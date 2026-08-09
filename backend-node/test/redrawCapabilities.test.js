@@ -574,3 +574,73 @@ test('listLocaleCapabilities requires every native human review field to be pres
     }], missingField);
   }
 });
+
+test('native dialogue audio cannot promote language evidence into a regional locale', () => {
+  const db = createDb();
+  insertConfig(db, [{
+    language: 'es',
+    locale: 'es-MX',
+    target_language: 'es',
+    target_locale: 'es-MX',
+    market: 'MX',
+    status: 'verified',
+    evidence: {
+      text: validEvidence(1),
+      subtitles: validEvidence(2),
+      character_image: validEvidence(3),
+      clean_plate_image: validEvidence(4),
+      video: validEvidence(5),
+      native_dialogue_audio: validNativeEvidence(1, NOW, 41),
+    },
+  }]);
+
+  assert.equal(resolveVerifiedLocaleCapability(db, {
+    locale: 'es-MX',
+    market: 'MX',
+    capability: 'native_dialogue_audio',
+    canReadArtifact: (id) => id === 41,
+  }), null);
+  assert.deepEqual(listLocaleCapabilities(db, (id) => id === 41 || (id >= 1 && id <= 5)), [{
+    locale: 'es-MX',
+    market: 'MX',
+    language: 'es',
+    region_status: 'unverified',
+    audio_mode: null,
+    native_dialogue_audio: false,
+    locale_verified: false,
+    status: 'subtitle_only',
+    blocking: ['tts', 'native_dialogue_audio'],
+  }]);
+});
+
+test('regional TTS capabilities keep replace audio and verified region status', () => {
+  const db = createDb();
+  insertConfig(db, [{
+    language: 'en',
+    locale: 'en-US',
+    target_language: 'en',
+    target_locale: 'en-US',
+    market: 'US',
+    status: 'verified',
+    evidence: {
+      text: validEvidence(1),
+      subtitles: validEvidence(2),
+      character_image: validEvidence(3),
+      clean_plate_image: validEvidence(4),
+      video: validEvidence(5),
+      tts: validEvidence(6),
+    },
+  }], { service_type: 'tts' });
+
+  assert.deepEqual(listLocaleCapabilities(db, (id) => id >= 1 && id <= 6), [{
+    locale: 'en-US',
+    market: 'US',
+    language: 'en',
+    region_status: 'verified',
+    audio_mode: 'replace',
+    native_dialogue_audio: false,
+    locale_verified: true,
+    status: 'full_output',
+    blocking: [],
+  }]);
+});

@@ -45,10 +45,18 @@ function nativeReviewPassed(review) {
   return true;
 }
 
+function hasCapabilityEvidence(entry, capability) {
+  const evidence = evidenceForCapability(entry, capability);
+  const parsed = parseJson(evidence);
+  return Object.keys(parsed).length > 0;
+}
+
 function validateNativeDialogueAudioEvidence(evidence, canReadArtifact, row, entry) {
   const parsed = parseJson(evidence);
   const verification = parsed.locale_verification;
   if (parsed.contract !== NATIVE_DIALOGUE_AUDIO_CONTRACT) return false;
+  if (entry?.market !== '') return false;
+  if (entry?.target_locale !== null) return false;
   if (!sameText(parsed.provider, row?.provider)) return false;
   if (!sameText(parsed.protocol, row?.api_protocol)) return false;
   if (!sameText(parsed.model, row?.default_model || row?.model)) return false;
@@ -61,7 +69,8 @@ function validateNativeDialogueAudioEvidence(evidence, canReadArtifact, row, ent
   if (parsed.media?.video_stream !== true || parsed.media?.audio_stream !== true) return false;
   if (!verification || typeof verification !== 'object') return false;
   if (verification.language_verified !== true || verification.locale_verified !== false) return false;
-  if (!sameText(verification.language, entry?.language || entry?.target_language || entry?.locale)) return false;
+  if (!sameText(verification.language, entry?.language || entry?.target_language)) return false;
+  if (!sameText(entry?.locale, verification.language)) return false;
   if (!nativeReviewPassed(parsed.human_review)) return false;
   if (typeof canReadArtifact !== 'function') return false;
   try {
@@ -189,7 +198,10 @@ function listLocaleCapabilities(db, canReadArtifact) {
         tts: false,
         video: false,
         native_dialogue_audio: false,
+        native_dialogue_audio_candidate: false,
       };
+      capability.native_dialogue_audio_candidate = capability.native_dialogue_audio_candidate
+        || hasCapabilityEvidence(entry, 'native_dialogue_audio');
       for (const name of REDRAW_OUTPUT_CAPABILITIES) {
         const valid = name === 'native_dialogue_audio'
           ? validateNativeDialogueAudioEvidence(evidenceForCapability(entry, name), canReadArtifact, row, entry)
@@ -204,6 +216,7 @@ function listLocaleCapabilities(db, canReadArtifact) {
     .sort((left, right) => `${left.locale}\u0000${left.market}`.localeCompare(`${right.locale}\u0000${right.market}`))
     .map((capability) => {
     const audioMode = capability.native_dialogue_audio ? 'native' : capability.tts ? 'replace' : null;
+    const localeVerified = Boolean(capability.market) && (capability.tts || !capability.native_dialogue_audio_candidate);
     const blocking = ['text', 'subtitles', 'character_image', 'clean_plate_image', 'video']
       .filter((name) => !capability[name]);
     if (!capability.tts && !capability.native_dialogue_audio) {
@@ -213,10 +226,10 @@ function listLocaleCapabilities(db, canReadArtifact) {
       locale: capability.locale,
       market: capability.market,
       language: capability.language,
-      region_status: capability.region_status,
+      region_status: localeVerified ? 'verified' : 'unverified',
       audio_mode: audioMode,
       native_dialogue_audio: capability.native_dialogue_audio,
-      locale_verified: capability.locale_verified,
+      locale_verified: localeVerified,
       status: summarizeLocaleCapability(capability),
       blocking,
     };

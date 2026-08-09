@@ -513,6 +513,10 @@ function nativeDialogueEvidence(configId, configUpdatedAt, artifactId = 771) {
 
 function insertNativeDialogueLocaleConfig(db, values = {}) {
   const now = values.updated_at || NOW;
+  const language = values.language || 'es';
+  const locale = values.locale || 'es';
+  const targetLocale = Object.prototype.hasOwnProperty.call(values, 'target_locale') ? values.target_locale : null;
+  const market = Object.prototype.hasOwnProperty.call(values, 'market') ? values.market : '';
   const configId = Number(db.prepare(`
     INSERT INTO ai_service_configs
       (service_type, provider, api_protocol, name, model, default_model, is_active, is_default, priority, settings, created_at, updated_at)
@@ -520,11 +524,11 @@ function insertNativeDialogueLocaleConfig(db, values = {}) {
   `).run(NOW, now).lastInsertRowid);
   db.prepare('UPDATE ai_service_configs SET settings = ? WHERE id = ?').run(JSON.stringify({
     redraw_locale_capabilities: [{
-      language: 'es',
-      locale: 'es',
-      target_language: 'es',
-      target_locale: null,
-      market: '',
+      language,
+      locale,
+      target_language: language,
+      target_locale: targetLocale,
+      market,
       status: 'verified',
       evidence: {
         text: {
@@ -906,6 +910,39 @@ test('语言目录真实响应不展示 human review 缺字段的原生对白能
     assert.deepEqual(locales.body.data, [{
       locale: 'es',
       market: '',
+      language: 'es',
+      region_status: 'unverified',
+      audio_mode: null,
+      native_dialogue_audio: false,
+      locale_verified: false,
+      status: 'subtitle_only',
+      blocking: ['tts', 'native_dialogue_audio'],
+    }]);
+  } finally {
+    db.close();
+  }
+});
+
+test('语言目录真实响应不把原生对白语言证据提升为地区能力', () => {
+  const db = createDb();
+  try {
+    insertNativeDialogueLocaleConfig(db, {
+      locale: 'es-MX',
+      target_locale: 'es-MX',
+      market: 'MX',
+    });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      capabilityService: redrawCapabilityService,
+      canReadArtifact: (assetId) => [771, 772, 773, 774, 775, 776].includes(Number(assetId)),
+    }));
+
+    const locales = captureResponse();
+    handlers.listLocales(request(), locales);
+
+    assert.equal(locales.statusCode, 200);
+    assert.deepEqual(locales.body.data, [{
+      locale: 'es-MX',
+      market: 'MX',
       language: 'es',
       region_status: 'unverified',
       audio_mode: null,
