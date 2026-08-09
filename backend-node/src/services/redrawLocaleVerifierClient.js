@@ -213,7 +213,7 @@ function validateNativeEvidence(evidence, request, pack) {
   const segments = nativeSegments(evidence?.segments);
   if (!evidence || typeof evidence !== 'object'
     || evidence.source !== 'offline-worker'
-    || (Object.hasOwn(evidence, 'request_id') && evidence.request_id !== request.request_id)
+    || evidence.request_id !== request.request_id
     || evidence.audio_sha256 !== request.audio_sha256
     || evidence.locale_pack !== pack.id
     || evidence.model_manifest_sha256 !== pack.model_manifest_sha256

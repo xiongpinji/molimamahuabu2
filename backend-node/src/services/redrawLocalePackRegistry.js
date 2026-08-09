@@ -231,6 +231,7 @@ function projectPack(pack) {
     };
   }
   if (modernFieldCount !== 3
+    || !sameArray(Object.keys(pack).sort(), [...MODERN_PACK_FIELDS].sort())
     || !/^[a-z]{2,8}$/.test(String(pack.language || ''))
     || !['language', 'locale'].includes(pack.scope)
     || typeof pack.prompt_language_label !== 'string'

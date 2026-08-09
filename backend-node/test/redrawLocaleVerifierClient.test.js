@@ -103,6 +103,7 @@ function nativeOkResponse(request, overrides = {}) {
   return {
     ok: true,
     result: {
+      request_id: request.request_id,
       audio_sha256: request.audio_sha256,
       locale_pack: 'es@1',
       source: 'offline-worker',
@@ -380,6 +381,7 @@ test('native client sends the exact server-generated language-pack request and r
 
 test('native client rejects language, locale, manifest, and video invocation evidence drift', async () => {
   const cases = [
+    { request_id: undefined },
     { request_id: 'response-must-not-rebind-request' },
     { detected_language: 'en' },
     { detected_locale: 'es-MX' },

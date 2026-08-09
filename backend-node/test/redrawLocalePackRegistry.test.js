@@ -395,7 +395,7 @@ test('registry rejects duplicate signed identities and invalid modern pack field
   }
 });
 
-test('registry returns a trusted pack projection and validates historical language evidence', () => {
+test('registry rejects unknown top-level fields in a modern signed pack', () => {
   const manifest = {
     schema_version: 1,
     enabled_packs: [spanishPack({ signed_but_untrusted_extension: 'must-not-leak' })],
@@ -415,8 +415,31 @@ test('registry returns a trusted pack projection and validates historical langua
     },
   });
   const registry = registryFor(fixture);
-  const pack = registry.assertReady({ packId: 'es@1', language: 'es', scope: 'language' });
-  assert.equal(Object.hasOwn(pack, 'signed_but_untrusted_extension'), false);
+  assert.throws(
+    () => registry.assertReady({ packId: 'es@1', language: 'es', scope: 'language' }),
+    { code: 'REDRAW_LOCALE_VERIFIER_NOT_READY' },
+  );
+});
+
+test('registry validates historical language evidence against the exact expected pack', () => {
+  const fixture = writeFixture({
+    manifest: {
+      schema_version: 1,
+      enabled_packs: [spanishPack()],
+    },
+    ready: {
+      locale_pack: 'es@1',
+      model_manifest_sha256: 'c'.repeat(64),
+      calibration_manifest_sha256: 'd'.repeat(64),
+      enabled_pack_ids: ['es@1'],
+      pack_attestations: [{
+        id: 'es@1',
+        model_manifest_sha256: 'c'.repeat(64),
+        calibration_manifest_sha256: 'd'.repeat(64),
+      }],
+    },
+  });
+  const registry = registryFor(fixture);
 
   const evidence = {
     source: 'offline-worker',
