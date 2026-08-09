@@ -91,6 +91,13 @@ test('第一步接入真实项目、源片上传、语言地区、比例、报�
   }
 })
 
+test('语言能力目录为空时显示未开放原因而不是两个空白下拉', () => {
+  assert.match(sourceStepSource, /暂无通过验收的语言\/地区/)
+  assert.match(sourceStepSource, /暂无已验证语言/)
+  assert.match(sourceStepSource, /暂无已验证地区/)
+  assert.equal(sourceStepSource.match(/:disabled="!localeOptions\.length"/g)?.length, 2)
+})
+
 test('分析确认与英文 1:1 本地化使用服务端报价、独立轮询和失败退款门禁', () => {
   for (const name of [
     'redrawWorkflowPhase',
