@@ -53,6 +53,51 @@ test('canonical key order is stable and arrays keep order', () => {
   assert.equal(signer.canonicalPayload(left).equals(signer.canonicalPayload(right)), true);
 });
 
+test('signed multi-pack manifest binds language scope thresholds and pack array order', () => {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+  const signed = {
+    schema_version: 1,
+    enabled_packs: [
+      {
+        id: 'en-US@1',
+        language: 'en',
+        locale: 'en-US',
+        scope: 'locale',
+        prompt_language_label: '英语（美国）',
+        model_manifest_sha256: 'a'.repeat(64),
+        calibration_manifest_sha256: 'b'.repeat(64),
+        thresholds: {
+          language_probability_min: 0.96,
+          dialogue_similarity_min: 0.98,
+          speech_chars_per_second_max: 18,
+        },
+      },
+      {
+        id: 'es@1',
+        language: 'es',
+        locale: null,
+        scope: 'language',
+        prompt_language_label: '西班牙语',
+        model_manifest_sha256: 'c'.repeat(64),
+        calibration_manifest_sha256: 'd'.repeat(64),
+        thresholds: {
+          language_probability_min: 0.8,
+          dialogue_similarity_min: 0.8,
+          speech_chars_per_second_max: 20,
+        },
+      },
+    ],
+  };
+  const signature = crypto.sign(null, signer.canonicalPayload(signed), privateKey);
+  assert.equal(crypto.verify(null, signer.canonicalPayload(signed), publicKey, signature), true);
+
+  const reordered = { ...signed, enabled_packs: [...signed.enabled_packs].reverse() };
+  const changedThreshold = structuredClone(signed);
+  changedThreshold.enabled_packs[1].thresholds.dialogue_similarity_min = 0.81;
+  assert.equal(crypto.verify(null, signer.canonicalPayload(reordered), publicKey, signature), false);
+  assert.equal(crypto.verify(null, signer.canonicalPayload(changedThreshold), publicKey, signature), false);
+});
+
 test('private key content is not written to logs or manifest', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-locale-secret-'));
   const { privateKey } = crypto.generateKeyPairSync('ed25519');

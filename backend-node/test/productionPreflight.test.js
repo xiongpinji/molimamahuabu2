@@ -310,8 +310,7 @@ test('语言验证预检默认关闭时通过，启用后必须阻止过期 read
       env: enabledEnv,
       db,
       localeRegistry: {
-        assertReady(locale) {
-          assert.equal(locale, 'en-US');
+        listReadyPacks() {
           const error = new Error(`${sensitiveManifestPath} expired`);
           error.code = 'REDRAW_LOCALE_VERIFIER_NOT_READY';
           throw error;
@@ -322,6 +321,68 @@ test('语言验证预检默认关闭时通过，启用后必须阻止过期 read
     assert.equal(staleCheck?.status, 'fail');
     assert.match(staleCheck?.message || '', /REDRAW_LOCALE_VERIFIER_NOT_READY/);
     assert.equal(JSON.stringify(stale).includes(sensitiveManifestPath), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('语言验证预检检查全部签名 pack 且消息只列 pack id', () => {
+  const db = createDb();
+  try {
+    const env = {
+      ...productionEnv(),
+      REDRAW_LOCALE_VERIFIER_ENABLED: 'true',
+    };
+    let calls = 0;
+    const report = runProductionPreflight({
+      config: productionConfig(),
+      env,
+      db,
+      localeRegistry: {
+        listReadyPacks() {
+          calls += 1;
+          return [
+            { id: 'en-US@1', model_path: 'C:\\secret\\model.bin' },
+            { id: 'es@1', transcript: 'Hola, pequeño.' },
+          ];
+        },
+      },
+    });
+    const check = report.checks.find((item) => item.id === 'redraw_locale_verifier');
+    assert.equal(calls, 1);
+    assert.equal(check?.status, 'pass');
+    assert.match(check?.message || '', /en-US@1/);
+    assert.match(check?.message || '', /es@1/);
+    assert.equal(check?.message.includes('C:\\secret'), false);
+    assert.equal(check?.message.includes('Hola, pequeño.'), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('语言验证预检在任一签名 pack 未 ready 时失败并隐藏底层细节', () => {
+  const db = createDb();
+  try {
+    const sensitive = 'C:\\secret\\es-model.bin: Hola, pequeño.';
+    const report = runProductionPreflight({
+      config: productionConfig(),
+      env: {
+        ...productionEnv(),
+        REDRAW_LOCALE_VERIFIER_ENABLED: 'true',
+      },
+      db,
+      localeRegistry: {
+        listReadyPacks() {
+          const error = new Error(sensitive);
+          error.code = 'REDRAW_LOCALE_VERIFIER_NOT_READY';
+          throw error;
+        },
+      },
+    });
+    const check = report.checks.find((item) => item.id === 'redraw_locale_verifier');
+    assert.equal(check?.status, 'fail');
+    assert.equal(check?.code, 'REDRAW_LOCALE_VERIFIER_NOT_READY');
+    assert.equal(JSON.stringify(check).includes(sensitive), false);
   } finally {
     db.close();
   }
