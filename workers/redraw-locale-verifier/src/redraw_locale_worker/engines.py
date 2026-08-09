@@ -13,11 +13,23 @@ class FasterWhisperEngine:
 
     def infer(self, audio_path):
         segments, info = self.model.transcribe(str(Path(audio_path)), beam_size=5, vad_filter=True)
-        text = " ".join(segment.text.strip() for segment in segments if getattr(segment, "text", "").strip()).strip()
+        evidence_segments = []
+        for segment in segments:
+            text = getattr(segment, "text", "").strip()
+            if not text:
+                continue
+            evidence_segments.append(
+                {
+                    "start": float(getattr(segment, "start")),
+                    "end": float(getattr(segment, "end")),
+                    "text": text,
+                }
+            )
         return {
             "language": getattr(info, "language", None),
             "probability": _raw_probability(getattr(info, "language_probability", None)),
-            "text": text,
+            "text": " ".join(segment["text"] for segment in evidence_segments).strip(),
+            "segments": evidence_segments,
         }
 
 

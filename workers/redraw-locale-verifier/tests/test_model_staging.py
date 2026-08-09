@@ -256,6 +256,11 @@ class ModelStagingTests(unittest.TestCase):
     def test_smoke_imports_provider_dependencies_only_after_offline_block(self):
         smoke_source = SMOKE_PATH.read_text(encoding="utf-8")
         top_level = smoke_source[: smoke_source.index("def _load_stage_models_module")]
+        network_block_definition = smoke_source.index("def block_network()")
+        self.assertIn("import ssl", smoke_source)
+        self.assertIn("import asyncio", smoke_source)
+        self.assertLess(smoke_source.index("import ssl"), network_block_definition)
+        self.assertLess(smoke_source.index("import asyncio"), network_block_definition)
         self.assertNotIn("from faster_whisper import WhisperModel", top_level)
         self.assertNotIn("import psutil", top_level)
         self.assertNotIn("from speechbrain.inference.interfaces import pretrained_from_hparams", top_level)

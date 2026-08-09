@@ -19,6 +19,23 @@ VALID_VERIFY_REQUEST = {
     },
 }
 
+VALID_NATIVE_AUDIO_REQUEST = {
+    "action": "verify_native_audio",
+    "request_id": "req-native-1",
+    "audio_path": "C:/tmp/native-audio.wav",
+    "audio_sha256": "a" * 64,
+    "approved_text": "Hola, pequeño.",
+    "locale_pack": "es@1",
+    "video_invocation": {
+        "provider": "toapis",
+        "model": "seedance-2-fast",
+        "ai_service_config_id": 16,
+        "config_updated_at": "2026-08-09T00:00:00Z",
+        "provider_task_id": "provider-real-1",
+        "artifact_sha256": "b" * 64,
+    },
+}
+
 
 class ProtocolTests(unittest.TestCase):
     def test_health_accepts_only_action_and_request_id(self):
@@ -73,6 +90,49 @@ class ProtocolTests(unittest.TestCase):
                 self.assertRaisesRegex(ProtocolError, "LOCALE_TTS_INVOCATION_INVALID"),
             ):
                 parse_request({**VALID_VERIFY_REQUEST, "tts_invocation": invocation})
+
+    def test_native_audio_request_requires_exact_video_invocation(self):
+        try:
+            parsed = parse_request(dict(VALID_NATIVE_AUDIO_REQUEST))
+        except ProtocolError as exc:
+            self.fail(f"native audio request should be accepted: {exc.code}")
+
+        self.assertEqual(parsed["action"], "verify_native_audio")
+        self.assertEqual(parsed["locale_pack"], "es@1")
+        self.assertEqual(parsed["video_invocation"]["artifact_sha256"], "b" * 64)
+
+    def test_native_audio_rejects_tts_invocation_and_unknown_fields(self):
+        invalid_requests = [
+            {
+                **VALID_NATIVE_AUDIO_REQUEST,
+                "tts_invocation": VALID_NATIVE_AUDIO_REQUEST["video_invocation"],
+            },
+            {**VALID_NATIVE_AUDIO_REQUEST, "detected_locale": "es-MX"},
+            {**VALID_NATIVE_AUDIO_REQUEST, "thresholds": {"language_probability_min": 0.0}},
+            {**VALID_NATIVE_AUDIO_REQUEST, "unknown": True},
+        ]
+        for request in invalid_requests:
+            with (
+                self.subTest(fields=sorted(request)),
+                self.assertRaisesRegex(ProtocolError, "LOCALE_VERIFY_REQUEST_INVALID"),
+            ):
+                parse_request(request)
+
+    def test_native_audio_hash_config_id_and_timestamp_are_strict(self):
+        invalid_cases = [
+            ({"audio_sha256": "A" * 64}, "LOCALE_AUDIO_HASH_INVALID"),
+            ({"audio_sha256": "a" * 63}, "LOCALE_AUDIO_HASH_INVALID"),
+            ({"video_invocation": {**VALID_NATIVE_AUDIO_REQUEST["video_invocation"], "artifact_sha256": "B" * 64}}, "LOCALE_VIDEO_INVOCATION_INVALID"),
+            ({"video_invocation": {**VALID_NATIVE_AUDIO_REQUEST["video_invocation"], "ai_service_config_id": True}}, "LOCALE_VIDEO_INVOCATION_INVALID"),
+            ({"video_invocation": {**VALID_NATIVE_AUDIO_REQUEST["video_invocation"], "config_updated_at": "2026-08-09T00:00:00"}}, "LOCALE_VIDEO_INVOCATION_INVALID"),
+            ({"video_invocation": {**VALID_NATIVE_AUDIO_REQUEST["video_invocation"], "provider_task_id": ""}}, "LOCALE_VIDEO_INVOCATION_INVALID"),
+        ]
+        for override, code in invalid_cases:
+            with self.subTest(override=override), self.assertRaisesRegex(ProtocolError, code):
+                parse_request({**VALID_NATIVE_AUDIO_REQUEST, **override})
+
+        with self.assertRaisesRegex(ProtocolError, "LOCALE_PACK_UNSUPPORTED"):
+            parse_request({**VALID_NATIVE_AUDIO_REQUEST, "locale_pack": "es-MX@1"})
 
 
 if __name__ == "__main__":

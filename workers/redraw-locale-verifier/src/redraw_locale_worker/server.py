@@ -21,11 +21,13 @@ FORBIDDEN_RESPONSE_FIELDS = frozenset({"transcript", "transcript_text", "approve
 
 @dataclass(frozen=True)
 class LocaleServerConfig:
-    pack: dict
+    pack: dict | None
     allowed_root: Path
+    pack_by_id: object = None
     asr: object = None
     accent: object = None
     verifier: object = None
+    native_verifier: object = None
     ready_path: Path | None = None
     socket_path: Path | None = None
 
@@ -89,10 +91,11 @@ class LocaleRequestHandler(socketserver.StreamRequestHandler):
 
         config = self.server.config
         try:
-            verifier = config.verifier or _default_verifier()
+            pack = _select_pack(config, request["locale_pack"])
+            verifier = _select_verifier(config, request["action"])
             result = verifier(
                 request,
-                config.pack,
+                pack,
                 allowed_root=config.allowed_root,
                 asr=config.asr,
                 accent=config.accent,
@@ -116,13 +119,15 @@ class LocaleRequestHandler(socketserver.StreamRequestHandler):
         self.wfile.flush()
 
 
-def make_test_server(verifier, *, pack, allowed_root, asr=None, accent=None):
+def make_test_server(verifier, *, pack=None, pack_by_id=None, allowed_root, asr=None, accent=None, native_verifier=None):
     config = LocaleServerConfig(
         pack=pack,
+        pack_by_id=pack_by_id,
         allowed_root=Path(allowed_root).resolve(),
         asr=asr,
         accent=accent,
         verifier=verifier,
+        native_verifier=native_verifier,
     )
     return LocaleTcpTestServer(("127.0.0.1", 0), LocaleRequestHandler, config=config)
 
@@ -229,7 +234,8 @@ def create_unix_server(socket_path, *, pack, allowed_root, asr, accent, ready_pa
         allowed_root=Path(allowed_root).resolve(),
         asr=asr,
         accent=accent,
-        verifier=_default_verifier(),
+        verifier=_default_verifier("verify"),
+        native_verifier=_default_verifier("verify_native_audio"),
         ready_path=Path(ready_path) if ready_path is not None else None,
         socket_path=Path(socket_path),
     )
@@ -291,10 +297,50 @@ def _safe_unlink_file(path):
         pass
 
 
-def _default_verifier():
-    from .verifier import verify_audio
+def _select_pack(config, requested_pack_id):
+    if config.pack_by_id is not None:
+        index = _validated_pack_index(config.pack_by_id)
+        if index is None or requested_pack_id not in index:
+            raise ProtocolError("LOCALE_PACK_UNSUPPORTED")
+        return index[requested_pack_id]
+    if _pack_identifier(config.pack) != requested_pack_id:
+        raise ProtocolError("LOCALE_PACK_UNSUPPORTED")
+    return config.pack
 
-    return verify_audio
+
+def _validated_pack_index(pack_by_id):
+    if not isinstance(pack_by_id, dict):
+        return None
+    index = {}
+    for key, pack in pack_by_id.items():
+        pack_id = _pack_identifier(pack)
+        if not isinstance(key, str) or not key.strip() or key != pack_id or pack_id in index:
+            return None
+        index[pack_id] = pack
+    return index
+
+
+def _pack_identifier(pack):
+    if not isinstance(pack, dict):
+        return None
+    pack_id = pack.get("id")
+    locale_pack = pack.get("locale_pack")
+    if pack_id is not None and locale_pack is not None and pack_id != locale_pack:
+        return None
+    value = pack_id if pack_id is not None else locale_pack
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _select_verifier(config, action):
+    if action == "verify_native_audio":
+        return config.native_verifier or _default_verifier(action)
+    return config.verifier or _default_verifier(action)
+
+
+def _default_verifier(action="verify"):
+    from .verifier import verify_audio, verify_native_audio
+
+    return verify_native_audio if action == "verify_native_audio" else verify_audio
 
 
 def main():

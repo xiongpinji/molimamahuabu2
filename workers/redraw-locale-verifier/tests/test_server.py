@@ -75,6 +75,28 @@ class ServerTests(unittest.TestCase):
             "model_manifest_sha256": "a" * 64,
             "calibration_manifest_sha256": "b" * 64,
         }
+        self.native_request = {
+            "action": "verify_native_audio",
+            "request_id": "req-native-1",
+            "audio_path": str(self.audio_path),
+            "audio_sha256": "a" * 64,
+            "approved_text": "Hola, pequeño.",
+            "locale_pack": "es@1",
+            "video_invocation": {
+                "provider": "toapis",
+                "model": "seedance-2-fast",
+                "ai_service_config_id": 16,
+                "config_updated_at": "2026-08-09T00:00:00Z",
+                "provider_task_id": "provider-real-1",
+                "artifact_sha256": "b" * 64,
+            },
+        }
+        self.native_pack = {
+            "id": "es@1",
+            "language": "es",
+            "model_manifest_sha256": "c" * 64,
+            "calibration_manifest_sha256": "d" * 64,
+        }
 
     def tearDown(self):
         server = getattr(self, "server", None)
@@ -103,6 +125,57 @@ class ServerTests(unittest.TestCase):
         self.assertEqual([result["ok"] for result in results], [True, True])
         self.assertEqual(len(verifier.calls), 2)
         self.assertEqual(verifier.calls[0][2], self.root)
+
+    def test_server_dispatches_action_to_matching_verifier_and_pack_id(self):
+        legacy = CountingVerifier()
+        native = CountingVerifier()
+        self.server = make_test_server(
+            legacy,
+            native_verifier=native,
+            pack=self.pack,
+            pack_by_id={"en-US@1": self.pack, "es@1": self.native_pack},
+            allowed_root=self.root,
+        )
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+
+        legacy_response = self._send_json(self.request)
+        native_response = self._send_json(self.native_request)
+
+        self.assertTrue(legacy_response["ok"])
+        self.assertTrue(native_response["ok"])
+        self.assertEqual(len(legacy.calls), 1)
+        self.assertEqual(len(native.calls), 1)
+        self.assertIs(legacy.calls[0][1], self.pack)
+        self.assertIs(native.calls[0][1], self.native_pack)
+
+    def test_server_unknown_duplicate_and_missing_pack_fail_closed(self):
+        cases = [
+            {"en-US@1": self.pack},
+            {"es@1": self.native_pack, "duplicate": dict(self.native_pack)},
+            None,
+        ]
+        for pack_by_id in cases:
+            with self.subTest(pack_by_id=pack_by_id):
+                native = CountingVerifier()
+                self.server = make_test_server(
+                    CountingVerifier(),
+                    native_verifier=native,
+                    pack=None,
+                    pack_by_id=pack_by_id,
+                    allowed_root=self.root,
+                )
+                thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+                thread.start()
+
+                response = self._send_json(self.native_request)
+
+                self.assertFalse(response["ok"])
+                self.assertEqual(response["error_code"], "LOCALE_PACK_UNSUPPORTED")
+                self.assertEqual(native.calls, [])
+                self.server.shutdown()
+                self.server.server_close()
+                self.server = None
 
     def test_oversized_json_line_is_rejected(self):
         self.server = make_test_server(CountingVerifier(), pack=self.pack, allowed_root=self.root)

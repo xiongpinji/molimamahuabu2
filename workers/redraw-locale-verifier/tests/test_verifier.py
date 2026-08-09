@@ -6,8 +6,11 @@ import types
 import unittest
 from pathlib import Path
 
+import redraw_locale_worker.verifier as verifier_module
 from redraw_locale_worker.engines import FasterWhisperEngine, _score_to_probability
-from redraw_locale_worker.verifier import verify_audio
+
+verify_audio = verifier_module.verify_audio
+verify_native_audio = getattr(verifier_module, "verify_native_audio", None)
 
 
 class FakeAsr:
@@ -35,6 +38,11 @@ class FakeAccent:
         self.seen_audio_path = audio_path
         self.called = True
         return dict(self.result)
+
+
+class ExplodingAccent:
+    def infer(self, audio_path):
+        raise AssertionError(f"native verification must not call accent inference: {audio_path}")
 
 
 class RaisingEngine:
@@ -74,7 +82,7 @@ class FakeWhisperModel:
 
     def transcribe(self, audio_path, beam_size, vad_filter):
         del audio_path, beam_size, vad_filter
-        segment = types.SimpleNamespace(text="Anna did not pay 50 dollars")
+        segment = types.SimpleNamespace(start=0.25, end=1.5, text="Anna did not pay 50 dollars")
         info = types.SimpleNamespace(language="en", language_probability=self.language_probability)
         return [segment], info
 
@@ -121,6 +129,44 @@ class VerifierTests(unittest.TestCase):
             },
             "us_accent_label": "us",
         }
+        self.native_text = "Hola, pequeño."
+        self.native_request = {
+            "action": "verify_native_audio",
+            "request_id": "req-native-1",
+            "audio_path": str(self.audio_path),
+            "audio_sha256": self.audio_sha256,
+            "approved_text": self.native_text,
+            "locale_pack": "es@1",
+            "video_invocation": {
+                "provider": "toapis",
+                "model": "seedance-2-fast",
+                "ai_service_config_id": 16,
+                "config_updated_at": "2026-08-09T00:00:00Z",
+                "provider_task_id": "provider-real-1",
+                "artifact_sha256": "e" * 64,
+            },
+        }
+        self.native_pack = {
+            "id": "es@1",
+            "language": "es",
+            "locale": None,
+            "scope": "language",
+            "model_manifest_sha256": "f" * 64,
+            "calibration_manifest_sha256": "9" * 64,
+            "thresholds": {
+                "language_probability_min": 0.80,
+                "dialogue_similarity_min": 0.80,
+                "speech_chars_per_second_max": 20,
+            },
+        }
+
+    def _native_asr(self, *, language="es", probability=0.96, text=None, segments=None):
+        transcript = self.native_text if text is None else text
+        if segments is None:
+            segments = [{"start": 0.0, "end": 1.2, "text": transcript}]
+        engine = FakeAsr(language, probability, transcript)
+        engine.result["segments"] = segments
+        return engine
 
     def test_locale_is_verified_only_when_all_gates_pass(self):
         result = verify_audio(
@@ -364,12 +410,107 @@ class VerifierTests(unittest.TestCase):
                         FakeWhisperModel.language_probability = value
                         self.assertIsNone(engine.infer(self.audio_path)["probability"])
                 FakeWhisperModel.language_probability = 0.98
-                self.assertEqual(engine.infer(self.audio_path)["probability"], 0.98)
+                evidence = engine.infer(self.audio_path)
+                self.assertEqual(evidence["probability"], 0.98)
+                self.assertEqual(
+                    evidence["segments"],
+                    [{"start": 0.25, "end": 1.5, "text": "Anna did not pay 50 dollars"}],
+                )
         finally:
             if previous is None:
                 sys.modules.pop("faster_whisper", None)
             else:
                 sys.modules["faster_whisper"] = previous
+
+    def test_native_audio_verifier_entrypoint_exists(self):
+        self.assertTrue(callable(verify_native_audio))
+
+    @unittest.skipUnless(callable(verify_native_audio), "native verifier is not implemented yet")
+    def test_native_audio_verifies_language_without_locale_or_accent(self):
+        result = verify_native_audio(
+            self.native_request,
+            self.native_pack,
+            allowed_root=self.allowed_root,
+            asr=self._native_asr(),
+            accent=ExplodingAccent(),
+        )
+
+        self.assertTrue(result["language_verified"])
+        self.assertFalse(result["locale_verified"])
+        self.assertEqual(result["detected_language"], "es")
+        self.assertIsNone(result["detected_locale"])
+        self.assertEqual(result["locale_pack"], "es@1")
+        self.assertEqual(result["dialogue_similarity"], 1.0)
+        self.assertEqual(result["asr"], {"ok": True, "language": "es", "probability": 0.96})
+        self.assertEqual(
+            result["segments"],
+            [
+                {
+                    "start_ms": 0,
+                    "end_ms": 1200,
+                    "text_sha256": hashlib.sha256(self.native_text.encode("utf-8")).hexdigest(),
+                }
+            ],
+        )
+        self.assertEqual(result["model_manifest_sha256"], "f" * 64)
+        self.assertEqual(result["calibration_manifest_sha256"], "9" * 64)
+        self.assertEqual(
+            result["video_invocation"],
+            {
+                "provider": "toapis",
+                "model": "seedance-2-fast",
+                "ai_service_config_id": 16,
+                "config_updated_at": "2026-08-09T00:00:00Z",
+                "artifact_sha256": "e" * 64,
+                "provider_task_id_sha256": hashlib.sha256(b"provider-real-1").hexdigest(),
+            },
+        )
+        serialized = json.dumps(result, sort_keys=True, ensure_ascii=False)
+        self.assertNotIn(self.native_text, serialized)
+        self.assertNotIn("provider-real-1", serialized)
+        self.assertNotIn("transcript", result)
+
+    @unittest.skipUnless(callable(verify_native_audio), "native verifier is not implemented yet")
+    def test_native_audio_uses_asr_language_not_request_locale_claims(self):
+        request = {
+            **self.native_request,
+            "locale": "es-MX",
+            "detected_locale": "es-MX",
+            "detected_language": "es",
+        }
+        result = verify_native_audio(
+            request,
+            self.native_pack,
+            allowed_root=self.allowed_root,
+            asr=self._native_asr(language="en"),
+            accent=ExplodingAccent(),
+        )
+
+        self.assertFalse(result["language_verified"])
+        self.assertFalse(result["locale_verified"])
+        self.assertEqual(result["detected_language"], "en")
+        self.assertIsNone(result["detected_locale"])
+        self.assertFalse(result["checks"]["language"])
+
+    @unittest.skipUnless(callable(verify_native_audio), "native verifier is not implemented yet")
+    def test_native_audio_fails_closed_without_real_speech_segments_and_hides_transcript(self):
+        for segments in ([], [{"start": 0.0, "end": 1.0, "text": ""}]):
+            with self.subTest(segments=segments):
+                transcript = "texto que no coincide"
+                result = verify_native_audio(
+                    self.native_request,
+                    self.native_pack,
+                    allowed_root=self.allowed_root,
+                    asr=self._native_asr(text=transcript, segments=segments),
+                    accent=ExplodingAccent(),
+                )
+
+                self.assertFalse(result["language_verified"])
+                self.assertIsNone(result["detected_locale"])
+                self.assertFalse(result["checks"]["speech_segments_present"])
+                serialized = json.dumps(result, sort_keys=True, ensure_ascii=False)
+                self.assertNotIn(transcript, serialized)
+                self.assertNotIn("provider-real-1", serialized)
 
 
 if __name__ == "__main__":
