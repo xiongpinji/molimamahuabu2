@@ -15,7 +15,9 @@ const redrawBillingService = require('./redrawBillingService');
 const redrawReviewService = require('./redrawReviewService');
 const redrawCapabilityService = require('./redrawCapabilityService');
 const redrawSourceConditioningService = require('./redrawSourceConditioningService');
+const { compileNativeDialoguePrompt } = require('./redrawNativeDialoguePromptService');
 const { FEITUO_MODELS, buildFeituoVideoBody } = require('./feituoVideoClient');
+const { TOAPIS_VIDEO_MODELS, validateToapisVideoOptions } = require('./toapisVideoClient');
 const { runWithGenerationLimit } = require('./generationConcurrency');
 
 const execFileAsync = promisify(execFile);
@@ -24,6 +26,24 @@ const INTERRUPTED_MESSAGE = '供应商状态未知/服务重启，请勿重新�
 const DEFAULT_GENERATION_CONCURRENCY = 3;
 const DEFAULT_RECOVERY_WAIT_MS = 60 * 60 * 1000;
 const DEFAULT_RECOVERY_POLL_MS = 1000;
+const CLIENT_GENERATION_CONTROL_FIELDS = [
+  'model',
+  'locale',
+  'prompt',
+  'generate_audio',
+  'generateAudio',
+  'ai_service_config_id',
+  'aiServiceConfigId',
+  'config_id',
+  'configId',
+  'provider',
+  'credit_amount',
+  'creditAmount',
+  'credits',
+  'price',
+  'reservation_id',
+  'reservationId',
+];
 
 function codedError(code, message, details) {
   const error = new Error(message);
@@ -275,6 +295,149 @@ function buildGenerationInput(shot, input, parsed, verifiedModel) {
   };
 }
 
+function rejectClientGenerationControl(input) {
+  for (const field of CLIENT_GENERATION_CONTROL_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(input || {}, field)) {
+      throw codedError('REDRAW_GENERATION_INPUT_INVALID', '转绘分镜生成的模型、语言、提示词、音频和积分只能由服务端决定');
+    }
+  }
+}
+
+function languageFromLocale(locale) {
+  const language = String(locale || '').trim().split('-')[0].toLowerCase();
+  return /^[a-z]{2,8}$/.test(language) ? language : '';
+}
+
+function nativeCapabilityForVersion(db, version, canReadArtifact) {
+  const language = languageFromLocale(version?.locale || version?.version_locale);
+  if (!language) return null;
+  return redrawCapabilityService.resolveVerifiedLocaleCapability(db, {
+    capability: 'native_dialogue_audio',
+    locale: language,
+    market: '',
+    canReadArtifact,
+  });
+}
+
+function assertReadyNativePack(ctx, language) {
+  const registry = ctx.localeVerifier;
+  if (!registry || typeof registry.assertReady !== 'function') {
+    throw codedError('REDRAW_LOCALE_VERIFIER_NOT_READY', '语言验证 Worker 未就绪');
+  }
+  return registry.assertReady({ language, scope: 'language' });
+}
+
+function assertNativeAudioCapability(capability) {
+  if (!capability) {
+    throw codedError('REDRAW_NO_VERIFIED_NATIVE_AUDIO', '当前语言没有已验证的原生对白声画能力');
+  }
+  const model = String(capability.model || '').trim().toLowerCase();
+  const protocol = String(capability.protocol || '').trim().toLowerCase();
+  const spec = protocol === 'toapis_video' ? TOAPIS_VIDEO_MODELS[model] : null;
+  if (capability.supportsAudio === false || spec?.supportsAudio !== true) {
+    throw codedError('REDRAW_NATIVE_AUDIO_UNSUPPORTED', '当前已验证视频模型不支持同步音频');
+  }
+  return {
+    config_id: Number(capability.carrier_config_id ?? capability.config_id),
+    config_updated_at: String((capability.carrier_updated_at ?? capability.config_updated_at) || ''),
+    provider: String((capability.carrier_provider ?? capability.provider) || '').trim(),
+    protocol,
+    model,
+  };
+}
+
+function buildNativeDialogues(shot) {
+  const rows = strictJsonArray(shot.localized_dialogue_json, 'localized_dialogue_json');
+  return rows.map((item) => ({
+    speaker_id: String((item.speaker_id ?? item.speakerId ?? item.speaker) || '').trim(),
+    start_ms: Number(item.start_ms ?? item.startMs),
+    end_ms: Number(item.end_ms ?? item.endMs),
+    text: String((item.text ?? item.localized_text ?? item.line) || '').trim(),
+  }));
+}
+
+function hasNativeDialogueRows(shot) {
+  return strictJsonArray(shot.localized_dialogue_json, 'localized_dialogue_json').length > 0;
+}
+
+function buildNativeGeneration(shot, parsed, nativeCapability, pack) {
+  const selected = assertNativeAudioCapability(nativeCapability);
+  const compiled = parsed.compiled;
+  const duration = normalizeDuration(compiled.duration ?? parsed.draft.duration ?? durationFromShotMs(shot));
+  const resolution = normalizeResolution(compiled.resolution ?? parsed.draft.resolution ?? '720p');
+  const aspectRatio = normalizeAspectRatio(compiled.aspect_ratio ?? compiled.aspectRatio
+    ?? parsed.draft.aspect_ratio ?? parsed.draft.aspectRatio ?? '16:9');
+  const promptBundle = compileNativeDialoguePrompt({
+    shot: { id: shot.id, start_ms: Number(shot.start_ms), end_ms: Number(shot.end_ms) },
+    basePrompt: String(compiled.text || compiled.prompt || shot.prompt || '').trim(),
+    language: pack.language,
+    promptLanguageLabel: pack.prompt_language_label,
+    localePack: pack,
+    modelPin: {
+      config_id: selected.config_id,
+      config_updated_at: selected.config_updated_at,
+      model: selected.model,
+    },
+    dialogues: buildNativeDialogues(shot),
+  });
+  return {
+    ...promptBundle,
+    prompt: promptBundle.prompt,
+    model: selected.model,
+    duration,
+    resolution,
+    aspect_ratio: aspectRatio,
+    count: 1,
+    locale: pack.language,
+    attempt: Number(parsed.draft.generation?.attempt ?? parsed.draft.attempt ?? 1),
+    provider: selected.provider,
+    protocol: selected.protocol,
+    aiServiceConfigId: selected.config_id,
+    aiServiceConfigUpdatedAt: selected.config_updated_at,
+    localePack: pack.id,
+    generateAudio: true,
+    nativeDialogue: true,
+  };
+}
+
+function buildRequestSnapshot(generation, sourceConditioning, referenceImageUrls) {
+  return {
+    prompt: generation.prompt,
+    model: generation.model,
+    duration: generation.duration,
+    aspect_ratio: generation.aspect_ratio,
+    resolution: generation.resolution,
+    reference_image_urls: referenceImageUrls,
+    reference_video_urls: [sourceConditioning.referenceVideoUrl],
+    generate_audio: generation.generateAudio === true,
+    ai_service_config_id: generation.aiServiceConfigId,
+    config_updated_at: generation.aiServiceConfigUpdatedAt,
+    locale: generation.locale,
+    ...(generation.localePack ? { locale_pack: generation.localePack } : {}),
+    ...(generation.prompt_hash ? { prompt_hash: generation.prompt_hash } : {}),
+    ...(generation.dialogue_snapshot_hash ? { dialogue_snapshot_hash: generation.dialogue_snapshot_hash } : {}),
+  };
+}
+
+function sameRequestSnapshot(storedSnapshot, expectedSnapshot) {
+  if (!expectedSnapshot) return true;
+  const stored = storedSnapshot && typeof storedSnapshot === 'object' ? storedSnapshot : {};
+  for (const key of [
+    'generate_audio',
+    'prompt_hash',
+    'dialogue_snapshot_hash',
+    'ai_service_config_id',
+    'config_updated_at',
+    'locale_pack',
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(expectedSnapshot, key)
+      && stored[key] !== expectedSnapshot[key]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function parseReferenceValue(value, fallbackKind = null, out = []) {
   if (Array.isArray(value)) {
     for (const item of value) parseReferenceValue(item, fallbackKind, out);
@@ -331,6 +494,23 @@ function collectReferenceImageUrls(db, shot, parsed) {
 }
 
 function preflightVideoGeneration(generation, sourceConditioning, referenceImageUrls) {
+  if (generation.protocol === 'toapis_video') {
+    try {
+      validateToapisVideoOptions({
+        model: generation.model,
+        prompt: generation.prompt,
+        duration: generation.duration,
+        aspect_ratio: generation.aspect_ratio,
+        resolution: generation.resolution,
+        reference_urls: referenceImageUrls,
+        reference_video_urls: [sourceConditioning.referenceVideoUrl],
+        generate_audio: generation.generateAudio === true,
+      });
+    } catch (error) {
+      throw codedError('REDRAW_GENERATION_INPUT_INVALID', error.message);
+    }
+    return;
+  }
   if (!FEITUO_MODELS[generation.model]) return;
   try {
     buildFeituoVideoBody({
@@ -374,6 +554,15 @@ function findReusable(db, shot, attempt, expectedGeneration = null) {
       return null;
     }
     if (!sameConditioning(storedConditioning, expectedGeneration.sourceConditioning)) return null;
+  }
+  if (expectedGeneration?.requestSnapshot) {
+    let storedSnapshot;
+    try {
+      storedSnapshot = strictJson(video.request_snapshot, 'request_snapshot');
+    } catch (_) {
+      return null;
+    }
+    if (!sameRequestSnapshot(storedSnapshot, expectedGeneration.requestSnapshot)) return null;
   }
   const draft = strictJson(shot.draft_json, 'draft_json');
   if (Number(draft.generation?.attempt ?? draft.attempt ?? 1) !== Number(attempt)) return null;
@@ -459,31 +648,57 @@ async function prepareServerSourceConditioning(ctx, shot) {
 async function generateShot(ctx, input = {}) {
   const { db } = ctx;
   if (!db || !ctx.tenantId || !ctx.userId) throw codedError('REDRAW_CONTEXT_INVALID', '缺少转绘生成上下文');
+  rejectClientGenerationControl(input);
   rejectClientVideoConditioning(input);
   const shot = selectShot(db, ctx, input);
   const parsed = parseShotPayload(shot);
   ensureGateOpen(db, ctx, shot.version_id);
-  const hasCapabilityOverride = typeof ctx.resolveVideoConditioningCapability === 'function';
-  const verifiedCapability = resolveVerifiedGenerationCapability(db, {
+  const versionIdentity = {
     locale: shot.version_locale,
     market: shot.version_market,
-  }, ctx.canReadArtifact, { requireSourceConditioning: !hasCapabilityOverride });
-  const generation = buildGenerationInput(shot, input, parsed, verifiedCapability?.model);
-  const conditioningCapability = hasCapabilityOverride
-    ? ctx.resolveVideoConditioningCapability(db, generation.model, verifiedCapability)
-    : verifiedCapability;
-  const selectedCapability = assertVideoConditioningCapability(conditioningCapability, {
-    allowDeclaredLimit: hasCapabilityOverride,
-  });
-  generation.provider = selectedCapability.provider || null;
-  generation.protocol = selectedCapability.protocol || null;
-  generation.aiServiceConfigId = Number(selectedCapability.config_id) || null;
-  generation.aiServiceConfigUpdatedAt = String(selectedCapability.config_updated_at || '');
+  };
+  const requiresNativeDialogue = hasNativeDialogueRows(shot);
+  const nativeCapability = nativeCapabilityForVersion(db, versionIdentity, ctx.canReadArtifact);
+  const language = languageFromLocale(shot.version_locale);
+  const nativePack = (requiresNativeDialogue || nativeCapability) ? assertReadyNativePack(ctx, language) : null;
+  let generation;
+  let selectedCapability;
+  if (requiresNativeDialogue || nativeCapability) {
+    const override = nativeCapability && typeof ctx.resolveVideoConditioningCapability === 'function'
+      ? ctx.resolveVideoConditioningCapability(db, nativeCapability?.model, nativeCapability)
+      : nativeCapability;
+    generation = buildNativeGeneration(shot, parsed, override, nativePack);
+    selectedCapability = {
+      config_id: generation.aiServiceConfigId,
+      config_updated_at: generation.aiServiceConfigUpdatedAt,
+      provider: generation.provider,
+      protocol: generation.protocol,
+      model: generation.model,
+    };
+  } else {
+    const hasCapabilityOverride = typeof ctx.resolveVideoConditioningCapability === 'function';
+    const verifiedCapability = resolveVerifiedGenerationCapability(db, versionIdentity, ctx.canReadArtifact, { requireSourceConditioning: !hasCapabilityOverride });
+    generation = buildGenerationInput(shot, input, parsed, verifiedCapability?.model);
+    const conditioningCapability = hasCapabilityOverride
+      ? ctx.resolveVideoConditioningCapability(db, generation.model, verifiedCapability)
+      : verifiedCapability;
+    selectedCapability = assertVideoConditioningCapability(conditioningCapability, {
+      allowDeclaredLimit: hasCapabilityOverride,
+    });
+    generation.provider = selectedCapability.provider || null;
+    generation.protocol = selectedCapability.protocol || null;
+    generation.aiServiceConfigId = Number(selectedCapability.config_id) || null;
+    generation.aiServiceConfigUpdatedAt = String(selectedCapability.config_updated_at || '');
+  }
   if (!Number.isSafeInteger(generation.attempt) || generation.attempt <= 0) {
     throw codedError('INVALID_REDRAW_GENERATION_INPUT', 'attempt 必须是正整数');
   }
   const sourceConditioning = await prepareServerSourceConditioning(ctx, shot);
   generation.sourceConditioning = sourceConditioning.billingSnapshot;
+  const referenceImageUrls = collectReferenceImageUrls(db, shot, parsed);
+  preflightVideoGeneration(generation, sourceConditioning, referenceImageUrls);
+  const requestSnapshot = buildRequestSnapshot(generation, sourceConditioning, referenceImageUrls);
+  generation.requestSnapshot = requestSnapshot;
   const reusable = findReusable(db, shot, generation.attempt, generation);
   if (reusable) return enrichGenerationResult(db, { ...reusable, attempt: generation.attempt });
   if (shot.video_generation_id) {
@@ -495,8 +710,6 @@ async function generateShot(ctx, input = {}) {
       throw codedError('REDRAW_SHOT_CONFLICT', '镜头已有不同参数的生成任务，请刷新后重试');
     }
   }
-  const referenceImageUrls = collectReferenceImageUrls(db, shot, parsed);
-  preflightVideoGeneration(generation, sourceConditioning, referenceImageUrls);
   if (typeof ctx.beforeCreateTransaction === 'function') {
     await ctx.beforeCreateTransaction({ shot, generation });
   }
@@ -543,9 +756,9 @@ async function generateShot(ctx, input = {}) {
       `).run('单镜视频生成已开始', String(ctx.tenantId), String(ctx.userId), generation.model, JSON.stringify(metadata), timestamp, task.id);
       const videoId = db.prepare(`INSERT INTO video_generations
         (provider, ai_service_config_id, prompt, model, duration, aspect_ratio, resolution, reference_image_urls,
-         reference_video_urls, source_conditioning_json, status, task_id, tenant_id, user_id,
+         reference_video_urls, source_conditioning_json, generate_audio, request_snapshot, status, task_id, tenant_id, user_id,
          credit_reservation_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, NULL, ?, ?)`)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, NULL, ?, ?)`)
         .run(
           generation.provider,
           generation.aiServiceConfigId,
@@ -566,6 +779,8 @@ async function generateShot(ctx, input = {}) {
               model: generation.model,
             },
           }),
+          generation.generateAudio === true ? 1 : 0,
+          JSON.stringify(requestSnapshot),
           task.id,
           String(ctx.tenantId),
           String(ctx.userId),
@@ -589,6 +804,12 @@ async function generateShot(ctx, input = {}) {
           resolution: generation.resolution,
           aspect_ratio: generation.aspect_ratio,
           source_conditioning: sourceConditioning.billingSnapshot,
+          generate_audio: generation.generateAudio === true,
+          locale_pack: generation.localePack,
+          prompt_hash: generation.prompt_hash,
+          dialogue_snapshot_hash: generation.dialogue_snapshot_hash,
+          ai_service_config_id: generation.aiServiceConfigId,
+          config_updated_at: generation.aiServiceConfigUpdatedAt,
           count: 1,
           attempt: generation.attempt,
         },
@@ -878,6 +1099,7 @@ async function runShotGeneration(ctx, taskId) {
         providerAssetStorageBaseUrl: ctx.storageBaseUrl,
         providerAssetTtlSeconds: ctx.providerAssetTtlSeconds,
         providerAssetNowMs: ctx.providerAssetNowMs,
+        evidenceRoots: ctx.evidenceRoots,
       })
     )));
   if (!recoveredRemoteTerminal) await processor(db, ctx.log || logNoop, video.id);

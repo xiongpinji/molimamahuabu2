@@ -334,7 +334,7 @@ function codedRouteError(code, message, details) {
 }
 
 const SAFE_GENERATION_FIELDS = new Set([
-  'model', 'duration', 'resolution', 'aspect_ratio', 'aspectRatio', 'locale',
+  'duration', 'resolution', 'aspect_ratio', 'aspectRatio', 'idempotency_key', 'idempotencyKey',
   'negative_prompt', 'negativePrompt',
 ]);
 const SAFE_BATCH_GENERATION_FIELDS = new Set([

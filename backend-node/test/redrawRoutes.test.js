@@ -3363,9 +3363,9 @@ test('单镜生成与显式重试统一调用 generation service 并返回 202',
     const handlers = redrawRoutes(db, { error() {} }, routeDeps({ generationService }));
 
     const first = captureResponse();
-    await handlers.generateShot(request({ id: shotId, body: { model: 'seedance 2.0' } }), first);
+    await handlers.generateShot(request({ id: shotId, body: {} }), first);
     const duplicate = captureResponse();
-    await handlers.generateShot(request({ id: shotId, body: { model: 'seedance 2.0' } }), duplicate);
+    await handlers.generateShot(request({ id: shotId, body: {} }), duplicate);
     const retry = captureResponse();
     await handlers.generateShot(request({ id: shotId, body: { retry: true } }), retry);
 
@@ -3581,7 +3581,7 @@ test('无 verified 生成能力时单镜生成 fail closed 且不冻结不提交
     }));
 
     const result = captureResponse();
-    await handlers.generateShot(request({ id: shotId, body: { model: 'seedance 2.0' } }), result);
+    await handlers.generateShot(request({ id: shotId, body: {} }), result);
 
     assert.equal(result.statusCode, 400);
     assert.equal(result.body.error.code, 'REDRAW_NO_VERIFIED_VIDEO_MODEL');
@@ -3646,6 +3646,13 @@ test('生成接口严格拒绝内部控制字段、未知字段与非 1 count', 
     const handlers = redrawRoutes(db, { error() {} }, routeDeps({ generationService }));
     const invalidSingle = [
       { attempt: 2 },
+      { model: 'seedance 2.0' },
+      { locale: 'en-US' },
+      { prompt: 'attacker prompt' },
+      { generate_audio: false },
+      { ai_service_config_id: 1 },
+      { provider: 'attacker' },
+      { credits: 1 },
       { operation_key: 'attacker-key' },
       { awaitCompletion: true },
       { schedule: 'inline' },

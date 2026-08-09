@@ -20,9 +20,11 @@ test('ToAPIs 视频模型能力按模型分别限制分辨率、时长和参考�
   assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-fast'].maxReferences, 1);
   assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-fast'].maxVideoReferences, 1);
   assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-fast'].maxAudioReferences, 1);
+  assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-fast'].supportsAudio, true);
   assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-mini'].maxReferences, 9);
   assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-mini'].maxVideoReferences, 3);
   assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-mini'].maxAudioReferences, 3);
+  assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-mini'].supportsAudio, true);
 
   assert.throws(
     () => validateToapisVideoOptions({ model: 'seedance-2-fast', resolution: '1080p', duration: 4, prompt: 'x' }),

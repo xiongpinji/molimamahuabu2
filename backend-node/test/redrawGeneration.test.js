@@ -13,6 +13,7 @@ const videoClient = require('../src/services/videoClient');
 const videoService = require('../src/services/videoService');
 const redrawOrchestrator = require('../src/services/redrawOrchestrator');
 const { resetGenerationConcurrencyForTests } = require('../src/services/generationConcurrency');
+const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 const {
   generateShot,
   generateBatch,
@@ -26,6 +27,7 @@ const {
 
 const log = { info() {}, warn() {}, error() {} };
 const FEITUO_FAST_MODEL = 'sdas-my-seedance-2.0-fast-upscaled-1080p';
+const TOAPIS_NATIVE_MODEL = 'seedance-2-fast';
 const SIGNED_SOURCE_VIDEO_URL = 'https://media.example.test/api/redraw-provider-assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4?expires=1786147800&signature=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
 function setup(overrides = {}) {
@@ -101,7 +103,7 @@ function addShot(db, versionId, overrides = {}) {
     aspect_ratio: '9:16',
   };
   const draft = overrides.draft || { attempt: 1, model: 'seedance 2.0' };
-  return db.prepare(`INSERT INTO redraw_shots
+  const shotId = db.prepare(`INSERT INTO redraw_shots
     (version_id, tenant_id, user_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
      references_json, prompt, negative_prompt, compiled_prompt_json, draft_json, status, created_at, updated_at)
     VALUES (?, 'tenant-a', 'user-a', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -120,6 +122,104 @@ function addShot(db, versionId, overrides = {}) {
       now,
       now,
     ).lastInsertRowid;
+  if (Object.prototype.hasOwnProperty.call(overrides, 'localized_dialogue_json')) {
+    db.prepare('UPDATE redraw_shots SET localized_dialogue_json = ? WHERE id = ?')
+      .run(overrides.localized_dialogue_json, shotId);
+  }
+  return shotId;
+}
+
+function nativePack(overrides = {}) {
+  return {
+    id: 'es@1',
+    language: 'es',
+    locale: null,
+    scope: 'language',
+    prompt_language_label: '西班牙语',
+    model_manifest_sha256: 'a'.repeat(64),
+    calibration_manifest_sha256: 'b'.repeat(64),
+    thresholds: {
+      language_probability_min: 0.8,
+      dialogue_similarity_min: 0.8,
+      speech_chars_per_second_max: 20,
+    },
+    ...overrides,
+  };
+}
+
+function addNativeDialogueCapability(db, overrides = {}) {
+  const now = overrides.updatedAt || new Date('2026-08-06T00:00:00.000Z').toISOString();
+  const model = overrides.model || TOAPIS_NATIVE_MODEL;
+  const inserted = db.prepare(`
+    INSERT INTO ai_service_configs
+      (service_type, provider, api_protocol, name, model, default_model, base_url, api_key,
+       is_active, is_default, priority, settings, created_at, updated_at)
+    VALUES ('video', 'toapis', 'toapis_video', 'ToAPIs 原生对白', ?, ?, 'https://toapis.com',
+            'secret', 1, 1, 0, '{}', ?, ?)
+  `).run(model, model, now, now);
+  const configId = Number(inserted.lastInsertRowid);
+  const evidence = {
+    contract: 'redraw-native-dialogue-audio-v1',
+    provider: 'toapis',
+    protocol: 'toapis_video',
+    model,
+    config_id: configId,
+    config_updated_at: overrides.evidenceUpdatedAt || now,
+    provider_task_id: 'provider-native-dialogue-real',
+    terminal_status: 'completed',
+    artifact_id: overrides.artifactId || 771,
+    artifact_sha256: 'd'.repeat(64),
+    media: { video_stream: true, audio_stream: true },
+    locale_verification: {
+      language: 'es',
+      language_verified: true,
+      locale_verified: false,
+    },
+    human_review: {
+      status: 'passed',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    },
+  };
+  db.prepare('UPDATE ai_service_configs SET settings = ? WHERE id = ?').run(JSON.stringify({
+    redraw_locale_capabilities: [{
+      language: 'es',
+      locale: 'es',
+      target_language: 'es',
+      target_locale: null,
+      market: '',
+      status: 'verified',
+      evidence: {
+        video: {
+          config_id: configId,
+          config_updated_at: now,
+          provider: 'toapis',
+          model,
+          task_id: 'video-task',
+          terminal_status: 'completed',
+          artifact_id: 772,
+        },
+        native_dialogue_audio: overrides.evidence || evidence,
+      },
+    }],
+  }), configId);
+  db.prepare(`UPDATE ai_service_configs
+    SET verification_status = 'verified',
+        verification_checked_at = ?,
+        verified_at = ?,
+        verified_capabilities = ?,
+        updated_at = ?
+    WHERE id = ?`)
+    .run(now, now, JSON.stringify({
+      [model]: withExternalModelEvidence(model, {
+        durations: [5],
+        resolutions: ['480p', '720p'],
+        supportsAudio: true,
+        supportsVideoReference: true,
+      }),
+    }), now, configId);
+  return { configId, updatedAt: now, model };
 }
 
 function ctx(db, overrides = {}) {
@@ -130,6 +230,9 @@ function ctx(db, overrides = {}) {
     userId: 'user-a',
     clock: () => '2026-08-06T00:00:00.000Z',
     canReadArtifact: () => true,
+    localeVerifier: {
+      assertReady: () => nativePack(),
+    },
     resolveVideoConditioningCapability: (_database, model, capability) => ({
       config_id: capability?.config_id,
       config_updated_at: capability?.config_updated_at,
@@ -325,6 +428,190 @@ test('视频能力证据必须绑定 exact config/provider/model 才能在 condi
     } finally {
       state.db.close();
     }
+  }
+});
+
+test('原生对白单镜拒绝客户端覆盖 prompt/model/locale/generate_audio/config/provider/价格且零副作用', async () => {
+  const state = setup();
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    const shotId = addShot(state.db, state.versionId, {
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 1000, end_ms: 2200, text: 'Hola, pequeño.' },
+      ]),
+    });
+    const forbiddenInputs = [
+      { model: TOAPIS_NATIVE_MODEL },
+      { locale: 'en-US' },
+      { prompt: 'attacker prompt' },
+      { generate_audio: false },
+      { ai_service_config_id: 1 },
+      { provider: 'attacker' },
+      { credits: 1 },
+    ];
+
+    for (const input of forbiddenInputs) {
+      await assert.rejects(
+        () => generateShot(ctx(state.db, { videoProcessor: async () => assert.fail('provider must not run') }), { shotId, ...input }),
+        (error) => error.code === 'REDRAW_GENERATION_INPUT_INVALID',
+        JSON.stringify(input),
+      );
+    }
+
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+    assert.equal(count(state.db, 'video_generations'), 0);
+    assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+    assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('原生对白生成在 reserve 前要求 ready pack、verified native capability、supportsAudio、pinned config 和合法对白窗口', async () => {
+  for (const scenario of ['pack', 'capability', 'configDrift', 'supportsAudio', 'dialogue']) {
+    const state = setup();
+    try {
+      state.db.prepare('DELETE FROM ai_service_configs').run();
+      addNativeDialogueCapability(state.db, scenario === 'capability'
+        ? { evidence: { contract: 'redraw-native-dialogue-audio-v1' } }
+        : scenario === 'configDrift'
+          ? { evidenceUpdatedAt: '2026-08-06T00:00:01.000Z' }
+        : {});
+      state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+      const shotId = addShot(state.db, state.versionId, {
+        durationMs: 6000,
+        startMs: 0,
+        endMs: 6000,
+        localized_dialogue_json: JSON.stringify(scenario === 'dialogue'
+          ? [{ speaker_id: 'Valeria', start_ms: 5000, end_ms: 7000, text: 'Hola, pequeño.' }]
+          : [{ speaker_id: 'Valeria', start_ms: 1000, end_ms: 2200, text: 'Hola, pequeño.' }]),
+      });
+      const localeVerifier = scenario === 'pack'
+        ? { assertReady: () => { const error = new Error('not ready'); error.code = 'REDRAW_LOCALE_VERIFIER_NOT_READY'; throw error; } }
+        : { assertReady: () => nativePack() };
+      const resolveVideoConditioningCapability = scenario === 'supportsAudio'
+        ? () => ({ provider: 'toapis', protocol: 'toapis_video', model: TOAPIS_NATIVE_MODEL, config_id: 1, config_updated_at: state.now, supportsAudio: false, maxVideoReferences: 1 })
+        : undefined;
+
+      await assert.rejects(
+        () => generateShot(ctx(state.db, {
+          localeVerifier,
+          resolveVideoConditioningCapability,
+          videoProcessor: async () => assert.fail('provider must not run'),
+        }), { shotId }),
+        (error) => [
+          'REDRAW_LOCALE_VERIFIER_NOT_READY',
+          'REDRAW_NO_VERIFIED_NATIVE_AUDIO',
+          'REDRAW_NATIVE_AUDIO_UNSUPPORTED',
+          'REDRAW_NATIVE_DIALOGUE_PROMPT_INVALID',
+        ].includes(error.code),
+        scenario,
+      );
+
+      assert.equal(count(state.db, 'tenant_usage_reservations'), 0, scenario);
+      assert.equal(count(state.db, 'video_generations'), 0, scenario);
+      assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0, scenario);
+      assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0, scenario);
+    } finally {
+      state.db.close();
+    }
+  }
+});
+
+test('原生对白生成持久化 generate_audio、prompt/dialogue/config/locale pack 快照且强制 ToAPIs 同步音频', async () => {
+  const state = setup();
+  const originalCallVideoApi = videoClient.callVideoApi;
+  let scheduled;
+  let captured;
+  try {
+    videoClient.callVideoApi = async (_db, _log, opts) => {
+      captured = opts;
+      return { task_id: 'provider-native-shot-1', status: 'queued' };
+    };
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    const native = addNativeDialogueCapability(state.db);
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      startMs: 0,
+      endMs: 5000,
+      compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+      ]),
+    });
+
+    const created = await generateShot(ctx(state.db, {
+      resolveVideoConditioningCapability: undefined,
+      evidenceRoots,
+      schedule(callback) { scheduled = callback; },
+    }), { shotId });
+    const video = state.db.prepare('SELECT * FROM video_generations WHERE id = ?').get(created.video_generation_id);
+    const snapshot = JSON.parse(video.request_snapshot);
+
+    assert.equal(video.generate_audio, 1);
+    assert.equal(snapshot.generate_audio, true);
+    assert.match(snapshot.prompt_hash, /^[0-9a-f]{64}$/);
+    assert.match(snapshot.dialogue_snapshot_hash, /^[0-9a-f]{64}$/);
+    assert.equal(snapshot.ai_service_config_id, native.configId);
+    assert.equal(snapshot.config_updated_at, native.updatedAt);
+    assert.equal(snapshot.locale_pack, 'es@1');
+    assert.equal(snapshot.model, TOAPIS_NATIVE_MODEL);
+    assert.equal(snapshot.locale, 'es');
+
+    await scheduled();
+    assert.equal(captured.generate_audio, true);
+    assert.equal(captured.prompt, snapshot.prompt);
+    assert.equal(captured.ai_service_config_id, native.configId);
+  } finally {
+    videoClient.callVideoApi = originalCallVideoApi;
+    state.db.close();
+  }
+});
+
+test('同一原生对白/config 快照跨幂等键只保留一条 active generation，快照改变不误复用', async () => {
+  const state = setup();
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      startMs: 0,
+      endMs: 5000,
+      compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+      ]),
+    });
+
+    const first = await generateShot(ctx(state.db, { schedule() {}, resolveVideoConditioningCapability: undefined }), { shotId });
+    const second = await generateShot(ctx(state.db, { schedule() {}, resolveVideoConditioningCapability: undefined }), { shotId, idempotency_key: 'different-client-key' });
+    assert.equal(second.video_generation_id, first.video_generation_id);
+    assert.equal(count(state.db, 'video_generations'), 1);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+
+    const snapshot = JSON.parse(state.db.prepare('SELECT request_snapshot FROM video_generations WHERE id = ?').get(first.video_generation_id).request_snapshot);
+    state.db.prepare("UPDATE redraw_shots SET status = 'draft', video_generation_id = NULL, localized_dialogue_json = ? WHERE id = ?")
+      .run(JSON.stringify([{ speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: '¿Te has perdido?' }]), shotId);
+    await generateShot(ctx(state.db, { schedule() {}, resolveVideoConditioningCapability: undefined }), { shotId });
+    const snapshots = state.db.prepare('SELECT request_snapshot FROM video_generations ORDER BY id').all()
+      .map((row) => JSON.parse(row.request_snapshot));
+    assert.equal(snapshots.length, 2);
+    assert.notEqual(snapshots[1].dialogue_snapshot_hash, snapshot.dialogue_snapshot_hash);
+  } finally {
+    state.db.close();
   }
 });
 
@@ -604,7 +891,7 @@ test('verified 生成模型跳过坏配置并按确定顺序选中后续有效�
     const result = await generateShot(ctx(state.db, {
       canReadArtifact: (artifactId) => artifactId === `artifact-${model}`,
       schedule() {},
-    }), { shotId, model: 'client-forged-model' });
+    }), { shotId });
 
     assert.equal(result.status, 'processing');
     assert.equal(state.db.prepare('SELECT model FROM tenant_usage_reservations').get().model, model);
@@ -636,7 +923,6 @@ test('批量生成全是坏 capability 配置时 fail closed 且不冻结不提�
     }), {
       versionId: state.versionId,
       shotIds: [shotId],
-      model: 'client-forged-model',
     });
 
     assert.equal(batch.results[0].error_code, 'REDRAW_NO_VERIFIED_VIDEO_MODEL');
@@ -842,10 +1128,10 @@ test('并发 loser 传入不同客户端模型时仍复用 verified 生成链且
       beforeCreateTransaction,
       schedule: () => { scheduled += 1; },
     });
-    const loserPromise = generateShot(context, { shotId, model: 'other-video-model' });
+    const loserPromise = generateShot(context, { shotId });
     await firstEntered;
     assert.equal(hookCalls, 1, 'beforeCreateTransaction hook must pause the first creator');
-    const winner = await generateShot(context, { shotId, model: 'seedance 2.0' });
+    const winner = await generateShot(context, { shotId });
     releaseFirst();
     const loser = await loserPromise;
 
@@ -1610,7 +1896,6 @@ test('批量生成使用 verified capability 模型贯穿报价、冻结、视�
     }), {
       versionId: state.versionId,
       shotIds: [shotId],
-      model: 'client-forged-model',
     });
 
     assert.equal(typeof scheduled, 'function');
@@ -1661,7 +1946,6 @@ test('批量生成在本地化物化镜头缺省 duration 时从 duration_ms 推
     }), {
       versionId: state.versionId,
       shotIds: [shotId],
-      model: 'client-forged-model',
     });
 
     assert.equal(typeof scheduled, 'function');
