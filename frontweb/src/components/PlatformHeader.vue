@@ -220,11 +220,12 @@ async function handleAccountCommand(command) {
   gap: 8px;
   min-width: 0;
   margin-left: auto;
-  flex-wrap: wrap;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
 }
 
 .platform-header--account-badge .platform-header__actions {
-  margin-right: 340px;
+  margin-right: clamp(0px, calc(1040px - 50vw), 240px);
 }
 
 .platform-header__button {
@@ -286,6 +287,11 @@ async function handleAccountCommand(command) {
   border-color: #ff7139 !important;
   color: #ffffff !important;
   background: #1d1d1d !important;
+}
+
+@media (max-width: 1280px) {
+  .platform-header__button-label { display: none; }
+  .platform-header__button { width: 40px; padding: 0 !important; }
 }
 
 @media (max-width: 860px) {
