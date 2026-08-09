@@ -1068,6 +1068,10 @@ test('原生对白人工批准使用默认本地 MP4 verifier 接受 needs_atten
     state.db.close();
     return;
   }
+  if (!writeTinyMp4(t, storageRoot, 'videos/native-manual-no-audio.mp4', { audio: false })) {
+    state.db.close();
+    return;
+  }
   let providerCalls = 0;
   let importerCalls = 0;
   try {
@@ -1178,7 +1182,25 @@ test('原生对白人工批准使用默认本地 MP4 verifier 接受 needs_atten
           candidate: originalAudit.candidate,
         }),
       }), shotId);
+    state.db.prepare("UPDATE video_generations SET local_path = 'videos/native-manual-no-audio.mp4' WHERE id = ?")
+      .run(held.video_generation_id);
+    await assert.rejects(
+      () => reviewNativeAudio(ctx(state.db, { storageRoot }), {
+        shotId,
+        validation_hash: 'c'.repeat(64),
+        expected_updated_at: beforeReview,
+        decision: 'approved',
+        speaker_order: 'passed',
+        lip_sync: 'passed',
+        extra_dialogue: 'passed',
+      }),
+      (error) => error.code === 'REDRAW_VIDEO_ARTIFACT_INVALID',
+    );
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(held.reservation_id).status, 'held');
 
+    state.db.prepare("UPDATE video_generations SET local_path = 'videos/native-manual-default.mp4' WHERE id = ?")
+      .run(held.video_generation_id);
     const approved = await reviewNativeAudio(ctx(state.db, {
       storageRoot,
       assetImporter: (db, _log, videoId) => {
@@ -2813,6 +2835,32 @@ test('default ffprobe 调用设置超时、buffer、killSignal 和 Windows 隐�
   assert.match(source, /maxBuffer:\s*1024\s*\*\s*1024/);
   assert.match(source, /killSignal:\s*'SIGKILL'/);
   assert.match(source, /windowsHide:\s*true/);
+});
+
+test('verifyVideoArtifact 默认不要求音轨，requireAudio 时拒绝无音轨 MP4', async (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-video-no-audio-'));
+  let db;
+  try {
+    if (!writeTinyMp4(t, tempRoot, 'videos/no-audio.mp4', { audio: false })) return;
+    db = new Database(':memory:');
+    runMigrationsAndEnsure(db);
+    const now = new Date().toISOString();
+    const videoId = db.prepare(`INSERT INTO video_generations
+      (status, local_path, created_at, updated_at) VALUES ('completed', 'videos/no-audio.mp4', ?, ?)`)
+      .run(now, now).lastInsertRowid;
+
+    const verified = await verifyVideoArtifact({ db, storageRoot: tempRoot }, videoId);
+    assert.equal(verified.width, 16);
+    assert.equal(verified.height, 16);
+    assert.ok(verified.duration > 0);
+    await assert.rejects(
+      () => verifyVideoArtifact({ db, storageRoot: tempRoot }, videoId, { requireAudio: true }),
+      (error) => error.code === 'REDRAW_VIDEO_ARTIFACT_INVALID',
+    );
+  } finally {
+    db?.close();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test('verifyVideoArtifact 路径越界和缺文件 fail closed，probeRunner 成功时返回元数据', async () => {

@@ -1289,7 +1289,7 @@ async function reviewNativeAudio(ctx, input = {}) {
     throw codedError('REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE', '原生音轨候选缺少可批准的音轨证据');
   }
   const verifier = ctx.artifactVerifier || verifyVideoArtifact;
-  const verification = await verifier(ctx, video.id, { allowedStatuses: ['needs_attention'] });
+  const verification = await verifier(ctx, video.id, { allowedStatuses: ['needs_attention'], requireAudio: true });
   const timestamp = now(ctx);
   const importer = ctx.assetImporter || ((database, logger, videoGenerationId) => (
     assetService.importFromVideo(database, logger, videoGenerationId)
@@ -2006,11 +2006,10 @@ function resolveStorageRoot(ctx) {
   return path.isAbsolute(storagePath) ? storagePath : path.join(process.cwd(), storagePath);
 }
 
-async function defaultProbe(absPath) {
+async function defaultProbe(absPath, options = {}) {
   const { stdout } = await execFileAsync(getFfprobePath(), [
     '-v', 'error',
-    '-select_streams', 'v:0',
-    '-show_entries', 'stream=width,height:format=duration',
+    '-show_entries', 'stream=codec_type,width,height,channels,sample_rate:format=duration',
     '-of', 'json',
     absPath,
   ], {
@@ -2020,12 +2019,21 @@ async function defaultProbe(absPath) {
     windowsHide: true,
   });
   const parsed = JSON.parse(stdout);
-  const stream = parsed.streams?.[0] || {};
-  return {
+  const videoStream = parsed.streams?.find((stream) => stream.codec_type === 'video') || {};
+  const audioStream = parsed.streams?.find((stream) => stream.codec_type === 'audio') || null;
+  const result = {
     duration: Number(parsed.format?.duration),
-    width: Number(stream.width),
-    height: Number(stream.height),
+    width: Number(videoStream.width),
+    height: Number(videoStream.height),
   };
+  if (options.requireAudio) {
+    result.hasAudio = !!audioStream && (
+      Number(audioStream.channels) > 0
+      || Number(audioStream.sample_rate) > 0
+      || Number(audioStream.duration) > 0
+    );
+  }
+  return result;
 }
 
 async function verifyVideoArtifact(ctx, videoGenerationId, options = {}) {
@@ -2054,9 +2062,12 @@ async function verifyVideoArtifact(ctx, videoGenerationId, options = {}) {
   if (!isInside(realStorageRoot, realAbsPath)) {
     throw codedError('REDRAW_VIDEO_ARTIFACT_INVALID', '视频成片路径越界');
   }
-  const probe = ctx.probeRunner ? await ctx.probeRunner(absPath, row) : await defaultProbe(absPath);
+  const probe = ctx.probeRunner ? await ctx.probeRunner(absPath, row, options) : await defaultProbe(absPath, options);
   if (!(probe?.duration > 0 && probe?.width > 0 && probe?.height > 0)) {
     throw codedError('REDRAW_VIDEO_ARTIFACT_INVALID', '视频成片元数据无效');
+  }
+  if (options.requireAudio && probe.hasAudio !== true) {
+    throw codedError('REDRAW_VIDEO_ARTIFACT_INVALID', '视频成片缺少可验证音轨');
   }
   return { duration: probe.duration, width: probe.width, height: probe.height };
 }
