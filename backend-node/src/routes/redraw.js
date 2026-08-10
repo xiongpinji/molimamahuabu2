@@ -1182,7 +1182,8 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       ? db.prepare(`
         SELECT * FROM redraw_versions
         WHERE work_id = ? AND tenant_id = ? AND user_id = ?
-          AND version = ? AND COALESCE(status, '') != 'draft' AND deleted_at IS NULL
+          AND version = ? AND COALESCE(locale, '') != 'source'
+          AND COALESCE(status, '') != 'draft' AND deleted_at IS NULL
         LIMIT 1
       `).get(work.id, currentOwner.tenantId, currentOwner.userId, versionNumber)
       : null;
@@ -1190,6 +1191,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     return db.prepare(`
       SELECT * FROM redraw_versions
       WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+        AND COALESCE(locale, '') != 'source'
         AND COALESCE(status, '') != 'draft' AND deleted_at IS NULL
       ORDER BY version DESC, id DESC
       LIMIT 1
@@ -1896,6 +1898,7 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
       tenantId: currentOwner.tenantId,
       userId: currentOwner.userId,
       canReadArtifact,
+      localeVerifier: options.localeVerifier,
     };
   }
 

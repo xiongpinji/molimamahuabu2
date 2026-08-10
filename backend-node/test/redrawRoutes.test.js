@@ -1860,6 +1860,11 @@ test('分析完成但未本地化时仍停留步骤 1 和 analysis_review phase'
       status: 'asset_review',
       task_id: 'task-analysis-done',
     });
+    insertVersion(db, workId, {
+      locale: 'source',
+      market: '',
+      status: 'asset_review',
+    });
     db.prepare(`INSERT INTO async_tasks
       (id, type, status, progress, message, resource_id, tenant_id, user_id, created_at, updated_at)
       VALUES ('task-analysis-done', 'redraw_analysis', 'completed', 100, '分析完成', ?, 'tenant-a', 'user-a', ?, ?)
@@ -3606,12 +3611,14 @@ test('批量生成严格绑定作品当前版本并拒绝 singular shot_id', asy
         return { version_id: input.versionId, results: [{ shot_id: 1, status: 'processing', billing: { held: 6 } }], skipped: [] };
       },
     };
-    const handlers = redrawRoutes(db, { error() {} }, routeDeps({ generationService }));
+    const localeVerifier = { assertReady: () => ({ id: 'en@route-test' }) };
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({ generationService, localeVerifier }));
 
     const current = captureResponse();
     await handlers.generateBatch(request({ id: workId, body: {} }), current);
     assert.equal(current.statusCode, 202);
     assert.equal(calls[0].input.versionId, versionId);
+    assert.equal(calls[0].context.localeVerifier, localeVerifier);
 
     const mismatch = captureResponse();
     await handlers.generateBatch(request({ id: workId, body: { version_id: otherVersionId } }), mismatch);
