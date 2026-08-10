@@ -31,10 +31,15 @@ for (const viewport of [
   { name: '移动端', width: 390, height: 844 },
 ]) {
   test(`${viewport.name}生产导航隐藏入口但保留直达路由`, async ({ page }) => {
+    expect(process.env.PLAYWRIGHT_BASE_URL, '生产预览合同必须显式指定 PLAYWRIGHT_BASE_URL').toBeTruthy()
+
     await installSessionAndApiFixtures(page)
     await page.setViewportSize({ width: viewport.width, height: viewport.height })
 
     await page.goto('/')
+    await expect(page.getByRole('navigation', { name: '主要功能' })).toBeVisible()
+    await expect(page.getByRole('link', { name: '短剧工厂' })).toBeVisible()
+    expect(await page.locator('html').innerHTML()).not.toContain('/@vite/client')
     await expect(page.getByRole('link', { name: '一键转绘' })).toHaveCount(0)
 
     await page.goto('/redraw')
