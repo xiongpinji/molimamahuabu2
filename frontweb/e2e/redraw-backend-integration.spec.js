@@ -8,6 +8,12 @@ import path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
+import {
+  actorReferenceUrl,
+  buildLocalCaseManifest,
+  redrawLatinAmericanCase,
+} from './fixtures/redraw-latin-american-case.js'
+
 const require = createRequire(import.meta.url)
 const backendRoot = fileURLToPath(new URL('../../backend-node/', import.meta.url))
 const express = require(path.join(backendRoot, 'node_modules', 'express'))
@@ -45,7 +51,7 @@ const owner = {
   user: { id: 'user-redraw-local' },
 }
 
-const sourceFacts = {
+const defaultSourceFacts = {
   duration_ms: 16_000,
   characters: [{ id: 'c1', source_name: '阿岚', relationships: [] }],
   scenes: [{ id: 's1', location: '天台', time: '夜', source_ranges: [{ start_ms: 0, end_ms: 16_000 }] }],
@@ -69,6 +75,30 @@ const sourceFacts = {
   locked_facts: ['阿岚在天台收到旧手机消息'],
   reversals: ['朋友其实在楼下等待'],
   episode_hook: '阿岚发现消息来自未来',
+}
+
+const activeCase = process.env.REDRAW_E2E_CASE === 'latam-real-source'
+  ? redrawLatinAmericanCase
+  : null
+const sourceFacts = activeCase?.sourceFacts || defaultSourceFacts
+const generationDurations = activeCase?.generationDurations || [8, 8]
+const artifactDurations = activeCase
+  ? sourceFacts.shots.map((shot) => (Number(shot.end_ms) - Number(shot.start_ms)) / 1000)
+  : generationDurations
+const expectedShotCount = sourceFacts.shots.length
+const expectedOutputDuration = artifactDurations.reduce((sum, duration) => sum + duration, 0)
+const expectedAssetCount = sourceFacts.characters.length * 2
+  + sourceFacts.scenes.length
+  + sourceFacts.props.length
+const expectedAssetCredits = expectedAssetCount * 5
+const localizationOverrides = activeCase?.localization || {
+  name_map: { 阿岚: 'Aran' },
+  culture_map: { 天台: 'rooftop' },
+  glossary: { 旧手机: 'old phone' },
+  dialogue: [{
+    shot_id: 'shot-1',
+    turns: [{ speaker_id: 'c1', localized_text: "Don't look back" }],
+  }],
 }
 
 test.setTimeout(120_000)
@@ -137,23 +167,45 @@ test.beforeAll(async () => {
   tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-redraw-browser-backend-'))
   storageRoot = path.join(tempRoot, 'storage')
   fs.mkdirSync(storageRoot, { recursive: true })
-  sourceVideoPath = path.join(tempRoot, 'source-16s.mp4')
-  runFfmpeg([
-    '-hide_banner', '-loglevel', 'error',
-    '-f', 'lavfi', '-i', 'color=c=navy:size=320x180:rate=12',
-    '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100',
-    '-t', '16', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
-    '-shortest', '-y', sourceVideoPath,
-  ], '本地转绘源片生成')
+  if (activeCase) {
+    sourceVideoPath = path.resolve(process.env.REDRAW_E2E_SOURCE_VIDEO)
+  } else {
+    sourceVideoPath = path.join(tempRoot, 'source-16s.mp4')
+    runFfmpeg([
+      '-hide_banner', '-loglevel', 'error',
+      '-f', 'lavfi', '-i', 'color=c=navy:size=320x180:rate=12',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100',
+      '-t', '16', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
+      '-shortest', '-y', sourceVideoPath,
+    ], '本地转绘源片生成')
+  }
   const artifactRoot = path.join(storageRoot, 'redraw-local-provider')
   fs.mkdirSync(artifactRoot, { recursive: true })
   for (const [kind, color] of [['character', 'red'], ['scene', 'green'], ['prop', 'yellow']]) {
     const target = path.join(artifactRoot, `${kind}.png`)
-    runFfmpeg([
-      '-hide_banner', '-loglevel', 'error', '-f', 'lavfi',
-      '-i', `color=c=${color}:size=320x180`, '-frames:v', '1', '-y', target,
-    ], `本地${kind}图片生成`)
-    providerArtifacts[kind] = { absolutePath: target, relativePath: `redraw-local-provider/${kind}.png` }
+    if (activeCase && kind === 'character') {
+      fs.copyFileSync(fileURLToPath(actorReferenceUrl), target)
+      providerArtifacts[kind] = {
+        absolutePath: target,
+        relativePath: `redraw-local-provider/${kind}.png`,
+        width: activeCase.castingReference.width,
+        height: activeCase.castingReference.height,
+        castingReference: true,
+      }
+    } else {
+      const width = activeCase && kind === 'scene' ? activeCase.source.video.width : 320
+      const height = activeCase && kind === 'scene' ? activeCase.source.video.height : 180
+      runFfmpeg([
+        '-hide_banner', '-loglevel', 'error', '-f', 'lavfi',
+        '-i', `color=c=${color}:size=${width}x${height}`, '-frames:v', '1', '-y', target,
+      ], `本地${kind}图片生成`)
+      providerArtifacts[kind] = {
+        absolutePath: target,
+        relativePath: `redraw-local-provider/${kind}.png`,
+        width,
+        height,
+      }
+    }
   }
   const voicePath = path.join(artifactRoot, 'voice.mp3')
   runFfmpeg([
@@ -161,7 +213,11 @@ test.beforeAll(async () => {
     '-i', 'sine=frequency=660:sample_rate=44100', '-t', '1.2', '-c:a', 'libmp3lame', '-y', voicePath,
   ], '本地音色样音生成')
   providerArtifacts.voice = { absolutePath: voicePath, relativePath: 'redraw-local-provider/voice.mp3' }
-  for (const [index, color] of [['1', 'blue'], ['2', 'purple']]) {
+  const shotColors = ['blue', 'purple', 'teal', 'orange', 'brown', 'pink', 'gray', 'cyan', 'magenta']
+  for (const [offset, duration] of generationDurations.entries()) {
+    const index = String(offset + 1)
+    const color = shotColors[offset % shotColors.length]
+    const artifactDuration = artifactDurations[offset]
     const target = path.join(artifactRoot, `shot-${index}.mp4`)
     const inputs = [
       '-hide_banner', '-loglevel', 'error',
@@ -169,7 +225,7 @@ test.beforeAll(async () => {
     ]
     if (index === '1') inputs.push('-f', 'lavfi', '-i', 'sine=frequency=520:sample_rate=44100')
     inputs.push(
-      '-t', '8', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+      '-t', String(artifactDuration), '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
       ...(index === '1' ? ['-c:a', 'aac', '-shortest'] : ['-an']),
       '-y', target,
     )
@@ -373,13 +429,7 @@ test.beforeAll(async () => {
       result: {
         ...input.input.source_facts,
         facts_hash: buildLocalizationInput(input.input.source_facts, { locale: input.locale }).source_facts_hash,
-        name_map: { 阿岚: 'Aran' },
-        culture_map: { 天台: 'rooftop' },
-        glossary: { 旧手机: 'old phone' },
-        dialogue: [{
-          shot_id: 'shot-1',
-          turns: [{ speaker_id: 'c1', localized_text: "Don't look back" }],
-        }],
+        ...localizationOverrides,
       },
     }),
     assetGenerationProvider: async ({ taskId, asset }) => {
@@ -392,7 +442,7 @@ test.beforeAll(async () => {
           }
         : {
             name: `本地${kind}资产`, type: 'image', relativePath: providerArtifact.relativePath,
-            mimeType: 'image/png', width: 320, height: 180,
+            mimeType: 'image/png', width: providerArtifact.width, height: providerArtifact.height,
           })
       const providerTaskId = `local-fixture-${kind}-${taskId}`
       const result = {
@@ -400,10 +450,17 @@ test.beforeAll(async () => {
         provider_task_id: providerTaskId,
         asset_id: artifactId,
       }
-      if (kind === 'character') result.metadata = { views: ['front', 'side', 'back'] }
+      if (kind === 'character') {
+        result.metadata = providerArtifact.castingReference
+          ? { casting_reference: true, production_identity_pack: false }
+          : { views: ['front', 'side', 'back'] }
+      }
       if (kind === 'scene') {
         result.quality = {
-          width: 320, height: 180, mask_area_changed: true, non_mask_similarity: 0.99,
+          width: providerArtifact.width,
+          height: providerArtifact.height,
+          mask_area_changed: true,
+          non_mask_similarity: 0.99,
         }
       }
       if (kind === 'voice') {
@@ -607,6 +664,11 @@ test.afterAll(async () => {
 })
 
 test('真实前后端与本地模拟供应商完成转绘同链', async ({ page }) => {
+  if (process.env.REDRAW_E2E_CASE === 'latam-real-source') {
+    expect(sourceVideoPath).toBe(path.resolve(process.env.REDRAW_E2E_SOURCE_VIDEO))
+    expect(sourceFacts.duration_ms).toBe(redrawLatinAmericanCase.sourceFacts.duration_ms)
+    expect(sourceFacts.shots).toHaveLength(redrawLatinAmericanCase.sourceFacts.shots.length)
+  }
   const browserErrors = []
   page.on('pageerror', (error) => browserErrors.push(`pageerror:${error.message}`))
   page.on('requestfailed', (request) => {
@@ -658,25 +720,28 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     status: 200, phase: 'asset_review', versionId: expect.any(Number),
   })
   const versionId = Number(localizationDebug.versionId)
-  const voiceRow = database.prepare(`
+  const voiceRows = database.prepare(`
     SELECT id, source_ref_json FROM redraw_assets
     WHERE version_id = ? AND kind = 'voice' AND deleted_at IS NULL
-    ORDER BY id DESC LIMIT 1
-  `).get(versionId)
-  const voiceSource = JSON.parse(voiceRow.source_ref_json)
-  voiceSource.source_ref.voice_id = 'fixture-voice'
-  voiceSource.source_ref.is_cloned = false
-  database.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?')
-    .run(JSON.stringify(voiceSource), voiceRow.id)
+    ORDER BY id DESC
+  `).all(versionId)
+  expect(voiceRows).toHaveLength(sourceFacts.characters.length)
+  for (const voiceRow of voiceRows) {
+    const voiceSource = JSON.parse(voiceRow.source_ref_json)
+    voiceSource.source_ref.voice_id = 'fixture-voice'
+    voiceSource.source_ref.is_cloned = false
+    database.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?')
+      .run(JSON.stringify(voiceSource), voiceRow.id)
+  }
   await page.reload()
   await expect(page.getByRole('heading', { name: '确认本地化资产后再进入批量转绘' })).toBeVisible()
-  await expect(page.getByText('4 项资产')).toBeVisible()
+  await expect(page.getByText(`${expectedAssetCount} 项资产`)).toBeVisible()
 
   const quoteResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets/batch-quote`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
   })
   expect(quoteResponse.status, JSON.stringify(quoteResponse.body)).toBe(200)
-  expect(quoteResponse.body.data).toMatchObject({ priced: true, total_credits: 20 })
+  expect(quoteResponse.body.data).toMatchObject({ priced: true, total_credits: expectedAssetCredits })
   const batchResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets/batches`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -686,16 +751,27 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     }),
   })
   expect(batchResponse.status, JSON.stringify(batchResponse.body)).toBe(202)
-  await expect.poll(() => database.prepare(`
-    SELECT status FROM redraw_asset_batches WHERE id = ?
-  `).get(Number(batchResponse.body.data.batch_id))?.status, { timeout: 15_000 }).toBe('completed')
+  let batchRow
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    batchRow = database.prepare('SELECT * FROM redraw_asset_batches WHERE id = ?')
+      .get(Number(batchResponse.body.data.batch_id))
+    if (['completed', 'partial_failed', 'failed', 'needs_attention'].includes(String(batchRow?.status))) break
+    await page.waitForTimeout(250)
+  }
+  const batchAttempts = JSON.parse(batchRow?.asset_ids_json || '[]').map((assetId) => (
+    database.prepare(`
+      SELECT id, kind, status, error_code, error_message
+      FROM redraw_assets WHERE id = ?
+    `).get(Number(assetId))
+  ))
+  expect(batchRow?.status, JSON.stringify({ batch: batchRow, attempts: batchAttempts })).toBe('completed')
 
   const assetsResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
   expect(assetsResponse.status, JSON.stringify(assetsResponse.body)).toBe(200)
   const generatedAssets = assetsResponse.body.data.filter((asset) => (
     asset.asset_id || asset.voice_asset_id || asset.clean_plate_asset_id
   ))
-  expect(generatedAssets).toHaveLength(4)
+  expect(generatedAssets).toHaveLength(expectedAssetCount)
   for (const asset of generatedAssets) {
     const reviewResponse = await browserApi(page, `/api/v1/redraw/assets/${asset.id}/review`, {
       method: 'POST',
@@ -711,9 +787,12 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
   const readyWork = await browserApi(page, `/api/v1/redraw/works/${workId}`)
   const preparedShots = []
   for (const shot of readyWork.body.data.shots) {
-    const prompt = Number(shot.shot_index) === 1
-      ? 'Cinematic rooftop at night. Aran checks an old phone as a strange message appears.'
-      : 'Cinematic rooftop at night. Aran looks around, turns, and leaves.'
+    const sourceShotId = sourceFacts.shots[Number(shot.shot_index) - 1]?.id
+    const prompt = activeCase
+      ? activeCase.shotPrompts[sourceShotId]
+      : (Number(shot.shot_index) === 1
+          ? 'Cinematic rooftop at night. Aran checks an old phone as a strange message appears.'
+          : 'Cinematic rooftop at night. Aran looks around, turns, and leaves.')
     const references = Number(shot.shot_index) === 1
       ? shot.references.filter((reference) => reference.kind === 'character').slice(0, 1)
       : shot.references
@@ -724,7 +803,7 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
         expected_updated_at: shot.updated_at,
         prompt,
         model: Number(shot.shot_index) === 1 ? 'seedance-2-fast' : 'fake-video',
-        duration: 8,
+        duration: generationDurations[Number(shot.shot_index) - 1],
         resolution: '720p',
         count: 1,
         references,
@@ -735,21 +814,21 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     preparedShots.push(updateResponse.body.data)
   }
   const shotIds = preparedShots.map((shot) => Number(shot.id))
-  expect(shotIds).toHaveLength(2)
+  expect(shotIds).toHaveLength(expectedShotCount)
   const videoBatchResponse = await browserApi(page, `/api/v1/redraw/works/${workId}/generate-batch`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ version_id: versionId, shot_ids: shotIds }),
   })
   expect(videoBatchResponse.status, JSON.stringify(videoBatchResponse.body)).toBe(202)
-  expect(videoBatchResponse.body.data.results).toHaveLength(2)
+  expect(videoBatchResponse.body.data.results).toHaveLength(expectedShotCount)
   let videoShotRows = []
   for (let attempt = 0; attempt < 120; attempt += 1) {
     videoShotRows = database.prepare(`
       SELECT id, shot_index, status, video_generation_id, error_code, error_message
       FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
     `).all(versionId)
-    if (videoShotRows.filter((shot) => shot.status === 'completed').length === 2) break
+    if (videoShotRows.filter((shot) => shot.status === 'completed').length === expectedShotCount) break
     if (videoShotRows.some((shot) => shot.status === 'completed')
       && videoShotRows.every((shot) => !['pending', 'processing'].includes(shot.status))) break
     await page.waitForTimeout(250)
@@ -763,29 +842,39 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
       batchResponse: videoBatchResponse.body,
       runtimeErrors,
     }),
-  ).toHaveLength(2)
+  ).toHaveLength(expectedShotCount)
   const composedWork = await browserApi(page, `/api/v1/redraw/works/${workId}`)
   expect(composedWork.body.data).toMatchObject({ current_step: 4, workflow_phase: 'video_generation' })
   expect(composedWork.body.data.shots.every((shot) => shot.new_video_ref?.asset_id)).toBe(true)
 
   const bindableAssets = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
   expect(bindableAssets.status, JSON.stringify(bindableAssets.body)).toBe(200)
-  const characterAsset = bindableAssets.body.data.find((asset) => asset.kind === 'character')
-  const voiceAsset = bindableAssets.body.data.find((asset) => asset.kind === 'voice')
-  expect(characterAsset).toBeTruthy()
-  expect(voiceAsset).toBeTruthy()
-  const voiceAssignment = await browserApi(page, `/api/v1/redraw/assets/${characterAsset.id}/voice`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      voice_asset_id: voiceAsset.id,
-      expected_updated_at: characterAsset.updated_at,
-    }),
-  })
-  expect(voiceAssignment.status, JSON.stringify(voiceAssignment.body)).toBe(200)
-  expect(voiceAssignment.body.data.voice_snapshot).toMatchObject({
-    provider: 'local-fake-tts', model: 'fake-tts', voice_id: 'fixture-voice', locale: 'en-US',
-  })
+  const characterAssets = bindableAssets.body.data.filter((asset) => asset.kind === 'character')
+  const voiceAssets = bindableAssets.body.data.filter((asset) => asset.kind === 'voice')
+  expect(characterAssets).toHaveLength(sourceFacts.characters.length)
+  expect(voiceAssets).toHaveLength(sourceFacts.characters.length)
+  const voiceAssignments = []
+  for (const characterAsset of characterAssets) {
+    const stableId = String(characterAsset.source_ref?.stable_id || characterAsset.source_ref?.id || '')
+    const voiceAsset = voiceAssets.find((candidate) => (
+      String(candidate.source_ref?.stable_id || candidate.source_ref?.id || '') === stableId
+    ))
+    expect(voiceAsset, `角色 ${stableId} 缺少匹配音色`).toBeTruthy()
+    const voiceAssignment = await browserApi(page, `/api/v1/redraw/assets/${characterAsset.id}/voice`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        voice_asset_id: voiceAsset.id,
+        expected_updated_at: characterAsset.updated_at,
+      }),
+    })
+    expect(voiceAssignment.status, JSON.stringify(voiceAssignment.body)).toBe(200)
+    expect(voiceAssignment.body.data.voice_snapshot).toMatchObject({
+      provider: 'local-fake-tts', model: 'fake-tts', voice_id: 'fixture-voice', locale: 'en-US',
+    })
+    voiceAssignments.push({ stableId, characterAssetId: characterAsset.id, voiceAssetId: voiceAsset.id })
+  }
+  expect(voiceAssignments).toHaveLength(sourceFacts.characters.length)
 
   const dialogueQuote = await browserApi(page, `/api/v1/redraw/versions/${versionId}/dialogue/quote`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
@@ -875,8 +964,8 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
   const audioStream = probe.streams.find((stream) => stream.codec_type === 'audio')
   expect(videoStream).toMatchObject({ width: 320, height: 180 })
   expect(audioStream).toBeTruthy()
-  expect(Number(probe.format.duration)).toBeGreaterThanOrEqual(15.9)
-  expect(Number(probe.format.duration)).toBeLessThanOrEqual(16.1)
+  expect(Number(probe.format.duration)).toBeGreaterThanOrEqual(expectedOutputDuration - 0.1)
+  expect(Number(probe.format.duration)).toBeLessThanOrEqual(expectedOutputDuration + 0.1)
   const sourceHash = crypto.createHash('sha256').update(fs.readFileSync(sourceVideoPath)).digest('hex')
   expect(downloaded.digest).not.toBe(sourceHash)
 
@@ -890,4 +979,62 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
   expect(activeTasks).toBe(0)
   expect(runtimeErrors, JSON.stringify(runtimeErrors)).toEqual([])
   expect(browserErrors, JSON.stringify(browserErrors)).toEqual([])
+
+  if (activeCase) {
+    const outputDir = path.resolve(process.env.REDRAW_E2E_CASE_OUTPUT_DIR)
+    fs.mkdirSync(outputDir, { recursive: true })
+    const persistedOutputs = {
+      mp4: path.join(outputDir, 'ac087bcd-latam-local-fixture.mp4'),
+      srt: path.join(outputDir, 'ac087bcd-latam-local-fixture.srt'),
+      vtt: path.join(outputDir, 'ac087bcd-latam-local-fixture.vtt'),
+    }
+    for (const [kind, target] of Object.entries(persistedOutputs)) {
+      fs.copyFileSync(path.join(storageRoot, manifest.outputs[`${kind}_path`]), target)
+    }
+    expect(
+      crypto.createHash('sha256').update(fs.readFileSync(persistedOutputs.mp4)).digest('hex'),
+    ).toBe(downloaded.digest)
+    const caseManifest = {
+      ...buildLocalCaseManifest({
+        source_upload_verified: true,
+        workflow_contract_verified: true,
+      }),
+      evidence: {
+        source_path: sourceVideoPath,
+        source_sha256: sourceHash,
+        source_uploaded_header_hex: uploadedHeaderHex,
+        work_id: workId,
+        version_id: versionId,
+        shots: videoShotRows.map((shot) => ({
+          shot_index: Number(shot.shot_index),
+          status: shot.status,
+          video_generation_id: Number(shot.video_generation_id),
+        })),
+        output: {
+          path: persistedOutputs.mp4,
+          srt_path: persistedOutputs.srt,
+          vtt_path: persistedOutputs.vtt,
+          sha256: downloaded.digest,
+          srt_sha256: exportDetail.hashes.srt,
+          vtt_sha256: exportDetail.hashes.vtt,
+          size: downloaded.size,
+          duration_seconds: Number(probe.format.duration),
+          width: Number(videoStream.width),
+          height: Number(videoStream.height),
+          has_audio: Boolean(audioStream),
+        },
+        held_reservations: heldReservations,
+        active_tasks: activeTasks,
+      },
+      limitations: [
+        'Video, image, analysis and TTS providers are local fixtures.',
+        'The generated MP4 does not prove visual actor replacement.',
+        'English lip sync and final aesthetic quality are not verified.',
+      ],
+    }
+    fs.writeFileSync(
+      path.join(outputDir, 'run-manifest.json'),
+      `${JSON.stringify(caseManifest, null, 2)}\n`,
+    )
+  }
 })
