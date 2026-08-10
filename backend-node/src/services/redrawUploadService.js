@@ -1,8 +1,13 @@
 const crypto = require('crypto');
+const { execFile } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { promisify } = require('util');
 const AdmZip = require('adm-zip');
+const { getFfprobePath } = require('../utils/ffmpegPath');
+
+const execFileAsync = promisify(execFile);
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov']);
 const ZIP_EXTENSIONS = new Set(['.zip']);
@@ -76,6 +81,32 @@ function normalizeProbeResult(raw) {
     width: Math.round(Number(raw?.width)),
     height: Math.round(Number(raw?.height)),
   };
+}
+
+async function probeSourceVideo(filePath) {
+  try {
+    const { stdout } = await execFileAsync(getFfprobePath(), [
+      '-v', 'error',
+      '-show_streams',
+      '-show_format',
+      '-of', 'json',
+      filePath,
+    ], {
+      encoding: 'utf8',
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: 15000,
+      windowsHide: true,
+    });
+    const payload = JSON.parse(stdout);
+    const video = payload.streams?.find((stream) => stream.codec_type === 'video');
+    return {
+      duration: Number(video?.duration ?? payload.format?.duration),
+      width: Number(video?.width),
+      height: Number(video?.height),
+    };
+  } catch (_) {
+    throw uploadError('REDRAW_SOURCE_PROBE_FAILED', '无法读取源片媒体信息');
+  }
 }
 
 async function validateSourceFile(file, limits = {}, probeVideo) {
@@ -260,7 +291,7 @@ async function expandZipUpload(file, limits, probeVideo) {
   }
 }
 
-async function expandSourceUpload(file, limits = {}, probeVideo) {
+async function expandSourceUpload(file, limits = {}, probeVideo = probeSourceVideo) {
   if (isZipUpload(file)) {
     assertZipSize(file, limits);
     return expandZipUpload(file, limits, probeVideo);

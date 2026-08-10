@@ -6,6 +6,8 @@ const path = require('path');
 const AdmZip = require('adm-zip');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const { hasLocalFfprobe } = require('../src/utils/ffmpegPath');
+const { MINIMAL_MP4 } = require('./fixtures/media');
 const {
   validateSourceFile,
   safeZipEntry,
@@ -271,6 +273,27 @@ test('expandSourceUpload returns one item for a single source upload', async (t)
   assert.equal(items[0].url, `/static/${items[0].local_path}`);
   assert.equal(JSON.stringify(items).includes(dir), false);
   assert.equal(JSON.stringify(items).includes(storageRoot), false);
+  assert.equal(fs.existsSync(path.join(storageRoot, items[0].local_path)), true);
+});
+
+test('expandSourceUpload uses the resolved ffprobe when the production route does not inject one', async (t) => {
+  if (!hasLocalFfprobe()) return t.skip('ffprobe unavailable');
+  const dir = makeTempDir(t);
+  const storageRoot = path.join(dir, 'storage');
+  const filePath = path.join(dir, 'real-minimal.mp4');
+  fs.writeFileSync(filePath, MINIMAL_MP4);
+
+  const items = await expandSourceUpload(makeUpload(filePath), {
+    maxBytes: 1024 * 1024,
+    minDurationMs: 1,
+    maxDurationMs: 1000,
+    storageRoot,
+  });
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0].width, 16);
+  assert.equal(items[0].height, 16);
+  assert.equal(items[0].duration_ms > 0, true);
   assert.equal(fs.existsSync(path.join(storageRoot, items[0].local_path)), true);
 });
 
