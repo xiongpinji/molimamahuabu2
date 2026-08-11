@@ -28,6 +28,7 @@ const INTERRUPTED_MESSAGE = '供应商状态未知/服务重启，请勿重新�
 const DEFAULT_GENERATION_CONCURRENCY = 3;
 const DEFAULT_RECOVERY_WAIT_MS = 60 * 60 * 1000;
 const DEFAULT_RECOVERY_POLL_MS = 1000;
+const ICREAT_MINI_MODEL = 'bytedance/seedance-2-0-mini';
 const CLIENT_GENERATION_CONTROL_FIELDS = [
   'model',
   'locale',
@@ -113,18 +114,19 @@ function sha256FileSync(absPath) {
   }
 }
 
-function normalizeDuration(value) {
+function normalizeDuration(value, options = {}) {
   const duration = Number(value);
-  if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) {
-    throw codedError('INVALID_VIDEO_DURATION', '视频时长必须是 5 到 15 秒之间的整数');
+  const minimum = options.allowFourSeconds === true ? 4 : 5;
+  if (!Number.isSafeInteger(duration) || duration < minimum || duration > 15) {
+    throw codedError('INVALID_VIDEO_DURATION', `视频时长必须是 ${minimum} 到 15 秒之间的整数`);
   }
   return duration;
 }
 
-function durationFromShotMs(shot) {
+function durationFromShotMs(shot, options = {}) {
   const derived = Math.ceil(Number(shot?.duration_ms || 0) / 1000);
   if (!Number.isSafeInteger(derived) || derived <= 0) return 5;
-  return Math.max(5, Math.min(15, derived));
+  return Math.max(options.allowFourSeconds === true ? 4 : 5, Math.min(15, derived));
 }
 
 function normalizeResolution(value) {
@@ -199,10 +201,16 @@ function listVerifiedGenerationCapabilities(db, version, canReadArtifact = () =>
   return capabilities;
 }
 
+function isIcreatMiniCapability(capability) {
+  return String(capability?.protocol || '').trim().toLowerCase() === 'icreat_task'
+    && String(capability?.model || '').trim().toLowerCase() === ICREAT_MINI_MODEL;
+}
+
 function supportsVideoConditioning(capability) {
   const model = String(capability?.model || '').trim();
-  return String(capability?.protocol || '').trim().toLowerCase() === 'feituo_open'
-    && Number(FEITUO_MODELS[model]?.maxVideos || 0) > 0;
+  return isIcreatMiniCapability(capability)
+    || (String(capability?.protocol || '').trim().toLowerCase() === 'feituo_open'
+      && Number(FEITUO_MODELS[model]?.maxVideos || 0) > 0);
 }
 
 function resolveVerifiedGenerationCapability(db, version, canReadArtifact = () => false, options = {}) {
@@ -221,10 +229,14 @@ function assertVideoConditioningCapability(capability, options = {}) {
   const model = String(capability?.model || '').trim();
   const protocol = String(capability?.protocol || '').trim().toLowerCase();
   const spec = FEITUO_MODELS[model];
-  const maxVideos = options.allowDeclaredLimit
-    ? Number(capability?.max_videos ?? capability?.maxVideos ?? spec?.maxVideos ?? 0)
-    : Number(spec?.maxVideos || 0);
-  if (protocol !== 'feituo_open' || maxVideos <= 0 || (!options.allowDeclaredLimit && !spec)) {
+  const icreatMini = isIcreatMiniCapability(capability);
+  const declaredMaxVideos = Number(capability?.max_videos ?? capability?.maxVideos ?? spec?.maxVideos ?? 0);
+  const maxVideos = icreatMini
+    ? 3
+    : options.allowDeclaredLimit
+      ? declaredMaxVideos
+      : Number(spec?.maxVideos || 0);
+  if (!icreatMini && (protocol !== 'feituo_open' || maxVideos <= 0 || (!options.allowDeclaredLimit && !spec))) {
     throw codedError('REDRAW_VIDEO_CONDITIONING_UNSUPPORTED', '当前已验证视频模型不支持源片视频 conditioning', {
       config_id: capability?.config_id ?? null,
       model: model || null,
@@ -371,7 +383,8 @@ function assertNativeAudioCapability(capability) {
   const model = String(capability.model || '').trim().toLowerCase();
   const protocol = String(capability.protocol || '').trim().toLowerCase();
   const spec = protocol === 'toapis_video' ? TOAPIS_VIDEO_MODELS[model] : null;
-  if (capability.supportsAudio === false || spec?.supportsAudio !== true) {
+  if (capability.supportsAudio === false
+    || (!isIcreatMiniCapability({ protocol, model }) && spec?.supportsAudio !== true)) {
     throw codedError('REDRAW_NATIVE_AUDIO_UNSUPPORTED', '当前已验证视频模型不支持同步音频');
   }
   return {
@@ -400,7 +413,11 @@ function hasNativeDialogueRows(shot) {
 function buildNativeGeneration(shot, parsed, nativeCapability, pack) {
   const selected = assertNativeAudioCapability(nativeCapability);
   const compiled = parsed.compiled;
-  const duration = normalizeDuration(compiled.duration ?? parsed.draft.duration ?? durationFromShotMs(shot));
+  const allowFourSeconds = isIcreatMiniCapability(selected);
+  const duration = normalizeDuration(
+    compiled.duration ?? parsed.draft.duration ?? durationFromShotMs(shot, { allowFourSeconds }),
+    { allowFourSeconds },
+  );
   const resolution = normalizeResolution(compiled.resolution ?? parsed.draft.resolution ?? '720p');
   const aspectRatio = normalizeAspectRatio(compiled.aspect_ratio ?? compiled.aspectRatio
     ?? parsed.draft.aspect_ratio ?? parsed.draft.aspectRatio ?? '16:9');
@@ -548,6 +565,23 @@ function preflightVideoGeneration(generation, sourceConditioning, referenceImage
     }
     return;
   }
+  if (generation.protocol === 'icreat_task') {
+    try {
+      videoClient.buildIcreatVideoBody({
+        model: generation.model,
+        prompt: generation.prompt,
+        duration: generation.duration,
+        aspect_ratio: generation.aspect_ratio,
+        resolution: generation.resolution,
+        reference_urls: referenceImageUrls,
+        reference_video_urls: [sourceConditioning.referenceVideoUrl],
+        generate_audio: generation.generateAudio === true,
+      });
+    } catch (error) {
+      throw codedError('REDRAW_GENERATION_INPUT_INVALID', error.message);
+    }
+    return;
+  }
   if (!FEITUO_MODELS[generation.model]) return;
   try {
     buildFeituoVideoBody({
@@ -652,6 +686,7 @@ function conditioningIdentity(value) {
     start_ms: Number(value.start_ms),
     end_ms: Number(value.end_ms),
     segment_sha256: String(value.segment_sha256 || ''),
+    audio_mode: String(value.audio_mode || 'preserve'),
   };
 }
 
@@ -659,7 +694,7 @@ function sameConditioning(left, right) {
   return JSON.stringify(conditioningIdentity(left)) === JSON.stringify(conditioningIdentity(right));
 }
 
-async function prepareServerSourceConditioning(ctx, shot) {
+async function prepareServerSourceConditioning(ctx, shot, generation) {
   const prepare = typeof ctx.prepareSourceConditioning === 'function'
     ? ctx.prepareSourceConditioning
     : redrawSourceConditioningService.prepareSourceConditioning;
@@ -671,6 +706,9 @@ async function prepareServerSourceConditioning(ctx, shot) {
     sourceFingerprint: shot.source_fingerprint,
     startMs: shot.start_ms,
     endMs: shot.end_ms,
+    audioMode: generation?.generateAudio === true && isIcreatMiniCapability(generation)
+      ? 'strip'
+      : 'preserve',
     storageRoot: ctx.storageRoot,
     storageBaseUrl: ctx.storageBaseUrl,
     signingSecret: ctx.providerAssetSecret,
@@ -731,7 +769,7 @@ async function generateShot(ctx, input = {}) {
   if (!Number.isSafeInteger(generation.attempt) || generation.attempt <= 0) {
     throw codedError('INVALID_REDRAW_GENERATION_INPUT', 'attempt 必须是正整数');
   }
-  const sourceConditioning = await prepareServerSourceConditioning(ctx, shot);
+  const sourceConditioning = await prepareServerSourceConditioning(ctx, shot, generation);
   generation.sourceConditioning = sourceConditioning.billingSnapshot;
   const referenceImageUrls = collectReferenceImageUrls(db, shot, parsed);
   preflightVideoGeneration(generation, sourceConditioning, referenceImageUrls);

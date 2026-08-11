@@ -2,6 +2,7 @@ const { createHash } = require('crypto');
 
 const creditLedger = require('./creditLedgerService');
 const modelPrice = require('./modelPriceService');
+const ICREAT_MINI_MODEL = 'bytedance/seedance-2-0-mini';
 
 function codedError(code, message) {
   const error = new Error(message);
@@ -17,10 +18,11 @@ function assertPositiveInteger(value, name) {
   return number;
 }
 
-function assertVideoDuration(value) {
+function assertVideoDuration(value, model) {
   const duration = Number(value);
-  if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) {
-    throw codedError('INVALID_VIDEO_DURATION', '视频时长必须是 5 到 15 秒之间的整数');
+  const minimum = model === ICREAT_MINI_MODEL ? 4 : 5;
+  if (!Number.isSafeInteger(duration) || duration < minimum || duration > 15) {
+    throw codedError('INVALID_VIDEO_DURATION', `视频时长必须是 ${minimum} 到 15 秒之间的整数`);
   }
   return duration;
 }
@@ -122,19 +124,25 @@ function normalizeSourceConditioning(value) {
   if (!Number.isSafeInteger(startMs) || startMs < 0 || !Number.isSafeInteger(endMs) || endMs <= startMs) {
     throw codedError('INVALID_REDRAW_BILLING_INPUT', 'source conditioning shot 边界无效');
   }
+  const audioMode = String(value.audio_mode ?? value.audioMode ?? 'preserve').trim().toLowerCase();
+  if (!['preserve', 'strip'].includes(audioMode)) {
+    throw codedError('INVALID_REDRAW_BILLING_INPUT', 'source conditioning audio_mode 无效');
+  }
   return {
     source_asset_id: sourceAssetId,
     source_fingerprint: sourceFingerprint,
     start_ms: startMs,
     end_ms: endMs,
     segment_sha256: segmentSha256,
+    audio_mode: audioMode,
   };
 }
 
 function buildSnapshot(input, shotIds, count, attempt) {
+  const model = modelPrice.canonicalModel(input.model);
   const snapshotInput = {
-    model: modelPrice.canonicalModel(input.model),
-    duration: assertVideoDuration(input.duration),
+    model,
+    duration: assertVideoDuration(input.duration, model),
     resolution: normalizeSnapshotResolution(input.resolution),
     count,
     locale: input.locale == null ? null : String(input.locale),

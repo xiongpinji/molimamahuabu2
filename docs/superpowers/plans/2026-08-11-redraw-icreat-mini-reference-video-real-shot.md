@@ -419,7 +419,9 @@ git commit -m "feat: 支持转绘源片移除原音轨"
 
 **文件：**
 - 修改：`backend-node/src/services/redrawGenerationService.js:116-127,202-235,367-437,533-564,662-683`
+- 修改：`backend-node/src/services/redrawBillingService.js:19-25,112-151`
 - 修改：`backend-node/test/redrawGeneration.test.js`
+- 修改：`backend-node/test/redrawShotBilling.test.js`
 
 - [ ] **步骤 1：编写失败的精确 capability 门禁测试**
 
@@ -467,10 +469,14 @@ assert.equal(JSON.parse(createdVideo.request_snapshot).config_updated_at, exact.
 artifact 均在准备 conditioning、积分预留和供应商调用前失败；非 iCreat 路径传入 4 秒继续返回
 `INVALID_VIDEO_DURATION`。
 
+计费测试必须证明只有精确 `bytedance/seedance-2-0-mini` 能按 4 秒报价，并把
+`source_conditioning.audio_mode=strip` 纳入稳定快照和 operation key；Fast、完整模型和既有
+按次模型继续拒绝 4 秒。
+
 - [ ] **步骤 3：运行测试确认失败**
 
 ~~~powershell
-node --test --test-concurrency=1 test/redrawGeneration.test.js
+node --test --test-concurrency=1 test/redrawGeneration.test.js test/redrawShotBilling.test.js
 ~~~
 
 预期：FAIL；iCreat 仍被源视频/原生音频门禁拒绝，4 秒仍被全局时长门禁拒绝。
@@ -521,10 +527,14 @@ audioMode: generation.generateAudio === true && isIcreatMiniCapability(generatio
 `preflightVideoGeneration` 对 `icreat_task` 调用已导出的 `buildIcreatVideoBody`，传入参考视频、
 参考图、4 秒和 `generate_audio`；任何输入错误统一映射为 `REDRAW_GENERATION_INPUT_INVALID`。
 
+`redrawBillingService.buildSnapshot` 先规范化模型，再以精确 Mini 判断最小时长；
+`normalizeSourceConditioning` 只接受 `preserve|strip` 并把 `audio_mode` 纳入计费快照。不得对
+其它模型放宽时长。
+
 - [ ] **步骤 6：运行测试验证通过**
 
 ~~~powershell
-node --test --test-concurrency=1 test/redrawGeneration.test.js
+node --test --test-concurrency=1 test/redrawGeneration.test.js test/redrawShotBilling.test.js
 ~~~
 
 预期：PASS；精确 iCreat Mini 绿灯，所有相邻负例和原有转绘生成测试继续通过。
@@ -532,7 +542,7 @@ node --test --test-concurrency=1 test/redrawGeneration.test.js
 - [ ] **步骤 7：提交任务 3**
 
 ~~~powershell
-git add backend-node/src/services/redrawGenerationService.js backend-node/test/redrawGeneration.test.js
+git add backend-node/src/services/redrawGenerationService.js backend-node/src/services/redrawBillingService.js backend-node/test/redrawGeneration.test.js backend-node/test/redrawShotBilling.test.js docs/superpowers/plans/2026-08-11-redraw-icreat-mini-reference-video-real-shot.md
 git commit -m "feat: 接通 iCreat Mini 转绘声画门禁"
 ~~~
 

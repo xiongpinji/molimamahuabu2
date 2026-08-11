@@ -27,11 +27,13 @@ const {
   verifyVideoArtifact,
   classifyVideoOutcome,
   reviewNativeAudio,
+  assertVideoConditioningCapability,
 } = require('../src/services/redrawGenerationService');
 
 const log = { info() {}, warn() {}, error() {} };
 const FEITUO_FAST_MODEL = 'sdas-my-seedance-2.0-fast-upscaled-1080p';
 const TOAPIS_NATIVE_MODEL = 'seedance-2-fast';
+const ICREAT_MINI_MODEL = 'bytedance/seedance-2-0-mini';
 const SIGNED_SOURCE_VIDEO_URL = 'https://media.example.test/api/redraw-provider-assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4?expires=1786147800&signature=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
 function setup(overrides = {}) {
@@ -205,18 +207,20 @@ function writeTinyMp4(t, storageRoot, relativePath, options = {}) {
 function addNativeDialogueCapability(db, overrides = {}) {
   const now = overrides.updatedAt || new Date('2026-08-06T00:00:00.000Z').toISOString();
   const model = overrides.model || TOAPIS_NATIVE_MODEL;
+  const provider = overrides.provider || 'toapis';
+  const protocol = overrides.protocol || 'toapis_video';
+  const language = overrides.language || 'es';
   const inserted = db.prepare(`
     INSERT INTO ai_service_configs
       (service_type, provider, api_protocol, name, model, default_model, base_url, api_key,
        is_active, is_default, priority, settings, created_at, updated_at)
-    VALUES ('video', 'toapis', 'toapis_video', 'ToAPIs 原生对白', ?, ?, 'https://toapis.com',
-            'secret', 1, 1, 0, '{}', ?, ?)
-  `).run(model, model, now, now);
+    VALUES ('video', ?, ?, '原生对白验证', ?, ?, ?, 'secret', 1, 1, 0, '{}', ?, ?)
+  `).run(provider, protocol, model, model, overrides.baseUrl || 'https://toapis.com', now, now);
   const configId = Number(inserted.lastInsertRowid);
   const evidence = {
     contract: 'redraw-native-dialogue-audio-v1',
-    provider: 'toapis',
-    protocol: 'toapis_video',
+    provider,
+    protocol,
     model,
     config_id: configId,
     config_updated_at: overrides.evidenceUpdatedAt || now,
@@ -226,7 +230,7 @@ function addNativeDialogueCapability(db, overrides = {}) {
     artifact_sha256: 'd'.repeat(64),
     media: { video_stream: true, audio_stream: true },
     locale_verification: {
-      language: 'es',
+      language,
       language_verified: true,
       locale_verified: false,
     },
@@ -239,9 +243,9 @@ function addNativeDialogueCapability(db, overrides = {}) {
   };
   db.prepare('UPDATE ai_service_configs SET settings = ? WHERE id = ?').run(JSON.stringify({
     redraw_locale_capabilities: [{
-      language: 'es',
-      locale: 'es',
-      target_language: 'es',
+      language,
+      locale: language,
+      target_language: language,
       target_locale: null,
       market: '',
       status: 'verified',
@@ -249,7 +253,7 @@ function addNativeDialogueCapability(db, overrides = {}) {
         video: {
           config_id: configId,
           config_updated_at: now,
-          provider: 'toapis',
+          provider,
           model,
           task_id: 'video-task',
           terminal_status: 'completed',
@@ -268,7 +272,7 @@ function addNativeDialogueCapability(db, overrides = {}) {
     WHERE id = ?`)
     .run(now, now, JSON.stringify({
       [model]: withExternalModelEvidence(model, {
-        durations: [5],
+        durations: overrides.durations || [5],
         resolutions: ['480p', '720p'],
         supportsAudio: true,
         supportsVideoReference: true,
@@ -421,6 +425,28 @@ test('ID9 iCreat verified 模型在 reserve/video row/provider 前以 conditioni
     assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
   } finally {
     state.db.close();
+  }
+});
+
+test('仅精确 iCreat Mini capability 支持源片 conditioning', () => {
+  const exact = {
+    config_id: 7,
+    config_updated_at: '2026-08-11T00:00:00.000Z',
+    provider: 'icreat',
+    protocol: 'icreat_task',
+    model: ICREAT_MINI_MODEL,
+  };
+
+  assert.deepEqual(assertVideoConditioningCapability(exact), { ...exact, max_videos: 3 });
+  for (const patch of [
+    { protocol: 'openai' },
+    { model: 'bytedance/seedance-2-0-fast' },
+    { model: 'bytedance/seedance-2-0' },
+  ]) {
+    assert.throws(
+      () => assertVideoConditioningCapability({ ...exact, ...patch }),
+      (error) => error.code === 'REDRAW_VIDEO_CONDITIONING_UNSUPPORTED',
+    );
   }
 });
 
@@ -634,6 +660,106 @@ test('原生对白生成持久化 generate_audio、prompt/dialogue/config/locale
     assert.equal(captured.ai_service_config_id, native.configId);
   } finally {
     videoClient.callVideoApi = originalCallVideoApi;
+    state.db.close();
+  }
+});
+
+test('已验证 iCreat Mini 原生英文路径使用 4 秒无源音轨 conditioning 并固定配置证据', async () => {
+  const state = setup();
+  let scheduled;
+  let capturedConditioning;
+  let capturedVideoRequest;
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    const native = addNativeDialogueCapability(state.db, {
+      provider: 'icreat',
+      protocol: 'icreat_task',
+      model: ICREAT_MINI_MODEL,
+      baseUrl: 'https://api.icreat.ai',
+      language: 'en',
+      durations: [4],
+    });
+    prices.set(state.db, ICREAT_MINI_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'en-US', market = 'US' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 4000,
+      startMs: 0,
+      endMs: 4000,
+      compiledPrompt: {
+        text: 'Keep the live-action school entrance shot.',
+        duration: 4,
+        resolution: '480p',
+        aspect_ratio: '9:16',
+      },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Mateo', start_ms: 700, end_ms: 2400, text: 'Dude, who are you?' },
+      ]),
+    });
+
+    const created = await generateShot(ctx(state.db, {
+      resolveVideoConditioningCapability: undefined,
+      evidenceRoots,
+      localeVerifier: {
+        assertReady: () => nativePack({
+          id: 'en@1',
+          language: 'en',
+          prompt_language_label: '美式英语',
+        }),
+      },
+      prepareSourceConditioning: async (input) => {
+        capturedConditioning = input;
+        return {
+          referenceVideoUrl: SIGNED_SOURCE_VIDEO_URL,
+          billingSnapshot: {
+            source_asset_id: 1,
+            source_fingerprint: 'f'.repeat(64),
+            start_ms: 0,
+            end_ms: 4000,
+            segment_sha256: 'a'.repeat(64),
+            audio_mode: input.audioMode,
+          },
+          auditSnapshot: {
+            schema_version: '1.0',
+            shot_id: Number(input.shot.id),
+            source_asset_id: 1,
+            source_fingerprint: 'f'.repeat(64),
+            start_ms: 0,
+            end_ms: 4000,
+            segment_sha256: 'a'.repeat(64),
+            audio_mode: input.audioMode,
+          },
+        };
+      },
+      videoProcessor: async (db, _log, videoGenerationId) => {
+        const row = db.prepare('SELECT request_snapshot FROM video_generations WHERE id = ?')
+          .get(videoGenerationId);
+        capturedVideoRequest = JSON.parse(row.request_snapshot);
+        db.prepare("UPDATE video_generations SET status = 'failed', error_msg = 'test stop' WHERE id = ?")
+          .run(videoGenerationId);
+      },
+      schedule(callback) { scheduled = callback; },
+    }), { shotId });
+    const video = state.db.prepare('SELECT * FROM video_generations WHERE id = ?').get(created.video_generation_id);
+    const snapshot = JSON.parse(video.request_snapshot);
+
+    assert.equal(capturedConditioning.audioMode, 'strip');
+    assert.equal(video.model, ICREAT_MINI_MODEL);
+    assert.equal(video.duration, 4);
+    assert.equal(video.generate_audio, 1);
+    assert.equal(snapshot.config_updated_at, native.updatedAt);
+    assert.equal(snapshot.generate_audio, true);
+    assert.equal(JSON.parse(video.source_conditioning_json).audio_mode, 'strip');
+
+    await scheduled();
+    assert.equal(capturedVideoRequest.model, ICREAT_MINI_MODEL);
+    assert.equal(capturedVideoRequest.duration, 4);
+    assert.equal(capturedVideoRequest.generate_audio, true);
+    assert.deepEqual(capturedVideoRequest.reference_video_urls, [SIGNED_SOURCE_VIDEO_URL]);
+  } finally {
     state.db.close();
   }
 });
