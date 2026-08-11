@@ -18,6 +18,12 @@ const {
   prepareCaseMedia,
   verifyCandidateMedia,
 } = require('../src/services/icreatMiniReferenceVideoCaseService');
+const {
+  PAID_CONFIRMATION,
+  assertPaidAuthorization,
+  parseArgs,
+  runCase,
+} = require('../scripts/run-icreat-mini-reference-video-case');
 
 const SOURCE_PROBE = {
   durationSeconds: 68.733333,
@@ -171,11 +177,14 @@ test('redacted evidence never contains credentials, task IDs or signed media URL
     task_id: 'provider-task-secret',
     signed_urls: ['https://case.localhost.run/a?token=must-not-appear'],
     status: 'submission_unknown',
+    media: { segment: { sha256: 'a'.repeat(64), audio_codec: null, audio_mode: 'strip' } },
   });
   const serialized = JSON.stringify(manifest);
   assert.equal(serialized.includes('must-not-appear'), false);
   assert.equal(serialized.includes('provider-task-secret'), false);
   assert.equal(manifest.provider_task_id_sha256.length, 64);
+  assert.equal(manifest.media.segment.audio_codec, null);
+  assert.equal(manifest.media.segment.audio_mode, 'strip');
   assert.equal(manifest.visual_actor_replacement_verified, false);
   assert.equal(Object.values(manifest.manual_review).every((value) => value === 'uncertain'), true);
 });
@@ -224,4 +233,130 @@ test('visual verification becomes true only after all seven manual checks pass',
     Object.keys(manifest.manual_review).map((key) => [key, 'passed']),
   ));
   assert.equal(allPassed.visual_actor_replacement_verified, true);
+});
+
+test('CLI defaults to dry-run and paid mode requires the exact phrase and bounded caps', () => {
+  const dryRun = parseArgs([]);
+  assert.equal(dryRun.mode, 'dry-run');
+  assert.equal(dryRun.submitPaidOnce, false);
+
+  const paid = parseArgs([
+    '--submit-paid-once',
+    '--max-credits', '50',
+    '--max-usd', '0.25',
+    '--confirm', PAID_CONFIRMATION,
+  ]);
+  assert.equal(paid.mode, 'paid-once');
+  assert.equal(paid.maxCredits, 50);
+  assert.equal(paid.maxUsd, 0.25);
+
+  const verified = {
+    priceConfirmed: true,
+    keyGroupAuthorized: true,
+    balanceSufficient: true,
+    expectedCredits: 40,
+    expectedUsd: 0.2,
+  };
+  assert.doesNotThrow(() => assertPaidAuthorization(paid, verified));
+  for (const patch of [
+    { ...paid, confirmation: 'wrong' },
+    { ...paid, maxCredits: 51 },
+    { ...paid, maxUsd: 0.26 },
+  ]) {
+    assert.throws(
+      () => assertPaidAuthorization(patch, verified),
+      (error) => error.code === 'ICREAT_PAID_AUTHORIZATION_REQUIRED',
+    );
+  }
+  for (const patch of [
+    { priceConfirmed: false },
+    { keyGroupAuthorized: false },
+    { balanceSufficient: false },
+    { expectedCredits: 0 },
+    { expectedCredits: 51 },
+    { expectedUsd: 0.26 },
+  ]) {
+    assert.throws(
+      () => assertPaidAuthorization(paid, { ...verified, ...patch }),
+      (error) => error.code === 'ICREAT_PAID_PREFLIGHT_FAILED',
+    );
+  }
+});
+
+test('paid orchestration fails closed before callVideoApi when access, HEAD or lock gates fail', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'icreat-case-paid-gates-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const media = {
+    rootDir: directory,
+    source: { path: 'source', sha256: EXPECTED_SOURCE_SHA256, probe: SOURCE_PROBE },
+    segment: { path: 'segment', sha256: '2'.repeat(64) },
+    mateo: { path: 'mateo', sha256: '3'.repeat(64) },
+    cast: { path: 'cast', sha256: EXPECTED_CAST_SHA256 },
+    cleanup: async () => {},
+  };
+  const args = {
+    ...parseArgs([
+      '--submit-paid-once', '--max-credits', '50', '--max-usd', '0.25',
+      '--confirm', PAID_CONFIRMATION,
+    ]),
+    outputDir: directory,
+    statePath: path.join(directory, 'submission-state.json'),
+  };
+  const validPreflight = {
+    priceConfirmed: true,
+    keyGroupAuthorized: true,
+    balanceSufficient: true,
+    expectedCredits: 40,
+    expectedUsd: 0.2,
+  };
+  let providerCalls = 0;
+  const baseDeps = {
+    prepareCaseMedia: async () => media,
+    loadLocalIcreatConfig: async () => ({ db: { close() {} }, config: { id: 7 } }),
+    callVideoApi: async () => { providerCalls += 1; return { task_id: 'must-not-run' }; },
+    writeEvidence: async () => {},
+  };
+
+  await assert.rejects(
+    () => runCase(args, {
+      ...baseDeps,
+      runReadOnlyPreflight: async () => ({ ...validPreflight, keyGroupAuthorized: false }),
+    }),
+    (error) => error.code === 'ICREAT_PAID_PREFLIGHT_FAILED',
+  );
+  assert.equal(providerCalls, 0);
+
+  await assert.rejects(
+    () => runCase(args, {
+      ...baseDeps,
+      runReadOnlyPreflight: async () => validPreflight,
+      startTemporaryMediaTunnel: async () => {
+        const error = new Error('HEAD failed');
+        error.code = 'TEMP_MEDIA_TUNNEL_UNAVAILABLE';
+        throw error;
+      },
+    }),
+    (error) => error.code === 'TEMP_MEDIA_TUNNEL_UNAVAILABLE',
+  );
+  assert.equal(providerCalls, 0);
+
+  createSubmissionLock(args.statePath, '4'.repeat(64));
+  consumeSubmissionLock(args.statePath, '4'.repeat(64));
+  await assert.rejects(
+    () => runCase(args, {
+      ...baseDeps,
+      runReadOnlyPreflight: async () => validPreflight,
+      startTemporaryMediaTunnel: async () => ({
+        urls: [
+          { id: 'shot', url: 'https://case.localhost.run/a', head_ok: true },
+          { id: 'mateo', url: 'https://case.localhost.run/b', head_ok: true },
+          { id: 'cast', url: 'https://case.localhost.run/c', head_ok: true },
+        ],
+        close: async () => {},
+      }),
+      requestHashForTest: '4'.repeat(64),
+    }),
+    (error) => ['ICREAT_CASE_LOCK_EXISTS', 'ICREAT_CASE_ALREADY_SUBMITTED'].includes(error.code),
+  );
+  assert.equal(providerCalls, 0);
 });

@@ -818,3 +818,16 @@ git commit -m "test: 接通 iCreat Mini 真人镜头 dry-run"
 - 不访问 `/opt/moli-drama`，不制作候选，不写生产数据库，不恢复线上一键转绘入口，不推送。
 - 用户以后明确授权的一笔付费调用仍需在调用当时重新完成费用、权限、生产冲突和三份媒体
   HEAD 门禁；本地实现通过不等于真实模型、人工视觉或产品 E2E 已通过。
+
+## 本地执行记录（2026-08-11）
+
+- 任务 1–6 的本地代码与合同测试已实现；提交阶段继续保持不推送、不部署。
+- 指定源片 dry-run：exit 0，`provider_called=false`，`tunnel_started=false`。
+- 源片 SHA-256：`24eb1d8ba3ff11e6aa3e547b7ac400f6b177dcf541d1af36354d3e46cc05e9ae`。
+- 4 秒无音轨 H.264 片段 SHA-256：`07fdf22a6094cb095644df16af79e64a86e3e428887664e02aefbc905dd82be8`。
+- Mateo 裁剪图 SHA-256：`3ace60e53803ea714085020c46bc51b1d01a7bb9ea876b92caac3a61ea567ee1`。
+- 演员合照 SHA-256：`35b1f9f65d819b12b11f61e17720f202a6ebb4292660a7fe93ec55fedddc319e`。
+- 请求快照 SHA-256：`9e0cdd0de484544d4653bb1cf34967b9fdd13e22e57f020fd7aeee7650d5d35e`。
+- 精确联合回归：exit 0；后端 211 个测试文件全量串行回归：exit 0。
+- 前端真实源片 + 本地模拟供应商转绘同链：Playwright 1/1 通过；临时输出已移入回收站。
+- 本轮没有读取供应商 Key、启动公网隧道、提交付费任务、写生产数据库或执行部署。

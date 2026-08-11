@@ -381,6 +381,7 @@ function updateSubmissionLock(statePath, requestHash, patch = {}) {
   const next = { ...state };
   if (patch.status) next.status = String(patch.status);
   if (patch.task_id) next.provider_task_id = String(patch.task_id);
+  if (patch.clear_task_id === true) delete next.provider_task_id;
   if (patch.updated_at) next.updated_at = String(patch.updated_at);
   fs.writeFileSync(target, JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 });
   return next;
@@ -395,9 +396,9 @@ function redactedMedia(value) {
   const output = {};
   for (const key of [
     'sha256', 'bytes', 'width', 'height', 'duration_seconds', 'audio_duration_seconds',
-    'video_codec', 'audio_codec', 'non_silent', 'max_volume_db',
+    'video_codec', 'audio_codec', 'audio_mode', 'non_silent', 'max_volume_db',
   ]) {
-    if (value[key] !== undefined && value[key] !== null) output[key] = value[key];
+    if (value[key] !== undefined) output[key] = value[key];
   }
   return Object.keys(output).length ? output : null;
 }
