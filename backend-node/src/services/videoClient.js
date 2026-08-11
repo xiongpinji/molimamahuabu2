@@ -4137,6 +4137,39 @@ function normalizeIcreatEndpoint(endpoint, fallback) {
   return value.startsWith('/') ? value : `/${value}`;
 }
 
+function icreatVideoInputError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function normalizeIcreatReferenceVideoUrls(values) {
+  const urls = [];
+  for (const raw of Array.isArray(values) ? values : []) {
+    let parsed;
+    try {
+      parsed = new URL(String(raw || '').trim());
+    } catch (_) {
+      throw icreatVideoInputError('ICREAT_REFERENCE_VIDEO_URL_INVALID', 'iCreat 参考视频必须是公网 HTTPS URL');
+    }
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.hash
+      || host === 'localhost' || host.endsWith('.localhost')
+      || (net.isIP(host) && isPrivateAddress(host))) {
+      throw icreatVideoInputError('ICREAT_REFERENCE_VIDEO_URL_INVALID', 'iCreat 参考视频必须是公网 HTTPS URL');
+    }
+    const value = parsed.toString();
+    if (urls.includes(value)) {
+      throw icreatVideoInputError('ICREAT_REFERENCE_VIDEO_DUPLICATE', 'iCreat 参考视频 URL 不得重复');
+    }
+    urls.push(value);
+  }
+  if (urls.length > 3) {
+    throw icreatVideoInputError('ICREAT_REFERENCE_VIDEO_LIMIT_EXCEEDED', 'iCreat 参考视频最多 3 个');
+  }
+  return urls;
+}
+
 function buildIcreatTaskUrl(config, endpoint, taskId) {
   const base = normalizeIcreatBaseUrl(config?.base_url);
   let ep = normalizeIcreatEndpoint(endpoint, '/v1/task/query-status');
@@ -4157,6 +4190,7 @@ function buildIcreatVideoBody({
   last_frame_url,
   image_url,
   reference_urls,
+  reference_video_urls,
   voice_reference_url,
   generate_audio,
   watermark,
@@ -4175,7 +4209,22 @@ function buildIcreatVideoBody({
   addImage(first_frame_url || image_url, 'first_frame');
   addImage(last_frame_url, 'last_frame');
   const hasFrameRole = content.some((part) => part.role === 'first_frame' || part.role === 'last_frame');
+  const videoUrls = normalizeIcreatReferenceVideoUrls(reference_video_urls);
+  if (hasFrameRole && videoUrls.length > 0) {
+    throw icreatVideoInputError(
+      'ICREAT_REFERENCE_MODE_CONFLICT',
+      'iCreat 首尾帧模式不能与参考视频模式混用',
+    );
+  }
   if (!hasFrameRole) {
+    for (const url of videoUrls) {
+      content.push({
+        type: 'video_url',
+        video_url: { url },
+        role: 'reference_video',
+        need_review: true,
+      });
+    }
     for (const url of Array.isArray(reference_urls) ? reference_urls : []) addImage(url, 'reference_image');
   }
   const voiceUrl = String(voice_reference_url || '').trim();
@@ -4209,6 +4258,10 @@ async function resolveIcreatImages(opts, log) {
   for (const [field, role] of fields) {
     const raw = String(opts[field] || '').trim();
     if (!raw) continue;
+    if (/^https:\/\//i.test(raw)) {
+      resolved[field] = raw;
+      continue;
+    }
     const image = await resolveVeo3ImageForApi(raw, opts.storage_local_path, log, `${opts.video_gen_id || 0}_icreat_${role}`);
     if (image?.value) resolved[field] = image.value;
   }
@@ -4216,6 +4269,10 @@ async function resolveIcreatImages(opts, log) {
   for (let i = 0; i < (Array.isArray(opts.reference_urls) ? opts.reference_urls.length : 0); i++) {
     const raw = String(opts.reference_urls[i] || '').trim();
     if (!raw) continue;
+    if (/^https:\/\//i.test(raw)) {
+      if (!refs.includes(raw)) refs.push(raw);
+      continue;
+    }
     const image = await resolveVeo3ImageForApi(raw, opts.storage_local_path, log, `${opts.video_gen_id || 0}_icreat_ref${i}`);
     if (image?.value && !refs.includes(image.value)) refs.push(image.value);
   }
@@ -4351,7 +4408,10 @@ async function callIcreatVideoApi(config, log, opts = {}) {
   log?.info?.('[iCreat video] 提交', {
     video_gen_id: opts.video_gen_id,
     model,
+    reference_video_count: body.content.filter((part) => part.role === 'reference_video').length,
+    reference_image_count: body.content.filter((part) => part.role === 'reference_image').length,
     has_voice_reference: body.content.some((part) => part.role === 'reference_audio'),
+    generate_audio: body.generate_audio === true,
   });
   if (opts.voice_reference_url && !body.content.some((part) => part.role === 'reference_audio')) {
     log?.warn?.('[iCreat video] 首尾帧模式不支持混合参考音频，已保留画面连续性并使用提示词声线锚点', {

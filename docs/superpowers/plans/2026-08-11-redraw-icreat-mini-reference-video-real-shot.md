@@ -75,10 +75,7 @@ it('builds Mini reference video plus reviewed actor references and native audio'
     duration: 4,
     aspect_ratio: '9:16',
     resolution: '480p',
-    reference_video_urls: [
-      'https://case.example/shot.mp4?token=video-secret',
-      'https://case.example/shot.mp4?token=video-secret',
-    ],
+    reference_video_urls: ['https://case.example/shot.mp4?token=video-secret'],
     reference_urls: [
       'https://case.example/mateo.png?token=image-secret-1',
       'https://case.example/cast.png?token=image-secret-2',
@@ -128,6 +125,15 @@ it('rejects unsafe or excessive iCreat reference videos before fetch', () => {
       reference_video_urls: [1, 2, 3, 4].map((id) => 'https://case.example/' + id + '.mp4'),
     }),
     (error) => error.code === 'ICREAT_REFERENCE_VIDEO_LIMIT_EXCEEDED',
+  );
+  assert.throws(
+    () => buildIcreatVideoBody({
+      reference_video_urls: [
+        'https://case.example/shot.mp4',
+        'https://case.example/shot.mp4',
+      ],
+    }),
+    (error) => error.code === 'ICREAT_REFERENCE_VIDEO_DUPLICATE',
   );
 });
 ~~~
@@ -182,7 +188,7 @@ node --test --test-concurrency=1 test/icreatVideo.test.js
 
 预期：新增测试 FAIL；当前请求体不包含 reference_video。
 
-- [ ] **步骤 5：实现最小 URL 归一化和视频内容**
+- [ ] **步骤 5：实现最小 URL 校验和视频内容**
 
 在 iCreat 模型函数附近加入：
 
@@ -209,7 +215,10 @@ function normalizeIcreatReferenceVideoUrls(values) {
       throw icreatVideoInputError('ICREAT_REFERENCE_VIDEO_URL_INVALID', 'iCreat 参考视频必须是公网 HTTPS URL');
     }
     const value = parsed.toString();
-    if (!urls.includes(value)) urls.push(value);
+    if (urls.includes(value)) {
+      throw icreatVideoInputError('ICREAT_REFERENCE_VIDEO_DUPLICATE', 'iCreat 参考视频 URL 不得重复');
+    }
+    urls.push(value);
   }
   if (urls.length > 3) {
     throw icreatVideoInputError('ICREAT_REFERENCE_VIDEO_LIMIT_EXCEEDED', 'iCreat 参考视频最多 3 个');
