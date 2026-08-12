@@ -82,6 +82,12 @@ export const redrawAPI = {
       expected_updated_at: body?.expected_updated_at || body?.expectedUpdatedAt,
     })
   },
+  getAssetPreview(assetId, variant) {
+    return request.get(`/redraw/assets/${assetId}/preview/${encodeURIComponent(variant)}`, {
+      responseType: 'blob',
+      silentError: true,
+    })
+  },
   listProductionVoices(versionId) {
     return request.get(`/redraw/versions/${versionId}/voices`)
   },

@@ -2033,6 +2033,58 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     }, { kind: req.query?.kind }));
   }
 
+  function previewRedrawAsset(req, res) {
+    const currentOwner = owner(req);
+    const redrawAsset = findOwnedAsset(req.params.id, currentOwner);
+    if (!redrawAsset) return response.notFound(res, '资产预览不存在');
+    const variant = String(req.params.variant || '').trim().toLowerCase();
+    const providerAssetId = variant === 'primary'
+      ? redrawAsset.asset_id
+      : variant === 'clean_plate' && redrawAsset.kind === 'scene'
+        ? redrawAsset.clean_plate_asset_id
+        : null;
+    if (!providerAssetId) return response.notFound(res, '资产预览不存在');
+    const providerAsset = db.prepare(
+      'SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL',
+    ).get(Number(providerAssetId));
+    const mime = String(providerAsset?.mime_type || '').trim().toLowerCase();
+    if (!providerAsset || providerAsset.type !== 'image'
+      || !/^image\/(?:png|jpe?g|webp|avif)$/.test(mime)) {
+      return response.notFound(res, '资产预览不存在');
+    }
+    const root = storageRootFromConfig(cfg);
+    const candidate = safeStoragePath(root, providerAsset.local_path);
+    let absolutePath;
+    try {
+      const realRoot = fs.realpathSync(root);
+      const realCandidate = candidate ? fs.realpathSync(candidate) : null;
+      const relative = realCandidate ? path.relative(realRoot, realCandidate) : '';
+      if (!realCandidate || !relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+        return response.notFound(res, '资产预览不存在');
+      }
+      absolutePath = realCandidate;
+    } catch (_) {
+      return response.notFound(res, '资产预览不存在');
+    }
+    if (typeof res.setHeader === 'function') {
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+      res.setHeader('Content-Disposition', 'inline');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    }
+    if (typeof res.sendFile === 'function') {
+      return res.sendFile(absolutePath, (error) => {
+        if (error && !res.headersSent) response.notFound(res, '资产预览不存在');
+      });
+    }
+    const stream = fs.createReadStream(absolutePath);
+    stream.once('error', () => {
+      if (!res.headersSent) response.notFound(res, '资产预览不存在');
+      else if (typeof res.destroy === 'function') res.destroy();
+    });
+    return stream.pipe(res);
+  }
+
   function listProductionVoices(req, res) {
     const currentOwner = owner(req);
     const version = findOwnedVersion(req.params.id, currentOwner);
@@ -2767,6 +2819,7 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     localizationQuote,
     createVersion,
     listVersionAssets,
+    previewRedrawAsset,
     listProductionVoices,
     previewProductionVoice,
     assignVoice,

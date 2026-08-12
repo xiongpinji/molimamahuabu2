@@ -8,16 +8,27 @@
       <el-tag :type="isApprovedAsset(asset) ? 'success' : asset.approval_status === 'rejected' ? 'danger' : 'warning'">{{ reviewLabel(asset) }}</el-tag>
     </header>
 
-    <div v-if="asset.kind === 'character'" class="media-grid three-view-grid" aria-label="角色三视图">
-      <div v-for="view in ['正面', '侧面', '背面']" :key="view" class="media-tile"><span>{{ view }}</span></div>
+    <div v-if="asset.kind === 'character'" class="media-preview character-preview" aria-label="角色三视图预览">
+      <img v-if="previewUrl" :src="previewUrl" :alt="`${asset.localized_name || '角色'}真人参考图`" />
+      <span v-if="previewUrl" class="media-label">角色生成图 · 正面 / 侧面 / 背面</span>
+      <span v-else class="preview-empty">{{ emptyPreviewText }}</span>
     </div>
     <div v-else-if="asset.kind === 'scene'" class="scene-panel">
       <div class="scene-tabs">
         <button v-for="item in sceneModes" :key="item.key" type="button" :class="{ active: sceneMode === item.key }" @click="sceneMode = item.key">{{ item.label }}</button>
       </div>
-      <div class="media-tile scene-media"><span>{{ sceneModes.find((item) => item.key === sceneMode)?.label }}</span></div>
+      <div class="media-preview scene-media">
+        <img v-if="previewUrl" :src="previewUrl" :alt="`${asset.localized_name || '场景'}${previewLabel}`" />
+        <span v-if="previewUrl" class="media-label">{{ previewLabel }}</span>
+        <span v-else class="preview-empty">{{ emptyPreviewText }}</span>
+      </div>
     </div>
-    <div v-else class="media-tile"><span>{{ asset.kind === 'prop' ? '物品文字与参考' : '目标音色证据' }}</span></div>
+    <div v-else-if="asset.kind === 'prop'" class="media-preview prop-preview">
+      <img v-if="previewUrl" :src="previewUrl" :alt="`${asset.localized_name || '物品'}参考图`" />
+      <span v-if="previewUrl" class="media-label">物品生成图</span>
+      <span v-else class="preview-empty">{{ emptyPreviewText }}</span>
+    </div>
+    <div v-else class="media-tile"><span>目标音色证据</span></div>
 
     <p v-if="asset.localized_description" class="asset-description">{{ asset.localized_description }}</p>
     <div class="asset-actions">
@@ -32,8 +43,9 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Check, CloseBold, Refresh } from '@element-plus/icons-vue'
+import { redrawAPI } from '@/api/redraw'
 import { ASSET_KINDS, assetAnchor, isApprovedAsset, reviewLabel } from '@/utils/redrawAssetState'
 
 const props = defineProps({
@@ -41,13 +53,79 @@ const props = defineProps({
   quote: { type: Number, default: 0 },
 })
 const emit = defineEmits(['generate', 'review'])
-const sceneMode = ref('source')
+const sceneMode = ref(props.asset.kind === 'scene' && props.asset.asset_id ? 'localized' : 'source')
+const previewUrl = ref('')
+const previewLoading = ref(false)
+const previewFailed = ref(false)
+let previewRequestId = 0
 const sceneModes = [
   { key: 'source', label: '原场景' },
   { key: 'localized', label: '本地化' },
   { key: 'clean_plate', label: '去人净景' },
 ]
 const kindLabel = computed(() => ASSET_KINDS.find((item) => item.key === props.asset.kind)?.label || '资产')
+const previewVariant = computed(() => {
+  if (props.asset.kind === 'character' || props.asset.kind === 'prop') return 'primary'
+  if (props.asset.kind !== 'scene') return null
+  if (sceneMode.value === 'localized') return 'primary'
+  if (sceneMode.value === 'clean_plate') return 'clean_plate'
+  return null
+})
+const previewAssetId = computed(() => {
+  if (previewVariant.value === 'primary') return Number(props.asset.asset_id) || null
+  if (previewVariant.value === 'clean_plate') return Number(props.asset.clean_plate_asset_id) || null
+  return null
+})
+const previewLabel = computed(() => sceneModes.find((item) => item.key === sceneMode.value)?.label || '场景')
+const emptyPreviewText = computed(() => {
+  if (previewLoading.value) return '正在加载图片…'
+  if (previewFailed.value) return '图片不可读取，请重新生成或检查产物'
+  if (props.asset.kind === 'character') return '尚未生成角色图片'
+  if (props.asset.kind === 'prop') return '尚未生成物品图片'
+  if (sceneMode.value === 'source') return '原场景预览尚未生成'
+  if (sceneMode.value === 'clean_plate') return '尚未生成去人净景图片'
+  return '尚未生成本地化场景图片'
+})
+
+function releasePreview() {
+  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
+  previewUrl.value = ''
+}
+
+async function loadPreview() {
+  const requestId = ++previewRequestId
+  releasePreview()
+  previewFailed.value = false
+  if (!previewVariant.value || !previewAssetId.value) {
+    previewLoading.value = false
+    return
+  }
+  previewLoading.value = true
+  try {
+    const blob = await redrawAPI.getAssetPreview(props.asset.id, previewVariant.value)
+    const nextUrl = URL.createObjectURL(blob)
+    if (requestId !== previewRequestId) {
+      URL.revokeObjectURL(nextUrl)
+      return
+    }
+    previewUrl.value = nextUrl
+  } catch (_) {
+    if (requestId === previewRequestId) previewFailed.value = true
+  } finally {
+    if (requestId === previewRequestId) previewLoading.value = false
+  }
+}
+
+watch(
+  () => [props.asset.id, props.asset.asset_id, props.asset.clean_plate_asset_id, previewVariant.value],
+  loadPreview,
+  { immediate: true },
+)
+
+onBeforeUnmount(() => {
+  previewRequestId += 1
+  releasePreview()
+})
 </script>
 
 <style scoped>
@@ -56,8 +134,12 @@ const kindLabel = computed(() => ASSET_KINDS.find((item) => item.key === props.a
 .asset-heading > div { min-width: 0; }
 .asset-kind { margin: 0 0 4px; color: #ff9a6d; font-size: 11px; font-weight: 800; }
 h3 { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
-.media-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .media-tile { display: grid; place-items: end start; aspect-ratio: 4 / 3; min-width: 0; padding: 10px; border: 1px solid #343434; border-radius: 6px; background: linear-gradient(135deg, #252525, #101010); color: #bbb; }
+.media-preview { position: relative; display: grid; place-items: center; min-width: 0; overflow: hidden; border: 1px solid #343434; border-radius: 8px; background: #0d0d0d; }
+.media-preview img { display: block; width: 100%; height: 100%; object-fit: contain; background: #0a0a0a; }
+.character-preview, .prop-preview { aspect-ratio: 4 / 3; }
+.media-label { position: absolute; left: 8px; bottom: 8px; padding: 4px 7px; border-radius: 4px; background: rgba(0, 0, 0, 0.72); color: #fff; font-size: 12px; }
+.preview-empty { padding: 18px; color: #888; line-height: 1.5; text-align: center; }
 .scene-panel { display: grid; gap: 8px; }
 .scene-tabs { display: flex; gap: 6px; overflow-x: auto; }
 .scene-tabs button { flex: 0 0 auto; padding: 7px 10px; border: 1px solid #353535; border-radius: 6px; background: #111; color: #aaa; }

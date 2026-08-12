@@ -326,6 +326,7 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/redraw/works/:id/localization-quote', redraw.localizationQuote);
   r.post('/redraw/works/:id/versions', redraw.createVersion);
   r.get('/redraw/versions/:id/assets', redraw.listVersionAssets);
+  r.get('/redraw/assets/:id/preview/:variant', redraw.previewRedrawAsset);
   r.get('/redraw/versions/:id/voices', redraw.listProductionVoices);
   r.get('/redraw/versions/:versionId/voices/:voiceAssetId/preview', redraw.previewProductionVoice);
   r.post('/redraw/versions/:id/assets/batch-quote', redraw.assetBatchQuote);

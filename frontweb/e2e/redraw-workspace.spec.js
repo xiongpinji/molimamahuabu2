@@ -1,7 +1,10 @@
 import { test, expect } from '@playwright/test'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const fixtureVideoPath = fileURLToPath(new URL('../../项目截图/1.mp4', import.meta.url))
+const actorPreviewBytes = readFileSync(new URL('./fixtures/redraw-latin-american-case/actor-cast-reference.png', import.meta.url))
+const neutralPreviewBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
 
 const project = {
   id: 41,
@@ -408,6 +411,17 @@ async function installFixtures(page, state) {
     if (method === 'GET' && pathname === '/api/v1/redraw/versions/812/assets') {
       state.requests.push({ method, pathname })
       await route.fulfill(apiData(state.assets))
+      return
+    }
+    if (method === 'GET' && /^\/api\/v1\/redraw\/assets\/\d+\/preview\/primary$/.test(pathname)) {
+      const assetId = Number(pathname.split('/')[5])
+      const asset = state.assets.find((item) => Number(item.id) === assetId)
+      if (asset?.asset_id) {
+        const body = asset.kind === 'character' ? actorPreviewBytes : neutralPreviewBytes
+        await route.fulfill({ status: 200, contentType: 'image/png', body })
+      } else {
+        await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ success: false }) })
+      }
       return
     }
     if (method === 'GET' && pathname === '/api/v1/redraw/versions/812/generation-gate') {
@@ -935,6 +949,7 @@ test.describe('一键转绘输入与分析流程', () => {
     await expect(page.getByText('确认本地化资产后再进入批量转绘')).toBeVisible()
     await expect(page.getByText('还有资产需要确认')).toBeVisible()
     await expect(page.getByText('3 项待处理')).toBeVisible()
+    await expect.poll(async () => page.locator('[aria-label="角色三视图预览"] img').evaluate((image) => image.naturalWidth)).toBeGreaterThan(0)
 
     await page.getByRole('button', { name: '批准' }).first().click()
     await expect(page.getByText('2 项待处理')).toBeVisible()

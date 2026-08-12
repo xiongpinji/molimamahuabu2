@@ -4118,6 +4118,7 @@ test('第三步和本地化确认 API 已真实注册在总路由', () => {
     assert.equal(routes.has('POST /redraw/works/:id/versions'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/assets/batch-quote'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/assets/batches'), true);
+    assert.equal(routes.has('GET /redraw/assets/:id/preview/:variant'), true);
     assert.equal(routes.has('GET /redraw/versions/:id/voices'), true);
     assert.equal(routes.has('GET /redraw/versions/:versionId/voices/:voiceAssetId/preview'), true);
     assert.equal(routes.has('POST /redraw/assets/:id/voice'), true);
@@ -4126,6 +4127,94 @@ test('第三步和本地化确认 API 已真实注册在总路由', () => {
     assert.equal(routes.has('GET /redraw/versions/:id/dialogue/tasks/:taskId'), true);
   } finally {
     db.close();
+  }
+});
+
+test('转绘图片预览仅返回当前 owner 的存储根内图片', () => {
+  const db = createDb();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-preview-'));
+  const outsidePath = path.join(path.dirname(storageRoot), `${path.basename(storageRoot)}-outside.png`);
+  try {
+    fs.mkdirSync(path.join(storageRoot, 'redraw-assets'), { recursive: true });
+    const imagePath = path.join(storageRoot, 'redraw-assets', 'actor.png');
+    fs.writeFileSync(imagePath, 'real actor preview');
+    db.prepare(`INSERT INTO assets
+      (id, name, type, category, url, local_path, mime_type, created_at, updated_at)
+      VALUES (701, 'Mateo', 'image', 'redraw', '/static/unsafe-actor.png', 'redraw-assets/actor.png', 'image/png', ?, ?)`)
+      .run(NOW, NOW);
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const assetId = insertRedrawAsset(db, versionId, { localized_name: 'Mateo' });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      cfg: { storage: { local_path: storageRoot } },
+    }));
+
+    const sent = { path: null, headers: {} };
+    const ownerResponse = captureResponse();
+    ownerResponse.setHeader = (name, value) => { sent.headers[name] = value; };
+    ownerResponse.sendFile = (filename, callback) => {
+      sent.path = filename;
+      callback?.();
+      return ownerResponse;
+    };
+    handlers.previewRedrawAsset({
+      params: { id: String(assetId), variant: 'primary' },
+      tenant: { id: 'tenant-a' },
+      user: { id: 'user-a' },
+    }, ownerResponse);
+
+    assert.equal(sent.path, fs.realpathSync(imagePath));
+    assert.equal(sent.headers['Content-Type'], 'image/png');
+    assert.equal(sent.headers['Cache-Control'], 'private, no-store, max-age=0');
+    assert.equal(sent.headers['X-Content-Type-Options'], 'nosniff');
+
+    const foreign = captureResponse();
+    handlers.previewRedrawAsset({
+      params: { id: String(assetId), variant: 'primary' },
+      tenant: { id: 'tenant-b' },
+      user: { id: 'user-a' },
+    }, foreign);
+    assert.equal(foreign.statusCode, 404);
+
+    const invalidVariant = captureResponse();
+    handlers.previewRedrawAsset({
+      params: { id: String(assetId), variant: 'source' },
+      tenant: { id: 'tenant-a' },
+      user: { id: 'user-a' },
+    }, invalidVariant);
+    assert.equal(invalidVariant.statusCode, 404);
+
+    db.prepare(`INSERT INTO assets
+      (id, name, type, category, local_path, mime_type, created_at, updated_at)
+      VALUES (702, 'not-image', 'video', 'redraw', 'redraw-assets/actor.png', 'video/mp4', ?, ?)`)
+      .run(NOW, NOW);
+    const nonImageAssetId = insertRedrawAsset(db, versionId, { asset_id: 702, localized_name: '错误媒体' });
+    const nonImage = captureResponse();
+    handlers.previewRedrawAsset({
+      params: { id: String(nonImageAssetId), variant: 'primary' },
+      tenant: { id: 'tenant-a' },
+      user: { id: 'user-a' },
+    }, nonImage);
+    assert.equal(nonImage.statusCode, 404);
+
+    fs.writeFileSync(outsidePath, 'outside image');
+    db.prepare(`INSERT INTO assets
+      (id, name, type, category, local_path, mime_type, created_at, updated_at)
+      VALUES (703, 'outside', 'image', 'redraw', ?, 'image/png', ?, ?)`)
+      .run(`../${path.basename(outsidePath)}`, NOW, NOW);
+    const outsideAssetId = insertRedrawAsset(db, versionId, { asset_id: 703, localized_name: '越界媒体' });
+    const outside = captureResponse();
+    handlers.previewRedrawAsset({
+      params: { id: String(outsideAssetId), variant: 'primary' },
+      tenant: { id: 'tenant-a' },
+      user: { id: 'user-a' },
+    }, outside);
+    assert.equal(outside.statusCode, 404);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+    fs.rmSync(outsidePath, { force: true });
   }
 });
 
