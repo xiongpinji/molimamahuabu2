@@ -12,6 +12,11 @@ const {
 
 const SHOT_IDS = ['shot-4', 'shot-8'];
 const TEXT_KINDS = ['text_subtitle', 'text_screen'];
+const IMAGE_EVIDENCE_FIELDS = [
+  { entry: 'representative_frame', manifest: 'source', label: 'source' },
+  { entry: 'mask_asset', manifest: 'mask', label: 'mask' },
+  { entry: 'clean_plate', manifest: 'text_clean', label: 'text-clean' },
+];
 const IMAGE_WIDTH = 1280;
 const IMAGE_HEIGHT = 720;
 
@@ -47,6 +52,7 @@ async function createPng(root, relativePath, {
 function assertCanonicalTwoShots(entries) {
   assert.equal(entries.length, SHOT_IDS.length, '测试变体必须保持两镜数量不变量');
   assert.deepEqual(entries.map((entry) => entry.shot_id), SHOT_IDS);
+  assert.deepEqual(entries.map((entry) => entry.text_kind), TEXT_KINDS);
 }
 
 function mutateTwoShotEntries(entries, mutation, { preserveShotIds = true } = {}) {
@@ -54,6 +60,11 @@ function mutateTwoShotEntries(entries, mutation, { preserveShotIds = true } = {}
   const mutated = structuredClone(entries);
   mutation(mutated);
   assert.equal(mutated.length, SHOT_IDS.length, '测试变体不得意外改变两镜数量');
+  assert.deepEqual(
+    mutated.map((entry) => entry.text_kind),
+    TEXT_KINDS,
+    '测试变体不得意外改变两镜文字类型',
+  );
   if (preserveShotIds) {
     assert.deepEqual(
       mutated.map((entry) => entry.shot_id),
@@ -101,11 +112,11 @@ async function makeFixture(t) {
       shot_id: shotId,
       text_kind: textKind,
       source_asset_id: 401 + index,
-      source,
+      representative_frame: source,
       mask_asset_id: 501 + index,
-      mask,
+      mask_asset: mask,
       text_clean_asset_id: 601 + index,
-      text_clean: textClean,
+      clean_plate: textClean,
       region: {
         kind: textKind,
         polygon,
@@ -154,9 +165,9 @@ test('两镜文字净景 manifest 固定排序、脱敏并绑定本地图片哈�
     assert.equal(shot.review.status, 'pending');
     assert.equal(shot.ready_for_reference, false);
 
-    for (const field of ['source', 'mask', 'text_clean']) {
-      const file = shot[field];
-      assert.equal(file.sha256, declaredEntry[field].sha256);
+    for (const field of IMAGE_EVIDENCE_FIELDS) {
+      const file = shot[field.manifest];
+      assert.equal(file.sha256, declaredEntry[field.entry].sha256);
       assert.equal(file.sha256, sha256File(path.join(root, file.path)));
       assert.match(file.sha256, /^[a-f0-9]{64}$/);
       assert.equal(path.isAbsolute(file.path), false);
@@ -211,9 +222,10 @@ test('非法文字区域或文字类型时拒绝生成文字净景 manifest', as
       },
     },
     {
-      name: '未知 text_kind',
+      name: '未知 region.kind',
+      shotId: 'shot-8',
       mutate(entry) {
-        entry.text_kind = 'text_unknown';
+        assert.equal(entry.text_kind, 'text_screen');
         entry.region.kind = 'text_unknown';
       },
     },
@@ -233,7 +245,7 @@ test('非法文字区域或文字类型时拒绝生成文字净景 manifest', as
 
   for (const invalidCase of cases) {
     await t.test(invalidCase.name, async () => {
-      const invalidEntries = mutateShot(entries, 'shot-4', (entry) => {
+      const invalidEntries = mutateShot(entries, invalidCase.shotId || 'shot-4', (entry) => {
         invalidCase.mutate(entry, root);
       });
       await assertRejectedCode(root, invalidEntries, 'REDRAW_TEXT_CLEAN_PLATE_REGION_INVALID');
@@ -244,25 +256,30 @@ test('非法文字区域或文字类型时拒绝生成文字净景 manifest', as
 test('绝对路径或 .. 路径时拒绝生成文字净景 manifest', async (t) => {
   const { root, entries } = await makeFixture(t);
 
-  const absolutePathEntries = mutateShot(entries, 'shot-4', (entry) => {
-    entry.source.path = path.join(root, 'shots', 'shot-4', 'source.png');
-  });
-  await assertRejectedCode(root, absolutePathEntries, 'REDRAW_TEXT_CLEAN_PLATE_PATH_INVALID');
+  for (const field of IMAGE_EVIDENCE_FIELDS) {
+    await t.test(`${field.entry} 使用绝对路径`, async () => {
+      const invalidEntries = mutateShot(entries, 'shot-4', (entry) => {
+        entry[field.entry].path = path.join(root, entry[field.entry].path);
+      });
+      await assertRejectedCode(root, invalidEntries, 'REDRAW_TEXT_CLEAN_PLATE_PATH_INVALID');
+    });
 
-  const parentPathEntries = mutateShot(entries, 'shot-8', (entry) => {
-    entry.mask.path = '../outside.png';
-  });
-  await assertRejectedCode(root, parentPathEntries, 'REDRAW_TEXT_CLEAN_PLATE_PATH_INVALID');
+    await t.test(`${field.entry} 使用 .. 路径`, async () => {
+      const invalidEntries = mutateShot(entries, 'shot-8', (entry) => {
+        entry[field.entry].path = '../outside.png';
+      });
+      await assertRejectedCode(root, invalidEntries, 'REDRAW_TEXT_CLEAN_PLATE_PATH_INVALID');
+    });
+  }
 });
 
 test('source、mask 或 text-clean 哈希漂移时拒绝生成文字净景 manifest', async (t) => {
   const { root, entries } = await makeFixture(t);
-  const fields = ['source', 'mask', 'text_clean'];
 
-  for (const [index, field] of fields.entries()) {
-    await t.test(`${field} 哈希漂移`, async () => {
+  for (const [index, field] of IMAGE_EVIDENCE_FIELDS.entries()) {
+    await t.test(`${field.label} 哈希漂移`, async () => {
       const invalidEntries = mutateShot(entries, 'shot-4', (entry) => {
-        entry[field].sha256 = String(index).repeat(64);
+        entry[field.entry].sha256 = String(index).repeat(64);
       });
       await assertRejectedCode(root, invalidEntries, 'REDRAW_TEXT_CLEAN_PLATE_HASH_MISMATCH');
     });
@@ -271,17 +288,16 @@ test('source、mask 或 text-clean 哈希漂移时拒绝生成文字净景 manif
 
 test('source、mask 或 text-clean 尺寸不一致时拒绝生成文字净景 manifest', async (t) => {
   const { root, entries } = await makeFixture(t);
-  const fields = ['source', 'mask', 'text_clean'];
 
-  for (const [index, field] of fields.entries()) {
-    await t.test(`${field} 尺寸不一致`, async () => {
-      const relativePath = `shots/shot-4/${field}-small.png`;
+  for (const [index, field] of IMAGE_EVIDENCE_FIELDS.entries()) {
+    await t.test(`${field.label} 尺寸不一致`, async () => {
+      const relativePath = `shots/shot-4/${field.entry}-small.png`;
       const wrongSizeEvidence = await createPng(root, relativePath, {
         width: IMAGE_WIDTH - 1 - index,
         background: '#505050',
       });
       const invalidEntries = mutateShot(entries, 'shot-4', (entry) => {
-        entry[field] = wrongSizeEvidence;
+        entry[field.entry] = wrongSizeEvidence;
       });
       await assertRejectedCode(root, invalidEntries, 'REDRAW_TEXT_CLEAN_PLATE_DIMENSIONS_INVALID');
     });
@@ -290,12 +306,11 @@ test('source、mask 或 text-clean 尺寸不一致时拒绝生成文字净景 ma
 
 test('source、mask 或 text-clean MIME 不一致时拒绝生成文字净景 manifest', async (t) => {
   const { root, entries } = await makeFixture(t);
-  const fields = ['source', 'mask', 'text_clean'];
 
-  for (const field of fields) {
-    await t.test(`${field} MIME 不一致`, async () => {
+  for (const field of IMAGE_EVIDENCE_FIELDS) {
+    await t.test(`${field.label} MIME 不一致`, async () => {
       const invalidEntries = mutateShot(entries, 'shot-8', (entry) => {
-        entry[field].mime_type = 'image/jpeg';
+        entry[field.entry].mime_type = 'image/jpeg';
       });
       await assertRejectedCode(root, invalidEntries, 'REDRAW_TEXT_CLEAN_PLATE_DIMENSIONS_INVALID');
     });
