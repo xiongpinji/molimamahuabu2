@@ -201,6 +201,16 @@ export const redrawLatinAmericanCase = Object.freeze({
   generationDurations: [8, 8, 8, 8, 8, 8, 8, 8, 5],
 })
 
+export function buildLocalIdentityPackInput(actor = {}) {
+  return {
+    target_actor_label: String(actor.target_name || '').trim(),
+    confirmed_views: ['front', 'profile', 'full_body'],
+    live_action_human_confirmed: true,
+    adult_status: 'verified_18_plus',
+    identity_consistency_confirmed: true,
+  }
+}
+
 export function validateSourceProbe(probe) {
   const expected = redrawLatinAmericanCase.source
   const sha256 = String(probe?.sha256 || '').toLowerCase()

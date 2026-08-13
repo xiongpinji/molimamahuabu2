@@ -6,6 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  buildLocalIdentityPackInput,
   buildLocalCaseManifest,
   redrawLatinAmericanCase,
   validateSourceProbe,
@@ -70,6 +71,18 @@ test('C 方案固定成年拉美演员并使用美式英语', () => {
   })
   for (const prompt of Object.values(redrawLatinAmericanCase.shotPrompts)) {
     assert.match(prompt, /fixed Latino actor/i)
+  }
+})
+
+test('C 方案为每个目标演员提供完整身份包输入', () => {
+  for (const actor of redrawLatinAmericanCase.cast) {
+    assert.deepEqual(buildLocalIdentityPackInput(actor), {
+      target_actor_label: actor.target_name,
+      confirmed_views: ['front', 'profile', 'full_body'],
+      live_action_human_confirmed: true,
+      adult_status: 'verified_18_plus',
+      identity_consistency_confirmed: true,
+    })
   }
 })
 

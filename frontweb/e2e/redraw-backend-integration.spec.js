@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 
 import {
   actorReferenceUrl,
+  buildLocalIdentityPackInput,
   buildLocalCaseManifest,
   redrawLatinAmericanCase,
 } from './fixtures/redraw-latin-american-case.js'
@@ -772,7 +773,38 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     asset.asset_id || asset.voice_asset_id || asset.clean_plate_asset_id
   ))
   expect(generatedAssets).toHaveLength(expectedAssetCount)
-  for (const asset of generatedAssets) {
+  const castById = new Map(activeCase ? activeCase.cast.map((actor) => [String(actor.id), actor]) : [])
+  const identityCharacterAssets = generatedAssets.filter((asset) => asset.kind === 'character')
+  expect(identityCharacterAssets).toHaveLength(sourceFacts.characters.length)
+  for (const asset of identityCharacterAssets) {
+    if (asset.identity_pack_status?.ready === true) continue
+    const sourceRef = asset.source_ref && typeof asset.source_ref === 'object'
+      ? asset.source_ref
+      : {}
+    const sourceCharacterKey = [sourceRef.stable_id, sourceRef.id, sourceRef.source_character_id]
+      .map((value) => String(value || '').trim())
+      .find(Boolean)
+    const actor = castById.get(sourceCharacterKey) || {
+      target_name: String(asset.localized_name || sourceCharacterKey || `Actor ${asset.id}`).trim(),
+    }
+    const identityResponse = await browserApi(page, `/api/v1/redraw/assets/${asset.id}/identity-pack`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...buildLocalIdentityPackInput(actor),
+        expected_updated_at: asset.updated_at,
+      }),
+    })
+    expect(identityResponse.status, JSON.stringify(identityResponse.body)).toBe(200)
+    expect(identityResponse.body.data.identity_pack_status).toMatchObject({ ready: true })
+  }
+  const reviewAssetsResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
+  expect(reviewAssetsResponse.status, JSON.stringify(reviewAssetsResponse.body)).toBe(200)
+  const reviewAssets = reviewAssetsResponse.body.data.filter((asset) => (
+    asset.asset_id || asset.voice_asset_id || asset.clean_plate_asset_id
+  ))
+  expect(reviewAssets).toHaveLength(expectedAssetCount)
+  for (const asset of reviewAssets) {
     const reviewResponse = await browserApi(page, `/api/v1/redraw/assets/${asset.id}/review`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -780,10 +812,6 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     })
     expect(reviewResponse.status, JSON.stringify(reviewResponse.body)).toBe(200)
   }
-  const gateResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/generation-gate`)
-  expect(gateResponse.status, JSON.stringify(gateResponse.body)).toBe(200)
-  expect(gateResponse.body.data.ok, JSON.stringify(gateResponse.body)).toBe(true)
-
   const readyWork = await browserApi(page, `/api/v1/redraw/works/${workId}`)
   const preparedShots = []
   for (const shot of readyWork.body.data.shots) {
@@ -813,6 +841,10 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     expect(updateResponse.body.data.compiled_prompt.text).toBe(prompt)
     preparedShots.push(updateResponse.body.data)
   }
+  const gateResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/generation-gate`)
+  expect(gateResponse.status, JSON.stringify(gateResponse.body)).toBe(200)
+  expect(gateResponse.body.data.ok, JSON.stringify(gateResponse.body)).toBe(true)
+
   const shotIds = preparedShots.map((shot) => Number(shot.id))
   expect(shotIds).toHaveLength(expectedShotCount)
   const videoBatchResponse = await browserApi(page, `/api/v1/redraw/works/${workId}/generate-batch`, {
