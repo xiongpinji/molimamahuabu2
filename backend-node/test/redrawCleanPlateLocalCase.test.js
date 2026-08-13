@@ -86,6 +86,7 @@ test('四镜 clean-plate manifest 按固定镜头排序并脱敏文件根路径'
   for (const shot of result.shots) {
     for (const file of [shot.source, shot.mask, shot.clean_plate]) {
       assert.match(file.sha256, /^[a-f0-9]{64}$/);
+      assert.equal(file.sha256, sha256File(path.join(root, file.path)));
     }
   }
   assert.equal(JSON.stringify(result).includes(root), false);
@@ -100,7 +101,7 @@ test('缺镜头或重复镜头时拒绝生成 clean-plate manifest', async (t) =
   );
 
   const duplicateShotEntries = cloneEntries(entries);
-  duplicateShotEntries[3].shot_id = duplicateShotEntries[0].shot_id;
+  duplicateShotEntries[1].shot_id = duplicateShotEntries[0].shot_id;
   await assert.rejects(
     () => buildLocalCleanPlateManifest({ root, entries: duplicateShotEntries }),
     { code: 'REDRAW_CLEAN_PLATE_SHOTS_INVALID' },
@@ -110,7 +111,7 @@ test('缺镜头或重复镜头时拒绝生成 clean-plate manifest', async (t) =
 test('包含未允许的 shot-5 时拒绝生成 clean-plate manifest', async (t) => {
   const { root, entries } = await makeFixture(t);
   const unsupportedShotEntries = cloneEntries(entries);
-  unsupportedShotEntries.push({ ...cloneEntries(entries)[0], shot_id: 'shot-5' });
+  unsupportedShotEntries[0].shot_id = 'shot-5';
 
   await assert.rejects(
     () => buildLocalCleanPlateManifest({ root, entries: unsupportedShotEntries }),
