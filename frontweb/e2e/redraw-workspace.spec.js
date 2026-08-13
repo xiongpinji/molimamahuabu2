@@ -6,6 +6,24 @@ const fixtureVideoPath = fileURLToPath(new URL('../../项目截图/1.mp4', impor
 const actorPreviewBytes = readFileSync(new URL('./fixtures/redraw-latin-american-case/actor-cast-reference.png', import.meta.url))
 const neutralPreviewBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
 
+const readyIdentityPack = {
+  schema_version: 'target-actor-identity-v1',
+  source_character_key: 'source-character-maya',
+  target_actor_label: 'Maya Rivera',
+  confirmed_views: ['front', 'profile', 'full_body'],
+  live_action_human_confirmed: true,
+  adult_status: 'verified_18_plus',
+  identity_consistency_confirmed: true,
+  pack_sha256: 'a'.repeat(64),
+  ready: true,
+}
+const readyIdentityStatus = {
+  ready: true,
+  missing_views: [],
+  missing_confirmations: [],
+  hash_valid: true,
+}
+
 const project = {
   id: 41,
   title: '转绘输入验收项目',
@@ -46,6 +64,8 @@ const redrawAssets = [
     status: 'generated',
     approval_status: 'pending',
     asset_id: 2201,
+    identity_pack: { ...readyIdentityPack },
+    identity_pack_status: { ...readyIdentityStatus },
     updated_at: '2026-08-06T08:10:00.000Z',
   },
   {
@@ -122,6 +142,8 @@ const approvedRedrawAssets = [
     status: 'generated',
     approval_status: 'approved',
     asset_id: 2201,
+    identity_pack: { ...readyIdentityPack },
+    identity_pack_status: { ...readyIdentityStatus },
     updated_at: '2026-08-06T08:20:00.000Z',
   },
   {
@@ -411,6 +433,45 @@ async function installFixtures(page, state) {
     if (method === 'GET' && pathname === '/api/v1/redraw/versions/812/assets') {
       state.requests.push({ method, pathname })
       await route.fulfill(apiData(state.assets))
+      return
+    }
+    if (method === 'PUT' && /^\/api\/v1\/redraw\/assets\/\d+\/identity-pack$/.test(pathname)) {
+      const assetId = Number(pathname.split('/')[5])
+      const body = request.postDataJSON()
+      const asset = state.assets.find((item) => Number(item.id) === assetId)
+      if (!asset || asset.kind !== 'character') {
+        await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ success: false }) })
+        return
+      }
+      state.requests.push({ method, pathname, body })
+      asset.identity_pack = {
+        ...readyIdentityPack,
+        target_actor_label: body.target_actor_label,
+        confirmed_views: body.confirmed_views,
+        live_action_human_confirmed: body.live_action_human_confirmed,
+        adult_status: body.adult_status,
+        identity_consistency_confirmed: body.identity_consistency_confirmed,
+        ready: body.confirmed_views?.length === 3
+          && body.live_action_human_confirmed === true
+          && body.adult_status === 'verified_18_plus'
+          && body.identity_consistency_confirmed === true,
+      }
+      asset.identity_pack_status = {
+        ready: asset.identity_pack.ready,
+        missing_views: asset.identity_pack.ready ? [] : ['profile', 'full_body'],
+        missing_confirmations: asset.identity_pack.ready ? [] : ['live_action_human_confirmed', 'adult_status', 'identity_consistency_confirmed'],
+        hash_valid: true,
+      }
+      asset.approval_status = 'pending'
+      asset.updated_at = '2026-08-06T08:13:00.000Z'
+      await route.fulfill(apiData({
+        asset,
+        identity_pack: asset.identity_pack,
+        identity_pack_status: asset.identity_pack_status,
+        version_id: 812,
+        status: 'asset_review',
+        current_step: 2,
+      }))
       return
     }
     if (method === 'GET' && /^\/api\/v1\/redraw\/assets\/\d+\/preview\/primary$/.test(pathname)) {
@@ -949,7 +1010,7 @@ test.describe('一键转绘输入与分析流程', () => {
     await expect(page.getByText('确认本地化资产后再进入批量转绘')).toBeVisible()
     await expect(page.getByText('还有资产需要确认')).toBeVisible()
     await expect(page.getByText('3 项待处理')).toBeVisible()
-    await expect.poll(async () => page.locator('[aria-label="角色三视图预览"] img').evaluate((image) => image.naturalWidth)).toBeGreaterThan(0)
+    await expect.poll(async () => page.locator('[aria-label="角色身份包预览"] img').evaluate((image) => image.naturalWidth)).toBeGreaterThan(0)
 
     await page.getByRole('button', { name: '批准' }).first().click()
     await expect(page.getByText('2 项待处理')).toBeVisible()
@@ -969,6 +1030,46 @@ test.describe('一键转绘输入与分析流程', () => {
     await expect(page.getByText('已开放')).toHaveCount(0)
     await expect(page.getByRole('button', { name: '03 批量转绘' })).toBeDisabled()
     expect(state.requests.filter((entry) => entry.pathname.endsWith('/review'))).toHaveLength(4)
+  })
+
+  test('角色身份包未确认时禁止批准，补齐人工确认后保存并显示逐镜映射', async ({ page }) => {
+    const state = {
+      projects: [project],
+      quoteReady: true,
+      assetQuoteReady: true,
+      work: { ...workBase, current_step: 2, status: 'asset_review', version_id: 812 },
+      assets: [{ ...structuredClone(redrawAssets[0]), identity_pack: undefined, identity_pack_status: undefined }],
+      gate: { ok: false, missing: [{ kind: 'character', asset_id: 1201, shot_ids: ['shot-01'], anchor: 'asset-1201-character' }], current_step: 2 },
+      requests: [],
+    }
+    await installFixtures(page, state)
+    await page.setViewportSize({ width: 1440, height: 900 })
+
+    await page.goto('/redraw/projects/41/works/710?step=2')
+    await expect(page.getByText('服务端未确认')).toBeVisible()
+    await expect(page.getByText(/缺项：正面、侧面、全身/)).toBeVisible()
+    await expect(page.getByRole('button', { name: '批准' })).toBeDisabled()
+
+    await page.getByPlaceholder('填写目标演员').fill('Maya Rivera')
+    for (const view of ['front', 'profile', 'full_body']) await page.getByText(view, { exact: true }).click()
+    await page.getByText('真人确认', { exact: true }).click()
+    await page.getByText('18+确认', { exact: true }).click()
+    await page.getByText('一致性确认', { exact: true }).click()
+    await page.getByRole('button', { name: '保存身份包' }).click()
+
+    await expect.poll(() => state.requests.filter((entry) => entry.method === 'PUT' && entry.pathname === '/api/v1/redraw/assets/1201/identity-pack').length).toBe(1)
+    const identitySave = state.requests.find((entry) => entry.pathname === '/api/v1/redraw/assets/1201/identity-pack')
+    expectOnlyKeys(identitySave.body, [
+      'target_actor_label', 'confirmed_views', 'live_action_human_confirmed',
+      'adult_status', 'identity_consistency_confirmed', 'expected_updated_at',
+    ])
+    expect(identitySave.body.confirmed_views).toEqual(['front', 'profile', 'full_body'])
+    expect(forbiddenClientFields(identitySave.body)).toEqual([])
+    expect(JSON.stringify(identitySave.body)).not.toContain('source_character_key')
+    await expect(page.getByText('服务端已确认')).toBeVisible()
+
+    await page.getByRole('button', { name: '批准' }).click()
+    await expect.poll(() => state.requests.filter((entry) => entry.pathname.endsWith('/review')).length).toBe(1)
   })
 
   test('第二步资产审核移动端无横向页面滚动', async ({ page }) => {
