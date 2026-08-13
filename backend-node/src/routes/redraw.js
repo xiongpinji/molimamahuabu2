@@ -1718,9 +1718,18 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
       if (!reference || typeof reference !== 'object' || Array.isArray(reference)) {
         throw codedRouteError('REDRAW_SHOT_INVALID', 'references 项无效');
       }
-      const id = Number(reference.redraw_asset_id ?? reference.redrawAssetId ?? reference.asset_id ?? reference.assetId);
+      const historicalCharacterId = reference.character_asset_id ?? reference.characterAssetId;
+      const explicitKind = reference.kind == null ? null : String(reference.kind);
+      if (historicalCharacterId != null && explicitKind !== null && explicitKind !== 'character') {
+        throw codedRouteError('REDRAW_SHOT_INVALID', '分镜引用包含未知资产');
+      }
+      const id = Number(
+        reference.redraw_asset_id ?? reference.redrawAssetId ?? reference.asset_id ?? reference.assetId
+          ?? historicalCharacterId,
+      );
       const asset = Number.isSafeInteger(id) ? assetsById.get(id) : null;
-      if (!asset || (reference.kind && String(reference.kind) !== String(asset.kind))) {
+      const referenceKind = historicalCharacterId != null ? 'character' : explicitKind;
+      if (!asset || (referenceKind && referenceKind !== String(asset.kind))) {
         throw codedRouteError('REDRAW_SHOT_INVALID', '分镜引用包含未知资产');
       }
       if (!asset.localized_name) throw codedRouteError('REDRAW_SHOT_INVALID', '分镜引用资产缺少名称');

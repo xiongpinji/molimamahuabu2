@@ -15,6 +15,40 @@ const redrawCapabilityService = require('../src/services/redrawCapabilityService
 
 const NOW = '2026-08-06T00:00:00.000Z';
 
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function canonicalIdentityPack(input = {}) {
+  const pack = {
+    schema_version: 'target-actor-identity-v1',
+    source_character_key: input.sourceCharacterKey || 'source-character-maya',
+    target_actor_label: input.targetActorLabel || 'Actor Maya',
+    artifact: {
+      asset_id: Number(input.artifactAssetId || 701),
+      sha256: crypto.createHash('sha256').update(input.artifactSeed || 'canonical actor portrait').digest('hex'),
+      width: 640,
+      height: 960,
+      mime_type: 'image/png',
+    },
+    confirmed_views: ['front', 'profile', 'full_body'],
+    live_action_human_confirmed: true,
+    adult_status: 'verified_18_plus',
+    identity_consistency_confirmed: true,
+    ready: true,
+    reviewed_by: 'user-a',
+    reviewed_at: NOW,
+  };
+  return {
+    ...pack,
+    pack_sha256: crypto.createHash('sha256').update(stableJson(pack)).digest('hex'),
+  };
+}
+
 function captureResponse() {
   return {
     statusCode: null,
@@ -3349,6 +3383,90 @@ test('分镜更新要求乐观锁并只写白名单且按批准资产重新规�
     handlers.updateShot(request({ id: shotId, body: { updated_at: NOW, prompt: '@Maya waits' } }), conflict);
     assert.equal(conflict.statusCode, 409);
     assert.equal(conflict.body.error.code, 'REDRAW_SHOT_CONFLICT');
+  } finally {
+    db.close();
+  }
+});
+
+test('编辑历史角色指针镜头时 snake/camel 引用均由服务端重新绑定身份', () => {
+  for (const pointerField of ['character_asset_id', 'characterAssetId']) {
+    const db = createDb();
+    try {
+      const projectId = insertProject(db);
+      const workId = insertWork(db, projectId, { current_version: 1 });
+      const versionId = insertVersion(db, workId);
+      const pack = canonicalIdentityPack({ artifactSeed: pointerField });
+      const assetId = insertRedrawAsset(db, versionId, {
+        source_ref_json: JSON.stringify({
+          source_ref: { stable_id: pack.source_character_key },
+          identity_pack: pack,
+        }),
+      });
+      const shotId = insertShot(db, versionId, {
+        references_json: JSON.stringify([{
+          [pointerField]: Number(assetId),
+          source_character_key: 'forged-source',
+          target_actor_label: 'Forged Actor',
+          identity_pack_sha256: 'forged-hash',
+        }]),
+      });
+      const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+      const updated = captureResponse();
+
+      handlers.updateShot(request({ id: shotId, body: {
+        updated_at: NOW,
+        start_ms: 1000,
+        end_ms: 7000,
+        prompt: 'legacy character shot edited',
+      } }), updated);
+
+      assert.equal(updated.statusCode, 200, pointerField);
+      assert.equal(updated.body.data.prompt, 'legacy character shot edited');
+      assert.equal(updated.body.data.start_ms, 1000);
+      assert.equal(updated.body.data.end_ms, 7000);
+      assert.deepEqual(updated.body.data.references, [{
+        asset_id: Number(assetId),
+        kind: 'character',
+        version_number: 1,
+        approval_status: 'approved',
+        name: 'Maya',
+        source_character_key: pack.source_character_key,
+        target_actor_label: pack.target_actor_label,
+        identity_pack_sha256: pack.pack_sha256,
+      }]);
+      assert.deepEqual(
+        JSON.parse(db.prepare('SELECT references_json FROM redraw_shots WHERE id = ?').get(shotId).references_json),
+        updated.body.data.references,
+      );
+    } finally {
+      db.close();
+    }
+  }
+});
+
+test('历史角色指针显式声明非 character kind 时拒绝更新', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const pack = canonicalIdentityPack();
+    const assetId = insertRedrawAsset(db, versionId, {
+      source_ref_json: JSON.stringify({ identity_pack: pack }),
+    });
+    const shotId = insertShot(db, versionId, {
+      references_json: JSON.stringify([{ kind: 'prop', character_asset_id: Number(assetId) }]),
+    });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+    const result = captureResponse();
+
+    handlers.updateShot(request({ id: shotId, body: {
+      updated_at: NOW,
+      prompt: 'must reject conflicting historical kind',
+    } }), result);
+
+    assert.equal(result.statusCode, 400);
+    assert.equal(result.body.error.code, 'REDRAW_SHOT_INVALID');
   } finally {
     db.close();
   }

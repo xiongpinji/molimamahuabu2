@@ -2537,6 +2537,60 @@ test('重复相同 attempt 复用已有 processing task/video/reservation', asyn
   }
 });
 
+test('旧非角色 generation 快照缺少 identity_bindings 时仍按空集合复用', async () => {
+  const state = setup();
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const first = await generateShot(ctx(state.db, { schedule() {} }), { shotId });
+    const video = state.db.prepare('SELECT request_snapshot FROM video_generations WHERE id = ?')
+      .get(first.video_generation_id);
+    const legacySnapshot = JSON.parse(video.request_snapshot);
+    delete legacySnapshot.identity_bindings;
+    state.db.prepare('UPDATE video_generations SET request_snapshot = ? WHERE id = ?')
+      .run(JSON.stringify(legacySnapshot), first.video_generation_id);
+
+    const second = await generateShot(ctx(state.db, { schedule() {} }), { shotId });
+
+    assert.equal(second.reused, true);
+    assert.equal(second.video_generation_id, first.video_generation_id);
+    assert.equal(count(state.db, 'video_generations'), 1);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('角色 generation 快照缺少 identity_bindings 时保持 fail closed', async () => {
+  const state = setup();
+  try {
+    const baseAssetId = addBaseAsset(state.db, { name: 'actor', url: 'https://cdn.test/actor.png' });
+    const redrawAssetId = addRedrawAsset(state.db, state.versionId, {
+      kind: 'character',
+      name: 'Actor Maya',
+      assetId: baseAssetId,
+    });
+    const shotId = addShot(state.db, state.versionId, {
+      references: [{ kind: 'character', asset_id: Number(redrawAssetId) }],
+    });
+    const first = await generateShot(ctx(state.db, { schedule() {} }), { shotId });
+    const video = state.db.prepare('SELECT request_snapshot FROM video_generations WHERE id = ?')
+      .get(first.video_generation_id);
+    const legacySnapshot = JSON.parse(video.request_snapshot);
+    delete legacySnapshot.identity_bindings;
+    state.db.prepare('UPDATE video_generations SET request_snapshot = ? WHERE id = ?')
+      .run(JSON.stringify(legacySnapshot), first.video_generation_id);
+
+    await assert.rejects(
+      () => generateShot(ctx(state.db, { schedule() {} }), { shotId }),
+      (error) => error.code === 'REDRAW_SHOT_CONFLICT',
+    );
+    assert.equal(count(state.db, 'video_generations'), 1);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+  } finally {
+    state.db.close();
+  }
+});
+
 test('角色身份 hash 更新会先关闭旧镜头门禁，重绑后 request snapshot 也不会误复用旧生成', async () => {
   const state = setup();
   try {

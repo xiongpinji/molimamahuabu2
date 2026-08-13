@@ -505,11 +505,15 @@ function sameRequestSnapshot(storedSnapshot, expectedSnapshot) {
       return false;
     }
   }
-  if (Object.prototype.hasOwnProperty.call(expectedSnapshot, 'identity_bindings')
-    && (!Array.isArray(stored.identity_bindings)
-      || JSON.stringify(canonicalIdentityBindings(stored.identity_bindings))
-        !== JSON.stringify(canonicalIdentityBindings(expectedSnapshot.identity_bindings)))) {
-    return false;
+  if (Object.prototype.hasOwnProperty.call(expectedSnapshot, 'identity_bindings')) {
+    const storedIdentityBindings = Object.prototype.hasOwnProperty.call(stored, 'identity_bindings')
+      ? stored.identity_bindings
+      : [];
+    if (!Array.isArray(storedIdentityBindings)
+      || JSON.stringify(canonicalIdentityBindings(storedIdentityBindings))
+        !== JSON.stringify(canonicalIdentityBindings(expectedSnapshot.identity_bindings))) {
+      return false;
+    }
   }
   return true;
 }
