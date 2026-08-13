@@ -1,0 +1,336 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const sharp = require('sharp');
+
+const {
+  buildTextCleanPlateManifest,
+} = require('../src/services/redrawTextCleanPlateLocalCaseService');
+
+const SHOT_IDS = ['shot-4', 'shot-8'];
+const TEXT_KINDS = ['text_subtitle', 'text_screen'];
+const IMAGE_WIDTH = 1280;
+const IMAGE_HEIGHT = 720;
+
+function sha256File(filePath) {
+  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+async function createPng(root, relativePath, {
+  width = IMAGE_WIDTH,
+  height = IMAGE_HEIGHT,
+  background = '#808080',
+} = {}) {
+  const filePath = path.join(root, relativePath);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  await sharp({
+    create: {
+      width,
+      height,
+      channels: 4,
+      background,
+    },
+  }).png().toFile(filePath);
+
+  return {
+    path: relativePath,
+    sha256: sha256File(filePath),
+    width,
+    height,
+    mime_type: 'image/png',
+  };
+}
+
+function assertCanonicalTwoShots(entries) {
+  assert.equal(entries.length, SHOT_IDS.length, '测试变体必须保持两镜数量不变量');
+  assert.deepEqual(entries.map((entry) => entry.shot_id), SHOT_IDS);
+}
+
+function mutateTwoShotEntries(entries, mutation, { preserveShotIds = true } = {}) {
+  assertCanonicalTwoShots(entries);
+  const mutated = structuredClone(entries);
+  mutation(mutated);
+  assert.equal(mutated.length, SHOT_IDS.length, '测试变体不得意外改变两镜数量');
+  if (preserveShotIds) {
+    assert.deepEqual(
+      mutated.map((entry) => entry.shot_id),
+      SHOT_IDS,
+      '非镜头集合测试不得意外改变镜头编号',
+    );
+  }
+  return mutated;
+}
+
+function mutateShot(entries, shotId, mutation, options) {
+  return mutateTwoShotEntries(entries, (mutated) => {
+    const entry = mutated.find((candidate) => candidate.shot_id === shotId);
+    assert.ok(entry, `缺少测试镜头 ${shotId}`);
+    mutation(entry);
+  }, options);
+}
+
+async function makeFixture(t) {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'redraw-text-clean-plate-case-'));
+  t.after(() => fs.promises.rm(root, { recursive: true, force: true }));
+
+  const entries = [];
+  for (const [index, shotId] of SHOT_IDS.entries()) {
+    const directory = `shots/${shotId}`;
+    const source = await createPng(root, `${directory}/source.png`, { background: '#707070' });
+    const mask = await createPng(root, `${directory}/mask.png`, { background: '#ffffff' });
+    const textClean = await createPng(root, `${directory}/text-clean.png`, { background: '#606060' });
+    const textKind = TEXT_KINDS[index];
+    const polygon = index === 0
+      ? [
+        { x: 120, y: 590 },
+        { x: 1160, y: 590 },
+        { x: 1160, y: 690 },
+        { x: 120, y: 690 },
+      ]
+      : [
+        { x: 720, y: 120 },
+        { x: 1160, y: 120 },
+        { x: 1160, y: 420 },
+        { x: 720, y: 420 },
+      ];
+
+    entries.push({
+      shot_id: shotId,
+      text_kind: textKind,
+      source_asset_id: 401 + index,
+      source,
+      mask_asset_id: 501 + index,
+      mask,
+      text_clean_asset_id: 601 + index,
+      text_clean: textClean,
+      region: {
+        kind: textKind,
+        polygon,
+      },
+      quality: {
+        width: IMAGE_WIDTH,
+        height: IMAGE_HEIGHT,
+        mask_area_changed: true,
+        non_mask_similarity: 0.98,
+        text_residual: false,
+      },
+      review: { status: 'pending' },
+    });
+  }
+
+  assertCanonicalTwoShots(entries);
+  return { root, entries };
+}
+
+async function assertRejectedCode(root, entries, code) {
+  await assert.rejects(
+    () => buildTextCleanPlateManifest({ root, entries }),
+    { code },
+  );
+}
+
+test('两镜文字净景 manifest 固定排序、脱敏并绑定本地图片哈希', async (t) => {
+  const { root, entries: canonicalEntries } = await makeFixture(t);
+  const result = await buildTextCleanPlateManifest({
+    root,
+    entries: canonicalEntries.slice().reverse(),
+    now: '2026-08-13T00:00:00.000Z',
+  });
+
+  assert.equal(result.mode, 'text_clean_plate');
+  assert.deepEqual(result.shots.map((shot) => shot.shot_id), SHOT_IDS);
+  assert.deepEqual(result.shots.map((shot) => shot.text_kind), TEXT_KINDS);
+  assert.equal(JSON.stringify(result).includes(root), false);
+
+  for (const shot of result.shots) {
+    const declaredEntry = canonicalEntries.find((entry) => entry.shot_id === shot.shot_id);
+    assert.ok(declaredEntry);
+    assert.equal(shot.region.kind, shot.text_kind);
+    assert.deepEqual(shot.region.polygon, declaredEntry.region.polygon);
+    assert.equal(Object.prototype.hasOwnProperty.call(shot.region, 'ocr_text'), false);
+    assert.equal(shot.review.status, 'pending');
+    assert.equal(shot.ready_for_reference, false);
+
+    for (const field of ['source', 'mask', 'text_clean']) {
+      const file = shot[field];
+      assert.equal(file.sha256, declaredEntry[field].sha256);
+      assert.equal(file.sha256, sha256File(path.join(root, file.path)));
+      assert.match(file.sha256, /^[a-f0-9]{64}$/);
+      assert.equal(path.isAbsolute(file.path), false);
+      assert.equal(file.path.split(/[\\/]+/).includes('..'), false);
+    }
+  }
+});
+
+test('缺镜、未知 shot-5 或重复镜头时拒绝生成文字净景 manifest', async (t) => {
+  const { root, entries } = await makeFixture(t);
+
+  const missingShotEntries = entries.slice(0, 1);
+  assert.equal(missingShotEntries.length, 1);
+  await assertRejectedCode(root, missingShotEntries, 'REDRAW_TEXT_CLEAN_PLATE_SHOTS_INVALID');
+
+  const unknownShotEntries = mutateShot(entries, 'shot-4', (entry) => {
+    entry.shot_id = 'shot-5';
+  }, { preserveShotIds: false });
+  await assertRejectedCode(root, unknownShotEntries, 'REDRAW_TEXT_CLEAN_PLATE_SHOTS_INVALID');
+
+  const duplicateShotEntries = mutateShot(entries, 'shot-8', (entry) => {
+    entry.shot_id = 'shot-4';
+  }, { preserveShotIds: false });
+  await assertRejectedCode(root, duplicateShotEntries, 'REDRAW_TEXT_CLEAN_PLATE_SHOTS_INVALID');
+});
+
+test('非法文字区域或文字类型时拒绝生成文字净景 manifest', async (t) => {
+  const { root, entries } = await makeFixture(t);
+  const cases = [
+    {
+      name: 'polygon 少于三个点',
+      mutate(entry) {
+        entry.region.polygon = entry.region.polygon.slice(0, 2);
+      },
+    },
+    {
+      name: 'polygon 含负坐标',
+      mutate(entry) {
+        entry.region.polygon[0].x = -1;
+      },
+    },
+    {
+      name: 'polygon 坐标越界',
+      mutate(entry) {
+        entry.region.polygon[1].x = IMAGE_WIDTH + 1;
+      },
+    },
+    {
+      name: 'region kind 与 entry text_kind 不一致',
+      mutate(entry) {
+        entry.region.kind = 'text_screen';
+      },
+    },
+    {
+      name: '未知 text_kind',
+      mutate(entry) {
+        entry.text_kind = 'text_unknown';
+        entry.region.kind = 'text_unknown';
+      },
+    },
+    {
+      name: 'region 混入 ocr_text',
+      mutate(entry) {
+        entry.region.ocr_text = '不得进入净景清单的识别文字';
+      },
+    },
+    {
+      name: 'region 混入绝对路径字段',
+      mutate(entry, fixtureRoot) {
+        entry.region.ocr_artifact_path = path.join(fixtureRoot, 'ocr-result.json');
+      },
+    },
+  ];
+
+  for (const invalidCase of cases) {
+    await t.test(invalidCase.name, async () => {
+      const invalidEntries = mutateShot(entries, 'shot-4', (entry) => {
+        invalidCase.mutate(entry, root);
+      });
+      await assertRejectedCode(root, invalidEntries, 'REDRAW_TEXT_CLEAN_PLATE_REGION_INVALID');
+    });
+  }
+});
+
+test('绝对路径或 .. 路径时拒绝生成文字净景 manifest', async (t) => {
+  const { root, entries } = await makeFixture(t);
+
+  const absolutePathEntries = mutateShot(entries, 'shot-4', (entry) => {
+    entry.source.path = path.join(root, 'shots', 'shot-4', 'source.png');
+  });
+  await assertRejectedCode(root, absolutePathEntries, 'REDRAW_TEXT_CLEAN_PLATE_PATH_INVALID');
+
+  const parentPathEntries = mutateShot(entries, 'shot-8', (entry) => {
+    entry.mask.path = '../outside.png';
+  });
+  await assertRejectedCode(root, parentPathEntries, 'REDRAW_TEXT_CLEAN_PLATE_PATH_INVALID');
+});
+
+test('source、mask 或 text-clean 哈希漂移时拒绝生成文字净景 manifest', async (t) => {
+  const { root, entries } = await makeFixture(t);
+  const fields = ['source', 'mask', 'text_clean'];
+
+  for (const [index, field] of fields.entries()) {
+    await t.test(`${field} 哈希漂移`, async () => {
+      const invalidEntries = mutateShot(entries, 'shot-4', (entry) => {
+        entry[field].sha256 = String(index).repeat(64);
+      });
+      await assertRejectedCode(root, invalidEntries, 'REDRAW_TEXT_CLEAN_PLATE_HASH_MISMATCH');
+    });
+  }
+});
+
+test('source、mask 或 text-clean 尺寸不一致时拒绝生成文字净景 manifest', async (t) => {
+  const { root, entries } = await makeFixture(t);
+  const fields = ['source', 'mask', 'text_clean'];
+
+  for (const [index, field] of fields.entries()) {
+    await t.test(`${field} 尺寸不一致`, async () => {
+      const relativePath = `shots/shot-4/${field}-small.png`;
+      const wrongSizeEvidence = await createPng(root, relativePath, {
+        width: IMAGE_WIDTH - 1 - index,
+        background: '#505050',
+      });
+      const invalidEntries = mutateShot(entries, 'shot-4', (entry) => {
+        entry[field] = wrongSizeEvidence;
+      });
+      await assertRejectedCode(root, invalidEntries, 'REDRAW_TEXT_CLEAN_PLATE_DIMENSIONS_INVALID');
+    });
+  }
+});
+
+test('source、mask 或 text-clean MIME 不一致时拒绝生成文字净景 manifest', async (t) => {
+  const { root, entries } = await makeFixture(t);
+  const fields = ['source', 'mask', 'text_clean'];
+
+  for (const field of fields) {
+    await t.test(`${field} MIME 不一致`, async () => {
+      const invalidEntries = mutateShot(entries, 'shot-8', (entry) => {
+        entry[field].mime_type = 'image/jpeg';
+      });
+      await assertRejectedCode(root, invalidEntries, 'REDRAW_TEXT_CLEAN_PLATE_DIMENSIONS_INVALID');
+    });
+  }
+});
+
+test('文字净景质量未达门禁时拒绝生成 manifest', async (t) => {
+  const { root, entries } = await makeFixture(t);
+  const cases = [
+    {
+      name: 'mask_area_changed=false',
+      mutate(quality) {
+        quality.mask_area_changed = false;
+      },
+    },
+    {
+      name: 'non_mask_similarity=.969',
+      mutate(quality) {
+        quality.non_mask_similarity = 0.969;
+      },
+    },
+    {
+      name: 'text_residual=true',
+      mutate(quality) {
+        quality.text_residual = true;
+      },
+    },
+  ];
+
+  for (const invalidCase of cases) {
+    await t.test(invalidCase.name, async () => {
+      const invalidEntries = mutateShot(entries, 'shot-8', (entry) => {
+        invalidCase.mutate(entry.quality);
+      });
+      await assertRejectedCode(root, invalidEntries, 'REDRAW_TEXT_CLEAN_PLATE_QUALITY_FAILED');
+    });
+  }
+});
