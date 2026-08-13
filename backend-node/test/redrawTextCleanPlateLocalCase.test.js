@@ -317,6 +317,40 @@ test('source、mask 或 text-clean MIME 不一致时拒绝生成文字净景 man
   }
 });
 
+test('图片证据打开后发现 symlink 目标切换时拒绝并且错误序列化不泄露根目录', async (t) => {
+  const { root, entries } = await makeFixture(t);
+  const sourcePath = path.resolve(root, entries[0].representative_frame.path);
+  const swappedRelativePath = 'shots/shot-4/swapped.png';
+  await createPng(root, swappedRelativePath, { background: '#505050' });
+
+  const originalRealpath = fs.realpathSync.native;
+  let sourceRealpathCalls = 0;
+  fs.realpathSync.native = (candidatePath) => {
+    const resolved = originalRealpath(candidatePath);
+    if (path.resolve(candidatePath) === sourcePath) {
+      sourceRealpathCalls += 1;
+      if (sourceRealpathCalls > 1) {
+        return originalRealpath(path.join(root, swappedRelativePath));
+      }
+    }
+    return resolved;
+  };
+
+  try {
+    await assert.rejects(
+      () => buildTextCleanPlateManifest({ root, entries }),
+      (error) => {
+        assert.equal(error.code, 'REDRAW_TEXT_CLEAN_PLATE_PATH_INVALID');
+        assert.equal(JSON.stringify(error).includes(root), false);
+        return true;
+      },
+    );
+  } finally {
+    fs.realpathSync.native = originalRealpath;
+  }
+  assert.ok(sourceRealpathCalls >= 2, '应在打开证据后复核 realpath');
+});
+
 test('文字净景质量未达门禁时拒绝生成 manifest', async (t) => {
   const { root, entries } = await makeFixture(t);
   const cases = [

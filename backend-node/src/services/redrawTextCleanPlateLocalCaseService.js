@@ -53,10 +53,9 @@ const QUALITY_FIELDS = new Set([
 const REVIEW_FIELDS = new Set(['status']);
 const REGION_FIELDS = new Set(['kind', 'shape', 'points', 'polygon', 'source']);
 
-function codedError(code, message, cause) {
+function codedError(code, message) {
   const error = new Error(message);
   error.code = code;
-  if (cause) error.cause = cause;
   return error;
 }
 
@@ -112,7 +111,7 @@ function normalizeRelativePath(root, candidatePath) {
   try {
     realPath = fs.realpathSync.native(lexicalPath);
   } catch (error) {
-    throw codedError('REDRAW_TEXT_CLEAN_PLATE_PATH_INVALID', '文字净景文件不存在或不可读取', error);
+    throw codedError('REDRAW_TEXT_CLEAN_PLATE_PATH_INVALID', '文字净景文件不存在或不可读取');
   }
   if (!isPathWithin(root, realPath)) {
     throw codedError('REDRAW_TEXT_CLEAN_PLATE_PATH_INVALID', '文字净景文件符号链接逃逸受控根目录');
@@ -120,6 +119,7 @@ function normalizeRelativePath(root, candidatePath) {
 
   return {
     realPath,
+    lexicalPath,
     relativePath: path.relative(root, lexicalPath).split(path.sep).join('/'),
   };
 }
@@ -138,7 +138,7 @@ async function readImageEvidence(root, evidence, label) {
     rejectUnknownFields(evidence, IMAGE_FIELDS, 'REDRAW_TEXT_CLEAN_PLATE_PATH_INVALID', label);
   } catch (error) {
     if (error.code) throw error;
-    throw codedError('REDRAW_TEXT_CLEAN_PLATE_PATH_INVALID', `${label}文件证据无效`, error);
+    throw codedError('REDRAW_TEXT_CLEAN_PLATE_PATH_INVALID', `${label}文件证据无效`);
   }
 
   const expectedSha = typeof evidence.sha256 === 'string' ? evidence.sha256.toLowerCase() : '';
@@ -147,16 +147,23 @@ async function readImageEvidence(root, evidence, label) {
   }
 
   const resolved = normalizeRelativePath(root, evidence.path);
+  let handle;
   let buffer;
   let metadata;
-  let stat;
   try {
-    stat = await fs.promises.stat(resolved.realPath);
-    if (!stat.isFile()) throw new Error('not a regular file');
-    buffer = await fs.promises.readFile(resolved.realPath);
-    metadata = await sharp(resolved.realPath).metadata();
+    // Open the lexical path once, then keep all reads on that descriptor so a
+    // later symlink swap cannot redirect the bytes or metadata to another file.
+    handle = await fs.promises.open(resolved.lexicalPath, 'r');
+    const descriptorStat = await handle.stat();
+    if (!descriptorStat.isFile()) throw new Error('not a regular file');
+    const openedRealPath = fs.realpathSync.native(resolved.lexicalPath);
+    if (openedRealPath !== resolved.realPath) throw new Error('path target changed');
+    buffer = await handle.readFile();
+    metadata = await sharp(buffer).metadata();
   } catch (error) {
-    throw codedError('REDRAW_TEXT_CLEAN_PLATE_PATH_INVALID', `${label}文件不存在、不可读取或不是有效图片`, error);
+    throw codedError('REDRAW_TEXT_CLEAN_PLATE_PATH_INVALID', `${label}文件不存在、不可读取或不是有效图片`);
+  } finally {
+    if (handle) await handle.close().catch(() => {});
   }
 
   const actualSha = sha256Buffer(buffer);
@@ -354,7 +361,7 @@ function assertQuality(quality, shotId) {
     rejectUnknownFields(quality, QUALITY_FIELDS, 'REDRAW_TEXT_CLEAN_PLATE_QUALITY_FAILED', `${shotId} 质量`);
   } catch (error) {
     if (error.code) throw error;
-    throw codedError('REDRAW_TEXT_CLEAN_PLATE_QUALITY_FAILED', `${shotId} 质量结构无效`, error);
+    throw codedError('REDRAW_TEXT_CLEAN_PLATE_QUALITY_FAILED', `${shotId} 质量结构无效`);
   }
   if (
     quality.mask_area_changed !== true
@@ -381,7 +388,7 @@ async function buildTextCleanPlateManifest({ root, entries, now = new Date().toI
     realRoot = fs.realpathSync.native(root);
     if (!fs.statSync(realRoot).isDirectory()) throw new Error('root is not a directory');
   } catch (error) {
-    throw codedError('REDRAW_TEXT_CLEAN_PLATE_PATH_INVALID', '文字净景受控根目录不可读取', error);
+    throw codedError('REDRAW_TEXT_CLEAN_PLATE_PATH_INVALID', '文字净景受控根目录不可读取');
   }
 
   const normalizedEntries = validateEntries(entries);
