@@ -44,7 +44,7 @@ test('资产卡使用鉴权 Blob 展示真实人物图片且释放本地预览 U
   assert.match(assetCardSource, /redrawAPI\.getAssetPreview/)
   assert.match(assetCardSource, /URL\.createObjectURL/)
   assert.match(assetCardSource, /URL\.revokeObjectURL/)
-  assert.match(assetCardSource, /尚未生成角色图片/)
+  assert.match(assetCardSource, /尚未生成身份包图片/)
   assert.doesNotMatch(assetCardSource, /v-for="view in \['正面', '侧面', '背面'\]"/)
 })
 

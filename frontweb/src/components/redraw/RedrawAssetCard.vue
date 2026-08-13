@@ -8,9 +8,9 @@
       <el-tag :type="isApprovedAsset(asset) ? 'success' : asset.approval_status === 'rejected' ? 'danger' : 'warning'">{{ reviewLabel(asset) }}</el-tag>
     </header>
 
-    <div v-if="asset.kind === 'character'" class="media-preview character-preview" aria-label="角色三视图预览">
+    <div v-if="asset.kind === 'character'" class="media-preview character-preview" aria-label="角色身份包预览">
       <img v-if="previewUrl" :src="previewUrl" :alt="`${asset.localized_name || '角色'}真人参考图`" />
-      <span v-if="previewUrl" class="media-label">角色生成图 · 正面 / 侧面 / 背面</span>
+      <span v-if="previewUrl" class="media-label">{{ identityPack?.confirmedViewLabels.length ? identityPack.confirmedViewLabels.join(' / ') : '身份包视图证据' }}</span>
       <span v-else class="preview-empty">{{ emptyPreviewText }}</span>
     </div>
     <div v-else-if="asset.kind === 'scene'" class="scene-panel">
@@ -55,10 +55,34 @@
       <p v-if="identityPack.shortHash" class="identity-pack__hash">#{{ identityPack.shortHash }}</p>
       <p v-if="identityPack.missingLabels.length" class="identity-pack__missing">缺项：{{ identityPack.missingLabels.join('、') }}</p>
     </div>
+    <div v-if="asset.kind === 'character'" class="identity-form">
+      <div class="identity-form__field">
+        <span>目标演员</span>
+        <el-input v-model="identityForm.target_actor_label" placeholder="填写目标演员" />
+      </div>
+      <div class="identity-form__field">
+        <span>三视图确认</span>
+        <el-checkbox-group v-model="identityForm.confirmed_views">
+          <el-checkbox label="front">front</el-checkbox>
+          <el-checkbox label="profile">profile</el-checkbox>
+          <el-checkbox label="full_body">full_body</el-checkbox>
+        </el-checkbox-group>
+      </div>
+      <div class="identity-form__field">
+        <el-checkbox v-model="identityForm.live_action_human_confirmed">真人确认</el-checkbox>
+      </div>
+      <div class="identity-form__field">
+        <el-checkbox v-model="identityForm.adult_status">18+确认</el-checkbox>
+      </div>
+      <div class="identity-form__field">
+        <el-checkbox v-model="identityForm.identity_consistency_confirmed">一致性确认</el-checkbox>
+      </div>
+    </div>
     <div class="asset-actions">
       <strong class="canvas-credit-callout-v1">{{ quote > 0 ? `本次预计扣除 ${quote} 积分` : '积分待管理员配置' }}</strong>
       <div class="action-buttons">
         <el-button size="small" :icon="Refresh" :disabled="quote <= 0" @click="emit('generate', asset)">重绘</el-button>
+        <el-button v-if="asset.kind === 'character'" size="small" type="primary" :loading="identitySaving" @click="saveIdentityPack">保存身份包</el-button>
         <el-button size="small" type="success" :icon="Check" :disabled="approveDisabled" @click="emit('review', asset, 'approved')">批准</el-button>
         <el-button size="small" type="danger" plain :icon="CloseBold" @click="emit('review', asset, 'rejected')">退回</el-button>
       </div>
@@ -68,6 +92,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import { Check, CloseBold, Refresh } from '@element-plus/icons-vue'
 import { redrawAPI } from '@/api/redraw'
 import { isRedrawCharacterIdentityPackReady, projectRedrawCharacterIdentityPack } from '@/utils/redrawCharacterIdentity'
@@ -77,11 +102,19 @@ const props = defineProps({
   asset: { type: Object, required: true },
   quote: { type: Number, default: 0 },
 })
-const emit = defineEmits(['generate', 'review'])
+const emit = defineEmits(['generate', 'review', 'identity-saved'])
 const sceneMode = ref(props.asset.kind === 'scene' && props.asset.asset_id ? 'localized' : 'source')
 const previewUrl = ref('')
 const previewLoading = ref(false)
 const previewFailed = ref(false)
+const identitySaving = ref(false)
+const identityForm = ref({
+  target_actor_label: '',
+  confirmed_views: [],
+  live_action_human_confirmed: false,
+  adult_status: false,
+  identity_consistency_confirmed: false,
+})
 let previewRequestId = 0
 const sceneModes = [
   { key: 'source', label: '原场景' },
@@ -110,16 +143,48 @@ const previewLabel = computed(() => sceneModes.find((item) => item.key === scene
 const emptyPreviewText = computed(() => {
   if (previewLoading.value) return '正在加载图片…'
   if (previewFailed.value) return '图片不可读取，请重新生成或检查产物'
-  if (props.asset.kind === 'character') return '尚未生成角色图片'
+  if (props.asset.kind === 'character') return '尚未生成身份包图片'
   if (props.asset.kind === 'prop') return '尚未生成物品图片'
   if (sceneMode.value === 'source') return '原场景预览尚未生成'
   if (sceneMode.value === 'clean_plate') return '尚未生成去人净景图片'
   return '尚未生成本地化场景图片'
 })
 
+function hydrateIdentityForm() {
+  const pack = props.asset?.identity_pack && typeof props.asset.identity_pack === 'object' ? props.asset.identity_pack : {}
+  identityForm.value = {
+    target_actor_label: String(pack.target_actor_label || '').trim(),
+    confirmed_views: Array.isArray(pack.confirmed_views) ? pack.confirmed_views.filter((item) => ['front', 'profile', 'full_body'].includes(String(item))) : [],
+    live_action_human_confirmed: pack.live_action_human_confirmed === true,
+    adult_status: pack.adult_status === 'verified_18_plus',
+    identity_consistency_confirmed: pack.identity_consistency_confirmed === true,
+  }
+}
+
 function releasePreview() {
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
   previewUrl.value = ''
+}
+
+async function saveIdentityPack() {
+  if (props.asset.kind !== 'character' || identitySaving.value) return
+  identitySaving.value = true
+  try {
+    await redrawAPI.saveRedrawCharacterIdentityPack(props.asset.id, {
+      target_actor_label: identityForm.value.target_actor_label,
+      confirmed_views: identityForm.value.confirmed_views,
+      live_action_human_confirmed: identityForm.value.live_action_human_confirmed,
+      adult_status: identityForm.value.adult_status ? 'verified_18_plus' : 'unverified',
+      identity_consistency_confirmed: identityForm.value.identity_consistency_confirmed,
+      expected_updated_at: props.asset.updated_at,
+    })
+    ElMessage.success('身份包已保存，请重新批准')
+    emit('identity-saved')
+  } catch (error) {
+    ElMessage.error(error?.message || '身份包保存失败')
+  } finally {
+    identitySaving.value = false
+  }
 }
 
 async function loadPreview() {
@@ -151,6 +216,7 @@ watch(
   loadPreview,
   { immediate: true },
 )
+watch(() => props.asset, hydrateIdentityForm, { immediate: true })
 
 onBeforeUnmount(() => {
   previewRequestId += 1
@@ -182,6 +248,10 @@ h3 { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
 .identity-pack__row strong { min-width: 0; overflow-wrap: anywhere; text-align: right; }
 .identity-pack__row strong.ready { color: #9ad7a8; }
 .identity-pack__hash, .identity-pack__missing { margin: 0; color: #d8c2b7; font-size: 12px; overflow-wrap: anywhere; }
+.identity-form { display: grid; gap: 10px; padding: 12px; border: 1px solid #313131; border-radius: 6px; background: #121212; }
+.identity-form__field { display: grid; gap: 6px; min-width: 0; color: #ddd; }
+.identity-form__field span { color: #aaa; font-size: 12px; }
+.identity-form :deep(.el-checkbox-group) { display: flex; flex-wrap: wrap; gap: 10px 12px; }
 .asset-actions { align-items: flex-end; flex-wrap: wrap; }
 .canvas-credit-callout-v1 { color: #fff; font-size: 13px; font-weight: 800; }
 .action-buttons { display: flex; gap: 6px; flex-wrap: wrap; }

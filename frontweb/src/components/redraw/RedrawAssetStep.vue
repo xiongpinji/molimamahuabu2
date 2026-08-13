@@ -38,7 +38,15 @@
       @preview-stop="stopVoicePreview"
     />
     <div class="asset-grid">
-      <RedrawAssetCard v-for="asset in visibleAssets" :key="asset.id" :asset="asset" :quote="asset.quote_credits || quote" @generate="generate" @review="review" />
+      <RedrawAssetCard
+        v-for="asset in visibleAssets"
+        :key="asset.id"
+        :asset="asset"
+        :quote="asset.quote_credits || quote"
+        @generate="generate"
+        @review="review"
+        @identity-saved="refresh"
+      />
       <p v-if="!visibleAssets.length" class="empty-state">当前类型暂无资产</p>
     </div>
   </section>
