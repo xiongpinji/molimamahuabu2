@@ -1411,6 +1411,7 @@ const providerConfigs = {
   ],
   image: [
     { id: 'aihubcc', name: 'AIHubCC 图片', models: AIHUBCC_IMAGE_MODELS },
+    { id: 'fumin_image', name: 'fumin GPT Image 2', models: ['fumin-gpt-image-2', 'fumin-gpt-image-2-4K'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
@@ -1423,6 +1424,7 @@ const providerConfigs = {
   ],
   storyboard_image: [
     { id: 'aihubcc', name: 'AIHubCC 图片', models: AIHUBCC_IMAGE_MODELS },
+    { id: 'fumin_image', name: 'fumin GPT Image 2', models: ['fumin-gpt-image-2', 'fumin-gpt-image-2-4K'] },
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
@@ -1480,6 +1482,7 @@ const providerProtocolMap = {
   volces: 'volcengine',
   volc: 'volcengine',
   nano_banana: 'nano_banana',
+  fumin_image: 'openai',
   dashscope: 'dashscope',
   qwen_image: 'dashscope',
   gemini: 'gemini',
@@ -1535,6 +1538,7 @@ function getBaseUrlForProvider(provider) {
   if (p === 'icreat' || p === 'icreat_task') return 'https://api.icreat.ai'
   if (p === 'usmercari' || p === 'usmercari_media') return 'https://ai.usmercari.com'
   if (p === 'fumin' || p === 'fumin_video') return 'https://fumin.ai'
+  if (p === 'fumin_image') return 'https://fumin.ai/v1'
   if (p === 'agnes') return 'https://apihub.agnes-ai.com/v1'
   if (p === 'djpsd') return 'https://shiping.djpsd.com'
   return 'https://api.chatfire.site/v1'
@@ -1869,6 +1873,11 @@ function onProviderChange(providerId) {
     form.value.api_protocol = 'fumin_video'
     form.value.endpoint = '/api/v3/contents/generations/tasks'
     form.value.query_endpoint = '/api/v3/contents/generations/tasks/{taskId}'
+  }
+  if ((st === 'image' || st === 'storyboard_image') && providerId === 'fumin_image') {
+    form.value.api_protocol = 'openai'
+    form.value.endpoint = '/images/generations'
+    form.value.query_endpoint = ''
   }
   if ((st === 'image' || st === 'storyboard_image') && providerId === 'kling') {
     form.value.endpoint = '/v1/images/generations'

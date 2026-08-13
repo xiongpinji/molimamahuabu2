@@ -6,6 +6,7 @@ const { resolveKlingBearerToken } = require('./klingJwt');
 const { buildFeituoStatusUrl } = require('./feituoVideoClient');
 const usmercariVideoClient = require('./usmercariVideoClient');
 const fuminVideoClient = require('./fuminVideoClient');
+const fuminImageClient = require('./fuminImageClient');
 
 function normalizeApiKeyForService(serviceType, apiKey) {
   if (serviceType === 'jimeng2_character_auth' && apiKey != null) {
@@ -487,6 +488,20 @@ async function testConnection(opts) {
     // 该目录是能力提示，不是视频模型可用性的权威来源：实测时 MINI
     // 可能不出现在列表中，但同一 Key 仍可成功提交对应的生成任务。
     // 连接测试只负责验证网络和鉴权，避免把目录延迟/裁剪误报成模型不可用。
+    return;
+  }
+
+  // fumin 图片连接测试只读取模型目录，禁止测试按钮提交付费图片任务。
+  if (provider === 'fumin_image' && (serviceType === 'image' || serviceType === 'storyboard_image')) {
+    if (!opts.api_key) throw new Error('api_key 必填');
+    const url = `${fuminImageClient.normalizeFuminImageBaseUrl(base)}/models`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${opts.api_key}` },
+    });
+    await res.text();
+    if (res.status === 401 || res.status === 403) throw new Error(`fumin API Key 无效 (${res.status})`);
+    if (!res.ok) throw new Error(`fumin 图片连接失败 (${res.status})`);
     return;
   }
 

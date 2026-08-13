@@ -13,6 +13,7 @@ const { resolveKlingBearerToken } = require('./klingJwt');
 const creditLedger = require('./creditLedgerService');
 const auditEvent = require('./auditEventService');
 const aihubccClient = require('./aihubccClient');
+const fuminImageClient = require('./fuminImageClient');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
@@ -104,6 +105,7 @@ function inferProtocol(provider, model) {
   if (p === 'kling' || p === 'klingai') return 'kling';
   if (/^kling-/i.test(model || '')) return 'kling';
   if (p === 'agnes' || /agnes-image|apihub\.agnes-ai\.com/i.test(String(model || ''))) return 'agnes';
+  if (p === 'fumin_image') return 'openai';
   return 'openai';
 }
 
@@ -1797,6 +1799,9 @@ async function callImageApi(db, log, opts) {
     });
   };
   const provider = (config.provider || '').toLowerCase();
+  const requestModel = provider === 'fumin_image'
+    ? fuminImageClient.resolveFuminImageModel(model)
+    : model;
   // api_protocol 显式指定接口规范，优先级高于 provider 推断；未设置时按 provider 自动判断
   const protocol = (config.api_protocol || '').toLowerCase() || inferProtocol(provider, model);
 
@@ -1918,14 +1923,14 @@ async function callImageApi(db, log, opts) {
   if (isSeedream && size) effectiveSize = fixSeedreamSize(size);
   else if (isAgnes && size) effectiveSize = fixAgnesImageSize(size);
 
-  const isGptImage = protocol === 'openai' && !isAgnes && /^gpt-image-/i.test(String(model || ''));
+  const isGptImage = protocol === 'openai' && !isAgnes && /^gpt-image-/i.test(String(requestModel || ''));
   const outputOptions = isGptImage
-    ? getOpenAIImageOutputOptions(model, quality)
+    ? getOpenAIImageOutputOptions(requestModel, quality)
     : {};
   if (isGptImage) effectiveSize = normalizeGptImageSize(effectiveSize);
 
   const body = {
-    model,
+    model: requestModel,
     prompt: effectivePrompt,
     // doubao-seedream API 不使用 n，其他 OpenAI 兼容接口保留
     ...(!isSeedream ? { n: 1 } : {}),

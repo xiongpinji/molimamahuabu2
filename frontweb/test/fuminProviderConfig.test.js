@@ -11,3 +11,12 @@ test('AI config exposes fumin aliases without reusing existing provider model id
   assert.match(source, /p === 'fumin' \|\| p === 'fumin_video'/)
   assert.match(source, /\/api\/v3\/contents\/generations\/tasks\/\{taskId\}/)
 })
+
+test('AI config exposes isolated fumin GPT Image aliases and OpenAI image endpoint', () => {
+  assert.match(source, /id: 'fumin_image', name: 'fumin GPT Image 2'/)
+  assert.match(source, /'fumin-gpt-image-2', 'fumin-gpt-image-2-4K'/)
+  assert.match(source, /fumin_image: 'openai'/)
+  assert.match(source, /p === 'fumin_image'\) return 'https:\/\/fumin\.ai\/v1'/)
+  assert.match(source, /providerId === 'fumin_image'/)
+  assert.match(source, /form\.value\.endpoint = '\/images\/generations'/)
+})
