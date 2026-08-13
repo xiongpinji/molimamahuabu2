@@ -388,6 +388,147 @@ test('去人净景使用人物遮罩并保留源场景版本', async () => {
   state.db.close();
 });
 
+test('文字净景快照只保留脱敏模式、类型和区域', async () => {
+  for (const [shotId, textKind, sourceId, maskId, cleanId] of [
+    ['shot-4', 'text_subtitle', 431, 432, 433],
+    ['shot-8', 'text_screen', 435, 436, 437],
+  ]) {
+    const state = setup();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-text-clean-plate-'));
+    for (const [id, file] of [[sourceId, 'source.png'], [maskId, 'mask.png'], [cleanId, 'clean.png']]) {
+      fs.writeFileSync(path.join(root, file), file);
+      addAsset(state.db, id, file);
+    }
+    const ctx = context(state, root);
+    const textRegions = [{
+      kind: textKind,
+      shape: 'polygon',
+      points: [[120, 590], [1160, 590], [1160, 690], [120, 690]],
+      source: 'manual_fixture',
+    }];
+    const result = await generateCleanPlate({
+      ...ctx,
+      provider: async ({ input }) => {
+        assert.equal(input.source_asset_id, sourceId);
+        assert.equal(input.mask_asset_id, maskId);
+        assert.equal(input.mode, 'text_clean_plate');
+        return {
+          status: 'completed',
+          asset_id: cleanId,
+          quality: {
+            width: 1280,
+            height: 720,
+            mask_area_changed: true,
+            non_mask_similarity: 0.98,
+          },
+        };
+      },
+    }, {
+      shotId,
+      source_asset_id: sourceId,
+      width: 1280,
+      height: 720,
+    }, {
+      mode: 'text_clean_plate',
+      mask_asset_id: maskId,
+      textKind,
+      textRegions,
+    });
+
+    const snapshot = JSON.parse(result.source_ref_json).snapshot;
+    assert.deepEqual(Object.keys(snapshot).sort(), ['mode', 'text_kind', 'text_regions']);
+    assert.equal(snapshot.mode, 'text_clean_plate');
+    assert.equal(snapshot.text_kind, textKind);
+    assert.deepEqual(snapshot.text_regions, textRegions);
+    assert.equal(JSON.stringify(snapshot).includes('ocr_text'), false);
+    assert.equal(JSON.stringify(snapshot).includes(root), false);
+    assert.equal(result.clean_plate_asset_id, cleanId);
+    assert.equal(result.approval_status, 'pending');
+    assert.equal(state.db.prepare('SELECT local_path FROM assets WHERE id = ?').get(sourceId).local_path, 'source.png');
+    fs.rmSync(root, { recursive: true, force: true });
+    state.db.close();
+  }
+});
+
+test('文字净景拒绝未知类型、混入 region/OCR、绝对路径和未知字段且不调用 provider', async () => {
+  const cases = [
+    { name: '未知文字类型', mutate: (input) => { input.textKind = 'text_unknown'; } },
+    { name: '混入 region', mutate: (input) => { input.region = { kind: 'text_subtitle', polygon: [[0, 0], [1, 0], [1, 1]] }; } },
+    { name: '混入 ocr_text', mutate: (input) => { input.textRegions[0].ocr_text = '不得落盘的原文'; } },
+    { name: '混入绝对路径', mutate: (input) => { input.textRegions[0].path = path.resolve('/tmp/ocr.json'); } },
+    { name: '混入未知字段', mutate: (input) => { input.textRegions[0].unexpected = 'reject'; } },
+  ];
+  for (const invalidCase of cases) {
+    const state = setup();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-text-clean-plate-invalid-'));
+    for (const [id, file] of [[431, 'source.png'], [432, 'mask.png'], [433, 'clean.png']]) {
+      fs.writeFileSync(path.join(root, file), file);
+      addAsset(state.db, id, file);
+    }
+    let providerCalls = 0;
+    const ctx = {
+      ...context(state, root),
+      provider: async () => { providerCalls += 1; return { status: 'completed', asset_id: 433 }; },
+    };
+    const input = {
+      mode: 'text_clean_plate',
+      mask_asset_id: 432,
+      textKind: 'text_subtitle',
+      textRegions: [{
+        kind: 'text_subtitle',
+        shape: 'polygon',
+        points: [[0, 0], [100, 0], [100, 100]],
+      }],
+    };
+    invalidCase.mutate(input);
+    await assert.rejects(
+      () => generateCleanPlate(ctx, { shotId: 'shot-4', source_asset_id: 431, width: 1280, height: 720 }, input),
+      (error) => String(error.code || '').startsWith('REDRAW_TEXT_CLEAN_PLATE_'),
+      invalidCase.name,
+    );
+    assert.equal(providerCalls, 0);
+    fs.rmSync(root, { recursive: true, force: true });
+    state.db.close();
+  }
+});
+
+test('文字净景质量或 provider 失败保留源文件、清景为空且审批待处理', async () => {
+  for (const providerResult of [
+    {
+      status: 'completed',
+      asset_id: 433,
+      quality: { width: 640, height: 720, mask_area_changed: true, non_mask_similarity: 0.98 },
+    },
+    { status: 'failed', error: '供应商拒绝' },
+  ]) {
+    const state = setup();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-text-clean-plate-failure-'));
+    for (const [id, file] of [[431, 'source.png'], [432, 'mask.png'], [433, 'clean.png']]) {
+      fs.writeFileSync(path.join(root, file), file);
+      addAsset(state.db, id, file);
+    }
+    const ctx = {
+      ...context(state, root),
+      provider: async () => providerResult,
+    };
+    await assert.rejects(
+      () => generateCleanPlate(ctx, { shotId: 'shot-4', source_asset_id: 431, width: 1280, height: 720 }, {
+        mode: 'text_clean_plate',
+        mask_asset_id: 432,
+        textKind: 'text_subtitle',
+        textRegions: [{ kind: 'text_subtitle', shape: 'polygon', points: [[0, 0], [100, 0], [100, 100]] }],
+      }),
+    );
+    const row = state.db.prepare('SELECT status, approval_status, clean_plate_asset_id FROM redraw_assets').get();
+    assert.equal(row.status, 'failed');
+    assert.equal(row.approval_status, 'pending');
+    assert.equal(row.clean_plate_asset_id, null);
+    assert.equal(state.db.prepare('SELECT local_path FROM assets WHERE id = 431').get().local_path, 'source.png');
+    fs.rmSync(root, { recursive: true, force: true });
+    state.db.close();
+  }
+});
+
 test('没有可审计遮罩时不提交去人生成', async () => {
   const state = setup();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-clean-plate-no-mask-'));

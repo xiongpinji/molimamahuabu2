@@ -376,6 +376,103 @@ function validateCleanPlateQuality(sceneAsset, options, providerResult) {
   }
 }
 
+const TEXT_CLEAN_KINDS = new Set(['text_subtitle', 'text_screen']);
+const TEXT_CLEAN_REGION_SOURCES = new Set(['manual_fixture', 'ocr_region']);
+
+function normalizeTextCleanShotId(value) {
+  const normalized = String(value ?? '').trim().toLowerCase().replace(/^shot-?/, 'shot-');
+  return normalized === 'shot-4' || normalized === 'shot-8' ? normalized : '';
+}
+
+function normalizeTextCleanPoint(point) {
+  if (Array.isArray(point)) {
+    if (point.length !== 2 || !point.every((value) => typeof value === 'number' && Number.isFinite(value))) return null;
+    return [point[0], point[1]];
+  }
+  if (point && typeof point === 'object'
+    && Object.keys(point).length === 2
+    && typeof point.x === 'number' && Number.isFinite(point.x)
+    && typeof point.y === 'number' && Number.isFinite(point.y)) {
+    return { x: point.x, y: point.y };
+  }
+  return null;
+}
+
+function validateTextCleanPlateOptions(sceneAsset, options = {}) {
+  if (options.region !== undefined) {
+    throw codedError('REDRAW_TEXT_CLEAN_PLATE_REGION_INVALID', '文字净景不得混用 region 与 text_regions');
+  }
+  const textKind = String(options.textKind ?? options.text_kind ?? '').trim();
+  if (!TEXT_CLEAN_KINDS.has(textKind)) {
+    throw codedError('REDRAW_TEXT_CLEAN_PLATE_TEXT_KIND_INVALID', '文字净景类型不在白名单');
+  }
+  const shotId = normalizeTextCleanShotId(sceneAsset.shotId ?? sceneAsset.shot_id);
+  if (shotId) {
+    const expected = shotId === 'shot-4' ? 'text_subtitle' : 'text_screen';
+    if (textKind !== expected) {
+      throw codedError('REDRAW_TEXT_CLEAN_PLATE_TEXT_KIND_INVALID', '文字净景类型与镜头不匹配');
+    }
+  }
+  if (options.textKind !== undefined && options.text_kind !== undefined
+    && String(options.textKind) !== String(options.text_kind)) {
+    throw codedError('REDRAW_TEXT_CLEAN_PLATE_TEXT_KIND_INVALID', '文字净景类型重复且不一致');
+  }
+  if (options.textRegions !== undefined && options.text_regions !== undefined) {
+    throw codedError('REDRAW_TEXT_CLEAN_PLATE_REGION_INVALID', '文字净景不得重复提供 text_regions');
+  }
+  const rawRegions = options.textRegions ?? options.text_regions;
+  if (!Array.isArray(rawRegions) || rawRegions.length === 0) {
+    throw codedError('REDRAW_TEXT_CLEAN_PLATE_REGION_INVALID', '文字净景需要非空 text_regions');
+  }
+  const width = Number(sceneAsset.width ?? sceneAsset.source_width);
+  const height = Number(sceneAsset.height ?? sceneAsset.source_height);
+  const textRegions = rawRegions.map((region) => {
+    if (!region || typeof region !== 'object' || Array.isArray(region)) {
+      throw codedError('REDRAW_TEXT_CLEAN_PLATE_REGION_INVALID', '文字区域结构无效');
+    }
+    const allowed = new Set(['kind', 'shape', 'points', 'source']);
+    if (Object.keys(region).some((key) => !allowed.has(key))) {
+      throw codedError('REDRAW_TEXT_CLEAN_PLATE_REGION_INVALID', '文字区域包含未允许字段');
+    }
+    if (region.kind !== textKind || region.shape !== 'polygon' || !Array.isArray(region.points) || region.points.length < 3) {
+      throw codedError('REDRAW_TEXT_CLEAN_PLATE_REGION_INVALID', '文字区域类型、形状或点集无效');
+    }
+    if (region.source !== undefined && !TEXT_CLEAN_REGION_SOURCES.has(region.source)) {
+      throw codedError('REDRAW_TEXT_CLEAN_PLATE_REGION_INVALID', '文字区域来源不在脱敏白名单');
+    }
+    const points = region.points.map(normalizeTextCleanPoint);
+    if (points.some((point) => !point)) {
+      throw codedError('REDRAW_TEXT_CLEAN_PLATE_REGION_INVALID', '文字区域坐标必须是有限数字');
+    }
+    if (Number.isFinite(width) && Number.isFinite(height)
+      && points.some((point) => {
+        const x = Array.isArray(point) ? point[0] : point.x;
+        const y = Array.isArray(point) ? point[1] : point.y;
+        return x < 0 || x > width || y < 0 || y > height;
+      })) {
+      throw codedError('REDRAW_TEXT_CLEAN_PLATE_REGION_INVALID', '文字区域坐标超出图片边界');
+    }
+    let area = 0;
+    for (let index = 0; index < points.length; index += 1) {
+      const current = points[index];
+      const next = points[(index + 1) % points.length];
+      const currentX = Array.isArray(current) ? current[0] : current.x;
+      const currentY = Array.isArray(current) ? current[1] : current.y;
+      const nextX = Array.isArray(next) ? next[0] : next.x;
+      const nextY = Array.isArray(next) ? next[1] : next.y;
+      area += currentX * nextY - nextX * currentY;
+    }
+    if (area === 0) throw codedError('REDRAW_TEXT_CLEAN_PLATE_REGION_INVALID', '文字区域面积必须大于零');
+    return {
+      kind: textKind,
+      shape: 'polygon',
+      points,
+      ...(region.source !== undefined ? { source: region.source } : {}),
+    };
+  });
+  return { textKind, textRegions };
+}
+
 function cleanPlateQualityOptions(attempt, providerResult = {}) {
   const snapshot = parseJson(attempt.source_ref_json, {}).snapshot || {};
   return {
@@ -847,6 +944,10 @@ async function generateAsset(ctx, input = {}) {
 
 async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
   const { db } = assertContext(ctx);
+  const mode = String(options.mode || 'clean_plate').trim();
+  if (mode !== 'clean_plate' && mode !== 'text_clean_plate') {
+    throw codedError('REDRAW_TEXT_CLEAN_PLATE_MODE_INVALID', '净景模式不受支持');
+  }
   const maskAssetId = options.mask_asset_id ?? options.maskAssetId;
   if (!maskAssetId) throw codedError('CLEAN_PLATE_MASK_REQUIRED', '去人净景需要人物遮罩');
   const sourceAssetId = sceneAsset.source_asset_id
@@ -854,6 +955,9 @@ async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
     ?? sceneAsset.asset_id
     ?? sceneAsset.id;
   if (!sourceAssetId) throw codedError('CLEAN_PLATE_SOURCE_REQUIRED', '去人净景缺少源场景资产');
+  const textClean = mode === 'text_clean_plate'
+    ? validateTextCleanPlateOptions(sceneAsset, options)
+    : null;
   assertReadableAsset(ctx, maskAssetId, '人物遮罩');
   assertReadableAsset(ctx, sourceAssetId, '源场景');
 
@@ -867,8 +971,24 @@ async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
   const sourceRef = {
     source_asset_id: sourceAssetId,
     source_fingerprint: String(inputFrameFingerprint),
-    source_ref: sceneAsset.source_ref || sceneAsset.sourceRef || {},
+    ...(mode === 'clean_plate'
+      ? { source_ref: sceneAsset.source_ref || sceneAsset.sourceRef || {} }
+      : {}),
   };
+  const snapshot = mode === 'text_clean_plate'
+    ? {
+        mode,
+        text_kind: textClean.textKind,
+        text_regions: textClean.textRegions,
+      }
+    : {
+        mode,
+        source_asset_id: sourceAssetId,
+        mask_asset_id: maskAssetId,
+        input_frame_fingerprint: String(inputFrameFingerprint),
+        model,
+        prompt,
+      };
   const attempt = createAssetAttempt({
     ...ctx,
     model,
@@ -877,14 +997,7 @@ async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
   }, {
     kind: 'scene',
     sourceRef,
-    snapshot: {
-      mode: 'clean_plate',
-      source_asset_id: sourceAssetId,
-      mask_asset_id: maskAssetId,
-      input_frame_fingerprint: String(inputFrameFingerprint),
-      model,
-      prompt,
-    },
+    snapshot,
     prompt,
     generationTaskId: options.generationTaskId || options.generation_task_id || null,
   });
@@ -899,11 +1012,16 @@ async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
       versionId: attempt.version_id,
       input: {
         ...sceneAsset,
+        mode,
         source_asset_id: sourceAssetId,
         mask_asset_id: Number(maskAssetId),
         input_frame_fingerprint: inputFrameFingerprint,
         model,
         prompt,
+        ...(textClean ? {
+          text_kind: textClean.textKind,
+          text_regions: textClean.textRegions,
+        } : {}),
       },
     });
     const providerTaskId = providerResult?.provider_task_id || providerResult?.task_id;
@@ -916,13 +1034,15 @@ async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
       throw codedError('REDRAW_ASSET_GENERATION_FAILED', providerResult?.error || '净景生成失败');
     }
     validateCleanPlateQuality(sceneAsset, options, providerResult || {});
-    const finalized = finalizeAssetAttempt(ctx, attempt.id, providerResult);
+    const finalized = finalizeAssetAttempt(ctx, attempt.id, mode === 'text_clean_plate'
+      ? { ...providerResult, clean_plate: true }
+      : providerResult);
     db.prepare(`
       UPDATE redraw_assets
       SET clean_plate_asset_id = ?, mask_asset_id = ?, status = 'needs_attention',
           approval_status = 'pending', updated_at = ?
       WHERE id = ?
-    `).run(Number(finalized.asset_id), Number(maskAssetId), new Date().toISOString(), Number(attempt.id));
+    `).run(Number(finalized.clean_plate_asset_id || finalized.asset_id), Number(maskAssetId), new Date().toISOString(), Number(attempt.id));
     return rowToAsset(db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attempt.id)));
   } catch (error) {
     const row = db.prepare('SELECT status FROM redraw_assets WHERE id = ?').get(Number(attempt.id));
