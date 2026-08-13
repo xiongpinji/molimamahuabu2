@@ -1,5 +1,9 @@
 const creditLedger = require('./creditLedgerService');
 const aiConfigService = require('./aiConfigService');
+const {
+  readIdentityPack,
+  identityPackStatus,
+} = require('./redrawCharacterIdentityService');
 
 let defaultEvidenceRegistry = null;
 
@@ -54,14 +58,21 @@ function getVersion(ctx) {
 function rowToAsset(row) {
   if (!row) return null;
   const sourcePayload = parseJson(row.source_ref_json, {});
+  const identityPack = readIdentityPack(row);
+  const { identity_pack: _storedIdentityPack, ...directSourceRef } = sourcePayload;
   return {
     ...row,
-    source_ref: sourcePayload.source_ref || sourcePayload.source || sourcePayload,
+    source_ref_json: identityPack
+      ? JSON.stringify({ ...sourcePayload, identity_pack: identityPack })
+      : row.source_ref_json,
+    source_ref: sourcePayload.source_ref || sourcePayload.source || directSourceRef,
     source_asset_id: sourcePayload.source_asset_id
       ?? sourcePayload.source_ref?.source_asset_id
       ?? row.source_asset_id
       ?? null,
     snapshot: sourcePayload.snapshot || {},
+    identity_pack: identityPack,
+    identity_pack_status: identityPackStatus(identityPack),
     review_status: row.status === 'needs_attention' && row.approval_status === 'pending'
       ? 'needs_review'
       : row.approval_status,
@@ -923,6 +934,7 @@ async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
 }
 
 module.exports = {
+  rowToAsset,
   listAssets,
   updateAsset,
   createAssetAttempt,
