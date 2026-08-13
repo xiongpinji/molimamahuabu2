@@ -9,6 +9,11 @@ const sharp = require('sharp');
 const {
   buildTextCleanPlateManifest,
 } = require('../src/services/redrawTextCleanPlateLocalCaseService');
+const {
+  main,
+  MANIFEST_FILENAME: LOCAL_MANIFEST_FILENAME,
+  CONTACT_SHEET_FILENAME: LOCAL_CONTACT_SHEET_FILENAME,
+} = require('../scripts/run-redraw-text-clean-plate-local-case');
 
 const SHOT_IDS = ['shot-4', 'shot-8'];
 const TEXT_KINDS = ['text_subtitle', 'text_screen'];
@@ -382,4 +387,78 @@ test('文字净景质量未达门禁时拒绝生成 manifest', async (t) => {
       await assertRejectedCode(root, invalidEntries, 'REDRAW_TEXT_CLEAN_PLATE_QUALITY_FAILED');
     });
   }
+});
+
+function captureStreams() {
+  let stdout = '';
+  let stderr = '';
+  return {
+    streams: {
+      stdout: { write(value) { stdout += String(value); } },
+      stderr: { write(value) { stderr += String(value); } },
+    },
+    get stdout() { return stdout; },
+    get stderr() { return stderr; },
+  };
+}
+
+test('本地 CLI fixture 生成两镜 manifest 与三列 contact sheet', async (t) => {
+  const outputDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'redraw-text-clean-plate-cli-'));
+  t.after(() => fs.promises.rm(outputDir, { recursive: true, force: true }));
+  const captured = captureStreams();
+
+  const exitCode = await main(['--fixture', '--output-dir', outputDir], captured.streams);
+
+  assert.equal(exitCode, 0);
+  assert.equal(captured.stdout, 'REDRAW_TEXT_CLEAN_PLATE_LOCAL_OK\n');
+  assert.equal(captured.stderr, '');
+
+  const manifestPath = path.join(outputDir, LOCAL_MANIFEST_FILENAME);
+  const contactSheetPath = path.join(outputDir, LOCAL_CONTACT_SHEET_FILENAME);
+  const manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf8'));
+  assert.deepEqual(manifest.shots.map((shot) => shot.shot_id), SHOT_IDS);
+  assert.deepEqual(manifest.shots.map((shot) => shot.text_kind), TEXT_KINDS);
+  assert.equal(JSON.stringify(manifest).includes(path.resolve(outputDir)), false);
+  assert.equal(JSON.stringify(manifest).includes('ocr_text'), false);
+
+  const metadata = await sharp(contactSheetPath).metadata();
+  assert.equal(metadata.format, 'jpeg');
+  assert.equal(metadata.width, 960);
+  assert.equal(metadata.height, 360);
+});
+
+test('本地 CLI 拒绝未知参数', async () => {
+  const unknown = captureStreams();
+  assert.equal(await main(['--unknown'], unknown.streams), 2);
+  assert.match(unknown.stderr, /error_code=REDRAW_TEXT_CLEAN_PLATE_LOCAL_CLI_INVALID/);
+});
+
+test('本地 CLI 缺两镜时返回 service 错误且失败不写 manifest', async (t) => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'redraw-text-clean-plate-cli-invalid-'));
+  t.after(() => fs.promises.rm(root, { recursive: true, force: true }));
+
+  const invalidManifestPath = path.join(root, 'missing-shot.json');
+  await fs.promises.writeFile(invalidManifestPath, JSON.stringify({
+    root: '.',
+    entries: [{ shot_id: 'shot-4' }],
+  }));
+  const missingShotsOutput = path.join(root, 'missing-shots-output');
+  const missingShots = captureStreams();
+  assert.equal(
+    await main(['--manifest', invalidManifestPath, '--output-dir', missingShotsOutput], missingShots.streams),
+    1,
+  );
+  assert.match(missingShots.stderr, /error_code=REDRAW_TEXT_CLEAN_PLATE_SHOTS_INVALID/);
+  assert.equal(fs.existsSync(path.join(missingShotsOutput, LOCAL_MANIFEST_FILENAME)), false);
+});
+
+test('本地 CLI 输出路径为普通文件时返回稳定错误且失败不写 manifest', async (t) => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'redraw-text-clean-plate-cli-output-invalid-'));
+  t.after(() => fs.promises.rm(root, { recursive: true, force: true }));
+  const outputFile = path.join(root, 'output-file');
+  await fs.promises.writeFile(outputFile, 'not-a-directory');
+  const outputInvalid = captureStreams();
+  assert.equal(await main(['--fixture', '--output-dir', outputFile], outputInvalid.streams), 1);
+  assert.match(outputInvalid.stderr, /error_code=REDRAW_TEXT_CLEAN_PLATE_LOCAL_OUTPUT_INVALID/);
+  assert.equal(fs.existsSync(path.join(outputFile, LOCAL_MANIFEST_FILENAME)), false);
 });
