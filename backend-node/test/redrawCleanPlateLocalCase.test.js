@@ -83,7 +83,11 @@ test('四镜 clean-plate manifest 按固定镜头排序并脱敏文件根路径'
   });
 
   assert.deepEqual(result.shots.map((shot) => shot.shot_id), SHOT_IDS);
-  assert.match(result.shots[0].source.sha256, /^[a-f0-9]{64}$/);
+  for (const shot of result.shots) {
+    for (const file of [shot.source, shot.mask, shot.clean_plate]) {
+      assert.match(file.sha256, /^[a-f0-9]{64}$/);
+    }
+  }
   assert.equal(JSON.stringify(result).includes(root), false);
 });
 
@@ -99,6 +103,17 @@ test('缺镜头或重复镜头时拒绝生成 clean-plate manifest', async (t) =
   duplicateShotEntries[3].shot_id = duplicateShotEntries[0].shot_id;
   await assert.rejects(
     () => buildLocalCleanPlateManifest({ root, entries: duplicateShotEntries }),
+    { code: 'REDRAW_CLEAN_PLATE_SHOTS_INVALID' },
+  );
+});
+
+test('包含未允许的 shot-5 时拒绝生成 clean-plate manifest', async (t) => {
+  const { root, entries } = await makeFixture(t);
+  const unsupportedShotEntries = cloneEntries(entries);
+  unsupportedShotEntries.push({ ...cloneEntries(entries)[0], shot_id: 'shot-5' });
+
+  await assert.rejects(
+    () => buildLocalCleanPlateManifest({ root, entries: unsupportedShotEntries }),
     { code: 'REDRAW_CLEAN_PLATE_SHOTS_INVALID' },
   );
 });
@@ -132,12 +147,56 @@ test('源帧哈希漂移时拒绝生成 clean-plate manifest', async (t) => {
   );
 });
 
+test('遮罩或净景哈希漂移时拒绝生成 clean-plate manifest', async (t) => {
+  const { root, entries } = await makeFixture(t);
+
+  const wrongMaskHashEntries = cloneEntries(entries);
+  wrongMaskHashEntries[0].mask.sha256 = '1'.repeat(64);
+  await assert.rejects(
+    () => buildLocalCleanPlateManifest({ root, entries: wrongMaskHashEntries }),
+    { code: 'REDRAW_CLEAN_PLATE_HASH_MISMATCH' },
+  );
+
+  const wrongCleanPlateHashEntries = cloneEntries(entries);
+  wrongCleanPlateHashEntries[0].clean_plate.sha256 = '2'.repeat(64);
+  await assert.rejects(
+    () => buildLocalCleanPlateManifest({ root, entries: wrongCleanPlateHashEntries }),
+    { code: 'REDRAW_CLEAN_PLATE_HASH_MISMATCH' },
+  );
+});
+
 test('源帧、遮罩和净景尺寸不一致时拒绝生成 clean-plate manifest', async (t) => {
   const { root, entries } = await makeFixture(t);
   const wrongSizeRelativePath = 'shots/shot-6/mask-small.png';
   const wrongSizeEvidence = await createPng(root, wrongSizeRelativePath, 640, IMAGE_HEIGHT);
   const wrongSizeEntries = cloneEntries(entries);
   wrongSizeEntries[1].mask = wrongSizeEvidence;
+
+  await assert.rejects(
+    () => buildLocalCleanPlateManifest({ root, entries: wrongSizeEntries }),
+    { code: 'REDRAW_CLEAN_PLATE_DIMENSIONS_INVALID' },
+  );
+});
+
+test('源帧尺寸不一致时拒绝生成 clean-plate manifest', async (t) => {
+  const { root, entries } = await makeFixture(t);
+  const wrongSizeRelativePath = 'shots/shot-1/source-small.png';
+  const wrongSizeEvidence = await createPng(root, wrongSizeRelativePath, 640, IMAGE_HEIGHT);
+  const wrongSizeEntries = cloneEntries(entries);
+  wrongSizeEntries[0].representative_frame = wrongSizeEvidence;
+
+  await assert.rejects(
+    () => buildLocalCleanPlateManifest({ root, entries: wrongSizeEntries }),
+    { code: 'REDRAW_CLEAN_PLATE_DIMENSIONS_INVALID' },
+  );
+});
+
+test('净景尺寸不一致时拒绝生成 clean-plate manifest', async (t) => {
+  const { root, entries } = await makeFixture(t);
+  const wrongSizeRelativePath = 'shots/shot-8/clean-small.png';
+  const wrongSizeEvidence = await createPng(root, wrongSizeRelativePath, 640, IMAGE_HEIGHT);
+  const wrongSizeEntries = cloneEntries(entries);
+  wrongSizeEntries[3].clean_plate = wrongSizeEvidence;
 
   await assert.rejects(
     () => buildLocalCleanPlateManifest({ root, entries: wrongSizeEntries }),
