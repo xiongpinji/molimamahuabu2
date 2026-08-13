@@ -27,7 +27,7 @@ const USMERCARI_VIDEO_CAPABILITIES = Object.freeze({
 const FUMIN_VIDEO_CAPABILITIES = Object.freeze({
   durations: Object.freeze([5]),
   aspectRatios: Object.freeze(['16:9']),
-  resolutions: Object.freeze(['480p', '720p']),
+  resolutions: Object.freeze(['480p']),
   maxReferences: 1,
   supportsImageReference: true,
 });

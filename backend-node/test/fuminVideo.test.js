@@ -173,14 +173,14 @@ describe('fumin catalog and read-only connectivity', () => {
     assert.deepEqual(providerCapabilities('fumin', 'fumin-seedance-2.0-fast'), {
       durations: [5],
       aspectRatios: ['16:9'],
-      resolutions: ['480p', '720p'],
+      resolutions: ['480p'],
       maxReferences: 1,
       supportsImageReference: true,
     });
     assert.deepEqual(providerCapabilities('fumin', 'fumin-seedance-2.0-mini'), {
       durations: [5],
       aspectRatios: ['16:9'],
-      resolutions: ['480p', '720p'],
+      resolutions: ['480p'],
       maxReferences: 1,
       supportsImageReference: true,
     });
@@ -207,6 +207,12 @@ describe('fumin catalog and read-only connectivity', () => {
     assert.equal(request.url, 'https://fumin.ai/v1/models');
     assert.equal(request.options.method, 'GET');
     assert.equal(request.options.headers.Authorization, 'Bearer secret');
+  });
+
+  it('rejects unverified fumin duration, ratio and 720p requests before submit', () => {
+    assert.throws(() => buildFuminVideoBody({ model: 'fumin-seedance-2.0-fast', duration: 10 }), /5 秒/);
+    assert.throws(() => buildFuminVideoBody({ model: 'fumin-seedance-2.0-fast', aspect_ratio: '9:16' }), /16:9/);
+    assert.throws(() => buildFuminVideoBody({ model: 'fumin-seedance-2.0-fast', resolution: '720p' }), /720P/);
   });
 
   it('does not reject a verified model omitted from the provider directory', async () => {

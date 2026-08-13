@@ -50,6 +50,12 @@ function buildFuminVideoBody(opts = {}) {
   if (!VERIFIED_UPSTREAM_MODELS.has(model)) {
     throw new Error(`fumin 模型 ${model || '(empty)'} 未经真实生成验证，禁止提交`);
   }
+  const duration = Number(opts.duration || 5);
+  if (duration !== 5) throw new Error('fumin 当前仅开放已实测的 5 秒视频');
+  const ratio = String(opts.aspect_ratio || '16:9').replace('：', ':');
+  if (ratio !== '16:9') throw new Error('fumin 当前仅开放已实测的 16:9 比例');
+  const resolution = opts.resolution ? String(opts.resolution).trim().toLowerCase() : '480p';
+  if (resolution !== '480p') throw new Error('fumin 720P 尚未完成额度充足下的真实验证，暂不开放');
   const refs = uniqueUrls([
     opts.image_url,
     opts.first_frame_url,
@@ -59,11 +65,11 @@ function buildFuminVideoBody(opts = {}) {
   const body = {
     model,
     content: [{ type: 'text', text: String(opts.prompt || '').trim() }],
-    ratio: String(opts.aspect_ratio || '16:9').replace('：', ':'),
-    duration: Number(opts.duration || 5),
+    ratio,
+    duration,
     watermark: opts.watermark != null ? Boolean(opts.watermark) : false,
   };
-  if (opts.resolution) body.resolution = String(opts.resolution).trim().toLowerCase();
+  body.resolution = resolution;
   if (opts.seed != null) body.seed = Number(opts.seed);
   if (opts.guidance_scale != null) body.guidance_scale = Number(opts.guidance_scale);
   for (const url of refs) body.content.push({ type: 'image_url', image_url: { url } });
