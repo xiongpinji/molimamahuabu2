@@ -187,6 +187,64 @@ function insertRedrawAsset(db, versionId, values = {}) {
   }).lastInsertRowid;
 }
 
+function setupIdentityPackRouteFixture(values = {}) {
+  const db = createDb();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-identity-route-'));
+  const artifactBytes = Buffer.from(values.artifactBody || 'canonical actor portrait');
+  const localPath = values.localPath || 'redraw-assets/actor.png';
+  fs.mkdirSync(path.dirname(path.join(storageRoot, localPath)), { recursive: true });
+  fs.writeFileSync(path.join(storageRoot, localPath), artifactBytes);
+  db.prepare(`INSERT INTO assets
+    (id, name, type, category, url, local_path, mime_type, width, height, created_at, updated_at)
+    VALUES (701, 'Actor Maya', 'image', 'redraw', '/static/redraw-assets/actor.png', ?,
+      'image/png', 640, 960, ?, ?)`).run(localPath, NOW, NOW);
+  const projectId = insertProject(db);
+  const workId = insertWork(db, projectId, { current_version: 1, current_step: 2 });
+  const versionId = insertVersion(db, workId, { status: 'asset_review' });
+  const assetId = insertRedrawAsset(db, versionId, {
+    kind: values.kind || 'character',
+    source_ref_json: JSON.stringify({
+      source_ref: {
+        stable_id: 'source-character-maya',
+        absolute_path: 'C:\\private\\actor.png',
+        local_path: 'private/actor.png',
+        storageRoot: 'C:\\private',
+      },
+    }),
+    approval_status: 'approved',
+  });
+  db.prepare(`UPDATE redraw_assets
+    SET approved_by = 'old-reviewer', approved_at = ?
+    WHERE id = ?`).run(NOW, Number(assetId));
+  const handlers = redrawRoutes(db, { error() {}, warn() {}, info() {} }, routeDeps({
+    cfg: { storage: { local_path: storageRoot } },
+  }));
+  return {
+    db,
+    storageRoot,
+    artifactBytes,
+    versionId: Number(versionId),
+    assetId: Number(assetId),
+    handlers,
+    close() {
+      db.close();
+      fs.rmSync(storageRoot, { recursive: true, force: true });
+    },
+  };
+}
+
+function completeIdentityPackRequest(overrides = {}) {
+  return {
+    target_actor_label: '  Actor Maya  ',
+    confirmed_views: ['full_body', 'front', 'profile', 'front'],
+    live_action_human_confirmed: true,
+    adult_status: 'verified_18_plus',
+    identity_consistency_confirmed: true,
+    expected_updated_at: NOW,
+    ...overrides,
+  };
+}
+
 function insertAssetBatch(db, versionId, values = {}) {
   return db.prepare(`
     INSERT INTO redraw_asset_batches
@@ -4219,7 +4277,213 @@ test('批量生成显式历史版本返回冲突且零调用零冻结', async ()
   }
 });
 
-test('第三步和本地化确认 API 已真实注册在总路由', () => {
+test('角色身份包 API 保存服务端证据、重置审核且响应不泄露存储路径', () => {
+  const fixture = setupIdentityPackRouteFixture();
+  try {
+    const result = captureResponse();
+    fixture.handlers.saveRedrawCharacterIdentityPack(
+      request({ id: fixture.assetId, body: completeIdentityPackRequest() }),
+      result,
+    );
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.success, true);
+    assert.equal(result.body.data.version_id, fixture.versionId);
+    assert.equal(result.body.data.status, 'asset_review');
+    assert.equal(result.body.data.current_step, 2);
+    assert.equal(result.body.data.identity_pack.source_character_key, 'source-character-maya');
+    assert.equal(result.body.data.identity_pack.target_actor_label, 'Actor Maya');
+    assert.deepEqual(result.body.data.identity_pack.confirmed_views, ['front', 'profile', 'full_body']);
+    assert.deepEqual(result.body.data.identity_pack.artifact, {
+      asset_id: 701,
+      sha256: crypto.createHash('sha256').update(fixture.artifactBytes).digest('hex'),
+      width: 640,
+      height: 960,
+      mime_type: 'image/png',
+    });
+    assert.equal(result.body.data.identity_pack.reviewed_by, 'user-a');
+    assert.equal(result.body.data.identity_pack.ready, true);
+    assert.equal(result.body.data.identity_pack_status.ready, true);
+    assert.match(result.body.data.identity_pack.pack_sha256, /^[0-9a-f]{64}$/);
+    const { pack_sha256: _storedHash, ...canonicalFields } = result.body.data.identity_pack;
+    assert.equal(
+      result.body.data.identity_pack.pack_sha256,
+      crypto.createHash('sha256').update(stableJson(canonicalFields)).digest('hex'),
+    );
+    const stored = fixture.db.prepare(`SELECT approval_status, approved_by, approved_at
+      FROM redraw_assets WHERE id = ?`).get(fixture.assetId);
+    assert.deepEqual(stored, { approval_status: 'pending', approved_by: null, approved_at: null });
+    assert.deepEqual(result.body.data.asset.identity_pack, result.body.data.identity_pack);
+    const serialized = JSON.stringify(result.body.data);
+    assert.equal(serialized.includes('storageRoot'), false);
+    assert.equal(serialized.includes('local_path'), false);
+    assert.equal(serialized.includes('absolute_path'), false);
+    assert.equal(serialized.includes('C:\\\\private'), false);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('角色身份包 API 拒绝客户端控制和未知字段且不修改数据库', () => {
+  const fixture = setupIdentityPackRouteFixture();
+  try {
+    const forbiddenFields = [
+      'source_character_key', 'artifact', 'sha256', 'pack_sha256', 'ready',
+      'reviewed_by', 'reviewed_at', 'asset_id', 'version_id', 'tenant_id', 'user_id',
+      'path', 'url', 'approval_status', 'status', 'unexpected_field',
+    ];
+    const before = fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
+      approved_at, updated_at FROM redraw_assets WHERE id = ?`).get(fixture.assetId);
+
+    for (const field of forbiddenFields) {
+      const result = captureResponse();
+      fixture.handlers.saveRedrawCharacterIdentityPack(
+        request({
+          id: fixture.assetId,
+          body: completeIdentityPackRequest({ [field]: field === 'artifact' ? {} : 'forged' }),
+        }),
+        result,
+      );
+      assert.equal(result.statusCode, 400, field);
+      assert.equal(result.body.error.code, 'REDRAW_CHARACTER_IDENTITY_INPUT_INVALID', field);
+      assert.deepEqual(
+        fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
+          approved_at, updated_at FROM redraw_assets WHERE id = ?`).get(fixture.assetId),
+        before,
+        field,
+      );
+    }
+
+    const aliases = captureResponse();
+    fixture.handlers.saveRedrawCharacterIdentityPack(
+      request({
+        id: fixture.assetId,
+        body: completeIdentityPackRequest({ targetActorLabel: 'Duplicate alias' }),
+      }),
+      aliases,
+    );
+    assert.equal(aliases.statusCode, 400);
+    assert.equal(aliases.body.error.code, 'REDRAW_CHARACTER_IDENTITY_INPUT_INVALID');
+    assert.deepEqual(
+      fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
+        approved_at, updated_at FROM redraw_assets WHERE id = ?`).get(fixture.assetId),
+      before,
+    );
+  } finally {
+    fixture.close();
+  }
+});
+
+test('角色身份包 API 对跨 owner 统一返回 404', () => {
+  const fixture = setupIdentityPackRouteFixture();
+  try {
+    for (const ownerPatch of [
+      { tenantId: 'tenant-b', userId: 'user-a' },
+      { tenantId: 'tenant-a', userId: 'user-b' },
+    ]) {
+      const result = captureResponse();
+      fixture.handlers.saveRedrawCharacterIdentityPack(
+        request({ id: fixture.assetId, body: completeIdentityPackRequest(), ...ownerPatch }),
+        result,
+      );
+      assert.equal(result.statusCode, 404);
+    }
+  } finally {
+    fixture.close();
+  }
+});
+
+test('角色身份包 API 拒绝非角色资产并把 CAS 冲突映射为 409', () => {
+  const nonCharacter = setupIdentityPackRouteFixture({ kind: 'prop' });
+  try {
+    const invalidKind = captureResponse();
+    nonCharacter.handlers.saveRedrawCharacterIdentityPack(
+      request({ id: nonCharacter.assetId, body: completeIdentityPackRequest() }),
+      invalidKind,
+    );
+    assert.equal(invalidKind.statusCode, 400);
+    assert.equal(invalidKind.body.error.code, 'REDRAW_IDENTITY_ASSET_INVALID_KIND');
+  } finally {
+    nonCharacter.close();
+  }
+
+  const conflict = setupIdentityPackRouteFixture();
+  try {
+    const result = captureResponse();
+    conflict.handlers.saveRedrawCharacterIdentityPack(
+      request({
+        id: conflict.assetId,
+        body: completeIdentityPackRequest({ expected_updated_at: '2026-08-05T00:00:00.000Z' }),
+      }),
+      result,
+    );
+    assert.equal(result.statusCode, 409);
+    assert.equal(result.body.error.code, 'REDRAW_IDENTITY_CONFLICT');
+  } finally {
+    conflict.close();
+  }
+});
+
+test('角色身份包 API 允许保存明确未完成的包并保持 ready=false', () => {
+  const fixture = setupIdentityPackRouteFixture();
+  try {
+    const result = captureResponse();
+    fixture.handlers.saveRedrawCharacterIdentityPack(
+      request({
+        id: fixture.assetId,
+        body: {
+          targetActorLabel: 'Actor Maya',
+          confirmedViews: ['front'],
+          liveActionHumanConfirmed: false,
+          adultStatus: 'unverified',
+          identityConsistencyConfirmed: false,
+          expectedUpdatedAt: NOW,
+        },
+      }),
+      result,
+    );
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.data.identity_pack.ready, false);
+    assert.equal(result.body.data.identity_pack_status.ready, false);
+    assert.deepEqual(result.body.data.identity_pack_status.missing_views, ['profile', 'full_body']);
+    assert.deepEqual(result.body.data.identity_pack_status.missing_confirmations, [
+      'live_action_human_confirmed',
+      'adult_status',
+      'identity_consistency_confirmed',
+    ]);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('角色身份包 API 严格校验允许字段类型和值', () => {
+  const fixture = setupIdentityPackRouteFixture();
+  try {
+    const invalidPatches = [
+      { target_actor_label: '' },
+      { target_actor_label: 'a'.repeat(101) },
+      { confirmed_views: 'front' },
+      { confirmed_views: ['front', 'rear'] },
+      { live_action_human_confirmed: 1 },
+      { adult_status: 'unknown' },
+      { identity_consistency_confirmed: 'true' },
+      { expected_updated_at: ' ' },
+    ];
+    for (const patch of invalidPatches) {
+      const result = captureResponse();
+      fixture.handlers.saveRedrawCharacterIdentityPack(
+        request({ id: fixture.assetId, body: completeIdentityPackRequest(patch) }),
+        result,
+      );
+      assert.equal(result.statusCode, 400, JSON.stringify(patch));
+      assert.equal(result.body.error.code, 'REDRAW_CHARACTER_IDENTITY_INPUT_INVALID');
+    }
+  } finally {
+    fixture.close();
+  }
+});
+
+test('第三步、角色身份包和本地化确认 API 已真实注册在总路由', () => {
   const db = createDb();
   try {
     const router = setupRouter({}, db, { error() {}, warn() {}, info() {} });
@@ -4237,6 +4501,7 @@ test('第三步和本地化确认 API 已真实注册在总路由', () => {
     assert.equal(routes.has('POST /redraw/versions/:id/assets/batch-quote'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/assets/batches'), true);
     assert.equal(routes.has('GET /redraw/assets/:id/preview/:variant'), true);
+    assert.equal(routes.has('PUT /redraw/assets/:id/identity-pack'), true);
     assert.equal(routes.has('GET /redraw/versions/:id/voices'), true);
     assert.equal(routes.has('GET /redraw/versions/:versionId/voices/:voiceAssetId/preview'), true);
     assert.equal(routes.has('POST /redraw/assets/:id/voice'), true);

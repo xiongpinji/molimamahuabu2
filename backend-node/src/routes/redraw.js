@@ -406,9 +406,119 @@ const DIALOGUE_CLIENT_CONTROL_FIELDS = new Set([
 ]);
 const DIALOGUE_START_FIELDS = new Set(['quote_hash', 'idempotency_key']);
 const VOICE_ASSIGN_FIELDS = new Set(['voice_asset_id', 'expected_updated_at']);
+const IDENTITY_PACK_FIELDS = new Set([
+  'target_actor_label', 'targetActorLabel',
+  'confirmed_views', 'confirmedViews',
+  'live_action_human_confirmed', 'liveActionHumanConfirmed',
+  'adult_status', 'adultStatus',
+  'identity_consistency_confirmed', 'identityConsistencyConfirmed',
+  'expected_updated_at', 'expectedUpdatedAt',
+]);
+const IDENTITY_PACK_FIELD_ALIASES = [
+  ['target_actor_label', 'targetActorLabel'],
+  ['confirmed_views', 'confirmedViews'],
+  ['live_action_human_confirmed', 'liveActionHumanConfirmed'],
+  ['adult_status', 'adultStatus'],
+  ['identity_consistency_confirmed', 'identityConsistencyConfirmed'],
+  ['expected_updated_at', 'expectedUpdatedAt'],
+];
+const IDENTITY_PACK_VIEWS = new Set(['front', 'profile', 'full_body']);
 
 function generationInputError(message) {
   return codedRouteError('REDRAW_GENERATION_INPUT_INVALID', message);
+}
+
+function identityPackInputError(message) {
+  return codedRouteError('REDRAW_CHARACTER_IDENTITY_INPUT_INVALID', message);
+}
+
+function identityPackInput(body) {
+  if (body == null || typeof body !== 'object' || Array.isArray(body)) {
+    throw identityPackInputError('角色身份包参数必须是对象');
+  }
+  for (const key of Object.keys(body)) {
+    if (!IDENTITY_PACK_FIELDS.has(key)) {
+      throw identityPackInputError(`角色身份包不接受字段 ${key}`);
+    }
+  }
+  for (const [snake, camel] of IDENTITY_PACK_FIELD_ALIASES) {
+    if (Object.prototype.hasOwnProperty.call(body, snake)
+      && Object.prototype.hasOwnProperty.call(body, camel)) {
+      throw identityPackInputError(`${snake} 与 ${camel} 不能同时提交`);
+    }
+  }
+  const read = (snake, camel) => (Object.prototype.hasOwnProperty.call(body, snake)
+    ? body[snake]
+    : body[camel]);
+  const targetActorLabelValue = read('target_actor_label', 'targetActorLabel');
+  if (typeof targetActorLabelValue !== 'string') {
+    throw identityPackInputError('target_actor_label 必须是字符串');
+  }
+  const targetActorLabel = targetActorLabelValue.trim();
+  if (!targetActorLabel || targetActorLabel.length > 100) {
+    throw identityPackInputError('target_actor_label 必须为 1 到 100 个字符');
+  }
+  const confirmedViewsValue = read('confirmed_views', 'confirmedViews');
+  if (!Array.isArray(confirmedViewsValue)) {
+    throw identityPackInputError('confirmed_views 必须是数组');
+  }
+  const confirmedViews = [];
+  const seenViews = new Set();
+  for (const value of confirmedViewsValue) {
+    if (typeof value !== 'string') {
+      throw identityPackInputError('confirmed_views 只能包含 front、profile、full_body');
+    }
+    const view = value.trim().toLowerCase();
+    if (!IDENTITY_PACK_VIEWS.has(view)) {
+      throw identityPackInputError('confirmed_views 只能包含 front、profile、full_body');
+    }
+    if (!seenViews.has(view)) {
+      seenViews.add(view);
+      confirmedViews.push(view);
+    }
+  }
+  const liveActionHumanConfirmed = read('live_action_human_confirmed', 'liveActionHumanConfirmed');
+  if (typeof liveActionHumanConfirmed !== 'boolean') {
+    throw identityPackInputError('live_action_human_confirmed 必须是布尔值');
+  }
+  const adultStatusValue = read('adult_status', 'adultStatus');
+  if (typeof adultStatusValue !== 'string'
+    || !['verified_18_plus', 'unverified'].includes(adultStatusValue.trim())) {
+    throw identityPackInputError('adult_status 必须是 verified_18_plus 或 unverified');
+  }
+  const identityConsistencyConfirmed = read(
+    'identity_consistency_confirmed',
+    'identityConsistencyConfirmed',
+  );
+  if (typeof identityConsistencyConfirmed !== 'boolean') {
+    throw identityPackInputError('identity_consistency_confirmed 必须是布尔值');
+  }
+  const expectedUpdatedAtValue = read('expected_updated_at', 'expectedUpdatedAt');
+  if (typeof expectedUpdatedAtValue !== 'string' || !expectedUpdatedAtValue.trim()) {
+    throw identityPackInputError('expected_updated_at 必须是非空字符串');
+  }
+  return {
+    target_actor_label: targetActorLabel,
+    confirmed_views: confirmedViews,
+    live_action_human_confirmed: liveActionHumanConfirmed,
+    adult_status: adultStatusValue.trim(),
+    identity_consistency_confirmed: identityConsistencyConfirmed,
+    expected_updated_at: expectedUpdatedAtValue.trim(),
+  };
+}
+
+function sanitizeIdentityPackResponse(value) {
+  if (Array.isArray(value)) return value.map(sanitizeIdentityPackResponse);
+  if (value && typeof value === 'object') {
+    const entries = [];
+    for (const [key, item] of Object.entries(value)) {
+      const normalized = String(key).replace(/[^a-z0-9]/gi, '').toLowerCase();
+      if (normalized === 'sourcerefjson' || normalized === 'storageroot' || normalized.endsWith('path')) continue;
+      entries.push([key, sanitizeIdentityPackResponse(item)]);
+    }
+    return Object.fromEntries(entries);
+  }
+  return value;
 }
 
 function rejectAliasPair(input, snake, camel) {
@@ -2594,6 +2704,51 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     }
   }
 
+  function saveRedrawCharacterIdentityPack(req, res) {
+    const currentOwner = owner(req);
+    const asset = findOwnedAsset(req.params.id, currentOwner);
+    if (!asset) {
+      return response.error(res, 404, 'REDRAW_ASSET_NOT_FOUND', '转绘资产不存在');
+    }
+    try {
+      const saved = redrawCharacterIdentityService.saveIdentityPack({
+        db,
+        assetId: Number(asset.id),
+        versionId: Number(asset.version_id),
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        reviewerId: currentOwner.userId,
+        storageRoot: storageRootFromConfig(cfg),
+        canReadArtifact,
+        assetReader: {
+          canRead: (row) => Boolean(row && canReadArtifact(row.id)),
+        },
+      }, asset.id, identityPackInput(req.body));
+      const projected = redrawAssetService.listAssets(db, {
+        versionId: Number(asset.version_id),
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+      }).find((item) => Number(item.id) === Number(saved.id));
+      const safeAsset = sanitizeIdentityPackResponse(projected || saved);
+      return response.success(res, {
+        asset: safeAsset,
+        identity_pack: safeAsset.identity_pack,
+        identity_pack_status: safeAsset.identity_pack_status,
+        version_id: Number(asset.version_id),
+        status: 'asset_review',
+        current_step: 2,
+      });
+    } catch (error) {
+      if (['REDRAW_ASSET_NOT_FOUND', 'REDRAW_IDENTITY_ASSET_NOT_FOUND'].includes(error.code)) {
+        return response.error(res, 404, 'REDRAW_ASSET_NOT_FOUND', '转绘资产不存在');
+      }
+      if (['REDRAW_IDENTITY_CONFLICT', 'REDRAW_CHARACTER_IDENTITY_CONFLICT'].includes(error.code)) {
+        return response.error(res, 409, error.code, error.message || '角色资产已被其他操作更新');
+      }
+      return sendRedrawError(res, error, '保存角色身份包失败', log, { assetId: asset.id });
+    }
+  }
+
   function updateRedrawAsset(req, res) {
     const currentOwner = owner(req);
     const asset = findOwnedAsset(req.params.id, currentOwner);
@@ -2847,6 +3002,7 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     downloadExport,
     generationGate,
     assetQuote,
+    saveRedrawCharacterIdentityPack,
     updateRedrawAsset,
     generateRedrawAsset,
     reviewRedrawAsset,

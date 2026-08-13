@@ -340,6 +340,7 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/redraw/exports/:id/download/:kind', redraw.downloadExport);
   r.get('/redraw/versions/:id/generation-gate', redraw.generationGate);
   r.get('/redraw/assets/:id/quote', redraw.assetQuote);
+  r.put('/redraw/assets/:id/identity-pack', redraw.saveRedrawCharacterIdentityPack);
   r.put('/redraw/assets/:id', redraw.updateRedrawAsset);
   r.post('/redraw/assets/:id/voice', redraw.assignVoice);
   r.post('/redraw/assets/:id/generate', redraw.generateRedrawAsset);
