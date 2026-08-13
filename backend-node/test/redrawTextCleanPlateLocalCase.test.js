@@ -258,6 +258,30 @@ test('非法文字区域或文字类型时拒绝生成文字净景 manifest', as
   }
 });
 
+test('文字区域 source 仅允许脱敏枚举并拒绝路径、OCR 原文和 Key', async (t) => {
+  const { root, entries } = await makeFixture(t);
+  const cases = [
+    { name: '绝对路径', value: path.join(root, 'ocr-result.json') },
+    { name: 'OCR 原文', value: '字幕原文：不得写入 manifest' },
+    { name: 'Authorization Key', value: 'Authorization: Bearer sk-test-secret' },
+  ];
+
+  for (const invalidCase of cases) {
+    await t.test(invalidCase.name, async () => {
+      const invalidEntries = mutateShot(entries, 'shot-4', (entry) => {
+        entry.region.source = invalidCase.value;
+      });
+      await assertRejectedCode(root, invalidEntries, 'REDRAW_TEXT_CLEAN_PLATE_REGION_INVALID');
+    });
+  }
+
+  const legalEntries = mutateShot(entries, 'shot-4', (entry) => {
+    entry.region.source = 'manual_fixture';
+  });
+  const result = await buildTextCleanPlateManifest({ root, entries: legalEntries });
+  assert.equal(result.shots[0].region.source, 'manual_fixture');
+});
+
 test('绝对路径或 .. 路径时拒绝生成文字净景 manifest', async (t) => {
   const { root, entries } = await makeFixture(t);
 

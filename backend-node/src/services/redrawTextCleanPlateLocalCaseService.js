@@ -13,6 +13,7 @@ const EXPECTED_TEXT_KIND_BY_SHOT = Object.freeze({
 });
 const NON_MASK_SIMILARITY_MIN = 0.97;
 const SCHEMA_VERSION = 'redraw-text-clean-plate-local-v1';
+const REGION_SOURCES = new Set(['manual_fixture', 'ocr_region']);
 
 const MIME_TYPES = Object.freeze({
   avif: 'image/avif',
@@ -300,8 +301,8 @@ function validateRegions(entry, source) {
     if (region.shape !== 'polygon') {
       throw codedError('REDRAW_TEXT_CLEAN_PLATE_REGION_INVALID', `${entry.shot_id} 文字区域形状必须是 polygon`);
     }
-    if (region.source !== undefined && (typeof region.source !== 'string' || region.source.length === 0)) {
-      throw codedError('REDRAW_TEXT_CLEAN_PLATE_REGION_INVALID', `${entry.shot_id} 文字区域 source 无效`);
+    if (region.source !== undefined && !REGION_SOURCES.has(region.source)) {
+      throw codedError('REDRAW_TEXT_CLEAN_PLATE_REGION_INVALID', `${entry.shot_id} 文字区域 source 必须是脱敏枚举`);
     }
     if (!Array.isArray(region.points) || region.points.length < 3) {
       throw codedError('REDRAW_TEXT_CLEAN_PLATE_REGION_INVALID', `${entry.shot_id} polygon 至少需要三个点`);
@@ -404,6 +405,7 @@ async function buildTextCleanPlateManifest({ root, entries, now = new Date().toI
     const legacyRegion = regions.length === 1 ? {
       kind: regions[0].kind,
       polygon: regions[0].polygon,
+      ...(regions[0].source !== undefined ? { source: regions[0].source } : {}),
     } : undefined;
     const textRegions = regions.map(({ legacy, polygon, ...region }) => region);
     shots.push({
