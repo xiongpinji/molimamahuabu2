@@ -205,6 +205,17 @@ test('净景尺寸不一致时拒绝生成 clean-plate manifest', async (t) => {
   );
 });
 
+test('源帧、遮罩和净景 MIME 不一致时拒绝生成 clean-plate manifest', async (t) => {
+  const { root, entries } = await makeFixture(t);
+  const wrongMimeEntries = cloneEntries(entries);
+  wrongMimeEntries[3].clean_plate.mime_type = 'image/jpeg';
+
+  await assert.rejects(
+    () => buildLocalCleanPlateManifest({ root, entries: wrongMimeEntries }),
+    { code: 'REDRAW_CLEAN_PLATE_DIMENSIONS_INVALID' },
+  );
+});
+
 test('mask_area_changed=false 时拒绝生成 clean-plate manifest', async (t) => {
   const { root, entries } = await makeFixture(t);
   const lowQualityEntries = cloneEntries(entries);

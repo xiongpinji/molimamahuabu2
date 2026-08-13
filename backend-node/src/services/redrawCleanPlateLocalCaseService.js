@@ -120,12 +120,18 @@ async function readImageEvidence(root, evidence, label) {
     throw codedError('REDRAW_CLEAN_PLATE_PATH_INVALID', `${label}图片元数据不可读`);
   }
 
+  const mimeType = MIME_TYPES[format] || `image/${format}`;
+  const declaredMimeType = typeof evidence.mime_type === 'string' ? evidence.mime_type.toLowerCase() : '';
+  if (!/^image\/[a-z0-9.+-]+$/i.test(mimeType) || declaredMimeType !== mimeType) {
+    throw codedError('REDRAW_CLEAN_PLATE_DIMENSIONS_INVALID', `${label} MIME 类型与图片内容不一致`);
+  }
+
   return {
     path: resolved.relativePath,
     sha256: actualSha,
     width,
     height,
-    mime_type: MIME_TYPES[format] || `image/${format}`,
+    mime_type: mimeType,
     bytes: file.length,
   };
 }
@@ -151,8 +157,15 @@ function validateEntries(entries) {
 }
 
 function assertSameDimensions(shotId, source, mask, cleanPlate, quality) {
-  if (source.width !== mask.width || source.height !== mask.height || source.width !== cleanPlate.width || source.height !== cleanPlate.height) {
-    throw codedError('REDRAW_CLEAN_PLATE_DIMENSIONS_INVALID', `${shotId} 源帧、遮罩和净景尺寸必须一致`);
+  if (
+    source.width !== mask.width
+    || source.height !== mask.height
+    || source.width !== cleanPlate.width
+    || source.height !== cleanPlate.height
+    || source.mime_type !== mask.mime_type
+    || source.mime_type !== cleanPlate.mime_type
+  ) {
+    throw codedError('REDRAW_CLEAN_PLATE_DIMENSIONS_INVALID', `${shotId} 源帧、遮罩和净景尺寸及 MIME 必须一致`);
   }
 
   if (quality && (Object.prototype.hasOwnProperty.call(quality, 'width') || Object.prototype.hasOwnProperty.call(quality, 'height'))) {
