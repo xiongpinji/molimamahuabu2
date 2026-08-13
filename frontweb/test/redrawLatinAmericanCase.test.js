@@ -100,7 +100,13 @@ test('整集合同显式记录烧录文字的目标处理策略', () => {
   )), true)
   const unresolved = shots.filter((shot) => shot.screen_text_status === 'manual_review')
   assert.deepEqual(unresolved.map((shot) => shot.id), ['shot-8'])
-  assert.match(unresolved[0].screen_text_target, /manual/i)
+  assert.match(unresolved[0].screen_text_target, /South Africa vs\. Mexico/i)
+  assert.deepEqual(unresolved[0].screen_text_evidence, {
+    method: 'manual_frame_review',
+    reviewed_frame_times_ms: [58_000, 59_000, 60_000, 61_000, 62_000],
+    confirmed: ['sina sports masthead', '南非对墨西哥 headline'],
+    unresolved: ['article body copy', 'banner copy', 'browser chrome text'],
+  })
 })
 
 test('整集对白时间来自烧录字幕逐帧人工复核', () => {
