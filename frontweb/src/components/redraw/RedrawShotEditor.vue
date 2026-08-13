@@ -70,6 +70,13 @@
         {{ referenceLabel(asset) }} · v{{ asset.version_number ?? '—' }}
       </span>
     </div>
+    <div v-if="characterIdentityPacks.length" class="identity-map" aria-label="角色身份包映射">
+      <div v-for="item in characterIdentityPacks" :key="item.sourceLabel" class="identity-map__row">
+        <strong>源角色 {{ item.sourceLabel }} → 目标演员 {{ item.targetActorLabel || '待确认' }}</strong>
+        <span>{{ item.shortHash ? `#${item.shortHash}` : 'hash待配置' }}</span>
+        <small>{{ item.ready ? 'ready' : `缺项：${item.missingLabels.join('、')}` }}</small>
+      </div>
+    </div>
 
     <div class="generation-grid">
       <el-form-item label="视频模型（后端快照）">
@@ -136,6 +143,7 @@ import {
   quoteCredits,
   structuredReferences,
 } from '@/utils/redrawShotState'
+import { projectRedrawCharacterIdentityPack } from '@/utils/redrawCharacterIdentity'
 
 const props = defineProps({
   shot: { type: Object, default: null },
@@ -167,6 +175,9 @@ const filteredReferences = computed(() => approvedReferenceOptions(props.assets,
 const selectedReferenceAssets = computed(() => referenceIds.value
   .map((id) => referenceAssets.value.find((asset) => Number(asset.id) === Number(id)))
   .filter(Boolean))
+const characterIdentityPacks = computed(() => selectedReferenceAssets.value
+  .filter((asset) => asset.kind === 'character')
+  .map((asset) => projectRedrawCharacterIdentityPack(asset)))
 const credits = computed(() => quoteCredits(props.shot))
 const availability = computed(() => generationAvailability(props.shot, props.gate))
 const editable = computed(() => ['draft', 'failed'].includes(String(props.shot?.status || '')))
@@ -260,6 +271,10 @@ h3 { margin: 0; font-size: 18px; overflow-wrap: anywhere; }
 .reference-select, :deep(.el-input-number), :deep(.el-select) { width: 100%; min-width: 0; }
 .reference-versions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: -8px; }
 .reference-versions span { max-width: 100%; padding: 5px 8px; border: 1px solid #3c332f; border-radius: 5px; color: #d8c2b7; font-size: 12px; overflow-wrap: anywhere; }
+.identity-map { display: grid; gap: 8px; }
+.identity-map__row { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid #3a302a; border-radius: 6px; background: #1a1310; color: #f2ded4; }
+.identity-map__row strong, .identity-map__row small { overflow-wrap: anywhere; }
+.identity-map__row span { color: #d8c2b7; font-size: 12px; overflow-wrap: anywhere; }
 .editor-actions { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; min-width: 0; }
 .credit-callout { display: grid; gap: 4px; min-width: 0; padding: 12px 14px; border: 1px solid #ff7139; border-radius: 8px; background: #25150f; color: #fff; }
 .credit-callout strong { color: #ff9a6d; font-size: 16px; overflow-wrap: anywhere; }

@@ -48,6 +48,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { redrawAPI } from '@/api/redraw'
+import { isRedrawCharacterIdentityPackReady } from '@/utils/redrawCharacterIdentity'
 import {
   ASSET_KINDS,
   assetBatchCredits,
@@ -332,6 +333,10 @@ async function generate(asset) {
 
 async function review(asset, action) {
   try {
+    if (action === 'approved' && asset?.kind === 'character' && !isRedrawCharacterIdentityPackReady(asset)) {
+      ElMessage.warning('角色身份包未就绪，不能批准')
+      return
+    }
     const result = await redrawAPI.reviewAsset(asset.id, { action, expected_updated_at: asset.updated_at })
     if (result?.current_step || result?.status) {
       emit('work-updated', {

@@ -73,6 +73,9 @@ export const redrawAPI = {
   updateAsset(assetId, body) {
     return request.put(`/redraw/assets/${assetId}`, body)
   },
+  saveRedrawCharacterIdentityPack(assetId, body) {
+    return request.put(`/redraw/assets/${assetId}/identity-pack`, body)
+  },
   generateAsset(assetId, body = {}) {
     return request.post(`/redraw/assets/${assetId}/generate`, body)
   },

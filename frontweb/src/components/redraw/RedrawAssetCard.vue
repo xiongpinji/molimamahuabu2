@@ -31,11 +31,35 @@
     <div v-else class="media-tile"><span>目标音色证据</span></div>
 
     <p v-if="asset.localized_description" class="asset-description">{{ asset.localized_description }}</p>
+    <div v-if="identityPack" class="identity-pack">
+      <div class="identity-pack__row">
+        <span>目标演员</span>
+        <strong>{{ identityPack.targetActorLabel || '待确认' }}</strong>
+      </div>
+      <div class="identity-pack__row">
+        <span>三视图确认</span>
+        <strong>{{ identityPack.confirmedViewLabels.length ? identityPack.confirmedViewLabels.join(' / ') : '缺项' }}</strong>
+      </div>
+      <div class="identity-pack__row">
+        <span>真人 / 18+ / 一致性</span>
+        <strong>
+          {{ identityPack.liveActionHumanConfirmed ? '真人确认' : '真人缺项' }}
+          · {{ identityPack.adultStatus === 'verified_18_plus' ? '18+确认' : '18+缺项' }}
+          · {{ identityPack.identityConsistencyConfirmed ? '一致性确认' : '一致性缺项' }}
+        </strong>
+      </div>
+      <div class="identity-pack__row">
+        <span>状态</span>
+        <strong :class="{ ready: identityPack.ready }">{{ identityPack.ready ? 'ready' : '缺项' }}</strong>
+      </div>
+      <p v-if="identityPack.shortHash" class="identity-pack__hash">#{{ identityPack.shortHash }}</p>
+      <p v-if="identityPack.missingLabels.length" class="identity-pack__missing">缺项：{{ identityPack.missingLabels.join('、') }}</p>
+    </div>
     <div class="asset-actions">
       <strong class="canvas-credit-callout-v1">{{ quote > 0 ? `本次预计扣除 ${quote} 积分` : '积分待管理员配置' }}</strong>
       <div class="action-buttons">
         <el-button size="small" :icon="Refresh" :disabled="quote <= 0" @click="emit('generate', asset)">重绘</el-button>
-        <el-button size="small" type="success" :icon="Check" :disabled="!asset.asset_id && !asset.voice_asset_id && !asset.clean_plate_asset_id" @click="emit('review', asset, 'approved')">批准</el-button>
+        <el-button size="small" type="success" :icon="Check" :disabled="approveDisabled" @click="emit('review', asset, 'approved')">批准</el-button>
         <el-button size="small" type="danger" plain :icon="CloseBold" @click="emit('review', asset, 'rejected')">退回</el-button>
       </div>
     </div>
@@ -46,6 +70,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Check, CloseBold, Refresh } from '@element-plus/icons-vue'
 import { redrawAPI } from '@/api/redraw'
+import { isRedrawCharacterIdentityPackReady, projectRedrawCharacterIdentityPack } from '@/utils/redrawCharacterIdentity'
 import { ASSET_KINDS, assetAnchor, isApprovedAsset, reviewLabel } from '@/utils/redrawAssetState'
 
 const props = defineProps({
@@ -64,6 +89,11 @@ const sceneModes = [
   { key: 'clean_plate', label: '去人净景' },
 ]
 const kindLabel = computed(() => ASSET_KINDS.find((item) => item.key === props.asset.kind)?.label || '资产')
+const identityPack = computed(() => (props.asset.kind === 'character' ? projectRedrawCharacterIdentityPack(props.asset) : null))
+const approveDisabled = computed(() => (
+  (!props.asset.asset_id && !props.asset.voice_asset_id && !props.asset.clean_plate_asset_id)
+  || (props.asset.kind === 'character' && !isRedrawCharacterIdentityPackReady(props.asset))
+))
 const previewVariant = computed(() => {
   if (props.asset.kind === 'character' || props.asset.kind === 'prop') return 'primary'
   if (props.asset.kind !== 'scene') return null
@@ -146,6 +176,12 @@ h3 { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
 .scene-tabs button.active { border-color: #ff7139; color: #fff; }
 .scene-media { aspect-ratio: 16 / 9; }
 .asset-description { margin: 0; color: #aaa; line-height: 1.5; overflow-wrap: anywhere; }
+.identity-pack { display: grid; gap: 6px; padding: 12px; border: 1px solid #3a302a; border-radius: 6px; background: #1b120f; color: #f2ded4; }
+.identity-pack__row { display: flex; justify-content: space-between; gap: 12px; min-width: 0; }
+.identity-pack__row span { color: #c5aca0; font-size: 12px; flex: 0 0 auto; }
+.identity-pack__row strong { min-width: 0; overflow-wrap: anywhere; text-align: right; }
+.identity-pack__row strong.ready { color: #9ad7a8; }
+.identity-pack__hash, .identity-pack__missing { margin: 0; color: #d8c2b7; font-size: 12px; overflow-wrap: anywhere; }
 .asset-actions { align-items: flex-end; flex-wrap: wrap; }
 .canvas-credit-callout-v1 { color: #fff; font-size: 13px; font-weight: 800; }
 .action-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
