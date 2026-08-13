@@ -980,6 +980,10 @@ function sendLocalizationError(res, error, fallbackMessage, log, context = {}) {
 
 function sendRedrawError(res, error, fallbackMessage, log, context = {}) {
   const code = String(error?.code || '');
+  if (code === 'REDRAW_IDENTITY_PROJECTION_FAILED') {
+    log?.error?.({ err: error, ...context }, fallbackMessage);
+    return response.error(res, 500, code, fallbackMessage);
+  }
   if (['REDRAW_WORK_NOT_FOUND', 'REDRAW_VERSION_NOT_FOUND', 'REDRAW_SHOT_NOT_FOUND',
     'REDRAW_SHOT_TASK_NOT_FOUND', 'REDRAW_VIDEO_NOT_FOUND'].includes(code)) {
     return response.error(res, 404, code, error.message || fallbackMessage, error.details);
@@ -2729,7 +2733,10 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
         tenantId: currentOwner.tenantId,
         userId: currentOwner.userId,
       }).find((item) => Number(item.id) === Number(saved.id));
-      const safeAsset = sanitizeIdentityPackResponse(projected || saved);
+      if (!projected) {
+        throw codedRouteError('REDRAW_IDENTITY_PROJECTION_FAILED', '保存角色身份包后无法读取当前资产投影');
+      }
+      const safeAsset = sanitizeIdentityPackResponse(projected);
       return response.success(res, {
         asset: safeAsset,
         identity_pack: safeAsset.identity_pack,

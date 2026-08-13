@@ -12,6 +12,7 @@ const creditLedger = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const realRedrawOrchestrator = require('../src/services/redrawOrchestrator');
 const redrawCapabilityService = require('../src/services/redrawCapabilityService');
+const redrawAssetService = require('../src/services/redrawAssetService');
 
 const NOW = '2026-08-06T00:00:00.000Z';
 
@@ -4320,6 +4321,37 @@ test('角色身份包 API 保存服务端证据、重置审核且响应不泄露
     assert.equal(serialized.includes('absolute_path'), false);
     assert.equal(serialized.includes('C:\\\\private'), false);
   } finally {
+    fixture.close();
+  }
+});
+
+test('角色身份包 API 投影缺失时拒绝回退 raw saved 且不泄露路径', () => {
+  const fixture = setupIdentityPackRouteFixture();
+  const originalListAssets = redrawAssetService.listAssets;
+  try {
+    const before = fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
+      approved_at, updated_at FROM redraw_assets WHERE id = ?`).get(fixture.assetId);
+    redrawAssetService.listAssets = () => [];
+    const result = captureResponse();
+    fixture.handlers.saveRedrawCharacterIdentityPack(
+      request({ id: fixture.assetId, body: completeIdentityPackRequest() }),
+      result,
+    );
+    assert.equal(result.statusCode, 500);
+    assert.equal(result.body.success, false);
+    assert.equal(result.body.error.code, 'REDRAW_IDENTITY_PROJECTION_FAILED');
+    const serialized = JSON.stringify(result.body);
+    assert.equal(serialized.includes('storageRoot'), false);
+    assert.equal(serialized.includes('local_path'), false);
+    assert.equal(serialized.includes('absolute_path'), false);
+    assert.equal(serialized.includes('C:\\\\private'), false);
+    const after = fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
+      approved_at, updated_at FROM redraw_assets WHERE id = ?`).get(fixture.assetId);
+    assert.notDeepEqual(after, before);
+    assert.equal(after.approval_status, 'pending');
+    assert.equal(after.approved_by, null);
+  } finally {
+    redrawAssetService.listAssets = originalListAssets;
     fixture.close();
   }
 });
