@@ -41,23 +41,35 @@ describe('fumin Seedance video protocol', () => {
     assert.equal(buildFuminQueryUrl({ base_url: 'https://fumin.ai' }, 'task-1'), 'https://fumin.ai/api/v3/contents/generations/tasks/task-1');
   });
 
-  it('builds the OpenAI-compatible content body without provider-specific roles', () => {
-    assert.deepEqual(buildFuminVideoBody({
+  it('builds the OpenAI-compatible mixed media body within the declared Seedance limits', () => {
+    const body = buildFuminVideoBody({
       model: 'fumin-seedance-2.0-fast',
       prompt: '自然地转身微笑',
-      duration: 5,
+      duration: 15,
       aspect_ratio: '16:9',
       resolution: '480p',
       image_url: 'https://cdn.example/first.jpg',
-      reference_urls: ['https://cdn.example/second.jpg'],
-    }), {
+      reference_urls: Array.from({ length: 8 }, (_, index) => `https://cdn.example/image-${index + 1}.jpg`),
+      reference_video_urls: Array.from({ length: 3 }, (_, index) => `https://cdn.example/video-${index + 1}.mp4`),
+      reference_audio_urls: Array.from({ length: 3 }, (_, index) => `https://cdn.example/audio-${index + 1}.mp3`),
+    });
+    assert.deepEqual(body, {
       model: 'seedance-2.0-fast',
       content: [
         { type: 'text', text: '自然地转身微笑' },
         { type: 'image_url', image_url: { url: 'https://cdn.example/first.jpg' } },
+        ...Array.from({ length: 8 }, (_, index) => ({
+          type: 'image_url', image_url: { url: `https://cdn.example/image-${index + 1}.jpg` },
+        })),
+        ...Array.from({ length: 3 }, (_, index) => ({
+          type: 'video_url', video_url: { url: `https://cdn.example/video-${index + 1}.mp4` }, role: 'reference_video',
+        })),
+        ...Array.from({ length: 3 }, (_, index) => ({
+          type: 'audio_url', audio_url: { url: `https://cdn.example/audio-${index + 1}.mp3` }, role: 'reference_audio',
+        })),
       ],
       ratio: '16:9',
-      duration: 5,
+      duration: 15,
       resolution: '480p',
       watermark: false,
     });
@@ -146,12 +158,18 @@ describe('fumin Seedance video protocol', () => {
       aspect_ratio: '16:9',
       resolution: '480p',
       image_url: 'data:image/png;base64,aW1hZ2U=',
+      reference_video_urls: ['https://cdn.example/reference.mp4'],
+      reference_audio_urls: ['https://cdn.example/reference.mp3'],
     });
     const completed = await pollVideoTask(null, log, 44, submitted.task_id, row, 1, 0);
     assert.deepEqual(submitted, { task_id: 'task-route-1', status: 'queued' });
     assert.deepEqual(completed, { video_url: 'https://cdn.example/fumin.mp4' });
     assert.equal(requests[0].body.model, 'seedance-2.0-fast');
     assert.equal(requests[0].body.content[1].image_url.url, 'data:image/png;base64,aW1hZ2U=');
+    assert.deepEqual(requests[0].body.content.slice(2), [
+      { type: 'video_url', video_url: { url: 'https://cdn.example/reference.mp4' }, role: 'reference_video' },
+      { type: 'audio_url', audio_url: { url: 'https://cdn.example/reference.mp3' }, role: 'reference_audio' },
+    ]);
     assert.equal(requests[1].url, 'https://fumin.ai/api/v3/contents/generations/tasks/task-route-1');
   });
 });
@@ -169,20 +187,30 @@ describe('fumin catalog and read-only connectivity', () => {
     }), { code: 'INVALID_FUMIN_MODEL' });
   });
 
-  it('exposes only the capabilities supported by the verified tests', () => {
+  it('exposes the declared fumin Seedance media and duration limits', () => {
     assert.deepEqual(providerCapabilities('fumin', 'fumin-seedance-2.0-fast'), {
-      durations: [5],
+      durations: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
       aspectRatios: ['16:9'],
       resolutions: ['480p'],
-      maxReferences: 1,
+      maxReferences: 9,
+      maxVideoReferences: 3,
+      maxAudioReferences: 3,
       supportsImageReference: true,
+      supportsVideoReference: true,
+      supportsAudioReference: true,
+      supportsAudio: true,
     });
     assert.deepEqual(providerCapabilities('fumin', 'fumin-seedance-2.0-mini'), {
-      durations: [5],
+      durations: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
       aspectRatios: ['16:9'],
       resolutions: ['480p'],
-      maxReferences: 1,
+      maxReferences: 9,
+      maxVideoReferences: 3,
+      maxAudioReferences: 3,
       supportsImageReference: true,
+      supportsVideoReference: true,
+      supportsAudioReference: true,
+      supportsAudio: true,
     });
   });
 
@@ -209,10 +237,30 @@ describe('fumin catalog and read-only connectivity', () => {
     assert.equal(request.options.headers.Authorization, 'Bearer secret');
   });
 
-  it('rejects unverified fumin duration, ratio and 720p requests before submit', () => {
-    assert.throws(() => buildFuminVideoBody({ model: 'fumin-seedance-2.0-fast', duration: 10 }), /5 秒/);
+  it('rejects requests outside the declared duration and media reference limits before submit', () => {
+    assert.doesNotThrow(() => buildFuminVideoBody({ model: 'fumin-seedance-2.0-fast', duration: 10 }));
+    assert.doesNotThrow(() => buildFuminVideoBody({
+      model: 'fumin-seedance-2.0-fast',
+      reference_urls: Array.from({ length: 9 }, (_, index) => `https://cdn.example/image-${index}.jpg`),
+      reference_video_urls: Array.from({ length: 3 }, (_, index) => `https://cdn.example/video-${index}.mp4`),
+      reference_audio_urls: Array.from({ length: 3 }, (_, index) => `https://cdn.example/audio-${index}.mp3`),
+    }));
+    assert.throws(() => buildFuminVideoBody({ model: 'fumin-seedance-2.0-fast', duration: 16 }), /5 到 15 秒/);
+    assert.throws(() => buildFuminVideoBody({ model: 'fumin-seedance-2.0-fast', duration: 0 }), /5 到 15 秒/);
     assert.throws(() => buildFuminVideoBody({ model: 'fumin-seedance-2.0-fast', aspect_ratio: '9:16' }), /16:9/);
     assert.throws(() => buildFuminVideoBody({ model: 'fumin-seedance-2.0-fast', resolution: '720p' }), /720P/);
+    assert.throws(() => buildFuminVideoBody({
+      model: 'fumin-seedance-2.0-fast',
+      reference_urls: Array.from({ length: 10 }, (_, index) => `https://cdn.example/image-${index}.jpg`),
+    }), /9 张/);
+    assert.throws(() => buildFuminVideoBody({
+      model: 'fumin-seedance-2.0-fast',
+      reference_video_urls: Array.from({ length: 4 }, (_, index) => `https://cdn.example/video-${index}.mp4`),
+    }), /3 个视频/);
+    assert.throws(() => buildFuminVideoBody({
+      model: 'fumin-seedance-2.0-fast',
+      reference_audio_urls: Array.from({ length: 4 }, (_, index) => `https://cdn.example/audio-${index}.mp3`),
+    }), /3 个音频/);
   });
 
   it('does not reject a verified model omitted from the provider directory', async () => {

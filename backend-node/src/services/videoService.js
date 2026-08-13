@@ -69,6 +69,23 @@ function parseReferenceImageUrls(value) {
   }
 }
 
+function parseReferenceUrls(value, fallback = null) {
+  if (value) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed.map((item) => String(item || '').trim()).filter(Boolean);
+    } catch (_) {}
+  }
+  const single = String(fallback || '').trim();
+  return single ? [single] : [];
+}
+
+function normalizeReferenceUrls(values) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean))];
+}
+
 function rowToItem(r) {
   return {
     id: r.id,
@@ -86,6 +103,8 @@ function rowToItem(r) {
     reference_image_urls: parseReferenceImageUrls(r.reference_image_urls),
     reference_video_url: r.reference_video_url,
     reference_audio_url: r.reference_audio_url,
+    reference_video_urls: parseReferenceUrls(r.reference_video_urls, r.reference_video_url),
+    reference_audio_urls: parseReferenceUrls(r.reference_audio_urls, r.reference_audio_url),
     video_url: r.video_url,
     local_path: r.local_path,
     status: r.status,
@@ -136,6 +155,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { randomUUID } = require('crypto');
 const videoClient = require('./videoClient');
+const fuminVideoClient = require('./fuminVideoClient');
 const taskService = require('./taskService');
 const storageLayout = require('./storageLayout');
 const creditLedger = require('./creditLedgerService');
@@ -217,6 +237,33 @@ function create(db, log, req, options = {}) {
     : configuredVideoDuration(videoConfig) || 5;
   const duration = normalizeVideoDuration(body.duration, fallbackDuration);
 
+  // fumin 的媒体数量和参数必须在创建任务、预扣积分前校验，避免异步提交阶段才失败。
+  const videoProtocol = String(videoConfig?.api_protocol || videoConfig?.provider || '').trim().toLowerCase();
+  if (videoProtocol === 'fumin_video' || videoProtocol === 'fumin') {
+    fuminVideoClient.buildFuminVideoBody({
+      model: selectedModel || videoConfig?.default_model || videoConfig?.model,
+      prompt: body.prompt,
+      duration,
+      aspect_ratio: body.aspect_ratio || '16:9',
+      resolution: body.resolution || '480p',
+      image_url: body.image_url,
+      first_frame_url: body.first_frame_url ?? body.first_frame_local_path,
+      last_frame_url: body.last_frame_url ?? body.last_frame_local_path,
+      reference_urls: Array.isArray(body.reference_image_urls) ? body.reference_image_urls : [],
+      reference_video_urls: [
+        body.reference_video_url,
+        ...(Array.isArray(body.reference_video_urls) ? body.reference_video_urls : []),
+      ],
+      reference_audio_urls: [
+        body.reference_audio_url,
+        ...(Array.isArray(body.reference_audio_urls) ? body.reference_audio_urls : []),
+      ],
+      watermark: body.watermark,
+      seed: body.seed,
+      guidance_scale: body.guidance_scale,
+    });
+  }
+
   const active = findActiveForStoryboard(db, storyboardId, {
     billingEnabled,
     userId: options.userId,
@@ -293,7 +340,6 @@ function create(db, log, req, options = {}) {
     }
     const referenceImageUrls = Array.isArray(body.reference_image_urls) ? body.reference_image_urls.slice(0, 10) : [];
     const refs = Array.isArray(body.reference_image_urls) ? JSON.stringify(referenceImageUrls) : null;
-    const videoProtocol = String(videoConfig?.api_protocol || videoConfig?.provider || '').trim().toLowerCase();
     const firstReferenceFallback = ['usmercari', 'usmercari_media'].includes(videoProtocol)
       ? null
       : referenceImageUrls[0] || null;
@@ -301,19 +347,31 @@ function create(db, log, req, options = {}) {
       ?? body.first_frame_local_path
       ?? body.image_url
       ?? firstReferenceFallback;
-    const referenceVideoUrl = String(body.reference_video_url || body.reference_video_urls?.[0] || '').trim() || null;
-    const referenceAudioUrl = String(body.reference_audio_url || body.reference_audio_urls?.[0] || '').trim() || null;
+    const referenceVideoUrls = normalizeReferenceUrls([
+      body.reference_video_url,
+      ...(Array.isArray(body.reference_video_urls) ? body.reference_video_urls : []),
+    ]);
+    const referenceAudioUrls = normalizeReferenceUrls([
+      body.reference_audio_url,
+      ...(Array.isArray(body.reference_audio_urls) ? body.reference_audio_urls : []),
+    ]);
+    const referenceVideoUrl = referenceVideoUrls[0] || null;
+    const referenceAudioUrl = referenceAudioUrls[0] || null;
+    const referenceVideoUrlsJson = referenceVideoUrls.length ? JSON.stringify(referenceVideoUrls) : null;
+    const referenceAudioUrlsJson = referenceAudioUrls.length ? JSON.stringify(referenceAudioUrls) : null;
     db.prepare(`INSERT INTO video_generations
       (drama_id, storyboard_id, provider, prompt, model, duration, aspect_ratio, resolution, seed, camera_fixed, watermark,
        image_url, first_frame_url, last_frame_url, reference_image_urls, reference_video_url, reference_audio_url,
+       reference_video_urls, reference_audio_urls,
        status, task_id, tenant_id, user_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?)`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?)`)
       .run(
         dramaId, storyboardId, body.provider || 'chatfire', prompt, billingModel || model, duration,
         aspectRatio, body.resolution ?? null, body.seed != null ? Number(body.seed) : null,
         body.camera_fixed != null ? (body.camera_fixed ? 1 : 0) : null, body.watermark ? 1 : 0,
         body.image_url ?? null, persistedFirstFrameUrl,
-        body.last_frame_url ?? body.last_frame_local_path ?? null, refs, referenceVideoUrl, referenceAudioUrl, task.id,
+        body.last_frame_url ?? body.last_frame_local_path ?? null, refs, referenceVideoUrl, referenceAudioUrl,
+        referenceVideoUrlsJson, referenceAudioUrlsJson, task.id,
         billingEnabled ? options.tenantId || null : null,
         billingEnabled ? String(options.userId) : null, now, now
       );
@@ -901,6 +959,8 @@ async function processVideoGeneration(db, log, videoGenId) {
         if (!Array.isArray(reference_urls)) reference_urls = null;
       } catch (_) {}
     }
+    const reference_video_urls = parseReferenceUrls(row.reference_video_urls, row.reference_video_url);
+    const reference_audio_urls = parseReferenceUrls(row.reference_audio_urls, row.reference_audio_url);
     const effectiveDuration = normalizeVideoDuration(row.duration, 5);
     let aspectForVideo = row.aspect_ratio;
     if (aspectForVideo) {
@@ -922,8 +982,8 @@ async function processVideoGeneration(db, log, videoGenId) {
     const rowForAspect = { ...row, aspect_ratio: aspectForVideo || row.aspect_ratio };
     const hasOmniRefs = !!(
       (reference_urls && reference_urls.length > 0)
-      || row.reference_video_url
-      || row.reference_audio_url
+      || reference_video_urls.length > 0
+      || reference_audio_urls.length > 0
     );
     if (row.task_id && hasOmniRefs) {
       const task = taskService.getTask(db, row.task_id);
@@ -953,9 +1013,9 @@ async function processVideoGeneration(db, log, videoGenId) {
       first_frame_url: row.first_frame_url,
       last_frame_url: row.last_frame_url,
       reference_urls,
-      reference_video_urls: row.reference_video_url ? [row.reference_video_url] : [],
-      reference_audio_urls: row.reference_audio_url ? [row.reference_audio_url] : [],
-      voice_reference_url: row.reference_audio_url || undefined,
+      reference_video_urls,
+      reference_audio_urls,
+      voice_reference_url: reference_audio_urls[0] || undefined,
       files_base_url: filesBaseUrl,
       storage_local_path: storageLocalPath,
       video_gen_id: videoGenId,

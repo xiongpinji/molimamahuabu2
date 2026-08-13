@@ -7,6 +7,14 @@ const FUMIN_MODELS = Object.freeze({
 
 const VERIFIED_UPSTREAM_MODELS = new Set(Object.values(FUMIN_MODELS));
 
+const FUMIN_VIDEO_LIMITS = Object.freeze({
+  minDuration: 5,
+  maxDuration: 15,
+  maxImageReferences: 9,
+  maxVideoReferences: 3,
+  maxAudioReferences: 3,
+});
+
 function normalizeFuminBaseUrl(value) {
   return String(value || 'https://fumin.ai').trim().replace(/\/+$/, '').replace(/\/api\/v3$/i, '');
 }
@@ -45,23 +53,40 @@ function uniqueUrls(values) {
   return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
 }
 
+function normalizedReferenceUrls(value) {
+  return uniqueUrls(Array.isArray(value) ? value : []);
+}
+
 function buildFuminVideoBody(opts = {}) {
   const model = resolveFuminModel(opts.model);
   if (!VERIFIED_UPSTREAM_MODELS.has(model)) {
     throw new Error(`fumin 模型 ${model || '(empty)'} 未经真实生成验证，禁止提交`);
   }
-  const duration = Number(opts.duration || 5);
-  if (duration !== 5) throw new Error('fumin 当前仅开放已实测的 5 秒视频');
+  const duration = opts.duration == null || opts.duration === '' ? 5 : Number(opts.duration);
+  if (!Number.isSafeInteger(duration) || duration < FUMIN_VIDEO_LIMITS.minDuration || duration > FUMIN_VIDEO_LIMITS.maxDuration) {
+    throw new Error(`fumin 视频时长必须是 ${FUMIN_VIDEO_LIMITS.minDuration} 到 ${FUMIN_VIDEO_LIMITS.maxDuration} 秒之间的整数`);
+  }
   const ratio = String(opts.aspect_ratio || '16:9').replace('：', ':');
   if (ratio !== '16:9') throw new Error('fumin 当前仅开放已实测的 16:9 比例');
   const resolution = opts.resolution ? String(opts.resolution).trim().toLowerCase() : '480p';
   if (resolution !== '480p') throw new Error('fumin 720P 尚未完成额度充足下的真实验证，暂不开放');
-  const refs = uniqueUrls([
+  const imageRefs = uniqueUrls([
     opts.image_url,
     opts.first_frame_url,
     opts.last_frame_url,
     ...(Array.isArray(opts.reference_urls) ? opts.reference_urls : []),
-  ]).slice(0, 1);
+  ]);
+  const videoRefs = normalizedReferenceUrls(opts.reference_video_urls);
+  const audioRefs = normalizedReferenceUrls(opts.reference_audio_urls);
+  if (imageRefs.length > FUMIN_VIDEO_LIMITS.maxImageReferences) {
+    throw new Error(`fumin 参考图最多支持 ${FUMIN_VIDEO_LIMITS.maxImageReferences} 张`);
+  }
+  if (videoRefs.length > FUMIN_VIDEO_LIMITS.maxVideoReferences) {
+    throw new Error(`fumin 视频参考最多支持 ${FUMIN_VIDEO_LIMITS.maxVideoReferences} 个视频`);
+  }
+  if (audioRefs.length > FUMIN_VIDEO_LIMITS.maxAudioReferences) {
+    throw new Error(`fumin 音频参考最多支持 ${FUMIN_VIDEO_LIMITS.maxAudioReferences} 个音频`);
+  }
   const body = {
     model,
     content: [{ type: 'text', text: String(opts.prompt || '').trim() }],
@@ -72,7 +97,9 @@ function buildFuminVideoBody(opts = {}) {
   body.resolution = resolution;
   if (opts.seed != null) body.seed = Number(opts.seed);
   if (opts.guidance_scale != null) body.guidance_scale = Number(opts.guidance_scale);
-  for (const url of refs) body.content.push({ type: 'image_url', image_url: { url } });
+  for (const url of imageRefs) body.content.push({ type: 'image_url', image_url: { url } });
+  for (const url of videoRefs) body.content.push({ type: 'video_url', video_url: { url }, role: 'reference_video' });
+  for (const url of audioRefs) body.content.push({ type: 'audio_url', audio_url: { url }, role: 'reference_audio' });
   return body;
 }
 
@@ -125,7 +152,7 @@ async function callFuminVideoApi(config, log, opts = {}) {
     opts.first_frame_url,
     opts.last_frame_url,
     ...(Array.isArray(opts.reference_urls) ? opts.reference_urls : []),
-  ]).slice(0, 1);
+  ]);
   try {
     for (let index = 0; index < rawRefs.length; index += 1) {
       const resolved = typeof opts.resolve_image === 'function'
@@ -136,9 +163,39 @@ async function callFuminVideoApi(config, log, opts = {}) {
   } catch (error) {
     return { error: `fumin 参考图准备失败: ${error.message}` };
   }
+  const resolveMedia = async (value, index, kind) => {
+    if (kind === 'image' && typeof opts.resolve_image === 'function') {
+      return opts.resolve_image(value, index);
+    }
+    return value;
+  };
+  let videoUrls = [];
+  let audioUrls = [];
+  try {
+    const rawVideos = normalizedReferenceUrls(opts.reference_video_urls);
+    for (let index = 0; index < rawVideos.length; index += 1) {
+      const resolved = await resolveMedia(rawVideos[index], index, 'video');
+      if (resolved) videoUrls.push(resolved);
+    }
+    const rawAudios = normalizedReferenceUrls(opts.reference_audio_urls);
+    for (let index = 0; index < rawAudios.length; index += 1) {
+      const resolved = await resolveMedia(rawAudios[index], index, 'audio');
+      if (resolved) audioUrls.push(resolved);
+    }
+  } catch (error) {
+    return { error: `fumin 参考视频或音频准备失败: ${error.message}` };
+  }
   let body;
   try {
-    body = buildFuminVideoBody({ ...opts, image_url: '', first_frame_url: '', last_frame_url: '', reference_urls: imageUrls });
+    body = buildFuminVideoBody({
+      ...opts,
+      image_url: '',
+      first_frame_url: '',
+      last_frame_url: '',
+      reference_urls: imageUrls,
+      reference_video_urls: videoUrls,
+      reference_audio_urls: audioUrls,
+    });
   } catch (error) {
     return { error: error.message };
   }
@@ -150,6 +207,8 @@ async function callFuminVideoApi(config, log, opts = {}) {
     resolution: body.resolution || null,
     ratio: body.ratio,
     reference_image_count: imageUrls.length,
+    reference_video_count: videoUrls.length,
+    reference_audio_count: audioUrls.length,
   });
   let response;
   try {
@@ -176,6 +235,7 @@ async function callFuminVideoApi(config, log, opts = {}) {
 
 module.exports = {
   FUMIN_MODELS,
+  FUMIN_VIDEO_LIMITS,
   normalizeFuminBaseUrl,
   resolveFuminModel,
   buildFuminCreateUrl,

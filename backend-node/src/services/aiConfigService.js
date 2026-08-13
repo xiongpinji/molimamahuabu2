@@ -158,6 +158,7 @@ function createConfig(db, log, req) {
   const model = modelToDb(req.model);
   const serviceType = req.service_type || 'text';
   validateFuminModelKeyIsolation({ provider: req.provider, serviceType, model: req.model });
+  fuminImageClient.validateFuminImageModels({ provider: req.provider, serviceType, model: req.model });
   const settings = normalizeCreateSettings(serviceType, req.settings);
   let endpoint = req.endpoint || '';
   let queryEndpoint = req.query_endpoint || '';
@@ -224,6 +225,8 @@ function createConfig(db, log, req) {
         endpoint = '/api/v3/contents/generations/tasks';
         queryEndpoint = '/api/v3/contents/generations/tasks/{taskId}';
       }
+    } else if (p === 'fumin_image') {
+      if (st === 'image' || st === 'storyboard_image') endpoint = '/images/generations';
     }
   }
   const defaultModel = req.default_model != null ? String(req.default_model).trim() || null : null;
@@ -257,6 +260,11 @@ function updateConfig(db, log, id, req) {
   const existing = getConfig(db, id);
   if (!existing) return null;
   validateFuminModelKeyIsolation({
+    provider: req.provider != null ? req.provider : existing.provider,
+    serviceType: req.service_type != null ? req.service_type : existing.service_type,
+    model: req.model !== undefined ? req.model : existing.model,
+  });
+  fuminImageClient.validateFuminImageModels({
     provider: req.provider != null ? req.provider : existing.provider,
     serviceType: req.service_type != null ? req.service_type : existing.service_type,
     model: req.model !== undefined ? req.model : existing.model,
@@ -969,5 +977,6 @@ module.exports = {
   bulkUpdateApiKey,
   hasConnectionCredential,
   validateFuminModelKeyIsolation,
+  validateFuminImageModels: fuminImageClient.validateFuminImageModels,
   toPublicConfig,
 };

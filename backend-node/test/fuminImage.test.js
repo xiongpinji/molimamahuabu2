@@ -9,6 +9,7 @@ const {
   FUMIN_IMAGE_MODELS,
   resolveFuminImageModel,
   normalizeFuminImageBaseUrl,
+  validateFuminImageModels,
 } = require('../src/services/fuminImageClient');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
@@ -26,8 +27,15 @@ test('fumin 图片别名映射到已验证的上游模型名', () => {
   });
   assert.equal(resolveFuminImageModel('fumin-gpt-image-2'), 'gpt-image-2');
   assert.equal(resolveFuminImageModel('fumin-gpt-image-2-4K'), 'gpt-image-2-4K');
+  assert.equal(resolveFuminImageModel('fumin-gpt-image-2-4k'), 'gpt-image-2-4K');
   assert.equal(resolveFuminImageModel('other-model'), 'other-model');
   assert.equal(normalizeFuminImageBaseUrl('https://fumin.ai/v1/'), 'https://fumin.ai/v1');
+  assert.doesNotThrow(() => validateFuminImageModels({
+    provider: 'fumin_image', serviceType: 'image', model: ['fumin-gpt-image-2', 'fumin-gpt-image-2-4K'],
+  }));
+  assert.throws(() => validateFuminImageModels({
+    provider: 'fumin_image', serviceType: 'image', model: ['unverified-model'],
+  }), { code: 'INVALID_FUMIN_IMAGE_MODEL' });
 });
 
 test('fumin 图片连接测试只读模型目录且不提交付费任务', async () => {
@@ -53,6 +61,29 @@ test('fumin 图片连接测试只读模型目录且不提交付费任务', async
   assert.equal(request.options.method, 'GET');
   assert.equal(request.options.headers.Authorization, 'Bearer secret');
   assert.equal(request.options.body, undefined);
+});
+
+test('fumin 图片配置只允许已验证别名并自动填充 OpenAI 图片端点', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  try {
+    const config = aiConfigService.createConfig(db, log, {
+      service_type: 'image',
+      provider: 'fumin_image',
+      api_protocol: 'openai',
+      name: 'fumin 图片配置校验',
+      base_url: 'https://fumin.ai/v1',
+      api_key: 'test-key',
+      model: ['fumin-gpt-image-2', 'fumin-gpt-image-2-4K'],
+      default_model: 'fumin-gpt-image-2',
+    });
+    assert.equal(config.endpoint, '/images/generations');
+    assert.throws(() => aiConfigService.createConfig(db, log, {
+      service_type: 'image', provider: 'fumin_image', api_key: 'test-key', model: ['unverified-model'],
+    }), { code: 'INVALID_FUMIN_IMAGE_MODEL' });
+  } finally {
+    db.close();
+  }
 });
 
 test('图片生成路由提交上游模型名并解析 base64 结果', async (t) => {

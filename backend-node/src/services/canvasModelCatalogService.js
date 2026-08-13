@@ -25,11 +25,16 @@ const USMERCARI_VIDEO_CAPABILITIES = Object.freeze({
 });
 
 const FUMIN_VIDEO_CAPABILITIES = Object.freeze({
-  durations: Object.freeze([5]),
+  durations: Object.freeze([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
   aspectRatios: Object.freeze(['16:9']),
   resolutions: Object.freeze(['480p']),
-  maxReferences: 1,
+  maxReferences: 9,
+  maxVideoReferences: 3,
+  maxAudioReferences: 3,
   supportsImageReference: true,
+  supportsVideoReference: true,
+  supportsAudioReference: true,
+  supportsAudio: true,
 });
 
 function providerCapabilities(provider, model) {
