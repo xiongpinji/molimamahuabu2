@@ -49,8 +49,8 @@
         </strong>
       </div>
       <div class="identity-pack__row">
-        <span>状态</span>
-        <strong :class="{ ready: identityPack.ready }">{{ identityPack.ready ? 'ready' : '缺项' }}</strong>
+        <span>确认状态</span>
+        <strong :class="{ ready: identityPack.ready }">{{ identityPack.ready ? '服务端已确认' : '服务端未确认' }}</strong>
       </div>
       <p v-if="identityPack.shortHash" class="identity-pack__hash">#{{ identityPack.shortHash }}</p>
       <p v-if="identityPack.missingLabels.length" class="identity-pack__missing">缺项：{{ identityPack.missingLabels.join('、') }}</p>
