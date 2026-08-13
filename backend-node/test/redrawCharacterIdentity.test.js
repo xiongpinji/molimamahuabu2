@@ -218,6 +218,27 @@ test('完整身份包使用服务端证据并生成稳定的 64 位小写哈希'
   }
 });
 
+test('角色键按 stable_id、id、source_character_id 的首个非空值回退', () => {
+  const state = setup();
+  try {
+    fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    addProviderAsset(state);
+    const cases = [
+      [{ id: 'id-only' }, 'id-only'],
+      [{ source_character_id: 'source-character-only' }, 'source-character-only'],
+      [{ stable_id: ' ', id: 'fallback-id', source_character_id: 'unused-source-id' }, 'fallback-id'],
+    ];
+
+    for (const [sourceRef, expectedKey] of cases) {
+      const characterId = addCharacter(state, { sourceRef });
+      const saved = saveIdentityPack(context(state), characterId, completeInput());
+      assert.equal(saved.identity_pack.source_character_key, expectedKey);
+    }
+  } finally {
+    close(state);
+  }
+});
+
 test('任一必需视图或确认项缺失时身份包均不 ready', () => {
   const cases = [
     ['front', { confirmed_views: ['profile', 'full_body'] }],

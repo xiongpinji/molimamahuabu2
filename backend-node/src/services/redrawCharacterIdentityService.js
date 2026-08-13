@@ -137,8 +137,9 @@ function normalizeContext(ctx = {}) {
 function sourceCharacterKey(row) {
   const payload = parseJson(row.source_ref_json, {});
   const sourceRef = payload.source_ref || payload.source || {};
-  const key = sourceRef.stable_id ?? sourceRef.id ?? sourceRef.source_character_id;
-  const normalized = String(key ?? '').trim();
+  const normalized = [sourceRef.stable_id, sourceRef.id, sourceRef.source_character_id]
+    .map((value) => String(value ?? '').trim())
+    .find(Boolean) || '';
   if (!normalized) {
     throw codedError('REDRAW_IDENTITY_SOURCE_KEY_REQUIRED', '角色来源缺少稳定身份键');
   }
