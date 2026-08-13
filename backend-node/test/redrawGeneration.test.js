@@ -159,11 +159,14 @@ function addShot(db, versionId, overrides = {}) {
   const startMs = overrides.startMs || overrides.start_ms || 0;
   const endMs = overrides.endMs || overrides.end_ms || (startMs + durationMs);
   const references = (overrides.references || []).map((reference) => {
-    if (String(reference?.kind || '') !== 'character' || overrides.bindCharacterIdentity === false) {
+    const historicalCharacterId = reference?.character_asset_id ?? reference?.characterAssetId;
+    const referenceKind = String(reference?.kind || (historicalCharacterId != null ? 'character' : ''));
+    if (referenceKind !== 'character' || overrides.bindCharacterIdentity === false) {
       return reference;
     }
     const redrawAssetId = Number(
-      reference.redraw_asset_id ?? reference.redrawAssetId ?? reference.asset_id ?? reference.assetId,
+      reference.redraw_asset_id ?? reference.redrawAssetId ?? reference.asset_id ?? reference.assetId
+        ?? historicalCharacterId,
     );
     const row = db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(redrawAssetId);
     const binding = identityBindingForAsset(row);
@@ -2551,7 +2554,7 @@ test('角色身份 hash 更新会先关闭旧镜头门禁，重绑后 request sn
       identityPack: firstPack,
     });
     const shotId = addShot(state.db, state.versionId, {
-      references: [{ kind: 'character', asset_id: Number(redrawAssetId) }],
+      references: [{ character_asset_id: Number(redrawAssetId) }],
     });
     const first = await generateShot(ctx(state.db, { schedule() {} }), { shotId });
     const firstSnapshot = JSON.parse(
@@ -2589,8 +2592,7 @@ test('角色身份 hash 更新会先关闭旧镜头门禁，重绑后 request sn
     state.db.prepare(`UPDATE redraw_shots
       SET status = 'draft', references_json = ?
       WHERE id = ?`).run(JSON.stringify([{
-      kind: 'character',
-      asset_id: Number(redrawAssetId),
+      character_asset_id: Number(redrawAssetId),
       source_character_key: binding.source_character_key,
       target_actor_label: binding.target_actor_label,
       identity_pack_sha256: binding.pack_sha256,
@@ -2600,6 +2602,53 @@ test('角色身份 hash 更新会先关闭旧镜头门禁，重绑后 request sn
       () => generateShot(ctx(state.db, { schedule() {} }), { shotId }),
       (error) => error.code === 'REDRAW_SHOT_CONFLICT',
     );
+    assert.equal(count(state.db, 'video_generations'), 1);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('角色 identity bindings 按集合 canonical 排序，A/B 引用反序仍复用同一生成', async () => {
+  const state = setup();
+  try {
+    const baseA = addBaseAsset(state.db, { name: 'actor-a', url: 'https://cdn.test/actor-a.png' });
+    const baseB = addBaseAsset(state.db, { name: 'actor-b', url: 'https://cdn.test/actor-b.png' });
+    const redrawA = addRedrawAsset(state.db, state.versionId, {
+      kind: 'character',
+      name: 'Actor A',
+      assetId: baseA,
+    });
+    const redrawB = addRedrawAsset(state.db, state.versionId, {
+      kind: 'character',
+      name: 'Actor B',
+      assetId: baseB,
+    });
+    const shotId = addShot(state.db, state.versionId, {
+      references: [
+        { kind: 'character', asset_id: Number(redrawB) },
+        { kind: 'character', asset_id: Number(redrawA) },
+      ],
+    });
+
+    const first = await generateShot(ctx(state.db, { schedule() {} }), { shotId });
+    const firstSnapshot = JSON.parse(
+      state.db.prepare('SELECT request_snapshot FROM video_generations WHERE id = ?').get(first.video_generation_id).request_snapshot,
+    );
+    assert.deepEqual(
+      firstSnapshot.identity_bindings.map((binding) => binding.redraw_asset_id),
+      [Number(redrawA), Number(redrawB)],
+    );
+
+    const storedReferences = JSON.parse(
+      state.db.prepare('SELECT references_json FROM redraw_shots WHERE id = ?').get(shotId).references_json,
+    );
+    state.db.prepare('UPDATE redraw_shots SET references_json = ? WHERE id = ?')
+      .run(JSON.stringify(storedReferences.reverse()), shotId);
+    const second = await generateShot(ctx(state.db, { schedule() {} }), { shotId });
+
+    assert.equal(second.reused, true);
+    assert.equal(second.video_generation_id, first.video_generation_id);
     assert.equal(count(state.db, 'video_generations'), 1);
     assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
   } finally {

@@ -208,6 +208,34 @@ test('返回每个未审批引用及直接定位信息', () => {
   }
 });
 
+test('重复无效或未审批引用按唯一 reference key 计数并继续合并定位镜头', () => {
+  const state = setup();
+  try {
+    addAsset(state.db, { id: 14, kind: 'voice' });
+    addShot(state.db, state.versionId, 1, [
+      { kind: 'voice', asset_id: 14 },
+      { kind: 'voice', asset_id: 14 },
+      { kind: 'prop', asset_id: 999 },
+      { kind: 'prop', asset_id: 999 },
+    ]);
+
+    const gate = evaluateGenerationGate(state.db, state.versionId, { tenantId: 'tenant-a', userId: 'user-a' });
+    assert.equal(gate.ok, false);
+    assert.equal(gate.blocking.find((item) => item.code === 'asset_not_approved').asset_count, 1);
+    assert.equal(gate.blocking.find((item) => item.code === 'asset_reference_invalid').asset_count, 1);
+    assert.deepEqual(gate.missing.map((item) => ({
+      kind: item.kind,
+      asset_id: item.asset_id,
+      shot_ids: item.shot_ids,
+    })), [
+      { kind: 'prop', asset_id: 999, shot_ids: [1] },
+      { kind: 'voice', asset_id: 14, shot_ids: [1] },
+    ]);
+  } finally {
+    state.db.close();
+  }
+});
+
 test('退回已引用净景会重新关闭视频生成门禁', () => {
   const state = setup();
   try {

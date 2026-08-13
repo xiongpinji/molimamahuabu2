@@ -129,8 +129,8 @@ function evaluateGenerationGate(db, versionId, owner = {}) {
     blocking.push({ code: 'shots_missing', reason: '当前版本没有可生成分镜' });
   }
   const missing = new Map();
-  let invalidReferenceCount = 0;
-  let unapprovedReferenceCount = 0;
+  const invalidReferenceKeys = new Set();
+  const unapprovedReferenceKeys = new Set();
   const characterIdentityPackRequired = new Set();
   const characterIdentityBindingStale = new Set();
   for (const shot of shots) {
@@ -138,10 +138,10 @@ function evaluateGenerationGate(db, versionId, owner = {}) {
     for (const reference of readShotReferences(shot)) {
       const row = findAsset(db, version, reference);
       if (!isApprovedAsset(row)) {
-        if (row) unapprovedReferenceCount += 1;
-        else invalidReferenceCount += 1;
         const assetId = row ? Number(row.id) : reference.asset_id;
         const key = referenceKey(reference.kind, assetId);
+        if (row) unapprovedReferenceKeys.add(key);
+        else invalidReferenceKeys.add(key);
         const item = missing.get(key) || {
           kind: reference.kind,
           asset_id: assetId,
@@ -202,18 +202,18 @@ function evaluateGenerationGate(db, versionId, owner = {}) {
   const items = [...missing.values()].sort((left, right) => (
     left.shot_ids[0] - right.shot_ids[0] || left.kind.localeCompare(right.kind) || left.asset_id - right.asset_id
   ));
-  if (invalidReferenceCount > 0) {
+  if (invalidReferenceKeys.size > 0) {
     blocking.push({
       code: 'asset_reference_invalid',
       reason: '分镜引用不属于当前版本的转绘资产',
-      asset_count: invalidReferenceCount,
+      asset_count: invalidReferenceKeys.size,
     });
   }
-  if (unapprovedReferenceCount > 0) {
+  if (unapprovedReferenceKeys.size > 0) {
     blocking.push({
       code: 'asset_not_approved',
       reason: '存在尚未生成或批准的分镜引用资产',
-      asset_count: unapprovedReferenceCount,
+      asset_count: unapprovedReferenceKeys.size,
     });
   }
   if (characterIdentityPackRequired.size > 0) {

@@ -454,6 +454,21 @@ function buildNativeGeneration(shot, parsed, nativeCapability, pack) {
   };
 }
 
+function canonicalIdentityBindings(value) {
+  const bindings = Array.isArray(value) ? value : [];
+  return bindings.map((binding) => ({
+    redraw_asset_id: Number(binding?.redraw_asset_id),
+    source_character_key: String(binding?.source_character_key || '').trim(),
+    target_actor_label: String(binding?.target_actor_label || '').trim(),
+    identity_pack_sha256: String(binding?.identity_pack_sha256 || '').trim(),
+  })).sort((left, right) => (
+    left.redraw_asset_id - right.redraw_asset_id
+    || left.source_character_key.localeCompare(right.source_character_key)
+    || left.target_actor_label.localeCompare(right.target_actor_label)
+    || left.identity_pack_sha256.localeCompare(right.identity_pack_sha256)
+  ));
+}
+
 function buildRequestSnapshot(generation, sourceConditioning, referenceImageUrls, identityBindings) {
   return {
     prompt: generation.prompt,
@@ -463,7 +478,7 @@ function buildRequestSnapshot(generation, sourceConditioning, referenceImageUrls
     resolution: generation.resolution,
     reference_image_urls: referenceImageUrls,
     reference_video_urls: [sourceConditioning.referenceVideoUrl],
-    identity_bindings: identityBindings,
+    identity_bindings: canonicalIdentityBindings(identityBindings),
     generate_audio: generation.generateAudio === true,
     ai_service_config_id: generation.aiServiceConfigId,
     config_updated_at: generation.aiServiceConfigUpdatedAt,
@@ -491,10 +506,33 @@ function sameRequestSnapshot(storedSnapshot, expectedSnapshot) {
     }
   }
   if (Object.prototype.hasOwnProperty.call(expectedSnapshot, 'identity_bindings')
-    && JSON.stringify(stored.identity_bindings) !== JSON.stringify(expectedSnapshot.identity_bindings)) {
+    && (!Array.isArray(stored.identity_bindings)
+      || JSON.stringify(canonicalIdentityBindings(stored.identity_bindings))
+        !== JSON.stringify(canonicalIdentityBindings(expectedSnapshot.identity_bindings)))) {
     return false;
   }
   return true;
+}
+
+function normalizeReferencePointer(value, fallbackKind = null) {
+  const kind = String(value.kind || value.type || value.asset_kind || fallbackKind || '').trim();
+  let rawId = value.redraw_asset_id ?? value.redrawAssetId ?? value.asset_id ?? value.assetId;
+  let inferredKind = kind;
+  for (const candidate of ['character', 'scene', 'prop', 'voice']) {
+    const candidateId = value[`${candidate}_asset_id`] ?? value[`${candidate}AssetId`];
+    if (rawId == null && candidateId != null) {
+      rawId = candidateId;
+      inferredKind = candidate;
+    }
+  }
+  if (rawId == null && value.clean_plate_asset_id != null) {
+    rawId = value.clean_plate_asset_id;
+    inferredKind = 'scene';
+  }
+  const id = Number(rawId);
+  if (!['character', 'scene', 'prop', 'voice'].includes(inferredKind)
+    || !Number.isInteger(id) || id <= 0) return null;
+  return { kind: inferredKind, id };
 }
 
 function parseReferenceValue(value, fallbackKind = null, out = []) {
@@ -503,13 +541,8 @@ function parseReferenceValue(value, fallbackKind = null, out = []) {
     return out;
   }
   if (!value || typeof value !== 'object') return out;
-  const kind = String(value.kind || value.type || value.asset_kind || fallbackKind || '').trim();
-  let rawId = value.redraw_asset_id ?? value.redrawAssetId ?? value.asset_id ?? value.assetId;
-  if (rawId == null && value.clean_plate_asset_id != null) rawId = value.clean_plate_asset_id;
-  const id = Number(rawId);
-  if (['character', 'scene', 'prop', 'voice'].includes(kind) && Number.isInteger(id) && id > 0) {
-    out.push({ kind, id });
-  }
+  const normalized = normalizeReferencePointer(value, fallbackKind);
+  if (normalized) out.push(normalized);
   for (const key of ['references', 'assets', 'asset_references', 'assetReferences']) {
     if (value[key] != null) parseReferenceValue(value[key], fallbackKind, out);
   }
@@ -561,16 +594,13 @@ function collectIdentityBindings(parsed) {
       return;
     }
     if (!value || typeof value !== 'object') return;
-    const kind = String(value.kind || value.type || value.asset_kind || '').trim();
-    const redrawAssetId = Number(
-      value.redraw_asset_id ?? value.redrawAssetId ?? value.asset_id ?? value.assetId,
-    );
-    if (kind === 'character' && Number.isInteger(redrawAssetId) && redrawAssetId > 0) {
-      const key = `${kind}:${redrawAssetId}`;
+    const normalized = normalizeReferencePointer(value);
+    if (normalized?.kind === 'character') {
+      const key = `${normalized.kind}:${normalized.id}`;
       if (!seen.has(key)) {
         seen.add(key);
         bindings.push({
-          redraw_asset_id: redrawAssetId,
+          redraw_asset_id: normalized.id,
           source_character_key: String(value.source_character_key || '').trim(),
           target_actor_label: String(value.target_actor_label || '').trim(),
           identity_pack_sha256: String(value.identity_pack_sha256 || '').trim(),
@@ -583,7 +613,7 @@ function collectIdentityBindings(parsed) {
   }
   collect(parsed.references);
   collect(parsed.draft.references || parsed.draft.assets || parsed.draft.asset_references);
-  return bindings;
+  return canonicalIdentityBindings(bindings);
 }
 
 function preflightVideoGeneration(generation, sourceConditioning, referenceImageUrls) {
