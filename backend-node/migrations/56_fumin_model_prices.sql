@@ -14,5 +14,5 @@ INSERT INTO model_credit_prices (
   ('fumin-seedance-2.0-fast', 107, 'fumin Seedance 2.0 Fast', 'video', 'enabled', 'second', 'second', 280000, 0, 0, datetime('now')),
   ('fumin-seedance-2.0-mini', 50, 'fumin Seedance 2.0 Mini', 'video', 'enabled', 'second', 'second', 100000, 0, 0, datetime('now')),
   ('fumin-gpt-image-2', 40, 'fumin GPT Image 2', 'image', 'enabled', 'request', 'image', 46000, 0, 0, datetime('now')),
-  ('fumin-gpt-image-2-4k', 70, 'fumin GPT Image 2 4K', 'image', 'enabled', 'request', 'image', 80000, 0, 0, datetime('now'))
+  ('fumin-gpt-image-2-4K', 70, 'fumin GPT Image 2 4K', 'image', 'enabled', 'request', 'image', 80000, 0, 0, datetime('now'))
 ON CONFLICT(model) DO NOTHING;

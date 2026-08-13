@@ -86,6 +86,19 @@ test('fumin 图片配置只允许已验证别名并自动填充 OpenAI 图片端
   }
 });
 
+test('fumin 4K 图片价格迁移保存前后端一致的规范别名', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  try {
+    const row = db.prepare(
+      "SELECT model FROM model_credit_prices WHERE model = ? COLLATE NOCASE"
+    ).get('fumin-gpt-image-2-4K');
+    assert.equal(row?.model, 'fumin-gpt-image-2-4K');
+  } finally {
+    db.close();
+  }
+});
+
 test('图片生成路由提交上游模型名并解析 base64 结果', async (t) => {
   let request;
   const server = http.createServer((req, res) => {
