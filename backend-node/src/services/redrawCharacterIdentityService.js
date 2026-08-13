@@ -73,8 +73,7 @@ function packFrom(value) {
   return value;
 }
 
-function identityPackStatus(rowOrPack) {
-  const pack = packFrom(rowOrPack);
+function packCompleteness(pack) {
   const confirmedViews = normalizeViews(pack?.confirmed_views);
   const missingViews = REQUIRED_VIEWS.filter((view) => !confirmedViews.includes(view));
   const missingConfirmations = [];
@@ -91,10 +90,44 @@ function identityPackStatus(rowOrPack) {
     && Boolean(String(pack?.source_character_key || '').trim())
     && sanitizeArtifact(pack?.artifact) !== null;
   return {
-    has_identity_pack: Boolean(pack),
     ready: validContract && missingViews.length === 0 && missingConfirmations.length === 0,
     missing_views: missingViews,
     missing_confirmations: missingConfirmations,
+  };
+}
+
+function canonicalPackFields(pack) {
+  return {
+    schema_version: pack?.schema_version === SCHEMA_VERSION ? SCHEMA_VERSION : String(pack?.schema_version || ''),
+    source_character_key: String(pack?.source_character_key || '').trim(),
+    target_actor_label: String(pack?.target_actor_label || '').trim(),
+    artifact: sanitizeArtifact(pack?.artifact),
+    confirmed_views: normalizeViews(pack?.confirmed_views),
+    live_action_human_confirmed: pack?.live_action_human_confirmed === true,
+    adult_status: pack?.adult_status === 'verified_18_plus' ? 'verified_18_plus' : null,
+    identity_consistency_confirmed: pack?.identity_consistency_confirmed === true,
+    ready: packCompleteness(pack).ready,
+    reviewed_by: String(pack?.reviewed_by || '').trim() || null,
+    reviewed_at: String(pack?.reviewed_at || '').trim() || null,
+  };
+}
+
+function canonicalPackHash(pack) {
+  return sha256(stableJson(canonicalPackFields(pack)));
+}
+
+function identityPackStatus(rowOrPack) {
+  const pack = packFrom(rowOrPack);
+  const completeness = packCompleteness(pack);
+  const storedHash = String(pack?.pack_sha256 || '');
+  const hashValid = /^[0-9a-f]{64}$/.test(storedHash)
+    && storedHash === canonicalPackHash(pack);
+  return {
+    has_identity_pack: Boolean(pack),
+    ready: completeness.ready && hashValid,
+    missing_views: completeness.missing_views,
+    missing_confirmations: completeness.missing_confirmations,
+    hash_valid: hashValid,
   };
 }
 
@@ -146,12 +179,65 @@ function sourceCharacterKey(row) {
   return normalized;
 }
 
-function resolveArtifact(db, storageRoot, assetId) {
-  const providerAssetId = Number(assetId);
+function samePath(left, right) {
+  const normalize = process.platform === 'win32'
+    ? (value) => path.resolve(value).toLowerCase()
+    : (value) => path.resolve(value);
+  return normalize(left) === normalize(right);
+}
+
+function isInside(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return Boolean(relative) && !relative.startsWith(`..${path.sep}`)
+    && relative !== '..' && !path.isAbsolute(relative);
+}
+
+function sameFileIdentity(left, right) {
+  return Boolean(left && right) && left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameOpenFileState(left, right) {
+  return sameFileIdentity(left, right)
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
+}
+
+function resolveArtifact(ctx, row) {
+  const { db, storageRoot, tenantId, userId, versionId } = ctx;
+  const providerAssetId = Number(row.asset_id);
   if (!Number.isSafeInteger(providerAssetId) || providerAssetId <= 0) {
     throw codedError('REDRAW_IDENTITY_ARTIFACT_INVALID', '角色身份图片无效');
   }
   const asset = db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(providerAssetId);
+  const explicitCurrentLink = row.kind === 'character'
+    && Number(row.version_id) === versionId
+    && String(row.tenant_id || '') === tenantId
+    && String(row.user_id || '') === userId
+    && Number(row.asset_id) === providerAssetId;
+  if (!explicitCurrentLink) {
+    throw codedError('REDRAW_IDENTITY_ARTIFACT_NOT_OWNED', '角色身份图片不属于当前本地化角色');
+  }
+  if (asset?.drama_id != null) {
+    const drama = db.prepare('SELECT tenant_id, user_id FROM dramas WHERE id = ? AND deleted_at IS NULL')
+      .get(Number(asset.drama_id));
+    const dramaTenantId = String(drama?.tenant_id ?? '').trim();
+    const dramaUserId = String(drama?.user_id ?? '').trim();
+    const owned = dramaTenantId
+      ? dramaTenantId === tenantId && (!dramaUserId || dramaUserId === userId)
+      : Boolean(dramaUserId) && dramaUserId === userId;
+    if (!owned) {
+      throw codedError('REDRAW_IDENTITY_ARTIFACT_NOT_OWNED', '角色身份图片不属于当前租户用户');
+    }
+  }
+  const hookReadable = typeof ctx.assetReader?.canRead === 'function'
+    ? ctx.assetReader.canRead(asset) === true
+    : typeof ctx.canReadArtifact === 'function'
+      ? ctx.canReadArtifact(providerAssetId) === true
+      : true;
+  if (!hookReadable) {
+    throw codedError('REDRAW_IDENTITY_ARTIFACT_NOT_READABLE', '角色身份图片不可读取');
+  }
   const mimeType = String(asset?.mime_type || '').trim().toLowerCase();
   const width = Number(asset?.width);
   const height = Number(asset?.height);
@@ -168,36 +254,64 @@ function resolveArtifact(db, storageRoot, assetId) {
     throw codedError('REDRAW_IDENTITY_ARTIFACT_PATH_INVALID', '角色身份图片路径无效');
   }
 
+  const fsApi = ctx.fs || fs;
   let rootRealPath;
   try {
-    rootRealPath = fs.realpathSync(storageRoot);
+    rootRealPath = fsApi.realpathSync(storageRoot);
   } catch (_) {
     throw codedError('REDRAW_IDENTITY_ARTIFACT_NOT_READABLE', '资产存储根目录不可读取');
   }
   const candidatePath = path.resolve(rootRealPath, localPath);
-  const candidateRelative = path.relative(rootRealPath, candidatePath);
-  if (!candidateRelative || candidateRelative.startsWith(`..${path.sep}`) || candidateRelative === '..'
-    || path.isAbsolute(candidateRelative)) {
+  if (!isInside(rootRealPath, candidatePath)) {
     throw codedError('REDRAW_IDENTITY_ARTIFACT_PATH_INVALID', '角色身份图片必须位于资产存储目录内');
   }
 
-  let realPath;
+  let realPathBefore;
+  try {
+    realPathBefore = fsApi.realpathSync(candidatePath);
+  } catch (_) {
+    throw codedError('REDRAW_IDENTITY_ARTIFACT_NOT_READABLE', '角色身份图片不可读取');
+  }
+  if (!isInside(rootRealPath, realPathBefore)) {
+    throw codedError('REDRAW_IDENTITY_ARTIFACT_PATH_INVALID', '角色身份图片符号链接越界');
+  }
+
+  let fd = null;
   let bytes;
   try {
-    realPath = fs.realpathSync(candidatePath);
-    const realRelative = path.relative(rootRealPath, realPath);
-    if (!realRelative || realRelative.startsWith(`..${path.sep}`) || realRelative === '..'
-      || path.isAbsolute(realRelative)) {
-      throw codedError('REDRAW_IDENTITY_ARTIFACT_PATH_INVALID', '角色身份图片符号链接越界');
-    }
-    if (!fs.statSync(realPath).isFile()) {
+    const constants = fsApi.constants || fs.constants;
+    const flags = constants.O_RDONLY | (constants.O_NOFOLLOW || 0);
+    fd = fsApi.openSync(candidatePath, flags);
+    const fdBefore = fsApi.fstatSync(fd);
+    if (!fdBefore.isFile()) {
       throw codedError('REDRAW_IDENTITY_ARTIFACT_NOT_READABLE', '角色身份资产不是可读文件');
     }
-    fs.accessSync(realPath, fs.constants.R_OK);
-    bytes = fs.readFileSync(realPath);
+    const realPathAfter = fsApi.realpathSync(candidatePath);
+    if (!samePath(realPathBefore, realPathAfter) || !isInside(rootRealPath, realPathAfter)) {
+      throw codedError('REDRAW_IDENTITY_ARTIFACT_CHANGED', '角色身份图片路径在读取期间发生变化');
+    }
+    if (!sameFileIdentity(fdBefore, fsApi.statSync(realPathAfter))) {
+      throw codedError('REDRAW_IDENTITY_ARTIFACT_CHANGED', '角色身份图片文件身份在读取期间发生变化');
+    }
+    bytes = fsApi.readFileSync(fd);
+    const fdAfter = fsApi.fstatSync(fd);
+    const realPathFinal = fsApi.realpathSync(candidatePath);
+    if (!samePath(realPathAfter, realPathFinal)
+      || !sameOpenFileState(fdBefore, fdAfter)
+      || !sameFileIdentity(fdAfter, fsApi.statSync(realPathFinal))) {
+      throw codedError('REDRAW_IDENTITY_ARTIFACT_CHANGED', '角色身份图片在读取期间发生变化');
+    }
   } catch (error) {
     if (error?.code?.startsWith('REDRAW_IDENTITY_')) throw error;
     throw codedError('REDRAW_IDENTITY_ARTIFACT_NOT_READABLE', '角色身份图片不可读取');
+  } finally {
+    if (fd !== null) {
+      try {
+        fsApi.closeSync(fd);
+      } catch (_) {
+        throw codedError('REDRAW_IDENTITY_ARTIFACT_NOT_READABLE', '角色身份图片读取句柄关闭失败');
+      }
+    }
   }
 
   return {
@@ -233,6 +347,7 @@ function projectSavedRow(row) {
 
 function saveIdentityPack(ctx, assetId, input = {}) {
   const { db, tenantId, userId, versionId, storageRoot } = normalizeContext(ctx);
+  const identityContext = { ...ctx, db, tenantId, userId, versionId, storageRoot };
   const id = Number(assetId);
   const expectedUpdatedAt = String(input.expected_updated_at ?? input.expectedUpdatedAt ?? '').trim();
   if (!Number.isSafeInteger(id) || id <= 0) {
@@ -258,7 +373,7 @@ function saveIdentityPack(ctx, assetId, input = {}) {
     schema_version: SCHEMA_VERSION,
     source_character_key: sourceCharacterKey(row),
     target_actor_label: String(input.target_actor_label ?? input.targetActorLabel ?? '').trim(),
-    artifact: resolveArtifact(db, storageRoot, row.asset_id),
+    artifact: resolveArtifact(identityContext, row),
     confirmed_views: normalizeViews(input.confirmed_views ?? input.confirmedViews),
     live_action_human_confirmed: input.live_action_human_confirmed === true
       || input.liveActionHumanConfirmed === true,
@@ -272,8 +387,8 @@ function saveIdentityPack(ctx, assetId, input = {}) {
     reviewed_by: userId,
     reviewed_at: reviewedAt,
   };
-  identityPack.ready = identityPackStatus(identityPack).ready;
-  identityPack.pack_sha256 = sha256(stableJson(identityPack));
+  identityPack.ready = packCompleteness(identityPack).ready;
+  identityPack.pack_sha256 = canonicalPackHash(identityPack);
 
   const sourcePayload = parseJson(row.source_ref_json, {});
   sourcePayload.identity_pack = identityPack;
@@ -300,13 +415,13 @@ function saveIdentityPack(ctx, assetId, input = {}) {
 
 function identityBindingForAsset(row) {
   const pack = readIdentityPack(row);
-  if (!pack) return null;
+  if (!pack || !identityPackStatus(pack).ready) return null;
   return {
     source_character_key: pack.source_character_key,
     target_actor_label: pack.target_actor_label,
     artifact: pack.artifact,
     pack_sha256: pack.pack_sha256,
-    ready: identityPackStatus(pack).ready,
+    ready: true,
   };
 }
 

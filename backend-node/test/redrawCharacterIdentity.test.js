@@ -63,11 +63,12 @@ function addProviderAsset(state, input = {}) {
   const id = Number(input.id || 101);
   const localPath = input.localPath ?? `character-${id}.png`;
   state.db.prepare(`INSERT INTO assets
-    (id, name, type, category, url, local_path, mime_type, width, height,
+    (id, drama_id, name, type, category, url, local_path, mime_type, width, height,
      created_at, updated_at)
-    VALUES (?, '身份图片', ?, 'redraw', '', ?, ?, ?, ?, ?, ?)`)
+    VALUES (?, ?, '身份图片', ?, 'redraw', '', ?, ?, ?, ?, ?, ?)`)
     .run(
       id,
+      input.dramaId ?? null,
       input.type || 'image',
       localPath,
       input.mimeType || 'image/png',
@@ -118,8 +119,42 @@ function rowSnapshot(db, id) {
     FROM redraw_assets WHERE id = ?`).get(id);
 }
 
-function validPack(overrides = {}) {
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function canonicalPackFields(pack) {
   return {
+    schema_version: pack.schema_version,
+    source_character_key: pack.source_character_key,
+    target_actor_label: pack.target_actor_label,
+    artifact: {
+      asset_id: pack.artifact.asset_id,
+      sha256: pack.artifact.sha256,
+      width: pack.artifact.width,
+      height: pack.artifact.height,
+      mime_type: pack.artifact.mime_type,
+    },
+    confirmed_views: pack.confirmed_views,
+    live_action_human_confirmed: pack.live_action_human_confirmed,
+    adult_status: pack.adult_status,
+    identity_consistency_confirmed: pack.identity_consistency_confirmed,
+    ready: pack.ready,
+    reviewed_by: pack.reviewed_by,
+    reviewed_at: pack.reviewed_at,
+  };
+}
+
+function canonicalPackHash(pack) {
+  return crypto.createHash('sha256').update(stableJson(canonicalPackFields(pack))).digest('hex');
+}
+
+function validPack(overrides = {}) {
+  const pack = {
     schema_version: 'target-actor-identity-v1',
     source_character_key: 'character-1',
     target_actor_label: 'Actor Maya',
@@ -135,10 +170,15 @@ function validPack(overrides = {}) {
     adult_status: 'verified_18_plus',
     identity_consistency_confirmed: true,
     ready: true,
-    pack_sha256: 'a'.repeat(64),
     reviewed_by: 'user-a',
     reviewed_at: REVIEWED_AT,
     ...overrides,
+  };
+  return {
+    ...pack,
+    pack_sha256: Object.hasOwn(overrides, 'pack_sha256')
+      ? overrides.pack_sha256
+      : canonicalPackHash(pack),
   };
 }
 
@@ -255,6 +295,27 @@ test('任一必需视图或确认项缺失时身份包均不 ready', () => {
   assert.equal(identityPackStatus(validPack()).ready, true);
 });
 
+test('已存身份包内容漂移但保留旧哈希时不 ready、不绑定且投影 fail closed', () => {
+  const original = validPack();
+  const driftedPacks = [
+    { ...original, target_actor_label: 'Tampered Actor' },
+    { ...original, artifact: { ...original.artifact, width: 641 } },
+  ];
+
+  for (const identityPack of driftedPacks) {
+    assert.equal(identityPackStatus(identityPack).ready, false);
+    assert.equal(identityBindingForAsset(identityPack), null);
+    const projected = rowToAsset({
+      id: 1,
+      source_ref_json: JSON.stringify({ source_ref: { id: 'character-1' }, identity_pack: identityPack }),
+      status: 'generated',
+      approval_status: 'pending',
+    });
+    assert.equal(projected.identity_pack.ready, false);
+    assert.equal(projected.identity_pack_status.ready, false);
+  }
+});
+
 test('允许保存不完整身份包并明确投影缺项', () => {
   const state = setup();
   try {
@@ -303,6 +364,30 @@ test('owner、version、角色类型与 CAS 任一不匹配时数据库保持不
   }
 });
 
+test('当前角色误链到其他租户 drama 图片时拒绝且不写入身份哈希', () => {
+  const state = setup();
+  try {
+    fs.writeFileSync(path.join(state.root, 'character-151.png'), IMAGE_BYTES);
+    state.db.prepare(`INSERT INTO dramas
+      (id, title, tenant_id, user_id, created_at, updated_at)
+      VALUES (51, '其他租户项目', 'tenant-b', 'user-b', ?, ?)`)
+      .run(INITIAL_UPDATED_AT, INITIAL_UPDATED_AT);
+    addProviderAsset(state, { id: 151, dramaId: 51 });
+    const characterId = addCharacter(state, { assetId: 151 });
+    const before = rowSnapshot(state.db, characterId);
+
+    assert.throws(
+      () => saveIdentityPack(context(state), characterId, completeInput()),
+      (error) => error.code === 'REDRAW_IDENTITY_ARTIFACT_NOT_OWNED',
+    );
+    assert.deepEqual(rowSnapshot(state.db, characterId), before);
+    assert.equal(before.source_ref_json.includes('pack_sha256'), false);
+    assert.equal(before.source_ref_json.includes(crypto.createHash('sha256').update(IMAGE_BYTES).digest('hex')), false);
+  } finally {
+    close(state);
+  }
+});
+
 test('非图片、不可读、路径越界、根目录与符号链接逃逸均失败且不改库', () => {
   const state = setup();
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-character-outside-'));
@@ -333,6 +418,54 @@ test('非图片、不可读、路径越界、根目录与符号链接逃逸均�
       );
       assert.deepEqual(rowSnapshot(state.db, characterId), before);
     }
+  } finally {
+    close(state, [outside]);
+  }
+});
+
+test('文件打开后 realpath 漂移时关闭同一 fd 并拒绝写库', () => {
+  const state = setup();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-character-toctou-'));
+  try {
+    const candidate = path.join(state.root, 'character-251.png');
+    const outsideFile = path.join(outside, 'replaced.png');
+    fs.writeFileSync(candidate, IMAGE_BYTES);
+    fs.writeFileSync(outsideFile, Buffer.from('replaced-image'));
+    addProviderAsset(state, { id: 251, localPath: 'character-251.png' });
+    const characterId = addCharacter(state, { assetId: 251 });
+    const before = rowSnapshot(state.db, characterId);
+    let candidateRealpathCalls = 0;
+    let opened = 0;
+    let closed = 0;
+    const injectedFs = {
+      constants: fs.constants,
+      realpathSync(value) {
+        if (path.resolve(value) === path.resolve(candidate)) {
+          candidateRealpathCalls += 1;
+          if (candidateRealpathCalls > 1) return fs.realpathSync(outsideFile);
+        }
+        return fs.realpathSync(value);
+      },
+      openSync(...args) {
+        opened += 1;
+        return fs.openSync(...args);
+      },
+      fstatSync: (...args) => fs.fstatSync(...args),
+      statSync: (...args) => fs.statSync(...args),
+      readFileSync: (...args) => fs.readFileSync(...args),
+      closeSync(...args) {
+        closed += 1;
+        return fs.closeSync(...args);
+      },
+    };
+
+    assert.throws(
+      () => saveIdentityPack(context(state, { fs: injectedFs }), characterId, completeInput()),
+      (error) => error.code === 'REDRAW_IDENTITY_ARTIFACT_CHANGED',
+    );
+    assert.equal(opened, 1);
+    assert.equal(closed, 1);
+    assert.deepEqual(rowSnapshot(state.db, characterId), before);
   } finally {
     close(state, [outside]);
   }
