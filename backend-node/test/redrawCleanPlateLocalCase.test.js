@@ -7,6 +7,7 @@ const path = require('node:path');
 const sharp = require('sharp');
 
 const { buildLocalCleanPlateManifest } = require('../src/services/redrawCleanPlateLocalCaseService');
+const { main } = require('../scripts/run-redraw-clean-plate-local-case');
 
 const SHOT_IDS = ['shot-1', 'shot-6', 'shot-7', 'shot-8'];
 const IMAGE_WIDTH = 1280;
@@ -236,4 +237,95 @@ test('non_mask_similarity 低于 0.97 时拒绝生成 clean-plate manifest', asy
     () => buildLocalCleanPlateManifest({ root, entries: lowQualityEntries }),
     { code: 'REDRAW_CLEAN_PLATE_QUALITY_FAILED' },
   );
+});
+
+function streamCapture() {
+  const chunks = [];
+  return {
+    stream: { write(value) { chunks.push(String(value)); } },
+    text() { return chunks.join(''); },
+  };
+}
+
+test('CLI fixture dry-run 生成脱敏 manifest 和四镜 contact sheet', async (t) => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'redraw-clean-plate-cli-output-'));
+  t.after(() => fs.promises.rm(root, { recursive: true, force: true }));
+  const outputDir = path.join(root, 'output');
+  const stdout = streamCapture();
+  const stderr = streamCapture();
+
+  const exitCode = await main(['--fixture', '--output-dir', outputDir], {
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+  });
+
+  assert.equal(exitCode, 0);
+  assert.match(stdout.text(), /REDRAW_CLEAN_PLATE_LOCAL_OK/);
+  assert.equal(stderr.text(), '');
+
+  const manifestPath = path.join(outputDir, 'redraw-clean-plate-local-manifest.json');
+  const contactSheetPath = path.join(outputDir, 'redraw-clean-plate-contact-sheet.jpg');
+  assert.ok(fs.existsSync(manifestPath));
+  assert.ok(fs.existsSync(contactSheetPath));
+  const manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf8'));
+  assert.deepEqual(manifest.shots.map((shot) => shot.shot_id), SHOT_IDS);
+  assert.equal(manifest.shots.every((shot) => shot.review.status === 'pending'), true);
+  assert.equal(manifest.shots.every((shot) => shot.ready_for_reference === false), true);
+  assert.equal(JSON.stringify(manifest).includes(root), false);
+
+  const contactSheetMetadata = await sharp(contactSheetPath).metadata();
+  assert.equal(contactSheetMetadata.width, 960);
+  assert.equal(contactSheetMetadata.height, 720);
+
+  const scriptSource = await fs.promises.readFile(
+    path.join(__dirname, '..', 'scripts', 'run-redraw-clean-plate-local-case.js'),
+    'utf8',
+  );
+  assert.doesNotMatch(scriptSource, /(?:https?:|fetch\s*\(|process\.env|api[_-]?key)/i);
+});
+
+test('CLI 未知参数返回稳定错误码', async () => {
+  const stdout = streamCapture();
+  const stderr = streamCapture();
+  const exitCode = await main(['--unknown'], { stdout: stdout.stream, stderr: stderr.stream });
+
+  assert.equal(exitCode, 2);
+  assert.match(stderr.text(), /error_code=REDRAW_CLEAN_PLATE_LOCAL_CLI_INVALID/);
+});
+
+test('CLI manifest 缺少四镜时返回 service 错误码', async (t) => {
+  const { root, entries } = await makeFixture(t);
+  const manifestRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'redraw-clean-plate-cli-manifest-'));
+  t.after(() => fs.promises.rm(manifestRoot, { recursive: true, force: true }));
+  const manifestPath = path.join(manifestRoot, 'input.json');
+  await fs.promises.writeFile(manifestPath, JSON.stringify({ entries: entries.slice(0, 3) }), 'utf8');
+  const outputDir = path.join(manifestRoot, 'output');
+  const stdout = streamCapture();
+  const stderr = streamCapture();
+
+  const exitCode = await main(['--manifest', manifestPath, '--output-dir', outputDir], {
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+  });
+
+  assert.equal(exitCode, 1);
+  assert.match(stderr.text(), /error_code=REDRAW_CLEAN_PLATE_SHOTS_INVALID/);
+  assert.equal(fs.existsSync(path.join(outputDir, 'redraw-clean-plate-local-manifest.json')), false);
+});
+
+test('CLI 输出目录不可写时返回稳定错误码', async (t) => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'redraw-clean-plate-cli-output-file-'));
+  t.after(() => fs.promises.rm(root, { recursive: true, force: true }));
+  const outputPath = path.join(root, 'output-file');
+  await fs.promises.writeFile(outputPath, 'not a directory', 'utf8');
+  const stdout = streamCapture();
+  const stderr = streamCapture();
+
+  const exitCode = await main(['--fixture', '--output-dir', outputPath], {
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+  });
+
+  assert.equal(exitCode, 1);
+  assert.match(stderr.text(), /error_code=REDRAW_CLEAN_PLATE_LOCAL_OUTPUT_INVALID/);
 });

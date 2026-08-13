@@ -22,6 +22,7 @@
     "audit:canvas-reference-sequence": "node scripts/verify-canvas-reference-sequence-contract.js",
     "verify:usmercari-image": "node scripts/verify-usmercari-image-models.js",
     "verify:icreat-mini-reference-video": "node scripts/run-icreat-mini-reference-video-case.js",
+    "verify:redraw-clean-plate-local": "node scripts/run-redraw-clean-plate-local-case.js --fixture",
     "audit:usmercari-image": "node scripts/verify-usmercari-image-release-contract.js",
     "verify:toapis-video": "node scripts/verify-toapis-video-models.js",
     "verify:feituo-video": "node scripts/verify-feituo-video-models.js",
