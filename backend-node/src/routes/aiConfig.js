@@ -62,7 +62,12 @@ function vendorLock(cfg) {
 }
 
 function isVideoSettingsError(error) {
-  return error?.code === 'INVALID_VIDEO_DURATION' || error?.code === 'INVALID_VIDEO_SETTINGS';
+  return [
+    'INVALID_VIDEO_DURATION',
+    'INVALID_VIDEO_SETTINGS',
+    'INVALID_FUMIN_MODEL',
+    'INVALID_FUMIN_MODEL_KEY_ISOLATION',
+  ].includes(error?.code);
 }
 
 function create(db, log, cfg) {

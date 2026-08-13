@@ -13,6 +13,7 @@ const imageClient = require('./imageClient');
 const aihubccClient = require('./aihubccClient');
 const feituoVideoClient = require('./feituoVideoClient');
 const usmercariVideoClient = require('./usmercariVideoClient');
+const fuminVideoClient = require('./fuminVideoClient');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
 const { snapshotVoiceMap } = require('./storyboardVoiceLockService');
 const storyboardVoicePromptService = require('./storyboardVoicePromptService');
@@ -47,6 +48,7 @@ function inferVideoProtocol(provider) {
   if (p === 'icreat' || p === 'icreat_ai' || p === 'icreat-seedance') return 'icreat_task';
   if (p === 'feituo' || p === 'feituo_open') return 'feituo_open';
   if (p === 'usmercari' || p === 'usmercari_media') return 'usmercari_media';
+  if (p === 'fumin' || p === 'fumin_video') return 'fumin_video';
   if (p === 'xai' || p === 'grok') return 'xai';
   if (p === 'agnes') return 'agnes';
   return 'openai';
@@ -157,6 +159,7 @@ function resolveVideoProtocol(config, modelHint) {
   }
   if (provider === 'feituo' || provider === 'feituo_open') protocol = 'feituo_open';
   if (provider === 'usmercari' || provider === 'usmercari_media') protocol = 'usmercari_media';
+  if (provider === 'fumin' || provider === 'fumin_video') protocol = 'fumin_video';
   if (provider === 'aihubcc' || provider === 'aihubcc_video') protocol = 'aihubcc';
   const baseLower = String(config.base_url || '').toLowerCase();
   const modelLower = String(modelHint || '').toLowerCase();
@@ -1091,6 +1094,7 @@ function buildQueryUrl(config, taskId) {
   else if (proto === 'agnes') defaultEp = '/videos/{taskId}';
   else if (proto === 'icreat_task') defaultEp = '/v1/task/query-status';
   else if (proto === 'usmercari_media') defaultEp = '/cpa-file/fetch';
+  else if (proto === 'fumin_video') return fuminVideoClient.buildFuminQueryUrl(config, taskId);
   else defaultEp = '/video/task/{taskId}';
   let ep = config.query_endpoint || defaultEp;
   if (
@@ -4675,6 +4679,33 @@ async function callVideoApi(db, log, opts) {
     });
   }
 
+  if (protocol === 'fumin_video') {
+    const rawReferences = [...new Set([
+      image_url,
+      first_frame_url,
+      last_frame_url,
+      ...(Array.isArray(opts.reference_urls) ? opts.reference_urls : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean))];
+    return fuminVideoClient.callFuminVideoApi(config, log, {
+      ...opts,
+      model,
+      prompt,
+      image_url: undefined,
+      first_frame_url: undefined,
+      last_frame_url: undefined,
+      reference_urls: rawReferences,
+      resolve_image: (raw, index) => resolveVolcOmniImageAsync(
+        raw,
+        opts.files_base_url,
+        opts.storage_local_path,
+        log,
+        video_gen_id,
+        index,
+      ),
+      video_gen_id,
+    });
+  }
+
   if (protocol === 'feituo_open') {
     const rawReferences = [...new Set([
       opts.image_url,
@@ -5016,6 +5047,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isIcreat = protocol === 'icreat_task';
   const isFeituo = protocol === 'feituo_open';
   const isUsmercari = protocol === 'usmercari_media';
+  const isFumin = protocol === 'fumin_video';
   /** 轮询日志里响应体最大字符数（即梦/方舟等 JSON 可能较长）；0 表示不截断（慎用） */
   const pollLogBodyMax = (() => {
     const v = String(process.env.VIDEO_POLL_LOG_MAX || '16384').trim();
@@ -5113,6 +5145,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           Authorization: 'Bearer ' + usmercariVideoClient.resolveUsmercariApiKey(config),
           'Content-Type': 'application/json',
         };
+      } else if (isFumin) {
+        url = fuminVideoClient.buildFuminQueryUrl(config, taskId);
+        headers = { Authorization: 'Bearer ' + (config.api_key || '') };
       } else {
         url = queryUrl();
         headers = { Authorization: 'Bearer ' + (config.api_key || '') };
@@ -5187,6 +5222,19 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           round: pollRound,
           state: result.state,
           progress: result.progress,
+        });
+        if (result.state === 'completed') return { video_url: result.videoUrl };
+        if (result.state === 'failed') return { error: result.error };
+        continue;
+      }
+
+      if (isFumin) {
+        const result = fuminVideoClient.parseFuminStatusPayload(data);
+        log.info('[fumin 视频] 轮询状态', {
+          video_gen_id: videoGenId,
+          round: pollRound,
+          state: result.state,
+          has_video_url: !!result.videoUrl,
         });
         if (result.state === 'completed') return { video_url: result.videoUrl };
         if (result.state === 'failed') return { error: result.error };

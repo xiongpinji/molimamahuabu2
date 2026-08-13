@@ -24,7 +24,19 @@ const USMERCARI_VIDEO_CAPABILITIES = Object.freeze({
   supportsAudio: true,
 });
 
+const FUMIN_VIDEO_CAPABILITIES = Object.freeze({
+  durations: Object.freeze([5]),
+  aspectRatios: Object.freeze(['16:9']),
+  resolutions: Object.freeze(['480p', '720p']),
+  maxReferences: 1,
+  supportsImageReference: true,
+});
+
 function providerCapabilities(provider, model) {
+  if (['fumin', 'fumin_video'].includes(String(provider || '').toLowerCase())
+    && ['fumin-seedance-2.0-fast', 'fumin-seedance-2.0-mini'].includes(String(model))) {
+    return { ...FUMIN_VIDEO_CAPABILITIES };
+  }
   if (!['usmercari', 'usmercari_media'].includes(String(provider || '').toLowerCase())) return {};
   if (!['MiniMax H3', 'seedance-2.0-fast', 'seedance-2.0-mini'].includes(String(model))) return {};
   const resolutions = String(model) === 'MiniMax H3' ? ['480p'] : ['480p', '720p'];
