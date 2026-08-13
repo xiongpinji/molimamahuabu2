@@ -4,12 +4,12 @@
 
 **静态四镜 clean plate 本地合同通过。**
 
-本次证据仅覆盖本地 fixture 的 manifest 与 contact sheet 生成，以及对应 Node 测试；不外推为供应商生成或生产验收。
+本次证据仅覆盖本地 fixture 的 manifest 与 contact sheet 生成，以及对应 Node 测试；不外推为供应商生成或生产验收，**不代表整段视频已完成去人**。
 
 ## 代码状态
 
 - 分支：`codex/redraw-r12-merge-20260809`
-- 短 HEAD：`6a2c1035`
+- 短 HEAD：`3ca0b79c`
 
 ## 执行命令与结果
 
@@ -41,12 +41,14 @@ fixture 生成四个镜头：`shot-1`、`shot-6`、`shot-7`、`shot-8`。每镜�
 
 对应相对文件名：
 
-| 镜头 | source | mask | clean_plate |
-|---|---|---|---|
-| shot-1 | `shots/shot-1/source.png` | `shots/shot-1/mask.png` | `shots/shot-1/clean-plate.png` |
-| shot-6 | `shots/shot-6/source.png` | `shots/shot-6/mask.png` | `shots/shot-6/clean-plate.png` |
-| shot-7 | `shots/shot-7/source.png` | `shots/shot-7/mask.png` | `shots/shot-7/clean-plate.png` |
-| shot-8 | `shots/shot-8/source.png` | `shots/shot-8/mask.png` | `shots/shot-8/clean-plate.png` |
+| 镜头 | source | mask | clean_plate | review | reference_gate |
+|---|---|---|---|---|---|
+| shot-1 | `shots/shot-1/source.png` | `shots/shot-1/mask.png` | `shots/shot-1/clean-plate.png` | `pending` | `ready_for_reference=false` |
+| shot-6 | `shots/shot-6/source.png` | `shots/shot-6/mask.png` | `shots/shot-6/clean-plate.png` | `pending` | `ready_for_reference=false` |
+| shot-7 | `shots/shot-7/source.png` | `shots/shot-7/mask.png` | `shots/shot-7/clean-plate.png` | `pending` | `ready_for_reference=false` |
+| shot-8 | `shots/shot-8/source.png` | `shots/shot-8/mask.png` | `shots/shot-8/clean-plate.png` | `pending` | `ready_for_reference=false` |
+
+上表逐镜完整链为：`source → mask → clean_plate → review → reference_gate`；四镜均停在人工 review pending，reference gate 未放行。
 
 ## 输出文件名
 
