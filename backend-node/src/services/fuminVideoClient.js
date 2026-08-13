@@ -97,7 +97,7 @@ function buildFuminVideoBody(opts = {}) {
   body.resolution = resolution;
   if (opts.seed != null) body.seed = Number(opts.seed);
   if (opts.guidance_scale != null) body.guidance_scale = Number(opts.guidance_scale);
-  for (const url of imageRefs) body.content.push({ type: 'image_url', image_url: { url } });
+  for (const url of imageRefs) body.content.push({ type: 'image_url', image_url: { url }, role: 'reference_image' });
   for (const url of videoRefs) body.content.push({ type: 'video_url', video_url: { url }, role: 'reference_video' });
   for (const url of audioRefs) body.content.push({ type: 'audio_url', audio_url: { url }, role: 'reference_audio' });
   return body;

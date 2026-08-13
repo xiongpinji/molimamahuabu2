@@ -57,9 +57,9 @@ describe('fumin Seedance video protocol', () => {
       model: 'seedance-2.0-fast',
       content: [
         { type: 'text', text: '自然地转身微笑' },
-        { type: 'image_url', image_url: { url: 'https://cdn.example/first.jpg' } },
+        { type: 'image_url', image_url: { url: 'https://cdn.example/first.jpg' }, role: 'reference_image' },
         ...Array.from({ length: 8 }, (_, index) => ({
-          type: 'image_url', image_url: { url: `https://cdn.example/image-${index + 1}.jpg` },
+          type: 'image_url', image_url: { url: `https://cdn.example/image-${index + 1}.jpg` }, role: 'reference_image',
         })),
         ...Array.from({ length: 3 }, (_, index) => ({
           type: 'video_url', video_url: { url: `https://cdn.example/video-${index + 1}.mp4` }, role: 'reference_video',
@@ -166,6 +166,7 @@ describe('fumin Seedance video protocol', () => {
     assert.deepEqual(completed, { video_url: 'https://cdn.example/fumin.mp4' });
     assert.equal(requests[0].body.model, 'seedance-2.0-fast');
     assert.equal(requests[0].body.content[1].image_url.url, 'data:image/png;base64,aW1hZ2U=');
+    assert.equal(requests[0].body.content[1].role, 'reference_image');
     assert.deepEqual(requests[0].body.content.slice(2), [
       { type: 'video_url', video_url: { url: 'https://cdn.example/reference.mp4' }, role: 'reference_video' },
       { type: 'audio_url', audio_url: { url: 'https://cdn.example/reference.mp3' }, role: 'reference_audio' },
