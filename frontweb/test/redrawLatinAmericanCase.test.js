@@ -35,7 +35,7 @@ test('C 方案锁定用户指定源片的媒体合同', () => {
   })
 })
 
-test('C 方案时间轴连续覆盖完整源片并映射为 69 秒供应商片段', () => {
+test('C 方案时间轴连续覆盖完整源片并映射为 Mini 可提交片段', () => {
   const shots = redrawLatinAmericanCase.sourceFacts.shots
   assert.equal(shots.length, 9)
   assert.equal(shots[0].start_ms, 0)
@@ -44,14 +44,77 @@ test('C 方案时间轴连续覆盖完整源片并映射为 69 秒供应商片�
     shots.every((shot, index) => index === 0 || shots[index - 1].end_ms === shot.start_ms),
     true,
   )
+  assert.equal(redrawLatinAmericanCase.generationDurations.length, shots.length)
   assert.equal(
     redrawLatinAmericanCase.generationDurations.reduce((sum, duration) => sum + duration, 0),
-    69,
+    72,
+  )
+  assert.equal(
+    redrawLatinAmericanCase.generationDurations.every((duration) => [4, 8, 10, 12, 15].includes(duration)),
+    true,
   )
   assert.equal(
     Object.keys(redrawLatinAmericanCase.shotPrompts).length,
     shots.length,
   )
+})
+
+test('整集合同为每个源对白提供同时间窗的英文映射', () => {
+  const localizedByShot = new Map(
+    (redrawLatinAmericanCase.localization.dialogue || []).map((row) => [row.shot_id, row]),
+  )
+  for (const shot of redrawLatinAmericanCase.sourceFacts.shots) {
+    const localized = localizedByShot.get(shot.id)
+    const sourceTurns = shot.dialogue || []
+    const localizedTurns = localized?.turns || []
+    assert.equal(localizedTurns.length, sourceTurns.length, `${shot.id} 对白数量不一致`)
+    sourceTurns.forEach((sourceTurn, index) => {
+      assert.equal(sourceTurn.start_ms >= shot.start_ms, true, `${shot.id} 对白起点越界`)
+      assert.equal(sourceTurn.end_ms <= shot.end_ms, true, `${shot.id} 对白终点越界`)
+      assert.equal(sourceTurn.end_ms > sourceTurn.start_ms, true, `${shot.id} 对白时间窗无效`)
+      const targetTurn = localizedTurns[index]
+      assert.equal(targetTurn.speaker_id, sourceTurn.speaker_id)
+      assert.equal(targetTurn.start_ms, sourceTurn.start_ms)
+      assert.equal(targetTurn.end_ms, sourceTurn.end_ms)
+      assert.match(String(targetTurn.localized_text || ''), /[A-Za-z]/)
+      const estimatedSpeechMs = String(targetTurn.localized_text).trim().split(/\s+/u).length * 300
+      assert.equal(
+        estimatedSpeechMs <= (sourceTurn.end_ms - sourceTurn.start_ms) * 1.12,
+        true,
+        `${shot.id} 英文对白超过原时间窗`,
+      )
+    })
+  }
+  const sourceTexts = redrawLatinAmericanCase.sourceFacts.shots.flatMap((shot) => (
+    (shot.dialogue || []).map((turn) => turn.text)
+  ))
+  assert.equal(new Set(sourceTexts).size, sourceTexts.length, '源对白不得因切片边界重复生成')
+})
+
+test('整集合同显式记录烧录文字的目标处理策略', () => {
+  const shots = redrawLatinAmericanCase.sourceFacts.shots
+  assert.equal(shots.every((shot) => (
+    typeof shot.screen_text === 'string'
+      && typeof shot.screen_text_target === 'string'
+      && ['translated', 'none', 'manual_review'].includes(shot.screen_text_status)
+  )), true)
+  const unresolved = shots.filter((shot) => shot.screen_text_status === 'manual_review')
+  assert.deepEqual(unresolved.map((shot) => shot.id), ['shot-8'])
+  assert.match(unresolved[0].screen_text_target, /manual/i)
+})
+
+test('整集对白时间来自烧录字幕逐帧人工复核', () => {
+  assert.deepEqual(redrawLatinAmericanCase.sourceFacts.dialogue_evidence, {
+    method: 'burned_subtitle_frame_sampling',
+    sample_interval_ms: 250,
+    status: 'manual_reviewed',
+  })
+  const dialogueShots = redrawLatinAmericanCase.sourceFacts.shots
+    .filter((shot) => shot.dialogue.length > 0)
+    .map((shot) => shot.id)
+  assert.deepEqual(dialogueShots, [
+    'shot-1', 'shot-2', 'shot-4', 'shot-5', 'shot-6', 'shot-7', 'shot-9',
+  ])
 })
 
 test('C 方案固定成年拉美演员并使用美式英语', () => {

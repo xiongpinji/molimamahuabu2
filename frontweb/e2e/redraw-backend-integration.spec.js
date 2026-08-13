@@ -101,6 +101,11 @@ const localizationOverrides = activeCase?.localization || {
     turns: [{ speaker_id: 'c1', localized_text: "Don't look back" }],
   }],
 }
+const expectedDialogueSegmentCount = sourceFacts.shots.reduce(
+  (count, shot) => count + (Array.isArray(shot.dialogue) ? shot.dialogue.length : 0),
+  0,
+)
+const expectedDialogueCredits = expectedDialogueSegmentCount * 3
 
 test.setTimeout(120_000)
 test.describe.configure({ mode: 'serial' })
@@ -490,7 +495,13 @@ test.beforeAll(async () => {
       const safeSegmentId = String(segment.segment_id).replace(/[^a-zA-Z0-9_-]/g, '-')
       const relativePath = `redraw-local-provider/dialogue-${safeSegmentId}.mp3`
       const absolutePath = path.join(storageRoot, relativePath)
-      fs.copyFileSync(providerArtifacts.voice.absolutePath, absolutePath)
+      const windowSeconds = (Number(segment.end_ms) - Number(segment.start_ms)) / 1000
+      const audioDuration = Math.max(0.25, Math.min(1.2, windowSeconds - 0.05))
+      runFfmpeg([
+        '-hide_banner', '-loglevel', 'error', '-f', 'lavfi',
+        '-i', 'sine=frequency=660:sample_rate=44100', '-t', String(audioDuration),
+        '-c:a', 'libmp3lame', '-y', absolutePath,
+      ], `本地对白 ${segment.segment_id} 生成`)
       const now = new Date().toISOString()
       const providerTaskId = `local-fixture-dialogue-${safeSegmentId}`
       const metadata = {
@@ -512,17 +523,21 @@ test.beforeAll(async () => {
       const assetId = Number(database.prepare(`
         INSERT INTO assets
           (name, type, category, url, local_path, file_size, mime_type, duration, metadata, created_at, updated_at)
-        VALUES (?, 'audio', 'redraw_dialogue', ?, ?, ?, 'audio/mpeg', 1.2, ?, ?, ?)
+        VALUES (?, 'audio', 'redraw_dialogue', ?, ?, ?, 'audio/mpeg', ?, ?, ?, ?)
       `).run(
         `本地对白 ${segment.segment_id}`,
         `https://media.example.test/static/${relativePath}?expires=4102444800&signature=local-fixture`,
         relativePath,
         fs.statSync(absolutePath).size,
+        audioDuration,
         JSON.stringify(metadata),
         now,
         now,
       ).lastInsertRowid)
-      return { status: 'completed', asset_id: assetId, provider_task_id: providerTaskId, duration: 1.2 }
+      return {
+        status: 'completed', asset_id: assetId, provider_task_id: providerTaskId,
+        duration: audioDuration,
+      }
     },
     localeVerifier,
     redrawOptions: {
@@ -816,12 +831,13 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
   const preparedShots = []
   for (const shot of readyWork.body.data.shots) {
     const sourceShotId = sourceFacts.shots[Number(shot.shot_index) - 1]?.id
+    const sourceShot = sourceFacts.shots[Number(shot.shot_index) - 1]
     const prompt = activeCase
       ? activeCase.shotPrompts[sourceShotId]
       : (Number(shot.shot_index) === 1
           ? 'Cinematic rooftop at night. Aran checks an old phone as a strange message appears.'
           : 'Cinematic rooftop at night. Aran looks around, turns, and leaves.')
-    const references = Number(shot.shot_index) === 1
+    const references = Array.isArray(sourceShot?.dialogue) && sourceShot.dialogue.length > 0
       ? shot.references.filter((reference) => reference.kind === 'character').slice(0, 1)
       : shot.references
     const updateResponse = await browserApi(page, `/api/v1/redraw/shots/${shot.id}`, {
@@ -912,7 +928,11 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
   })
   expect(dialogueQuote.status, JSON.stringify(dialogueQuote.body)).toBe(200)
-  expect(dialogueQuote.body.data).toMatchObject({ status: 'ready', segment_count: 1, total_credits: 3 })
+  expect(dialogueQuote.body.data).toMatchObject({
+    status: 'ready',
+    segment_count: expectedDialogueSegmentCount,
+    total_credits: expectedDialogueCredits,
+  })
   const dialogueStart = await browserApi(page, `/api/v1/redraw/versions/${versionId}/dialogue/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -932,17 +952,27 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     dialogueTask = result.body?.data
     return dialogueTask?.status
   }, { timeout: 15_000, message: JSON.stringify(dialogueTask) }).toBe('completed')
-  const dialogueAudit = JSON.parse(database.prepare(`
-    SELECT draft_json FROM redraw_shots WHERE version_id = ? AND shot_index = 1
-  `).get(versionId).draft_json).dialogue_generation
-  expect(dialogueAudit.status).toBe('completed')
-  expect(dialogueAudit.segments).toHaveLength(1)
-  expect(dialogueAudit.segments[0]).toMatchObject({
-    status: 'completed', reservation_status: 'confirmed', provider: 'local-fake-tts', model: 'fake-tts',
-  })
-  const dialogueArtifact = database.prepare('SELECT * FROM assets WHERE id = ?')
-    .get(Number(dialogueAudit.segments[0].audio_asset_id))
-  expect(fs.existsSync(path.join(storageRoot, dialogueArtifact.local_path))).toBe(true)
+  const dialogueAudits = database.prepare(`
+    SELECT shot_index, draft_json FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
+  `).all(versionId).map((row) => ({
+    shot_index: row.shot_index,
+    audit: JSON.parse(row.draft_json || '{}').dialogue_generation || null,
+  }))
+  const dialogueSegments = dialogueAudits.flatMap(({ audit }) => audit?.segments || [])
+  expect(dialogueSegments).toHaveLength(expectedDialogueSegmentCount)
+  expect(dialogueAudits.filter(({ audit }) => audit).every(({ audit }) => audit.status === 'completed')).toBe(true)
+  expect(dialogueSegments.every((segment) => (
+    segment.status === 'completed'
+      && segment.reservation_status === 'confirmed'
+      && segment.provider === 'local-fake-tts'
+      && segment.model === 'fake-tts'
+  ))).toBe(true)
+  for (const segment of dialogueSegments) {
+    const dialogueArtifact = database.prepare('SELECT * FROM assets WHERE id = ?')
+      .get(Number(segment.audio_asset_id))
+    expect(dialogueArtifact, `缺少对白音频资产 ${segment.segment_id}`).toBeTruthy()
+    expect(fs.existsSync(path.join(storageRoot, dialogueArtifact.local_path))).toBe(true)
+  }
 
   const composeStart = await browserApi(page, `/api/v1/redraw/versions/${versionId}/compose`, {
     method: 'POST',

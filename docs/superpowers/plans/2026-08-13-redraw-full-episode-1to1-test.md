@@ -26,7 +26,7 @@
 - 修改：`frontweb/e2e/fixtures/redraw-latin-american-case.js`
 - 测试：`frontweb/test/redrawLatinAmericanCase.test.js`
 
-- [ ] **步骤 1：运行源片探针并记录基线**
+- [x] **步骤 1：运行源片探针并记录基线**
 
 运行：
 
@@ -37,11 +37,11 @@ ffprobe -v error -show_streams -show_format -of json `
 
 预期：SHA-256 为 `24eb1d8ba3ff11e6aa3e547b7ac400f6b177dcf541d1af36354d3e46cc05e9ae`，时长约 68.733 秒，视频 720×1280/30fps，HEVC，音频 AAC/44.1kHz/单声道。
 
-- [ ] **步骤 2：编写失败测试，拒绝不连续或越界的整集分段**
+- [x] **步骤 2：编写失败测试，拒绝不连续或越界的整集分段**
 
 在 `frontweb/test/redrawLatinAmericanCase.test.js` 增加对 9 段 `start_ms/end_ms` 连续覆盖 `[0, 68733]`、无重叠、每段供应商时长落在 4–15 秒的断言；先将一段边界改成空档运行测试，确认出现断言失败。
 
-- [ ] **步骤 3：恢复最小合同实现并运行测试**
+- [x] **步骤 3：恢复最小合同实现并运行测试**
 
 运行：
 
@@ -58,7 +58,7 @@ node --test frontweb/test/redrawLatinAmericanCase.test.js
 - 修改：`frontweb/e2e/redraw-backend-integration.spec.js`
 - 输出：`C:\tmp\redraw-full-episode-local-20260813\`
 
-- [ ] **步骤 1：运行本地前后端 9 段链**
+- [x] **步骤 1：运行本地前后端 9 段链**
 
 运行：
 
@@ -70,7 +70,7 @@ node frontweb/scripts/run-redraw-latin-american-case.mjs `
 
 预期：9/9 镜头 `completed`；角色身份包 `ready=true`；逐镜角色绑定通过 generation gate；合并 MP4、SRT、VTT 可读；held reservations=0、active tasks=0。
 
-- [ ] **步骤 2：独立校验合并产物**
+- [x] **步骤 2：独立校验合并产物**
 
 运行：
 
@@ -89,6 +89,8 @@ ffprobe -v error -show_streams -show_format -of json `
 - 临时状态：`C:\tmp\toapis-full-episode-20260813\`
 
 - [ ] **步骤 1：只读检查账户余额、模型和最终报价**
+
+> 本地 9 段 dry-run 已完成；真实 ToAPIs 账户只读报价和余额仍待单独授权后再做，未发送 generation POST。
 
 只允许 GET 余额/模型和 Dashboard 报价，不发送 generation POST。记录 `remain_credits`、当前账户报价、预计请求数（9 次）和总预算；公开价格页仅作参考，最终以账户报价为准。
 
