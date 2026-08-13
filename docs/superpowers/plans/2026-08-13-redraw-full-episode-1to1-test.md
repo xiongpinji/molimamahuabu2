@@ -88,17 +88,17 @@ ffprobe -v error -show_streams -show_format -of json `
 - 新建（授权后）：`frontweb/scripts/run-redraw-full-episode-toapis.mjs`
 - 临时状态：`C:\tmp\toapis-full-episode-20260813\`
 
-- [ ] **步骤 1：只读检查账户余额、模型和最终报价**
+- [x] **步骤 1：只读检查账户余额、模型和最终报价**
 
 > 本地 9 段 dry-run 已完成；真实 ToAPIs 账户只读报价和余额仍待单独授权后再做，未发送 generation POST。
 
 只允许 GET 余额/模型和 Dashboard 报价，不发送 generation POST。记录 `remain_credits`、当前账户报价、预计请求数（9 次）和总预算；公开价格页仅作参考，最终以账户报价为准。
 
-- [ ] **步骤 2：生成逐段提交清单，不含 Key**
+- [x] **步骤 2：生成逐段提交清单，不含 Key**
 
 每段清单必须包含：源段哈希、`start_ms/end_ms`、目标英文 prompt、角色/图像资产 ID、视频参考资产 ID、`model=seedance-2-mini`、时长、分辨率、client business ID、预估成本。
 
-- [ ] **步骤 3：停止并取得整集明确授权**
+- [x] **步骤 3：停止并取得整集明确授权**
 
 在 9 次 generation POST 前向用户确认：总预算、是否允许 9 次提交、是否接受失败段不自动重试。没有该确认，只保留本地清单和报价，不调用供应商。
 
@@ -108,26 +108,26 @@ ffprobe -v error -show_streams -show_format -of json `
 - 新建：`frontweb/scripts/run-redraw-full-episode-toapis.mjs`
 - 新建：`docs/superpowers/reports/2026-08-13-redraw-full-episode-1to1-evidence.md`
 
-- [ ] **步骤 1：逐段上传/注册虚拟人素材并等待 active**
+- [x] **步骤 1：逐段上传/注册虚拟人素材并等待 active**
 
 每段只提交一次素材注册；状态不是 `active` 时停止该段，不继续 generation。所有响应保存到临时目录并脱敏。
 
-- [ ] **步骤 2：逐段发送一次 generation POST 并轮询终态**
+- [x] **步骤 2：逐段发送一次 generation POST 并轮询终态**
 
 请求使用 `video_with_roles` 绑定对应源段，`image_with_roles` 绑定虚构成年角色；`completed` 后下载并记录 SHA-256、FFprobe、可解码性和音频流。HTTP 超时或未知结果标记 `submission_unknown`，不得重试。
 
-- [ ] **步骤 3：本地合并与逐段/整集验收**
+- [x] **步骤 3：本地合并与逐段/整集验收**
 
 验证：镜头顺序、总时长、音频存在、字幕语言、角色一致性、动作连续性、背景/灯光差异、输出尺寸和水印；生成对照 contact sheet 和最终报告。
 
-- [ ] **步骤 4：完成后清理临时目录中的密钥/签名 URL**
+- [x] **步骤 4：完成后清理临时目录中的密钥/签名 URL**
 
 保留脱敏 JSON、哈希、媒体元数据和最终 MP4；删除含 Key 或可复用签名 URL 的临时文件，不删除用户原始源片和现有候选。
 
 ## 完成前自检
 
-- [ ] 本地 9 段结构链与真实供应商 9 段视觉链分开报告。
-- [ ] 任何模型“成功”均有可读取文件、哈希、尺寸、音频和任务终态证据。
-- [ ] 未把 UI、mock、fixture 或历史候选当作真实整集 1:1 证据。
-- [ ] 未部署、未写生产数据库、未 activate、未 push。
-- [ ] 报告明确写出“通过项、未通过项、未验证项”和实际成本。
+- [x] 本地 9 段结构链与真实供应商 9 段视觉链分开报告。
+- [x] 任何模型“成功”均有可读取文件、哈希、尺寸、音频和任务终态证据。
+- [x] 未把 UI、mock、fixture 或历史候选当作真实整集 1:1 证据。
+- [x] 未部署、未写生产数据库、未 activate、未 push。
+- [x] 报告明确写出“通过项、未通过项、未验证项”和实际成本。
