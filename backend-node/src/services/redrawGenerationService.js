@@ -454,7 +454,7 @@ function buildNativeGeneration(shot, parsed, nativeCapability, pack) {
   };
 }
 
-function buildRequestSnapshot(generation, sourceConditioning, referenceImageUrls) {
+function buildRequestSnapshot(generation, sourceConditioning, referenceImageUrls, identityBindings) {
   return {
     prompt: generation.prompt,
     model: generation.model,
@@ -463,6 +463,7 @@ function buildRequestSnapshot(generation, sourceConditioning, referenceImageUrls
     resolution: generation.resolution,
     reference_image_urls: referenceImageUrls,
     reference_video_urls: [sourceConditioning.referenceVideoUrl],
+    identity_bindings: identityBindings,
     generate_audio: generation.generateAudio === true,
     ai_service_config_id: generation.aiServiceConfigId,
     config_updated_at: generation.aiServiceConfigUpdatedAt,
@@ -488,6 +489,10 @@ function sameRequestSnapshot(storedSnapshot, expectedSnapshot) {
       && stored[key] !== expectedSnapshot[key]) {
       return false;
     }
+  }
+  if (Object.prototype.hasOwnProperty.call(expectedSnapshot, 'identity_bindings')
+    && JSON.stringify(stored.identity_bindings) !== JSON.stringify(expectedSnapshot.identity_bindings)) {
+    return false;
   }
   return true;
 }
@@ -545,6 +550,40 @@ function collectReferenceImageUrls(db, shot, parsed) {
     }
   }
   return urls;
+}
+
+function collectIdentityBindings(parsed) {
+  const bindings = [];
+  const seen = new Set();
+  function collect(value) {
+    if (Array.isArray(value)) {
+      for (const item of value) collect(item);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    const kind = String(value.kind || value.type || value.asset_kind || '').trim();
+    const redrawAssetId = Number(
+      value.redraw_asset_id ?? value.redrawAssetId ?? value.asset_id ?? value.assetId,
+    );
+    if (kind === 'character' && Number.isInteger(redrawAssetId) && redrawAssetId > 0) {
+      const key = `${kind}:${redrawAssetId}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        bindings.push({
+          redraw_asset_id: redrawAssetId,
+          source_character_key: String(value.source_character_key || '').trim(),
+          target_actor_label: String(value.target_actor_label || '').trim(),
+          identity_pack_sha256: String(value.identity_pack_sha256 || '').trim(),
+        });
+      }
+    }
+    for (const key of ['references', 'assets', 'asset_references', 'assetReferences']) {
+      if (value[key] != null) collect(value[key]);
+    }
+  }
+  collect(parsed.references);
+  collect(parsed.draft.references || parsed.draft.assets || parsed.draft.asset_references);
+  return bindings;
 }
 
 function preflightVideoGeneration(generation, sourceConditioning, referenceImageUrls) {
@@ -772,8 +811,14 @@ async function generateShot(ctx, input = {}) {
   const sourceConditioning = await prepareServerSourceConditioning(ctx, shot, generation);
   generation.sourceConditioning = sourceConditioning.billingSnapshot;
   const referenceImageUrls = collectReferenceImageUrls(db, shot, parsed);
+  const identityBindings = collectIdentityBindings(parsed);
   preflightVideoGeneration(generation, sourceConditioning, referenceImageUrls);
-  const requestSnapshot = buildRequestSnapshot(generation, sourceConditioning, referenceImageUrls);
+  const requestSnapshot = buildRequestSnapshot(
+    generation,
+    sourceConditioning,
+    referenceImageUrls,
+    identityBindings,
+  );
   generation.requestSnapshot = requestSnapshot;
   const reusable = findReusable(db, shot, generation.attempt, generation);
   if (reusable) return enrichGenerationResult(db, { ...reusable, attempt: generation.attempt });

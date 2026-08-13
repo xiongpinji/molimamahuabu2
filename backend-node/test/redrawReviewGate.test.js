@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
@@ -8,6 +9,67 @@ const {
   reviewAsset,
 } = require('../src/services/redrawReviewService');
 const { updateAsset } = require('../src/services/redrawAssetService');
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function canonicalIdentityPack(overrides = {}) {
+  const pack = {
+    schema_version: 'target-actor-identity-v1',
+    source_character_key: 'source-character-1',
+    target_actor_label: 'Actor Maya',
+    artifact: {
+      asset_id: 1001,
+      sha256: crypto.createHash('sha256').update('canonical actor portrait').digest('hex'),
+      width: 640,
+      height: 960,
+      mime_type: 'image/png',
+    },
+    confirmed_views: ['front', 'profile', 'full_body'],
+    live_action_human_confirmed: true,
+    adult_status: 'verified_18_plus',
+    identity_consistency_confirmed: true,
+    ready: true,
+    reviewed_by: 'user-a',
+    reviewed_at: '2026-08-06T00:00:00.000Z',
+    ...overrides,
+  };
+  const canonical = {
+    schema_version: pack.schema_version,
+    source_character_key: pack.source_character_key,
+    target_actor_label: pack.target_actor_label,
+    artifact: pack.artifact,
+    confirmed_views: pack.confirmed_views,
+    live_action_human_confirmed: pack.live_action_human_confirmed,
+    adult_status: pack.adult_status,
+    identity_consistency_confirmed: pack.identity_consistency_confirmed,
+    ready: pack.ready,
+    reviewed_by: pack.reviewed_by,
+    reviewed_at: pack.reviewed_at,
+  };
+  return {
+    ...pack,
+    pack_sha256: Object.hasOwn(overrides, 'pack_sha256')
+      ? overrides.pack_sha256
+      : crypto.createHash('sha256').update(stableJson(canonical)).digest('hex'),
+  };
+}
+
+function characterReference(assetId, pack, overrides = {}) {
+  return {
+    kind: 'character',
+    asset_id: Number(assetId),
+    source_character_key: pack.source_character_key,
+    target_actor_label: pack.target_actor_label,
+    identity_pack_sha256: pack.pack_sha256,
+    ...overrides,
+  };
+}
 
 function setup() {
   const db = new Database(':memory:');
@@ -29,15 +91,23 @@ function setup() {
   return { db, workId, versionId, now };
 }
 
-function addAsset(db, { id, kind, status = 'generated', approvalStatus = 'pending', versionNumber = 1 }) {
+function addAsset(db, {
+  id,
+  kind,
+  status = 'generated',
+  approvalStatus = 'pending',
+  versionNumber = 1,
+  identityPack = null,
+}) {
   const now = new Date().toISOString();
   db.prepare(`INSERT INTO redraw_assets
     (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
      asset_id, version_number, approval_status, status, created_at, updated_at)
-    VALUES (?, ?, 'tenant-a', 'user-a', ?, '{}', ?, ?, ?, ?, ?, ?, ?)`).run(
+    VALUES (?, ?, 'tenant-a', 'user-a', ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     id,
     1,
     kind,
+    JSON.stringify(identityPack ? { identity_pack: identityPack } : {}),
     `${kind}-${id}`,
     id + 1000,
     versionNumber,
@@ -176,6 +246,131 @@ test('审核使用 expected_updated_at 乐观锁且只允许 approved/rejected',
       }),
       (error) => error.code === 'REDRAW_REVIEW_ACTION_INVALID',
     );
+  } finally {
+    state.db.close();
+  }
+});
+
+test('角色资产缺少完整且哈希有效的身份包时不能批准，但仍允许退回', () => {
+  const state = setup();
+  try {
+    const incompletePack = canonicalIdentityPack({
+      confirmed_views: ['front', 'profile'],
+      live_action_human_confirmed: false,
+      ready: false,
+    });
+    const asset = addAsset(state.db, {
+      id: 32,
+      kind: 'character',
+      identityPack: incompletePack,
+    });
+    assert.throws(
+      () => reviewAsset(state.db, asset.id, {
+        action: 'approved',
+        reviewerId: 'user-a',
+        expectedUpdatedAt: asset.updated_at,
+      }),
+      (error) => error.code === 'REDRAW_CHARACTER_IDENTITY_REQUIRED',
+    );
+    assert.equal(state.db.prepare('SELECT approval_status FROM redraw_assets WHERE id = ?').get(asset.id).approval_status, 'pending');
+
+    const rejected = reviewAsset(state.db, asset.id, {
+      action: 'rejected',
+      reviewerId: 'user-a',
+      expectedUpdatedAt: asset.updated_at,
+    });
+    assert.equal(rejected.approval_status, 'rejected');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('角色身份包完整且 canonical hash 有效时可以批准', () => {
+  const state = setup();
+  try {
+    const pack = canonicalIdentityPack();
+    const asset = addAsset(state.db, { id: 33, kind: 'character', identityPack: pack });
+    const approved = reviewAsset(state.db, asset.id, {
+      action: 'approved',
+      reviewerId: 'user-a',
+      expectedUpdatedAt: asset.updated_at,
+    });
+    assert.equal(approved.approval_status, 'approved');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('角色门禁要求当前身份包及逐镜 binding 完整一致', () => {
+  const cases = [
+    {
+      name: '缺身份包',
+      pack: null,
+      reference: (assetId) => ({ kind: 'character', asset_id: assetId }),
+      code: 'character_identity_pack_required',
+    },
+    {
+      name: '缺逐镜 binding',
+      pack: canonicalIdentityPack(),
+      reference: (assetId) => ({ kind: 'character', asset_id: assetId }),
+      code: 'character_identity_binding_stale',
+    },
+    {
+      name: '身份包 hash 漂移',
+      pack: canonicalIdentityPack(),
+      reference: (assetId, pack) => characterReference(assetId, pack, {
+        identity_pack_sha256: crypto.createHash('sha256').update('older canonical identity pack').digest('hex'),
+      }),
+      code: 'character_identity_binding_stale',
+    },
+    {
+      name: 'source 不一致',
+      pack: canonicalIdentityPack(),
+      reference: (assetId, pack) => characterReference(assetId, pack, { source_character_key: 'forged-source' }),
+      code: 'character_identity_binding_stale',
+    },
+    {
+      name: 'target 不一致',
+      pack: canonicalIdentityPack(),
+      reference: (assetId, pack) => characterReference(assetId, pack, { target_actor_label: 'Forged Actor' }),
+      code: 'character_identity_binding_stale',
+    },
+  ];
+  for (const entry of cases) {
+    const state = setup();
+    try {
+      const asset = addAsset(state.db, {
+        id: 70,
+        kind: 'character',
+        approvalStatus: 'approved',
+        identityPack: entry.pack,
+      });
+      addShot(state.db, state.versionId, 1, [entry.reference(asset.id, entry.pack)]);
+      const gate = evaluateGenerationGate(state.db, state.versionId, { tenantId: 'tenant-a', userId: 'user-a' });
+      assert.equal(gate.ok, false, entry.name);
+      assert.equal(gate.blocking.some((item) => item.code === entry.code), true, entry.name);
+      assert.equal(gate.missing[0].code, entry.code, entry.name);
+    } finally {
+      state.db.close();
+    }
+  }
+});
+
+test('当前 canonical 身份 binding 与身份包一致时角色门禁开放', () => {
+  const state = setup();
+  try {
+    const pack = canonicalIdentityPack();
+    const asset = addAsset(state.db, {
+      id: 71,
+      kind: 'character',
+      approvalStatus: 'approved',
+      identityPack: pack,
+    });
+    addShot(state.db, state.versionId, 1, [characterReference(asset.id, pack)]);
+    const gate = evaluateGenerationGate(state.db, state.versionId, { tenantId: 'tenant-a', userId: 'user-a' });
+    assert.equal(gate.ok, true);
+    assert.deepEqual(gate.blocking, []);
+    assert.deepEqual(gate.missing, []);
   } finally {
     state.db.close();
   }

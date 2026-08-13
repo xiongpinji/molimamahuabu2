@@ -15,6 +15,7 @@ const taskService = require('../src/services/taskService');
 const videoClient = require('../src/services/videoClient');
 const videoService = require('../src/services/videoService');
 const redrawOrchestrator = require('../src/services/redrawOrchestrator');
+const { identityBindingForAsset } = require('../src/services/redrawCharacterIdentityService');
 const { resetGenerationConcurrencyForTests } = require('../src/services/generationConcurrency');
 const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 const {
@@ -35,6 +36,48 @@ const FEITUO_FAST_MODEL = 'sdas-my-seedance-2.0-fast-upscaled-1080p';
 const TOAPIS_NATIVE_MODEL = 'seedance-2-fast';
 const ICREAT_MINI_MODEL = 'bytedance/seedance-2-0-mini';
 const SIGNED_SOURCE_VIDEO_URL = 'https://media.example.test/api/redraw-provider-assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4?expires=1786147800&signature=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function canonicalIdentityPack(input = {}) {
+  const {
+    sourceCharacterKey = 'source-character-1',
+    targetActorLabel = 'Actor Maya',
+    artifactAssetId = 101,
+    artifactSeed = 'canonical actor portrait',
+    ...overrides
+  } = input;
+  const pack = {
+    schema_version: 'target-actor-identity-v1',
+    source_character_key: sourceCharacterKey,
+    target_actor_label: targetActorLabel,
+    artifact: {
+      asset_id: Number(artifactAssetId),
+      sha256: crypto.createHash('sha256').update(artifactSeed).digest('hex'),
+      width: 640,
+      height: 960,
+      mime_type: 'image/png',
+    },
+    confirmed_views: ['front', 'profile', 'full_body'],
+    live_action_human_confirmed: true,
+    adult_status: 'verified_18_plus',
+    identity_consistency_confirmed: true,
+    ready: true,
+    reviewed_by: 'user-a',
+    reviewed_at: '2026-08-06T00:00:00.000Z',
+    ...overrides,
+  };
+  return {
+    ...pack,
+    pack_sha256: crypto.createHash('sha256').update(stableJson(pack)).digest('hex'),
+  };
+}
 
 function setup(overrides = {}) {
   const db = new Database(':memory:');
@@ -77,13 +120,29 @@ function addBaseAsset(db, input) {
 
 function addRedrawAsset(db, versionId, input) {
   const now = new Date().toISOString();
+  const hasIdentityPack = Object.hasOwn(input, 'identityPack');
+  const identityPack = input.kind === 'character'
+    ? (hasIdentityPack ? input.identityPack : canonicalIdentityPack({
+        sourceCharacterKey: input.sourceCharacterKey || `source-character-${input.assetId}`,
+        targetActorLabel: input.targetActorLabel || input.name || 'Actor Maya',
+        artifactAssetId: input.assetId,
+        artifactSeed: `canonical actor portrait ${input.assetId}`,
+      }))
+    : null;
+  const sourceRef = input.kind === 'character'
+    ? {
+        source_ref: { stable_id: identityPack?.source_character_key || `source-character-${input.assetId}` },
+        ...(identityPack ? { identity_pack: identityPack } : {}),
+      }
+    : {};
   return db.prepare(`INSERT INTO redraw_assets
     (version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
      asset_id, clean_plate_asset_id, approval_status, status, created_at, updated_at)
-    VALUES (?, 'tenant-a', 'user-a', ?, '{}', ?, ?, ?, ?, ?, ?, ?)`)
+    VALUES (?, 'tenant-a', 'user-a', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       versionId,
       input.kind,
+      JSON.stringify(sourceRef),
       input.name || input.kind,
       input.assetId || null,
       input.cleanPlateAssetId || null,
@@ -99,7 +158,23 @@ function addShot(db, versionId, overrides = {}) {
   const durationMs = overrides.durationMs || overrides.duration_ms || 6000;
   const startMs = overrides.startMs || overrides.start_ms || 0;
   const endMs = overrides.endMs || overrides.end_ms || (startMs + durationMs);
-  const references = overrides.references || [];
+  const references = (overrides.references || []).map((reference) => {
+    if (String(reference?.kind || '') !== 'character' || overrides.bindCharacterIdentity === false) {
+      return reference;
+    }
+    const redrawAssetId = Number(
+      reference.redraw_asset_id ?? reference.redrawAssetId ?? reference.asset_id ?? reference.assetId,
+    );
+    const row = db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(redrawAssetId);
+    const binding = identityBindingForAsset(row);
+    if (!binding) return reference;
+    return {
+      ...reference,
+      source_character_key: binding.source_character_key,
+      target_actor_label: binding.target_actor_label,
+      identity_pack_sha256: binding.pack_sha256,
+    };
+  });
   const compiled = overrides.compiledPrompt || {
     text: 'compiled hero prompt',
     negative_prompt: 'low quality',
@@ -1959,9 +2034,22 @@ test('ID14 Feituo Fast 将服务端 source segment 与已审批图片引用共�
     const video = state.db.prepare('SELECT * FROM video_generations WHERE id = ?').get(result.video_generation_id);
     const task = state.db.prepare('SELECT metadata FROM async_tasks WHERE id = ?').get(result.task_id);
     const metadata = JSON.parse(task.metadata).redraw_shot;
+    const requestSnapshot = JSON.parse(video.request_snapshot);
+    const identityPack = JSON.parse(
+      state.db.prepare('SELECT source_ref_json FROM redraw_assets WHERE id = ?').get(redrawAssetId).source_ref_json,
+    ).identity_pack;
 
     assert.equal(video.model, FEITUO_FAST_MODEL);
     assert.deepEqual(JSON.parse(video.reference_image_urls), ['https://cdn.example.test/character.png']);
+    assert.deepEqual(requestSnapshot.identity_bindings, [{
+      redraw_asset_id: Number(redrawAssetId),
+      source_character_key: identityPack.source_character_key,
+      target_actor_label: identityPack.target_actor_label,
+      identity_pack_sha256: identityPack.pack_sha256,
+    }]);
+    assert.equal(JSON.stringify(requestSnapshot).includes('identity_pack'), true);
+    assert.equal(JSON.stringify(requestSnapshot).includes('artifact'), false);
+    assert.equal(JSON.stringify(requestSnapshot).includes('local_path'), false);
     assert.deepEqual(JSON.parse(video.reference_video_urls), [SIGNED_SOURCE_VIDEO_URL]);
     assert.equal(JSON.parse(video.source_conditioning_json).start_ms, 2000);
     assert.equal(JSON.parse(video.source_conditioning_json).end_ms, 8000);
@@ -2439,6 +2527,79 @@ test('重复相同 attempt 复用已有 processing task/video/reservation', asyn
     assert.equal(second.task_id, first.task_id);
     assert.equal(second.video_generation_id, first.video_generation_id);
     assert.equal(count(state.db, "async_tasks", "type = 'redraw_shot'"), 1);
+    assert.equal(count(state.db, 'video_generations'), 1);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('角色身份 hash 更新会先关闭旧镜头门禁，重绑后 request snapshot 也不会误复用旧生成', async () => {
+  const state = setup();
+  try {
+    const baseAssetId = addBaseAsset(state.db, { name: 'actor', url: 'https://cdn.test/actor.png' });
+    const firstPack = canonicalIdentityPack({
+      sourceCharacterKey: 'source-character-stable',
+      targetActorLabel: 'Actor Maya',
+      artifactAssetId: baseAssetId,
+      artifactSeed: 'actor portrait revision one',
+    });
+    const redrawAssetId = addRedrawAsset(state.db, state.versionId, {
+      kind: 'character',
+      name: 'Actor Maya',
+      assetId: baseAssetId,
+      identityPack: firstPack,
+    });
+    const shotId = addShot(state.db, state.versionId, {
+      references: [{ kind: 'character', asset_id: Number(redrawAssetId) }],
+    });
+    const first = await generateShot(ctx(state.db, { schedule() {} }), { shotId });
+    const firstSnapshot = JSON.parse(
+      state.db.prepare('SELECT request_snapshot FROM video_generations WHERE id = ?').get(first.video_generation_id).request_snapshot,
+    );
+    assert.deepEqual(firstSnapshot.identity_bindings, [{
+      redraw_asset_id: Number(redrawAssetId),
+      source_character_key: firstPack.source_character_key,
+      target_actor_label: firstPack.target_actor_label,
+      identity_pack_sha256: firstPack.pack_sha256,
+    }]);
+
+    const secondPack = canonicalIdentityPack({
+      sourceCharacterKey: firstPack.source_character_key,
+      targetActorLabel: firstPack.target_actor_label,
+      artifactAssetId: baseAssetId,
+      artifactSeed: 'actor portrait revision two',
+      reviewed_at: '2026-08-06T01:00:00.000Z',
+    });
+    state.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?')
+      .run(JSON.stringify({
+        source_ref: { stable_id: firstPack.source_character_key },
+        identity_pack: secondPack,
+      }), redrawAssetId);
+
+    await assert.rejects(
+      () => generateShot(ctx(state.db, { schedule() {} }), { shotId }),
+      (error) => error.code === 'REDRAW_ASSET_REVIEW_REQUIRED'
+        && error.details.missing[0].code === 'character_identity_binding_stale',
+    );
+
+    const binding = identityBindingForAsset(
+      state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(redrawAssetId),
+    );
+    state.db.prepare(`UPDATE redraw_shots
+      SET status = 'draft', references_json = ?
+      WHERE id = ?`).run(JSON.stringify([{
+      kind: 'character',
+      asset_id: Number(redrawAssetId),
+      source_character_key: binding.source_character_key,
+      target_actor_label: binding.target_actor_label,
+      identity_pack_sha256: binding.pack_sha256,
+    }]), shotId);
+
+    await assert.rejects(
+      () => generateShot(ctx(state.db, { schedule() {} }), { shotId }),
+      (error) => error.code === 'REDRAW_SHOT_CONFLICT',
+    );
     assert.equal(count(state.db, 'video_generations'), 1);
     assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
   } finally {

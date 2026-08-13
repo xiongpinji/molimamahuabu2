@@ -12,6 +12,7 @@ const redrawOrchestrator = require('../services/redrawOrchestrator');
 const redrawLocalizationOrchestrator = require('../services/redrawLocalizationOrchestrator');
 const redrawAssetService = require('../services/redrawAssetService');
 const redrawReviewService = require('../services/redrawReviewService');
+const redrawCharacterIdentityService = require('../services/redrawCharacterIdentityService');
 const redrawShotService = require('../services/redrawShotService');
 const redrawGenerationService = require('../services/redrawGenerationService');
 const redrawBillingService = require('../services/redrawBillingService');
@@ -1791,6 +1792,9 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
         asset_id: asset.id,
         name: `__redraw_asset_${asset.id}`,
         display_name: asset.localized_name,
+        identity_binding: asset.kind === 'character'
+          ? redrawCharacterIdentityService.identityBindingForAsset(asset)
+          : null,
       }));
       const editableKeys = [
         'start_ms', 'end_ms', 'opening_state', 'continuous_action', 'ending_state',

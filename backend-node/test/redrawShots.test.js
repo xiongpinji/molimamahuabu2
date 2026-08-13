@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const Database = require('better-sqlite3');
 
 const {
@@ -8,6 +9,44 @@ const {
   groupShotsIntoBatches,
   snapshotShots,
 } = require('../src/services/redrawShotService');
+const { identityBindingForAsset } = require('../src/services/redrawCharacterIdentityService');
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function canonicalIdentityPack() {
+  const pack = {
+    schema_version: 'target-actor-identity-v1',
+    source_character_key: 'source-character-maya',
+    target_actor_label: 'Actor Maya',
+    artifact: {
+      asset_id: 101,
+      sha256: crypto.createHash('sha256').update('maya canonical portrait').digest('hex'),
+      width: 640,
+      height: 960,
+      mime_type: 'image/png',
+    },
+    confirmed_views: ['front', 'profile', 'full_body'],
+    live_action_human_confirmed: true,
+    adult_status: 'verified_18_plus',
+    identity_consistency_confirmed: true,
+    ready: true,
+    reviewed_by: 'user-a',
+    reviewed_at: '2026-08-06T00:00:00.000Z',
+  };
+  return {
+    ...pack,
+    pack_sha256: crypto.createHash('sha256').update(stableJson(pack)).digest('hex'),
+  };
+}
+
+const mayaIdentityPack = canonicalIdentityPack();
+const mayaIdentityBinding = identityBindingForAsset({ identity_pack: mayaIdentityPack });
 
 const approvedAssets = [
   {
@@ -16,6 +55,7 @@ const approvedAssets = [
     kind: 'character',
     version_number: 3,
     approval_status: 'approved',
+    identity_binding: mayaIdentityBinding,
   },
   {
     localized_name: '旧仓库',
@@ -81,7 +121,16 @@ test('分镜保留完整源合同并解析三类已批准资产引用', () => {
   assert.deepEqual(shot.audio_ref, { asset_id: 3 });
   assert.deepEqual(shot.subtitle_ref, { asset_id: 4 });
   assert.deepEqual(shot.references, [
-    { asset_id: 101, kind: 'character', version_number: 3, approval_status: 'approved', name: 'Maya' },
+    {
+      asset_id: 101,
+      kind: 'character',
+      version_number: 3,
+      approval_status: 'approved',
+      name: 'Maya',
+      source_character_key: 'source-character-maya',
+      target_actor_label: 'Actor Maya',
+      identity_pack_sha256: mayaIdentityPack.pack_sha256,
+    },
     { asset_id: 202, kind: 'scene', version_number: 2, approval_status: 'approved', name: '旧仓库' },
     { asset_id: 303, kind: 'prop', version_number: 4, approval_status: 'approved', name: '怀表' },
   ]);
@@ -128,6 +177,31 @@ test('同一资产的多个别名只返回首次出现的一条引用', () => {
 
   assert.deepEqual(references.map((reference) => reference.asset_id), [501, 502]);
   assert.deepEqual(references.map((reference) => reference.name), ['Alice', 'Bob']);
+});
+
+test('角色引用只消费服务端 identity binding 并忽略客户端同名伪造字段', () => {
+  const references = parseShotReferences('@Maya', [{
+    localized_name: 'Maya',
+    asset_id: 101,
+    kind: 'character',
+    version_number: 3,
+    approval_status: 'approved',
+    source_character_key: 'forged-source',
+    target_actor_label: 'Forged Actor',
+    identity_pack_sha256: crypto.createHash('sha256').update('forged identity pack').digest('hex'),
+    identity_binding: mayaIdentityBinding,
+  }]);
+
+  assert.deepEqual(references, [{
+    asset_id: 101,
+    kind: 'character',
+    version_number: 3,
+    approval_status: 'approved',
+    name: 'Maya',
+    source_character_key: 'source-character-maya',
+    target_actor_label: 'Actor Maya',
+    identity_pack_sha256: mayaIdentityPack.pack_sha256,
+  }]);
 });
 
 test('分镜显式 references 会被校验并解析', () => {
