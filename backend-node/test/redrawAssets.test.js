@@ -377,6 +377,12 @@ test('去人净景使用人物遮罩并保留源场景版本', async () => {
   assert.equal(result.status, 'needs_attention');
   assert.equal(result.approval_status, 'pending');
   assert.equal(result.review_status, 'needs_review');
+  const snapshot = JSON.parse(result.source_ref_json).snapshot;
+  assert.equal(snapshot.mode, 'clean_plate');
+  assert.equal(snapshot.source_asset_id, 401);
+  assert.equal(snapshot.mask_asset_id, 402);
+  assert.equal(snapshot.input_frame_fingerprint, 'frame-1');
+  assert.equal(snapshot.model, 'redraw-clean-plate');
   assert.equal(state.db.prepare('SELECT local_path FROM assets WHERE id = 401').get().local_path, 'scene.png');
   fs.rmSync(root, { recursive: true, force: true });
   state.db.close();
@@ -420,8 +426,11 @@ test('去人净景质量门禁失败时只退回本次积分', async () => {
       }, { source_asset_id: 411, width: 1280, height: 720 }, { mask_asset_id: 412 }),
       /质量/,
     );
-    const row = state.db.prepare('SELECT status, credit_reservation_id FROM redraw_assets').get();
+    const row = state.db.prepare('SELECT status, approval_status, clean_plate_asset_id, credit_reservation_id FROM redraw_assets').get();
     assert.equal(row.status, 'failed');
+    assert.equal(row.approval_status, 'pending');
+    assert.equal(row.clean_plate_asset_id, null);
+    assert.equal(state.db.prepare('SELECT local_path FROM assets WHERE id = 411').get().local_path, 'scene.png');
     assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'refunded');
     fs.rmSync(root, { recursive: true, force: true });
     state.db.close();
@@ -443,8 +452,11 @@ test('去人 provider 明确失败时按生成失败退款', async () => {
     }, { source_asset_id: 421 }, { mask_asset_id: 422 }),
     /供应商拒绝/,
   );
-  const row = state.db.prepare('SELECT status, error_code, credit_reservation_id FROM redraw_assets').get();
+  const row = state.db.prepare('SELECT status, approval_status, clean_plate_asset_id, error_code, credit_reservation_id FROM redraw_assets').get();
   assert.equal(row.status, 'failed');
+  assert.equal(row.approval_status, 'pending');
+  assert.equal(row.clean_plate_asset_id, null);
+  assert.equal(state.db.prepare('SELECT local_path FROM assets WHERE id = 421').get().local_path, 'scene.png');
   assert.equal(row.error_code, 'REDRAW_ASSET_GENERATION_FAILED');
   assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'refunded');
   fs.rmSync(root, { recursive: true, force: true });
