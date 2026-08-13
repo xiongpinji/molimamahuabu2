@@ -9,7 +9,7 @@
 ## 代码状态
 
 - 分支：`codex/redraw-r12-merge-20260809`
-- 短 HEAD：`f36ac2ae`
+- 短 HEAD：`6a2c1035`
 
 ## 执行命令与结果
 
