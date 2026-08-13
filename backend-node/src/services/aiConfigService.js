@@ -5,6 +5,8 @@ const { normalizeMaterialHubToken } = require('./jimengMaterialHubService');
 const { resolveKlingBearerToken } = require('./klingJwt');
 const { buildFeituoStatusUrl } = require('./feituoVideoClient');
 const usmercariVideoClient = require('./usmercariVideoClient');
+const fuminVideoClient = require('./fuminVideoClient');
+const fuminImageClient = require('./fuminImageClient');
 
 function normalizeApiKeyForService(serviceType, apiKey) {
   if (serviceType === 'jimeng2_character_auth' && apiKey != null) {
@@ -116,6 +118,27 @@ function normalizeCreateSettings(serviceType, settings) {
   return JSON.stringify(parseVideoSettings(settings));
 }
 
+function validateFuminModelKeyIsolation({ provider, serviceType, model }) {
+  const normalizedProvider = String(provider || '').toLowerCase();
+  if (!['fumin', 'fumin_video'].includes(normalizedProvider) || String(serviceType || '').toLowerCase() !== 'video') {
+    return;
+  }
+  const models = Array.isArray(model) ? model : model == null ? [] : [model];
+  const names = models.map((item) => String(item || '').trim()).filter(Boolean);
+  const invalid = names.filter((item) => !fuminVideoClient.FUMIN_MODELS[item]
+    && !Object.values(fuminVideoClient.FUMIN_MODELS).includes(item));
+  if (invalid.length) {
+    const error = new Error(`fumin 模型未经真实生成验证，禁止配置: ${invalid.join(', ')}`);
+    error.code = 'INVALID_FUMIN_MODEL';
+    throw error;
+  }
+  if (names.length > 1) {
+    const error = new Error('fumin FAST 与 MINI 必须分别建立配置，每条配置只能绑定一个模型和一个 API Key');
+    error.code = 'INVALID_FUMIN_MODEL_KEY_ISOLATION';
+    throw error;
+  }
+}
+
 function mergeVideoSettings(existingSettings, incomingSettings) {
   let existing = {};
   try {
@@ -134,6 +157,8 @@ function createConfig(db, log, req) {
   const now = new Date().toISOString();
   const model = modelToDb(req.model);
   const serviceType = req.service_type || 'text';
+  validateFuminModelKeyIsolation({ provider: req.provider, serviceType, model: req.model });
+  fuminImageClient.validateFuminImageModels({ provider: req.provider, serviceType, model: req.model });
   const settings = normalizeCreateSettings(serviceType, req.settings);
   let endpoint = req.endpoint || '';
   let queryEndpoint = req.query_endpoint || '';
@@ -195,6 +220,13 @@ function createConfig(db, log, req) {
         endpoint = '/cpa-file/submit/video';
         queryEndpoint = '/cpa-file/fetch';
       }
+    } else if (p === 'fumin' || p === 'fumin_video') {
+      if (st === 'video') {
+        endpoint = '/api/v3/contents/generations/tasks';
+        queryEndpoint = '/api/v3/contents/generations/tasks/{taskId}';
+      }
+    } else if (p === 'fumin_image') {
+      if (st === 'image' || st === 'storyboard_image') endpoint = '/images/generations';
     }
   }
   const defaultModel = req.default_model != null ? String(req.default_model).trim() || null : null;
@@ -227,6 +259,16 @@ function createConfig(db, log, req) {
 function updateConfig(db, log, id, req) {
   const existing = getConfig(db, id);
   if (!existing) return null;
+  validateFuminModelKeyIsolation({
+    provider: req.provider != null ? req.provider : existing.provider,
+    serviceType: req.service_type != null ? req.service_type : existing.service_type,
+    model: req.model !== undefined ? req.model : existing.model,
+  });
+  fuminImageClient.validateFuminImageModels({
+    provider: req.provider != null ? req.provider : existing.provider,
+    serviceType: req.service_type != null ? req.service_type : existing.service_type,
+    model: req.model !== undefined ? req.model : existing.model,
+  });
   const updates = [];
   const params = [];
   if (req.name != null) {
@@ -437,6 +479,37 @@ async function testConnection(opts) {
       .map((item) => String(item || '').trim()).filter(Boolean);
     const missing = requested.filter((item) => !available.has(item));
     if (missing.length) throw new Error(`USMercari 模型目录缺少: ${missing.join(', ')}`);
+    return;
+  }
+
+  // fumin 连接测试只读取模型目录，禁止提交会扣费的视频任务。
+  if ((provider === 'fumin' || provider === 'fumin_video') && serviceType === 'video') {
+    if (!opts.api_key) throw new Error('api_key 必填');
+    const url = `${fuminVideoClient.normalizeFuminBaseUrl(base)}/v1/models`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${opts.api_key}` },
+    });
+    await res.text();
+    if (res.status === 401 || res.status === 403) throw new Error(`fumin API Key 无效 (${res.status})`);
+    if (!res.ok) throw new Error(`fumin 连接失败 (${res.status})`);
+    // 该目录是能力提示，不是视频模型可用性的权威来源：实测时 MINI
+    // 可能不出现在列表中，但同一 Key 仍可成功提交对应的生成任务。
+    // 连接测试只负责验证网络和鉴权，避免把目录延迟/裁剪误报成模型不可用。
+    return;
+  }
+
+  // fumin 图片连接测试只读取模型目录，禁止测试按钮提交付费图片任务。
+  if (provider === 'fumin_image' && (serviceType === 'image' || serviceType === 'storyboard_image')) {
+    if (!opts.api_key) throw new Error('api_key 必填');
+    const url = `${fuminImageClient.normalizeFuminImageBaseUrl(base)}/models`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${opts.api_key}` },
+    });
+    await res.text();
+    if (res.status === 401 || res.status === 403) throw new Error(`fumin API Key 无效 (${res.status})`);
+    if (!res.ok) throw new Error(`fumin 图片连接失败 (${res.status})`);
     return;
   }
 
@@ -903,5 +976,7 @@ module.exports = {
   applyVendorLock,
   bulkUpdateApiKey,
   hasConnectionCredential,
+  validateFuminModelKeyIsolation,
+  validateFuminImageModels: fuminImageClient.validateFuminImageModels,
   toPublicConfig,
 };

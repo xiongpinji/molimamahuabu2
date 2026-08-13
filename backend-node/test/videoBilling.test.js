@@ -63,17 +63,22 @@ test('视频任务持久化参考图、参考视频与参考音频供异步生�
     prompt: '全能参考链路',
     duration: 5,
     reference_image_urls: ['/static/reference.png'],
-    reference_video_url: '/static/reference.mp4',
-    reference_audio_url: '/static/reference.mp3',
+    reference_video_urls: ['/static/reference-1.mp4', '/static/reference-2.mp4', '/static/reference-3.mp4'],
+    reference_audio_urls: ['/static/reference-1.mp3', '/static/reference-2.mp3', '/static/reference-3.mp3'],
   }, { billingEnabled: true, userId: 'user-1', schedule() {} });
 
-  const row = db.prepare(`SELECT first_frame_url, reference_image_urls, reference_video_url, reference_audio_url
+  const row = db.prepare(`SELECT first_frame_url, reference_image_urls, reference_video_url, reference_audio_url,
+      reference_video_urls, reference_audio_urls
     FROM video_generations WHERE id = ?`).get(created.id);
   assert.equal(row.first_frame_url, '/static/reference.png');
   assert.deepEqual(JSON.parse(row.reference_image_urls), ['/static/reference.png']);
-  assert.equal(row.reference_video_url, '/static/reference.mp4');
-  assert.equal(row.reference_audio_url, '/static/reference.mp3');
+  assert.equal(row.reference_video_url, '/static/reference-1.mp4');
+  assert.equal(row.reference_audio_url, '/static/reference-1.mp3');
+  assert.deepEqual(JSON.parse(row.reference_video_urls), ['/static/reference-1.mp4', '/static/reference-2.mp4', '/static/reference-3.mp4']);
+  assert.deepEqual(JSON.parse(row.reference_audio_urls), ['/static/reference-1.mp3', '/static/reference-2.mp3', '/static/reference-3.mp3']);
   assert.deepEqual(videoService.getById(db, created.id).reference_image_urls, ['/static/reference.png']);
+  assert.deepEqual(videoService.getById(db, created.id).reference_video_urls, ['/static/reference-1.mp4', '/static/reference-2.mp4', '/static/reference-3.mp4']);
+  assert.deepEqual(videoService.getById(db, created.id).reference_audio_urls, ['/static/reference-1.mp3', '/static/reference-2.mp3', '/static/reference-3.mp3']);
   db.close();
 });
 
@@ -190,6 +195,39 @@ test('视频任务拒绝 5 到 15 秒之外或非整数的时长', () => {
     }, { billingEnabled: true, userId: 'user-1', schedule() {} }), (error) => error.code === 'INVALID_VIDEO_DURATION');
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM video_generations').get().count, 0);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count, 0);
+    db.close();
+  }
+});
+
+test('fumin 参考媒体超限在建任务和预扣积分前拒绝', () => {
+  const db = setup();
+  const originalGetDefaultVideoConfig = videoClient.getDefaultVideoConfig;
+  prices.set(db, 'fumin-seedance-2.0-fast', 107, {
+    category: 'video',
+    cost_unit: 'second',
+    cost_micros_per_second: 280000,
+  });
+  try {
+    videoClient.getDefaultVideoConfig = () => ({
+      provider: 'fumin',
+      api_protocol: 'fumin_video',
+      default_model: 'fumin-seedance-2.0-fast',
+    });
+
+    assert.throws(() => videoService.create(db, log, {
+      drama_id: 1,
+      storyboard_id: 1,
+      model: 'fumin-seedance-2.0-fast',
+      prompt: '超限参考图不应进入队列',
+      duration: 15,
+      reference_image_urls: Array.from({ length: 10 }, (_, index) => `/static/reference-${index + 1}.png`),
+    }, { billingEnabled: true, userId: 'user-1', schedule() {} }), /最多支持 9 张/);
+
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM video_generations').get().count, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count, 0);
+    assert.equal(credits.getAccount(db, 'user-1').held, 0);
+  } finally {
+    videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;
     db.close();
   }
 });
