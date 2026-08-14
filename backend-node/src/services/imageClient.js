@@ -209,11 +209,38 @@ function hasColumn(db, table, columnName) {
     .some((column) => column.name === columnName);
 }
 
-function getImageConfigById(db, configId, preferredModel) {
-  const numericId = Number(configId);
-  if (!Number.isSafeInteger(numericId) || numericId <= 0) {
+function normalizeImageConfigId(configId) {
+  if (typeof configId === 'number') {
+    if (Number.isSafeInteger(configId) && configId > 0) return configId;
     throw imageConfigError('IMAGE_CONFIG_NOT_FOUND', '图片模型配置不存在');
   }
+  if (typeof configId === 'string') {
+    const trimmed = configId.trim();
+    if (/^[0-9]+$/.test(trimmed)) {
+      const numericId = Number(trimmed);
+      if (Number.isSafeInteger(numericId) && numericId > 0) return numericId;
+    }
+  }
+  throw imageConfigError('IMAGE_CONFIG_NOT_FOUND', '图片模型配置不存在');
+}
+
+function resolveExplicitImageConfigId(opts = {}) {
+  const hasSnake = Object.prototype.hasOwnProperty.call(opts, 'config_id');
+  const hasCamel = Object.prototype.hasOwnProperty.call(opts, 'configId');
+  if (!hasSnake && !hasCamel) return null;
+  if (!hasSnake) return normalizeImageConfigId(opts.configId);
+  if (!hasCamel) return normalizeImageConfigId(opts.config_id);
+
+  const snakeId = normalizeImageConfigId(opts.config_id);
+  const camelId = normalizeImageConfigId(opts.configId);
+  if (snakeId !== camelId) {
+    throw imageConfigError('IMAGE_CONFIG_NOT_FOUND', '图片模型配置不存在');
+  }
+  return snakeId;
+}
+
+function getImageConfigById(db, configId, preferredModel) {
+  const numericId = normalizeImageConfigId(configId);
 
   const config = aiConfigService.getConfig(db, numericId);
   if (!config || !['image', 'storyboard_image'].includes(config.service_type)) {
@@ -1804,8 +1831,8 @@ async function callImageApi(db, log, opts) {
     schedule,
   } = opts;
   const preferredProvider = preferred_provider ?? opts.preferredProvider;
-  const explicitConfigId = opts.config_id ?? opts.configId;
-  const hasExplicitConfig = explicitConfigId != null && String(explicitConfigId).trim() !== '';
+  const explicitConfigId = resolveExplicitImageConfigId(opts);
+  const hasExplicitConfig = explicitConfigId != null;
   const candidates = hasExplicitConfig
     ? [getImageConfigById(db, explicitConfigId, preferredModel)]
     : getImageConfigCandidates(

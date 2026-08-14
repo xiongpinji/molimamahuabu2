@@ -127,6 +127,39 @@ test('getImageConfigById rejects invalid config ids and unavailable configs with
   }
 });
 
+test('getImageConfigById accepts only safe positive integers or decimal digit strings', () => {
+  const db = createDb();
+  try {
+    const first = addConfig(db);
+    db.prepare("UPDATE sqlite_sequence SET seq = 99 WHERE name = 'ai_service_configs'").run();
+    const hundred = addConfig(db);
+    assert.equal(hundred.id, 100);
+
+    assert.equal(imageClient.getImageConfigById(db, first.id, 'gpt-image-2').id, first.id);
+    assert.equal(imageClient.getImageConfigById(db, ` ${first.id} `, 'gpt-image-2').id, first.id);
+
+    for (const invalidId of [
+      true,
+      false,
+      [first.id],
+      { id: first.id },
+      '1e2',
+      '1.0',
+      `+${first.id}`,
+      `-${first.id}`,
+      '',
+      '   ',
+    ]) {
+      assertConfigError(
+        () => imageClient.getImageConfigById(db, invalidId, 'gpt-image-2'),
+        'IMAGE_CONFIG_NOT_FOUND',
+      );
+    }
+  } finally {
+    db.close();
+  }
+});
+
 test('callImageApi with explicit config_id does not fail over to another matching image config after 503', async (t) => {
   const db = createDb();
   t.after(() => db.close());
@@ -167,6 +200,7 @@ test('callImageApi with explicit config_id does not fail over to another matchin
 
   const result = await imageClient.callImageApi(db, log, {
     config_id: target.id,
+    configId: ` ${target.id} `,
     prompt: 'local test prompt',
     model: 'gpt-image-2',
     size: '1024x1024',
@@ -175,4 +209,61 @@ test('callImageApi with explicit config_id does not fail over to another matchin
 
   assert.match(result.error, /^图片生成请求失败: 503\b/);
   assert.deepEqual(requests, ['primary']);
+});
+
+test('callImageApi rejects conflicting or invalid explicit config id aliases before calling providers', async (t) => {
+  const db = createDb();
+  t.after(() => db.close());
+
+  const requests = [];
+  const server = await listen((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      requests.push('provider-called');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ url: 'https://cdn.example/primary.jpg' }] }));
+    });
+  });
+  t.after(() => close(server));
+
+  const target = addConfig(db, {
+    base_url: `http://127.0.0.1:${server.address().port}`,
+    model: ['gpt-image-2'],
+    priority: 100,
+    is_default: true,
+  });
+  const other = addConfig(db, {
+    base_url: `http://127.0.0.1:${server.address().port}`,
+    model: ['gpt-image-2'],
+    priority: 90,
+  });
+
+  await assert.rejects(
+    () => imageClient.callImageApi(db, log, {
+      config_id: target.id,
+      configId: other.id,
+      prompt: 'local test prompt',
+      model: 'gpt-image-2',
+      image_gen_id: 903,
+    }),
+    (error) => {
+      assert.equal(error.code, 'IMAGE_CONFIG_NOT_FOUND');
+      return true;
+    },
+  );
+  await assert.rejects(
+    () => imageClient.callImageApi(db, log, {
+      config_id: target.id,
+      configId: '1.0',
+      prompt: 'local test prompt',
+      model: 'gpt-image-2',
+      image_gen_id: 904,
+    }),
+    (error) => {
+      assert.equal(error.code, 'IMAGE_CONFIG_NOT_FOUND');
+      return true;
+    },
+  );
+
+  assert.deepEqual(requests, []);
 });
