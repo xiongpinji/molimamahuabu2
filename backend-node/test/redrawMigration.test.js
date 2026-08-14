@@ -396,11 +396,29 @@ test('参考包列迁移幂等且旧生成默认关闭', () => {
   runMigrationsAndEnsure(db);
   runMigrationsAndEnsure(db);
 
-  const versionColumns = columnNames(db, 'redraw_versions');
-  const shotColumns = columnNames(db, 'redraw_shots');
-  assert.ok(versionColumns.includes('reference_bundle_required'));
-  for (const name of ['reference_bundle_json', 'reference_bundle_hash', 'reference_bundle_updated_at']) {
-    assert.ok(shotColumns.includes(name), name);
+  const versionColumns = new Map(
+    db.prepare('PRAGMA table_info(redraw_versions)').all().map((column) => [column.name, column]),
+  );
+  const shotColumns = new Map(
+    db.prepare('PRAGMA table_info(redraw_shots)').all().map((column) => [column.name, column]),
+  );
+  const requiredColumn = versionColumns.get('reference_bundle_required');
+  assert.ok(requiredColumn);
+  assert.deepEqual(
+    { type: requiredColumn.type, notnull: requiredColumn.notnull, default: requiredColumn.dflt_value },
+    { type: 'INTEGER', notnull: 1, default: '0' },
+  );
+
+  const bundleJsonColumn = shotColumns.get('reference_bundle_json');
+  assert.ok(bundleJsonColumn);
+  assert.deepEqual(
+    { type: bundleJsonColumn.type, notnull: bundleJsonColumn.notnull, default: bundleJsonColumn.dflt_value },
+    { type: 'TEXT', notnull: 1, default: "'{}'" },
+  );
+  for (const name of ['reference_bundle_hash', 'reference_bundle_updated_at']) {
+    const column = shotColumns.get(name);
+    assert.ok(column, name);
+    assert.deepEqual({ type: column.type, notnull: column.notnull }, { type: 'TEXT', notnull: 0 });
   }
 
   const projectId = insertProject(db);
@@ -411,6 +429,16 @@ test('参考包列迁移幂等且旧生成默认关闭', () => {
       .get(versionId).reference_bundle_required,
     0,
   );
+
+  const shotId = db.prepare(`
+    INSERT INTO redraw_shots
+      (version_id, batch_index, shot_index, start_ms, end_ms, duration_ms, status, created_at, updated_at)
+    VALUES (?, 1, 1, 0, 10000, 10000, 'draft', ?, ?)
+  `).run(versionId, NOW, NOW).lastInsertRowid;
+  const referenceBundleJson = db.prepare(`
+    SELECT reference_bundle_json FROM redraw_shots WHERE id = ?
+  `).get(shotId).reference_bundle_json;
+  assert.deepEqual(JSON.parse(referenceBundleJson), {});
   db.close();
 });
 
