@@ -16,6 +16,7 @@ const redrawBillingService = require('./redrawBillingService');
 const redrawReviewService = require('./redrawReviewService');
 const redrawCapabilityService = require('./redrawCapabilityService');
 const redrawSourceConditioningService = require('./redrawSourceConditioningService');
+const redrawReferenceBundleService = require('./redrawReferenceBundleService');
 const { compileNativeDialoguePrompt } = require('./redrawNativeDialoguePromptService');
 const redrawNativeAudioService = require('./redrawNativeAudioService');
 const { FEITUO_MODELS, buildFeituoVideoBody } = require('./feituoVideoClient');
@@ -46,6 +47,26 @@ const CLIENT_GENERATION_CONTROL_FIELDS = [
   'price',
   'reservation_id',
   'reservationId',
+];
+const CLIENT_REFERENCE_BUNDLE_CONTROL_FIELDS = [
+  'reference_bundle',
+  'referenceBundle',
+  'face_tracks',
+  'faceTracks',
+  'text_regions',
+  'textRegions',
+  'motion_reference',
+  'motionReference',
+  'reference_urls',
+  'referenceUrls',
+  'reference_hash',
+  'referenceHash',
+  'reference_path',
+  'referencePath',
+  'reference_url',
+  'referenceUrl',
+  'reviewer_status',
+  'reviewerStatus',
 ];
 
 function codedError(code, message, details) {
@@ -252,7 +273,8 @@ function selectShot(db, ctx, shotInput) {
     throw codedError('REDRAW_SHOT_NOT_FOUND', '转绘镜头不存在');
   }
   const rows = db.prepare(`
-    SELECT s.*, v.work_id, v.style_snapshot_json, v.locale AS version_locale,
+    SELECT s.*, v.work_id, v.style_snapshot_json, v.reference_bundle_required,
+           v.locale AS version_locale,
            v.market AS version_market,
            v.status AS version_status, v.deleted_at AS version_deleted_at,
            w.source_asset_id, w.source_fingerprint, w.duration_ms AS source_duration_ms
@@ -348,6 +370,11 @@ function rejectClientGenerationControl(input) {
   for (const field of CLIENT_GENERATION_CONTROL_FIELDS) {
     if (Object.prototype.hasOwnProperty.call(input || {}, field)) {
       throw codedError('REDRAW_GENERATION_INPUT_INVALID', '转绘分镜生成的模型、语言、提示词、音频和积分只能由服务端决定');
+    }
+  }
+  for (const field of CLIENT_REFERENCE_BUNDLE_CONTROL_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(input || {}, field)) {
+      throw codedError('REDRAW_GENERATION_INPUT_INVALID', '转绘参考包只能由服务端审核结果决定');
     }
   }
 }
@@ -457,19 +484,25 @@ function buildNativeGeneration(shot, parsed, nativeCapability, pack) {
 function canonicalIdentityBindings(value) {
   const bindings = Array.isArray(value) ? value : [];
   return bindings.map((binding) => ({
-    redraw_asset_id: Number(binding?.redraw_asset_id),
+    ...(binding?.track_key ? { track_key: String(binding.track_key || '').trim() } : {}),
+    ...(binding?.reference_image_asset_id ? { reference_image_asset_id: Number(binding.reference_image_asset_id) } : {}),
+    ...(binding?.redraw_asset_id ? { redraw_asset_id: Number(binding.redraw_asset_id) } : {}),
     source_character_key: String(binding?.source_character_key || '').trim(),
+    ...(binding?.target_character_name ? { target_character_name: String(binding.target_character_name || '').trim() } : {}),
     target_actor_label: String(binding?.target_actor_label || '').trim(),
     identity_pack_sha256: String(binding?.identity_pack_sha256 || '').trim(),
   })).sort((left, right) => (
-    left.redraw_asset_id - right.redraw_asset_id
+    Number(left.redraw_asset_id || 0) - Number(right.redraw_asset_id || 0)
+    || String(left.track_key || '').localeCompare(String(right.track_key || ''))
+    || Number(left.reference_image_asset_id || 0) - Number(right.reference_image_asset_id || 0)
     || left.source_character_key.localeCompare(right.source_character_key)
+    || String(left.target_character_name || '').localeCompare(String(right.target_character_name || ''))
     || left.target_actor_label.localeCompare(right.target_actor_label)
     || left.identity_pack_sha256.localeCompare(right.identity_pack_sha256)
   ));
 }
 
-function buildRequestSnapshot(generation, sourceConditioning, referenceImageUrls, identityBindings) {
+function buildRequestSnapshot(generation, sourceConditioning, referenceImageUrls, identityBindings, referenceBundleSnapshot = null) {
   return {
     prompt: generation.prompt,
     model: generation.model,
@@ -486,6 +519,7 @@ function buildRequestSnapshot(generation, sourceConditioning, referenceImageUrls
     ...(generation.localePack ? { locale_pack: generation.localePack } : {}),
     ...(generation.prompt_hash ? { prompt_hash: generation.prompt_hash } : {}),
     ...(generation.dialogue_snapshot_hash ? { dialogue_snapshot_hash: generation.dialogue_snapshot_hash } : {}),
+    ...(referenceBundleSnapshot ? { reference_bundle: referenceBundleSnapshot } : {}),
   };
 }
 
@@ -513,6 +547,20 @@ function sameRequestSnapshot(storedSnapshot, expectedSnapshot) {
       || JSON.stringify(canonicalIdentityBindings(storedIdentityBindings))
         !== JSON.stringify(canonicalIdentityBindings(expectedSnapshot.identity_bindings))) {
       return false;
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(expectedSnapshot, 'reference_bundle')) {
+    const expectedBundle = expectedSnapshot.reference_bundle || {};
+    const storedBundle = stored.reference_bundle || {};
+    for (const key of [
+      'schema_version',
+      'coverage_sha256',
+      'source_sha256',
+      'motion_sha256',
+      'dialogue_script_sha256',
+      'character_name_map_sha256',
+    ]) {
+      if (storedBundle[key] !== expectedBundle[key]) return false;
     }
   }
   return true;
@@ -794,6 +842,46 @@ async function prepareServerSourceConditioning(ctx, shot, generation) {
   return result;
 }
 
+async function prepareReferenceBundleConditioning(ctx, shot) {
+  const projection = await redrawReferenceBundleService.projectReferenceBundleForGeneration({
+    ...ctx,
+    versionId: Number(shot.version_id),
+  }, Number(shot.id));
+  const snapshot = projection.referenceBundleSnapshot || {};
+  const sourceConditioning = {
+    referenceVideoUrl: projection.referenceVideoUrl,
+    billingSnapshot: {
+      mode: 'redraw_reference_bundle',
+      source_asset_id: Number(shot.source_asset_id),
+      source_fingerprint: String(shot.source_fingerprint || ''),
+      start_ms: Number(shot.start_ms),
+      end_ms: Number(shot.end_ms),
+      segment_sha256: String(snapshot.motion_sha256 || ''),
+      audio_mode: 'strip',
+      coverage_sha256: String(snapshot.coverage_sha256 || ''),
+    },
+    auditSnapshot: {
+      schema_version: 'redraw-reference-bundle-generation-v1',
+      mode: 'redraw_reference_bundle',
+      shot_id: Number(shot.id),
+      source_asset_id: Number(shot.source_asset_id),
+      source_fingerprint: String(shot.source_fingerprint || ''),
+      start_ms: Number(shot.start_ms),
+      end_ms: Number(shot.end_ms),
+      segment_sha256: String(snapshot.motion_sha256 || ''),
+      audio_mode: 'strip',
+      coverage_sha256: String(snapshot.coverage_sha256 || ''),
+      reference_bundle: snapshot,
+    },
+  };
+  return {
+    sourceConditioning,
+    referenceImageUrls: projection.referenceImageUrls || [],
+    identityBindings: projection.identityBindings || [],
+    referenceBundleSnapshot: snapshot,
+  };
+}
+
 async function generateShot(ctx, input = {}) {
   const { db } = ctx;
   if (!db || !ctx.tenantId || !ctx.userId) throw codedError('REDRAW_CONTEXT_INVALID', '缺少转绘生成上下文');
@@ -806,7 +894,8 @@ async function generateShot(ctx, input = {}) {
     locale: shot.version_locale,
     market: shot.version_market,
   };
-  const requiresNativeDialogue = hasNativeDialogueRows(shot);
+  const requiresReferenceBundle = Number(shot.reference_bundle_required || 0) === 1;
+  const requiresNativeDialogue = !requiresReferenceBundle && hasNativeDialogueRows(shot);
   const nativeCapability = nativeCapabilityForVersion(db, versionIdentity, ctx.canReadArtifact);
   const language = languageFromLocale(shot.version_locale);
   const nativePack = requiresNativeDialogue ? assertReadyNativePack(ctx, language) : null;
@@ -842,16 +931,24 @@ async function generateShot(ctx, input = {}) {
   if (!Number.isSafeInteger(generation.attempt) || generation.attempt <= 0) {
     throw codedError('INVALID_REDRAW_GENERATION_INPUT', 'attempt 必须是正整数');
   }
-  const sourceConditioning = await prepareServerSourceConditioning(ctx, shot, generation);
+  let referenceBundleProjection = null;
+  const sourceConditioning = requiresReferenceBundle
+    ? (referenceBundleProjection = await prepareReferenceBundleConditioning(ctx, shot)).sourceConditioning
+    : await prepareServerSourceConditioning(ctx, shot, generation);
   generation.sourceConditioning = sourceConditioning.billingSnapshot;
-  const referenceImageUrls = collectReferenceImageUrls(db, shot, parsed);
-  const identityBindings = collectIdentityBindings(parsed);
+  const referenceImageUrls = requiresReferenceBundle
+    ? referenceBundleProjection.referenceImageUrls
+    : collectReferenceImageUrls(db, shot, parsed);
+  const identityBindings = requiresReferenceBundle
+    ? referenceBundleProjection.identityBindings
+    : collectIdentityBindings(parsed);
   preflightVideoGeneration(generation, sourceConditioning, referenceImageUrls);
   const requestSnapshot = buildRequestSnapshot(
     generation,
     sourceConditioning,
     referenceImageUrls,
     identityBindings,
+    referenceBundleProjection?.referenceBundleSnapshot || null,
   );
   generation.requestSnapshot = requestSnapshot;
   const reusable = findReusable(db, shot, generation.attempt, generation);

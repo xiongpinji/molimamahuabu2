@@ -16,6 +16,7 @@ const videoClient = require('../src/services/videoClient');
 const videoService = require('../src/services/videoService');
 const redrawOrchestrator = require('../src/services/redrawOrchestrator');
 const { identityBindingForAsset } = require('../src/services/redrawCharacterIdentityService');
+const { saveReferenceBundle } = require('../src/services/redrawReferenceBundleService');
 const { resetGenerationConcurrencyForTests } = require('../src/services/generationConcurrency');
 const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 const {
@@ -36,6 +37,10 @@ const FEITUO_FAST_MODEL = 'sdas-my-seedance-2.0-fast-upscaled-1080p';
 const TOAPIS_NATIVE_MODEL = 'seedance-2-fast';
 const ICREAT_MINI_MODEL = 'bytedance/seedance-2-0-mini';
 const SIGNED_SOURCE_VIDEO_URL = 'https://media.example.test/api/redraw-provider-assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4?expires=1786147800&signature=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const REFERENCE_BUNDLE_SOURCE_BYTES = Buffer.from('generation-reference-bundle-source-video');
+const REFERENCE_BUNDLE_SOURCE_SHA256 = crypto.createHash('sha256').update(REFERENCE_BUNDLE_SOURCE_BYTES).digest('hex');
+const REFERENCE_BUNDLE_MOTION_BYTES = Buffer.from('generation-reference-bundle-motion-video');
+const REFERENCE_BUNDLE_MOTION_SHA256 = crypto.createHash('sha256').update(REFERENCE_BUNDLE_MOTION_BYTES).digest('hex');
 
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -407,6 +412,337 @@ function ctx(db, overrides = {}) {
 
 function count(db, table, where = '1=1') {
   return db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where}`).get().count;
+}
+
+function referenceBundleIdentityPack(input) {
+  const pack = {
+    schema_version: 'target-actor-identity-v1',
+    source_character_key: input.sourceCharacterKey,
+    target_actor_label: input.targetActorLabel,
+    artifact: {
+      asset_id: Number(input.assetId),
+      sha256: input.sha256,
+      width: 864,
+      height: 1296,
+      mime_type: 'image/png',
+    },
+    confirmed_views: ['front', 'profile', 'full_body'],
+    live_action_human_confirmed: true,
+    adult_status: 'verified_18_plus',
+    identity_consistency_confirmed: true,
+    persona_origin: 'fictional_ai_generated',
+    target_country: 'US',
+    ready: true,
+    reviewed_by: 'user-a',
+    reviewed_at: '2026-08-14T00:05:00.000Z',
+  };
+  pack.pack_sha256 = crypto.createHash('sha256').update(stableJson(pack)).digest('hex');
+  return pack;
+}
+
+function referenceBundleTextPack(input) {
+  const pack = {
+    schema_version: 'text-clean-plate-reference-v1',
+    region_key: input.regionKey,
+    kind: input.kind,
+    artifact: {
+      asset_id: Number(input.assetId),
+      sha256: input.sha256,
+      width: 864,
+      height: 496,
+      mime_type: 'image/png',
+    },
+    source_fingerprint: REFERENCE_BUNDLE_SOURCE_SHA256,
+    ready: true,
+    reviewed_by: 'user-a',
+    reviewed_at: '2026-08-14T00:05:00.000Z',
+  };
+  pack.pack_sha256 = crypto.createHash('sha256').update(stableJson(pack)).digest('hex');
+  return pack;
+}
+
+function putStorageFile(storageRoot, relativePath, bytes) {
+  const absPath = path.join(storageRoot, relativePath);
+  fs.mkdirSync(path.dirname(absPath), { recursive: true });
+  fs.writeFileSync(absPath, bytes);
+}
+
+function insertReferenceBundleAsset(db, input) {
+  const now = '2026-08-14T00:00:00.000Z';
+  db.prepare(`INSERT INTO assets
+    (id, name, type, category, url, local_path, mime_type, metadata, created_at, updated_at)
+    VALUES (?, ?, ?, 'redraw', ?, ?, ?, ?, ?, ?)`)
+    .run(
+      input.id,
+      input.name || `asset-${input.id}`,
+      input.type || 'image',
+      input.url || '',
+      input.localPath,
+      input.mimeType || 'image/png',
+      JSON.stringify(input.metadata || { sha256: input.sha256, width: 864, height: 496 }),
+      now,
+      now,
+    );
+  return input.id;
+}
+
+async function setupReferenceBundleGenerationFixture(t, options = {}) {
+  const state = setup();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-generation-reference-bundle-'));
+  t.after(() => {
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  });
+  state.storageRoot = storageRoot;
+  state.sourceAssetId = 9001;
+  state.motionAssetId = 9006;
+  state.actorAImageId = 9002;
+  state.actorBImageId = 9003;
+  state.subtitleCleanImageId = 9004;
+  state.screenCleanImageId = 9005;
+  const imageBytes = (id) => Buffer.from(`generation-reference-bundle-image:${id}`);
+  const imageSha = (id) => crypto.createHash('sha256').update(imageBytes(id)).digest('hex');
+  putStorageFile(storageRoot, 'source/source.mp4', REFERENCE_BUNDLE_SOURCE_BYTES);
+  putStorageFile(storageRoot, `redraw-conditioning/${REFERENCE_BUNDLE_MOTION_SHA256}.mp4`, REFERENCE_BUNDLE_MOTION_BYTES);
+  for (const id of [state.actorAImageId, state.actorBImageId, state.subtitleCleanImageId, state.screenCleanImageId]) {
+    putStorageFile(storageRoot, `redraw/${id}.png`, imageBytes(id));
+  }
+  insertReferenceBundleAsset(state.db, {
+    id: state.sourceAssetId,
+    type: 'video',
+    localPath: 'source/source.mp4',
+    mimeType: 'video/mp4',
+    sha256: REFERENCE_BUNDLE_SOURCE_SHA256,
+  });
+  insertReferenceBundleAsset(state.db, {
+    id: state.actorAImageId,
+    localPath: `redraw/${state.actorAImageId}.png`,
+    sha256: imageSha(state.actorAImageId),
+  });
+  insertReferenceBundleAsset(state.db, {
+    id: state.actorBImageId,
+    localPath: `redraw/${state.actorBImageId}.png`,
+    sha256: imageSha(state.actorBImageId),
+  });
+  insertReferenceBundleAsset(state.db, {
+    id: state.subtitleCleanImageId,
+    localPath: `redraw/${state.subtitleCleanImageId}.png`,
+    sha256: imageSha(state.subtitleCleanImageId),
+  });
+  insertReferenceBundleAsset(state.db, {
+    id: state.screenCleanImageId,
+    localPath: `redraw/${state.screenCleanImageId}.png`,
+    sha256: imageSha(state.screenCleanImageId),
+  });
+  prices.set(state.db, 'seedance 2.0', 2, {
+    category: 'video',
+    billing_unit: 'second',
+    resolution_prices: { '480p': { credits: 2 }, '720p': { credits: 3 } },
+  });
+  addVerifiedGenerationCapability(state.db, 'seedance 2.0', { locale: 'en-US', market: 'US' });
+  const now = '2026-08-14T00:00:00.000Z';
+  const nameMap = { 'character-001': 'Ethan', 'character-002': 'Maya' };
+  const sourceFacts = {
+    script_sha256: '5'.repeat(64),
+    name_map_source_sha256: crypto.createHash('sha256').update(stableJson(nameMap)).digest('hex'),
+  };
+  state.db.prepare(`UPDATE redraw_works
+    SET source_asset_id = ?, source_fingerprint = ?, updated_at = ?
+    WHERE id = ?`)
+    .run(state.sourceAssetId, REFERENCE_BUNDLE_SOURCE_SHA256, now, state.workId);
+  state.db.prepare(`UPDATE redraw_versions
+    SET locale = 'en-US', market = 'US', name_map_json = ?, source_facts_json = ?,
+        facts_hash = ?, reference_bundle_required = ?, status = 'ready_to_generate', updated_at = ?
+    WHERE id = ?`)
+    .run(
+      JSON.stringify(nameMap),
+      JSON.stringify(sourceFacts),
+      crypto.createHash('sha256').update(stableJson(sourceFacts)).digest('hex'),
+      options.referenceBundleRequired === false ? 0 : 1,
+      now,
+      state.versionId,
+    );
+  const shotId = addShot(state.db, state.versionId, {
+    durationMs: 5000,
+    endMs: 5000,
+    references: [],
+    compiledPrompt: {
+      text: 'English scene prompt with Ethan and Maya speaking in a tense hallway.',
+      model: 'seedance 2.0',
+      duration: 5,
+      resolution: '480p',
+      aspect_ratio: '16:9',
+    },
+    localized_dialogue_json: JSON.stringify([
+      { speaker_id: 'character-001', localized_text: 'Come with me.', start_ms: 0, end_ms: 2400 },
+      { speaker_id: 'character-002', localized_text: 'Not without proof.', start_ms: 2500, end_ms: 5000 },
+    ]),
+  });
+  state.shotId = shotId;
+  state.db.prepare('UPDATE redraw_shots SET work_id = ? WHERE id = ?').run(state.workId, shotId);
+  const actorAId = addRedrawAsset(state.db, state.versionId, {
+    kind: 'character',
+    name: 'Actor Ethan',
+    assetId: state.actorAImageId,
+    sourceCharacterKey: 'character-001',
+    targetActorLabel: 'Actor Ethan',
+    identityPack: referenceBundleIdentityPack({
+      sourceCharacterKey: 'character-001',
+      targetActorLabel: 'Actor Ethan',
+      assetId: state.actorAImageId,
+      sha256: imageSha(state.actorAImageId),
+    }),
+  });
+  const actorBId = addRedrawAsset(state.db, state.versionId, {
+    kind: 'character',
+    name: 'Actor Maya',
+    assetId: state.actorBImageId,
+    sourceCharacterKey: 'character-002',
+    targetActorLabel: 'Actor Maya',
+    identityPack: referenceBundleIdentityPack({
+      sourceCharacterKey: 'character-002',
+      targetActorLabel: 'Actor Maya',
+      assetId: state.actorBImageId,
+      sha256: imageSha(state.actorBImageId),
+    }),
+  });
+  const subtitleCleanId = addRedrawAsset(state.db, state.versionId, {
+    kind: 'scene',
+    name: 'subtitle clean',
+    cleanPlateAssetId: state.subtitleCleanImageId,
+  });
+  state.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?')
+    .run(JSON.stringify({
+      source_ref: { stable_id: 'text-001', kind: 'text_subtitle' },
+      snapshot: { mode: 'text_clean_plate' },
+      text_clean_plate_pack: referenceBundleTextPack({
+        regionKey: 'text-001',
+        kind: 'text_subtitle',
+        assetId: state.subtitleCleanImageId,
+        sha256: imageSha(state.subtitleCleanImageId),
+      }),
+    }), subtitleCleanId);
+  const screenCleanId = addRedrawAsset(state.db, state.versionId, {
+    kind: 'scene',
+    name: 'screen clean',
+    cleanPlateAssetId: state.screenCleanImageId,
+  });
+  state.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?')
+    .run(JSON.stringify({
+      source_ref: { stable_id: 'text-002', kind: 'text_screen' },
+      snapshot: { mode: 'text_clean_plate' },
+      text_clean_plate_pack: referenceBundleTextPack({
+        regionKey: 'text-002',
+        kind: 'text_screen',
+        assetId: state.screenCleanImageId,
+        sha256: imageSha(state.screenCleanImageId),
+      }),
+    }), screenCleanId);
+  const faceCoverageSha256 = crypto.createHash('sha256').update(stableJson([
+    { identity_redraw_asset_id: Number(actorAId), source_character_key: 'character-001', time_ranges: [[0, 5000]], track_key: 'face-001' },
+    { identity_redraw_asset_id: Number(actorBId), source_character_key: 'character-002', time_ranges: [[2500, 5000]], track_key: 'face-002' },
+  ])).digest('hex');
+  const textCoverageSha256 = crypto.createHash('sha256').update(stableJson([
+    { kind: 'text_subtitle', region_key: 'text-001', text_clean_redraw_asset_id: Number(subtitleCleanId), time_ranges: [[0, 2500]] },
+    { kind: 'text_screen', region_key: 'text-002', text_clean_redraw_asset_id: Number(screenCleanId), time_ranges: [[2500, 5000]] },
+  ])).digest('hex');
+  insertReferenceBundleAsset(state.db, {
+    id: state.motionAssetId,
+    type: 'video',
+    localPath: `redraw-conditioning/${REFERENCE_BUNDLE_MOTION_SHA256}.mp4`,
+    mimeType: 'video/mp4',
+    sha256: REFERENCE_BUNDLE_MOTION_SHA256,
+    metadata: {
+      redraw_motion_reference: {
+        schema_version: 'redraw-motion-reference-v1',
+        tenant_id: 'tenant-a',
+        user_id: 'user-a',
+        version_id: state.versionId,
+        shot_id: shotId,
+        source_asset_id: state.sourceAssetId,
+        source_fingerprint: REFERENCE_BUNDLE_SOURCE_SHA256,
+        clip_start_ms: 0,
+        clip_end_ms: 5000,
+        face_coverage_sha256: faceCoverageSha256,
+        text_coverage_sha256: textCoverageSha256,
+      },
+    },
+  });
+  state.referenceBundleInput = {
+    shot_id: shotId,
+    expected_updated_at: state.db.prepare('SELECT updated_at FROM redraw_shots WHERE id = ?').get(shotId).updated_at,
+    motion_reference_asset_id: state.motionAssetId,
+    face_tracks: [
+      { track_key: 'face-002', source_character_key: 'character-002', time_ranges: [[2500, 5000]], identity_redraw_asset_id: Number(actorBId) },
+      { track_key: 'face-001', source_character_key: 'character-001', time_ranges: [[0, 5000]], identity_redraw_asset_id: Number(actorAId) },
+    ],
+    text_regions: [
+      { region_key: 'text-002', kind: 'text_screen', time_ranges: [[2500, 5000]], text_clean_redraw_asset_id: Number(screenCleanId) },
+      { region_key: 'text-001', kind: 'text_subtitle', time_ranges: [[0, 2500]], text_clean_redraw_asset_id: Number(subtitleCleanId) },
+    ],
+    coverage_review: {
+      recognizable_face_count: 2,
+      mapped_face_count: 2,
+      unresolved_face_count: 0,
+      recognizable_text_region_count: 2,
+      mapped_text_region_count: 2,
+      unresolved_text_region_count: 0,
+      status: 'approved',
+    },
+  };
+  if (options.saveBundle !== false) {
+    state.savedReferenceBundle = await saveReferenceBundle({
+      db: state.db,
+      tenantId: 'tenant-a',
+      userId: 'user-a',
+      versionId: state.versionId,
+      storageRoot,
+      now: '2026-08-14T00:05:00.000Z',
+      probeRunner: async () => ({
+        duration_ms: 5000,
+        width: 864,
+        height: 496,
+        mime_type: 'video/mp4',
+        video_codec: 'h264',
+        audio_stream_count: 0,
+      }),
+    }, state.referenceBundleInput);
+  }
+  return state;
+}
+
+function assertReferenceBundlePreflightClean(state, providerCalls) {
+  assert.equal(count(state.db, 'video_generations'), 0);
+  assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+  assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+  assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+  assert.equal(providerCalls, 0);
+}
+
+async function assertReferenceBundleGenerationRejects(t, mutate, expectedCode) {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  let providerCalls = 0;
+  mutate(state);
+  await assert.rejects(
+    () => generateShot(ctx(state.db, {
+      storageRoot: state.storageRoot,
+      versionId: state.versionId,
+      createReferenceUrl: ({ asset_id: assetId }) => `https://cdn.example.test/reference/${assetId}.png`,
+      prepareSourceConditioning: async () => assert.fail('raw source conditioning must not run'),
+      videoProcessor: async () => { providerCalls += 1; },
+      schedule() {},
+    }), { shotId: state.shotId }),
+    (error) => {
+      assert.equal(error.code, expectedCode);
+      const serialized = JSON.stringify(error);
+      assert.equal(/[A-Za-z]:[\\/]/.test(serialized), false);
+      assert.equal(serialized.includes('sk-'), false);
+      assert.equal(serialized.includes('Authorization'), false);
+      assert.equal(serialized.includes('http://'), false);
+      assert.equal(serialized.includes('https://'), false);
+      return true;
+    },
+  );
+  assertReferenceBundlePreflightClean(state, providerCalls);
 }
 
 function nativeAudit(db, shotId, taskId) {
@@ -4285,5 +4621,156 @@ test('供应商回读已先落 completed 终态时启动 mark 仍安排 shot 与
     assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'confirmed');
   } finally {
     state.db.close();
+  }
+});
+
+test('reference bundle required 的单镜生成使用安全参考包投影且不调用源片 conditioning', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  let providerCalls = 0;
+  const result = await generateShot(ctx(state.db, {
+    storageRoot: state.storageRoot,
+    versionId: state.versionId,
+    probeRunner: async () => ({
+      duration_ms: 5000,
+      width: 864,
+      height: 496,
+      mime_type: 'video/mp4',
+      video_codec: 'h264',
+      audio_stream_count: 0,
+    }),
+    createReferenceUrl: ({ asset_id: assetId, kind }) => `https://cdn.example.test/reference/${kind}/${assetId}`,
+    prepareSourceConditioning: async () => assert.fail('raw source conditioning must not run'),
+    videoProcessor: async () => { providerCalls += 1; },
+    schedule() {},
+  }), { shotId: state.shotId });
+
+  assert.equal(result.status, 'processing');
+  assert.equal(providerCalls, 0);
+  assert.equal(count(state.db, 'video_generations'), 1);
+  assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+  const video = state.db.prepare('SELECT * FROM video_generations').get();
+  const snapshot = JSON.parse(video.request_snapshot);
+  const sourceConditioning = JSON.parse(video.source_conditioning_json);
+  assert.equal(snapshot.reference_bundle.schema_version, 'redraw-reference-bundle-v1');
+  assert.equal(snapshot.reference_bundle.motion_sha256, REFERENCE_BUNDLE_MOTION_SHA256);
+  assert.deepEqual(snapshot.reference_video_urls, [`https://cdn.example.test/reference/motion/${state.motionAssetId}`]);
+  assert.deepEqual(JSON.parse(video.reference_video_urls), [`https://cdn.example.test/reference/motion/${state.motionAssetId}`]);
+  assert.deepEqual(JSON.parse(video.reference_image_urls), [
+    `https://cdn.example.test/reference/identity/${state.actorAImageId}`,
+    `https://cdn.example.test/reference/identity/${state.actorBImageId}`,
+  ]);
+  assert.deepEqual(snapshot.identity_bindings.map((binding) => binding.source_character_key), [
+    'character-001',
+    'character-002',
+  ]);
+  assert.equal(sourceConditioning.mode, 'redraw_reference_bundle');
+  assert.equal(sourceConditioning.audio_mode, 'strip');
+  assert.equal(sourceConditioning.segment_sha256, REFERENCE_BUNDLE_MOTION_SHA256);
+  const serialized = JSON.stringify({ snapshot, sourceConditioning });
+  assert.equal(serialized.includes(SIGNED_SOURCE_VIDEO_URL), false);
+  assert.equal(/[A-Za-z]:\\/.test(serialized), false);
+  assert.equal(/[\u3400-\u9fff]/.test(serialized), false);
+  assert.equal(serialized.includes('sk-'), false);
+  assert.equal(serialized.includes('Authorization'), false);
+});
+
+test('reference bundle required 缺失或漂移时在冻结积分和建视频前失败', async (t) => {
+  await assertReferenceBundleGenerationRejects(
+    t,
+    (state) => {
+      state.db.prepare(`UPDATE redraw_shots
+        SET reference_bundle_json = '{}', reference_bundle_hash = NULL, reference_bundle_updated_at = NULL
+        WHERE id = ?`).run(state.shotId);
+    },
+    'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED',
+  );
+  await assertReferenceBundleGenerationRejects(
+    t,
+    (state) => {
+      const row = state.db.prepare('SELECT reference_bundle_json FROM redraw_shots WHERE id = ?').get(state.shotId);
+      const bundle = JSON.parse(row.reference_bundle_json);
+      bundle.coverage_sha256 = '0'.repeat(64);
+      state.db.prepare('UPDATE redraw_shots SET reference_bundle_json = ? WHERE id = ?')
+        .run(JSON.stringify(bundle), state.shotId);
+    },
+    'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED',
+  );
+});
+
+test('reference bundle required 的运动、身份、文本和对白证据过期时不产生副作用', async (t) => {
+  const staleCases = [
+    ['motion has audio', (state) => {
+      const metadata = JSON.parse(state.db.prepare('SELECT metadata FROM assets WHERE id = ?').get(state.motionAssetId).metadata);
+      metadata.redraw_motion_reference.clip_end_ms = 4900;
+      state.db.prepare('UPDATE assets SET metadata = ? WHERE id = ?').run(JSON.stringify(metadata), state.motionAssetId);
+    }],
+    ['identity stale', (state) => {
+      const row = state.db.prepare('SELECT source_ref_json FROM redraw_assets WHERE asset_id = ?').get(state.actorAImageId);
+      const payload = JSON.parse(row.source_ref_json);
+      payload.identity_pack.ready = false;
+      state.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE asset_id = ?')
+        .run(JSON.stringify(payload), state.actorAImageId);
+    }],
+    ['text clean stale', (state) => {
+      const row = state.db.prepare('SELECT source_ref_json FROM redraw_assets WHERE clean_plate_asset_id = ?').get(state.subtitleCleanImageId);
+      const payload = JSON.parse(row.source_ref_json);
+      payload.text_clean_plate_pack.ready = false;
+      state.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE clean_plate_asset_id = ?')
+        .run(JSON.stringify(payload), state.subtitleCleanImageId);
+    }],
+    ['dialogue stale', (state) => {
+      state.db.prepare('UPDATE redraw_shots SET localized_dialogue_json = ? WHERE id = ?')
+        .run(JSON.stringify([{ speaker_id: 'character-001', localized_text: '中文对白', start_ms: 0, end_ms: 1000 }]), state.shotId);
+    }],
+  ];
+  for (const [, mutate] of staleCases) {
+    await assertReferenceBundleGenerationRejects(t, mutate, 'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED');
+  }
+});
+
+test('reference bundle required 超过 9 个身份和客户端参考包控制字段都在前置阶段拒绝', async (t) => {
+  await assertReferenceBundleGenerationRejects(
+    t,
+    (state) => {
+      const row = state.db.prepare('SELECT reference_bundle_json FROM redraw_shots WHERE id = ?').get(state.shotId);
+      const bundle = JSON.parse(row.reference_bundle_json);
+      for (let index = 0; index < 8; index += 1) {
+        bundle.face_tracks.push({
+          ...bundle.face_tracks[0],
+          track_key: `face-extra-${index}`,
+          source_character_key: `character-extra-${index}`,
+        });
+      }
+      state.db.prepare('UPDATE redraw_shots SET reference_bundle_json = ?, reference_bundle_hash = ? WHERE id = ?')
+        .run(JSON.stringify(bundle), 'f'.repeat(64), state.shotId);
+    },
+    'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED',
+  );
+
+  for (const [field, value] of [
+    ['reference_bundle', {}],
+    ['referenceBundle', {}],
+    ['face_tracks', []],
+    ['text_regions', []],
+    ['motion_reference', {}],
+    ['reference_urls', ['https://evil.example.test/ref.png']],
+    ['reference_hash', 'a'.repeat(64)],
+    ['reference_path', 'C:\\tmp\\ref.png'],
+    ['reviewer_status', 'approved'],
+  ]) {
+    const state = await setupReferenceBundleGenerationFixture(t);
+    let providerCalls = 0;
+    await assert.rejects(
+      () => generateShot(ctx(state.db, {
+        storageRoot: state.storageRoot,
+        versionId: state.versionId,
+        createReferenceUrl: ({ asset_id: assetId }) => `https://cdn.example.test/reference/${assetId}.png`,
+        videoProcessor: async () => { providerCalls += 1; },
+        schedule() {},
+      }), { shotId: state.shotId, [field]: value }),
+      (error) => error.code === 'REDRAW_GENERATION_INPUT_INVALID',
+      field,
+    );
+    assertReferenceBundlePreflightClean(state, providerCalls);
   }
 });
