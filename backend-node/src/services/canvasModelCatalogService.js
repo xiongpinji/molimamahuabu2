@@ -11,7 +11,7 @@ const KIND_BY_SERVICE = {
 };
 
 const PRIVATE_CATALOG_FIELDS = new Set([
-  'provider', 'base_url', 'api_key', 'name', 'hostname', 'domain',
+  'provider', 'base_url', 'api_key', 'hostname', 'domain',
 ]);
 
 const USMERCARI_VIDEO_CAPABILITIES = Object.freeze({

@@ -17,11 +17,29 @@ test('canvas model catalog parses model lists without exposing config secrets', 
       provider: 'private-relay',
       base_url: 'https://private-relay.example/v1',
       api_key: 'nested-secret',
-      name: 'Private Relay',
       hostname: 'private-relay.example',
       domain: 'private-relay.example',
     },
   })), { durations: [5, 10] });
+})
+
+test('canvas model catalog preserves public capability names while removing relay metadata', () => {
+  assert.deepEqual(safeCapabilities(JSON.stringify({
+    canvas_capabilities: {
+      presets: [{
+        id: 'p1',
+        name: 'Public Preset',
+        value: 'x',
+        provider: 'private-relay',
+        base_url: 'https://private-relay.example/v1',
+        api_key: 'nested-secret',
+        hostname: 'private-relay.example',
+        domain: 'private-relay.example',
+      }],
+    },
+  })), {
+    presets: [{ id: 'p1', name: 'Public Preset', value: 'x' }],
+  });
 })
 
 test('canvas model catalog exposes video resolution prices to the node editor', () => {
