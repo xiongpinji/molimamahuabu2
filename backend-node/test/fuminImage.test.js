@@ -5,6 +5,8 @@ const Database = require('better-sqlite3');
 
 const aiConfigService = require('../src/services/aiConfigService');
 const imageClient = require('../src/services/imageClient');
+const imageService = require('../src/services/imageService');
+const creditLedgerService = require('../src/services/creditLedgerService');
 const {
   FUMIN_IMAGE_MODELS,
   resolveFuminImageModel,
@@ -94,6 +96,49 @@ test('fumin 4K 图片价格迁移保存前后端一致的规范别名', () => {
       "SELECT model FROM model_credit_prices WHERE model = ? COLLATE NOCASE"
     ).get('fumin-gpt-image-2-4K');
     assert.equal(row?.model, 'fumin-gpt-image-2-4K');
+  } finally {
+    db.close();
+  }
+});
+
+test('fumin 4K 图片计费后仍保留供应商配置使用的模型大小写', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  try {
+    creditLedgerService.setAccountBalance(db, 'user-1', 100);
+    aiConfigService.createConfig(db, log, {
+      service_type: 'image',
+      provider: 'fumin_image',
+      api_protocol: 'openai',
+      name: 'fumin GPT Image 2 计费路由',
+      base_url: 'https://fumin.ai/v1',
+      endpoint: '/images/generations',
+      api_key: 'test-key',
+      model: ['fumin-gpt-image-2', 'fumin-gpt-image-2-4K'],
+      default_model: 'fumin-gpt-image-2',
+      is_default: true,
+    });
+
+    const created = imageService.create(db, log, {
+      drama_id: 1,
+      model: 'fumin-gpt-image-2-4K',
+      prompt: '电影感人物肖像',
+    }, {
+      billingEnabled: true,
+      userId: 'user-1',
+      schedule() {},
+    });
+    const row = db.prepare('SELECT model FROM image_generations WHERE id = ?').get(created.id);
+
+    assert.equal(row.model, 'fumin-gpt-image-2-4K');
+    assert.equal(
+      imageClient.getDefaultImageConfig(db, row.model, null, 'image')?.provider,
+      'fumin_image',
+    );
+    assert.equal(
+      imageClient.getDefaultImageConfig(db, 'fumin-gpt-image-2-4k', null, 'image')?.provider,
+      'fumin_image',
+    );
   } finally {
     db.close();
   }

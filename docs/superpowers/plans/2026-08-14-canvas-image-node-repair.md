@@ -74,7 +74,7 @@ export function collectDirectUpstreamImageReferences(nodes = [], edges = [], tar
 - 修改：`backend-node/src/services/imageClient.js`
 - 修改：`backend-node/src/services/imageService.js`
 
-- [ ] **步骤 1：增加计费后路由回归测试**
+- [x] **步骤 1：增加计费后路由回归测试**
 
 ```js
 const created = imageService.create(db, log, {
@@ -91,13 +91,13 @@ assert.equal(row.model, 'fumin-gpt-image-2-4K')
 assert.equal(imageClient.getDefaultImageConfig(db, 'fumin-gpt-image-2-4k', null, 'image')?.provider, 'fumin_image')
 ```
 
-- [ ] **步骤 2：运行红灯测试**
+- [x] **步骤 2：运行红灯测试**
 
 运行：`cd backend-node && node --test test/fuminImage.test.js`
 
 预期：数据库保存值为小写 `fumin-gpt-image-2-4k`，或小写选择无法匹配 Fumin 配置。
 
-- [ ] **步骤 3：最小化修复配置匹配和生成模型持久化**
+- [x] **步骤 3：最小化修复配置匹配和生成模型持久化**
 
 ```js
 const wantedModel = String(preferredModel).trim().toLowerCase()
@@ -107,7 +107,7 @@ const matching = active.filter((config) => configuredModels(config)
 
 生成记录保存配置中的 `generationModel`，计费仍使用 `canonicalModel(generationModel)` 得到价格键。
 
-- [ ] **步骤 4：运行绿灯测试并提交**
+- [x] **步骤 4：运行绿灯测试并提交**
 
 运行：`cd backend-node && node --test test/fuminImage.test.js`
 
