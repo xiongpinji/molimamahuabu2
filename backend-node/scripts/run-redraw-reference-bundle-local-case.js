@@ -24,6 +24,7 @@ const DEFAULT_OUTPUT_DIR = path.join(os.tmpdir(), 'redraw-reference-bundle-local
 const MANIFEST_FILENAME = 'redraw-reference-bundle-local-manifest.json';
 const MOTION_FILENAME = 'redraw-reference-bundle-motion.mp4';
 const CONTACT_SHEET_FILENAME = 'redraw-reference-bundle-contact-sheet.jpg';
+const HEX_64 = /^[a-f0-9]{64}$/;
 const REVIEWED_AT = '2026-08-14T00:05:00.000Z';
 const UPDATED_AT = '2026-08-14T00:00:00.000Z';
 const SOURCE_FACTS = Object.freeze({
@@ -125,6 +126,45 @@ async function renameAtomic(sourcePath, finalPath) {
   }
 }
 
+function viewLayout() {
+  return {
+    view_count: 3,
+    view_layout: {
+      rows: 1,
+      columns: 3,
+      panel_width: 288,
+      panel_height: 1296,
+      views: ['front', 'profile', 'full_body'],
+    },
+  };
+}
+
+function actorSheetSvg(title, palette) {
+  const [front, profile, fullBody, ink] = palette;
+  const views = [
+    ['front', front, 'circle'],
+    ['profile', profile, 'triangle'],
+    ['full_body', fullBody, 'rect'],
+  ];
+  const panels = views.map(([label, color, shape], index) => {
+    const x = index * 288;
+    const body = shape === 'circle'
+      ? `<circle cx="${x + 144}" cy="360" r="92" fill="${ink}"/><rect x="${x + 92}" y="510" width="104" height="420" rx="44" fill="${ink}"/>`
+      : shape === 'triangle'
+        ? `<path d="M${x + 144} 250 L${x + 235} 470 L${x + 53} 470 Z" fill="${ink}"/><rect x="${x + 110}" y="540" width="68" height="390" rx="28" fill="${ink}"/>`
+        : `<rect x="${x + 79}" y="260" width="130" height="170" rx="46" fill="${ink}"/><rect x="${x + 66}" y="500" width="156" height="520" rx="40" fill="${ink}"/>`;
+    return `
+      <rect x="${x}" y="0" width="288" height="1296" fill="${color}"/>
+      ${body}
+      <text x="${x + 28}" y="1160" font-family="Arial" font-size="34" fill="${ink}">${label}</text>`;
+  }).join('');
+  return Buffer.from(`
+<svg xmlns="http://www.w3.org/2000/svg" width="864" height="1296">
+  ${panels}
+  <text x="28" y="80" font-family="Arial" font-size="42" fill="${ink}">${title}</text>
+</svg>`);
+}
+
 function svg(width, height, title, palette) {
   const [bg, fg, accent] = palette;
   return Buffer.from(`
@@ -146,6 +186,18 @@ async function writeImage(filePath, width, height, title, palette) {
     width,
     height,
     mime_type: 'image/png',
+  };
+}
+
+async function writeActorSheet(filePath, title, palette) {
+  await fsp.mkdir(path.dirname(filePath), { recursive: true });
+  await sharp(actorSheetSvg(title, palette)).png().toFile(filePath);
+  return {
+    sha256: sha256File(filePath),
+    width: 864,
+    height: 1296,
+    mime_type: 'image/png',
+    ...viewLayout(),
   };
 }
 
@@ -284,8 +336,8 @@ async function createFixture(deps = {}) {
     const motionPath = path.join(root, motionRelativePath);
     await fsp.rename(motionDraftPath, motionPath);
 
-    const ethan = await writeImage(path.join(root, 'redraw', 'identity-301.png'), 864, 1296, 'Ethan AI adult', ['#1f2937', '#d1d5db', '#60a5fa']);
-    const maya = await writeImage(path.join(root, 'redraw', 'identity-302.png'), 864, 1296, 'Maya AI adult', ['#111827', '#f3f4f6', '#f472b6']);
+    const ethan = await writeActorSheet(path.join(root, 'redraw', 'identity-301.png'), 'Ethan AI adult', ['#dbeafe', '#bfdbfe', '#93c5fd', '#1f2937']);
+    const maya = await writeActorSheet(path.join(root, 'redraw', 'identity-302.png'), 'Maya AI adult', ['#fce7f3', '#fbcfe8', '#f9a8d4', '#111827']);
     const subtitle = await writeImage(path.join(root, 'redraw', 'text-clean-303.png'), 864, 496, 'subtitle clean plate', ['#f8fafc', '#dbeafe', '#2563eb']);
     const screen = await writeImage(path.join(root, 'redraw', 'text-clean-304.png'), 864, 496, 'screen clean plate', ['#f9fafb', '#dcfce7', '#16a34a']);
 
@@ -335,8 +387,8 @@ async function createFixture(deps = {}) {
         UPDATED_AT,
       ).lastInsertRowid);
 
-    const identityA = identityPack({ sourceCharacterKey: 'character-001', targetActorLabel: 'Actor Ethan', artifact: { asset_id: 301, sha256: ethan.sha256, width: 864, height: 1296, mime_type: 'image/png' } });
-    const identityB = identityPack({ sourceCharacterKey: 'character-002', targetActorLabel: 'Actor Maya', artifact: { asset_id: 302, sha256: maya.sha256, width: 864, height: 1296, mime_type: 'image/png' } });
+    const identityA = identityPack({ sourceCharacterKey: 'character-001', targetActorLabel: 'Actor Ethan', artifact: { asset_id: 301, sha256: ethan.sha256, width: 864, height: 1296, mime_type: 'image/png', view_count: ethan.view_count, view_layout: ethan.view_layout } });
+    const identityB = identityPack({ sourceCharacterKey: 'character-002', targetActorLabel: 'Actor Maya', artifact: { asset_id: 302, sha256: maya.sha256, width: 864, height: 1296, mime_type: 'image/png', view_count: maya.view_count, view_layout: maya.view_layout } });
     for (const asset of [
       { id: 301, name: 'identity-ethan', localPath: 'redraw/identity-301.png', sha256: ethan.sha256, width: 864, height: 1296 },
       { id: 302, name: 'identity-maya', localPath: 'redraw/identity-302.png', sha256: maya.sha256, width: 864, height: 1296 },
@@ -477,7 +529,34 @@ async function writeContactSheet(fixture, outputPath) {
   }
 }
 
-function buildManifest(fixture) {
+async function writeContactSheetChecked(writer, fixture, outputPath) {
+  try {
+    await writer(fixture, outputPath);
+  } catch (error) {
+    if (error?.code === 'REDRAW_REFERENCE_BUNDLE_LOCAL_CONTACT_SHEET_FAILED') throw error;
+    localError('REDRAW_REFERENCE_BUNDLE_LOCAL_CONTACT_SHEET_FAILED', 'contact sheet output failed');
+  }
+}
+
+async function contactSheetEvidence(filePath) {
+  let metadata;
+  try {
+    metadata = await sharp(filePath).metadata();
+  } catch (_) {
+    localError('REDRAW_REFERENCE_BUNDLE_LOCAL_MANIFEST_INVALID', 'contact sheet is unreadable');
+  }
+  if (metadata.format !== 'jpeg' || metadata.width !== 960 || metadata.height !== 360) {
+    localError('REDRAW_REFERENCE_BUNDLE_LOCAL_MANIFEST_INVALID', 'contact sheet media mismatch');
+  }
+  return {
+    sha256: sha256File(filePath),
+    width: 960,
+    height: 360,
+    mime_type: 'image/jpeg',
+  };
+}
+
+function buildManifest(fixture, contactSheet) {
   const bundle = fixture.bundle;
   return {
     schema_version: 'redraw-reference-bundle-local-manifest-v1',
@@ -495,9 +574,10 @@ function buildManifest(fixture) {
     },
     contact_sheet: {
       filename: CONTACT_SHEET_FILENAME,
-      width: 960,
-      height: 360,
-      mime_type: 'image/jpeg',
+      sha256: contactSheet.sha256,
+      width: contactSheet.width,
+      height: contactSheet.height,
+      mime_type: contactSheet.mime_type,
     },
     coverage_sha256: bundle.coverage_sha256,
     reference_bundle_hash: fixture.referenceBundleHash,
@@ -510,6 +590,8 @@ function buildManifest(fixture) {
       adult_status: 'verified_18_plus',
       approval_status: 'approved',
       artifact_sha256: track.identity.artifact.sha256,
+      view_count: track.identity.artifact.view_count,
+      view_layout: track.identity.artifact.view_layout,
       pack_sha256: track.identity.pack_sha256,
     })),
     text_regions: bundle.text_regions.map((region) => ({
@@ -529,10 +611,21 @@ function assertFinalManifest(manifest) {
     || manifest.market !== 'US'
     || manifest.motion?.filename !== MOTION_FILENAME
     || manifest.contact_sheet?.filename !== CONTACT_SHEET_FILENAME
+    || !HEX_64.test(String(manifest.contact_sheet?.sha256 || ''))
+    || manifest.contact_sheet?.width !== 960
+    || manifest.contact_sheet?.height !== 360
+    || manifest.contact_sheet?.mime_type !== 'image/jpeg'
     || manifest.motion?.video_codec !== 'h264'
     || manifest.motion?.audio_stream_count !== 0
     || canonicalBundleHash(manifest.bundle) !== manifest.reference_bundle_hash) {
     localError('REDRAW_REFERENCE_BUNDLE_LOCAL_MANIFEST_INVALID', 'manifest validation failed');
+  }
+  if (!Array.isArray(manifest.characters)
+    || manifest.characters.some((entry) => entry?.view_count !== 3
+      || entry?.view_layout?.columns !== 3
+      || entry?.view_layout?.rows !== 1
+      || JSON.stringify(entry?.view_layout?.views) !== JSON.stringify(['front', 'profile', 'full_body']))) {
+    localError('REDRAW_REFERENCE_BUNDLE_LOCAL_MANIFEST_INVALID', 'identity view evidence missing');
   }
   const serialized = JSON.stringify(manifest);
   if (/[A-Za-z]:[\\/]/.test(serialized)
@@ -556,16 +649,74 @@ async function readInputManifest(manifestPath) {
   }
 }
 
+async function createStagingDir(outputDir) {
+  return fsp.mkdtemp(path.join(outputDir, `.redraw-reference-bundle-local-${process.pid}-`));
+}
+
+function finalOutputNames() {
+  return [MANIFEST_FILENAME, MOTION_FILENAME, CONTACT_SHEET_FILENAME];
+}
+
+async function validateStagedOutputs(root, manifest) {
+  assertFinalManifest(manifest);
+  const motionPath = path.join(root, MOTION_FILENAME);
+  const contactSheetPath = path.join(root, CONTACT_SHEET_FILENAME);
+  if (sha256File(motionPath) !== manifest.motion.sha256) {
+    localError('REDRAW_REFERENCE_BUNDLE_LOCAL_MANIFEST_INVALID', 'motion hash mismatch');
+  }
+  const contact = await contactSheetEvidence(contactSheetPath);
+  if (contact.sha256 !== manifest.contact_sheet.sha256) {
+    localError('REDRAW_REFERENCE_BUNDLE_LOCAL_MANIFEST_INVALID', 'contact sheet hash mismatch');
+  }
+}
+
+async function commitStagedOutputs(outputDir, stagingDir) {
+  const backups = [];
+  const installed = [];
+  try {
+    for (const name of finalOutputNames()) {
+      const finalPath = path.join(outputDir, name);
+      const stagedPath = path.join(stagingDir, name);
+      const backupPath = `${finalPath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.bak`;
+      if (fs.existsSync(finalPath)) {
+        await fsp.rename(finalPath, backupPath);
+        backups.push({ finalPath, backupPath });
+      }
+      await fsp.rename(stagedPath, finalPath);
+      installed.push({ finalPath, backupPath: fs.existsSync(backupPath) ? backupPath : null });
+    }
+    for (const backup of backups) {
+      await fsp.rm(backup.backupPath, { force: true }).catch(() => {});
+    }
+  } catch (error) {
+    for (const item of installed.reverse()) {
+      await fsp.rm(item.finalPath, { force: true }).catch(() => {});
+    }
+    for (const backup of backups.reverse()) {
+      if (fs.existsSync(backup.backupPath) && !fs.existsSync(backup.finalPath)) {
+        await fsp.rename(backup.backupPath, backup.finalPath).catch(() => {});
+      }
+    }
+    localError('REDRAW_REFERENCE_BUNDLE_LOCAL_OUTPUT_INVALID', 'final output commit failed');
+  }
+}
+
 async function outputFixture(options, deps) {
   let fixture;
+  let stagingDir;
   try {
     fixture = await createFixture(deps);
-    const manifest = buildManifest(fixture);
-    assertFinalManifest(manifest);
-    await renameAtomic(fixture.motionPath, path.join(options.outputDir, MOTION_FILENAME));
-    await writeContactSheet(fixture, path.join(options.outputDir, CONTACT_SHEET_FILENAME));
-    await writeAtomic(path.join(options.outputDir, MANIFEST_FILENAME), `${JSON.stringify(manifest, null, 2)}\n`, { encoding: 'utf8' });
+    stagingDir = await createStagingDir(options.outputDir);
+    await renameAtomic(fixture.motionPath, path.join(stagingDir, MOTION_FILENAME));
+    const contactSheetPath = path.join(stagingDir, CONTACT_SHEET_FILENAME);
+    await writeContactSheetChecked(deps.writeContactSheet || writeContactSheet, fixture, contactSheetPath);
+    const manifest = buildManifest(fixture, await contactSheetEvidence(contactSheetPath));
+    await validateStagedOutputs(stagingDir, manifest);
+    await writeAtomic(path.join(stagingDir, MANIFEST_FILENAME), `${JSON.stringify(manifest, null, 2)}\n`, { encoding: 'utf8' });
+    await validateStagedOutputs(stagingDir, manifest);
+    await commitStagedOutputs(options.outputDir, stagingDir);
   } finally {
+    if (stagingDir) await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
     if (fixture) {
       fixture.db.close();
       await fsp.rm(fixture.root, { recursive: true, force: true }).catch(() => {});
@@ -583,9 +734,21 @@ async function outputManifest(options) {
   if (sha256File(motionPath) !== manifest.motion.sha256) {
     localError('REDRAW_REFERENCE_BUNDLE_LOCAL_MANIFEST_INVALID', 'manifest motion hash mismatch');
   }
-  await renameAtomic(motionPath, path.join(options.outputDir, MOTION_FILENAME));
-  await renameAtomic(contactSheetPath, path.join(options.outputDir, CONTACT_SHEET_FILENAME));
-  await writeAtomic(path.join(options.outputDir, MANIFEST_FILENAME), `${JSON.stringify(manifest, null, 2)}\n`, { encoding: 'utf8' });
+  const contact = await contactSheetEvidence(contactSheetPath);
+  if (contact.sha256 !== manifest.contact_sheet.sha256) {
+    localError('REDRAW_REFERENCE_BUNDLE_LOCAL_MANIFEST_INVALID', 'manifest contact sheet hash mismatch');
+  }
+  let stagingDir;
+  try {
+    stagingDir = await createStagingDir(options.outputDir);
+    await renameAtomic(motionPath, path.join(stagingDir, MOTION_FILENAME));
+    await renameAtomic(contactSheetPath, path.join(stagingDir, CONTACT_SHEET_FILENAME));
+    await writeAtomic(path.join(stagingDir, MANIFEST_FILENAME), `${JSON.stringify(manifest, null, 2)}\n`, { encoding: 'utf8' });
+    await validateStagedOutputs(stagingDir, manifest);
+    await commitStagedOutputs(options.outputDir, stagingDir);
+  } finally {
+    if (stagingDir) await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 function helpText() {
@@ -597,9 +760,6 @@ function helpText() {
 
 async function runCase(options, deps = {}) {
   await ensureOutputDirectory(options.outputDir);
-  for (const name of [MANIFEST_FILENAME, MOTION_FILENAME, CONTACT_SHEET_FILENAME]) {
-    await fsp.rm(path.join(options.outputDir, name), { force: true }).catch(() => {});
-  }
   if (options.fixture) {
     await outputFixture(options, deps);
   } else {
