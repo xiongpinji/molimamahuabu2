@@ -226,9 +226,10 @@ function getImageConfigCandidates(db, preferredModel, preferredProvider, imageSe
     }
   }
   if (preferredModel) {
+    const wantedModel = String(preferredModel).trim().toLowerCase();
     const matching = active.filter((c) => {
       const models = Array.isArray(c.model) ? c.model : (c.model != null ? [c.model] : []);
-      return models.includes(preferredModel);
+      return models.some((model) => String(model).trim().toLowerCase() === wantedModel);
     });
     const isDefaultModel = matching.some((config) => config.is_default);
     active = isDefaultModel
@@ -395,7 +396,11 @@ function buildImageUrl(config) {
 
 function getModelFromConfig(config, preferredModel) {
   const models = Array.isArray(config.model) ? config.model : (config.model != null ? [config.model] : []);
-  if (preferredModel && models.includes(preferredModel)) return preferredModel;
+  if (preferredModel) {
+    const wantedModel = String(preferredModel).trim().toLowerCase();
+    const matchedModel = models.find((model) => String(model).trim().toLowerCase() === wantedModel);
+    if (matchedModel) return matchedModel;
+  }
   if (config.default_model && models.includes(config.default_model)) return config.default_model;
   return models[0] || 'dall-e-3';
 }

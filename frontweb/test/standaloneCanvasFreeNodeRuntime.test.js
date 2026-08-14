@@ -54,6 +54,8 @@ test('选中自由节点展开专属编辑器，视频节点展示自动采用�
   assert.match(nodeSource, /:aria-label="data\.kind === 'video' \? '自动参考素材' : '自动参考图'"/)
   assert.match(nodeSource, /ctx\?\.getFreeNodeInputReferences\?\.\(props\.id\)/)
   assert.match(nodeSource, /reference\.ready \? 'ready' : 'pending'/)
+  assert.match(nodeSource, /<img v-if="reference\.url && reference\.kind === 'image'"/)
+  assert.match(nodeSource, /<span v-else class="reference-placeholder">/)
   assert.match(nodeSource, /把图片、视频或音频节点连接到视频节点/)
   assert.match(canvasSource, /getFreeNodeInputReferences: freeCanvasNodeInputReferences/)
   assert.match(canvasSource, /视频节点已采用该\$\{mediaLabel\}作为参考素材/)
@@ -173,6 +175,9 @@ test('自由节点运行结果可轮询、失败写回、成功自动入库并�
   assert.match(canvasSource, /async function retryFreeCanvasAssetSave\(nodeOrId\)/)
   assert.match(canvasSource, /retryFreeCanvasAssetSave,\s*\r?\n/)
   assert.match(canvasSource, /save-node-result-asset[\s\S]*saveFreeCanvasResultAsset\(node, node\.data\?\.kind, nodeResultUrl\(node\), null, node\.data\?\.taskId \|\| ''\)[\s\S]*ElMessage\.error\(error\?\.message \|\| '存入素材库失败'\)/)
+  assert.match(canvasSource, /function resumePendingFreeCanvasTasks\(\)[\s\S]*node\?\.data\?\.status !== 'running'[\s\S]*void resumeFreeCanvasNodeTask\(node\)/)
+  assert.match(canvasSource, /async function resumeFreeCanvasNodeTask\(nodeOrId\)[\s\S]*await pollFreeCanvasTask\(taskId,[\s\S]*status: 'failed'[\s\S]*generationActive: false[\s\S]*taskId,[\s\S]*error: errorMessage/)
+  assert.match(canvasSource, /await loadForDrama\(drama\.value, filterEpisodeId\.value\)[\s\S]*rebuildGraph\(\)[\s\S]*resumePendingFreeCanvasTasks\(\)/)
 })
 
 test('画布保存使用串行队列并在执行时构造最新布局', () => {

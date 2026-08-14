@@ -719,6 +719,7 @@ function create(db, log, req, options = {}) {
     }
     return { ...getById(db, active.id), reused: true };
   }
+  let generationModel = req.model || null;
   let billedModel = null;
   let billedCredits = null;
   if (options.billingEnabled) {
@@ -729,9 +730,9 @@ function create(db, log, req, options = {}) {
     }
     const imageServiceType = req.storyboard_id ? 'storyboard_image' : 'image';
     const config = imageClient.getDefaultImageConfig(db, req.model, req.provider, imageServiceType);
-    billedModel = req.model || config?.default_model || (Array.isArray(config?.model) ? config.model[0] : config?.model);
+    generationModel = req.model || config?.default_model || (Array.isArray(config?.model) ? config.model[0] : config?.model);
     const modelPriceService = require('./modelPriceService');
-    billedModel = modelPriceService.canonicalModel(billedModel);
+    billedModel = modelPriceService.canonicalModel(generationModel);
     billedCredits = modelPriceService.requirePrice(db, billedModel);
   }
   const sceneId = req.scene_id != null ? Number(req.scene_id) : null;
@@ -764,7 +765,7 @@ function create(db, log, req, options = {}) {
     const billingValues = options.billingEnabled ? ', ?, ?, NULL' : '';
     const params = [
       req.storyboard_id ?? null, Number(req.drama_id) || 0, sceneId, req.provider || 'openai',
-      mergedPrompt, req.negative_prompt ?? null, billedModel || req.model || null, frameType,
+      mergedPrompt, req.negative_prompt ?? null, generationModel, frameType,
       refImagesJson, useFirstFrameLayoutLock, reqSize, taskId, now, now,
     ];
     if (options.billingEnabled) params.push(options.tenantId || null, String(options.userId));
