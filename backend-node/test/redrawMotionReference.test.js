@@ -117,6 +117,17 @@ function updateMotionMetadata(fixture, fields) {
   updateAsset(fixture, { metadata: JSON.stringify(metadata) });
 }
 
+async function sha256Path(filePath) {
+  const hash = crypto.createHash('sha256');
+  await new Promise((resolve, reject) => {
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.once('error', reject);
+    stream.once('end', resolve);
+  });
+  return hash.digest('hex');
+}
+
 async function captureError(input) {
   try {
     await verifyMotionReference(input);
@@ -334,6 +345,65 @@ test('probe 抛错统一 fail closed', async (t) => {
     throw new Error(`ffprobe failed at ${fixture.absolutePath}`);
   };
   await expectStale(fixture);
+});
+
+test('probe timeout-like 错误统一脱敏为 stale', async (t) => {
+  const fixture = createFixture(t);
+  fixture.input.probeRunner = async () => {
+    const error = new Error(`ffprobe timed out at ${fixture.absolutePath}`);
+    error.code = 'ETIMEDOUT';
+    error.killed = true;
+    error.signal = 'SIGKILL';
+    throw error;
+  };
+  await expectStale(fixture);
+});
+
+test('probe 只读验证器快照且原路径瞬时换文件后可安全恢复', async (t) => {
+  const fixture = createFixture(t);
+  const parkedConditioningRoot = `${fixture.conditioningRoot}-parked`;
+  let probePath;
+  let probedSha256;
+
+  fixture.input.probeRunner = async (candidatePath) => {
+    probePath = candidatePath;
+    probedSha256 = await sha256Path(candidatePath);
+
+    fs.renameSync(fixture.conditioningRoot, parkedConditioningRoot);
+    try {
+      fs.mkdirSync(fixture.conditioningRoot);
+      fs.writeFileSync(fixture.absolutePath, Buffer.from('transient-unverified-video'));
+    } finally {
+      fs.rmSync(fixture.conditioningRoot, { recursive: true, force: true });
+      fs.renameSync(parkedConditioningRoot, fixture.conditioningRoot);
+    }
+    return { ...DEFAULT_PROBE };
+  };
+
+  const verified = await verifyMotionReference(fixture.input);
+
+  assert.notEqual(path.resolve(probePath), path.resolve(fixture.absolutePath));
+  assert.equal(probedSha256, VIDEO_SHA256);
+  assert.equal(verified.sha256, VIDEO_SHA256);
+  assert.equal(fs.existsSync(probePath), false);
+  assert.deepEqual(
+    fs.readdirSync(fixture.conditioningRoot).filter((name) => name.includes('.probe-')),
+    [],
+  );
+});
+
+test('probe 期间快照 hash 漂移必须 fail closed 并清理快照', async (t) => {
+  const fixture = createFixture(t);
+  let probePath;
+  fixture.input.probeRunner = async (candidatePath) => {
+    probePath = candidatePath;
+    fs.writeFileSync(candidatePath, Buffer.from('tampered-probe-snapshot'));
+    return { ...DEFAULT_PROBE };
+  };
+
+  await expectStale(fixture);
+
+  assert.equal(fs.existsSync(probePath), false);
 });
 
 test('验证中 realpath 逃逸 fail closed', async (t) => {

@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
+const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
@@ -219,6 +220,8 @@ async function runLocalProbe(absolutePath) {
   ], {
     windowsHide: true,
     maxBuffer: 4 * 1024 * 1024,
+    timeout: 15000,
+    killSignal: 'SIGKILL',
   });
   const parsed = JSON.parse(stdout);
   const streams = Array.isArray(parsed.streams) ? parsed.streams : [];
@@ -254,6 +257,19 @@ function sameEvidence(before, after) {
     && before.sha256 === after.sha256;
 }
 
+function createProbeSnapshotPath() {
+  const randomName = crypto.randomBytes(32).toString('hex');
+  return path.join(os.tmpdir(), `redraw-motion.probe-${randomName}.mp4`);
+}
+
+async function removeProbeSnapshot(snapshotPath) {
+  try {
+    await fsp.unlink(snapshotPath);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+}
+
 async function verifyMotionReference(input) {
   assertValidInput(input);
 
@@ -267,8 +283,19 @@ async function verifyMotionReference(input) {
     if (before.sha256 !== resolved.filenameSha256) throw staleError();
 
     const runner = input.probeRunner || runLocalProbe;
-    const probe = await runner(before.realPath);
-    assertMotionContract(probe, input.expected);
+    const snapshotPath = createProbeSnapshotPath();
+    let probe;
+    try {
+      await fsp.copyFile(before.realPath, snapshotPath, fs.constants.COPYFILE_EXCL);
+      if (await sha256File(snapshotPath) !== before.sha256) throw staleError();
+
+      probe = await runner(snapshotPath);
+      assertMotionContract(probe, input.expected);
+
+      if (await sha256File(snapshotPath) !== before.sha256) throw staleError();
+    } finally {
+      await removeProbeSnapshot(snapshotPath);
+    }
 
     const after = await readFileEvidence(resolved);
     if (after.sha256 !== resolved.filenameSha256 || !sameEvidence(before, after)) {
