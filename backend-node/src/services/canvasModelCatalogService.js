@@ -132,11 +132,13 @@ function list(db) {
       };
     }))
     .filter(Boolean);
-  for (const item of canvasProviderConfigService.listSafe()) {
-    const key = `${item.kind}:${item.model.toLowerCase()}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      configured.push(item);
+  if (verifiedIds === null) {
+    for (const item of canvasProviderConfigService.listSafe()) {
+      const key = `${item.kind}:${item.model.toLowerCase()}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        configured.push(item);
+      }
     }
   }
   return configured;

@@ -130,6 +130,34 @@ test('canvas model catalog exposes only the selected verified config identity', 
   db.close();
 });
 
+test('verified catalog excludes environment fallbacks while legacy schema keeps them', () => {
+  const keys = ['CANVAS_IMAGE_API_KEY', 'CANVAS_IMAGE_MODEL', 'CANVAS_IMAGE_BASE_URL'];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  let verifiedDb;
+  let legacyDb;
+  try {
+    process.env.CANVAS_IMAGE_API_KEY = 'environment-fallback-secret';
+    process.env.CANVAS_IMAGE_MODEL = 'environment-fallback-image';
+    process.env.CANVAS_IMAGE_BASE_URL = 'https://environment-fallback.example/v1';
+
+    verifiedDb = new Database(':memory:');
+    runMigrationsAndEnsure(verifiedDb);
+    verifiedDb.exec('ALTER TABLE ai_service_configs ADD COLUMN verification_status TEXT');
+    assert.equal(catalog.list(verifiedDb).some((row) => row.model === 'environment-fallback-image'), false);
+
+    legacyDb = new Database(':memory:');
+    runMigrationsAndEnsure(legacyDb);
+    assert.equal(catalog.list(legacyDb).some((row) => row.model === 'environment-fallback-image'), true);
+  } finally {
+    verifiedDb?.close();
+    legacyDb?.close();
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+});
+
 test('canvas model catalog applies per-model capabilities without exposing 1080p', () => {
   const settings = JSON.stringify({
     canvas_capabilities: { durations: [5], aspectRatios: ['16:9'] },
