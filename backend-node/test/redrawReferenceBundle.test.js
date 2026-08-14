@@ -520,7 +520,10 @@ test('保存参考包时规范排序、脱敏并写入稳定哈希', async () =>
     assert.equal(bundle.market, 'US');
     assert.deepEqual(bundle.face_tracks.map((entry) => entry.track_key), ['face-001', 'face-002']);
     assert.deepEqual(bundle.text_regions.map((entry) => entry.region_key), ['text-001', 'text-002']);
-    assert.deepEqual(bundle.dialogue.map((entry) => entry.speaker_id), ['character-001', 'character-002']);
+    assert.equal(bundle.dialogue.localized_script_version_id, `shot-${state.shotId}`);
+    assert.equal(bundle.dialogue.script_sha256, '5'.repeat(64));
+    assert.equal(bundle.dialogue.character_name_map_sha256, sha256(stableJson({ 'character-001': 'Ethan', 'character-002': 'Maya' })));
+    assert.deepEqual(bundle.dialogue.turns.map((entry) => entry.speaker_id), ['character-001', 'character-002']);
     assert.deepEqual(bundle.name_map, { 'character-001': 'Ethan', 'character-002': 'Maya' });
     assert.match(bundle.coverage_sha256, /^[0-9a-f]{64}$/);
 
@@ -569,8 +572,8 @@ test('重读参考包时重新校验并投影生成用白名单 URL', async () =
       coverage_sha256: loaded.bundle.coverage_sha256,
       source_sha256: SOURCE_FINGERPRINT,
       motion_sha256: MOTION_SHA256,
-      dialogue_script_sha256: '5'.repeat(64),
-      character_name_map_sha256: sha256(stableJson({ 'character-001': 'Ethan', 'character-002': 'Maya' })),
+      dialogue_script_sha256: loaded.bundle.dialogue.script_sha256,
+      character_name_map_sha256: loaded.bundle.dialogue.character_name_map_sha256,
     });
     assert.equal(JSON.stringify(projected).includes('source/source.mp4'), false);
     assert.equal(JSON.stringify(projected).includes('sk-'), false);
@@ -620,6 +623,47 @@ test('重读参考包时拒绝保存后仍有效的文字净景证据漂移', as
     assertShotUnchanged(state.db, state.shotId, before);
   } finally {
     state.cleanup();
+  }
+});
+
+test('重读参考包时拒绝保存后仍有效的剧本证据漂移', async () => {
+  const savedState = setup();
+  let savedRow;
+  try {
+    await saveReferenceBundle(ctx(savedState), validInput(savedState));
+    savedRow = currentShot(savedState.db, savedState.shotId);
+  } finally {
+    savedState.cleanup();
+  }
+
+  const driftState = setup({ sourceFacts: { script_sha256: '6'.repeat(64) } });
+  try {
+    driftState.db.prepare(`
+      UPDATE redraw_shots
+      SET reference_bundle_json = ?, reference_bundle_hash = ?,
+          reference_bundle_updated_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run(
+      savedRow.reference_bundle_json,
+      savedRow.reference_bundle_hash,
+      savedRow.reference_bundle_updated_at,
+      savedRow.updated_at,
+      driftState.shotId,
+    );
+    const before = currentShot(driftState.db, driftState.shotId);
+
+    const loadError = await captureAnyError(() => loadCurrentReferenceBundle(ctx(driftState), driftState.shotId));
+    assert.equal(loadError.code, 'REDRAW_REFERENCE_BUNDLE_DRIFT');
+
+    const projectionError = await captureAnyError(() => projectReferenceBundleForGeneration(ctx(driftState, {
+      createReferenceUrl() {
+        return '/static/redraw-reference/unused';
+      },
+    }), driftState.shotId));
+    assert.equal(projectionError.code, 'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED');
+    assertShotUnchanged(driftState.db, driftState.shotId, before);
+  } finally {
+    driftState.cleanup();
   }
 });
 

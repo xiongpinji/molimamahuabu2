@@ -479,7 +479,7 @@ async function buildBundle(ctx, input, options = {}) {
       clip_end_ms: Number(shot.end_ms),
     },
     name_map: nameMap,
-    dialogue: dialogue.turns,
+    dialogue,
     face_tracks: faces.map((face) => ({
       ...face,
       identity: identityEvidence.find((entry) => entry.redraw_asset_id === face.identity_redraw_asset_id),
@@ -591,8 +591,6 @@ async function projectReferenceBundleForGeneration(rawCtx, shotId) {
     if (typeof ctx.createReferenceUrl !== 'function') fail(PROJECTION_CODE);
     const loaded = await loadCurrentReferenceBundle(ctx, shotId);
     const bundle = loaded.bundle;
-    const { shot } = getRows(ctx, Number(shotId));
-    const facts = parseJson(shot.source_facts_json, {});
     const sourceAsset = ctx.db.prepare('SELECT url FROM assets WHERE id = ? AND deleted_at IS NULL')
       .get(bundle.source.asset_id);
     const sourceUrl = String(sourceAsset?.url || '');
@@ -627,8 +625,8 @@ async function projectReferenceBundleForGeneration(rawCtx, shotId) {
         coverage_sha256: bundle.coverage_sha256,
         source_sha256: bundle.source.sha256,
         motion_sha256: bundle.motion_reference.sha256,
-        dialogue_script_sha256: facts.script_sha256,
-        character_name_map_sha256: sha256(stableJson(bundle.name_map)),
+        dialogue_script_sha256: bundle.dialogue.script_sha256,
+        character_name_map_sha256: bundle.dialogue.character_name_map_sha256,
       },
     };
   } catch (_) {
