@@ -24,6 +24,7 @@ const DEFAULT_OUTPUT_DIR = path.join(os.tmpdir(), 'redraw-reference-bundle-local
 const MANIFEST_FILENAME = 'redraw-reference-bundle-local-manifest.json';
 const MOTION_FILENAME = 'redraw-reference-bundle-motion.mp4';
 const CONTACT_SHEET_FILENAME = 'redraw-reference-bundle-contact-sheet.jpg';
+const LOCK_FILENAME = '.redraw-reference-bundle-local.lock';
 const HEX_64 = /^[a-f0-9]{64}$/;
 const REVIEWED_AT = '2026-08-14T00:05:00.000Z';
 const UPDATED_AT = '2026-08-14T00:00:00.000Z';
@@ -657,6 +658,23 @@ function finalOutputNames() {
   return [MANIFEST_FILENAME, MOTION_FILENAME, CONTACT_SHEET_FILENAME];
 }
 
+function assertMotionProbeMatchesManifest(probe, manifest) {
+  if (Math.abs(Number(probe.duration_ms) - 5000) > 100
+    || Number(probe.width) !== 864
+    || Number(probe.height) !== 496
+    || probe.video_codec !== 'h264'
+    || Number(probe.audio_stream_count) !== 0
+    || Number(probe.duration_ms) !== Number(manifest.motion.duration_ms)
+    || Number(probe.width) !== Number(manifest.motion.width)
+    || Number(probe.height) !== Number(manifest.motion.height)
+    || probe.video_codec !== manifest.motion.video_codec
+    || Number(probe.audio_stream_count) !== Number(manifest.motion.audio_stream_count)
+    || manifest.bundle?.motion_reference?.sha256 !== manifest.motion.sha256
+    || canonicalBundleHash(manifest.bundle) !== manifest.reference_bundle_hash) {
+    localError('REDRAW_REFERENCE_BUNDLE_LOCAL_MANIFEST_INVALID', 'motion media mismatch');
+  }
+}
+
 async function validateStagedOutputs(root, manifest) {
   assertFinalManifest(manifest);
   const motionPath = path.join(root, MOTION_FILENAME);
@@ -664,9 +682,36 @@ async function validateStagedOutputs(root, manifest) {
   if (sha256File(motionPath) !== manifest.motion.sha256) {
     localError('REDRAW_REFERENCE_BUNDLE_LOCAL_MANIFEST_INVALID', 'motion hash mismatch');
   }
+  assertMotionProbeMatchesManifest(await probeVideo(motionPath), manifest);
   const contact = await contactSheetEvidence(contactSheetPath);
   if (contact.sha256 !== manifest.contact_sheet.sha256) {
     localError('REDRAW_REFERENCE_BUNDLE_LOCAL_MANIFEST_INVALID', 'contact sheet hash mismatch');
+  }
+}
+
+async function acquireOutputLock(outputDir) {
+  const lockPath = path.join(outputDir, LOCK_FILENAME);
+  const owner = `${process.pid}:${crypto.randomBytes(12).toString('hex')}`;
+  let handle;
+  try {
+    handle = await fsp.open(lockPath, 'wx');
+    await handle.writeFile(owner, 'utf8');
+    return {
+      async release() {
+        await handle.close().catch(() => {});
+        try {
+          if (await fsp.readFile(lockPath, 'utf8') === owner) {
+            await fsp.rm(lockPath, { force: true });
+          }
+        } catch (_) {}
+      },
+    };
+  } catch (error) {
+    if (handle) await handle.close().catch(() => {});
+    if (error?.code === 'EEXIST') {
+      localError('REDRAW_REFERENCE_BUNDLE_LOCAL_OUTPUT_LOCKED', 'output directory is locked');
+    }
+    localError('REDRAW_REFERENCE_BUNDLE_LOCAL_OUTPUT_INVALID', 'output lock failed');
   }
 }
 
@@ -704,6 +749,7 @@ async function commitStagedOutputs(outputDir, stagingDir) {
 async function outputFixture(options, deps) {
   let fixture;
   let stagingDir;
+  let lock;
   try {
     fixture = await createFixture(deps);
     stagingDir = await createStagingDir(options.outputDir);
@@ -711,11 +757,13 @@ async function outputFixture(options, deps) {
     const contactSheetPath = path.join(stagingDir, CONTACT_SHEET_FILENAME);
     await writeContactSheetChecked(deps.writeContactSheet || writeContactSheet, fixture, contactSheetPath);
     const manifest = buildManifest(fixture, await contactSheetEvidence(contactSheetPath));
-    await validateStagedOutputs(stagingDir, manifest);
     await writeAtomic(path.join(stagingDir, MANIFEST_FILENAME), `${JSON.stringify(manifest, null, 2)}\n`, { encoding: 'utf8' });
+    lock = await acquireOutputLock(options.outputDir);
     await validateStagedOutputs(stagingDir, manifest);
+    if (typeof deps.beforeCommit === 'function') await deps.beforeCommit();
     await commitStagedOutputs(options.outputDir, stagingDir);
   } finally {
+    if (lock) await lock.release();
     if (stagingDir) await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
     if (fixture) {
       fixture.db.close();
@@ -724,29 +772,39 @@ async function outputFixture(options, deps) {
   }
 }
 
-async function outputManifest(options) {
+function assertInsideRoot(root, filePath) {
+  const relative = path.relative(root, filePath);
+  return relative && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+async function outputManifest(options, deps = {}) {
   const { root, manifest } = await readInputManifest(options.manifest);
   const motionPath = path.resolve(root, manifest.motion.filename);
   const contactSheetPath = path.resolve(root, manifest.contact_sheet.filename);
-  if (path.relative(root, motionPath).startsWith('..') || path.relative(root, contactSheetPath).startsWith('..')) {
+  if (!assertInsideRoot(root, motionPath) || !assertInsideRoot(root, contactSheetPath)) {
     localError('REDRAW_REFERENCE_BUNDLE_LOCAL_MANIFEST_INVALID', 'manifest file references must stay inside root');
   }
   if (sha256File(motionPath) !== manifest.motion.sha256) {
     localError('REDRAW_REFERENCE_BUNDLE_LOCAL_MANIFEST_INVALID', 'manifest motion hash mismatch');
   }
+  assertMotionProbeMatchesManifest(await probeVideo(motionPath), manifest);
   const contact = await contactSheetEvidence(contactSheetPath);
   if (contact.sha256 !== manifest.contact_sheet.sha256) {
     localError('REDRAW_REFERENCE_BUNDLE_LOCAL_MANIFEST_INVALID', 'manifest contact sheet hash mismatch');
   }
   let stagingDir;
+  let lock;
   try {
     stagingDir = await createStagingDir(options.outputDir);
-    await renameAtomic(motionPath, path.join(stagingDir, MOTION_FILENAME));
-    await renameAtomic(contactSheetPath, path.join(stagingDir, CONTACT_SHEET_FILENAME));
+    await fsp.copyFile(motionPath, path.join(stagingDir, MOTION_FILENAME));
+    await fsp.copyFile(contactSheetPath, path.join(stagingDir, CONTACT_SHEET_FILENAME));
     await writeAtomic(path.join(stagingDir, MANIFEST_FILENAME), `${JSON.stringify(manifest, null, 2)}\n`, { encoding: 'utf8' });
+    lock = await acquireOutputLock(options.outputDir);
     await validateStagedOutputs(stagingDir, manifest);
+    if (typeof deps.beforeCommit === 'function') await deps.beforeCommit();
     await commitStagedOutputs(options.outputDir, stagingDir);
   } finally {
+    if (lock) await lock.release();
     if (stagingDir) await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
   }
 }
@@ -763,7 +821,7 @@ async function runCase(options, deps = {}) {
   if (options.fixture) {
     await outputFixture(options, deps);
   } else {
-    await outputManifest(options);
+    await outputManifest(options, deps);
   }
 }
 
@@ -776,6 +834,7 @@ function sanitizedMessage(error) {
     'REDRAW_REFERENCE_BUNDLE_LOCAL_FFMPEG_FAILED',
     'REDRAW_REFERENCE_BUNDLE_LOCAL_FFPROBE_FAILED',
     'REDRAW_REFERENCE_BUNDLE_LOCAL_CONTACT_SHEET_FAILED',
+    'REDRAW_REFERENCE_BUNDLE_LOCAL_OUTPUT_LOCKED',
   ]);
   return safeCodes.has(code) ? code : 'REDRAW_REFERENCE_BUNDLE_LOCAL_FAILED';
 }

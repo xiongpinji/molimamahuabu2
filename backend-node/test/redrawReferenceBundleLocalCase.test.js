@@ -8,6 +8,7 @@ const { execFileSync } = require('node:child_process');
 const sharp = require('sharp');
 
 const { getFfprobePath, hasLocalFfmpeg, hasLocalFfprobe } = require('../src/utils/ffmpegPath');
+const { canonicalBundleHash } = require('../src/services/redrawReferenceBundleService');
 const {
   MOTION_FILENAME,
   CONTACT_SHEET_FILENAME,
@@ -56,6 +57,14 @@ function snapshotFixedOutputs(outputDir) {
 
 function assertFixedOutputsUnchanged(outputDir, before) {
   assert.deepEqual(snapshotFixedOutputs(outputDir), before);
+}
+
+function listTransientOutputs(outputDir) {
+  return fs.readdirSync(outputDir).filter((name) => (
+    name.includes('.redraw-reference-bundle-local-')
+      || name.endsWith('.bak')
+      || name === '.redraw-reference-bundle-local.lock'
+  ));
 }
 
 function readManifest(outputDir) {
@@ -285,4 +294,68 @@ test('manifest replay 校验 contact sheet hash 和尺寸且失败不覆盖既�
   assert.equal(await main(['--manifest', path.join(sourceDir, MANIFEST_FILENAME), '--output-dir', outputDir], replay.streams), 1);
   assert.match(replay.chunks.stderr, /REDRAW_REFERENCE_BUNDLE_LOCAL_MANIFEST_INVALID/);
   assertFixedOutputsUnchanged(outputDir, before);
+});
+
+test('manifest replay 对同步 hash 的坏 motion 仍用 ffprobe 拒绝且不覆盖旧输出', async (t) => {
+  if (!hasLocalFfmpeg() || !hasLocalFfprobe()) return t.skip('ffmpeg/ffprobe unavailable');
+  const sourceDir = tempDir(t);
+  const outputDir = tempDir(t);
+  assert.equal(await main(['--fixture', '--output-dir', sourceDir], captureStreams().streams), 0);
+
+  const badMotionPath = path.join(sourceDir, MOTION_FILENAME);
+  fs.writeFileSync(badMotionPath, 'not a video');
+  const badMotionSha = sha256File(badMotionPath);
+  const manifest = readManifest(sourceDir);
+  manifest.motion.sha256 = badMotionSha;
+  manifest.bundle.motion_reference.sha256 = badMotionSha;
+  manifest.reference_bundle_hash = canonicalBundleHash(manifest.bundle);
+  fs.writeFileSync(path.join(sourceDir, MANIFEST_FILENAME), `${JSON.stringify(manifest, null, 2)}\n`);
+
+  const before = writeFixedOutputs(outputDir, 'old-bad-motion');
+  const replay = captureStreams();
+  assert.equal(await main(['--manifest', path.join(sourceDir, MANIFEST_FILENAME), '--output-dir', outputDir], replay.streams), 1);
+  assert.match(replay.chunks.stderr, /REDRAW_REFERENCE_BUNDLE_LOCAL_(MANIFEST_INVALID|FFPROBE_FAILED)/);
+  assertFixedOutputsUnchanged(outputDir, before);
+  assert.deepEqual(listTransientOutputs(outputDir), []);
+});
+
+test('同一 outputDir 并发提交只允许一个进入发布且不留下锁或临时文件', async (t) => {
+  if (!hasLocalFfmpeg() || !hasLocalFfprobe()) return t.skip('ffmpeg/ffprobe unavailable');
+  const outputDir = tempDir(t);
+  let delayed = false;
+  const delayOnce = () => new Promise((resolve) => {
+    if (delayed) return resolve();
+    delayed = true;
+    return setTimeout(resolve, 500);
+  });
+  const first = captureStreams();
+  const second = captureStreams();
+
+  const results = await Promise.all([
+    main(['--fixture', '--output-dir', outputDir], first.streams, { beforeCommit: delayOnce }),
+    main(['--fixture', '--output-dir', outputDir], second.streams, { beforeCommit: delayOnce }),
+  ]);
+
+  assert.deepEqual(results.sort(), [0, 1]);
+  assert.match(`${first.chunks.stderr}${second.chunks.stderr}`, /REDRAW_REFERENCE_BUNDLE_LOCAL_OUTPUT_LOCKED/);
+  const manifest = readManifest(outputDir);
+  assert.equal(manifest.motion.sha256, sha256File(path.join(outputDir, MOTION_FILENAME)));
+  assert.equal(manifest.contact_sheet.sha256, sha256File(path.join(outputDir, CONTACT_SHEET_FILENAME)));
+  assert.deepEqual(listTransientOutputs(outputDir), []);
+});
+
+test('已有陌生 outputDir lock 时稳定失败且不删除 lock 或覆盖旧输出', async (t) => {
+  if (!hasLocalFfmpeg() || !hasLocalFfprobe()) return t.skip('ffmpeg/ffprobe unavailable');
+  const outputDir = tempDir(t);
+  const lockPath = path.join(outputDir, '.redraw-reference-bundle-local.lock');
+  fs.writeFileSync(lockPath, 'foreign-owner');
+  const before = writeFixedOutputs(outputDir, 'old-locked');
+  const locked = captureStreams();
+
+  assert.equal(await main(['--fixture', '--output-dir', outputDir], locked.streams), 1);
+
+  assert.match(locked.chunks.stderr, /REDRAW_REFERENCE_BUNDLE_LOCAL_OUTPUT_LOCKED/);
+  assert.equal(fs.readFileSync(lockPath, 'utf8'), 'foreign-owner');
+  assertFixedOutputsUnchanged(outputDir, before);
+  assert.deepEqual(listTransientOutputs(outputDir), ['.redraw-reference-bundle-local.lock']);
 });
