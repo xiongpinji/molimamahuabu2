@@ -749,7 +749,6 @@ async function commitStagedOutputs(outputDir, stagingDir) {
 async function outputFixture(options, deps) {
   let fixture;
   let stagingDir;
-  let lock;
   try {
     fixture = await createFixture(deps);
     stagingDir = await createStagingDir(options.outputDir);
@@ -758,12 +757,10 @@ async function outputFixture(options, deps) {
     await writeContactSheetChecked(deps.writeContactSheet || writeContactSheet, fixture, contactSheetPath);
     const manifest = buildManifest(fixture, await contactSheetEvidence(contactSheetPath));
     await writeAtomic(path.join(stagingDir, MANIFEST_FILENAME), `${JSON.stringify(manifest, null, 2)}\n`, { encoding: 'utf8' });
-    lock = await acquireOutputLock(options.outputDir);
     await validateStagedOutputs(stagingDir, manifest);
     if (typeof deps.beforeCommit === 'function') await deps.beforeCommit();
     await commitStagedOutputs(options.outputDir, stagingDir);
   } finally {
-    if (lock) await lock.release();
     if (stagingDir) await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
     if (fixture) {
       fixture.db.close();
@@ -793,18 +790,15 @@ async function outputManifest(options, deps = {}) {
     localError('REDRAW_REFERENCE_BUNDLE_LOCAL_MANIFEST_INVALID', 'manifest contact sheet hash mismatch');
   }
   let stagingDir;
-  let lock;
   try {
     stagingDir = await createStagingDir(options.outputDir);
     await fsp.copyFile(motionPath, path.join(stagingDir, MOTION_FILENAME));
     await fsp.copyFile(contactSheetPath, path.join(stagingDir, CONTACT_SHEET_FILENAME));
     await writeAtomic(path.join(stagingDir, MANIFEST_FILENAME), `${JSON.stringify(manifest, null, 2)}\n`, { encoding: 'utf8' });
-    lock = await acquireOutputLock(options.outputDir);
     await validateStagedOutputs(stagingDir, manifest);
     if (typeof deps.beforeCommit === 'function') await deps.beforeCommit();
     await commitStagedOutputs(options.outputDir, stagingDir);
   } finally {
-    if (lock) await lock.release();
     if (stagingDir) await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
   }
 }
@@ -818,10 +812,17 @@ function helpText() {
 
 async function runCase(options, deps = {}) {
   await ensureOutputDirectory(options.outputDir);
-  if (options.fixture) {
-    await outputFixture(options, deps);
-  } else {
-    await outputManifest(options, deps);
+  const lock = await acquireOutputLock(options.outputDir);
+  try {
+    if (typeof deps.afterLockAcquired === 'function') await deps.afterLockAcquired();
+    if (typeof deps.beforeStaging === 'function') await deps.beforeStaging();
+    if (options.fixture) {
+      await outputFixture(options, deps);
+    } else {
+      await outputManifest(options, deps);
+    }
+  } finally {
+    await lock.release();
   }
 }
 

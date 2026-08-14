@@ -322,22 +322,33 @@ test('manifest replay 对同步 hash 的坏 motion 仍用 ffprobe 拒绝且不�
 test('同一 outputDir 并发提交只允许一个进入发布且不留下锁或临时文件', async (t) => {
   if (!hasLocalFfmpeg() || !hasLocalFfprobe()) return t.skip('ffmpeg/ffprobe unavailable');
   const outputDir = tempDir(t);
-  let delayed = false;
-  const delayOnce = () => new Promise((resolve) => {
-    if (delayed) return resolve();
-    delayed = true;
-    return setTimeout(resolve, 500);
-  });
+  let releaseFirst;
+  let firstLockAcquired;
+  const firstPaused = new Promise((resolve) => { firstLockAcquired = resolve; });
+  const holdFirst = new Promise((resolve) => { releaseFirst = resolve; });
   const first = captureStreams();
   const second = captureStreams();
 
-  const results = await Promise.all([
-    main(['--fixture', '--output-dir', outputDir], first.streams, { beforeCommit: delayOnce }),
-    main(['--fixture', '--output-dir', outputDir], second.streams, { beforeCommit: delayOnce }),
+  const firstRun = main(['--fixture', '--output-dir', outputDir], first.streams, {
+    afterLockAcquired() {
+      firstLockAcquired();
+    },
+    beforeStaging() {
+      return holdFirst;
+    },
+  });
+  await Promise.race([
+    firstPaused,
+    new Promise((_, reject) => { setTimeout(() => reject(new Error('first run did not acquire output lock before staging')), 2000); }),
   ]);
 
+  const secondRun = main(['--fixture', '--output-dir', outputDir], second.streams);
+  assert.equal(await secondRun, 1);
+  assert.match(second.chunks.stderr, /REDRAW_REFERENCE_BUNDLE_LOCAL_OUTPUT_LOCKED/);
+  releaseFirst();
+  const results = [await firstRun, 1];
+
   assert.deepEqual(results.sort(), [0, 1]);
-  assert.match(`${first.chunks.stderr}${second.chunks.stderr}`, /REDRAW_REFERENCE_BUNDLE_LOCAL_OUTPUT_LOCKED/);
   const manifest = readManifest(outputDir);
   assert.equal(manifest.motion.sha256, sha256File(path.join(outputDir, MOTION_FILENAME)));
   assert.equal(manifest.contact_sheet.sha256, sha256File(path.join(outputDir, CONTACT_SHEET_FILENAME)));
@@ -358,4 +369,27 @@ test('已有陌生 outputDir lock 时稳定失败且不删除 lock 或覆盖旧�
   assert.equal(fs.readFileSync(lockPath, 'utf8'), 'foreign-owner');
   assertFixedOutputsUnchanged(outputDir, before);
   assert.deepEqual(listTransientOutputs(outputDir), ['.redraw-reference-bundle-local.lock']);
+});
+
+test('manifest 与 ffmpeg 失败后释放 outputDir lock 且后续正常运行成功', async (t) => {
+  if (!hasLocalFfmpeg() || !hasLocalFfprobe()) return t.skip('ffmpeg/ffprobe unavailable');
+  const outputDir = tempDir(t);
+  const invalid = captureStreams();
+  assert.equal(await main(['--manifest', path.join(outputDir, 'missing.json'), '--output-dir', outputDir], invalid.streams), 1);
+  assert.match(invalid.chunks.stderr, /REDRAW_REFERENCE_BUNDLE_LOCAL_MANIFEST_INVALID/);
+  assert.deepEqual(listTransientOutputs(outputDir), []);
+
+  const ffmpeg = captureStreams();
+  assert.equal(await main(['--fixture', '--output-dir', outputDir], ffmpeg.streams, {
+    execFile() {
+      throw Object.assign(new Error('ffmpeg failed'), { code: 'ENOENT' });
+    },
+  }), 1);
+  assert.match(ffmpeg.chunks.stderr, /REDRAW_REFERENCE_BUNDLE_LOCAL_FFMPEG_FAILED/);
+  assert.deepEqual(listTransientOutputs(outputDir), []);
+
+  const ok = captureStreams();
+  assert.equal(await main(['--fixture', '--output-dir', outputDir], ok.streams), 0);
+  assert.equal(ok.chunks.stdout, 'REDRAW_REFERENCE_BUNDLE_LOCAL_OK\n');
+  assert.deepEqual(listTransientOutputs(outputDir), []);
 });
