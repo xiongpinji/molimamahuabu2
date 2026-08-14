@@ -88,6 +88,7 @@ test('项目图片素材连线后会成为可用的下游参考图', () => {
       edgeId: 'manual:project-asset:77:free:video:target',
       title: '项目雨夜参考图',
       url: 'https://example.com/project-rain.png',
+      kind: 'image',
       ready: true,
       slot: 'reference-image',
       enabled: true,

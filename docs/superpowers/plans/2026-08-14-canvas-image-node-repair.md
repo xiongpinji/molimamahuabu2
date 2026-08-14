@@ -122,7 +122,7 @@ const matching = active.filter((config) => configuredModels(config)
 - 检查：`backend-node/src/services/imageClient.js`
 - 创建：`docs/superpowers/reports/2026-08-14-canvas-image-node-repair-verification.md`
 
-- [ ] **步骤 1：验证现有失败任务恢复链**
+- [x] **步骤 1：验证现有失败任务恢复链**
 
 检查 `resumePendingFreeCanvasTasks → resumeFreeCanvasNodeTask → pollFreeCanvasTask`，确认后端 `failed` 会执行：
 
@@ -137,11 +137,11 @@ await patchFreeCanvasNodeData(node.id, {
 
 若源码合同已存在，不为截图发生在任务终态之前而新增重复状态机；在报告中记录“现有代码具备恢复逻辑，需浏览器刷新验收”。
 
-- [ ] **步骤 2：记录 Git main 与线上复合源码差异**
+- [x] **步骤 2：记录 Git main 与线上复合源码差异**
 
 线上 `cfg-{id}::model` 逻辑尚未完整进入 `origin/main`，且另一个工作树正在修改相同文件。报告必须记录线上失败样本 `cfg-4::gpt-image-2-3.5k → 未配置图片模型`，并把“将精确配置 ID 跨 `image/storyboard_image` 解析”列为合入前阻断项；禁止从其他工作树复制未提交文件。
 
-- [ ] **步骤 3：检查供应商错误的代码边界**
+- [x] **步骤 3：检查供应商错误的代码边界**
 
 记录以下错误不可由本地别名修复伪装为成功：AIHubCC `502`、Rehdasu `403`、AIHubCC 3.5K `503`、Fumin 带参考图 `504`。未获得单次付费验证授权前不提交真实生成。
 
@@ -150,30 +150,30 @@ await patchFreeCanvasNodeData(node.id, {
 **文件：**
 - 创建：`docs/superpowers/reports/2026-08-14-canvas-image-node-repair-verification.md`
 
-- [ ] **步骤 1：运行前端全量测试**
+- [x] **步骤 1：运行前端全量测试**
 
 运行：`cd frontweb && node --test test/*.test.js`
 
 预期：零失败。
 
-- [ ] **步骤 2：运行后端全量测试**
+- [x] **步骤 2：运行后端全量测试**
 
 运行：`cd backend-node && node --test --test-concurrency=1 test/*.test.js`
 
 预期：零失败，允许仓库既有明确跳过项。
 
-- [ ] **步骤 3：运行生产前端构建**
+- [x] **步骤 3：运行生产前端构建**
 
 运行：`cd frontweb && npm run build`
 
 预期：构建成功。
 
-- [ ] **步骤 4：审计改动范围**
+- [x] **步骤 4：审计改动范围**
 
 运行：`git status --short && git diff --check && git diff origin/main...HEAD --name-only`
 
 预期：只包含本计划列出的源码、测试和文档。
 
-- [ ] **步骤 5：交付本地结果并停止**
+- [x] **步骤 5：交付本地结果并停止**
 
 汇报通过项、阻断项、提交 SHA 和精确文件清单。不推送、不创建 PR、不部署，等待用户下达下一条发布指令。

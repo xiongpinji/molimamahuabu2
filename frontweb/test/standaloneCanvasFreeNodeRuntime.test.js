@@ -175,6 +175,9 @@ test('自由节点运行结果可轮询、失败写回、成功自动入库并�
   assert.match(canvasSource, /async function retryFreeCanvasAssetSave\(nodeOrId\)/)
   assert.match(canvasSource, /retryFreeCanvasAssetSave,\s*\r?\n/)
   assert.match(canvasSource, /save-node-result-asset[\s\S]*saveFreeCanvasResultAsset\(node, node\.data\?\.kind, nodeResultUrl\(node\), null, node\.data\?\.taskId \|\| ''\)[\s\S]*ElMessage\.error\(error\?\.message \|\| '存入素材库失败'\)/)
+  assert.match(canvasSource, /function resumePendingFreeCanvasTasks\(\)[\s\S]*node\?\.data\?\.status !== 'running'[\s\S]*void resumeFreeCanvasNodeTask\(node\)/)
+  assert.match(canvasSource, /async function resumeFreeCanvasNodeTask\(nodeOrId\)[\s\S]*await pollFreeCanvasTask\(taskId,[\s\S]*status: 'failed'[\s\S]*generationActive: false[\s\S]*taskId,[\s\S]*error: errorMessage/)
+  assert.match(canvasSource, /await loadForDrama\(drama\.value, filterEpisodeId\.value\)[\s\S]*rebuildGraph\(\)[\s\S]*resumePendingFreeCanvasTasks\(\)/)
 })
 
 test('画布保存使用串行队列并在执行时构造最新布局', () => {
