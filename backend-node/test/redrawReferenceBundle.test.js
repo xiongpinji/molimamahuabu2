@@ -321,6 +321,12 @@ function textCleanPack(input = {}) {
   return pack;
 }
 
+function recalcTextCleanPackHash(payload) {
+  const pack = { ...payload.text_clean_plate_pack };
+  delete pack.pack_sha256;
+  payload.text_clean_plate_pack.pack_sha256 = sha256(stableJson(pack));
+}
+
 function insertTextCleanAsset(db, versionId, input) {
   insertAsset(db, {
     id: input.assetId,
@@ -435,6 +441,15 @@ async function captureError(fn) {
     return error;
   }
   assert.fail('expected saveReferenceBundle to reject');
+}
+
+async function captureAnyError(fn) {
+  try {
+    await fn();
+  } catch (error) {
+    return error;
+  }
+  assert.fail('expected function to reject');
 }
 
 async function assertRejectsUnchanged(state, input, code, contextOverrides = {}, forbiddenValues = []) {
@@ -561,6 +576,97 @@ test('重读参考包时重新校验并投影生成用白名单 URL', async () =
     assert.equal(JSON.stringify(projected).includes('sk-'), false);
   } finally {
     state.cleanup();
+  }
+});
+
+test('重读参考包时拒绝保存后仍有效的身份证据漂移', async () => {
+  const state = setup();
+  try {
+    await saveReferenceBundle(ctx(state), validInput(state));
+    const before = currentShot(state.db, state.shotId);
+    updateJsonColumn(state.db, 'redraw_assets', state.actorAId, 'source_ref_json', (payload) => {
+      payload.identity_pack.target_actor_label = 'Actor Ethan II';
+      recalcIdentityPackHash(payload);
+    });
+    updateRedrawAsset(state.db, state.actorAId, { localized_name: 'Actor Ethan II' });
+
+    const loadError = await captureAnyError(() => loadCurrentReferenceBundle(ctx(state), state.shotId));
+    assert.equal(loadError.code, 'REDRAW_REFERENCE_BUNDLE_DRIFT');
+
+    const projectionError = await captureAnyError(() => projectReferenceBundleForGeneration(ctx(state, {
+      createReferenceUrl() {
+        return '/static/redraw-reference/unused';
+      },
+    }), state.shotId));
+    assert.equal(projectionError.code, 'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED');
+    assertShotUnchanged(state.db, state.shotId, before);
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('重读参考包时拒绝保存后仍有效的文字净景证据漂移', async () => {
+  const state = setup();
+  try {
+    await saveReferenceBundle(ctx(state), validInput(state));
+    const before = currentShot(state.db, state.shotId);
+    updateJsonColumn(state.db, 'redraw_assets', state.subtitleCleanId, 'source_ref_json', (payload) => {
+      payload.text_clean_plate_pack.reviewed_at = '2026-08-14T00:06:00.000Z';
+      recalcTextCleanPackHash(payload);
+    });
+
+    const loadError = await captureAnyError(() => loadCurrentReferenceBundle(ctx(state), state.shotId));
+    assert.equal(loadError.code, 'REDRAW_REFERENCE_BUNDLE_DRIFT');
+    assertShotUnchanged(state.db, state.shotId, before);
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('投影允许 HTTPS 参考 URL 并拒绝源 URL 相同或非 HTTPS 外链', async () => {
+  const httpsState = setup();
+  try {
+    await saveReferenceBundle(ctx(httpsState), validInput(httpsState));
+    const projected = await projectReferenceBundleForGeneration(ctx(httpsState, {
+      createReferenceUrl({ asset_id: assetId, kind }) {
+        return `https://cdn.example.test/redraw/${kind}/${assetId}.png`;
+      },
+    }), httpsState.shotId);
+    assert.equal(projected.referenceVideoUrl.startsWith('https://cdn.example.test/'), true);
+    assert.equal(projected.referenceImageUrls.every((url) => url.startsWith('https://cdn.example.test/')), true);
+  } finally {
+    httpsState.cleanup();
+  }
+
+  const sameSourceState = setup();
+  try {
+    await saveReferenceBundle(ctx(sameSourceState), validInput(sameSourceState));
+    const sourceUrl = 'https://cdn.example.test/source/original.mp4';
+    sameSourceState.db.prepare('UPDATE assets SET url = ? WHERE id = ?').run(sourceUrl, sameSourceState.sourceAssetId);
+    const error = await captureAnyError(() => projectReferenceBundleForGeneration(ctx(sameSourceState, {
+      createReferenceUrl() {
+        return sourceUrl;
+      },
+    }), sameSourceState.shotId));
+    assert.equal(error.code, 'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED');
+    assert.equal(JSON.stringify(error).includes(sourceUrl), false);
+  } finally {
+    sameSourceState.cleanup();
+  }
+
+  const httpState = setup();
+  try {
+    await saveReferenceBundle(ctx(httpState), validInput(httpState));
+    const leakedUrl = 'http://cdn.example.test/redraw/identity/201.png';
+    const error = await captureAnyError(() => projectReferenceBundleForGeneration(ctx(httpState, {
+      createReferenceUrl() {
+        return leakedUrl;
+      },
+    }), httpState.shotId));
+    assert.equal(error.code, 'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED');
+    assert.equal(JSON.stringify(error).includes(leakedUrl), false);
+  } finally {
+    httpState.cleanup();
   }
 });
 

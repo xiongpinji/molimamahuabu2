@@ -14,6 +14,7 @@ const TEXT_CODE = 'REDRAW_REFERENCE_BUNDLE_TEXT_INVALID';
 const DIALOGUE_CODE = 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_INVALID';
 const LIMIT_CODE = 'REDRAW_REFERENCE_BUNDLE_REFERENCE_LIMIT_EXCEEDED';
 const PROJECTION_CODE = 'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED';
+const DRIFT_CODE = 'REDRAW_REFERENCE_BUNDLE_DRIFT';
 const HEX_64 = /^[0-9a-f]{64}$/;
 const INPUT_FIELDS = new Set([
   'shot_id',
@@ -110,20 +111,49 @@ function resolveLocal(storageRoot, localPath, code) {
   return real;
 }
 
+function sameFileStat(left, right) {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
+}
+
 function sha256File(storageRoot, asset, code) {
   const filePath = resolveLocal(storageRoot, asset?.local_path, code);
+  let fd = null;
   try {
-    const before = fs.statSync(filePath);
+    const realBefore = fs.realpathSync(filePath);
+    const before = fs.statSync(realBefore);
     if (!before.isFile()) fail(code);
-    const digest = sha256(fs.readFileSync(filePath));
-    const after = fs.statSync(filePath);
-    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+    fd = fs.openSync(realBefore, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const fdBefore = fs.fstatSync(fd);
+    if (!fdBefore.isFile() || !sameFileStat(before, fdBefore)) fail(code);
+    const hash = crypto.createHash('sha256');
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let bytesRead = 0;
+    do {
+      bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+    const fdAfter = fs.fstatSync(fd);
+    const realAfter = fs.realpathSync(filePath);
+    const after = fs.statSync(realAfter);
+    if (comparable(realBefore) !== comparable(realAfter) || !sameFileStat(fdBefore, fdAfter) || !sameFileStat(fdAfter, after)) {
       fail(code);
     }
-    return digest;
+    return hash.digest('hex');
   } catch (error) {
     if (error?.code?.startsWith?.('REDRAW_REFERENCE_BUNDLE_')) throw error;
     fail(code);
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch (_) {
+        // ignore close errors after fail-closed validation has already completed
+      }
+    }
   }
 }
 
@@ -392,7 +422,7 @@ function validateInput(input) {
   return { shotId, motionId, expectedUpdatedAt };
 }
 
-async function buildBundle(ctx, input) {
+async function buildBundle(ctx, input, options = {}) {
   const ids = validateInput(input);
   const { shot } = getRows(ctx, ids.shotId);
   if (String(shot.updated_at || '') !== ids.expectedUpdatedAt) fail(CONFLICT_CODE);
@@ -426,10 +456,11 @@ async function buildBundle(ctx, input) {
     probeRunner: ctx.probeRunner,
   });
 
-  const reviewedAt = timestamp(ctx, shot.updated_at);
+  const reviewedAt = options.reviewedAt || timestamp(ctx, shot.updated_at);
+  const reviewedBy = options.reviewedBy || ctx.userId;
   const coverage = {
     ...coverageReview,
-    reviewed_by: ctx.userId,
+    reviewed_by: reviewedBy,
     reviewed_at: reviewedAt,
     face_coverage_sha256: faceCoverageSha256,
     text_coverage_sha256: textCoverageSha256,
@@ -538,7 +569,12 @@ async function loadCurrentReferenceBundle(rawCtx, shotId) {
       status: 'approved',
     },
   };
-  await buildBundle(ctx, input);
+  if (!bundle.coverage_review?.reviewed_at || !bundle.coverage_review?.reviewed_by) fail(DRIFT_CODE);
+  const rebuilt = await buildBundle(ctx, input, {
+    reviewedAt: bundle.coverage_review.reviewed_at,
+    reviewedBy: bundle.coverage_review.reviewed_by,
+  });
+  if (rebuilt.hash !== shot.reference_bundle_hash || stableJson(rebuilt.bundle) !== stableJson(bundle)) fail(DRIFT_CODE);
   return { shot_id: id, reference_bundle_hash: shot.reference_bundle_hash, bundle };
 }
 
