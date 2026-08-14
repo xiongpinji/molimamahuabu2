@@ -384,13 +384,20 @@ async function captureError(fn) {
   assert.fail('expected saveReferenceBundle to reject');
 }
 
-async function assertRejectsUnchanged(state, input, code, contextOverrides = {}) {
+async function assertRejectsUnchanged(state, input, code, contextOverrides = {}, forbiddenValues = []) {
   const before = currentShot(state.db, state.shotId);
   const error = await captureError(() => saveReferenceBundle(ctx(state, contextOverrides), input));
   assert.equal(error.code, code);
   assertShotUnchanged(state.db, state.shotId, before);
-  assert.equal(JSON.stringify(error).includes('C:\\'), false);
-  assert.equal(JSON.stringify(error).includes('Authorization'), false);
+  const serialized = JSON.stringify(error);
+  assert.equal(/[A-Za-z]:[\\/]/.test(serialized), false);
+  assert.equal(serialized.includes('sk-'), false);
+  assert.equal(serialized.includes('Authorization'), false);
+  assert.equal(serialized.includes('http://'), false);
+  assert.equal(serialized.includes('https://'), false);
+  for (const value of forbiddenValues) {
+    assert.equal(serialized.includes(value), false);
+  }
 }
 
 function mutateInput(state, mutate) {
@@ -771,10 +778,12 @@ test('未知字段、客户端 hash、路径、URL、reviewer 或 status 注入�
     },
     {
       name: 'path',
+      forbiddenValues: ['secret', 'reference.mp4'],
       mutate(input) { input.local_path = 'C:\\secret\\reference.mp4'; },
     },
     {
       name: 'url',
+      forbiddenValues: ['example.test', 'private.png'],
       mutate(input) { input.url = 'https://example.test/private.png'; },
     },
     {
@@ -793,6 +802,8 @@ test('未知字段、客户端 hash、路径、URL、reviewer 或 status 注入�
         state,
         mutateInput(state, entry.mutate),
         'REDRAW_REFERENCE_BUNDLE_INPUT_INVALID',
+        {},
+        entry.forbiddenValues || [],
       );
     } finally {
       state.db.close();
