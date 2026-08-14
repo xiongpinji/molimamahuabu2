@@ -412,6 +412,8 @@ const IDENTITY_PACK_FIELDS = new Set([
   'live_action_human_confirmed', 'liveActionHumanConfirmed',
   'adult_status', 'adultStatus',
   'identity_consistency_confirmed', 'identityConsistencyConfirmed',
+  'persona_origin', 'personaOrigin',
+  'target_country', 'targetCountry',
   'expected_updated_at', 'expectedUpdatedAt',
 ]);
 const IDENTITY_PACK_FIELD_ALIASES = [
@@ -420,6 +422,8 @@ const IDENTITY_PACK_FIELD_ALIASES = [
   ['live_action_human_confirmed', 'liveActionHumanConfirmed'],
   ['adult_status', 'adultStatus'],
   ['identity_consistency_confirmed', 'identityConsistencyConfirmed'],
+  ['persona_origin', 'personaOrigin'],
+  ['target_country', 'targetCountry'],
   ['expected_updated_at', 'expectedUpdatedAt'],
 ];
 const IDENTITY_PACK_VIEWS = new Set(['front', 'profile', 'full_body']);
@@ -493,6 +497,20 @@ function identityPackInput(body) {
   if (typeof identityConsistencyConfirmed !== 'boolean') {
     throw identityPackInputError('identity_consistency_confirmed 必须是布尔值');
   }
+  const hasPersonaOrigin = Object.prototype.hasOwnProperty.call(body, 'persona_origin')
+    || Object.prototype.hasOwnProperty.call(body, 'personaOrigin');
+  const personaOriginValue = read('persona_origin', 'personaOrigin');
+  if (hasPersonaOrigin && (typeof personaOriginValue !== 'string'
+    || personaOriginValue.trim() !== 'fictional_ai_generated')) {
+    throw identityPackInputError('persona_origin 必须是 fictional_ai_generated');
+  }
+  const hasTargetCountry = Object.prototype.hasOwnProperty.call(body, 'target_country')
+    || Object.prototype.hasOwnProperty.call(body, 'targetCountry');
+  const targetCountryValue = read('target_country', 'targetCountry');
+  if (hasTargetCountry && (typeof targetCountryValue !== 'string'
+    || targetCountryValue.trim() !== 'US')) {
+    throw identityPackInputError('target_country 必须是 US');
+  }
   const expectedUpdatedAtValue = read('expected_updated_at', 'expectedUpdatedAt');
   if (typeof expectedUpdatedAtValue !== 'string' || !expectedUpdatedAtValue.trim()) {
     throw identityPackInputError('expected_updated_at 必须是非空字符串');
@@ -503,6 +521,8 @@ function identityPackInput(body) {
     live_action_human_confirmed: liveActionHumanConfirmed,
     adult_status: adultStatusValue.trim(),
     identity_consistency_confirmed: identityConsistencyConfirmed,
+    ...(hasPersonaOrigin ? { persona_origin: personaOriginValue.trim() } : {}),
+    ...(hasTargetCountry ? { target_country: targetCountryValue.trim() } : {}),
     expected_updated_at: expectedUpdatedAtValue.trim(),
   };
 }

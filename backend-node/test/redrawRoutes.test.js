@@ -4283,7 +4283,13 @@ test('角色身份包 API 保存服务端证据、重置审核且响应不泄露
   try {
     const result = captureResponse();
     fixture.handlers.saveRedrawCharacterIdentityPack(
-      request({ id: fixture.assetId, body: completeIdentityPackRequest() }),
+      request({
+        id: fixture.assetId,
+        body: completeIdentityPackRequest({
+          persona_origin: ' fictional_ai_generated ',
+          target_country: ' US ',
+        }),
+      }),
       result,
     );
 
@@ -4294,6 +4300,8 @@ test('角色身份包 API 保存服务端证据、重置审核且响应不泄露
     assert.equal(result.body.data.current_step, 2);
     assert.equal(result.body.data.identity_pack.source_character_key, 'source-character-maya');
     assert.equal(result.body.data.identity_pack.target_actor_label, 'Actor Maya');
+    assert.equal(result.body.data.identity_pack.persona_origin, 'fictional_ai_generated');
+    assert.equal(result.body.data.identity_pack.target_country, 'US');
     assert.deepEqual(result.body.data.identity_pack.confirmed_views, ['front', 'profile', 'full_body']);
     assert.deepEqual(result.body.data.identity_pack.artifact, {
       asset_id: 701,
@@ -4316,10 +4324,77 @@ test('角色身份包 API 保存服务端证据、重置审核且响应不泄露
     assert.deepEqual(stored, { approval_status: 'pending', approved_by: null, approved_at: null });
     assert.deepEqual(result.body.data.asset.identity_pack, result.body.data.identity_pack);
     const serialized = JSON.stringify(result.body.data);
+    assert.equal(serialized.includes('source_ref_json'), false);
     assert.equal(serialized.includes('storageRoot'), false);
+    assert.equal(serialized.includes('"path"'), false);
     assert.equal(serialized.includes('local_path'), false);
     assert.equal(serialized.includes('absolute_path'), false);
     assert.equal(serialized.includes('C:\\\\private'), false);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('角色身份包 API 接受 camelCase 虚构美国政策字段并保持安全响应', () => {
+  const fixture = setupIdentityPackRouteFixture();
+  try {
+    const result = captureResponse();
+    fixture.handlers.saveRedrawCharacterIdentityPack(
+      request({
+        id: fixture.assetId,
+        body: completeIdentityPackRequest({
+          personaOrigin: ' fictional_ai_generated ',
+          targetCountry: ' US ',
+        }),
+      }),
+      result,
+    );
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.data.identity_pack.persona_origin, 'fictional_ai_generated');
+    assert.equal(result.body.data.identity_pack.target_country, 'US');
+    assert.equal(result.body.data.identity_pack_status.ready, true);
+    const serialized = JSON.stringify(result.body.data);
+    assert.equal(serialized.includes('source_ref_json'), false);
+    assert.equal(serialized.includes('storageRoot'), false);
+    assert.equal(serialized.includes('local_path'), false);
+    assert.equal(serialized.includes('absolute_path'), false);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('角色身份包 API 严格拒绝非法、重复和未知政策字段且数据库不变', () => {
+  const fixture = setupIdentityPackRouteFixture();
+  try {
+    const invalidPatches = [
+      { persona_origin: 'real_person' },
+      { target_country: 'CN' },
+      { persona_origin: 1 },
+      { target_country: true },
+      { target_country: 'us' },
+      { persona_origin: 'fictional_ai_generated', personaOrigin: 'fictional_ai_generated' },
+      { target_country: 'US', targetCountry: 'US' },
+      { unknown_policy: 'fictional_ai_generated' },
+    ];
+    const before = fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
+      approved_at, updated_at FROM redraw_assets WHERE id = ?`).get(fixture.assetId);
+
+    for (const patch of invalidPatches) {
+      const result = captureResponse();
+      fixture.handlers.saveRedrawCharacterIdentityPack(
+        request({ id: fixture.assetId, body: completeIdentityPackRequest(patch) }),
+        result,
+      );
+      assert.equal(result.statusCode, 400, JSON.stringify(patch));
+      assert.equal(result.body.error.code, 'REDRAW_CHARACTER_IDENTITY_INPUT_INVALID');
+      assert.deepEqual(
+        fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
+          approved_at, updated_at FROM redraw_assets WHERE id = ?`).get(fixture.assetId),
+        before,
+        JSON.stringify(patch),
+      );
+    }
   } finally {
     fixture.close();
   }

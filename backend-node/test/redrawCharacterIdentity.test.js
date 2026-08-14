@@ -11,6 +11,7 @@ const { listAssets, rowToAsset } = require('../src/services/redrawAssetService')
 const {
   identityBindingForAsset,
   identityPackStatus,
+  readIdentityPack,
   saveIdentityPack,
 } = require('../src/services/redrawCharacterIdentityService');
 
@@ -146,6 +147,8 @@ function canonicalPackFields(pack) {
     ready: pack.ready,
     reviewed_by: pack.reviewed_by,
     reviewed_at: pack.reviewed_at,
+    ...(pack.persona_origin ? { persona_origin: pack.persona_origin } : {}),
+    ...(pack.target_country ? { target_country: pack.target_country } : {}),
   };
 }
 
@@ -253,6 +256,82 @@ test('完整身份包使用服务端证据并生成稳定的 64 位小写哈希'
       pack_sha256: first.identity_pack.pack_sha256,
       ready: true,
     });
+  } finally {
+    close(state);
+  }
+});
+
+test('完整虚构美国角色身份包保存、读取和绑定一致投影政策字段', () => {
+  const state = setup();
+  try {
+    fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    addProviderAsset(state);
+    const characterId = addCharacter(state);
+
+    const saved = saveIdentityPack(context(state), characterId, completeInput(INITIAL_UPDATED_AT, {
+      persona_origin: 'fictional_ai_generated',
+      target_country: 'US',
+    }));
+    const read = readIdentityPack(saved);
+
+    assert.equal(saved.identity_pack.persona_origin, 'fictional_ai_generated');
+    assert.equal(saved.identity_pack.target_country, 'US');
+    assert.match(saved.identity_pack.pack_sha256, /^[0-9a-f]{64}$/);
+    assert.equal(saved.identity_pack.pack_sha256, canonicalPackHash(saved.identity_pack));
+    assert.equal(read.persona_origin, 'fictional_ai_generated');
+    assert.equal(read.target_country, 'US');
+    assert.equal(read.ready, true);
+    assert.equal(identityPackStatus(read).ready, true);
+    assert.equal(identityPackStatus(read).hash_valid, true);
+    assert.deepEqual(identityBindingForAsset(saved), {
+      source_character_key: 'character-1',
+      target_actor_label: 'Actor Maya',
+      artifact: saved.identity_pack.artifact,
+      pack_sha256: saved.identity_pack.pack_sha256,
+      ready: true,
+      persona_origin: 'fictional_ai_generated',
+      target_country: 'US',
+    });
+  } finally {
+    close(state);
+  }
+});
+
+test('历史身份包缺少政策字段时保留原哈希且仍为 ready', () => {
+  const historical = validPack();
+  const read = readIdentityPack(historical);
+
+  assert.equal(Object.hasOwn(historical, 'persona_origin'), false);
+  assert.equal(Object.hasOwn(historical, 'target_country'), false);
+  assert.equal(Object.hasOwn(read, 'persona_origin'), false);
+  assert.equal(Object.hasOwn(read, 'target_country'), false);
+  assert.equal(read.pack_sha256, historical.pack_sha256);
+  assert.equal(read.ready, true);
+  assert.equal(identityPackStatus(read).ready, true);
+  assert.equal(identityPackStatus(read).hash_valid, true);
+});
+
+test('service 直接调用不会把非法角色政策值写入身份包', () => {
+  const state = setup();
+  try {
+    fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    addProviderAsset(state);
+    const cases = [
+      { persona_origin: 'real_person', target_country: 'CN' },
+      { persona_origin: new String('fictional_ai_generated'), target_country: ['US'] },
+    ];
+    for (const policyFields of cases) {
+      const characterId = addCharacter(state);
+      const saved = saveIdentityPack(context(state), characterId, completeInput(
+        INITIAL_UPDATED_AT,
+        policyFields,
+      ));
+
+      assert.equal(Object.hasOwn(saved.identity_pack, 'persona_origin'), false);
+      assert.equal(Object.hasOwn(saved.identity_pack, 'target_country'), false);
+      assert.equal(saved.identity_pack.ready, true);
+      assert.equal(saved.identity_pack_status.hash_valid, true);
+    }
   } finally {
     close(state);
   }

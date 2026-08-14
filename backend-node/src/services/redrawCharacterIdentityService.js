@@ -3,6 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const SCHEMA_VERSION = 'target-actor-identity-v1';
+const PERSONA_ORIGIN = 'fictional_ai_generated';
+const TARGET_COUNTRY = 'US';
 const REQUIRED_VIEWS = ['front', 'profile', 'full_body'];
 const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   'image/png',
@@ -96,6 +98,19 @@ function packCompleteness(pack) {
   };
 }
 
+function identityPolicyFields(pack) {
+  const personaOrigin = typeof pack?.persona_origin === 'string'
+    ? pack.persona_origin.trim()
+    : '';
+  const targetCountry = typeof pack?.target_country === 'string'
+    ? pack.target_country.trim()
+    : '';
+  return {
+    ...(personaOrigin === PERSONA_ORIGIN ? { persona_origin: PERSONA_ORIGIN } : {}),
+    ...(targetCountry === TARGET_COUNTRY ? { target_country: TARGET_COUNTRY } : {}),
+  };
+}
+
 function canonicalPackFields(pack) {
   return {
     schema_version: pack?.schema_version === SCHEMA_VERSION ? SCHEMA_VERSION : String(pack?.schema_version || ''),
@@ -109,6 +124,7 @@ function canonicalPackFields(pack) {
     ready: packCompleteness(pack).ready,
     reviewed_by: String(pack?.reviewed_by || '').trim() || null,
     reviewed_at: String(pack?.reviewed_at || '').trim() || null,
+    ...identityPolicyFields(pack),
   };
 }
 
@@ -149,6 +165,7 @@ function readIdentityPack(row) {
       : null,
     reviewed_by: String(source.reviewed_by || '').trim() || null,
     reviewed_at: String(source.reviewed_at || '').trim() || null,
+    ...identityPolicyFields(source),
   };
   pack.ready = identityPackStatus(pack).ready;
   return pack;
@@ -386,6 +403,7 @@ function saveIdentityPack(ctx, assetId, input = {}) {
     ready: false,
     reviewed_by: userId,
     reviewed_at: reviewedAt,
+    ...identityPolicyFields(input),
   };
   identityPack.ready = packCompleteness(identityPack).ready;
   identityPack.pack_sha256 = canonicalPackHash(identityPack);
@@ -422,6 +440,7 @@ function identityBindingForAsset(row) {
     artifact: pack.artifact,
     pack_sha256: pack.pack_sha256,
     ready: true,
+    ...identityPolicyFields(pack),
   };
 }
 
