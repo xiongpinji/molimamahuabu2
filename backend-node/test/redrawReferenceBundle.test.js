@@ -558,10 +558,31 @@ test('重读参考包时重新校验并投影生成用白名单 URL', async () =
 
     assert.deepEqual(Object.keys(projected).sort(), [
       'identityBindings',
+      'generateAudio',
+      'prompt',
       'referenceBundleSnapshot',
       'referenceImageUrls',
       'referenceVideoUrl',
+      'targetLocale',
     ].sort());
+    assert.equal(projected.targetLocale, 'en-US');
+    assert.equal(projected.generateAudio, true);
+    assert.match(projected.prompt, /Ethan/);
+    assert.match(projected.prompt, /Maya/);
+    assert.match(projected.prompt, /Come with me\./);
+    assert.match(projected.prompt, /Not without proof\./);
+    assert.match(projected.prompt, /0-2400ms/);
+    assert.equal(/[\u3400-\u9fff]/.test(projected.prompt), false);
+    assert.equal(projected.prompt.includes('source/source.mp4'), false);
+    assert.equal(projected.prompt.includes('http://'), false);
+    assert.equal(projected.prompt.includes('https://'), false);
+    assert.equal(projected.prompt.includes('sk-'), false);
+    const projectedAgain = await projectReferenceBundleForGeneration(ctx(state, {
+      createReferenceUrl({ asset_id: assetId, sha256: digest, kind }) {
+        return `/static/redraw-reference/${kind}/${assetId}-${digest.slice(0, 8)}`;
+      },
+    }), state.shotId);
+    assert.equal(projectedAgain.prompt, projected.prompt);
     assert.equal(projected.referenceImageUrls.length, 2);
     assert.equal(projected.referenceVideoUrl.startsWith('/static/'), true);
     assert.deepEqual(referenceKinds.sort(), ['identity', 'identity', 'motion']);

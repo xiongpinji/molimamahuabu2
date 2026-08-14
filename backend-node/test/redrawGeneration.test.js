@@ -538,7 +538,18 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
     billing_unit: 'second',
     resolution_prices: { '480p': { credits: 2 }, '720p': { credits: 3 } },
   });
-  addVerifiedGenerationCapability(state.db, 'seedance 2.0', { locale: 'en-US', market: 'US' });
+  prices.set(state.db, ICREAT_MINI_MODEL, 2, {
+    category: 'video',
+    billing_unit: 'second',
+    resolution_prices: { '480p': { credits: 2 }, '720p': { credits: 3 } },
+  });
+  addVerifiedGenerationCapability(state.db, ICREAT_MINI_MODEL, {
+    locale: 'en-US',
+    market: 'US',
+    provider: 'icreat',
+    apiProtocol: 'icreat_task',
+    configModel: ICREAT_MINI_MODEL,
+  });
   const now = '2026-08-14T00:00:00.000Z';
   const nameMap = { 'character-001': 'Ethan', 'character-002': 'Maya' };
   const sourceFacts = {
@@ -566,12 +577,13 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
     endMs: 5000,
     references: [],
     compiledPrompt: {
-      text: 'English scene prompt with Ethan and Maya speaking in a tense hallway.',
-      model: 'seedance 2.0',
+      text: '原始中文提示词不允许进入供应商。',
+      model: ICREAT_MINI_MODEL,
       duration: 5,
       resolution: '480p',
       aspect_ratio: '16:9',
     },
+    prompt: '镜头原始中文 prompt 也不允许进入供应商。',
     localized_dialogue_json: JSON.stringify([
       { speaker_id: 'character-001', localized_text: 'Come with me.', start_ms: 0, end_ms: 2400 },
       { speaker_id: 'character-002', localized_text: 'Not without proof.', start_ms: 2500, end_ms: 5000 },
@@ -718,6 +730,18 @@ function assertReferenceBundlePreflightClean(state, providerCalls) {
   assert.equal(providerCalls, 0);
 }
 
+function referenceBundleAudioCapability(state) {
+  return {
+    provider: 'icreat',
+    protocol: 'icreat_task',
+    model: ICREAT_MINI_MODEL,
+    config_id: 1,
+    config_updated_at: state.now,
+    supportsAudio: true,
+    max_videos: 3,
+  };
+}
+
 async function assertReferenceBundleGenerationRejects(t, mutate, expectedCode) {
   const state = await setupReferenceBundleGenerationFixture(t);
   let providerCalls = 0;
@@ -726,6 +750,7 @@ async function assertReferenceBundleGenerationRejects(t, mutate, expectedCode) {
     () => generateShot(ctx(state.db, {
       storageRoot: state.storageRoot,
       versionId: state.versionId,
+      resolveVideoConditioningCapability: () => referenceBundleAudioCapability(state),
       createReferenceUrl: ({ asset_id: assetId }) => `https://cdn.example.test/reference/${assetId}.png`,
       prepareSourceConditioning: async () => assert.fail('raw source conditioning must not run'),
       videoProcessor: async () => { providerCalls += 1; },
@@ -4638,6 +4663,7 @@ test('reference bundle required 的单镜生成使用安全参考包投影且不
       video_codec: 'h264',
       audio_stream_count: 0,
     }),
+    resolveVideoConditioningCapability: () => referenceBundleAudioCapability(state),
     createReferenceUrl: ({ asset_id: assetId, kind }) => `https://cdn.example.test/reference/${kind}/${assetId}`,
     prepareSourceConditioning: async () => assert.fail('raw source conditioning must not run'),
     videoProcessor: async () => { providerCalls += 1; },
@@ -4653,6 +4679,16 @@ test('reference bundle required 的单镜生成使用安全参考包投影且不
   const sourceConditioning = JSON.parse(video.source_conditioning_json);
   assert.equal(snapshot.reference_bundle.schema_version, 'redraw-reference-bundle-v1');
   assert.equal(snapshot.reference_bundle.motion_sha256, REFERENCE_BUNDLE_MOTION_SHA256);
+  assert.equal(snapshot.locale, 'en-US');
+  assert.equal(video.generate_audio, 1);
+  assert.equal(snapshot.generate_audio, true);
+  assert.equal(video.prompt, snapshot.prompt);
+  assert.match(snapshot.prompt, /Ethan/);
+  assert.match(snapshot.prompt, /Maya/);
+  assert.match(snapshot.prompt, /Come with me\./);
+  assert.match(snapshot.prompt, /Not without proof\./);
+  assert.equal(snapshot.prompt.includes('原始中文提示词'), false);
+  assert.equal(snapshot.prompt.includes('镜头原始中文'), false);
   assert.deepEqual(snapshot.reference_video_urls, [`https://cdn.example.test/reference/motion/${state.motionAssetId}`]);
   assert.deepEqual(JSON.parse(video.reference_video_urls), [`https://cdn.example.test/reference/motion/${state.motionAssetId}`]);
   assert.deepEqual(JSON.parse(video.reference_image_urls), [
@@ -4668,10 +4704,48 @@ test('reference bundle required 的单镜生成使用安全参考包投影且不
   assert.equal(sourceConditioning.segment_sha256, REFERENCE_BUNDLE_MOTION_SHA256);
   const serialized = JSON.stringify({ snapshot, sourceConditioning });
   assert.equal(serialized.includes(SIGNED_SOURCE_VIDEO_URL), false);
-  assert.equal(/[A-Za-z]:\\/.test(serialized), false);
+  assert.equal(/[A-Za-z]:\\\\/.test(serialized), false);
   assert.equal(/[\u3400-\u9fff]/.test(serialized), false);
   assert.equal(serialized.includes('sk-'), false);
   assert.equal(serialized.includes('Authorization'), false);
+});
+
+test('reference bundle required 的本地假 provider 收到同一安全英文 prompt', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  let capturedPrompt = null;
+  let capturedSnapshotPrompt = null;
+  const result = await generateShot(ctx(state.db, {
+    storageRoot: state.storageRoot,
+    versionId: state.versionId,
+    awaitCompletion: true,
+    probeRunner: async () => ({
+      duration_ms: 5000,
+      width: 864,
+      height: 496,
+      mime_type: 'video/mp4',
+      video_codec: 'h264',
+      audio_stream_count: 0,
+    }),
+    resolveVideoConditioningCapability: () => referenceBundleAudioCapability(state),
+    createReferenceUrl: ({ asset_id: assetId, kind }) => `https://cdn.example.test/reference/${kind}/${assetId}`,
+    prepareSourceConditioning: async () => assert.fail('raw source conditioning must not run'),
+    videoProcessor: async (db, _log, videoGenerationId) => {
+      const row = db.prepare('SELECT prompt, request_snapshot FROM video_generations WHERE id = ?').get(videoGenerationId);
+      capturedPrompt = row.prompt;
+      capturedSnapshotPrompt = JSON.parse(row.request_snapshot).prompt;
+      db.prepare("UPDATE video_generations SET status = 'failed', error_msg = 'local fake provider stopped before submit' WHERE id = ?")
+        .run(videoGenerationId);
+    },
+  }), { shotId: state.shotId });
+
+  assert.equal(result.status, 'failed');
+  assert.equal(capturedPrompt, capturedSnapshotPrompt);
+  assert.match(capturedPrompt, /Ethan/);
+  assert.match(capturedPrompt, /Maya/);
+  assert.match(capturedPrompt, /Come with me\./);
+  assert.equal(/[\u3400-\u9fff]/.test(capturedPrompt), false);
+  assert.equal(capturedPrompt.includes('原始中文提示词'), false);
+  assert.equal(capturedPrompt.includes('镜头原始中文'), false);
 });
 
 test('reference bundle required 缺失或漂移时在冻结积分和建视频前失败', async (t) => {
@@ -4695,6 +4769,46 @@ test('reference bundle required 缺失或漂移时在冻结积分和建视频前
     },
     'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED',
   );
+});
+
+test('reference bundle required 要求同步音频能力且在副作用前失败', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  let providerCalls = 0;
+  let scheduleCalls = 0;
+  await assert.rejects(
+    () => generateShot(ctx(state.db, {
+      storageRoot: state.storageRoot,
+      versionId: state.versionId,
+      probeRunner: async () => ({
+        duration_ms: 5000,
+        width: 864,
+        height: 496,
+        mime_type: 'video/mp4',
+        video_codec: 'h264',
+        audio_stream_count: 0,
+      }),
+      resolveVideoConditioningCapability: () => ({
+        provider: 'icreat',
+        protocol: 'icreat_task',
+        model: ICREAT_MINI_MODEL,
+        config_id: 1,
+        config_updated_at: state.now,
+        supportsAudio: false,
+        max_videos: 3,
+      }),
+      createReferenceUrl: ({ asset_id: assetId, kind }) => `https://cdn.example.test/reference/${kind}/${assetId}`,
+      prepareSourceConditioning: async () => assert.fail('raw source conditioning must not run'),
+      videoProcessor: async () => { providerCalls += 1; },
+      schedule() { scheduleCalls += 1; },
+    }), { shotId: state.shotId }),
+    (error) => error.code === 'REDRAW_NATIVE_AUDIO_UNSUPPORTED',
+  );
+  assert.equal(count(state.db, 'video_generations'), 0);
+  assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+  assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+  assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+  assert.equal(providerCalls, 0);
+  assert.equal(scheduleCalls, 0);
 });
 
 test('reference bundle required 的运动、身份、文本和对白证据过期时不产生副作用', async (t) => {
@@ -4764,6 +4878,7 @@ test('reference bundle required 超过 9 个身份和客户端参考包控制字
       () => generateShot(ctx(state.db, {
         storageRoot: state.storageRoot,
         versionId: state.versionId,
+        resolveVideoConditioningCapability: () => referenceBundleAudioCapability(state),
         createReferenceUrl: ({ asset_id: assetId }) => `https://cdn.example.test/reference/${assetId}.png`,
         videoProcessor: async () => { providerCalls += 1; },
         schedule() {},

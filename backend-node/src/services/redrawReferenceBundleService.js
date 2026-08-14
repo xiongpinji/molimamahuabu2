@@ -585,6 +585,36 @@ function assertReferenceUrl(value, sourceUrl) {
   return value;
 }
 
+function promptTimeRange(entry) {
+  return `${Number(entry.start_ms)}-${Number(entry.end_ms)}ms`;
+}
+
+function buildGenerationPrompt(bundle, identityBindings) {
+  const nameByCharacter = new Map(identityBindings.map((entry) => [
+    entry.source_character_key,
+    entry.target_character_name,
+  ]));
+  const characterLines = identityBindings.map((entry) => (
+    `- ${entry.source_character_key}: ${entry.target_character_name}, portrayed by ${entry.target_actor_label}`
+  ));
+  const dialogueLines = bundle.dialogue.turns.map((turn) => {
+    const speaker = nameByCharacter.get(turn.speaker_id);
+    if (!speaker) fail(PROJECTION_CODE);
+    return `- ${promptTimeRange(turn)} ${speaker}: ${turn.localized_text}`;
+  });
+  return [
+    'Create a 1:1 live-action redraw of this short-drama shot for a US English audience.',
+    'Use the approved fictional AI-generated adult character references and the silent motion reference only.',
+    'Keep the same plot beats, blocking, camera framing, pacing, and visible text coverage.',
+    'Target locale: en-US.',
+    'Character mapping:',
+    ...characterLines,
+    'English dialogue timing:',
+    ...dialogueLines,
+    'Generate synchronized English speech audio. Do not include any Chinese subtitles, Chinese dialogue, watermarks, URLs, file paths, keys, or authorization text.',
+  ].join('\n');
+}
+
 async function projectReferenceBundleForGeneration(rawCtx, shotId) {
   try {
     const ctx = normalizeContext(rawCtx);
@@ -610,16 +640,20 @@ async function projectReferenceBundleForGeneration(rawCtx, shotId) {
       sha256: bundle.motion_reference.sha256,
       kind: 'motion',
     }), sourceUrl);
+    const identityBindings = bundle.face_tracks.map((face) => ({
+      track_key: face.track_key,
+      source_character_key: face.source_character_key,
+      target_character_name: face.identity.target_character_name,
+      target_actor_label: face.identity.target_actor_label,
+      reference_image_asset_id: face.identity.artifact.asset_id,
+    }));
     return {
+      prompt: buildGenerationPrompt(bundle, identityBindings),
+      targetLocale: 'en-US',
+      generateAudio: true,
       referenceImageUrls: [...imageByIdentity.values()],
       referenceVideoUrl,
-      identityBindings: bundle.face_tracks.map((face) => ({
-        track_key: face.track_key,
-        source_character_key: face.source_character_key,
-        target_character_name: face.identity.target_character_name,
-        target_actor_label: face.identity.target_actor_label,
-        reference_image_asset_id: face.identity.artifact.asset_id,
-      })),
+      identityBindings,
       referenceBundleSnapshot: {
         schema_version: SCHEMA_VERSION,
         coverage_sha256: bundle.coverage_sha256,

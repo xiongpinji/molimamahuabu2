@@ -513,6 +513,7 @@ function buildRequestSnapshot(generation, sourceConditioning, referenceImageUrls
     reference_video_urls: [sourceConditioning.referenceVideoUrl],
     identity_bindings: canonicalIdentityBindings(identityBindings),
     generate_audio: generation.generateAudio === true,
+    ...(generation.targetLocale ? { target_locale: generation.targetLocale } : {}),
     ai_service_config_id: generation.aiServiceConfigId,
     config_updated_at: generation.aiServiceConfigUpdatedAt,
     locale: generation.locale,
@@ -528,6 +529,7 @@ function sameRequestSnapshot(storedSnapshot, expectedSnapshot) {
   const stored = storedSnapshot && typeof storedSnapshot === 'object' ? storedSnapshot : {};
   for (const key of [
     'generate_audio',
+    'target_locale',
     'prompt_hash',
     'dialogue_snapshot_hash',
     'ai_service_config_id',
@@ -876,6 +878,9 @@ async function prepareReferenceBundleConditioning(ctx, shot) {
   };
   return {
     sourceConditioning,
+    prompt: String(projection.prompt || ''),
+    targetLocale: String(projection.targetLocale || ''),
+    generateAudio: projection.generateAudio === true,
     referenceImageUrls: projection.referenceImageUrls || [],
     identityBindings: projection.identityBindings || [],
     referenceBundleSnapshot: snapshot,
@@ -931,11 +936,20 @@ async function generateShot(ctx, input = {}) {
   if (!Number.isSafeInteger(generation.attempt) || generation.attempt <= 0) {
     throw codedError('INVALID_REDRAW_GENERATION_INPUT', 'attempt 必须是正整数');
   }
+  if (requiresReferenceBundle) {
+    assertNativeAudioCapability(selectedCapability);
+  }
   let referenceBundleProjection = null;
   const sourceConditioning = requiresReferenceBundle
     ? (referenceBundleProjection = await prepareReferenceBundleConditioning(ctx, shot)).sourceConditioning
     : await prepareServerSourceConditioning(ctx, shot, generation);
   generation.sourceConditioning = sourceConditioning.billingSnapshot;
+  if (requiresReferenceBundle) {
+    generation.prompt = referenceBundleProjection.prompt;
+    generation.locale = referenceBundleProjection.targetLocale || 'en-US';
+    generation.targetLocale = referenceBundleProjection.targetLocale || 'en-US';
+    generation.generateAudio = referenceBundleProjection.generateAudio === true;
+  }
   const referenceImageUrls = requiresReferenceBundle
     ? referenceBundleProjection.referenceImageUrls
     : collectReferenceImageUrls(db, shot, parsed);
