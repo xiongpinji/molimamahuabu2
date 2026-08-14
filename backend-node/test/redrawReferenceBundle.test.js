@@ -1,21 +1,45 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
-const { saveReferenceBundle } = require('../src/services/redrawReferenceBundleService');
+const {
+  canonicalBundleHash,
+  loadCurrentReferenceBundle,
+  projectReferenceBundleForGeneration,
+  saveReferenceBundle,
+} = require('../src/services/redrawReferenceBundleService');
 
 const INITIAL_UPDATED_AT = '2026-08-14T00:00:00.000Z';
 const REVIEWED_AT = '2026-08-14T00:05:00.000Z';
-const SOURCE_FINGERPRINT = '1'.repeat(64);
-const MOTION_SHA256 = '2'.repeat(64);
-const FACE_COVERAGE_SHA256 = '3'.repeat(64);
-const TEXT_COVERAGE_SHA256 = '4'.repeat(64);
+const SOURCE_BYTES = Buffer.from('reference-bundle-source-video');
+const SOURCE_FINGERPRINT = sha256(SOURCE_BYTES);
+const MOTION_BYTES = Buffer.from('reference-bundle-motion-reference');
+const MOTION_SHA256 = sha256(MOTION_BYTES);
+const FACE_COVERAGE_SHA256 = sha256(stableJson([
+  { identity_redraw_asset_id: 201, source_character_key: 'character-001', time_ranges: [[0, 5000]], track_key: 'face-001' },
+  { identity_redraw_asset_id: 202, source_character_key: 'character-002', time_ranges: [[2500, 5000]], track_key: 'face-002' },
+]));
+const TEXT_COVERAGE_SHA256 = sha256(stableJson([
+  { kind: 'text_subtitle', region_key: 'text-001', text_clean_redraw_asset_id: 203, time_ranges: [[0, 2500]] },
+  { kind: 'text_screen', region_key: 'text-002', text_clean_redraw_asset_id: 204, time_ranges: [[2500, 5000]] },
+]));
+const PNG_BYTES = Buffer.from('reference-bundle-image');
 
 function setup(overrides = {}) {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-reference-bundle-'));
+  currentStorageRoot = storageRoot;
+  fs.mkdirSync(path.join(storageRoot, 'source'), { recursive: true });
+  fs.mkdirSync(path.join(storageRoot, 'redraw'), { recursive: true });
+  fs.mkdirSync(path.join(storageRoot, 'redraw-conditioning'), { recursive: true });
+  fs.writeFileSync(path.join(storageRoot, 'source', 'source.mp4'), SOURCE_BYTES);
+  fs.writeFileSync(path.join(storageRoot, 'redraw-conditioning', `${MOTION_SHA256}.mp4`), MOTION_BYTES);
   const now = INITIAL_UPDATED_AT;
   const nameMap = overrides.nameMap || { 'character-001': 'Ethan', 'character-002': 'Maya' };
   const facts = sourceFacts(nameMap, overrides.sourceFacts || {});
@@ -31,8 +55,8 @@ function setup(overrides = {}) {
     VALUES ('tenant-a', 'user-a', 'reference bundle project', 'en-US', 'US', ?, ?)`).run(now, now);
   const projectId = db.prepare('SELECT id FROM redraw_projects LIMIT 1').get().id;
   db.prepare(`INSERT INTO redraw_works
-    (project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint, duration_ms, created_at, updated_at)
-    VALUES (?, 'tenant-a', 'user-a', 'reference bundle work', ?, ?, 5000, ?, ?)`)
+    (id, project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint, duration_ms, created_at, updated_at)
+    VALUES (1, ?, 'tenant-a', 'user-a', 'reference bundle work', ?, ?, 15000, ?, ?)`)
     .run(projectId, sourceAssetId, SOURCE_FINGERPRINT, now, now);
   const workId = db.prepare('SELECT id FROM redraw_works LIMIT 1').get().id;
   const versionId = Number(db.prepare(`INSERT INTO redraw_versions
@@ -72,28 +96,28 @@ function setup(overrides = {}) {
     sourceCharacterKey: 'character-001',
     targetActorLabel: 'Actor Ethan',
     assetId: 301,
-    sha256: 'a'.repeat(64),
+    sha256: assetSha(301),
   });
   const actorBId = insertCharacterRedrawAsset(db, versionId, {
     id: 202,
     sourceCharacterKey: 'character-002',
     targetActorLabel: 'Actor Maya',
     assetId: 302,
-    sha256: 'b'.repeat(64),
+    sha256: assetSha(302),
   });
   const subtitleCleanId = insertTextCleanAsset(db, versionId, {
     id: 203,
     regionKey: 'text-001',
     kind: 'text_subtitle',
     assetId: 303,
-    sha256: 'c'.repeat(64),
+    sha256: assetSha(303),
   });
   const screenCleanId = insertTextCleanAsset(db, versionId, {
     id: 204,
     regionKey: 'text-002',
     kind: 'text_screen',
     assetId: 304,
-    sha256: 'd'.repeat(64),
+    sha256: assetSha(304),
   });
   const motionAssetId = insertAsset(db, {
     id: 305,
@@ -120,6 +144,12 @@ function setup(overrides = {}) {
 
   return {
     db,
+    cleanup() {
+      db.close();
+      fs.rmSync(storageRoot, { recursive: true, force: true });
+      if (currentStorageRoot === storageRoot) currentStorageRoot = null;
+    },
+    storageRoot,
     workId,
     versionId,
     shotId,
@@ -146,7 +176,15 @@ function factsHash(value) {
 }
 
 function sha256(value) {
-  return crypto.createHash('sha256').update(String(value)).digest('hex');
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function assetBytes(id) {
+  return Buffer.from(`${PNG_BYTES}:${id}`);
+}
+
+function assetSha(id) {
+  return sha256(assetBytes(id));
 }
 
 function stableJson(value) {
@@ -158,6 +196,10 @@ function stableJson(value) {
 }
 
 function insertAsset(db, input) {
+  if (input.localPath?.startsWith('redraw/')) {
+    const root = input.storageRoot || currentStorageRoot;
+    if (root) fs.writeFileSync(path.join(root, input.localPath), assetBytes(input.id));
+  }
   db.prepare(`INSERT INTO assets
     (id, name, type, category, url, local_path, mime_type, metadata, created_at, updated_at)
     VALUES (?, ?, ?, 'redraw', '', ?, ?, ?, ?, ?)`)
@@ -177,6 +219,8 @@ function insertAsset(db, input) {
     );
   return input.id;
 }
+
+let currentStorageRoot = null;
 
 function identityPack(input = {}) {
   const pack = {
@@ -315,7 +359,16 @@ function ctx(state, overrides = {}) {
     tenantId: 'tenant-a',
     userId: 'user-a',
     versionId: state.versionId,
+    storageRoot: state.storageRoot,
     now: REVIEWED_AT,
+    probeRunner: async () => ({
+      duration_ms: 5000,
+      width: 864,
+      height: 496,
+      mime_type: 'video/mp4',
+      video_codec: 'h264',
+      audio_stream_count: 0,
+    }),
     ...overrides,
   };
 }
@@ -464,7 +517,50 @@ test('保存参考包时规范排序、脱敏并写入稳定哈希', async () =>
     assert.equal(serialized.includes('https://'), false);
     assert.equal(serialized.includes('http://'), false);
   } finally {
-    state.db.close();
+    state.cleanup();
+  }
+});
+
+test('重读参考包时重新校验并投影生成用白名单 URL', async () => {
+  const state = setup();
+  try {
+    const saved = await saveReferenceBundle(ctx(state), validInput(state));
+
+    const loaded = await loadCurrentReferenceBundle(ctx(state), state.shotId);
+    assert.equal(loaded.reference_bundle_hash, saved.reference_bundle_hash);
+    assert.equal(canonicalBundleHash(loaded.bundle), saved.reference_bundle_hash);
+
+    const referenceKinds = [];
+    const projected = await projectReferenceBundleForGeneration(ctx(state, {
+      createReferenceUrl({ asset_id: assetId, sha256: digest, kind }) {
+        referenceKinds.push(kind);
+        return `/static/redraw-reference/${kind}/${assetId}-${digest.slice(0, 8)}`;
+      },
+    }), state.shotId);
+
+    assert.deepEqual(Object.keys(projected).sort(), [
+      'identityBindings',
+      'referenceBundleSnapshot',
+      'referenceImageUrls',
+      'referenceVideoUrl',
+    ].sort());
+    assert.equal(projected.referenceImageUrls.length, 2);
+    assert.equal(projected.referenceVideoUrl.startsWith('/static/'), true);
+    assert.deepEqual(referenceKinds.sort(), ['identity', 'identity', 'motion']);
+    assert.equal(projected.identityBindings.length, 2);
+    assert.deepEqual(projected.identityBindings.map((entry) => entry.target_character_name), ['Ethan', 'Maya']);
+    assert.deepEqual(projected.referenceBundleSnapshot, {
+      schema_version: 'redraw-reference-bundle-v1',
+      coverage_sha256: loaded.bundle.coverage_sha256,
+      source_sha256: SOURCE_FINGERPRINT,
+      motion_sha256: MOTION_SHA256,
+      dialogue_script_sha256: '5'.repeat(64),
+      character_name_map_sha256: sha256(stableJson({ 'character-001': 'Ethan', 'character-002': 'Maya' })),
+    });
+    assert.equal(JSON.stringify(projected).includes('source/source.mp4'), false);
+    assert.equal(JSON.stringify(projected).includes('sk-'), false);
+  } finally {
+    state.cleanup();
   }
 });
 
@@ -504,7 +600,7 @@ test('人脸覆盖缺失、重复、非法时间、未批准或 unresolved 时�
         'REDRAW_REFERENCE_BUNDLE_FACE_INVALID',
       );
     } finally {
-      state.db.close();
+      state.cleanup();
     }
   }
 });
@@ -546,7 +642,7 @@ test('角色身份一对一映射与 9 个引用上限 fail closed', async () =>
       if (entry.mutateDb) entry.mutateDb(state);
       await assertRejectsUnchanged(state, mutateInput(state, entry.mutate), entry.code);
     } finally {
-      state.db.close();
+      state.cleanup();
     }
   }
 });
@@ -612,7 +708,7 @@ test('身份包缺视图、未批准、非成年、非虚构 AI、非 US 或哈�
         'REDRAW_REFERENCE_BUNDLE_IDENTITY_INVALID',
       );
     } finally {
-      state.db.close();
+      state.cleanup();
     }
   }
 });
@@ -666,7 +762,7 @@ test('文字净景缺失、重复、数量、unresolved、类型、时间、审�
         'REDRAW_REFERENCE_BUNDLE_TEXT_INVALID',
       );
     } finally {
-      state.db.close();
+      state.cleanup();
     }
   }
 });
@@ -691,11 +787,7 @@ test('语言市场、名字映射、对白绑定或剧本证据漂移时拒绝',
     },
     {
       name: 'script drift',
-      setup: () => setup({ sourceFacts: { script_sha256: '8'.repeat(64) } }),
-      mutateDb(state) {
-        state.db.prepare("UPDATE redraw_versions SET source_facts_json = json_set(source_facts_json, '$.script_sha256', ?) WHERE id = ?")
-          .run('9'.repeat(64), state.versionId);
-      },
+      setup: () => setup({ sourceFacts: { script_sha256: 'not-a-sha256' } }),
     },
     {
       name: 'name map drift',
@@ -716,7 +808,7 @@ test('语言市场、名字映射、对白绑定或剧本证据漂移时拒绝',
         'REDRAW_REFERENCE_BUNDLE_DIALOGUE_INVALID',
       );
     } finally {
-      state.db.close();
+      state.cleanup();
     }
   }
 });
@@ -737,7 +829,7 @@ test('跨租户用户不可见且不会写入镜头', async () => {
       { userId: 'user-b' },
     );
   } finally {
-    state.db.close();
+    state.cleanup();
   }
 });
 
@@ -761,7 +853,7 @@ test('缺少 expected_updated_at 或 CAS 冲突时拒绝', async () => {
         'REDRAW_REFERENCE_BUNDLE_CONFLICT',
       );
     } finally {
-      state.db.close();
+      state.cleanup();
     }
   }
 });
@@ -806,7 +898,7 @@ test('未知字段、客户端 hash、路径、URL、reviewer 或 status 注入�
         entry.forbiddenValues || [],
       );
     } finally {
-      state.db.close();
+      state.cleanup();
     }
   }
 });
