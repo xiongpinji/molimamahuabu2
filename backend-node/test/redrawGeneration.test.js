@@ -4756,7 +4756,7 @@ test('reference bundle required 缺失或漂移时在冻结积分和建视频前
         SET reference_bundle_json = '{}', reference_bundle_hash = NULL, reference_bundle_updated_at = NULL
         WHERE id = ?`).run(state.shotId);
     },
-    'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED',
+    'REDRAW_REFERENCE_BUNDLE_NOT_FOUND',
   );
   await assertReferenceBundleGenerationRejects(
     t,
@@ -4767,7 +4767,7 @@ test('reference bundle required 缺失或漂移时在冻结积分和建视频前
       state.db.prepare('UPDATE redraw_shots SET reference_bundle_json = ? WHERE id = ?')
         .run(JSON.stringify(bundle), state.shotId);
     },
-    'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED',
+    'REDRAW_REFERENCE_BUNDLE_CONFLICT',
   );
 });
 
@@ -4837,8 +4837,14 @@ test('reference bundle required 的运动、身份、文本和对白证据过期
         .run(JSON.stringify([{ speaker_id: 'character-001', localized_text: '中文对白', start_ms: 0, end_ms: 1000 }]), state.shotId);
     }],
   ];
-  for (const [, mutate] of staleCases) {
-    await assertReferenceBundleGenerationRejects(t, mutate, 'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED');
+  for (const [name, mutate] of staleCases) {
+    const expectedCode = {
+      'motion has audio': 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE',
+      'identity stale': 'REDRAW_REFERENCE_BUNDLE_IDENTITY_PACK_REQUIRED',
+      'text clean stale': 'REDRAW_REFERENCE_BUNDLE_TEXT_COVERAGE_REQUIRED',
+      'dialogue stale': 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED',
+    }[name];
+    await assertReferenceBundleGenerationRejects(t, mutate, expectedCode);
   }
 });
 
@@ -4858,7 +4864,7 @@ test('reference bundle required 超过 9 个身份和客户端参考包控制字
       state.db.prepare('UPDATE redraw_shots SET reference_bundle_json = ?, reference_bundle_hash = ? WHERE id = ?')
         .run(JSON.stringify(bundle), 'f'.repeat(64), state.shotId);
     },
-    'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED',
+    'REDRAW_REFERENCE_BUNDLE_CONFLICT',
   );
 
   for (const [field, value] of [

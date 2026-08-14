@@ -8,13 +8,13 @@ const SCHEMA_VERSION = 'redraw-reference-bundle-v1';
 const INPUT_CODE = 'REDRAW_REFERENCE_BUNDLE_INPUT_INVALID';
 const NOT_FOUND_CODE = 'REDRAW_REFERENCE_BUNDLE_NOT_FOUND';
 const CONFLICT_CODE = 'REDRAW_REFERENCE_BUNDLE_CONFLICT';
-const FACE_CODE = 'REDRAW_REFERENCE_BUNDLE_FACE_INVALID';
-const IDENTITY_CODE = 'REDRAW_REFERENCE_BUNDLE_IDENTITY_INVALID';
-const TEXT_CODE = 'REDRAW_REFERENCE_BUNDLE_TEXT_INVALID';
-const DIALOGUE_CODE = 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_INVALID';
+const FACE_CODE = 'REDRAW_REFERENCE_BUNDLE_FACE_COVERAGE_REQUIRED';
+const IDENTITY_CODE = 'REDRAW_REFERENCE_BUNDLE_IDENTITY_PACK_REQUIRED';
+const TEXT_CODE = 'REDRAW_REFERENCE_BUNDLE_TEXT_COVERAGE_REQUIRED';
+const DIALOGUE_CODE = 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED';
+const MOTION_CODE = 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE';
 const LIMIT_CODE = 'REDRAW_REFERENCE_BUNDLE_REFERENCE_LIMIT_EXCEEDED';
 const PROJECTION_CODE = 'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED';
-const DRIFT_CODE = 'REDRAW_REFERENCE_BUNDLE_DRIFT';
 const HEX_64 = /^[0-9a-f]{64}$/;
 const INPUT_FIELDS = new Set([
   'shot_id',
@@ -306,6 +306,11 @@ function verifyIdentities(ctx, faces, nameMap) {
       source_character_key: face.source_character_key,
       target_character_name: nameMap[face.source_character_key],
       target_actor_label: pack.target_actor_label,
+      identity_asset_id: Number(pack.artifact.asset_id),
+      identity_pack_sha256: pack.pack_sha256,
+      persona_origin: pack.persona_origin,
+      target_country: pack.target_country,
+      adult_status: pack.adult_status,
       artifact: pack.artifact,
       pack_sha256: pack.pack_sha256,
     };
@@ -363,20 +368,6 @@ function verifyTexts(ctx, texts) {
   });
 }
 
-function assertFullTextCoverage(texts, durationMs) {
-  const ranges = [];
-  for (const text of texts) {
-    ranges.push(...text.time_ranges);
-  }
-  ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  let cursor = 0;
-  for (const range of ranges) {
-    if (range[0] !== cursor) fail(TEXT_CODE);
-    cursor = range[1];
-  }
-  if (cursor !== durationMs) fail(TEXT_CODE);
-}
-
 function containsChinese(value) {
   return /[\u3400-\u9fff]/.test(JSON.stringify(value));
 }
@@ -401,7 +392,8 @@ function verifyDialogue(shot, nameMap, boundCharacters) {
     return { speaker_id: speaker, localized_text: text, start_ms: start, end_ms: end };
   }).sort((a, b) => a.start_ms - b.start_ms || a.end_ms - b.end_ms || a.speaker_id.localeCompare(b.speaker_id));
   return {
-    localized_script_version_id: `shot-${Number(shot.id)}`,
+    localized_script_version_id: Number(shot.version_id),
+    target_locale: shot.locale,
     script_sha256: facts.script_sha256,
     character_name_map_sha256: sha256(stableJson(nameMap)),
     turns: normalized,
@@ -433,7 +425,6 @@ async function buildBundle(ctx, input, options = {}) {
   if (faces.length !== coverageReview.mapped_face_count) fail(FACE_CODE);
   if (texts.length !== coverageReview.mapped_text_region_count) fail(TEXT_CODE);
   assertFaceOneToOne(faces);
-  assertFullTextCoverage(texts, durationMs);
 
   const nameMap = parseJson(shot.name_map_json, {});
   const dialogue = verifyDialogue(shot, nameMap, new Set(faces.map((face) => face.source_character_key)));
@@ -482,7 +473,18 @@ async function buildBundle(ctx, input, options = {}) {
     dialogue,
     face_tracks: faces.map((face) => ({
       ...face,
-      identity: identityEvidence.find((entry) => entry.redraw_asset_id === face.identity_redraw_asset_id),
+      ...(() => {
+        const identity = identityEvidence.find((entry) => entry.redraw_asset_id === face.identity_redraw_asset_id);
+        return {
+          target_character_name: identity.target_character_name,
+          identity_asset_id: identity.identity_asset_id,
+          identity_pack_sha256: identity.identity_pack_sha256,
+          persona_origin: identity.persona_origin,
+          target_country: identity.target_country,
+          adult_status: identity.adult_status,
+          identity,
+        };
+      })(),
     })),
     text_regions: texts.map((text) => ({
       ...text,
@@ -537,12 +539,22 @@ async function saveReferenceBundle(rawCtx, input) {
   };
 }
 
+function classifyBundleMismatch(saved, rebuilt) {
+  if (stableJson(saved.dialogue) !== stableJson(rebuilt.dialogue)
+    || stableJson(saved.name_map) !== stableJson(rebuilt.name_map)) return DIALOGUE_CODE;
+  if (stableJson(saved.face_tracks) !== stableJson(rebuilt.face_tracks)) return IDENTITY_CODE;
+  if (stableJson(saved.text_regions) !== stableJson(rebuilt.text_regions)) return TEXT_CODE;
+  if (stableJson(saved.motion_reference) !== stableJson(rebuilt.motion_reference)) return MOTION_CODE;
+  return CONFLICT_CODE;
+}
+
 async function loadCurrentReferenceBundle(rawCtx, shotId) {
   const ctx = normalizeContext(rawCtx);
   const id = Number(shotId);
   const { shot } = getRows(ctx, id);
   const bundle = parseJson(shot.reference_bundle_json, null);
-  if (!bundle || bundle.schema_version !== SCHEMA_VERSION || canonicalBundleHash(bundle) !== shot.reference_bundle_hash) fail(NOT_FOUND_CODE);
+  if (!bundle || bundle.schema_version !== SCHEMA_VERSION || !shot.reference_bundle_hash) fail(NOT_FOUND_CODE);
+  if (canonicalBundleHash(bundle) !== shot.reference_bundle_hash) fail(CONFLICT_CODE);
   const input = {
     shot_id: id,
     expected_updated_at: shot.updated_at,
@@ -569,12 +581,14 @@ async function loadCurrentReferenceBundle(rawCtx, shotId) {
       status: 'approved',
     },
   };
-  if (!bundle.coverage_review?.reviewed_at || !bundle.coverage_review?.reviewed_by) fail(DRIFT_CODE);
+  if (!bundle.coverage_review?.reviewed_at || !bundle.coverage_review?.reviewed_by) fail(CONFLICT_CODE);
   const rebuilt = await buildBundle(ctx, input, {
     reviewedAt: bundle.coverage_review.reviewed_at,
     reviewedBy: bundle.coverage_review.reviewed_by,
   });
-  if (rebuilt.hash !== shot.reference_bundle_hash || stableJson(rebuilt.bundle) !== stableJson(bundle)) fail(DRIFT_CODE);
+  if (rebuilt.hash !== shot.reference_bundle_hash || stableJson(rebuilt.bundle) !== stableJson(bundle)) {
+    fail(classifyBundleMismatch(bundle, rebuilt.bundle));
+  }
   return { shot_id: id, reference_bundle_hash: shot.reference_bundle_hash, bundle };
 }
 
@@ -616,11 +630,11 @@ function buildGenerationPrompt(bundle, identityBindings) {
 }
 
 async function projectReferenceBundleForGeneration(rawCtx, shotId) {
+  const ctx = normalizeContext(rawCtx);
+  const loaded = await loadCurrentReferenceBundle(ctx, shotId);
+  const bundle = loaded.bundle;
   try {
-    const ctx = normalizeContext(rawCtx);
     if (typeof ctx.createReferenceUrl !== 'function') fail(PROJECTION_CODE);
-    const loaded = await loadCurrentReferenceBundle(ctx, shotId);
-    const bundle = loaded.bundle;
     const sourceAsset = ctx.db.prepare('SELECT url FROM assets WHERE id = ? AND deleted_at IS NULL')
       .get(bundle.source.asset_id);
     const sourceUrl = String(sourceAsset?.url || '');

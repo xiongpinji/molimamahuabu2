@@ -195,6 +195,22 @@ function stableJson(value) {
   return JSON.stringify(value);
 }
 
+function textCoverageHash(input) {
+  return sha256(stableJson(input.text_regions.map((entry) => ({
+    kind: entry.kind,
+    region_key: entry.region_key,
+    text_clean_redraw_asset_id: entry.text_clean_redraw_asset_id,
+    time_ranges: [...entry.time_ranges].sort((a, b) => a[0] - b[0] || a[1] - b[1]),
+  })).sort((a, b) => a.region_key.localeCompare(b.region_key))));
+}
+
+function syncMotionTextCoverage(state, input) {
+  const row = state.db.prepare('SELECT metadata FROM assets WHERE id = ?').get(state.motionAssetId);
+  const metadata = JSON.parse(row.metadata);
+  metadata.redraw_motion_reference.text_coverage_sha256 = textCoverageHash(input);
+  state.db.prepare('UPDATE assets SET metadata = ? WHERE id = ?').run(JSON.stringify(metadata), state.motionAssetId);
+}
+
 function insertAsset(db, input) {
   if (input.localPath?.startsWith('redraw/')) {
     const root = input.storageRoot || currentStorageRoot;
@@ -519,8 +535,36 @@ test('保存参考包时规范排序、脱敏并写入稳定哈希', async () =>
     assert.equal(bundle.locale, 'en-US');
     assert.equal(bundle.market, 'US');
     assert.deepEqual(bundle.face_tracks.map((entry) => entry.track_key), ['face-001', 'face-002']);
+    assert.deepEqual(bundle.face_tracks.map((entry) => ({
+      target_character_name: entry.target_character_name,
+      identity_asset_id: entry.identity_asset_id,
+      identity_pack_sha256: entry.identity_pack_sha256,
+      persona_origin: entry.persona_origin,
+      target_country: entry.target_country,
+      adult_status: entry.adult_status,
+    })), [
+      {
+        target_character_name: 'Ethan',
+        identity_asset_id: 301,
+        identity_pack_sha256: bundle.face_tracks[0].identity.pack_sha256,
+        persona_origin: 'fictional_ai_generated',
+        target_country: 'US',
+        adult_status: 'verified_18_plus',
+      },
+      {
+        target_character_name: 'Maya',
+        identity_asset_id: 302,
+        identity_pack_sha256: bundle.face_tracks[1].identity.pack_sha256,
+        persona_origin: 'fictional_ai_generated',
+        target_country: 'US',
+        adult_status: 'verified_18_plus',
+      },
+    ]);
+    assert.match(bundle.face_tracks[0].identity_pack_sha256, /^[0-9a-f]{64}$/);
+    assert.match(bundle.face_tracks[1].identity_pack_sha256, /^[0-9a-f]{64}$/);
     assert.deepEqual(bundle.text_regions.map((entry) => entry.region_key), ['text-001', 'text-002']);
-    assert.equal(bundle.dialogue.localized_script_version_id, `shot-${state.shotId}`);
+    assert.equal(bundle.dialogue.localized_script_version_id, state.versionId);
+    assert.equal(bundle.dialogue.target_locale, 'en-US');
     assert.equal(bundle.dialogue.script_sha256, '5'.repeat(64));
     assert.equal(bundle.dialogue.character_name_map_sha256, sha256(stableJson({ 'character-001': 'Ethan', 'character-002': 'Maya' })));
     assert.deepEqual(bundle.dialogue.turns.map((entry) => entry.speaker_id), ['character-001', 'character-002']);
@@ -538,7 +582,6 @@ test('保存参考包时规范排序、脱敏并写入稳定哈希', async () =>
     state.cleanup();
   }
 });
-
 test('重读参考包时重新校验并投影生成用白名单 URL', async () => {
   const state = setup();
   try {
@@ -615,14 +658,14 @@ test('重读参考包时拒绝保存后仍有效的身份证据漂移', async ()
     updateRedrawAsset(state.db, state.actorAId, { localized_name: 'Actor Ethan II' });
 
     const loadError = await captureAnyError(() => loadCurrentReferenceBundle(ctx(state), state.shotId));
-    assert.equal(loadError.code, 'REDRAW_REFERENCE_BUNDLE_DRIFT');
+    assert.equal(loadError.code, 'REDRAW_REFERENCE_BUNDLE_IDENTITY_PACK_REQUIRED');
 
     const projectionError = await captureAnyError(() => projectReferenceBundleForGeneration(ctx(state, {
       createReferenceUrl() {
         return '/static/redraw-reference/unused';
       },
     }), state.shotId));
-    assert.equal(projectionError.code, 'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED');
+    assert.equal(projectionError.code, 'REDRAW_REFERENCE_BUNDLE_IDENTITY_PACK_REQUIRED');
     assertShotUnchanged(state.db, state.shotId, before);
   } finally {
     state.cleanup();
@@ -640,7 +683,7 @@ test('重读参考包时拒绝保存后仍有效的文字净景证据漂移', as
     });
 
     const loadError = await captureAnyError(() => loadCurrentReferenceBundle(ctx(state), state.shotId));
-    assert.equal(loadError.code, 'REDRAW_REFERENCE_BUNDLE_DRIFT');
+    assert.equal(loadError.code, 'REDRAW_REFERENCE_BUNDLE_TEXT_COVERAGE_REQUIRED');
     assertShotUnchanged(state.db, state.shotId, before);
   } finally {
     state.cleanup();
@@ -674,17 +717,43 @@ test('重读参考包时拒绝保存后仍有效的剧本证据漂移', async ()
     const before = currentShot(driftState.db, driftState.shotId);
 
     const loadError = await captureAnyError(() => loadCurrentReferenceBundle(ctx(driftState), driftState.shotId));
-    assert.equal(loadError.code, 'REDRAW_REFERENCE_BUNDLE_DRIFT');
+    assert.equal(loadError.code, 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED');
 
     const projectionError = await captureAnyError(() => projectReferenceBundleForGeneration(ctx(driftState, {
       createReferenceUrl() {
         return '/static/redraw-reference/unused';
       },
     }), driftState.shotId));
-    assert.equal(projectionError.code, 'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED');
+    assert.equal(projectionError.code, 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED');
     assertShotUnchanged(driftState.db, driftState.shotId, before);
   } finally {
     driftState.cleanup();
+  }
+});
+
+test('重读参考包时将已存包哈希不一致报告为冲突且投影保留根因', async () => {
+  const state = setup();
+  try {
+    await saveReferenceBundle(ctx(state), validInput(state));
+    const before = currentShot(state.db, state.shotId);
+    const bundle = JSON.parse(before.reference_bundle_json);
+    bundle.coverage_sha256 = '0'.repeat(64);
+    state.db.prepare('UPDATE redraw_shots SET reference_bundle_json = ? WHERE id = ?')
+      .run(JSON.stringify(bundle), state.shotId);
+    const afterTamper = currentShot(state.db, state.shotId);
+
+    const loadError = await captureAnyError(() => loadCurrentReferenceBundle(ctx(state), state.shotId));
+    assert.equal(loadError.code, 'REDRAW_REFERENCE_BUNDLE_CONFLICT');
+
+    const projectionError = await captureAnyError(() => projectReferenceBundleForGeneration(ctx(state, {
+      createReferenceUrl() {
+        return '/static/redraw-reference/unused';
+      },
+    }), state.shotId));
+    assert.equal(projectionError.code, 'REDRAW_REFERENCE_BUNDLE_CONFLICT');
+    assertShotUnchanged(state.db, state.shotId, afterTamper);
+  } finally {
+    state.cleanup();
   }
 });
 
@@ -735,6 +804,61 @@ test('投影允许 HTTPS 参考 URL 并拒绝源 URL 相同或非 HTTPS 外链',
   }
 });
 
+test('文字覆盖允许无文字、片段 gap 和不同区域重叠', async () => {
+  const cases = [
+    {
+      name: 'zero text',
+      mutate(input) {
+        input.text_regions = [];
+        input.coverage_review.recognizable_text_region_count = 0;
+        input.coverage_review.mapped_text_region_count = 0;
+      },
+      assertBundle(bundle) {
+        assert.deepEqual(bundle.text_regions, []);
+      },
+    },
+    {
+      name: 'single text gap',
+      mutate(input) {
+        input.text_regions = [{
+          region_key: 'text-001',
+          kind: 'text_subtitle',
+          time_ranges: [[1000, 2000]],
+          text_clean_redraw_asset_id: 203,
+        }];
+        input.coverage_review.recognizable_text_region_count = 1;
+        input.coverage_review.mapped_text_region_count = 1;
+      },
+      assertBundle(bundle) {
+        assert.deepEqual(bundle.text_regions[0].time_ranges, [[1000, 2000]]);
+      },
+    },
+    {
+      name: 'overlap across regions',
+      mutate(input) {
+        input.text_regions[0].time_ranges = [[0, 3000]];
+        input.text_regions[1].time_ranges = [[2000, 5000]];
+      },
+      assertBundle(bundle) {
+        assert.deepEqual(bundle.text_regions.map((entry) => entry.time_ranges), [[[2000, 5000]], [[0, 3000]]]);
+      },
+    },
+  ];
+  for (const entry of cases) {
+    const state = setup();
+    try {
+      const input = validInput(state);
+      entry.mutate(input);
+      syncMotionTextCoverage(state, input);
+      const saved = await saveReferenceBundle(ctx(state), input);
+      assert.match(saved.reference_bundle_hash, /^[0-9a-f]{64}$/);
+      entry.assertBundle(saved.bundle);
+    } finally {
+      state.cleanup();
+    }
+  }
+});
+
 test('人脸覆盖缺失、重复、非法时间、未批准或 unresolved 时拒绝且不写入', async () => {
   const cases = [
     {
@@ -768,7 +892,7 @@ test('人脸覆盖缺失、重复、非法时间、未批准或 unresolved 时�
       await assertRejectsUnchanged(
         state,
         mutateInput(state, entry.mutate),
-        'REDRAW_REFERENCE_BUNDLE_FACE_INVALID',
+        'REDRAW_REFERENCE_BUNDLE_FACE_COVERAGE_REQUIRED',
       );
     } finally {
       state.cleanup();
@@ -779,11 +903,11 @@ test('人脸覆盖缺失、重复、非法时间、未批准或 unresolved 时�
 test('角色身份一对一映射与 9 个引用上限 fail closed', async () => {
   const cases = [
     {
-      code: 'REDRAW_REFERENCE_BUNDLE_FACE_INVALID',
+      code: 'REDRAW_REFERENCE_BUNDLE_FACE_COVERAGE_REQUIRED',
       mutate(input) { input.face_tracks[1].identity_redraw_asset_id = input.face_tracks[0].identity_redraw_asset_id; },
     },
     {
-      code: 'REDRAW_REFERENCE_BUNDLE_FACE_INVALID',
+      code: 'REDRAW_REFERENCE_BUNDLE_FACE_COVERAGE_REQUIRED',
       mutateDb(state) {
         updateJsonColumn(state.db, 'redraw_assets', state.actorBId, 'source_ref_json', (payload) => {
           payload.source_ref.stable_id = 'character-001';
@@ -876,7 +1000,7 @@ test('身份包缺视图、未批准、非成年、非虚构 AI、非 US 或哈�
       await assertRejectsUnchanged(
         state,
         validInput(state),
-        'REDRAW_REFERENCE_BUNDLE_IDENTITY_INVALID',
+        'REDRAW_REFERENCE_BUNDLE_IDENTITY_PACK_REQUIRED',
       );
     } finally {
       state.cleanup();
@@ -907,8 +1031,8 @@ test('文字净景缺失、重复、数量、unresolved、类型、时间、审�
       mutate(input) { input.text_regions[0].kind = 'text_subtitle'; },
     },
     {
-      name: 'time gap',
-      mutate(input) { input.text_regions[1].time_ranges = [[3000, 5000]]; },
+      name: 'same region overlap',
+      mutate(input) { input.text_regions[1].time_ranges = [[2500, 4000], [3900, 5000]]; },
     },
     {
       name: 'not approved',
@@ -930,7 +1054,7 @@ test('文字净景缺失、重复、数量、unresolved、类型、时间、审�
       await assertRejectsUnchanged(
         state,
         entry.mutate ? mutateInput(state, entry.mutate) : validInput(state),
-        'REDRAW_REFERENCE_BUNDLE_TEXT_INVALID',
+        'REDRAW_REFERENCE_BUNDLE_TEXT_COVERAGE_REQUIRED',
       );
     } finally {
       state.cleanup();
@@ -976,7 +1100,7 @@ test('语言市场、名字映射、对白绑定或剧本证据漂移时拒绝',
       await assertRejectsUnchanged(
         state,
         validInput(state),
-        'REDRAW_REFERENCE_BUNDLE_DIALOGUE_INVALID',
+        'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED',
       );
     } finally {
       state.cleanup();
