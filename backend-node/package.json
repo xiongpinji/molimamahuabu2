@@ -24,6 +24,7 @@
     "verify:icreat-mini-reference-video": "node scripts/run-icreat-mini-reference-video-case.js",
     "verify:redraw-clean-plate-local": "node scripts/run-redraw-clean-plate-local-case.js --fixture",
     "verify:redraw-text-clean-plate-local": "node scripts/run-redraw-text-clean-plate-local-case.js --fixture",
+    "verify:redraw-reference-bundle-local": "node scripts/run-redraw-reference-bundle-local-case.js --fixture",
     "audit:usmercari-image": "node scripts/verify-usmercari-image-release-contract.js",
     "verify:toapis-video": "node scripts/verify-toapis-video-models.js",
     "verify:feituo-video": "node scripts/verify-feituo-video-models.js",
