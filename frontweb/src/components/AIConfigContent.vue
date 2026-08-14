@@ -80,6 +80,21 @@
                 {{ row.default_model || (Array.isArray(row.model) && row.model[0]) || '—' }}
               </template>
             </el-table-column>
+            <el-table-column label="模型 → 中转站" min-width="260">
+              <template #default="{ row }">
+                <div v-if="row.relay_associations.length" class="relay-associations">
+                  <div
+                    v-for="association in row.relay_associations"
+                    :key="`${row.id}:${association.model}`"
+                    class="relay-association"
+                  >
+                    <span class="relay-model">{{ association.model }}</span>
+                    <span class="relay-detail">{{ association.detail }}</span>
+                  </div>
+                </div>
+                <span v-else class="no-default">—</span>
+              </template>
+            </el-table-column>
             <el-table-column prop="service_type" label="类型" width="148">
               <template #default="{ row }">
                 <span :class="['type-badge', 'type-' + row.service_type]">
@@ -1190,6 +1205,7 @@ import PromptEditor from '@/components/PromptEditor.vue'
 import SceneModelMap from '@/components/SceneModelMap.vue'
 import Sd2AssetManagement from '@/components/Sd2AssetManagement.vue'
 import { VIDEO_DURATION_OPTIONS, mergeVideoDurationSetting, readVideoDurationSetting } from '@/utils/videoDuration'
+import { buildAiConfigRelayAssociations } from '@/utils/aiConfigRelayAssociation'
 
 const activeTab = ref('configs')
 const importFileRef = ref(null)
@@ -1946,7 +1962,11 @@ function onRowEdit(row) {
 async function loadList() {
   loading.value = true
   try {
-    list.value = await aiAPI.list()
+    const configs = await aiAPI.list()
+    list.value = configs.map((row) => ({
+      ...row,
+      relay_associations: buildAiConfigRelayAssociations(row),
+    }))
   } catch (_) {
     list.value = []
   } finally {
@@ -2591,6 +2611,22 @@ onMounted(() => {
   background: rgba(99, 102, 241, 0.12);
   color: #6366f1;
   border-color: rgba(99, 102, 241, 0.25);
+}
+
+.relay-associations {
+  display: grid;
+  gap: 6px;
+}
+.relay-association {
+  display: grid;
+  line-height: 1.35;
+}
+.relay-model {
+  font-weight: 600;
+}
+.relay-detail {
+  color: #909399;
+  font-size: 12px;
 }
 
 .no-default {
