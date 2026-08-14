@@ -41,12 +41,18 @@ test('canvas model catalog preserves public capability names while removing rela
         token: 'token-secret',
         secret: 'plain-secret',
         secretKey: 'key-secret',
+        secret_access_key: 'secret-access-key',
+        klingSecretKey: 'kling-secret-key',
+        access_key_id: 'access-key-id',
+        databaseCredential: 'database-credential',
+        password: 'password-secret',
         hostname: 'private-relay.example',
         domain: 'private-relay.example',
+        keyboardShortcut: 'Ctrl+K',
       }],
     },
   })), {
-    presets: [{ id: 'p1', name: 'Public Preset', value: 'x' }],
+    presets: [{ id: 'p1', name: 'Public Preset', value: 'x', keyboardShortcut: 'Ctrl+K' }],
   });
 })
 

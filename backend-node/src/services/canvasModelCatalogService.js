@@ -14,6 +14,7 @@ const PRIVATE_CATALOG_FIELDS = new Set([
   'provider', 'baseurl', 'apikey', 'hostname', 'domain',
   'accesstoken', 'refreshtoken', 'sessiontoken', 'token', 'secret', 'secretkey',
 ]);
+const PRIVATE_CATALOG_FRAGMENTS = ['token', 'secret', 'credential', 'password', 'accesskey'];
 
 const USMERCARI_VIDEO_CAPABILITIES = Object.freeze({
   durations: Object.freeze([5]),
@@ -65,11 +66,17 @@ function parseModels(value, fallback) {
   return fallback ? [String(fallback).trim()].filter(Boolean) : [];
 }
 
+function isPrivateCatalogField(key) {
+  const normalized = key.replace(/[_-]/g, '').toLowerCase();
+  return PRIVATE_CATALOG_FIELDS.has(normalized)
+    || PRIVATE_CATALOG_FRAGMENTS.some((fragment) => normalized.includes(fragment));
+}
+
 function publicCapabilityValue(value) {
   if (Array.isArray(value)) return value.map(publicCapabilityValue);
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value)
-    .filter(([key]) => !PRIVATE_CATALOG_FIELDS.has(key.replace(/[_-]/g, '').toLowerCase()))
+    .filter(([key]) => !isPrivateCatalogField(key))
     .map(([key, item]) => [key, publicCapabilityValue(item)]));
 }
 
