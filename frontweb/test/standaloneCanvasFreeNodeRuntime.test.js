@@ -54,6 +54,8 @@ test('选中自由节点展开专属编辑器，视频节点展示自动采用�
   assert.match(nodeSource, /:aria-label="data\.kind === 'video' \? '自动参考素材' : '自动参考图'"/)
   assert.match(nodeSource, /ctx\?\.getFreeNodeInputReferences\?\.\(props\.id\)/)
   assert.match(nodeSource, /reference\.ready \? 'ready' : 'pending'/)
+  assert.match(nodeSource, /<img v-if="reference\.url && reference\.kind === 'image'"/)
+  assert.match(nodeSource, /<span v-else class="reference-placeholder">/)
   assert.match(nodeSource, /把图片、视频或音频节点连接到视频节点/)
   assert.match(canvasSource, /getFreeNodeInputReferences: freeCanvasNodeInputReferences/)
   assert.match(canvasSource, /视频节点已采用该\$\{mediaLabel\}作为参考素材/)

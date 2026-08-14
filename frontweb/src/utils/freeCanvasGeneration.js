@@ -632,7 +632,6 @@ export function collectDirectUpstreamMediaReferences(nodes = [], edges = [], tar
 export function collectDirectUpstreamImageReferences(nodes = [], edges = [], targetNodeId = '') {
   return collectDirectUpstreamMediaReferences(nodes, edges, targetNodeId)
     .filter((reference) => reference.kind === 'image')
-    .map(({ kind: _kind, ...reference }) => reference)
 }
 
 export function buildFreeCanvasReferenceMentionCandidates(references = []) {

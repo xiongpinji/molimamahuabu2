@@ -431,8 +431,8 @@ test('collectDirectUpstreamImageReferences 同时呈现已就绪和等待生成�
   ]
 
   assert.deepEqual(collectDirectUpstreamImageReferences(nodes, edges, 'video'), [
-    { nodeId: 'image-ready', edgeId: 'manual:ready', title: '首帧', url: '/static/first.png', ready: true, slot: 'reference-image', enabled: true, order: 0, weight: 1 },
-    { nodeId: 'image-pending', edgeId: 'manual:pending', title: '尾帧', url: '', ready: false, slot: 'reference-image', enabled: true, order: 1, weight: 1 },
+    { kind: 'image', nodeId: 'image-ready', edgeId: 'manual:ready', title: '首帧', url: '/static/first.png', ready: true, slot: 'reference-image', enabled: true, order: 0, weight: 1 },
+    { kind: 'image', nodeId: 'image-pending', edgeId: 'manual:pending', title: '尾帧', url: '', ready: false, slot: 'reference-image', enabled: true, order: 1, weight: 1 },
   ])
 })
 
