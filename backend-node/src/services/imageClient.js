@@ -521,6 +521,95 @@ function formatGptImageUnknownResultError(error) {
   return `图片生成连接中断，供应商可能已受理或扣费，但本平台未收到结果（结果未知）。为避免重复扣费，请先核对生成记录或供应商账单，不要连续重试。原始错误: ${detail}`;
 }
 
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+/** 按固定优先级提取 OpenAI 兼容同步生图结果，不接触日志或计费状态。 */
+function extractOpenAIImageResult(data, outputFormat) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const item = Array.isArray(data.data) ? data.data[0] : null;
+  const itemUrl = nonEmptyString(item?.url);
+  if (itemUrl) return { image_url: itemUrl };
+  const itemImageUrl = nonEmptyString(item?.image_url);
+  if (itemImageUrl) return { image_url: itemImageUrl };
+  const itemBase64 = nonEmptyString(item?.b64_json)?.replace(/\s/g, '');
+  if (itemBase64) {
+    return { image_url: `data:${imageMimeFromOutputFormat(outputFormat)};base64,${itemBase64}` };
+  }
+  const topImageUrl = nonEmptyString(data.image_url);
+  if (topImageUrl) return { image_url: topImageUrl };
+  const resultUrl = nonEmptyString(data.result?.url);
+  if (resultUrl) return { image_url: resultUrl };
+  const firstImage = Array.isArray(data.images) ? nonEmptyString(data.images[0]) : null;
+  if (!firstImage) return null;
+  return {
+    image_url: firstImage.startsWith('data:')
+      ? firstImage
+      : `data:image/png;base64,${firstImage.replace(/\s/g, '')}`,
+  };
+}
+
+const SAFE_IMAGE_RESPONSE_KEYS = new Set([
+  'id', 'request_id', 'requestId', 'task_id', 'taskId', 'created', 'status',
+  'data', 'images', 'image_url', 'result', 'usage', 'output', 'diagnostic',
+]);
+const SAFE_IMAGE_ITEM_KEYS = new Set(['id', 'url', 'image_url', 'b64_json', 'created', 'status']);
+
+function safeResponseIdentifier(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
+  const text = String(value).trim();
+  if (
+    !text
+    || text.length > 128
+    || /^(?:sk-|bearer(?:[\s_:.-]|$))/i.test(text)
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(text)
+  ) return undefined;
+  return text;
+}
+
+function safeModelLabel(value) {
+  if (typeof value !== 'string') return undefined;
+  const text = value.trim();
+  if (!text || text.length > 160 || /(?:https?:\/\/|data:|bearer\s|sk-|[?&](?:signature|token|key)=)/i.test(text)) {
+    return undefined;
+  }
+  return text;
+}
+
+/** 供应商响应日志摘要：仅返回固定白名单元数据，不复制正文、URL、Base64 或密钥。 */
+function summarizeImageResponse(data, raw, httpStatus, imageGenId, model) {
+  const payload = data && typeof data === 'object' && !Array.isArray(data) ? data : null;
+  const firstItem = Array.isArray(payload?.data) && payload.data[0] && typeof payload.data[0] === 'object'
+    ? payload.data[0]
+    : null;
+  const summary = {
+    response_bytes: Buffer.byteLength(typeof raw === 'string' || Buffer.isBuffer(raw) ? raw : '', 'utf8'),
+    response_keys: payload ? Object.keys(payload).filter((key) => SAFE_IMAGE_RESPONSE_KEYS.has(key)) : [],
+    first_item_keys: firstItem ? Object.keys(firstItem).filter((key) => SAFE_IMAGE_ITEM_KEYS.has(key)) : [],
+  };
+  const upstreamRequestId = safeResponseIdentifier(payload?.request_id ?? payload?.requestId ?? payload?.id);
+  const upstreamTaskId = safeResponseIdentifier(payload?.task_id ?? payload?.taskId ?? payload?.result?.task_id ?? payload?.result?.taskId);
+  if (upstreamRequestId !== undefined) summary.upstream_request_id = upstreamRequestId;
+  if (upstreamTaskId !== undefined) summary.upstream_task_id = upstreamTaskId;
+  if (Number.isInteger(Number(httpStatus))) summary.http_status = Number(httpStatus);
+  if (typeof imageGenId === 'number' && Number.isSafeInteger(imageGenId)) summary.image_gen_id = imageGenId;
+  else {
+    const safeGenerationId = safeResponseIdentifier(imageGenId);
+    if (safeGenerationId !== undefined) summary.image_gen_id = safeGenerationId;
+  }
+  const safeModel = safeModelLabel(model);
+  if (safeModel !== undefined) summary.model = safeModel;
+  return summary;
+}
+
+function openAIImageIndeterminateResult(reason) {
+  return {
+    indeterminate: true,
+    error: `图片生成请求已成功返回，但${reason || '未收到可读取的图片产物'}，供应商结果未知。为避免重复扣费，请先核对供应商生成记录，不要连续重试。`,
+  };
+}
+
 // 通义万象 size：格式 "宽*高"，总像素须在 589824(768*768)～1638400(1280*1280) 之间
 const DASHSCOPE_MIN_PIXELS = 589824;
 const DASHSCOPE_MAX_PIXELS = 1638400;
@@ -2078,38 +2167,21 @@ async function callImageApi(db, log, opts) {
   try {
     data = JSON.parse(raw);
   } catch (e) {
-    log.warn('Image API response parse error', {
-      image_gen_id,
-      response_bytes: Buffer.byteLength(raw || '', 'utf8'),
-    });
+    log.warn('Image API response parse error', summarizeImageResponse(null, raw, httpStatus, image_gen_id, model));
+    if (protocol === 'openai') return openAIImageIndeterminateResult('响应正文无法解析，未收到可读取的图片产物');
     return { error: '图片生成返回格式异常' };
   }
-  // 兼容多种返回格式：OpenAI 风格 data[].url / b64_json，部分厂商 data[].image_url 或 data.output 等
-  // Stable Diffusion WebUI（/sdapi/v1/txt2img|img2img）：顶层 images 为 PNG base64 字符串数组，无 data 数组
-  const item = data.data && data.data[0];
-  let imageUrl = item && (item.url || item.image_url);
-  if (!imageUrl && item?.b64_json) {
-    const mimeType = imageMimeFromOutputFormat(outputOptions.output_format);
-    imageUrl = `data:${mimeType};base64,${String(item.b64_json).replace(/\s/g, '')}`;
-  }
-  if (!imageUrl && Array.isArray(data.images) && data.images.length > 0) {
-    const first = data.images[0];
-    if (typeof first === 'string' && first.length > 0) {
-      imageUrl = first.startsWith('data:') ? first : `data:image/png;base64,${first.replace(/\s/g, '')}`;
+  const imageResult = extractOpenAIImageResult(data, outputOptions.output_format);
+  if (!imageResult) {
+    const summary = summarizeImageResponse(data, raw, httpStatus, image_gen_id, model);
+    if (protocol === 'openai') {
+      log.warn('Image API result indeterminate', summary);
+      return openAIImageIndeterminateResult('响应中没有可读取的图片产物');
     }
-  }
-  if (!imageUrl) {
-    log.warn('Image API no image URL in response', {
-      image_gen_id,
-      model,
-      response_keys: data ? Object.keys(data) : [],
-      response_bytes: Buffer.byteLength(raw || '', 'utf8'),
-      has_data_array: !!(data.data && Array.isArray(data.data)),
-      first_item_keys: (data.data && data.data[0]) ? Object.keys(data.data[0]) : [],
-    });
+    log.warn('Image API no image URL in response', summary);
     return { error: '未返回图片地址' };
   }
-  return { image_url: imageUrl };
+  return imageResult;
 }
 
 /**
@@ -2522,6 +2594,8 @@ module.exports = {
   normalizeGptImageSize,
   imageMimeFromOutputFormat,
   formatGptImageUnknownResultError,
+  extractOpenAIImageResult,
+  summarizeImageResponse,
   buildKlingImageQueryUrl,
   parseKlingImagePollResult,
   callImageApi: (...args) => runWithGenerationLimit('image', () => callImageApi(...args)),

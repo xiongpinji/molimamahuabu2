@@ -1,12 +1,34 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const http = require('node:http');
+const Database = require('better-sqlite3');
+
+const aiConfig = require('../src/services/aiConfigService');
+const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 const {
   getOpenAIImageOutputOptions,
   normalizeGptImageSize,
   imageMimeFromOutputFormat,
   formatGptImageUnknownResultError,
+  extractOpenAIImageResult,
+  summarizeImageResponse,
+  callImageApi,
 } = require('../src/services/imageClient');
+
+function listen(handler) {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer(handler);
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve(server));
+  });
+}
+
+function close(server) {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
 
 test('GPT Image 使用压缩 JPEG，缩短同步响应时间并减小返回体', () => {
   assert.deepEqual(getOpenAIImageOutputOptions('gpt-image-2', null), {
@@ -36,4 +58,141 @@ test('GPT Image 同步连接中断明确提示结果未知与重复扣费风险'
   assert.match(message, /不要连续重试/);
   assert.match(message, /重复扣费/);
   assert.match(message, /socket hang up/);
+});
+
+test('OpenAI 兼容图片响应按固定优先级解析七种格式', () => {
+  const cases = [
+    [{ data: [{ url: 'https://cdn.example/data-url.png' }] }, null, 'https://cdn.example/data-url.png'],
+    [{ data: [{ image_url: 'https://cdn.example/data-image-url.png' }] }, null, 'https://cdn.example/data-image-url.png'],
+    [{ data: [{ b64_json: ' YW Jj\nZA== ' }] }, 'jpeg', 'data:image/jpeg;base64,YWJjZA=='],
+    [{ image_url: 'https://cdn.example/top-image-url.png' }, null, 'https://cdn.example/top-image-url.png'],
+    [{ result: { url: 'https://cdn.example/result-url.png' } }, null, 'https://cdn.example/result-url.png'],
+    [{ images: ['data:image/webp;base64,existing'] }, null, 'data:image/webp;base64,existing'],
+    [{ images: [' aG Vs\nbG8= '] }, null, 'data:image/png;base64,aGVsbG8='],
+  ];
+
+  for (const [data, outputFormat, expected] of cases) {
+    assert.deepEqual(extractOpenAIImageResult(data, outputFormat), { image_url: expected });
+  }
+
+  assert.deepEqual(extractOpenAIImageResult({
+    data: [{
+      url: 'https://cdn.example/priority-1.png',
+      image_url: 'https://cdn.example/priority-2.png',
+      b64_json: 'cHJpb3JpdHkz',
+    }],
+    image_url: 'https://cdn.example/priority-4.png',
+    result: { url: 'https://cdn.example/priority-5.png' },
+    images: ['cHJpb3JpdHk2'],
+  }, 'webp'), { image_url: 'https://cdn.example/priority-1.png' });
+});
+
+test('OpenAI 兼容图片响应对空值和不可读值返回 null', () => {
+  for (const data of [
+    null,
+    {},
+    { data: [] },
+    { data: [{ url: '', image_url: '  ', b64_json: '\n\t' }] },
+    { image_url: 42, result: { url: {} }, images: [{ url: 'not-a-string' }] },
+  ]) {
+    assert.equal(extractOpenAIImageResult(data, 'png'), null);
+  }
+});
+
+test('图片响应安全摘要只包含白名单元数据', () => {
+  const secret = 'sk-super-secret';
+  const signedUrl = 'https://cdn.example/image.png?X-Amz-Signature=top-secret';
+  const base64 = 'c2VjcmV0LWltYWdlLWJ5dGVz';
+  const raw = JSON.stringify({ secret, signedUrl, base64, prompt: 'private prompt' });
+  const data = {
+    request_id: 'req_safe-123',
+    task_id: 'task_safe-456',
+    data: [{ url: signedUrl, image_url: signedUrl, b64_json: base64, [secret]: 'value' }],
+    images: [base64],
+    authorization: `Bearer ${secret}`,
+    [signedUrl]: 'malicious-key',
+  };
+
+  const summary = summarizeImageResponse(data, raw, 200, 876, 'gpt-image-2');
+
+  assert.deepEqual(summary, {
+    response_bytes: Buffer.byteLength(raw, 'utf8'),
+    response_keys: ['request_id', 'task_id', 'data', 'images'],
+    first_item_keys: ['url', 'image_url', 'b64_json'],
+    upstream_request_id: 'req_safe-123',
+    upstream_task_id: 'task_safe-456',
+    http_status: 200,
+    image_gen_id: 876,
+    model: 'gpt-image-2',
+  });
+  const serialized = JSON.stringify(summary);
+  assert.doesNotMatch(serialized, /sk-super-secret|X-Amz-Signature|top-secret|c2VjcmV0|private prompt|Bearer/i);
+
+  const maliciousIdentifiers = summarizeImageResponse({
+    id: 'sk-provider-key-shaped-value',
+    task_id: 'Bearer_provider_token',
+  }, raw, 200, 877, signedUrl);
+  assert.equal('upstream_request_id' in maliciousIdentifiers, false);
+  assert.equal('upstream_task_id' in maliciousIdentifiers, false);
+  assert.equal('model' in maliciousIdentifiers, false);
+});
+
+test('OpenAI 兼容同步 2xx 无可读图片时返回结果未知且日志不含响应正文', async (t) => {
+  const responseSecret = 'private-provider-diagnostic';
+  const signedUrl = 'https://cdn.example/private.png?X-Amz-Signature=private-signature';
+  const server = await listen((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        request_id: 'req_local_789',
+        data: [],
+        diagnostic: responseSecret,
+        unusable: signedUrl,
+      }));
+    });
+  });
+  t.after(() => close(server));
+
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  t.after(() => db.close());
+  const config = aiConfig.createConfig(db, { info() {} }, {
+    service_type: 'image',
+    provider: 'openai',
+    api_protocol: 'openai',
+    name: 'local OpenAI image result test',
+    base_url: `http://127.0.0.1:${server.address().port}`,
+    endpoint: '/images/generations',
+    api_key: 'local-test-key',
+    model: ['gpt-image-2'],
+    default_model: 'gpt-image-2',
+    is_default: true,
+  });
+  if (db.prepare('PRAGMA table_info(ai_service_configs)').all().some((column) => column.name === 'verification_status')) {
+    db.prepare('UPDATE ai_service_configs SET verification_status = ? WHERE id = ?').run('verified', config.id);
+  }
+  const entries = [];
+  const log = {
+    info(message, details) { entries.push({ level: 'info', message, details }); },
+    warn(message, details) { entries.push({ level: 'warn', message, details }); },
+    error(message, details) { entries.push({ level: 'error', message, details }); },
+  };
+
+  const result = await callImageApi(db, log, {
+    config_id: config.id,
+    prompt: 'local-only prompt',
+    model: 'gpt-image-2',
+    image_gen_id: 877,
+  });
+
+  assert.equal(result.indeterminate, true);
+  assert.match(result.error, /结果未知/);
+  assert.match(result.error, /不要连续重试/);
+  const warning = entries.find((entry) => entry.message === 'Image API result indeterminate');
+  assert.ok(warning);
+  assert.equal(warning.details.upstream_request_id, 'req_local_789');
+  const serializedWarning = JSON.stringify(warning);
+  assert.doesNotMatch(serializedWarning, new RegExp(responseSecret));
+  assert.doesNotMatch(serializedWarning, /X-Amz-Signature|private-signature/i);
 });
