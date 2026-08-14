@@ -2,7 +2,7 @@
 
 Date: 2026-08-15
 Branch: codex/redraw-r12-merge-20260809
-Evidence baseline commit: 57343ed1
+Evidence baseline commit: 0664e343
 Backend cwd: backend-node
 
 ## Scope
@@ -21,7 +21,7 @@ The fixture command wrote exactly these fixed output names outside the repositor
 
 Fresh artifact evidence:
 
-- manifest: 8457 bytes, SHA-256 `443fd3b51bcb49d3345e7780a69ffa7593dc60afa62831f05dc48f2722a5841d`
+- manifest: 9633 bytes, SHA-256 `47ef5bc5c29f415c9cab65724e895a8f5798a703930f27c2c45dfb01cb96b9b1`
 - motion: 7132 bytes, SHA-256 `5755702549c3828533d7e3e3ae8cc662d88918c646dca5d0e96554637fc81d48`
 - contact sheet: 29440 bytes, SHA-256 `643c339ce7d9437a446771c3cf148d071a00babfdd9e6ed663ab3fe6c7005716`
 
@@ -32,7 +32,7 @@ Fresh artifact evidence:
 - reference gate: `ready`
 - locale and market: `en-US` / `US`
 - source fingerprint: `db8ea9891695045dfa636b28503b035eec584b263ac22621841df330109eb05e`
-- reference bundle hash: `be52f7b8e93cffad3f7a69167b126f1c2ceaa550489a40c75131e099ec0bf083`
+- reference bundle hash: `e2108cd8bbc70c834fb60f8b11996fcd6342c5bf6bd895189b95297436ac02c6`
 - coverage hash: `8bd4693a6b22b74873f374eec893532c5cdceee0750e4d88f76207d9ba7a82ad`
 - face coverage hash: `efc006d024ec5f9638c8411da561921854d88b08a48eb9cd8122cb13f43505bb`
 - text coverage hash: `e369c5ba6c05faa17cc8e12ff4e362bffadcfa1b51cffcbe367bf6544a7e50d3`
@@ -54,6 +54,8 @@ Fresh local evidence:
 - motion reference: manifest SHA exists, file SHA matches manifest, H.264, 864x496, 5000 ms, 0 audio streams
 - contact sheet: actual JPEG, 960x360, file SHA matches manifest
 - provider projection gate: `test/redrawGeneration.test.js` proves the reference-bundle path persists `generate_audio=true`, target locale `en-US`, names `Ethan`/`Maya`, English prompt text, `source_conditioning.mode=redraw_reference_bundle`, `audio_mode=strip`, and no raw source conditioning call
+- stable gate code evidence: automated tests assert unchanged write behavior and stable error codes for identity, text coverage, dialogue, motion, stale reference bundle, and projection failures
+- zero-text/gap/overlap evidence: automated tests prove local reference-bundle contract handling for no text regions, a single text-region time gap, allowed overlap across different regions, and rejected overlap inside the same region; this is contract evidence only, not supplier visual acceptance
 
 ## Commands And Results
 
@@ -66,14 +68,14 @@ Fresh local evidence:
 `node --test --test-concurrency=1 test/redrawMigration.test.js test/redrawCharacterIdentity.test.js test/redrawRoutes.test.js test/redrawMotionReference.test.js test/redrawReferenceBundle.test.js test/redrawReferenceBundleLocalCase.test.js test/redrawGeneration.test.js test/redrawReviewGate.test.js test/redrawAssets.test.js test/redrawTextCleanPlateLocalCase.test.js`
 
 - exit code: 0
-- tests: 351
-- pass: 350
+- tests: 353
+- pass: 352
 - fail: 0
 - cancelled: 0
 - skipped: 1
 - todo: 0
-- duration: 58606.3074 ms
-- measured wall time: 58696 ms
+- duration: 59210.7857 ms
+- measured wall time: 59290 ms
 
 Independent media and manifest verification:
 
