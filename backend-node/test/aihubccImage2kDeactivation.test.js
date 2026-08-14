@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -12,6 +13,7 @@ const scriptPath = path.resolve(__dirname, '..', 'scripts', 'deactivate-aihubcc-
 const {
   inspectAihubccGptImage2k,
   deactivateAihubccGptImage2k,
+  assertDatabaseSnapshotStable,
 } = require(scriptPath);
 
 const TARGET_MODEL = 'gpt-image-2-2k';
@@ -179,6 +181,46 @@ function runCli(args) {
   });
 }
 
+function directorySnapshot(directory) {
+  return Object.fromEntries(fs.readdirSync(directory).sort().map((name) => {
+    const filePath = path.join(directory, name);
+    const stats = fs.statSync(filePath);
+    return [name, {
+      size: stats.size,
+      mtimeMs: stats.mtimeMs,
+      hash: crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex'),
+    }];
+  }));
+}
+
+function snapshotTempDirectories() {
+  return fs.readdirSync(os.tmpdir())
+    .filter((name) => name.startsWith('moli-aihubcc-dry-run-'))
+    .sort();
+}
+
+function createWalSnapshotFixture(root) {
+  const liveDirectory = path.join(root, 'live');
+  const sourceDirectory = path.join(root, 'source');
+  fs.mkdirSync(liveDirectory);
+  fs.mkdirSync(sourceDirectory);
+  const livePath = path.join(liveDirectory, 'live.db');
+  const liveDb = new Database(livePath);
+  liveDb.pragma('journal_mode = WAL');
+  liveDb.pragma('wal_autocheckpoint = 0');
+  createSchema(liveDb);
+  seedFixture(liveDb);
+  assert.equal(fs.existsSync(`${livePath}-wal`), true);
+  assert.equal(fs.existsSync(`${livePath}-shm`), true);
+
+  const sourcePath = path.join(sourceDirectory, 'fixture.db');
+  fs.copyFileSync(livePath, sourcePath);
+  fs.copyFileSync(`${livePath}-wal`, `${sourcePath}-wal`);
+  liveDb.close();
+  assert.equal(fs.existsSync(`${sourcePath}-shm`), false);
+  return { sourceDirectory, sourcePath };
+}
+
 test('inspect returns only the exact safe AIHubCC 2K target identity without writing', () => {
   const db = createDb();
   try {
@@ -287,6 +329,53 @@ test('script source excludes historical generations and credit-ledger operations
   const source = fs.readFileSync(scriptPath, 'utf8');
   assert.doesNotMatch(source, /image_generations|usage_reservations|tenant_credit_ledger/);
   assert.doesNotMatch(source, /\b(?:536|540|541)\b/);
+});
+
+test('snapshot stability guard rejects main or sidecar drift with safe details', () => {
+  const stable = {
+    main: { exists: true, size: 4096, mtimeMs: 1, ctimeMs: 1, ino: 1 },
+    wal: { exists: true, size: 8192, mtimeMs: 2, ctimeMs: 2, ino: 2 },
+    shm: { exists: false },
+  };
+  assert.doesNotThrow(() => assertDatabaseSnapshotStable(stable, structuredClone(stable)));
+  for (const [part, field, value] of [
+    ['main', 'size', 4097],
+    ['wal', 'mtimeMs', 3],
+    ['shm', 'exists', true],
+  ]) {
+    const changed = structuredClone(stable);
+    changed[part][field] = value;
+    assert.throws(
+      () => assertDatabaseSnapshotStable(stable, changed),
+      (error) => {
+        assert.equal(error.code, 'DEACTIVATION_PRECONDITION_FAILED');
+        assert.deepEqual(Object.keys(error.details).sort(), ['config_id', 'hostname', 'model']);
+        assert.doesNotMatch(JSON.stringify(error), /\\|\/opt\/|api_key|fixture-secret/i);
+        return true;
+      },
+    );
+  }
+});
+
+test('WAL dry-run inspects a private snapshot without creating or changing source sidecars', (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-aihubcc-wal-source-'));
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  const { sourceDirectory, sourcePath } = createWalSnapshotFixture(tempDir);
+  const sourceBefore = directorySnapshot(sourceDirectory);
+  const tempBefore = snapshotTempDirectories();
+
+  const result = runCli(['--database', sourcePath]);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    ok: true,
+    dry_run: true,
+    config_id: 2,
+    model: TARGET_MODEL,
+    hostname: 'aihubcc.cc',
+  });
+  assert.deepEqual(directorySnapshot(sourceDirectory), sourceBefore);
+  assert.deepEqual(snapshotTempDirectories(), tempBefore);
 });
 
 test('CLI defaults to byte-stable read-only dry-run and requires explicit apply to write', (t) => {

@@ -1,5 +1,8 @@
 'use strict';
 
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const Database = require('better-sqlite3');
 
 const TARGET_CONFIG_ID = 2;
@@ -35,6 +38,108 @@ function safeHostname(value) {
     return new URL(String(value || '')).hostname.toLowerCase();
   } catch {
     return '';
+  }
+}
+
+function databaseUnavailableError() {
+  const error = new Error('数据库不可读取');
+  error.code = 'DATABASE_UNAVAILABLE';
+  return error;
+}
+
+function fileSignature(filePath) {
+  try {
+    const stats = fs.statSync(filePath);
+    return {
+      exists: true,
+      size: stats.size,
+      mtimeMs: stats.mtimeMs,
+      ctimeMs: stats.ctimeMs,
+      ino: stats.ino,
+    };
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { exists: false };
+    throw error;
+  }
+}
+
+function captureDatabaseSnapshotSignature(databasePath) {
+  const mainPath = path.resolve(databasePath);
+  return {
+    main: fileSignature(mainPath),
+    wal: fileSignature(`${mainPath}-wal`),
+    shm: fileSignature(`${mainPath}-shm`),
+  };
+}
+
+function assertDatabaseSnapshotStable(before, after) {
+  if (JSON.stringify(before) === JSON.stringify(after)) return;
+  throw deactivationError('数据库快照期间源文件发生变化，已中止', {
+    config_id: TARGET_CONFIG_ID,
+    model: TARGET_MODEL,
+    hostname: TARGET_HOSTNAME,
+  });
+}
+
+function createDatabaseSnapshot(databasePath) {
+  const sourceMain = path.resolve(databasePath);
+  const before = captureDatabaseSnapshotSignature(sourceMain);
+  if (!before.main.exists) throw databaseUnavailableError();
+  let directory;
+  try {
+    directory = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-aihubcc-dry-run-'));
+    const snapshotMain = path.join(directory, path.basename(sourceMain));
+    const sources = {
+      main: sourceMain,
+      wal: `${sourceMain}-wal`,
+      shm: `${sourceMain}-shm`,
+    };
+    const destinations = {
+      main: snapshotMain,
+      wal: `${snapshotMain}-wal`,
+      shm: `${snapshotMain}-shm`,
+    };
+    let copyError = null;
+    try {
+      for (const key of ['main', 'wal', 'shm']) {
+        if (before[key].exists) fs.copyFileSync(sources[key], destinations[key]);
+      }
+    } catch (error) {
+      copyError = error;
+    }
+    const after = captureDatabaseSnapshotSignature(sourceMain);
+    assertDatabaseSnapshotStable(before, after);
+    if (copyError) throw copyError;
+    return { directory, databasePath: snapshotMain };
+  } catch (error) {
+    if (directory) fs.rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function inspectDatabaseSnapshot(databasePath) {
+  let snapshot;
+  try {
+    snapshot = createDatabaseSnapshot(databasePath);
+    const db = new Database(snapshot.databasePath, {
+      readonly: true,
+      fileMustExist: true,
+    });
+    try {
+      return inspectAihubccGptImage2k(db);
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    if (error?.code === 'DEACTIVATION_PRECONDITION_FAILED'
+        || error?.code === 'DATABASE_UNAVAILABLE') {
+      throw error;
+    }
+    throw databaseUnavailableError();
+  } finally {
+    if (snapshot?.directory) {
+      fs.rmSync(snapshot.directory, { recursive: true, force: true });
+    }
   }
 }
 
@@ -127,25 +232,26 @@ function parseArguments(argv) {
 
 function executeCli(argv) {
   const { databasePath, apply } = parseArguments(argv);
+  if (!apply) {
+    return {
+      ok: true,
+      dry_run: true,
+      ...inspectDatabaseSnapshot(databasePath),
+    };
+  }
   let db;
   try {
     db = new Database(databasePath, {
-      readonly: !apply,
       fileMustExist: true,
     });
   } catch {
-    const error = new Error('数据库不可读取');
-    error.code = 'DATABASE_UNAVAILABLE';
-    throw error;
+    throw databaseUnavailableError();
   }
   try {
-    const result = apply
-      ? deactivateAihubccGptImage2k(db)
-      : inspectAihubccGptImage2k(db);
     return {
       ok: true,
-      dry_run: !apply,
-      ...result,
+      dry_run: false,
+      ...deactivateAihubccGptImage2k(db),
     };
   } finally {
     db.close();
@@ -189,4 +295,5 @@ if (require.main === module) {
 module.exports = {
   inspectAihubccGptImage2k,
   deactivateAihubccGptImage2k,
+  assertDatabaseSnapshotStable,
 };
