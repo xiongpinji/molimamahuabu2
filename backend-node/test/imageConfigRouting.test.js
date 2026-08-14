@@ -5,6 +5,9 @@ const Database = require('better-sqlite3');
 
 const aiConfig = require('../src/services/aiConfigService');
 const imageClient = require('../src/services/imageClient');
+const imageService = require('../src/services/imageService');
+const imageRoutes = require('../src/routes/images');
+const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
@@ -22,8 +25,8 @@ function createDb() {
 function addConfig(db, values = {}) {
   const config = aiConfig.createConfig(db, log, {
     service_type: values.service_type || 'image',
-    provider: 'openai',
-    api_protocol: 'openai',
+    provider: values.provider || 'openai',
+    api_protocol: values.api_protocol || 'openai',
     name: values.name || 'test image config',
     base_url: values.base_url || 'http://127.0.0.1:9',
     api_key: 'test-key',
@@ -39,6 +42,17 @@ function addConfig(db, values = {}) {
   db.prepare('UPDATE ai_service_configs SET verification_status = ? WHERE id = ?')
     .run(values.verification_status || 'verified', config.id);
   return aiConfig.getConfig(db, config.id);
+}
+
+function captureResponse() {
+  const result = {};
+  return {
+    result,
+    res: {
+      status(code) { result.status = code; return this; },
+      json(body) { result.body = body; return this; },
+    },
+  };
 }
 
 function assertConfigError(fn, code) {
@@ -266,4 +280,232 @@ test('callImageApi rejects conflicting or invalid explicit config id aliases bef
   );
 
   assert.deepEqual(requests, []);
+});
+
+test('图片任务从预扣到异步执行始终使用请求 config_id', async (t) => {
+  const db = createDb();
+  t.after(() => db.close());
+  credits.setAccountBalance(db, 'user-1', 100);
+  prices.set(db, 'relay-exact-model', 37, { category: 'image' });
+
+  const exact = addConfig(db, {
+    service_type: 'storyboard_image',
+    provider: 'exact-relay',
+    name: 'exact relay',
+    model: ['relay-exact-model'],
+    default_model: 'relay-exact-model',
+    priority: 10,
+    is_default: true,
+  });
+  addConfig(db, {
+    service_type: 'image',
+    provider: 'backup-relay',
+    name: 'same model backup',
+    model: ['relay-exact-model'],
+    default_model: 'relay-exact-model',
+    priority: 100,
+    is_default: true,
+  });
+
+  const scheduled = [];
+  const calls = [];
+  const originalCallImageApi = imageClient.callImageApi;
+  imageClient.callImageApi = async (_db, _log, options) => {
+    calls.push(options);
+    return { error: 'local stub stop' };
+  };
+  t.after(() => { imageClient.callImageApi = originalCallImageApi; });
+
+  const created = imageService.create(db, log, {
+    drama_id: 7,
+    prompt: '测试精确路由',
+    config_id: exact.id,
+  }, {
+    billingEnabled: true,
+    userId: 'user-1',
+    schedule(callback) { scheduled.push(callback); },
+  });
+
+  const row = db.prepare(
+    'SELECT config_id, model, provider, credit_reservation_id FROM image_generations WHERE id = ?',
+  ).get(created.id);
+  const task = db.prepare('SELECT model, credit_reservation_id FROM async_tasks WHERE id = ?')
+    .get(created.task_id);
+  assert.equal(row.config_id, exact.id);
+  assert.equal(row.model, 'relay-exact-model');
+  assert.equal(row.provider, 'exact-relay');
+  assert.equal(task.model, 'relay-exact-model');
+  assert.equal(task.credit_reservation_id, row.credit_reservation_id);
+  assert.deepEqual(credits.getAccount(db, 'user-1'), {
+    user_id: 'user-1', available: 63, held: 37, spent: 0,
+  });
+  assert.equal(scheduled.length, 1);
+
+  await scheduled[0]();
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].config_id, exact.id);
+  assert.equal(calls[0].model, 'relay-exact-model');
+});
+
+test('非法显式图片配置在记录、任务和积分预占前拒绝', () => {
+  const cases = [
+    {
+      name: '不存在',
+      expected: 'IMAGE_CONFIG_NOT_FOUND',
+      setup: () => ({ configId: 999999, model: 'gpt-image-2' }),
+    },
+    {
+      name: '已停用',
+      expected: 'IMAGE_CONFIG_INACTIVE',
+      setup: (db) => ({ configId: addConfig(db, { is_active: false }).id, model: 'gpt-image-2' }),
+    },
+    {
+      name: '未验证',
+      expected: 'IMAGE_CONFIG_UNVERIFIED',
+      setup: (db) => ({
+        configId: addConfig(db, { verification_status: 'failed' }).id,
+        model: 'gpt-image-2',
+      }),
+    },
+    {
+      name: '模型不匹配',
+      expected: 'IMAGE_CONFIG_MODEL_MISMATCH',
+      setup: (db) => ({
+        configId: addConfig(db, {
+          model: ['gpt-image-2-2k'],
+          default_model: 'gpt-image-2-2k',
+        }).id,
+        model: 'gpt-image-2',
+      }),
+    },
+  ];
+
+  for (const item of cases) {
+    const db = createDb();
+    try {
+      credits.setAccountBalance(db, 'user-1', 100);
+      prices.set(db, 'gpt-image-2', 18, { category: 'image' });
+      const { configId, model } = item.setup(db);
+      let scheduled = 0;
+      assert.throws(() => imageService.create(db, log, {
+        drama_id: 8,
+        prompt: `reject ${item.name}`,
+        model,
+        config_id: configId,
+      }, {
+        billingEnabled: true,
+        userId: 'user-1',
+        schedule() { scheduled += 1; },
+      }), (error) => error.code === item.expected);
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM image_generations').get().count, 0, item.name);
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM async_tasks').get().count, 0, item.name);
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count, 0, item.name);
+      assert.equal(scheduled, 0, item.name);
+    } finally {
+      db.close();
+    }
+  }
+});
+
+test('排队期间显式配置被停用时失败且不切换同模型备用配置', async (t) => {
+  const db = createDb();
+  t.after(() => db.close());
+  const exact = addConfig(db, {
+    provider: 'exact-relay',
+    model: ['queue-model'],
+    default_model: 'queue-model',
+    priority: 100,
+    is_default: true,
+  });
+  addConfig(db, {
+    provider: 'backup-relay',
+    model: ['queue-model'],
+    default_model: 'queue-model',
+    priority: 90,
+  });
+
+  const scheduled = [];
+  const calls = [];
+  const originalCallImageApi = imageClient.callImageApi;
+  imageClient.callImageApi = async (...args) => {
+    calls.push(args);
+    return { error: 'backup must not run' };
+  };
+  t.after(() => { imageClient.callImageApi = originalCallImageApi; });
+
+  const created = imageService.create(db, log, {
+    drama_id: 9,
+    prompt: 'queued exact config',
+    model: 'queue-model',
+    config_id: exact.id,
+  }, {
+    schedule(callback) { scheduled.push(callback); },
+  });
+  db.prepare('UPDATE ai_service_configs SET is_active = 0 WHERE id = ?').run(exact.id);
+
+  await scheduled[0]();
+
+  const row = db.prepare('SELECT status, error_msg FROM image_generations WHERE id = ?').get(created.id);
+  assert.equal(row.status, 'failed');
+  assert.match(row.error_msg, /图片模型配置已停用/);
+  assert.equal(calls.length, 0);
+});
+
+test('旧图片任务无 config_id 时仍保留默认配置路径', async (t) => {
+  const db = createDb();
+  t.after(() => db.close());
+  addConfig(db, {
+    model: ['legacy-model'],
+    default_model: 'legacy-model',
+    priority: 100,
+    is_default: true,
+  });
+  const scheduled = [];
+  const calls = [];
+  const originalCallImageApi = imageClient.callImageApi;
+  imageClient.callImageApi = async (_db, _log, options) => {
+    calls.push(options);
+    return { error: 'local stub stop' };
+  };
+  t.after(() => { imageClient.callImageApi = originalCallImageApi; });
+
+  const created = imageService.create(db, log, {
+    drama_id: 10,
+    prompt: 'legacy row',
+    model: 'legacy-model',
+  }, {
+    schedule(callback) { scheduled.push(callback); },
+  });
+  db.prepare('UPDATE image_generations SET config_id = NULL WHERE id = ?').run(created.id);
+
+  await scheduled[0]();
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].config_id, undefined);
+  assert.equal(calls[0].model, 'legacy-model');
+});
+
+test('图片路由保留显式配置错误码并映射为 400 或 503', () => {
+  const db = createDb();
+  try {
+    const inactive = addConfig(db, { is_active: false });
+    const handlers = imageRoutes(db, {}, log, { schedule() {} });
+
+    const notFound = captureResponse();
+    handlers.create({
+      body: { drama_id: 11, model: 'gpt-image-2', config_id: 999999 },
+    }, notFound.res);
+    assert.equal(notFound.result.status, 400);
+    assert.equal(notFound.result.body.error.code, 'IMAGE_CONFIG_NOT_FOUND');
+
+    const unavailable = captureResponse();
+    handlers.create({
+      body: { drama_id: 11, model: 'gpt-image-2', config_id: inactive.id },
+    }, unavailable.res);
+    assert.equal(unavailable.result.status, 503);
+    assert.equal(unavailable.result.body.error.code, 'IMAGE_CONFIG_INACTIVE');
+  } finally {
+    db.close();
+  }
 });

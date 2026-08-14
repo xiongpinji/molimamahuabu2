@@ -699,6 +699,11 @@ function findActiveForTarget(db, storyboardId, frameType, options = {}) {
 function create(db, log, req, options = {}) {
   const now = new Date().toISOString();
   const frameType = req.frame_type ?? null;
+  const imageServiceType = req.storyboard_id ? 'storyboard_image' : 'image';
+  const selectedConfig = req.config_id != null
+    ? imageClient.getImageConfigById(db, req.config_id, req.model)
+    : imageClient.getDefaultImageConfig(db, req.model, req.provider, imageServiceType);
+  const selectedConfigId = selectedConfig?.id ?? null;
   const active = findActiveForTarget(db, req.storyboard_id, frameType, options);
   if (active) {
     log.info('Duplicate image generation prevented', {
@@ -719,7 +724,10 @@ function create(db, log, req, options = {}) {
     }
     return { ...getById(db, active.id), reused: true };
   }
-  let generationModel = req.model || null;
+  let generationModel = req.model
+    || selectedConfig?.default_model
+    || (Array.isArray(selectedConfig?.model) ? selectedConfig.model[0] : selectedConfig?.model)
+    || null;
   let billedModel = null;
   let billedCredits = null;
   if (options.billingEnabled) {
@@ -728,9 +736,6 @@ function create(db, log, req, options = {}) {
       error.code = 'UNAUTHORIZED';
       throw error;
     }
-    const imageServiceType = req.storyboard_id ? 'storyboard_image' : 'image';
-    const config = imageClient.getDefaultImageConfig(db, req.model, req.provider, imageServiceType);
-    generationModel = req.model || config?.default_model || (Array.isArray(config?.model) ? config.model[0] : config?.model);
     const modelPriceService = require('./modelPriceService');
     billedModel = modelPriceService.canonicalModel(generationModel);
     billedCredits = modelPriceService.requirePrice(db, billedModel);
@@ -764,14 +769,15 @@ function create(db, log, req, options = {}) {
     const billingColumns = options.billingEnabled ? ', tenant_id, user_id, credit_reservation_id' : '';
     const billingValues = options.billingEnabled ? ', ?, ?, NULL' : '';
     const params = [
-      req.storyboard_id ?? null, Number(req.drama_id) || 0, sceneId, req.provider || 'openai',
+      req.storyboard_id ?? null, Number(req.drama_id) || 0, sceneId,
+      selectedConfig?.provider || req.provider || 'openai', selectedConfigId,
       mergedPrompt, req.negative_prompt ?? null, generationModel, frameType,
       refImagesJson, useFirstFrameLayoutLock, reqSize, taskId, now, now,
     ];
     if (options.billingEnabled) params.push(options.tenantId || null, String(options.userId));
     const info = db.prepare(
-      `INSERT INTO image_generations (storyboard_id, drama_id, scene_id, provider, prompt, negative_prompt, model, frame_type, reference_images, use_first_frame_layout_lock, size, status, task_id, created_at, updated_at${billingColumns})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?${billingValues})`
+      `INSERT INTO image_generations (storyboard_id, drama_id, scene_id, provider, config_id, prompt, negative_prompt, model, frame_type, reference_images, use_first_frame_layout_lock, size, status, task_id, created_at, updated_at${billingColumns})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?${billingValues})`
     ).run(...params);
     const imageGenId = info.lastInsertRowid;
     if (!imageGenId) throw new Error('insert failed');
@@ -957,7 +963,9 @@ async function processImageGeneration(db, log, imageGenId) {
     }
 
     // ── Step 1: 获取 AI 配置 ──────────────────────────────────────────
-    const config = imageClient.getDefaultImageConfig(db, row.model, null, imageServiceType);
+    const config = row.config_id != null
+      ? imageClient.getImageConfigById(db, row.config_id, row.model)
+      : imageClient.getDefaultImageConfig(db, row.model, null, imageServiceType);
     if (!config) {
       log.error('[图生] ✗ 未找到图片 AI 配置', { id: imageGenId, imageServiceType, elapsed: elapsed() });
       db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?').run(
@@ -1656,6 +1664,7 @@ async function processImageGeneration(db, log, imageGenId) {
     }
 
     const result = await taskService.withTaskHeartbeat(db, row.task_id, '正在等待图片生成服务...', () => imageClient.callImageApi(db, log, {
+      config_id: row.config_id || undefined,
       prompt: finalPrompt,
       model: row.model,
       size: imageSize,
