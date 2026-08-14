@@ -138,13 +138,15 @@ test('图片明确失败后退回预扣积分', () => {
   const row = db.prepare('SELECT credit_reservation_id FROM image_generations WHERE id = ?').get(image.id);
   imageService.settleImageCredit(db, log, row, 'failed', '供应商明确拒绝请求');
   assert.equal(credits.getReservation(db, row.credit_reservation_id).status, 'refunded');
+  assert.deepEqual(credits.getAccount(db, 'user-1'), { user_id: 'user-1', available: 100, held: 0, spent: 0 });
 });
 
-test('图片结果未知时保持冻结', () => {
+test('同步 2xx 无可读产物的结果未知错误经过图片结算后保持冻结', () => {
   const db = setup(100);
   prices.set(db, 'gpt-image-2', 18);
   const image = create(db);
   const row = db.prepare('SELECT credit_reservation_id FROM image_generations WHERE id = ?').get(image.id);
-  imageService.settleImageCredit(db, log, row, 'failed', '网络中断，供应商结果未知，请勿重复提交');
+  imageService.settleImageCredit(db, log, row, 'failed', '图片生成响应成功但没有可读取产物，供应商结果未知；请核对供应商记录，不要连续重试');
   assert.equal(credits.getReservation(db, row.credit_reservation_id).status, 'held');
+  assert.deepEqual(credits.getAccount(db, 'user-1'), { user_id: 'user-1', available: 82, held: 18, spent: 0 });
 });

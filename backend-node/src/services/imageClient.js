@@ -198,6 +198,79 @@ function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServi
     : null;
 }
 
+function imageConfigError(code, message) {
+  const error = new Error(message || code);
+  error.code = code;
+  return error;
+}
+
+function hasColumn(db, table, columnName) {
+  return db.prepare(`PRAGMA table_info(${table})`).all()
+    .some((column) => column.name === columnName);
+}
+
+function normalizeImageConfigId(configId) {
+  if (typeof configId === 'number') {
+    if (Number.isSafeInteger(configId) && configId > 0) return configId;
+    throw imageConfigError('IMAGE_CONFIG_NOT_FOUND', '图片模型配置不存在');
+  }
+  if (typeof configId === 'string') {
+    const trimmed = configId.trim();
+    if (/^[0-9]+$/.test(trimmed)) {
+      const numericId = Number(trimmed);
+      if (Number.isSafeInteger(numericId) && numericId > 0) return numericId;
+    }
+  }
+  throw imageConfigError('IMAGE_CONFIG_NOT_FOUND', '图片模型配置不存在');
+}
+
+function resolveExplicitImageConfigId(opts = {}) {
+  const hasSnake = Object.prototype.hasOwnProperty.call(opts, 'config_id');
+  const hasCamel = Object.prototype.hasOwnProperty.call(opts, 'configId');
+  if (!hasSnake && !hasCamel) return null;
+  if (!hasSnake) return normalizeImageConfigId(opts.configId);
+  if (!hasCamel) return normalizeImageConfigId(opts.config_id);
+
+  const snakeId = normalizeImageConfigId(opts.config_id);
+  const camelId = normalizeImageConfigId(opts.configId);
+  if (snakeId !== camelId) {
+    throw imageConfigError('IMAGE_CONFIG_NOT_FOUND', '图片模型配置不存在');
+  }
+  return snakeId;
+}
+
+function getImageConfigById(db, configId, preferredModel) {
+  const numericId = normalizeImageConfigId(configId);
+
+  const config = aiConfigService.getConfig(db, numericId);
+  if (!config || !['image', 'storyboard_image'].includes(config.service_type)) {
+    throw imageConfigError('IMAGE_CONFIG_NOT_FOUND', '图片模型配置不存在');
+  }
+  if (!config.is_active) {
+    throw imageConfigError('IMAGE_CONFIG_INACTIVE', '图片模型配置已停用');
+  }
+
+  if (hasColumn(db, 'ai_service_configs', 'verification_status')) {
+    const row = db.prepare(
+      'SELECT verification_status FROM ai_service_configs WHERE id = ? AND deleted_at IS NULL',
+    ).get(numericId);
+    if (row?.verification_status !== 'verified') {
+      throw imageConfigError('IMAGE_CONFIG_UNVERIFIED', '图片模型配置未通过真实生成验证');
+    }
+  }
+
+  if (preferredModel) {
+    const wantedModel = String(preferredModel).trim().toLowerCase();
+    const models = Array.isArray(config.model) ? config.model : (config.model != null ? [config.model] : []);
+    const hasModel = models.some((model) => String(model).trim().toLowerCase() === wantedModel);
+    if (!hasModel) {
+      throw imageConfigError('IMAGE_CONFIG_MODEL_MISMATCH', '图片模型配置不包含请求模型');
+    }
+  }
+
+  return config;
+}
+
 function getImageConfigCandidates(db, preferredModel, preferredProvider, imageServiceType) {
   const serviceType = imageServiceType || 'image';
   let configs = aiConfigService.listConfigs(db, serviceType);
@@ -446,6 +519,128 @@ function imageMimeFromOutputFormat(format) {
 function formatGptImageUnknownResultError(error) {
   const detail = error?.message || String(error || '连接中断');
   return `图片生成连接中断，供应商可能已受理或扣费，但本平台未收到结果（结果未知）。为避免重复扣费，请先核对生成记录或供应商账单，不要连续重试。原始错误: ${detail}`;
+}
+
+const MAX_PROVIDER_IMAGE_BASE64_LENGTH = 32 * 1024 * 1024;
+
+function validProviderImageBase64(value) {
+  if (!value || value.length > MAX_PROVIDER_IMAGE_BASE64_LENGTH || value.length % 4 !== 0) return false;
+  return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value);
+}
+
+/** 将供应商产物收窄为可下载 HTTP(S) 或受支持的 Base64 图片 data URL。 */
+function normalizeProviderImageOutput(value, options = {}) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const dataMatch = trimmed.match(/^data:image\/(png|jpeg|jpg|webp);base64,([\s\S]+)$/i);
+  if (dataMatch) {
+    const encoded = dataMatch[2].replace(/\s/g, '');
+    if (!validProviderImageBase64(encoded)) return null;
+    return `data:image/${dataMatch[1].toLowerCase()};base64,${encoded}`;
+  }
+
+  if (/^https?:\/\//i.test(trimmed) && !/\s/.test(trimmed)) {
+    try {
+      const parsed = new URL(trimmed);
+      if ((parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.hostname) return trimmed;
+    } catch (_) {}
+  }
+
+  if (!options.allowRawBase64) return null;
+  const encoded = trimmed.replace(/\s/g, '');
+  if (!validProviderImageBase64(encoded)) return null;
+  const mimeType = /^(?:image\/)(?:png|jpeg|jpg|webp)$/i.test(String(options.mimeType || ''))
+    ? String(options.mimeType).toLowerCase()
+    : 'image/png';
+  return `data:${mimeType};base64,${encoded}`;
+}
+
+/** 按固定优先级提取 OpenAI 兼容同步生图结果，不接触日志或计费状态。 */
+function extractOpenAIImageResult(data, outputFormat) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const item = Array.isArray(data.data) ? data.data[0] : null;
+  const itemUrl = normalizeProviderImageOutput(item?.url);
+  if (itemUrl) return { image_url: itemUrl };
+  const itemImageUrl = normalizeProviderImageOutput(item?.image_url);
+  if (itemImageUrl) return { image_url: itemImageUrl };
+  const itemBase64 = normalizeProviderImageOutput(item?.b64_json, {
+    allowRawBase64: true,
+    mimeType: imageMimeFromOutputFormat(outputFormat),
+  });
+  if (itemBase64) {
+    return { image_url: itemBase64 };
+  }
+  const topImageUrl = normalizeProviderImageOutput(data.image_url);
+  if (topImageUrl) return { image_url: topImageUrl };
+  const resultUrl = normalizeProviderImageOutput(data.result?.url);
+  if (resultUrl) return { image_url: resultUrl };
+  const firstImage = Array.isArray(data.images)
+    ? normalizeProviderImageOutput(data.images[0], { allowRawBase64: true, mimeType: 'image/png' })
+    : null;
+  if (!firstImage) return null;
+  return { image_url: firstImage };
+}
+
+const SAFE_IMAGE_RESPONSE_KEYS = new Set([
+  'id', 'request_id', 'requestId', 'task_id', 'taskId', 'created', 'status',
+  'data', 'images', 'image_url', 'result', 'usage', 'output', 'diagnostic',
+]);
+const SAFE_IMAGE_ITEM_KEYS = new Set(['id', 'url', 'image_url', 'b64_json', 'created', 'status']);
+
+function safeResponseIdentifier(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
+  const text = String(value).trim();
+  if (
+    !text
+    || text.length > 128
+    || /^(?:sk-|bearer(?:[\s_:.-]|$))/i.test(text)
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(text)
+  ) return undefined;
+  return text;
+}
+
+function safeModelLabel(value) {
+  if (typeof value !== 'string') return undefined;
+  const text = value.trim();
+  if (!text || text.length > 160 || /(?:https?:\/\/|data:|bearer\s|sk-|[?&](?:signature|token|key)=)/i.test(text)) {
+    return undefined;
+  }
+  return text;
+}
+
+/** 供应商响应日志摘要：仅返回固定白名单元数据，不复制正文、URL、Base64 或密钥。 */
+function summarizeImageResponse(data, raw, httpStatus, imageGenId, model) {
+  const payload = data && typeof data === 'object' && !Array.isArray(data) ? data : null;
+  const firstItem = Array.isArray(payload?.data) && payload.data[0] && typeof payload.data[0] === 'object'
+    ? payload.data[0]
+    : null;
+  const summary = {
+    response_bytes: Buffer.byteLength(typeof raw === 'string' || Buffer.isBuffer(raw) ? raw : '', 'utf8'),
+    response_keys: payload ? Object.keys(payload).filter((key) => SAFE_IMAGE_RESPONSE_KEYS.has(key)) : [],
+    first_item_keys: firstItem ? Object.keys(firstItem).filter((key) => SAFE_IMAGE_ITEM_KEYS.has(key)) : [],
+  };
+  const upstreamRequestId = safeResponseIdentifier(payload?.request_id ?? payload?.requestId ?? payload?.id);
+  const upstreamTaskId = safeResponseIdentifier(payload?.task_id ?? payload?.taskId ?? payload?.result?.task_id ?? payload?.result?.taskId);
+  if (upstreamRequestId !== undefined) summary.upstream_request_id = upstreamRequestId;
+  if (upstreamTaskId !== undefined) summary.upstream_task_id = upstreamTaskId;
+  if (Number.isInteger(Number(httpStatus))) summary.http_status = Number(httpStatus);
+  if (typeof imageGenId === 'number' && Number.isSafeInteger(imageGenId)) summary.image_gen_id = imageGenId;
+  else {
+    const safeGenerationId = safeResponseIdentifier(imageGenId);
+    if (safeGenerationId !== undefined) summary.image_gen_id = safeGenerationId;
+  }
+  const safeModel = safeModelLabel(model);
+  if (safeModel !== undefined) summary.model = safeModel;
+  return summary;
+}
+
+function openAIImageIndeterminateResult(reason) {
+  return {
+    indeterminate: true,
+    error: `图片生成请求已成功返回，但${reason || '未收到可读取的图片产物'}，供应商结果未知。为避免重复扣费，请先核对供应商生成记录，不要连续重试。`,
+  };
 }
 
 // 通义万象 size：格式 "宽*高"，总像素须在 589824(768*768)～1638400(1280*1280) 之间
@@ -1758,12 +1953,16 @@ async function callImageApi(db, log, opts) {
     schedule,
   } = opts;
   const preferredProvider = preferred_provider ?? opts.preferredProvider;
-  const candidates = getImageConfigCandidates(
-    db,
-    preferredModel,
-    preferredProvider,
-    imageServiceType,
-  );
+  const explicitConfigId = resolveExplicitImageConfigId(opts);
+  const hasExplicitConfig = explicitConfigId != null;
+  const candidates = hasExplicitConfig
+    ? [getImageConfigById(db, explicitConfigId, preferredModel)]
+    : getImageConfigCandidates(
+        db,
+        preferredModel,
+        preferredProvider,
+        imageServiceType,
+      );
   const config = opts._imageConfigOverride
     || candidates[0]
     || getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType);
@@ -1778,7 +1977,7 @@ async function callImageApi(db, log, opts) {
     ? opts._attemptedImageConfigKeys.map(String)
     : []);
   attempted.add(configKey);
-  const nextConfig = candidates.find((candidate) => {
+  const nextConfig = hasExplicitConfig ? null : candidates.find((candidate) => {
     const candidateModel = getModelFromConfig(candidate, preferredModel);
     const key = candidate.id != null
       ? `id:${candidate.id}`
@@ -2001,38 +2200,21 @@ async function callImageApi(db, log, opts) {
   try {
     data = JSON.parse(raw);
   } catch (e) {
-    log.warn('Image API response parse error', {
-      image_gen_id,
-      response_bytes: Buffer.byteLength(raw || '', 'utf8'),
-    });
+    log.warn('Image API response parse error', summarizeImageResponse(null, raw, httpStatus, image_gen_id, model));
+    if (protocol === 'openai') return openAIImageIndeterminateResult('响应正文无法解析，未收到可读取的图片产物');
     return { error: '图片生成返回格式异常' };
   }
-  // 兼容多种返回格式：OpenAI 风格 data[].url / b64_json，部分厂商 data[].image_url 或 data.output 等
-  // Stable Diffusion WebUI（/sdapi/v1/txt2img|img2img）：顶层 images 为 PNG base64 字符串数组，无 data 数组
-  const item = data.data && data.data[0];
-  let imageUrl = item && (item.url || item.image_url);
-  if (!imageUrl && item?.b64_json) {
-    const mimeType = imageMimeFromOutputFormat(outputOptions.output_format);
-    imageUrl = `data:${mimeType};base64,${String(item.b64_json).replace(/\s/g, '')}`;
-  }
-  if (!imageUrl && Array.isArray(data.images) && data.images.length > 0) {
-    const first = data.images[0];
-    if (typeof first === 'string' && first.length > 0) {
-      imageUrl = first.startsWith('data:') ? first : `data:image/png;base64,${first.replace(/\s/g, '')}`;
+  const imageResult = extractOpenAIImageResult(data, outputOptions.output_format);
+  if (!imageResult) {
+    const summary = summarizeImageResponse(data, raw, httpStatus, image_gen_id, model);
+    if (protocol === 'openai') {
+      log.warn('Image API result indeterminate', summary);
+      return openAIImageIndeterminateResult('响应中没有可读取的图片产物');
     }
-  }
-  if (!imageUrl) {
-    log.warn('Image API no image URL in response', {
-      image_gen_id,
-      model,
-      response_keys: data ? Object.keys(data) : [],
-      response_bytes: Buffer.byteLength(raw || '', 'utf8'),
-      has_data_array: !!(data.data && Array.isArray(data.data)),
-      first_item_keys: (data.data && data.data[0]) ? Object.keys(data.data[0]) : [],
-    });
+    log.warn('Image API no image URL in response', summary);
     return { error: '未返回图片地址' };
   }
-  return { image_url: imageUrl };
+  return imageResult;
 }
 
 /**
@@ -2436,6 +2618,7 @@ const { runWithGenerationLimit } = require('./generationConcurrency');
 
 module.exports = {
   getImageConfigCandidates,
+  getImageConfigById,
   getDefaultImageConfig,
   resolveImageModel,
   getReferenceImageCapability,
@@ -2444,6 +2627,10 @@ module.exports = {
   normalizeGptImageSize,
   imageMimeFromOutputFormat,
   formatGptImageUnknownResultError,
+  MAX_PROVIDER_IMAGE_BASE64_LENGTH,
+  normalizeProviderImageOutput,
+  extractOpenAIImageResult,
+  summarizeImageResponse,
   buildKlingImageQueryUrl,
   parseKlingImagePollResult,
   callImageApi: (...args) => runWithGenerationLimit('image', () => callImageApi(...args)),

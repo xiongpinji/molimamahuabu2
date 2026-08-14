@@ -34,6 +34,12 @@ function routes(db, cfg, log, options = {}) {
         if (['MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED'].includes(err.code)) {
           return response.error(res, 503, err.code, err.message);
         }
+        if (['IMAGE_CONFIG_NOT_FOUND', 'IMAGE_CONFIG_MODEL_MISMATCH'].includes(err.code)) {
+          return response.error(res, 400, err.code, err.message);
+        }
+        if (['IMAGE_CONFIG_INACTIVE', 'IMAGE_CONFIG_UNVERIFIED'].includes(err.code)) {
+          return response.error(res, 503, err.code, err.message);
+        }
         if (err.code === 'INSUFFICIENT_CREDITS') {
           return response.error(res, 402, err.code, '积分不足，请充值后重试');
         }

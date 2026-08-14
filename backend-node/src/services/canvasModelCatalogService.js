@@ -10,6 +10,12 @@ const KIND_BY_SERVICE = {
   tts: 'audio',
 };
 
+const PRIVATE_CATALOG_FIELDS = new Set([
+  'provider', 'baseurl', 'apikey', 'hostname', 'domain',
+  'accesstoken', 'refreshtoken', 'sessiontoken', 'token', 'secret', 'secretkey',
+]);
+const PRIVATE_CATALOG_FRAGMENTS = ['token', 'secret', 'credential', 'password', 'accesskey'];
+
 const USMERCARI_VIDEO_CAPABILITIES = Object.freeze({
   durations: Object.freeze([5]),
   aspectRatios: Object.freeze(['16:9']),
@@ -60,18 +66,40 @@ function parseModels(value, fallback) {
   return fallback ? [String(fallback).trim()].filter(Boolean) : [];
 }
 
+function isPrivateCatalogField(key) {
+  const normalized = key.replace(/[_-]/g, '').toLowerCase();
+  return PRIVATE_CATALOG_FIELDS.has(normalized)
+    || PRIVATE_CATALOG_FRAGMENTS.some((fragment) => normalized.includes(fragment));
+}
+
+function publicCapabilityValue(value) {
+  if (Array.isArray(value)) return value.map(publicCapabilityValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !isPrivateCatalogField(key))
+    .map(([key, item]) => [key, publicCapabilityValue(item)]));
+}
+
 function safeCapabilities(settings, model) {
   try {
     const parsed = typeof settings === 'string' ? JSON.parse(settings) : settings;
     const value = parsed?.canvas_capabilities;
     const base = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
     const perModel = model && parsed?.canvas_capabilities_by_model?.[model];
-    return perModel && typeof perModel === 'object' && !Array.isArray(perModel)
+    return publicCapabilityValue(perModel && typeof perModel === 'object' && !Array.isArray(perModel)
       ? { ...base, ...perModel }
-      : base;
+      : base);
   } catch (_) {
     return {};
   }
+}
+
+function verifiedConfigIds(db) {
+  const hasVerificationStatus = db.prepare('PRAGMA table_info(ai_service_configs)').all()
+    .some((column) => column.name === 'verification_status');
+  if (!hasVerificationStatus) return null;
+  return new Set(db.prepare(`SELECT id FROM ai_service_configs
+    WHERE deleted_at IS NULL AND verification_status = 'verified'`).all().map((row) => row.id));
 }
 
 function list(db) {
@@ -79,14 +107,18 @@ function list(db) {
     .filter((row) => row.status === 'enabled')
     .map((row) => [String(row.model).toLowerCase(), row]));
   const seen = new Set();
+  const verifiedIds = verifiedConfigIds(db);
   const configured = aiConfigService.listConfigs(db)
-    .filter((config) => config.is_active !== false && KIND_BY_SERVICE[config.service_type])
+    .filter((config) => config.is_active !== false
+      && KIND_BY_SERVICE[config.service_type]
+      && (!verifiedIds || verifiedIds.has(config.id)))
     .flatMap((config) => parseModels(config.model, config.default_model).map((model) => {
       const key = `${KIND_BY_SERVICE[config.service_type]}:${model.toLowerCase()}`;
       if (seen.has(key)) return null;
       seen.add(key);
       const price = prices.get(model.toLowerCase());
       return {
+        config_id: config.id,
         kind: KIND_BY_SERVICE[config.service_type],
         model,
         label: price?.display_name || model,
@@ -100,11 +132,13 @@ function list(db) {
       };
     }))
     .filter(Boolean);
-  for (const item of canvasProviderConfigService.listSafe()) {
-    const key = `${item.kind}:${item.model.toLowerCase()}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      configured.push(item);
+  if (verifiedIds === null) {
+    for (const item of canvasProviderConfigService.listSafe()) {
+      const key = `${item.kind}:${item.model.toLowerCase()}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        configured.push(item);
+      }
     }
   }
   return configured;
