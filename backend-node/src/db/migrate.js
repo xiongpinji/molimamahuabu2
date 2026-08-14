@@ -334,6 +334,7 @@ function ensureAllColumns(database) {
     { name: 'scene_id',         type: 'INTEGER' },
     { name: 'character_id',     type: 'INTEGER' },
     { name: 'provider',         type: 'TEXT' },
+    { name: 'config_id',        type: 'INTEGER' },
     { name: 'image_type',       type: 'TEXT' },
     { name: 'prompt',           type: 'TEXT' },
     { name: 'negative_prompt',  type: 'TEXT' },

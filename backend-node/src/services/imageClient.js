@@ -198,6 +198,52 @@ function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServi
     : null;
 }
 
+function imageConfigError(code, message) {
+  const error = new Error(message || code);
+  error.code = code;
+  return error;
+}
+
+function hasColumn(db, table, columnName) {
+  return db.prepare(`PRAGMA table_info(${table})`).all()
+    .some((column) => column.name === columnName);
+}
+
+function getImageConfigById(db, configId, preferredModel) {
+  const numericId = Number(configId);
+  if (!Number.isSafeInteger(numericId) || numericId <= 0) {
+    throw imageConfigError('IMAGE_CONFIG_NOT_FOUND', '图片模型配置不存在');
+  }
+
+  const config = aiConfigService.getConfig(db, numericId);
+  if (!config || !['image', 'storyboard_image'].includes(config.service_type)) {
+    throw imageConfigError('IMAGE_CONFIG_NOT_FOUND', '图片模型配置不存在');
+  }
+  if (!config.is_active) {
+    throw imageConfigError('IMAGE_CONFIG_INACTIVE', '图片模型配置已停用');
+  }
+
+  if (hasColumn(db, 'ai_service_configs', 'verification_status')) {
+    const row = db.prepare(
+      'SELECT verification_status FROM ai_service_configs WHERE id = ? AND deleted_at IS NULL',
+    ).get(numericId);
+    if (row?.verification_status !== 'verified') {
+      throw imageConfigError('IMAGE_CONFIG_UNVERIFIED', '图片模型配置未通过真实生成验证');
+    }
+  }
+
+  if (preferredModel) {
+    const wantedModel = String(preferredModel).trim().toLowerCase();
+    const models = Array.isArray(config.model) ? config.model : (config.model != null ? [config.model] : []);
+    const hasModel = models.some((model) => String(model).trim().toLowerCase() === wantedModel);
+    if (!hasModel) {
+      throw imageConfigError('IMAGE_CONFIG_MODEL_MISMATCH', '图片模型配置不包含请求模型');
+    }
+  }
+
+  return config;
+}
+
 function getImageConfigCandidates(db, preferredModel, preferredProvider, imageServiceType) {
   const serviceType = imageServiceType || 'image';
   let configs = aiConfigService.listConfigs(db, serviceType);
@@ -1758,12 +1804,16 @@ async function callImageApi(db, log, opts) {
     schedule,
   } = opts;
   const preferredProvider = preferred_provider ?? opts.preferredProvider;
-  const candidates = getImageConfigCandidates(
-    db,
-    preferredModel,
-    preferredProvider,
-    imageServiceType,
-  );
+  const explicitConfigId = opts.config_id ?? opts.configId;
+  const hasExplicitConfig = explicitConfigId != null && String(explicitConfigId).trim() !== '';
+  const candidates = hasExplicitConfig
+    ? [getImageConfigById(db, explicitConfigId, preferredModel)]
+    : getImageConfigCandidates(
+        db,
+        preferredModel,
+        preferredProvider,
+        imageServiceType,
+      );
   const config = opts._imageConfigOverride
     || candidates[0]
     || getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType);
@@ -1778,7 +1828,7 @@ async function callImageApi(db, log, opts) {
     ? opts._attemptedImageConfigKeys.map(String)
     : []);
   attempted.add(configKey);
-  const nextConfig = candidates.find((candidate) => {
+  const nextConfig = hasExplicitConfig ? null : candidates.find((candidate) => {
     const candidateModel = getModelFromConfig(candidate, preferredModel);
     const key = candidate.id != null
       ? `id:${candidate.id}`
@@ -2436,6 +2486,7 @@ const { runWithGenerationLimit } = require('./generationConcurrency');
 
 module.exports = {
   getImageConfigCandidates,
+  getImageConfigById,
   getDefaultImageConfig,
   resolveImageModel,
   getReferenceImageCapability,
