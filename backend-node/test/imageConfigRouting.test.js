@@ -452,21 +452,58 @@ test('排队期间显式配置被停用时失败且不切换同模型备用配�
   assert.equal(calls.length, 0);
 });
 
-test('旧图片任务无 config_id 时仍保留默认配置路径', async (t) => {
+test('新图片请求无 config_id 时不锁定配置并保留同价备用切换', async (t) => {
   const db = createDb();
   t.after(() => db.close());
+  prices.set(db, 'legacy-model', 19, { category: 'image' });
+
+  const requests = [];
+  const primary = await listen((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      requests.push('primary');
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'primary unavailable' } }));
+    });
+  });
+  const backup = await listen((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      requests.push('backup');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ url: 'https://cdn.example/backup.png' }] }));
+    });
+  });
+  t.after(async () => Promise.all([close(primary), close(backup)]));
+
   addConfig(db, {
+    base_url: `http://127.0.0.1:${primary.address().port}`,
     model: ['legacy-model'],
     default_model: 'legacy-model',
     priority: 100,
     is_default: true,
   });
+  addConfig(db, {
+    base_url: `http://127.0.0.1:${backup.address().port}`,
+    model: ['legacy-model'],
+    default_model: 'legacy-model',
+    priority: 90,
+  });
   const scheduled = [];
   const calls = [];
+  const providerResults = [];
+  const providerErrors = [];
   const originalCallImageApi = imageClient.callImageApi;
   imageClient.callImageApi = async (_db, _log, options) => {
     calls.push(options);
-    return { error: 'local stub stop' };
+    try {
+      const result = await originalCallImageApi(_db, _log, options);
+      providerResults.push(result);
+      return result.image_url ? { error: 'local stub stop after failover' } : result;
+    } catch (error) {
+      providerErrors.push({ code: error.code, message: error.message });
+      throw error;
+    }
   };
   t.after(() => { imageClient.callImageApi = originalCallImageApi; });
 
@@ -477,13 +514,18 @@ test('旧图片任务无 config_id 时仍保留默认配置路径', async (t) =>
   }, {
     schedule(callback) { scheduled.push(callback); },
   });
-  db.prepare('UPDATE image_generations SET config_id = NULL WHERE id = ?').run(created.id);
+  const createdRow = db.prepare('SELECT config_id FROM image_generations WHERE id = ?').get(created.id);
+  assert.equal(createdRow.config_id, null);
 
   await scheduled[0]();
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].config_id, undefined);
+  assert.equal(Object.prototype.hasOwnProperty.call(calls[0], 'config_id'), false);
   assert.equal(calls[0].model, 'legacy-model');
+  assert.deepEqual(providerErrors, []);
+  assert.deepEqual(providerResults[0], { image_url: 'https://cdn.example/backup.png' });
+  assert.deepEqual(requests, ['primary', 'backup']);
 });
 
 test('图片路由保留显式配置错误码并映射为 400 或 503', () => {

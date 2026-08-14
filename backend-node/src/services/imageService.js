@@ -703,7 +703,7 @@ function create(db, log, req, options = {}) {
   const selectedConfig = req.config_id != null
     ? imageClient.getImageConfigById(db, req.config_id, req.model)
     : imageClient.getDefaultImageConfig(db, req.model, req.provider, imageServiceType);
-  const selectedConfigId = selectedConfig?.id ?? null;
+  const selectedConfigId = req.config_id != null ? (selectedConfig?.id ?? null) : null;
   const active = findActiveForTarget(db, req.storyboard_id, frameType, options);
   if (active) {
     log.info('Duplicate image generation prevented', {
@@ -1664,7 +1664,7 @@ async function processImageGeneration(db, log, imageGenId) {
     }
 
     const result = await taskService.withTaskHeartbeat(db, row.task_id, '正在等待图片生成服务...', () => imageClient.callImageApi(db, log, {
-      config_id: row.config_id || undefined,
+      ...(row.config_id != null ? { config_id: row.config_id } : {}),
       prompt: finalPrompt,
       model: row.model,
       size: imageSize,
