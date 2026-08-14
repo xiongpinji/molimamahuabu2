@@ -11,7 +11,8 @@ const KIND_BY_SERVICE = {
 };
 
 const PRIVATE_CATALOG_FIELDS = new Set([
-  'provider', 'base_url', 'api_key', 'hostname', 'domain',
+  'provider', 'baseurl', 'apikey', 'hostname', 'domain',
+  'accesstoken', 'refreshtoken', 'sessiontoken', 'token', 'secret', 'secretkey',
 ]);
 
 const USMERCARI_VIDEO_CAPABILITIES = Object.freeze({
@@ -68,7 +69,7 @@ function publicCapabilityValue(value) {
   if (Array.isArray(value)) return value.map(publicCapabilityValue);
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value)
-    .filter(([key]) => !PRIVATE_CATALOG_FIELDS.has(key.toLowerCase()))
+    .filter(([key]) => !PRIVATE_CATALOG_FIELDS.has(key.replace(/[_-]/g, '').toLowerCase()))
     .map(([key, item]) => [key, publicCapabilityValue(item)]));
 }
 
