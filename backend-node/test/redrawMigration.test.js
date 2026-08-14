@@ -391,6 +391,29 @@ test('转绘本地化任务与资产批次迁移可重复执行并保留幂等�
   assert.ok(versionIndexes.some((index) => index.name === 'uq_redraw_localization_idempotency'));
 });
 
+test('参考包列迁移幂等且旧生成默认关闭', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  runMigrationsAndEnsure(db);
+
+  const versionColumns = columnNames(db, 'redraw_versions');
+  const shotColumns = columnNames(db, 'redraw_shots');
+  assert.ok(versionColumns.includes('reference_bundle_required'));
+  for (const name of ['reference_bundle_json', 'reference_bundle_hash', 'reference_bundle_updated_at']) {
+    assert.ok(shotColumns.includes(name), name);
+  }
+
+  const projectId = insertProject(db);
+  const workId = insertWork(db, projectId);
+  const versionId = insertVersion(db, workId);
+  assert.equal(
+    db.prepare('SELECT reference_bundle_required FROM redraw_versions WHERE id = ?')
+      .get(versionId).reference_bundle_required,
+    0,
+  );
+  db.close();
+});
+
 test('源视频 conditioning 列迁移可重复执行并兼容单列已存在的旧库', () => {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
