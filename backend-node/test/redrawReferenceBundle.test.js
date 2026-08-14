@@ -17,6 +17,8 @@ function setup(overrides = {}) {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
   const now = INITIAL_UPDATED_AT;
+  const nameMap = overrides.nameMap || { 'character-001': 'Ethan', 'character-002': 'Maya' };
+  const facts = sourceFacts(nameMap, overrides.sourceFacts || {});
   const sourceAssetId = insertAsset(db, {
     id: 101,
     type: 'video',
@@ -41,9 +43,9 @@ function setup(overrides = {}) {
       workId,
       overrides.locale || 'en-US',
       overrides.market || 'US',
-      JSON.stringify(overrides.nameMap || { 'character-001': 'Ethan', 'character-002': 'Maya' }),
-      JSON.stringify(sourceFacts(overrides.sourceFacts || {})),
-      factsHash(sourceFacts(overrides.sourceFacts || {})),
+      JSON.stringify(nameMap),
+      JSON.stringify(facts),
+      factsHash(facts),
       now,
       now,
     ).lastInsertRowid);
@@ -130,10 +132,10 @@ function setup(overrides = {}) {
   };
 }
 
-function sourceFacts(overrides = {}) {
+function sourceFacts(nameMap, overrides = {}) {
   return {
     script_sha256: '5'.repeat(64),
-    name_map_source_sha256: '6'.repeat(64),
+    name_map_source_sha256: sha256(stableJson(nameMap)),
     dialogue_sha256: '7'.repeat(64),
     ...overrides,
   };
@@ -198,7 +200,12 @@ function identityPack(input = {}) {
     reviewed_by: 'user-a',
     reviewed_at: REVIEWED_AT,
   };
-  pack.pack_sha256 = input.packSha256 || sha256(stableJson({
+  pack.pack_sha256 = input.packSha256 || identityPackHash(pack);
+  return pack;
+}
+
+function identityPackHash(pack) {
+  return sha256(stableJson({
     artifact: pack.artifact,
     adult_status: pack.adult_status,
     confirmed_views: pack.confirmed_views,
@@ -213,7 +220,10 @@ function identityPack(input = {}) {
     target_actor_label: pack.target_actor_label,
     target_country: pack.target_country,
   }));
-  return pack;
+}
+
+function recalcIdentityPackHash(payload) {
+  payload.identity_pack.pack_sha256 = identityPackHash(payload.identity_pack);
 }
 
 function insertCharacterRedrawAsset(db, versionId, input) {
@@ -500,6 +510,13 @@ test('角色身份一对一映射与 9 个引用上限 fail closed', async () =>
     },
     {
       code: 'REDRAW_REFERENCE_BUNDLE_FACE_INVALID',
+      mutateDb(state) {
+        updateJsonColumn(state.db, 'redraw_assets', state.actorBId, 'source_ref_json', (payload) => {
+          payload.source_ref.stable_id = 'character-001';
+          payload.identity_pack.source_character_key = 'character-001';
+          recalcIdentityPackHash(payload);
+        });
+      },
       mutate(input) { input.face_tracks[1].source_character_key = 'character-001'; },
     },
     {
@@ -519,6 +536,7 @@ test('角色身份一对一映射与 9 个引用上限 fail closed', async () =>
   for (const entry of cases) {
     const state = setup();
     try {
+      if (entry.mutateDb) entry.mutateDb(state);
       await assertRejectsUnchanged(state, mutateInput(state, entry.mutate), entry.code);
     } finally {
       state.db.close();
@@ -533,6 +551,7 @@ test('身份包缺视图、未批准、非成年、非虚构 AI、非 US 或哈�
       mutateDb(state) {
         updateJsonColumn(state.db, 'redraw_assets', state.actorAId, 'source_ref_json', (payload) => {
           payload.identity_pack.confirmed_views = ['front', 'profile'];
+          recalcIdentityPackHash(payload);
         });
       },
     },
@@ -545,6 +564,7 @@ test('身份包缺视图、未批准、非成年、非虚构 AI、非 US 或哈�
       mutateDb(state) {
         updateJsonColumn(state.db, 'redraw_assets', state.actorAId, 'source_ref_json', (payload) => {
           payload.identity_pack.adult_status = 'unknown';
+          recalcIdentityPackHash(payload);
         });
       },
     },
@@ -553,6 +573,7 @@ test('身份包缺视图、未批准、非成年、非虚构 AI、非 US 或哈�
       mutateDb(state) {
         updateJsonColumn(state.db, 'redraw_assets', state.actorAId, 'source_ref_json', (payload) => {
           payload.identity_pack.persona_origin = 'real_person';
+          recalcIdentityPackHash(payload);
         });
       },
     },
@@ -561,6 +582,7 @@ test('身份包缺视图、未批准、非成年、非虚构 AI、非 US 或哈�
       mutateDb(state) {
         updateJsonColumn(state.db, 'redraw_assets', state.actorAId, 'source_ref_json', (payload) => {
           payload.identity_pack.target_country = 'GB';
+          recalcIdentityPackHash(payload);
         });
       },
     },
