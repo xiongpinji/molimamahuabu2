@@ -517,7 +517,7 @@ test('角色身份一对一映射与 9 个引用上限 fail closed', async () =>
           recalcIdentityPackHash(payload);
         });
       },
-      mutate(input) { input.face_tracks[1].source_character_key = 'character-001'; },
+      mutate(input) { input.face_tracks[0].source_character_key = 'character-001'; },
     },
     {
       code: 'REDRAW_REFERENCE_BUNDLE_REFERENCE_LIMIT_EXCEEDED',
