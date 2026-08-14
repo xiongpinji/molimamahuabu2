@@ -11,6 +11,8 @@ const {
   normalizeGptImageSize,
   imageMimeFromOutputFormat,
   formatGptImageUnknownResultError,
+  MAX_PROVIDER_IMAGE_BASE64_LENGTH,
+  normalizeProviderImageOutput,
   extractOpenAIImageResult,
   summarizeImageResponse,
   callImageApi,
@@ -87,6 +89,59 @@ test('OpenAI 兼容图片响应按固定优先级解析七种格式', () => {
   }, 'webp'), { image_url: 'https://cdn.example/priority-1.png' });
 });
 
+test('供应商图片产物仅接受可读取的 HTTP(S)、受支持 data image 或合规 Base64', () => {
+  assert.equal(
+    normalizeProviderImageOutput('  https://cdn.example/image.png?X-Amz-Signature=test  '),
+    'https://cdn.example/image.png?X-Amz-Signature=test',
+  );
+  assert.equal(
+    normalizeProviderImageOutput(' data:image/jpeg;base64, YW Jj\nZA== '),
+    'data:image/jpeg;base64,YWJjZA==',
+  );
+  assert.equal(
+    normalizeProviderImageOutput(' YW Jj\nZA== ', { allowRawBase64: true, mimeType: 'image/webp' }),
+    'data:image/webp;base64,YWJjZA==',
+  );
+
+  for (const invalid of [
+    'javascript:alert(1)',
+    'file:///etc/passwd',
+    'ftp://cdn.example/image.png',
+    'http:relative-path',
+    'https://cdn.example/image name.png',
+    'ordinary string as url',
+    'data:text/html;base64,PGgxPnNlY3JldDwvaDE+',
+    'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=',
+    'data:image/png;base64,not*base64',
+    'data:image/png;base64,abc',
+    '',
+    '   ',
+    123,
+    {},
+    [],
+  ]) {
+    assert.equal(normalizeProviderImageOutput(invalid), null);
+  }
+
+  const oversized = 'A'.repeat(MAX_PROVIDER_IMAGE_BASE64_LENGTH + 4);
+  assert.equal(normalizeProviderImageOutput(oversized, { allowRawBase64: true }), null);
+  assert.equal(normalizeProviderImageOutput(`data:image/png;base64,${oversized}`), null);
+});
+
+test('七种响应槽位中的危险协议、普通字符串和畸形 Base64 均不可进入 completed', () => {
+  for (const data of [
+    { data: [{ url: 'javascript:alert(1)' }] },
+    { data: [{ image_url: 'file:///tmp/private.png' }] },
+    { data: [{ b64_json: 'not*base64' }] },
+    { image_url: 'ftp://cdn.example/private.png' },
+    { result: { url: 'ordinary string as url' } },
+    { images: ['data:text/html;base64,PGgxPnNlY3JldDwvaDE+'] },
+    { images: ['abc'] },
+  ]) {
+    assert.equal(extractOpenAIImageResult(data, 'png'), null);
+  }
+});
+
 test('OpenAI 兼容图片响应对空值和不可读值返回 null', () => {
   for (const data of [
     null,
@@ -146,7 +201,7 @@ test('OpenAI 兼容同步 2xx 无可读图片时返回结果未知且日志不�
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({
         request_id: 'req_local_789',
-        data: [],
+        data: [{ url: 'javascript:alert(1)' }],
         diagnostic: responseSecret,
         unusable: signedUrl,
       }));

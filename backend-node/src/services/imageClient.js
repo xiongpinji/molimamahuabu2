@@ -521,33 +521,66 @@ function formatGptImageUnknownResultError(error) {
   return `图片生成连接中断，供应商可能已受理或扣费，但本平台未收到结果（结果未知）。为避免重复扣费，请先核对生成记录或供应商账单，不要连续重试。原始错误: ${detail}`;
 }
 
-function nonEmptyString(value) {
-  return typeof value === 'string' && value.trim() ? value : null;
+const MAX_PROVIDER_IMAGE_BASE64_LENGTH = 32 * 1024 * 1024;
+
+function validProviderImageBase64(value) {
+  if (!value || value.length > MAX_PROVIDER_IMAGE_BASE64_LENGTH || value.length % 4 !== 0) return false;
+  return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value);
+}
+
+/** 将供应商产物收窄为可下载 HTTP(S) 或受支持的 Base64 图片 data URL。 */
+function normalizeProviderImageOutput(value, options = {}) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const dataMatch = trimmed.match(/^data:image\/(png|jpeg|jpg|webp);base64,([\s\S]+)$/i);
+  if (dataMatch) {
+    const encoded = dataMatch[2].replace(/\s/g, '');
+    if (!validProviderImageBase64(encoded)) return null;
+    return `data:image/${dataMatch[1].toLowerCase()};base64,${encoded}`;
+  }
+
+  if (/^https?:\/\//i.test(trimmed) && !/\s/.test(trimmed)) {
+    try {
+      const parsed = new URL(trimmed);
+      if ((parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.hostname) return trimmed;
+    } catch (_) {}
+  }
+
+  if (!options.allowRawBase64) return null;
+  const encoded = trimmed.replace(/\s/g, '');
+  if (!validProviderImageBase64(encoded)) return null;
+  const mimeType = /^(?:image\/)(?:png|jpeg|jpg|webp)$/i.test(String(options.mimeType || ''))
+    ? String(options.mimeType).toLowerCase()
+    : 'image/png';
+  return `data:${mimeType};base64,${encoded}`;
 }
 
 /** 按固定优先级提取 OpenAI 兼容同步生图结果，不接触日志或计费状态。 */
 function extractOpenAIImageResult(data, outputFormat) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
   const item = Array.isArray(data.data) ? data.data[0] : null;
-  const itemUrl = nonEmptyString(item?.url);
+  const itemUrl = normalizeProviderImageOutput(item?.url);
   if (itemUrl) return { image_url: itemUrl };
-  const itemImageUrl = nonEmptyString(item?.image_url);
+  const itemImageUrl = normalizeProviderImageOutput(item?.image_url);
   if (itemImageUrl) return { image_url: itemImageUrl };
-  const itemBase64 = nonEmptyString(item?.b64_json)?.replace(/\s/g, '');
+  const itemBase64 = normalizeProviderImageOutput(item?.b64_json, {
+    allowRawBase64: true,
+    mimeType: imageMimeFromOutputFormat(outputFormat),
+  });
   if (itemBase64) {
-    return { image_url: `data:${imageMimeFromOutputFormat(outputFormat)};base64,${itemBase64}` };
+    return { image_url: itemBase64 };
   }
-  const topImageUrl = nonEmptyString(data.image_url);
+  const topImageUrl = normalizeProviderImageOutput(data.image_url);
   if (topImageUrl) return { image_url: topImageUrl };
-  const resultUrl = nonEmptyString(data.result?.url);
+  const resultUrl = normalizeProviderImageOutput(data.result?.url);
   if (resultUrl) return { image_url: resultUrl };
-  const firstImage = Array.isArray(data.images) ? nonEmptyString(data.images[0]) : null;
+  const firstImage = Array.isArray(data.images)
+    ? normalizeProviderImageOutput(data.images[0], { allowRawBase64: true, mimeType: 'image/png' })
+    : null;
   if (!firstImage) return null;
-  return {
-    image_url: firstImage.startsWith('data:')
-      ? firstImage
-      : `data:image/png;base64,${firstImage.replace(/\s/g, '')}`,
-  };
+  return { image_url: firstImage };
 }
 
 const SAFE_IMAGE_RESPONSE_KEYS = new Set([
@@ -2594,6 +2627,8 @@ module.exports = {
   normalizeGptImageSize,
   imageMimeFromOutputFormat,
   formatGptImageUnknownResultError,
+  MAX_PROVIDER_IMAGE_BASE64_LENGTH,
+  normalizeProviderImageOutput,
   extractOpenAIImageResult,
   summarizeImageResponse,
   buildKlingImageQueryUrl,
