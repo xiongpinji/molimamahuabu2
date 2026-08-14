@@ -1,7 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { buildCanvasExecutionPlan } from '../src/utils/canvasExecutionPlan.js'
-import { estimateCanvasCredits, canvasModelCapability } from '../src/utils/canvasModelCapabilities.js'
+import {
+  canvasModelCapability,
+  canvasModelRoute,
+  estimateCanvasCredits,
+  normalizeCanvasModelCatalog,
+} from '../src/utils/canvasModelCapabilities.js'
 import { mergeLocalCanvasIntoProjectLayout } from '../src/utils/localCanvasBinding.js'
 
 const node = (id, kind) => ({ id, type: 'homeCanvasNode', position: { x: 0, y: 0 }, data: { kind } })
@@ -55,6 +60,27 @@ test('model capabilities estimate per-request video cost without duration multip
 
 test('video capability fallback includes every supported duration from 5 to 15 seconds', () => {
   assert.deepEqual(canvasModelCapability([], 'video', 'lingjing-video-v1').durations, [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+})
+
+test('model catalog keeps a strict opaque config route out of user-facing labels', () => {
+  const catalog = normalizeCanvasModelCatalog([
+    { kind: 'image', model: 'image-a', label: '图片模型 A', config_id: 42 },
+    { kind: 'image', model: 'image-b', label: '图片模型 B', config_id: '0043' },
+    { kind: 'image', model: 'bad-boolean', config_id: true },
+    { kind: 'image', model: 'bad-exponent', config_id: '1e2' },
+    { kind: 'image', model: 'bad-decimal', config_id: '1.0' },
+    { kind: 'image', model: 'bad-sign', config_id: '+44' },
+    { kind: 'image', model: 'bad-zero', config_id: 0 },
+    { kind: 'image', model: 'bad-unsafe', config_id: Number.MAX_SAFE_INTEGER + 1 },
+  ])
+
+  assert.equal(canvasModelRoute(catalog, 'image', 'image-a').configId, 42)
+  assert.equal(canvasModelRoute(catalog, 'image', 'image-b').configId, 43)
+  assert.equal(canvasModelRoute(catalog, 'image', 'image-a').label, '图片模型 A')
+  for (const model of ['bad-boolean', 'bad-exponent', 'bad-decimal', 'bad-sign', 'bad-zero', 'bad-unsafe']) {
+    assert.equal(canvasModelRoute(catalog, 'image', model).configId, null)
+  }
+  assert.equal(catalog.some((item) => item.label.includes('#42') || item.label.includes('config')), false)
 })
 
 test('local canvas binding preserves existing project nodes and remaps collisions', () => {

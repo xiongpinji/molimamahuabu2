@@ -5,8 +5,18 @@ const DEFAULTS = {
   audio: { quantities: [1] },
 }
 
+function opaqueConfigId(value) {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : null
+  }
+  if (typeof value !== 'string' || !/^\d+$/.test(value.trim())) return null
+  const number = Number(value.trim())
+  return Number.isSafeInteger(number) && number > 0 ? number : null
+}
+
 export function normalizeCanvasModelCatalog(items = []) {
   return items.filter((item) => item?.model && item?.kind).map((item) => ({
+    configId: opaqueConfigId(item.config_id ?? item.configId),
     model: String(item.model),
     label: String(item.label || item.model),
     kind: String(item.kind),
@@ -21,13 +31,17 @@ export function normalizeCanvasModelCatalog(items = []) {
   }))
 }
 
+export function canvasModelRoute(catalog, kind, model) {
+  return normalizeCanvasModelCatalog(catalog).find((item) => item.kind === kind && item.model === model)
+}
+
 export function canvasModelCapability(catalog, kind, model) {
-  return normalizeCanvasModelCatalog(catalog).find((item) => item.kind === kind && item.model === model)?.capabilities
+  return canvasModelRoute(catalog, kind, model)?.capabilities
     || { ...(DEFAULTS[kind] || {}) }
 }
 
 export function estimateCanvasCredits(catalog, kind, model, quantity = 1, duration = 1, resolution = '') {
-  const entry = normalizeCanvasModelCatalog(catalog).find((item) => item.kind === kind && item.model === model)
+  const entry = canvasModelRoute(catalog, kind, model)
   const tierCredits = kind === 'video'
     ? Number(entry?.resolutionPrices?.[String(resolution).trim().toLowerCase()]?.credits)
     : NaN

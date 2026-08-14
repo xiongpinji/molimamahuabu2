@@ -362,6 +362,31 @@ test('文本连线内容按契约进入下游图片、视频和音频模型输�
   }).prompt, '雨夜车站\n\n电影光影')
 })
 
+test('只有图片自由节点请求携带合法目录配置身份', () => {
+  const imagePayload = buildFreeCanvasGenerationRequest({
+    kind: 'image',
+    content: '一张雨夜街道',
+    model: 'image-a',
+  }, { dramaId: 7, configId: '42' })
+  assert.equal(imagePayload.config_id, 42)
+
+  for (const configId of [true, '1e2', '1.0', '+42', 0, Number.MAX_SAFE_INTEGER + 1]) {
+    const payload = buildFreeCanvasGenerationRequest({
+      kind: 'image',
+      content: '一张雨夜街道',
+      model: 'image-a',
+    }, { dramaId: 7, configId })
+    assert.equal('config_id' in payload, false)
+  }
+
+  const nonImagePayloads = [
+    buildFreeCanvasGenerationRequest({ kind: 'text', content: '旁白', model: 'text-a' }, { dramaId: 7, configId: 42 }),
+    buildFreeCanvasGenerationRequest({ kind: 'video', content: '推镜', model: 'video-a' }, { dramaId: 7, configId: 42 }),
+    buildFreeCanvasGenerationRequest({ kind: 'audio', content: '对白', model: 'audio-a' }, { dramaId: 7, configId: 42 }),
+  ]
+  for (const payload of nonImagePayloads) assert.equal('config_id' in payload, false)
+})
+
 test('文本自由节点构造真实 AI 生成请求', () => {
   assert.deepEqual(buildFreeCanvasGenerationRequest({
     kind: 'text',

@@ -12,7 +12,15 @@ test('canvas model catalog parses model lists without exposing config secrets', 
   assert.deepEqual(parseModels('v1,v2'), ['v1', 'v2']);
   assert.deepEqual(safeCapabilities(JSON.stringify({
     api_key: 'secret',
-    canvas_capabilities: { durations: [5, 10] },
+    canvas_capabilities: {
+      durations: [5, 10],
+      provider: 'private-relay',
+      base_url: 'https://private-relay.example/v1',
+      api_key: 'nested-secret',
+      name: 'Private Relay',
+      hostname: 'private-relay.example',
+      domain: 'private-relay.example',
+    },
   })), { durations: [5, 10] });
 })
 
@@ -39,6 +47,54 @@ test('canvas model catalog exposes video resolution prices to the node editor', 
     '480p': { credits: 2, cost_micros_per_second: 50000 },
     '720p': { credits: 5, cost_micros_per_second: 120000 },
   });
+  db.close();
+});
+
+test('canvas model catalog exposes only the selected verified config identity', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  db.exec('ALTER TABLE ai_service_configs ADD COLUMN verification_status TEXT');
+  const now = new Date().toISOString();
+  const insert = db.prepare(`INSERT INTO ai_service_configs
+    (service_type, provider, name, base_url, api_key, model, default_model, priority,
+      is_default, is_active, settings, verification_status, created_at, updated_at)
+    VALUES ('storyboard_image', ?, ?, ?, ?, ?, ?, ?, ?, 1, '{}', ?, ?, ?)`);
+  const unverified = insert.run(
+    'private-relay',
+    'Unverified Relay',
+    'https://unverified-relay.example/v1',
+    'unverified-secret',
+    JSON.stringify(['catalog-route-image']),
+    'catalog-route-image',
+    100,
+    1,
+    'failed',
+    now,
+    now,
+  );
+  const verified = insert.run(
+    'selected-relay',
+    'Selected Relay',
+    'https://selected-relay.example/v1',
+    'selected-secret',
+    JSON.stringify(['catalog-route-image']),
+    'catalog-route-image',
+    10,
+    0,
+    'verified',
+    now,
+    now,
+  );
+  prices.set(db, 'catalog-route-image', 40, { category: 'image' });
+
+  const item = catalog.list(db).find((row) => row.model === 'catalog-route-image');
+  assert.equal(item.config_id, Number(verified.lastInsertRowid));
+  assert.notEqual(item.config_id, Number(unverified.lastInsertRowid));
+  for (const field of ['provider', 'base_url', 'api_key', 'name', 'hostname', 'domain']) {
+    assert.equal(item[field], undefined);
+  }
+  assert.equal(JSON.stringify(item).includes('selected-relay.example'), false);
+  assert.equal(JSON.stringify(item).includes('selected-secret'), false);
   db.close();
 });
 

@@ -90,6 +90,15 @@ function positiveInteger(value) {
   return Number.isInteger(number) && number > 0 ? number : undefined
 }
 
+function opaqueConfigId(value) {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : undefined
+  }
+  if (typeof value !== 'string' || !/^\d+$/.test(value.trim())) return undefined
+  const number = Number(value.trim())
+  return Number.isSafeInteger(number) && number > 0 ? number : undefined
+}
+
 function uniqueStrings(values) {
   return [...new Set((Array.isArray(values) ? values : [])
     .map((value) => cleanString(value))
@@ -536,6 +545,7 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
       drama_id: dramaId,
       prompt: content,
       model: nodeData.model,
+      config_id: opaqueConfigId(options.configId),
       aspect_ratio: nodeData.aspectRatio,
       style: nodeData.style,
       size: imageSizeFromResolution(nodeData.aspectRatio, nodeData.resolution),

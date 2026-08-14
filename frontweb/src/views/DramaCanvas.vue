@@ -685,7 +685,7 @@ import {
   toLibTvCanvasEdge,
 } from '@/utils/canvasNodeContracts'
 import { buildCanvasExecutionPlan } from '@/utils/canvasExecutionPlan'
-import { canvasModelCapability, estimateCanvasCredits, normalizeCanvasModelCatalog } from '@/utils/canvasModelCapabilities'
+import { canvasModelCapability, canvasModelRoute, estimateCanvasCredits, normalizeCanvasModelCatalog } from '@/utils/canvasModelCapabilities'
 import {
   commitCanvasInteractionHistory,
   createCanvasInteractionHistory,
@@ -3023,12 +3023,14 @@ async function runFreeCanvasNode(nodeOrId) {
   let requestPayload
   try {
     const capability = getFreeNodeModelCapability(kind, node.data?.model)
+    const modelRoute = canvasModelRoute(freeCanvasModelCatalog.value, kind, node.data?.model)
     requestPayload = buildFreeCanvasGenerationRequest(node.data, {
       dramaId: dramaId.value,
       upstreamUrls,
       upstreamReferences,
       upstreamTexts,
       maxReferences: capability.maxReferences,
+      ...(kind === 'image' ? { configId: modelRoute?.configId } : {}),
     })
   } catch (error) {
     const errorMessage = error?.message || '自由节点生成参数不完整'
