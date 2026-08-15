@@ -344,6 +344,8 @@ export const redrawLatinAmericanCase = Object.freeze({
     },
     dialogue: [{
       shot_id: 'shot-1',
+      kind: 'spoken',
+      speech_required: true,
       turns: [
         { speaker_id: 'mateo', localized_text: 'Who are you?', start_ms: 250, end_ms: 1_250 },
         { speaker_id: 'diego', localized_text: 'Mateo, you think acting crazy is funny?', start_ms: 1_250, end_ms: 3_500 },
@@ -352,6 +354,8 @@ export const redrawLatinAmericanCase = Object.freeze({
       ],
     }, {
       shot_id: 'shot-2',
+      kind: 'spoken',
+      speech_required: true,
       turns: [
         { speaker_id: 'lucas', localized_text: 'You just got rejected.', start_ms: 8_000, end_ms: 9_500 },
         { speaker_id: 'lucas', localized_text: 'Try again next time.', start_ms: 9_500, end_ms: 10_750 },
@@ -359,20 +363,28 @@ export const redrawLatinAmericanCase = Object.freeze({
       ],
     }, {
       shot_id: 'shot-3',
+      kind: 'silent',
+      speech_required: false,
       turns: [],
     }, {
       shot_id: 'shot-4',
+      kind: 'spoken',
+      speech_required: true,
       turns: [
         { speaker_id: 'mateo', localized_text: 'This place will be demolished in two months.', start_ms: 24_000, end_ms: 26_500 },
         { speaker_id: 'mateo', localized_text: 'But he has no capital right now.', start_ms: 29_500, end_ms: 32_000 },
       ],
     }, {
       shot_id: 'shot-5',
+      kind: 'spoken',
+      speech_required: true,
       turns: [
         { speaker_id: 'mateo', localized_text: 'I have my first seed money.', start_ms: 36_500, end_ms: 39_000 },
       ],
     }, {
       shot_id: 'shot-6',
+      kind: 'spoken',
+      speech_required: true,
       turns: [
         { speaker_id: 'elena', localized_text: "College kid's home.", start_ms: 43_750, end_ms: 45_250 },
         { speaker_id: 'elena', localized_text: 'Wash your hands and eat.', start_ms: 45_250, end_ms: 46_750 },
@@ -380,14 +392,20 @@ export const redrawLatinAmericanCase = Object.freeze({
       ],
     }, {
       shot_id: 'shot-7',
+      kind: 'spoken',
+      speech_required: true,
       turns: [
         { speaker_id: 'mateo', localized_text: 'My parents will live better.', start_ms: 48_750, end_ms: 50_500 },
       ],
     }, {
       shot_id: 'shot-8',
+      kind: 'silent',
+      speech_required: false,
       turns: [],
     }, {
       shot_id: 'shot-9',
+      kind: 'spoken',
+      speech_required: true,
       turns: [
         { speaker_id: 'mateo', localized_text: 'The World Cup is my starting capital.', start_ms: 64_500, end_ms: 68_000 },
       ],
@@ -396,12 +414,12 @@ export const redrawLatinAmericanCase = Object.freeze({
   shotPrompts: {
     'shot-1': 'Same fixed Latino actors Mateo, Diego, and Lucas at the school entrance; Diego confronts Mateo before Lucas arrives, use the supplied natural American English dialogue, preserve each speaker turn, close framing, and confused reaction.',
     'shot-2': 'Same fixed Latino actors Mateo and Lucas as Lucas comments on the rejection and Mateo leaves by bicycle; use the supplied American English lines in the same order, preserve the original blocking and camera direction.',
-    'shot-3': 'Same fixed Latino actor Mateo rides away from school on the same bicycle; preserve the rear tracking composition and travel direction, and do not invent dialogue.',
+    'shot-3': 'Same fixed Latino actor Mateo rides away from school on the same bicycle; preserve the rear tracking composition and travel direction, with no spoken dialogue or voiceover; include street ambience and bicycle movement sound effects.',
     'shot-4': 'Same fixed Latino actor Mateo sees the future demolition and worries that he has no capital; use the two supplied English inner-monologue lines, preserve the thoughtful close-ups and action timing.',
     'shot-5': 'Same fixed Latino actor Mateo sees sports news and realizes he has found his first seed money; use the supplied English inner-monologue line, preserve the bicycle movement, screen inserts, and transition home.',
     'shot-6': 'Same fixed Latino actors Mateo, Elena, and Rafael reunite at the family dinner table; use the supplied English family dialogue and inner monologue in order, preserve warm interior blocking and emotional close-up.',
     'shot-7': 'Same fixed Latino actor Mateo vows to give his parents a good life, then enters his dark bedroom and turns on the computer; use the supplied American English line and preserve the transition timing.',
-    'shot-8': 'Same fixed Latino actor Mateo researches the opportunity on the computer and makes a decision; preserve the screen insert and determined close-up, avoid rendering unreadable Chinese text as verified English copy.',
+    'shot-8': 'Same fixed Latino actor Mateo researches the opportunity on the computer and makes a decision; preserve the screen insert and determined close-up, avoid rendering unreadable Chinese text as verified English copy; use no spoken dialogue or voiceover, with room ambience, keyboard, mouse, and computer interaction sound effects.',
     'shot-9': 'Same fixed Latino actor Mateo writes down the plan at his desk and says the supplied final English hook; preserve the seated pose and final hook timing.',
   },
   generationDurations: [8, 8, 8, 8, 8, 8, 8, 8, 8],

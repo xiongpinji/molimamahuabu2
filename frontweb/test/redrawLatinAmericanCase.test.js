@@ -91,6 +91,65 @@ test('整集合同为每个源对白提供同时间窗的英文映射', () => {
   assert.equal(new Set(sourceTexts).size, sourceTexts.length, '源对白不得因切片边界重复生成')
 })
 
+test('真实整集本地化对白逐镜显式声明口播与静默语义', () => {
+  const shots = redrawLatinAmericanCase.sourceFacts.shots
+  const dialogueRows = redrawLatinAmericanCase.localization.dialogue
+  const silentShotIds = []
+
+  assert.equal(dialogueRows.length, shots.length)
+  assert.deepEqual(dialogueRows.map((row) => row.shot_id), shots.map((shot) => shot.id))
+
+  shots.forEach((shot, index) => {
+    const row = dialogueRows[index]
+    const silent = shot.dialogue.length === 0
+    assert.equal(row.kind, silent ? 'silent' : 'spoken', `${shot.id} 对白类型与源事实不一致`)
+    assert.equal(row.speech_required, !silent, `${shot.id} 口播要求与源事实不一致`)
+    assert.equal(row.turns.length === 0, silent, `${shot.id} 本地化对白空状态与源事实不一致`)
+    if (silent) {
+      silentShotIds.push(shot.id)
+      assert.deepEqual(row.turns, [], `${shot.id} 静默镜头不得包含本地化对白`)
+    }
+  })
+
+  assert.deepEqual(silentShotIds, ['shot-3', 'shot-8'])
+
+  const disguisedSilenceTokens = new Set([
+    'silence',
+    '[silence]',
+    '(silence)',
+    'silent',
+    'no dialogue',
+    '[no dialogue]',
+  ])
+  for (const turn of dialogueRows.flatMap((row) => row.turns)) {
+    const normalized = String(turn.localized_text || '').trim().toLowerCase().replace(/\s+/gu, ' ')
+    assert.equal(
+      disguisedSilenceTokens.has(normalized),
+      false,
+      `${turn.speaker_id} 不得用伪装文本表示静默`,
+    )
+  }
+})
+
+test('第三镜提示词保留骑行构图并显式要求无人声和街道自行车环境声', () => {
+  const prompt = redrawLatinAmericanCase.shotPrompts['shot-3']
+  assert.match(prompt, /same fixed Latino actor Mateo/i)
+  assert.match(prompt, /rides away from school on the same bicycle/i)
+  assert.match(prompt, /rear tracking composition and travel direction/i)
+  assert.match(prompt, /no spoken dialogue or voiceover/i)
+  assert.match(prompt, /street ambience and bicycle movement sound effects/i)
+})
+
+test('第八镜提示词保留电脑决策与屏幕文字并显式要求无人声和交互环境声', () => {
+  const prompt = redrawLatinAmericanCase.shotPrompts['shot-8']
+  assert.match(prompt, /same fixed Latino actor Mateo/i)
+  assert.match(prompt, /researches the opportunity on the computer and makes a decision/i)
+  assert.match(prompt, /screen insert/i)
+  assert.match(prompt, /unreadable Chinese text as verified English copy/i)
+  assert.match(prompt, /no spoken dialogue or voiceover/i)
+  assert.match(prompt, /room ambience, keyboard, mouse, and computer interaction sound effects/i)
+})
+
 test('整集合同分离校园三名男学生并保持源目标说话人一致', () => {
   const shots = new Map(
     redrawLatinAmericanCase.sourceFacts.shots.map((shot) => [shot.id, shot]),
