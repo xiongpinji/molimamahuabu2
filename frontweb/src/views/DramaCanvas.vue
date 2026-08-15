@@ -712,7 +712,6 @@ import {
   canvasModelSelectionDecision,
   createCanvasModelCatalogLoader,
   estimateCanvasCredits,
-  filterCanvasCatalogFallbackModels,
   normalizeCanvasModelCatalog,
 } from '@/utils/canvasModelCapabilities'
 import {
@@ -1003,8 +1002,8 @@ function persistFreeCanvasNodeDefaults(kind, data) {
   }
 }
 
-function getFreeNodeModelOptions(kind) {
-  return getFreeNodeModelOptionEntries(kind).map((item) => item.value)
+function getFreeNodeModelOptions(kind, nodeOrId) {
+  return getFreeNodeModelOptionEntriesForNode(kind, nodeOrId)
 }
 
 function getFreeNodeModelOptionEntries(kind) {
@@ -1016,15 +1015,7 @@ function getFreeNodeModelOptionEntriesForNode(kind, nodeOrId) {
     ? freeCanvasNodeInputReferences(nodeOrId).filter((reference) => reference.ready && reference.enabled !== false).length
     : 0
   const catalogOptions = canvasModelOptions(freeCanvasModelCatalog.value, kind, { referenceCount })
-  if (catalogOptions.length) return catalogOptions
-  const serviceType = canvasModelServiceType(kind)
-  return serviceType
-    ? filterCanvasCatalogFallbackModels(
-      getSelectableModelsAcrossConfigs(freeCanvasModelConfigs.value, serviceType),
-      kind,
-    )
-      .map((model) => ({ value: model, label: model }))
-    : []
+  return catalogOptions
 }
 
 const freeNodeSelectedModelEntry = computed(() => getFreeNodeModelOptionEntriesForNode(freeNodeKind.value, freeNodeEditingId.value)

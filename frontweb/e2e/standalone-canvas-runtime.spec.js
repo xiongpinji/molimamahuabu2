@@ -634,9 +634,9 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await node.click()
     const editor = page.getByRole('region', { name: '图片节点编辑器' })
     await expect(editor).toBeVisible()
-    await expect(editor.locator('datalist option[value="canvas-image-alpha"]')).toHaveCount(1)
-    await editor.getByRole('combobox', { name: '生成模型' }).fill('canvas-image-beta')
-    await editor.getByRole('combobox', { name: '生成模型' }).blur()
+    await expect(editor.getByRole('combobox', { name: '生成模型' }).locator('option[value="canvas-image-alpha"]'))
+      .toHaveText('canvas-image-alpha')
+    await editor.getByRole('combobox', { name: '生成模型' }).selectOption('canvas-image-beta')
     await expect.poll(() => freeNode(state.canvasLayout, 'free:image:mount')?.data?.model).toBe('canvas-image-beta')
 
     await editor.getByRole('button', { name: '关闭编辑器' }).click()
