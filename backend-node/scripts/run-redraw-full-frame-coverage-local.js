@@ -21,6 +21,28 @@ const MODEL_LOCK_INVALID = 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID';
 const MODEL_UNAVAILABLE = 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE';
 const FRAME_GAP = 'REDRAW_FULL_FRAME_FRAME_GAP';
 const MASK_INVALID = 'REDRAW_FULL_FRAME_MASK_INVALID';
+const DEFAULT_CASE_POLICY = Object.freeze({
+  case_id: 'ac087bcd-latam-en-us',
+  duration_ms: 68733,
+  source: Object.freeze({
+    video: Object.freeze({ width: 720, height: 1280, codec: 'hevc', frame_rate: 30 }),
+    audio: Object.freeze({ codec: 'aac', channels: 1, sample_rate: 44100 }),
+  }),
+  target: Object.freeze({ language: 'en', locale: 'en-US', market: 'US' }),
+  cast_ids: Object.freeze(['mateo', 'diego', 'lucas', 'elena', 'rafael']),
+  shots: Object.freeze([
+    Object.freeze({ id: 'shot-1', start_ms: 0, end_ms: 8000 }),
+    Object.freeze({ id: 'shot-2', start_ms: 8000, end_ms: 16000 }),
+    Object.freeze({ id: 'shot-3', start_ms: 16000, end_ms: 24000 }),
+    Object.freeze({ id: 'shot-4', start_ms: 24000, end_ms: 32000 }),
+    Object.freeze({ id: 'shot-5', start_ms: 32000, end_ms: 40000 }),
+    Object.freeze({ id: 'shot-6', start_ms: 40000, end_ms: 48000 }),
+    Object.freeze({ id: 'shot-7', start_ms: 48000, end_ms: 56000 }),
+    Object.freeze({ id: 'shot-8', start_ms: 56000, end_ms: 64000 }),
+    Object.freeze({ id: 'shot-9', start_ms: 64000, end_ms: 68733 }),
+  ]),
+});
+const FAULTS = new Set(['mask_write', 'write_manifest', 'before_publish']);
 
 function coded(code) {
   const error = new Error(code);
@@ -49,6 +71,17 @@ function assertExactKeys(value, keys, code = OUTPUT_INVALID) {
   }
   for (const key of keys) {
     if (!Object.prototype.hasOwnProperty.call(value, key)) fail(code);
+  }
+}
+
+function assertTargetKeys(value) {
+  assertPlainObject(value);
+  const allowed = new Set(['language', 'locale', 'market', 'cast_direction']);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) fail(OUTPUT_INVALID);
+  }
+  for (const key of ['language', 'locale', 'market']) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) fail(OUTPUT_INVALID);
   }
 }
 
@@ -241,14 +274,43 @@ async function extractFrames({ source, framesDir, ffmpegPath }) {
   ], { timeoutMs: 120000 });
 }
 
-function validateCase(raw) {
+function requirePolicy(policy) {
   try {
+    assertExactKeys(policy, ['case_id', 'duration_ms', 'source', 'target', 'cast_ids', 'shots']);
+    assertExactKeys(policy.source, ['video', 'audio']);
+    assertExactKeys(policy.source.video, ['width', 'height', 'codec', 'frame_rate']);
+    assertExactKeys(policy.source.audio, ['codec', 'channels', 'sample_rate']);
+    assertExactKeys(policy.target, ['language', 'locale', 'market']);
+    if (typeof policy.case_id !== 'string' || !Number.isInteger(policy.duration_ms)) fail(OUTPUT_INVALID);
+    if (!Array.isArray(policy.cast_ids) || policy.cast_ids.length !== 5) fail(OUTPUT_INVALID);
+    if (!Array.isArray(policy.shots) || policy.shots.length !== 9) fail(OUTPUT_INVALID);
+    for (const shot of policy.shots) assertExactKeys(shot, ['id', 'start_ms', 'end_ms']);
+    return policy;
+  } catch (error) {
+    sanitizeCatch(error, OUTPUT_INVALID);
+  }
+}
+
+function validateCase(raw, policy = DEFAULT_CASE_POLICY) {
+  try {
+    policy = requirePolicy(policy);
     assertNoForbidden(raw);
     assertExactKeys(raw, ['case_id', 'source', 'target', 'cast', 'shots']);
-    assertExactKeys(raw.source, ['sha256', 'duration_ms', 'duration_tolerance_ms', 'video']);
+    assertExactKeys(raw.source, ['sha256', 'duration_ms', 'duration_tolerance_ms', 'video', 'audio']);
     assertExactKeys(raw.source.video, ['width', 'height', 'codec', 'frame_rate']);
-    assertExactKeys(raw.target, ['language', 'locale', 'market']);
+    assertExactKeys(raw.source.audio, ['codec', 'channels', 'sample_rate']);
+    assertTargetKeys(raw.target);
+    if (raw.case_id !== policy.case_id) fail(OUTPUT_INVALID);
     if (raw.target.language !== 'en' || raw.target.locale !== 'en-US' || raw.target.market !== 'US') fail(OUTPUT_INVALID);
+    if (raw.target.language !== policy.target.language || raw.target.locale !== policy.target.locale || raw.target.market !== policy.target.market) fail(OUTPUT_INVALID);
+    if (raw.source.duration_ms !== policy.duration_ms) fail(OUTPUT_INVALID);
+    if (raw.source.video.width !== policy.source.video.width
+      || raw.source.video.height !== policy.source.video.height
+      || String(raw.source.video.codec).toLowerCase() !== String(policy.source.video.codec).toLowerCase()
+      || Number(raw.source.video.frame_rate) !== Number(policy.source.video.frame_rate)) fail(OUTPUT_INVALID);
+    if (String(raw.source.audio.codec).toLowerCase() !== String(policy.source.audio.codec).toLowerCase()
+      || raw.source.audio.channels !== policy.source.audio.channels
+      || raw.source.audio.sample_rate !== policy.source.audio.sample_rate) fail(OUTPUT_INVALID);
     if (!Array.isArray(raw.cast) || raw.cast.length !== 5) fail(OUTPUT_INVALID);
     const castIds = new Set();
     for (const item of raw.cast) {
@@ -256,10 +318,13 @@ function validateCase(raw) {
       if (!/^[A-Za-z0-9_-]+$/.test(item.id) || castIds.has(item.id) || !Number.isInteger(item.age_min) || item.age_min < 18) fail(OUTPUT_INVALID);
       castIds.add(item.id);
     }
+    if (JSON.stringify([...castIds]) !== JSON.stringify(policy.cast_ids)) fail(OUTPUT_INVALID);
     if (!Array.isArray(raw.shots) || raw.shots.length !== 9) fail(FRAME_GAP);
     for (let index = 0; index < raw.shots.length; index += 1) {
       const shot = raw.shots[index];
+      const expectedShot = policy.shots[index];
       assertExactKeys(shot, ['id', 'start_ms', 'end_ms', 'speaking_character_ids', 'text_regions']);
+      if (shot.id !== expectedShot.id || shot.start_ms !== expectedShot.start_ms || shot.end_ms !== expectedShot.end_ms) fail(FRAME_GAP);
       if (shot.id !== `shot-${index + 1}`) fail(FRAME_GAP);
       if (index === 0 && shot.start_ms !== 0) fail(FRAME_GAP);
       if (index > 0 && shot.start_ms !== raw.shots[index - 1].end_ms) fail(FRAME_GAP);
@@ -318,7 +383,8 @@ function clampBox(box, width, height) {
   };
 }
 
-async function writeMask(maskPath, width, height, fill) {
+async function writeMask(maskPath, width, height, fill, fault) {
+  if (fault === 'mask_write') fail(MASK_INVALID);
   const pixels = Buffer.alloc(width * height, 0);
   fill(pixels);
   const bytes = await sharp(pixels, { raw: { width, height, channels: 1 } }).toColourspace('b-w').png().toBuffer();
@@ -353,15 +419,19 @@ function classifyPerson(trackKey, castIds) {
   return { track_key: trackKey, kind: 'background_extra', source_character_key: null, target_strategy: 'foreign_adult_extra' };
 }
 
-function matchTextRegion(caseData, frame, polygon, width) {
+function matchTextRegion(caseData, frame, polygon, height) {
   const shot = frameShot(caseData, frame.timestamp_ms);
+  const active = shot.text_regions
+    .filter((region) => region.time_ranges.some(([start, end]) => frame.timestamp_ms >= start && frame.timestamp_ms < end))
+    .sort((left, right) => left.region_key.localeCompare(right.region_key));
+  if (active.length === 0) return null;
+  if (active.length === 1) return active[0];
   const centerY = polygon.reduce((sum, point) => sum + point.y, 0) / polygon.length;
-  const preferredKind = centerY > (width / 3) ? 'text_subtitle' : 'text_screen';
-  return shot.text_regions.find((region) => region.kind === preferredKind
-    && region.time_ranges.some(([start, end]) => frame.timestamp_ms >= start && frame.timestamp_ms < end));
+  const preferredKind = centerY > (height / 3) ? 'text_subtitle' : 'text_screen';
+  return active.find((region) => region.kind === preferredKind) || active[0];
 }
 
-async function buildTracks({ staging, source, caseData, frames, detections }) {
+async function buildTracks({ staging, source, caseData, frames, detections, fault }) {
   const castIds = new Set(caseData.cast.map((item) => item.id));
   const personGroups = new Map();
   const textGroups = new Map();
@@ -378,7 +448,7 @@ async function buildTracks({ staging, source, caseData, frames, detections }) {
       const regionId = `person-${frame.frame_index}-${person.candidate_id}`.replace(/[^A-Za-z0-9_:-]/g, '-');
       const maskPath = `masks/person/${regionId}.png`;
       const bbox = clampBox(person.bbox, source.width, source.height);
-      const maskSha = await writeMask(path.join(staging, maskPath), source.width, source.height, (pixels) => fillBbox(pixels, source.width, bbox));
+      const maskSha = await writeMask(path.join(staging, maskPath), source.width, source.height, (pixels) => fillBbox(pixels, source.width, bbox), fault);
       personGroups.get(groupKey).regions.push({
         region_id: regionId,
         frame_index: frame.frame_index,
@@ -405,7 +475,7 @@ async function buildTracks({ staging, source, caseData, frames, detections }) {
       }
       const bbox = clampBox(face.bbox, source.width, source.height);
       const maskPath = `masks/person/${regionId}.png`;
-      const maskSha = await writeMask(path.join(staging, maskPath), source.width, source.height, (pixels) => fillBbox(pixels, source.width, bbox));
+      const maskSha = await writeMask(path.join(staging, maskPath), source.width, source.height, (pixels) => fillBbox(pixels, source.width, bbox), fault);
       personGroups.get(groupKey).regions.push({
         region_id: regionId,
         frame_index: frame.frame_index,
@@ -431,7 +501,7 @@ async function buildTracks({ staging, source, caseData, frames, detections }) {
       const regionId = `text-${frame.frame_index}-${text.candidate_id}`.replace(/[^A-Za-z0-9_:-]/g, '-');
       const maskPath = `masks/text/${regionId}.png`;
       const polygon = text.polygon.map((point) => ({ x: Math.round(point.x), y: Math.round(point.y) }));
-      const maskSha = await writeMask(path.join(staging, maskPath), source.width, source.height, (pixels) => fillPolygon(pixels, source.width, source.height, polygon));
+      const maskSha = await writeMask(path.join(staging, maskPath), source.width, source.height, (pixels) => fillPolygon(pixels, source.width, source.height, polygon), fault);
       textGroups.get(groupKey).regions.push({
         region_id: regionId,
         frame_index: frame.frame_index,
@@ -603,10 +673,11 @@ async function runAnalyze(options, deps = {}) {
   let published = false;
   try {
     if (!safeArg(options.source) || !safeArg(options.casePath) || !safeArg(options.modelLockPath) || !safeArg(options.outputDir)) fail(OUTPUT_INVALID);
+    if (deps.fault !== undefined && !FAULTS.has(deps.fault)) fail(OUTPUT_INVALID);
     if (fs.existsSync(outputDir) && (await fsp.readdir(outputDir)).length !== 0) fail(OUTPUT_INVALID);
     await fsp.mkdir(staging, { recursive: false });
 
-    const caseData = validateCase(JSON.parse(await fsp.readFile(options.casePath, 'utf8')));
+    const caseData = validateCase(JSON.parse(await fsp.readFile(options.casePath, 'utf8')), deps.casePolicy || DEFAULT_CASE_POLICY);
     const sourceSha = await sha256File(options.source);
     if (sourceSha !== caseData.source.sha256) fail(SOURCE_MISMATCH);
     const ffprobePath = deps.ffprobePath || getFfprobePath();
@@ -672,7 +743,7 @@ async function runAnalyze(options, deps = {}) {
         frame_path: path.join(staging, frame.path),
       })),
     }).catch(() => { throw coded(MODEL_UNAVAILABLE); });
-    const { personTracks, textTracks, frameRegionIds } = await buildTracks({ staging, source, caseData, frames, detections });
+    const { personTracks, textTracks, frameRegionIds } = await buildTracks({ staging, source, caseData, frames, detections, fault: deps.fault });
     for (const frame of frames) {
       const ids = frameRegionIds.get(frame.frame_index);
       frame.person_region_ids = ids.persons;
@@ -688,9 +759,11 @@ async function runAnalyze(options, deps = {}) {
       textTracks,
       modelLock,
     });
+    if (deps.fault === 'write_manifest') fail(OUTPUT_INVALID);
     await writeJson(path.join(staging, 'redraw-full-frame-coverage-manifest.json'), manifest);
     const contactSheets = await writeReviewArtifacts({ staging, manifest });
     await assertReadableArtifacts(staging, manifest, contactSheets);
+    if (deps.fault === 'before_publish') fail(OUTPUT_INVALID);
     if (fs.existsSync(outputDir) && (await fsp.readdir(outputDir)).length !== 0) fail(OUTPUT_INVALID);
     await publishStaging(staging, outputDir);
     published = true;
