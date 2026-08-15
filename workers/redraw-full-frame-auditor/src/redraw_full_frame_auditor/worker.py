@@ -5,6 +5,8 @@ import json
 import math
 import os
 import sys
+import tarfile
+import zipfile
 from types import SimpleNamespace
 
 
@@ -23,6 +25,9 @@ REPOSITORY_BY_COMPONENT = {
     "text_detector": "PaddlePaddle/PaddleOCR",
     "tracker": "FoundationVision/ByteTrack",
 }
+YOLOXInferenceContext = SimpleNamespace
+MediaPipeFaceContext = SimpleNamespace
+PaddleTextDetectionContext = SimpleNamespace
 
 
 class ProtocolError(Exception):
@@ -103,8 +108,16 @@ def _validate_frame(frame):
 
 
 def _validate_raw_person(item):
-    _exact_keys(item, ("bbox", "confidence"))
-    return {"bbox": _bbox(item["bbox"]), "confidence": _bounded_confidence(item["confidence"])}
+    _plain_object(item)
+    allowed = {"bbox", "confidence", "_frame_width", "_frame_height"}
+    if not {"bbox", "confidence"}.issubset(item.keys()) or any(key not in allowed for key in item.keys()):
+        _fail()
+    result = {"bbox": _bbox(item["bbox"]), "confidence": _bounded_confidence(item["confidence"])}
+    if "_frame_width" in item:
+        result["_frame_width"] = _finite_number(item["_frame_width"])
+    if "_frame_height" in item:
+        result["_frame_height"] = _finite_number(item["_frame_height"])
+    return result
 
 
 def _person_candidate(item):
@@ -190,22 +203,51 @@ class SafeArgumentParser(argparse.ArgumentParser):
 
 class YOLOXPersonAdapter:
     def __init__(self, artifact_path, factory):
-        self.model = factory(artifact_path)
+        self.context = factory(artifact_path)
 
     def detect(self, frame_path):
-        raw = self.model.detect(frame_path)
-        if not isinstance(raw, list):
+        context = self.context
+        image = context.cv2.imread(frame_path)
+        if image is None or not hasattr(image, "shape") or len(image.shape) < 2:
+            _fail()
+        height, width = image.shape[0], image.shape[1]
+        if height <= 0 or width <= 0:
+            _fail()
+        transformed = context.transform(image, None, context.input_size)
+        tensor_source = transformed[0] if isinstance(transformed, tuple) else transformed
+        tensor = context.torch.from_numpy(tensor_source)
+        if hasattr(tensor, "unsqueeze"):
+            tensor = tensor.unsqueeze(0)
+        if hasattr(tensor, "float"):
+            tensor = tensor.float()
+        with context.torch.no_grad():
+            raw = context.model(tensor)
+        outputs = context.postprocess(raw, context.num_classes, context.conf, context.nms)
+        if outputs is None or not isinstance(outputs, (list, tuple)) or len(outputs) == 0:
+            return []
+        detections = _to_rows(outputs[0])
+        ratio = min(float(context.input_size[0]) / float(height), float(context.input_size[1]) / float(width))
+        if ratio <= 0 or not math.isfinite(ratio):
             _fail()
         persons = []
-        for item in raw:
-            _plain_object(item)
-            class_id = item.get("class_id", item.get("category_id"))
-            class_name = item.get("class_name", item.get("label"))
-            if class_id not in (None, 0) and class_name != "person":
+        for row in detections:
+            if len(row) < 7:
+                _fail()
+            x1, y1, x2, y2 = (_finite_number(row[index]) / ratio for index in range(4))
+            object_score = _bounded_confidence(row[4])
+            class_score = _bounded_confidence(row[5])
+            class_id_value = _finite_number(row[6])
+            class_id = int(class_id_value)
+            if class_id != class_id_value:
+                _fail()
+            if class_id != 0:
                 continue
-            if class_id is None and class_name not in (None, "person"):
-                continue
-            persons.append({"bbox": _bbox(item.get("bbox")), "confidence": _bounded_confidence(item.get("confidence"))})
+            persons.append({
+                "bbox": _bbox({"x": x1, "y": y1, "width": x2 - x1, "height": y2 - y1}),
+                "confidence": _bounded_confidence(object_score * class_score),
+                "_frame_width": float(width),
+                "_frame_height": float(height),
+            })
         return persons
 
 
@@ -214,55 +256,158 @@ class ByteTrackAdapter:
         self.tracker = factory(artifact_path)
 
     def update(self, frame_index, persons):
-        raw = self.tracker.update(frame_index, persons)
-        if raw is None:
-            raw = [
-                {
-                    "candidate_id": f"person_{frame_index}_{index + 1}",
-                    "track_key": f"track_{frame_index}_{index + 1}",
-                    "kind": "person_candidate",
-                    "bbox": person["bbox"],
-                    "confidence": person["confidence"],
-                }
-                for index, person in enumerate(persons)
-            ]
-        return raw
+        frame_width = persons[0].get("_frame_width", 0) if persons else 0
+        frame_height = persons[0].get("_frame_height", 0) if persons else 0
+        det_rows = []
+        for person in persons:
+            box = person["bbox"]
+            det_rows.append([
+                box["x"],
+                box["y"],
+                box["x"] + box["width"],
+                box["y"] + box["height"],
+                person["confidence"],
+            ])
+        dets = det_rows
+        try:
+            np = importlib.import_module("numpy")
+            dets = np.asarray(det_rows, dtype=float)
+        except Exception:
+            pass
+        targets = self.tracker.update(dets, (frame_height, frame_width), (frame_height, frame_width))
+        if targets is None:
+            targets = []
+        results = []
+        for target in targets:
+            tlwh = _to_rows(getattr(target, "tlwh"))[0]
+            if len(tlwh) < 4:
+                _fail()
+            track_id = _identifier(str(getattr(target, "track_id")))
+            score = _bounded_confidence(getattr(target, "score"))
+            results.append({
+                "candidate_id": f"person_{track_id}",
+                "track_key": f"track_{track_id}",
+                "kind": "person_candidate",
+                "bbox": _bbox({"x": tlwh[0], "y": tlwh[1], "width": tlwh[2], "height": tlwh[3]}),
+                "confidence": score,
+            })
+        return results
 
 
 class MediaPipeFaceAdapter:
     def __init__(self, artifact_path, factory):
-        self.detector = factory(artifact_path)
+        self.context = factory(artifact_path)
 
     def detect(self, frame_path):
-        return self.detector.detect(frame_path)
+        context = self.context
+        image = context.cv2.imread(frame_path)
+        if image is None or not hasattr(image, "shape") or len(image.shape) < 2:
+            _fail()
+        rgb = context.cv2.cvtColor(image, context.cv2.COLOR_BGR2RGB)
+        result = context.detector.process(rgb)
+        detections = getattr(result, "detections", None) or []
+        height, width = image.shape[0], image.shape[1]
+        faces = []
+        for index, detection in enumerate(detections):
+            location = getattr(detection, "location_data", None)
+            rel_box = getattr(location, "relative_bounding_box", None)
+            if rel_box is None:
+                _fail()
+            scores = getattr(detection, "score", None)
+            score = scores[0] if isinstance(scores, (list, tuple)) and scores else scores
+            faces.append({
+                "candidate_id": f"face_{index + 1}",
+                "kind": "face_candidate",
+                "bbox": _bbox({
+                    "x": _finite_number(rel_box.xmin) * width,
+                    "y": _finite_number(rel_box.ymin) * height,
+                    "width": _finite_number(rel_box.width) * width,
+                    "height": _finite_number(rel_box.height) * height,
+                }),
+                "confidence": _bounded_confidence(score),
+            })
+        return faces
 
 
 class PaddleTextDetectionAdapter:
     def __init__(self, artifact_path, factory):
-        self.detector = factory(artifact_path)
+        self.context = factory(artifact_path)
 
     def detect_regions(self, frame_path):
-        return self.detector.detect_regions(frame_path)
+        context = self.context
+        image = context.cv2.imread(frame_path)
+        if image is None or not hasattr(image, "shape") or len(image.shape) < 2:
+            _fail()
+        raw = context.detector(image)
+        if not isinstance(raw, (list, tuple)) or len(raw) == 0:
+            _fail()
+        boxes = raw[0]
+        scores = raw[1] if len(raw) > 1 else [1.0] * len(boxes)
+        texts = []
+        for index, box in enumerate(boxes):
+            points = _to_rows(box)
+            score = scores[index] if index < len(scores) else 1.0
+            texts.append({
+                "candidate_id": f"text_{index + 1}",
+                "kind": "text_candidate",
+                "polygon": _polygon([{"x": point[0], "y": point[1]} for point in points]),
+                "confidence": _bounded_confidence(score),
+            })
+        return texts
+
+
+def _to_rows(value):
+    if value is None:
+        _fail()
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "numpy"):
+        value = value.numpy()
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, tuple):
+        value = list(value)
+    if not isinstance(value, list):
+        _fail()
+    if value and not isinstance(value[0], (list, tuple)):
+        return [value]
+    return [list(row) for row in value]
 
 
 def _default_person_factory(artifact_path):
     try:
+        cv2 = importlib.import_module("cv2")
         torch = importlib.import_module("torch")
         exp_module = importlib.import_module("yolox.exp")
+        data_module = importlib.import_module("yolox.data.data_augment")
+        utils_module = importlib.import_module("yolox.utils")
         exp = exp_module.get_exp(None, None)
         model = exp.get_model()
         checkpoint = torch.load(artifact_path, map_location="cpu")
         model.load_state_dict(checkpoint.get("model", checkpoint))
         model.eval()
-        if not hasattr(model, "detect"):
-            _fail()
-        return model
+        return YOLOXInferenceContext(
+            cv2=cv2,
+            torch=torch,
+            model=model,
+            transform=data_module.ValTransform(legacy=False),
+            postprocess=utils_module.postprocess,
+            input_size=exp.test_size,
+            conf=getattr(exp, "test_conf", 0.25),
+            nms=getattr(exp, "nmsthre", 0.45),
+            num_classes=getattr(exp, "num_classes", 80),
+        )
     except Exception as exc:
         raise ProtocolError(ERROR_CODE) from exc
 
 
 def _default_tracker_factory(artifact_path):
     try:
+        prepared = _prepare_artifact_path(artifact_path)
+        if os.path.isdir(prepared) and prepared not in sys.path:
+            sys.path.insert(0, prepared)
         tracker_module = importlib.import_module("yolox.tracker.byte_tracker")
         tracker_class = getattr(tracker_module, "BYTETracker")
         tracker = tracker_class(SimpleNamespace(track_thresh=0.5, track_buffer=30, match_thresh=0.8, mot20=False))
@@ -275,28 +420,79 @@ def _default_tracker_factory(artifact_path):
 
 def _default_face_factory(artifact_path):
     try:
+        cv2 = importlib.import_module("cv2")
         mediapipe = importlib.import_module("mediapipe")
         face_detection = mediapipe.solutions.face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
-        if not hasattr(face_detection, "detect"):
+        if not hasattr(face_detection, "process"):
             _fail()
-        return face_detection
+        return MediaPipeFaceContext(cv2=cv2, detector=face_detection)
     except Exception as exc:
         raise ProtocolError(ERROR_CODE) from exc
 
 
 def _default_text_detector_factory(artifact_path):
     try:
+        prepared = _prepare_artifact_path(artifact_path)
+        cv2 = importlib.import_module("cv2")
         text_system = importlib.import_module("paddleocr.tools.infer.predict_det")
         args_factory = getattr(text_system, "parse_args")
         text_detector_class = getattr(text_system, "TextDetector")
         args = args_factory([])
-        args.det_model_dir = os.path.dirname(artifact_path)
+        args.det_model_dir = prepared if os.path.isdir(prepared) else os.path.dirname(artifact_path)
         detector = text_detector_class(args)
-        if not hasattr(detector, "detect_regions"):
+        if not callable(detector):
             _fail()
-        return detector
+        return PaddleTextDetectionContext(cv2=cv2, detector=detector)
     except Exception as exc:
         raise ProtocolError(ERROR_CODE) from exc
+
+
+def _prepare_artifact_path(artifact_path):
+    if not os.path.isfile(artifact_path):
+        _fail()
+    lower = artifact_path.lower()
+    if not (lower.endswith(".zip") or lower.endswith(".tar") or lower.endswith(".tar.gz") or lower.endswith(".tgz")):
+        return artifact_path
+    parent = os.path.dirname(os.path.realpath(artifact_path))
+    prepared_root = os.path.join(parent, ".prepared", hashlib.sha256(artifact_path.encode("utf-8")).hexdigest()[:16])
+    os.makedirs(prepared_root, exist_ok=True)
+    root_real = os.path.realpath(prepared_root)
+    if lower.endswith(".zip"):
+        with zipfile.ZipFile(artifact_path) as archive:
+            for info in archive.infolist():
+                mode = (info.external_attr >> 16) & 0o170000
+                if mode == 0o120000:
+                    _fail()
+                target = os.path.realpath(os.path.join(root_real, info.filename))
+                if os.path.commonpath([root_real, target]) != root_real:
+                    _fail()
+                if info.is_dir():
+                    os.makedirs(target, exist_ok=True)
+                    continue
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with archive.open(info) as source, open(target, "wb") as dest:
+                    dest.write(source.read())
+        return prepared_root
+    with tarfile.open(artifact_path) as archive:
+        for member in archive.getmembers():
+            if member.issym() or member.islnk():
+                _fail()
+            target = os.path.realpath(os.path.join(root_real, member.name))
+            if os.path.commonpath([root_real, target]) != root_real:
+                _fail()
+            if member.isdir():
+                os.makedirs(target, exist_ok=True)
+                continue
+            if member.isfile():
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                source = archive.extractfile(member)
+                if source is None:
+                    _fail()
+                with source, open(target, "wb") as dest:
+                    dest.write(source.read())
+                continue
+            _fail()
+    return prepared_root
 
 
 def _default_factories():

@@ -123,53 +123,155 @@ def write_model_lock(root):
 class FakeFactory:
     def __init__(self):
         self.calls = []
+        self.events = []
 
     def person(self, artifact_path):
         self.calls.append(("person", pathlib.Path(artifact_path).name))
+        events = self.events
 
-        class PersonModel:
+        class FakeImage:
+            shape = (100, 200, 3)
+
+        class FakeTensor:
+            def unsqueeze(self, dim):
+                events.append(("tensor_unsqueeze", dim))
+                return self
+
+            def float(self):
+                events.append(("tensor_float",))
+                return self
+
+        class FakeTorch:
+            def from_numpy(self, value):
+                events.append(("torch_from_numpy", value))
+                return FakeTensor()
+
+            class _NoGrad:
+                def __enter__(self):
+                    events.append(("no_grad_enter",))
+
+                def __exit__(self, exc_type, exc, tb):
+                    events.append(("no_grad_exit",))
+
+            def no_grad(self):
+                return self._NoGrad()
+
+        class FakeModel:
             def detect(self, frame_path):
-                return [
-                    {"class_id": 0, "bbox": {"x": 1, "y": 2, "width": 3, "height": 4}, "confidence": 0.9},
-                    {"class_id": 1, "bbox": {"x": 10, "y": 20, "width": 30, "height": 40}, "confidence": 0.8},
-                ]
+                raise AssertionError("YOLOX adapter must not call custom detect")
 
-        return PersonModel()
+            def __call__(self, tensor):
+                events.append(("model_call", tensor.__class__.__name__))
+                return "raw-yolox-output"
+
+        def transform(image, _target, input_size):
+            events.append(("val_transform", image.shape, input_size))
+            return "transformed-image", None
+
+        def postprocess(raw, num_classes, conf, nms):
+            events.append(("postprocess", raw, num_classes, conf, nms))
+            return [[
+                [10, 20, 50, 70, 0.8, 0.5, 0],
+                [1, 2, 9, 10, 0.9, 0.9, 1],
+            ]]
+
+        class FakeCv2:
+            def imread(self, frame_path):
+                events.append(("cv2_imread_person", frame_path))
+                return FakeImage()
+
+        return worker.YOLOXInferenceContext(
+            cv2=FakeCv2(),
+            torch=FakeTorch(),
+            model=FakeModel(),
+            transform=transform,
+            postprocess=postprocess,
+            input_size=(100, 200),
+            conf=0.25,
+            nms=0.45,
+            num_classes=80,
+        )
 
     def tracker(self, artifact_path):
         self.calls.append(("tracker", pathlib.Path(artifact_path).name))
+        events = self.events
 
-        class TrackerModel:
-            def update(self, frame_index, persons):
-                return [
-                    {
-                        "candidate_id": "person_1",
-                        "track_key": f"track_{frame_index}_1",
-                        "kind": "person_candidate",
-                        "bbox": persons[0]["bbox"],
-                        "confidence": persons[0]["confidence"],
-                    }
-                ]
+        class Target:
+            tlwh = [10, 20, 40, 50]
+            track_id = 42
+            score = 0.4
 
-        return TrackerModel()
+        class ByteTracker:
+            def update(self, dets, img_info, img_size):
+                events.append(("bytetrack_update", dets, img_info, img_size))
+                return [Target()]
+
+        return ByteTracker()
 
     def face(self, artifact_path):
         self.calls.append(("face", pathlib.Path(artifact_path).name))
+        events = self.events
+
+        class FakeImage:
+            shape = (100, 200, 3)
+
+        class FakeCv2:
+            COLOR_BGR2RGB = 4
+
+            def imread(self, frame_path):
+                events.append(("cv2_imread_face", frame_path))
+                return FakeImage()
+
+            def cvtColor(self, image, code):
+                events.append(("cvtColor", image.shape, code))
+                return "rgb-image"
+
+        class RelativeBox:
+            xmin = 0.1
+            ymin = 0.2
+            width = 0.3
+            height = 0.4
+
+        class LocationData:
+            relative_bounding_box = RelativeBox()
+
+        class Detection:
+            location_data = LocationData()
+            score = [0.95]
 
         class FaceModel:
             def detect(self, frame_path):
-                return [{"candidate_id": "face_1", "kind": "face_candidate", "bbox": {"x": 5, "y": 6, "width": 7, "height": 8}, "confidence": 0.7}]
+                raise AssertionError("MediaPipe adapter must call process")
 
-        return FaceModel()
+            def process(self, image):
+                events.append(("mediapipe_process", image))
+                return type("Result", (), {"detections": [Detection()]})()
+
+        return worker.MediaPipeFaceContext(cv2=FakeCv2(), detector=FaceModel())
 
     def text_detector(self, artifact_path):
         self.calls.append(("text_detector", pathlib.Path(artifact_path).name))
+        events = self.events
+
+        class FakeImage:
+            shape = (100, 200, 3)
+
+        class FakeCv2:
+            def imread(self, frame_path):
+                events.append(("cv2_imread_text", frame_path))
+                return FakeImage()
 
         class TextModel:
             def detect_regions(self, frame_path):
-                return [{"candidate_id": "text_1", "kind": "text_candidate", "polygon": [{"x": 0, "y": 0}, {"x": 3, "y": 0}, {"x": 0, "y": 3}], "confidence": 0.6}]
+                raise AssertionError("Paddle adapter must call detection-only callable")
 
-        return TextModel()
+            def __call__(self, image):
+                events.append(("paddle_text_call", image.shape))
+                return [
+                    [[0, 0], [3, 0], [3, 3], [0, 3]],
+                ], [0.88]
+
+        return worker.PaddleTextDetectionContext(cv2=FakeCv2(), detector=TextModel())
 
     def paddle_ocr(self, artifact_path):
         self.calls.append(("paddle_ocr", pathlib.Path(artifact_path).name))
@@ -301,9 +403,19 @@ class WorkerProtocolTests(unittest.TestCase):
             result = worker.detect_frame(valid_frame(3), detectors)
 
         self.assertEqual([call[0] for call in factories.calls], ["person", "tracker", "face", "text_detector"])
-        self.assertEqual(result["persons"][0]["track_key"], "track_3_1")
+        self.assertIn(("model_call", "FakeTensor"), factories.events)
+        self.assertIn(("postprocess", "raw-yolox-output", 80, 0.25, 0.45), factories.events)
+        bytetrack_event = next(event for event in factories.events if event[0] == "bytetrack_update")
+        dets = bytetrack_event[1].tolist() if hasattr(bytetrack_event[1], "tolist") else bytetrack_event[1]
+        self.assertEqual(dets, [[10.0, 20.0, 50.0, 70.0, 0.4]])
+        self.assertIn(("mediapipe_process", "rgb-image"), factories.events)
+        self.assertIn(("paddle_text_call", (100, 200, 3)), factories.events)
+        self.assertEqual(result["persons"][0]["track_key"], "track_42")
+        self.assertEqual(result["persons"][0]["bbox"], {"x": 10.0, "y": 20.0, "width": 40.0, "height": 50.0})
         self.assertEqual(result["faces"][0]["candidate_id"], "face_1")
         self.assertEqual(result["texts"][0]["candidate_id"], "text_1")
+        self.assertNotIn("_frame_width", json.dumps(result))
+        self.assertNotIn("_frame_height", json.dumps(result))
 
     def test_bootstrap_models_uses_same_loader_and_reports_only_sanitized_success(self):
         with tempfile.TemporaryDirectory() as root:

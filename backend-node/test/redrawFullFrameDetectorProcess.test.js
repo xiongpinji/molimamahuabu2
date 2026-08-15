@@ -13,6 +13,7 @@ const {
 const {
   parseArgs,
   resolveOfficialComponent,
+  venvPython,
   runFetchModels,
 } = require('../scripts/fetch-redraw-full-frame-models-local');
 
@@ -166,9 +167,23 @@ test('detectFrames rejects invalid inputs and child protocol failures with a sta
 test('fetch model CLI args only accept help or an output directory', () => {
   assert.deepEqual(parseArgs(['--help']), { help: true });
   assert.deepEqual(parseArgs(['--output-dir', 'cache']), { outputDir: 'cache' });
-  for (const argv of [[], ['--output-dir'], ['--output-dir', 'a', '--output-dir', 'b'], ['--url', 'https://example.test'], ['--approved']]) {
+  for (const argv of [
+    [],
+    ['--output-dir'],
+    ['--output-dir', 'a', '--output-dir', 'b'],
+    ['--url', 'https://example.test'],
+    ['--approved'],
+    ['--output-dir', 'https://secret.example/cache'],
+    ['--output-dir', 'file:///C:/secret/cache'],
+    ['--output-dir', 'cache?api_key=secret'],
+    ['--output-dir', 'cache?authorization=Bearer-secret'],
+    ['--output-dir', 'cache?access-token=secret'],
+    ['--output-dir', 'cache?client_secret=secret'],
+    ['--output-dir', 'bad\u0000path'],
+  ]) {
     assert.throws(() => parseArgs(argv), /REDRAW_FULL_FRAME_OUTPUT_INVALID/);
   }
+  assert.deepEqual(parseArgs(['--output-dir', 'C:\\local\\cache']), { outputDir: 'C:\\local\\cache' });
 });
 
 test('runFetchModels builds a fixture cache, validates lock, and leaves no final directory on failure', async (t) => {
@@ -273,15 +288,29 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   };
   const parent = tempDir(t, 'redraw-runtime-');
   const fetchModule = require('../scripts/fetch-redraw-full-frame-models-local');
+  const expectedPython = venvPython(parent);
 
   await fetchModule.createVenv(parent, deps);
   await fetchModule.installRuntime(parent, [], deps);
   assert.deepEqual(await fetchModule.pipFreeze(parent, deps), ['pkg==1.0.0']);
   assert.equal(await fetchModule.pythonVersion(parent, deps), 'Python 3.11.9');
   await fetchModule.bootstrapWorker(parent, path.join(parent, 'model-lock.json'), deps);
+  assert.equal(calls[0].command, 'python-fixture');
+  assert(calls.slice(1).every((call) => call.command === expectedPython), JSON.stringify(calls));
   assert(calls.every((call) => Array.isArray(call.args)));
   assert(calls.every((call) => call.env.PYTHONUTF8 === '1'));
   assert(calls.every((call) => !Object.prototype.hasOwnProperty.call(call.env, 'OPENAI_API_KEY')));
+  const installArgs = calls
+    .filter((call) => call.args.includes('install'))
+    .flatMap((call) => call.args)
+    .filter((arg) => /^[A-Za-z0-9_.-]+[<>=!~]/.test(arg));
+  assert(installArgs.includes('numpy==1.26.4'));
+  assert(installArgs.includes('opencv-python-headless==4.10.0.84'));
+  assert(installArgs.includes('torch==2.3.1'));
+  assert(installArgs.includes('mediapipe==0.10.14'));
+  assert(installArgs.includes('paddlepaddle==2.6.2'));
+  assert(installArgs.includes('paddleocr==2.8.1'));
+  assert(installArgs.every((arg) => /^[A-Za-z0-9_.-]+==[A-Za-z0-9_.!+-]+$/.test(arg)));
 
   await assert.rejects(
     fetchModule.pipFreeze(parent, { ...deps, spawnProcess: async () => 'pkg>=1.0.0\n' }),

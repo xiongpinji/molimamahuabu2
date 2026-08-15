@@ -47,6 +47,13 @@ const OFFICIAL_CATALOG = Object.freeze({
 const RUNTIME_PACKAGES = Object.freeze([
   'setuptools==80.9.0',
   'wheel==0.43.0',
+  'numpy==1.26.4',
+  'opencv-python-headless==4.10.0.84',
+  'torch==2.3.1',
+  'yolox==0.3.0',
+  'mediapipe==0.10.14',
+  'paddlepaddle==2.6.2',
+  'paddleocr==2.8.1',
 ]);
 
 function error(code) {
@@ -67,7 +74,14 @@ function sanitizeEnv(env = process.env) {
 function parseArgs(argv) {
   if (argv.length === 1 && argv[0] === '--help') return { help: true };
   if (argv.length !== 2 || argv[0] !== '--output-dir' || !argv[1]) throw error(OUTPUT_ERROR);
+  assertSafeOutputDirArg(argv[1]);
   return { outputDir: argv[1] };
+}
+
+function assertSafeOutputDirArg(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.includes('\0')) throw error(OUTPUT_ERROR);
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value) && !/^[A-Za-z]:[\\/]/.test(value)) throw error(OUTPUT_ERROR);
+  if (/(^|[?&#;_\-\s])(api[_-]?key|authorization|token|secret)=/i.test(value)) throw error(OUTPUT_ERROR);
 }
 
 function sha256(bytes) {
@@ -284,6 +298,12 @@ function runtimePython(deps = {}) {
   return python;
 }
 
+function venvPython(staging) {
+  return process.platform === 'win32'
+    ? path.join(staging, '.venv', 'Scripts', 'python.exe')
+    : path.join(staging, '.venv', 'bin', 'python');
+}
+
 async function createVenv(staging, deps = {}) {
   const runner = deps.spawnProcess || spawnProcess;
   await runner(runtimePython(deps), ['-m', 'venv', '.venv'], { cwd: staging, env: sanitizeEnv(deps.env) });
@@ -291,7 +311,7 @@ async function createVenv(staging, deps = {}) {
 
 async function installRuntime(staging, _components = [], deps = {}) {
   const runner = deps.spawnProcess || spawnProcess;
-  const python = runtimePython(deps);
+  const python = venvPython(staging);
   for (const requirement of RUNTIME_PACKAGES) {
     if (!/^[A-Za-z0-9_.-]+==[A-Za-z0-9_.!+-]+$/.test(requirement)) throw error(MODEL_ERROR);
     await runner(python, ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', requirement], { cwd: staging, env: sanitizeEnv(deps.env) });
@@ -300,19 +320,19 @@ async function installRuntime(staging, _components = [], deps = {}) {
 
 async function pipFreeze(staging, deps = {}) {
   const runner = deps.spawnProcess || spawnProcess;
-  const output = await runner(runtimePython(deps), ['-m', 'pip', 'freeze'], { cwd: staging, env: sanitizeEnv(deps.env) });
+  const output = await runner(venvPython(staging), ['-m', 'pip', 'freeze'], { cwd: staging, env: sanitizeEnv(deps.env) });
   return assertPinnedFreeze(String(output).split(/\r?\n/));
 }
 
 async function pythonVersion(staging, deps = {}) {
   const runner = deps.spawnProcess || spawnProcess;
-  return String(await runner(runtimePython(deps), ['--version'], { cwd: staging, env: sanitizeEnv(deps.env) })).trim();
+  return String(await runner(venvPython(staging), ['--version'], { cwd: staging, env: sanitizeEnv(deps.env) })).trim();
 }
 
 async function bootstrapWorker(staging, _modelLockPath, deps = {}) {
   const runner = deps.spawnProcess || spawnProcess;
   const worker = path.resolve(__dirname, '../../workers/redraw-full-frame-auditor/src/redraw_full_frame_auditor/worker.py');
-  await runner(runtimePython(deps), [worker, 'bootstrap', '--model-lock', 'model-lock.json'], { cwd: staging, env: sanitizeEnv(deps.env) });
+  await runner(venvPython(staging), [worker, 'bootstrap', '--model-lock', path.join(staging, 'model-lock.json')], { cwd: staging, env: sanitizeEnv(deps.env) });
 }
 
 async function runFetchModels(options, injectedDeps = {}) {
@@ -402,6 +422,7 @@ if (require.main === module) {
 module.exports = {
   parseArgs,
   resolveOfficialComponent,
+  venvPython,
   createVenv,
   installRuntime,
   pipFreeze,
