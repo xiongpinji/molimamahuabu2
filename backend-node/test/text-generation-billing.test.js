@@ -141,6 +141,27 @@ test('文本生成明确失败时退回预扣积分', (t) => {
   });
 });
 
+test('文本生成结果未知时保留预扣等待人工核对', (t) => {
+  const db = setup();
+  t.after(() => db.close());
+  const billing = textBilling.begin(db, {
+    enabled: true,
+    tenantId: 'tenant-a',
+    userId: 'user-1',
+    requestedModel: 'GPT-5.5',
+    resourceType: 'canvas_text',
+    resourceId: 'node-unknown',
+    operation: 'canvas_text',
+  });
+
+  const settled = textBilling.settle(db, log, billing, 'needs_attention');
+
+  assert.equal(settled.status, 'held');
+  assert.deepEqual(credits.getTenantAccount(db, 'tenant-a'), {
+    tenant_id: 'tenant-a', available: 15, held: 5, spent: 0,
+  });
+});
+
 test('关闭公开计费时只解析请求模型且不创建预扣', (t) => {
   const db = setup({ withPrice: false });
   t.after(() => db.close());
