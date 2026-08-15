@@ -29,8 +29,8 @@
       ],
       "fixCommit": "9fe8285f737fabe57078f6615c72223b4b5b9e14",
       "unlock": {
-        "reason": "收敛实时生产逻辑模型容灾配置并保留连接变更后撤销验证的安全合同",
-        "approvedBy": "product-owner 2026-08-15",
+        "reason": "兼容实时生产旧库 pending 默认值并强制新配置从 unverified 开始",
+        "approvedBy": "product-owner 2026-08-15 production-schema-compat",
         "impactTests": [
           "backend-node/test/providerRouteStability.test.js",
           "backend-node/test/aiConfigPublicView.test.js",
