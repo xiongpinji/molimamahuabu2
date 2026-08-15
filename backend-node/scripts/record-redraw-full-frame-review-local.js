@@ -159,8 +159,13 @@ function parseCorrections(raw) {
 }
 
 async function runDecide({ decisions, frameIndex, decision, correctionJson }) {
+  let lockHandle;
+  let lockPath;
+  let temp;
   try {
     const abs = await assertRegularNoLink(decisions);
+    lockPath = `${abs}.lock`;
+    lockHandle = await fsp.open(lockPath, 'wx').catch(() => fail());
     const beforeBytes = await fsp.readFile(abs);
     const beforeSha = sha256(beforeBytes);
     const parsed = JSON.parse(beforeBytes.toString('utf8'));
@@ -172,18 +177,24 @@ async function runDecide({ decisions, frameIndex, decision, correctionJson }) {
     }
     const point = parsed.review_points?.find((item) => item.frame_index === frameIndex);
     if (!point) fail();
+    if (point.decision !== 'pending' || point.corrections.length !== 0) fail();
     point.decision = decision;
     point.corrections = decision === 'accepted' ? [] : parseCorrections(correctionJson);
     const nextBytes = Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`);
-    const temp = path.join(path.dirname(abs), `.tmp-${path.basename(abs)}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
+    temp = path.join(path.dirname(abs), `.tmp-${path.basename(abs)}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
     await fsp.writeFile(temp, nextBytes, { flag: 'wx' });
     const currentBytes = await fsp.readFile(abs);
     if (sha256(currentBytes) !== beforeSha) fail();
     await fsp.rename(temp, abs);
+    temp = null;
     return parsed;
   } catch (error) {
     if (error?.code && /^REDRAW_FULL_FRAME_/.test(error.code)) throw error;
     fail();
+  } finally {
+    if (lockHandle) await lockHandle.close().catch(() => {});
+    if (temp) await fsp.rm(temp, { force: true }).catch(() => {});
+    if (lockPath && lockHandle) await fsp.rm(lockPath, { force: true }).catch(() => {});
   }
 }
 

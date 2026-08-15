@@ -14,6 +14,7 @@ const REVIEWER = 'codex-local-review';
 const DECISIONS_SCHEMA = 'redraw-full-frame-review-decisions-v1';
 const SUMMARY_SCHEMA = 'redraw-full-frame-review-summary-v1';
 const HASH_RE = /^[a-f0-9]{64}$/;
+const SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
 const SAFE_VALUE_RE = /(https?:\/\/|file:\/\/|[A-Za-z]:\\|\/[A-Za-z0-9_.-]+\/|api[_-]?key\s*=|authorization\s*=|bearer\s+|token\s*=|secret\s*=)/i;
 const FORBIDDEN_KEYS = new Set([
   'path',
@@ -112,6 +113,12 @@ function assertString(value, code = 'REDRAW_FULL_FRAME_REVIEW_INCOMPLETE') {
   return value;
 }
 
+function assertSegment(value, code = 'REDRAW_FULL_FRAME_REVIEW_INCOMPLETE') {
+  assertString(value, code);
+  if (!SEGMENT_RE.test(value)) fail(code);
+  return value;
+}
+
 function assertMaybeString(value, code = 'REDRAW_FULL_FRAME_REVIEW_INCOMPLETE') {
   if (value === null) return null;
   return assertString(value, code);
@@ -206,7 +213,7 @@ function normalizeCorrection(correction, frameIndex, source) {
       if (correction.frame_index !== frameIndex) fail('REDRAW_FULL_FRAME_REVIEW_INCOMPLETE');
       if (!VISIBILITY.has(correction.visibility)) fail('REDRAW_FULL_FRAME_REVIEW_INCOMPLETE');
       validatePersonContract(correction.kind, correction.source_character_key, correction.target_strategy);
-      return { ...correction, region_id: assertString(correction.region_id), track_key: assertString(correction.track_key), bbox: validateBBox(correction.bbox, source) };
+      return { ...correction, region_id: assertSegment(correction.region_id), track_key: assertString(correction.track_key), bbox: validateBBox(correction.bbox, source) };
     case 'remove_person_candidate':
       assertExactKeys(correction, ['action', 'region_id']);
       return { action: correction.action, region_id: assertString(correction.region_id) };
@@ -224,7 +231,7 @@ function normalizeCorrection(correction, frameIndex, source) {
       assertExactKeys(correction, ['action', 'region_id', 'frame_index', 'region_key', 'polygon', 'kind', 'treatment', 'target_text_key']);
       if (correction.frame_index !== frameIndex) fail('REDRAW_FULL_FRAME_REVIEW_INCOMPLETE');
       validateTextContract(correction.kind, correction.treatment, correction.target_text_key);
-      return { ...correction, region_id: assertString(correction.region_id), region_key: assertString(correction.region_key), polygon: validatePolygon(correction.polygon, source) };
+      return { ...correction, region_id: assertSegment(correction.region_id), region_key: assertString(correction.region_key), polygon: validatePolygon(correction.polygon, source) };
     case 'remove_text_candidate':
       assertExactKeys(correction, ['action', 'region_id']);
       return { action: correction.action, region_id: assertString(correction.region_id) };
@@ -450,17 +457,40 @@ async function assertLocalDir(root) {
   return fsp.realpath(root);
 }
 
+function safeJoin(root, relativePath, code = 'REDRAW_FULL_FRAME_OUTPUT_INVALID') {
+  if (typeof relativePath !== 'string' || relativePath.length === 0 || relativePath.includes('\0') || path.isAbsolute(relativePath) || path.win32.isAbsolute(relativePath) || path.posix.isAbsolute(relativePath)) fail(code);
+  const normalized = relativePath.replace(/\\/g, '/');
+  if (normalized.split('/').some((segment) => !segment || segment === '.' || segment === '..')) fail(code);
+  const target = path.resolve(root, normalized);
+  if (!insideOrSame(root, target)) fail(code);
+  return target;
+}
+
+async function assertNoLinkAncestors(root, target) {
+  const relative = path.relative(root, target);
+  if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
+  let current = root;
+  const parts = relative.split(path.sep).filter(Boolean);
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    current = path.join(current, parts[index]);
+    const stat = await fsp.lstat(current).catch(() => null);
+    if (stat && (stat.isSymbolicLink() || !stat.isDirectory())) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
+  }
+}
+
 async function snapshotTree(root) {
   const rootReal = await assertLocalDir(root);
-  const entries = [];
+  const entries = [{ path: '', type: 'dir' }];
   async function walk(dir) {
     for (const name of (await fsp.readdir(dir)).sort()) {
       const abs = path.join(dir, name);
       const stat = await fsp.lstat(abs);
       if (stat.isSymbolicLink()) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
       const rel = path.relative(rootReal, abs).replace(/\\/g, '/');
-      if (stat.isDirectory()) await walk(abs);
-      else if (stat.isFile()) entries.push({ path: rel, size: Number(stat.size), sha256: sha256(await fsp.readFile(abs)) });
+      if (stat.isDirectory()) {
+        entries.push({ path: rel, type: 'dir' });
+        await walk(abs);
+      } else if (stat.isFile()) entries.push({ path: rel, type: 'file', size: Number(stat.size), sha256: sha256(await fsp.readFile(abs)) });
       else fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
     }
   }
@@ -470,9 +500,13 @@ async function snapshotTree(root) {
 
 async function copyTree(src, dst) {
   const snap = await snapshotTree(src);
+  for (const entry of snap.entries.filter((item) => item.type === 'dir' && item.path)) {
+    await fsp.mkdir(safeJoin(dst, entry.path), { recursive: true });
+  }
   for (const entry of snap.entries) {
+    if (entry.type !== 'file') continue;
     const from = path.join(snap.rootReal, entry.path);
-    const to = path.join(dst, entry.path);
+    const to = safeJoin(dst, entry.path);
     const bytes = await fsp.readFile(from);
     if (sha256(bytes) !== entry.sha256) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
     await fsp.mkdir(path.dirname(to), { recursive: true });
@@ -486,6 +520,19 @@ async function writeAtomic(filePath, bytesOrText) {
   const temp = path.join(path.dirname(filePath), `.tmp-${path.basename(filePath)}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
   await fsp.writeFile(temp, bytesOrText, { flag: 'wx' });
   await fsp.rename(temp, filePath);
+}
+
+async function writeAtomicInside(root, baseRelative, fileRelative, bytesOrText) {
+  const rootReal = await fsp.realpath(root);
+  const base = safeJoin(rootReal, baseRelative);
+  await fsp.mkdir(base, { recursive: true });
+  const target = safeJoin(base, fileRelative);
+  await assertNoLinkAncestors(rootReal, target);
+  await writeAtomic(target, bytesOrText);
+  const stat = await fsp.lstat(target);
+  if (!stat.isFile() || stat.isSymbolicLink()) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
+  const real = await fsp.realpath(target);
+  if (!insideOrSame(base, real)) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
 }
 
 async function writeJson(filePath, value) {
@@ -517,7 +564,7 @@ async function writePendingMasks(staging, manifest, pendingMasks) {
       const pixels = Buffer.alloc(manifest.source.width * manifest.source.height, 0);
       fillBox(pixels, manifest.source.width, pending.bbox);
       const bytes = await sharp(pixels, { raw: { width: manifest.source.width, height: manifest.source.height, channels: 1 } }).toColourspace('b-w').png().toBuffer();
-      await writeAtomic(path.join(staging, region.mask.path), bytes);
+      await writeAtomicInside(staging, 'masks/review/person', `${pending.region_id}.png`, bytes);
       region.mask.sha256 = sha256(bytes);
     }
   }
@@ -528,7 +575,7 @@ async function writePendingMasks(staging, manifest, pendingMasks) {
       const pixels = Buffer.alloc(manifest.source.width * manifest.source.height, 0);
       fillPolygon(pixels, manifest.source.width, pending.polygon);
       const bytes = await sharp(pixels, { raw: { width: manifest.source.width, height: manifest.source.height, channels: 1 } }).toColourspace('b-w').png().toBuffer();
-      await writeAtomic(path.join(staging, region.mask.path), bytes);
+      await writeAtomicInside(staging, 'masks/review/text', `${pending.region_id}.png`, bytes);
       region.mask.sha256 = sha256(bytes);
     }
   }
@@ -632,6 +679,7 @@ function htmlEscape(value) {
 }
 
 async function writeReviewedArtifacts(staging, manifest) {
+  if (!Array.isArray(manifest.shots) || manifest.shots.length !== 9) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
   const personByFrame = new Map(manifest.frames.map((frame) => [frame.frame_index, []]));
   const textByFrame = new Map(manifest.frames.map((frame) => [frame.frame_index, []]));
   for (const track of manifest.person_tracks) for (const region of track.regions) personByFrame.get(region.frame_index).push(region);
@@ -666,6 +714,7 @@ async function writeReviewedArtifacts(staging, manifest) {
     await writeAtomic(path.join(staging, relative), bytes);
     sheets.push(relative);
   }
+  if (sheets.length !== 9) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
   const html = [
     '<!doctype html><html><head><meta charset="utf-8"><title>Redraw Full Frame Reviewed</title></head><body>',
     '<h1>Redraw Full Frame Reviewed</h1>',
@@ -701,7 +750,66 @@ function toReviewedManifest(generated) {
   return reviewed;
 }
 
+async function validateReviewedCoverageManifest({ evidenceRoot, manifest }) {
+  try {
+    assertExactKeys(manifest, [
+      'schema_version',
+      'status',
+      'source',
+      'models',
+      'shots',
+      'frames',
+      'person_tracks',
+      'text_tracks',
+      'review',
+      'unresolved_person_count',
+      'unresolved_text_region_count',
+      'approval_status',
+      'ready_for_reference',
+      'analysis_sha256',
+    ], 'REDRAW_FULL_FRAME_OUTPUT_INVALID');
+    if (manifest.schema_version !== 'redraw-full-frame-coverage-v1' || manifest.status !== 'reviewed') fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
+    if (!Array.isArray(manifest.shots) || manifest.shots.length !== 9) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
+    assertExactKeys(manifest.review, ['status', 'reviewed', 'required_review_point_count', 'reviewed_point_count', 'reviewer'], 'REDRAW_FULL_FRAME_OUTPUT_INVALID');
+    if (manifest.review.status !== 'reviewed' || manifest.review.reviewed !== true || manifest.review.reviewer !== REVIEWER) fail('REDRAW_FULL_FRAME_APPROVAL_FORBIDDEN');
+    if (manifest.review.required_review_point_count !== manifest.review.reviewed_point_count) fail('REDRAW_FULL_FRAME_APPROVAL_FORBIDDEN');
+    if (manifest.approval_status !== 'pending' || manifest.ready_for_reference !== false) fail('REDRAW_FULL_FRAME_APPROVAL_FORBIDDEN');
+    for (const frame of manifest.frames) {
+      if (frame.review_status !== (frame.review_point_reasons.length > 0 ? 'reviewed' : 'not_required')) fail('REDRAW_FULL_FRAME_APPROVAL_FORBIDDEN');
+    }
+    for (const track of [...manifest.person_tracks, ...manifest.text_tracks]) {
+      if (track.review_status !== 'reviewed' || track.reviewer !== REVIEWER) fail('REDRAW_FULL_FRAME_APPROVAL_FORBIDDEN');
+    }
+    if (canonicalCoverageSha256(manifest) !== manifest.analysis_sha256) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
+    const generatedLike = clone(manifest);
+    generatedLike.status = 'generated';
+    for (const frame of generatedLike.frames) frame.review_status = frame.review_point_reasons.length > 0 ? 'pending' : 'not_required';
+    for (const track of generatedLike.person_tracks) {
+      track.review_status = 'pending';
+      track.reviewer = null;
+    }
+    for (const track of generatedLike.text_tracks) {
+      track.review_status = 'pending';
+      track.reviewer = null;
+    }
+    generatedLike.review = {
+      status: 'pending',
+      required_review_point_count: manifest.review.required_review_point_count,
+      reviewed_point_count: 0,
+      reviewer: null,
+    };
+    generatedLike.analysis_sha256 = canonicalCoverageSha256(generatedLike);
+    await validateGeneratedCoverageManifest({ evidenceRoot, manifest: generatedLike });
+    return clone(manifest);
+  } catch (error) {
+    sanitize(error, 'REDRAW_FULL_FRAME_OUTPUT_INVALID');
+  }
+}
+
 async function verifyOutput(staging, sheets) {
+  if (!Array.isArray(sheets) || sheets.length !== 9) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
+  const reviewed = JSON.parse(await fsp.readFile(path.join(staging, 'redraw-full-frame-reviewed-manifest.json'), 'utf8'));
+  await validateReviewedCoverageManifest({ evidenceRoot: staging, manifest: reviewed });
   const required = [
     'redraw-full-frame-reviewed-manifest.json',
     'review-correction-summary.json',
@@ -778,6 +886,12 @@ async function finalizeReviewedCoverage({ analysisRoot, decisions, outputRoot })
     if (stableJson(before.entries) !== stableJson(after.entries)) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
     await publish(staging, outputResolved);
     published = true;
+    const afterPublish = await snapshotTree(analysisReal);
+    if (stableJson(before.entries) !== stableJson(afterPublish.entries)) {
+      await fsp.rm(outputResolved, { recursive: true, force: true }).catch(() => {});
+      published = false;
+      fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
+    }
     return {
       reviewed_manifest: reviewed,
       summary,
@@ -800,6 +914,7 @@ module.exports = {
   finalizeReviewedCoverage,
   normalizeReviewDecisions,
   applyCorrections,
+  validateReviewedCoverageManifest,
   REVIEWER,
   DECISIONS_SCHEMA,
 };
