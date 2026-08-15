@@ -2604,12 +2604,12 @@ function createAndGenerateImage(db, log, opts) {
       // 兼容旧库无 completed_at：先试完整 UPDATE，失败则只更新必有列
       try {
         db.prepare(
-          'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?'
+          'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, error_msg = NULL, completed_at = ?, updated_at = ? WHERE id = ?'
         ).run('completed', result.image_url, localPath, now2, now2, imageGenId);
       } catch (e) {
         if ((e.message || '').includes('completed_at')) {
           db.prepare(
-            'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, updated_at = ? WHERE id = ?'
+            'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, error_msg = NULL, updated_at = ? WHERE id = ?'
           ).run('completed', result.image_url, localPath, now2, imageGenId);
         } else {
           throw e;
@@ -2633,7 +2633,7 @@ function createAndGenerateImage(db, log, opts) {
             image_url: result.image_url,
             local_path: localPath,
           });
-          db.prepare('UPDATE characters SET image_url = ?, local_path = ?, extra_images = ?, updated_at = ? WHERE id = ?').run(
+          db.prepare('UPDATE characters SET image_url = ?, local_path = ?, extra_images = ?, error_msg = NULL, updated_at = ? WHERE id = ?').run(
             result.image_url,
             localPath,
             extraJson,
@@ -2642,7 +2642,7 @@ function createAndGenerateImage(db, log, opts) {
           );
         } catch (e) {
           if ((e.message || '').includes('local_path') || (e.message || '').includes('extra_images')) {
-            db.prepare('UPDATE characters SET image_url = ?, updated_at = ? WHERE id = ?').run(result.image_url, now2, charIdNum);
+            db.prepare('UPDATE characters SET image_url = ?, error_msg = NULL, updated_at = ? WHERE id = ?').run(result.image_url, now2, charIdNum);
           } else {
             throw e;
           }
@@ -2664,13 +2664,13 @@ function createAndGenerateImage(db, log, opts) {
             if (!Array.isArray(extras)) extras = [];
             if (oldPath && !extras.includes(oldPath)) extras.push(oldPath);
             const extraJson = extras.length ? JSON.stringify(extras) : null;
-            db.prepare('UPDATE scenes SET image_url = ?, local_path = ?, extra_images = ?, updated_at = ? WHERE id = ?').run(
+            db.prepare('UPDATE scenes SET image_url = ?, local_path = ?, extra_images = ?, error_msg = NULL, updated_at = ? WHERE id = ?').run(
               result.image_url, localPath, extraJson, now2, sceneIdNum
             );
           }
         } catch (e) {
           if ((e.message || '').includes('local_path') || (e.message || '').includes('extra_images')) {
-            db.prepare('UPDATE scenes SET image_url = ?, updated_at = ? WHERE id = ?').run(result.image_url, now2, sceneIdNum);
+            db.prepare('UPDATE scenes SET image_url = ?, error_msg = NULL, updated_at = ? WHERE id = ?').run(result.image_url, now2, sceneIdNum);
           } else {
             throw e;
           }

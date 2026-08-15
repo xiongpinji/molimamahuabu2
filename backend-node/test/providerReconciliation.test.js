@@ -71,6 +71,8 @@ test('submitting 未知请求转 needs_attention 并保持积分冻结且重复�
   t.after(() => db.close());
   const reservation = reserve(db, 'unknown-submit');
   createRoute(db, config, reservation, 'unknown-submit');
+  db.prepare(`UPDATE generation_route_attempts SET started_at = ?
+    WHERE request_id = ?`).run('2026-08-15T11:30:00.000Z', 'route-unknown-submit');
 
   const first = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:00:00.000Z');
   const second = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:01:00.000Z');
@@ -85,6 +87,31 @@ test('submitting 未知请求转 needs_attention 并保持积分冻结且重复�
   assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
   assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM provider_stability_events
     WHERE request_id = ? AND event_type = 'provider_request_needs_attention'`).get('route-unknown-submit').count, 1);
+});
+
+test('仍在正常等待窗口内的 submitting 请求不会被提前标记为结果未知', (t) => {
+  const { db, config } = setup();
+  t.after(() => db.close());
+  const reservation = reserve(db, 'fresh-submit');
+  createRoute(db, config, reservation, 'fresh-submit');
+  db.prepare(`UPDATE generation_route_attempts SET started_at = ?
+    WHERE request_id = ?`).run('2026-08-15T11:59:30.000Z', 'route-fresh-submit');
+
+  const result = providerReconciliation.reconcileProviderRequests(
+    db,
+    log,
+    '2026-08-15T12:00:00.000Z',
+  );
+
+  assert.equal(result.processed, 0);
+  assert.equal(db.prepare('SELECT state FROM generation_route_requests').get().state, 'running');
+  assert.equal(db.prepare('SELECT state, error_category FROM generation_route_attempts').get().state,
+    'submitting');
+  assert.equal(db.prepare('SELECT error_category FROM generation_route_attempts').get().error_category,
+    null);
+  assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM provider_stability_events
+    WHERE request_id = ?`).get('route-fresh-submit').count, 0);
 });
 
 test('artifact_unreadable 保持冻结并只产生一次管理员事件', (t) => {

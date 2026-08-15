@@ -207,7 +207,8 @@ function recordAcceptedTask(db, input) {
 function recordArtifactVerified(db, input) {
   const now = input.now || new Date().toISOString();
   db.transaction(() => {
-    db.prepare(`UPDATE generation_route_attempts SET state = 'succeeded', finished_at = ?
+    db.prepare(`UPDATE generation_route_attempts SET state = 'succeeded', error_category = NULL,
+      safe_error_summary = NULL, finished_at = ?
       WHERE request_id = ? AND attempt_no = ?`).run(now, input.requestId, input.attemptNo);
     db.prepare(`UPDATE generation_route_requests
       SET state = 'succeeded', final_config_id = ?, updated_at = ? WHERE id = ?`)

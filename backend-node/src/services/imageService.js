@@ -1767,7 +1767,7 @@ async function processImageGeneration(db, log, imageGenId) {
 
     // ── Step 6: 写库 & 任务完成 ──────────────────────────────────────
     db.prepare(
-      'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?'
+      'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, error_msg = NULL, completed_at = ?, updated_at = ? WHERE id = ?'
     ).run('completed', persistedImageUrl, localPath, now2, now2, imageGenId);
     if (row.task_id) {
       taskService.updateTaskResult(db, row.task_id, {
@@ -1788,12 +1788,12 @@ async function processImageGeneration(db, log, imageGenId) {
       if (oldPath && !sceneExtras.includes(oldPath)) sceneExtras.push(oldPath);
       const sceneExtraJson = sceneExtras.length ? JSON.stringify(sceneExtras) : null;
       try {
-        db.prepare("UPDATE scenes SET image_url = ?, local_path = ?, extra_images = ?, status = 'generated', updated_at = ? WHERE id = ?").run(
+        db.prepare("UPDATE scenes SET image_url = ?, local_path = ?, extra_images = ?, error_msg = NULL, status = 'generated', updated_at = ? WHERE id = ?").run(
           persistedImageUrl, localPath, sceneExtraJson, now2, row.scene_id
         );
       } catch (e) {
         if ((e.message || '').includes('extra_images')) {
-          db.prepare("UPDATE scenes SET image_url = ?, local_path = ?, status = 'generated', updated_at = ? WHERE id = ?").run(
+          db.prepare("UPDATE scenes SET image_url = ?, local_path = ?, error_msg = NULL, status = 'generated', updated_at = ? WHERE id = ?").run(
             persistedImageUrl, localPath, now2, row.scene_id
           );
         } else {
