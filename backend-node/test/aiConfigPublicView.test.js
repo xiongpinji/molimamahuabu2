@@ -61,6 +61,48 @@ test('管理员可配置逻辑模型和容灾开关但不能直接标记已验�
   db.close();
 });
 
+test('旧生产库默认 pending 时新配置仍从 unverified 开始', () => {
+  const db = new Database(':memory:');
+  db.exec(`CREATE TABLE ai_service_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_type TEXT NOT NULL,
+    provider TEXT,
+    api_protocol TEXT,
+    name TEXT,
+    base_url TEXT,
+    api_key TEXT,
+    model TEXT,
+    default_model TEXT,
+    endpoint TEXT,
+    query_endpoint TEXT,
+    priority INTEGER DEFAULT 0,
+    is_default INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    settings TEXT,
+    logical_model_id TEXT,
+    failover_enabled INTEGER NOT NULL DEFAULT 0,
+    verification_status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT,
+    updated_at TEXT,
+    deleted_at TEXT
+  )`);
+
+  const created = aiConfigService.createConfig(db, { info() {} }, {
+    service_type: 'image',
+    provider: 'relay',
+    name: 'Relay',
+    base_url: 'https://relay.example/v1',
+    api_key: 'secret',
+    model: ['upstream-image'],
+    default_model: 'upstream-image',
+    logical_model_id: 'logical-image',
+    failover_enabled: true,
+  });
+
+  assert.equal(created.verification_status, 'unverified');
+  db.close();
+});
+
 test('普通用户模型目录只返回已验证逻辑模型并合并供应商', () => {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
