@@ -61,8 +61,9 @@ test('canvas model catalog exposes video resolution prices to the node editor', 
   runMigrationsAndEnsure(db);
   const now = new Date().toISOString();
   db.prepare(`INSERT INTO ai_service_configs
-    (service_type, provider, name, model, default_model, is_active, settings, created_at, updated_at)
-    VALUES ('video', 'test', 'Resolution Video', ?, 'resolution-video', 1, ?, ?, ?)`)
+    (service_type, provider, name, model, default_model, is_active, settings,
+      verification_status, created_at, updated_at)
+    VALUES ('video', 'test', 'Resolution Video', ?, 'resolution-video', 1, ?, 'verified', ?, ?)`)
     .run(JSON.stringify(['resolution-video']), JSON.stringify({
       canvas_capabilities: { resolutions: ['480p', '720p'] },
     }), now, now);
@@ -85,7 +86,6 @@ test('canvas model catalog exposes video resolution prices to the node editor', 
 test('canvas model catalog exposes only the selected verified config identity', () => {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
-  db.exec('ALTER TABLE ai_service_configs ADD COLUMN verification_status TEXT');
   const now = new Date().toISOString();
   const insert = db.prepare(`INSERT INTO ai_service_configs
     (service_type, provider, name, base_url, api_key, model, default_model, priority,
@@ -142,11 +142,11 @@ test('verified catalog excludes environment fallbacks while legacy schema keeps 
 
     verifiedDb = new Database(':memory:');
     runMigrationsAndEnsure(verifiedDb);
-    verifiedDb.exec('ALTER TABLE ai_service_configs ADD COLUMN verification_status TEXT');
     assert.equal(catalog.list(verifiedDb).some((row) => row.model === 'environment-fallback-image'), false);
 
     legacyDb = new Database(':memory:');
     runMigrationsAndEnsure(legacyDb);
+    legacyDb.exec('ALTER TABLE ai_service_configs DROP COLUMN verification_status');
     assert.equal(catalog.list(legacyDb).some((row) => row.model === 'environment-fallback-image'), true);
   } finally {
     verifiedDb?.close();
