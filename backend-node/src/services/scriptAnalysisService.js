@@ -484,7 +484,7 @@ function validateProductionPackage(value, {
   return value;
 }
 
-async function runAnalysis({ db, log, project, skill, strategyPreset }) {
+async function runAnalysis({ db, log, project, skill, strategyPreset, generationOptions = {} }) {
   const selectedSkill = skill || resolveScriptAnalysisSkill();
   const raw = await aiClient.generateText(
     db,
@@ -497,6 +497,7 @@ async function runAnalysis({ db, log, project, skill, strategyPreset }) {
       temperature: 0.3,
       json_mode: true,
       max_tokens: 12000,
+      ...generationOptions,
     },
   );
   const normalized = normalizeProductionPackage(
@@ -516,7 +517,15 @@ async function runAnalysis({ db, log, project, skill, strategyPreset }) {
   });
 }
 
-async function runRevision({ db, log, project, currentPackage, note, skill }) {
+async function runRevision({
+  db,
+  log,
+  project,
+  currentPackage,
+  note,
+  skill,
+  generationOptions = {},
+}) {
   const selectedSkill = skill || resolveScriptAnalysisSkill();
   const raw = await aiClient.generateText(
     db,
@@ -529,6 +538,7 @@ async function runRevision({ db, log, project, currentPackage, note, skill }) {
       temperature: 0.2,
       json_mode: true,
       max_tokens: 12000,
+      ...generationOptions,
     },
   );
   const normalized = normalizeProductionPackage(

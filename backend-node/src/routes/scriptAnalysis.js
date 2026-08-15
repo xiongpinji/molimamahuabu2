@@ -26,6 +26,7 @@ const {
 const {
   listStrategyPresets,
 } = require('../services/shortDramaProductionDirector');
+const textGenerationBilling = require('../services/text-generation-billing-service');
 
 function parseJSON(value, fallback) {
   if (!value) return fallback;
@@ -66,9 +67,63 @@ function mapVersion(row) {
 
 const REVIEW_STATUSES = new Set(['approved', 'rejected', 'needs_review']);
 
-module.exports = function scriptAnalysisRoutes(db, log) {
+module.exports = function scriptAnalysisRoutes(db, log, options = {}) {
+  const billingEnabled = options.billingEnabled === undefined
+    ? /^(1|true|yes)$/i.test(String(process.env.PUBLIC_PLATFORM_MODE || ''))
+    : options.billingEnabled === true;
+
   function userId(req) {
     return String(req.user?.id || 'local');
+  }
+
+  function beginBilling(req, ownerId, project, operation) {
+    return textGenerationBilling.begin(db, {
+      enabled: billingEnabled,
+      tenantId: req.tenant?.id,
+      userId: ownerId,
+      requestedModel: req.body?.model,
+      sceneKey: 'story_generation',
+      resourceType: operation,
+      resourceId: project.id,
+      operation,
+    });
+  }
+
+  function generationOptions(billing) {
+    if (!billing?.reservationId) return {};
+    return {
+      model: billing.model,
+      tenantId: billing.tenantId,
+      userId: billing.userId,
+      creditReservationId: billing.reservationId,
+      idempotency_key: billing.reservationId,
+    };
+  }
+
+  function settleBilling(billing, error) {
+    textGenerationBilling.settle(
+      db,
+      log,
+      billing,
+      error
+        ? (error.code === 'TEXT_RESULT_UNKNOWN' ? 'needs_attention' : 'failed')
+        : 'completed',
+      error?.message || '',
+    );
+  }
+
+  function attachBillingToTask(task, ownerId, billing) {
+    db.prepare(`
+      UPDATE async_tasks
+      SET user_id = ?, tenant_id = ?, model = ?, credit_reservation_id = ?
+      WHERE id = ?
+    `).run(
+      ownerId,
+      billing.tenantId || null,
+      billing.model || null,
+      billing.reservationId || null,
+      task.id,
+    );
   }
 
   function findOwnedProject(id, ownerId) {
@@ -365,32 +420,46 @@ module.exports = function scriptAnalysisRoutes(db, log) {
             ? 'short-drama-production-director'
             : 'short-drama-director',
         );
+      let billing;
+      try {
+        billing = beginBilling(req, ownerId, project, 'script_analysis_revision');
+      } catch (error) {
+        if (textGenerationBilling.respondError(response, res, error)) return undefined;
+        log?.error?.({ err: error, projectId: project.id }, 'script analysis revision billing failed');
+        return response.internalError(res, error.message || '创建剧本分析修订任务失败');
+      }
       let task;
-      const transaction = db.transaction(() => {
-        task = createTask(db, log, 'script_analysis_revision', `script-analysis:${project.id}`);
-        db.prepare('UPDATE async_tasks SET user_id = ? WHERE id = ?').run(ownerId, task.id);
-        db.prepare(`
-          UPDATE script_analysis_versions
-          SET package_json = ?, approval_status = 'rejected'
-          WHERE project_id = ? AND version = ?
-        `).run(
-          JSON.stringify(reviewedPackage),
-          project.id,
-          project.current_version,
-        );
-        db.prepare(`
-          UPDATE script_analysis_projects
-          SET analysis_json = ?, review_json = ?, status = 'analyzing', updated_at = ?
-          WHERE id = ? AND user_id = ?
-        `).run(
-          JSON.stringify(reviewedPackage),
-          JSON.stringify(reviewResult),
-          now,
-          project.id,
-          ownerId,
-        );
-      });
-      transaction();
+      try {
+        const transaction = db.transaction(() => {
+          task = createTask(db, log, 'script_analysis_revision', `script-analysis:${project.id}`);
+          attachBillingToTask(task, ownerId, billing);
+          db.prepare(`
+            UPDATE script_analysis_versions
+            SET package_json = ?, approval_status = 'rejected'
+            WHERE project_id = ? AND version = ?
+          `).run(
+            JSON.stringify(reviewedPackage),
+            project.id,
+            project.current_version,
+          );
+          db.prepare(`
+            UPDATE script_analysis_projects
+            SET analysis_json = ?, review_json = ?, status = 'analyzing', updated_at = ?
+            WHERE id = ? AND user_id = ?
+          `).run(
+            JSON.stringify(reviewedPackage),
+            JSON.stringify(reviewResult),
+            now,
+            project.id,
+            ownerId,
+          );
+        });
+        transaction();
+      } catch (error) {
+        settleBilling(billing, error);
+        log?.error?.({ err: error, projectId: project.id }, 'script analysis revision task failed');
+        return response.internalError(res, error.message || '创建剧本分析修订任务失败');
+      }
 
       const rejectedVersion = Number(project.current_version);
       const work = new Promise((resolve) => {
@@ -405,6 +474,7 @@ module.exports = function scriptAnalysisRoutes(db, log) {
                 currentPackage: reviewedPackage,
                 note,
                 skill: selectedSkill,
+                generationOptions: generationOptions(billing),
               });
               const revisedAt = new Date().toISOString();
               const nextVersion = rejectedVersion + 1;
@@ -477,6 +547,7 @@ module.exports = function scriptAnalysisRoutes(db, log) {
                 version: nextVersion,
                 package: reviewablePackage,
               });
+              settleBilling(billing);
             } catch (error) {
               log?.error?.({ err: error, projectId: project.id }, 'script analysis revision failed');
               db.prepare(`
@@ -492,6 +563,7 @@ module.exports = function scriptAnalysisRoutes(db, log) {
                 rejectedVersion,
               );
               updateTaskError(db, task.id, error.message || '根据审核意见修改失败');
+              settleBilling(billing, error);
             }
           })();
           resolve(execution);
@@ -555,15 +627,32 @@ module.exports = function scriptAnalysisRoutes(db, log) {
     }, { requireSource: true });
     if (inputError) return response.badRequest(res, inputError);
 
-    const task = createTask(db, log, 'script_analysis', `script-analysis:${project.id}`);
-    db.prepare(`
-      UPDATE async_tasks SET user_id = ? WHERE id = ?
-    `).run(ownerId, task.id);
-    db.prepare(`
-      UPDATE script_analysis_projects
-      SET status = 'analyzing', updated_at = ?
-      WHERE id = ? AND user_id = ?
-    `).run(new Date().toISOString(), project.id, ownerId);
+    let billing;
+    try {
+      billing = beginBilling(req, ownerId, project, 'script_analysis');
+    } catch (error) {
+      if (textGenerationBilling.respondError(response, res, error)) return undefined;
+      log?.error?.({ err: error, projectId: project.id }, 'script analysis billing failed');
+      return response.internalError(res, error.message || '创建剧本分析任务失败');
+    }
+
+    let task;
+    try {
+      const transaction = db.transaction(() => {
+        task = createTask(db, log, 'script_analysis', `script-analysis:${project.id}`);
+        attachBillingToTask(task, ownerId, billing);
+        db.prepare(`
+          UPDATE script_analysis_projects
+          SET status = 'analyzing', updated_at = ?
+          WHERE id = ? AND user_id = ?
+        `).run(new Date().toISOString(), project.id, ownerId);
+      });
+      transaction();
+    } catch (error) {
+      settleBilling(billing, error);
+      log?.error?.({ err: error, projectId: project.id }, 'script analysis task failed');
+      return response.internalError(res, error.message || '创建剧本分析任务失败');
+    }
 
     const work = new Promise((resolve) => {
       setImmediate(async () => {
@@ -575,6 +664,7 @@ module.exports = function scriptAnalysisRoutes(db, log) {
             project,
             skill: selectedSkill,
             strategyPreset,
+            generationOptions: generationOptions(billing),
           });
           const reviewablePackage = {
             ...productionPackage,
@@ -625,6 +715,7 @@ module.exports = function scriptAnalysisRoutes(db, log) {
             version: nextVersion,
             package: reviewablePackage,
           });
+          settleBilling(billing);
         } catch (error) {
           log?.error?.({ err: error, projectId: project.id }, 'script analysis failed');
           db.prepare(`
@@ -638,6 +729,7 @@ module.exports = function scriptAnalysisRoutes(db, log) {
             ownerId,
           );
           updateTaskError(db, task.id, error.message || '剧本分析失败');
+          settleBilling(billing, error);
         } finally {
           resolve();
         }
