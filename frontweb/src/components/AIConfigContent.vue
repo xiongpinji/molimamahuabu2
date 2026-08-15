@@ -142,6 +142,11 @@
           </el-table>
         </div>
       </el-tab-pane>
+      <el-tab-pane label="稳定性" name="stability">
+        <div class="tab-content">
+          <ProviderStabilityPanel />
+        </div>
+      </el-tab-pane>
       <el-tab-pane label="高级设置（提示词）" name="prompts">
         <div class="tab-content">
           <PromptEditor />
@@ -1204,6 +1209,7 @@ import { generationSettingsAPI } from '@/api/prompts'
 import PromptEditor from '@/components/PromptEditor.vue'
 import SceneModelMap from '@/components/SceneModelMap.vue'
 import Sd2AssetManagement from '@/components/Sd2AssetManagement.vue'
+import ProviderStabilityPanel from '@/components/ProviderStabilityPanel.vue'
 import { VIDEO_DURATION_OPTIONS, mergeVideoDurationSetting, readVideoDurationSetting } from '@/utils/videoDuration'
 import { buildAiConfigRelayAssociations } from '@/utils/aiConfigRelayAssociation'
 

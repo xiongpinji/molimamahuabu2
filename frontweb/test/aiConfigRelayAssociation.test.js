@@ -1,5 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
 
 import { buildAiConfigRelayAssociations } from '../src/utils/aiConfigRelayAssociation.js'
 
@@ -65,4 +67,19 @@ test('拒绝非 HTTP(S) 和非法 URL，仅显示安全占位域名', () => {
 test('无模型时不生成关联项', () => {
   assert.deepEqual(buildAiConfigRelayAssociations({ model: [] }), [])
   assert.deepEqual(buildAiConfigRelayAssociations({ model: ' , ， ' }), [])
+})
+
+test('中转关联和稳定性组件只挂载在管理员模型配置页', () => {
+  const root = path.join(import.meta.dirname, '..', 'src')
+  const admin = fs.readFileSync(path.join(root, 'components/AIConfigContent.vue'), 'utf8')
+  assert.match(admin, /ProviderStabilityPanel/)
+  for (const relative of [
+    'views/DramaCanvas.vue',
+    'views/ScriptAnalysis.vue',
+    'views/FilmList.vue',
+    'views/FilmCreate.vue',
+  ]) {
+    const source = fs.readFileSync(path.join(root, relative), 'utf8')
+    assert.doesNotMatch(source, /ProviderStabilityPanel|providerStability|relay_associations/)
+  }
 })
