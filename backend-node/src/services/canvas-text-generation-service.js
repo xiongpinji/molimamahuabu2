@@ -33,7 +33,16 @@ async function generate(db, log, input = {}) {
       'text',
       prompt,
       '你是独立画布文本节点的创作助手。直接输出可继续编辑和连接到下游节点的正文，不要解释过程。',
-      { model: billing.model || input.model, max_tokens: 4096 },
+      {
+        model: billing.model || input.model,
+        max_tokens: 4096,
+        ...(billing.reservationId ? {
+          tenantId: billing.tenantId,
+          userId: billing.userId,
+          creditReservationId: billing.reservationId,
+          idempotency_key: billing.reservationId,
+        } : {}),
+      },
     );
     textGenerationBilling.settle(db, log, billing, 'completed');
     return {
@@ -41,7 +50,13 @@ async function generate(db, log, input = {}) {
       model: billing.model || input.model || '',
     };
   } catch (error) {
-    textGenerationBilling.settle(db, log, billing, 'failed', error.message);
+    textGenerationBilling.settle(
+      db,
+      log,
+      billing,
+      error.code === 'TEXT_RESULT_UNKNOWN' ? 'needs_attention' : 'failed',
+      error.message,
+    );
     throw error;
   }
 }

@@ -4,6 +4,9 @@ const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const scriptAnalysisRoutes = require('../src/routes/scriptAnalysis');
 const aiClient = require('../src/services/aiClient');
+const aiConfig = require('../src/services/aiConfigService');
+const credits = require('../src/services/creditLedgerService');
+const prices = require('../src/services/modelPriceService');
 
 function captureResponse() {
   return {
@@ -20,12 +23,28 @@ function captureResponse() {
   };
 }
 
-function request({ id, userId = 'user-a', body = {} } = {}) {
+function request({ id, userId = 'user-a', tenantId, body = {} } = {}) {
   return {
     params: id === undefined ? {} : { id: String(id) },
     user: { id: userId },
+    ...(tenantId ? { tenant: { id: tenantId } } : {}),
     body,
   };
+}
+
+function setupScriptAnalysisBilling(db) {
+  aiConfig.createConfig(db, { info() {} }, {
+    service_type: 'text',
+    provider: 'openai',
+    name: '剧本分析计费模型',
+    base_url: 'https://example.invalid/v1',
+    api_key: 'test-key',
+    model: ['script-text-model'],
+    default_model: 'script-text-model',
+    is_default: true,
+  });
+  credits.setTenantAccountBalance(db, 'tenant-script', 20);
+  prices.set(db, 'script-text-model', 5, { category: 'text' });
 }
 
 function validProductionPackage(overrides = {}) {
@@ -377,6 +396,172 @@ test('成功分析可选电影化视觉导演并保留原始剧本', async () =>
       JSON.parse(project.analysis_json).skill_snapshot,
       productionPackage.skill_snapshot,
     );
+  } finally {
+    aiClient.generateText = originalGenerateText;
+    global.setImmediate = originalSetImmediate;
+    db.close();
+  }
+});
+
+test('剧本分析初次运行与退回自动修订分别按真实文本模型计费', async () => {
+  const db = new Database(':memory:');
+  const originalGenerateText = aiClient.generateText;
+  const originalSetImmediate = global.setImmediate;
+  try {
+    runMigrationsAndEnsure(db);
+    setupScriptAnalysisBilling(db);
+    const handlers = scriptAnalysisRoutes(
+      db,
+      { error() {}, info() {} },
+      { billingEnabled: true },
+    );
+    const created = captureResponse();
+    handlers.create(request({
+      tenantId: 'tenant-script',
+      body: {
+        title: '计费闭环测试',
+        source_script: '第一场：小满在雨夜街道发现一封信。',
+        locked_facts: ['主角叫小满'],
+      },
+    }), created);
+
+    const callbacks = [];
+    const routeOptions = [];
+    aiClient.generateText = async (_db, _log, _type, _prompt, _system, options) => {
+      routeOptions.push(options);
+      return JSON.stringify(validV2ProductionPackage());
+    };
+    global.setImmediate = (callback) => {
+      callbacks.push(callback);
+      return { unref() {} };
+    };
+
+    const runResult = captureResponse();
+    handlers.run(request({
+      id: created.body.data.id,
+      tenantId: 'tenant-script',
+      body: { skill_id: 'short-drama-production-director' },
+    }), runResult);
+    assert.equal(runResult.statusCode, 201);
+    assert.equal(callbacks.length, 1);
+    let task = db.prepare('SELECT * FROM async_tasks WHERE id = ?')
+      .get(runResult.body.data.task_id);
+    let reservation = db.prepare('SELECT * FROM tenant_usage_reservations').get();
+    assert.equal(task.credit_reservation_id, reservation.id);
+    assert.equal(task.tenant_id, 'tenant-script');
+    assert.equal(task.model, 'script-text-model');
+    assert.equal(reservation.status, 'held');
+    await callbacks.shift()();
+
+    task = db.prepare('SELECT * FROM async_tasks WHERE id = ?').get(task.id);
+    assert.equal(task.status, 'completed');
+    reservation = db.prepare('SELECT * FROM tenant_usage_reservations').get();
+    assert.equal(reservation.resource_type, 'script_analysis');
+    assert.equal(reservation.amount, 5);
+    assert.equal(reservation.status, 'confirmed');
+
+    const rejected = captureResponse();
+    handlers.review(request({
+      id: created.body.data.id,
+      tenantId: 'tenant-script',
+      body: {
+        version: 1,
+        status: 'rejected',
+        note: '强化开场钩子，但保留主角姓名和雨夜场景',
+      },
+    }), rejected);
+    assert.equal(rejected.statusCode, 201);
+    assert.equal(callbacks.length, 1);
+    const revisionTask = db.prepare('SELECT * FROM async_tasks WHERE id = ?')
+      .get(rejected.body.data.task_id);
+    const revisionReservation = db.prepare(`SELECT * FROM tenant_usage_reservations
+      WHERE id = ?`).get(revisionTask.credit_reservation_id);
+    assert.equal(revisionTask.tenant_id, 'tenant-script');
+    assert.equal(revisionTask.model, 'script-text-model');
+    assert.equal(revisionReservation.resource_type, 'script_analysis_revision');
+    assert.equal(revisionReservation.status, 'held');
+    await callbacks.shift()();
+
+    const reservations = db.prepare(`SELECT resource_type, amount, status
+      FROM tenant_usage_reservations ORDER BY created_at`).all();
+    assert.deepEqual(reservations, [
+      { resource_type: 'script_analysis', amount: 5, status: 'confirmed' },
+      { resource_type: 'script_analysis_revision', amount: 5, status: 'confirmed' },
+    ]);
+    assert.deepEqual(credits.getTenantAccount(db, 'tenant-script'), {
+      tenant_id: 'tenant-script', available: 10, held: 0, spent: 10,
+    });
+    assert.equal(routeOptions.length, 2);
+    for (const [index, options] of routeOptions.entries()) {
+      const billedReservation = db.prepare(`SELECT * FROM tenant_usage_reservations
+        WHERE resource_type = ?`).get(
+        index === 0 ? 'script_analysis' : 'script_analysis_revision',
+      );
+      assert.equal(options.model, 'script-text-model');
+      assert.equal(options.tenantId, 'tenant-script');
+      assert.equal(options.userId, 'user-a');
+      assert.equal(options.creditReservationId, billedReservation.id);
+      assert.equal(options.idempotency_key, billedReservation.id);
+    }
+  } finally {
+    aiClient.generateText = originalGenerateText;
+    global.setImmediate = originalSetImmediate;
+    db.close();
+  }
+});
+
+test('剧本分析结果未知时任务失败但积分保持冻结等待人工核对', async () => {
+  const db = new Database(':memory:');
+  const originalGenerateText = aiClient.generateText;
+  const originalSetImmediate = global.setImmediate;
+  try {
+    runMigrationsAndEnsure(db);
+    setupScriptAnalysisBilling(db);
+    const handlers = scriptAnalysisRoutes(
+      db,
+      { error() {}, info() {} },
+      { billingEnabled: true },
+    );
+    const created = captureResponse();
+    handlers.create(request({
+      tenantId: 'tenant-script',
+      body: {
+        title: '未知态计费测试',
+        source_script: '第一场：小满在雨夜街道发现一封信。',
+        locked_facts: ['主角叫小满'],
+      },
+    }), created);
+
+    let backgroundTask = null;
+    aiClient.generateText = async () => {
+      const error = new Error('文本生成结果未知，请勿连续重试');
+      error.code = 'TEXT_RESULT_UNKNOWN';
+      throw error;
+    };
+    global.setImmediate = (callback) => {
+      backgroundTask = callback;
+      return { unref() {} };
+    };
+
+    const result = captureResponse();
+    handlers.run(request({
+      id: created.body.data.id,
+      tenantId: 'tenant-script',
+      body: { skill_id: 'short-drama-production-director' },
+    }), result);
+    assert.equal(result.statusCode, 201);
+    await backgroundTask();
+
+    const task = db.prepare('SELECT * FROM async_tasks WHERE id = ?')
+      .get(result.body.data.task_id);
+    const reservation = db.prepare('SELECT * FROM tenant_usage_reservations').get();
+    assert.equal(task.status, 'failed');
+    assert.match(task.error, /结果未知/);
+    assert.equal(task.credit_reservation_id, reservation.id);
+    assert.equal(reservation.status, 'held');
+    assert.deepEqual(credits.getTenantAccount(db, 'tenant-script'), {
+      tenant_id: 'tenant-script', available: 15, held: 5, spent: 0,
+    });
   } finally {
     aiClient.generateText = originalGenerateText;
     global.setImmediate = originalSetImmediate;
