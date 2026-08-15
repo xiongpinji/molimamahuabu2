@@ -155,13 +155,6 @@ function assertCommitSha(value) {
   return value.toLowerCase();
 }
 
-function assertNonFloating(value) {
-  if (typeof value !== 'string' || !value || /(^|[^a-z0-9])(latest|main|master|placeholder|unknown|todo)([^a-z0-9]|$)/i.test(value)) {
-    throw error(MODEL_ERROR);
-  }
-  return value;
-}
-
 function requestBuffer(rawUrl, redirects = 0, maxBytes = ARTIFACT_MAX_BYTES) {
   const parsed = assertAllowedUrl(rawUrl);
   if (redirects > 5) return Promise.reject(error(MODEL_ERROR));
