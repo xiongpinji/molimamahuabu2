@@ -56,6 +56,14 @@ test('Space 平移结束后抑制空白点击避免清空当前编辑焦点', ()
   assert.match(canvasSource, /function onPaneClick\(event\) \{\s*\n\s*if \(paneClickSuppressed\.value\) return/)
 })
 
+test('图片预览独占 Space 手势且不触发画布平移结束副作用', () => {
+  assert.match(canvasSource, /let mediaPreviewOwnsSpaceGesture = false/)
+  assert.match(canvasSource, /function isImageMediaPreviewOpen\(\) \{\s*\n\s*return Boolean\(document\.querySelector\('\[role="dialog"\]\[aria-label="图片全屏预览"\]'\)\)\s*\n\s*\}/)
+  assert.match(canvasSource, /if \(key === ' ' \|\| key === 'spacebar'\) \{\s*\n\s*if \(isImageMediaPreviewOpen\(\)\) \{\s*\n\s*event\.preventDefault\(\)\s*\n\s*mediaPreviewOwnsSpaceGesture = true\s*\n\s*return\s*\n\s*\}\s*\n\s*event\.preventDefault\(\)\s*\n\s*setSpacePanning\(true\)/)
+  assert.match(canvasSource, /function onCanvasKeyup\(event\) \{[\s\S]*if \(key === ' ' \|\| key === 'spacebar'\) \{\s*\n\s*if \(mediaPreviewOwnsSpaceGesture\) \{\s*\n\s*event\.preventDefault\(\)\s*\n\s*mediaPreviewOwnsSpaceGesture = false\s*\n\s*return\s*\n\s*\}\s*\n\s*event\.preventDefault\(\)\s*\n\s*setSpacePanning\(false\)/)
+  assert.match(canvasSource, /function onCanvasBlur\(\) \{\s*\n\s*mediaPreviewOwnsSpaceGesture = false\s*\n\s*setSpacePanning\(false\)/)
+})
+
 test('自由画布普通点击仅保留当前节点，Ctrl 或 Cmd 才允许多选', () => {
   assert.match(canvasSource, /function applySelectedFreeNodeIds\(ids = \[\]\)/)
   assert.match(canvasSource, /selectedFreeNodeIds\.value = normalizedIds/)

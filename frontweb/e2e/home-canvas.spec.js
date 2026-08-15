@@ -645,6 +645,67 @@ test('生成结果数组中的图片可被 @ 引用并支持双击全屏预览',
   await expect(mentionMenu.locator('img')).toHaveAttribute('src', /data:image/)
 })
 
+test('图片预览只在放大后允许空格拖动且不移动底层画布', async ({ page }) => {
+  await loadHomeCanvasState(page, generatedMentionHomeCanvasState)
+
+  const imageNode = page.locator('.vue-flow__node[data-id="e2e:image-reference"]')
+  await imageNode.locator('.node-media').dblclick()
+
+  const dialog = page.getByRole('dialog', { name: '图片全屏预览' })
+  const previewImage = dialog.locator('img')
+  const transformationPane = page.locator('.vue-flow__transformationpane')
+  await expect(dialog).toBeVisible()
+
+  const readCanvasTransform = () => transformationPane.evaluate((element) => getComputedStyle(element).transform)
+  const readPreviewTranslation = () => previewImage.evaluate((image) => {
+    const matrix = new DOMMatrixReadOnly(getComputedStyle(image).transform)
+    return { x: matrix.m41, y: matrix.m42 }
+  })
+  const dragFromCenter = async (deltaX, deltaY) => {
+    const box = await previewImage.boundingBox()
+    if (!box) throw new Error('图片预览未生成可拖动区域')
+    const centerX = box.x + box.width / 2
+    const centerY = box.y + box.height / 2
+    await page.mouse.move(centerX, centerY)
+    await page.mouse.down()
+    await page.mouse.move(centerX + deltaX, centerY + deltaY, { steps: 4 })
+  }
+
+  const initialCanvasTransform = await readCanvasTransform()
+  const initialImageTransform = await previewImage.evaluate((image) => getComputedStyle(image).transform)
+  await page.keyboard.down('Space')
+  await dragFromCenter(60, 35)
+  await page.mouse.up()
+  await page.keyboard.up('Space')
+  expect(await previewImage.evaluate((image) => getComputedStyle(image).transform)).toBe(initialImageTransform)
+  expect(await readCanvasTransform()).toBe(initialCanvasTransform)
+
+  const previewBox = await previewImage.boundingBox()
+  if (!previewBox) throw new Error('图片预览未生成缩放区域')
+  await page.mouse.move(previewBox.x + previewBox.width / 2, previewBox.y + previewBox.height / 2)
+  await page.keyboard.down('Control')
+  await page.mouse.wheel(0, -100)
+  await page.keyboard.up('Control')
+  await expect.poll(() => previewImage.getAttribute('style')).toContain('scale(1.15)')
+
+  await page.keyboard.down('Space')
+  await dragFromCenter(80, 45)
+  const draggedTranslation = await readPreviewTranslation()
+  expect(draggedTranslation.x).toBeCloseTo(80, 1)
+  expect(draggedTranslation.y).toBeCloseTo(45, 1)
+
+  await page.keyboard.up('Space')
+  const boxAfterRelease = await previewImage.boundingBox()
+  if (!boxAfterRelease) throw new Error('图片预览在释放空格后消失')
+  await page.mouse.move(boxAfterRelease.x + boxAfterRelease.width / 2 + 40, boxAfterRelease.y + boxAfterRelease.height / 2 + 20)
+  const translationAfterRelease = await readPreviewTranslation()
+  expect(translationAfterRelease.x).toBeCloseTo(draggedTranslation.x, 1)
+  expect(translationAfterRelease.y).toBeCloseTo(draggedTranslation.y, 1)
+  await page.mouse.up()
+
+  expect(await readCanvasTransform()).toBe(initialCanvasTransform)
+})
+
 test('已连接参考图可以从节点编辑器取消', async ({ page }) => {
   const connectedState = {
     ...mentionHomeCanvasState,

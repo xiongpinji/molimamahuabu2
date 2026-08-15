@@ -22,6 +22,33 @@ test('图片和视频预览都可通过关闭操作及 Escape 退出', () => {
   assert.match(nodeSource, /if \(mediaPreviewUrl\.value\) \{[\s\S]*closeMediaPreview\(\)/)
 })
 
+test('图片全屏预览支持 Ctrl 或 Command 加滚轮缩放并在开关时复位', () => {
+  assert.match(nodeSource, /const mediaPreviewScale = ref\(1\)/)
+  assert.match(nodeSource, /@wheel="onMediaPreviewWheel"/)
+  assert.match(nodeSource, /if \(!event\.ctrlKey && !event\.metaKey\) return/)
+  assert.match(nodeSource, /mediaPreviewScale\.value = Math\.min\(5, Math\.max\(0\.25,/)
+  assert.match(nodeSource, /:style="\{ transform: `translate\(\$\{mediaPreviewPan\.x\}px, \$\{mediaPreviewPan\.y\}px\) scale\(\$\{mediaPreviewScale\}\)` \}"/)
+  assert.match(nodeSource, /mediaPreviewScale\.value = 1[\s\S]*mediaPreviewUrl\.value = String\(url\)/)
+  assert.match(nodeSource, /mediaPreviewUrl\.value = ''[\s\S]*mediaPreviewScale\.value = 1/)
+})
+
+test('图片预览仅在放大后支持空格拖动并完整清理事件', () => {
+  assert.match(nodeSource, /const mediaPreviewCanPan = computed/)
+  assert.match(nodeSource, /mediaPreviewScale\.value > 1/)
+  assert.match(nodeSource, /@pointerdown\.stop="onMediaPreviewPointerDown"/)
+  assert.match(nodeSource, /@pointermove\.stop="onMediaPreviewPointerMove"/)
+  assert.match(nodeSource, /@pointerup\.stop="onMediaPreviewPointerUp"/)
+  assert.match(nodeSource, /@pointercancel\.stop="onMediaPreviewPointerUp"/)
+  assert.match(nodeSource, /setPointerCapture\?\.\(event\.pointerId\)/)
+  assert.match(nodeSource, /if \(mediaPreviewScale\.value <= 1\) resetMediaPreviewPan\(\)/)
+  assert.match(nodeSource, /window\.addEventListener\('keydown', onEditorKeydown\)/)
+  assert.match(nodeSource, /window\.removeEventListener\('keydown', onEditorKeydown\)/)
+  assert.match(nodeSource, /window\.addEventListener\('keyup', onMediaPreviewKeyup\)/)
+  assert.match(nodeSource, /window\.removeEventListener\('keyup', onMediaPreviewKeyup\)/)
+  assert.match(nodeSource, /window\.addEventListener\('blur', onMediaPreviewBlur\)/)
+  assert.match(nodeSource, /window\.removeEventListener\('blur', onMediaPreviewBlur\)/)
+})
+
 test('独立画布支持将本地图片直接拖入并在落点创建图片节点', () => {
   assert.match(canvasSource, /@dragover="onCanvasImageDragOver"/)
   assert.match(canvasSource, /@drop="onCanvasImageDrop"/)

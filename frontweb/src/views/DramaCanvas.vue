@@ -1082,6 +1082,7 @@ let virtualizationFrame = null
 let freeNodeSequence = 0
 let canvasAlive = true
 let runQueueTimer = null
+let mediaPreviewOwnsSpaceGesture = false
 
 const nodeTypes = {
   canvasLabel: markRaw(CanvasLabelNode),
@@ -6970,6 +6971,10 @@ function isEditableTarget(target) {
   return Boolean(element && (['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName) || element.isContentEditable))
 }
 
+function isImageMediaPreviewOpen() {
+  return Boolean(document.querySelector('[role="dialog"][aria-label="图片全屏预览"]'))
+}
+
 function setSpacePanning(active) {
   if (spacePanning.value === active) return
   spacePanning.value = active
@@ -7085,6 +7090,11 @@ function onCanvasKeydown(event) {
     return
   }
   if (key === ' ' || key === 'spacebar') {
+    if (isImageMediaPreviewOpen()) {
+      event.preventDefault()
+      mediaPreviewOwnsSpaceGesture = true
+      return
+    }
     event.preventDefault()
     setSpacePanning(true)
     return
@@ -7122,12 +7132,18 @@ function onCanvasKeydown(event) {
 function onCanvasKeyup(event) {
   const key = String(event.key || '').toLowerCase()
   if (key === ' ' || key === 'spacebar') {
+    if (mediaPreviewOwnsSpaceGesture) {
+      event.preventDefault()
+      mediaPreviewOwnsSpaceGesture = false
+      return
+    }
     event.preventDefault()
     setSpacePanning(false)
   }
 }
 
 function onCanvasBlur() {
+  mediaPreviewOwnsSpaceGesture = false
   setSpacePanning(false)
 }
 
