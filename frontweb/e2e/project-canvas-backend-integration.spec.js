@@ -443,6 +443,25 @@ test.beforeAll(async () => {
       throw new Error(`AI 模型配置初始化失败：${configResponse.status} ${await configResponse.text()}`)
     }
   }
+
+  const verificationDb = new Database(databasePath)
+  try {
+    const now = new Date().toISOString()
+    const result = verificationDb.prepare(
+      `UPDATE ai_service_configs
+       SET verification_status = 'verified', verified_at = ?, verification_evidence = ?, updated_at = ?
+       WHERE deleted_at IS NULL`,
+    ).run(
+      now,
+      JSON.stringify({ source: 'local-playwright-provider-fixture' }),
+      now,
+    )
+    if (result.changes !== 3) {
+      throw new Error(`本地供应商验证夹具数量异常：${result.changes}`)
+    }
+  } finally {
+    verificationDb.close()
+  }
 })
 
 test.afterAll(async () => {
