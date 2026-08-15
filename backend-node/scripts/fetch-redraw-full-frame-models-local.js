@@ -18,8 +18,6 @@ const ALLOWED_HTTPS_HOSTS = new Set([
   'raw.githubusercontent.com',
   'storage.googleapis.com',
   'paddleocr.bj.bcebos.com',
-  'files.pythonhosted.org',
-  'pypi.org',
 ]);
 const OFFICIAL_CATALOG = Object.freeze({
   face_detector: Object.freeze({
@@ -488,6 +486,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  assertAllowedUrl,
   parseArgs,
   resolveOfficialComponent,
   venvPython,

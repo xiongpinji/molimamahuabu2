@@ -11,6 +11,7 @@ const {
   safeWorkerEnv,
 } = require('../src/services/redrawFullFrameDetectorProcess');
 const {
+  assertAllowedUrl,
   parseArgs,
   resolveOfficialComponent,
   venvPython,
@@ -239,6 +240,29 @@ test('fetch model CLI args only accept help or an output directory', () => {
     assert.throws(() => parseArgs(argv), /REDRAW_FULL_FRAME_OUTPUT_INVALID/);
   }
   assert.deepEqual(parseArgs(['--output-dir', 'C:\\local\\cache']), { outputDir: 'C:\\local\\cache' });
+});
+
+test('model artifact URL validator keeps only the official model source hosts', () => {
+  for (const url of [
+    'https://api.github.com/repos/Megvii-BaseDetection/YOLOX/commits/e1052df71842031413f6030723c3607b839c80ce',
+    'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.pth',
+    'https://codeload.github.com/FoundationVision/ByteTrack/zip/d1bf0191adff59bc8fcfeaa0b33d3d1642552a99',
+    'https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/40c56628fda416e1c8710eb19e4b260536902520/LICENSE',
+    'https://release-assets.githubusercontent.com/github-production-release-asset/example',
+    'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
+    'https://paddleocr.bj.bcebos.com/PP-OCRv3/english/en_PP-OCRv3_det_infer.tar',
+  ]) {
+    assert.equal(assertAllowedUrl(url).protocol, 'https:');
+  }
+
+  for (const url of [
+    'https://pypi.org/simple/paddleocr/',
+    'https://files.pythonhosted.org/packages/example.whl',
+    'http://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.pth',
+    'https://example.com/model.bin',
+  ]) {
+    assert.throws(() => assertAllowedUrl(url), /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/);
+  }
 });
 
 test('runFetchModels builds a fixture cache, validates lock, and leaves no final directory on failure', async (t) => {
