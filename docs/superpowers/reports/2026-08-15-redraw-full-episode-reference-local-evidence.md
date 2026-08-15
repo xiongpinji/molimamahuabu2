@@ -11,6 +11,32 @@
 
 本次运行 cwd 为 `backend-node`。案例 JSON 位于独立的仓库外证据目录；最终运行产物位于仓库外目录 `full-episode-reference-20260815-run1`。报告只记录 basename、相对证据文件和哈希，不记录本机绝对路径。
 
+## 代码执行基线
+
+本报告所述 runner、独立复核、测试和构建均针对报告落库前的代码基线：
+
+```text
+b7e1222f7976458f86c876e79a7832553e415418
+```
+
+该 SHA 同时绑定本次关键输入：`frontweb/e2e/fixtures/redraw-latin-american-case.js`、`backend-node/scripts/run-redraw-full-episode-reference-local.js`、本报告列出的前后端测试文件、`backend-node/package.json` 与 `frontweb/package.json`。报告首次落库 commit 为 `23fd40261dc168eaa7b266fa2fc2d4c5037c20d5`；它只是报告文件的首个版本，不是执行基线，也不把后续报告修订 HEAD 写成自引用证据。
+
+## 脱敏证据索引
+
+证据根目录通过环境变量定位，不记录用户名：
+
+```powershell
+$evidenceRoot = Join-Path $env:LOCALAPPDATA 'moli-redraw-evidence'
+```
+
+| 证据 | 相对 `$evidenceRoot` 路径 | SHA-256 |
+| --- | --- | --- |
+| 机械投影案例 | `full-episode-reference-20260815-case/redraw-full-episode-reference-case.json` | `dd8c2e54bc4c222745944b195428e24e162c531f5d0ea0552e139a39579b00bb` |
+| runner manifest | `full-episode-reference-20260815-run1/redraw-full-episode-reference-local-manifest.json` | `7b1d249ba808e6568acb7331b8642415c828dab5cef0869608da8bebdca42e4b` |
+| 独立复核 | `full-episode-reference-20260815-run1/independent-verification.json` | `4cf84f87d62f6e24c0a869b923b7a19079ba984898eee896fe9549af1f2fabda` |
+
+case 子目录 basename 为 `full-episode-reference-20260815-case`，run 子目录 basename 为 `full-episode-reference-20260815-run1`。run 目录现已包含 manifest、独立复核和 18 个媒体产物，因此非空，runner 会 fail closed，**不得原地重跑**。复跑必须选择新的、尚不存在或为空的 basename，例如 `full-episode-reference-20260815-run2`，并重新记录新产物哈希。
+
 ## 案例清单生成方式
 
 `redraw-full-episode-reference-case.json` 由当前 `frontweb/e2e/fixtures/redraw-latin-american-case.js` 机械投影生成，没有手工提升任何审核状态：
@@ -36,10 +62,24 @@
 | 视频 | HEVC，720 × 1280，30 fps |
 | 音频 | AAC，单声道，44,100 Hz |
 
-执行：
+实际 runner 命令如下。该块记录本次参数构造；由于 `run1` 已非空，不应再次原样执行，复跑时必须把 `$runDir` 改为新的空目录 basename：
 
-```text
-node scripts/run-redraw-full-episode-reference-local.js --source <源片 basename> --case-manifest <案例 basename> --output-dir <仓库外输出目录 basename>
+```powershell
+$evidenceRoot = Join-Path $env:LOCALAPPDATA 'moli-redraw-evidence'
+$caseDir = Join-Path $evidenceRoot 'full-episode-reference-20260815-case'
+$runDir = Join-Path $evidenceRoot 'full-episode-reference-20260815-run1'
+$sourcePath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'ac087bcd4cf5f856f85182834794853a.mp4'
+
+Push-Location backend-node
+try {
+  node scripts/run-redraw-full-episode-reference-local.js `
+    --source $sourcePath `
+    --case-manifest (Join-Path $caseDir 'redraw-full-episode-reference-case.json') `
+    --output-dir $runDir
+  if ($LASTEXITCODE -ne 0) { throw "runner failed: $LASTEXITCODE" }
+} finally {
+  Pop-Location
+}
 ```
 
 runner 退出码为 0，输出摘要为 `shot_count=9`、`ready_count=0`、`blocked_count=9`。生成清单：
@@ -71,6 +111,42 @@ runner 退出码为 0，输出摘要为 `shot_count=9`、`ready_count=0`、`bloc
 完整 blocker 机器值见 `redraw-full-episode-reference-local-manifest.json` 和 `independent-verification.json`。其中 `shot-3`、`shot-8` 明确包含 `silent_dialogue_contract_unsupported`；其余七镜有英文 turns，但仍因参考包其他部分未批准而 fail closed。
 
 ## 同一验收运行的测试与构建
+
+实际命令：
+
+```powershell
+node --test `
+  frontweb/test/redrawLatinAmericanCase.test.js `
+  frontweb/test/redrawShots.test.js `
+  frontweb/test/redrawAssets.test.js
+if ($LASTEXITCODE -ne 0) { throw "frontend tests failed: $LASTEXITCODE" }
+
+$hadRequireLocalFfmpeg = Test-Path Env:REQUIRE_LOCAL_FFMPEG
+$previousRequireLocalFfmpeg = $env:REQUIRE_LOCAL_FFMPEG
+Push-Location backend-node
+try {
+  $env:REQUIRE_LOCAL_FFMPEG = '1'
+  node --test --test-concurrency=1 `
+    test/redrawRoutes.test.js `
+    test/redrawReferenceBundle.test.js `
+    test/redrawGeneration.test.js `
+    test/redrawFullEpisodeReferenceLocal.test.js
+  $backendTestExit = $LASTEXITCODE
+} finally {
+  Pop-Location
+  if ($hadRequireLocalFfmpeg) {
+    $env:REQUIRE_LOCAL_FFMPEG = $previousRequireLocalFfmpeg
+  } else {
+    Remove-Item Env:REQUIRE_LOCAL_FFMPEG -ErrorAction SilentlyContinue
+  }
+}
+if ($backendTestExit -ne 0) { throw "backend tests failed: $backendTestExit" }
+
+npm --prefix frontweb run build
+if ($LASTEXITCODE -ne 0) { throw "frontend build failed: $LASTEXITCODE" }
+git diff --check
+if ($LASTEXITCODE -ne 0) { throw "diff check failed: $LASTEXITCODE" }
+```
 
 | 验证 | 结果 |
 | --- | --- |
