@@ -526,8 +526,7 @@ test('独立项目画布图片节点通过真实后端同链路生成、入库�
   await imageEditor.getByRole('textbox', { name: '生成提示词' })
     .fill('雨夜花园里一朵白色茉莉花，电影光影')
   const modelInput = imageEditor.getByRole('combobox', { name: '生成模型' })
-  await modelInput.fill('canvas-image-alpha')
-  await modelInput.press('Tab')
+  await modelInput.selectOption('canvas-image-alpha')
   await expect(modelInput).toHaveValue('canvas-image-alpha')
   await imageEditor.getByRole('button', { name: '生成', exact: true }).click()
 

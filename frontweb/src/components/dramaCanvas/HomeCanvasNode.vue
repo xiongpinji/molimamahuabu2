@@ -335,19 +335,22 @@
         </div>
 
         <div class="editor-options">
-          <label v-if="canGenerate" class="editor-field field-model">
+          <label v-if="canGenerate || modelOptions.length" class="editor-field field-model">
             <span>模型</span>
-            <input
+            <select
               v-model="draft.model"
               aria-label="生成模型"
-              :placeholder="defaultModelLabel"
-              :list="modelOptions.length ? modelListId : undefined"
-              @blur="saveDraft"
-            />
+              @change="onModelChange"
+            >
+              <option value="">{{ defaultModelLabel }}</option>
+              <option v-for="option in modelOptions" :key="option.value" :value="option.value" :disabled="option.disabled">{{ option.label }}</option>
+            </select>
           </label>
-          <datalist v-if="modelOptions.length" :id="modelListId">
-            <option v-for="model in modelOptions" :key="model" :value="model" />
-          </datalist>
+          <p v-if="currentModelMetadata?.publicNote || currentModelMetadata?.label" class="model-metadata">
+            <strong>{{ currentModelMetadata.label || currentModelMetadata.model }}</strong>
+            <span v-if="currentModelMetadata.publicNote">{{ currentModelMetadata.publicNote }}</span>
+            <em v-if="currentModelMetadata.verificationStatus === 'verified'">已验证</em>
+          </p>
 
           <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
             <span>风格</span>
@@ -601,8 +604,16 @@ const canTranslate = computed(() => typeof ctx?.translateFreeCanvasNode === 'fun
 const canUpload = computed(() => typeof ctx?.uploadFreeCanvasNodeFile === 'function')
 const canUploadReference = computed(() => typeof ctx?.uploadFreeCanvasReferenceMedia === 'function')
 const canMountAsset = computed(() => typeof ctx?.openFreeNodeAssetLibrary === 'function')
-const modelOptions = computed(() => ctx?.getFreeNodeModelOptions?.(props.data.kind) || [])
-const capability = computed(() => ctx?.getFreeNodeModelCapability?.(props.data.kind, draft.model) || {})
+const modelOptions = computed(() => ctx?.getFreeNodeModelOptions?.(props.data.kind, props.id) || [])
+const currentModelMetadata = computed(() => (
+  ctx?.getFreeNodeModelMetadata?.(props.data.kind, draft.model)
+  || null
+))
+const capability = computed(() => (
+  ctx?.getFreeNodeModelCapability?.(props.data.kind, draft.model)
+  || currentModelMetadata.value?.capabilities
+  || {}
+))
 const estimatedCredits = computed(() => ctx?.getFreeNodeEstimatedCredits?.(
   props.data.kind,
   draft.model,
@@ -651,7 +662,6 @@ const filteredReferenceCandidates = computed(() => {
 })
 const showReferenceMention = computed(() => props.data.kind === 'video' && mentionStart.value >= 0)
 const readyReferenceCount = computed(() => inputReferences.value.filter((reference) => reference.ready).length)
-const modelListId = computed(() => `free-node-models-${String(props.id || 'node').replace(/[^a-zA-Z0-9_-]/g, '-')}`)
 const voiceListId = computed(() => `free-node-voices-${String(props.id || 'node').replace(/[^a-zA-Z0-9_-]/g, '-')}`)
 const resultUrls = computed(() => [...new Set([
   ...(Array.isArray(props.data.resultUrls) ? props.data.resultUrls : []),
@@ -699,6 +709,19 @@ function syncDraft() {
   draft.effect = props.data.effect || ''
   draft.includeAudio = props.data.includeAudio === true
   draft.videoReferenceMode = props.data.videoReferenceMode || ''
+}
+
+async function onModelChange() {
+  draft.model = draft.model.trim()
+  const resolutions = Array.isArray(capability.value.resolutions) ? capability.value.resolutions : []
+  const normalizedResolution = String(draft.resolution || '').trim().toLowerCase()
+  if (resolutions.length && !resolutions.includes(normalizedResolution)) draft.resolution = resolutions[0]
+  else if (normalizedResolution) draft.resolution = normalizedResolution
+  const quantities = Array.isArray(capability.value.quantities) && capability.value.quantities.length
+    ? capability.value.quantities.map(Number)
+    : [1]
+  if (!quantities.includes(Number(draft.quantity))) draft.quantity = quantities[0]
+  await saveDraft()
 }
 
 async function saveDraft() {
@@ -1737,6 +1760,19 @@ watch(isSelected, (selected) => {
   font: inherit;
 }
 .field-model { grid-column: span 2; }
+.model-metadata {
+  display: flex;
+  grid-column: span 2;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  color: #a1a1aa;
+  font-size: 11px;
+}
+.model-metadata strong { color: #e4e4e7; font-weight: 600; }
+.model-metadata span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-metadata em { color: #86efac; font-style: normal; white-space: nowrap; }
 .field-wide { grid-column: span 2; }
 .editor-check { display: flex; align-items: flex-end; gap: 8px; padding: 0 4px 9px; color: #d4d4d8; font-size: 11px; }
 .editor-footer {
