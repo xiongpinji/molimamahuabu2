@@ -95,6 +95,12 @@ function requireConcreteString(value) {
   return value;
 }
 
+function requireConcreteRevision(value) {
+  requireConcreteString(value);
+  if (/(^|[^a-z0-9])(latest|main|master|unknown|example|placeholder|todo)([^a-z0-9]|$)/i.test(value)) throw invalid();
+  return value;
+}
+
 function requireHash(value) {
   requireConcreteString(value);
   if (!/^[a-f0-9]{64}$/.test(value)) throw invalid();
@@ -168,12 +174,15 @@ async function secureReadFile({ cacheRootReal, relativePath }) {
 
   const realBefore = await fs.realpath(target);
   if (!isInsideOrSame(cacheRootReal, realBefore)) throw invalid();
+  const statExpected = await fs.stat(realBefore, { bigint: true });
+  assertRegularFile(statExpected);
 
   let handle;
   try {
     handle = await fs.open(realBefore, 'r');
     const statBefore = await handle.stat({ bigint: true });
     assertRegularFile(statBefore);
+    if (!sameIdentity(statExpected, statBefore)) throw invalid();
     const bytes = await handle.readFile();
     const statAfter = await handle.stat({ bigint: true });
     assertRegularFile(statAfter);
@@ -216,7 +225,7 @@ function canonicalizeComponent(component) {
     component: component.component,
     project: component.project,
     repository: component.repository,
-    revision: requireConcreteString(component.revision),
+    revision: requireConcreteRevision(component.revision),
     artifact_name: requireConcreteString(component.artifact_name),
     artifact_path: requireSafeRelativePath(component.artifact_path),
     artifact_sha256: requireHash(component.artifact_sha256),

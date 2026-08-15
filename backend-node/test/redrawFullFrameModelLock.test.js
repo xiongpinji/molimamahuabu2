@@ -215,6 +215,26 @@ test('placeholder and floating values fail closed', async (t) => {
   }
 });
 
+test('revision rejects embedded floating and placeholder tokens without rejecting fixed values', async (t) => {
+  const invalidRevisions = ['release-latest-face_detector', 'MODEL_Main_build', 'todo-revision'];
+  for (const revision of invalidRevisions) {
+    const { cacheRoot, lock } = createValidLock(t);
+    await assertInvalid(validateModelLock({
+      cacheRoot,
+      sourcePolicy,
+      lock: { ...lock, components: lock.components.map((item, index) => index === 0 ? { ...item, revision } : item) },
+    }), cacheRoot);
+  }
+
+  const { cacheRoot, lock } = createValidLock(t);
+  const fixedLock = {
+    ...lock,
+    components: lock.components.map((item, index) => index === 0 ? { ...item, revision: 'a'.repeat(40) } : item),
+  };
+  const result = await validateModelLock({ cacheRoot, sourcePolicy, lock: fixedLock });
+  assert.equal(result.components.find((item) => item.component === lock.components[0].component).revision, 'a'.repeat(40));
+});
+
 test('artifact and license hash drift fail independently', async (t) => {
   const first = createValidLock(t);
   first.lock.components[0].artifact_sha256 = '0'.repeat(64);
@@ -311,6 +331,26 @@ test('non-regular files and read-time identity drift fail closed', async (t) => 
   t.after(() => { fsp.open = originalOpen; });
 
   await assertInvalid(validateModelLock({ cacheRoot: second.cacheRoot, sourcePolicy, lock: second.lock }), second.cacheRoot);
+});
+
+test('opened file descriptor must match the pre-open in-cache file identity', async (t) => {
+  const { cacheRoot, lock } = createValidLock(t);
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-full-frame-fd-redirect-'));
+  const originalOpen = fsp.open;
+  const target = fs.realpathSync(path.join(cacheRoot, lock.components[0].artifact_path));
+  const outsideFile = path.join(outside, 'model.bin');
+  fs.writeFileSync(outsideFile, fs.readFileSync(target));
+  t.after(() => {
+    fsp.open = originalOpen;
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
+  fsp.open = async (...args) => {
+    if (args[0] === target) return originalOpen.call(fsp, outsideFile, ...args.slice(1));
+    return originalOpen.apply(fsp, args);
+  };
+
+  await assertInvalid(validateModelLock({ cacheRoot, sourcePolicy, lock }), cacheRoot);
 });
 
 test('read-time realpath drift fails closed', async (t) => {
