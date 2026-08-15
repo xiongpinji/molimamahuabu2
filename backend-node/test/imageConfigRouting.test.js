@@ -452,7 +452,7 @@ test('排队期间显式配置被停用时失败且不切换同模型备用配�
   assert.equal(calls.length, 0);
 });
 
-test('新图片请求无 config_id 时不锁定配置并保留同价备用切换', async (t) => {
+test('旧模型请求无 config_id 时不锁定配置且不再宽泛切换', async (t) => {
   const db = createDb();
   t.after(() => db.close());
   prices.set(db, 'legacy-model', 19, { category: 'image' });
@@ -524,8 +524,8 @@ test('新图片请求无 config_id 时不锁定配置并保留同价备用切换
   assert.equal(Object.prototype.hasOwnProperty.call(calls[0], 'config_id'), false);
   assert.equal(calls[0].model, 'legacy-model');
   assert.deepEqual(providerErrors, []);
-  assert.deepEqual(providerResults[0], { image_url: 'https://cdn.example/backup.png' });
-  assert.deepEqual(requests, ['primary', 'backup']);
+  assert.match(providerResults[0].error, /^\u56fe片生成请求失败: 503\b/);
+  assert.deepEqual(requests, ['primary']);
 });
 
 test('图片路由保留显式配置错误码并映射为 400 或 503', () => {

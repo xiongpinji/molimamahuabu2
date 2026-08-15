@@ -100,10 +100,11 @@ function selectVerifiedCandidates(db, input) {
       CASE COALESCE(h.state, 'healthy')
         WHEN 'healthy' THEN 0 WHEN 'degraded' THEN 1 WHEN 'half_open' THEN 2 ELSE 3 END,
       c.id ASC`).all(String(input.serviceType || '').trim(), logicalModelId);
+  const primaryConfigId = input.primaryConfigId == null ? rows[0]?.id : Number(input.primaryConfigId);
   const candidates = rows
     .map((row) => aiConfigService.getConfig(db, row.id))
     .filter(Boolean)
-    .filter((config) => config.id === Number(input.primaryConfigId) || config.failover_enabled)
+    .filter((config) => config.id === primaryConfigId || config.failover_enabled)
     .filter((config) => {
       const health = rows.find((row) => row.id === config.id);
       if (health?.health_state === 'disabled') return false;
