@@ -15,6 +15,7 @@ const redrawReviewService = require('../services/redrawReviewService');
 const redrawCharacterIdentityService = require('../services/redrawCharacterIdentityService');
 const redrawShotService = require('../services/redrawShotService');
 const redrawGenerationService = require('../services/redrawGenerationService');
+const redrawReferenceBundleService = require('../services/redrawReferenceBundleService');
 const redrawBillingService = require('../services/redrawBillingService');
 const redrawAssetBatchService = require('../services/redrawAssetBatchService');
 const redrawDialogueOrchestrator = require('../services/redrawDialogueOrchestrator');
@@ -427,6 +428,13 @@ const IDENTITY_PACK_FIELD_ALIASES = [
   ['expected_updated_at', 'expectedUpdatedAt'],
 ];
 const IDENTITY_PACK_VIEWS = new Set(['front', 'profile', 'full_body']);
+const REFERENCE_BUNDLE_FIELDS = new Set([
+  'expected_updated_at',
+  'motion_reference_asset_id',
+  'face_tracks',
+  'text_regions',
+  'coverage_review',
+]);
 
 function generationInputError(message) {
   return codedRouteError('REDRAW_GENERATION_INPUT_INVALID', message);
@@ -539,6 +547,64 @@ function sanitizeIdentityPackResponse(value) {
     return Object.fromEntries(entries);
   }
   return value;
+}
+
+function referenceBundleInput(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw codedRouteError('REDRAW_REFERENCE_BUNDLE_INPUT_INVALID', '参考包参数必须是对象');
+  }
+  for (const key of Object.keys(body)) {
+    if (!REFERENCE_BUNDLE_FIELDS.has(key)) {
+      throw codedRouteError('REDRAW_REFERENCE_BUNDLE_INPUT_INVALID', `参考包不接受字段 ${key}`);
+    }
+  }
+  return Object.fromEntries(
+    [...REFERENCE_BUNDLE_FIELDS]
+      .filter((key) => Object.prototype.hasOwnProperty.call(body, key))
+      .map((key) => [key, body[key]]),
+  );
+}
+
+function sanitizeReferenceBundle(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (/^(?:[a-zA-Z]:[\\/]|\/|\\\\|file:\/\/|https?:\/\/)/i.test(trimmed)) return undefined;
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(sanitizeReferenceBundle).filter((item) => item !== undefined);
+  }
+  if (value && typeof value === 'object') {
+    const entries = [];
+    for (const [key, item] of Object.entries(value)) {
+      const normalized = String(key).replace(/[^a-z0-9]/gi, '').toLowerCase();
+      if (normalized === 'storageroot'
+        || normalized === 'reviewer'
+        || normalized === 'reviewerid'
+        || normalized === 'reviewedby'
+        || normalized === 'tenant'
+        || normalized.endsWith('tenantid')
+        || normalized === 'user'
+        || normalized.endsWith('userid')
+        || normalized.endsWith('path')
+        || normalized.endsWith('url')) {
+        continue;
+      }
+      const sanitized = sanitizeReferenceBundle(item);
+      if (sanitized !== undefined) entries.push([key, sanitized]);
+    }
+    return Object.fromEntries(entries);
+  }
+  return value;
+}
+
+function referenceBundleResponse(result, referenceBundleUpdatedAt = null) {
+  return {
+    shot_id: Number(result?.shot_id),
+    reference_bundle_hash: result?.reference_bundle_hash || null,
+    reference_bundle_updated_at: result?.reference_bundle_updated_at || referenceBundleUpdatedAt || null,
+    bundle: sanitizeReferenceBundle(result?.bundle || {}),
+  };
 }
 
 function rejectAliasPair(input, snake, camel) {
@@ -1005,7 +1071,8 @@ function sendRedrawError(res, error, fallbackMessage, log, context = {}) {
     return response.error(res, 500, code, fallbackMessage);
   }
   if (['REDRAW_WORK_NOT_FOUND', 'REDRAW_VERSION_NOT_FOUND', 'REDRAW_SHOT_NOT_FOUND',
-    'REDRAW_SHOT_TASK_NOT_FOUND', 'REDRAW_VIDEO_NOT_FOUND'].includes(code)) {
+    'REDRAW_SHOT_TASK_NOT_FOUND', 'REDRAW_VIDEO_NOT_FOUND',
+    'REDRAW_REFERENCE_BUNDLE_NOT_FOUND'].includes(code)) {
     return response.error(res, 404, code, error.message || fallbackMessage, error.details);
   }
   if (code === 'INSUFFICIENT_CREDITS') {
@@ -1014,7 +1081,7 @@ function sendRedrawError(res, error, fallbackMessage, log, context = {}) {
   if (['REDRAW_ASSET_REVIEW_REQUIRED', 'REDRAW_SHOT_CONFLICT', 'REDRAW_VERSION_CONFLICT',
     'REDRAW_SHOT_EDIT_CONFLICT', 'REDRAW_RETRY_UNCERTAIN', 'REDRAW_SHOT_RETRY_REQUIRED',
     'REDRAW_SHOT_PRICING_UNCONFIGURED', 'REDRAW_NATIVE_AUDIO_REVIEW_CONFLICT',
-    'REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE'].includes(code)) {
+    'REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE', 'REDRAW_REFERENCE_BUNDLE_CONFLICT'].includes(code)) {
     return response.error(res, 409, code, error.message || fallbackMessage, error.details);
   }
   if (code.startsWith('REDRAW_') || code.startsWith('INVALID_')) {
@@ -1080,6 +1147,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   const orchestrator = options.orchestrator || redrawOrchestrator;
   const shotService = options.shotService || redrawShotService;
   const generationService = options.generationService || redrawGenerationService;
+  const referenceBundleService = options.referenceBundleService || redrawReferenceBundleService;
   const localizationOrchestrator = options.localizationOrchestrator || redrawLocalizationOrchestrator;
   const assetBatchService = options.assetBatchService || {
     quoteAssetBatch: (ctx, input) => redrawAssetBatchService.quoteAssetBatch(db, { ...ctx, ...input }),
@@ -2049,6 +2117,62 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     };
   }
 
+  function referenceBundleContext(shot, currentOwner) {
+    const context = {
+      ...(options.referenceBundleOptions || {}),
+      db,
+      log,
+      cfg,
+      tenantId: currentOwner.tenantId,
+      userId: currentOwner.userId,
+      versionId: Number(shot.version_id),
+      storageRoot: storageRootFromConfig(cfg),
+      canReadArtifact,
+    };
+    const probeRunner = options.referenceBundleOptions?.probeRunner
+      || options.referenceBundleProbeRunner
+      || options.probeRunner
+      || options.generationOptions?.probeRunner;
+    if (probeRunner) context.probeRunner = probeRunner;
+    if (!context.now && options.clock) context.now = options.clock;
+    return context;
+  }
+
+  async function getReferenceBundle(req, res) {
+    const currentOwner = owner(req);
+    const shot = findOwnedShot(req.params.id, currentOwner);
+    if (!shot) return response.error(res, 404, 'REDRAW_SHOT_NOT_FOUND', '转绘镜头不存在');
+    try {
+      const result = await referenceBundleService.loadCurrentReferenceBundle(
+        referenceBundleContext(shot, currentOwner),
+        Number(shot.id),
+      );
+      const latest = findOwnedShot(shot.id, currentOwner);
+      return response.success(
+        res,
+        referenceBundleResponse(result, latest?.reference_bundle_updated_at),
+      );
+    } catch (error) {
+      return sendRedrawError(res, error, '读取逐镜参考包失败', log, { shotId: shot.id });
+    }
+  }
+
+  async function saveReferenceBundle(req, res) {
+    const currentOwner = owner(req);
+    const shot = findOwnedShot(req.params.id, currentOwner);
+    if (!shot) return response.error(res, 404, 'REDRAW_SHOT_NOT_FOUND', '转绘镜头不存在');
+    try {
+      const input = referenceBundleInput(req.body);
+      const result = await referenceBundleService.saveReferenceBundle(
+        referenceBundleContext(shot, currentOwner),
+        { shot_id: Number(shot.id), ...input },
+      );
+      return response.success(res, referenceBundleResponse(result));
+    } catch (error) {
+      return sendRedrawError(res, error, '保存逐镜参考包失败', log, { shotId: shot.id });
+    }
+  }
+
   async function generateShot(req, res) {
     const currentOwner = owner(req);
     const shot = findOwnedShot(req.params.id, currentOwner);
@@ -3008,6 +3132,8 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     createWorks,
     getWork,
     updateShot,
+    getReferenceBundle,
+    saveReferenceBundle,
     generateShot,
     nativeAudioReview,
     generateBatch,

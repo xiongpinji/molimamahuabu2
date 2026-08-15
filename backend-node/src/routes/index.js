@@ -317,6 +317,8 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/redraw/projects/:id/works', redraw.uploadSource, redraw.createWorks);
   r.get('/redraw/works/:id', redraw.getWork);
   r.put('/redraw/shots/:id', redraw.updateShot);
+  r.get('/redraw/shots/:id/reference-bundle', redraw.getReferenceBundle);
+  r.put('/redraw/shots/:id/reference-bundle', redraw.saveReferenceBundle);
   r.post('/redraw/shots/:id/generate', redraw.generateShot);
   r.post('/redraw/shots/:id/native-audio-review', redraw.nativeAudioReview);
   r.post('/redraw/works/:id/generate-batch', redraw.generateBatch);

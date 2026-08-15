@@ -3713,6 +3713,251 @@ test('分镜更新和生成对跨租户或跨用户统一返回 404 且不调用
   }
 });
 
+test('参考包 API PUT 仅传递服务端 shot 身份并返回脱敏投影', async () => {
+  const db = createDb();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-reference-bundle-route-'));
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    const input = {
+      expected_updated_at: NOW,
+      motion_reference_asset_id: 305,
+      face_tracks: [{ track_key: 'face-1' }],
+      text_regions: [{ region_key: 'subtitle-1' }],
+      coverage_review: { status: 'approved' },
+    };
+    const calls = [];
+    const referenceBundleService = {
+      async saveReferenceBundle(context, savedInput) {
+        calls.push({ context, input: savedInput });
+        return {
+          shot_id: shotId,
+          reference_bundle_hash: 'a'.repeat(64),
+          reference_bundle_updated_at: '2026-08-06T00:01:00.000Z',
+          bundle: {
+            schema_version: 'redraw-reference-bundle-v1',
+            shot_id: shotId,
+            coverage_review: {
+              reviewed_at: '2026-08-06T00:01:00.000Z',
+              reviewed_by: 'user-a',
+            },
+            local_path: 'private/reference.json',
+            nested: {
+              url: 'https://private.example/reference',
+              absolute_path: 'C:\\private\\reference.json',
+              tenant_id: 'tenant-a',
+              user_id: 'user-a',
+              safe_value: 'visible',
+            },
+          },
+          raw_service_field: 'must-not-leak',
+        };
+      },
+    };
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      cfg: { storage: { local_path: storageRoot } },
+      referenceBundleService,
+    }));
+    const result = captureResponse();
+
+    await handlers.saveReferenceBundle(request({ id: shotId, body: input }), result);
+
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(Object.keys(result.body.data).sort(), [
+      'bundle',
+      'reference_bundle_hash',
+      'reference_bundle_updated_at',
+      'shot_id',
+    ]);
+    assert.equal(result.body.data.shot_id, Number(shotId));
+    assert.equal(result.body.data.reference_bundle_hash, 'a'.repeat(64));
+    assert.equal(result.body.data.bundle.nested.safe_value, 'visible');
+    const serialized = JSON.stringify(result.body.data);
+    for (const secret of [
+      'raw_service_field', 'local_path', 'absolute_path', 'https://private.example',
+      'reviewed_by', 'tenant_id', 'user_id', 'C:\\\\private',
+    ]) assert.equal(serialized.includes(secret), false, secret);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].input, { shot_id: Number(shotId), ...input });
+    assert.equal(calls[0].context.db, db);
+    assert.equal(calls[0].context.tenantId, 'tenant-a');
+    assert.equal(calls[0].context.userId, 'user-a');
+    assert.equal(calls[0].context.versionId, Number(versionId));
+    assert.equal(calls[0].context.storageRoot, storageRoot);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('参考包 API PUT 对未知、客户端控制和 camelCase 字段 fail closed', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    let calls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      referenceBundleService: {
+        async saveReferenceBundle() { calls += 1; },
+      },
+    }));
+    const forbiddenFields = [
+      'shot_id', 'reference_bundle_hash', 'hash', 'path', 'local_path', 'url',
+      'reviewer', 'reviewed_by', 'status', 'tenant_id', 'tenantId', 'user_id', 'userId',
+      'expectedUpdatedAt', 'motionReferenceAssetId', 'faceTracks', 'textRegions', 'coverageReview',
+    ];
+
+    for (const field of forbiddenFields) {
+      const result = captureResponse();
+      await handlers.saveReferenceBundle(request({
+        id: shotId,
+        body: {
+          expected_updated_at: NOW,
+          motion_reference_asset_id: 305,
+          face_tracks: [],
+          text_regions: [],
+          coverage_review: {},
+          [field]: 'client-controlled',
+        },
+      }), result);
+      assert.equal(result.statusCode, 400, field);
+      assert.equal(result.body.error.code, 'REDRAW_REFERENCE_BUNDLE_INPUT_INVALID', field);
+    }
+    const nonObject = captureResponse();
+    await handlers.saveReferenceBundle(request({ id: shotId, body: [] }), nonObject);
+    assert.equal(nonObject.statusCode, 400);
+    assert.equal(nonObject.body.error.code, 'REDRAW_REFERENCE_BUNDLE_INPUT_INVALID');
+    assert.equal(calls, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('参考包 API GET 返回脱敏当前包和服务端更新时间', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    const updatedAt = '2026-08-06T00:02:00.000Z';
+    db.prepare('UPDATE redraw_shots SET reference_bundle_updated_at = ? WHERE id = ?')
+      .run(updatedAt, shotId);
+    const calls = [];
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      referenceBundleService: {
+        async loadCurrentReferenceBundle(context, id) {
+          calls.push({ context, id });
+          return {
+            shot_id: id,
+            reference_bundle_hash: 'b'.repeat(64),
+            bundle: {
+              schema_version: 'redraw-reference-bundle-v1',
+              safe: true,
+              storageRoot: 'C:\\private',
+              source_url: 'https://private.example/source',
+              reviewed_by: 'user-a',
+            },
+            internal: 'must-not-leak',
+          };
+        },
+      },
+    }));
+    const result = captureResponse();
+
+    await handlers.getReferenceBundle(request({ id: shotId }), result);
+
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(result.body.data, {
+      shot_id: Number(shotId),
+      reference_bundle_hash: 'b'.repeat(64),
+      reference_bundle_updated_at: updatedAt,
+      bundle: {
+        schema_version: 'redraw-reference-bundle-v1',
+        safe: true,
+      },
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].id, Number(shotId));
+    assert.equal(calls[0].context.versionId, Number(versionId));
+  } finally {
+    db.close();
+  }
+});
+
+test('参考包 API 对跨 owner 与不存在镜头统一 404 且不调用 service', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    let calls = 0;
+    const referenceBundleService = {
+      async saveReferenceBundle() { calls += 1; },
+      async loadCurrentReferenceBundle() { calls += 1; },
+    };
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({ referenceBundleService }));
+    const requests = [
+      ['getReferenceBundle', request({ id: shotId, tenantId: 'tenant-b' })],
+      ['getReferenceBundle', request({ id: shotId, userId: 'user-b' })],
+      ['getReferenceBundle', request({ id: 999999 })],
+      ['saveReferenceBundle', request({ id: shotId, tenantId: 'tenant-b', body: {} })],
+      ['saveReferenceBundle', request({ id: shotId, userId: 'user-b', body: {} })],
+      ['saveReferenceBundle', request({ id: 999999, body: {} })],
+    ];
+
+    for (const [method, req] of requests) {
+      const result = captureResponse();
+      await handlers[method](req, result);
+      assert.equal(result.statusCode, 404, method);
+      assert.equal(result.body.error.code, 'REDRAW_SHOT_NOT_FOUND', method);
+    }
+    assert.equal(calls, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('参考包 API 稳定映射未找到、CAS 冲突和输入错误', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    const baseBody = {
+      expected_updated_at: NOW,
+      motion_reference_asset_id: 305,
+      face_tracks: [],
+      text_regions: [],
+      coverage_review: {},
+    };
+    const cases = [
+      ['getReferenceBundle', 'REDRAW_REFERENCE_BUNDLE_NOT_FOUND', 404],
+      ['saveReferenceBundle', 'REDRAW_REFERENCE_BUNDLE_CONFLICT', 409],
+      ['saveReferenceBundle', 'REDRAW_REFERENCE_BUNDLE_FACE_COVERAGE_REQUIRED', 400],
+    ];
+    for (const [method, code, status] of cases) {
+      const referenceBundleService = {
+        async saveReferenceBundle() { throw Object.assign(new Error('参考包错误'), { code }); },
+        async loadCurrentReferenceBundle() { throw Object.assign(new Error('参考包错误'), { code }); },
+      };
+      const handlers = redrawRoutes(db, { error() {} }, routeDeps({ referenceBundleService }));
+      const result = captureResponse();
+      await handlers[method](request({ id: shotId, body: baseBody }), result);
+      assert.equal(result.statusCode, status, code);
+      assert.equal(result.body.error.code, code);
+    }
+  } finally {
+    db.close();
+  }
+});
+
 test('单镜生成错误保持结构化 code details 与规定 HTTP 状态', async () => {
   const db = createDb();
   try {
@@ -4600,6 +4845,8 @@ test('第三步、角色身份包和本地化确认 API 已真实注册在总路
         .map((method) => `${method.toUpperCase()} ${layer.route.path}`)));
     assert.equal(routes.has('GET /redraw/works/:id'), true);
     assert.equal(routes.has('PUT /redraw/shots/:id'), true);
+    assert.equal(routes.has('GET /redraw/shots/:id/reference-bundle'), true);
+    assert.equal(routes.has('PUT /redraw/shots/:id/reference-bundle'), true);
     assert.equal(routes.has('POST /redraw/shots/:id/generate'), true);
     assert.equal(routes.has('POST /redraw/shots/:id/native-audio-review'), true);
     assert.equal(routes.has('POST /redraw/works/:id/generate-batch'), true);
