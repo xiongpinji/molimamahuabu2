@@ -252,6 +252,7 @@ for (const shot of shots) {
 export const redrawLatinAmericanCase = Object.freeze({
   id: 'ac087bcd-latam-en-us',
   title: '拉美演员美式英语真实源片本地案例',
+  reference_bundle_required: true,
   target: {
     language: 'en',
     locale: 'en-US',

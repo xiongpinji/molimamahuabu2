@@ -231,6 +231,10 @@ test('C 方案固定成年拉美演员并使用美式英语', () => {
   }
 })
 
+test('真实整集案例显式启用服务端参考包门禁', () => {
+  assert.equal(redrawLatinAmericanCase.reference_bundle_required, true)
+})
+
 test('整集人物事实与本地化姓名映射包含独立朋友 Lucas', () => {
   assert.deepEqual(redrawLatinAmericanCase.cast[2], {
     id: 'lucas',

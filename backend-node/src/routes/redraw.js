@@ -1904,6 +1904,7 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
         workflow_phase: workflowPhase(projectedWork, analysisTask, localizationTask, assetBatch),
         analysis_billing: analysisBilling(work, currentOwner),
         localization_billing: localizationBilling(work, localizationTask, currentOwner),
+        reference_bundle_required: Number(currentVersion?.reference_bundle_required || 0) === 1,
         shots,
         batches,
       });

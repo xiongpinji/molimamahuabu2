@@ -3792,6 +3792,70 @@ test('参考包 API PUT 仅传递服务端 shot 身份并返回脱敏投影', as
   }
 });
 
+test('作品详情只读投影当前版本参考包门禁且更新与生成 payload 均不能控制', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?')
+      .run(versionId);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const before = captureResponse();
+    handlers.getWork(request({ id: workId }), before);
+    assert.equal(before.statusCode, 200);
+    assert.equal(before.body.data.reference_bundle_required, true);
+
+    const updated = captureResponse();
+    handlers.updateShot(request({
+      id: shotId,
+      body: { updated_at: NOW, reference_bundle_required: false },
+    }), updated);
+    assert.equal(updated.statusCode, 200, JSON.stringify(updated.body));
+    assert.equal(
+      db.prepare('SELECT reference_bundle_required FROM redraw_versions WHERE id = ?')
+        .get(versionId).reference_bundle_required,
+      1,
+    );
+
+    let generationCalls = 0;
+    const generationHandlers = redrawRoutes(db, { error() {} }, routeDeps({
+      generationService: {
+        async generateShot() { generationCalls += 1; return {}; },
+        async retryShot() { generationCalls += 1; return {}; },
+      },
+    }));
+    const generated = captureResponse();
+    await generationHandlers.generateShot(request({
+      id: shotId,
+      body: { reference_bundle_required: false },
+    }), generated);
+    assert.equal(generated.statusCode, 400);
+    assert.equal(generated.body.error.code, 'REDRAW_GENERATION_INPUT_INVALID');
+    assert.equal(generationCalls, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('没有参考包门禁的旧版本作品详情稳定返回 false', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    insertVersion(db, workId);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+    const result = captureResponse();
+    handlers.getWork(request({ id: workId }), result);
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.data.reference_bundle_required, false);
+  } finally {
+    db.close();
+  }
+});
+
 test('参考包 API PUT 对未知、客户端控制和 camelCase 字段 fail closed', async () => {
   const db = createDb();
   try {

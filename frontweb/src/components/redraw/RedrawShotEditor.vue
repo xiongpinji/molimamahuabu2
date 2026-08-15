@@ -78,6 +78,13 @@
       </div>
     </div>
 
+    <RedrawReferenceBundlePanel
+      v-if="referenceBundleRequired"
+      :state="referenceBundleState"
+      :saving="referenceBundleSaving"
+      @save="$emit('save-reference-bundle', $event)"
+    />
+
     <div class="generation-grid">
       <el-form-item label="视频模型（后端快照）">
         <el-input v-model="form.model" readonly />
@@ -109,7 +116,7 @@
           type="danger"
           :icon="RefreshRight"
           :loading="generating"
-          :disabled="!availability.ok || !durationInRange"
+          :disabled="generationDisabled"
           @click="generate(true)"
         >独立重试</el-button>
         <el-button
@@ -117,7 +124,7 @@
           type="primary"
           :icon="VideoPlay"
           :loading="generating"
-          :disabled="!availability.ok || !durationInRange"
+          :disabled="generationDisabled"
           @click="generate(false)"
         >生成本镜头</el-button>
       </div>
@@ -144,6 +151,7 @@ import {
   structuredReferences,
 } from '@/utils/redrawShotState'
 import { projectRedrawCharacterIdentityPack } from '@/utils/redrawCharacterIdentity'
+import RedrawReferenceBundlePanel from './RedrawReferenceBundlePanel.vue'
 
 const props = defineProps({
   shot: { type: Object, default: null },
@@ -151,8 +159,11 @@ const props = defineProps({
   gate: { type: Object, default: () => ({ ok: false, missing: [] }) },
   saving: Boolean,
   generating: Boolean,
+  referenceBundleRequired: Boolean,
+  referenceBundleState: { type: Object, default: () => ({ ready: false }) },
+  referenceBundleSaving: Boolean,
 })
-const emit = defineEmits(['save', 'generate'])
+const emit = defineEmits(['save', 'generate', 'save-reference-bundle'])
 const referenceQuery = ref('')
 const referenceIds = ref([])
 const form = reactive({
@@ -183,6 +194,10 @@ const availability = computed(() => generationAvailability(props.shot, props.gat
 const editable = computed(() => ['draft', 'failed'].includes(String(props.shot?.status || '')))
 const durationSeconds = computed(() => Math.max(0, Number(form.end_ms) - Number(form.start_ms)) / 1000)
 const durationInRange = computed(() => durationSeconds.value >= 10 && durationSeconds.value <= 15)
+const generationDisabled = computed(() => !availability.value.ok
+  || !durationInRange.value
+  || (props.referenceBundleRequired
+    && (props.referenceBundleSaving || !props.referenceBundleState.ready)))
 const sourceDialogueText = computed(() => dialogueText(props.shot?.source_dialogue))
 const statusLabel = computed(() => ({
   draft: '待生成', processing: '生成中', completed: '已完成', failed: '失败', needs_attention: '需人工确认',

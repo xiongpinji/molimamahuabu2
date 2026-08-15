@@ -11,6 +11,7 @@ const apiSource = source('../src/api/redraw.js')
 const workspaceSource = source('../src/views/RedrawWorkspace.vue')
 const stepSource = source('../src/components/redraw/RedrawShotStep.vue')
 const editorSource = source('../src/components/redraw/RedrawShotEditor.vue')
+const referenceBundleSource = source('../src/components/redraw/RedrawReferenceBundlePanel.vue')
 const batchSource = source('../src/components/redraw/RedrawBatchPanel.vue')
 const previewSource = source('../src/components/redraw/RedrawShotPreview.vue')
 
@@ -104,6 +105,113 @@ test('第三步 API 只提交后端允许的更新、单镜和批量入口', () 
   }
   assert.match(apiSource, /\/redraw\/shots\/\$\{shotId\}/)
   assert.match(apiSource, /generate-batch/)
+})
+
+test('参考包 API 使用精确 GET PUT 且保存参数由客户端白名单重建', async () => {
+  assert.match(apiSource, /getReferenceBundle\(shotId\)/)
+  assert.match(apiSource, /saveReferenceBundle\(shotId, body\)/)
+  assert.match(apiSource, /request\.get\(`\/redraw\/shots\/\$\{shotId\}\/reference-bundle`\)/)
+  assert.match(apiSource, /request\.put\(`\/redraw\/shots\/\$\{shotId\}\/reference-bundle`,\s*buildReferenceBundlePayload\(body\)\)/)
+  for (const field of [
+    'expected_updated_at', 'motion_reference_asset_id', 'face_tracks', 'text_regions',
+    'coverage_review', 'track_key', 'source_character_key', 'time_ranges',
+    'identity_redraw_asset_id', 'region_key', 'kind', 'text_clean_redraw_asset_id',
+    'recognizable_face_count', 'mapped_face_count', 'unresolved_face_count',
+    'recognizable_text_region_count', 'mapped_text_region_count',
+    'unresolved_text_region_count', 'status',
+  ]) assert.match(apiSource, new RegExp(field), field)
+  assert.doesNotMatch(apiSource, /saveReferenceBundle[\s\S]{0,260}\.\.\.body/)
+
+  const executableSource = apiSource.replace("import request from '@/utils/request'", 'const request = {}')
+  const apiModule = await import(`data:text/javascript;base64,${Buffer.from(executableSource).toString('base64')}`)
+  const payload = apiModule.buildReferenceBundlePayload({
+    expected_updated_at: 'server-shot-version',
+    motion_reference_asset_id: 11,
+    face_tracks: [{
+      track_key: 'face-1',
+      source_character_key: 'mateo',
+      time_ranges: [[0, 5000]],
+      identity_redraw_asset_id: 21,
+      identity_pack_sha256: 'client-must-not-send',
+    }],
+    text_regions: [{
+      region_key: 'subtitle-1',
+      kind: 'text_subtitle',
+      time_ranges: [[0, 5000]],
+      text_clean_redraw_asset_id: 31,
+      url: 'https://client-must-not-send.example',
+    }],
+    coverage_review: {
+      recognizable_face_count: 1,
+      mapped_face_count: 1,
+      unresolved_face_count: 0,
+      recognizable_text_region_count: 1,
+      mapped_text_region_count: 1,
+      unresolved_text_region_count: 0,
+      status: 'approved',
+      reviewed_by: 'client-must-not-send',
+    },
+    ready: true,
+    reference_bundle_hash: 'client-must-not-send',
+  })
+  assert.deepEqual(payload, {
+    expected_updated_at: 'server-shot-version',
+    motion_reference_asset_id: 11,
+    face_tracks: [{
+      track_key: 'face-1',
+      source_character_key: 'mateo',
+      time_ranges: [[0, 5000]],
+      identity_redraw_asset_id: 21,
+    }],
+    text_regions: [{
+      region_key: 'subtitle-1',
+      kind: 'text_subtitle',
+      time_ranges: [[0, 5000]],
+      text_clean_redraw_asset_id: 31,
+    }],
+    coverage_review: {
+      recognizable_face_count: 1,
+      mapped_face_count: 1,
+      unresolved_face_count: 0,
+      recognizable_text_region_count: 1,
+      mapped_text_region_count: 1,
+      unresolved_text_region_count: 0,
+      status: 'approved',
+    },
+  })
+  assert.throws(() => apiModule.buildReferenceBundlePayload({ face_tracks: '[]' }), /格式错误/)
+})
+
+test('逐镜参考包面板显示五段服务端证据且不提供客户端 ready 或敏感字段输入', () => {
+  for (const label of ['人物轨迹', '身份包', '文字净景', '无原音运动参考', '英文对白']) {
+    assert.match(referenceBundleSource, new RegExp(label), label)
+  }
+  assert.match(referenceBundleSource, /JSON\.parse/)
+  assert.match(referenceBundleSource, /参考包编辑内容格式错误/)
+  assert.match(referenceBundleSource, /coverage_review/)
+  assert.doesNotMatch(referenceBundleSource, /v-model[^>]*(?:hash|path|url|reviewer|ready)/i)
+})
+
+test('强制参考包版本仅以 GET 完整证据放行保存后单镜与批量生成', () => {
+  assert.match(stepSource, /reference_bundle_required\s*===\s*true/)
+  assert.match(stepSource, /getReferenceBundle/)
+  assert.match(stepSource, /loadAllReferenceBundles/)
+  assert.match(stepSource, /referenceBundleEvidence/)
+  assert.match(stepSource, /saveReferenceBundle/)
+  assert.match(stepSource, /expected_updated_at:\s*currentShot\.updated_at/)
+  assert.match(stepSource, /responseStatus\(error\)\s*===\s*409/)
+  assert.match(stepSource, /await refreshWork\(\{ quiet: true \}\)/)
+  const saveFunction = stepSource.slice(
+    stepSource.indexOf('async function saveReferenceBundleDraft'),
+    stepSource.indexOf('async function saveShot'),
+  )
+  assert.equal((saveFunction.match(/redrawAPI\.saveReferenceBundle/g) || []).length, 1)
+  assert.match(stepSource, /verifiedShotIds/)
+  assert.match(stepSource, /if \(!verifiedShotIds\.length\) return/)
+  assert.match(editorSource, /RedrawReferenceBundlePanel/)
+  assert.match(editorSource, /props\.referenceBundleRequired/)
+  assert.match(editorSource, /props\.referenceBundleSaving \|\| !props\.referenceBundleState\.ready/)
+  assert.match(editorSource, /canvas-credit-callout-v1/)
 })
 
 test('第三步工作台覆盖批次、编辑、计费、重试、对照预览和后端轮询', () => {

@@ -37,8 +37,12 @@
           :gate="gate"
           :saving="saving"
           :generating="shotGenerating"
+          :reference-bundle-required="referenceBundleRequired"
+          :reference-bundle-state="selectedReferenceBundleState"
+          :reference-bundle-saving="referenceBundleSaving"
           @save="saveShot"
           @generate="generateShot"
+          @save-reference-bundle="saveReferenceBundleDraft"
         />
       </div>
     </div>
@@ -78,6 +82,8 @@ const refreshing = ref(false)
 const saving = ref(false)
 const shotGenerating = ref(false)
 const batchGenerating = ref(false)
+const referenceBundleSaving = ref(false)
+const referenceBundles = ref({})
 const loadError = ref('')
 const pollAttempts = ref(0)
 const MAX_POLL_ATTEMPTS = 120
@@ -89,6 +95,77 @@ const shots = computed(() => state.value.shots)
 const batches = computed(() => state.value.batches)
 const resolvedVersionId = computed(() => props.versionId || localWork.value?.version_id || localWork.value?.current_version_id)
 const selectedShot = computed(() => shots.value.find((shot) => String(shot.id) === String(selectedShotId.value)) || null)
+const referenceBundleRequired = computed(() => localWork.value?.reference_bundle_required === true)
+const selectedReferenceBundleState = computed(() => referenceBundles.value[String(selectedShotId.value)] || {
+  loaded: false,
+  loading: false,
+  ready: false,
+  evidence: {},
+  response: null,
+  error: '',
+})
+
+const HEX_SHA256 = /^[a-f0-9]{64}$/i
+
+function referenceBundleEvidence(response, shotId) {
+  const bundle = response?.bundle
+  const coverage = bundle?.coverage_review
+  const faceTracks = Array.isArray(bundle?.face_tracks) ? bundle.face_tracks : null
+  const textRegions = Array.isArray(bundle?.text_regions) ? bundle.text_regions : null
+  const faceCountsMatch = coverage && faceTracks
+    && Number(coverage.recognizable_face_count) === Number(coverage.mapped_face_count)
+    && Number(coverage.mapped_face_count) === faceTracks.length
+    && Number(coverage.unresolved_face_count) === 0
+  const textCountsMatch = coverage && textRegions
+    && Number(coverage.recognizable_text_region_count) === Number(coverage.mapped_text_region_count)
+    && Number(coverage.mapped_text_region_count) === textRegions.length
+    && Number(coverage.unresolved_text_region_count) === 0
+  const evidence = {
+    faceTracks: Boolean(faceCountsMatch && faceTracks.every((track) => (
+      String(track?.track_key || '').trim()
+        && String(track?.source_character_key || '').trim()
+        && Array.isArray(track?.time_ranges)
+        && Number.isSafeInteger(Number(track?.identity_redraw_asset_id))
+        && Number(track.identity_redraw_asset_id) > 0
+    ))),
+    identityPacks: Boolean(faceTracks && faceTracks.every((track) => (
+      HEX_SHA256.test(String(track?.identity_pack_sha256 || ''))
+        && HEX_SHA256.test(String(track?.identity?.artifact?.sha256 || ''))
+        && Number.isSafeInteger(Number(track?.identity?.artifact?.asset_id))
+        && Number(track.identity.artifact.asset_id) > 0
+    ))),
+    textClean: Boolean(textCountsMatch && textRegions.every((region) => (
+      ['text_subtitle', 'text_screen'].includes(String(region?.kind || ''))
+        && HEX_SHA256.test(String(region?.clean_plate?.pack_sha256 || ''))
+        && HEX_SHA256.test(String(region?.clean_plate?.artifact?.sha256 || ''))
+        && Number.isSafeInteger(Number(region?.clean_plate?.artifact?.asset_id))
+        && Number(region.clean_plate.artifact.asset_id) > 0
+    ))),
+    motion: Boolean(
+      Number.isSafeInteger(Number(bundle?.motion_reference?.asset_id))
+        && Number(bundle.motion_reference.asset_id) > 0
+        && HEX_SHA256.test(String(bundle?.motion_reference?.sha256 || ''))
+        && Number(bundle?.motion_reference?.audio_stream_count) === 0
+    ),
+    dialogue: Boolean(
+      bundle?.dialogue?.target_locale === 'en-US'
+        && Array.isArray(bundle?.dialogue?.turns)
+        && !/[\u3400-\u9fff]/.test(JSON.stringify(bundle.dialogue.turns))
+    ),
+  }
+  const envelope = Number(response?.shot_id) === Number(shotId)
+    && bundle?.schema_version === 'redraw-reference-bundle-v1'
+    && HEX_SHA256.test(String(response?.reference_bundle_hash || ''))
+    && Boolean(response?.reference_bundle_updated_at)
+  return { ...evidence, ready: Boolean(envelope && Object.values(evidence).every(Boolean)) }
+}
+
+function setReferenceBundleState(shotId, next) {
+  referenceBundles.value = {
+    ...referenceBundles.value,
+    [String(shotId)]: { ...(referenceBundles.value[String(shotId)] || {}), ...next },
+  }
+}
 
 function errorReason(error, fallback) {
   return error?.response?.data?.error?.message || error?.message || fallback
@@ -130,6 +207,82 @@ async function loadAssetsAndGate() {
   }
 }
 
+async function loadReferenceBundle(shotId) {
+  if (!referenceBundleRequired.value) return true
+  setReferenceBundleState(shotId, { loading: true, ready: false, error: '' })
+  try {
+    const response = await redrawAPI.getReferenceBundle(shotId)
+    const evidence = referenceBundleEvidence(response, shotId)
+    setReferenceBundleState(shotId, {
+      loaded: true,
+      loading: false,
+      ready: evidence.ready,
+      evidence,
+      response,
+      error: evidence.ready ? '' : '服务端参考包证据不完整，当前镜头禁止生成',
+    })
+    return evidence.ready
+  } catch (error) {
+    setReferenceBundleState(shotId, {
+      loaded: true,
+      loading: false,
+      ready: false,
+      evidence: {},
+      response: null,
+      error: errorReason(error, '读取逐镜参考包失败'),
+    })
+    return false
+  }
+}
+
+async function loadAllReferenceBundles() {
+  if (!referenceBundleRequired.value) {
+    referenceBundles.value = {}
+    return
+  }
+  await Promise.all(shots.value.map((shot) => loadReferenceBundle(shot.id)))
+}
+
+function responseStatus(error) {
+  return Number(error?.response?.status || error?.response?.data?.status || 0)
+}
+
+async function saveReferenceBundleDraft(draft) {
+  const currentShot = selectedShot.value
+  if (!referenceBundleRequired.value || !currentShot?.id) return
+  referenceBundleSaving.value = true
+  setReferenceBundleState(currentShot.id, {
+    loading: true,
+    ready: false,
+    error: '参考包保存后等待服务端重新验证',
+  })
+  try {
+    await redrawAPI.saveReferenceBundle(currentShot.id, {
+      expected_updated_at: currentShot.updated_at,
+      motion_reference_asset_id: draft.motion_reference_asset_id,
+      face_tracks: draft.face_tracks,
+      text_regions: draft.text_regions,
+      coverage_review: draft.coverage_review,
+    })
+    await refreshWork({ quiet: true })
+    const ready = await loadReferenceBundle(currentShot.id)
+    if (ready) ElMessage.success('参考包已保存并由服务端重新验证')
+    else ElMessage.error('参考包已保存，但服务端证据复核未通过')
+  } catch (error) {
+    const message = errorReason(error, '保存逐镜参考包失败')
+    loadError.value = message
+    if (responseStatus(error) === 409) {
+      await refreshWork({ quiet: true })
+      await loadReferenceBundle(currentShot.id)
+    } else {
+      setReferenceBundleState(currentShot.id, { loading: false, ready: false, error: message })
+    }
+    ElMessage.error(message)
+  } finally {
+    referenceBundleSaving.value = false
+  }
+}
+
 async function saveShot(payload, { silent = false } = {}) {
   if (!selectedShot.value?.id) return null
   saving.value = true
@@ -156,6 +309,10 @@ async function generateShot({ update, retry }) {
   try {
     const saved = await saveShot(update, { silent: true })
     if (!saved) return
+    if (referenceBundleRequired.value && !(await loadReferenceBundle(saved.id))) {
+      ElMessage.error('镜头保存后参考包复核未通过，未提交生成任务')
+      return
+    }
     const body = {
       model: saved.model,
       duration: Number(saved.duration),
@@ -180,13 +337,20 @@ async function generateBatch(shotIds) {
   if (!localWork.value?.id || !shotIds.length) return
   batchGenerating.value = true
   try {
+    let verifiedShotIds = shotIds
+    if (referenceBundleRequired.value) {
+      const candidates = shotIds.filter((shotId) => referenceBundles.value[String(shotId)]?.ready === true)
+      const rechecked = await Promise.all(candidates.map((shotId) => loadReferenceBundle(shotId)))
+      verifiedShotIds = candidates.filter((_shotId, index) => rechecked[index] === true)
+    }
+    if (!verifiedShotIds.length) return
     await redrawAPI.generateBatch(localWork.value.id, {
       version_id: resolvedVersionId.value,
-      shot_ids: shotIds,
+      shot_ids: verifiedShotIds,
     })
     pollAttempts.value = 0
     await refreshWork({ quiet: true })
-    ElMessage.success(`已提交 ${shotIds.length} 个镜头`)
+    ElMessage.success(`已提交 ${verifiedShotIds.length} 个镜头`)
   } catch (error) {
     const message = errorReason(error, '批量生成失败')
     loadError.value = message
@@ -226,6 +390,11 @@ watch(() => props.work, (nextWork) => {
   selectedShotId.value = restoreSelectedShotId(state.value.shots, selectedShotId.value)
 }, { immediate: true })
 watch(resolvedVersionId, loadAssetsAndGate)
+watch(
+  () => `${referenceBundleRequired.value}:${resolvedVersionId.value || ''}:${shots.value.map((shot) => shot.id).join(',')}`,
+  loadAllReferenceBundles,
+  { immediate: true },
+)
 watch(shots, syncPolling, { deep: true })
 
 onMounted(async () => {
