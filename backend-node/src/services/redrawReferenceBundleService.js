@@ -589,7 +589,12 @@ async function loadCurrentReferenceBundle(rawCtx, shotId) {
   if (rebuilt.hash !== shot.reference_bundle_hash || stableJson(rebuilt.bundle) !== stableJson(bundle)) {
     fail(classifyBundleMismatch(bundle, rebuilt.bundle));
   }
-  return { shot_id: id, reference_bundle_hash: shot.reference_bundle_hash, bundle };
+  return {
+    shot_id: id,
+    reference_bundle_hash: shot.reference_bundle_hash,
+    reference_bundle_updated_at: shot.reference_bundle_updated_at,
+    bundle,
+  };
 }
 
 function assertReferenceUrl(value, sourceUrl) {

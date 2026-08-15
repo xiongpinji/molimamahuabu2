@@ -598,11 +598,11 @@ function sanitizeReferenceBundle(value) {
   return value;
 }
 
-function referenceBundleResponse(result, referenceBundleUpdatedAt = null) {
+function referenceBundleResponse(result) {
   return {
     shot_id: Number(result?.shot_id),
     reference_bundle_hash: result?.reference_bundle_hash || null,
-    reference_bundle_updated_at: result?.reference_bundle_updated_at || referenceBundleUpdatedAt || null,
+    reference_bundle_updated_at: result?.reference_bundle_updated_at || null,
     bundle: sanitizeReferenceBundle(result?.bundle || {}),
   };
 }
@@ -2147,11 +2147,7 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
         referenceBundleContext(shot, currentOwner),
         Number(shot.id),
       );
-      const latest = findOwnedShot(shot.id, currentOwner);
-      return response.success(
-        res,
-        referenceBundleResponse(result, latest?.reference_bundle_updated_at),
-      );
+      return response.success(res, referenceBundleResponse(result));
     } catch (error) {
       return sendRedrawError(res, error, '读取逐镜参考包失败', log, { shotId: shot.id });
     }

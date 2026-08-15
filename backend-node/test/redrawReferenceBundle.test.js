@@ -589,6 +589,7 @@ test('重读参考包时重新校验并投影生成用白名单 URL', async () =
 
     const loaded = await loadCurrentReferenceBundle(ctx(state), state.shotId);
     assert.equal(loaded.reference_bundle_hash, saved.reference_bundle_hash);
+    assert.equal(loaded.reference_bundle_updated_at, saved.reference_bundle_updated_at);
     assert.equal(canonicalBundleHash(loaded.bundle), saved.reference_bundle_hash);
 
     const referenceKinds = [];

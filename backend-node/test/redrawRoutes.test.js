@@ -3837,7 +3837,7 @@ test('参考包 API PUT 对未知、客户端控制和 camelCase 字段 fail clo
   }
 });
 
-test('参考包 API GET 返回脱敏当前包和服务端更新时间', async () => {
+test('参考包 API GET 使用 service 同一读取快照且不二次读取 shot', async () => {
   const db = createDb();
   try {
     const projectId = insertProject(db);
@@ -3845,16 +3845,32 @@ test('参考包 API GET 返回脱敏当前包和服务端更新时间', async ()
     const versionId = insertVersion(db, workId);
     const shotId = insertShot(db, versionId);
     const updatedAt = '2026-08-06T00:02:00.000Z';
+    const concurrentUpdatedAt = '2026-08-06T00:03:00.000Z';
     db.prepare('UPDATE redraw_shots SET reference_bundle_updated_at = ? WHERE id = ?')
       .run(updatedAt, shotId);
+    let ownedShotReads = 0;
+    const observedDb = new Proxy(db, {
+      get(target, property) {
+        if (property !== 'prepare') return Reflect.get(target, property, target);
+        return (sql) => {
+          if (/FROM\s+redraw_shots\s+s[\s\S]+JOIN\s+redraw_versions\s+v/i.test(String(sql))) {
+            ownedShotReads += 1;
+          }
+          return target.prepare(sql);
+        };
+      },
+    });
     const calls = [];
-    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+    const handlers = redrawRoutes(observedDb, { error() {} }, routeDeps({
       referenceBundleService: {
         async loadCurrentReferenceBundle(context, id) {
           calls.push({ context, id });
+          db.prepare('UPDATE redraw_shots SET reference_bundle_updated_at = ? WHERE id = ?')
+            .run(concurrentUpdatedAt, shotId);
           return {
             shot_id: id,
             reference_bundle_hash: 'b'.repeat(64),
+            reference_bundle_updated_at: updatedAt,
             bundle: {
               schema_version: 'redraw-reference-bundle-v1',
               safe: true,
@@ -3884,6 +3900,12 @@ test('参考包 API GET 返回脱敏当前包和服务端更新时间', async ()
     assert.equal(calls.length, 1);
     assert.equal(calls[0].id, Number(shotId));
     assert.equal(calls[0].context.versionId, Number(versionId));
+    assert.equal(ownedShotReads, 1);
+    assert.equal(
+      db.prepare('SELECT reference_bundle_updated_at FROM redraw_shots WHERE id = ?').get(shotId)
+        .reference_bundle_updated_at,
+      concurrentUpdatedAt,
+    );
   } finally {
     db.close();
   }
