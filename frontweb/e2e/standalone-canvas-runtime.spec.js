@@ -564,6 +564,14 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await page.mouse.up()
 
     await expect.poll(() => state.canvasLayout.free_nodes[0].position).not.toEqual(originalPosition)
+
+    await page.getByRole('button', { name: '添加元素' }).click()
+    await page.getByRole('menu', { name: '添加节点菜单' })
+      .getByRole('menuitem', { name: /^图片 图片生成节点$/ })
+      .click()
+    await expect(page.locator('.vue-flow__node[data-id^="free:image:"]')).toHaveCount(2)
+    await expect(page.locator('.vue-flow__node[data-id^="free:image:"].selected')).toHaveCount(1)
+    await expect(page.getByRole('region', { name: '图片节点编辑器' })).toBeVisible()
   })
 
   test('新建图片节点后点击空白处保持节点可见', async ({ page }) => {

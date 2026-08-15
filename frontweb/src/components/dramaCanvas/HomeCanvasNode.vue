@@ -909,6 +909,7 @@ function closeEditor() {
   editorHidden.value = true
   editorFullscreen.value = false
   stopEditorPositionTracking()
+  ctx?.clearFocusedNode?.()
 }
 
 function updateEditorPosition() {
@@ -1233,6 +1234,11 @@ watch(isSelected, (selected) => {
     closeMediaPreview()
   }
 })
+watch(() => ctx?.focusedNodeId?.value, (focusedId) => {
+  if (String(focusedId || '') !== String(props.id)) return
+  editorHidden.value = false
+  nextTick(startEditorPositionTracking)
+}, { immediate: true })
 </script>
 
 <style scoped>

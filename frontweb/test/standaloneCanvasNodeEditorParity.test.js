@@ -131,6 +131,7 @@ test('图片工具条和下拉菜单计入编辑器下边界且关闭操作取�
   assert.doesNotMatch(localCanvasSource, /panCanvasForNodeEditor/)
   assert.doesNotMatch(dramaCanvasSource, /panCanvasForNodeEditor/)
   assert.match(nodeSource, /function closeEditor\(\) \{[\s\S]*window\.clearTimeout\(mediaOpenTimer\)/)
+  assert.match(nodeSource, /function closeEditor\(\) \{[\s\S]*ctx\?\.clearFocusedNode\?\.\(\)/)
   assert.match(nodeSource, /@suspend-editor="closeEditor"/)
   assert.match(imageToolbarSource, /function openToolbarMenu\(menu\) \{[\s\S]*emit\('suspend-editor'\)/)
   assert.match(imageToolbarSource, /function selectOperation\(item\) \{[\s\S]*emit\('suspend-editor'\)/)
@@ -158,4 +159,9 @@ test('图片视频节点使用大画幅预览，运行中明确显示生成状�
 test('独立画布只读取用户可访问的模型目录，不请求管理员模型配置接口', () => {
   assert.match(dramaCanvasSource, /request\.get\('\/canvas\/model-catalog'\)/)
   assert.doesNotMatch(dramaCanvasSource, /aiAPI\.list\(/)
+})
+
+test('连续创建节点时同步单选状态，避免新节点编辑器被误判为多选', () => {
+  assert.match(dramaCanvasSource, /async function createFreeCanvasNode\([\s\S]*applySelectedFreeNodeIds\(\[id\]\)[\s\S]*focusedNodeId\.value = id[\s\S]*await focusCanvasNode\(id\)/)
+  assert.match(nodeSource, /watch\(\(\) => ctx\?\.focusedNodeId\?\.value,[\s\S]*editorHidden\.value = false[\s\S]*immediate: true/)
 })

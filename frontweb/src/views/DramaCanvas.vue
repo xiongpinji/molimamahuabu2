@@ -2476,11 +2476,12 @@ async function createFreeCanvasNode(kind, flowPosition = null, initialData = {})
       data,
     },
   ]
+  applySelectedFreeNodeIds([id])
   focusedNodeId.value = id
-  applyVirtualizedGraph()
   commitInteractionHistory(previousState)
   await persistCanvasState({ layoutOnly: true })
   await nextTick()
+  await focusCanvasNode(id)
   document.querySelector(`.vue-flow__node[data-id="${id}"] .node-title-input`)?.focus()
   return id
 }
