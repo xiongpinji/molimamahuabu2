@@ -100,27 +100,42 @@ function casePolicyFromCase(caseData) {
   return {
     case_id: caseData.case_id,
     duration_ms: caseData.source.duration_ms,
-    source: { video: caseData.source.video, audio: caseData.source.audio },
+    source: { sha256: caseData.source.sha256, video: caseData.source.video, audio: caseData.source.audio },
     target: caseData.target,
     cast_ids: caseData.cast.map((item) => item.id),
     shots: caseData.shots.map(({ id, start_ms, end_ms }) => ({ id, start_ms, end_ms })),
   };
 }
 
-async function writeSyntheticVideo(t, root) {
+async function writeSyntheticVideo(t, root, { width = 64, height = 36, audio = 'ok' } = {}) {
   if (!hasLocalFfmpeg() || !hasLocalFfprobe()) t.skip('ffmpeg/ffprobe unavailable');
   const frameDir = path.join(root, 'input-frames');
   fs.mkdirSync(frameDir);
   for (let index = 0; index < 9; index += 1) {
-    const bytes = await sharp({ create: { width: 64, height: 36, channels: 3, background: { r: 20 + (index * 20), g: 80, b: 120 } } }).png().toBuffer();
+    const bytes = await sharp({
+      create: {
+        width,
+        height,
+        channels: 3,
+        background: { r: 20 + (index * 20), g: 80, b: 120 },
+      },
+    }).png().toBuffer();
     fs.writeFileSync(path.join(frameDir, `frame-${String(index).padStart(3, '0')}.png`), bytes);
   }
   const videoPath = path.join(root, 'source.mp4');
-  const result = spawnSync(getFfmpegPath(), [
+  const args = [
     '-hide_banner', '-loglevel', 'error', '-framerate', '1',
     '-i', path.join(frameDir, 'frame-%03d.png'),
-    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', videoPath,
-  ], { shell: false, windowsHide: true });
+  ];
+  if (audio !== 'none') {
+    args.push('-f', 'lavfi', '-i', audio === 'drift'
+      ? 'anullsrc=channel_layout=stereo:sample_rate=48000'
+      : 'anullsrc=channel_layout=mono:sample_rate=44100');
+  }
+  args.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p');
+  if (audio !== 'none') args.push('-c:a', 'aac', '-ac', audio === 'drift' ? '2' : '1', '-ar', audio === 'drift' ? '48000' : '44100', '-shortest');
+  args.push('-movflags', '+faststart', videoPath);
+  const result = spawnSync(getFfmpegPath(), args, { shell: false, windowsHide: true });
   if (result.status !== 0) t.skip('ffmpeg cannot encode synthetic fixture');
   return videoPath;
 }
@@ -250,6 +265,12 @@ test('default runner policy locks the approved case and rejects synthetic case b
     modelLockPath: setup.lockPath,
     outputDir: path.join(setup.root, 'bad-policy'),
   }, { ...setup.deps, casePolicy: true }), /REDRAW_FULL_FRAME_OUTPUT_INVALID/);
+  await assert.rejects(runner.runAnalyze({
+    source: setup.videoPath,
+    casePath: setup.casePath,
+    modelLockPath: setup.lockPath,
+    outputDir: path.join(setup.root, 'missing-policy-sha'),
+  }, { ...setup.deps, casePolicy: { ...casePolicyFromCase(setup.caseData), source: { video: setup.caseData.source.video, audio: setup.caseData.source.audio } } }), /REDRAW_FULL_FRAME_OUTPUT_INVALID/);
 });
 
 test('analyze args reject CLI-only dangerous options and non-empty output dirs', async (t) => {
@@ -319,6 +340,40 @@ test('analyze builds offline review artifacts from real ffprobe/ffmpeg frames an
   assert(!JSON.stringify(first).includes('fault'));
 });
 
+test('contact sheets contain portrait frames without stretching them', async (t) => {
+  const root = tempDir(t, 'redraw-portrait-contact-');
+  const videoPath = await writeSyntheticVideo(t, root, { width: 36, height: 64 });
+  const caseData = buildSyntheticCase({ videoPath, width: 36, height: 64 });
+  const casePath = path.join(root, 'case.json');
+  fs.writeFileSync(casePath, JSON.stringify(caseData, null, 2));
+  const { lockPath } = await writeModelLock(t);
+  const result = await runner.runAnalyze({
+    source: videoPath,
+    casePath,
+    modelLockPath: lockPath,
+    outputDir: path.join(root, 'out'),
+  }, {
+    ffmpegPath: getFfmpegPath(),
+    ffprobePath: getFfprobePath(),
+    casePolicy: casePolicyFromCase(caseData),
+    detectFrames: async ({ frames }) => frames.map((frame) => ({
+      frame_index: frame.frame_index,
+      persons: [{ candidate_id: `p-${frame.frame_index}`, track_key: 'character:mateo', kind: 'person_candidate', bbox: { x: 8, y: 8, width: 12, height: 20 }, confidence: 0.9 }],
+      faces: [],
+      texts: [],
+    })),
+    randomHex: () => 'portraitcontact',
+  });
+  const sheetPath = path.join(root, 'out', result.contact_sheets[0]);
+  const metadata = await sharp(sheetPath).metadata();
+  assert.equal(metadata.width, 960);
+  assert.equal(metadata.height, 180);
+  const edge = await sharp(sheetPath).extract({ left: 2, top: 90, width: 1, height: 1 }).raw().toBuffer();
+  const center = await sharp(sheetPath).extract({ left: 160, top: 90, width: 1, height: 1 }).raw().toBuffer();
+  assert(edge[0] < 30 && edge[1] < 30 && edge[2] < 30, 'source cell keeps dark side letterbox');
+  assert(center[0] > 30 || center[1] > 30 || center[2] > 30, 'source image remains visible in contained center');
+});
+
 test('analyze failure matrix reaches the intended legal-media stages and leaves no final directory', async (t) => {
   const setup = await prepareSyntheticRun(t);
   await assertRunRejectsNoFinal(setup, 'REDRAW_FULL_FRAME_SOURCE_MISMATCH', { probeVideo: async () => { throw Object.assign(new Error('C:\\secret\\ffprobe'), { code: 'REDRAW_FULL_FRAME_SOURCE_MISMATCH' }); } });
@@ -338,6 +393,58 @@ test('analyze failure matrix reaches the intended legal-media stages and leaves 
   assert.equal(detectorCalled, true);
   await assertRunRejectsNoFinal(setup2, 'REDRAW_FULL_FRAME_MASK_INVALID', { fault: 'mask_write' });
   await assert.rejects(runner.runAnalyze({ source: setup2.videoPath, casePath: setup2.casePath, modelLockPath: setup2.lockPath, outputDir: path.join(setup2.root, 'unknown-fault') }, { ...setup2.deps, fault: 'unknown' }), /REDRAW_FULL_FRAME_OUTPUT_INVALID/);
+});
+
+test('analyze fails closed when detector omits frames or emits no candidates for the whole video', async (t) => {
+  const setup = await prepareSyntheticRun(t);
+  const textOnly = (frame) => ({
+    frame_index: frame.frame_index,
+    persons: [],
+    faces: [],
+    texts: [{ candidate_id: `text-${frame.frame_index}`, kind: 'text_candidate', polygon: [{ x: 1, y: 1 }, { x: 8, y: 1 }, { x: 8, y: 8 }, { x: 1, y: 8 }], confidence: 0.8 }],
+  });
+  await assertRunRejectsNoFinal(setup, 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE', {
+    detectFrames: async ({ frames }) => frames.slice(0, -1).map(textOnly),
+  });
+  await assertRunRejectsNoFinal(setup, 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE', {
+    detectFrames: async ({ frames }) => frames.map((frame) => ({ frame_index: frame.frame_index, persons: [], faces: [], texts: [] })),
+  });
+  await assertRunRejectsNoFinal(setup, 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE', {
+    detectFrames: async ({ frames }) => [...frames.map(textOnly), textOnly(frames[0])],
+  });
+  await assertRunRejectsNoFinal(setup, 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE', {
+    detectFrames: async ({ frames }) => [...frames.map(textOnly), { ...textOnly(frames[0]), frame_index: 99 }],
+  });
+});
+
+test('analyze validates actual AAC mono 44100 audio stream from ffprobe', async (t) => {
+  const noAudioRoot = tempDir(t, 'redraw-no-audio-');
+  const noAudioVideo = await writeSyntheticVideo(t, noAudioRoot, { audio: 'none' });
+  const noAudioCase = buildSyntheticCase({ videoPath: noAudioVideo });
+  const noAudioCasePath = path.join(noAudioRoot, 'case.json');
+  fs.writeFileSync(noAudioCasePath, JSON.stringify(noAudioCase, null, 2));
+  const { lockPath: lockPath1 } = await writeModelLock(t);
+  await assertRunRejectsNoFinal({
+    root: noAudioRoot,
+    videoPath: noAudioVideo,
+    casePath: noAudioCasePath,
+    lockPath: lockPath1,
+    deps: { ffmpegPath: getFfmpegPath(), ffprobePath: getFfprobePath(), casePolicy: casePolicyFromCase(noAudioCase), detectFrames: async ({ frames }) => fakeDetections(frames), randomHex: () => 'noaudio' },
+  }, 'REDRAW_FULL_FRAME_SOURCE_MISMATCH');
+
+  const driftRoot = tempDir(t, 'redraw-audio-drift-');
+  const driftVideo = await writeSyntheticVideo(t, driftRoot, { audio: 'drift' });
+  const driftCase = buildSyntheticCase({ videoPath: driftVideo });
+  const driftCasePath = path.join(driftRoot, 'case.json');
+  fs.writeFileSync(driftCasePath, JSON.stringify(driftCase, null, 2));
+  const { lockPath: lockPath2 } = await writeModelLock(t);
+  await assertRunRejectsNoFinal({
+    root: driftRoot,
+    videoPath: driftVideo,
+    casePath: driftCasePath,
+    lockPath: lockPath2,
+    deps: { ffmpegPath: getFfmpegPath(), ffprobePath: getFfprobePath(), casePolicy: casePolicyFromCase(driftCase), detectFrames: async ({ frames }) => fakeDetections(frames), randomHex: () => 'audiodrift' },
+  }, 'REDRAW_FULL_FRAME_SOURCE_MISMATCH');
 });
 
 test('manifest and template atomic rename failures prove temp write and clean final state', async (t) => {

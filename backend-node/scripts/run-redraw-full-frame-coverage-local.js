@@ -25,6 +25,7 @@ const DEFAULT_CASE_POLICY = Object.freeze({
   case_id: 'ac087bcd-latam-en-us',
   duration_ms: 68733,
   source: Object.freeze({
+    sha256: '24eb1d8ba3ff11e6aa3e547b7ac400f6b177dcf541d1af36354d3e46cc05e9ae',
     video: Object.freeze({ width: 720, height: 1280, codec: 'hevc', frame_rate: 30 }),
     audio: Object.freeze({ codec: 'aac', channels: 1, sample_rate: 44100 }),
   }),
@@ -223,8 +224,6 @@ async function probeVideo({ source, ffprobePath }) {
       '-v',
       'error',
       '-count_frames',
-      '-select_streams',
-      'v:0',
       '-show_streams',
       '-show_format',
       '-of',
@@ -244,7 +243,8 @@ async function probeVideo({ source, ffprobePath }) {
       source,
     ]);
     const parsed = JSON.parse(streamsRaw);
-    const stream = parsed.streams?.[0];
+    const stream = (parsed.streams || []).find((item) => item.codec_type === 'video');
+    const audioStream = (parsed.streams || []).find((item) => item.codec_type === 'audio');
     if (!stream) fail(SOURCE_MISMATCH);
     const frames = JSON.parse(frameRaw).frames || [];
     const timeBase = parseTimeBase(stream.time_base);
@@ -266,6 +266,11 @@ async function probeVideo({ source, ffprobePath }) {
       time_base: timeBase,
       frame_count: timestamps.length,
       duration_ms: Math.round(Number(parsed.format?.duration || 0) * 1000),
+      audio: audioStream ? {
+        codec: String(audioStream.codec_name || '').toLowerCase(),
+        channels: Number(audioStream.channels),
+        sample_rate: Number(audioStream.sample_rate),
+      } : null,
       timestamps,
     };
   } catch (error) {
@@ -292,11 +297,11 @@ async function extractFrames({ source, framesDir, ffmpegPath }) {
 function requirePolicy(policy) {
   try {
     assertExactKeys(policy, ['case_id', 'duration_ms', 'source', 'target', 'cast_ids', 'shots']);
-    assertExactKeys(policy.source, ['video', 'audio']);
+    assertExactKeys(policy.source, ['sha256', 'video', 'audio']);
     assertExactKeys(policy.source.video, ['width', 'height', 'codec', 'frame_rate']);
     assertExactKeys(policy.source.audio, ['codec', 'channels', 'sample_rate']);
     assertExactKeys(policy.target, ['language', 'locale', 'market']);
-    if (typeof policy.case_id !== 'string' || !Number.isInteger(policy.duration_ms)) fail(OUTPUT_INVALID);
+    if (typeof policy.case_id !== 'string' || !Number.isInteger(policy.duration_ms) || !/^[a-f0-9]{64}$/i.test(policy.source.sha256)) fail(OUTPUT_INVALID);
     if (!Array.isArray(policy.cast_ids) || policy.cast_ids.length !== 5) fail(OUTPUT_INVALID);
     if (!Array.isArray(policy.shots) || policy.shots.length !== 9) fail(OUTPUT_INVALID);
     for (const shot of policy.shots) assertExactKeys(shot, ['id', 'start_ms', 'end_ms']);
@@ -316,6 +321,7 @@ function validateCase(raw, policy = DEFAULT_CASE_POLICY) {
     assertExactKeys(raw.source.audio, ['codec', 'channels', 'sample_rate']);
     assertTargetKeys(raw.target);
     if (raw.case_id !== policy.case_id) fail(OUTPUT_INVALID);
+    if (raw.source.sha256 !== policy.source.sha256) fail(SOURCE_MISMATCH);
     if (raw.target.language !== 'en' || raw.target.locale !== 'en-US' || raw.target.market !== 'US') fail(OUTPUT_INVALID);
     if (raw.target.language !== policy.target.language || raw.target.locale !== policy.target.locale || raw.target.market !== policy.target.market) fail(OUTPUT_INVALID);
     if (raw.source.duration_ms !== policy.duration_ms) fail(OUTPUT_INVALID);
@@ -446,6 +452,23 @@ function matchTextRegion(caseData, frame, polygon, height) {
   return active.find((region) => region.kind === preferredKind) || active[0];
 }
 
+function validateDetections(detections, frames) {
+  if (!Array.isArray(detections)) fail(MODEL_UNAVAILABLE);
+  const expected = new Set(frames.map((frame) => frame.frame_index));
+  const seen = new Set();
+  let candidateCount = 0;
+  for (const detection of detections) {
+    if (!detection || typeof detection !== 'object' || Array.isArray(detection)) fail(MODEL_UNAVAILABLE);
+    const frameIndex = detection.frame_index;
+    if (!Number.isInteger(frameIndex) || !expected.has(frameIndex) || seen.has(frameIndex)) fail(MODEL_UNAVAILABLE);
+    if (!Array.isArray(detection.persons) || !Array.isArray(detection.faces) || !Array.isArray(detection.texts)) fail(MODEL_UNAVAILABLE);
+    seen.add(frameIndex);
+    candidateCount += detection.persons.length + detection.faces.length + detection.texts.length;
+  }
+  if (seen.size !== expected.size || candidateCount === 0) fail(MODEL_UNAVAILABLE);
+  return detections;
+}
+
 async function buildTracks({ staging, source, caseData, frames, detections, fault, fsOps }) {
   const castIds = new Set(caseData.cast.map((item) => item.id));
   const personGroups = new Map();
@@ -454,7 +477,7 @@ async function buildTracks({ staging, source, caseData, frames, detections, faul
   const detectionByFrame = new Map(detections.map((item) => [item.frame_index, item]));
 
   for (const frame of frames) {
-    const detection = detectionByFrame.get(frame.frame_index) || { persons: [], faces: [], texts: [] };
+    const detection = detectionByFrame.get(frame.frame_index);
     const personBoxes = [];
     for (const person of detection.persons) {
       const classification = classifyPerson(person.track_key, castIds);
@@ -602,9 +625,10 @@ async function writeReviewArtifacts({ staging, manifest, fsOps }) {
     const selected = reviewFrames.length > 0 ? reviewFrames : [shotFrames[0]];
     const rows = [];
     for (const frame of selected) {
-      const source = await sharp(path.join(staging, frame.path)).resize(320, 180, { fit: 'fill' }).jpeg().toBuffer();
-      const person = await sharp(path.join(staging, 'overlays', 'person', `frame-${String(frame.frame_index).padStart(6, '0')}.jpg`)).resize(320, 180, { fit: 'fill' }).jpeg().toBuffer();
-      const text = await sharp(path.join(staging, 'overlays', 'text', `frame-${String(frame.frame_index).padStart(6, '0')}.jpg`)).resize(320, 180, { fit: 'fill' }).jpeg().toBuffer();
+      const resizeCell = { fit: 'contain', background: '#111111' };
+      const source = await sharp(path.join(staging, frame.path)).resize(320, 180, resizeCell).jpeg().toBuffer();
+      const person = await sharp(path.join(staging, 'overlays', 'person', `frame-${String(frame.frame_index).padStart(6, '0')}.jpg`)).resize(320, 180, resizeCell).jpeg().toBuffer();
+      const text = await sharp(path.join(staging, 'overlays', 'text', `frame-${String(frame.frame_index).padStart(6, '0')}.jpg`)).resize(320, 180, resizeCell).jpeg().toBuffer();
       rows.push({ source, person, text });
     }
     const canvas = sharp({
@@ -705,6 +729,10 @@ async function runAnalyze(options, deps = {}) {
     if (probe.codec !== String(caseData.source.video.codec).toLowerCase()) fail(SOURCE_MISMATCH);
     if (Math.abs(probe.frame_rate - Number(caseData.source.video.frame_rate)) > 0.01) fail(SOURCE_MISMATCH);
     if (Math.abs(probe.duration_ms - caseData.source.duration_ms) > caseData.source.duration_tolerance_ms) fail(SOURCE_MISMATCH);
+    if (!probe.audio
+      || probe.audio.codec !== String(caseData.source.audio.codec).toLowerCase()
+      || probe.audio.channels !== caseData.source.audio.channels
+      || probe.audio.sample_rate !== caseData.source.audio.sample_rate) fail(SOURCE_MISMATCH);
 
     const modelLock = await validateModelLock({
       cacheRoot: path.dirname(path.resolve(options.modelLockPath)),
@@ -751,7 +779,7 @@ async function runAnalyze(options, deps = {}) {
     const pythonPath = deps.pythonPath || process.env.REDRAW_AUDITOR_PYTHON;
     if (!deps.detectFrames && !pythonPath) fail(MODEL_UNAVAILABLE);
     const workerRoot = path.resolve(__dirname, '..', '..', 'workers', 'redraw-full-frame-auditor');
-    const detections = await detectFrames({
+    const detections = validateDetections(await detectFrames({
       pythonPath,
       workerRoot,
       modelLockPath: path.resolve(options.modelLockPath),
@@ -760,7 +788,7 @@ async function runAnalyze(options, deps = {}) {
         timestamp_ms: frame.timestamp_ms,
         frame_path: path.join(staging, frame.path),
       })),
-    }).catch(() => { throw coded(MODEL_UNAVAILABLE); });
+    }).catch(() => { throw coded(MODEL_UNAVAILABLE); }), frames);
     const { personTracks, textTracks, frameRegionIds } = await buildTracks({ staging, source, caseData, frames, detections, fault: deps.fault, fsOps });
     for (const frame of frames) {
       const ids = frameRegionIds.get(frame.frame_index);
