@@ -10,7 +10,7 @@ const MINIMAX_H3_DURATIONS = Object.freeze(
 );
 const USMERCARI_MODELS = Object.freeze({
   'MiniMax H3': Object.freeze({
-    maxImages: 5, maxVideos: 0, maxAudio: 3,
+    maxImages: 3, maxVideos: 0, maxAudio: 3,
     resolutions: Object.freeze(['1440p']), durations: MINIMAX_H3_DURATIONS,
   }),
   'seedance-2.0-fast': Object.freeze({

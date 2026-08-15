@@ -65,6 +65,7 @@ function providerCapabilities(provider, model) {
   return {
     ...USMERCARI_VIDEO_CAPABILITIES,
     maxReferences: spec.maxImages,
+    maxImageReferences: spec.maxImages,
     maxVideoReferences: spec.maxVideos,
     maxAudioReferences: spec.maxAudio,
     supportsVideoReference: spec.maxVideos > 0,

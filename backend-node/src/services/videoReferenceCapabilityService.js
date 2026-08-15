@@ -1,5 +1,7 @@
 'use strict';
 
+const { USMERCARI_MODELS } = require('./usmercariVideoClient');
+
 const TYPE_LABELS = { image: '图片', audio: '音频', video: '视频' };
 
 function parseSettings(settings) {
@@ -15,6 +17,28 @@ function knownCapabilities(config = {}, model = '') {
   const protocol = String(config.api_protocol || '').trim().toLowerCase();
   const provider = String(config.provider || '').trim().toLowerCase();
   if (protocol === 'usmercari_media' || provider === 'usmercari' || provider === 'usmercari_media') {
+    const spec = Object.entries(USMERCARI_MODELS)
+      .find(([name]) => name.toLowerCase() === normalizedModel)?.[1];
+    if (spec) {
+      const referenceTypes = [
+        spec.maxImages > 0 ? 'image' : '',
+        spec.maxVideos > 0 ? 'video' : '',
+        spec.maxAudio > 0 ? 'audio' : '',
+      ].filter(Boolean);
+      return {
+        referenceTypes,
+        maxImageReferences: spec.maxImages,
+        maxVideoReferences: spec.maxVideos,
+        maxAudioReferences: spec.maxAudio,
+        aspectRatios: ['16:9'],
+        resolutions: [...spec.resolutions],
+        durations: [...spec.durations],
+        quantities: [1],
+        supportsFirstFrame: spec.maxImages > 0,
+        supportsLastFrame: spec.maxImages > 1,
+        supportsAudio: true,
+      };
+    }
     return {
       referenceTypes: ['image', 'video', 'audio'],
       maxImageReferences: 4,

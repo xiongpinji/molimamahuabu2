@@ -13,6 +13,7 @@ import {
   normalizeFreeCanvasNode,
   normalizeFreeCanvasNodeData,
   normalizeFreeCanvasVideoReferenceMode,
+  planFreeCanvasVideoReferences,
   resolveFreeCanvasVideoReferenceInput,
   resolveFreeCanvasResultUrl,
 } from '../src/utils/freeCanvasGeneration.js'
@@ -44,6 +45,49 @@ test('未就绪参考图不会让后续 @ 候选序号与卡片序号错位', ()
   assert.equal(candidates.length, 1)
   assert.equal(candidates[0].label, '图片2')
   assert.equal(candidates[0].mentionToken, '@图片2')
+})
+
+test('MiniMax H3 只采用前三张参考图且未采用素材不生成 @图片 token', () => {
+  const references = Array.from({ length: 4 }, (_, index) => ({
+    nodeId: `image-${index + 1}`,
+    kind: 'image',
+    title: `参考图 ${index + 1}`,
+    url: `/static/reference-${index + 1}.png`,
+    ready: true,
+    enabled: true,
+    order: index,
+  }))
+  const capability = {
+    declared: true,
+    referenceTypes: ['image', 'audio'],
+    maxImageReferences: 3,
+    maxAudioReferences: 3,
+    maxVideoReferences: 0,
+    supportsImageReference: true,
+    supportsAudioReference: true,
+    supportsVideoReference: false,
+  }
+  const planned = planFreeCanvasVideoReferences(capability, 'omni', references)
+  assert.deepEqual(planned.map(({ enabled }) => enabled), [true, true, true, false])
+
+  const adopted = planned.filter(({ enabled }) => enabled).map(({ reference }) => reference)
+  assert.deepEqual(
+    buildFreeCanvasReferenceMentionCandidates(adopted).map(({ mentionToken }) => mentionToken),
+    ['@图片1', '@图片2', '@图片3'],
+  )
+  assert.deepEqual(buildFreeCanvasGenerationRequest({
+    kind: 'video',
+    content: '只使用已采用的三张参考图',
+    model: 'MiniMax H3',
+    videoReferenceMode: 'omni',
+    aspectRatio: '16:9',
+    duration: 15,
+    resolution: '1440p',
+  }, { dramaId: 7, upstreamReferences: references, capability }).reference_image_urls, [
+    '/static/reference-1.png',
+    '/static/reference-2.png',
+    '/static/reference-3.png',
+  ])
 })
 
 test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数值和状态', () => {

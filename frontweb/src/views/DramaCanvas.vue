@@ -684,6 +684,7 @@ import {
   collectDirectUpstreamTextInputs,
   getFreeCanvasNodeResultUrl,
   normalizeFreeCanvasSubmissionReferences,
+  planFreeCanvasVideoReferences,
   resolveFreeCanvasResultUrl,
 } from '@/utils/freeCanvasGeneration'
 import {
@@ -2924,10 +2925,18 @@ function freeCanvasNodeInputReferences(nodeOrId) {
 function freeCanvasReferenceCandidates(nodeOrId) {
   const targetNode = freeCanvasNodeById(nodeOrId)
   if (!targetNode) return []
+  const references = normalizeFreeCanvasSubmissionReferences(
+    collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id),
+  )
+  const adoptedReferences = targetNode.data?.kind === 'video'
+    ? planFreeCanvasVideoReferences(
+      getFreeNodeModelCapability('video', targetNode.data?.model),
+      targetNode.data?.videoReferenceMode,
+      references,
+    ).filter(({ enabled }) => enabled).map(({ reference }) => reference)
+    : references
   return buildFreeCanvasReferenceMentionCandidates(
-    normalizeFreeCanvasSubmissionReferences(
-      collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id),
-    ),
+    adoptedReferences,
   )
 }
 

@@ -204,7 +204,8 @@ test('USMercari 三模型目录声明真实参考图、参考视频和参考音�
   assert.deepEqual(providerCapabilities('usmercari', 'MiniMax H3'), {
     durations: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
     aspectRatios: ['16:9'],
-    maxReferences: 5,
+    maxReferences: 3,
+    maxImageReferences: 3,
     maxVideoReferences: 0,
     maxAudioReferences: 3,
     supportsFirstFrame: true,
