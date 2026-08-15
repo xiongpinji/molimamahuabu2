@@ -14,6 +14,7 @@ const {
   buildGeneratedCoverageManifest,
   validateGeneratedCoverageManifest,
 } = require('../src/services/redrawFullFrameCoverageService');
+const reviewService = require('../src/services/redrawFullFrameReviewService');
 
 const OUTPUT_INVALID = 'REDRAW_FULL_FRAME_OUTPUT_INVALID';
 const SOURCE_MISMATCH = 'REDRAW_FULL_FRAME_SOURCE_MISMATCH';
@@ -122,6 +123,7 @@ function safeArg(value) {
 
 function parseArgs(argv = process.argv.slice(2)) {
   if (argv.length === 1 && argv[0] === '--help') return { help: true };
+  if (argv[0] === 'finalize') return parseFinalizeArgs(argv);
   if (argv[0] !== 'analyze') fail(OUTPUT_INVALID);
   const required = new Map([
     ['--source', 'source'],
@@ -130,6 +132,27 @@ function parseArgs(argv = process.argv.slice(2)) {
     ['--output-dir', 'outputDir'],
   ]);
   const parsed = { command: 'analyze' };
+  for (let index = 1; index < argv.length; index += 2) {
+    const flag = argv[index];
+    const value = argv[index + 1];
+    const key = required.get(flag);
+    if (!key || value === undefined || parsed[key] !== undefined || !safeArg(value)) fail(OUTPUT_INVALID);
+    parsed[key] = value;
+  }
+  for (const key of required.values()) {
+    if (!parsed[key]) fail(OUTPUT_INVALID);
+  }
+  return parsed;
+}
+
+function parseFinalizeArgs(argv = process.argv.slice(2)) {
+  if (argv[0] !== 'finalize') fail(OUTPUT_INVALID);
+  const required = new Map([
+    ['--analysis-dir', 'analysisDir'],
+    ['--review-decisions', 'reviewDecisions'],
+    ['--output-dir', 'outputDir'],
+  ]);
+  const parsed = { command: 'finalize' };
   for (let index = 1; index < argv.length; index += 2) {
     const flag = argv[index];
     const value = argv[index + 1];
@@ -827,15 +850,36 @@ async function runAnalyze(options, deps = {}) {
   }
 }
 
+async function runFinalize(options) {
+  try {
+    if (!safeArg(options.analysisDir) || !safeArg(options.reviewDecisions) || !safeArg(options.outputDir)) fail(OUTPUT_INVALID);
+    const stat = await fsp.lstat(options.reviewDecisions).catch(() => fail(OUTPUT_INVALID));
+    if (!stat.isFile() || stat.isSymbolicLink()) fail(OUTPUT_INVALID);
+    const decisions = JSON.parse(await fsp.readFile(options.reviewDecisions, 'utf8'));
+    return await reviewService.finalizeReviewedCoverage({
+      analysisRoot: options.analysisDir,
+      decisions,
+      outputRoot: options.outputDir,
+    });
+  } catch (error) {
+    sanitizeCatch(error, OUTPUT_INVALID);
+  }
+}
+
 async function runCli(argv = process.argv.slice(2)) {
   try {
     const args = parseArgs(argv);
     if (args.help) {
-      process.stdout.write('Usage: node scripts/run-redraw-full-frame-coverage-local.js analyze --source <local-video> --case <case-json> --model-lock <raw-model-lock-json> --output-dir <missing-or-empty-dir>\n');
+      process.stdout.write('Usage: node scripts/run-redraw-full-frame-coverage-local.js analyze --source <local-video> --case <case-json> --model-lock <raw-model-lock-json> --output-dir <missing-or-empty-dir>\n       node scripts/run-redraw-full-frame-coverage-local.js finalize --analysis-dir <dir> --review-decisions <json> --output-dir <missing-or-empty-dir>\n');
       return;
     }
-    await runAnalyze(args);
-    process.stdout.write('REDRAW_FULL_FRAME_COVERAGE_LOCAL_OK\n');
+    if (args.command === 'finalize') {
+      await runFinalize(args);
+      process.stdout.write('REDRAW_FULL_FRAME_REVIEW_FINALIZED_OK\n');
+    } else {
+      await runAnalyze(args);
+      process.stdout.write('REDRAW_FULL_FRAME_COVERAGE_LOCAL_OK\n');
+    }
   } catch (error) {
     process.stderr.write(`${error?.code && /^REDRAW_FULL_FRAME_/.test(error.code) ? error.code : OUTPUT_INVALID}\n`);
     process.exitCode = 1;
@@ -848,7 +892,9 @@ if (require.main === module) {
 
 module.exports = {
   parseArgs,
+  parseFinalizeArgs,
   runAnalyze,
+  runFinalize,
   runCli,
   probeVideo,
   runProcess,

@@ -13,6 +13,7 @@ const { getFfmpegPath, getFfprobePath, hasLocalFfmpeg, hasLocalFfprobe } = requi
 const { validateModelLock } = require('../src/services/redrawFullFrameModelLockService');
 const exporter = require('../scripts/export-redraw-full-frame-audit-case');
 const runner = require('../scripts/run-redraw-full-frame-coverage-local');
+const review = require('../src/services/redrawFullFrameReviewService');
 
 function tempDir(t, prefix) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -296,6 +297,39 @@ test('analyze args reject CLI-only dangerous options and non-empty output dirs',
   fs.writeFileSync(path.join(outputDir, 'keep.txt'), 'keep');
   await assert.rejects(runner.runAnalyze({ source, casePath, modelLockPath: lockPath, outputDir }, { probeVideo: async () => ({ frame_count: 1 }) }), /REDRAW_FULL_FRAME_OUTPUT_INVALID/);
   assert.equal(fs.readFileSync(path.join(outputDir, 'keep.txt'), 'utf8'), 'keep');
+});
+
+test('finalize args call review finalizer and reject analyze-only or approval options', async (t) => {
+  const root = tempDir(t, 'redraw-finalize-args-');
+  const analysisDir = path.join(root, 'analysis');
+  const decisions = path.join(root, 'decisions.json');
+  const outputDir = path.join(root, 'reviewed');
+  fs.mkdirSync(analysisDir);
+  fs.writeFileSync(decisions, '{}');
+  assert.deepEqual(runner.parseFinalizeArgs(['finalize', '--analysis-dir', analysisDir, '--review-decisions', decisions, '--output-dir', outputDir]), {
+    command: 'finalize',
+    analysisDir,
+    reviewDecisions: decisions,
+    outputDir,
+  });
+  for (const argv of [
+    ['finalize', '--analysis-dir', analysisDir, '--review-decisions', decisions],
+    ['finalize', '--analysis-dir', analysisDir, '--review-decisions', decisions, '--output-dir', outputDir, '--approved'],
+    ['finalize', '--source', 'source.mp4', '--analysis-dir', analysisDir, '--review-decisions', decisions, '--output-dir', outputDir],
+    ['finalize', '--analysis-dir', 'https://example.test/a', '--review-decisions', decisions, '--output-dir', outputDir],
+  ]) assert.throws(() => runner.parseFinalizeArgs(argv), /REDRAW_FULL_FRAME_OUTPUT_INVALID/);
+
+  const original = review.finalizeReviewedCoverage;
+  t.after(() => { review.finalizeReviewedCoverage = original; });
+  let called = null;
+  review.finalizeReviewedCoverage = async (args) => {
+    called = args;
+    return { files: { manifest: 'redraw-full-frame-reviewed-manifest.json' }, reviewed_manifest: { review: { reviewed_point_count: 1 } } };
+  };
+  const result = await runner.runFinalize({ analysisDir, reviewDecisions: decisions, outputDir });
+  assert.equal(called.analysisRoot, analysisDir);
+  assert.equal(called.outputRoot, outputDir);
+  assert.deepEqual(result.files, { manifest: 'redraw-full-frame-reviewed-manifest.json' });
 });
 
 test('analyze builds offline review artifacts from real ffprobe/ffmpeg frames and fake detector without leaking inputs', async (t) => {
