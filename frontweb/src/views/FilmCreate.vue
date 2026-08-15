@@ -1673,10 +1673,13 @@
             </el-select>
           </el-form-item>
           <el-form-item label="分辨率">
-            <el-select v-model="videoResolution" style="width: 160px">
-              <el-option label="480p" value="480p" />
-              <el-option label="720p" value="720p" />
-              <el-option label="1080p" value="1080p" />
+            <el-select v-model="videoResolution" style="width: 160px" @change="() => saveProjectSettings(false)">
+              <el-option
+                v-for="resolution in videoResolutionOptions"
+                :key="resolution"
+                :label="resolution"
+                :value="resolution"
+              />
             </el-select>
           </el-form-item>
           <!--
@@ -2872,6 +2875,10 @@ import {
   supportsFeituoShortDramaOmni,
 } from '@/utils/videoGenerationRequest'
 import {
+  coerceVideoResolutionForModel,
+  videoResolutionOptionsForModel,
+} from '@/utils/videoResolution'
+import {
   buildFactoryGenerationPreflight,
   buildScriptAnalysisProvenance,
 } from '@/utils/scriptAnalysisProductionClosure'
@@ -2992,6 +2999,7 @@ const scriptContent = computed({
 const videoResolution = storeVideoResolution
 const selectedVideoModel = ref('')
 const videoModelOptions = ref([])
+const videoResolutionOptions = computed(() => videoResolutionOptionsForModel(selectedVideoModel.value))
 const videoVoicePolicyByModel = ref({})
 const videoMusic = ref('')
 const videoSfx = ref('')
@@ -4900,6 +4908,8 @@ async function loadDrama() {
     videoClipDuration.value = (d.metadata && d.metadata.video_clip_duration) ? Number(d.metadata.video_clip_duration) : 5
     const savedVideoModel = (d.metadata && d.metadata.video_model) ? String(d.metadata.video_model) : ''
     if (savedVideoModel) selectedVideoModel.value = savedVideoModel
+    videoResolution.value = d.metadata?.video_resolution || videoResolution.value
+    alignVideoResolutionToModel(selectedVideoModel.value)
     storyboardIncludeNarration.value = !!(d.metadata && d.metadata.storyboard_include_narration)
     storyboardUniversalOmni.value = !!(d.metadata && d.metadata.storyboard_universal_omni)
     storyboardUseFirstLastFrame.value = !!(d.metadata && d.metadata.storyboard_use_first_last_frame)
@@ -5299,6 +5309,7 @@ async function saveProjectSettings(includeGenerationStyle = false) {
     aspect_ratio: projectAspectRatio.value || '16:9',
     video_clip_duration: videoClipDuration.value || 5,
     video_model: selectedVideoModel.value || undefined,
+    video_resolution: effectiveVideoResolution(selectedVideoModel.value),
     storyboard_include_narration: !!storyboardIncludeNarration.value,
     storyboard_universal_omni: !!storyboardUniversalOmni.value,
     storyboard_use_first_last_frame: !!storyboardUseFirstLastFrame.value,
@@ -6550,6 +6561,7 @@ async function loadVideoModelOptions() {
       const preferredConfig = active.find((config) => config.is_default) || active[0]
       selectedVideoModel.value = videoModelNameFromAiConfig(preferredConfig) || models[0] || ''
     }
+    alignVideoResolutionToModel(selectedVideoModel.value)
     activeVideoAiConfigsCache = active
     activeVideoAiConfigCache = active.find((config) => config.is_default) || active[0] || null
     activeVideoAiConfigCacheAt = Date.now()
@@ -6559,7 +6571,16 @@ async function loadVideoModelOptions() {
   }
 }
 
+function effectiveVideoResolution(model = selectedVideoModel.value) {
+  return coerceVideoResolutionForModel(model, videoResolution.value)
+}
+
+function alignVideoResolutionToModel(model = selectedVideoModel.value) {
+  videoResolution.value = effectiveVideoResolution(model)
+}
+
 function onVideoModelChange() {
+  alignVideoResolutionToModel(selectedVideoModel.value)
   saveProjectSettings(false)
 }
 
@@ -6675,7 +6696,7 @@ async function buildSbVideoRequestContext(sb, { universalOmniApi, persistGridSel
     referenceImageUrls: limitFeituoShortDramaReferenceImages(sbModel, referenceUrls),
     style: getSelectedStyle(),
     aspectRatio: projectAspectRatio.value || '16:9',
-    resolution: videoResolution.value || undefined,
+    resolution: effectiveVideoResolution(sbModel),
     duration: getSbVideoDurationForApi(sb),
   })
   return {
@@ -7523,7 +7544,7 @@ async function startBatchVideoGeneration() {
             reference_image_urls: refUrls,
             style: getSelectedStyle(),
             aspect_ratio: projectAspectRatio.value || '16:9',
-            resolution: videoResolution.value || undefined,
+            resolution: effectiveVideoResolution(sbModel),
             duration: getSbVideoDurationForApi(sb),
           })
           if (res?.task_id) {
@@ -8222,7 +8243,7 @@ async function runOneClickPipeline(textOnly = false) {
               reference_image_urls: refUrls,
               style,
               aspect_ratio: projectAspectRatio.value || '16:9',
-              resolution: videoResolution.value || undefined,
+              resolution: effectiveVideoResolution(selectedVideoModel.value),
               duration: getSbVideoDurationForApi(sb),
             })
             if (res?.task_id) {
@@ -8567,7 +8588,7 @@ async function runRepairPipeline() {
               last_frame_url: vLast,
               reference_image_urls: refUrls,
               aspect_ratio: projectAspectRatio.value || '16:9',
-              resolution: videoResolution.value || undefined,
+              resolution: effectiveVideoResolution(selectedVideoModel.value),
               duration: getSbVideoDurationForApi(sb),
             })
             if (res?.task_id) {

@@ -2,14 +2,28 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 
-import { videoResolutionOptionsForModel } from '../src/utils/videoResolution.js'
+import {
+  coerceVideoResolutionForModel,
+  videoResolutionOptionsForModel,
+} from '../src/utils/videoResolution.js'
 
 const adminSource = fs.readFileSync(new URL('../src/views/BillingAdmin.vue', import.meta.url), 'utf8')
+const filmCreateSource = fs.readFileSync(new URL('../src/views/FilmCreate.vue', import.meta.url), 'utf8')
 
 test('MiniMax H3 前端只开放 1440P，Seedance 2.0 档位不变', () => {
   assert.deepEqual(videoResolutionOptionsForModel('MiniMax H3'), ['1440p'])
   assert.deepEqual(videoResolutionOptionsForModel('seedance-2.0-fast'), ['480p', '720p'])
   assert.deepEqual(videoResolutionOptionsForModel('seedance-2.0-mini'), ['480p', '720p'])
+  assert.equal(coerceVideoResolutionForModel('MiniMax H3', ''), '1440p')
+  assert.equal(coerceVideoResolutionForModel('MiniMax H3', '480p'), '1440p')
+})
+
+test('短剧工厂按当前视频模型显示并提交唯一可用清晰度', () => {
+  assert.match(filmCreateSource, /v-for="resolution in videoResolutionOptions"/)
+  assert.match(filmCreateSource, /coerceVideoResolutionForModel/)
+  assert.match(filmCreateSource, /resolution:\s*effectiveVideoResolution\(sbModel\)/)
+  assert.match(filmCreateSource, /resolution:\s*effectiveVideoResolution\(selectedVideoModel\.value\)/)
+  assert.doesNotMatch(filmCreateSource, /resolution:\s*videoResolution\.value\s*\|\|\s*undefined/)
 })
 
 test('管理员保存两套 H3 时锁定固定按次价格并清除分辨率价格档', () => {
