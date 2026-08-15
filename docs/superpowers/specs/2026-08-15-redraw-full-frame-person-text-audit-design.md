@@ -90,9 +90,11 @@ flowchart LR
   D --> E[轨迹传播与区域规范化]
   E --> F[连续覆盖与一致性检查]
   F --> G[变化点和固定间隔人工审核]
-  G --> H[本地完整 manifest 与联系表]
-  H --> I[仓库脱敏报告]
-  I --> J[reviewed / approval pending / ready false]
+  G --> H[analyze 原子发布 generated 草稿]
+  H --> I[人工审核决定文件]
+  I --> J[finalize 复核证据哈希与覆盖]
+  J --> K[reviewed / approval pending / ready false]
+  K --> L[仓库脱敏报告]
 ```
 
 ### 3.1 确定性层
@@ -131,7 +133,7 @@ YOLOX 和 PaddleOCR 代码采用 Apache-2.0，ByteTrack 代码采用 MIT。模�
 - 修正漏检、误检、遮挡和轨迹跳变；
 - 记录候选值、最终值、修正原因和 reviewer。
 
-人工审核完成后只写 `reviewed=true`。用户明确批准前，`approval_status` 必须保持 `pending`。
+`analyze` 阶段只输出 `generated` 草稿、遮罩、联系表和离线审核索引。人工审核决定保存在独立本地 JSON 文件中，不允许直接修改草稿 manifest。`finalize` 阶段绑定草稿规范哈希，验证全部审核决定后才写 `reviewed=true`。用户明确批准前，`approval_status` 必须保持 `pending`。
 
 ## 4. 本地模型获取与锁定
 
@@ -292,7 +294,17 @@ generated
 
 本阶段最多到达 `awaiting_user_approval`。CLI、检测器、fixture 或本地 runner 均不得接受客户端 `approved=true`。
 
-### 7.1 `reviewed` 必要条件
+### 7.1 双阶段转换
+
+`analyze` 和 `finalize` 使用两个不同的空输出目录：
+
+- `analyze` 输入源片、case manifest 和模型锁，输出 `generated` 草稿证据；
+- 人工审核工具读取草稿证据，输出独立 `review-decisions.json`；
+- `finalize` 输入草稿目录和审核决定文件，验证 `analysis_sha256`、逐帧引用、候选闭环及审核点覆盖；
+- `finalize` 输出新的 reviewed 证据目录，不修改、覆盖或删除草稿目录；
+- 审核决定缺失、引用未知候选、证据哈希漂移或试图写 `approved` 时必须失败。
+
+### 7.2 `reviewed` 必要条件
 
 - 源媒体合同匹配；
 - 全部帧连续且已分析；
@@ -304,7 +316,7 @@ generated
 - 完整 manifest 与联系表均可读取；
 - manifest 与联系表的规范哈希已记录。
 
-### 7.2 本阶段固定输出状态
+### 7.3 本阶段固定输出状态
 
 ```json
 {
@@ -321,7 +333,7 @@ generated
 ### 8.1 原子发布
 
 - 所有中间产物写入最终目录同父级的随机 staging；
-- 最终目录必须不存在或为空；
+- `analyze` 和 `finalize` 各自使用独立最终目录，两个目录都必须不存在或为空；
 - 发布前重新验证最终目录状态；
 - 完整校验通过后使用同盘 rename 原子发布；
 - 失败时只递归删除内部随机 staging；
@@ -349,14 +361,19 @@ generated
 新增固定本地入口：
 
 ```text
-node scripts/run-redraw-full-frame-coverage-local.js \
+node scripts/run-redraw-full-frame-coverage-local.js analyze \
   --source <local-video> \
   --case <case-json> \
   --model-lock <local-model-lock> \
-  --output-dir <empty-local-dir>
+  --output-dir <empty-analysis-dir>
+
+node scripts/run-redraw-full-frame-coverage-local.js finalize \
+  --analysis-dir <completed-analysis-dir> \
+  --review-decisions <local-review-json> \
+  --output-dir <empty-reviewed-dir>
 ```
 
-CLI 还支持 `--help`。未知参数、重复参数、缺失参数、输出非空和路径逃逸使用稳定退出码。CLI 不接受 Key、供应商 URL、`approved`、数据库连接或模型下载地址。模型获取是独立、可审计的前置命令。
+CLI 还支持 `--help`。未知子命令、未知参数、重复参数、缺失参数、输出非空和路径逃逸使用稳定退出码。`finalize` 不接受 `--source`、`--case` 或 `--model-lock`，只消费已完成草稿证据及其哈希绑定审核决定。CLI 不接受 Key、供应商 URL、`approved`、数据库连接或模型下载地址。模型获取是独立、可审计的前置命令。
 
 ## 10. 测试设计
 
@@ -376,6 +393,7 @@ CLI 还支持 `--help`。未知参数、重复参数、缺失参数、输出非�
 - OCR 原文、绝对路径、Key、Authorization 和 URL 脱敏；
 - 模型缺失、锁文件漂移和未知许可证；
 - 自动结果不能写 `approved`；
+- `finalize` 拒绝草稿哈希漂移、未知候选引用、缺少审核点和审核决定自报 approved；
 - 反序输入得到稳定排序与相同规范哈希。
 
 ### 10.2 合成视频测试
@@ -388,7 +406,7 @@ CLI 还支持 `--help`。未知参数、重复参数、缺失参数、输出非�
 - 人物与文字同时出现和分别消失；
 - 镜头切换与遮罩面积突变。
 
-测试必须验证全部帧进入清单、审核点生成正确、联系表可打开，以及中途故障不留下最终 manifest。
+测试必须验证全部帧进入清单、审核点生成正确、联系表可打开，以及中途故障不留下最终 manifest。还要证明 `analyze` 只输出 generated，`finalize` 不修改草稿目录，并只在审核决定完整且绑定同一 `analysis_sha256` 时输出 reviewed。
 
 ### 10.3 真实源片本地验收
 
@@ -402,6 +420,7 @@ CLI 还支持 `--help`。未知参数、重复参数、缺失参数、输出非�
 - `unresolved_text_region_count=0`；
 - 9 张联系表和离线 HTML 索引可打开；
 - 所有遮罩可读、尺寸一致、哈希匹配；
+- generated 草稿和 reviewed 证据位于两个独立目录，草稿字节在 finalize 前后保持不变；
 - 最终状态为 reviewed、pending、ready=false；
 - 仓库脱敏报告不含源图、可读原文字、绝对路径、Key 或供应商 URL。
 
