@@ -370,6 +370,30 @@ async function probeMedia(filePath, options = {}) {
   };
 }
 
+async function probeImage(filePath) {
+  const result = await runMedia(getFfprobePath(), [
+    '-v', 'error', '-select_streams', 'v:0',
+    '-show_entries', 'stream=width,height,codec_name:format=format_name',
+    '-of', 'json', filePath,
+  ]);
+  let parsed;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch (_) {
+    fail(MEDIA_CODE, 'representative frame probe returned invalid JSON');
+  }
+  const stream = Array.isArray(parsed.streams) ? parsed.streams[0] : null;
+  const width = Number(stream?.width);
+  const height = Number(stream?.height);
+  const codec = String(stream?.codec_name || '').toLowerCase();
+  const format = String(parsed.format?.format_name || '').toLowerCase();
+  if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0
+    || !codec || !format) {
+    fail(MEDIA_CODE, 'representative frame is not readable');
+  }
+  return { width, height, codec, format };
+}
+
 function sha256File(filePath) {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
@@ -459,10 +483,11 @@ async function generateShotArtifacts(sourcePath, outputDir, shot) {
     '-ss', seconds(shot.start_ms + Math.floor(durationMs / 2)), '-i', sourcePath,
     '-map', '0:v:0', '-frames:v', '1', '-q:v', '2',
   ]);
-  const [clipHash, frameHash, clipProbe] = await Promise.all([
+  const [clipHash, frameHash, clipProbe, frameProbe] = await Promise.all([
     sha256File(clipPath),
     sha256File(framePath),
     probeMedia(clipPath),
+    probeImage(framePath),
   ]);
   if (clipProbe.has_audio || Math.abs(clipProbe.duration_ms - durationMs) > 250) {
     fail(MEDIA_CODE, 'generated motion clip failed media validation');
@@ -484,7 +509,7 @@ async function generateShotArtifacts(sourcePath, outputDir, shot) {
         },
       },
     },
-    representative_frame: { path: frameRelative, sha256: frameHash },
+    representative_frame: { path: frameRelative, sha256: frameHash, probe: frameProbe },
   };
 }
 

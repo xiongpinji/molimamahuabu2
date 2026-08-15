@@ -215,6 +215,12 @@ test('pending review 与静默镜头形成稳定 blockers，绝不构造供应�
     assert.equal(path.isAbsolute(shot.representative_frame.path), false);
     assert.match(shot.motion_reference.artifact.sha256, /^[a-f0-9]{64}$/);
     assert.match(shot.representative_frame.sha256, /^[a-f0-9]{64}$/);
+    assert.ok(Number.isInteger(shot.representative_frame.probe.width));
+    assert.ok(shot.representative_frame.probe.width > 0);
+    assert.ok(Number.isInteger(shot.representative_frame.probe.height));
+    assert.ok(shot.representative_frame.probe.height > 0);
+    assert.ok(shot.representative_frame.probe.codec);
+    assert.ok(shot.representative_frame.probe.format);
     assert.equal(shot.motion_reference.artifact.probe.has_audio, false);
     assert.equal(shot.reference_bundle_ready, false);
     assert.ok(shot.blockers.includes('face_track_review_not_approved'));
