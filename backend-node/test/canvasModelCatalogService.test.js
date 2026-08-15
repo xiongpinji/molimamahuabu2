@@ -130,6 +130,29 @@ test('canvas model catalog exposes only the selected verified config identity', 
   db.close();
 });
 
+test('canvas model catalog exposes one logical model without supplier config identity', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const now = new Date().toISOString();
+  const insert = db.prepare(`INSERT INTO ai_service_configs
+    (service_type, provider, name, model, default_model, priority, is_active, settings,
+     logical_model_id, failover_enabled, verification_status, created_at, updated_at)
+    VALUES ('image', ?, ?, ?, ?, ?, 1, ?, 'logical-canvas-image', ?, 'verified', ?, ?)`);
+  const settings = JSON.stringify({ canvas_capabilities: { aspectRatios: ['16:9'] } });
+  insert.run('relay-a', 'Relay A', JSON.stringify(['upstream-a']), 'upstream-a', 100, settings, 0, now, now);
+  insert.run('relay-b', 'Relay B', JSON.stringify(['upstream-b']), 'upstream-b', 90, settings, 1, now, now);
+  prices.set(db, 'logical-canvas-image', 40, { category: 'image' });
+
+  const items = catalog.list(db).filter((row) => row.model === 'logical-canvas-image');
+  assert.equal(items.length, 1);
+  assert.equal(items[0].config_id, undefined);
+  assert.equal(items[0].credits, 40);
+  assert.deepEqual(items[0].capabilities, { aspectRatios: ['16:9'] });
+  assert.equal(JSON.stringify(items[0]).includes('relay-'), false);
+  assert.equal(JSON.stringify(items[0]).includes('upstream-'), false);
+  db.close();
+});
+
 test('verified catalog excludes environment fallbacks while legacy schema keeps them', () => {
   const keys = ['CANVAS_IMAGE_API_KEY', 'CANVAS_IMAGE_MODEL', 'CANVAS_IMAGE_BASE_URL'];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));

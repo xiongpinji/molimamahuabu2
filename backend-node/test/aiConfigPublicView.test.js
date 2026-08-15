@@ -2,8 +2,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 
-const { toPublicConfig } = require('../src/services/aiConfigService');
+const aiConfigService = require('../src/services/aiConfigService');
+const { toPublicConfig } = aiConfigService;
 const aiConfigRoutes = require('../src/routes/aiConfig');
+const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 test('AI 配置公开视图不返回供应商密钥', () => {
   const output = toPublicConfig({
@@ -17,6 +19,73 @@ test('AI 配置公开视图不返回供应商密钥', () => {
   assert.equal(settings.kling_access_key, undefined);
   assert.equal(settings.kling_secret_key, undefined);
   assert.equal(settings.deepseek_thinking, 'enabled');
+});
+
+test('管理员脱敏视图保留逻辑模型与验证状态', () => {
+  const output = toPublicConfig({
+    id: 2,
+    api_key: 'supplier-secret',
+    logical_model_id: 'logical-image',
+    failover_enabled: true,
+    verification_status: 'verified',
+    verified_at: '2026-08-15T00:00:00.000Z',
+  });
+  assert.equal(output.api_key, undefined);
+  assert.equal(output.logical_model_id, 'logical-image');
+  assert.equal(output.failover_enabled, true);
+  assert.equal(output.verification_status, 'verified');
+});
+
+test('管理员可配置逻辑模型和容灾开关但不能直接标记已验证', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const log = { info() {} };
+  const created = aiConfigService.createConfig(db, log, {
+    service_type: 'image',
+    provider: 'relay',
+    name: 'Relay',
+    base_url: 'https://relay.example/v1',
+    api_key: 'secret',
+    model: ['upstream-image'],
+    default_model: 'upstream-image',
+    logical_model_id: 'logical-image',
+    failover_enabled: true,
+    verification_status: 'verified',
+  });
+  assert.equal(created.logical_model_id, 'logical-image');
+  assert.equal(created.failover_enabled, true);
+  assert.equal(created.verification_status, 'unverified');
+
+  const updated = aiConfigService.updateConfig(db, log, created.id, { verification_status: 'verified' });
+  assert.equal(updated.verification_status, 'unverified');
+  db.close();
+});
+
+test('普通用户模型目录只返回已验证逻辑模型并合并供应商', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const insert = db.prepare(`INSERT INTO ai_service_configs
+    (service_type, provider, name, model, default_model, is_active, logical_model_id,
+     failover_enabled, verification_status, created_at, updated_at)
+    VALUES ('image', ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`);
+  const now = '2026-08-15T00:00:00.000Z';
+  insert.run('relay-a', 'A', JSON.stringify(['upstream-a']), 'upstream-a',
+    'logical-image', 0, 'verified', now, now);
+  insert.run('relay-b', 'B', JSON.stringify(['upstream-b']), 'upstream-b',
+    'logical-image', 1, 'verified', now, now);
+  insert.run('relay-c', 'C', JSON.stringify(['hidden-upstream']), 'hidden-upstream',
+    'hidden-logical', 1, 'unverified', now, now);
+
+  let payload;
+  aiConfigRoutes(db, {}, {}).listPublicImageModels({ query: {} }, {
+    status() { return this; },
+    json(body) { payload = body; },
+  });
+
+  assert.deepEqual(payload.data, ['logical-image']);
+  assert.equal(JSON.stringify(payload).includes('relay-'), false);
+  assert.equal(JSON.stringify(payload).includes('upstream-'), false);
+  db.close();
 });
 
 test('普通用户视频模型接口只返回管理员启用的模型名称', () => {

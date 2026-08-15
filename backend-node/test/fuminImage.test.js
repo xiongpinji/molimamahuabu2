@@ -106,7 +106,7 @@ test('fumin 4K 图片计费后仍保留供应商配置使用的模型大小写',
   runMigrationsAndEnsure(db);
   try {
     creditLedgerService.setAccountBalance(db, 'user-1', 100);
-    aiConfigService.createConfig(db, log, {
+    const config = aiConfigService.createConfig(db, log, {
       service_type: 'image',
       provider: 'fumin_image',
       api_protocol: 'openai',
@@ -118,6 +118,8 @@ test('fumin 4K 图片计费后仍保留供应商配置使用的模型大小写',
       default_model: 'fumin-gpt-image-2',
       is_default: true,
     });
+    db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
+      .run(config.id);
 
     const created = imageService.create(db, log, {
       drama_id: 1,
@@ -168,7 +170,7 @@ test('图片生成路由提交上游模型名并解析 base64 结果', async (t)
   const db = new Database(':memory:');
   t.after(() => db.close());
   runMigrationsAndEnsure(db);
-  aiConfigService.createConfig(db, log, {
+  const config = aiConfigService.createConfig(db, log, {
     service_type: 'image',
     provider: 'fumin_image',
     api_protocol: 'openai',
@@ -180,6 +182,8 @@ test('图片生成路由提交上游模型名并解析 base64 结果', async (t)
     default_model: 'fumin-gpt-image-2',
     is_default: true,
   });
+  db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
+    .run(config.id);
 
   const result = await imageClient.callImageApi(db, log, {
     prompt: '电影感客厅',

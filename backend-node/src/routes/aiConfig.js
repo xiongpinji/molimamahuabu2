@@ -35,7 +35,9 @@ function listPublicAudioModels(db) {
 function publicModelNames(configs) {
   const names = configs
     .filter((config) => config.is_active !== false)
+    .filter((config) => config.verification_status == null || config.verification_status === 'verified')
     .flatMap((config) => {
+      if (config.logical_model_id) return [config.logical_model_id];
       const models = Array.isArray(config.model) ? config.model : [config.model];
       return [config.default_model, ...models];
     })
