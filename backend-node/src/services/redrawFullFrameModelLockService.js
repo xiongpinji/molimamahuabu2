@@ -188,6 +188,9 @@ async function secureReadFile({ cacheRootReal, relativePath }) {
     assertRegularFile(statAfter);
     const realAfter = await fs.realpath(realBefore);
     if (realAfter !== realBefore) throw invalid();
+    const statPathAfter = await fs.stat(realAfter, { bigint: true });
+    assertRegularFile(statPathAfter);
+    if (!sameIdentity(statBefore, statPathAfter)) throw invalid();
     if (!sameIdentity(statBefore, statAfter)) throw invalid();
     return bytes;
   } finally {

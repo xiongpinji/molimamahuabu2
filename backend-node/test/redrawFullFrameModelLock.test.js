@@ -353,6 +353,30 @@ test('opened file descriptor must match the pre-open in-cache file identity', as
   await assertInvalid(validateModelLock({ cacheRoot, sourcePolicy, lock }), cacheRoot);
 });
 
+test('post-open path identity drift fails even when realpath string is stable', async (t) => {
+  const { cacheRoot, lock } = createValidLock(t);
+  const originalStat = fsp.stat;
+  const target = fs.realpathSync(path.join(cacheRoot, lock.components[0].artifact_path));
+  let targetStats = 0;
+  t.after(() => { fsp.stat = originalStat; });
+
+  fsp.stat = async (...args) => {
+    const stat = await originalStat.apply(fsp, args);
+    if (args[0] !== target) return stat;
+    targetStats += 1;
+    if (targetStats === 1) return stat;
+    return new Proxy(stat, {
+      get(current, property, receiver) {
+        if (property === 'ino') return typeof current.ino === 'bigint' ? current.ino + 1n : current.ino + 1;
+        if (property === 'size') return typeof current.size === 'bigint' ? current.size + 1n : current.size + 1;
+        return Reflect.get(current, property, receiver);
+      },
+    });
+  };
+
+  await assertInvalid(validateModelLock({ cacheRoot, sourcePolicy, lock }), cacheRoot);
+});
+
 test('read-time realpath drift fails closed', async (t) => {
   const { cacheRoot, lock } = createValidLock(t);
   const originalRealpath = fsp.realpath;
