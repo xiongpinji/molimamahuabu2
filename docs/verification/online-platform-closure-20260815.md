@@ -110,10 +110,28 @@
 - 兼容修复把直连图片收集放回统一候选构造器的返回表达式，同时继续先经过模型能力规划并只为 `adoptedReferences` 生成 `@图片N`；本地审计器同步收紧为生产固定合同且保留“未采用参考图不得生成 mention token”的额外检查。
 - 此门禁失败发生在 `PROTECTED_RELEASE_VERIFY_ONLY=1` 阶段，线上 `current`、服务、数据库和 AI 音乐均未切换或重启。
 
-本地实现与回归已经完成，但尚不能直接进入生产切换：
+以下为生产切换前的门禁记录：
 
 1. 付费生成项与生产写入项仍缺同批次闭环，因此不能宣称所有外部模型或全部生产写回当前无缺陷；
 2. 归档保留策略仍是独立运维决策，不随本次应用发布自动执行；
 3. 必须先提交本轮修改，重新执行最终提交审计，检查其他工作树与最新 `origin/main` 冲突，再推送 PR、等待 CI 并合入；
 4. 合入后必须重新读取实时 `/opt/moli-drama/current`，从该版本克隆候选，只覆盖审计白名单内的改动，完成部署锁、CAS、备份、活动任务、双服务健康、日志和 AI 音乐隔离检查；
 5. 生产切换只能使用共享 `activate-protected-release.sh`，不得整体覆盖或直接替换 `/opt/moli-drama/current`。
+
+## 生产发布与切换后验收
+
+- PR #150、#151、#152 已依次合入；最终运行时提交为 `1a80773c267f348a307b8d8330dcc1f367631c22`。
+- 最终候选从实时 `current` `/opt/moli-drama/releases/platform-stability-pr149-20260815-38135ad1-gatefix2` 克隆，只覆盖 6 个审计白名单运行时文件；候选为 `/opt/moli-drama/releases/platform-closure-pr152-20260815-1a80773c-r3`。
+- 增量范围清单为 `/opt/moli-drama/shared/release-audit/pr152-platform-closure-1a80773c-scope.json`，SHA-256 为 `5413b54607b24a1b9159966a7682394b7fa02d206b7c211d0e30e8f5c1ce5001`。
+- 候选组合回归通过：后端生产目录 3/3、旧库兼容 4/4、视频与目录 32/32；前端 H3 与自由节点请求 27/27，图片/视频/音频参考编辑器定向 1/1；生产环境预检 16/16。
+- 共享发布门禁在 verify-only 和正式激活时均通过 `canvas-credit-callout-v1`、`canvas-reference-numbered-mentions-v1` 与外部模型发布合同。
+- 2026-08-15T14:03:49Z 使用共享 `activate-protected-release.sh` 开始原子切换，2026-08-15T14:08:39Z 成功切换到最终候选；没有直接替换 `current`。
+- 发布审计：`/opt/moli-drama/shared/release-audit/protected-release-20260815T140349Z-3446232.audit`；完整日志：`/opt/moli-drama/shared/release-audit/protected-release-20260815T140349Z-3446232.journal`。
+- 数据库备份：`/opt/moli-drama/shared/backups/database-release-guard-20260815T140349Z-3446232.sqlite`，备份 SHA-256 为 `a27ae5321e0900c51f3fdde920956b7012dc835f33f6a1b8e9cacdd87ef54a2a`，切换前 quick_check 为 `ok`。
+- 切换前后活动任务均为 `async_tasks=0`、`image_generations=0`、`video_generations=0`；切换后再次只读检查数据库 quick_check 为 `ok`，没有活动异步任务，也没有新生成任务。
+- 切换后主服务为 `active`，PID `3911943`，`NRestarts=0`；本地 `/health` 与公网 `/drama-health` 均返回 200，切换后错误级服务日志为 0。
+- 公网页面 `/`、`/login`、`/canvas/33`、`/script-analysis`、`/factory`、`/film/45` 均返回 200；公网首页与候选 `index.html` SHA-256 同为 `93071a3f99e8b1db21a216a38340d0af8e92743801cf6c6101b675807779c9e7`，两个入口静态资产均返回 200。
+- AI 音乐保持隔离：`/opt/moli-mama` 的 server/worker PID 仍为 `206874`/`206895`，本地健康检查通过。
+- 浏览器切换后只读打开 `/canvas/63`，现有文本、图片、视频节点、结果图和工具栏均完成渲染；继续导航到剧本分析时浏览器登录态已过期并被正确重定向到登录页，因此切换后的已登录跨模块页面复核仍需用户重新登录后补齐。
+- 本次发布没有调用付费供应商。以上证据不能扩张为“所有外部模型此刻均真实生成成功”，也不能证明未执行的生产写入操作没有缺陷。
+- 系统盘切换后约 90% 使用、剩余约 18 GB；尚未删除候选、回滚版本或归档，后续容量治理仍须走独立受保护运维流程。
