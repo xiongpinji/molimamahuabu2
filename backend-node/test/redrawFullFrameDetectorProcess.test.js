@@ -33,6 +33,7 @@ function writeFakeWorker(t, mode = 'ok') {
 const fs = require('node:fs');
 const mode = ${JSON.stringify(mode)};
 const capture = ${JSON.stringify(capturePath)};
+if (mode === 'instant-exit') process.exit(7);
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { input += chunk; });
@@ -180,6 +181,42 @@ test('detectFrames rejects invalid inputs and child protocol failures with a sta
     ...common,
     frames: Array.from({ length: 100001 }, (_, index) => ({ frame_index: index, timestamp_ms: index, frame_path: `C:/secret/${index}.png` })),
   }), /secret|model-lock|redraw-worker/);
+});
+
+test('detectFrames sanitizes EPIPE when worker exits while frames are being written', async (t) => {
+  const fake = writeFakeWorker(t, 'instant-exit');
+  const modelLockPath = path.join(fake.root, 'model-lock.json');
+  fs.writeFileSync(modelLockPath, '{}');
+  const uncaught = [];
+  const unhandled = [];
+  const onUncaught = (error) => {
+    uncaught.push(error);
+  };
+  const onUnhandled = (reason) => {
+    unhandled.push(reason);
+  };
+  process.on('uncaughtException', onUncaught);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => {
+    process.removeListener('uncaughtException', onUncaught);
+    process.removeListener('unhandledRejection', onUnhandled);
+  });
+
+  await assertUnavailable(detectFrames({
+    pythonPath: process.execPath,
+    workerRoot: fake.root,
+    modelLockPath,
+    timeoutMs: 3000,
+    frames: Array.from({ length: 50000 }, (_, index) => ({
+      frame_index: index,
+      timestamp_ms: index,
+      frame_path: `C:/secret/frame-${index}.png`,
+    })),
+  }), /secret|model-lock|redraw-worker/);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(uncaught, []);
+  assert.deepEqual(unhandled, []);
 });
 
 test('fetch model CLI args only accept help or an output directory', () => {

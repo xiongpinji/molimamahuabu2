@@ -145,16 +145,30 @@ function detectFrames({ pythonPath, workerRoot, modelLockPath, frames, timeoutMs
       let stderr = '';
       let stdoutBytes = 0;
       let stderrBytes = 0;
+      let stdinClosed = false;
+      let drainListener = null;
+      const safeCloseStdin = () => {
+        stdinClosed = true;
+        try {
+          if (!child.stdin.destroyed) child.stdin.destroy();
+        } catch (_) {
+          // The caller always receives the stable sanitized error.
+        }
+      };
       const cleanup = () => {
         clearTimeout(timer);
+        if (drainListener) {
+          child.stdin.removeListener('drain', drainListener);
+          drainListener = null;
+        }
         child.stdout.removeAllListeners();
         child.stderr.removeAllListeners();
         child.removeAllListeners();
-        child.stdin.removeAllListeners();
       };
       const fail = () => {
         if (settled) return;
         settled = true;
+        safeCloseStdin();
         child.kill();
         cleanup();
         reject(unavailable());
@@ -165,6 +179,10 @@ function detectFrames({ pythonPath, workerRoot, modelLockPath, frames, timeoutMs
       }, timeoutMs);
 
       child.on('error', fail);
+      child.stdin.on('error', fail);
+      child.stdin.on('close', () => {
+        stdinClosed = true;
+      });
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');
       child.stdout.on('data', (chunk) => {
@@ -184,6 +202,7 @@ function detectFrames({ pythonPath, workerRoot, modelLockPath, frames, timeoutMs
         stderr += chunk;
       });
       child.on('close', (code) => {
+        stdinClosed = true;
         if (settled) return;
         try {
           if (code !== 0 || stderr.length > 0) throw unavailable();
@@ -212,15 +231,25 @@ function detectFrames({ pythonPath, workerRoot, modelLockPath, frames, timeoutMs
 
       let writeIndex = 0;
       const writeNext = () => {
-        while (!settled && writeIndex < sortedFrames.length) {
-          const ok = child.stdin.write(`${JSON.stringify(sortedFrames[writeIndex])}\n`);
+        drainListener = null;
+        while (!settled && !stdinClosed && child.stdin.writable && !child.stdin.destroyed && writeIndex < sortedFrames.length) {
+          const ok = child.stdin.write(`${JSON.stringify(sortedFrames[writeIndex])}\n`, (error) => {
+            if (error) fail();
+          });
           writeIndex += 1;
           if (!ok) {
-            child.stdin.once('drain', writeNext);
+            drainListener = writeNext;
+            child.stdin.once('drain', drainListener);
             return;
           }
         }
-        if (!settled) child.stdin.end();
+        if (!settled && !stdinClosed && child.stdin.writable && !child.stdin.destroyed) {
+          try {
+            child.stdin.end();
+          } catch (_) {
+            fail();
+          }
+        }
       };
       writeNext();
     } catch (_) {
