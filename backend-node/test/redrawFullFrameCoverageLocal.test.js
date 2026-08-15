@@ -337,9 +337,79 @@ test('analyze failure matrix reaches the intended legal-media stages and leaves 
   await assertRunRejectsNoFinal(setup2, 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE', { detectFrames: async () => { detectorCalled = true; throw new Error('C:\\secret\\detector'); } });
   assert.equal(detectorCalled, true);
   await assertRunRejectsNoFinal(setup2, 'REDRAW_FULL_FRAME_MASK_INVALID', { fault: 'mask_write' });
-  await assertRunRejectsNoFinal(setup2, 'REDRAW_FULL_FRAME_OUTPUT_INVALID', { fault: 'before_publish' });
-  await assertRunRejectsNoFinal(setup2, 'REDRAW_FULL_FRAME_OUTPUT_INVALID', { fault: 'write_manifest' });
   await assert.rejects(runner.runAnalyze({ source: setup2.videoPath, casePath: setup2.casePath, modelLockPath: setup2.lockPath, outputDir: path.join(setup2.root, 'unknown-fault') }, { ...setup2.deps, fault: 'unknown' }), /REDRAW_FULL_FRAME_OUTPUT_INVALID/);
+});
+
+test('manifest and template atomic rename failures prove temp write and clean final state', async (t) => {
+  const setup = await prepareSyntheticRun(t);
+  for (const targetName of ['redraw-full-frame-coverage-manifest.json', 'review-decisions.template.json']) {
+    const calls = [];
+    const outputDir = path.join(setup.root, `atomic-${targetName.replace(/[^a-z0-9]/gi, '-')}`);
+    await assert.rejects(runner.runAnalyze({
+      source: setup.videoPath,
+      casePath: setup.casePath,
+      modelLockPath: setup.lockPath,
+      outputDir,
+    }, {
+      ...setup.deps,
+      randomHex: () => `atomic${targetName.length}`,
+      fsOps: {
+        writeFile: async (...args) => fs.promises.writeFile(...args),
+        rename: async (from, to) => {
+          calls.push({ from, to, tempExists: fs.existsSync(from), targetExistsBefore: fs.existsSync(to) });
+          if (path.basename(to) === targetName) throw new Error(`C:\\secret\\${targetName}`);
+          await fs.promises.rename(from, to);
+        },
+        rmdir: async (...args) => fs.promises.rmdir(...args),
+      },
+    }), (error) => {
+      assert.equal(error.code, 'REDRAW_FULL_FRAME_OUTPUT_INVALID');
+      assertSanitized(error);
+      return true;
+    });
+    const matched = calls.find((call) => path.basename(call.to) === targetName);
+    assert(matched, `rename called for ${targetName}`);
+    assert.equal(matched.tempExists, true);
+    assert.equal(matched.targetExistsBefore, false);
+    assert.equal(fs.existsSync(outputDir), false);
+    assert.deepEqual(fs.readdirSync(setup.root).filter((name) => name.includes('redraw-full-frame-staging')), []);
+  }
+});
+
+test('publish rename failure runs after artifact verification and leaves no partial output', async (t) => {
+  const setup = await prepareSyntheticRun(t);
+  for (const precreate of [false, true]) {
+    const calls = [];
+    const outputDir = path.join(setup.root, precreate ? 'publish-empty-target' : 'publish-missing-target');
+    if (precreate) fs.mkdirSync(outputDir);
+    await assert.rejects(runner.runAnalyze({
+      source: setup.videoPath,
+      casePath: setup.casePath,
+      modelLockPath: setup.lockPath,
+      outputDir,
+    }, {
+      ...setup.deps,
+      randomHex: () => precreate ? 'publishempty' : 'publishmissing',
+      fsOps: {
+        writeFile: async (...args) => fs.promises.writeFile(...args),
+        rename: async (from, to) => {
+          calls.push({ from, to, isPublish: to === path.resolve(outputDir), stagingHasManifest: fs.existsSync(path.join(from, 'redraw-full-frame-coverage-manifest.json')) });
+          if (to === path.resolve(outputDir)) throw new Error('C:\\secret\\publish');
+          await fs.promises.rename(from, to);
+        },
+        rmdir: async (...args) => fs.promises.rmdir(...args),
+      },
+    }), (error) => {
+      assert.equal(error.code, 'REDRAW_FULL_FRAME_OUTPUT_INVALID');
+      assertSanitized(error);
+      return true;
+    });
+    const publishCall = calls.find((call) => call.isPublish);
+    assert(publishCall, 'publish rename called');
+    assert.equal(publishCall.stagingHasManifest, true);
+    assert.equal(fs.existsSync(outputDir), false);
+    assert.deepEqual(fs.readdirSync(setup.root).filter((name) => name.includes('redraw-full-frame-staging')), []);
+  }
 });
 
 test('analyze preserves occupied output bytes and atomically replaces empty output directory', async (t) => {

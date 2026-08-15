@@ -42,7 +42,7 @@ const DEFAULT_CASE_POLICY = Object.freeze({
     Object.freeze({ id: 'shot-9', start_ms: 64000, end_ms: 68733 }),
   ]),
 });
-const FAULTS = new Set(['mask_write', 'write_manifest', 'before_publish']);
+const FAULTS = new Set(['mask_write']);
 
 function coded(code) {
   const error = new Error(code);
@@ -95,6 +95,21 @@ function assertNoForbidden(value, code = OUTPUT_INVALID) {
     if (/^(url|ocr|ocr_text|text|content|prompt|key|token|authorization|approved|ready)$/i.test(key)) fail(code);
     assertNoForbidden(nested, code);
   }
+}
+
+function resolveFsOps(fsOps) {
+  if (fsOps === undefined) {
+    return {
+      writeFile: (...args) => fsp.writeFile(...args),
+      rename: (...args) => fsp.rename(...args),
+      rmdir: (...args) => fsp.rmdir(...args),
+    };
+  }
+  assertExactKeys(fsOps, ['writeFile', 'rename', 'rmdir']);
+  for (const key of ['writeFile', 'rename', 'rmdir']) {
+    if (typeof fsOps[key] !== 'function') fail(OUTPUT_INVALID);
+  }
+  return fsOps;
 }
 
 function safeArg(value) {
@@ -383,13 +398,13 @@ function clampBox(box, width, height) {
   };
 }
 
-async function writeMask(maskPath, width, height, fill, fault) {
+async function writeMask(maskPath, width, height, fill, fault, fsOps) {
   if (fault === 'mask_write') fail(MASK_INVALID);
   const pixels = Buffer.alloc(width * height, 0);
   fill(pixels);
   const bytes = await sharp(pixels, { raw: { width, height, channels: 1 } }).toColourspace('b-w').png().toBuffer();
   await fsp.mkdir(path.dirname(maskPath), { recursive: true });
-  await writeAtomic(maskPath, bytes);
+  await writeAtomic(maskPath, bytes, fsOps);
   return sha256Bytes(bytes);
 }
 
@@ -431,7 +446,7 @@ function matchTextRegion(caseData, frame, polygon, height) {
   return active.find((region) => region.kind === preferredKind) || active[0];
 }
 
-async function buildTracks({ staging, source, caseData, frames, detections, fault }) {
+async function buildTracks({ staging, source, caseData, frames, detections, fault, fsOps }) {
   const castIds = new Set(caseData.cast.map((item) => item.id));
   const personGroups = new Map();
   const textGroups = new Map();
@@ -448,7 +463,7 @@ async function buildTracks({ staging, source, caseData, frames, detections, faul
       const regionId = `person-${frame.frame_index}-${person.candidate_id}`.replace(/[^A-Za-z0-9_:-]/g, '-');
       const maskPath = `masks/person/${regionId}.png`;
       const bbox = clampBox(person.bbox, source.width, source.height);
-      const maskSha = await writeMask(path.join(staging, maskPath), source.width, source.height, (pixels) => fillBbox(pixels, source.width, bbox), fault);
+      const maskSha = await writeMask(path.join(staging, maskPath), source.width, source.height, (pixels) => fillBbox(pixels, source.width, bbox), fault, fsOps);
       personGroups.get(groupKey).regions.push({
         region_id: regionId,
         frame_index: frame.frame_index,
@@ -475,7 +490,7 @@ async function buildTracks({ staging, source, caseData, frames, detections, faul
       }
       const bbox = clampBox(face.bbox, source.width, source.height);
       const maskPath = `masks/person/${regionId}.png`;
-      const maskSha = await writeMask(path.join(staging, maskPath), source.width, source.height, (pixels) => fillBbox(pixels, source.width, bbox), fault);
+      const maskSha = await writeMask(path.join(staging, maskPath), source.width, source.height, (pixels) => fillBbox(pixels, source.width, bbox), fault, fsOps);
       personGroups.get(groupKey).regions.push({
         region_id: regionId,
         frame_index: frame.frame_index,
@@ -501,7 +516,7 @@ async function buildTracks({ staging, source, caseData, frames, detections, faul
       const regionId = `text-${frame.frame_index}-${text.candidate_id}`.replace(/[^A-Za-z0-9_:-]/g, '-');
       const maskPath = `masks/text/${regionId}.png`;
       const polygon = text.polygon.map((point) => ({ x: Math.round(point.x), y: Math.round(point.y) }));
-      const maskSha = await writeMask(path.join(staging, maskPath), source.width, source.height, (pixels) => fillPolygon(pixels, source.width, source.height, polygon), fault);
+      const maskSha = await writeMask(path.join(staging, maskPath), source.width, source.height, (pixels) => fillPolygon(pixels, source.width, source.height, polygon), fault, fsOps);
       textGroups.get(groupKey).regions.push({
         region_id: regionId,
         frame_index: frame.frame_index,
@@ -537,25 +552,25 @@ async function buildTracks({ staging, source, caseData, frames, detections, faul
   return { personTracks, textTracks, frameRegionIds };
 }
 
-async function writeAtomic(filePath, bytesOrText) {
+async function writeAtomic(filePath, bytesOrText, fsOps) {
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
   const temp = path.join(path.dirname(filePath), `.tmp-${path.basename(filePath)}-${process.pid}-${Date.now()}`);
-  await fsp.writeFile(temp, bytesOrText, { flag: 'wx' });
-  await fsp.rename(temp, filePath);
+  await fsOps.writeFile(temp, bytesOrText, { flag: 'wx' });
+  await fsOps.rename(temp, filePath);
 }
 
-async function writeJson(filePath, value) {
-  await writeAtomic(filePath, `${JSON.stringify(value, null, 2)}\n`);
+async function writeJson(filePath, value, fsOps) {
+  await writeAtomic(filePath, `${JSON.stringify(value, null, 2)}\n`, fsOps);
 }
 
-async function makeOverlay({ framePath, outputPath, boxes = [], polygons = [], color }) {
+async function makeOverlay({ framePath, outputPath, boxes = [], polygons = [], color, fsOps }) {
   const input = sharp(framePath);
   const metadata = await input.metadata();
   const svg = `<svg width="${metadata.width}" height="${metadata.height}" xmlns="http://www.w3.org/2000/svg">${boxes.map((box) => `<rect x="${box.x}" y="${box.y}" width="${box.width}" height="${box.height}" fill="none" stroke="${color}" stroke-width="2"/>`).join('')}${polygons.map((polygon) => `<polygon points="${polygon.map((point) => `${point.x},${point.y}`).join(' ')}" fill="none" stroke="${color}" stroke-width="2"/>`).join('')}</svg>`;
-  await writeAtomic(outputPath, await input.composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).jpeg({ quality: 86 }).toBuffer());
+  await writeAtomic(outputPath, await input.composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).jpeg({ quality: 86 }).toBuffer(), fsOps);
 }
 
-async function writeReviewArtifacts({ staging, manifest }) {
+async function writeReviewArtifacts({ staging, manifest, fsOps }) {
   const personByFrame = new Map(manifest.frames.map((frame) => [frame.frame_index, []]));
   const textByFrame = new Map(manifest.frames.map((frame) => [frame.frame_index, []]));
   for (const track of manifest.person_tracks) {
@@ -570,12 +585,14 @@ async function writeReviewArtifacts({ staging, manifest }) {
       outputPath: path.join(staging, 'overlays', 'person', `frame-${String(frame.frame_index).padStart(6, '0')}.jpg`),
       boxes: personByFrame.get(frame.frame_index).map((item) => item.bbox),
       color: '#00ff66',
+      fsOps,
     });
     await makeOverlay({
       framePath: path.join(staging, frame.path),
       outputPath: path.join(staging, 'overlays', 'text', `frame-${String(frame.frame_index).padStart(6, '0')}.jpg`),
       polygons: textByFrame.get(frame.frame_index).map((item) => item.polygon),
       color: '#ffcc00',
+      fsOps,
     });
   }
   const contactSheets = [];
@@ -605,7 +622,7 @@ async function writeReviewArtifacts({ staging, manifest }) {
       composite.push({ input: row.text, left: 640, top: index * 180 });
     });
     const relative = `contact-sheets/${shot.shot_id}.jpg`;
-    await writeAtomic(path.join(staging, relative), await canvas.composite(composite).jpeg({ quality: 88 }).toBuffer());
+    await writeAtomic(path.join(staging, relative), await canvas.composite(composite).jpeg({ quality: 88 }).toBuffer(), fsOps);
     contactSheets.push(relative);
   }
   const template = {
@@ -616,7 +633,7 @@ async function writeReviewArtifacts({ staging, manifest }) {
       .filter((frame) => frame.review_point_reasons.length > 0)
       .map((frame) => ({ frame_index: frame.frame_index, decision: null, corrections: [] })),
   };
-  await writeJson(path.join(staging, 'review-decisions.template.json'), template);
+  await writeJson(path.join(staging, 'review-decisions.template.json'), template, fsOps);
   const html = [
     '<!doctype html><html><head><meta charset="utf-8"><title>Redraw Full Frame Review</title></head><body>',
     '<h1>Redraw Full Frame Review</h1>',
@@ -631,7 +648,7 @@ async function writeReviewArtifacts({ staging, manifest }) {
     }),
     '</body></html>',
   ].join('');
-  await writeAtomic(path.join(staging, 'review', 'index.html'), html);
+  await writeAtomic(path.join(staging, 'review', 'index.html'), html, fsOps);
   return contactSheets;
 }
 
@@ -656,13 +673,13 @@ async function assertReadableArtifacts(staging, manifest, contactSheets) {
   }
 }
 
-async function publishStaging(staging, outputDir) {
+async function publishStaging(staging, outputDir, fsOps) {
   if (fs.existsSync(outputDir)) {
     const entries = await fsp.readdir(outputDir);
     if (entries.length !== 0) fail(OUTPUT_INVALID);
-    await fsp.rmdir(outputDir);
+    await fsOps.rmdir(outputDir);
   }
-  await fsp.rename(staging, outputDir);
+  await fsOps.rename(staging, outputDir);
 }
 
 async function runAnalyze(options, deps = {}) {
@@ -674,6 +691,7 @@ async function runAnalyze(options, deps = {}) {
   try {
     if (!safeArg(options.source) || !safeArg(options.casePath) || !safeArg(options.modelLockPath) || !safeArg(options.outputDir)) fail(OUTPUT_INVALID);
     if (deps.fault !== undefined && !FAULTS.has(deps.fault)) fail(OUTPUT_INVALID);
+    const fsOps = resolveFsOps(deps.fsOps);
     if (fs.existsSync(outputDir) && (await fsp.readdir(outputDir)).length !== 0) fail(OUTPUT_INVALID);
     await fsp.mkdir(staging, { recursive: false });
 
@@ -743,7 +761,7 @@ async function runAnalyze(options, deps = {}) {
         frame_path: path.join(staging, frame.path),
       })),
     }).catch(() => { throw coded(MODEL_UNAVAILABLE); });
-    const { personTracks, textTracks, frameRegionIds } = await buildTracks({ staging, source, caseData, frames, detections, fault: deps.fault });
+    const { personTracks, textTracks, frameRegionIds } = await buildTracks({ staging, source, caseData, frames, detections, fault: deps.fault, fsOps });
     for (const frame of frames) {
       const ids = frameRegionIds.get(frame.frame_index);
       frame.person_region_ids = ids.persons;
@@ -759,13 +777,11 @@ async function runAnalyze(options, deps = {}) {
       textTracks,
       modelLock,
     });
-    if (deps.fault === 'write_manifest') fail(OUTPUT_INVALID);
-    await writeJson(path.join(staging, 'redraw-full-frame-coverage-manifest.json'), manifest);
-    const contactSheets = await writeReviewArtifacts({ staging, manifest });
+    await writeJson(path.join(staging, 'redraw-full-frame-coverage-manifest.json'), manifest, fsOps);
+    const contactSheets = await writeReviewArtifacts({ staging, manifest, fsOps });
     await assertReadableArtifacts(staging, manifest, contactSheets);
-    if (deps.fault === 'before_publish') fail(OUTPUT_INVALID);
     if (fs.existsSync(outputDir) && (await fsp.readdir(outputDir)).length !== 0) fail(OUTPUT_INVALID);
-    await publishStaging(staging, outputDir);
+    await publishStaging(staging, outputDir, fsOps);
     published = true;
     return {
       manifest,
