@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const crypto = require('node:crypto');
 const fsp = require('node:fs/promises');
+const https = require('node:https');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { validateModelLock } = require('../src/services/redrawFullFrameModelLockService');
@@ -9,11 +10,58 @@ const sourcePolicy = require('../config/redraw-full-frame-model-sources.json');
 const OUTPUT_ERROR = 'REDRAW_FULL_FRAME_OUTPUT_INVALID';
 const MODEL_ERROR = 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE';
 const COMPONENT_ORDER = ['face_detector', 'person_detector', 'text_detector', 'tracker'];
+const ALLOWED_HTTPS_HOSTS = new Set([
+  'api.github.com',
+  'github.com',
+  'codeload.github.com',
+  'raw.githubusercontent.com',
+  'files.pythonhosted.org',
+  'pypi.org',
+]);
+const OFFICIAL_CATALOG = Object.freeze({
+  face_detector: Object.freeze({
+    repository: 'google-ai-edge/mediapipe',
+    releaseTag: 'v0.10.14',
+    assetName: 'mediapipe-face-detection-model.tflite',
+    licensePath: 'LICENSE',
+  }),
+  person_detector: Object.freeze({
+    repository: 'Megvii-BaseDetection/YOLOX',
+    releaseTag: 'v0.3.0',
+    assetName: 'yolox_s.pth',
+    licensePath: 'LICENSE',
+  }),
+  text_detector: Object.freeze({
+    repository: 'PaddlePaddle/PaddleOCR',
+    releaseTag: 'v2.8.1',
+    assetName: 'en_PP-OCRv3_det_infer.tar',
+    licensePath: 'LICENSE',
+  }),
+  tracker: Object.freeze({
+    repository: 'FoundationVision/ByteTrack',
+    releaseTag: 'v0.3.0',
+    assetName: 'bytetrack-source.zip',
+    licensePath: 'LICENSE',
+  }),
+});
+const RUNTIME_PACKAGES = Object.freeze([
+  'setuptools==80.9.0',
+  'wheel==0.43.0',
+]);
 
 function error(code) {
   const err = new Error(code);
   err.code = code;
   return err;
+}
+
+function sanitizeEnv(env = process.env) {
+  const safe = {};
+  for (const key of ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP']) {
+    if (Object.prototype.hasOwnProperty.call(env, key)) safe[key] = env[key];
+  }
+  safe.PYTHONUTF8 = '1';
+  return safe;
 }
 
 function parseArgs(argv) {
@@ -66,6 +114,110 @@ function assertPinnedFreeze(lines) {
   return sorted;
 }
 
+function assertAllowedUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch (_) {
+    throw error(MODEL_ERROR);
+  }
+  if (parsed.protocol !== 'https:' || !ALLOWED_HTTPS_HOSTS.has(parsed.hostname)) throw error(MODEL_ERROR);
+  return parsed;
+}
+
+function assertCommitSha(value) {
+  if (typeof value !== 'string' || !/^[a-f0-9]{40}$/i.test(value)) throw error(MODEL_ERROR);
+  return value.toLowerCase();
+}
+
+function assertNonFloating(value) {
+  if (typeof value !== 'string' || !value || /(^|[^a-z0-9])(latest|main|master|placeholder|unknown|todo)([^a-z0-9]|$)/i.test(value)) {
+    throw error(MODEL_ERROR);
+  }
+  return value;
+}
+
+function requestBuffer(rawUrl, redirects = 0) {
+  const parsed = assertAllowedUrl(rawUrl);
+  if (redirects > 5) return Promise.reject(error(MODEL_ERROR));
+  return new Promise((resolve, reject) => {
+    const req = https.get(parsed, { headers: { 'User-Agent': 'moli-redraw-full-frame-bootstrap' } }, (res) => {
+      const status = res.statusCode || 0;
+      if ([301, 302, 303, 307, 308].includes(status)) {
+        const location = res.headers.location;
+        res.resume();
+        if (!location) {
+          reject(error(MODEL_ERROR));
+          return;
+        }
+        const redirected = new URL(location, parsed).toString();
+        try {
+          assertAllowedUrl(redirected);
+        } catch (err) {
+          reject(err);
+          return;
+        }
+        requestBuffer(redirected, redirects + 1).then(resolve, reject);
+        return;
+      }
+      if (status < 200 || status >= 300) {
+        res.resume();
+        reject(error(MODEL_ERROR));
+        return;
+      }
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+    });
+    req.on('error', () => reject(error(MODEL_ERROR)));
+    req.setTimeout(30000, () => {
+      req.destroy();
+      reject(error(MODEL_ERROR));
+    });
+  });
+}
+
+async function requestJson(rawUrl) {
+  const bytes = await requestBuffer(rawUrl);
+  try {
+    return JSON.parse(bytes.toString('utf8'));
+  } catch (_) {
+    throw error(MODEL_ERROR);
+  }
+}
+
+async function requestBytes(rawUrl) {
+  return requestBuffer(rawUrl);
+}
+
+async function resolveOfficialComponent(source, deps = {}) {
+  const catalog = OFFICIAL_CATALOG[source.component];
+  if (!catalog || catalog.repository !== source.repository || catalog.licensePath !== source.license_path) throw error(MODEL_ERROR);
+  const jsonRequest = deps.requestJson || requestJson;
+  const bytesRequest = deps.requestBytes || requestBytes;
+  const releaseUrl = `https://api.github.com/repos/${catalog.repository}/releases/tags/${encodeURIComponent(catalog.releaseTag)}`;
+  const release = await jsonRequest(releaseUrl);
+  const revision = assertCommitSha(release.target_commitish);
+  assertNonFloating(release.tag_name);
+  const assets = Array.isArray(release.assets) ? release.assets : [];
+  const asset = assets.find((item) => item && item.name === catalog.assetName);
+  if (!asset || typeof asset.browser_download_url !== 'string') throw error(MODEL_ERROR);
+  const artifactUrl = assertAllowedUrl(asset.browser_download_url).toString();
+  const licenseUrl = `https://raw.githubusercontent.com/${catalog.repository}/${revision}/${catalog.licensePath}`;
+  const artifactBytes = await bytesRequest(artifactUrl);
+  const licenseBytes = await bytesRequest(licenseUrl);
+  if (!Buffer.isBuffer(artifactBytes) && !(artifactBytes instanceof Uint8Array)) throw error(MODEL_ERROR);
+  if (!Buffer.isBuffer(licenseBytes) && !(licenseBytes instanceof Uint8Array)) throw error(MODEL_ERROR);
+  if (artifactBytes.length === 0 || licenseBytes.length === 0) throw error(MODEL_ERROR);
+  return {
+    revision,
+    artifact_name: catalog.assetName,
+    artifact_bytes: Buffer.from(artifactBytes),
+    license_name: `${source.component}-LICENSE.txt`,
+    license_bytes: Buffer.from(licenseBytes),
+  };
+}
+
 function assertComponentEvidence(source, evidence) {
   if (!evidence || typeof evidence !== 'object') throw error(MODEL_ERROR);
   for (const key of ['revision', 'artifact_name', 'artifact_bytes', 'license_name', 'license_bytes']) {
@@ -92,37 +244,24 @@ function assertComponentEvidence(source, evidence) {
 function defaultDeps() {
   return {
     randomHex,
-    async fetchComponent() {
-      throw error(MODEL_ERROR);
-    },
-    async createVenv(staging) {
-      const python = process.env.REDRAW_AUDITOR_PYTHON;
-      if (!python) throw error(MODEL_ERROR);
-      await runProcess(python, ['-m', 'venv', '.venv'], { cwd: staging });
-    },
-    async installRuntime() {
-      throw error(MODEL_ERROR);
-    },
-    async pipFreeze() {
-      throw error(MODEL_ERROR);
-    },
-    async pythonVersion(staging) {
-      const python = process.env.REDRAW_AUDITOR_PYTHON;
-      if (!python) throw error(MODEL_ERROR);
-      return runProcess(python, ['--version'], { cwd: staging });
-    },
-    async bootstrapWorker(staging) {
-      const python = process.env.REDRAW_AUDITOR_PYTHON;
-      if (!python) throw error(MODEL_ERROR);
-      const worker = path.resolve(__dirname, '../../workers/redraw-full-frame-auditor/src/redraw_full_frame_auditor/worker.py');
-      await runProcess(python, [worker, 'bootstrap', '--model-lock', 'model-lock.json'], { cwd: staging });
-    },
+    fetchComponent: resolveOfficialComponent,
+    createVenv,
+    installRuntime,
+    pipFreeze,
+    pythonVersion,
+    bootstrapWorker,
   };
 }
 
 function runProcess(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: options.cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env || sanitizeEnv(),
+      shell: false,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     let stdout = '';
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
@@ -132,6 +271,48 @@ function runProcess(command, args, options = {}) {
       else resolve(stdout.trim());
     });
   });
+}
+
+function spawnProcess(command, args, options) {
+  return runProcess(command, args, options);
+}
+
+function runtimePython(deps = {}) {
+  const env = deps.env || process.env;
+  const python = env.REDRAW_AUDITOR_PYTHON;
+  if (typeof python !== 'string' || python.length === 0) throw error(MODEL_ERROR);
+  return python;
+}
+
+async function createVenv(staging, deps = {}) {
+  const runner = deps.spawnProcess || spawnProcess;
+  await runner(runtimePython(deps), ['-m', 'venv', '.venv'], { cwd: staging, env: sanitizeEnv(deps.env) });
+}
+
+async function installRuntime(staging, _components = [], deps = {}) {
+  const runner = deps.spawnProcess || spawnProcess;
+  const python = runtimePython(deps);
+  for (const requirement of RUNTIME_PACKAGES) {
+    if (!/^[A-Za-z0-9_.-]+==[A-Za-z0-9_.!+-]+$/.test(requirement)) throw error(MODEL_ERROR);
+    await runner(python, ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', requirement], { cwd: staging, env: sanitizeEnv(deps.env) });
+  }
+}
+
+async function pipFreeze(staging, deps = {}) {
+  const runner = deps.spawnProcess || spawnProcess;
+  const output = await runner(runtimePython(deps), ['-m', 'pip', 'freeze'], { cwd: staging, env: sanitizeEnv(deps.env) });
+  return assertPinnedFreeze(String(output).split(/\r?\n/));
+}
+
+async function pythonVersion(staging, deps = {}) {
+  const runner = deps.spawnProcess || spawnProcess;
+  return String(await runner(runtimePython(deps), ['--version'], { cwd: staging, env: sanitizeEnv(deps.env) })).trim();
+}
+
+async function bootstrapWorker(staging, _modelLockPath, deps = {}) {
+  const runner = deps.spawnProcess || spawnProcess;
+  const worker = path.resolve(__dirname, '../../workers/redraw-full-frame-auditor/src/redraw_full_frame_auditor/worker.py');
+  await runner(runtimePython(deps), [worker, 'bootstrap', '--model-lock', 'model-lock.json'], { cwd: staging, env: sanitizeEnv(deps.env) });
 }
 
 async function runFetchModels(options, injectedDeps = {}) {
@@ -218,4 +399,14 @@ if (require.main === module) {
   runCli().then((code) => { process.exitCode = code; });
 }
 
-module.exports = { parseArgs, runFetchModels, runCli };
+module.exports = {
+  parseArgs,
+  resolveOfficialComponent,
+  createVenv,
+  installRuntime,
+  pipFreeze,
+  pythonVersion,
+  bootstrapWorker,
+  runFetchModels,
+  runCli,
+};

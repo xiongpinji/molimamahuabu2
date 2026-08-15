@@ -12,6 +12,7 @@ const {
 } = require('../src/services/redrawFullFrameDetectorProcess');
 const {
   parseArgs,
+  resolveOfficialComponent,
   runFetchModels,
 } = require('../scripts/fetch-redraw-full-frame-models-local');
 
@@ -224,4 +225,66 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
     outputDir: failed,
   }, { ...deps, fetchComponent: async () => { throw new Error('https://secret.example/model'); } }), /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/);
   assert.equal(fs.existsSync(failed), false);
+});
+
+test('default fetch path resolves official HTTPS catalog without unconditional stubs', async () => {
+  const calls = [];
+  const deps = {
+    requestJson: async (url) => {
+      calls.push(['json', url]);
+      assert.match(url, /^https:\/\/api\.github\.com\//);
+      return {
+        tag_name: 'v1.2.3',
+        target_commitish: '0123456789abcdef0123456789abcdef01234567',
+        assets: [{ name: 'yolox_s.pth', browser_download_url: 'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/v0.3.0/yolox_s.pth' }],
+      };
+    },
+    requestBytes: async (url) => {
+      calls.push(['bytes', url]);
+      assert.match(url, /^https:\/\//);
+      return Buffer.from(url.includes('LICENSE') ? 'license-bytes' : 'artifact-bytes');
+    },
+  };
+
+  const evidence = await resolveOfficialComponent({
+    component: 'person_detector',
+    project: 'YOLOX',
+    repository: 'Megvii-BaseDetection/YOLOX',
+    license_path: 'LICENSE',
+  }, deps);
+
+  assert.equal(evidence.revision, '0123456789abcdef0123456789abcdef01234567');
+  assert.equal(evidence.artifact_name, 'yolox_s.pth');
+  assert(Buffer.isBuffer(evidence.artifact_bytes));
+  assert(Buffer.isBuffer(evidence.license_bytes));
+  assert.deepEqual(calls.map((call) => call[0]), ['json', 'bytes', 'bytes']);
+});
+
+test('default runtime helpers use safe argv spawn contracts and reject non-exact freeze lines', async (t) => {
+  const calls = [];
+  const deps = {
+    spawnProcess: async (command, args, options) => {
+      calls.push({ command, args, env: options.env, cwd: options.cwd });
+      if (args.includes('freeze')) return 'pkg==1.0.0\n';
+      if (args.includes('--version')) return 'Python 3.11.9\n';
+      return '';
+    },
+    env: { REDRAW_AUDITOR_PYTHON: 'python-fixture', OPENAI_API_KEY: 'secret', PATH: 'path' },
+  };
+  const parent = tempDir(t, 'redraw-runtime-');
+  const fetchModule = require('../scripts/fetch-redraw-full-frame-models-local');
+
+  await fetchModule.createVenv(parent, deps);
+  await fetchModule.installRuntime(parent, [], deps);
+  assert.deepEqual(await fetchModule.pipFreeze(parent, deps), ['pkg==1.0.0']);
+  assert.equal(await fetchModule.pythonVersion(parent, deps), 'Python 3.11.9');
+  await fetchModule.bootstrapWorker(parent, path.join(parent, 'model-lock.json'), deps);
+  assert(calls.every((call) => Array.isArray(call.args)));
+  assert(calls.every((call) => call.env.PYTHONUTF8 === '1'));
+  assert(calls.every((call) => !Object.prototype.hasOwnProperty.call(call.env, 'OPENAI_API_KEY')));
+
+  await assert.rejects(
+    fetchModule.pipFreeze(parent, { ...deps, spawnProcess: async () => 'pkg>=1.0.0\n' }),
+    /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+  );
 });
