@@ -4,6 +4,7 @@ const path = require('node:path');
 
 const ERROR_CODE = 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID';
 const SOURCE_SCHEMA = 'redraw-full-frame-model-sources-v1';
+const LOCK_SCHEMA = 'redraw-full-frame-model-lock-v1';
 const COMPONENT_ORDER = Object.freeze([
   'face_detector',
   'person_detector',
@@ -147,7 +148,7 @@ function isUnsafeRelativePath(value) {
 function requireSafeRelativePath(value) {
   requireConcreteString(value);
   if (isUnsafeRelativePath(value)) throw invalid();
-  return value;
+  return value.replace(/\\/g, '/');
 }
 
 function isInsideOrSame(rootReal, targetReal) {
@@ -257,8 +258,9 @@ function canonicalizeModelLock(lock) {
     return found;
   });
 
+  if (lock.schema_version !== LOCK_SCHEMA) throw invalid();
   return {
-    schema_version: requireConcreteString(lock.schema_version),
+    schema_version: lock.schema_version,
     runtime: JSON.parse(stableJson(lock.runtime)),
     components,
   };

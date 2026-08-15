@@ -100,6 +100,16 @@ test('valid lock returns sorted canonical evidence without leaking cache root', 
   assert.equal(JSON.stringify(lock), before);
 });
 
+test('lock schema_version is fixed and fails closed when drifted', async (t) => {
+  const { cacheRoot, lock } = createValidLock(t);
+
+  await assertInvalid(validateModelLock({
+    cacheRoot,
+    sourcePolicy,
+    lock: { ...lock, schema_version: 'redraw-full-frame-model-lock-v2' },
+  }), cacheRoot);
+});
+
 test('canonical hash is stable across object key order and input component order', async (t) => {
   const { cacheRoot, lock } = createValidLock(t);
   const reordered = {
@@ -124,6 +134,39 @@ test('canonical hash is stable across object key order and input component order
 
   assert.equal(first.canonical_sha256, second.canonical_sha256);
   assert.equal(canonicalSha256(canonicalizeModelLock(lock)), canonicalSha256(canonicalizeModelLock(reordered)));
+});
+
+test('canonical paths normalize separators to forward slash', async (t) => {
+  const { cacheRoot, lock } = createValidLock(t);
+  const withForwardSlash = {
+    ...lock,
+    components: lock.components.map((component) => ({
+      ...component,
+      artifact_path: component.artifact_path.replace(/\\/g, '/'),
+      license_evidence_path: component.license_evidence_path.replace(/\\/g, '/'),
+    })),
+  };
+  const withBackslash = {
+    ...lock,
+    components: lock.components.map((component) => ({
+      ...component,
+      artifact_path: component.artifact_path.replace(/\//g, '\\'),
+      license_evidence_path: component.license_evidence_path.replace(/\//g, '\\'),
+    })),
+  };
+
+  const first = await validateModelLock({ cacheRoot, sourcePolicy, lock: withForwardSlash });
+  const second = await validateModelLock({ cacheRoot, sourcePolicy, lock: withBackslash });
+
+  assert.equal(first.canonical_sha256, second.canonical_sha256);
+  assert.deepEqual(
+    first.components.map((component) => [component.artifact_path, component.license_evidence_path]),
+    second.components.map((component) => [component.artifact_path, component.license_evidence_path]),
+  );
+  for (const component of second.components) {
+    assert.doesNotMatch(component.artifact_path, /\\/);
+    assert.doesNotMatch(component.license_evidence_path, /\\/);
+  }
 });
 
 test('tampered artifact bytes fail declared hash verification', async (t) => {
