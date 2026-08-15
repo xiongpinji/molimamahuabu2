@@ -66,8 +66,16 @@
         "docs/verification/platform-stability/foundation-verification.md",
         "docs/verification/platform-stability/image-legacy-failover-compatibility.md"
       ],
-      "fixCommit": "11b843cbc046ad32c32a557507819d01009e0bf9",
-      "unlock": null
+      "fixCommit": "7e43791b12cd608dd5af294ad081690fbc2c8af2",
+      "unlock": {
+        "reason": "线上付费实测发现视频产物下载连接中断被误判为失败退款，修复为结果未知并保留预扣",
+        "approvedBy": "product-owner 2026-08-16 paid-acceptance",
+        "impactTests": [
+          "backend-node/test/providerRouteVideoIntegration.test.js",
+          "backend-node/test/storyboardVideoGeneration.integration.test.js",
+          "backend-node/test/videoBilling.test.js"
+        ]
+      }
     },
     {
       "featureId": "stability.unknown-state-billing-reconciliation",
