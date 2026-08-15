@@ -58,7 +58,15 @@
         "docs/verification/platform-stability/foundation-verification.md"
       ],
       "fixCommit": "73186d44b427b8dac5083853f1ec10b1d7252905",
-      "unlock": null
+      "unlock": {
+        "reason": "生产候选与线上基线对比复现旧图片配置丢失同价已验证回退；仅恢复明确未受理时的兼容回退，未知结果仍禁止重提",
+        "approvedBy": "product-owner-2026-08-15",
+        "impactTests": [
+          "backend-node/test/providerErrorClassification.test.js",
+          "backend-node/test/providerRouteImageIntegration.test.js",
+          "backend-node/test/imageAssetModelFailover.test.js"
+        ]
+      }
     },
     {
       "featureId": "stability.unknown-state-billing-reconciliation",
