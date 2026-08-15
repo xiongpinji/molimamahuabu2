@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "release": "fixed-video-resolution-fallback",
+  "allowedPaths": [
+    "frontweb/src/views/FilmCreate.vue"
+  ]
+}
