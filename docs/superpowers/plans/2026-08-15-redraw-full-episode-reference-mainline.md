@@ -22,9 +22,11 @@
 - 修改：`backend-node/src/routes/redraw.js`、`backend-node/src/routes/index.js`——增加当前 owner 的逐镜参考包读写 API。
 - 修改：`backend-node/test/redrawRoutes.test.js`——验证输入白名单、跨 owner、CAS、响应脱敏和路由注册。
 - 修改：`frontweb/src/api/redraw.js`——增加参考包读写客户端。
+- 修改：`backend-node/src/routes/redraw.js`、`backend-node/test/redrawRoutes.test.js`——把当前版本的服务端 `reference_bundle_required` 只读投影给工作台，不提供客户端开关。
 - 创建：`frontweb/src/components/redraw/RedrawReferenceBundlePanel.vue`——显示逐镜人脸、文字、运动参考和对白门禁。
 - 修改：`frontweb/src/components/redraw/RedrawShotEditor.vue`、`frontweb/src/components/redraw/RedrawShotStep.vue`——在生成按钮之前保存和刷新参考包。
 - 修改：`frontweb/test/redrawShots.test.js`——验证工作台不得绕过参考包。
+- 修改：`frontweb/e2e/fixtures/redraw-latin-american-case.js`、`frontweb/test/redrawLatinAmericanCase.test.js`——当前真实源片案例显式启用参考包主线。
 - 创建：`backend-node/scripts/run-redraw-full-episode-reference-local.js`——读取真实源片，输出九镜本地准备清单和联系表，不调用供应商。
 - 创建：`backend-node/test/redrawFullEpisodeReferenceLocal.test.js`——验证真实源片合同、九镜连续性、阻塞原因和脱敏输出。
 - 创建：`docs/superpowers/reports/2026-08-15-redraw-full-episode-reference-local-evidence.md`——记录本地主线准备结果和未完成项。
@@ -145,15 +147,19 @@ git commit -m "feat(转绘): 接通逐镜参考包接口"
 ### 任务 3：把参考包门禁接入本地工作台
 
 **文件：**
+- 修改：`backend-node/src/routes/redraw.js`
+- 修改：`backend-node/test/redrawRoutes.test.js`
 - 修改：`frontweb/src/api/redraw.js`
 - 创建：`frontweb/src/components/redraw/RedrawReferenceBundlePanel.vue`
 - 修改：`frontweb/src/components/redraw/RedrawShotEditor.vue`
 - 修改：`frontweb/src/components/redraw/RedrawShotStep.vue`
 - 修改：`frontweb/test/redrawShots.test.js`
+- 修改：`frontweb/e2e/fixtures/redraw-latin-american-case.js`
+- 修改：`frontweb/test/redrawLatinAmericanCase.test.js`
 
-- [ ] **步骤 1：写前端红灯测试**
+- [ ] **步骤 1：写服务端状态投影和前端红灯测试**
 
-锁定：工作台显示 `人物轨迹 → 身份包 → 文字净景 → 无原音运动参考 → 英文对白` 五段状态；参考包未 ready 时生成按钮禁用；保存参考包使用 `expected_updated_at`；响应 409 后刷新当前 work，不自动重放 PUT；批量生成只包含 `reference_bundle_ready=true` 的镜头。
+锁定：`getWork` 只读返回当前版本的 `reference_bundle_required`，客户端不能修改该值；当前真实源片案例显式为 `true`。工作台显示 `人物轨迹 → 身份包 → 文字净景 → 无原音运动参考 → 英文对白` 五段状态；强制参考包的版本中，参考包未 ready 时生成按钮禁用；保存参考包使用 `expected_updated_at`；响应 409 后刷新当前 work，不自动重放 PUT；批量生成只包含经 GET 参考包复核成功的镜头。旧版本 `reference_bundle_required=0` 不增加新阻塞。
 
 - [ ] **步骤 2：运行红灯**
 
@@ -163,15 +169,18 @@ node --test frontweb/test/redrawShots.test.js
 
 - [ ] **步骤 3：实现最小面板与 API 接线**
 
-面板只编辑 asset/track/region 绑定，不允许输入 hash、path、URL、reviewer 或 ready。已有 `reference_bundle_required=0` 的旧项目保持旧路径；当前整集本地案例必须显式设置为 1。
+面板只编辑 asset/track/region 绑定，不允许输入 hash、path、URL、reviewer 或 ready。后端只读投影当前版本的 `reference_bundle_required`；前端不可切换。已有 `reference_bundle_required=0` 的旧项目保持旧路径；当前整集本地案例必须显式设置为 1。
 
 - [ ] **步骤 4：运行绿灯并提交**
 
 ```powershell
 node --test frontweb/test/redrawShots.test.js frontweb/test/redrawAssets.test.js frontweb/test/redrawFoundation.test.js
+Set-Location backend-node
+node --test --test-concurrency=1 test/redrawRoutes.test.js
+Set-Location ..
 npm --prefix frontweb run build
 git diff --check
-git add frontweb/src/api/redraw.js frontweb/src/components/redraw/RedrawReferenceBundlePanel.vue frontweb/src/components/redraw/RedrawShotEditor.vue frontweb/src/components/redraw/RedrawShotStep.vue frontweb/test/redrawShots.test.js
+git add backend-node/src/routes/redraw.js backend-node/test/redrawRoutes.test.js frontweb/src/api/redraw.js frontweb/src/components/redraw/RedrawReferenceBundlePanel.vue frontweb/src/components/redraw/RedrawShotEditor.vue frontweb/src/components/redraw/RedrawShotStep.vue frontweb/test/redrawShots.test.js frontweb/e2e/fixtures/redraw-latin-american-case.js frontweb/test/redrawLatinAmericanCase.test.js
 git commit -m "feat(转绘): 在工作台显示逐镜参考包门禁"
 ```
 
