@@ -25,6 +25,11 @@ function createApp() {
   const { resumeProcessingVideoGenerations } = require('./services/videoService');
   resumeProcessingVideoGenerations(db, log);
 
+  const providerReconciliation = require('./services/providerReconciliationService');
+  providerReconciliation.startProviderReconciliation(db, log, {
+    intervalMs: Number(process.env.PROVIDER_RECONCILIATION_INTERVAL_MS) || 60_000,
+  });
+
   const app = express();
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true }));
@@ -119,7 +124,12 @@ function createApp() {
     }
   });
 
-  return { app, config, db };
+  return {
+    app,
+    config,
+    db,
+    stopBackgroundServices: () => providerReconciliation.stopProviderReconciliation(),
+  };
 }
 
 module.exports = { createApp };

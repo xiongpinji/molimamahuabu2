@@ -116,10 +116,27 @@ function evidenceForReservation(db, reservationId) {
   const videos = db.prepare(`SELECT id, status, error_msg, provider_task_id, updated_at
     FROM video_generations
     WHERE credit_reservation_id = ? AND deleted_at IS NULL`).all(reservationId);
-  return { tasks, images, videos };
+  let providerRoutes = [];
+  try {
+    providerRoutes = db.prepare(`SELECT id, service_type, state, updated_at
+      FROM generation_route_requests WHERE credit_reservation_id = ?`).all(reservationId);
+  } catch (error) {
+    if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
+  }
+  return { tasks, images, videos, providerRoutes };
 }
 
 function classifyEvidence(evidence) {
+  if (evidence.providerRoutes?.some((row) => (
+    ['running', 'accepted', 'needs_attention'].includes(String(row.state || '').toLowerCase())
+  ))) {
+    return { refundable: false, safety_status: 'provider_route_needs_attention' };
+  }
+  if (evidence.providerRoutes?.some((row) => (
+    ['succeeded', 'completed'].includes(String(row.state || '').toLowerCase())
+  ))) {
+    return { refundable: false, safety_status: 'completed_requires_review' };
+  }
   const records = [
     ...evidence.tasks.map((row) => ({
       kind: 'async_task',
