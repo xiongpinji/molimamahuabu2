@@ -91,6 +91,93 @@ test('整集合同为每个源对白提供同时间窗的英文映射', () => {
   assert.equal(new Set(sourceTexts).size, sourceTexts.length, '源对白不得因切片边界重复生成')
 })
 
+test('整集合同分离校园三名男学生并保持源目标说话人一致', () => {
+  const shots = new Map(
+    redrawLatinAmericanCase.sourceFacts.shots.map((shot) => [shot.id, shot]),
+  )
+  const localized = new Map(
+    redrawLatinAmericanCase.localization.dialogue.map((row) => [row.shot_id, row]),
+  )
+  assert.deepEqual(shots.get('shot-1').dialogue.map((turn) => turn.speaker_id), [
+    'mateo', 'diego', 'lucas', 'lucas',
+  ])
+  assert.deepEqual(shots.get('shot-2').dialogue.map((turn) => turn.speaker_id), [
+    'lucas', 'lucas', 'mateo',
+  ])
+  assert.deepEqual(localized.get('shot-1').turns.map((turn) => turn.localized_text), [
+    'Who are you?',
+    'Mateo, you think acting crazy is funny?',
+    'Mateo, are you okay?',
+    "That's Diego.",
+  ])
+  assert.deepEqual(localized.get('shot-2').turns.map((turn) => turn.localized_text), [
+    'You just got rejected.',
+    'Try again next time.',
+    'A nice guy ranks below a simp.',
+  ])
+  const allLocalizedText = redrawLatinAmericanCase.localization.dialogue
+    .flatMap((row) => row.turns)
+    .map((turn) => turn.localized_text)
+    .join('\n')
+  assert.doesNotMatch(allLocalizedText, /\bLin\b|Lu Feiyu/i)
+})
+
+test('整集合同逐镜声明实际说话角色且按首次出现去重', () => {
+  for (const shot of redrawLatinAmericanCase.sourceFacts.shots) {
+    assert.deepEqual(
+      shot.speaking_character_ids,
+      [...new Set(shot.dialogue.map((turn) => turn.speaker_id))],
+      `${shot.id} 说话角色与对白不一致`,
+    )
+  }
+  const shots = redrawLatinAmericanCase.sourceFacts.shots
+  assert.deepEqual(shots.find((shot) => shot.id === 'shot-1').speaking_character_ids, [
+    'mateo', 'diego', 'lucas',
+  ])
+  assert.deepEqual(shots.find((shot) => shot.id === 'shot-2').speaking_character_ids, [
+    'lucas', 'mateo',
+  ])
+  assert.deepEqual(shots.find((shot) => shot.id === 'shot-3').speaking_character_ids, [])
+})
+
+test('整集合同逐条记录烧录中文字幕区域并保留第八镜屏幕文字区域', () => {
+  for (const shot of redrawLatinAmericanCase.sourceFacts.shots) {
+    const subtitleRegions = (shot.text_regions || [])
+      .filter((region) => region.kind === 'text_subtitle')
+    assert.equal(subtitleRegions.length, shot.dialogue.length, `${shot.id} 字幕区域数量不一致`)
+    assert.deepEqual(
+      subtitleRegions.flatMap((region) => region.time_ranges),
+      shot.dialogue.map(({ start_ms, end_ms }) => [start_ms, end_ms]),
+      `${shot.id} 字幕区域时间窗不一致`,
+    )
+    assert.equal(
+      new Set((shot.text_regions || []).map((region) => region.region_key)).size,
+      (shot.text_regions || []).length,
+      `${shot.id} 文字区域键不唯一`,
+    )
+  }
+  const shot8 = redrawLatinAmericanCase.sourceFacts.shots.find((shot) => shot.id === 'shot-8')
+  assert.deepEqual(shot8.text_regions, [{
+    region_key: 'shot-8-screen-1',
+    kind: 'text_screen',
+    time_ranges: [[56_000, 64_000]],
+  }])
+})
+
+test('整集九镜逐帧人脸轨迹与文字区域审核均保持待处理', () => {
+  assert.equal(redrawLatinAmericanCase.sourceFacts.shots.length, 9)
+  for (const shot of redrawLatinAmericanCase.sourceFacts.shots) {
+    for (const review of [shot.face_track_review, shot.text_region_review]) {
+      assert.equal(review?.status, 'pending', `${shot.id} 不得伪造审核通过`)
+      assert.equal(
+        typeof review?.unresolved_reason === 'string' && review.unresolved_reason.trim().length > 0,
+        true,
+        `${shot.id} 待审核原因不能为空`,
+      )
+    }
+  }
+})
+
 test('整集合同显式记录烧录文字的目标处理策略', () => {
   const shots = redrawLatinAmericanCase.sourceFacts.shots
   assert.equal(shots.every((shot) => (
@@ -124,11 +211,12 @@ test('整集对白时间来自烧录字幕逐帧人工复核', () => {
 })
 
 test('C 方案固定成年拉美演员并使用美式英语', () => {
-  assert.equal(redrawLatinAmericanCase.cast.length, 4)
+  assert.equal(redrawLatinAmericanCase.cast.length, 5)
   assert.equal(redrawLatinAmericanCase.cast.every((actor) => actor.age_min >= 18), true)
   assert.deepEqual(redrawLatinAmericanCase.cast.map((actor) => actor.id), [
     'mateo',
     'diego',
+    'lucas',
     'elena',
     'rafael',
   ])
@@ -141,6 +229,28 @@ test('C 方案固定成年拉美演员并使用美式英语', () => {
   for (const prompt of Object.values(redrawLatinAmericanCase.shotPrompts)) {
     assert.match(prompt, /fixed Latino actor/i)
   }
+})
+
+test('整集人物事实与本地化姓名映射包含独立朋友 Lucas', () => {
+  assert.deepEqual(redrawLatinAmericanCase.cast[2], {
+    id: 'lucas',
+    source_name: '男同学朋友',
+    target_name: 'Lucas',
+    role: 'friend',
+    age_min: 18,
+  })
+  const character = redrawLatinAmericanCase.sourceFacts.characters
+    .find((entry) => entry.id === 'lucas')
+  assert.deepEqual(character, {
+    id: 'lucas',
+    source_name: '男同学朋友',
+    relationships: [{ target_id: 'mateo', type: 'friend' }],
+  })
+  assert.equal(redrawLatinAmericanCase.localization.name_map.男同学朋友, 'Lucas')
+  assert.deepEqual(
+    redrawLatinAmericanCase.sourceFacts.characters.map((entry) => entry.id),
+    redrawLatinAmericanCase.cast.map((actor) => actor.id),
+  )
 })
 
 test('C 方案为每个目标演员提供完整身份包输入', () => {

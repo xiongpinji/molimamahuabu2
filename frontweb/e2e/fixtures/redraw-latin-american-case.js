@@ -23,14 +23,14 @@ const shots = [
       emotion: 'mocking',
       overlap_group: null,
     }, {
-      speaker_id: 'diego',
+      speaker_id: 'lucas',
       text: '林哥你没事吧',
       start_ms: 5_500,
       end_ms: 6_750,
       emotion: 'concerned',
       overlap_group: null,
     }, {
-      speaker_id: 'diego',
+      speaker_id: 'lucas',
       text: '这是陆飞宇啊',
       start_ms: 6_750,
       end_ms: 8_000,
@@ -49,14 +49,14 @@ const shots = [
     start_ms: 8_000,
     end_ms: 16_000,
     dialogue: [{
-      speaker_id: 'diego',
+      speaker_id: 'lucas',
       text: '而且不就是表白失败吗',
       start_ms: 8_000,
       end_ms: 9_500,
       emotion: 'teasing',
       overlap_group: null,
     }, {
-      speaker_id: 'diego',
+      speaker_id: 'lucas',
       text: '下次再接再厉',
       start_ms: 9_500,
       end_ms: 10_750,
@@ -225,6 +225,30 @@ const shots = [
   },
 ]
 
+for (const shot of shots) {
+  shot.speaking_character_ids = [...new Set(shot.dialogue.map((turn) => turn.speaker_id))]
+  shot.text_regions = shot.dialogue.map(({ start_ms, end_ms }, index) => ({
+    region_key: `${shot.id}-subtitle-${index + 1}`,
+    kind: 'text_subtitle',
+    time_ranges: [[start_ms, end_ms]],
+  }))
+  if (shot.id === 'shot-8') {
+    shot.text_regions.push({
+      region_key: 'shot-8-screen-1',
+      kind: 'text_screen',
+      time_ranges: [[56_000, 64_000]],
+    })
+  }
+  shot.face_track_review = {
+    status: 'pending',
+    unresolved_reason: '当前仅完成抽帧盘点，尚未完成该镜全片逐帧人脸轨迹审核',
+  }
+  shot.text_region_review = {
+    status: 'pending',
+    unresolved_reason: '当前仅完成抽帧盘点，尚未完成该镜全片逐帧文字区域审核',
+  }
+}
+
 export const redrawLatinAmericanCase = Object.freeze({
   id: 'ac087bcd-latam-en-us',
   title: '拉美演员美式英语真实源片本地案例',
@@ -252,6 +276,7 @@ export const redrawLatinAmericanCase = Object.freeze({
   cast: [
     { id: 'mateo', source_name: '男主', target_name: 'Mateo', role: 'protagonist', age_min: 18 },
     { id: 'diego', source_name: '男同学', target_name: 'Diego', role: 'classmate', age_min: 18 },
+    { id: 'lucas', source_name: '男同学朋友', target_name: 'Lucas', role: 'friend', age_min: 18 },
     { id: 'elena', source_name: '母亲', target_name: 'Elena', role: 'mother', age_min: 35 },
     { id: 'rafael', source_name: '父亲', target_name: 'Rafael', role: 'father', age_min: 35 },
   ],
@@ -265,6 +290,7 @@ export const redrawLatinAmericanCase = Object.freeze({
     characters: [
       { id: 'mateo', source_name: '男主', relationships: [{ target_id: 'elena', type: 'son' }, { target_id: 'rafael', type: 'son' }] },
       { id: 'diego', source_name: '男同学', relationships: [{ target_id: 'mateo', type: 'classmate' }] },
+      { id: 'lucas', source_name: '男同学朋友', relationships: [{ target_id: 'mateo', type: 'friend' }] },
       { id: 'elena', source_name: '母亲', relationships: [{ target_id: 'mateo', type: 'mother' }] },
       { id: 'rafael', source_name: '父亲', relationships: [{ target_id: 'mateo', type: 'father' }] },
     ],
@@ -297,7 +323,13 @@ export const redrawLatinAmericanCase = Object.freeze({
     episode_hook: '男主写下利用新信息赚取第一桶金的计划',
   },
   localization: {
-    name_map: { 男主: 'Mateo', 男同学: 'Diego', 母亲: 'Elena', 父亲: 'Rafael' },
+    name_map: {
+      男主: 'Mateo',
+      男同学: 'Diego',
+      男同学朋友: 'Lucas',
+      母亲: 'Elena',
+      父亲: 'Rafael',
+    },
     culture_map: {
       校园门口: 'school entrance',
       校园周边道路: 'neighborhood street',
@@ -313,15 +345,15 @@ export const redrawLatinAmericanCase = Object.freeze({
       shot_id: 'shot-1',
       turns: [
         { speaker_id: 'mateo', localized_text: 'Who are you?', start_ms: 250, end_ms: 1_250 },
-        { speaker_id: 'diego', localized_text: 'Lin, is pretending to be crazy funny?', start_ms: 1_250, end_ms: 3_500 },
-        { speaker_id: 'diego', localized_text: 'Lin, you okay?', start_ms: 5_500, end_ms: 6_750 },
-        { speaker_id: 'diego', localized_text: "That's Lu Feiyu.", start_ms: 6_750, end_ms: 8_000 },
+        { speaker_id: 'diego', localized_text: 'Mateo, you think acting crazy is funny?', start_ms: 1_250, end_ms: 3_500 },
+        { speaker_id: 'lucas', localized_text: 'Mateo, are you okay?', start_ms: 5_500, end_ms: 6_750 },
+        { speaker_id: 'lucas', localized_text: "That's Diego.", start_ms: 6_750, end_ms: 8_000 },
       ],
     }, {
       shot_id: 'shot-2',
       turns: [
-        { speaker_id: 'diego', localized_text: 'You just got rejected.', start_ms: 8_000, end_ms: 9_500 },
-        { speaker_id: 'diego', localized_text: 'Try again next time.', start_ms: 9_500, end_ms: 10_750 },
+        { speaker_id: 'lucas', localized_text: 'You just got rejected.', start_ms: 8_000, end_ms: 9_500 },
+        { speaker_id: 'lucas', localized_text: 'Try again next time.', start_ms: 9_500, end_ms: 10_750 },
         { speaker_id: 'mateo', localized_text: 'A nice guy ranks below a simp.', start_ms: 13_750, end_ms: 16_000 },
       ],
     }, {
@@ -361,8 +393,8 @@ export const redrawLatinAmericanCase = Object.freeze({
     }],
   },
   shotPrompts: {
-    'shot-1': 'Same fixed Latino actors Mateo and Diego at the school entrance; replace all spoken lines with the supplied natural American English dialogue, preserve each speaker turn, close framing, and confused reaction.',
-    'shot-2': 'Same fixed Latino actors Mateo and Diego as Diego teases Mateo and Mateo leaves by bicycle; use the supplied American English lines in the same order, preserve the original blocking and camera direction.',
+    'shot-1': 'Same fixed Latino actors Mateo, Diego, and Lucas at the school entrance; Diego confronts Mateo before Lucas arrives, use the supplied natural American English dialogue, preserve each speaker turn, close framing, and confused reaction.',
+    'shot-2': 'Same fixed Latino actors Mateo and Lucas as Lucas comments on the rejection and Mateo leaves by bicycle; use the supplied American English lines in the same order, preserve the original blocking and camera direction.',
     'shot-3': 'Same fixed Latino actor Mateo rides away from school on the same bicycle; preserve the rear tracking composition and travel direction, and do not invent dialogue.',
     'shot-4': 'Same fixed Latino actor Mateo sees the future demolition and worries that he has no capital; use the two supplied English inner-monologue lines, preserve the thoughtful close-ups and action timing.',
     'shot-5': 'Same fixed Latino actor Mateo sees sports news and realizes he has found his first seed money; use the supplied English inner-monologue line, preserve the bicycle movement, screen inserts, and transition home.',
