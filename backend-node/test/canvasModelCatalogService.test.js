@@ -202,18 +202,18 @@ test('canvas model catalog applies per-model capabilities without exposing 1080p
 
 test('USMercari 三模型目录声明真实参考图、参考视频和参考音频能力', () => {
   assert.deepEqual(providerCapabilities('usmercari', 'MiniMax H3'), {
-    durations: [5],
+    durations: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
     aspectRatios: ['16:9'],
-    maxReferences: 4,
-    maxVideoReferences: 1,
-    maxAudioReferences: 1,
+    maxReferences: 5,
+    maxVideoReferences: 0,
+    maxAudioReferences: 3,
     supportsFirstFrame: true,
     supportsLastFrame: true,
     supportsImageReference: true,
-    supportsVideoReference: true,
+    supportsVideoReference: false,
     supportsAudioReference: true,
     supportsAudio: true,
-    resolutions: ['480p'],
+    resolutions: ['1440p'],
   });
   assert.deepEqual(providerCapabilities('usmercari', 'seedance-2.0-fast').resolutions, ['480p', '720p']);
   assert.deepEqual(providerCapabilities('usmercari', 'seedance-2.0-mini').resolutions, ['480p', '720p']);

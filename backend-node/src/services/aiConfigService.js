@@ -4,7 +4,10 @@ const path = require('path');
 const { normalizeMaterialHubToken } = require('./jimengMaterialHubService');
 const { resolveKlingBearerToken } = require('./klingJwt');
 const { buildFeituoStatusUrl } = require('./feituoVideoClient');
+const token6688Client = require('./token6688Client');
 const usmercariVideoClient = require('./usmercariVideoClient');
+const toapisVideoClient = require('./toapisVideoClient');
+const lingjingVideoClient = require('./lingjingVideoClient');
 const fuminVideoClient = require('./fuminVideoClient');
 const fuminImageClient = require('./fuminImageClient');
 
@@ -17,8 +20,13 @@ function normalizeApiKeyForService(serviceType, apiKey) {
 
 function hasConnectionCredential(opts = {}) {
   if (String(opts.api_key || '').trim()) return true;
-  if (String(opts.provider || '').toLowerCase() === 'usmercari') {
+  if (['usmercari', 'usmercari_image'].includes(String(opts.provider || '').toLowerCase())
+      || String(opts.api_protocol || '').toLowerCase() === 'usmercari_image') {
     return !!usmercariVideoClient.resolveUsmercariApiKey(opts);
+  }
+  if (['toapis', 'toapis_video'].includes(String(opts.provider || '').toLowerCase())
+      || String(opts.api_protocol || '').toLowerCase() === 'toapis_video') {
+    return !!toapisVideoClient.resolveToapisApiKey(opts);
   }
   if (String(opts.provider || '').toLowerCase() !== 'kling') return false;
   try {
@@ -87,7 +95,40 @@ function getConfig(db, id) {
   return row ? rowToConfig(row) : null;
 }
 
-function parseVideoSettings(settings) {
+const USMERCARI_VIDEO_MODELS = new Set(['MiniMax H3', 'seedance-2.0-fast', 'seedance-2.0-mini']);
+
+function allowsUsmercariFourSecondDuration(context = {}) {
+  const provider = String(context.provider || '').trim().toLowerCase();
+  if (!['usmercari', 'usmercari_media'].includes(provider)) return false;
+  const models = [
+    ...(Array.isArray(context.model) ? context.model : [context.model]),
+    context.default_model,
+  ].map((model) => String(model || '').trim());
+  return models.some((model) => USMERCARI_VIDEO_MODELS.has(model));
+}
+
+function resolveVideoSettingsDurations(context = {}) {
+  if (Array.isArray(context.allowedDurations) && context.allowedDurations.length) {
+    return [...new Set(context.allowedDurations.map(Number).filter(Number.isSafeInteger))];
+  }
+  const protocols = [context.api_protocol, context.protocol, context.provider]
+    .map((value) => String(value || '').trim().toLowerCase());
+  const configuredModel = context.default_model
+    || (Array.isArray(context.model) ? context.model[0] : context.model);
+  if (protocols.some((protocol) => ['toapis', 'toapis_video'].includes(protocol))) {
+    return toapisVideoClient.TOAPIS_VIDEO_MODELS[String(configuredModel || '').trim().toLowerCase()]?.durations || null;
+  }
+  if (protocols.some((value) => ['lingjing', 'lingjing_open'].includes(value))
+      && String(configuredModel || '').trim().toLowerCase() === lingjingVideoClient.PUBLIC_MODEL) {
+    return lingjingVideoClient.DURATIONS;
+  }
+  if (allowsUsmercariFourSecondDuration(context)) {
+    return Array.from({ length: 12 }, (_, index) => index + 4);
+  }
+  return null;
+}
+
+function parseVideoSettings(settings, context = {}) {
   let parsed;
   try {
     parsed = typeof settings === 'string' ? JSON.parse(settings) : settings;
@@ -103,8 +144,14 @@ function parseVideoSettings(settings) {
   }
   if (Object.prototype.hasOwnProperty.call(parsed, 'video_duration')) {
     const duration = Number(parsed.video_duration);
-    if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) {
-      const error = new Error('视频默认时长必须是 5 到 15 秒之间的整数');
+    const allowedDurations = resolveVideoSettingsDurations(context);
+    const minimum = allowsUsmercariFourSecondDuration(context) ? 4 : 5;
+    const invalidDuration = !Number.isSafeInteger(duration)
+      || (allowedDurations ? !allowedDurations.includes(duration) : duration < minimum || duration > 15);
+    if (invalidDuration) {
+      const error = new Error(allowedDurations
+        ? `视频默认时长必须是 ${allowedDurations.join('、')} 秒之一`
+        : `视频默认时长必须是 ${minimum} 到 15 秒之间的整数`);
       error.code = 'INVALID_VIDEO_DURATION';
       throw error;
     }
@@ -113,9 +160,9 @@ function parseVideoSettings(settings) {
   return parsed;
 }
 
-function normalizeCreateSettings(serviceType, settings) {
+function normalizeCreateSettings(serviceType, settings, context = {}) {
   if (serviceType !== 'video' || settings == null) return settings || null;
-  return JSON.stringify(parseVideoSettings(settings));
+  return JSON.stringify(parseVideoSettings(settings, context));
 }
 
 function validateFuminModelKeyIsolation({ provider, serviceType, model }) {
@@ -139,18 +186,33 @@ function validateFuminModelKeyIsolation({ provider, serviceType, model }) {
   }
 }
 
-function mergeVideoSettings(existingSettings, incomingSettings) {
+function mergeVideoSettings(existingSettings, incomingSettings, context = {}) {
   let existing = {};
   try {
     const parsed = typeof existingSettings === 'string' ? JSON.parse(existingSettings) : existingSettings;
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) existing = parsed;
   } catch (_) {}
-  const incoming = parseVideoSettings(incomingSettings);
+  const incoming = parseVideoSettings(incomingSettings, context);
   for (const [key, value] of Object.entries(incoming)) {
     if (SENSITIVE_SETTING_KEYS.has(key.toLowerCase()) && (value == null || value === '')) continue;
     existing[key] = value;
   }
-  return JSON.stringify(parseVideoSettings(existing));
+  return JSON.stringify(parseVideoSettings(existing, context));
+}
+
+function verificationSettingsFingerprint(settings) {
+  try {
+    if (settings == null || settings === '') return '{}';
+    const parsed = typeof settings === 'string' ? JSON.parse(settings) : settings;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return String(settings || '');
+    const connectionSettings = {};
+    for (const key of Object.keys(parsed).sort()) {
+      if (CONNECTION_SETTING_KEYS.has(key.toLowerCase())) connectionSettings[key] = parsed[key];
+    }
+    return JSON.stringify(connectionSettings);
+  } catch (_) {
+    return String(settings || '');
+  }
 }
 
 function createConfig(db, log, req) {
@@ -159,7 +221,7 @@ function createConfig(db, log, req) {
   const serviceType = req.service_type || 'text';
   validateFuminModelKeyIsolation({ provider: req.provider, serviceType, model: req.model });
   fuminImageClient.validateFuminImageModels({ provider: req.provider, serviceType, model: req.model });
-  const settings = normalizeCreateSettings(serviceType, req.settings);
+  const settings = normalizeCreateSettings(serviceType, req.settings, req);
   let endpoint = req.endpoint || '';
   let queryEndpoint = req.query_endpoint || '';
   if (!endpoint && req.provider) {
@@ -220,6 +282,24 @@ function createConfig(db, log, req) {
         endpoint = '/cpa-file/submit/video';
         queryEndpoint = '/cpa-file/fetch';
       }
+    } else if (p === 'token6688' || p === 'tokengo') {
+      if (st === 'image' || st === 'storyboard_image') endpoint = '/v1/images/generations';
+      else if (st === 'video') {
+        endpoint = '/v1/videos/generations';
+        queryEndpoint = '/v1/tasks/{taskId}';
+      }
+    } else if (p === 'djpsd_openapi' || req.api_protocol === 'djpsd_openapi' || req.api_protocol === 'djpsd_media') {
+      if (st === 'image' || st === 'storyboard_image' || st === 'video') {
+        endpoint = '/v1/media/generate';
+        queryEndpoint = '/v1/media/status?task_id={taskId}';
+      }
+    } else if (p === 'toapis' || p === 'toapis_video') {
+      if (st === 'video') {
+        endpoint = '/v1/videos/generations';
+        queryEndpoint = '/v1/videos/generations/{taskId}';
+      }
+    } else if (p === 'usmercari_image') {
+      if (st === 'image' || st === 'storyboard_image') endpoint = '/v1/images/generations';
     } else if (p === 'fumin' || p === 'fumin_video') {
       if (st === 'video') {
         endpoint = '/api/v3/contents/generations/tasks';
@@ -271,8 +351,22 @@ function updateConfig(db, log, id, req) {
     serviceType: req.service_type != null ? req.service_type : existing.service_type,
     model: req.model !== undefined ? req.model : existing.model,
   });
+  const videoContextChanged = req.provider != null
+    || req.api_protocol != null
+    || req.model != null
+    || req.default_model !== undefined;
+  if (existing.service_type === 'video' && req.settings == null
+      && existing.settings != null && videoContextChanged) {
+    parseVideoSettings(existing.settings, {
+      provider: req.provider ?? existing.provider,
+      api_protocol: req.api_protocol ?? existing.api_protocol,
+      model: req.model ?? existing.model,
+      default_model: req.default_model !== undefined ? req.default_model : existing.default_model,
+    });
+  }
   const updates = [];
   const params = [];
+  let connectivityChanged = false;
   if (req.name != null) {
     updates.push('name = ?');
     params.push(req.name);
@@ -280,27 +374,36 @@ function updateConfig(db, log, id, req) {
   if (req.provider != null) {
     updates.push('provider = ?');
     params.push(req.provider);
+    connectivityChanged ||= String(req.provider) !== String(existing.provider || '');
   }
   if (req.api_protocol != null) {
     updates.push('api_protocol = ?');
     params.push(req.api_protocol);
+    connectivityChanged ||= String(req.api_protocol) !== String(existing.api_protocol || '');
   }
   if (req.base_url != null) {
     updates.push('base_url = ?');
     params.push(req.base_url);
+    connectivityChanged ||= String(req.base_url) !== String(existing.base_url || '');
   }
   if (req.api_key != null) {
     updates.push('api_key = ?');
     const st = req.service_type != null ? req.service_type : existing.service_type;
-    params.push(normalizeApiKeyForService(st, req.api_key));
+    const nextApiKey = normalizeApiKeyForService(st, req.api_key);
+    params.push(nextApiKey);
+    connectivityChanged ||= String(nextApiKey || '') !== String(existing.api_key || '');
   }
   if (req.model != null) {
     updates.push('model = ?');
-    params.push(modelToDb(req.model));
+    const nextModel = modelToDb(req.model);
+    params.push(nextModel);
+    connectivityChanged ||= nextModel !== modelToDb(existing.model);
   }
   if (req.default_model !== undefined) {
     updates.push('default_model = ?');
-    params.push(req.default_model != null ? String(req.default_model).trim() || null : null);
+    const nextDefaultModel = req.default_model != null ? String(req.default_model).trim() || null : null;
+    params.push(nextDefaultModel);
+    connectivityChanged ||= nextDefaultModel !== existing.default_model;
   }
   if (req.priority != null) {
     updates.push('priority = ?');
@@ -308,17 +411,29 @@ function updateConfig(db, log, id, req) {
   }
   if (req.endpoint !== undefined) {
     updates.push('endpoint = ?');
-    params.push(req.endpoint || '');
+    const nextEndpoint = req.endpoint || '';
+    params.push(nextEndpoint);
+    connectivityChanged ||= String(nextEndpoint) !== String(existing.endpoint || '');
   }
   if (req.query_endpoint !== undefined) {
     updates.push('query_endpoint = ?');
-    params.push(req.query_endpoint || '');
+    const nextQueryEndpoint = req.query_endpoint || '';
+    params.push(nextQueryEndpoint);
+    connectivityChanged ||= String(nextQueryEndpoint) !== String(existing.query_endpoint || '');
   }
   if (req.settings != null) {
     updates.push('settings = ?');
-    params.push(existing.service_type === 'video'
-      ? mergeVideoSettings(existing.settings, req.settings)
-      : req.settings);
+    const nextSettings = existing.service_type === 'video'
+      ? mergeVideoSettings(existing.settings, req.settings, {
+        provider: req.provider ?? existing.provider,
+        api_protocol: req.api_protocol ?? existing.api_protocol,
+        model: req.model ?? existing.model,
+        default_model: req.default_model !== undefined ? req.default_model : existing.default_model,
+      })
+      : req.settings;
+    params.push(nextSettings);
+    connectivityChanged ||= verificationSettingsFingerprint(nextSettings)
+      !== verificationSettingsFingerprint(existing.settings);
   }
   if (typeof req.is_default === 'boolean') {
     updates.push('is_default = ?');
@@ -336,6 +451,12 @@ function updateConfig(db, log, id, req) {
     updates.push('failover_enabled = ?');
     params.push(req.failover_enabled ? 1 : 0);
   }
+  if (connectivityChanged) {
+    updates.push("verification_status = 'unverified'");
+    updates.push('verification_checked_at = NULL');
+    updates.push('verified_at = NULL');
+    updates.push('verification_error = NULL');
+  }
   if (updates.length === 0) return existing;
   params.push(new Date().toISOString(), id);
   db.prepare('UPDATE ai_service_configs SET ' + updates.join(', ') + ', updated_at = ? WHERE id = ?').run(...params);
@@ -350,6 +471,44 @@ function deleteConfig(db, log, id) {
   if (result.changes === 0) return false;
   log.info('AI config deleted', { config_id: id });
   return true;
+}
+
+const VERIFICATION_STATUSES = new Set(['pending', 'verified', 'failed']);
+
+function redactRealVerificationError(error) {
+  return String(error || '')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+    .replace(/(api[-_ ]?key|token)\s*[:=]\s*[A-Za-z0-9._~+/=-]+/gi, '$1=[REDACTED]')
+    .slice(0, 800);
+}
+
+function recordVerification(db, configId, result = {}) {
+  const id = Number(configId);
+  const existing = getConfig(db, id);
+  if (!existing) throw new Error('配置不存在');
+  const status = String(result.status || '').trim().toLowerCase();
+  if (!VERIFICATION_STATUSES.has(status)) {
+    throw new Error('验证状态必须是 pending、verified 或 failed');
+  }
+  const capabilities = result.capabilities && typeof result.capabilities === 'object' && !Array.isArray(result.capabilities)
+    ? result.capabilities
+    : {};
+  const now = new Date().toISOString();
+  const verifiedAt = status === 'verified'
+    ? String(result.verifiedAt || now)
+    : null;
+  const error = status === 'failed'
+    ? redactRealVerificationError(result.error || '真实生成验证失败')
+    : null;
+  db.prepare(`UPDATE ai_service_configs
+      SET verification_status = ?,
+          verified_capabilities = ?,
+          verified_at = ?,
+          verification_error = ?,
+          updated_at = ?
+      WHERE id = ? AND deleted_at IS NULL`)
+    .run(status, JSON.stringify(capabilities), verifiedAt, error, now, id);
+  return getConfig(db, id);
 }
 
 function rowToConfig(r) {
@@ -370,8 +529,11 @@ function rowToConfig(r) {
     is_active: r.is_active == null ? true : !!r.is_active,
     logical_model_id: r.logical_model_id ? String(r.logical_model_id).trim() : null,
     failover_enabled: !!r.failover_enabled,
-    verification_status: r.verification_status || null,
+    verification_status: String(r.verification_status || 'pending'),
+    verification_checked_at: r.verification_checked_at || null,
+    verified_capabilities: parseObject(r.verified_capabilities),
     verified_at: r.verified_at || null,
+    verification_error: r.verification_error || null,
     verification_evidence: r.verification_evidence || null,
     settings: r.settings,
     created_at: r.created_at,
@@ -388,9 +550,25 @@ function rowToConfig(r) {
   return cfg;
 }
 
+function parseObject(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(value || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
 const SENSITIVE_SETTING_KEYS = new Set([
   'api_key', 'token', 'access_token', 'refresh_token', 'session_token',
-  'kling_access_key', 'kling_secret_key', 'access_key_id', 'secret_access_key',
+  'kling_access_key', 'kling_secret_key', 'access_key', 'secret_key',
+  'access_key_id', 'secret_access_key',
+]);
+
+const CONNECTION_SETTING_KEYS = new Set([
+  ...SENSITIVE_SETTING_KEYS,
+  'kling_secret_key_base64', 'icreat_group',
 ]);
 
 function redactSettings(settings) {
@@ -413,11 +591,46 @@ function toPublicConfig(config) {
   const { api_key, ...safe } = config;
   return {
     ...safe,
-    has_api_key: !!String(api_key || '').trim()
-      || (String(config.provider || '').toLowerCase() === 'usmercari'
-        && !!usmercariVideoClient.resolveUsmercariApiKey(config)),
+    has_api_key: hasConnectionCredential(config),
     settings: redactSettings(config.settings),
   };
+}
+
+function isVerifiedConfig(config) {
+  return String(config?.verification_status || '').toLowerCase() === 'verified';
+}
+
+function redactVerificationError(config, error) {
+  let message = String(error?.message || error || '未知错误').replace(/\s+/g, ' ').trim();
+  const secrets = [config?.api_key];
+  try {
+    const settings = typeof config?.settings === 'string' ? JSON.parse(config.settings) : config?.settings;
+    if (settings && typeof settings === 'object' && !Array.isArray(settings)) {
+      for (const [key, value] of Object.entries(settings)) {
+        if (SENSITIVE_SETTING_KEYS.has(key.toLowerCase())) secrets.push(value);
+      }
+    }
+  } catch (_) {}
+  for (const secret of secrets) {
+    const value = String(secret || '').trim();
+    if (value.length < 4) continue;
+    message = message.split(value).join('[REDACTED]');
+    message = message.split(encodeURIComponent(value)).join('[REDACTED]');
+  }
+  return message.slice(0, 500);
+}
+
+function setVerificationResult(db, id, status, error) {
+  if (!['verified', 'failed'].includes(status)) throw new Error('无效的连接验证状态');
+  const checkedAt = new Date().toISOString();
+  const verificationError = status === 'failed'
+    ? redactVerificationError(getConfig(db, id), error)
+    : null;
+  const result = db.prepare(`UPDATE ai_service_configs SET
+      verification_status = ?, verification_checked_at = ?, verified_at = ?, verification_error = ?
+    WHERE id = ? AND deleted_at IS NULL`)
+    .run(status, checkedAt, status === 'verified' ? checkedAt : null, verificationError, id);
+  return result.changes ? getConfig(db, id) : null;
 }
 
 /**
@@ -432,12 +645,15 @@ async function testConnection(opts) {
   const model = models[0] || '';
   if (!model && (opts.provider === 'gemini' || opts.provider === 'google')) throw new Error('model 必填');
   const provider = (opts.provider || 'openai').toLowerCase();
+  const protocol = String(opts.api_protocol || '').toLowerCase();
   const serviceType = (opts.service_type || '').toLowerCase();
   let endpoint = opts.endpoint || '';
 
-  if (provider === 'aihubcc' || provider === 'aihubcc_image' || provider === 'aihubcc_video') {
+  let isAihubccHost = false;
+  try { isAihubccHost = new URL(base).hostname.toLowerCase() === 'aihubcc.cc'; } catch (_) {}
+  if (provider === 'aihubcc' || provider === 'aihubcc_image' || provider === 'aihubcc_video' || isAihubccHost) {
     if (!opts.api_key) throw new Error('api_key 必填');
-    const queryPath = String(opts.query_endpoint || '/videos/{taskId}')
+    const queryPath = String('/videos/{taskId}')
       .replace(/\{taskId\}|\{task_id\}|\{id\}/gi, 'codex-connectivity-check');
     const url = base + (queryPath.startsWith('/') ? queryPath : '/' + queryPath);
     const res = await fetch(url, {
@@ -474,6 +690,32 @@ async function testConnection(opts) {
     return;
   }
 
+  if ((provider === 'token6688' || provider === 'tokengo' || protocol === 'token6688')
+      && (serviceType === 'image' || serviceType === 'storyboard_image' || serviceType === 'video')) {
+    if (!opts.api_key) throw new Error('api_key 必填');
+    const url = `${token6688Client.normalizeBaseUrl(base)}/v1/models`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${opts.api_key || ''}` },
+    });
+    const raw = await res.text();
+    let data = {};
+    try { data = raw ? JSON.parse(raw) : {}; } catch (_) {}
+    if (res.status === 401 || res.status === 403) throw new Error(`Token6688 API Key 无效 (${res.status})`);
+    if (!res.ok) throw new Error(`Token6688 连接失败 (${res.status})`);
+    const available = new Set((Array.isArray(data?.data) ? data.data : [])
+      .map((item) => String(item?.id || item?.name || '').trim())
+      .filter(Boolean));
+    const requested = models
+      .map((item) => token6688Client.normalizeImageModel(item))
+      .map((item) => String(item || '').trim())
+      .map((item) => item.startsWith('seedance-2-0-special-') ? 'seedance-2-0-special' : item)
+      .filter(Boolean);
+    const missing = requested.filter((item) => !available.has(item));
+    if (missing.length) throw new Error(`Token6688 未找到已配置模型: ${missing.join(', ')}`);
+    return;
+  }
+
   // USMercari 连接测试只读取模型目录，禁止创建会扣费的视频任务。
   if ((provider === 'usmercari' || provider === 'usmercari_media') && serviceType === 'video') {
     const apiKey = usmercariVideoClient.resolveUsmercariApiKey(opts);
@@ -494,6 +736,74 @@ async function testConnection(opts) {
       .map((item) => String(item || '').trim()).filter(Boolean);
     const missing = requested.filter((item) => !available.has(item));
     if (missing.length) throw new Error(`USMercari 模型目录缺少: ${missing.join(', ')}`);
+    return;
+  }
+
+  // USMercari 图片连接测试只读取模型目录。真实验证状态只能由实生成证据写入，
+  // 不能由这个不会产生结果文件的探针升级。
+  if ((provider === 'usmercari_image' || protocol === 'usmercari_image')
+      && (serviceType === 'image' || serviceType === 'storyboard_image')) {
+    const apiKey = usmercariVideoClient.resolveUsmercariApiKey(opts);
+    if (!apiKey) throw new Error('api_key 必填');
+    const url = `${usmercariVideoClient.normalizeUsmercariBaseUrl(base)}/v1/models`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    const raw = await res.text();
+    let data = null;
+    try { data = raw ? JSON.parse(raw) : null; } catch (_) {}
+    if (res.status === 401 || res.status === 403) throw new Error(`USMercari API Key 无效 (${res.status})`);
+    if (!res.ok) throw new Error(`USMercari 连接失败 (${res.status})`);
+    const available = new Set((Array.isArray(data?.data) ? data.data : [])
+      .map((item) => String(item?.id || item?.name || '').trim()).filter(Boolean));
+    const missing = models.map((item) => String(item || '').trim()).filter(Boolean)
+      .filter((item) => !available.has(item));
+    if (missing.length) throw new Error(`USMercari 模型目录缺少: ${missing.join(', ')}`);
+    return;
+  }
+
+  // ToAPIs 连接测试只读取官方模型目录，禁止提交可能计费的视频生成请求。
+  if ((provider === 'toapis' || provider === 'toapis_video' || protocol === 'toapis_video')
+      && serviceType === 'video') {
+    const apiKey = toapisVideoClient.resolveToapisApiKey(opts);
+    if (!apiKey) throw new Error('api_key 必填');
+    const url = `${toapisVideoClient.normalizeToapisBaseUrl(base)}/v1/models?type=video`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    const raw = await res.text();
+    let data = null;
+    try { data = raw ? JSON.parse(raw) : null; } catch (_) {}
+    if (res.status === 401 || res.status === 403) throw new Error(`ToAPIs API Key 无效 (${res.status})`);
+    if (!res.ok) throw new Error(`ToAPIs 连接失败 (${res.status})`);
+    const available = new Set((Array.isArray(data?.data) ? data.data : [])
+      .map((item) => String(item?.id || item?.name || '').trim()).filter(Boolean));
+    const requested = (models.length ? models : Object.keys(toapisVideoClient.TOAPIS_VIDEO_MODELS))
+      .map((item) => String(item || '').trim()).filter(Boolean);
+    const missing = requested.filter((item) => !available.has(item));
+    if (missing.length) throw new Error(`ToAPIs 模型目录缺少: ${missing.join(', ')}`);
+    return;
+  }
+
+  // 灵境连接测试只读取模型目录，禁止创建付费任务；真实验证状态由成片证据单独写入。
+  if ((provider === 'lingjing' || protocol === 'lingjing_open') && serviceType === 'video') {
+    if (!opts.api_key) throw new Error('api_key 必填');
+    const res = await fetch(lingjingVideoClient.buildLingjingModelsUrl(base), {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${opts.api_key}` },
+    });
+    const raw = await res.text();
+    let data = null;
+    try { data = raw ? JSON.parse(raw) : null; } catch (_) {}
+    if (res.status === 401 || res.status === 403) throw new Error(`灵境 API Key 无效 (${res.status})`);
+    if (!res.ok) throw new Error(`灵境连接失败 (${res.status})`);
+    const available = new Set((Array.isArray(data?.models) ? data.models : Array.isArray(data?.data) ? data.data : [])
+      .map((item) => String(item?.model_key || item?.id || item?.name || item || '').trim()).filter(Boolean));
+    if (available.size && !available.has(lingjingVideoClient.UPSTREAM_MODEL)) {
+      throw new Error(`灵境模型目录缺少上游模型: ${lingjingVideoClient.UPSTREAM_MODEL}`);
+    }
     return;
   }
 
@@ -529,6 +839,19 @@ async function testConnection(opts) {
   }
 
   if (!opts.api_key) throw new Error('api_key 必填');
+
+  if ((provider === 'djpsd_openapi' || protocol === 'djpsd_openapi' || protocol === 'djpsd_media')
+      && (serviceType === 'image' || serviceType === 'storyboard_image' || serviceType === 'video')) {
+    const root = base.replace(/\/+$/, '').replace(/\/v1$/i, '');
+    const res = await fetch(`${root}/v1/media/status?task_id=0`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${opts.api_key || ''}` },
+    });
+    const text = await res.text();
+    if (res.status === 401 || res.status === 403) throw new Error(`DJPSD 开放 API Key 无效 (${res.status})`);
+    if (res.ok || res.status === 400 || res.status === 404) return;
+    throw new Error(`DJPSD 开放 API 连接失败 (${res.status})${text ? `: ${text.slice(0, 160)}` : ''}`);
+  }
 
   // 飞拓连接测试只查询一个不存在的 jobId，禁止创建付费视频任务。
   if ((provider === 'feituo' || provider === 'feituo_open') && serviceType === 'video') {
@@ -678,25 +1001,8 @@ async function testConnection(opts) {
 
   // --- MiniMax TTS 语音合成 ---
   if (serviceType === 'tts' && provider === 'minimax') {
-    const probeUrl = base + '/t2a_v2';
-    const probeBody = JSON.stringify({
-      model: model || 'speech-2.8-hd',
-      text: '测试',
-      stream: false,
-      output_format: 'hex',
-      voice_setting: {
-        voice_id: 'male-qn-qingse',
-        speed: 1,
-        vol: 1,
-        pitch: 0,
-      },
-      audio_setting: {
-        sample_rate: 32000,
-        bitrate: 128000,
-        format: 'mp3',
-        channel: 1,
-      },
-    });
+    const probeUrl = base + '/get_voice';
+    const probeBody = JSON.stringify({ voice_type: 'all' });
     const res = await fetch(probeUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (opts.api_key || '') },
@@ -974,7 +1280,15 @@ function applyVendorLock(db, log, cfg) {
 function bulkUpdateApiKey(db, log, newKey) {
   const now = new Date().toISOString();
   const info = db.prepare(
-    'UPDATE ai_service_configs SET api_key = ?, updated_at = ? WHERE deleted_at IS NULL'
+    `UPDATE ai_service_configs
+      SET api_key = ?,
+          verification_status = 'unverified',
+          verification_checked_at = NULL,
+          verified_at = NULL,
+          verification_error = NULL,
+          verified_capabilities = '{}',
+          updated_at = ?
+      WHERE deleted_at IS NULL`
   ).run(newKey, now);
   log.info('Bulk update api_key', { updated: info.changes });
   return info.changes;
@@ -986,6 +1300,7 @@ module.exports = {
   createConfig,
   updateConfig,
   deleteConfig,
+  recordVerification,
   testConnection,
   getVendorLockStatus,
   applyVendorLock,
@@ -994,4 +1309,7 @@ module.exports = {
   validateFuminModelKeyIsolation,
   validateFuminImageModels: fuminImageClient.validateFuminImageModels,
   toPublicConfig,
+  isVerifiedConfig,
+  redactVerificationError,
+  setVerificationResult,
 };

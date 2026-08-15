@@ -139,7 +139,7 @@ test('首尾帧模式将前两张参考图映射为首帧和尾帧', () => {
   assert.equal(resolveFreeCanvasVideoReferenceInput('first-last', 1), 'last-frame')
   assert.equal(resolveFreeCanvasVideoReferenceInput('first-last', 2), 'reference-image')
   assert.equal(resolveFreeCanvasVideoReferenceInput('multi', 0), 'reference-image')
-  assert.equal(resolveFreeCanvasVideoReferenceInput('omni', 0), 'first-frame')
+  assert.equal(resolveFreeCanvasVideoReferenceInput('omni', 0), 'reference-image')
   assert.equal(resolveFreeCanvasVideoReferenceInput('omni', 1), 'reference-image')
 })
 
@@ -271,7 +271,9 @@ test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => 
     model: 'flux',
     aspect_ratio: '16:9',
     style: 'cinematic',
+    resolution: '2k',
     size: '2048x1152',
+    n: 2,
     negative_prompt: '模糊，低清晰度',
     reference_images: [
       'https://cdn.example/a.png',
@@ -311,7 +313,6 @@ test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => 
     reference_image_urls: [
       'https://cdn.example/first.png',
       'https://cdn.example/last.png',
-      'https://cdn.example/ref.png',
       'https://cdn.example/character.png',
     ],
     aspect_ratio: '9:16',
@@ -486,11 +487,9 @@ test('全能参考收集图片、视频、音频并构造真实视频请求字�
     drama_id: 7,
     prompt: '跟随参考动作',
     model: 'MiniMax H3',
-    image_url: '/static/first.png',
-    first_frame_url: '/static/first.png',
     reference_image_urls: ['/static/first.png'],
-    reference_video_url: '/static/motion.mp4',
-    reference_audio_url: '/static/voice.mp3',
+    reference_video_urls: ['/static/motion.mp4'],
+    reference_audio_urls: ['/static/voice.mp3'],
     aspect_ratio: '16:9',
     duration: 5,
     resolution: '480p',
