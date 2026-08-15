@@ -190,6 +190,23 @@ async function snapshot(root) {
   return out;
 }
 
+function assertNoTempOrLock(dir) {
+  assert.deepEqual(fs.readdirSync(dir).filter((name) => name.includes('.tmp-') || name.endsWith('.lock')), []);
+}
+
+function makeJunctionOrSkip(t, target, link) {
+  try {
+    fs.symlinkSync(target, link, 'junction');
+  } catch (error) {
+    if (process.platform === 'win32' && ['EPERM', 'EACCES', 'UNKNOWN'].includes(error.code)) {
+      t.skip(`junction unavailable: ${error.code}`);
+      return false;
+    }
+    throw error;
+  }
+  return true;
+}
+
 test('normalizes all accepted decisions and rejects drift, pending, corrections, approvals, and secret shapes', async (t) => {
   const { manifest } = await fixture(t);
   const input = decisionsFor(manifest);
@@ -379,4 +396,72 @@ test('recorder concurrent decide uses lock and permits exactly one writer withou
   assert.equal(workers.filter((item) => item.status === 'rejected' && /^REDRAW_FULL_FRAME_/.test(item.reason.code)).length, 1);
   assert.equal(JSON.parse(fs.readFileSync(decisionsPath, 'utf8')).review_points.find((point) => point.frame_index === frameIndex).decision, 'accepted');
   assert.equal(fs.existsSync(`${decisionsPath}.lock`), false);
+});
+
+test('recorder rejects init and decide through a junction parent without touching the real target', async (t) => {
+  const { evidenceRoot } = await fixture(t);
+  const root = tempDir(t, 'redraw-review-recorder-junction-');
+  const realTarget = path.join(root, 'real-target');
+  const junction = path.join(root, 'junction-parent');
+  fs.mkdirSync(realTarget);
+  if (!makeJunctionOrSkip(t, realTarget, junction)) return;
+
+  await assert.rejects(recorder.runInit({ analysisDir: evidenceRoot, output: path.join(junction, 'decisions.json') }), (error) => {
+    assert.equal(error.code, 'REDRAW_FULL_FRAME_OUTPUT_INVALID');
+    assert.doesNotMatch(JSON.stringify(error), /[A-Za-z]:\\/);
+    return true;
+  });
+  assert.deepEqual(fs.readdirSync(realTarget), []);
+  assertNoTempOrLock(realTarget);
+
+  const decisionsPath = path.join(realTarget, 'decisions.json');
+  await recorder.runInit({ analysisDir: evidenceRoot, output: decisionsPath });
+  const beforeHash = sha256(fs.readFileSync(decisionsPath));
+  const frameIndex = JSON.parse(fs.readFileSync(decisionsPath, 'utf8')).review_points[0].frame_index;
+  await assert.rejects(recorder.runDecide({ decisions: path.join(junction, 'decisions.json'), frameIndex, decision: 'accepted' }), (error) => {
+    assert.equal(error.code, 'REDRAW_FULL_FRAME_OUTPUT_INVALID');
+    assert.doesNotMatch(JSON.stringify(error), /[A-Za-z]:\\/);
+    return true;
+  });
+  assert.equal(sha256(fs.readFileSync(decisionsPath)), beforeHash);
+  assertNoTempOrLock(realTarget);
+});
+
+test('recorder preserves existing locks and only removes its own lock on internal failure', async (t) => {
+  const { evidenceRoot } = await fixture(t);
+  const root = tempDir(t, 'redraw-review-recorder-locks-');
+  const decisionsPath = path.join(root, 'decisions.json');
+  await recorder.runInit({ analysisDir: evidenceRoot, output: decisionsPath });
+  const frameIndex = JSON.parse(fs.readFileSync(decisionsPath, 'utf8')).review_points[0].frame_index;
+  const beforeHash = sha256(fs.readFileSync(decisionsPath));
+  const lockPath = `${decisionsPath}.lock`;
+  fs.writeFileSync(lockPath, '{"owner":"external"}\n');
+  await assert.rejects(recorder.runDecide({ decisions: decisionsPath, frameIndex, decision: 'accepted' }), (error) => {
+    assert.equal(error.code, 'REDRAW_FULL_FRAME_REVIEW_LOCKED');
+    return true;
+  });
+  assert.equal(fs.readFileSync(lockPath, 'utf8'), '{"owner":"external"}\n');
+  assert.equal(sha256(fs.readFileSync(decisionsPath)), beforeHash);
+  const cli = spawnSync(process.execPath, ['scripts/record-redraw-full-frame-review-local.js', 'decide', '--decisions', decisionsPath, '--frame-index', String(frameIndex), '--decision', 'accepted'], { cwd: path.resolve(__dirname, '..'), encoding: 'utf8' });
+  assert.equal(cli.status, 1);
+  assert.equal(cli.stderr.trim(), 'REDRAW_FULL_FRAME_REVIEW_LOCKED');
+  fs.rmSync(lockPath);
+
+  const originalRename = fs.promises.rename;
+  let observedLock = null;
+  t.after(() => { fs.promises.rename = originalRename; });
+  fs.promises.rename = async (from, to) => {
+    if (path.resolve(to) === path.resolve(decisionsPath)) {
+      observedLock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+      throw new Error('synthetic rename failure');
+    }
+    return originalRename.call(fs.promises, from, to);
+  };
+  await assert.rejects(recorder.runDecide({ decisions: decisionsPath, frameIndex, decision: 'accepted' }), /REDRAW_FULL_FRAME_OUTPUT_INVALID/);
+  assert.match(String(observedLock.pid), /^\d+$/);
+  assert.match(observedLock.created_at, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(observedLock.decisions_sha256, beforeHash);
+  assert.equal(fs.existsSync(lockPath), false);
+  assert.equal(sha256(fs.readFileSync(decisionsPath)), beforeHash);
+  assertNoTempOrLock(root);
 });

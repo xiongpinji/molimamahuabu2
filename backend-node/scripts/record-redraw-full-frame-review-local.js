@@ -11,6 +11,7 @@ const {
 } = require('../src/services/redrawFullFrameReviewService');
 
 const OUTPUT_INVALID = 'REDRAW_FULL_FRAME_OUTPUT_INVALID';
+const REVIEW_LOCKED = 'REDRAW_FULL_FRAME_REVIEW_LOCKED';
 const ACTION_KEYS = new Map([
   ['add_person_region', ['action', 'region_id', 'frame_index', 'track_key', 'bbox', 'visibility', 'kind', 'source_character_key', 'target_strategy']],
   ['remove_person_candidate', ['action', 'region_id']],
@@ -82,8 +83,61 @@ function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
 }
 
+function samePath(left, right) {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function sameIdentity(left, right) {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs;
+}
+
+async function assertSafeExistingDirectory(dirPath) {
+  const resolved = path.resolve(dirPath);
+  const parsed = path.parse(resolved);
+  let current = parsed.root;
+  const parts = resolved.slice(parsed.root.length).split(/[\\/]/).filter(Boolean);
+  for (const part of parts) {
+    current = path.join(current, part);
+    const stat = await fsp.lstat(current, { bigint: true }).catch(() => fail());
+    if (!stat.isDirectory() || stat.isSymbolicLink()) fail();
+    const real = await fsp.realpath(current).catch(() => fail());
+    if (!samePath(real, current)) fail();
+  }
+  return resolved;
+}
+
+async function secureReadExistingFile(filePath) {
+  const abs = path.resolve(filePath);
+  await assertSafeExistingDirectory(path.dirname(abs));
+  const pathStat = await fsp.lstat(abs, { bigint: true }).catch(() => fail());
+  if (!pathStat.isFile() || pathStat.isSymbolicLink()) fail();
+  const realBefore = await fsp.realpath(abs).catch(() => fail());
+  if (!samePath(realBefore, abs)) fail();
+  let handle;
+  try {
+    handle = await fsp.open(abs, 'r');
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || !sameIdentity(pathStat, before)) fail();
+    const bytes = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    const pathAfter = await fsp.lstat(abs, { bigint: true }).catch(() => fail());
+    const realAfter = await fsp.realpath(abs).catch(() => fail());
+    if (!samePath(realBefore, realAfter) || !sameIdentity(before, after) || !sameIdentity(before, pathAfter)) fail();
+    return { abs, bytes, sha256: sha256(bytes), stat: before };
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
+}
+
 async function assertRegularNoLink(filePath, missingOk = false) {
   const abs = path.resolve(filePath);
+  await assertSafeExistingDirectory(path.dirname(abs));
   const stat = await fsp.lstat(abs).catch((error) => {
     if (missingOk && error.code === 'ENOENT') return null;
     fail();
@@ -93,8 +147,8 @@ async function assertRegularNoLink(filePath, missingOk = false) {
 }
 
 async function readJsonNoLink(filePath) {
-  const abs = await assertRegularNoLink(filePath);
-  return JSON.parse(await fsp.readFile(abs, 'utf8'));
+  const read = await secureReadExistingFile(filePath);
+  return JSON.parse(read.bytes.toString('utf8'));
 }
 
 async function readGenerated(analysisDir) {
@@ -108,9 +162,24 @@ async function readGenerated(analysisDir) {
 async function writeMissingJson(filePath, value) {
   const abs = await assertRegularNoLink(filePath, true);
   if (fs.existsSync(abs)) fail();
+  const parent = await assertSafeExistingDirectory(path.dirname(abs));
   const temp = path.join(path.dirname(abs), `.tmp-${path.basename(abs)}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
-  await fsp.writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' });
-  await fsp.rename(temp, abs);
+  let wroteTemp = false;
+  try {
+    await fsp.writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' });
+    wroteTemp = true;
+    await assertSafeExistingDirectory(parent);
+    const targetStat = await fsp.lstat(abs).catch((error) => {
+      if (error.code === 'ENOENT') return null;
+      fail();
+    });
+    if (targetStat) fail();
+    await fsp.rename(temp, abs);
+    wroteTemp = false;
+    await secureReadExistingFile(abs);
+  } finally {
+    if (wroteTemp) await fsp.rm(temp, { force: true }).catch(() => {});
+  }
 }
 
 async function runInit({ analysisDir, output }) {
@@ -161,13 +230,22 @@ function parseCorrections(raw) {
 async function runDecide({ decisions, frameIndex, decision, correctionJson }) {
   let lockHandle;
   let lockPath;
+  let ownsLock = false;
   let temp;
   try {
-    const abs = await assertRegularNoLink(decisions);
+    const initial = await secureReadExistingFile(decisions);
+    const abs = initial.abs;
     lockPath = `${abs}.lock`;
-    lockHandle = await fsp.open(lockPath, 'wx').catch(() => fail());
-    const beforeBytes = await fsp.readFile(abs);
-    const beforeSha = sha256(beforeBytes);
+    await assertSafeExistingDirectory(path.dirname(lockPath));
+    lockHandle = await fsp.open(lockPath, 'wx').catch((error) => {
+      if (error.code === 'EEXIST') fail(REVIEW_LOCKED);
+      fail();
+    });
+    ownsLock = true;
+    const locked = await secureReadExistingFile(abs);
+    const beforeBytes = locked.bytes;
+    const beforeSha = locked.sha256;
+    await lockHandle.writeFile(`${JSON.stringify({ pid: process.pid, created_at: new Date().toISOString(), decisions_sha256: beforeSha })}\n`);
     const parsed = JSON.parse(beforeBytes.toString('utf8'));
     if (parsed.schema_version !== DECISIONS_SCHEMA || parsed.reviewer !== REVIEWER || !/^[a-f0-9]{64}$/.test(parsed.analysis_sha256) || !Array.isArray(parsed.review_points)) fail();
     for (const item of parsed.review_points) {
@@ -182,11 +260,14 @@ async function runDecide({ decisions, frameIndex, decision, correctionJson }) {
     point.corrections = decision === 'accepted' ? [] : parseCorrections(correctionJson);
     const nextBytes = Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`);
     temp = path.join(path.dirname(abs), `.tmp-${path.basename(abs)}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
+    await assertSafeExistingDirectory(path.dirname(temp));
     await fsp.writeFile(temp, nextBytes, { flag: 'wx' });
-    const currentBytes = await fsp.readFile(abs);
-    if (sha256(currentBytes) !== beforeSha) fail();
+    const current = await secureReadExistingFile(abs);
+    if (current.sha256 !== beforeSha) fail();
+    await assertSafeExistingDirectory(path.dirname(abs));
     await fsp.rename(temp, abs);
     temp = null;
+    await secureReadExistingFile(abs);
     return parsed;
   } catch (error) {
     if (error?.code && /^REDRAW_FULL_FRAME_/.test(error.code)) throw error;
@@ -194,7 +275,7 @@ async function runDecide({ decisions, frameIndex, decision, correctionJson }) {
   } finally {
     if (lockHandle) await lockHandle.close().catch(() => {});
     if (temp) await fsp.rm(temp, { force: true }).catch(() => {});
-    if (lockPath && lockHandle) await fsp.rm(lockPath, { force: true }).catch(() => {});
+    if (lockPath && ownsLock) await fsp.rm(lockPath, { force: true }).catch(() => {});
   }
 }
 
