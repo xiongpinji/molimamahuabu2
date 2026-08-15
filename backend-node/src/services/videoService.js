@@ -556,8 +556,25 @@ async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, proj
 }
 
 /** 与图生 aspectRatioToSize 对齐的归一化分辨率（偶数像素，便于 H.264） */
-function targetVideoPixelsForAspect(aspectRatio) {
+function targetVideoPixelsForAspect(aspectRatio, resolution) {
   const r = String(aspectRatio || '16:9').trim();
+  const shortEdge = {
+    '480p': 480,
+    '720p': 720,
+    '1080p': 1080,
+    '1440p': 1440,
+    '2k': 1440,
+    '2160p': 2160,
+    '4k': 2160,
+  }[String(resolution || '').trim().toLowerCase()];
+  if (shortEdge) {
+    const match = r.match(/^(\d+)\s*:\s*(\d+)$/);
+    const a = match ? parseInt(match[1], 10) : 16;
+    const b = match ? parseInt(match[2], 10) : 9;
+    const even = (value) => Math.max(2, Math.round(value / 2) * 2);
+    if (a >= b) return { w: even((shortEdge * a) / b), h: shortEdge };
+    return { w: shortEdge, h: even((shortEdge * b) / a) };
+  }
   const map = {
     '16:9': { w: 2560, h: 1440 },
     '9:16': { w: 1440, h: 2560 },
@@ -631,7 +648,7 @@ function normalizeVideoFileToTargetPixels(absPath, tw, th, log, videoGenId) {
 function maybeNormalizeVideoAfterDownload(storagePath, localPath, row, videoGenId, log) {
   if (!localPath) return;
   const abs = path.join(storagePath, localPath);
-  const dim = targetVideoPixelsForAspect(row.aspect_ratio);
+  const dim = targetVideoPixelsForAspect(row.aspect_ratio, row.resolution);
   normalizeVideoFileToTargetPixels(abs, dim.w, dim.h, log, videoGenId);
 }
 
@@ -1221,6 +1238,7 @@ module.exports = {
   resumeProcessingVideoGenerations,
   localVideoDeliveryWarning,
   settleVideoCredit,
+  targetVideoPixelsForAspect,
   extractVideoBoundaryFrames,
   ensureBoundaryFrames,
 };

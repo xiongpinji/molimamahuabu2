@@ -66,11 +66,12 @@
         "docs/verification/platform-stability/foundation-verification.md",
         "docs/verification/platform-stability/image-legacy-failover-compatibility.md"
       ],
-      "fixCommit": "7e43791b12cd608dd5af294ad081690fbc2c8af2",
+      "fixCommit": "8132dfe9c66166ee9f8e6110d62770840088262f",
       "unlock": {
-        "reason": "线上付费实测发现视频产物下载连接中断被误判为失败退款，修复为结果未知并保留预扣",
+        "reason": "线上付费实测发现 480P 成片被平台统一放大为 2K，修复为按用户选择的清晰度归一化",
         "approvedBy": "product-owner 2026-08-16 paid-acceptance",
         "impactTests": [
+          "backend-node/test/videoResolutionNormalization.test.js",
           "backend-node/test/providerRouteVideoIntegration.test.js",
           "backend-node/test/storyboardVideoGeneration.integration.test.js",
           "backend-node/test/videoBilling.test.js"
