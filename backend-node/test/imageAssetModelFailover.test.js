@@ -113,3 +113,53 @@ test('默认图片模型明确不可用时只切换到同逻辑模型的已验�
   assert.deepEqual(result, { image_url: 'https://cdn.example/fallback.jpg' });
   assert.deepEqual(requests, ['primary', 'backup:gpt-image-2']);
 });
+
+test('未配置逻辑模型的旧图片配置仍按同价已验证模型回退', async (t) => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  t.after(() => db.close());
+
+  const requests = [];
+  const primary = await listen((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      requests.push('primary');
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 'model_not_found', message: 'No available channel' } }));
+    });
+  });
+  const backup = await listen((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      requests.push(`backup:${body.model}`);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ url: 'https://cdn.example/legacy-fallback.jpg' }] }));
+    });
+  });
+  t.after(async () => {
+    await Promise.all([close(primary), close(backup)]);
+  });
+
+  prices.set(db, 'gpt-image-2-2k', 40, { category: 'image' });
+  prices.set(db, 'gpt-image-2', 40, { category: 'image' });
+  addImageConfig(db, {
+    name: '旧默认模型', model: 'gpt-image-2-2k', baseUrl: `http://127.0.0.1:${primary.address().port}`,
+    priority: 100, isDefault: true, verified: true,
+  });
+  addImageConfig(db, {
+    name: '旧同价备用模型', model: 'gpt-image-2', baseUrl: `http://127.0.0.1:${backup.address().port}`,
+    priority: 80, verified: true,
+  });
+
+  const result = await imageClient.callImageApi(db, log, {
+    prompt: '一张风景参考图',
+    model: 'gpt-image-2-2k',
+    size: '1792x1024',
+    image_gen_id: 902,
+  });
+
+  assert.deepEqual(result, { image_url: 'https://cdn.example/legacy-fallback.jpg' });
+  assert.deepEqual(requests, ['primary', 'backup:gpt-image-2']);
+});

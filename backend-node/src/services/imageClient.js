@@ -2233,16 +2233,33 @@ async function callImageApi(db, log, opts) {
 
   const logicalRoute = findLogicalImageRoute(db, preferredModel, opts.imageServiceType);
   if (!logicalRoute) {
-    const config = getDefaultImageConfig(
+    const candidates = getImageConfigCandidates(
       db,
       preferredModel,
       preferredProvider,
       opts.imageServiceType,
     );
-    if (!config) {
+    if (candidates.length === 0) {
+      const fallback = getDefaultImageConfig(db, preferredModel, preferredProvider, opts.imageServiceType);
+      if (fallback) candidates.push(fallback);
+    }
+    if (candidates.length === 0) {
       throw new Error('未配置图片模型，请在「AI 配置」中添加 image 类型且已启用的配置');
     }
-    return stripImageRouteMeta(await submitImageWithConfig(db, log, config, opts));
+    let lastResult = null;
+    for (let index = 0; index < candidates.length; index += 1) {
+      const config = candidates[index];
+      lastResult = await submitImageWithConfig(db, log, config, opts);
+      if (lastResult?.image_url) return stripImageRouteMeta(lastResult);
+      const classification = classifyProviderFailure(lastResult?.route_meta || {});
+      if (!classification.mayFailover || index + 1 >= candidates.length) break;
+      log.warn('Legacy image route switching after definitive non-acceptance', {
+        image_gen_id: opts.image_gen_id,
+        from_config_id: config.id,
+        category: classification.category,
+      });
+    }
+    return stripImageRouteMeta(lastResult);
   }
 
   const selected = providerRouteStability.selectVerifiedCandidates(db, {
