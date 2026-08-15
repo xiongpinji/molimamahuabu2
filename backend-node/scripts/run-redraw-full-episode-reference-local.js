@@ -426,16 +426,70 @@ function assertSourceContract(expected, hash, probe) {
   }
 }
 
-async function ensureOutputDirectory(outputDir) {
+async function inspectOutputTarget(outputDir) {
+  const parentDir = path.dirname(outputDir);
+  const baseName = path.basename(outputDir);
+  if (!baseName || outputDir === parentDir) fail(OUTPUT_CODE, 'output-dir cannot be a filesystem root');
   try {
-    if (fs.existsSync(outputDir) && !fs.statSync(outputDir).isDirectory()) fail(OUTPUT_CODE, 'output-dir is not a directory');
-    await fsp.mkdir(outputDir, { recursive: true });
-    await fsp.access(outputDir, fs.constants.W_OK);
-    await fsp.mkdir(path.join(outputDir, 'shots'), { recursive: true });
-    await fsp.mkdir(path.join(outputDir, 'frames'), { recursive: true });
+    await fsp.mkdir(parentDir, { recursive: true });
+    await fsp.access(parentDir, fs.constants.W_OK);
+    let stat = null;
+    try {
+      stat = await fsp.lstat(outputDir);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    if (!stat) return { existed: false, parentDir, baseName };
+    if (!stat.isDirectory() || stat.isSymbolicLink()) fail(OUTPUT_CODE, 'output-dir is not a directory');
+    if ((await fsp.readdir(outputDir)).length !== 0) fail(OUTPUT_CODE, 'output-dir must be empty');
+    return { existed: true, parentDir, baseName, dev: stat.dev, ino: stat.ino };
   } catch (error) {
     if (error?.code === OUTPUT_CODE) throw error;
     fail(OUTPUT_CODE, 'output-dir is not writable');
+  }
+}
+
+async function createStagingDirectory(target) {
+  try {
+    const stagingDir = await fsp.mkdtemp(path.join(target.parentDir, `.${target.baseName}.staging-`));
+    await fsp.mkdir(path.join(stagingDir, 'shots'));
+    await fsp.mkdir(path.join(stagingDir, 'frames'));
+    return stagingDir;
+  } catch (_) {
+    fail(OUTPUT_CODE, 'cannot create staging directory');
+  }
+}
+
+async function publishStagingDirectory(stagingDir, outputDir, target) {
+  let removedEmptyTarget = false;
+  try {
+    if (target.existed) {
+      const stat = await fsp.lstat(outputDir);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== target.dev || stat.ino !== target.ino
+        || (await fsp.readdir(outputDir)).length !== 0) {
+        fail(OUTPUT_CODE, 'output-dir changed before publish');
+      }
+      await fsp.rmdir(outputDir);
+      removedEmptyTarget = true;
+    } else {
+      try {
+        await fsp.lstat(outputDir);
+        fail(OUTPUT_CODE, 'output-dir appeared before publish');
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+    }
+    await fsp.rename(stagingDir, outputDir);
+  } catch (error) {
+    if (removedEmptyTarget) {
+      try {
+        await fsp.mkdir(outputDir);
+      } catch (_) {
+        // A concurrent writer may have recreated the destination; never remove it.
+      }
+    }
+    if (error?.code === OUTPUT_CODE) throw error;
+    fail(OUTPUT_CODE, 'atomic output publish failed');
   }
 }
 
@@ -525,11 +579,11 @@ async function readCase(casePath) {
   }
 }
 
-async function runLocalPreparation(options) {
+async function runLocalPreparation(options, deps = {}) {
   const sourcePath = path.resolve(String(options?.source || ''));
   const casePath = path.resolve(String(options?.caseManifest || ''));
   const outputDir = path.resolve(String(options?.outputDir || ''));
-  await ensureOutputDirectory(outputDir);
+  const outputTarget = await inspectOutputTarget(outputDir);
   const caseManifest = await readCase(casePath);
 
   let before;
@@ -555,57 +609,65 @@ async function runLocalPreparation(options) {
   if (!sameStat(before, after)) fail(SOURCE_CODE, 'source changed during verification');
   assertSourceContract(caseManifest.source, sourceHash, sourceProbe);
 
-  const outputShots = [];
-  for (const shot of caseManifest.shots) {
-    const artifacts = await generateShotArtifacts(sourcePath, outputDir, shot);
-    outputShots.push({
-      id: shot.id,
-      start_ms: shot.start_ms,
-      end_ms: shot.end_ms,
-      face_tracks: shot.face_tracks,
-      face_track_review: shot.face_track_review,
-      identity_packs: shot.identity_packs,
-      text_regions: shot.text_regions,
-      text_region_review: shot.text_region_review,
-      motion_reference: artifacts.motion_reference,
-      representative_frame: artifacts.representative_frame,
-      dialogue: shot.dialogue,
-      reference_bundle_ready: shot.reference_bundle_ready,
-      blockers: shot.blockers,
-    });
-  }
-  let finalSourceStat;
+  const stagingDir = await createStagingDirectory(outputTarget);
+  let published = false;
   try {
-    finalSourceStat = await fsp.stat(sourcePath);
-  } catch (_) {
-    fail(SOURCE_CODE, 'source changed during local preprocessing');
-  }
-  if (!sameStat(before, finalSourceStat)) fail(SOURCE_CODE, 'source changed during local preprocessing');
+    const outputShots = [];
+    const artifactGenerator = deps.generateShotArtifacts || generateShotArtifacts;
+    for (const shot of caseManifest.shots) {
+      const artifacts = await artifactGenerator(sourcePath, stagingDir, shot);
+      outputShots.push({
+        id: shot.id,
+        start_ms: shot.start_ms,
+        end_ms: shot.end_ms,
+        face_tracks: shot.face_tracks,
+        face_track_review: shot.face_track_review,
+        identity_packs: shot.identity_packs,
+        text_regions: shot.text_regions,
+        text_region_review: shot.text_region_review,
+        motion_reference: artifacts.motion_reference,
+        representative_frame: artifacts.representative_frame,
+        dialogue: shot.dialogue,
+        reference_bundle_ready: shot.reference_bundle_ready,
+        blockers: shot.blockers,
+      });
+    }
+    let finalSourceStat;
+    try {
+      finalSourceStat = await fsp.stat(sourcePath);
+    } catch (_) {
+      fail(SOURCE_CODE, 'source changed during local preprocessing');
+    }
+    if (!sameStat(before, finalSourceStat)) fail(SOURCE_CODE, 'source changed during local preprocessing');
 
-  const manifest = {
-    schema_version: 'redraw-full-episode-reference-local-v1',
-    case_id: caseManifest.case_id,
-    reference_bundle_required: true,
-    target: caseManifest.target,
-    source: {
-      sha256: sourceHash,
-      duration_ms: sourceProbe.duration_ms,
-      video: sourceProbe.video,
-      audio: sourceProbe.audio,
-    },
-    timeline_contiguous: true,
-    provider_request_constructed: false,
-    supplier_call_performed: false,
-    shots: outputShots,
-    summary: {
-      shot_count: outputShots.length,
-      ready_count: outputShots.filter((shot) => shot.reference_bundle_ready).length,
-      blocked_count: outputShots.filter((shot) => !shot.reference_bundle_ready).length,
-    },
-  };
-  const manifestPath = path.join(outputDir, MANIFEST_FILENAME);
-  await writeAtomic(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-  return { manifestPath, manifest };
+    const manifest = {
+      schema_version: 'redraw-full-episode-reference-local-v1',
+      case_id: caseManifest.case_id,
+      reference_bundle_required: true,
+      target: caseManifest.target,
+      source: {
+        sha256: sourceHash,
+        duration_ms: sourceProbe.duration_ms,
+        video: sourceProbe.video,
+        audio: sourceProbe.audio,
+      },
+      timeline_contiguous: true,
+      provider_request_constructed: false,
+      supplier_call_performed: false,
+      shots: outputShots,
+      summary: {
+        shot_count: outputShots.length,
+        ready_count: outputShots.filter((shot) => shot.reference_bundle_ready).length,
+        blocked_count: outputShots.filter((shot) => !shot.reference_bundle_ready).length,
+      },
+    };
+    await writeAtomic(path.join(stagingDir, MANIFEST_FILENAME), `${JSON.stringify(manifest, null, 2)}\n`);
+    await publishStagingDirectory(stagingDir, outputDir, outputTarget);
+    published = true;
+    return { manifestPath: path.join(outputDir, MANIFEST_FILENAME), manifest };
+  } finally {
+    if (!published) await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 function exitCodeFor(error) {

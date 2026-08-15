@@ -109,6 +109,16 @@ function makeRealSource(directory) {
   return sourcePath;
 }
 
+function requireLocalMedia(t) {
+  if (hasLocalFfmpeg() && hasLocalFfprobe()) return true;
+  if (/^(?:1|true)$/i.test(String(process.env.CI || ''))
+    || process.env.REQUIRE_LOCAL_FFMPEG === '1') {
+    assert.fail('ffmpeg/ffprobe are required for this verification run');
+  }
+  t.skip('ffmpeg/ffprobe unavailable');
+  return false;
+}
+
 test('CLI 只接受固定参数并支持 help', () => {
   assert.deepEqual(parseArgs(['--source', 'a.mp4', '--case-manifest', 'case.json', '--output-dir', 'out']), {
     source: path.resolve('a.mp4'),
@@ -170,7 +180,7 @@ test('case manifest 拒绝绝对路径、穿越引用、公网 URL、凭据字�
 });
 
 test('pending review 与静默镜头形成稳定 blockers，绝不构造供应商请求', async (t) => {
-  if (!hasLocalFfmpeg() || !hasLocalFfprobe()) return t.skip('ffmpeg/ffprobe unavailable');
+  if (!requireLocalMedia(t)) return;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-full-episode-real-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const sourcePath = makeRealSource(root);
@@ -194,6 +204,7 @@ test('pending review 与静默镜头形成稳定 blockers，绝不构造供应�
   const casePath = path.join(root, 'case.json');
   fs.writeFileSync(casePath, JSON.stringify(validCase(source)));
   const outputDir = path.join(root, 'output');
+  fs.mkdirSync(outputDir);
   const sourceHashBefore = sha256File(sourcePath);
 
   const result = await runLocalPreparation({ source: sourcePath, caseManifest: casePath, outputDir });
@@ -209,6 +220,8 @@ test('pending review 与静默镜头形成稳定 blockers，绝不构造供应�
   assert.deepEqual(output.shots.map((shot) => shot.id), EXPECTED_SHOT_IDS);
   assert.equal(output.summary.ready_count, 0);
   assert.equal(output.summary.blocked_count, 9);
+  assert.equal(fs.statSync(outputDir).isDirectory(), true);
+  assert.deepEqual(fs.readdirSync(root).filter((name) => name.startsWith('.output.staging-')), []);
 
   for (const shot of output.shots) {
     assert.equal(path.isAbsolute(shot.motion_reference.artifact.path), false);
@@ -242,7 +255,7 @@ test('pending review 与静默镜头形成稳定 blockers，绝不构造供应�
 });
 
 test('源 hash 或 ffprobe 合同不匹配时 fail closed 且不写 manifest', async (t) => {
-  if (!hasLocalFfmpeg() || !hasLocalFfprobe()) return t.skip('ffmpeg/ffprobe unavailable');
+  if (!requireLocalMedia(t)) return;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-full-episode-mismatch-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const sourcePath = makeRealSource(root);
@@ -271,6 +284,77 @@ test('源 hash 或 ffprobe 合同不匹配时 fail closed 且不写 manifest', a
     );
     assert.equal(fs.existsSync(path.join(outputDir, MANIFEST_FILENAME)), false);
   }
+});
+
+test('非空 output-dir fail closed 且旧 manifest 与 artifact 字节不变', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-full-episode-existing-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const outputDir = path.join(root, 'output');
+  const oldManifest = path.join(outputDir, MANIFEST_FILENAME);
+  const oldArtifact = path.join(outputDir, 'shots', 'shot-1-motion.mp4');
+  fs.mkdirSync(path.dirname(oldArtifact), { recursive: true });
+  fs.writeFileSync(oldManifest, '{"old":true}\n');
+  fs.writeFileSync(oldArtifact, 'old-artifact-bytes');
+  const before = [sha256File(oldManifest), sha256File(oldArtifact)];
+
+  await assert.rejects(
+    runLocalPreparation({
+      source: path.join(root, 'missing.mp4'),
+      caseManifest: path.join(root, 'missing.json'),
+      outputDir,
+    }),
+    (error) => error.code === 'REDRAW_FULL_EPISODE_OUTPUT_INVALID',
+  );
+  assert.deepEqual([sha256File(oldManifest), sha256File(oldArtifact)], before);
+  assert.deepEqual(fs.readdirSync(root).filter((name) => name.startsWith('.output.staging-')), []);
+});
+
+test('中途媒体失败清理 staging，最终目录不出现 manifest 或分镜', async (t) => {
+  if (!requireLocalMedia(t)) return;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-full-episode-staging-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const sourcePath = makeRealSource(root);
+  const sourceProbe = await probeMedia(sourcePath);
+  const casePath = path.join(root, 'case.json');
+  fs.writeFileSync(casePath, JSON.stringify(validCase({
+    sha256: sha256File(sourcePath),
+    duration_ms: 68733,
+    duration_tolerance_ms: 100,
+    video: sourceProbe.video,
+    audio: sourceProbe.audio,
+  })));
+  const outputDir = path.join(root, 'output');
+  let calls = 0;
+
+  await assert.rejects(
+    runLocalPreparation(
+      { source: sourcePath, caseManifest: casePath, outputDir },
+      {
+        async generateShotArtifacts(_sourcePath, stagingDir, shot) {
+          calls += 1;
+          if (calls === 2) throw Object.assign(new Error('injected media failure'), { code: 'REDRAW_FULL_EPISODE_MEDIA_FAILED' });
+          const partial = path.join(stagingDir, 'shots', `${shot.id}-motion.mp4`);
+          fs.writeFileSync(partial, 'partial-artifact');
+          return {
+            motion_reference: {
+              kind: 'audio_free_source_motion',
+              artifact: { path: `shots/${shot.id}-motion.mp4`, sha256: 'e'.repeat(64) },
+            },
+            representative_frame: {
+              path: `frames/${shot.id}-representative.jpg`,
+              sha256: 'f'.repeat(64),
+            },
+          };
+        },
+      },
+    ),
+    (error) => error.code === 'REDRAW_FULL_EPISODE_MEDIA_FAILED',
+  );
+  assert.equal(calls, 2);
+  assert.equal(fs.existsSync(path.join(outputDir, MANIFEST_FILENAME)), false);
+  assert.equal(fs.existsSync(path.join(outputDir, 'shots')), false);
+  const stagingPrefix = `.${path.basename(outputDir)}.staging-`;
+  assert.deepEqual(fs.readdirSync(root).filter((name) => name.startsWith(stagingPrefix)), []);
 });
 
 test('中文对白只形成 blocker，不会被当作英文对白 ready', () => {
