@@ -528,7 +528,11 @@ async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, proj
     const res = await fetch(videoUrl, { method: 'GET', ...fetchOptions });
     if (!res.ok) {
       log.warn('Download video failed', { status: res.status, videoGenId });
-      return { localPath: null };
+      return {
+        localPath: null,
+        indeterminate: true,
+        error: `供应商视频链接返回 HTTP ${res.status}（结果未知）`,
+      };
     }
     const buf = Buffer.from(await res.arrayBuffer());
     const validationError = validateDownloadedVideoBuffer(buf, ext);
@@ -543,7 +547,11 @@ async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, proj
     return { localPath: relativePath };
   } catch (e) {
     log.warn('Download video error', { videoGenId, error: e.message });
-    return { localPath: null };
+    return {
+      localPath: null,
+      indeterminate: true,
+      error: '供应商视频链接暂时不可读取（结果未知）',
+    };
   }
 }
 
@@ -757,6 +765,7 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
   const now = new Date().toISOString();
   let localPath = null;
   let downloadError = null;
+  let downloadIndeterminate = false;
   let boundaryFrames = {
     output_first_frame_url: null,
     output_last_frame_url: null,
@@ -776,14 +785,15 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     );
     localPath = downloaded.localPath;
     downloadError = downloaded.error || null;
+    downloadIndeterminate = downloaded.indeterminate === true;
     maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
     boundaryFrames = extractVideoBoundaryFrames(storagePath, localPath, videoGenId, log);
   } catch (error) {
     downloadError = error?.message || '视频产物下载或校验失败';
   }
   if (!localPath) {
-    const message = downloadError || '供应商视频链接暂时不可读取，请勿重新提交，等待管理员核对';
-    if (markVideoArtifactUnreadable(db, videoGenId)) {
+    const message = `${downloadError || '供应商视频链接暂时不可读取（结果未知）'}，请勿重新提交，等待管理员核对`;
+    if (downloadIndeterminate || markVideoArtifactUnreadable(db, videoGenId)) {
       db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
         .run('processing', message.slice(0, 500), now, videoGenId);
       if (row.task_id) taskService.updateTaskStatus(db, row.task_id, 'processing', 90, message);
