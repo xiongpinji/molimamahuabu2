@@ -13,6 +13,10 @@ const {
   canonicalCoverageSha256,
   validateGeneratedCoverageManifest,
 } = require('../src/services/redrawFullFrameCoverageService');
+const {
+  canonicalizeModelLock,
+  canonicalSha256: canonicalModelLockSha256,
+} = require('../src/services/redrawFullFrameModelLockService');
 
 const HEX_A = 'a'.repeat(64);
 const HEX_B = 'b'.repeat(64);
@@ -77,11 +81,14 @@ function validModelLock() {
     license_evidence_path: `${component}/LICENSE.txt`,
     license_evidence_sha256: HEX_B,
   }));
-  return {
+  const lock = {
     schema_version: 'redraw-full-frame-model-lock-v1',
     runtime: { node: 'test' },
     components,
-    canonical_sha256: 'c'.repeat(64),
+  };
+  return {
+    ...lock,
+    canonical_sha256: canonicalModelLockSha256(canonicalizeModelLock(lock)),
   };
 }
 
@@ -442,6 +449,23 @@ test('frame coverage, timestamp drift, shot continuity, and empty shot gaps fail
       { shot_id: 'shot-2', start_ms: 1000, end_ms: 6000 },
     ],
   }), 'REDRAW_FULL_FRAME_FRAME_GAP', evidenceRoot);
+
+  await assertInvalid(buildGeneratedCoverageManifest({
+    ...input,
+    shots: [
+      { shot_id: 'shot-0', start_ms: 0, end_ms: 3000 },
+      { shot_id: 'shot-1', start_ms: 3000, end_ms: 6000 },
+    ],
+  }), 'REDRAW_FULL_FRAME_FRAME_GAP', evidenceRoot);
+
+  await assertInvalid(buildGeneratedCoverageManifest({
+    ...input,
+    shots: [
+      { shot_id: 'shot-1', start_ms: 0, end_ms: 3000 },
+      { shot_id: 'shot-3', start_ms: 3000, end_ms: 6000 },
+    ],
+    frames: input.frames.map((frame) => ({ ...frame, shot_id: frame.shot_id === 'shot-2' ? 'shot-3' : frame.shot_id })),
+  }), 'REDRAW_FULL_FRAME_FRAME_GAP', evidenceRoot);
 });
 
 test('person track classification and mapping rules fail closed', async (t) => {
@@ -598,6 +622,27 @@ test('unknown nested fields, approvals, invalid model lock, and manifest hash dr
 
   await assertInvalid(buildGeneratedCoverageManifest({
     ...input,
+    modelLock: { ...input.modelLock, canonical_sha256: 'f'.repeat(64) },
+  }), 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID', evidenceRoot);
+
+  await assertInvalid(buildGeneratedCoverageManifest({
+    ...input,
+    modelLock: {
+      ...input.modelLock,
+      components: input.modelLock.components.map((component) => component.component === 'tracker' ? { ...component, repository: 'Other/Tracker' } : component),
+    },
+  }), 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID', evidenceRoot);
+
+  await assertInvalid(buildGeneratedCoverageManifest({
+    ...input,
+    modelLock: {
+      ...input.modelLock,
+      components: input.modelLock.components.map((component) => component.component === 'person_detector' ? { ...component, project: 'Other Person Detector' } : component),
+    },
+  }), 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID', evidenceRoot);
+
+  await assertInvalid(buildGeneratedCoverageManifest({
+    ...input,
     modelLock: { schema_version: input.modelLock.schema_version, components: input.modelLock.components, canonical_sha256: input.modelLock.canonical_sha256 },
   }), 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID', evidenceRoot);
 
@@ -651,6 +696,25 @@ test('symlink escape fails closed when supported', async (t) => {
   }
 
   await assertInvalid(buildGeneratedCoverageManifest(input), 'REDRAW_FULL_FRAME_SOURCE_MISMATCH', evidenceRoot);
+});
+
+test('junction inside evidence root fails closed when supported', async (t) => {
+  const { evidenceRoot, input } = await createFixture(t);
+  const junctionPath = path.join(evidenceRoot, 'frames-junction');
+  try {
+    fs.symlinkSync(path.join(evidenceRoot, 'frames'), junctionPath, 'junction');
+  } catch (error) {
+    if (process.platform === 'win32' && ['EPERM', 'EACCES', 'UNKNOWN'].includes(error.code)) {
+      t.skip(`junction unavailable: ${error.code}`);
+      return;
+    }
+    throw error;
+  }
+
+  await assertInvalid(buildGeneratedCoverageManifest({
+    ...input,
+    frames: input.frames.map((frame) => frame.frame_index === 0 ? { ...frame, path: 'frames-junction/frame-0.png' } : frame),
+  }), 'REDRAW_FULL_FRAME_SOURCE_MISMATCH', evidenceRoot);
 });
 
 test('read-time file identity drift fails closed', async (t) => {

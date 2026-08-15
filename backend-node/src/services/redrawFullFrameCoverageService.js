@@ -4,6 +4,12 @@ const path = require('node:path');
 
 const sharp = require('sharp');
 
+const modelSourcePolicy = require('../../config/redraw-full-frame-model-sources.json');
+const {
+  canonicalizeModelLock,
+  canonicalSha256: canonicalModelLockSha256,
+} = require('./redrawFullFrameModelLockService');
+
 const SCHEMA_VERSION = 'redraw-full-frame-coverage-v1';
 const LOCK_SCHEMA_VERSION = 'redraw-full-frame-model-lock-v1';
 const STATUS = 'generated';
@@ -178,12 +184,22 @@ function assertRegularFile(stat, code) {
   if (!stat.isFile()) fail(code);
 }
 
+async function assertNoLinkedPathComponents({ rootReal, normalized, code }) {
+  let current = rootReal;
+  for (const segment of normalized.split('/')) {
+    current = path.join(current, segment);
+    const stat = await withCodeAsync(() => fsp.lstat(current, { bigint: true }), code);
+    if (stat.isSymbolicLink()) fail(code);
+  }
+}
+
 async function secureReadFile({ rootReal, relativePath, code }) {
   if (isUnsafeRelativePath(relativePath)) fail(code);
   const normalized = normalizePathSeparators(relativePath);
   const target = path.resolve(rootReal, normalized);
   if (!isInsideOrSame(rootReal, target)) fail(code);
 
+  await assertNoLinkedPathComponents({ rootReal, normalized, code });
   const realBefore = await withCodeAsync(() => fsp.realpath(target), code);
   if (!isInsideOrSame(rootReal, realBefore)) fail(code);
   const statExpected = await withCodeAsync(() => fsp.stat(realBefore, { bigint: true }), code);
@@ -198,6 +214,7 @@ async function secureReadFile({ rootReal, relativePath, code }) {
     const bytes = await handle.readFile();
     const statAfter = await handle.stat({ bigint: true });
     assertRegularFile(statAfter, code);
+    await assertNoLinkedPathComponents({ rootReal, normalized, code });
     const realAfter = await withCodeAsync(() => fsp.realpath(realBefore), code);
     if (realAfter !== realBefore) fail(code);
     const statPathAfter = await withCodeAsync(() => fsp.stat(realAfter, { bigint: true }), code);
@@ -256,6 +273,7 @@ function validateShots(shots, source) {
   }).sort((left, right) => left.number - right.number);
 
   for (let index = 0; index < sorted.length; index += 1) {
+    if (sorted[index].number !== index + 1) fail('REDRAW_FULL_FRAME_FRAME_GAP');
     if (index > 0 && sorted[index].number === sorted[index - 1].number) fail('REDRAW_FULL_FRAME_FRAME_GAP');
     if (index === 0 && sorted[index].start_ms !== 0) fail('REDRAW_FULL_FRAME_FRAME_GAP');
     if (index > 0 && sorted[index].start_ms !== sorted[index - 1].end_ms) fail('REDRAW_FULL_FRAME_FRAME_GAP');
@@ -620,16 +638,36 @@ async function validateTextTracks(textTracks, source, rootReal, existingRegionOw
   return { tracks: normalized, regionOwners };
 }
 
+function officialSourcesByComponent() {
+  assertExactKeys(modelSourcePolicy, ['schema_version', 'sources'], 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+  if (modelSourcePolicy.schema_version !== 'redraw-full-frame-model-sources-v1') fail('REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+  if (!Array.isArray(modelSourcePolicy.sources) || modelSourcePolicy.sources.length !== COMPONENT_ORDER.length) fail('REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+  const byComponent = new Map();
+  for (const source of modelSourcePolicy.sources) {
+    assertExactKeys(source, ['component', 'project', 'repository', 'license_path'], 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+    if (!COMPONENT_ORDER.includes(source.component) || byComponent.has(source.component)) fail('REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+    byComponent.set(source.component, source);
+  }
+  for (const component of COMPONENT_ORDER) {
+    if (!byComponent.has(component)) fail('REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+  }
+  return byComponent;
+}
+
 function validateModelLock(modelLock, { requireCanonicalInput = false } = {}) {
   if (requireCanonicalInput) {
     assertExactKeys(modelLock, ['schema_version', 'runtime', 'components', 'canonical_sha256'], 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
     assertPlainObject(modelLock.runtime, 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+    const { canonical_sha256: declaredSha256, ...lockWithoutSha } = modelLock;
+    const canonical = withCode(() => canonicalizeModelLock(lockWithoutSha), 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+    if (canonicalModelLockSha256(canonical) !== declaredSha256) fail('REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
   } else {
     assertAllowedKeys(modelLock, ['schema_version', 'runtime', 'components', 'canonical_sha256'], ['schema_version', 'components', 'canonical_sha256'], 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
   }
   if (modelLock.schema_version !== LOCK_SCHEMA_VERSION) fail('REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
   const modelLockSha256 = requireHash(modelLock.canonical_sha256, 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
   if (!Array.isArray(modelLock.components) || modelLock.components.length !== COMPONENT_ORDER.length) fail('REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+  const officialSources = officialSourcesByComponent();
   const byComponent = new Map();
   for (const component of modelLock.components) {
     const componentKeys = [
@@ -649,7 +687,9 @@ function validateModelLock(modelLock, { requireCanonicalInput = false } = {}) {
     } else {
       assertAllowedKeys(component, componentKeys, ['component', 'project', 'repository', 'revision', 'artifact_sha256', 'license_evidence_sha256'], 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
     }
-    if (!COMPONENT_ORDER.includes(component.component) || byComponent.has(component.component)) fail('REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+    const official = officialSources.get(component.component);
+    if (!COMPONENT_ORDER.includes(component.component) || byComponent.has(component.component) || !official) fail('REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+    if (component.project !== official.project || component.repository !== official.repository) fail('REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
     byComponent.set(component.component, {
       component: component.component,
       project: requireString(component.project, 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID'),
