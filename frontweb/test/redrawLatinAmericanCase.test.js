@@ -136,8 +136,12 @@ test('第三镜提示词保留骑行构图并显式要求无人声和街道自�
   assert.match(prompt, /same fixed Latino actor Mateo/i)
   assert.match(prompt, /rides away from school on the same bicycle/i)
   assert.match(prompt, /rear tracking composition and travel direction/i)
-  assert.match(prompt, /no spoken dialogue or voiceover/i)
+  assert.match(prompt, /use only/i)
   assert.match(prompt, /street ambience and bicycle movement sound effects/i)
+  assert.match(
+    prompt,
+    /do not generate spoken dialogue, voiceover, narration, or intelligible vocalization/i,
+  )
 })
 
 test('第八镜提示词保留电脑决策与屏幕文字并显式要求无人声和交互环境声', () => {
@@ -146,8 +150,12 @@ test('第八镜提示词保留电脑决策与屏幕文字并显式要求无人�
   assert.match(prompt, /researches the opportunity on the computer and makes a decision/i)
   assert.match(prompt, /screen insert/i)
   assert.match(prompt, /unreadable Chinese text as verified English copy/i)
-  assert.match(prompt, /no spoken dialogue or voiceover/i)
+  assert.match(prompt, /use only/i)
   assert.match(prompt, /room ambience, keyboard, mouse, and computer interaction sound effects/i)
+  assert.match(
+    prompt,
+    /do not generate spoken dialogue, voiceover, narration, or intelligible vocalization/i,
+  )
 })
 
 test('整集合同分离校园三名男学生并保持源目标说话人一致', () => {
