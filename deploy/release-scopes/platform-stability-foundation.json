@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "release": "platform-stability-foundation",
+  "allowedPaths": [
+    "backend-node/migrations/59_provider_route_stability.sql",
+    "backend-node/package.json",
+    "backend-node/scripts/verify-feature-lock-manifest.js",
+    "backend-node/src/app.js",
+    "backend-node/src/db/migrate.js",
+    "backend-node/src/routes/aiConfig.js",
+    "backend-node/src/routes/index.js",
+    "backend-node/src/routes/providerStability.js",
+    "backend-node/src/services/aiClient.js",
+    "backend-node/src/services/aiConfigService.js",
+    "backend-node/src/services/billingReconciliationService.js",
+    "backend-node/src/services/canvasModelCatalogService.js",
+    "backend-node/src/services/imageClient.js",
+    "backend-node/src/services/imageService.js",
+    "backend-node/src/services/providerErrorClassifier.js",
+    "backend-node/src/services/providerReconciliationService.js",
+    "backend-node/src/services/providerRouteStabilityService.js",
+    "backend-node/src/services/taskService.js",
+    "backend-node/src/services/text-generation-billing-service.js",
+    "backend-node/src/services/videoClient.js",
+    "backend-node/src/services/videoService.js",
+    "deploy/release-scopes/platform-stability-foundation.json",
+    "frontweb/src/api/providerStability.js",
+    "frontweb/src/components/AIConfigContent.vue",
+    "frontweb/src/components/ProviderStabilityPanel.vue"
+  ]
+}

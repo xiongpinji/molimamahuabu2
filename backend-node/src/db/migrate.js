@@ -302,6 +302,11 @@ function ensureAllColumns(database) {
     { name: 'is_default',     type: 'INTEGER DEFAULT 0' },
     { name: 'is_active',      type: 'INTEGER DEFAULT 1' },
     { name: 'settings',       type: 'TEXT' },
+    { name: 'logical_model_id', type: 'TEXT' },
+    { name: 'failover_enabled', type: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'verification_status', type: 'TEXT NOT NULL DEFAULT \'unverified\'' },
+    { name: 'verified_at', type: 'TEXT' },
+    { name: 'verification_evidence', type: 'TEXT' },
     { name: 'created_at',     type: 'TEXT' },
     { name: 'updated_at',     type: 'TEXT' },
     { name: 'deleted_at',     type: 'TEXT' },
@@ -397,6 +402,7 @@ function ensureAllColumns(database) {
     { name: 'user_id',              type: 'TEXT' },
     { name: 'tenant_id',            type: 'TEXT' },
     { name: 'credit_reservation_id', type: 'TEXT' },
+    { name: 'config_id',              type: 'INTEGER' },
   ]);
 
   // --- video_merges ---

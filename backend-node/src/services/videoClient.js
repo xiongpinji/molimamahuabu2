@@ -1,6 +1,7 @@
 // ? Go pkg/video + VideoGenerationService ????????? API??????(????)
 const fs = require('fs');
 const path = require('path');
+const { randomUUID } = require('crypto');
 const dnsCore = require('dns');
 const dns = require('dns').promises;
 const http = require('http');
@@ -15,6 +16,8 @@ const feituoVideoClient = require('./feituoVideoClient');
 const usmercariVideoClient = require('./usmercariVideoClient');
 const fuminVideoClient = require('./fuminVideoClient');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
+const providerRouteStability = require('./providerRouteStabilityService');
+const { classifyProviderFailure } = require('./providerErrorClassifier');
 const { snapshotVoiceMap } = require('./storyboardVoiceLockService');
 const storyboardVoicePromptService = require('./storyboardVoicePromptService');
 const {
@@ -52,6 +55,22 @@ function inferVideoProtocol(provider) {
   if (p === 'xai' || p === 'grok') return 'xai';
   if (p === 'agnes') return 'agnes';
   return 'openai';
+}
+
+function providerErrorMeta(data, httpStatus, overrides = {}) {
+  const message = String(data?.error?.message || data?.message || data?.error || '');
+  let providerCode = String(data?.error?.code || data?.code || '').trim();
+  if (/no available channel/i.test(message)) providerCode = 'NO_AVAILABLE_CHANNEL';
+  const providerTaskId = aihubccClient.extractTaskId(data);
+  const explicitlyRejected = [400, 401, 413, 422, 429].includes(Number(httpStatus))
+    || providerCode === 'NO_AVAILABLE_CHANNEL';
+  return {
+    httpStatus: Number.isInteger(Number(httpStatus)) ? Number(httpStatus) : undefined,
+    providerCode: providerCode || undefined,
+    providerTaskId: providerTaskId || undefined,
+    explicitlyRejected,
+    ...overrides,
+  };
 }
 
 function normalizeDjpsdBaseUrl(baseUrl) {
@@ -1020,6 +1039,33 @@ function parseKlingOmniPollVideoUrl(data) {
   return null;
 }
 
+function hasColumn(db, table, column) {
+  try {
+    return db.prepare(`PRAGMA table_info(${table})`).all()
+      .some((item) => item.name === column);
+  } catch (_) {
+    return false;
+  }
+}
+
+function findLogicalVideoRoute(db, logicalModelId) {
+  if (!logicalModelId || !hasColumn(db, 'ai_service_configs', 'logical_model_id')) return null;
+  try {
+    return db.prepare(`SELECT id, service_type FROM ai_service_configs
+      WHERE deleted_at IS NULL AND is_active = 1 AND service_type = 'video'
+        AND logical_model_id = ? COLLATE NOCASE AND verification_status = 'verified'
+      ORDER BY priority DESC, id ASC LIMIT 1`).get(String(logicalModelId).trim()) || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function getVideoConfigById(db, configId) {
+  const id = Number(configId);
+  if (!Number.isSafeInteger(id) || id <= 0) return null;
+  return aiConfigService.getConfig(db, id);
+}
+
 // ??????????????????listConfigs ?? is_default DESC, priority DESC ??
 function getDefaultVideoConfig(db, preferredModel) {
   const configs = aiConfigService.listConfigs(db, 'video');
@@ -1041,6 +1087,8 @@ function getDefaultVideoConfig(db, preferredModel) {
       const requested = normalize(preferredModel);
       if (models.some((model) => normalize(model) === requested)) return c;
     }
+    const logicalRoute = findLogicalVideoRoute(db, preferredModel);
+    if (logicalRoute) return getVideoConfigById(db, logicalRoute.id);
     return canvasProviderConfigService.getConfig('video', preferredModel);
   }
   const defaultOne = active.find((c) => c.is_default);
@@ -4492,7 +4540,7 @@ function requestPublicImage(url, maxBytes) {
  * ?????? API?ChatFire/?? ? ?????
  * @returns {Promise<{ task_id?: string, video_url?: string, error?: string }>}
  */
-async function callVideoApi(db, log, opts) {
+async function submitVideoWithConfig(db, log, config, opts) {
   const {
     prompt: inputPrompt,
     model: preferredModel,
@@ -4513,10 +4561,6 @@ async function callVideoApi(db, log, opts) {
     first_frame_local_path,
     last_frame_local_path,
   } = opts;
-  const config = getDefaultVideoConfig(db, preferredModel);
-  if (!config) {
-    throw new Error('???????????AI ?????? video ?????????');
-  }
   const model = getModelFromConfig(config, preferredModel);
   const provider = (config.provider || '').toLowerCase();
   const protocol = resolveVideoProtocol(config, preferredModel);
@@ -4982,34 +5026,50 @@ async function callVideoApi(db, log, opts) {
     has_last_frame: !!lastForApi,
     frame_count: (firstForApi ? 1 : 0) + (lastForApi ? 1 : 0),
   });
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: 'Bearer ' + (config.api_key || ''),
-    },
-    body: JSON.stringify(body),
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + (config.api_key || ''),
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    return {
+      indeterminate: true,
+      error: '视频生成提交结果未知，请勿重复提交。',
+      route_meta: {
+        phase: 'submit',
+        requestBodySent: true,
+        transportCode: error?.cause?.code || error?.code,
+      },
+    };
+  }
   const raw = await res.text();
   log.info('Video API raw response', { video_gen_id, status: res.status, raw: raw.slice(0, 1000) });
-  if (!res.ok) {
-    log.error('Video API failed', { status: res.status, body: raw.slice(0, 500) });
-    let errMsg = '????????: ' + res.status;
-    try {
-      const errJson = JSON.parse(raw);
-      const msg = errJson.error?.message || errJson.message || errJson.error;
-      if (msg) errMsg += ' - ' + (typeof msg === 'string' ? msg : JSON.stringify(msg).slice(0, 200));
-    } catch (_) {
-      if (raw && raw.length) errMsg += ' - ' + raw.slice(0, 200);
-    }
-    return { error: errMsg };
-  }
   let data;
   try {
     data = JSON.parse(raw);
-  } catch (e) {
-    log.error('Video API response JSON parse failed', { video_gen_id, raw: raw.slice(0, 1000), parse_error: e.message });
-    return { error: '??????????: ' + e.message + ' | raw: ' + raw.slice(0, 200) };
+  } catch (_) {
+    data = null;
+  }
+  if (!res.ok) {
+    log.error('Video API failed', { status: res.status, body: raw.slice(0, 500) });
+    let errMsg = '????????: ' + res.status;
+    const msg = data?.error?.message || data?.message || data?.error;
+    if (msg) errMsg += ' - ' + (typeof msg === 'string' ? msg : JSON.stringify(msg).slice(0, 200));
+    else if (raw && raw.length) errMsg += ' - ' + raw.slice(0, 200);
+    return { error: errMsg, route_meta: providerErrorMeta(data, res.status) };
+  }
+  if (!data) {
+    log.error('Video API response JSON parse failed', { video_gen_id, raw: raw.slice(0, 1000) });
+    return {
+      indeterminate: true,
+      error: '视频生成提交结果未知，请勿重复提交。',
+      route_meta: providerErrorMeta(null, res.status, { phase: 'submit', requestBodySent: true }),
+    };
   }
   log.info('Video API parsed response', { video_gen_id, data: JSON.stringify(data).slice(0, 500) });
   const taskId = data.id || data.task_id || (data.data && data.data.id);
@@ -5021,10 +5081,236 @@ async function callVideoApi(db, log, opts) {
   }
   if (taskId) {
     log.info('Video API returned task_id', { video_gen_id, task_id: taskId, status });
-    return { task_id: taskId, status: status || 'processing' };
+    return {
+      task_id: taskId,
+      status: status || 'processing',
+      route_meta: providerErrorMeta(data, res.status, { providerTaskId: String(taskId) }),
+    };
   }
   log.error('Video API: no task_id or video_url in response', { video_gen_id, data: JSON.stringify(data).slice(0, 500) });
-  return { error: '??? task_id ? video_url?????: ' + JSON.stringify(data).slice(0, 300) };
+  return {
+    indeterminate: true,
+    error: '视频生成提交结果未知，请勿重复提交。',
+    route_meta: providerErrorMeta(data, res.status, { phase: 'submit', requestBodySent: true }),
+  };
+}
+
+function stripVideoRouteMeta(result) {
+  if (!result || typeof result !== 'object') return result;
+  const { route_meta, provider_task_id, ...safe } = result;
+  return safe;
+}
+
+function safeVideoRouteFailure(classification, result) {
+  const category = classification.category;
+  if (category === 'policy_rejected') {
+    return { error: '视频生成请求被内容安全策略拒绝，请调整提示词后重试。' };
+  }
+  if (category === 'validation_error') {
+    return { error: '视频生成参数不受支持，请检查参考素材、时长、分辨率或其他参数。' };
+  }
+  if (['provider_unavailable', 'rate_limited', 'auth_unavailable', 'transport_not_sent'].includes(category)) {
+    return { error: '视频生成服务暂时不可用，请稍后再试。' };
+  }
+  if (result?.indeterminate || ['artifact_unreadable', 'result_unknown', 'submission_unknown', 'forbidden_unknown'].includes(category)) {
+    return {
+      indeterminate: true,
+      error: '视频生成结果未知，为避免重复提交或重复扣费，请先核对生成记录，不要连续重试。',
+    };
+  }
+  return { error: '视频生成失败，请稍后再试。' };
+}
+
+function updateVideoRouteRequestState(db, requestId, state, now = new Date().toISOString()) {
+  db.prepare('UPDATE generation_route_requests SET state = ?, updated_at = ? WHERE id = ?')
+    .run(state, now, requestId);
+}
+
+function recordDirectVideoAccepted(db, requestId, attemptNo, now = new Date().toISOString()) {
+  db.transaction(() => {
+    db.prepare(`UPDATE generation_route_attempts SET state = 'accepted'
+      WHERE request_id = ? AND attempt_no = ?`).run(requestId, attemptNo);
+    db.prepare("UPDATE generation_route_requests SET state = 'accepted', updated_at = ? WHERE id = ?")
+      .run(now, requestId);
+  })();
+}
+
+function persistAcceptedVideoRoute(db, opts, configId, providerTaskId) {
+  if (opts.video_gen_id == null || !hasColumn(db, 'video_generations', 'config_id')) return;
+  if (providerTaskId) {
+    db.prepare(`UPDATE video_generations SET config_id = ?, provider_task_id = ?, updated_at = ?
+      WHERE id = ?`).run(configId, String(providerTaskId), new Date().toISOString(), opts.video_gen_id);
+    return;
+  }
+  db.prepare('UPDATE video_generations SET config_id = ?, updated_at = ? WHERE id = ?')
+    .run(configId, new Date().toISOString(), opts.video_gen_id);
+}
+
+async function callVideoApi(db, log, opts) {
+  const preferredModel = String(opts.model || '').trim() || null;
+  const explicitConfigId = opts.config_id ?? opts.configId;
+  if (explicitConfigId != null) {
+    const config = getVideoConfigById(db, explicitConfigId);
+    if (!config || !config.is_active) throw new Error('指定的视频模型配置不存在或已停用');
+    return stripVideoRouteMeta(await submitVideoWithConfig(db, log, config, opts));
+  }
+
+  const logicalRoute = findLogicalVideoRoute(db, preferredModel);
+  if (!logicalRoute) {
+    const config = getDefaultVideoConfig(db, preferredModel);
+    if (!config) throw new Error('未配置视频模型，请在「AI 配置」中添加 video 类型且已启用的配置');
+    return stripVideoRouteMeta(await submitVideoWithConfig(db, log, config, opts));
+  }
+
+  const selected = providerRouteStability.selectVerifiedCandidates(db, {
+    serviceType: 'video',
+    logicalModelId: preferredModel,
+    primaryConfigId: logicalRoute.id,
+    capabilities: {
+      resolution: opts.resolution,
+      aspectRatio: opts.aspect_ratio || opts.aspectRatio,
+      duration: opts.duration,
+      referenceImageCount: Array.isArray(opts.reference_urls)
+        ? opts.reference_urls.filter(Boolean).length
+        : 0,
+      referenceVideoCount: Array.isArray(opts.reference_video_urls)
+        ? opts.reference_video_urls.filter(Boolean).length
+        : 0,
+      referenceAudioCount: Array.isArray(opts.reference_audio_urls)
+        ? opts.reference_audio_urls.filter(Boolean).length
+        : 0,
+    },
+  });
+  if (selected.candidates.length === 0) {
+    throw new Error('未配置与当前视频生成参数匹配的已验证模型');
+  }
+
+  const routeId = randomUUID();
+  const businessId = opts.video_gen_id == null ? routeId : String(opts.video_gen_id);
+  const owner = String(opts.tenantId || opts.userId || 'local');
+  const capabilities = {
+    resolution: opts.resolution,
+    aspectRatio: opts.aspect_ratio || opts.aspectRatio,
+    duration: opts.duration,
+    referenceImageCount: Array.isArray(opts.reference_urls) ? opts.reference_urls.filter(Boolean).length : 0,
+    referenceVideoCount: Array.isArray(opts.reference_video_urls)
+      ? opts.reference_video_urls.filter(Boolean).length
+      : 0,
+    referenceAudioCount: Array.isArray(opts.reference_audio_urls)
+      ? opts.reference_audio_urls.filter(Boolean).length
+      : 0,
+  };
+  const route = providerRouteStability.createOrGetRouteRequest(db, {
+    id: routeId,
+    idempotencyKey: `${owner}:video:${businessId}`,
+    serviceType: 'video',
+    businessType: 'video_generation',
+    businessId,
+    tenantId: opts.tenantId,
+    userId: opts.userId,
+    logicalModelId: preferredModel,
+    capabilities,
+    userPriceSnapshot: selected.userPriceSnapshot,
+    candidateConfigIds: selected.candidates.map((candidate) => candidate.id),
+    creditReservationId: opts.creditReservationId,
+  });
+  if (route.state !== 'created') {
+    return safeVideoRouteFailure({ category: 'result_unknown' }, { indeterminate: true });
+  }
+
+  let lastFailure = null;
+  for (let index = 0; index < selected.candidates.length; index += 1) {
+    const config = selected.candidates[index];
+    const attempt = providerRouteStability.startAttempt(db, {
+      requestId: route.id,
+      configId: config.id,
+      provider: config.provider || 'configured',
+      upstreamModel: getModelFromConfig(config),
+    });
+    let result;
+    try {
+      result = await submitVideoWithConfig(db, log, config, { ...opts, model: undefined });
+    } catch (error) {
+      result = {
+        indeterminate: true,
+        error: '视频生成提交结果未知，请勿重复提交。',
+        route_meta: {
+          phase: 'submit',
+          requestBodySent: true,
+          transportCode: error?.cause?.code || error?.code,
+        },
+      };
+      log.error('Video route attempt ended without a structured result', {
+        video_gen_id: opts.video_gen_id,
+        config_id: config.id,
+        error_code: error?.code || null,
+      });
+    }
+    const routeMeta = result?.route_meta || {};
+    const providerTaskId = result?.task_id || routeMeta.providerTaskId;
+    if (providerTaskId) {
+      providerRouteStability.recordAcceptedTask(db, {
+        requestId: route.id,
+        attemptNo: attempt.attempt_no,
+        providerTaskId: String(providerTaskId),
+      });
+      persistAcceptedVideoRoute(db, opts, config.id, providerTaskId);
+      const acceptedResult = stripVideoRouteMeta(result);
+      delete acceptedResult.error;
+      delete acceptedResult.indeterminate;
+      return {
+        ...acceptedResult,
+        task_id: String(providerTaskId),
+        status: result?.status || 'processing',
+        config_id: config.id,
+        route_request_id: route.id,
+        route_attempt_no: attempt.attempt_no,
+      };
+    }
+    if (result?.video_url) {
+      recordDirectVideoAccepted(db, route.id, attempt.attempt_no);
+      persistAcceptedVideoRoute(db, opts, config.id, null);
+      return {
+        ...stripVideoRouteMeta(result),
+        config_id: config.id,
+        route_request_id: route.id,
+        route_attempt_no: attempt.attempt_no,
+      };
+    }
+
+    const classification = classifyProviderFailure(routeMeta);
+    const uncertainAttempt = ['submission_unknown', 'result_unknown', 'artifact_unreadable', 'forbidden_unknown']
+      .includes(classification.category);
+    providerRouteStability.finishAttempt(db, {
+      requestId: route.id,
+      attemptNo: attempt.attempt_no,
+      state: uncertainAttempt ? classification.category : 'failed',
+      httpStatus: routeMeta.httpStatus,
+      errorCategory: classification.category,
+    });
+    providerRouteStability.recordFailureAndHealth(db, {
+      requestId: route.id,
+      tenantId: opts.tenantId,
+      configId: config.id,
+      logicalModelId: preferredModel,
+      classification,
+    });
+    lastFailure = { classification, result };
+    const hasNext = index + 1 < selected.candidates.length;
+    if (!classification.mayFailover || !hasNext) {
+      const requestState = uncertainAttempt ? 'needs_attention' : 'failed';
+      updateVideoRouteRequestState(db, route.id, requestState);
+      return safeVideoRouteFailure(classification, result);
+    }
+    log.warn('Video route switching after definitive non-acceptance', {
+      video_gen_id: opts.video_gen_id,
+      logical_model_id: preferredModel,
+      from_config_id: config.id,
+      category: classification.category,
+    });
+  }
+  return safeVideoRouteFailure(lastFailure?.classification || { category: 'submission_unknown' },
+    lastFailure?.result);
 }
 
 /**
@@ -5559,6 +5845,7 @@ const { runWithGenerationLimit } = require('./generationConcurrency');
 
 module.exports = {
   getDefaultVideoConfig,
+  getVideoConfigById,
   getVideoArtifactFetchOptions,
   callAihubccVideoApi,
   callXaiVideoApi,

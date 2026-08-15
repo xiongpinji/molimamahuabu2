@@ -124,6 +124,33 @@ test('陈旧 held 扫描覆盖个人和租户，并阻断运行中、不确定�
   assert.equal(byKey.fresh, undefined);
 });
 
+test('供应商路由 needs_attention 覆盖旧失败文本并禁止退款', () => {
+  const db = setup();
+  db.exec(`CREATE TABLE generation_route_requests (
+    id TEXT PRIMARY KEY,
+    credit_reservation_id TEXT,
+    state TEXT,
+    service_type TEXT,
+    updated_at TEXT
+  )`);
+  const held = reserve(db, 'route-needs-attention');
+  linkTask(db, held, 'failed', '供应商明确拒绝');
+  db.prepare(`INSERT INTO generation_route_requests
+    (id, credit_reservation_id, state, service_type, updated_at)
+    VALUES ('route-needs-attention', ?, 'needs_attention', 'text', ?)`)
+    .run(held.id, OLD);
+
+  const row = reconciliation.listAnomalies(db, {
+    olderThanMinutes: 60,
+    now: NOW,
+  }).find((item) => item.reservation_id === held.id);
+
+  assert.equal(row.refundable, false);
+  assert.equal(row.safety_status, 'provider_route_needs_attention');
+  assert.equal(credits.getReservation(db, held.id).status, 'held');
+  db.close();
+});
+
 test('明确失败退款以幂等键闭环，重复调用不重复入账或审计', () => {
   const db = setup();
   const held = reserve(db, 'refund-once', { tenant: true });

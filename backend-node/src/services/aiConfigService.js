@@ -231,8 +231,8 @@ function createConfig(db, log, req) {
   }
   const defaultModel = req.default_model != null ? String(req.default_model).trim() || null : null;
   const info = db.prepare(
-    `INSERT INTO ai_service_configs (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, endpoint, query_endpoint, priority, is_default, is_active, settings, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
+    `INSERT INTO ai_service_configs (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, endpoint, query_endpoint, priority, is_default, is_active, settings, logical_model_id, failover_enabled, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`
   ).run(
     serviceType,
     req.provider || '',
@@ -247,6 +247,8 @@ function createConfig(db, log, req) {
     req.priority ?? 0,
     req.is_default ? 1 : 0,
     settings,
+    req.logical_model_id != null ? String(req.logical_model_id).trim() || null : null,
+    req.failover_enabled ? 1 : 0,
     now,
     now
   );
@@ -326,6 +328,14 @@ function updateConfig(db, log, id, req) {
     updates.push('is_active = ?');
     params.push(req.is_active ? 1 : 0);
   }
+  if (req.logical_model_id !== undefined) {
+    updates.push('logical_model_id = ?');
+    params.push(req.logical_model_id != null ? String(req.logical_model_id).trim() || null : null);
+  }
+  if (typeof req.failover_enabled === 'boolean') {
+    updates.push('failover_enabled = ?');
+    params.push(req.failover_enabled ? 1 : 0);
+  }
   if (updates.length === 0) return existing;
   params.push(new Date().toISOString(), id);
   db.prepare('UPDATE ai_service_configs SET ' + updates.join(', ') + ', updated_at = ? WHERE id = ?').run(...params);
@@ -358,6 +368,11 @@ function rowToConfig(r) {
     priority: r.priority ?? 0,
     is_default: !!r.is_default,
     is_active: r.is_active == null ? true : !!r.is_active,
+    logical_model_id: r.logical_model_id ? String(r.logical_model_id).trim() : null,
+    failover_enabled: !!r.failover_enabled,
+    verification_status: r.verification_status || null,
+    verified_at: r.verified_at || null,
+    verification_evidence: r.verification_evidence || null,
     settings: r.settings,
     created_at: r.created_at,
     updated_at: r.updated_at,

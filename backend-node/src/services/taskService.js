@@ -1,5 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const creditLedger = require('./creditLedgerService');
+const providerReconciliation = require('./providerReconciliationService');
 
 function createTask(db, log, taskType, resourceId) {
   const id = uuidv4();
@@ -204,6 +205,11 @@ function cancelTask(db, log, taskId, reason) {
  * 进程内 setImmediate 任务在重启后会丢失；启动时将遗留的 pending/processing 标为失败，避免前端无限轮询。
  */
 function failOrphanedAsyncTasksOnStartup(db, log) {
+  try {
+    providerReconciliation.reconcileProviderRequests(db, log);
+  } catch (error) {
+    if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
+  }
   let rows;
   try {
     rows = db.prepare(
@@ -229,6 +235,17 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
     rows = rows.filter(
       (row) => row.type !== 'video_generation' || !resumableVideoTaskIds.has(row.id)
     );
+  } catch (error) {
+    if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
+  }
+  try {
+    const protectedReservations = new Set(db.prepare(`SELECT credit_reservation_id
+      FROM generation_route_requests
+      WHERE credit_reservation_id IS NOT NULL
+        AND state IN ('running', 'accepted', 'needs_attention')`).all()
+      .map((row) => row.credit_reservation_id));
+    rows = rows.filter((row) => !row.credit_reservation_id
+      || !protectedReservations.has(row.credit_reservation_id));
   } catch (error) {
     if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
   }

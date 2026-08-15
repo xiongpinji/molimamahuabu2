@@ -33,6 +33,7 @@ const billingRoutes = require('./billing');
 const alipayRechargeRoutes = require('./alipay-recharge');
 const tenantRoutes = require('./tenants');
 const platformAccountRoutes = require('./platformAccounts');
+const providerStabilityRoutes = require('./providerStability');
 const { createEmailService } = require('../services/emailService');
 const { createRateLimitMiddleware } = require('../middleware/rateLimit');
 const { createModelGenerationGuard } = require('../middleware/modelGenerationGuard');
@@ -85,6 +86,7 @@ function setupRouter(cfg, db, log) {
   const uploadHandlers = uploadModule.routes(cfg, log, db, { publicPlatformEnabled });
   const tenants = tenantRoutes(db, log);
   const platformAccounts = platformAccountRoutes(db, log);
+  const providerStability = providerStabilityRoutes(db, log);
   const requirePlatformPermission = (permission) => createPlatformPermissionMiddleware(
     permission,
     { enabled: publicPlatformEnabled },
@@ -159,6 +161,11 @@ function setupRouter(cfg, db, log) {
   r.put('/billing/plans/:planId', requireAdmin, requireBillingManager, billing.upsertPlan);
   r.get('/billing/prices', requireAdmin, requireBillingManager, billing.listPrices);
   r.put('/billing/prices/:model', requireAdmin, requireBillingManager, billing.updatePrice);
+  r.get('/admin/provider-stability/routes', requireAdmin, requireBillingManager, providerStability.listRoutes);
+  r.get('/admin/provider-stability/events', requireAdmin, requireBillingManager, providerStability.listEvents);
+  r.patch('/admin/provider-stability/routes/:configId', requireAdmin, requireBillingManager, providerStability.updateRoute);
+  r.post('/admin/provider-stability/routes/:configId/reset-health', requireAdmin, requireBillingManager, providerStability.resetHealth);
+  r.post('/admin/provider-stability/routes/:configId/verify-from-generation', requireAdmin, requireBillingManager, providerStability.verifyFromGeneration);
   r.get('/billing/admin/recharge-packages', requireAdmin, requireBillingManager, alipayRecharge.listAdminPackages);
   r.post('/billing/admin/recharge-packages', requireAdmin, requireBillingManager, alipayRecharge.createAdminPackage);
   r.post('/billing/admin/recharge-packages/image', requireAdmin, requireBillingManager, uploadHandlers.multerRechargePackageImageSingle, uploadHandlers.uploadRechargePackageImage);

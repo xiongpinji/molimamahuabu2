@@ -112,25 +112,32 @@ function list(db) {
     .filter((config) => config.is_active !== false
       && KIND_BY_SERVICE[config.service_type]
       && (!verifiedIds || verifiedIds.has(config.id)))
-    .flatMap((config) => parseModels(config.model, config.default_model).map((model) => {
-      const key = `${KIND_BY_SERVICE[config.service_type]}:${model.toLowerCase()}`;
-      if (seen.has(key)) return null;
-      seen.add(key);
-      const price = prices.get(model.toLowerCase());
-      return {
-        config_id: config.id,
-        kind: KIND_BY_SERVICE[config.service_type],
-        model,
-        label: price?.display_name || model,
-        credits: price?.credits || null,
-        billing_unit: price?.billing_unit || null,
-        resolution_prices: price?.resolution_prices || {},
-        capabilities: {
-          ...providerCapabilities(config.provider, model),
-          ...safeCapabilities(config.settings, model),
-        },
-      };
-    }))
+    .flatMap((config) => {
+      const logicalModel = String(config.logical_model_id || '').trim();
+      const routeModels = logicalModel ? [logicalModel] : parseModels(config.model, config.default_model);
+      return routeModels.map((model) => {
+        const key = `${KIND_BY_SERVICE[config.service_type]}:${model.toLowerCase()}`;
+        if (seen.has(key)) return null;
+        seen.add(key);
+        const price = prices.get(model.toLowerCase());
+        const capabilityModel = logicalModel
+          ? config.default_model || parseModels(config.model)[0]
+          : model;
+        return {
+          ...(logicalModel ? {} : { config_id: config.id }),
+          kind: KIND_BY_SERVICE[config.service_type],
+          model,
+          label: price?.display_name || model,
+          credits: price?.credits || null,
+          billing_unit: price?.billing_unit || null,
+          resolution_prices: price?.resolution_prices || {},
+          capabilities: {
+            ...providerCapabilities(config.provider, capabilityModel),
+            ...safeCapabilities(config.settings, capabilityModel),
+          },
+        };
+      });
+    })
     .filter(Boolean);
   if (verifiedIds === null) {
     for (const item of canvasProviderConfigService.listSafe()) {

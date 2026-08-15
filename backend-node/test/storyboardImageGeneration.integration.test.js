@@ -119,8 +119,9 @@ test('分镜图片通过本地 OpenAI 兼容供应商完成提交、轮询与结
     const configId = db.prepare(
       `INSERT INTO ai_service_configs
         (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
-         endpoint, is_active, is_default, priority, created_at, updated_at)
-       VALUES ('storyboard_image', 'openai', 'openai', ?, ?, ?, ?, ?, ?, 1, 1, 0, ?, ?)`
+         endpoint, is_active, is_default, priority, verification_status, verification_evidence,
+         created_at, updated_at)
+       VALUES ('storyboard_image', 'openai', 'openai', ?, ?, ?, ?, ?, ?, 1, 1, 0, 'verified', ?, ?, ?)`
     ).run(
       '本地图片回归供应商',
       providerBaseUrl,
@@ -128,6 +129,7 @@ test('分镜图片通过本地 OpenAI 兼容供应商完成提交、轮询与结
       JSON.stringify(['dall-e-3']),
       'dall-e-3',
       '/images/generations',
+      JSON.stringify({ source: 'local-integration-test' }),
       now,
       now
     ).lastInsertRowid;

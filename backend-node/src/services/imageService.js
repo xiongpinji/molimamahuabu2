@@ -1678,6 +1678,9 @@ async function processImageGeneration(db, log, imageGenId) {
       storage_local_path: storageLocalPath,
       system_prompt: apiSystemPrompt,
       negative_prompt: row.negative_prompt || undefined,
+      userId: row.user_id || undefined,
+      tenantId: row.tenant_id || undefined,
+      creditReservationId: row.credit_reservation_id || undefined,
       frame_identity_lock: isFrameIdentityLock,
     }));
     log.info('[图生] Step4 图生 API 返回', { id: imageGenId, api_ms: Date.now() - tApi, has_error: !!result.error, elapsed: elapsed() });
