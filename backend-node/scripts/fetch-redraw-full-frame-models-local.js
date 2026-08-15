@@ -58,12 +58,16 @@ const RUNTIME_PACKAGE_SPECS = Object.freeze([
   Object.freeze({ requirement: 'torch==2.3.1' }),
   Object.freeze({ requirement: 'torchvision==0.18.1' }),
   Object.freeze({ requirement: 'yolox==0.3.0', noDeps: true }),
+  Object.freeze({ requirement: 'pycocotools==2.0.11' }),
   Object.freeze({ requirement: 'loguru==0.7.2' }),
   Object.freeze({ requirement: 'tabulate==0.9.0' }),
   Object.freeze({ requirement: 'thop==0.1.1.post2209072238' }),
+  Object.freeze({ requirement: 'lap==0.5.13' }),
   Object.freeze({ requirement: 'mediapipe==0.10.14' }),
   Object.freeze({ requirement: 'paddlepaddle==2.6.2' }),
   Object.freeze({ requirement: 'paddleocr==2.8.1' }),
+  Object.freeze({ requirement: 'Cython==3.2.9' }),
+  Object.freeze({ requirement: 'cython-bbox==0.1.5' }),
 ]);
 const JSON_MAX_BYTES = 2 * 1024 * 1024;
 const LICENSE_MAX_BYTES = 2 * 1024 * 1024;

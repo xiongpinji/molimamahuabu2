@@ -468,10 +468,14 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   assert(installArgs.includes('mediapipe==0.10.14'));
   assert(installArgs.includes('paddlepaddle==2.6.2'));
   assert(installArgs.includes('paddleocr==2.8.1'));
+  assert(installArgs.includes('Cython==3.2.9'));
+  assert(installArgs.includes('cython-bbox==0.1.5'));
   assert(installArgs.includes('yolox==0.3.0'));
+  assert(installArgs.includes('pycocotools==2.0.11'));
   assert(installArgs.includes('loguru==0.7.2'));
   assert(installArgs.includes('tabulate==0.9.0'));
   assert(installArgs.includes('thop==0.1.1.post2209072238'));
+  assert(installArgs.includes('lap==0.5.13'));
   assert(installArgs.every((arg) => /^[A-Za-z0-9_.-]+==[A-Za-z0-9_.!+-]+$/.test(arg)));
   const yoloxInstallCalls = installCalls.filter((call) => call.args.includes('yolox==0.3.0'));
   assert.equal(yoloxInstallCalls.length, 1);
