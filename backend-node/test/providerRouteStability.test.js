@@ -150,9 +150,15 @@ test('route requests and attempts are idempotent and preserve accepted provider 
       { state: 'succeeded', final_config_id: configId },
     );
     assert.deepEqual(
-      db.prepare(`SELECT state, provider_task_id FROM generation_route_attempts
+      db.prepare(`SELECT state, provider_task_id, error_category, safe_error_summary
+        FROM generation_route_attempts
         WHERE request_id = ? AND attempt_no = 1`).get(first.id),
-      { state: 'succeeded', provider_task_id: 'provider-task-1' },
+      {
+        state: 'succeeded',
+        provider_task_id: 'provider-task-1',
+        error_category: null,
+        safe_error_summary: null,
+      },
     );
   } finally {
     db.close();

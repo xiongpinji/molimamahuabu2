@@ -82,7 +82,8 @@ function updateTaskResult(db, taskId, result) {
   const now = new Date().toISOString();
   const resultStr = typeof result === 'string' ? result : JSON.stringify(result || {});
   db.prepare(
-    `UPDATE async_tasks SET status = 'completed', progress = 100, result = ?, completed_at = ?, updated_at = ?
+    `UPDATE async_tasks SET status = 'completed', progress = 100, message = '', error = NULL,
+       result = ?, completed_at = ?, updated_at = ?
      WHERE id = ?`
   ).run(resultStr, now, now, taskId);
 }
@@ -206,7 +207,9 @@ function cancelTask(db, log, taskId, reason) {
  */
 function failOrphanedAsyncTasksOnStartup(db, log) {
   try {
-    providerReconciliation.reconcileProviderRequests(db, log);
+    providerReconciliation.reconcileProviderRequests(db, log, new Date().toISOString(), {
+      submittingGraceMs: 0,
+    });
   } catch (error) {
     if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
   }

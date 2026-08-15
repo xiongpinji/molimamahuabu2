@@ -420,6 +420,10 @@ test('主供应商明确未受理后备用成功只结算一次积分', async (t
   assert.deepEqual(creditLedgerService.getAccount(db, 'user-1'), {
     user_id: 'user-1', available: 60, held: 40, spent: 0,
   });
+  db.prepare(`UPDATE image_generations SET error_msg = 'stale unknown result' WHERE id = ?`)
+    .run(image.id);
+  db.prepare(`UPDATE async_tasks SET message = 'stale unknown result', error = 'stale error'
+    WHERE id = ?`).run(image.task_id);
   await scheduled[0]();
 
   assert.deepEqual(
@@ -429,6 +433,10 @@ test('主供应商明确未受理后备用成功只结算一次积分', async (t
   assert.deepEqual(creditLedgerService.getAccount(db, 'user-1'), {
     user_id: 'user-1', available: 60, held: 0, spent: 40,
   });
+  assert.deepEqual(
+    db.prepare('SELECT status, message, error FROM async_tasks WHERE id = ?').get(image.task_id),
+    { status: 'completed', message: '', error: null },
+  );
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count, 1);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM generation_route_attempts').get().count, 2);
 });

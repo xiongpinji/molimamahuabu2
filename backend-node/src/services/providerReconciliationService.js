@@ -10,10 +10,12 @@ const DEFINITE_FAILURES = new Set([
 ]);
 const UNKNOWN_MESSAGE = '供应商提交结果未知，等待管理员核对，请勿重新提交';
 const DEFAULT_INTERVAL_MS = 60_000;
+const DEFAULT_SUBMITTING_GRACE_MS = 20 * 60_000;
 let reconciliationTimer = null;
 
 function routeRows(db, limit = 100) {
   return db.prepare(`SELECT r.*, a.attempt_no, a.config_id, a.state AS attempt_state,
+      a.started_at AS attempt_started_at,
       a.provider_task_id, a.http_status, a.error_category
     FROM generation_route_requests r
     LEFT JOIN generation_route_attempts a ON a.id = (
@@ -24,6 +26,13 @@ function routeRows(db, limit = 100) {
     WHERE r.state IN ('running', 'accepted', 'failed', 'needs_attention')
     ORDER BY r.updated_at ASC
     LIMIT ?`).all(Math.min(Math.max(Number(limit) || 100, 1), 500));
+}
+
+function isStaleSubmitting(route, now, graceMs) {
+  if (route.attempt_state !== 'submitting') return false;
+  const startedAt = Date.parse(route.attempt_started_at || '');
+  if (!Number.isFinite(startedAt)) return true;
+  return Date.parse(now) - startedAt >= graceMs;
 }
 
 function hasEvent(db, requestId, eventType) {
@@ -109,6 +118,10 @@ function refundDefiniteFailure(db, route, now) {
 
 function reconcileProviderRequests(db, log, nowValue = new Date().toISOString(), options = {}) {
   const now = new Date(nowValue).toISOString();
+  const configuredGraceMs = Number(options.submittingGraceMs);
+  const submittingGraceMs = Number.isFinite(configuredGraceMs) && configuredGraceMs >= 0
+    ? configuredGraceMs
+    : DEFAULT_SUBMITTING_GRACE_MS;
   const summary = { processed: 0, needs_attention: 0, refunded: 0, resumable: 0 };
   for (const route of routeRows(db, options.limit)) {
     if (route.service_type === 'video' && route.provider_task_id) {
@@ -117,8 +130,10 @@ function reconcileProviderRequests(db, log, nowValue = new Date().toISOString(),
     }
     const artifactUnreadable = route.error_category === 'artifact_unreadable'
       || route.attempt_state === 'artifact_unreadable';
+    const staleSubmitting = isStaleSubmitting(route, now, submittingGraceMs);
     const uncertain = artifactUnreadable
-      || ['submitting', 'submission_unknown', 'result_unknown', 'forbidden_unknown']
+      || staleSubmitting
+      || ['submission_unknown', 'result_unknown', 'forbidden_unknown']
         .includes(route.attempt_state)
       || ['submission_unknown', 'result_unknown', 'forbidden_unknown']
         .includes(route.error_category)
