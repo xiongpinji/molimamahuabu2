@@ -1,0 +1,314 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+umask 077
+
+MOLI_ROOT="/opt/moli-drama"
+RELEASE_ROOT="${MOLI_ROOT}/releases"
+CURRENT_LINK="${MOLI_ROOT}/current"
+DATA_MOUNT="/root/data/disk"
+DATA_UUID="298334c3-1660-449c-8884-d6ed6c1da996"
+ARCHIVE_ROOT="${DATA_MOUNT}/moli-maintenance-archive/moli-drama-releases-auto"
+LOCK_FILE="/run/lock/moli-drama-release-archive.lock"
+
+KEEP_COUNT=40
+ROOT_TRIGGER_PERCENT=75
+DATA_STOP_PERCENT=75
+QUIET_SECONDS=1800
+MIN_AGE_SECONDS=86400
+DATA_RESERVE_BYTES=$((20 * 1024 * 1024 * 1024))
+
+MODE="dry-run"
+case "${1:---dry-run}" in
+  --dry-run) MODE="dry-run" ;;
+  --apply) MODE="apply" ;;
+  *)
+    echo "usage: $0 [--dry-run|--apply]" >&2
+    exit 64
+    ;;
+esac
+
+log() {
+  printf '%s [%s] %s\n' "$(date -Is)" "${MODE}" "$*"
+}
+
+fail() {
+  log "ERROR $*" >&2
+  exit 1
+}
+
+for command_name in awk basename blkid comm curl date df du find findmnt flock grep head install ionice mktemp mv nice pgrep readlink rm sort stat systemctl wc; do
+  command -v "${command_name}" >/dev/null 2>&1 || fail "missing command: ${command_name}"
+done
+
+[[ "${EUID}" -eq 0 ]] || fail "must run as root"
+[[ -d "${RELEASE_ROOT}" ]] || fail "release root is missing: ${RELEASE_ROOT}"
+[[ -L "${CURRENT_LINK}" ]] || fail "current link is missing: ${CURRENT_LINK}"
+
+exec 9>"${LOCK_FILE}"
+if ! flock -n 9; then
+  log "SKIP another archive check is running"
+  exit 0
+fi
+
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf -- "${tmp_dir}"' EXIT
+
+mount_is_safe() {
+  local source uuid
+  findmnt -rn -M "${DATA_MOUNT}" >/dev/null 2>&1 || return 1
+  source="$(findmnt -rn -o SOURCE -M "${DATA_MOUNT}")"
+  [[ -n "${source}" ]] || return 1
+  uuid="$(blkid -s UUID -o value "${source}" 2>/dev/null || true)"
+  [[ "${uuid}" == "${DATA_UUID}" ]]
+}
+
+current_release() {
+  local target
+  target="$(readlink -f -- "${CURRENT_LINK}")"
+  case "${target}" in
+    "${RELEASE_ROOT}"/*) printf '%s\n' "${target%%/backend-node}" ;;
+    *) return 1 ;;
+  esac
+}
+
+health_is_good() {
+  systemctl is-active --quiet moli-drama.service || return 1
+  curl -fsS --max-time 5 http://127.0.0.1:5679/health >/dev/null || return 1
+  curl -fsS --max-time 5 http://127.0.0.1:8787/health >/dev/null || return 1
+  curl -fsS --max-time 10 https://molimama.vip/drama-health >/dev/null || return 1
+  curl -fsS --max-time 10 https://molimama.vip/health >/dev/null || return 1
+}
+
+deployment_lock_is_held() {
+  local lock_path
+  for lock_path in \
+    "${MOLI_ROOT}/shared/deploy.lock" \
+    "${MOLI_ROOT}/.deploy.lock" \
+    "${MOLI_ROOT}/deploy.lock" \
+    "${MOLI_ROOT}/shared/.deploy.lock" \
+    "/run/lock/moli-drama-deploy.lock"; do
+    [[ -e "${lock_path}" ]] || continue
+    if ! flock -n "${lock_path}" true; then
+      log "SKIP deployment lock is held: ${lock_path}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+deployment_process_is_active() {
+  local pattern matches
+  pattern='(npm|pnpm|yarn).*(build|install|ci)|vite|rsync.*moli-drama|scp.*moli|cp .*(/opt/moli-drama|moli-drama)|tar .*(/opt/moli-drama|moli-drama)|ln .*moli-drama/current'
+  matches="$(pgrep -af "${pattern}" || true)"
+  if [[ -n "${matches}" ]]; then
+    log "SKIP deployment-like process is active"
+    printf '%s\n' "${matches}" | head -n 5
+    return 0
+  fi
+  return 1
+}
+
+other_release_workdir_is_active() {
+  local main_pid current path pid target
+  main_pid="$(systemctl show -p MainPID --value moli-drama.service)"
+  current="$(current_release)" || return 0
+
+  for path in /proc/[0-9]*/cwd; do
+    pid="${path#/proc/}"
+    pid="${pid%/cwd}"
+    target="$(readlink -f -- "${path}" 2>/dev/null || true)"
+    case "${target}" in
+      "${RELEASE_ROOT}"/*)
+        if [[ "${pid}" == "${main_pid}" && "${target}" == "${current}/backend-node" ]]; then
+          continue
+        fi
+        log "SKIP process ${pid} is using release workdir: ${target}"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+recent_release_activity_exists() {
+  local cutoff recent_target current_changed_at
+  cutoff=$(( $(date +%s) - QUIET_SECONDS ))
+  recent_target="$(find "${RELEASE_ROOT}" -mindepth 1 -maxdepth 1 \
+    \( -type d -o -type l \) -printf '%C@\t%p\n' \
+    | awk -F '\t' -v cutoff="${cutoff}" '$1 >= cutoff { print $2; exit }')"
+  current_changed_at="$(stat -c '%Z' -- "${CURRENT_LINK}")"
+
+  if [[ -n "${recent_target}" || "${current_changed_at}" -ge "${cutoff}" ]]; then
+    log "SKIP release activity occurred within ${QUIET_SECONDS} seconds"
+    [[ -n "${recent_target}" ]] && log "recent release: ${recent_target}"
+    return 0
+  fi
+  return 1
+}
+
+new_release_appeared() {
+  local current_names="${tmp_dir}/current-names"
+  find "${RELEASE_ROOT}" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort >"${current_names}"
+  comm -13 "${tmp_dir}/initial-names" "${current_names}" | grep -q .
+}
+
+release_is_referenced_now() {
+  local candidate="$1" link_path path target
+
+  target="$(current_release)" || return 0
+  [[ "${target}" == "${candidate}" ]] && return 0
+
+  while IFS= read -r -d '' link_path; do
+    target="$(readlink -f -- "${link_path}" 2>/dev/null || true)"
+    case "${target}" in
+      "${candidate}"|"${candidate}"/*) return 0 ;;
+    esac
+  done < <(find "${MOLI_ROOT}" -mindepth 1 -maxdepth 2 -type l -print0)
+
+  for path in /proc/[0-9]*/cwd; do
+    target="$(readlink -f -- "${path}" 2>/dev/null || true)"
+    case "${target}" in
+      "${candidate}"|"${candidate}"/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+mount_is_safe || fail "data disk is not mounted from expected UUID at ${DATA_MOUNT}"
+
+root_used_percent="$(df -P / | awk 'NR == 2 { gsub(/%/, "", $5); print $5 }')"
+data_used_percent="$(df -P "${DATA_MOUNT}" | awk 'NR == 2 { gsub(/%/, "", $5); print $5 }')"
+release_count="$(find "${RELEASE_ROOT}" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+
+log "STATE root_used=${root_used_percent}% data_used=${data_used_percent}% releases=${release_count} keep=${KEEP_COUNT}"
+
+if (( data_used_percent >= DATA_STOP_PERCENT )); then
+  log "ALERT data disk usage reached stop threshold: ${data_used_percent}%; archival paused and no files changed"
+  exit 0
+fi
+
+if (( root_used_percent < ROOT_TRIGGER_PERCENT && release_count <= KEEP_COUNT )); then
+  log "NOOP thresholds are healthy"
+  exit 0
+fi
+
+if deployment_lock_is_held || deployment_process_is_active || other_release_workdir_is_active || recent_release_activity_exists; then
+  exit 0
+fi
+
+health_is_good || fail "pre-archive health check failed"
+
+initial_current="$(current_release)" || fail "current release cannot be resolved"
+find "${RELEASE_ROOT}" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort >"${tmp_dir}/initial-names"
+
+declare -A protected=()
+protect_target() {
+  local raw="$1" target relative release_path
+  target="$(readlink -f -- "${raw}" 2>/dev/null || true)"
+  case "${target}" in
+    "${RELEASE_ROOT}"/*)
+      relative="${target#${RELEASE_ROOT}/}"
+      release_path="${RELEASE_ROOT}/${relative%%/*}"
+      protected["${release_path}"]=1
+      ;;
+  esac
+}
+
+protect_target "${CURRENT_LINK}"
+while IFS= read -r -d '' path; do
+  protect_target "${path}"
+done < <(find "${MOLI_ROOT}" -mindepth 1 -maxdepth 2 -type l -print0)
+while IFS= read -r path; do
+  protect_target "${path}"
+done < <(printf '%s\n' /proc/[0-9]*/cwd)
+while IFS=$'\t' read -r _ path; do
+  [[ -n "${path}" ]] && protected["${path}"]=1
+done < <(find "${RELEASE_ROOT}" -mindepth 1 -maxdepth 1 -type d -printf '%C@\t%p\n' \
+  | LC_ALL=C sort -nr | head -n "${KEEP_COUNT}")
+
+age_cutoff=$(( $(date +%s) - MIN_AGE_SECONDS ))
+candidates=()
+while IFS=$'\t' read -r changed_at path; do
+  [[ -n "${path}" ]] || continue
+  (( ${changed_at%.*} < age_cutoff )) || continue
+  [[ -z "${protected["${path}"]+present}" ]] || continue
+  candidates+=("${path}")
+done < <(find "${RELEASE_ROOT}" -mindepth 1 -maxdepth 1 -type d -printf '%C@\t%p\n' | LC_ALL=C sort -n)
+
+if (( ${#candidates[@]} == 0 )); then
+  log "NOOP no release is both unprotected and older than ${MIN_AGE_SECONDS} seconds"
+  exit 0
+fi
+
+log "CANDIDATES count=${#candidates[@]}"
+for path in "${candidates[@]}"; do
+  log "CANDIDATE ${path}"
+done
+
+if [[ "${MODE}" == "dry-run" ]]; then
+  log "DRY_RUN complete; no files changed"
+  exit 0
+fi
+
+install -d -m 0700 -- "${ARCHIVE_ROOT}"
+manifest="${ARCHIVE_ROOT}/archive-$(date +%Y%m%dT%H%M%S%z)-$$.tsv"
+printf 'source\tdestination\tbytes\tcompleted_at\n' >"${manifest}"
+
+moved=0
+for path in "${candidates[@]}"; do
+  mount_is_safe || fail "data disk mount changed during archive"
+
+  if deployment_lock_is_held || deployment_process_is_active || other_release_workdir_is_active; then
+    log "STOP deployment activity began during archive"
+    break
+  fi
+
+  if [[ "$(current_release)" != "${initial_current}" ]]; then
+    log "STOP current release changed during archive"
+    break
+  fi
+
+  if new_release_appeared; then
+    log "STOP a new release appeared during archive"
+    break
+  fi
+
+  [[ -d "${path}" && ! -L "${path}" ]] || {
+    log "SKIP candidate disappeared or changed type: ${path}"
+    continue
+  }
+
+  if release_is_referenced_now "${path}"; then
+    log "SKIP candidate became referenced: ${path}"
+    continue
+  fi
+
+  candidate_changed_at="$(stat -c '%Z' -- "${path}")"
+  if (( candidate_changed_at >= age_cutoff )); then
+    log "SKIP candidate changed after selection: ${path}"
+    continue
+  fi
+
+  destination="${ARCHIVE_ROOT}/$(basename -- "${path}")"
+  [[ ! -e "${destination}" ]] || fail "archive destination already exists: ${destination}"
+
+  candidate_bytes="$(du -s -B1 -- "${path}" | awk '{ print $1 }')"
+  data_available="$(df -B1 --output=avail "${DATA_MOUNT}" | awk 'NR == 2 { print $1 }')"
+  if (( data_available < candidate_bytes + DATA_RESERVE_BYTES )); then
+    fail "insufficient data disk headroom for ${path}"
+  fi
+
+  log "MOVE source=${path} bytes=${candidate_bytes}"
+  ionice -c3 nice -n 19 mv -- "${path}" "${ARCHIVE_ROOT}/"
+  printf '%s\t%s\t%s\t%s\n' "${path}" "${destination}" "${candidate_bytes}" "$(date -Is)" >>"${manifest}"
+  moved=$((moved + 1))
+
+  health_is_good || fail "health check failed after moving ${path}"
+done
+
+root_used_percent="$(df -P / | awk 'NR == 2 { gsub(/%/, "", $5); print $5 }')"
+data_used_percent="$(df -P "${DATA_MOUNT}" | awk 'NR == 2 { gsub(/%/, "", $5); print $5 }')"
+release_count="$(find "${RELEASE_ROOT}" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+health_is_good || fail "final health check failed"
+log "DONE moved=${moved} root_used=${root_used_percent}% data_used=${data_used_percent}% releases=${release_count} manifest=${manifest}"
