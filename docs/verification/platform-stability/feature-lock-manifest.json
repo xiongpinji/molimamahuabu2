@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "baselineCommit": "8f9a66cd708d5db96fbee573a2f4aa7de182a6fe",
+  "features": [
+    {
+      "featureId": "stability.provider-route-contract",
+      "module": "shared",
+      "status": "locked_fixed",
+      "acceptance": [
+        "逻辑模型与供应商配置分离，只有已验证且能力匹配的配置进入候选池",
+        "路由请求和供应商尝试具有稳定状态与幂等键"
+      ],
+      "protectedPaths": [
+        "backend-node/migrations/59_provider_route_stability.sql",
+        "backend-node/src/db/migrate.js",
+        "backend-node/src/services/aiConfigService.js",
+        "backend-node/src/services/providerRouteStabilityService.js"
+      ],
+      "requiredTests": [
+        "backend-node/test/providerRouteSchema.test.js",
+        "backend-node/test/providerRouteStability.test.js",
+        "backend-node/test/aiConfigPublicView.test.js",
+        "backend-node/test/canvasModelCatalogService.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
+        "docs/superpowers/plans/2026-08-15-platform-stability-foundation.md"
+      ],
+      "fixCommit": null,
+      "unlock": null
+    },
+    {
+      "featureId": "stability.safe-provider-failover",
+      "module": "shared",
+      "status": "locked_fixed",
+      "acceptance": [
+        "图片、视频和文本只在明确未受理且同逻辑模型同能力的已验证配置间切换",
+        "策略拒绝、参数错误、结果未知和不可读产物均不得自动重提"
+      ],
+      "protectedPaths": [
+        "backend-node/src/services/providerErrorClassifier.js",
+        "backend-node/src/services/imageClient.js",
+        "backend-node/src/services/imageService.js",
+        "backend-node/src/services/videoClient.js",
+        "backend-node/src/services/videoService.js",
+        "backend-node/src/services/aiClient.js"
+      ],
+      "requiredTests": [
+        "backend-node/test/providerErrorClassification.test.js",
+        "backend-node/test/providerRouteImageIntegration.test.js",
+        "backend-node/test/providerRouteVideoIntegration.test.js",
+        "backend-node/test/providerRouteTextIntegration.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
+        "docs/superpowers/plans/2026-08-15-platform-stability-foundation.md"
+      ],
+      "fixCommit": null,
+      "unlock": null
+    },
+    {
+      "featureId": "stability.unknown-state-billing-reconciliation",
+      "module": "shared",
+      "status": "locked_fixed",
+      "acceptance": [
+        "提交或结果未知时任务进入人工核对且积分保持冻结",
+        "只有明确失败且未创建供应商任务时自动退款，重复对账幂等"
+      ],
+      "protectedPaths": [
+        "backend-node/src/app.js",
+        "backend-node/src/services/taskService.js",
+        "backend-node/src/services/billingReconciliationService.js",
+        "backend-node/src/services/providerReconciliationService.js",
+        "backend-node/src/services/text-generation-billing-service.js"
+      ],
+      "requiredTests": [
+        "backend-node/test/providerReconciliation.test.js",
+        "backend-node/test/billingReconciliation.test.js",
+        "backend-node/test/taskService.test.js",
+        "backend-node/test/text-generation-billing.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
+        "docs/superpowers/plans/2026-08-15-platform-stability-foundation.md"
+      ],
+      "fixCommit": null,
+      "unlock": null
+    },
+    {
+      "featureId": "stability.admin-provider-observability",
+      "module": "shared",
+      "status": "locked_fixed",
+      "acceptance": [
+        "管理员可查看模型中转关联、健康熔断、任务积分状态与安全告警摘要",
+        "普通用户目录和生成界面不暴露中转、配置 ID、成本、密钥或内部错误"
+      ],
+      "protectedPaths": [
+        "backend-node/src/routes/aiConfig.js",
+        "backend-node/src/routes/index.js",
+        "backend-node/src/routes/providerStability.js",
+        "backend-node/src/services/canvasModelCatalogService.js",
+        "frontweb/src/api/providerStability.js",
+        "frontweb/src/components/AIConfigContent.vue",
+        "frontweb/src/components/ProviderStabilityPanel.vue"
+      ],
+      "requiredTests": [
+        "backend-node/test/providerRouteAdminRoutes.test.js",
+        "backend-node/test/aiConfigPublicView.test.js",
+        "frontweb/test/providerStabilityAdmin.test.js",
+        "frontweb/test/aiConfigRelayAssociation.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
+        "docs/superpowers/plans/2026-08-15-platform-stability-foundation.md"
+      ],
+      "fixCommit": null,
+      "unlock": null
+    }
+  ]
+}
