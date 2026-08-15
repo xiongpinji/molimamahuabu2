@@ -25,6 +25,14 @@ const INPUT_FIELDS = new Set([
   'coverage_review',
 ]);
 const REQUIRED_VIEWS = new Set(['front', 'profile', 'full_body']);
+const SILENCE_TOKENS = new Set([
+  'silence',
+  '[silence]',
+  '(silence)',
+  'silent',
+  'no dialogue',
+  '[no dialogue]',
+]);
 
 function codedError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -57,6 +65,17 @@ function parseJson(value, fallback) {
     return parsed && typeof parsed === 'object' ? parsed : fallback;
   } catch (_) {
     return fallback;
+  }
+}
+
+function parseDialogueArray(value) {
+  try {
+    const parsed = Array.isArray(value) ? value : JSON.parse(value);
+    if (!Array.isArray(parsed)) fail(DIALOGUE_CODE);
+    return parsed;
+  } catch (error) {
+    if (error?.code === DIALOGUE_CODE) throw error;
+    fail(DIALOGUE_CODE);
   }
 }
 
@@ -372,30 +391,54 @@ function containsChinese(value) {
   return /[\u3400-\u9fff]/.test(JSON.stringify(value));
 }
 
+function isSilenceToken(value) {
+  return SILENCE_TOKENS.has(String(value || '').trim().toLowerCase().replace(/\s+/g, ' '));
+}
+
 function verifyDialogue(shot, nameMap, boundCharacters) {
   if (shot.locale !== 'en-US' || shot.market !== 'US') fail(DIALOGUE_CODE);
   const facts = parseJson(shot.source_facts_json, {});
-  if (!HEX_64.test(String(facts.script_sha256 || '')) || facts.name_map_source_sha256 !== sha256(stableJson(nameMap))) {
+  if (!HEX_64.test(String(facts.script_sha256 || ''))
+    || facts.name_map_source_sha256 !== sha256(stableJson(nameMap))
+    || containsChinese(nameMap)) {
     fail(DIALOGUE_CODE);
   }
-  const dialogue = parseJson(shot.localized_dialogue_json, []);
-  if (!Array.isArray(dialogue) || dialogue.length === 0 || containsChinese(dialogue) || containsChinese(nameMap)) fail(DIALOGUE_CODE);
+  const sourceDialogue = parseDialogueArray(shot.source_dialogue_json);
+  const dialogue = parseDialogueArray(shot.localized_dialogue_json);
+  const sourceSilent = sourceDialogue.length === 0;
+  const localizedSilent = dialogue.length === 0;
+  if (sourceSilent !== localizedSilent) fail(DIALOGUE_CODE);
+  const common = {
+    localized_script_version_id: Number(shot.version_id),
+    target_locale: shot.locale,
+    script_sha256: facts.script_sha256,
+    character_name_map_sha256: sha256(stableJson(nameMap)),
+  };
+  if (sourceSilent) {
+    return {
+      ...common,
+      kind: 'silent',
+      speech_required: false,
+      turns: [],
+    };
+  }
+  if (containsChinese(dialogue)) fail(DIALOGUE_CODE);
   const normalized = dialogue.map((entry) => {
+    assertPlainObject(entry, DIALOGUE_CODE);
     const speaker = String(entry.speaker_id || '').trim();
     const text = String(entry.localized_text || '').trim();
     const start = Number(entry.start_ms);
     const end = Number(entry.end_ms);
-    if (!boundCharacters.has(speaker) || !nameMap[speaker] || !text
+    if (!boundCharacters.has(speaker) || !nameMap[speaker] || !text || isSilenceToken(text)
       || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start >= end || end > Number(shot.duration_ms)) {
       fail(DIALOGUE_CODE);
     }
     return { speaker_id: speaker, localized_text: text, start_ms: start, end_ms: end };
   }).sort((a, b) => a.start_ms - b.start_ms || a.end_ms - b.end_ms || a.speaker_id.localeCompare(b.speaker_id));
   return {
-    localized_script_version_id: Number(shot.version_id),
-    target_locale: shot.locale,
-    script_sha256: facts.script_sha256,
-    character_name_map_sha256: sha256(stableJson(nameMap)),
+    ...common,
+    kind: 'spoken',
+    speech_required: true,
     turns: normalized,
   };
 }
@@ -616,11 +659,28 @@ function buildGenerationPrompt(bundle, identityBindings) {
   const characterLines = identityBindings.map((entry) => (
     `- ${entry.source_character_key}: ${entry.target_character_name}, portrayed by ${entry.target_actor_label}`
   ));
-  const dialogueLines = bundle.dialogue.turns.map((turn) => {
-    const speaker = nameByCharacter.get(turn.speaker_id);
-    if (!speaker) fail(PROJECTION_CODE);
-    return `- ${promptTimeRange(turn)} ${speaker}: ${turn.localized_text}`;
-  });
+  let dialogueSection;
+  if (bundle.dialogue.kind === 'spoken' && bundle.dialogue.speech_required === true) {
+    const dialogueLines = bundle.dialogue.turns.map((turn) => {
+      const speaker = nameByCharacter.get(turn.speaker_id);
+      if (!speaker) fail(PROJECTION_CODE);
+      return `- ${promptTimeRange(turn)} ${speaker}: ${turn.localized_text}`;
+    });
+    dialogueSection = [
+      'Dialogue mode: spoken.',
+      'English dialogue timing:',
+      ...dialogueLines,
+      'Generate synchronized US English speech audio for the approved dialogue timing only.',
+    ];
+  } else if (bundle.dialogue.kind === 'silent' && bundle.dialogue.speech_required === false) {
+    dialogueSection = [
+      'Dialogue mode: silent.',
+      'Do not generate spoken dialogue, voiceover, narration, chanting, or intelligible vocalization.',
+      'Generate only scene-appropriate non-speech ambience and action sound effects.',
+    ];
+  } else {
+    fail(PROJECTION_CODE);
+  }
   return [
     'Create a 1:1 live-action redraw of this short-drama shot for a US English audience.',
     'Use the approved fictional AI-generated adult character references and the silent motion reference only.',
@@ -628,9 +688,8 @@ function buildGenerationPrompt(bundle, identityBindings) {
     'Target locale: en-US.',
     'Character mapping:',
     ...characterLines,
-    'English dialogue timing:',
-    ...dialogueLines,
-    'Generate synchronized English speech audio. Do not include any Chinese subtitles, Chinese dialogue, watermarks, URLs, file paths, keys, or authorization text.',
+    ...dialogueSection,
+    'Do not include any Chinese subtitles, Chinese dialogue, watermarks, URLs, file paths, keys, or authorization text.',
   ].join('\n');
 }
 
@@ -678,6 +737,8 @@ async function projectReferenceBundleForGeneration(rawCtx, shotId) {
         coverage_sha256: bundle.coverage_sha256,
         source_sha256: bundle.source.sha256,
         motion_sha256: bundle.motion_reference.sha256,
+        dialogue_kind: bundle.dialogue.kind,
+        speech_required: bundle.dialogue.speech_required,
         dialogue_script_sha256: bundle.dialogue.script_sha256,
         character_name_map_sha256: bundle.dialogue.character_name_map_sha256,
       },

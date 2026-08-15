@@ -215,6 +215,10 @@ function addShot(db, versionId, overrides = {}) {
     db.prepare('UPDATE redraw_shots SET localized_dialogue_json = ? WHERE id = ?')
       .run(overrides.localized_dialogue_json, shotId);
   }
+  if (Object.prototype.hasOwnProperty.call(overrides, 'source_dialogue_json')) {
+    db.prepare('UPDATE redraw_shots SET source_dialogue_json = ? WHERE id = ?')
+      .run(overrides.source_dialogue_json, shotId);
+  }
   return shotId;
 }
 
@@ -584,6 +588,10 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
       aspect_ratio: '16:9',
     },
     prompt: '镜头原始中文 prompt 也不允许进入供应商。',
+    source_dialogue_json: JSON.stringify([
+      { speaker_id: 'character-001', text: '跟我走。', start_ms: 0, end_ms: 2400 },
+      { speaker_id: 'character-002', text: '没有证据我不走。', start_ms: 2500, end_ms: 5000 },
+    ]),
     localized_dialogue_json: JSON.stringify([
       { speaker_id: 'character-001', localized_text: 'Come with me.', start_ms: 0, end_ms: 2400 },
       { speaker_id: 'character-002', localized_text: 'Not without proof.', start_ms: 2500, end_ms: 5000 },

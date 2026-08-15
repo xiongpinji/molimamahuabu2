@@ -43,6 +43,19 @@ function setup(overrides = {}) {
   const now = INITIAL_UPDATED_AT;
   const nameMap = overrides.nameMap || { 'character-001': 'Ethan', 'character-002': 'Maya' };
   const facts = sourceFacts(nameMap, overrides.sourceFacts || {});
+  const sourceDialogueJson = Object.prototype.hasOwnProperty.call(overrides, 'source_dialogue_json')
+    ? overrides.source_dialogue_json
+    : JSON.stringify(Object.prototype.hasOwnProperty.call(overrides, 'sourceDialogue')
+      ? overrides.sourceDialogue
+      : [{ speaker_id: 'character-001', text: '跟我走。', start_ms: 0, end_ms: 2400 }]);
+  const localizedDialogueJson = Object.prototype.hasOwnProperty.call(overrides, 'localized_dialogue_json')
+    ? overrides.localized_dialogue_json
+    : JSON.stringify(Object.prototype.hasOwnProperty.call(overrides, 'dialogue')
+      ? overrides.dialogue
+      : [
+        { speaker_id: 'character-001', localized_text: 'Come with me.', start_ms: 0, end_ms: 2400 },
+        { speaker_id: 'character-002', localized_text: 'Not without proof.', start_ms: 2500, end_ms: 5000 },
+      ]);
   const sourceAssetId = insertAsset(db, {
     id: 101,
     type: 'video',
@@ -82,11 +95,8 @@ function setup(overrides = {}) {
     .run(
       workId,
       versionId,
-      JSON.stringify([{ speaker_id: 'character-001', text: '跟我走。', start_ms: 0, end_ms: 2400 }]),
-      JSON.stringify(overrides.dialogue || [
-        { speaker_id: 'character-001', localized_text: 'Come with me.', start_ms: 0, end_ms: 2400 },
-        { speaker_id: 'character-002', localized_text: 'Not without proof.', start_ms: 2500, end_ms: 5000 },
-      ]),
+      sourceDialogueJson,
+      localizedDialogueJson,
       now,
       now,
     ).lastInsertRowid);
@@ -565,6 +575,8 @@ test('保存参考包时规范排序、脱敏并写入稳定哈希', async () =>
     assert.deepEqual(bundle.text_regions.map((entry) => entry.region_key), ['text-001', 'text-002']);
     assert.equal(bundle.dialogue.localized_script_version_id, state.versionId);
     assert.equal(bundle.dialogue.target_locale, 'en-US');
+    assert.equal(bundle.dialogue.kind, 'spoken');
+    assert.equal(bundle.dialogue.speech_required, true);
     assert.equal(bundle.dialogue.script_sha256, '5'.repeat(64));
     assert.equal(bundle.dialogue.character_name_map_sha256, sha256(stableJson({ 'character-001': 'Ethan', 'character-002': 'Maya' })));
     assert.deepEqual(bundle.dialogue.turns.map((entry) => entry.speaker_id), ['character-001', 'character-002']);
@@ -611,6 +623,9 @@ test('重读参考包时重新校验并投影生成用白名单 URL', async () =
     ].sort());
     assert.equal(projected.targetLocale, 'en-US');
     assert.equal(projected.generateAudio, true);
+    assert.match(projected.prompt, /Dialogue mode: spoken\./);
+    assert.match(projected.prompt, /English dialogue timing:/);
+    assert.match(projected.prompt, /Generate synchronized US English speech audio for the approved dialogue timing only\./);
     assert.match(projected.prompt, /Ethan/);
     assert.match(projected.prompt, /Maya/);
     assert.match(projected.prompt, /Come with me\./);
@@ -637,11 +652,163 @@ test('重读参考包时重新校验并投影生成用白名单 URL', async () =
       coverage_sha256: loaded.bundle.coverage_sha256,
       source_sha256: SOURCE_FINGERPRINT,
       motion_sha256: MOTION_SHA256,
+      dialogue_kind: 'spoken',
+      speech_required: true,
       dialogue_script_sha256: loaded.bundle.dialogue.script_sha256,
       character_name_map_sha256: loaded.bundle.dialogue.character_name_map_sha256,
     });
     assert.equal(JSON.stringify(projected).includes('source/source.mp4'), false);
     assert.equal(JSON.stringify(projected).includes('sk-'), false);
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('静默对白保存、重读并投影为非人声环境音合同', async () => {
+  const state = setup({ sourceDialogue: [], dialogue: [] });
+  try {
+    const saved = await saveReferenceBundle(ctx(state), validInput(state));
+    assert.equal(saved.bundle.dialogue.kind, 'silent');
+    assert.equal(saved.bundle.dialogue.speech_required, false);
+    assert.deepEqual(saved.bundle.dialogue.turns, []);
+    assert.equal(canonicalBundleHash(saved.bundle), saved.reference_bundle_hash);
+
+    const loaded = await loadCurrentReferenceBundle(ctx(state), state.shotId);
+    assert.deepEqual(loaded.bundle.dialogue, saved.bundle.dialogue);
+
+    const projected = await projectReferenceBundleForGeneration(ctx(state, {
+      createReferenceUrl({ asset_id: assetId, kind }) {
+        return `/static/redraw-reference/${kind}/${assetId}`;
+      },
+    }), state.shotId);
+    assert.equal(projected.generateAudio, true);
+    assert.equal(projected.identityBindings.length, 2);
+    assert.equal(projected.referenceImageUrls.length, 2);
+    assert.match(projected.prompt, /Dialogue mode: silent\./);
+    assert.match(projected.prompt, /Do not generate spoken dialogue, voiceover, narration, chanting, or intelligible vocalization\./);
+    assert.match(projected.prompt, /Generate only scene-appropriate non-speech ambience and action sound effects\./);
+    assert.equal(projected.prompt.includes('English dialogue timing:'), false);
+    assert.equal(projected.prompt.includes('Generate synchronized US English speech audio'), false);
+    assert.equal(/[\u3400-\u9fff]/.test(projected.prompt), false);
+    assert.equal(projected.prompt.includes('source/source.mp4'), false);
+    assert.equal(projected.prompt.includes('http://'), false);
+    assert.equal(projected.prompt.includes('https://'), false);
+    assert.equal(projected.prompt.includes('sk-'), false);
+    assert.equal(projected.prompt.includes('Authorization'), false);
+    assert.deepEqual(projected.referenceBundleSnapshot, {
+      schema_version: 'redraw-reference-bundle-v1',
+      coverage_sha256: loaded.bundle.coverage_sha256,
+      source_sha256: SOURCE_FINGERPRINT,
+      motion_sha256: MOTION_SHA256,
+      dialogue_kind: 'silent',
+      speech_required: false,
+      dialogue_script_sha256: loaded.bundle.dialogue.script_sha256,
+      character_name_map_sha256: loaded.bundle.dialogue.character_name_map_sha256,
+    });
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('源与本地化对白空值不一致、非法 JSON 或非数组时拒绝且不写入', async () => {
+  const cases = [
+    { name: 'source only empty', overrides: { sourceDialogue: [] } },
+    { name: 'localized only empty', overrides: { dialogue: [] } },
+    { name: 'source invalid json', overrides: { source_dialogue_json: '{' } },
+    { name: 'localized invalid json', overrides: { localized_dialogue_json: '[' } },
+    { name: 'source non-array', overrides: { source_dialogue_json: '{}' } },
+    { name: 'localized non-array', overrides: { localized_dialogue_json: '"dialogue"' } },
+  ];
+  for (const entry of cases) {
+    const state = setup(entry.overrides);
+    try {
+      await assertRejectsUnchanged(
+        state,
+        validInput(state),
+        'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED',
+      );
+    } finally {
+      state.cleanup();
+    }
+  }
+});
+
+test('spoken 对白拒绝六种精确静默伪装文本且不写入', async () => {
+  const tokens = [' SILENCE ', ' [SILENCE] ', '(silence)', ' silent ', 'no   dialogue', ' [no\tdialogue] '];
+  for (const localizedText of tokens) {
+    const state = setup({
+      dialogue: [{ speaker_id: 'character-001', localized_text: localizedText, start_ms: 0, end_ms: 1000 }],
+    });
+    try {
+      await assertRejectsUnchanged(
+        state,
+        validInput(state),
+        'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED',
+      );
+    } finally {
+      state.cleanup();
+    }
+  }
+});
+
+test('静默对白不绕过人脸、身份、文字或运动参考门禁', async () => {
+  const state = setup({ sourceDialogue: [], dialogue: [] });
+  try {
+    await assertRejectsUnchanged(
+      state,
+      mutateInput(state, (input) => { input.face_tracks.pop(); }),
+      'REDRAW_REFERENCE_BUNDLE_FACE_COVERAGE_REQUIRED',
+    );
+
+    updateRedrawAsset(state.db, state.actorAId, { approval_status: 'pending' });
+    await assertRejectsUnchanged(
+      state,
+      validInput(state),
+      'REDRAW_REFERENCE_BUNDLE_IDENTITY_PACK_REQUIRED',
+    );
+    updateRedrawAsset(state.db, state.actorAId, { approval_status: 'approved' });
+
+    updateRedrawAsset(state.db, state.subtitleCleanId, { approval_status: 'pending' });
+    await assertRejectsUnchanged(
+      state,
+      validInput(state),
+      'REDRAW_REFERENCE_BUNDLE_TEXT_COVERAGE_REQUIRED',
+    );
+    updateRedrawAsset(state.db, state.subtitleCleanId, { approval_status: 'approved' });
+
+    updateJsonColumn(state.db, 'assets', state.motionAssetId, 'metadata', (metadata) => {
+      metadata.redraw_motion_reference.source_fingerprint = '0'.repeat(64);
+    });
+    await assertRejectsUnchanged(
+      state,
+      validInput(state),
+      'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE',
+    );
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('旧包缺少对白模式字段时即使重算哈希也拒绝重读和投影且不升级 DB', async () => {
+  const state = setup();
+  try {
+    await saveReferenceBundle(ctx(state), validInput(state));
+    const legacyBundle = JSON.parse(currentShot(state.db, state.shotId).reference_bundle_json);
+    delete legacyBundle.dialogue.kind;
+    delete legacyBundle.dialogue.speech_required;
+    state.db.prepare('UPDATE redraw_shots SET reference_bundle_json = ?, reference_bundle_hash = ? WHERE id = ?')
+      .run(JSON.stringify(legacyBundle), canonicalBundleHash(legacyBundle), state.shotId);
+    const before = currentShot(state.db, state.shotId);
+
+    const loadError = await captureAnyError(() => loadCurrentReferenceBundle(ctx(state), state.shotId));
+    assert.equal(loadError.code, 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED');
+    const projectionError = await captureAnyError(() => projectReferenceBundleForGeneration(ctx(state, {
+      createReferenceUrl() {
+        return '/static/redraw-reference/unused';
+      },
+    }), state.shotId));
+    assert.equal(projectionError.code, 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED');
+    assertShotUnchanged(state.db, state.shotId, before);
   } finally {
     state.cleanup();
   }
