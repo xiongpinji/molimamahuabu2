@@ -385,7 +385,7 @@ def _default_person_factory(artifact_path):
         exp_module = importlib.import_module("yolox.exp")
         data_module = importlib.import_module("yolox.data.data_augment")
         utils_module = importlib.import_module("yolox.utils")
-        exp = exp_module.get_exp(None, None)
+        exp = exp_module.get_exp(None, "yolox-s")
         model = exp.get_model()
         checkpoint = torch.load(artifact_path, map_location="cpu")
         model.load_state_dict(checkpoint.get("model", checkpoint))

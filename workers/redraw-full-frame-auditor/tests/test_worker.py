@@ -432,6 +432,62 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertNotIn("_frame_width", json.dumps(result))
         self.assertNotIn("_frame_height", json.dumps(result))
 
+    def test_default_person_factory_loads_yolox_s_exp_for_locked_artifact(self):
+        events = []
+
+        class FakeModel:
+            def load_state_dict(self, checkpoint):
+                events.append(("load_state_dict", checkpoint))
+
+            def eval(self):
+                events.append(("eval",))
+
+        class FakeExpModule:
+            def get_exp(self, exp_file, exp_name):
+                events.append(("get_exp", exp_file, exp_name))
+                if (exp_file, exp_name) != (None, "yolox-s"):
+                    raise AssertionError("plz provide exp file or exp name")
+                return worker.SimpleNamespace(
+                    get_model=lambda: FakeModel(),
+                    test_size=(640, 640),
+                    test_conf=0.3,
+                    nmsthre=0.5,
+                    num_classes=80,
+                )
+
+        class FakeTorch:
+            def load(self, artifact_path, map_location):
+                events.append(("torch_load", artifact_path, map_location))
+                return {"model": {"weight": "locked-yolox-s"}}
+
+        class FakeDataModule:
+            class ValTransform:
+                def __init__(self, legacy):
+                    events.append(("ValTransform", legacy))
+
+        fake_modules = {
+            "cv2": worker.SimpleNamespace(),
+            "torch": FakeTorch(),
+            "yolox.exp": FakeExpModule(),
+            "yolox.data.data_augment": FakeDataModule,
+            "yolox.utils": worker.SimpleNamespace(postprocess=lambda *_args: []),
+        }
+        artifact_path = "C:/models/person_detector/yolox_s.pth"
+        original_import_module = worker.importlib.import_module
+        try:
+            worker.importlib.import_module = lambda name: fake_modules[name]
+            context = worker._default_person_factory(artifact_path)
+        finally:
+            worker.importlib.import_module = original_import_module
+
+        self.assertIn(("get_exp", None, "yolox-s"), events)
+        self.assertIn(("torch_load", artifact_path, "cpu"), events)
+        self.assertIn(("load_state_dict", {"weight": "locked-yolox-s"}), events)
+        self.assertIn(("eval",), events)
+        self.assertEqual(context.input_size, (640, 640))
+        self.assertEqual(context.conf, 0.3)
+        self.assertEqual(context.nms, 0.5)
+
     def test_bytetrack_empty_persons_uses_empty_nx5_detections(self):
         events = []
 
