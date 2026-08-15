@@ -52,7 +52,7 @@ function validateCanvasEntry(content, relativePath) {
   const section = functionSection(content, 'freeCanvasReferenceCandidates');
   requireMatch(
     section,
-    /buildFreeCanvasReferenceMentionCandidates\(/,
+    /return buildFreeCanvasReferenceMentionCandidates\([\s\S]*collectDirectUpstreamImageReferences\(/,
     `${relativePath} 必须复用统一序号候选构造器`,
   );
   requireMatch(

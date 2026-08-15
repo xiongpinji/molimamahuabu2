@@ -85,7 +85,7 @@ test('门禁拒绝视频节点为模型未采用的参考图生成 mention token
   const root = createFixture(t);
   const target = path.join(root, 'frontweb/src/views/DramaCanvas.vue');
   const source = fs.readFileSync(target, 'utf8')
-    .replace('buildFreeCanvasReferenceMentionCandidates(\n    adoptedReferences,', 'buildFreeCanvasReferenceMentionCandidates(\n    references,');
+    .replace('buildFreeCanvasReferenceMentionCandidates(\n    adoptedReferences(', 'buildFreeCanvasReferenceMentionCandidates(\n    ((references) => references)(');
   fs.writeFileSync(target, source);
 
   assert.throws(
