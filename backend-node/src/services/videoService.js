@@ -163,6 +163,8 @@ const generationCost = require('./generationCostLedgerService');
 const modelPrice = require('./modelPriceService');
 const auditEvent = require('./auditEventService');
 const voicePrompt = require('./storyboardVoicePromptService');
+const providerRouteStability = require('./providerRouteStabilityService');
+const { classifyProviderFailure } = require('./providerErrorClassifier');
 const { getFfmpegPath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
 
 function loadStoryboardVideoDefaults(db, storyboardId) {
@@ -198,6 +200,53 @@ function settleVideoCredit(db, log, row, outcome, message = '') {
     log?.error('视频积分结算失败，保留原预扣状态', { id: row.id, error: error.message });
     return null;
   }
+}
+
+function getVideoRouteAttempt(db, videoGenId) {
+  try {
+    return db.prepare(`SELECT r.id AS request_id, r.logical_model_id, r.tenant_id,
+        a.attempt_no, a.config_id
+      FROM generation_route_requests r
+      JOIN generation_route_attempts a ON a.request_id = r.id
+      WHERE r.business_type = 'video_generation' AND r.business_id = ?
+      ORDER BY a.attempt_no DESC LIMIT 1`).get(String(videoGenId)) || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function markVideoArtifactUnreadable(db, videoGenId) {
+  const route = getVideoRouteAttempt(db, videoGenId);
+  if (!route) return false;
+  const classification = classifyProviderFailure({ httpStatus: 200, artifactReadable: false });
+  providerRouteStability.finishAttempt(db, {
+    requestId: route.request_id,
+    attemptNo: route.attempt_no,
+    state: classification.category,
+    httpStatus: 200,
+    errorCategory: classification.category,
+  });
+  providerRouteStability.recordFailureAndHealth(db, {
+    requestId: route.request_id,
+    tenantId: route.tenant_id,
+    configId: route.config_id,
+    logicalModelId: route.logical_model_id,
+    classification,
+  });
+  db.prepare("UPDATE generation_route_requests SET state = 'needs_attention', updated_at = ? WHERE id = ?")
+    .run(new Date().toISOString(), route.request_id);
+  return true;
+}
+
+function markVideoArtifactVerified(db, videoGenId) {
+  const route = getVideoRouteAttempt(db, videoGenId);
+  if (!route) return false;
+  providerRouteStability.recordArtifactVerified(db, {
+    requestId: route.request_id,
+    attemptNo: route.attempt_no,
+    configId: route.config_id,
+  });
+  return true;
 }
 
 function normalizeVideoDuration(value, fallback = 5) {
@@ -729,11 +778,21 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     downloadError = downloaded.error || null;
     maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
     boundaryFrames = extractVideoBoundaryFrames(storagePath, localPath, videoGenId, log);
-  } catch (_) {}
-  if (downloadError) {
-    setVideoGenFailed(db, videoGenId, downloadError, now);
-    if (row.task_id) taskService.updateTaskError(db, row.task_id, downloadError);
-    log.error('Video generation failed before completion', { id: videoGenId, error: downloadError });
+  } catch (error) {
+    downloadError = error?.message || '视频产物下载或校验失败';
+  }
+  if (!localPath) {
+    const message = downloadError || '供应商视频链接暂时不可读取，请勿重新提交，等待管理员核对';
+    if (markVideoArtifactUnreadable(db, videoGenId)) {
+      db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
+        .run('processing', message.slice(0, 500), now, videoGenId);
+      if (row.task_id) taskService.updateTaskStatus(db, row.task_id, 'processing', 90, message);
+      log.warn('Video artifact unreadable; request held for review', { id: videoGenId });
+      return false;
+    }
+    setVideoGenFailed(db, videoGenId, message, now);
+    if (row.task_id) taskService.updateTaskError(db, row.task_id, message);
+    log.error('Video generation failed before completion', { id: videoGenId, error: message });
     return false;
   }
   const deliveryWarning = localVideoDeliveryWarning(localPath);
@@ -782,6 +841,7 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
       status: 'completed',
     });
   }
+  markVideoArtifactVerified(db, videoGenId);
   settleVideoCredit(db, log, row, 'completed');
   log.info('Video generation completed' + (logLabel ? ` (${logLabel})` : ''), {
     id: videoGenId,
@@ -851,7 +911,9 @@ async function resumePollForVideoGeneration(db, log, videoGenId) {
   const providerTaskId = row.provider_task_id && String(row.provider_task_id).trim();
   if (!providerTaskId) return;
 
-  const config = videoClient.getDefaultVideoConfig(db, row.model);
+  const config = row.config_id
+    ? videoClient.getVideoConfigById(db, row.config_id)
+    : videoClient.getDefaultVideoConfig(db, row.model);
   if (!config) {
     const now = new Date().toISOString();
     setVideoGenFailed(db, videoGenId, '未配置视频模型', now);
@@ -874,8 +936,10 @@ async function resumePollForVideoGeneration(db, log, videoGenId) {
     await pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspect, providerTaskId, config);
   } catch (err) {
     const now = new Date().toISOString();
-    setVideoGenFailed(db, videoGenId, err.message, now);
-    if (row.task_id) taskService.updateTaskError(db, row.task_id, err.message);
+    const message = '供应商任务轮询暂时中断，将继续使用原任务号恢复，请勿重新提交';
+    db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
+      .run('processing', message, now, videoGenId);
+    if (row.task_id) taskService.updateTaskStatus(db, row.task_id, 'processing', 90, message);
     log.error('Video generation resume poll error', { id: videoGenId, error: err.message });
   } finally {
     activeVideoPolls.delete(videoGenId);
@@ -946,8 +1010,8 @@ async function processVideoGeneration(db, log, videoGenId) {
     const storageLocalPath = path.isAbsolute(cfg.storage?.local_path)
       ? cfg.storage.local_path
       : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
-    const config = videoClient.getDefaultVideoConfig(db, row.model);
-    if (!config) {
+    const initialConfig = videoClient.getDefaultVideoConfig(db, row.model);
+    if (!initialConfig) {
       setVideoGenFailed(db, videoGenId, '未配置视频模型', now);
       if (row.task_id) taskService.updateTaskError(db, row.task_id, '未配置视频模型');
       return;
@@ -1019,12 +1083,32 @@ async function processVideoGeneration(db, log, videoGenId) {
       files_base_url: filesBaseUrl,
       storage_local_path: storageLocalPath,
       video_gen_id: videoGenId,
+      userId: row.user_id || undefined,
+      tenantId: row.tenant_id || undefined,
+      creditReservationId: row.credit_reservation_id || undefined,
     });
     const now2 = new Date().toISOString();
     if (result.error) {
+      if (result.indeterminate) {
+        db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
+          .run('processing', String(result.error).slice(0, 500), now2, videoGenId);
+        if (row.task_id) taskService.updateTaskStatus(db, row.task_id, 'processing', 90, result.error);
+        log.warn('Video generation submission result unknown; duplicate guard remains active', {
+          id: videoGenId,
+        });
+        return;
+      }
       setVideoGenFailed(db, videoGenId, result.error, now2);
       if (row.task_id) taskService.updateTaskError(db, row.task_id, result.error);
       log.error('Video generation failed', { id: videoGenId, error: result.error });
+      return;
+    }
+    const selectedConfig = result.config_id
+      ? videoClient.getVideoConfigById(db, result.config_id)
+      : initialConfig;
+    if (!selectedConfig) {
+      setVideoGenFailed(db, videoGenId, '已受理视频任务的供应商配置不存在', now2);
+      if (row.task_id) taskService.updateTaskError(db, row.task_id, '已受理视频任务的供应商配置不存在');
       return;
     }
     const directVideo = resolveRemoteVideoUrl(result.video_url, result.error);
@@ -1037,7 +1121,7 @@ async function processVideoGeneration(db, log, videoGenId) {
         rowForAspect,
         directVideo.video_url,
         '',
-        config
+        selectedConfig
       );
       return;
     }
@@ -1051,7 +1135,7 @@ async function processVideoGeneration(db, log, videoGenId) {
       db.prepare(
         'UPDATE video_generations SET status = ?, provider_task_id = ?, updated_at = ? WHERE id = ?'
       ).run('processing', result.task_id, now2, videoGenId);
-      await pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspect, result.task_id, config);
+      await pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspect, result.task_id, selectedConfig);
       return;
     }
     setVideoGenFailed(db, videoGenId, '未返回 task_id 或 video_url', now2);
