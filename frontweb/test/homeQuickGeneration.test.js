@@ -40,8 +40,10 @@ test('首页草稿只接受文字、图片和视频并携带一次性自动生�
     aspectRatio: '16:9',
     duration: 5,
     resolution: '720p',
+    quantity: 1,
     autoStart: true,
     referenceImageUrl: '/static/uploads/reference.png',
+    generateAudio: false,
   })
   assert.equal(normalizeQuickGenerationDraft({ mode: 'script' }).mode, 'image')
 })
@@ -61,7 +63,8 @@ test('文字、图片和视频请求均保留所选模型及对应生成参数',
     endpoint: '/images',
     body: {
       prompt: '生成雨夜车站', model: 'image-model', style: 'cinematic',
-      aspect_ratio: '9:16', reference_images: ['/static/uploads/reference.png'],
+      aspect_ratio: '9:16', resolution: '1k', size: '576x1024', n: 1,
+      reference_images: ['/static/uploads/reference.png'],
     },
   })
 
@@ -74,6 +77,7 @@ test('文字、图片和视频请求均保留所选模型及对应生成参数',
     body: {
       prompt: '人物走入雨幕', model: 'video-model', style: 'cinematic',
       aspect_ratio: '16:9', duration: 10, resolution: '1080p',
+      reference_mode: 'first_last',
       first_frame_url: 'uploads/reference.png', image_url: '/static/uploads/reference.png',
     },
   })

@@ -140,8 +140,8 @@ test('右键空白画布提供 LibTV 式添加节点入口并使用点击位置'
 })
 
 test('右键和上传落点优先使用 VueFlow 原生坐标投影', () => {
-  assert.match(alignerSource, /const \{ fitView, getViewport, setNodes, setViewport, zoomIn, zoomOut, screenToFlowPosition, project \} = useVueFlow\(\)/)
-  assert.match(alignerSource, /registerCanvasFlowApi\?\.\(\{ fitView, getViewport, setNodes, setViewport, zoomIn, zoomOut, screenToFlowPosition, project \}\)/)
+  assert.match(alignerSource, /const \{[\s\S]*fitView,[\s\S]*screenToFlowPosition,[\s\S]*setCenter,[\s\S]*updateNodeInternals,[\s\S]*\} = useVueFlow\(\)/)
+  assert.match(alignerSource, /registerCanvasFlowApi\?\.\(\{[\s\S]*fitView,[\s\S]*screenToFlowPosition,[\s\S]*setCenter,[\s\S]*updateNodeInternals,[\s\S]*\}\)/)
   assert.match(canvasSource, /const api = canvasFlowApi\.value/)
   assert.match(canvasSource, /const viewport = api\?\.getViewport\?\.\(\)/)
   assert.match(canvasSource, /currentViewport\.value = \{ x: viewport\.x, y: viewport\.y, zoom: viewport\.zoom \}/)
@@ -151,8 +151,8 @@ test('右键和上传落点优先使用 VueFlow 原生坐标投影', () => {
 })
 
 test('自动整理后同步 VueFlow 内部节点仓库避免界面坐标停留', () => {
-  assert.match(alignerSource, /const \{ fitView, getViewport, setNodes, setViewport, zoomIn, zoomOut, screenToFlowPosition, project \} = useVueFlow\(\)/)
-  assert.match(alignerSource, /registerCanvasFlowApi\?\.\(\{ fitView, getViewport, setNodes, setViewport, zoomIn, zoomOut, screenToFlowPosition, project \}\)/)
+  assert.match(alignerSource, /const \{[\s\S]*fitView,[\s\S]*setNodes,[\s\S]*updateNodeInternals,[\s\S]*\} = useVueFlow\(\)/)
+  assert.match(alignerSource, /registerCanvasFlowApi\?\.\(\{[\s\S]*fitView,[\s\S]*setNodes,[\s\S]*updateNodeInternals,[\s\S]*\}\)/)
   assert.match(canvasSource, /computedPosition: \{ \.\.\.n\.computedPosition, x: pos\.x, y: pos\.y \}/)
   assert.match(canvasSource, /applyVirtualizedGraph\(\)\s*\n\s*canvasFlowApi\.value\?\.setNodes\?\.\(nodes\.value\)/)
 })
@@ -393,7 +393,7 @@ test('右键分镜节点支持克隆到旁边', () => {
   assert.match(canvasSource, /const created = await storyboardsAPI\.create\(cloneStoryboardCreatePayload\(sourceStoryboard, episodeId, maxNum \+ 1\)\)/)
   assert.match(canvasSource, /\[targetNodeId\]: \{ x: sourcePosition\.x \+ 56, y: sourcePosition\.y \+ 56 \}/)
   assert.match(canvasSource, /await persistCanvasState\(\{ layoutOnly: true \}\)/)
-  assert.match(canvasSource, /async function duplicateStoryboardNode[\s\S]*await refreshCanvas\(false\)\s*\n\s*focusedNodeId\.value = null\s*\n\s*scheduleVirtualization\(\)/)
+  assert.match(canvasSource, /async function duplicateStoryboardNode[\s\S]*await refreshCanvas\(false\)\s*\n\s*await focusCanvasNode\(targetNodeId, \{ includeNodeIds: \[node\.id\] \}\)/)
   assert.match(canvasSource, /已复制分镜到画布/)
   assert.match(canvasSource, /type === 'duplicate-storyboard-node'[\s\S]*await duplicateStoryboardNode\(node\)/)
 })

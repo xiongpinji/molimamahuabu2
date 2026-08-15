@@ -28,7 +28,15 @@
         "docs/verification/platform-stability/foundation-verification.md"
       ],
       "fixCommit": "9fe8285f737fabe57078f6615c72223b4b5b9e14",
-      "unlock": null
+      "unlock": {
+        "reason": "收敛实时生产逻辑模型容灾配置并保留连接变更后撤销验证的安全合同",
+        "approvedBy": "product-owner 2026-08-15",
+        "impactTests": [
+          "backend-node/test/providerRouteStability.test.js",
+          "backend-node/test/aiConfigPublicView.test.js",
+          "backend-node/test/canvasModelCatalogService.test.js"
+        ]
+      }
     },
     {
       "featureId": "stability.safe-provider-failover",
@@ -119,7 +127,15 @@
         "docs/verification/platform-stability/foundation-verification.md"
       ],
       "fixCommit": "f960703ce43e67900b6a294e61d36cf40f2a1d1e",
-      "unlock": null
+      "unlock": {
+        "reason": "恢复已验证 Fumin 视频模型能力目录并保持供应商信息仅管理员可见",
+        "approvedBy": "product-owner 2026-08-15",
+        "impactTests": [
+          "backend-node/test/fuminVideo.test.js",
+          "backend-node/test/canvasModelCatalogService.test.js",
+          "backend-node/test/aiConfigPublicView.test.js"
+        ]
+      }
     }
   ]
 }

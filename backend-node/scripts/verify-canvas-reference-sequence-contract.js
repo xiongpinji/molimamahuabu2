@@ -52,9 +52,22 @@ function validateCanvasEntry(content, relativePath) {
   const section = functionSection(content, 'freeCanvasReferenceCandidates');
   requireMatch(
     section,
-    /return buildFreeCanvasReferenceMentionCandidates\([\s\S]*collectDirectUpstreamImageReferences\(/,
+    /buildFreeCanvasReferenceMentionCandidates\(/,
     `${relativePath} 必须复用统一序号候选构造器`,
   );
+  requireMatch(
+    section,
+    /collectDirectUpstreamImageReferences\(/,
+    `${relativePath} 必须只从直连图片构造候选`,
+  );
+  if (relativePath.endsWith('/DramaCanvas.vue')) {
+    requireMatch(section, /planFreeCanvasVideoReferences\(/, 'DramaCanvas.vue 必须先按模型能力规划视频参考素材');
+    requireMatch(
+      section,
+      /buildFreeCanvasReferenceMentionCandidates\(\s*adoptedReferences/,
+      'DramaCanvas.vue 只能为模型实际采用的参考图生成 mention token',
+    );
+  }
 }
 
 function validateNodeEditor(content) {

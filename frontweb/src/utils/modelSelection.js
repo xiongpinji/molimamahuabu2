@@ -1,11 +1,46 @@
+export function normalizeModelOption(model) {
+  if (model == null) return ''
+  if (typeof model === 'object') {
+    return String(model.value ?? model.model ?? model.id ?? model.name ?? '').trim()
+  }
+  const value = String(model).trim()
+  if (!value) return ''
+  if (value.startsWith('{') || value.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(value)
+      if (Array.isArray(parsed)) return ''
+      return normalizeModelOption(parsed)
+    } catch (_) {
+      // Preserve non-JSON model IDs that happen to start with a brace.
+    }
+  }
+  return value
+}
+
 export function parseModelList(models, defaultModel = '') {
   if (Array.isArray(models)) {
-    return models.map((m) => String(m).trim()).filter(Boolean)
+    return [...new Set(models.flatMap((item) => {
+      if (typeof item === 'string' && (item.trim().startsWith('[') || item.trim().startsWith('{'))) {
+        try {
+          const parsed = JSON.parse(item)
+          return Array.isArray(parsed) ? parseModelList(parsed) : [normalizeModelOption(parsed)]
+        } catch (_) {}
+      }
+      return [normalizeModelOption(item)]
+    }).filter(Boolean))]
   }
   if (typeof models === 'string') {
-    return models.split(/[\n,，]/).map((s) => s.trim()).filter(Boolean)
+    const value = models.trim()
+    if (value.startsWith('[') || value.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(value)
+        return parseModelList(parsed, defaultModel)
+      } catch (_) {}
+    }
+    return value.split(/[\n,，]/).map((s) => normalizeModelOption(s)).filter(Boolean)
   }
-  return defaultModel ? [String(defaultModel).trim()].filter(Boolean) : []
+  const fallback = normalizeModelOption(defaultModel)
+  return fallback ? [fallback] : []
 }
 
 export function getModelsFromAiConfig(config) {

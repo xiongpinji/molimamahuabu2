@@ -106,6 +106,7 @@ test('普通用户视频模型接口只返回管理员启用的模型名称', ()
       priority INTEGER DEFAULT 0,
       is_default INTEGER DEFAULT 0,
       is_active INTEGER DEFAULT 1,
+      verification_status TEXT,
       settings TEXT,
       created_at TEXT,
       updated_at TEXT,
@@ -122,6 +123,7 @@ test('普通用户视频模型接口只返回管理员启用的模型名称', ()
       (service_type, provider, name, model, is_active)
     VALUES ('video', 'disabled', '停用模型', ?, 0)
   `).run(JSON.stringify(['disabled-model']));
+  db.exec("UPDATE ai_service_configs SET verification_status = 'verified' WHERE is_active = 1;");
 
   let payload;
   const res = {
@@ -153,6 +155,7 @@ test('普通用户图像模型接口只返回管理员启用的模型名称', ()
       priority INTEGER DEFAULT 0,
       is_default INTEGER DEFAULT 0,
       is_active INTEGER DEFAULT 1,
+      verification_status TEXT,
       settings TEXT,
       created_at TEXT,
       updated_at TEXT,
@@ -174,6 +177,7 @@ test('普通用户图像模型接口只返回管理员启用的模型名称', ()
       (service_type, provider, name, model, is_active)
     VALUES ('image', 'disabled', '停用图片', ?, 0)
   `).run(JSON.stringify(['disabled-image']));
+  db.exec("UPDATE ai_service_configs SET verification_status = 'verified' WHERE is_active = 1;");
 
   let payload;
   const res = {
@@ -205,6 +209,7 @@ test('普通用户音频模型接口只返回管理员启用的模型名称', ()
       priority INTEGER DEFAULT 0,
       is_default INTEGER DEFAULT 0,
       is_active INTEGER DEFAULT 1,
+      verification_status TEXT,
       settings TEXT,
       created_at TEXT,
       updated_at TEXT,
@@ -216,6 +221,7 @@ test('普通用户音频模型接口只返回管理员启用的模型名称', ()
       (service_type, provider, name, base_url, api_key, model, default_model, is_default, is_active)
     VALUES ('tts', 'voice', '平台音色', 'https://private.example', 'secret', ?, 'voice-1', 1, 1)
   `).run(JSON.stringify(['voice-1']));
+  db.exec("UPDATE ai_service_configs SET verification_status = 'verified' WHERE is_active = 1;");
 
   let payload;
   const res = {
