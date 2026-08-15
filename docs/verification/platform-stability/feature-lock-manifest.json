@@ -55,18 +55,11 @@
       "evidence": [
         "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
         "docs/superpowers/plans/2026-08-15-platform-stability-foundation.md",
-        "docs/verification/platform-stability/foundation-verification.md"
+        "docs/verification/platform-stability/foundation-verification.md",
+        "docs/verification/platform-stability/image-legacy-failover-compatibility.md"
       ],
-      "fixCommit": "73186d44b427b8dac5083853f1ec10b1d7252905",
-      "unlock": {
-        "reason": "生产候选与线上基线对比复现旧图片配置丢失同价已验证回退；仅恢复明确未受理时的兼容回退，未知结果仍禁止重提",
-        "approvedBy": "product-owner-2026-08-15",
-        "impactTests": [
-          "backend-node/test/providerErrorClassification.test.js",
-          "backend-node/test/providerRouteImageIntegration.test.js",
-          "backend-node/test/imageAssetModelFailover.test.js"
-        ]
-      }
+      "fixCommit": "11b843cbc046ad32c32a557507819d01009e0bf9",
+      "unlock": null
     },
     {
       "featureId": "stability.unknown-state-billing-reconciliation",
