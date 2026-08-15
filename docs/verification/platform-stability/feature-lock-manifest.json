@@ -25,16 +25,17 @@
       "evidence": [
         "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
         "docs/superpowers/plans/2026-08-15-platform-stability-foundation.md",
-        "docs/verification/platform-stability/foundation-verification.md"
+        "docs/verification/platform-stability/foundation-verification.md",
+        "docs/verification/platform-stability/provider-reconciliation-grace-20260816.md"
       ],
-      "fixCommit": "9fe8285f737fabe57078f6615c72223b4b5b9e14",
+      "fixCommit": "51a91f1e3eb5dc3636adb1c8a47e45f22a60e000",
       "unlock": {
-        "reason": "兼容实时生产旧库 pending 默认值并强制新配置从 unverified 开始",
-        "approvedBy": "product-owner 2026-08-15 production-schema-compat",
+        "reason": "线上付费验收复现运行中请求被提前标记结果未知，修复成功终态与路由尝试状态一致性",
+        "approvedBy": "product-owner 2026-08-16 one-pass-production-acceptance",
         "impactTests": [
           "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/aiConfigPublicView.test.js",
-          "backend-node/test/canvasModelCatalogService.test.js"
+          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/providerRouteImageIntegration.test.js"
         ]
       }
     },
@@ -64,17 +65,17 @@
         "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
         "docs/superpowers/plans/2026-08-15-platform-stability-foundation.md",
         "docs/verification/platform-stability/foundation-verification.md",
-        "docs/verification/platform-stability/image-legacy-failover-compatibility.md"
+        "docs/verification/platform-stability/image-legacy-failover-compatibility.md",
+        "docs/verification/platform-stability/provider-reconciliation-grace-20260816.md"
       ],
-      "fixCommit": "8132dfe9c66166ee9f8e6110d62770840088262f",
+      "fixCommit": "51a91f1e3eb5dc3636adb1c8a47e45f22a60e000",
       "unlock": {
-        "reason": "线上付费实测发现 480P 成片被平台统一放大为 2K，修复为按用户选择的清晰度归一化",
-        "approvedBy": "product-owner 2026-08-16 paid-acceptance",
+        "reason": "线上角色图片单次主路由成功后仍残留结果未知提示，清理成功终态旧错误且不改变故障切换边界",
+        "approvedBy": "product-owner 2026-08-16 one-pass-production-acceptance",
         "impactTests": [
-          "backend-node/test/videoResolutionNormalization.test.js",
-          "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/storyboardVideoGeneration.integration.test.js",
-          "backend-node/test/videoBilling.test.js"
+          "backend-node/test/providerRouteImageIntegration.test.js",
+          "backend-node/test/providerRouteStability.test.js",
+          "backend-node/test/providerErrorClassification.test.js"
         ]
       }
     },
@@ -102,10 +103,19 @@
       "evidence": [
         "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
         "docs/superpowers/plans/2026-08-15-platform-stability-foundation.md",
-        "docs/verification/platform-stability/foundation-verification.md"
+        "docs/verification/platform-stability/foundation-verification.md",
+        "docs/verification/platform-stability/provider-reconciliation-grace-20260816.md"
       ],
-      "fixCommit": "3c3640667c5afd6f55216ec0a82acc0f0550fd9f",
-      "unlock": null
+      "fixCommit": "51a91f1e3eb5dc3636adb1c8a47e45f22a60e000",
+      "unlock": {
+        "reason": "线上付费验收复现正常同步请求被定时对账提前冻结，增加运行等待窗口并保持重启遗留请求即时保护",
+        "approvedBy": "product-owner 2026-08-16 one-pass-production-acceptance",
+        "impactTests": [
+          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/taskService.test.js",
+          "backend-node/test/providerRouteImageIntegration.test.js"
+        ]
+      }
     },
     {
       "featureId": "stability.admin-provider-observability",
