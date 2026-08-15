@@ -411,17 +411,24 @@ async function validateMask(mask, source, rootReal) {
   }
   const raw = await withCodeAsync(() => image.raw().toBuffer(), 'REDRAW_FULL_FRAME_MASK_INVALID');
   let nonZero = false;
+  let nonZeroArea = 0;
   for (const value of raw) {
     if (value !== 0 && value !== 255) fail('REDRAW_FULL_FRAME_MASK_INVALID');
-    if (value === 255) nonZero = true;
+    if (value === 255) {
+      nonZero = true;
+      nonZeroArea += 1;
+    }
   }
   if (!nonZero) fail('REDRAW_FULL_FRAME_MASK_INVALID');
   return {
-    path: read.normalized,
-    sha256: mask.sha256,
-    width: mask.width,
-    height: mask.height,
-    mime_type: 'image/png',
+    mask: {
+      path: read.normalized,
+      sha256: mask.sha256,
+      width: mask.width,
+      height: mask.height,
+      mime_type: 'image/png',
+    },
+    non_zero_area: nonZeroArea,
   };
 }
 
@@ -538,11 +545,13 @@ async function validatePersonTracks(personTracks, source, rootReal) {
       const associationConfidence = requireFiniteNumber(region.association_confidence);
       if (associationConfidence < 0 || associationConfidence > 1) fail('REDRAW_FULL_FRAME_PERSON_UNRESOLVED');
       if (typeof region.detector_disagreement !== 'boolean') fail('REDRAW_FULL_FRAME_PERSON_UNRESOLVED');
+      const maskEvidence = await validateMask(region.mask, source, rootReal);
       regions.push({
         region_id: regionId,
         frame_index: frameIndex,
         bbox: validateBBox(region.bbox, source),
-        mask: await validateMask(region.mask, source, rootReal),
+        mask: maskEvidence.mask,
+        _mask_area: maskEvidence.non_zero_area,
         association_confidence: associationConfidence,
         detector_disagreement: region.detector_disagreement,
       });
@@ -612,11 +621,13 @@ async function validateTextTracks(textTracks, source, rootReal, existingRegionOw
       regionOwners.set(regionId, regionKey);
       const frameIndex = requireNonNegativeInt(region.frame_index, 'REDRAW_FULL_FRAME_TEXT_UNRESOLVED');
       if (frameIndex >= source.frame_count) fail('REDRAW_FULL_FRAME_TEXT_UNRESOLVED');
+      const maskEvidence = await validateMask(region.mask, source, rootReal);
       regions.push({
         region_id: regionId,
         frame_index: frameIndex,
         polygon: validatePolygon(region.polygon, source),
-        mask: await validateMask(region.mask, source, rootReal),
+        mask: maskEvidence.mask,
+        _mask_area: maskEvidence.non_zero_area,
       });
     }
     regions.sort((left, right) => left.frame_index - right.frame_index || left.region_id.localeCompare(right.region_id));
@@ -710,10 +721,27 @@ function validateModelLock(modelLock, { requireCanonicalInput = false } = {}) {
 }
 
 function collectReviewReasons(frames, shots, personTracks, textTracks) {
-  const byFrame = new Map(frames.map((frame) => [frame.frame_index, new Set(frame.review_point_reasons)]));
+  const byFrame = new Map(frames.map((frame) => [
+    frame.frame_index,
+    new Set(frame.review_point_reasons.filter((reason) => reason !== 'mask_area_change')),
+  ]));
   const add = (frameIndex, reason) => {
     const set = byFrame.get(frameIndex);
     if (set) set.add(reason);
+  };
+  const addMaskAreaChanges = (tracks) => {
+    for (const track of tracks) {
+      const regions = [...track.regions].sort((left, right) => left.frame_index - right.frame_index || left.region_id.localeCompare(right.region_id));
+      for (let index = 1; index < regions.length; index += 1) {
+        const previous = regions[index - 1];
+        const current = regions[index];
+        if (current.frame_index !== previous.frame_index + 1) continue;
+        const denominator = Math.max(previous._mask_area, current._mask_area);
+        if (denominator > 0 && Math.abs(current._mask_area - previous._mask_area) / denominator >= 0.25) {
+          add(current.frame_index, 'mask_area_change');
+        }
+      }
+    }
   };
   const framesByShot = new Map();
   for (const frame of frames) {
@@ -761,6 +789,8 @@ function collectReviewReasons(frames, shots, personTracks, textTracks) {
       add(range.end_frame, 'text_track_end');
     }
   }
+  addMaskAreaChanges(personTracks);
+  addMaskAreaChanges(textTracks);
   return byFrame;
 }
 
@@ -783,6 +813,14 @@ function assertFrameRegionClosure(frames, personTracks, textTracks) {
 
 function finalManifest({ source, models, shots, frames, personTracks, textTracks }) {
   const reviewReasons = collectReviewReasons(frames, shots, personTracks, textTracks);
+  const cleanPersonTracks = personTracks.map((track) => ({
+    ...track,
+    regions: track.regions.map(({ _mask_area, ...region }) => region),
+  }));
+  const cleanTextTracks = textTracks.map((track) => ({
+    ...track,
+    regions: track.regions.map(({ _mask_area, ...region }) => region),
+  }));
   const finalFrames = frames.map((frame) => {
     const reasons = [...reviewReasons.get(frame.frame_index)].sort((a, b) => REVIEW_REASON_ORDER.indexOf(a) - REVIEW_REASON_ORDER.indexOf(b));
     return {
@@ -799,8 +837,8 @@ function finalManifest({ source, models, shots, frames, personTracks, textTracks
     models,
     shots,
     frames: finalFrames,
-    person_tracks: personTracks,
-    text_tracks: textTracks,
+    person_tracks: cleanPersonTracks,
+    text_tracks: cleanTextTracks,
     review: {
       status: 'pending',
       required_review_point_count: requiredReviewPointCount,

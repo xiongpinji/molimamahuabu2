@@ -40,11 +40,11 @@ async function writePng(filePath, { width = WIDTH, height = HEIGHT, channels = 3
   return sha256(bytes);
 }
 
-async function writeMask(filePath, { width = WIDTH, height = HEIGHT, value = 0, fillRect = true } = {}) {
+async function writeMask(filePath, { width = WIDTH, height = HEIGHT, value = 0, fillRect = true, rect = { x: 7, y: 8, width: 12, height: 12 } } = {}) {
   const pixels = Buffer.alloc(width * height, value);
   if (fillRect) {
-    for (let y = 8; y < 20 && y < height; y += 1) {
-      for (let x = 7; x < 19 && x < width; x += 1) pixels[(y * width) + x] = 255;
+    for (let y = rect.y; y < rect.y + rect.height && y < height; y += 1) {
+      for (let x = rect.x; x < rect.x + rect.width && x < width; x += 1) pixels[(y * width) + x] = 255;
     }
   }
   const bytes = await sharp(pixels, { raw: { width, height, channels: 1 } }).toColourspace('b-w').png().toBuffer();
@@ -310,6 +310,46 @@ async function buildValid(t) {
   };
 }
 
+async function replacePersonRegionMask({ evidenceRoot, input, regionId, maskPath, rect }) {
+  const maskSha = await writeMask(path.join(evidenceRoot, maskPath), { rect });
+  return {
+    ...input,
+    personTracks: input.personTracks.map((track) => ({
+      ...track,
+      regions: track.regions.map((region) => region.region_id === regionId ? {
+        ...region,
+        mask: {
+          path: maskPath,
+          sha256: maskSha,
+          width: WIDTH,
+          height: HEIGHT,
+          mime_type: 'image/png',
+        },
+      } : region),
+    })),
+  };
+}
+
+async function replaceTextRegionMask({ evidenceRoot, input, regionId, maskPath, rect }) {
+  const maskSha = await writeMask(path.join(evidenceRoot, maskPath), { rect });
+  return {
+    ...input,
+    textTracks: input.textTracks.map((track) => ({
+      ...track,
+      regions: track.regions.map((region) => region.region_id === regionId ? {
+        ...region,
+        mask: {
+          path: maskPath,
+          sha256: maskSha,
+          width: WIDTH,
+          height: HEIGHT,
+          mime_type: 'image/png',
+        },
+      } : region),
+    })),
+  };
+}
+
 async function assertInvalid(promise, expectedCode, root) {
   await assert.rejects(
     promise,
@@ -414,6 +454,52 @@ test('builds generated coverage manifest with sorted evidence, stable hash, pend
 
   await assert.deepEqual(await validateGeneratedCoverageManifest({ evidenceRoot, manifest }), manifest);
   assert.equal(JSON.stringify(input), before);
+});
+
+test('mask area review point is generated only for large same-track consecutive changes', async (t) => {
+  const personFixture = await createFixture(t);
+  const personChangedInput = await replacePersonRegionMask({
+    evidenceRoot: personFixture.evidenceRoot,
+    input: personFixture.input,
+    regionId: 'p-a-1',
+    maskPath: 'masks/person-a-1-large.png',
+    rect: { x: 7, y: 8, width: 24, height: 24 },
+  });
+  const personChanged = await buildGeneratedCoverageManifest(personChangedInput);
+  assert.ok(personChanged.frames[1].review_point_reasons.includes('mask_area_change'));
+
+  const textFixture = await createFixture(t);
+  const textChangedInput = await replaceTextRegionMask({
+    evidenceRoot: textFixture.evidenceRoot,
+    input: textFixture.input,
+    regionId: 't-ui-5',
+    maskPath: 'masks/text-ui-5-large.png',
+    rect: { x: 6, y: 30, width: 24, height: 24 },
+  });
+  const textChanged = await buildGeneratedCoverageManifest(textChangedInput);
+  assert.ok(textChanged.frames[5].review_point_reasons.includes('mask_area_change'));
+
+  const smallFixture = await createFixture(t);
+  const smallChangedInput = await replacePersonRegionMask({
+    evidenceRoot: smallFixture.evidenceRoot,
+    input: smallFixture.input,
+    regionId: 'p-a-1',
+    maskPath: 'masks/person-a-1-small-change.png',
+    rect: { x: 7, y: 8, width: 12, height: 13 },
+  });
+  const smallChanged = await buildGeneratedCoverageManifest(smallChangedInput);
+  assert.equal(smallChanged.frames[1].review_point_reasons.includes('mask_area_change'), false);
+
+  const nonConsecutiveFixture = await createFixture(t);
+  const nonConsecutiveInput = await replacePersonRegionMask({
+    evidenceRoot: nonConsecutiveFixture.evidenceRoot,
+    input: nonConsecutiveFixture.input,
+    regionId: 'p-b-3',
+    maskPath: 'masks/person-b-3-large.png',
+    rect: { x: 8, y: 8, width: 24, height: 24 },
+  });
+  const nonConsecutive = await buildGeneratedCoverageManifest(nonConsecutiveInput);
+  assert.equal(nonConsecutive.frames[3].review_point_reasons.includes('mask_area_change'), false);
 });
 
 test('frame coverage, timestamp drift, shot continuity, and empty shot gaps fail closed', async (t) => {
@@ -665,6 +751,16 @@ test('unknown nested fields, approvals, invalid model lock, and manifest hash dr
   await assertInvalid(validateGeneratedCoverageManifest({
     evidenceRoot,
     manifest: { ...manifest, analysis_sha256: '0'.repeat(64) },
+  }), 'REDRAW_FULL_FRAME_OUTPUT_INVALID', evidenceRoot);
+
+  const forgedMaskAreaChange = clone(manifest);
+  forgedMaskAreaChange.frames[1].review_point_reasons.push('mask_area_change');
+  forgedMaskAreaChange.frames[1].review_point_reasons.sort();
+  forgedMaskAreaChange.review.required_review_point_count = forgedMaskAreaChange.frames.filter((frame) => frame.review_point_reasons.length > 0).length;
+  forgedMaskAreaChange.analysis_sha256 = canonicalCoverageSha256(forgedMaskAreaChange);
+  await assertInvalid(validateGeneratedCoverageManifest({
+    evidenceRoot,
+    manifest: forgedMaskAreaChange,
   }), 'REDRAW_FULL_FRAME_OUTPUT_INVALID', evidenceRoot);
 
   await assertInvalid(validateGeneratedCoverageManifest({
