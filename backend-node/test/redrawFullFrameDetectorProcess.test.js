@@ -449,16 +449,40 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
     .filter((call) => call.args.includes('install'))
     .flatMap((call) => call.args)
     .filter((arg) => /^[A-Za-z0-9_.-]+[<>=!~]/.test(arg));
+  const installCalls = calls.filter((call) => call.args.includes('install'));
+  assert(installCalls.every((call) => {
+    const index = call.args.indexOf('--index-url');
+    return index >= 0 && call.args[index + 1] === 'https://pypi.org/simple';
+  }), JSON.stringify(installCalls));
   assert(installArgs.includes('numpy==1.26.4'));
   assert(installArgs.includes('opencv-python-headless==4.10.0.84'));
   assert(installArgs.includes('torch==2.3.1'));
+  assert(installArgs.includes('torchvision==0.18.1'));
   assert(installArgs.includes('mediapipe==0.10.14'));
   assert(installArgs.includes('paddlepaddle==2.6.2'));
   assert(installArgs.includes('paddleocr==2.8.1'));
+  assert(installArgs.includes('yolox==0.3.0'));
+  assert(installArgs.includes('loguru==0.7.2'));
+  assert(installArgs.includes('tabulate==0.9.0'));
+  assert(installArgs.includes('thop==0.1.1.post2209072238'));
   assert(installArgs.every((arg) => /^[A-Za-z0-9_.-]+==[A-Za-z0-9_.!+-]+$/.test(arg)));
+  const yoloxInstallCalls = installCalls.filter((call) => call.args.includes('yolox==0.3.0'));
+  assert.equal(yoloxInstallCalls.length, 1);
+  assert(yoloxInstallCalls[0].args.includes('--no-deps'), JSON.stringify(yoloxInstallCalls[0]));
+  assert(installCalls
+    .filter((call) => !call.args.includes('yolox==0.3.0'))
+    .every((call) => !call.args.includes('--no-deps')), JSON.stringify(installCalls));
 
   await assert.rejects(
     fetchModule.pipFreeze(parent, { ...deps, spawnProcess: async () => 'pkg>=1.0.0\n' }),
+    /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+  );
+  await assert.rejects(
+    fetchModule.installRuntime(parent, [], { ...deps, runtimePackageSpecs: [{ requirement: 'pkg>=1.0.0' }] }),
+    /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+  );
+  await assert.rejects(
+    fetchModule.installRuntime(parent, [], { ...deps, runtimePackageSpecs: [{ requirement: 'pkg==1.0.0', unexpected: true }] }),
     /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
   );
 });

@@ -49,16 +49,21 @@ const OFFICIAL_CATALOG = Object.freeze({
     licensePath: 'LICENSE',
   }),
 });
-const RUNTIME_PACKAGES = Object.freeze([
-  'setuptools==80.9.0',
-  'wheel==0.43.0',
-  'numpy==1.26.4',
-  'opencv-python-headless==4.10.0.84',
-  'torch==2.3.1',
-  'yolox==0.3.0',
-  'mediapipe==0.10.14',
-  'paddlepaddle==2.6.2',
-  'paddleocr==2.8.1',
+const PYPI_INDEX_URL = 'https://pypi.org/simple';
+const RUNTIME_PACKAGE_SPECS = Object.freeze([
+  Object.freeze({ requirement: 'setuptools==80.9.0' }),
+  Object.freeze({ requirement: 'wheel==0.43.0' }),
+  Object.freeze({ requirement: 'numpy==1.26.4' }),
+  Object.freeze({ requirement: 'opencv-python-headless==4.10.0.84' }),
+  Object.freeze({ requirement: 'torch==2.3.1' }),
+  Object.freeze({ requirement: 'torchvision==0.18.1' }),
+  Object.freeze({ requirement: 'yolox==0.3.0', noDeps: true }),
+  Object.freeze({ requirement: 'loguru==0.7.2' }),
+  Object.freeze({ requirement: 'tabulate==0.9.0' }),
+  Object.freeze({ requirement: 'thop==0.1.1.post2209072238' }),
+  Object.freeze({ requirement: 'mediapipe==0.10.14' }),
+  Object.freeze({ requirement: 'paddlepaddle==2.6.2' }),
+  Object.freeze({ requirement: 'paddleocr==2.8.1' }),
 ]);
 const JSON_MAX_BYTES = 2 * 1024 * 1024;
 const LICENSE_MAX_BYTES = 2 * 1024 * 1024;
@@ -137,6 +142,20 @@ function assertPinnedFreeze(lines) {
     if (!/^[A-Za-z0-9_.-]+==[A-Za-z0-9_.!+-]+$/.test(line)) throw error(MODEL_ERROR);
   }
   return sorted;
+}
+
+function normalizeRuntimePackageSpecs(specs) {
+  if (!Array.isArray(specs) || specs.length === 0) throw error(MODEL_ERROR);
+  return specs.map((spec) => {
+    if (!spec || typeof spec !== 'object' || Array.isArray(spec)) throw error(MODEL_ERROR);
+    const keys = Object.keys(spec).sort();
+    if (!keys.every((key) => key === 'noDeps' || key === 'requirement')) throw error(MODEL_ERROR);
+    if (typeof spec.requirement !== 'string' || !/^[A-Za-z0-9_.-]+==[A-Za-z0-9_.!+-]+$/.test(spec.requirement)) {
+      throw error(MODEL_ERROR);
+    }
+    if (spec.noDeps !== undefined && spec.noDeps !== true) throw error(MODEL_ERROR);
+    return { requirement: spec.requirement, noDeps: spec.noDeps === true };
+  });
 }
 
 function assertAllowedUrl(rawUrl) {
@@ -371,9 +390,12 @@ async function createVenv(staging, deps = {}) {
 async function installRuntime(staging, _components = [], deps = {}) {
   const runner = deps.spawnProcess || spawnProcess;
   const python = venvPython(staging);
-  for (const requirement of RUNTIME_PACKAGES) {
-    if (!/^[A-Za-z0-9_.-]+==[A-Za-z0-9_.!+-]+$/.test(requirement)) throw error(MODEL_ERROR);
-    await runner(python, ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', requirement], { cwd: staging, env: sanitizeEnv(deps.env) });
+  const specs = normalizeRuntimePackageSpecs(deps.runtimePackageSpecs || RUNTIME_PACKAGE_SPECS);
+  for (const spec of specs) {
+    const args = ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--index-url', PYPI_INDEX_URL];
+    if (spec.noDeps) args.push('--no-deps');
+    args.push(spec.requirement);
+    await runner(python, args, { cwd: staging, env: sanitizeEnv(deps.env) });
   }
 }
 
