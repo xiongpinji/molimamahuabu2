@@ -7,6 +7,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+import zipfile
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -487,6 +488,137 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertEqual(context.input_size, (640, 640))
         self.assertEqual(context.conf, 0.3)
         self.assertEqual(context.nms, 0.5)
+
+    def test_default_face_factory_uses_mediapipe_tasks_public_api(self):
+        events = []
+
+        class FakeBaseOptions:
+            def __init__(self, model_asset_path):
+                events.append(("BaseOptions", model_asset_path))
+                self.model_asset_path = model_asset_path
+
+        class FakeVision:
+            class RunningMode:
+                IMAGE = "IMAGE"
+
+            class FaceDetectorOptions:
+                def __init__(self, base_options, running_mode):
+                    events.append(("FaceDetectorOptions", base_options.model_asset_path, running_mode))
+                    self.base_options = base_options
+                    self.running_mode = running_mode
+
+            class FaceDetector:
+                @staticmethod
+                def create_from_options(options):
+                    events.append(("create_from_options", options.base_options.model_asset_path, options.running_mode))
+
+                    class Detector:
+                        def detect(self, _image):
+                            return worker.SimpleNamespace(detections=[])
+
+                    return Detector()
+
+        fake_mediapipe = worker.SimpleNamespace(
+            tasks=worker.SimpleNamespace(vision=FakeVision, BaseOptions=FakeBaseOptions),
+            Image=lambda **kwargs: kwargs,
+            ImageFormat=worker.SimpleNamespace(SRGB="SRGB"),
+        )
+        fake_modules = {
+            "cv2": worker.SimpleNamespace(),
+            "mediapipe": fake_mediapipe,
+        }
+        artifact_path = "C:/models/face_detector/blaze_face_short_range.tflite"
+        original_import_module = worker.importlib.import_module
+        try:
+            worker.importlib.import_module = lambda name: fake_modules[name]
+            context = worker._default_face_factory(artifact_path)
+        finally:
+            worker.importlib.import_module = original_import_module
+
+        self.assertIn(("BaseOptions", artifact_path), events)
+        self.assertIn(("FaceDetectorOptions", artifact_path, "IMAGE"), events)
+        self.assertIn(("create_from_options", artifact_path, "IMAGE"), events)
+        self.assertEqual(context.image_format, "SRGB")
+
+    def test_default_text_detector_factory_uses_unique_prepared_paddle_model_dir(self):
+        events = []
+
+        class FakeParser:
+            def parse_args(self, argv):
+                events.append(("parse_args", argv, sys.argv[:]))
+                return worker.SimpleNamespace(det_model_dir=None)
+
+        class FakeUtility:
+            @staticmethod
+            def init_args():
+                events.append(("init_args",))
+                return FakeParser()
+
+        class FakeTextSystem:
+            utility = FakeUtility
+
+            class TextDetector:
+                def __init__(self, args):
+                    events.append(("TextDetector", pathlib.Path(args.det_model_dir).name))
+                    self.args = args
+
+                def __call__(self, _image):
+                    return [[[[0, 0], [1, 0], [1, 1]]]]
+
+        fake_modules = {
+            "cv2": worker.SimpleNamespace(),
+            "paddleocr.tools.infer.predict_det": FakeTextSystem,
+        }
+        original_import_module = worker.importlib.import_module
+        original_argv = sys.argv[:]
+        try:
+            sys.argv = ["worker.py", "--unexpected-worker-argv"]
+            worker.importlib.import_module = lambda name: fake_modules[name]
+            with tempfile.TemporaryDirectory() as root:
+                archive_path = pathlib.Path(root) / "paddle.zip"
+                with zipfile.ZipFile(archive_path, "w") as archive:
+                    archive.writestr("en_PP-OCRv3_det_infer/inference.pdmodel", "model")
+                    archive.writestr("en_PP-OCRv3_det_infer/inference.pdiparams", "params")
+
+                context = worker._default_text_detector_factory(str(archive_path))
+        finally:
+            sys.argv = original_argv
+            worker.importlib.import_module = original_import_module
+
+        parse_event = next(event for event in events if event[0] == "parse_args")
+        self.assertEqual(parse_event[1], [])
+        self.assertEqual(parse_event[2], ["worker.py", "--unexpected-worker-argv"])
+        self.assertIn(("init_args",), events)
+        self.assertIn(("TextDetector", "en_PP-OCRv3_det_infer"), events)
+        self.assertTrue(callable(context.detector))
+
+    def test_default_text_detector_factory_rejects_missing_or_ambiguous_prepared_paddle_model_dirs(self):
+        fake_modules = {
+            "cv2": worker.SimpleNamespace(),
+            "paddleocr.tools.infer.predict_det": worker.SimpleNamespace(
+                utility=worker.SimpleNamespace(init_args=lambda: argparse.ArgumentParser()),
+                TextDetector=lambda _args: (lambda _image: []),
+            ),
+        }
+        original_import_module = worker.importlib.import_module
+        try:
+            worker.importlib.import_module = lambda name: fake_modules[name]
+            with tempfile.TemporaryDirectory() as root:
+                missing_path = pathlib.Path(root) / "missing.zip"
+                with zipfile.ZipFile(missing_path, "w") as archive:
+                    archive.writestr("en_PP-OCRv3_det_infer/README.txt", "no model")
+                with self.assertRaises(worker.ProtocolError):
+                    worker._default_text_detector_factory(str(missing_path))
+
+                ambiguous_path = pathlib.Path(root) / "ambiguous.zip"
+                with zipfile.ZipFile(ambiguous_path, "w") as archive:
+                    for name in ["a_det", "b_det"]:
+                        archive.writestr(f"{name}/inference.pdmodel", "model")
+                        archive.writestr(f"{name}/inference.pdiparams", "params")
+                with self.assertRaises(worker.ProtocolError):
+                    worker._default_text_detector_factory(str(ambiguous_path))
+        finally:
+            worker.importlib.import_module = original_import_module
 
     def test_bytetrack_empty_persons_uses_empty_nx5_detections(self):
         events = []

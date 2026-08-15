@@ -422,8 +422,8 @@ def _default_face_factory(artifact_path):
     try:
         cv2 = importlib.import_module("cv2")
         mediapipe = importlib.import_module("mediapipe")
-        vision = mediapipe.tasks.python.vision
-        base_options_class = mediapipe.tasks.python.BaseOptions
+        vision = mediapipe.tasks.vision
+        base_options_class = mediapipe.tasks.BaseOptions
         options = vision.FaceDetectorOptions(
             base_options=base_options_class(model_asset_path=artifact_path),
             running_mode=vision.RunningMode.IMAGE,
@@ -441,16 +441,33 @@ def _default_text_detector_factory(artifact_path):
         prepared = _prepare_artifact_path(artifact_path)
         cv2 = importlib.import_module("cv2")
         text_system = importlib.import_module("paddleocr.tools.infer.predict_det")
-        args_factory = getattr(text_system, "parse_args")
+        args_parser = text_system.utility.init_args()
         text_detector_class = getattr(text_system, "TextDetector")
-        args = args_factory([])
-        args.det_model_dir = prepared if os.path.isdir(prepared) else os.path.dirname(artifact_path)
+        args = args_parser.parse_args([])
+        args.det_model_dir = _find_unique_paddle_det_model_dir(prepared, artifact_path)
         detector = text_detector_class(args)
         if not callable(detector):
             _fail()
         return PaddleTextDetectionContext(cv2=cv2, detector=detector)
     except Exception as exc:
         raise ProtocolError(ERROR_CODE) from exc
+
+
+def _find_unique_paddle_det_model_dir(prepared, artifact_path):
+    if not os.path.isdir(prepared):
+        return os.path.dirname(os.path.realpath(artifact_path))
+    candidates = []
+    search_roots = [prepared]
+    for name in os.listdir(prepared):
+        child = os.path.join(prepared, name)
+        if os.path.isdir(child):
+            search_roots.append(child)
+    for candidate in search_roots:
+        if os.path.isfile(os.path.join(candidate, "inference.pdmodel")) and os.path.isfile(os.path.join(candidate, "inference.pdiparams")):
+            candidates.append(os.path.realpath(candidate))
+    if len(candidates) != 1:
+        _fail()
+    return candidates[0]
 
 
 def _prepare_artifact_path(artifact_path, require_bytetrack=False):
