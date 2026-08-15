@@ -485,6 +485,10 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
     fetchModule.installRuntime(parent, [], { ...deps, runtimePackageSpecs: [{ requirement: 'pkg==1.0.0', unexpected: true }] }),
     /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
   );
+  await assert.rejects(
+    fetchModule.installRuntime(parent, [], { ...deps, runtimePackageSpecs: [{ requirement: 'pkg==1.0.0', noDeps: true }] }),
+    /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+  );
 });
 
 test('runProcess consumes stderr, enforces limits, timeout, and settles once', async (t) => {

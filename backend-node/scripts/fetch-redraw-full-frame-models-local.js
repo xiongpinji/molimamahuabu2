@@ -154,6 +154,7 @@ function normalizeRuntimePackageSpecs(specs) {
       throw error(MODEL_ERROR);
     }
     if (spec.noDeps !== undefined && spec.noDeps !== true) throw error(MODEL_ERROR);
+    if (spec.noDeps === true && spec.requirement !== 'yolox==0.3.0') throw error(MODEL_ERROR);
     return { requirement: spec.requirement, noDeps: spec.noDeps === true };
   });
 }
