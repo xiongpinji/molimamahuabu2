@@ -5,6 +5,7 @@ const modelPriceService = require('./modelPriceService');
 const { IMAGE_REFERENCE_LIMITS } = require('./token6688Client');
 const videoReferenceCapabilityService = require('./videoReferenceCapabilityService');
 const { USMERCARI_MODELS } = require('./usmercariVideoClient');
+const { FUMIN_MODELS } = require('./fuminVideoClient');
 const toapisVideoClient = require('./toapisVideoClient');
 const feituoVideoClient = require('./feituoVideoClient');
 const lingjingVideoClient = require('./lingjingVideoClient');
@@ -58,6 +59,10 @@ function providerCapabilities(provider, model) {
       provider: normalizedProvider,
       api_protocol: 'token6688',
     }, model);
+  }
+  if (['fumin', 'fumin_video'].includes(normalizedProvider)) {
+    if (!Object.prototype.hasOwnProperty.call(FUMIN_MODELS, String(model))) return {};
+    return { ...FUMIN_VIDEO_CAPABILITIES };
   }
   if (!['usmercari', 'usmercari_media'].includes(normalizedProvider)) return {};
   const spec = USMERCARI_MODELS[String(model)];

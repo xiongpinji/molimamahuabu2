@@ -5,6 +5,8 @@ import {
   getModelsFromAiConfig,
   getSelectableModels,
   isConfigForServiceType,
+  normalizeModelOption,
+  parseModelList,
 } from '../src/utils/modelSelection.js'
 
 const configs = [
@@ -76,5 +78,14 @@ test('normalizes a video AI config for option loading', () => {
   assert.deepEqual(getModelsFromAiConfig({ model: 'grok-video-3\ngrok-video-3-fast' }), [
     'grok-video-3',
     'grok-video-3-fast',
+  ])
+})
+
+test('normalizes catalog option objects and JSON-backed model lists', () => {
+  assert.equal(normalizeModelOption({ value: 'seedance-2.0-fast' }), 'seedance-2.0-fast')
+  assert.equal(normalizeModelOption('{"model":"gpt-image-2"}'), 'gpt-image-2')
+  assert.deepEqual(parseModelList('[{"value":"gpt-image-2"},{"model":"nano-banana-2"}]'), [
+    'gpt-image-2',
+    'nano-banana-2',
   ])
 })

@@ -80,3 +80,17 @@ test('门禁拒绝任一画布入口绕过统一候选构造器', (t) => {
       && error.message.includes('HomeCanvas.vue'),
   );
 });
+
+test('门禁拒绝视频节点为模型未采用的参考图生成 mention token', (t) => {
+  const root = createFixture(t);
+  const target = path.join(root, 'frontweb/src/views/DramaCanvas.vue');
+  const source = fs.readFileSync(target, 'utf8')
+    .replace('buildFreeCanvasReferenceMentionCandidates(\n    adoptedReferences,', 'buildFreeCanvasReferenceMentionCandidates(\n    references,');
+  fs.writeFileSync(target, source);
+
+  assert.throws(
+    () => auditCanvasReferenceSequenceContract({ releaseRoot: root }),
+    (error) => error.code === 'PROTECTED_REFERENCE_SEQUENCE_CONTRACT_FAILED'
+      && error.message.includes('实际采用'),
+  );
+});

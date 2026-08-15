@@ -95,7 +95,10 @@ function verifyFeatureLock({ repoRoot, currentManifest, baseManifest, changedPat
       const touched = (baseFeature.protectedPaths || []).filter((entry) => changed.has(entry));
       if (!touched.length) continue;
       const currentFeature = currentById.get(baseFeature.featureId);
-      if (!currentFeature || !validateUnlock(currentFeature.unlock, repoRoot)) {
+      const hasFreshUnlock = currentFeature
+        && validateUnlock(currentFeature.unlock, repoRoot)
+        && JSON.stringify(currentFeature.unlock) !== JSON.stringify(baseFeature.unlock);
+      if (!hasFreshUnlock) {
         violations.push({ featureId: baseFeature.featureId, touched });
       }
     }

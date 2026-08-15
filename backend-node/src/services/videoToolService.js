@@ -14,6 +14,7 @@ const MAX_SOURCE_PIXELS = 7680 * 4320;
 const FFPROBE_TIMEOUT_MS = 30 * 1000;
 const FFMPEG_TIMEOUT_MS = 10 * 60 * 1000;
 const FRAME_TIMEOUT_MS = 30 * 1000;
+const VIDEO_ENCODER_THREADS = 2;
 let activeOperationCount = 0;
 const OPERATIONS = new Set([
   'crop',
@@ -321,7 +322,10 @@ async function runFfmpeg(sourcePath, outputPath, plan) {
   } else {
     if (plan.videoFilter) args.push('-vf', plan.videoFilter);
     if (plan.audioFilter) args.push('-af', plan.audioFilter);
-    args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p');
+    args.push(
+      '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p',
+      '-threads', String(VIDEO_ENCODER_THREADS),
+    );
     if (!plan.copyAudio) args.push('-an');
     else args.push('-c:a', 'aac', '-b:a', '192k');
     args.push('-movflags', '+faststart');

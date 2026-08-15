@@ -52,7 +52,7 @@ describe('USMercari async video protocol', () => {
       prompt: '电影感森林晨雾',
       duration: 5,
       aspect_ratio: '16:9',
-      resolution: '480p',
+      resolution: '1440p',
       image_url: 'https://cdn.example/first.png',
     }), {
       model: 'MiniMax H3',
@@ -60,12 +60,12 @@ describe('USMercari async video protocol', () => {
       duration: 5,
       metadata: {
         aspect_ratio: '16:9',
-        resolution: '480p',
+        resolution: '1440p',
         image_url: 'https://cdn.example/first.png',
       },
     });
     assert.throws(() => buildUsmercariVideoBody({ model: 'unknown', prompt: 'x' }), /未经真实生成验证/);
-    assert.throws(() => buildUsmercariVideoBody({ model: 'MiniMax H3', prompt: 'x', duration: 6 }), /仅开放已实测的 5 秒/);
+    assert.doesNotThrow(() => buildUsmercariVideoBody({ model: 'MiniMax H3', prompt: 'x', duration: 6 }));
     assert.equal(buildUsmercariVideoBody({
       model: 'seedance-2.0-fast', prompt: 'x', duration: 5, resolution: '720p',
     }).metadata.resolution, '720p');
@@ -80,24 +80,27 @@ describe('USMercari async video protocol', () => {
     }), /不支持 1080p/);
     assert.deepEqual(buildUsmercariVideoBody({
       model: 'MiniMax H3', prompt: 'x', image_id: 'img-1', end_image_id: 'img-2',
-      video_reference_id: 'video-1', audio_reference_id: 'audio-1',
+      audio_reference_id: 'audio-1',
     }).metadata, {
-      aspect_ratio: '16:9', resolution: '480p', image_id: 'img-1', end_image_id: 'img-2',
-      video_reference_id: 'video-1', audio_reference_id: 'audio-1',
+      aspect_ratio: '16:9', resolution: '1440p', image_id: 'img-1', end_image_id: 'img-2',
+      audio_reference_id: 'audio-1',
     });
   });
 
   it('validates material constraints before any paid generation submit', () => {
     assert.throws(() => validateUsmercariVideoOptions({
       model: 'MiniMax H3', first_frame_url: 'first', reference_urls: ['ref'],
-    }), /首尾帧模式与多图参考模式互斥/);
+    }), /首尾帧模式与多参考图模式互斥/);
     assert.throws(() => validateUsmercariVideoOptions({
       model: 'MiniMax H3', reference_video_urls: ['video'],
-    }), /参考视频模式必须同时提供首帧/);
-    assert.throws(() => validateUsmercariVideoOptions({
+    }), /不支持参考视频/);
+    assert.doesNotThrow(() => validateUsmercariVideoOptions({
       model: 'MiniMax H3', reference_audio_urls: ['audio'],
-    }), /参考音频必须同时提供首帧或参考图/);
-    for (const model of Object.keys(USMERCARI_MODELS)) {
+    }));
+    assert.doesNotThrow(() => validateUsmercariVideoOptions({
+      model: 'MiniMax H3', first_frame_url: 'image', reference_audio_urls: ['audio'],
+    }), 'MiniMax H3 应支持参考图和参考音频');
+    for (const model of ['seedance-2.0-fast', 'seedance-2.0-mini']) {
       assert.doesNotThrow(() => validateUsmercariVideoOptions({
         model,
         first_frame_url: 'image',
@@ -220,9 +223,8 @@ describe('USMercari async video protocol', () => {
     };
 
     const submitted = await callVideoApi(db, log, {
-      model: 'MiniMax H3', prompt: 'test', duration: 5, aspect_ratio: '16:9', resolution: '480p',
+      model: 'seedance-2.0-fast', prompt: 'test', duration: 5, aspect_ratio: '16:9', resolution: '480p',
       first_frame_url: 'data:image/png;base64,aW1hZ2U=',
-      reference_urls: ['data:image/png;base64,aW1hZ2U=', 'data:image/png;base64,b3RoZXI='],
       reference_video_urls: ['data:video/mp4;base64,dmlkZW8='],
       reference_audio_urls: ['data:audio/mpeg;base64,YXVkaW8='],
     });
@@ -231,10 +233,10 @@ describe('USMercari async video protocol', () => {
     assert.deepEqual(submitted, { task_id: 'task-routed', status: 'queued' });
     const submit = requests.find((request) => request.url.endsWith('/cpa-file/submit/video'));
     assert.deepEqual(submit.body, {
-      model: 'MiniMax H3', prompt: 'test', duration: 5,
+      model: 'seedance-2.0-fast', prompt: 'test', duration: 5,
       metadata: {
         aspect_ratio: '16:9', resolution: '480p', image_id: 'media-image',
-        video_reference_id: 'media-video', audio_reference_id: 'media-audio',
+        video_reference_ids: ['media-video'], audio_reference_ids: ['media-audio'],
       },
     });
     const poll = requests.find((request) => request.url.endsWith('/cpa-file/fetch'));

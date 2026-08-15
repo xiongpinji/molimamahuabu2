@@ -43,8 +43,9 @@ test('model capabilities restrict parameters and estimate per-second video cost'
     capabilities: { durations: [5, 8] },
   }]
   assert.deepEqual(canvasModelCapability(catalog, 'video', 'v1').durations, [5, 8])
-  assert.equal(estimateCanvasCredits(catalog, 'video', 'v1', 1, 12, '480P'), 72)
-  assert.equal(estimateCanvasCredits(catalog, 'video', 'v1', 1, 12, '720p'), 144)
+  assert.equal(estimateCanvasCredits(catalog, 'video', 'v1', 1, 8, '480P'), 48)
+  assert.equal(estimateCanvasCredits(catalog, 'video', 'v1', 1, 8, '720p'), 96)
+  assert.equal(estimateCanvasCredits(catalog, 'video', 'v1', 1, 12, '720p'), null)
 })
 
 test('model capabilities estimate per-request video cost without duration multiplier', () => {

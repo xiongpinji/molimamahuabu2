@@ -662,6 +662,7 @@ import {
 } from '@/utils/dramaCanvasAdapter'
 import { preserveCanvasNodeRuntimeMeasurements, virtualizeCanvasGraph } from '@/utils/canvasVirtualization'
 import {
+  CANVAS_KEYBOARD_PAN_INITIAL_STEP,
   CANVAS_KEYBOARD_PAN_SPEED,
   canvasKeyboardPanDelta,
   canvasKeyboardPanVector,
@@ -947,7 +948,6 @@ const freeNodeForm = ref({ title: '', content: '', url: '', model: '', aspectRat
 const FREE_CANVAS_DEFAULTS_STORAGE_KEY = 'moli_canvas_free_node_defaults'
 const FREE_CANVAS_GENERATION_HISTORY_LIMIT = 20
 const CANVAS_VIRTUALIZATION_MIN_NODES = 80
-const CANVAS_KEYBOARD_PAN_STEP = 56
 const freeCanvasModelCatalog = ref([])
 const freeCanvasModelCatalogState = ref({ status: 'idle', error: null })
 const freeCanvasVoiceOptions = ref([])
@@ -1004,7 +1004,7 @@ function persistFreeCanvasNodeDefaults(kind, data) {
 }
 
 function getFreeNodeModelOptions(kind) {
-  return getFreeNodeModelOptionEntries(kind)
+  return getFreeNodeModelOptionEntries(kind).map((item) => item.value)
 }
 
 function getFreeNodeModelOptionEntries(kind) {
@@ -3198,6 +3198,7 @@ async function runFreeCanvasNode(nodeOrId) {
     ? Math.min(4, Math.max(1, Number(node.data?.quantity) || 1))
     : 1
   await patchFreeCanvasNodeData(node.id, {
+    model: requestPayload.model || node.data?.model || '',
     status: 'running',
     generationActive: true,
     generationBatchSize: quantity,
@@ -4417,7 +4418,7 @@ async function duplicateStoryboardNode(node) {
   await persistCanvasState({ layoutOnly: true })
   if (filterEpisodeId.value !== episodeId) filterEpisodeId.value = episodeId
   await refreshCanvas(false)
-  await focusCanvasNode(targetNodeId)
+  await focusCanvasNode(targetNodeId, { includeNodeIds: [node.id] })
   ElMessage.success('已复制分镜到画布')
   return targetNodeId
 }
@@ -6106,10 +6107,32 @@ function openNodeConfig(node) {
 
 function focusNodeForConfig(node, options = {}) {
   if (!node?.id) return
+  const focusChanged = focusedNodeId.value !== node.id
   focusedNodeId.value = node.id
   const storyboard = storyboardForNode(node)
   if (options?.syncStoryboard !== false && storyboard?.id) applySelectedStoryboardIds([storyboard.id])
   scheduleVirtualization()
+  if (focusChanged && PANEL_NODE_TYPES.has(node.type)) void fitFocusedNodePanel(node.id)
+}
+
+async function fitFocusedNodePanel(nodeId) {
+  await nextTick()
+  await new Promise((resolve) => window.requestAnimationFrame(resolve))
+  if (focusedNodeId.value !== nodeId) return
+  const api = canvasFlowApi.value
+  if (!api?.fitView) return
+  api.updateNodeInternals?.([String(nodeId)])
+  await nextTick()
+  await new Promise((resolve) => window.requestAnimationFrame(resolve))
+  if (focusedNodeId.value !== nodeId) return
+  await api.fitView({
+    nodes: [String(nodeId)],
+    padding: 0.08,
+    duration: 240,
+    maxZoom: 1,
+    includeHiddenNodes: false,
+  })
+  syncCanvasViewportFromFlow()
 }
 
 function openCanvasCreateMenuAt(clientX, clientY, connectionSource = null, flowPosition = null) {
@@ -6980,7 +7003,7 @@ async function fitCanvasView() {
   }
 }
 
-async function focusCanvasNode(nodeId) {
+async function focusCanvasNode(nodeId, options = {}) {
   if (!nodeId) return
   const node = findGraphNode(nodeId)
   focusedNodeId.value = nodeId
@@ -6988,6 +7011,21 @@ async function focusCanvasNode(nodeId) {
   await nextTick()
   const api = canvasFlowApi.value
   if (!api?.fitView && !api?.setCenter) return
+  const fitNodeIds = [...new Set([
+    String(nodeId),
+    ...(Array.isArray(options.includeNodeIds) ? options.includeNodeIds.map(String) : []),
+  ])]
+  if (fitNodeIds.length > 1 && api.fitView) {
+    await api.fitView({ nodes: fitNodeIds, padding: 0.35, duration: 320, includeHiddenNodes: false })
+    await nextTick()
+    api.updateNodeInternals?.(fitNodeIds)
+    const relatedViewport = api.getViewport?.()
+    if (relatedViewport) {
+      currentViewport.value = { x: relatedViewport.x, y: relatedViewport.y, zoom: relatedViewport.zoom }
+      scheduleVirtualization()
+    }
+    return
+  }
   if (!node) {
     await api.fitView?.({ nodes: [String(nodeId)], padding: 0.55, duration: 320, includeHiddenNodes: false })
     await nextTick()
@@ -7213,8 +7251,8 @@ function panCanvasByKeyboard(key) {
   if (!['w', 'a', 's', 'd'].includes(key)) return false
   const vector = canvasKeyboardPanVector([key])
   return panCanvasByKeyboardDelta({
-    x: vector.x * CANVAS_KEYBOARD_PAN_STEP,
-    y: vector.y * CANVAS_KEYBOARD_PAN_STEP,
+    x: vector.x * CANVAS_KEYBOARD_PAN_INITIAL_STEP,
+    y: vector.y * CANVAS_KEYBOARD_PAN_INITIAL_STEP,
   })
 }
 

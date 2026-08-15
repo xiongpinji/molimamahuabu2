@@ -60,6 +60,10 @@ test('锁定保护路径发生变化时必须提供原因、批准者和影响�
     verifyFeatureLock({ repoRoot, currentManifest: approved, baseManifest, changedPaths: [protectedPath] }).ready,
     true,
   );
+  assert.throws(
+    () => verifyFeatureLock({ repoRoot, currentManifest: approved, baseManifest: approved, changedPaths: [protectedPath] }),
+    (error) => error.code === 'FEATURE_LOCKED',
+  );
 });
 
 test('清单拒绝非法状态、缺失路径和空验收标准', () => {
