@@ -55,6 +55,12 @@ const RUNTIME_PACKAGES = Object.freeze([
   'paddlepaddle==2.6.2',
   'paddleocr==2.8.1',
 ]);
+const JSON_MAX_BYTES = 2 * 1024 * 1024;
+const LICENSE_MAX_BYTES = 2 * 1024 * 1024;
+const ARTIFACT_MAX_BYTES = 512 * 1024 * 1024;
+const PROCESS_STDOUT_MAX_BYTES = 4 * 1024 * 1024;
+const PROCESS_STDERR_MAX_BYTES = 1024 * 1024;
+const PROCESS_TIMEOUT_MS = 15 * 60 * 1000;
 
 function error(code) {
   const err = new Error(code);
@@ -151,12 +157,24 @@ function assertNonFloating(value) {
   return value;
 }
 
-function requestBuffer(rawUrl, redirects = 0) {
+function requestBuffer(rawUrl, redirects = 0, maxBytes = ARTIFACT_MAX_BYTES) {
   const parsed = assertAllowedUrl(rawUrl);
   if (redirects > 5) return Promise.reject(error(MODEL_ERROR));
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = () => {
+      if (settled) return;
+      settled = true;
+      reject(error(MODEL_ERROR));
+    };
     const req = https.get(parsed, { headers: { 'User-Agent': 'moli-redraw-full-frame-bootstrap' } }, (res) => {
       const status = res.statusCode || 0;
+      const contentLength = Number(res.headers['content-length'] || 0);
+      if (contentLength > maxBytes) {
+        res.destroy();
+        fail();
+        return;
+      }
       if ([301, 302, 303, 307, 308].includes(status)) {
         const location = res.headers.location;
         res.resume();
@@ -171,7 +189,7 @@ function requestBuffer(rawUrl, redirects = 0) {
           reject(err);
           return;
         }
-        requestBuffer(redirected, redirects + 1).then(resolve, reject);
+        requestBuffer(redirected, redirects + 1, maxBytes).then(resolve, reject);
         return;
       }
       if (status < 200 || status >= 300) {
@@ -180,19 +198,32 @@ function requestBuffer(rawUrl, redirects = 0) {
         return;
       }
       const chunks = [];
-      res.on('data', (chunk) => chunks.push(chunk));
-      res.on('end', () => resolve(Buffer.concat(chunks)));
+      let total = 0;
+      res.on('data', (chunk) => {
+        total += chunk.length;
+        if (total > maxBytes) {
+          res.destroy();
+          fail();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on('end', () => {
+        if (settled) return;
+        settled = true;
+        resolve(Buffer.concat(chunks));
+      });
     });
-    req.on('error', () => reject(error(MODEL_ERROR)));
+    req.on('error', fail);
     req.setTimeout(30000, () => {
       req.destroy();
-      reject(error(MODEL_ERROR));
+      fail();
     });
   });
 }
 
 async function requestJson(rawUrl) {
-  const bytes = await requestBuffer(rawUrl);
+  const bytes = await requestBuffer(rawUrl, 0, JSON_MAX_BYTES);
   try {
     return JSON.parse(bytes.toString('utf8'));
   } catch (_) {
@@ -201,7 +232,7 @@ async function requestJson(rawUrl) {
 }
 
 async function requestBytes(rawUrl) {
-  return requestBuffer(rawUrl);
+  return requestBuffer(rawUrl, 0, ARTIFACT_MAX_BYTES);
 }
 
 async function resolveOfficialComponent(source, deps = {}) {
@@ -211,15 +242,16 @@ async function resolveOfficialComponent(source, deps = {}) {
   const bytesRequest = deps.requestBytes || requestBytes;
   const releaseUrl = `https://api.github.com/repos/${catalog.repository}/releases/tags/${encodeURIComponent(catalog.releaseTag)}`;
   const release = await jsonRequest(releaseUrl);
-  const revision = assertCommitSha(release.target_commitish);
   assertNonFloating(release.tag_name);
+  const tagCommit = await jsonRequest(`https://api.github.com/repos/${catalog.repository}/commits/${encodeURIComponent(release.tag_name)}`);
+  const revision = assertCommitSha(tagCommit.sha);
   const assets = Array.isArray(release.assets) ? release.assets : [];
   const asset = assets.find((item) => item && item.name === catalog.assetName);
   if (!asset || typeof asset.browser_download_url !== 'string') throw error(MODEL_ERROR);
   const artifactUrl = assertAllowedUrl(asset.browser_download_url).toString();
   const licenseUrl = `https://raw.githubusercontent.com/${catalog.repository}/${revision}/${catalog.licensePath}`;
   const artifactBytes = await bytesRequest(artifactUrl);
-  const licenseBytes = await bytesRequest(licenseUrl);
+  const licenseBytes = deps.requestBytes ? await bytesRequest(licenseUrl) : await requestBuffer(licenseUrl, 0, LICENSE_MAX_BYTES);
   if (!Buffer.isBuffer(artifactBytes) && !(artifactBytes instanceof Uint8Array)) throw error(MODEL_ERROR);
   if (!Buffer.isBuffer(licenseBytes) && !(licenseBytes instanceof Uint8Array)) throw error(MODEL_ERROR);
   if (artifactBytes.length === 0 || licenseBytes.length === 0) throw error(MODEL_ERROR);
@@ -269,6 +301,7 @@ function defaultDeps() {
 
 function runProcess(command, args, options = {}) {
   return new Promise((resolve, reject) => {
+    let settled = false;
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env || sanitizeEnv(),
@@ -277,12 +310,43 @@ function runProcess(command, args, options = {}) {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    const finishReject = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill();
+      reject(error(MODEL_ERROR));
+    };
+    const finishResolve = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(stdout.trim());
+    };
+    const timer = setTimeout(finishReject, options.timeoutMs || PROCESS_TIMEOUT_MS);
     child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.on('error', () => reject(error(MODEL_ERROR)));
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdoutBytes += Buffer.byteLength(chunk);
+      if (stdoutBytes > (options.stdoutMaxBytes || PROCESS_STDOUT_MAX_BYTES)) {
+        finishReject();
+        return;
+      }
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderrBytes += Buffer.byteLength(chunk);
+      if (stderrBytes > (options.stderrMaxBytes || PROCESS_STDERR_MAX_BYTES)) {
+        finishReject();
+      }
+    });
+    child.on('error', finishReject);
     child.on('close', (code) => {
-      if (code !== 0) reject(error(MODEL_ERROR));
-      else resolve(stdout.trim());
+      if (settled) return;
+      if (code !== 0) finishReject();
+      else finishResolve();
     });
   });
 }
@@ -423,6 +487,7 @@ module.exports = {
   parseArgs,
   resolveOfficialComponent,
   venvPython,
+  runProcess,
   createVenv,
   installRuntime,
   pipFreeze,

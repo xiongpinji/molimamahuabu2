@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import importlib
+import importlib.util
 import json
 import math
 import os
@@ -272,6 +273,8 @@ class ByteTrackAdapter:
         try:
             np = importlib.import_module("numpy")
             dets = np.asarray(det_rows, dtype=float)
+            if len(det_rows) == 0:
+                dets = dets.reshape((0, 5))
         except Exception:
             pass
         targets = self.tracker.update(dets, (frame_height, frame_width), (frame_height, frame_width))
@@ -304,25 +307,24 @@ class MediaPipeFaceAdapter:
         if image is None or not hasattr(image, "shape") or len(image.shape) < 2:
             _fail()
         rgb = context.cv2.cvtColor(image, context.cv2.COLOR_BGR2RGB)
-        result = context.detector.process(rgb)
+        mp_image = context.image_class(image_format=context.image_format, data=rgb)
+        result = context.detector.detect(mp_image)
         detections = getattr(result, "detections", None) or []
-        height, width = image.shape[0], image.shape[1]
         faces = []
         for index, detection in enumerate(detections):
-            location = getattr(detection, "location_data", None)
-            rel_box = getattr(location, "relative_bounding_box", None)
-            if rel_box is None:
+            box = getattr(detection, "bounding_box", None)
+            categories = getattr(detection, "categories", None)
+            if box is None or not categories:
                 _fail()
-            scores = getattr(detection, "score", None)
-            score = scores[0] if isinstance(scores, (list, tuple)) and scores else scores
+            score = getattr(categories[0], "score", None)
             faces.append({
                 "candidate_id": f"face_{index + 1}",
                 "kind": "face_candidate",
                 "bbox": _bbox({
-                    "x": _finite_number(rel_box.xmin) * width,
-                    "y": _finite_number(rel_box.ymin) * height,
-                    "width": _finite_number(rel_box.width) * width,
-                    "height": _finite_number(rel_box.height) * height,
+                    "x": getattr(box, "origin_x", None),
+                    "y": getattr(box, "origin_y", None),
+                    "width": getattr(box, "width", None),
+                    "height": getattr(box, "height", None),
                 }),
                 "confidence": _bounded_confidence(score),
             })
@@ -342,7 +344,7 @@ class PaddleTextDetectionAdapter:
         if not isinstance(raw, (list, tuple)) or len(raw) == 0:
             _fail()
         boxes = raw[0]
-        scores = raw[1] if len(raw) > 1 else [1.0] * len(boxes)
+        scores = raw[1] if len(raw) > 1 and isinstance(raw[1], list) else [1.0] * len(boxes)
         texts = []
         for index, box in enumerate(boxes):
             points = _to_rows(box)
@@ -405,10 +407,8 @@ def _default_person_factory(artifact_path):
 
 def _default_tracker_factory(artifact_path):
     try:
-        prepared = _prepare_artifact_path(artifact_path)
-        if os.path.isdir(prepared) and prepared not in sys.path:
-            sys.path.insert(0, prepared)
-        tracker_module = importlib.import_module("yolox.tracker.byte_tracker")
+        prepared = _prepare_artifact_path(artifact_path, require_bytetrack=True)
+        tracker_module = _load_locked_bytetrack_module(prepared)
         tracker_class = getattr(tracker_module, "BYTETracker")
         tracker = tracker_class(SimpleNamespace(track_thresh=0.5, track_buffer=30, match_thresh=0.8, mot20=False))
         if not hasattr(tracker, "update"):
@@ -422,10 +422,16 @@ def _default_face_factory(artifact_path):
     try:
         cv2 = importlib.import_module("cv2")
         mediapipe = importlib.import_module("mediapipe")
-        face_detection = mediapipe.solutions.face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
-        if not hasattr(face_detection, "process"):
+        vision = mediapipe.tasks.python.vision
+        base_options_class = mediapipe.tasks.python.BaseOptions
+        options = vision.FaceDetectorOptions(
+            base_options=base_options_class(model_asset_path=artifact_path),
+            running_mode=vision.RunningMode.IMAGE,
+        )
+        detector = vision.FaceDetector.create_from_options(options)
+        if not hasattr(detector, "detect"):
             _fail()
-        return MediaPipeFaceContext(cv2=cv2, detector=face_detection)
+        return MediaPipeFaceContext(cv2=cv2, image_class=mediapipe.Image, image_format=mediapipe.ImageFormat.SRGB, detector=detector)
     except Exception as exc:
         raise ProtocolError(ERROR_CODE) from exc
 
@@ -447,15 +453,27 @@ def _default_text_detector_factory(artifact_path):
         raise ProtocolError(ERROR_CODE) from exc
 
 
-def _prepare_artifact_path(artifact_path):
+def _prepare_artifact_path(artifact_path, require_bytetrack=False):
     if not os.path.isfile(artifact_path):
         _fail()
     lower = artifact_path.lower()
     if not (lower.endswith(".zip") or lower.endswith(".tar") or lower.endswith(".tar.gz") or lower.endswith(".tgz")):
         return artifact_path
+    artifact_hash = _sha256_file(artifact_path)
     parent = os.path.dirname(os.path.realpath(artifact_path))
-    prepared_root = os.path.join(parent, ".prepared", hashlib.sha256(artifact_path.encode("utf-8")).hexdigest()[:16])
-    os.makedirs(prepared_root, exist_ok=True)
+    prepared_root = os.path.join(parent, ".prepared", artifact_hash[:16])
+    marker_path = os.path.join(prepared_root, ".redraw-full-frame-artifact.sha256")
+    if os.path.isdir(prepared_root):
+        try:
+            with open(marker_path, "r", encoding="utf-8") as handle:
+                if handle.read().strip() != artifact_hash:
+                    _fail()
+            if require_bytetrack:
+                _find_unique_bytetrack_module(prepared_root)
+            return prepared_root
+        except FileNotFoundError as exc:
+            raise ProtocolError(ERROR_CODE) from exc
+    os.makedirs(prepared_root, exist_ok=False)
     root_real = os.path.realpath(prepared_root)
     if lower.endswith(".zip"):
         with zipfile.ZipFile(artifact_path) as archive:
@@ -472,6 +490,10 @@ def _prepare_artifact_path(artifact_path):
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 with archive.open(info) as source, open(target, "wb") as dest:
                     dest.write(source.read())
+        if require_bytetrack:
+            _find_unique_bytetrack_module(prepared_root)
+        with open(marker_path, "w", encoding="utf-8") as handle:
+            handle.write(artifact_hash)
         return prepared_root
     with tarfile.open(artifact_path) as archive:
         for member in archive.getmembers():
@@ -492,7 +514,55 @@ def _prepare_artifact_path(artifact_path):
                     dest.write(source.read())
                 continue
             _fail()
+    if require_bytetrack:
+        _find_unique_bytetrack_module(prepared_root)
+    with open(marker_path, "w", encoding="utf-8") as handle:
+        handle.write(artifact_hash)
     return prepared_root
+
+
+def _find_unique_bytetrack_module(root):
+    matches = []
+    for current_root, _dirs, files in os.walk(root):
+        if "byte_tracker.py" in files:
+            candidate = os.path.realpath(os.path.join(current_root, "byte_tracker.py"))
+            normalized = candidate.replace("\\", "/")
+            if normalized.endswith("/yolox/tracker/byte_tracker.py"):
+                matches.append(candidate)
+    if len(matches) != 1:
+        _fail()
+    return matches[0]
+
+
+def _load_locked_bytetrack_module(prepared):
+    if os.path.isfile(prepared):
+        tracker_module = importlib.import_module("yolox.tracker.byte_tracker")
+        module_file = os.path.realpath(getattr(tracker_module, "__file__", ""))
+        if not module_file:
+            _fail()
+        return tracker_module
+    module_path = _find_unique_bytetrack_module(prepared)
+    package_root = os.path.dirname(os.path.dirname(os.path.dirname(module_path)))
+    previous_path = list(sys.path)
+    previous_modules = {name: sys.modules.get(name) for name in list(sys.modules) if name == "yolox" or name.startswith("yolox.")}
+    try:
+        for name in list(sys.modules):
+            if name == "yolox" or name.startswith("yolox."):
+                del sys.modules[name]
+        sys.path.insert(0, package_root)
+        module = importlib.import_module("yolox.tracker.byte_tracker")
+        module_file = os.path.realpath(getattr(module, "__file__", ""))
+        if os.path.commonpath([os.path.realpath(prepared), module_file]) != os.path.realpath(prepared):
+            _fail()
+        return module
+    finally:
+        sys.path[:] = previous_path
+        for name in list(sys.modules):
+            if name == "yolox" or name.startswith("yolox."):
+                del sys.modules[name]
+        for name, module in previous_modules.items():
+            if module is not None:
+                sys.modules[name] = module
 
 
 def _default_factories():

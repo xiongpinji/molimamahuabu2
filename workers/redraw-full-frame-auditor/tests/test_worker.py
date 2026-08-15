@@ -226,28 +226,40 @@ class FakeFactory:
                 events.append(("cvtColor", image.shape, code))
                 return "rgb-image"
 
-        class RelativeBox:
-            xmin = 0.1
-            ymin = 0.2
-            width = 0.3
-            height = 0.4
+        class BoundingBox:
+            origin_x = 20
+            origin_y = 30
+            width = 40
+            height = 50
 
-        class LocationData:
-            relative_bounding_box = RelativeBox()
+        class Category:
+            score = 0.95
 
         class Detection:
-            location_data = LocationData()
-            score = [0.95]
+            bounding_box = BoundingBox()
+            categories = [Category()]
 
         class FaceModel:
-            def detect(self, frame_path):
-                raise AssertionError("MediaPipe adapter must call process")
+            artifact_path_seen = artifact_path
 
             def process(self, image):
-                events.append(("mediapipe_process", image))
+                raise AssertionError("MediaPipe Tasks adapter must call detect")
+
+            def detect(self, image):
+                events.append(("mediapipe_tasks_detect", image.image_format, image.data, self.artifact_path_seen))
                 return type("Result", (), {"detections": [Detection()]})()
 
-        return worker.MediaPipeFaceContext(cv2=FakeCv2(), detector=FaceModel())
+        class MpImage:
+            def __init__(self, image_format, data):
+                self.image_format = image_format
+                self.data = data
+
+        return worker.MediaPipeFaceContext(
+            cv2=FakeCv2(),
+            image_class=MpImage,
+            image_format="SRGB",
+            detector=FaceModel(),
+        )
 
     def text_detector(self, artifact_path):
         self.calls.append(("text_detector", pathlib.Path(artifact_path).name))
@@ -269,7 +281,7 @@ class FakeFactory:
                 events.append(("paddle_text_call", image.shape))
                 return [
                     [[0, 0], [3, 0], [3, 3], [0, 3]],
-                ], [0.88]
+                ], 0.01
 
         return worker.PaddleTextDetectionContext(cv2=FakeCv2(), detector=TextModel())
 
@@ -408,14 +420,50 @@ class WorkerProtocolTests(unittest.TestCase):
         bytetrack_event = next(event for event in factories.events if event[0] == "bytetrack_update")
         dets = bytetrack_event[1].tolist() if hasattr(bytetrack_event[1], "tolist") else bytetrack_event[1]
         self.assertEqual(dets, [[10.0, 20.0, 50.0, 70.0, 0.4]])
-        self.assertIn(("mediapipe_process", "rgb-image"), factories.events)
+        face_artifact = next(call for call in factories.calls if call[0] == "face")[1]
+        self.assertIn(("mediapipe_tasks_detect", "SRGB", "rgb-image", str(pathlib.Path(root) / "models" / "face_detector" / face_artifact)), factories.events)
         self.assertIn(("paddle_text_call", (100, 200, 3)), factories.events)
         self.assertEqual(result["persons"][0]["track_key"], "track_42")
         self.assertEqual(result["persons"][0]["bbox"], {"x": 10.0, "y": 20.0, "width": 40.0, "height": 50.0})
+        self.assertEqual(result["faces"][0]["bbox"], {"x": 20.0, "y": 30.0, "width": 40.0, "height": 50.0})
+        self.assertEqual(result["texts"][0]["confidence"], 1.0)
         self.assertEqual(result["faces"][0]["candidate_id"], "face_1")
         self.assertEqual(result["texts"][0]["candidate_id"], "text_1")
         self.assertNotIn("_frame_width", json.dumps(result))
         self.assertNotIn("_frame_height", json.dumps(result))
+
+    def test_bytetrack_empty_persons_uses_empty_nx5_detections(self):
+        events = []
+
+        class Tracker:
+            def update(self, dets, img_info, img_size):
+                events.append((getattr(dets, "shape", None), dets.tolist() if hasattr(dets, "tolist") else dets, img_info, img_size))
+                return []
+
+        result = worker.ByteTrackAdapter("tracker.zip", lambda _path: Tracker()).update(9, [])
+
+        self.assertEqual(result, [])
+        self.assertEqual(events[0][0], (0, 5))
+        self.assertEqual(events[0][1], [])
+
+    def test_prepare_artifact_uses_content_hash_and_rejects_stale_marker(self):
+        import zipfile
+        with tempfile.TemporaryDirectory() as root:
+            first = pathlib.Path(root) / "tracker.zip"
+            with zipfile.ZipFile(first, "w") as archive:
+                archive.writestr("ByteTrack-main/yolox/tracker/byte_tracker.py", "class BYTETracker: pass\n")
+            first_prepared = pathlib.Path(worker._prepare_artifact_path(str(first)))
+            self.assertIn(hashlib.sha256(first.read_bytes()).hexdigest()[:16], str(first_prepared))
+            marker = first_prepared / ".redraw-full-frame-artifact.sha256"
+            marker.write_text("stale", encoding="utf-8")
+            with self.assertRaises(worker.ProtocolError):
+                worker._prepare_artifact_path(str(first))
+
+            second = pathlib.Path(root) / "tracker2.zip"
+            with zipfile.ZipFile(second, "w") as archive:
+                archive.writestr("ByteTrack-main/yolox/tracker/byte_tracker.py", "class BYTETracker:\n    pass\n")
+            second_prepared = pathlib.Path(worker._prepare_artifact_path(str(second)))
+            self.assertNotEqual(first_prepared, second_prepared)
 
     def test_bootstrap_models_uses_same_loader_and_reports_only_sanitized_success(self):
         with tempfile.TemporaryDirectory() as root:

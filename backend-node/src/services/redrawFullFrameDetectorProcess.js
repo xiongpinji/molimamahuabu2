@@ -2,6 +2,9 @@ const { spawn } = require('node:child_process');
 const path = require('node:path');
 
 const ERROR_CODE = 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE';
+const MAX_FRAMES = 100000;
+const MAX_STDOUT_BYTES = 256 * 1024 * 1024;
+const MAX_STDERR_BYTES = 1024 * 1024;
 
 function unavailable() {
   const error = new Error(ERROR_CODE);
@@ -116,7 +119,7 @@ function detectFrames({ pythonPath, workerRoot, modelLockPath, frames, timeoutMs
     try {
       if (typeof pythonPath !== 'string' || !pythonPath || typeof workerRoot !== 'string' || !workerRoot || typeof modelLockPath !== 'string' || !modelLockPath) throw unavailable();
       if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 300000) throw unavailable();
-      if (!Array.isArray(frames) || frames.length === 0) throw unavailable();
+      if (!Array.isArray(frames) || frames.length === 0 || frames.length > MAX_FRAMES) throw unavailable();
       const seen = new Set();
       const sortedFrames = frames.map((frame) => {
         assertFrame(frame);
@@ -140,6 +143,8 @@ function detectFrames({ pythonPath, workerRoot, modelLockPath, frames, timeoutMs
       let settled = false;
       let stdout = '';
       let stderr = '';
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
       const cleanup = () => {
         clearTimeout(timer);
         child.stdout.removeAllListeners();
@@ -150,6 +155,7 @@ function detectFrames({ pythonPath, workerRoot, modelLockPath, frames, timeoutMs
       const fail = () => {
         if (settled) return;
         settled = true;
+        child.kill();
         cleanup();
         reject(unavailable());
       };
@@ -161,8 +167,22 @@ function detectFrames({ pythonPath, workerRoot, modelLockPath, frames, timeoutMs
       child.on('error', fail);
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');
-      child.stdout.on('data', (chunk) => { stdout += chunk; });
-      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.stdout.on('data', (chunk) => {
+        stdoutBytes += Buffer.byteLength(chunk);
+        if (stdoutBytes > MAX_STDOUT_BYTES) {
+          fail();
+          return;
+        }
+        stdout += chunk;
+      });
+      child.stderr.on('data', (chunk) => {
+        stderrBytes += Buffer.byteLength(chunk);
+        if (stderrBytes > MAX_STDERR_BYTES) {
+          fail();
+          return;
+        }
+        stderr += chunk;
+      });
       child.on('close', (code) => {
         if (settled) return;
         try {
@@ -190,10 +210,19 @@ function detectFrames({ pythonPath, workerRoot, modelLockPath, frames, timeoutMs
         }
       });
 
-      for (const frame of sortedFrames) {
-        child.stdin.write(`${JSON.stringify(frame)}\n`);
-      }
-      child.stdin.end();
+      let writeIndex = 0;
+      const writeNext = () => {
+        while (!settled && writeIndex < sortedFrames.length) {
+          const ok = child.stdin.write(`${JSON.stringify(sortedFrames[writeIndex])}\n`);
+          writeIndex += 1;
+          if (!ok) {
+            child.stdin.once('drain', writeNext);
+            return;
+          }
+        }
+        if (!settled) child.stdin.end();
+      };
+      writeNext();
     } catch (_) {
       reject(unavailable());
     }

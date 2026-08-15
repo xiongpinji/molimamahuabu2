@@ -14,6 +14,7 @@ const {
   parseArgs,
   resolveOfficialComponent,
   venvPython,
+  runProcess,
   runFetchModels,
 } = require('../scripts/fetch-redraw-full-frame-models-local');
 
@@ -29,41 +30,49 @@ function writeFakeWorker(t, mode = 'ok') {
   fs.mkdirSync(src, { recursive: true });
   const capturePath = path.join(root, 'capture.json');
   fs.writeFileSync(path.join(src, 'worker.py'), `
-import json, os, sys, time
-capture = ${JSON.stringify(capturePath)}
-mode = ${JSON.stringify(mode)}
-lines = [line for line in sys.stdin.read().splitlines() if line]
-with open(capture, 'w', encoding='utf-8') as fh:
-    json.dump({"env": sorted(os.environ.keys()), "stdin": lines}, fh)
-if mode == 'timeout':
-    time.sleep(5)
-elif mode == 'nonzero':
-    sys.stderr.write("C:/secret/model-lock.json")
-    sys.exit(7)
-elif mode == 'invalid-json':
-    print("{bad")
-elif mode == 'extra':
-    for line in lines:
-        frame = json.loads(line)
-        print(json.dumps({"frame_index": frame["frame_index"], "persons": [], "faces": [], "texts": []}))
-    print(json.dumps({"frame_index": 999, "persons": [], "faces": [], "texts": []}))
-elif mode == 'duplicate':
-    frame = json.loads(lines[0])
-    out = {"frame_index": frame["frame_index"], "persons": [], "faces": [], "texts": []}
-    print(json.dumps(out))
-    print(json.dumps(out))
-elif mode == 'missing':
-    frame = json.loads(lines[0])
-    print(json.dumps({"frame_index": frame["frame_index"], "persons": [], "faces": [], "texts": []}))
-else:
-    for line in reversed(lines):
-        frame = json.loads(line)
-        print(json.dumps({
-            "frame_index": frame["frame_index"],
-            "persons": [{"candidate_id":"person_1","track_key":"track_1","kind":"person_candidate","bbox":{"x":1,"y":2,"width":3,"height":4},"confidence":0.9}],
-            "faces": [],
-            "texts": []
-        }))
+const fs = require('node:fs');
+const mode = ${JSON.stringify(mode)};
+const capture = ${JSON.stringify(capturePath)};
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => { input += chunk; });
+process.stdin.on('end', () => {
+  const lines = input.split(/\\r?\\n/).filter(Boolean);
+  fs.writeFileSync(capture, JSON.stringify({ env: Object.keys(process.env).sort(), stdin: lines }));
+  if (mode === 'timeout') return setTimeout(() => {}, 5000);
+  if (mode === 'nonzero') { process.stderr.write('C:/secret/model-lock.json'); process.exit(7); }
+  if (mode === 'invalid-json') { process.stdout.write('{bad\\n'); return; }
+  if (mode === 'huge-stderr') { process.stderr.write('x'.repeat(1024 * 1024 + 1)); process.exit(1); }
+  if (mode === 'huge-stdout') { process.stdout.write('x'.repeat(256 * 1024 * 1024 + 1)); return; }
+  if (mode === 'extra') {
+    for (const line of lines) {
+      const frame = JSON.parse(line);
+      process.stdout.write(JSON.stringify({ frame_index: frame.frame_index, persons: [], faces: [], texts: [] }) + '\\n');
+    }
+    process.stdout.write(JSON.stringify({ frame_index: 999, persons: [], faces: [], texts: [] }) + '\\n');
+    return;
+  }
+  if (mode === 'duplicate') {
+    const frame = JSON.parse(lines[0]);
+    const out = JSON.stringify({ frame_index: frame.frame_index, persons: [], faces: [], texts: [] }) + '\\n';
+    process.stdout.write(out + out);
+    return;
+  }
+  if (mode === 'missing') {
+    const frame = JSON.parse(lines[0]);
+    process.stdout.write(JSON.stringify({ frame_index: frame.frame_index, persons: [], faces: [], texts: [] }) + '\\n');
+    return;
+  }
+  for (const line of lines.reverse()) {
+    const frame = JSON.parse(line);
+    process.stdout.write(JSON.stringify({
+      frame_index: frame.frame_index,
+      persons: [{ candidate_id: 'person_1', track_key: 'track_1', kind: 'person_candidate', bbox: { x: 1, y: 2, width: 3, height: 4 }, confidence: 0.9 }],
+      faces: [],
+      texts: []
+    }) + '\\n');
+  }
+});
 `, 'utf8');
   return { root, capturePath };
 }
@@ -107,14 +116,19 @@ test('safeWorkerEnv keeps only the allowlist and fixed Python UTF-8 setting', ()
 });
 
 test('detectFrames sends sorted JSONL, returns sorted sanitized detections, and uses safe env', async (t) => {
+  const previousPython = process.env.REDRAW_AUDITOR_PYTHON;
+  delete process.env.REDRAW_AUDITOR_PYTHON;
   process.env.OPENAI_API_KEY = 'secret';
-  t.after(() => { delete process.env.OPENAI_API_KEY; });
+  t.after(() => {
+    delete process.env.OPENAI_API_KEY;
+    if (previousPython !== undefined) process.env.REDRAW_AUDITOR_PYTHON = previousPython;
+  });
   const { root, capturePath } = writeFakeWorker(t);
   const modelLockPath = path.join(root, 'model-lock.json');
   fs.writeFileSync(modelLockPath, '{}');
 
   const results = await detectFrames({
-    pythonPath: process.env.REDRAW_AUDITOR_PYTHON || process.execPath,
+    pythonPath: process.execPath,
     workerRoot: root,
     modelLockPath,
     timeoutMs: 3000,
@@ -138,7 +152,7 @@ test('detectFrames sends sorted JSONL, returns sorted sanitized detections, and 
 test('detectFrames rejects invalid inputs and child protocol failures with a stable sanitized error', async (t) => {
   const { root } = writeFakeWorker(t);
   const common = {
-    pythonPath: process.env.REDRAW_AUDITOR_PYTHON || process.execPath,
+    pythonPath: process.execPath,
     workerRoot: root,
     modelLockPath: path.join(root, 'model-lock.json'),
     frames: [{ frame_index: 1, timestamp_ms: 10, frame_path: 'C:/secret/frame.png' }],
@@ -148,7 +162,7 @@ test('detectFrames rejects invalid inputs and child protocol failures with a sta
   await assertUnavailable(detectFrames({ ...common, frames: [{ ...common.frames[0], extra: true }] }), /secret|model-lock|redraw-worker/);
   await assertUnavailable(detectFrames({ ...common, frames: [common.frames[0], common.frames[0]] }), /secret|model-lock|redraw-worker/);
 
-  for (const mode of ['timeout', 'nonzero', 'invalid-json', 'extra', 'duplicate', 'missing']) {
+  for (const mode of ['timeout', 'nonzero', 'invalid-json', 'extra', 'duplicate', 'missing', 'huge-stderr', 'huge-stdout']) {
     const fake = writeFakeWorker(t, mode);
     fs.writeFileSync(path.join(fake.root, 'model-lock.json'), '{}');
     const frames = mode === 'missing'
@@ -162,6 +176,10 @@ test('detectFrames rejects invalid inputs and child protocol failures with a sta
       timeoutMs: mode === 'timeout' ? 50 : 1000,
     }), /secret|model-lock|redraw-worker/);
   }
+  await assertUnavailable(detectFrames({
+    ...common,
+    frames: Array.from({ length: 100001 }, (_, index) => ({ frame_index: index, timestamp_ms: index, frame_path: `C:/secret/${index}.png` })),
+  }), /secret|model-lock|redraw-worker/);
 });
 
 test('fetch model CLI args only accept help or an output directory', () => {
@@ -248,9 +266,10 @@ test('default fetch path resolves official HTTPS catalog without unconditional s
     requestJson: async (url) => {
       calls.push(['json', url]);
       assert.match(url, /^https:\/\/api\.github\.com\//);
+      if (url.includes('/commits/')) return { sha: '0123456789abcdef0123456789abcdef01234567' };
       return {
         tag_name: 'v1.2.3',
-        target_commitish: '0123456789abcdef0123456789abcdef01234567',
+        target_commitish: 'main',
         assets: [{ name: 'yolox_s.pth', browser_download_url: 'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/v0.3.0/yolox_s.pth' }],
       };
     },
@@ -272,7 +291,13 @@ test('default fetch path resolves official HTTPS catalog without unconditional s
   assert.equal(evidence.artifact_name, 'yolox_s.pth');
   assert(Buffer.isBuffer(evidence.artifact_bytes));
   assert(Buffer.isBuffer(evidence.license_bytes));
-  assert.deepEqual(calls.map((call) => call[0]), ['json', 'bytes', 'bytes']);
+  assert.deepEqual(calls.map((call) => call[0]), ['json', 'json', 'bytes', 'bytes']);
+  await assert.rejects(resolveOfficialComponent({
+    component: 'person_detector',
+    project: 'YOLOX',
+    repository: 'Megvii-BaseDetection/YOLOX',
+    license_path: 'LICENSE',
+  }, { ...deps, requestJson: async (url) => (url.includes('/commits/') ? { sha: 'main' } : { tag_name: 'v1.2.3', assets: [{ name: 'yolox_s.pth', browser_download_url: 'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/v0.3.0/yolox_s.pth' }] }) }), /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/);
 });
 
 test('default runtime helpers use safe argv spawn contracts and reject non-exact freeze lines', async (t) => {
@@ -316,4 +341,17 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
     fetchModule.pipFreeze(parent, { ...deps, spawnProcess: async () => 'pkg>=1.0.0\n' }),
     /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
   );
+});
+
+test('runProcess consumes stderr, enforces limits, timeout, and settles once', async (t) => {
+  const script = path.join(tempDir(t, 'redraw-run-process-'), 'child.js');
+  fs.writeFileSync(script, `
+const mode = process.argv[2];
+if (mode === 'stderr') { process.stderr.write('x'.repeat(1024 * 1024 + 1)); }
+else if (mode === 'timeout') { setTimeout(() => {}, 5000); }
+else { process.stderr.write('warn'); process.stdout.write('ok'); }
+`, 'utf8');
+  assert.equal(await runProcess(process.execPath, [script, 'ok'], { timeoutMs: 1000 }), 'ok');
+  await assert.rejects(runProcess(process.execPath, [script, 'stderr'], { timeoutMs: 1000 }), /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/);
+  await assert.rejects(runProcess(process.execPath, [script, 'timeout'], { timeoutMs: 50 }), /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/);
 });
