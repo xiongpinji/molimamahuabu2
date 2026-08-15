@@ -297,44 +297,103 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
   assert.equal(fs.existsSync(failed), false);
 });
 
-test('default fetch path resolves official HTTPS catalog without unconditional stubs', async () => {
+test('default fetch path resolves four fixed official sources from exact revisions and artifact URLs', async () => {
+  const expected = {
+    face_detector: {
+      repository: 'google-ai-edge/mediapipe',
+      revision: '4cf89a70942ca3252e46ace7e4552f53be9bef2e',
+      artifactName: 'blaze_face_short_range.tflite',
+      artifactUrl: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
+    },
+    person_detector: {
+      repository: 'Megvii-BaseDetection/YOLOX',
+      revision: 'e1052df71842031413f6030723c3607b839c80ce',
+      artifactName: 'yolox_s.pth',
+      artifactUrl: 'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.pth',
+    },
+    text_detector: {
+      repository: 'PaddlePaddle/PaddleOCR',
+      revision: '40c56628fda416e1c8710eb19e4b260536902520',
+      artifactName: 'en_PP-OCRv3_det_infer.tar',
+      artifactUrl: 'https://paddleocr.bj.bcebos.com/PP-OCRv3/english/en_PP-OCRv3_det_infer.tar',
+    },
+    tracker: {
+      repository: 'FoundationVision/ByteTrack',
+      revision: 'd1bf0191adff59bc8fcfeaa0b33d3d1642552a99',
+      artifactName: 'bytetrack-source.zip',
+      artifactUrl: 'https://codeload.github.com/FoundationVision/ByteTrack/zip/d1bf0191adff59bc8fcfeaa0b33d3d1642552a99',
+    },
+  };
   const calls = [];
   const deps = {
     requestJson: async (url) => {
       calls.push(['json', url]);
-      assert.match(url, /^https:\/\/api\.github\.com\//);
-      if (url.includes('/commits/')) return { sha: '0123456789abcdef0123456789abcdef01234567' };
-      return {
-        tag_name: 'v1.2.3',
-        target_commitish: 'main',
-        assets: [{ name: 'yolox_s.pth', browser_download_url: 'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/v0.3.0/yolox_s.pth' }],
-      };
+      const entry = Object.values(expected).find((item) => url === `https://api.github.com/repos/${item.repository}/commits/${item.revision}`);
+      assert(entry, `unexpected JSON request: ${url}`);
+      return { sha: entry.revision };
     },
     requestBytes: async (url) => {
       calls.push(['bytes', url]);
-      assert.match(url, /^https:\/\//);
-      return Buffer.from(url.includes('LICENSE') ? 'license-bytes' : 'artifact-bytes');
+      const entry = Object.values(expected).find((item) => item.artifactUrl === url || url === `https://raw.githubusercontent.com/${item.repository}/${item.revision}/LICENSE`);
+      assert(entry, `unexpected bytes request: ${url}`);
+      return Buffer.from(url.includes('/LICENSE') ? `${entry.repository}:license` : `${entry.repository}:artifact`);
     },
   };
 
-  const evidence = await resolveOfficialComponent({
-    component: 'person_detector',
-    project: 'YOLOX',
-    repository: 'Megvii-BaseDetection/YOLOX',
-    license_path: 'LICENSE',
-  }, deps);
+  for (const source of [
+    { component: 'face_detector', project: 'MediaPipe face detection', repository: 'google-ai-edge/mediapipe', license_path: 'LICENSE' },
+    { component: 'person_detector', project: 'YOLOX', repository: 'Megvii-BaseDetection/YOLOX', license_path: 'LICENSE' },
+    { component: 'text_detector', project: 'PaddleOCR', repository: 'PaddlePaddle/PaddleOCR', license_path: 'LICENSE' },
+    { component: 'tracker', project: 'ByteTrack', repository: 'FoundationVision/ByteTrack', license_path: 'LICENSE' },
+  ]) {
+    const evidence = await resolveOfficialComponent(source, deps);
+    assert.equal(evidence.revision, expected[source.component].revision);
+    assert.equal(evidence.artifact_name, expected[source.component].artifactName);
+    assert(Buffer.isBuffer(evidence.artifact_bytes));
+    assert(Buffer.isBuffer(evidence.license_bytes));
+  }
 
-  assert.equal(evidence.revision, '0123456789abcdef0123456789abcdef01234567');
-  assert.equal(evidence.artifact_name, 'yolox_s.pth');
-  assert(Buffer.isBuffer(evidence.artifact_bytes));
-  assert(Buffer.isBuffer(evidence.license_bytes));
-  assert.deepEqual(calls.map((call) => call[0]), ['json', 'json', 'bytes', 'bytes']);
-  await assert.rejects(resolveOfficialComponent({
+  assert.equal(calls.filter((call) => call[0] === 'json').length, 4);
+  assert.equal(calls.filter((call) => call[0] === 'bytes').length, 8);
+  assert(calls.every((call) => !call[1].includes('/releases/tags/')), JSON.stringify(calls));
+  assert(calls.some((call) => call[1] === 'https://release-assets.githubusercontent.com/injected.bin') === false);
+});
+
+test('default fetch path rejects official revision drift and injected artifact URLs', async () => {
+  const source = {
     component: 'person_detector',
     project: 'YOLOX',
     repository: 'Megvii-BaseDetection/YOLOX',
     license_path: 'LICENSE',
-  }, { ...deps, requestJson: async (url) => (url.includes('/commits/') ? { sha: 'main' } : { tag_name: 'v1.2.3', assets: [{ name: 'yolox_s.pth', browser_download_url: 'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/v0.3.0/yolox_s.pth' }] }) }), /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/);
+  };
+  await assert.rejects(resolveOfficialComponent(source, {
+    requestJson: async () => ({ sha: '0'.repeat(40) }),
+    requestBytes: async () => Buffer.from('must-not-download'),
+  }), /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/);
+
+  const bytesCalls = [];
+  const evidence = await resolveOfficialComponent(source, {
+    requestJson: async (url) => {
+      if (url.endsWith('/e1052df71842031413f6030723c3607b839c80ce')) {
+        return { sha: 'e1052df71842031413f6030723c3607b839c80ce' };
+      }
+      return {
+        tag_name: '0.1.1rc0',
+        assets: [{ name: 'yolox_s.pth', browser_download_url: 'https://release-assets.githubusercontent.com/injected.bin' }],
+      };
+    },
+    requestBytes: async (url) => {
+      bytesCalls.push(url);
+      if (url === 'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.pth') return Buffer.from('official-artifact');
+      if (url === 'https://raw.githubusercontent.com/Megvii-BaseDetection/YOLOX/e1052df71842031413f6030723c3607b839c80ce/LICENSE') return Buffer.from('license');
+      throw new Error(`injected URL was used: ${url}`);
+    },
+  });
+  assert.equal(evidence.revision, 'e1052df71842031413f6030723c3607b839c80ce');
+  assert.deepEqual(bytesCalls, [
+    'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.pth',
+    'https://raw.githubusercontent.com/Megvii-BaseDetection/YOLOX/e1052df71842031413f6030723c3607b839c80ce/LICENSE',
+  ]);
 });
 
 test('default runtime helpers use safe argv spawn contracts and reject non-exact freeze lines', async (t) => {

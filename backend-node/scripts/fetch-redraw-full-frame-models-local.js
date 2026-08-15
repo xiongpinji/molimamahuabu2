@@ -14,33 +14,40 @@ const ALLOWED_HTTPS_HOSTS = new Set([
   'api.github.com',
   'github.com',
   'codeload.github.com',
+  'release-assets.githubusercontent.com',
   'raw.githubusercontent.com',
+  'storage.googleapis.com',
+  'paddleocr.bj.bcebos.com',
   'files.pythonhosted.org',
   'pypi.org',
 ]);
 const OFFICIAL_CATALOG = Object.freeze({
   face_detector: Object.freeze({
     repository: 'google-ai-edge/mediapipe',
-    releaseTag: 'v0.10.14',
-    assetName: 'mediapipe-face-detection-model.tflite',
+    revision: '4cf89a70942ca3252e46ace7e4552f53be9bef2e',
+    artifactUrl: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
+    artifactName: 'blaze_face_short_range.tflite',
     licensePath: 'LICENSE',
   }),
   person_detector: Object.freeze({
     repository: 'Megvii-BaseDetection/YOLOX',
-    releaseTag: 'v0.3.0',
-    assetName: 'yolox_s.pth',
+    revision: 'e1052df71842031413f6030723c3607b839c80ce',
+    artifactUrl: 'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.pth',
+    artifactName: 'yolox_s.pth',
     licensePath: 'LICENSE',
   }),
   text_detector: Object.freeze({
     repository: 'PaddlePaddle/PaddleOCR',
-    releaseTag: 'v2.8.1',
-    assetName: 'en_PP-OCRv3_det_infer.tar',
+    revision: '40c56628fda416e1c8710eb19e4b260536902520',
+    artifactUrl: 'https://paddleocr.bj.bcebos.com/PP-OCRv3/english/en_PP-OCRv3_det_infer.tar',
+    artifactName: 'en_PP-OCRv3_det_infer.tar',
     licensePath: 'LICENSE',
   }),
   tracker: Object.freeze({
     repository: 'FoundationVision/ByteTrack',
-    releaseTag: 'v0.3.0',
-    assetName: 'bytetrack-source.zip',
+    revision: 'd1bf0191adff59bc8fcfeaa0b33d3d1642552a99',
+    artifactUrl: 'https://codeload.github.com/FoundationVision/ByteTrack/zip/d1bf0191adff59bc8fcfeaa0b33d3d1642552a99',
+    artifactName: 'bytetrack-source.zip',
     licensePath: 'LICENSE',
   }),
 });
@@ -240,15 +247,12 @@ async function resolveOfficialComponent(source, deps = {}) {
   if (!catalog || catalog.repository !== source.repository || catalog.licensePath !== source.license_path) throw error(MODEL_ERROR);
   const jsonRequest = deps.requestJson || requestJson;
   const bytesRequest = deps.requestBytes || requestBytes;
-  const releaseUrl = `https://api.github.com/repos/${catalog.repository}/releases/tags/${encodeURIComponent(catalog.releaseTag)}`;
-  const release = await jsonRequest(releaseUrl);
-  assertNonFloating(release.tag_name);
-  const tagCommit = await jsonRequest(`https://api.github.com/repos/${catalog.repository}/commits/${encodeURIComponent(release.tag_name)}`);
-  const revision = assertCommitSha(tagCommit.sha);
-  const assets = Array.isArray(release.assets) ? release.assets : [];
-  const asset = assets.find((item) => item && item.name === catalog.assetName);
-  if (!asset || typeof asset.browser_download_url !== 'string') throw error(MODEL_ERROR);
-  const artifactUrl = assertAllowedUrl(asset.browser_download_url).toString();
+  const expectedRevision = assertCommitSha(catalog.revision);
+  const commit = await jsonRequest(`https://api.github.com/repos/${catalog.repository}/commits/${expectedRevision}`);
+  const revision = assertCommitSha(commit.sha);
+  if (revision !== expectedRevision) throw error(MODEL_ERROR);
+  const artifactUrl = assertAllowedUrl(catalog.artifactUrl).toString();
+  if (artifactUrl !== catalog.artifactUrl) throw error(MODEL_ERROR);
   const licenseUrl = `https://raw.githubusercontent.com/${catalog.repository}/${revision}/${catalog.licensePath}`;
   const artifactBytes = await bytesRequest(artifactUrl);
   const licenseBytes = deps.requestBytes ? await bytesRequest(licenseUrl) : await requestBuffer(licenseUrl, 0, LICENSE_MAX_BYTES);
@@ -257,7 +261,7 @@ async function resolveOfficialComponent(source, deps = {}) {
   if (artifactBytes.length === 0 || licenseBytes.length === 0) throw error(MODEL_ERROR);
   return {
     revision,
-    artifact_name: catalog.assetName,
+    artifact_name: catalog.artifactName,
     artifact_bytes: Buffer.from(artifactBytes),
     license_name: `${source.component}-LICENSE.txt`,
     license_bytes: Buffer.from(licenseBytes),
