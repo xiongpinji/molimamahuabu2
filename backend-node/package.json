@@ -29,7 +29,8 @@
     "audit:usmercari-image": "node scripts/verify-usmercari-image-release-contract.js",
     "verify:toapis-video": "node scripts/verify-toapis-video-models.js",
     "verify:feituo-video": "node scripts/verify-feituo-video-models.js",
-    "audit:toapis-video": "node scripts/verify-toapis-video-release-contract.js"
+    "audit:toapis-video": "node scripts/verify-toapis-video-release-contract.js",
+    "fetch:redraw-full-frame-models-local": "node scripts/fetch-redraw-full-frame-models-local.js"
   },
   "engines": {
     "node": ">=20.9.0"
