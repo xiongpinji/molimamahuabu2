@@ -2925,10 +2925,7 @@ function freeCanvasNodeInputReferences(nodeOrId) {
 function freeCanvasReferenceCandidates(nodeOrId) {
   const targetNode = freeCanvasNodeById(nodeOrId)
   if (!targetNode) return []
-  const references = normalizeFreeCanvasSubmissionReferences(
-    collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id),
-  )
-  const adoptedReferences = targetNode.data?.kind === 'video'
+  const adoptedReferences = (references) => targetNode.data?.kind === 'video'
     ? planFreeCanvasVideoReferences(
       getFreeNodeModelCapability('video', targetNode.data?.model),
       targetNode.data?.videoReferenceMode,
@@ -2936,7 +2933,11 @@ function freeCanvasReferenceCandidates(nodeOrId) {
     ).filter(({ enabled }) => enabled).map(({ reference }) => reference)
     : references
   return buildFreeCanvasReferenceMentionCandidates(
-    adoptedReferences,
+    adoptedReferences(
+      normalizeFreeCanvasSubmissionReferences(
+        collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id),
+      ),
+    ),
   )
 }
 

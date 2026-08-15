@@ -90,7 +90,7 @@ test('图片编辑器上传参考图，视频编辑器上传图片、视频或�
   assert.match(canvasSource, /function attachFreeCanvasReference\(targetNodeOrId, sourceNodeOrId\)/)
   assert.match(canvasSource, /onConnect\(\{ source: sourceNode\.id, target: targetNode\.id \}\)/)
   assert.match(canvasSource, /uploadFreeCanvasReferenceMedia,\s*\n\s*attachFreeCanvasReference,/)
-  assert.match(canvasSource, /function freeCanvasReferenceCandidates\(nodeOrId\)[\s\S]{0,500}collectDirectUpstreamImageReferences[\s\S]{0,500}planFreeCanvasVideoReferences[\s\S]{0,500}buildFreeCanvasReferenceMentionCandidates\(\s*adoptedReferences/)
+  assert.match(canvasSource, /function freeCanvasReferenceCandidates\(nodeOrId\)[\s\S]{0,700}planFreeCanvasVideoReferences[\s\S]{0,700}return buildFreeCanvasReferenceMentionCandidates\(\s*adoptedReferences\([\s\S]{0,300}collectDirectUpstreamImageReferences/)
   assert.doesNotMatch(canvasSource, /function freeCanvasReferenceCandidates[\s\S]{0,500}allGraphNodes\.value\s*\.filter/)
   assert.match(homeCanvasSource, /function freeCanvasReferenceCandidates\(nodeOrId\)[\s\S]{0,500}buildFreeCanvasReferenceMentionCandidates\([\s\S]*collectDirectUpstreamImageReferences/)
   assert.doesNotMatch(homeCanvasSource, /function freeCanvasReferenceCandidates[\s\S]{0,600}!connectedNodeIds\.has/)
