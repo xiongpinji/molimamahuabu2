@@ -75,10 +75,12 @@ function validCase(source = {}) {
         },
         dialogue: silent ? {
           kind: 'silent',
+          speech_required: false,
           target_locale: 'en-US',
           turns: [],
         } : {
           kind: 'spoken',
+          speech_required: true,
           target_locale: 'en-US',
           turns: [{
             speaker_id: 'mateo',
@@ -94,6 +96,20 @@ function validCase(source = {}) {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function approveNonDialogueGates(shot) {
+  shot.face_track_review = { status: 'approved', unresolved_reason: '' };
+  for (const pack of shot.identity_packs) {
+    pack.status = 'approved';
+    pack.sha256 ||= 'b'.repeat(64);
+  }
+  shot.text_region_review = { status: 'approved', unresolved_reason: '' };
+  for (const region of shot.text_regions) {
+    region.clean_plate_status = 'approved';
+    region.clean_plate_sha256 ||= 'c'.repeat(64);
+  }
+  shot.motion_reference = { review_status: 'approved', evidence_sha256: 'd'.repeat(64) };
 }
 
 function makeRealSource(directory) {
@@ -179,7 +195,7 @@ test('case manifest 拒绝绝对路径、穿越引用、公网 URL、凭据字�
   }
 });
 
-test('pending review 与静默镜头形成稳定 blockers，绝不构造供应商请求', async (t) => {
+test('pending review 保持镜头 blocked，合法静默对白不产生旧 blocker', async (t) => {
   if (!requireLocalMedia(t)) return;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-full-episode-real-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -245,13 +261,96 @@ test('pending review 与静默镜头形成稳定 blockers，绝不构造供应�
   for (const id of ['shot-3', 'shot-8']) {
     const shot = output.shots.find((entry) => entry.id === id);
     assert.equal(shot.dialogue.kind, 'silent');
-    assert.equal(shot.dialogue.turns.length, 0);
-    assert.ok(shot.blockers.includes('silent_dialogue_contract_unsupported'));
+    assert.equal(shot.dialogue.speech_required, false);
+    assert.deepEqual(shot.dialogue.turns, []);
+    assert.equal(shot.reference_bundle_ready, false);
+    assert.equal(shot.blockers.includes('silent_dialogue_contract_unsupported'), false);
+    assert.equal(shot.blockers.includes('english_dialogue_missing'), false);
   }
   const serialized = JSON.stringify(output);
   assert.equal(serialized.includes(root), false);
   assert.doesNotMatch(serialized, /https?:\/\//i);
   assert.doesNotMatch(serialized, /authorization|api[_-]?key|bearer\s|sk-/i);
+});
+
+test('非对白门禁全部批准后合法静默镜头 ready', () => {
+  const value = validCase();
+  for (const id of ['shot-3', 'shot-8']) {
+    approveNonDialogueGates(value.shots.find((shot) => shot.id === id));
+  }
+
+  const normalized = validateCaseManifest(value);
+  for (const id of ['shot-3', 'shot-8']) {
+    const shot = normalized.shots.find((entry) => entry.id === id);
+    assert.deepEqual(shot.dialogue, {
+      kind: 'silent',
+      speech_required: false,
+      target_locale: 'en-US',
+      turns: [],
+    });
+    assert.equal(shot.reference_bundle_ready, true);
+    assert.deepEqual(shot.blockers, []);
+  }
+});
+
+test('对白模式、speech_required 与 turns 不一致时形成稳定 blocker', () => {
+  const cases = [
+    ['spoken/false', (shot) => { shot.dialogue.speech_required = false; }, 'dialogue_speech_contract_mismatch'],
+    ['silent with turns', (shot) => {
+      shot.dialogue.kind = 'silent';
+      shot.dialogue.speech_required = false;
+    }, 'silent_dialogue_has_turns'],
+    ['spoken without turns', (shot) => { shot.dialogue.turns = []; }, 'spoken_dialogue_missing'],
+  ];
+
+  for (const [name, mutate, blocker] of cases) {
+    const value = validCase();
+    const shot = value.shots[0];
+    approveNonDialogueGates(shot);
+    mutate(shot);
+    const normalized = validateCaseManifest(value).shots[0];
+    assert.equal(normalized.reference_bundle_ready, false, name);
+    assert.deepEqual(normalized.blockers, [blocker], name);
+  }
+});
+
+test('六种伪装静默 token 归一化后均被禁止', () => {
+  const cases = [
+    ['silence', ' silence '],
+    ['[silence]', '[SILENCE]'],
+    ['(silence)', ' (Silence) '],
+    ['silent', 'SILENT'],
+    ['no dialogue', ' No   Dialogue '],
+    ['[no dialogue]', ' [No\tDialogue] '],
+  ];
+
+  for (const [name, token] of cases) {
+    const value = validCase();
+    const shot = value.shots[0];
+    approveNonDialogueGates(shot);
+    shot.dialogue.turns[0].text = token;
+    const normalized = validateCaseManifest(value).shots[0];
+    assert.equal(normalized.reference_bundle_ready, false, name);
+    assert.deepEqual(normalized.blockers, ['dialogue_silence_token_forbidden'], name);
+  }
+});
+
+test('speech_required 缺失、非布尔和对白未知字段 fail closed', () => {
+  const invalidCases = [
+    ['missing', (dialogue) => { delete dialogue.speech_required; }],
+    ['string', (dialogue) => { dialogue.speech_required = 'true'; }],
+    ['unknown field', (dialogue) => { dialogue.note = 'unsupported'; }],
+  ];
+
+  for (const [name, mutate] of invalidCases) {
+    const value = validCase();
+    mutate(value.shots[0].dialogue);
+    assert.throws(
+      () => validateCaseManifest(value),
+      (error) => error.code === 'REDRAW_FULL_EPISODE_CASE_INVALID',
+      name,
+    );
+  }
 });
 
 test('源 hash 或 ffprobe 合同不匹配时 fail closed 且不写 manifest', async (t) => {
@@ -368,16 +467,12 @@ test('中文对白只形成 blocker，不会被当作英文对白 ready', () => 
 test('只有人物、身份、文字净景、运动和英文对白全批准的有声镜头才 ready', () => {
   const value = validCase();
   const spoken = value.shots[0];
-  spoken.face_track_review = { status: 'approved', unresolved_reason: '' };
-  spoken.text_region_review = { status: 'approved', unresolved_reason: '' };
-  spoken.text_regions[0].clean_plate_status = 'approved';
-  spoken.text_regions[0].clean_plate_sha256 = 'c'.repeat(64);
-  spoken.motion_reference = { review_status: 'approved', evidence_sha256: 'd'.repeat(64) };
+  approveNonDialogueGates(spoken);
   const normalized = validateCaseManifest(value);
   assert.equal(normalized.shots[0].reference_bundle_ready, true);
   assert.deepEqual(normalized.shots[0].blockers, []);
   assert.equal(normalized.shots[2].reference_bundle_ready, false);
-  assert.ok(normalized.shots[2].blockers.includes('silent_dialogue_contract_unsupported'));
+  assert.equal(normalized.shots[2].blockers.includes('silent_dialogue_contract_unsupported'), false);
 
   const missingIdentity = clone(value);
   missingIdentity.shots[0].identity_packs[0].status = 'pending';

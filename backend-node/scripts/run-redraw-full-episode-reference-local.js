@@ -15,6 +15,14 @@ const MANIFEST_FILENAME = 'redraw-full-episode-reference-local-manifest.json';
 const EXPECTED_SHOT_IDS = Object.freeze(Array.from({ length: 9 }, (_, index) => `shot-${index + 1}`));
 const HEX_64 = /^[a-f0-9]{64}$/;
 const CHINESE = /[\u3400-\u9fff\uf900-\ufaff]/u;
+const SILENCE_TOKENS = new Set([
+  'silence',
+  '[silence]',
+  '(silence)',
+  'silent',
+  'no dialogue',
+  '[no dialogue]',
+]);
 const CLI_CODE = 'REDRAW_FULL_EPISODE_CLI_INVALID';
 const CASE_CODE = 'REDRAW_FULL_EPISODE_CASE_INVALID';
 const SOURCE_CODE = 'REDRAW_FULL_EPISODE_SOURCE_MISMATCH';
@@ -191,10 +199,13 @@ function normalizeShot(value, index) {
     evidence_sha256: normalizeHash(value.motion_reference.evidence_sha256, true),
   };
 
-  assertExactKeys(value.dialogue, new Set(['kind', 'target_locale', 'turns']), `${label}.dialogue`);
+  assertExactKeys(value.dialogue, new Set(['kind', 'speech_required', 'target_locale', 'turns']), `${label}.dialogue`);
   const dialogueKind = String(value.dialogue.kind || '');
+  const speechRequired = value.dialogue.speech_required;
   if (!['spoken', 'silent'].includes(dialogueKind) || value.dialogue.target_locale !== 'en-US'
-    || !Array.isArray(value.dialogue.turns)) fail(CASE_CODE, 'invalid dialogue contract');
+    || typeof speechRequired !== 'boolean' || !Array.isArray(value.dialogue.turns)) {
+    fail(CASE_CODE, 'invalid dialogue contract');
+  }
   const turns = value.dialogue.turns.map((entry, turnIndex) => {
     assertExactKeys(entry, new Set(['speaker_id', 'text', 'start_ms', 'end_ms']), `${label}.dialogue.turns[${turnIndex}]`);
     const speakerId = String(entry.speaker_id || '').trim();
@@ -205,8 +216,6 @@ function normalizeShot(value, index) {
       || start < startMs || start >= end || end > endMs) fail(CASE_CODE, 'invalid dialogue turn');
     return { speaker_id: speakerId, text, start_ms: start, end_ms: end };
   });
-  if (dialogueKind === 'silent' && turns.length !== 0) fail(CASE_CODE, 'silent dialogue cannot contain turns');
-
   const blockers = [];
   if (faceReview.status !== 'approved') blockers.push('face_track_review_not_approved');
   const identities = new Map(identityPacks.map((entry) => [entry.character_id, entry]));
@@ -221,10 +230,11 @@ function normalizeShot(value, index) {
   if (motionReference.review_status !== 'approved' || !motionReference.evidence_sha256) {
     blockers.push('motion_reference_not_approved');
   }
-  if (dialogueKind === 'silent') {
-    blockers.push('silent_dialogue_contract_unsupported');
-  } else if (turns.length === 0) {
-    blockers.push('english_dialogue_missing');
+  if (speechRequired !== (dialogueKind === 'spoken')) blockers.push('dialogue_speech_contract_mismatch');
+  if (dialogueKind === 'silent' && turns.length !== 0) blockers.push('silent_dialogue_has_turns');
+  if (dialogueKind === 'spoken' && turns.length === 0) blockers.push('spoken_dialogue_missing');
+  if (turns.some((entry) => SILENCE_TOKENS.has(entry.text.toLowerCase().replace(/\s+/g, ' ')))) {
+    blockers.push('dialogue_silence_token_forbidden');
   }
   if (turns.some((entry) => CHINESE.test(entry.text))) blockers.push('dialogue_contains_chinese');
 
@@ -236,7 +246,12 @@ function normalizeShot(value, index) {
     text_regions: textRegions,
     text_region_review: textReview,
     motion_reference: motionReference,
-    dialogue: { kind: dialogueKind, target_locale: 'en-US', turns },
+    dialogue: {
+      kind: dialogueKind,
+      speech_required: speechRequired,
+      target_locale: 'en-US',
+      turns,
+    },
     reference_bundle_ready: blockers.length === 0,
     blockers,
   };
