@@ -393,7 +393,7 @@ async function installRuntime(staging, _components = [], deps = {}) {
   const python = venvPython(staging);
   const specs = normalizeRuntimePackageSpecs(deps.runtimePackageSpecs || RUNTIME_PACKAGE_SPECS);
   for (const spec of specs) {
-    const args = ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--index-url', PYPI_INDEX_URL];
+    const args = ['-m', 'pip', '--isolated', 'install', '--disable-pip-version-check', '--no-input', '--index-url', PYPI_INDEX_URL];
     if (spec.noDeps) args.push('--no-deps');
     args.push(spec.requirement);
     await runner(python, args, { cwd: staging, env: sanitizeEnv(deps.env) });

@@ -452,7 +452,14 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   const installCalls = calls.filter((call) => call.args.includes('install'));
   assert(installCalls.every((call) => {
     const index = call.args.indexOf('--index-url');
-    return index >= 0 && call.args[index + 1] === 'https://pypi.org/simple';
+    const isolated = call.args.indexOf('--isolated');
+    const install = call.args.indexOf('install');
+    return index >= 0
+      && call.args[index + 1] === 'https://pypi.org/simple'
+      && isolated >= 0
+      && isolated < install
+      && !call.args.includes('--extra-index-url')
+      && !call.args.includes('--find-links');
   }), JSON.stringify(installCalls));
   assert(installArgs.includes('numpy==1.26.4'));
   assert(installArgs.includes('opencv-python-headless==4.10.0.84'));
