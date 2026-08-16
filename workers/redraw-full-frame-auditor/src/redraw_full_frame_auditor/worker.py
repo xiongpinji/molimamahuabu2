@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import hashlib
 import importlib
 import importlib.util
@@ -7,8 +8,14 @@ import math
 import os
 import sys
 import tarfile
+import tempfile
 import zipfile
 from types import SimpleNamespace
+
+if __package__:
+    from .text_subprocess import TextSubprocessAdapter
+else:
+    from text_subprocess import TextSubprocessAdapter
 
 
 ERROR_CODE = "REDRAW_FULL_FRAME_MODEL_UNAVAILABLE"
@@ -587,8 +594,29 @@ def _default_factories():
         person=_default_person_factory,
         tracker=_default_tracker_factory,
         face=_default_face_factory,
-        text_detector=_default_text_detector_factory,
     )
+
+
+def _text_worker_path():
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), "text_worker.py")
+
+
+def _default_text_process_factory(model_lock_path):
+    return TextSubprocessAdapter(
+        python_path=sys.executable,
+        text_worker_path=_text_worker_path(),
+        model_lock_path=model_lock_path,
+    )
+
+
+def _close_detectors(detectors):
+    text = getattr(detectors, "text", None)
+    close = getattr(text, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            raise ProtocolError(ERROR_CODE) from None
 
 
 def _validate_model_lock(model_lock_path):
@@ -631,45 +659,71 @@ def _validate_model_lock(model_lock_path):
     return lock, by_component
 
 
-def _load_real_detectors(model_lock_path, factories=None):
+def _load_real_detectors(model_lock_path, factories=None, text_process_factory=None):
+    text = None
     try:
         _lock, components = _validate_model_lock(model_lock_path)
         active_factories = factories or _default_factories()
-        return SimpleNamespace(
-            person=YOLOXPersonAdapter(components["person_detector"]["artifact_abs_path"], active_factories.person),
-            tracker=ByteTrackAdapter(components["tracker"]["artifact_abs_path"], active_factories.tracker),
-            face=MediaPipeFaceAdapter(components["face_detector"]["artifact_abs_path"], active_factories.face),
-            text=PaddleTextDetectionAdapter(components["text_detector"]["artifact_abs_path"], active_factories.text_detector),
+        person = YOLOXPersonAdapter(
+            components["person_detector"]["artifact_abs_path"],
+            active_factories.person,
         )
-    except ProtocolError:
-        raise
-    except Exception as exc:
-        raise ProtocolError(ERROR_CODE) from exc
+        tracker = ByteTrackAdapter(
+            components["tracker"]["artifact_abs_path"],
+            active_factories.tracker,
+        )
+        face = MediaPipeFaceAdapter(
+            components["face_detector"]["artifact_abs_path"],
+            active_factories.face,
+        )
+        active_text_process_factory = text_process_factory or _default_text_process_factory
+        text = active_text_process_factory(model_lock_path=model_lock_path)
+        return SimpleNamespace(
+            person=person,
+            tracker=tracker,
+            face=face,
+            text=text,
+        )
+    except Exception:
+        if text is not None:
+            try:
+                _close_detectors(SimpleNamespace(text=text))
+            except Exception:
+                pass
+        raise ProtocolError(ERROR_CODE) from None
 
 
 def run_jsonl(args, detectors=None, factories=None):
     stdin = getattr(args, "stdin", sys.stdin)
     stdout = getattr(args, "stdout", sys.stdout)
     stderr = getattr(args, "stderr", sys.stderr)
+    active_detectors = None
+    failed = False
     try:
-        active_detectors = detectors if detectors is not None else _load_real_detectors(args.model_lock, factories=factories)
+        active_detectors = detectors if detectors is not None else _load_real_detectors(
+            args.model_lock,
+            factories=factories,
+        )
         for line in stdin:
-            if line.endswith("\n"):
-                line = line[:-1]
-            if not line:
+            if not line.endswith("\n") or not line.strip():
                 _fail()
-            try:
-                frame = json.loads(line)
-            except Exception as exc:
-                raise ProtocolError(ERROR_CODE) from exc
+            frame = json.loads(line)
             result = detect_frame(frame, active_detectors)
             stdout.write(json.dumps(result, separators=(",", ":"), ensure_ascii=True) + "\n")
             stdout.flush()
-        return 0
     except Exception:
+        failed = True
+    finally:
+        if active_detectors is not None:
+            try:
+                _close_detectors(active_detectors)
+            except Exception:
+                failed = True
+    if failed:
         stderr.write(ERROR_CODE + "\n")
         stderr.flush()
         return 1
+    return 0
 
 
 def _sha256_file(path):
@@ -695,9 +749,30 @@ def _safe_join(root, relative_path):
     return target
 
 
-def bootstrap_models(args, adapters=None, factories=None):
+@contextlib.contextmanager
+def _probe_frame():
+    cv2 = importlib.import_module("cv2")
+    numpy = importlib.import_module("numpy")
+    with tempfile.TemporaryDirectory(prefix="redraw-full-frame-probe-") as root:
+        frame_path = os.path.join(root, "probe.png")
+        image = numpy.zeros((64, 64, 3), dtype=numpy.uint8)
+        if not cv2.imwrite(frame_path, image):
+            _fail()
+        yield frame_path
+
+
+def bootstrap_models(args, adapters=None, factories=None, detector_loader=None, probe_frame_factory=None):
+    detectors = None
     try:
-        _load_real_detectors(args.model_lock, factories=factories)
+        loader = detector_loader or (lambda path: _load_real_detectors(path, factories=factories))
+        detectors = loader(args.model_lock)
+        probe_factory = probe_frame_factory or _probe_frame
+        with probe_factory() as frame_path:
+            detect_frame({
+                "frame_index": 0,
+                "timestamp_ms": 0,
+                "frame_path": frame_path,
+            }, detectors)
         if adapters is not None:
             probe = getattr(adapters, "probe", None)
             if callable(probe):
@@ -705,8 +780,11 @@ def bootstrap_models(args, adapters=None, factories=None):
         return {"status": "ok", "schema_version": LOCK_SCHEMA, "components": sorted(COMPONENTS)}
     except ProtocolError:
         raise
-    except Exception as exc:
-        raise ProtocolError(ERROR_CODE) from exc
+    except Exception:
+        raise ProtocolError(ERROR_CODE) from None
+    finally:
+        if detectors is not None:
+            _close_detectors(detectors)
 
 
 def parse_args(argv):

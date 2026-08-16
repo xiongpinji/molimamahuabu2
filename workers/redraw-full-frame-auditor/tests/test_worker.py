@@ -262,30 +262,6 @@ class FakeFactory:
             detector=FaceModel(),
         )
 
-    def text_detector(self, artifact_path):
-        self.calls.append(("text_detector", pathlib.Path(artifact_path).name))
-        events = self.events
-
-        class FakeImage:
-            shape = (100, 200, 3)
-
-        class FakeCv2:
-            def imread(self, frame_path):
-                events.append(("cv2_imread_text", frame_path))
-                return FakeImage()
-
-        class TextModel:
-            def detect_regions(self, frame_path):
-                raise AssertionError("Paddle adapter must call detection-only callable")
-
-            def __call__(self, image):
-                events.append(("paddle_text_call", image.shape))
-                return [
-                    [[0, 0], [3, 0], [3, 3], [0, 3]],
-                ], 0.01
-
-        return worker.PaddleTextDetectionContext(cv2=FakeCv2(), detector=TextModel())
-
     def paddle_ocr(self, artifact_path):
         self.calls.append(("paddle_ocr", pathlib.Path(artifact_path).name))
         raise AssertionError("recognition pipeline must not be used")
@@ -382,6 +358,8 @@ class WorkerProtocolTests(unittest.TestCase):
                 {"candidate_id": "person_a", "track_key": "track_1", "kind": "person_candidate", "bbox": {"x": 1, "y": 2, "width": 3, "height": 4}, "confidence": 0.9},
             ],
         )
+        close_events = []
+        detectors.text.close = lambda: close_events.append("success-close")
         args = argparse.Namespace(
             stdin=io.StringIO(json.dumps(valid_frame(7)) + "\n"),
             stdout=io.StringIO(),
@@ -396,26 +374,60 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["frame_index"], 7)
         self.assertEqual(args.stderr.getvalue(), "")
+        self.assertEqual(close_events, ["success-close"])
 
+        bad_detectors = FakeDetectors()
+        bad_detectors.text.close = lambda: close_events.append("failure-close")
         bad_args = argparse.Namespace(
             stdin=io.StringIO("{not json C:/secret/frame.png}\n"),
             stdout=io.StringIO(),
             stderr=io.StringIO(),
             model_lock="fixture-lock.json",
         )
-        self.assertNotEqual(worker.run_jsonl(bad_args, detectors=detectors), 0)
+        self.assertNotEqual(worker.run_jsonl(bad_args, detectors=bad_detectors), 0)
         self.assertEqual(bad_args.stdout.getvalue(), "")
         self.assertEqual(bad_args.stderr.getvalue().strip(), "REDRAW_FULL_FRAME_MODEL_UNAVAILABLE")
         self.assertNotIn("secret", bad_args.stderr.getvalue())
+        self.assertEqual(close_events, ["success-close", "failure-close"])
+
+    def test_run_jsonl_sanitizes_text_process_close_failure(self):
+        detectors = FakeDetectors()
+
+        def fail_close():
+            raise RuntimeError("C:/private/model-lock.json Authorization: secret")
+
+        detectors.text.close = fail_close
+        args = argparse.Namespace(
+            stdin=io.StringIO(""),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+            model_lock="fixture-lock.json",
+        )
+
+        self.assertEqual(worker.run_jsonl(args, detectors=detectors), 1)
+        self.assertEqual(args.stdout.getvalue(), "")
+        self.assertEqual(args.stderr.getvalue(), "REDRAW_FULL_FRAME_MODEL_UNAVAILABLE\n")
+        self.assertNotIn("private", args.stderr.getvalue().lower())
+        self.assertNotIn("authorization", args.stderr.getvalue().lower())
 
     def test_real_loader_assembles_four_adapters_from_validated_model_lock_without_recognition_pipeline(self):
+        text = FakeTextDetector([{
+            "candidate_id": "text_1",
+            "kind": "text_candidate",
+            "polygon": [{"x": 0, "y": 0}, {"x": 3, "y": 0}, {"x": 3, "y": 3}],
+            "confidence": 1.0,
+        }])
         with tempfile.TemporaryDirectory() as root:
             lock_path = write_model_lock(root)
             factories = FakeFactory()
-            detectors = worker._load_real_detectors(str(lock_path), factories=factories)
+            detectors = worker._load_real_detectors(
+                str(lock_path),
+                factories=factories,
+                text_process_factory=lambda **_kwargs: text,
+            )
             result = worker.detect_frame(valid_frame(3), detectors)
 
-        self.assertEqual([call[0] for call in factories.calls], ["person", "tracker", "face", "text_detector"])
+        self.assertEqual([call[0] for call in factories.calls], ["person", "tracker", "face"])
         self.assertIn(("model_call", "FakeTensor"), factories.events)
         self.assertIn(("postprocess", "raw-yolox-output", 80, 0.25, 0.45), factories.events)
         bytetrack_event = next(event for event in factories.events if event[0] == "bytetrack_update")
@@ -423,7 +435,7 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertEqual(dets, [[10.0, 20.0, 50.0, 70.0, 0.4]])
         face_artifact = next(call for call in factories.calls if call[0] == "face")[1]
         self.assertIn(("mediapipe_tasks_detect", "SRGB", "rgb-image", str(pathlib.Path(root) / "models" / "face_detector" / face_artifact)), factories.events)
-        self.assertIn(("paddle_text_call", (100, 200, 3)), factories.events)
+        self.assertEqual(text.calls, ["fixture/frame.png"])
         self.assertEqual(result["persons"][0]["track_key"], "track_42")
         self.assertEqual(result["persons"][0]["bbox"], {"x": 10.0, "y": 20.0, "width": 40.0, "height": 50.0})
         self.assertEqual(result["faces"][0]["bbox"], {"x": 20.0, "y": 30.0, "width": 40.0, "height": 50.0})
@@ -432,6 +444,41 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertEqual(result["texts"][0]["candidate_id"], "text_1")
         self.assertNotIn("_frame_width", json.dumps(result))
         self.assertNotIn("_frame_height", json.dumps(result))
+
+    def test_default_loader_uses_text_process_and_closes_it(self):
+        events = []
+
+        class FakeTextProcess(FakeTextDetector):
+            def close(self):
+                events.append("text-close")
+
+        factories = FakeFactory()
+        original_text_factory = worker._default_text_detector_factory
+        try:
+            worker._default_text_detector_factory = lambda _path: self.fail("main worker loaded Paddle")
+            with tempfile.TemporaryDirectory() as root:
+                lock_path = write_model_lock(root)
+
+                def text_process_factory(**kwargs):
+                    self.assertEqual(kwargs, {"model_lock_path": str(lock_path)})
+                    factories.calls.append(("text-process", pathlib.Path(kwargs["model_lock_path"]).name))
+                    return FakeTextProcess()
+
+                detectors = worker._load_real_detectors(
+                    str(lock_path),
+                    factories=factories,
+                    text_process_factory=text_process_factory,
+                )
+                worker._close_detectors(detectors)
+        finally:
+            worker._default_text_detector_factory = original_text_factory
+
+        self.assertEqual(
+            [call[0] for call in factories.calls],
+            ["person", "tracker", "face", "text-process"],
+        )
+        self.assertEqual(events, ["text-close"])
+        self.assertFalse(hasattr(worker._default_factories(), "text_detector"))
 
     def test_default_person_factory_loads_yolox_s_exp_for_locked_artifact(self):
         events = []
@@ -653,20 +700,113 @@ class WorkerProtocolTests(unittest.TestCase):
             second_prepared = pathlib.Path(worker._prepare_artifact_path(str(second)))
             self.assertNotEqual(first_prepared, second_prepared)
 
-    def test_bootstrap_models_uses_same_loader_and_reports_only_sanitized_success(self):
+    def test_probe_frame_creates_and_removes_64x64_blank_png(self):
+        events = []
+
+        class FakeImage:
+            shape = (64, 64, 3)
+
+        class FakeNumpy:
+            uint8 = "uint8"
+
+            @staticmethod
+            def zeros(shape, dtype):
+                events.append(("zeros", shape, dtype))
+                return FakeImage()
+
+        class FakeCv2:
+            @staticmethod
+            def imwrite(frame_path, image):
+                events.append(("imwrite", pathlib.Path(frame_path).name, image.shape))
+                pathlib.Path(frame_path).write_bytes(b"blank-png-fixture")
+                return True
+
+        modules = {"cv2": FakeCv2, "numpy": FakeNumpy}
+        original_import_module = worker.importlib.import_module
+        try:
+            worker.importlib.import_module = lambda name: modules[name]
+            with worker._probe_frame() as frame_path:
+                target = pathlib.Path(frame_path)
+                self.assertTrue(target.is_file())
+                self.assertEqual(target.read_bytes(), b"blank-png-fixture")
+            self.assertFalse(target.exists())
+        finally:
+            worker.importlib.import_module = original_import_module
+
+        self.assertEqual(events, [
+            ("zeros", (64, 64, 3), "uint8"),
+            ("imwrite", "probe.png", (64, 64, 3)),
+        ])
+
+    def test_bootstrap_models_uses_same_loader_runs_probe_and_always_closes(self):
+        import contextlib
+
+        close_events = []
+        text = FakeTextDetector([])
+        text.close = lambda: close_events.append("text-close")
         with tempfile.TemporaryDirectory() as root:
             lock_path = write_model_lock(root)
             factories = FakeFactory()
             args = argparse.Namespace(model_lock=str(lock_path))
-            result = worker.bootstrap_models(args, factories=factories)
+
+            def detector_loader(path):
+                self.assertEqual(path, str(lock_path))
+                return worker._load_real_detectors(
+                    path,
+                    factories=factories,
+                    text_process_factory=lambda **_kwargs: text,
+                )
+
+            result = worker.bootstrap_models(
+                args,
+                detector_loader=detector_loader,
+                probe_frame_factory=lambda: contextlib.nullcontext("D:/redraw-local/probe.png"),
+            )
 
         self.assertEqual(result, {
             "status": "ok",
             "schema_version": "redraw-full-frame-model-lock-v1",
             "components": ["face_detector", "person_detector", "text_detector", "tracker"],
         })
-        self.assertEqual([call[0] for call in factories.calls], ["person", "tracker", "face", "text_detector"])
+        self.assertEqual([call[0] for call in factories.calls], ["person", "tracker", "face"])
+        self.assertIn(("cv2_imread_person", "D:/redraw-local/probe.png"), factories.events)
+        self.assertIn(("cv2_imread_face", "D:/redraw-local/probe.png"), factories.events)
+        self.assertEqual(text.calls, ["D:/redraw-local/probe.png"])
+        self.assertEqual(close_events, ["text-close"])
         self.assertNotIn(str(lock_path), json.dumps(result))
+
+    def test_bootstrap_closes_after_probe_failure_and_sanitizes_close_failure(self):
+        import contextlib
+
+        close_events = []
+        detectors = FakeDetectors(person_loaded=False)
+        detectors.text.close = lambda: close_events.append("probe-failure-close")
+        args = argparse.Namespace(model_lock="D:/models/model-lock.json")
+        with self.assertRaises(worker.ProtocolError) as raised:
+            worker.bootstrap_models(
+                args,
+                detector_loader=lambda _path: detectors,
+                probe_frame_factory=lambda: contextlib.nullcontext("D:/redraw-local/probe.png"),
+            )
+        self.assertEqual(str(raised.exception), "REDRAW_FULL_FRAME_MODEL_UNAVAILABLE")
+        self.assertEqual(close_events, ["probe-failure-close"])
+
+        close_failed = FakeDetectors()
+
+        def fail_close():
+            raise RuntimeError("C:/private/model-lock.json Authorization: secret")
+
+        close_failed.text.close = fail_close
+        with self.assertRaises(worker.ProtocolError) as raised:
+            worker.bootstrap_models(
+                args,
+                detector_loader=lambda _path: close_failed,
+                probe_frame_factory=lambda: contextlib.nullcontext("D:/redraw-local/probe.png"),
+            )
+        self.assertEqual(str(raised.exception), "REDRAW_FULL_FRAME_MODEL_UNAVAILABLE")
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertNotIn("private", repr(raised.exception).lower())
+        self.assertNotIn("authorization", repr(raised.exception).lower())
 
     def test_cli_argument_errors_are_sanitized_and_help_still_works(self):
         help_stdout = io.StringIO()
