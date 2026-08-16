@@ -825,6 +825,50 @@ test('runFetchModels does not create a missing output directory when publish ren
   );
 });
 
+test('runFetchModels removes staging when Paddle wheel download fails', async (t) => {
+  const parent = tempDir(t, 'redraw-model-paddle-download-fail-');
+  const outputDir = path.join(parent, 'cache');
+  const raw = new Error('C:\\Users\\private\\paddle.py Authorization: Bearer secret-token Key=secret-key root=/private/root');
+  raw.code = 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE';
+  raw.stage = 'download:C:\\Users\\private\\paddle.py';
+  raw.cause = new Error('C:\\Users\\private\\root\\paddle.py');
+  raw.context = { authorization: 'Bearer secret-token', key: 'secret-key', root: '/private/root' };
+  const processDeps = {
+    env: { PATH: 'path-value', SystemRoot: 'system-root', WINDIR: 'windir', TEMP: 'temp', TMP: 'tmp' },
+    spawnProcess: async (_command, args) => {
+      assert(Array.isArray(args));
+      if (args.includes('download')) throw raw;
+      return '';
+    },
+  };
+  const deps = {
+    ...buildSuccessfulFetchDeps('paddle-download'),
+    createVenv: async (staging, runtimeName) => {
+      await fsp.mkdir(path.join(staging, 'runtime', runtimeName, '.venv'), { recursive: true });
+    },
+    installRuntime: async (staging, components, runtimeName) => (
+      installRuntime(staging, components, runtimeName, processDeps)
+    ),
+  };
+
+  await assert.rejects(
+    runFetchModels({ outputDir }, deps),
+    (error) => {
+      assertStableFetchError(error, 'download:text:paddlepaddle');
+      const serialized = JSON.stringify(error);
+      assert.doesNotMatch(serialized, /private|root|Authorization|secret-token|secret-key/i);
+      return true;
+    },
+  );
+
+  assert.equal(fs.existsSync(outputDir), false);
+  assert.equal(fs.existsSync(path.join(outputDir, 'model-lock.json')), false);
+  assert.deepEqual(
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    [],
+  );
+});
+
 test('runFetchModels builds a fixture cache, validates lock, and leaves no final directory on failure', async (t) => {
   const parent = tempDir(t, 'redraw-model-fetch-');
   const outputDir = path.join(parent, 'cache');
@@ -1175,6 +1219,10 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   await fetchModule.installRuntime(parent, [], 'text', deps);
   assert.equal(EXPECTED_MAIN_RUNTIME_PACKAGE_SPECS.length, 23);
   assert.equal(EXPECTED_TEXT_RUNTIME_PACKAGE_SPECS.length, 31);
+  assert.equal(
+    EXPECTED_MAIN_RUNTIME_PACKAGE_SPECS.length + EXPECTED_TEXT_RUNTIME_PACKAGE_SPECS.length - 1,
+    53,
+  );
   assert.equal(EXPECTED_MAIN_RUNTIME_TRANSITIVE_FREEZE.length, 22);
   assert.equal(EXPECTED_TEXT_RUNTIME_TRANSITIVE_FREEZE.length, 12);
   for (const [runtimeName, directFreeze] of Object.entries({
@@ -1222,8 +1270,41 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   assert(calls.every((call) => Array.isArray(call.args)));
   assert(calls.every((call) => call.env.PYTHONUTF8 === '1'));
   assert(calls.every((call) => !Object.prototype.hasOwnProperty.call(call.env, 'OPENAI_API_KEY')));
+  assert(calls.every((call) => call.cwd === parent));
   const installCalls = calls.filter((call) => call.args.includes('install'));
+  const downloadCalls = calls.filter((call) => call.args.includes('download'));
+  assert.equal(downloadCalls.length, 1);
+  assert.deepEqual(downloadCalls[0].args, [
+    '-m',
+    'pip',
+    '--isolated',
+    'download',
+    '--disable-pip-version-check',
+    '--no-input',
+    '--index-url',
+    'https://pypi.org/simple',
+    '--no-deps',
+    '--only-binary=:all:',
+    '--dest',
+    PADDLE_WHEEL_RELATIVE_DIR,
+    'paddlepaddle==2.6.2',
+  ]);
   const indexedInstallCalls = installCalls.filter((call) => !call.args.includes('--no-index'));
+  const localInstallCalls = installCalls.filter((call) => call.args.includes('--no-index'));
+  assert.equal(indexedInstallCalls.length, 53);
+  assert.equal(localInstallCalls.length, 1);
+  assert.equal(localInstallCalls[0].command, venvPython(parent, 'text'));
+  assert.deepEqual(localInstallCalls[0].args, [
+    '-m',
+    'pip',
+    '--isolated',
+    'install',
+    '--disable-pip-version-check',
+    '--no-input',
+    '--no-index',
+    '--no-deps',
+    PADDLE_WHEEL_RELATIVE_PATH,
+  ]);
   assert(indexedInstallCalls.every((call) => {
     const index = call.args.indexOf('--index-url');
     const isolated = call.args.indexOf('--isolated');
@@ -1235,6 +1316,15 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
       && !call.args.includes('--extra-index-url')
       && !call.args.includes('--find-links');
   }), JSON.stringify(indexedInstallCalls));
+  assert.deepEqual(
+    indexedInstallCalls.map((call) => call.args[call.args.length - 1]),
+    [
+      ...EXPECTED_MAIN_RUNTIME_PACKAGE_SPECS.map((spec) => spec.requirement),
+      ...EXPECTED_TEXT_RUNTIME_PACKAGE_SPECS
+        .filter((spec) => spec.requirement !== 'paddlepaddle==2.6.2')
+        .map((spec) => spec.requirement),
+    ],
+  );
   assert.deepEqual(
     indexedInstallCalls.filter((call) => call.command === venvPython(parent, 'main')).map((call) => ({
       requirement: call.args[call.args.length - 1],
@@ -1259,6 +1349,14 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
     installCalls.filter((call) => call.args.includes('--no-deps')).map((call) => call.args[call.args.length - 1]),
     ['yolox==0.3.0', 'mediapipe==0.10.14', 'imgaug==0.4.0', PADDLE_WHEEL_RELATIVE_PATH, 'paddleocr==2.8.1'],
   );
+  assert.deepEqual(
+    [
+      ...EXPECTED_MAIN_RUNTIME_PACKAGE_SPECS,
+      ...EXPECTED_TEXT_RUNTIME_PACKAGE_SPECS,
+    ].filter((spec) => spec.noDeps).map((spec) => spec.requirement),
+    ['yolox==0.3.0', 'mediapipe==0.10.14', 'imgaug==0.4.0', 'paddlepaddle==2.6.2', 'paddleocr==2.8.1'],
+  );
+  assert(indexedInstallCalls.every((call) => !call.args.includes('--no-index')));
 
   await assert.rejects(
     fetchModule.pipFreeze(parent, 'main', { ...deps, spawnProcess: async () => 'pkg>=1.0.0\n' }),
@@ -1978,6 +2076,8 @@ test('runProcess only trusts fixed bootstrap child stages when explicitly enable
 });
 
 test('runProcess consumes stderr, enforces limits, timeout, and settles once', async (t) => {
+  const fetchSource = fs.readFileSync(path.resolve(__dirname, '../scripts/fetch-redraw-full-frame-models-local.js'), 'utf8');
+  assert.match(fetchSource, /spawn\(command, args, \{[\s\S]*?shell: false,/);
   const script = path.join(tempDir(t, 'redraw-run-process-'), 'child.js');
   fs.writeFileSync(script, `
 const mode = process.argv[2];
