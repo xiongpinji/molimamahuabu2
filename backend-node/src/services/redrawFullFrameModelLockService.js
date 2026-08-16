@@ -4,7 +4,7 @@ const path = require('node:path');
 
 const ERROR_CODE = 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID';
 const SOURCE_SCHEMA = 'redraw-full-frame-model-sources-v1';
-const LOCK_SCHEMA = 'redraw-full-frame-model-lock-v1';
+const LOCK_SCHEMA = 'redraw-full-frame-model-lock-v2';
 const COMPONENT_ORDER = Object.freeze([
   'face_detector',
   'person_detector',
@@ -37,7 +37,14 @@ const SOURCE_BY_COMPONENT = Object.freeze({
     license_path: 'LICENSE',
   }),
 });
-const TOP_LEVEL_KEYS = Object.freeze(['schema_version', 'runtime', 'components']);
+const TOP_LEVEL_KEYS = Object.freeze(['schema_version', 'runtimes', 'components']);
+const RUNTIME_NAMES = Object.freeze(['main', 'text']);
+const RUNTIME_KEYS = Object.freeze([
+  'python_version',
+  'interpreter_path',
+  'pip_freeze_path',
+  'pip_freeze_sha256',
+]);
 const COMPONENT_KEYS = Object.freeze([
   'component',
   'project',
@@ -193,10 +200,17 @@ async function secureReadFile({ cacheRootReal, relativePath }) {
     assertRegularFile(statPathAfter);
     if (!sameIdentity(statBefore, statPathAfter)) throw invalid();
     if (!sameIdentity(statBefore, statAfter)) throw invalid();
-    return bytes;
+    return { bytes, realpath: realBefore };
   } finally {
     if (handle) await handle.close().catch(() => {});
   }
+}
+
+function requireRuntimePath(value, runtimeName) {
+  const relativePath = requireSafeRelativePath(value);
+  const runtimePrefix = `runtime/${runtimeName}/`;
+  if (!relativePath.startsWith(runtimePrefix) || relativePath === runtimePrefix) throw invalid();
+  return relativePath;
 }
 
 function validateSourcePolicy(sourcePolicy) {
@@ -239,10 +253,27 @@ function canonicalizeComponent(component) {
   };
 }
 
+function canonicalizeRuntime(runtime, runtimeName) {
+  assertExactKeys(runtime, RUNTIME_KEYS);
+  return {
+    python_version: requireConcreteString(runtime.python_version),
+    interpreter_path: requireRuntimePath(runtime.interpreter_path, runtimeName),
+    pip_freeze_path: requireRuntimePath(runtime.pip_freeze_path, runtimeName),
+    pip_freeze_sha256: requireHash(runtime.pip_freeze_sha256),
+  };
+}
+
+function canonicalizeRuntimes(runtimes) {
+  assertExactKeys(runtimes, RUNTIME_NAMES);
+  const canonical = {};
+  for (const runtimeName of RUNTIME_NAMES) {
+    canonical[runtimeName] = canonicalizeRuntime(runtimes[runtimeName], runtimeName);
+  }
+  return canonical;
+}
+
 function canonicalizeModelLock(lock) {
   assertExactKeys(lock, TOP_LEVEL_KEYS);
-  assertJsonSerializable(lock.runtime);
-  if (!lock.runtime || typeof lock.runtime !== 'object' || Array.isArray(lock.runtime)) throw invalid();
   if (!Array.isArray(lock.components) || lock.components.length !== COMPONENT_ORDER.length) throw invalid();
 
   const byComponent = new Map();
@@ -261,7 +292,7 @@ function canonicalizeModelLock(lock) {
   if (lock.schema_version !== LOCK_SCHEMA) throw invalid();
   return {
     schema_version: lock.schema_version,
-    runtime: JSON.parse(stableJson(lock.runtime)),
+    runtimes: canonicalizeRuntimes(lock.runtimes),
     components,
   };
 }
@@ -275,11 +306,22 @@ async function validateModelLock({ cacheRoot, sourcePolicy, lock }) {
     if (!cacheRootStat.isDirectory()) throw invalid();
     const canonical = canonicalizeModelLock(lock);
 
+    const interpreterRealpaths = new Set();
+    for (const runtimeName of RUNTIME_NAMES) {
+      const runtime = canonical.runtimes[runtimeName];
+      const interpreter = await secureReadFile({ cacheRootReal, relativePath: runtime.interpreter_path });
+      if (interpreterRealpaths.has(interpreter.realpath)) throw invalid();
+      interpreterRealpaths.add(interpreter.realpath);
+
+      const freeze = await secureReadFile({ cacheRootReal, relativePath: runtime.pip_freeze_path });
+      if (bytesSha256(freeze.bytes) !== runtime.pip_freeze_sha256) throw invalid();
+    }
+
     for (const component of canonical.components) {
       const artifact = await secureReadFile({ cacheRootReal, relativePath: component.artifact_path });
-      if (bytesSha256(artifact) !== component.artifact_sha256) throw invalid();
+      if (bytesSha256(artifact.bytes) !== component.artifact_sha256) throw invalid();
       const license = await secureReadFile({ cacheRootReal, relativePath: component.license_evidence_path });
-      if (bytesSha256(license) !== component.license_evidence_sha256) throw invalid();
+      if (bytesSha256(license.bytes) !== component.license_evidence_sha256) throw invalid();
     }
 
     return {
