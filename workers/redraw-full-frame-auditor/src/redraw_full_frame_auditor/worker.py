@@ -47,8 +47,9 @@ _BOOTSTRAP_STAGES = frozenset((
 )) | frozenset(f"load:text:{stage}" for stage in _TEXT_LOAD_STAGES)
 _INTERNAL_STAGES = _BOOTSTRAP_STAGES | _TEXT_LOAD_STAGES
 _STAGE_TOKEN = object()
-LOCK_SCHEMA = "redraw-full-frame-model-lock-v1"
+LOCK_SCHEMA = "redraw-full-frame-model-lock-v2"
 COMPONENTS = ("face_detector", "person_detector", "text_detector", "tracker")
+RUNTIME_NAMES = ("main", "text")
 PROJECT_BY_COMPONENT = {
     "face_detector": "MediaPipe face detection",
     "person_detector": "YOLOX",
@@ -679,9 +680,9 @@ def _text_worker_path():
     return os.path.join(os.path.dirname(os.path.realpath(__file__)), "text_worker.py")
 
 
-def _default_text_process_factory(model_lock_path):
+def _default_text_process_factory(model_lock_path, python_path):
     return TextSubprocessAdapter(
-        python_path=sys.executable,
+        python_path=python_path,
         text_worker_path=_text_worker_path(),
         model_lock_path=model_lock_path,
     )
@@ -698,50 +699,139 @@ def _close_detectors(detectors):
 
 
 def _validate_model_lock(model_lock_path):
-    with open(model_lock_path, "r", encoding="utf-8") as handle:
-        lock = json.load(handle)
-    _exact_keys(lock, ("schema_version", "runtime", "components"))
-    if lock["schema_version"] != LOCK_SCHEMA:
+    try:
+        with open(model_lock_path, "r", encoding="utf-8") as handle:
+            lock = json.load(handle)
+        _exact_keys(lock, ("schema_version", "runtimes", "components"))
+        if lock["schema_version"] != LOCK_SCHEMA:
+            _fail()
+        if not isinstance(lock["components"], list) or len(lock["components"]) != 4:
+            _fail()
+        root = os.path.dirname(os.path.realpath(model_lock_path))
+        by_component = {}
+        for component in lock["components"]:
+            _exact_keys(component, (
+                "component",
+                "project",
+                "repository",
+                "revision",
+                "artifact_name",
+                "artifact_path",
+                "artifact_sha256",
+                "license_name",
+                "license_evidence_path",
+                "license_evidence_sha256",
+            ))
+            name = component["component"]
+            if name not in COMPONENTS or name in by_component:
+                _fail()
+            if component["project"] != PROJECT_BY_COMPONENT[name] or component["repository"] != REPOSITORY_BY_COMPONENT[name]:
+                _fail()
+            artifact_path = _safe_join(root, component["artifact_path"])
+            license_path = _safe_join(root, component["license_evidence_path"])
+            if _sha256_file(artifact_path) != component["artifact_sha256"]:
+                _fail()
+            if _sha256_file(license_path) != component["license_evidence_sha256"]:
+                _fail()
+            by_component[name] = {**component, "artifact_abs_path": artifact_path}
+        if set(by_component) != set(COMPONENTS):
+            _fail()
+        runtimes = _validate_runtimes(root, lock["runtimes"])
+        if _same_file(runtimes["main"]["interpreter_abs_path"], runtimes["text"]["interpreter_abs_path"]):
+            _fail()
+        canonical_lock = json.loads(json.dumps(lock))
+        return canonical_lock, by_component, runtimes
+    except ProtocolError:
+        raise
+    except Exception:
+        raise ProtocolError(ERROR_CODE) from None
+
+
+def _validate_runtimes(root, value):
+    _exact_keys(value, RUNTIME_NAMES)
+    runtimes = {}
+    for name in RUNTIME_NAMES:
+        item = value[name]
+        _exact_keys(item, ("python_version", "interpreter_path", "pip_freeze_path", "pip_freeze_sha256"))
+        if not isinstance(item["python_version"], str) or not item["python_version"]:
+            _fail()
+        interpreter_path = _safe_runtime_file(root, name, item["interpreter_path"], hash_expected=None)
+        _safe_runtime_file(root, name, item["pip_freeze_path"], hash_expected=item["pip_freeze_sha256"])
+        runtimes[name] = {
+            **item,
+            "interpreter_abs_path": interpreter_path,
+        }
+    return runtimes
+
+
+def _safe_runtime_file(root, runtime_name, relative_path, hash_expected=None):
+    if not isinstance(relative_path, str) or not relative_path:
         _fail()
-    if not isinstance(lock["components"], list) or len(lock["components"]) != 4:
+    normalized = relative_path.replace("\\", "/")
+    prefix = f"runtime/{runtime_name}/"
+    if not normalized.startswith(prefix):
         _fail()
-    root = os.path.dirname(os.path.realpath(model_lock_path))
-    by_component = {}
-    for component in lock["components"]:
-        _exact_keys(component, (
-            "component",
-            "project",
-            "repository",
-            "revision",
-            "artifact_name",
-            "artifact_path",
-            "artifact_sha256",
-            "license_name",
-            "license_evidence_path",
-            "license_evidence_sha256",
-        ))
-        name = component["component"]
-        if name not in COMPONENTS or name in by_component:
-            _fail()
-        if component["project"] != PROJECT_BY_COMPONENT[name] or component["repository"] != REPOSITORY_BY_COMPONENT[name]:
-            _fail()
-        artifact_path = _safe_join(root, component["artifact_path"])
-        license_path = _safe_join(root, component["license_evidence_path"])
-        if _sha256_file(artifact_path) != component["artifact_sha256"]:
-            _fail()
-        if _sha256_file(license_path) != component["license_evidence_sha256"]:
-            _fail()
-        by_component[name] = {**component, "artifact_abs_path": artifact_path}
-    if set(by_component) != set(COMPONENTS):
+    if ":" in normalized or os.path.isabs(relative_path):
         _fail()
-    return lock, by_component
+    parts = normalized.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        _fail()
+    target = _safe_join(root, normalized)
+    return _read_stable_regular_file(target, hash_expected=hash_expected)
+
+
+def _read_stable_regular_file(path, hash_expected=None):
+    try:
+        before_real = os.path.realpath(path)
+        before_stat = os.stat(before_real)
+        if not os.path.isfile(before_real):
+            _fail()
+        digest = hashlib.sha256() if hash_expected is not None else None
+        with open(before_real, "rb") as handle:
+            fd_stat = os.fstat(handle.fileno())
+            if not _same_stat(before_stat, fd_stat):
+                _fail()
+            if digest is not None:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            after_real = os.path.realpath(path)
+            after_stat = os.stat(after_real)
+            if before_real != after_real or not _same_stat(fd_stat, after_stat):
+                _fail()
+        if digest is not None and digest.hexdigest() != hash_expected:
+            _fail()
+        return before_real
+    except ProtocolError:
+        raise
+    except Exception:
+        raise ProtocolError(ERROR_CODE) from None
+
+
+def _same_stat(left, right):
+    left_mtime_ns = getattr(left, "st_mtime_ns", int(left.st_mtime * 1_000_000_000))
+    right_mtime_ns = getattr(right, "st_mtime_ns", int(right.st_mtime * 1_000_000_000))
+    return (
+        left.st_dev == right.st_dev
+        and left.st_ino == right.st_ino
+        and left.st_size == right.st_size
+        and left_mtime_ns == right_mtime_ns
+    )
+
+
+def _same_file(left, right):
+    try:
+        return os.path.samefile(left, right)
+    except Exception:
+        return os.path.realpath(left) == os.path.realpath(right)
 
 
 def _load_real_detectors(model_lock_path, factories=None, text_process_factory=None):
     text = None
     try:
         try:
-            _lock, components = _validate_model_lock(model_lock_path)
+            _lock, components, runtimes = _validate_model_lock(model_lock_path)
+            if not _same_file(sys.executable, runtimes["main"]["interpreter_abs_path"]):
+                _fail()
         except Exception:
             raise _stage_error("validate_lock") from None
         active_factories = factories or _default_factories()
@@ -768,7 +858,10 @@ def _load_real_detectors(model_lock_path, factories=None, text_process_factory=N
             raise _stage_error("load:face") from None
         active_text_process_factory = text_process_factory or _default_text_process_factory
         try:
-            text = active_text_process_factory(model_lock_path=model_lock_path)
+            text = active_text_process_factory(
+                model_lock_path=model_lock_path,
+                python_path=runtimes["text"]["interpreter_abs_path"],
+            )
         except Exception as exc:
             text_stage = _trusted_text_stage(exc) if type(exc) is TextSubprocessError else None
             if text_stage in _TEXT_LOAD_STAGES:

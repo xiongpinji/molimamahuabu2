@@ -294,7 +294,7 @@ class TextWorkerProtocolTests(unittest.TestCase):
         original_factory = text_worker.worker._default_text_detector_factory
         original_adapter = text_worker.worker.PaddleTextDetectionAdapter
         try:
-            text_worker.worker._validate_model_lock = lambda _model_lock: ({}, {"text_detector": {"artifact_abs_path": "C:/models/text.zip"}})
+            text_worker.worker._validate_model_lock = lambda _model_lock: ({}, {"text_detector": {"artifact_abs_path": "C:/models/text.zip"}}, {"text": {"interpreter_abs_path": sys.executable}})
             for stage in ("import_cv2", "import_paddle", "build_args", "model_dir", "detector_init"):
                 with self.subTest(stage=stage):
                     text_worker.worker._default_text_detector_factory = lambda _artifact, stage=stage: (_ for _ in ()).throw(
@@ -474,7 +474,7 @@ class TextWorkerProtocolTests(unittest.TestCase):
                 "person_detector": {"artifact_abs_path": "C:/models/person.bin"},
                 "face_detector": {"artifact_abs_path": "C:/models/face.task"},
                 "tracker": {"artifact_abs_path": "C:/models/tracker.py"},
-            }
+            }, {"text": {"interpreter_abs_path": sys.executable}}
 
         original_validate = text_worker.worker._validate_model_lock
         original_factory = text_worker.worker._default_text_detector_factory
@@ -502,6 +502,31 @@ class TextWorkerProtocolTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "")
         self.assertEqual(stderr.getvalue(), "")
 
+    def test_load_detector_rejects_current_text_mismatch_before_adapter(self):
+        events = []
+        original_validate = text_worker.worker._validate_model_lock
+        original_adapter = text_worker.worker.PaddleTextDetectionAdapter
+        try:
+            with tempfile.TemporaryDirectory() as root:
+                other_python = pathlib.Path(root) / "python.exe"
+                other_python.write_bytes(b"other-python")
+                text_worker.worker._validate_model_lock = lambda _model_lock: (
+                    {},
+                    {"text_detector": {"artifact_abs_path": "C:/models/text-det.zip"}},
+                    {"text": {"interpreter_abs_path": str(other_python)}},
+                )
+                text_worker.worker.PaddleTextDetectionAdapter = lambda *_args: events.append("adapter")
+                with self.assertRaises(worker.ProtocolError) as raised:
+                    text_worker.load_detector(str(pathlib.Path(root) / "model-lock.json"))
+        finally:
+            text_worker.worker._validate_model_lock = original_validate
+            text_worker.worker.PaddleTextDetectionAdapter = original_adapter
+
+        self.assertEqual(worker._trusted_stage(raised.exception), "validate_lock")
+        self.assertEqual(events, [])
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertNotIn("python", repr(raised.exception).lower())
+
     def test_load_and_detect_logs_over_one_mib_fail_closed_without_leaking_paths(self):
         def noisy_load(_model_lock):
             print("é" * ((1024 * 1024 // 2) + 1))
@@ -510,7 +535,7 @@ class TextWorkerProtocolTests(unittest.TestCase):
         original_validate = text_worker.worker._validate_model_lock
         original_factory = text_worker.worker._default_text_detector_factory
         try:
-            text_worker.worker._validate_model_lock = lambda _model_lock: ({}, {"text_detector": {"artifact_abs_path": "C:/secret/model"}})
+            text_worker.worker._validate_model_lock = lambda _model_lock: ({}, {"text_detector": {"artifact_abs_path": "C:/secret/model"}}, {"text": {"interpreter_abs_path": sys.executable}})
             text_worker.worker._default_text_detector_factory = noisy_load
             stdout = io.StringIO()
             stderr = io.StringIO()

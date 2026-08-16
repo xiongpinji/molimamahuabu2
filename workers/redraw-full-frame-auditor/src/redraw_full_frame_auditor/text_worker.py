@@ -84,7 +84,9 @@ def _sanitize_texts(texts):
 def load_detector(model_lock):
     try:
         with _discard_python_output():
-            _lock, components = worker._validate_model_lock(model_lock)
+            _lock, components, runtimes = worker._validate_model_lock(model_lock)
+            if not worker._same_file(sys.executable, runtimes["text"]["interpreter_abs_path"]):
+                _fail()
     except Exception as exc:
         stage = _trusted_text_load_stage(exc)
         if stage == "output_limit":

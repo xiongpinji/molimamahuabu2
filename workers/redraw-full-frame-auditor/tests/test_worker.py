@@ -3,6 +3,7 @@ import copy
 import hashlib
 import io
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -77,7 +78,30 @@ def valid_frame(index=2):
     }
 
 
-def write_model_lock(root):
+def _sha256_bytes(value):
+    return hashlib.sha256(value).hexdigest()
+
+
+def _write_runtime(root, name, freeze_text, *, link_current=False):
+    runtime_dir = pathlib.Path(root) / "runtime" / name
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    interpreter_path = runtime_dir / "python.exe"
+    if link_current:
+        os.link(sys.executable, interpreter_path)
+    else:
+        interpreter_path.write_bytes(f"fixture-{name}-python".encode("utf-8"))
+    freeze_path = runtime_dir / "pip-freeze.txt"
+    freeze_bytes = freeze_text.encode("utf-8")
+    freeze_path.write_bytes(freeze_bytes)
+    return {
+        "python_version": "3.11.9",
+        "interpreter_path": f"runtime/{name}/python.exe",
+        "pip_freeze_path": f"runtime/{name}/pip-freeze.txt",
+        "pip_freeze_sha256": _sha256_bytes(freeze_bytes),
+    }
+
+
+def write_model_lock(root, mutate=None):
     components = []
     for component in ["face_detector", "person_detector", "text_detector", "tracker"]:
         artifact_path = pathlib.Path("models") / component / "model.bin"
@@ -107,16 +131,30 @@ def write_model_lock(root):
             "revision": f"fixed-{component}-20260815",
             "artifact_name": "model.bin",
             "artifact_path": artifact_path.as_posix(),
-            "artifact_sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+            "artifact_sha256": _sha256_bytes(artifact_bytes),
             "license_name": "LICENSE.txt",
             "license_evidence_path": license_path.as_posix(),
-            "license_evidence_sha256": hashlib.sha256(license_bytes).hexdigest(),
+            "license_evidence_sha256": _sha256_bytes(license_bytes),
         })
     lock = {
-        "schema_version": "redraw-full-frame-model-lock-v1",
-        "runtime": {"python_version": "3.11.9"},
+        "schema_version": "redraw-full-frame-model-lock-v2",
+        "runtimes": {
+            "main": _write_runtime(
+                root,
+                "main",
+                "mediapipe==0.10.14\nprotobuf==4.25.9\n",
+                link_current=True,
+            ),
+            "text": _write_runtime(
+                root,
+                "text",
+                "paddle==2.6.2\npaddleocr==2.7.3\nprotobuf==3.20.2\n",
+            ),
+        },
         "components": components,
     }
+    if mutate is not None:
+        mutate(lock)
     lock_path = pathlib.Path(root) / "model-lock.json"
     lock_path.write_text(json.dumps(lock), encoding="utf-8")
     return lock_path
@@ -457,6 +495,108 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertNotIn("_frame_width", json.dumps(result))
         self.assertNotIn("_frame_height", json.dumps(result))
 
+    def test_model_lock_v2_returns_components_and_runtimes_without_mutating_json(self):
+        with tempfile.TemporaryDirectory() as root:
+            lock_path = write_model_lock(root)
+            before = json.loads(lock_path.read_text(encoding="utf-8"))
+
+            canonical_lock, components, runtimes = worker._validate_model_lock(str(lock_path))
+            after = json.loads(lock_path.read_text(encoding="utf-8"))
+            self.assertEqual(before, after)
+            self.assertEqual(canonical_lock["schema_version"], "redraw-full-frame-model-lock-v2")
+            self.assertEqual(set(components), set(worker.COMPONENTS))
+            self.assertEqual(set(runtimes), {"main", "text"})
+            self.assertTrue(os.path.samefile(runtimes["main"]["interpreter_abs_path"], sys.executable))
+            self.assertFalse(os.path.samefile(
+                runtimes["main"]["interpreter_abs_path"],
+                runtimes["text"]["interpreter_abs_path"],
+            ))
+            self.assertNotIn("interpreter_abs_path", json.dumps(canonical_lock))
+
+    def test_model_lock_rejects_v1_top_level_and_runtime_shape_changes(self):
+        bad_runtime_cases = {
+            "v1": lambda lock: (
+                lock.update({"schema_version": "redraw-full-frame-model-lock-v1", "runtime": {"python_version": "3.11.9"}}),
+                lock.pop("runtimes"),
+            ),
+            "top_extra": lambda lock: lock.update({"extra": True}),
+            "runtime_extra": lambda lock: lock["runtimes"].update({"ocr": copy.deepcopy(lock["runtimes"]["text"])}),
+            "runtime_missing": lambda lock: lock["runtimes"].pop("text"),
+            "runtime_field_extra": lambda lock: lock["runtimes"]["main"].update({"extra": True}),
+            "runtime_field_missing": lambda lock: lock["runtimes"]["main"].pop("pip_freeze_sha256"),
+        }
+        for name, mutate in bad_runtime_cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as root:
+                lock_path = write_model_lock(root, mutate=mutate)
+                with self.assertRaises(worker.ProtocolError) as raised:
+                    worker._validate_model_lock(str(lock_path))
+                self.assertIsNone(raised.exception.__cause__)
+                self.assertNotIn(str(root).lower(), repr(raised.exception).lower())
+
+    def test_model_lock_rejects_runtime_paths_hash_drift_and_shared_interpreters(self):
+        bad_cases = {
+            "absolute_interpreter": lambda lock: lock["runtimes"]["text"].update({"interpreter_path": str(pathlib.Path("C:/outside/python.exe"))}),
+            "drive_relative_interpreter": lambda lock: lock["runtimes"]["text"].update({"interpreter_path": "C:runtime/text/python.exe"}),
+            "dotdot_interpreter": lambda lock: lock["runtimes"]["text"].update({"interpreter_path": "runtime/text/../python.exe"}),
+            "missing_interpreter": lambda lock: lock["runtimes"]["text"].update({"interpreter_path": "runtime/text/missing.exe"}),
+            "directory_interpreter": lambda lock: lock["runtimes"]["text"].update({"interpreter_path": "runtime/text"}),
+            "hash_drift": lambda lock: lock["runtimes"]["text"].update({"pip_freeze_sha256": "0" * 64}),
+            "same_path": lambda lock: lock["runtimes"]["text"].update({"interpreter_path": lock["runtimes"]["main"]["interpreter_path"]}),
+        }
+        for name, mutate in bad_cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as root:
+                lock_path = write_model_lock(root, mutate=mutate)
+                with self.assertRaises(worker.ProtocolError) as raised:
+                    worker._validate_model_lock(str(lock_path))
+                self.assertIsNone(raised.exception.__cause__)
+                self.assertNotIn("model-lock", repr(raised.exception).lower())
+
+        with tempfile.TemporaryDirectory() as root:
+            lock_path = write_model_lock(root)
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            text_interpreter = pathlib.Path(root) / lock["runtimes"]["text"]["interpreter_path"]
+            text_interpreter.unlink()
+            os.link(pathlib.Path(root) / lock["runtimes"]["main"]["interpreter_path"], text_interpreter)
+            with self.assertRaises(worker.ProtocolError):
+                worker._validate_model_lock(str(lock_path))
+
+    def test_model_lock_rejects_runtime_root_outside_symlink(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as outside:
+            lock_path = write_model_lock(root)
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            text_interpreter = pathlib.Path(root) / lock["runtimes"]["text"]["interpreter_path"]
+            text_interpreter.unlink()
+            outside_python = pathlib.Path(outside) / "python.exe"
+            outside_python.write_bytes(b"outside-python")
+            try:
+                os.symlink(outside_python, text_interpreter)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            with self.assertRaises(worker.ProtocolError):
+                worker._validate_model_lock(str(lock_path))
+
+    def test_model_lock_rejects_runtime_path_drift(self):
+        with tempfile.TemporaryDirectory() as root:
+            lock_path = write_model_lock(root)
+            original_realpath = worker.os.path.realpath
+            calls = {"count": 0}
+
+            def drifting_realpath(path):
+                value = original_realpath(path)
+                if value.endswith("runtime\\text\\pip-freeze.txt") or value.endswith("runtime/text/pip-freeze.txt"):
+                    calls["count"] += 1
+                    if calls["count"] >= 3:
+                        return original_realpath(pathlib.Path(root) / "runtime" / "text" / "python.exe")
+                return value
+
+            try:
+                worker.os.path.realpath = drifting_realpath
+                with self.assertRaises(worker.ProtocolError) as raised:
+                    worker._validate_model_lock(str(lock_path))
+            finally:
+                worker.os.path.realpath = original_realpath
+            self.assertIsNone(raised.exception.__cause__)
+
     def test_default_loader_uses_text_process_and_closes_it(self):
         events = []
 
@@ -472,7 +612,11 @@ class WorkerProtocolTests(unittest.TestCase):
                 lock_path = write_model_lock(root)
 
                 def text_process_factory(**kwargs):
-                    self.assertEqual(kwargs, {"model_lock_path": str(lock_path)})
+                    self.assertEqual(set(kwargs), {"model_lock_path", "python_path"})
+                    self.assertEqual(kwargs["model_lock_path"], str(lock_path))
+                    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+                    expected_text_python = pathlib.Path(root) / lock["runtimes"]["text"]["interpreter_path"]
+                    self.assertTrue(os.path.samefile(kwargs["python_path"], expected_text_python))
                     factories.calls.append(("text-process", pathlib.Path(kwargs["model_lock_path"]).name))
                     return FakeTextProcess()
 
@@ -491,6 +635,25 @@ class WorkerProtocolTests(unittest.TestCase):
         )
         self.assertEqual(events, ["text-close"])
         self.assertFalse(hasattr(worker._default_factories(), "text_detector"))
+
+    def test_real_loader_rejects_current_main_mismatch_before_factories(self):
+        with tempfile.TemporaryDirectory() as root:
+            def use_other_main(lock):
+                other_python = pathlib.Path(root) / "runtime" / "main" / "other-python.exe"
+                other_python.write_bytes(b"other-main-python")
+                lock["runtimes"]["main"]["interpreter_path"] = "runtime/main/other-python.exe"
+
+            lock_path = write_model_lock(root, mutate=use_other_main)
+            factories = FakeFactory()
+            self.assert_trusted_stage(
+                lambda: worker._load_real_detectors(
+                    str(lock_path),
+                    factories=factories,
+                    text_process_factory=lambda **_kwargs: FakeTextDetector(),
+                ),
+                "validate_lock",
+            )
+            self.assertEqual(factories.calls, [])
 
     def test_real_loader_marks_each_trusted_component_stage_and_rejects_spoofing(self):
         with tempfile.TemporaryDirectory() as root:
@@ -963,7 +1126,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
         self.assertEqual(result, {
             "status": "ok",
-            "schema_version": "redraw-full-frame-model-lock-v1",
+            "schema_version": "redraw-full-frame-model-lock-v2",
             "components": ["face_detector", "person_detector", "text_detector", "tracker"],
         })
         self.assertEqual([call[0] for call in factories.calls], ["person", "tracker", "face"])
