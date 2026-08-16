@@ -99,6 +99,39 @@ const NO_DEPS_REQUIREMENTS = new Set([
   'paddleocr==2.8.1',
 ]);
 const NO_DEPS_PACKAGE_NAMES = new Set(['yolox', 'imgaug', 'mediapipe', 'paddlepaddle', 'paddleocr']);
+const RUNTIME_FREEZE_ALLOWED_TRANSITIVE_NAMES = new Set([
+  'anyio',
+  'certifi',
+  'cffi',
+  'charset-normalizer',
+  'colorama',
+  'contourpy',
+  'cycler',
+  'filelock',
+  'fonttools',
+  'fsspec',
+  'h11',
+  'httpcore',
+  'idna',
+  'intel-openmp',
+  'jinja2',
+  'kiwisolver',
+  'lazy-loader',
+  'markupsafe',
+  'mkl',
+  'mpmath',
+  'networkx',
+  'packaging',
+  'pycparser',
+  'pyparsing',
+  'python-dateutil',
+  'sniffio',
+  'sympy',
+  'tbb',
+  'typing-extensions',
+  'urllib3',
+  'win32-setctime',
+]);
 const FORBIDDEN_RUNTIME_PACKAGES = new Set([
   'opencv-python',
   'opencv-contrib-python',
@@ -195,11 +228,17 @@ function assertPinnedFreeze(lines) {
     if (FORBIDDEN_RUNTIME_PACKAGES.has(requirement.name) || installed.has(requirement.name)) throw error(MODEL_ERROR);
     installed.set(requirement.name, requirement.version);
   }
+  const requiredNames = new Set();
   for (const spec of RUNTIME_PACKAGE_SPECS) {
     const required = splitRequirement(spec.requirement);
-    if (installed.get(required.name) !== required.version) throw error(MODEL_ERROR);
+    if (requiredNames.has(required.name) || installed.get(required.name) !== required.version) throw error(MODEL_ERROR);
+    requiredNames.add(required.name);
   }
-  if (installed.size !== RUNTIME_PACKAGE_SPECS.length) throw error(MODEL_ERROR);
+  for (const installedName of installed.keys()) {
+    if (!requiredNames.has(installedName) && !RUNTIME_FREEZE_ALLOWED_TRANSITIVE_NAMES.has(installedName)) {
+      throw error(MODEL_ERROR);
+    }
+  }
   return sorted;
 }
 

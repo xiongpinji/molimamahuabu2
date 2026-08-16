@@ -61,6 +61,43 @@ const EXPECTED_RUNTIME_PACKAGE_SPECS = [
   { requirement: 'paddleocr==2.8.1', noDeps: true },
 ];
 const EXPECTED_RUNTIME_FREEZE = EXPECTED_RUNTIME_PACKAGE_SPECS.map((spec) => spec.requirement);
+const ALLOWED_RUNTIME_TRANSITIVE_FREEZE = [
+  'anyio==4.14.2',
+  'certifi==2026.7.22',
+  'cffi==2.1.1',
+  'charset-normalizer==3.5.1',
+  'colorama==0.4.6',
+  'contourpy==1.3.3',
+  'cycler==0.12.1',
+  'filelock==3.32.3',
+  'fonttools==4.63.0',
+  'fsspec==2026.7.0',
+  'h11==0.16.0',
+  'httpcore==1.0.9',
+  'idna==3.18',
+  'intel-openmp==2021.4.0',
+  'Jinja2==3.1.6',
+  'kiwisolver==1.5.0',
+  'lazy-loader==0.5',
+  'MarkupSafe==3.0.3',
+  'mkl==2021.4.0',
+  'mpmath==1.3.0',
+  'networkx==3.6.1',
+  'packaging==26.3',
+  'pycparser==3.0',
+  'pyparsing==3.3.2',
+  'python-dateutil==2.9.0.post0',
+  'sniffio==1.3.1',
+  'sympy==1.14.0',
+  'tbb==2021.13.1',
+  'typing-extensions==4.16.0',
+  'urllib3==2.7.0',
+  'win32-setctime==1.2.0',
+];
+const EXPECTED_RUNTIME_FREEZE_WITH_TRANSITIVES = [
+  ...EXPECTED_RUNTIME_FREEZE,
+  ...ALLOWED_RUNTIME_TRANSITIVE_FREEZE,
+];
 const FORBIDDEN_RUNTIME_PACKAGES = new Set([
   'opencv-python',
   'opencv-contrib-python',
@@ -333,7 +370,7 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
     },
     createVenv: async () => calls.push('venv'),
     installRuntime: async () => calls.push('install'),
-    pipFreeze: async () => EXPECTED_RUNTIME_FREEZE,
+    pipFreeze: async () => EXPECTED_RUNTIME_FREEZE_WITH_TRANSITIVES,
     bootstrapWorker: async () => calls.push('bootstrap'),
     pythonVersion: async () => 'Python 3.11.9',
   };
@@ -346,14 +383,17 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
   assert(fs.existsSync(path.join(outputDir, 'model-lock.json')));
   const lock = JSON.parse(fs.readFileSync(path.join(outputDir, 'model-lock.json'), 'utf8'));
   assert.equal(lock.schema_version, 'redraw-full-frame-model-lock-v1');
-  assert.deepEqual(lock.runtime.pip_freeze, EXPECTED_RUNTIME_FREEZE.slice().sort((a, b) => a.localeCompare(b)));
+  assert.deepEqual(
+    lock.runtime.pip_freeze,
+    EXPECTED_RUNTIME_FREEZE_WITH_TRANSITIVES.slice().sort((a, b) => a.localeCompare(b)),
+  );
   const frozenPackages = new Map(lock.runtime.pip_freeze.map((line) => {
     const [name, version] = line.split('==');
-    return [name.toLowerCase().replace(/[_.]+/g, '-'), version];
+    return [name.toLowerCase().replace(/[-_.]+/g, '-'), version];
   }));
   for (const requirement of EXPECTED_RUNTIME_FREEZE) {
     const [name, version] = requirement.split('==');
-    assert.equal(frozenPackages.get(name.toLowerCase().replace(/[_.]+/g, '-')), version);
+    assert.equal(frozenPackages.get(name.toLowerCase().replace(/[-_.]+/g, '-')), version);
   }
   for (const forbidden of FORBIDDEN_RUNTIME_PACKAGES) assert.equal(frozenPackages.has(forbidden), false);
   for (const component of lock.components) {
@@ -510,7 +550,7 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   const deps = {
     spawnProcess: async (command, args, options) => {
       calls.push({ command, args, env: options.env, cwd: options.cwd });
-      if (args.includes('freeze')) return `${EXPECTED_RUNTIME_FREEZE.join('\n')}\n`;
+      if (args.includes('freeze')) return `${EXPECTED_RUNTIME_FREEZE_WITH_TRANSITIVES.join('\n')}\n`;
       if (args.includes('--version')) return 'Python 3.11.9\n';
       return '';
     },
@@ -524,7 +564,7 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   await fetchModule.installRuntime(parent, [], deps);
   assert.deepEqual(
     await fetchModule.pipFreeze(parent, deps),
-    EXPECTED_RUNTIME_FREEZE.slice().sort((a, b) => a.localeCompare(b)),
+    EXPECTED_RUNTIME_FREEZE_WITH_TRANSITIVES.slice().sort((a, b) => a.localeCompare(b)),
   );
   assert.equal(await fetchModule.pythonVersion(parent, deps), 'Python 3.11.9');
   await fetchModule.bootstrapWorker(parent, path.join(parent, 'model-lock.json'), deps);
@@ -567,7 +607,7 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   );
   assert(installArgs.every((requirement) => {
     const [name] = requirement.split('==');
-    return !FORBIDDEN_RUNTIME_PACKAGES.has(name.toLowerCase().replace(/[_.]+/g, '-'));
+    return !FORBIDDEN_RUNTIME_PACKAGES.has(name.toLowerCase().replace(/[-_.]+/g, '-'));
   }));
 
   await assert.rejects(
@@ -638,6 +678,24 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
     }),
     /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
   );
+  for (const excluded of [
+    'beautifulsoup4',
+    'fire',
+    'lxml',
+    'python-docx',
+    'pyyaml',
+    'rapidfuzz',
+    'soupsieve',
+    'termcolor',
+  ]) {
+    await assert.rejects(
+      fetchModule.pipFreeze(parent, {
+        ...deps,
+        spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.join('\n')}\n${excluded}==9.9.9\n`,
+      }),
+      /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+    );
+  }
   await assert.rejects(
     fetchModule.pipFreeze(parent, {
       ...deps,
