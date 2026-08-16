@@ -204,3 +204,44 @@ test('图片生成路由提交上游模型名并解析 base64 结果', async (t)
     image_url: `data:image/jpeg;base64,${Buffer.from('fumin-image-result').toString('base64')}`,
   });
 });
+
+test('fumin GPT Image 对未验证的参考图能力在提交前明确拒绝', async (t) => {
+  let requestCount = 0;
+  const server = http.createServer((req, res) => {
+    requestCount += 1;
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'should not submit' } }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+  const config = aiConfigService.createConfig(db, log, {
+    service_type: 'image',
+    provider: 'fumin_image',
+    api_protocol: 'openai',
+    name: 'fumin GPT Image 2 参考图能力保护',
+    base_url: `http://127.0.0.1:${server.address().port}`,
+    endpoint: '/images/generations',
+    api_key: 'test-key',
+    model: ['fumin-gpt-image-2-4K'],
+    default_model: 'fumin-gpt-image-2-4K',
+    is_default: true,
+  });
+  db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
+    .run(config.id);
+
+  const result = await imageClient.callImageApi(db, log, {
+    prompt: '保持人物一致并更换服装',
+    model: 'fumin-gpt-image-2-4K',
+    preferred_provider: 'fumin_image',
+    size: '2048x1152',
+    reference_image_urls: [`data:image/png;base64,${Buffer.from('reference-image').toString('base64')}`],
+    imageServiceType: 'image',
+  });
+
+  assert.equal(requestCount, 0);
+  assert.match(result.error, /fumin GPT Image.*不支持参考图/);
+});

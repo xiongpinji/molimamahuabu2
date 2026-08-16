@@ -161,6 +161,15 @@ test('独立画布只读取用户可访问的模型目录，不请求管理员�
   assert.doesNotMatch(dramaCanvasSource, /aiAPI\.list\(/)
 })
 
+test('图片模型在两套节点编辑器中都显示用户可读的能力范围', () => {
+  assert.match(nodeSource, /imageModelCapabilityBadges/)
+  assert.match(nodeSource, /class="model-capability-badges"/)
+  assert.match(nodeSource, /v-for="badge in currentModelCapabilityBadges"/)
+  assert.match(dramaCanvasSource, /imageModelCapabilityBadges/)
+  assert.match(dramaCanvasSource, /class="free-node-model-capabilities"/)
+  assert.match(dramaCanvasSource, /v-for="badge in freeNodeSelectedCapabilityBadges"/)
+})
+
 test('连续创建节点时同步单选状态，避免新节点编辑器被误判为多选', () => {
   assert.match(dramaCanvasSource, /async function createFreeCanvasNode\([\s\S]*applySelectedFreeNodeIds\(\[id\]\)[\s\S]*focusedNodeId\.value = id[\s\S]*await focusCanvasNode\(id\)/)
   assert.match(nodeSource, /watch\(\(\) => ctx\?\.focusedNodeId\?\.value,[\s\S]*editorHidden\.value = false[\s\S]*immediate: true/)

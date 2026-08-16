@@ -180,6 +180,56 @@ function supportsRequirements(entry, kind, requirements = {}) {
   return referenceCount <= limit
 }
 
+function safePositiveInteger(value) {
+  const number = Number(value)
+  return Number.isSafeInteger(number) && number > 0 ? number : 0
+}
+
+function imageReferenceCapability(capabilities = {}) {
+  const limit = safePositiveInteger(capabilities.maxReferences ?? capabilities.maxImageReferences)
+  const supported = capabilities.supportsImageReference === true
+    || capabilities.supportsReferenceImages === true
+    || limit > 0
+  const declaredUnsupported = capabilities.supportsImageReference === false
+    || capabilities.supportsReferenceImages === false
+    || (Object.prototype.hasOwnProperty.call(capabilities, 'maxReferences') && limit === 0)
+  return { limit, supported, declaredUnsupported }
+}
+
+export function imageModelCapabilityBadges(capabilities = {}) {
+  const badges = ['文生图']
+  const reference = imageReferenceCapability(capabilities)
+  if (reference.supported) badges.push(`图生图：最多 ${reference.limit} 张参考图`)
+  else badges.push(reference.declaredUnsupported ? '参考图：不支持' : '参考图：能力未标明')
+
+  const resolutions = Array.isArray(capabilities.resolutions)
+    ? capabilities.resolutions.map(String).filter(Boolean)
+    : []
+  if (resolutions.length) badges.push(`清晰度：${resolutions.join(' / ')}`)
+
+  const aspectRatios = Array.isArray(capabilities.aspectRatios)
+    ? capabilities.aspectRatios.map(String).filter(Boolean)
+    : []
+  if (aspectRatios.length) {
+    badges.push(aspectRatios.length <= 5
+      ? `画面比例：${aspectRatios.join(' / ')}`
+      : `画面比例：${aspectRatios.length} 种`)
+  }
+
+  const quantities = Array.isArray(capabilities.quantities)
+    ? capabilities.quantities.map(Number).filter((value) => Number.isSafeInteger(value) && value > 0)
+    : []
+  if (quantities.length === 1) badges.push(`每次 ${quantities[0]} 张`)
+  else if (quantities.length > 1) badges.push(`每次可生成：${quantities.join(' / ')} 张`)
+  return badges
+}
+
+export function imageModelCapabilityLabel(capabilities = {}) {
+  const reference = imageReferenceCapability(capabilities)
+  if (reference.supported) return `文生图 · 图生图（${reference.limit} 张参考图）`
+  return `文生图 · ${reference.declaredUnsupported ? '不支持参考图' : '参考图能力未标明'}`
+}
+
 export function canvasModelEntry(catalog, kind, model, requirements = {}) {
   const kindEntries = normalizeCanvasModelCatalog(catalog).filter((item) => item.kind === kind)
   return kindEntries.find((item) => item.model === model)
@@ -196,9 +246,12 @@ export function canvasModelOptions(catalog, kind, requirements = {}) {
     .filter((item) => item.kind === kind)
     .map((item) => {
       const disabled = !supportsRequirements(item, kind, requirements)
+      const capabilityLabel = kind === 'image' ? `｜${imageModelCapabilityLabel(item.capabilities)}` : ''
       const option = {
         value: item.model,
-        label: disabled ? `${item.label}（不支持参考图）` : item.label,
+        label: disabled
+          ? `${item.label}${capabilityLabel}（超出参考图上限）`
+          : `${item.label}${capabilityLabel}`,
       }
       if (disabled) option.disabled = true
       return option

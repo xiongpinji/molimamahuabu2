@@ -589,6 +589,9 @@
             <button type="button" class="free-node-model-retry" @click="loadFreeCanvasModelConfigs">重试</button>
           </p>
           <p v-else-if="freeNodeSelectedModelNote" class="free-node-model-note">{{ freeNodeSelectedModelNote }}</p>
+          <div v-if="freeNodeKind === 'image' && freeNodeSelectedCapabilityBadges.length" class="free-node-model-capabilities" aria-label="模型能力范围">
+            <span v-for="badge in freeNodeSelectedCapabilityBadges" :key="badge">{{ badge }}</span>
+          </div>
           <p v-else-if="freeNodeModelUnavailable" class="free-node-model-unavailable">当前模型已不可用，请重新选择</p>
         </el-form-item>
         <el-form-item v-if="['image', 'video'].includes(freeNodeKind)" label="画面比例">
@@ -712,6 +715,7 @@ import {
   canvasModelSelectionDecision,
   createCanvasModelCatalogLoader,
   estimateCanvasCredits,
+  imageModelCapabilityBadges,
   normalizeCanvasModelCatalog,
 } from '@/utils/canvasModelCapabilities'
 import {
@@ -1018,9 +1022,17 @@ function getFreeNodeModelOptionEntriesForNode(kind, nodeOrId) {
   return catalogOptions
 }
 
-const freeNodeSelectedModelEntry = computed(() => getFreeNodeModelOptionEntriesForNode(freeNodeKind.value, freeNodeEditingId.value)
-  .find((item) => item.value === normalizeModelOption(freeNodeForm.value.model)) || null)
-const freeNodeSelectedModelNote = computed(() => String(freeNodeSelectedModelEntry.value?.note || '').trim())
+const freeNodeSelectedModelMetadata = computed(() => canvasModelEntry(
+  freeCanvasModelCatalog.value,
+  freeNodeKind.value,
+  normalizeModelOption(freeNodeForm.value.model),
+))
+const freeNodeSelectedModelNote = computed(() => String(freeNodeSelectedModelMetadata.value?.publicNote || '').trim())
+const freeNodeSelectedCapabilityBadges = computed(() => (
+  freeNodeKind.value === 'image' && freeNodeSelectedModelMetadata.value
+    ? imageModelCapabilityBadges(freeNodeSelectedModelMetadata.value.capabilities || {})
+    : []
+))
 const freeNodeModelDecision = computed(() => canvasModelSelectionDecision(
   freeCanvasModelCatalog.value,
   freeNodeKind.value,
@@ -8982,6 +8994,22 @@ html.light .drama-canvas-page .canvas-topbar .header-actions .el-button:hover {
 }
 .canvas-free-node-dialog .free-node-model-note { color: #9ca3af; }
 .canvas-free-node-dialog .free-node-model-unavailable { color: #f59e0b; }
+.canvas-free-node-dialog .free-node-model-capabilities {
+  display: flex;
+  width: 100%;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.canvas-free-node-dialog .free-node-model-capabilities span {
+  border: 1px solid #3f3f46;
+  border-radius: 999px;
+  background: #202024;
+  color: #d4d4d8;
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 1.2;
+}
 .canvas-free-node-dialog .free-node-model-retry {
   margin-left: 6px;
   border: 0;
