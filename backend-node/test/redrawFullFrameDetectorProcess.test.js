@@ -204,6 +204,9 @@ function assertStableFetchError(error, expectedStage) {
   assert.equal(error.code, 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE');
   assert.equal(error.message, 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE');
   assert.deepEqual(Object.keys(error), ['code']);
+  assert(Object.getOwnPropertySymbols(error).every((symbol) => (
+    Object.getOwnPropertyDescriptor(error, symbol).enumerable === false
+  )));
   assert.equal(error.stage, expectedStage);
   assert.equal(Object.getOwnPropertyDescriptor(error, 'stage').enumerable, false);
   assert.equal(error.cause, undefined);
@@ -451,9 +454,14 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
   assert.equal(fs.readFileSync(path.join(occupied, 'keep.txt'), 'utf8'), 'keep');
 
   const failed = path.join(parent, 'failed');
+  const rawFetchError = new Error('C:\\Users\\private\\face.bin Authorization: Bearer secret-token Key=secret-key');
+  rawFetchError.code = 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE';
+  rawFetchError.cause = new Error('C:\\Users\\private\\face.bin');
+  rawFetchError.context = { authorization: 'Bearer secret-token', key: 'secret-key' };
+  rawFetchError.stage = 'install:paddleocr';
   await assert.rejects(runFetchModels({
     outputDir: failed,
-  }, { ...deps, fetchComponent: async () => { throw new Error('https://secret.example/model'); } }), (error) => (
+  }, { ...deps, fetchComponent: async () => { throw rawFetchError; } }), (error) => (
     assertStableFetchError(error, 'fetch:face_detector')
   ));
   assert.equal(fs.existsSync(failed), false);
@@ -463,7 +471,7 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
   rawBootstrapError.code = 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE';
   rawBootstrapError.cause = new Error('C:\\Users\\private\\worker.py');
   rawBootstrapError.context = { authorization: 'Bearer secret-token', key: 'secret-key' };
-  rawBootstrapError.stage = 'bootstrap:C:\\Users\\private\\worker.py';
+  rawBootstrapError.stage = 'install:paddleocr';
   await assert.rejects(runFetchModels({
     outputDir: bootstrapFailed,
   }, {

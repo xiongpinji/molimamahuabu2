@@ -160,6 +160,7 @@ const ARTIFACT_MAX_BYTES = 512 * 1024 * 1024;
 const PROCESS_STDOUT_MAX_BYTES = 4 * 1024 * 1024;
 const PROCESS_STDERR_MAX_BYTES = 1024 * 1024;
 const PROCESS_TIMEOUT_MS = 15 * 60 * 1000;
+const TRUSTED_SANITIZED_ERROR = Symbol('trustedSanitizedError');
 const FIXED_RUNTIME_STAGES = new Set([
   'unknown',
   'create_venv',
@@ -194,8 +195,12 @@ function error(code, stage = 'unknown') {
 
 function sanitizedError(err, fallbackStage = 'unknown') {
   const code = err && err.code === OUTPUT_ERROR ? OUTPUT_ERROR : MODEL_ERROR;
-  const sourceStage = normalizeStage(err && err.stage);
-  return error(code, sourceStage === 'unknown' ? normalizeStage(fallbackStage) : sourceStage);
+  const sourceStage = err && err[TRUSTED_SANITIZED_ERROR] === true
+    ? normalizeStage(err.stage)
+    : 'unknown';
+  const safe = error(code, sourceStage === 'unknown' ? normalizeStage(fallbackStage) : sourceStage);
+  Object.defineProperty(safe, TRUSTED_SANITIZED_ERROR, { value: true, enumerable: false });
+  return safe;
 }
 
 function sanitizeEnv(env = process.env) {
