@@ -686,8 +686,16 @@ async function bootstrapWorker(staging, _modelLockPath, runtimeName = 'main', de
 
 async function publishCache(staging, outputDir) {
   await assertEmptyOrMissing(outputDir);
-  if (await exists(outputDir)) await fsp.rmdir(outputDir);
-  await fsp.rename(staging, outputDir);
+  const hadEmptyOutputDir = await exists(outputDir);
+  if (hadEmptyOutputDir) await fsp.rmdir(outputDir);
+  try {
+    await fsp.rename(staging, outputDir);
+  } catch (err) {
+    if (hadEmptyOutputDir && !(await exists(outputDir))) {
+      await fsp.mkdir(outputDir).catch(() => {});
+    }
+    throw err;
+  }
 }
 
 async function runFetchModels(options, injectedDeps = {}) {

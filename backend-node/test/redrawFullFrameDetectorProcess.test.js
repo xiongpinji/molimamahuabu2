@@ -293,6 +293,32 @@ function assertStableFetchError(error, expectedStage) {
   return true;
 }
 
+function buildSuccessfulFetchDeps(randomHexValue = 'fixture') {
+  const freezeByRuntime = {
+    main: EXPECTED_MAIN_RUNTIME_FREEZE_WITH_TRANSITIVES,
+    text: EXPECTED_TEXT_RUNTIME_FREEZE_WITH_TRANSITIVES,
+  };
+  return {
+    randomHex: () => randomHexValue,
+    fetchComponent: async (source) => ({
+      revision: `fixed-${source.component}-20260816`,
+      artifact_name: `${source.component}.bin`,
+      artifact_bytes: Buffer.from(`${source.component}:artifact`),
+      license_name: `${source.component}.license`,
+      license_bytes: Buffer.from(`${source.component}:license`),
+    }),
+    createVenv: async (staging, runtimeName) => {
+      const interpreter = venvPython(staging, runtimeName);
+      await fsp.mkdir(path.dirname(interpreter), { recursive: true });
+      await fsp.writeFile(interpreter, `${runtimeName}:python`);
+    },
+    installRuntime: async () => {},
+    pipFreeze: async (_staging, runtimeName) => freezeByRuntime[runtimeName],
+    pythonVersion: async (_staging, runtimeName) => `Python 3.11.9 ${runtimeName}`,
+    bootstrapWorker: async () => {},
+  };
+}
+
 test('safeWorkerEnv keeps only the allowlist and fixed Python UTF-8 setting', () => {
   const previous = { ...process.env };
   process.env.PATH = 'path-value';
@@ -581,6 +607,57 @@ test('runFetchModels builds separate main and text runtimes with a v2 lock', asy
   assert.equal(
     fs.readFileSync(path.join(outputDir, 'runtime', 'text', 'pip-freeze.txt'), 'utf8'),
     `${EXPECTED_TEXT_RUNTIME_FREEZE_WITH_TRANSITIVES.slice().sort((a, b) => a.localeCompare(b)).join('\n')}\n`,
+  );
+});
+
+test('runFetchModels restores a pre-existing empty output directory when publish rename fails', async (t) => {
+  const parent = tempDir(t, 'redraw-model-publish-existing-');
+  const outputDir = path.join(parent, 'cache');
+  fs.mkdirSync(outputDir);
+  const originalRename = fsp.rename;
+  fsp.rename = async (source, target) => {
+    if (target === outputDir) {
+      throw new Error(`rename failed from ${source} to ${target} with Authorization secret-token`);
+    }
+    return originalRename.call(fsp, source, target);
+  };
+  t.after(() => { fsp.rename = originalRename; });
+
+  await assert.rejects(
+    runFetchModels({ outputDir }, buildSuccessfulFetchDeps('publish-existing')),
+    (error) => assertStableFetchError(error, 'publish'),
+  );
+
+  assert.equal(fs.existsSync(outputDir), true);
+  assert.deepEqual(fs.readdirSync(outputDir), []);
+  assert.equal(fs.existsSync(path.join(outputDir, 'model-lock.json')), false);
+  assert.deepEqual(
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    [],
+  );
+});
+
+test('runFetchModels does not create a missing output directory when publish rename fails', async (t) => {
+  const parent = tempDir(t, 'redraw-model-publish-missing-');
+  const outputDir = path.join(parent, 'cache');
+  const originalRename = fsp.rename;
+  fsp.rename = async (source, target) => {
+    if (target === outputDir) {
+      throw new Error(`rename failed from ${source} to ${target} with Authorization secret-token`);
+    }
+    return originalRename.call(fsp, source, target);
+  };
+  t.after(() => { fsp.rename = originalRename; });
+
+  await assert.rejects(
+    runFetchModels({ outputDir }, buildSuccessfulFetchDeps('publish-missing')),
+    (error) => assertStableFetchError(error, 'publish'),
+  );
+
+  assert.equal(fs.existsSync(outputDir), false);
+  assert.deepEqual(
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    [],
   );
 });
 
