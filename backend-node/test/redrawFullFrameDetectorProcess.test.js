@@ -980,7 +980,13 @@ test('runCli emits only stable sanitized install and bootstrap stages', async (t
   const installResult = await capture(['--output-dir', path.join(parent, 'install-failed')], {
     ...fixtureDeps,
     installRuntime: async (staging, components, runtimeName) => installRuntime(staging, components, runtimeName, {
-      spawnProcess: async (_command, args) => {
+      spawnProcess: async (_command, args, options) => {
+        if (args.includes('download')) {
+          const dest = args[args.indexOf('--dest') + 1];
+          await fsp.mkdir(path.join(options.cwd, dest), { recursive: true });
+          await fsp.writeFile(path.join(options.cwd, dest, PADDLE_WHEEL_FILE), 'fixture-wheel');
+          return '';
+        }
         if (args[args.length - 1] === 'paddleocr==2.8.1') throw privateFailure('paddleocr.py');
         return '';
       },
