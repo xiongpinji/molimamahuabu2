@@ -1501,7 +1501,7 @@ test('PaddlePaddle wheel symlink pointing outside staging is rejected before loc
           try {
             await fsp.symlink(outside, path.join(wheelDir, PADDLE_WHEEL_FILE));
           } catch (err) {
-            if (err && (err.code === 'EPERM' || err.code === 'EACCES')) {
+            if (err && err.code === 'EPERM') {
               t.skip(`symlink creation not permitted: ${err.code}`);
               return;
             }
@@ -1539,7 +1539,7 @@ test('PaddlePaddle wheel junction replacing package directory is rejected before
           try {
             await fsp.symlink(outside, wheelDir, process.platform === 'win32' ? 'junction' : 'dir');
           } catch (err) {
-            if (err && (err.code === 'EPERM' || err.code === 'EACCES')) {
+            if (err && err.code === 'EPERM') {
               t.skip(`junction creation not permitted: ${err.code}`);
               return;
             }
