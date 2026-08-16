@@ -319,6 +319,32 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
     outputDir: failed,
   }, { ...deps, fetchComponent: async () => { throw new Error('https://secret.example/model'); } }), /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/);
   assert.equal(fs.existsSync(failed), false);
+
+  const bootstrapFailed = path.join(parent, 'bootstrap-failed');
+  const rawBootstrapError = new Error('C:\\Users\\private\\model-lock.json Authorization: Bearer secret-token Key=secret-key');
+  rawBootstrapError.code = 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE';
+  rawBootstrapError.cause = new Error('C:\\Users\\private\\worker.py');
+  rawBootstrapError.context = { authorization: 'Bearer secret-token', key: 'secret-key' };
+  await assert.rejects(runFetchModels({
+    outputDir: bootstrapFailed,
+  }, {
+    ...deps,
+    randomHex: () => 'bootstrap123',
+    bootstrapWorker: async () => { throw rawBootstrapError; },
+  }), (error) => {
+    assert.equal(error.code, 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE');
+    assert.equal(error.message, 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE');
+    assert.deepEqual(Object.keys(error), ['code']);
+    assert.equal(error.cause, undefined);
+    assert.equal(error.context, undefined);
+    assert.doesNotMatch(JSON.stringify(error), /private|Authorization|secret-token|secret-key|model-lock|worker\.py/i);
+    return true;
+  });
+  assert.equal(fs.existsSync(bootstrapFailed), false);
+  assert.deepEqual(
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    [],
+  );
 });
 
 test('default fetch path resolves four fixed official sources from exact revisions and artifact URLs', async () => {

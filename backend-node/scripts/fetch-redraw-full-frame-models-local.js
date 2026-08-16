@@ -475,8 +475,7 @@ async function runFetchModels(options, injectedDeps = {}) {
       runtime_lock: 'runtime/pip-freeze.txt',
     };
   } catch (err) {
-    if (err && (err.code === OUTPUT_ERROR || err.code === MODEL_ERROR)) throw err;
-    throw error(MODEL_ERROR);
+    throw error(err && err.code === OUTPUT_ERROR ? OUTPUT_ERROR : MODEL_ERROR);
   } finally {
     if (!complete) {
       await fsp.rm(staging, { recursive: true, force: true }).catch(() => {});
