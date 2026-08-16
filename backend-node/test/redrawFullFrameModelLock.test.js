@@ -187,6 +187,7 @@ test('top-level and runtime keys are exact', async (t) => {
   await assertInvalid(validateModelLock({ cacheRoot, sourcePolicy, lock: { ...lock, runtimes: { main: lock.runtimes.main } } }), cacheRoot);
   await assertInvalid(validateModelLock({ cacheRoot, sourcePolicy, lock: { ...lock, runtimes: { ...lock.runtimes, worker: lock.runtimes.main } } }), cacheRoot);
   await assertInvalid(validateModelLock({ cacheRoot, sourcePolicy, lock: mutateRuntime(lock, 'main', { extra: true }) }), cacheRoot);
+  await assertInvalid(validateModelLock({ cacheRoot, sourcePolicy, lock: mutateRuntime(lock, 'text', { extra: true }) }), cacheRoot);
   const { pip_freeze_sha256, ...textWithoutHash } = lock.runtimes.text;
   assert.equal(pip_freeze_sha256.length, 64);
   await assertInvalid(validateModelLock({
