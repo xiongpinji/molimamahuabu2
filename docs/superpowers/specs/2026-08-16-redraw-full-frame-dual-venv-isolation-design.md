@@ -144,17 +144,18 @@ runtime/
 
 未来获得单独真实下载授权后，获取器固定执行：
 
-1. 在同父目录随机 staging 中获取四个官方模型和许可证证据；
-2. 创建 `runtime/main/.venv`；
-3. 安装、freeze 并校验主运行时；
-4. 创建 `runtime/text/.venv`；
-5. 安装、freeze 并校验文字运行时；
-6. 原子写入两个 `pip-freeze.txt`；
-7. 原子写入 v2 `model-lock.json`；
-8. 用主解释器启动主 worker bootstrap；
-9. 主 worker 从 v2 锁中解析并复核文字解释器，再启动文字子进程；
-10. 四组件真实 smoke 全部成功后复验 v2 锁；
-11. 目标仍不存在或仍为空时，同盘原子 rename 发布。
+1. 在创建 staging 或联网前，要求 `REDRAW_AUDITOR_PYTHON` 为显式绝对路径，并用安全环境执行一次 `--version` 本地探针；
+2. 在同父目录随机 staging 中获取四个官方模型和许可证证据；
+3. 创建 `runtime/main/.venv`；
+4. 安装、freeze 并校验主运行时；
+5. 创建 `runtime/text/.venv`；
+6. 安装、freeze 并校验文字运行时；
+7. 原子写入两个 `pip-freeze.txt`；
+8. 原子写入 v2 `model-lock.json`；
+9. 用主解释器启动主 worker bootstrap；
+10. 主 worker 从 v2 锁中解析并复核文字解释器，再启动文字子进程；
+11. 四组件真实 smoke 全部成功后复验 v2 锁；
+12. 目标仍不存在或仍为空时，同盘原子 rename 发布。
 
 任一步失败只清理本次随机 staging，不删除用户目标、不覆盖旧缓存、不自动重试、不 fallback。
 
@@ -170,6 +171,7 @@ runtime/
 
 新增或替换的安全阶段只允许固定枚举：
 
+- `python_preflight`
 - `create_venv:main`
 - `create_venv:text`
 - `install:main:<canonical-package>`

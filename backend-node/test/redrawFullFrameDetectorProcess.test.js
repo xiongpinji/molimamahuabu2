@@ -23,6 +23,7 @@ const {
   runCli,
   installRuntime,
   bootstrapWorker,
+  preflightRuntimePython,
 } = require('../scripts/fetch-redraw-full-frame-models-local');
 
 const WINDOWS_ONLY_RUNTIME_TRANSITIVE_NAMES = new Set([
@@ -323,6 +324,7 @@ function buildSuccessfulFetchDeps(randomHexValue = 'fixture') {
   };
   return {
     randomHex: () => randomHexValue,
+    preflightRuntimePython: async () => {},
     fetchComponent: async (source) => ({
       revision: `fixed-${source.component}-20260816`,
       artifact_name: `${source.component}.bin`,
@@ -516,6 +518,86 @@ test('model artifact URL validator keeps only the official model source hosts', 
   }
 });
 
+test('runFetchModels rejects a missing auditor Python before fetch or staging', async (t) => {
+  const parent = tempDir(t, 'redraw-model-python-preflight-');
+  const outputDir = path.join(parent, 'cache');
+  let fetchCalls = 0;
+  let randomCalls = 0;
+  const deps = {
+    ...buildSuccessfulFetchDeps('python-preflight'),
+    env: { PATH: 'path-only' },
+    preflightRuntimePython: (runtimeDeps) => preflightRuntimePython(runtimeDeps),
+    randomHex: () => {
+      randomCalls += 1;
+      return 'python-preflight';
+    },
+    fetchComponent: async () => {
+      fetchCalls += 1;
+      throw new Error('network must not be reached');
+    },
+  };
+
+  await assert.rejects(
+    runFetchModels({ outputDir }, deps),
+    (error) => assertStableFetchError(error, 'python_preflight'),
+  );
+
+  assert.equal(fetchCalls, 0);
+  assert.equal(randomCalls, 0);
+  assert.equal(fs.existsSync(outputDir), false);
+  assert.deepEqual(
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    [],
+  );
+});
+
+test('auditor Python preflight requires an absolute interpreter and safe version probe', async () => {
+  const python = process.platform === 'win32' ? 'C:\\runtime\\python.exe' : '/runtime/python';
+  const calls = [];
+  const deps = {
+    env: {
+      REDRAW_AUDITOR_PYTHON: python,
+      PATH: 'path-value',
+      SystemRoot: 'system-root',
+      OPENAI_API_KEY: 'secret',
+      HTTPS_PROXY: 'https://proxy.invalid',
+      PYTHONPATH: 'private-python-path',
+    },
+    spawnProcess: async (command, args, options) => {
+      calls.push({ command, args, options });
+      return 'Python 3.12.13\n';
+    },
+  };
+
+  assert.equal(await preflightRuntimePython(deps), python);
+  assert.deepEqual(calls, [{
+    command: python,
+    args: ['--version'],
+    options: {
+      cwd: path.resolve(__dirname, '..', '..'),
+      env: {
+        PATH: 'path-value',
+        SystemRoot: 'system-root',
+        PYTHONUTF8: '1',
+      },
+    },
+  }]);
+
+  for (const invalidDeps of [
+    { env: {} },
+    { env: { REDRAW_AUDITOR_PYTHON: 'python' } },
+    {
+      env: { REDRAW_AUDITOR_PYTHON: python },
+      spawnProcess: async () => 'not-python',
+    },
+  ]) {
+    await assert.rejects(
+      preflightRuntimePython(invalidDeps),
+      (error) => assertStableFetchError(error, 'python_preflight'),
+    );
+  }
+});
+
 test('runFetchModels builds separate main and text runtimes with a v2 lock', async (t) => {
   const parent = tempDir(t, 'redraw-model-fetch-dual-runtime-');
   const outputDir = path.join(parent, 'cache');
@@ -535,6 +617,7 @@ test('runFetchModels builds separate main and text runtimes with a v2 lock', asy
   };
   const deps = {
     randomHex: () => 'dual123',
+    preflightRuntimePython: async () => calls.push('preflight_python'),
     fetchComponent: async (source) => {
       calls.push(`fetch:${source.component}`);
       return {
@@ -601,6 +684,7 @@ test('runFetchModels builds separate main and text runtimes with a v2 lock', asy
   const result = await runFetchModels({ outputDir }, deps);
 
   assert.deepEqual(calls, [
+    'preflight_python',
     'fetch:face_detector',
     'fetch:person_detector',
     'fetch:text_detector',
@@ -748,6 +832,7 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
   };
   const deps = {
     randomHex: () => 'abc123',
+    preflightRuntimePython: async () => {},
     fetchComponent: async (source) => {
       calls.push(source.component);
       return {
@@ -859,6 +944,7 @@ test('runCli emits only stable sanitized install and bootstrap stages', async (t
   };
   const fixtureDeps = {
     randomHex: () => 'cli-stage',
+    preflightRuntimePython: async () => {},
     fetchComponent: async (source) => ({
       revision: `fixed-${source.component}-20260816`,
       artifact_name: `${source.component}.bin`,

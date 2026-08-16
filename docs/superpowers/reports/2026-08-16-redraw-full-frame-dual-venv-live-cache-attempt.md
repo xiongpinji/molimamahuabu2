@@ -48,3 +48,15 @@
 2. 获取器必须在任何官方组件联网获取前验证 `REDRAW_AUDITOR_PYTHON`，避免同类配置错误先消耗网络获取。
 
 完成本地修复与审查仍不构成新的真实执行授权。
+
+## 后续本地修复
+
+本次失败后只执行了本地 TDD 修复，没有再次联网获取、创建真实 venv、安装依赖或运行四组件 smoke：
+
+- 红灯：缺少 `REDRAW_AUDITOR_PYTHON` 时，旧实现实际先进入 `fetch:face_detector`；新增 preflight helper 尚不存在；
+- 绿灯：缺少或相对解释器路径时稳定失败为 `python_preflight`，`fetchComponent` 调用数为 `0`，随机 staging 调用数为 `0`；
+- 合法绝对解释器只执行一次 `--version`，子进程环境仅保留安全白名单和固定 UTF-8 设置；
+- preflight 已移动到 staging 创建和四组件官方获取之前；
+- 获取器目标测试为 `22/22` 通过。
+
+本地修复不改变本报告记录的唯一真实执行次数，也不构成新的真实执行授权。

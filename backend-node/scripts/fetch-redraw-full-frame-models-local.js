@@ -210,6 +210,7 @@ const PYTHON_BOOTSTRAP_SAFE_STAGES = new Set([
 ]);
 const FIXED_RUNTIME_STAGES = new Set([
   'unknown',
+  'python_preflight',
   'write_model_lock',
   'bootstrap',
   'validate',
@@ -523,6 +524,7 @@ function assertComponentEvidence(source, evidence) {
 function defaultDeps() {
   return {
     randomHex,
+    preflightRuntimePython,
     fetchComponent: resolveOfficialComponent,
     createVenv,
     installRuntime,
@@ -603,6 +605,22 @@ function runtimePython(deps = {}) {
   const python = env.REDRAW_AUDITOR_PYTHON;
   if (typeof python !== 'string' || python.length === 0) throw error(MODEL_ERROR);
   return python;
+}
+
+async function preflightRuntimePython(deps = {}) {
+  const runner = deps.spawnProcess || spawnProcess;
+  try {
+    const python = runtimePython(deps);
+    if (!path.isAbsolute(python)) throw error(MODEL_ERROR);
+    const version = String(await runner(python, ['--version'], {
+      cwd: path.resolve(__dirname, '../..'),
+      env: sanitizeEnv(deps.env),
+    })).trim();
+    if (!/^Python [0-9]+\.[0-9]+\.[0-9]+$/.test(version)) throw error(MODEL_ERROR);
+    return python;
+  } catch (err) {
+    throw sanitizedError(err, 'python_preflight');
+  }
 }
 
 function runtimeInterpreterPath(runtimeName) {
@@ -706,6 +724,7 @@ async function runFetchModels(options, injectedDeps = {}) {
   const deps = { ...defaultDeps(), ...injectedDeps };
   const outputDir = path.resolve(options.outputDir);
   await assertEmptyOrMissing(outputDir);
+  await deps.preflightRuntimePython(deps);
   const parent = path.dirname(outputDir);
   await fsp.mkdir(parent, { recursive: true });
   const staging = path.join(parent, `.redraw-full-frame-staging-${deps.randomHex()}`);
@@ -819,6 +838,7 @@ module.exports = {
   pipFreeze,
   pythonVersion,
   bootstrapWorker,
+  preflightRuntimePython,
   runFetchModels,
   runCli,
 };
