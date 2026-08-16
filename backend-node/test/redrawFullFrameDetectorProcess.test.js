@@ -2076,8 +2076,6 @@ test('runProcess only trusts fixed bootstrap child stages when explicitly enable
 });
 
 test('runProcess consumes stderr, enforces limits, timeout, and settles once', async (t) => {
-  const fetchSource = fs.readFileSync(path.resolve(__dirname, '../scripts/fetch-redraw-full-frame-models-local.js'), 'utf8');
-  assert.match(fetchSource, /spawn\(command, args, \{[\s\S]*?shell: false,/);
   const script = path.join(tempDir(t, 'redraw-run-process-'), 'child.js');
   fs.writeFileSync(script, `
 const mode = process.argv[2];
@@ -2086,6 +2084,14 @@ else if (mode === 'timeout') { setTimeout(() => {}, 5000); }
 else { process.stderr.write('warn'); process.stdout.write('ok'); }
 `, 'utf8');
   assert.equal(await runProcess(process.execPath, [script, 'ok'], { timeoutMs: 1000 }), 'ok');
+  const shellLiteral = 'redraw&echo REDRAW_SHELL_WAS_USED';
+  const argvProbe = await runProcess(
+    process.execPath,
+    ['-e', 'process.stdout.write(JSON.stringify(process.argv.slice(1)))', shellLiteral],
+    { timeoutMs: 1000 },
+  );
+  assert.equal(argvProbe, JSON.stringify([shellLiteral]));
+  assert.deepEqual(JSON.parse(argvProbe), [shellLiteral]);
   await assert.rejects(runProcess(process.execPath, [script, 'stderr'], { timeoutMs: 1000 }), /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/);
   await assert.rejects(runProcess(process.execPath, [script, 'timeout'], { timeoutMs: 50 }), /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/);
 });
