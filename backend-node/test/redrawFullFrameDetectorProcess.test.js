@@ -5,6 +5,7 @@ const fsp = require('node:fs/promises');
 const https = require('node:https');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const { test } = require('node:test');
 
 const {
@@ -148,6 +149,7 @@ const FORBIDDEN_RUNTIME_PACKAGES = new Set([
   'jaxlib',
   'ml-dtypes',
 ]);
+const RUNTIME_KEYS = ['python_version', 'interpreter_path', 'pip_freeze_path', 'pip_freeze_sha256'];
 
 function tempDir(t, prefix) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -1220,6 +1222,43 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
     }),
     /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
   );
+});
+
+test('Node fetcher and Python worker expose the same v2 runtime contract', () => {
+  const repoRoot = path.resolve(__dirname, '..', '..');
+  const python = process.env.REDRAW_AUDITOR_PYTHON || 'python';
+  const probe = [
+    'import json',
+    'from redraw_full_frame_auditor import worker',
+    'print(json.dumps({',
+    '    "lock_schema": worker.LOCK_SCHEMA,',
+    '    "runtime_names": list(worker.RUNTIME_NAMES),',
+    '    "runtime_keys": list(worker.RUNTIME_KEYS),',
+    '}))',
+  ].join('\n');
+  const result = spawnSync(python, ['-c', probe], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PYTHONPATH: path.join(repoRoot, 'workers', 'redraw-full-frame-auditor', 'src'),
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const contract = JSON.parse(result.stdout);
+  assert.equal(contract.lock_schema, 'redraw-full-frame-model-lock-v2');
+  assert.deepEqual(contract.runtime_names, ['main', 'text']);
+  assert.deepEqual(contract.runtime_keys, RUNTIME_KEYS);
+  assert.deepEqual(
+    assertPinnedFreeze(EXPECTED_MAIN_RUNTIME_FREEZE, 'win32', 'main').filter((line) => line.startsWith('protobuf==')),
+    ['protobuf==4.25.9'],
+  );
+  assert.deepEqual(
+    assertPinnedFreeze(EXPECTED_TEXT_RUNTIME_FREEZE, 'win32', 'text').filter((line) => line.startsWith('protobuf==')),
+    ['protobuf==3.20.2'],
+  );
+  assert(!EXPECTED_MAIN_RUNTIME_FREEZE.some((line) => /^paddle(?:paddle|ocr)==/i.test(line)));
+  assert(!EXPECTED_TEXT_RUNTIME_FREEZE.some((line) => /^(torch|torchvision|yolox|mediapipe)==/i.test(line)));
 });
 
 test('runProcess only trusts fixed bootstrap child stages when explicitly enabled', async (t) => {

@@ -50,6 +50,7 @@ _STAGE_TOKEN = object()
 LOCK_SCHEMA = "redraw-full-frame-model-lock-v2"
 COMPONENTS = ("face_detector", "person_detector", "text_detector", "tracker")
 RUNTIME_NAMES = ("main", "text")
+RUNTIME_KEYS = ("python_version", "interpreter_path", "pip_freeze_path", "pip_freeze_sha256")
 PROJECT_BY_COMPONENT = {
     "face_detector": "MediaPipe face detection",
     "person_detector": "YOLOX",
@@ -752,7 +753,7 @@ def _validate_runtimes(root, value):
     runtimes = {}
     for name in RUNTIME_NAMES:
         item = value[name]
-        _exact_keys(item, ("python_version", "interpreter_path", "pip_freeze_path", "pip_freeze_sha256"))
+        _exact_keys(item, RUNTIME_KEYS)
         if not isinstance(item["python_version"], str) or not item["python_version"]:
             _fail()
         interpreter_path = _safe_runtime_file(root, name, item["interpreter_path"], hash_expected=None)
