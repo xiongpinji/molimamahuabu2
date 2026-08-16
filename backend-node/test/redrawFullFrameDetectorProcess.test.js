@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
+const https = require('node:https');
 const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
@@ -18,6 +19,8 @@ const {
   venvPython,
   runProcess,
   runFetchModels,
+  runCli,
+  installRuntime,
 } = require('../scripts/fetch-redraw-full-frame-models-local');
 
 const EXPECTED_RUNTIME_PACKAGE_SPECS = [
@@ -59,6 +62,14 @@ const EXPECTED_RUNTIME_PACKAGE_SPECS = [
   { requirement: 'imgaug==0.4.0', noDeps: true },
   { requirement: 'mediapipe==0.10.14', noDeps: true },
   { requirement: 'paddlepaddle==2.6.2', noDeps: true },
+  { requirement: 'beautifulsoup4==4.15.0' },
+  { requirement: 'fire==0.7.1' },
+  { requirement: 'lxml==6.1.1' },
+  { requirement: 'python-docx==1.2.0' },
+  { requirement: 'PyYAML==6.0.3' },
+  { requirement: 'RapidFuzz==3.14.5' },
+  { requirement: 'soupsieve==2.9.2' },
+  { requirement: 'termcolor==3.3.0' },
   { requirement: 'paddleocr==2.8.1', noDeps: true },
 ];
 const EXPECTED_RUNTIME_FREEZE = EXPECTED_RUNTIME_PACKAGE_SPECS.map((spec) => spec.requirement);
@@ -187,6 +198,21 @@ async function assertUnavailable(promise, secretPattern) {
     assert.doesNotMatch(serialized, /C:\\|C:\//);
     return true;
   });
+}
+
+function assertStableFetchError(error, expectedStage) {
+  assert.equal(error.code, 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE');
+  assert.equal(error.message, 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE');
+  assert.deepEqual(Object.keys(error), ['code']);
+  assert.equal(error.stage, expectedStage);
+  assert.equal(Object.getOwnPropertyDescriptor(error, 'stage').enumerable, false);
+  assert.equal(error.cause, undefined);
+  assert.equal(error.context, undefined);
+  assert.doesNotMatch(
+    JSON.stringify(error),
+    /private|Authorization|secret-token|secret-key|model-lock|worker\.py|paddleocr\.py/i,
+  );
+  return true;
 }
 
 test('safeWorkerEnv keeps only the allowlist and fixed Python UTF-8 setting', () => {
@@ -427,7 +453,9 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
   const failed = path.join(parent, 'failed');
   await assert.rejects(runFetchModels({
     outputDir: failed,
-  }, { ...deps, fetchComponent: async () => { throw new Error('https://secret.example/model'); } }), /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/);
+  }, { ...deps, fetchComponent: async () => { throw new Error('https://secret.example/model'); } }), (error) => (
+    assertStableFetchError(error, 'fetch:face_detector')
+  ));
   assert.equal(fs.existsSync(failed), false);
 
   const bootstrapFailed = path.join(parent, 'bootstrap-failed');
@@ -435,22 +463,94 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
   rawBootstrapError.code = 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE';
   rawBootstrapError.cause = new Error('C:\\Users\\private\\worker.py');
   rawBootstrapError.context = { authorization: 'Bearer secret-token', key: 'secret-key' };
+  rawBootstrapError.stage = 'bootstrap:C:\\Users\\private\\worker.py';
   await assert.rejects(runFetchModels({
     outputDir: bootstrapFailed,
   }, {
     ...deps,
     randomHex: () => 'bootstrap123',
     bootstrapWorker: async () => { throw rawBootstrapError; },
-  }), (error) => {
-    assert.equal(error.code, 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE');
-    assert.equal(error.message, 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE');
-    assert.deepEqual(Object.keys(error), ['code']);
-    assert.equal(error.cause, undefined);
-    assert.equal(error.context, undefined);
-    assert.doesNotMatch(JSON.stringify(error), /private|Authorization|secret-token|secret-key|model-lock|worker\.py/i);
-    return true;
-  });
+  }), (error) => assertStableFetchError(error, 'bootstrap'));
   assert.equal(fs.existsSync(bootstrapFailed), false);
+  assert.deepEqual(
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    [],
+  );
+});
+
+test('runCli emits only stable sanitized install and bootstrap stages', async (t) => {
+  const parent = tempDir(t, 'redraw-model-cli-stage-');
+  const originalGet = https.get;
+  https.get = () => { throw new Error('network must not be reached'); };
+  t.after(() => { https.get = originalGet; });
+
+  const privateFailure = (fileName) => {
+    const raw = new Error(`C:\\Users\\private\\${fileName} Authorization: Bearer secret-token Key=secret-key`);
+    raw.code = 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE';
+    raw.cause = new Error(`C:\\Users\\private\\${fileName}`);
+    raw.context = { authorization: 'Bearer secret-token', key: 'secret-key' };
+    raw.stage = `install:C:\\Users\\private\\${fileName}`;
+    return raw;
+  };
+  const fixtureDeps = {
+    randomHex: () => 'cli-stage',
+    fetchComponent: async (source) => ({
+      revision: `fixed-${source.component}-20260816`,
+      artifact_name: `${source.component}.bin`,
+      artifact_bytes: Buffer.from(`${source.component}:artifact`),
+      license_name: `${source.component}.license`,
+      license_bytes: Buffer.from(`${source.component}:license`),
+    }),
+    createVenv: async () => {},
+    pipFreeze: async () => EXPECTED_RUNTIME_FREEZE_WITH_TRANSITIVES,
+    pythonVersion: async () => 'Python 3.11.9',
+    bootstrapWorker: async () => {},
+  };
+  const capture = async (argv, injectedDeps) => {
+    let stderr = '';
+    const stderrWrite = process.stderr.write;
+    process.stderr.write = (chunk) => { stderr += String(chunk); return true; };
+    try {
+      return { code: await runCli(argv, injectedDeps), stderr };
+    } finally {
+      process.stderr.write = stderrWrite;
+    }
+  };
+
+  const installResult = await capture(['--output-dir', path.join(parent, 'install-failed')], {
+    ...fixtureDeps,
+    installRuntime: async (staging, components) => installRuntime(staging, components, {
+      spawnProcess: async (_command, args) => {
+        if (args[args.length - 1] === 'paddleocr==2.8.1') throw privateFailure('paddleocr.py');
+        return '';
+      },
+      env: { PATH: 'path' },
+    }),
+  });
+  assert.deepEqual(installResult, {
+    code: 1,
+    stderr: 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=install:paddleocr\n',
+  });
+
+  const bootstrapResult = await capture(['--output-dir', path.join(parent, 'bootstrap-failed')], {
+    ...fixtureDeps,
+    installRuntime: async () => {},
+    bootstrapWorker: async () => { throw privateFailure('worker.py'); },
+  });
+  assert.deepEqual(bootstrapResult, {
+    code: 1,
+    stderr: 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=bootstrap\n',
+  });
+
+  const unknownResult = await capture(['--url', 'https://secret.example/model'], fixtureDeps);
+  assert.deepEqual(unknownResult, {
+    code: 1,
+    stderr: 'REDRAW_FULL_FRAME_OUTPUT_INVALID stage=unknown\n',
+  });
+  assert.doesNotMatch(
+    `${installResult.stderr}${bootstrapResult.stderr}${unknownResult.stderr}`,
+    /private|Authorization|secret-token|secret-key|worker\.py|paddleocr\.py|https?:/i,
+  );
   assert.deepEqual(
     fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
     [],
@@ -573,6 +673,17 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
 
   await fetchModule.createVenv(parent, deps);
   await fetchModule.installRuntime(parent, [], deps);
+  assert.equal(EXPECTED_RUNTIME_PACKAGE_SPECS.length, 47);
+  assert.equal(ALLOWED_RUNTIME_TRANSITIVE_FREEZE.length, 31);
+  const directNames = EXPECTED_RUNTIME_FREEZE.map((requirement) => (
+    requirement.split('==')[0].toLowerCase().replace(/[-_.]+/g, '-')
+  ));
+  const transitiveNames = ALLOWED_RUNTIME_TRANSITIVE_FREEZE.map((requirement) => (
+    requirement.split('==')[0].toLowerCase().replace(/[-_.]+/g, '-')
+  ));
+  assert.equal(new Set(directNames).size, directNames.length);
+  assert.equal(new Set(transitiveNames).size, transitiveNames.length);
+  assert.deepEqual(directNames.filter((name) => new Set(transitiveNames).has(name)), []);
   assert.deepEqual(
     await fetchModule.pipFreeze(parent, deps),
     EXPECTED_RUNTIME_FREEZE_WITH_TRANSITIVES.slice().sort((a, b) => a.localeCompare(b)),
@@ -663,6 +774,21 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
     fetchModule.installRuntime(parent, [], { ...deps, runtimePackageSpecs: [{ requirement: 'paddleocr==2.8.2', noDeps: true }] }),
     /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
   );
+  const rawInstallError = new Error('C:\\Users\\private\\paddleocr.py Authorization: Bearer secret-token Key=secret-key');
+  rawInstallError.code = 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE';
+  rawInstallError.cause = new Error('C:\\Users\\private\\paddleocr.py');
+  rawInstallError.context = { authorization: 'Bearer secret-token', key: 'secret-key' };
+  rawInstallError.stage = 'install:C:\\Users\\private\\paddleocr.py';
+  await assert.rejects(
+    fetchModule.installRuntime(parent, [], {
+      ...deps,
+      spawnProcess: async (_command, args) => {
+        if (args[args.length - 1] === 'paddleocr==2.8.1') throw rawInstallError;
+        return '';
+      },
+    }),
+    (error) => assertStableFetchError(error, 'install:paddleocr'),
+  );
   for (const requirement of [
     'opencv-python==4.10.0.84',
     'opencv-contrib-python==4.10.0.84',
@@ -715,24 +841,6 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
       fetchModule.pipFreeze(parent, {
         ...deps,
         spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.join('\n')}\n${requirement}\n`,
-      }),
-      /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
-    );
-  }
-  for (const excluded of [
-    'beautifulsoup4',
-    'fire',
-    'lxml',
-    'python-docx',
-    'pyyaml',
-    'rapidfuzz',
-    'soupsieve',
-    'termcolor',
-  ]) {
-    await assert.rejects(
-      fetchModule.pipFreeze(parent, {
-        ...deps,
-        spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.join('\n')}\n${excluded}==9.9.9\n`,
       }),
       /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
     );

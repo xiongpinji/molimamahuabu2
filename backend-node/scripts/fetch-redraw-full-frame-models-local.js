@@ -89,6 +89,14 @@ const RUNTIME_PACKAGE_SPECS = Object.freeze([
   Object.freeze({ requirement: 'imgaug==0.4.0', noDeps: true }),
   Object.freeze({ requirement: 'mediapipe==0.10.14', noDeps: true }),
   Object.freeze({ requirement: 'paddlepaddle==2.6.2', noDeps: true }),
+  Object.freeze({ requirement: 'beautifulsoup4==4.15.0' }),
+  Object.freeze({ requirement: 'fire==0.7.1' }),
+  Object.freeze({ requirement: 'lxml==6.1.1' }),
+  Object.freeze({ requirement: 'python-docx==1.2.0' }),
+  Object.freeze({ requirement: 'PyYAML==6.0.3' }),
+  Object.freeze({ requirement: 'RapidFuzz==3.14.5' }),
+  Object.freeze({ requirement: 'soupsieve==2.9.2' }),
+  Object.freeze({ requirement: 'termcolor==3.3.0' }),
   Object.freeze({ requirement: 'paddleocr==2.8.1', noDeps: true }),
 ]);
 const NO_DEPS_REQUIREMENTS = new Set([
@@ -152,11 +160,42 @@ const ARTIFACT_MAX_BYTES = 512 * 1024 * 1024;
 const PROCESS_STDOUT_MAX_BYTES = 4 * 1024 * 1024;
 const PROCESS_STDERR_MAX_BYTES = 1024 * 1024;
 const PROCESS_TIMEOUT_MS = 15 * 60 * 1000;
+const FIXED_RUNTIME_STAGES = new Set([
+  'unknown',
+  'create_venv',
+  'freeze',
+  'python_version',
+  'write_runtime_lock',
+  'write_model_lock',
+  'bootstrap',
+  'validate',
+  'publish',
+]);
+const RUNTIME_PACKAGE_STAGE_NAMES = new Set(RUNTIME_PACKAGE_SPECS.map((spec) => (
+  spec.requirement.slice(0, spec.requirement.indexOf('==')).toLowerCase().replace(/[-_.]+/g, '-')
+)));
 
-function error(code) {
+function normalizeStage(stage) {
+  if (typeof stage !== 'string') return 'unknown';
+  if (FIXED_RUNTIME_STAGES.has(stage)) return stage;
+  if (stage.startsWith('fetch:') && COMPONENT_ORDER.includes(stage.slice('fetch:'.length))) return stage;
+  const install = /^install:([A-Za-z0-9_.-]+)$/.exec(stage);
+  if (!install) return 'unknown';
+  const packageName = install[1].toLowerCase().replace(/[-_.]+/g, '-');
+  return RUNTIME_PACKAGE_STAGE_NAMES.has(packageName) ? `install:${packageName}` : 'unknown';
+}
+
+function error(code, stage = 'unknown') {
   const err = new Error(code);
   err.code = code;
+  Object.defineProperty(err, 'stage', { value: normalizeStage(stage), enumerable: false });
   return err;
+}
+
+function sanitizedError(err, fallbackStage = 'unknown') {
+  const code = err && err.code === OUTPUT_ERROR ? OUTPUT_ERROR : MODEL_ERROR;
+  const sourceStage = normalizeStage(err && err.stage);
+  return error(code, sourceStage === 'unknown' ? normalizeStage(fallbackStage) : sourceStage);
 }
 
 function sanitizeEnv(env = process.env) {
@@ -492,7 +531,11 @@ function venvPython(staging) {
 
 async function createVenv(staging, deps = {}) {
   const runner = deps.spawnProcess || spawnProcess;
-  await runner(runtimePython(deps), ['-m', 'venv', '.venv'], { cwd: staging, env: sanitizeEnv(deps.env) });
+  try {
+    await runner(runtimePython(deps), ['-m', 'venv', '.venv'], { cwd: staging, env: sanitizeEnv(deps.env) });
+  } catch (err) {
+    throw sanitizedError(err, 'create_venv');
+  }
 }
 
 async function installRuntime(staging, _components = [], deps = {}) {
@@ -503,25 +546,41 @@ async function installRuntime(staging, _components = [], deps = {}) {
     const args = ['-m', 'pip', '--isolated', 'install', '--disable-pip-version-check', '--no-input', '--index-url', PYPI_INDEX_URL];
     if (spec.noDeps) args.push('--no-deps');
     args.push(spec.requirement);
-    await runner(python, args, { cwd: staging, env: sanitizeEnv(deps.env) });
+    try {
+      await runner(python, args, { cwd: staging, env: sanitizeEnv(deps.env) });
+    } catch (err) {
+      throw sanitizedError(err, `install:${splitRequirement(spec.requirement).name}`);
+    }
   }
 }
 
 async function pipFreeze(staging, deps = {}) {
   const runner = deps.spawnProcess || spawnProcess;
-  const output = await runner(venvPython(staging), ['-m', 'pip', 'freeze'], { cwd: staging, env: sanitizeEnv(deps.env) });
-  return assertPinnedFreeze(String(output).split(/\r?\n/));
+  try {
+    const output = await runner(venvPython(staging), ['-m', 'pip', 'freeze'], { cwd: staging, env: sanitizeEnv(deps.env) });
+    return assertPinnedFreeze(String(output).split(/\r?\n/));
+  } catch (err) {
+    throw sanitizedError(err, 'freeze');
+  }
 }
 
 async function pythonVersion(staging, deps = {}) {
   const runner = deps.spawnProcess || spawnProcess;
-  return String(await runner(venvPython(staging), ['--version'], { cwd: staging, env: sanitizeEnv(deps.env) })).trim();
+  try {
+    return String(await runner(venvPython(staging), ['--version'], { cwd: staging, env: sanitizeEnv(deps.env) })).trim();
+  } catch (err) {
+    throw sanitizedError(err, 'python_version');
+  }
 }
 
 async function bootstrapWorker(staging, _modelLockPath, deps = {}) {
   const runner = deps.spawnProcess || spawnProcess;
   const worker = path.resolve(__dirname, '../../workers/redraw-full-frame-auditor/src/redraw_full_frame_auditor/worker.py');
-  await runner(venvPython(staging), [worker, 'bootstrap', '--model-lock', path.join(staging, 'model-lock.json')], { cwd: staging, env: sanitizeEnv(deps.env) });
+  try {
+    await runner(venvPython(staging), [worker, 'bootstrap', '--model-lock', path.join(staging, 'model-lock.json')], { cwd: staging, env: sanitizeEnv(deps.env) });
+  } catch (err) {
+    throw sanitizedError(err, 'bootstrap');
+  }
 }
 
 async function runFetchModels(options, injectedDeps = {}) {
@@ -532,11 +591,13 @@ async function runFetchModels(options, injectedDeps = {}) {
   await fsp.mkdir(parent, { recursive: true });
   const staging = path.join(parent, `.redraw-full-frame-staging-${deps.randomHex()}`);
   let complete = false;
+  let stage = 'unknown';
   try {
     await fsp.mkdir(staging, { recursive: false });
     const byComponent = new Map(sourcePolicy.sources.map((source) => [source.component, source]));
     const components = [];
     for (const componentName of COMPONENT_ORDER) {
+      stage = `fetch:${componentName}`;
       const source = byComponent.get(componentName);
       if (!source) throw error(MODEL_ERROR);
       const evidence = assertComponentEvidence(source, await deps.fetchComponent(source));
@@ -555,19 +616,28 @@ async function runFetchModels(options, injectedDeps = {}) {
         license_evidence_sha256: sha256(evidence.license_bytes),
       });
     }
+    stage = 'create_venv';
     await deps.createVenv(staging);
+    stage = 'unknown';
     await deps.installRuntime(staging, components);
+    stage = 'freeze';
     const freeze = assertPinnedFreeze(await deps.pipFreeze(staging));
+    stage = 'python_version';
     const pythonVersion = await deps.pythonVersion(staging);
+    stage = 'write_runtime_lock';
     await writeFileAtomic(path.join(staging, 'runtime', 'pip-freeze.txt'), Buffer.from(`${freeze.join('\n')}\n`));
     const lock = {
       schema_version: 'redraw-full-frame-model-lock-v1',
       runtime: { python_version: pythonVersion, pip_freeze: freeze },
       components,
     };
+    stage = 'write_model_lock';
     await writeFileAtomic(path.join(staging, 'model-lock.json'), Buffer.from(`${JSON.stringify(lock, null, 2)}\n`));
+    stage = 'bootstrap';
     await deps.bootstrapWorker(staging, path.join(staging, 'model-lock.json'));
+    stage = 'validate';
     const validated = await validateModelLock({ cacheRoot: staging, sourcePolicy, lock });
+    stage = 'publish';
     await assertEmptyOrMissing(outputDir);
     if (await exists(outputDir)) await fsp.rmdir(outputDir);
     await fsp.rename(staging, outputDir);
@@ -578,7 +648,7 @@ async function runFetchModels(options, injectedDeps = {}) {
       runtime_lock: 'runtime/pip-freeze.txt',
     };
   } catch (err) {
-    throw error(err && err.code === OUTPUT_ERROR ? OUTPUT_ERROR : MODEL_ERROR);
+    throw sanitizedError(err, stage);
   } finally {
     if (!complete) {
       await fsp.rm(staging, { recursive: true, force: true }).catch(() => {});
@@ -586,19 +656,19 @@ async function runFetchModels(options, injectedDeps = {}) {
   }
 }
 
-async function runCli(argv = process.argv.slice(2)) {
+async function runCli(argv = process.argv.slice(2), injectedDeps = {}) {
   try {
     const args = parseArgs(argv);
     if (args.help) {
       process.stdout.write('Usage: fetch-redraw-full-frame-models-local --output-dir <empty-or-missing-dir>\n');
       return 0;
     }
-    const result = await runFetchModels({ outputDir: args.outputDir });
+    const result = await runFetchModels({ outputDir: args.outputDir }, injectedDeps);
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return 0;
   } catch (err) {
-    const code = err && err.code === OUTPUT_ERROR ? OUTPUT_ERROR : MODEL_ERROR;
-    process.stderr.write(`${code}\n`);
+    const safe = sanitizedError(err);
+    process.stderr.write(`${safe.code} stage=${safe.stage}\n`);
     return 1;
   }
 }
