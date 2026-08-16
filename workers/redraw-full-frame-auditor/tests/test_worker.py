@@ -268,6 +268,17 @@ class FakeFactory:
 
 
 class WorkerProtocolTests(unittest.TestCase):
+    def assert_trusted_stage(self, action, expected_stage):
+        with self.assertRaises(worker.ProtocolError) as raised:
+            action()
+        error = raised.exception
+        self.assertEqual(str(error), "REDRAW_FULL_FRAME_MODEL_UNAVAILABLE")
+        self.assertEqual(worker._trusted_stage(error), expected_stage)
+        self.assertIsNone(error.__cause__)
+        self.assertNotIn("private", repr(error).lower())
+        self.assertNotIn("authorization", repr(error).lower())
+        return error
+
     def test_package_exports_public_worker_api(self):
         self.assertIs(redraw_full_frame_auditor.detect_frame, worker.detect_frame)
         self.assertIs(redraw_full_frame_auditor.sanitize_result, worker.sanitize_result)
@@ -479,6 +490,60 @@ class WorkerProtocolTests(unittest.TestCase):
         )
         self.assertEqual(events, ["text-close"])
         self.assertFalse(hasattr(worker._default_factories(), "text_detector"))
+
+    def test_real_loader_marks_each_trusted_component_stage_and_rejects_spoofing(self):
+        with tempfile.TemporaryDirectory() as root:
+            lock_path = write_model_lock(root)
+
+            invalid_lock = pathlib.Path(root) / "invalid-lock.json"
+            invalid_lock.write_text("{private Authorization", encoding="utf-8")
+            self.assert_trusted_stage(
+                lambda: worker._load_real_detectors(str(invalid_lock)),
+                "validate_lock",
+            )
+
+            for name, expected_stage in (
+                ("person", "load:person"),
+                ("tracker", "load:tracker"),
+                ("face", "load:face"),
+            ):
+                with self.subTest(name=name):
+                    factories = FakeFactory()
+                    spoof = worker.ProtocolError(
+                        "C:/private/model-lock.json Authorization: secret",
+                        stage="load:text",
+                    )
+
+                    def fail_factory(_artifact_path, error=spoof):
+                        raise error
+
+                    setattr(factories, name, fail_factory)
+                    self.assert_trusted_stage(
+                        lambda factories=factories: worker._load_real_detectors(
+                            str(lock_path),
+                            factories=factories,
+                            text_process_factory=lambda **_kwargs: FakeTextDetector(),
+                        ),
+                        expected_stage,
+                    )
+
+            factories = FakeFactory()
+
+            def fail_text(**_kwargs):
+                error = worker.ProtocolError(
+                    "C:/private/model-lock.json Authorization: secret",
+                    stage="load:person",
+                )
+                raise error
+
+            self.assert_trusted_stage(
+                lambda: worker._load_real_detectors(
+                    str(lock_path),
+                    factories=factories,
+                    text_process_factory=fail_text,
+                ),
+                "load:text",
+            )
 
     def test_default_person_factory_loads_yolox_s_exp_for_locked_artifact(self):
         events = []
@@ -807,6 +872,208 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertIsNone(raised.exception.__cause__)
         self.assertNotIn("private", repr(raised.exception).lower())
         self.assertNotIn("authorization", repr(raised.exception).lower())
+
+    def test_bootstrap_marks_probe_components_and_coarse_validation_stage(self):
+        import contextlib
+
+        args = argparse.Namespace(model_lock="D:/models/model-lock.json")
+
+        for component, expected_stage in (
+            ("person", "probe:person"),
+            ("face", "probe:face"),
+            ("text", "probe:text"),
+            ("tracker", "probe:tracker"),
+        ):
+            with self.subTest(component=component):
+                detectors = FakeDetectors()
+                spoof = worker.ProtocolError(
+                    "C:/private/frame.png Authorization: secret",
+                    stage="probe:text",
+                )
+                if component == "person":
+                    detectors.person.detect = lambda _path, error=spoof: (_ for _ in ()).throw(error)
+                elif component == "face":
+                    detectors.face.detect = lambda _path, error=spoof: (_ for _ in ()).throw(error)
+                elif component == "text":
+                    detectors.text.detect_regions = lambda _path, error=spoof: (_ for _ in ()).throw(error)
+                else:
+                    detectors.tracker.update = lambda _index, _persons, error=spoof: (_ for _ in ()).throw(error)
+                self.assert_trusted_stage(
+                    lambda detectors=detectors: worker.bootstrap_models(
+                        args,
+                        detector_loader=lambda _path: detectors,
+                        probe_frame_factory=lambda: contextlib.nullcontext("D:/redraw-local/probe.png"),
+                    ),
+                    expected_stage,
+                )
+
+        invalid_result = FakeDetectors(texts=[{
+            "candidate_id": "text_1",
+            "kind": "text_candidate",
+            "polygon": [{"x": 0, "y": 0}, {"x": 1, "y": 1}, {"x": 2, "y": 2}],
+            "confidence": 1,
+        }])
+        self.assert_trusted_stage(
+            lambda: worker.bootstrap_models(
+                args,
+                detector_loader=lambda _path: invalid_result,
+                probe_frame_factory=lambda: contextlib.nullcontext("D:/redraw-local/probe.png"),
+            ),
+            "probe",
+        )
+
+    def test_bootstrap_marks_outer_load_probe_frame_adapter_and_close_stages(self):
+        import contextlib
+
+        args = argparse.Namespace(model_lock="D:/models/model-lock.json")
+
+        spoof = worker.ProtocolError(
+            "C:/private/model-lock.json Authorization: secret",
+            stage="load:text",
+        )
+        self.assert_trusted_stage(
+            lambda: worker.bootstrap_models(
+                args,
+                detector_loader=lambda _path: (_ for _ in ()).throw(spoof),
+            ),
+            "load",
+        )
+
+        @contextlib.contextmanager
+        def failed_probe_frame():
+            raise RuntimeError("C:/private/probe.png Authorization: secret")
+            yield
+
+        self.assert_trusted_stage(
+            lambda: worker.bootstrap_models(
+                args,
+                detector_loader=lambda _path: FakeDetectors(),
+                probe_frame_factory=failed_probe_frame,
+            ),
+            "probe_frame",
+        )
+
+        adapters = worker.SimpleNamespace(
+            probe=lambda _path: (_ for _ in ()).throw(
+                worker.ProtocolError(
+                    "C:/private/model-lock.json Authorization: secret",
+                    stage="probe:text",
+                )
+            ),
+        )
+        self.assert_trusted_stage(
+            lambda: worker.bootstrap_models(
+                args,
+                adapters=adapters,
+                detector_loader=lambda _path: FakeDetectors(),
+                probe_frame_factory=lambda: contextlib.nullcontext("D:/redraw-local/probe.png"),
+            ),
+            "adapter_probe",
+        )
+
+        class ProbeAccessFailed:
+            @property
+            def probe(self):
+                raise worker.ProtocolError(
+                    "C:/private/model-lock.json Authorization: secret",
+                    stage="probe:text",
+                )
+
+        self.assert_trusted_stage(
+            lambda: worker.bootstrap_models(
+                args,
+                adapters=ProbeAccessFailed(),
+                detector_loader=lambda _path: FakeDetectors(),
+                probe_frame_factory=lambda: contextlib.nullcontext("D:/redraw-local/probe.png"),
+            ),
+            "adapter_probe",
+        )
+
+        close_failed = FakeDetectors()
+        close_failed.text.close = lambda: (_ for _ in ()).throw(
+            RuntimeError("C:/private/model-lock.json Authorization: secret")
+        )
+        self.assert_trusted_stage(
+            lambda: worker.bootstrap_models(
+                args,
+                detector_loader=lambda _path: close_failed,
+                probe_frame_factory=lambda: contextlib.nullcontext("D:/redraw-local/probe.png"),
+            ),
+            "close",
+        )
+
+    def test_bootstrap_close_failure_does_not_override_earlier_component_stage(self):
+        import contextlib
+
+        args = argparse.Namespace(model_lock="D:/models/model-lock.json")
+        detectors = FakeDetectors()
+        detectors.person.detect = lambda _path: (_ for _ in ()).throw(
+            RuntimeError("C:/private/frame.png Authorization: secret")
+        )
+        detectors.text.close = lambda: (_ for _ in ()).throw(
+            RuntimeError("C:/private/model-lock.json Authorization: secret")
+        )
+
+        self.assert_trusted_stage(
+            lambda: worker.bootstrap_models(
+                args,
+                detector_loader=lambda _path: detectors,
+                probe_frame_factory=lambda: contextlib.nullcontext("D:/redraw-local/probe.png"),
+            ),
+            "probe:person",
+        )
+
+    def test_main_bootstrap_emits_only_trusted_stage_and_success_has_no_stage(self):
+        original_bootstrap = worker.bootstrap_models
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        try:
+            success_stdout = io.StringIO()
+            success_stderr = io.StringIO()
+            sys.stdout = success_stdout
+            sys.stderr = success_stderr
+            worker.bootstrap_models = lambda _args: {
+                "status": "ok",
+                "schema_version": worker.LOCK_SCHEMA,
+                "components": sorted(worker.COMPONENTS),
+            }
+            self.assertEqual(worker.main(["bootstrap", "--model-lock", "D:/models/model-lock.json"]), 0)
+            self.assertNotIn("stage=", success_stdout.getvalue())
+            self.assertEqual(success_stderr.getvalue(), "")
+
+            for error, expected_stage in (
+                (worker._stage_error("probe:text"), "probe:text"),
+                (
+                    worker.ProtocolError(
+                        "C:/private/model-lock.json Authorization: secret",
+                        stage="probe:text",
+                    ),
+                    "load",
+                ),
+                (RuntimeError("C:/private/model-lock.json Authorization: secret"), "load"),
+            ):
+                with self.subTest(expected_stage=expected_stage, error=type(error).__name__):
+                    stdout = io.StringIO()
+                    stderr = io.StringIO()
+                    sys.stdout = stdout
+                    sys.stderr = stderr
+
+                    def fail_bootstrap(_args, raised=error):
+                        raise raised
+
+                    worker.bootstrap_models = fail_bootstrap
+                    self.assertEqual(worker.main(["bootstrap", "--model-lock", "D:/models/model-lock.json"]), 1)
+                    self.assertEqual(stdout.getvalue(), "")
+                    self.assertEqual(
+                        stderr.getvalue(),
+                        f"REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage={expected_stage}\n",
+                    )
+                    self.assertNotIn("private", stderr.getvalue().lower())
+                    self.assertNotIn("authorization", stderr.getvalue().lower())
+        finally:
+            worker.bootstrap_models = original_bootstrap
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
 
     def test_cli_argument_errors_are_sanitized_and_help_still_works(self):
         help_stdout = io.StringIO()

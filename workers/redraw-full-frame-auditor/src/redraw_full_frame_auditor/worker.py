@@ -19,6 +19,23 @@ else:
 
 
 ERROR_CODE = "REDRAW_FULL_FRAME_MODEL_UNAVAILABLE"
+_BOOTSTRAP_STAGES = frozenset((
+    "validate_lock",
+    "load",
+    "load:person",
+    "load:tracker",
+    "load:face",
+    "load:text",
+    "probe_frame",
+    "probe",
+    "probe:person",
+    "probe:face",
+    "probe:text",
+    "probe:tracker",
+    "adapter_probe",
+    "close",
+))
+_STAGE_TOKEN = object()
 LOCK_SCHEMA = "redraw-full-frame-model-lock-v1"
 COMPONENTS = ("face_detector", "person_detector", "text_detector", "tracker")
 PROJECT_BY_COMPONENT = {
@@ -39,7 +56,29 @@ PaddleTextDetectionContext = SimpleNamespace
 
 
 class ProtocolError(Exception):
-    pass
+    def __init__(self, _message=ERROR_CODE, *, stage=None, _token=None):
+        super().__init__(ERROR_CODE)
+        trusted = _token is _STAGE_TOKEN and stage in _BOOTSTRAP_STAGES
+        self._trusted_stage = stage if trusted else None
+        self._stage_token = _token if trusted else None
+
+
+def _stage_error(stage):
+    if stage not in _BOOTSTRAP_STAGES:
+        stage = "load"
+    return ProtocolError(ERROR_CODE, stage=stage, _token=_STAGE_TOKEN)
+
+
+def _trusted_stage(error):
+    if (type(error) is ProtocolError
+            and getattr(error, "_stage_token", None) is _STAGE_TOKEN
+            and getattr(error, "_trusted_stage", None) in _BOOTSTRAP_STAGES):
+        return error._trusted_stage
+    return None
+
+
+def _stage_from_error(error, fallback):
+    return _stage_error(_trusted_stage(error) or fallback)
 
 
 def _fail():
@@ -190,18 +229,31 @@ def sanitize_result(frame_index, tracked, faces, texts):
 def detect_frame(frame, detectors):
     try:
         _validate_frame(frame)
+    except Exception:
+        raise _stage_error("probe") from None
+    try:
         persons = detectors.person.detect(frame["frame_path"])
         if not isinstance(persons, list):
             _fail()
         persons = [_validate_raw_person(item) for item in persons]
+    except Exception:
+        raise _stage_error("probe:person") from None
+    try:
         faces = detectors.face.detect(frame["frame_path"])
+    except Exception:
+        raise _stage_error("probe:face") from None
+    try:
         texts = detectors.text.detect_regions(frame["frame_path"])
+    except Exception:
+        raise _stage_error("probe:text") from None
+    try:
         tracked = detectors.tracker.update(frame["frame_index"], persons)
+    except Exception:
+        raise _stage_error("probe:tracker") from None
+    try:
         return sanitize_result(frame["frame_index"], tracked, faces, texts)
-    except ProtocolError:
-        raise
-    except Exception as exc:
-        raise ProtocolError(ERROR_CODE) from exc
+    except Exception:
+        raise _stage_error("probe") from None
 
 
 class SafeArgumentParser(argparse.ArgumentParser):
@@ -662,35 +714,51 @@ def _validate_model_lock(model_lock_path):
 def _load_real_detectors(model_lock_path, factories=None, text_process_factory=None):
     text = None
     try:
-        _lock, components = _validate_model_lock(model_lock_path)
+        try:
+            _lock, components = _validate_model_lock(model_lock_path)
+        except Exception:
+            raise _stage_error("validate_lock") from None
         active_factories = factories or _default_factories()
-        person = YOLOXPersonAdapter(
-            components["person_detector"]["artifact_abs_path"],
-            active_factories.person,
-        )
-        tracker = ByteTrackAdapter(
-            components["tracker"]["artifact_abs_path"],
-            active_factories.tracker,
-        )
-        face = MediaPipeFaceAdapter(
-            components["face_detector"]["artifact_abs_path"],
-            active_factories.face,
-        )
+        try:
+            person = YOLOXPersonAdapter(
+                components["person_detector"]["artifact_abs_path"],
+                active_factories.person,
+            )
+        except Exception:
+            raise _stage_error("load:person") from None
+        try:
+            tracker = ByteTrackAdapter(
+                components["tracker"]["artifact_abs_path"],
+                active_factories.tracker,
+            )
+        except Exception:
+            raise _stage_error("load:tracker") from None
+        try:
+            face = MediaPipeFaceAdapter(
+                components["face_detector"]["artifact_abs_path"],
+                active_factories.face,
+            )
+        except Exception:
+            raise _stage_error("load:face") from None
         active_text_process_factory = text_process_factory or _default_text_process_factory
-        text = active_text_process_factory(model_lock_path=model_lock_path)
+        try:
+            text = active_text_process_factory(model_lock_path=model_lock_path)
+        except Exception:
+            raise _stage_error("load:text") from None
         return SimpleNamespace(
             person=person,
             tracker=tracker,
             face=face,
             text=text,
         )
-    except Exception:
+    except Exception as exc:
+        failure = _stage_from_error(exc, "load")
         if text is not None:
             try:
                 _close_detectors(SimpleNamespace(text=text))
             except Exception:
                 pass
-        raise ProtocolError(ERROR_CODE) from None
+        raise failure from None
 
 
 def run_jsonl(args, detectors=None, factories=None):
@@ -763,28 +831,52 @@ def _probe_frame():
 
 def bootstrap_models(args, adapters=None, factories=None, detector_loader=None, probe_frame_factory=None):
     detectors = None
+    result = None
+    failure = None
     try:
-        loader = detector_loader or (lambda path: _load_real_detectors(path, factories=factories))
-        detectors = loader(args.model_lock)
+        if detector_loader is None:
+            try:
+                detectors = _load_real_detectors(args.model_lock, factories=factories)
+            except Exception as exc:
+                raise _stage_from_error(exc, "load") from None
+        else:
+            try:
+                detectors = detector_loader(args.model_lock)
+            except Exception:
+                raise _stage_error("load") from None
         probe_factory = probe_frame_factory or _probe_frame
-        with probe_factory() as frame_path:
-            detect_frame({
-                "frame_index": 0,
-                "timestamp_ms": 0,
-                "frame_path": frame_path,
-            }, detectors)
+        try:
+            with probe_factory() as frame_path:
+                try:
+                    detect_frame({
+                        "frame_index": 0,
+                        "timestamp_ms": 0,
+                        "frame_path": frame_path,
+                    }, detectors)
+                except Exception as exc:
+                    raise _stage_from_error(exc, "probe") from None
+        except Exception as exc:
+            raise _stage_from_error(exc, "probe_frame") from None
         if adapters is not None:
-            probe = getattr(adapters, "probe", None)
-            if callable(probe):
-                probe(args.model_lock)
-        return {"status": "ok", "schema_version": LOCK_SCHEMA, "components": sorted(COMPONENTS)}
-    except ProtocolError:
-        raise
-    except Exception:
-        raise ProtocolError(ERROR_CODE) from None
+            try:
+                probe = getattr(adapters, "probe", None)
+                if callable(probe):
+                    probe(args.model_lock)
+            except Exception:
+                raise _stage_error("adapter_probe") from None
+        result = {"status": "ok", "schema_version": LOCK_SCHEMA, "components": sorted(COMPONENTS)}
+    except Exception as exc:
+        failure = _stage_from_error(exc, "load")
     finally:
         if detectors is not None:
-            _close_detectors(detectors)
+            try:
+                _close_detectors(detectors)
+            except Exception:
+                if failure is None:
+                    failure = _stage_error("close")
+    if failure is not None:
+        raise failure from None
+    return result
 
 
 def parse_args(argv):
@@ -799,8 +891,10 @@ def parse_args(argv):
 
 
 def main(argv=None):
+    command = None
     try:
         args = parse_args(sys.argv[1:] if argv is None else argv)
+        command = args.command
         if args.command == "run":
             return run_jsonl(args)
         if args.command == "bootstrap":
@@ -810,8 +904,12 @@ def main(argv=None):
         raise ProtocolError(ERROR_CODE)
     except SystemExit as exc:
         return int(exc.code) if isinstance(exc.code, int) else 1
-    except Exception:
-        sys.stderr.write(ERROR_CODE + "\n")
+    except Exception as exc:
+        if command == "bootstrap":
+            stage = _trusted_stage(exc) or "load"
+            sys.stderr.write(f"{ERROR_CODE} stage={stage}\n")
+        else:
+            sys.stderr.write(ERROR_CODE + "\n")
         return 1
 
 
