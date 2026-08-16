@@ -210,6 +210,124 @@ test('infrastructure failures open the route while policy failures do not', () =
   }
 });
 
+test('expired circuit permits only one half-open attempt', () => {
+  const db = createDb();
+  try {
+    const configId = addConfig(db);
+    db.prepare(`INSERT INTO provider_route_health
+      (config_id, state, consecutive_failures, open_until, updated_at)
+      VALUES (?, 'open', 3, '2026-08-15T00:08:00.000Z', '2026-08-15T00:03:00.000Z')`)
+      .run(configId);
+    for (const requestId of ['half-open-1', 'half-open-2']) {
+      stability.createOrGetRouteRequest(db, {
+        id: requestId,
+        idempotencyKey: requestId,
+        serviceType: 'image',
+        businessType: 'image_generation',
+        businessId: requestId,
+        logicalModelId: 'logical-image',
+        userPriceSnapshot: { model: 'logical-image', credits: 40 },
+        candidateConfigIds: [configId],
+        now: '2026-08-15T00:09:00.000Z',
+      });
+    }
+
+    const first = stability.startAttempt(db, {
+      requestId: 'half-open-1', configId, provider: 'relay', upstreamModel: 'upstream-image',
+      now: '2026-08-15T00:09:00.000Z',
+    });
+    const second = stability.startAttempt(db, {
+      requestId: 'half-open-2', configId, provider: 'relay', upstreamModel: 'upstream-image',
+      now: '2026-08-15T00:09:01.000Z',
+    });
+
+    assert.ok(first);
+    assert.equal(second, null);
+    assert.deepEqual(
+      db.prepare('SELECT state, half_open_claimed_at FROM provider_route_health WHERE config_id = ?')
+        .get(configId),
+      { state: 'half_open', half_open_claimed_at: '2026-08-15T00:09:00.000Z' },
+    );
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM generation_route_attempts').get().count, 1);
+
+    stability.recordFailureAndHealth(db, {
+      requestId: 'half-open-1',
+      configId,
+      logicalModelId: 'logical-image',
+      classification: {
+        category: 'provider_unavailable',
+        affectsHealth: true,
+        disableConfig: false,
+      },
+      now: '2026-08-15T00:09:02.000Z',
+    });
+    assert.deepEqual(
+      db.prepare(`SELECT state, open_until, half_open_claimed_at
+        FROM provider_route_health WHERE config_id = ?`).get(configId),
+      { state: 'open', open_until: '2026-08-15T00:14:02.000Z', half_open_claimed_at: null },
+    );
+    const retry = stability.startAttempt(db, {
+      requestId: 'half-open-2', configId, provider: 'relay', upstreamModel: 'upstream-image',
+      now: '2026-08-15T00:15:00.000Z',
+    });
+    assert.ok(retry);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM generation_route_attempts').get().count, 2);
+  } finally {
+    db.close();
+  }
+});
+
+test('non-health terminal response releases a claimed half-open route', () => {
+  const db = createDb();
+  try {
+    const configId = addConfig(db);
+    db.prepare(`INSERT INTO provider_route_health
+      (config_id, state, consecutive_failures, open_until, updated_at)
+      VALUES (?, 'open', 3, '2026-08-15T00:08:00.000Z', '2026-08-15T00:03:00.000Z')`)
+      .run(configId);
+    for (const requestId of ['policy-probe-1', 'policy-probe-2']) {
+      stability.createOrGetRouteRequest(db, {
+        id: requestId,
+        idempotencyKey: requestId,
+        serviceType: 'image',
+        businessType: 'image_generation',
+        businessId: requestId,
+        logicalModelId: 'logical-image',
+        userPriceSnapshot: { model: 'logical-image', credits: 40 },
+        candidateConfigIds: [configId],
+        now: '2026-08-15T00:09:00.000Z',
+      });
+    }
+    assert.ok(stability.startAttempt(db, {
+      requestId: 'policy-probe-1', configId, provider: 'relay', upstreamModel: 'upstream-image',
+      now: '2026-08-15T00:09:00.000Z',
+    }));
+    stability.recordFailureAndHealth(db, {
+      requestId: 'policy-probe-1',
+      configId,
+      logicalModelId: 'logical-image',
+      classification: {
+        category: 'policy_rejected',
+        affectsHealth: false,
+        disableConfig: false,
+      },
+      now: '2026-08-15T00:09:01.000Z',
+    });
+
+    assert.deepEqual(
+      db.prepare(`SELECT state, consecutive_failures, open_until, half_open_claimed_at
+        FROM provider_route_health WHERE config_id = ?`).get(configId),
+      { state: 'healthy', consecutive_failures: 0, open_until: null, half_open_claimed_at: null },
+    );
+    assert.ok(stability.startAttempt(db, {
+      requestId: 'policy-probe-2', configId, provider: 'relay', upstreamModel: 'upstream-image',
+      now: '2026-08-15T00:09:02.000Z',
+    }));
+  } finally {
+    db.close();
+  }
+});
+
 test('verification requires a completed generation with a readable local artifact', () => {
   const db = createDb();
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-route-evidence-'));

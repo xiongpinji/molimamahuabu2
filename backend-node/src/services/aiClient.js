@@ -630,6 +630,8 @@ async function executeTextRoute(db, log, serviceType, options, invoke) {
   });
   if (route.state !== 'created') throw safeTextRouteError('result_unknown');
 
+  let lastFailure = null;
+  let pendingSwitch = null;
   for (let index = 0; index < selected.candidates.length; index += 1) {
     const config = selected.candidates[index];
     const attempt = providerRouteStability.startAttempt(db, {
@@ -638,6 +640,18 @@ async function executeTextRoute(db, log, serviceType, options, invoke) {
       provider: config.provider || 'configured',
       upstreamModel: getModelFromConfig(config),
     });
+    if (!attempt) continue;
+    if (pendingSwitch) {
+      providerRouteStability.recordRouteSwitch(db, {
+        requestId: route.id,
+        tenantId: options.tenantId,
+        logicalModelId: routeConfig.logicalModelId,
+        configId: pendingSwitch.configId,
+        targetConfigId: config.id,
+        category: pendingSwitch.category,
+      });
+      pendingSwitch = null;
+    }
     try {
       const content = await invoke({
         ...options,
@@ -680,8 +694,10 @@ async function executeTextRoute(db, log, serviceType, options, invoke) {
         logicalModelId: routeConfig.logicalModelId,
         classification,
       });
+      lastFailure = { classification };
       const hasNext = index + 1 < selected.candidates.length;
       if (classification.mayFailover && hasNext) {
+        pendingSwitch = { configId: config.id, category: classification.category };
         log.warn('Text route switching after definitive non-acceptance', {
           logical_model_id: routeConfig.logicalModelId,
           from_config_id: config.id,
@@ -693,8 +709,11 @@ async function executeTextRoute(db, log, serviceType, options, invoke) {
       throw safeTextRouteError(classification.category);
     }
   }
-  updateTextRouteState(db, route.id, 'needs_attention');
-  throw safeTextRouteError('submission_unknown');
+  const finalCategory = lastFailure?.classification?.category || 'provider_unavailable';
+  const uncertain = ['submission_unknown', 'result_unknown', 'artifact_unreadable', 'forbidden_unknown']
+    .includes(finalCategory);
+  updateTextRouteState(db, route.id, uncertain ? 'needs_attention' : 'failed');
+  throw safeTextRouteError(finalCategory);
 }
 
 async function generateTextSingleConfig(db, log, serviceType, userPrompt, systemPrompt, options = {}) {

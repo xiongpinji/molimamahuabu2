@@ -65,6 +65,12 @@ async function setup() {
     VALUES ('critical', 'provider_failure', 'logical-image', ?, 'failed', 'held',
       '{"category":"provider_unavailable","debug":"prompt text https://signed.example/result?token=hidden sk-secret"}', ?)`)
     .run(configId, now);
+  db.prepare(`INSERT INTO provider_stability_events
+    (severity, event_type, logical_model_id, config_id, target_config_id,
+     safe_details, created_at)
+    VALUES ('warning', 'route_switched', 'logical-image', ?, ?,
+      '{"category":"provider_unavailable","state":"switching"}', ?)`)
+    .run(configId, configId, '2026-08-14T23:59:00.000Z');
 
   const previous = {
     PUBLIC_PLATFORM_MODE: process.env.PUBLIC_PLATFORM_MODE,
@@ -120,6 +126,7 @@ test('管理员列表只返回安全中转关联、健康和任务积分摘要',
   assert.equal(routes.body.data.configs[0].logical_model_id, 'logical-image');
   assert.equal(routes.body.data.configs[0].relay_host, 'relay.example.com');
   assert.equal(routes.body.data.configs[0].health.state, 'degraded');
+  assert.equal(routes.body.data.configs[0].last_switch_at, '2026-08-14T23:59:00.000Z');
   const serialized = JSON.stringify(routes.body);
   for (const secret of [
     'sk-never-return-this', 'password', 'token=hidden', ':8443', '/v1/images',

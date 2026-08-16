@@ -161,9 +161,16 @@ function startAttempt(db, input) {
   return db.transaction(() => {
     const request = db.prepare('SELECT id FROM generation_route_requests WHERE id = ?').get(input.requestId);
     if (!request) throw new Error('路由请求不存在');
+    const now = input.now || new Date().toISOString();
+    const health = db.prepare(`SELECT state, open_until FROM provider_route_health
+      WHERE config_id = ?`).get(input.configId);
+    if (health?.state === 'disabled' || health?.state === 'half_open') return null;
+    if (health?.state === 'open') {
+      if (!health.open_until || health.open_until > now) return null;
+      if (!claimHalfOpen(db, input.configId, now)) return null;
+    }
     const attemptNo = Number(db.prepare(`SELECT COALESCE(MAX(attempt_no), 0) + 1 AS attempt_no
       FROM generation_route_attempts WHERE request_id = ?`).get(input.requestId).attempt_no);
-    const now = input.now || new Date().toISOString();
     const info = db.prepare(`INSERT INTO generation_route_attempts
       (request_id, attempt_no, config_id, provider, upstream_model, state, started_at)
       VALUES (?, ?, ?, ?, ?, 'submitting', ?)`)
@@ -268,17 +275,23 @@ function recordFailureAndHealth(db, input) {
     let openUntil = current?.open_until || null;
     if (classification.disableConfig) {
       state = 'disabled';
+      openUntil = null;
     } else if (classification.affectsHealth) {
       failures += 1;
       state = failures >= failureThreshold ? 'open' : 'degraded';
       openUntil = state === 'open' ? addSeconds(now, cooldownSeconds) : null;
+    } else if (current?.state === 'half_open') {
+      failures = 0;
+      state = 'healthy';
+      openUntil = null;
     }
     db.prepare(`INSERT INTO provider_route_health
       (config_id, state, consecutive_failures, open_until, last_error_category, updated_at)
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(config_id) DO UPDATE SET state = excluded.state,
         consecutive_failures = excluded.consecutive_failures, open_until = excluded.open_until,
-        last_error_category = excluded.last_error_category, updated_at = excluded.updated_at`)
+        half_open_claimed_at = NULL, last_error_category = excluded.last_error_category,
+        updated_at = excluded.updated_at`)
       .run(input.configId, state, failures, openUntil, classification.category || 'unknown', now);
     insertEvent(db, {
       eventType: state === 'open' ? 'route_opened' : 'provider_failure',
@@ -291,6 +304,19 @@ function recordFailureAndHealth(db, input) {
     });
     return db.prepare('SELECT * FROM provider_route_health WHERE config_id = ?').get(input.configId);
   })();
+}
+
+function recordRouteSwitch(db, input) {
+  insertEvent(db, {
+    eventType: 'route_switched',
+    requestId: input.requestId,
+    tenantId: input.tenantId,
+    logicalModelId: input.logicalModelId,
+    configId: input.configId,
+    targetConfigId: input.targetConfigId,
+    safeDetails: { category: input.category || 'provider_unavailable', state: 'switching' },
+    now: input.now,
+  });
 }
 
 function claimHalfOpen(db, configId, now = new Date().toISOString()) {
@@ -394,6 +420,7 @@ module.exports = {
   recordAcceptedTask,
   recordArtifactVerified,
   recordFailureAndHealth,
+  recordRouteSwitch,
   claimHalfOpen,
   listAdminRoutes,
   listAdminEvents,

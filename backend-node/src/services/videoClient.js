@@ -5219,6 +5219,7 @@ async function callVideoApi(db, log, opts) {
   }
 
   let lastFailure = null;
+  let pendingSwitch = null;
   for (let index = 0; index < selected.candidates.length; index += 1) {
     const config = selected.candidates[index];
     const attempt = providerRouteStability.startAttempt(db, {
@@ -5227,6 +5228,18 @@ async function callVideoApi(db, log, opts) {
       provider: config.provider || 'configured',
       upstreamModel: getModelFromConfig(config),
     });
+    if (!attempt) continue;
+    if (pendingSwitch) {
+      providerRouteStability.recordRouteSwitch(db, {
+        requestId: route.id,
+        tenantId: opts.tenantId,
+        logicalModelId: preferredModel,
+        configId: pendingSwitch.configId,
+        targetConfigId: config.id,
+        category: pendingSwitch.category,
+      });
+      pendingSwitch = null;
+    }
     let result;
     try {
       result = await submitVideoWithConfig(db, log, config, { ...opts, model: undefined });
@@ -5302,6 +5315,7 @@ async function callVideoApi(db, log, opts) {
       updateVideoRouteRequestState(db, route.id, requestState);
       return safeVideoRouteFailure(classification, result);
     }
+    pendingSwitch = { configId: config.id, category: classification.category };
     log.warn('Video route switching after definitive non-acceptance', {
       video_gen_id: opts.video_gen_id,
       logical_model_id: preferredModel,
@@ -5309,7 +5323,11 @@ async function callVideoApi(db, log, opts) {
       category: classification.category,
     });
   }
-  return safeVideoRouteFailure(lastFailure?.classification || { category: 'submission_unknown' },
+  const finalCategory = lastFailure?.classification?.category || 'provider_unavailable';
+  const uncertain = ['submission_unknown', 'result_unknown', 'artifact_unreadable', 'forbidden_unknown']
+    .includes(finalCategory);
+  updateVideoRouteRequestState(db, route.id, uncertain ? 'needs_attention' : 'failed');
+  return safeVideoRouteFailure(lastFailure?.classification || { category: finalCategory },
     lastFailure?.result);
 }
 
