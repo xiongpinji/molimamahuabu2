@@ -40,16 +40,36 @@ class RaisingStdin(io.BytesIO):
         raise BrokenPipeError("C:/private/Authorization-secret")
 
 
+class AfterAbortStderr:
+    def __init__(self, stop_event, payload):
+        self._stop_event = stop_event
+        self._payload = payload
+        self._sent = False
+        self.closed = False
+
+    def read(self, _size=-1):
+        self._stop_event.wait(2)
+        if not self._sent:
+            self._sent = True
+            return self._payload
+        return b""
+
+    def close(self):
+        self.closed = True
+        self._stop_event.set()
+
+
 class FakeProcess:
     def __init__(self, stdout_lines=(), *, stderr=b"", returncode=None,
-                 block_stdout=False, stdin=None, wait_hangs=False):
+                 stderr_stream=None, block_stdout=False, stdin=None,
+                 wait_hangs=False):
         self._stop_event = threading.Event()
         self.stdin = stdin or io.BytesIO()
         if block_stdout:
             self.stdout = BlockingPipe(self._stop_event, stdout_lines)
         else:
             self.stdout = io.BytesIO(b"".join(stdout_lines))
-        self.stderr = io.BytesIO(stderr)
+        self.stderr = stderr_stream or io.BytesIO(stderr)
         self.returncode = returncode
         self.killed = False
         self.wait_hangs = wait_hangs
@@ -74,6 +94,16 @@ class FakeProcess:
 
 class TextSubprocessTests(unittest.TestCase):
     HANDSHAKE = b'{"status":"ok","schema_version":"redraw-full-frame-text-subprocess-v1"}\n'
+    SAFE_STARTUP_STAGES = frozenset((
+        "validate_lock",
+        "import_cv2",
+        "import_paddle",
+        "build_args",
+        "model_dir",
+        "detector_init",
+        "adapter_init",
+        "output_limit",
+    ))
 
     def assert_stable_error(self, action):
         with self.assertRaises(text_subprocess.TextSubprocessError) as raised:
@@ -83,6 +113,7 @@ class TextSubprocessTests(unittest.TestCase):
         self.assertIsNone(raised.exception.__context__)
         self.assertNotIn("private", repr(raised.exception).lower())
         self.assertNotIn("authorization", repr(raised.exception).lower())
+        return raised.exception
 
     def make_adapter(self, process, **overrides):
         options = {
@@ -305,6 +336,128 @@ class TextSubprocessTests(unittest.TestCase):
         self.assertEqual(process.wait_timeouts[0], text_subprocess.SHUTDOWN_TIMEOUT_SECONDS)
         self.assertFalse(adapter._stdout_thread.is_alive())
         self.assertFalse(adapter._stderr_thread.is_alive())
+        adapter.close()
+
+    def test_startup_safe_stage_is_trusted_only_after_cleanup(self):
+        self.assertEqual(text_subprocess.TEXT_STARTUP_SAFE_STAGES, self.SAFE_STARTUP_STAGES)
+        for stage in self.SAFE_STARTUP_STAGES:
+            with self.subTest(stage=stage):
+                process = FakeProcess(
+                    stderr=(
+                        b"\n"
+                        + f"REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage={stage}\r\n".encode("ascii")
+                        + b"\n"
+                    ),
+                    returncode=1,
+                )
+                error = self.assert_stable_error(lambda: self.make_adapter(process))
+                self.assertEqual(text_subprocess._trusted_text_stage(error), stage)
+                self.assertEqual(error.args, ("REDRAW_FULL_FRAME_MODEL_UNAVAILABLE",))
+                self.assertNotIn(stage, str(error))
+                self.assertNotIn(stage, repr(error))
+                self.assertTrue(process.stdin.closed)
+                self.assertTrue(process.stdout.closed)
+                self.assertTrue(process.stderr.closed)
+
+    def test_startup_stage_rejects_raw_spoof_illegal_sensitive_and_exit_zero(self):
+        direct_spoof = text_subprocess.TextSubprocessError(
+            "C:/private/model-lock Authorization: secret",
+            stage="validate_lock",
+        )
+        self.assertEqual(str(direct_spoof), "REDRAW_FULL_FRAME_MODEL_UNAVAILABLE")
+        self.assertIsNone(text_subprocess._trusted_text_stage(direct_spoof))
+
+        class SpoofedSubclass(text_subprocess.TextSubprocessError):
+            pass
+
+        subclass_spoof = SpoofedSubclass("ignored")
+        subclass_spoof._trusted_stage = "validate_lock"
+        subclass_spoof._stage_token = getattr(text_subprocess, "_TEXT_STAGE_TOKEN", object())
+        self.assertIsNone(text_subprocess._trusted_text_stage(subclass_spoof))
+
+        cases = {
+            "raw": b"REDRAW_FULL_FRAME_MODEL_UNAVAILABLE\n",
+            "illegal": b"REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=import_os\n",
+            "non-last": (
+                b"REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=validate_lock\n"
+                b"later output\n"
+            ),
+            "authorization": (
+                b"Authorization: value\n"
+                b"REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=validate_lock\n"
+            ),
+            "auth": (
+                b"Auth: value\n"
+                b"REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=validate_lock\n"
+            ),
+            "key": (
+                b"API_KEY=value\n"
+                b"REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=validate_lock\n"
+            ),
+            "sensitive": (
+                b"sensitive=value\n"
+                b"REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=validate_lock\n"
+            ),
+            "path": (
+                b"C:/private/model-lock.json\n"
+                b"REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=validate_lock\n"
+            ),
+            "suffix": b"REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=validate_lock extra\n",
+            "invalid-utf8": (
+                b"\xff\n"
+                b"REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=validate_lock\n"
+            ),
+        }
+        for name, stderr in cases.items():
+            with self.subTest(name=name):
+                error = self.assert_stable_error(lambda stderr=stderr: self.make_adapter(
+                    FakeProcess(stderr=stderr, returncode=1)
+                ))
+                self.assertIsNone(text_subprocess._trusted_text_stage(error))
+                self.assertNotIn("secret", repr(error).lower())
+                self.assertNotIn("private", repr(error).lower())
+
+        oversized = (
+            b"x" * text_subprocess.MAX_STDERR_BYTES
+            + b"\nREDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=validate_lock\n"
+        )
+        overflow_error = self.assert_stable_error(lambda: self.make_adapter(
+            FakeProcess(stderr=oversized, returncode=1)
+        ))
+        self.assertIsNone(text_subprocess._trusted_text_stage(overflow_error))
+
+        exit_zero_error = self.assert_stable_error(lambda: self.make_adapter(FakeProcess(
+            stderr=b"REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=validate_lock\n",
+            returncode=0,
+        )))
+        self.assertIsNone(text_subprocess._trusted_text_stage(exit_zero_error))
+
+    def test_startup_stage_waits_for_stderr_drain_and_request_failures_have_no_stage(self):
+        process = FakeProcess(block_stdout=True)
+        process.stderr = AfterAbortStderr(
+            process._stop_event,
+            b"REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=detector_init\n",
+        )
+        error = self.assert_stable_error(lambda: self.make_adapter(process))
+        self.assertEqual(text_subprocess._trusted_text_stage(error), "detector_init")
+        self.assertFalse(any(
+            thread.name in {"redraw-text-stdout", "redraw-text-stderr"}
+            for thread in threading.enumerate()
+        ))
+
+        request_process = FakeProcess(
+            [
+                self.HANDSHAKE,
+                b'{"request_id":2,"texts":[]}\n',
+            ],
+            stderr=b"REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=model_dir\n",
+        )
+        adapter = self.make_adapter(request_process)
+        request_error = self.assert_stable_error(
+            lambda: adapter.detect_regions("D:/redraw-local/frame.png")
+        )
+        self.assertIsNone(text_subprocess._trusted_text_stage(request_error))
+        self.assertEqual(adapter._startup_stderr, bytearray())
         adapter.close()
 
 

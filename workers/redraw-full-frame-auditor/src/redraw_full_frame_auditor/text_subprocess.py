@@ -15,10 +15,67 @@ MAX_LINE_BYTES = 1024 * 1024
 MAX_STDERR_BYTES = 1024 * 1024
 MAX_REQUEST_ID = 9007199254740991
 ENV_ALLOWLIST = ("PATH", "SystemRoot", "WINDIR", "TEMP", "TMP")
+TEXT_STARTUP_SAFE_STAGES = frozenset((
+    "validate_lock",
+    "import_cv2",
+    "import_paddle",
+    "build_args",
+    "model_dir",
+    "detector_init",
+    "adapter_init",
+    "output_limit",
+))
+_TEXT_STAGE_TOKEN = object()
+_SENSITIVE_STARTUP_MARKERS = (
+    "auth",
+    "authorization",
+    "key",
+    "sensitive",
+    "secret",
+    "token",
+    "password",
+    "credential",
+    "bearer",
+    "proxy",
+    "path",
+)
 
 
 class TextSubprocessError(Exception):
-    pass
+    def __init__(self, _message=ERROR_CODE, *, stage=None, _token=None):
+        super().__init__(ERROR_CODE)
+        trusted = _token is _TEXT_STAGE_TOKEN and stage in TEXT_STARTUP_SAFE_STAGES
+        self._trusted_stage = stage if trusted else None
+        self._stage_token = _token if trusted else None
+
+
+def _trusted_text_stage(error):
+    if (type(error) is TextSubprocessError
+            and getattr(error, "_stage_token", None) is _TEXT_STAGE_TOKEN
+            and getattr(error, "_trusted_stage", None) in TEXT_STARTUP_SAFE_STAGES):
+        return error._trusted_stage
+    return None
+
+
+def _parse_startup_stage(stderr_bytes, *, overflowed, exit_code):
+    if overflowed or exit_code == 0 or len(stderr_bytes) > MAX_STDERR_BYTES:
+        return None
+    try:
+        value = bytes(stderr_bytes).decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return None
+    lowered = value.lower()
+    if ("/" in value or "\\" in value
+            or any(marker in lowered for marker in _SENSITIVE_STARTUP_MARKERS)):
+        return None
+    lines = [line for line in value.splitlines() if line.strip()]
+    if not lines:
+        return None
+    last_line = lines[-1]
+    for stage in TEXT_STARTUP_SAFE_STAGES:
+        if last_line == f"{ERROR_CODE} stage={stage}":
+            return stage
+    return None
 
 
 def safe_text_env(source_env=None):
@@ -66,6 +123,10 @@ class TextSubprocessAdapter:
                  frame_timeout=FRAME_TIMEOUT_SECONDS):
         self._queue = queue.Queue(maxsize=2)
         self._stderr_bytes = 0
+        self._stderr_lock = threading.Lock()
+        self._startup_stderr = bytearray()
+        self._collect_startup_stderr = True
+        self._stderr_overflow = False
         self._protocol_failed = threading.Event()
         self._request_lock = threading.Lock()
         self._request_id = 0
@@ -115,11 +176,22 @@ class TextSubprocessAdapter:
         if thread_start_failed:
             self._fail_closed()
 
-        handshake = self._next_message(start_timeout)
+        handshake = self._next_message(start_timeout, startup=True)
         if handshake != {"status": "ok", "schema_version": TEXT_SCHEMA}:
-            self._fail_closed()
+            self._fail_closed(startup=True)
+        with self._stderr_lock:
+            if self._stderr_overflow:
+                startup_overflow = True
+            else:
+                startup_overflow = False
+                self._collect_startup_stderr = False
+                self._startup_stderr.clear()
+        if startup_overflow:
+            self._fail_closed(startup=True)
 
-    def _raise_stable(self):
+    def _raise_stable(self, stage=None):
+        if stage in TEXT_STARTUP_SAFE_STAGES:
+            raise TextSubprocessError(ERROR_CODE, stage=stage, _token=_TEXT_STAGE_TOKEN)
         raise TextSubprocessError(ERROR_CODE)
 
     def _queue_message(self, message):
@@ -147,8 +219,15 @@ class TextSubprocessAdapter:
                 chunk = self._process.stderr.read(65536)
                 if not chunk:
                     return
-                self._stderr_bytes += len(chunk)
-                if self._stderr_bytes > MAX_STDERR_BYTES:
+                with self._stderr_lock:
+                    self._stderr_bytes += len(chunk)
+                    overflowed = self._stderr_bytes > MAX_STDERR_BYTES
+                    if overflowed:
+                        self._stderr_overflow = True
+                        self._startup_stderr.clear()
+                    elif self._collect_startup_stderr:
+                        self._startup_stderr.extend(chunk)
+                if overflowed:
                     self._protocol_failed.set()
                     self._abort()
                     self._queue_message(None)
@@ -164,7 +243,7 @@ class TextSubprocessAdapter:
         except Exception:
             return False
 
-    def _next_message(self, timeout):
+    def _next_message(self, timeout, startup=False):
         timed_out = False
         try:
             message = self._queue.get(timeout=timeout)
@@ -173,7 +252,7 @@ class TextSubprocessAdapter:
             message = None
         if (timed_out or message is None or self._protocol_failed.is_set()
                 or not self._process_is_alive()):
-            self._fail_closed()
+            self._fail_closed(startup=startup)
         return message
 
     def _abort(self):
@@ -204,13 +283,34 @@ class TextSubprocessAdapter:
             except Exception:
                 pass
 
-    def _fail_closed(self):
+    def _process_returncode(self):
+        process = self._process
+        if process is None:
+            return None
+        try:
+            return process.poll()
+        except Exception:
+            return None
+
+    def _startup_failure_stage(self, exit_code):
+        with self._stderr_lock:
+            stderr_bytes = bytes(self._startup_stderr)
+            overflowed = self._stderr_overflow
+        return _parse_startup_stage(
+            stderr_bytes,
+            overflowed=overflowed,
+            exit_code=exit_code,
+        )
+
+    def _fail_closed(self, startup=False):
+        exit_code = self._process_returncode()
         self._abort()
         try:
             self.close()
         except TextSubprocessError:
             pass
-        self._raise_stable()
+        stage = self._startup_failure_stage(exit_code) if startup else None
+        self._raise_stable(stage)
 
     def detect_regions(self, frame_path):
         if not isinstance(frame_path, str) or not frame_path:
@@ -275,6 +375,7 @@ class TextSubprocessAdapter:
             except Exception:
                 failed = True
 
+        self._join_threads(SHUTDOWN_TIMEOUT_SECONDS)
         for stream_name in ("stdout", "stderr"):
             stream = getattr(process, stream_name, None)
             if stream is not None and not getattr(stream, "closed", False):
