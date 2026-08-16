@@ -31,7 +31,7 @@ class _BoundedDiscard(io.TextIOBase):
             value = str(value)
         self.count += len(value.encode("utf-8"))
         if self.count > self.limit:
-            _fail()
+            raise worker._stage_error("output_limit")
         return len(value)
 
     def flush(self):
@@ -55,6 +55,13 @@ def _fail():
     raise worker.ProtocolError(worker.ERROR_CODE)
 
 
+def _trusted_text_load_stage(error):
+    stage = worker._trusted_stage(error)
+    if stage in worker._TEXT_LOAD_STAGES:
+        return stage
+    return None
+
+
 def _validate_request(value, expected_request_id):
     worker._exact_keys(value, ("request_id", "frame_path"))
     request_id = value["request_id"]
@@ -75,23 +82,39 @@ def _sanitize_texts(texts):
 
 
 def load_detector(model_lock):
-    with _discard_python_output():
-        _lock, components = worker._validate_model_lock(model_lock)
-        return worker.PaddleTextDetectionAdapter(
-            components["text_detector"]["artifact_abs_path"],
-            worker._default_text_detector_factory,
-        )
+    try:
+        with _discard_python_output():
+            _lock, components = worker._validate_model_lock(model_lock)
+    except Exception as exc:
+        stage = _trusted_text_load_stage(exc)
+        if stage == "output_limit":
+            raise exc
+        raise worker._stage_error("validate_lock") from None
+
+    try:
+        with _discard_python_output():
+            return worker.PaddleTextDetectionAdapter(
+                components["text_detector"]["artifact_abs_path"],
+                worker._default_text_detector_factory,
+            )
+    except Exception as exc:
+        stage = _trusted_text_load_stage(exc)
+        if stage is not None:
+            raise exc
+        raise worker._stage_error("adapter_init") from None
 
 
 def run_jsonl(stdin=None, stdout=None, stderr=None, detector=None, model_lock=None):
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
+    handshake_succeeded = False
     try:
         if detector is None:
             detector = load_detector(model_lock)
 
         _write_json(stdout, _HANDSHAKE)
+        handshake_succeeded = True
         expected_request_id = 1
         for line in stdin:
             if not line.endswith("\n"):
@@ -103,8 +126,12 @@ def run_jsonl(stdin=None, stdout=None, stderr=None, detector=None, model_lock=No
             _write_json(stdout, {"request_id": request_id, "texts": _sanitize_texts(texts)})
             expected_request_id += 1
         return 0
-    except Exception:
-        stderr.write(worker.ERROR_CODE + "\n")
+    except Exception as exc:
+        stage = None if handshake_succeeded else _trusted_text_load_stage(exc)
+        if stage is None:
+            stderr.write(worker.ERROR_CODE + "\n")
+        else:
+            stderr.write(f"{worker.ERROR_CODE} stage={stage}\n")
         stderr.flush()
         return 1
 

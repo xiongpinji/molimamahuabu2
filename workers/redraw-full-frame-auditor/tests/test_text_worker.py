@@ -15,6 +15,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from redraw_full_frame_auditor import text_worker
+from redraw_full_frame_auditor import text_subprocess
 from redraw_full_frame_auditor import worker
 
 
@@ -253,6 +254,133 @@ class TextWorkerProtocolTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "REDRAW_FULL_FRAME_MODEL_UNAVAILABLE\n")
         self.assertNotIn("secret", stderr.getvalue())
 
+    def test_real_cli_missing_model_lock_exits_with_trusted_validate_lock_without_stdin_close(self):
+        proc = subprocess.Popen(
+            [
+                str(PYTHON),
+                str(ROOT / "src" / "redraw_full_frame_auditor" / "text_worker.py"),
+                "run",
+                "--model-lock",
+                str(ROOT / "missing-model-lock.json"),
+            ],
+            cwd=str(ROOT),
+            text=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            stderr_line = _readline_with_timeout(proc, proc.stderr, "stderr")
+            self.assertEqual(stderr_line, "REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=validate_lock\n")
+            self.assertEqual(proc.wait(timeout=10), 1)
+            self.assertEqual(proc.stdout.read(), "")
+            self.assertFalse(proc.stdin.closed)
+        finally:
+            _cleanup_process(proc)
+
+    def test_text_subprocess_adapter_trusts_real_text_worker_validate_lock_stage(self):
+        with self.assertRaises(text_subprocess.TextSubprocessError) as raised:
+            text_subprocess.TextSubprocessAdapter(
+                str(PYTHON),
+                str(ROOT / "src" / "redraw_full_frame_auditor" / "text_worker.py"),
+                str(ROOT / "missing-model-lock.json"),
+                start_timeout=5,
+            )
+
+        self.assertEqual(text_subprocess._trusted_text_stage(raised.exception), "validate_lock")
+
+    def test_load_detector_preserves_trusted_factory_stages_and_marks_adapter_init(self):
+        original_validate = text_worker.worker._validate_model_lock
+        original_factory = text_worker.worker._default_text_detector_factory
+        original_adapter = text_worker.worker.PaddleTextDetectionAdapter
+        try:
+            text_worker.worker._validate_model_lock = lambda _model_lock: ({}, {"text_detector": {"artifact_abs_path": "C:/models/text.zip"}})
+            for stage in ("import_cv2", "import_paddle", "build_args", "model_dir", "detector_init"):
+                with self.subTest(stage=stage):
+                    text_worker.worker._default_text_detector_factory = lambda _artifact, stage=stage: (_ for _ in ()).throw(
+                        worker._stage_error(stage)
+                    )
+                    with self.assertRaises(worker.ProtocolError) as raised:
+                        text_worker.load_detector("C:/locks/model-lock.json")
+                    self.assertEqual(worker._trusted_stage(raised.exception), stage)
+
+            class BrokenAdapter:
+                def __init__(self, _artifact_path, _factory):
+                    raise RuntimeError("C:/secret/adapter")
+
+            text_worker.worker.PaddleTextDetectionAdapter = BrokenAdapter
+            with self.assertRaises(worker.ProtocolError) as raised:
+                text_worker.load_detector("C:/locks/model-lock.json")
+            self.assertEqual(worker._trusted_stage(raised.exception), "adapter_init")
+        finally:
+            text_worker.worker._validate_model_lock = original_validate
+            text_worker.worker._default_text_detector_factory = original_factory
+            text_worker.worker.PaddleTextDetectionAdapter = original_adapter
+
+    def test_pre_handshake_load_failures_emit_only_trusted_safe_stages(self):
+        original_load_detector = text_worker.load_detector
+        try:
+            for stage in ("validate_lock", "import_cv2", "import_paddle", "build_args", "model_dir", "detector_init", "adapter_init", "output_limit"):
+                with self.subTest(stage=stage):
+                    text_worker.load_detector = lambda _model_lock, stage=stage: (_ for _ in ()).throw(worker._stage_error(stage))
+                    stdout = io.StringIO()
+                    stderr = io.StringIO()
+                    code = text_worker.run_jsonl(
+                        stdin=io.StringIO(""),
+                        stdout=stdout,
+                        stderr=stderr,
+                        model_lock="C:/secret/model-lock.json",
+                    )
+                    self.assertEqual(code, 1)
+                    self.assertEqual(stdout.getvalue(), "")
+                    self.assertEqual(stderr.getvalue(), f"REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage={stage}\n")
+                    self.assertNotIn("secret", stderr.getvalue())
+        finally:
+            text_worker.load_detector = original_load_detector
+
+    def test_raw_spoof_unknown_and_handshake_after_failures_emit_code_only(self):
+        class SpoofedProtocolError(worker.ProtocolError):
+            pass
+
+        raw_errors = [
+            RuntimeError("C:/secret/raw"),
+            worker.ProtocolError(worker.ERROR_CODE, stage="import_cv2"),
+            SpoofedProtocolError(worker.ERROR_CODE),
+            worker._stage_error("load"),
+        ]
+        original_load_detector = text_worker.load_detector
+        try:
+            for error in raw_errors:
+                with self.subTest(error=type(error).__name__, trusted=worker._trusted_stage(error)):
+                    text_worker.load_detector = lambda _model_lock, error=error: (_ for _ in ()).throw(error)
+                    stdout = io.StringIO()
+                    stderr = io.StringIO()
+                    code = text_worker.run_jsonl(
+                        stdin=io.StringIO(""),
+                        stdout=stdout,
+                        stderr=stderr,
+                        model_lock="C:/secret/model-lock.json",
+                    )
+                    self.assertEqual(code, 1)
+                    self.assertEqual(stdout.getvalue(), "")
+                    self.assertEqual(stderr.getvalue(), "REDRAW_FULL_FRAME_MODEL_UNAVAILABLE\n")
+                    self.assertNotIn("secret", stderr.getvalue())
+        finally:
+            text_worker.load_detector = original_load_detector
+
+        class BrokenDetector:
+            def detect_regions(self, _frame_path):
+                raise worker._stage_error("detector_init")
+
+        code, stdout_lines, stderr, _detector = self.run_worker(
+            json.dumps({"request_id": 1, "frame_path": "C:/secret/frame.png"}) + "\n",
+            detector=BrokenDetector(),
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout_lines, ['{"status":"ok","schema_version":"redraw-full-frame-text-subprocess-v1"}'])
+        self.assertEqual(stderr, "REDRAW_FULL_FRAME_MODEL_UNAVAILABLE\n")
+        self.assertNotIn("secret", stderr)
+
     def test_rejects_missing_newline_illegal_json_and_non_contiguous_followup(self):
         bad_inputs = [
             json.dumps({"request_id": 1, "frame_path": "a.png"}),
@@ -398,7 +526,7 @@ class TextWorkerProtocolTests(unittest.TestCase):
 
         self.assertNotEqual(code, 0)
         self.assertEqual(stdout.getvalue(), "")
-        self.assertEqual(stderr.getvalue(), "REDRAW_FULL_FRAME_MODEL_UNAVAILABLE\n")
+        self.assertEqual(stderr.getvalue(), "REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=output_limit\n")
         self.assertNotIn("secret", stderr.getvalue())
 
         class NoisyDetector:
