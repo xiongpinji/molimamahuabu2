@@ -19,6 +19,56 @@ const {
   runFetchModels,
 } = require('../scripts/fetch-redraw-full-frame-models-local');
 
+const EXPECTED_RUNTIME_PACKAGE_SPECS = [
+  { requirement: 'setuptools==80.9.0' },
+  { requirement: 'wheel==0.43.0' },
+  { requirement: 'numpy==1.26.4' },
+  { requirement: 'protobuf==4.25.9' },
+  { requirement: 'Pillow==11.3.0' },
+  { requirement: 'six==1.17.0' },
+  { requirement: 'scipy==1.17.1' },
+  { requirement: 'imageio==2.37.4' },
+  { requirement: 'tifffile==2026.3.3' },
+  { requirement: 'scikit-image==0.26.0' },
+  { requirement: 'Shapely==2.1.2' },
+  { requirement: 'pyclipper==1.4.0' },
+  { requirement: 'lmdb==2.3.0' },
+  { requirement: 'tqdm==4.68.1' },
+  { requirement: 'requests==2.33.0' },
+  { requirement: 'absl-py==2.5.0' },
+  { requirement: 'attrs==26.1.0' },
+  { requirement: 'flatbuffers==25.12.19' },
+  { requirement: 'matplotlib==3.11.1' },
+  { requirement: 'sounddevice==0.5.5' },
+  { requirement: 'httpx==0.27.0' },
+  { requirement: 'decorator==5.3.1' },
+  { requirement: 'astor==0.8.1' },
+  { requirement: 'opt-einsum==3.3.0' },
+  { requirement: 'opencv-python-headless==4.10.0.84' },
+  { requirement: 'torch==2.3.1' },
+  { requirement: 'torchvision==0.18.1' },
+  { requirement: 'yolox==0.3.0', noDeps: true },
+  { requirement: 'pycocotools==2.0.11' },
+  { requirement: 'loguru==0.7.2' },
+  { requirement: 'tabulate==0.9.0' },
+  { requirement: 'thop==0.1.1.post2209072238' },
+  { requirement: 'lap==0.5.13' },
+  { requirement: 'Cython==3.2.9' },
+  { requirement: 'cython-bbox==0.1.5' },
+  { requirement: 'imgaug==0.4.0', noDeps: true },
+  { requirement: 'mediapipe==0.10.14', noDeps: true },
+  { requirement: 'paddlepaddle==2.6.2', noDeps: true },
+  { requirement: 'paddleocr==2.8.1', noDeps: true },
+];
+const EXPECTED_RUNTIME_FREEZE = EXPECTED_RUNTIME_PACKAGE_SPECS.map((spec) => spec.requirement);
+const FORBIDDEN_RUNTIME_PACKAGES = new Set([
+  'opencv-python',
+  'opencv-contrib-python',
+  'jax',
+  'jaxlib',
+  'ml-dtypes',
+]);
+
 function tempDir(t, prefix) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -283,7 +333,7 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
     },
     createVenv: async () => calls.push('venv'),
     installRuntime: async () => calls.push('install'),
-    pipFreeze: async () => ['a-package==1.2.3', 'b-package==4.5.6'],
+    pipFreeze: async () => EXPECTED_RUNTIME_FREEZE,
     bootstrapWorker: async () => calls.push('bootstrap'),
     pythonVersion: async () => 'Python 3.11.9',
   };
@@ -296,7 +346,16 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
   assert(fs.existsSync(path.join(outputDir, 'model-lock.json')));
   const lock = JSON.parse(fs.readFileSync(path.join(outputDir, 'model-lock.json'), 'utf8'));
   assert.equal(lock.schema_version, 'redraw-full-frame-model-lock-v1');
-  assert.deepEqual(lock.runtime.pip_freeze, ['a-package==1.2.3', 'b-package==4.5.6']);
+  assert.deepEqual(lock.runtime.pip_freeze, EXPECTED_RUNTIME_FREEZE.slice().sort((a, b) => a.localeCompare(b)));
+  const frozenPackages = new Map(lock.runtime.pip_freeze.map((line) => {
+    const [name, version] = line.split('==');
+    return [name.toLowerCase().replace(/[_.]+/g, '-'), version];
+  }));
+  for (const requirement of EXPECTED_RUNTIME_FREEZE) {
+    const [name, version] = requirement.split('==');
+    assert.equal(frozenPackages.get(name.toLowerCase().replace(/[_.]+/g, '-')), version);
+  }
+  for (const forbidden of FORBIDDEN_RUNTIME_PACKAGES) assert.equal(frozenPackages.has(forbidden), false);
   for (const component of lock.components) {
     assert.equal(
       component.artifact_sha256,
@@ -451,7 +510,7 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   const deps = {
     spawnProcess: async (command, args, options) => {
       calls.push({ command, args, env: options.env, cwd: options.cwd });
-      if (args.includes('freeze')) return 'pkg==1.0.0\n';
+      if (args.includes('freeze')) return `${EXPECTED_RUNTIME_FREEZE.join('\n')}\n`;
       if (args.includes('--version')) return 'Python 3.11.9\n';
       return '';
     },
@@ -463,7 +522,10 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
 
   await fetchModule.createVenv(parent, deps);
   await fetchModule.installRuntime(parent, [], deps);
-  assert.deepEqual(await fetchModule.pipFreeze(parent, deps), ['pkg==1.0.0']);
+  assert.deepEqual(
+    await fetchModule.pipFreeze(parent, deps),
+    EXPECTED_RUNTIME_FREEZE.slice().sort((a, b) => a.localeCompare(b)),
+  );
   assert.equal(await fetchModule.pythonVersion(parent, deps), 'Python 3.11.9');
   await fetchModule.bootstrapWorker(parent, path.join(parent, 'model-lock.json'), deps);
   assert.equal(calls[0].command, 'python-fixture');
@@ -487,28 +549,26 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
       && !call.args.includes('--extra-index-url')
       && !call.args.includes('--find-links');
   }), JSON.stringify(installCalls));
-  assert(installArgs.includes('numpy==1.26.4'));
-  assert(installArgs.includes('opencv-python-headless==4.10.0.84'));
-  assert(installArgs.includes('torch==2.3.1'));
-  assert(installArgs.includes('torchvision==0.18.1'));
-  assert(installArgs.includes('mediapipe==0.10.14'));
-  assert(installArgs.includes('paddlepaddle==2.6.2'));
-  assert(installArgs.includes('paddleocr==2.8.1'));
-  assert(installArgs.includes('Cython==3.2.9'));
-  assert(installArgs.includes('cython-bbox==0.1.5'));
-  assert(installArgs.includes('yolox==0.3.0'));
-  assert(installArgs.includes('pycocotools==2.0.11'));
-  assert(installArgs.includes('loguru==0.7.2'));
-  assert(installArgs.includes('tabulate==0.9.0'));
-  assert(installArgs.includes('thop==0.1.1.post2209072238'));
-  assert(installArgs.includes('lap==0.5.13'));
+  assert.deepEqual(installArgs, EXPECTED_RUNTIME_FREEZE);
   assert(installArgs.every((arg) => /^[A-Za-z0-9_.-]+==[A-Za-z0-9_.!+-]+$/.test(arg)));
-  const yoloxInstallCalls = installCalls.filter((call) => call.args.includes('yolox==0.3.0'));
-  assert.equal(yoloxInstallCalls.length, 1);
-  assert(yoloxInstallCalls[0].args.includes('--no-deps'), JSON.stringify(yoloxInstallCalls[0]));
-  assert(installCalls
-    .filter((call) => !call.args.includes('yolox==0.3.0'))
-    .every((call) => !call.args.includes('--no-deps')), JSON.stringify(installCalls));
+  assert.deepEqual(
+    installCalls.map((call) => ({
+      requirement: call.args[call.args.length - 1],
+      noDeps: call.args.includes('--no-deps'),
+    })),
+    EXPECTED_RUNTIME_PACKAGE_SPECS.map((spec) => ({
+      requirement: spec.requirement,
+      noDeps: spec.noDeps === true,
+    })),
+  );
+  assert.deepEqual(
+    installCalls.filter((call) => call.args.includes('--no-deps')).map((call) => call.args[call.args.length - 1]),
+    ['yolox==0.3.0', 'imgaug==0.4.0', 'mediapipe==0.10.14', 'paddlepaddle==2.6.2', 'paddleocr==2.8.1'],
+  );
+  assert(installArgs.every((requirement) => {
+    const [name] = requirement.split('==');
+    return !FORBIDDEN_RUNTIME_PACKAGES.has(name.toLowerCase().replace(/[_.]+/g, '-'));
+  }));
 
   await assert.rejects(
     fetchModule.pipFreeze(parent, { ...deps, spawnProcess: async () => 'pkg>=1.0.0\n' }),
@@ -524,6 +584,51 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   );
   await assert.rejects(
     fetchModule.installRuntime(parent, [], { ...deps, runtimePackageSpecs: [{ requirement: 'pkg==1.0.0', noDeps: true }] }),
+    /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+  );
+  for (const requirement of ['yolox==0.3.0', 'imgaug==0.4.0', 'mediapipe==0.10.14', 'paddlepaddle==2.6.2', 'paddleocr==2.8.1']) {
+    await assert.rejects(
+      fetchModule.installRuntime(parent, [], { ...deps, runtimePackageSpecs: [{ requirement }] }),
+      /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+    );
+  }
+  await assert.rejects(
+    fetchModule.installRuntime(parent, [], { ...deps, runtimePackageSpecs: [{ requirement: 'paddleocr==2.8.2', noDeps: true }] }),
+    /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+  );
+  for (const requirement of [
+    'opencv-python==4.10.0.84',
+    'opencv-contrib-python==4.10.0.84',
+    'jax==0.4.30',
+    'jaxlib==0.4.30',
+    'ml-dtypes==0.4.0',
+  ]) {
+    await assert.rejects(
+      fetchModule.installRuntime(parent, [], { ...deps, runtimePackageSpecs: [{ requirement }] }),
+      /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+    );
+  }
+  await assert.rejects(
+    fetchModule.pipFreeze(parent, {
+      ...deps,
+      spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.join('\n')}\nopencv-python==4.10.0.84\n`,
+    }),
+    /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+  );
+  await assert.rejects(
+    fetchModule.pipFreeze(parent, {
+      ...deps,
+      spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.filter((line) => line !== 'protobuf==4.25.9').join('\n')}\n`,
+    }),
+    /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+  );
+  await assert.rejects(
+    fetchModule.pipFreeze(parent, {
+      ...deps,
+      spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.map((line) => (
+        line === 'protobuf==4.25.9' ? 'protobuf==4.25.8' : line
+      )).join('\n')}\n`,
+    }),
     /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
   );
 });

@@ -54,6 +54,27 @@ const RUNTIME_PACKAGE_SPECS = Object.freeze([
   Object.freeze({ requirement: 'setuptools==80.9.0' }),
   Object.freeze({ requirement: 'wheel==0.43.0' }),
   Object.freeze({ requirement: 'numpy==1.26.4' }),
+  Object.freeze({ requirement: 'protobuf==4.25.9' }),
+  Object.freeze({ requirement: 'Pillow==11.3.0' }),
+  Object.freeze({ requirement: 'six==1.17.0' }),
+  Object.freeze({ requirement: 'scipy==1.17.1' }),
+  Object.freeze({ requirement: 'imageio==2.37.4' }),
+  Object.freeze({ requirement: 'tifffile==2026.3.3' }),
+  Object.freeze({ requirement: 'scikit-image==0.26.0' }),
+  Object.freeze({ requirement: 'Shapely==2.1.2' }),
+  Object.freeze({ requirement: 'pyclipper==1.4.0' }),
+  Object.freeze({ requirement: 'lmdb==2.3.0' }),
+  Object.freeze({ requirement: 'tqdm==4.68.1' }),
+  Object.freeze({ requirement: 'requests==2.33.0' }),
+  Object.freeze({ requirement: 'absl-py==2.5.0' }),
+  Object.freeze({ requirement: 'attrs==26.1.0' }),
+  Object.freeze({ requirement: 'flatbuffers==25.12.19' }),
+  Object.freeze({ requirement: 'matplotlib==3.11.1' }),
+  Object.freeze({ requirement: 'sounddevice==0.5.5' }),
+  Object.freeze({ requirement: 'httpx==0.27.0' }),
+  Object.freeze({ requirement: 'decorator==5.3.1' }),
+  Object.freeze({ requirement: 'astor==0.8.1' }),
+  Object.freeze({ requirement: 'opt-einsum==3.3.0' }),
   Object.freeze({ requirement: 'opencv-python-headless==4.10.0.84' }),
   Object.freeze({ requirement: 'torch==2.3.1' }),
   Object.freeze({ requirement: 'torchvision==0.18.1' }),
@@ -63,11 +84,27 @@ const RUNTIME_PACKAGE_SPECS = Object.freeze([
   Object.freeze({ requirement: 'tabulate==0.9.0' }),
   Object.freeze({ requirement: 'thop==0.1.1.post2209072238' }),
   Object.freeze({ requirement: 'lap==0.5.13' }),
-  Object.freeze({ requirement: 'mediapipe==0.10.14' }),
-  Object.freeze({ requirement: 'paddlepaddle==2.6.2' }),
-  Object.freeze({ requirement: 'paddleocr==2.8.1' }),
   Object.freeze({ requirement: 'Cython==3.2.9' }),
   Object.freeze({ requirement: 'cython-bbox==0.1.5' }),
+  Object.freeze({ requirement: 'imgaug==0.4.0', noDeps: true }),
+  Object.freeze({ requirement: 'mediapipe==0.10.14', noDeps: true }),
+  Object.freeze({ requirement: 'paddlepaddle==2.6.2', noDeps: true }),
+  Object.freeze({ requirement: 'paddleocr==2.8.1', noDeps: true }),
+]);
+const NO_DEPS_REQUIREMENTS = new Set([
+  'yolox==0.3.0',
+  'imgaug==0.4.0',
+  'mediapipe==0.10.14',
+  'paddlepaddle==2.6.2',
+  'paddleocr==2.8.1',
+]);
+const NO_DEPS_PACKAGE_NAMES = new Set(['yolox', 'imgaug', 'mediapipe', 'paddlepaddle', 'paddleocr']);
+const FORBIDDEN_RUNTIME_PACKAGES = new Set([
+  'opencv-python',
+  'opencv-contrib-python',
+  'jax',
+  'jaxlib',
+  'ml-dtypes',
 ]);
 const JSON_MAX_BYTES = 2 * 1024 * 1024;
 const LICENSE_MAX_BYTES = 2 * 1024 * 1024;
@@ -139,11 +176,28 @@ async function writeFileAtomic(target, bytes) {
   await fsp.rename(tmp, target);
 }
 
+function normalizePackageName(name) {
+  return name.toLowerCase().replace(/[_.]+/g, '-');
+}
+
+function splitRequirement(requirement) {
+  const match = /^([A-Za-z0-9_.-]+)==([A-Za-z0-9_.!+-]+)$/.exec(requirement);
+  if (!match) throw error(MODEL_ERROR);
+  return { name: normalizePackageName(match[1]), version: match[2] };
+}
+
 function assertPinnedFreeze(lines) {
   if (!Array.isArray(lines)) throw error(MODEL_ERROR);
   const sorted = lines.filter((line) => line.length > 0).slice().sort((a, b) => a.localeCompare(b));
+  const installed = new Map();
   for (const line of sorted) {
-    if (!/^[A-Za-z0-9_.-]+==[A-Za-z0-9_.!+-]+$/.test(line)) throw error(MODEL_ERROR);
+    const requirement = splitRequirement(line);
+    if (FORBIDDEN_RUNTIME_PACKAGES.has(requirement.name) || installed.has(requirement.name)) throw error(MODEL_ERROR);
+    installed.set(requirement.name, requirement.version);
+  }
+  for (const spec of RUNTIME_PACKAGE_SPECS) {
+    const required = splitRequirement(spec.requirement);
+    if (installed.get(required.name) !== required.version) throw error(MODEL_ERROR);
   }
   return sorted;
 }
@@ -154,11 +208,13 @@ function normalizeRuntimePackageSpecs(specs) {
     if (!spec || typeof spec !== 'object' || Array.isArray(spec)) throw error(MODEL_ERROR);
     const keys = Object.keys(spec).sort();
     if (!keys.every((key) => key === 'noDeps' || key === 'requirement')) throw error(MODEL_ERROR);
-    if (typeof spec.requirement !== 'string' || !/^[A-Za-z0-9_.-]+==[A-Za-z0-9_.!+-]+$/.test(spec.requirement)) {
-      throw error(MODEL_ERROR);
-    }
+    if (typeof spec.requirement !== 'string') throw error(MODEL_ERROR);
+    const requirement = splitRequirement(spec.requirement);
+    if (FORBIDDEN_RUNTIME_PACKAGES.has(requirement.name)) throw error(MODEL_ERROR);
     if (spec.noDeps !== undefined && spec.noDeps !== true) throw error(MODEL_ERROR);
-    if (spec.noDeps === true && spec.requirement !== 'yolox==0.3.0') throw error(MODEL_ERROR);
+    const mustUseNoDeps = NO_DEPS_REQUIREMENTS.has(spec.requirement);
+    if (NO_DEPS_PACKAGE_NAMES.has(requirement.name) && !mustUseNoDeps) throw error(MODEL_ERROR);
+    if (mustUseNoDeps !== (spec.noDeps === true)) throw error(MODEL_ERROR);
     return { requirement: spec.requirement, noDeps: spec.noDeps === true };
   });
 }
