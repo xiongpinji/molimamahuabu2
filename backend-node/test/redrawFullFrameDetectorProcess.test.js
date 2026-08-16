@@ -146,7 +146,7 @@ if (mode.startsWith('stage=')) {
   process.exit(1);
 }
 if (mode === 'not-last') {
-  process.stderr.write(code + ' stage=load:text\\nwarning after stage\\n');
+  process.stderr.write(code + ' stage=load:text:output_limit\\nwarning after stage\\n');
   process.exit(1);
 }
 if (mode.startsWith('sensitive=')) {
@@ -510,7 +510,7 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
   rawBootstrapError.code = 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE';
   rawBootstrapError.cause = new Error('C:\\Users\\private\\worker.py');
   rawBootstrapError.context = { authorization: 'Bearer secret-token', key: 'secret-key' };
-  rawBootstrapError.stage = 'bootstrap:load:text';
+  rawBootstrapError.stage = 'bootstrap:load:text:output_limit';
   await assert.rejects(runFetchModels({
     outputDir: bootstrapFailed,
   }, {
@@ -596,13 +596,13 @@ test('runCli emits only stable sanitized install and bootstrap stages', async (t
     bootstrapWorker: async (staging, modelLockPath) => bootstrapWorker(staging, modelLockPath, {
       env: process.env,
       spawnProcess: async (_command, _args, options) => (
-        runProcess(process.execPath, [stageChild, 'stage=load:text'], options)
+        runProcess(process.execPath, [stageChild, 'stage=load:text:output_limit'], options)
       ),
     }),
   });
   assert.deepEqual(bootstrapChildResult, {
     code: 1,
-    stderr: 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=bootstrap:load:text\n',
+    stderr: 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=bootstrap:load:text:output_limit\n',
   });
 
   const unknownResult = await capture(['--url', 'https://secret.example/model'], fixtureDeps);
@@ -951,7 +951,35 @@ test('runProcess only trusts fixed bootstrap child stages when explicitly enable
     'probe:tracker',
     'adapter_probe',
     'close',
+    'load:text:validate_lock',
+    'load:text:import_cv2',
+    'load:text:import_paddle',
+    'load:text:build_args',
+    'load:text:model_dir',
+    'load:text:detector_init',
+    'load:text:adapter_init',
+    'load:text:output_limit',
   ];
+  const fetchSource = fs.readFileSync(path.resolve(__dirname, '../scripts/fetch-redraw-full-frame-models-local.js'), 'utf8');
+  const workerSource = fs.readFileSync(path.resolve(__dirname, '../../workers/redraw-full-frame-auditor/src/redraw_full_frame_auditor/worker.py'), 'utf8');
+  const nodeBlock = /const PYTHON_BOOTSTRAP_SAFE_STAGES = new Set\(\[([\s\S]*?)\]\);/.exec(fetchSource);
+  const pythonTextBlock = /_TEXT_LOAD_STAGES = frozenset\(\(([\s\S]*?)\)\)/.exec(workerSource);
+  const pythonBootstrapBlock = /_BOOTSTRAP_STAGES = frozenset\(\(([\s\S]*?)\)\) \|/.exec(workerSource);
+  assert(nodeBlock && pythonTextBlock && pythonBootstrapBlock);
+  const quotedStages = (block) => Array.from(
+    block.matchAll(/["']([a-z0-9_]+(?::[a-z0-9_]+)*)["']/g),
+    (match) => match[1],
+  );
+  const nodeStages = quotedStages(nodeBlock[1]);
+  const pythonTextStages = quotedStages(pythonTextBlock[1]);
+  const pythonStages = [
+    ...quotedStages(pythonBootstrapBlock[1]),
+    ...pythonTextStages.map((stage) => `load:text:${stage}`),
+  ];
+  assert.equal(new Set(nodeStages).size, 22);
+  assert.equal(new Set(pythonStages).size, 22);
+  assert.deepEqual(nodeStages.slice().sort(), pythonStages.slice().sort());
+  assert.deepEqual(allowedStages.slice().sort(), pythonStages.slice().sort());
   for (const stage of allowedStages) {
     await assert.rejects(
       runProcess(process.execPath, [script, `stage=${stage}`], parseOptions),
@@ -959,10 +987,20 @@ test('runProcess only trusts fixed bootstrap child stages when explicitly enable
     );
   }
   await assert.rejects(
-    runProcess(process.execPath, [script, 'stage=load:text'], { timeoutMs: 1000 }),
+    runProcess(process.execPath, [script, 'stage=load:text:output_limit'], { timeoutMs: 1000 }),
     (error) => assertStableFetchError(error, 'unknown'),
   );
-  for (const mode of ['stage=load:unknown', 'not-last', 'sensitive=auth', 'sensitive=key', 'sensitive=path']) {
+  for (const mode of [
+    'stage=load:unknown',
+    'stage=load:text:unknown',
+    'stage=load:text:output_limit:extra',
+    'stage=load:text:output_limit extra',
+    'stage=load:text:/private',
+    'not-last',
+    'sensitive=auth',
+    'sensitive=key',
+    'sensitive=path',
+  ]) {
     await assert.rejects(
       runProcess(process.execPath, [script, mode], parseOptions),
       (error) => assertStableFetchError(error, 'unknown'),
@@ -980,8 +1018,8 @@ test('runProcess only trusts fixed bootstrap child stages when explicitly enable
     spawnProcess: async (_command, _args, options) => runProcess(process.execPath, [script, mode], options),
   });
   await assert.rejects(
-    withChild('stage=load:text'),
-    (error) => assertStableFetchError(error, 'bootstrap:load:text'),
+    withChild('stage=load:text:output_limit'),
+    (error) => assertStableFetchError(error, 'bootstrap:load:text:output_limit'),
   );
   await assert.rejects(
     withChild('stage=load:unknown'),

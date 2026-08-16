@@ -176,6 +176,14 @@ const PYTHON_BOOTSTRAP_SAFE_STAGES = new Set([
   'probe:tracker',
   'adapter_probe',
   'close',
+  'load:text:validate_lock',
+  'load:text:import_cv2',
+  'load:text:import_paddle',
+  'load:text:build_args',
+  'load:text:model_dir',
+  'load:text:detector_init',
+  'load:text:adapter_init',
+  'load:text:output_limit',
 ]);
 const FIXED_RUNTIME_STAGES = new Set([
   'unknown',
@@ -225,9 +233,13 @@ function parseBootstrapErrorStage(stderr) {
   if (/(?:authorization|bearer|(?:api[-_ ]?key|secret[-_ ]?key|\bkey\s*[:=])|https?:\/\/|[A-Za-z]:[\\/]|(?:^|[\s"'(])\/[^\s])/im.test(stderr)) return null;
   const lines = stderr.split(/\r?\n/).filter((line) => line.trim().length > 0);
   if (lines.length === 0) return null;
-  const match = /^REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=([a-z_]+(?::[a-z_]+)?)$/.exec(lines[lines.length - 1]);
-  if (!match || !PYTHON_BOOTSTRAP_SAFE_STAGES.has(match[1])) return null;
-  return `bootstrap:${match[1]}`;
+  const prefix = `${MODEL_ERROR} stage=`;
+  const lastLine = lines[lines.length - 1];
+  if (!lastLine.startsWith(prefix)) return null;
+  const candidate = lastLine.slice(prefix.length);
+  if (!/^[a-z0-9_]+(?::[a-z0-9_]+){0,2}$/.test(candidate)) return null;
+  if (!PYTHON_BOOTSTRAP_SAFE_STAGES.has(candidate)) return null;
+  return `bootstrap:${candidate}`;
 }
 
 function sanitizeEnv(env = process.env) {
