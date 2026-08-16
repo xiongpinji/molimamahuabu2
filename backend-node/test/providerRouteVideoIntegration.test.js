@@ -139,6 +139,55 @@ test('明确未受理才切换到已验证同逻辑视频供应商并固定任�
       { config_id: backupId, state: 'accepted', error_category: null },
     ],
   );
+  assert.deepEqual(
+    db.prepare(`SELECT event_type, config_id, target_config_id
+      FROM provider_stability_events WHERE event_type = 'route_switched'`).get(),
+    { event_type: 'route_switched', config_id: primaryId, target_config_id: backupId },
+  );
+});
+
+test('视频备用供应商半开探测被占用时不会重复调用或误记切换', async (t) => {
+  const requests = [];
+  const primary = await listen((req, res) => {
+    requests.push('primary');
+    req.resume();
+    res.writeHead(503, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { code: 'NO_AVAILABLE_CHANNEL', message: 'No available channel' } }));
+  });
+  const backup = await listen((req, res) => {
+    requests.push('backup');
+    req.resume();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id: 'should-not-run', status: 'processing' }));
+  });
+  t.after(async () => Promise.all([close(primary), close(backup)]));
+  const db = createDb();
+  t.after(() => db.close());
+  addRoute(db, {
+    provider: 'private-primary', baseUrl: `http://127.0.0.1:${primary.address().port}`,
+    upstreamModel: 'upstream-primary', priority: 100,
+  });
+  const backupId = addRoute(db, {
+    provider: 'private-backup', baseUrl: `http://127.0.0.1:${backup.address().port}`,
+    upstreamModel: 'upstream-backup', priority: 90, failover: true,
+  });
+  db.prepare(`INSERT INTO provider_route_health
+    (config_id, state, consecutive_failures, half_open_claimed_at, updated_at)
+    VALUES (?, 'half_open', 3, ?, ?)`).run(
+    backupId, '2026-08-15T00:09:00.000Z', '2026-08-15T00:09:00.000Z',
+  );
+
+  const result = await videoClient.callVideoApi(db, log, {
+    prompt: 'user prompt', model: 'logical-video', duration: 5, video_gen_id: 4002,
+  });
+  assert.deepEqual(result, { error: '视频生成服务暂时不可用，请稍后再试。' });
+  assert.deepEqual(requests, ['primary']);
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS count FROM provider_stability_events WHERE event_type = 'route_switched'")
+      .get().count,
+    0,
+  );
+  assert.equal(db.prepare('SELECT state FROM generation_route_requests').get().state, 'failed');
 });
 
 test('响应携带供应商任务号时固定原供应商且绝不重复提交', async (t) => {

@@ -108,6 +108,56 @@ test('非流式文本明确无通道时切换到已验证的同逻辑模型', as
   assert.deepEqual(db.prepare('SELECT state, final_config_id FROM generation_route_requests').get(), {
     state: 'succeeded', final_config_id: backupId,
   });
+  assert.deepEqual(
+    db.prepare(`SELECT event_type, config_id, target_config_id
+      FROM provider_stability_events WHERE event_type = 'route_switched'`).get(),
+    { event_type: 'route_switched', config_id: primaryId, target_config_id: backupId },
+  );
+});
+
+test('已被其他请求占用的半开供应商不会被重复探测或记录为切换', async (t) => {
+  const requests = [];
+  const primary = await listen((req, res) => {
+    requests.push('primary');
+    req.resume();
+    jsonResponse(res, 503, { error: { code: 'NO_AVAILABLE_CHANNEL', message: 'No available channel' } });
+  });
+  const backup = await listen((req, res) => {
+    requests.push('backup');
+    req.resume();
+    jsonResponse(res, 200, { choices: [{ message: { content: '不应调用' } }] });
+  });
+  t.after(async () => Promise.all([close(primary), close(backup)]));
+  const db = createDb();
+  t.after(() => db.close());
+  addRoute(db, {
+    provider: 'private-primary', baseUrl: `http://127.0.0.1:${primary.address().port}`,
+    upstreamModel: 'upstream-primary', priority: 100,
+  });
+  const backupId = addRoute(db, {
+    provider: 'private-backup', baseUrl: `http://127.0.0.1:${backup.address().port}`,
+    upstreamModel: 'upstream-backup', priority: 90, failover: true,
+  });
+  db.prepare(`INSERT INTO provider_route_health
+    (config_id, state, consecutive_failures, half_open_claimed_at, updated_at)
+    VALUES (?, 'half_open', 3, ?, ?)`).run(
+    backupId, '2026-08-15T00:09:00.000Z', '2026-08-15T00:09:00.000Z',
+  );
+
+  await assert.rejects(
+    () => aiClient.generateTextWithVision(
+      db, log, 'text', '描述图片', '', visionSource(),
+      { model: 'logical-text', idempotency_key: 'text-half-open-busy-1' },
+    ),
+    (error) => error.code === 'TEXT_PROVIDER_UNAVAILABLE',
+  );
+  assert.deepEqual(requests, ['primary']);
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS count FROM provider_stability_events WHERE event_type = 'route_switched'")
+      .get().count,
+    0,
+  );
+  assert.equal(db.prepare('SELECT state FROM generation_route_requests').get().state, 'failed');
 });
 
 test('流式首 token 后断线标记结果未知且绝不提交备用供应商', async (t) => {

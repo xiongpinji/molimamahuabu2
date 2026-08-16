@@ -2306,6 +2306,7 @@ async function callImageApi(db, log, opts) {
   }
 
   let lastFailure = null;
+  let pendingSwitch = null;
   for (let index = 0; index < selected.candidates.length; index += 1) {
     const config = selected.candidates[index];
     const upstreamModel = getModelFromConfig(config);
@@ -2315,6 +2316,18 @@ async function callImageApi(db, log, opts) {
       provider: config.provider || 'configured',
       upstreamModel,
     });
+    if (!attempt) continue;
+    if (pendingSwitch) {
+      providerRouteStability.recordRouteSwitch(db, {
+        requestId: route.id,
+        tenantId: opts.tenantId,
+        logicalModelId: preferredModel,
+        configId: pendingSwitch.configId,
+        targetConfigId: config.id,
+        category: pendingSwitch.category,
+      });
+      pendingSwitch = null;
+    }
     let result;
     try {
       result = await submitImageWithConfig(db, log, config, { ...opts, model: undefined });
@@ -2380,6 +2393,7 @@ async function callImageApi(db, log, opts) {
       updateImageRouteRequestState(db, route.id, requestState);
       return safeImageRouteFailure(classification, result);
     }
+    pendingSwitch = { configId: config.id, category: classification.category };
     log.warn('Image route switching after definitive non-acceptance', {
       image_gen_id: opts.image_gen_id,
       logical_model_id: preferredModel,
@@ -2387,7 +2401,11 @@ async function callImageApi(db, log, opts) {
       category: classification.category,
     });
   }
-  return safeImageRouteFailure(lastFailure?.classification || { category: 'submission_unknown' }, lastFailure?.result);
+  const finalCategory = lastFailure?.classification?.category || 'provider_unavailable';
+  const uncertain = ['submission_unknown', 'result_unknown', 'artifact_unreadable', 'forbidden_unknown']
+    .includes(finalCategory);
+  updateImageRouteRequestState(db, route.id, uncertain ? 'needs_attention' : 'failed');
+  return safeImageRouteFailure(lastFailure?.classification || { category: finalCategory }, lastFailure?.result);
 }
 
 /**
