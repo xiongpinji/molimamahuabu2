@@ -20,14 +20,15 @@
 - `fa772b4b` `feat(转绘): 绑定全帧双运行时解释器`
 - `d2b21519` `fix(转绘): 拒绝不可验证运行时文件身份`
 - `90f8370e` `fix(转绘): 对齐全帧双运行时证据`
+- `5a240819` `fix(转绘): 收紧双运行时合同探针环境`
 
 ## 本地测试证据
 
 | 检查 | 结果 |
 | --- | --- |
-| Node 五组联合回归：model-lock、fetcher、coverage、coverage-local、review | `tests 66; pass 63; fail 0; skipped 3` |
+| Node 五组联合回归：model-lock、fetcher、coverage、coverage-local、review | `tests 68; pass 65; fail 0; skipped 3` |
 | Python worker 全套回归 | `Ran 61 tests; OK; skipped 1` |
-| 获取器单组回归，含 Node/Python 合同探针 | `tests 18; pass 18; fail 0; skipped 0` |
+| 获取器单组回归，含 Node/Python 合同探针 | `tests 20; pass 20; fail 0; skipped 0` |
 | coverage、coverage-local、review 三组回归 | `tests 35; pass 34; fail 0; skipped 1` |
 | Node 语法检查 | fetcher、model-lock service、coverage service、fetcher test 均 exit 0 |
 | Python 语法检查 | worker、text worker、text subprocess 均 exit 0 |
@@ -45,7 +46,7 @@ Windows 环境的跳过项均为符号链接权限限制导致的显式 skip；�
 - `text` freeze 策略包含且仅接受 `protobuf==3.20.2`，并拒绝主运行时 native 组件。
 - coverage manifest 的 `models.model_lock_sha256` 绑定 v2 canonical hash，并投影 `runtimes` 与四组件证据。
 - 获取器失败路径保持原子性：任一 runtime、bootstrap、validate 或 publish 失败不发布部分缓存，不自动重试。
-- 错误阶段只使用可信枚举；测试覆盖伪造 stage、底层 stderr、命令、路径和敏感字段脱敏。
+- 错误阶段只使用可信枚举；测试覆盖伪造 stage、底层诊断文本、命令、路径和敏感字段脱敏。
 
 ## 边界声明
 
