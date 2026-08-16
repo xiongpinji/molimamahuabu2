@@ -150,6 +150,52 @@ describe('USMercari async video protocol', () => {
     }
   });
 
+  it('keeps foreign, lookalike-prefix and traversing absolute URLs on the network path', async () => {
+    const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'usmercari-static-boundary-'));
+    const outsideName = `outside-${path.basename(storageRoot)}.png`;
+    const outsidePath = path.join(storageRoot, '..', outsideName);
+    const traps = [
+      path.join(storageRoot, 'projects', '65', 'images', 'frame.png'),
+      path.join(storageRoot, 'foo', 'projects', '65', 'images', 'frame.png'),
+      outsidePath,
+    ];
+    for (const trap of traps) {
+      fs.mkdirSync(path.dirname(trap), { recursive: true });
+      fs.writeFileSync(trap, Buffer.from('must-not-read'));
+    }
+    const sources = [
+      'https://other.example/static/projects/65/images/frame.png',
+      'https://molimama.vip/staticfoo/projects/65/images/frame.png',
+      `https://molimama.vip/static/%2e%2e%2f${outsideName}`,
+    ];
+    let fetchCalls = 0;
+    global.fetch = async () => {
+      fetchCalls += 1;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => name === 'content-type' ? 'image/png' : null },
+        arrayBuffer: async () => Buffer.from('network-frame'),
+      };
+    };
+
+    try {
+      for (const source of sources) {
+        assert.deepEqual(await mediaUploadPayload('image', source, {
+          storage_local_path: storageRoot,
+          files_base_url: 'https://molimama.vip/static',
+        }), {
+          data: `data:image/png;base64,${Buffer.from('network-frame').toString('base64')}`,
+          extension: 'png',
+        });
+      }
+      assert.equal(fetchCalls, sources.length);
+    } finally {
+      fs.rmSync(storageRoot, { recursive: true, force: true });
+      fs.rmSync(outsidePath, { force: true });
+    }
+  });
+
   it('submits once with bearer auth and never retries an interrupted submit', async () => {
     let request;
     let calls = 0;
