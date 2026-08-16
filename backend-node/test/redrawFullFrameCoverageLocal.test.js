@@ -25,6 +25,21 @@ function sha256File(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
 
+function writeRuntimeEvidence(cacheRoot, name, freezeBytes) {
+  const interpreterPath = `runtime/${name}/.venv/Scripts/python.exe`;
+  const freezePath = `runtime/${name}/pip-freeze.txt`;
+  fs.mkdirSync(path.dirname(path.join(cacheRoot, interpreterPath)), { recursive: true });
+  fs.mkdirSync(path.dirname(path.join(cacheRoot, freezePath)), { recursive: true });
+  fs.writeFileSync(path.join(cacheRoot, interpreterPath), `${name}:python\n`);
+  fs.writeFileSync(path.join(cacheRoot, freezePath), freezeBytes);
+  return {
+    python_version: 'Python 3.11.9',
+    interpreter_path: interpreterPath,
+    pip_freeze_path: freezePath,
+    pip_freeze_sha256: sha256File(path.join(cacheRoot, freezePath)),
+  };
+}
+
 function assertSanitized(value) {
   const serialized = typeof value === 'string' ? value : JSON.stringify(value);
   assert.doesNotMatch(serialized, /https?:\/\/|file:\/\//i);
@@ -54,7 +69,11 @@ async function writeModelLock(t) {
       license_evidence_sha256: sha256File(path.join(cacheRoot, licensePath)),
     };
   });
-  const lock = { schema_version: 'redraw-full-frame-model-lock-v1', runtime: { node: 'test' }, components };
+  const runtimes = {
+    main: writeRuntimeEvidence(cacheRoot, 'main', 'mediapipe==0.10.14\nprotobuf==4.25.9\n'),
+    text: writeRuntimeEvidence(cacheRoot, 'text', 'paddleocr==2.8.1\npaddlepaddle==2.6.2\nprotobuf==3.20.2\n'),
+  };
+  const lock = { schema_version: 'redraw-full-frame-model-lock-v2', runtimes, components };
   const validated = await validateModelLock({ cacheRoot, sourcePolicy, lock });
   const lockPath = path.join(cacheRoot, 'model-lock.json');
   fs.writeFileSync(lockPath, JSON.stringify(lock, null, 2));

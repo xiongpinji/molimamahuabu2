@@ -11,10 +11,17 @@ const {
 } = require('./redrawFullFrameModelLockService');
 
 const SCHEMA_VERSION = 'redraw-full-frame-coverage-v1';
-const LOCK_SCHEMA_VERSION = 'redraw-full-frame-model-lock-v1';
+const LOCK_SCHEMA_VERSION = 'redraw-full-frame-model-lock-v2';
 const STATUS = 'generated';
 const HASH_RE = /^[a-f0-9]{64}$/;
 const COMPONENT_ORDER = Object.freeze(['face_detector', 'person_detector', 'text_detector', 'tracker']);
+const RUNTIME_NAMES = Object.freeze(['main', 'text']);
+const RUNTIME_KEYS = Object.freeze([
+  'python_version',
+  'interpreter_path',
+  'pip_freeze_path',
+  'pip_freeze_sha256',
+]);
 const REVIEW_REASON_ORDER = Object.freeze([
   'shot_start',
   'shot_end',
@@ -68,15 +75,15 @@ function assertPlainObject(value, code = 'REDRAW_FULL_FRAME_OUTPUT_INVALID') {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail(code);
 }
 
-function scanForbiddenKeys(value, code = 'REDRAW_FULL_FRAME_OUTPUT_INVALID') {
+function scanForbiddenKeys(value, code = 'REDRAW_FULL_FRAME_OUTPUT_INVALID', parentKey = null) {
   if (!value || typeof value !== 'object') return;
   if (Array.isArray(value)) {
-    for (const item of value) scanForbiddenKeys(item, code);
+    for (const item of value) scanForbiddenKeys(item, code, parentKey);
     return;
   }
   for (const key of Object.keys(value)) {
-    if (SENSITIVE_KEYS.test(key)) fail(code);
-    scanForbiddenKeys(value[key], code);
+    if (!(parentKey === 'runtimes' && key === 'text') && SENSITIVE_KEYS.test(key)) fail(code);
+    scanForbiddenKeys(value[key], code, key);
   }
 }
 
@@ -667,20 +674,31 @@ function officialSourcesByComponent() {
 
 function validateModelLock(modelLock, { requireCanonicalInput = false } = {}) {
   if (requireCanonicalInput) {
-    assertExactKeys(modelLock, ['schema_version', 'runtime', 'components', 'canonical_sha256'], 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
-    assertPlainObject(modelLock.runtime, 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+    assertExactKeys(modelLock, ['schema_version', 'runtimes', 'components', 'canonical_sha256'], 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
     const { canonical_sha256: declaredSha256, ...lockWithoutSha } = modelLock;
     const canonical = withCode(() => canonicalizeModelLock(lockWithoutSha), 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
     if (canonicalModelLockSha256(canonical) !== declaredSha256) fail('REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
   } else {
-    assertAllowedKeys(modelLock, ['schema_version', 'runtime', 'components', 'canonical_sha256'], ['schema_version', 'components', 'canonical_sha256'], 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+    assertExactKeys(modelLock, ['schema_version', 'runtimes', 'components', 'canonical_sha256'], 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
   }
   if (modelLock.schema_version !== LOCK_SCHEMA_VERSION) fail('REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
   const modelLockSha256 = requireHash(modelLock.canonical_sha256, 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
-  if (!Array.isArray(modelLock.components) || modelLock.components.length !== COMPONENT_ORDER.length) fail('REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+  const canonical = withCode(() => canonicalizeModelLock({
+    schema_version: modelLock.schema_version,
+    runtimes: modelLock.runtimes,
+    components: modelLock.components,
+  }), 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+  if (canonicalModelLockSha256(canonical) !== modelLockSha256) fail('REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+  assertExactKeys(canonical.runtimes, RUNTIME_NAMES, 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+  const runtimes = {};
+  for (const runtimeName of RUNTIME_NAMES) {
+    assertExactKeys(canonical.runtimes[runtimeName], RUNTIME_KEYS, 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
+    runtimes[runtimeName] = { ...canonical.runtimes[runtimeName] };
+  }
+  if (!Array.isArray(canonical.components) || canonical.components.length !== COMPONENT_ORDER.length) fail('REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
   const officialSources = officialSourcesByComponent();
   const byComponent = new Map();
-  for (const component of modelLock.components) {
+  for (const component of canonical.components) {
     const componentKeys = [
       'component',
       'project',
@@ -706,12 +724,17 @@ function validateModelLock(modelLock, { requireCanonicalInput = false } = {}) {
       project: requireString(component.project, 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID'),
       repository: requireString(component.repository, 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID'),
       revision: requireString(component.revision, 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID'),
+      artifact_name: requireString(component.artifact_name, 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID'),
+      artifact_path: requireString(component.artifact_path, 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID'),
       artifact_sha256: requireHash(component.artifact_sha256, 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID'),
+      license_name: requireString(component.license_name, 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID'),
+      license_evidence_path: requireString(component.license_evidence_path, 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID'),
       license_evidence_sha256: requireHash(component.license_evidence_sha256, 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID'),
     });
   }
   return {
     model_lock_sha256: modelLockSha256,
+    runtimes,
     components: COMPONENT_ORDER.map((component) => {
       const found = byComponent.get(component);
       if (!found) fail('REDRAW_FULL_FRAME_MODEL_LOCK_INVALID');
@@ -910,9 +933,10 @@ async function normalizeValidate({ evidenceRoot, manifest }) {
   const source = validateSource(manifest.source);
   const shots = validateShots(manifest.shots, source);
   const frames = await validateFrames(manifest.frames, source, shots, rootReal);
-  assertExactKeys(manifest.models, ['model_lock_sha256', 'components']);
+  assertExactKeys(manifest.models, ['model_lock_sha256', 'runtimes', 'components']);
   const models = validateModelLock({
     schema_version: LOCK_SCHEMA_VERSION,
+    runtimes: manifest.models.runtimes,
     components: manifest.models.components,
     canonical_sha256: manifest.models.model_lock_sha256,
   });

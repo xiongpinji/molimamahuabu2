@@ -82,8 +82,21 @@ function validModelLock() {
     license_evidence_sha256: HEX_B,
   }));
   const lock = {
-    schema_version: 'redraw-full-frame-model-lock-v1',
-    runtime: { node: 'test' },
+    schema_version: 'redraw-full-frame-model-lock-v2',
+    runtimes: {
+      main: {
+        python_version: 'Python 3.11.9',
+        interpreter_path: 'runtime/main/.venv/Scripts/python.exe',
+        pip_freeze_path: 'runtime/main/pip-freeze.txt',
+        pip_freeze_sha256: '1'.repeat(64),
+      },
+      text: {
+        python_version: 'Python 3.11.9',
+        interpreter_path: 'runtime/text/.venv/Scripts/python.exe',
+        pip_freeze_path: 'runtime/text/pip-freeze.txt',
+        pip_freeze_sha256: '2'.repeat(64),
+      },
+    },
     components,
   };
   return {
@@ -401,6 +414,10 @@ test('builds generated coverage manifest with sorted evidence, stable hash, pend
   assert.deepEqual(manifest.text_tracks.map((track) => track.region_key), ['text-subtitle', 'text-ui-blur']);
   assert.deepEqual(manifest.frames[1].person_region_ids, ['p-a-1', 'p-b-1']);
   assert.deepEqual(manifest.models.components.map((item) => item.component), ['face_detector', 'person_detector', 'text_detector', 'tracker']);
+  assert.deepEqual(Object.keys(manifest.models.runtimes), ['main', 'text']);
+  assert.deepEqual(Object.keys(manifest.models.runtimes.main), ['python_version', 'interpreter_path', 'pip_freeze_path', 'pip_freeze_sha256']);
+  assert.equal(manifest.models.runtimes.main.interpreter_path, 'runtime/main/.venv/Scripts/python.exe');
+  assert.equal(manifest.models.runtimes.text.pip_freeze_path, 'runtime/text/pip-freeze.txt');
   assert.equal(manifest.models.model_lock_sha256, input.modelLock.canonical_sha256);
 
   for (const frame of manifest.frames) {
@@ -730,6 +747,76 @@ test('unknown nested fields, approvals, invalid model lock, and manifest hash dr
   await assertInvalid(buildGeneratedCoverageManifest({
     ...input,
     modelLock: { schema_version: input.modelLock.schema_version, components: input.modelLock.components, canonical_sha256: input.modelLock.canonical_sha256 },
+  }), 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID', evidenceRoot);
+
+  await assertInvalid(buildGeneratedCoverageManifest({
+    ...input,
+    modelLock: {
+      ...input.modelLock,
+      schema_version: 'redraw-full-frame-model-lock-v1',
+      runtime: { node: 'test' },
+    },
+  }), 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID', evidenceRoot);
+
+  await assertInvalid(buildGeneratedCoverageManifest({
+    ...input,
+    modelLock: {
+      ...input.modelLock,
+      runtimes: { ...input.modelLock.runtimes, audio: input.modelLock.runtimes.text },
+    },
+  }), 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID', evidenceRoot);
+
+  await assertInvalid(buildGeneratedCoverageManifest({
+    ...input,
+    modelLock: {
+      ...input.modelLock,
+      runtimes: { main: input.modelLock.runtimes.main },
+    },
+  }), 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID', evidenceRoot);
+
+  await assertInvalid(buildGeneratedCoverageManifest({
+    ...input,
+    modelLock: {
+      ...input.modelLock,
+      runtimes: {
+        ...input.modelLock.runtimes,
+        main: { ...input.modelLock.runtimes.main, extra: true },
+      },
+    },
+  }), 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID', evidenceRoot);
+
+  await assertInvalid(buildGeneratedCoverageManifest({
+    ...input,
+    modelLock: {
+      ...input.modelLock,
+      runtimes: {
+        ...input.modelLock.runtimes,
+        main: { ...input.modelLock.runtimes.main, interpreter_path: 'C:\\runtime\\main\\python.exe' },
+      },
+    },
+  }), 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID', evidenceRoot);
+
+  await assertInvalid(buildGeneratedCoverageManifest({
+    ...input,
+    modelLock: {
+      ...input.modelLock,
+      runtimes: {
+        ...input.modelLock.runtimes,
+        text: { ...input.modelLock.runtimes.text, pip_freeze_path: '../runtime/text/pip-freeze.txt' },
+      },
+    },
+  }), 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID', evidenceRoot);
+
+  const freezeDrift = {
+    ...input.modelLock,
+    runtimes: {
+      ...input.modelLock.runtimes,
+      text: { ...input.modelLock.runtimes.text, pip_freeze_sha256: '3'.repeat(64) },
+    },
+  };
+  await assertInvalid(buildGeneratedCoverageManifest({
+    ...input,
+    modelLock: freezeDrift,
   }), 'REDRAW_FULL_FRAME_MODEL_LOCK_INVALID', evidenceRoot);
 
   await assertInvalid(buildGeneratedCoverageManifest({

@@ -70,7 +70,24 @@ function validModelLock() {
     license_evidence_path: `${component}/LICENSE.txt`,
     license_evidence_sha256: 'b'.repeat(64),
   }));
-  const lock = { schema_version: 'redraw-full-frame-model-lock-v1', runtime: { node: 'test' }, components };
+  const lock = {
+    schema_version: 'redraw-full-frame-model-lock-v2',
+    runtimes: {
+      main: {
+        python_version: 'Python 3.11.9',
+        interpreter_path: 'runtime/main/.venv/Scripts/python.exe',
+        pip_freeze_path: 'runtime/main/pip-freeze.txt',
+        pip_freeze_sha256: '1'.repeat(64),
+      },
+      text: {
+        python_version: 'Python 3.11.9',
+        interpreter_path: 'runtime/text/.venv/Scripts/python.exe',
+        pip_freeze_path: 'runtime/text/pip-freeze.txt',
+        pip_freeze_sha256: '2'.repeat(64),
+      },
+    },
+    components,
+  };
   return { ...lock, canonical_sha256: canonicalModelLockSha256(canonicalizeModelLock(lock)) };
 }
 
