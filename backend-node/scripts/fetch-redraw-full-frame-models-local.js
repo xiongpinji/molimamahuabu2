@@ -99,37 +99,44 @@ const NO_DEPS_REQUIREMENTS = new Set([
   'paddleocr==2.8.1',
 ]);
 const NO_DEPS_PACKAGE_NAMES = new Set(['yolox', 'imgaug', 'mediapipe', 'paddlepaddle', 'paddleocr']);
-const RUNTIME_FREEZE_ALLOWED_TRANSITIVE_NAMES = new Set([
-  'anyio',
-  'certifi',
-  'cffi',
-  'charset-normalizer',
+const RUNTIME_FREEZE_ALLOWED_TRANSITIVE_SPECS = new Map([
+  ['anyio', '4.14.2'],
+  ['certifi', '2026.7.22'],
+  ['cffi', '2.1.1'],
+  ['charset-normalizer', '3.5.1'],
+  ['colorama', '0.4.6'],
+  ['contourpy', '1.3.3'],
+  ['cycler', '0.12.1'],
+  ['filelock', '3.32.3'],
+  ['fonttools', '4.63.0'],
+  ['fsspec', '2026.7.0'],
+  ['h11', '0.16.0'],
+  ['httpcore', '1.0.9'],
+  ['idna', '3.18'],
+  ['intel-openmp', '2021.4.0'],
+  ['jinja2', '3.1.6'],
+  ['kiwisolver', '1.5.0'],
+  ['lazy-loader', '0.5'],
+  ['markupsafe', '3.0.3'],
+  ['mkl', '2021.4.0'],
+  ['mpmath', '1.3.0'],
+  ['networkx', '3.6.1'],
+  ['packaging', '26.3'],
+  ['pycparser', '3.0'],
+  ['pyparsing', '3.3.2'],
+  ['python-dateutil', '2.9.0.post0'],
+  ['sniffio', '1.3.1'],
+  ['sympy', '1.14.0'],
+  ['tbb', '2021.13.1'],
+  ['typing-extensions', '4.16.0'],
+  ['urllib3', '2.7.0'],
+  ['win32-setctime', '1.2.0'],
+]);
+const WINDOWS_ONLY_RUNTIME_TRANSITIVE_NAMES = new Set([
   'colorama',
-  'contourpy',
-  'cycler',
-  'filelock',
-  'fonttools',
-  'fsspec',
-  'h11',
-  'httpcore',
-  'idna',
   'intel-openmp',
-  'jinja2',
-  'kiwisolver',
-  'lazy-loader',
-  'markupsafe',
   'mkl',
-  'mpmath',
-  'networkx',
-  'packaging',
-  'pycparser',
-  'pyparsing',
-  'python-dateutil',
-  'sniffio',
-  'sympy',
   'tbb',
-  'typing-extensions',
-  'urllib3',
   'win32-setctime',
 ]);
 const FORBIDDEN_RUNTIME_PACKAGES = new Set([
@@ -219,8 +226,8 @@ function splitRequirement(requirement) {
   return { name: normalizePackageName(match[1]), version: match[2] };
 }
 
-function assertPinnedFreeze(lines) {
-  if (!Array.isArray(lines)) throw error(MODEL_ERROR);
+function assertPinnedFreeze(lines, platform = process.platform) {
+  if (!Array.isArray(lines) || typeof platform !== 'string' || platform.length === 0) throw error(MODEL_ERROR);
   const sorted = lines.filter((line) => line.length > 0).slice().sort((a, b) => a.localeCompare(b));
   const installed = new Map();
   for (const line of sorted) {
@@ -234,10 +241,10 @@ function assertPinnedFreeze(lines) {
     if (requiredNames.has(required.name) || installed.get(required.name) !== required.version) throw error(MODEL_ERROR);
     requiredNames.add(required.name);
   }
-  for (const installedName of installed.keys()) {
-    if (!requiredNames.has(installedName) && !RUNTIME_FREEZE_ALLOWED_TRANSITIVE_NAMES.has(installedName)) {
-      throw error(MODEL_ERROR);
-    }
+  for (const [installedName, installedVersion] of installed.entries()) {
+    if (requiredNames.has(installedName)) continue;
+    if (RUNTIME_FREEZE_ALLOWED_TRANSITIVE_SPECS.get(installedName) !== installedVersion) throw error(MODEL_ERROR);
+    if (WINDOWS_ONLY_RUNTIME_TRANSITIVE_NAMES.has(installedName) && platform !== 'win32') throw error(MODEL_ERROR);
   }
   return sorted;
 }
@@ -601,6 +608,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  assertPinnedFreeze,
   assertAllowedUrl,
   parseArgs,
   resolveOfficialComponent,

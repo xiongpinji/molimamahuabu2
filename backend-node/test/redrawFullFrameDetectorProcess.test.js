@@ -11,6 +11,7 @@ const {
   safeWorkerEnv,
 } = require('../src/services/redrawFullFrameDetectorProcess');
 const {
+  assertPinnedFreeze,
   assertAllowedUrl,
   parseArgs,
   resolveOfficialComponent,
@@ -94,9 +95,19 @@ const ALLOWED_RUNTIME_TRANSITIVE_FREEZE = [
   'urllib3==2.7.0',
   'win32-setctime==1.2.0',
 ];
+const WINDOWS_ONLY_RUNTIME_TRANSITIVE_NAMES = new Set([
+  'colorama',
+  'intel-openmp',
+  'mkl',
+  'tbb',
+  'win32-setctime',
+]);
+const CROSS_PLATFORM_RUNTIME_TRANSITIVE_FREEZE = ALLOWED_RUNTIME_TRANSITIVE_FREEZE.filter((requirement) => (
+  !WINDOWS_ONLY_RUNTIME_TRANSITIVE_NAMES.has(requirement.split('==')[0].toLowerCase().replace(/[-_.]+/g, '-'))
+));
 const EXPECTED_RUNTIME_FREEZE_WITH_TRANSITIVES = [
   ...EXPECTED_RUNTIME_FREEZE,
-  ...ALLOWED_RUNTIME_TRANSITIVE_FREEZE,
+  ...(process.platform === 'win32' ? ALLOWED_RUNTIME_TRANSITIVE_FREEZE : CROSS_PLATFORM_RUNTIME_TRANSITIVE_FREEZE),
 ];
 const FORBIDDEN_RUNTIME_PACKAGES = new Set([
   'opencv-python',
@@ -566,6 +577,22 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
     await fetchModule.pipFreeze(parent, deps),
     EXPECTED_RUNTIME_FREEZE_WITH_TRANSITIVES.slice().sort((a, b) => a.localeCompare(b)),
   );
+  assert.deepEqual(
+    assertPinnedFreeze([...EXPECTED_RUNTIME_FREEZE, ...CROSS_PLATFORM_RUNTIME_TRANSITIVE_FREEZE], 'linux'),
+    [...EXPECTED_RUNTIME_FREEZE, ...CROSS_PLATFORM_RUNTIME_TRANSITIVE_FREEZE].sort((a, b) => a.localeCompare(b)),
+  );
+  for (const requirement of ALLOWED_RUNTIME_TRANSITIVE_FREEZE.filter((line) => (
+    WINDOWS_ONLY_RUNTIME_TRANSITIVE_NAMES.has(line.split('==')[0].toLowerCase().replace(/[-_.]+/g, '-'))
+  ))) {
+    assert.throws(
+      () => assertPinnedFreeze([...EXPECTED_RUNTIME_FREEZE, requirement], 'linux'),
+      /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+    );
+  }
+  assert.doesNotThrow(() => assertPinnedFreeze(
+    [...EXPECTED_RUNTIME_FREEZE, ...ALLOWED_RUNTIME_TRANSITIVE_FREEZE],
+    'win32',
+  ));
   assert.equal(await fetchModule.pythonVersion(parent, deps), 'Python 3.11.9');
   await fetchModule.bootstrapWorker(parent, path.join(parent, 'model-lock.json'), deps);
   assert.equal(calls[0].command, 'python-fixture');
@@ -678,6 +705,20 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
     }),
     /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
   );
+  for (const requirement of [
+    'anyio==999.0.0',
+    'intel-openmp==999.0.0',
+    'mkl==999.0.0',
+    'win32-setctime==999.0.0',
+  ]) {
+    await assert.rejects(
+      fetchModule.pipFreeze(parent, {
+        ...deps,
+        spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.join('\n')}\n${requirement}\n`,
+      }),
+      /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+    );
+  }
   for (const excluded of [
     'beautifulsoup4',
     'fire',
