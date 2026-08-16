@@ -597,6 +597,43 @@ class WorkerProtocolTests(unittest.TestCase):
                 worker.os.path.realpath = original_realpath
             self.assertIsNone(raised.exception.__cause__)
 
+    def test_model_lock_rejects_runtime_zero_file_identity_even_when_metadata_matches(self):
+        with tempfile.TemporaryDirectory() as root:
+            lock_path = write_model_lock(root)
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            text_interpreter = str(pathlib.Path(root) / lock["runtimes"]["text"]["interpreter_path"])
+            text_size = pathlib.Path(text_interpreter).stat().st_size
+            original_stat = worker.os.stat
+            original_fstat = worker.os.fstat
+
+            def zero_identity(stat_result):
+                values = list(stat_result)
+                values[0] = 0
+                values[1] = 0
+                return os.stat_result(values)
+
+            def fake_stat(path):
+                result = original_stat(path)
+                if pathlib.Path(path) == pathlib.Path(text_interpreter):
+                    return zero_identity(result)
+                return result
+
+            def fake_fstat(fd):
+                result = original_fstat(fd)
+                if result.st_size == text_size:
+                    return zero_identity(result)
+                return result
+
+            try:
+                worker.os.stat = fake_stat
+                worker.os.fstat = fake_fstat
+                with self.assertRaises(worker.ProtocolError) as raised:
+                    worker._validate_model_lock(str(lock_path))
+            finally:
+                worker.os.stat = original_stat
+                worker.os.fstat = original_fstat
+            self.assertIsNone(raised.exception.__cause__)
+
     def test_default_loader_uses_text_process_and_closes_it(self):
         events = []
 

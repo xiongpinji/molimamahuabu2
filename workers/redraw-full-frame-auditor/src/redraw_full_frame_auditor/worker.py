@@ -808,6 +808,8 @@ def _read_stable_regular_file(path, hash_expected=None):
 
 
 def _same_stat(left, right):
+    if not _trusted_stat_identity(left) or not _trusted_stat_identity(right):
+        return False
     left_mtime_ns = getattr(left, "st_mtime_ns", int(left.st_mtime * 1_000_000_000))
     right_mtime_ns = getattr(right, "st_mtime_ns", int(right.st_mtime * 1_000_000_000))
     return (
@@ -816,6 +818,10 @@ def _same_stat(left, right):
         and left.st_size == right.st_size
         and left_mtime_ns == right_mtime_ns
     )
+
+
+def _trusted_stat_identity(value):
+    return getattr(value, "st_dev", 0) > 0 and getattr(value, "st_ino", 0) > 0
 
 
 def _same_file(left, right):
