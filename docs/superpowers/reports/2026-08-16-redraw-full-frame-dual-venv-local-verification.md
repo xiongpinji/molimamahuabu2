@@ -6,8 +6,9 @@
 
 ## 验证基线
 
-- 验证命令运行于 `codex/redraw-r12-merge-20260809`，任务 4 后 HEAD 为 `90f8370e`。
+- 验证命令运行于 `codex/redraw-r12-merge-20260809`，任务 1—5 验证基线 HEAD 为 `bd372e4a`。
 - 本报告提交前新增任务 5 本地一致性改动：Python worker 导出 `RUNTIME_KEYS`，Node 获取器测试用本地 Python 探针读取 worker 固定合同。
+- 报告文件自身的最新修正提交需通过 `git log -1 --format=%H -- docs/superpowers/reports/2026-08-16-redraw-full-frame-dual-venv-local-verification.md` 获取；将自身未来提交 hash 写入正文会改变该文件。
 
 ## 任务提交
 
@@ -20,7 +21,9 @@
 - `fa772b4b` `feat(转绘): 绑定全帧双运行时解释器`
 - `d2b21519` `fix(转绘): 拒绝不可验证运行时文件身份`
 - `90f8370e` `fix(转绘): 对齐全帧双运行时证据`
+- `a77b9300` `docs(转绘): 记录双 venv 本地验证证据`
 - `5a240819` `fix(转绘): 收紧双运行时合同探针环境`
+- `bd372e4a` `docs(转绘): 更新双 venv 本地测试证据`
 
 ## 本地测试证据
 
