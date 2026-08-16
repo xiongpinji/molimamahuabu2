@@ -154,11 +154,26 @@ function mimeForExtension(extension, kind) {
   return known[String(extension || '').toLowerCase()] || DEFAULT_MIME[kind];
 }
 
-function resolveStorageFile(source, storageLocalPath) {
+function resolveStorageFile(source, storageLocalPath, filesBaseUrl) {
   if (!storageLocalPath) return '';
   const raw = String(source || '').trim();
-  if (!raw || /^data:/i.test(raw) || /^https?:\/\//i.test(raw)) return '';
-  const relative = decodeURIComponent(raw.replace(/^\/static\//i, '').replace(/^static[\\/]/i, '')).replace(/^[/\\]+/, '');
+  if (!raw || /^data:/i.test(raw)) return '';
+  let storagePath = raw;
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const sourceUrl = new URL(raw);
+      const baseUrl = new URL(String(filesBaseUrl || '').replace(/\/+$/, ''));
+      const basePath = baseUrl.pathname.replace(/\/+$/, '');
+      if (sourceUrl.origin !== baseUrl.origin
+          || (sourceUrl.pathname !== basePath && !sourceUrl.pathname.startsWith(`${basePath}/`))) {
+        return '';
+      }
+      storagePath = sourceUrl.pathname.slice(basePath.length);
+    } catch (_) {
+      return '';
+    }
+  }
+  const relative = decodeURIComponent(storagePath.replace(/^\/static\//i, '').replace(/^static[\\/]/i, '')).replace(/^[/\\]+/, '');
   const root = path.resolve(storageLocalPath);
   const candidate = path.resolve(root, relative);
   if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) return '';
@@ -221,7 +236,7 @@ async function mediaUploadPayload(kind, source, opts = {}) {
     };
   }
 
-  const localFile = resolveStorageFile(raw, opts.storage_local_path);
+  const localFile = resolveStorageFile(raw, opts.storage_local_path, opts.files_base_url);
   if (localFile) {
     const bytes = fs.readFileSync(localFile);
     const extension = extensionFrom(localFile, DEFAULT_EXTENSION[kind]);
@@ -308,7 +323,10 @@ async function uploadUsmercariMedia(config, kind, source, opts = {}) {
 
 async function prepareUsmercariVideoBody(config, opts = {}) {
   const checked = validateUsmercariVideoOptions(opts);
-  const uploadOpts = { storage_local_path: opts.storage_local_path };
+  const uploadOpts = {
+    storage_local_path: opts.storage_local_path,
+    files_base_url: opts.files_base_url,
+  };
   const [imageId, endImageId, imageIds, videoReferenceIds, audioReferenceIds] = await Promise.all([
     checked.firstFrame ? uploadUsmercariMedia(config, 'image', checked.firstFrame, uploadOpts) : '',
     checked.lastFrame ? uploadUsmercariMedia(config, 'image', checked.lastFrame, uploadOpts) : '',

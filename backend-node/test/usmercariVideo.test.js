@@ -1,5 +1,8 @@
 const { describe, it, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const {
   USMERCARI_MODELS,
@@ -115,6 +118,36 @@ describe('USMercari async video protocol', () => {
       data: 'data:audio/mpeg;base64,YXVkaW8=',
       extension: 'mp3',
     });
+  });
+
+  it('reads an authenticated same-origin static URL from local storage before fetching', async () => {
+    const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'usmercari-static-'));
+    const relativePath = path.join('projects', '65', 'images', 'frame.png');
+    const localPath = path.join(storageRoot, relativePath);
+    fs.mkdirSync(path.dirname(localPath), { recursive: true });
+    fs.writeFileSync(localPath, Buffer.from('local-frame'));
+    let fetchCalls = 0;
+    global.fetch = async () => {
+      fetchCalls += 1;
+      throw new Error('authenticated static URL must not be fetched anonymously');
+    };
+
+    try {
+      assert.deepEqual(await mediaUploadPayload(
+        'image',
+        'https://molimama.vip/static/projects/65/images/frame.png',
+        {
+          storage_local_path: storageRoot,
+          files_base_url: 'https://molimama.vip/static',
+        },
+      ), {
+        data: `data:image/png;base64,${Buffer.from('local-frame').toString('base64')}`,
+        extension: 'png',
+      });
+      assert.equal(fetchCalls, 0);
+    } finally {
+      fs.rmSync(storageRoot, { recursive: true, force: true });
+    }
   });
 
   it('submits once with bearer auth and never retries an interrupted submit', async () => {
