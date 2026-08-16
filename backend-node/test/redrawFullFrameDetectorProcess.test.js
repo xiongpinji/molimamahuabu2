@@ -1655,6 +1655,105 @@ test('PaddlePaddle wheel drift rejects same-name wheel content replacement after
   assert.equal(fs.existsSync(path.join(parent, PADDLE_WHEEL_RELATIVE_PATH)), true);
 });
 
+test('PaddlePaddle wheel hard link from outside staging is rejected before local install', async (t) => {
+  const parent = tempDir(t, 'redraw-paddle-wheel-hardlink-download-');
+  const outside = path.join(tempDir(t, 'redraw-paddle-wheel-hardlink-outside-'), PADDLE_WHEEL_FILE);
+  await fsp.writeFile(outside, 'fixture-wheel');
+  await fsp.mkdir(path.join(parent, 'runtime', 'text'), { recursive: true });
+  const calls = [];
+  let linkCreated = false;
+
+  await assert.rejects(
+    installRuntime(parent, [], 'text', {
+      env: { OPENAI_API_KEY: 'secret', PATH: 'path' },
+      spawnProcess: async (_command, args, options) => {
+        calls.push(args.slice());
+        if (args.includes('download')) {
+          const dest = args[args.indexOf('--dest') + 1];
+          const wheelDir = path.join(options.cwd, dest);
+          await fsp.mkdir(wheelDir, { recursive: true });
+          try {
+            await fsp.link(outside, path.join(wheelDir, PADDLE_WHEEL_FILE));
+            linkCreated = true;
+          } catch (err) {
+            if (err && err.code === 'EPERM') {
+              t.skip(`hard link creation not permitted: ${err.code}`);
+              return;
+            }
+            throw err;
+          }
+        }
+        return '';
+      },
+    }),
+    (error) => {
+      assert.equal(linkCreated, true);
+      assertStableFetchError(error, 'download:text:paddlepaddle');
+      assertSerializedFetchErrorIsSanitized(error);
+      return true;
+    },
+  );
+  assert.equal(calls.filter((args) => args.includes('--no-index')).length, 0);
+});
+
+test('PaddlePaddle wheel hard link created during local install is rejected after install', async (t) => {
+  const parent = tempDir(t, 'redraw-paddle-wheel-hardlink-install-');
+  const outside = path.join(tempDir(t, 'redraw-paddle-wheel-hardlink-install-outside-'), PADDLE_WHEEL_FILE);
+  const originalLstat = fsp.lstat;
+  let wheelPath = null;
+  let preLinkStat = null;
+  await fsp.mkdir(path.join(parent, 'runtime', 'text'), { recursive: true });
+  let linkCreated = false;
+  t.after(() => { fsp.lstat = originalLstat; });
+
+  await assert.rejects(
+    installRuntime(parent, [], 'text', {
+      env: { OPENAI_API_KEY: 'secret', PATH: 'path' },
+      spawnProcess: async (_command, args, options) => {
+        if (args.includes('download')) {
+          const dest = args[args.indexOf('--dest') + 1];
+          const wheelDir = path.join(options.cwd, dest);
+          wheelPath = path.join(wheelDir, PADDLE_WHEEL_FILE);
+          await fsp.mkdir(wheelDir, { recursive: true });
+          await fsp.writeFile(wheelPath, 'fixture-wheel');
+        }
+        if (args.includes('--no-index')) {
+          try {
+            preLinkStat = await originalLstat(wheelPath, { bigint: true });
+            await fsp.link(wheelPath, outside);
+            linkCreated = true;
+            fsp.lstat = async (target, options) => {
+              const stat = await originalLstat(target, options);
+              if (path.resolve(target) !== path.resolve(wheelPath) || stat.nlink !== 2n) return stat;
+              Object.defineProperties(stat, {
+                dev: { value: preLinkStat.dev },
+                ino: { value: preLinkStat.ino },
+                size: { value: preLinkStat.size },
+                mtimeNs: { value: preLinkStat.mtimeNs },
+                ctimeNs: { value: preLinkStat.ctimeNs },
+              });
+              return stat;
+            };
+          } catch (err) {
+            if (err && err.code === 'EPERM') {
+              t.skip(`hard link creation not permitted: ${err.code}`);
+              return;
+            }
+            throw err;
+          }
+        }
+        return '';
+      },
+    }),
+    (error) => {
+      assert.equal(linkCreated, true);
+      assertStableFetchError(error, 'install:text:paddlepaddle');
+      assertSerializedFetchErrorIsSanitized(error);
+      return true;
+    },
+  );
+});
+
 test('PaddlePaddle download failure returns only the trusted sanitized stage', async (t) => {
   const parent = tempDir(t, 'redraw-paddle-download-fail-');
   const raw = new Error('C:\\Users\\private\\paddle.py Authorization: Bearer secret-token Key=secret-key');

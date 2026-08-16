@@ -426,7 +426,7 @@ async function readPaddleWheelEvidence(staging, wheelDir) {
   if (relativePath.replace(/\\/g, '/') !== `${PADDLE_WHEEL_RELATIVE_DIR}/${entry.name}`) throw error(MODEL_ERROR);
   const absPath = path.join(stagingRoot, relativePath);
   const pathStat = await fsp.lstat(absPath, { bigint: true });
-  if (!pathStat.isFile() || pathStat.isSymbolicLink()) throw error(MODEL_ERROR);
+  if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1n) throw error(MODEL_ERROR);
   const realPath = await fsp.realpath(absPath);
   if (!sameResolvedPath(path.dirname(realPath), realWheelDir)) throw error(MODEL_ERROR);
   return {
@@ -440,7 +440,7 @@ async function readPaddleWheelEvidence(staging, wheelDir) {
 
 async function revalidatePaddleWheelEvidence(evidence) {
   const pathStat = await fsp.lstat(evidence.absPath, { bigint: true });
-  if (!pathStat.isFile() || pathStat.isSymbolicLink()) throw error(MODEL_ERROR);
+  if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1n) throw error(MODEL_ERROR);
   const realPath = await fsp.realpath(evidence.absPath);
   if (!sameResolvedPath(realPath, evidence.realPath)) throw error(MODEL_ERROR);
   if (!sameResolvedPath(path.dirname(realPath), evidence.realDir)) throw error(MODEL_ERROR);
