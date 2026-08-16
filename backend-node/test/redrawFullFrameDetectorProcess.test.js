@@ -151,6 +151,27 @@ const FORBIDDEN_RUNTIME_PACKAGES = new Set([
 ]);
 const RUNTIME_KEYS = ['python_version', 'interpreter_path', 'pip_freeze_path', 'pip_freeze_sha256'];
 
+function pickEnvValue(sourceEnv, canonicalKey) {
+  if (sourceEnv[canonicalKey] !== undefined) return sourceEnv[canonicalKey];
+  const found = Object.keys(sourceEnv).find((key) => key.toLowerCase() === canonicalKey.toLowerCase());
+  return found ? sourceEnv[found] : undefined;
+}
+
+function contractProbePython(sourceEnv = process.env) {
+  return sourceEnv.REDRAW_AUDITOR_PYTHON || null;
+}
+
+function contractProbeEnv(repoRoot, sourceEnv = process.env) {
+  const env = {};
+  for (const key of ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP']) {
+    const value = pickEnvValue(sourceEnv, key);
+    if (value !== undefined) env[key] = value;
+  }
+  env.PYTHONPATH = path.join(repoRoot, 'workers', 'redraw-full-frame-auditor', 'src');
+  env.PYTHONUTF8 = '1';
+  return env;
+}
+
 function tempDir(t, prefix) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -1224,9 +1245,41 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   );
 });
 
-test('Node fetcher and Python worker expose the same v2 runtime contract', () => {
+test('contract probe requires an explicit auditor Python interpreter', () => {
+  assert.equal(contractProbePython({ PATH: 'path-value' }), null);
+});
+
+test('contract probe passes only the safe Python runtime environment allowlist', () => {
+  const env = contractProbeEnv('repo-root', {
+    PATH: 'path-value',
+    SYSTEMROOT: 'system-root',
+    WINDIR: 'windir',
+    TEMP: 'temp',
+    TMP: 'tmp',
+    REDRAW_AUDITOR_PYTHON: 'python-fixture',
+    OPENAI_API_KEY: 'secret',
+    HTTPS_PROXY: 'proxy',
+    PYTHONHOME: 'pythonhome',
+    PYTHONIOENCODING: 'utf-8',
+  });
+  assert.deepEqual(env, {
+    PATH: 'path-value',
+    SystemRoot: 'system-root',
+    WINDIR: 'windir',
+    TEMP: 'temp',
+    TMP: 'tmp',
+    PYTHONPATH: path.join('repo-root', 'workers', 'redraw-full-frame-auditor', 'src'),
+    PYTHONUTF8: '1',
+  });
+});
+
+test('Node fetcher and Python worker expose the same v2 runtime contract', (t) => {
   const repoRoot = path.resolve(__dirname, '..', '..');
-  const python = process.env.REDRAW_AUDITOR_PYTHON || 'python';
+  const python = contractProbePython();
+  if (!python) {
+    t.skip('REDRAW_AUDITOR_PYTHON is required for the Python contract probe');
+    return;
+  }
   const probe = [
     'import json',
     'from redraw_full_frame_auditor import worker',
@@ -1239,10 +1292,7 @@ test('Node fetcher and Python worker expose the same v2 runtime contract', () =>
   const result = spawnSync(python, ['-c', probe], {
     cwd: repoRoot,
     encoding: 'utf8',
-    env: {
-      ...process.env,
-      PYTHONPATH: path.join(repoRoot, 'workers', 'redraw-full-frame-auditor', 'src'),
-    },
+    env: contractProbeEnv(repoRoot),
   });
   assert.equal(result.status, 0, result.stderr);
   const contract = JSON.parse(result.stdout);
