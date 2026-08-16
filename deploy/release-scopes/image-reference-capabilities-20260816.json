@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "release": "image-reference-capabilities-20260816",
+  "allowedPaths": [
+    "backend-node/scripts/sync-image-model-capabilities.js",
+    "backend-node/src/services/imageClient.js",
+    "deploy/release-scopes/image-reference-capabilities-20260816.json",
+    "frontweb/src/components/dramaCanvas/HomeCanvasNode.vue",
+    "frontweb/src/utils/canvasModelCapabilities.js",
+    "frontweb/src/views/DramaCanvas.vue"
+  ]
+}

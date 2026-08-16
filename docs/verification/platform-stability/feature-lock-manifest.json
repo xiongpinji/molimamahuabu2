@@ -72,19 +72,20 @@
         "docs/verification/platform-stability/foundation-verification.md",
         "docs/verification/platform-stability/image-legacy-failover-compatibility.md",
         "docs/verification/platform-stability/provider-reconciliation-grace-20260816.md",
-        "docs/tasks/2026-08-16-provider-failover-protection-phase.md"
+        "docs/tasks/2026-08-16-provider-failover-protection-phase.md",
+        "docs/tasks/2026-08-16-image-node-gpt-image-reference-repair.md"
       ],
       "fixCommit": "54eb8e940982cd9c4b65e91b934d8593a6b1975b",
       "unlock": {
-        "reason": "经批准执行供应商容灾保护阶段，补齐真实切换事件并阻止被占用半开供应商重复提交",
-        "approvedBy": "product-owner 2026-08-16 provider-failover-protection-phase",
+        "reason": "经批准修复 AIHubCC gpt-image-2 图生图协议并锁定已实测的 20 张参考图能力，同时在提交前拒绝不受支持的 fumin 参考图请求",
+        "approvedBy": "product-owner 2026-08-16 image-reference-capability-deploy",
         "impactTests": [
+          "backend-node/test/aihubccImage.test.js",
+          "backend-node/test/fuminImage.test.js",
+          "backend-node/test/imageBilling.test.js",
           "backend-node/test/providerRouteImageIntegration.test.js",
           "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/providerErrorClassification.test.js",
-          "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/providerRouteTextIntegration.test.js",
-          "backend-node/test/providerRouteAdminRoutes.test.js"
+          "backend-node/test/providerErrorClassification.test.js"
         ]
       }
     },

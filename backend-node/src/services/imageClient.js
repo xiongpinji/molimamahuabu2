@@ -117,29 +117,96 @@ function providerErrorMeta(data, httpStatus, overrides = {}) {
   };
 }
 
+async function aihubccReferenceToFile(value, index = 0) {
+  const source = String(value || '').trim();
+  const dataMatch = source.match(/^data:(image\/(?:png|jpe?g|webp));base64,([A-Za-z0-9+/=\s]+)$/i);
+  let bytes;
+  let mimeType;
+  if (dataMatch) {
+    mimeType = dataMatch[1].toLowerCase().replace('image/jpg', 'image/jpeg');
+    bytes = Buffer.from(dataMatch[2].replace(/\s+/g, ''), 'base64');
+  } else if (/^https?:\/\//i.test(source)) {
+    throw new Error('远程参考图必须先保存为本地素材');
+  } else {
+    throw new Error('参考图无法转换为上传文件');
+  }
+  if (!bytes.length) throw new Error('参考图内容为空');
+  if (bytes.length > 20 * 1024 * 1024) throw new Error('参考图超过 20MB 限制');
+  const extension = mimeType === 'image/png' ? 'png' : mimeType === 'image/webp' ? 'webp' : 'jpg';
+  return {
+    blob: new Blob([bytes], { type: mimeType }),
+    filename: `reference-${index + 1}.${extension}`,
+  };
+}
+
 async function callAihubccImageApi(config, log, opts = {}) {
   const model = String(opts.model || 'gpt-image-2').trim();
   const rawRefs = Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.filter(Boolean) : [];
+  const gptImage2 = /^gpt-image-2$/i.test(model);
+  if (gptImage2 && rawRefs.length > 20) {
+    return {
+      error: 'AIHubCC gpt-image-2 最多支持 20 张参考图，请移除超出的参考图后再生成',
+      route_meta: {
+        phase: 'prepare',
+        requestBodySent: false,
+        explicitlyRejected: true,
+      },
+    };
+  }
   const refs = rawRefs
     .map((value) => resolveImageRef(value, opts.files_base_url, opts.storage_local_path))
     .filter(Boolean)
-    .slice(0, 6);
+    .slice(0, gptImage2 ? 20 : 6);
+  const gptImage2Edit = gptImage2 && refs.length > 0;
+  if (gptImage2 && rawRefs.length > 0 && refs.length !== rawRefs.length) {
+    return {
+      error: 'AIHubCC gpt-image-2 参考图无法读取，请重新上传后再生成',
+      route_meta: {
+        phase: 'prepare',
+        requestBodySent: false,
+        explicitlyRejected: true,
+      },
+    };
+  }
   const flowModel = aihubccClient.isFlowImageModel(model);
   const asyncModel = aihubccClient.isAsyncImageModel(model);
-  const endpoint = flowModel ? '/chat/completions' : (asyncModel ? '/videos' : (config.endpoint || '/images/generations'));
-  const body = flowModel
-    ? aihubccClient.buildFlowImageBody({
-        model,
-        prompt: opts.prompt,
-        referenceUrls: refs,
-      })
-    : aihubccClient.buildImageBody({
-        model,
-        prompt: opts.prompt,
-        size: opts.size,
-        quality: opts.quality,
-        referenceUrls: refs,
-      });
+  const requestSize = /^gpt-image-2(?:-1k)?$/i.test(model)
+    ? normalizeGptImageSize(opts.size)
+    : opts.size;
+  const endpoint = gptImage2Edit
+    ? '/images/edits'
+    : (flowModel ? '/chat/completions' : (asyncModel ? '/videos' : (config.endpoint || '/images/generations')));
+  let body;
+  if (gptImage2Edit) {
+    let files;
+    try {
+      files = await Promise.all(refs.map(aihubccReferenceToFile));
+    } catch (error) {
+      return {
+        error: `AIHubCC gpt-image-2 参考图准备失败: ${error.message}`,
+        route_meta: { phase: 'prepare', requestBodySent: false, explicitlyRejected: true },
+      };
+    }
+    body = new FormData();
+    body.append('model', model);
+    body.append('prompt', opts.prompt || '');
+    body.append('size', requestSize || '1024x1024');
+    for (const file of files) body.append('image[]', file.blob, file.filename);
+  } else {
+    body = flowModel
+      ? aihubccClient.buildFlowImageBody({
+          model,
+          prompt: opts.prompt,
+          referenceUrls: refs,
+        })
+      : aihubccClient.buildImageBody({
+          model,
+          prompt: opts.prompt,
+          size: requestSize,
+          quality: opts.quality,
+          referenceUrls: refs,
+        });
+  }
   const url = aihubccClient.getSubmitUrl(config, endpoint);
   log.info('[AIHubCC image] 提交', {
     image_gen_id: opts.image_gen_id,
@@ -153,8 +220,8 @@ async function callAihubccImageApi(config, log, opts = {}) {
   try {
     result = await aihubccClient.requestJson(url, {
       method: 'POST',
-      headers: aihubccClient.authHeaders(config, true),
-      body: JSON.stringify(body),
+      headers: aihubccClient.authHeaders(config, !gptImage2Edit),
+      body: gptImage2Edit ? body : JSON.stringify(body),
       timeoutMs: IMAGE_HTTP_TIMEOUT_MS,
     });
   } catch (error) {
@@ -183,6 +250,8 @@ async function callAihubccImageApi(config, log, opts = {}) {
           route_meta: providerErrorMeta(result.data, result.response.status, { artifactReadable: false }),
         };
   }
+  const openAIResult = extractOpenAIImageResult(result.data);
+  if (openAIResult) return openAIResult;
   const direct = normalizeProviderImageOutput(aihubccClient.extractMediaUrl(result.data, config));
   if (direct) return { image_url: direct };
   const b64 = normalizeProviderImageOutput(result.data?.data?.[0]?.b64_json, {
@@ -191,11 +260,20 @@ async function callAihubccImageApi(config, log, opts = {}) {
   });
   if (b64) return { image_url: b64 };
   const taskId = aihubccClient.extractTaskId(result.data);
-  if (!taskId) return {
-    indeterminate: true,
-    error: 'AIHubCC 图片接口未返回图片地址或任务编号',
-    route_meta: providerErrorMeta(result.data, result.response.status, { artifactReadable: false }),
-  };
+  if (!taskId) {
+    log.warn('[AIHubCC image] 结果未知', summarizeImageResponse(
+      result.data,
+      result.raw,
+      result.response.status,
+      opts.image_gen_id,
+      model,
+    ));
+    return {
+      indeterminate: true,
+      error: 'AIHubCC 图片接口未返回图片地址或任务编号',
+      route_meta: providerErrorMeta(result.data, result.response.status, { artifactReadable: false }),
+    };
+  }
   const polled = await aihubccClient.pollTask(config, taskId, {
     mediaType: 'image',
     maxAttempts: Number(process.env.AIHUBCC_IMAGE_MAX_ATTEMPTS || 720),
@@ -1372,7 +1450,7 @@ function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
 
   let relPath = null;
   const isStaticPath = /^\/?static\//.test(s);
-  const absoluteInput = path.isAbsolute(s) && !isStaticPath;
+  const absoluteInput = (path.isAbsolute(s) || path.win32.isAbsolute(s)) && !isStaticPath;
   if (s.startsWith('http://') || s.startsWith('https://')) {
     if (!isLocalhost || !storageLocalPath) return s;
     // 从 URL 中提取 /static/ 之后的相对路径；或去掉 baseUrl 前缀
@@ -2061,6 +2139,12 @@ async function submitImageWithConfig(db, log, config, opts) {
   // 解析参考图：本地路径/localhost URL → base64，公网 URL → 直接传
   const rawRefs = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
   const resolvedRefs = rawRefs.map((r) => resolveImageRef(r, files_base_url, storage_local_path)).filter(Boolean);
+  if (provider === 'fumin_image' && resolvedRefs.length > 0) {
+    return {
+      error: 'fumin GPT Image 当前不支持参考图（供应商文档未声明该能力），请改用已验证支持参考图的图片模型',
+      route_meta: { phase: 'prepare', requestBodySent: false, explicitlyRejected: true },
+    };
+  }
   if (resolvedRefs.length > 0) {
     log.info('Image API request with reference images', {
       url: url.slice(0, 60), model, image_gen_id,
