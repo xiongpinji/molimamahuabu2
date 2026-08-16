@@ -602,6 +602,9 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
     'jax==0.4.30',
     'jaxlib==0.4.30',
     'ml-dtypes==0.4.0',
+    'opencv--python==4.10.0.84',
+    'opencv._-python==4.10.0.84',
+    'ml--dtypes==0.4.0',
   ]) {
     await assert.rejects(
       fetchModule.installRuntime(parent, [], { ...deps, runtimePackageSpecs: [{ requirement }] }),
@@ -615,6 +618,19 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
     }),
     /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
   );
+  for (const requirement of [
+    'opencv--python==4.10.0.84',
+    'opencv._-python==4.10.0.84',
+    'ml--dtypes==0.4.0',
+  ]) {
+    await assert.rejects(
+      fetchModule.pipFreeze(parent, {
+        ...deps,
+        spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.join('\n')}\n${requirement}\n`,
+      }),
+      /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+    );
+  }
   await assert.rejects(
     fetchModule.pipFreeze(parent, {
       ...deps,

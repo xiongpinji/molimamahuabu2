@@ -177,7 +177,7 @@ async function writeFileAtomic(target, bytes) {
 }
 
 function normalizePackageName(name) {
-  return name.toLowerCase().replace(/[_.]+/g, '-');
+  return name.toLowerCase().replace(/[-_.]+/g, '-');
 }
 
 function splitRequirement(requirement) {
