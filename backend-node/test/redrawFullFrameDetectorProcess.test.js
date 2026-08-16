@@ -141,7 +141,7 @@ function writeBootstrapStageChild(t) {
 const mode = process.argv[2];
 const code = 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE';
 if (mode.startsWith('stage=')) {
-  process.stderr.write('warning without sensitive data\\n');
+  process.stderr.write('ordinary diagnostic\\n');
   process.stderr.write(code + ' stage=' + mode.slice('stage='.length) + '\\n');
   process.exit(1);
 }
@@ -149,10 +149,26 @@ if (mode === 'not-last') {
   process.stderr.write(code + ' stage=load:text:output_limit\\nwarning after stage\\n');
   process.exit(1);
 }
+if (mode === 'bare-key') {
+  process.stderr.write('ordinary key reference\\n');
+  process.stderr.write(code + ' stage=load:text\\n');
+  process.exit(1);
+}
 if (mode.startsWith('sensitive=')) {
   const warnings = {
     auth: 'Authorization: opaque-value',
+    auth_short: 'AuTh: opaque-value',
+    bearer: 'Bearer opaque-value',
     key: 'Key: opaque-value',
+    api_dash_key: 'API-Key: opaque-value',
+    api_underscore_key: 'api_key=opaque-value',
+    api_space_key: 'api key=opaque-value',
+    token: 'token=opaque-value',
+    password: 'PASSWORD=opaque-value',
+    credential: 'credential=opaque-value',
+    proxy: 'Proxy=opaque-value',
+    secret: 'secret=opaque-value',
+    sensitive: 'Sensitive=opaque-value',
     path: 'failure at C:/private/worker.py',
   };
   process.stderr.write(warnings[mode.slice('sensitive='.length)] + '\\n');
@@ -990,6 +1006,10 @@ test('runProcess only trusts fixed bootstrap child stages when explicitly enable
     runProcess(process.execPath, [script, 'stage=load:text:output_limit'], { timeoutMs: 1000 }),
     (error) => assertStableFetchError(error, 'unknown'),
   );
+  await assert.rejects(
+    runProcess(process.execPath, [script, 'bare-key'], parseOptions),
+    (error) => assertStableFetchError(error, 'bootstrap:load:text'),
+  );
   for (const mode of [
     'stage=load:unknown',
     'stage=load:text:unknown',
@@ -998,7 +1018,18 @@ test('runProcess only trusts fixed bootstrap child stages when explicitly enable
     'stage=load:text:/private',
     'not-last',
     'sensitive=auth',
+    'sensitive=auth_short',
+    'sensitive=bearer',
     'sensitive=key',
+    'sensitive=api_dash_key',
+    'sensitive=api_underscore_key',
+    'sensitive=api_space_key',
+    'sensitive=token',
+    'sensitive=password',
+    'sensitive=credential',
+    'sensitive=proxy',
+    'sensitive=secret',
+    'sensitive=sensitive',
     'sensitive=path',
   ]) {
     await assert.rejects(

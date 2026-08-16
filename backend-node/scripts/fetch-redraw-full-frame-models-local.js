@@ -230,7 +230,7 @@ function sanitizedError(err, fallbackStage = 'unknown') {
 
 function parseBootstrapErrorStage(stderr) {
   if (typeof stderr !== 'string' || stderr.length === 0) return null;
-  if (/(?:authorization|bearer|(?:api[-_ ]?key|secret[-_ ]?key|\bkey\s*[:=])|https?:\/\/|[A-Za-z]:[\\/]|(?:^|[\s"'(])\/[^\s])/im.test(stderr)) return null;
+  if (/(?:auth|authorization|bearer|token|password|credential|proxy|sensitive|secret|path|(?:api[-_ ]?key|secret[-_ ]?key|\bkey\s*[:=])|https?:\/\/|[A-Za-z]:[\\/]|(?:^|[\s"'(])\/[^\s])/im.test(stderr)) return null;
   const lines = stderr.split(/\r?\n/).filter((line) => line.trim().length > 0);
   if (lines.length === 0) return null;
   const prefix = `${MODEL_ERROR} stage=`;
