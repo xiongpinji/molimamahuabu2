@@ -151,6 +151,9 @@ const FORBIDDEN_RUNTIME_PACKAGES = new Set([
   'ml-dtypes',
 ]);
 const RUNTIME_KEYS = ['python_version', 'interpreter_path', 'pip_freeze_path', 'pip_freeze_sha256'];
+const PADDLE_WHEEL_RELATIVE_DIR = 'runtime/text/.wheel-stage/paddlepaddle';
+const PADDLE_WHEEL_FILE = 'paddlepaddle-2.6.2-cp312-cp312-win_amd64.whl';
+const PADDLE_WHEEL_RELATIVE_PATH = `${PADDLE_WHEEL_RELATIVE_DIR}/${PADDLE_WHEEL_FILE}`;
 
 function pickEnvValue(sourceEnv, canonicalKey) {
   if (sourceEnv[canonicalKey] !== undefined) return sourceEnv[canonicalKey];
@@ -1137,6 +1140,11 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   const deps = {
     spawnProcess: async (command, args, options) => {
       calls.push({ command, args, env: options.env, cwd: options.cwd });
+      if (args.includes('download')) {
+        const dest = args[args.indexOf('--dest') + 1];
+        await fsp.mkdir(path.join(options.cwd, dest), { recursive: true });
+        await fsp.writeFile(path.join(options.cwd, dest, PADDLE_WHEEL_FILE), 'fixture-wheel');
+      }
       if (args.includes('freeze')) {
         const runtimeName = command.includes(`${path.sep}text${path.sep}`) ? 'text' : 'main';
         return `${freezeByRuntime[runtimeName].join('\n')}\n`;
@@ -1152,6 +1160,7 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   await fetchModule.createVenv(parent, 'main', deps);
   await fetchModule.installRuntime(parent, [], 'main', deps);
   await fetchModule.createVenv(parent, 'text', deps);
+  await fsp.mkdir(path.join(parent, 'runtime', 'text'), { recursive: true });
   await fetchModule.installRuntime(parent, [], 'text', deps);
   assert.equal(EXPECTED_MAIN_RUNTIME_PACKAGE_SPECS.length, 23);
   assert.equal(EXPECTED_TEXT_RUNTIME_PACKAGE_SPECS.length, 31);
@@ -1203,7 +1212,8 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   assert(calls.every((call) => call.env.PYTHONUTF8 === '1'));
   assert(calls.every((call) => !Object.prototype.hasOwnProperty.call(call.env, 'OPENAI_API_KEY')));
   const installCalls = calls.filter((call) => call.args.includes('install'));
-  assert(installCalls.every((call) => {
+  const indexedInstallCalls = installCalls.filter((call) => !call.args.includes('--no-index'));
+  assert(indexedInstallCalls.every((call) => {
     const index = call.args.indexOf('--index-url');
     const isolated = call.args.indexOf('--isolated');
     const install = call.args.indexOf('install');
@@ -1213,9 +1223,9 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
       && isolated < install
       && !call.args.includes('--extra-index-url')
       && !call.args.includes('--find-links');
-  }), JSON.stringify(installCalls));
+  }), JSON.stringify(indexedInstallCalls));
   assert.deepEqual(
-    installCalls.filter((call) => call.command === venvPython(parent, 'main')).map((call) => ({
+    indexedInstallCalls.filter((call) => call.command === venvPython(parent, 'main')).map((call) => ({
       requirement: call.args[call.args.length - 1],
       noDeps: call.args.includes('--no-deps'),
     })),
@@ -1225,18 +1235,18 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
     })),
   );
   assert.deepEqual(
-    installCalls.filter((call) => call.command === venvPython(parent, 'text')).map((call) => ({
+    indexedInstallCalls.filter((call) => call.command === venvPython(parent, 'text')).map((call) => ({
       requirement: call.args[call.args.length - 1],
       noDeps: call.args.includes('--no-deps'),
     })),
-    EXPECTED_TEXT_RUNTIME_PACKAGE_SPECS.map((spec) => ({
+    EXPECTED_TEXT_RUNTIME_PACKAGE_SPECS.filter((spec) => spec.requirement !== 'paddlepaddle==2.6.2').map((spec) => ({
       requirement: spec.requirement,
       noDeps: spec.noDeps === true,
     })),
   );
   assert.deepEqual(
     installCalls.filter((call) => call.args.includes('--no-deps')).map((call) => call.args[call.args.length - 1]),
-    ['yolox==0.3.0', 'mediapipe==0.10.14', 'imgaug==0.4.0', 'paddlepaddle==2.6.2', 'paddleocr==2.8.1'],
+    ['yolox==0.3.0', 'mediapipe==0.10.14', 'imgaug==0.4.0', PADDLE_WHEEL_RELATIVE_PATH, 'paddleocr==2.8.1'],
   );
 
   await assert.rejects(
@@ -1255,7 +1265,13 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   await assert.rejects(
     fetchModule.installRuntime(parent, [], 'text', {
       ...deps,
-      spawnProcess: async (_command, args) => {
+      spawnProcess: async (_command, args, options) => {
+        if (args.includes('download')) {
+          const dest = args[args.indexOf('--dest') + 1];
+          await fsp.mkdir(path.join(options.cwd, dest), { recursive: true });
+          await fsp.writeFile(path.join(options.cwd, dest, PADDLE_WHEEL_FILE), 'fixture-wheel');
+          return '';
+        }
         if (args[args.length - 1] === 'paddleocr==2.8.1') throw rawInstallError;
         return '';
       },
@@ -1328,6 +1344,107 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
       )).join('\n')}\n`,
     }),
     /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+  );
+});
+
+test('PaddlePaddle text runtime downloads the pinned wheel before local no-index install', async (t) => {
+  const parent = tempDir(t, 'redraw-paddle-wheel-');
+  const calls = [];
+  const deps = {
+    env: { OPENAI_API_KEY: 'secret', PATH: 'path' },
+    spawnProcess: async (command, args, options) => {
+      calls.push({ command, args: args.slice(), env: { ...options.env }, cwd: options.cwd });
+      if (args.includes('download')) {
+        const dest = args[args.indexOf('--dest') + 1];
+        await fsp.mkdir(path.join(options.cwd, dest), { recursive: true });
+        await fsp.writeFile(path.join(options.cwd, dest, PADDLE_WHEEL_FILE), 'fixture-wheel');
+      }
+      return '';
+    },
+  };
+  await fsp.mkdir(path.join(parent, 'runtime', 'text'), { recursive: true });
+
+  await installRuntime(parent, [], 'text', deps);
+
+  const downloadCalls = calls.filter((call) => call.args.includes('download'));
+  const localInstallCalls = calls.filter((call) => call.args.includes('--no-index'));
+  assert.equal(downloadCalls.length, 1);
+  assert.equal(localInstallCalls.length, 1);
+  assert.deepEqual(downloadCalls[0].args, [
+    '-m',
+    'pip',
+    '--isolated',
+    'download',
+    '--disable-pip-version-check',
+    '--no-input',
+    '--index-url',
+    'https://pypi.org/simple',
+    '--no-deps',
+    '--only-binary=:all:',
+    '--dest',
+    PADDLE_WHEEL_RELATIVE_DIR,
+    'paddlepaddle==2.6.2',
+  ]);
+  assert(localInstallCalls[0].args.includes('--no-index'));
+  assert(localInstallCalls[0].args.includes('--no-deps'));
+  assert(!localInstallCalls[0].args.includes('--index-url'));
+  assert.equal(localInstallCalls[0].args[localInstallCalls[0].args.length - 1], PADDLE_WHEEL_RELATIVE_PATH);
+  assert.equal(path.isAbsolute(localInstallCalls[0].args[localInstallCalls[0].args.length - 1]), false);
+  assert(calls.indexOf(downloadCalls[0]) < calls.indexOf(localInstallCalls[0]));
+  for (const call of [downloadCalls[0], localInstallCalls[0]]) {
+    assert.equal(call.command, venvPython(parent, 'text'));
+    assert.equal(call.cwd, parent);
+    assert.equal(call.env.PYTHONUTF8, '1');
+    assert(!Object.prototype.hasOwnProperty.call(call.env, 'OPENAI_API_KEY'));
+  }
+  assert.equal(fs.existsSync(path.join(parent, 'runtime', 'text', '.wheel-stage')), false);
+});
+
+test('PaddlePaddle download failure returns only the trusted sanitized stage', async (t) => {
+  const parent = tempDir(t, 'redraw-paddle-download-fail-');
+  const raw = new Error('C:\\Users\\private\\paddle.py Authorization: Bearer secret-token Key=secret-key');
+  raw.code = 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE';
+  raw.stage = 'download:C:\\Users\\private\\paddle.py';
+  raw.cause = new Error('C:\\Users\\private\\paddle.py');
+  raw.context = { authorization: 'Bearer secret-token', key: 'secret-key' };
+  await fsp.mkdir(path.join(parent, 'runtime', 'text'), { recursive: true });
+
+  await assert.rejects(
+    installRuntime(parent, [], 'text', {
+      env: { OPENAI_API_KEY: 'secret', PATH: 'path' },
+      spawnProcess: async (_command, args) => {
+        if (args.includes('download')) throw raw;
+        return '';
+      },
+    }),
+    (error) => assertStableFetchError(error, 'download:text:paddlepaddle'),
+  );
+});
+
+test('PaddlePaddle local wheel install failure returns only the trusted sanitized stage', async (t) => {
+  const parent = tempDir(t, 'redraw-paddle-install-fail-');
+  const raw = new Error('C:\\Users\\private\\paddle.py Authorization: Bearer secret-token Key=secret-key');
+  raw.code = 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE';
+  raw.stage = 'install:C:\\Users\\private\\paddle.py';
+  raw.cause = new Error('C:\\Users\\private\\paddle.py');
+  raw.context = { authorization: 'Bearer secret-token', key: 'secret-key' };
+  await fsp.mkdir(path.join(parent, 'runtime', 'text'), { recursive: true });
+
+  await assert.rejects(
+    installRuntime(parent, [], 'text', {
+      env: { OPENAI_API_KEY: 'secret', PATH: 'path' },
+      spawnProcess: async (_command, args, options) => {
+        if (args.includes('download')) {
+          const dest = args[args.indexOf('--dest') + 1];
+          await fsp.mkdir(path.join(options.cwd, dest), { recursive: true });
+          await fsp.writeFile(path.join(options.cwd, dest, PADDLE_WHEEL_FILE), 'fixture-wheel');
+          return '';
+        }
+        if (args.includes('--no-index')) throw raw;
+        return '';
+      },
+    }),
+    (error) => assertStableFetchError(error, 'install:text:paddlepaddle'),
   );
 });
 

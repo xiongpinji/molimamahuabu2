@@ -113,6 +113,10 @@ const RUNTIME_PACKAGE_SPECS = Object.freeze({
   main: MAIN_RUNTIME_PACKAGE_SPECS,
   text: TEXT_RUNTIME_PACKAGE_SPECS,
 });
+const PADDLE_WHEEL_RUNTIME = 'text';
+const PADDLE_WHEEL_REQUIREMENT = 'paddlepaddle==2.6.2';
+const PADDLE_WHEEL_RELATIVE_DIR = 'runtime/text/.wheel-stage/paddlepaddle';
+const PADDLE_WHEEL_FILE_PATTERN = /^paddlepaddle-2\.6\.2-cp312-cp312-win_amd64\.whl$/;
 const NO_DEPS_REQUIREMENTS = new Set([
   'yolox==0.3.0',
   'imgaug==0.4.0',
@@ -223,6 +227,7 @@ const RUNTIME_PACKAGE_STAGE_NAMES = new Set(Object.values(RUNTIME_PACKAGE_SPECS)
 function normalizeStage(stage) {
   if (typeof stage !== 'string') return 'unknown';
   if (FIXED_RUNTIME_STAGES.has(stage)) return stage;
+  if (stage === 'download:text:paddlepaddle') return stage;
   if (stage.startsWith('fetch:') && COMPONENT_ORDER.includes(stage.slice('fetch:'.length))) return stage;
   if (stage.startsWith('bootstrap:') && PYTHON_BOOTSTRAP_SAFE_STAGES.has(stage.slice('bootstrap:'.length))) return stage;
   const runtimeStage = /^(create_venv|freeze|python_version|write_runtime_lock):(main|text)$/.exec(stage);
@@ -376,6 +381,12 @@ function normalizeRuntimePackageSpecs(runtimeName) {
     if (mustUseNoDeps !== (spec.noDeps === true)) throw error(MODEL_ERROR);
     return { requirement: spec.requirement, noDeps: spec.noDeps === true };
   });
+}
+
+function isPaddleWheelSpec(runtimeName, spec) {
+  return runtimeName === PADDLE_WHEEL_RUNTIME
+    && spec.requirement === PADDLE_WHEEL_REQUIREMENT
+    && spec.noDeps === true;
 }
 
 function assertAllowedUrl(rawUrl) {
@@ -651,6 +662,10 @@ async function installRuntime(staging, _components = [], runtimeName, deps = {})
   const python = venvPython(staging, runtimeName);
   const specs = normalizeRuntimePackageSpecs(runtimeName);
   for (const spec of specs) {
+    if (isPaddleWheelSpec(runtimeName, spec)) {
+      await installPinnedPaddleWheel(staging, python, deps);
+      continue;
+    }
     const args = ['-m', 'pip', '--isolated', 'install', '--disable-pip-version-check', '--no-input', '--index-url', PYPI_INDEX_URL];
     if (spec.noDeps) args.push('--no-deps');
     args.push(spec.requirement);
@@ -659,6 +674,57 @@ async function installRuntime(staging, _components = [], runtimeName, deps = {})
     } catch (err) {
       throw sanitizedError(err, `install:${runtimeName}:${splitRequirement(spec.requirement).name}`);
     }
+  }
+}
+
+async function installPinnedPaddleWheel(staging, python, deps = {}) {
+  const runner = deps.spawnProcess || spawnProcess;
+  const wheelStageParent = path.join(staging, 'runtime', 'text', '.wheel-stage');
+  const wheelDir = path.join(wheelStageParent, 'paddlepaddle');
+  try {
+    await fsp.mkdir(wheelStageParent, { recursive: false });
+    await fsp.mkdir(wheelDir, { recursive: false });
+    await runner(python, [
+      '-m',
+      'pip',
+      '--isolated',
+      'download',
+      '--disable-pip-version-check',
+      '--no-input',
+      '--index-url',
+      PYPI_INDEX_URL,
+      '--no-deps',
+      '--only-binary=:all:',
+      '--dest',
+      PADDLE_WHEEL_RELATIVE_DIR,
+      PADDLE_WHEEL_REQUIREMENT,
+    ], { cwd: staging, env: sanitizeEnv(deps.env) });
+    const entries = await fsp.readdir(wheelDir, { withFileTypes: true });
+    if (entries.length !== 1 || !entries[0].isFile() || !PADDLE_WHEEL_FILE_PATTERN.test(entries[0].name)) {
+      throw error(MODEL_ERROR);
+    }
+    const wheelRelativePath = `${PADDLE_WHEEL_RELATIVE_DIR}/${entries[0].name}`;
+    try {
+      await runner(python, [
+        '-m',
+        'pip',
+        '--isolated',
+        'install',
+        '--disable-pip-version-check',
+        '--no-input',
+        '--no-index',
+        '--no-deps',
+        wheelRelativePath,
+      ], { cwd: staging, env: sanitizeEnv(deps.env) });
+      await fsp.unlink(path.join(staging, wheelRelativePath));
+      await fsp.rmdir(wheelDir);
+      await fsp.rmdir(wheelStageParent);
+    } catch (err) {
+      throw sanitizedError(err, 'install:text:paddlepaddle');
+    }
+  } catch (err) {
+    if (normalizeStage(err && err.stage) === 'install:text:paddlepaddle') throw err;
+    throw sanitizedError(err, 'download:text:paddlepaddle');
   }
 }
 
