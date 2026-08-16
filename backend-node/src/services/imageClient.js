@@ -1450,7 +1450,7 @@ function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
 
   let relPath = null;
   const isStaticPath = /^\/?static\//.test(s);
-  const absoluteInput = path.isAbsolute(s) && !isStaticPath;
+  const absoluteInput = (path.isAbsolute(s) || path.win32.isAbsolute(s)) && !isStaticPath;
   if (s.startsWith('http://') || s.startsWith('https://')) {
     if (!isLocalhost || !storageLocalPath) return s;
     // 从 URL 中提取 /static/ 之后的相对路径；或去掉 baseUrl 前缀
