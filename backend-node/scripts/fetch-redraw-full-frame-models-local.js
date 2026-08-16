@@ -692,7 +692,11 @@ async function publishCache(staging, outputDir) {
     await fsp.rename(staging, outputDir);
   } catch (err) {
     if (hadEmptyOutputDir && !(await exists(outputDir))) {
-      await fsp.mkdir(outputDir).catch(() => {});
+      try {
+        await fsp.mkdir(outputDir);
+      } catch (restoreErr) {
+        if (!(await exists(outputDir))) throw restoreErr;
+      }
     }
     throw err;
   }

@@ -637,6 +637,55 @@ test('runFetchModels restores a pre-existing empty output directory when publish
   );
 });
 
+test('runFetchModels reports publish failure when restoring a removed empty output directory also fails', async (t) => {
+  const parent = tempDir(t, 'redraw-model-publish-restore-failed-');
+  const outputDir = path.join(parent, 'cache');
+  fs.mkdirSync(outputDir);
+  let restoreMkdirCalls = 0;
+  const originalRename = fsp.rename;
+  const originalMkdir = fsp.mkdir;
+  fsp.rename = async (source, target) => {
+    if (target === outputDir) {
+      throw new Error(`rename failed from ${source} to ${target} with Authorization secret-token`);
+    }
+    return originalRename.call(fsp, source, target);
+  };
+  fsp.mkdir = async (target, options) => {
+    if (target === outputDir) {
+      restoreMkdirCalls += 1;
+      const restoreError = new Error(`restore failed for ${target} with Authorization secret-token`);
+      restoreError.code = 'REDRAW_FULL_FRAME_OUTPUT_INVALID';
+      throw restoreError;
+    }
+    return originalMkdir.call(fsp, target, options);
+  };
+  t.after(() => {
+    fsp.rename = originalRename;
+    fsp.mkdir = originalMkdir;
+  });
+
+  await assert.rejects(
+    runFetchModels({ outputDir }, buildSuccessfulFetchDeps('publish-restore-failed')),
+    (error) => {
+      assert.equal(error.code, 'REDRAW_FULL_FRAME_OUTPUT_INVALID');
+      assert.equal(error.message, 'REDRAW_FULL_FRAME_OUTPUT_INVALID');
+      assert.deepEqual(Object.keys(error), ['code']);
+      assert.equal(error.stage, 'publish');
+      assert.equal(error.cause, undefined);
+      assert.equal(error.context, undefined);
+      assert.doesNotMatch(JSON.stringify(error), /redraw-model-publish-restore-failed|Authorization|secret-token|cache/i);
+      return true;
+    },
+  );
+
+  assert.equal(restoreMkdirCalls, 1);
+  assert.equal(fs.existsSync(outputDir), false);
+  assert.deepEqual(
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    [],
+  );
+});
+
 test('runFetchModels does not create a missing output directory when publish rename fails', async (t) => {
   const parent = tempDir(t, 'redraw-model-publish-missing-');
   const outputDir = path.join(parent, 'cache');
