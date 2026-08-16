@@ -171,6 +171,17 @@ function sameIdentity(left, right) {
     && left.ctimeNs === right.ctimeNs;
 }
 
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function fileIdentity(stat) {
+  return {
+    dev: stat.dev,
+    ino: stat.ino,
+  };
+}
+
 function assertRegularFile(stat) {
   if (!stat.isFile()) throw invalid();
 }
@@ -200,7 +211,7 @@ async function secureReadFile({ cacheRootReal, relativePath }) {
     assertRegularFile(statPathAfter);
     if (!sameIdentity(statBefore, statPathAfter)) throw invalid();
     if (!sameIdentity(statBefore, statAfter)) throw invalid();
-    return { bytes, realpath: realBefore };
+    return { bytes, realpath: realBefore, identity: fileIdentity(statBefore) };
   } finally {
     if (handle) await handle.close().catch(() => {});
   }
@@ -306,12 +317,12 @@ async function validateModelLock({ cacheRoot, sourcePolicy, lock }) {
     if (!cacheRootStat.isDirectory()) throw invalid();
     const canonical = canonicalizeModelLock(lock);
 
-    const interpreterRealpaths = new Set();
+    const interpreters = [];
     for (const runtimeName of RUNTIME_NAMES) {
       const runtime = canonical.runtimes[runtimeName];
       const interpreter = await secureReadFile({ cacheRootReal, relativePath: runtime.interpreter_path });
-      if (interpreterRealpaths.has(interpreter.realpath)) throw invalid();
-      interpreterRealpaths.add(interpreter.realpath);
+      if (interpreters.some((seen) => seen.realpath === interpreter.realpath || sameFileIdentity(seen.identity, interpreter.identity))) throw invalid();
+      interpreters.push(interpreter);
 
       const freeze = await secureReadFile({ cacheRootReal, relativePath: runtime.pip_freeze_path });
       if (bytesSha256(freeze.bytes) !== runtime.pip_freeze_sha256) throw invalid();

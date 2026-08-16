@@ -397,6 +397,24 @@ test('two runtimes cannot point to the same interpreter file', async (t) => {
   }), cacheRoot);
 });
 
+test('two runtimes cannot use hard links to the same interpreter file', async (t) => {
+  const { cacheRoot, lock } = createValidLock(t);
+  const mainInterpreter = path.join(cacheRoot, lock.runtimes.main.interpreter_path);
+  const textInterpreter = path.join(cacheRoot, lock.runtimes.text.interpreter_path);
+  fs.rmSync(textInterpreter);
+  try {
+    fs.linkSync(mainInterpreter, textInterpreter);
+  } catch (error) {
+    if (process.platform === 'win32' && ['EPERM', 'EACCES', 'UNKNOWN'].includes(error.code)) {
+      t.skip(`hardlink unavailable: ${error.code}`);
+      return;
+    }
+    throw error;
+  }
+
+  await assertInvalid(validateModelLock({ cacheRoot, sourcePolicy, lock }), cacheRoot);
+});
+
 test('component set and official source policy are strict', async (t) => {
   const { cacheRoot, lock } = createValidLock(t);
 
