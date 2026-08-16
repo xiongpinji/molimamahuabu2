@@ -1,11 +1,12 @@
 import contextlib
 import io
 import json
-import os
 import pathlib
+import queue
 import subprocess
 import sys
 import tempfile
+import threading
 import textwrap
 import unittest
 
@@ -17,7 +18,44 @@ from redraw_full_frame_auditor import text_worker
 from redraw_full_frame_auditor import worker
 
 
-PYTHON = pathlib.Path(r"C:\Users\canqu\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe")
+PYTHON = pathlib.Path(sys.executable)
+
+
+def _cleanup_process(proc):
+    if proc.poll() is None:
+        proc.kill()
+        proc.wait(timeout=10)
+    for pipe in (proc.stdin, proc.stdout, proc.stderr):
+        if pipe and not pipe.closed:
+            pipe.close()
+
+
+def _readline_with_timeout(proc, stream, name, timeout=5):
+    result = queue.Queue(maxsize=1)
+
+    def reader():
+        try:
+            result.put(("line", stream.readline()))
+        except Exception as exc:
+            result.put(("error", exc))
+
+    thread = threading.Thread(target=reader, name=f"text-worker-{name}-reader")
+    thread.start()
+    try:
+        kind, value = result.get(timeout=timeout)
+    except queue.Empty as exc:
+        _cleanup_process(proc)
+        thread.join(timeout=5)
+        if thread.is_alive():
+            raise AssertionError(f"{name} reader thread leaked after timeout") from exc
+        raise AssertionError(f"{name} readline timed out") from exc
+    thread.join(timeout=5)
+    if thread.is_alive():
+        _cleanup_process(proc)
+        raise AssertionError(f"{name} reader thread leaked")
+    if kind == "error":
+        raise value
+    return value
 
 
 class FakeDetector:
@@ -40,6 +78,26 @@ class FakeDetector:
 
 
 class TextWorkerProtocolTests(unittest.TestCase):
+    def test_uses_current_python_executable_for_subprocesses(self):
+        self.assertEqual(PYTHON, pathlib.Path(sys.executable))
+
+    def test_bounded_subprocess_read_times_out_and_cleans_up(self):
+        proc = subprocess.Popen(
+            [str(PYTHON), "-u", "-c", "import time; time.sleep(30)"],
+            cwd=str(ROOT),
+            text=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        with self.assertRaisesRegex(AssertionError, "timed out"):
+            _readline_with_timeout(proc, proc.stdout, "stdout", timeout=0.2)
+
+        self.assertIsNotNone(proc.poll())
+        self.assertTrue(proc.stdout.closed)
+        self.assertTrue(proc.stderr.closed)
+
     def run_worker(self, stdin_text, detector=None):
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -102,13 +160,13 @@ class TextWorkerProtocolTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
         try:
-            handshake = proc.stdout.readline()
+            handshake = _readline_with_timeout(proc, proc.stdout, "stdout")
             self.assertEqual(handshake, '{"status":"ok","schema_version":"redraw-full-frame-text-subprocess-v1"}\n')
 
             proc.stdin.write(json.dumps({"request_id": 1, "frame_path": "C:/frames/live.png"}) + "\n")
             proc.stdin.flush()
 
-            response = proc.stdout.readline()
+            response = _readline_with_timeout(proc, proc.stdout, "stdout")
             self.assertEqual(json.loads(response), {
                 "request_id": 1,
                 "texts": [{
@@ -126,15 +184,7 @@ class TextWorkerProtocolTests(unittest.TestCase):
             proc.stdout.close()
             proc.stderr.close()
         finally:
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait(timeout=10)
-            if proc.stdin and not proc.stdin.closed:
-                proc.stdin.close()
-            if proc.stdout and not proc.stdout.closed:
-                proc.stdout.close()
-            if proc.stderr and not proc.stderr.closed:
-                proc.stderr.close()
+            _cleanup_process(proc)
 
     def test_rejects_unknown_request_fields_zero_id_non_contiguous_id_and_empty_path(self):
         bad_inputs = [
@@ -240,8 +290,7 @@ class TextWorkerProtocolTests(unittest.TestCase):
     def test_cli_accepts_only_run_model_lock_and_unknown_arguments_are_sanitized(self):
         proc = subprocess.run(
             [str(PYTHON), "-m", "redraw_full_frame_auditor.text_worker", "--unknown", "C:/secret/model"],
-            cwd=str(ROOT),
-            env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+            cwd=str(ROOT / "src"),
             text=True,
             input="",
             stdout=subprocess.PIPE,
@@ -258,7 +307,6 @@ class TextWorkerProtocolTests(unittest.TestCase):
         direct_proc = subprocess.run(
             [str(PYTHON), str(ROOT / "src" / "redraw_full_frame_auditor" / "text_worker.py"), "--unknown", "C:/secret/model"],
             cwd=str(ROOT),
-            env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
             text=True,
             input="",
             stdout=subprocess.PIPE,
