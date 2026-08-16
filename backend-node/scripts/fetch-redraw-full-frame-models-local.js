@@ -199,6 +199,7 @@ function assertPinnedFreeze(lines) {
     const required = splitRequirement(spec.requirement);
     if (installed.get(required.name) !== required.version) throw error(MODEL_ERROR);
   }
+  if (installed.size !== RUNTIME_PACKAGE_SPECS.length) throw error(MODEL_ERROR);
   return sorted;
 }
 

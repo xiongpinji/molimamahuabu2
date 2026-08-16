@@ -634,6 +634,20 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   await assert.rejects(
     fetchModule.pipFreeze(parent, {
       ...deps,
+      spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.join('\n')}\nunapproved-extra-package==9.9.9\n`,
+    }),
+    /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+  );
+  await assert.rejects(
+    fetchModule.pipFreeze(parent, {
+      ...deps,
+      spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.join('\n')}\nNumPy==1.26.4\n`,
+    }),
+    /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+  );
+  await assert.rejects(
+    fetchModule.pipFreeze(parent, {
+      ...deps,
       spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.filter((line) => line !== 'protobuf==4.25.9').join('\n')}\n`,
     }),
     /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
