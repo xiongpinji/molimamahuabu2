@@ -29,8 +29,9 @@ class _BoundedDiscard(io.TextIOBase):
     def write(self, value):
         if not isinstance(value, str):
             value = str(value)
-        remaining = max(self.limit - self.count, 0)
-        self.count += min(len(value), remaining)
+        self.count += len(value.encode("utf-8"))
+        if self.count > self.limit:
+            _fail()
         return len(value)
 
     def flush(self):
@@ -39,8 +40,9 @@ class _BoundedDiscard(io.TextIOBase):
 
 @contextlib.contextmanager
 def _discard_python_output():
-    sink = _BoundedDiscard()
-    with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+    stdout_sink = _BoundedDiscard()
+    stderr_sink = _BoundedDiscard()
+    with contextlib.redirect_stdout(stdout_sink), contextlib.redirect_stderr(stderr_sink):
         yield
 
 
@@ -72,26 +74,28 @@ def _sanitize_texts(texts):
     return [worker._text_candidate(item) for item in texts]
 
 
-def load_detector(model_artifact):
+def load_detector(model_lock):
     with _discard_python_output():
-        return worker.PaddleTextDetectionAdapter(model_artifact, worker._default_text_detector_factory)
+        _lock, components = worker._validate_model_lock(model_lock)
+        return worker.PaddleTextDetectionAdapter(
+            components["text_detector"]["artifact_abs_path"],
+            worker._default_text_detector_factory,
+        )
 
 
-def run_jsonl(stdin=None, stdout=None, stderr=None, detector=None, model_artifact=None):
+def run_jsonl(stdin=None, stdout=None, stderr=None, detector=None, model_lock=None):
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
     try:
         if detector is None:
-            detector = load_detector(model_artifact)
+            detector = load_detector(model_lock)
 
         _write_json(stdout, _HANDSHAKE)
-        data = stdin.read()
-        if data and not data.endswith("\n"):
-            _fail()
-
         expected_request_id = 1
-        for line in data.splitlines():
+        for line in stdin:
+            if not line.endswith("\n"):
+                _fail()
             request = json.loads(line)
             request_id, frame_path = _validate_request(request, expected_request_id)
             with _discard_python_output():
@@ -106,12 +110,10 @@ def run_jsonl(stdin=None, stdout=None, stderr=None, detector=None, model_artifac
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--model-artifact")
-    args, unknown = parser.parse_known_args(argv)
-    if unknown or not args.model_artifact:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if len(argv) != 3 or argv[0] != "run" or argv[1] != "--model-lock" or not argv[2]:
         _fail()
-    return args
+    return argparse.Namespace(model_lock=argv[2])
 
 
 def main(argv=None):
@@ -120,7 +122,7 @@ def main(argv=None):
     except Exception:
         sys.stderr.write(worker.ERROR_CODE + "\n")
         return 1
-    return run_jsonl(model_artifact=args.model_artifact)
+    return run_jsonl(model_lock=args.model_lock)
 
 
 if __name__ == "__main__":
