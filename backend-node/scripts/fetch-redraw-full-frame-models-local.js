@@ -116,7 +116,7 @@ const RUNTIME_PACKAGE_SPECS = Object.freeze({
 const PADDLE_WHEEL_RUNTIME = 'text';
 const PADDLE_WHEEL_REQUIREMENT = 'paddlepaddle==2.6.2';
 const PADDLE_WHEEL_RELATIVE_DIR = 'runtime/text/.wheel-stage/paddlepaddle';
-const PADDLE_WHEEL_FILE_PATTERN = /^paddlepaddle-2\.6\.2-cp312-cp312-win_amd64\.whl$/;
+const PADDLE_WHEEL_NAME = 'paddlepaddle-2.6.2-cp312-cp312-win_amd64.whl';
 const NO_DEPS_REQUIREMENTS = new Set([
   'yolox==0.3.0',
   'imgaug==0.4.0',
@@ -387,6 +387,64 @@ function isPaddleWheelSpec(runtimeName, spec) {
   return runtimeName === PADDLE_WHEEL_RUNTIME
     && spec.requirement === PADDLE_WHEEL_REQUIREMENT
     && spec.noDeps === true;
+}
+
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs;
+}
+
+function sameResolvedPath(left, right) {
+  const normalizedLeft = path.resolve(left);
+  const normalizedRight = path.resolve(right);
+  return process.platform === 'win32'
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
+}
+
+async function readPaddleWheelEvidence(staging, wheelDir) {
+  const expectedRelativeDir = PADDLE_WHEEL_RELATIVE_DIR.split('/').join(path.sep);
+  const stagingRoot = path.resolve(staging);
+  const wheelDirPath = path.resolve(wheelDir);
+  if (path.relative(stagingRoot, wheelDirPath) !== expectedRelativeDir) throw error(MODEL_ERROR);
+
+  const realStaging = await fsp.realpath(stagingRoot);
+  const wheelDirStat = await fsp.lstat(wheelDirPath, { bigint: true });
+  if (!wheelDirStat.isDirectory() || wheelDirStat.isSymbolicLink()) throw error(MODEL_ERROR);
+  const realWheelDir = await fsp.realpath(wheelDirPath);
+  if (!sameResolvedPath(realWheelDir, path.join(realStaging, expectedRelativeDir))) throw error(MODEL_ERROR);
+
+  const entries = await fsp.readdir(wheelDirPath, { withFileTypes: true });
+  if (entries.length !== 1) throw error(MODEL_ERROR);
+  const entry = entries[0];
+  if (!entry.isFile() || entry.isSymbolicLink() || entry.name !== PADDLE_WHEEL_NAME) throw error(MODEL_ERROR);
+
+  const relativePath = `${PADDLE_WHEEL_RELATIVE_DIR}/${entry.name}`;
+  if (relativePath.replace(/\\/g, '/') !== `${PADDLE_WHEEL_RELATIVE_DIR}/${entry.name}`) throw error(MODEL_ERROR);
+  const absPath = path.join(stagingRoot, relativePath);
+  const pathStat = await fsp.lstat(absPath, { bigint: true });
+  if (!pathStat.isFile() || pathStat.isSymbolicLink()) throw error(MODEL_ERROR);
+  const realPath = await fsp.realpath(absPath);
+  if (!sameResolvedPath(path.dirname(realPath), realWheelDir)) throw error(MODEL_ERROR);
+  return {
+    relativePath,
+    absPath,
+    realDir: realWheelDir,
+    realPath,
+    pathStat,
+  };
+}
+
+async function revalidatePaddleWheelEvidence(evidence) {
+  const pathStat = await fsp.lstat(evidence.absPath, { bigint: true });
+  if (!pathStat.isFile() || pathStat.isSymbolicLink()) throw error(MODEL_ERROR);
+  const realPath = await fsp.realpath(evidence.absPath);
+  if (!sameResolvedPath(realPath, evidence.realPath)) throw error(MODEL_ERROR);
+  if (!sameResolvedPath(path.dirname(realPath), evidence.realDir)) throw error(MODEL_ERROR);
+  if (!sameFileIdentity(pathStat, evidence.pathStat)) throw error(MODEL_ERROR);
 }
 
 function assertAllowedUrl(rawUrl) {
@@ -681,6 +739,7 @@ async function installPinnedPaddleWheel(staging, python, deps = {}) {
   const runner = deps.spawnProcess || spawnProcess;
   const wheelStageParent = path.join(staging, 'runtime', 'text', '.wheel-stage');
   const wheelDir = path.join(wheelStageParent, 'paddlepaddle');
+  let evidence;
   try {
     await fsp.mkdir(wheelStageParent, { recursive: false });
     await fsp.mkdir(wheelDir, { recursive: false });
@@ -699,11 +758,7 @@ async function installPinnedPaddleWheel(staging, python, deps = {}) {
       PADDLE_WHEEL_RELATIVE_DIR,
       PADDLE_WHEEL_REQUIREMENT,
     ], { cwd: staging, env: sanitizeEnv(deps.env) });
-    const entries = await fsp.readdir(wheelDir, { withFileTypes: true });
-    if (entries.length !== 1 || !entries[0].isFile() || !PADDLE_WHEEL_FILE_PATTERN.test(entries[0].name)) {
-      throw error(MODEL_ERROR);
-    }
-    const wheelRelativePath = `${PADDLE_WHEEL_RELATIVE_DIR}/${entries[0].name}`;
+    evidence = await readPaddleWheelEvidence(staging, wheelDir);
     try {
       await runner(python, [
         '-m',
@@ -714,9 +769,10 @@ async function installPinnedPaddleWheel(staging, python, deps = {}) {
         '--no-input',
         '--no-index',
         '--no-deps',
-        wheelRelativePath,
+        evidence.relativePath,
       ], { cwd: staging, env: sanitizeEnv(deps.env) });
-      await fsp.unlink(path.join(staging, wheelRelativePath));
+      await revalidatePaddleWheelEvidence(evidence);
+      await fsp.unlink(evidence.absPath);
       await fsp.rmdir(wheelDir);
       await fsp.rmdir(wheelStageParent);
     } catch (err) {

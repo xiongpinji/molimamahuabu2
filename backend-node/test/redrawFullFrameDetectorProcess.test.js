@@ -320,6 +320,11 @@ function assertStableFetchError(error, expectedStage) {
   return true;
 }
 
+function assertSerializedFetchErrorIsSanitized(error) {
+  const serialized = JSON.stringify(error);
+  assert.doesNotMatch(serialized, /C:\\|C:\/|redraw-paddle|paddlepaddle-2\.6\.2|Authorization|secret-token|secret-key|Key/i);
+}
+
 function buildSuccessfulFetchDeps(randomHexValue = 'fixture') {
   const freezeByRuntime = {
     main: EXPECTED_MAIN_RUNTIME_FREEZE_WITH_TRANSITIVES,
@@ -1404,6 +1409,250 @@ test('PaddlePaddle text runtime downloads the pinned wheel before local no-index
     assert(!Object.prototype.hasOwnProperty.call(call.env, 'OPENAI_API_KEY'));
   }
   assert.equal(fs.existsSync(path.join(parent, 'runtime', 'text', '.wheel-stage')), false);
+});
+
+test('PaddlePaddle wheel evidence rejects ambiguous or mismatched download results before local install', async (t) => {
+  const cases = [
+    {
+      name: 'empty directory',
+      write: async () => {},
+    },
+    {
+      name: 'valid wheel plus extra file',
+      write: async (wheelDir) => {
+        await fsp.writeFile(path.join(wheelDir, PADDLE_WHEEL_FILE), 'fixture-wheel');
+        await fsp.writeFile(path.join(wheelDir, 'extra.txt'), 'extra');
+      },
+    },
+    {
+      name: 'wrong package name',
+      write: async (wheelDir) => {
+        await fsp.writeFile(path.join(wheelDir, 'notpaddle-2.6.2-cp312-cp312-win_amd64.whl'), 'fixture-wheel');
+      },
+    },
+    {
+      name: 'wrong version',
+      write: async (wheelDir) => {
+        await fsp.writeFile(path.join(wheelDir, 'paddlepaddle-2.6.1-cp312-cp312-win_amd64.whl'), 'fixture-wheel');
+      },
+    },
+    {
+      name: 'source archive',
+      write: async (wheelDir) => {
+        await fsp.writeFile(path.join(wheelDir, 'paddlepaddle-2.6.2.tar.gz'), 'fixture-wheel');
+      },
+    },
+    {
+      name: 'same-name directory',
+      write: async (wheelDir) => {
+        await fsp.mkdir(path.join(wheelDir, PADDLE_WHEEL_FILE));
+      },
+    },
+  ];
+
+  for (const item of cases) {
+    await t.test(item.name, async (subtest) => {
+      const parent = tempDir(subtest, 'redraw-paddle-wheel-evidence-');
+      const calls = [];
+      await fsp.mkdir(path.join(parent, 'runtime', 'text'), { recursive: true });
+
+      await assert.rejects(
+        installRuntime(parent, [], 'text', {
+          env: { OPENAI_API_KEY: 'secret', PATH: 'path' },
+          spawnProcess: async (_command, args, options) => {
+            calls.push(args.slice());
+            if (args.includes('download')) {
+              const dest = args[args.indexOf('--dest') + 1];
+              const wheelDir = path.join(options.cwd, dest);
+              await fsp.mkdir(wheelDir, { recursive: true });
+              await item.write(wheelDir);
+            }
+            return '';
+          },
+        }),
+        (error) => {
+          assertStableFetchError(error, 'download:text:paddlepaddle');
+          assertSerializedFetchErrorIsSanitized(error);
+          return true;
+        },
+      );
+
+      assert.equal(calls.filter((args) => args.includes('--no-index')).length, 0);
+    });
+  }
+});
+
+test('PaddlePaddle wheel symlink pointing outside staging is rejected before local install', async (t) => {
+  const parent = tempDir(t, 'redraw-paddle-wheel-symlink-');
+  const outside = path.join(tempDir(t, 'redraw-paddle-wheel-outside-'), 'outside.whl');
+  await fsp.writeFile(outside, 'fixture-wheel');
+  await fsp.mkdir(path.join(parent, 'runtime', 'text'), { recursive: true });
+  const calls = [];
+
+  await assert.rejects(
+    installRuntime(parent, [], 'text', {
+      env: { OPENAI_API_KEY: 'secret', PATH: 'path' },
+      spawnProcess: async (_command, args, options) => {
+        calls.push(args.slice());
+        if (args.includes('download')) {
+          const dest = args[args.indexOf('--dest') + 1];
+          const wheelDir = path.join(options.cwd, dest);
+          await fsp.mkdir(wheelDir, { recursive: true });
+          try {
+            await fsp.symlink(outside, path.join(wheelDir, PADDLE_WHEEL_FILE));
+          } catch (err) {
+            if (err && (err.code === 'EPERM' || err.code === 'EACCES')) {
+              t.skip(`symlink creation not permitted: ${err.code}`);
+              return;
+            }
+            throw err;
+          }
+        }
+        return '';
+      },
+    }),
+    (error) => {
+      assertStableFetchError(error, 'download:text:paddlepaddle');
+      assertSerializedFetchErrorIsSanitized(error);
+      return true;
+    },
+  );
+  assert.equal(calls.filter((args) => args.includes('--no-index')).length, 0);
+});
+
+test('PaddlePaddle wheel junction replacing package directory is rejected before local install', async (t) => {
+  const parent = tempDir(t, 'redraw-paddle-wheel-junction-');
+  const outside = tempDir(t, 'redraw-paddle-wheel-junction-outside-');
+  await fsp.writeFile(path.join(outside, PADDLE_WHEEL_FILE), 'fixture-wheel');
+  await fsp.mkdir(path.join(parent, 'runtime', 'text'), { recursive: true });
+  const calls = [];
+
+  await assert.rejects(
+    installRuntime(parent, [], 'text', {
+      env: { OPENAI_API_KEY: 'secret', PATH: 'path' },
+      spawnProcess: async (_command, args, options) => {
+        calls.push(args.slice());
+        if (args.includes('download')) {
+          const dest = args[args.indexOf('--dest') + 1];
+          const wheelDir = path.join(options.cwd, dest);
+          await fsp.rmdir(wheelDir);
+          try {
+            await fsp.symlink(outside, wheelDir, process.platform === 'win32' ? 'junction' : 'dir');
+          } catch (err) {
+            if (err && (err.code === 'EPERM' || err.code === 'EACCES')) {
+              t.skip(`junction creation not permitted: ${err.code}`);
+              return;
+            }
+            throw err;
+          }
+        }
+        return '';
+      },
+    }),
+    (error) => {
+      assertStableFetchError(error, 'download:text:paddlepaddle');
+      assertSerializedFetchErrorIsSanitized(error);
+      return true;
+    },
+  );
+  assert.equal(calls.filter((args) => args.includes('--no-index')).length, 0);
+});
+
+test('PaddlePaddle wheel drift rejects realpath escape during download evidence read', async (t) => {
+  const parent = tempDir(t, 'redraw-paddle-wheel-drift-download-');
+  const outside = tempDir(t, 'redraw-paddle-wheel-drift-outside-');
+  const originalRealpath = fsp.realpath;
+  await fsp.mkdir(path.join(parent, 'runtime', 'text'), { recursive: true });
+  t.after(() => { fsp.realpath = originalRealpath; });
+
+  await assert.rejects(
+    installRuntime(parent, [], 'text', {
+      env: { OPENAI_API_KEY: 'secret', PATH: 'path' },
+      spawnProcess: async (_command, args, options) => {
+        if (args.includes('download')) {
+          const dest = args[args.indexOf('--dest') + 1];
+          const wheelDir = path.join(options.cwd, dest);
+          await fsp.mkdir(wheelDir, { recursive: true });
+          await fsp.writeFile(path.join(wheelDir, PADDLE_WHEEL_FILE), 'fixture-wheel');
+          fsp.realpath = async (target, ...rest) => {
+            if (path.resolve(target) === path.resolve(wheelDir)) return path.join(outside, 'paddlepaddle');
+            return originalRealpath.call(fsp, target, ...rest);
+          };
+        }
+        return '';
+      },
+    }),
+    (error) => {
+      assertStableFetchError(error, 'download:text:paddlepaddle');
+      assertSerializedFetchErrorIsSanitized(error);
+      return true;
+    },
+  );
+});
+
+test('PaddlePaddle wheel drift rejects realpath escape after local install', async (t) => {
+  const parent = tempDir(t, 'redraw-paddle-wheel-drift-install-');
+  const outside = tempDir(t, 'redraw-paddle-wheel-drift-install-outside-');
+  const originalRealpath = fsp.realpath;
+  let drift = false;
+  await fsp.mkdir(path.join(parent, 'runtime', 'text'), { recursive: true });
+  t.after(() => { fsp.realpath = originalRealpath; });
+
+  await assert.rejects(
+    installRuntime(parent, [], 'text', {
+      env: { OPENAI_API_KEY: 'secret', PATH: 'path' },
+      spawnProcess: async (_command, args, options) => {
+        if (args.includes('download')) {
+          const dest = args[args.indexOf('--dest') + 1];
+          const wheelDir = path.join(options.cwd, dest);
+          await fsp.mkdir(wheelDir, { recursive: true });
+          await fsp.writeFile(path.join(wheelDir, PADDLE_WHEEL_FILE), 'fixture-wheel');
+          fsp.realpath = async (target, ...rest) => {
+            if (drift && path.resolve(target) === path.resolve(path.join(wheelDir, PADDLE_WHEEL_FILE))) {
+              return path.join(outside, PADDLE_WHEEL_FILE);
+            }
+            return originalRealpath.call(fsp, target, ...rest);
+          };
+        }
+        if (args.includes('--no-index')) drift = true;
+        return '';
+      },
+    }),
+    (error) => {
+      assertStableFetchError(error, 'install:text:paddlepaddle');
+      assertSerializedFetchErrorIsSanitized(error);
+      return true;
+    },
+  );
+});
+
+test('PaddlePaddle wheel drift rejects same-name wheel content replacement after local install', async (t) => {
+  const parent = tempDir(t, 'redraw-paddle-wheel-drift-content-');
+  await fsp.mkdir(path.join(parent, 'runtime', 'text'), { recursive: true });
+
+  await assert.rejects(
+    installRuntime(parent, [], 'text', {
+      env: { OPENAI_API_KEY: 'secret', PATH: 'path' },
+      spawnProcess: async (_command, args, options) => {
+        if (args.includes('download')) {
+          const dest = args[args.indexOf('--dest') + 1];
+          const wheelDir = path.join(options.cwd, dest);
+          await fsp.mkdir(wheelDir, { recursive: true });
+          await fsp.writeFile(path.join(wheelDir, PADDLE_WHEEL_FILE), 'fixture-wheel');
+        }
+        if (args.includes('--no-index')) {
+          await fsp.writeFile(path.join(options.cwd, PADDLE_WHEEL_RELATIVE_PATH), 'fixture-wheel-rewritten');
+        }
+        return '';
+      },
+    }),
+    (error) => {
+      assertStableFetchError(error, 'install:text:paddlepaddle');
+      assertSerializedFetchErrorIsSanitized(error);
+      return true;
+    },
+  );
+  assert.equal(fs.existsSync(path.join(parent, PADDLE_WHEEL_RELATIVE_PATH)), true);
 });
 
 test('PaddlePaddle download failure returns only the trusted sanitized stage', async (t) => {
