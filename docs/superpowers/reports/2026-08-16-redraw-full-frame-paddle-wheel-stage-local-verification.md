@@ -20,12 +20,12 @@
 | `fcdf3226` | 加固 wheel 证据门禁，要求目录、包名、版本、归属路径和证据读取都匹配固定合同。 |
 | `6ba46fe6` | 收紧链接类 skip 门禁，Windows 权限不可用时只允许明确 EPERM 类 skip。 |
 | `0ee0ac5a` | 拒绝来自 staging 外部或安装期间产生的 hard link wheel 身份漂移。 |
-| `6efd7dbd` | 固化下载失败、安装失败和发布失败的原子清理证据。 |
+| `6efd7dbd` | 固化 Paddle download 失败穿过 `runFetchModels` 后的原子清理证据，并固化其他 53 项调用不变。 |
 | `eae58561` | 用行为证据固化无 shell 执行，确认特殊字符参数按 argv 字面传递。 |
 
 ## 红灯记录
 
-- 任务 1 红灯：3 个 fail，分别覆盖缺少 Paddle wheel download 行为、下载后证据读取拒绝不足、安装前 wheel 目录内容拒绝不足。
+- 任务 1 红灯：3 个 fail，分别覆盖 happy path 无 download 调用、download 失败用例缺少预期 rejection、local install 失败用例缺少预期 rejection。
 - 任务 2 扩展红灯：4 个 fail，分别覆盖 junction 替换、初始 realpath 逃逸、安装后 realpath 逃逸、同名内容替换缺少拒绝；hard-link 红灯另有 2 个 fail，分别覆盖下载前外部 hard link 和安装后 hard link 身份漂移。
 - invalid matrix 在任务 1 基线天然 pass，只能作为既有覆盖项，不能计入新增红灯。
 - 任务 3 新增编排和行为证据为自然 pass 回归，不属于红灯。
@@ -46,15 +46,15 @@
 ## 行为证据
 
 - download stage：`download:text:paddlepaddle` 只负责固定 `paddlepaddle==2.6.2` wheel 下载到内部临时 wheel 目录；下载失败返回稳定 stage，错误不携带底层诊断文本。
-- install stage：`install:text:paddlepaddle` 使用本地 wheel、no-index 和 fixed-links 方式安装；安装失败返回稳定 stage，错误不携带底层诊断文本。
+- install stage：`install:text:paddlepaddle` 使用经验证的本地相对 wheel 路径、no-index 和 no-deps 方式安装；安装失败返回稳定 stage，错误不携带底层诊断文本。
 - 路径与身份：证据读取要求 wheel 目录位于 staging 内部固定相对位置，拒绝 symlink、junction、realpath 逃逸、下载后 realpath 逃逸、同名内容替换和 hard link 身份漂移。
 - 原子清理：失败路径不留下最终输出目录、模型锁或随机 staging；成功路径不保留内部 wheel 目录。
-- 其他 53 specs：五文件联合回归中非 Paddle wheel 分阶段目标的 coverage、model-lock、coverage-local 和 review 行为保持 pass，未引入额外 fail。
+- 其他 53 specs：target helper 测试以精确计数、顺序和 requirement 断言固化非目标调用不变，非 Paddle wheel 分阶段目标未引入额外 fail。
 - shell 行为：`runProcess` 使用 `spawn` 的 argv 合同，`shell:false`；含 shell 特殊字符的探针参数按字面进入 argv，没有触发 shell 展开或额外命令执行。
 
 ## 脱敏证据
 
-- 失败错误只暴露稳定错误码或可信 stage，不暴露本地路径、缓存位置、worker 文件名、wheel 文件名、底层 stderr、鉴权头词、token、key、代理配置或外部地址。
+- 失败错误只暴露稳定错误码或可信 stage，不暴露本地路径、缓存位置、worker 文件名、wheel 文件名、底层 stderr、鉴权头、访问凭据、代理配置或外部地址。
 - `runCli` 覆盖 install、bootstrap 和 unknown args 的脱敏输出；Paddle download 和 local wheel install 单独覆盖稳定 stage。
 - `detectFrames` 覆盖子进程协议失败、EPIPE、超大 stdout/stderr 和非法 frame 输入的脱敏错误。
 
