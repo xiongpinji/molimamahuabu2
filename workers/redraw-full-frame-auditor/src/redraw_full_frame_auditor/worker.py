@@ -13,12 +13,22 @@ import zipfile
 from types import SimpleNamespace
 
 if __package__:
-    from .text_subprocess import TextSubprocessAdapter
+    from .text_subprocess import TextSubprocessAdapter, TextSubprocessError, _trusted_text_stage
 else:
-    from text_subprocess import TextSubprocessAdapter
+    from text_subprocess import TextSubprocessAdapter, TextSubprocessError, _trusted_text_stage
 
 
 ERROR_CODE = "REDRAW_FULL_FRAME_MODEL_UNAVAILABLE"
+_TEXT_LOAD_STAGES = frozenset((
+    "validate_lock",
+    "import_cv2",
+    "import_paddle",
+    "build_args",
+    "model_dir",
+    "detector_init",
+    "adapter_init",
+    "output_limit",
+))
 _BOOTSTRAP_STAGES = frozenset((
     "validate_lock",
     "load",
@@ -34,7 +44,8 @@ _BOOTSTRAP_STAGES = frozenset((
     "probe:tracker",
     "adapter_probe",
     "close",
-))
+)) | frozenset(f"load:text:{stage}" for stage in _TEXT_LOAD_STAGES)
+_INTERNAL_STAGES = _BOOTSTRAP_STAGES | _TEXT_LOAD_STAGES
 _STAGE_TOKEN = object()
 LOCK_SCHEMA = "redraw-full-frame-model-lock-v1"
 COMPONENTS = ("face_detector", "person_detector", "text_detector", "tracker")
@@ -58,13 +69,13 @@ PaddleTextDetectionContext = SimpleNamespace
 class ProtocolError(Exception):
     def __init__(self, _message=ERROR_CODE, *, stage=None, _token=None):
         super().__init__(ERROR_CODE)
-        trusted = _token is _STAGE_TOKEN and stage in _BOOTSTRAP_STAGES
+        trusted = _token is _STAGE_TOKEN and stage in _INTERNAL_STAGES
         self._trusted_stage = stage if trusted else None
         self._stage_token = _token if trusted else None
 
 
 def _stage_error(stage):
-    if stage not in _BOOTSTRAP_STAGES:
+    if stage not in _INTERNAL_STAGES:
         stage = "load"
     return ProtocolError(ERROR_CODE, stage=stage, _token=_STAGE_TOKEN)
 
@@ -72,7 +83,7 @@ def _stage_error(stage):
 def _trusted_stage(error):
     if (type(error) is ProtocolError
             and getattr(error, "_stage_token", None) is _STAGE_TOKEN
-            and getattr(error, "_trusted_stage", None) in _BOOTSTRAP_STAGES):
+            and getattr(error, "_trusted_stage", None) in _INTERNAL_STAGES):
         return error._trusted_stage
     return None
 
@@ -498,18 +509,33 @@ def _default_face_factory(artifact_path):
 def _default_text_detector_factory(artifact_path):
     try:
         prepared = _prepare_artifact_path(artifact_path)
+    except Exception:
+        raise _stage_error("model_dir") from None
+    try:
         cv2 = importlib.import_module("cv2")
+    except Exception:
+        raise _stage_error("import_cv2") from None
+    try:
         text_system = importlib.import_module("paddleocr.tools.infer.predict_det")
+    except Exception:
+        raise _stage_error("import_paddle") from None
+    try:
         args_parser = text_system.utility.init_args()
-        text_detector_class = getattr(text_system, "TextDetector")
         args = args_parser.parse_args([])
+    except Exception:
+        raise _stage_error("build_args") from None
+    try:
         args.det_model_dir = _find_unique_paddle_det_model_dir(prepared, artifact_path)
+    except Exception:
+        raise _stage_error("model_dir") from None
+    try:
+        text_detector_class = getattr(text_system, "TextDetector")
         detector = text_detector_class(args)
         if not callable(detector):
             _fail()
         return PaddleTextDetectionContext(cv2=cv2, detector=detector)
-    except Exception as exc:
-        raise ProtocolError(ERROR_CODE) from exc
+    except Exception:
+        raise _stage_error("detector_init") from None
 
 
 def _find_unique_paddle_det_model_dir(prepared, artifact_path):
@@ -743,7 +769,10 @@ def _load_real_detectors(model_lock_path, factories=None, text_process_factory=N
         active_text_process_factory = text_process_factory or _default_text_process_factory
         try:
             text = active_text_process_factory(model_lock_path=model_lock_path)
-        except Exception:
+        except Exception as exc:
+            text_stage = _trusted_text_stage(exc) if type(exc) is TextSubprocessError else None
+            if text_stage in _TEXT_LOAD_STAGES:
+                raise _stage_error(f"load:text:{text_stage}") from None
             raise _stage_error("load:text") from None
         return SimpleNamespace(
             person=person,
@@ -906,7 +935,8 @@ def main(argv=None):
         return int(exc.code) if isinstance(exc.code, int) else 1
     except Exception as exc:
         if command == "bootstrap":
-            stage = _trusted_stage(exc) or "load"
+            trusted_stage = _trusted_stage(exc)
+            stage = trusted_stage if trusted_stage in _BOOTSTRAP_STAGES else "load"
             sys.stderr.write(f"{ERROR_CODE} stage={stage}\n")
         else:
             sys.stderr.write(ERROR_CODE + "\n")

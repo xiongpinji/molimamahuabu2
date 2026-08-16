@@ -14,6 +14,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 import redraw_full_frame_auditor
+from redraw_full_frame_auditor import text_subprocess
 from redraw_full_frame_auditor import worker
 
 
@@ -545,6 +546,74 @@ class WorkerProtocolTests(unittest.TestCase):
                 "load:text",
             )
 
+    def test_real_loader_maps_only_exact_trusted_text_process_stages(self):
+        expected_text_stages = frozenset((
+            "validate_lock",
+            "import_cv2",
+            "import_paddle",
+            "build_args",
+            "model_dir",
+            "detector_init",
+            "adapter_init",
+            "output_limit",
+        ))
+        self.assertEqual(worker._TEXT_LOAD_STAGES, expected_text_stages)
+        self.assertEqual(len(worker._BOOTSTRAP_STAGES), 22)
+        self.assertTrue({f"load:text:{stage}" for stage in expected_text_stages}.issubset(
+            worker._BOOTSTRAP_STAGES
+        ))
+
+        with tempfile.TemporaryDirectory() as root:
+            lock_path = write_model_lock(root)
+            for stage in sorted(expected_text_stages):
+                with self.subTest(stage=stage):
+                    trusted = text_subprocess.TextSubprocessError(
+                        worker.ERROR_CODE,
+                        stage=stage,
+                        _token=text_subprocess._TEXT_STAGE_TOKEN,
+                    )
+                    self.assertEqual(text_subprocess._trusted_text_stage(trusted), stage)
+
+                    def fail_text(**_kwargs):
+                        raise trusted
+
+                    self.assert_trusted_stage(
+                        lambda: worker._load_real_detectors(
+                            str(lock_path),
+                            factories=FakeFactory(),
+                            text_process_factory=fail_text,
+                        ),
+                        f"load:text:{stage}",
+                    )
+
+            class SpoofedSubclass(text_subprocess.TextSubprocessError):
+                pass
+
+            subclass_spoof = SpoofedSubclass(worker.ERROR_CODE)
+            subclass_spoof._trusted_stage = "import_cv2"
+            subclass_spoof._stage_token = text_subprocess._TEXT_STAGE_TOKEN
+            fallbacks = (
+                RuntimeError("C:/private/model-lock.json Authorization: secret"),
+                text_subprocess.TextSubprocessError(worker.ERROR_CODE, stage="import_cv2"),
+                subclass_spoof,
+                worker._stage_error("import_cv2"),
+                text_subprocess.TextSubprocessError(
+                    worker.ERROR_CODE,
+                    stage="unknown",
+                    _token=text_subprocess._TEXT_STAGE_TOKEN,
+                ),
+            )
+            for error in fallbacks:
+                with self.subTest(fallback=type(error).__name__, trusted=worker._trusted_stage(error)):
+                    self.assert_trusted_stage(
+                        lambda error=error: worker._load_real_detectors(
+                            str(lock_path),
+                            factories=FakeFactory(),
+                            text_process_factory=lambda **_kwargs: (_ for _ in ()).throw(error),
+                        ),
+                        "load:text",
+                    )
+
     def test_default_person_factory_loads_yolox_s_exp_for_locked_artifact(self):
         events = []
 
@@ -803,6 +872,70 @@ class WorkerProtocolTests(unittest.TestCase):
             ("imwrite", "probe.png", (64, 64, 3)),
         ])
 
+    def test_default_text_detector_factory_marks_safe_internal_load_stages(self):
+        class Parser:
+            def parse_args(self, _argv):
+                return worker.SimpleNamespace(det_model_dir=None)
+
+        class Utility:
+            @staticmethod
+            def init_args():
+                return Parser()
+
+        class TextDetector:
+            def __init__(self, _args):
+                pass
+
+            def __call__(self, _image):
+                return []
+
+        text_system = worker.SimpleNamespace(utility=Utility, TextDetector=TextDetector)
+        original_import_module = worker.importlib.import_module
+        try:
+            with tempfile.TemporaryDirectory() as root:
+                artifact_path = pathlib.Path(root) / "detector.pdmodel"
+                artifact_path.write_bytes(b"fixture")
+
+                cases = {
+                    "import_cv2": lambda name: (_ for _ in ()).throw(
+                        RuntimeError("C:/private/cv2.pyd Authorization: secret")
+                    ) if name == "cv2" else text_system,
+                    "import_paddle": lambda name: worker.SimpleNamespace() if name == "cv2" else (
+                        _ for _ in ()
+                    ).throw(RuntimeError("C:/private/paddle.pyd API_KEY=secret")),
+                    "build_args": lambda name: worker.SimpleNamespace() if name == "cv2" else worker.SimpleNamespace(
+                        utility=worker.SimpleNamespace(
+                            init_args=lambda: (_ for _ in ()).throw(
+                                RuntimeError("C:/private/args.py Authorization: secret")
+                            )
+                        ),
+                        TextDetector=TextDetector,
+                    ),
+                    "detector_init": lambda name: worker.SimpleNamespace() if name == "cv2" else worker.SimpleNamespace(
+                        utility=Utility,
+                        TextDetector=lambda _args: (_ for _ in ()).throw(
+                            RuntimeError("C:/private/model.bin Authorization: secret")
+                        ),
+                    ),
+                }
+                for expected_stage, importer in cases.items():
+                    with self.subTest(expected_stage=expected_stage):
+                        worker.importlib.import_module = importer
+                        self.assert_trusted_stage(
+                            lambda: worker._default_text_detector_factory(str(artifact_path)),
+                            expected_stage,
+                        )
+
+                worker.importlib.import_module = lambda name: (
+                    worker.SimpleNamespace() if name == "cv2" else text_system
+                )
+                self.assert_trusted_stage(
+                    lambda: worker._default_text_detector_factory(str(pathlib.Path(root) / "missing.zip")),
+                    "model_dir",
+                )
+        finally:
+            worker.importlib.import_module = original_import_module
+
     def test_bootstrap_models_uses_same_loader_runs_probe_and_always_closes(self):
         import contextlib
 
@@ -1043,6 +1176,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
             for error, expected_stage in (
                 (worker._stage_error("probe:text"), "probe:text"),
+                (worker._stage_error("import_cv2"), "load"),
                 (
                     worker.ProtocolError(
                         "C:/private/model-lock.json Authorization: secret",
