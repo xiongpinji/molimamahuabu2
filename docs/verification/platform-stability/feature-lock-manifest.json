@@ -8,7 +8,8 @@
       "status": "locked_fixed",
       "acceptance": [
         "逻辑模型与供应商配置分离，只有已验证且能力匹配的配置进入候选池",
-        "路由请求和供应商尝试具有稳定状态与幂等键"
+        "路由请求和供应商尝试具有稳定状态与幂等键",
+        "熔断冷却后的半开供应商只允许一个请求创建探测 attempt"
       ],
       "protectedPaths": [
         "backend-node/migrations/59_provider_route_stability.sql",
@@ -26,16 +27,19 @@
         "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
         "docs/superpowers/plans/2026-08-15-platform-stability-foundation.md",
         "docs/verification/platform-stability/foundation-verification.md",
-        "docs/verification/platform-stability/provider-reconciliation-grace-20260816.md"
+        "docs/verification/platform-stability/provider-reconciliation-grace-20260816.md",
+        "docs/tasks/2026-08-16-provider-failover-protection-phase.md"
       ],
-      "fixCommit": "51a91f1e3eb5dc3636adb1c8a47e45f22a60e000",
+      "fixCommit": "54eb8e940982cd9c4b65e91b934d8593a6b1975b",
       "unlock": {
-        "reason": "线上付费验收复现运行中请求被提前标记结果未知，修复成功终态与路由尝试状态一致性",
-        "approvedBy": "product-owner 2026-08-16 one-pass-production-acceptance",
+        "reason": "经批准执行供应商容灾保护阶段，补齐半开路由单探针 CAS 与 attempt 终态保护",
+        "approvedBy": "product-owner 2026-08-16 provider-failover-protection-phase",
         "impactTests": [
           "backend-node/test/providerRouteStability.test.js",
           "backend-node/test/providerReconciliation.test.js",
-          "backend-node/test/providerRouteImageIntegration.test.js"
+          "backend-node/test/providerRouteImageIntegration.test.js",
+          "backend-node/test/providerRouteVideoIntegration.test.js",
+          "backend-node/test/providerRouteTextIntegration.test.js"
         ]
       }
     },
@@ -45,7 +49,8 @@
       "status": "locked_fixed",
       "acceptance": [
         "图片、视频和文本只在明确未受理且同逻辑模型同能力的已验证配置间切换",
-        "策略拒绝、参数错误、结果未知和不可读产物均不得自动重提"
+        "策略拒绝、参数错误、结果未知和不可读产物均不得自动重提",
+        "只有备用 attempt 实际创建后才写管理员 route_switched 安全事件"
       ],
       "protectedPaths": [
         "backend-node/src/services/providerErrorClassifier.js",
@@ -66,16 +71,20 @@
         "docs/superpowers/plans/2026-08-15-platform-stability-foundation.md",
         "docs/verification/platform-stability/foundation-verification.md",
         "docs/verification/platform-stability/image-legacy-failover-compatibility.md",
-        "docs/verification/platform-stability/provider-reconciliation-grace-20260816.md"
+        "docs/verification/platform-stability/provider-reconciliation-grace-20260816.md",
+        "docs/tasks/2026-08-16-provider-failover-protection-phase.md"
       ],
-      "fixCommit": "51a91f1e3eb5dc3636adb1c8a47e45f22a60e000",
+      "fixCommit": "54eb8e940982cd9c4b65e91b934d8593a6b1975b",
       "unlock": {
-        "reason": "线上角色图片单次主路由成功后仍残留结果未知提示，清理成功终态旧错误且不改变故障切换边界",
-        "approvedBy": "product-owner 2026-08-16 one-pass-production-acceptance",
+        "reason": "经批准执行供应商容灾保护阶段，补齐真实切换事件并阻止被占用半开供应商重复提交",
+        "approvedBy": "product-owner 2026-08-16 provider-failover-protection-phase",
         "impactTests": [
           "backend-node/test/providerRouteImageIntegration.test.js",
           "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/providerErrorClassification.test.js"
+          "backend-node/test/providerErrorClassification.test.js",
+          "backend-node/test/providerRouteVideoIntegration.test.js",
+          "backend-node/test/providerRouteTextIntegration.test.js",
+          "backend-node/test/providerRouteAdminRoutes.test.js"
         ]
       }
     },
