@@ -21,6 +21,7 @@ const {
   runFetchModels,
   runCli,
   installRuntime,
+  bootstrapWorker,
 } = require('../scripts/fetch-redraw-full-frame-models-local');
 
 const EXPECTED_RUNTIME_PACKAGE_SPECS = [
@@ -132,6 +133,44 @@ function tempDir(t, prefix) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return root;
+}
+
+function writeBootstrapStageChild(t) {
+  const script = path.join(tempDir(t, 'redraw-bootstrap-stage-child-'), 'child.js');
+  fs.writeFileSync(script, `
+const mode = process.argv[2];
+const code = 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE';
+if (mode.startsWith('stage=')) {
+  process.stderr.write('warning without sensitive data\\n');
+  process.stderr.write(code + ' stage=' + mode.slice('stage='.length) + '\\n');
+  process.exit(1);
+}
+if (mode === 'not-last') {
+  process.stderr.write(code + ' stage=load:text\\nwarning after stage\\n');
+  process.exit(1);
+}
+if (mode.startsWith('sensitive=')) {
+  const warnings = {
+    auth: 'Authorization: opaque-value',
+    key: 'Key: opaque-value',
+    path: 'failure at C:/private/worker.py',
+  };
+  process.stderr.write(warnings[mode.slice('sensitive='.length)] + '\\n');
+  process.stderr.write(code + ' stage=load:text\\n');
+  process.exit(1);
+}
+if (mode === 'huge') {
+  process.stderr.write('x'.repeat(257));
+  process.stderr.write('\\n' + code + ' stage=load:text\\n');
+  process.exit(1);
+}
+if (mode === 'zero') {
+  process.stderr.write(code + ' stage=load:text\\n');
+  process.exit(0);
+}
+process.exit(2);
+`, 'utf8');
+  return script;
 }
 
 function writeFakeWorker(t, mode = 'ok') {
@@ -471,7 +510,7 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
   rawBootstrapError.code = 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE';
   rawBootstrapError.cause = new Error('C:\\Users\\private\\worker.py');
   rawBootstrapError.context = { authorization: 'Bearer secret-token', key: 'secret-key' };
-  rawBootstrapError.stage = 'install:paddleocr';
+  rawBootstrapError.stage = 'bootstrap:load:text';
   await assert.rejects(runFetchModels({
     outputDir: bootstrapFailed,
   }, {
@@ -488,6 +527,7 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
 
 test('runCli emits only stable sanitized install and bootstrap stages', async (t) => {
   const parent = tempDir(t, 'redraw-model-cli-stage-');
+  const stageChild = writeBootstrapStageChild(t);
   const originalGet = https.get;
   https.get = () => { throw new Error('network must not be reached'); };
   t.after(() => { https.get = originalGet; });
@@ -550,13 +590,28 @@ test('runCli emits only stable sanitized install and bootstrap stages', async (t
     stderr: 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=bootstrap\n',
   });
 
+  const bootstrapChildResult = await capture(['--output-dir', path.join(parent, 'bootstrap-child-failed')], {
+    ...fixtureDeps,
+    installRuntime: async () => {},
+    bootstrapWorker: async (staging, modelLockPath) => bootstrapWorker(staging, modelLockPath, {
+      env: process.env,
+      spawnProcess: async (_command, _args, options) => (
+        runProcess(process.execPath, [stageChild, 'stage=load:text'], options)
+      ),
+    }),
+  });
+  assert.deepEqual(bootstrapChildResult, {
+    code: 1,
+    stderr: 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=bootstrap:load:text\n',
+  });
+
   const unknownResult = await capture(['--url', 'https://secret.example/model'], fixtureDeps);
   assert.deepEqual(unknownResult, {
     code: 1,
     stderr: 'REDRAW_FULL_FRAME_OUTPUT_INVALID stage=unknown\n',
   });
   assert.doesNotMatch(
-    `${installResult.stderr}${bootstrapResult.stderr}${unknownResult.stderr}`,
+    `${installResult.stderr}${bootstrapResult.stderr}${bootstrapChildResult.stderr}${unknownResult.stderr}`,
     /private|Authorization|secret-token|secret-key|worker\.py|paddleocr\.py|https?:/i,
   );
   assert.deepEqual(
@@ -875,6 +930,62 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
       )).join('\n')}\n`,
     }),
     /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+  );
+});
+
+test('runProcess only trusts fixed bootstrap child stages when explicitly enabled', async (t) => {
+  const script = writeBootstrapStageChild(t);
+  const parseOptions = { timeoutMs: 1000, parseBootstrapErrorStage: true };
+  const allowedStages = [
+    'validate_lock',
+    'load',
+    'load:person',
+    'load:tracker',
+    'load:face',
+    'load:text',
+    'probe_frame',
+    'probe',
+    'probe:person',
+    'probe:face',
+    'probe:text',
+    'probe:tracker',
+    'adapter_probe',
+    'close',
+  ];
+  for (const stage of allowedStages) {
+    await assert.rejects(
+      runProcess(process.execPath, [script, `stage=${stage}`], parseOptions),
+      (error) => assertStableFetchError(error, `bootstrap:${stage}`),
+    );
+  }
+  await assert.rejects(
+    runProcess(process.execPath, [script, 'stage=load:text'], { timeoutMs: 1000 }),
+    (error) => assertStableFetchError(error, 'unknown'),
+  );
+  for (const mode of ['stage=load:unknown', 'not-last', 'sensitive=auth', 'sensitive=key', 'sensitive=path']) {
+    await assert.rejects(
+      runProcess(process.execPath, [script, mode], parseOptions),
+      (error) => assertStableFetchError(error, 'unknown'),
+    );
+  }
+  await assert.rejects(
+    runProcess(process.execPath, [script, 'huge'], { ...parseOptions, stderrMaxBytes: 256 }),
+    (error) => assertStableFetchError(error, 'unknown'),
+  );
+  assert.equal(await runProcess(process.execPath, [script, 'zero'], parseOptions), '');
+
+  const parent = tempDir(t, 'redraw-bootstrap-stage-wrapper-');
+  const withChild = (mode) => bootstrapWorker(parent, path.join(parent, 'model-lock.json'), {
+    env: process.env,
+    spawnProcess: async (_command, _args, options) => runProcess(process.execPath, [script, mode], options),
+  });
+  await assert.rejects(
+    withChild('stage=load:text'),
+    (error) => assertStableFetchError(error, 'bootstrap:load:text'),
+  );
+  await assert.rejects(
+    withChild('stage=load:unknown'),
+    (error) => assertStableFetchError(error, 'bootstrap'),
   );
 });
 

@@ -161,6 +161,22 @@ const PROCESS_STDOUT_MAX_BYTES = 4 * 1024 * 1024;
 const PROCESS_STDERR_MAX_BYTES = 1024 * 1024;
 const PROCESS_TIMEOUT_MS = 15 * 60 * 1000;
 const TRUSTED_SANITIZED_ERROR = Symbol('trustedSanitizedError');
+const PYTHON_BOOTSTRAP_SAFE_STAGES = new Set([
+  'validate_lock',
+  'load',
+  'load:person',
+  'load:tracker',
+  'load:face',
+  'load:text',
+  'probe_frame',
+  'probe',
+  'probe:person',
+  'probe:face',
+  'probe:text',
+  'probe:tracker',
+  'adapter_probe',
+  'close',
+]);
 const FIXED_RUNTIME_STAGES = new Set([
   'unknown',
   'create_venv',
@@ -180,6 +196,7 @@ function normalizeStage(stage) {
   if (typeof stage !== 'string') return 'unknown';
   if (FIXED_RUNTIME_STAGES.has(stage)) return stage;
   if (stage.startsWith('fetch:') && COMPONENT_ORDER.includes(stage.slice('fetch:'.length))) return stage;
+  if (stage.startsWith('bootstrap:') && PYTHON_BOOTSTRAP_SAFE_STAGES.has(stage.slice('bootstrap:'.length))) return stage;
   const install = /^install:([A-Za-z0-9_.-]+)$/.exec(stage);
   if (!install) return 'unknown';
   const packageName = install[1].toLowerCase().replace(/[-_.]+/g, '-');
@@ -201,6 +218,16 @@ function sanitizedError(err, fallbackStage = 'unknown') {
   const safe = error(code, sourceStage === 'unknown' ? normalizeStage(fallbackStage) : sourceStage);
   Object.defineProperty(safe, TRUSTED_SANITIZED_ERROR, { value: true, enumerable: false });
   return safe;
+}
+
+function parseBootstrapErrorStage(stderr) {
+  if (typeof stderr !== 'string' || stderr.length === 0) return null;
+  if (/(?:authorization|bearer|(?:api[-_ ]?key|secret[-_ ]?key|\bkey\s*[:=])|https?:\/\/|[A-Za-z]:[\\/]|(?:^|[\s"'(])\/[^\s])/im.test(stderr)) return null;
+  const lines = stderr.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  if (lines.length === 0) return null;
+  const match = /^REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=([a-z_]+(?::[a-z_]+)?)$/.exec(lines[lines.length - 1]);
+  if (!match || !PYTHON_BOOTSTRAP_SAFE_STAGES.has(match[1])) return null;
+  return `bootstrap:${match[1]}`;
 }
 
 function sanitizeEnv(env = process.env) {
@@ -476,14 +503,17 @@ function runProcess(command, args, options = {}) {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
+    let stderr = '';
     let stdoutBytes = 0;
     let stderrBytes = 0;
-    const finishReject = () => {
+    const finishReject = (bootstrapStage = null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       child.kill();
-      reject(error(MODEL_ERROR));
+      reject(bootstrapStage
+        ? sanitizedError(error(MODEL_ERROR), bootstrapStage)
+        : error(MODEL_ERROR));
     };
     const finishResolve = () => {
       if (settled) return;
@@ -505,13 +535,18 @@ function runProcess(command, args, options = {}) {
     child.stderr.on('data', (chunk) => {
       stderrBytes += Buffer.byteLength(chunk);
       if (stderrBytes > (options.stderrMaxBytes || PROCESS_STDERR_MAX_BYTES)) {
+        stderr = '';
         finishReject();
+        return;
       }
+      if (options.parseBootstrapErrorStage === true) stderr += chunk;
     });
-    child.on('error', finishReject);
+    child.on('error', () => finishReject());
     child.on('close', (code) => {
       if (settled) return;
-      if (code !== 0) finishReject();
+      if (code !== 0) {
+        finishReject(options.parseBootstrapErrorStage === true ? parseBootstrapErrorStage(stderr) : null);
+      }
       else finishResolve();
     });
   });
@@ -582,7 +617,11 @@ async function bootstrapWorker(staging, _modelLockPath, deps = {}) {
   const runner = deps.spawnProcess || spawnProcess;
   const worker = path.resolve(__dirname, '../../workers/redraw-full-frame-auditor/src/redraw_full_frame_auditor/worker.py');
   try {
-    await runner(venvPython(staging), [worker, 'bootstrap', '--model-lock', path.join(staging, 'model-lock.json')], { cwd: staging, env: sanitizeEnv(deps.env) });
+    await runner(venvPython(staging), [worker, 'bootstrap', '--model-lock', path.join(staging, 'model-lock.json')], {
+      cwd: staging,
+      env: sanitizeEnv(deps.env),
+      parseBootstrapErrorStage: true,
+    });
   } catch (err) {
     throw sanitizedError(err, 'bootstrap');
   }
