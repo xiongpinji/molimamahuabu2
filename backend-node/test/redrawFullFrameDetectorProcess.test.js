@@ -24,31 +24,25 @@ const {
   bootstrapWorker,
 } = require('../scripts/fetch-redraw-full-frame-models-local');
 
-const EXPECTED_RUNTIME_PACKAGE_SPECS = [
+const WINDOWS_ONLY_RUNTIME_TRANSITIVE_NAMES = new Set([
+  'colorama',
+  'intel-openmp',
+  'mkl',
+  'tbb',
+  'win32-setctime',
+]);
+const EXPECTED_MAIN_RUNTIME_PACKAGE_SPECS = [
   { requirement: 'setuptools==80.9.0' },
   { requirement: 'wheel==0.43.0' },
   { requirement: 'numpy==1.26.4' },
   { requirement: 'protobuf==4.25.9' },
   { requirement: 'Pillow==11.3.0' },
   { requirement: 'six==1.17.0' },
-  { requirement: 'scipy==1.17.1' },
-  { requirement: 'imageio==2.37.4' },
-  { requirement: 'tifffile==2026.3.3' },
-  { requirement: 'scikit-image==0.26.0' },
-  { requirement: 'Shapely==2.1.2' },
-  { requirement: 'pyclipper==1.4.0' },
-  { requirement: 'lmdb==2.3.0' },
-  { requirement: 'tqdm==4.68.1' },
-  { requirement: 'requests==2.33.0' },
   { requirement: 'absl-py==2.5.0' },
   { requirement: 'attrs==26.1.0' },
   { requirement: 'flatbuffers==25.12.19' },
   { requirement: 'matplotlib==3.11.1' },
   { requirement: 'sounddevice==0.5.5' },
-  { requirement: 'httpx==0.27.0' },
-  { requirement: 'decorator==5.3.1' },
-  { requirement: 'astor==0.8.1' },
-  { requirement: 'opt-einsum==3.3.0' },
   { requirement: 'opencv-python-headless==4.10.0.84' },
   { requirement: 'torch==2.3.1' },
   { requirement: 'torchvision==0.18.1' },
@@ -60,8 +54,30 @@ const EXPECTED_RUNTIME_PACKAGE_SPECS = [
   { requirement: 'lap==0.5.13' },
   { requirement: 'Cython==3.2.9' },
   { requirement: 'cython-bbox==0.1.5' },
-  { requirement: 'imgaug==0.4.0', noDeps: true },
   { requirement: 'mediapipe==0.10.14', noDeps: true },
+];
+const EXPECTED_TEXT_RUNTIME_PACKAGE_SPECS = [
+  { requirement: 'setuptools==80.9.0' },
+  { requirement: 'wheel==0.43.0' },
+  { requirement: 'numpy==1.26.4' },
+  { requirement: 'protobuf==3.20.2' },
+  { requirement: 'Pillow==11.3.0' },
+  { requirement: 'six==1.17.0' },
+  { requirement: 'scipy==1.17.1' },
+  { requirement: 'imageio==2.37.4' },
+  { requirement: 'tifffile==2026.3.3' },
+  { requirement: 'scikit-image==0.26.0' },
+  { requirement: 'Shapely==2.1.2' },
+  { requirement: 'pyclipper==1.4.0' },
+  { requirement: 'lmdb==2.3.0' },
+  { requirement: 'tqdm==4.68.1' },
+  { requirement: 'requests==2.33.0' },
+  { requirement: 'httpx==0.27.0' },
+  { requirement: 'decorator==5.3.1' },
+  { requirement: 'astor==0.8.1' },
+  { requirement: 'opt-einsum==3.3.0' },
+  { requirement: 'opencv-python-headless==4.10.0.84' },
+  { requirement: 'imgaug==0.4.0', noDeps: true },
   { requirement: 'paddlepaddle==2.6.2', noDeps: true },
   { requirement: 'beautifulsoup4==4.15.0' },
   { requirement: 'fire==0.7.1' },
@@ -73,25 +89,19 @@ const EXPECTED_RUNTIME_PACKAGE_SPECS = [
   { requirement: 'termcolor==3.3.0' },
   { requirement: 'paddleocr==2.8.1', noDeps: true },
 ];
-const EXPECTED_RUNTIME_FREEZE = EXPECTED_RUNTIME_PACKAGE_SPECS.map((spec) => spec.requirement);
-const ALLOWED_RUNTIME_TRANSITIVE_FREEZE = [
-  'anyio==4.14.2',
-  'certifi==2026.7.22',
+const EXPECTED_MAIN_RUNTIME_FREEZE = EXPECTED_MAIN_RUNTIME_PACKAGE_SPECS.map((spec) => spec.requirement);
+const EXPECTED_TEXT_RUNTIME_FREEZE = EXPECTED_TEXT_RUNTIME_PACKAGE_SPECS.map((spec) => spec.requirement);
+const EXPECTED_MAIN_RUNTIME_TRANSITIVE_FREEZE = [
   'cffi==2.1.1',
-  'charset-normalizer==3.5.1',
   'colorama==0.4.6',
   'contourpy==1.3.3',
   'cycler==0.12.1',
   'filelock==3.32.3',
   'fonttools==4.63.0',
   'fsspec==2026.7.0',
-  'h11==0.16.0',
-  'httpcore==1.0.9',
-  'idna==3.18',
   'intel-openmp==2021.4.0',
   'Jinja2==3.1.6',
   'kiwisolver==1.5.0',
-  'lazy-loader==0.5',
   'MarkupSafe==3.0.3',
   'mkl==2021.4.0',
   'mpmath==1.3.0',
@@ -100,26 +110,36 @@ const ALLOWED_RUNTIME_TRANSITIVE_FREEZE = [
   'pycparser==3.0',
   'pyparsing==3.3.2',
   'python-dateutil==2.9.0.post0',
-  'sniffio==1.3.1',
   'sympy==1.14.0',
   'tbb==2021.13.1',
   'typing-extensions==4.16.0',
-  'urllib3==2.7.0',
   'win32-setctime==1.2.0',
 ];
-const WINDOWS_ONLY_RUNTIME_TRANSITIVE_NAMES = new Set([
-  'colorama',
-  'intel-openmp',
-  'mkl',
-  'tbb',
-  'win32-setctime',
-]);
-const CROSS_PLATFORM_RUNTIME_TRANSITIVE_FREEZE = ALLOWED_RUNTIME_TRANSITIVE_FREEZE.filter((requirement) => (
-  !WINDOWS_ONLY_RUNTIME_TRANSITIVE_NAMES.has(requirement.split('==')[0].toLowerCase().replace(/[-_.]+/g, '-'))
-));
-const EXPECTED_RUNTIME_FREEZE_WITH_TRANSITIVES = [
-  ...EXPECTED_RUNTIME_FREEZE,
-  ...(process.platform === 'win32' ? ALLOWED_RUNTIME_TRANSITIVE_FREEZE : CROSS_PLATFORM_RUNTIME_TRANSITIVE_FREEZE),
+const EXPECTED_TEXT_RUNTIME_TRANSITIVE_FREEZE = [
+  'anyio==4.14.2',
+  'certifi==2026.7.22',
+  'charset-normalizer==3.5.1',
+  'h11==0.16.0',
+  'httpcore==1.0.9',
+  'idna==3.18',
+  'lazy-loader==0.5',
+  'networkx==3.6.1',
+  'packaging==26.3',
+  'sniffio==1.3.1',
+  'typing-extensions==4.16.0',
+  'urllib3==2.7.0',
+];
+const EXPECTED_MAIN_RUNTIME_FREEZE_WITH_TRANSITIVES = [
+  ...EXPECTED_MAIN_RUNTIME_FREEZE,
+  ...(process.platform === 'win32'
+    ? EXPECTED_MAIN_RUNTIME_TRANSITIVE_FREEZE
+    : EXPECTED_MAIN_RUNTIME_TRANSITIVE_FREEZE.filter((requirement) => (
+      !WINDOWS_ONLY_RUNTIME_TRANSITIVE_NAMES.has(requirement.split('==')[0].toLowerCase().replace(/[-_.]+/g, '-'))
+    ))),
+];
+const EXPECTED_TEXT_RUNTIME_FREEZE_WITH_TRANSITIVES = [
+  ...EXPECTED_TEXT_RUNTIME_FREEZE,
+  ...EXPECTED_TEXT_RUNTIME_TRANSITIVE_FREEZE,
 ];
 const FORBIDDEN_RUNTIME_PACKAGES = new Set([
   'opencv-python',
@@ -447,10 +467,136 @@ test('model artifact URL validator keeps only the official model source hosts', 
   }
 });
 
+test('runFetchModels builds separate main and text runtimes with a v2 lock', async (t) => {
+  const parent = tempDir(t, 'redraw-model-fetch-dual-runtime-');
+  const outputDir = path.join(parent, 'cache');
+  const calls = [];
+  const freezeByRuntime = {
+    main: EXPECTED_MAIN_RUNTIME_FREEZE_WITH_TRANSITIVES,
+    text: EXPECTED_TEXT_RUNTIME_FREEZE_WITH_TRANSITIVES,
+  };
+  const versionByRuntime = {
+    main: 'Python 3.11.9 main',
+    text: 'Python 3.11.9 text',
+  };
+  const writeFakeInterpreter = async (staging, runtimeName) => {
+    const interpreter = venvPython(staging, runtimeName);
+    await fsp.mkdir(path.dirname(interpreter), { recursive: true });
+    await fsp.writeFile(interpreter, `${runtimeName}:python`);
+  };
+  const deps = {
+    randomHex: () => 'dual123',
+    fetchComponent: async (source) => {
+      calls.push(`fetch:${source.component}`);
+      return {
+        revision: `fixed-${source.component}-20260816`,
+        artifact_name: `${source.component}.bin`,
+        artifact_bytes: Buffer.from(`${source.component}:artifact`),
+        license_name: `${source.component}.license`,
+        license_bytes: Buffer.from(`${source.component}:license`),
+      };
+    },
+    createVenv: async (staging, runtimeName) => {
+      assert(['main', 'text'].includes(runtimeName));
+      calls.push(`create:${runtimeName}`);
+      await writeFakeInterpreter(staging, runtimeName);
+    },
+    installRuntime: async (_staging, _components, runtimeName) => {
+      assert(['main', 'text'].includes(runtimeName));
+      calls.push(`install:${runtimeName}`);
+    },
+    pipFreeze: async (_staging, runtimeName) => {
+      assert(['main', 'text'].includes(runtimeName));
+      calls.push(`freeze:${runtimeName}`);
+      return freezeByRuntime[runtimeName];
+    },
+    pythonVersion: async (_staging, runtimeName) => {
+      assert(['main', 'text'].includes(runtimeName));
+      calls.push(`version:${runtimeName}`);
+      return versionByRuntime[runtimeName];
+    },
+    bootstrapWorker: async (staging, modelLockPath, runtimeName) => {
+      assert.equal(runtimeName, 'main');
+      calls.push('bootstrap:main');
+      const lock = JSON.parse(await fsp.readFile(modelLockPath, 'utf8'));
+      assert.equal(lock.schema_version, 'redraw-full-frame-model-lock-v2');
+      assert.deepEqual(Object.keys(lock.runtimes), ['main', 'text']);
+      assert.equal(lock.runtimes.main.python_version, versionByRuntime.main);
+      assert.equal(lock.runtimes.text.python_version, versionByRuntime.text);
+      assert.equal(lock.runtimes.main.interpreter_path, 'runtime/main/.venv/Scripts/python.exe');
+      assert.equal(lock.runtimes.text.interpreter_path, 'runtime/text/.venv/Scripts/python.exe');
+      assert.equal(lock.runtimes.main.pip_freeze_path, 'runtime/main/pip-freeze.txt');
+      assert.equal(lock.runtimes.text.pip_freeze_path, 'runtime/text/pip-freeze.txt');
+      for (const runtimeName of ['main', 'text']) {
+        const freezePath = path.join(staging, lock.runtimes[runtimeName].pip_freeze_path);
+        const freezeBytes = await fsp.readFile(freezePath);
+        assert.equal(
+          lock.runtimes[runtimeName].pip_freeze_sha256,
+          crypto.createHash('sha256').update(freezeBytes).digest('hex'),
+        );
+      }
+    },
+    validateModelLock: async ({ lock }) => {
+      calls.push('validate');
+      return {
+        canonical_sha256: 'a'.repeat(64),
+        components: lock.components,
+      };
+    },
+    publishCache: async (staging, target) => {
+      calls.push('publish');
+      await fsp.rename(staging, target);
+    },
+  };
+
+  const result = await runFetchModels({ outputDir }, deps);
+
+  assert.deepEqual(calls, [
+    'fetch:face_detector',
+    'fetch:person_detector',
+    'fetch:text_detector',
+    'fetch:tracker',
+    'create:main',
+    'install:main',
+    'freeze:main',
+    'version:main',
+    'create:text',
+    'install:text',
+    'freeze:text',
+    'version:text',
+    'bootstrap:main',
+    'validate',
+    'publish',
+  ]);
+  assert.equal(result.runtime_lock, undefined);
+  assert.deepEqual(result.runtime_locks, {
+    main: 'runtime/main/pip-freeze.txt',
+    text: 'runtime/text/pip-freeze.txt',
+  });
+  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(outputDir, 'model-lock.json'), 'utf8')).runtimes), ['main', 'text']);
+  assert.equal(
+    fs.readFileSync(path.join(outputDir, 'runtime', 'main', 'pip-freeze.txt'), 'utf8'),
+    `${EXPECTED_MAIN_RUNTIME_FREEZE_WITH_TRANSITIVES.slice().sort((a, b) => a.localeCompare(b)).join('\n')}\n`,
+  );
+  assert.equal(
+    fs.readFileSync(path.join(outputDir, 'runtime', 'text', 'pip-freeze.txt'), 'utf8'),
+    `${EXPECTED_TEXT_RUNTIME_FREEZE_WITH_TRANSITIVES.slice().sort((a, b) => a.localeCompare(b)).join('\n')}\n`,
+  );
+});
+
 test('runFetchModels builds a fixture cache, validates lock, and leaves no final directory on failure', async (t) => {
   const parent = tempDir(t, 'redraw-model-fetch-');
   const outputDir = path.join(parent, 'cache');
   const calls = [];
+  const writeFakeInterpreter = async (staging, runtimeName) => {
+    const interpreter = venvPython(staging, runtimeName);
+    await fsp.mkdir(path.dirname(interpreter), { recursive: true });
+    await fsp.writeFile(interpreter, `${runtimeName}:python`);
+  };
+  const freezeByRuntime = {
+    main: EXPECTED_MAIN_RUNTIME_FREEZE_WITH_TRANSITIVES,
+    text: EXPECTED_TEXT_RUNTIME_FREEZE_WITH_TRANSITIVES,
+  };
   const deps = {
     randomHex: () => 'abc123',
     fetchComponent: async (source) => {
@@ -463,34 +609,40 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
         license_bytes: Buffer.from(`${source.component}:license`),
       };
     },
-    createVenv: async () => calls.push('venv'),
-    installRuntime: async () => calls.push('install'),
-    pipFreeze: async () => EXPECTED_RUNTIME_FREEZE_WITH_TRANSITIVES,
+    createVenv: async (staging, runtimeName) => {
+      calls.push(`venv:${runtimeName}`);
+      await writeFakeInterpreter(staging, runtimeName);
+    },
+    installRuntime: async (_staging, _components, runtimeName) => calls.push(`install:${runtimeName}`),
+    pipFreeze: async (_staging, runtimeName) => freezeByRuntime[runtimeName],
     bootstrapWorker: async () => calls.push('bootstrap'),
-    pythonVersion: async () => 'Python 3.11.9',
+    pythonVersion: async (_staging, runtimeName) => `Python 3.11.9 ${runtimeName}`,
   };
 
   const result = await runFetchModels({ outputDir }, deps);
 
   assert.deepEqual(result.components, ['face_detector', 'person_detector', 'text_detector', 'tracker']);
   assert.match(result.canonical_sha256, /^[a-f0-9]{64}$/);
-  assert.equal(result.runtime_lock, 'runtime/pip-freeze.txt');
+  assert.deepEqual(result.runtime_locks, {
+    main: 'runtime/main/pip-freeze.txt',
+    text: 'runtime/text/pip-freeze.txt',
+  });
   assert(fs.existsSync(path.join(outputDir, 'model-lock.json')));
   const lock = JSON.parse(fs.readFileSync(path.join(outputDir, 'model-lock.json'), 'utf8'));
-  assert.equal(lock.schema_version, 'redraw-full-frame-model-lock-v1');
-  assert.deepEqual(
-    lock.runtime.pip_freeze,
-    EXPECTED_RUNTIME_FREEZE_WITH_TRANSITIVES.slice().sort((a, b) => a.localeCompare(b)),
-  );
-  const frozenPackages = new Map(lock.runtime.pip_freeze.map((line) => {
-    const [name, version] = line.split('==');
-    return [name.toLowerCase().replace(/[-_.]+/g, '-'), version];
-  }));
-  for (const requirement of EXPECTED_RUNTIME_FREEZE) {
-    const [name, version] = requirement.split('==');
-    assert.equal(frozenPackages.get(name.toLowerCase().replace(/[-_.]+/g, '-')), version);
+  assert.equal(lock.schema_version, 'redraw-full-frame-model-lock-v2');
+  assert.deepEqual(Object.keys(lock.runtimes), ['main', 'text']);
+  for (const runtimeName of ['main', 'text']) {
+    const freezeBytes = fs.readFileSync(path.join(outputDir, lock.runtimes[runtimeName].pip_freeze_path));
+    assert.equal(
+      lock.runtimes[runtimeName].pip_freeze_sha256,
+      crypto.createHash('sha256').update(freezeBytes).digest('hex'),
+    );
+    const frozenPackages = new Map(String(freezeBytes).trim().split(/\r?\n/).map((line) => {
+      const [name, version] = line.split('==');
+      return [name.toLowerCase().replace(/[-_.]+/g, '-'), version];
+    }));
+    for (const forbidden of FORBIDDEN_RUNTIME_PACKAGES) assert.equal(frozenPackages.has(forbidden), false);
   }
-  for (const forbidden of FORBIDDEN_RUNTIME_PACKAGES) assert.equal(frozenPackages.has(forbidden), false);
   for (const component of lock.components) {
     assert.equal(
       component.artifact_sha256,
@@ -565,9 +717,15 @@ test('runCli emits only stable sanitized install and bootstrap stages', async (t
       license_name: `${source.component}.license`,
       license_bytes: Buffer.from(`${source.component}:license`),
     }),
-    createVenv: async () => {},
-    pipFreeze: async () => EXPECTED_RUNTIME_FREEZE_WITH_TRANSITIVES,
-    pythonVersion: async () => 'Python 3.11.9',
+    createVenv: async (staging, runtimeName) => {
+      const interpreter = venvPython(staging, runtimeName);
+      await fsp.mkdir(path.dirname(interpreter), { recursive: true });
+      await fsp.writeFile(interpreter, `${runtimeName}:python`);
+    },
+    pipFreeze: async (_staging, runtimeName) => (
+      runtimeName === 'main' ? EXPECTED_MAIN_RUNTIME_FREEZE_WITH_TRANSITIVES : EXPECTED_TEXT_RUNTIME_FREEZE_WITH_TRANSITIVES
+    ),
+    pythonVersion: async (_staging, runtimeName) => `Python 3.11.9 ${runtimeName}`,
     bootstrapWorker: async () => {},
   };
   const capture = async (argv, injectedDeps) => {
@@ -583,7 +741,7 @@ test('runCli emits only stable sanitized install and bootstrap stages', async (t
 
   const installResult = await capture(['--output-dir', path.join(parent, 'install-failed')], {
     ...fixtureDeps,
-    installRuntime: async (staging, components) => installRuntime(staging, components, {
+    installRuntime: async (staging, components, runtimeName) => installRuntime(staging, components, runtimeName, {
       spawnProcess: async (_command, args) => {
         if (args[args.length - 1] === 'paddleocr==2.8.1') throw privateFailure('paddleocr.py');
         return '';
@@ -593,7 +751,7 @@ test('runCli emits only stable sanitized install and bootstrap stages', async (t
   });
   assert.deepEqual(installResult, {
     code: 1,
-    stderr: 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=install:paddleocr\n',
+    stderr: 'REDRAW_FULL_FRAME_MODEL_UNAVAILABLE stage=install:text:paddleocr\n',
   });
 
   const bootstrapResult = await capture(['--output-dir', path.join(parent, 'bootstrap-failed')], {
@@ -737,10 +895,17 @@ test('default fetch path rejects official revision drift and injected artifact U
 
 test('default runtime helpers use safe argv spawn contracts and reject non-exact freeze lines', async (t) => {
   const calls = [];
+  const freezeByRuntime = {
+    main: EXPECTED_MAIN_RUNTIME_FREEZE_WITH_TRANSITIVES,
+    text: EXPECTED_TEXT_RUNTIME_FREEZE_WITH_TRANSITIVES,
+  };
   const deps = {
     spawnProcess: async (command, args, options) => {
       calls.push({ command, args, env: options.env, cwd: options.cwd });
-      if (args.includes('freeze')) return `${EXPECTED_RUNTIME_FREEZE_WITH_TRANSITIVES.join('\n')}\n`;
+      if (args.includes('freeze')) {
+        const runtimeName = command.includes(`${path.sep}text${path.sep}`) ? 'text' : 'main';
+        return `${freezeByRuntime[runtimeName].join('\n')}\n`;
+      }
       if (args.includes('--version')) return 'Python 3.11.9\n';
       return '';
     },
@@ -748,52 +913,60 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   };
   const parent = tempDir(t, 'redraw-runtime-');
   const fetchModule = require('../scripts/fetch-redraw-full-frame-models-local');
-  const expectedPython = venvPython(parent);
 
-  await fetchModule.createVenv(parent, deps);
-  await fetchModule.installRuntime(parent, [], deps);
-  assert.equal(EXPECTED_RUNTIME_PACKAGE_SPECS.length, 47);
-  assert.equal(ALLOWED_RUNTIME_TRANSITIVE_FREEZE.length, 31);
-  const directNames = EXPECTED_RUNTIME_FREEZE.map((requirement) => (
-    requirement.split('==')[0].toLowerCase().replace(/[-_.]+/g, '-')
-  ));
-  const transitiveNames = ALLOWED_RUNTIME_TRANSITIVE_FREEZE.map((requirement) => (
-    requirement.split('==')[0].toLowerCase().replace(/[-_.]+/g, '-')
-  ));
-  assert.equal(new Set(directNames).size, directNames.length);
-  assert.equal(new Set(transitiveNames).size, transitiveNames.length);
-  assert.deepEqual(directNames.filter((name) => new Set(transitiveNames).has(name)), []);
+  await fetchModule.createVenv(parent, 'main', deps);
+  await fetchModule.installRuntime(parent, [], 'main', deps);
+  await fetchModule.createVenv(parent, 'text', deps);
+  await fetchModule.installRuntime(parent, [], 'text', deps);
+  assert.equal(EXPECTED_MAIN_RUNTIME_PACKAGE_SPECS.length, 23);
+  assert.equal(EXPECTED_TEXT_RUNTIME_PACKAGE_SPECS.length, 31);
+  assert.equal(EXPECTED_MAIN_RUNTIME_TRANSITIVE_FREEZE.length, 22);
+  assert.equal(EXPECTED_TEXT_RUNTIME_TRANSITIVE_FREEZE.length, 12);
+  for (const [runtimeName, directFreeze] of Object.entries({
+    main: EXPECTED_MAIN_RUNTIME_FREEZE,
+    text: EXPECTED_TEXT_RUNTIME_FREEZE,
+  })) {
+    const directNames = directFreeze.map((requirement) => (
+      requirement.split('==')[0].toLowerCase().replace(/[-_.]+/g, '-')
+    ));
+    assert.equal(new Set(directNames).size, directNames.length);
+    assert.deepEqual(
+      await fetchModule.pipFreeze(parent, runtimeName, deps),
+      freezeByRuntime[runtimeName].slice().sort((a, b) => a.localeCompare(b)),
+    );
+  }
+  const mainLinuxFreeze = [
+    ...EXPECTED_MAIN_RUNTIME_FREEZE,
+    ...EXPECTED_MAIN_RUNTIME_TRANSITIVE_FREEZE.filter((requirement) => (
+      !WINDOWS_ONLY_RUNTIME_TRANSITIVE_NAMES.has(requirement.split('==')[0].toLowerCase().replace(/[-_.]+/g, '-'))
+    )),
+  ];
   assert.deepEqual(
-    await fetchModule.pipFreeze(parent, deps),
-    EXPECTED_RUNTIME_FREEZE_WITH_TRANSITIVES.slice().sort((a, b) => a.localeCompare(b)),
+    assertPinnedFreeze(mainLinuxFreeze, 'linux', 'main'),
+    mainLinuxFreeze.slice().sort((a, b) => a.localeCompare(b)),
   );
-  assert.deepEqual(
-    assertPinnedFreeze([...EXPECTED_RUNTIME_FREEZE, ...CROSS_PLATFORM_RUNTIME_TRANSITIVE_FREEZE], 'linux'),
-    [...EXPECTED_RUNTIME_FREEZE, ...CROSS_PLATFORM_RUNTIME_TRANSITIVE_FREEZE].sort((a, b) => a.localeCompare(b)),
-  );
-  for (const requirement of ALLOWED_RUNTIME_TRANSITIVE_FREEZE.filter((line) => (
+  for (const requirement of EXPECTED_MAIN_RUNTIME_TRANSITIVE_FREEZE.filter((line) => (
     WINDOWS_ONLY_RUNTIME_TRANSITIVE_NAMES.has(line.split('==')[0].toLowerCase().replace(/[-_.]+/g, '-'))
   ))) {
     assert.throws(
-      () => assertPinnedFreeze([...EXPECTED_RUNTIME_FREEZE, requirement], 'linux'),
+      () => assertPinnedFreeze([...EXPECTED_MAIN_RUNTIME_FREEZE, requirement], 'linux', 'main'),
       /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
     );
   }
   assert.doesNotThrow(() => assertPinnedFreeze(
-    [...EXPECTED_RUNTIME_FREEZE, ...ALLOWED_RUNTIME_TRANSITIVE_FREEZE],
+    [...EXPECTED_MAIN_RUNTIME_FREEZE, ...EXPECTED_MAIN_RUNTIME_TRANSITIVE_FREEZE],
     'win32',
+    'main',
   ));
-  assert.equal(await fetchModule.pythonVersion(parent, deps), 'Python 3.11.9');
+  assert.equal(await fetchModule.pythonVersion(parent, 'main', deps), 'Python 3.11.9');
   await fetchModule.bootstrapWorker(parent, path.join(parent, 'model-lock.json'), deps);
-  assert.equal(calls[0].command, 'python-fixture');
-  assert(calls.slice(1).every((call) => call.command === expectedPython), JSON.stringify(calls));
+  assert(calls.filter((call) => call.args.includes('venv')).every((call) => call.command === 'python-fixture'));
+  assert(calls.filter((call) => !call.args.includes('venv')).every((call) => (
+    call.command === venvPython(parent, 'main') || call.command === venvPython(parent, 'text')
+  )), JSON.stringify(calls));
   assert(calls.every((call) => Array.isArray(call.args)));
   assert(calls.every((call) => call.env.PYTHONUTF8 === '1'));
   assert(calls.every((call) => !Object.prototype.hasOwnProperty.call(call.env, 'OPENAI_API_KEY')));
-  const installArgs = calls
-    .filter((call) => call.args.includes('install'))
-    .flatMap((call) => call.args)
-    .filter((arg) => /^[A-Za-z0-9_.-]+[<>=!~]/.test(arg));
   const installCalls = calls.filter((call) => call.args.includes('install'));
   assert(installCalls.every((call) => {
     const index = call.args.indexOf('--index-url');
@@ -806,51 +979,37 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
       && !call.args.includes('--extra-index-url')
       && !call.args.includes('--find-links');
   }), JSON.stringify(installCalls));
-  assert.deepEqual(installArgs, EXPECTED_RUNTIME_FREEZE);
-  assert(installArgs.every((arg) => /^[A-Za-z0-9_.-]+==[A-Za-z0-9_.!+-]+$/.test(arg)));
   assert.deepEqual(
-    installCalls.map((call) => ({
+    installCalls.filter((call) => call.command === venvPython(parent, 'main')).map((call) => ({
       requirement: call.args[call.args.length - 1],
       noDeps: call.args.includes('--no-deps'),
     })),
-    EXPECTED_RUNTIME_PACKAGE_SPECS.map((spec) => ({
+    EXPECTED_MAIN_RUNTIME_PACKAGE_SPECS.map((spec) => ({
+      requirement: spec.requirement,
+      noDeps: spec.noDeps === true,
+    })),
+  );
+  assert.deepEqual(
+    installCalls.filter((call) => call.command === venvPython(parent, 'text')).map((call) => ({
+      requirement: call.args[call.args.length - 1],
+      noDeps: call.args.includes('--no-deps'),
+    })),
+    EXPECTED_TEXT_RUNTIME_PACKAGE_SPECS.map((spec) => ({
       requirement: spec.requirement,
       noDeps: spec.noDeps === true,
     })),
   );
   assert.deepEqual(
     installCalls.filter((call) => call.args.includes('--no-deps')).map((call) => call.args[call.args.length - 1]),
-    ['yolox==0.3.0', 'imgaug==0.4.0', 'mediapipe==0.10.14', 'paddlepaddle==2.6.2', 'paddleocr==2.8.1'],
+    ['yolox==0.3.0', 'mediapipe==0.10.14', 'imgaug==0.4.0', 'paddlepaddle==2.6.2', 'paddleocr==2.8.1'],
   );
-  assert(installArgs.every((requirement) => {
-    const [name] = requirement.split('==');
-    return !FORBIDDEN_RUNTIME_PACKAGES.has(name.toLowerCase().replace(/[-_.]+/g, '-'));
-  }));
 
   await assert.rejects(
-    fetchModule.pipFreeze(parent, { ...deps, spawnProcess: async () => 'pkg>=1.0.0\n' }),
+    fetchModule.pipFreeze(parent, 'main', { ...deps, spawnProcess: async () => 'pkg>=1.0.0\n' }),
     /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
   );
   await assert.rejects(
-    fetchModule.installRuntime(parent, [], { ...deps, runtimePackageSpecs: [{ requirement: 'pkg>=1.0.0' }] }),
-    /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
-  );
-  await assert.rejects(
-    fetchModule.installRuntime(parent, [], { ...deps, runtimePackageSpecs: [{ requirement: 'pkg==1.0.0', unexpected: true }] }),
-    /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
-  );
-  await assert.rejects(
-    fetchModule.installRuntime(parent, [], { ...deps, runtimePackageSpecs: [{ requirement: 'pkg==1.0.0', noDeps: true }] }),
-    /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
-  );
-  for (const requirement of ['yolox==0.3.0', 'imgaug==0.4.0', 'mediapipe==0.10.14', 'paddlepaddle==2.6.2', 'paddleocr==2.8.1']) {
-    await assert.rejects(
-      fetchModule.installRuntime(parent, [], { ...deps, runtimePackageSpecs: [{ requirement }] }),
-      /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
-    );
-  }
-  await assert.rejects(
-    fetchModule.installRuntime(parent, [], { ...deps, runtimePackageSpecs: [{ requirement: 'paddleocr==2.8.2', noDeps: true }] }),
+    fetchModule.installRuntime(parent, [], 'main', { ...deps, runtimePackageSpecs: [{ requirement: 'pkg==1.0.0' }] }),
     /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
   );
   const rawInstallError = new Error('C:\\Users\\private\\paddleocr.py Authorization: Bearer secret-token Key=secret-key');
@@ -859,14 +1018,14 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
   rawInstallError.context = { authorization: 'Bearer secret-token', key: 'secret-key' };
   rawInstallError.stage = 'install:C:\\Users\\private\\paddleocr.py';
   await assert.rejects(
-    fetchModule.installRuntime(parent, [], {
+    fetchModule.installRuntime(parent, [], 'text', {
       ...deps,
       spawnProcess: async (_command, args) => {
         if (args[args.length - 1] === 'paddleocr==2.8.1') throw rawInstallError;
         return '';
       },
     }),
-    (error) => assertStableFetchError(error, 'install:paddleocr'),
+    (error) => assertStableFetchError(error, 'install:text:paddleocr'),
   );
   for (const requirement of [
     'opencv-python==4.10.0.84',
@@ -879,70 +1038,58 @@ test('default runtime helpers use safe argv spawn contracts and reject non-exact
     'ml--dtypes==0.4.0',
   ]) {
     await assert.rejects(
-      fetchModule.installRuntime(parent, [], { ...deps, runtimePackageSpecs: [{ requirement }] }),
+      fetchModule.pipFreeze(parent, 'main', {
+        ...deps,
+        spawnProcess: async () => `${EXPECTED_MAIN_RUNTIME_FREEZE.join('\n')}\n${requirement}\n`,
+      }),
       /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
     );
   }
-  await assert.rejects(
-    fetchModule.pipFreeze(parent, {
-      ...deps,
-      spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.join('\n')}\nopencv-python==4.10.0.84\n`,
-    }),
-    /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
-  );
-  for (const requirement of [
-    'opencv--python==4.10.0.84',
-    'opencv._-python==4.10.0.84',
-    'ml--dtypes==0.4.0',
-  ]) {
+  for (const [runtimeName, directFreeze] of Object.entries({
+    main: EXPECTED_MAIN_RUNTIME_FREEZE,
+    text: EXPECTED_TEXT_RUNTIME_FREEZE,
+  })) {
     await assert.rejects(
-      fetchModule.pipFreeze(parent, {
+      fetchModule.pipFreeze(parent, runtimeName, {
         ...deps,
-        spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.join('\n')}\n${requirement}\n`,
+        spawnProcess: async () => `${directFreeze.join('\n')}\nunapproved-extra-package==9.9.9\n`,
+      }),
+      /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+    );
+    await assert.rejects(
+      fetchModule.pipFreeze(parent, runtimeName, {
+        ...deps,
+        spawnProcess: async () => `${directFreeze.join('\n')}\nNumPy==1.26.4\n`,
       }),
       /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
     );
   }
   await assert.rejects(
-    fetchModule.pipFreeze(parent, {
+    fetchModule.pipFreeze(parent, 'main', {
       ...deps,
-      spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.join('\n')}\nunapproved-extra-package==9.9.9\n`,
-    }),
-    /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
-  );
-  for (const requirement of [
-    'anyio==999.0.0',
-    'intel-openmp==999.0.0',
-    'mkl==999.0.0',
-    'win32-setctime==999.0.0',
-  ]) {
-    await assert.rejects(
-      fetchModule.pipFreeze(parent, {
-        ...deps,
-        spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.join('\n')}\n${requirement}\n`,
-      }),
-      /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
-    );
-  }
-  await assert.rejects(
-    fetchModule.pipFreeze(parent, {
-      ...deps,
-      spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.join('\n')}\nNumPy==1.26.4\n`,
+      spawnProcess: async () => `${EXPECTED_MAIN_RUNTIME_FREEZE.join('\n')}\npaddleocr==2.8.1\n`,
     }),
     /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
   );
   await assert.rejects(
-    fetchModule.pipFreeze(parent, {
+    fetchModule.pipFreeze(parent, 'text', {
       ...deps,
-      spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.filter((line) => line !== 'protobuf==4.25.9').join('\n')}\n`,
+      spawnProcess: async () => `${EXPECTED_TEXT_RUNTIME_FREEZE.join('\n')}\ntorch==2.3.1\n`,
     }),
     /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
   );
   await assert.rejects(
-    fetchModule.pipFreeze(parent, {
+    fetchModule.pipFreeze(parent, 'main', {
       ...deps,
-      spawnProcess: async () => `${EXPECTED_RUNTIME_FREEZE.map((line) => (
-        line === 'protobuf==4.25.9' ? 'protobuf==4.25.8' : line
+      spawnProcess: async () => `${EXPECTED_MAIN_RUNTIME_FREEZE.filter((line) => line !== 'protobuf==4.25.9').join('\n')}\n`,
+    }),
+    /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,
+  );
+  await assert.rejects(
+    fetchModule.pipFreeze(parent, 'text', {
+      ...deps,
+      spawnProcess: async () => `${EXPECTED_TEXT_RUNTIME_FREEZE.map((line) => (
+        line === 'protobuf==3.20.2' ? 'protobuf==4.25.9' : line
       )).join('\n')}\n`,
     }),
     /REDRAW_FULL_FRAME_MODEL_UNAVAILABLE/,

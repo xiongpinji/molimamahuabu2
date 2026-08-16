@@ -50,31 +50,19 @@ const OFFICIAL_CATALOG = Object.freeze({
   }),
 });
 const PYPI_INDEX_URL = 'https://pypi.org/simple';
-const RUNTIME_PACKAGE_SPECS = Object.freeze([
+const RUNTIME_NAMES = Object.freeze(['main', 'text']);
+const MAIN_RUNTIME_PACKAGE_SPECS = Object.freeze([
   Object.freeze({ requirement: 'setuptools==80.9.0' }),
   Object.freeze({ requirement: 'wheel==0.43.0' }),
   Object.freeze({ requirement: 'numpy==1.26.4' }),
   Object.freeze({ requirement: 'protobuf==4.25.9' }),
   Object.freeze({ requirement: 'Pillow==11.3.0' }),
   Object.freeze({ requirement: 'six==1.17.0' }),
-  Object.freeze({ requirement: 'scipy==1.17.1' }),
-  Object.freeze({ requirement: 'imageio==2.37.4' }),
-  Object.freeze({ requirement: 'tifffile==2026.3.3' }),
-  Object.freeze({ requirement: 'scikit-image==0.26.0' }),
-  Object.freeze({ requirement: 'Shapely==2.1.2' }),
-  Object.freeze({ requirement: 'pyclipper==1.4.0' }),
-  Object.freeze({ requirement: 'lmdb==2.3.0' }),
-  Object.freeze({ requirement: 'tqdm==4.68.1' }),
-  Object.freeze({ requirement: 'requests==2.33.0' }),
   Object.freeze({ requirement: 'absl-py==2.5.0' }),
   Object.freeze({ requirement: 'attrs==26.1.0' }),
   Object.freeze({ requirement: 'flatbuffers==25.12.19' }),
   Object.freeze({ requirement: 'matplotlib==3.11.1' }),
   Object.freeze({ requirement: 'sounddevice==0.5.5' }),
-  Object.freeze({ requirement: 'httpx==0.27.0' }),
-  Object.freeze({ requirement: 'decorator==5.3.1' }),
-  Object.freeze({ requirement: 'astor==0.8.1' }),
-  Object.freeze({ requirement: 'opt-einsum==3.3.0' }),
   Object.freeze({ requirement: 'opencv-python-headless==4.10.0.84' }),
   Object.freeze({ requirement: 'torch==2.3.1' }),
   Object.freeze({ requirement: 'torchvision==0.18.1' }),
@@ -86,8 +74,30 @@ const RUNTIME_PACKAGE_SPECS = Object.freeze([
   Object.freeze({ requirement: 'lap==0.5.13' }),
   Object.freeze({ requirement: 'Cython==3.2.9' }),
   Object.freeze({ requirement: 'cython-bbox==0.1.5' }),
-  Object.freeze({ requirement: 'imgaug==0.4.0', noDeps: true }),
   Object.freeze({ requirement: 'mediapipe==0.10.14', noDeps: true }),
+]);
+const TEXT_RUNTIME_PACKAGE_SPECS = Object.freeze([
+  Object.freeze({ requirement: 'setuptools==80.9.0' }),
+  Object.freeze({ requirement: 'wheel==0.43.0' }),
+  Object.freeze({ requirement: 'numpy==1.26.4' }),
+  Object.freeze({ requirement: 'protobuf==3.20.2' }),
+  Object.freeze({ requirement: 'Pillow==11.3.0' }),
+  Object.freeze({ requirement: 'six==1.17.0' }),
+  Object.freeze({ requirement: 'scipy==1.17.1' }),
+  Object.freeze({ requirement: 'imageio==2.37.4' }),
+  Object.freeze({ requirement: 'tifffile==2026.3.3' }),
+  Object.freeze({ requirement: 'scikit-image==0.26.0' }),
+  Object.freeze({ requirement: 'Shapely==2.1.2' }),
+  Object.freeze({ requirement: 'pyclipper==1.4.0' }),
+  Object.freeze({ requirement: 'lmdb==2.3.0' }),
+  Object.freeze({ requirement: 'tqdm==4.68.1' }),
+  Object.freeze({ requirement: 'requests==2.33.0' }),
+  Object.freeze({ requirement: 'httpx==0.27.0' }),
+  Object.freeze({ requirement: 'decorator==5.3.1' }),
+  Object.freeze({ requirement: 'astor==0.8.1' }),
+  Object.freeze({ requirement: 'opt-einsum==3.3.0' }),
+  Object.freeze({ requirement: 'opencv-python-headless==4.10.0.84' }),
+  Object.freeze({ requirement: 'imgaug==0.4.0', noDeps: true }),
   Object.freeze({ requirement: 'paddlepaddle==2.6.2', noDeps: true }),
   Object.freeze({ requirement: 'beautifulsoup4==4.15.0' }),
   Object.freeze({ requirement: 'fire==0.7.1' }),
@@ -99,6 +109,10 @@ const RUNTIME_PACKAGE_SPECS = Object.freeze([
   Object.freeze({ requirement: 'termcolor==3.3.0' }),
   Object.freeze({ requirement: 'paddleocr==2.8.1', noDeps: true }),
 ]);
+const RUNTIME_PACKAGE_SPECS = Object.freeze({
+  main: MAIN_RUNTIME_PACKAGE_SPECS,
+  text: TEXT_RUNTIME_PACKAGE_SPECS,
+});
 const NO_DEPS_REQUIREMENTS = new Set([
   'yolox==0.3.0',
   'imgaug==0.4.0',
@@ -107,24 +121,17 @@ const NO_DEPS_REQUIREMENTS = new Set([
   'paddleocr==2.8.1',
 ]);
 const NO_DEPS_PACKAGE_NAMES = new Set(['yolox', 'imgaug', 'mediapipe', 'paddlepaddle', 'paddleocr']);
-const RUNTIME_FREEZE_ALLOWED_TRANSITIVE_SPECS = new Map([
-  ['anyio', '4.14.2'],
-  ['certifi', '2026.7.22'],
+const MAIN_RUNTIME_FREEZE_ALLOWED_TRANSITIVE_SPECS = new Map([
   ['cffi', '2.1.1'],
-  ['charset-normalizer', '3.5.1'],
   ['colorama', '0.4.6'],
   ['contourpy', '1.3.3'],
   ['cycler', '0.12.1'],
   ['filelock', '3.32.3'],
   ['fonttools', '4.63.0'],
   ['fsspec', '2026.7.0'],
-  ['h11', '0.16.0'],
-  ['httpcore', '1.0.9'],
-  ['idna', '3.18'],
   ['intel-openmp', '2021.4.0'],
   ['jinja2', '3.1.6'],
   ['kiwisolver', '1.5.0'],
-  ['lazy-loader', '0.5'],
   ['markupsafe', '3.0.3'],
   ['mkl', '2021.4.0'],
   ['mpmath', '1.3.0'],
@@ -133,13 +140,29 @@ const RUNTIME_FREEZE_ALLOWED_TRANSITIVE_SPECS = new Map([
   ['pycparser', '3.0'],
   ['pyparsing', '3.3.2'],
   ['python-dateutil', '2.9.0.post0'],
-  ['sniffio', '1.3.1'],
   ['sympy', '1.14.0'],
   ['tbb', '2021.13.1'],
   ['typing-extensions', '4.16.0'],
-  ['urllib3', '2.7.0'],
   ['win32-setctime', '1.2.0'],
 ]);
+const TEXT_RUNTIME_FREEZE_ALLOWED_TRANSITIVE_SPECS = new Map([
+  ['anyio', '4.14.2'],
+  ['certifi', '2026.7.22'],
+  ['charset-normalizer', '3.5.1'],
+  ['h11', '0.16.0'],
+  ['httpcore', '1.0.9'],
+  ['idna', '3.18'],
+  ['lazy-loader', '0.5'],
+  ['networkx', '3.6.1'],
+  ['packaging', '26.3'],
+  ['sniffio', '1.3.1'],
+  ['typing-extensions', '4.16.0'],
+  ['urllib3', '2.7.0'],
+]);
+const RUNTIME_FREEZE_ALLOWED_TRANSITIVE_SPECS = Object.freeze({
+  main: MAIN_RUNTIME_FREEZE_ALLOWED_TRANSITIVE_SPECS,
+  text: TEXT_RUNTIME_FREEZE_ALLOWED_TRANSITIVE_SPECS,
+});
 const WINDOWS_ONLY_RUNTIME_TRANSITIVE_NAMES = new Set([
   'colorama',
   'intel-openmp',
@@ -187,16 +210,12 @@ const PYTHON_BOOTSTRAP_SAFE_STAGES = new Set([
 ]);
 const FIXED_RUNTIME_STAGES = new Set([
   'unknown',
-  'create_venv',
-  'freeze',
-  'python_version',
-  'write_runtime_lock',
   'write_model_lock',
   'bootstrap',
   'validate',
   'publish',
 ]);
-const RUNTIME_PACKAGE_STAGE_NAMES = new Set(RUNTIME_PACKAGE_SPECS.map((spec) => (
+const RUNTIME_PACKAGE_STAGE_NAMES = new Set(Object.values(RUNTIME_PACKAGE_SPECS).flat().map((spec) => (
   spec.requirement.slice(0, spec.requirement.indexOf('==')).toLowerCase().replace(/[-_.]+/g, '-')
 )));
 
@@ -205,10 +224,12 @@ function normalizeStage(stage) {
   if (FIXED_RUNTIME_STAGES.has(stage)) return stage;
   if (stage.startsWith('fetch:') && COMPONENT_ORDER.includes(stage.slice('fetch:'.length))) return stage;
   if (stage.startsWith('bootstrap:') && PYTHON_BOOTSTRAP_SAFE_STAGES.has(stage.slice('bootstrap:'.length))) return stage;
-  const install = /^install:([A-Za-z0-9_.-]+)$/.exec(stage);
+  const runtimeStage = /^(create_venv|freeze|python_version|write_runtime_lock):(main|text)$/.exec(stage);
+  if (runtimeStage) return stage;
+  const install = /^install:(main|text):([A-Za-z0-9_.-]+)$/.exec(stage);
   if (!install) return 'unknown';
-  const packageName = install[1].toLowerCase().replace(/[-_.]+/g, '-');
-  return RUNTIME_PACKAGE_STAGE_NAMES.has(packageName) ? `install:${packageName}` : 'unknown';
+  const packageName = install[2].toLowerCase().replace(/[-_.]+/g, '-');
+  return RUNTIME_PACKAGE_STAGE_NAMES.has(packageName) ? `install:${install[1]}:${packageName}` : 'unknown';
 }
 
 function error(code, stage = 'unknown') {
@@ -309,7 +330,13 @@ function splitRequirement(requirement) {
   return { name: normalizePackageName(match[1]), version: match[2] };
 }
 
-function assertPinnedFreeze(lines, platform = process.platform) {
+function assertRuntimeName(runtimeName) {
+  if (!RUNTIME_NAMES.includes(runtimeName)) throw error(MODEL_ERROR);
+  return runtimeName;
+}
+
+function assertPinnedFreeze(lines, platform = process.platform, runtimeName = 'main') {
+  assertRuntimeName(runtimeName);
   if (!Array.isArray(lines) || typeof platform !== 'string' || platform.length === 0) throw error(MODEL_ERROR);
   const sorted = lines.filter((line) => line.length > 0).slice().sort((a, b) => a.localeCompare(b));
   const installed = new Map();
@@ -319,21 +346,22 @@ function assertPinnedFreeze(lines, platform = process.platform) {
     installed.set(requirement.name, requirement.version);
   }
   const requiredNames = new Set();
-  for (const spec of RUNTIME_PACKAGE_SPECS) {
+  for (const spec of RUNTIME_PACKAGE_SPECS[runtimeName]) {
     const required = splitRequirement(spec.requirement);
     if (requiredNames.has(required.name) || installed.get(required.name) !== required.version) throw error(MODEL_ERROR);
     requiredNames.add(required.name);
   }
   for (const [installedName, installedVersion] of installed.entries()) {
     if (requiredNames.has(installedName)) continue;
-    if (RUNTIME_FREEZE_ALLOWED_TRANSITIVE_SPECS.get(installedName) !== installedVersion) throw error(MODEL_ERROR);
-    if (WINDOWS_ONLY_RUNTIME_TRANSITIVE_NAMES.has(installedName) && platform !== 'win32') throw error(MODEL_ERROR);
+    if (RUNTIME_FREEZE_ALLOWED_TRANSITIVE_SPECS[runtimeName].get(installedName) !== installedVersion) throw error(MODEL_ERROR);
+    if (runtimeName === 'main' && WINDOWS_ONLY_RUNTIME_TRANSITIVE_NAMES.has(installedName) && platform !== 'win32') throw error(MODEL_ERROR);
   }
   return sorted;
 }
 
-function normalizeRuntimePackageSpecs(specs) {
-  if (!Array.isArray(specs) || specs.length === 0) throw error(MODEL_ERROR);
+function normalizeRuntimePackageSpecs(runtimeName) {
+  assertRuntimeName(runtimeName);
+  const specs = RUNTIME_PACKAGE_SPECS[runtimeName];
   return specs.map((spec) => {
     if (!spec || typeof spec !== 'object' || Array.isArray(spec)) throw error(MODEL_ERROR);
     const keys = Object.keys(spec).sort();
@@ -501,6 +529,8 @@ function defaultDeps() {
     pipFreeze,
     pythonVersion,
     bootstrapWorker,
+    validateModelLock,
+    publishCache,
   };
 }
 
@@ -575,25 +605,33 @@ function runtimePython(deps = {}) {
   return python;
 }
 
-function venvPython(staging) {
+function runtimeInterpreterPath(runtimeName) {
+  assertRuntimeName(runtimeName);
   return process.platform === 'win32'
-    ? path.join(staging, '.venv', 'Scripts', 'python.exe')
-    : path.join(staging, '.venv', 'bin', 'python');
+    ? `runtime/${runtimeName}/.venv/Scripts/python.exe`
+    : `runtime/${runtimeName}/.venv/bin/python`;
 }
 
-async function createVenv(staging, deps = {}) {
+function venvPython(staging, runtimeName) {
+  return path.join(staging, runtimeInterpreterPath(runtimeName));
+}
+
+async function createVenv(staging, runtimeName, deps = {}) {
+  assertRuntimeName(runtimeName);
   const runner = deps.spawnProcess || spawnProcess;
   try {
-    await runner(runtimePython(deps), ['-m', 'venv', '.venv'], { cwd: staging, env: sanitizeEnv(deps.env) });
+    await runner(runtimePython(deps), ['-m', 'venv', path.join('runtime', runtimeName, '.venv')], { cwd: staging, env: sanitizeEnv(deps.env) });
   } catch (err) {
-    throw sanitizedError(err, 'create_venv');
+    throw sanitizedError(err, `create_venv:${runtimeName}`);
   }
 }
 
-async function installRuntime(staging, _components = [], deps = {}) {
+async function installRuntime(staging, _components = [], runtimeName, deps = {}) {
+  assertRuntimeName(runtimeName);
+  if (Object.prototype.hasOwnProperty.call(deps, 'runtimePackageSpecs')) throw error(MODEL_ERROR);
   const runner = deps.spawnProcess || spawnProcess;
-  const python = venvPython(staging);
-  const specs = normalizeRuntimePackageSpecs(deps.runtimePackageSpecs || RUNTIME_PACKAGE_SPECS);
+  const python = venvPython(staging, runtimeName);
+  const specs = normalizeRuntimePackageSpecs(runtimeName);
   for (const spec of specs) {
     const args = ['-m', 'pip', '--isolated', 'install', '--disable-pip-version-check', '--no-input', '--index-url', PYPI_INDEX_URL];
     if (spec.noDeps) args.push('--no-deps');
@@ -601,35 +639,42 @@ async function installRuntime(staging, _components = [], deps = {}) {
     try {
       await runner(python, args, { cwd: staging, env: sanitizeEnv(deps.env) });
     } catch (err) {
-      throw sanitizedError(err, `install:${splitRequirement(spec.requirement).name}`);
+      throw sanitizedError(err, `install:${runtimeName}:${splitRequirement(spec.requirement).name}`);
     }
   }
 }
 
-async function pipFreeze(staging, deps = {}) {
+async function pipFreeze(staging, runtimeName, deps = {}) {
+  assertRuntimeName(runtimeName);
   const runner = deps.spawnProcess || spawnProcess;
   try {
-    const output = await runner(venvPython(staging), ['-m', 'pip', 'freeze'], { cwd: staging, env: sanitizeEnv(deps.env) });
-    return assertPinnedFreeze(String(output).split(/\r?\n/));
+    const output = await runner(venvPython(staging, runtimeName), ['-m', 'pip', 'freeze'], { cwd: staging, env: sanitizeEnv(deps.env) });
+    return assertPinnedFreeze(String(output).split(/\r?\n/), process.platform, runtimeName);
   } catch (err) {
-    throw sanitizedError(err, 'freeze');
+    throw sanitizedError(err, `freeze:${runtimeName}`);
   }
 }
 
-async function pythonVersion(staging, deps = {}) {
+async function pythonVersion(staging, runtimeName, deps = {}) {
+  assertRuntimeName(runtimeName);
   const runner = deps.spawnProcess || spawnProcess;
   try {
-    return String(await runner(venvPython(staging), ['--version'], { cwd: staging, env: sanitizeEnv(deps.env) })).trim();
+    return String(await runner(venvPython(staging, runtimeName), ['--version'], { cwd: staging, env: sanitizeEnv(deps.env) })).trim();
   } catch (err) {
-    throw sanitizedError(err, 'python_version');
+    throw sanitizedError(err, `python_version:${runtimeName}`);
   }
 }
 
-async function bootstrapWorker(staging, _modelLockPath, deps = {}) {
+async function bootstrapWorker(staging, _modelLockPath, runtimeName = 'main', deps = {}) {
+  if (runtimeName && typeof runtimeName === 'object') {
+    deps = runtimeName;
+    runtimeName = 'main';
+  }
+  assertRuntimeName(runtimeName);
   const runner = deps.spawnProcess || spawnProcess;
   const worker = path.resolve(__dirname, '../../workers/redraw-full-frame-auditor/src/redraw_full_frame_auditor/worker.py');
   try {
-    await runner(venvPython(staging), [worker, 'bootstrap', '--model-lock', path.join(staging, 'model-lock.json')], {
+    await runner(venvPython(staging, runtimeName), [worker, 'bootstrap', '--model-lock', path.join(staging, 'model-lock.json')], {
       cwd: staging,
       env: sanitizeEnv(deps.env),
       parseBootstrapErrorStage: true,
@@ -637,6 +682,12 @@ async function bootstrapWorker(staging, _modelLockPath, deps = {}) {
   } catch (err) {
     throw sanitizedError(err, 'bootstrap');
   }
+}
+
+async function publishCache(staging, outputDir) {
+  await assertEmptyOrMissing(outputDir);
+  if (await exists(outputDir)) await fsp.rmdir(outputDir);
+  await fsp.rename(staging, outputDir);
 }
 
 async function runFetchModels(options, injectedDeps = {}) {
@@ -672,36 +723,47 @@ async function runFetchModels(options, injectedDeps = {}) {
         license_evidence_sha256: sha256(evidence.license_bytes),
       });
     }
-    stage = 'create_venv';
-    await deps.createVenv(staging);
-    stage = 'unknown';
-    await deps.installRuntime(staging, components);
-    stage = 'freeze';
-    const freeze = assertPinnedFreeze(await deps.pipFreeze(staging));
-    stage = 'python_version';
-    const pythonVersion = await deps.pythonVersion(staging);
-    stage = 'write_runtime_lock';
-    await writeFileAtomic(path.join(staging, 'runtime', 'pip-freeze.txt'), Buffer.from(`${freeze.join('\n')}\n`));
+    const runtimes = {};
+    const runtimeLocks = {};
+    for (const runtimeName of RUNTIME_NAMES) {
+      stage = `create_venv:${runtimeName}`;
+      await deps.createVenv(staging, runtimeName);
+      stage = 'unknown';
+      await deps.installRuntime(staging, components, runtimeName);
+      stage = `freeze:${runtimeName}`;
+      const freeze = assertPinnedFreeze(await deps.pipFreeze(staging, runtimeName), process.platform, runtimeName);
+      stage = `python_version:${runtimeName}`;
+      const pythonVersion = await deps.pythonVersion(staging, runtimeName);
+      stage = `write_runtime_lock:${runtimeName}`;
+      const freezeBytes = Buffer.from(`${freeze.join('\n')}\n`);
+      const pipFreezePath = `runtime/${runtimeName}/pip-freeze.txt`;
+      await writeFileAtomic(path.join(staging, pipFreezePath), freezeBytes);
+      runtimes[runtimeName] = {
+        python_version: pythonVersion,
+        interpreter_path: runtimeInterpreterPath(runtimeName),
+        pip_freeze_path: pipFreezePath,
+        pip_freeze_sha256: sha256(freezeBytes),
+      };
+      runtimeLocks[runtimeName] = pipFreezePath;
+    }
     const lock = {
-      schema_version: 'redraw-full-frame-model-lock-v1',
-      runtime: { python_version: pythonVersion, pip_freeze: freeze },
+      schema_version: 'redraw-full-frame-model-lock-v2',
+      runtimes,
       components,
     };
     stage = 'write_model_lock';
     await writeFileAtomic(path.join(staging, 'model-lock.json'), Buffer.from(`${JSON.stringify(lock, null, 2)}\n`));
     stage = 'bootstrap';
-    await deps.bootstrapWorker(staging, path.join(staging, 'model-lock.json'));
+    await deps.bootstrapWorker(staging, path.join(staging, 'model-lock.json'), 'main');
     stage = 'validate';
-    const validated = await validateModelLock({ cacheRoot: staging, sourcePolicy, lock });
+    const validated = await deps.validateModelLock({ cacheRoot: staging, sourcePolicy, lock });
     stage = 'publish';
-    await assertEmptyOrMissing(outputDir);
-    if (await exists(outputDir)) await fsp.rmdir(outputDir);
-    await fsp.rename(staging, outputDir);
+    await deps.publishCache(staging, outputDir);
     complete = true;
     return {
       canonical_sha256: validated.canonical_sha256,
       components: validated.components.map((component) => component.component),
-      runtime_lock: 'runtime/pip-freeze.txt',
+      runtime_locks: runtimeLocks,
     };
   } catch (err) {
     throw sanitizedError(err, stage);
