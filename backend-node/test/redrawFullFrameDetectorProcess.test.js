@@ -574,9 +574,36 @@ test('runFetchModels rejects a missing auditor Python before fetch or staging', 
   assert.equal(randomCalls, 0);
   assert.equal(fs.existsSync(outputDir), false);
   assert.deepEqual(
-    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.rff-')),
     [],
   );
+});
+
+test('runFetchModels keeps the Windows staging path within the Torch wheel extraction budget', async (t) => {
+  const parent = tempDir(t, 'redraw-model-short-staging-');
+  const outputDir = path.join(parent, 'cache');
+  const randomHex = 'a'.repeat(32);
+  const deps = buildSuccessfulFetchDeps(randomHex);
+  const createVenv = deps.createVenv;
+  let stagingBasename;
+  deps.createVenv = async (staging, runtimeName) => {
+    stagingBasename ??= path.basename(staging);
+    await createVenv(staging, runtimeName);
+  };
+
+  await runFetchModels({ outputDir }, deps);
+
+  assert.equal(stagingBasename, `.rff-${randomHex}`);
+  const windowsParent = `C:\\${'p'.repeat(61)}`;
+  assert.equal(windowsParent.length, 64);
+  const longestTorchMember = 'torch/include/ATen/ops/_fake_quantize_per_tensor_affine_cachemask_tensor_qparams_compositeexplicitautograd_dispatch.h';
+  const extractionPath = path.win32.join(
+    windowsParent,
+    stagingBasename,
+    'runtime/main/.venv/Lib/site-packages',
+    longestTorchMember,
+  );
+  assert(extractionPath.length < 260, `Torch extraction path is ${extractionPath.length} characters`);
 });
 
 test('auditor Python preflight requires an absolute interpreter and safe version probe', async () => {
@@ -791,7 +818,7 @@ test('runFetchModels restores a pre-existing empty output directory when publish
   assert.deepEqual(fs.readdirSync(outputDir), []);
   assert.equal(fs.existsSync(path.join(outputDir, 'model-lock.json')), false);
   assert.deepEqual(
-    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.rff-')),
     [],
   );
 });
@@ -840,7 +867,7 @@ test('runFetchModels reports publish failure when restoring a removed empty outp
   assert.equal(restoreMkdirCalls, 1);
   assert.equal(fs.existsSync(outputDir), false);
   assert.deepEqual(
-    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.rff-')),
     [],
   );
 });
@@ -864,7 +891,7 @@ test('runFetchModels does not create a missing output directory when publish ren
 
   assert.equal(fs.existsSync(outputDir), false);
   assert.deepEqual(
-    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.rff-')),
     [],
   );
 });
@@ -908,7 +935,7 @@ test('runFetchModels removes staging when Paddle wheel download fails', async (t
   assert.equal(fs.existsSync(outputDir), false);
   assert.equal(fs.existsSync(path.join(outputDir, 'model-lock.json')), false);
   assert.deepEqual(
-    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.rff-')),
     [],
   );
 });
@@ -1018,7 +1045,7 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
   }), (error) => assertStableFetchError(error, 'bootstrap'));
   assert.equal(fs.existsSync(bootstrapFailed), false);
   assert.deepEqual(
-    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.rff-')),
     [],
   );
 });
@@ -1126,7 +1153,7 @@ test('runCli emits only stable sanitized install and bootstrap stages', async (t
     /private|Authorization|secret-token|secret-key|worker\.py|paddleocr\.py|https?:/i,
   );
   assert.deepEqual(
-    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.rff-')),
     [],
   );
 });
