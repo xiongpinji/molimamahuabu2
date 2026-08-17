@@ -176,6 +176,13 @@ function contractProbeEnv(repoRoot, sourceEnv = process.env) {
   return env;
 }
 
+function restoreEnvSnapshot(target, snapshot) {
+  for (const key of Object.keys(target)) {
+    if (!Object.prototype.hasOwnProperty.call(snapshot, key)) delete target[key];
+  }
+  for (const [key, value] of Object.entries(snapshot)) target[key] = value;
+}
+
 function tempDir(t, prefix) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -374,8 +381,21 @@ test('safeWorkerEnv keeps only the allowlist and fixed Python UTF-8 setting', ()
       PYTHONUTF8: '1',
     });
   } finally {
-    process.env = previous;
+    restoreEnvSnapshot(process.env, previous);
   }
+});
+
+test('restoreEnvSnapshot removes variables absent from the baseline', () => {
+  const target = {
+    PATH: 'changed-path',
+    TEMP: 'temp',
+    TMP: 'tmp',
+    OPENAI_API_KEY: 'secret',
+  };
+
+  restoreEnvSnapshot(target, { PATH: 'original-path' });
+
+  assert.deepEqual(target, { PATH: 'original-path' });
 });
 
 test('detectFrames sends sorted JSONL, returns sorted sanitized detections, and uses safe env', async (t) => {
