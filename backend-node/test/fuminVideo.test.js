@@ -157,7 +157,7 @@ describe('fumin Seedance video protocol', () => {
       duration: 5,
       aspect_ratio: '16:9',
       resolution: '480p',
-      image_url: 'data:image/png;base64,aW1hZ2U=',
+      image_url: 'https://cdn.example/input.png',
       reference_video_urls: ['https://cdn.example/reference.mp4'],
       reference_audio_urls: ['https://cdn.example/reference.mp3'],
     });
@@ -165,13 +165,130 @@ describe('fumin Seedance video protocol', () => {
     assert.deepEqual(submitted, { task_id: 'task-route-1', status: 'queued' });
     assert.deepEqual(completed, { video_url: 'https://cdn.example/fumin.mp4' });
     assert.equal(requests[0].body.model, 'seedance-2.0-fast');
-    assert.equal(requests[0].body.content[1].image_url.url, 'data:image/png;base64,aW1hZ2U=');
+    assert.equal(requests[0].body.content[1].image_url.url, 'https://cdn.example/input.png');
     assert.equal(requests[0].body.content[1].role, 'reference_image');
     assert.deepEqual(requests[0].body.content.slice(2), [
       { type: 'video_url', video_url: { url: 'https://cdn.example/reference.mp4' }, role: 'reference_video' },
       { type: 'audio_url', audio_url: { url: 'https://cdn.example/reference.mp3' }, role: 'reference_audio' },
     ]);
     assert.equal(requests[1].url, 'https://fumin.ai/api/v3/contents/generations/tasks/task-route-1');
+  });
+
+  it('signs protected platform reference images for both fumin Fast and Mini', async (t) => {
+    const originalSecret = process.env.PLATFORM_JWT_SECRET;
+    process.env.PLATFORM_JWT_SECRET = 'test-provider-asset-secret-at-least-32-characters';
+    t.after(() => {
+      if (originalSecret == null) delete process.env.PLATFORM_JWT_SECRET;
+      else process.env.PLATFORM_JWT_SECRET = originalSecret;
+    });
+
+    for (const model of ['fumin-seedance-2.0-fast', 'fumin-seedance-2.0-mini']) {
+      let requestBody;
+      global.fetch = async (_url, options = {}) => {
+        requestBody = JSON.parse(options.body);
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ id: `task-${model}`, status: 'queued' }),
+        };
+      };
+      const row = {
+        id: model.endsWith('fast') ? 47 : 48,
+        service_type: 'video',
+        provider: 'fumin',
+        api_protocol: 'fumin_video',
+        base_url: 'https://fumin.ai',
+        api_key: 'secret',
+        model: JSON.stringify([model]),
+        default_model: model,
+        is_default: true,
+        is_active: true,
+      };
+      const db = {
+        prepare(sql) {
+          return { all: () => sql.includes('SELECT * FROM ai_service_configs') ? [row] : [] };
+        },
+      };
+
+      const submitted = await callVideoApi(db, log, {
+        model,
+        prompt: 'test',
+        duration: 5,
+        aspect_ratio: '16:9',
+        resolution: '480p',
+        reference_urls: [
+          'https://molimama.vip/static/projects/0039/private-reference.png',
+          'https://cdn.example/external-reference.png',
+        ],
+        files_base_url: 'https://molimama.vip/static',
+        video_gen_id: 100,
+      });
+
+      assert.deepEqual(submitted, { task_id: `task-${model}`, status: 'queued' });
+      const imageUrls = requestBody.content
+        .filter((entry) => entry.type === 'image_url')
+        .map((entry) => entry.image_url.url);
+      assert.equal(imageUrls.length, 2);
+      const signed = new URL(imageUrls[0]);
+      assert.equal(signed.pathname, '/static/projects/0039/private-reference.png');
+      assert.ok(signed.searchParams.get('provider_asset_expires'));
+      assert.ok(signed.searchParams.get('provider_asset_signature'));
+      assert.equal(imageUrls[1], 'https://cdn.example/external-reference.png');
+    }
+  });
+
+  it('uploads data reference images before submitting both fumin Fast and Mini', async () => {
+    for (const model of ['fumin-seedance-2.0-fast', 'fumin-seedance-2.0-mini']) {
+      const requests = [];
+      global.fetch = async (url, options = {}) => {
+        requests.push({ url: String(url), body: options.body });
+        if (String(url).includes('/api/upload')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ url: `https://imageproxy.example/${model}.png` }),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ id: `task-${model}`, status: 'queued' }),
+        };
+      };
+      const row = {
+        id: model.endsWith('fast') ? 49 : 50,
+        service_type: 'video',
+        provider: 'fumin',
+        api_protocol: 'fumin_video',
+        base_url: 'https://fumin.ai',
+        api_key: 'secret',
+        model: JSON.stringify([model]),
+        default_model: model,
+        is_default: true,
+        is_active: true,
+      };
+      const db = {
+        prepare(sql) {
+          return { all: () => sql.includes('SELECT * FROM ai_service_configs') ? [row] : [] };
+        },
+      };
+
+      const submitted = await callVideoApi(db, log, {
+        model,
+        prompt: 'test',
+        duration: 5,
+        aspect_ratio: '16:9',
+        resolution: '480p',
+        image_url: 'data:image/png;base64,aW1hZ2U=',
+        video_gen_id: 101,
+      });
+
+      assert.deepEqual(submitted, { task_id: `task-${model}`, status: 'queued' });
+      assert.equal(requests.length, 2);
+      assert.match(requests[0].url, /\/api\/upload/);
+      const submittedBody = JSON.parse(requests[1].body);
+      assert.equal(submittedBody.content[1].image_url.url, `https://imageproxy.example/${model}.png`);
+    }
   });
 });
 

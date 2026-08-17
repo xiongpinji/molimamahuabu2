@@ -15,7 +15,7 @@ test('release archiver checks the shared deployment lock and both public service
 
 test('release archiver pauses cleanly when the data disk reaches its stop threshold', () => {
   const source = fs.readFileSync(scriptPath, 'utf8');
-  const thresholdBlock = source.match(/if \(\( data_used_percent >= DATA_STOP_PERCENT \)\); then\n([\s\S]*?)\nfi/);
+  const thresholdBlock = source.match(/if \(\( data_used_percent >= DATA_STOP_PERCENT \)\); then\r?\n([\s\S]*?)\r?\nfi/);
 
   assert.ok(thresholdBlock, 'data disk stop-threshold block is required');
   assert.match(thresholdBlock[1], /ALERT/);

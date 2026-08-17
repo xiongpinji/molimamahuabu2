@@ -1,6 +1,7 @@
 import { assetMediaUrl } from './mediaUrl.js'
 import { imageModelMaxReferences, validateQuickImageSelection } from './homeQuickGeneration.js'
 import { assertVideoDurationAllowed } from './videoDuration.js'
+import { normalizeGenerationProgress } from './canvasGenerationProgress.js'
 
 const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
 const FREE_NODE_STATUSES = new Set(['idle', 'queued', 'running', 'success', 'failed'])
@@ -50,6 +51,58 @@ const VIDEO_TOOL_RETRY_PARAMETERS = Object.freeze({
   edit: ['transform', 'brightness', 'contrast', 'saturation', 'speed'],
 })
 const ASSET_TYPES = new Set(['image', 'video', 'audio'])
+
+function freeCanvasTaskError(message, code) {
+  const error = new Error(message)
+  error.code = code
+  return error
+}
+
+export async function pollFreeCanvasTask(taskId, options = {}) {
+  const {
+    maxAttempts = 60,
+    intervalMs = 3000,
+    onProgress,
+    getTask,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  } = options
+  if (typeof getTask !== 'function') throw new TypeError('getTask 必须是函数')
+
+  let lastPollingError = null
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (attempt > 0) await sleep(intervalMs)
+    let task
+    try {
+      task = await getTask(taskId)
+      lastPollingError = null
+    } catch (error) {
+      lastPollingError = error
+      continue
+    }
+    const progress = normalizeGenerationProgress(task?.progress)
+    if (progress !== null) await onProgress?.(progress)
+    if (task?.status === 'completed') return task
+    if (task?.status === 'failed') {
+      throw freeCanvasTaskError(task?.error || task?.message || '自由节点生成失败', 'FREE_CANVAS_TASK_FAILED')
+    }
+    if (task?.status === 'needs_attention') {
+      throw freeCanvasTaskError(
+        task?.error || task?.message || '任务提交结果未知，请勿重复提交',
+        'FREE_CANVAS_TASK_NEEDS_ATTENTION',
+      )
+    }
+  }
+  if (lastPollingError) {
+    throw freeCanvasTaskError(
+      '任务已提交，但当前无法查询状态；系统会继续保留任务，请不要重复提交',
+      'FREE_CANVAS_TASK_STATUS_UNAVAILABLE',
+    )
+  }
+  throw freeCanvasTaskError(
+    '任务已提交且仍在处理中；系统会继续跟踪，请不要重复提交',
+    'FREE_CANVAS_TASK_RESULT_PENDING',
+  )
+}
 
 function cleanString(value) {
   return String(value ?? '').trim()
