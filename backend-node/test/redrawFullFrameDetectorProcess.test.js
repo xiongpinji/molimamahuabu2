@@ -683,8 +683,9 @@ test('runFetchModels builds separate main and text runtimes with a v2 lock', asy
       assert.deepEqual(Object.keys(lock.runtimes), ['main', 'text']);
       assert.equal(lock.runtimes.main.python_version, versionByRuntime.main);
       assert.equal(lock.runtimes.text.python_version, versionByRuntime.text);
-      assert.equal(lock.runtimes.main.interpreter_path, 'runtime/main/.venv/Scripts/python.exe');
-      assert.equal(lock.runtimes.text.interpreter_path, 'runtime/text/.venv/Scripts/python.exe');
+      const interpreterSuffix = process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python';
+      assert.equal(lock.runtimes.main.interpreter_path, `runtime/main/.venv/${interpreterSuffix}`);
+      assert.equal(lock.runtimes.text.interpreter_path, `runtime/text/.venv/${interpreterSuffix}`);
       assert.equal(lock.runtimes.main.pip_freeze_path, 'runtime/main/pip-freeze.txt');
       assert.equal(lock.runtimes.text.pip_freeze_path, 'runtime/text/pip-freeze.txt');
       for (const runtimeName of ['main', 'text']) {
