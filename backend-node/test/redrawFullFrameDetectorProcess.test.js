@@ -626,6 +626,29 @@ test('auditor Python preflight requires an absolute interpreter and safe version
   }
 });
 
+test('auditor worker package declares the Python 3.12 runtime contract', () => {
+  const pyproject = fs.readFileSync(path.resolve(
+    __dirname,
+    '../../workers/redraw-full-frame-auditor/pyproject.toml',
+  ), 'utf8');
+
+  assert.match(pyproject, /^requires-python = ">=3\.12,<3\.13"$/m);
+});
+
+test('auditor Python preflight rejects non-3.12 runtimes with a stable stage', async () => {
+  const python = process.platform === 'win32' ? 'C:\\runtime\\python.exe' : '/runtime/python';
+
+  for (const version of ['Python 3.11.9', 'Python 3.13.0', 'Python 2.12.13']) {
+    await assert.rejects(
+      preflightRuntimePython({
+        env: { REDRAW_AUDITOR_PYTHON: python },
+        spawnProcess: async () => `${version}\n`,
+      }),
+      (error) => assertStableFetchError(error, 'python_preflight'),
+    );
+  }
+});
+
 test('runFetchModels builds separate main and text runtimes with a v2 lock', async (t) => {
   const parent = tempDir(t, 'redraw-model-fetch-dual-runtime-');
   const outputDir = path.join(parent, 'cache');
