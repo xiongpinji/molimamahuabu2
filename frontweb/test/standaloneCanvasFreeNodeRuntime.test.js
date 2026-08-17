@@ -12,6 +12,7 @@ const contextMenuSource = readFileSync(resolve(__dirname, '../src/components/dra
 const accountBadgeSource = readFileSync(resolve(__dirname, '../src/components/AccountBadge.vue'), 'utf8')
 const imagesSource = readFileSync(resolve(__dirname, '../src/api/images.js'), 'utf8')
 const videosSource = readFileSync(resolve(__dirname, '../src/api/videos.js'), 'utf8')
+const generationSource = readFileSync(resolve(__dirname, '../src/utils/freeCanvasGeneration.js'), 'utf8')
 
 test('自由节点配置面板保存并回填模型、比例和时长字段，并记住视频参数', () => {
   assert.match(canvasSource, /freeNodeForm = ref\(\{ title: '', content: '', url: '', model: '', aspectRatio: '16:9', duration: 5 \}\)/)
@@ -161,9 +162,11 @@ test('独立画布自由节点走真实生成分支，禁止污染剧集 runCanv
 
 test('自由节点运行结果可轮询、失败写回、成功自动入库并保留旧 url', () => {
   assert.match(canvasSource, /async function pollFreeCanvasTask\(taskId/)
-  assert.match(canvasSource, /if \(task\?\.status === 'completed'\) return task/)
-  assert.match(canvasSource, /if \(task\?\.status === 'failed'\) throw new Error/)
-  assert.match(canvasSource, /throw new Error\('自由节点生成超时'\)/)
+  assert.match(canvasSource, /pollFreeCanvasTaskStatus\(taskId, \{ \.\.\.options, getTask: taskAPI\.get \}\)/)
+  assert.match(canvasSource, /FREE_CANVAS_TASK_NEEDS_ATTENTION/)
+  assert.match(generationSource, /if \(task\?\.status === 'completed'\) return task/)
+  assert.match(generationSource, /FREE_CANVAS_TASK_STATUS_UNAVAILABLE/)
+  assert.match(generationSource, /FREE_CANVAS_TASK_RESULT_PENDING/)
   assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{\s*model: requestPayload\.model \|\| node\.data\?\.model \|\| '',\s*status: 'running'/)
   assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{[\s\S]*status: 'running'[\s\S]*error: ''/)
   assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{[\s\S]*status: 'success'[\s\S]*url: resultUrl[\s\S]*assetSaveStatus: 'running'[\s\S]*assetSaveError: ''/)
@@ -183,7 +186,7 @@ test('自由节点运行结果可轮询、失败写回、成功自动入库并�
   assert.match(canvasSource, /retryFreeCanvasAssetSave,\s*\r?\n/)
   assert.match(canvasSource, /save-node-result-asset[\s\S]*saveFreeCanvasResultAsset\(node, node\.data\?\.kind, nodeResultUrl\(node\), null, node\.data\?\.taskId \|\| ''\)[\s\S]*ElMessage\.error\(error\?\.message \|\| '存入素材库失败'\)/)
   assert.match(canvasSource, /function resumePendingFreeCanvasTasks\(\)[\s\S]*node\?\.data\?\.status !== 'running'[\s\S]*void resumeFreeCanvasNodeTask\(node\)/)
-  assert.match(canvasSource, /async function resumeFreeCanvasNodeTask\(nodeOrId\)[\s\S]*await pollFreeCanvasTask\(taskId,[\s\S]*status: 'failed'[\s\S]*generationActive: false[\s\S]*taskId,[\s\S]*error: errorMessage/)
+  assert.match(canvasSource, /async function resumeFreeCanvasNodeTask\(nodeOrId\)[\s\S]*await pollFreeCanvasTask\(taskId,[\s\S]*isFreeCanvasTaskStillPending\(error\)[\s\S]*status: 'running'[\s\S]*generationActive: false[\s\S]*status: 'failed'/)
   assert.match(canvasSource, /await loadForDrama\(drama\.value, filterEpisodeId\.value\)[\s\S]*rebuildGraph\(\)[\s\S]*resumePendingFreeCanvasTasks\(\)/)
 })
 

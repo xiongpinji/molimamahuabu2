@@ -13,7 +13,7 @@ const TOAPIS_VIDEO_MODELS = Object.freeze({
     ...TOAPIS_VIDEO_COMMON_CAPABILITIES,
     durations: Object.freeze([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
     resolutions: Object.freeze(['480p', '720p']),
-    maxReferences: 1,
+    maxReferences: 9,
     maxVideoReferences: 1,
     maxAudioReferences: 1,
   }),
@@ -260,10 +260,11 @@ function formatProviderError(payload) {
   return sanitizeProviderMessage(message);
 }
 
-function indeterminateCreateError(message) {
+function indeterminateCreateError(message, routeMeta = {}) {
   return {
     indeterminate: true,
     error: `ToAPIs 创建请求结果未知，供应商可能已受理或扣费但本平台未取得 task_id；为避免重复扣费，不得自动重试。${message || ''}`.trim(),
+    route_meta: { phase: 'submit', requestBodySent: true, ...routeMeta },
   };
 }
 
@@ -302,22 +303,34 @@ async function readJsonResponse(response) {
 
 async function callToapisVideoApi(config, log, opts = {}, requestOpts = {}) {
   const apiKey = resolveToapisApiKey(config);
-  if (!apiKey) return { error: 'ToAPIs API Key 未配置' };
+  if (!apiKey) return {
+    error: 'ToAPIs API Key 未配置',
+    route_meta: { phase: 'validation', requestBodySent: false, providerCode: 'AUTH_INVALID', explicitlyRejected: true },
+  };
   let body;
   try {
     body = buildToapisVideoBody(opts);
   } catch (error) {
-    return { error: error.message };
+    return {
+      error: error.message,
+      route_meta: { phase: 'validation', requestBodySent: false, providerCode: 'INVALID_ARGUMENT', explicitlyRejected: true },
+    };
   }
   let baseUrl;
   try {
     baseUrl = normalizeToapisBaseUrl(config?.base_url);
   } catch (error) {
-    return { error: error.message };
+    return {
+      error: error.message,
+      route_meta: { phase: 'validation', requestBodySent: false, providerCode: 'INVALID_ARGUMENT', explicitlyRejected: true },
+    };
   }
   const url = `${baseUrl}/v1/videos/generations`;
   const fetchImpl = requestOpts.fetchImpl || globalThis.fetch;
-  if (typeof fetchImpl !== 'function') return { error: 'ToAPIs fetch 不可用' };
+  if (typeof fetchImpl !== 'function') return {
+    error: 'ToAPIs fetch 不可用',
+    route_meta: { phase: 'connect', requestBodySent: false },
+  };
   log?.info?.('[ToAPIs 视频] 创建任务', {
     video_gen_id: opts.video_gen_id,
     model: body.model,
@@ -335,22 +348,39 @@ async function callToapisVideoApi(config, log, opts = {}, requestOpts = {}) {
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-  } catch (_) {
-    return indeterminateCreateError('连接中断。');
+  } catch (error) {
+    return indeterminateCreateError('连接中断。', { transportCode: error?.cause?.code || error?.code });
   }
   const { raw, payload } = await readJsonResponse(response);
   if (!response.ok) {
     if (response.status === 408 || response.status >= 500) {
-      return indeterminateCreateError(`HTTP ${response.status}。`);
+      return indeterminateCreateError(`HTTP ${response.status}。`, { httpStatus: response.status });
     }
-    if (!payload) return indeterminateCreateError(`HTTP ${response.status} 返回非 JSON 响应。`);
+    if (!payload) return indeterminateCreateError(`HTTP ${response.status} 返回非 JSON 响应。`, {
+      httpStatus: response.status,
+    });
     const message = formatProviderError(payload);
-    return { error: `ToAPIs 创建视频任务失败 (${response.status})${message ? `: ${message}` : ''}` };
+    return {
+      error: `ToAPIs 创建视频任务失败 (${response.status})${message ? `: ${message}` : ''}`,
+      route_meta: {
+        phase: 'submit',
+        requestBodySent: true,
+        httpStatus: response.status,
+        providerCode: String(payload?.error?.code || payload?.code || '').trim() || undefined,
+        explicitlyRejected: [400, 401, 413, 422, 429].includes(Number(response.status)),
+      },
+    };
   }
-  if (!payload) return indeterminateCreateError('返回非 JSON 响应。');
+  if (!payload) return indeterminateCreateError('返回非 JSON 响应。', { httpStatus: response.status });
   const taskId = payload.id ?? payload.task_id ?? payload?.data?.id ?? payload?.data?.task_id;
-  if (taskId == null || String(taskId).trim() === '') return indeterminateCreateError('未取得 task_id。');
-  return { task_id: String(taskId), status: String(payload.status || payload?.data?.status || 'processing').toLowerCase() };
+  if (taskId == null || String(taskId).trim() === '') {
+    return indeterminateCreateError('未取得 task_id。', { httpStatus: response.status });
+  }
+  return {
+    task_id: String(taskId),
+    status: String(payload.status || payload?.data?.status || 'processing').toLowerCase(),
+    route_meta: { httpStatus: response.status, providerTaskId: String(taskId) },
+  };
 }
 
 async function fetchToapisTask(config, taskId, opts = {}) {

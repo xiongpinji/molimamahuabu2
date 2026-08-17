@@ -14,6 +14,8 @@ const imageClient = require('./imageClient');
 const aihubccClient = require('./aihubccClient');
 const feituoVideoClient = require('./feituoVideoClient');
 const usmercariVideoClient = require('./usmercariVideoClient');
+const toapisVideoClient = require('./toapisVideoClient');
+const providerAssetUrl = require('./providerAssetUrlService');
 const fuminVideoClient = require('./fuminVideoClient');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
 const providerRouteStability = require('./providerRouteStabilityService');
@@ -51,6 +53,7 @@ function inferVideoProtocol(provider) {
   if (p === 'icreat' || p === 'icreat_ai' || p === 'icreat-seedance') return 'icreat_task';
   if (p === 'feituo' || p === 'feituo_open') return 'feituo_open';
   if (p === 'usmercari' || p === 'usmercari_media') return 'usmercari_media';
+  if (p === 'toapis' || p === 'toapis_video') return 'toapis_video';
   if (p === 'fumin' || p === 'fumin_video') return 'fumin_video';
   if (p === 'xai' || p === 'grok') return 'xai';
   if (p === 'agnes') return 'agnes';
@@ -178,6 +181,7 @@ function resolveVideoProtocol(config, modelHint) {
   }
   if (provider === 'feituo' || provider === 'feituo_open') protocol = 'feituo_open';
   if (provider === 'usmercari' || provider === 'usmercari_media') protocol = 'usmercari_media';
+  if (provider === 'toapis' || provider === 'toapis_video') protocol = 'toapis_video';
   if (provider === 'fumin' || provider === 'fumin_video') protocol = 'fumin_video';
   if (provider === 'aihubcc' || provider === 'aihubcc_video') protocol = 'aihubcc';
   const baseLower = String(config.base_url || '').toLowerCase();
@@ -617,6 +621,25 @@ async function resolveImageInputForAgnesAsync(db, rawUrl, files_base_url, storag
 
   log.warn('[Agnes] 参考图无法转为公网 URL', { video_gen_id, index, raw_head: raw.slice(0, 80) });
   return null;
+}
+
+async function resolveFuminReferenceImageAsync(db, rawUrl, files_base_url, storage_local_path, log, video_gen_id, index) {
+  const raw = String(rawUrl || '').trim();
+  if (!raw) return null;
+  if (raw.startsWith('asset://')) return raw;
+  const resolved = await resolveImageInputForAgnesAsync(
+    db,
+    raw,
+    files_base_url,
+    storage_local_path,
+    log,
+    video_gen_id,
+    `fumin_${index}`,
+  );
+  if (!resolved) {
+    throw new Error(`参考图 ${Number(index) + 1} 无法转换为中转站可读取的公网地址`);
+  }
+  return providerAssetUrl.signProviderAssetUrl(resolved, { filesBaseUrl: files_base_url });
 }
 
 /**
@@ -4723,6 +4746,36 @@ async function submitVideoWithConfig(db, log, config, opts) {
     });
   }
 
+  if (protocol === 'toapis_video') {
+    const signAsset = (value) => providerAssetUrl.signProviderAssetUrl(value, {
+      filesBaseUrl: opts.files_base_url,
+    });
+    const signAssets = (values) => Array.isArray(values) ? values.map(signAsset) : values;
+    const hasMultimodalReferences = [
+      opts.reference_urls,
+      opts.reference_video_urls,
+      opts.reference_audio_urls,
+    ].some((values) => Array.isArray(values) && values.some((value) => String(value || '').trim()))
+      || String(opts.voice_reference_url || '').trim();
+    return toapisVideoClient.callToapisVideoApi(config, log, {
+      ...opts,
+      model,
+      prompt,
+      duration: opts.duration,
+      aspect_ratio,
+      resolution,
+      image_url: hasMultimodalReferences ? '' : signAsset(opts.image_url),
+      first_frame_url: hasMultimodalReferences ? '' : signAsset(opts.first_frame_url),
+      last_frame_url: hasMultimodalReferences ? '' : signAsset(opts.last_frame_url),
+      reference_urls: signAssets(opts.reference_urls),
+      reference_video_urls: signAssets(opts.reference_video_urls),
+      reference_audio_urls: signAssets(opts.reference_audio_urls),
+      voice_reference_url: signAsset(opts.voice_reference_url),
+      client_business_id: opts.client_business_id || (video_gen_id ? `video-${video_gen_id}` : ''),
+      video_gen_id,
+    }, { fetchImpl: opts.fetchImpl });
+  }
+
   if (protocol === 'fumin_video') {
     const rawReferences = [...new Set([
       image_url,
@@ -4738,7 +4791,8 @@ async function submitVideoWithConfig(db, log, config, opts) {
       first_frame_url: undefined,
       last_frame_url: undefined,
       reference_urls: rawReferences,
-      resolve_image: (raw, index) => resolveVolcOmniImageAsync(
+      resolve_image: (raw, index) => resolveFuminReferenceImageAsync(
+        db,
         raw,
         opts.files_base_url,
         opts.storage_local_path,
@@ -5334,7 +5388,7 @@ async function callVideoApi(db, log, opts) {
 /**
  * ??????????????????/ChatFire ? ???? DashScope?
  */
-async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 300, intervalMs = 10000) {
+async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 300, intervalMs = 10000, requestOpts = {}) {
   const provider = (config.provider || '').toLowerCase();
   const protocol = resolveVideoProtocol(config);
   const isDashScope = protocol === 'dashscope';
@@ -5351,6 +5405,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isIcreat = protocol === 'icreat_task';
   const isFeituo = protocol === 'feituo_open';
   const isUsmercari = protocol === 'usmercari_media';
+  const isToapis = protocol === 'toapis_video';
   const isFumin = protocol === 'fumin_video';
   /** 轮询日志里响应体最大字符数（即梦/方舟等 JSON 可能较长）；0 表示不截断（慎用） */
   const pollLogBodyMax = (() => {
@@ -5374,6 +5429,14 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await new Promise((r) => setTimeout(r, intervalMs));
     try {
+      if (isToapis) {
+        const result = await toapisVideoClient.fetchToapisTask(config, taskId, {
+          fetchImpl: requestOpts.fetchImpl,
+        });
+        if (result.state === 'completed') return { video_url: result.videoUrl };
+        if (result.state === 'failed') return { error: result.error };
+        continue;
+      }
       let url, headers, method = 'GET', requestBody;
       if (isKling) {
         // task_id 编码格式：`t2v:xxx` / `i2v:xxx` / `mc:xxx`

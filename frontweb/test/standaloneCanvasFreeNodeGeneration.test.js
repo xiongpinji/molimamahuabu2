@@ -14,6 +14,7 @@ import {
   normalizeFreeCanvasNodeData,
   normalizeFreeCanvasVideoReferenceMode,
   planFreeCanvasVideoReferences,
+  pollFreeCanvasTask,
   resolveFreeCanvasVideoReferenceInput,
   resolveFreeCanvasResultUrl,
 } from '../src/utils/freeCanvasGeneration.js'
@@ -21,6 +22,59 @@ import {
   buildCanvasLayoutPayload,
   resolveFreeCanvasNodes,
 } from '../src/utils/canvasLayout.js'
+
+test('自由节点任务轮询容忍瞬时断网并继续查询同一 task_id', async () => {
+  const calls = []
+  const task = await pollFreeCanvasTask('task-video-1', {
+    maxAttempts: 3,
+    intervalMs: 0,
+    sleep: async () => {},
+    getTask: async (taskId) => {
+      calls.push(taskId)
+      if (calls.length === 1) throw new Error('Network Error')
+      if (calls.length === 2) return { status: 'processing', progress: 40 }
+      return { status: 'completed', result: { video_url: 'https://cdn.example/result.mp4' } }
+    },
+  })
+
+  assert.equal(task.status, 'completed')
+  assert.deepEqual(calls, ['task-video-1', 'task-video-1', 'task-video-1'])
+})
+
+test('自由节点查询中断时保留已提交状态并明确禁止重复提交', async () => {
+  let calls = 0
+  await assert.rejects(
+    pollFreeCanvasTask('task-video-2', {
+      maxAttempts: 2,
+      intervalMs: 0,
+      sleep: async () => {},
+      getTask: async () => {
+        calls += 1
+        throw new Error('Network Error')
+      },
+    }),
+    (error) => error.code === 'FREE_CANVAS_TASK_STATUS_UNAVAILABLE'
+      && /任务已提交/.test(error.message)
+      && /不要重复提交/.test(error.message),
+  )
+  assert.equal(calls, 2)
+})
+
+test('自由节点 needs_attention 状态直接提示禁止重复提交', async () => {
+  await assert.rejects(
+    pollFreeCanvasTask('task-video-3', {
+      maxAttempts: 1,
+      intervalMs: 0,
+      sleep: async () => {},
+      getTask: async () => ({
+        status: 'needs_attention',
+        error: '供应商提交结果未知，请勿重复提交',
+      }),
+    }),
+    (error) => error.code === 'FREE_CANVAS_TASK_NEEDS_ATTENTION'
+      && /请勿重复提交/.test(error.message),
+  )
+})
 
 test('参考图 @ 候选按连线顺序生成图片1、图片2、图片3及同序号 token', () => {
   const candidates = buildFreeCanvasReferenceMentionCandidates([

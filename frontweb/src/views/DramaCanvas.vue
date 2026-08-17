@@ -689,11 +689,11 @@ import {
   getFreeCanvasNodeResultUrl,
   normalizeFreeCanvasSubmissionReferences,
   planFreeCanvasVideoReferences,
+  pollFreeCanvasTask as pollFreeCanvasTaskStatus,
   resolveFreeCanvasResultUrl,
 } from '@/utils/freeCanvasGeneration'
 import {
   calculateBatchGenerationProgress,
-  normalizeGenerationProgress,
 } from '@/utils/canvasGenerationProgress'
 import {
   collectDroppedImageFiles,
@@ -2706,20 +2706,16 @@ function freeCanvasGenerationId(kind, submitResult, taskResult) {
   return ''
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+async function pollFreeCanvasTask(taskId, options = {}) {
+  return pollFreeCanvasTaskStatus(taskId, { ...options, getTask: taskAPI.get })
 }
 
-async function pollFreeCanvasTask(taskId, { maxAttempts = 60, intervalMs = 3000, onProgress } = {}) {
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    if (attempt > 0) await sleep(intervalMs)
-    const task = await taskAPI.get(taskId)
-    const progress = normalizeGenerationProgress(task?.progress)
-    if (progress !== null) await onProgress?.(progress)
-    if (task?.status === 'completed') return task
-    if (task?.status === 'failed') throw new Error(task?.error || task?.message || '自由节点生成失败')
-  }
-  throw new Error('自由节点生成超时')
+function isFreeCanvasTaskStillPending(error) {
+  return [
+    'FREE_CANVAS_TASK_NEEDS_ATTENTION',
+    'FREE_CANVAS_TASK_STATUS_UNAVAILABLE',
+    'FREE_CANVAS_TASK_RESULT_PENDING',
+  ].includes(error?.code)
 }
 
 async function resolveFreeCanvasFinalUrl(kind, submitResult, taskResult) {
@@ -3297,6 +3293,24 @@ async function runFreeCanvasNode(nodeOrId) {
   } catch (error) {
     const errorMessage = error?.message || '自由节点生成失败'
     const completedResultUrls = completedResults.map((result) => result.resultUrl)
+    if (isFreeCanvasTaskStillPending(error) && taskId) {
+      await updateFreeCanvasGenerationHistory(node.id, historyId, {
+        status: 'running',
+        taskId,
+        resultUrls: [...completedResultUrls],
+        error: errorMessage,
+      })
+      await patchFreeCanvasNodeData(node.id, {
+        status: 'running',
+        generationActive: false,
+        url: previousUrl,
+        resultUrls: previousResultUrls,
+        taskId,
+        error: errorMessage,
+      })
+      ElMessage.warning(errorMessage)
+      return { ok: false, pending: true, nodeId: String(node.id), taskId, error: errorMessage }
+    }
     await updateFreeCanvasGenerationHistory(node.id, historyId, {
       status: 'failed',
       completedAt: new Date().toISOString(),
@@ -3432,6 +3446,17 @@ async function resumeFreeCanvasNodeTask(nodeOrId) {
       const latestNode = freeCanvasNodeById(node.id)
       if (String(latestNode?.data?.taskId || '') !== taskId || latestNode?.data?.status !== 'running') return
       const errorMessage = error?.message || '自由节点生成失败'
+      if (isFreeCanvasTaskStillPending(error)) {
+        await patchFreeCanvasNodeData(node.id, {
+          status: 'running',
+          generationActive: false,
+          url: latestNode?.data?.url || '',
+          taskId,
+          error: errorMessage,
+        })
+        ElMessage.warning(errorMessage)
+        return
+      }
       await patchFreeCanvasNodeData(node.id, {
         status: 'failed',
         generationActive: false,

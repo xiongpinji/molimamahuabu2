@@ -77,15 +77,13 @@
       ],
       "fixCommit": "54eb8e940982cd9c4b65e91b934d8593a6b1975b",
       "unlock": {
-        "reason": "经批准修复 AIHubCC gpt-image-2 图生图协议并锁定已实测的 20 张参考图能力，同时在提交前拒绝不受支持的 fumin 参考图请求",
-        "approvedBy": "product-owner 2026-08-16 image-reference-capability-deploy",
+        "reason": "经批准修复 Fumin 与 ToAPIs Fast/Mini 多参考素材透传、受保护素材签名、任务轮询和提交结果未知保护",
+        "approvedBy": "product-owner 2026-08-17 video-relay-multi-reference-fix",
         "impactTests": [
-          "backend-node/test/aihubccImage.test.js",
-          "backend-node/test/fuminImage.test.js",
-          "backend-node/test/imageBilling.test.js",
-          "backend-node/test/providerRouteImageIntegration.test.js",
-          "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/providerErrorClassification.test.js"
+          "backend-node/test/fuminVideo.test.js",
+          "backend-node/test/toapisVideoIntegration.test.js",
+          "backend-node/test/providerRouteVideoIntegration.test.js",
+          "backend-node/test/videoBilling.test.js"
         ]
       }
     },
