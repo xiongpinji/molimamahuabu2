@@ -77,3 +77,13 @@
 - 迁移后全量两次均为 `tests 931; pass 923; fail 3; skipped 5`。除上述两项基线失败外，`providerRouteImageIntegration.test.js` 的备用图片落盘用例只在全量高负载中失败；该文件单独复跑 `14/14`，全文件集仅匹配该用例 `169/169`，前半套回归为 `tests 572; pass 570; fail 1; skipped 1`（唯一失败是既有 mention token 门禁），与两组 Paddle 测试联合为 `tests 67; pass 63; fail 0; skipped 4`。新增文件未修改图片路由、图片服务或该测试，因此本报告把它记录为现有负载敏感测试隔离警告，不把它描述为本功能通过的全量绿灯。
 
 结论：Paddle wheel 功能定向合同全部通过，迁移未引入可稳定复现的业务回归；仓库全量仍不是绿灯，合并审查必须同时看到两项确定的基线失败和一项负载敏感图片用例警告。本地证据不等于官方缓存、双 venv、真实四组件 smoke 或部署验收。
+
+## 合并前 Python 版本门禁修复（2026-08-17）
+
+- 实现提交：`32bc6032`。worker 包声明与固定 cp312 wheel 合同统一为 Python 3.12；前置探针只接受 `Python 3.12.x`，其他主次版本在随机 staging 和模型请求之前稳定拒绝为 `python_preflight`。
+- TDD 红灯：新增 2 项测试首次运行 `pass 0; fail 2`；分别证明包元数据仍排斥 3.12，以及 3.11 仍被旧探针接受。
+- 定向绿灯：Python 版本门禁 3 项 `pass 3; fail 0`。
+- Node 联合：显式使用 bundled Python 后，模型锁与 detector 共 `tests 56; pass 53; fail 0; skipped 3`；跳过均为 Windows 链接权限。
+- Python worker：`Ran 61; OK; skipped 1`；唯一跳过为 Windows symlink 权限。
+- 静态检查：两个 Node 文件语法检查、7 个 Python 文件编译检查和 `git diff --check` 均为 exit 0。
+- 本次修复未执行真实网络、pip、venv、官方模型下载、模型 bootstrap、四组件 smoke、供应商调用、数据库操作、SSH、部署或合并。
