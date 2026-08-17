@@ -1,0 +1,9 @@
+{
+  "schema_version": "redraw-full-frame-model-sources-v1",
+  "sources": [
+    {"component":"person_detector","project":"YOLOX","repository":"Megvii-BaseDetection/YOLOX","license_path":"LICENSE"},
+    {"component":"tracker","project":"ByteTrack","repository":"FoundationVision/ByteTrack","license_path":"LICENSE"},
+    {"component":"face_detector","project":"MediaPipe face detection","repository":"google-ai-edge/mediapipe","license_path":"LICENSE"},
+    {"component":"text_detector","project":"PaddleOCR","repository":"PaddlePaddle/PaddleOCR","license_path":"LICENSE"}
+  ]
+}
