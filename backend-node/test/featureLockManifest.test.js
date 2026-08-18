@@ -18,6 +18,66 @@ const {
   verifyFeatureLock,
 } = require('../scripts/verify-feature-lock-manifest');
 
+const PROACTIVE_CANARY_FEATURE_ID = 'stability.proactive-canary-and-public-evidence';
+const PROACTIVE_CANARY_ACCEPTANCE = [
+  '公开线路只有匹配的新鲜真实证据才能进入严格候选',
+  '巡检预算日月原子受限且未知结果保留占用',
+  '巡检不污染用户资产、生成记录和积分',
+  '管理员可见线路证据预算，普通用户不泄露供应商与成本',
+];
+const PROACTIVE_CANARY_CORE_PATHS = [
+  'backend-node/migrations/60_provider_canary_guard.sql',
+  'backend-node/migrations/61_provider_canary_reconcile_claim.sql',
+  'backend-node/migrations/62_provider_canary_admin_pagination.sql',
+  'backend-node/src/app.js',
+  'backend-node/src/middleware/resourceOwnership.js',
+  'backend-node/src/routes/index.js',
+  'backend-node/src/routes/providerStability.js',
+  'backend-node/src/services/aiClient.js',
+  'backend-node/src/services/aiConfigService.js',
+  'backend-node/src/services/canvasModelCatalogService.js',
+  'backend-node/src/services/imageClient.js',
+  'backend-node/src/services/modelPriceService.js',
+  'backend-node/src/services/providerCanaryArtifactService.js',
+  'backend-node/src/services/providerCanaryBudgetService.js',
+  'backend-node/src/services/providerCanaryEvidenceService.js',
+  'backend-node/src/services/providerCanaryExecutor.js',
+  'backend-node/src/services/providerCanaryFixtureService.js',
+  'backend-node/src/services/providerCanarySchedulerService.js',
+  'backend-node/src/services/providerRouteStabilityService.js',
+  'backend-node/src/services/providerRuntimeFingerprintService.js',
+  'backend-node/src/services/videoClient.js',
+  '.github/workflows/platform-zero-cost-smoke.yml',
+  'frontweb/scripts/run-platform-zero-cost-smoke.mjs',
+  'frontweb/src/api/providerStability.js',
+  'frontweb/src/components/ProviderStabilityPanel.vue',
+];
+const PROACTIVE_CANARY_REQUIRED_TESTS = [
+  'backend-node/test/aiConfigPublicView.test.js',
+  'backend-node/test/appBackgroundServices.test.js',
+  'backend-node/test/canvasModelCatalogService.test.js',
+  'backend-node/test/modelPrice.test.js',
+  'backend-node/test/providerAssetSignedAccess.test.js',
+  'backend-node/test/providerCanaryAdminRoutes.test.js',
+  'backend-node/test/providerCanaryArtifacts.test.js',
+  'backend-node/test/providerCanaryBudget.test.js',
+  'backend-node/test/providerCanaryEvidence.test.js',
+  'backend-node/test/providerCanaryExecutor.test.js',
+  'backend-node/test/providerCanaryFixtures.test.js',
+  'backend-node/test/providerCanaryInvalidation.test.js',
+  'backend-node/test/providerCanaryPublicGate.test.js',
+  'backend-node/test/providerCanaryScheduler.test.js',
+  'backend-node/test/providerCanaryTextConfig.test.js',
+  'backend-node/test/providerRouteAdminRoutes.test.js',
+  'backend-node/test/providerRouteSchema.test.js',
+  'backend-node/test/providerRuntimeFingerprint.test.js',
+  'backend-node/test/videoQueryTaskStatusOnce.test.js',
+  'frontweb/e2e/platform-zero-cost-smoke.spec.js',
+  'frontweb/e2e/provider-stability-admin.spec.js',
+  'frontweb/test/platformZeroCostSmokeContract.test.js',
+  'frontweb/test/providerStabilityAdmin.test.js',
+];
+
 test('共享稳定性锁定清单引用的保护路径、测试和证据全部存在', () => {
   const report = loadAndVerifyCurrentManifest({ repoRoot, manifestPath, baseManifest: null, changedPaths: [] });
   assert.equal(report.ready, true);
@@ -27,6 +87,30 @@ test('共享稳定性锁定清单引用的保护路径、测试和证据全部�
   assert.equal(manifest.features.every((feature) => feature.module === 'shared'), true);
   assert.equal(manifest.features.some((feature) => /canvas|factory|script-analysis/.test(feature.featureId)), false);
   assert.equal(manifest.features.every((feature) => feature.status === 'locked_fixed'), true);
+});
+
+test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件与测试', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
+  assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
+  assert.deepEqual(feature.acceptance, PROACTIVE_CANARY_ACCEPTANCE);
+  for (const protectedPath of PROACTIVE_CANARY_CORE_PATHS) {
+    assert.ok(feature.protectedPaths.includes(protectedPath), `功能锁缺少保护路径: ${protectedPath}`);
+  }
+  for (const testPath of PROACTIVE_CANARY_REQUIRED_TESTS) {
+    assert.ok(feature.requiredTests.includes(testPath), `功能锁缺少影响测试: ${testPath}`);
+  }
+});
+
+test('本轮触及的既有稳定性锁使用同一批准原因且保留历史证据', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const existing = manifest.features.filter(({ featureId }) => featureId !== PROACTIVE_CANARY_FEATURE_ID);
+  assert.equal(existing.length >= 4, true);
+  for (const feature of existing) {
+    assert.equal(feature.unlock?.reason, '2026-08-18 主动巡检书面规格获批，实施阶段 0+1');
+    assert.match(feature.unlock?.approvedBy || '', /product-owner/);
+    assert.equal(feature.evidence.length > 0, true);
+  }
 });
 
 test('锁定保护路径发生变化时必须提供原因、批准者和影响测试', () => {
