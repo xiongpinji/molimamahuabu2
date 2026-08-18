@@ -7,6 +7,7 @@ const SMOKE_PAGE_PATHS = Object.freeze(['/', '/login', '/canvas', '/factory', '/
 const PUBLIC_MODEL_CATALOG_PATH = '/api/v1/canvas/model-catalog'
 const LOGIN_PATH = '/api/v1/auth/login'
 const AUTH_ME_PATH = '/api/v1/auth/me'
+const MALICIOUS_SW_PATH = '/platform-smoke-malicious-sw.js'
 const ALLOWED_API_READ_PATHS = new Set([AUTH_ME_PATH, PUBLIC_MODEL_CATALOG_PATH])
 const ARTIFACT_DIR = fileURLToPath(new URL('../platform-smoke-artifacts/', import.meta.url))
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1'])
@@ -163,6 +164,18 @@ async function startFixture(config) {
         data: { id: 'fixture-monitor', email: config.email, role: 'user' },
       })
     }
+    if (url.pathname === MALICIOUS_SW_PATH) {
+      response.writeHead(200, {
+        'cache-control': 'no-store',
+        'content-type': 'application/javascript; charset=utf-8',
+      })
+      return response.end(`self.addEventListener('fetch', (event) => {
+  const url = new URL(event.request.url)
+  if (event.request.method === 'POST' && url.pathname === '/api/v1/images') {
+    event.respondWith(fetch(event.request))
+  }
+})`)
+    }
     if (url.pathname === PUBLIC_MODEL_CATALOG_PATH) {
       return jsonResponse(response, 200, {
         success: true,
@@ -252,7 +265,7 @@ export async function runBlockedWriteProbe() {
   try {
     const { chromium } = await import('@playwright/test')
     browser = await chromium.launch({ headless: true })
-    const context = await browser.newContext({ baseURL: config.baseURL })
+    const context = await browser.newContext({ baseURL: config.baseURL, serviceWorkers: 'block' })
     const page = await context.newPage()
     await page.route('**/*', async (route) => {
       const request = route.request()
@@ -277,14 +290,62 @@ export async function runBlockedWriteProbe() {
         return 'blocked'
       }
     })
-    await context.close()
     if (browserResult !== 'blocked' || blockedRequestCount !== 1) {
       throw new Error('ZERO_COST_SMOKE_NEGATIVE_PROBE_NOT_BLOCKED')
+    }
+    const ordinaryBlockedRequestCount = blockedRequestCount
+    const serviceWorkerRegistration = await page.evaluate(async (scriptPath) => {
+      if (!('serviceWorker' in navigator)) return { blocked: false, supported: false }
+      try {
+        await navigator.serviceWorker.register(scriptPath, { scope: '/' })
+        const becameReady = await Promise.race([
+          navigator.serviceWorker.ready.then(() => true),
+          new Promise((resolve) => setTimeout(() => resolve(false), 2_000)),
+        ])
+        return { blocked: !becameReady, supported: true }
+      } catch {
+        return { blocked: true, supported: true }
+      }
+    }, MALICIOUS_SW_PATH)
+    const serviceWorkerRegistrationBlocked = serviceWorkerRegistration.blocked
+    if (!serviceWorkerRegistrationBlocked) {
+      await page.reload({ waitUntil: 'domcontentloaded' })
+    }
+    const serviceWorkerControlled = await page.evaluate(() => Boolean(navigator.serviceWorker.controller))
+    const beforeServiceWorkerProbe = blockedRequestCount
+    const serviceWorkerBrowserResult = await page.evaluate(async () => {
+      try {
+        await fetch('/api/v1/images', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        })
+        return 'reached-server'
+      } catch {
+        return 'blocked'
+      }
+    })
+    const serviceWorkerBlockedRequestCount = blockedRequestCount - beforeServiceWorkerProbe
+    await context.close()
+    if (
+      !serviceWorkerRegistration.supported
+      || !serviceWorkerRegistrationBlocked
+      || serviceWorkerControlled
+      || serviceWorkerBrowserResult !== 'blocked'
+      || serviceWorkerBlockedRequestCount < 1
+    ) {
+      throw new Error('ZERO_COST_SMOKE_SERVICE_WORKER_BYPASS_DETECTED')
     }
     if (fixture.received.nonLoginWrites !== 0) {
       throw new Error('ZERO_COST_SMOKE_NEGATIVE_PROBE_REACHED_FIXTURE')
     }
-    return { blockedRequestCount, fixtureWriteCount: fixture.received.nonLoginWrites }
+    return {
+      blockedRequestCount: ordinaryBlockedRequestCount,
+      serviceWorkerRegistrationBlocked,
+      serviceWorkerControlled,
+      serviceWorkerBlockedRequestCount,
+      fixtureWriteCount: fixture.received.nonLoginWrites,
+    }
   } finally {
     if (browser) await browser.close()
     await fixture.close()
@@ -312,6 +373,7 @@ export async function runSmoke({ localFixture = false } = {}) {
     const context = await browser.newContext({
       baseURL: config.baseURL,
       colorScheme: 'dark',
+      serviceWorkers: 'block',
       viewport: { width: 1440, height: 900 },
     })
     const page = await context.newPage()

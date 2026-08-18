@@ -136,3 +136,13 @@ test('本地 fixture 只允许回环地址并由脚本启停', async () => {
   assert.match(runner, /server\.close/)
   assert.match(runner, /local-test-only/)
 })
+
+test('两个浏览器上下文都禁用 Service Worker 绕过请求门禁', async () => {
+  const { runner, spec } = await readSources()
+
+  assert.equal((runner.match(/serviceWorkers:\s*['"]block['"]/g) || []).length, 2)
+  assert.match(runner, /platform-smoke-malicious-sw\.js/)
+  assert.match(spec, /serviceWorkerRegistrationBlocked/)
+  assert.match(spec, /serviceWorkerBlockedRequestCount/)
+  assert.match(spec, /fixtureWriteCount/)
+})

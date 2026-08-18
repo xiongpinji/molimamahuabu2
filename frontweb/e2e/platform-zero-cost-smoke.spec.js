@@ -61,6 +61,9 @@ test('禁止生成 POST 在到达本地 fixture 前被拦截', async () => {
   try {
     const result = await runBlockedWriteProbe()
     expect(result.blockedRequestCount).toBe(1)
+    expect(result.serviceWorkerRegistrationBlocked).toBe(true)
+    expect(result.serviceWorkerControlled).toBe(false)
+    expect(result.serviceWorkerBlockedRequestCount).toBeGreaterThanOrEqual(1)
     expect(result.fixtureWriteCount).toBe(0)
   } finally {
     for (const [name, value] of Object.entries(previous)) {
