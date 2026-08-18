@@ -8,15 +8,19 @@ const test = require('node:test');
 
 const runtimeService = require('../src/services/providerRuntimeFingerprintService');
 
-const CANARY_VALIDATOR_FILES = {
+const CANARY_RUNTIME_FILES = {
+  'src/middleware/resourceOwnership.js': 'signed access middleware v1\n',
+  'src/services/providerAssetUrlService.js': 'asset signer v1\n',
   'src/services/providerCanaryArtifactService.js': 'artifact validator v1\n',
   'src/services/providerCanaryFixtureService.js': 'fixture validator v1\n',
+  'src/services/userAuthService.js': 'secret validator v1\n',
+  'src/utils/ffmpegPath.js': 'ffmpeg resolver v1\n',
 };
 
 function createRuntimeRoot(t, suffix, files) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `provider-runtime-${suffix}-`));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  for (const [relativePath, contents] of Object.entries({ ...CANARY_VALIDATOR_FILES, ...files })) {
+  for (const [relativePath, contents] of Object.entries({ ...CANARY_RUNTIME_FILES, ...files })) {
     const filename = path.join(root, ...relativePath.split('/'));
     fs.mkdirSync(path.dirname(filename), { recursive: true });
     fs.writeFileSync(filename, contents);
@@ -41,10 +45,14 @@ test('runtime fingerprint is stable across roots and changes with common or adap
   assert.equal(a.fingerprint, b.fingerprint);
   assert.match(a.fingerprint, /^[a-f0-9]{64}$/);
   assert.deepEqual(a.files, [
+    'src/middleware/resourceOwnership.js',
     'src/services/imageClient.js',
+    'src/services/providerAssetUrlService.js',
     'src/services/providerCanaryArtifactService.js',
     'src/services/providerCanaryFixtureService.js',
     'src/services/providerErrorClassifier.js',
+    'src/services/userAuthService.js',
+    'src/utils/ffmpegPath.js',
   ]);
   const serialized = JSON.stringify(a);
   assert.equal(serialized.includes(rootA), false);
@@ -74,10 +82,12 @@ test('runtime fingerprint is stable across roots and changes with common or adap
   );
 });
 
-test('shared canary validator source changes invalidate every service runtime fingerprint', (t) => {
+test('canary runtime source changes invalidate text image and representative video fingerprints', (t) => {
   const commonFiles = {
     'src/services/aiClient.js': 'text common\n',
+    'src/services/fuminVideoClient.js': 'fumin adapter\n',
     'src/services/imageClient.js': 'image common\n',
+    'src/services/toapisVideoClient.js': 'toapis adapter\n',
     'src/services/videoClient.js': 'video common\n',
     'src/services/providerErrorClassifier.js': 'classifier\n',
   };
@@ -85,10 +95,11 @@ test('shared canary validator source changes invalidate every service runtime fi
   const configs = [
     { service_type: 'text', provider: 'generic', api_protocol: 'openai' },
     { service_type: 'image', provider: 'generic', api_protocol: 'openai' },
-    { service_type: 'video', provider: 'generic', api_protocol: 'openai' },
+    { service_type: 'video', provider: 'fumin', api_protocol: 'fumin_video' },
+    { service_type: 'video', provider: 'toapis', api_protocol: 'toapis_video' },
   ];
 
-  for (const relativePath of Object.keys(CANARY_VALIDATOR_FILES)) {
+  for (const relativePath of Object.keys(CANARY_RUNTIME_FILES)) {
     const changedRoot = createRuntimeRoot(t, path.basename(relativePath), {
       ...commonFiles,
       [relativePath]: `${relativePath} changed\n`,
@@ -143,12 +154,15 @@ test('provider inference selects the repository current adapter branches', (t) =
   assert.equal(result.ok, true);
   assert.equal(result.protocol, 'toapis_video');
   assert.deepEqual(result.files, [
+    'src/middleware/resourceOwnership.js',
     'src/services/providerAssetUrlService.js',
     'src/services/providerCanaryArtifactService.js',
     'src/services/providerCanaryFixtureService.js',
     'src/services/providerErrorClassifier.js',
     'src/services/toapisVideoClient.js',
+    'src/services/userAuthService.js',
     'src/services/videoClient.js',
+    'src/utils/ffmpegPath.js',
   ]);
 });
 

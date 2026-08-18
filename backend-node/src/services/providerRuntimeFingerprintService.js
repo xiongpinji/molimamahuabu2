@@ -5,8 +5,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const CANARY_RUNTIME_FILES = Object.freeze([
+  'src/middleware/resourceOwnership.js',
+  'src/services/providerAssetUrlService.js',
   'src/services/providerCanaryArtifactService.js',
   'src/services/providerCanaryFixtureService.js',
+  'src/services/userAuthService.js',
+  'src/utils/ffmpegPath.js',
 ]);
 
 const COMMON_FILES = Object.freeze({
