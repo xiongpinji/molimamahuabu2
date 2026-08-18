@@ -4,6 +4,8 @@ import { runBlockedWriteProbe, runSmoke } from '../scripts/run-platform-zero-cos
 
 const artifactDirectory = new URL('../platform-smoke-artifacts/', import.meta.url)
 
+test.use({ trace: 'off' })
+
 test('本地五分钟冒烟仅读首屏且生成写请求为零', async () => {
   const previous = Object.fromEntries([
     'PLATFORM_SMOKE_BASE_URL',
@@ -19,6 +21,11 @@ test('本地五分钟冒烟仅读首屏且生成写请求为零', async () => {
     expect(result.generationWriteCount).toBe(0)
     expect(result.nonLoginWriteCount).toBe(0)
     expect(result.safeTrace.at(-1)).toMatchObject({ result: 'passed' })
+    expect(result.safeTrace.filter((entry) => entry.step === 'allowed-api')).toEqual([
+      { step: 'allowed-api', method: 'POST', pathname: '/api/v1/auth/login', status: 200 },
+      { step: 'allowed-api', method: 'GET', pathname: '/api/v1/auth/me', status: 200 },
+      { step: 'allowed-api', method: 'GET', pathname: '/api/v1/canvas/model-catalog', status: 200 },
+    ])
 
     const artifactNames = await readdir(artifactDirectory)
     expect(artifactNames.sort()).toEqual([

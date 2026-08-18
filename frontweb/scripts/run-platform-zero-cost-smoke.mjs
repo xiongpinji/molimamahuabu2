@@ -6,6 +6,8 @@ import path from 'node:path'
 const SMOKE_PAGE_PATHS = Object.freeze(['/', '/login', '/canvas', '/factory', '/script-analysis'])
 const PUBLIC_MODEL_CATALOG_PATH = '/api/v1/canvas/model-catalog'
 const LOGIN_PATH = '/api/v1/auth/login'
+const AUTH_ME_PATH = '/api/v1/auth/me'
+const ALLOWED_API_READ_PATHS = new Set([AUTH_ME_PATH, PUBLIC_MODEL_CATALOG_PATH])
 const ARTIFACT_DIR = fileURLToPath(new URL('../platform-smoke-artifacts/', import.meta.url))
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1'])
 
@@ -39,13 +41,25 @@ export function assertNavigationAllowed(value, allowedOrigin) {
 
 export function assertRequestAllowed(method, value, allowedOrigin = '') {
   const normalizedMethod = String(method || 'GET').toUpperCase()
-  const pathname = normalizePathname(value)
-  if (['GET', 'HEAD', 'OPTIONS'].includes(normalizedMethod)) return
-  if (allowedOrigin && new URL(value, allowedOrigin).origin !== allowedOrigin) {
+  const expectedOrigin = allowedOrigin || 'http://smoke.invalid'
+  const url = new URL(value, expectedOrigin)
+  const pathname = normalizePathname(url.href)
+  if (url.origin !== expectedOrigin) {
     throw new Error(`ZERO_COST_SMOKE_CROSS_ORIGIN_REQUEST:${normalizedMethod}:${pathname}`)
+  }
+  if (['GET', 'HEAD'].includes(normalizedMethod)) {
+    if (!pathname.startsWith('/api/')) return
+    if (ALLOWED_API_READ_PATHS.has(pathname)) return
+    throw new Error(`ZERO_COST_SMOKE_FORBIDDEN_API_READ:${normalizedMethod}:${pathname}`)
   }
   if (normalizedMethod === 'POST' && pathname === LOGIN_PATH) return
   throw new Error(`ZERO_COST_SMOKE_FORBIDDEN_WRITE:${normalizedMethod}:${pathname}`)
+}
+
+function isAllowedApiRequest(method, pathname) {
+  const normalizedMethod = String(method || 'GET').toUpperCase()
+  return (normalizedMethod === 'POST' && pathname === LOGIN_PATH)
+    || (['GET', 'HEAD'].includes(normalizedMethod) && ALLOWED_API_READ_PATHS.has(pathname))
 }
 
 function readRuntimeConfig(localFixture) {
@@ -105,7 +119,9 @@ function loginFixturePage() {
 <script>document.getElementById('login-form').addEventListener('submit', async (event) => {
 event.preventDefault(); const form = new FormData(event.currentTarget);
 const response = await fetch('${LOGIN_PATH}', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: form.get('email'), password: form.get('password') }) });
-if (!response.ok) throw new Error('login failed'); location.assign('/');
+if (!response.ok) throw new Error('login failed');
+const identity = await fetch('${AUTH_ME_PATH}', { method: 'GET', credentials: 'same-origin' });
+if (!identity.ok) throw new Error('identity failed'); location.assign('/');
 });</script></body></html>`
 }
 
@@ -140,6 +156,12 @@ async function startFixture(config) {
     if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
       received.nonLoginWrites += 1
       return jsonResponse(response, 405, { success: false })
+    }
+    if (url.pathname === AUTH_ME_PATH) {
+      return jsonResponse(response, 200, {
+        success: true,
+        data: { id: 'fixture-monitor', email: config.email, role: 'user' },
+      })
     }
     if (url.pathname === PUBLIC_MODEL_CATALOG_PATH) {
       return jsonResponse(response, 200, {
@@ -296,6 +318,19 @@ export async function runSmoke({ localFixture = false } = {}) {
 
     page.on('pageerror', () => runtimeFailures.push('pageerror'))
     page.on('response', (response) => {
+      const responseURL = new URL(response.url())
+      const request = response.request()
+      if (
+        responseURL.origin === config.baseURL
+        && isAllowedApiRequest(request.method(), responseURL.pathname)
+      ) {
+        safeTrace.push({
+          step: 'allowed-api',
+          method: request.method(),
+          pathname: responseURL.pathname,
+          status: response.status(),
+        })
+      }
       if (response.status() >= 500) runtimeFailures.push(`http-${response.status()}:${safePath(response.url())}`)
     })
     await page.route('**/*', async (route) => {
@@ -312,6 +347,7 @@ export async function runSmoke({ localFixture = false } = {}) {
           violations.push(error.message)
           return route.abort('blockedbyclient')
         }
+        return route.continue()
       }
       try {
         assertRequestAllowed(request.method(), requestURL.href, config.baseURL)

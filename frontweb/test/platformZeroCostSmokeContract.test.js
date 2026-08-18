@@ -74,8 +74,25 @@ test('浏览器只导航允许页面并读取公开模型目录', async () => {
 test('请求门禁仅允许登录 POST，拦截生成、充值、积分和资产写入', async () => {
   const { assertRequestAllowed } = await import(sourcePaths.runner.href)
 
-  assert.doesNotThrow(() => assertRequestAllowed('GET', '/api/v1/canvas/model-catalog'))
-  assert.doesNotThrow(() => assertRequestAllowed('POST', '/api/v1/auth/login'))
+  const origin = 'https://app.example'
+  assert.doesNotThrow(() => assertRequestAllowed('GET', `${origin}/assets/index.js`, origin))
+  assert.doesNotThrow(() => assertRequestAllowed('HEAD', `${origin}/moli-mama-logo.png`, origin))
+  assert.doesNotThrow(() => assertRequestAllowed('POST', `${origin}/api/v1/auth/login`, origin))
+  assert.doesNotThrow(() => assertRequestAllowed('GET', `${origin}/api/v1/auth/me`, origin))
+  assert.doesNotThrow(() => assertRequestAllowed('HEAD', `${origin}/api/v1/auth/me`, origin))
+  assert.doesNotThrow(() => assertRequestAllowed('GET', `${origin}/api/v1/canvas/model-catalog`, origin))
+
+  for (const path of [
+    '/api/v1/assets',
+    '/api/v1/billing/account',
+    '/api/v1/dramas',
+    '/api/v1/script-analysis/projects',
+  ]) {
+    assert.throws(
+      () => assertRequestAllowed('GET', `${origin}${path}`, origin),
+      /ZERO_COST_SMOKE_FORBIDDEN_API_READ/,
+    )
+  }
 
   for (const path of [
     '/api/v1/images',
@@ -92,6 +109,10 @@ test('请求门禁仅允许登录 POST，拦截生成、充值、积分和资产
     () => assertRequestAllowed('POST', 'https://outside.example/api/v1/auth/login', 'https://app.example'),
     /ZERO_COST_SMOKE_CROSS_ORIGIN_REQUEST/,
   )
+  assert.throws(
+    () => assertRequestAllowed('GET', 'https://outside.example/assets/logo.png', 'https://app.example'),
+    /ZERO_COST_SMOKE_CROSS_ORIGIN_REQUEST/,
+  )
 })
 
 test('安全产物不使用原生 Playwright trace 或记录请求秘密', async () => {
@@ -103,6 +124,7 @@ test('安全产物不使用原生 Playwright trace 或记录请求秘密', async
   assert.doesNotMatch(combined, /['"](?:Cookie|Authorization)['"]\s*:/i)
   assert.match(sources.runner, /safe-trace\.json/)
   assert.match(sources.runner, /sanitized-/)
+  assert.match(sources.spec, /test\.use\(\{\s*trace:\s*['"]off['"]\s*\}\)/)
 })
 
 test('本地 fixture 只允许回环地址并由脚本启停', async () => {
