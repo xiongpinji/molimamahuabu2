@@ -18,12 +18,179 @@ function errorCodes(result) {
   return new Set(result.errors.map((error) => error.code));
 }
 
+function featureMap(inventory) {
+  return new Map(inventory.features.map((feature) => [feature.feature_id, feature]));
+}
+
 test('checked-in feature inventory satisfies its structural and coverage contract', () => {
   const { inventory, schema } = loadDefaultInventory();
   const result = validateInventory(inventory, { repoRoot, schema });
 
   assert.deepEqual(result.errors, []);
   assert.equal(result.valid, true);
+});
+
+test('public API operation families remain independently traceable', () => {
+  const { inventory } = loadDefaultInventory();
+  const byId = featureMap(inventory);
+  const requiredIds = [
+    'shared.api.auth_session',
+    'shared.api.tenant_member',
+    'shared.api.platform_account_admin',
+    'shared.api.billing_account',
+    'shared.api.billing_catalog',
+    'shared.api.billing_redeem',
+    'shared.api.billing_orders',
+    'shared.api.billing_recharge',
+    'shared.api.billing_admin_pricing',
+    'shared.api.billing_reconciliation',
+    'shared.api.asset_library',
+    'canvas.api.layout',
+    'canvas.api.asset',
+    'canvas.api.text_generation',
+    'canvas.api.image_generation',
+    'canvas.api.video_generation',
+    'canvas.api.audio_generation',
+    'canvas.api.image_tool',
+    'canvas.api.video_tool',
+    'canvas.api.task_status_result',
+    'short_drama_factory.api.drama',
+    'short_drama_factory.api.project',
+    'short_drama_factory.api.episode',
+    'short_drama_factory.api.import',
+    'short_drama_factory.api.export',
+    'short_drama_factory.api.character',
+    'short_drama_factory.api.scene',
+    'short_drama_factory.api.prop',
+    'short_drama_factory.api.storyboard',
+    'short_drama_factory.api.image_media',
+    'short_drama_factory.api.video_media',
+    'short_drama_factory.api.audio_media',
+    'short_drama_factory.api.generation_task',
+    'script_analysis.api.skill_preset',
+    'script_analysis.api.project',
+    'script_analysis.api.version',
+    'script_analysis.api.revision',
+    'script_analysis.api.review',
+    'script_analysis.api.run',
+    'script_analysis.api.factory_import',
+  ];
+
+  for (const featureId of requiredIds) {
+    assert.ok(byId.has(featureId), `missing operation family: ${featureId}`);
+    assert.equal(byId.get(featureId).action_kind, 'api', featureId);
+  }
+
+  for (const featureId of ['script_analysis.canvas.projection', 'script_analysis.factory.projection']) {
+    assert.ok(byId.has(featureId), featureId);
+    assert.equal(byId.get(featureId).action_kind, 'projection', featureId);
+  }
+
+  for (const groupedId of [
+    'shared.api.billing_account_catalog',
+    'shared.api.billing_orders_recharge',
+    'short_drama_factory.api.drama_project_episode',
+    'short_drama_factory.api.import_export',
+    'script_analysis.api.version_revision',
+  ]) {
+    assert.equal(byId.has(groupedId), false, groupedId);
+  }
+});
+
+test('verifier rejects removal of a required operation family', () => {
+  const { inventory, schema } = loadDefaultInventory();
+  const missingFamily = clone(inventory);
+  missingFamily.features = missingFamily.features.filter(
+    (feature) => feature.feature_id !== 'shared.api.auth_session',
+  );
+
+  const result = validateInventory(missingFamily, { repoRoot, schema });
+
+  assert.equal(result.valid, false);
+  assert.ok(errorCodes(result).has('missing_required_feature'));
+});
+
+test('API features reject umbrella coverage labels and ids', () => {
+  const { inventory, schema } = loadDefaultInventory();
+  const umbrellaPattern = /公开\s*API|全部|统一|综合|public_routes/i;
+
+  for (const feature of inventory.features.filter((item) => item.action_kind === 'api')) {
+    assert.doesNotMatch(feature.feature_id, umbrellaPattern, feature.feature_id);
+    assert.doesNotMatch(feature.control_label, umbrellaPattern, feature.feature_id);
+  }
+
+  const generic = clone(inventory);
+  const apiFeature = generic.features.find((feature) => feature.action_kind === 'api');
+  apiFeature.control_label = '综合公开 API';
+  const result = validateInventory(generic, { repoRoot, schema });
+  assert.equal(result.valid, false);
+  assert.ok(errorCodes(result).has('generic_api_coverage'));
+});
+
+test('script analysis run inventory records backend credit reservation and settlement', () => {
+  const { inventory } = loadDefaultInventory();
+  const byId = featureMap(inventory);
+
+  for (const featureId of ['script_analysis.run', 'script_analysis.api.run']) {
+    const feature = byId.get(featureId);
+    assert.ok(feature, featureId);
+    assert.equal(feature.may_charge, true, featureId);
+    assert.ok(feature.acceptance_chain.includes('billing'), featureId);
+  }
+
+  const visibility = byId.get('script_analysis.billing.visibility');
+  assert.equal(visibility.baseline_state, 'blocked');
+  assert.match(visibility.block_reason, /后端.*计费/);
+  assert.match(visibility.block_reason, /前端.*预计扣费/);
+});
+
+test('canvas image toolbar operation groups remain independently traceable', () => {
+  const { inventory } = loadDefaultInventory();
+  const byId = featureMap(inventory);
+  const requiredIds = [
+    'canvas.image_tool.character_portrait',
+    'canvas.image_tool.composition_narrative',
+    'canvas.image_tool.quality',
+    'canvas.image_tool.geometry',
+    'canvas.image_tool.edit',
+    'canvas.image_tool.matting',
+  ];
+
+  for (const featureId of requiredIds) assert.ok(byId.has(featureId), featureId);
+});
+
+test('short drama factory keeps resource and generation families split', () => {
+  const { inventory } = loadDefaultInventory();
+  const byId = featureMap(inventory);
+  const requiredIds = [
+    'short_drama_factory.character.crud',
+    'short_drama_factory.scene.crud',
+    'short_drama_factory.prop.crud',
+    'short_drama_factory.storyboard.crud',
+    'short_drama_factory.character.asset_library',
+    'short_drama_factory.scene.asset_library',
+    'short_drama_factory.prop.asset_library',
+    'short_drama_factory.character.reference',
+    'short_drama_factory.scene.reference',
+    'short_drama_factory.prop.reference',
+    'short_drama_factory.storyboard.reference',
+    'short_drama_factory.character.image_generation',
+    'short_drama_factory.scene.image_generation',
+    'short_drama_factory.prop.image_generation',
+    'short_drama_factory.storyboard.image_generation',
+    'short_drama_factory.storyboard.video_generation',
+    'short_drama_factory.storyboard.batch_video_generation',
+  ];
+  const forbiddenGroupedIds = [
+    'short_drama_factory.resource.crud',
+    'short_drama_factory.resource.asset_library',
+    'short_drama_factory.reference.assets',
+    'short_drama_factory.image.generation',
+    'short_drama_factory.video.generation',
+  ];
+
+  for (const featureId of requiredIds) assert.ok(byId.has(featureId), featureId);
+  for (const featureId of forbiddenGroupedIds) assert.equal(byId.has(featureId), false, featureId);
 });
 
 test('schema rejects additional properties and fixed-enum violations', () => {

@@ -87,7 +87,76 @@ const REQUIRED_COVERAGE = Object.freeze({
   ],
 });
 
+const REQUIRED_FEATURE_IDS = Object.freeze([
+  'shared.api.auth_session',
+  'shared.api.tenant_member',
+  'shared.api.platform_account_admin',
+  'shared.api.billing_account',
+  'shared.api.billing_catalog',
+  'shared.api.billing_redeem',
+  'shared.api.billing_orders',
+  'shared.api.billing_recharge',
+  'shared.api.billing_admin_pricing',
+  'shared.api.billing_reconciliation',
+  'shared.api.asset_library',
+  'canvas.api.layout',
+  'canvas.api.asset',
+  'canvas.api.text_generation',
+  'canvas.api.image_generation',
+  'canvas.api.video_generation',
+  'canvas.api.audio_generation',
+  'canvas.api.image_tool',
+  'canvas.api.video_tool',
+  'canvas.api.task_status_result',
+  'canvas.image_tool.character_portrait',
+  'canvas.image_tool.composition_narrative',
+  'canvas.image_tool.quality',
+  'canvas.image_tool.geometry',
+  'canvas.image_tool.edit',
+  'canvas.image_tool.matting',
+  'short_drama_factory.api.drama',
+  'short_drama_factory.api.project',
+  'short_drama_factory.api.episode',
+  'short_drama_factory.api.import',
+  'short_drama_factory.api.export',
+  'short_drama_factory.api.character',
+  'short_drama_factory.api.scene',
+  'short_drama_factory.api.prop',
+  'short_drama_factory.api.storyboard',
+  'short_drama_factory.api.image_media',
+  'short_drama_factory.api.video_media',
+  'short_drama_factory.api.audio_media',
+  'short_drama_factory.api.generation_task',
+  'short_drama_factory.character.crud',
+  'short_drama_factory.scene.crud',
+  'short_drama_factory.prop.crud',
+  'short_drama_factory.storyboard.crud',
+  'short_drama_factory.character.asset_library',
+  'short_drama_factory.scene.asset_library',
+  'short_drama_factory.prop.asset_library',
+  'short_drama_factory.character.reference',
+  'short_drama_factory.scene.reference',
+  'short_drama_factory.prop.reference',
+  'short_drama_factory.storyboard.reference',
+  'short_drama_factory.character.image_generation',
+  'short_drama_factory.scene.image_generation',
+  'short_drama_factory.prop.image_generation',
+  'short_drama_factory.storyboard.image_generation',
+  'short_drama_factory.storyboard.video_generation',
+  'short_drama_factory.storyboard.batch_video_generation',
+  'script_analysis.api.skill_preset',
+  'script_analysis.api.project',
+  'script_analysis.api.version',
+  'script_analysis.api.revision',
+  'script_analysis.api.review',
+  'script_analysis.api.run',
+  'script_analysis.api.factory_import',
+  'script_analysis.canvas.projection',
+  'script_analysis.factory.projection',
+]);
+
 const PLACEHOLDER_PATTERN = /\b(?:TODO|TBD|placeholder)\b|待定/i;
+const GENERIC_API_PATTERN = /公开\s*API|全部|统一|综合|public_routes/i;
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -157,6 +226,16 @@ function validateInventory(inventory, { repoRoot = REPO_ROOT, schema } = {}) {
         message: `${featureId || '<unknown>'} cannot be verified in source-inventory phase`,
       });
     }
+    if (
+      feature?.action_kind === 'api'
+      && (GENERIC_API_PATTERN.test(String(featureId || ''))
+        || GENERIC_API_PATTERN.test(String(feature?.control_label || '')))
+    ) {
+      errors.push({
+        code: 'generic_api_coverage',
+        message: `${featureId || '<unknown>'} uses an umbrella API label or id`,
+      });
+    }
     if (feature?.baseline_state === 'blocked' && !String(feature?.block_reason || '').trim()) {
       errors.push({
         code: 'blocked_without_reason',
@@ -194,6 +273,15 @@ function validateInventory(inventory, { repoRoot = REPO_ROOT, schema } = {}) {
           message: `${moduleName} requires action_kind=${actionKind}`,
         });
       }
+    }
+  }
+
+  for (const featureId of REQUIRED_FEATURE_IDS) {
+    if (!seenIds.has(featureId)) {
+      errors.push({
+        code: 'missing_required_feature',
+        message: `required feature_id is missing: ${featureId}`,
+      });
     }
   }
 
@@ -242,6 +330,7 @@ module.exports = {
   INVENTORY_PATH,
   REPO_ROOT,
   REQUIRED_COVERAGE,
+  REQUIRED_FEATURE_IDS,
   SCHEMA_PATH,
   loadDefaultInventory,
   summarize,
