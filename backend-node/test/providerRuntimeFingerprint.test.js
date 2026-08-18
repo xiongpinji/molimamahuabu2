@@ -8,10 +8,15 @@ const test = require('node:test');
 
 const runtimeService = require('../src/services/providerRuntimeFingerprintService');
 
+const CANARY_VALIDATOR_FILES = {
+  'src/services/providerCanaryArtifactService.js': 'artifact validator v1\n',
+  'src/services/providerCanaryFixtureService.js': 'fixture validator v1\n',
+};
+
 function createRuntimeRoot(t, suffix, files) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `provider-runtime-${suffix}-`));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  for (const [relativePath, contents] of Object.entries(files)) {
+  for (const [relativePath, contents] of Object.entries({ ...CANARY_VALIDATOR_FILES, ...files })) {
     const filename = path.join(root, ...relativePath.split('/'));
     fs.mkdirSync(path.dirname(filename), { recursive: true });
     fs.writeFileSync(filename, contents);
@@ -35,7 +40,12 @@ test('runtime fingerprint is stable across roots and changes with common or adap
   assert.equal(a.ok, true);
   assert.equal(a.fingerprint, b.fingerprint);
   assert.match(a.fingerprint, /^[a-f0-9]{64}$/);
-  assert.deepEqual(a.files, ['src/services/imageClient.js', 'src/services/providerErrorClassifier.js']);
+  assert.deepEqual(a.files, [
+    'src/services/imageClient.js',
+    'src/services/providerCanaryArtifactService.js',
+    'src/services/providerCanaryFixtureService.js',
+    'src/services/providerErrorClassifier.js',
+  ]);
   const serialized = JSON.stringify(a);
   assert.equal(serialized.includes(rootA), false);
   assert.equal(serialized.includes('image common v1'), false);
@@ -62,6 +72,35 @@ test('runtime fingerprint is stable across roots and changes with common or adap
     runtimeService.runtimeFingerprintForConfig(adapterConfig, { repoRoot: rootA }).fingerprint,
     runtimeService.runtimeFingerprintForConfig(adapterConfig, { repoRoot: rootB }).fingerprint,
   );
+});
+
+test('shared canary validator source changes invalidate every service runtime fingerprint', (t) => {
+  const commonFiles = {
+    'src/services/aiClient.js': 'text common\n',
+    'src/services/imageClient.js': 'image common\n',
+    'src/services/videoClient.js': 'video common\n',
+    'src/services/providerErrorClassifier.js': 'classifier\n',
+  };
+  const baselineRoot = createRuntimeRoot(t, 'canary-validator-baseline', commonFiles);
+  const configs = [
+    { service_type: 'text', provider: 'generic', api_protocol: 'openai' },
+    { service_type: 'image', provider: 'generic', api_protocol: 'openai' },
+    { service_type: 'video', provider: 'generic', api_protocol: 'openai' },
+  ];
+
+  for (const relativePath of Object.keys(CANARY_VALIDATOR_FILES)) {
+    const changedRoot = createRuntimeRoot(t, path.basename(relativePath), {
+      ...commonFiles,
+      [relativePath]: `${relativePath} changed\n`,
+    });
+    for (const config of configs) {
+      const baseline = runtimeService.runtimeFingerprintForConfig(config, { repoRoot: baselineRoot });
+      const changed = runtimeService.runtimeFingerprintForConfig(config, { repoRoot: changedRoot });
+      assert.equal(baseline.ok, true, JSON.stringify(baseline));
+      assert.equal(changed.ok, true, JSON.stringify(changed));
+      assert.notEqual(baseline.fingerprint, changed.fingerprint, `${config.service_type}:${relativePath}`);
+    }
+  }
 });
 
 test('known service mappings are explicit and missing files are structured failures', (t) => {
@@ -105,6 +144,8 @@ test('provider inference selects the repository current adapter branches', (t) =
   assert.equal(result.protocol, 'toapis_video');
   assert.deepEqual(result.files, [
     'src/services/providerAssetUrlService.js',
+    'src/services/providerCanaryArtifactService.js',
+    'src/services/providerCanaryFixtureService.js',
     'src/services/providerErrorClassifier.js',
     'src/services/toapisVideoClient.js',
     'src/services/videoClient.js',

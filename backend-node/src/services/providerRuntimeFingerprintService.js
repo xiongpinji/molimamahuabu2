@@ -4,10 +4,15 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const CANARY_RUNTIME_FILES = Object.freeze([
+  'src/services/providerCanaryArtifactService.js',
+  'src/services/providerCanaryFixtureService.js',
+]);
+
 const COMMON_FILES = Object.freeze({
-  text: ['src/services/aiClient.js', 'src/services/providerErrorClassifier.js'],
-  image: ['src/services/imageClient.js', 'src/services/providerErrorClassifier.js'],
-  video: ['src/services/videoClient.js', 'src/services/providerErrorClassifier.js'],
+  text: ['src/services/aiClient.js', ...CANARY_RUNTIME_FILES, 'src/services/providerErrorClassifier.js'],
+  image: ['src/services/imageClient.js', ...CANARY_RUNTIME_FILES, 'src/services/providerErrorClassifier.js'],
+  video: ['src/services/videoClient.js', ...CANARY_RUNTIME_FILES, 'src/services/providerErrorClassifier.js'],
 });
 
 const PROTOCOL_ADAPTERS = Object.freeze({
