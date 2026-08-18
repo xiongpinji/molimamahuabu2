@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const http = require('node:http');
 const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
@@ -42,6 +43,20 @@ function createDb() {
   return db;
 }
 
+function listen(handler) {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer(handler);
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve(server));
+  });
+}
+
+function close(server) {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
 function addConfig(db, values = {}) {
   const capabilities = values.capabilities || {
     resolutions: ['480p', '720p'],
@@ -73,12 +88,34 @@ function addConfig(db, values = {}) {
     }).lastInsertRowid);
 }
 
-function costFingerprint(db) {
+function addPublicConfig(db, values) {
+  const capabilities = values.capabilities || {};
+  const config = aiConfigService.createConfig(db, { info() {}, warn() {}, error() {} }, {
+    service_type: values.serviceType,
+    provider: `public-${values.serviceType}`,
+    api_protocol: 'openai',
+    name: `${values.serviceType}-${values.suffix}`,
+    base_url: values.baseUrl,
+    api_key: 'test-key',
+    model: [values.upstreamModel],
+    default_model: values.upstreamModel,
+    endpoint: values.serviceType === 'video' ? '/video/generations' : '/images/generations',
+    priority: 100,
+    logical_model_id: values.logicalModelId,
+    failover_enabled: false,
+    settings: JSON.stringify({ canvas_capabilities: capabilities }),
+  });
+  db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
+    .run(config.id);
+  return config;
+}
+
+function costFingerprint(db, logicalModelId = 'seedance-logical') {
   const price = modelPriceService.list(db)
-    .find((row) => row.model.toLowerCase() === 'seedance-logical');
-  const tiers = Object.entries(price.resolution_prices || {})
+    .find((row) => row.model.toLowerCase() === logicalModelId.toLowerCase());
+  const tiers = Object.entries(price?.resolution_prices || {})
     .map(([resolution, value]) => ({ resolution, ...value }));
-  return evidenceService.costFingerprint(price, tiers);
+  return evidenceService.costFingerprint(price || null, tiers);
 }
 
 function addEvidence(db, configId, capability, suffix, state = 'fresh') {
@@ -86,21 +123,25 @@ function addEvidence(db, configId, capability, suffix, state = 'fresh') {
   const configFingerprint = evidenceService.configFingerprint(config);
   const runtime = runtimeService.runtimeFingerprintForConfig(config);
   assert.equal(runtime.ok, true, runtime.code);
-  const normalized = evidenceService.normalizeCapability('video', capability);
-  const capabilityFingerprint = evidenceService.capabilityFingerprint('video', normalized);
+  const serviceType = config.service_type;
+  const logicalModelId = config.logical_model_id;
+  const normalized = evidenceService.normalizeCapability(serviceType, capability);
+  const capabilityFingerprint = evidenceService.capabilityFingerprint(serviceType, normalized);
   const runId = `public-gate-${configId}-${suffix}`;
-  const cost = costFingerprint(db);
+  const cost = costFingerprint(db, logicalModelId);
   db.prepare(`INSERT INTO provider_canary_runs
     (id, idempotency_key, config_id, logical_model_id, service_type, capability_fingerprint,
      config_fingerprint, cost_fingerprint, runtime_fingerprint, provider_scope_key, state,
      reserved_cost_micros, actual_cost_micros, currency, budget_day, budget_month,
      created_at, finished_at, updated_at)
-    VALUES (?, ?, ?, 'seedance-logical', 'video', ?, ?, ?, ?, ?, 'succeeded',
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'succeeded',
       1, 1, 'CNY', '2026-08-18', '2026-08', ?, ?, ?)`)
     .run(
       runId,
       `idem-${runId}`,
       configId,
+      logicalModelId,
+      serviceType,
       capabilityFingerprint,
       configFingerprint,
       cost,
@@ -113,7 +154,7 @@ function addEvidence(db, configId, capability, suffix, state = 'fresh') {
   const evidence = evidenceService.recordSuccess(db, {
     runId,
     configId,
-    serviceType: 'video',
+    serviceType,
     capability: normalized,
     configFingerprint,
     costFingerprint: cost,
@@ -204,6 +245,8 @@ test('shadow 保留现有候选并仅在内部标注 would_be_hidden，off 不�
 test('调用方省略模式时统一读取并校验 PROVIDER_CANARY_MODE', () => {
   const previous = process.env.PROVIDER_CANARY_MODE;
   const { db, ids } = routeFixture();
+  const errors = [];
+  const log = { error(message, details) { errors.push({ message, details }); } };
   try {
     process.env.PROVIDER_CANARY_MODE = 'EnForCe';
     const enforced = stability.selectVerifiedCandidates(db, {
@@ -212,12 +255,17 @@ test('调用方省略模式时统一读取并校验 PROVIDER_CANARY_MODE', () =>
     });
     assert.deepEqual(enforced.candidates.map((row) => row.name), ['fresh-primary', 'fresh-backup']);
 
-    process.env.PROVIDER_CANARY_MODE = 'invalid-mode';
-    const invalidFallsBackOff = stability.selectVerifiedCandidates(db, {
-      serviceType: 'video', logicalModelId: 'seedance-logical', primaryConfigId: ids.primary,
-      capabilities: REQUESTED, now: NOW,
-    });
-    assert.equal(invalidFallsBackOff.candidates.some((row) => row.name === 'unknown-route'), true);
+    process.env.PROVIDER_CANARY_MODE = 'secret-invalid-mode-must-not-appear';
+    for (let index = 0; index < 2; index += 1) {
+      const invalidFallsBackOff = stability.selectVerifiedCandidates(db, {
+        serviceType: 'video', logicalModelId: 'seedance-logical', primaryConfigId: ids.primary,
+        capabilities: REQUESTED, now: NOW, log,
+      });
+      assert.equal(invalidFallsBackOff.candidates.some((row) => row.name === 'unknown-route'), true);
+    }
+    assert.ok(catalog.list(db, { log }).some((row) => row.model === 'seedance-logical'));
+    assert.equal(errors.length, 1);
+    assert.equal(JSON.stringify(errors).includes(process.env.PROVIDER_CANARY_MODE), false);
   } finally {
     if (previous === undefined) delete process.env.PROVIDER_CANARY_MODE;
     else process.env.PROVIDER_CANARY_MODE = previous;
@@ -348,6 +396,193 @@ test('全部线路从可公开变为不可公开时隐藏模型且 P1 只写一�
     db.close();
   }
 });
+
+test('enforce 不信任成本缺失、零成本或缺少对应分辨率 tier 的 fresh 证据', async (t) => {
+  const scenarios = [
+    {
+      name: 'missing price',
+      capability: REQUESTED,
+      mutate(db) {
+        db.prepare("DELETE FROM model_resolution_prices WHERE model = 'seedance-logical'").run();
+        db.prepare("DELETE FROM model_credit_prices WHERE model = 'seedance-logical'").run();
+      },
+    },
+    {
+      name: 'zero base cost',
+      capability: { ...REQUESTED, resolution: null },
+      mutate(db) {
+        db.prepare("DELETE FROM model_resolution_prices WHERE model = 'seedance-logical'").run();
+        db.prepare("UPDATE model_credit_prices SET cost_micros_per_unit = 0 WHERE model = 'seedance-logical'")
+          .run();
+      },
+    },
+    {
+      name: 'missing resolution tier',
+      capability: REQUESTED,
+      mutate(db) {
+        db.prepare("DELETE FROM model_resolution_prices WHERE model = 'seedance-logical' AND resolution = '720p'")
+          .run();
+      },
+    },
+    {
+      name: 'zero resolution tier cost',
+      capability: REQUESTED,
+      mutate(db) {
+        db.prepare(`UPDATE model_resolution_prices SET cost_micros_per_second = 0
+          WHERE model = 'seedance-logical' AND resolution = '720p'`).run();
+      },
+    },
+  ];
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, () => {
+      const db = createDb();
+      try {
+        const configId = addConfig(db, { name: `price-${scenario.name}`, priority: 100 });
+        scenario.mutate(db);
+        addEvidence(db, configId, scenario.capability, `price-${scenario.name}`);
+        let candidates = [];
+        try {
+          candidates = stability.selectVerifiedCandidates(db, {
+            serviceType: 'video', logicalModelId: 'seedance-logical', primaryConfigId: configId,
+            capabilities: scenario.capability, canaryMode: 'enforce', now: NOW,
+          }).candidates;
+        } catch (_) {}
+        assert.deepEqual(candidates, []);
+        assert.equal(catalog.list(db, { canaryMode: 'enforce', now: NOW })
+          .some((row) => row.model === 'seedance-logical'), false);
+      } finally {
+        db.close();
+      }
+    });
+  }
+});
+
+const EXPLICIT_BLOCK_SCENARIOS = [
+  { name: 'stale', evidenceState: 'stale' },
+  { name: 'failing', evidenceState: 'failing' },
+  { name: 'submission_unknown', evidenceState: 'submission_unknown' },
+  { name: 'budget_blocked', evidenceState: 'budget_blocked' },
+  { name: 'open circuit', evidenceState: 'fresh', openCircuit: true },
+  { name: 'insufficient capability', evidenceState: 'fresh', insufficient: true },
+];
+
+for (const serviceType of ['image', 'video']) {
+  test(`public ${serviceType} 显式 config_id 在 enforce 下不能绕过证据和健康门禁`, async (t) => {
+    const previous = process.env.PROVIDER_CANARY_MODE;
+    let submissions = 0;
+    const server = await listen((req, res) => {
+      submissions += 1;
+      req.resume();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(serviceType === 'image'
+        ? { data: [{ url: 'https://cdn.example/public-gate.png' }] }
+        : { id: 'public-gate-task', status: 'processing' }));
+    });
+    t.after(async () => {
+      if (previous === undefined) delete process.env.PROVIDER_CANARY_MODE;
+      else process.env.PROVIDER_CANARY_MODE = previous;
+      await close(server);
+    });
+    process.env.PROVIDER_CANARY_MODE = 'enforce';
+
+    for (const scenario of EXPLICIT_BLOCK_SCENARIOS) {
+      await t.test(scenario.name, async () => {
+        const db = createDb();
+        try {
+          const logicalModelId = `explicit-${serviceType}-${scenario.name}`;
+          const upstreamModel = `upstream-${serviceType}-${scenario.name}`;
+          const capabilities = serviceType === 'image'
+            ? { resolutions: ['1k'], aspectRatios: ['1:1'], maxReferences: 2 }
+            : { resolutions: ['720p'], aspectRatios: ['16:9'], durations: [5], maxReferences: 2 };
+          modelPriceService.set(db, logicalModelId, 5, serviceType === 'image'
+            ? { category: 'image', cost_unit: 'image', cost_micros_per_unit: 1000 }
+            : {
+              category: 'video', cost_unit: 'second', cost_micros_per_unit: 1000,
+              resolution_prices: { '720p': { credits: 5, cost_micros_per_second: 1000 } },
+            });
+          const config = addPublicConfig(db, {
+            serviceType,
+            suffix: scenario.name,
+            baseUrl: `http://127.0.0.1:${server.address().port}`,
+            upstreamModel,
+            logicalModelId,
+            capabilities,
+          });
+          const requestedCapability = serviceType === 'image'
+            ? { resolution: '1k', aspectRatio: '1:1', referenceImageCount: 2 }
+            : { resolution: '720p', aspectRatio: '16:9', duration: 5, referenceImageCount: 2 };
+          addEvidence(
+            db,
+            config.id,
+            scenario.insufficient ? { ...requestedCapability, referenceImageCount: 1 } : requestedCapability,
+            scenario.name,
+            scenario.evidenceState,
+          );
+          if (scenario.openCircuit) {
+            db.prepare(`INSERT INTO provider_route_health
+              (config_id, state, consecutive_failures, open_until, updated_at)
+              VALUES (?, 'open', 3, '2099-01-01T00:00:00.000Z', ?)`).run(config.id, NOW);
+          }
+          const before = submissions;
+          const request = serviceType === 'image'
+            ? {
+              config_id: config.id,
+              prompt: 'local public gate',
+              model: upstreamModel,
+              resolution: '1k',
+              aspect_ratio: '1:1',
+              reference_image_urls: ['https://refs.invalid/1.png', 'https://refs.invalid/2.png'],
+            }
+            : {
+              config_id: config.id,
+              prompt: 'local public gate',
+              model: upstreamModel,
+              duration: 5,
+              resolution: '720p',
+              aspect_ratio: '16:9',
+              reference_urls: ['https://refs.invalid/1.png', 'https://refs.invalid/2.png'],
+            };
+          await assert.rejects(
+            () => serviceType === 'image'
+              ? imageClient.callImageApi(db, { info() {}, warn() {}, error() {} }, request)
+              : videoClient.callVideoApi(db, { info() {}, warn() {}, error() {} }, request),
+            /匹配|可用|验证|模型/,
+          );
+          assert.equal(submissions, before);
+        } finally {
+          db.close();
+        }
+      });
+    }
+
+    await t.test('canary internal ForConfigId remains executable', async () => {
+      const db = createDb();
+      try {
+        const logicalModelId = `internal-${serviceType}`;
+        const upstreamModel = `upstream-internal-${serviceType}`;
+        const config = addPublicConfig(db, {
+          serviceType,
+          suffix: 'internal',
+          baseUrl: `http://127.0.0.1:${server.address().port}`,
+          upstreamModel,
+          logicalModelId,
+        });
+        const before = submissions;
+        const result = serviceType === 'image'
+          ? await imageClient.callImageApiForConfigId(db, { info() {}, warn() {}, error() {} }, config.id, {
+            prompt: 'internal canary', model: upstreamModel,
+          })
+          : await videoClient.callVideoApiForConfigId(db, { info() {}, warn() {}, error() {} }, config.id, {
+            prompt: 'internal canary', model: upstreamModel, duration: 5,
+          });
+        assert.equal(submissions, before + 1);
+        assert.ok(serviceType === 'image' ? result.image_url : result.task_id);
+      } finally {
+        db.close();
+      }
+    });
+  });
+}
 
 test('image video text 现有调用方省略 mode 时仍会在 enforce 提交前拦截无 fresh 证据线路', async () => {
   const previous = process.env.PROVIDER_CANARY_MODE;

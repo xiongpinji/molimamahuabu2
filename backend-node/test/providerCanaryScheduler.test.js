@@ -105,12 +105,16 @@ test('default off and invalid mode never install a timer', () => {
     return { unref() {} };
   };
   assert.equal(scheduler.startProviderCanaryScheduler({}, {}, { setIntervalFn }), null);
-  assert.equal(scheduler.startProviderCanaryScheduler({}, {
-    error(message, details) { errors.push({ message, details }); },
-  }, { mode: 'invalid', setIntervalFn }), null);
+  const invalidMode = 'secret-invalid-mode-must-not-appear';
+  for (let index = 0; index < 2; index += 1) {
+    assert.equal(scheduler.startProviderCanaryScheduler({}, {
+      error(message, details) { errors.push({ message, details }); },
+    }, { mode: invalidMode, setIntervalFn }), null);
+  }
   assert.equal(timers.length, 0);
   assert.equal(errors.length, 1);
   assert.match(errors[0].message, /mode/i);
+  assert.equal(JSON.stringify(errors).includes(invalidMode), false);
 });
 
 test('shadow installs an unref five-minute timer and paid false never calls executor', async (t) => {

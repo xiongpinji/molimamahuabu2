@@ -2309,13 +2309,41 @@ function updateImageRouteRequestState(db, requestId, state, now = new Date().toI
 async function callImageApi(db, log, opts) {
   const preferredModel = String(opts.model || '').trim() || null;
   const preferredProvider = opts.preferred_provider ?? opts.preferredProvider;
+  const requestedCapabilities = {
+    resolution: opts.resolution || opts.quality,
+    aspectRatio: opts.aspect_ratio || opts.aspectRatio,
+    referenceImageCount: Array.isArray(opts.reference_image_urls)
+      ? opts.reference_image_urls.filter(Boolean).length
+      : 0,
+  };
   const explicitConfigId = resolveExplicitImageConfigId(opts);
+  let logicalModelId = preferredModel;
+  let logicalRoute;
+  let selected;
   if (explicitConfigId != null) {
     const config = getImageConfigById(db, explicitConfigId, preferredModel);
-    return stripImageRouteMeta(await submitImageWithConfig(db, log, config, opts));
+    if (providerRouteStability.resolveCanaryMode(undefined, log) !== 'enforce') {
+      return stripImageRouteMeta(await submitImageWithConfig(db, log, config, opts));
+    }
+    logicalModelId = String(config.logical_model_id || '').trim();
+    if (!logicalModelId) throw new Error('未配置与当前图片生成参数匹配的已验证模型');
+    logicalRoute = { id: config.id, service_type: config.service_type };
+    const explicitSelection = providerRouteStability.selectVerifiedCandidates(db, {
+      serviceType: config.service_type,
+      logicalModelId,
+      primaryConfigId: config.id,
+      capabilities: requestedCapabilities,
+      canaryMode: 'enforce',
+      log,
+    });
+    selected = {
+      ...explicitSelection,
+      candidates: explicitSelection.candidates.filter((candidate) => candidate.id === config.id),
+    };
+  } else {
+    logicalRoute = findLogicalImageRoute(db, preferredModel, opts.imageServiceType);
   }
 
-  const logicalRoute = findLogicalImageRoute(db, preferredModel, opts.imageServiceType);
   if (!logicalRoute) {
     const candidates = getImageConfigCandidates(
       db,
@@ -2346,17 +2374,12 @@ async function callImageApi(db, log, opts) {
     return stripImageRouteMeta(lastResult);
   }
 
-  const selected = providerRouteStability.selectVerifiedCandidates(db, {
+  selected ||= providerRouteStability.selectVerifiedCandidates(db, {
     serviceType: logicalRoute.service_type,
-    logicalModelId: preferredModel,
+    logicalModelId,
     primaryConfigId: logicalRoute.id,
-    capabilities: {
-      resolution: opts.resolution || opts.quality,
-      aspectRatio: opts.aspect_ratio || opts.aspectRatio,
-      referenceImageCount: Array.isArray(opts.reference_image_urls)
-        ? opts.reference_image_urls.filter(Boolean).length
-        : 0,
-    },
+    capabilities: requestedCapabilities,
+    log,
   });
   if (selected.candidates.length === 0) {
     throw new Error('未配置与当前图片生成参数匹配的已验证模型');
@@ -2373,14 +2396,8 @@ async function callImageApi(db, log, opts) {
     businessId,
     tenantId: opts.tenantId,
     userId: opts.userId,
-    logicalModelId: preferredModel,
-    capabilities: {
-      resolution: opts.resolution || opts.quality,
-      aspectRatio: opts.aspect_ratio || opts.aspectRatio,
-      referenceImageCount: Array.isArray(opts.reference_image_urls)
-        ? opts.reference_image_urls.filter(Boolean).length
-        : 0,
-    },
+    logicalModelId,
+    capabilities: requestedCapabilities,
     userPriceSnapshot: selected.userPriceSnapshot,
     candidateConfigIds: selected.candidates.map((candidate) => candidate.id),
     creditReservationId: opts.creditReservationId,
@@ -2405,7 +2422,7 @@ async function callImageApi(db, log, opts) {
       providerRouteStability.recordRouteSwitch(db, {
         requestId: route.id,
         tenantId: opts.tenantId,
-        logicalModelId: preferredModel,
+        logicalModelId,
         configId: pendingSwitch.configId,
         targetConfigId: config.id,
         category: pendingSwitch.category,
@@ -2466,7 +2483,7 @@ async function callImageApi(db, log, opts) {
       requestId: route.id,
       tenantId: opts.tenantId,
       configId: config.id,
-      logicalModelId: preferredModel,
+      logicalModelId,
       classification,
     });
     lastFailure = { classification, result };
@@ -2480,7 +2497,7 @@ async function callImageApi(db, log, opts) {
     pendingSwitch = { configId: config.id, category: classification.category };
     log.warn('Image route switching after definitive non-acceptance', {
       image_gen_id: opts.image_gen_id,
-      logical_model_id: preferredModel,
+      logical_model_id: logicalModelId,
       from_config_id: config.id,
       category: classification.category,
     });

@@ -15,10 +15,10 @@ const executorService = require('./providerCanaryExecutor');
 const fixtureService = require('./providerCanaryFixtureService');
 const inventoryService = require('./providerCanaryInventoryService');
 const modelPriceService = require('./modelPriceService');
+const providerRouteStabilityService = require('./providerRouteStabilityService');
 const runtimeService = require('./providerRuntimeFingerprintService');
 
 const DEFAULT_INTERVAL_MS = 300_000;
-const VALID_MODES = new Set(['off', 'shadow', 'enforce']);
 const UNKNOWN_STATES = ['submission_unknown', 'result_unknown', 'artifact_unreadable'];
 const BLOCK_EVENT_TYPES = {
   canary_paused: 'provider_canary_paused',
@@ -50,10 +50,7 @@ function nowIso(value) {
 }
 
 function parseMode(value, log) {
-  const mode = String(value == null || value === '' ? 'off' : value).trim().toLowerCase();
-  if (VALID_MODES.has(mode)) return mode;
-  log?.error?.('Invalid provider canary mode; scheduler remains off', { mode });
-  return 'off';
+  return providerRouteStabilityService.resolveCanaryMode(value, log);
 }
 
 function parsePaidEnabled(value, log) {

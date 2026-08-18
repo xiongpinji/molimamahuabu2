@@ -5225,46 +5225,6 @@ function persistAcceptedVideoRoute(db, opts, configId, providerTaskId) {
 
 async function callVideoApi(db, log, opts) {
   const preferredModel = String(opts.model || '').trim() || null;
-  const explicitConfigId = opts.config_id ?? opts.configId;
-  if (explicitConfigId != null) {
-    const config = getVideoConfigById(db, explicitConfigId);
-    if (!config || !config.is_active) throw new Error('指定的视频模型配置不存在或已停用');
-    return stripVideoRouteMeta(await submitVideoWithConfig(db, log, config, opts));
-  }
-
-  const logicalRoute = findLogicalVideoRoute(db, preferredModel);
-  if (!logicalRoute) {
-    const config = getDefaultVideoConfig(db, preferredModel);
-    if (!config) throw new Error('未配置视频模型，请在「AI 配置」中添加 video 类型且已启用的配置');
-    return stripVideoRouteMeta(await submitVideoWithConfig(db, log, config, opts));
-  }
-
-  const selected = providerRouteStability.selectVerifiedCandidates(db, {
-    serviceType: 'video',
-    logicalModelId: preferredModel,
-    primaryConfigId: logicalRoute.id,
-    capabilities: {
-      resolution: opts.resolution,
-      aspectRatio: opts.aspect_ratio || opts.aspectRatio,
-      duration: opts.duration,
-      referenceImageCount: Array.isArray(opts.reference_urls)
-        ? opts.reference_urls.filter(Boolean).length
-        : 0,
-      referenceVideoCount: Array.isArray(opts.reference_video_urls)
-        ? opts.reference_video_urls.filter(Boolean).length
-        : 0,
-      referenceAudioCount: Array.isArray(opts.reference_audio_urls)
-        ? opts.reference_audio_urls.filter(Boolean).length
-        : 0,
-    },
-  });
-  if (selected.candidates.length === 0) {
-    throw new Error('未配置与当前视频生成参数匹配的已验证模型');
-  }
-
-  const routeId = randomUUID();
-  const businessId = opts.video_gen_id == null ? routeId : String(opts.video_gen_id);
-  const owner = String(opts.tenantId || opts.userId || 'local');
   const capabilities = {
     resolution: opts.resolution,
     aspectRatio: opts.aspect_ratio || opts.aspectRatio,
@@ -5277,6 +5237,55 @@ async function callVideoApi(db, log, opts) {
       ? opts.reference_audio_urls.filter(Boolean).length
       : 0,
   };
+  const explicitConfigId = opts.config_id ?? opts.configId;
+  let logicalModelId = preferredModel;
+  let logicalRoute;
+  let selected;
+  if (explicitConfigId != null) {
+    const config = getVideoConfigById(db, explicitConfigId);
+    if (!config || !config.is_active) throw new Error('指定的视频模型配置不存在或已停用');
+    if (providerRouteStability.resolveCanaryMode(undefined, log) !== 'enforce') {
+      return stripVideoRouteMeta(await submitVideoWithConfig(db, log, config, opts));
+    }
+    logicalModelId = String(config.logical_model_id || '').trim();
+    if (!logicalModelId) throw new Error('未配置与当前视频生成参数匹配的已验证模型');
+    logicalRoute = { id: config.id };
+    const explicitSelection = providerRouteStability.selectVerifiedCandidates(db, {
+      serviceType: 'video',
+      logicalModelId,
+      primaryConfigId: config.id,
+      capabilities,
+      canaryMode: 'enforce',
+      log,
+    });
+    selected = {
+      ...explicitSelection,
+      candidates: explicitSelection.candidates.filter((candidate) => candidate.id === config.id),
+    };
+  } else {
+    logicalRoute = findLogicalVideoRoute(db, preferredModel);
+  }
+
+  if (!logicalRoute) {
+    const config = getDefaultVideoConfig(db, preferredModel);
+    if (!config) throw new Error('未配置视频模型，请在「AI 配置」中添加 video 类型且已启用的配置');
+    return stripVideoRouteMeta(await submitVideoWithConfig(db, log, config, opts));
+  }
+
+  selected ||= providerRouteStability.selectVerifiedCandidates(db, {
+    serviceType: 'video',
+    logicalModelId,
+    primaryConfigId: logicalRoute.id,
+    capabilities,
+    log,
+  });
+  if (selected.candidates.length === 0) {
+    throw new Error('未配置与当前视频生成参数匹配的已验证模型');
+  }
+
+  const routeId = randomUUID();
+  const businessId = opts.video_gen_id == null ? routeId : String(opts.video_gen_id);
+  const owner = String(opts.tenantId || opts.userId || 'local');
   const route = providerRouteStability.createOrGetRouteRequest(db, {
     id: routeId,
     idempotencyKey: `${owner}:video:${businessId}`,
@@ -5285,7 +5294,7 @@ async function callVideoApi(db, log, opts) {
     businessId,
     tenantId: opts.tenantId,
     userId: opts.userId,
-    logicalModelId: preferredModel,
+    logicalModelId,
     capabilities,
     userPriceSnapshot: selected.userPriceSnapshot,
     candidateConfigIds: selected.candidates.map((candidate) => candidate.id),
@@ -5310,7 +5319,7 @@ async function callVideoApi(db, log, opts) {
       providerRouteStability.recordRouteSwitch(db, {
         requestId: route.id,
         tenantId: opts.tenantId,
-        logicalModelId: preferredModel,
+        logicalModelId,
         configId: pendingSwitch.configId,
         targetConfigId: config.id,
         category: pendingSwitch.category,
@@ -5382,7 +5391,7 @@ async function callVideoApi(db, log, opts) {
       requestId: route.id,
       tenantId: opts.tenantId,
       configId: config.id,
-      logicalModelId: preferredModel,
+      logicalModelId,
       classification,
     });
     lastFailure = { classification, result };
@@ -5395,7 +5404,7 @@ async function callVideoApi(db, log, opts) {
     pendingSwitch = { configId: config.id, category: classification.category };
     log.warn('Video route switching after definitive non-acceptance', {
       video_gen_id: opts.video_gen_id,
-      logical_model_id: preferredModel,
+      logical_model_id: logicalModelId,
       from_config_id: config.id,
       category: classification.category,
     });

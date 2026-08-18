@@ -476,7 +476,7 @@ function list(db, options = {}) {
     }
   }
   if (verifiedIds !== null
-      && providerRouteStabilityService.resolveCanaryMode(options.canaryMode) === 'enforce') {
+      && providerRouteStabilityService.resolveCanaryMode(options.canaryMode, options.log) === 'enforce') {
     configured = enforceFreshEvidenceCatalog(
       db,
       configured,

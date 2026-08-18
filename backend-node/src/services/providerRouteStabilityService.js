@@ -1,5 +1,6 @@
 const fs = require('fs');
 
+const defaultLog = require('../logger');
 const aiConfigService = require('./aiConfigService');
 const modelPriceService = require('./modelPriceService');
 const evidenceService = require('./providerCanaryEvidenceService');
@@ -9,6 +10,7 @@ const { toSafeErrorSummary } = require('./providerErrorClassifier');
 const DEFAULT_FAILURE_THRESHOLD = 3;
 const DEFAULT_COOLDOWN_SECONDS = 300;
 const VALID_CANARY_MODES = new Set(['off', 'shadow', 'enforce']);
+let invalidCanaryModeLogged = false;
 
 function parseJson(value, fallback = {}) {
   if (!value) return fallback;
@@ -86,16 +88,45 @@ function matchesCapabilities(config, requested) {
   return true;
 }
 
-function resolveCanaryMode(value) {
+function resolveCanaryMode(value, log = defaultLog) {
   const raw = value === undefined ? process.env.PROVIDER_CANARY_MODE : value;
   const mode = String(raw == null || raw === '' ? 'off' : raw).trim().toLowerCase();
-  return VALID_CANARY_MODES.has(mode) ? mode : 'off';
+  if (VALID_CANARY_MODES.has(mode)) return mode;
+  if (!invalidCanaryModeLogged) {
+    invalidCanaryModeLogged = true;
+    log?.error?.('Invalid provider canary mode; using off');
+  }
+  return 'off';
 }
 
 function priceSnapshot(db, config) {
   const model = String(config.logical_model_id || config.default_model || config.model?.[0] || '').trim();
   return modelPriceService.list(db)
     .find((row) => row.model.toLowerCase() === model.toLowerCase()) || null;
+}
+
+function positiveInteger(value) {
+  return Number.isSafeInteger(Number(value)) && Number(value) > 0;
+}
+
+function currentPriceCoversCapability(db, config, capability = {}) {
+  const price = priceSnapshot(db, config);
+  if (!price || price.status !== 'enabled' || !positiveInteger(price.credits)) return false;
+  const serviceType = String(config.service_type || '').trim().toLowerCase();
+  if (serviceType === 'video') {
+    if (capability.duration != null && !positiveInteger(capability.duration)) return false;
+    const resolution = String(capability.resolution || '').trim().toLowerCase();
+    if (resolution) {
+      const tier = price.resolution_prices?.[resolution];
+      return positiveInteger(tier?.credits) && positiveInteger(tier?.cost_micros_per_second);
+    }
+    return positiveInteger(price.cost_micros_per_unit);
+  }
+  if (String(price.cost_unit || '').trim().toLowerCase() === 'token') {
+    return positiveInteger(price.input_cost_micros_per_1k)
+      || positiveInteger(price.output_cost_micros_per_1k);
+  }
+  return positiveInteger(price.cost_micros_per_unit);
 }
 
 function evidenceFingerprints(db, config) {
@@ -118,6 +149,7 @@ function evidenceFingerprints(db, config) {
 }
 
 function freshEvidenceForCapability(db, config, capability, now, fingerprints = evidenceFingerprints(db, config)) {
+  if (!currentPriceCoversCapability(db, config, capability)) return [];
   if (!fingerprints) return [];
   return evidenceService.listFreshCoveringEvidence(db, {
     serviceType: config.service_type,
@@ -208,7 +240,7 @@ function selectVerifiedCandidates(db, input) {
   const primaryConfigId = input.primaryConfigId == null ? rows[0]?.id : Number(input.primaryConfigId);
   const currentCandidates = availableConfigs(rows, db, primaryConfigId, now)
     .filter((config) => matchesCapabilities(config, requested));
-  const canaryMode = resolveCanaryMode(input.canaryMode);
+  const canaryMode = resolveCanaryMode(input.canaryMode, input.log);
   const evidenceByConfig = canaryMode === 'off'
     ? new Map()
     : new Map(currentCandidates.map((config) => [
