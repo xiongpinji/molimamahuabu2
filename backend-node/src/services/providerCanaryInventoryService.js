@@ -46,7 +46,11 @@ function capabilitiesDeclared(config) {
 }
 
 function sanitizeRouteRef(config) {
-  const origin = new URL(String(config.base_url || '')).origin;
+  let origin = 'invalid-origin';
+  try {
+    const parsed = new URL(String(config.base_url || ''));
+    if (parsed.origin !== 'null') origin = parsed.origin;
+  } catch (_) {}
   return crypto.createHash('sha256')
     .update(`${String(config.provider || '')}\n${origin}\n${String(config.id)}`)
     .digest('hex')
@@ -72,25 +76,60 @@ function costStatus(price, resolutionCosts) {
   return values.some((value) => Number(value) > 0) ? 'positive' : 'not_positive';
 }
 
-function buildCanaryReadiness(db, options = {}) {
-  const configs = db.prepare(`SELECT id, service_type, provider, base_url, model, default_model,
-      priority, is_active, settings, logical_model_id, verification_status,
-      updated_at
+function tableColumns(db, table) {
+  const exists = db.prepare(`SELECT 1 FROM sqlite_master
+    WHERE type = 'table' AND name = ?`).get(table);
+  if (!exists) return null;
+  return new Set(db.prepare(`PRAGMA table_info("${table}")`).all()
+    .map((column) => column.name));
+}
+
+function projected(columns, name, fallback = 'NULL') {
+  return columns.has(name) ? `"${name}"` : `${fallback} AS "${name}"`;
+}
+
+function readConfigs(db) {
+  const columns = tableColumns(db, 'ai_service_configs');
+  if (!columns) return [];
+  const names = [
+    'id', 'service_type', 'provider', 'base_url', 'model', 'default_model',
+    'priority', 'is_active', 'settings', 'logical_model_id', 'verification_status',
+    'updated_at',
+  ];
+  const fallbacks = { priority: '0', is_active: '0' };
+  const where = columns.has('deleted_at') ? 'WHERE "deleted_at" IS NULL' : '';
+  return db.prepare(`SELECT ${names.map((name) => projected(columns, name, fallbacks[name])).join(', ')}
     FROM ai_service_configs
-    WHERE deleted_at IS NULL
+    ${where}
     ORDER BY priority DESC, id ASC`).all();
-  const prices = db.prepare(`SELECT model, credits, status, cost_micros_per_unit,
-      input_cost_micros_per_1k, output_cost_micros_per_1k, updated_at
+}
+
+function readPrices(db) {
+  const columns = tableColumns(db, 'model_credit_prices');
+  if (!columns) return [];
+  const names = [
+    'model', 'credits', 'status', 'cost_micros_per_unit',
+    'input_cost_micros_per_1k', 'output_cost_micros_per_1k', 'updated_at',
+  ];
+  return db.prepare(`SELECT ${names.map((name) => projected(columns, name)).join(', ')}
     FROM model_credit_prices
     ORDER BY model COLLATE NOCASE`).all();
-  const hasResolutionPrices = db.prepare(`SELECT 1
-    FROM sqlite_master
-    WHERE type = 'table' AND name = 'model_resolution_prices'`).get();
-  const resolutionPrices = hasResolutionPrices
-    ? db.prepare(`SELECT model, cost_micros_per_second, updated_at
-      FROM model_resolution_prices
-      ORDER BY model COLLATE NOCASE, resolution`).all()
-    : [];
+}
+
+function readResolutionPrices(db) {
+  const columns = tableColumns(db, 'model_resolution_prices');
+  if (!columns) return [];
+  const names = ['model', 'cost_micros_per_second', 'updated_at'];
+  const order = columns.has('resolution') ? 'model COLLATE NOCASE, resolution' : 'model COLLATE NOCASE';
+  return db.prepare(`SELECT ${names.map((name) => projected(columns, name)).join(', ')}
+    FROM model_resolution_prices
+    ORDER BY ${order}`).all();
+}
+
+function buildCanaryReadiness(db, options = {}) {
+  const configs = readConfigs(db);
+  const prices = readPrices(db);
+  const resolutionPrices = readResolutionPrices(db);
   const priceByModel = new Map(prices.map((price) => [String(price.model).toLowerCase(), price]));
   const resolutionCostsByModel = new Map();
   for (const tier of resolutionPrices) {

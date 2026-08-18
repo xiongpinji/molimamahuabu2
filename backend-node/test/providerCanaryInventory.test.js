@@ -29,6 +29,7 @@ const schemaPath = path.resolve(
   'platform-stability',
   'provider-canary-readiness.schema.json',
 );
+const packageJsonPath = path.resolve(__dirname, '..', 'package.json');
 const baselinePath = path.resolve(
   __dirname,
   '..',
@@ -165,6 +166,41 @@ function createFixtureDb(filename = ':memory:') {
   return db;
 }
 
+function createLegacyPriceDb({ withNarrowPriceTable }) {
+  const db = new Database(':memory:');
+  db.exec(`CREATE TABLE ai_service_configs (
+    id INTEGER PRIMARY KEY,
+    service_type TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    base_url TEXT NOT NULL,
+    model TEXT,
+    default_model TEXT,
+    priority INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    settings TEXT,
+    logical_model_id TEXT,
+    verification_status TEXT,
+    updated_at TEXT,
+    deleted_at TEXT
+  )`);
+  db.prepare(`INSERT INTO ai_service_configs
+    (id, service_type, provider, base_url, model, default_model, priority, is_active,
+     settings, logical_model_id, verification_status, updated_at, deleted_at)
+    VALUES (21, 'image', 'legacy-provider', 'https://legacy.invalid/v1', 'legacy-model',
+      'legacy-model', 10, 1, ?, 'legacy-model', 'verified', ?, NULL)`)
+    .run(JSON.stringify({ canvas_capabilities: { resolutions: ['1k'] } }), NOW);
+  if (withNarrowPriceTable) {
+    db.exec(`CREATE TABLE model_credit_prices (
+      model TEXT PRIMARY KEY,
+      credits INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    )`);
+    db.prepare(`INSERT INTO model_credit_prices (model, credits, updated_at)
+      VALUES ('legacy-model', 10, ?)`).run(NOW);
+  }
+  return db;
+}
+
 function buildFixtureReport() {
   const inventory = require('../src/services/providerCanaryInventoryService');
   const db = createFixtureDb();
@@ -176,6 +212,21 @@ function buildFixtureReport() {
   } finally {
     db.close();
   }
+}
+
+function compileReadinessSchema() {
+  const Ajv2020 = require('ajv/dist/2020');
+  const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
+  return new Ajv2020({ allErrors: true, strict: true, validateFormats: false }).compile(schema);
+}
+
+function assertSchemaInvalid(validate, value, keyword) {
+  assert.equal(validate(value), false);
+  assert.equal(
+    validate.errors.some((error) => error.keyword === keyword),
+    true,
+    JSON.stringify(validate.errors),
+  );
 }
 
 test('buildCanaryReadiness classifies four route states without exposing provider secrets', () => {
@@ -240,6 +291,53 @@ test('sanitizeRouteRef is the first 16 hex characters of the required route iden
   assert.equal(inventory.sanitizeRouteRef(config).includes('relay'), false);
 });
 
+test('invalid route URLs use one deterministic sentinel without aborting or leaking input', () => {
+  const inventory = require('../src/services/providerCanaryInventoryService');
+  const expected = crypto.createHash('sha256')
+    .update('legacy-provider\ninvalid-origin\n21')
+    .digest('hex')
+    .slice(0, 16);
+  for (const invalidUrl of ['', '/v1/images', 'not a url']) {
+    const db = createLegacyPriceDb({ withNarrowPriceTable: false });
+    try {
+      db.prepare('UPDATE ai_service_configs SET base_url = ?').run(invalidUrl);
+      const report = inventory.buildCanaryReadiness(db, { now: NOW });
+      assert.equal(report.routes[0].route_ref, expected);
+      if (invalidUrl) assert.equal(JSON.stringify(report).includes(invalidUrl), false);
+    } finally {
+      db.close();
+    }
+  }
+});
+
+test('missing price tables become blockers instead of aborting the inventory', () => {
+  const inventory = require('../src/services/providerCanaryInventoryService');
+  const db = createLegacyPriceDb({ withNarrowPriceTable: false });
+  try {
+    const report = inventory.buildCanaryReadiness(db, { now: NOW });
+    assert.equal(report.summary.public_routes, 1);
+    assert.equal(report.summary.ready_for_paid_canary, 0);
+    assert.equal(report.routes[0].user_price_status, 'missing');
+    assert.equal(report.routes[0].cost_status, 'missing');
+    assert.deepEqual(report.routes[0].blockers, ['missing_user_price', 'missing_cost']);
+  } finally {
+    db.close();
+  }
+});
+
+test('legacy narrow price tables treat absent status and cost columns as no evidence', () => {
+  const inventory = require('../src/services/providerCanaryInventoryService');
+  const db = createLegacyPriceDb({ withNarrowPriceTable: true });
+  try {
+    const report = inventory.buildCanaryReadiness(db, { now: NOW });
+    assert.equal(report.routes[0].user_price_status, 'missing');
+    assert.equal(report.routes[0].cost_status, 'missing');
+    assert.deepEqual(report.routes[0].blockers, ['missing_user_price', 'missing_cost']);
+  } finally {
+    db.close();
+  }
+});
+
 test('checked-in schema covers the report structure and fixed blocker enum', () => {
   const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
   assert.equal(schema.type, 'object');
@@ -250,6 +348,40 @@ test('checked-in schema covers the report structure and fixed blocker enum', () 
   assert.deepEqual(schema.properties.routes.items.properties.blockers.items.enum, BLOCKERS);
   assert.equal(schema.properties.routes.items.additionalProperties, false);
   assert.equal(schema.properties.summary.additionalProperties, false);
+});
+
+test('Ajv 8 is an exact direct development dependency', () => {
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+  assert.equal(packageJson.devDependencies?.ajv, '8.17.1');
+});
+
+test('Ajv 2020 validates both generated and checked-in readiness reports', () => {
+  const validate = compileReadinessSchema();
+  const generated = buildFixtureReport();
+  assert.equal(validate(generated), true, JSON.stringify(validate.errors));
+  const checkedIn = JSON.parse(fs.readFileSync(baselinePath, 'utf8'));
+  assert.equal(validate(checkedIn), true, JSON.stringify(validate.errors));
+});
+
+test('JSON Schema rejects additional route properties', () => {
+  const validate = compileReadinessSchema();
+  const report = structuredClone(buildFixtureReport());
+  report.routes[0].provider = 'must-not-be-accepted';
+  assertSchemaInvalid(validate, report, 'additionalProperties');
+});
+
+test('JSON Schema rejects blocker values outside the fixed enum', () => {
+  const validate = compileReadinessSchema();
+  const report = structuredClone(buildFixtureReport());
+  report.routes[0].blockers = ['unknown_blocker'];
+  assertSchemaInvalid(validate, report, 'enum');
+});
+
+test('JSON Schema rejects malformed route references', () => {
+  const validate = compileReadinessSchema();
+  const report = structuredClone(buildFixtureReport());
+  report.routes[0].route_ref = 'not-a-route-hash';
+  assertSchemaInvalid(validate, report, 'pattern');
 });
 
 test('checked-in readiness baseline is generated from the deterministic local fixture', () => {
