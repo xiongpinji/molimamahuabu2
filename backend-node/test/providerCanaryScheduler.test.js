@@ -262,15 +262,63 @@ test('default provider probe performs injected DNS TLS auth and read-only GET on
       return socket;
     },
     fetchFn: async (url, request) => {
-      calls.push(['fetch', url, request.method, request.headers.authorization]);
+      calls.push(['fetch', url, request.method, request.redirect, request.headers.authorization]);
       return { ok: true };
     },
   });
   assert.deepEqual(calls, [
     ['dns', 'provider.example'],
     ['tls', 'provider.example', true],
-    ['fetch', 'https://provider.example/v1/models', 'GET', `Bearer ${route.api_key}`],
+    ['fetch', 'https://provider.example/v1/models', 'GET', 'manual', `Bearer ${route.api_key}`],
   ]);
+});
+
+test('same-origin and cross-origin redirects both fail closed without following or reading Location', async (t) => {
+  const scheduler = loadScheduler();
+  const { db, storageRoot } = setup(t);
+  const probes = { ...allHealthyProbes };
+  delete probes.provider;
+  const redirects = [
+    'https://provider.example/v1/other-read-only',
+    'https://attacker.example/collect',
+  ];
+  const logs = [];
+  for (const [index, location] of redirects.entries()) {
+    const route = config(index + 1, { base_url: 'https://provider.example/v1/' });
+    insertRoute(db, route);
+    let fetchCalls = 0;
+    let locationReads = 0;
+    const result = await scheduler.runZeroCostSweep(db, {
+      warn(message, details) { logs.push({ message, details }); },
+    }, {
+      now: `2026-08-18T00:0${index}:00.000Z`, storageRoot, configs: [route], probes,
+      dnsLookup: async () => {},
+      tlsConnect(_connectOptions, callback) {
+        const socket = { once() {}, destroy() {} };
+        queueMicrotask(callback);
+        return socket;
+      },
+      fetchFn: async (_url, request) => {
+        fetchCalls += 1;
+        assert.equal(request.redirect, 'manual');
+        assert.equal(request.headers.authorization, `Bearer ${route.api_key}`);
+        return {
+          ok: false,
+          status: 302,
+          headers: { get() { locationReads += 1; return location; } },
+        };
+      },
+    });
+    assert.equal(fetchCalls, 1);
+    assert.equal(locationReads, 0);
+    assert.equal(result.routes[0].category, 'provider_read_only_redirect_forbidden');
+  }
+  const events = db.prepare(`SELECT safe_details FROM provider_stability_events
+    WHERE event_type = 'provider_canary_zero_cost_check' ORDER BY id`).all();
+  const serialized = JSON.stringify({ logs, events });
+  for (const forbidden of [...redirects, 'key-1', 'key-2', 'Bearer']) {
+    assert.equal(serialized.includes(forbidden), false, forbidden);
+  }
 });
 
 test('cross-origin read-only endpoint fails closed before any authenticated fetch', async (t) => {

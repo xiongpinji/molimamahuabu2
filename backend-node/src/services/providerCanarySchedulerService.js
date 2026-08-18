@@ -436,8 +436,12 @@ async function probeProvider(_db, config, options = {}) {
   try {
     const response = await withTimeout(fetchFn(endpoint.toString(), {
       method: 'GET',
+      redirect: 'manual',
       headers: { authorization: `Bearer ${config.api_key}` },
     }), timeoutMs, options);
+    if (response.status >= 300 && response.status < 400) {
+      return { ok: false, category: 'provider_read_only_redirect_forbidden' };
+    }
     return { ok: response.ok, category: response.ok ? null : 'provider_read_only_failed' };
   } catch (_) {
     return { ok: false, category: 'provider_read_only_failed' };
