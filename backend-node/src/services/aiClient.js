@@ -976,6 +976,30 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
   );
 }
 
+async function generateTextForConfigId(
+  db,
+  log,
+  configId,
+  userPrompt,
+  systemPrompt,
+  options = {},
+) {
+  const numericId = Number(configId);
+  const config = Number.isSafeInteger(numericId) && numericId > 0
+    ? aiConfigService.getConfig(db, numericId)
+    : null;
+  if (!config || !config.is_active || config.service_type !== 'text') {
+    throw new Error('指定的文本模型配置不存在、已停用或类型不匹配');
+  }
+  return generateTextSingleConfig(db, log, 'text', userPrompt, systemPrompt, {
+    ...options,
+    model: undefined,
+    scene_key: null,
+    _routeConfig: config,
+    _safeRoute: true,
+  });
+}
+
 /**
  * 与 generateText 相同的路由与鉴权，但将模型增量以 delta 回调给调用方；返回完整拼接文本。
  * @param {(delta: string) => void} onDelta 仅增量片段（UTF-8 字符串）
@@ -1355,6 +1379,10 @@ module.exports = {
   getModelFromConfig,
   resolveTextModel,
   generateText: (...args) => runWithGenerationLimit('text', () => generateText(...args)),
+  generateTextForConfigId: (...args) => runWithGenerationLimit(
+    'text',
+    () => generateTextForConfigId(...args),
+  ),
   streamGenerateText: (...args) => runWithGenerationLimit('text', () => streamGenerateText(...args)),
   generateTextWithVision: (...args) => runWithGenerationLimit('text', () => generateTextWithVision(...args)),
   resolveEntityImageSource,
