@@ -1,7 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const sharp = require('sharp');
@@ -17,16 +16,23 @@ function tempStorage() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'moli-provider-canary-artifacts-'));
 }
 
-function listen(handler) {
-  return new Promise((resolve, reject) => {
-    const server = http.createServer(handler);
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => resolve(server));
-  });
+async function publicDnsLookup() {
+  return [{ address: '93.184.216.34', family: 4 }];
 }
 
-function close(server) {
-  return new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+function response(status, bytes = Buffer.alloc(0), headers = {}) {
+  const body = Buffer.from(bytes || Buffer.alloc(0));
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: new Headers({
+      ...(body.length ? { 'content-length': String(body.length) } : {}),
+      ...headers,
+    }),
+    body: (async function* responseBody() {
+      if (body.length) yield body;
+    }()),
+  };
 }
 
 function tempFiles(storageRoot, runId) {
@@ -45,33 +51,27 @@ test('image and video artifacts are verified, atomically isolated, private, and 
     create: { width: 8, height: 8, channels: 4, background: '#ffffff' },
   }).png().toBuffer();
   const mp4 = Buffer.from('00000018667479706d703432000000006d70343269736f6d', 'hex');
-  const server = await listen((req, res) => {
-    if (req.url.startsWith('/image')) {
-      res.writeHead(200, { 'content-type': 'image/jpeg', 'content-length': jpeg.length });
-      return res.end(jpeg);
-    }
-    if (req.url.startsWith('/video')) {
-      res.writeHead(200, { 'content-type': 'video/mp4', 'content-length': mp4.length });
-      return res.end(mp4);
-    }
-    res.writeHead(404).end();
-  });
-  t.after(async () => {
-    await close(server);
-    fs.rmSync(storageRoot, { recursive: true, force: true });
-  });
-  const base = `http://127.0.0.1:${server.address().port}`;
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const fetchImpl = async (url) => {
+    if (url.pathname === '/image') return response(200, jpeg, { 'content-type': 'image/jpeg' });
+    if (url.pathname === '/video') return response(200, mp4, { 'content-type': 'video/mp4' });
+    return response(404);
+  };
 
-  const remoteImage = await materializeImage({ image_url: `${base}/image?private_signature=do-not-store` }, {
+  const remoteImage = await materializeImage({ image_url: 'https://artifact.example/image?private_signature=do-not-store' }, {
     storageRoot,
     runId: 'run-image-http',
+    fetchImpl,
+    _dnsLookupForTest: publicDnsLookup,
   });
   const dataImage = await materializeImage({
     image_url: `data:image/png;base64,${png.toString('base64')}`,
   }, { storageRoot, runId: 'run-image-data' });
-  const video = await materializeVideo(`${base}/video?private_signature=do-not-store`, {
+  const video = await materializeVideo('https://artifact.example/video?private_signature=do-not-store', {
     storageRoot,
     runId: 'run-video-http',
+    fetchImpl,
+    _dnsLookupForTest: publicDnsLookup,
   });
 
   assert.match(remoteImage.relative_path, /^_system\/provider-canary\/runs\/run-image-http\/image\.jpg$/);
@@ -81,7 +81,7 @@ test('image and video artifacts are verified, atomically isolated, private, and 
     assert.match(summary.sha256, /^[a-f0-9]{64}$/);
     assert.ok(summary.bytes > 0);
     const serialized = JSON.stringify(summary);
-    assert.doesNotMatch(serialized, /private_signature|data:image|base64|127\.0\.0\.1/);
+    assert.doesNotMatch(serialized, /private_signature|data:image|base64|artifact\.example/);
     const filePath = path.join(storageRoot, ...summary.relative_path.split('/'));
     if (process.platform !== 'win32') {
       assert.equal(fs.statSync(filePath).mode & 0o777, 0o600);
@@ -94,34 +94,43 @@ test('image and video artifacts are verified, atomically isolated, private, and 
 
 test('artifact materialization rejects unsafe, unreadable, interrupted, redirected, and oversized inputs and cleans partial files', async (t) => {
   const storageRoot = tempStorage();
-  const server = await listen((req, res) => {
-    if (req.url === '/html') return res.writeHead(200, { 'content-type': 'text/html' }).end('<html>not image</html>');
-    if (req.url === '/svg') return res.writeHead(200, { 'content-type': 'image/svg+xml' }).end('<svg/>');
-    if (req.url === '/empty') return res.writeHead(200, { 'content-length': 0 }).end();
-    if (req.url === '/oversize') return res.writeHead(200, { 'content-length': 32 }).end(Buffer.alloc(32, 1));
-    if (req.url === '/file-redirect') return res.writeHead(302, { location: 'file:///tmp/private.png' }).end();
-    if (req.url === '/interrupt') {
-      res.writeHead(200, { 'content-type': 'image/png' });
-      res.write(Buffer.from('89504e470d0a1a0a', 'hex'));
-      return res.destroy();
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const fetchImpl = async (url) => {
+    if (url.pathname === '/html') return response(200, '<html>not image</html>', { 'content-type': 'text/html' });
+    if (url.pathname === '/svg') return response(200, '<svg/>', { 'content-type': 'image/svg+xml' });
+    if (url.pathname === '/empty') return response(200);
+    if (url.pathname === '/oversize') return response(200, Buffer.alloc(32, 1));
+    if (url.pathname === '/file-redirect') return response(302, null, { location: 'file:///tmp/private.png' });
+    if (url.pathname === '/interrupt') {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        body: (async function* interruptedBody() {
+          yield Buffer.from('89504e470d0a1a0a', 'hex');
+          throw new Error('connection interrupted');
+        }()),
+      };
     }
-    return res.writeHead(404).end();
+    return response(404);
+  };
+  const options = (runId, extra = {}) => ({
+    storageRoot,
+    runId,
+    fetchImpl,
+    _dnsLookupForTest: publicDnsLookup,
+    ...extra,
   });
-  t.after(async () => {
-    await close(server);
-    fs.rmSync(storageRoot, { recursive: true, force: true });
-  });
-  const base = `http://127.0.0.1:${server.address().port}`;
   const cases = [
     ['relative', () => materializeImage('/relative.png', { storageRoot, runId: 'bad-relative' })],
     ['file', () => materializeImage('file:///tmp/private.png', { storageRoot, runId: 'bad-file' })],
     ['svg-data', () => materializeImage('data:image/svg+xml;base64,PHN2Zy8+', { storageRoot, runId: 'bad-svg-data' })],
-    ['html', () => materializeImage(`${base}/html`, { storageRoot, runId: 'bad-html' })],
-    ['svg', () => materializeImage(`${base}/svg`, { storageRoot, runId: 'bad-svg' })],
-    ['empty', () => materializeImage(`${base}/empty`, { storageRoot, runId: 'bad-empty' })],
-    ['oversize', () => materializeImage(`${base}/oversize`, { storageRoot, runId: 'bad-oversize', maxBytes: 16 })],
-    ['redirect', () => materializeImage(`${base}/file-redirect`, { storageRoot, runId: 'bad-redirect' })],
-    ['interrupt', () => materializeImage(`${base}/interrupt`, { storageRoot, runId: 'bad-interrupt' })],
+    ['html', () => materializeImage('https://artifact.example/html', options('bad-html'))],
+    ['svg', () => materializeImage('https://artifact.example/svg', options('bad-svg'))],
+    ['empty', () => materializeImage('https://artifact.example/empty', options('bad-empty'))],
+    ['oversize', () => materializeImage('https://artifact.example/oversize', options('bad-oversize', { maxBytes: 16 }))],
+    ['redirect', () => materializeImage('https://artifact.example/file-redirect', options('bad-redirect'))],
+    ['interrupt', () => materializeImage('https://artifact.example/interrupt', options('bad-interrupt'))],
   ];
   for (const [runSuffix, operation] of cases) {
     await assert.rejects(operation);
@@ -154,6 +163,7 @@ test('magic checks accept PNG JPEG WebP ISO BMFF and WebM but reject mismatched 
         headers: new Headers({ 'content-length': String(bytes.length) }),
         body: (async function* body() { yield bytes; }()),
       }),
+      _dnsLookupForTest: publicDnsLookup,
     });
     assert.ok(result.bytes > 0);
   }
@@ -166,7 +176,109 @@ test('magic checks accept PNG JPEG WebP ISO BMFF and WebM but reject mismatched 
       headers: new Headers(),
       body: (async function* body() { yield png; }()),
     }),
+    _dnsLookupForTest: publicDnsLookup,
   }));
+});
+
+test('HTTP artifact sources fail closed for local, metadata, private, and non-public DNS targets before fetch', async (t) => {
+  const storageRoot = tempStorage();
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  let fetchCalls = 0;
+  const fetchImpl = async () => {
+    fetchCalls += 1;
+    return response(200, Buffer.from('89504e470d0a1a0a00000000', 'hex'));
+  };
+  const cases = [
+    ['localhost', 'http://localhost/image.png', publicDnsLookup],
+    ['loopback', 'http://127.0.0.1/image.png', publicDnsLookup],
+    ['metadata', 'http://169.254.169.254/latest/meta-data', publicDnsLookup],
+    ['ipv6-loopback', 'http://[::1]/image.png', publicDnsLookup],
+    ['private-dns', 'https://private.example/image.png', async () => [{ address: '10.1.2.3', family: 4 }]],
+    ['link-local-dns', 'https://link-local.example/image.png', async () => [{ address: 'fe80::1', family: 6 }]],
+  ];
+  for (const [runId, url, dnsLookup] of cases) {
+    await assert.rejects(
+      () => materializeImage(url, { storageRoot, runId, fetchImpl, _dnsLookupForTest: dnsLookup }),
+      /public|private|local|SSRF|address|host/i,
+    );
+    assert.deepEqual(tempFiles(storageRoot, runId), []);
+  }
+  assert.equal(fetchCalls, 0);
+});
+
+test('every redirect target is public-address validated before it can be fetched', async (t) => {
+  const storageRoot = tempStorage();
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const fetched = [];
+  const fetchImpl = async (url) => {
+    fetched.push(url.toString());
+    return response(302, null, { location: 'https://redirect-private.example/image.png' });
+  };
+  const dnsLookup = async (hostname) => hostname === 'artifact.example'
+    ? [{ address: '93.184.216.34', family: 4 }]
+    : [{ address: '192.168.1.20', family: 4 }];
+
+  await assert.rejects(
+    () => materializeImage('https://artifact.example/start', {
+      storageRoot,
+      runId: 'private-redirect',
+      fetchImpl,
+      _dnsLookupForTest: dnsLookup,
+    }),
+    /public|private|local|SSRF|address|host/i,
+  );
+  assert.deepEqual(fetched, ['https://artifact.example/start']);
+  assert.deepEqual(tempFiles(storageRoot, 'private-redirect'), []);
+});
+
+test('same run and artifact kind publishes once without overwriting across concurrent materializers', async (t) => {
+  const storageRoot = tempStorage();
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const first = Buffer.from('89504e470d0a1a0a11111111', 'hex');
+  const second = Buffer.from('89504e470d0a1a0a22222222', 'hex');
+  const buffers = [first, second];
+  let fetchIndex = 0;
+  let releaseBodies;
+  const bodiesReady = new Promise((resolve) => { releaseBodies = resolve; });
+  let waitingBodies = 0;
+  const fetchImpl = async () => {
+    const bytes = buffers[fetchIndex++];
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-length': String(bytes.length) }),
+      body: (async function* synchronizedBody() {
+        waitingBodies += 1;
+        if (waitingBodies === 2) releaseBodies();
+        await bodiesReady;
+        yield bytes;
+      }()),
+    };
+  };
+  const options = {
+    storageRoot,
+    runId: 'same-run',
+    fetchImpl,
+    _dnsLookupForTest: publicDnsLookup,
+  };
+
+  const settled = await Promise.allSettled([
+    materializeImage('https://artifact.example/first.png', options),
+    materializeImage('https://artifact.example/second.png', options),
+  ]);
+  const fulfilled = settled.filter(({ status }) => status === 'fulfilled');
+  const rejected = settled.filter(({ status }) => status === 'rejected');
+  assert.equal(fulfilled.length, 1);
+  assert.equal(rejected.length, 1);
+  assert.match(String(rejected[0].reason?.message), /already exists|conflict/i);
+  const finalPath = path.join(storageRoot, ...fulfilled[0].value.relative_path.split('/'));
+  assert.equal(fs.readFileSync(finalPath).equals(first) || fs.readFileSync(finalPath).equals(second), true);
+  assert.equal(artifactSummary(finalPath, { storageRoot }).sha256, fulfilled[0].value.sha256);
+  assert.deepEqual(tempFiles(storageRoot, 'same-run'), []);
+
+  const source = fs.readFileSync(require.resolve('../src/services/providerCanaryArtifactService'), 'utf8');
+  assert.doesNotMatch(source, /existsSync\(finalPath\)[\s\S]{0,200}renameSync\(tempPath, finalPath\)/);
+  assert.match(source, /linkSync\(tempPath, finalPath\)/);
 });
 
 test('text verification returns only a non-empty digest summary', () => {

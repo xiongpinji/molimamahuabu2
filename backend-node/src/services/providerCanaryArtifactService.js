@@ -1,13 +1,31 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const dns = require('node:dns').promises;
 const fs = require('node:fs');
+const http = require('node:http');
+const https = require('node:https');
+const net = require('node:net');
 const path = require('node:path');
 
 const DEFAULT_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
 const DEFAULT_VIDEO_MAX_BYTES = 512 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 60 * 1000;
 const MAX_REDIRECTS = 3;
+const NON_PUBLIC_IPV4 = new net.BlockList();
+const NON_PUBLIC_IPV6 = new net.BlockList();
+
+for (const [address, prefix] of [
+  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
+  ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24],
+  ['192.88.99.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['198.51.100.0', 24],
+  ['203.0.113.0', 24], ['224.0.0.0', 4], ['240.0.0.0', 4],
+]) NON_PUBLIC_IPV4.addSubnet(address, prefix, 'ipv4');
+
+for (const [address, prefix] of [
+  ['::', 96], ['::ffff:0:0', 96], ['100::', 64], ['2001:2::', 48],
+  ['2001:db8::', 32], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8],
+]) NON_PUBLIC_IPV6.addSubnet(address, prefix, 'ipv6');
 
 function storageRoot(value) {
   if (typeof value !== 'string' || !value.trim()) throw new TypeError('storageRoot must be a non-empty string');
@@ -36,11 +54,103 @@ function header(response, name) {
   return headers[name] ?? headers[name.toLowerCase()] ?? null;
 }
 
+async function cancelBody(response) {
+  try {
+    if (typeof response?.body?.cancel === 'function') await response.body.cancel();
+    else if (typeof response?.body?.destroy === 'function') response.body.destroy();
+  } catch (_) { /* preserve the original failure */ }
+}
+
 function absoluteHttpUrl(value) {
   let parsed;
   try { parsed = new URL(String(value)); } catch (_) { throw new TypeError('artifact URL must be absolute http/https'); }
   if (!['http:', 'https:'].includes(parsed.protocol)) throw new TypeError('artifact URL must be absolute http/https');
+  if (parsed.username || parsed.password) throw new TypeError('artifact URL credentials are not allowed');
   return parsed;
+}
+
+function normalizedHostname(url) {
+  const hostname = url.hostname.toLowerCase();
+  return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+}
+
+function isNonPublicAddress(address) {
+  const family = net.isIP(address);
+  if (!family) return true;
+  return family === 4
+    ? NON_PUBLIC_IPV4.check(address, 'ipv4')
+    : NON_PUBLIC_IPV6.check(address, 'ipv6');
+}
+
+async function publicAddresses(url, options) {
+  const hostname = normalizedHostname(url);
+  if (!hostname
+      || hostname === 'localhost'
+      || hostname.endsWith('.localhost')
+      || hostname.endsWith('.local')
+      || hostname.endsWith('.internal')
+      || hostname.endsWith('.localdomain')) {
+    throw new Error('artifact URL host must resolve only to public addresses');
+  }
+  const literalFamily = net.isIP(hostname);
+  if (literalFamily) {
+    if (isNonPublicAddress(hostname)) throw new Error('artifact URL host must resolve only to public addresses');
+    return [{ address: hostname, family: literalFamily }];
+  }
+  const lookup = options._dnsLookupForTest || dns.lookup;
+  let records;
+  try {
+    records = await lookup(hostname, { all: true, verbatim: true });
+  } catch (_) {
+    throw new Error('artifact URL host could not be resolved to public addresses');
+  }
+  if (!Array.isArray(records)) records = records ? [records] : [];
+  const normalized = records.map((record) => ({
+    address: String(record?.address || ''),
+    family: Number(record?.family || net.isIP(record?.address)),
+  }));
+  if (normalized.length === 0
+      || normalized.some(({ address, family }) => ![4, 6].includes(family) || isNonPublicAddress(address))) {
+    throw new Error('artifact URL host must resolve only to public addresses');
+  }
+  return normalized;
+}
+
+function pinnedLookup(records) {
+  return (_hostname, options, callback) => {
+    const requestedFamily = Number(options?.family || 0);
+    const matching = records.filter(({ family }) => !requestedFamily || family === requestedFamily);
+    if (matching.length === 0) {
+      const error = new Error('validated DNS response does not include the requested address family');
+      error.code = 'ENOTFOUND';
+      callback(error);
+      return;
+    }
+    if (options?.all) {
+      callback(null, matching);
+      return;
+    }
+    const [record] = matching;
+    callback(null, record.address, record.family);
+  };
+}
+
+function requestPinned(url, records, signal) {
+  const transport = url.protocol === 'https:' ? https : http;
+  return new Promise((resolve, reject) => {
+    const request = transport.request(url, {
+      method: 'GET',
+      lookup: pinnedLookup(records),
+      signal,
+    }, (incoming) => resolve({
+      ok: incoming.statusCode >= 200 && incoming.statusCode < 300,
+      status: incoming.statusCode,
+      headers: { get: (name) => incoming.headers[String(name).toLowerCase()] ?? null },
+      body: incoming,
+    }));
+    request.once('error', reject);
+    request.end();
+  });
 }
 
 function decodeDataImage(value, limit) {
@@ -89,27 +199,39 @@ async function writeResponseBody(response, handle, limit) {
 }
 
 async function downloadHttpToFile(source, tempPath, options, limit) {
-  const fetchImpl = options.fetchImpl || global.fetch;
-  if (typeof fetchImpl !== 'function') throw new Error('fetch is unavailable');
+  const fetchImpl = options.fetchImpl;
+  if (fetchImpl !== undefined && typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a function');
   let current = absoluteHttpUrl(source);
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
-    const response = await fetchImpl(current, {
-      method: 'GET',
-      redirect: 'manual',
-      signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
-    });
+    const records = await publicAddresses(current, options);
+    const signal = AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const response = fetchImpl
+      ? await fetchImpl(current, {
+        method: 'GET',
+        redirect: 'manual',
+        signal,
+      })
+      : await requestPinned(current, records, signal);
     const status = Number(response?.status);
     if (status >= 300 && status < 400) {
       const location = header(response, 'location');
       if (!location || redirects === MAX_REDIRECTS) throw new Error('artifact redirect is invalid or excessive');
-      if (typeof response.body?.cancel === 'function') await response.body.cancel();
+      await cancelBody(response);
       current = absoluteHttpUrl(new URL(location, current).toString());
       continue;
     }
-    if (!response?.ok && !(status >= 200 && status < 300)) throw new Error(`artifact download failed: HTTP ${status || 0}`);
+    if (!response?.ok && !(status >= 200 && status < 300)) {
+      await cancelBody(response);
+      throw new Error(`artifact download failed: HTTP ${status || 0}`);
+    }
     const handle = await fs.promises.open(tempPath, 'wx', 0o600);
     try {
-      await writeResponseBody(response, handle, limit);
+      try {
+        await writeResponseBody(response, handle, limit);
+      } catch (error) {
+        await cancelBody(response);
+        throw error;
+      }
       await handle.sync();
     } finally {
       await handle.close();
@@ -203,10 +325,18 @@ async function materialize(source, options, kind) {
     const prefix = readPrefix(tempPath);
     const extension = kind === 'image' ? imageFormat(prefix) : videoFormat(prefix);
     const finalPath = path.join(directory, `${kind}.${extension}`);
-    if (fs.existsSync(finalPath)) throw new Error('artifact already exists for run');
     fs.chmodSync(tempPath, 0o600);
-    fs.renameSync(tempPath, finalPath);
-    fs.chmodSync(finalPath, 0o600);
+    try {
+      fs.linkSync(tempPath, finalPath);
+    } catch (error) {
+      if (error?.code === 'EEXIST') {
+        const conflict = new Error('artifact already exists for run');
+        conflict.code = 'PROVIDER_CANARY_ARTIFACT_EXISTS';
+        throw conflict;
+      }
+      throw error;
+    }
+    fs.unlinkSync(tempPath);
     return artifactSummary(finalPath, { storageRoot: options.storageRoot });
   } finally {
     fs.rmSync(tempPath, { force: true });
