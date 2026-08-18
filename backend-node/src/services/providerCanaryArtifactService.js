@@ -23,8 +23,9 @@ for (const [address, prefix] of [
 ]) NON_PUBLIC_IPV4.addSubnet(address, prefix, 'ipv4');
 
 for (const [address, prefix] of [
-  ['::', 96], ['::ffff:0:0', 96], ['100::', 64], ['2001:2::', 48],
-  ['2001:db8::', 32], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8],
+  ['::', 96], ['::ffff:0:0', 96], ['64:ff9b::', 96], ['64:ff9b:1::', 48],
+  ['100::', 64], ['2001::', 32], ['2001:2::', 48], ['2001:db8::', 32],
+  ['2002::', 16], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8],
 ]) NON_PUBLIC_IPV6.addSubnet(address, prefix, 'ipv6');
 
 function storageRoot(value) {

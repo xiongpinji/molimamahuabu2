@@ -195,6 +195,10 @@ test('HTTP artifact sources fail closed for local, metadata, private, and non-pu
     ['ipv6-loopback', 'http://[::1]/image.png', publicDnsLookup],
     ['private-dns', 'https://private.example/image.png', async () => [{ address: '10.1.2.3', family: 4 }]],
     ['link-local-dns', 'https://link-local.example/image.png', async () => [{ address: 'fe80::1', family: 6 }]],
+    ['nat64-loopback', 'http://[64:ff9b::7f00:1]/image.png', publicDnsLookup],
+    ['nat64-private', 'http://[64:ff9b:1::a01:203]/image.png', publicDnsLookup],
+    ['six-to-four-metadata', 'http://[2002:a9fe:a9fe::]/image.png', publicDnsLookup],
+    ['teredo-loopback', 'http://[2001:0:4136:e378:8000:63bf:80ff:fffe]/image.png', publicDnsLookup],
   ];
   for (const [runId, url, dnsLookup] of cases) {
     await assert.rejects(
