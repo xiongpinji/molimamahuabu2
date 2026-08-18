@@ -849,7 +849,7 @@ async function runFetchModels(options, injectedDeps = {}) {
   await deps.preflightRuntimePython(deps);
   const parent = path.dirname(outputDir);
   await fsp.mkdir(parent, { recursive: true });
-  const staging = path.join(parent, `.redraw-full-frame-staging-${deps.randomHex()}`);
+  const staging = path.join(parent, `.rff-${deps.randomHex()}`);
   let complete = false;
   let stage = 'unknown';
   try {
