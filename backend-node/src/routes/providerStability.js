@@ -4,10 +4,7 @@ const stability = require('../services/providerRouteStabilityService');
 const audit = require('../services/auditEventService');
 
 const PATCH_FIELDS = new Set([
-  'logical_model_id',
-  'failover_enabled',
-  'priority',
-  'admin_paused',
+  'canary_paused',
 ]);
 
 function configId(req, res) {
@@ -55,6 +52,7 @@ function safeConfigSummary(db, config) {
     failover_enabled: config.failover_enabled,
     priority: config.priority,
     admin_paused: !config.is_active,
+    canary_paused: Boolean(config.canary_paused),
     verification_status: config.verification_status,
     verified_at: config.verified_at,
     health,
@@ -70,7 +68,21 @@ function safeEvent(event) {
       allowedDetails[key] = value;
     }
   }
-  return { ...event, safe_details: allowedDetails };
+  const alertLevels = {
+    critical: 'P0',
+    error: 'P1',
+    warning: 'P2',
+    info: 'P3',
+    P0: 'P0',
+    P1: 'P1',
+    P2: 'P2',
+    P3: 'P3',
+  };
+  return {
+    ...event,
+    alert_level: alertLevels[event.severity] || 'P2',
+    safe_details: allowedDetails,
+  };
 }
 
 function safeRouteRequest(db, route) {
@@ -107,7 +119,7 @@ function recordAdminAudit(db, req, eventType, configIdValue, code) {
   });
 }
 
-module.exports = function providerStabilityRoutes(db, log) {
+module.exports = function providerStabilityRoutes(db, log, options = {}) {
   return {
     listRoutes(req, res) {
       const configs = aiConfigService.listConfigs(db)
@@ -126,39 +138,68 @@ module.exports = function providerStabilityRoutes(db, log) {
       }).map(safeEvent));
     },
 
+    getCanarySummary(_req, res) {
+      response.success(res, stability.getCanaryAdminSummary(db));
+    },
+
+    listCanaryRuns(req, res) {
+      response.success(res, stability.listCanaryRuns(db, {
+        state: req.query.state,
+        logicalModelId: req.query.logical_model_id,
+      }));
+    },
+
+    async reconcileCanaryRun(req, res) {
+      const body = req.body || {};
+      if (Object.keys(body).length > 0) {
+        return response.badRequest(res, '对账不接受客户端状态、产物或其他字段');
+      }
+      try {
+        const result = await stability.reconcileCanaryRun(db, log, req.params.runId, {
+          actorId: req.user?.id,
+          storageRoot: options.storageRoot,
+        });
+        return response.success(res, result);
+      } catch (error) {
+        if (error?.code === 'PROVIDER_CANARY_RUN_INVALID') {
+          return response.badRequest(res, '巡检运行 ID 无效');
+        }
+        if (error?.code === 'PROVIDER_CANARY_RUN_NOT_FOUND') {
+          return response.notFound(res, '巡检运行不存在');
+        }
+        if (error?.code === 'PROVIDER_CANARY_RUN_NOT_RECONCILABLE') {
+          return response.error(res, 409, error.code, '该巡检运行当前不可对账');
+        }
+        log.error('provider canary reconciliation failed', {
+          run_id: req.params.runId,
+          code: error?.code || 'UNKNOWN',
+        });
+        return response.internalError(res, '巡检对账失败');
+      }
+    },
+
     updateRoute(req, res) {
       const id = configId(req, res);
       if (id == null) return;
       const body = req.body || {};
       const keys = Object.keys(body);
       if (!keys.length || keys.some((key) => !PATCH_FIELDS.has(key))) {
-        return response.badRequest(res, '只允许修改逻辑模型、容灾开关、优先级和管理员暂停状态');
+        return response.badRequest(res, '只允许修改巡检暂停状态');
       }
-      const changes = {};
-      if (Object.prototype.hasOwnProperty.call(body, 'logical_model_id')) {
-        if (body.logical_model_id != null
-          && (typeof body.logical_model_id !== 'string' || body.logical_model_id.trim().length > 200)) {
-          return response.badRequest(res, '逻辑模型无效');
-        }
-        changes.logical_model_id = body.logical_model_id == null ? null : body.logical_model_id.trim();
+      if (typeof body.canary_paused !== 'boolean') {
+        return response.badRequest(res, '巡检暂停状态无效');
       }
-      if (Object.prototype.hasOwnProperty.call(body, 'failover_enabled')) {
-        if (typeof body.failover_enabled !== 'boolean') return response.badRequest(res, '容灾开关无效');
-        changes.failover_enabled = body.failover_enabled;
-      }
-      if (Object.prototype.hasOwnProperty.call(body, 'priority')) {
-        if (!Number.isSafeInteger(body.priority) || Math.abs(body.priority) > 100000) {
-          return response.badRequest(res, '优先级无效');
-        }
-        changes.priority = body.priority;
-      }
-      if (Object.prototype.hasOwnProperty.call(body, 'admin_paused')) {
-        if (typeof body.admin_paused !== 'boolean') return response.badRequest(res, '管理员暂停状态无效');
-        changes.is_active = !body.admin_paused;
-      }
+      const changes = { canary_paused: body.canary_paused };
       const updated = aiConfigService.updateConfig(db, log, id, changes);
       if (!updated) return response.notFound(res, '配置不存在');
-      recordAdminAudit(db, req, 'provider.route.updated', id);
+      recordAdminAudit(
+        db,
+        req,
+        body.canary_paused
+          ? 'provider.route.canary_paused'
+          : 'provider.route.canary_resumed',
+        id,
+      );
       response.success(res, safeConfigSummary(db, updated));
     },
 

@@ -9,6 +9,7 @@ const Database = require('better-sqlite3');
 const { setupRouter } = require('../src/routes');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const userAuth = require('../src/services/userAuthService');
+const evidenceService = require('../src/services/providerCanaryEvidenceService');
 
 const JWT_SECRET = 'provider-stability-jwt-secret-value-123456';
 const ADMIN_TOKEN = 'provider-stability-admin-token-value-123456';
@@ -71,6 +72,11 @@ async function setup() {
     VALUES ('warning', 'route_switched', 'logical-image', ?, ?,
       '{"category":"provider_unavailable","state":"switching"}', ?)`)
     .run(configId, configId, '2026-08-14T23:59:00.000Z');
+  db.prepare(`INSERT INTO provider_stability_events
+    (severity, event_type, logical_model_id, config_id, safe_details, created_at)
+    VALUES ('error', 'logical_model_unavailable', 'logical-image', ?, '{}', ?),
+           ('info', 'provider_recovered', 'logical-image', ?, '{}', ?)`)
+    .run(configId, '2026-08-14T23:58:00.000Z', configId, '2026-08-14T23:57:00.000Z');
 
   const previous = {
     PUBLIC_PLATFORM_MODE: process.env.PUBLIC_PLATFORM_MODE,
@@ -109,6 +115,8 @@ test('供应商稳定性接口仅管理员和财务管理权限可访问', async
   for (const endpoint of [
     '/admin/provider-stability/routes',
     '/admin/provider-stability/events',
+    '/admin/provider-stability/canary/summary',
+    '/admin/provider-stability/canary/runs',
   ]) {
     assert.equal((await request(context.baseUrl, endpoint)).status, 401);
     assert.equal((await request(context.baseUrl, endpoint, { token: context.plainToken })).status, 403);
@@ -137,48 +145,91 @@ test('管理员列表只返回安全中转关联、健康和任务积分摘要',
   });
   assert.equal(events.status, 200);
   assert.equal(events.body.data[0].event_type, 'provider_failure');
+  assert.deepEqual(events.body.data.map((event) => event.alert_level), [
+    'P0', 'P2', 'P1', 'P3',
+  ]);
   assert.equal(JSON.stringify(events.body).includes('sk-never-return-this'), false);
   assert.equal(JSON.stringify(events.body).includes('signed.example'), false);
   assert.equal(JSON.stringify(events.body).includes('prompt text'), false);
 });
 
-test('稳定性配置只允许逻辑模型、容灾、优先级和管理员暂停字段', async (t) => {
+test('巡检线路配置只允许 canary_paused 且恢复不激活线路或伪造 fresh 证据', async (t) => {
   const context = await setup();
   t.after(() => context.close());
+  const capability = evidenceService.normalizeCapability('image', { count: 1 });
+  const capabilityFingerprint = evidenceService.capabilityFingerprint('image', capability);
+  context.db.prepare(`INSERT INTO provider_canary_runs
+    (id, idempotency_key, config_id, logical_model_id, service_type,
+     capability_fingerprint, config_fingerprint, cost_fingerprint,
+     runtime_fingerprint, provider_scope_key, state, reserved_cost_micros,
+     actual_cost_micros, currency, budget_day, budget_month, created_at,
+     finished_at, updated_at)
+    VALUES ('pause-run', 'pause-idem', ?, 'logical-image', 'image', ?,
+      'cfg-hash', 'cost-hash', 'runtime-hash', 'scope-hash', 'succeeded',
+      1, 1, 'CNY', '2026-08-15', '2026-08', ?, ?, ?)`)
+    .run(context.configId, capabilityFingerprint,
+      '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z');
+  context.db.prepare(`INSERT INTO provider_canary_evidence
+    (config_id, service_type, capability_fingerprint, capability_json, state,
+     run_id, config_fingerprint, cost_fingerprint, runtime_fingerprint,
+     verified_at, expires_at, created_at, updated_at)
+    VALUES (?, 'image', ?, ?, 'fresh', 'pause-run', 'cfg-hash', 'cost-hash',
+      'runtime-hash', ?, '2026-08-17T00:00:00.000Z', ?, ?)`)
+    .run(context.configId, capabilityFingerprint, JSON.stringify(capability),
+      '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z');
   const rejected = await request(
     context.baseUrl,
     `/admin/provider-stability/routes/${context.configId}`,
     {
       method: 'PATCH',
       token: context.adminToken,
-      body: { verification_status: 'verified', base_url: 'https://evil.example/v1' },
+      body: { logical_model_id: 'logical-image-v2', admin_paused: true },
     },
   );
   assert.equal(rejected.status, 400);
+  assert.equal((await request(
+    context.baseUrl,
+    `/admin/provider-stability/routes/${context.configId}`,
+    { method: 'PATCH', body: { canary_paused: true } },
+  )).status, 401);
+  assert.equal((await request(
+    context.baseUrl,
+    `/admin/provider-stability/routes/${context.configId}`,
+    { method: 'PATCH', token: context.plainToken, body: { canary_paused: true } },
+  )).status, 403);
 
-  const updated = await request(
+  const paused = await request(
     context.baseUrl,
     `/admin/provider-stability/routes/${context.configId}`,
     {
       method: 'PATCH',
       token: context.adminToken,
-      body: {
-        logical_model_id: 'logical-image-v2',
-        failover_enabled: false,
-        priority: 25,
-        admin_paused: true,
-      },
+      body: { canary_paused: true },
     },
   );
-  assert.equal(updated.status, 200);
-  assert.equal(updated.body.data.logical_model_id, 'logical-image-v2');
-  assert.equal(updated.body.data.failover_enabled, false);
-  assert.equal(updated.body.data.admin_paused, true);
-  const stored = context.db.prepare(`SELECT base_url, verification_status, is_active
+  assert.equal(paused.status, 200);
+  assert.equal(paused.body.data.canary_paused, true);
+  const resumed = await request(
+    context.baseUrl,
+    `/admin/provider-stability/routes/${context.configId}`,
+    { method: 'PATCH', token: context.adminToken, body: { canary_paused: false } },
+  );
+  assert.equal(resumed.status, 200);
+  assert.equal(resumed.body.data.canary_paused, false);
+  const stored = context.db.prepare(`SELECT base_url, verification_status, is_active, canary_paused
     FROM ai_service_configs WHERE id = ?`).get(context.configId);
   assert.match(stored.base_url, /relay\.example\.com/);
   assert.equal(stored.verification_status, 'unverified');
-  assert.equal(stored.is_active, 0);
+  assert.equal(stored.is_active, 1);
+  assert.equal(stored.canary_paused, 0);
+  assert.equal(context.db.prepare(`SELECT state FROM provider_canary_evidence
+    WHERE run_id = 'pause-run'`).get().state, 'never_verified');
+  const auditTypes = context.db.prepare(`SELECT event_type FROM audit_events
+    WHERE user_id = ? ORDER BY created_at`).all('stability-admin').map((row) => row.event_type);
+  assert.deepEqual(auditTypes, [
+    'provider.route.canary_paused',
+    'provider.route.canary_resumed',
+  ]);
 });
 
 test('健康重置和真实生成验证均写管理员审计且验证不接受客户端自证', async (t) => {

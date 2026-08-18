@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const response = require('../response');
 const dramaRoutes = require('./drama');
 const taskRoutes = require('./task');
@@ -86,7 +87,12 @@ function setupRouter(cfg, db, log) {
   const uploadHandlers = uploadModule.routes(cfg, log, db, { publicPlatformEnabled });
   const tenants = tenantRoutes(db, log);
   const platformAccounts = platformAccountRoutes(db, log);
-  const providerStability = providerStabilityRoutes(db, log);
+  const providerStorageRoot = cfg.storage?.local_path
+    ? path.resolve(process.cwd(), cfg.storage.local_path)
+    : path.join(process.cwd(), 'data', 'storage');
+  const providerStability = providerStabilityRoutes(db, log, {
+    storageRoot: providerStorageRoot,
+  });
   const requirePlatformPermission = (permission) => createPlatformPermissionMiddleware(
     permission,
     { enabled: publicPlatformEnabled },
@@ -163,6 +169,9 @@ function setupRouter(cfg, db, log) {
   r.put('/billing/prices/:model', requireAdmin, requireBillingManager, billing.updatePrice);
   r.get('/admin/provider-stability/routes', requireAdmin, requireBillingManager, providerStability.listRoutes);
   r.get('/admin/provider-stability/events', requireAdmin, requireBillingManager, providerStability.listEvents);
+  r.get('/admin/provider-stability/canary/summary', requireAdmin, requireBillingManager, providerStability.getCanarySummary);
+  r.get('/admin/provider-stability/canary/runs', requireAdmin, requireBillingManager, providerStability.listCanaryRuns);
+  r.post('/admin/provider-stability/canary/runs/:runId/reconcile', requireAdmin, requireBillingManager, providerStability.reconcileCanaryRun);
   r.patch('/admin/provider-stability/routes/:configId', requireAdmin, requireBillingManager, providerStability.updateRoute);
   r.post('/admin/provider-stability/routes/:configId/reset-health', requireAdmin, requireBillingManager, providerStability.resetHealth);
   r.post('/admin/provider-stability/routes/:configId/verify-from-generation', requireAdmin, requireBillingManager, providerStability.verifyFromGeneration);

@@ -1,10 +1,14 @@
 const fs = require('fs');
+const crypto = require('crypto');
 
 const defaultLog = require('../logger');
 const aiConfigService = require('./aiConfigService');
 const modelPriceService = require('./modelPriceService');
 const evidenceService = require('./providerCanaryEvidenceService');
 const runtimeService = require('./providerRuntimeFingerprintService');
+const budgetService = require('./providerCanaryBudgetService');
+const artifactService = require('./providerCanaryArtifactService');
+const auditEvent = require('./auditEventService');
 const { toSafeErrorSummary } = require('./providerErrorClassifier');
 
 const DEFAULT_FAILURE_THRESHOLD = 3;
@@ -502,6 +506,477 @@ function listAdminEvents(db, filters = {}) {
     .map((row) => ({ ...row, safe_details: parseJson(row.safe_details) }));
 }
 
+const UNKNOWN_CANARY_STATES = new Set([
+  'submission_unknown',
+  'result_unknown',
+  'artifact_unreadable',
+]);
+
+function maskedRouteName(config) {
+  const digest = crypto.createHash('sha256')
+    .update(`${config?.id || ''}:${config?.name || ''}`)
+    .digest('hex')
+    .slice(0, 8);
+  return `线路-${digest}`;
+}
+
+function safeCategory(value, fallback = 'unknown') {
+  const category = String(value || '').trim();
+  return /^[A-Za-z0-9_.:-]{1,128}$/.test(category) ? category : fallback;
+}
+
+function parsedCapability(serviceType, value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    return evidenceService.normalizeCapability(serviceType, parseJson(value));
+  } catch (_) {
+    return null;
+  }
+}
+
+function canaryRunDto(row) {
+  return {
+    id: row.id,
+    logical_model_id: row.logical_model_id,
+    route_name: maskedRouteName(row),
+    service_type: row.service_type,
+    capability: parsedCapability(row.service_type, row.capability_json),
+    state: row.state,
+    cost: {
+      reserved_micros: row.reserved_cost_micros,
+      actual_micros: row.actual_cost_micros,
+      currency: row.currency,
+    },
+    times: {
+      created_at: row.created_at,
+      submitted_at: row.submitted_at,
+      finished_at: row.finished_at,
+      updated_at: row.updated_at,
+    },
+    error_category: row.error_category ? safeCategory(row.error_category) : null,
+    reconcilable: row.service_type === 'video'
+      && UNKNOWN_CANARY_STATES.has(row.state)
+      && !row.deleted_at
+      && typeof row.provider_task_id === 'string'
+      && row.provider_task_id.trim().length > 0,
+  };
+}
+
+function listCanaryRuns(db, filters = {}) {
+  const clauses = [];
+  const params = [];
+  if (filters.state) {
+    clauses.push('r.state = ?');
+    params.push(filters.state);
+  }
+  if (filters.logicalModelId) {
+    clauses.push('r.logical_model_id = ? COLLATE NOCASE');
+    params.push(filters.logicalModelId);
+  }
+  return db.prepare(`SELECT r.*, c.name, c.deleted_at,
+      e.capability_json
+    FROM provider_canary_runs r
+    JOIN ai_service_configs c ON c.id = r.config_id
+    LEFT JOIN provider_canary_evidence e
+      ON e.config_id = r.config_id
+     AND e.capability_fingerprint = r.capability_fingerprint
+    ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+    ORDER BY r.updated_at DESC, r.id DESC LIMIT 200`)
+    .all(...params)
+    .map(canaryRunDto);
+}
+
+function unknownBudgetUsage(db, column, bucket) {
+  return Number(db.prepare(`SELECT COALESCE(SUM(reserved_cost_micros), 0) AS used
+    FROM provider_canary_runs
+    WHERE ${column} = ?
+      AND state IN ('submission_unknown', 'result_unknown', 'artifact_unreadable')`)
+    .get(bucket)?.used || 0);
+}
+
+const EVIDENCE_STATE_PRIORITY = [
+  'disabled',
+  'submission_unknown',
+  'failing',
+  'budget_blocked',
+  'stale',
+  'never_verified',
+  'fresh',
+];
+
+function aggregateEvidenceState(states, config) {
+  if (!config.is_active || config.canary_paused) return 'disabled';
+  if (!states.length) return 'never_verified';
+  return EVIDENCE_STATE_PRIORITY.find((state) => states.includes(state)) || 'never_verified';
+}
+
+function routeCanarySummary(db, config, now, canaryMode) {
+  const zeroCost = db.prepare(`SELECT state, category, checked_at
+    FROM provider_zero_cost_checks WHERE config_id = ?`).get(config.id);
+  const rows = db.prepare(`SELECT * FROM provider_canary_evidence
+    WHERE config_id = ? ORDER BY updated_at DESC`).all(config.id);
+  const fingerprints = evidenceFingerprints(db, config);
+  const states = rows.map((row) => evidenceService.effectiveEvidenceState(row, {
+    now,
+    canaryPaused: config.canary_paused,
+    isActive: config.is_active,
+    configFingerprint: fingerprints?.configFingerprint,
+    costFingerprint: fingerprints?.costFingerprint,
+    runtimeFingerprint: fingerprints?.runtimeFingerprint,
+  }));
+  const hasFresh = states.includes('fresh');
+  const health = db.prepare('SELECT state FROM provider_route_health WHERE config_id = ?')
+    .get(config.id)?.state || 'healthy';
+  const currentVisible = config.is_active
+    && config.verification_status === 'verified'
+    && !['disabled', 'open', 'half_open'].includes(health);
+  const visible = currentVisible && (canaryMode !== 'enforce' || hasFresh);
+  const latestSuccess = rows.reduce((latest, row) => (
+    row.verified_at && (!latest || row.verified_at > latest) ? row.verified_at : latest
+  ), null);
+  const freshExpiry = rows
+    .filter((row, index) => states[index] === 'fresh' && row.expires_at)
+    .map((row) => row.expires_at)
+    .sort()[0] || null;
+  const budgetBlock = db.prepare(`SELECT error_category FROM provider_canary_runs
+    WHERE config_id = ? AND state = 'budget_blocked'
+    ORDER BY updated_at DESC, id DESC LIMIT 1`).get(config.id);
+  return {
+    route_id: config.id,
+    route_name: maskedRouteName(config),
+    logical_model_id: config.logical_model_id,
+    service_type: config.service_type,
+    canary_paused: Boolean(config.canary_paused),
+    public_state: visible ? 'visible' : 'hidden',
+    would_be_hidden: !hasFresh,
+    latest_zero_cost_check: zeroCost ? {
+      state: zeroCost.state,
+      category: zeroCost.category ? safeCategory(zeroCost.category) : null,
+      checked_at: zeroCost.checked_at,
+    } : null,
+    latest_real_success_at: latestSuccess,
+    evidence_expires_at: freshExpiry,
+    evidence_state: aggregateEvidenceState(states, config),
+    budget_block_reason: budgetBlock?.error_category
+      ? safeCategory(budgetBlock.error_category)
+      : null,
+  };
+}
+
+function getCanaryAdminSummary(db, now = new Date().toISOString()) {
+  const budget = budgetService.getBudgetSummary(db, now);
+  const mode = resolveCanaryMode(undefined);
+  const configs = aiConfigService.listConfigs(db);
+  return {
+    mode,
+    budget: {
+      budget_day: budget.budgetDay,
+      budget_month: budget.budgetMonth,
+      daily_limit_micros: budget.effectiveDailyLimitMicros,
+      monthly_limit_micros: budget.effectiveMonthlyLimitMicros,
+      daily_used_micros: budget.dailyUsedMicros,
+      monthly_used_micros: budget.monthlyUsedMicros,
+      daily_remaining_micros: budget.dailyRemainingMicros,
+      monthly_remaining_micros: budget.monthlyRemainingMicros,
+      daily_unknown_micros: unknownBudgetUsage(db, 'budget_day', budget.budgetDay),
+      monthly_unknown_micros: unknownBudgetUsage(db, 'budget_month', budget.budgetMonth),
+    },
+    routes: configs.map((config) => routeCanarySummary(db, config, now, mode)),
+  };
+}
+
+function canaryError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function loadReconcilableCanary(db, runId) {
+  const row = db.prepare(`SELECT r.*, c.name, c.service_type AS config_service_type,
+      e.capability_json
+    FROM provider_canary_runs r
+    JOIN ai_service_configs c ON c.id = r.config_id AND c.deleted_at IS NULL
+    LEFT JOIN provider_canary_evidence e
+      ON e.config_id = r.config_id
+     AND e.capability_fingerprint = r.capability_fingerprint
+    WHERE r.id = ?`).get(runId);
+  if (!row) throw canaryError('PROVIDER_CANARY_RUN_NOT_FOUND', '巡检运行不存在');
+  if (!UNKNOWN_CANARY_STATES.has(row.state)
+      || row.service_type !== 'video'
+      || typeof row.provider_task_id !== 'string'
+      || !row.provider_task_id.trim()
+      || !row.capability_json) {
+    throw canaryError('PROVIDER_CANARY_RUN_NOT_RECONCILABLE', '该巡检运行不可对账');
+  }
+  return row;
+}
+
+function loadCurrentReconciliation(db, before) {
+  const current = loadReconcilableCanary(db, before.id);
+  if (current.provider_task_id !== before.provider_task_id) {
+    throw canaryError('PROVIDER_CANARY_RUN_CHANGED', '巡检运行已变化');
+  }
+  return current;
+}
+
+async function defaultQueryTaskOnce(input) {
+  // 延迟加载，避免 videoClient -> providerRouteStabilityService 的循环依赖。
+  const videoClient = require('./videoClient');
+  const safeLog = { info() {}, warn() {}, error() {} };
+  const result = await videoClient.pollVideoTask(
+    input.db,
+    safeLog,
+    null,
+    input.taskId,
+    input.config,
+    1,
+    0,
+    input.requestOptions || {},
+  );
+  if (result?.video_url) return { state: 'succeeded', artifactUrl: result.video_url };
+  if (result?.indeterminate) return { state: 'unknown' };
+  if (result?.error) {
+    const message = String(result.error);
+    if (/完成但|completed but|未返回.*(?:地址|URL)|without.*(?:url|artifact)/i.test(message)) {
+      return { state: 'artifact_unreadable' };
+    }
+    return { state: 'failed', category: 'provider_task_failed' };
+  }
+  return { state: 'unknown' };
+}
+
+function reconciliationAudit(db, input) {
+  auditEvent.record(db, {
+    userId: input.actorId,
+    eventType: 'provider.canary.reconciled',
+    resourceType: 'provider_canary_run',
+    resourceId: input.runId,
+    outcome: input.outcome,
+    code: input.category,
+  });
+}
+
+function reconciliationEvent(db, run, eventType, severity, category, now) {
+  insertEvent(db, {
+    severity,
+    eventType,
+    requestId: run.id,
+    logicalModelId: run.logical_model_id,
+    configId: run.config_id,
+    taskState: run.state,
+    safeDetails: { category, state: run.state },
+    now,
+  });
+}
+
+function reconciliationEvidenceInput(run, capability, now) {
+  return {
+    runId: run.id,
+    configId: run.config_id,
+    serviceType: run.service_type,
+    capability,
+    configFingerprint: run.config_fingerprint,
+    costFingerprint: run.cost_fingerprint,
+    runtimeFingerprint: run.runtime_fingerprint,
+    now,
+  };
+}
+
+function normalizedReconciledArtifact(value, runId) {
+  const expectedPrefix = `_system/provider-canary/runs/${runId}/`;
+  const relativePath = String(value?.relative_path || '');
+  const sha256 = String(value?.sha256 || '').toLowerCase();
+  const bytes = Number(value?.bytes);
+  if (!relativePath.startsWith(expectedPrefix)
+      || relativePath.slice(expectedPrefix.length).includes('/')
+      || !/^[a-f0-9]{64}$/.test(sha256)
+      || !Number.isSafeInteger(bytes)
+      || bytes <= 0) {
+    throw canaryError('PROVIDER_CANARY_ARTIFACT_UNREADABLE', '巡检产物不可读');
+  }
+  return { relative_path: relativePath, sha256, bytes };
+}
+
+function safeReconcileResult(run, reconciled) {
+  return {
+    id: run.id,
+    state: run.state,
+    reconciled,
+    error_category: run.error_category ? safeCategory(run.error_category) : null,
+    reconcilable: run.service_type === 'video'
+      && UNKNOWN_CANARY_STATES.has(run.state)
+      && Boolean(run.provider_task_id),
+  };
+}
+
+async function reconcileCanaryRun(db, log, runId, options = {}) {
+  if (typeof runId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,254}$/.test(runId)) {
+    throw canaryError('PROVIDER_CANARY_RUN_INVALID', '巡检运行 ID 无效');
+  }
+  const before = loadReconcilableCanary(db, runId);
+  const config = aiConfigService.getConfig(db, before.config_id);
+  if (!config) throw canaryError('PROVIDER_CANARY_RUN_NOT_RECONCILABLE', '巡检线路不可用');
+  const capability = parsedCapability(before.service_type, before.capability_json);
+  if (!capability
+      || evidenceService.capabilityFingerprint(before.service_type, capability)
+        !== before.capability_fingerprint) {
+    throw canaryError('PROVIDER_CANARY_RUN_NOT_RECONCILABLE', '巡检能力证据不可对账');
+  }
+  const now = options.now || new Date().toISOString();
+  const query = options.queryTaskOnce || defaultQueryTaskOnce;
+  let queryResult;
+  try {
+    queryResult = await query({
+      db,
+      log,
+      config,
+      taskId: before.provider_task_id,
+      requestOptions: options.pollRequestOptions,
+    });
+  } catch (_) {
+    queryResult = { state: 'unknown' };
+  }
+
+  if (queryResult?.state === 'succeeded' && queryResult.artifactUrl) {
+    let artifact;
+    try {
+      artifact = await (options.materializeVideo || artifactService.materializeVideo)(
+        queryResult.artifactUrl,
+        { storageRoot: options.storageRoot, runId: before.id },
+      );
+      artifact = normalizedReconciledArtifact(artifact, before.id);
+    } catch (_) {
+      queryResult = { state: 'artifact_unreadable' };
+    }
+    if (artifact) {
+      const after = db.transaction(() => {
+        const current = loadCurrentReconciliation(db, before);
+        db.prepare(`UPDATE provider_canary_runs
+          SET state = 'succeeded', actual_cost_micros = reserved_cost_micros,
+            artifact_path = ?, artifact_sha256 = ?, artifact_bytes = ?,
+            error_category = NULL, safe_error_summary = NULL,
+            finished_at = ?, updated_at = ?
+          WHERE id = ?`).run(
+          artifact.relative_path,
+          artifact.sha256,
+          artifact.bytes,
+          now,
+          now,
+          runId,
+        );
+        evidenceService.recordSuccess(
+          db,
+          reconciliationEvidenceInput(current, capability, now),
+        );
+        const updated = db.prepare('SELECT * FROM provider_canary_runs WHERE id = ?').get(runId);
+        reconciliationEvent(
+          db,
+          updated,
+          'provider_canary_reconciled_success',
+          'info',
+          'reconciled_success',
+          now,
+        );
+        reconciliationAudit(db, {
+          actorId: options.actorId,
+          runId,
+          outcome: 'success',
+          category: 'reconciled_success',
+        });
+        return updated;
+      }).immediate();
+      return safeReconcileResult(after, true);
+    }
+  }
+
+  if (queryResult?.state === 'succeeded') {
+    queryResult = { state: 'artifact_unreadable' };
+  }
+
+  if (queryResult?.state === 'failed') {
+    const category = safeCategory(queryResult.category, 'provider_task_failed');
+    const after = db.transaction(() => {
+      const current = loadCurrentReconciliation(db, before);
+      db.prepare(`UPDATE provider_canary_runs
+        SET state = 'failed', actual_cost_micros = reserved_cost_micros,
+          error_category = ?, safe_error_summary = ?, finished_at = ?, updated_at = ?
+        WHERE id = ?`).run(category, `category=${category}`, now, now, runId);
+      evidenceService.recordFailure(
+        db,
+        reconciliationEvidenceInput(current, capability, now),
+      );
+      const updated = db.prepare('SELECT * FROM provider_canary_runs WHERE id = ?').get(runId);
+      reconciliationEvent(
+        db,
+        updated,
+        'provider_canary_reconciled_failure',
+        'warning',
+        category,
+        now,
+      );
+      reconciliationAudit(db, {
+        actorId: options.actorId,
+        runId,
+        outcome: 'failed',
+        category,
+      });
+      return updated;
+    }).immediate();
+    return safeReconcileResult(after, true);
+  }
+
+  if (queryResult?.state === 'artifact_unreadable') {
+    const after = db.transaction(() => {
+      const current = loadCurrentReconciliation(db, before);
+      db.prepare(`UPDATE provider_canary_runs SET state = 'artifact_unreadable',
+        error_category = 'artifact_unreadable', safe_error_summary = 'category=artifact_unreadable',
+        finished_at = ?, updated_at = ? WHERE id = ?`).run(now, now, runId);
+      evidenceService.recordUnknown(db, {
+        ...reconciliationEvidenceInput(current, capability, now),
+        state: 'artifact_unreadable',
+      });
+      const updated = db.prepare('SELECT * FROM provider_canary_runs WHERE id = ?').get(runId);
+      reconciliationEvent(
+        db,
+        updated,
+        'provider_canary_reconcile_unknown',
+        'warning',
+        'artifact_unreadable',
+        now,
+      );
+      reconciliationAudit(db, {
+        actorId: options.actorId,
+        runId,
+        outcome: 'unknown',
+        category: 'artifact_unreadable',
+      });
+      return updated;
+    }).immediate();
+    return safeReconcileResult(after, false);
+  }
+
+  const unchanged = db.transaction(() => {
+    const current = loadCurrentReconciliation(db, before);
+    reconciliationEvent(
+      db,
+      current,
+      'provider_canary_reconcile_unknown',
+      'warning',
+      safeCategory(current.error_category, 'result_unknown'),
+      now,
+    );
+    reconciliationAudit(db, {
+      actorId: options.actorId,
+      runId,
+      outcome: 'unknown',
+      category: safeCategory(current.error_category, 'result_unknown'),
+    });
+    return current;
+  }).immediate();
+  log?.warn?.('Provider canary reconciliation remains unknown', { run_id: runId });
+  return safeReconcileResult(unchanged, false);
+}
+
 function resetHealth(db, configId, actor = 'admin', now = new Date().toISOString()) {
   db.prepare(`INSERT INTO provider_route_health
     (config_id, state, consecutive_failures, updated_at)
@@ -566,6 +1041,9 @@ module.exports = {
   claimHalfOpen,
   listAdminRoutes,
   listAdminEvents,
+  getCanaryAdminSummary,
+  listCanaryRuns,
+  reconcileCanaryRun,
   resetHealth,
   resolveCanaryMode,
   listFreshCandidateEvidence,
