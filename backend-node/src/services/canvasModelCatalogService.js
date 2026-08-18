@@ -2,6 +2,7 @@ const aiConfigService = require('./aiConfigService');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
 const mediaModelSelection = require('./mediaModelSelectionService');
 const modelPriceService = require('./modelPriceService');
+const providerRouteStabilityService = require('./providerRouteStabilityService');
 const { IMAGE_REFERENCE_LIMITS } = require('./token6688Client');
 const videoReferenceCapabilityService = require('./videoReferenceCapabilityService');
 const { USMERCARI_MODELS } = require('./usmercariVideoClient');
@@ -299,6 +300,84 @@ function verifiedConfigIds(db) {
     WHERE deleted_at IS NULL AND verification_status = 'verified'`).all().map((row) => row.id));
 }
 
+function uniqueSorted(values) {
+  return [...new Set(values.filter((value) => value !== null && value !== undefined && value !== ''))]
+    .sort((left, right) => (typeof left === 'number' && typeof right === 'number'
+      ? left - right
+      : String(left).localeCompare(String(right), 'en')));
+}
+
+function evidenceCapabilityEnvelope(rows) {
+  const capabilities = rows.map((row) => row.capability).filter(Boolean);
+  const maximum = (field) => capabilities.reduce((value, capability) => (
+    Math.max(value, Number(capability[field]) || 0)
+  ), 0);
+  const maxImageReferences = maximum('referenceImageCount');
+  const maxVideoReferences = maximum('referenceVideoCount');
+  const maxAudioReferences = maximum('referenceAudioCount');
+  return publicCapabilityValue({
+    resolutions: uniqueSorted(capabilities.map((capability) => capability.resolution)),
+    aspectRatios: uniqueSorted(capabilities.map((capability) => capability.aspectRatio)),
+    durations: uniqueSorted(capabilities.map((capability) => capability.duration).filter(Boolean)),
+    maxReferences: maxImageReferences,
+    maxImageReferences,
+    maxVideoReferences,
+    maxAudioReferences,
+    supportsImageReference: maxImageReferences > 0,
+    supportsVideoReference: maxVideoReferences > 0,
+    supportsAudioReference: maxAudioReferences > 0,
+    supportsAudio: capabilities.some((capability) => capability.requiresAudio === true),
+    supportsFirstFrame: capabilities.some((capability) => capability.firstFrame === true),
+    supportsLastFrame: capabilities.some((capability) => capability.lastFrame === true),
+  });
+}
+
+function recordPublicUnavailableTransition(db, logicalModelId, configIds, now) {
+  if (!logicalModelId || !configIds.length) return false;
+  const placeholders = configIds.map(() => '?').join(',');
+  return db.transaction(() => {
+    const history = db.prepare(`SELECT MAX(verified_at) AS last_verified_at
+      FROM provider_canary_evidence
+      WHERE config_id IN (${placeholders}) AND verified_at IS NOT NULL`).get(...configIds);
+    if (!history?.last_verified_at) return false;
+    const previous = db.prepare(`SELECT MAX(created_at) AS last_event_at
+      FROM provider_stability_events
+      WHERE event_type = 'provider_canary_public_unavailable'
+        AND logical_model_id = ? COLLATE NOCASE`).get(logicalModelId);
+    if (previous?.last_event_at && previous.last_event_at >= history.last_verified_at) return false;
+    db.prepare(`INSERT INTO provider_stability_events
+      (severity, event_type, logical_model_id, safe_details, created_at)
+      VALUES ('P1', 'provider_canary_public_unavailable', ?, ?, ?)`)
+      .run(logicalModelId, JSON.stringify({ category: 'fresh_evidence_unavailable' }), now);
+    return true;
+  }).immediate();
+}
+
+function enforceFreshEvidenceCatalog(db, items, configsByKey, now) {
+  const result = [];
+  for (const item of items) {
+    const key = `${item.kind}:${item.model.toLowerCase()}`;
+    const configs = configsByKey.get(key) || [];
+    const evidence = providerRouteStabilityService.listFreshCandidateEvidence(db, configs, now);
+    if (!evidence.length) {
+      const logicalModelId = configs
+        .map((config) => String(config.logical_model_id || '').trim())
+        .find(Boolean);
+      recordPublicUnavailableTransition(db, logicalModelId, configs.map((config) => config.id), now);
+      continue;
+    }
+    const capabilities = evidenceCapabilityEnvelope(evidence);
+    const resolutions = new Set(capabilities.resolutions || []);
+    result.push({
+      ...item,
+      resolution_prices: Object.fromEntries(Object.entries(item.resolution_prices || {})
+        .filter(([resolution]) => resolutions.has(String(resolution).toLowerCase()))),
+      capabilities,
+    });
+  }
+  return result;
+}
+
 function list(db, options = {}) {
   const prices = new Map(modelPriceService.list(db)
     .filter((row) => row.status === 'enabled')
@@ -339,8 +418,17 @@ function list(db, options = {}) {
       model: String(config.logical_model_id || '').trim() || upstreamModel,
       upstreamModel,
     })));
+  const allEntries = [...mediaEntries, ...nonMediaEntries];
+  const configsByKey = new Map();
+  for (const entry of allEntries) {
+    const key = `${entry.kind}:${entry.model.toLowerCase()}`;
+    if (!configsByKey.has(key)) configsByKey.set(key, []);
+    if (!configsByKey.get(key).some((config) => config.id === entry.config.id)) {
+      configsByKey.get(key).push(entry.config);
+    }
+  }
   const seen = new Set();
-  const configured = [...mediaEntries, ...nonMediaEntries]
+  let configured = allEntries
     .filter((entry) => entry.kind
       && (!verifiedIds || aiConfigService.isVerifiedConfig(entry.config))
       && isRealGenerationVerified(entry.config, entry.upstreamModel))
@@ -386,6 +474,15 @@ function list(db, options = {}) {
         configured.push(item);
       }
     }
+  }
+  if (verifiedIds !== null
+      && providerRouteStabilityService.resolveCanaryMode(options.canaryMode) === 'enforce') {
+    configured = enforceFreshEvidenceCatalog(
+      db,
+      configured,
+      configsByKey,
+      options.now || new Date().toISOString(),
+    );
   }
   return configured;
 }

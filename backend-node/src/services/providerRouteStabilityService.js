@@ -2,10 +2,13 @@ const fs = require('fs');
 
 const aiConfigService = require('./aiConfigService');
 const modelPriceService = require('./modelPriceService');
+const evidenceService = require('./providerCanaryEvidenceService');
+const runtimeService = require('./providerRuntimeFingerprintService');
 const { toSafeErrorSummary } = require('./providerErrorClassifier');
 
 const DEFAULT_FAILURE_THRESHOLD = 3;
 const DEFAULT_COOLDOWN_SECONDS = 300;
+const VALID_CANARY_MODES = new Set(['off', 'shadow', 'enforce']);
 
 function parseJson(value, fallback = {}) {
   if (!value) return fallback;
@@ -83,6 +86,108 @@ function matchesCapabilities(config, requested) {
   return true;
 }
 
+function resolveCanaryMode(value) {
+  const raw = value === undefined ? process.env.PROVIDER_CANARY_MODE : value;
+  const mode = String(raw == null || raw === '' ? 'off' : raw).trim().toLowerCase();
+  return VALID_CANARY_MODES.has(mode) ? mode : 'off';
+}
+
+function priceSnapshot(db, config) {
+  const model = String(config.logical_model_id || config.default_model || config.model?.[0] || '').trim();
+  return modelPriceService.list(db)
+    .find((row) => row.model.toLowerCase() === model.toLowerCase()) || null;
+}
+
+function evidenceFingerprints(db, config) {
+  try {
+    const price = priceSnapshot(db, config);
+    const tiers = price
+      ? Object.entries(price.resolution_prices || {})
+        .map(([resolution, value]) => ({ resolution, ...value }))
+      : [];
+    const runtime = runtimeService.runtimeFingerprintForConfig(config);
+    if (!runtime.ok || !runtime.fingerprint) return null;
+    return {
+      configFingerprint: evidenceService.configFingerprint(config),
+      costFingerprint: evidenceService.costFingerprint(price, tiers),
+      runtimeFingerprint: runtime.fingerprint,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function freshEvidenceForCapability(db, config, capability, now, fingerprints = evidenceFingerprints(db, config)) {
+  if (!fingerprints) return [];
+  return evidenceService.listFreshCoveringEvidence(db, {
+    serviceType: config.service_type,
+    logicalModelId: config.logical_model_id,
+    configId: config.id,
+    capability,
+    now,
+    ...fingerprints,
+  });
+}
+
+function availableConfigs(rows, db, primaryConfigId, now) {
+  return rows
+    .map((row) => aiConfigService.getConfig(db, row.id))
+    .filter(Boolean)
+    .filter((config) => config.id === primaryConfigId || config.failover_enabled)
+    .filter((config) => {
+      const health = rows.find((row) => row.id === config.id);
+      if (health?.health_state === 'disabled') return false;
+      return health?.health_state !== 'open' || !health.open_until || health.open_until <= now;
+    });
+}
+
+function listFreshCandidateEvidence(db, configs, now = new Date().toISOString()) {
+  const byService = new Map();
+  for (const config of configs || []) {
+    const serviceType = String(config?.service_type || '').trim().toLowerCase();
+    if (!serviceType) continue;
+    if (!byService.has(serviceType)) byService.set(serviceType, []);
+    byService.get(serviceType).push(config);
+  }
+  const result = [];
+  for (const group of byService.values()) {
+    const ordered = [...group].sort((left, right) => (
+      Number(right.priority || 0) - Number(left.priority || 0) || Number(left.id) - Number(right.id)
+    ));
+    const configIds = ordered.map((config) => config.id);
+    if (!configIds.length) continue;
+    const placeholders = configIds.map(() => '?').join(',');
+    const healthRows = db.prepare(`SELECT c.id, h.state AS health_state, h.open_until
+      FROM ai_service_configs c
+      LEFT JOIN provider_route_health h ON h.config_id = c.id
+      WHERE c.id IN (${placeholders})`).all(...configIds);
+    const healthById = new Map(healthRows.map((row) => [row.id, row]));
+    const primaryConfigId = ordered[0].id;
+    const candidates = ordered
+      .filter((config) => config.id === primaryConfigId || config.failover_enabled)
+      .filter((config) => {
+        const health = healthById.get(config.id);
+        if (health?.health_state === 'disabled') return false;
+        return health?.health_state !== 'open' || !health.open_until || health.open_until <= now;
+      });
+    for (const config of candidates) {
+      const fingerprints = evidenceFingerprints(db, config);
+      if (!fingerprints) continue;
+      const rawRows = db.prepare(`SELECT capability_fingerprint, capability_json
+        FROM provider_canary_evidence WHERE config_id = ? ORDER BY capability_fingerprint`)
+        .all(config.id);
+      for (const raw of rawRows) {
+        let capability;
+        try { capability = JSON.parse(raw.capability_json); } catch (_) { continue; }
+        const matching = freshEvidenceForCapability(db, config, capability, now, fingerprints)
+          .find((row) => row.capability_fingerprint === raw.capability_fingerprint);
+        if (matching) result.push(matching);
+      }
+    }
+  }
+  return result;
+}
+
 function selectVerifiedCandidates(db, input) {
   const logicalModelId = modelPriceService.canonicalModel(input.logicalModelId);
   const credits = modelPriceService.requirePrice(db, logicalModelId);
@@ -101,16 +206,23 @@ function selectVerifiedCandidates(db, input) {
         WHEN 'healthy' THEN 0 WHEN 'degraded' THEN 1 WHEN 'half_open' THEN 2 ELSE 3 END,
       c.id ASC`).all(String(input.serviceType || '').trim(), logicalModelId);
   const primaryConfigId = input.primaryConfigId == null ? rows[0]?.id : Number(input.primaryConfigId);
-  const candidates = rows
-    .map((row) => aiConfigService.getConfig(db, row.id))
-    .filter(Boolean)
-    .filter((config) => config.id === primaryConfigId || config.failover_enabled)
-    .filter((config) => {
-      const health = rows.find((row) => row.id === config.id);
-      if (health?.health_state === 'disabled') return false;
-      return health?.health_state !== 'open' || !health.open_until || health.open_until <= now;
-    })
+  const currentCandidates = availableConfigs(rows, db, primaryConfigId, now)
     .filter((config) => matchesCapabilities(config, requested));
+  const canaryMode = resolveCanaryMode(input.canaryMode);
+  const evidenceByConfig = canaryMode === 'off'
+    ? new Map()
+    : new Map(currentCandidates.map((config) => [
+      config.id,
+      freshEvidenceForCapability(db, config, input.capabilities || {}, now),
+    ]));
+  const candidates = canaryMode === 'enforce'
+    ? currentCandidates.filter((config) => evidenceByConfig.get(config.id)?.length)
+    : canaryMode === 'shadow'
+      ? currentCandidates.map((config) => ({
+        ...config,
+        would_be_hidden: !evidenceByConfig.get(config.id)?.length,
+      }))
+      : currentCandidates;
   return {
     candidates,
     userPriceSnapshot: { model: logicalModelId, credits },
@@ -425,5 +537,7 @@ module.exports = {
   listAdminRoutes,
   listAdminEvents,
   resetHealth,
+  resolveCanaryMode,
+  listFreshCandidateEvidence,
   verifyConfigFromGenerationEvidence,
 };
