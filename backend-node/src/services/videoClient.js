@@ -5267,6 +5267,9 @@ async function callVideoApi(db, log, opts) {
   }
 
   if (!logicalRoute) {
+    if (providerRouteStability.resolveCanaryMode(undefined, log) === 'enforce') {
+      throw new Error('未配置与当前视频生成参数匹配的已验证模型');
+    }
     const config = getDefaultVideoConfig(db, preferredModel);
     if (!config) throw new Error('未配置视频模型，请在「AI 配置」中添加 video 类型且已启用的配置');
     return stripVideoRouteMeta(await submitVideoWithConfig(db, log, config, opts));

@@ -110,6 +110,30 @@ function addPublicConfig(db, values) {
   return config;
 }
 
+function addLegacyPublicConfig(db, values) {
+  const endpointByService = {
+    image: '/images/generations',
+    video: '/video/generations',
+    text: '/chat/completions',
+  };
+  const upstreamModel = `legacy-${values.serviceType}`;
+  const config = aiConfigService.createConfig(db, { info() {}, warn() {}, error() {} }, {
+    service_type: values.serviceType,
+    provider: `legacy-${values.serviceType}`,
+    api_protocol: 'openai',
+    name: `legacy-${values.serviceType}`,
+    base_url: values.baseUrl,
+    api_key: 'test-key',
+    model: [upstreamModel],
+    default_model: upstreamModel,
+    endpoint: endpointByService[values.serviceType],
+    priority: 100,
+  });
+  db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
+    .run(config.id);
+  return { config, upstreamModel };
+}
+
 function costFingerprint(db, logicalModelId = 'seedance-logical') {
   const price = modelPriceService.list(db)
     .find((row) => row.model.toLowerCase() === logicalModelId.toLowerCase());
@@ -583,6 +607,132 @@ for (const serviceType of ['image', 'video']) {
     });
   });
 }
+
+test('enforce 下缺少 logical model 的 active legacy 配置不能直连上游', async (t) => {
+  const previous = process.env.PROVIDER_CANARY_MODE;
+  let submissions = 0;
+  const server = await listen((req, res) => {
+    submissions += 1;
+    req.resume();
+    if (req.url.includes('/chat/completions')) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(`data: ${JSON.stringify({ choices: [{ delta: { content: 'legacy text' } }] })}\n\ndata: [DONE]\n\n`);
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(req.url.includes('/images/')
+      ? { data: [{ url: 'https://cdn.example/legacy.png' }] }
+      : { id: 'legacy-video-task', status: 'processing' }));
+  });
+  t.after(async () => {
+    if (previous === undefined) delete process.env.PROVIDER_CANARY_MODE;
+    else process.env.PROVIDER_CANARY_MODE = previous;
+    await close(server);
+  });
+  process.env.PROVIDER_CANARY_MODE = 'enforce';
+  const log = { info() {}, warn() {}, error() {}, errorw() {} };
+
+  for (const serviceType of ['image', 'video', 'text']) {
+    await t.test(`${serviceType} public legacy route`, async () => {
+      const db = createDb();
+      try {
+        const { config, upstreamModel } = addLegacyPublicConfig(db, {
+          serviceType,
+          baseUrl: `http://127.0.0.1:${server.address().port}`,
+        });
+        const before = submissions;
+        const invocation = serviceType === 'image'
+          ? () => imageClient.callImageApi(db, log, { prompt: 'legacy', model: upstreamModel })
+          : serviceType === 'video'
+            ? () => videoClient.callVideoApi(db, log, {
+              prompt: 'legacy', model: upstreamModel, duration: 5,
+            })
+            : () => aiClient.generateText(db, log, 'text', 'legacy', '', { model: upstreamModel });
+        await assert.rejects(invocation, /匹配|可用|验证|路由|模型/);
+        assert.equal(submissions, before);
+
+        if (serviceType !== 'text') {
+          await assert.rejects(
+            () => serviceType === 'image'
+              ? imageClient.callImageApi(db, log, {
+                config_id: config.id, prompt: 'legacy explicit', model: upstreamModel,
+              })
+              : videoClient.callVideoApi(db, log, {
+                config_id: config.id, prompt: 'legacy explicit', model: upstreamModel, duration: 5,
+              }),
+            /匹配|可用|验证|路由|模型/,
+          );
+          assert.equal(submissions, before);
+        }
+      } finally {
+        db.close();
+      }
+    });
+  }
+
+  for (const serviceType of ['image', 'video']) {
+    await t.test(`${serviceType} internal ForConfigId remains executable`, async () => {
+      const db = createDb();
+      try {
+        const { config, upstreamModel } = addLegacyPublicConfig(db, {
+          serviceType,
+          baseUrl: `http://127.0.0.1:${server.address().port}`,
+        });
+        const before = submissions;
+        const result = serviceType === 'image'
+          ? await imageClient.callImageApiForConfigId(db, log, config.id, {
+            prompt: 'internal legacy', model: upstreamModel,
+          })
+          : await videoClient.callVideoApiForConfigId(db, log, config.id, {
+            prompt: 'internal legacy', model: upstreamModel, duration: 5,
+          });
+        assert.equal(submissions, before + 1);
+        assert.ok(serviceType === 'image' ? result.image_url : result.task_id);
+      } finally {
+        db.close();
+      }
+    });
+  }
+});
+
+test('公共路由和目录绝不把 expired open 或 half_open 当作用户探针', async (t) => {
+  const scenarios = [
+    { name: 'expired open', state: 'open', openUntil: '2026-08-17T00:00:00.000Z' },
+    { name: 'half_open', state: 'half_open', openUntil: null },
+  ];
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, () => {
+      const db = createDb();
+      try {
+        const configId = addConfig(db, { name: `health-${scenario.name}`, priority: 100 });
+        addEvidence(db, configId, REQUESTED, `health-${scenario.name}`);
+        db.prepare(`INSERT INTO provider_route_health
+          (config_id, state, consecutive_failures, open_until, updated_at)
+          VALUES (?, ?, 3, ?, ?)`).run(configId, scenario.state, scenario.openUntil, NOW);
+        const selected = stability.selectVerifiedCandidates(db, {
+          serviceType: 'video', logicalModelId: 'seedance-logical', primaryConfigId: configId,
+          capabilities: REQUESTED, canaryMode: 'enforce', now: NOW,
+        });
+        assert.deepEqual(selected.candidates, []);
+        assert.equal(catalog.list(db, { canaryMode: 'enforce', now: NOW })
+          .some((row) => row.model === 'seedance-logical'), false);
+
+        db.prepare(`UPDATE provider_route_health SET state = 'healthy', open_until = NULL,
+          consecutive_failures = 0, half_open_claimed_at = NULL, updated_at = ? WHERE config_id = ?`)
+          .run('2026-08-18T00:01:00.000Z', configId);
+        assert.deepEqual(stability.selectVerifiedCandidates(db, {
+          serviceType: 'video', logicalModelId: 'seedance-logical', primaryConfigId: configId,
+          capabilities: REQUESTED, canaryMode: 'enforce', now: '2026-08-18T00:02:00.000Z',
+        }).candidates.map((row) => row.id), [configId]);
+        assert.equal(catalog.list(db, {
+          canaryMode: 'enforce', now: '2026-08-18T00:02:00.000Z',
+        }).some((row) => row.model === 'seedance-logical'), true);
+      } finally {
+        db.close();
+      }
+    });
+  }
+});
 
 test('image video text 现有调用方省略 mode 时仍会在 enforce 提交前拦截无 fresh 证据线路', async () => {
   const previous = process.env.PROVIDER_CANARY_MODE;

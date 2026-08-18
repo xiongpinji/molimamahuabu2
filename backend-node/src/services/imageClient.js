@@ -2345,6 +2345,9 @@ async function callImageApi(db, log, opts) {
   }
 
   if (!logicalRoute) {
+    if (providerRouteStability.resolveCanaryMode(undefined, log) === 'enforce') {
+      throw new Error('未配置与当前图片生成参数匹配的已验证模型');
+    }
     const candidates = getImageConfigCandidates(
       db,
       preferredModel,

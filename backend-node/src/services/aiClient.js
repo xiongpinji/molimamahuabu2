@@ -601,7 +601,12 @@ function updateTextRouteState(db, requestId, state) {
 async function executeTextRoute(db, log, serviceType, options, invoke) {
   if (options._routeConfig) return invoke(options);
   const routeConfig = findTextLogicalRoute(db, serviceType, options.model, options.scene_key);
-  if (!routeConfig) return invoke(options);
+  if (!routeConfig) {
+    if (providerRouteStability.resolveCanaryMode(undefined, log) === 'enforce') {
+      throw safeTextRouteError('provider_unavailable');
+    }
+    return invoke(options);
+  }
 
   const selected = providerRouteStability.selectVerifiedCandidates(db, {
     serviceType: 'text',

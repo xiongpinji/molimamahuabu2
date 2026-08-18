@@ -161,15 +161,14 @@ function freshEvidenceForCapability(db, config, capability, now, fingerprints = 
   });
 }
 
-function availableConfigs(rows, db, primaryConfigId, now) {
+function availableConfigs(rows, db, primaryConfigId) {
   return rows
     .map((row) => aiConfigService.getConfig(db, row.id))
     .filter(Boolean)
     .filter((config) => config.id === primaryConfigId || config.failover_enabled)
     .filter((config) => {
       const health = rows.find((row) => row.id === config.id);
-      if (health?.health_state === 'disabled') return false;
-      return health?.health_state !== 'open' || !health.open_until || health.open_until <= now;
+      return !['disabled', 'open', 'half_open'].includes(health?.health_state);
     });
 }
 
@@ -189,7 +188,7 @@ function listFreshCandidateEvidence(db, configs, now = new Date().toISOString())
     const configIds = ordered.map((config) => config.id);
     if (!configIds.length) continue;
     const placeholders = configIds.map(() => '?').join(',');
-    const healthRows = db.prepare(`SELECT c.id, h.state AS health_state, h.open_until
+    const healthRows = db.prepare(`SELECT c.id, h.state AS health_state
       FROM ai_service_configs c
       LEFT JOIN provider_route_health h ON h.config_id = c.id
       WHERE c.id IN (${placeholders})`).all(...configIds);
@@ -199,8 +198,7 @@ function listFreshCandidateEvidence(db, configs, now = new Date().toISOString())
       .filter((config) => config.id === primaryConfigId || config.failover_enabled)
       .filter((config) => {
         const health = healthById.get(config.id);
-        if (health?.health_state === 'disabled') return false;
-        return health?.health_state !== 'open' || !health.open_until || health.open_until <= now;
+        return !['disabled', 'open', 'half_open'].includes(health?.health_state);
       });
     for (const config of candidates) {
       const fingerprints = evidenceFingerprints(db, config);
@@ -225,7 +223,7 @@ function selectVerifiedCandidates(db, input) {
   const credits = modelPriceService.requirePrice(db, logicalModelId);
   const requested = normalizeCapabilities(input.serviceType, input.capabilities);
   const now = input.now || new Date().toISOString();
-  const rows = db.prepare(`SELECT c.*, h.state AS health_state, h.open_until
+  const rows = db.prepare(`SELECT c.*, h.state AS health_state
     FROM ai_service_configs c
     LEFT JOIN provider_route_health h ON h.config_id = c.id
     WHERE c.deleted_at IS NULL
@@ -238,7 +236,7 @@ function selectVerifiedCandidates(db, input) {
         WHEN 'healthy' THEN 0 WHEN 'degraded' THEN 1 WHEN 'half_open' THEN 2 ELSE 3 END,
       c.id ASC`).all(String(input.serviceType || '').trim(), logicalModelId);
   const primaryConfigId = input.primaryConfigId == null ? rows[0]?.id : Number(input.primaryConfigId);
-  const currentCandidates = availableConfigs(rows, db, primaryConfigId, now)
+  const currentCandidates = availableConfigs(rows, db, primaryConfigId)
     .filter((config) => matchesCapabilities(config, requested));
   const canaryMode = resolveCanaryMode(input.canaryMode, input.log);
   const evidenceByConfig = canaryMode === 'off'
