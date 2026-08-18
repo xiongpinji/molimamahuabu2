@@ -7,6 +7,15 @@ export const providerStabilityAPI = {
   listEvents(params = {}) {
     return request.get('/admin/provider-stability/events', { params })
   },
+  getCanarySummary() {
+    return request.get('/admin/provider-stability/canary/summary')
+  },
+  listCanaryRuns(params = {}) {
+    return request.get('/admin/provider-stability/canary/runs', { params })
+  },
+  reconcileCanaryRun(runId) {
+    return request.post(`/admin/provider-stability/canary/runs/${runId}/reconcile`, {})
+  },
   updateRoute(configId, body) {
     return request.patch(`/admin/provider-stability/routes/${configId}`, body)
   },
