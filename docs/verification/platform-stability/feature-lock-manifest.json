@@ -179,6 +179,7 @@
         "backend-node/migrations/60_provider_canary_guard.sql",
         "backend-node/migrations/61_provider_canary_reconcile_claim.sql",
         "backend-node/migrations/62_provider_canary_admin_pagination.sql",
+        "backend-node/scripts/verify-feature-lock-manifest.js",
         "backend-node/src/app.js",
         "backend-node/src/middleware/resourceOwnership.js",
         "backend-node/src/routes/index.js",

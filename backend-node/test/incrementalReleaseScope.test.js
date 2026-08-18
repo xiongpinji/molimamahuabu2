@@ -18,6 +18,79 @@ const proactiveCanaryManifestPath = path.join(
   'release-scopes',
   'platform-stability-proactive-canary.json',
 );
+const PROACTIVE_CANARY_ALLOWED_PATHS = [
+  '.github/workflows/platform-zero-cost-smoke.yml',
+  'backend-node/migrations/60_provider_canary_guard.sql',
+  'backend-node/migrations/61_provider_canary_reconcile_claim.sql',
+  'backend-node/migrations/62_provider_canary_admin_pagination.sql',
+  'backend-node/package-lock.json',
+  'backend-node/package.json',
+  'backend-node/scripts/audit-provider-canary-readiness.js',
+  'backend-node/scripts/verify-feature-lock-manifest.js',
+  'backend-node/scripts/verify-platform-feature-inventory.js',
+  'backend-node/src/app.js',
+  'backend-node/src/middleware/resourceOwnership.js',
+  'backend-node/src/routes/index.js',
+  'backend-node/src/routes/providerStability.js',
+  'backend-node/src/services/aiClient.js',
+  'backend-node/src/services/aiConfigService.js',
+  'backend-node/src/services/canvasModelCatalogService.js',
+  'backend-node/src/services/imageClient.js',
+  'backend-node/src/services/modelPriceService.js',
+  'backend-node/src/services/providerCanaryArtifactService.js',
+  'backend-node/src/services/providerCanaryBudgetService.js',
+  'backend-node/src/services/providerCanaryEvidenceService.js',
+  'backend-node/src/services/providerCanaryExecutor.js',
+  'backend-node/src/services/providerCanaryFixtureService.js',
+  'backend-node/src/services/providerCanaryInventoryService.js',
+  'backend-node/src/services/providerCanarySchedulerService.js',
+  'backend-node/src/services/providerRouteStabilityService.js',
+  'backend-node/src/services/providerRuntimeFingerprintService.js',
+  'backend-node/src/services/videoClient.js',
+  'backend-node/test/aiConfigPublicView.test.js',
+  'backend-node/test/appBackgroundServices.test.js',
+  'backend-node/test/canvasModelCatalogService.test.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/modelPrice.test.js',
+  'backend-node/test/platformFeatureInventory.test.js',
+  'backend-node/test/providerAssetSignedAccess.test.js',
+  'backend-node/test/providerCanaryAdminRoutes.test.js',
+  'backend-node/test/providerCanaryArtifacts.test.js',
+  'backend-node/test/providerCanaryBudget.test.js',
+  'backend-node/test/providerCanaryEvidence.test.js',
+  'backend-node/test/providerCanaryExecutor.test.js',
+  'backend-node/test/providerCanaryFixtures.test.js',
+  'backend-node/test/providerCanaryInvalidation.test.js',
+  'backend-node/test/providerCanaryInventory.test.js',
+  'backend-node/test/providerCanaryPublicGate.test.js',
+  'backend-node/test/providerCanaryScheduler.test.js',
+  'backend-node/test/providerCanaryTextConfig.test.js',
+  'backend-node/test/providerRouteAdminRoutes.test.js',
+  'backend-node/test/providerRouteSchema.test.js',
+  'backend-node/test/providerRuntimeFingerprint.test.js',
+  'backend-node/test/videoQueryTaskStatusOnce.test.js',
+  'deploy/release-scopes/platform-stability-proactive-canary.json',
+  'docs/superpowers/plans/2026-08-18-platform-stability-proactive-canary-foundation.md',
+  'docs/superpowers/specs/2026-08-18-platform-stability-proactive-canary-design.md',
+  'docs/verification/platform-stability/feature-lock-manifest.json',
+  'docs/verification/platform-stability/platform-feature-inventory.json',
+  'docs/verification/platform-stability/platform-feature-inventory.schema.json',
+  'docs/verification/platform-stability/proactive-canary-verification.md',
+  'docs/verification/platform-stability/provider-canary-readiness.json',
+  'docs/verification/platform-stability/provider-canary-readiness.schema.json',
+  'frontweb/e2e/platform-zero-cost-smoke.spec.js',
+  'frontweb/e2e/provider-stability-admin.spec.js',
+  'frontweb/scripts/run-platform-zero-cost-smoke.mjs',
+  'frontweb/src/api/providerStability.js',
+  'frontweb/src/components/ProviderStabilityPanel.vue',
+  'frontweb/test/platformZeroCostSmokeContract.test.js',
+  'frontweb/test/providerStabilityAdmin.test.js',
+];
+
+function assertExactProactiveCanaryScope(allowedPaths) {
+  assert.deepEqual(allowedPaths, PROACTIVE_CANARY_ALLOWED_PATHS);
+}
 
 function createFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'incremental-release-scope-'));
@@ -94,7 +167,7 @@ test('增量门禁拒绝路径穿越和清单哈希不匹配', (t) => {
 test('主动巡检发布范围是精确文件白名单且排除运行数据与受保护服务', () => {
   const { manifest, allowedPaths } = loadManifest(proactiveCanaryManifestPath);
   assert.equal(manifest.release, 'platform-stability-proactive-canary');
-  assert.equal(allowedPaths.length, 66);
+  assertExactProactiveCanaryScope(allowedPaths);
   assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
 
   for (const required of [
@@ -125,4 +198,15 @@ test('主动巡检发布范围是精确文件白名单且排除运行数据与�
       `发布范围不得包含: ${forbidden}`,
     );
   }
+});
+
+test('主动巡检发布范围拒绝同数量偷换任一文件', () => {
+  const swapped = [...PROACTIVE_CANARY_ALLOWED_PATHS];
+  const index = swapped.indexOf('backend-node/src/services/providerCanaryBudgetService.js');
+  swapped[index] = 'backend-node/data/drama_generator.db';
+  assert.equal(swapped.length, PROACTIVE_CANARY_ALLOWED_PATHS.length);
+  assert.throws(
+    () => assertExactProactiveCanaryScope(swapped),
+    { name: 'AssertionError' },
+  );
 });

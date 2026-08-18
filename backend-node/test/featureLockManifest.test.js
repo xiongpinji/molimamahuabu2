@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -29,6 +30,7 @@ const PROACTIVE_CANARY_CORE_PATHS = [
   'backend-node/migrations/60_provider_canary_guard.sql',
   'backend-node/migrations/61_provider_canary_reconcile_claim.sql',
   'backend-node/migrations/62_provider_canary_admin_pagination.sql',
+  'backend-node/scripts/verify-feature-lock-manifest.js',
   'backend-node/src/app.js',
   'backend-node/src/middleware/resourceOwnership.js',
   'backend-node/src/routes/index.js',
@@ -118,6 +120,42 @@ test('本轮触及的既有稳定性锁使用同一批准原因且保留历史�
     assert.match(feature.unlock?.approvedBy || '', /product-owner/);
     assert.equal(feature.evidence.length > 0, true);
   }
+});
+
+test('显式 --base 拒绝不存在的 Git 引用且不能静默按零变更放行', () => {
+  const result = spawnSync(process.execPath, [
+    path.join(repoRoot, 'backend-node', 'scripts', 'verify-feature-lock-manifest.js'),
+    '--base',
+    'refs/heads/feature-lock-base-does-not-exist',
+  ], { cwd: repoRoot, encoding: 'utf8' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /INVALID_BASE_REF/);
+  assert.doesNotMatch(result.stdout, /"ready":true/);
+});
+
+test('显式 --base 存在但基线清单不可读时拒绝放行', () => {
+  const result = spawnSync(process.execPath, [
+    path.join(repoRoot, 'backend-node', 'scripts', 'verify-feature-lock-manifest.js'),
+    '--base',
+    'HEAD:backend-node/package.json',
+  ], { cwd: repoRoot, encoding: 'utf8' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /BASE_MANIFEST_UNAVAILABLE/);
+  assert.doesNotMatch(result.stdout, /"ready":true/);
+});
+
+test('显式 --base 有效且包含基线清单时执行真实差异审计', () => {
+  const result = spawnSync(process.execPath, [
+    path.join(repoRoot, 'backend-node', 'scripts', 'verify-feature-lock-manifest.js'),
+    '--base',
+    'HEAD^',
+  ], { cwd: repoRoot, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.ready, true);
+  assert.equal(report.baseRef, 'HEAD^');
+  assert.equal(report.changedPaths > 0, true);
+  assert.equal(report.protectedFeaturesFromBase > 0, true);
 });
 
 test('锁定保护路径发生变化时必须提供原因、批准者和影响测试', () => {

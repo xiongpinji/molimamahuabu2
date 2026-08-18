@@ -14,6 +14,13 @@ function gateError(message, details = []) {
   return error;
 }
 
+function baseRefError(code, message, details = []) {
+  const error = new Error(message);
+  error.code = code;
+  error.details = details;
+  return error;
+}
+
 function normalizePath(value, field) {
   const raw = String(value || '').replaceAll('\\', '/');
   const normalized = path.posix.normalize(raw);
@@ -168,10 +175,26 @@ function loadAndVerifyCurrentManifest(options = {}) {
   const manifestPath = path.resolve(options.manifestPath || path.join(repoRoot, DEFAULT_MANIFEST));
   const manifestRelativePath = path.relative(repoRoot, manifestPath).replaceAll('\\', '/');
   const currentManifest = readJson(manifestPath);
-  const baseRef = options.baseRef || discoverBaseRef(repoRoot);
+  const explicitBaseRef = typeof options.baseRef === 'string' && options.baseRef.trim()
+    ? options.baseRef.trim()
+    : null;
+  if (explicitBaseRef) {
+    try {
+      git(repoRoot, ['rev-parse', '--verify', explicitBaseRef]);
+    } catch (_) {
+      throw baseRefError('INVALID_BASE_REF', `显式基线 Git 引用不存在: ${explicitBaseRef}`);
+    }
+  }
+  const baseRef = explicitBaseRef || discoverBaseRef(repoRoot);
   const baseManifest = Object.prototype.hasOwnProperty.call(options, 'baseManifest')
     ? options.baseManifest
     : loadBaseManifest(repoRoot, baseRef, manifestRelativePath);
+  if (explicitBaseRef && !baseManifest) {
+    throw baseRefError(
+      'BASE_MANIFEST_UNAVAILABLE',
+      `显式基线缺少或无法读取功能锁清单: ${explicitBaseRef}:${manifestRelativePath}`,
+    );
+  }
   const changedPaths = options.changedPaths || (baseManifest ? changedPathsSince(repoRoot, baseRef) : []);
   return {
     ...verifyFeatureLock({ repoRoot, currentManifest, baseManifest, changedPaths }),

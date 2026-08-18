@@ -9,6 +9,7 @@
     "backend-node/package-lock.json",
     "backend-node/package.json",
     "backend-node/scripts/audit-provider-canary-readiness.js",
+    "backend-node/scripts/verify-feature-lock-manifest.js",
     "backend-node/scripts/verify-platform-feature-inventory.js",
     "backend-node/src/app.js",
     "backend-node/src/middleware/resourceOwnership.js",
