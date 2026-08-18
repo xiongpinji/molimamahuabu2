@@ -68,27 +68,28 @@ function budgetBuckets(now) {
 }
 
 function parseCnyMicros(value, hardLimit) {
-  if (typeof value !== 'string' || value.length === 0 || value.length > 64) {
-    return hardLimit;
-  }
+  if (value === undefined || value === null || value === '') return hardLimit;
+  if (typeof value !== 'string' || value.length > 64) return 0;
   const match = /^(0|[1-9]\d*)(?:\.(\d{1,6}))?$/.exec(value);
-  if (!match) return hardLimit;
+  if (!match) return 0;
   const fractional = (match[2] || '').padEnd(6, '0');
   const micros = (BigInt(match[1]) * 1_000_000n) + BigInt(fractional || '0');
+  if (micros > BigInt(Number.MAX_SAFE_INTEGER)) return 0;
   const hard = BigInt(hardLimit);
   return Number(micros > hard ? hard : micros);
 }
 
 function resolveBudgetLimits(env = {}) {
+  const source = env && typeof env === 'object' ? env : {};
   return {
     hardDailyLimitMicros: HARD_DAILY_BUDGET_MICROS,
     hardMonthlyLimitMicros: HARD_MONTHLY_BUDGET_MICROS,
     effectiveDailyLimitMicros: parseCnyMicros(
-      env.PROVIDER_CANARY_DAILY_BUDGET_CNY,
+      source.PROVIDER_CANARY_DAILY_BUDGET_CNY,
       HARD_DAILY_BUDGET_MICROS,
     ),
     effectiveMonthlyLimitMicros: parseCnyMicros(
-      env.PROVIDER_CANARY_MONTHLY_BUDGET_CNY,
+      source.PROVIDER_CANARY_MONTHLY_BUDGET_CNY,
       HARD_MONTHLY_BUDGET_MICROS,
     ),
   };
@@ -156,10 +157,33 @@ function normalizeReserveInput(input) {
 
 function usageFor(db, column, bucket) {
   return db.prepare(`SELECT COALESCE(SUM(
-      COALESCE(actual_cost_micros, reserved_cost_micros)
+      CASE
+        WHEN state = 'budget_blocked' THEN COALESCE(actual_cost_micros, 0)
+        WHEN state IN ('succeeded', 'failed')
+          THEN COALESCE(actual_cost_micros, reserved_cost_micros)
+        ELSE reserved_cost_micros
+      END
     ), 0) AS used
     FROM provider_canary_runs
     WHERE ${column} = ?`).get(bucket).used;
+}
+
+function reservationMatches(row, values) {
+  return [
+    'id',
+    'config_id',
+    'logical_model_id',
+    'service_type',
+    'capability_fingerprint',
+    'config_fingerprint',
+    'cost_fingerprint',
+    'runtime_fingerprint',
+    'provider_scope_key',
+    'reserved_cost_micros',
+    'currency',
+    'budget_day',
+    'budget_month',
+  ].every((field) => row[field] === values[field]);
 }
 
 function reserve(db, input) {
@@ -171,9 +195,16 @@ function reserve(db, input) {
     const existing = db.prepare(
       'SELECT * FROM provider_canary_runs WHERE idempotency_key = ?',
     ).get(idempotencyKey);
-    if (existing) return existing;
-
     const values = normalizeReserveInput(input);
+    if (existing) {
+      if (!reservationMatches(existing, values)) {
+        throw serviceError(
+          'PROVIDER_CANARY_IDEMPOTENCY_CONFLICT',
+          'provider canary idempotency key conflicts with an existing reservation',
+        );
+      }
+      return existing;
+    }
     const limits = resolveBudgetLimits(process.env);
     const dailyUsed = usageFor(db, 'budget_day', values.budget_day);
     if (dailyUsed + values.reserved_cost_micros > limits.effectiveDailyLimitMicros) {
@@ -208,26 +239,50 @@ function reserve(db, input) {
 function markSubmitting(db, runId, now) {
   const id = requireString(runId, 'runId', 255);
   requireIsoTime(now);
-  const row = getRun(db, id);
-  if (row.state === 'submitting') return row;
-  if (row.state !== 'reserved') throw invalidTransition();
-  db.prepare(`UPDATE provider_canary_runs
-    SET state = 'submitting', submitted_at = ?, updated_at = ?
-    WHERE id = ?`).run(now, now, id);
-  return getRun(db, id);
+  const transaction = db.transaction(() => {
+    const row = getRun(db, id);
+    if (row.state === 'submitting'
+      && row.provider_task_id === null
+      && row.error_category === null) return row;
+    if (row.state !== 'reserved') throw invalidTransition();
+    const result = db.prepare(`UPDATE provider_canary_runs
+      SET state = 'submitting', submitted_at = ?, updated_at = ?
+      WHERE id = ? AND state = 'reserved'`).run(now, now, id);
+    if (result.changes !== 1) {
+      const current = getRun(db, id);
+      if (current.state === 'submitting'
+        && current.provider_task_id === null
+        && current.error_category === null) return current;
+      throw invalidTransition();
+    }
+    return getRun(db, id);
+  });
+  return transaction.immediate();
 }
 
 function markAccepted(db, runId, providerTaskId, now) {
   const id = requireString(runId, 'runId', 255);
   const taskId = requireString(providerTaskId, 'providerTaskId', 512);
   requireIsoTime(now);
-  const row = getRun(db, id);
-  if (row.state === 'accepted' && row.provider_task_id === taskId) return row;
-  if (row.state !== 'submitting') throw invalidTransition();
-  db.prepare(`UPDATE provider_canary_runs
-    SET state = 'accepted', provider_task_id = ?, updated_at = ?
-    WHERE id = ?`).run(taskId, now, id);
-  return getRun(db, id);
+  const transaction = db.transaction(() => {
+    const row = getRun(db, id);
+    if (row.state === 'accepted'
+      && row.provider_task_id === taskId
+      && row.error_category === null) return row;
+    if (row.state !== 'submitting') throw invalidTransition();
+    const result = db.prepare(`UPDATE provider_canary_runs
+      SET state = 'accepted', provider_task_id = ?, updated_at = ?
+      WHERE id = ? AND state = 'submitting'`).run(taskId, now, id);
+    if (result.changes !== 1) {
+      const current = getRun(db, id);
+      if (current.state === 'accepted'
+        && current.provider_task_id === taskId
+        && current.error_category === null) return current;
+      throw invalidTransition();
+    }
+    return getRun(db, id);
+  });
+  return transaction.immediate();
 }
 
 function normalizeArtifact(artifact) {
@@ -250,6 +305,9 @@ function normalizeArtifact(artifact) {
 }
 
 function recordOverrunEvent(db, row, actualCostMicros, now) {
+  const existing = db.prepare(`SELECT 1 FROM provider_stability_events
+    WHERE request_id = ? AND event_type = 'provider_canary_cost_overrun'`).get(row.id);
+  if (existing) return;
   const safeDetails = JSON.stringify({
     runId: row.id,
     logicalModelId: row.logical_model_id,
@@ -257,9 +315,10 @@ function recordOverrunEvent(db, row, actualCostMicros, now) {
     actualCostMicros,
   });
   db.prepare(`INSERT INTO provider_stability_events
-    (severity, event_type, logical_model_id, config_id, task_state, safe_details, created_at)
-    VALUES ('P1', 'provider_canary_cost_overrun', ?, ?, ?, ?, ?)`)
-    .run(row.logical_model_id, row.config_id, row.state, safeDetails, now);
+    (severity, event_type, request_id, logical_model_id, config_id, task_state,
+     safe_details, created_at)
+    VALUES ('P1', 'provider_canary_cost_overrun', ?, ?, ?, ?, ?, ?)`)
+    .run(row.id, row.logical_model_id, row.config_id, row.state, safeDetails, now);
 }
 
 function runSettlement(db, runId, actualCostMicros, now, settle) {
@@ -379,22 +438,35 @@ function settleUnknown(db, runId, state, category, providerTaskId, now) {
   const safeCategory = requireCategory(category);
   const requestedTaskId = optionalTaskId(providerTaskId);
   requireIsoTime(now);
-  const row = getRun(db, id);
-  if (row.state === state) {
+  const transaction = db.transaction(() => {
+    const row = getRun(db, id);
+    if (row.state === state) {
+      const replayTaskId = taskIdForUnknown(row, state, requestedTaskId);
+      if (row.error_category === safeCategory && row.provider_task_id === replayTaskId) return row;
+      throw invalidTransition();
+    }
+    const allowedOrigins = state === 'submission_unknown'
+      ? new Set(['submitting'])
+      : new Set(['accepted', 'verifying']);
+    if (!allowedOrigins.has(row.state)) throw invalidTransition();
     const taskId = taskIdForUnknown(row, state, requestedTaskId);
-    if (row.error_category === safeCategory && row.provider_task_id === taskId) return row;
-    throw invalidTransition();
-  }
-  const allowedOrigins = state === 'submission_unknown'
-    ? new Set(['submitting'])
-    : new Set(['accepted', 'verifying']);
-  if (!allowedOrigins.has(row.state)) throw invalidTransition();
-  const taskId = taskIdForUnknown(row, state, requestedTaskId);
-  db.prepare(`UPDATE provider_canary_runs
-    SET state = ?, error_category = ?, provider_task_id = ?,
-      finished_at = ?, updated_at = ?
-    WHERE id = ?`).run(state, safeCategory, taskId, now, now, id);
-  return getRun(db, id);
+    const result = db.prepare(`UPDATE provider_canary_runs
+      SET state = ?, error_category = ?, provider_task_id = ?,
+        finished_at = ?, updated_at = ?
+      WHERE id = ? AND state = ?`)
+      .run(state, safeCategory, taskId, now, now, id, row.state);
+    if (result.changes !== 1) {
+      const current = getRun(db, id);
+      if (current.state === state) {
+        const replayTaskId = taskIdForUnknown(current, state, requestedTaskId);
+        if (current.error_category === safeCategory
+          && current.provider_task_id === replayTaskId) return current;
+      }
+      throw invalidTransition();
+    }
+    return getRun(db, id);
+  });
+  return transaction.immediate();
 }
 
 function getBudgetSummary(db, now) {

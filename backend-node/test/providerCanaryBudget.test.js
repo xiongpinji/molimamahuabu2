@@ -176,25 +176,30 @@ test('two file-backed connections observe committed reservations without overspe
   }
 });
 
-test('idempotency lookup returns the original run before evaluating changed input', () => {
+test('idempotency replay requires every immutable reservation field to match', () => {
   const db = createDb();
   try {
     const original = reserveRun(db);
-    const replay = reserveRun(db, {
-      id: 'different-id',
-      route: {
-        configId: 2,
-        logicalModelId: 'different-model',
-        serviceType: 'image',
-        capabilityFingerprint: 'different-capability',
-        configFingerprint: 'different-config',
-        costFingerprint: 'different-cost',
-        runtimeFingerprint: 'different-runtime',
-        providerScopeKey: 'different-scope',
-      },
-      reservedCostMicros: 19_000_000,
-    });
-    assert.deepEqual(replay, original);
+    assert.deepEqual(reserveRun(db), original);
+    const conflicts = [
+      { id: 'different-id' },
+      { route: { configId: 2 } },
+      { route: { logicalModelId: 'different-model' } },
+      { route: { serviceType: 'image' } },
+      { route: { capabilityFingerprint: 'different-capability' } },
+      { route: { configFingerprint: 'different-config' } },
+      { route: { costFingerprint: 'different-cost' } },
+      { route: { runtimeFingerprint: 'different-runtime' } },
+      { route: { providerScopeKey: 'different-scope' } },
+      { reservedCostMicros: 2_000_000 },
+      { now: '2026-08-18T16:00:00.000Z' },
+    ];
+    for (const override of conflicts) {
+      expectCode(
+        () => reserveRun(db, override),
+        'PROVIDER_CANARY_IDEMPOTENCY_CONFLICT',
+      );
+    }
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM provider_canary_runs').get().count, 1);
     assert.equal(budgetService.getBudgetSummary(db, NOW).dailyUsedMicros, 1_000_000);
   } finally {
@@ -252,6 +257,126 @@ test('submitting and accepted transitions are strict, validated, idempotent, and
     expectCode(() => budgetService.markSubmitting(db, 'run-1', NOW), 'PROVIDER_CANARY_INVALID_STATE_TRANSITION');
   } finally {
     db.close();
+  }
+});
+
+test('submitting, accepted, and unknown transitions use immediate transactions', () => {
+  const db = createDb();
+  try {
+    reserveRun(db);
+    const originalTransaction = db.transaction.bind(db);
+    let immediateCalls = 0;
+    db.transaction = (fn) => {
+      const transaction = originalTransaction(fn);
+      const wrapper = (...args) => transaction(...args);
+      wrapper.immediate = (...args) => {
+        immediateCalls += 1;
+        return transaction.immediate(...args);
+      };
+      return wrapper;
+    };
+    budgetService.markSubmitting(db, 'run-1', '2026-08-18T00:00:01.000Z');
+    budgetService.markAccepted(db, 'run-1', 'provider-task-original', '2026-08-18T00:00:02.000Z');
+    budgetService.settleUnknown(
+      db, 'run-1', 'result_unknown', 'result_timeout', null, '2026-08-18T00:00:03.000Z',
+    );
+    assert.equal(immediateCalls, 3);
+  } finally {
+    db.close();
+  }
+});
+
+test('state replay rejects stored task or category fields absent from the request', () => {
+  const db = createDb();
+  try {
+    reserveRun(db, { id: 'submitting-replay', idempotencyKey: 'submitting-replay-key' });
+    budgetService.markSubmitting(db, 'submitting-replay', '2026-08-18T00:00:01.000Z');
+    db.prepare(`UPDATE provider_canary_runs SET provider_task_id = 'unexpected-task'
+      WHERE id = 'submitting-replay'`).run();
+    expectCode(
+      () => budgetService.markSubmitting(db, 'submitting-replay', '2026-08-18T00:00:09.000Z'),
+      'PROVIDER_CANARY_INVALID_STATE_TRANSITION',
+    );
+
+    reserveRun(db, { id: 'accepted-replay', idempotencyKey: 'accepted-replay-key' });
+    budgetService.markSubmitting(db, 'accepted-replay', '2026-08-18T00:00:01.000Z');
+    budgetService.markAccepted(
+      db, 'accepted-replay', 'provider-task-original', '2026-08-18T00:00:02.000Z',
+    );
+    db.prepare(`UPDATE provider_canary_runs SET error_category = 'unexpected_category'
+      WHERE id = 'accepted-replay'`).run();
+    expectCode(
+      () => budgetService.markAccepted(
+        db, 'accepted-replay', 'provider-task-original', '2026-08-18T00:00:09.000Z',
+      ),
+      'PROVIDER_CANARY_INVALID_STATE_TRANSITION',
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('two connections cannot overwrite accepted task or unknown terminal identity', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-canary-state-'));
+  const filename = path.join(directory, 'state.sqlite');
+  const first = createDb(filename);
+  const second = new Database(filename);
+  try {
+    second.pragma('foreign_keys = ON');
+    first.pragma('busy_timeout = 1000');
+    second.pragma('busy_timeout = 1000');
+    reserveRun(first);
+    const submitting = budgetService.markSubmitting(first, 'run-1', '2026-08-18T00:00:01.000Z');
+    assert.deepEqual(
+      budgetService.markSubmitting(second, 'run-1', '2026-08-18T00:00:09.000Z'),
+      submitting,
+    );
+    const accepted = budgetService.markAccepted(
+      first, 'run-1', 'provider-task-original', '2026-08-18T00:00:02.000Z',
+    );
+    expectCode(
+      () => budgetService.markAccepted(
+        second, 'run-1', 'provider-task-different', '2026-08-18T00:00:03.000Z',
+      ),
+      'PROVIDER_CANARY_INVALID_STATE_TRANSITION',
+    );
+    assert.deepEqual(
+      budgetService.markAccepted(
+        second, 'run-1', 'provider-task-original', '2026-08-18T00:00:09.000Z',
+      ),
+      accepted,
+    );
+
+    const unknown = budgetService.settleUnknown(
+      first, 'run-1', 'result_unknown', 'result_timeout', null,
+      '2026-08-18T00:00:04.000Z',
+    );
+    expectCode(
+      () => budgetService.settleUnknown(
+        second, 'run-1', 'result_unknown', 'different_category', null,
+        '2026-08-18T00:00:05.000Z',
+      ),
+      'PROVIDER_CANARY_INVALID_STATE_TRANSITION',
+    );
+    expectCode(
+      () => budgetService.settleUnknown(
+        second, 'run-1', 'artifact_unreadable', 'result_timeout', null,
+        '2026-08-18T00:00:05.000Z',
+      ),
+      'PROVIDER_CANARY_INVALID_STATE_TRANSITION',
+    );
+    assert.deepEqual(second.prepare(`SELECT state, provider_task_id, error_category,
+      actual_cost_micros, finished_at FROM provider_canary_runs WHERE id = 'run-1'`).get(), {
+      state: unknown.state,
+      provider_task_id: 'provider-task-original',
+      error_category: 'result_timeout',
+      actual_cost_micros: null,
+      finished_at: '2026-08-18T00:00:04.000Z',
+    });
+  } finally {
+    second.close();
+    first.close();
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -337,15 +462,26 @@ test('cost overrun persists a safe P1 event and keeps the full reservation', () 
       () => budgetService.settleSuccess(db, 'run-1', 1_000_001, artifact, '2026-08-18T00:00:03.000Z'),
       'PROVIDER_CANARY_COST_OVERRUN',
     );
+    expectCode(
+      () => budgetService.settleSuccess(db, 'run-1', 1_000_001, artifact, '2026-08-18T00:00:04.000Z'),
+      'PROVIDER_CANARY_COST_OVERRUN',
+    );
+    expectCode(
+      () => budgetService.settleDefinitiveFailure(
+        db, 'run-1', 1_000_002, 'provider_failure', '2026-08-18T00:00:05.000Z',
+      ),
+      'PROVIDER_CANARY_COST_OVERRUN',
+    );
     const run = db.prepare('SELECT * FROM provider_canary_runs WHERE id = ?').get('run-1');
     assert.equal(run.state, 'accepted');
     assert.equal(run.actual_cost_micros, null);
     assert.equal(budgetService.getBudgetSummary(db, NOW).dailyUsedMicros, 1_000_000);
 
-    const event = db.prepare(`SELECT severity, event_type, logical_model_id, config_id,
+    const event = db.prepare(`SELECT severity, event_type, request_id, logical_model_id, config_id,
       safe_details FROM provider_stability_events`).get();
     assert.equal(event.severity, 'P1');
     assert.equal(event.event_type, 'provider_canary_cost_overrun');
+    assert.equal(event.request_id, 'run-1');
     assert.equal(event.logical_model_id, 'logical-video');
     assert.equal(event.config_id, 1);
     assert.deepEqual(JSON.parse(event.safe_details), {
@@ -355,6 +491,8 @@ test('cost overrun persists a safe P1 event and keeps the full reservation', () 
       actualCostMicros: 1_000_001,
     });
     assert.doesNotMatch(event.safe_details, /provider|api[_-]?key|https?:|task-run-1/i);
+    assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM provider_stability_events
+      WHERE request_id = 'run-1' AND event_type = 'provider_canary_cost_overrun'`).get().count, 1);
   } finally {
     db.close();
   }
@@ -533,6 +671,64 @@ test('submission unknown never clears or replaces an existing database task id',
   }
 });
 
+test('budget usage is state-aware and fails safe for abnormal terminal rows', () => {
+  const db = createDb();
+  try {
+    const rows = [
+      ['reserved', 5, 1],
+      ['submitting', 6, 2],
+      ['accepted', 7, 3],
+      ['verifying', 8, 4],
+      ['submission_unknown', 9, 1],
+      ['result_unknown', 10, 1],
+      ['artifact_unreadable', 11, 1],
+      ['succeeded', 100, 12],
+      ['failed', 100, 13],
+      ['succeeded', 14, null],
+      ['failed', 15, null],
+      ['budget_blocked', 200, null],
+      ['budget_blocked', 200, 16],
+    ];
+    rows.forEach(([state, reserved, actual], index) => insertHistoricalRun(db, {
+      id: `usage-run-${index}`,
+      idempotency_key: `usage-key-${index}`,
+      capability_fingerprint: `usage-capability-${index}`,
+      state,
+      reserved_cost_micros: reserved,
+      actual_cost_micros: actual,
+      budget_day: '2026-08-18',
+      created_at: NOW,
+      updated_at: NOW,
+    }));
+    const summary = budgetService.getBudgetSummary(db, NOW);
+    assert.equal(summary.dailyUsedMicros, 126);
+    assert.equal(summary.monthlyUsedMicros, 126);
+    assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM provider_canary_runs
+      WHERE state = 'budget_blocked' AND actual_cost_micros IS NULL`).get().count, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('reserve checks state-aware settled usage instead of stale reservation amounts', () => {
+  const db = createDb();
+  try {
+    insertHistoricalRun(db, {
+      state: 'succeeded',
+      reserved_cost_micros: 20_000_000,
+      actual_cost_micros: 0,
+      budget_day: '2026-08-18',
+    });
+    reserveRun(db, { reservedCostMicros: 20_000_000 });
+    expectCode(
+      () => reserveRun(db, { id: 'state-aware-next', idempotencyKey: 'state-aware-next-key', reservedCostMicros: 1 }),
+      'PROVIDER_CANARY_DAILY_BUDGET_EXCEEDED',
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test('Asia/Shanghai buckets cross UTC 16:00 and summaries leave old unknown runs unchanged', () => {
   const db = createDb();
   try {
@@ -573,7 +769,7 @@ test('Asia/Shanghai buckets cross UTC 16:00 and summaries leave old unknown runs
   }
 });
 
-test('environment limits clamp upward values, accept lower exact values and zero, and safely reject invalid decimals', () => {
+test('environment limits clamp upward values, accept exact decimals, and fail closed malformed values', () => {
   const hard = budgetService.resolveBudgetLimits({
     PROVIDER_CANARY_DAILY_BUDGET_CNY: '21',
     PROVIDER_CANARY_MONTHLY_BUDGET_CNY: '601',
@@ -600,12 +796,40 @@ test('environment limits clamp upward values, accept lower exact values and zero
     budgetService.resolveBudgetLimits({ PROVIDER_CANARY_DAILY_BUDGET_CNY: '0' }).effectiveDailyLimitMicros,
     0,
   );
-  for (const value of ['NaN', '-1', '1.0000001', '1e1', '', ' ']) {
+  for (const env of [
+    {},
+    null,
+    { PROVIDER_CANARY_DAILY_BUDGET_CNY: null },
+    { PROVIDER_CANARY_DAILY_BUDGET_CNY: '' },
+  ]) {
+    assert.equal(budgetService.resolveBudgetLimits(env).effectiveDailyLimitMicros, 20_000_000);
+  }
+  for (const value of [
+    'NaN', '-1', '1.0000001', '1e1', ' ', '+1',
+    '9007199254740992', '9'.repeat(100),
+  ]) {
     assert.equal(
       budgetService.resolveBudgetLimits({ PROVIDER_CANARY_DAILY_BUDGET_CNY: value }).effectiveDailyLimitMicros,
-      20_000_000,
+      0,
       value,
     );
+  }
+});
+
+test('malformed explicit environment budget is visible in summary and closes reserve', () => {
+  const previous = process.env.PROVIDER_CANARY_DAILY_BUDGET_CNY;
+  const db = createDb();
+  try {
+    process.env.PROVIDER_CANARY_DAILY_BUDGET_CNY = 'NaN';
+    const summary = budgetService.getBudgetSummary(db, NOW);
+    assert.equal(summary.hardDailyLimitMicros, 20_000_000);
+    assert.equal(summary.effectiveDailyLimitMicros, 0);
+    assert.equal(summary.dailyRemainingMicros, 0);
+    expectCode(() => reserveRun(db), 'PROVIDER_CANARY_DAILY_BUDGET_EXCEEDED');
+  } finally {
+    if (previous === undefined) delete process.env.PROVIDER_CANARY_DAILY_BUDGET_CNY;
+    else process.env.PROVIDER_CANARY_DAILY_BUDGET_CNY = previous;
+    db.close();
   }
 });
 
