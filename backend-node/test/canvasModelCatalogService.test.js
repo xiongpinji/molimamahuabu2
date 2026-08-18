@@ -56,6 +56,71 @@ test('canvas model catalog preserves public capability names while removing rela
   });
 })
 
+test('canvas capability sanitizer recursively rejects composed identity fields in every key style', () => {
+  const capabilities = safeCapabilities(JSON.stringify({
+    canvas_capabilities: {
+      durations: [5, 10],
+      resolutions: ['480p', '720p'],
+      aspectRatios: ['16:9'],
+      maxReferences: 3,
+      supportsImageReference: true,
+      providerName: 'private-provider-name',
+      provider_name: 'private-provider-snake',
+      'provider-id': 'private-provider-kebab',
+      providerId: 'private-provider-id',
+      providerCode: 'private-provider-code',
+      modelProvider: 'private-model-provider',
+      configName: 'private-config-name',
+      configId: 998,
+      upstreamProvider: 'private-upstream-provider',
+      upstreamModel: 'private-upstream-model',
+      protocolName: 'private-protocol-name',
+      'ProViDeR.Name': 'private-provider-mixed',
+      nested: [{
+        publicFlag: true,
+        ENDPOINT_URL: 'https://private-endpoint.example/v1',
+        deeper: {
+          providerName: 'private-deep-provider',
+          config_name: 'private-deep-config',
+          upstream_provider: 'private-deep-upstream',
+          protocolName: 'private-deep-protocol',
+        },
+      }],
+      presets: [{
+        id: 'public-preset',
+        name: 'Public Preset',
+        value: 'public-value',
+        keyboardShortcut: 'Ctrl+K',
+        publicFlag: true,
+        modelProvider: 'private-preset-provider',
+      }],
+    },
+  }));
+
+  assert.deepEqual(capabilities, {
+    durations: [5, 10],
+    resolutions: ['480p', '720p'],
+    aspectRatios: ['16:9'],
+    maxReferences: 3,
+    supportsImageReference: true,
+    nested: [{ publicFlag: true, deeper: {} }],
+    presets: [{
+      id: 'public-preset',
+      name: 'Public Preset',
+      value: 'public-value',
+      keyboardShortcut: 'Ctrl+K',
+      publicFlag: true,
+    }],
+  });
+  const serialized = JSON.stringify(capabilities);
+  for (const privateKey of [
+    'providerName', 'provider_name', 'provider-id', 'providerId', 'providerCode', 'modelProvider',
+    'configName', 'configId', 'upstreamProvider', 'upstreamModel', 'protocolName',
+    'ProViDeR.Name', 'ENDPOINT_URL', 'config_name', 'upstream_provider',
+  ]) assert.equal(serialized.includes(privateKey), false, privateKey);
+  assert.equal(serialized.includes('private-'), false);
+});
+
 test('canvas model catalog exposes only user video resolution prices to the node editor', () => {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);

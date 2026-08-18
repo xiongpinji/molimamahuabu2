@@ -19,12 +19,11 @@ const KIND_BY_SERVICE = {
   tts: 'audio',
 };
 
-const PRIVATE_CATALOG_FIELDS = new Set([
-  'provider', 'baseurl', 'apikey', 'hostname', 'domain',
-  'accesstoken', 'refreshtoken', 'sessiontoken', 'token', 'secret', 'secretkey',
-  'protocol', 'configid', 'upstreammodel', 'relay', 'relayurl', 'base', 'cost',
+const PRIVATE_CATALOG_FRAGMENTS = Object.freeze([
+  'provider', 'protocol', 'config', 'upstream', 'relay', 'evidence', 'cost',
+  'credential', 'secret', 'token', 'password', 'accesskey', 'apikey',
+  'baseurl', 'hostname', 'domain', 'endpoint',
 ]);
-const PRIVATE_CATALOG_FRAGMENTS = ['token', 'secret', 'credential', 'password', 'accesskey'];
 
 const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'feituo_open', 'lingjing_open']);
 
@@ -93,11 +92,9 @@ function parseModels(value, fallback) {
 }
 
 function isPrivateCatalogField(key) {
-  const normalized = key.replace(/[_-]/g, '').toLowerCase();
-  const tokens = String(key).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[_-]+/);
-  return PRIVATE_CATALOG_FIELDS.has(normalized)
-    || PRIVATE_CATALOG_FRAGMENTS.some((fragment) => normalized.includes(fragment))
-    || tokens.some((token) => ['cost', 'evidence', 'relay'].includes(token));
+  const normalized = String(key).replace(/[^a-z0-9]/gi, '').toLowerCase();
+  return normalized === 'base'
+    || PRIVATE_CATALOG_FRAGMENTS.some((fragment) => normalized.includes(fragment));
 }
 
 function publicCapabilityValue(value) {
