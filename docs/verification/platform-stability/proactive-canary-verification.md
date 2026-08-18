@@ -4,7 +4,9 @@
 
 - 本地基线引用：`origin/main`，未联网刷新；Task13 执行时解析为 `577b94816333e26bbbfe70d46f8e07ec124af0b1`。
 - 候选 A：`1e999c828a8e2eed0377521032a9210185b244ac`；包含功能锁、精确发布范围、合同测试和验证前证据骨架。
-- 证据提交 B：本文件更新后的下一提交；只记录候选 A 的验证结果，不修改候选 A 的代码、锁、测试或 release scope。
+- 证据提交 B：`9a97ea867de86dc85769557263bbd4fdbc8dd778`；只记录候选 A 的验证结果，没有修改候选 A 的代码、锁、测试或 release scope。
+- 规格审查修复候选 C：`3a2b7557cbf105edd03e755f25919f8d2623173d`；只为新锁补齐 7 个核心 required tests，并同步固定列表合同测试。
+- 证据提交 D：本文件更新后的下一提交；只记录候选 C 的审查修复验证结果。
 - Task14 必须从实时 `/opt/moli-drama/current` 重建最终候选并重跑全部门禁；本地引用不代表实时线上版本。
 
 ## 自动化验证
@@ -41,6 +43,31 @@
 - 前端验证期间仅建立指向该同锁依赖树的临时 `node_modules` junction；没有联网安装，验证后已删除 junction。
 - Playwright 本地产物目录和隔离预检 SQLite fixture 均在验证后删除；仓库工作树在填写本证据前保持干净。
 
+## 规格审查修复候选 C
+
+规格审查发现新锁 required tests 未显式列出 7 个既有核心回归。TDD 红灯先扩展 `featureLockManifest.test.js` 的固定列表：6 个测试中 5 个通过、1 个按预期失败，首个缺项为 `backend-node/test/openAIImageOutput.test.js`。随后只向新锁追加以下测试，未删除任何既有 required test、evidence 或 unlock：
+
+- `backend-node/test/openAIImageOutput.test.js`
+- `backend-node/test/providerRouteImageIntegration.test.js`
+- `backend-node/test/providerRouteVideoIntegration.test.js`
+- `backend-node/test/providerRouteTextIntegration.test.js`
+- `backend-node/test/providerRouteStability.test.js`
+- `backend-node/test/videoBilling.test.js`
+- `backend-node/test/providerReconciliation.test.js`
+
+候选 C 的验证如下，时间均为 UTC：
+
+| 开始时间 | 结束时间 | 命令 | 退出码 | 结果 |
+| --- | --- | --- | ---: | --- |
+| 2026-08-18T22:10:37.1617043Z | 2026-08-18T22:10:37.5262009Z | `cd backend-node; node --test test/featureLockManifest.test.js` | 0 | 6/6 通过；固定列表确认 7 个核心回归均进入新锁 |
+| 2026-08-18T22:10:52.6984129Z | 2026-08-18T22:10:55.5235952Z | 定向运行上述 7 个核心测试文件 | 0 | 64/64 通过 |
+| 2026-08-18T22:11:06.1747154Z | 2026-08-18T22:11:07.1903773Z | `cd backend-node; npm run audit:feature-lock -- --base origin/main` | 0 | `ready=true`；5 个锁、66 个变更路径；基线仍为未联网刷新的本地 `origin/main` |
+| 2026-08-18T22:11:15.6547166Z | 2026-08-18T22:11:15.9734574Z | `cd backend-node; node --test test/incrementalReleaseScope.test.js` | 0 | 5/5 通过 |
+| 2026-08-18T22:11:29.8186665Z | 2026-08-18T22:11:30.1020065Z | `git diff --check origin/main...HEAD` 并比较变更文件与 scope | 0 | diff check 通过；变更 66、allowlist 66、差异 0 |
+| 2026-08-18T22:11:41.5993052Z | 2026-08-18T22:11:42.5300196Z | 全树与新增行敏感信息扫描 | 0 | 全树 21 个占位/假值命中；新增行 2 个命中均为扫描规则自身及其证据引用；无真实凭据 |
+
+候选 C 相对证据提交 B 只修改 `backend-node/test/featureLockManifest.test.js` 和 `docs/verification/platform-stability/feature-lock-manifest.json`，因此 release scope 文件数仍为 66。候选 A 的完整后端、前端、构建和 Playwright 证据不被伪称为候选 C 的全量重跑；Task14 最终候选仍需从实时 current 重建并全量验证。
+
 ## 合同证据
 
 - 预算原子门禁：`providerCanaryBudget.test.js` 同时进入后端全量和 123 项定向回归；覆盖日/月硬上限、并发预占、幂等和超额告警。
@@ -62,4 +89,4 @@
 
 ## 自引用边界
 
-完整验证对象必须是候选 A。证据提交 B 只记录结果，不能声称候选 A 的完整套件验证了 B 自身；B 后仅重跑功能锁、增量范围、变更范围和敏感信息检查。Task14 仍须从实时 current 构建最终候选并全量重跑。
+完整后端、前端、构建和 Playwright 验证对象是候选 A；候选 C 只按审查要求重跑功能锁、7 个核心回归和轻量门禁。证据提交 B、D 均只记录结果，不能声称前一候选的测试验证了证据提交自身；D 后仅重跑功能锁、增量范围、变更范围和敏感信息检查。Task14 仍须从实时 current 构建最终候选并全量重跑。
