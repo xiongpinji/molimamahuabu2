@@ -54,6 +54,18 @@ function config(id, overrides = {}) {
   };
 }
 
+function insertRoute(db, route) {
+  db.prepare(`INSERT INTO ai_service_configs
+      (id, service_type, provider, api_protocol, name, base_url, api_key, model,
+       default_model, priority, is_active, settings, logical_model_id, canary_paused,
+       created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`)
+    .run(route.id, route.service_type, route.provider, route.api_protocol, route.name,
+      route.base_url, route.api_key, JSON.stringify(route.model), route.default_model,
+      route.priority, route.settings, route.logical_model_id, route.canary_paused ? 1 : 0,
+      '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z');
+}
+
 const allHealthyProbes = {
   async applicationHealth() { return { ok: true }; },
   database() { return { ok: true }; },
@@ -259,6 +271,127 @@ test('default provider probe performs injected DNS TLS auth and read-only GET on
     ['tls', 'provider.example', true],
     ['fetch', 'https://provider.example/v1/models', 'GET', `Bearer ${route.api_key}`],
   ]);
+});
+
+test('cross-origin read-only endpoint fails closed before any authenticated fetch', async (t) => {
+  const scheduler = loadScheduler();
+  const { db, storageRoot } = setup(t);
+  const route = config(1, {
+    base_url: 'https://provider.example/v1/',
+    query_endpoint: 'https://attacker.example/collect',
+  });
+  insertRoute(db, route);
+  const probes = { ...allHealthyProbes };
+  delete probes.provider;
+  const fetches = [];
+  const result = await scheduler.runZeroCostSweep(db, {}, {
+    now: '2026-08-18T00:00:00.000Z', storageRoot, configs: [route], probes,
+    dnsLookup: async () => {},
+    tlsConnect() { throw new Error('TLS must not start for an unsafe endpoint'); },
+    fetchFn: async (...args) => { fetches.push(args); return { ok: true }; },
+  });
+  assert.equal(fetches.length, 0);
+  assert.equal(result.routes[0].category, 'provider_read_only_origin_mismatch');
+});
+
+test('plaintext provider base fails closed without DNS TLS fetch or Authorization', async (t) => {
+  const scheduler = loadScheduler();
+  const { db, storageRoot } = setup(t);
+  const route = config(1, { base_url: 'http://provider.example/v1/' });
+  insertRoute(db, route);
+  const probes = { ...allHealthyProbes };
+  delete probes.provider;
+  const externalCalls = [];
+  const result = await scheduler.runZeroCostSweep(db, {}, {
+    now: '2026-08-18T00:00:00.000Z', storageRoot, configs: [route], probes,
+    dnsLookup: async () => { externalCalls.push('dns'); },
+    tlsConnect() { externalCalls.push('tls'); },
+    fetchFn: async (_url, request) => {
+      externalCalls.push(['fetch', request?.headers?.authorization]);
+      return { ok: true };
+    },
+  });
+  assert.deepEqual(externalCalls, []);
+  assert.equal(result.routes[0].category, 'provider_tls_required');
+});
+
+test('userinfo protocol-relative backslash and encoded-host endpoints fail before auth', async (t) => {
+  const scheduler = loadScheduler();
+  const { db, storageRoot } = setup(t);
+  const probes = { ...allHealthyProbes };
+  delete probes.provider;
+  const unsafeEndpoints = [
+    '//attacker.example/collect',
+    String.raw`\\attacker.example\collect`,
+    'https://user:password@provider.example/v1/models',
+    'https://provider.example@attacker.example/v1/models',
+    'https://%61ttacker.example/v1/models',
+  ];
+  for (const [index, queryEndpoint] of unsafeEndpoints.entries()) {
+    let fetchCalls = 0;
+    const route = config(index + 1, {
+      base_url: 'https://provider.example/v1/',
+      query_endpoint: queryEndpoint,
+    });
+    insertRoute(db, route);
+    const result = await scheduler.runZeroCostSweep(db, {}, {
+      now: `2026-08-18T00:0${index}:00.000Z`, storageRoot, configs: [route], probes,
+      dnsLookup: async () => {},
+      tlsConnect() { throw new Error('TLS must not start for an unsafe endpoint'); },
+      fetchFn: async () => { fetchCalls += 1; return { ok: true }; },
+    });
+    assert.equal(fetchCalls, 0, queryEndpoint);
+    assert.match(result.routes[0].category, /^provider_read_only_(origin_mismatch|credentials_forbidden)$/);
+  }
+});
+
+test('same-origin relative read-only endpoint remains allowed and substitutes placeholders', async (t) => {
+  const scheduler = loadScheduler();
+  const { db, storageRoot } = setup(t);
+  const route = config(1, {
+    base_url: 'https://provider.example/v1/',
+    query_endpoint: '/v1/tasks/{taskId}',
+  });
+  insertRoute(db, route);
+  const probes = { ...allHealthyProbes };
+  delete probes.provider;
+  const fetches = [];
+  await scheduler.runZeroCostSweep(db, {}, {
+    now: '2026-08-18T00:00:00.000Z', storageRoot, configs: [route], probes,
+    dnsLookup: async () => {},
+    tlsConnect(_connectOptions, callback) {
+      const socket = { once() {}, destroy() {} };
+      queueMicrotask(callback);
+      return socket;
+    },
+    fetchFn: async (url, request) => {
+      fetches.push([url, request.method, request.headers.authorization]);
+      return { ok: true };
+    },
+  });
+  assert.deepEqual(fetches, [[
+    'https://provider.example/v1/tasks/provider-canary-read-only-check',
+    'GET',
+    `Bearer ${route.api_key}`,
+  ]]);
+});
+
+test('provider base URL userinfo fails before any external operation', async (t) => {
+  const scheduler = loadScheduler();
+  const { db, storageRoot } = setup(t);
+  const route = config(1, { base_url: 'https://user:password@provider.example/v1/' });
+  insertRoute(db, route);
+  const probes = { ...allHealthyProbes };
+  delete probes.provider;
+  let externalCalls = 0;
+  const result = await scheduler.runZeroCostSweep(db, {}, {
+    now: '2026-08-18T00:00:00.000Z', storageRoot, configs: [route], probes,
+    dnsLookup: async () => { externalCalls += 1; },
+    tlsConnect() { externalCalls += 1; },
+    fetchFn: async () => { externalCalls += 1; return { ok: true }; },
+  });
+  assert.equal(externalCalls, 0);
+  assert.equal(result.routes[0].category, 'provider_url_credentials_forbidden');
 });
 
 test('zero-cost events deduplicate by type model config and category within one window', async (t) => {

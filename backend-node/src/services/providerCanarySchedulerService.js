@@ -401,6 +401,26 @@ async function probeProvider(_db, config, options = {}) {
   try { base = new URL(config.base_url); } catch (_) {
     return { ok: false, category: 'provider_url_invalid' };
   }
+  if (base.protocol !== 'https:') {
+    return { ok: false, category: 'provider_tls_required' };
+  }
+  if (base.username || base.password) {
+    return { ok: false, category: 'provider_url_credentials_forbidden' };
+  }
+  let endpoint;
+  try {
+    endpoint = config.query_endpoint
+      ? new URL(String(config.query_endpoint).replace(/\{[^}]+\}/g, 'provider-canary-read-only-check'), base)
+      : new URL('models', base.toString().endsWith('/') ? base : `${base}/`);
+  } catch (_) {
+    return { ok: false, category: 'provider_read_only_url_invalid' };
+  }
+  if (endpoint.username || endpoint.password) {
+    return { ok: false, category: 'provider_read_only_credentials_forbidden' };
+  }
+  if (endpoint.protocol !== 'https:' || endpoint.origin !== base.origin) {
+    return { ok: false, category: 'provider_read_only_origin_mismatch' };
+  }
   const timeoutMs = options.timeoutMs || 5_000;
   const dnsLookup = options.dnsLookup || dns.lookup;
   const fetchFn = options.fetchFn || fetch;
@@ -409,22 +429,12 @@ async function probeProvider(_db, config, options = {}) {
   } catch (_) {
     return { ok: false, category: 'provider_dns_failed' };
   }
-  if (base.protocol === 'https:') {
-    try { await openTls(base.hostname, Number(base.port) || 443, timeoutMs, options); } catch (_) {
-      return { ok: false, category: 'provider_tls_failed' };
-    }
+  try { await openTls(base.hostname, Number(base.port) || 443, timeoutMs, options); } catch (_) {
+    return { ok: false, category: 'provider_tls_failed' };
   }
   if (!String(config.api_key || '').trim()) return { ok: false, category: 'provider_auth_missing' };
-  let endpoint;
   try {
-    endpoint = config.query_endpoint
-      ? new URL(String(config.query_endpoint).replace(/\{[^}]+\}/g, 'provider-canary-read-only-check'), base).toString()
-      : new URL('models', base.toString().endsWith('/') ? base : `${base}/`).toString();
-  } catch (_) {
-    return { ok: false, category: 'provider_read_only_url_invalid' };
-  }
-  try {
-    const response = await withTimeout(fetchFn(endpoint, {
+    const response = await withTimeout(fetchFn(endpoint.toString(), {
       method: 'GET',
       headers: { authorization: `Bearer ${config.api_key}` },
     }), timeoutMs, options);
