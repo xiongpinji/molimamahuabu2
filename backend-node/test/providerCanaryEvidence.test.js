@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const Database = require('better-sqlite3');
 
+const aiConfigService = require('../src/services/aiConfigService');
 const evidenceService = require('../src/services/providerCanaryEvidenceService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
@@ -390,6 +391,113 @@ test('failure, budget block, targeted invalidation, and covering lookup preserve
     });
     evidenceService.invalidateLogicalModel(db, 'logical-video', 'logical_model_changed', NOW);
     assert.equal(db.prepare('SELECT state FROM provider_canary_evidence WHERE config_id = 9').get().state, 'fresh');
+  } finally {
+    db.close();
+  }
+});
+
+test('soft deletion invalidates only the deleted route and fresh lookup excludes it', () => {
+  const db = createDb();
+  try {
+    insertRun(db);
+    recordSuccess(db);
+    insertRun(db, {
+      id: 'canary-run-2',
+      idempotency_key: 'canary-key-2',
+      config_id: 8,
+    });
+    recordSuccess(db, { configId: 8, runId: 'canary-run-2' });
+    db.prepare("UPDATE ai_service_configs SET verification_status = 'verified', is_active = 1 WHERE id = 7").run();
+
+    const logs = [];
+    assert.equal(aiConfigService.deleteConfig(db, { info: (...args) => logs.push(args) }, 7), true);
+    const deleted = db.prepare('SELECT deleted_at, verification_status, is_active FROM ai_service_configs WHERE id = 7').get();
+    const invalidated = db.prepare(`SELECT state, invalidation_reason, updated_at
+      FROM provider_canary_evidence WHERE config_id = 7`).get();
+    assert.equal(deleted.deleted_at, invalidated.updated_at);
+    assert.equal(deleted.verification_status, 'verified');
+    assert.equal(deleted.is_active, 1);
+    assert.deepEqual(
+      { state: invalidated.state, invalidation_reason: invalidated.invalidation_reason },
+      { state: 'stale', invalidation_reason: 'admin_invalidated' },
+    );
+
+    const lookup = (configId) => evidenceService.listFreshCoveringEvidence(db, {
+      configId,
+      logicalModelId: 'logical-video',
+      serviceType: 'video',
+      capability: CAPABILITY,
+      now: '2026-08-19T00:00:00.000Z',
+      ...fingerprints(),
+    });
+    assert.equal(lookup(7).length, 0);
+    assert.equal(lookup(8).length, 1);
+    assert.equal(db.prepare('SELECT state FROM provider_canary_evidence WHERE config_id = 8').get().state, 'fresh');
+    assert.equal(aiConfigService.deleteConfig(db, { info() {} }, 7), false);
+    assert.equal(aiConfigService.deleteConfig(db, { info() {} }, 999), false);
+    assert.equal(logs.length, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('fresh lookup rejects legacy deleted configs even if active and verified residue remains', () => {
+  const db = createDb();
+  try {
+    insertRun(db);
+    recordSuccess(db);
+    db.prepare(`UPDATE ai_service_configs
+      SET deleted_at = ?, verification_status = 'verified', is_active = 1
+      WHERE id = 7`).run('2026-08-18T01:00:00.000Z');
+    assert.equal(db.prepare('SELECT state FROM provider_canary_evidence WHERE config_id = 7').get().state, 'fresh');
+    assert.equal(evidenceService.listFreshCoveringEvidence(db, {
+      configId: 7,
+      logicalModelId: 'logical-video',
+      serviceType: 'video',
+      capability: CAPABILITY,
+      now: '2026-08-19T00:00:00.000Z',
+      ...fingerprints(),
+    }).length, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('ordinary evidence invalidation failures roll back soft deletion', () => {
+  const db = createDb();
+  try {
+    insertRun(db);
+    recordSuccess(db);
+    db.exec(`CREATE TRIGGER reject_delete_invalidation
+      BEFORE UPDATE ON provider_canary_evidence
+      BEGIN
+        SELECT RAISE(ABORT, 'delete invalidation rejected');
+      END`);
+    assert.throws(
+      () => aiConfigService.deleteConfig(db, { info() {} }, 7),
+      /delete invalidation rejected/,
+    );
+    assert.equal(db.prepare('SELECT deleted_at FROM ai_service_configs WHERE id = 7').get().deleted_at, null);
+    assert.deepEqual(
+      db.prepare('SELECT state, invalidation_reason FROM provider_canary_evidence WHERE config_id = 7').get(),
+      { state: 'fresh', invalidation_reason: null },
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('legacy databases without the canary evidence table retain idempotent deletion semantics', () => {
+  const db = new Database(':memory:');
+  try {
+    db.exec(`CREATE TABLE ai_service_configs (
+      id INTEGER PRIMARY KEY,
+      deleted_at TEXT
+    )`);
+    db.prepare('INSERT INTO ai_service_configs (id, deleted_at) VALUES (1, NULL)').run();
+    assert.equal(aiConfigService.deleteConfig(db, { info() {} }, 1), true);
+    assert.equal(aiConfigService.deleteConfig(db, { info() {} }, 1), false);
+    assert.equal(aiConfigService.deleteConfig(db, { info() {} }, 999), false);
   } finally {
     db.close();
   }

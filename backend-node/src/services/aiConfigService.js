@@ -551,8 +551,14 @@ function updateConfig(db, log, id, req) {
 
 function deleteConfig(db, log, id) {
   const now = new Date().toISOString();
-  const result = db.prepare('UPDATE ai_service_configs SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL').run(now, id);
-  if (result.changes === 0) return false;
+  const applyDelete = () => {
+    const result = db.prepare('UPDATE ai_service_configs SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL').run(now, id);
+    if (result.changes === 0) return false;
+    invalidateConfigEvidence(db, id, 'admin_invalidated', now);
+    return true;
+  };
+  const deleted = db.inTransaction ? applyDelete() : db.transaction(applyDelete)();
+  if (!deleted) return false;
   log.info('AI config deleted', { config_id: id });
   return true;
 }

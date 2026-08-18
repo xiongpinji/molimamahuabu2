@@ -601,7 +601,7 @@ function fingerprintForConfig(input, camel, snake, configId) {
 function listFreshCoveringEvidence(db, input) {
   const serviceType = normalizedRequiredString(input.serviceType ?? input.service_type, 'serviceType', { lowercase: true });
   const requested = normalizeCapability(serviceType, input.capability);
-  const clauses = ['e.service_type = ?'];
+  const clauses = ['e.service_type = ?', 'c.deleted_at IS NULL'];
   const params = [serviceType];
   if (input.configId != null || input.config_id != null) {
     const configId = input.configId ?? input.config_id;
