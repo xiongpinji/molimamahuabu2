@@ -12,6 +12,88 @@ function indexNames(db, table) {
   return new Set(db.prepare(`PRAGMA index_list(${table})`).all().map((row) => row.name));
 }
 
+function hasTable(db, table) {
+  return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.[1] === 1;
+}
+
+function insertCanaryRun(db, overrides = {}) {
+  const run = {
+    id: 'canary-run-1',
+    idempotency_key: 'canary-idempotency-1',
+    config_id: 1,
+    logical_model_id: 'logical-image-1',
+    service_type: 'image',
+    capability_fingerprint: 'capability-1',
+    config_fingerprint: 'config-1',
+    cost_fingerprint: 'cost-1',
+    runtime_fingerprint: 'runtime-1',
+    provider_scope_key: 'provider-scope-1',
+    state: 'reserved',
+    reserved_cost_micros: 0,
+    actual_cost_micros: null,
+    currency: 'CNY',
+    budget_day: '2026-08-18',
+    budget_month: '2026-08',
+    artifact_bytes: null,
+    created_at: '2026-08-18T00:00:00.000Z',
+    updated_at: '2026-08-18T00:00:00.000Z',
+    ...overrides,
+  };
+  return db.prepare(`INSERT INTO provider_canary_runs
+    (id, idempotency_key, config_id, logical_model_id, service_type,
+     capability_fingerprint, config_fingerprint, cost_fingerprint,
+     runtime_fingerprint, provider_scope_key, state, reserved_cost_micros,
+     actual_cost_micros, currency, budget_day, budget_month, artifact_bytes,
+     created_at, updated_at)
+    VALUES (@id, @idempotency_key, @config_id, @logical_model_id, @service_type,
+     @capability_fingerprint, @config_fingerprint, @cost_fingerprint,
+     @runtime_fingerprint, @provider_scope_key, @state, @reserved_cost_micros,
+     @actual_cost_micros, @currency, @budget_day, @budget_month, @artifact_bytes,
+     @created_at, @updated_at)`).run(run);
+}
+
+function insertCanaryEvidence(db, overrides = {}) {
+  const evidence = {
+    config_id: 1,
+    service_type: 'image',
+    capability_fingerprint: 'capability-1',
+    state: 'never_verified',
+    run_id: null,
+    config_fingerprint: 'config-1',
+    cost_fingerprint: 'cost-1',
+    runtime_fingerprint: 'runtime-1',
+    verified_at: null,
+    expires_at: null,
+    invalidated_at: null,
+    invalidation_reason: null,
+    created_at: '2026-08-18T00:00:00.000Z',
+    updated_at: '2026-08-18T00:00:00.000Z',
+    ...overrides,
+  };
+  return db.prepare(`INSERT INTO provider_canary_evidence
+    (config_id, service_type, capability_fingerprint, state, run_id,
+     config_fingerprint, cost_fingerprint, runtime_fingerprint, verified_at,
+     expires_at, invalidated_at, invalidation_reason, created_at, updated_at)
+    VALUES (@config_id, @service_type, @capability_fingerprint, @state, @run_id,
+     @config_fingerprint, @cost_fingerprint, @runtime_fingerprint, @verified_at,
+     @expires_at, @invalidated_at, @invalidation_reason, @created_at, @updated_at)`).run(evidence);
+}
+
+function insertZeroCostCheck(db, overrides = {}) {
+  const check = {
+    config_id: 1,
+    state: 'healthy',
+    category: null,
+    safe_summary: null,
+    checked_at: '2026-08-18T00:00:00.000Z',
+    updated_at: '2026-08-18T00:00:00.000Z',
+    ...overrides,
+  };
+  return db.prepare(`INSERT INTO provider_zero_cost_checks
+    (config_id, state, category, safe_summary, checked_at, updated_at)
+    VALUES (@config_id, @state, @category, @safe_summary, @checked_at, @updated_at)`).run(check);
+}
+
 test('provider stability migration creates the routing schema and remains idempotent', () => {
   const db = new Database(':memory:');
   try {
@@ -25,6 +107,7 @@ test('provider stability migration creates the routing schema and remains idempo
       'verification_status',
       'verified_at',
       'verification_evidence',
+      'canary_paused',
     ]) {
       assert.equal(configColumns.has(name), true, `missing ai_service_configs.${name}`);
     }
@@ -35,12 +118,11 @@ test('provider stability migration creates the routing schema and remains idempo
       'generation_route_attempts',
       'provider_route_health',
       'provider_stability_events',
+      'provider_canary_runs',
+      'provider_canary_evidence',
+      'provider_zero_cost_checks',
     ]) {
-      assert.equal(
-        db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.[1],
-        1,
-        `missing table ${table}`,
-      );
+      assert.equal(hasTable(db, table), true, `missing table ${table}`);
     }
 
     assert.equal(
@@ -55,6 +137,19 @@ test('provider stability migration creates the routing schema and remains idempo
       indexNames(db, 'provider_stability_events').has('idx_provider_stability_events_created'),
       true,
     );
+    for (const name of [
+      'idx_provider_canary_runs_budget_day',
+      'idx_provider_canary_runs_budget_month',
+      'idx_provider_canary_runs_config_state',
+    ]) {
+      assert.equal(indexNames(db, 'provider_canary_runs').has(name), true, `missing index ${name}`);
+    }
+    for (const name of [
+      'idx_provider_canary_evidence_expiry',
+      'idx_provider_canary_evidence_state',
+    ]) {
+      assert.equal(indexNames(db, 'provider_canary_evidence').has(name), true, `missing index ${name}`);
+    }
   } finally {
     db.close();
   }
@@ -103,6 +198,174 @@ test('provider stability schema rejects duplicate idempotency keys and attempt n
     assert.throws(
       () => insertAttempt.run(attempt),
       /UNIQUE constraint failed: generation_route_attempts\.request_id, generation_route_attempts\.attempt_no/,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('canary migration preserves existing provider configs and defaults pause to zero', () => {
+  const db = new Database(':memory:');
+  try {
+    db.exec(`CREATE TABLE ai_service_configs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      service_type TEXT NOT NULL,
+      provider TEXT DEFAULT '',
+      name TEXT DEFAULT '',
+      base_url TEXT DEFAULT '',
+      api_key TEXT,
+      model TEXT,
+      default_model TEXT,
+      endpoint TEXT,
+      query_endpoint TEXT,
+      priority INTEGER DEFAULT 0,
+      is_default INTEGER DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
+      settings TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      deleted_at TEXT
+    )`);
+    db.prepare(`INSERT INTO ai_service_configs
+      (id, service_type, provider, name, base_url, model, is_active)
+      VALUES (77, 'image', 'existing-provider', 'Existing route', 'https://provider.invalid', 'image-v1', 1)`).run();
+
+    runMigrationsAndEnsure(db);
+
+    const column = db.prepare('PRAGMA table_info(ai_service_configs)').all()
+      .find((item) => item.name === 'canary_paused');
+    assert.equal(column.notnull, 1);
+    assert.equal(column.dflt_value, '0');
+    assert.deepEqual(
+      db.prepare(`SELECT id, service_type, provider, name, base_url, model, is_active, canary_paused
+        FROM ai_service_configs WHERE id = 77`).get(),
+      {
+        id: 77,
+        service_type: 'image',
+        provider: 'existing-provider',
+        name: 'Existing route',
+        base_url: 'https://provider.invalid',
+        model: 'image-v1',
+        is_active: 1,
+        canary_paused: 0,
+      },
+    );
+    assert.deepEqual(
+      db.prepare(`SELECT name, type FROM sqlite_master
+        WHERE name LIKE 'provider_canary_%' AND type NOT IN ('table', 'index')`).all(),
+      [],
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('canary schema rejects duplicate run and evidence identities', () => {
+  const db = new Database(':memory:');
+  try {
+    runMigrationsAndEnsure(db);
+    insertCanaryRun(db);
+    assert.throws(
+      () => insertCanaryRun(db, { id: 'canary-run-2' }),
+      /UNIQUE constraint failed: provider_canary_runs\.idempotency_key/,
+    );
+
+    insertCanaryEvidence(db);
+    assert.throws(
+      () => insertCanaryEvidence(db, { state: 'fresh', run_id: 'canary-run-1' }),
+      /UNIQUE constraint failed: provider_canary_evidence\.config_id, provider_canary_evidence\.capability_fingerprint/,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('canary runs reject negative cost, negative artifact size, and non-CNY currency', () => {
+  const db = new Database(':memory:');
+  try {
+    runMigrationsAndEnsure(db);
+    for (const [suffix, overrides] of [
+      ['reserved-cost', { reserved_cost_micros: -1 }],
+      ['actual-cost', { actual_cost_micros: -1 }],
+      ['artifact-bytes', { artifact_bytes: -1 }],
+      ['currency', { currency: 'USD' }],
+    ]) {
+      assert.throws(
+        () => insertCanaryRun(db, {
+          id: `canary-run-${suffix}`,
+          idempotency_key: `canary-idempotency-${suffix}`,
+          ...overrides,
+        }),
+        /CHECK constraint failed/,
+      );
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('canary tables accept every legal state and reject illegal states', () => {
+  const db = new Database(':memory:');
+  try {
+    runMigrationsAndEnsure(db);
+
+    const runStates = [
+      'reserved',
+      'submitting',
+      'accepted',
+      'verifying',
+      'succeeded',
+      'failed',
+      'submission_unknown',
+      'result_unknown',
+      'artifact_unreadable',
+      'budget_blocked',
+    ];
+    runStates.forEach((state, index) => insertCanaryRun(db, {
+      id: `canary-state-run-${index}`,
+      idempotency_key: `canary-state-idempotency-${index}`,
+      state,
+    }));
+    assert.throws(
+      () => insertCanaryRun(db, {
+        id: 'canary-state-run-invalid',
+        idempotency_key: 'canary-state-idempotency-invalid',
+        state: 'unknown',
+      }),
+      /CHECK constraint failed/,
+    );
+
+    const evidenceStates = [
+      'never_verified',
+      'fresh',
+      'stale',
+      'failing',
+      'submission_unknown',
+      'budget_blocked',
+      'disabled',
+    ];
+    evidenceStates.forEach((state, index) => insertCanaryEvidence(db, {
+      config_id: index + 1,
+      capability_fingerprint: `evidence-capability-${index}`,
+      state,
+    }));
+    assert.throws(
+      () => insertCanaryEvidence(db, {
+        config_id: 100,
+        capability_fingerprint: 'evidence-capability-invalid',
+        state: 'unknown',
+      }),
+      /CHECK constraint failed/,
+    );
+
+    const zeroCostStates = ['healthy', 'degraded', 'failed', 'disabled'];
+    zeroCostStates.forEach((state, index) => insertZeroCostCheck(db, {
+      config_id: index + 1,
+      state,
+    }));
+    assert.throws(
+      () => insertZeroCostCheck(db, { config_id: 100, state: 'unknown' }),
+      /CHECK constraint failed/,
     );
   } finally {
     db.close();
