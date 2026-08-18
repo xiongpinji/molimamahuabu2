@@ -347,7 +347,7 @@ function recordPublicUnavailableTransition(db, logicalModelId, configIds, now) {
     if (previous?.last_event_at && previous.last_event_at >= history.last_verified_at) return false;
     db.prepare(`INSERT INTO provider_stability_events
       (severity, event_type, logical_model_id, safe_details, created_at)
-      VALUES ('P1', 'provider_canary_public_unavailable', ?, ?, ?)`)
+      VALUES ('error', 'provider_canary_public_unavailable', ?, ?, ?)`)
       .run(logicalModelId, JSON.stringify({ category: 'fresh_evidence_unavailable' }), now);
     return true;
   }).immediate();

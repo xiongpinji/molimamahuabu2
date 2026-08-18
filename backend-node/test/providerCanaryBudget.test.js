@@ -508,7 +508,7 @@ test('definitive pre-submit failure with zero actual cost releases reservation',
   }
 });
 
-test('cost overrun persists a safe P1 event and keeps the full reservation', () => {
+test('cost overrun persists a safe error event and keeps the full reservation', () => {
   const db = createDb();
   try {
     acceptRun(db, { reservedCostMicros: 1_000_000 });
@@ -534,7 +534,7 @@ test('cost overrun persists a safe P1 event and keeps the full reservation', () 
 
     const event = db.prepare(`SELECT severity, event_type, request_id, logical_model_id, config_id,
       safe_details FROM provider_stability_events`).get();
-    assert.equal(event.severity, 'P1');
+    assert.equal(event.severity, 'error');
     assert.equal(event.event_type, 'provider_canary_cost_overrun');
     assert.equal(event.request_id, 'run-1');
     assert.equal(event.logical_model_id, 'logical-video');
@@ -566,7 +566,7 @@ test('definitive failure also protects against cost overrun', () => {
       { state: 'reserved', actual_cost_micros: null },
     );
     assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM provider_stability_events
-      WHERE event_type = 'provider_canary_cost_overrun' AND severity = 'P1'`).get().count, 1);
+      WHERE event_type = 'provider_canary_cost_overrun' AND severity = 'error'`).get().count, 1);
   } finally {
     db.close();
   }

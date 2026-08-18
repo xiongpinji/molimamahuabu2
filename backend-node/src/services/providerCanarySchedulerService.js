@@ -258,6 +258,15 @@ function windowStart(now, intervalMs = DEFAULT_INTERVAL_MS) {
   return new Date(Math.floor(millis / intervalMs) * intervalMs).toISOString();
 }
 
+function databaseSeverity(value) {
+  return {
+    P0: 'critical',
+    P1: 'error',
+    P2: 'warning',
+    P3: 'info',
+  }[value] || (['critical', 'error', 'warning', 'info'].includes(value) ? value : 'info');
+}
+
 function recordEventOnce(db, input) {
   const rows = db.prepare(`SELECT safe_details FROM provider_stability_events
     WHERE event_type = ? AND logical_model_id IS ? AND config_id IS ? AND created_at >= ?`)
@@ -270,7 +279,7 @@ function recordEventOnce(db, input) {
       (severity, event_type, logical_model_id, config_id, task_state, safe_details, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .run(
-      input.severity || 'P3',
+      databaseSeverity(input.severity),
       input.eventType,
       input.logicalModelId || null,
       input.configId || null,

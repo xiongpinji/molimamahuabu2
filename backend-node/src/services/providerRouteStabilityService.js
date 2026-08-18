@@ -574,28 +574,137 @@ function canaryRunDto(row, now) {
   };
 }
 
+const CANARY_RUN_STATES = new Set([
+  'reserved',
+  'submitting',
+  'accepted',
+  'verifying',
+  'succeeded',
+  'failed',
+  'submission_unknown',
+  'result_unknown',
+  'artifact_unreadable',
+  'budget_blocked',
+]);
+
+function invalidCanaryList() {
+  throw canaryError('PROVIDER_CANARY_LIST_INVALID', '巡检运行筛选条件无效');
+}
+
+function canonicalIso(value) {
+  if (typeof value !== 'string') return null;
+  const millis = Date.parse(value);
+  if (!Number.isFinite(millis)) return null;
+  const canonical = new Date(millis).toISOString();
+  return canonical === value ? canonical : null;
+}
+
+function encodeCanaryRunCursor(value) {
+  return Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
+}
+
+function decodeCanaryRunCursor(value) {
+  if (typeof value !== 'string'
+      || value.length < 1
+      || value.length > 512
+      || !/^[A-Za-z0-9_-]+$/.test(value)) invalidCanaryList();
+  let decoded;
+  try {
+    const buffer = Buffer.from(value, 'base64url');
+    if (buffer.toString('base64url') !== value) invalidCanaryList();
+    decoded = JSON.parse(buffer.toString('utf8'));
+  } catch (_) {
+    invalidCanaryList();
+  }
+  if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)
+      || Object.keys(decoded).sort().join(',') !== 'i,s,u,v'
+      || decoded.v !== 1
+      || !canonicalIso(decoded.s)
+      || !canonicalIso(decoded.u)
+      || decoded.u > decoded.s
+      || typeof decoded.i !== 'string'
+      || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,254}$/.test(decoded.i)) invalidCanaryList();
+  return decoded;
+}
+
+function normalizedCanaryRunFilters(filters) {
+  let limit = 50;
+  if (filters.limit !== undefined) {
+    if (typeof filters.limit !== 'string' || !/^[1-9][0-9]{0,2}$/.test(filters.limit)) {
+      invalidCanaryList();
+    }
+    limit = Number(filters.limit);
+    if (limit > 200) invalidCanaryList();
+  }
+  let state = null;
+  if (filters.state !== undefined) {
+    if (typeof filters.state !== 'string' || !CANARY_RUN_STATES.has(filters.state)) {
+      invalidCanaryList();
+    }
+    state = filters.state;
+  }
+  let logicalModelId = null;
+  if (filters.logicalModelId !== undefined) {
+    if (typeof filters.logicalModelId !== 'string'
+        || filters.logicalModelId.length > 200
+        || !filters.logicalModelId.trim()
+        || /[\u0000-\u001f\u007f]/.test(filters.logicalModelId)) invalidCanaryList();
+    logicalModelId = filters.logicalModelId.trim();
+  }
+  const cursor = filters.before === undefined ? null : decodeCanaryRunCursor(filters.before);
+  const snapshotAt = cursor?.s || canonicalIso(filters.now) || new Date().toISOString();
+  return { limit, state, logicalModelId, cursor, snapshotAt };
+}
+
 function listCanaryRuns(db, filters = {}) {
-  const clauses = [];
-  const params = [];
-  if (filters.state) {
+  const normalized = normalizedCanaryRunFilters(filters);
+  if (!normalized.cursor) {
+    const latestStored = canonicalIso(db.prepare(`SELECT MAX(updated_at) AS updated_at
+      FROM provider_canary_runs`).get()?.updated_at);
+    if (latestStored && latestStored > normalized.snapshotAt) normalized.snapshotAt = latestStored;
+  }
+  const clauses = ['r.updated_at <= ?'];
+  const params = [normalized.snapshotAt];
+  if (normalized.state) {
     clauses.push('r.state = ?');
-    params.push(filters.state);
+    params.push(normalized.state);
   }
-  if (filters.logicalModelId) {
+  if (normalized.logicalModelId) {
     clauses.push('r.logical_model_id = ? COLLATE NOCASE');
-    params.push(filters.logicalModelId);
+    params.push(normalized.logicalModelId);
   }
-  return db.prepare(`SELECT r.*, c.name, c.deleted_at,
+  if (normalized.cursor) {
+    clauses.push('(r.updated_at < ? OR (r.updated_at = ? AND r.id < ?))');
+    params.push(normalized.cursor.u, normalized.cursor.u, normalized.cursor.i);
+  }
+  const rows = db.prepare(`SELECT r.*, c.name, c.deleted_at,
       e.capability_json
     FROM provider_canary_runs r
     JOIN ai_service_configs c ON c.id = r.config_id
     LEFT JOIN provider_canary_evidence e
       ON e.config_id = r.config_id
      AND e.capability_fingerprint = r.capability_fingerprint
-    ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
-    ORDER BY r.updated_at DESC, r.id DESC LIMIT 200`)
-    .all(...params)
-    .map((row) => canaryRunDto(row, filters.now));
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY r.updated_at DESC, r.id DESC LIMIT ?`)
+    .all(...params, normalized.limit + 1);
+  const hasMore = rows.length > normalized.limit;
+  const pageRows = hasMore ? rows.slice(0, normalized.limit) : rows;
+  const last = pageRows.at(-1);
+  return {
+    items: pageRows.map((row) => canaryRunDto(row, filters.now)),
+    pagination: {
+      limit: normalized.limit,
+      has_more: hasMore,
+      next_cursor: hasMore && last
+        ? encodeCanaryRunCursor({
+          v: 1,
+          s: normalized.snapshotAt,
+          u: last.updated_at,
+          i: last.id,
+        })
+        : null,
+    },
+  };
 }
 
 function unknownBudgetUsage(db, column, bucket) {
@@ -783,6 +892,34 @@ async function defaultQueryTaskOnce(input) {
   );
 }
 
+const SAFE_QUERY_CATEGORIES = new Set([
+  'result_unknown',
+  'validation_error',
+  'auth_unavailable',
+  'forbidden_unknown',
+  'rate_limited',
+  'provider_unavailable',
+  'query_request_limit',
+  'query_protocol_error',
+]);
+
+function normalizedQueryCategory(value, fallback = 'query_protocol_error') {
+  const category = safeCategory(value, fallback);
+  return SAFE_QUERY_CATEGORIES.has(category) ? category : fallback;
+}
+
+function thrownQueryCategory(error) {
+  if (error?.code === 'PROVIDER_QUERY_REQUEST_LIMIT') return 'query_request_limit';
+  if (error?.code === 'PROVIDER_QUERY_PROTOCOL_ERROR') return 'query_protocol_error';
+  if (error?.code === 'PROVIDER_QUERY_VALIDATION_ERROR') return 'validation_error';
+  if (error?.name === 'AbortError'
+      || error?.name === 'TimeoutError'
+      || ['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT'].includes(error?.code)) {
+    return 'result_unknown';
+  }
+  return 'query_protocol_error';
+}
+
 function reconciliationAudit(db, input) {
   auditEvent.record(db, {
     userId: input.actorId,
@@ -874,8 +1011,11 @@ async function reconcileCanaryRun(db, log, runId, options = {}) {
       taskId: before.provider_task_id,
       requestOptions: options.pollRequestOptions,
     });
-  } catch (_) {
-    queryResult = { state: 'unknown' };
+  } catch (error) {
+    const category = thrownQueryCategory(error);
+    queryResult = category === 'result_unknown'
+      ? { state: 'unknown', category }
+      : { state: 'query_failed', category };
   }
 
   if (queryResult?.state === 'succeeded' && queryResult.artifactUrl) {
@@ -1012,27 +1152,32 @@ async function reconcileCanaryRun(db, log, runId, options = {}) {
     return safeReconcileResult(after, now);
   }
 
+  const unknownCategory = queryResult?.state === 'query_failed'
+    ? normalizedQueryCategory(queryResult.category)
+    : normalizedQueryCategory(queryResult?.category, 'result_unknown');
   const unchanged = db.transaction(() => {
     const ownership = ownedReconciliation(db, before, claimToken);
     if (!ownership.owned) return ownership.row;
     const current = ownership.row;
     db.prepare(`UPDATE provider_canary_runs SET reconcile_claim_token = NULL,
-      reconcile_lease_until = NULL, reconcile_checked_at = ?
-      WHERE id = ? AND reconcile_claim_token = ?`).run(now, runId, claimToken);
+      reconcile_lease_until = NULL, reconcile_checked_at = ?, error_category = ?,
+      safe_error_summary = ?
+      WHERE id = ? AND reconcile_claim_token = ?`)
+      .run(now, unknownCategory, `category=${unknownCategory}`, runId, claimToken);
     const updated = loadCanaryForReconciliation(db, runId);
     reconciliationEvent(
       db,
       updated,
       'provider_canary_reconcile_unknown',
       'warning',
-      safeCategory(updated.error_category, 'result_unknown'),
+      unknownCategory,
       now,
     );
     reconciliationAudit(db, {
       actorId: options.actorId,
       runId,
       outcome: 'unknown',
-      category: safeCategory(updated.error_category, 'result_unknown'),
+      category: unknownCategory,
     });
     return updated;
   }).immediate();

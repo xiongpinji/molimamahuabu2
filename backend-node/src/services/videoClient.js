@@ -5981,10 +5981,67 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
 async function queryVideoTaskStatusOnce(db, log, taskId, config, requestOpts = {}) {
   const baseFetch = requestOpts.fetchImpl || globalThis.fetch;
   let requestCount = 0;
+  let observedStatus = null;
+  let observedQueryCategory = null;
+  let observedBodyWasJson = null;
+
+  const safeQueryCategoryForError = (error, transport = false) => {
+    if (error?.code === 'PROVIDER_QUERY_REQUEST_LIMIT') return 'query_request_limit';
+    if (error?.code === 'PROVIDER_QUERY_PROTOCOL_ERROR') return 'query_protocol_error';
+    if (error?.code === 'PROVIDER_QUERY_VALIDATION_ERROR') return 'validation_error';
+    if (error?.name === 'AbortError'
+        || error?.name === 'TimeoutError'
+        || ['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT'].includes(error?.code)) {
+      return 'result_unknown';
+    }
+    return transport && error instanceof TypeError ? 'provider_unavailable' : 'query_protocol_error';
+  };
+
+  const safeQueryCategoryForStatus = (status) => {
+    if (status === 401) return 'auth_unavailable';
+    if (status === 403) return 'forbidden_unknown';
+    if (status === 404 || status === 408) return 'result_unknown';
+    if (status === 429) return 'rate_limited';
+    if (status >= 500) return 'provider_unavailable';
+    return 'validation_error';
+  };
+
+  const trustedArtifactUrl = (value) => {
+    if (!isPlausibleHttpVideoUrl(value)) return false;
+    try {
+      const parsed = new URL(String(value).trim());
+      const embedded = `${parsed.pathname}${parsed.search}`;
+      return ['http:', 'https:'].includes(parsed.protocol)
+        && !parsed.username
+        && !parsed.password
+        && !/(?:file|javascript|data):/i.test(embedded);
+    } catch (_) {
+      return false;
+    }
+  };
+
+  if (config?.base_url) {
+    try {
+      const parsed = new URL(String(config.base_url));
+      if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('unsupported provider URL');
+    } catch (_) {
+      return { state: 'query_failed', category: 'validation_error' };
+    }
+  }
+
   const fetchOnce = async (url, options = {}) => {
     if (requestCount >= 1) {
       const error = new Error('single provider task query exceeded one request');
       error.code = 'PROVIDER_QUERY_REQUEST_LIMIT';
+      throw error;
+    }
+    try {
+      const parsed = new URL(String(url));
+      if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('unsupported query URL');
+    } catch (_) {
+      const error = new Error('invalid provider query URL');
+      error.code = 'PROVIDER_QUERY_VALIDATION_ERROR';
+      observedQueryCategory = 'validation_error';
       throw error;
     }
     requestCount += 1;
@@ -5992,20 +6049,75 @@ async function queryVideoTaskStatusOnce(db, log, taskId, config, requestOpts = {
     if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
       bounded.signal = AbortSignal.timeout(30_000);
     }
-    return baseFetch(url, bounded);
+    let response;
+    try {
+      response = await baseFetch(url, bounded);
+    } catch (error) {
+      observedQueryCategory = safeQueryCategoryForError(error, true);
+      throw error;
+    }
+    observedStatus = Number(response?.status);
+    return {
+      ok: response?.ok,
+      status: response?.status,
+      headers: response?.headers,
+      async text() {
+        let raw;
+        try {
+          raw = await response.text();
+        } catch (error) {
+          observedQueryCategory = safeQueryCategoryForError(error);
+          throw error;
+        }
+        try {
+          JSON.parse(raw);
+          observedBodyWasJson = true;
+        } catch (_) {
+          observedBodyWasJson = false;
+        }
+        return raw;
+      },
+    };
   };
-  const result = await pollVideoTask(db, log, null, taskId, config, 1, 0, {
-    fetchImpl: fetchOnce,
-    [STRICT_SINGLE_PROVIDER_REQUEST]: true,
-  });
-  if (result?.video_url) return { state: 'succeeded', artifactUrl: result.video_url };
+  let result;
+  try {
+    result = await pollVideoTask(db, { info() {}, warn() {}, error() {} }, null, taskId, config, 1, 0, {
+      fetchImpl: fetchOnce,
+      [STRICT_SINGLE_PROVIDER_REQUEST]: true,
+    });
+  } catch (error) {
+    const category = observedQueryCategory || safeQueryCategoryForError(error);
+    return category === 'result_unknown'
+      ? { state: 'unknown', category }
+      : { state: 'query_failed', category };
+  }
+  if (Number.isFinite(observedStatus) && (observedStatus < 200 || observedStatus >= 300)) {
+    return { state: 'query_failed', category: safeQueryCategoryForStatus(observedStatus) };
+  }
+  if (observedQueryCategory) {
+    return observedQueryCategory === 'result_unknown'
+      ? { state: 'unknown', category: observedQueryCategory }
+      : { state: 'query_failed', category: observedQueryCategory };
+  }
+  if (observedBodyWasJson === false) {
+    return { state: 'query_failed', category: 'query_protocol_error' };
+  }
+  if (result?.video_url) {
+    return trustedArtifactUrl(result.video_url)
+      ? { state: 'succeeded', artifactUrl: result.video_url }
+      : { state: 'artifact_unreadable' };
+  }
   if (result?.artifact_unreadable
       || (Object.prototype.hasOwnProperty.call(result || {}, 'video_url') && !result.video_url)) {
     return { state: 'artifact_unreadable' };
   }
-  if (result?.indeterminate) return { state: 'unknown' };
-  if (result?.error) return { state: 'failed', category: 'provider_task_failed' };
-  return { state: 'unknown' };
+  if (result?.indeterminate) return { state: 'unknown', category: 'result_unknown' };
+  if (result?.error) {
+    return requestCount === 0
+      ? { state: 'query_failed', category: 'validation_error' }
+      : { state: 'failed', category: 'provider_task_failed' };
+  }
+  return { state: 'unknown', category: 'result_unknown' };
 }
 
 const { runWithGenerationLimit } = require('./generationConcurrency');

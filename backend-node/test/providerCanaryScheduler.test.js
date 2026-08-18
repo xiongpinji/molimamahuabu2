@@ -635,7 +635,7 @@ test('fixture failure happens before reservation and leaves the global slot free
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM provider_canary_runs').get().count, 0);
   const event = db.prepare(`SELECT severity, safe_details FROM provider_stability_events
     WHERE event_type = 'provider_canary_fixture_failed'`).get();
-  assert.equal(event.severity, 'P3');
+  assert.equal(event.severity, 'info');
   assert.equal(event.safe_details.includes(secret), false);
 });
 
@@ -766,7 +766,7 @@ test('recordFailure bookkeeping errors emergency-close reserved runs before aler
     safe_error_summary: 'category=canary_bookkeeping_failed',
   });
   assert.equal(db.prepare(`SELECT severity FROM provider_stability_events
-    WHERE event_type = 'provider_canary_bookkeeping_failed'`).get().severity, 'P1');
+    WHERE event_type = 'provider_canary_bookkeeping_failed'`).get().severity, 'error');
   assert.equal(JSON.stringify(logs).includes(raw), false);
 
   let nextCalls = 0;
@@ -817,7 +817,7 @@ test('recordUnknown bookkeeping errors retain held cost and free the global slot
     safe_error_summary: 'category=canary_bookkeeping_failed',
   });
   assert.equal(db.prepare(`SELECT severity FROM provider_stability_events
-    WHERE event_type = 'provider_canary_bookkeeping_failed'`).get().severity, 'P1');
+    WHERE event_type = 'provider_canary_bookkeeping_failed'`).get().severity, 'error');
   assert.equal(JSON.stringify(logs).includes(raw), false);
 
   let nextCalls = 0;
@@ -969,7 +969,7 @@ test('unexpected throws after acceptance or verification close each active slot 
     .includes(secret), false);
 });
 
-test('paused and missing-cost profiles emit one P3 each and never submit', async (t) => {
+test('paused and missing-cost profiles emit one info event each and never submit', async (t) => {
   const scheduler = loadScheduler();
   const { db } = setup(t);
   const paused = config(1, { canary_paused: true });
@@ -989,12 +989,12 @@ test('paused and missing-cost profiles emit one P3 each and never submit', async
   const events = db.prepare(`SELECT severity, event_type, config_id FROM provider_stability_events
     ORDER BY config_id`).all();
   assert.deepEqual(events, [
-    { severity: 'P3', event_type: 'provider_canary_paused', config_id: 1 },
-    { severity: 'P3', event_type: 'provider_canary_cost_missing', config_id: 2 },
+    { severity: 'info', event_type: 'provider_canary_paused', config_id: 1 },
+    { severity: 'info', event_type: 'provider_canary_cost_missing', config_id: 2 },
   ]);
 });
 
-test('blocked profiles still emit P3 when the same tick submits one valid profile', async (t) => {
+test('blocked profiles still emit info when the same tick submits one valid profile', async (t) => {
   const scheduler = loadScheduler();
   const { db } = setup(t);
   const valid = config(1);
@@ -1026,7 +1026,7 @@ test('blocked profiles still emit P3 when the same tick submits one valid profil
   ]);
 });
 
-test('budget rejection emits P3 and never calls executor', async (t) => {
+test('budget rejection emits info and never calls executor', async (t) => {
   const scheduler = loadScheduler();
   const { db } = setup(t);
   let executeCalls = 0;
@@ -1052,7 +1052,7 @@ test('budget rejection emits P3 and never calls executor', async (t) => {
   assert.equal(result.state, 'budget_blocked');
   assert.equal(executeCalls, 0);
   assert.equal(db.prepare(`SELECT severity FROM provider_stability_events
-    WHERE event_type = 'provider_canary_budget_blocked'`).get().severity, 'P3');
+    WHERE event_type = 'provider_canary_budget_blocked'`).get().severity, 'info');
 });
 
 test('default budget reservation shares the database global slot transaction', async (t) => {

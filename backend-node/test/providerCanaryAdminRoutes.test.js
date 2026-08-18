@@ -98,6 +98,21 @@ function insertCanaryFixture(db) {
   return { configId, capability, capabilityFingerprint };
 }
 
+function cloneCanaryRun(db, id, state, updatedAt, logicalModelId = 'logical-video') {
+  db.prepare(`INSERT INTO provider_canary_runs
+    (id, idempotency_key, config_id, logical_model_id, service_type,
+     capability_fingerprint, config_fingerprint, cost_fingerprint,
+     runtime_fingerprint, provider_scope_key, state, reserved_cost_micros,
+     actual_cost_micros, currency, budget_day, budget_month, provider_task_id,
+     error_category, safe_error_summary, created_at, submitted_at, finished_at, updated_at)
+    SELECT ?, ?, config_id, ?, service_type, capability_fingerprint,
+      config_fingerprint, cost_fingerprint, runtime_fingerprint, provider_scope_key,
+      ?, reserved_cost_micros, actual_cost_micros, currency, budget_day, budget_month,
+      provider_task_id, error_category, safe_error_summary, ?, submitted_at, finished_at, ?
+    FROM provider_canary_runs WHERE id = 'run-unknown'`)
+    .run(id, `idem-${id}`, logicalModelId, state, updatedAt, updatedAt);
+}
+
 function reconciliationSnapshot(db) {
   return {
     run: db.prepare(`SELECT state, actual_cost_micros, artifact_path, error_category,
@@ -207,7 +222,7 @@ test('summary 返回巡检状态和预算未知占用且不泄漏供应商身份
   ]) assert.equal(serialized.includes(secret), false, secret);
 });
 
-test('runs 只返回安全运行字段和可对账标记', async (t) => {
+test('runs 只返回安全运行字段、可对账标记与可消费分页结构', async (t) => {
   const context = await setup();
   t.after(() => context.close());
   const result = await request(
@@ -216,8 +231,13 @@ test('runs 只返回安全运行字段和可对账标记', async (t) => {
     { token: context.adminToken },
   );
   assert.equal(result.status, 200);
-  assert.equal(result.body.data.length, 1);
-  const run = result.body.data[0];
+  assert.equal(result.body.data.items.length, 1);
+  assert.deepEqual(result.body.data.pagination, {
+    limit: 50,
+    has_more: false,
+    next_cursor: null,
+  });
+  const run = result.body.data.items[0];
   assert.equal(run.id, 'run-unknown');
   assert.equal(run.logical_model_id, 'logical-video');
   assert.match(run.route_name, /^线路-[a-f0-9]{8}$/);
@@ -239,6 +259,58 @@ test('runs 只返回安全运行字段和可对账标记', async (t) => {
     'provider_task_id', 'provider-task-secret-123', 'safe_error_summary',
     'signed.example', 'secret-provider', 'config_id', 'artifact_path',
   ]) assert.equal(serialized.includes(secret), false, secret);
+});
+
+test('runs 使用快照和 updated_at/id 元组稳定分页，历史 unknown 均可到达', async (t) => {
+  const context = await setup();
+  t.after(() => context.close());
+  cloneCanaryRun(context.db, 'run-b', 'submission_unknown', '2026-08-19T01:59:00.000Z');
+  cloneCanaryRun(context.db, 'run-a', 'artifact_unreadable', '2026-08-19T01:59:00.000Z');
+  cloneCanaryRun(context.db, 'run-old', 'result_unknown', '2026-08-19T01:58:00.000Z');
+
+  const first = await request(
+    context.baseUrl,
+    '/admin/provider-stability/canary/runs?limit=2',
+    { token: context.adminToken },
+  );
+  assert.equal(first.status, 200);
+  assert.deepEqual(first.body.data.items.map((run) => run.id), ['run-unknown', 'run-b']);
+  assert.equal(first.body.data.pagination.has_more, true);
+  assert.match(first.body.data.pagination.next_cursor, /^[A-Za-z0-9_-]{1,512}$/);
+
+  cloneCanaryRun(context.db, 'run-after-snapshot', 'result_unknown', '2099-01-01T00:00:00.000Z');
+  const second = await request(
+    context.baseUrl,
+    `/admin/provider-stability/canary/runs?limit=2&before=${encodeURIComponent(first.body.data.pagination.next_cursor)}`,
+    { token: context.adminToken },
+  );
+  assert.equal(second.status, 200);
+  assert.deepEqual(second.body.data.items.map((run) => run.id), ['run-a', 'run-old']);
+  assert.equal(second.body.data.pagination.has_more, false);
+  assert.equal(second.body.data.pagination.next_cursor, null);
+  assert.equal(JSON.stringify(second.body).includes('run-after-snapshot'), false);
+});
+
+test('runs 严格校验 limit、state、logical_model_id、before 和未知查询字段', async (t) => {
+  const context = await setup();
+  t.after(() => context.close());
+  const invalidQueries = [
+    'limit=0',
+    'limit=201',
+    'limit=1.5',
+    'state=not-a-canary-state',
+    `logical_model_id=${'a'.repeat(201)}`,
+    'before=not_base64url!',
+    'unexpected=1',
+  ];
+  for (const query of invalidQueries) {
+    const result = await request(
+      context.baseUrl,
+      `/admin/provider-stability/canary/runs?${query}`,
+      { token: context.adminToken },
+    );
+    assert.equal(result.status, 400, query);
+  }
 });
 
 test('reconcile 拒绝客户端状态或产物字段且不触发查询', async (t) => {
@@ -418,11 +490,82 @@ test('reconcile 明确失败原子结算失败并保持证据不可公开', asyn
 test('巡检迁移提供持久对账 claim、lease 和去抖时间', () => {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
+  runMigrationsAndEnsure(db);
   const columns = new Set(db.prepare('PRAGMA table_info(provider_canary_runs)').all()
     .map((column) => column.name));
   for (const column of [
     'reconcile_claim_token', 'reconcile_lease_until', 'reconcile_checked_at',
   ]) assert.equal(columns.has(column), true, column);
+  const indexes = new Set(db.prepare(`SELECT name FROM sqlite_master
+    WHERE type = 'index' AND tbl_name = 'provider_canary_runs'`).all()
+    .map((index) => index.name));
+  for (const index of [
+    'idx_provider_canary_runs_admin_page',
+    'idx_provider_canary_runs_admin_state_page',
+    'idx_provider_canary_runs_admin_model_page',
+  ]) assert.equal(indexes.has(index), true, index);
+  db.close();
+});
+
+test('reconcile 查询故障保持 unknown 并只写安全分类，不泄露原始错误', async () => {
+  for (const category of [
+    'validation_error',
+    'auth_unavailable',
+    'forbidden_unknown',
+    'rate_limited',
+    'provider_unavailable',
+    'query_request_limit',
+    'query_protocol_error',
+  ]) {
+    const db = new Database(':memory:');
+    runMigrationsAndEnsure(db);
+    insertUser(db, 'stability-admin', 'admin');
+    insertCanaryFixture(db);
+    const raw = 'Authorization Bearer secret https://provider.example/task?signature=hidden';
+    const result = await stability.reconcileCanaryRun(db, null, 'run-unknown', {
+      actorId: 'stability-admin',
+      now: NOW,
+      async queryTaskOnce() { return { state: 'query_failed', category, raw }; },
+    });
+    assert.equal(result.state, 'result_unknown', category);
+    assert.equal(result.reconciled, false, category);
+    assert.equal(result.error_category, category, category);
+    const stored = db.prepare(`SELECT state, error_category, safe_error_summary
+      FROM provider_canary_runs WHERE id = 'run-unknown'`).get();
+    assert.deepEqual(stored, {
+      state: 'result_unknown',
+      error_category: category,
+      safe_error_summary: `category=${category}`,
+    });
+    const event = db.prepare(`SELECT severity, safe_details FROM provider_stability_events
+      WHERE event_type = 'provider_canary_reconcile_unknown'`).get();
+    assert.equal(event.severity, 'warning');
+    assert.equal(JSON.parse(event.safe_details).category, category);
+    const auditRow = db.prepare(`SELECT code FROM audit_events
+      WHERE event_type = 'provider.canary.reconciled'`).get();
+    assert.match(auditRow.code, new RegExp(category));
+    const serialized = JSON.stringify({ result, stored, event, auditRow });
+    assert.equal(serialized.includes(raw), false);
+    assert.equal(serialized.includes('provider.example'), false);
+    db.close();
+  }
+});
+
+test('reconcile 仅协议分类异常保持 unknown，显式任务失败仍是唯一 failed 入口', async () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  insertUser(db, 'stability-admin', 'admin');
+  insertCanaryFixture(db);
+  const error = new Error('raw provider parser detail must not leak');
+  error.code = 'PROVIDER_QUERY_PROTOCOL_ERROR';
+  const result = await stability.reconcileCanaryRun(db, null, 'run-unknown', {
+    actorId: 'stability-admin',
+    now: NOW,
+    async queryTaskOnce() { throw error; },
+  });
+  assert.equal(result.state, 'result_unknown');
+  assert.equal(result.error_category, 'query_protocol_error');
+  assert.equal(JSON.stringify(result).includes('parser detail'), false);
   db.close();
 });
 

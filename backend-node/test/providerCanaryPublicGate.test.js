@@ -386,7 +386,7 @@ test('shadow 不隐藏公共模型也不向用户暴露 would_be_hidden', () => 
   }
 });
 
-test('全部线路从可公开变为不可公开时隐藏模型且 P1 只写一次', () => {
+test('全部线路从可公开变为不可公开时隐藏模型且 error 只写一次', () => {
   const db = createDb();
   try {
     const configId = addConfig(db, { name: 'transition-route', priority: 100 });
@@ -411,7 +411,7 @@ test('全部线路从可公开变为不可公开时隐藏模型且 P1 只写一�
     assert.deepEqual(db.prepare(`SELECT severity, event_type, logical_model_id, safe_details
       FROM provider_stability_events
       WHERE event_type = 'provider_canary_public_unavailable'`).all(), [{
-      severity: 'P1',
+      severity: 'error',
       event_type: 'provider_canary_public_unavailable',
       logical_model_id: 'seedance-logical',
       safe_details: '{"category":"fresh_evidence_unavailable"}',

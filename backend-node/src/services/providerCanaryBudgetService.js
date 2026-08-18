@@ -356,7 +356,7 @@ function recordOverrunEvent(db, row, actualCostMicros, now) {
   db.prepare(`INSERT INTO provider_stability_events
     (severity, event_type, request_id, logical_model_id, config_id, task_state,
      safe_details, created_at)
-    VALUES ('P1', 'provider_canary_cost_overrun', ?, ?, ?, ?, ?, ?)`)
+    VALUES ('error', 'provider_canary_cost_overrun', ?, ?, ?, ?, ?, ?)`)
     .run(row.id, row.logical_model_id, row.config_id, row.state, safeDetails, now);
 }
 

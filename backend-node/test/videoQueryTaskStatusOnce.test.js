@@ -89,7 +89,7 @@ test('单次任务查询复用现有解析并区分成功、明确失败和仍�
     },
     {
       payload: { status: 'processing' },
-      expected: { state: 'unknown' },
+      expected: { state: 'unknown', category: 'result_unknown' },
     },
   ]) {
     let requests = 0;
@@ -119,7 +119,151 @@ test('单次任务查询禁止自动跟随重定向且设置请求超时信号',
       return jsonResponse({ status: 'processing' });
     },
   });
-  assert.deepEqual(result, { state: 'unknown' });
+  assert.deepEqual(result, { state: 'unknown', category: 'result_unknown' });
   assert.equal(requestOptions.redirect, 'manual');
   assert.equal(requestOptions.signal instanceof AbortSignal, true);
+});
+
+test('单次任务查询把上游 HTTP 状态归为安全查询故障而不伪造任务失败', async () => {
+  const logEntries = [];
+  const capturingLog = {
+    info(...args) { logEntries.push(args); },
+    warn(...args) { logEntries.push(args); },
+    error(...args) { logEntries.push(args); },
+  };
+  const cases = [
+    [302, 'validation_error'],
+    [400, 'validation_error'],
+    [401, 'auth_unavailable'],
+    [403, 'forbidden_unknown'],
+    [404, 'result_unknown'],
+    [408, 'result_unknown'],
+    [429, 'rate_limited'],
+    [503, 'provider_unavailable'],
+  ];
+  for (const [status, category] of cases) {
+    const result = await queryVideoTaskStatusOnce(null, capturingLog, 'saved-task-id', {
+      provider: 'aihubcc',
+      api_protocol: 'aihubcc',
+      base_url: 'https://relay.invalid/v1',
+      api_key: 'test-key',
+      query_endpoint: '/videos/{taskId}',
+    }, {
+      async fetchImpl() {
+        return jsonResponse({
+          error: { message: 'raw provider response Authorization Bearer secret' },
+        }, status);
+      },
+    });
+    assert.deepEqual(result, { state: 'query_failed', category }, String(status));
+    assert.equal(JSON.stringify(result).includes('Bearer secret'), false);
+  }
+  assert.deepEqual(logEntries, []);
+});
+
+test('单次任务查询仅把超时或处理中归 unknown 并保留安全 result_unknown 分类', async () => {
+  const config = {
+    provider: 'aihubcc',
+    api_protocol: 'aihubcc',
+    base_url: 'https://relay.invalid/v1',
+    api_key: 'test-key',
+    query_endpoint: '/videos/{taskId}',
+  };
+  const timeout = new Error('raw timeout target must not leak');
+  timeout.name = 'TimeoutError';
+  const timedOut = await queryVideoTaskStatusOnce(null, log, 'saved-task-id', config, {
+    async fetchImpl() { throw timeout; },
+  });
+  assert.deepEqual(timedOut, { state: 'unknown', category: 'result_unknown' });
+  const processing = await queryVideoTaskStatusOnce(null, log, 'saved-task-id', config, {
+    async fetchImpl() { return jsonResponse({ status: 'processing' }); },
+  });
+  assert.deepEqual(processing, { state: 'unknown', category: 'result_unknown' });
+});
+
+test('单次任务查询安全区分非法 URL、非 JSON、协议异常与请求次数门禁', async () => {
+  const invalidUrl = await queryVideoTaskStatusOnce(null, log, 'saved-task-id', {
+    provider: 'aihubcc',
+    api_protocol: 'aihubcc',
+    base_url: 'not a valid URL',
+    api_key: 'test-key',
+    query_endpoint: '/videos/{taskId}',
+  }, { async fetchImpl() { throw new Error('must not fetch'); } });
+  assert.deepEqual(invalidUrl, { state: 'query_failed', category: 'validation_error' });
+
+  const nonJson = await queryVideoTaskStatusOnce(null, log, 'saved-task-id', {
+    provider: 'aihubcc',
+    api_protocol: 'aihubcc',
+    base_url: 'https://relay.invalid/v1',
+    api_key: 'test-key',
+    query_endpoint: '/videos/{taskId}',
+  }, {
+    async fetchImpl() {
+      return { ok: true, status: 200, text: async () => '<html>secret upstream response</html>' };
+    },
+  });
+  assert.deepEqual(nonJson, { state: 'query_failed', category: 'query_protocol_error' });
+
+  for (const code of ['PROVIDER_QUERY_REQUEST_LIMIT', 'PROVIDER_QUERY_PROTOCOL_ERROR']) {
+    const result = await queryVideoTaskStatusOnce(null, log, 'saved-task-id', {
+      provider: 'aihubcc',
+      api_protocol: 'aihubcc',
+      base_url: 'https://relay.invalid/v1',
+      api_key: 'test-key',
+      query_endpoint: '/videos/{taskId}',
+    }, {
+      async fetchImpl() {
+        return {
+          ok: true,
+          status: 200,
+          async text() {
+            const error = new Error('raw internal error must not leak');
+            error.code = code;
+            throw error;
+          },
+        };
+      },
+    });
+    assert.deepEqual(result, {
+      state: 'query_failed',
+      category: code === 'PROVIDER_QUERY_REQUEST_LIMIT'
+        ? 'query_request_limit'
+        : 'query_protocol_error',
+    });
+  }
+
+  const genericParserFailure = await queryVideoTaskStatusOnce(null, log, 'saved-task-id', {
+    provider: 'aihubcc',
+    api_protocol: 'aihubcc',
+    base_url: 'https://relay.invalid/v1',
+    api_key: 'test-key',
+    query_endpoint: '/videos/{taskId}',
+  }, {
+    async fetchImpl() {
+      return {
+        ok: true,
+        status: 200,
+        async text() { throw new TypeError('raw parser implementation detail'); },
+      };
+    },
+  });
+  assert.deepEqual(genericParserFailure, {
+    state: 'query_failed',
+    category: 'query_protocol_error',
+  });
+});
+
+test('单次任务查询只接受可信 HTTP 产物 URL', async () => {
+  const result = await queryVideoTaskStatusOnce(null, log, 'saved-task-id', {
+    provider: 'aihubcc',
+    api_protocol: 'aihubcc',
+    base_url: 'https://relay.invalid/v1',
+    api_key: 'test-key',
+    query_endpoint: '/videos/{taskId}',
+  }, {
+    async fetchImpl() {
+      return jsonResponse({ status: 'completed', video_url: 'file:///private/result.mp4' });
+    },
+  });
+  assert.deepEqual(result, { state: 'artifact_unreadable' });
 });
