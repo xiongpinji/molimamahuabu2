@@ -207,11 +207,57 @@ function verificationSettingsFingerprint(settings) {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return String(settings || '');
     const connectionSettings = {};
     for (const key of Object.keys(parsed).sort()) {
-      if (CONNECTION_SETTING_KEYS.has(key.toLowerCase())) connectionSettings[key] = parsed[key];
+      const normalizedKey = key.toLowerCase();
+      if (CONNECTION_SETTING_KEYS.has(normalizedKey)
+          || ['canvas_capabilities', 'canvas_capabilities_by_model', 'capabilities'].includes(normalizedKey)) {
+        connectionSettings[key] = stableJsonValue(parsed[key], key);
+      }
     }
     return JSON.stringify(connectionSettings);
   } catch (_) {
     return String(settings || '');
+  }
+}
+
+function stableJsonValue(value, key = '') {
+  if (Array.isArray(value)) {
+    const items = value.map((item) => stableJsonValue(item));
+    if (!CAPABILITY_SET_ARRAY_KEYS.has(key)) return items;
+    return [...new Map(items
+      .map((item) => [JSON.stringify(item), item])
+      .sort(([left], [right]) => left.localeCompare(right))).values()];
+  }
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.keys(value).sort().map((childKey) => (
+    [childKey, stableJsonValue(value[childKey], childKey)]
+  )));
+}
+
+function tableColumns(db, table) {
+  return new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name));
+}
+
+function isMissingCanaryEvidenceTable(error) {
+  return error?.code === 'SQLITE_ERROR'
+    && /no such table:\s*provider_canary_evidence\b/i.test(String(error.message || ''));
+}
+
+function invalidateConfigEvidence(db, configId, reason, now) {
+  try {
+    require('./providerCanaryEvidenceService').invalidateConfig(db, configId, reason, now);
+  } catch (error) {
+    if (!isMissingCanaryEvidenceTable(error)) throw error;
+  }
+}
+
+function setPausedEvidenceState(db, configId, paused, now) {
+  try {
+    const nextState = paused ? 'disabled' : 'never_verified';
+    db.prepare(`UPDATE provider_canary_evidence
+      SET state = ?, invalidated_at = ?, invalidation_reason = 'admin_invalidated', updated_at = ?
+      WHERE config_id = ?`).run(nextState, now, now, configId);
+  } catch (error) {
+    if (!isMissingCanaryEvidenceTable(error)) throw error;
   }
 }
 
@@ -367,6 +413,9 @@ function updateConfig(db, log, id, req) {
   const updates = [];
   const params = [];
   let connectivityChanged = false;
+  let routeEvidenceChanged = false;
+  let pauseChanged = false;
+  let nextCanaryPaused = existing.canary_paused === true;
   if (req.name != null) {
     updates.push('name = ?');
     params.push(req.name);
@@ -375,16 +424,19 @@ function updateConfig(db, log, id, req) {
     updates.push('provider = ?');
     params.push(req.provider);
     connectivityChanged ||= String(req.provider) !== String(existing.provider || '');
+    routeEvidenceChanged ||= String(req.provider) !== String(existing.provider || '');
   }
   if (req.api_protocol != null) {
     updates.push('api_protocol = ?');
     params.push(req.api_protocol);
     connectivityChanged ||= String(req.api_protocol) !== String(existing.api_protocol || '');
+    routeEvidenceChanged ||= String(req.api_protocol) !== String(existing.api_protocol || '');
   }
   if (req.base_url != null) {
     updates.push('base_url = ?');
     params.push(req.base_url);
     connectivityChanged ||= String(req.base_url) !== String(existing.base_url || '');
+    routeEvidenceChanged ||= String(req.base_url) !== String(existing.base_url || '');
   }
   if (req.api_key != null) {
     updates.push('api_key = ?');
@@ -392,34 +444,40 @@ function updateConfig(db, log, id, req) {
     const nextApiKey = normalizeApiKeyForService(st, req.api_key);
     params.push(nextApiKey);
     connectivityChanged ||= String(nextApiKey || '') !== String(existing.api_key || '');
+    routeEvidenceChanged ||= String(nextApiKey || '') !== String(existing.api_key || '');
   }
   if (req.model != null) {
     updates.push('model = ?');
     const nextModel = modelToDb(req.model);
     params.push(nextModel);
     connectivityChanged ||= nextModel !== modelToDb(existing.model);
+    routeEvidenceChanged ||= nextModel !== modelToDb(existing.model);
   }
   if (req.default_model !== undefined) {
     updates.push('default_model = ?');
     const nextDefaultModel = req.default_model != null ? String(req.default_model).trim() || null : null;
     params.push(nextDefaultModel);
     connectivityChanged ||= nextDefaultModel !== existing.default_model;
+    routeEvidenceChanged ||= nextDefaultModel !== existing.default_model;
   }
   if (req.priority != null) {
     updates.push('priority = ?');
     params.push(req.priority);
+    routeEvidenceChanged ||= Number(req.priority) !== Number(existing.priority || 0);
   }
   if (req.endpoint !== undefined) {
     updates.push('endpoint = ?');
     const nextEndpoint = req.endpoint || '';
     params.push(nextEndpoint);
     connectivityChanged ||= String(nextEndpoint) !== String(existing.endpoint || '');
+    routeEvidenceChanged ||= String(nextEndpoint) !== String(existing.endpoint || '');
   }
   if (req.query_endpoint !== undefined) {
     updates.push('query_endpoint = ?');
     const nextQueryEndpoint = req.query_endpoint || '';
     params.push(nextQueryEndpoint);
     connectivityChanged ||= String(nextQueryEndpoint) !== String(existing.query_endpoint || '');
+    routeEvidenceChanged ||= String(nextQueryEndpoint) !== String(existing.query_endpoint || '');
   }
   if (req.settings != null) {
     updates.push('settings = ?');
@@ -432,37 +490,63 @@ function updateConfig(db, log, id, req) {
       })
       : req.settings;
     params.push(nextSettings);
-    connectivityChanged ||= verificationSettingsFingerprint(nextSettings)
+    const settingsChanged = verificationSettingsFingerprint(nextSettings)
       !== verificationSettingsFingerprint(existing.settings);
+    connectivityChanged ||= settingsChanged;
+    routeEvidenceChanged ||= settingsChanged;
   }
   if (typeof req.is_default === 'boolean') {
     updates.push('is_default = ?');
     params.push(req.is_default ? 1 : 0);
+    routeEvidenceChanged ||= req.is_default !== existing.is_default;
   }
   if (typeof req.is_active === 'boolean') {
     updates.push('is_active = ?');
     params.push(req.is_active ? 1 : 0);
+    routeEvidenceChanged ||= req.is_active !== existing.is_active;
   }
   if (req.logical_model_id !== undefined) {
     updates.push('logical_model_id = ?');
-    params.push(req.logical_model_id != null ? String(req.logical_model_id).trim() || null : null);
+    const nextLogicalModelId = req.logical_model_id != null ? String(req.logical_model_id).trim() || null : null;
+    params.push(nextLogicalModelId);
+    routeEvidenceChanged ||= nextLogicalModelId !== existing.logical_model_id;
   }
   if (typeof req.failover_enabled === 'boolean') {
     updates.push('failover_enabled = ?');
     params.push(req.failover_enabled ? 1 : 0);
+    routeEvidenceChanged ||= req.failover_enabled !== existing.failover_enabled;
+  }
+  if (typeof req.canary_paused === 'boolean') {
+    const columns = tableColumns(db, 'ai_service_configs');
+    if (columns.has('canary_paused')) {
+      nextCanaryPaused = req.canary_paused;
+      pauseChanged = nextCanaryPaused !== existing.canary_paused;
+      updates.push('canary_paused = ?');
+      params.push(nextCanaryPaused ? 1 : 0);
+    }
   }
   if (connectivityChanged) {
+    const columns = tableColumns(db, 'ai_service_configs');
     updates.push("verification_status = 'unverified'");
-    updates.push('verification_checked_at = NULL');
-    updates.push('verified_at = NULL');
-    updates.push('verification_error = NULL');
+    if (columns.has('verification_checked_at')) updates.push('verification_checked_at = NULL');
+    if (columns.has('verified_at')) updates.push('verified_at = NULL');
+    if (columns.has('verification_error')) updates.push('verification_error = NULL');
   }
   if (updates.length === 0) return existing;
-  params.push(new Date().toISOString(), id);
-  db.prepare('UPDATE ai_service_configs SET ' + updates.join(', ') + ', updated_at = ? WHERE id = ?').run(...params);
-  if (req.is_default === true) clearOtherDefault(db, existing.service_type, id);
+  const now = new Date().toISOString();
+  params.push(now, id);
+  const applyUpdate = () => {
+    db.prepare('UPDATE ai_service_configs SET ' + updates.join(', ') + ', updated_at = ? WHERE id = ?').run(...params);
+    if (req.is_default === true) clearOtherDefault(db, existing.service_type, id);
+    if (routeEvidenceChanged || pauseChanged) {
+      invalidateConfigEvidence(db, id, pauseChanged ? 'admin_invalidated' : 'config_changed', now);
+    }
+    if (pauseChanged) setPausedEvidenceState(db, id, nextCanaryPaused, now);
+    return getConfig(db, id);
+  };
+  const updated = db.inTransaction ? applyUpdate() : db.transaction(applyUpdate)();
   log.info('AI config updated', { config_id: id });
-  return getConfig(db, id);
+  return updated;
 }
 
 function deleteConfig(db, log, id) {
@@ -529,6 +613,7 @@ function rowToConfig(r) {
     is_active: r.is_active == null ? true : !!r.is_active,
     logical_model_id: r.logical_model_id ? String(r.logical_model_id).trim() : null,
     failover_enabled: !!r.failover_enabled,
+    canary_paused: !!r.canary_paused,
     verification_status: String(r.verification_status || 'pending'),
     verification_checked_at: r.verification_checked_at || null,
     verified_capabilities: parseObject(r.verified_capabilities),
@@ -569,6 +654,10 @@ const SENSITIVE_SETTING_KEYS = new Set([
 const CONNECTION_SETTING_KEYS = new Set([
   ...SENSITIVE_SETTING_KEYS,
   'kling_secret_key_base64', 'icreat_group',
+]);
+const CAPABILITY_SET_ARRAY_KEYS = new Set([
+  'aspectRatios', 'durations', 'features', 'modelFeatures', 'models', 'resolutions',
+  'requiredFeatures', 'supportedFeatures',
 ]);
 
 function redactSettings(settings) {
