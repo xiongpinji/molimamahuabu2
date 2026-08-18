@@ -16,6 +16,23 @@ function hasTable(db, table) {
   return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.[1] === 1;
 }
 
+function enableForeignKeys(db) {
+  db.pragma('foreign_keys = ON');
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+}
+
+function insertProviderConfig(db, id, overrides = {}) {
+  const config = {
+    id,
+    service_type: 'image',
+    provider: `provider-${id}`,
+    name: `Provider ${id}`,
+    ...overrides,
+  };
+  return db.prepare(`INSERT INTO ai_service_configs (id, service_type, provider, name)
+    VALUES (@id, @service_type, @provider, @name)`).run(config);
+}
+
 function insertCanaryRun(db, overrides = {}) {
   const run = {
     id: 'canary-run-1',
@@ -97,6 +114,7 @@ function insertZeroCostCheck(db, overrides = {}) {
 test('provider stability migration creates the routing schema and remains idempotent', () => {
   const db = new Database(':memory:');
   try {
+    enableForeignKeys(db);
     runMigrationsAndEnsure(db);
     runMigrationsAndEnsure(db);
 
@@ -207,6 +225,7 @@ test('provider stability schema rejects duplicate idempotency keys and attempt n
 test('canary migration preserves existing provider configs and defaults pause to zero', () => {
   const db = new Database(':memory:');
   try {
+    enableForeignKeys(db);
     db.exec(`CREATE TABLE ai_service_configs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       service_type TEXT NOT NULL,
@@ -255,6 +274,10 @@ test('canary migration preserves existing provider configs and defaults pause to
         WHERE name LIKE 'provider_canary_%' AND type NOT IN ('table', 'index')`).all(),
       [],
     );
+    assert.throws(
+      () => db.prepare('UPDATE ai_service_configs SET canary_paused = 7 WHERE id = 77').run(),
+      /CHECK constraint failed/,
+    );
   } finally {
     db.close();
   }
@@ -263,7 +286,9 @@ test('canary migration preserves existing provider configs and defaults pause to
 test('canary schema rejects duplicate run and evidence identities', () => {
   const db = new Database(':memory:');
   try {
+    enableForeignKeys(db);
     runMigrationsAndEnsure(db);
+    insertProviderConfig(db, 1);
     insertCanaryRun(db);
     assert.throws(
       () => insertCanaryRun(db, { id: 'canary-run-2' }),
@@ -272,7 +297,7 @@ test('canary schema rejects duplicate run and evidence identities', () => {
 
     insertCanaryEvidence(db);
     assert.throws(
-      () => insertCanaryEvidence(db, { state: 'fresh', run_id: 'canary-run-1' }),
+      () => insertCanaryEvidence(db, { state: 'stale' }),
       /UNIQUE constraint failed: provider_canary_evidence\.config_id, provider_canary_evidence\.capability_fingerprint/,
     );
   } finally {
@@ -280,15 +305,21 @@ test('canary schema rejects duplicate run and evidence identities', () => {
   }
 });
 
-test('canary runs reject negative cost, negative artifact size, and non-CNY currency', () => {
+test('canary runs reject invalid costs, currency, and budget bucket formats', () => {
   const db = new Database(':memory:');
   try {
+    enableForeignKeys(db);
     runMigrationsAndEnsure(db);
+    insertProviderConfig(db, 1);
     for (const [suffix, overrides] of [
       ['reserved-cost', { reserved_cost_micros: -1 }],
       ['actual-cost', { actual_cost_micros: -1 }],
       ['artifact-bytes', { artifact_bytes: -1 }],
       ['currency', { currency: 'USD' }],
+      ['budget-day', { budget_day: 'not-a-date' }],
+      ['budget-day-digits', { budget_day: '202A-08-18' }],
+      ['budget-month', { budget_month: 'not-a-month' }],
+      ['budget-month-digits', { budget_month: '2026-AA' }],
     ]) {
       assert.throws(
         () => insertCanaryRun(db, {
@@ -299,6 +330,14 @@ test('canary runs reject negative cost, negative artifact size, and non-CNY curr
         /CHECK constraint failed/,
       );
     }
+    insertCanaryRun(db, {
+      id: 'canary-run-valid-boundaries',
+      idempotency_key: 'canary-idempotency-valid-boundaries',
+      actual_cost_micros: 0,
+      artifact_bytes: 0,
+      budget_day: '2026-08-19',
+      budget_month: '2026-08',
+    });
   } finally {
     db.close();
   }
@@ -307,7 +346,9 @@ test('canary runs reject negative cost, negative artifact size, and non-CNY curr
 test('canary tables accept every legal state and reject illegal states', () => {
   const db = new Database(':memory:');
   try {
+    enableForeignKeys(db);
     runMigrationsAndEnsure(db);
+    insertProviderConfig(db, 1);
 
     const runStates = [
       'reserved',
@@ -344,11 +385,33 @@ test('canary tables accept every legal state and reject illegal states', () => {
       'budget_blocked',
       'disabled',
     ];
-    evidenceStates.forEach((state, index) => insertCanaryEvidence(db, {
-      config_id: index + 1,
-      capability_fingerprint: `evidence-capability-${index}`,
-      state,
-    }));
+    evidenceStates.forEach((state, index) => {
+      const configId = index + 20;
+      const capabilityFingerprint = `evidence-capability-${index}`;
+      insertProviderConfig(db, configId);
+      const overrides = {
+        config_id: configId,
+        capability_fingerprint: capabilityFingerprint,
+        state,
+      };
+      if (state === 'fresh') {
+        const runId = `fresh-evidence-run-${index}`;
+        insertCanaryRun(db, {
+          id: runId,
+          idempotency_key: `fresh-evidence-idempotency-${index}`,
+          config_id: configId,
+          capability_fingerprint: capabilityFingerprint,
+          state: 'succeeded',
+        });
+        Object.assign(overrides, {
+          run_id: runId,
+          verified_at: '2026-08-18T00:00:00.000Z',
+          expires_at: '2026-08-19T00:00:00.000Z',
+        });
+      }
+      insertCanaryEvidence(db, overrides);
+    });
+    insertProviderConfig(db, 100);
     assert.throws(
       () => insertCanaryEvidence(db, {
         config_id: 100,
@@ -359,13 +422,132 @@ test('canary tables accept every legal state and reject illegal states', () => {
     );
 
     const zeroCostStates = ['healthy', 'degraded', 'failed', 'disabled'];
-    zeroCostStates.forEach((state, index) => insertZeroCostCheck(db, {
-      config_id: index + 1,
-      state,
-    }));
+    zeroCostStates.forEach((state, index) => {
+      const configId = index + 40;
+      insertProviderConfig(db, configId);
+      insertZeroCostCheck(db, { config_id: configId, state });
+    });
     assert.throws(
       () => insertZeroCostCheck(db, { config_id: 100, state: 'unknown' }),
       /CHECK constraint failed/,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('fresh canary evidence requires a matching run and an increasing verification window', () => {
+  const db = new Database(':memory:');
+  try {
+    enableForeignKeys(db);
+    runMigrationsAndEnsure(db);
+    insertProviderConfig(db, 1);
+    insertCanaryRun(db, { state: 'succeeded' });
+
+    const validFresh = {
+      state: 'fresh',
+      run_id: 'canary-run-1',
+      verified_at: '2026-08-18T00:00:00.000Z',
+      expires_at: '2026-08-19T00:00:00.000Z',
+    };
+    for (const overrides of [
+      { ...validFresh, run_id: null },
+      { ...validFresh, verified_at: null },
+      { ...validFresh, expires_at: null },
+      { ...validFresh, expires_at: validFresh.verified_at },
+      { ...validFresh, expires_at: '2026-08-17T00:00:00.000Z' },
+    ]) {
+      assert.throws(() => insertCanaryEvidence(db, overrides), /CHECK constraint failed/);
+    }
+
+    insertCanaryEvidence(db, validFresh);
+    assert.throws(
+      () => db.prepare(`UPDATE provider_canary_evidence
+        SET expires_at = verified_at WHERE config_id = 1 AND capability_fingerprint = 'capability-1'`).run(),
+      /CHECK constraint failed/,
+    );
+    assert.throws(
+      () => db.prepare(`UPDATE provider_canary_evidence
+        SET run_id = NULL WHERE config_id = 1 AND capability_fingerprint = 'capability-1'`).run(),
+      /CHECK constraint failed/,
+    );
+
+    insertCanaryEvidence(db, {
+      config_id: 1,
+      capability_fingerprint: 'capability-without-verification',
+      state: 'stale',
+    });
+  } finally {
+    db.close();
+  }
+});
+
+test('canary foreign keys reject orphans and cascade only canary records', () => {
+  const db = new Database(':memory:');
+  try {
+    enableForeignKeys(db);
+    runMigrationsAndEnsure(db);
+
+    assert.throws(
+      () => insertCanaryRun(db, { config_id: 999 }),
+      /FOREIGN KEY constraint failed/,
+    );
+    assert.throws(
+      () => insertCanaryEvidence(db, { config_id: 999 }),
+      /FOREIGN KEY constraint failed/,
+    );
+    assert.throws(
+      () => insertZeroCostCheck(db, { config_id: 999 }),
+      /FOREIGN KEY constraint failed/,
+    );
+
+    insertProviderConfig(db, 1, { provider: 'deletable-provider', name: 'Deletable provider' });
+    insertProviderConfig(db, 2, { provider: 'preserved-provider', name: 'Preserved provider' });
+    const freshEvidence = {
+      state: 'fresh',
+      run_id: 'canary-run-1',
+      verified_at: '2026-08-18T00:00:00.000Z',
+      expires_at: '2026-08-19T00:00:00.000Z',
+    };
+    assert.throws(
+      () => insertCanaryEvidence(db, freshEvidence),
+      /FOREIGN KEY constraint failed/,
+    );
+
+    insertCanaryRun(db, { state: 'succeeded' });
+    assert.throws(
+      () => insertCanaryEvidence(db, { ...freshEvidence, config_id: 2 }),
+      /FOREIGN KEY constraint failed/,
+    );
+    assert.throws(
+      () => insertCanaryEvidence(db, {
+        ...freshEvidence,
+        capability_fingerprint: 'different-capability',
+      }),
+      /FOREIGN KEY constraint failed/,
+    );
+
+    insertCanaryEvidence(db, freshEvidence);
+    insertZeroCostCheck(db);
+    db.prepare(`INSERT INTO generation_route_requests
+      (id, idempotency_key, service_type, business_type, logical_model_id,
+       capability_fingerprint, candidate_config_ids, state, final_config_id, created_at, updated_at)
+      VALUES ('preserved-route', 'preserved-route-key', 'image', 'image_generation',
+       'logical-image-1', 'capability-1', '[1]', 'succeeded', 1,
+       '2026-08-18T00:00:00.000Z', '2026-08-18T00:00:00.000Z')`).run();
+
+    db.prepare('DELETE FROM ai_service_configs WHERE id = 1').run();
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM provider_canary_runs WHERE config_id = 1').get().count, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM provider_canary_evidence WHERE config_id = 1').get().count, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM provider_zero_cost_checks WHERE config_id = 1').get().count, 0);
+    assert.deepEqual(
+      db.prepare('SELECT provider, name FROM ai_service_configs WHERE id = 2').get(),
+      { provider: 'preserved-provider', name: 'Preserved provider' },
+    );
+    assert.deepEqual(
+      db.prepare(`SELECT state, final_config_id FROM generation_route_requests
+        WHERE id = 'preserved-route'`).get(),
+      { state: 'succeeded', final_config_id: 1 },
     );
   } finally {
     db.close();

@@ -1,4 +1,5 @@
-ALTER TABLE ai_service_configs ADD COLUMN canary_paused INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ai_service_configs ADD COLUMN canary_paused INTEGER NOT NULL DEFAULT 0
+  CHECK (canary_paused IN (0, 1));
 
 CREATE TABLE IF NOT EXISTS provider_canary_runs (
   id TEXT PRIMARY KEY,
@@ -26,8 +27,14 @@ CREATE TABLE IF NOT EXISTS provider_canary_runs (
   reserved_cost_micros INTEGER NOT NULL CHECK (reserved_cost_micros >= 0),
   actual_cost_micros INTEGER CHECK (actual_cost_micros >= 0),
   currency TEXT NOT NULL DEFAULT 'CNY' CHECK (currency = 'CNY'),
-  budget_day TEXT NOT NULL,
-  budget_month TEXT NOT NULL,
+  budget_day TEXT NOT NULL CHECK (
+    length(budget_day) = 10
+    AND budget_day GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+  ),
+  budget_month TEXT NOT NULL CHECK (
+    length(budget_month) = 7
+    AND budget_month GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'
+  ),
   provider_task_id TEXT,
   artifact_path TEXT,
   artifact_sha256 TEXT,
@@ -37,7 +44,9 @@ CREATE TABLE IF NOT EXISTS provider_canary_runs (
   created_at TEXT NOT NULL,
   submitted_at TEXT,
   finished_at TEXT,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  UNIQUE (id, config_id, capability_fingerprint),
+  FOREIGN KEY (config_id) REFERENCES ai_service_configs(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS provider_canary_evidence (
@@ -52,7 +61,15 @@ CREATE TABLE IF NOT EXISTS provider_canary_evidence (
     'submission_unknown',
     'budget_blocked',
     'disabled'
-  )),
+  )) CHECK (
+    state <> 'fresh'
+    OR (
+      run_id IS NOT NULL
+      AND verified_at IS NOT NULL
+      AND expires_at IS NOT NULL
+      AND expires_at > verified_at
+    )
+  ),
   run_id TEXT,
   config_fingerprint TEXT NOT NULL,
   cost_fingerprint TEXT NOT NULL,
@@ -63,7 +80,11 @@ CREATE TABLE IF NOT EXISTS provider_canary_evidence (
   invalidation_reason TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (config_id, capability_fingerprint)
+  PRIMARY KEY (config_id, capability_fingerprint),
+  FOREIGN KEY (config_id) REFERENCES ai_service_configs(id) ON DELETE CASCADE,
+  FOREIGN KEY (run_id, config_id, capability_fingerprint)
+    REFERENCES provider_canary_runs(id, config_id, capability_fingerprint)
+    ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS provider_zero_cost_checks (
@@ -72,7 +93,8 @@ CREATE TABLE IF NOT EXISTS provider_zero_cost_checks (
   category TEXT,
   safe_summary TEXT,
   checked_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (config_id) REFERENCES ai_service_configs(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_provider_canary_runs_budget_day
