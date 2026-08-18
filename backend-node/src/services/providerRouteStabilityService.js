@@ -511,6 +511,9 @@ const UNKNOWN_CANARY_STATES = new Set([
   'result_unknown',
   'artifact_unreadable',
 ]);
+const TERMINAL_CANARY_STATES = new Set(['succeeded', 'failed']);
+const RECONCILE_DEBOUNCE_MS = 60 * 1000;
+const RECONCILE_LEASE_MS = 120 * 1000;
 
 function maskedRouteName(config) {
   const digest = crypto.createHash('sha256')
@@ -534,7 +537,20 @@ function parsedCapability(serviceType, value) {
   }
 }
 
-function canaryRunDto(row) {
+function reconciliationAvailable(row, now = new Date().toISOString()) {
+  if (row.service_type !== 'video'
+      || !UNKNOWN_CANARY_STATES.has(row.state)
+      || row.deleted_at
+      || typeof row.provider_task_id !== 'string'
+      || !row.provider_task_id.trim()) return false;
+  const nowMs = Date.parse(now);
+  const leaseMs = Date.parse(row.reconcile_lease_until || '');
+  const checkedMs = Date.parse(row.reconcile_checked_at || '');
+  if (Number.isFinite(leaseMs) && leaseMs > nowMs) return false;
+  return !Number.isFinite(checkedMs) || checkedMs <= nowMs - RECONCILE_DEBOUNCE_MS;
+}
+
+function canaryRunDto(row, now) {
   return {
     id: row.id,
     logical_model_id: row.logical_model_id,
@@ -554,11 +570,7 @@ function canaryRunDto(row) {
       updated_at: row.updated_at,
     },
     error_category: row.error_category ? safeCategory(row.error_category) : null,
-    reconcilable: row.service_type === 'video'
-      && UNKNOWN_CANARY_STATES.has(row.state)
-      && !row.deleted_at
-      && typeof row.provider_task_id === 'string'
-      && row.provider_task_id.trim().length > 0,
+    reconcilable: reconciliationAvailable(row, now),
   };
 }
 
@@ -583,7 +595,7 @@ function listCanaryRuns(db, filters = {}) {
     ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
     ORDER BY r.updated_at DESC, r.id DESC LIMIT 200`)
     .all(...params)
-    .map(canaryRunDto);
+    .map((row) => canaryRunDto(row, filters.now));
 }
 
 function unknownBudgetUsage(db, column, bucket) {
@@ -691,58 +703,84 @@ function canaryError(code, message) {
   return error;
 }
 
-function loadReconcilableCanary(db, runId) {
+function loadCanaryForReconciliation(db, runId) {
   const row = db.prepare(`SELECT r.*, c.name, c.service_type AS config_service_type,
-      e.capability_json
+      c.deleted_at, e.capability_json
     FROM provider_canary_runs r
-    JOIN ai_service_configs c ON c.id = r.config_id AND c.deleted_at IS NULL
+    JOIN ai_service_configs c ON c.id = r.config_id
     LEFT JOIN provider_canary_evidence e
       ON e.config_id = r.config_id
      AND e.capability_fingerprint = r.capability_fingerprint
     WHERE r.id = ?`).get(runId);
   if (!row) throw canaryError('PROVIDER_CANARY_RUN_NOT_FOUND', '巡检运行不存在');
+  return row;
+}
+
+function assertReconcilableUnknown(row) {
   if (!UNKNOWN_CANARY_STATES.has(row.state)
       || row.service_type !== 'video'
+      || row.deleted_at
       || typeof row.provider_task_id !== 'string'
       || !row.provider_task_id.trim()
       || !row.capability_json) {
     throw canaryError('PROVIDER_CANARY_RUN_NOT_RECONCILABLE', '该巡检运行不可对账');
   }
-  return row;
 }
 
-function loadCurrentReconciliation(db, before) {
-  const current = loadReconcilableCanary(db, before.id);
-  if (current.provider_task_id !== before.provider_task_id) {
-    throw canaryError('PROVIDER_CANARY_RUN_CHANGED', '巡检运行已变化');
-  }
-  return current;
+function isoAfter(now, milliseconds) {
+  return new Date(Date.parse(now) + milliseconds).toISOString();
+}
+
+function claimReconciliation(db, before, token, now) {
+  return db.transaction(() => {
+    const current = loadCanaryForReconciliation(db, before.id);
+    if (TERMINAL_CANARY_STATES.has(current.state)) return { claimed: false, row: current };
+    assertReconcilableUnknown(current);
+    if (current.provider_task_id !== before.provider_task_id) {
+      throw canaryError('PROVIDER_CANARY_RUN_CHANGED', '巡检运行已变化');
+    }
+    const result = db.prepare(`UPDATE provider_canary_runs
+      SET reconcile_claim_token = ?, reconcile_lease_until = ?, updated_at = updated_at
+      WHERE id = ? AND provider_task_id = ?
+        AND state IN ('submission_unknown', 'result_unknown', 'artifact_unreadable')
+        AND (reconcile_lease_until IS NULL OR reconcile_lease_until <= ?)
+        AND (reconcile_checked_at IS NULL OR reconcile_checked_at <= ?)`)
+      .run(
+        token,
+        isoAfter(now, RECONCILE_LEASE_MS),
+        before.id,
+        before.provider_task_id,
+        now,
+        isoAfter(now, -RECONCILE_DEBOUNCE_MS),
+      );
+    return {
+      claimed: result.changes === 1,
+      row: loadCanaryForReconciliation(db, before.id),
+    };
+  }).immediate();
+}
+
+function ownedReconciliation(db, before, token) {
+  const current = loadCanaryForReconciliation(db, before.id);
+  return {
+    owned: current.reconcile_claim_token === token
+      && current.provider_task_id === before.provider_task_id
+      && UNKNOWN_CANARY_STATES.has(current.state),
+    row: current,
+  };
 }
 
 async function defaultQueryTaskOnce(input) {
   // 延迟加载，避免 videoClient -> providerRouteStabilityService 的循环依赖。
   const videoClient = require('./videoClient');
   const safeLog = { info() {}, warn() {}, error() {} };
-  const result = await videoClient.pollVideoTask(
+  return videoClient.queryVideoTaskStatusOnce(
     input.db,
     safeLog,
-    null,
     input.taskId,
     input.config,
-    1,
-    0,
     input.requestOptions || {},
   );
-  if (result?.video_url) return { state: 'succeeded', artifactUrl: result.video_url };
-  if (result?.indeterminate) return { state: 'unknown' };
-  if (result?.error) {
-    const message = String(result.error);
-    if (/完成但|completed but|未返回.*(?:地址|URL)|without.*(?:url|artifact)/i.test(message)) {
-      return { state: 'artifact_unreadable' };
-    }
-    return { state: 'failed', category: 'provider_task_failed' };
-  }
-  return { state: 'unknown' };
 }
 
 function reconciliationAudit(db, input) {
@@ -797,15 +835,13 @@ function normalizedReconciledArtifact(value, runId) {
   return { relative_path: relativePath, sha256, bytes };
 }
 
-function safeReconcileResult(run, reconciled) {
+function safeReconcileResult(run, now) {
   return {
     id: run.id,
     state: run.state,
-    reconciled,
+    reconciled: TERMINAL_CANARY_STATES.has(run.state),
     error_category: run.error_category ? safeCategory(run.error_category) : null,
-    reconcilable: run.service_type === 'video'
-      && UNKNOWN_CANARY_STATES.has(run.state)
-      && Boolean(run.provider_task_id),
+    reconcilable: reconciliationAvailable(run, now),
   };
 }
 
@@ -813,7 +849,10 @@ async function reconcileCanaryRun(db, log, runId, options = {}) {
   if (typeof runId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,254}$/.test(runId)) {
     throw canaryError('PROVIDER_CANARY_RUN_INVALID', '巡检运行 ID 无效');
   }
-  const before = loadReconcilableCanary(db, runId);
+  const before = loadCanaryForReconciliation(db, runId);
+  const now = options.now || new Date().toISOString();
+  if (TERMINAL_CANARY_STATES.has(before.state)) return safeReconcileResult(before, now);
+  assertReconcilableUnknown(before);
   const config = aiConfigService.getConfig(db, before.config_id);
   if (!config) throw canaryError('PROVIDER_CANARY_RUN_NOT_RECONCILABLE', '巡检线路不可用');
   const capability = parsedCapability(before.service_type, before.capability_json);
@@ -822,7 +861,9 @@ async function reconcileCanaryRun(db, log, runId, options = {}) {
         !== before.capability_fingerprint) {
     throw canaryError('PROVIDER_CANARY_RUN_NOT_RECONCILABLE', '巡检能力证据不可对账');
   }
-  const now = options.now || new Date().toISOString();
+  const claimToken = crypto.randomUUID();
+  const claim = claimReconciliation(db, before, claimToken, now);
+  if (!claim.claimed) return safeReconcileResult(claim.row, now);
   const query = options.queryTaskOnce || defaultQueryTaskOnce;
   let queryResult;
   try {
@@ -839,6 +880,8 @@ async function reconcileCanaryRun(db, log, runId, options = {}) {
 
   if (queryResult?.state === 'succeeded' && queryResult.artifactUrl) {
     let artifact;
+    const currentClaim = ownedReconciliation(db, before, claimToken);
+    if (!currentClaim.owned) return safeReconcileResult(currentClaim.row, now);
     try {
       artifact = await (options.materializeVideo || artifactService.materializeVideo)(
         queryResult.artifactUrl,
@@ -850,19 +893,24 @@ async function reconcileCanaryRun(db, log, runId, options = {}) {
     }
     if (artifact) {
       const after = db.transaction(() => {
-        const current = loadCurrentReconciliation(db, before);
+        const ownership = ownedReconciliation(db, before, claimToken);
+        if (!ownership.owned) return ownership.row;
+        const current = ownership.row;
         db.prepare(`UPDATE provider_canary_runs
           SET state = 'succeeded', actual_cost_micros = reserved_cost_micros,
             artifact_path = ?, artifact_sha256 = ?, artifact_bytes = ?,
             error_category = NULL, safe_error_summary = NULL,
-            finished_at = ?, updated_at = ?
-          WHERE id = ?`).run(
+            reconcile_claim_token = NULL, reconcile_lease_until = NULL,
+            reconcile_checked_at = ?, finished_at = ?, updated_at = ?
+          WHERE id = ? AND reconcile_claim_token = ?`).run(
           artifact.relative_path,
           artifact.sha256,
           artifact.bytes,
           now,
           now,
+          now,
           runId,
+          claimToken,
         );
         evidenceService.recordSuccess(
           db,
@@ -885,7 +933,7 @@ async function reconcileCanaryRun(db, log, runId, options = {}) {
         });
         return updated;
       }).immediate();
-      return safeReconcileResult(after, true);
+      return safeReconcileResult(after, now);
     }
   }
 
@@ -896,11 +944,16 @@ async function reconcileCanaryRun(db, log, runId, options = {}) {
   if (queryResult?.state === 'failed') {
     const category = safeCategory(queryResult.category, 'provider_task_failed');
     const after = db.transaction(() => {
-      const current = loadCurrentReconciliation(db, before);
+      const ownership = ownedReconciliation(db, before, claimToken);
+      if (!ownership.owned) return ownership.row;
+      const current = ownership.row;
       db.prepare(`UPDATE provider_canary_runs
         SET state = 'failed', actual_cost_micros = reserved_cost_micros,
-          error_category = ?, safe_error_summary = ?, finished_at = ?, updated_at = ?
-        WHERE id = ?`).run(category, `category=${category}`, now, now, runId);
+          error_category = ?, safe_error_summary = ?, reconcile_claim_token = NULL,
+          reconcile_lease_until = NULL, reconcile_checked_at = ?,
+          finished_at = ?, updated_at = ?
+        WHERE id = ? AND reconcile_claim_token = ?`)
+        .run(category, `category=${category}`, now, now, now, runId, claimToken);
       evidenceService.recordFailure(
         db,
         reconciliationEvidenceInput(current, capability, now),
@@ -922,15 +975,19 @@ async function reconcileCanaryRun(db, log, runId, options = {}) {
       });
       return updated;
     }).immediate();
-    return safeReconcileResult(after, true);
+    return safeReconcileResult(after, now);
   }
 
   if (queryResult?.state === 'artifact_unreadable') {
     const after = db.transaction(() => {
-      const current = loadCurrentReconciliation(db, before);
+      const ownership = ownedReconciliation(db, before, claimToken);
+      if (!ownership.owned) return ownership.row;
+      const current = ownership.row;
       db.prepare(`UPDATE provider_canary_runs SET state = 'artifact_unreadable',
         error_category = 'artifact_unreadable', safe_error_summary = 'category=artifact_unreadable',
-        finished_at = ?, updated_at = ? WHERE id = ?`).run(now, now, runId);
+        reconcile_claim_token = NULL, reconcile_lease_until = NULL,
+        reconcile_checked_at = ?, finished_at = ?, updated_at = ?
+        WHERE id = ? AND reconcile_claim_token = ?`).run(now, now, now, runId, claimToken);
       evidenceService.recordUnknown(db, {
         ...reconciliationEvidenceInput(current, capability, now),
         state: 'artifact_unreadable',
@@ -952,29 +1009,35 @@ async function reconcileCanaryRun(db, log, runId, options = {}) {
       });
       return updated;
     }).immediate();
-    return safeReconcileResult(after, false);
+    return safeReconcileResult(after, now);
   }
 
   const unchanged = db.transaction(() => {
-    const current = loadCurrentReconciliation(db, before);
+    const ownership = ownedReconciliation(db, before, claimToken);
+    if (!ownership.owned) return ownership.row;
+    const current = ownership.row;
+    db.prepare(`UPDATE provider_canary_runs SET reconcile_claim_token = NULL,
+      reconcile_lease_until = NULL, reconcile_checked_at = ?
+      WHERE id = ? AND reconcile_claim_token = ?`).run(now, runId, claimToken);
+    const updated = loadCanaryForReconciliation(db, runId);
     reconciliationEvent(
       db,
-      current,
+      updated,
       'provider_canary_reconcile_unknown',
       'warning',
-      safeCategory(current.error_category, 'result_unknown'),
+      safeCategory(updated.error_category, 'result_unknown'),
       now,
     );
     reconciliationAudit(db, {
       actorId: options.actorId,
       runId,
       outcome: 'unknown',
-      category: safeCategory(current.error_category, 'result_unknown'),
+      category: safeCategory(updated.error_category, 'result_unknown'),
     });
-    return current;
+    return updated;
   }).immediate();
   log?.warn?.('Provider canary reconciliation remains unknown', { run_id: runId });
-  return safeReconcileResult(unchanged, false);
+  return safeReconcileResult(unchanged, now);
 }
 
 function resetHealth(db, configId, actor = 'admin', now = new Date().toISOString()) {

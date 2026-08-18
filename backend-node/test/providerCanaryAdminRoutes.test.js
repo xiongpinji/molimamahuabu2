@@ -18,6 +18,10 @@ const SHANGHAI_NOW = new Date(Date.now() + (8 * 60 * 60 * 1000)).toISOString();
 const CURRENT_BUDGET_DAY = SHANGHAI_NOW.slice(0, 10);
 const CURRENT_BUDGET_MONTH = CURRENT_BUDGET_DAY.slice(0, 7);
 
+function plusMilliseconds(value, amount) {
+  return new Date(new Date(value).getTime() + amount).toISOString();
+}
+
 function insertUser(db, id, role) {
   db.prepare(`INSERT INTO platform_users
     (id, email, password_hash, password_salt, role, platform_role, status)
@@ -92,6 +96,18 @@ function insertCanaryFixture(db) {
       'category=provider_read_only_failed', ?, ?)`)
     .run(configId, NOW, NOW);
   return { configId, capability, capabilityFingerprint };
+}
+
+function reconciliationSnapshot(db) {
+  return {
+    run: db.prepare(`SELECT state, actual_cost_micros, artifact_path, error_category,
+      reconcile_claim_token, reconcile_lease_until, reconcile_checked_at, updated_at
+      FROM provider_canary_runs WHERE id = 'run-unknown'`).get(),
+    evidence: db.prepare(`SELECT state, verified_at, expires_at, updated_at
+      FROM provider_canary_evidence WHERE run_id = 'run-unknown'`).get(),
+    eventCount: db.prepare('SELECT COUNT(*) AS count FROM provider_stability_events').get().count,
+    auditCount: db.prepare('SELECT COUNT(*) AS count FROM audit_events').get().count,
+  };
 }
 
 async function request(baseUrl, endpoint, { method = 'GET', token, body } = {}) {
@@ -396,5 +412,201 @@ test('reconcile 明确失败原子结算失败并保持证据不可公开', asyn
     WHERE event_type = 'provider_canary_reconciled_failure'`).get().count, 1);
   assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM audit_events
     WHERE event_type = 'provider.canary.reconciled' AND outcome = 'failed'`).get().count, 1);
+  db.close();
+});
+
+test('巡检迁移提供持久对账 claim、lease 和去抖时间', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const columns = new Set(db.prepare('PRAGMA table_info(provider_canary_runs)').all()
+    .map((column) => column.name));
+  for (const column of [
+    'reconcile_claim_token', 'reconcile_lease_until', 'reconcile_checked_at',
+  ]) assert.equal(columns.has(column), true, column);
+  db.close();
+});
+
+test('reconcile 成功终态重复调用返回同一安全 DTO 且零副作用', async () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  insertUser(db, 'stability-admin', 'admin');
+  insertCanaryFixture(db);
+  db.prepare(`UPDATE provider_canary_runs SET state = 'succeeded',
+    actual_cost_micros = reserved_cost_micros,
+    artifact_path = '_system/provider-canary/runs/run-unknown/video.mp4',
+    artifact_sha256 = ?, artifact_bytes = 24, error_category = NULL,
+    safe_error_summary = NULL, finished_at = ?, updated_at = ?
+    WHERE id = 'run-unknown'`).run('a'.repeat(64), NOW, NOW);
+  const before = reconciliationSnapshot(db);
+  let queryCalls = 0;
+  const options = {
+    actorId: 'stability-admin',
+    now: plusMilliseconds(NOW, 10_000),
+    async queryTaskOnce() { queryCalls += 1; throw new Error('must not query'); },
+  };
+  const first = await stability.reconcileCanaryRun(db, null, 'run-unknown', options);
+  const second = await stability.reconcileCanaryRun(db, null, 'run-unknown', options);
+  assert.deepEqual(first, second);
+  assert.deepEqual(first, {
+    id: 'run-unknown', state: 'succeeded', reconciled: true,
+    error_category: null, reconcilable: false,
+  });
+  assert.equal(queryCalls, 0);
+  assert.deepEqual(reconciliationSnapshot(db), before);
+  db.close();
+});
+
+test('reconcile 失败终态重复调用返回同一安全 DTO 且零副作用', async () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  insertUser(db, 'stability-admin', 'admin');
+  insertCanaryFixture(db);
+  db.prepare(`UPDATE provider_canary_runs SET state = 'failed',
+    actual_cost_micros = reserved_cost_micros, error_category = 'provider_rejected',
+    safe_error_summary = 'category=provider_rejected', finished_at = ?, updated_at = ?
+    WHERE id = 'run-unknown'`).run(NOW, NOW);
+  const before = reconciliationSnapshot(db);
+  let queryCalls = 0;
+  const options = {
+    actorId: 'stability-admin',
+    now: plusMilliseconds(NOW, 10_000),
+    async queryTaskOnce() { queryCalls += 1; throw new Error('must not query'); },
+  };
+  const first = await stability.reconcileCanaryRun(db, null, 'run-unknown', options);
+  const second = await stability.reconcileCanaryRun(db, null, 'run-unknown', options);
+  assert.deepEqual(first, second);
+  assert.deepEqual(first, {
+    id: 'run-unknown', state: 'failed', reconciled: true,
+    error_category: 'provider_rejected', reconcilable: false,
+  });
+  assert.equal(queryCalls, 0);
+  assert.deepEqual(reconciliationSnapshot(db), before);
+  db.close();
+});
+
+test('reconcile 未知态并发点击只查询一次且第二次返回 200 语义安全 DTO', async () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  insertUser(db, 'stability-admin', 'admin');
+  insertCanaryFixture(db);
+  let queryCalls = 0;
+  let signalStarted;
+  const started = new Promise((resolve) => { signalStarted = resolve; });
+  let releaseQuery;
+  const gate = new Promise((resolve) => { releaseQuery = resolve; });
+  const options = {
+    actorId: 'stability-admin',
+    now: NOW,
+    async queryTaskOnce() {
+      queryCalls += 1;
+      signalStarted();
+      await gate;
+      return { state: 'unknown' };
+    },
+  };
+  const firstPromise = stability.reconcileCanaryRun(db, null, 'run-unknown', options);
+  await started;
+  const secondPromise = stability.reconcileCanaryRun(db, null, 'run-unknown', options);
+  await new Promise((resolve) => setImmediate(resolve));
+  releaseQuery();
+  const [first, second] = await Promise.all([firstPromise, secondPromise]);
+  assert.equal(queryCalls, 1);
+  assert.equal(first.state, 'result_unknown');
+  assert.equal(second.state, 'result_unknown');
+  assert.equal(first.reconciled, false);
+  assert.equal(second.reconciled, false);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM audit_events
+    WHERE event_type = 'provider.canary.reconciled'`).get().count, 1);
+  db.close();
+});
+
+test('reconcile 未知态 60 秒内去抖，60 秒后只允许一次新查询', async () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  insertUser(db, 'stability-admin', 'admin');
+  insertCanaryFixture(db);
+  let queryCalls = 0;
+  const queryTaskOnce = async () => { queryCalls += 1; return { state: 'unknown' }; };
+  await stability.reconcileCanaryRun(db, null, 'run-unknown', {
+    actorId: 'stability-admin', now: NOW, queryTaskOnce,
+  });
+  const withinWindow = await stability.reconcileCanaryRun(db, null, 'run-unknown', {
+    actorId: 'stability-admin', now: plusMilliseconds(NOW, 59_999), queryTaskOnce,
+  });
+  assert.equal(withinWindow.reconcilable, false);
+  await stability.reconcileCanaryRun(db, null, 'run-unknown', {
+    actorId: 'stability-admin', now: plusMilliseconds(NOW, 60_001), queryTaskOnce,
+  });
+  assert.equal(queryCalls, 2);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM audit_events
+    WHERE event_type = 'provider.canary.reconciled'`).get().count, 2);
+  db.close();
+});
+
+test('reconcile 未过期 lease 不查询，lease 过期后可恢复一次', async () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  insertUser(db, 'stability-admin', 'admin');
+  insertCanaryFixture(db);
+  db.prepare(`UPDATE provider_canary_runs SET reconcile_claim_token = 'orphan-claim',
+    reconcile_lease_until = ? WHERE id = 'run-unknown'`)
+    .run(plusMilliseconds(NOW, 120_000));
+  let queryCalls = 0;
+  const queryTaskOnce = async () => { queryCalls += 1; return { state: 'unknown' }; };
+  const leased = await stability.reconcileCanaryRun(db, null, 'run-unknown', {
+    actorId: 'stability-admin', now: plusMilliseconds(NOW, 119_999), queryTaskOnce,
+  });
+  assert.equal(leased.reconcilable, false);
+  await stability.reconcileCanaryRun(db, null, 'run-unknown', {
+    actorId: 'stability-admin', now: plusMilliseconds(NOW, 120_001), queryTaskOnce,
+  });
+  assert.equal(queryCalls, 1);
+  db.close();
+});
+
+test('reconcile lease 过期后的新结果胜出，旧请求迟到不得覆盖或重复审计', async () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  insertUser(db, 'stability-admin', 'admin');
+  insertCanaryFixture(db);
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  let firstStarted;
+  const started = new Promise((resolve) => { firstStarted = resolve; });
+  let materializeCalls = 0;
+  const firstPromise = stability.reconcileCanaryRun(db, null, 'run-unknown', {
+    actorId: 'stability-admin',
+    now: NOW,
+    async queryTaskOnce() {
+      firstStarted();
+      await firstGate;
+      return { state: 'succeeded', artifactUrl: 'https://cdn.invalid/late.mp4' };
+    },
+    async materializeVideo() {
+      materializeCalls += 1;
+      return {
+        relative_path: '_system/provider-canary/runs/run-unknown/video.mp4',
+        sha256: 'b'.repeat(64),
+        bytes: 12,
+      };
+    },
+  });
+  await started;
+  const newer = await stability.reconcileCanaryRun(db, null, 'run-unknown', {
+    actorId: 'stability-admin',
+    now: plusMilliseconds(NOW, 120_001),
+    async queryTaskOnce() { return { state: 'failed', category: 'provider_rejected' }; },
+  });
+  releaseFirst();
+  const older = await firstPromise;
+  assert.equal(newer.state, 'failed');
+  assert.deepEqual(older, newer);
+  assert.equal(materializeCalls, 0);
+  assert.equal(db.prepare(`SELECT state FROM provider_canary_runs
+    WHERE id = 'run-unknown'`).get().state, 'failed');
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM audit_events
+    WHERE event_type = 'provider.canary.reconciled'`).get().count, 1);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM provider_stability_events
+    WHERE event_type LIKE 'provider_canary_reconcile%'`).get().count, 1);
   db.close();
 });

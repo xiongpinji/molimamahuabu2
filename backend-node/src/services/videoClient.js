@@ -5423,6 +5423,8 @@ async function callVideoApi(db, log, opts) {
 /**
  * ??????????????????/ChatFire ? ???? DashScope?
  */
+const STRICT_SINGLE_PROVIDER_REQUEST = Symbol('strict-single-provider-request');
+
 async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 300, intervalMs = 10000, requestOpts = {}) {
   const provider = (config.provider || '').toLowerCase();
   const protocol = resolveVideoProtocol(config);
@@ -5442,6 +5444,8 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isUsmercari = protocol === 'usmercari_media';
   const isToapis = protocol === 'toapis_video';
   const isFumin = protocol === 'fumin_video';
+  const strictSingleRequest = requestOpts[STRICT_SINGLE_PROVIDER_REQUEST] === true;
+  const fetchImpl = requestOpts.fetchImpl || globalThis.fetch;
   /** 轮询日志里响应体最大字符数（即梦/方舟等 JSON 可能较长）；0 表示不截断（慎用） */
   const pollLogBodyMax = (() => {
     const v = String(process.env.VIDEO_POLL_LOG_MAX || '16384').trim();
@@ -5466,7 +5470,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
     try {
       if (isToapis) {
         const result = await toapisVideoClient.fetchToapisTask(config, taskId, {
-          fetchImpl: requestOpts.fetchImpl,
+          fetchImpl,
         });
         if (result.state === 'completed') return { video_url: result.videoUrl };
         if (result.state === 'failed') return { error: result.error };
@@ -5556,7 +5560,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
       }
       const pollRound = attempt + 1;
       log.info('[poll] 发起查询', { video_gen_id: videoGenId, round: pollRound, url });
-      const res = await fetch(url, { method, headers, ...(requestBody ? { body: requestBody } : {}) });
+      const res = await fetchImpl(url, { method, headers, ...(requestBody ? { body: requestBody } : {}) });
       const raw = await res.text();
       const bodyLogged =
         pollLogBodyMax === Infinity
@@ -5666,6 +5670,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         }
         if (status === 'succeeded' || status === 'completed' || status === 'done') {
           const mode = resolveDeepwlGrokMode(config);
+          if (strictSingleRequest) return { artifact_unreadable: true };
           if (mode !== 'unified') {
             const contentUrl = await fetchDeepwlGrokContentUrl(config, taskId, log, videoGenId);
             if (contentUrl) {
@@ -5696,7 +5701,8 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           return { error: aihubccClient.extractError(data) || `AIHubCC 任务失败: ${status || 'unknown'}` };
         }
         if (aihubccClient.isDoneStatus(status)) {
-          const contentResponse = await fetch(aihubccClient.getContentUrl(config, taskId), {
+          if (strictSingleRequest) return { artifact_unreadable: true };
+          const contentResponse = await fetchImpl(aihubccClient.getContentUrl(config, taskId), {
             headers: aihubccClient.authHeaders(config),
           });
           const contentRaw = await contentResponse.text();
@@ -5725,6 +5731,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           return { error: `iCreat 任务失败或不存在: ${status}${detail}` };
         }
         if (['SUCCEEDED', 'COMPLETED', 'DONE', 'SUCCESS'].includes(status)) {
+          if (strictSingleRequest) return { artifact_unreadable: true };
           const settings = parseConfigSettingsJson(config);
           const resultUrl = buildIcreatTaskUrl(config, settings.icreat_result_endpoint || '/v1/task/get-result', taskId);
           const resultFetchOptions = {
@@ -5739,7 +5746,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
             resultFetchOptions.signal = AbortSignal.timeout(30_000);
           }
-          const resultResponse = await fetch(resultUrl, resultFetchOptions);
+          const resultResponse = await fetchImpl(resultUrl, resultFetchOptions);
           const resultRaw = await resultResponse.text();
           let resultData;
           try { resultData = JSON.parse(resultRaw); } catch (_) { resultData = null; }
@@ -5765,7 +5772,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
             log.info('[Kling poll] 视频生成完成', { video_gen_id: videoGenId, video_url: videoUrl });
             return { video_url: videoUrl };
           }
-          return { error: '可灵任务完成但未返回视频地址' };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: '可灵任务完成但未返回视频地址' };
         }
         if (status === 'failed') {
           const errMsg = data?.data?.task_status_msg || '任务失败';
@@ -5790,7 +5799,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           return { video_url: videoUrlOmni };
         }
         if (st === 'succeed' || st === 'success' || st === 'completed' || st === 'succeeded' || st === 'done') {
-          return { error: 'Kling Omni 标记完成但未解析到视频地址' };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Kling Omni 标记完成但未解析到视频地址' };
         }
         if (st === 'failed' || st === 'error') {
           const errMsg = data?.data?.task_status_msg || data?.task_status_msg || data?.message || '任务失败';
@@ -5814,7 +5825,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         }
         if (status === 'succeeded' || status === 'completed' || status === 'done') {
           log.warn('[Veo3 poll] completed but no video_url', { data: JSON.stringify(data).slice(0, 500) });
-          return { error: 'Veo3 completed but no video URL: ' + JSON.stringify(data).slice(0, 300) };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Veo3 completed but no video URL: ' + JSON.stringify(data).slice(0, 300) };
         }
         continue;
       }
@@ -5835,7 +5848,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         }
         if (status === 'succeeded' || status === 'completed' || status === 'done') {
           log.warn('[Sora poll] ????????? video_url', { video_gen_id: videoGenId, data: JSON.stringify(data).slice(0, 500) });
-          return { error: 'Sora ?????????????????: ' + JSON.stringify(data).slice(0, 300) };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Sora ?????????????????: ' + JSON.stringify(data).slice(0, 300) };
         }
         // queued / processing / running ? ????
         continue;
@@ -5856,7 +5871,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         }
         if (status === 'succeeded' || status === 'completed' || status === 'done') {
           log.warn('[Agnes poll] 标记完成但未返回 video_url', { video_gen_id: videoGenId, data: JSON.stringify(data).slice(0, 500) });
-          return { error: 'Agnes 任务完成但未返回视频地址: ' + JSON.stringify(data).slice(0, 300) };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Agnes 任务完成但未返回视频地址: ' + JSON.stringify(data).slice(0, 300) };
         }
         continue;
       }
@@ -5881,7 +5898,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         }
         if (state === 'success' || state === 'succeeded' || state === 'completed' || state === 'done') {
           log.warn('[Vidu poll] ???????? video_url', { data: JSON.stringify(data).slice(0, 500) });
-          return { error: 'Vidu ??????????' };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Vidu ??????????' };
         }
         continue;
       }
@@ -5893,7 +5912,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         if (data.done === true) {
           const videoUri = data.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri;
           if (videoUri) return { video_url: videoUri };
-          return { error: 'Gemini ??????????????' };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Gemini ??????????????' };
         }
         continue;
       }
@@ -5957,6 +5978,36 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   };
 }
 
+async function queryVideoTaskStatusOnce(db, log, taskId, config, requestOpts = {}) {
+  const baseFetch = requestOpts.fetchImpl || globalThis.fetch;
+  let requestCount = 0;
+  const fetchOnce = async (url, options = {}) => {
+    if (requestCount >= 1) {
+      const error = new Error('single provider task query exceeded one request');
+      error.code = 'PROVIDER_QUERY_REQUEST_LIMIT';
+      throw error;
+    }
+    requestCount += 1;
+    const bounded = { ...options, redirect: 'manual' };
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+      bounded.signal = AbortSignal.timeout(30_000);
+    }
+    return baseFetch(url, bounded);
+  };
+  const result = await pollVideoTask(db, log, null, taskId, config, 1, 0, {
+    fetchImpl: fetchOnce,
+    [STRICT_SINGLE_PROVIDER_REQUEST]: true,
+  });
+  if (result?.video_url) return { state: 'succeeded', artifactUrl: result.video_url };
+  if (result?.artifact_unreadable
+      || (Object.prototype.hasOwnProperty.call(result || {}, 'video_url') && !result.video_url)) {
+    return { state: 'artifact_unreadable' };
+  }
+  if (result?.indeterminate) return { state: 'unknown' };
+  if (result?.error) return { state: 'failed', category: 'provider_task_failed' };
+  return { state: 'unknown' };
+}
+
 const { runWithGenerationLimit } = require('./generationConcurrency');
 
 module.exports = {
@@ -5971,6 +6022,7 @@ module.exports = {
     () => callVideoApiForConfigId(...args),
   ),
   pollVideoTask,
+  queryVideoTaskStatusOnce,
   normalizeAspectRatioForApi,
   isPlausibleHttpVideoUrl,
   pickProxyVideoUrl,
