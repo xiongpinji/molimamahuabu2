@@ -34,6 +34,15 @@ function positiveConfigId(config) {
   return config.id;
 }
 
+function requireSingleOutput(capability) {
+  if (capability?.count !== 1) {
+    throw serviceError(
+      'PROVIDER_CANARY_OUTPUT_COUNT_UNSUPPORTED',
+      'provider canary supports exactly one output per run',
+    );
+  }
+}
+
 function array(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === 'string' && item.trim()) : [];
 }
@@ -76,6 +85,7 @@ function exactFixtures(fixtures, capability) {
 }
 
 function buildCanaryRequest(_db, config, capability, fixtures = {}) {
+  requireSingleOutput(capability);
   const configId = positiveConfigId(config);
   const serviceType = String(config.service_type || '').trim().toLowerCase();
   if (!['image', 'storyboard_image', 'video', 'text'].includes(serviceType)) {
@@ -121,6 +131,7 @@ function configuredModel(config) {
 }
 
 function estimateCanaryCost(db, config, capability = {}) {
+  requireSingleOutput(capability);
   const serviceType = String(config?.service_type || '').trim().toLowerCase();
   const model = configuredModel(config);
   if (!model) throw serviceError('PROVIDER_CANARY_COST_NOT_CONFIGURED', 'provider canary cost model is missing');
@@ -266,13 +277,18 @@ async function executeCanaryRun(db, log, runInput, options = {}) {
   assertReservedAndUnblocked(db, run);
   const config = loadConfig(db, run);
   const capability = evidenceService.normalizeCapability(run.service_type, options.capability);
+  requireSingleOutput(capability);
   if (evidenceService.capabilityFingerprint(run.service_type, capability) !== run.capability_fingerprint) {
     throw serviceError('PROVIDER_CANARY_CAPABILITY_MISMATCH', 'provider canary capability does not match the run');
   }
   const now = isoNow(options.now);
   const request = buildCanaryRequest(db, config, capability, options.fixtures);
   const clients = {
-    callImageApi: options.clients?.callImageApi || imageClient.callImageApi,
+    callImageApi: options.clients?.callImageApi || ((clientDb, clientLog, imageRequest) => (
+      imageClient.callImageApiForConfigId(
+        clientDb, clientLog, imageRequest.config_id, imageRequest,
+      )
+    )),
     callVideoApi: options.clients?.callVideoApi || videoClient.callVideoApi,
     pollVideoTask: options.clients?.pollVideoTask || videoClient.pollVideoTask,
     generateTextForConfigId: options.clients?.generateTextForConfigId || aiClient.generateTextForConfigId,
@@ -369,9 +385,7 @@ async function executeCanaryRun(db, log, runInput, options = {}) {
       budgetService.markAccepted(db, run.id, String(meta.providerTaskId), now);
     }
     markVerifying(db, run.id, now);
-    const state = classification.category === 'artifact_unreadable'
-      ? 'artifact_unreadable'
-      : 'result_unknown';
+    const state = 'result_unknown';
     const settled = settleUnknown(
       db, run, capability, state, state, meta.providerTaskId || null, meta, now,
     );

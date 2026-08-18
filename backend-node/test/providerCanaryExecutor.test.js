@@ -3,11 +3,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const Database = require('better-sqlite3');
 
 const aiConfigService = require('../src/services/aiConfigService');
+const imageClient = require('../src/services/imageClient');
 const budget = require('../src/services/providerCanaryBudgetService');
 const evidence = require('../src/services/providerCanaryEvidenceService');
 const modelPrice = require('../src/services/modelPriceService');
@@ -15,6 +17,20 @@ const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 const NOW = '2026-08-18T00:00:00.000Z';
 const log = { info() {}, warn() {}, error() {} };
+
+function listen(handler) {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer(handler);
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve(server));
+  });
+}
+
+function close(server) {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
 
 function loadExecutor() {
   return require('../src/services/providerCanaryExecutor');
@@ -49,6 +65,31 @@ function addConfig(db, serviceType, suffix = 'a') {
     cost_micros_per_unit: serviceType === 'text' ? 0 : 1000,
     input_cost_micros_per_1k: serviceType === 'text' ? 1000 : 0,
     output_cost_micros_per_1k: serviceType === 'text' ? 2000 : 0,
+  });
+  return aiConfigService.getConfig(db, config.id);
+}
+
+function addHttpImageConfig(db, server, suffix) {
+  const model = `local-image-${suffix}`;
+  const config = aiConfigService.createConfig(db, log, {
+    service_type: 'image',
+    provider: `local-image-${suffix}`,
+    api_protocol: 'openai',
+    name: `local-image-${suffix}`,
+    base_url: `http://127.0.0.1:${server.address().port}`,
+    api_key: `local-private-${suffix}`,
+    model: [model],
+    default_model: model,
+    endpoint: '/images/generations',
+    logical_model_id: 'logical-local-image',
+  });
+  db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
+    .run(config.id);
+  modelPrice.set(db, 'logical-local-image', 10, {
+    category: 'image',
+    billing_unit: 'request',
+    cost_unit: 'image',
+    cost_micros_per_unit: 1000,
   });
   return aiConfigService.getConfig(db, config.id);
 }
@@ -170,6 +211,43 @@ test('buildCanaryRequest is fixed safe input and pins image and video requests t
   }
 });
 
+for (const serviceType of ['image', 'video']) {
+  test(`${serviceType} canary fails closed before submission when output count is not one`, async (t) => {
+    const executor = loadExecutor();
+    const db = createDb();
+    t.after(() => db.close());
+    const config = addConfig(db, serviceType, `multi-output-${serviceType}`);
+    const capability = { ...capabilityFor(serviceType), count: 2 };
+    const expected = (error) => error.code === 'PROVIDER_CANARY_OUTPUT_COUNT_UNSUPPORTED';
+
+    assert.throws(
+      () => executor.buildCanaryRequest(db, config, capability, fixturesFor(capability)),
+      expected,
+    );
+    assert.throws(() => executor.estimateCanaryCost(db, config, capability), expected);
+
+    const run = reserveRun(db, config, capability, `multi-output-${serviceType}`);
+    let submissions = 0;
+    const options = baseOptions(capability, {
+      clients: {
+        async callImageApi() { submissions += 1; },
+        async callVideoApi() { submissions += 1; },
+      },
+    });
+    t.after(() => fs.rmSync(options.storageRoot, { recursive: true, force: true }));
+
+    await assert.rejects(
+      () => executor.executeCanaryRun(db, log, run, options),
+      expected,
+    );
+    assert.equal(submissions, 0);
+    assert.equal(
+      db.prepare('SELECT state FROM provider_canary_runs WHERE id = ?').get(run.id).state,
+      'reserved',
+    );
+  });
+}
+
 test('estimateCanaryCost uses the configured model cost and rejects zero or missing cost', () => {
   const executor = loadExecutor();
   const db = createDb();
@@ -269,6 +347,72 @@ test('2xx without a parseable artifact becomes result_unknown and blocks the pro
   assert.equal(submissions, 1);
   assert.equal(db.prepare('SELECT state FROM provider_canary_runs WHERE id = ?').get(second.id).state, 'reserved');
   assert.deepEqual(rowCounts(db), before);
+});
+
+test('internal exact image entry keeps route metadata while public callImageApi strips it', async (t) => {
+  let requests = 0;
+  const server = await listen((req, res) => {
+    requests += 1;
+    req.resume();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ request_id: 'local-empty-result', data: [] }));
+  });
+  t.after(() => close(server));
+  const db = createDb();
+  t.after(() => db.close());
+  const config = addHttpImageConfig(db, server, 'meta');
+  const request = {
+    config_id: config.id,
+    prompt: 'fixed local canary prompt',
+    size: '1024x1024',
+  };
+
+  const internal = await imageClient.callImageApiForConfigId(
+    db, log, config.id, request,
+  );
+  const publicResult = await imageClient.callImageApi(db, log, request);
+
+  assert.equal(requests, 2);
+  assert.equal(internal.route_meta.httpStatus, 200);
+  assert.equal(internal.route_meta.artifactReadable, false);
+  assert.equal(Object.hasOwn(publicResult, 'route_meta'), false);
+  assert.equal(Object.hasOwn(publicResult, 'provider_task_id'), false);
+});
+
+test('real internal image path classifies 2xx without artifact as result_unknown once without failover', async (t) => {
+  const requests = [];
+  const primary = await listen((req, res) => {
+    requests.push('primary');
+    req.resume();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ request_id: 'local-empty-result', data: [] }));
+  });
+  const backup = await listen((req, res) => {
+    requests.push('backup');
+    req.resume();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ data: [{ url: 'https://artifacts.invalid/must-not-run.png' }] }));
+  });
+  t.after(async () => Promise.all([close(primary), close(backup)]));
+  const executor = loadExecutor();
+  const db = createDb();
+  t.after(() => db.close());
+  const config = addHttpImageConfig(db, primary, 'primary');
+  addHttpImageConfig(db, backup, 'backup');
+  const capability = capabilityFor('image');
+  const run = reserveRun(db, config, capability, 'real-image-empty', 'real-image-scope');
+  const options = baseOptions(capability);
+  t.after(() => fs.rmSync(options.storageRoot, { recursive: true, force: true }));
+
+  const result = await executor.executeCanaryRun(db, log, run, options);
+  const stored = db.prepare(`SELECT state, safe_error_summary FROM provider_canary_runs
+    WHERE id = ?`).get(run.id);
+
+  assert.equal(result.state, 'result_unknown');
+  assert.equal(result.submitCount, 1);
+  assert.deepEqual(requests, ['primary']);
+  assert.equal(stored.state, 'result_unknown');
+  assert.equal(stored.safe_error_summary, 'category=result_unknown status=200');
 });
 
 test('uncertain submit response stays submission_unknown without pretending verification started', async (t) => {

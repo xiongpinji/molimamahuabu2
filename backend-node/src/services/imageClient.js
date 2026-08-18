@@ -2492,6 +2492,17 @@ async function callImageApi(db, log, opts) {
   return safeImageRouteFailure(lastFailure?.classification || { category: finalCategory }, lastFailure?.result);
 }
 
+async function callImageApiForConfigId(db, log, configId, opts = {}) {
+  const explicitConfigId = normalizeImageConfigId(configId);
+  const requestConfigId = resolveExplicitImageConfigId(opts);
+  if (requestConfigId != null && requestConfigId !== explicitConfigId) {
+    throw imageConfigError('IMAGE_CONFIG_NOT_FOUND', '图片模型配置不存在');
+  }
+  const preferredModel = String(opts.model || '').trim() || null;
+  const config = getImageConfigById(db, explicitConfigId, preferredModel);
+  return submitImageWithConfig(db, log, config, opts);
+}
+
 /**
  * 创建 image_generation 记录并异步调用 API，完成后更新记录与角色 image_url。
  * 与场景图一致：创建 task 并写入 task_id，便于前端轮询 /tasks/:task_id 获知完成或报错。
@@ -2913,6 +2924,10 @@ module.exports = {
   buildKlingImageQueryUrl,
   parseKlingImagePollResult,
   callImageApi: (...args) => runWithGenerationLimit('image', () => callImageApi(...args)),
+  callImageApiForConfigId: (...args) => runWithGenerationLimit(
+    'image',
+    () => callImageApiForConfigId(...args),
+  ),
   createAndGenerateImage,
   settleImageCredit,
   resolveAssetUserNegativeForApi,
