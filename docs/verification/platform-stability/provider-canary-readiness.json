@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "evidence_scope": "local_fixture",
+  "evidence_source": "deterministic_test_fixture",
+  "generated_at": "2026-08-18T00:00:00.000Z",
+  "summary": {
+    "total_routes": 4,
+    "public_routes": 3,
+    "ready_for_paid_canary": 1,
+    "blocked_routes": 3
+  },
+  "routes": [
+    {
+      "route_ref": "a2c4960176296774",
+      "logical_model_id": "image-ready",
+      "service_type": "image",
+      "capabilities_declared": true,
+      "user_price_status": "configured",
+      "cost_status": "positive",
+      "priority": 100,
+      "runtime_fingerprint": "image-runtime",
+      "blockers": []
+    },
+    {
+      "route_ref": "5d35a8785bcd629b",
+      "logical_model_id": "video-zero-cost",
+      "service_type": "video",
+      "capabilities_declared": true,
+      "user_price_status": "configured",
+      "cost_status": "not_positive",
+      "priority": 90,
+      "runtime_fingerprint": "video-runtime",
+      "blockers": [
+        "cost_not_positive"
+      ]
+    },
+    {
+      "route_ref": "b2e77a665396a4e9",
+      "logical_model_id": null,
+      "service_type": "image",
+      "capabilities_declared": true,
+      "user_price_status": "configured",
+      "cost_status": "positive",
+      "priority": 80,
+      "runtime_fingerprint": "image-runtime",
+      "blockers": [
+        "missing_logical_model_id",
+        "legacy_connection_only_verification"
+      ]
+    },
+    {
+      "route_ref": "dc382cec8ee9c9f9",
+      "logical_model_id": "video-paused",
+      "service_type": "video",
+      "capabilities_declared": true,
+      "user_price_status": "configured",
+      "cost_status": "positive",
+      "priority": 70,
+      "runtime_fingerprint": "video-runtime",
+      "blockers": [
+        "admin_paused"
+      ]
+    }
+  ]
+}
