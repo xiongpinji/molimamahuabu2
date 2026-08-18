@@ -343,18 +343,45 @@ function settleDefinitiveFailure(db, runId, actualCostMicros, category, now) {
   });
 }
 
+function optionalTaskId(value) {
+  if (value === null || value === undefined || value === '') return null;
+  return requireString(value, 'providerTaskId', 512);
+}
+
+function taskIdForUnknown(row, state, requestedTaskId) {
+  const storedTaskId = typeof row.provider_task_id === 'string'
+    && row.provider_task_id.trim().length > 0
+    ? row.provider_task_id
+    : null;
+  if (state !== 'submission_unknown' && storedTaskId === null) {
+    throw serviceError(
+      'PROVIDER_CANARY_TASK_ID_REQUIRED',
+      'accepted provider canary run requires a provider task id',
+    );
+  }
+  if (storedTaskId !== null) {
+    if (requestedTaskId !== null && requestedTaskId !== storedTaskId) {
+      throw serviceError(
+        'PROVIDER_CANARY_TASK_ID_MISMATCH',
+        'provider canary task id does not match the stored task id',
+      );
+    }
+    return storedTaskId;
+  }
+  return requestedTaskId;
+}
+
 function settleUnknown(db, runId, state, category, providerTaskId, now) {
   const id = requireString(runId, 'runId', 255);
   if (!UNKNOWN_STATES.has(state)) {
     throw invalidInput('state must be a supported unknown terminal state');
   }
   const safeCategory = requireCategory(category);
-  const taskId = providerTaskId === null
-    ? null
-    : requireString(providerTaskId, 'providerTaskId', 512);
+  const requestedTaskId = optionalTaskId(providerTaskId);
   requireIsoTime(now);
   const row = getRun(db, id);
   if (row.state === state) {
+    const taskId = taskIdForUnknown(row, state, requestedTaskId);
     if (row.error_category === safeCategory && row.provider_task_id === taskId) return row;
     throw invalidTransition();
   }
@@ -362,6 +389,7 @@ function settleUnknown(db, runId, state, category, providerTaskId, now) {
     ? new Set(['submitting'])
     : new Set(['accepted', 'verifying']);
   if (!allowedOrigins.has(row.state)) throw invalidTransition();
+  const taskId = taskIdForUnknown(row, state, requestedTaskId);
   db.prepare(`UPDATE provider_canary_runs
     SET state = ?, error_category = ?, provider_task_id = ?,
       finished_at = ?, updated_at = ?

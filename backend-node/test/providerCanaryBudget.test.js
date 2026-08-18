@@ -429,6 +429,110 @@ test('all unknown terminal states preserve full reservation and forbid terminal 
   }
 });
 
+test('result and artifact unknown states preserve the accepted task id for empty input', () => {
+  const db = createDb();
+  try {
+    for (const [index, [state, emptyTaskId]] of [
+      ['result_unknown', null],
+      ['artifact_unreadable', ''],
+    ].entries()) {
+      const id = `accepted-unknown-${index}`;
+      reserveRun(db, { id, idempotencyKey: `accepted-unknown-key-${index}` });
+      budgetService.markSubmitting(db, id, '2026-08-18T00:00:01.000Z');
+      budgetService.markAccepted(db, id, 'provider-task-original', '2026-08-18T00:00:02.000Z');
+      const unknown = budgetService.settleUnknown(
+        db, id, state, `${state}_category`, emptyTaskId, '2026-08-18T00:00:03.000Z',
+      );
+      assert.equal(unknown.provider_task_id, 'provider-task-original');
+      assert.equal(unknown.actual_cost_micros, null);
+      assert.equal(
+        budgetService.settleUnknown(
+          db, id, state, `${state}_category`, '', '2026-08-18T00:00:09.000Z',
+        ).provider_task_id,
+        'provider-task-original',
+      );
+    }
+    assert.equal(budgetService.getBudgetSummary(db, NOW).dailyUsedMicros, 2_000_000);
+  } finally {
+    db.close();
+  }
+});
+
+test('result and artifact unknown states reject mismatched or missing accepted task ids', () => {
+  const db = createDb();
+  try {
+    for (const [index, state] of ['result_unknown', 'artifact_unreadable'].entries()) {
+      const mismatchId = `task-mismatch-${index}`;
+      reserveRun(db, { id: mismatchId, idempotencyKey: `task-mismatch-key-${index}` });
+      budgetService.markSubmitting(db, mismatchId, '2026-08-18T00:00:01.000Z');
+      budgetService.markAccepted(
+        db, mismatchId, 'provider-task-original', '2026-08-18T00:00:02.000Z',
+      );
+      expectCode(
+        () => budgetService.settleUnknown(
+          db, mismatchId, state, `${state}_category`, 'provider-task-different',
+          '2026-08-18T00:00:03.000Z',
+        ),
+        'PROVIDER_CANARY_TASK_ID_MISMATCH',
+      );
+      assert.deepEqual(
+        db.prepare(`SELECT state, provider_task_id, actual_cost_micros
+          FROM provider_canary_runs WHERE id = ?`).get(mismatchId),
+        { state: 'accepted', provider_task_id: 'provider-task-original', actual_cost_micros: null },
+      );
+
+      const missingId = `task-missing-${index}`;
+      reserveRun(db, { id: missingId, idempotencyKey: `task-missing-key-${index}` });
+      budgetService.markSubmitting(db, missingId, '2026-08-18T00:00:01.000Z');
+      db.prepare(`UPDATE provider_canary_runs
+        SET state = 'accepted', provider_task_id = NULL WHERE id = ?`).run(missingId);
+      expectCode(
+        () => budgetService.settleUnknown(
+          db, missingId, state, `${state}_category`, null, '2026-08-18T00:00:03.000Z',
+        ),
+        'PROVIDER_CANARY_TASK_ID_REQUIRED',
+      );
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('submission unknown never clears or replaces an existing database task id', () => {
+  const db = createDb();
+  try {
+    reserveRun(db, { id: 'submission-preserve', idempotencyKey: 'submission-preserve-key' });
+    budgetService.markSubmitting(db, 'submission-preserve', '2026-08-18T00:00:01.000Z');
+    db.prepare(`UPDATE provider_canary_runs SET provider_task_id = 'provider-task-original'
+      WHERE id = 'submission-preserve'`).run();
+    const unknown = budgetService.settleUnknown(
+      db, 'submission-preserve', 'submission_unknown', 'submission_timeout', null,
+      '2026-08-18T00:00:02.000Z',
+    );
+    assert.equal(unknown.provider_task_id, 'provider-task-original');
+    assert.equal(unknown.actual_cost_micros, null);
+
+    reserveRun(db, { id: 'submission-mismatch', idempotencyKey: 'submission-mismatch-key' });
+    budgetService.markSubmitting(db, 'submission-mismatch', '2026-08-18T00:00:01.000Z');
+    db.prepare(`UPDATE provider_canary_runs SET provider_task_id = 'provider-task-original'
+      WHERE id = 'submission-mismatch'`).run();
+    expectCode(
+      () => budgetService.settleUnknown(
+        db, 'submission-mismatch', 'submission_unknown', 'submission_timeout',
+        'provider-task-different', '2026-08-18T00:00:02.000Z',
+      ),
+      'PROVIDER_CANARY_TASK_ID_MISMATCH',
+    );
+    assert.equal(
+      db.prepare(`SELECT provider_task_id FROM provider_canary_runs
+        WHERE id = 'submission-mismatch'`).get().provider_task_id,
+      'provider-task-original',
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test('Asia/Shanghai buckets cross UTC 16:00 and summaries leave old unknown runs unchanged', () => {
   const db = createDb();
   try {
