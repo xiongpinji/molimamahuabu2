@@ -87,76 +87,132 @@ const REQUIRED_COVERAGE = Object.freeze({
   ],
 });
 
-const REQUIRED_FEATURE_IDS = Object.freeze([
-  'shared.api.auth_session',
-  'shared.api.tenant_member',
-  'shared.api.platform_account_admin',
-  'shared.api.billing_account',
-  'shared.api.billing_catalog',
-  'shared.api.billing_redeem',
-  'shared.api.billing_orders',
-  'shared.api.billing_recharge',
-  'shared.api.billing_admin_pricing',
-  'shared.api.billing_reconciliation',
-  'shared.api.asset_library',
-  'canvas.api.layout',
-  'canvas.api.asset',
-  'canvas.api.text_generation',
-  'canvas.api.image_generation',
-  'canvas.api.video_generation',
-  'canvas.api.audio_generation',
-  'canvas.api.image_tool',
-  'canvas.api.video_tool',
-  'canvas.api.task_status_result',
-  'canvas.image_tool.character_portrait',
-  'canvas.image_tool.composition_narrative',
-  'canvas.image_tool.quality',
-  'canvas.image_tool.geometry',
-  'canvas.image_tool.edit',
-  'canvas.image_tool.matting',
-  'short_drama_factory.api.drama',
-  'short_drama_factory.api.project',
-  'short_drama_factory.api.episode',
-  'short_drama_factory.api.import',
-  'short_drama_factory.api.export',
-  'short_drama_factory.api.character',
-  'short_drama_factory.api.scene',
-  'short_drama_factory.api.prop',
-  'short_drama_factory.api.storyboard',
-  'short_drama_factory.api.image_media',
-  'short_drama_factory.api.video_media',
-  'short_drama_factory.api.audio_media',
-  'short_drama_factory.api.generation_task',
-  'short_drama_factory.character.crud',
-  'short_drama_factory.scene.crud',
-  'short_drama_factory.prop.crud',
-  'short_drama_factory.storyboard.crud',
-  'short_drama_factory.character.asset_library',
-  'short_drama_factory.scene.asset_library',
-  'short_drama_factory.prop.asset_library',
-  'short_drama_factory.character.reference',
-  'short_drama_factory.scene.reference',
-  'short_drama_factory.prop.reference',
-  'short_drama_factory.storyboard.reference',
-  'short_drama_factory.character.image_generation',
-  'short_drama_factory.scene.image_generation',
-  'short_drama_factory.prop.image_generation',
-  'short_drama_factory.storyboard.image_generation',
-  'short_drama_factory.storyboard.video_generation',
-  'short_drama_factory.storyboard.batch_video_generation',
-  'script_analysis.api.skill_preset',
-  'script_analysis.api.project',
-  'script_analysis.api.version',
-  'script_analysis.api.revision',
-  'script_analysis.api.review',
-  'script_analysis.api.run',
-  'script_analysis.api.factory_import',
-  'script_analysis.canvas.projection',
-  'script_analysis.factory.projection',
+function requiredFeatureDescriptors(moduleName, actionKind, acceptanceChain, featureIds) {
+  return featureIds.map((featureId) => Object.freeze({
+    feature_id: featureId,
+    module: moduleName,
+    action_kind: actionKind,
+    acceptance_chain: Object.freeze([...acceptanceChain]),
+  }));
+}
+
+const REQUIRED_FEATURE_DESCRIPTORS = Object.freeze([
+  ...requiredFeatureDescriptors('shared', 'api', ['api'], [
+    'shared.api.auth_session',
+    'shared.api.tenant_member',
+    'shared.api.platform_account_admin',
+    'shared.api.billing_account',
+    'shared.api.billing_catalog',
+    'shared.api.billing_redeem',
+    'shared.api.billing_orders',
+    'shared.api.billing_recharge',
+    'shared.api.billing_admin_pricing',
+    'shared.api.billing_reconciliation',
+    'shared.api.asset_library',
+  ]),
+  ...requiredFeatureDescriptors('canvas', 'api', ['api'], [
+    'canvas.api.layout',
+    'canvas.api.asset',
+    'canvas.api.text_generation',
+    'canvas.api.image_generation',
+    'canvas.api.video_generation',
+    'canvas.api.audio_generation',
+    'canvas.api.image_tool',
+    'canvas.api.video_tool',
+    'canvas.api.task_status_result',
+  ]),
+  ...requiredFeatureDescriptors(
+    'canvas',
+    'edit',
+    ['browser', 'api', 'task', 'provider', 'artifact', 'writeback', 'billing'],
+    [
+      'canvas.image_tool.character_portrait',
+      'canvas.image_tool.composition_narrative',
+      'canvas.image_tool.quality',
+      'canvas.image_tool.geometry',
+      'canvas.image_tool.edit',
+      'canvas.image_tool.matting',
+    ],
+  ),
+  ...requiredFeatureDescriptors('short_drama_factory', 'api', ['api'], [
+    'short_drama_factory.api.drama',
+    'short_drama_factory.api.project',
+    'short_drama_factory.api.episode',
+    'short_drama_factory.api.import',
+    'short_drama_factory.api.export',
+    'short_drama_factory.api.character',
+    'short_drama_factory.api.scene',
+    'short_drama_factory.api.prop',
+    'short_drama_factory.api.storyboard',
+    'short_drama_factory.api.image_media',
+    'short_drama_factory.api.video_media',
+    'short_drama_factory.api.audio_media',
+    'short_drama_factory.api.generation_task',
+  ]),
+  ...requiredFeatureDescriptors('short_drama_factory', 'edit', ['browser', 'api', 'writeback'], [
+    'short_drama_factory.character.crud',
+    'short_drama_factory.scene.crud',
+    'short_drama_factory.prop.crud',
+    'short_drama_factory.storyboard.crud',
+  ]),
+  ...requiredFeatureDescriptors(
+    'short_drama_factory',
+    'asset_library',
+    ['browser', 'api', 'artifact', 'writeback'],
+    [
+      'short_drama_factory.character.asset_library',
+      'short_drama_factory.scene.asset_library',
+      'short_drama_factory.prop.asset_library',
+    ],
+  ),
+  ...requiredFeatureDescriptors(
+    'short_drama_factory',
+    'reference',
+    ['browser', 'api', 'artifact', 'writeback'],
+    [
+      'short_drama_factory.character.reference',
+      'short_drama_factory.scene.reference',
+      'short_drama_factory.prop.reference',
+      'short_drama_factory.storyboard.reference',
+    ],
+  ),
+  ...requiredFeatureDescriptors(
+    'short_drama_factory',
+    'generation',
+    ['browser', 'api', 'task', 'provider', 'artifact', 'writeback', 'billing'],
+    [
+      'short_drama_factory.character.image_generation',
+      'short_drama_factory.scene.image_generation',
+      'short_drama_factory.prop.image_generation',
+      'short_drama_factory.storyboard.image_generation',
+      'short_drama_factory.storyboard.video_generation',
+      'short_drama_factory.storyboard.batch_video_generation',
+    ],
+  ),
+  ...requiredFeatureDescriptors('script_analysis', 'api', ['api'], [
+    'script_analysis.api.skill_preset',
+    'script_analysis.api.project',
+    'script_analysis.api.version',
+    'script_analysis.api.revision',
+    'script_analysis.api.review',
+    'script_analysis.api.run',
+    'script_analysis.api.factory_import',
+  ]),
+  ...requiredFeatureDescriptors(
+    'script_analysis',
+    'projection',
+    ['browser', 'api', 'writeback'],
+    [
+      'script_analysis.canvas.projection',
+      'script_analysis.factory.projection',
+    ],
+  ),
 ]);
 
 const PLACEHOLDER_PATTERN = /\b(?:TODO|TBD|placeholder)\b|待定/i;
 const GENERIC_API_PATTERN = /公开\s*API|全部|统一|综合|public_routes/i;
+const TEST_EVIDENCE_PATH_PATTERN = /^(?:frontweb\/(?:test|e2e)|backend-node\/test)\/.+\.(?:test|spec)\.js$/;
+const INVENTORY_TEST_BASENAME_PATTERN = /Inventory\.test\.js$/i;
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -211,6 +267,7 @@ function validateInventory(inventory, { repoRoot = REPO_ROOT, schema } = {}) {
   }
 
   const seenIds = new Set();
+  const featuresById = new Map();
   for (const feature of features) {
     const featureId = feature?.feature_id;
     if (typeof featureId === 'string') {
@@ -218,6 +275,21 @@ function validateInventory(inventory, { repoRoot = REPO_ROOT, schema } = {}) {
         errors.push({ code: 'duplicate_feature_id', message: `duplicate feature_id: ${featureId}` });
       }
       seenIds.add(featureId);
+      if (!featuresById.has(featureId)) featuresById.set(featureId, feature);
+
+      const modulePrefix = featureId.split('.')[0];
+      if (typeof feature?.module === 'string' && modulePrefix !== feature.module) {
+        errors.push({
+          code: 'feature_module_mismatch',
+          message: `${featureId} prefix requires module=${modulePrefix}`,
+        });
+      }
+      if (featureId.includes('.api.') && feature?.action_kind !== 'api') {
+        errors.push({
+          code: 'api_action_kind_mismatch',
+          message: `${featureId} requires action_kind=api`,
+        });
+      }
     }
 
     if (feature?.baseline_state === 'verified') {
@@ -246,11 +318,22 @@ function validateInventory(inventory, { repoRoot = REPO_ROOT, schema } = {}) {
     for (const field of ['source_paths', 'test_paths']) {
       const paths = Array.isArray(feature?.[field]) ? feature[field] : [];
       for (const relativePath of paths) {
-        if (field === 'test_paths' && relativePath === 'backend-node/test/platformFeatureInventory.test.js') {
-          errors.push({
-            code: 'inventory_test_not_feature_evidence',
-            message: `${featureId || '<unknown>'} cannot use inventory structure test as feature evidence`,
-          });
+        if (field === 'test_paths') {
+          const normalizedPath = typeof relativePath === 'string'
+            ? relativePath.replace(/\\/g, '/')
+            : '';
+          if (!TEST_EVIDENCE_PATH_PATTERN.test(normalizedPath)) {
+            errors.push({
+              code: 'invalid_test_evidence_path',
+              message: `${featureId || '<unknown>'} test_paths is not an allowed test file: ${relativePath}`,
+            });
+          }
+          if (INVENTORY_TEST_BASENAME_PATTERN.test(normalizedPath)) {
+            errors.push({
+              code: 'inventory_test_not_feature_evidence',
+              message: `${featureId || '<unknown>'} cannot use inventory structure test as feature evidence`,
+            });
+          }
         }
         if (!isRepositoryFile(repoRoot, relativePath)) {
           errors.push({
@@ -276,11 +359,28 @@ function validateInventory(inventory, { repoRoot = REPO_ROOT, schema } = {}) {
     }
   }
 
-  for (const featureId of REQUIRED_FEATURE_IDS) {
-    if (!seenIds.has(featureId)) {
+  for (const descriptor of REQUIRED_FEATURE_DESCRIPTORS) {
+    const feature = featuresById.get(descriptor.feature_id);
+    if (!feature) {
       errors.push({
         code: 'missing_required_feature',
-        message: `required feature_id is missing: ${featureId}`,
+        message: `required feature_id is missing: ${descriptor.feature_id}`,
+      });
+      continue;
+    }
+
+    const acceptanceChain = Array.isArray(feature.acceptance_chain) ? feature.acceptance_chain : [];
+    const missingAcceptance = descriptor.acceptance_chain.filter(
+      (chainEntry) => !acceptanceChain.includes(chainEntry),
+    );
+    if (
+      feature.module !== descriptor.module
+      || feature.action_kind !== descriptor.action_kind
+      || missingAcceptance.length > 0
+    ) {
+      errors.push({
+        code: 'required_feature_contract',
+        message: `${descriptor.feature_id} requires module=${descriptor.module}, action_kind=${descriptor.action_kind}, acceptance_chain=${descriptor.acceptance_chain.join(',')}`,
       });
     }
   }
@@ -330,7 +430,7 @@ module.exports = {
   INVENTORY_PATH,
   REPO_ROOT,
   REQUIRED_COVERAGE,
-  REQUIRED_FEATURE_IDS,
+  REQUIRED_FEATURE_DESCRIPTORS,
   SCHEMA_PATH,
   loadDefaultInventory,
   summarize,

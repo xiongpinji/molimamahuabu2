@@ -110,6 +110,23 @@ test('verifier rejects removal of a required operation family', () => {
   assert.ok(errorCodes(result).has('missing_required_feature'));
 });
 
+test('required feature descriptors reject module and action-kind drift', () => {
+  const { inventory, schema } = loadDefaultInventory();
+  const drifted = clone(inventory);
+  const authSession = drifted.features.find(
+    (feature) => feature.feature_id === 'shared.api.auth_session',
+  );
+  authSession.module = 'canvas';
+  authSession.action_kind = 'entry';
+
+  const result = validateInventory(drifted, { repoRoot, schema });
+
+  assert.equal(result.valid, false);
+  assert.ok(errorCodes(result).has('required_feature_contract'));
+  assert.ok(errorCodes(result).has('feature_module_mismatch'));
+  assert.ok(errorCodes(result).has('api_action_kind_mismatch'));
+});
+
 test('API features reject umbrella coverage labels and ids', () => {
   const { inventory, schema } = loadDefaultInventory();
   const umbrellaPattern = /公开\s*API|全部|统一|综合|public_routes/i;
@@ -299,6 +316,32 @@ test('inventory structure test cannot be used as feature acceptance evidence', (
   selfReferenced.features[0].test_paths = ['backend-node/test/platformFeatureInventory.test.js'];
 
   const result = validateInventory(selfReferenced, { repoRoot, schema });
+
+  assert.equal(result.valid, false);
+  assert.ok(errorCodes(result).has('inventory_test_not_feature_evidence'));
+});
+
+test('ordinary scripts cannot be used as feature test evidence', () => {
+  const { inventory, schema } = loadDefaultInventory();
+  const scriptReferenced = clone(inventory);
+  scriptReferenced.features[0].test_paths = [
+    'backend-node/scripts/verify-platform-feature-inventory.js',
+  ];
+
+  const result = validateInventory(scriptReferenced, { repoRoot, schema });
+
+  assert.equal(result.valid, false);
+  assert.ok(errorCodes(result).has('invalid_test_evidence_path'));
+});
+
+test('other inventory-only tests cannot be used as feature acceptance evidence', () => {
+  const { inventory, schema } = loadDefaultInventory();
+  const inventoryTestReferenced = clone(inventory);
+  inventoryTestReferenced.features[0].test_paths = [
+    'backend-node/test/providerCanaryInventory.test.js',
+  ];
+
+  const result = validateInventory(inventoryTestReferenced, { repoRoot, schema });
 
   assert.equal(result.valid, false);
   assert.ok(errorCodes(result).has('inventory_test_not_feature_evidence'));
