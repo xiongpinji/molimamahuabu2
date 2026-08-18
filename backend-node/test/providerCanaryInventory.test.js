@@ -216,8 +216,11 @@ function buildFixtureReport() {
 
 function compileReadinessSchema() {
   const Ajv2020 = require('ajv/dist/2020');
+  const addFormats = require('ajv-formats');
   const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
-  return new Ajv2020({ allErrors: true, strict: true, validateFormats: false }).compile(schema);
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  addFormats(ajv);
+  return ajv.compile(schema);
 }
 
 function assertSchemaInvalid(validate, value, keyword) {
@@ -350,9 +353,10 @@ test('checked-in schema covers the report structure and fixed blocker enum', () 
   assert.equal(schema.properties.summary.additionalProperties, false);
 });
 
-test('Ajv 8 is an exact direct development dependency', () => {
+test('JSON Schema validators are exact direct development dependencies', () => {
   const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
   assert.equal(packageJson.devDependencies?.ajv, '8.17.1');
+  assert.equal(packageJson.devDependencies?.['ajv-formats'], '3.0.1');
 });
 
 test('Ajv 2020 validates both generated and checked-in readiness reports', () => {
@@ -382,6 +386,13 @@ test('JSON Schema rejects malformed route references', () => {
   const report = structuredClone(buildFixtureReport());
   report.routes[0].route_ref = 'not-a-route-hash';
   assertSchemaInvalid(validate, report, 'pattern');
+});
+
+test('JSON Schema rejects invalid generated_at date-time values', () => {
+  const validate = compileReadinessSchema();
+  const report = structuredClone(buildFixtureReport());
+  report.generated_at = 'not-a-date';
+  assertSchemaInvalid(validate, report, 'format');
 });
 
 test('checked-in readiness baseline is generated from the deterministic local fixture', () => {
