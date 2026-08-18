@@ -402,6 +402,11 @@ function rowWithCapability(row) {
   return { ...row, capability: JSON.parse(row.capability_json) };
 }
 
+function runImmediate(db, work) {
+  if (db.inTransaction) return work();
+  return db.transaction(work).immediate();
+}
+
 function recordSuccess(db, input) {
   const capability = normalizeCapability(input.serviceType ?? input.service_type, input.capability);
   const capabilityJson = stableJson(capability);
@@ -412,7 +417,7 @@ function recordSuccess(db, input) {
   const now = normalizedNow(input.now);
   const nowIso = now.toISOString();
   const expiresAt = new Date(now.getTime() + evidenceAgeMs(input)).toISOString();
-  const transaction = db.transaction(() => {
+  const row = runImmediate(db, () => {
     const match = loadMatchingRun(db, input, capabilityHash, { requiredState: 'succeeded' });
     if (match.run.config_fingerprint !== configHash
         || match.run.cost_fingerprint !== costHash
@@ -445,7 +450,7 @@ function recordSuccess(db, input) {
     return db.prepare(`SELECT * FROM provider_canary_evidence
       WHERE config_id = ? AND capability_fingerprint = ?`).get(match.configId, capabilityHash);
   });
-  return rowWithCapability(transaction());
+  return rowWithCapability(row);
 }
 
 function writeNonFreshEvidence(db, input, runState, evidenceState) {
@@ -488,11 +493,14 @@ function writeNonFreshEvidence(db, input, runState, evidenceState) {
 }
 
 function recordFailure(db, input) {
-  return db.transaction(() => writeNonFreshEvidence(db, input, 'failed', 'failing').row)();
+  return runImmediate(db, () => writeNonFreshEvidence(db, input, 'failed', 'failing').row);
 }
 
 function recordBudgetBlocked(db, input) {
-  return db.transaction(() => writeNonFreshEvidence(db, input, 'budget_blocked', 'budget_blocked').row)();
+  return runImmediate(
+    db,
+    () => writeNonFreshEvidence(db, input, 'budget_blocked', 'budget_blocked').row,
+  );
 }
 
 function recordUnknown(db, input) {
@@ -500,7 +508,7 @@ function recordUnknown(db, input) {
   if (!UNKNOWN_STATES.has(state)) {
     throw new TypeError('state must be submission_unknown, result_unknown, or artifact_unreadable');
   }
-  return db.transaction(() => {
+  return runImmediate(db, () => {
     const result = writeNonFreshEvidence(db, input, state, 'submission_unknown');
     const safeDetails = stableJson({
       capability_ref: sha256(result.match.run.capability_fingerprint),
@@ -509,16 +517,24 @@ function recordUnknown(db, input) {
     });
     db.prepare(`INSERT INTO provider_stability_events
       (severity, event_type, logical_model_id, config_id, task_state, safe_details, created_at)
-      VALUES ('warning', 'provider_canary_unknown', ?, ?, ?, ?, ?)`)
+      SELECT 'warning', 'provider_canary_unknown', ?, ?, ?, ?, ?
+      WHERE NOT EXISTS (
+        SELECT 1 FROM provider_stability_events
+        WHERE event_type = 'provider_canary_unknown'
+          AND config_id = ? AND task_state = ? AND safe_details = ?
+      )`)
       .run(
         result.match.run.logical_model_id,
         result.match.configId,
         state,
         safeDetails,
         normalizedNow(input.now).toISOString(),
+        result.match.configId,
+        state,
+        safeDetails,
       );
     return result.row;
-  })();
+  });
 }
 
 function safeInvalidationReason(reason) {

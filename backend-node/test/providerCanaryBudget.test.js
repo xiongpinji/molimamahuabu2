@@ -176,6 +176,61 @@ test('two file-backed connections observe committed reservations without overspe
   }
 });
 
+test('claimForExecution grants one owner after two connections both observed reserved', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-canary-claim-'));
+  const filename = path.join(directory, 'claim.sqlite');
+  const first = createDb(filename);
+  const second = new Database(filename);
+  try {
+    second.pragma('foreign_keys = ON');
+    first.pragma('busy_timeout = 1000');
+    second.pragma('busy_timeout = 1000');
+    reserveRun(first);
+    assert.equal(first.prepare("SELECT state FROM provider_canary_runs WHERE id = 'run-1'").get().state, 'reserved');
+    assert.equal(second.prepare("SELECT state FROM provider_canary_runs WHERE id = 'run-1'").get().state, 'reserved');
+
+    let submitOwners = 0;
+    const claimed = budgetService.claimForExecution(
+      first, 'run-1', '2026-08-18T00:00:01.000Z',
+    );
+    if (claimed.executionOwner) submitOwners += 1;
+    expectCode(
+      () => budgetService.claimForExecution(second, 'run-1', '2026-08-18T00:00:02.000Z'),
+      'PROVIDER_CANARY_EXECUTION_NOT_CLAIMED',
+    );
+
+    assert.equal(claimed.executionOwner, true);
+    assert.equal(claimed.run.state, 'submitting');
+    assert.equal(submitOwners, 1);
+    assert.equal(second.prepare("SELECT state FROM provider_canary_runs WHERE id = 'run-1'").get().state, 'submitting');
+  } finally {
+    second.close();
+    first.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('claimForExecution checks unresolved provider scope blockers in the same transaction', () => {
+  const db = createDb();
+  try {
+    insertHistoricalRun(db, {
+      id: 'unknown-scope-run',
+      idempotency_key: 'unknown-scope-key',
+      provider_scope_key: 'scope-a',
+      state: 'submission_unknown',
+    });
+    reserveRun(db);
+
+    expectCode(
+      () => budgetService.claimForExecution(db, 'run-1', '2026-08-18T00:00:01.000Z'),
+      'PROVIDER_CANARY_SCOPE_BLOCKED',
+    );
+    assert.equal(db.prepare("SELECT state FROM provider_canary_runs WHERE id = 'run-1'").get().state, 'reserved');
+  } finally {
+    db.close();
+  }
+});
+
 test('idempotency replay requires every immutable reservation field to match', () => {
   const db = createDb();
   try {

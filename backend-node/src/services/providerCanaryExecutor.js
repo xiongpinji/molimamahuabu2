@@ -162,6 +162,11 @@ function currentRun(db, run) {
   return row;
 }
 
+function runImmediate(db, work) {
+  if (db.inTransaction) return work();
+  return db.transaction(work).immediate();
+}
+
 function loadConfig(db, run) {
   const config = aiConfigService.getConfig(db, run.config_id);
   const row = db.prepare(`SELECT service_type, is_active, canary_paused
@@ -171,19 +176,6 @@ function loadConfig(db, run) {
     throw serviceError('PROVIDER_CANARY_CONFIG_UNAVAILABLE', 'provider canary config is unavailable');
   }
   return config;
-}
-
-function assertReservedAndUnblocked(db, run) {
-  if (run.state !== 'reserved') {
-    throw serviceError('PROVIDER_CANARY_INVALID_STATE_TRANSITION', 'provider canary run must be reserved');
-  }
-  const blocked = db.prepare(`SELECT id FROM provider_canary_runs
-    WHERE provider_scope_key = ? AND id <> ?
-      AND state IN ('submission_unknown', 'result_unknown', 'artifact_unreadable')
-    ORDER BY created_at LIMIT 1`).get(run.provider_scope_key, run.id);
-  if (blocked) {
-    throw serviceError('PROVIDER_CANARY_SCOPE_BLOCKED', 'provider scope has an unresolved canary result');
-  }
 }
 
 function markVerifying(db, runId, now) {
@@ -197,17 +189,10 @@ function markVerifying(db, runId, now) {
 
 function safeMeta(errorOrResult, fallback = {}) {
   const meta = errorOrResult?.route_meta || errorOrResult?.routeMeta || {};
-  const rawMessage = typeof errorOrResult?.error === 'string'
-    ? errorOrResult.error
-    : errorOrResult?.message;
-  const statusMatch = typeof rawMessage === 'string'
-    ? rawMessage.match(/(?:HTTP|请求失败\s*:)\s*([1-5]\d\d)\b/i)
-    : null;
-  const parsedStatus = statusMatch ? Number(statusMatch[1]) : undefined;
   return {
     httpStatus: Number.isInteger(meta.httpStatus)
       ? meta.httpStatus
-      : (parsedStatus ?? fallback.httpStatus),
+      : fallback.httpStatus,
     providerCode: meta.providerCode ?? fallback.providerCode,
     providerTaskId: meta.providerTaskId ?? fallback.providerTaskId,
     phase: meta.phase ?? fallback.phase,
@@ -241,10 +226,12 @@ function evidenceInput(run, capability, now, state) {
 
 function settleFailure(db, run, capability, meta, now) {
   const classification = classifyProviderFailure(meta);
-  budgetService.settleDefinitiveFailure(db, run.id, 0, classification.category, now);
-  updateSafeSummary(db, run.id, classification.category, meta, now);
-  evidenceService.recordFailure(db, evidenceInput(run, capability, now));
-  return { state: 'failed', category: classification.category };
+  return runImmediate(db, () => {
+    budgetService.settleDefinitiveFailure(db, run.id, 0, classification.category, now);
+    updateSafeSummary(db, run.id, classification.category, meta, now);
+    evidenceService.recordFailure(db, evidenceInput(run, capability, now));
+    return { state: 'failed', category: classification.category };
+  });
 }
 
 function settleUnknownWithoutTask(db, run, state, category, now) {
@@ -257,11 +244,16 @@ function settleUnknownWithoutTask(db, run, state, category, now) {
 }
 
 function settleUnknown(db, run, capability, state, category, taskId, meta, now) {
-  if (taskId) budgetService.settleUnknown(db, run.id, state, category, taskId, now);
-  else settleUnknownWithoutTask(db, run, state, category, now);
-  updateSafeSummary(db, run.id, category, meta, now);
-  evidenceService.recordUnknown(db, evidenceInput(run, capability, now, state));
-  return { state, category };
+  return runImmediate(db, () => {
+    if (state === 'submission_unknown' || taskId) {
+      budgetService.settleUnknown(db, run.id, state, category, taskId, now);
+    } else {
+      settleUnknownWithoutTask(db, run, state, category, now);
+    }
+    updateSafeSummary(db, run.id, category, meta, now);
+    evidenceService.recordUnknown(db, evidenceInput(run, capability, now, state));
+    return { state, category };
+  });
 }
 
 function normalizedArtifact(summary, runId, serviceType) {
@@ -274,7 +266,6 @@ function normalizedArtifact(summary, runId, serviceType) {
 
 async function executeCanaryRun(db, log, runInput, options = {}) {
   const run = currentRun(db, runInput);
-  assertReservedAndUnblocked(db, run);
   const config = loadConfig(db, run);
   const capability = evidenceService.normalizeCapability(run.service_type, options.capability);
   requireSingleOutput(capability);
@@ -289,7 +280,11 @@ async function executeCanaryRun(db, log, runInput, options = {}) {
         clientDb, clientLog, imageRequest.config_id, imageRequest,
       )
     )),
-    callVideoApi: options.clients?.callVideoApi || videoClient.callVideoApi,
+    callVideoApi: options.clients?.callVideoApi || ((clientDb, clientLog, videoRequest) => (
+      videoClient.callVideoApiForConfigId(
+        clientDb, clientLog, videoRequest.config_id, videoRequest,
+      )
+    )),
     pollVideoTask: options.clients?.pollVideoTask || videoClient.pollVideoTask,
     generateTextForConfigId: options.clients?.generateTextForConfigId || aiClient.generateTextForConfigId,
   };
@@ -299,7 +294,7 @@ async function executeCanaryRun(db, log, runInput, options = {}) {
     verifyText: options.artifacts?.verifyText || artifactService.verifyText,
   };
   let submitCount = 0;
-  budgetService.markSubmitting(db, run.id, now);
+  budgetService.claimForExecution(db, run.id, now);
   let result;
   try {
     submitCount += 1;
@@ -327,10 +322,10 @@ async function executeCanaryRun(db, log, runInput, options = {}) {
     const category = classification.category === 'artifact_unreadable'
       ? 'artifact_unreadable'
       : 'submission_unknown';
-    budgetService.settleUnknown(db, run.id, category, category, meta.providerTaskId || null, now);
-    updateSafeSummary(db, run.id, category, meta, now);
-    evidenceService.recordUnknown(db, evidenceInput(run, capability, now, category));
-    return { state: category, category, submitCount };
+    const settled = settleUnknown(
+      db, run, capability, category, category, meta.providerTaskId || null, meta, now,
+    );
+    return { ...settled, submitCount };
   }
 
   let providerTaskId = null;
@@ -376,10 +371,8 @@ async function executeCanaryRun(db, log, runInput, options = {}) {
     if (classification.category === 'submission_unknown'
         || classification.category === 'forbidden_unknown') {
       const state = 'submission_unknown';
-      budgetService.settleUnknown(db, run.id, state, state, null, now);
-      updateSafeSummary(db, run.id, state, meta, now);
-      evidenceService.recordUnknown(db, evidenceInput(run, capability, now, state));
-      return { state, category: state, submitCount };
+      const settled = settleUnknown(db, run, capability, state, state, null, meta, now);
+      return { ...settled, submitCount };
     }
     if (meta.providerTaskId) {
       budgetService.markAccepted(db, run.id, String(meta.providerTaskId), now);
@@ -443,9 +436,11 @@ async function executeCanaryRun(db, log, runInput, options = {}) {
 
   const artifact = normalizedArtifact(summary, run.id, run.service_type);
   const actualCostMicros = options.actualCostMicros ?? run.reserved_cost_micros;
-  budgetService.settleSuccess(db, run.id, actualCostMicros, artifact, now);
-  evidenceService.recordSuccess(db, evidenceInput(run, capability, now));
-  return { state: 'succeeded', submitCount, artifact };
+  return runImmediate(db, () => {
+    budgetService.settleSuccess(db, run.id, actualCostMicros, artifact, now);
+    evidenceService.recordSuccess(db, evidenceInput(run, capability, now));
+    return { state: 'succeeded', submitCount, artifact };
+  });
 }
 
 module.exports = {

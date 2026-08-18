@@ -5155,6 +5155,29 @@ function stripVideoRouteMeta(result) {
   return safe;
 }
 
+function exactVideoConfigId(value) {
+  const id = typeof value === 'string' && /^[1-9]\d*$/.test(value)
+    ? Number(value)
+    : value;
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new Error('指定的视频模型配置不存在或已停用');
+  }
+  return id;
+}
+
+async function callVideoApiForConfigId(db, log, configId, opts = {}) {
+  const explicitConfigId = exactVideoConfigId(configId);
+  const requestConfigId = opts.config_id ?? opts.configId;
+  if (requestConfigId != null && exactVideoConfigId(requestConfigId) !== explicitConfigId) {
+    throw new Error('指定的视频模型配置不存在或已停用');
+  }
+  const config = getVideoConfigById(db, explicitConfigId);
+  if (!config || !config.is_active || String(config.service_type).toLowerCase() !== 'video') {
+    throw new Error('指定的视频模型配置不存在、已停用或不是 video 类型');
+  }
+  return submitVideoWithConfig(db, log, config, opts);
+}
+
 function safeVideoRouteFailure(classification, result) {
   const category = classification.category;
   if (category === 'policy_rejected') {
@@ -5931,6 +5954,10 @@ module.exports = {
   callAihubccVideoApi,
   callXaiVideoApi,
   callVideoApi: (...args) => runWithGenerationLimit('video', () => callVideoApi(...args)),
+  callVideoApiForConfigId: (...args) => runWithGenerationLimit(
+    'video',
+    () => callVideoApiForConfigId(...args),
+  ),
   pollVideoTask,
   normalizeAspectRatioForApi,
   isPlausibleHttpVideoUrl,

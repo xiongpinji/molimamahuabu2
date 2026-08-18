@@ -117,6 +117,11 @@ function invalidTransition() {
   );
 }
 
+function runImmediate(db, work) {
+  if (db.inTransaction) return work();
+  return db.transaction(work).immediate();
+}
+
 function normalizeReserveInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw invalidInput('input must be an object');
@@ -260,6 +265,40 @@ function markSubmitting(db, runId, now) {
   return transaction.immediate();
 }
 
+function claimForExecution(db, runId, now) {
+  const id = requireString(runId, 'runId', 255);
+  requireIsoTime(now);
+  return runImmediate(db, () => {
+    const row = getRun(db, id);
+    if (row.state !== 'reserved') {
+      throw serviceError(
+        'PROVIDER_CANARY_EXECUTION_NOT_CLAIMED',
+        'provider canary execution was not claimed',
+      );
+    }
+    const blocked = db.prepare(`SELECT id FROM provider_canary_runs
+      WHERE provider_scope_key = ? AND id <> ?
+        AND state IN ('submission_unknown', 'result_unknown', 'artifact_unreadable')
+      ORDER BY created_at, id LIMIT 1`).get(row.provider_scope_key, id);
+    if (blocked) {
+      throw serviceError(
+        'PROVIDER_CANARY_SCOPE_BLOCKED',
+        'provider scope has an unresolved canary result',
+      );
+    }
+    const result = db.prepare(`UPDATE provider_canary_runs
+      SET state = 'submitting', submitted_at = ?, updated_at = ?
+      WHERE id = ? AND state = 'reserved'`).run(now, now, id);
+    if (result.changes !== 1) {
+      throw serviceError(
+        'PROVIDER_CANARY_EXECUTION_NOT_CLAIMED',
+        'provider canary execution was not claimed',
+      );
+    }
+    return { executionOwner: true, run: getRun(db, id) };
+  });
+}
+
 function markAccepted(db, runId, providerTaskId, now) {
   const id = requireString(runId, 'runId', 255);
   const taskId = requireString(providerTaskId, 'providerTaskId', 512);
@@ -322,7 +361,7 @@ function recordOverrunEvent(db, row, actualCostMicros, now) {
 }
 
 function runSettlement(db, runId, actualCostMicros, now, settle) {
-  const transaction = db.transaction(() => {
+  const result = runImmediate(db, () => {
     const row = getRun(db, runId);
     const idempotent = settle.idempotent(row);
     if (idempotent) return { row };
@@ -336,7 +375,6 @@ function runSettlement(db, runId, actualCostMicros, now, settle) {
     settle.update(row);
     return { row: getRun(db, runId) };
   });
-  const result = transaction.immediate();
   if (result.overrun) {
     throw serviceError(
       'PROVIDER_CANARY_COST_OVERRUN',
@@ -438,7 +476,7 @@ function settleUnknown(db, runId, state, category, providerTaskId, now) {
   const safeCategory = requireCategory(category);
   const requestedTaskId = optionalTaskId(providerTaskId);
   requireIsoTime(now);
-  const transaction = db.transaction(() => {
+  return runImmediate(db, () => {
     const row = getRun(db, id);
     if (row.state === state) {
       const replayTaskId = taskIdForUnknown(row, state, requestedTaskId);
@@ -466,7 +504,6 @@ function settleUnknown(db, runId, state, category, providerTaskId, now) {
     }
     return getRun(db, id);
   });
-  return transaction.immediate();
 }
 
 function getBudgetSummary(db, now) {
@@ -490,6 +527,7 @@ module.exports = {
   HARD_MONTHLY_BUDGET_MICROS,
   reserve,
   markSubmitting,
+  claimForExecution,
   markAccepted,
   settleSuccess,
   settleDefinitiveFailure,

@@ -322,6 +322,14 @@ test('unknown outcomes preserve exact run states, unify evidence state, and emit
       assert.equal(db.prepare('SELECT state FROM provider_canary_runs').get().state, state);
       assert.equal(db.prepare('SELECT state FROM provider_canary_evidence').get().state, 'submission_unknown');
     }
+    evidenceService.recordUnknown(db, {
+      configId: 7,
+      serviceType: 'video',
+      capability: CAPABILITY,
+      runId: 'canary-run-1',
+      state: 'artifact_unreadable',
+      now: NOW,
+    });
     const events = db.prepare('SELECT * FROM provider_stability_events ORDER BY id').all();
     assert.deepEqual(events.map((event) => event.task_state), [
       'submission_unknown', 'result_unknown', 'artifact_unreadable',

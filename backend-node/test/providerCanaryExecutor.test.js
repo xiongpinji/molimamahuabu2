@@ -10,6 +10,7 @@ const Database = require('better-sqlite3');
 
 const aiConfigService = require('../src/services/aiConfigService');
 const imageClient = require('../src/services/imageClient');
+const videoClient = require('../src/services/videoClient');
 const budget = require('../src/services/providerCanaryBudgetService');
 const evidence = require('../src/services/providerCanaryEvidenceService');
 const modelPrice = require('../src/services/modelPriceService');
@@ -89,6 +90,32 @@ function addHttpImageConfig(db, server, suffix) {
     category: 'image',
     billing_unit: 'request',
     cost_unit: 'image',
+    cost_micros_per_unit: 1000,
+  });
+  return aiConfigService.getConfig(db, config.id);
+}
+
+function addHttpVideoConfig(db, server, suffix) {
+  const model = `local-video-${suffix}`;
+  const config = aiConfigService.createConfig(db, log, {
+    service_type: 'video',
+    provider: `local-video-${suffix}`,
+    api_protocol: 'openai',
+    name: `local-video-${suffix}`,
+    base_url: `http://127.0.0.1:${server.address().port}`,
+    api_key: `local-private-${suffix}`,
+    model: [model],
+    default_model: model,
+    endpoint: '/video/generations',
+    query_endpoint: '/video/generations/{taskId}',
+    logical_model_id: 'logical-local-video',
+  });
+  db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
+    .run(config.id);
+  modelPrice.set(db, 'logical-local-video', 10, {
+    category: 'video',
+    billing_unit: 'second',
+    cost_unit: 'second',
     cost_micros_per_unit: 1000,
   });
   return aiConfigService.getConfig(db, config.id);
@@ -349,6 +376,59 @@ test('2xx without a parseable artifact becomes result_unknown and blocks the pro
   assert.deepEqual(rowCounts(db), before);
 });
 
+test('two file-backed executor workers permit only the atomic claim owner to submit', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-canary-executor-claim-'));
+  const filename = path.join(directory, 'canary.sqlite');
+  const first = new Database(filename);
+  runMigrationsAndEnsure(first);
+  const second = new Database(filename);
+  first.pragma('busy_timeout = 1000');
+  second.pragma('busy_timeout = 1000');
+  t.after(() => {
+    second.close();
+    first.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  const executor = loadExecutor();
+  const config = addConfig(first, 'image', 'claim-race');
+  const capability = capabilityFor('image');
+  const run = reserveRun(first, config, capability, 'claim-race');
+  let releaseSubmission;
+  const submissionGate = new Promise((resolve) => { releaseSubmission = resolve; });
+  let submissions = 0;
+  const firstOptions = baseOptions(capability, {
+    clients: {
+      async callImageApi() {
+        submissions += 1;
+        await submissionGate;
+        return { route_meta: { httpStatus: 200 } };
+      },
+    },
+  });
+  const secondOptions = baseOptions(capability, {
+    clients: {
+      async callImageApi() { submissions += 1; },
+    },
+  });
+  t.after(() => {
+    fs.rmSync(firstOptions.storageRoot, { recursive: true, force: true });
+    fs.rmSync(secondOptions.storageRoot, { recursive: true, force: true });
+  });
+
+  const ownerExecution = executor.executeCanaryRun(first, log, run, firstOptions);
+  await new Promise((resolve) => setImmediate(resolve));
+  await assert.rejects(
+    () => executor.executeCanaryRun(second, log, run, secondOptions),
+    (error) => error.code === 'PROVIDER_CANARY_EXECUTION_NOT_CLAIMED',
+  );
+  assert.equal(submissions, 1);
+  releaseSubmission();
+  const ownerResult = await ownerExecution;
+  assert.equal(ownerResult.state, 'result_unknown');
+  assert.equal(ownerResult.submitCount, 1);
+  assert.equal(submissions, 1);
+});
+
 test('internal exact image entry keeps route metadata while public callImageApi strips it', async (t) => {
   let requests = 0;
   const server = await listen((req, res) => {
@@ -377,6 +457,65 @@ test('internal exact image entry keeps route metadata while public callImageApi 
   assert.equal(internal.route_meta.artifactReadable, false);
   assert.equal(Object.hasOwn(publicResult, 'route_meta'), false);
   assert.equal(Object.hasOwn(publicResult, 'provider_task_id'), false);
+});
+
+test('internal exact video entry keeps route metadata while public callVideoApi strips it', async (t) => {
+  let requests = 0;
+  const server = await listen((req, res) => {
+    requests += 1;
+    req.resume();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id: 'local-video-task', status: 'processing' }));
+  });
+  t.after(() => close(server));
+  const db = createDb();
+  t.after(() => db.close());
+  const config = addHttpVideoConfig(db, server, 'meta');
+  const request = {
+    config_id: config.id,
+    prompt: 'fixed local canary prompt',
+    duration: 5,
+    resolution: '720p',
+    aspect_ratio: '16:9',
+  };
+
+  const internal = await videoClient.callVideoApiForConfigId(
+    db, log, config.id, request,
+  );
+  const publicResult = await videoClient.callVideoApi(db, log, request);
+
+  assert.equal(requests, 2);
+  assert.equal(internal.task_id, 'local-video-task');
+  assert.equal(internal.route_meta.httpStatus, 200);
+  assert.equal(internal.route_meta.providerTaskId, 'local-video-task');
+  assert.equal(Object.hasOwn(publicResult, 'route_meta'), false);
+  assert.equal(Object.hasOwn(publicResult, 'provider_task_id'), false);
+});
+
+test('internal exact video entry rejects inactive and wrong-type configs before HTTP', async (t) => {
+  let requests = 0;
+  const server = await listen((req, res) => {
+    requests += 1;
+    req.resume();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id: 'must-not-submit' }));
+  });
+  t.after(() => close(server));
+  const db = createDb();
+  t.after(() => db.close());
+  const inactive = addHttpVideoConfig(db, server, 'inactive');
+  const wrongType = addHttpImageConfig(db, server, 'wrong-type');
+  db.prepare('UPDATE ai_service_configs SET is_active = 0 WHERE id = ?').run(inactive.id);
+
+  await assert.rejects(
+    () => videoClient.callVideoApiForConfigId(db, log, inactive.id, { prompt: 'safe' }),
+    /不存在|停用/,
+  );
+  await assert.rejects(
+    () => videoClient.callVideoApiForConfigId(db, log, wrongType.id, { prompt: 'safe' }),
+    /video|视频/,
+  );
+  assert.equal(requests, 0);
 });
 
 test('real internal image path classifies 2xx without artifact as result_unknown once without failover', async (t) => {
@@ -540,6 +679,12 @@ test('definitive 4xx not accepted fails once, costs zero, and stores only a safe
       async callImageApi() {
         return {
           error: '图片生成请求失败: 400 - private https://relay.invalid sk-private safe prompt leaked',
+          route_meta: {
+            httpStatus: 400,
+            phase: 'submit',
+            requestBodySent: false,
+            explicitlyRejected: true,
+          },
         };
       },
     },
@@ -556,6 +701,166 @@ test('definitive 4xx not accepted fails once, costs zero, and stores only a safe
   assert.equal(db.prepare('SELECT state FROM provider_canary_evidence').get().state, 'failing');
   assert.doesNotMatch(JSON.stringify(stored), /relay|sk-private|prompt leaked/);
   assert.deepEqual(rowCounts(db), before);
+});
+
+test('unstructured error text that looks like HTTP 400 remains submission_unknown', async (t) => {
+  const executor = loadExecutor();
+  const db = createDb();
+  t.after(() => db.close());
+  const config = addConfig(db, 'image');
+  const capability = capabilityFor('image');
+  const run = reserveRun(db, config, capability, 'unstructured-4xx');
+  const options = baseOptions(capability, {
+    clients: {
+      async callImageApi() {
+        return { error: '图片生成请求失败: 400 - private https://relay.invalid sk-private' };
+      },
+    },
+  });
+  t.after(() => fs.rmSync(options.storageRoot, { recursive: true, force: true }));
+
+  const result = await executor.executeCanaryRun(db, log, run, options);
+  const stored = db.prepare(`SELECT state, actual_cost_micros, safe_error_summary
+    FROM provider_canary_runs WHERE id = ?`).get(run.id);
+  assert.equal(result.state, 'submission_unknown');
+  assert.equal(result.submitCount, 1);
+  assert.equal(stored.state, 'submission_unknown');
+  assert.equal(stored.actual_cost_micros, null);
+  assert.equal(stored.safe_error_summary, 'category=submission_unknown');
+  assert.doesNotMatch(JSON.stringify(stored), /relay|sk-private/);
+});
+
+for (const status of [400, 413, 422]) {
+  test(`real internal video HTTP ${status} is definitive failure once without failover`, async (t) => {
+    const requests = [];
+    const primary = await listen((req, res) => {
+      requests.push('primary');
+      req.resume();
+      res.writeHead(status, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 'BAD_REQUEST', message: 'invalid input' } }));
+    });
+    const backup = await listen((req, res) => {
+      requests.push('backup');
+      req.resume();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ id: 'must-not-run', status: 'processing' }));
+    });
+    t.after(async () => Promise.all([close(primary), close(backup)]));
+    const executor = loadExecutor();
+    const db = createDb();
+    t.after(() => db.close());
+    const config = addHttpVideoConfig(db, primary, `status-${status}`);
+    addHttpVideoConfig(db, backup, `backup-${status}`);
+    const capability = capabilityFor('video');
+    const run = reserveRun(db, config, capability, `video-${status}`, `video-status-${status}`);
+    const options = baseOptions(capability);
+    t.after(() => fs.rmSync(options.storageRoot, { recursive: true, force: true }));
+
+    const result = await executor.executeCanaryRun(db, log, run, options);
+    const stored = db.prepare(`SELECT state, actual_cost_micros, safe_error_summary
+      FROM provider_canary_runs WHERE id = ?`).get(run.id);
+    assert.equal(result.state, 'failed');
+    assert.equal(result.submitCount, 1);
+    assert.deepEqual(requests, ['primary']);
+    assert.equal(stored.state, 'failed');
+    assert.equal(stored.actual_cost_micros, 0);
+    assert.equal(
+      stored.safe_error_summary,
+      `category=validation_error status=${status} code=BAD_REQUEST`,
+    );
+  });
+}
+
+test('success terminal state rolls back when fresh evidence cannot be written', async (t) => {
+  const executor = loadExecutor();
+  const db = createDb();
+  t.after(() => db.close());
+  const config = addConfig(db, 'image');
+  const capability = capabilityFor('image');
+  const run = reserveRun(db, config, capability, 'success-evidence-rollback');
+  db.exec(`CREATE TRIGGER fail_canary_success_evidence
+    BEFORE INSERT ON provider_canary_evidence
+    BEGIN SELECT RAISE(ABORT, 'forced evidence failure'); END`);
+  const options = baseOptions(capability, {
+    clients: { async callImageApi() { return { image_url: 'https://artifacts.invalid/result.png' }; } },
+    artifacts: {
+      async materializeImage() {
+        return { relative_path: '_system/provider-canary/runs/success/image.png', sha256: 'c'.repeat(64), bytes: 10 };
+      },
+    },
+  });
+  t.after(() => fs.rmSync(options.storageRoot, { recursive: true, force: true }));
+
+  await assert.rejects(
+    () => executor.executeCanaryRun(db, log, run, options),
+    /forced evidence failure/,
+  );
+  const stored = db.prepare(`SELECT state, actual_cost_micros, artifact_path, safe_error_summary
+    FROM provider_canary_runs WHERE id = ?`).get(run.id);
+  assert.deepEqual(stored, {
+    state: 'verifying', actual_cost_micros: null, artifact_path: null, safe_error_summary: null,
+  });
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM provider_canary_evidence').get().count, 0);
+});
+
+test('failure terminal state rolls back when failing evidence cannot be written', async (t) => {
+  const executor = loadExecutor();
+  const db = createDb();
+  t.after(() => db.close());
+  const config = addConfig(db, 'image');
+  const capability = capabilityFor('image');
+  const run = reserveRun(db, config, capability, 'failure-evidence-rollback');
+  db.exec(`CREATE TRIGGER fail_canary_failure_evidence
+    BEFORE INSERT ON provider_canary_evidence
+    BEGIN SELECT RAISE(ABORT, 'forced evidence failure'); END`);
+  const options = baseOptions(capability, {
+    clients: {
+      async callImageApi() {
+        return { error: 'invalid', route_meta: { httpStatus: 400, explicitlyRejected: true } };
+      },
+    },
+  });
+  t.after(() => fs.rmSync(options.storageRoot, { recursive: true, force: true }));
+
+  await assert.rejects(
+    () => executor.executeCanaryRun(db, log, run, options),
+    /forced evidence failure/,
+  );
+  const stored = db.prepare(`SELECT state, actual_cost_micros, safe_error_summary
+    FROM provider_canary_runs WHERE id = ?`).get(run.id);
+  assert.deepEqual(stored, {
+    state: 'submitting', actual_cost_micros: null, safe_error_summary: null,
+  });
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM provider_canary_evidence').get().count, 0);
+});
+
+test('unknown terminal state and evidence roll back when the event cannot be written', async (t) => {
+  const executor = loadExecutor();
+  const db = createDb();
+  t.after(() => db.close());
+  const config = addConfig(db, 'image');
+  const capability = capabilityFor('image');
+  const run = reserveRun(db, config, capability, 'unknown-event-rollback');
+  db.exec(`CREATE TRIGGER fail_canary_unknown_event
+    BEFORE INSERT ON provider_stability_events
+    WHEN NEW.event_type = 'provider_canary_unknown'
+    BEGIN SELECT RAISE(ABORT, 'forced event failure'); END`);
+  const options = baseOptions(capability, {
+    clients: { async callImageApi() { return { route_meta: { httpStatus: 200 } }; } },
+  });
+  t.after(() => fs.rmSync(options.storageRoot, { recursive: true, force: true }));
+
+  await assert.rejects(
+    () => executor.executeCanaryRun(db, log, run, options),
+    /forced event failure/,
+  );
+  const stored = db.prepare(`SELECT state, actual_cost_micros, safe_error_summary
+    FROM provider_canary_runs WHERE id = ?`).get(run.id);
+  assert.deepEqual(stored, {
+    state: 'verifying', actual_cost_micros: null, safe_error_summary: null,
+  });
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM provider_canary_evidence').get().count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM provider_stability_events').get().count, 0);
 });
 
 test('text success verifies a non-empty digest, writes fresh evidence, and never changes user credit tables', async (t) => {
