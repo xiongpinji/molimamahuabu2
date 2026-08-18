@@ -56,7 +56,7 @@ test('canvas model catalog preserves public capability names while removing rela
   });
 })
 
-test('canvas model catalog exposes video resolution prices to the node editor', () => {
+test('canvas model catalog exposes only user video resolution prices to the node editor', () => {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
   const now = new Date().toISOString();
@@ -77,13 +77,14 @@ test('canvas model catalog exposes video resolution prices to the node editor', 
 
   const item = catalog.list(db).find((row) => row.model === 'resolution-video');
   assert.deepEqual(item.resolution_prices, {
-    '480p': { credits: 2, cost_micros_per_second: 50000 },
-    '720p': { credits: 5, cost_micros_per_second: 120000 },
+    '480p': { credits: 2 },
+    '720p': { credits: 5 },
   });
+  assert.equal(/cost/i.test(JSON.stringify(item.resolution_prices)), false);
   db.close();
 });
 
-test('canvas model catalog exposes only the selected verified config identity', () => {
+test('canvas model catalog selects a verified config without exposing its identity', () => {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
   const now = new Date().toISOString();
@@ -120,13 +121,93 @@ test('canvas model catalog exposes only the selected verified config identity', 
   prices.set(db, 'catalog-route-image', 40, { category: 'image' });
 
   const item = catalog.list(db).find((row) => row.model === 'catalog-route-image');
-  assert.equal(item.config_id, Number(verified.lastInsertRowid));
-  assert.notEqual(item.config_id, Number(unverified.lastInsertRowid));
-  for (const field of ['provider', 'base_url', 'api_key', 'name', 'hostname', 'domain']) {
+  assert.equal(item.config_id, undefined);
+  assert.equal(item.upstream_model, undefined);
+  assert.notEqual(Number(verified.lastInsertRowid), Number(unverified.lastInsertRowid));
+  for (const field of ['provider', 'protocol', 'base_url', 'api_key', 'name', 'hostname', 'domain']) {
     assert.equal(item[field], undefined);
   }
   assert.equal(JSON.stringify(item).includes('selected-relay.example'), false);
   assert.equal(JSON.stringify(item).includes('selected-secret'), false);
+  db.close();
+});
+
+test('canvas public items hide route, relay, evidence, and cost metadata for logical and non-logical models', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const now = new Date().toISOString();
+  const settings = JSON.stringify({
+    canvas_capabilities: {
+      durations: [5, 10],
+      protocol: 'private-capability-protocol',
+      config_id: 991,
+      relay_url: 'https://nested-relay.example/v1',
+      evidence_sha256: 'private-evidence-sha',
+      cost_micros_per_second: 70000,
+      nested: {
+        base_url: 'https://nested-base.example/v1',
+        provider: 'nested-private-provider',
+        publicFlag: true,
+      },
+    },
+  });
+  const insert = db.prepare(`INSERT INTO ai_service_configs
+    (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+     priority, is_active, settings, logical_model_id, verification_status, created_at, updated_at)
+    VALUES ('video', ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'verified', ?, ?)`);
+  insert.run(
+    'private-relay-a', 'private-protocol-a', 'Private Route A', 'https://relay-a.example/v1',
+    'private-key-a', JSON.stringify(['safe-public-video']), 'safe-public-video', 100,
+    settings, null, now, now,
+  );
+  insert.run(
+    'private-relay-a2', 'private-protocol-a2', 'Private Route A2', 'https://relay-a2.example/v1',
+    'private-key-a2', JSON.stringify(['safe-public-video']), 'safe-public-video', 95,
+    settings, null, now, now,
+  );
+  insert.run(
+    'private-relay-b', 'private-protocol-b', 'Private Route B', 'https://relay-b.example/v1',
+    'private-key-b', JSON.stringify(['private-upstream-video']), 'private-upstream-video', 90,
+    settings, 'logical-public-video', now, now,
+  );
+  for (const model of ['safe-public-video', 'logical-public-video']) {
+    prices.set(db, model, 4, {
+      category: 'video',
+      cost_unit: 'second',
+      cost_micros_per_unit: 80000,
+      resolution_prices: {
+        '480p': { credits: 4, cost_micros_per_second: 50000 },
+        '720p': { credits: 7, cost_micros_per_second: 110000 },
+      },
+    });
+  }
+
+  const items = catalog.list(db).filter((row) => (
+    row.model === 'safe-public-video' || row.model === 'logical-public-video'
+  ));
+  assert.equal(items.length, 2);
+  for (const item of items) {
+    assert.deepEqual(Object.keys(item).sort(), [
+      'billing_unit', 'capabilities', 'credits', 'default_voice_id', 'kind', 'label', 'model',
+      'public_note', 'resolution_prices', 'verification_status',
+    ]);
+    assert.deepEqual(item.resolution_prices, {
+      '480p': { credits: 4 },
+      '720p': { credits: 7 },
+    });
+    assert.deepEqual(item.capabilities.durations, [5, 10]);
+    assert.deepEqual(item.capabilities.nested, { publicFlag: true });
+  }
+  const serialized = JSON.stringify(items);
+  for (const privateKey of [
+    '"provider"', '"protocol"', '"config_id"', '"upstream_model"', '"base_url"',
+    '"relay_url"', '"evidence_sha256"', '"cost_micros_per_second"',
+  ]) assert.equal(serialized.includes(privateKey), false, privateKey);
+  for (const privateValue of [
+    'private-relay', 'private-protocol', 'private-upstream-video', 'private-key', 'cfg-',
+    'relay-a.example', 'relay-a2.example', 'relay-b.example', 'nested-relay.example', 'nested-base.example',
+    'private-evidence-sha',
+  ]) assert.equal(serialized.includes(privateValue), false, privateValue);
   db.close();
 });
 

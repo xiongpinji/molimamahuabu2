@@ -1374,19 +1374,35 @@ function applyVendorLock(db, log, cfg) {
  */
 function bulkUpdateApiKey(db, log, newKey) {
   const now = new Date().toISOString();
-  const info = db.prepare(
-    `UPDATE ai_service_configs
-      SET api_key = ?,
-          verification_status = 'unverified',
-          verification_checked_at = NULL,
-          verified_at = NULL,
-          verification_error = NULL,
-          verified_capabilities = '{}',
-          updated_at = ?
-      WHERE deleted_at IS NULL`
-  ).run(newKey, now);
-  log.info('Bulk update api_key', { updated: info.changes });
-  return info.changes;
+  const applyUpdate = () => {
+    const ids = db.prepare(`SELECT id FROM ai_service_configs
+      WHERE deleted_at IS NULL AND api_key IS NOT ? ORDER BY id`).all(newKey).map((row) => row.id);
+    if (!ids.length) return 0;
+    const columns = tableColumns(db, 'ai_service_configs');
+    const assignments = ['api_key = ?'];
+    if (columns.has('verification_status')) assignments.push("verification_status = 'unverified'");
+    if (columns.has('verification_checked_at')) assignments.push('verification_checked_at = NULL');
+    if (columns.has('verified_at')) assignments.push('verified_at = NULL');
+    if (columns.has('verification_error')) assignments.push('verification_error = NULL');
+    if (columns.has('verified_capabilities')) assignments.push("verified_capabilities = '{}'");
+    if (columns.has('updated_at')) assignments.push('updated_at = ?');
+    const update = db.prepare(`UPDATE ai_service_configs SET ${assignments.join(', ')}
+      WHERE id = ? AND deleted_at IS NULL AND api_key IS NOT ?`);
+    let updated = 0;
+    for (const id of ids) {
+      const params = [newKey];
+      if (columns.has('updated_at')) params.push(now);
+      params.push(id, newKey);
+      const info = update.run(...params);
+      if (info.changes === 0) continue;
+      invalidateConfigEvidence(db, id, 'admin_invalidated', now);
+      updated += info.changes;
+    }
+    return updated;
+  };
+  const updated = db.inTransaction ? applyUpdate() : db.transaction(applyUpdate).immediate();
+  log.info('Bulk update api_key', { updated });
+  return updated;
 }
 
 module.exports = {

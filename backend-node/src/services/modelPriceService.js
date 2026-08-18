@@ -236,12 +236,23 @@ function listPublic(db) {
       .filter(Boolean)
       .map((model) => model.toLowerCase()),
   );
-  return list(db).filter((row) => (
-    row.status === 'enabled'
-    && Number.isSafeInteger(row.credits)
-    && row.credits > 0
-    && activeModels.has(row.model.toLowerCase())
-  ));
+  return list(db)
+    .filter((row) => (
+      row.status === 'enabled'
+      && Number.isSafeInteger(row.credits)
+      && row.credits > 0
+      && activeModels.has(row.model.toLowerCase())
+    ))
+    .map((row) => ({
+      model: row.model,
+      display_name: row.display_name,
+      category: row.category,
+      credits: row.credits,
+      status: row.status,
+      billing_unit: row.billing_unit,
+      resolution_prices: Object.fromEntries(Object.entries(row.resolution_prices || {})
+        .map(([resolution, tier]) => [resolution, { credits: tier.credits }])),
+    }));
 }
 
 function set(db, value, creditsValue, options = {}) {

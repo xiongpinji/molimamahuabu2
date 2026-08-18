@@ -22,6 +22,7 @@ const KIND_BY_SERVICE = {
 const PRIVATE_CATALOG_FIELDS = new Set([
   'provider', 'baseurl', 'apikey', 'hostname', 'domain',
   'accesstoken', 'refreshtoken', 'sessiontoken', 'token', 'secret', 'secretkey',
+  'protocol', 'configid', 'upstreammodel', 'relay', 'relayurl', 'base', 'cost',
 ]);
 const PRIVATE_CATALOG_FRAGMENTS = ['token', 'secret', 'credential', 'password', 'accesskey'];
 
@@ -93,8 +94,10 @@ function parseModels(value, fallback) {
 
 function isPrivateCatalogField(key) {
   const normalized = key.replace(/[_-]/g, '').toLowerCase();
+  const tokens = String(key).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[_-]+/);
   return PRIVATE_CATALOG_FIELDS.has(normalized)
-    || PRIVATE_CATALOG_FRAGMENTS.some((fragment) => normalized.includes(fragment));
+    || PRIVATE_CATALOG_FRAGMENTS.some((fragment) => normalized.includes(fragment))
+    || tokens.some((token) => ['cost', 'evidence', 'relay'].includes(token));
 }
 
 function publicCapabilityValue(value) {
@@ -326,17 +329,9 @@ function list(db, options = {}) {
       const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
       return !strictKeys.has(upstreamKey) || !!strictVerifiedProtocol(entry.config);
     });
-  const mediaCounts = new Map();
-  for (const entry of mediaCandidates) {
-    const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
-    mediaCounts.set(upstreamKey, (mediaCounts.get(upstreamKey) || 0) + 1);
-  }
   const mediaEntries = mediaCandidates.map((entry) => {
-    const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
     const logicalModel = String(entry.config.logical_model_id || '').trim();
-    const model = logicalModel || (mediaCounts.get(upstreamKey) > 1
-      ? `cfg-${entry.config.id}::${entry.upstreamModel}`
-      : entry.upstreamModel);
+    const model = logicalModel || entry.upstreamModel;
     return { ...entry, model };
   });
   const nonMediaEntries = eligibleConfigs
@@ -354,7 +349,6 @@ function list(db, options = {}) {
       && isRealGenerationVerified(entry.config, entry.upstreamModel))
     .map((entry) => {
       const { config, kind, model, upstreamModel } = entry;
-      const logicalModel = String(config.logical_model_id || '').trim();
       const key = `${kind}:${model.toLowerCase()}`;
       if (seen.has(key)) return null;
       const price = prices.get(model.toLowerCase());
@@ -370,18 +364,13 @@ function list(db, options = {}) {
       return {
         kind,
         model,
-        ...(logicalModel ? {} : { upstream_model: upstreamModel }),
         label: price?.display_name || model,
         public_note: price?.public_note || null,
-        ...(kind === 'image' ? {} : {
-          provider: String(config.provider || '').toLowerCase(),
-          protocol: config.api_protocol || config.provider || '',
-        }),
-        ...(logicalModel ? {} : { config_id: config.id }),
         default_voice_id: config.service_type === 'tts' ? String(config.voice_id || '').trim() : '',
         credits: price?.credits || null,
         billing_unit: price?.billing_unit || null,
-        resolution_prices: resolutionPrices,
+        resolution_prices: Object.fromEntries(Object.entries(resolutionPrices)
+          .map(([resolution, tier]) => [resolution, { credits: tier.credits }])),
         verification_status: config.verification_status || 'pending',
         capabilities: publicCapabilityValue(verifiedCapabilities || (kind === 'video'
           ? {

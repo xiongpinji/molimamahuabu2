@@ -355,3 +355,99 @@ test('旧库缺少巡检迁移表时安全跳过，但普通失效错误回滚�
     broken.close();
   }
 });
+
+test('批量换钥只更新实际变化的非删除配置并精准失效其全部证据', () => {
+  const { db, configs } = fixture();
+  const logMessages = [];
+  const log = { info(message, fields) { logMessages.push(JSON.stringify({ message, fields })); } };
+  try {
+    db.prepare('UPDATE ai_service_configs SET api_key = ? WHERE id = ?').run('shared-next-key', configs.b1);
+    db.prepare('UPDATE ai_service_configs SET deleted_at = ? WHERE id = ?').run(NOW, configs.b2);
+    resetFresh(db);
+
+    assert.equal(aiConfigService.bulkUpdateApiKey(db, log, 'shared-next-key'), 2);
+    const rows = db.prepare(`SELECT id, api_key, verification_status, deleted_at
+      FROM ai_service_configs ORDER BY id`).all();
+    assert.deepEqual(rows.map((row) => [row.id, row.api_key]), [
+      [configs.a1, 'shared-next-key'],
+      [configs.a2, 'shared-next-key'],
+      [configs.b1, 'shared-next-key'],
+      [configs.b2, 'secret-b2'],
+    ]);
+    assert.equal(rows.find((row) => row.id === configs.a1).verification_status, 'unverified');
+    assert.equal(rows.find((row) => row.id === configs.a2).verification_status, 'unverified');
+    assert.equal(rows.find((row) => row.id === configs.b1).verification_status, 'verified');
+    assert.equal(rows.find((row) => row.id === configs.b2).deleted_at, NOW);
+    assert.deepEqual(evidenceStates(db, configs.a1), ['stale', 'stale']);
+    assert.deepEqual(evidenceStates(db, configs.a2), ['stale', 'stale']);
+    assert.deepEqual(evidenceStates(db, configs.b1), ['fresh', 'fresh']);
+    assert.deepEqual(evidenceStates(db, configs.b2), ['fresh', 'fresh']);
+    assert.equal(logMessages.some((line) => line.includes('shared-next-key')), false);
+
+    resetFresh(db);
+    assert.equal(aiConfigService.bulkUpdateApiKey(db, log, 'shared-next-key'), 0);
+    for (const configId of Object.values(configs)) {
+      assert.deepEqual(evidenceStates(db, configId), ['fresh', 'fresh']);
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('批量换钥失效证据失败时整体回滚密钥与验证状态', () => {
+  const { db, configs } = fixture();
+  try {
+    db.exec(`ALTER TABLE ai_service_configs ADD COLUMN verification_checked_at TEXT;
+      ALTER TABLE ai_service_configs ADD COLUMN verification_error TEXT;
+      ALTER TABLE ai_service_configs ADD COLUMN verified_capabilities TEXT;`);
+    const before = db.prepare(`SELECT id, api_key, verification_status, verified_at, updated_at
+      FROM ai_service_configs ORDER BY id`).all();
+    db.exec(`CREATE TRIGGER reject_bulk_key_invalidation
+      BEFORE UPDATE ON provider_canary_evidence
+      BEGIN
+        SELECT RAISE(ABORT, 'bulk key invalidation rejected');
+      END`);
+
+    assert.throws(
+      () => aiConfigService.bulkUpdateApiKey(db, { info() {} }, 'rollback-key'),
+      /bulk key invalidation rejected/,
+    );
+    assert.deepEqual(db.prepare(`SELECT id, api_key, verification_status, verified_at, updated_at
+      FROM ai_service_configs ORDER BY id`).all(), before);
+    for (const configId of Object.values(configs)) {
+      assert.deepEqual(evidenceStates(db, configId), ['fresh', 'fresh']);
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('批量换钥兼容缺少可选验证列和巡检表的旧库', () => {
+  const db = new Database(':memory:');
+  try {
+    db.exec(`CREATE TABLE ai_service_configs (
+      id INTEGER PRIMARY KEY,
+      api_key TEXT,
+      verification_status TEXT,
+      verified_at TEXT,
+      updated_at TEXT,
+      deleted_at TEXT
+    )`);
+    db.prepare(`INSERT INTO ai_service_configs
+      (id, api_key, verification_status, verified_at, updated_at, deleted_at)
+      VALUES (1, 'old-key', 'verified', ?, ?, NULL),
+             (2, 'deleted-key', 'verified', ?, ?, ?)`)
+      .run(NOW, NOW, NOW, NOW, NOW);
+
+    assert.equal(aiConfigService.bulkUpdateApiKey(db, { info() {} }, 'legacy-next-key'), 1);
+    assert.deepEqual(
+      db.prepare(`SELECT api_key, verification_status, verified_at
+        FROM ai_service_configs WHERE id = 1`).get(),
+      { api_key: 'legacy-next-key', verification_status: 'unverified', verified_at: null },
+    );
+    assert.equal(db.prepare('SELECT api_key FROM ai_service_configs WHERE id = 2').get().api_key, 'deleted-key');
+    assert.equal(aiConfigService.bulkUpdateApiKey(db, { info() {} }, 'legacy-next-key'), 0);
+  } finally {
+    db.close();
+  }
+});
