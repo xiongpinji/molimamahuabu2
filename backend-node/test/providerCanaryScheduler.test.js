@@ -489,6 +489,26 @@ test('literal local private metadata mapped and transition addresses fail before
   }
 });
 
+test('public IPv4 and IPv6 literals also fail before DNS TLS request or auth', async (t) => {
+  const scheduler = loadScheduler();
+  const { db, storageRoot } = setup(t);
+  const probes = { ...allHealthyProbes };
+  delete probes.provider;
+  for (const [index, host] of ['8.8.8.8', '[2001:4860:4860::8888]'].entries()) {
+    const route = config(index + 1, { base_url: `https://${host}/v1/` });
+    insertRoute(db, route);
+    let externalCalls = 0;
+    const result = await scheduler.runZeroCostSweep(db, {}, {
+      now: `2026-08-18T02:0${index}:00.000Z`, storageRoot, configs: [route], probes,
+      dnsLookup: async () => { externalCalls += 1; return SAFE_PUBLIC_DNS; },
+      tlsConnect() { externalCalls += 1; },
+      readOnlyRequest: async () => { externalCalls += 1; return { ok: true, status: 200 }; },
+    });
+    assert.equal(externalCalls, 0, host);
+    assert.equal(result.routes[0].category, 'provider_address_forbidden', host);
+  }
+});
+
 test('mixed public and private DNS answers fail closed before TLS request or auth', async (t) => {
   const scheduler = loadScheduler();
   const { db, storageRoot } = setup(t);
@@ -628,8 +648,12 @@ test('executor failure before claim settles reserved at zero cost and frees the 
     fingerprint: paidFingerprintOverrides(),
   });
   assert.equal(result.state, 'local_failed');
-  const run = db.prepare('SELECT state, actual_cost_micros FROM provider_canary_runs').get();
-  assert.deepEqual(run, { state: 'failed', actual_cost_micros: 0 });
+  const run = db.prepare(`SELECT state, actual_cost_micros, safe_error_summary
+    FROM provider_canary_runs`).get();
+  assert.deepEqual(run, {
+    state: 'failed', actual_cost_micros: 0,
+    safe_error_summary: 'category=local_pre_submit_failure',
+  });
   assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM provider_canary_runs
     WHERE state IN ('reserved', 'submitting', 'accepted', 'verifying')`).get().count, 0);
   const serialized = JSON.stringify(db.prepare(`SELECT safe_details FROM provider_stability_events`).all());
@@ -687,6 +711,8 @@ test('unexpected throw after claim becomes atomic submission unknown and blocks 
   assert.equal(firstResult.state, 'submission_unknown');
   assert.equal(db.prepare(`SELECT state FROM provider_canary_runs WHERE config_id = 1`).get().state,
     'submission_unknown');
+  assert.equal(db.prepare(`SELECT safe_error_summary FROM provider_canary_runs WHERE config_id = 1`)
+    .get().safe_error_summary, 'category=submission_unknown');
   assert.equal(db.prepare(`SELECT state FROM provider_canary_evidence WHERE config_id = 1`).get().state,
     'submission_unknown');
   assert.equal(JSON.stringify(db.prepare('SELECT safe_details FROM provider_stability_events').all()).includes(secret), false);
@@ -706,6 +732,200 @@ test('unexpected throw after claim becomes atomic submission unknown and blocks 
   });
   assert.equal(secondResult.state, 'failed');
   assert.equal(secondCalls, 1);
+});
+
+test('recordFailure bookkeeping errors emergency-close reserved runs before alerting', async (t) => {
+  const scheduler = loadScheduler();
+  const evidence = require('../src/services/providerCanaryEvidenceService');
+  const budget = require('../src/services/providerCanaryBudgetService');
+  const { db } = setup(t);
+  const first = config(1);
+  const second = config(2);
+  insertRoute(db, first);
+  insertRoute(db, second);
+  const raw = 'recordFailure secret sk-bookkeeping https://private.example/prompt';
+  const original = evidence.recordFailure;
+  evidence.recordFailure = () => { throw new Error(raw); };
+  t.after(() => { evidence.recordFailure = original; });
+  const logs = [];
+  const result = await scheduler.runOnePaidCanary(db, { error(...args) { logs.push(args); } }, {
+    paidEnabled: true, now: '2026-08-18T03:00:00.000Z',
+    dueProfiles: [paidCandidate(scheduler, first)], buildFixtures: async () => ({}),
+    executor: { async executeCanaryRun() { throw new Error('executor raw secret'); } },
+    fingerprint: paidFingerprintOverrides(),
+  });
+  assert.equal(result.state, 'local_failed');
+  assert.deepEqual(db.prepare(`SELECT state, actual_cost_micros, error_category, safe_error_summary
+    FROM provider_canary_runs WHERE config_id = 1`).get(), {
+    state: 'failed', actual_cost_micros: 0,
+    error_category: 'canary_bookkeeping_failed',
+    safe_error_summary: 'category=canary_bookkeeping_failed',
+  });
+  assert.equal(db.prepare(`SELECT severity FROM provider_stability_events
+    WHERE event_type = 'provider_canary_bookkeeping_failed'`).get().severity, 'P1');
+  assert.equal(JSON.stringify(logs).includes(raw), false);
+
+  let nextCalls = 0;
+  const next = await scheduler.runOnePaidCanary(db, {}, {
+    paidEnabled: true, now: '2026-08-18T03:01:00.000Z',
+    dueProfiles: [paidCandidate(scheduler, second)], buildFixtures: async () => ({}),
+    executor: { async executeCanaryRun(executorDb, _log, run) {
+      nextCalls += 1;
+      budget.claimForExecution(executorDb, run.id, '2026-08-18T03:01:00.000Z');
+      budget.settleDefinitiveFailure(executorDb, run.id, 0, 'local_test_failure',
+        '2026-08-18T03:01:00.000Z');
+      return { state: 'failed' };
+    } },
+    fingerprint: paidFingerprintOverrides(),
+  });
+  assert.equal(next.state, 'failed');
+  assert.equal(nextCalls, 1);
+});
+
+test('recordUnknown bookkeeping errors retain held cost and free the global slot', async (t) => {
+  const scheduler = loadScheduler();
+  const evidence = require('../src/services/providerCanaryEvidenceService');
+  const budget = require('../src/services/providerCanaryBudgetService');
+  const { db } = setup(t);
+  const first = config(1);
+  const second = config(2);
+  insertRoute(db, first);
+  insertRoute(db, second);
+  const raw = 'recordUnknown secret sk-bookkeeping https://private.example/result';
+  const original = evidence.recordUnknown;
+  evidence.recordUnknown = () => { throw new Error(raw); };
+  t.after(() => { evidence.recordUnknown = original; });
+  const logs = [];
+  const result = await scheduler.runOnePaidCanary(db, { error(...args) { logs.push(args); } }, {
+    paidEnabled: true, now: '2026-08-18T03:02:00.000Z',
+    dueProfiles: [paidCandidate(scheduler, first)], buildFixtures: async () => ({}),
+    executor: { async executeCanaryRun(executorDb, _log, run) {
+      budget.claimForExecution(executorDb, run.id, '2026-08-18T03:02:00.000Z');
+      throw new Error('executor raw secret');
+    } },
+    fingerprint: paidFingerprintOverrides(),
+  });
+  assert.equal(result.state, 'submission_unknown');
+  assert.deepEqual(db.prepare(`SELECT state, reserved_cost_micros, actual_cost_micros,
+      error_category, safe_error_summary FROM provider_canary_runs WHERE config_id = 1`).get(), {
+    state: 'submission_unknown', reserved_cost_micros: 10, actual_cost_micros: null,
+    error_category: 'canary_bookkeeping_failed',
+    safe_error_summary: 'category=canary_bookkeeping_failed',
+  });
+  assert.equal(db.prepare(`SELECT severity FROM provider_stability_events
+    WHERE event_type = 'provider_canary_bookkeeping_failed'`).get().severity, 'P1');
+  assert.equal(JSON.stringify(logs).includes(raw), false);
+
+  let nextCalls = 0;
+  const next = await scheduler.runOnePaidCanary(db, {}, {
+    paidEnabled: true, now: '2026-08-18T03:03:00.000Z',
+    dueProfiles: [paidCandidate(scheduler, second)], buildFixtures: async () => ({}),
+    executor: { async executeCanaryRun(executorDb, _log, run) {
+      nextCalls += 1;
+      budget.claimForExecution(executorDb, run.id, '2026-08-18T03:03:00.000Z');
+      budget.settleDefinitiveFailure(executorDb, run.id, 0, 'local_test_failure',
+        '2026-08-18T03:03:00.000Z');
+      return { state: 'failed' };
+    } },
+    fingerprint: paidFingerprintOverrides(),
+  });
+  assert.equal(next.state, 'failed');
+  assert.equal(nextCalls, 1);
+});
+
+test('recordUnknown bookkeeping emergency maps accepted and verifying states without releasing cost', async (t) => {
+  const scheduler = loadScheduler();
+  const evidence = require('../src/services/providerCanaryEvidenceService');
+  const budget = require('../src/services/providerCanaryBudgetService');
+  const { db } = setup(t);
+  const accepted = config(1);
+  const verifying = config(2);
+  insertRoute(db, accepted);
+  insertRoute(db, verifying);
+  const original = evidence.recordUnknown;
+  evidence.recordUnknown = () => { throw new Error('raw bookkeeping secret'); };
+  t.after(() => { evidence.recordUnknown = original; });
+  for (const [route, expected] of [
+    [accepted, 'result_unknown'],
+    [verifying, 'artifact_unreadable'],
+  ]) {
+    const result = await scheduler.runOnePaidCanary(db, {}, {
+      paidEnabled: true, now: '2026-08-18T03:06:00.000Z',
+      dueProfiles: [paidCandidate(scheduler, route)], buildFixtures: async () => ({}),
+      executor: { async executeCanaryRun(executorDb, _log, run) {
+        budget.claimForExecution(executorDb, run.id, '2026-08-18T03:06:00.000Z');
+        budget.markAccepted(executorDb, run.id, `task-${route.id}`, '2026-08-18T03:06:00.000Z');
+        if (expected === 'artifact_unreadable') {
+          executorDb.prepare(`UPDATE provider_canary_runs SET state = 'verifying'
+            WHERE id = ? AND state = 'accepted'`).run(run.id);
+        }
+        throw new Error('executor raw secret');
+      } },
+      fingerprint: paidFingerprintOverrides(),
+    });
+    assert.equal(result.state, expected);
+    assert.deepEqual(db.prepare(`SELECT state, provider_task_id, reserved_cost_micros,
+        actual_cost_micros, error_category, safe_error_summary
+      FROM provider_canary_runs WHERE config_id = ?`).get(route.id), {
+      state: expected,
+      provider_task_id: `task-${route.id}`,
+      reserved_cost_micros: 10,
+      actual_cost_micros: null,
+      error_category: 'canary_bookkeeping_failed',
+      safe_error_summary: 'category=canary_bookkeeping_failed',
+    });
+  }
+});
+
+test('event insert bookkeeping errors still close unknown runs and emit only a safe log', async (t) => {
+  const scheduler = loadScheduler();
+  const budget = require('../src/services/providerCanaryBudgetService');
+  const { db } = setup(t);
+  const first = config(1);
+  const second = config(2);
+  insertRoute(db, first);
+  insertRoute(db, second);
+  const raw = 'event secret sk-bookkeeping https://private.example/location';
+  db.exec(`CREATE TRIGGER fail_canary_event BEFORE INSERT ON provider_stability_events
+    BEGIN SELECT RAISE(ABORT, '${raw}'); END`);
+  const logs = [];
+  const result = await scheduler.runOnePaidCanary(db, { error(...args) { logs.push(args); } }, {
+    paidEnabled: true, now: '2026-08-18T03:04:00.000Z',
+    dueProfiles: [paidCandidate(scheduler, first)], buildFixtures: async () => ({}),
+    executor: { async executeCanaryRun(executorDb, _log, run) {
+      budget.claimForExecution(executorDb, run.id, '2026-08-18T03:04:00.000Z');
+      throw new Error('executor raw secret');
+    } },
+    fingerprint: paidFingerprintOverrides(),
+  });
+  assert.equal(result.state, 'submission_unknown');
+  assert.deepEqual(db.prepare(`SELECT state, reserved_cost_micros, actual_cost_micros,
+      error_category, safe_error_summary FROM provider_canary_runs WHERE config_id = 1`).get(), {
+    state: 'submission_unknown', reserved_cost_micros: 10, actual_cost_micros: null,
+    error_category: 'canary_bookkeeping_failed',
+    safe_error_summary: 'category=canary_bookkeeping_failed',
+  });
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM provider_canary_runs
+    WHERE state IN ('reserved', 'submitting', 'accepted', 'verifying')`).get().count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM provider_stability_events').get().count, 0);
+  assert.equal(JSON.stringify(logs).includes(raw), false);
+  assert.match(JSON.stringify(logs), /bookkeeping alert could not be recorded/);
+
+  let nextCalls = 0;
+  const next = await scheduler.runOnePaidCanary(db, {}, {
+    paidEnabled: true, now: '2026-08-18T03:05:00.000Z',
+    dueProfiles: [paidCandidate(scheduler, second)], buildFixtures: async () => ({}),
+    executor: { async executeCanaryRun(executorDb, _log, run) {
+      nextCalls += 1;
+      budget.claimForExecution(executorDb, run.id, '2026-08-18T03:05:00.000Z');
+      budget.settleDefinitiveFailure(executorDb, run.id, 0, 'local_test_failure',
+        '2026-08-18T03:05:00.000Z');
+      return { state: 'failed' };
+    } },
+    fingerprint: paidFingerprintOverrides(),
+  });
+  assert.equal(next.state, 'failed');
+  assert.equal(nextCalls, 1);
 });
 
 test('unexpected throws after acceptance or verification close each active slot as unknown', async (t) => {

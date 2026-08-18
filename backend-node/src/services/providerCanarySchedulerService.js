@@ -422,18 +422,15 @@ async function resolvePublicAddresses(base, timeoutMs, options = {}) {
     return { ok: false, category: 'provider_address_forbidden' };
   }
   const literalFamily = net.isIP(hostname);
+  if (literalFamily) return { ok: false, category: 'provider_address_forbidden' };
+  const dnsLookup = options.dnsLookup || dns.lookup;
   let rows;
-  if (literalFamily) {
-    rows = [{ address: hostname, family: literalFamily }];
-  } else {
-    const dnsLookup = options.dnsLookup || dns.lookup;
-    try {
-      rows = await withTimeout(
-        dnsLookup(hostname, { all: true, verbatim: true }), timeoutMs, options,
-      );
-    } catch (_) {
-      return { ok: false, category: 'provider_dns_failed' };
-    }
+  try {
+    rows = await withTimeout(
+      dnsLookup(hostname, { all: true, verbatim: true }), timeoutMs, options,
+    );
+  } catch (_) {
+    return { ok: false, category: 'provider_dns_failed' };
   }
   const addresses = (Array.isArray(rows) ? rows : [rows]).map((row) => ({
     address: normalizedHostname(typeof row === 'string' ? row : row?.address),
@@ -715,7 +712,56 @@ function recordLocalFailureEvent(db, candidate, eventType, category, now) {
   });
 }
 
-function settleRunAfterUnexpectedError(db, candidate, runId, now) {
+function updateSafeRunSummary(db, runId, category, now) {
+  db.prepare(`UPDATE provider_canary_runs SET safe_error_summary = ?, updated_at = ?
+    WHERE id = ?`).run(`category=${category}`, now, runId);
+}
+
+function emergencyCloseRun(db, log, candidate, runId, now) {
+  const close = () => {
+    const run = db.prepare('SELECT * FROM provider_canary_runs WHERE id = ?').get(runId);
+    if (!run) return { state: 'local_failed', runId };
+    if (!['reserved', 'submitting', 'accepted', 'verifying'].includes(run.state)) {
+      return { state: run.state, runId: run.id, closed: false };
+    }
+    const state = run.state === 'reserved'
+      ? 'failed'
+      : run.state === 'submitting'
+        ? 'submission_unknown'
+        : run.state === 'verifying' ? 'artifact_unreadable' : 'result_unknown';
+    const actualCost = run.state === 'reserved' ? 0 : null;
+    const result = db.prepare(`UPDATE provider_canary_runs
+      SET state = ?, actual_cost_micros = ?, error_category = 'canary_bookkeeping_failed',
+        safe_error_summary = 'category=canary_bookkeeping_failed', finished_at = ?, updated_at = ?
+      WHERE id = ? AND state = ?`)
+      .run(state, actualCost, now, now, run.id, run.state);
+    if (result.changes !== 1) {
+      const current = db.prepare('SELECT state FROM provider_canary_runs WHERE id = ?').get(run.id);
+      return { state: current?.state || 'local_failed', runId: run.id, closed: false };
+    }
+    return { state: state === 'failed' ? 'local_failed' : state, runId: run.id, closed: true };
+  };
+  const outcome = db.transaction(close).immediate();
+  if (outcome.closed) {
+    try {
+      recordEventOnce(db, {
+        severity: 'P1',
+        eventType: 'provider_canary_bookkeeping_failed',
+        logicalModelId: candidate.config.logical_model_id,
+        configId: candidate.config.id,
+        category: 'canary_bookkeeping_failed',
+        taskState: outcome.state === 'local_failed' ? 'failed' : outcome.state,
+        now,
+        windowStart: windowStart(now),
+      });
+    } catch (_) {
+      log?.error?.('Provider canary bookkeeping alert could not be recorded');
+    }
+  }
+  return outcome;
+}
+
+function settleRunAfterUnexpectedError(db, log, candidate, runId, now) {
   const work = () => {
     const run = db.prepare('SELECT * FROM provider_canary_runs WHERE id = ?').get(runId);
     if (!run) return { state: 'local_failed', runId };
@@ -724,6 +770,7 @@ function settleRunAfterUnexpectedError(db, candidate, runId, now) {
     }
     if (run.state === 'reserved') {
       budgetService.settleDefinitiveFailure(db, run.id, 0, 'local_pre_submit_failure', now);
+      updateSafeRunSummary(db, run.id, 'local_pre_submit_failure', now);
       evidenceService.recordFailure(db, canaryEvidenceInput(run, candidate, now));
       recordLocalFailureEvent(
         db, candidate, 'provider_canary_local_failed', 'local_pre_submit_failure', now,
@@ -743,10 +790,15 @@ function settleRunAfterUnexpectedError(db, candidate, runId, now) {
         SET state = ?, error_category = ?, finished_at = ?, updated_at = ?
         WHERE id = ? AND state = ?`).run(state, state, now, now, run.id, run.state);
     }
+    updateSafeRunSummary(db, run.id, state, now);
     evidenceService.recordUnknown(db, canaryEvidenceInput(run, candidate, now, state));
     return { state, runId: run.id };
   };
-  return db.inTransaction ? work() : db.transaction(work).immediate();
+  try {
+    return db.transaction(work).immediate();
+  } catch (_) {
+    return emergencyCloseRun(db, log, candidate, runId, now);
+  }
 }
 
 async function runOnePaidCanary(db, log, options = {}) {
@@ -836,7 +888,7 @@ async function runOnePaidCanary(db, log, options = {}) {
         });
         return { ...result, runId: run.id };
       } catch (_) {
-        return settleRunAfterUnexpectedError(db, candidate, run.id, now);
+        return settleRunAfterUnexpectedError(db, log, candidate, run.id, now);
       }
     }
     return sawBlock ? { state: 'blocked' } : { state: 'not_due' };
