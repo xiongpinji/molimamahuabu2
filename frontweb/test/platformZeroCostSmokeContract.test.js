@@ -69,6 +69,15 @@ test('浏览器只导航允许页面并读取公开模型目录', async () => {
     () => assertNavigationAllowed('https://outside.example/login', 'https://app.example'),
     /ZERO_COST_SMOKE_FORBIDDEN_NAVIGATION/,
   )
+
+  assert.throws(
+    () => assertNavigationAllowed('https://user:pass@app.example/canvas', 'https://app.example'),
+    (error) => {
+      assert.match(error.message, /ZERO_COST_SMOKE_URL_CREDENTIALS:\/canvas/)
+      assert.doesNotMatch(error.message, /user|pass/)
+      return true
+    },
+  )
 })
 
 test('请求门禁仅允许登录 POST，拦截生成、充值、积分和资产写入', async () => {
@@ -113,6 +122,20 @@ test('请求门禁仅允许登录 POST，拦截生成、充值、积分和资产
     () => assertRequestAllowed('GET', 'https://outside.example/assets/logo.png', 'https://app.example'),
     /ZERO_COST_SMOKE_CROSS_ORIGIN_REQUEST/,
   )
+
+  for (const [method, url] of [
+    ['POST', 'https://user:pass@app.example/api/v1/auth/login'],
+    ['GET', 'https://user:pass@app.example/api/v1/canvas/model-catalog'],
+  ]) {
+    assert.throws(
+      () => assertRequestAllowed(method, url, 'https://app.example'),
+      (error) => {
+        assert.match(error.message, /ZERO_COST_SMOKE_URL_CREDENTIALS:\/api\/v1\//)
+        assert.doesNotMatch(error.message, /user|pass/)
+        return true
+      },
+    )
+  }
 })
 
 test('安全产物不使用原生 Playwright trace 或记录请求秘密', async () => {

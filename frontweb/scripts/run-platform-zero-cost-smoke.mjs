@@ -33,8 +33,15 @@ function normalizePathname(value) {
   }
 }
 
+function assertNoURLCredentials(url) {
+  if (url.username || url.password) {
+    throw new Error(`ZERO_COST_SMOKE_URL_CREDENTIALS:${url.pathname}`)
+  }
+}
+
 export function assertNavigationAllowed(value, allowedOrigin) {
   const url = new URL(value, allowedOrigin)
+  assertNoURLCredentials(url)
   if (url.origin !== allowedOrigin || !SMOKE_PAGE_PATHS.includes(url.pathname)) {
     throw new Error(`ZERO_COST_SMOKE_FORBIDDEN_NAVIGATION:${url.pathname}`)
   }
@@ -44,6 +51,7 @@ export function assertRequestAllowed(method, value, allowedOrigin = '') {
   const normalizedMethod = String(method || 'GET').toUpperCase()
   const expectedOrigin = allowedOrigin || 'http://smoke.invalid'
   const url = new URL(value, expectedOrigin)
+  assertNoURLCredentials(url)
   const pathname = normalizePathname(url.href)
   if (url.origin !== expectedOrigin) {
     throw new Error(`ZERO_COST_SMOKE_CROSS_ORIGIN_REQUEST:${normalizedMethod}:${pathname}`)
