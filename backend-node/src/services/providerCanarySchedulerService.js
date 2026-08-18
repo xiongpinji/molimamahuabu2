@@ -3,6 +3,8 @@
 const crypto = require('node:crypto');
 const dns = require('node:dns').promises;
 const fs = require('node:fs');
+const https = require('node:https');
+const net = require('node:net');
 const path = require('node:path');
 const tls = require('node:tls');
 
@@ -27,6 +29,18 @@ const BLOCK_EVENT_TYPES = {
 let schedulerState = null;
 let paidRunInFlight = false;
 const zeroCostMetrics = { unknown: null };
+const forbiddenAddresses = new net.BlockList();
+
+for (const [network, prefix, family] of [
+  ['0.0.0.0', 8, 'ipv4'], ['10.0.0.0', 8, 'ipv4'], ['100.64.0.0', 10, 'ipv4'],
+  ['127.0.0.0', 8, 'ipv4'], ['169.254.0.0', 16, 'ipv4'], ['172.16.0.0', 12, 'ipv4'],
+  ['192.0.0.0', 24, 'ipv4'], ['192.168.0.0', 16, 'ipv4'], ['198.18.0.0', 15, 'ipv4'],
+  ['224.0.0.0', 4, 'ipv4'], ['240.0.0.0', 4, 'ipv4'],
+  ['::', 96, 'ipv6'], ['::1', 128, 'ipv6'], ['fc00::', 7, 'ipv6'],
+  ['fe80::', 10, 'ipv6'], ['ff00::', 8, 'ipv6'],
+  ['64:ff9b::', 96, 'ipv6'], ['64:ff9b:1::', 48, 'ipv6'],
+  ['2001:0000::', 32, 'ipv6'], ['2002::', 16, 'ipv6'],
+]) forbiddenAddresses.addSubnet(network, prefix, family);
 
 function nowIso(value) {
   const raw = typeof value === 'function' ? value() : value;
@@ -387,13 +401,97 @@ function probeMappings(db, options = {}) {
   }
 }
 
-function openTls(hostname, port, timeoutMs, options = {}) {
+function normalizedHostname(hostname) {
+  const value = String(hostname || '').trim().toLowerCase();
+  return value.startsWith('[') && value.endsWith(']') ? value.slice(1, -1) : value;
+}
+
+function addressForbidden(address) {
+  const value = normalizedHostname(address);
+  if (!value || value.includes('%')) return true;
+  const family = net.isIP(value);
+  if (family === 6 && /^::ffff:/i.test(value)) return true;
+  return family === 0 || forbiddenAddresses.check(value, family === 4 ? 'ipv4' : 'ipv6');
+}
+
+async function resolvePublicAddresses(base, timeoutMs, options = {}) {
+  const hostname = normalizedHostname(base.hostname);
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')
+      || hostname === 'metadata' || hostname.endsWith('.metadata.google.internal')
+      || hostname === 'instance-data.ec2.internal') {
+    return { ok: false, category: 'provider_address_forbidden' };
+  }
+  const literalFamily = net.isIP(hostname);
+  let rows;
+  if (literalFamily) {
+    rows = [{ address: hostname, family: literalFamily }];
+  } else {
+    const dnsLookup = options.dnsLookup || dns.lookup;
+    try {
+      rows = await withTimeout(
+        dnsLookup(hostname, { all: true, verbatim: true }), timeoutMs, options,
+      );
+    } catch (_) {
+      return { ok: false, category: 'provider_dns_failed' };
+    }
+  }
+  const addresses = (Array.isArray(rows) ? rows : [rows]).map((row) => ({
+    address: normalizedHostname(typeof row === 'string' ? row : row?.address),
+    family: Number(typeof row === 'object' ? row?.family : net.isIP(row)),
+  }));
+  if (!addresses.length || addresses.some((row) => addressForbidden(row.address))) {
+    return { ok: false, category: 'provider_address_forbidden' };
+  }
+  return { ok: true, addresses };
+}
+
+function openTls(address, hostname, port, timeoutMs, options = {}) {
   const tlsConnect = options.tlsConnect || tls.connect;
   let socket;
   return withTimeout(new Promise((resolve, reject) => {
-    socket = tlsConnect({ host: hostname, port, servername: hostname, rejectUnauthorized: true }, resolve);
+    socket = tlsConnect({ host: address, port, servername: hostname, rejectUnauthorized: true }, resolve);
     socket.once('error', reject);
   }), timeoutMs, options).finally(() => socket?.destroy?.());
+}
+
+function pinnedReadOnlyRequest(endpoint, requestOptions, timeoutMs, options = {}) {
+  if (options.readOnlyRequest) {
+    return withTimeout(
+      options.readOnlyRequest(endpoint.toString(), requestOptions), timeoutMs, options,
+    );
+  }
+  if (options.fetchFn) {
+    return withTimeout(options.fetchFn(endpoint.toString(), {
+      method: 'GET',
+      redirect: 'manual',
+      resolvedAddress: requestOptions.address,
+      headers: { authorization: requestOptions.authorization },
+    }), timeoutMs, options);
+  }
+  const httpsRequest = options.httpsRequest || https.request;
+  let request;
+  const work = new Promise((resolve, reject) => {
+    request = httpsRequest({
+      hostname: requestOptions.address,
+      family: requestOptions.family,
+      port: requestOptions.port,
+      servername: requestOptions.servername,
+      rejectUnauthorized: true,
+      method: 'GET',
+      path: `${endpoint.pathname}${endpoint.search}`,
+      headers: {
+        host: requestOptions.hostHeader,
+        authorization: requestOptions.authorization,
+      },
+    }, (response) => {
+      response.resume?.();
+      const status = Number(response.statusCode) || 0;
+      resolve({ ok: status >= 200 && status < 300, status });
+    });
+    request.once('error', reject);
+    request.end();
+  });
+  return withTimeout(work, timeoutMs, options).finally(() => request?.destroy?.());
 }
 
 async function probeProvider(_db, config, options = {}) {
@@ -422,23 +520,23 @@ async function probeProvider(_db, config, options = {}) {
     return { ok: false, category: 'provider_read_only_origin_mismatch' };
   }
   const timeoutMs = options.timeoutMs || 5_000;
-  const dnsLookup = options.dnsLookup || dns.lookup;
-  const fetchFn = options.fetchFn || fetch;
-  try {
-    await withTimeout(dnsLookup(base.hostname), timeoutMs, options);
-  } catch (_) {
-    return { ok: false, category: 'provider_dns_failed' };
-  }
-  try { await openTls(base.hostname, Number(base.port) || 443, timeoutMs, options); } catch (_) {
+  const resolved = await resolvePublicAddresses(base, timeoutMs, options);
+  if (!resolved.ok) return resolved;
+  const target = resolved.addresses[0];
+  const hostname = normalizedHostname(base.hostname);
+  try { await openTls(target.address, hostname, Number(base.port) || 443, timeoutMs, options); } catch (_) {
     return { ok: false, category: 'provider_tls_failed' };
   }
   if (!String(config.api_key || '').trim()) return { ok: false, category: 'provider_auth_missing' };
   try {
-    const response = await withTimeout(fetchFn(endpoint.toString(), {
-      method: 'GET',
-      redirect: 'manual',
-      headers: { authorization: `Bearer ${config.api_key}` },
-    }), timeoutMs, options);
+    const response = await pinnedReadOnlyRequest(endpoint, {
+      address: target.address,
+      family: target.family,
+      port: Number(base.port) || 443,
+      servername: hostname,
+      hostHeader: base.host,
+      authorization: `Bearer ${config.api_key}`,
+    }, timeoutMs, options);
     if (response.status >= 300 && response.status < 400) {
       return { ok: false, category: 'provider_read_only_redirect_forbidden' };
     }
@@ -590,6 +688,67 @@ function reserveWithGlobalSlot(db, input, injectedBudgetService) {
   }).immediate();
 }
 
+function canaryEvidenceInput(run, candidate, now, state) {
+  return {
+    runId: run.id,
+    configId: run.config_id,
+    serviceType: run.service_type,
+    capability: candidate.capability,
+    configFingerprint: run.config_fingerprint,
+    costFingerprint: run.cost_fingerprint,
+    runtimeFingerprint: run.runtime_fingerprint,
+    now,
+    ...(state ? { state } : {}),
+  };
+}
+
+function recordLocalFailureEvent(db, candidate, eventType, category, now) {
+  return recordEventOnce(db, {
+    severity: 'P3',
+    eventType,
+    logicalModelId: candidate.config.logical_model_id,
+    configId: candidate.config.id,
+    category,
+    taskState: 'failed',
+    now,
+    windowStart: windowStart(now),
+  });
+}
+
+function settleRunAfterUnexpectedError(db, candidate, runId, now) {
+  const work = () => {
+    const run = db.prepare('SELECT * FROM provider_canary_runs WHERE id = ?').get(runId);
+    if (!run) return { state: 'local_failed', runId };
+    if (!['reserved', 'submitting', 'accepted', 'verifying'].includes(run.state)) {
+      return { state: run.state, runId: run.id };
+    }
+    if (run.state === 'reserved') {
+      budgetService.settleDefinitiveFailure(db, run.id, 0, 'local_pre_submit_failure', now);
+      evidenceService.recordFailure(db, canaryEvidenceInput(run, candidate, now));
+      recordLocalFailureEvent(
+        db, candidate, 'provider_canary_local_failed', 'local_pre_submit_failure', now,
+      );
+      return { state: 'local_failed', runId: run.id };
+    }
+    const state = run.state === 'submitting'
+      ? 'submission_unknown'
+      : run.state === 'verifying' ? 'artifact_unreadable' : 'result_unknown';
+    const taskId = typeof run.provider_task_id === 'string' && run.provider_task_id.trim()
+      ? run.provider_task_id.trim()
+      : null;
+    if (state === 'submission_unknown' || taskId) {
+      budgetService.settleUnknown(db, run.id, state, state, taskId, now);
+    } else {
+      db.prepare(`UPDATE provider_canary_runs
+        SET state = ?, error_category = ?, finished_at = ?, updated_at = ?
+        WHERE id = ? AND state = ?`).run(state, state, now, now, run.id, run.state);
+    }
+    evidenceService.recordUnknown(db, canaryEvidenceInput(run, candidate, now, state));
+    return { state, runId: run.id };
+  };
+  return db.inTransaction ? work() : db.transaction(work).immediate();
+}
+
 async function runOnePaidCanary(db, log, options = {}) {
   if (!parsePaidEnabled(options.paidEnabled, log)) return { state: 'paid_disabled' };
   if (paidRunInFlight) return { state: 'busy' };
@@ -623,6 +782,22 @@ async function runOnePaidCanary(db, log, options = {}) {
         costFingerprint: routeCostFingerprint,
         runtimeFingerprint: runtime.fingerprint,
       });
+      const buildFixtures = options.buildFixtures || ((input) => fixtureService.buildReferenceInputs(input));
+      let fixtures;
+      try {
+        fixtures = await buildFixtures({
+          capability: candidate.capability,
+          storageRoot: options.storageRoot,
+          filesBaseUrl: options.filesBaseUrl || process.env.PROVIDER_CANARY_FILES_BASE_URL,
+          secret: options.assetSecret || process.env.PROVIDER_CANARY_ASSET_SECRET,
+          now,
+        });
+      } catch (_) {
+        recordLocalFailureEvent(
+          db, candidate, 'provider_canary_fixture_failed', 'fixture_build_failed', now,
+        );
+        return { state: 'local_failed', reason: 'fixture_build_failed' };
+      }
       let run;
       try {
         run = reserveWithGlobalSlot(db, {
@@ -651,22 +826,18 @@ async function runOnePaidCanary(db, log, options = {}) {
         throw error;
       }
       if (run.state && run.state !== 'reserved') return { state: run.state, runId: run.id };
-      const buildFixtures = options.buildFixtures || ((input) => fixtureService.buildReferenceInputs(input));
-      const fixtures = await buildFixtures({
-        capability: candidate.capability,
-        storageRoot: options.storageRoot,
-        filesBaseUrl: options.filesBaseUrl || process.env.PROVIDER_CANARY_FILES_BASE_URL,
-        secret: options.assetSecret || process.env.PROVIDER_CANARY_ASSET_SECRET,
-        now,
-      });
-      const result = await (options.executor || executorService).executeCanaryRun(db, log, run, {
-        capability: candidate.capability,
-        fixtures,
-        storageRoot: options.storageRoot,
-        now,
-        ...(options.executorOptions || {}),
-      });
-      return { ...result, runId: run.id };
+      try {
+        const result = await (options.executor || executorService).executeCanaryRun(db, log, run, {
+          capability: candidate.capability,
+          fixtures,
+          storageRoot: options.storageRoot,
+          now,
+          ...(options.executorOptions || {}),
+        });
+        return { ...result, runId: run.id };
+      } catch (_) {
+        return settleRunAfterUnexpectedError(db, candidate, run.id, now);
+      }
     }
     return sawBlock ? { state: 'blocked' } : { state: 'not_due' };
   } finally {

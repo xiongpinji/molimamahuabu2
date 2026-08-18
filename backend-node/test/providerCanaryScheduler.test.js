@@ -9,6 +9,8 @@ const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
+const SAFE_PUBLIC_DNS = [{ address: '93.184.216.34', family: 4 }];
+
 function loadScheduler() {
   return require('../src/services/providerCanarySchedulerService');
 }
@@ -64,6 +66,24 @@ function insertRoute(db, route) {
       route.base_url, route.api_key, JSON.stringify(route.model), route.default_model,
       route.priority, route.settings, route.logical_model_id, route.canary_paused ? 1 : 0,
       '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z');
+}
+
+function paidFingerprintOverrides(scope = (route) => `scope-${route.id}`) {
+  return {
+    config: (route) => `cfg-${route.id}`,
+    cost: (route) => `cost-${route.id}`,
+    runtime: (route) => ({ ok: true, fingerprint: `runtime-${route.id}` }),
+    scope,
+  };
+}
+
+function paidCandidate(scheduler, route) {
+  return {
+    config: route,
+    capability: scheduler.enumerateCapabilityProfiles(route)[0],
+    reservedCostMicros: 10,
+    profileKey: `profile-${route.id}`,
+  };
 }
 
 const allHealthyProbes = {
@@ -254,7 +274,7 @@ test('default provider probe performs injected DNS TLS auth and read-only GET on
   delete probes.provider;
   await scheduler.runZeroCostSweep(db, {}, {
     now: '2026-08-18T00:00:00.000Z', storageRoot, configs: [route], probes,
-    dnsLookup: async (hostname) => { calls.push(['dns', hostname]); },
+    dnsLookup: async (hostname) => { calls.push(['dns', hostname]); return SAFE_PUBLIC_DNS; },
     tlsConnect(connectOptions, callback) {
       calls.push(['tls', connectOptions.host, connectOptions.rejectUnauthorized]);
       const socket = { once() {}, destroy() {} };
@@ -268,7 +288,7 @@ test('default provider probe performs injected DNS TLS auth and read-only GET on
   });
   assert.deepEqual(calls, [
     ['dns', 'provider.example'],
-    ['tls', 'provider.example', true],
+    ['tls', SAFE_PUBLIC_DNS[0].address, true],
     ['fetch', 'https://provider.example/v1/models', 'GET', 'manual', `Bearer ${route.api_key}`],
   ]);
 });
@@ -292,7 +312,7 @@ test('same-origin and cross-origin redirects both fail closed without following 
       warn(message, details) { logs.push({ message, details }); },
     }, {
       now: `2026-08-18T00:0${index}:00.000Z`, storageRoot, configs: [route], probes,
-      dnsLookup: async () => {},
+      dnsLookup: async () => SAFE_PUBLIC_DNS,
       tlsConnect(_connectOptions, callback) {
         const socket = { once() {}, destroy() {} };
         queueMicrotask(callback);
@@ -334,7 +354,7 @@ test('cross-origin read-only endpoint fails closed before any authenticated fetc
   const fetches = [];
   const result = await scheduler.runZeroCostSweep(db, {}, {
     now: '2026-08-18T00:00:00.000Z', storageRoot, configs: [route], probes,
-    dnsLookup: async () => {},
+    dnsLookup: async () => SAFE_PUBLIC_DNS,
     tlsConnect() { throw new Error('TLS must not start for an unsafe endpoint'); },
     fetchFn: async (...args) => { fetches.push(args); return { ok: true }; },
   });
@@ -406,7 +426,7 @@ test('same-origin relative read-only endpoint remains allowed and substitutes pl
   const fetches = [];
   await scheduler.runZeroCostSweep(db, {}, {
     now: '2026-08-18T00:00:00.000Z', storageRoot, configs: [route], probes,
-    dnsLookup: async () => {},
+    dnsLookup: async () => SAFE_PUBLIC_DNS,
     tlsConnect(_connectOptions, callback) {
       const socket = { once() {}, destroy() {} };
       queueMicrotask(callback);
@@ -440,6 +460,89 @@ test('provider base URL userinfo fails before any external operation', async (t)
   });
   assert.equal(externalCalls, 0);
   assert.equal(result.routes[0].category, 'provider_url_credentials_forbidden');
+});
+
+test('literal local private metadata mapped and transition addresses fail before DNS TLS or auth', async (t) => {
+  const scheduler = loadScheduler();
+  const { db, storageRoot } = setup(t);
+  const probes = { ...allHealthyProbes };
+  delete probes.provider;
+  const hosts = [
+    'localhost', '127.0.0.1', '10.0.0.1', '172.16.0.1', '192.168.1.1',
+    '169.254.169.254', '[::1]', '[::ffff:8.8.8.8]', '[::192.168.1.1]',
+    '[64:ff9b::808:808]', '[2002:0808:0808::]', '[2001:0000::1]',
+  ];
+  for (const [index, host] of hosts.entries()) {
+    const route = config(index + 1, { base_url: `https://${host}/v1/` });
+    insertRoute(db, route);
+    let externalCalls = 0;
+    const result = await scheduler.runZeroCostSweep(db, {}, {
+      now: `2026-08-18T01:${String(index).padStart(2, '0')}:00.000Z`,
+      storageRoot, configs: [route], probes,
+      dnsLookup: async () => { externalCalls += 1; return SAFE_PUBLIC_DNS; },
+      tlsConnect() { externalCalls += 1; },
+      fetchFn: async () => { externalCalls += 1; return { ok: true }; },
+      readOnlyRequest: async () => { externalCalls += 1; return { ok: true, status: 200 }; },
+    });
+    assert.equal(externalCalls, 0, host);
+    assert.equal(result.routes[0].category, 'provider_address_forbidden', host);
+  }
+});
+
+test('mixed public and private DNS answers fail closed before TLS request or auth', async (t) => {
+  const scheduler = loadScheduler();
+  const { db, storageRoot } = setup(t);
+  const route = config(1, { base_url: 'https://provider.example/v1/' });
+  insertRoute(db, route);
+  const probes = { ...allHealthyProbes };
+  delete probes.provider;
+  let tlsCalls = 0;
+  let requestCalls = 0;
+  const result = await scheduler.runZeroCostSweep(db, {}, {
+    now: '2026-08-18T00:00:00.000Z', storageRoot, configs: [route], probes,
+    dnsLookup: async () => [...SAFE_PUBLIC_DNS, { address: '10.0.0.8', family: 4 }],
+    tlsConnect() { tlsCalls += 1; },
+    fetchFn: async () => { requestCalls += 1; return { ok: true }; },
+    readOnlyRequest: async () => { requestCalls += 1; return { ok: true, status: 200 }; },
+  });
+  assert.equal(tlsCalls, 0);
+  assert.equal(requestCalls, 0);
+  assert.equal(result.routes[0].category, 'provider_address_forbidden');
+});
+
+test('provider probe pins TLS and HTTPS request to one verified public address', async (t) => {
+  const scheduler = loadScheduler();
+  const { db, storageRoot } = setup(t);
+  const route = config(1, { base_url: 'https://provider.example/v1/' });
+  insertRoute(db, route);
+  const probes = { ...allHealthyProbes };
+  delete probes.provider;
+  const calls = [];
+  const result = await scheduler.runZeroCostSweep(db, {}, {
+    now: '2026-08-18T00:00:00.000Z', storageRoot, configs: [route], probes,
+    dnsLookup: async (_hostname, options) => {
+      calls.push(['dns', options]);
+      return [...SAFE_PUBLIC_DNS, { address: '93.184.216.35', family: 4 }];
+    },
+    tlsConnect(connectOptions, callback) {
+      calls.push(['tls', connectOptions.host, connectOptions.servername]);
+      const socket = { once() {}, destroy() {} };
+      queueMicrotask(callback);
+      return socket;
+    },
+    fetchFn: async () => { calls.push(['fetch']); return { ok: true, status: 200 }; },
+    readOnlyRequest: async (endpoint, request) => {
+      calls.push(['request', endpoint, request.address, request.servername, request.hostHeader]);
+      return { ok: true, status: 200 };
+    },
+  });
+  assert.equal(result.routes[0].state, 'healthy');
+  assert.deepEqual(calls, [
+    ['dns', { all: true, verbatim: true }],
+    ['tls', SAFE_PUBLIC_DNS[0].address, 'provider.example'],
+    ['request', 'https://provider.example/v1/models', SAFE_PUBLIC_DNS[0].address,
+      'provider.example', 'provider.example'],
+  ]);
 });
 
 test('zero-cost events deduplicate by type model config and category within one window', async (t) => {
@@ -490,6 +593,156 @@ test('due profiles sort by expiry, impact, priority, then cost and skip unresolv
     estimateCost: (_db, route) => (route.id === 2 ? 20 : route.id === 3 ? 10 : 1),
   });
   assert.deepEqual(result.map((row) => row.config.id), [3, 2, 1]);
+});
+
+test('fixture failure happens before reservation and leaves the global slot free', async (t) => {
+  const scheduler = loadScheduler();
+  const { db } = setup(t);
+  const route = config(1);
+  insertRoute(db, route);
+  const secret = 'https://secret.example/path?token=fixture-secret';
+  const result = await scheduler.runOnePaidCanary(db, {}, {
+    paidEnabled: true, now: '2026-08-18T00:00:00.000Z',
+    dueProfiles: [paidCandidate(scheduler, route)],
+    buildFixtures: async () => { throw new Error(secret); },
+    fingerprint: paidFingerprintOverrides(),
+  });
+  assert.equal(result.state, 'local_failed');
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM provider_canary_runs').get().count, 0);
+  const event = db.prepare(`SELECT severity, safe_details FROM provider_stability_events
+    WHERE event_type = 'provider_canary_fixture_failed'`).get();
+  assert.equal(event.severity, 'P3');
+  assert.equal(event.safe_details.includes(secret), false);
+});
+
+test('executor failure before claim settles reserved at zero cost and frees the slot', async (t) => {
+  const scheduler = loadScheduler();
+  const { db } = setup(t);
+  const route = config(1);
+  insertRoute(db, route);
+  const secret = 'sk-local-secret https://secret.example/prompt';
+  const result = await scheduler.runOnePaidCanary(db, {}, {
+    paidEnabled: true, now: '2026-08-18T00:00:00.000Z',
+    dueProfiles: [paidCandidate(scheduler, route)], buildFixtures: async () => ({}),
+    executor: { async executeCanaryRun() { throw new Error(secret); } },
+    fingerprint: paidFingerprintOverrides(),
+  });
+  assert.equal(result.state, 'local_failed');
+  const run = db.prepare('SELECT state, actual_cost_micros FROM provider_canary_runs').get();
+  assert.deepEqual(run, { state: 'failed', actual_cost_micros: 0 });
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM provider_canary_runs
+    WHERE state IN ('reserved', 'submitting', 'accepted', 'verifying')`).get().count, 0);
+  const serialized = JSON.stringify(db.prepare(`SELECT safe_details FROM provider_stability_events`).all());
+  assert.equal(serialized.includes(secret), false);
+});
+
+test('scope-blocked claim closes its reservation while preserving the prior unknown scope', async (t) => {
+  const scheduler = loadScheduler();
+  const budget = require('../src/services/providerCanaryBudgetService');
+  const { db } = setup(t);
+  const route = config(1);
+  insertRoute(db, route);
+  db.prepare(`INSERT INTO provider_canary_runs
+      (id, idempotency_key, config_id, logical_model_id, service_type,
+       capability_fingerprint, config_fingerprint, cost_fingerprint, runtime_fingerprint,
+       provider_scope_key, state, reserved_cost_micros, currency, budget_day, budget_month,
+       created_at, updated_at, finished_at)
+    VALUES ('unknown-owner', 'unknown-key', 1, ?, 'video', 'prior-cap', 'cfg', 'cost', 'runtime',
+      'shared-scope', 'submission_unknown', 10, 'CNY', '2026-08-18', '2026-08', ?, ?, ?)`)
+    .run(route.logical_model_id, '2026-08-18T00:00:00.000Z',
+      '2026-08-18T00:00:00.000Z', '2026-08-18T00:00:00.000Z');
+  const result = await scheduler.runOnePaidCanary(db, {}, {
+    paidEnabled: true, now: '2026-08-18T00:00:00.000Z',
+    dueProfiles: [paidCandidate(scheduler, route)], buildFixtures: async () => ({}),
+    executor: { async executeCanaryRun(executorDb, _log, run) {
+      budget.claimForExecution(executorDb, run.id, '2026-08-18T00:00:00.000Z');
+    } },
+    fingerprint: paidFingerprintOverrides(() => 'shared-scope'),
+  });
+  assert.equal(result.state, 'local_failed');
+  assert.equal(db.prepare(`SELECT state FROM provider_canary_runs WHERE id = 'unknown-owner'`).get().state,
+    'submission_unknown');
+  assert.equal(db.prepare(`SELECT state FROM provider_canary_runs WHERE id <> 'unknown-owner'`).get().state,
+    'failed');
+});
+
+test('unexpected throw after claim becomes atomic submission unknown and blocks only that scope', async (t) => {
+  const scheduler = loadScheduler();
+  const budget = require('../src/services/providerCanaryBudgetService');
+  const { db } = setup(t);
+  const first = config(1);
+  const second = config(2);
+  insertRoute(db, first);
+  insertRoute(db, second);
+  const secret = 'sk-submit-secret https://secret.example/result';
+  const firstResult = await scheduler.runOnePaidCanary(db, {}, {
+    paidEnabled: true, now: '2026-08-18T00:00:00.000Z',
+    dueProfiles: [paidCandidate(scheduler, first)], buildFixtures: async () => ({}),
+    executor: { async executeCanaryRun(executorDb, _log, run) {
+      budget.claimForExecution(executorDb, run.id, '2026-08-18T00:00:00.000Z');
+      throw new Error(secret);
+    } },
+    fingerprint: paidFingerprintOverrides(),
+  });
+  assert.equal(firstResult.state, 'submission_unknown');
+  assert.equal(db.prepare(`SELECT state FROM provider_canary_runs WHERE config_id = 1`).get().state,
+    'submission_unknown');
+  assert.equal(db.prepare(`SELECT state FROM provider_canary_evidence WHERE config_id = 1`).get().state,
+    'submission_unknown');
+  assert.equal(JSON.stringify(db.prepare('SELECT safe_details FROM provider_stability_events').all()).includes(secret), false);
+
+  let secondCalls = 0;
+  const secondResult = await scheduler.runOnePaidCanary(db, {}, {
+    paidEnabled: true, now: '2026-08-18T00:01:00.000Z',
+    dueProfiles: [paidCandidate(scheduler, second)], buildFixtures: async () => ({}),
+    executor: { async executeCanaryRun(executorDb, _log, run) {
+      secondCalls += 1;
+      budget.claimForExecution(executorDb, run.id, '2026-08-18T00:01:00.000Z');
+      budget.settleDefinitiveFailure(executorDb, run.id, 0, 'local_test_failure',
+        '2026-08-18T00:01:00.000Z');
+      return { state: 'failed' };
+    } },
+    fingerprint: paidFingerprintOverrides(),
+  });
+  assert.equal(secondResult.state, 'failed');
+  assert.equal(secondCalls, 1);
+});
+
+test('unexpected throws after acceptance or verification close each active slot as unknown', async (t) => {
+  const scheduler = loadScheduler();
+  const budget = require('../src/services/providerCanaryBudgetService');
+  const { db } = setup(t);
+  const accepted = config(1);
+  const verifying = config(2);
+  insertRoute(db, accepted);
+  insertRoute(db, verifying);
+  const secret = 'sk-lifecycle-secret https://secret.example/artifact';
+  for (const [route, expectedState] of [
+    [accepted, 'result_unknown'],
+    [verifying, 'artifact_unreadable'],
+  ]) {
+    const result = await scheduler.runOnePaidCanary(db, {}, {
+      paidEnabled: true, now: '2026-08-18T00:02:00.000Z',
+      dueProfiles: [paidCandidate(scheduler, route)], buildFixtures: async () => ({}),
+      executor: { async executeCanaryRun(executorDb, _log, run) {
+        budget.claimForExecution(executorDb, run.id, '2026-08-18T00:02:00.000Z');
+        budget.markAccepted(executorDb, run.id, `task-${route.id}`, '2026-08-18T00:02:00.000Z');
+        if (expectedState === 'artifact_unreadable') {
+          executorDb.prepare(`UPDATE provider_canary_runs SET state = 'verifying'
+            WHERE id = ? AND state = 'accepted'`).run(run.id);
+        }
+        throw new Error(secret);
+      } },
+      fingerprint: paidFingerprintOverrides(),
+    });
+    assert.equal(result.state, expectedState);
+    assert.equal(db.prepare('SELECT state FROM provider_canary_runs WHERE config_id = ?')
+      .get(route.id).state, expectedState);
+  }
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM provider_canary_runs
+    WHERE state IN ('reserved', 'submitting', 'accepted', 'verifying')`).get().count, 0);
+  assert.equal(JSON.stringify(db.prepare('SELECT safe_details FROM provider_stability_events').all())
+    .includes(secret), false);
 });
 
 test('paused and missing-cost profiles emit one P3 each and never submit', async (t) => {
@@ -565,6 +818,7 @@ test('budget rejection emits P3 and never calls executor', async (t) => {
         throw error;
       },
     },
+    buildFixtures: async () => ({}),
     executor: { async executeCanaryRun() { executeCalls += 1; } },
     fingerprint: {
       capability: () => 'cap', config: () => 'cfg', cost: () => 'cost',
@@ -680,6 +934,7 @@ test('an active database run owns the global slot across scheduler instances', a
     dueProfiles: [{
       config: route, capability: {}, reservedCostMicros: 10, profileKey: 'new-profile',
     }],
+    buildFixtures: async () => ({}),
     executor: { async executeCanaryRun() { executeCalls += 1; } },
     fingerprint: {
       capability: () => 'new-cap', config: () => 'cfg', cost: () => 'cost',
