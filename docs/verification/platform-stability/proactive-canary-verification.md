@@ -6,7 +6,9 @@
 - 候选 A：`1e999c828a8e2eed0377521032a9210185b244ac`；包含功能锁、精确发布范围、合同测试和验证前证据骨架。
 - 证据提交 B：`9a97ea867de86dc85769557263bbd4fdbc8dd778`；只记录候选 A 的验证结果，没有修改候选 A 的代码、锁、测试或 release scope。
 - 规格审查修复候选 C：`3a2b7557cbf105edd03e755f25919f8d2623173d`；只为新锁补齐 7 个核心 required tests，并同步固定列表合同测试。
-- 证据提交 D：本文件更新后的下一提交；只记录候选 C 的审查修复验证结果。
+- 证据提交 D：`7815b6c2cca971dff354db9ec629fb92835a206d`；只记录候选 C 的审查修复验证结果。
+- 质量审查门禁修复候选 E：`1b01462f92bd8c1dd0ea0156833ab71214514fe4`；严格拒绝无效显式基线，并把 release scope 锁为 67 项精确清单。
+- 证据提交 F：本文件更新后的下一提交；只记录候选 E 的质量审查验证结果，不预填自身 SHA。
 - Task14 必须从实时 `/opt/moli-drama/current` 重建最终候选并重跑全部门禁；本地引用不代表实时线上版本。
 
 ## 自动化验证
@@ -68,6 +70,35 @@
 
 候选 C 相对证据提交 B 只修改 `backend-node/test/featureLockManifest.test.js` 和 `docs/verification/platform-stability/feature-lock-manifest.json`，因此 release scope 文件数仍为 66。候选 A 的完整后端、前端、构建和 Playwright 证据不被伪称为候选 C 的全量重跑；Task14 最终候选仍需从实时 current 重建并全量验证。
 
+## 质量审查门禁修复候选 E
+
+质量审查确认两个门禁缺陷：显式 `--base` 无效或无法读取基线清单时会静默退化为零变更 ready；原 scope 测试只校验数量和样例，无法拒绝同数量偷换。TDD 红灯先修改两个测试文件：15 个测试中 11 个通过、4 个按预期失败，分别对应缺少审计脚本保护路径、非法 ref 被放行、存在 ref 但基线清单不可读仍被放行、scope 缺少第 67 项。最小实现后 15/15 通过。
+
+候选 E 只修改以下 5 个文件，没有改证据文档：
+
+- `backend-node/scripts/verify-feature-lock-manifest.js`
+- `backend-node/test/featureLockManifest.test.js`
+- `backend-node/test/incrementalReleaseScope.test.js`
+- `deploy/release-scopes/platform-stability-proactive-canary.json`
+- `docs/verification/platform-stability/feature-lock-manifest.json`
+
+审计脚本仅在调用方显式传入非空 `--base` 时先执行 `git rev-parse --verify`，并要求该 ref 的功能锁清单可解析；无显式 base 仍使用既有发现顺序。审计脚本自身加入新锁 protected paths 和 release scope。`incrementalReleaseScope.test.js` 对 67 项完整有序列表执行深比较，并以替换为运行数据库路径的同数量恶意清单证明数量相同也会被拒绝。
+
+候选 E 的验证如下，时间均为 UTC：
+
+| 开始时间 | 结束时间 | 命令 | 实际退出码 | 结果 |
+| --- | --- | --- | ---: | --- |
+| 2026-08-18T22:27:28.4600929Z | 2026-08-18T22:27:28.6607866Z | `cd backend-node; node scripts/verify-feature-lock-manifest.js --base refs/heads/feature-lock-base-does-not-exist` | 1 | 正确拒绝，错误码 `INVALID_BASE_REF`，没有 ready 输出 |
+| 2026-08-18T22:27:37.8065414Z | 2026-08-18T22:27:38.0881396Z | `cd backend-node; node scripts/verify-feature-lock-manifest.js --base HEAD:backend-node/package.json` | 1 | ref 存在但清单不可读，正确拒绝为 `BASE_MANIFEST_UNAVAILABLE` |
+| 2026-08-18T22:27:46.2774472Z | 2026-08-18T22:27:46.6978998Z | `cd backend-node; node scripts/verify-feature-lock-manifest.js --base origin/main` | 0 | `ready=true`；5 个锁、67 个变更路径；本地 `origin/main` 未联网刷新 |
+| 2026-08-18T22:27:55.6585273Z | 2026-08-18T22:27:56.8267685Z | `cd backend-node; node --test test/featureLockManifest.test.js` | 0 | 9/9 通过；反例通过真实 CLI 子进程断言非零退出，不是 helper 模拟 |
+| 2026-08-18T22:28:06.1218390Z | 2026-08-18T22:28:06.4519782Z | `cd backend-node; node --test test/incrementalReleaseScope.test.js` | 0 | 6/6 通过；包含精确 67 项和同数量偷换反例 |
+| 2026-08-18T22:28:17.4435070Z | 2026-08-18T22:28:17.7501155Z | `git diff --check origin/main...HEAD` 并比较变更文件与 scope | 0 | diff check 通过；变更 67、allowlist 67、差异 0 |
+| 2026-08-18T22:28:28.5355911Z | 2026-08-18T22:28:29.4943880Z | 全树与新增行敏感信息扫描 | 0 | 全树 21 个占位/假值命中；新增行 2 个命中均为扫描规则自身及其证据引用；无真实凭据 |
+| 2026-08-18T22:29:03.3001994Z | 2026-08-18T22:29:03.6912522Z | `cd backend-node; node scripts/verify-feature-lock-manifest.js` | 0 | 无显式 base 保留既有默认语义，本次发现 `HEAD^` 并审计 5 个真实变更路径 |
+
+候选 E 的范围扩展只有审计脚本这一条已实际修改文件；没有新增运行数据、用户资产、AI 音乐、旧 scope、共享门禁或无关前端路径。
+
 ## 合同证据
 
 - 预算原子门禁：`providerCanaryBudget.test.js` 同时进入后端全量和 123 项定向回归；覆盖日/月硬上限、并发预占、幂等和超额告警。
@@ -89,4 +120,4 @@
 
 ## 自引用边界
 
-完整后端、前端、构建和 Playwright 验证对象是候选 A；候选 C 只按审查要求重跑功能锁、7 个核心回归和轻量门禁。证据提交 B、D 均只记录结果，不能声称前一候选的测试验证了证据提交自身；D 后仅重跑功能锁、增量范围、变更范围和敏感信息检查。Task14 仍须从实时 current 构建最终候选并全量重跑。
+完整后端、前端、构建和 Playwright 验证对象是候选 A；候选 C 只按规格审查要求重跑功能锁、7 个核心回归和轻量门禁；候选 E 只按质量审查要求重跑显式/默认基线 CLI、两个门禁测试和轻量范围审计。证据提交 B、D、F 均只记录结果，不能声称前一候选的测试验证了证据提交自身；F 后仅重跑功能锁、增量范围、变更范围和敏感信息检查。Task14 仍须从实时 current 构建最终候选并全量重跑。
