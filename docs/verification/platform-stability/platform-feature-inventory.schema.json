@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://moli.local/schemas/platform-feature-inventory.schema.json",
+  "title": "Platform feature inventory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "evidence_scope",
+    "source_inventory",
+    "features"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "generated_at": {
+      "const": "2026-08-18T00:00:00+08:00"
+    },
+    "evidence_scope": {
+      "const": "source_inventory_only"
+    },
+    "source_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["starting_paths", "scope_note"],
+      "properties": {
+        "starting_paths": {
+          "type": "array",
+          "minItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "scope_note": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "features": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/feature"
+      }
+    }
+  },
+  "$defs": {
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "feature_id",
+        "module",
+        "entry_route",
+        "control_label",
+        "action_kind",
+        "required_role",
+        "writes_state",
+        "may_charge",
+        "acceptance_chain",
+        "source_paths",
+        "test_paths",
+        "baseline_state"
+      ],
+      "properties": {
+        "feature_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"
+        },
+        "module": {
+          "enum": [
+            "shared",
+            "canvas",
+            "short_drama_factory",
+            "script_analysis"
+          ]
+        },
+        "entry_route": {
+          "type": "string",
+          "minLength": 1
+        },
+        "control_label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action_kind": {
+          "enum": [
+            "api",
+            "asset_library",
+            "billing",
+            "composition",
+            "connection",
+            "create",
+            "delete",
+            "download",
+            "edit",
+            "entry",
+            "generation",
+            "menu",
+            "modal",
+            "navigation",
+            "permission",
+            "preview",
+            "projection",
+            "reference",
+            "refresh",
+            "review",
+            "save",
+            "selection",
+            "share",
+            "status",
+            "tab",
+            "upload",
+            "viewport",
+            "workflow"
+          ]
+        },
+        "required_role": {
+          "enum": ["public", "user", "admin"]
+        },
+        "writes_state": {
+          "type": "boolean"
+        },
+        "may_charge": {
+          "type": "boolean"
+        },
+        "acceptance_chain": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "browser",
+              "auth",
+              "api",
+              "task",
+              "provider",
+              "artifact",
+              "writeback",
+              "billing",
+              "download"
+            ]
+          }
+        },
+        "source_paths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "test_paths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "baseline_state": {
+          "enum": ["unverified", "verified", "blocked"]
+        },
+        "block_reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "baseline_state": { "const": "blocked" }
+            },
+            "required": ["baseline_state"]
+          },
+          "then": {
+            "required": ["block_reason"]
+          }
+        }
+      ]
+    }
+  }
+}
