@@ -111,7 +111,7 @@ test('provider inference selects the repository current adapter branches', (t) =
   ]);
 });
 
-test('catalog-supported image and video protocols have explicit adapter mappings', (t) => {
+test('catalog-supported text and image protocols with runtime branches have mappings', (t) => {
   const root = createRuntimeRoot(t, 'catalog-protocols', {
     'src/services/aiClient.js': 'text common\n',
     'src/services/imageClient.js': 'image common\n',
@@ -119,13 +119,40 @@ test('catalog-supported image and video protocols have explicit adapter mappings
     'src/services/providerErrorClassifier.js': 'classifier\n',
     'src/services/token6688Client.js': 'token adapter\n',
     'src/services/usmercariVideoClient.js': 'usmercari adapter\n',
-    'src/services/lingjingVideoClient.js': 'lingjing adapter\n',
   });
   for (const config of [
     { service_type: 'text', provider: 'openai', api_protocol: 'responses' },
     { service_type: 'image', provider: 'token6688', api_protocol: 'token6688' },
     { service_type: 'image', provider: 'usmercari_image', api_protocol: 'usmercari_image' },
-    { service_type: 'video', provider: 'lingjing', api_protocol: 'lingjing_open' },
+  ]) {
+    const result = runtimeService.runtimeFingerprintForConfig(config, { repoRoot: root });
+    assert.equal(result.ok, true, JSON.stringify(result));
+  }
+});
+
+test('video protocols without submission dispatch stay unmapped while wired protocols remain mapped', (t) => {
+  const root = createRuntimeRoot(t, 'video-dispatch', {
+    'src/services/videoClient.js': 'video common\n',
+    'src/services/providerErrorClassifier.js': 'classifier\n',
+    'src/services/klingJwt.js': 'kling helper\n',
+    'src/services/providerAssetUrlService.js': 'asset helper\n',
+    'src/services/toapisVideoClient.js': 'toapis adapter\n',
+  });
+
+  for (const protocol of ['djpsd_media', 'djpsd_openapi', 'lingjing_open']) {
+    const result = runtimeService.runtimeFingerprintForConfig(
+      { service_type: 'video', provider: 'catalog-provider', api_protocol: protocol },
+      { repoRoot: root },
+    );
+    assert.equal(result.ok, false, protocol);
+    assert.equal(result.code, 'missing_runtime_mapping', protocol);
+    assert.equal(result.fingerprint, null, protocol);
+  }
+
+  for (const config of [
+    { service_type: 'video', provider: 'generic', api_protocol: 'openai' },
+    { service_type: 'video', provider: 'kling', api_protocol: 'kling' },
+    { service_type: 'video', provider: 'toapis', api_protocol: 'toapis_video' },
   ]) {
     const result = runtimeService.runtimeFingerprintForConfig(config, { repoRoot: root });
     assert.equal(result.ok, true, JSON.stringify(result));

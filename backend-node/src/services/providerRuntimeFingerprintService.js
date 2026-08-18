@@ -34,8 +34,6 @@ const PROTOCOL_ADAPTERS = Object.freeze({
     dashscope: [],
     deepwl_grok: [],
     djpsd: [],
-    djpsd_media: [],
-    djpsd_openapi: [],
     feituo_open: ['src/services/feituoVideoClient.js'],
     fumin_video: ['src/services/fuminVideoClient.js'],
     gemini: [],
@@ -43,7 +41,6 @@ const PROTOCOL_ADAPTERS = Object.freeze({
     jimeng_ai_api: [],
     kling: ['src/services/klingJwt.js'],
     kling_omni: ['src/services/klingJwt.js'],
-    lingjing_open: ['src/services/lingjingVideoClient.js'],
     sora: [],
     toapis_video: [
       'src/services/providerAssetUrlService.js',
