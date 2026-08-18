@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const Database = require('better-sqlite3');
 const inventory = require('../src/services/providerCanaryInventoryService');
+const runtimeFingerprintService = require('../src/services/providerRuntimeFingerprintService');
 
 const HELP = `Usage:
   node scripts/audit-provider-canary-readiness.js --database <sqlite> --out <json> [--allow-blocked]
@@ -79,7 +80,12 @@ function run(argv) {
   let db;
   try {
     db = new Database(args.databasePath, { readonly: true, fileMustExist: true });
-    const report = inventory.buildCanaryReadiness(db);
+    const report = inventory.buildCanaryReadiness(db, {
+      runtimeFingerprintResolver: (config) => runtimeFingerprintService.runtimeFingerprintForConfig(
+        config,
+        { repoRoot: path.resolve(__dirname, '..') },
+      ),
+    });
     atomicWriteJson(args.outputPath, report);
     return {
       help: false,

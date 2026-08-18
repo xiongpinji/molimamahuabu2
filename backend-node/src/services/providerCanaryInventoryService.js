@@ -8,6 +8,7 @@ const BLOCKERS = [
   'missing_cost',
   'cost_not_positive',
   'missing_capabilities',
+  'missing_runtime_mapping',
   'legacy_connection_only_verification',
   'admin_paused',
 ];
@@ -92,7 +93,7 @@ function readConfigs(db) {
   const columns = tableColumns(db, 'ai_service_configs');
   if (!columns) return [];
   const names = [
-    'id', 'service_type', 'provider', 'base_url', 'model', 'default_model',
+    'id', 'service_type', 'provider', 'base_url', 'api_protocol', 'model', 'default_model',
     'priority', 'is_active', 'settings', 'logical_model_id', 'verification_status',
     'updated_at',
   ];
@@ -152,12 +153,30 @@ function buildCanaryReadiness(db, options = {}) {
       : 'missing';
     const routeCostStatus = costStatus(price, resolutionCostsByModel.get(modelKey) || []);
     const declared = capabilitiesDeclared(config);
+    let runtimeFingerprint = null;
+    if (typeof options.runtimeFingerprintResolver === 'function') {
+      try {
+        const resolved = options.runtimeFingerprintResolver(config);
+        if (resolved?.ok !== false) {
+          if (typeof resolved === 'string') runtimeFingerprint = resolved.trim() || null;
+          else if (typeof resolved?.fingerprint === 'string') {
+            runtimeFingerprint = resolved.fingerprint.trim() || null;
+          }
+        }
+      } catch (_) {
+        runtimeFingerprint = null;
+      }
+    } else if (Object.prototype.hasOwnProperty.call(runtimeFingerprints, config.service_type)) {
+      const resolved = runtimeFingerprints[config.service_type];
+      runtimeFingerprint = typeof resolved === 'string' ? resolved.trim() || null : null;
+    }
     const checks = {
       missing_logical_model_id: !logicalModelId,
       missing_user_price: userPriceStatus !== 'configured',
       missing_cost: routeCostStatus === 'missing',
       cost_not_positive: routeCostStatus === 'not_positive',
       missing_capabilities: !declared,
+      missing_runtime_mapping: !runtimeFingerprint,
       legacy_connection_only_verification: config.verification_status !== 'verified',
       admin_paused: config.is_active !== 1,
     };
@@ -169,7 +188,7 @@ function buildCanaryReadiness(db, options = {}) {
       user_price_status: userPriceStatus,
       cost_status: routeCostStatus,
       priority: Number.isSafeInteger(config.priority) ? config.priority : 0,
-      runtime_fingerprint: runtimeFingerprints[config.service_type] || null,
+      runtime_fingerprint: runtimeFingerprint,
       blockers: BLOCKERS.filter((blocker) => checks[blocker]),
     };
   });

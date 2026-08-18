@@ -74,6 +74,7 @@ function insertCanaryEvidence(db, overrides = {}) {
     config_id: 1,
     service_type: 'image',
     capability_fingerprint: 'capability-1',
+    capability_json: JSON.stringify({ serviceType: 'image' }),
     state: 'never_verified',
     run_id: null,
     config_fingerprint: 'config-1',
@@ -88,10 +89,10 @@ function insertCanaryEvidence(db, overrides = {}) {
     ...overrides,
   };
   return db.prepare(`INSERT INTO provider_canary_evidence
-    (config_id, service_type, capability_fingerprint, state, run_id,
+    (config_id, service_type, capability_fingerprint, capability_json, state, run_id,
      config_fingerprint, cost_fingerprint, runtime_fingerprint, verified_at,
      expires_at, invalidated_at, invalidation_reason, created_at, updated_at)
-    VALUES (@config_id, @service_type, @capability_fingerprint, @state, @run_id,
+    VALUES (@config_id, @service_type, @capability_fingerprint, @capability_json, @state, @run_id,
      @config_fingerprint, @cost_fingerprint, @runtime_fingerprint, @verified_at,
      @expires_at, @invalidated_at, @invalidation_reason, @created_at, @updated_at)`).run(evidence);
 }
@@ -142,6 +143,10 @@ test('provider stability migration creates the routing schema and remains idempo
     ]) {
       assert.equal(hasTable(db, table), true, `missing table ${table}`);
     }
+    const capabilityJsonColumn = db.prepare('PRAGMA table_info(provider_canary_evidence)').all()
+      .find((column) => column.name === 'capability_json');
+    assert.equal(capabilityJsonColumn.type, 'TEXT');
+    assert.equal(capabilityJsonColumn.notnull, 1);
 
     assert.equal(
       indexNames(db, 'generation_route_requests').has('idx_generation_route_requests_state'),

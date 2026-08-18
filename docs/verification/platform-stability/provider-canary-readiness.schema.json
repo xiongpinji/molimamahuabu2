@@ -95,6 +95,7 @@
                 "missing_cost",
                 "cost_not_positive",
                 "missing_capabilities",
+                "missing_runtime_mapping",
                 "legacy_connection_only_verification",
                 "admin_paused"
               ]

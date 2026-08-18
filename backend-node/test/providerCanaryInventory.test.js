@@ -16,6 +16,7 @@ const BLOCKERS = [
   'missing_cost',
   'cost_not_positive',
   'missing_capabilities',
+  'missing_runtime_mapping',
   'legacy_connection_only_verification',
   'admin_paused',
 ];
@@ -49,6 +50,7 @@ function createFixtureDb(filename = ':memory:') {
       provider TEXT NOT NULL,
       base_url TEXT NOT NULL,
       api_key TEXT,
+      api_protocol TEXT,
       model TEXT,
       default_model TEXT,
       priority INTEGER NOT NULL DEFAULT 0,
@@ -81,9 +83,9 @@ function createFixtureDb(filename = ':memory:') {
     );
   `);
   const insertConfig = db.prepare(`INSERT INTO ai_service_configs
-    (id, service_type, provider, base_url, api_key, model, default_model, priority,
+    (id, service_type, provider, base_url, api_key, api_protocol, model, default_model, priority,
      is_active, settings, logical_model_id, verification_status, updated_at, deleted_at)
-    VALUES (@id, @service_type, @provider, @base_url, @api_key, @model, @default_model,
+    VALUES (@id, @service_type, @provider, @base_url, @api_key, @api_protocol, @model, @default_model,
       @priority, @is_active, @settings, @logical_model_id, @verification_status,
       @updated_at, NULL)`);
   insertConfig.run({
@@ -92,6 +94,7 @@ function createFixtureDb(filename = ':memory:') {
     provider: 'fixture-image-provider',
     base_url: 'https://relay.example.com/v1/images',
     api_key: 'sk-secret',
+    api_protocol: 'openai',
     model: JSON.stringify(['private-image-upstream']),
     default_model: 'private-image-upstream',
     priority: 100,
@@ -111,6 +114,7 @@ function createFixtureDb(filename = ':memory:') {
     provider: 'fixture-video-provider',
     base_url: 'https://video-fixture.invalid/v1',
     api_key: 'video-secret',
+    api_protocol: 'openai',
     model: JSON.stringify(['private-video-upstream']),
     default_model: 'private-video-upstream',
     priority: 90,
@@ -126,6 +130,7 @@ function createFixtureDb(filename = ':memory:') {
     provider: 'fixture-legacy-provider',
     base_url: 'https://legacy-fixture.invalid/api',
     api_key: 'legacy-secret',
+    api_protocol: 'openai',
     model: JSON.stringify(['legacy-private-upstream']),
     default_model: 'legacy-private-upstream',
     priority: 80,
@@ -141,6 +146,7 @@ function createFixtureDb(filename = ':memory:') {
     provider: 'fixture-paused-provider',
     base_url: 'https://paused-fixture.invalid/v1',
     api_key: 'paused-secret',
+    api_protocol: 'openai',
     model: JSON.stringify(['paused-private-upstream']),
     default_model: 'paused-private-upstream',
     priority: 70,
@@ -322,7 +328,7 @@ test('missing price tables become blockers instead of aborting the inventory', (
     assert.equal(report.summary.ready_for_paid_canary, 0);
     assert.equal(report.routes[0].user_price_status, 'missing');
     assert.equal(report.routes[0].cost_status, 'missing');
-    assert.deepEqual(report.routes[0].blockers, ['missing_user_price', 'missing_cost']);
+    assert.deepEqual(report.routes[0].blockers, ['missing_user_price', 'missing_cost', 'missing_runtime_mapping']);
   } finally {
     db.close();
   }
@@ -335,7 +341,41 @@ test('legacy narrow price tables treat absent status and cost columns as no evid
     const report = inventory.buildCanaryReadiness(db, { now: NOW });
     assert.equal(report.routes[0].user_price_status, 'missing');
     assert.equal(report.routes[0].cost_status, 'missing');
-    assert.deepEqual(report.routes[0].blockers, ['missing_user_price', 'missing_cost']);
+    assert.deepEqual(report.routes[0].blockers, ['missing_user_price', 'missing_cost', 'missing_runtime_mapping']);
+  } finally {
+    db.close();
+  }
+});
+
+test('runtime resolver receives protocol/provider/settings and missing mappings block only their route', () => {
+  const inventory = require('../src/services/providerCanaryInventoryService');
+  const db = createFixtureDb();
+  const seen = [];
+  try {
+    const report = inventory.buildCanaryReadiness(db, {
+      now: NOW,
+      runtimeFingerprintResolver(config) {
+        seen.push({
+          id: config.id,
+          api_protocol: config.api_protocol,
+          provider: config.provider,
+          settings: config.settings,
+        });
+        return config.id === 11
+          ? { ok: true, fingerprint: 'resolved-image-runtime' }
+          : { ok: false, code: 'missing_runtime_mapping', fingerprint: null };
+      },
+    });
+    assert.equal(seen.length, 4);
+    assert.equal(seen[0].api_protocol, 'openai');
+    assert.equal(seen[0].provider, 'fixture-image-provider');
+    assert.match(seen[0].settings, /canvas_capabilities/);
+    assert.equal(report.routes[0].runtime_fingerprint, 'resolved-image-runtime');
+    assert.equal(report.routes[0].blockers.includes('missing_runtime_mapping'), false);
+    for (const route of report.routes.slice(1)) {
+      assert.equal(route.runtime_fingerprint, null);
+      assert.equal(route.blockers.includes('missing_runtime_mapping'), true);
+    }
   } finally {
     db.close();
   }

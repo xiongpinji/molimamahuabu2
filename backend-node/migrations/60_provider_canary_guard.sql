@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS provider_canary_evidence (
   config_id INTEGER NOT NULL,
   service_type TEXT NOT NULL,
   capability_fingerprint TEXT NOT NULL,
+  capability_json TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN (
     'never_verified',
     'fresh',
