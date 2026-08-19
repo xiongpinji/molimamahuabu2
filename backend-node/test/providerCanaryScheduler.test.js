@@ -145,7 +145,7 @@ test('shadow installs an unref five-minute timer and paid false never calls exec
   assert.equal(executorCalls, 0);
 });
 
-test('route mapping failure only blocks the affected route in a zero-cost sweep', async (t) => {
+test('route mapping failure records the affected route first actionable blocker', async (t) => {
   const scheduler = loadScheduler();
   const { db, storageRoot } = setup(t);
   const ready = config(1);
@@ -174,7 +174,7 @@ test('route mapping failure only blocks the affected route in a zero-cost sweep'
     category: route.category,
   })), [
     { config_id: ready.id, state: 'healthy', category: null },
-    { config_id: blocked.id, state: 'failed', category: 'route_mapping_incomplete' },
+    { config_id: blocked.id, state: 'failed', category: 'missing_logical_model_id' },
   ]);
 });
 

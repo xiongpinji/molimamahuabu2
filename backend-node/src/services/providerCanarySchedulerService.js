@@ -401,7 +401,7 @@ function probeMappings(db, options = {}) {
       row.route_ref,
       {
         ok: row.blockers.length === 0,
-        category: row.blockers.length === 0 ? null : 'route_mapping_incomplete',
+        category: row.blockers[0] || null,
       },
     ]));
     return {

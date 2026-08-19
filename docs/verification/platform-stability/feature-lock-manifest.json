@@ -245,8 +245,8 @@
       ],
       "fixCommit": null,
       "unlock": {
-        "reason": "2026-08-19 两项运营处理获批，修复线路映射误报",
-        "approvedBy": "product-owner 2026-08-19 operations-followup",
+        "reason": "2026-08-19 运营处理获批，按线路记录可执行阻断并修复只读探测目标",
+        "approvedBy": "product-owner 2026-08-19 route-remediation-followup",
         "impactTests": [
           "backend-node/test/providerCanaryInventory.test.js",
           "backend-node/test/providerCanaryScheduler.test.js"
