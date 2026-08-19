@@ -61,6 +61,21 @@
 `logical_model_id` 会改变 shadow 生成路由，而部分配置同时承载多个上游模型；在拆分与真实
 生成证据完成前自动写值会制造错误路由，而不是修复告警。
 
+### 生产 shadow 回读
+
+- 从实时 `platform-stability-shadow-route-map-20260819-5794441d-r1` 克隆候选，只覆盖调度器
+  实现和对应回归测试两个文件；共享门禁验证模式与正式激活均通过。
+- 已激活 `platform-stability-shadow-route-category-20260819-6e50c7d2-r1`；门禁审计为
+  `protected-release-20260819T135312Z-4180357.audit`，发布前数据库备份位于新数据盘。
+- Token6688 配置 26 另做一致性备份后，以 compare-and-set 事务把空的只读查询目标改为
+  `/v1/models`；生成验证状态与既有验证时间未变化，并写入一条管理员审计事件。
+- 2026-08-19T14:00:49.316Z 的同批零成本 shadow 回读覆盖全部 17 条启用线路：2 条
+  `healthy`、13 条 `missing_logical_model_id`、2 条 `cost_not_positive`；
+  `route_mapping_incomplete` 为 0。
+- `provider_canary_runs` 为 0，预占和实际成本均为 0；数据库 `quick_check=ok`，三类生成任务
+  均为 0。服务本机健康和公开首页均返回 200，重启计数 0，启动后致命日志 0；AI 音乐两个
+  进程 PID 保持 206874、206895，未被触碰。
+
 ## 系统盘安全清理
 
 清理前根分区使用率为 96%，可用约 8.49 GB。只读核对确认当前版本、显式回滚版本、运行进程工作目录、部署锁、数据库/资产目录和 AI 音乐进程均已排除。
