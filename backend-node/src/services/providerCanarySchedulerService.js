@@ -397,10 +397,18 @@ function probeMappings(db, options = {}) {
       runtimeFingerprintResolver: options.runtimeFingerprintResolver
         || ((config) => runtimeService.runtimeFingerprintForConfig(config)),
     });
+    const routes = Object.fromEntries(report.routes.map((row) => [
+      row.route_ref,
+      {
+        ok: row.blockers.length === 0,
+        category: row.blockers.length === 0 ? null : 'route_mapping_incomplete',
+      },
+    ]));
     return {
       ok: report.routes.every((row) => row.blockers.length === 0),
       blocked: report.routes.filter((row) => row.blockers.length > 0).length,
       category: 'route_mapping_incomplete',
+      routes,
     };
   } catch (_) {
     return { ok: false, category: 'route_mapping_unavailable' };
@@ -587,8 +595,13 @@ async function runZeroCostSweep(db, log, options = {}) {
   const routes = [];
   for (const config of configs) {
     const provider = await invokeProbe(probes.provider, [db, config, options], 'provider_probe_failed');
+    const mapping = globalChecks.mappings?.routes
+      ? globalChecks.mappings.routes[inventoryService.sanitizeRouteRef(config)]
+        || { ok: false, category: 'route_mapping_incomplete' }
+      : globalChecks.mappings;
+    const routeChecks = { ...globalChecks, mappings: mapping };
     const failures = [
-      ...Object.entries(globalChecks).filter(([, result]) => !result.ok),
+      ...Object.entries(routeChecks).filter(([, result]) => !result.ok),
       ...(!provider.ok ? [['provider', provider]] : []),
     ];
     const state = config.canary_paused ? 'disabled' : failures.length ? 'failed' : 'healthy';

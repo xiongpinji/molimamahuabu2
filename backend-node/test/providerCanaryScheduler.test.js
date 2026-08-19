@@ -145,6 +145,39 @@ test('shadow installs an unref five-minute timer and paid false never calls exec
   assert.equal(executorCalls, 0);
 });
 
+test('route mapping failure only blocks the affected route in a zero-cost sweep', async (t) => {
+  const scheduler = loadScheduler();
+  const { db, storageRoot } = setup(t);
+  const ready = config(1);
+  const blocked = config(2, { logical_model_id: null });
+  insertRoute(db, ready);
+  insertRoute(db, blocked);
+  db.prepare("UPDATE ai_service_configs SET verification_status = 'verified'").run();
+  const prices = require('../src/services/modelPriceService');
+  prices.set(db, ready.logical_model_id, 10, {
+    category: 'video', cost_micros_per_unit: 10,
+  });
+  prices.set(db, blocked.default_model, 10, {
+    category: 'video', cost_micros_per_unit: 10,
+  });
+  const probes = { ...allHealthyProbes };
+  delete probes.mappings;
+
+  const result = await scheduler.runZeroCostSweep(db, {}, {
+    now: '2026-08-18T00:00:00.000Z', storageRoot,
+    configs: [ready, blocked], probes,
+  });
+
+  assert.deepEqual(result.routes.map((route) => ({
+    config_id: route.config_id,
+    state: route.state,
+    category: route.category,
+  })), [
+    { config_id: ready.id, state: 'healthy', category: null },
+    { config_id: blocked.id, state: 'failed', category: 'route_mapping_incomplete' },
+  ]);
+});
+
 test('capability profiles form deterministic exact dimension combinations and use declared maxima', () => {
   const scheduler = loadScheduler();
   const profiles = scheduler.enumerateCapabilityProfiles(config(1, {

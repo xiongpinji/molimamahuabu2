@@ -240,10 +240,18 @@
         "docs/superpowers/plans/2026-08-18-platform-stability-proactive-canary-foundation.md",
         "docs/verification/platform-stability/provider-canary-readiness.json",
         "docs/verification/platform-stability/platform-feature-inventory.json",
-        "docs/verification/platform-stability/proactive-canary-verification.md"
+        "docs/verification/platform-stability/proactive-canary-verification.md",
+        "docs/verification/platform-stability/route-mapping-and-disk-operations-20260819.md"
       ],
       "fixCommit": null,
-      "unlock": null
+      "unlock": {
+        "reason": "2026-08-19 两项运营处理获批，修复线路映射误报",
+        "approvedBy": "product-owner 2026-08-19 operations-followup",
+        "impactTests": [
+          "backend-node/test/providerCanaryInventory.test.js",
+          "backend-node/test/providerCanaryScheduler.test.js"
+        ]
+      }
     }
   ]
 }

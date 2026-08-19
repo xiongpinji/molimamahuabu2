@@ -79,6 +79,7 @@ const PROACTIVE_CANARY_ALLOWED_PATHS = [
   'docs/verification/platform-stability/proactive-canary-verification.md',
   'docs/verification/platform-stability/provider-canary-readiness.json',
   'docs/verification/platform-stability/provider-canary-readiness.schema.json',
+  'docs/verification/platform-stability/route-mapping-and-disk-operations-20260819.md',
   'frontweb/e2e/platform-zero-cost-smoke.spec.js',
   'frontweb/e2e/provider-stability-admin.spec.js',
   'frontweb/scripts/run-platform-zero-cost-smoke.mjs',
