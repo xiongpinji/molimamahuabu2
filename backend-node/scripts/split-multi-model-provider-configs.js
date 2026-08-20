@@ -114,7 +114,7 @@ function readBindingFile(filePath) {
   return { schema_version: 1, source_config_id: raw.source_config_id, models };
 }
 
-function normalizeModels(value) {
+function parseModelEntries(value) {
   let parsed;
   try {
     parsed = JSON.parse(value || '[]');
@@ -122,7 +122,11 @@ function normalizeModels(value) {
     parsed = [value];
   }
   const values = Array.isArray(parsed) ? parsed : [parsed];
-  return [...new Set(values.map((item) => String(item || '').trim()).filter(Boolean))];
+  return values.map((item) => String(item || '').trim()).filter(Boolean);
+}
+
+function normalizeModels(value) {
+  return [...new Set(parseModelEntries(value))];
 }
 
 function readTarget(db, configId) {
@@ -217,7 +221,9 @@ function validateEvidenceBoundPlan(db, input, overrides = {}) {
   const readTrustedEvidence = overrides.readTrustedEvidence
     || externalModelEvidenceService.readTrustedEvidence;
   const target = readTarget(db, input.configId);
-  if (new Set(target.models.map((model) => model.toLowerCase())).size !== target.models.length) {
+  const sourceModelEntries = parseModelEntries(target.row.model);
+  if (new Set(sourceModelEntries.map((model) => model.toLowerCase())).size
+      !== sourceModelEntries.length) {
     fail('INVALID_MODEL_CONFIGURATION');
   }
   const source = target.row;

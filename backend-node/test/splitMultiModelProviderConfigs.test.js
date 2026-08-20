@@ -391,12 +391,12 @@ test('证据绑定拆分原子生成两个启用已验证且巡检暂停的单�
   db.close();
 });
 
-test('证据绑定拆分拒绝大小写重复的源模型且四表零变化', (t) => {
+function assertDuplicateSourceModelsRejected(t, sourceModels) {
   const item = evidenceFixture();
   t.after(() => cleanup(item));
   const db = new Database(item.dbPath);
   db.prepare('UPDATE ai_service_configs SET model = ? WHERE id = ?').run(
-    JSON.stringify(['seedance-2-fast', 'SEEDANCE-2-FAST', 'seedance-2-mini']),
+    JSON.stringify(sourceModels),
     item.configId,
   );
   const binding = validBinding(item.configId);
@@ -427,4 +427,16 @@ test('证据绑定拆分拒绝大小写重复的源模型且四表零变化', (t
   assert.deepEqual(snapshot(), before);
   assert.equal(error?.code, 'INVALID_MODEL_CONFIGURATION');
   db.close();
+}
+
+test('证据绑定拆分拒绝大小写重复的源模型且四表零变化', (t) => {
+  assertDuplicateSourceModelsRejected(t, [
+    'seedance-2-fast', 'SEEDANCE-2-FAST', 'seedance-2-mini',
+  ]);
+});
+
+test('证据绑定拆分拒绝完全重复的源模型且四表零变化', (t) => {
+  assertDuplicateSourceModelsRejected(t, [
+    'seedance-2-fast', 'seedance-2-fast', 'seedance-2-mini',
+  ]);
 });
