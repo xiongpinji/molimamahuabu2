@@ -83,6 +83,7 @@ const PROACTIVE_CANARY_ALLOWED_PATHS = [
   'backend-node/test/providerRuntimeFingerprint.test.js',
   'backend-node/test/splitMultiModelProviderConfigs.test.js',
   'backend-node/test/text-generation-billing.test.js',
+  'backend-node/test/videoBilling.test.js',
   'backend-node/test/videoQueryTaskStatusOnce.test.js',
   'deploy/release-scopes/platform-stability-proactive-canary.json',
   'docs/superpowers/plans/2026-08-18-platform-stability-proactive-canary-foundation.md',
