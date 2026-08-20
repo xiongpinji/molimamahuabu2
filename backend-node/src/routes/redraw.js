@@ -443,6 +443,8 @@ const PROJECT_POLICY_FIELDS = new Set([
   'max_auto_attempts_per_shot',
   'expected_updated_at',
 ]);
+const PROJECT_POLICY_DANGEROUS_FIELDS = new Set(['__proto__', 'constructor', 'prototype']);
+const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 
 function generationInputError(message) {
   return codedRouteError('REDRAW_GENERATION_INPUT_INVALID', message);
@@ -1842,6 +1844,14 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     }
     const body = req.body || {};
     for (const key of Object.keys(body)) {
+      if (PROJECT_POLICY_DANGEROUS_FIELDS.has(key)) {
+        return response.error(
+          res,
+          400,
+          'REDRAW_PROJECT_POLICY_INVALID',
+          `项目策略不接受字段 ${key}`,
+        );
+      }
       if (!PROJECT_POLICY_FIELDS.has(key)) {
         return response.error(
           res,
@@ -1851,7 +1861,7 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
         );
       }
     }
-    if (!String(body.expected_updated_at || '').trim()) {
+    if (!hasOwn(body, 'expected_updated_at') || !String(body.expected_updated_at || '').trim()) {
       return response.error(
         res,
         400,
@@ -1866,11 +1876,11 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
         projectId: Number(req.params.id),
         expectedUpdatedAt: body.expected_updated_at,
         input: {
-          execution_mode: body.execution_mode,
-          ...(Object.prototype.hasOwnProperty.call(body, 'budget_limit_credits')
+          ...(hasOwn(body, 'execution_mode') ? { execution_mode: body.execution_mode } : {}),
+          ...(hasOwn(body, 'budget_limit_credits')
             ? { budget_limit_credits: body.budget_limit_credits }
             : {}),
-          ...(Object.prototype.hasOwnProperty.call(body, 'max_auto_attempts_per_shot')
+          ...(hasOwn(body, 'max_auto_attempts_per_shot')
             ? { max_auto_attempts_per_shot: body.max_auto_attempts_per_shot }
             : {}),
         },

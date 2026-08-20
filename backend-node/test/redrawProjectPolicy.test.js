@@ -98,6 +98,43 @@ test('策略输入严格拒绝未知字段和非法数值', () => {
   });
 });
 
+test('策略输入只接受 own property 且拒绝原型污染键', () => {
+  const inheritedSafe = Object.create({ execution_mode: 'safe' });
+  assert.throws(
+    () => normalizeProjectPolicy(inheritedSafe),
+    (error) => error.code === 'REDRAW_PROJECT_POLICY_INVALID',
+  );
+
+  const inheritedAuto = Object.create({
+    execution_mode: 'auto',
+    budget_limit_credits: 100,
+    max_auto_attempts_per_shot: 2,
+  });
+  assert.throws(
+    () => normalizeProjectPolicy(inheritedAuto),
+    (error) => error.code === 'REDRAW_PROJECT_POLICY_INVALID',
+  );
+
+  const literalProto = { __proto__: { execution_mode: 'safe' } };
+  assert.throws(
+    () => normalizeProjectPolicy(literalProto),
+    (error) => error.code === 'REDRAW_PROJECT_POLICY_INVALID',
+  );
+
+  const jsonProto = JSON.parse('{"__proto__":{"execution_mode":"safe"},"execution_mode":"safe"}');
+  assert.throws(
+    () => normalizeProjectPolicy(jsonProto),
+    (error) => error.code === 'REDRAW_PROJECT_POLICY_INVALID',
+  );
+
+  const nullPrototype = Object.assign(Object.create(null), { execution_mode: 'safe' });
+  assert.deepEqual(normalizeProjectPolicy(nullPrototype), {
+    execution_mode: 'safe',
+    budget_limit_credits: null,
+    max_auto_attempts_per_shot: null,
+  });
+});
+
 test('策略更新使用 owner 与 updated_at CAS 且不改写目标国家语言', () => {
   const db = createDb();
   try {

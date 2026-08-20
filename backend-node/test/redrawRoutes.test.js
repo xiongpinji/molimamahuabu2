@@ -5068,6 +5068,59 @@ test('项目策略 API 对跨 owner 统一 404，CAS 冲突 409 且不追加事�
   }
 });
 
+test('项目策略 API 拒绝继承字段和原型污染键且零写入', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+    const before = db.prepare(`
+      SELECT execution_mode, budget_limit_credits, max_auto_attempts_per_shot,
+             policy_version, updated_at
+      FROM redraw_projects WHERE id = ?
+    `).get(projectId);
+
+    const inheritedPolicy = Object.create({
+      execution_mode: 'auto',
+      budget_limit_credits: 100,
+      max_auto_attempts_per_shot: 2,
+      expected_updated_at: NOW,
+    });
+    const inherited = captureResponse();
+    handlers.updateProjectPolicy(request({ id: projectId, body: inheritedPolicy }), inherited);
+    assert.equal(inherited.statusCode, 400);
+    assert.equal(inherited.body.error.code, 'REDRAW_PROJECT_POLICY_EXPECTED_UPDATED_AT_REQUIRED');
+
+    const inheritedCas = Object.assign(Object.create({ expected_updated_at: NOW }), {
+      execution_mode: 'safe',
+    });
+    const cas = captureResponse();
+    handlers.updateProjectPolicy(request({ id: projectId, body: inheritedCas }), cas);
+    assert.equal(cas.statusCode, 400);
+    assert.equal(cas.body.error.code, 'REDRAW_PROJECT_POLICY_EXPECTED_UPDATED_AT_REQUIRED');
+
+    const literalProto = { __proto__: { execution_mode: 'safe', expected_updated_at: NOW } };
+    const literal = captureResponse();
+    handlers.updateProjectPolicy(request({ id: projectId, body: literalProto }), literal);
+    assert.equal(literal.statusCode, 400);
+    assert.equal(literal.body.error.code, 'REDRAW_PROJECT_POLICY_EXPECTED_UPDATED_AT_REQUIRED');
+
+    const jsonProto = JSON.parse(`{"__proto__":{"execution_mode":"safe"},"execution_mode":"safe","expected_updated_at":"${NOW}"}`);
+    const ownProto = captureResponse();
+    handlers.updateProjectPolicy(request({ id: projectId, body: jsonProto }), ownProto);
+    assert.equal(ownProto.statusCode, 400);
+    assert.equal(ownProto.body.error.code, 'REDRAW_PROJECT_POLICY_INVALID');
+
+    assert.deepEqual(db.prepare(`
+      SELECT execution_mode, budget_limit_credits, max_auto_attempts_per_shot,
+             policy_version, updated_at
+      FROM redraw_projects WHERE id = ?
+    `).get(projectId), before);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_workflow_events').get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
 test('转绘图片预览仅返回当前 owner 的存储根内图片', () => {
   const db = createDb();
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-preview-'));

@@ -8,6 +8,8 @@ const ALLOWED_FIELDS = new Set([
   'budget_limit_credits',
   'max_auto_attempts_per_shot',
 ]);
+const DANGEROUS_FIELDS = new Set(['__proto__', 'constructor', 'prototype']);
+const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 
 function coded(code, message) {
   const error = new Error(message);
@@ -20,6 +22,9 @@ function assertAllowedFields(input) {
     throw coded('REDRAW_PROJECT_POLICY_INVALID', '项目策略必须是对象');
   }
   for (const key of Object.keys(input)) {
+    if (DANGEROUS_FIELDS.has(key)) {
+      throw coded('REDRAW_PROJECT_POLICY_INVALID', `项目策略不接受字段 ${key}`);
+    }
     if (!ALLOWED_FIELDS.has(key)) {
       throw coded('REDRAW_PROJECT_POLICY_UNKNOWN_FIELD', `项目策略不接受字段 ${key}`);
     }
@@ -36,12 +41,22 @@ function optionalPositiveInteger(value, field, max = null) {
 
 function normalizeProjectPolicy(input = {}) {
   assertAllowedFields(input);
+  if (!hasOwn(input, 'execution_mode')) {
+    throw coded('REDRAW_PROJECT_POLICY_INVALID', 'execution_mode 必须是 safe 或 auto');
+  }
   const executionMode = String(input.execution_mode || '').trim();
   if (!['safe', 'auto'].includes(executionMode)) {
     throw coded('REDRAW_PROJECT_POLICY_INVALID', 'execution_mode 必须是 safe 或 auto');
   }
-  const budget = optionalPositiveInteger(input.budget_limit_credits, 'budget_limit_credits');
-  const attempts = optionalPositiveInteger(input.max_auto_attempts_per_shot, 'max_auto_attempts_per_shot', 5);
+  const budget = optionalPositiveInteger(
+    hasOwn(input, 'budget_limit_credits') ? input.budget_limit_credits : null,
+    'budget_limit_credits',
+  );
+  const attempts = optionalPositiveInteger(
+    hasOwn(input, 'max_auto_attempts_per_shot') ? input.max_auto_attempts_per_shot : null,
+    'max_auto_attempts_per_shot',
+    5,
+  );
   if (executionMode === 'auto' && (budget == null || attempts == null)) {
     throw coded('REDRAW_PROJECT_POLICY_INCOMPLETE', 'auto 模式必须同时提供预算和自动尝试上限');
   }
