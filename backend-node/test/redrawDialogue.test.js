@@ -298,28 +298,30 @@ test('buildDialoguePlan accepts v2 materialized target_text dialogue turns', () 
 });
 
 test('buildDialoguePlan does not fall back when v2 target_text is present but empty', () => {
-  const state = setup();
-  state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
-  state.db.prepare('UPDATE redraw_shots SET localized_dialogue_json = ? WHERE id = 801')
-    .run(JSON.stringify([{
-      speaker_id: 'c-1',
-      target_text: '',
-      localized_text: 'Legacy fallback must not be used.',
-      text: 'Text fallback must not be used.',
-      start_ms: 100,
-      end_ms: 1200,
-      estimated_duration_ms: 900,
-    }]));
+  for (const targetText of ['', null, { text: 'Object fallback must not be used.' }, ['Array fallback must not be used.']]) {
+    const state = setup();
+    state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
+    state.db.prepare('UPDATE redraw_shots SET localized_dialogue_json = ? WHERE id = 801')
+      .run(JSON.stringify([{
+        speaker_id: 'c-1',
+        target_text: targetText,
+        localized_text: 'Legacy fallback must not be used.',
+        text: 'Text fallback must not be used.',
+        start_ms: 100,
+        end_ms: 1200,
+        estimated_duration_ms: 900,
+      }]));
 
-  const plan = buildDialoguePlan(state.db, ctx(state));
-  const quote = quoteDialoguePlan(state.db, ctx(state));
+    const plan = buildDialoguePlan(state.db, ctx(state));
+    const quote = quoteDialoguePlan(state.db, ctx(state));
 
-  assert.equal(plan.status, 'needs_rewrite');
-  assert.deepEqual(plan.segments, []);
-  assert.deepEqual(plan.issues.map((issue) => issue.reason), ['dialogue_text_invalid']);
-  assert.equal(quote.status, 'needs_rewrite');
-  assert.equal(quote.segment_count, 0);
-  state.db.close();
+    assert.equal(plan.status, 'needs_rewrite', `target_text=${JSON.stringify(targetText)}`);
+    assert.deepEqual(plan.segments, []);
+    assert.deepEqual(plan.issues.map((issue) => issue.reason), ['dialogue_text_invalid']);
+    assert.equal(quote.status, 'needs_rewrite');
+    assert.equal(quote.segment_count, 0);
+    state.db.close();
+  }
 });
 
 test('dialogue quote requires ready locale verifier and binds worker pack manifests into quote hash', () => {
