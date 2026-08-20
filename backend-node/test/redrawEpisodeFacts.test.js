@@ -105,6 +105,7 @@ test('v2 事实连续覆盖整集并绑定人物、说话人、文字和环境�
 
 test('v2 facts hash is canonical, semantic and input-safe', () => {
   const raw = genericThreeShotFacts();
+  raw.story = ['乔安接到超时订单', '陆沉暴露旧案线索'];
   raw.scenes[0].source_ranges = [
     { start_ms: 0, end_ms: 6_000 },
     { start_ms: 6_000, end_ms: 12_300 },
@@ -116,6 +117,8 @@ test('v2 facts hash is canonical, semantic and input-safe', () => {
   const before = JSON.stringify(raw);
   const first = normalizeEpisodeFactsV2(raw);
   const reordered = genericThreeShotFacts();
+  reordered.story = ['陆沉暴露旧案线索', '乔安接到超时订单'];
+  reordered.causal_chain = ['陆沉戒指连接旧案编号', '超时订单让乔安遇见陆沉'];
   reordered.characters.reverse();
   reordered.shots[1].visible_character_ids.reverse();
   reordered.scenes[0].source_ranges = [
@@ -131,6 +134,8 @@ test('v2 facts hash is canonical, semantic and input-safe', () => {
   changed.shots[0].continuous_action = '她停下检查密封餐袋';
   assert.equal(JSON.stringify(raw), before);
   assert.equal(first.facts_hash, second.facts_hash);
+  assert.deepEqual(second.story, ['乔安接到超时订单', '陆沉暴露旧案线索']);
+  assert.deepEqual(second.causal_chain, ['超时订单让乔安遇见陆沉', '陆沉戒指连接旧案编号']);
   assert.notEqual(first.facts_hash, normalizeEpisodeFactsV2(changed).facts_hash);
 });
 
