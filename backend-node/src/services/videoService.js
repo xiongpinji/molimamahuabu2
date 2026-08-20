@@ -185,7 +185,33 @@ function loadStoryboardVideoDefaults(db, storyboardId) {
 function settleVideoCredit(db, log, row, outcome, message = '') {
   if (!row?.credit_reservation_id) return null;
   try {
+    const actual = db.prepare('SELECT * FROM video_generations WHERE credit_reservation_id = ?')
+      .get(row.credit_reservation_id) || row;
     const settled = creditLedger.settleGeneration(db, row.credit_reservation_id, outcome, message);
+    try {
+      if (outcome === 'completed') {
+        generationCost.record(db, {
+          reservationId: row.credit_reservation_id,
+          model: actual.model || settled?.model,
+          configId: actual.config_id,
+          count: 1,
+          duration: actual.duration,
+          resolution: actual.resolution,
+          usageSource: 'provider',
+        });
+      } else if (settled?.status === 'held') {
+        generationCost.record(db, {
+          reservationId: row.credit_reservation_id,
+          model: actual.model || settled?.model,
+          usageSource: 'unknown',
+        });
+      }
+    } catch (costError) {
+      log?.error?.('视频生成成本记录失败，保留未计成本标记', {
+        id: actual.id,
+        error: costError.message,
+      });
+    }
     auditEvent.record(db, {
       userId: settled?.user_id,
       tenantId: settled?.tenant_id,
@@ -199,6 +225,22 @@ function settleVideoCredit(db, log, row, outcome, message = '') {
   } catch (error) {
     log?.error('视频积分结算失败，保留原预扣状态', { id: row.id, error: error.message });
     return null;
+  }
+}
+
+function markVideoCostUnknown(db, log, row) {
+  if (!row?.credit_reservation_id) return;
+  try {
+    generationCost.record(db, {
+      reservationId: row.credit_reservation_id,
+      model: row.model,
+      usageSource: 'unknown',
+    });
+  } catch (error) {
+    log?.error?.('视频生成结果未知成本标记失败，保留未计成本状态', {
+      id: row.id,
+      error: error.message,
+    });
   }
 }
 
@@ -813,6 +855,7 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     if (downloadIndeterminate || markVideoArtifactUnreadable(db, videoGenId)) {
       db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
         .run('processing', message.slice(0, 500), now, videoGenId);
+      markVideoCostUnknown(db, log, row);
       if (row.task_id) taskService.updateTaskStatus(db, row.task_id, 'processing', 90, message);
       log.warn('Video artifact unreadable; request held for review', { id: videoGenId });
       return false;
@@ -913,6 +956,7 @@ async function pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspec
     const message = String(pollResult.error || '供应商任务仍可能处理中，请勿重新提交').slice(0, 500);
     db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
       .run('processing', message, now, videoGenId);
+    markVideoCostUnknown(db, log, row);
     if (row.task_id) taskService.updateTaskStatus(db, row.task_id, 'processing', 90, message);
     log.warn('Video generation final status indeterminate; duplicate guard remains active', {
       id: videoGenId,
@@ -1119,6 +1163,7 @@ async function processVideoGeneration(db, log, videoGenId) {
       if (result.indeterminate) {
         db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
           .run('processing', String(result.error).slice(0, 500), now2, videoGenId);
+        markVideoCostUnknown(db, log, row);
         if (row.task_id) taskService.updateTaskStatus(db, row.task_id, 'processing', 90, result.error);
         log.warn('Video generation submission result unknown; duplicate guard remains active', {
           id: videoGenId,

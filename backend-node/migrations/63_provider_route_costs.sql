@@ -20,3 +20,7 @@ CREATE TABLE IF NOT EXISTS provider_route_resolution_costs (
 
 CREATE INDEX IF NOT EXISTS idx_provider_route_resolution_costs_config
   ON provider_route_resolution_costs(config_id, resolution);
+
+ALTER TABLE generation_cost_records ADD COLUMN config_id INTEGER;
+ALTER TABLE generation_cost_records ADD COLUMN cost_snapshot_json TEXT;
+ALTER TABLE generation_cost_records ADD COLUMN cost_source TEXT NOT NULL DEFAULT 'unavailable';

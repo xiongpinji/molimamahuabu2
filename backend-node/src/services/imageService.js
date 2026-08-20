@@ -72,6 +72,7 @@ const storageLayout = require('./storageLayout');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
 const creditLedger = require('./creditLedgerService');
+const generationCost = require('./generationCostLedgerService');
 const auditEvent = require('./auditEventService');
 const textGenerationBilling = require('./text-generation-billing-service');
 const { getGridLayout, isGridFrameType, getGridCells } = require('./gridLayout');
@@ -79,7 +80,33 @@ const { getGridLayout, isGridFrameType, getGridCells } = require('./gridLayout')
 function settleImageCredit(db, log, row, outcome, message = '') {
   if (!row?.credit_reservation_id) return null;
   try {
-    return creditLedger.settleGeneration(db, row.credit_reservation_id, outcome, message);
+    const actual = db.prepare('SELECT * FROM image_generations WHERE credit_reservation_id = ?')
+      .get(row.credit_reservation_id) || row;
+    const settled = creditLedger.settleGeneration(db, row.credit_reservation_id, outcome, message);
+    try {
+      if (outcome === 'completed') {
+        generationCost.record(db, {
+          reservationId: row.credit_reservation_id,
+          model: actual.model || settled?.model,
+          configId: actual.config_id,
+          count: 1,
+          resolution: actual.size,
+          usageSource: 'provider',
+        });
+      } else if (settled?.status === 'held') {
+        generationCost.record(db, {
+          reservationId: row.credit_reservation_id,
+          model: actual.model || settled?.model,
+          usageSource: 'unknown',
+        });
+      }
+    } catch (costError) {
+      log?.error?.('[图生] 成本记录失败，保留未计成本标记', {
+        id: actual.id,
+        error: costError.message,
+      });
+    }
+    return settled;
   } catch (error) {
     log?.error('[图生] 积分结算失败，保留原预扣状态', { id: row.id, error: error.message });
     return null;
@@ -783,7 +810,6 @@ function create(db, log, req, options = {}) {
     if (!imageGenId) throw new Error('insert failed');
     if (options.billingEnabled) {
       const creditLedger = require('./creditLedgerService');
-      const generationCost = require('./generationCostLedgerService');
       const reservation = creditLedger.reserve(db, {
         tenantId: options.tenantId,
         actorUserId: options.userId,

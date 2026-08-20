@@ -27,6 +27,14 @@ function capture(rawUsage) {
   };
 }
 
+function captureRoute(rawConfigId) {
+  const billing = storage.getStore();
+  if (!billing) return;
+  const configId = Number(rawConfigId);
+  if (!Number.isSafeInteger(configId) || configId <= 0) return;
+  billing.route = { configId };
+}
+
 function clear(billing) {
   if (storage.getStore() === billing) storage.enterWith(null);
 }
@@ -34,5 +42,6 @@ function clear(billing) {
 module.exports = {
   activate,
   capture,
+  captureRoute,
   clear,
 };

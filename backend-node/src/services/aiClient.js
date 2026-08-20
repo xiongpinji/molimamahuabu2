@@ -846,6 +846,7 @@ async function generateTextSingleConfig(db, log, serviceType, userPrompt, system
       text_length: response.body.length,
       elapsed_ms: Date.now() - startMs,
     });
+    generationUsageContext.captureRoute(config.id);
     return response.body;
   }
   log.info('AI generateText request', { url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)', json_mode, stream: true });
@@ -875,6 +876,7 @@ async function generateTextSingleConfig(db, log, serviceType, userPrompt, system
       text_length: fallback.body.length,
       elapsed_ms: Date.now() - startMs,
     });
+    generationUsageContext.captureRoute(config.id);
     return fallback.body;
   };
   let res;
@@ -966,6 +968,7 @@ async function generateTextSingleConfig(db, log, serviceType, userPrompt, system
   }
   generationUsageContext.capture(res.usage);
   log.info('AI raw response received', { model, text_length: content.length, elapsed_ms: elapsedMs });
+  generationUsageContext.captureRoute(config.id);
   return content;
 }
 
@@ -1113,6 +1116,7 @@ async function streamGenerateTextSingleConfig(db, log, serviceType, userPrompt, 
     throw new Error('AI 返回内容为空');
   }
   log.info('AI streamGenerateText done', { model, text_length: content.length, elapsed_ms: Date.now() - startMs });
+  generationUsageContext.captureRoute(config.id);
   return content;
 }
 
@@ -1274,6 +1278,7 @@ async function generateTextWithVisionSingleConfig(db, log, serviceType, userProm
     throw new Error(`AI vision 返回内容为空（HTTP ${res.status}），原始响应：${(res.raw || '').slice(0, 200)}`);
   }
   log.info('[Vision] 请求成功', { model, elapsed_ms: Date.now() - startMs, result_len: content.length, result_preview: content.slice(0, 100) });
+  generationUsageContext.captureRoute(config.id);
   return content.trim();
 }
 
