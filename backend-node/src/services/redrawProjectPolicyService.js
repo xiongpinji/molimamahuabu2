@@ -91,6 +91,16 @@ function evidenceHash(snapshot) {
   return crypto.createHash('sha256').update(stableJson(snapshot)).digest('hex');
 }
 
+function nextUpdatedAt(candidate, previous) {
+  const previousMs = Date.parse(String(previous || ''));
+  const candidateMs = Date.parse(String(candidate || ''));
+  if (Number.isFinite(candidateMs) && (!Number.isFinite(previousMs) || candidateMs > previousMs)) {
+    return new Date(candidateMs).toISOString();
+  }
+  const baseMs = Number.isFinite(previousMs) ? previousMs : Date.now();
+  return new Date(baseMs + 1).toISOString();
+}
+
 function updateProjectPolicy(db, options = {}) {
   const tenantId = String(options.tenantId || '');
   const userId = String(options.userId || '');
@@ -116,7 +126,7 @@ function updateProjectPolicy(db, options = {}) {
       throw coded('REDRAW_PROJECT_POLICY_CONFLICT', '项目策略已被其他操作更新');
     }
 
-    const updatedAt = String(now());
+    const updatedAt = nextUpdatedAt(now(), existing.updated_at);
     const result = db.prepare(`
       UPDATE redraw_projects
       SET execution_mode = ?,

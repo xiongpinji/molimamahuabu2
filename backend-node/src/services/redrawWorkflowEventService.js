@@ -3,9 +3,20 @@
 const RESOURCE_TYPES = new Set(['project', 'version', 'shot', 'asset', 'candidate', 'release']);
 const REASON_CODE = /^[a-z][a-z0-9_]{0,63}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
-const SENSITIVE_KEY = /(key|authorization|token|secret|url|path|raw|provider.*response|response.*body)/i;
+const FORMAT_OR_CONTROL = /[\p{Cf}\p{Cc}]/gu;
 const URL_VALUE = /\b(?:https?:\/\/|file:\/\/)/i;
 const ABSOLUTE_PATH_VALUE = /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/;
+const SENSITIVE_COMPACT = [
+  'auth',
+  'authorization',
+  'apikey',
+  'token',
+  'secret',
+  'password',
+  'credential',
+  'bearer',
+  'providerresponse',
+];
 
 function invalid(message) {
   const error = new Error(message);
@@ -13,30 +24,72 @@ function invalid(message) {
   return error;
 }
 
+function normalizeForScan(value) {
+  return String(value).normalize('NFKC').replace(FORMAT_OR_CONTROL, '');
+}
+
+function assertNoSensitiveText(value, label) {
+  const normalized = normalizeForScan(value);
+  const compact = normalized.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (SENSITIVE_COMPACT.some((term) => compact.includes(term))) {
+    throw invalid(`workflow event metadata contains sensitive ${label}`);
+  }
+  if (URL_VALUE.test(normalized) || ABSOLUTE_PATH_VALUE.test(normalized.trim())) {
+    throw invalid(`workflow event metadata contains sensitive ${label}`);
+  }
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object') return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function assertSafeMetadataValue(value, seen) {
+  if (value == null) return null;
+  const type = typeof value;
+  if (type === 'string') {
+    assertNoSensitiveText(value, 'value');
+    return value;
+  }
+  if (type === 'number') {
+    if (!Number.isFinite(value)) throw invalid('workflow event metadata number invalid');
+    return value;
+  }
+  if (type === 'boolean') return value;
+  if (type === 'function' || type === 'symbol' || type === 'bigint' || type === 'undefined') {
+    throw invalid('workflow event metadata type invalid');
+  }
+  if (seen.has(value)) throw invalid('workflow event metadata is not serializable');
+  if (Buffer.isBuffer(value)
+    || value instanceof ArrayBuffer
+    || ArrayBuffer.isView(value)
+    || value instanceof Date
+    || value instanceof Map
+    || value instanceof Set) {
+    throw invalid('workflow event metadata type invalid');
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const result = value.map((item) => assertSafeMetadataValue(item, seen));
+    seen.delete(value);
+    return result;
+  }
+  if (!isPlainObject(value)) throw invalid('workflow event metadata type invalid');
+  const result = {};
+  for (const key of Object.keys(value)) {
+    assertNoSensitiveText(key, 'key');
+    result[key] = assertSafeMetadataValue(value[key], seen);
+  }
+  seen.delete(value);
+  return result;
+}
+
 function assertSafeMetadata(value) {
   if (value == null) return {};
-  let serialized;
-  try {
-    serialized = JSON.stringify(value, (key, item) => {
-      if (key && SENSITIVE_KEY.test(key)) {
-        throw invalid('workflow event metadata contains sensitive key');
-      }
-      if (typeof item === 'string') {
-        const trimmed = item.trim();
-        if (URL_VALUE.test(trimmed) || ABSOLUTE_PATH_VALUE.test(trimmed)) {
-          throw invalid('workflow event metadata contains sensitive value');
-        }
-        if (/\b(?:authorization|api[_-]?key|token|secret)\b/i.test(trimmed)) {
-          throw invalid('workflow event metadata contains sensitive value');
-        }
-      }
-      return item;
-    });
-  } catch (error) {
-    if (error.code === 'REDRAW_WORKFLOW_EVENT_INVALID') throw error;
-    throw invalid('workflow event metadata is not serializable');
-  }
-  return JSON.parse(serialized || '{}');
+  const metadata = assertSafeMetadataValue(value, new WeakSet());
+  if (!isPlainObject(metadata)) throw invalid('workflow event metadata must be an object');
+  return metadata;
 }
 
 function normalizeEventInput(input = {}) {

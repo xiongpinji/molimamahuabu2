@@ -175,6 +175,44 @@ test('策略更新使用 owner 与 updated_at CAS 且不改写目标国家语言
   }
 });
 
+test('策略更新在 now 未推进时仍生成单调 updated_at 并阻止旧 token 重放', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const updated = updateProjectPolicy(db, {
+      tenantId: 'tenant-a',
+      userId: 'user-a',
+      projectId,
+      expectedUpdatedAt: NOW,
+      input: {
+        execution_mode: 'auto',
+        budget_limit_credits: 100,
+        max_auto_attempts_per_shot: 2,
+      },
+      now: () => NOW,
+    });
+    assert.notEqual(updated.updated_at, NOW);
+    assert.ok(new Date(updated.updated_at).getTime() > new Date(NOW).getTime());
+    assert.equal(updated.policy_version, 2);
+
+    assert.throws(
+      () => updateProjectPolicy(db, {
+        tenantId: 'tenant-a',
+        userId: 'user-a',
+        projectId,
+        expectedUpdatedAt: NOW,
+        input: { execution_mode: 'safe' },
+        now: () => NOW,
+      }),
+      (error) => error.code === 'REDRAW_PROJECT_POLICY_CONFLICT',
+    );
+    assert.deepEqual(projectPolicySnapshot(db.prepare('SELECT * FROM redraw_projects WHERE id = ?').get(projectId)), updated);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_workflow_events').get().count, 1);
+  } finally {
+    db.close();
+  }
+});
+
 test('策略更新对跨 owner 统一 404，CAS 冲突 409 且零部分写入', () => {
   const db = createDb();
   try {
@@ -287,6 +325,77 @@ test('workflow event 服务拒绝敏感 metadata、危险 reason 和非法 evide
       }), (error) => error.code === 'REDRAW_WORKFLOW_EVENT_INVALID');
     }
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_workflow_events').get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('workflow event metadata 仅接受安全 JSON 数据模型并规范化检查敏感内容', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const customPrototype = Object.create({ inherited: true });
+    customPrototype.safe = 'value';
+    const badMetadata = [
+      { 'apiＫey': 'secret' },
+      { link: 'https:\u200b//provider.example/task' },
+      { blob: Buffer.from('apiKey=secret https://provider.example/task') },
+      { blob: new ArrayBuffer(8) },
+      { blob: new Uint8Array([1, 2, 3]) },
+      { when: new Date(NOW) },
+      { map: new Map([['safe', 'value']]) },
+      { set: new Set(['safe']) },
+      { fn: () => 'nope' },
+      { sym: Symbol('nope') },
+      { big: 1n },
+      { value: Number.NaN },
+      { value: Infinity },
+      customPrototype,
+      { auth: 'Bearer abc' },
+      { note: 'provider\u200b response body' },
+      { file: '/var/tmp/provider.json' },
+      { file: 'C:\\private\\provider.json' },
+      { file: '\\\\server\\share\\provider.json' },
+    ];
+    const circular = {};
+    circular.self = circular;
+    badMetadata.push(circular);
+
+    for (const metadata of badMetadata) {
+      assert.throws(() => appendWorkflowEvent(db, {
+        tenantId: 'tenant-a',
+        userId: 'user-a',
+        projectId,
+        resourceType: 'project',
+        resourceId: String(projectId),
+        fromState: 'safe',
+        toState: 'auto',
+        reasonCode: 'project_policy_updated',
+        evidenceHash: null,
+        metadata,
+        createdAt: NOW,
+      }), (error) => error.code === 'REDRAW_WORKFLOW_EVENT_INVALID');
+    }
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_workflow_events').get().count, 0);
+
+    assert.doesNotThrow(() => appendWorkflowEvent(db, {
+      tenantId: 'tenant-a',
+      userId: 'user-a',
+      projectId,
+      resourceType: 'project',
+      resourceId: String(projectId),
+      fromState: 'safe',
+      toState: 'auto',
+      reasonCode: 'project_policy_updated',
+      evidenceHash: null,
+      metadata: Object.assign(Object.create(null), {
+        label: 'ordinary relative metadata',
+        reference: 'redraw-assets/candidate.json',
+        nested: [{ count: 1, ok: true, empty: null }],
+      }),
+      createdAt: NOW,
+    }));
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_workflow_events').get().count, 1);
   } finally {
     db.close();
   }
