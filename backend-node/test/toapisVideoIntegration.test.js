@@ -2,7 +2,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { callVideoApi, pollVideoTask } = require('../src/services/videoClient');
-const { callToapisVideoApi, TOAPIS_VIDEO_MODELS } = require('../src/services/toapisVideoClient');
+const {
+  buildToapisVideoBody,
+  callToapisVideoApi,
+  TOAPIS_VIDEO_MODELS,
+} = require('../src/services/toapisVideoClient');
 
 const log = { info() {}, warn() {}, error() {} };
 
@@ -75,6 +79,57 @@ test('ToAPIs Fast and Mini both preserve two reference images through the shared
     assert.equal(signed.pathname, '/static/projects/0039/reference-1.png');
     assert.ok(signed.searchParams.get('provider_asset_signature'));
     assert.equal(calls[0].body.image_with_roles[1].url, 'https://cdn.example.com/reference-2.png');
+  }
+});
+
+test('ToAPIs Fast and Mini both expose and accept 9 image, 3 video, and 3 audio references', () => {
+  const images = Array.from({ length: 9 }, (_, index) => `https://cdn.example.com/image-${index + 1}.png`);
+  const videos = Array.from({ length: 3 }, (_, index) => `https://cdn.example.com/video-${index + 1}.mp4`);
+  const audio = Array.from({ length: 3 }, (_, index) => `https://cdn.example.com/audio-${index + 1}.mp3`);
+
+  for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
+    const spec = TOAPIS_VIDEO_MODELS[model];
+    assert.equal(spec.maxReferences, 9);
+    assert.equal(spec.maxVideoReferences, 3);
+    assert.equal(spec.maxAudioReferences, 3);
+
+    const body = buildToapisVideoBody({
+      model,
+      prompt: '保持所有参考素材中的人物、环境与声音一致',
+      duration: 4,
+      resolution: '480p',
+      aspect_ratio: '16:9',
+      reference_urls: images,
+      reference_video_urls: videos,
+      reference_audio_urls: audio,
+    });
+    assert.equal(body.image_with_roles.length, 9);
+    assert.equal(body.video_with_roles.length, 3);
+    assert.equal(body.audio_with_roles.length, 3);
+
+    assert.throws(() => buildToapisVideoBody({
+      model,
+      prompt: '超出图片上限',
+      duration: 4,
+      resolution: '480p',
+      reference_urls: [...images, 'https://cdn.example.com/image-10.png'],
+    }), /最多支持 9 张参考图/);
+    assert.throws(() => buildToapisVideoBody({
+      model,
+      prompt: '超出视频上限',
+      duration: 4,
+      resolution: '480p',
+      reference_urls: images,
+      reference_video_urls: [...videos, 'https://cdn.example.com/video-4.mp4'],
+    }), /最多支持 3 个参考视频/);
+    assert.throws(() => buildToapisVideoBody({
+      model,
+      prompt: '超出音频上限',
+      duration: 4,
+      resolution: '480p',
+      reference_urls: images,
+      reference_audio_urls: [...audio, 'https://cdn.example.com/audio-4.mp3'],
+    }), /最多支持 3 个参考音频/);
   }
 });
 
