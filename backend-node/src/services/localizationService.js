@@ -213,7 +213,10 @@ function safeMap(value, name) {
 function safeStringMap(value, name, code) {
   const map = safeMap(value, name);
   for (const key of Object.keys(map)) {
-    if (TARGET_INJECTION_KEYS.has(normalizeText(key))) throw codedError(code, `${name} target field invalid`);
+    const normalizedKey = normalizeText(key);
+    if (TARGET_INJECTION_KEYS.has(normalizedKey) || normalizedKey.startsWith('target_')) {
+      throw codedError(code, `${name} target field invalid`);
+    }
     if (typeof map[key] !== 'string') throw codedError(code, `${name} value invalid`);
     map[key] = map[key].trim();
   }
