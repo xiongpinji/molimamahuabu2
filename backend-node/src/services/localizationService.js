@@ -1,5 +1,20 @@
 const { createHash, randomUUID } = require('node:crypto');
 
+const SHA256 = /^[a-f0-9]{64}$/;
+const V2_RESULT_FIELDS = new Set([
+  'facts_hash',
+  'locale',
+  'market',
+  'name_map',
+  'culture_map',
+  'glossary',
+  'dialogue',
+  'text_map',
+  'confidence',
+]);
+const CONFIDENCE_KEYS = ['names', 'dialogue_semantics', 'dialogue_timing', 'culture', 'screen_text'];
+const UNSAFE_KEY = /(?:^|_|\b)(?:auth|authorization|token|secret|password|credential|provider|raw|prompt|url|path)(?:$|_|\b)/i;
+
 function assertObject(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw Object.assign(new Error(`${name} 必须是对象`), { code: 'LOCALIZATION_INVALID_INPUT' });
@@ -15,6 +30,9 @@ function stableStringify(value) {
 }
 
 function factsHash(sourceFacts) {
+  if (sourceFacts?.schema_version === '2.0' && SHA256.test(String(sourceFacts.facts_hash || ''))) {
+    return String(sourceFacts.facts_hash);
+  }
   const hashable = clone(sourceFacts);
   if (hashable && typeof hashable === 'object') delete hashable.facts_hash;
   return createHash('sha256').update(stableStringify(hashable)).digest('hex');
@@ -108,6 +126,257 @@ function validateLocalizedFacts(sourceFacts, localizedFacts) {
   };
 }
 
+function codedError(code, message, details = {}) {
+  return Object.assign(new Error(message), { code, ...details });
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function assertSafeJson(value, path = 'localized_result', seen = new WeakSet()) {
+  if (value == null) return;
+  const type = typeof value;
+  if (type === 'number') {
+    if (!Number.isFinite(value)) throw codedError('LOCALIZATION_INVALID_JSON', `${path} number invalid`);
+    return;
+  }
+  if (type === 'string' || type === 'boolean') return;
+  if (type === 'undefined' || type === 'function' || type === 'symbol' || type === 'bigint') {
+    throw codedError('LOCALIZATION_INVALID_JSON', `${path} JSON invalid`);
+  }
+  if (seen.has(value)) throw codedError('LOCALIZATION_INVALID_JSON', `${path} JSON cycle`);
+  if (Buffer.isBuffer(value)
+    || value instanceof Date
+    || value instanceof Map
+    || value instanceof Set
+    || value instanceof ArrayBuffer
+    || ArrayBuffer.isView(value)) {
+    throw codedError('LOCALIZATION_INVALID_JSON', `${path} JSON invalid`);
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertSafeJson(item, `${path}[${index}]`, seen));
+    seen.delete(value);
+    return;
+  }
+  if (!isPlainObject(value)) throw codedError('LOCALIZATION_INVALID_JSON', `${path} JSON object invalid`);
+  for (const key of Object.keys(value)) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype' || UNSAFE_KEY.test(key)) {
+      throw codedError('LOCALIZATION_UNKNOWN_FIELD', `${path}.${key} is not allowed`, { field: key });
+    }
+    assertSafeJson(value[key], `${path}.${key}`, seen);
+  }
+  seen.delete(value);
+}
+
+function normalizeText(value) {
+  return String(value ?? '').normalize('NFKC').replace(/\s+/gu, ' ').trim().toLowerCase();
+}
+
+function v2SourceHash(sourceFacts) {
+  const value = String(sourceFacts?.facts_hash || '').trim();
+  if (!SHA256.test(value)) {
+    throw codedError('LOCALIZATION_FACT_HASH_MISMATCH', 'v2 source facts_hash invalid');
+  }
+  return value;
+}
+
+function assertV2RootFields(raw) {
+  for (const key of Object.keys(raw)) {
+    if (!V2_RESULT_FIELDS.has(key)) {
+      throw codedError('LOCALIZATION_UNKNOWN_FIELD', `v2 localization field not allowed: ${key}`, { field: key });
+    }
+  }
+}
+
+function safeMap(value, name) {
+  assertObject(value, name);
+  assertSafeJson(value, name);
+  return clone(value);
+}
+
+function collectV2TextRegions(sourceFacts) {
+  const regions = [];
+  for (const shot of Array.isArray(sourceFacts.shots) ? sourceFacts.shots : []) {
+    for (const region of Array.isArray(shot?.text_regions) ? shot.text_regions : []) {
+      const key = `${String(shot.id)}:${String(region.id)}`;
+      regions.push({ key, source_text: String(region.source_text ?? region.text ?? '') });
+    }
+  }
+  return regions;
+}
+
+function normalizeV2NameMap(rawNameMap, sourceFacts) {
+  const nameMap = safeMap(rawNameMap, 'name_map');
+  const characters = Array.isArray(sourceFacts.characters) ? sourceFacts.characters : [];
+  const expectedIds = characters.map((character) => String(character?.id || '').trim()).filter(Boolean);
+  const actualIds = Object.keys(nameMap).sort();
+  if (stableStringify(actualIds) !== stableStringify([...expectedIds].sort())) {
+    throw codedError('LOCALIZATION_NAME_MAP_MISMATCH', 'v2 name_map must exactly cover source character ids');
+  }
+  const seenNames = new Set();
+  for (const id of expectedIds) {
+    const value = String(nameMap[id] ?? '').trim();
+    if (!value) throw codedError('LOCALIZATION_NAME_EMPTY', 'v2 localized name empty', { character_id: id });
+    const normalized = normalizeText(value);
+    if (seenNames.has(normalized)) throw codedError('LOCALIZATION_NAME_DUPLICATE', 'v2 localized names duplicate');
+    seenNames.add(normalized);
+    nameMap[id] = value;
+  }
+  return nameMap;
+}
+
+function assertNoSourceRemainder(targetText, sourceText, sourceFacts) {
+  if (normalizeText(targetText) === normalizeText(sourceText)) {
+    throw codedError('LOCALIZATION_SOURCE_TEXT_REMAINS', 'target text equals source text');
+  }
+  for (const character of Array.isArray(sourceFacts.characters) ? sourceFacts.characters : []) {
+    const sourceName = normalizeText(character?.source_name);
+    if (sourceName && normalizeText(targetText).includes(sourceName)) {
+      throw codedError('LOCALIZATION_SOURCE_TEXT_REMAINS', 'target text contains source character name');
+    }
+  }
+}
+
+function turnTargetText(turn) {
+  return String(turn?.target_text ?? turn?.localized_text ?? turn?.text ?? '').trim();
+}
+
+function normalizeV2Dialogue(rawDialogue, sourceFacts, locale) {
+  if (!Array.isArray(rawDialogue)) throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'v2 dialogue must be an array');
+  const sourceShots = Array.isArray(sourceFacts.shots) ? sourceFacts.shots : [];
+  const rows = new Map();
+  for (const row of rawDialogue) {
+    assertObject(row, 'dialogue[]');
+    assertSafeJson(row, 'dialogue[]');
+    const shotId = String(row.shot_id ?? row.shotId ?? '').trim();
+    if (!shotId || rows.has(shotId)) throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'v2 dialogue shot invalid');
+    rows.set(shotId, row);
+  }
+  const sourceShotIds = new Set(sourceShots.map((shot) => String(shot?.id || '')));
+  for (const shotId of rows.keys()) {
+    if (!sourceShotIds.has(shotId)) throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'v2 dialogue shot unknown');
+  }
+
+  return sourceShots.map((shot) => {
+    const shotId = String(shot?.id || '');
+    const sourceTurns = Array.isArray(shot?.dialogue) ? shot.dialogue : [];
+    const row = rows.get(shotId);
+    const turns = row ? row.turns : [];
+    if (!Array.isArray(turns)) throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'v2 dialogue turns invalid');
+    if (sourceTurns.length === 0) {
+      if (turns.length !== 0) throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'v2 silent shot cannot add dialogue');
+      return { shot_id: shotId, turns: [] };
+    }
+    if (!row || turns.length !== sourceTurns.length) {
+      throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'v2 dialogue turn count mismatch');
+    }
+    const normalizedTurns = [];
+    for (let index = 0; index < sourceTurns.length; index += 1) {
+      const source = sourceTurns[index] || {};
+      const localized = turns[index] || {};
+      const sourceId = String(source.id ?? source.turn_id ?? `turn-${index + 1}`);
+      const localizedId = String(localized.id ?? localized.turn_id ?? '').trim();
+      if (localizedId !== sourceId) throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'v2 dialogue turn id mismatch');
+      if (localized.speaker_id != null && String(localized.speaker_id) !== String(source.speaker_id)) {
+        throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'v2 dialogue speaker mismatch');
+      }
+      if ((localized.start_ms != null && Number(localized.start_ms) !== Number(source.start_ms))
+        || (localized.end_ms != null && Number(localized.end_ms) !== Number(source.end_ms))) {
+        throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'v2 dialogue timing mismatch');
+      }
+      if (localized.overlap_group != null && (localized.overlap_group || null) !== (source.overlap_group || null)) {
+        throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'v2 dialogue overlap mismatch');
+      }
+      const targetText = turnTargetText(localized);
+      if (!targetText) throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'v2 dialogue target text missing');
+      assertNoSourceRemainder(targetText, source.source_text ?? source.text, sourceFacts);
+      const availableMs = Number(source.end_ms) - Number(source.start_ms);
+      const estimatedDurationMs = estimateSpeechMs(targetText, locale);
+      if (!Number.isFinite(availableMs) || availableMs <= 0 || estimatedDurationMs > availableMs) {
+        throw codedError('LOCALIZATION_DIALOGUE_DURATION_EXCEEDED', 'v2 dialogue duration exceeded');
+      }
+      normalizedTurns.push({
+        id: sourceId,
+        speaker_id: String(source.speaker_id),
+        source_text: String(source.source_text ?? source.text ?? ''),
+        target_text: targetText,
+        start_ms: Number(source.start_ms),
+        end_ms: Number(source.end_ms),
+        emotion: source.emotion ?? null,
+        overlap_group: source.overlap_group || null,
+        estimated_duration_ms: estimatedDurationMs,
+      });
+    }
+    return { shot_id: shotId, turns: normalizedTurns };
+  });
+}
+
+function normalizeV2TextMap(rawTextMap, sourceFacts) {
+  const textMap = safeMap(rawTextMap, 'text_map');
+  const regions = collectV2TextRegions(sourceFacts);
+  const expectedKeys = regions.map((region) => region.key).sort();
+  const actualKeys = Object.keys(textMap).sort();
+  if (stableStringify(expectedKeys) !== stableStringify(actualKeys)) {
+    throw codedError('LOCALIZATION_TEXT_REGION_MISMATCH', 'v2 text_map must exactly cover source text regions');
+  }
+  for (const region of regions) {
+    const targetText = String(textMap[region.key] ?? '').trim();
+    if (!targetText) throw codedError('LOCALIZATION_TEXT_REGION_MISMATCH', 'v2 text_map target empty');
+    assertNoSourceRemainder(targetText, region.source_text, sourceFacts);
+    textMap[region.key] = targetText;
+  }
+  return textMap;
+}
+
+function normalizeV2Confidence(rawConfidence) {
+  const confidence = safeMap(rawConfidence, 'confidence');
+  const actualKeys = Object.keys(confidence).sort();
+  if (stableStringify(actualKeys) !== stableStringify([...CONFIDENCE_KEYS].sort())) {
+    throw codedError('LOCALIZATION_CONFIDENCE_INVALID', 'v2 confidence keys invalid');
+  }
+  for (const key of CONFIDENCE_KEYS) {
+    const value = Number(confidence[key]);
+    if (!Number.isFinite(value) || value < 0 || value > 1) {
+      throw codedError('LOCALIZATION_CONFIDENCE_INVALID', 'v2 confidence value invalid', { field: key });
+    }
+    confidence[key] = value;
+  }
+  return confidence;
+}
+
+function normalizeLocalizationResultV2(raw, sourceFacts) {
+  assertSafeJson(raw);
+  assertV2RootFields(raw);
+  const expectedHash = v2SourceHash(sourceFacts);
+  if (String(raw.facts_hash || '') !== expectedHash) {
+    throw codedError('LOCALIZATION_FACT_HASH_MISMATCH', 'v2 facts_hash mismatch', {
+      expected: expectedHash,
+      received: String(raw.facts_hash || ''),
+    });
+  }
+  const expectedLocale = String(sourceFacts.locale || '').trim();
+  const expectedMarket = String(sourceFacts.market || '').trim();
+  const locale = String(raw.locale ?? expectedLocale).trim();
+  const market = String(raw.market ?? expectedMarket).trim();
+  if (!locale || locale !== expectedLocale) throw codedError('LOCALIZATION_LOCALE_MISMATCH', 'v2 locale mismatch');
+  if (!market || market !== expectedMarket) throw codedError('LOCALIZATION_MARKET_MISMATCH', 'v2 market mismatch');
+  const nameMap = normalizeV2NameMap(raw.name_map, sourceFacts);
+  return {
+    facts_hash: expectedHash,
+    locale,
+    market,
+    name_map: nameMap,
+    culture_map: safeMap(raw.culture_map || {}, 'culture_map'),
+    glossary: safeMap(raw.glossary || {}, 'glossary'),
+    dialogue: normalizeV2Dialogue(raw.dialogue || [], sourceFacts, locale),
+    text_map: normalizeV2TextMap(raw.text_map || {}, sourceFacts),
+    confidence: normalizeV2Confidence(raw.confidence),
+  };
+}
+
 function buildLocalizationInput(sourceFacts, options = {}) {
   assertObject(sourceFacts, 'source_facts');
   const locale = assertLocale(options.locale);
@@ -124,6 +393,9 @@ function buildLocalizationInput(sourceFacts, options = {}) {
 
 function normalizeLocalizationResult(raw, sourceFacts) {
   assertObject(raw, 'localized_result');
+  if (sourceFacts?.schema_version === '2.0') {
+    return normalizeLocalizationResultV2(raw, sourceFacts);
+  }
   const validation = validateLocalizedFacts(sourceFacts, raw);
   if (!validation.ok) {
     throw Object.assign(new Error('本地化结果改变了锁定事实'), {
@@ -181,6 +453,7 @@ function createLocalizationDraftRecord(db, owner, workId, input) {
     throw Object.assign(new Error('缺少本地化草稿幂等参数'), { code: 'LOCALIZATION_DRAFT_INVALID' });
   }
   const locale = assertLocale(input.locale);
+  const market = trimValue(input.market);
   const existing = findExistingLocalizationDraft(db, tenantId, userId, workId, idempotencyKey);
   if (existing) return existing;
 
@@ -190,6 +463,20 @@ function createLocalizationDraftRecord(db, owner, workId, input) {
     WHERE id = ? AND tenant_id = ? AND user_id = ?
   `).get(Number(workId), String(tenantId), String(userId));
   if (!work) throw Object.assign(new Error('转绘作品不存在'), { code: 'LOCALIZATION_WORK_NOT_FOUND' });
+  const existingMarket = db.prepare(`
+    SELECT locale, market
+    FROM redraw_versions
+    WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+      AND locale != 'source' AND deleted_at IS NULL
+    ORDER BY id ASC
+    LIMIT 1
+  `).get(Number(workId), String(tenantId), String(userId));
+  if (existingMarket && (String(existingMarket.locale) !== locale || String(existingMarket.market || '') !== market)) {
+    throw codedError('LOCALIZATION_TARGET_MARKET_CONFLICT', '一个转绘版本只允许一个目标 locale/market', {
+      existing_locale: existingMarket.locale,
+      existing_market: existingMarket.market,
+    });
+  }
 
   const nextVersion = Number(db.prepare('SELECT COALESCE(MAX(version), 0) AS value FROM redraw_versions WHERE work_id = ?').get(Number(workId)).value) + 1;
   const now = new Date().toISOString();
@@ -206,7 +493,7 @@ function createLocalizationDraftRecord(db, owner, workId, input) {
       String(userId),
       nextVersion,
       locale,
-      trimValue(input.market),
+      market,
       trimValue(input.localizationLevel ?? input.localization_level) || 'faithful',
       trimValue(input.inputHash ?? input.input_hash),
       idempotencyKey,
@@ -340,6 +627,42 @@ function localizedAssetName(kind, item, input) {
   return String(glossary[item.id] ?? glossary[item.name] ?? item.name ?? '');
 }
 
+function hasColumn(db, table, column) {
+  return db.prepare(`PRAGMA table_info(${table})`).all().some((row) => row.name === column);
+}
+
+function v2ShotFactDraft(shot = {}) {
+  return {
+    composition: clone(shot.composition || ''),
+    camera_movement: clone(shot.camera_movement || ''),
+    opening_state: clone(shot.opening_state || ''),
+    continuous_action: clone(shot.continuous_action || ''),
+    ending_state: clone(shot.ending_state || ''),
+    visible_character_ids: clone(Array.isArray(shot.visible_character_ids) ? shot.visible_character_ids : []),
+    text_regions: clone(Array.isArray(shot.text_regions) ? shot.text_regions : []),
+    audio_contract: clone(shot.audio_contract || {}),
+  };
+}
+
+function existingMaterializedDraft(db, owner, draftVersionId, workId) {
+  const { tenantId, userId } = normalizeOwner(owner);
+  const row = db.prepare(`
+    SELECT *
+    FROM redraw_versions
+    WHERE id = ? AND work_id = ? AND tenant_id = ? AND user_id = ?
+      AND status != 'draft' AND deleted_at IS NULL
+  `).get(Number(draftVersionId), Number(workId), String(tenantId), String(userId));
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    version: Number(row.version),
+    work_id: Number(workId),
+    locale: row.locale,
+    shot_count: db.prepare('SELECT COUNT(*) AS count FROM redraw_shots WHERE version_id = ? AND deleted_at IS NULL').get(Number(row.id)).count,
+    asset_count: db.prepare('SELECT COUNT(*) AS count FROM redraw_assets WHERE version_id = ? AND deleted_at IS NULL').get(Number(row.id)).count,
+  };
+}
+
 function sourceAssetDescription(kind, item) {
   if (kind === 'scene') return [item.location, item.time].filter(Boolean).join(' · ');
   return String(item.source_name || item.name || '');
@@ -383,6 +706,7 @@ function createLocalizationVersion(db, owner, workId, input) {
     }
     const persistedSourceFacts = parseJson(sourceVersion.source_facts_json, null);
     assertObject(persistedSourceFacts, 'source_facts');
+    const isV2 = persistedSourceFacts.schema_version === '2.0';
     const persistedFactsHash = String(sourceVersion.facts_hash || factsHash(persistedSourceFacts));
     if (persistedFactsHash !== expectedFactsHash) {
       throw Object.assign(new Error('本地化输入事实哈希不匹配'), {
@@ -429,7 +753,9 @@ function createLocalizationVersion(db, owner, workId, input) {
           String(tenantId),
           String(userId),
           kind,
-          JSON.stringify({ source_ref: { kind, id: stableId, stable_id: stableId }, snapshot: character }),
+          JSON.stringify(isV2
+            ? { source_ref: { kind, source_character_key: stableId }, snapshot: character }
+            : { source_ref: { kind, id: stableId, stable_id: stableId }, snapshot: character }),
           localizedAssetName('character', character, input),
           sourceAssetDescription('character', character),
           now,
@@ -438,37 +764,41 @@ function createLocalizationVersion(db, owner, workId, input) {
         assetByStableId.set(`${kind}:${stableId}`, Number(asset.lastInsertRowid));
       }
     }
-    for (const [kind, items] of [
-      ['scene', persistedSourceFacts.scenes],
-      ['prop', persistedSourceFacts.props],
-    ]) {
-      for (const item of Array.isArray(items) ? items : []) {
-        const stableId = String(item?.id || '').trim();
-        if (!stableId) continue;
-        const asset = insertAsset.run(
-          versionId,
-          String(tenantId),
-          String(userId),
-          kind,
-          JSON.stringify({ source_ref: { kind, id: stableId, stable_id: stableId }, snapshot: item }),
-          localizedAssetName(kind, item, input),
-          sourceAssetDescription(kind, item),
-          now,
-          now,
-        );
-        assetByStableId.set(`${kind}:${stableId}`, Number(asset.lastInsertRowid));
+    if (!isV2) {
+      for (const [kind, items] of [
+        ['scene', persistedSourceFacts.scenes],
+        ['prop', persistedSourceFacts.props],
+      ]) {
+        for (const item of Array.isArray(items) ? items : []) {
+          const stableId = String(item?.id || '').trim();
+          if (!stableId) continue;
+          const asset = insertAsset.run(
+            versionId,
+            String(tenantId),
+            String(userId),
+            kind,
+            JSON.stringify({ source_ref: { kind, id: stableId, stable_id: stableId }, snapshot: item }),
+            localizedAssetName(kind, item, input),
+            sourceAssetDescription(kind, item),
+            now,
+            now,
+          );
+          assetByStableId.set(`${kind}:${stableId}`, Number(asset.lastInsertRowid));
+        }
       }
     }
 
     const factShots = new Map((persistedSourceFacts.shots || []).map((shot) => [String(shot.id), shot]));
-    const insertShot = db.prepare(`
+    const canStoreDraftJson = hasColumn(db, 'redraw_shots', 'draft_json');
+    const insertShotSql = `
       INSERT INTO redraw_shots
         (work_id, shot_id, version_id, tenant_id, user_id, batch_index, shot_index,
          start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
          references_json, opening_state, continuous_action, ending_state, prompt,
-         negative_prompt, compiled_prompt_json, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '{}', 'draft', ?, ?)
-    `);
+         negative_prompt, compiled_prompt_json${canStoreDraftJson ? ', draft_json' : ''}, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?${canStoreDraftJson ? ', ?' : ''}, 'draft', ?, ?)
+    `;
+    const insertShot = db.prepare(insertShotSql);
     for (const sourceShot of sourceShots) {
       const stableShotId = String(sourceShot.shot_id || '').trim();
       const factShot = factShots.get(stableShotId) || {};
@@ -497,7 +827,9 @@ function createLocalizationVersion(db, owner, workId, input) {
         if (!assetId || !overlapsShot(prop.evidence_ranges, sourceShot)) continue;
         references.push({ kind: 'prop', asset_id: assetId, anchor: `prop:${prop.id}` });
       }
-      insertShot.run(
+      const draftJson = isV2 ? JSON.stringify(v2ShotFactDraft(factShot)) : '{}';
+      const compiledPromptJson = isV2 ? draftJson : '{}';
+      const shotParams = [
         Number(workId),
         stableShotId,
         versionId,
@@ -514,9 +846,14 @@ function createLocalizationVersion(db, owner, workId, input) {
         String(sourceShot.opening_state || factShot.opening_state || ''),
         String(sourceShot.continuous_action || factShot.continuous_action || ''),
         String(sourceShot.ending_state || factShot.ending_state || ''),
+        compiledPromptJson,
+      ];
+      if (canStoreDraftJson) shotParams.push(draftJson);
+      shotParams.push(
         now,
         now,
       );
+      insertShot.run(...shotParams);
     }
     const finalized = db.prepare(`
       UPDATE redraw_versions
@@ -554,6 +891,9 @@ function createLocalizationVersion(db, owner, workId, input) {
 }
 
 function materializeLocalizationDraft(db, owner, draftVersionId, input) {
+  const workId = Number(input.workId || input.work_id);
+  const existing = existingMaterializedDraft(db, owner, draftVersionId, workId);
+  if (existing) return existing;
   return createLocalizationVersion(db, owner, input.workId || input.work_id, {
     ...input,
     draftVersionId: Number(draftVersionId),
@@ -608,7 +948,7 @@ function validateLocalizedDialogue(sourceTurn, localizedTurn, options = {}) {
     if (!Number.isFinite(availableMs) || availableMs <= 0) {
       return { ok: false, reason: 'dialogue_timing_invalid', status: 'needs_rewrite', turn_index: index };
     }
-    const localizedText = String(localized.localized_text ?? localized.text ?? '').trim();
+    const localizedText = String(localized.localized_text ?? localized.target_text ?? localized.text ?? '').trim();
     if (!localizedText) {
       return { ok: false, reason: 'dialogue_text_missing', status: 'needs_rewrite', turn_index: index };
     }

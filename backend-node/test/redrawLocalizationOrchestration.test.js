@@ -51,6 +51,63 @@ function sourceFacts() {
   };
 }
 
+function v2SourceFacts() {
+  return {
+    schema_version: '2.0',
+    facts_hash: 'a'.repeat(64),
+    locale: 'en-US',
+    market: 'US',
+    duration_ms: 8_000,
+    characters: [
+      { id: 'c1', source_name: '小满', relationships: [] },
+      { id: 'c2', source_name: '阿岚', relationships: [] },
+    ],
+    shots: [
+      {
+        id: 'shot-1',
+        start_ms: 0,
+        end_ms: 4_000,
+        composition: 'medium two shot',
+        camera_movement: 'slow push',
+        opening_state: '小满站在门口',
+        continuous_action: '小满看向阿岚',
+        ending_state: '阿岚低头',
+        visible_character_ids: ['c1', 'c2'],
+        text_regions: [],
+        audio_contract: { ambience: 'quiet room' },
+        dialogue: [{
+          id: 'turn-1',
+          speaker_id: 'c1',
+          source_text: '别回头',
+          start_ms: 500,
+          end_ms: 2_500,
+          emotion: 'urgent',
+          overlap_group: null,
+        }],
+      },
+      {
+        id: 'shot-2',
+        start_ms: 4_000,
+        end_ms: 8_000,
+        composition: 'insert phone',
+        camera_movement: 'static',
+        opening_state: '手机屏幕亮起',
+        continuous_action: '屏幕显示来电',
+        ending_state: '小满伸手',
+        visible_character_ids: ['c1'],
+        text_regions: [{
+          id: 'screen-1',
+          kind: 'phone_screen',
+          source_text: '给妈妈打电话',
+          polygon: [[0, 0], [1, 0], [1, 1], [0, 1]],
+        }],
+        audio_contract: { ambience: 'phone buzz' },
+        dialogue: [],
+      },
+    ],
+  };
+}
+
 function localizedResult(overrides = {}) {
   return {
     ...sourceFacts(),
@@ -62,6 +119,29 @@ function localizedResult(overrides = {}) {
       shot_id: 'shot-1',
       turns: [{ speaker_id: 'c1', localized_text: "Don't look back" }],
     }],
+    ...overrides,
+  };
+}
+
+function v2LocalizedResult(overrides = {}) {
+  const facts = v2SourceFacts();
+  return {
+    facts_hash: facts.facts_hash,
+    name_map: { c1: 'Mateo', c2: 'Diego' },
+    culture_map: { currency: 'USD' },
+    glossary: { family_title: 'Mom' },
+    dialogue: [{
+      shot_id: 'shot-1',
+      turns: [{ id: 'turn-1', target_text: 'Do not look back' }],
+    }],
+    text_map: { 'shot-2:screen-1': 'CALL MOM' },
+    confidence: {
+      names: 0.92,
+      dialogue_semantics: 0.93,
+      dialogue_timing: 0.94,
+      culture: 0.91,
+      screen_text: 0.9,
+    },
     ...overrides,
   };
 }
@@ -136,6 +216,20 @@ function createDb(options = {}) {
       updated_at TEXT,
       deleted_at TEXT
     );
+    CREATE TABLE redraw_workflow_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      project_id INTEGER NOT NULL,
+      resource_type TEXT NOT NULL,
+      resource_id TEXT NOT NULL,
+      from_state TEXT,
+      to_state TEXT NOT NULL,
+      reason_code TEXT NOT NULL,
+      evidence_hash TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
     CREATE UNIQUE INDEX uq_redraw_version_number ON redraw_versions(work_id, version);
     CREATE UNIQUE INDEX uq_redraw_version_localization_key
       ON redraw_versions(work_id, tenant_id, user_id, localization_idempotency_key)
@@ -178,6 +272,7 @@ function createDb(options = {}) {
       prompt TEXT NOT NULL DEFAULT '',
       negative_prompt TEXT NOT NULL DEFAULT '',
       compiled_prompt_json TEXT NOT NULL DEFAULT '{}',
+      draft_json TEXT NOT NULL DEFAULT '{}',
       status TEXT NOT NULL DEFAULT 'draft',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -224,13 +319,15 @@ function createDb(options = {}) {
     }));
   }
   const now = new Date().toISOString();
-  const facts = sourceFacts();
-  const factsHash = buildLocalizationInput(facts, { locale: 'source' }).source_facts_hash;
+  const facts = options.sourceFacts || sourceFacts();
+  const factsHash = facts.schema_version === '2.0'
+    ? facts.facts_hash
+    : buildLocalizationInput(facts, { locale: 'source' }).source_facts_hash;
   db.prepare(`
     INSERT INTO redraw_projects
       (id, tenant_id, user_id, execution_mode, budget_limit_credits, automation_policy_json, policy_version, updated_at)
-    VALUES (1, 'tenant-a', 'user-a', 'auto', 30, '{}', 1, ?)
-  `).run(now);
+    VALUES (1, 'tenant-a', 'user-a', ?, 30, ?, 1, ?)
+  `).run(options.executionMode || 'auto', JSON.stringify(options.automationPolicy || {}), now);
   db.prepare('INSERT INTO redraw_works (id, project_id, tenant_id, user_id, current_version, current_step, status, task_id, updated_at) VALUES (1, 1, ?, ?, 1, 1, ?, ?, ?)')
     .run('tenant-a', 'user-a', 'fact_confirmed', 'task-analysis', now);
   const sourceVersionId = Number(db.prepare(`
@@ -504,6 +601,99 @@ test('starts localization, writes provider task id, materializes draft, complete
   assert.equal(draft.localization_task_id, started.task_id);
   assert.equal(draft.localization_credit_reservation_id, started.reservation_id);
   db.close();
+});
+
+test('v2 localization auto advances only when all confidence thresholds pass and records safe decision', async () => {
+  const db = createDb({
+    sourceFacts: v2SourceFacts(),
+    automationPolicy: {
+      localization_thresholds: {
+        names: 0.9,
+        dialogue_semantics: 0.9,
+        dialogue_timing: 0.9,
+        culture: 0.9,
+        screen_text: 0.9,
+      },
+    },
+  });
+  const started = await startWithQuote(db, { idempotencyKey: 'idem-v2-auto' }, {
+    provider: providerReturning(v2LocalizedResult()),
+  });
+  await started.completion;
+
+  const task = taskService.getTask(db, started.task_id);
+  const result = JSON.parse(task.result);
+  assert.equal(task.status, 'completed');
+  assert.equal(result.localization_decision.action, 'advance');
+  assert.equal(result.localization_decision.effective_mode, 'auto');
+  assert.equal(result.localization_decision.evidence_hash, v2SourceFacts().facts_hash);
+  assert.deepEqual(db.prepare('SELECT current_step, status FROM redraw_works WHERE id = 1').get(), {
+    current_step: 2,
+    status: 'asset_review',
+  });
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_asset_batch'").get().count, 0);
+  assert.deepEqual(db.prepare('SELECT reason_code, to_state FROM redraw_workflow_events').get(), {
+    reason_code: 'localization_completed',
+    to_state: 'asset_review',
+  });
+  db.close();
+});
+
+test('v2 localization safe or low confidence stops at needs_review without asset generation task', async () => {
+  for (const item of [
+    {
+      name: 'safe',
+      db: createDb({
+        sourceFacts: v2SourceFacts(),
+        executionMode: 'safe',
+        automationPolicy: {
+          localization_thresholds: {
+            names: 0.9,
+            dialogue_semantics: 0.9,
+            dialogue_timing: 0.9,
+            culture: 0.9,
+            screen_text: 0.9,
+          },
+        },
+      }),
+      result: v2LocalizedResult(),
+      reason: 'safe_mode_requires_review',
+    },
+    {
+      name: 'low confidence',
+      db: createDb({
+        sourceFacts: v2SourceFacts(),
+        automationPolicy: {
+          localization_thresholds: {
+            names: 0.9,
+            dialogue_semantics: 0.9,
+            dialogue_timing: 0.9,
+            culture: 0.9,
+            screen_text: 0.9,
+          },
+        },
+      }),
+      result: v2LocalizedResult({ confidence: { ...v2LocalizedResult().confidence, screen_text: 0.5 } }),
+      reason: 'localization_confidence_below_threshold',
+    },
+  ]) {
+    const started = await startWithQuote(item.db, { idempotencyKey: `idem-v2-${item.name}` }, {
+      provider: providerReturning(item.result),
+    });
+    await started.completion;
+
+    const task = taskService.getTask(item.db, started.task_id);
+    const result = JSON.parse(task.result);
+    assert.equal(result.localization_decision.action, 'needs_review', item.name);
+    assert.equal(result.localization_decision.effective_mode, 'safe', item.name);
+    assert.deepEqual(result.localization_decision.reason_codes, [item.reason], item.name);
+    assert.deepEqual(item.db.prepare('SELECT current_step, status FROM redraw_works WHERE id = 1').get(), {
+      current_step: 1,
+      status: 'needs_review',
+    }, item.name);
+    assert.equal(item.db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_asset_batch'").get().count, 0, item.name);
+    item.db.close();
+  }
 });
 
 test('default scheduler returns awaitable tracked completion and clears in-flight on success', async () => {

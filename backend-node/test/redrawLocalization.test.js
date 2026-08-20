@@ -56,6 +56,88 @@ function sourceFacts() {
   };
 }
 
+function v2SourceFacts(overrides = {}) {
+  const facts = {
+    schema_version: '2.0',
+    facts_hash: 'a'.repeat(64),
+    locale: 'en-US',
+    market: 'US',
+    duration_ms: 8_000,
+    characters: [
+      { id: 'c1', source_name: '小满', relationships: [] },
+      { id: 'c2', source_name: '阿岚', relationships: [] },
+    ],
+    shots: [
+      {
+        id: 'shot-1',
+        start_ms: 0,
+        end_ms: 4_000,
+        composition: 'medium two shot',
+        camera_movement: 'slow push',
+        opening_state: '小满站在门口',
+        continuous_action: '小满看向阿岚',
+        ending_state: '阿岚低头',
+        visible_character_ids: ['c1', 'c2'],
+        text_regions: [],
+        audio_contract: { ambience: 'quiet room' },
+        dialogue: [{
+          id: 'turn-1',
+          speaker_id: 'c1',
+          source_text: '别回头',
+          start_ms: 500,
+          end_ms: 2_500,
+          emotion: 'urgent',
+          overlap_group: 'og-1',
+        }],
+      },
+      {
+        id: 'shot-2',
+        start_ms: 4_000,
+        end_ms: 8_000,
+        composition: 'insert phone',
+        camera_movement: 'static',
+        opening_state: '手机屏幕亮起',
+        continuous_action: '屏幕显示来电',
+        ending_state: '小满伸手',
+        visible_character_ids: ['c1'],
+        text_regions: [{
+          id: 'screen-1',
+          kind: 'phone_screen',
+          source_text: '给妈妈打电话',
+          polygon: [[0, 0], [1, 0], [1, 1], [0, 1]],
+        }],
+        audio_contract: { ambience: 'phone buzz' },
+        dialogue: [],
+      },
+    ],
+    ...overrides,
+  };
+  return facts;
+}
+
+function v2LocalizationResult(overrides = {}) {
+  const source = v2SourceFacts();
+  return {
+    facts_hash: source.facts_hash,
+    name_map: { c1: 'Mateo', c2: 'Diego' },
+    culture_map: { currency: 'USD' },
+    glossary: { family_title: 'Mom' },
+    dialogue: [{
+      shot_id: 'shot-1',
+      turns: [{ id: 'turn-1', target_text: 'Do not look back' }],
+    }],
+    text_map: { 'shot-2:screen-1': 'CALL MOM' },
+    confidence: {
+      names: 0.92,
+      dialogue_semantics: 0.93,
+      dialogue_timing: 0.94,
+      culture: 0.91,
+      screen_text: 0.9,
+    },
+    ...overrides,
+  };
+}
+
 function localizedFacts(overrides = {}) {
   return {
     ...sourceFacts(),
@@ -200,6 +282,46 @@ function createDb(options = {}) {
   return db;
 }
 
+function createV2Db() {
+  const db = createDb();
+  db.exec('ALTER TABLE redraw_shots ADD COLUMN draft_json TEXT NOT NULL DEFAULT \'{}\'');
+  db.prepare('DELETE FROM redraw_shots').run();
+  db.prepare('DELETE FROM redraw_versions').run();
+  db.prepare('UPDATE redraw_works SET current_version = 1, current_step = 1, status = ? WHERE id = 1')
+    .run('fact_confirmed');
+  const now = new Date().toISOString();
+  const facts = v2SourceFacts();
+  const sourceVersionId = Number(db.prepare(`
+    INSERT INTO redraw_versions
+      (work_id, tenant_id, user_id, version, locale, market, localization_level,
+       source_facts_json, facts_hash, status, created_at, updated_at)
+    VALUES (1, 'tenant-a', 'user-a', 1, 'source', '', 'faithful', ?, ?, 'asset_review', ?, ?)
+  `).run(JSON.stringify(facts), facts.facts_hash, now, now).lastInsertRowid);
+  const insertShot = db.prepare(`
+    INSERT INTO redraw_shots
+      (work_id, shot_id, version_id, tenant_id, user_id, batch_index, shot_index,
+       start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
+       references_json, opening_state, continuous_action, ending_state, compiled_prompt_json,
+       draft_json, created_at, updated_at)
+    VALUES (1, ?, ?, 'tenant-a', 'user-a', 1, ?, ?, ?, ?, ?, '[]', '[]', ?, ?, ?, '{}', '{}', ?, ?)
+  `);
+  facts.shots.forEach((shot, index) => insertShot.run(
+    shot.id,
+    sourceVersionId,
+    index + 1,
+    shot.start_ms,
+    shot.end_ms,
+    shot.end_ms - shot.start_ms,
+    JSON.stringify(shot.dialogue),
+    shot.opening_state,
+    shot.continuous_action,
+    shot.ending_state,
+    now,
+    now,
+  ));
+  return db;
+}
+
 function localizationPayload(overrides = {}) {
   const facts = sourceFacts();
   return {
@@ -263,6 +385,133 @@ test('本地化结果事实哈希不匹配时拒绝写入', () => {
     () => normalizeLocalizationResult({ ...localizedFacts(), facts_hash: 'stale-hash' }, sourceFacts()),
     (error) => error.code === 'LOCALIZATION_FACT_HASH_MISMATCH',
   );
+});
+
+test('v2 本地化只改姓名文字对白并保留镜头事实', () => {
+  const source = v2SourceFacts();
+  const result = normalizeLocalizationResult(v2LocalizationResult(), source);
+  assert.deepEqual(Object.keys(result), [
+    'facts_hash',
+    'locale',
+    'market',
+    'name_map',
+    'culture_map',
+    'glossary',
+    'dialogue',
+    'text_map',
+    'confidence',
+  ]);
+  assert.equal(result.facts_hash, source.facts_hash);
+  assert.equal(result.locale, 'en-US');
+  assert.equal(result.market, 'US');
+  assert.equal(result.name_map.c1, 'Mateo');
+  assert.equal(result.dialogue[0].turns[0].id, 'turn-1');
+  assert.equal(result.dialogue[0].turns[0].speaker_id, 'c1');
+  assert.equal(result.dialogue[0].turns[0].start_ms, source.shots[0].dialogue[0].start_ms);
+  assert.equal(result.dialogue[0].turns[0].end_ms, source.shots[0].dialogue[0].end_ms);
+  assert.equal(result.dialogue[0].turns[0].overlap_group, 'og-1');
+  assert.deepEqual(result.dialogue[1].turns, []);
+  assert.deepEqual(result.text_map, { 'shot-2:screen-1': 'CALL MOM' });
+});
+
+test('v2 本地化严格拒绝漂移、第二市场、未知字段、残留源文本和非法置信度', () => {
+  const source = v2SourceFacts();
+  const cases = [
+    ['hash', { facts_hash: 'b'.repeat(64) }, 'LOCALIZATION_FACT_HASH_MISMATCH'],
+    ['market', { market: 'MX' }, 'LOCALIZATION_MARKET_MISMATCH'],
+    ['unknown', { prompt: 'explain how this was localized' }, 'LOCALIZATION_UNKNOWN_FIELD'],
+    ['same dialogue', { dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'turn-1', target_text: '别回头' }] }] }, 'LOCALIZATION_SOURCE_TEXT_REMAINS'],
+    ['name remains', { dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'turn-1', target_text: '小满, run now' }] }] }, 'LOCALIZATION_SOURCE_TEXT_REMAINS'],
+    ['duplicate name', { name_map: { c1: 'Mateo', c2: ' mateo ' } }, 'LOCALIZATION_NAME_DUPLICATE'],
+    ['missing text', { text_map: {} }, 'LOCALIZATION_TEXT_REGION_MISMATCH'],
+    ['extra turn', { dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'turn-1', target_text: 'Run now' }, { id: 'turn-2', target_text: 'extra' }] }] }, 'LOCALIZATION_DIALOGUE_INVALID'],
+    ['silent turn', { dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'turn-1', target_text: 'Run now' }] }, { shot_id: 'shot-2', turns: [{ id: 'turn-x', target_text: 'noise' }] }] }, 'LOCALIZATION_DIALOGUE_INVALID'],
+    ['confidence', { confidence: { ...v2LocalizationResult().confidence, names: Number.NaN } }, 'LOCALIZATION_INVALID_JSON'],
+  ];
+  for (const [name, patch, code] of cases) {
+    assert.throws(
+      () => normalizeLocalizationResult(v2LocalizationResult(patch), source),
+      (error) => error.code === code,
+      name,
+    );
+  }
+
+  const inherited = Object.create({ locale: 'fr-FR' });
+  Object.assign(inherited, v2LocalizationResult());
+  assert.throws(
+    () => normalizeLocalizationResult(inherited, source),
+    (error) => error.code === 'LOCALIZATION_INVALID_JSON',
+  );
+});
+
+test('v2 物化仅保存源片事实白名单并以 source_character_key 幂等绑定角色和声音草稿', () => {
+  const db = createV2Db();
+  const source = v2SourceFacts();
+  const draft = createLocalizationDraft(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, {
+    locale: 'en-US',
+    market: 'US',
+    localizationLevel: 'faithful',
+    inputHash: source.facts_hash,
+    idempotencyKey: 'confirm-v2-en-us',
+    modelSnapshot: { provider: 'provider-a', model: 'model-a' },
+  });
+  const normalized = normalizeLocalizationResult(v2LocalizationResult(), source);
+  const result = materializeLocalizationDraft(db, { tenantId: 'tenant-a', userId: 'user-a' }, draft.id, {
+    workId: 1,
+    locale: 'en-US',
+    market: 'US',
+    localizationLevel: 'faithful',
+    sourceFacts: source,
+    sourceFactsHash: source.facts_hash,
+    ...normalized,
+  });
+  assert.equal(result.id, draft.id);
+
+  const shots = db.prepare('SELECT * FROM redraw_shots WHERE version_id = ? ORDER BY shot_index').all(draft.id);
+  assert.equal(shots.length, 2);
+  const firstDraft = JSON.parse(shots[0].draft_json);
+  assert.deepEqual(Object.keys(firstDraft).sort(), [
+    'audio_contract',
+    'camera_movement',
+    'composition',
+    'continuous_action',
+    'ending_state',
+    'opening_state',
+    'text_regions',
+    'visible_character_ids',
+  ]);
+  assert.equal(firstDraft.composition, source.shots[0].composition);
+  assert.equal(firstDraft.opening_state, source.shots[0].opening_state);
+  assert.equal(JSON.parse(shots[0].compiled_prompt_json).composition, source.shots[0].composition);
+  assert.deepEqual(JSON.parse(shots[1].draft_json).text_regions, source.shots[1].text_regions);
+
+  const assets = db.prepare('SELECT kind, source_ref_json, localized_name FROM redraw_assets WHERE version_id = ? ORDER BY id').all(draft.id);
+  assert.equal(assets.length, 4);
+  assert.deepEqual(assets.map((asset) => asset.kind), ['character', 'voice', 'character', 'voice']);
+  assert.deepEqual(JSON.parse(assets[0].source_ref_json).source_ref, {
+    kind: 'character',
+    source_character_key: 'c1',
+  });
+  assert.deepEqual(JSON.parse(assets[1].source_ref_json).source_ref, {
+    kind: 'voice',
+    source_character_key: 'c1',
+  });
+  assert.equal(assets[0].localized_name, 'Mateo');
+  assert.equal(assets[2].localized_name, 'Diego');
+
+  const replay = materializeLocalizationDraft(db, { tenantId: 'tenant-a', userId: 'user-a' }, draft.id, {
+    workId: 1,
+    locale: 'en-US',
+    market: 'US',
+    localizationLevel: 'faithful',
+    sourceFacts: source,
+    sourceFactsHash: source.facts_hash,
+    ...normalized,
+  });
+  assert.equal(replay.id, draft.id);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_assets WHERE version_id = ?').get(draft.id).count, 4);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_shots WHERE version_id = ?').get(draft.id).count, 2);
+  db.close();
 });
 
 test('创建本地化版本原子物化目标分镜与同版本资产引用且不改写源事实', () => {

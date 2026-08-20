@@ -241,6 +241,103 @@ function quoteLocalization(db, input = {}) {
   };
 }
 
+function tableExists(db, table) {
+  return !!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+}
+
+function projectState(db, input) {
+  return db.prepare(`
+    SELECT w.id AS work_id, w.project_id, w.status AS work_status, w.current_step,
+           p.execution_mode, p.policy_version, p.automation_policy_json
+    FROM redraw_works w
+    LEFT JOIN redraw_projects p
+      ON p.id = w.project_id AND p.tenant_id = w.tenant_id AND p.user_id = w.user_id
+    WHERE w.id = ? AND w.tenant_id = ? AND w.user_id = ?
+    LIMIT 1
+  `).get(Number(input.workId), String(input.tenantId), String(input.userId));
+}
+
+function localizationDecision(db, input, normalized) {
+  if (input.source_facts?.schema_version !== '2.0') return null;
+  const state = projectState(db, input);
+  const policy = parseJson(state?.automation_policy_json, {});
+  const thresholds = policy?.localization_thresholds;
+  const reasonCodes = [];
+  let action = 'advance';
+  if (String(state?.execution_mode || 'auto') !== 'auto') {
+    action = 'needs_review';
+    reasonCodes.push('safe_mode_requires_review');
+  } else if (!thresholds || typeof thresholds !== 'object' || Array.isArray(thresholds)) {
+    action = 'needs_review';
+    reasonCodes.push('localization_thresholds_missing');
+  } else {
+    for (const key of ['names', 'dialogue_semantics', 'dialogue_timing', 'culture', 'screen_text']) {
+      const threshold = Number(thresholds[key]);
+      const confidence = Number(normalized.confidence?.[key]);
+      if (!Number.isFinite(threshold) || !Number.isFinite(confidence) || confidence < threshold) {
+        action = 'needs_review';
+        reasonCodes.push('localization_confidence_below_threshold');
+        break;
+      }
+    }
+  }
+  return {
+    action,
+    effective_mode: action === 'advance' ? 'auto' : 'safe',
+    reason_codes: reasonCodes,
+    policy_version: Number(state?.policy_version || 0),
+    evidence_hash: normalized.facts_hash,
+  };
+}
+
+function recordLocalizationEvent(db, input, decision, toState) {
+  if (!tableExists(db, 'redraw_workflow_events')) return;
+  const state = projectState(db, input);
+  db.prepare(`
+    INSERT INTO redraw_workflow_events
+      (tenant_id, user_id, project_id, resource_type, resource_id,
+       from_state, to_state, reason_code, evidence_hash, metadata_json, created_at)
+    VALUES (?, ?, ?, 'redraw_work', ?, ?, ?, 'localization_completed', ?, ?, ?)
+  `).run(
+    String(input.tenantId),
+    String(input.userId),
+    Number(state?.project_id || 0),
+    String(input.workId),
+    String(state?.work_status || ''),
+    toState,
+    decision.evidence_hash,
+    JSON.stringify({ localization_decision: decision }),
+    new Date().toISOString(),
+  );
+}
+
+function finalizeLocalization(db, taskId, reservationId, input, materialized, normalized, decision) {
+  return db.transaction(() => {
+    let toState = 'asset_review';
+    if (decision?.action === 'needs_review') {
+      toState = 'needs_review';
+      db.prepare(`
+        UPDATE redraw_versions
+        SET status = 'needs_review', updated_at = ?
+        WHERE id = ?
+      `).run(new Date().toISOString(), Number(materialized.id));
+      db.prepare(`
+        UPDATE redraw_works
+        SET current_step = 1, status = 'needs_review', updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND user_id = ?
+      `).run(new Date().toISOString(), Number(input.workId), String(input.tenantId), String(input.userId));
+    }
+    if (decision) recordLocalizationEvent(db, input, decision, toState);
+    markCompleted(db, taskId, reservationId, {
+      status: 'completed',
+      work_id: Number(input.workId),
+      version_id: materialized.id,
+      facts_hash: normalized.facts_hash,
+      ...(decision ? { localization_decision: decision } : {}),
+    });
+  }).immediate();
+}
+
 function findExistingDraft(db, input) {
   return db.prepare(`
     SELECT *
@@ -455,7 +552,7 @@ function runLocalizationJob(db, records, deps) {
         locale: quote.snapshot.input.locale,
         market: quote.snapshot.input.market,
         localizationLevel: quote.snapshot.input.localization_level,
-        sourceFacts: normalized.source_facts,
+        sourceFacts: quote.snapshot.input.source_facts,
         sourceFactsHash: normalized.facts_hash,
         glossary: normalized.glossary,
         nameMap: normalized.name_map,
@@ -464,12 +561,14 @@ function runLocalizationJob(db, records, deps) {
         styleSnapshot: quote.snapshot.input.style_snapshot,
         modelSnapshot: quote.snapshot,
       });
-      markCompleted(db, taskId, reservationId, {
-        status: 'completed',
-        work_id: Number(records.workId),
-        version_id: materialized.id,
-        facts_hash: normalized.facts_hash,
-      });
+      const decisionInput = {
+        tenantId: quote.snapshot.input.tenantId || records.tenantId,
+        userId: quote.snapshot.input.userId || records.userId,
+        workId: Number(quote.snapshot.input.workId || records.workId),
+        source_facts: quote.snapshot.input.source_facts,
+      };
+      const decision = localizationDecision(db, decisionInput, normalized);
+      finalizeLocalization(db, taskId, reservationId, decisionInput, materialized, normalized, decision);
       return { status: 'completed', version_id: materialized.id };
     } catch (error) {
       const task = taskService.getTask(db, taskId);
