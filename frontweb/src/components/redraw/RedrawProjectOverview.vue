@@ -73,7 +73,13 @@ const props = defineProps({
 const project = computed(() => props.project || {})
 const policy = computed(() => project.value.effective_policy || project.value.policy || project.value)
 const rawMode = computed(() => project.value.execution_mode || project.value.raw_execution_mode || 'safe')
-const effectiveMode = computed(() => policy.value.execution_mode || project.value.effective_execution_mode || rawMode.value)
+const effectiveMode = computed(() => {
+  return props.work?.analysis_decision?.effective_mode
+    || props.work?.localization_decision?.effective_mode
+    || policy.value.execution_mode
+    || project.value.effective_execution_mode
+    || '-'
+})
 const policyVersion = computed(() => policy.value.policy_version || project.value.policy_version || project.value.updated_at || '-')
 const reviewCount = computed(() => Number(project.value.review_pending_count ?? props.work?.review_pending_count ?? props.work?.pending_review_count ?? 0))
 const needsAttentionCount = computed(() => {

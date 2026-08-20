@@ -41,7 +41,7 @@
             </label>
             <label class="create-field">
               <span>自动尝试上限</span>
-              <el-input-number v-model="createForm.max_auto_attempts_per_shot" :min="1" :max="9" controls-position="right" />
+              <el-input-number v-model="createForm.max_auto_attempts_per_shot" :min="1" :max="5" controls-position="right" />
             </label>
           </div>
         </div>

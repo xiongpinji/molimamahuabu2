@@ -90,6 +90,62 @@ test('auto 项目创建必须有预算和自动尝试上限', () => {
   })
 })
 
+test('项目策略输入必须是 safe/auto、单一 locale/market，market 归一为两位国家码', () => {
+  assert.throws(() => workspaceState.buildCreateProjectPayload({
+    execution_mode: 'manual',
+    default_locale: 'en-US',
+    default_market: 'US',
+  }), /执行模式/)
+  assert.throws(() => workspaceState.buildCreateProjectPayload({
+    execution_mode: 'safe',
+    default_locale: '',
+    default_market: 'US',
+  }), /目标语言/)
+  assert.throws(() => workspaceState.buildCreateProjectPayload({
+    execution_mode: 'safe',
+    default_locale: 'en-US,es-ES',
+    default_market: 'US',
+  }), /目标语言/)
+  assert.throws(() => workspaceState.buildCreateProjectPayload({
+    execution_mode: 'safe',
+    default_locale: 'en/US',
+    default_market: 'US',
+  }), /目标语言/)
+  assert.throws(() => workspaceState.buildCreateProjectPayload({
+    execution_mode: 'safe',
+    default_locale: 'en-US',
+    default_market: 'USA',
+  }), /目标市场/)
+  assert.throws(() => workspaceState.buildCreateProjectPayload({
+    execution_mode: 'safe',
+    default_locale: 'en-US',
+    default_market: 'US,ES',
+  }), /目标市场/)
+  assert.equal(workspaceState.buildCreateProjectPayload({
+    execution_mode: 'safe',
+    default_locale: 'es-ES',
+    default_market: 'es',
+  }).default_market, 'ES')
+})
+
+test('auto 自动尝试上限必须锁定在 1 到 5', () => {
+  assert.throws(() => workspaceState.buildCreateProjectPayload({
+    execution_mode: 'auto',
+    budget_limit_credits: 100,
+    max_auto_attempts_per_shot: 6,
+    default_locale: 'en-US',
+    default_market: 'US',
+  }), /尝试上限/)
+  assert.throws(() => workspaceState.buildCreateProjectPayload({
+    execution_mode: 'auto',
+    budget_limit_credits: 100,
+    max_auto_attempts_per_shot: 0,
+    default_locale: 'en-US',
+    default_market: 'US',
+  }), /尝试上限/)
+  assert.match(listSource, /:max="5"/)
+})
+
 test('通用项目 API 暴露策略更新和事件读取入口', () => {
   assert.match(apiSource, /updateProjectPolicy\(projectId,\s*body\)/)
   assert.match(apiSource, /request\.put\(`\/redraw\/projects\/\$\{projectId\}\/policy`,\s*body\)/)
@@ -140,6 +196,47 @@ test('八阶段状态只从服务端 workflow_phase、版本和事件投影', ()
   }).find((stage) => stage.key === 'localization').status, 'needs_attention')
 })
 
+test('未知 workflow_phase 失败关闭且 source version 不伪装本地化完成', () => {
+  const unknown = workspaceState.resolveEightStageState({ workflow_phase: 'unknown_phase', version_id: 42 })
+  assert.equal(unknown.some((stage) => stage.status === 'active'), false)
+  assert.equal(unknown.every((stage) => stage.status === 'pending'), true)
+  assert.equal(workspaceState.resolveEightStageState({
+    workflow_phase: 'source',
+    version_id: 42,
+  }).find((stage) => stage.key === 'localization').status, 'pending')
+})
+
+test('八阶段状态保留后端兼容 phase 别名', () => {
+  const cases = [
+    ['source', 'project_input'],
+    ['analysis_review', 'source_analysis'],
+    ['localizing', 'localization'],
+    ['assets', 'character_assets'],
+    ['asset_review', 'character_assets'],
+    ['generating', 'generation'],
+    ['export', 'episode_export'],
+  ]
+  for (const [phase, activeKey] of cases) {
+    const active = workspaceState.resolveEightStageState({ workflow_phase: phase })
+      .find((stage) => stage.status === 'active')
+    assert.equal(active?.key, activeKey, phase)
+  }
+})
+
+test('needs_attention 事件必须逐条独立匹配，不能跨事件串扰', () => {
+  assert.notEqual(workspaceState.resolveEightStageState({
+    workflow_phase: 'generation',
+    events: [
+      { reason_code: 'localization_completed', to_state: 'localization' },
+      { reason_code: 'generation_needs_attention', to_state: 'generation' },
+    ],
+  }).find((stage) => stage.key === 'localization').status, 'needs_attention')
+  assert.equal(workspaceState.resolveEightStageState({
+    workflow_phase: 'generation',
+    events: [{ reason_code: 'localization_failed', to_state: 'localization_needs_attention' }],
+  }).find((stage) => stage.key === 'localization').status, 'needs_attention')
+})
+
 test('项目概览显示原始模式、有效模式、预算、版本和审核计数', () => {
   for (const label of [
     '原始模式',
@@ -155,4 +252,11 @@ test('项目概览显示原始模式、有效模式、预算、版本和审核�
   }
   assert.match(workspaceSource, /RedrawProjectOverview/)
   assert.match(sourceStepSource, /resolveEightStageState/)
+})
+
+test('项目概览 effective mode 优先读取工作分析和本地化决策', () => {
+  assert.match(overviewSource, /analysis_decision\?\.effective_mode/)
+  assert.match(overviewSource, /localization_decision\?\.effective_mode/)
+  assert.match(overviewSource, /effectiveMode = computed/)
+  assert.doesNotMatch(overviewSource, /effective_execution_mode \|\| rawMode\.value/)
 })

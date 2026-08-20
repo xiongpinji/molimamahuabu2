@@ -23,23 +23,38 @@ export function isExistingWorkId(value) {
   return Number.isInteger(id) && id > 0
 }
 
-function positiveIntegerOrNull(value) {
+function positiveIntegerOrNull(value, max = Number.MAX_SAFE_INTEGER) {
   if (value == null || String(value).trim() === '') return null
   const number = Number(value)
-  return Number.isSafeInteger(number) && number > 0 ? number : null
+  return Number.isSafeInteger(number) && number > 0 && number <= max ? number : null
+}
+
+function normalizeLocale(value) {
+  const locale = String(value || '').trim()
+  if (!locale || /[\s,/]/.test(locale) || !/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$/.test(locale)) {
+    throw new Error('目标语言必须是单一 locale')
+  }
+  return locale
+}
+
+function normalizeMarket(value) {
+  const market = String(value || '').trim().toUpperCase()
+  if (!/^[A-Z]{2}$/.test(market)) throw new Error('目标市场必须是单一两位国家码')
+  return market
 }
 
 export function buildCreateProjectPayload(body = {}) {
   const executionMode = String(body.execution_mode || body.executionMode || 'safe').trim() || 'safe'
+  if (!['safe', 'auto'].includes(executionMode)) throw new Error('执行模式必须是 safe 或 auto')
   const budgetLimit = positiveIntegerOrNull(body.budget_limit_credits ?? body.budgetLimitCredits)
-  const maxAttempts = positiveIntegerOrNull(body.max_auto_attempts_per_shot ?? body.maxAutoAttemptsPerShot)
+  const maxAttempts = positiveIntegerOrNull(body.max_auto_attempts_per_shot ?? body.maxAutoAttemptsPerShot, 5)
   if (executionMode === 'auto' && budgetLimit == null) throw new Error('auto 模式必须填写预算')
   if (executionMode === 'auto' && maxAttempts == null) throw new Error('auto 模式必须填写自动尝试上限')
   const payload = {
     title: String(body.title || '').trim() || '未命名转绘项目',
     execution_mode: executionMode,
-    default_locale: String(body.default_locale || body.defaultLocale || 'en-US').trim(),
-    default_market: String(body.default_market || body.defaultMarket || 'US').trim(),
+    default_locale: normalizeLocale(body.default_locale || body.defaultLocale),
+    default_market: normalizeMarket(body.default_market || body.defaultMarket),
     localization_level: String(body.localization_level || body.localizationLevel || 'faithful').trim() || 'faithful',
   }
   if (budgetLimit != null) payload.budget_limit_credits = budgetLimit
@@ -88,29 +103,31 @@ const PHASE_STAGE_ALIAS = {
 
 export function resolveEightStageState(work = {}) {
   const rawPhase = String(work.workflow_phase || '').trim()
-  const activeKey = PHASE_STAGE_ALIAS[rawPhase] || (EIGHT_STAGE_KEYS.includes(rawPhase) ? rawPhase : 'project_input')
+  const activeKey = rawPhase
+    ? PHASE_STAGE_ALIAS[rawPhase] || (EIGHT_STAGE_KEYS.includes(rawPhase) ? rawPhase : '')
+    : 'project_input'
   const activeIndex = EIGHT_STAGE_KEYS.indexOf(activeKey)
   const events = Array.isArray(work.events) ? work.events : []
-  const eventText = events
-    .map((event) => {
-      return [
-        event?.event_type,
-        event?.reason_code,
-        event?.status,
-        event?.phase,
-        event?.from_state,
-        event?.to_state,
-      ].filter(Boolean).join(' ')
-    })
-    .join(' ')
-    .toLowerCase()
   return EIGHT_STAGE_KEYS.map((key, index) => {
-    let status = index < activeIndex || (key === 'localization' && work.version_id) ? 'completed' : 'pending'
-    if (index === activeIndex) status = 'active'
-    if (eventText.includes(key) && eventText.includes('needs_attention')) status = 'needs_attention'
-    if (key === 'localization' && eventText.includes('localization_needs_attention')) status = 'needs_attention'
+    let status = activeIndex >= 0 && index < activeIndex ? 'completed' : 'pending'
+    if (activeIndex >= 0 && index === activeIndex) status = 'active'
+    if (events.some((event) => eventNeedsAttentionForStage(event, key))) status = 'needs_attention'
     return { key, label: EIGHT_STAGE_LABELS[key], status }
   })
+}
+
+function eventNeedsAttentionForStage(event, key) {
+  const text = [
+    event?.event_type,
+    event?.reason_code,
+    event?.status,
+    event?.phase,
+    event?.from_state,
+    event?.to_state,
+  ].filter(Boolean).join(' ').toLowerCase()
+  if (!text.includes('needs_attention')) return false
+  if (text.includes(key)) return true
+  return key === 'localization' && text.includes('localization_needs_attention')
 }
 
 export function analysisQuoteCredits(work) {
