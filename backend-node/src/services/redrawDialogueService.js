@@ -127,11 +127,12 @@ function listShots(db, version, input) {
 }
 
 function normalizeTurn(shot, turn, index) {
+  const hasTargetText = Object.prototype.hasOwnProperty.call(turn || {}, 'target_text');
   return {
     ...turn,
     turn_index: index,
     speaker_id: String(turn?.speaker_id || ''),
-    localized_text: String(turn?.localized_text ?? turn?.text ?? ''),
+    localized_text: String(hasTargetText ? turn?.target_text : (turn?.localized_text ?? turn?.text ?? '')),
     start_ms: Number(turn?.start_ms),
     end_ms: Number(turn?.end_ms),
     estimated_duration_ms: Number(turn?.estimated_duration_ms ?? turn?.audio_duration_ms),

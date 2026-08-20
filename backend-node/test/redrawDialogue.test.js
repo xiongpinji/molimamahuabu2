@@ -244,6 +244,84 @@ test('buildDialoguePlan fixes speaker voices from server snapshots and orders co
   state.db.close();
 });
 
+test('buildDialoguePlan accepts v2 materialized target_text dialogue turns', () => {
+  const state = setup();
+  state.db.prepare('UPDATE redraw_shots SET localized_dialogue_json = ? WHERE id = 801')
+    .run(JSON.stringify([{
+      id: 'turn-1',
+      speaker_id: 'c-1',
+      source_text: '跟我来。',
+      target_text: 'Come with me.',
+      start_ms: 100,
+      end_ms: 1200,
+      emotion: 'urgent',
+      overlap_group: null,
+      estimated_duration_ms: 900,
+    }]));
+  state.db.prepare('UPDATE redraw_shots SET localized_dialogue_json = ? WHERE id = 802')
+    .run(JSON.stringify([
+      {
+        id: 'turn-1',
+        speaker_id: 'c-1',
+        source_text: '不。',
+        target_text: 'No.',
+        start_ms: 3100,
+        end_ms: 3700,
+        emotion: 'tense',
+        overlap_group: null,
+        estimated_duration_ms: 500,
+      },
+      {
+        id: 'turn-2',
+        speaker_id: 'c-2',
+        source_text: '那就安静。',
+        target_text: 'Then stay quiet.',
+        start_ms: 3800,
+        end_ms: 5200,
+        emotion: 'calm',
+        overlap_group: 'overlap-1',
+        estimated_duration_ms: 1200,
+      },
+    ]));
+
+  const plan = buildDialoguePlan(state.db, ctx(state));
+  const quote = quoteDialoguePlan(state.db, ctx(state));
+
+  assert.equal(plan.status, 'ready');
+  assert.deepEqual(plan.segments.map((segment) => segment.text), ['Come with me.', 'No.', 'Then stay quiet.']);
+  assert.deepEqual(plan.segments.map((segment) => segment.start_ms), [100, 3100, 3800]);
+  assert.deepEqual(plan.segments.map((segment) => segment.end_ms), [1200, 3700, 5200]);
+  assert.equal(quote.status, 'ready');
+  assert.equal(quote.segment_count, 3);
+  assert.equal(quote.total_credits, 12);
+  state.db.close();
+});
+
+test('buildDialoguePlan does not fall back when v2 target_text is present but empty', () => {
+  const state = setup();
+  state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
+  state.db.prepare('UPDATE redraw_shots SET localized_dialogue_json = ? WHERE id = 801')
+    .run(JSON.stringify([{
+      speaker_id: 'c-1',
+      target_text: '',
+      localized_text: 'Legacy fallback must not be used.',
+      text: 'Text fallback must not be used.',
+      start_ms: 100,
+      end_ms: 1200,
+      estimated_duration_ms: 900,
+    }]));
+
+  const plan = buildDialoguePlan(state.db, ctx(state));
+  const quote = quoteDialoguePlan(state.db, ctx(state));
+
+  assert.equal(plan.status, 'needs_rewrite');
+  assert.deepEqual(plan.segments, []);
+  assert.deepEqual(plan.issues.map((issue) => issue.reason), ['dialogue_text_invalid']);
+  assert.equal(quote.status, 'needs_rewrite');
+  assert.equal(quote.segment_count, 0);
+  state.db.close();
+});
+
 test('dialogue quote requires ready locale verifier and binds worker pack manifests into quote hash', () => {
   const state = setup();
   const calls = [];
