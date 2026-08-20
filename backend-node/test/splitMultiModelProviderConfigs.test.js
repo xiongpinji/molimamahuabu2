@@ -516,15 +516,31 @@ test('拆分前后 shadow 目录模型集合一致且 FAST/MINI 只走各自线�
     assert.equal(candidates[0].would_be_hidden, true);
   }
 
+  const splitConfigIds = configs.map((config) => config.id).sort((left, right) => left - right);
+  const dueProfiles = providerCanarySchedulerService.selectDueProfiles(db, {
+    now: '2026-08-20T00:05:00.000Z',
+  });
+  const splitDueProfiles = dueProfiles.filter((profile) => (
+    splitConfigIds.includes(profile.config.id)
+  ));
+  assert.deepEqual(
+    [...new Set(splitDueProfiles.map((profile) => profile.config.id))]
+      .sort((left, right) => left - right),
+    splitConfigIds,
+  );
+  for (const configId of splitConfigIds) {
+    assert.ok(splitDueProfiles.some((profile) => profile.config.id === configId));
+  }
+  for (const profile of splitDueProfiles) {
+    assert.equal(profile.config.canary_paused, true);
+    assert.equal(profile.blockedReason, 'canary_paused');
+  }
+
   let executorCalls = 0;
   const paidResult = await providerCanarySchedulerService.runOnePaidCanary(db, {}, {
     paidEnabled: true,
     now: '2026-08-20T00:05:00.000Z',
-    dueProfiles: configs.map((config) => ({
-      config: { ...config, canary_paused: true },
-      capability: providerCanarySchedulerService.enumerateCapabilityProfiles(config)[0],
-      blockedReason: 'canary_paused',
-    })),
+    dueProfiles: splitDueProfiles,
     executor: {
       async executeCanaryRun() {
         executorCalls += 1;
