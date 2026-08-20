@@ -13,6 +13,10 @@ const modelPriceService = require('../src/services/modelPriceService');
 const providerRouteCostService = require('../src/services/providerRouteCostService');
 const externalModelEvidenceService = require('../src/services/externalModelEvidenceService');
 const auditEventService = require('../src/services/auditEventService');
+const canvasModelCatalogService = require('../src/services/canvasModelCatalogService');
+const providerRouteStabilityService = require('../src/services/providerRouteStabilityService');
+const providerCanarySchedulerService = require('../src/services/providerCanarySchedulerService');
+const aiConfigService = require('../src/services/aiConfigService');
 const splitTool = require('../scripts/split-multi-model-provider-configs');
 
 const script = path.resolve(__dirname, '../scripts/split-multi-model-provider-configs.js');
@@ -449,6 +453,86 @@ test('证据绑定拆分原子生成两个启用已验证且巡检暂停的单�
     [audit.user_id, audit.resource_type, audit.resource_id, audit.outcome],
     ['system/cli', 'ai_service_config', String(item.configId), 'success'],
   );
+  db.close();
+});
+
+test('拆分前后 shadow 目录模型集合一致且 FAST/MINI 只走各自线路', async (t) => {
+  const item = evidenceFixture();
+  const db = new Database(item.dbPath);
+  t.after(() => {
+    if (db.open) db.close();
+    cleanup(item);
+  });
+
+  const beforeModels = canvasModelCatalogService.list(db, {
+    canaryMode: 'shadow',
+    evidenceRoots: item.evidenceRoots,
+  }).map((entry) => entry.model)
+    .filter((model) => model.startsWith('seedance-2-'))
+    .sort();
+  assert.deepEqual(beforeModels, ['seedance-2-fast', 'seedance-2-mini']);
+
+  const binding = validBinding(item.configId);
+  for (const model of binding.models) model.evidence_sha256 = item.evidenceSha256;
+  splitTool.applyEvidenceBoundPlan(db, {
+    configId: item.configId,
+    expectedFingerprint: splitTool.fingerprint(splitTool.readTarget(db, item.configId)),
+    binding,
+  }, {
+    readTrustedEvidence: (model) => externalModelEvidenceService.readTrustedEvidence(
+      model,
+      item.evidenceRoots,
+    ),
+  });
+
+  const afterModels = canvasModelCatalogService.list(db, {
+    canaryMode: 'shadow',
+    evidenceRoots: item.evidenceRoots,
+  }).map((entry) => entry.model)
+    .filter((model) => model.startsWith('seedance-2-'))
+    .sort();
+  assert.deepEqual(afterModels, beforeModels);
+
+  const configs = aiConfigService.listConfigs(db, 'video')
+    .filter((config) => config.logical_model_id?.startsWith('seedance-2-'));
+  assert.equal(configs.length, 2);
+  assert.deepEqual(configs.map((config) => config.logical_model_id).sort(), beforeModels);
+
+  for (const model of beforeModels) {
+    const { candidates } = providerRouteStabilityService.selectVerifiedCandidates(db, {
+      logicalModelId: model,
+      serviceType: 'video',
+      capabilities: {
+        resolution: '480p',
+        duration: 5,
+        referenceImageCount: 9,
+        referenceVideoCount: 3,
+        referenceAudioCount: 3,
+      },
+      canaryMode: 'shadow',
+    });
+    assert.equal(candidates.length, 1);
+    assert.equal(candidates[0].default_model, model);
+    assert.equal(candidates[0].would_be_hidden, true);
+  }
+
+  let executorCalls = 0;
+  const paidResult = await providerCanarySchedulerService.runOnePaidCanary(db, {}, {
+    paidEnabled: true,
+    now: '2026-08-20T00:05:00.000Z',
+    dueProfiles: configs.map((config) => ({
+      config: { ...config, canary_paused: true },
+      capability: providerCanarySchedulerService.enumerateCapabilityProfiles(config)[0],
+      blockedReason: 'canary_paused',
+    })),
+    executor: {
+      async executeCanaryRun() {
+        executorCalls += 1;
+      },
+    },
+  });
+  assert.equal(paidResult.state, 'blocked');
+  assert.equal(executorCalls, 0);
   db.close();
 });
 
