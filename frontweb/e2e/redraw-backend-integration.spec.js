@@ -30,6 +30,7 @@ const redrawUploadService = require(path.join(backendRoot, 'src', 'services', 'r
 const creditLedger = require(path.join(backendRoot, 'src', 'services', 'creditLedgerService'))
 const modelPrices = require(path.join(backendRoot, 'src', 'services', 'modelPriceService'))
 const { buildLocalizationInput } = require(path.join(backendRoot, 'src', 'services', 'localizationService'))
+const { serverAutomationPolicySnapshot } = require(path.join(backendRoot, 'src', 'services', 'redrawProjectPolicyService'))
 const { getFfmpegPath, getFfprobePath } = require(path.join(backendRoot, 'src', 'utils', 'ffmpegPath'))
 
 let backendServer
@@ -790,7 +791,7 @@ function createGenericSourceVideo({
   return videoPath
 }
 
-async function createProjectFromRedraw(page, project, automationPolicy = null) {
+async function createProjectFromRedraw(page, project) {
   await page.goto('/redraw')
   await page.getByRole('button', { name: '新建转绘项目' }).click()
   await page.locator('.create-field').filter({ hasText: '项目名称' }).locator('input')
@@ -819,32 +820,14 @@ async function createProjectFromRedraw(page, project, automationPolicy = null) {
   const payload = JSON.parse(await response.text())
   expect(response.status(), JSON.stringify(payload)).toBe(201)
   const projectId = Number(payload.data.id)
-  if (automationPolicy) {
-    database.prepare('UPDATE redraw_projects SET automation_policy_json = ? WHERE id = ?')
-      .run(JSON.stringify(automationPolicy), projectId)
-    const savedPolicy = database.prepare('SELECT automation_policy_json FROM redraw_projects WHERE id = ?')
-      .get(projectId)
-    expect(JSON.parse(savedPolicy.automation_policy_json)).toEqual(automationPolicy)
-  }
+  const savedPolicy = database.prepare('SELECT automation_policy_json FROM redraw_projects WHERE id = ?')
+    .get(projectId)
+  expect(JSON.parse(savedPolicy.automation_policy_json)).toEqual(serverAutomationPolicySnapshot())
   return projectId
 }
 
 async function createGenericProjectFromRedraw(page) {
-  return createProjectFromRedraw(page, genericRedrawProject.project, {
-    analysis_confidence_thresholds: {
-      character_mapping: 0.9,
-      speaker_mapping: 0.75,
-      text_regions: 0.9,
-      shot_boundary: 0.9,
-    },
-    localization_thresholds: {
-      names: 0.9,
-      dialogue_semantics: 0.9,
-      dialogue_timing: 0.9,
-      culture: 0.9,
-      screen_text: 0.9,
-    },
-  })
+  return createProjectFromRedraw(page, genericRedrawProject.project)
 }
 
 function genericHighConfidenceSourceFacts() {
@@ -1136,20 +1119,6 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     default_market: 'US',
     budget_limit_credits: 100,
     max_auto_attempts_per_shot: 1,
-  }, {
-    analysis_confidence_thresholds: {
-      character_mapping: 0.9,
-      speaker_mapping: 0.9,
-      text_regions: 0.9,
-      shot_boundary: 0.9,
-    },
-    localization_thresholds: {
-      names: 0.9,
-      dialogue_semantics: 0.9,
-      dialogue_timing: 0.9,
-      culture: 0.9,
-      screen_text: 0.9,
-    },
   })
   await expect(page).toHaveURL(/\/redraw\/projects\/\d+\/works\/new\?step=1/)
 

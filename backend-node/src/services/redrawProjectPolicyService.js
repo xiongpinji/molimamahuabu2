@@ -8,6 +8,22 @@ const ALLOWED_FIELDS = new Set([
   'budget_limit_credits',
   'max_auto_attempts_per_shot',
 ]);
+const SERVER_AUTOMATION_POLICY_SNAPSHOT = Object.freeze({
+  schema_version: 'redraw-server-automation-policy-v1',
+  analysis_confidence_thresholds: Object.freeze({
+    character_mapping: 0.9,
+    speaker_mapping: 0.9,
+    text_regions: 0.9,
+    shot_boundary: 0.9,
+  }),
+  localization_thresholds: Object.freeze({
+    names: 0.9,
+    dialogue_semantics: 0.9,
+    dialogue_timing: 0.9,
+    culture: 0.9,
+    screen_text: 0.9,
+  }),
+});
 const DANGEROUS_FIELDS = new Set(['__proto__', 'constructor', 'prototype']);
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 
@@ -87,6 +103,14 @@ function stableJson(value) {
   return JSON.stringify(value);
 }
 
+function serverAutomationPolicySnapshot() {
+  return JSON.parse(JSON.stringify(SERVER_AUTOMATION_POLICY_SNAPSHOT));
+}
+
+function serverAutomationPolicySnapshotJson() {
+  return stableJson(serverAutomationPolicySnapshot());
+}
+
 function evidenceHash(snapshot) {
   return crypto.createHash('sha256').update(stableJson(snapshot)).digest('hex');
 }
@@ -132,6 +156,7 @@ function updateProjectPolicy(db, options = {}) {
       SET execution_mode = ?,
           budget_limit_credits = ?,
           max_auto_attempts_per_shot = ?,
+          automation_policy_json = ?,
           policy_version = policy_version + 1,
           updated_at = ?
       WHERE id = ?
@@ -143,6 +168,7 @@ function updateProjectPolicy(db, options = {}) {
       normalized.execution_mode,
       normalized.budget_limit_credits,
       normalized.max_auto_attempts_per_shot,
+      serverAutomationPolicySnapshotJson(),
       updatedAt,
       projectId,
       tenantId,
@@ -177,5 +203,7 @@ function updateProjectPolicy(db, options = {}) {
 module.exports = {
   normalizeProjectPolicy,
   projectPolicySnapshot,
+  serverAutomationPolicySnapshot,
+  serverAutomationPolicySnapshotJson,
   updateProjectPolicy,
 };

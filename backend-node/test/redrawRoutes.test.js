@@ -15,6 +15,22 @@ const redrawCapabilityService = require('../src/services/redrawCapabilityService
 const redrawAssetService = require('../src/services/redrawAssetService');
 
 const NOW = '2026-08-06T00:00:00.000Z';
+const EXPECTED_SERVER_AUTOMATION_POLICY = {
+  schema_version: 'redraw-server-automation-policy-v1',
+  analysis_confidence_thresholds: {
+    character_mapping: 0.9,
+    speaker_mapping: 0.9,
+    text_regions: 0.9,
+    shot_boundary: 0.9,
+  },
+  localization_thresholds: {
+    names: 0.9,
+    dialogue_semantics: 0.9,
+    dialogue_timing: 0.9,
+    culture: 0.9,
+    screen_text: 0.9,
+  },
+};
 
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -876,9 +892,11 @@ test('创建转绘项目原子保存并投影新项目策略', () => {
 
     const stored = db.prepare(`
       SELECT execution_mode, budget_limit_credits, max_auto_attempts_per_shot,
-             policy_version, default_locale, default_market
+             policy_version, default_locale, default_market, automation_policy_json
       FROM redraw_projects WHERE id = ?
     `).get(created.body.data.id);
+    const storedPolicy = JSON.parse(stored.automation_policy_json);
+    delete stored.automation_policy_json;
     assert.deepEqual(stored, {
       execution_mode: 'auto',
       budget_limit_credits: 120,
@@ -887,6 +905,7 @@ test('创建转绘项目原子保存并投影新项目策略', () => {
       default_locale: 'en-US',
       default_market: 'US',
     });
+    assert.deepEqual(storedPolicy, EXPECTED_SERVER_AUTOMATION_POLICY);
 
     const own = captureResponse();
     handlers.getProject(request({ id: created.body.data.id }), own);
@@ -928,6 +947,8 @@ test('创建转绘项目严格拒绝新合同非法策略目标与客户端注�
       { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'safe', model: 'client' },
       { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'safe', provider: 'client' },
       { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'safe', reservation_id: 'client' },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'safe', automation_policy_json: '{}' },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'safe', thresholds: { speaker_mapping: 0.1 } },
       JSON.parse('{"title":"bad","default_locale":"en-US","default_market":"US","execution_mode":"safe","__proto__":{"polluted":true}}'),
     ];
     for (const body of cases) {
@@ -5434,7 +5455,7 @@ test('项目策略 API 严格白名单、CAS 更新并追加脱敏事件', () =>
     assert.equal(missingCas.statusCode, 400);
     assert.equal(missingCas.body.error.code, 'REDRAW_PROJECT_POLICY_EXPECTED_UPDATED_AT_REQUIRED');
 
-    for (const field of ['default_market', 'default_locale', 'spent_credits', 'reservation_id', 'provider', 'model', 'apiKey', 'base_url']) {
+    for (const field of ['default_market', 'default_locale', 'spent_credits', 'reservation_id', 'provider', 'model', 'apiKey', 'base_url', 'automation_policy_json', 'thresholds']) {
       const bad = captureResponse();
       handlers.updateProjectPolicy(request({
         id: projectId,
@@ -5476,6 +5497,9 @@ test('项目策略 API 严格白名单、CAS 更新并追加脱敏事件', () =>
       default_market: 'US',
       default_locale: 'en-US',
     });
+    const storedPolicy = db.prepare('SELECT automation_policy_json FROM redraw_projects WHERE id = ?')
+      .get(projectId);
+    assert.deepEqual(JSON.parse(storedPolicy.automation_policy_json), EXPECTED_SERVER_AUTOMATION_POLICY);
 
     const events = captureResponse();
     handlers.listProjectEvents(request({ id: projectId }), events);
@@ -5540,7 +5564,7 @@ test('项目策略 API 拒绝继承字段和原型污染键且零写入', () => 
     const handlers = redrawRoutes(db, { error() {} }, routeDeps());
     const before = db.prepare(`
       SELECT execution_mode, budget_limit_credits, max_auto_attempts_per_shot,
-             policy_version, updated_at
+             policy_version, updated_at, automation_policy_json
       FROM redraw_projects WHERE id = ?
     `).get(projectId);
 
@@ -5577,7 +5601,7 @@ test('项目策略 API 拒绝继承字段和原型污染键且零写入', () => 
 
     assert.deepEqual(db.prepare(`
       SELECT execution_mode, budget_limit_credits, max_auto_attempts_per_shot,
-             policy_version, updated_at
+             policy_version, updated_at, automation_policy_json
       FROM redraw_projects WHERE id = ?
     `).get(projectId), before);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_workflow_events').get().count, 0);

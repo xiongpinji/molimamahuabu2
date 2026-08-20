@@ -13,6 +13,22 @@ const {
 } = require('../src/services/redrawWorkflowEventService');
 
 const NOW = '2026-08-06T00:00:00.000Z';
+const EXPECTED_SERVER_AUTOMATION_POLICY = {
+  schema_version: 'redraw-server-automation-policy-v1',
+  analysis_confidence_thresholds: {
+    character_mapping: 0.9,
+    speaker_mapping: 0.9,
+    text_regions: 0.9,
+    shot_boundary: 0.9,
+  },
+  localization_thresholds: {
+    names: 0.9,
+    dialogue_semantics: 0.9,
+    dialogue_timing: 0.9,
+    culture: 0.9,
+    screen_text: 0.9,
+  },
+};
 
 function createDb() {
   const db = new Database(':memory:');
@@ -169,6 +185,9 @@ test('策略更新使用 owner 与 updated_at CAS 且不改写目标国家语言
       default_market: 'US',
       default_locale: 'en-US',
     });
+    const storedPolicy = db.prepare('SELECT automation_policy_json FROM redraw_projects WHERE id = ?')
+      .get(projectId);
+    assert.deepEqual(JSON.parse(storedPolicy.automation_policy_json), EXPECTED_SERVER_AUTOMATION_POLICY);
     assert.deepEqual(projectPolicySnapshot(db.prepare('SELECT * FROM redraw_projects WHERE id = ?').get(projectId)), updated);
   } finally {
     db.close();
@@ -248,6 +267,7 @@ test('策略更新对跨 owner 统一 404，CAS 冲突 409 且零部分写入', 
     assert.equal(after.max_auto_attempts_per_shot, before.max_auto_attempts_per_shot);
     assert.equal(after.policy_version, before.policy_version);
     assert.equal(after.updated_at, before.updated_at);
+    assert.equal(after.automation_policy_json, before.automation_policy_json);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_workflow_events').get().count, 0);
   } finally {
     db.close();

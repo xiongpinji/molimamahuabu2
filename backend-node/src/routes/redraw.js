@@ -1985,8 +1985,8 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
       INSERT INTO redraw_projects
         (tenant_id, user_id, title, default_locale, default_market, localization_level,
          status, execution_mode, budget_limit_credits, max_auto_attempts_per_shot,
-         policy_version, created_at, updated_at, deleted_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, 1, ?, ?, NULL)
+         policy_version, automation_policy_json, created_at, updated_at, deleted_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, 1, ?, ?, ?, NULL)
     `).run(
       currentOwner.tenantId,
       currentOwner.userId,
@@ -1997,6 +1997,7 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
       policy.execution_mode,
       policy.budget_limit_credits,
       policy.max_auto_attempts_per_shot,
+      redrawProjectPolicyService.serverAutomationPolicySnapshotJson(),
       now,
       now,
     );
