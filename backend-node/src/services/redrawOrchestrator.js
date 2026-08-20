@@ -452,11 +452,6 @@ function analysisConfidence(normalized) {
   return result;
 }
 
-function analysisThresholds(project) {
-  const policy = parseJson(project?.automation_policy_json, {});
-  return policy.analysis_confidence_thresholds || policy.thresholds || {};
-}
-
 function parseAutomationPolicy(project) {
   if (project?.automation_policy_json == null || String(project.automation_policy_json).trim() === '') {
     return { ok: false, code: 'project_policy_missing', policy: null };
@@ -497,16 +492,29 @@ function enrichAutomationDecision(decision, outcome, factsHash) {
   };
 }
 
-function persistedAutomationDecision(task, factsHash) {
+function taskResultPayload(work, version, resultAssetId, factsHash, decision) {
+  return {
+    status: 'completed',
+    work_id: work.id,
+    version_id: Number(version.id),
+    result_asset_id: resultAssetId,
+    facts_hash: factsHash,
+    automation_decision: decision,
+  };
+}
+
+function persistedAutomationDecision(task, factsHash, versionId, policyVersion) {
   const parsed = parseJson(task?.result, null);
   const decision = parsed?.automation_decision;
   if (
     !decision
+    || Number(parsed?.version_id) !== Number(versionId)
     || !['advance', 'needs_review', 'blocked'].includes(decision.action)
     || !['auto', 'safe'].includes(decision.effective_mode)
     || !Array.isArray(decision.reason_codes)
     || typeof decision.evidence_hash !== 'string'
     || decision.evidence_hash !== factsHash
+    || Number(decision.policy_version) !== Number(policyVersion)
     || typeof decision.effective_analysis_state !== 'string'
   ) {
     return null;
@@ -519,6 +527,57 @@ function persistedAutomationDecision(task, factsHash) {
     evidence_hash: decision.evidence_hash,
     effective_analysis_state: decision.effective_analysis_state,
   };
+}
+
+function projectPolicyVersion(db, work) {
+  const project = readProjectPolicy(db, work);
+  return project ? Number(project.policy_version || 0) : 0;
+}
+
+function eventAutomationDecision(db, work, version, factsHash) {
+  if (!work.project_id) return null;
+  const policyVersion = projectPolicyVersion(db, work);
+  if (!policyVersion) return null;
+  const row = db.prepare(`
+    SELECT *
+    FROM redraw_workflow_events
+    WHERE tenant_id = ? AND user_id = ? AND project_id = ?
+      AND resource_type = 'version' AND resource_id = ?
+      AND reason_code = 'analysis_completed' AND evidence_hash = ?
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(String(work.tenant_id || ''), String(work.user_id || ''), Number(work.project_id), String(version.id), factsHash);
+  const metadata = parseJson(row?.metadata_json, null);
+  if (
+    !metadata
+    || !['advance', 'needs_review', 'blocked'].includes(metadata.action)
+    || !['auto', 'safe'].includes(metadata.effective_mode)
+    || !Array.isArray(metadata.reason_codes)
+    || Number(metadata.policy_version) !== policyVersion
+  ) {
+    return null;
+  }
+  return {
+    action: metadata.action,
+    effective_mode: metadata.effective_mode,
+    reason_codes: [...metadata.reason_codes].map(String).sort(),
+    policy_version: policyVersion,
+    evidence_hash: factsHash,
+    effective_analysis_state: String(row.to_state || ''),
+  };
+}
+
+function reservationIsHeld(db, reservationId) {
+  return creditLedger.getReservation(db, reservationId)?.status === 'held';
+}
+
+function atomicFinalize(db, work) {
+  try {
+    return db.transaction(work)();
+  } catch (error) {
+    error.atomic_finalize_failed = true;
+    throw error;
+  }
 }
 
 function automationOutcome(db, work, normalized) {
@@ -700,10 +759,16 @@ function writeFactsOnce(db, work, normalized, outcome = null) {
   return { version, changed };
 }
 
-function existingSourceFactsVersion(db, workId) {
+function existingSourceFactsVersion(db, work) {
+  const columns = tableColumns(db, 'redraw_versions');
+  const localeClause = columns.has('locale') ? "AND locale = 'source'" : '';
   return db.prepare(
-    'SELECT * FROM redraw_versions WHERE work_id = ? AND source_facts_json IS NOT NULL ORDER BY id ASC LIMIT 1'
-  ).get(workId);
+    `SELECT *
+     FROM redraw_versions
+     WHERE work_id = ? ${localeClause} AND source_facts_json IS NOT NULL
+     ORDER BY CASE WHEN version = ? THEN 0 ELSE 1 END, version DESC, id DESC
+     LIMIT 1`
+  ).get(work.id, Number(work.current_version || 0));
 }
 
 function finalizeCompletedAnalysis(db, log, task, work, result, options = {}) {
@@ -712,7 +777,7 @@ function finalizeCompletedAnalysis(db, log, task, work, result, options = {}) {
     const resultAssetId = result.result_asset_id || result.result_asset?.id;
     assertAssetReadable(db, options.assetReader, resultAssetId, '分析结果');
     const normalized = normalizeSourceFacts(result.facts || result.source_facts);
-    const existingVersion = existingSourceFactsVersion(db, work.id);
+    const existingVersion = existingSourceFactsVersion(db, work);
     if (existingVersion) {
       if (existingVersion.facts_hash !== normalized.facts_hash) {
         const error = codedError('SOURCE_FACTS_HASH_CONFLICT', '源片事实 hash 冲突，请人工确认后再继续');
@@ -720,8 +785,23 @@ function finalizeCompletedAnalysis(db, log, task, work, result, options = {}) {
         error.incoming_hash = normalized.facts_hash;
         throw error;
       }
-      const decision = persistedAutomationDecision(task, normalized.facts_hash);
+      const policyVersion = projectPolicyVersion(db, work);
+      const decision = persistedAutomationDecision(task, normalized.facts_hash, existingVersion.id, policyVersion)
+        || eventAutomationDecision(db, work, existingVersion, normalized.facts_hash);
       if (!decision && work.project_id) throw codedError('AUTOMATION_DECISION_MISSING', '自动化分析决策缺失');
+      const alreadyComplete = task.status === 'completed'
+        && persistedAutomationDecision(task, normalized.facts_hash, existingVersion.id, policyVersion)
+        && !reservationIsHeld(db, task.credit_reservation_id || work.credit_reservation_id);
+      if (!alreadyComplete && decision) {
+        atomicFinalize(db, () => {
+          taskService.updateTaskResult(
+            db,
+            task.id,
+            taskResultPayload(work, existingVersion, resultAssetId, normalized.facts_hash, decision),
+          );
+          creditLedger.settleGeneration(db, task.credit_reservation_id || work.credit_reservation_id, 'completed');
+        });
+      }
       return {
         status: 'completed',
         facts_hash: normalized.facts_hash,
@@ -730,30 +810,34 @@ function finalizeCompletedAnalysis(db, log, task, work, result, options = {}) {
         automation_decision: decision,
       };
     }
-    const outcome = automationOutcome(db, work, normalized);
-    const { version, changed } = db.transaction(() => writeFactsOnce(db, work, normalized, outcome))();
-    if (changed || task.status !== 'completed') {
-      taskService.updateTaskResult(db, task.id, {
-        status: 'completed',
-        work_id: work.id,
-        version_id: version.id,
-        result_asset_id: resultAssetId,
-        facts_hash: normalized.facts_hash,
-        automation_decision: outcome.decision,
-      });
+    const committed = atomicFinalize(db, () => {
+      const outcome = automationOutcome(db, work, normalized);
+      const { version } = writeFactsOnce(db, work, normalized, outcome);
+      if (task.status !== 'completed') {
+        taskService.updateTaskResult(
+          db,
+          task.id,
+          taskResultPayload(work, version, resultAssetId, normalized.facts_hash, outcome.decision),
+        );
+      }
       creditLedger.settleGeneration(db, task.credit_reservation_id || work.credit_reservation_id, 'completed');
-    }
+      return { version, decision: outcome.decision };
+    });
     return {
       status: 'completed',
       facts_hash: normalized.facts_hash,
-      version_id: version.id,
+      version_id: committed.version.id,
       result_asset_id: resultAssetId,
-      automation_decision: outcome.decision,
+      automation_decision: committed.decision,
     };
   } catch (error) {
     if (error.code === 'SOURCE_FACTS_HASH_CONFLICT') {
       markNeedsAttention(db, task, work, error.message);
       return { status: 'needs_attention', error: error.message };
+    }
+    if (error.atomic_finalize_failed) {
+      log?.warn?.('redraw analysis atomic finalize failed', { task_id: task.id, work_id: work.id, message: error.message });
+      return { status: 'failed', error: error.message };
     }
     markFailure(db, log, task, work, error.message);
     return { status: 'failed', error: error.message };

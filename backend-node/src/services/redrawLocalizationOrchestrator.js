@@ -80,20 +80,22 @@ function getOwnedWork(db, input) {
   return work;
 }
 
-function safeAutomationDecision(value, evidenceHash) {
-  const decision = value?.automation_decision || value;
+function safeAutomationDecision(value, evidenceHash, versionId, currentPolicyVersion) {
+  const result = value?.automation_decision ? value : null;
+  const decision = result?.automation_decision || value;
   if (!decision || typeof decision !== 'object' || Array.isArray(decision)) return null;
   if (!['advance', 'needs_review', 'blocked'].includes(decision.action)) return null;
   if (!['auto', 'safe'].includes(decision.effective_mode)) return null;
   if (!Array.isArray(decision.reason_codes)) return null;
   if (typeof decision.evidence_hash !== 'string' || decision.evidence_hash !== evidenceHash) return null;
   if (typeof decision.effective_analysis_state !== 'string') return null;
-  const policyVersion = Number(decision.policy_version);
+  if (Number(result?.version_id) !== Number(versionId)) return null;
+  if (Number(decision.policy_version) !== Number(currentPolicyVersion)) return null;
   return {
     action: decision.action,
     effective_mode: decision.effective_mode,
     reason_codes: [...decision.reason_codes].map(String).sort(),
-    policy_version: Number.isFinite(policyVersion) ? policyVersion : 0,
+    policy_version: Number(decision.policy_version),
     evidence_hash: decision.evidence_hash,
     effective_analysis_state: decision.effective_analysis_state,
   };
@@ -113,16 +115,25 @@ function getAnalysisAutomationDecision(db, input = {}) {
     throw error;
   }
   if (!work.task_id) return null;
+  if (!work.project_id) return null;
   const sourceVersion = db.prepare(`
     SELECT id, facts_hash
     FROM redraw_versions
     WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+      AND locale = 'source'
       AND source_facts_json IS NOT NULL AND TRIM(source_facts_json) != ''
       AND deleted_at IS NULL
-    ORDER BY version ASC, id ASC
+    ORDER BY CASE WHEN version = ? THEN 0 ELSE 1 END, version DESC, id DESC
     LIMIT 1
-  `).get(normalized.workId, normalized.tenantId, normalized.userId);
+  `).get(normalized.workId, normalized.tenantId, normalized.userId, Number(work.current_version || 0));
   if (!sourceVersion?.facts_hash) return null;
+  const project = db.prepare(`
+    SELECT policy_version
+    FROM redraw_projects
+    WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+    LIMIT 1
+  `).get(Number(work.project_id), normalized.tenantId, normalized.userId);
+  if (!project) return null;
   const task = db.prepare(`
     SELECT result
     FROM async_tasks
@@ -132,7 +143,7 @@ function getAnalysisAutomationDecision(db, input = {}) {
     LIMIT 1
   `).get(String(work.task_id), String(normalized.workId), normalized.tenantId, normalized.userId);
   const parsed = parseJson(task?.result, null);
-  return safeAutomationDecision(parsed, sourceVersion.facts_hash);
+  return safeAutomationDecision(parsed, sourceVersion.facts_hash, sourceVersion.id, project.policy_version);
 }
 
 function analysisGateQuote(db, input) {
@@ -156,16 +167,17 @@ function buildLocalizationSnapshot(db, input = {}) {
     market: trim(input.market),
     localizationLevel: trim(input.localizationLevel ?? input.localization_level) || 'faithful',
   };
-  getOwnedWork(db, normalized);
+  const work = getOwnedWork(db, normalized);
   const sourceVersion = db.prepare(`
     SELECT *
     FROM redraw_versions
     WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+      AND locale = 'source'
       AND source_facts_json IS NOT NULL AND TRIM(source_facts_json) != ''
       AND deleted_at IS NULL
-    ORDER BY version ASC, id ASC
+    ORDER BY CASE WHEN version = ? THEN 0 ELSE 1 END, version DESC, id DESC
     LIMIT 1
-  `).get(normalized.workId, normalized.tenantId, normalized.userId);
+  `).get(normalized.workId, normalized.tenantId, normalized.userId, Number(work.current_version || 0));
   if (!sourceVersion) {
     throw codedError('REDRAW_LOCALIZATION_SOURCE_REQUIRED', '本地化需要先完成源片事实确认');
   }

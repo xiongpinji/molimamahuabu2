@@ -90,6 +90,7 @@ function createDb(options = {}) {
     );
     CREATE TABLE redraw_works (
       id INTEGER PRIMARY KEY,
+      project_id INTEGER,
       tenant_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
       current_version INTEGER NOT NULL DEFAULT 0,
@@ -122,6 +123,17 @@ function createDb(options = {}) {
       status TEXT NOT NULL DEFAULT 'draft',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );
+    CREATE TABLE redraw_projects (
+      id INTEGER PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      execution_mode TEXT DEFAULT 'safe',
+      budget_limit_credits INTEGER,
+      automation_policy_json TEXT,
+      policy_version INTEGER DEFAULT 1,
+      updated_at TEXT,
       deleted_at TEXT
     );
     CREATE UNIQUE INDEX uq_redraw_version_number ON redraw_versions(work_id, version);
@@ -214,7 +226,12 @@ function createDb(options = {}) {
   const now = new Date().toISOString();
   const facts = sourceFacts();
   const factsHash = buildLocalizationInput(facts, { locale: 'source' }).source_facts_hash;
-  db.prepare('INSERT INTO redraw_works (id, tenant_id, user_id, current_version, current_step, status, task_id, updated_at) VALUES (1, ?, ?, 1, 1, ?, ?, ?)')
+  db.prepare(`
+    INSERT INTO redraw_projects
+      (id, tenant_id, user_id, execution_mode, budget_limit_credits, automation_policy_json, policy_version, updated_at)
+    VALUES (1, 'tenant-a', 'user-a', 'auto', 30, '{}', 1, ?)
+  `).run(now);
+  db.prepare('INSERT INTO redraw_works (id, project_id, tenant_id, user_id, current_version, current_step, status, task_id, updated_at) VALUES (1, 1, ?, ?, 1, 1, ?, ?, ?)')
     .run('tenant-a', 'user-a', 'fact_confirmed', 'task-analysis', now);
   const sourceVersionId = Number(db.prepare(`
     INSERT INTO redraw_versions
@@ -250,18 +267,24 @@ function createDb(options = {}) {
     policy_version: 1,
     evidence_hash: factsHash,
     effective_analysis_state: 'asset_review',
-  });
+  }, sourceVersionId);
   return db;
 }
 
-function setAnalysisDecision(db, decision) {
+function setAnalysisDecision(db, decision, versionId = 1) {
   const now = new Date().toISOString();
   db.prepare(`
     INSERT INTO async_tasks
       (id, type, status, progress, message, result, resource_id, tenant_id, user_id, created_at, updated_at, completed_at)
     VALUES ('task-analysis', 'redraw_analysis', 'completed', 100, '分析完成', ?, '1', 'tenant-a', 'user-a', ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET result = excluded.result, updated_at = excluded.updated_at
-  `).run(JSON.stringify({ automation_decision: decision }), now, now, now);
+  `).run(JSON.stringify({
+    status: 'completed',
+    work_id: 1,
+    version_id: versionId,
+    facts_hash: decision.evidence_hash,
+    automation_decision: decision,
+  }), now, now, now);
 }
 
 function quoteInput(overrides = {}) {
@@ -383,6 +406,63 @@ test('start fails closed before draft, reservation, task, and provider when anal
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_localization'").get().count, 0);
     db.close();
   }
+});
+
+test('quote and start fail closed when current project policy version drifted after analysis advance', () => {
+  const db = createDb({ capability: false, price: false });
+  db.prepare("UPDATE redraw_projects SET policy_version = 2, execution_mode = 'safe' WHERE id = 1").run();
+  const provider = providerReturning(localizedResult());
+
+  const quote = quoteLocalization(db, quoteInput());
+  assert.equal(quote.priced, false);
+  assert.equal(quote.code, 'REDRAW_LOCALIZATION_ANALYSIS_NOT_ADVANCED');
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_localization'").get().count, 0);
+
+  assert.throws(
+    () => startLocalization(db, { info() {}, warn() {}, error() {} }, {
+      ...quoteInput(),
+      idempotencyKey: 'idem-policy-drift',
+      quoteHash: 'stale-quote',
+    }, { provider, schedule: (job) => job() }),
+    (error) => error.code === 'REDRAW_LOCALIZATION_ANALYSIS_NOT_ADVANCED',
+  );
+  assert.equal(provider.calls.length, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count, 1);
+  db.close();
+});
+
+test('old advance decision from another source version cannot unlock current localization', () => {
+  const db = createDb({ capability: false, price: false });
+  const facts = sourceFacts();
+  const nextFacts = {
+    ...facts,
+    episode_hook: { id: 'hook-2', text: 'new hook' },
+  };
+  const nextHash = buildLocalizationInput(nextFacts, { locale: 'source' }).source_facts_hash;
+  const nextVersionId = Number(db.prepare(`
+    INSERT INTO redraw_versions
+      (work_id, tenant_id, user_id, version, locale, market, localization_level,
+       source_facts_json, facts_hash, status, created_at, updated_at)
+    VALUES (1, 'tenant-a', 'user-a', 2, 'source', '', 'faithful', ?, ?, 'asset_review', ?, ?)
+  `).run(JSON.stringify(nextFacts), nextHash, new Date().toISOString(), new Date().toISOString()).lastInsertRowid);
+  db.prepare('UPDATE redraw_works SET current_version = 2 WHERE id = 1').run();
+  setAnalysisDecision(db, {
+    action: 'advance',
+    effective_mode: 'auto',
+    reason_codes: [],
+    policy_version: 1,
+    evidence_hash: nextHash,
+    effective_analysis_state: 'asset_review',
+  }, 1);
+
+  const quote = quoteLocalization(db, quoteInput());
+  assert.equal(quote.priced, false);
+  assert.equal(quote.code, 'REDRAW_LOCALIZATION_ANALYSIS_NOT_ADVANCED');
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_localization'").get().count, 0);
+  assert.equal(nextVersionId > 1, true);
+  db.close();
 });
 
 test('quote returns unpriced codes for unavailable capability and price', () => {

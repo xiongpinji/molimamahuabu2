@@ -213,7 +213,7 @@ function routeSourceFacts() {
   };
 }
 
-function insertAnalysisDecision(db, workId, factsHash, decisionOverrides = {}) {
+function insertAnalysisDecision(db, workId, factsHash, decisionOverrides = {}, versionId = 1) {
   const decision = {
     action: 'advance',
     effective_mode: 'auto',
@@ -227,7 +227,13 @@ function insertAnalysisDecision(db, workId, factsHash, decisionOverrides = {}) {
     INSERT INTO async_tasks
       (id, type, status, progress, message, result, resource_id, tenant_id, user_id, created_at, updated_at, completed_at)
     VALUES (?, 'redraw_analysis', 'completed', 100, '分析完成', ?, ?, 'tenant-a', 'user-a', ?, ?, ?)
-  `).run(`task-analysis-${workId}`, JSON.stringify({ automation_decision: decision }), String(workId), NOW, NOW, NOW);
+  `).run(`task-analysis-${workId}`, JSON.stringify({
+    status: 'completed',
+    work_id: workId,
+    version_id: versionId,
+    facts_hash: factsHash,
+    automation_decision: decision,
+  }), String(workId), NOW, NOW, NOW);
   db.prepare('UPDATE redraw_works SET task_id = ? WHERE id = ?').run(`task-analysis-${workId}`, workId);
   return decision;
 }
@@ -1686,7 +1692,7 @@ test('真实本地化报价在分析未 advance 时服务端拒绝且无副作�
     const projectId = insertProject(db);
     const workId = insertWork(db, projectId, { current_version: 1, current_step: 1 });
     const factsHash = 'route-facts-hash-safe-review';
-    insertVersion(db, workId, {
+    const sourceVersionId = insertVersion(db, workId, {
       locale: 'source',
       market: '',
       status: 'needs_attention',
@@ -1699,7 +1705,7 @@ test('真实本地化报价在分析未 advance 时服务端拒绝且无副作�
       effective_mode: 'safe',
       reason_codes: ['safe_mode_requires_review'],
       effective_analysis_state: 'analysis_review',
-    });
+    }, sourceVersionId);
     insertRedrawLocaleCapabilityConfig(db, [{
       locale: 'en-US',
       market: 'US',
@@ -1829,7 +1835,7 @@ test('本地化版本提交默认真实 orchestrator 无 provider 时同步拒�
     };
     db.prepare('UPDATE redraw_versions SET source_facts_json = ?, facts_hash = ? WHERE id = ?')
       .run(JSON.stringify(sourceFacts), 'source-facts-hash', sourceVersionId);
-    insertAnalysisDecision(db, workId, 'source-facts-hash');
+    insertAnalysisDecision(db, workId, 'source-facts-hash', {}, sourceVersionId);
     insertRedrawLocaleCapabilityConfig(db, [{
       locale: 'en-US',
       market: 'US',
@@ -1984,7 +1990,7 @@ test('作品详情只投影可恢复分析决策白名单且不公开 task resul
       task_id: 'task-analysis-safe-projection',
     });
     const factsHash = 'projection-facts-hash';
-    insertVersion(db, workId, {
+    const sourceVersionId = insertVersion(db, workId, {
       locale: 'source',
       market: '',
       status: 'needs_attention',
@@ -1995,7 +2001,7 @@ test('作品详情只投影可恢复分析决策白名单且不公开 task resul
       action: 'blocked',
       effective_mode: 'safe',
       reason_codes: ['project_policy_missing'],
-      policy_version: 3,
+      policy_version: 1,
       evidence_hash: factsHash,
       effective_analysis_state: 'blocked',
     };
@@ -2004,6 +2010,10 @@ test('作品详情只投影可恢复分析决策白名单且不公开 task resul
       VALUES ('task-analysis-safe-projection', 'redraw_analysis', 'completed', 100, '分析完成', ?, ?, ?, 'tenant-a', 'user-a', ?, ?)
     `).run(
       JSON.stringify({
+        status: 'completed',
+        work_id: workId,
+        version_id: sourceVersionId,
+        facts_hash: factsHash,
         automation_decision: {
           ...decision,
           internal_path: 'C:\\private\\analysis.json',
