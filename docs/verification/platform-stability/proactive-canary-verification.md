@@ -159,3 +159,61 @@
 - `backend-node/test/redrawFullFrameDetectorProcess.test.js`
 
 它们没有被错误加入本任务 85 项发布白名单，也没有被本任务修改或删除。这一差异证明当前分支不能直接整体覆盖生产。任何后续发布仍必须按项目硬约束读取实时 `/opt/moli-drama/current`，从实时版本构建候选，只叠加本任务白名单内实际改动，再重跑共享门禁、全量测试、构建、健康和 AI 音乐隔离检查。
+
+## 2026-08-20 逐模型证据绑定拆分本地 TDD
+
+本节只记录 2026-08-21（Asia/Shanghai）在本地工作树
+`C:\Users\canqu\Documents\茉莉妈妈2\worktrees\platform-stability-proactive-canary-plan-20260818`
+对逐模型证据绑定拆分候选执行的新鲜验证，不复用前述候选计数。
+
+### 功能锁与范围 TDD
+
+| 开始时间 | 结束时间 | 命令 | 退出码 | tests / pass / fail / skip | 真实结果 |
+| --- | --- | --- | ---: | --- | --- |
+| 2026-08-21T01:06:40.8728110+08:00 | 2026-08-21T01:06:42.3457856+08:00 | `cd backend-node; node --test --test-concurrency=1 test/featureLockManifest.test.js test/incrementalReleaseScope.test.js` | 1 | 15 / 13 / 2 / 0 | 预期红灯；主动巡检锁首个缺项为 `provider-readiness-binding-candidate-20260820.md`，scope 深比较明确缺少本轮三份证据路径。 |
+| 2026-08-21T01:07:13.0412235+08:00 | 2026-08-21T01:07:14.5388334+08:00 | 同一锁与范围定向命令 | 0 | 15 / 15 / 0 / 0 | 只追加三份 evidence 并按字典序同步 scope 后转绿。 |
+| 2026-08-21T01:07:14.5459467+08:00 | 2026-08-21T01:07:14.9537007+08:00 | `cd backend-node; node scripts/verify-feature-lock-manifest.js --base origin/main` | 1 | 不适用 | 首次真实 CLI 审计返回 `FEATURE_LOCKED`；相对本地 `origin/main`，既有受保护路径 `split-multi-model-provider-configs.js` 与 `providerRouteCostService.js` 已变更，但原 unlock 与基线相同，不是 fresh unlock。 |
+| 2026-08-21T01:11:11.8384233+08:00 | 2026-08-21T01:11:13.1109869+08:00 | `cd backend-node; node --test --test-concurrency=1 test/featureLockManifest.test.js` | 1 | 9 / 8 / 1 / 0 | fresh unlock 合同红灯；精确显示旧 reason、approvedBy 和缺少的三项跨服务 impact tests。 |
+| 2026-08-21T01:11:37.3700569+08:00 | 2026-08-21T01:11:38.8533312+08:00 | 锁与范围定向命令 | 0 | 15 / 15 / 0 / 0 | proactive 锁使用 scope-specific fresh unlock 后转绿；其余四个锁的既有 unlock 保持不变。 |
+| 2026-08-21T01:11:38.8615236+08:00 | 2026-08-21T01:11:39.2754651+08:00 | `cd backend-node; node scripts/verify-feature-lock-manifest.js --base origin/main` | 0 | 不适用 | `ready=true`，5 个锁、11 个变更路径、5 个基线保护锁。 |
+
+原书面计划同时要求“不修改 unlock”和 `verify-feature-lock-manifest --base origin/main` 必须 ready；当前审计器只接受与基线 JSON 不同的有效 fresh unlock，新增 evidence 本身不能解锁，二者构成真实冲突。首次 `FEATURE_LOCKED` 后没有绕过门禁；经任务控制者依据产品负责人已经批准的书面规格与本地 TDD 执行授权，才把 proactive 锁更新为 `2026-08-20 逐模型证据绑定拆分本地 TDD 授权`，保留原 6 项 impact tests 并追加 canvas catalog、public gate、video route integration 三项真实跨服务回归。
+
+本轮数据变更只在 `stability.proactive-canary-and-public-evidence.evidence` 末尾追加三份证据，并更新该 feature 的 fresh unlock；没有减少 acceptance、status、protectedPaths、requiredTests 或历史 evidence，也没有修改其他 feature。发布 scope 只按字典序加入同三份文档，未加入数据库、资产、AI 音乐、shared release guard、临时产物、目录项或通配符。
+
+### 完整本地验证
+
+| 开始时间 | 结束时间 | 命令 | 退出码 | tests / pass / fail / skip | 真实结果 |
+| --- | --- | --- | ---: | --- | --- |
+| 2026-08-21T01:13:40.7742362+08:00 | 2026-08-21T01:14:31.7660437+08:00 | `cd backend-node; node --test --test-concurrency=1 test/providerRouteCost.test.js test/splitMultiModelProviderConfigs.test.js test/canvasModelCatalogService.test.js test/providerCanaryPublicGate.test.js test/providerCanaryScheduler.test.js test/providerRouteVideoIntegration.test.js test/featureLockManifest.test.js test/incrementalReleaseScope.test.js` | 0 | 143 / 143 / 0 / 0 | 指定后端跨服务回归全部通过。 |
+| 2026-08-21T01:14:47.2541775+08:00 | 2026-08-21T01:18:56.3040176+08:00 | `cd backend-node; npm test` | 0 | 1244 / 1239 / 0 / 5 | 后端全量通过；26 suites，5 项按既有条件跳过。 |
+| 2026-08-21T01:19:18.7487716+08:00 | 2026-08-21T01:19:18.9050856+08:00 | `cd backend-node; node --check scripts/split-multi-model-provider-configs.js` | 0 | 不适用 | 语法检查通过。 |
+| 2026-08-21T01:19:18.9115933+08:00 | 2026-08-21T01:19:19.0272031+08:00 | `cd backend-node; node --check src/services/providerRouteCostService.js` | 0 | 不适用 | 语法检查通过。 |
+| 2026-08-21T01:19:56.7713818+08:00 | 2026-08-21T01:20:43.7174310+08:00 | `cd frontweb; node --test test/*.test.js` | 0 | 677 / 677 / 0 / 0 | 前端全量测试通过。 |
+| 2026-08-21T01:20:55.5646999+08:00 | 2026-08-21T01:21:23.0729103+08:00 | `cd frontweb; npm run build` | 0 | 不适用 | Vite 6.4.3 完成 1859 个模块，25.14 秒；仅有大于 500 kB 的既有 chunk 警告。 |
+| 2026-08-21T01:21:33.6251624+08:00 | 2026-08-21T01:21:53.6378554+08:00 | `cd frontweb; npx --no-install playwright test e2e/provider-stability-admin.spec.js e2e/platform-zero-cost-smoke.spec.js` | 0 | 7 / 7 / 0 / 0 | 两个 worker、7 项通过；零成本 smoke 的生成写请求计数为 0。仅出现 `NO_COLOR` 被 `FORCE_COLOR` 忽略的运行器警告。 |
+
+后端测试使用测试创建并清理的临时 SQLite；证据绑定测试只读取受保护证据 fixture，不读取生产 evidence roots。前端工作树原先没有 `node_modules`，没有运行 `npm install` 或任何联网安装：
+
+- 工作树 `frontweb/package-lock.json` SHA-256：`18BA50E97964D491CBD15CE54EB3FB65BE4470F04FA9F1D03845FB7B307CE82D`。
+- 离线依赖来源：`C:\Users\canqu\Documents\茉莉妈妈2\worktrees\fumin-seedance-20260813\frontweb\node_modules`。
+- 来源工作树 `frontweb/package-lock.json` SHA-256：`18BA50E97964D491CBD15CE54EB3FB65BE4470F04FA9F1D03845FB7B307CE82D`；两份锁完全相同。
+- 验证时只创建指向上述绝对来源的临时 `node_modules` junction。删除前再次确认 `LinkType=Junction`、Target 精确等于上述来源；只删除 junction 本身，删除后来源仍存在。
+- 本轮创建的 `frontweb/test-results` 和 `frontweb/platform-smoke-artifacts` 均在确认绝对路径位于本工作树且不是 reparse point 后清理。`frontweb/dist` 创建时间早于本轮，作为既有 ignored 构建目录保留，没有把它纳入 Task6 提交。
+
+### 锁、范围与凭据形状审计
+
+| 开始时间 | 结束时间 | 审计 | 退出码 | 结果 |
+| --- | --- | --- | ---: | --- |
+| 2026-08-21T01:25:09.1317780+08:00 | 2026-08-21T01:25:09.5166017+08:00 | `git diff --check`、`git status --short`、`git diff --name-only origin/main...HEAD` | 0 | 差异格式通过；当时仅 4 个 Task6 数据/测试文件未提交，HEAD 范围为 7 个既有实现/测试/规格证据文件。 |
+| 2026-08-21T01:25:42.7760895+08:00 | 2026-08-21T01:25:43.2546301+08:00 | 对 `origin/main...HEAD` 新增行执行脱敏 credential-shaped 扫描 | 0 | 2 个命中，均在计划文档第 1287 行：`sk-` 与 `Bearer` 是扫描规则自身；`api_key` 后长令牌与 URL userinfo 为 0。未输出候选值，无无法解释命中。 |
+| 2026-08-21T01:26:11.9328035+08:00 | 2026-08-21T01:26:12.3866176+08:00 | 对包含未提交 Task6 变更的 `origin/main` 工作树差异执行同一脱敏扫描 | 0 | 仍只有同一行的 2 个规则自身命中；Task6 新增行没有凭据形状。 |
+
+scope 当前 88 条且保持字典序；写本文前的 11 条工作树差异全部在 scope 中，missing 0，数据库/上传/存储/资产/AI 音乐/release guard/通配符等禁区命中 0。2026-08-21T01:28:54.4651979+08:00 至 01:28:55.1977451+08:00 的最终提交前审计再次确认 `git diff --check` 为 0、Task6 修改精确等于五文件白名单、包含本文后的 `origin/main` 工作树差异为 12 条且 scope missing 仍为 0；其他四个 feature 完全未变，proactive 锁除 evidence 后缀与 fresh unlock 外的受保护字段和历史 evidence 前缀均未变。2026-08-21T01:29:12.7291716+08:00 至 01:29:13.2382064+08:00 的最终工作树脱敏扫描共 4 个命中，分别是计划与本节各 2 个规则自引用；长令牌和 URL userinfo 仍为 0，无无法解释命中。提交前还会对精确五文件 staged allowlist 重审，提交后重新运行功能锁、范围、差异格式与干净工作树门禁。
+
+### 明确边界与后续门禁
+
+- 本轮没有访问生产、供应商或付费接口，没有 SSH、推送、部署、真实生成或真实供应商查单。
+- 没有启用 `enforce`，没有修改生产数据库、用户资产、积分或 AI 音乐；临时 SQLite 和受保护证据 fixture 仅用于本地测试。
+- 生产实时指纹、生产绑定文件、数据库备份、部署锁、从实时 `/opt/moli-drama/current` 构建候选、共享发布门禁和逐线路付费授权仍是后续独立门禁。
+- 本地绿灯不等于线上稳定，不证明所有模型已恢复，也不授权把未完成真实生成、成功终态和可读产物验证的模型开放到生产目录。
