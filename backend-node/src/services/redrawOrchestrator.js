@@ -4,7 +4,12 @@ const creditLedger = require('./creditLedgerService');
 const modelPrice = require('./modelPriceService');
 const taskService = require('./taskService');
 const { normalizeSourceFacts } = require('./redrawAnalysisService');
+const {
+  evaluateAutomationDecision,
+  requiredAnalysisConfidenceKeys,
+} = require('./redrawAutomationPolicyService');
 const redrawGenerationService = require('./redrawGenerationService');
+const { appendWorkflowEvent } = require('./redrawWorkflowEventService');
 
 const DEFAULT_RESUME_QUERY_TIMEOUT_MS = 10_000;
 const RESUME_ERROR_SNIPPET_LIMIT = 512;
@@ -21,6 +26,15 @@ function parseSettings(row) {
     return typeof row.settings === 'string' ? JSON.parse(row.settings) : row.settings;
   } catch (_) {
     return {};
+  }
+}
+
+function parseJson(value, fallback = {}) {
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : fallback;
+  } catch (_) {
+    return fallback;
   }
 }
 
@@ -394,8 +408,98 @@ function markNeedsAttention(db, task, work, message) {
   );
 }
 
-function writeFactsOnce(db, work, normalized) {
+function readProjectPolicy(db, work) {
+  const columns = tableColumns(db, 'redraw_works');
+  if (!columns.has('project_id') || !columns.has('tenant_id') || !columns.has('user_id') || !work.project_id) return null;
+  try {
+    return db.prepare(`
+      SELECT id, tenant_id, user_id, execution_mode, budget_limit_credits,
+             automation_policy_json, policy_version, updated_at
+      FROM redraw_projects
+      WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+    `).get(Number(work.project_id), String(work.tenant_id || ''), String(work.user_id || '')) || null;
+  } catch (error) {
+    if (/no such table|no such column/i.test(String(error.message || ''))) return null;
+    throw error;
+  }
+}
+
+function analysisGates(normalized) {
+  return {
+    media: Number(normalized.duration_ms) > 0 && Array.isArray(normalized.shots) && normalized.shots.length > 0,
+    timeline: Array.isArray(normalized.shots) && normalized.shots.length > 0,
+    facts: Array.isArray(normalized.characters) && normalized.characters.length > 0
+      && Array.isArray(normalized.scenes) && normalized.scenes.length > 0
+      && Array.isArray(normalized.props) && normalized.props.length > 0,
+  };
+}
+
+function analysisConfidence(normalized) {
+  const result = {};
+  for (const key of requiredAnalysisConfidenceKeys) {
+    let min = null;
+    let complete = true;
+    for (const shot of normalized.shots || []) {
+      const value = shot?.confidence?.[key];
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        complete = false;
+        break;
+      }
+      min = min == null ? value : Math.min(min, value);
+    }
+    if (complete && min != null) result[key] = min;
+  }
+  return result;
+}
+
+function analysisThresholds(project) {
+  const policy = parseJson(project?.automation_policy_json, {});
+  return policy.analysis_confidence_thresholds || policy.thresholds || {};
+}
+
+function automationOutcome(db, work, normalized) {
+  const project = readProjectPolicy(db, work);
+  if (!project) {
+    return {
+      project: null,
+      decision: null,
+      workStatus: 'asset_review',
+      versionStatus: 'asset_review',
+      currentStep: 2,
+      errorMessage: null,
+    };
+  }
+  const input = {
+    execution_mode: project.execution_mode || 'safe',
+    gates: analysisGates(normalized),
+  };
+  if (input.execution_mode === 'auto') {
+    input.budget_configured = project.budget_limit_credits != null;
+    input.confidence = analysisConfidence(normalized);
+    input.thresholds = analysisThresholds(project);
+  }
+  const decision = evaluateAutomationDecision(input);
+  const blocked = decision.action === 'blocked';
+  const advance = decision.action === 'advance';
+  return {
+    project,
+    decision,
+    projectStatus: advance ? 'asset_review' : (blocked ? 'blocked' : 'analysis_review'),
+    workStatus: advance ? 'asset_review' : 'needs_attention',
+    versionStatus: advance ? 'asset_review' : 'needs_attention',
+    currentStep: advance ? 2 : 1,
+    errorMessage: blocked ? decision.reason_codes.join(',') : null,
+  };
+}
+
+function writeFactsOnce(db, work, normalized, outcome = null) {
   const now = new Date().toISOString();
+  const state = outcome || {
+    workStatus: 'asset_review',
+    versionStatus: 'asset_review',
+    currentStep: 2,
+    errorMessage: null,
+  };
   let changed = true;
   let version = db.prepare(
     'SELECT * FROM redraw_versions WHERE work_id = ? AND source_facts_json IS NOT NULL ORDER BY id ASC LIMIT 1'
@@ -411,9 +515,14 @@ function writeFactsOnce(db, work, normalized) {
   } else {
     const existing = db.prepare('SELECT * FROM redraw_versions WHERE work_id = ? ORDER BY id ASC LIMIT 1').get(work.id);
     if (existing) {
-      db.prepare('UPDATE redraw_versions SET source_facts_json = ?, facts_hash = ?, updated_at = ? WHERE id = ?')
-        .run(JSON.stringify(normalized), normalized.facts_hash, now, existing.id);
-      version = { ...existing, source_facts_json: JSON.stringify(normalized), facts_hash: normalized.facts_hash };
+      db.prepare('UPDATE redraw_versions SET source_facts_json = ?, facts_hash = ?, status = ?, updated_at = ? WHERE id = ?')
+        .run(JSON.stringify(normalized), normalized.facts_hash, state.versionStatus, now, existing.id);
+      version = {
+        ...existing,
+        source_facts_json: JSON.stringify(normalized),
+        facts_hash: normalized.facts_hash,
+        status: state.versionStatus,
+      };
     } else {
       const id = insertDynamic(db, 'redraw_versions', {
         work_id: work.id,
@@ -425,7 +534,7 @@ function writeFactsOnce(db, work, normalized) {
         localization_level: 'faithful',
         source_facts_json: JSON.stringify(normalized),
         facts_hash: normalized.facts_hash,
-        status: 'asset_review',
+        status: state.versionStatus,
         created_at: now,
         updated_at: now,
       }).lastInsertRowid;
@@ -465,12 +574,36 @@ function writeFactsOnce(db, work, normalized) {
     });
   }
   updateDynamic(db, 'redraw_works', {
-    status: 'asset_review',
+    status: state.workStatus,
     current_version: Number(version.version || 1),
-    current_step: 2,
-    error_msg: null,
+    current_step: state.currentStep,
+    error_msg: state.errorMessage,
     updated_at: now,
   }, 'id', work.id);
+  if (version.status !== state.versionStatus) {
+    updateDynamic(db, 'redraw_versions', { status: state.versionStatus, updated_at: now }, 'id', version.id);
+    version = { ...version, status: state.versionStatus };
+  }
+  if (outcome?.project) {
+    appendWorkflowEvent(db, {
+      tenantId: String(outcome.project.tenant_id || ''),
+      userId: String(outcome.project.user_id || ''),
+      projectId: Number(outcome.project.id),
+      resourceType: 'version',
+      resourceId: String(version.id),
+      fromState: String(work.status || ''),
+      toState: outcome.projectStatus,
+      reasonCode: 'analysis_completed',
+      evidenceHash: normalized.facts_hash,
+      metadata: {
+        action: outcome.decision.action,
+        effective_mode: outcome.decision.effective_mode,
+        reason_codes: outcome.decision.reason_codes,
+        policy_version: Number(outcome.project.policy_version || 0),
+      },
+      createdAt: now,
+    });
+  }
   return { version, changed };
 }
 
@@ -480,7 +613,8 @@ function finalizeCompletedAnalysis(db, log, task, work, result, options = {}) {
     const resultAssetId = result.result_asset_id || result.result_asset?.id;
     assertAssetReadable(db, options.assetReader, resultAssetId, '分析结果');
     const normalized = normalizeSourceFacts(result.facts || result.source_facts);
-    const { version, changed } = db.transaction(() => writeFactsOnce(db, work, normalized))();
+    const outcome = automationOutcome(db, work, normalized);
+    const { version, changed } = db.transaction(() => writeFactsOnce(db, work, normalized, outcome))();
     if (changed || task.status !== 'completed') {
       taskService.updateTaskResult(db, task.id, {
         status: 'completed',
@@ -488,6 +622,7 @@ function finalizeCompletedAnalysis(db, log, task, work, result, options = {}) {
         version_id: version.id,
         result_asset_id: resultAssetId,
         facts_hash: normalized.facts_hash,
+        automation_decision: outcome.decision,
       });
       creditLedger.settleGeneration(db, task.credit_reservation_id || work.credit_reservation_id, 'completed');
     }
@@ -496,6 +631,7 @@ function finalizeCompletedAnalysis(db, log, task, work, result, options = {}) {
       facts_hash: normalized.facts_hash,
       version_id: version.id,
       result_asset_id: resultAssetId,
+      automation_decision: outcome.decision,
     };
   } catch (error) {
     if (error.code === 'SOURCE_FACTS_HASH_CONFLICT') {
