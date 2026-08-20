@@ -132,6 +132,12 @@ function ensureRedrawWorkDurationConstraint(database) {
   if (!oldDurationCheck.test(sql)) return;
 
   const tempTable = '__redraw_works_duration_rebuild';
+  if (database.inTransaction) {
+    throw new Error('redraw_works duration constraint migration requires no active transaction');
+  }
+  if (tableExists(database, tempTable)) {
+    throw new Error('redraw_works duration rebuild temp table already exists');
+  }
   const createTempSql = sql
     .replace(
       /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"redraw_works"|`redraw_works`|\[redraw_works\]|redraw_works)\s*\(/i,
@@ -157,7 +163,6 @@ function ensureRedrawWorkDurationConstraint(database) {
   try {
     database.pragma('foreign_keys = OFF');
     database.exec('BEGIN');
-    database.exec(`DROP TABLE IF EXISTS ${quoteIdent(tempTable)}`);
     database.exec(createTempSql);
     database.exec(`
       INSERT INTO ${quoteIdent(tempTable)} (${columnSql})

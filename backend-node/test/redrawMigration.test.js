@@ -395,6 +395,119 @@ test('旧 15 秒 redraw_works CHECK 可幂等升级为 12 秒且保留数据索�
   `).run(NOW, NOW), /CHECK/);
 });
 
+test('旧 15 秒 redraw_works CHECK 升级遇到外层事务会拒绝且保留调用方事务', () => {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  db.exec(`
+    CREATE TABLE migration_marker (id INTEGER PRIMARY KEY, value TEXT);
+    CREATE TABLE redraw_projects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT,
+      title TEXT,
+      created_at TEXT,
+      updated_at TEXT
+    );
+    CREATE TABLE redraw_works (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      source_asset_id INTEGER NOT NULL,
+      source_fingerprint TEXT NOT NULL,
+      duration_ms INTEGER NOT NULL CHECK (duration_ms BETWEEN 15000 AND 3600000),
+      current_version INTEGER NOT NULL DEFAULT 0 CHECK (current_version >= 0),
+      current_step INTEGER NOT NULL DEFAULT 1 CHECK (current_step BETWEEN 1 AND 4),
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      FOREIGN KEY(project_id) REFERENCES redraw_projects(id)
+    );
+  `);
+  db.exec('BEGIN');
+  db.prepare("INSERT INTO migration_marker (id, value) VALUES (1, 'outer transaction stays open')").run();
+
+  assert.throws(() => runMigrationsAndEnsure(db), /redraw_works duration constraint migration requires no active transaction/);
+  assert.equal(db.inTransaction, true);
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+  assert.equal(
+    db.prepare('SELECT value FROM migration_marker WHERE id = 1').get().value,
+    'outer transaction stays open',
+  );
+  assert.match(
+    db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'redraw_works'").get().sql,
+    /duration_ms BETWEEN 15000 AND 3600000/,
+  );
+
+  db.exec('ROLLBACK');
+  assert.equal(db.inTransaction, false);
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+});
+
+test('旧 15 秒 redraw_works CHECK 升级遇到固定临时表碰撞会 fail closed', () => {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  db.exec(`
+    CREATE TABLE redraw_projects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT,
+      title TEXT,
+      created_at TEXT,
+      updated_at TEXT
+    );
+    CREATE TABLE redraw_works (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      source_asset_id INTEGER NOT NULL,
+      source_fingerprint TEXT NOT NULL,
+      duration_ms INTEGER NOT NULL CHECK (duration_ms BETWEEN 15000 AND 3600000),
+      current_version INTEGER NOT NULL DEFAULT 0 CHECK (current_version >= 0),
+      current_step INTEGER NOT NULL DEFAULT 1 CHECK (current_step BETWEEN 1 AND 4),
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      FOREIGN KEY(project_id) REFERENCES redraw_projects(id)
+    );
+    CREATE TABLE __redraw_works_duration_rebuild (
+      id INTEGER PRIMARY KEY,
+      marker TEXT NOT NULL
+    );
+    INSERT INTO __redraw_works_duration_rebuild (id, marker) VALUES (1, 'do not drop');
+    INSERT INTO redraw_projects
+      (tenant_id, user_id, title, created_at, updated_at)
+    VALUES ('tenant-a', 'user-a', 'legacy project', '${NOW}', '${NOW}');
+    INSERT INTO redraw_works
+      (project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint,
+       duration_ms, current_version, current_step, status, created_at, updated_at, deleted_at)
+    VALUES
+      (1, 'tenant-a', 'user-a', 'legacy work', 101, 'legacy-fingerprint',
+       15000, 0, 1, 'draft', '${NOW}', '${NOW}', NULL);
+  `);
+
+  assert.throws(() => runMigrationsAndEnsure(db), /redraw_works duration rebuild temp table already exists/);
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+  assert.equal(
+    db.prepare('SELECT marker FROM __redraw_works_duration_rebuild WHERE id = 1').get().marker,
+    'do not drop',
+  );
+  assert.match(
+    db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '__redraw_works_duration_rebuild'").get().sql,
+    /marker TEXT NOT NULL/,
+  );
+  assert.equal(db.prepare('SELECT duration_ms FROM redraw_works WHERE id = 1').get().duration_ms, 15000);
+  assert.match(
+    db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'redraw_works'").get().sql,
+    /duration_ms BETWEEN 15000 AND 3600000/,
+  );
+});
+
 test('旧的租户级源片唯一索引会安全重建为租户用户级索引', () => {
   const db = new Database(':memory:');
   db.exec(`
