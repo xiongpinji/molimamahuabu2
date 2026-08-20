@@ -16,10 +16,18 @@ const DANGEROUS_KEYS = new Set([
   '__proto__', 'prototype', 'constructor',
 ]);
 
+function compareCodeUnit(left, right) {
+  const a = String(left);
+  const b = String(right);
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 function stableStringify(value) {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
   if (value && typeof value === 'object') {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+    return `{${Object.keys(value).sort(compareCodeUnit).map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
   }
   return JSON.stringify(value);
 }
@@ -74,7 +82,7 @@ function safeText(value, name, maxLength = 500) {
   const text = value.trim();
   if (!text) throw new Error(`${name} 必须提供`);
   if (text.length > maxLength) throw new Error(`${name} 过长`);
-  if (/(?:https?:\/\/|www\.|file:\/\/|^[a-zA-Z]:[\\/]|^\\\\|^(?:\.{1,2}[\\/])|\\|(?:^|\/)[^/\s]+\.(?:png|jpe?g|webp|gif|bmp|svg|mp4|mov|webm|m4v|avi|json|txt)\b|api[_-]?key|bearer\s+|prompt\s*:)/i.test(text)) {
+  if (/(?:https?:\/\/|www\.|file:\/\/|^[a-zA-Z]:[\\/]|^\\\\|^\/[a-zA-Z0-9._-]+(?:\/[a-zA-Z0-9._-]+)*$|^(?:\.{1,2}[\\/])|^(?:storage|upload|uploads|redraw)[\\/]|(?:[a-zA-Z0-9._-]+[\\/]){2,}[a-zA-Z0-9._-]+|\\|(?:^|\/)[^/\s]+\.(?:png|jpe?g|webp|gif|bmp|svg|mp4|mov|webm|m4v|avi|json|txt)\b|api[_-]?key|bearer\s+|prompt\s*:)/i.test(text)) {
     throw new Error(`${name} 包含危险路径或URL`);
   }
   return text;
@@ -125,7 +133,7 @@ function normalizeStringArray(value, name, options = {}) {
     if (typeof item !== 'string') throw new Error(`${name}[${index}] 必须是文本`);
     return safeText(item, `${name}[${index}]`, 500);
   });
-  return options.sort ? normalized.sort() : normalized;
+  return options.sort ? normalized.sort(compareCodeUnit) : normalized;
 }
 
 function normalizeCharacters(value) {
@@ -145,12 +153,12 @@ function normalizeCharacters(value) {
       normalized.relationships = character.relationships.map((item, relIndex) => {
         if (typeof item !== 'string') throw new Error(`characters[${index}].relationships[${relIndex}] 必须是文本`);
         return safeText(item, `characters[${index}].relationships[${relIndex}]`, 200);
-      }).sort();
+      }).sort(compareCodeUnit);
     } else {
       normalized.relationships = [];
     }
     return normalized;
-  }).sort((a, b) => a.id.localeCompare(b.id));
+  }).sort((a, b) => compareCodeUnit(a.id, b.id));
 }
 
 function normalizeScenes(value, durationMs) {
@@ -164,7 +172,7 @@ function normalizeScenes(value, durationMs) {
       time: safeText(scene.time, `scenes[${index}].time`, 120),
       source_ranges: normalizeRanges(scene.source_ranges, `scenes[${index}].source_ranges`, durationMs),
     };
-  }).sort((a, b) => a.id.localeCompare(b.id));
+  }).sort((a, b) => compareCodeUnit(a.id, b.id));
 }
 
 function normalizeProps(value, durationMs) {
@@ -177,7 +185,7 @@ function normalizeProps(value, durationMs) {
       name: safeText(prop.name, `props[${index}].name`, 200),
       evidence_ranges: normalizeRanges(prop.evidence_ranges, `props[${index}].evidence_ranges`, durationMs),
     };
-  }).sort((a, b) => a.id.localeCompare(b.id));
+  }).sort((a, b) => compareCodeUnit(a.id, b.id));
 }
 
 function normalizeAudioContract(value, name) {
@@ -239,7 +247,7 @@ function normalizeTextRegions(value, name, seenTextRegionIds) {
     const text = optionalSafeText(region.source_text, `${name}[${index}].source_text`, 300);
     if (text) normalized.source_text = text;
     return normalized;
-  }).sort((a, b) => a.id.localeCompare(b.id));
+  }).sort((a, b) => compareCodeUnit(a.id, b.id));
 }
 
 function normalizeDialogue(value, name, shot, visibleIds, seenTurnIds) {
@@ -258,7 +266,7 @@ function normalizeDialogue(value, name, shot, visibleIds, seenTurnIds) {
       end_ms: end,
       source_text: safeText(turn.source_text, `${name}[${index}].source_text`, 300),
     };
-  }).sort((a, b) => (a.start_ms - b.start_ms) || a.id.localeCompare(b.id));
+  }).sort((a, b) => (a.start_ms - b.start_ms) || compareCodeUnit(a.id, b.id));
 }
 
 function normalizeVisibleCharacters(value, name, knownCharacters) {
@@ -270,7 +278,7 @@ function normalizeVisibleCharacters(value, name, knownCharacters) {
     if (seen.has(valueId)) throw new Error(`${name} 重复`);
     seen.add(valueId);
     return valueId;
-  }).sort();
+  }).sort(compareCodeUnit);
 }
 
 function normalizeShots(value, durationMs, knownCharacters) {

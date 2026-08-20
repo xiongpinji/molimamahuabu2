@@ -139,6 +139,30 @@ test('v2 facts hash is canonical, semantic and input-safe', () => {
   assert.notEqual(first.facts_hash, normalizeEpisodeFactsV2(changed).facts_hash);
 });
 
+test('v2 facts hash uses deterministic code-unit ordering for unordered ids', () => {
+  const raw = genericThreeShotFacts();
+  raw.characters = [
+    { id: 'a_id', source_name: '乙', display_name: '乙', relationship: '同事' },
+    { id: 'A.id', source_name: '甲', display_name: '甲', relationship: '主管' },
+    { id: 'a-id', source_name: '丙', display_name: '丙', relationship: '邻居' },
+  ];
+  raw.shots[0].visible_character_ids = ['a_id'];
+  raw.shots[0].dialogue[0].speaker_id = 'a_id';
+  raw.shots[1].visible_character_ids = ['a-id', 'A.id'];
+  raw.shots[1].dialogue[0].speaker_id = 'a-id';
+  raw.shots[2].visible_character_ids = ['A.id'];
+
+  const reordered = JSON.parse(JSON.stringify(raw));
+  reordered.characters.reverse();
+  reordered.shots[1].visible_character_ids.reverse();
+
+  const first = normalizeEpisodeFactsV2(raw);
+  const second = normalizeEpisodeFactsV2(reordered);
+  assert.equal(first.facts_hash, second.facts_hash);
+  assert.deepEqual(first.characters.map((character) => character.id), ['A.id', 'a-id', 'a_id']);
+  assert.deepEqual(second.shots[1].visible_character_ids, ['A.id', 'a-id']);
+});
+
 test('v2 rejects inherited enumerable keys while accepting null-prototype plain data', () => {
   const nullProto = Object.assign(Object.create(null), genericThreeShotFacts());
   assert.equal(normalizeEpisodeFactsV2(nullProto).schema_version, '2.0');
@@ -213,6 +237,10 @@ test('v2 rejects non-string narrative arrays and dangerous file path text', () =
   }
 
   for (const value of [
+    '/etc/passwd',
+    '/tmp/source',
+    'uploads/private/frame',
+    'storage/redraw-source',
     'uploads/private/frame.png',
     './x.jpg',
     '../x',
@@ -230,6 +258,11 @@ test('v2 rejects non-string narrative arrays and dangerous file path text', () =
     raw.shots[0].composition = '乔安在门口决定进/退';
   }));
   assert.equal(ordinarySlash.shots[0].composition, '乔安在门口决定进/退');
+
+  const englishSlash = normalizeEpisodeFactsV2(invalid((raw) => {
+    raw.shots[0].composition = '乔安 hesitates between stay and/or leave';
+  }));
+  assert.equal(englishSlash.shots[0].composition, '乔安 hesitates between stay and/or leave');
 });
 
 module.exports = { genericThreeShotFacts };

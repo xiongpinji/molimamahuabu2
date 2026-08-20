@@ -185,6 +185,10 @@ function parseJsonObject(text) {
   return parsed;
 }
 
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 function getWork(db, input) {
   const tenantId = String(input.tenantId ?? input.tenant_id ?? '');
   const userId = String(input.userId ?? input.user_id ?? '');
@@ -277,6 +281,34 @@ function safeMediaProbeMetadata(probe, sheetCount) {
   };
 }
 
+function hasVisibleDialogueTextEvidence(shot) {
+  return Array.isArray(shot.text_regions) && shot.text_regions.some((region) => (
+    region
+    && ['subtitle', 'screen_text'].includes(region.kind)
+    && typeof region.source_text === 'string'
+    && region.source_text.trim()
+  ));
+}
+
+function applyNoTranscriptEvidencePolicy(rawFacts) {
+  const facts = cloneJson(rawFacts);
+  const shots = Array.isArray(facts.shots) ? facts.shots : [];
+  for (const [index, shot] of shots.entries()) {
+    const dialogue = Array.isArray(shot.dialogue) ? shot.dialogue : [];
+    const mode = shot.audio_contract && shot.audio_contract.dialogue_mode;
+    if ((mode === 'spoken' || dialogue.length > 0) && !hasVisibleDialogueTextEvidence(shot)) {
+      throw codedError(
+        'REDRAW_NATIVE_DIALOGUE_TEXT_EVIDENCE_REQUIRED',
+        `shots[${index}] 无音频转写时 spoken dialogue 必须有可见字幕文本证据`,
+      );
+    }
+    if (shot.confidence && typeof shot.confidence === 'object' && !Array.isArray(shot.confidence)) {
+      shot.confidence.speaker_mapping = 0;
+    }
+  }
+  return facts;
+}
+
 async function analyzeNativeSource(ctx = {}, input = {}) {
   const db = ctx.db;
   if (!db) throw codedError('REDRAW_NATIVE_DB_REQUIRED', '缺少数据库');
@@ -331,7 +363,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
       throw codedError('VISION_PROVIDER_RESPONSE_ID_MISSING', '视觉分析缺少真实 provider response id');
     }
     const parsed = parseJsonObject(vision.text);
-    const facts = normalizeSourceFacts(parsed.source_facts || parsed);
+    const facts = normalizeSourceFacts(applyNoTranscriptEvidencePolicy(parsed.source_facts || parsed));
     assertStrictNativeFacts(facts, probe);
     const mediaProbe = safeMediaProbeMetadata(probe, sheets.length);
     const output = {

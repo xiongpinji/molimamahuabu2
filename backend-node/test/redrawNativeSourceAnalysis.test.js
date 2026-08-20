@@ -302,6 +302,104 @@ test('analyzeNativeSource rejects native dialogue without exact timings before a
   }
 });
 
+test('analyzeNativeSource lowers speaker confidence without transcript evidence and recomputes hash', async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'native-redraw-evidence-'));
+  const db = createDb();
+  try {
+    const sourceRelative = createSampleVideo(storageRoot);
+    addWork(db, { localPath: sourceRelative });
+    const providerFacts = validFacts();
+    providerFacts.shots[0].audio_contract.dialogue_mode = 'spoken';
+    providerFacts.shots[0].dialogue.push({
+      id: 't1',
+      speaker_id: 'c1',
+      start_ms: 100,
+      end_ms: 600,
+      source_text: '我看到了',
+    });
+    providerFacts.shots[0].confidence.speaker_mapping = 0.95;
+
+    const result = await nativeAnalysis.analyzeNativeSource({
+      db,
+      log,
+      storageRoot,
+      assetService,
+      visionDetailed: async () => ({
+        text: JSON.stringify({ source_facts: providerFacts }),
+        provider_task_id: 'vision-evidence-id',
+        model: 'vision-model',
+        raw_hash: 'd'.repeat(64),
+      }),
+    }, {
+      workId: 1,
+      tenantId: 'tenant-1',
+      userId: 'user-1',
+      taskId: 'task-native-evidence',
+      model: 'vision-model',
+    });
+
+    assert.equal(providerFacts.shots[0].confidence.speaker_mapping, 0.95);
+    assert.equal(result.facts.shots[0].confidence.speaker_mapping, 0);
+    const asset = db.prepare('SELECT * FROM assets WHERE id = ?').get(result.result_asset_id);
+    const saved = JSON.parse(fs.readFileSync(path.join(storageRoot, asset.local_path), 'utf8'));
+    const metadata = JSON.parse(asset.metadata);
+    assert.equal(saved.facts.shots[0].confidence.speaker_mapping, 0);
+    assert.equal(metadata.facts_hash, result.facts.facts_hash);
+    assert.equal(saved.facts.facts_hash, result.facts.facts_hash);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test('analyzeNativeSource rejects guessed spoken dialogue without visible text evidence', async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'native-redraw-no-text-'));
+  const db = createDb();
+  try {
+    const sourceRelative = createSampleVideo(storageRoot);
+    addWork(db, { localPath: sourceRelative });
+    const facts = validFacts();
+    facts.shots[0].audio_contract.dialogue_mode = 'spoken';
+    facts.shots[0].dialogue.push({
+      id: 't1',
+      speaker_id: 'c1',
+      start_ms: 100,
+      end_ms: 600,
+      source_text: '我看到了',
+    });
+    facts.shots[0].text_regions = [];
+
+    await assert.rejects(
+      () => nativeAnalysis.analyzeNativeSource({
+        db,
+        log,
+        storageRoot,
+        assetService,
+        visionDetailed: async () => ({
+          text: JSON.stringify({ source_facts: facts }),
+          provider_task_id: 'vision-no-text-id',
+          model: 'vision-model',
+          raw_hash: 'e'.repeat(64),
+        }),
+      }, {
+        workId: 1,
+        tenantId: 'tenant-1',
+        userId: 'user-1',
+        taskId: 'task-native-no-text',
+        model: 'vision-model',
+      }),
+      (error) => error.code === 'REDRAW_NATIVE_DIALOGUE_TEXT_EVIDENCE_REQUIRED',
+    );
+    assert.equal(
+      db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category = 'redraw_source_analysis'").get().count,
+      0,
+    );
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
 test('analyzeNativeSource enforces tenant and user ownership before reading source files', async () => {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'native-redraw-owner-'));
   const db = createDb();
