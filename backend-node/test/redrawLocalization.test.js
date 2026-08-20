@@ -120,7 +120,7 @@ function v2LocalizationResult(overrides = {}) {
   return {
     facts_hash: source.facts_hash,
     name_map: { c1: 'Mateo', c2: 'Diego' },
-    culture_map: { currency: 'USD' },
+    culture_map: { honorifics: 'Use first names in casual dialogue' },
     glossary: { family_title: 'Mom' },
     dialogue: [{
       shot_id: 'shot-1',
@@ -388,8 +388,8 @@ test('本地化结果事实哈希不匹配时拒绝写入', () => {
 });
 
 test('v2 本地化只改姓名文字对白并保留镜头事实', () => {
-  const source = v2SourceFacts();
-  const result = normalizeLocalizationResult(v2LocalizationResult(), source);
+  const source = v2SourceFacts({ locale: undefined, market: undefined });
+  const result = normalizeLocalizationResult(v2LocalizationResult(), source, { locale: 'en-US', market: 'US' });
   assert.deepEqual(Object.keys(result), [
     'facts_hash',
     'locale',
@@ -421,9 +421,15 @@ test('v2 本地化严格拒绝漂移、第二市场、未知字段、残留源�
     ['market', { market: 'MX' }, 'LOCALIZATION_MARKET_MISMATCH'],
     ['unknown', { prompt: 'explain how this was localized' }, 'LOCALIZATION_UNKNOWN_FIELD'],
     ['same dialogue', { dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'turn-1', target_text: '别回头' }] }] }, 'LOCALIZATION_SOURCE_TEXT_REMAINS'],
+    ['dialogue substring with punctuation', { dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'turn-1', target_text: 'Please 别　回，头 now' }] }] }, 'LOCALIZATION_SOURCE_TEXT_REMAINS'],
     ['name remains', { dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'turn-1', target_text: '小满, run now' }] }] }, 'LOCALIZATION_SOURCE_TEXT_REMAINS'],
     ['duplicate name', { name_map: { c1: 'Mateo', c2: ' mateo ' } }, 'LOCALIZATION_NAME_DUPLICATE'],
     ['missing text', { text_map: {} }, 'LOCALIZATION_TEXT_REGION_MISMATCH'],
+    ['text value object', { text_map: { 'shot-2:screen-1': { text: 'CALL MOM' } } }, 'LOCALIZATION_TEXT_REGION_MISMATCH'],
+    ['ocr substring with punctuation', { text_map: { 'shot-2:screen-1': 'Please 给　妈妈，打 电话 now' } }, 'LOCALIZATION_SOURCE_TEXT_REMAINS'],
+    ['culture target injection', { culture_map: { market: 'MX' } }, 'LOCALIZATION_CULTURE_MAP_INVALID'],
+    ['glossary target injection', { glossary: { currency: 'USD' } }, 'LOCALIZATION_GLOSSARY_INVALID'],
+    ['glossary nested value', { glossary: { family_title: { text: 'Mom' } } }, 'LOCALIZATION_GLOSSARY_INVALID'],
     ['extra turn', { dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'turn-1', target_text: 'Run now' }, { id: 'turn-2', target_text: 'extra' }] }] }, 'LOCALIZATION_DIALOGUE_INVALID'],
     ['silent turn', { dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'turn-1', target_text: 'Run now' }] }, { shot_id: 'shot-2', turns: [{ id: 'turn-x', target_text: 'noise' }] }] }, 'LOCALIZATION_DIALOGUE_INVALID'],
     ['confidence', { confidence: { ...v2LocalizationResult().confidence, names: Number.NaN } }, 'LOCALIZATION_INVALID_JSON'],

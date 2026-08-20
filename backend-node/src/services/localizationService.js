@@ -14,6 +14,7 @@ const V2_RESULT_FIELDS = new Set([
 ]);
 const CONFIDENCE_KEYS = ['names', 'dialogue_semantics', 'dialogue_timing', 'culture', 'screen_text'];
 const UNSAFE_KEY = /(?:^|_|\b)(?:auth|authorization|token|secret|password|credential|provider|raw|prompt|url|path)(?:$|_|\b)/i;
+const TARGET_INJECTION_KEYS = new Set(['locale', 'market', 'region', 'currency', 'country', 'language', 'target_locale', 'target_market']);
 
 function assertObject(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -175,6 +176,10 @@ function normalizeText(value) {
   return String(value ?? '').normalize('NFKC').replace(/\s+/gu, ' ').trim().toLowerCase();
 }
 
+function compactComparableText(value) {
+  return normalizeText(value).replace(/[\p{White_Space}\p{P}\p{S}]+/gu, '');
+}
+
 function v2SourceHash(sourceFacts) {
   const value = String(sourceFacts?.facts_hash || '').trim();
   if (!SHA256.test(value)) {
@@ -195,6 +200,16 @@ function safeMap(value, name) {
   assertObject(value, name);
   assertSafeJson(value, name);
   return clone(value);
+}
+
+function safeStringMap(value, name, code) {
+  const map = safeMap(value, name);
+  for (const key of Object.keys(map)) {
+    if (TARGET_INJECTION_KEYS.has(normalizeText(key))) throw codedError(code, `${name} target field invalid`);
+    if (typeof map[key] !== 'string') throw codedError(code, `${name} value invalid`);
+    map[key] = map[key].trim();
+  }
+  return map;
 }
 
 function collectV2TextRegions(sourceFacts) {
@@ -229,12 +244,16 @@ function normalizeV2NameMap(rawNameMap, sourceFacts) {
 }
 
 function assertNoSourceRemainder(targetText, sourceText, sourceFacts) {
-  if (normalizeText(targetText) === normalizeText(sourceText)) {
+  const normalizedTarget = normalizeText(targetText);
+  const normalizedSource = normalizeText(sourceText);
+  const compactTarget = compactComparableText(targetText);
+  const compactSource = compactComparableText(sourceText);
+  if (normalizedTarget === normalizedSource || (compactSource && compactTarget.includes(compactSource))) {
     throw codedError('LOCALIZATION_SOURCE_TEXT_REMAINS', 'target text equals source text');
   }
   for (const character of Array.isArray(sourceFacts.characters) ? sourceFacts.characters : []) {
-    const sourceName = normalizeText(character?.source_name);
-    if (sourceName && normalizeText(targetText).includes(sourceName)) {
+    const sourceName = compactComparableText(character?.source_name);
+    if (sourceName && compactTarget.includes(sourceName)) {
       throw codedError('LOCALIZATION_SOURCE_TEXT_REMAINS', 'target text contains source character name');
     }
   }
@@ -323,7 +342,10 @@ function normalizeV2TextMap(rawTextMap, sourceFacts) {
     throw codedError('LOCALIZATION_TEXT_REGION_MISMATCH', 'v2 text_map must exactly cover source text regions');
   }
   for (const region of regions) {
-    const targetText = String(textMap[region.key] ?? '').trim();
+    if (typeof textMap[region.key] !== 'string') {
+      throw codedError('LOCALIZATION_TEXT_REGION_MISMATCH', 'v2 text_map target must be string');
+    }
+    const targetText = textMap[region.key].trim();
     if (!targetText) throw codedError('LOCALIZATION_TEXT_REGION_MISMATCH', 'v2 text_map target empty');
     assertNoSourceRemainder(targetText, region.source_text, sourceFacts);
     textMap[region.key] = targetText;
@@ -347,7 +369,7 @@ function normalizeV2Confidence(rawConfidence) {
   return confidence;
 }
 
-function normalizeLocalizationResultV2(raw, sourceFacts) {
+function normalizeLocalizationResultV2(raw, sourceFacts, options = {}) {
   assertSafeJson(raw);
   assertV2RootFields(raw);
   const expectedHash = v2SourceHash(sourceFacts);
@@ -357,8 +379,8 @@ function normalizeLocalizationResultV2(raw, sourceFacts) {
       received: String(raw.facts_hash || ''),
     });
   }
-  const expectedLocale = String(sourceFacts.locale || '').trim();
-  const expectedMarket = String(sourceFacts.market || '').trim();
+  const expectedLocale = String(options.locale || sourceFacts.locale || '').trim();
+  const expectedMarket = String(options.market || sourceFacts.market || '').trim();
   const locale = String(raw.locale ?? expectedLocale).trim();
   const market = String(raw.market ?? expectedMarket).trim();
   if (!locale || locale !== expectedLocale) throw codedError('LOCALIZATION_LOCALE_MISMATCH', 'v2 locale mismatch');
@@ -369,8 +391,8 @@ function normalizeLocalizationResultV2(raw, sourceFacts) {
     locale,
     market,
     name_map: nameMap,
-    culture_map: safeMap(raw.culture_map || {}, 'culture_map'),
-    glossary: safeMap(raw.glossary || {}, 'glossary'),
+    culture_map: safeStringMap(raw.culture_map || {}, 'culture_map', 'LOCALIZATION_CULTURE_MAP_INVALID'),
+    glossary: safeStringMap(raw.glossary || {}, 'glossary', 'LOCALIZATION_GLOSSARY_INVALID'),
     dialogue: normalizeV2Dialogue(raw.dialogue || [], sourceFacts, locale),
     text_map: normalizeV2TextMap(raw.text_map || {}, sourceFacts),
     confidence: normalizeV2Confidence(raw.confidence),
@@ -391,10 +413,10 @@ function buildLocalizationInput(sourceFacts, options = {}) {
   };
 }
 
-function normalizeLocalizationResult(raw, sourceFacts) {
+function normalizeLocalizationResult(raw, sourceFacts, options = {}) {
   assertObject(raw, 'localized_result');
   if (sourceFacts?.schema_version === '2.0') {
-    return normalizeLocalizationResultV2(raw, sourceFacts);
+    return normalizeLocalizationResultV2(raw, sourceFacts, options);
   }
   const validation = validateLocalizedFacts(sourceFacts, raw);
   if (!validation.ok) {
@@ -685,7 +707,7 @@ function createLocalizationVersion(db, owner, workId, input) {
       received: String(suppliedFactsHash),
     });
   }
-  const transaction = db.transaction(() => {
+  const run = () => {
     const now = new Date().toISOString();
     const work = db.prepare(`
       SELECT id, current_version
@@ -886,8 +908,8 @@ function createLocalizationVersion(db, owner, workId, input) {
       shot_count: sourceShots.length,
       asset_count: assetByStableId.size,
     };
-  });
-  return transaction.immediate();
+  };
+  return db.inTransaction ? run() : db.transaction(run).immediate();
 }
 
 function materializeLocalizationDraft(db, owner, draftVersionId, input) {
