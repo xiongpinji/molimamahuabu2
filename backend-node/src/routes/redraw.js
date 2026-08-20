@@ -163,7 +163,7 @@ function publicLocalizationDecision(task, currentVersion, project) {
     reason_codes: [...reasonCodes].sort(),
     policy_version: Number(decision.policy_version),
     version_id: Number(currentVersion.id),
-    evidence: { facts_hash: factsHash },
+    evidence_hash: factsHash,
   };
   const effectiveState = safeDecisionToken(decision.effective_analysis_state);
   if (effectiveState && LOCALIZATION_DECISION_STATES.has(effectiveState)) {

@@ -774,12 +774,16 @@ function resetProviderFixture(facts = sourceFacts, localization = localizationOv
   runtimeErrors.length = 0
 }
 
-function createGenericSourceVideo() {
-  const videoPath = path.join(tempRoot, 'generic-source-12s.mp4')
+function createGenericSourceVideo({
+  filename = 'generic-source-12s.mp4',
+  color = 'darkgreen',
+  frequency = 380,
+} = {}) {
+  const videoPath = path.join(tempRoot, filename)
   runFfmpeg([
     '-hide_banner', '-loglevel', 'error',
-    '-f', 'lavfi', '-i', 'color=c=darkgreen:size=320x180:rate=12',
-    '-f', 'lavfi', '-i', 'sine=frequency=380:sample_rate=44100',
+    '-f', 'lavfi', '-i', `color=c=${color}:size=320x180:rate=12`,
+    '-f', 'lavfi', '-i', `sine=frequency=${frequency}:sample_rate=44100`,
     '-t', '12', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
     '-shortest', '-y', videoPath,
   ], '通用三镜源片生成')
@@ -833,7 +837,27 @@ async function createGenericProjectFromRedraw(page) {
       text_regions: 0.9,
       shot_boundary: 0.9,
     },
+    localization_thresholds: {
+      names: 0.9,
+      dialogue_semantics: 0.9,
+      dialogue_timing: 0.9,
+      culture: 0.9,
+      screen_text: 0.9,
+    },
   })
+}
+
+function genericHighConfidenceSourceFacts() {
+  return {
+    ...genericSourceFacts,
+    shots: genericSourceFacts.shots.map((shot) => ({
+      ...shot,
+      confidence: {
+        ...shot.confidence,
+        speaker_mapping: 0.96,
+      },
+    })),
+  }
 }
 
 test('通用三镜项目完成前链分析并在低说话人置信度下降级 safe', async ({ page }) => {
@@ -949,6 +973,146 @@ test('通用三镜项目完成前链分析并在低说话人置信度下降级 s
     WHERE resource_type IN ('redraw_localization', 'redraw_asset', 'redraw_shot', 'redraw_dialogue')
   `).get().count).toBe(0)
   expect(providerCallCounts).toEqual({ asset: 0, video: 0, dialogue: 0 })
+  expect(browserErrors, JSON.stringify(browserErrors)).toEqual([])
+  expect(runtimeErrors, JSON.stringify(runtimeErrors)).toEqual([])
+})
+
+test('通用三镜项目高置信度分析后完成 es-ES 本地化并物化三镜', async ({ page }) => {
+  resetProviderFixture(genericHighConfidenceSourceFacts(), genericLocalization)
+  const browserErrors = []
+  page.on('pageerror', (error) => browserErrors.push(`pageerror:${error.message}`))
+  page.on('requestfailed', (request) => {
+    browserErrors.push(`requestfailed:${request.method()} ${request.url()} ${request.failure()?.errorText || ''}`)
+  })
+  const genericVideoPath = createGenericSourceVideo({
+    filename: 'generic-source-12s-high-confidence.mp4',
+    color: 'darkblue',
+    frequency: 420,
+  })
+  const projectId = await createGenericProjectFromRedraw(page)
+  await expect(page).toHaveURL(new RegExp(`/redraw/projects/${projectId}/works/new\\?step=1`))
+
+  await page.locator('input[type="file"][accept*="video/mp4"]').setInputFiles(genericVideoPath)
+  const uploadResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+      && /\/api\/v1\/redraw\/projects\/\d+\/works$/.test(new URL(response.url()).pathname)
+  ))
+  await page.getByRole('button', { name: '上传源片', exact: true }).click()
+  const uploadResponse = await uploadResponsePromise
+  const uploadPayload = JSON.parse(await uploadResponse.text())
+  expect(uploadResponse.status(), JSON.stringify(uploadPayload)).toBe(201)
+  const workId = Number(uploadPayload.data.items[0].id)
+
+  const analysisStart = await browserApi(page, `/api/v1/redraw/works/${workId}/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      locale: genericRedrawProject.target.locale,
+      market: genericRedrawProject.target.market,
+      aspect_ratio: '16:9',
+      style_preset_id: 1,
+    }),
+  })
+  expect([201, 202], JSON.stringify(analysisStart.body)).toContain(analysisStart.status)
+
+  let analyzed
+  await expect.poll(async () => {
+    const result = await browserApi(page, `/api/v1/redraw/works/${workId}`)
+    analyzed = result.body?.data
+    return analyzed?.analysis_decision?.effective_mode || ''
+  }, { timeout: 15_000, message: JSON.stringify(analyzed) }).toBe('auto')
+  expect(analyzed).toMatchObject({
+    analysis_decision: {
+      action: 'advance',
+      effective_mode: 'auto',
+      reason_codes: [],
+    },
+  })
+
+  const quoteResponse = await browserApi(page, `/api/v1/redraw/works/${workId}/localization-quote`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      locale: genericRedrawProject.target.locale,
+      market: genericRedrawProject.target.market,
+      localization_level: genericRedrawProject.project.localization_level,
+    }),
+  })
+  expect(quoteResponse.status, JSON.stringify(quoteResponse.body)).toBe(200)
+  expect(quoteResponse.body.data).toMatchObject({ priced: true, quote_hash: expect.any(String) })
+  const localizationStart = await browserApi(page, `/api/v1/redraw/works/${workId}/versions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      locale: genericRedrawProject.target.locale,
+      market: genericRedrawProject.target.market,
+      localization_level: genericRedrawProject.project.localization_level,
+      quote_hash: quoteResponse.body.data.quote_hash,
+      idempotency_key: 'generic-es-localization-1',
+    }),
+  })
+  expect(localizationStart.status, JSON.stringify(localizationStart.body)).toBe(202)
+
+  let localizationDebug
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const result = await browserApi(page, `/api/v1/redraw/works/${workId}`)
+    const work = result.body?.data
+    localizationDebug = {
+      status: result.status,
+      phase: work?.workflow_phase,
+      versionId: work?.version_id,
+      localizationTask: work?.localization_task,
+      versions: database.prepare('SELECT id, version, locale, market, status, localization_task_id FROM redraw_versions WHERE work_id = ? ORDER BY version').all(workId),
+    }
+    if (work?.version_id) break
+    await page.waitForTimeout(250)
+  }
+  expect(localizationDebug, JSON.stringify(localizationDebug)).toMatchObject({
+    status: 200,
+    phase: 'asset_review',
+    versionId: expect.any(Number),
+  })
+
+  const localizedResult = await browserApi(page, `/api/v1/redraw/works/${workId}`)
+  const localized = localizedResult.body.data
+  expect(localized).toMatchObject({
+    workflow_phase: 'asset_review',
+    version_id: expect.any(Number),
+  })
+  const localizedVersion = database.prepare(`
+    SELECT id, locale, market, status FROM redraw_versions WHERE id = ?
+  `).get(Number(localized.version_id))
+  expect(localizedVersion).toMatchObject({
+    locale: genericRedrawProject.target.locale,
+    market: genericRedrawProject.target.market,
+    status: 'asset_review',
+  })
+  const localizedShots = database.prepare(`
+    SELECT shot_id, start_ms, end_ms FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
+  `).all(Number(localized.version_id))
+  expect(localizedShots.map((shot) => [shot.shot_id, shot.start_ms, shot.end_ms])).toEqual([
+    ['generic-1', 0, 4_000],
+    ['generic-2', 4_000, 8_000],
+    ['generic-3', 8_000, 12_000],
+  ])
+  expect(localized.shots).toHaveLength(3)
+
+  await page.reload()
+  const refreshed = await browserApi(page, `/api/v1/redraw/works/${workId}`)
+  expect(refreshed.body.data).toMatchObject({
+    workflow_phase: 'asset_review',
+    version_id: Number(localized.version_id),
+  })
+  expect(await page.evaluate(() => Object.keys(window.localStorage)
+    .filter((key) => /redraw|workflow/i.test(key))
+    .sort())).toEqual([])
+  expect(await page.evaluate(() => Object.keys(window.sessionStorage)
+    .filter((key) => /redraw|workflow/i.test(key))
+    .sort())).toEqual([])
+  expect(providerCallCounts).toEqual({ asset: 0, video: 0, dialogue: 0 })
+  expect(database.prepare('SELECT COUNT(*) AS count FROM video_generations').get().count).toBe(0)
+  expect(database.prepare('SELECT COUNT(*) AS count FROM redraw_asset_batches').get().count).toBe(0)
+  expect(database.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'held'").get().count).toBe(0)
   expect(browserErrors, JSON.stringify(browserErrors)).toEqual([])
   expect(runtimeErrors, JSON.stringify(runtimeErrors)).toEqual([])
 })

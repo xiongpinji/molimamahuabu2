@@ -2172,7 +2172,7 @@ test('作品详情只投影可恢复本地化决策白名单且不公开 task re
       current_step: 1,
       status: 'needs_attention',
     });
-    const factsHash = 'projection-localization-facts-hash';
+    const factsHash = 'a'.repeat(64);
     const versionId = insertVersion(db, workId, {
       locale: 'es-ES',
       market: 'ES',
@@ -2187,7 +2187,7 @@ test('作品详情只投影可恢复本地化决策白名单且不公开 task re
       reason_codes: ['speaker_confidence_low'],
       policy_version: 1,
       version_id: versionId,
-      evidence: { facts_hash: factsHash },
+      evidence_hash: factsHash,
       effective_analysis_state: 'analysis_review',
     };
     db.prepare(`INSERT INTO async_tasks
@@ -2227,11 +2227,13 @@ test('作品详情只投影可恢复本地化决策白名单且不公开 task re
       'action',
       'effective_analysis_state',
       'effective_mode',
-      'evidence',
+      'evidence_hash',
       'policy_version',
       'reason_codes',
       'version_id',
     ]);
+    assert.match(result.body.data.localization_decision.evidence_hash, /^[a-f0-9]{64}$/);
+    assert.equal(result.body.data.localization_decision.evidence, undefined);
     assert.equal(result.body.data.localization_task.result, undefined);
     assert.equal(result.body.data.localization_task.metadata, undefined);
     assert.equal(JSON.stringify(result.body.data).includes('private'), false);
@@ -2281,7 +2283,7 @@ test('作品详情拒绝失配或非法的本地化决策投影', () => {
         max_auto_attempts_per_shot: 1,
       });
       const workId = insertWork(db, projectId, { current_version: 1, current_step: 1 });
-      const factsHash = 'projection-localization-facts-hash';
+      const factsHash = 'a'.repeat(64);
       const versionId = insertVersion(db, workId, {
         locale: 'es-ES',
         market: 'ES',

@@ -114,11 +114,11 @@ export const genericLocalization = {
   dialogue: [
     {
       shot_id: 'generic-1',
-      turns: [{ id: 'g1-t1', speaker_id: 'c1', localized_text: 'El ultimo lugar donde lo vieron fue aqui.' }],
+      turns: [{ id: 'g1-t1', speaker_id: 'c1', localized_text: 'Fue aqui.' }],
     },
     {
       shot_id: 'generic-2',
-      turns: [{ id: 'g2-t1', speaker_id: 'c2', localized_text: 'Deja de investigar. Alguien te esta vigilando.' }],
+      turns: [{ id: 'g2-t1', speaker_id: 'c2', localized_text: 'No sigas.' }],
     },
     { shot_id: 'generic-3', turns: [] },
   ],
