@@ -504,7 +504,7 @@ function validateProjectCreateBody(body) {
 function normalizeCreateLocale(value) {
   if (typeof value !== 'string') throw projectCreateInputError('default_locale 必须是单一语言代码');
   const locale = value.trim();
-  if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(locale)) {
+  if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$/.test(locale)) {
     throw projectCreateInputError('default_locale 必须是有效单一语言代码');
   }
   return locale;

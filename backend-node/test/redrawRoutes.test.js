@@ -919,6 +919,7 @@ test('创建转绘项目严格拒绝新合同非法策略目标与客户端注�
       { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'auto', budget_limit_credits: 10, max_auto_attempts_per_shot: 6 },
       { title: 'bad', default_locale: '', default_market: 'US', execution_mode: 'safe' },
       { title: 'bad', default_locale: ['en-US', 'es-ES'], default_market: 'US', execution_mode: 'safe' },
+      { title: 'bad', default_locale: 'en-US-Latn-FOO', default_market: 'US', execution_mode: 'safe' },
       { title: 'bad', default_locale: 'en-US', default_market: '', execution_mode: 'safe' },
       { title: 'bad', default_locale: 'en-US', default_market: ['US', 'GB'], execution_mode: 'safe' },
       { title: 'bad', default_locale: 'en-US', default_market: 'us', execution_mode: 'safe' },
