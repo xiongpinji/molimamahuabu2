@@ -643,6 +643,7 @@ function runLocalizationJob(db, records, deps) {
           locale: quote.snapshot.input.locale,
           market: quote.snapshot.input.market,
           localizationLevel: quote.snapshot.input.localization_level,
+          sourceVersionId: quote.snapshot.source_version_id,
           sourceFacts: quote.snapshot.input.source_facts,
           sourceFactsHash: normalized.facts_hash,
           glossary: normalized.glossary,

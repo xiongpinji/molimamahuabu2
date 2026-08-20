@@ -423,18 +423,28 @@ test('v2 本地化严格拒绝漂移、第二市场、未知字段、残留源�
     ['same dialogue', { dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'turn-1', target_text: '别回头' }] }] }, 'LOCALIZATION_SOURCE_TEXT_REMAINS'],
     ['dialogue substring with punctuation', { dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'turn-1', target_text: 'Please 别　回，头 now' }] }] }, 'LOCALIZATION_SOURCE_TEXT_REMAINS'],
     ['name remains', { dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'turn-1', target_text: '小满, run now' }] }] }, 'LOCALIZATION_SOURCE_TEXT_REMAINS'],
+    ['name object', { name_map: { c1: { target: 'Mateo' }, c2: 'Diego' } }, 'LOCALIZATION_NAME_INVALID'],
+    ['name number', { name_map: { c1: 123, c2: 'Diego' } }, 'LOCALIZATION_NAME_INVALID'],
     ['duplicate name', { name_map: { c1: 'Mateo', c2: ' mateo ' } }, 'LOCALIZATION_NAME_DUPLICATE'],
     ['missing text', { text_map: {} }, 'LOCALIZATION_TEXT_REGION_MISMATCH'],
     ['text value object', { text_map: { 'shot-2:screen-1': { text: 'CALL MOM' } } }, 'LOCALIZATION_TEXT_REGION_MISMATCH'],
     ['ocr substring with punctuation', { text_map: { 'shot-2:screen-1': 'Please 给　妈妈，打 电话 now' } }, 'LOCALIZATION_SOURCE_TEXT_REMAINS'],
+    ['dialogue row unknown', { dialogue: [{ shot_id: 'shot-1', provider_note: 'raw', turns: [{ id: 'turn-1', target_text: 'Run now' }] }] }, 'LOCALIZATION_UNKNOWN_FIELD'],
+    ['dialogue turn unknown', { dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'turn-1', target_text: 'Run now', style: 'extra' }] }] }, 'LOCALIZATION_UNKNOWN_FIELD'],
+    ['culture currency allowed', { culture_map: { currency: 'USD' } }, null],
     ['culture target injection', { culture_map: { market: 'MX' } }, 'LOCALIZATION_CULTURE_MAP_INVALID'],
-    ['glossary target injection', { glossary: { currency: 'USD' } }, 'LOCALIZATION_GLOSSARY_INVALID'],
+    ['culture credential injection', { culture_map: { api_key: 'secret' } }, 'LOCALIZATION_UNKNOWN_FIELD'],
+    ['glossary credential injection', { glossary: { access_key: 'secret' } }, 'LOCALIZATION_UNKNOWN_FIELD'],
     ['glossary nested value', { glossary: { family_title: { text: 'Mom' } } }, 'LOCALIZATION_GLOSSARY_INVALID'],
     ['extra turn', { dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'turn-1', target_text: 'Run now' }, { id: 'turn-2', target_text: 'extra' }] }] }, 'LOCALIZATION_DIALOGUE_INVALID'],
     ['silent turn', { dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'turn-1', target_text: 'Run now' }] }, { shot_id: 'shot-2', turns: [{ id: 'turn-x', target_text: 'noise' }] }] }, 'LOCALIZATION_DIALOGUE_INVALID'],
     ['confidence', { confidence: { ...v2LocalizationResult().confidence, names: Number.NaN } }, 'LOCALIZATION_INVALID_JSON'],
   ];
   for (const [name, patch, code] of cases) {
+    if (!code) {
+      assert.doesNotThrow(() => normalizeLocalizationResult(v2LocalizationResult(patch), source), name);
+      continue;
+    }
     assert.throws(
       () => normalizeLocalizationResult(v2LocalizationResult(patch), source),
       (error) => error.code === code,
@@ -586,6 +596,62 @@ test('创建本地化版本原子物化目标分镜与同版本资产引用且�
   assert.equal(sourceShots[0].localized_dialogue_json, '[]');
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_assets WHERE version_id != ?').get(result.id).count, 0);
   db.close();
+});
+
+test('物化本地化显式绑定源事实版本且兼容调用优先当前源版本', () => {
+  for (const explicit of [true, false]) {
+    const db = createDb();
+    const nextFacts = {
+      ...sourceFacts(),
+      facts_hash: undefined,
+      shots: [{
+        id: 'shot-current',
+        start_ms: 0,
+        end_ms: 3_000,
+        opening_state: 'current opening',
+        continuous_action: 'current action',
+        ending_state: 'current ending',
+        dialogue: [{
+          speaker_id: 'c1',
+          source_text: '快走',
+          start_ms: 300,
+          end_ms: 1_500,
+          emotion: 'urgent',
+          overlap_group: null,
+        }],
+      }],
+    };
+    const nextHash = buildLocalizationInput(nextFacts, { locale: 'source' }).source_facts_hash;
+    const now = new Date().toISOString();
+    const sourceVersionId = Number(db.prepare(`
+      INSERT INTO redraw_versions
+        (work_id, tenant_id, user_id, version, locale, market, localization_level,
+         source_facts_json, facts_hash, status, created_at, updated_at)
+      VALUES (1, 'tenant-a', 'user-a', 2, 'source', '', 'faithful', ?, ?, 'asset_review', ?, ?)
+    `).run(JSON.stringify(nextFacts), nextHash, now, now).lastInsertRowid);
+    db.prepare(`
+      INSERT INTO redraw_shots
+        (work_id, shot_id, version_id, tenant_id, user_id, batch_index, shot_index,
+         start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
+         references_json, opening_state, continuous_action, ending_state, created_at, updated_at)
+      VALUES (1, 'shot-current', ?, 'tenant-a', 'user-a', 1, 1, 0, 3000, 3000, ?, '[]', '[]',
+        'current opening', 'current action', 'current ending', ?, ?)
+    `).run(sourceVersionId, JSON.stringify(nextFacts.shots[0].dialogue), now, now);
+    db.prepare('UPDATE redraw_works SET current_version = 2 WHERE id = 1').run();
+
+    const result = createLocalizationVersion(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, {
+      ...localizationPayload({
+        sourceFacts: nextFacts,
+        sourceFactsHash: nextHash,
+        dialogue: [{ shot_id: 'shot-current', turns: [{ speaker_id: 'c1', localized_text: 'Go now' }] }],
+      }),
+      ...(explicit ? { sourceVersionId } : {}),
+    });
+
+    const shot = db.prepare('SELECT shot_id, opening_state FROM redraw_shots WHERE version_id = ?').get(result.id);
+    assert.deepEqual(shot, { shot_id: 'shot-current', opening_state: 'current opening' }, explicit ? 'explicit' : 'current fallback');
+    db.close();
+  }
 });
 
 test('第二次确认只创建隐藏草稿且不推进作品步骤', () => {

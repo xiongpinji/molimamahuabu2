@@ -13,8 +13,10 @@ const V2_RESULT_FIELDS = new Set([
   'confidence',
 ]);
 const CONFIDENCE_KEYS = ['names', 'dialogue_semantics', 'dialogue_timing', 'culture', 'screen_text'];
-const UNSAFE_KEY = /(?:^|_|\b)(?:auth|authorization|token|secret|password|credential|provider|raw|prompt|url|path)(?:$|_|\b)/i;
-const TARGET_INJECTION_KEYS = new Set(['locale', 'market', 'region', 'currency', 'country', 'language', 'target_locale', 'target_market']);
+const UNSAFE_KEY = /(?:^|_|\b)(?:key|api_key|access_key|secret_key|private_key|auth|authorization|token|secret|password|credential|provider|raw|prompt|url|path)(?:$|_|\b)/i;
+const TARGET_INJECTION_KEYS = new Set(['locale', 'market', 'region', 'country', 'language', 'target_locale', 'target_market']);
+const V2_DIALOGUE_ROW_FIELDS = new Set(['shot_id', 'shotId', 'turns']);
+const V2_DIALOGUE_TURN_FIELDS = new Set(['id', 'turn_id', 'speaker_id', 'start_ms', 'end_ms', 'overlap_group', 'target_text', 'localized_text', 'text']);
 
 function assertObject(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -196,6 +198,12 @@ function assertV2RootFields(raw) {
   }
 }
 
+function assertOnlyKeys(value, allowed, code, name) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) throw codedError(code, `${name}.${key} is not allowed`, { field: key });
+  }
+}
+
 function safeMap(value, name) {
   assertObject(value, name);
   assertSafeJson(value, name);
@@ -233,7 +241,8 @@ function normalizeV2NameMap(rawNameMap, sourceFacts) {
   }
   const seenNames = new Set();
   for (const id of expectedIds) {
-    const value = String(nameMap[id] ?? '').trim();
+    if (typeof nameMap[id] !== 'string') throw codedError('LOCALIZATION_NAME_INVALID', 'v2 localized name invalid');
+    const value = nameMap[id].trim();
     if (!value) throw codedError('LOCALIZATION_NAME_EMPTY', 'v2 localized name empty', { character_id: id });
     const normalized = normalizeText(value);
     if (seenNames.has(normalized)) throw codedError('LOCALIZATION_NAME_DUPLICATE', 'v2 localized names duplicate');
@@ -270,6 +279,7 @@ function normalizeV2Dialogue(rawDialogue, sourceFacts, locale) {
   for (const row of rawDialogue) {
     assertObject(row, 'dialogue[]');
     assertSafeJson(row, 'dialogue[]');
+    assertOnlyKeys(row, V2_DIALOGUE_ROW_FIELDS, 'LOCALIZATION_UNKNOWN_FIELD', 'dialogue[]');
     const shotId = String(row.shot_id ?? row.shotId ?? '').trim();
     if (!shotId || rows.has(shotId)) throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'v2 dialogue shot invalid');
     rows.set(shotId, row);
@@ -296,6 +306,9 @@ function normalizeV2Dialogue(rawDialogue, sourceFacts, locale) {
     for (let index = 0; index < sourceTurns.length; index += 1) {
       const source = sourceTurns[index] || {};
       const localized = turns[index] || {};
+      assertObject(localized, 'dialogue[].turns[]');
+      assertSafeJson(localized, 'dialogue[].turns[]');
+      assertOnlyKeys(localized, V2_DIALOGUE_TURN_FIELDS, 'LOCALIZATION_UNKNOWN_FIELD', 'dialogue[].turns[]');
       const sourceId = String(source.id ?? source.turn_id ?? `turn-${index + 1}`);
       const localizedId = String(localized.id ?? localized.turn_id ?? '').trim();
       if (localizedId !== sourceId) throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'v2 dialogue turn id mismatch');
@@ -715,14 +728,27 @@ function createLocalizationVersion(db, owner, workId, input) {
       WHERE id = ? AND tenant_id = ? AND user_id = ?
     `).get(Number(workId), String(tenantId), String(userId));
     if (!work) throw Object.assign(new Error('转绘作品不存在'), { code: 'LOCALIZATION_WORK_NOT_FOUND' });
-    const sourceVersion = db.prepare(`
-      SELECT *
-      FROM redraw_versions
-      WHERE work_id = ? AND tenant_id = ? AND user_id = ?
-        AND source_facts_json IS NOT NULL AND deleted_at IS NULL
-      ORDER BY version ASC, id ASC
-      LIMIT 1
-    `).get(Number(workId), String(tenantId), String(userId));
+    const sourceVersionId = input.sourceVersionId ?? input.source_version_id;
+    const sourceVersion = sourceVersionId != null
+      ? db.prepare(`
+        SELECT *
+        FROM redraw_versions
+        WHERE id = ? AND work_id = ? AND tenant_id = ? AND user_id = ?
+          AND locale = 'source'
+          AND source_facts_json IS NOT NULL AND TRIM(source_facts_json) != ''
+          AND deleted_at IS NULL
+        LIMIT 1
+      `).get(Number(sourceVersionId), Number(workId), String(tenantId), String(userId))
+      : db.prepare(`
+        SELECT *
+        FROM redraw_versions
+        WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+          AND locale = 'source'
+          AND source_facts_json IS NOT NULL AND TRIM(source_facts_json) != ''
+          AND deleted_at IS NULL
+        ORDER BY CASE WHEN version = ? THEN 0 ELSE 1 END, version DESC, id DESC
+        LIMIT 1
+      `).get(Number(workId), String(tenantId), String(userId), Number(work.current_version || 0));
     if (!sourceVersion) {
       throw Object.assign(new Error('源片事实版本不存在'), { code: 'LOCALIZATION_SOURCE_VERSION_REQUIRED' });
     }
