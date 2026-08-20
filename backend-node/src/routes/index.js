@@ -314,6 +314,8 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/redraw/projects', redraw.listProjects);
   r.post('/redraw/projects', redraw.createProject);
   r.get('/redraw/projects/:id', redraw.getProject);
+  r.put('/redraw/projects/:id/policy', redraw.updateProjectPolicy);
+  r.get('/redraw/projects/:id/events', redraw.listProjectEvents);
   r.post('/redraw/projects/:id/works', redraw.uploadSource, redraw.createWorks);
   r.get('/redraw/works/:id', redraw.getWork);
   r.put('/redraw/shots/:id', redraw.updateShot);

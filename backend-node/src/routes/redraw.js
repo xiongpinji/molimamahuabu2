@@ -23,6 +23,8 @@ const redrawVoiceService = require('../services/redrawVoiceService');
 const redrawCompositionService = require('../services/redrawCompositionService');
 const redrawExportService = require('../services/redrawExportService');
 const redrawNativeSourceAnalysisService = require('../services/redrawNativeSourceAnalysisService');
+const redrawProjectPolicyService = require('../services/redrawProjectPolicyService');
+const redrawWorkflowEventService = require('../services/redrawWorkflowEventService');
 const assetService = require('../services/assetService');
 const uploadServiceModule = require('../services/uploadService');
 
@@ -434,6 +436,12 @@ const REFERENCE_BUNDLE_FIELDS = new Set([
   'face_tracks',
   'text_regions',
   'coverage_review',
+]);
+const PROJECT_POLICY_FIELDS = new Set([
+  'execution_mode',
+  'budget_limit_credits',
+  'max_auto_attempts_per_shot',
+  'expected_updated_at',
 ]);
 
 function generationInputError(message) {
@@ -1827,6 +1835,73 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     return response.success(res, mapProject(project));
   }
 
+  function updateProjectPolicy(req, res) {
+    const currentOwner = owner(req);
+    if (!findOwnedProject(req.params.id, currentOwner)) {
+      return response.error(res, 404, 'REDRAW_PROJECT_NOT_FOUND', '转绘项目不存在');
+    }
+    const body = req.body || {};
+    for (const key of Object.keys(body)) {
+      if (!PROJECT_POLICY_FIELDS.has(key)) {
+        return response.error(
+          res,
+          400,
+          'REDRAW_PROJECT_POLICY_UNKNOWN_FIELD',
+          `项目策略不接受字段 ${key}`,
+        );
+      }
+    }
+    if (!String(body.expected_updated_at || '').trim()) {
+      return response.error(
+        res,
+        400,
+        'REDRAW_PROJECT_POLICY_EXPECTED_UPDATED_AT_REQUIRED',
+        'expected_updated_at 必填',
+      );
+    }
+    try {
+      const updated = redrawProjectPolicyService.updateProjectPolicy(db, {
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        projectId: Number(req.params.id),
+        expectedUpdatedAt: body.expected_updated_at,
+        input: {
+          execution_mode: body.execution_mode,
+          ...(Object.prototype.hasOwnProperty.call(body, 'budget_limit_credits')
+            ? { budget_limit_credits: body.budget_limit_credits }
+            : {}),
+          ...(Object.prototype.hasOwnProperty.call(body, 'max_auto_attempts_per_shot')
+            ? { max_auto_attempts_per_shot: body.max_auto_attempts_per_shot }
+            : {}),
+        },
+      });
+      return response.success(res, updated);
+    } catch (error) {
+      if (error.code === 'REDRAW_PROJECT_NOT_FOUND') {
+        return response.error(res, 404, error.code, error.message || '转绘项目不存在');
+      }
+      if (error.code === 'REDRAW_PROJECT_POLICY_CONFLICT') {
+        return response.error(res, 409, error.code, error.message || '项目策略已被其他操作更新');
+      }
+      if (String(error.code || '').startsWith('REDRAW_PROJECT_POLICY_')) {
+        return response.error(res, 400, error.code, error.message || '项目策略参数无效');
+      }
+      log?.error?.({ err: error, projectId: req.params.id }, 'redraw project policy update failed');
+      return response.error(res, 500, 'INTERNAL_ERROR', '更新项目策略失败');
+    }
+  }
+
+  function listProjectEvents(req, res) {
+    const currentOwner = owner(req);
+    const project = findOwnedProject(req.params.id, currentOwner);
+    if (!project) return response.error(res, 404, 'REDRAW_PROJECT_NOT_FOUND', '转绘项目不存在');
+    return response.success(res, redrawWorkflowEventService.listProjectWorkflowEvents(db, {
+      tenantId: currentOwner.tenantId,
+      userId: currentOwner.userId,
+      projectId: Number(project.id),
+    }));
+  }
+
   async function createWorks(req, res) {
     const currentOwner = owner(req);
     const projectId = numericId(req.params.id);
@@ -3126,6 +3201,8 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     listProjects,
     createProject,
     getProject,
+    updateProjectPolicy,
+    listProjectEvents,
     createWorks,
     getWork,
     updateShot,

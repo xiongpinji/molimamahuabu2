@@ -4948,6 +4948,121 @@ test('第三步、角色身份包和本地化确认 API 已真实注册在总路
     assert.equal(routes.has('POST /redraw/versions/:id/dialogue/quote'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/dialogue/start'), true);
     assert.equal(routes.has('GET /redraw/versions/:id/dialogue/tasks/:taskId'), true);
+    assert.equal(routes.has('PUT /redraw/projects/:id/policy'), true);
+    assert.equal(routes.has('GET /redraw/projects/:id/events'), true);
+  } finally {
+    db.close();
+  }
+});
+
+test('项目策略 API 严格白名单、CAS 更新并追加脱敏事件', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const missingCas = captureResponse();
+    handlers.updateProjectPolicy(request({
+      id: projectId,
+      body: { execution_mode: 'safe' },
+    }), missingCas);
+    assert.equal(missingCas.statusCode, 400);
+    assert.equal(missingCas.body.error.code, 'REDRAW_PROJECT_POLICY_EXPECTED_UPDATED_AT_REQUIRED');
+
+    for (const field of ['default_market', 'default_locale', 'spent_credits', 'reservation_id', 'provider', 'model', 'apiKey', 'base_url']) {
+      const bad = captureResponse();
+      handlers.updateProjectPolicy(request({
+        id: projectId,
+        body: { execution_mode: 'safe', expected_updated_at: NOW, [field]: 'client' },
+      }), bad);
+      assert.equal(bad.statusCode, 400, field);
+      assert.equal(bad.body.error.code, 'REDRAW_PROJECT_POLICY_UNKNOWN_FIELD', field);
+    }
+
+    const ok = captureResponse();
+    handlers.updateProjectPolicy(request({
+      id: projectId,
+      body: {
+        execution_mode: 'auto',
+        budget_limit_credits: 100,
+        max_auto_attempts_per_shot: 2,
+        expected_updated_at: NOW,
+      },
+    }), ok);
+    assert.equal(ok.statusCode, 200);
+    assert.deepEqual(
+      {
+        execution_mode: ok.body.data.execution_mode,
+        budget_limit_credits: ok.body.data.budget_limit_credits,
+        max_auto_attempts_per_shot: ok.body.data.max_auto_attempts_per_shot,
+        policy_version: ok.body.data.policy_version,
+      },
+      {
+        execution_mode: 'auto',
+        budget_limit_credits: 100,
+        max_auto_attempts_per_shot: 2,
+        policy_version: 2,
+      },
+    );
+    assert.ok(ok.body.data.updated_at);
+    assert.deepEqual(db.prepare(`
+      SELECT default_market, default_locale FROM redraw_projects WHERE id = ?
+    `).get(projectId), {
+      default_market: 'US',
+      default_locale: 'en-US',
+    });
+
+    const events = captureResponse();
+    handlers.listProjectEvents(request({ id: projectId }), events);
+    assert.equal(events.statusCode, 200);
+    assert.equal(events.body.data.length, 1);
+    assert.equal(events.body.data[0].reason_code, 'project_policy_updated');
+    assert.match(events.body.data[0].evidence_hash, /^[a-f0-9]{64}$/);
+    const serialized = JSON.stringify(events.body.data);
+    assert.equal(serialized.includes('metadata_json'), false);
+    assert.equal(serialized.includes('apiKey'), false);
+    assert.equal(serialized.includes('http'), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('项目策略 API 对跨 owner 统一 404，CAS 冲突 409 且不追加事件', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const foreignPut = captureResponse();
+    handlers.updateProjectPolicy(request({
+      id: projectId,
+      tenantId: 'tenant-b',
+      body: {
+        execution_mode: 'safe',
+        expected_updated_at: NOW,
+      },
+    }), foreignPut);
+    assert.equal(foreignPut.statusCode, 404);
+    assert.equal(foreignPut.body.error.code, 'REDRAW_PROJECT_NOT_FOUND');
+
+    const conflict = captureResponse();
+    handlers.updateProjectPolicy(request({
+      id: projectId,
+      body: {
+        execution_mode: 'auto',
+        budget_limit_credits: 100,
+        max_auto_attempts_per_shot: 2,
+        expected_updated_at: '2026-08-05T00:00:00.000Z',
+      },
+    }), conflict);
+    assert.equal(conflict.statusCode, 409);
+    assert.equal(conflict.body.error.code, 'REDRAW_PROJECT_POLICY_CONFLICT');
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_workflow_events').get().count, 0);
+
+    const foreignList = captureResponse();
+    handlers.listProjectEvents(request({ id: projectId, userId: 'user-b' }), foreignList);
+    assert.equal(foreignList.statusCode, 404);
+    assert.equal(foreignList.body.error.code, 'REDRAW_PROJECT_NOT_FOUND');
   } finally {
     db.close();
   }
