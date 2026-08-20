@@ -184,11 +184,22 @@ function normalizeContext(ctx = {}) {
   return { db: ctx.db, tenantId, userId, versionId, storageRoot };
 }
 
+function normalizeSourceKeyValue(value) {
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value);
+  return '';
+}
+
 function sourceCharacterKey(row) {
   const payload = parseJson(row.source_ref_json, {});
   const sourceRef = payload.source_ref || payload.source || {};
-  const normalized = [sourceRef.stable_id, sourceRef.id, sourceRef.source_character_id]
-    .map((value) => String(value ?? '').trim())
+  const normalized = [
+    sourceRef.source_character_key,
+    sourceRef.stable_id,
+    sourceRef.id,
+    sourceRef.source_character_id,
+  ]
+    .map(normalizeSourceKeyValue)
     .find(Boolean) || '';
   if (!normalized) {
     throw codedError('REDRAW_IDENTITY_SOURCE_KEY_REQUIRED', '角色来源缺少稳定身份键');

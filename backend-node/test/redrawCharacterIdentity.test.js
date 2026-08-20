@@ -358,6 +358,48 @@ test('角色键按 stable_id、id、source_character_id 的首个非空值回退
   }
 });
 
+test('v2 本地化物化角色使用 source_ref.source_character_key 保存身份包', () => {
+  const state = setup();
+  try {
+    fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    addProviderAsset(state);
+    const characterId = addCharacter(state, {
+      sourceRef: { kind: 'character', source_character_key: 'character-v2-maya' },
+    });
+
+    const saved = saveIdentityPack(context(state), characterId, completeInput());
+
+    assert.equal(saved.identity_pack.source_character_key, 'character-v2-maya');
+    assert.equal(saved.identity_pack.ready, true);
+  } finally {
+    close(state);
+  }
+});
+
+test('空白或非法 v2 source_character_key 不可绕过且不改库', () => {
+  const state = setup();
+  try {
+    fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    addProviderAsset(state);
+    const cases = [
+      { kind: 'character', source_character_key: ' ', name: 'Maya' },
+      { kind: 'character', source_character_key: { id: 'nested-forged' } },
+    ];
+
+    for (const sourceRef of cases) {
+      const characterId = addCharacter(state, { sourceRef });
+      const before = rowSnapshot(state.db, characterId);
+      assert.throws(
+        () => saveIdentityPack(context(state), characterId, completeInput()),
+        (error) => error.code === 'REDRAW_IDENTITY_SOURCE_KEY_REQUIRED',
+      );
+      assert.deepEqual(rowSnapshot(state.db, characterId), before);
+    }
+  } finally {
+    close(state);
+  }
+});
+
 test('任一必需视图或确认项缺失时身份包均不 ready', () => {
   const cases = [
     ['front', { confirmed_views: ['profile', 'full_body'] }],
