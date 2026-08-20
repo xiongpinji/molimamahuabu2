@@ -14,8 +14,8 @@ const TOAPIS_VIDEO_MODELS = Object.freeze({
     durations: Object.freeze([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
     resolutions: Object.freeze(['480p', '720p']),
     maxReferences: 9,
-    maxVideoReferences: 1,
-    maxAudioReferences: 1,
+    maxVideoReferences: 3,
+    maxAudioReferences: 3,
   }),
   'seedance-2-mini': Object.freeze({
     ...TOAPIS_VIDEO_COMMON_CAPABILITIES,

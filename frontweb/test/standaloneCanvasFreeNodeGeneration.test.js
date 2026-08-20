@@ -144,6 +144,37 @@ test('MiniMax H3 只采用前三张参考图且未采用素材不生成 @图片 
   ])
 })
 
+test('国内 Seedance FAST 和 MINI 按 9 图、3 视频、3 音频能力采用全部参考素材', () => {
+  const references = [
+    ...Array.from({ length: 9 }, (_, index) => ({
+      kind: 'image', url: `/static/image-${index + 1}.png`, ready: true, order: index,
+    })),
+    ...Array.from({ length: 3 }, (_, index) => ({
+      kind: 'video', url: `/static/video-${index + 1}.mp4`, ready: true, order: 9 + index,
+    })),
+    ...Array.from({ length: 3 }, (_, index) => ({
+      kind: 'audio', url: `/static/audio-${index + 1}.mp3`, ready: true, order: 12 + index,
+    })),
+  ]
+  const capability = {
+    declared: true,
+    referenceTypes: ['image', 'video', 'audio'],
+    maxReferences: 9,
+    maxImageReferences: 9,
+    maxVideoReferences: 3,
+    maxAudioReferences: 3,
+    supportsImageReference: true,
+    supportsVideoReference: true,
+    supportsAudioReference: true,
+  }
+
+  for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
+    const planned = planFreeCanvasVideoReferences(capability, 'omni', references)
+    assert.equal(planned.length, 15, model)
+    assert.equal(planned.every(({ enabled }) => enabled), true, model)
+  }
+})
+
 test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数值和状态', () => {
   assert.equal(normalizeFreeCanvasNodeData({ kind: 'scene' }), null)
   assert.deepEqual(normalizeFreeCanvasNodeData({
