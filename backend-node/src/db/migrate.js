@@ -184,6 +184,96 @@ function ensureRedrawWorkDurationConstraint(database) {
   }
 }
 
+const REDRAW_WORK_VERSION_STATUSES = [
+  'draft',
+  'analyzing',
+  'asset_review',
+  'ready_to_generate',
+  'generating',
+  'composing',
+  'completed',
+  'failed',
+  'needs_attention',
+  'needs_review',
+  'blocked',
+];
+
+function rebuildTableFromSql(database, tableName, tempTable, createTempSql) {
+  if (database.inTransaction) {
+    throw new Error(`${tableName} rebuild requires no active transaction`);
+  }
+  if (tableExists(database, tempTable)) {
+    throw new Error(`${tableName} status rebuild temp table already exists`);
+  }
+  if (!createTempSql.startsWith(`CREATE TABLE ${quoteIdent(tempTable)}`)) {
+    throw new Error(`Unsupported ${tableName} DDL for status constraint migration`);
+  }
+
+  const columns = database.prepare(`PRAGMA table_info(${quoteIdent(tableName)})`).all().map((column) => column.name);
+  const columnSql = columns.map(quoteIdent).join(', ');
+  const dependentSql = database.prepare(`
+    SELECT type, name, sql
+    FROM sqlite_master
+    WHERE tbl_name = ?
+      AND type IN ('index', 'trigger')
+      AND sql IS NOT NULL
+    ORDER BY type, name
+  `).all(tableName);
+  const foreignKeysEnabled = database.pragma('foreign_keys', { simple: true }) ? 1 : 0;
+
+  try {
+    database.pragma('foreign_keys = OFF');
+    database.exec('BEGIN');
+    database.exec(createTempSql);
+    database.exec(`
+      INSERT INTO ${quoteIdent(tempTable)} (${columnSql})
+      SELECT ${columnSql} FROM ${quoteIdent(tableName)}
+    `);
+    database.exec(`DROP TABLE ${quoteIdent(tableName)}`);
+    database.exec(`ALTER TABLE ${quoteIdent(tempTable)} RENAME TO ${quoteIdent(tableName)}`);
+    for (const item of dependentSql) {
+      database.exec(item.sql);
+    }
+    database.exec('COMMIT');
+  } catch (error) {
+    try {
+      database.exec('ROLLBACK');
+    } catch (_) {}
+    throw error;
+  } finally {
+    database.pragma(`foreign_keys = ${foreignKeysEnabled ? 'ON' : 'OFF'}`);
+  }
+}
+
+function ensureRedrawStatusConstraint(database, tableName) {
+  if (!tableExists(database, tableName)) return;
+  const table = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(tableName);
+  const sql = table?.sql || '';
+  if (/\bneeds_review\b/i.test(sql) && /\bblocked\b/i.test(sql)) return;
+
+  const statusCheck = /status\s+TEXT\s+NOT\s+NULL\s+DEFAULT\s+'draft'\s+CHECK\s*\(\s*status\s+IN\s*\(([^)]*)\)\s*\)/i;
+  if (!statusCheck.test(sql)) return;
+  const tempTable = `__${tableName}_status_rebuild`;
+  const nextStatusSql = `status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN (${REDRAW_WORK_VERSION_STATUSES.map((status) => `'${status}'`).join(', ')}))`;
+  const createTempSql = sql
+    .replace(
+      new RegExp(`^CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(?:"${tableName}"|\`${tableName}\`|\\[${tableName}\\]|${tableName})\\s*\\(`, 'i'),
+      `CREATE TABLE ${quoteIdent(tempTable)} (`,
+    )
+    .replace(statusCheck, nextStatusSql);
+  if (createTempSql === sql) {
+    throw new Error(`Unsupported ${tableName} DDL for status constraint migration`);
+  }
+  rebuildTableFromSql(database, tableName, tempTable, createTempSql);
+}
+
+function ensureRedrawWorkflowStatusConstraints(database) {
+  ensureRedrawStatusConstraint(database, 'redraw_works');
+  ensureRedrawStatusConstraint(database, 'redraw_versions');
+}
+
 function ensureRedrawWorkSourceIndex(database) {
   if (!tableExists(database, 'redraw_works')) return;
   database.transaction(() => {
@@ -1096,6 +1186,7 @@ function runMigrationsAndEnsure(database) {
   ensureAllColumns(database);
   ensureRedrawCompatibility(database);
   ensureRedrawWorkDurationConstraint(database);
+  ensureRedrawWorkflowStatusConstraints(database);
   ensureRedrawWorkSourceIndex(database);
 }
 

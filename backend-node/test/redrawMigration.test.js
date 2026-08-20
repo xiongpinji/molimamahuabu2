@@ -61,6 +61,10 @@ function schemaSnapshot(db) {
   `).all();
 }
 
+function tableSql(db, table) {
+  return db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table).sql;
+}
+
 function insertProject(db, tenantId = 'tenant-a', userId = 'user-a') {
   return db.prepare(`
     INSERT INTO redraw_projects
@@ -194,6 +198,152 @@ test('旧的不完整 redraw_projects 表可在迁移前补齐 owner 索引依�
   assert.ok(columnNames(db, 'redraw_projects').includes('user_id'));
   assert.ok(columnNames(db, 'redraw_projects').includes('updated_at'));
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_redraw_projects_owner'").get());
+});
+
+test('新库转绘作品和版本状态 CHECK 支持本地化审核与阻断状态', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const projectId = insertProject(db);
+  const reviewWorkId = insertWork(db, projectId, {
+    source_fingerprint: 'fingerprint-review',
+    status: 'needs_review',
+  });
+  assert.equal(
+    db.prepare('SELECT status FROM redraw_works WHERE id = ?').get(reviewWorkId).status,
+    'needs_review',
+  );
+  const blockedVersionId = insertVersion(db, reviewWorkId, 1, {
+    status: 'blocked',
+  });
+  assert.equal(
+    db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(blockedVersionId).status,
+    'blocked',
+  );
+
+  assert.throws(() => insertWork(db, projectId, {
+    source_fingerprint: 'fingerprint-invalid-work',
+    status: 'manual_review',
+  }), /CHECK/);
+  assert.throws(() => insertVersion(db, reviewWorkId, 2, {
+    status: 'manual_review',
+  }), /CHECK/);
+});
+
+test('旧库 redraw_works/redraw_versions 状态 CHECK 可升级并保留数据索引外键 owner 字段', () => {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  db.exec(`
+    CREATE TABLE redraw_projects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT,
+      title TEXT,
+      created_at TEXT,
+      updated_at TEXT
+    );
+    CREATE TABLE redraw_works (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      source_asset_id INTEGER NOT NULL,
+      source_fingerprint TEXT NOT NULL,
+      duration_ms INTEGER NOT NULL CHECK (duration_ms BETWEEN 12000 AND 3600000),
+      current_version INTEGER NOT NULL DEFAULT 0 CHECK (current_version >= 0),
+      current_step INTEGER NOT NULL DEFAULT 1 CHECK (current_step BETWEEN 1 AND 4),
+      status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'analyzing', 'asset_review', 'ready_to_generate', 'generating', 'composing', 'completed', 'failed', 'needs_attention')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      FOREIGN KEY(project_id) REFERENCES redraw_projects(id)
+    );
+    CREATE TABLE redraw_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      work_id INTEGER NOT NULL,
+      tenant_id TEXT,
+      user_id TEXT,
+      version INTEGER NOT NULL CHECK (version > 0),
+      locale TEXT NOT NULL,
+      market TEXT NOT NULL DEFAULT '',
+      localization_level TEXT NOT NULL DEFAULT 'faithful',
+      style_snapshot_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'analyzing', 'asset_review', 'ready_to_generate', 'generating', 'composing', 'completed', 'failed', 'needs_attention')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      FOREIGN KEY(work_id) REFERENCES redraw_works(id)
+    );
+    CREATE INDEX idx_redraw_work_owner_legacy ON redraw_works(tenant_id, user_id, updated_at DESC);
+    CREATE UNIQUE INDEX uq_redraw_version_number ON redraw_versions(work_id, version);
+    CREATE TABLE redraw_version_notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version_id INTEGER NOT NULL,
+      note TEXT,
+      FOREIGN KEY(version_id) REFERENCES redraw_versions(id)
+    );
+    INSERT INTO redraw_projects
+      (tenant_id, user_id, title, created_at, updated_at)
+    VALUES ('tenant-a', 'user-a', 'legacy project', '${NOW}', '${NOW}');
+    INSERT INTO redraw_works
+      (project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint,
+       duration_ms, current_version, current_step, status, created_at, updated_at, deleted_at)
+    VALUES
+      (1, 'tenant-a', 'user-a', 'legacy work', 101, 'legacy-fingerprint',
+       12000, 1, 1, 'asset_review', '${NOW}', '${NOW}', NULL);
+    INSERT INTO redraw_versions
+      (work_id, tenant_id, user_id, version, locale, market, localization_level, style_snapshot_json,
+       status, created_at, updated_at, deleted_at)
+    VALUES
+      (1, 'tenant-a', 'user-a', 1, 'source', '', 'faithful', '{}',
+       'asset_review', '${NOW}', '${NOW}', NULL);
+    INSERT INTO redraw_version_notes (version_id, note) VALUES (1, 'keep child fk');
+  `);
+
+  assert.throws(() => db.prepare("UPDATE redraw_works SET status = 'needs_review' WHERE id = 1").run(), /CHECK/);
+  assert.throws(() => db.prepare("UPDATE redraw_versions SET status = 'blocked' WHERE id = 1").run(), /CHECK/);
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+
+  assert.match(tableSql(db, 'redraw_works'), /needs_review/);
+  assert.match(tableSql(db, 'redraw_versions'), /blocked/);
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_redraw_work_owner_legacy'").get());
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'uq_redraw_version_number'").get());
+  assert.deepEqual(
+    db.prepare('SELECT tenant_id, user_id FROM redraw_works WHERE id = 1').get(),
+    { tenant_id: 'tenant-a', user_id: 'user-a' },
+  );
+  assert.equal(db.prepare('SELECT note FROM redraw_version_notes WHERE version_id = 1').get().note, 'keep child fk');
+  assert.doesNotThrow(() => db.prepare("UPDATE redraw_works SET status = 'needs_review' WHERE id = 1").run());
+  assert.doesNotThrow(() => db.prepare("UPDATE redraw_versions SET status = 'blocked' WHERE id = 1").run());
+  assert.throws(() => db.prepare("UPDATE redraw_works SET status = 'manual_review' WHERE id = 1").run(), /CHECK/);
+  assert.throws(() => db.prepare("UPDATE redraw_versions SET status = 'manual_review' WHERE id = 1").run(), /CHECK/);
+});
+
+test('旧库状态 CHECK 升级遇到固定临时表碰撞会 fail closed 且无部分写入', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_works (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'asset_review'))
+    );
+    CREATE TABLE __redraw_works_status_rebuild (
+      id INTEGER PRIMARY KEY,
+      marker TEXT NOT NULL
+    );
+    INSERT INTO redraw_works (status) VALUES ('asset_review');
+    INSERT INTO __redraw_works_status_rebuild (id, marker) VALUES (1, 'do not drop');
+  `);
+  assert.throws(() => runMigrationsAndEnsure(db), /redraw_works status rebuild temp table already exists/);
+  assert.equal(
+    db.prepare('SELECT marker FROM __redraw_works_status_rebuild WHERE id = 1').get().marker,
+    'do not drop',
+  );
+  assert.match(tableSql(db, 'redraw_works'), /status TEXT NOT NULL DEFAULT 'draft' CHECK \(status IN \('draft', 'asset_review'\)\)/);
+  assert.doesNotMatch(tableSql(db, 'redraw_works'), /needs_review|blocked/);
+  assert.throws(() => db.prepare("UPDATE redraw_works SET status = 'needs_review' WHERE id = 1").run(), /CHECK/);
 });
 
 test('通用转绘项目保存 A/B、预算、尝试上限和追加式事件', () => {

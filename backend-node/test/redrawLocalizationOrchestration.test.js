@@ -175,7 +175,7 @@ function createDb(options = {}) {
       user_id TEXT NOT NULL,
       current_version INTEGER NOT NULL DEFAULT 0,
       current_step INTEGER NOT NULL DEFAULT 1,
-      status TEXT NOT NULL DEFAULT 'fact_confirmed',
+      status TEXT NOT NULL DEFAULT 'fact_confirmed' CHECK (status IN ('draft', 'fact_confirmed', 'analyzing', 'asset_review', 'ready_to_generate', 'generating', 'composing', 'completed', 'failed', 'needs_attention', 'needs_review', 'blocked')),
       task_id TEXT,
       updated_at TEXT
     );
@@ -200,7 +200,7 @@ function createDb(options = {}) {
       localization_idempotency_key TEXT,
       localization_model_snapshot_json TEXT NOT NULL DEFAULT '{}',
       facts_hash TEXT,
-      status TEXT NOT NULL DEFAULT 'draft',
+      status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'analyzing', 'asset_review', 'ready_to_generate', 'generating', 'composing', 'completed', 'failed', 'needs_attention', 'needs_review', 'blocked')),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT
@@ -691,7 +691,12 @@ test('v2 localization safe or low confidence stops at needs_review without asset
       current_step: 1,
       status: 'needs_review',
     }, item.name);
+    assert.equal(item.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(started.draft_version_id).status, 'needs_review', item.name);
     assert.equal(item.db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_asset_batch'").get().count, 0, item.name);
+    assert.deepEqual(item.db.prepare('SELECT reason_code, to_state FROM redraw_workflow_events ORDER BY id DESC LIMIT 1').get(), {
+      reason_code: 'localization_completed',
+      to_state: 'needs_review',
+    }, item.name);
     item.db.close();
   }
 });
@@ -761,7 +766,12 @@ test('v2 localization blocks when thresholds are missing or policy and budget dr
       current_step: 1,
       status: 'blocked',
     }, item.name);
+    assert.equal(item.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(started.draft_version_id).status, 'blocked', item.name);
     assert.equal(item.db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_asset_batch'").get().count, 0, item.name);
+    assert.deepEqual(item.db.prepare('SELECT reason_code, to_state FROM redraw_workflow_events ORDER BY id DESC LIMIT 1').get(), {
+      reason_code: 'localization_completed',
+      to_state: 'blocked',
+    }, item.name);
     item.db.close();
   }
 });
