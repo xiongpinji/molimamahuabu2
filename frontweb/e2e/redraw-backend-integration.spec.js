@@ -1167,13 +1167,6 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     ORDER BY id DESC
   `).all(versionId)
   expect(voiceRows).toHaveLength(sourceFacts.characters.length)
-  for (const voiceRow of voiceRows) {
-    const voiceSource = JSON.parse(voiceRow.source_ref_json)
-    voiceSource.source_ref.voice_id = 'fixture-voice'
-    voiceSource.source_ref.is_cloned = false
-    database.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?')
-      .run(JSON.stringify(voiceSource), voiceRow.id)
-  }
   await page.reload()
   await expect(page.getByRole('heading', { name: '确认本地化资产后再进入批量转绘' })).toBeVisible()
   await expect(page.getByText(`${expectedAssetCount} 项资产`)).toBeVisible()

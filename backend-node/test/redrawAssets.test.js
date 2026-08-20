@@ -136,7 +136,7 @@ function voiceInput(state, sourceRef) {
   };
 }
 
-function voiceResult(assetId, providerTaskId = 'provider-voice-1') {
+function voiceResult(assetId, providerTaskId = 'provider-voice-1', voiceEvidenceOverrides = {}) {
   return {
     status: 'completed',
     provider_task_id: providerTaskId,
@@ -169,6 +169,7 @@ function voiceResult(assetId, providerTaskId = 'provider-voice-1') {
       detected_locale: 'en-US',
       is_cloned: false,
       authorization_asset_id: null,
+      ...voiceEvidenceOverrides,
     },
   };
 }
@@ -643,6 +644,90 @@ test('finalizeAssetAttempt 按资产类型写入 voice 与 clean plate 目标字
   assert.equal(scene.asset_id, null);
   assert.equal(scene.status, 'needs_attention');
   assert.equal(scene.review_status, 'needs_review');
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('finalizeAssetAttempt allows provider-generated voice evidence without preselected voice id', () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-provider-voice-'));
+  fs.writeFileSync(path.join(root, 'voice.mp3'), 'voice');
+  addTypedAsset(state.db, 511, 'voice.mp3', 'audio', 'audio/mpeg', 3.2);
+  const ctx = context(state, root);
+  addDraftPlaceholder(state.db, state, {
+    kind: 'voice',
+    sourceRef: { id: 'v-provider-generated', is_cloned: false },
+  });
+  const voiceAttempt = createAssetAttempt(ctx, voiceInput(state, {
+    id: 'v-provider-generated',
+    is_cloned: false,
+  }));
+
+  const voice = finalizeAssetAttempt(ctx, voiceAttempt.id, voiceResult(511));
+
+  assert.equal(voice.voice_asset_id, 511);
+  assert.equal(voice.status, 'generated');
+  const sourcePayload = JSON.parse(state.db.prepare('SELECT source_ref_json FROM redraw_assets WHERE id = ?')
+    .get(voiceAttempt.id).source_ref_json);
+  assert.equal(sourcePayload.snapshot.voice_evidence.voice_id, 'fixture-voice');
+  assert.equal(credits.getReservation(state.db, voice.credit_reservation_id).status, 'confirmed');
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('finalizeAssetAttempt rejects provider voice id that differs from explicit expected voice id', () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-voice-mismatch-'));
+  fs.writeFileSync(path.join(root, 'voice.mp3'), 'voice');
+  addTypedAsset(state.db, 512, 'voice.mp3', 'audio', 'audio/mpeg', 3.2);
+  const ctx = context(state, root);
+  addDraftPlaceholder(state.db, state, {
+    kind: 'voice',
+    sourceRef: { id: 'v-expected', voice_id: 'expected-voice', is_cloned: false },
+  });
+  const voiceAttempt = createAssetAttempt(ctx, voiceInput(state, {
+    id: 'v-expected',
+    voice_id: 'expected-voice',
+    is_cloned: false,
+  }));
+
+  const voice = finalizeAssetAttempt(ctx, voiceAttempt.id, voiceResult(512));
+
+  assert.equal(voice.status, 'needs_attention');
+  const row = state.db.prepare('SELECT error_code, voice_asset_id, credit_reservation_id FROM redraw_assets WHERE id = ?')
+    .get(voiceAttempt.id);
+  assert.equal(row.error_code, 'REDRAW_VOICE_EVIDENCE_INCOMPLETE');
+  assert.equal(row.voice_asset_id, 512);
+  assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'held');
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('finalizeAssetAttempt rejects provider-generated voice evidence with empty voice id', () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-empty-voice-'));
+  fs.writeFileSync(path.join(root, 'voice.mp3'), 'voice');
+  addTypedAsset(state.db, 513, 'voice.mp3', 'audio', 'audio/mpeg', 3.2);
+  const ctx = context(state, root);
+  addDraftPlaceholder(state.db, state, {
+    kind: 'voice',
+    sourceRef: { id: 'v-empty', is_cloned: false },
+  });
+  const voiceAttempt = createAssetAttempt(ctx, voiceInput(state, {
+    id: 'v-empty',
+    is_cloned: false,
+  }));
+
+  const voice = finalizeAssetAttempt(ctx, voiceAttempt.id, voiceResult(513, 'provider-voice-empty', {
+    voice_id: '',
+  }));
+
+  assert.equal(voice.status, 'needs_attention');
+  const row = state.db.prepare('SELECT error_code, voice_asset_id, credit_reservation_id FROM redraw_assets WHERE id = ?')
+    .get(voiceAttempt.id);
+  assert.equal(row.error_code, 'REDRAW_VOICE_EVIDENCE_INCOMPLETE');
+  assert.equal(row.voice_asset_id, 513);
+  assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'held');
   fs.rmSync(root, { recursive: true, force: true });
   state.db.close();
 });

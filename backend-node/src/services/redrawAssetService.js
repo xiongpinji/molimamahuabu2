@@ -716,7 +716,7 @@ function verifiedVoiceEvidence(ctx, attempt, asset, providerResult, terminalStat
     || !configUpdatedAt
     || (Number.isSafeInteger(expectedConfigId) && expectedConfigId > 0
       && (aiServiceConfigId !== expectedConfigId || configUpdatedAt !== expectedConfigUpdatedAt))
-    || !voiceId || !expectedVoiceId || voiceId !== expectedVoiceId
+    || !voiceId || (expectedVoiceId && voiceId !== expectedVoiceId)
     || !providerTaskId || rawTaskId !== providerTaskId
     || !completedProviderStatus(terminalStatus) || !completedProviderStatus(rawStatus)
     || raw.real_generation_verified !== true || raw.language_verified !== true
