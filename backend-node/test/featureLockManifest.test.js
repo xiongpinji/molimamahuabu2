@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -18,6 +19,89 @@ const {
   verifyFeatureLock,
 } = require('../scripts/verify-feature-lock-manifest');
 
+const PROACTIVE_CANARY_FEATURE_ID = 'stability.proactive-canary-and-public-evidence';
+const PROACTIVE_CANARY_ACCEPTANCE = [
+  '公开线路只有匹配的新鲜真实证据才能进入严格候选',
+  '巡检预算日月原子受限且未知结果保留占用',
+  '巡检不污染用户资产、生成记录和积分',
+  '管理员可见线路证据预算，普通用户不泄露供应商与成本',
+];
+const PROACTIVE_CANARY_CORE_PATHS = [
+  'backend-node/migrations/60_provider_canary_guard.sql',
+  'backend-node/migrations/61_provider_canary_reconcile_claim.sql',
+  'backend-node/migrations/62_provider_canary_admin_pagination.sql',
+  'backend-node/migrations/63_provider_route_costs.sql',
+  'backend-node/scripts/split-multi-model-provider-configs.js',
+  'backend-node/scripts/verify-feature-lock-manifest.js',
+  'backend-node/src/app.js',
+  'backend-node/src/middleware/resourceOwnership.js',
+  'backend-node/src/routes/index.js',
+  'backend-node/src/routes/providerStability.js',
+  'backend-node/src/services/aiClient.js',
+  'backend-node/src/services/aiConfigService.js',
+  'backend-node/src/services/canvasModelCatalogService.js',
+  'backend-node/src/services/generationCostLedgerService.js',
+  'backend-node/src/services/generationUsageContext.js',
+  'backend-node/src/services/imageClient.js',
+  'backend-node/src/services/imageService.js',
+  'backend-node/src/services/modelPriceService.js',
+  'backend-node/src/services/providerCanaryArtifactService.js',
+  'backend-node/src/services/providerCanaryBudgetService.js',
+  'backend-node/src/services/providerCanaryEvidenceService.js',
+  'backend-node/src/services/providerCanaryExecutor.js',
+  'backend-node/src/services/providerCanaryFixtureService.js',
+  'backend-node/src/services/providerCanarySchedulerService.js',
+  'backend-node/src/services/providerRouteCostService.js',
+  'backend-node/src/services/providerRouteStabilityService.js',
+  'backend-node/src/services/providerRuntimeFingerprintService.js',
+  'backend-node/src/services/text-generation-billing-service.js',
+  'backend-node/src/services/videoClient.js',
+  'backend-node/src/services/videoService.js',
+  '.github/workflows/platform-zero-cost-smoke.yml',
+  'frontweb/scripts/run-platform-zero-cost-smoke.mjs',
+  'frontweb/src/api/providerStability.js',
+  'frontweb/src/components/ProviderStabilityPanel.vue',
+];
+const PROACTIVE_CANARY_REQUIRED_TESTS = [
+  'backend-node/test/aiConfigPublicView.test.js',
+  'backend-node/test/appBackgroundServices.test.js',
+  'backend-node/test/canvasModelCatalogService.test.js',
+  'backend-node/test/generationCostLedger.test.js',
+  'backend-node/test/generationRouteCostLedger.test.js',
+  'backend-node/test/imageBilling.test.js',
+  'backend-node/test/modelPrice.test.js',
+  'backend-node/test/openAIImageOutput.test.js',
+  'backend-node/test/providerAssetSignedAccess.test.js',
+  'backend-node/test/providerCanaryAdminRoutes.test.js',
+  'backend-node/test/providerCanaryArtifacts.test.js',
+  'backend-node/test/providerCanaryBudget.test.js',
+  'backend-node/test/providerCanaryEvidence.test.js',
+  'backend-node/test/providerCanaryExecutor.test.js',
+  'backend-node/test/providerCanaryFixtures.test.js',
+  'backend-node/test/providerCanaryInvalidation.test.js',
+  'backend-node/test/providerCanaryPublicGate.test.js',
+  'backend-node/test/providerCanaryScheduler.test.js',
+  'backend-node/test/providerCanaryTextConfig.test.js',
+  'backend-node/test/providerReconciliation.test.js',
+  'backend-node/test/providerRouteAdminRoutes.test.js',
+  'backend-node/test/providerRouteCost.test.js',
+  'backend-node/test/providerRouteImageIntegration.test.js',
+  'backend-node/test/providerRouteSchema.test.js',
+  'backend-node/test/providerRouteStability.test.js',
+  'backend-node/test/providerRouteTextIntegration.test.js',
+  'backend-node/test/providerRouteVideoIntegration.test.js',
+  'backend-node/test/providerRuntimeFingerprint.test.js',
+  'backend-node/test/splitMultiModelProviderConfigs.test.js',
+  'backend-node/test/text-generation-billing.test.js',
+  'backend-node/test/videoBilling.test.js',
+  'backend-node/test/videoQueryTaskStatusOnce.test.js',
+  'frontweb/e2e/platform-zero-cost-smoke.spec.js',
+  'frontweb/e2e/provider-stability-admin.spec.js',
+  'frontweb/test/platformZeroCostSmokeContract.test.js',
+  'frontweb/test/providerRouteCostAdmin.test.js',
+  'frontweb/test/providerStabilityAdmin.test.js',
+];
+
 test('共享稳定性锁定清单引用的保护路径、测试和证据全部存在', () => {
   const report = loadAndVerifyCurrentManifest({ repoRoot, manifestPath, baseManifest: null, changedPaths: [] });
   assert.equal(report.ready, true);
@@ -27,6 +111,65 @@ test('共享稳定性锁定清单引用的保护路径、测试和证据全部�
   assert.equal(manifest.features.every((feature) => feature.module === 'shared'), true);
   assert.equal(manifest.features.some((feature) => /canvas|factory|script-analysis/.test(feature.featureId)), false);
   assert.equal(manifest.features.every((feature) => feature.status === 'locked_fixed'), true);
+});
+
+test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件与测试', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
+  assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
+  assert.deepEqual(feature.acceptance, PROACTIVE_CANARY_ACCEPTANCE);
+  for (const protectedPath of PROACTIVE_CANARY_CORE_PATHS) {
+    assert.ok(feature.protectedPaths.includes(protectedPath), `功能锁缺少保护路径: ${protectedPath}`);
+  }
+  for (const testPath of PROACTIVE_CANARY_REQUIRED_TESTS) {
+    assert.ok(feature.requiredTests.includes(testPath), `功能锁缺少影响测试: ${testPath}`);
+  }
+});
+
+test('本轮触及的稳定性锁使用同一批准原因且保留历史证据', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  assert.equal(manifest.features.length >= 5, true);
+  for (const feature of manifest.features) {
+    assert.equal(feature.unlock?.reason, '2026-08-20 线路成本分离与多模型配置拆分本地 TDD 授权');
+    assert.match(feature.unlock?.approvedBy || '', /product-owner/);
+    assert.equal(feature.evidence.length > 0, true);
+  }
+});
+
+test('显式 --base 拒绝不存在的 Git 引用且不能静默按零变更放行', () => {
+  const result = spawnSync(process.execPath, [
+    path.join(repoRoot, 'backend-node', 'scripts', 'verify-feature-lock-manifest.js'),
+    '--base',
+    'refs/heads/feature-lock-base-does-not-exist',
+  ], { cwd: repoRoot, encoding: 'utf8' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /INVALID_BASE_REF/);
+  assert.doesNotMatch(result.stdout, /"ready":true/);
+});
+
+test('显式 --base 存在但基线清单不可读时拒绝放行', () => {
+  const result = spawnSync(process.execPath, [
+    path.join(repoRoot, 'backend-node', 'scripts', 'verify-feature-lock-manifest.js'),
+    '--base',
+    'HEAD:backend-node/package.json',
+  ], { cwd: repoRoot, encoding: 'utf8' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /BASE_MANIFEST_UNAVAILABLE/);
+  assert.doesNotMatch(result.stdout, /"ready":true/);
+});
+
+test('显式 --base 有效且包含基线清单时执行真实差异审计', () => {
+  const result = spawnSync(process.execPath, [
+    path.join(repoRoot, 'backend-node', 'scripts', 'verify-feature-lock-manifest.js'),
+    '--base',
+    'HEAD^',
+  ], { cwd: repoRoot, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.ready, true);
+  assert.equal(report.baseRef, 'HEAD^');
+  assert.equal(report.changedPaths > 0, true);
+  assert.equal(report.protectedFeaturesFromBase > 0, true);
 });
 
 test('锁定保护路径发生变化时必须提供原因、批准者和影响测试', () => {

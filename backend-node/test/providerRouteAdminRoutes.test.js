@@ -9,6 +9,8 @@ const Database = require('better-sqlite3');
 const { setupRouter } = require('../src/routes');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const userAuth = require('../src/services/userAuthService');
+const evidenceService = require('../src/services/providerCanaryEvidenceService');
+const routeCosts = require('../src/services/providerRouteCostService');
 
 const JWT_SECRET = 'provider-stability-jwt-secret-value-123456';
 const ADMIN_TOKEN = 'provider-stability-admin-token-value-123456';
@@ -38,7 +40,11 @@ async function request(baseUrl, endpoint, { method = 'GET', token, body } = {}) 
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();
-  return { status: response.status, body: text ? JSON.parse(text) : null };
+  let parsed = null;
+  if (text) {
+    try { parsed = JSON.parse(text); } catch (_) { parsed = text; }
+  }
+  return { status: response.status, body: parsed };
 }
 
 async function setup() {
@@ -71,6 +77,19 @@ async function setup() {
     VALUES ('warning', 'route_switched', 'logical-image', ?, ?,
       '{"category":"provider_unavailable","state":"switching"}', ?)`)
     .run(configId, configId, '2026-08-14T23:59:00.000Z');
+  db.prepare(`INSERT INTO provider_stability_events
+    (severity, event_type, logical_model_id, config_id, safe_details, created_at)
+    VALUES ('error', 'logical_model_unavailable', 'logical-image', ?, '{}', ?),
+           ('info', 'provider_recovered', 'logical-image', ?, '{}', ?),
+           ('P1', 'legacy_provider_alert', 'logical-image', ?, '{}', ?)`)
+    .run(
+      configId,
+      '2026-08-14T23:58:00.000Z',
+      configId,
+      '2026-08-14T23:57:00.000Z',
+      configId,
+      '2026-08-14T23:56:00.000Z',
+    );
 
   const previous = {
     PUBLIC_PLATFORM_MODE: process.env.PUBLIC_PLATFORM_MODE,
@@ -109,6 +128,8 @@ test('供应商稳定性接口仅管理员和财务管理权限可访问', async
   for (const endpoint of [
     '/admin/provider-stability/routes',
     '/admin/provider-stability/events',
+    '/admin/provider-stability/canary/summary',
+    '/admin/provider-stability/canary/runs',
   ]) {
     assert.equal((await request(context.baseUrl, endpoint)).status, 401);
     assert.equal((await request(context.baseUrl, endpoint, { token: context.plainToken })).status, 403);
@@ -137,14 +158,41 @@ test('管理员列表只返回安全中转关联、健康和任务积分摘要',
   });
   assert.equal(events.status, 200);
   assert.equal(events.body.data[0].event_type, 'provider_failure');
+  assert.deepEqual(events.body.data.map((event) => event.alert_level), [
+    'P0', 'P2', 'P1', 'P3', 'P1',
+  ]);
+  assert.deepEqual(events.body.data.map((event) => event.severity), [
+    'critical', 'warning', 'error', 'info', 'error',
+  ]);
   assert.equal(JSON.stringify(events.body).includes('sk-never-return-this'), false);
   assert.equal(JSON.stringify(events.body).includes('signed.example'), false);
   assert.equal(JSON.stringify(events.body).includes('prompt text'), false);
 });
 
-test('稳定性配置只允许逻辑模型、容灾、优先级和管理员暂停字段', async (t) => {
+test('线路 PATCH 保留原四字段并增量支持 canary_paused，恢复巡检不激活线路或伪造 fresh', async (t) => {
   const context = await setup();
   t.after(() => context.close());
+  const capability = evidenceService.normalizeCapability('image', { count: 1 });
+  const capabilityFingerprint = evidenceService.capabilityFingerprint('image', capability);
+  context.db.prepare(`INSERT INTO provider_canary_runs
+    (id, idempotency_key, config_id, logical_model_id, service_type,
+     capability_fingerprint, config_fingerprint, cost_fingerprint,
+     runtime_fingerprint, provider_scope_key, state, reserved_cost_micros,
+     actual_cost_micros, currency, budget_day, budget_month, created_at,
+     finished_at, updated_at)
+    VALUES ('pause-run', 'pause-idem', ?, 'logical-image', 'image', ?,
+      'cfg-hash', 'cost-hash', 'runtime-hash', 'scope-hash', 'succeeded',
+      1, 1, 'CNY', '2026-08-15', '2026-08', ?, ?, ?)`)
+    .run(context.configId, capabilityFingerprint,
+      '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z');
+  context.db.prepare(`INSERT INTO provider_canary_evidence
+    (config_id, service_type, capability_fingerprint, capability_json, state,
+     run_id, config_fingerprint, cost_fingerprint, runtime_fingerprint,
+     verified_at, expires_at, created_at, updated_at)
+    VALUES (?, 'image', ?, ?, 'fresh', 'pause-run', 'cfg-hash', 'cost-hash',
+      'runtime-hash', ?, '2026-08-17T00:00:00.000Z', ?, ?)`)
+    .run(context.configId, capabilityFingerprint, JSON.stringify(capability),
+      '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z');
   const rejected = await request(
     context.baseUrl,
     `/admin/provider-stability/routes/${context.configId}`,
@@ -155,8 +203,18 @@ test('稳定性配置只允许逻辑模型、容灾、优先级和管理员暂�
     },
   );
   assert.equal(rejected.status, 400);
+  assert.equal((await request(
+    context.baseUrl,
+    `/admin/provider-stability/routes/${context.configId}`,
+    { method: 'PATCH', body: { canary_paused: true } },
+  )).status, 401);
+  assert.equal((await request(
+    context.baseUrl,
+    `/admin/provider-stability/routes/${context.configId}`,
+    { method: 'PATCH', token: context.plainToken, body: { canary_paused: true } },
+  )).status, 403);
 
-  const updated = await request(
+  const paused = await request(
     context.baseUrl,
     `/admin/provider-stability/routes/${context.configId}`,
     {
@@ -167,18 +225,70 @@ test('稳定性配置只允许逻辑模型、容灾、优先级和管理员暂�
         failover_enabled: false,
         priority: 25,
         admin_paused: true,
+        canary_paused: true,
       },
     },
   );
-  assert.equal(updated.status, 200);
-  assert.equal(updated.body.data.logical_model_id, 'logical-image-v2');
-  assert.equal(updated.body.data.failover_enabled, false);
-  assert.equal(updated.body.data.admin_paused, true);
-  const stored = context.db.prepare(`SELECT base_url, verification_status, is_active
+  assert.equal(paused.status, 200);
+  assert.equal(paused.body.data.logical_model_id, 'logical-image-v2');
+  assert.equal(paused.body.data.failover_enabled, false);
+  assert.equal(paused.body.data.priority, 25);
+  assert.equal(paused.body.data.admin_paused, true);
+  assert.equal(paused.body.data.canary_paused, true);
+  const resumed = await request(
+    context.baseUrl,
+    `/admin/provider-stability/routes/${context.configId}`,
+    { method: 'PATCH', token: context.adminToken, body: { canary_paused: false } },
+  );
+  assert.equal(resumed.status, 200);
+  assert.equal(resumed.body.data.admin_paused, true);
+  assert.equal(resumed.body.data.canary_paused, false);
+  const stored = context.db.prepare(`SELECT base_url, verification_status, is_active, canary_paused,
+      logical_model_id, failover_enabled, priority
     FROM ai_service_configs WHERE id = ?`).get(context.configId);
   assert.match(stored.base_url, /relay\.example\.com/);
   assert.equal(stored.verification_status, 'unverified');
   assert.equal(stored.is_active, 0);
+  assert.equal(stored.canary_paused, 0);
+  assert.equal(stored.logical_model_id, 'logical-image-v2');
+  assert.equal(stored.failover_enabled, 0);
+  assert.equal(stored.priority, 25);
+  assert.equal(context.db.prepare(`SELECT state FROM provider_canary_evidence
+    WHERE run_id = 'pause-run'`).get().state, 'never_verified');
+  const auditTypes = context.db.prepare(`SELECT event_type FROM audit_events
+    WHERE user_id = ? ORDER BY created_at`).all('stability-admin').map((row) => row.event_type);
+  assert.deepEqual(auditTypes, [
+    'provider.route.updated',
+    'provider.route.updated',
+  ]);
+});
+
+test('线路 PATCH 与管理员审计处于同一事务，审计失败时配置不落盘', async (t) => {
+  const context = await setup();
+  t.after(() => context.close());
+  context.db.exec(`CREATE TRIGGER reject_provider_route_audit
+    BEFORE INSERT ON audit_events
+    WHEN NEW.event_type = 'provider.route.updated'
+    BEGIN
+      SELECT RAISE(ABORT, 'audit blocked');
+    END`);
+  const before = context.db.prepare(`SELECT priority, logical_model_id, is_active, canary_paused
+    FROM ai_service_configs WHERE id = ?`).get(context.configId);
+  const result = await request(
+    context.baseUrl,
+    `/admin/provider-stability/routes/${context.configId}`,
+    {
+      method: 'PATCH',
+      token: context.adminToken,
+      body: { priority: 9, logical_model_id: 'must-rollback', canary_paused: true },
+    },
+  );
+  assert.equal(result.status, 500);
+  assert.deepEqual(
+    context.db.prepare(`SELECT priority, logical_model_id, is_active, canary_paused
+      FROM ai_service_configs WHERE id = ?`).get(context.configId),
+    before,
+  );
 });
 
 test('健康重置和真实生成验证均写管理员审计且验证不接受客户端自证', async (t) => {
@@ -225,4 +335,129 @@ test('健康重置和真实生成验证均写管理员审计且验证不接受�
     WHERE user_id = ? ORDER BY created_at`).all('stability-admin').map((row) => row.event_type);
   assert.equal(auditTypes.includes('provider.health.reset'), true);
   assert.equal(auditTypes.includes('provider.config.verified'), true);
+});
+
+test('线路成本接口仅管理员可读写并在同一事务失效该线路证据和写审计', async (t) => {
+  const context = await setup();
+  t.after(() => context.close());
+  const endpoint = `/admin/provider-stability/routes/${context.configId}/cost`;
+  assert.equal((await request(context.baseUrl, endpoint)).status, 401);
+  assert.equal((await request(context.baseUrl, endpoint, { token: context.plainToken })).status, 403);
+  const empty = await request(context.baseUrl, endpoint, { token: context.adminToken });
+  assert.equal(empty.status, 200);
+  assert.equal(empty.body.data, null);
+
+  const capability = evidenceService.normalizeCapability('image', { count: 1 });
+  const fingerprint = evidenceService.capabilityFingerprint('image', capability);
+  context.db.prepare(`INSERT INTO provider_canary_evidence
+    (config_id, service_type, capability_fingerprint, capability_json, state,
+     config_fingerprint, cost_fingerprint, runtime_fingerprint, created_at, updated_at)
+    VALUES (?, 'image', ?, ?, 'never_verified', 'cfg', 'cost', 'runtime', ?, ?)`)
+    .run(
+      context.configId,
+      fingerprint,
+      JSON.stringify(capability),
+      '2026-08-15T00:00:00.000Z',
+      '2026-08-15T00:00:00.000Z',
+    );
+
+  const saved = await request(context.baseUrl, endpoint, {
+    method: 'PUT',
+    token: context.adminToken,
+    body: {
+      currency: 'CNY',
+      cost_unit: 'request',
+      micros_per_unit: 46_000,
+      resolution_prices: { '2k': { micros_per_unit: 70_000 } },
+    },
+  });
+  assert.equal(saved.status, 200);
+  assert.deepEqual(saved.body.data, {
+    config_id: context.configId,
+    currency: 'CNY',
+    cost_unit: 'request',
+    micros_per_unit: 46_000,
+    input_cost_micros_per_1k: 0,
+    output_cost_micros_per_1k: 0,
+    resolution_prices: { '2k': { micros_per_unit: 70_000 } },
+    updated_at: saved.body.data.updated_at,
+  });
+  assert.equal((await request(context.baseUrl, endpoint, { token: context.adminToken })).body.data.cost_unit, 'request');
+  assert.deepEqual(
+    context.db.prepare(`SELECT state, invalidation_reason FROM provider_canary_evidence
+      WHERE config_id = ?`).get(context.configId),
+    { state: 'stale', invalidation_reason: 'cost_changed' },
+  );
+  assert.equal(
+    context.db.prepare(`SELECT COUNT(*) AS count FROM audit_events
+      WHERE user_id = 'stability-admin' AND event_type = 'provider.route.cost.updated'`).get().count,
+    1,
+  );
+});
+
+test('线路成本接口拒绝非法和不存在配置且不回显输入', async (t) => {
+  const context = await setup();
+  t.after(() => context.close());
+  const endpoint = `/admin/provider-stability/routes/${context.configId}/cost`;
+  for (const body of [
+    { cost_unit: 'credits', micros_per_unit: 1 },
+    { cost_unit: 'request', micros_per_unit: 0 },
+    { cost_unit: 'request', micros_per_unit: -1 },
+    { cost_unit: 'request', micros_per_unit: Number.MAX_SAFE_INTEGER + 1 },
+    { cost_unit: 'token', input_cost_micros_per_1k: 0, output_cost_micros_per_1k: 0 },
+  ]) {
+    const result = await request(context.baseUrl, endpoint, {
+      method: 'PUT', token: context.adminToken, body,
+    });
+    assert.equal(result.status, 400);
+    assert.equal(JSON.stringify(result.body).includes('credits'), false);
+  }
+  assert.equal((await request(
+    context.baseUrl,
+    '/admin/provider-stability/routes/999999/cost',
+    { token: context.adminToken },
+  )).status, 404);
+  assert.equal((await request(
+    context.baseUrl,
+    '/admin/provider-stability/routes/999999/cost',
+    { method: 'PUT', token: context.adminToken, body: { cost_unit: 'request', micros_per_unit: 1 } },
+  )).status, 404);
+});
+
+test('线路成本更新与审计失败整体回滚', async (t) => {
+  const context = await setup();
+  t.after(() => context.close());
+  routeCosts.setRouteCost(context.db, context.configId, {
+    cost_unit: 'request', micros_per_unit: 46_000,
+  });
+  const capability = evidenceService.normalizeCapability('image', { count: 1 });
+  const fingerprint = evidenceService.capabilityFingerprint('image', capability);
+  context.db.prepare(`INSERT INTO provider_canary_evidence
+    (config_id, service_type, capability_fingerprint, capability_json, state,
+     config_fingerprint, cost_fingerprint, runtime_fingerprint, created_at, updated_at)
+    VALUES (?, 'image', ?, ?, 'never_verified', 'cfg', 'cost', 'runtime', ?, ?)`)
+    .run(
+      context.configId, fingerprint, JSON.stringify(capability),
+      '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z',
+    );
+  context.db.exec(`CREATE TRIGGER reject_route_cost_audit
+    BEFORE INSERT ON audit_events
+    WHEN NEW.event_type = 'provider.route.cost.updated'
+    BEGIN SELECT RAISE(ABORT, 'audit blocked'); END`);
+
+  const result = await request(
+    context.baseUrl,
+    `/admin/provider-stability/routes/${context.configId}/cost`,
+    {
+      method: 'PUT', token: context.adminToken,
+      body: { cost_unit: 'request', micros_per_unit: 99_000 },
+    },
+  );
+  assert.equal(result.status, 500);
+  assert.equal(routeCosts.getRouteCost(context.db, context.configId).micros_per_unit, 46_000);
+  assert.deepEqual(
+    context.db.prepare(`SELECT state, invalidated_at FROM provider_canary_evidence
+      WHERE config_id = ?`).get(context.configId),
+    { state: 'never_verified', invalidated_at: null },
+  );
 });

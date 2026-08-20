@@ -7,6 +7,8 @@ const videoClient = require('../src/services/videoClient');
 const taskService = require('../src/services/taskService');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
+const aiConfig = require('../src/services/aiConfigService');
+const routeCosts = require('../src/services/providerRouteCostService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 const log = { info() {}, warn() {}, error() {} };
@@ -108,7 +110,7 @@ test('USMercari 多图参考入库时不混入首帧字段', () => {
   }
 });
 
-test('视频任务按所选 480P 或 720P 分辨率预扣积分并记录对应成本', () => {
+test('视频任务按所选 480P 或 720P 分辨率预扣积分但创建阶段不猜供应商成本', () => {
   const db = setup();
   prices.set(db, 'seedance 2.0', 3, {
     category: 'video',
@@ -135,11 +137,44 @@ test('视频任务按所选 480P 或 720P 分辨率预扣积分并记录对应�
 
   assert.deepEqual(amounts, [15, 25]);
   assert.deepEqual(
-    db.prepare('SELECT resolution, cost_micros FROM generation_cost_records ORDER BY resolution').all(),
+    db.prepare('SELECT resolution, cost_micros, cost_source FROM generation_cost_records ORDER BY resolution').all(),
     [
-      { resolution: '480p', cost_micros: 250000 },
-      { resolution: '720p', cost_micros: 600000 },
+      { resolution: '480p', cost_micros: 0, cost_source: 'unavailable' },
+      { resolution: '720p', cost_micros: 0, cost_source: 'unavailable' },
     ],
+  );
+  db.close();
+});
+
+test('视频成功按最终 config_id 与分辨率线路成本结算', () => {
+  const db = setup();
+  prices.set(db, 'seedance 2.0', 3, {
+    category: 'video', cost_unit: 'second',
+    resolution_prices: { '720p': { credits: 5, cost_micros_per_second: 1 } },
+  });
+  const config = aiConfig.createConfig(db, log, {
+    service_type: 'video', provider: 'video-cost-route', name: '视频成本线路',
+    base_url: 'https://video-cost.invalid/v1', api_key: 'test-key',
+    model: ['video-upstream'], default_model: 'video-upstream',
+    logical_model_id: 'seedance 2.0', is_active: true,
+  });
+  routeCosts.setRouteCost(db, config.id, {
+    cost_unit: 'second', micros_per_unit: 50_000,
+    resolution_prices: { '720p': { micros_per_unit: 120_000 } },
+  });
+  const created = videoService.create(db, log, {
+    drama_id: 1, storyboard_id: 1, model: 'seedance 2.0',
+    prompt: '线路成本结算', duration: 5, resolution: '720p',
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} });
+  db.prepare('UPDATE video_generations SET config_id = ? WHERE id = ?').run(config.id, created.id);
+  const row = db.prepare('SELECT * FROM video_generations WHERE id = ?').get(created.id);
+
+  videoService.settleVideoCredit(db, log, row, 'completed');
+
+  assert.deepEqual(
+    db.prepare('SELECT config_id, cost_micros, cost_source FROM generation_cost_records WHERE reservation_id = ?')
+      .get(row.credit_reservation_id),
+    { config_id: config.id, cost_micros: 600_000, cost_source: 'provider_route' },
   );
   db.close();
 });

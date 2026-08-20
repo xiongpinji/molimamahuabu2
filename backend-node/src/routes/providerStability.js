@@ -8,6 +8,7 @@ const PATCH_FIELDS = new Set([
   'failover_enabled',
   'priority',
   'admin_paused',
+  'canary_paused',
 ]);
 
 function configId(req, res) {
@@ -55,8 +56,10 @@ function safeConfigSummary(db, config) {
     failover_enabled: config.failover_enabled,
     priority: config.priority,
     admin_paused: !config.is_active,
+    canary_paused: Boolean(config.canary_paused),
     verification_status: config.verification_status,
     verified_at: config.verified_at,
+    route_cost: stability.getRouteCostForAdmin(db, config.id),
     health,
     last_switch_at: lastSwitch?.created_at || null,
   };
@@ -70,7 +73,28 @@ function safeEvent(event) {
       allowedDetails[key] = value;
     }
   }
-  return { ...event, safe_details: allowedDetails };
+  const legacySeverities = {
+    P0: 'critical',
+    P1: 'error',
+    P2: 'warning',
+    P3: 'info',
+  };
+  const severity = legacySeverities[event.severity]
+    || (['critical', 'error', 'warning', 'info'].includes(event.severity)
+      ? event.severity
+      : 'warning');
+  const alertLevels = {
+    critical: 'P0',
+    error: 'P1',
+    warning: 'P2',
+    info: 'P3',
+  };
+  return {
+    ...event,
+    severity,
+    alert_level: alertLevels[severity],
+    safe_details: allowedDetails,
+  };
 }
 
 function safeRouteRequest(db, route) {
@@ -107,7 +131,7 @@ function recordAdminAudit(db, req, eventType, configIdValue, code) {
   });
 }
 
-module.exports = function providerStabilityRoutes(db, log) {
+module.exports = function providerStabilityRoutes(db, log, options = {}) {
   return {
     listRoutes(req, res) {
       const configs = aiConfigService.listConfigs(db)
@@ -126,13 +150,66 @@ module.exports = function providerStabilityRoutes(db, log) {
       }).map(safeEvent));
     },
 
+    getCanarySummary(_req, res) {
+      response.success(res, stability.getCanaryAdminSummary(db));
+    },
+
+    listCanaryRuns(req, res) {
+      const allowedQueryFields = new Set(['state', 'logical_model_id', 'limit', 'before']);
+      if (Object.keys(req.query || {}).some((key) => !allowedQueryFields.has(key))) {
+        return response.badRequest(res, '巡检运行筛选条件无效');
+      }
+      try {
+        response.success(res, stability.listCanaryRuns(db, {
+          state: req.query.state,
+          logicalModelId: req.query.logical_model_id,
+          limit: req.query.limit,
+          before: req.query.before,
+        }));
+      } catch (error) {
+        if (error?.code === 'PROVIDER_CANARY_LIST_INVALID') {
+          return response.badRequest(res, '巡检运行筛选条件无效');
+        }
+        throw error;
+      }
+    },
+
+    async reconcileCanaryRun(req, res) {
+      const body = req.body || {};
+      if (Object.keys(body).length > 0) {
+        return response.badRequest(res, '对账不接受客户端状态、产物或其他字段');
+      }
+      try {
+        const result = await stability.reconcileCanaryRun(db, log, req.params.runId, {
+          actorId: req.user?.id,
+          storageRoot: options.storageRoot,
+        });
+        return response.success(res, result);
+      } catch (error) {
+        if (error?.code === 'PROVIDER_CANARY_RUN_INVALID') {
+          return response.badRequest(res, '巡检运行 ID 无效');
+        }
+        if (error?.code === 'PROVIDER_CANARY_RUN_NOT_FOUND') {
+          return response.notFound(res, '巡检运行不存在');
+        }
+        if (error?.code === 'PROVIDER_CANARY_RUN_NOT_RECONCILABLE') {
+          return response.error(res, 409, error.code, '该巡检运行当前不可对账');
+        }
+        log.error('provider canary reconciliation failed', {
+          run_id: req.params.runId,
+          code: error?.code || 'UNKNOWN',
+        });
+        return response.internalError(res, '巡检对账失败');
+      }
+    },
+
     updateRoute(req, res) {
       const id = configId(req, res);
       if (id == null) return;
       const body = req.body || {};
       const keys = Object.keys(body);
       if (!keys.length || keys.some((key) => !PATCH_FIELDS.has(key))) {
-        return response.badRequest(res, '只允许修改逻辑模型、容灾开关、优先级和管理员暂停状态');
+        return response.badRequest(res, '只允许修改逻辑模型、容灾开关、优先级、管理员暂停和巡检暂停状态');
       }
       const changes = {};
       if (Object.prototype.hasOwnProperty.call(body, 'logical_model_id')) {
@@ -156,10 +233,76 @@ module.exports = function providerStabilityRoutes(db, log) {
         if (typeof body.admin_paused !== 'boolean') return response.badRequest(res, '管理员暂停状态无效');
         changes.is_active = !body.admin_paused;
       }
-      const updated = aiConfigService.updateConfig(db, log, id, changes);
-      if (!updated) return response.notFound(res, '配置不存在');
-      recordAdminAudit(db, req, 'provider.route.updated', id);
-      response.success(res, safeConfigSummary(db, updated));
+      if (Object.prototype.hasOwnProperty.call(body, 'canary_paused')) {
+        if (typeof body.canary_paused !== 'boolean') return response.badRequest(res, '巡检暂停状态无效');
+        changes.canary_paused = body.canary_paused;
+      }
+      try {
+        const updated = db.transaction(() => {
+          const result = aiConfigService.updateConfig(db, log, id, changes);
+          if (!result) return null;
+          recordAdminAudit(db, req, 'provider.route.updated', id);
+          return result;
+        }).immediate();
+        if (!updated) return response.notFound(res, '配置不存在');
+        return response.success(res, safeConfigSummary(db, updated));
+      } catch (error) {
+        log.error('provider route update failed', {
+          config_id: id,
+          code: error?.code || 'UNKNOWN',
+        });
+        return response.internalError(res, '更新线路失败');
+      }
+    },
+
+    getRouteCost(req, res) {
+      const id = configId(req, res);
+      if (id == null) return;
+      try {
+        return response.success(res, stability.getRouteCostForAdmin(db, id));
+      } catch (error) {
+        if (error?.code === 'PROVIDER_ROUTE_NOT_FOUND') {
+          return response.notFound(res, '配置不存在');
+        }
+        log.error('provider route cost read failed', {
+          config_id: id,
+          code: error?.code || 'UNKNOWN',
+        });
+        return response.internalError(res, '读取线路成本失败');
+      }
+    },
+
+    updateRouteCost(req, res) {
+      const id = configId(req, res);
+      if (id == null) return;
+      const body = req.body || {};
+      const allowed = new Set([
+        'currency', 'cost_unit', 'micros_per_unit', 'input_cost_micros_per_1k',
+        'output_cost_micros_per_1k', 'resolution_prices',
+      ]);
+      if (!Object.keys(body).length || Object.keys(body).some((key) => !allowed.has(key))) {
+        return response.badRequest(res, '线路成本参数无效');
+      }
+      try {
+        const saved = db.transaction(() => {
+          const cost = stability.updateRouteCostForAdmin(db, id, body);
+          recordAdminAudit(db, req, 'provider.route.cost.updated', id);
+          return cost;
+        }).immediate();
+        return response.success(res, saved);
+      } catch (error) {
+        if (error?.code === 'INVALID_PROVIDER_ROUTE_COST') {
+          return response.badRequest(res, '线路成本参数无效');
+        }
+        if (error?.code === 'PROVIDER_ROUTE_NOT_FOUND') {
+          return response.notFound(res, '配置不存在');
+        }
+        log.error('provider route cost update failed', {
+          config_id: id,
+          code: error?.code || 'UNKNOWN',
+        });
+        return response.internalError(res, '更新线路成本失败');
+      }
     },
 
     resetHealth(req, res) {

@@ -601,7 +601,12 @@ function updateTextRouteState(db, requestId, state) {
 async function executeTextRoute(db, log, serviceType, options, invoke) {
   if (options._routeConfig) return invoke(options);
   const routeConfig = findTextLogicalRoute(db, serviceType, options.model, options.scene_key);
-  if (!routeConfig) return invoke(options);
+  if (!routeConfig) {
+    if (providerRouteStability.resolveCanaryMode(undefined, log) === 'enforce') {
+      throw safeTextRouteError('provider_unavailable');
+    }
+    return invoke(options);
+  }
 
   const selected = providerRouteStability.selectVerifiedCandidates(db, {
     serviceType: 'text',
@@ -841,6 +846,7 @@ async function generateTextSingleConfig(db, log, serviceType, userPrompt, system
       text_length: response.body.length,
       elapsed_ms: Date.now() - startMs,
     });
+    generationUsageContext.captureRoute(config.id);
     return response.body;
   }
   log.info('AI generateText request', { url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)', json_mode, stream: true });
@@ -870,6 +876,7 @@ async function generateTextSingleConfig(db, log, serviceType, userPrompt, system
       text_length: fallback.body.length,
       elapsed_ms: Date.now() - startMs,
     });
+    generationUsageContext.captureRoute(config.id);
     return fallback.body;
   };
   let res;
@@ -961,6 +968,7 @@ async function generateTextSingleConfig(db, log, serviceType, userPrompt, system
   }
   generationUsageContext.capture(res.usage);
   log.info('AI raw response received', { model, text_length: content.length, elapsed_ms: elapsedMs });
+  generationUsageContext.captureRoute(config.id);
   return content;
 }
 
@@ -974,6 +982,30 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
       db, log, serviceType, userPrompt, systemPrompt, routeOptions,
     ),
   );
+}
+
+async function generateTextForConfigId(
+  db,
+  log,
+  configId,
+  userPrompt,
+  systemPrompt,
+  options = {},
+) {
+  const numericId = Number(configId);
+  const config = Number.isSafeInteger(numericId) && numericId > 0
+    ? aiConfigService.getConfig(db, numericId)
+    : null;
+  if (!config || !config.is_active || config.service_type !== 'text') {
+    throw new Error('指定的文本模型配置不存在、已停用或类型不匹配');
+  }
+  return generateTextSingleConfig(db, log, 'text', userPrompt, systemPrompt, {
+    ...options,
+    model: undefined,
+    scene_key: null,
+    _routeConfig: config,
+    _safeRoute: true,
+  });
 }
 
 /**
@@ -1084,6 +1116,7 @@ async function streamGenerateTextSingleConfig(db, log, serviceType, userPrompt, 
     throw new Error('AI 返回内容为空');
   }
   log.info('AI streamGenerateText done', { model, text_length: content.length, elapsed_ms: Date.now() - startMs });
+  generationUsageContext.captureRoute(config.id);
   return content;
 }
 
@@ -1245,6 +1278,7 @@ async function generateTextWithVisionSingleConfig(db, log, serviceType, userProm
     throw new Error(`AI vision 返回内容为空（HTTP ${res.status}），原始响应：${(res.raw || '').slice(0, 200)}`);
   }
   log.info('[Vision] 请求成功', { model, elapsed_ms: Date.now() - startMs, result_len: content.length, result_preview: content.slice(0, 100) });
+  generationUsageContext.captureRoute(config.id);
   return content.trim();
 }
 
@@ -1355,6 +1389,10 @@ module.exports = {
   getModelFromConfig,
   resolveTextModel,
   generateText: (...args) => runWithGenerationLimit('text', () => generateText(...args)),
+  generateTextForConfigId: (...args) => runWithGenerationLimit(
+    'text',
+    () => generateTextForConfigId(...args),
+  ),
   streamGenerateText: (...args) => runWithGenerationLimit('text', () => streamGenerateText(...args)),
   generateTextWithVision: (...args) => runWithGenerationLimit('text', () => generateTextWithVision(...args)),
   resolveEntityImageSource,

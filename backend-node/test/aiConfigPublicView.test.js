@@ -107,16 +107,25 @@ test('普通用户模型目录只返回已验证逻辑模型并合并供应商',
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
   const insert = db.prepare(`INSERT INTO ai_service_configs
-    (service_type, provider, name, model, default_model, is_active, logical_model_id,
+    (service_type, provider, name, base_url, api_key, model, default_model, is_active, logical_model_id,
      failover_enabled, verification_status, created_at, updated_at)
-    VALUES ('image', ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`);
+    VALUES ('image', ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`);
   const now = '2026-08-15T00:00:00.000Z';
-  insert.run('relay-a', 'A', JSON.stringify(['upstream-a']), 'upstream-a',
+  insert.run('relay-a', 'A', 'https://private-a.example/v1', 'supplier-secret-a',
+    JSON.stringify(['upstream-a']), 'upstream-a',
     'logical-image', 0, 'verified', now, now);
-  insert.run('relay-b', 'B', JSON.stringify(['upstream-b']), 'upstream-b',
+  insert.run('relay-b', 'B', 'https://private-b.example/v1', 'supplier-secret-b',
+    JSON.stringify(['upstream-b']), 'upstream-b',
     'logical-image', 1, 'verified', now, now);
-  insert.run('relay-c', 'C', JSON.stringify(['hidden-upstream']), 'hidden-upstream',
+  insert.run('relay-c', 'C', 'https://private-c.example/v1', 'supplier-secret-c',
+    JSON.stringify(['hidden-upstream']), 'hidden-upstream',
     'hidden-logical', 1, 'unverified', now, now);
+  db.prepare(`INSERT INTO model_credit_prices
+    (model, credits, display_name, category, status, billing_unit, cost_unit,
+     cost_micros_per_unit, input_cost_micros_per_1k, output_cost_micros_per_1k, updated_at)
+    VALUES ('logical-image', 40, 'Logical image', 'image', 'enabled', 'request', 'image',
+      987654321, 0, 0, ?)`)
+    .run(now);
 
   let payload;
   aiConfigRoutes(db, {}, {}).listPublicImageModels({ query: {} }, {
@@ -125,8 +134,10 @@ test('普通用户模型目录只返回已验证逻辑模型并合并供应商',
   });
 
   assert.deepEqual(payload.data, ['logical-image']);
-  assert.equal(JSON.stringify(payload).includes('relay-'), false);
-  assert.equal(JSON.stringify(payload).includes('upstream-'), false);
+  const serialized = JSON.stringify(payload);
+  for (const secret of ['relay-', 'upstream-', 'private-', 'supplier-secret', '987654321']) {
+    assert.equal(serialized.includes(secret), false, secret);
+  }
   db.close();
 });
 

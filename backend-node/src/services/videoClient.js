@@ -5155,6 +5155,29 @@ function stripVideoRouteMeta(result) {
   return safe;
 }
 
+function exactVideoConfigId(value) {
+  const id = typeof value === 'string' && /^[1-9]\d*$/.test(value)
+    ? Number(value)
+    : value;
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new Error('指定的视频模型配置不存在或已停用');
+  }
+  return id;
+}
+
+async function callVideoApiForConfigId(db, log, configId, opts = {}) {
+  const explicitConfigId = exactVideoConfigId(configId);
+  const requestConfigId = opts.config_id ?? opts.configId;
+  if (requestConfigId != null && exactVideoConfigId(requestConfigId) !== explicitConfigId) {
+    throw new Error('指定的视频模型配置不存在或已停用');
+  }
+  const config = getVideoConfigById(db, explicitConfigId);
+  if (!config || !config.is_active || String(config.service_type).toLowerCase() !== 'video') {
+    throw new Error('指定的视频模型配置不存在、已停用或不是 video 类型');
+  }
+  return submitVideoWithConfig(db, log, config, opts);
+}
+
 function safeVideoRouteFailure(classification, result) {
   const category = classification.category;
   if (category === 'policy_rejected') {
@@ -5202,46 +5225,6 @@ function persistAcceptedVideoRoute(db, opts, configId, providerTaskId) {
 
 async function callVideoApi(db, log, opts) {
   const preferredModel = String(opts.model || '').trim() || null;
-  const explicitConfigId = opts.config_id ?? opts.configId;
-  if (explicitConfigId != null) {
-    const config = getVideoConfigById(db, explicitConfigId);
-    if (!config || !config.is_active) throw new Error('指定的视频模型配置不存在或已停用');
-    return stripVideoRouteMeta(await submitVideoWithConfig(db, log, config, opts));
-  }
-
-  const logicalRoute = findLogicalVideoRoute(db, preferredModel);
-  if (!logicalRoute) {
-    const config = getDefaultVideoConfig(db, preferredModel);
-    if (!config) throw new Error('未配置视频模型，请在「AI 配置」中添加 video 类型且已启用的配置');
-    return stripVideoRouteMeta(await submitVideoWithConfig(db, log, config, opts));
-  }
-
-  const selected = providerRouteStability.selectVerifiedCandidates(db, {
-    serviceType: 'video',
-    logicalModelId: preferredModel,
-    primaryConfigId: logicalRoute.id,
-    capabilities: {
-      resolution: opts.resolution,
-      aspectRatio: opts.aspect_ratio || opts.aspectRatio,
-      duration: opts.duration,
-      referenceImageCount: Array.isArray(opts.reference_urls)
-        ? opts.reference_urls.filter(Boolean).length
-        : 0,
-      referenceVideoCount: Array.isArray(opts.reference_video_urls)
-        ? opts.reference_video_urls.filter(Boolean).length
-        : 0,
-      referenceAudioCount: Array.isArray(opts.reference_audio_urls)
-        ? opts.reference_audio_urls.filter(Boolean).length
-        : 0,
-    },
-  });
-  if (selected.candidates.length === 0) {
-    throw new Error('未配置与当前视频生成参数匹配的已验证模型');
-  }
-
-  const routeId = randomUUID();
-  const businessId = opts.video_gen_id == null ? routeId : String(opts.video_gen_id);
-  const owner = String(opts.tenantId || opts.userId || 'local');
   const capabilities = {
     resolution: opts.resolution,
     aspectRatio: opts.aspect_ratio || opts.aspectRatio,
@@ -5254,6 +5237,58 @@ async function callVideoApi(db, log, opts) {
       ? opts.reference_audio_urls.filter(Boolean).length
       : 0,
   };
+  const explicitConfigId = opts.config_id ?? opts.configId;
+  let logicalModelId = preferredModel;
+  let logicalRoute;
+  let selected;
+  if (explicitConfigId != null) {
+    const config = getVideoConfigById(db, explicitConfigId);
+    if (!config || !config.is_active) throw new Error('指定的视频模型配置不存在或已停用');
+    if (providerRouteStability.resolveCanaryMode(undefined, log) !== 'enforce') {
+      return stripVideoRouteMeta(await submitVideoWithConfig(db, log, config, opts));
+    }
+    logicalModelId = String(config.logical_model_id || '').trim();
+    if (!logicalModelId) throw new Error('未配置与当前视频生成参数匹配的已验证模型');
+    logicalRoute = { id: config.id };
+    const explicitSelection = providerRouteStability.selectVerifiedCandidates(db, {
+      serviceType: 'video',
+      logicalModelId,
+      primaryConfigId: config.id,
+      capabilities,
+      canaryMode: 'enforce',
+      log,
+    });
+    selected = {
+      ...explicitSelection,
+      candidates: explicitSelection.candidates.filter((candidate) => candidate.id === config.id),
+    };
+  } else {
+    logicalRoute = findLogicalVideoRoute(db, preferredModel);
+  }
+
+  if (!logicalRoute) {
+    if (providerRouteStability.resolveCanaryMode(undefined, log) === 'enforce') {
+      throw new Error('未配置与当前视频生成参数匹配的已验证模型');
+    }
+    const config = getDefaultVideoConfig(db, preferredModel);
+    if (!config) throw new Error('未配置视频模型，请在「AI 配置」中添加 video 类型且已启用的配置');
+    return stripVideoRouteMeta(await submitVideoWithConfig(db, log, config, opts));
+  }
+
+  selected ||= providerRouteStability.selectVerifiedCandidates(db, {
+    serviceType: 'video',
+    logicalModelId,
+    primaryConfigId: logicalRoute.id,
+    capabilities,
+    log,
+  });
+  if (selected.candidates.length === 0) {
+    throw new Error('未配置与当前视频生成参数匹配的已验证模型');
+  }
+
+  const routeId = randomUUID();
+  const businessId = opts.video_gen_id == null ? routeId : String(opts.video_gen_id);
+  const owner = String(opts.tenantId || opts.userId || 'local');
   const route = providerRouteStability.createOrGetRouteRequest(db, {
     id: routeId,
     idempotencyKey: `${owner}:video:${businessId}`,
@@ -5262,7 +5297,7 @@ async function callVideoApi(db, log, opts) {
     businessId,
     tenantId: opts.tenantId,
     userId: opts.userId,
-    logicalModelId: preferredModel,
+    logicalModelId,
     capabilities,
     userPriceSnapshot: selected.userPriceSnapshot,
     candidateConfigIds: selected.candidates.map((candidate) => candidate.id),
@@ -5287,7 +5322,7 @@ async function callVideoApi(db, log, opts) {
       providerRouteStability.recordRouteSwitch(db, {
         requestId: route.id,
         tenantId: opts.tenantId,
-        logicalModelId: preferredModel,
+        logicalModelId,
         configId: pendingSwitch.configId,
         targetConfigId: config.id,
         category: pendingSwitch.category,
@@ -5359,7 +5394,7 @@ async function callVideoApi(db, log, opts) {
       requestId: route.id,
       tenantId: opts.tenantId,
       configId: config.id,
-      logicalModelId: preferredModel,
+      logicalModelId,
       classification,
     });
     lastFailure = { classification, result };
@@ -5372,7 +5407,7 @@ async function callVideoApi(db, log, opts) {
     pendingSwitch = { configId: config.id, category: classification.category };
     log.warn('Video route switching after definitive non-acceptance', {
       video_gen_id: opts.video_gen_id,
-      logical_model_id: preferredModel,
+      logical_model_id: logicalModelId,
       from_config_id: config.id,
       category: classification.category,
     });
@@ -5388,6 +5423,8 @@ async function callVideoApi(db, log, opts) {
 /**
  * ??????????????????/ChatFire ? ???? DashScope?
  */
+const STRICT_SINGLE_PROVIDER_REQUEST = Symbol('strict-single-provider-request');
+
 async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 300, intervalMs = 10000, requestOpts = {}) {
   const provider = (config.provider || '').toLowerCase();
   const protocol = resolveVideoProtocol(config);
@@ -5407,6 +5444,8 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isUsmercari = protocol === 'usmercari_media';
   const isToapis = protocol === 'toapis_video';
   const isFumin = protocol === 'fumin_video';
+  const strictSingleRequest = requestOpts[STRICT_SINGLE_PROVIDER_REQUEST] === true;
+  const fetchImpl = requestOpts.fetchImpl || globalThis.fetch;
   /** 轮询日志里响应体最大字符数（即梦/方舟等 JSON 可能较长）；0 表示不截断（慎用） */
   const pollLogBodyMax = (() => {
     const v = String(process.env.VIDEO_POLL_LOG_MAX || '16384').trim();
@@ -5431,7 +5470,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
     try {
       if (isToapis) {
         const result = await toapisVideoClient.fetchToapisTask(config, taskId, {
-          fetchImpl: requestOpts.fetchImpl,
+          fetchImpl,
         });
         if (result.state === 'completed') return { video_url: result.videoUrl };
         if (result.state === 'failed') return { error: result.error };
@@ -5521,7 +5560,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
       }
       const pollRound = attempt + 1;
       log.info('[poll] 发起查询', { video_gen_id: videoGenId, round: pollRound, url });
-      const res = await fetch(url, { method, headers, ...(requestBody ? { body: requestBody } : {}) });
+      const res = await fetchImpl(url, { method, headers, ...(requestBody ? { body: requestBody } : {}) });
       const raw = await res.text();
       const bodyLogged =
         pollLogBodyMax === Infinity
@@ -5631,6 +5670,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         }
         if (status === 'succeeded' || status === 'completed' || status === 'done') {
           const mode = resolveDeepwlGrokMode(config);
+          if (strictSingleRequest) return { artifact_unreadable: true };
           if (mode !== 'unified') {
             const contentUrl = await fetchDeepwlGrokContentUrl(config, taskId, log, videoGenId);
             if (contentUrl) {
@@ -5661,7 +5701,8 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           return { error: aihubccClient.extractError(data) || `AIHubCC 任务失败: ${status || 'unknown'}` };
         }
         if (aihubccClient.isDoneStatus(status)) {
-          const contentResponse = await fetch(aihubccClient.getContentUrl(config, taskId), {
+          if (strictSingleRequest) return { artifact_unreadable: true };
+          const contentResponse = await fetchImpl(aihubccClient.getContentUrl(config, taskId), {
             headers: aihubccClient.authHeaders(config),
           });
           const contentRaw = await contentResponse.text();
@@ -5690,6 +5731,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           return { error: `iCreat 任务失败或不存在: ${status}${detail}` };
         }
         if (['SUCCEEDED', 'COMPLETED', 'DONE', 'SUCCESS'].includes(status)) {
+          if (strictSingleRequest) return { artifact_unreadable: true };
           const settings = parseConfigSettingsJson(config);
           const resultUrl = buildIcreatTaskUrl(config, settings.icreat_result_endpoint || '/v1/task/get-result', taskId);
           const resultFetchOptions = {
@@ -5704,7 +5746,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
             resultFetchOptions.signal = AbortSignal.timeout(30_000);
           }
-          const resultResponse = await fetch(resultUrl, resultFetchOptions);
+          const resultResponse = await fetchImpl(resultUrl, resultFetchOptions);
           const resultRaw = await resultResponse.text();
           let resultData;
           try { resultData = JSON.parse(resultRaw); } catch (_) { resultData = null; }
@@ -5730,7 +5772,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
             log.info('[Kling poll] 视频生成完成', { video_gen_id: videoGenId, video_url: videoUrl });
             return { video_url: videoUrl };
           }
-          return { error: '可灵任务完成但未返回视频地址' };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: '可灵任务完成但未返回视频地址' };
         }
         if (status === 'failed') {
           const errMsg = data?.data?.task_status_msg || '任务失败';
@@ -5755,7 +5799,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           return { video_url: videoUrlOmni };
         }
         if (st === 'succeed' || st === 'success' || st === 'completed' || st === 'succeeded' || st === 'done') {
-          return { error: 'Kling Omni 标记完成但未解析到视频地址' };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Kling Omni 标记完成但未解析到视频地址' };
         }
         if (st === 'failed' || st === 'error') {
           const errMsg = data?.data?.task_status_msg || data?.task_status_msg || data?.message || '任务失败';
@@ -5779,7 +5825,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         }
         if (status === 'succeeded' || status === 'completed' || status === 'done') {
           log.warn('[Veo3 poll] completed but no video_url', { data: JSON.stringify(data).slice(0, 500) });
-          return { error: 'Veo3 completed but no video URL: ' + JSON.stringify(data).slice(0, 300) };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Veo3 completed but no video URL: ' + JSON.stringify(data).slice(0, 300) };
         }
         continue;
       }
@@ -5800,7 +5848,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         }
         if (status === 'succeeded' || status === 'completed' || status === 'done') {
           log.warn('[Sora poll] ????????? video_url', { video_gen_id: videoGenId, data: JSON.stringify(data).slice(0, 500) });
-          return { error: 'Sora ?????????????????: ' + JSON.stringify(data).slice(0, 300) };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Sora ?????????????????: ' + JSON.stringify(data).slice(0, 300) };
         }
         // queued / processing / running ? ????
         continue;
@@ -5821,7 +5871,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         }
         if (status === 'succeeded' || status === 'completed' || status === 'done') {
           log.warn('[Agnes poll] 标记完成但未返回 video_url', { video_gen_id: videoGenId, data: JSON.stringify(data).slice(0, 500) });
-          return { error: 'Agnes 任务完成但未返回视频地址: ' + JSON.stringify(data).slice(0, 300) };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Agnes 任务完成但未返回视频地址: ' + JSON.stringify(data).slice(0, 300) };
         }
         continue;
       }
@@ -5846,7 +5898,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         }
         if (state === 'success' || state === 'succeeded' || state === 'completed' || state === 'done') {
           log.warn('[Vidu poll] ???????? video_url', { data: JSON.stringify(data).slice(0, 500) });
-          return { error: 'Vidu ??????????' };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Vidu ??????????' };
         }
         continue;
       }
@@ -5858,7 +5912,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         if (data.done === true) {
           const videoUri = data.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri;
           if (videoUri) return { video_url: videoUri };
-          return { error: 'Gemini ??????????????' };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Gemini ??????????????' };
         }
         continue;
       }
@@ -5922,6 +5978,148 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   };
 }
 
+async function queryVideoTaskStatusOnce(db, log, taskId, config, requestOpts = {}) {
+  const baseFetch = requestOpts.fetchImpl || globalThis.fetch;
+  let requestCount = 0;
+  let observedStatus = null;
+  let observedQueryCategory = null;
+  let observedBodyWasJson = null;
+
+  const safeQueryCategoryForError = (error, transport = false) => {
+    if (error?.code === 'PROVIDER_QUERY_REQUEST_LIMIT') return 'query_request_limit';
+    if (error?.code === 'PROVIDER_QUERY_PROTOCOL_ERROR') return 'query_protocol_error';
+    if (error?.code === 'PROVIDER_QUERY_VALIDATION_ERROR') return 'validation_error';
+    if (error?.name === 'AbortError'
+        || error?.name === 'TimeoutError'
+        || ['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT'].includes(error?.code)) {
+      return 'result_unknown';
+    }
+    return transport && error instanceof TypeError ? 'provider_unavailable' : 'query_protocol_error';
+  };
+
+  const safeQueryCategoryForStatus = (status) => {
+    if (status === 401) return 'auth_unavailable';
+    if (status === 403) return 'forbidden_unknown';
+    if (status === 404 || status === 408) return 'result_unknown';
+    if (status === 429) return 'rate_limited';
+    if (status >= 500) return 'provider_unavailable';
+    return 'validation_error';
+  };
+
+  const trustedArtifactUrl = (value) => {
+    if (!isPlausibleHttpVideoUrl(value)) return false;
+    try {
+      const parsed = new URL(String(value).trim());
+      const embedded = `${parsed.pathname}${parsed.search}`;
+      return ['http:', 'https:'].includes(parsed.protocol)
+        && !parsed.username
+        && !parsed.password
+        && !/(?:file|javascript|data):/i.test(embedded);
+    } catch (_) {
+      return false;
+    }
+  };
+
+  if (config?.base_url) {
+    try {
+      const parsed = new URL(String(config.base_url));
+      if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('unsupported provider URL');
+    } catch (_) {
+      return { state: 'query_failed', category: 'validation_error' };
+    }
+  }
+
+  const fetchOnce = async (url, options = {}) => {
+    if (requestCount >= 1) {
+      const error = new Error('single provider task query exceeded one request');
+      error.code = 'PROVIDER_QUERY_REQUEST_LIMIT';
+      throw error;
+    }
+    try {
+      const parsed = new URL(String(url));
+      if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('unsupported query URL');
+    } catch (_) {
+      const error = new Error('invalid provider query URL');
+      error.code = 'PROVIDER_QUERY_VALIDATION_ERROR';
+      observedQueryCategory = 'validation_error';
+      throw error;
+    }
+    requestCount += 1;
+    const bounded = { ...options, redirect: 'manual' };
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+      bounded.signal = AbortSignal.timeout(30_000);
+    }
+    let response;
+    try {
+      response = await baseFetch(url, bounded);
+    } catch (error) {
+      observedQueryCategory = safeQueryCategoryForError(error, true);
+      throw error;
+    }
+    observedStatus = Number(response?.status);
+    return {
+      ok: response?.ok,
+      status: response?.status,
+      headers: response?.headers,
+      async text() {
+        let raw;
+        try {
+          raw = await response.text();
+        } catch (error) {
+          observedQueryCategory = safeQueryCategoryForError(error);
+          throw error;
+        }
+        try {
+          JSON.parse(raw);
+          observedBodyWasJson = true;
+        } catch (_) {
+          observedBodyWasJson = false;
+        }
+        return raw;
+      },
+    };
+  };
+  let result;
+  try {
+    result = await pollVideoTask(db, { info() {}, warn() {}, error() {} }, null, taskId, config, 1, 0, {
+      fetchImpl: fetchOnce,
+      [STRICT_SINGLE_PROVIDER_REQUEST]: true,
+    });
+  } catch (error) {
+    const category = observedQueryCategory || safeQueryCategoryForError(error);
+    return category === 'result_unknown'
+      ? { state: 'unknown', category }
+      : { state: 'query_failed', category };
+  }
+  if (Number.isFinite(observedStatus) && (observedStatus < 200 || observedStatus >= 300)) {
+    return { state: 'query_failed', category: safeQueryCategoryForStatus(observedStatus) };
+  }
+  if (observedQueryCategory) {
+    return observedQueryCategory === 'result_unknown'
+      ? { state: 'unknown', category: observedQueryCategory }
+      : { state: 'query_failed', category: observedQueryCategory };
+  }
+  if (observedBodyWasJson === false) {
+    return { state: 'query_failed', category: 'query_protocol_error' };
+  }
+  if (result?.video_url) {
+    return trustedArtifactUrl(result.video_url)
+      ? { state: 'succeeded', artifactUrl: result.video_url }
+      : { state: 'artifact_unreadable' };
+  }
+  if (result?.artifact_unreadable
+      || (Object.prototype.hasOwnProperty.call(result || {}, 'video_url') && !result.video_url)) {
+    return { state: 'artifact_unreadable' };
+  }
+  if (result?.indeterminate) return { state: 'unknown', category: 'result_unknown' };
+  if (result?.error) {
+    return requestCount === 0
+      ? { state: 'query_failed', category: 'validation_error' }
+      : { state: 'failed', category: 'provider_task_failed' };
+  }
+  return { state: 'unknown', category: 'result_unknown' };
+}
+
 const { runWithGenerationLimit } = require('./generationConcurrency');
 
 module.exports = {
@@ -5931,7 +6129,12 @@ module.exports = {
   callAihubccVideoApi,
   callXaiVideoApi,
   callVideoApi: (...args) => runWithGenerationLimit('video', () => callVideoApi(...args)),
+  callVideoApiForConfigId: (...args) => runWithGenerationLimit(
+    'video',
+    () => callVideoApiForConfigId(...args),
+  ),
   pollVideoTask,
+  queryVideoTaskStatusOnce,
   normalizeAspectRatioForApi,
   isPlausibleHttpVideoUrl,
   pickProxyVideoUrl,

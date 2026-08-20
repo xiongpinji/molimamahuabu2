@@ -4,6 +4,7 @@ const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const catalog = require('../src/services/canvasModelCatalogService');
 const prices = require('../src/services/modelPriceService');
+const routeCosts = require('../src/services/providerRouteCostService');
 
 const { parseModels, safeCapabilities, providerCapabilities } = catalog;
 
@@ -56,7 +57,72 @@ test('canvas model catalog preserves public capability names while removing rela
   });
 })
 
-test('canvas model catalog exposes video resolution prices to the node editor', () => {
+test('canvas capability sanitizer recursively rejects composed identity fields in every key style', () => {
+  const capabilities = safeCapabilities(JSON.stringify({
+    canvas_capabilities: {
+      durations: [5, 10],
+      resolutions: ['480p', '720p'],
+      aspectRatios: ['16:9'],
+      maxReferences: 3,
+      supportsImageReference: true,
+      providerName: 'private-provider-name',
+      provider_name: 'private-provider-snake',
+      'provider-id': 'private-provider-kebab',
+      providerId: 'private-provider-id',
+      providerCode: 'private-provider-code',
+      modelProvider: 'private-model-provider',
+      configName: 'private-config-name',
+      configId: 998,
+      upstreamProvider: 'private-upstream-provider',
+      upstreamModel: 'private-upstream-model',
+      protocolName: 'private-protocol-name',
+      'ProViDeR.Name': 'private-provider-mixed',
+      nested: [{
+        publicFlag: true,
+        ENDPOINT_URL: 'https://private-endpoint.example/v1',
+        deeper: {
+          providerName: 'private-deep-provider',
+          config_name: 'private-deep-config',
+          upstream_provider: 'private-deep-upstream',
+          protocolName: 'private-deep-protocol',
+        },
+      }],
+      presets: [{
+        id: 'public-preset',
+        name: 'Public Preset',
+        value: 'public-value',
+        keyboardShortcut: 'Ctrl+K',
+        publicFlag: true,
+        modelProvider: 'private-preset-provider',
+      }],
+    },
+  }));
+
+  assert.deepEqual(capabilities, {
+    durations: [5, 10],
+    resolutions: ['480p', '720p'],
+    aspectRatios: ['16:9'],
+    maxReferences: 3,
+    supportsImageReference: true,
+    nested: [{ publicFlag: true, deeper: {} }],
+    presets: [{
+      id: 'public-preset',
+      name: 'Public Preset',
+      value: 'public-value',
+      keyboardShortcut: 'Ctrl+K',
+      publicFlag: true,
+    }],
+  });
+  const serialized = JSON.stringify(capabilities);
+  for (const privateKey of [
+    'providerName', 'provider_name', 'provider-id', 'providerId', 'providerCode', 'modelProvider',
+    'configName', 'configId', 'upstreamProvider', 'upstreamModel', 'protocolName',
+    'ProViDeR.Name', 'ENDPOINT_URL', 'config_name', 'upstream_provider',
+  ]) assert.equal(serialized.includes(privateKey), false, privateKey);
+  assert.equal(serialized.includes('private-'), false);
+});
+
+test('canvas model catalog exposes only user video resolution prices to the node editor', () => {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
   const now = new Date().toISOString();
@@ -77,13 +143,14 @@ test('canvas model catalog exposes video resolution prices to the node editor', 
 
   const item = catalog.list(db).find((row) => row.model === 'resolution-video');
   assert.deepEqual(item.resolution_prices, {
-    '480p': { credits: 2, cost_micros_per_second: 50000 },
-    '720p': { credits: 5, cost_micros_per_second: 120000 },
+    '480p': { credits: 2 },
+    '720p': { credits: 5 },
   });
+  assert.equal(/cost/i.test(JSON.stringify(item.resolution_prices)), false);
   db.close();
 });
 
-test('canvas model catalog exposes only the selected verified config identity', () => {
+test('canvas model catalog selects a verified config without exposing its identity', () => {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
   const now = new Date().toISOString();
@@ -120,13 +187,105 @@ test('canvas model catalog exposes only the selected verified config identity', 
   prices.set(db, 'catalog-route-image', 40, { category: 'image' });
 
   const item = catalog.list(db).find((row) => row.model === 'catalog-route-image');
-  assert.equal(item.config_id, Number(verified.lastInsertRowid));
-  assert.notEqual(item.config_id, Number(unverified.lastInsertRowid));
-  for (const field of ['provider', 'base_url', 'api_key', 'name', 'hostname', 'domain']) {
+  assert.equal(item.config_id, undefined);
+  assert.equal(item.upstream_model, undefined);
+  assert.notEqual(Number(verified.lastInsertRowid), Number(unverified.lastInsertRowid));
+  for (const field of ['provider', 'protocol', 'base_url', 'api_key', 'name', 'hostname', 'domain']) {
     assert.equal(item[field], undefined);
   }
   assert.equal(JSON.stringify(item).includes('selected-relay.example'), false);
   assert.equal(JSON.stringify(item).includes('selected-secret'), false);
+  db.close();
+});
+
+test('canvas public items hide route, relay, evidence, and cost metadata for logical and non-logical models', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const now = new Date().toISOString();
+  const settings = JSON.stringify({
+    canvas_capabilities: {
+      durations: [5, 10],
+      protocol: 'private-capability-protocol',
+      config_id: 991,
+      relay_url: 'https://nested-relay.example/v1',
+      evidence_sha256: 'private-evidence-sha',
+      cost_micros_per_second: 70000,
+      nested: {
+        base_url: 'https://nested-base.example/v1',
+        provider: 'nested-private-provider',
+        publicFlag: true,
+      },
+    },
+  });
+  const insert = db.prepare(`INSERT INTO ai_service_configs
+    (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+     priority, is_active, settings, logical_model_id, verification_status, created_at, updated_at)
+    VALUES ('video', ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'verified', ?, ?)`);
+  const routeA = insert.run(
+    'private-relay-a', 'private-protocol-a', 'Private Route A', 'https://relay-a.example/v1',
+    'private-key-a', JSON.stringify(['safe-public-video']), 'safe-public-video', 100,
+    settings, null, now, now,
+  );
+  const routeA2 = insert.run(
+    'private-relay-a2', 'private-protocol-a2', 'Private Route A2', 'https://relay-a2.example/v1',
+    'private-key-a2', JSON.stringify(['safe-public-video']), 'safe-public-video', 95,
+    settings, null, now, now,
+  );
+  const routeB = insert.run(
+    'private-relay-b', 'private-protocol-b', 'Private Route B', 'https://relay-b.example/v1',
+    'private-key-b', JSON.stringify(['private-upstream-video']), 'private-upstream-video', 90,
+    settings, 'logical-public-video', now, now,
+  );
+  for (const model of ['safe-public-video', 'logical-public-video']) {
+    prices.set(db, model, 4, {
+      category: 'video',
+      cost_unit: 'second',
+      cost_micros_per_unit: 80000,
+      resolution_prices: {
+        '480p': { credits: 4, cost_micros_per_second: 50000 },
+        '720p': { credits: 7, cost_micros_per_second: 110000 },
+      },
+    });
+  }
+  for (const configId of [routeA.lastInsertRowid, routeA2.lastInsertRowid, routeB.lastInsertRowid]) {
+    routeCosts.setRouteCost(db, Number(configId), {
+      currency: 'CNY',
+      cost_unit: 'second',
+      micros_per_unit: 91001,
+      resolution_prices: {
+        '480p': { micros_per_unit: 52001 },
+        '720p': { micros_per_unit: 121001 },
+      },
+    });
+  }
+
+  const items = catalog.list(db).filter((row) => (
+    row.model === 'safe-public-video' || row.model === 'logical-public-video'
+  ));
+  assert.equal(items.length, 2);
+  for (const item of items) {
+    assert.deepEqual(Object.keys(item).sort(), [
+      'billing_unit', 'capabilities', 'credits', 'default_voice_id', 'kind', 'label', 'model',
+      'public_note', 'resolution_prices', 'verification_status',
+    ]);
+    assert.deepEqual(item.resolution_prices, {
+      '480p': { credits: 4 },
+      '720p': { credits: 7 },
+    });
+    assert.deepEqual(item.capabilities.durations, [5, 10]);
+    assert.deepEqual(item.capabilities.nested, { publicFlag: true });
+  }
+  const serialized = JSON.stringify(items);
+  for (const privateKey of [
+    '"provider"', '"protocol"', '"config_id"', '"upstream_model"', '"base_url"',
+    '"relay_url"', '"evidence_sha256"', '"cost_micros_per_second"',
+    '"micros_per_unit"', '"input_cost_micros_per_1k"', '"output_cost_micros_per_1k"',
+  ]) assert.equal(serialized.includes(privateKey), false, privateKey);
+  for (const privateValue of [
+    'private-relay', 'private-protocol', 'private-upstream-video', 'private-key', 'cfg-',
+    'relay-a.example', 'relay-a2.example', 'relay-b.example', 'nested-relay.example', 'nested-base.example',
+    'private-evidence-sha',
+  ]) assert.equal(serialized.includes(privateValue), false, privateValue);
   db.close();
 });
 

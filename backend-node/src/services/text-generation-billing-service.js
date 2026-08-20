@@ -86,17 +86,6 @@ function begin(db, input) {
 function settle(db, log, billing, outcome, message = '') {
   if (!billing?.reservationId) return null;
   try {
-    if (outcome === 'completed') {
-      generationCost.record(db, {
-        reservationId: billing.reservationId,
-        model: billing.model,
-        quantity: 1,
-        inputTokens: billing.usage?.inputTokens,
-        outputTokens: billing.usage?.outputTokens,
-        reasoningTokens: billing.usage?.reasoningTokens,
-        usageSource: billing.usage?.source || 'unavailable',
-      });
-    }
     const heldForReview = outcome === 'needs_attention' || outcome === 'held_for_review';
     const settlementOutcome = heldForReview ? 'failed' : outcome;
     const settlementMessage = heldForReview
@@ -108,6 +97,31 @@ function settle(db, log, billing, outcome, message = '') {
       settlementOutcome,
       settlementMessage,
     );
+    try {
+      if (outcome === 'completed') {
+        generationCost.record(db, {
+          reservationId: billing.reservationId,
+          model: billing.model,
+          configId: billing.route?.configId,
+          count: 1,
+          inputTokens: billing.usage?.inputTokens,
+          outputTokens: billing.usage?.outputTokens,
+          reasoningTokens: billing.usage?.reasoningTokens,
+          usageSource: billing.usage?.source || 'unavailable',
+        });
+      } else if (heldForReview) {
+        generationCost.record(db, {
+          reservationId: billing.reservationId,
+          model: billing.model,
+          usageSource: 'unknown',
+        });
+      }
+    } catch (costError) {
+      log?.error?.('文本生成成本记录失败，保留未计成本标记', {
+        reservation_id: billing.reservationId,
+        error: costError.message,
+      });
+    }
     auditEvent.record(db, {
       userId: settled?.actor_user_id || settled?.user_id,
       tenantId: settled?.tenant_id,

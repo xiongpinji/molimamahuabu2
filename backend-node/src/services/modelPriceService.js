@@ -95,6 +95,45 @@ function readRow(db, model) {
   return withResolutionPrices(db, row);
 }
 
+function stableCostSnapshot(row) {
+  if (!row) return null;
+  return JSON.stringify({
+    model: String(row.model || '').toLowerCase(),
+    category: row.category,
+    credits: row.credits,
+    status: row.status,
+    billing_unit: billingUnit(row.model, row.category, row.billing_unit),
+    cost_unit: row.cost_unit,
+    cost_micros_per_unit: row.cost_micros_per_unit,
+    input_cost_micros_per_1k: row.input_cost_micros_per_1k,
+    output_cost_micros_per_1k: row.output_cost_micros_per_1k,
+    resolution_prices: Object.fromEntries(Object.entries(row.resolution_prices || {})
+      .sort(([left], [right]) => left.localeCompare(right))),
+  });
+}
+
+function invalidateLogicalModelEvidence(db, logicalModelId, now) {
+  try {
+    const hasLogicalModelColumn = hasTable(db, 'ai_service_configs')
+      && db.prepare('PRAGMA table_info(ai_service_configs)').all()
+        .some((column) => column.name === 'logical_model_id');
+    const logicalModelIds = hasLogicalModelColumn
+      ? db.prepare(`SELECT DISTINCT logical_model_id FROM ai_service_configs
+          WHERE deleted_at IS NULL AND logical_model_id = ? COLLATE NOCASE`)
+        .all(logicalModelId).map((row) => row.logical_model_id)
+      : [];
+    const evidenceService = require('./providerCanaryEvidenceService');
+    for (const mappedId of logicalModelIds.length ? logicalModelIds : [logicalModelId]) {
+      evidenceService.invalidateLogicalModel(db, mappedId, 'cost_changed', now);
+    }
+  } catch (error) {
+    if (error?.code !== 'SQLITE_ERROR'
+        || !/no such table:\s*provider_canary_evidence\b/i.test(String(error.message || ''))) {
+      throw error;
+    }
+  }
+}
+
 function hasTable(db, name) {
   return Boolean(db.prepare(
     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -197,12 +236,23 @@ function listPublic(db) {
       .filter(Boolean)
       .map((model) => model.toLowerCase()),
   );
-  return list(db).filter((row) => (
-    row.status === 'enabled'
-    && Number.isSafeInteger(row.credits)
-    && row.credits > 0
-    && activeModels.has(row.model.toLowerCase())
-  ));
+  return list(db)
+    .filter((row) => (
+      row.status === 'enabled'
+      && Number.isSafeInteger(row.credits)
+      && row.credits > 0
+      && activeModels.has(row.model.toLowerCase())
+    ))
+    .map((row) => ({
+      model: row.model,
+      display_name: row.display_name,
+      category: row.category,
+      credits: row.credits,
+      status: row.status,
+      billing_unit: row.billing_unit,
+      resolution_prices: Object.fromEntries(Object.entries(row.resolution_prices || {})
+        .map(([resolution, tier]) => [resolution, { credits: tier.credits }])),
+    }));
 }
 
 function set(db, value, creditsValue, options = {}) {
@@ -256,7 +306,8 @@ function set(db, value, creditsValue, options = {}) {
     throw priceError('INVALID_MODEL_PRICE', '只有视频模型可以配置分辨率价格');
   }
   const updatedAt = new Date().toISOString();
-  db.transaction(() => {
+  let saved;
+  const applySet = () => {
     db.prepare(`INSERT INTO model_credit_prices
         (model, display_name, category, credits, status, billing_unit, cost_unit, cost_micros_per_unit,
          input_cost_micros_per_1k, output_cost_micros_per_1k, updated_at)
@@ -282,8 +333,13 @@ function set(db, value, creditsValue, options = {}) {
         insert.run(model, tier.resolution, tier.credits, tier.cost_micros_per_second, updatedAt);
       }
     }
-  })();
-  const saved = readRow(db, model);
+    saved = readRow(db, model);
+    if (stableCostSnapshot(existing) !== stableCostSnapshot(saved)) {
+      invalidateLogicalModelEvidence(db, model, updatedAt);
+    }
+  };
+  if (db.inTransaction) applySet();
+  else db.transaction(applySet)();
   return { ...saved, billing_unit: billingUnit(saved.model, saved.category, saved.billing_unit) };
 }
 
