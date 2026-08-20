@@ -217,6 +217,9 @@ function validateEvidenceBoundPlan(db, input, overrides = {}) {
   const readTrustedEvidence = overrides.readTrustedEvidence
     || externalModelEvidenceService.readTrustedEvidence;
   const target = readTarget(db, input.configId);
+  if (new Set(target.models.map((model) => model.toLowerCase())).size !== target.models.length) {
+    fail('INVALID_MODEL_CONFIGURATION');
+  }
   const source = target.row;
   if (target.models.length <= 1) fail('ALREADY_EVIDENCE_BOUND_SPLIT');
   if (source.is_active !== 1 || source.verification_status !== 'verified') {

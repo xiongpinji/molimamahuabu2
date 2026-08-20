@@ -390,3 +390,41 @@ test('证据绑定拆分原子生成两个启用已验证且巡检暂停的单�
   );
   db.close();
 });
+
+test('证据绑定拆分拒绝大小写重复的源模型且四表零变化', (t) => {
+  const item = evidenceFixture();
+  t.after(() => cleanup(item));
+  const db = new Database(item.dbPath);
+  db.prepare('UPDATE ai_service_configs SET model = ? WHERE id = ?').run(
+    JSON.stringify(['seedance-2-fast', 'SEEDANCE-2-FAST', 'seedance-2-mini']),
+    item.configId,
+  );
+  const binding = validBinding(item.configId);
+  for (const model of binding.models) model.evidence_sha256 = item.evidenceSha256;
+  const snapshot = () => ({
+    configs: db.prepare('SELECT * FROM ai_service_configs ORDER BY id').all(),
+    costs: db.prepare('SELECT * FROM provider_route_costs ORDER BY config_id').all(),
+    tiers: db.prepare(`SELECT * FROM provider_route_resolution_costs
+      ORDER BY config_id, resolution`).all(),
+    audit: db.prepare('SELECT * FROM audit_events ORDER BY created_at, id').all(),
+  });
+  const before = snapshot();
+  let error;
+  try {
+    splitTool.applyEvidenceBoundPlan(db, {
+      configId: item.configId,
+      expectedFingerprint: splitTool.fingerprint(splitTool.readTarget(db, item.configId)),
+      binding,
+    }, {
+      readTrustedEvidence: (model) => externalModelEvidenceService.readTrustedEvidence(
+        model,
+        item.evidenceRoots,
+      ),
+    });
+  } catch (caught) {
+    error = caught;
+  }
+  assert.deepEqual(snapshot(), before);
+  assert.equal(error?.code, 'INVALID_MODEL_CONFIGURATION');
+  db.close();
+});
