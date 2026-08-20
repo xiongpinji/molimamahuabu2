@@ -209,11 +209,13 @@ test('未知 workflow_phase 失败关闭且 source version 不伪装本地化完
 test('八阶段状态保留后端兼容 phase 别名', () => {
   const cases = [
     ['source', 'project_input'],
+    ['analyzing', 'source_analysis'],
     ['analysis_review', 'source_analysis'],
     ['localizing', 'localization'],
     ['assets', 'character_assets'],
     ['asset_review', 'character_assets'],
     ['generating', 'generation'],
+    ['video_generation', 'generation'],
     ['export', 'episode_export'],
   ]
   for (const [phase, activeKey] of cases) {
@@ -255,8 +257,72 @@ test('项目概览显示原始模式、有效模式、预算、版本和审核�
 })
 
 test('项目概览 effective mode 优先读取工作分析和本地化决策', () => {
-  assert.match(overviewSource, /analysis_decision\?\.effective_mode/)
-  assert.match(overviewSource, /localization_decision\?\.effective_mode/)
-  assert.match(overviewSource, /effectiveMode = computed/)
+  assert.match(stateSource, /analysis_decision\?\.effective_mode/)
+  assert.match(stateSource, /localization_decision\?\.effective_mode/)
+  assert.match(overviewSource, /resolveProjectEffectiveMode/)
   assert.doesNotMatch(overviewSource, /effective_execution_mode \|\| rawMode\.value/)
+})
+
+test('项目事件读取失败保留旧事件并暴露错误状态', () => {
+  assert.equal(typeof workspaceState.resolveProjectEventsState, 'function')
+  assert.deepEqual(workspaceState.resolveProjectEventsState({
+    previousEvents: [{ reason_code: 'old' }],
+    nextEvents: [{ reason_code: 'new' }],
+  }), {
+    events: [{ reason_code: 'new' }],
+    error: '',
+  })
+  assert.deepEqual(workspaceState.resolveProjectEventsState({
+    previousEvents: [{ reason_code: 'old' }],
+    error: new Error('server down'),
+  }), {
+    events: [{ reason_code: 'old' }],
+    error: 'server down',
+  })
+  assert.match(workspaceSource, /projectEventsError/)
+  assert.match(workspaceSource, /el-alert/)
+  assert.doesNotMatch(workspaceSource, /listProjectEvents\(projectId\.value\)\.catch\(\(\) => \[\]\)/)
+})
+
+test('effective mode 按工作决策、项目有效模式、policy、raw 逐级回退', () => {
+  assert.equal(typeof workspaceState.resolveProjectEffectiveMode, 'function')
+  assert.equal(workspaceState.resolveProjectEffectiveMode({
+    project: {
+      execution_mode: 'auto',
+      effective_execution_mode: 'safe',
+      effective_policy: { execution_mode: 'auto' },
+    },
+    work: {},
+  }), 'safe')
+  assert.equal(workspaceState.resolveProjectEffectiveMode({
+    project: {
+      execution_mode: 'auto',
+      effective_execution_mode: 'safe',
+      effective_policy: { execution_mode: 'safe' },
+    },
+    work: { analysis_decision: { effective_mode: 'auto' } },
+  }), 'auto')
+  assert.equal(workspaceState.resolveProjectEffectiveMode({
+    project: { execution_mode: 'safe' },
+    work: { localization_decision: { effective_mode: 'auto' } },
+  }), 'auto')
+})
+
+test('needs_attention 有限聚合计数优先，包括 0，不与事件相加', () => {
+  assert.equal(typeof workspaceState.resolveNeedsAttentionCount, 'function')
+  assert.equal(workspaceState.resolveNeedsAttentionCount({
+    project: { needs_attention_count: 0 },
+    work: { needs_attention_count: 3 },
+    events: [{ reason_code: 'generation_needs_attention' }],
+  }), 0)
+  assert.equal(workspaceState.resolveNeedsAttentionCount({
+    project: {},
+    work: { needs_attention_count: 2 },
+    events: [{ reason_code: 'generation_needs_attention' }],
+  }), 2)
+  assert.equal(workspaceState.resolveNeedsAttentionCount({
+    project: { needs_attention_count: Number.NaN },
+    work: {},
+    events: [{ reason_code: 'generation_needs_attention' }],
+  }), 1)
 })

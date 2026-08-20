@@ -86,6 +86,7 @@ const EIGHT_STAGE_LABELS = {
 
 const PHASE_STAGE_ALIAS = {
   source: 'project_input',
+  analyzing: 'source_analysis',
   analysis_review: 'source_analysis',
   localizing: 'localization',
   localization_needs_attention: 'localization',
@@ -93,6 +94,7 @@ const PHASE_STAGE_ALIAS = {
   asset_review: 'character_assets',
   asset_generating: 'generation',
   generating: 'generation',
+  video_generation: 'generation',
   reference: 'reference_preparation',
   reference_preparation: 'reference_preparation',
   generation: 'generation',
@@ -128,6 +130,61 @@ function eventNeedsAttentionForStage(event, key) {
   if (!text.includes('needs_attention')) return false
   if (text.includes(key)) return true
   return key === 'localization' && text.includes('localization_needs_attention')
+}
+
+function eventNeedsAttention(event) {
+  return [
+    event?.event_type,
+    event?.reason_code,
+    event?.status,
+    event?.phase,
+    event?.from_state,
+    event?.to_state,
+  ].filter(Boolean).join(' ').toLowerCase().includes('needs_attention')
+}
+
+function finiteCount(value) {
+  const number = Number(value)
+  return Number.isFinite(number) && number >= 0 ? number : null
+}
+
+export function resolveNeedsAttentionCount({ project = {}, work = {}, events = [] } = {}) {
+  const projectCount = finiteCount(project.needs_attention_count)
+  if (projectCount != null) return projectCount
+  const workCount = finiteCount(work.needs_attention_count)
+  if (workCount != null) return workCount
+  return Array.isArray(events) ? events.filter(eventNeedsAttention).length : 0
+}
+
+export function resolveProjectEffectiveMode({ project = {}, work = {} } = {}) {
+  return work?.analysis_decision?.effective_mode
+    || work?.localization_decision?.effective_mode
+    || project?.effective_execution_mode
+    || project?.effective_policy?.execution_mode
+    || project?.policy?.execution_mode
+    || project?.execution_mode
+    || '-'
+}
+
+function normalizeProjectEvents(value) {
+  if (Array.isArray(value)) return value
+  if (Array.isArray(value?.events)) return value.events
+  if (Array.isArray(value?.items)) return value.items
+  if (Array.isArray(value?.data)) return value.data
+  return []
+}
+
+export function resolveProjectEventsState({ previousEvents = [], nextEvents, error } = {}) {
+  if (error) {
+    return {
+      events: Array.isArray(previousEvents) ? previousEvents : [],
+      error: error.message || '项目事件读取失败',
+    }
+  }
+  return {
+    events: normalizeProjectEvents(nextEvents),
+    error: '',
+  }
 }
 
 export function analysisQuoteCredits(work) {

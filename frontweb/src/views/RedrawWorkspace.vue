@@ -34,6 +34,15 @@
           :stages="eightStageState"
         />
 
+        <el-alert
+          v-if="projectEventsError"
+          class="redraw-events-alert"
+          type="warning"
+          :closable="false"
+          :title="projectEventsError"
+          show-icon
+        />
+
         <nav class="redraw-workspace-tabs" aria-label="通用转绘工作区">
           <span v-for="tab in workspaceTabs" :key="tab">{{ tab }}</span>
         </nav>
@@ -86,6 +95,7 @@ import {
   normalizeStep,
   resolveEightStageState,
   resolveAllowedStep,
+  resolveProjectEventsState,
   resolveUpdatedStep,
 } from '@/utils/redrawWorkspaceState'
 
@@ -95,6 +105,7 @@ const loading = ref(false)
 const project = ref(null)
 const work = ref(null)
 const projectEvents = ref([])
+const projectEventsError = ref('')
 
 const projectId = computed(() => route.params.projectId)
 const workId = computed(() => route.params.workId)
@@ -115,13 +126,12 @@ const steps = [
 async function loadWorkspace() {
   loading.value = true
   try {
-    const [nextProject, nextEvents] = await Promise.all([
-      redrawAPI.getProject(projectId.value),
-      redrawAPI.listProjectEvents(projectId.value).catch(() => []),
-    ])
-    project.value = nextProject
-    projectEvents.value = Array.isArray(nextEvents) ? nextEvents : []
+    const eventsRequest = redrawAPI.listProjectEvents(projectId.value)
+      .then((nextEvents) => resolveProjectEventsState({ previousEvents: projectEvents.value, nextEvents }))
+      .catch((error) => resolveProjectEventsState({ previousEvents: projectEvents.value, error }))
+    project.value = await redrawAPI.getProject(projectId.value)
     work.value = isExistingWorkId(workId.value) ? await redrawAPI.getWork(workId.value) : null
+    applyProjectEventsState(await eventsRequest)
     const nextStep = resolveAllowedStep(route.query.step, work.value?.current_step || 1)
     if (String(route.query.step || '1') !== String(nextStep)) {
       router.replace({ query: { ...route.query, step: nextStep } })
@@ -159,7 +169,15 @@ function onWorkUpdated(nextWork) {
 }
 
 async function refreshProjectEvents() {
-  projectEvents.value = await redrawAPI.listProjectEvents(projectId.value).catch(() => projectEvents.value)
+  const nextState = await redrawAPI.listProjectEvents(projectId.value)
+    .then((nextEvents) => resolveProjectEventsState({ previousEvents: projectEvents.value, nextEvents }))
+    .catch((error) => resolveProjectEventsState({ previousEvents: projectEvents.value, error }))
+  applyProjectEventsState(nextState)
+}
+
+function applyProjectEventsState(nextState) {
+  projectEvents.value = nextState.events
+  projectEventsError.value = nextState.error
 }
 
 onMounted(loadWorkspace)
@@ -242,6 +260,10 @@ watch(() => [route.params.projectId, route.params.workId], loadWorkspace)
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  margin-bottom: 14px;
+}
+
+.redraw-events-alert {
   margin-bottom: 14px;
 }
 

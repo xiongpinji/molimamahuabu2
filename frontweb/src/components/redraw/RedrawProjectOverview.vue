@@ -50,6 +50,10 @@
 
 <script setup>
 import { computed } from 'vue'
+import {
+  resolveNeedsAttentionCount,
+  resolveProjectEffectiveMode,
+} from '@/utils/redrawWorkspaceState'
 
 const props = defineProps({
   project: {
@@ -73,29 +77,14 @@ const props = defineProps({
 const project = computed(() => props.project || {})
 const policy = computed(() => project.value.effective_policy || project.value.policy || project.value)
 const rawMode = computed(() => project.value.execution_mode || project.value.raw_execution_mode || 'safe')
-const effectiveMode = computed(() => {
-  return props.work?.analysis_decision?.effective_mode
-    || props.work?.localization_decision?.effective_mode
-    || policy.value.execution_mode
-    || project.value.effective_execution_mode
-    || '-'
-})
+const effectiveMode = computed(() => resolveProjectEffectiveMode({ project: project.value, work: props.work || {} }))
 const policyVersion = computed(() => policy.value.policy_version || project.value.policy_version || project.value.updated_at || '-')
 const reviewCount = computed(() => Number(project.value.review_pending_count ?? props.work?.review_pending_count ?? props.work?.pending_review_count ?? 0))
-const needsAttentionCount = computed(() => {
-  const fromProject = Number(project.value.needs_attention_count ?? props.work?.needs_attention_count ?? 0)
-  const fromEvents = props.events.filter((event) => {
-    const text = [
-      event?.event_type,
-      event?.reason_code,
-      event?.status,
-      event?.from_state,
-      event?.to_state,
-    ].filter(Boolean).join(' ').toLowerCase()
-    return text.includes('needs_attention')
-  }).length
-  return fromProject + fromEvents
-})
+const needsAttentionCount = computed(() => resolveNeedsAttentionCount({
+  project: project.value,
+  work: props.work || {},
+  events: props.events,
+}))
 
 function creditsText(value) {
   const number = Number(value)
