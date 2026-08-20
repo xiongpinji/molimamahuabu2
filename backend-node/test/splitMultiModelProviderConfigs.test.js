@@ -135,6 +135,28 @@ function evidenceFixture() {
     now,
     now,
   );
+  const canaryCapabilityJson = JSON.stringify({
+    serviceType: 'video',
+    generationType: 'video',
+    resolution: '720p',
+    duration: 5,
+    count: 1,
+  });
+  db.prepare(`INSERT INTO provider_canary_evidence
+      (config_id, service_type, capability_fingerprint, capability_json, state,
+       run_id, config_fingerprint, cost_fingerprint, runtime_fingerprint,
+       verified_at, expires_at, invalidated_at, invalidation_reason, created_at, updated_at)
+    VALUES (?, 'video', ?, ?, 'stale', NULL, ?, ?, ?,
+      NULL, NULL, NULL, NULL, ?, ?)`).run(
+    Number(info.lastInsertRowid),
+    crypto.createHash('sha256').update(canaryCapabilityJson).digest('hex'),
+    canaryCapabilityJson,
+    'c'.repeat(64),
+    'd'.repeat(64),
+    'e'.repeat(64),
+    now,
+    now,
+  );
   for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
     const fast = model.endsWith('fast');
     modelPriceService.set(db, model, fast ? 107 : 50, {
@@ -194,13 +216,15 @@ function rows(dbPath) {
   return result;
 }
 
-function fourTableSnapshot(db) {
+function writeSurfaceSnapshot(db) {
   return {
     configs: db.prepare('SELECT * FROM ai_service_configs ORDER BY id').all(),
     costs: db.prepare('SELECT * FROM provider_route_costs ORDER BY config_id').all(),
     tiers: db.prepare(`SELECT * FROM provider_route_resolution_costs
       ORDER BY config_id, resolution`).all(),
     audit: db.prepare('SELECT * FROM audit_events ORDER BY rowid').all(),
+    evidence: db.prepare(`SELECT * FROM provider_canary_evidence
+      ORDER BY config_id, capability_fingerprint`).all(),
   };
 }
 
@@ -438,14 +462,7 @@ function assertDuplicateSourceModelsRejected(t, sourceModels) {
   );
   const binding = validBinding(item.configId);
   for (const model of binding.models) model.evidence_sha256 = item.evidenceSha256;
-  const snapshot = () => ({
-    configs: db.prepare('SELECT * FROM ai_service_configs ORDER BY id').all(),
-    costs: db.prepare('SELECT * FROM provider_route_costs ORDER BY config_id').all(),
-    tiers: db.prepare(`SELECT * FROM provider_route_resolution_costs
-      ORDER BY config_id, resolution`).all(),
-    audit: db.prepare('SELECT * FROM audit_events ORDER BY created_at, id').all(),
-  });
-  const before = snapshot();
+  const before = writeSurfaceSnapshot(db);
   let error;
   try {
     splitTool.applyEvidenceBoundPlan(db, {
@@ -461,18 +478,18 @@ function assertDuplicateSourceModelsRejected(t, sourceModels) {
   } catch (caught) {
     error = caught;
   }
-  assert.deepEqual(snapshot(), before);
+  assert.deepEqual(writeSurfaceSnapshot(db), before);
   assert.equal(error?.code, 'INVALID_MODEL_CONFIGURATION');
   db.close();
 }
 
-test('证据绑定拆分拒绝大小写重复的源模型且四表零变化', (t) => {
+test('证据绑定拆分拒绝大小写重复的源模型且写面零变化', (t) => {
   assertDuplicateSourceModelsRejected(t, [
     'seedance-2-fast', 'SEEDANCE-2-FAST', 'seedance-2-mini',
   ]);
 });
 
-test('证据绑定拆分拒绝完全重复的源模型且四表零变化', (t) => {
+test('证据绑定拆分拒绝完全重复的源模型且写面零变化', (t) => {
   assertDuplicateSourceModelsRejected(t, [
     'seedance-2-fast', 'seedance-2-fast', 'seedance-2-mini',
   ]);
@@ -548,7 +565,7 @@ const evidenceQualificationFailures = [
 ];
 
 for (const scenario of evidenceQualificationFailures) {
-  test(`证据绑定资格失败：${scenario.name}时四表零变化`, (t) => {
+  test(`证据绑定资格失败：${scenario.name}时写面零变化`, (t) => {
     const item = evidenceFixture();
     t.after(() => cleanup(item));
     const db = new Database(item.dbPath);
@@ -556,7 +573,7 @@ for (const scenario of evidenceQualificationFailures) {
     for (const model of binding.models) model.evidence_sha256 = item.evidenceSha256;
     scenario.mutate(db, binding, item);
     const target = splitTool.readTarget(db, item.configId);
-    const before = fourTableSnapshot(db);
+    const before = writeSurfaceSnapshot(db);
     const error = captureError(() => splitTool.applyEvidenceBoundPlan(db, {
       configId: item.configId,
       expectedFingerprint: splitTool.fingerprint(target),
@@ -568,12 +585,12 @@ for (const scenario of evidenceQualificationFailures) {
       ),
     }));
     assert.equal(error.code, scenario.code);
-    assert.deepEqual(fourTableSnapshot(db), before);
+    assert.deepEqual(writeSurfaceSnapshot(db), before);
     db.close();
   });
 }
 
-test('证据绑定拆分拒绝已存在的相同供应商模型线路且四表零变化', (t) => {
+test('证据绑定拆分拒绝已存在的相同供应商模型线路且写面零变化', (t) => {
   const item = evidenceFixture();
   t.after(() => cleanup(item));
   const db = new Database(item.dbPath);
@@ -592,14 +609,14 @@ test('证据绑定拆分拒绝已存在的相同供应商模型线路且四表�
     item.configId,
   );
   const { input, overrides } = evidenceBoundInput(db, item);
-  const before = fourTableSnapshot(db);
+  const before = writeSurfaceSnapshot(db);
   const error = captureError(() => splitTool.applyEvidenceBoundPlan(db, input, overrides));
   assert.equal(error.code, 'DUPLICATE_PROVIDER_ROUTE');
-  assert.deepEqual(fourTableSnapshot(db), before);
+  assert.deepEqual(writeSurfaceSnapshot(db), before);
   db.close();
 });
 
-test('证据绑定拆分拒绝过期指纹且四表零变化', (t) => {
+test('证据绑定拆分拒绝过期指纹且写面零变化', (t) => {
   const item = evidenceFixture();
   t.after(() => cleanup(item));
   const db = new Database(item.dbPath);
@@ -608,7 +625,7 @@ test('证据绑定拆分拒绝过期指纹且四表零变化', (t) => {
   const staleFingerprint = splitTool.fingerprint(splitTool.readTarget(db, item.configId));
   db.prepare('UPDATE ai_service_configs SET priority = priority + 1 WHERE id = ?')
     .run(item.configId);
-  const before = fourTableSnapshot(db);
+  const before = writeSurfaceSnapshot(db);
   const error = captureError(() => splitTool.applyEvidenceBoundPlan(db, {
     configId: item.configId,
     expectedFingerprint: staleFingerprint,
@@ -620,7 +637,7 @@ test('证据绑定拆分拒绝过期指纹且四表零变化', (t) => {
     ),
   }));
   assert.equal(error.code, 'STALE_FINGERPRINT');
-  assert.deepEqual(fourTableSnapshot(db), before);
+  assert.deepEqual(writeSurfaceSnapshot(db), before);
   db.close();
 });
 
@@ -630,18 +647,18 @@ test('证据绑定拆分重复执行返回固定幂等错误且不新增克隆�
   const db = new Database(item.dbPath);
   const { input, overrides } = evidenceBoundInput(db, item);
   splitTool.applyEvidenceBoundPlan(db, input, overrides);
-  const before = fourTableSnapshot(db);
+  const before = writeSurfaceSnapshot(db);
   const current = splitTool.readTarget(db, item.configId);
   const error = captureError(() => splitTool.applyEvidenceBoundPlan(db, {
     ...input,
     expectedFingerprint: splitTool.fingerprint(current),
   }, overrides));
   assert.equal(error.code, 'ALREADY_EVIDENCE_BOUND_SPLIT');
-  assert.deepEqual(fourTableSnapshot(db), before);
+  assert.deepEqual(writeSurfaceSnapshot(db), before);
   db.close();
 });
 
-test('成本或审计失败时源配置、克隆、成本和审计全部回滚', async (t) => {
+test('成本或审计失败时配置、成本、巡检证据和审计全部回滚', async (t) => {
   for (const failure of [
     { stage: 'cost', code: 'FIXTURE_COST_FAILURE' },
     { stage: 'audit', code: 'FIXTURE_AUDIT_FAILURE' },
@@ -651,7 +668,11 @@ test('成本或审计失败时源配置、克隆、成本和审计全部回滚',
       subtest.after(() => cleanup(item));
       const db = new Database(item.dbPath);
       const { input, overrides } = evidenceBoundInput(db, item);
-      const before = fourTableSnapshot(db);
+      const before = writeSurfaceSnapshot(db);
+      assert.equal(before.evidence.length, 1);
+      assert.equal(before.evidence[0].state, 'stale');
+      assert.equal(before.evidence[0].invalidated_at, null);
+      assert.equal(before.evidence[0].invalidation_reason, null);
       let costCalls = 0;
       const error = captureError(() => splitTool.applyEvidenceBoundPlan(db, input, {
         ...overrides,
@@ -666,6 +687,12 @@ test('成本或审计失败时源配置、克隆、成本和审计全部回滚',
         },
         recordAudit: (...args) => {
           if (failure.stage === 'audit') {
+            const invalidatedEvidence = args[0].prepare(`SELECT state, invalidated_at,
+                invalidation_reason FROM provider_canary_evidence WHERE config_id = ?`)
+              .get(item.configId);
+            assert.equal(invalidatedEvidence.state, 'stale');
+            assert.ok(invalidatedEvidence.invalidated_at);
+            assert.equal(invalidatedEvidence.invalidation_reason, 'cost_changed');
             const injected = new Error(failure.code);
             injected.code = failure.code;
             throw injected;
@@ -674,7 +701,7 @@ test('成本或审计失败时源配置、克隆、成本和审计全部回滚',
         },
       }));
       assert.equal(error.code, failure.code);
-      assert.deepEqual(fourTableSnapshot(db), before);
+      assert.deepEqual(writeSurfaceSnapshot(db), before);
       assert.equal(db.prepare('SELECT COUNT(*) AS count FROM provider_route_costs').get().count, 0);
       assert.equal(
         db.prepare('SELECT COUNT(*) AS count FROM provider_route_resolution_costs').get().count,
