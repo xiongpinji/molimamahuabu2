@@ -842,16 +842,23 @@ test('转绘本地化任务与资产批次迁移可重复执行并保留幂等�
   runMigrationsAndEnsure(db);
   runMigrationsAndEnsure(db);
 
-  const versionColumns = columnNames(db, 'redraw_versions');
+  const versionColumnRows = db.prepare('PRAGMA table_info(redraw_versions)').all();
+  const versionColumns = versionColumnRows.map((row) => row.name);
   for (const name of [
     'localization_task_id',
     'localization_credit_reservation_id',
     'localization_input_hash',
     'localization_idempotency_key',
     'localization_model_snapshot_json',
+    'text_map_json',
   ]) {
     assert.ok(versionColumns.includes(name), name);
   }
+  const textMapColumn = versionColumnRows.find((row) => row.name === 'text_map_json');
+  assert.deepEqual(
+    { type: textMapColumn.type, notnull: textMapColumn.notnull, default: textMapColumn.dflt_value },
+    { type: 'TEXT', notnull: 1, default: "'{}'" },
+  );
 
   const batchColumns = columnNames(db, 'redraw_asset_batches');
   for (const name of [
@@ -875,6 +882,67 @@ test('转绘本地化任务与资产批次迁移可重复执行并保留幂等�
 
   const versionIndexes = db.prepare('PRAGMA index_list(redraw_versions)').all();
   assert.ok(versionIndexes.some((index) => index.name === 'uq_redraw_localization_idempotency'));
+  const projectId = insertProject(db);
+  const workId = insertWork(db, projectId);
+  const versionId = insertVersion(db, workId);
+  assert.deepEqual(JSON.parse(db.prepare('SELECT text_map_json FROM redraw_versions WHERE id = ?').get(versionId).text_map_json), {});
+});
+
+test('旧库 redraw_versions 补齐 text_map_json 且保留旧版本数据', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      work_id INTEGER NOT NULL,
+      version INTEGER NOT NULL,
+      locale TEXT NOT NULL,
+      market TEXT NOT NULL DEFAULT '',
+      localization_level TEXT NOT NULL DEFAULT 'faithful',
+      source_facts_json TEXT,
+      glossary_json TEXT NOT NULL DEFAULT '{}',
+      name_map_json TEXT NOT NULL DEFAULT '{}',
+      culture_map_json TEXT NOT NULL DEFAULT '{}',
+      style_snapshot_json TEXT NOT NULL DEFAULT '{"tone":"legacy"}',
+      capability_snapshot_json TEXT NOT NULL DEFAULT '{}',
+      facts_hash TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );
+    INSERT INTO redraw_versions
+      (work_id, version, locale, market, localization_level, source_facts_json,
+       glossary_json, name_map_json, culture_map_json, style_snapshot_json, capability_snapshot_json,
+       facts_hash, status, created_at, updated_at, deleted_at)
+    VALUES
+      (1, 1, 'source', '', 'faithful', '{"locked":true}',
+       '{"keep":"glossary"}', '{"keep":"name"}', '{"keep":"culture"}', '{"tone":"legacy"}', '{}',
+       'hash-a', 'asset_review', '${NOW}', '${NOW}', NULL);
+  `);
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+
+  const columns = new Map(db.prepare('PRAGMA table_info(redraw_versions)').all().map((row) => [row.name, row]));
+  assert.deepEqual(
+    {
+      type: columns.get('text_map_json').type,
+      notnull: columns.get('text_map_json').notnull,
+      default: columns.get('text_map_json').dflt_value,
+    },
+    { type: 'TEXT', notnull: 1, default: "'{}'" },
+  );
+  assert.deepEqual(
+    db.prepare('SELECT source_facts_json, glossary_json, name_map_json, culture_map_json, style_snapshot_json, text_map_json FROM redraw_versions WHERE id = 1').get(),
+    {
+      source_facts_json: '{"locked":true}',
+      glossary_json: '{"keep":"glossary"}',
+      name_map_json: '{"keep":"name"}',
+      culture_map_json: '{"keep":"culture"}',
+      style_snapshot_json: '{"tone":"legacy"}',
+      text_map_json: '{}',
+    },
+  );
 });
 
 test('参考包列迁移幂等且旧生成默认关闭', () => {

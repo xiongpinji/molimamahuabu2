@@ -649,6 +649,7 @@ function runLocalizationJob(db, records, deps) {
           glossary: normalized.glossary,
           nameMap: normalized.name_map,
           cultureMap: normalized.culture_map,
+          textMap: normalized.text_map,
           dialogue: normalized.dialogue,
           styleSnapshot: quote.snapshot.input.style_snapshot,
           modelSnapshot: quote.snapshot,

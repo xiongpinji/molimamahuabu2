@@ -173,6 +173,7 @@ function createDb(options = {}) {
       glossary_json TEXT NOT NULL DEFAULT '{}',
       name_map_json TEXT NOT NULL DEFAULT '{}',
       culture_map_json TEXT NOT NULL DEFAULT '{}',
+      text_map_json TEXT NOT NULL DEFAULT '{}',
       style_snapshot_json TEXT NOT NULL DEFAULT '{}',
       capability_snapshot_json TEXT NOT NULL DEFAULT '{}',
       localization_input_hash TEXT,
@@ -503,7 +504,20 @@ test('v2 物化仅保存源片事实白名单并以 source_character_key 幂等�
   assert.equal(firstDraft.composition, source.shots[0].composition);
   assert.equal(firstDraft.opening_state, source.shots[0].opening_state);
   assert.equal(JSON.parse(shots[0].compiled_prompt_json).composition, source.shots[0].composition);
-  assert.deepEqual(JSON.parse(shots[1].draft_json).text_regions, source.shots[1].text_regions);
+  const secondDraft = JSON.parse(shots[1].draft_json);
+  const secondCompiled = JSON.parse(shots[1].compiled_prompt_json);
+  assert.deepEqual(secondDraft.text_regions, [{
+    ...source.shots[1].text_regions[0],
+    target_text: 'CALL MOM',
+  }]);
+  assert.deepEqual(secondCompiled.text_regions, secondDraft.text_regions);
+  assert.equal(secondDraft.text_regions[0].source_text, '给妈妈打电话');
+  assert.equal(secondDraft.text_regions[0].kind, 'phone_screen');
+
+  const row = db.prepare('SELECT text_map_json, source_facts_json, style_snapshot_json FROM redraw_versions WHERE id = ?').get(draft.id);
+  assert.deepEqual(JSON.parse(row.text_map_json), { 'shot-2:screen-1': 'CALL MOM' });
+  assert.equal(row.source_facts_json, JSON.stringify(source));
+  assert.deepEqual(JSON.parse(row.style_snapshot_json), {});
 
   const assets = db.prepare('SELECT kind, source_ref_json, localized_name FROM redraw_assets WHERE version_id = ? ORDER BY id').all(draft.id);
   assert.equal(assets.length, 4);
@@ -531,6 +545,39 @@ test('v2 物化仅保存源片事实白名单并以 source_character_key 幂等�
   assert.equal(replay.id, draft.id);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_assets WHERE version_id = ?').get(draft.id).count, 4);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_shots WHERE version_id = ?').get(draft.id).count, 2);
+  db.close();
+});
+
+test('v2 物化拒绝缺失 text_map 目标且不留下部分版本证据', () => {
+  const db = createV2Db();
+  const source = v2SourceFacts();
+  const draft = createLocalizationDraft(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, {
+    locale: 'en-US',
+    market: 'US',
+    localizationLevel: 'faithful',
+    inputHash: source.facts_hash,
+    idempotencyKey: 'confirm-v2-missing-text-map',
+    modelSnapshot: { provider: 'provider-a', model: 'model-a' },
+  });
+  const normalized = normalizeLocalizationResult(v2LocalizationResult(), source);
+
+  assert.throws(
+    () => materializeLocalizationDraft(db, { tenantId: 'tenant-a', userId: 'user-a' }, draft.id, {
+      workId: 1,
+      locale: 'en-US',
+      market: 'US',
+      localizationLevel: 'faithful',
+      sourceFacts: source,
+      sourceFactsHash: source.facts_hash,
+      ...normalized,
+      text_map: {},
+    }),
+    (error) => error.code === 'LOCALIZATION_TEXT_REGION_MISMATCH',
+  );
+  assert.equal(db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(draft.id).status, 'draft');
+  assert.deepEqual(JSON.parse(db.prepare('SELECT text_map_json FROM redraw_versions WHERE id = ?').get(draft.id).text_map_json), {});
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_shots WHERE version_id = ?').get(draft.id).count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_assets WHERE version_id = ?').get(draft.id).count, 0);
   db.close();
 });
 

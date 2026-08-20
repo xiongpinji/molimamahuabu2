@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS redraw_versions (
   glossary_json TEXT NOT NULL DEFAULT '{}',
   name_map_json TEXT NOT NULL DEFAULT '{}',
   culture_map_json TEXT NOT NULL DEFAULT '{}',
+  text_map_json TEXT NOT NULL DEFAULT '{}',
   style_snapshot_json TEXT NOT NULL DEFAULT '{}',
   capability_snapshot_json TEXT NOT NULL DEFAULT '{}',
   facts_hash TEXT,

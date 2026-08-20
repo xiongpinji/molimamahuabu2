@@ -669,7 +669,7 @@ function hasColumn(db, table, column) {
   return db.prepare(`PRAGMA table_info(${table})`).all().some((row) => row.name === column);
 }
 
-function v2ShotFactDraft(shot = {}) {
+function v2ShotFactDraft(shot = {}, textMap = {}) {
   return {
     composition: clone(shot.composition || ''),
     camera_movement: clone(shot.camera_movement || ''),
@@ -677,7 +677,16 @@ function v2ShotFactDraft(shot = {}) {
     continuous_action: clone(shot.continuous_action || ''),
     ending_state: clone(shot.ending_state || ''),
     visible_character_ids: clone(Array.isArray(shot.visible_character_ids) ? shot.visible_character_ids : []),
-    text_regions: clone(Array.isArray(shot.text_regions) ? shot.text_regions : []),
+    text_regions: (Array.isArray(shot.text_regions) ? shot.text_regions : []).map((region) => {
+      const key = `${String(shot.id)}:${String(region?.id)}`;
+      if (!Object.prototype.hasOwnProperty.call(textMap, key)) {
+        throw codedError('LOCALIZATION_TEXT_REGION_MISMATCH', 'v2 text_map target missing');
+      }
+      return {
+        ...clone(region),
+        target_text: textMap[key],
+      };
+    }),
     audio_contract: clone(shot.audio_contract || {}),
   };
 }
@@ -767,6 +776,9 @@ function createLocalizationVersion(db, owner, workId, input) {
       });
     }
     const dialogueByShot = localizedDialogueByShot(input, persistedSourceFacts, locale);
+    const textMap = isV2
+      ? normalizeV2TextMap(input.textMap ?? input.text_map ?? {}, persistedSourceFacts)
+      : {};
     const draft = input.draftVersionId != null
       ? findOwnedDraftVersion(db, owner, input.draftVersionId, workId)
       : createLocalizationDraftRecord(db, owner, workId, {
@@ -878,7 +890,7 @@ function createLocalizationVersion(db, owner, workId, input) {
         if (!assetId || !overlapsShot(prop.evidence_ranges, sourceShot)) continue;
         references.push({ kind: 'prop', asset_id: assetId, anchor: `prop:${prop.id}` });
       }
-      const draftJson = isV2 ? JSON.stringify(v2ShotFactDraft(factShot)) : '{}';
+      const draftJson = isV2 ? JSON.stringify(v2ShotFactDraft(factShot, textMap)) : '{}';
       const compiledPromptJson = isV2 ? draftJson : '{}';
       const shotParams = [
         Number(workId),
@@ -909,13 +921,14 @@ function createLocalizationVersion(db, owner, workId, input) {
     const finalized = db.prepare(`
       UPDATE redraw_versions
       SET source_facts_json = ?, glossary_json = ?, name_map_json = ?, culture_map_json = ?,
-        style_snapshot_json = ?, facts_hash = ?, status = 'asset_review', updated_at = ?
+        text_map_json = ?, style_snapshot_json = ?, facts_hash = ?, status = 'asset_review', updated_at = ?
       WHERE id = ? AND status = 'draft'
     `).run(
       sourceVersion.source_facts_json,
       JSON.stringify(input.glossary || input.glossaryMap || {}),
       JSON.stringify(input.nameMap || input.name_map || {}),
       JSON.stringify(input.cultureMap || input.culture_map || {}),
+      JSON.stringify(textMap),
       JSON.stringify(input.styleSnapshot || input.style_snapshot || {}),
       persistedFactsHash,
       now,

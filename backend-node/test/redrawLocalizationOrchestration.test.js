@@ -192,6 +192,7 @@ function createDb(options = {}) {
       glossary_json TEXT NOT NULL DEFAULT '{}',
       name_map_json TEXT NOT NULL DEFAULT '{}',
       culture_map_json TEXT NOT NULL DEFAULT '{}',
+      text_map_json TEXT NOT NULL DEFAULT '{}',
       style_snapshot_json TEXT NOT NULL DEFAULT '{}',
       capability_snapshot_json TEXT NOT NULL DEFAULT '{}',
       localization_task_id TEXT,
@@ -631,6 +632,12 @@ test('v2 localization auto advances only when all confidence thresholds pass and
     current_step: 2,
     status: 'asset_review',
   });
+  const version = db.prepare('SELECT text_map_json FROM redraw_versions WHERE id = ?').get(started.draft_version_id);
+  assert.deepEqual(JSON.parse(version.text_map_json), { 'shot-2:screen-1': 'CALL MOM' });
+  const shot = db.prepare("SELECT draft_json, compiled_prompt_json FROM redraw_shots WHERE version_id = ? AND shot_id = 'shot-2'")
+    .get(started.draft_version_id);
+  assert.equal(JSON.parse(shot.draft_json).text_regions[0].target_text, 'CALL MOM');
+  assert.equal(JSON.parse(shot.compiled_prompt_json).text_regions[0].target_text, 'CALL MOM');
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_asset_batch'").get().count, 0);
   assert.deepEqual(db.prepare('SELECT reason_code, to_state FROM redraw_workflow_events').get(), {
     reason_code: 'localization_completed',
