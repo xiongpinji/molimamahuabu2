@@ -836,6 +836,120 @@ test('转绘项目列表与创建按租户和用户隔离', () => {
   }
 });
 
+test('创建转绘项目原子保存并投影新项目策略', () => {
+  const db = createDb();
+  try {
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const created = captureResponse();
+    handlers.createProject(request({
+      body: {
+        title: '英语自动复刻项目',
+        default_locale: 'en-US',
+        default_market: 'US',
+        localization_level: 'localized',
+        execution_mode: 'auto',
+        budget_limit_credits: 120,
+        max_auto_attempts_per_shot: 3,
+      },
+    }), created);
+    assert.equal(created.statusCode, 201);
+    assert.deepEqual(
+      {
+        execution_mode: created.body.data.execution_mode,
+        budget_limit_credits: created.body.data.budget_limit_credits,
+        max_auto_attempts_per_shot: created.body.data.max_auto_attempts_per_shot,
+        policy_version: created.body.data.policy_version,
+        default_locale: created.body.data.default_locale,
+        default_market: created.body.data.default_market,
+      },
+      {
+        execution_mode: 'auto',
+        budget_limit_credits: 120,
+        max_auto_attempts_per_shot: 3,
+        policy_version: 1,
+        default_locale: 'en-US',
+        default_market: 'US',
+      },
+    );
+    assert.equal(JSON.stringify(created.body.data).includes('automation_policy_json'), false);
+
+    const stored = db.prepare(`
+      SELECT execution_mode, budget_limit_credits, max_auto_attempts_per_shot,
+             policy_version, default_locale, default_market
+      FROM redraw_projects WHERE id = ?
+    `).get(created.body.data.id);
+    assert.deepEqual(stored, {
+      execution_mode: 'auto',
+      budget_limit_credits: 120,
+      max_auto_attempts_per_shot: 3,
+      policy_version: 1,
+      default_locale: 'en-US',
+      default_market: 'US',
+    });
+
+    const own = captureResponse();
+    handlers.getProject(request({ id: created.body.data.id }), own);
+    assert.equal(own.statusCode, 200);
+    assert.equal(own.body.data.execution_mode, 'auto');
+    assert.equal(own.body.data.budget_limit_credits, 120);
+    assert.equal(own.body.data.max_auto_attempts_per_shot, 3);
+    assert.equal(own.body.data.policy_version, 1);
+
+    const listed = captureResponse();
+    handlers.listProjects(request(), listed);
+    assert.equal(listed.statusCode, 200);
+    assert.equal(listed.body.data[0].execution_mode, 'auto');
+    assert.equal(listed.body.data[0].budget_limit_credits, 120);
+    assert.equal(listed.body.data[0].max_auto_attempts_per_shot, 3);
+    assert.equal(listed.body.data[0].policy_version, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('创建转绘项目严格拒绝新合同非法策略目标与客户端注入且零写入', () => {
+  const db = createDb();
+  try {
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+    const cases = [
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'manual', budget_limit_credits: 10, max_auto_attempts_per_shot: 1 },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'auto', max_auto_attempts_per_shot: 1 },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'auto', budget_limit_credits: 10 },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'auto', budget_limit_credits: 10, max_auto_attempts_per_shot: 6 },
+      { title: 'bad', default_locale: '', default_market: 'US', execution_mode: 'safe' },
+      { title: 'bad', default_locale: ['en-US', 'es-ES'], default_market: 'US', execution_mode: 'safe' },
+      { title: 'bad', default_locale: 'en-US', default_market: '', execution_mode: 'safe' },
+      { title: 'bad', default_locale: 'en-US', default_market: ['US', 'GB'], execution_mode: 'safe' },
+      { title: 'bad', default_locale: 'en-US', default_market: 'us', execution_mode: 'safe' },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'safe', spent_credits: 1 },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'safe', held_credits: 1 },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'safe', model: 'client' },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'safe', provider: 'client' },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'safe', reservation_id: 'client' },
+      JSON.parse('{"title":"bad","default_locale":"en-US","default_market":"US","execution_mode":"safe","__proto__":{"polluted":true}}'),
+    ];
+    for (const body of cases) {
+      const res = captureResponse();
+      handlers.createProject(request({ body }), res);
+      assert.equal(res.statusCode, 400, JSON.stringify(body));
+    }
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_projects').get().count, 0);
+
+    const legacy = captureResponse();
+    handlers.createProject(request({ body: { title: '旧客户端项目' } }), legacy);
+    assert.equal(legacy.statusCode, 201);
+    assert.equal(legacy.body.data.execution_mode, 'safe');
+    assert.equal(legacy.body.data.default_locale, 'en-US');
+    assert.equal(legacy.body.data.default_market, '');
+    assert.equal(legacy.body.data.budget_limit_credits, null);
+    assert.equal(legacy.body.data.max_auto_attempts_per_shot, null);
+    assert.equal(legacy.body.data.policy_version, 1);
+  } finally {
+    db.close();
+  }
+});
+
 test('转绘项目详情跨租户和跨用户返回 404', () => {
   const db = createDb();
   try {

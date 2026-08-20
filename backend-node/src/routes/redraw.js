@@ -135,6 +135,12 @@ function mapProject(row) {
     default_market: row.default_market,
     localization_level: row.localization_level,
     status: row.status,
+    execution_mode: row.execution_mode || 'safe',
+    budget_limit_credits: row.budget_limit_credits == null ? null : Number(row.budget_limit_credits),
+    max_auto_attempts_per_shot: row.max_auto_attempts_per_shot == null
+      ? null
+      : Number(row.max_auto_attempts_per_shot),
+    policy_version: Number(row.policy_version || 1),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -444,6 +450,23 @@ const PROJECT_POLICY_FIELDS = new Set([
   'max_auto_attempts_per_shot',
   'expected_updated_at',
 ]);
+const PROJECT_CREATE_FIELDS = new Set([
+  'title',
+  'default_locale',
+  'default_market',
+  'localization_level',
+  'execution_mode',
+  'budget_limit_credits',
+  'max_auto_attempts_per_shot',
+]);
+const PROJECT_CREATE_STRICT_FIELDS = new Set([
+  'default_locale',
+  'default_market',
+  'localization_level',
+  'execution_mode',
+  'budget_limit_credits',
+  'max_auto_attempts_per_shot',
+]);
 const PROJECT_POLICY_DANGEROUS_FIELDS = new Set(['__proto__', 'constructor', 'prototype']);
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 
@@ -453,6 +476,55 @@ function generationInputError(message) {
 
 function identityPackInputError(message) {
   return codedRouteError('REDRAW_CHARACTER_IDENTITY_INPUT_INVALID', message);
+}
+
+function projectCreateInputError(message) {
+  return codedRouteError('REDRAW_PROJECT_CREATE_INVALID', message);
+}
+
+function strictCreateProjectRequested(body) {
+  return [...PROJECT_CREATE_STRICT_FIELDS].some((field) => hasOwn(body, field));
+}
+
+function validateProjectCreateBody(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw projectCreateInputError('转绘项目参数必须是对象');
+  }
+  const proto = Object.getPrototypeOf(body);
+  if (proto !== Object.prototype && proto !== null) {
+    throw projectCreateInputError('转绘项目参数必须是普通对象');
+  }
+  for (const key of Object.keys(body)) {
+    if (PROJECT_POLICY_DANGEROUS_FIELDS.has(key) || !PROJECT_CREATE_FIELDS.has(key)) {
+      throw projectCreateInputError(`转绘项目不接受字段 ${key}`);
+    }
+  }
+}
+
+function normalizeCreateLocale(value) {
+  if (typeof value !== 'string') throw projectCreateInputError('default_locale 必须是单一语言代码');
+  const locale = value.trim();
+  if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(locale)) {
+    throw projectCreateInputError('default_locale 必须是有效单一语言代码');
+  }
+  return locale;
+}
+
+function normalizeCreateMarket(value) {
+  if (typeof value !== 'string') throw projectCreateInputError('default_market 必须是单一国家或地区代码');
+  const market = value.trim();
+  if (!/^[A-Z]{2}$/.test(market)) {
+    throw projectCreateInputError('default_market 必须是 2 位大写国家或地区代码');
+  }
+  return market;
+}
+
+function normalizeCreateLocalizationLevel(value) {
+  if (value == null || value === '') return 'faithful';
+  if (typeof value !== 'string') throw projectCreateInputError('localization_level 必须是字符串');
+  const level = value.trim();
+  if (!level) throw projectCreateInputError('localization_level 不能为空');
+  return level;
 }
 
 function identityPackInput(body) {
@@ -1810,22 +1882,70 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     if (!currentOwner.tenantId || !currentOwner.userId) {
       return response.badRequest(res, '缺少租户或用户身份');
     }
-    const title = String(req.body?.title || '').trim();
+    const body = req.body || {};
+    try {
+      validateProjectCreateBody(body);
+    } catch (error) {
+      return response.error(res, 400, error.code || 'REDRAW_PROJECT_CREATE_INVALID', error.message || '转绘项目参数无效');
+    }
+
+    const title = String(body.title || '').trim();
     if (!title) return response.badRequest(res, '请输入转绘项目标题');
+
+    const strictCreate = strictCreateProjectRequested(body);
+    let defaultLocale = 'en-US';
+    let defaultMarket = '';
+    let localizationLevel = 'faithful';
+    let policy = {
+      execution_mode: 'safe',
+      budget_limit_credits: null,
+      max_auto_attempts_per_shot: null,
+    };
+    try {
+      if (strictCreate) {
+        defaultLocale = normalizeCreateLocale(body.default_locale);
+        defaultMarket = normalizeCreateMarket(body.default_market);
+        localizationLevel = normalizeCreateLocalizationLevel(body.localization_level);
+      }
+      if (
+        hasOwn(body, 'execution_mode')
+        || hasOwn(body, 'budget_limit_credits')
+        || hasOwn(body, 'max_auto_attempts_per_shot')
+      ) {
+        policy = redrawProjectPolicyService.normalizeProjectPolicy({
+          ...(hasOwn(body, 'execution_mode') ? { execution_mode: body.execution_mode } : {}),
+          ...(hasOwn(body, 'budget_limit_credits')
+            ? { budget_limit_credits: body.budget_limit_credits }
+            : {}),
+          ...(hasOwn(body, 'max_auto_attempts_per_shot')
+            ? { max_auto_attempts_per_shot: body.max_auto_attempts_per_shot }
+            : {}),
+        });
+      }
+    } catch (error) {
+      const code = String(error.code || '').startsWith('REDRAW_PROJECT_POLICY_')
+        ? error.code
+        : 'REDRAW_PROJECT_CREATE_INVALID';
+      return response.error(res, 400, code, error.message || '转绘项目参数无效');
+    }
 
     const now = new Date().toISOString();
     const result = db.prepare(`
       INSERT INTO redraw_projects
         (tenant_id, user_id, title, default_locale, default_market, localization_level,
-         status, created_at, updated_at, deleted_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, NULL)
+         status, execution_mode, budget_limit_credits, max_auto_attempts_per_shot,
+         policy_version, created_at, updated_at, deleted_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, 1, ?, ?, NULL)
     `).run(
       currentOwner.tenantId,
       currentOwner.userId,
       title,
-      String(req.body?.default_locale || 'en-US').trim() || 'en-US',
-      String(req.body?.default_market || '').trim(),
-      String(req.body?.localization_level || 'faithful').trim() || 'faithful',
+      defaultLocale,
+      defaultMarket,
+      localizationLevel,
+      policy.execution_mode,
+      policy.budget_limit_credits,
+      policy.max_auto_attempts_per_shot,
       now,
       now,
     );
