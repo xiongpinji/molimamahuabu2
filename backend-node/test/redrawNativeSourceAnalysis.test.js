@@ -21,26 +21,32 @@ function createDb() {
 
 function validFacts(durationMs = 1000) {
   return {
+    schema_version: '2.0',
     duration_ms: durationMs,
-    characters: [{ id: 'c1', source_name: '林娜', relationships: [] }],
+    story: ['林娜在室内发现手机消息'],
+    characters: [{ id: 'c1', source_name: '林娜', display_name: '林娜', relationship: '主人公', relationships: [] }],
     scenes: [{ id: 's1', location: '室内', time: '白天', source_ranges: [{ start_ms: 0, end_ms: durationMs }] }],
     props: [{ id: 'p1', name: '手机', evidence_ranges: [{ start_ms: 0, end_ms: Math.min(1000, durationMs) }] }],
     shots: [{
       id: 'sh1',
+      index: 1,
       start_ms: 0,
       end_ms: durationMs,
-      dialogue: [{
-        speaker_id: 'c1',
-        text: '你好',
-        start_ms: Math.min(100, Math.max(0, durationMs - 2)),
-        end_ms: Math.min(900, Math.max(1, durationMs - 1)),
-        emotion: '平静',
-        overlap_group: null,
-      }],
-      screen_text: '',
+      composition: '林娜站在室内桌边的中景',
+      camera_movement: '固定机位',
       opening_state: '林娜看向镜头',
       continuous_action: '她举起手机',
       ending_state: '手机停在胸前',
+      visible_character_ids: ['c1'],
+      dialogue: [],
+      text_regions: [{
+        id: 'txt1',
+        kind: 'subtitle',
+        source_text: '未接来电',
+        polygon: [[0.2, 0.82], [0.8, 0.82], [0.8, 0.92], [0.2, 0.92]],
+      }],
+      audio_contract: { dialogue_mode: 'silent', ambient_audio: 'preserve_or_rebuild' },
+      confidence: { character_mapping: 0.82, speaker_mapping: 0.2, text_regions: 0.8, shot_boundary: 0.86 },
     }],
     causal_chain: ['林娜举起手机引出下一步行动'],
     locked_facts: ['林娜在室内拿着手机'],
@@ -124,9 +130,12 @@ test('analyzeNativeSource creates contact sheets, strict facts JSON and a readab
       visionDetailed: async (payload) => {
         calls.push(payload);
         assert.equal(payload.imageSources.length, 2);
+        assert.match(payload.userPrompt, /schema_version.*2\.0/);
         assert.match(payload.userPrompt, /start_ms/);
         assert.match(payload.userPrompt, /end_ms/);
         assert.match(payload.userPrompt, /gap-free/);
+        assert.match(payload.userPrompt, /do not guess speech/i);
+        assert.match(payload.userPrompt, /audio_contract/);
         for (const source of payload.imageSources) {
           assert.match(source.localAbsPath, /redraw-native-/);
           assert.equal(path.resolve(source.localAbsPath).startsWith(path.resolve(storageRoot)), false);
@@ -164,8 +173,10 @@ test('analyzeNativeSource creates contact sheets, strict facts JSON and a readab
     assert.equal(fs.existsSync(resultPath), true);
     const saved = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
     assert.equal(saved.provider_task_id, 'vision-real-id-1');
+    assert.equal(saved.schema_version, '2.0');
     assert.equal(saved.raw_hash, 'a'.repeat(64));
     assert.equal(saved.facts.facts_hash, result.facts.facts_hash);
+    assert.equal(JSON.parse(asset.metadata).schema_version, '2.0');
     assert.equal(calls[0].imageSources.every((source) => !fs.existsSync(source.localAbsPath)), true);
   } finally {
     db.close();
@@ -229,8 +240,13 @@ test('analyzeNativeSource rejects native dialogue without exact timings before a
     const sourceRelative = createSampleVideo(storageRoot);
     addWork(db, { localPath: sourceRelative });
     const facts = validFacts();
-    delete facts.shots[0].dialogue[0].start_ms;
-    delete facts.shots[0].dialogue[0].end_ms;
+    facts.shots[0].audio_contract.dialogue_mode = 'spoken';
+    facts.shots[0].dialogue.push({
+      id: 't1',
+      speaker_id: 'c1',
+      source_text: '你好',
+      end_ms: 900,
+    });
     await assert.rejects(
       () => nativeAnalysis.analyzeNativeSource({
         db,
@@ -250,7 +266,7 @@ test('analyzeNativeSource rejects native dialogue without exact timings before a
         taskId: 'task-native-timing',
         model: 'vision-model',
       }),
-      (error) => error.code === 'REDRAW_NATIVE_DIALOGUE_TIMING_REQUIRED',
+      /start_ms|dialogue/,
     );
     assert.equal(
       db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category = 'redraw_source_analysis'").get().count,

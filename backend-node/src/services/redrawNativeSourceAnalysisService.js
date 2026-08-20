@@ -117,7 +117,8 @@ function sheetFilter(mode, page) {
   const rows = Math.ceil(page.frameCount / SHEET_COLUMNS);
   const prefix = mode === 'lower_third' ? 'crop=iw:ih/3:0:ih*2/3,' : '';
   const offset = page.startSeconds.toFixed(3);
-  const timestamp = `drawtext=text='page+${offset}s %{pts\\:hms}':x=4:y=4:fontsize=12:fontcolor=white:box=1:boxcolor=black@0.75`;
+  const fontFile = '/Windows/Fonts/arial.ttf';
+  const timestamp = `drawtext=fontfile=${fontFile}:text='page+${offset}s %{pts\\:hms}':x=4:y=4:fontsize=12:fontcolor=white:box=1:boxcolor=black@0.75`;
   return `${prefix}fps=${page.sampleRate},scale=240:-1,${timestamp},tile=${SHEET_COLUMNS}x${rows}:nb_frames=${page.frameCount}:padding=4:margin=4:color=black`;
 }
 
@@ -191,15 +192,19 @@ function getAsset(db, assetId) {
 
 function buildPrompt(probe) {
   return [
-    'You are analyzing a short-drama source video for strict 1:1 redraw.',
+    'You are analyzing a short-drama source video for strict 1:1 redraw facts v2.',
     'Return ONLY JSON with one top-level key named source_facts.',
+    'source_facts.schema_version MUST be "2.0". Do not add explanations or any keys outside the schema.',
     'The images cover the full source in chronological pages. Every tile is labeled with its page offset and relative timestamp.',
     'Do not invent characters, scenes, props, reversals, dialogue, or timing that is not visible.',
-    'For dialogue, transcribe only visibly burned-in subtitles or visible screen dialogue; never infer speech from faces.',
-    'Every non-empty dialogue line MUST contain speaker_id, text, integer start_ms, integer end_ms, emotion, and overlap_group.',
-    'Shots MUST be chronological, gap-free, non-overlapping, start at 0, and end at duration_ms.',
+    'For dialogue, use only provided audio transcript evidence or visibly burned-in subtitles. No transcript evidence is provided here, so do not guess speech from mouths, faces, or contact-sheet context.',
+    'When dialogue evidence is absent, set audio_contract.dialogue_mode to "silent", keep dialogue empty, and keep speaker_mapping confidence low.',
+    'Every spoken dialogue turn MUST contain id, speaker_id, source_text, integer start_ms, and integer end_ms.',
+    'Shots MUST be chronological, continuous, gap-free, non-overlapping, start at 0, and end at duration_ms.',
+    'Each shot MUST include composition, camera_movement, opening_state, continuous_action, ending_state, visible_character_ids, dialogue, text_regions, audio_contract, and confidence.',
+    'text_regions polygon coordinates MUST be normalized 0..1 points with at least 3 non-collinear points.',
     'Use this exact source_facts schema:',
-    '{"duration_ms":0,"characters":[{"id":"c1","source_name":"","relationships":[]}],"scenes":[{"id":"s1","location":"","time":"","source_ranges":[{"start_ms":0,"end_ms":1}]}],"props":[{"id":"p1","name":"","evidence_ranges":[{"start_ms":0,"end_ms":1}]}],"shots":[{"id":"shot-1","start_ms":0,"end_ms":1,"dialogue":[{"speaker_id":"c1","text":"","start_ms":0,"end_ms":1,"emotion":"","overlap_group":null}],"screen_text":"","opening_state":"","continuous_action":"","ending_state":""}],"causal_chain":[""],"locked_facts":[""],"reversals":[""],"episode_hook":""}',
+    '{"schema_version":"2.0","duration_ms":1,"story":[""],"characters":[{"id":"c1","source_name":"","display_name":"","relationship":"","relationships":[]}],"scenes":[{"id":"s1","location":"","time":"","source_ranges":[{"start_ms":0,"end_ms":1}]}],"props":[{"id":"p1","name":"","evidence_ranges":[{"start_ms":0,"end_ms":1}]}],"shots":[{"id":"shot-1","index":1,"start_ms":0,"end_ms":1,"composition":"","camera_movement":"","opening_state":"","continuous_action":"","ending_state":"","visible_character_ids":["c1"],"dialogue":[],"text_regions":[{"id":"txt1","kind":"subtitle","source_text":"","polygon":[[0.1,0.8],[0.9,0.8],[0.9,0.9],[0.1,0.9]]}],"audio_contract":{"dialogue_mode":"silent","ambient_audio":"preserve_or_rebuild"},"confidence":{"character_mapping":0.5,"speaker_mapping":0.2,"text_regions":0.5,"shot_boundary":0.5}}],"causal_chain":[""],"locked_facts":[""],"reversals":[""],"episode_hook":""}',
     'Keep all required arrays non-empty only when supported by visible evidence; an unsupported clip must fail rather than be completed with invented facts.',
     `Measured video metadata: duration_ms=${probe.duration_ms}, width=${probe.width || 'unknown'}, height=${probe.height || 'unknown'}.`,
   ].join('\n');
@@ -218,7 +223,7 @@ function assertStrictNativeFacts(facts, probe) {
     let previousDialogueEnd = Number(shot.start_ms);
     let previousOverlapGroup = null;
     for (const [dialogueIndex, line] of shot.dialogue.entries()) {
-      if (!String(line.text || '').trim()) continue;
+      if (!String(line.source_text || '').trim()) continue;
       if (!Number.isSafeInteger(line.start_ms) || !Number.isSafeInteger(line.end_ms)) {
         throw codedError(
           'REDRAW_NATIVE_DIALOGUE_TIMING_REQUIRED',
@@ -303,7 +308,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
     const facts = normalizeSourceFacts(parsed.source_facts || parsed);
     assertStrictNativeFacts(facts, probe);
     const output = {
-      schema_version: '1.0',
+      schema_version: '2.0',
       work_id: Number(work.id),
       source_asset_id: Number(sourceAsset.id),
       provider_task_id: String(vision.provider_task_id),
@@ -340,6 +345,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
         work_id: Number(work.id),
         source_asset_id: Number(sourceAsset.id),
         provider_task_id: String(vision.provider_task_id),
+        schema_version: '2.0',
         sha256: resultHash,
         facts_hash: facts.facts_hash,
       },
@@ -374,5 +380,6 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
 
 module.exports = {
   analyzeNativeSource,
+  buildPrompt,
   parseJsonObject,
 };
