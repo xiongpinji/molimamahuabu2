@@ -459,11 +459,7 @@ function validateTtsBatch(db, versionId, turns = [], options = {}) {
   for (const character of characters) {
     const payload = parseJson(character.source_ref_json);
     const sourceRef = payload.source_ref && typeof payload.source_ref === 'object' ? payload.source_ref : {};
-    const nestedSourceRef = sourceRef.source_ref && typeof sourceRef.source_ref === 'object'
-      ? sourceRef.source_ref
-      : {};
     const speakerId = firstSpeakerKey(
-      nestedSourceRef.source_character_key,
       sourceRef.source_character_key,
       sourceRef.character_id,
       sourceRef.id,

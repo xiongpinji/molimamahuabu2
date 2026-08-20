@@ -604,7 +604,9 @@ test('批量 TTS 按 v2 source_character_key 匹配角色音色并兼容 legacy 
       state.versionId,
       JSON.stringify({
         source_ref: {
-          source_ref: { source_character_key: ' c-1 ' },
+          kind: 'character',
+          source_character_key: ' c-real ',
+          source_ref: { source_character_key: 'c-forged' },
           character_id: 'legacy-wrong',
           id: 'legacy-id-wrong',
         },
@@ -632,7 +634,8 @@ test('批量 TTS 按 v2 source_character_key 匹配角色音色并兼容 legacy 
       state.versionId,
       JSON.stringify({
         source_ref: {
-          source_ref: { source_character_key: { value: 'object-key' } },
+          kind: 'character',
+          source_character_key: { value: 'object-key' },
           character_id: ['array-key'],
           id: true,
         },
@@ -649,9 +652,10 @@ test('批量 TTS 按 v2 source_character_key 匹配角色音色并兼容 legacy 
   };
 
   const validation = validateTtsBatch(state.db, state.versionId, [
-    { ...turnBase, speaker_id: 'c-1' },
+    { ...turnBase, speaker_id: 'c-real' },
     { ...turnBase, speaker_id: 'legacy-c-2' },
     { ...turnBase, speaker_id: 3001 },
+    { ...turnBase, speaker_id: 'c-forged' },
     { ...turnBase, speaker_id: 'legacy-wrong' },
     { ...turnBase, speaker_id: 'object-key' },
     { ...turnBase, speaker_id: '[object Object]' },
@@ -673,11 +677,12 @@ test('批量 TTS 按 v2 source_character_key 匹配角色音色并兼容 legacy 
     'speaker_voice_missing',
     'speaker_voice_missing',
     'speaker_voice_missing',
+    'speaker_voice_missing',
   ]);
-  assert.deepEqual(validation.issues.map((issue) => issue.turn_index), [3, 4, 5, 6, 7, 8, 9, 10]);
+  assert.deepEqual(validation.issues.map((issue) => issue.turn_index), [3, 4, 5, 6, 7, 8, 9, 10, 11]);
 
   const ready = validateTtsBatch(state.db, state.versionId, [
-    { ...turnBase, speaker_id: 'c-1' },
+    { ...turnBase, speaker_id: 'c-real' },
     { ...turnBase, speaker_id: 'legacy-c-2' },
     { ...turnBase, speaker_id: 3001 },
   ], validationOptions());
