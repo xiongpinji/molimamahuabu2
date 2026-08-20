@@ -111,6 +111,12 @@ export const redrawAPI = {
   getProject(id) {
     return request.get(`/redraw/projects/${id}`)
   },
+  updateProjectPolicy(projectId, body) {
+    return request.put(`/redraw/projects/${projectId}/policy`, body)
+  },
+  listProjectEvents(projectId) {
+    return request.get(`/redraw/projects/${projectId}/events`)
+  },
   createWorks(projectId, file) {
     const form = new FormData()
     form.append('file', file)

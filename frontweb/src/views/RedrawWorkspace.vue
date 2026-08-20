@@ -27,10 +27,22 @@
           <el-tag v-if="work?.status">{{ work.status }}</el-tag>
         </header>
 
+        <RedrawProjectOverview
+          :project="project"
+          :work="work"
+          :events="projectEvents"
+          :stages="eightStageState"
+        />
+
+        <nav class="redraw-workspace-tabs" aria-label="通用转绘工作区">
+          <span v-for="tab in workspaceTabs" :key="tab">{{ tab }}</span>
+        </nav>
+
         <RedrawSourceStep
           v-if="allowedStep === 1"
           :project-id="projectId"
           :initial-work="work"
+          :events="projectEvents"
           @work-updated="onWorkUpdated"
         />
         <RedrawAssetStep
@@ -64,6 +76,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PlatformHeader from '@/components/PlatformHeader.vue'
 import RedrawSourceStep from '@/components/redraw/RedrawSourceStep.vue'
+import RedrawProjectOverview from '@/components/redraw/RedrawProjectOverview.vue'
 import RedrawAssetStep from '@/components/redraw/RedrawAssetStep.vue'
 import RedrawShotStep from '@/components/redraw/RedrawShotStep.vue'
 import RedrawEditStep from '@/components/redraw/RedrawEditStep.vue'
@@ -71,6 +84,7 @@ import { redrawAPI } from '@/api/redraw'
 import {
   isExistingWorkId,
   normalizeStep,
+  resolveEightStageState,
   resolveAllowedStep,
   resolveUpdatedStep,
 } from '@/utils/redrawWorkspaceState'
@@ -80,11 +94,17 @@ const router = useRouter()
 const loading = ref(false)
 const project = ref(null)
 const work = ref(null)
+const projectEvents = ref([])
 
 const projectId = computed(() => route.params.projectId)
 const workId = computed(() => route.params.workId)
 const backendStep = computed(() => normalizeStep(work.value?.current_step || 1))
 const allowedStep = computed(() => resolveAllowedStep(route.query.step, work.value?.current_step || 1))
+const eightStageState = computed(() => resolveEightStageState({
+  ...(work.value || {}),
+  events: projectEvents.value,
+}))
+const workspaceTabs = ['项目设置', '分析本地化', '角色资产库', '逐镜工作台', '生成与 QA', '合并与导出']
 const steps = [
   { step: 1, label: '源片与风格' },
   { step: 2, label: '资产审核' },
@@ -95,7 +115,12 @@ const steps = [
 async function loadWorkspace() {
   loading.value = true
   try {
-    project.value = await redrawAPI.getProject(projectId.value)
+    const [nextProject, nextEvents] = await Promise.all([
+      redrawAPI.getProject(projectId.value),
+      redrawAPI.listProjectEvents(projectId.value).catch(() => []),
+    ])
+    project.value = nextProject
+    projectEvents.value = Array.isArray(nextEvents) ? nextEvents : []
     work.value = isExistingWorkId(workId.value) ? await redrawAPI.getWork(workId.value) : null
     const nextStep = resolveAllowedStep(route.query.step, work.value?.current_step || 1)
     if (String(route.query.step || '1') !== String(nextStep)) {
@@ -114,6 +139,7 @@ function goStep(step) {
 function onWorkUpdated(nextWork) {
   const previousBackendStep = work.value?.current_step || 1
   work.value = nextWork
+  refreshProjectEvents()
   if (nextWork?.id && String(workId.value) !== String(nextWork.id)) {
     router.replace({
       name: 'redraw-workspace',
@@ -130,6 +156,10 @@ function onWorkUpdated(nextWork) {
   if (String(route.query.step || '1') !== String(nextStep)) {
     router.replace({ query: { ...route.query, step: nextStep } })
   }
+}
+
+async function refreshProjectEvents() {
+  projectEvents.value = await redrawAPI.listProjectEvents(projectId.value).catch(() => projectEvents.value)
 }
 
 onMounted(loadWorkspace)
@@ -206,6 +236,21 @@ watch(() => [route.params.projectId, route.params.workId], loadWorkspace)
   gap: 12px;
   min-width: 0;
   margin-bottom: 18px;
+}
+
+.redraw-workspace-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.redraw-workspace-tabs span {
+  padding: 7px 10px;
+  border: 1px solid #333;
+  border-radius: 999px;
+  color: #d8d8d8;
+  font-size: 13px;
 }
 
 .redraw-workspace__heading > div {

@@ -23,6 +23,96 @@ export function isExistingWorkId(value) {
   return Number.isInteger(id) && id > 0
 }
 
+function positiveIntegerOrNull(value) {
+  if (value == null || String(value).trim() === '') return null
+  const number = Number(value)
+  return Number.isSafeInteger(number) && number > 0 ? number : null
+}
+
+export function buildCreateProjectPayload(body = {}) {
+  const executionMode = String(body.execution_mode || body.executionMode || 'safe').trim() || 'safe'
+  const budgetLimit = positiveIntegerOrNull(body.budget_limit_credits ?? body.budgetLimitCredits)
+  const maxAttempts = positiveIntegerOrNull(body.max_auto_attempts_per_shot ?? body.maxAutoAttemptsPerShot)
+  if (executionMode === 'auto' && budgetLimit == null) throw new Error('auto 模式必须填写预算')
+  if (executionMode === 'auto' && maxAttempts == null) throw new Error('auto 模式必须填写自动尝试上限')
+  const payload = {
+    title: String(body.title || '').trim() || '未命名转绘项目',
+    execution_mode: executionMode,
+    default_locale: String(body.default_locale || body.defaultLocale || 'en-US').trim(),
+    default_market: String(body.default_market || body.defaultMarket || 'US').trim(),
+    localization_level: String(body.localization_level || body.localizationLevel || 'faithful').trim() || 'faithful',
+  }
+  if (budgetLimit != null) payload.budget_limit_credits = budgetLimit
+  if (maxAttempts != null) payload.max_auto_attempts_per_shot = maxAttempts
+  return payload
+}
+
+export const EIGHT_STAGE_KEYS = [
+  'project_input',
+  'source_analysis',
+  'localization',
+  'character_assets',
+  'reference_preparation',
+  'generation',
+  'shot_quality',
+  'episode_export',
+]
+
+const EIGHT_STAGE_LABELS = {
+  project_input: '项目输入',
+  source_analysis: '源片分析',
+  localization: '本地化',
+  character_assets: '角色资产',
+  reference_preparation: '参考准备',
+  generation: '生成',
+  shot_quality: '镜头质检',
+  episode_export: '整集导出',
+}
+
+const PHASE_STAGE_ALIAS = {
+  source: 'project_input',
+  analysis_review: 'source_analysis',
+  localizing: 'localization',
+  localization_needs_attention: 'localization',
+  assets: 'character_assets',
+  asset_review: 'character_assets',
+  asset_generating: 'generation',
+  generating: 'generation',
+  reference: 'reference_preparation',
+  reference_preparation: 'reference_preparation',
+  generation: 'generation',
+  shot_quality: 'shot_quality',
+  export: 'episode_export',
+  episode_export: 'episode_export',
+}
+
+export function resolveEightStageState(work = {}) {
+  const rawPhase = String(work.workflow_phase || '').trim()
+  const activeKey = PHASE_STAGE_ALIAS[rawPhase] || (EIGHT_STAGE_KEYS.includes(rawPhase) ? rawPhase : 'project_input')
+  const activeIndex = EIGHT_STAGE_KEYS.indexOf(activeKey)
+  const events = Array.isArray(work.events) ? work.events : []
+  const eventText = events
+    .map((event) => {
+      return [
+        event?.event_type,
+        event?.reason_code,
+        event?.status,
+        event?.phase,
+        event?.from_state,
+        event?.to_state,
+      ].filter(Boolean).join(' ')
+    })
+    .join(' ')
+    .toLowerCase()
+  return EIGHT_STAGE_KEYS.map((key, index) => {
+    let status = index < activeIndex || (key === 'localization' && work.version_id) ? 'completed' : 'pending'
+    if (index === activeIndex) status = 'active'
+    if (eventText.includes(key) && eventText.includes('needs_attention')) status = 'needs_attention'
+    if (key === 'localization' && eventText.includes('localization_needs_attention')) status = 'needs_attention'
+    return { key, label: EIGHT_STAGE_LABELS[key], status }
+  })
+}
+
 export function analysisQuoteCredits(work) {
   const credits = Number(work?.analysis_quote?.credits ?? work?.analysis_quote?.amount)
   return Number.isSafeInteger(credits) && credits > 0 ? credits : null

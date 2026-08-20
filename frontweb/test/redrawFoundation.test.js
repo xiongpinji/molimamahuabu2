@@ -21,6 +21,8 @@ test('一键转绘 API 使用统一 request 并导出阶段 1 所需真实接口
     'listProjects',
     'createProject',
     'getProject',
+    'updateProjectPolicy',
+    'listProjectEvents',
     'createWorks',
     'getWork',
     'listStylePresets',
@@ -57,11 +59,21 @@ test('一键转绘在路由和主导航中作为真实工作台入口', () => {
 test('工作台步骤由路由 query 和后端 current_step 取较小允许值，不能靠缓存越过门禁', () => {
   assert.match(stateSource, /normalizeStep/)
   assert.match(stateSource, /resolveAllowedStep/)
+  assert.match(stateSource, /resolveEightStageState/)
   assert.match(stateSource, /Math\.min\(routeStep,\s*backendStep\)/)
   assert.doesNotMatch(stateSource, /localStorage|sessionStorage/)
   assert.match(workspaceSource, /getWork\(workId\.value\)/)
   assert.match(workspaceSource, /resolveAllowedStep\(\s*route\.query\.step,\s*work\.value\?\.current_step/)
   assert.match(workspaceSource, /router\.replace/)
+})
+
+test('通用项目工作台展示六工作区和服务端八阶段概览', () => {
+  for (const label of ['项目设置', '分析本地化', '角色资产库', '逐镜工作台', '生成与 QA', '合并与导出']) {
+    assert.match(workspaceSource, new RegExp(label), label)
+  }
+  assert.match(workspaceSource, /RedrawProjectOverview/)
+  assert.match(workspaceSource, /redrawAPI\.listProjectEvents/)
+  assert.match(sourceStepSource, /resolveEightStageState/)
 })
 
 test('第一步接入真实项目、源片上传、语言地区、比例、报价和分析任务', () => {
