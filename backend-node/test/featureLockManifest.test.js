@@ -30,6 +30,8 @@ const PROACTIVE_CANARY_CORE_PATHS = [
   'backend-node/migrations/60_provider_canary_guard.sql',
   'backend-node/migrations/61_provider_canary_reconcile_claim.sql',
   'backend-node/migrations/62_provider_canary_admin_pagination.sql',
+  'backend-node/migrations/63_provider_route_costs.sql',
+  'backend-node/scripts/split-multi-model-provider-configs.js',
   'backend-node/scripts/verify-feature-lock-manifest.js',
   'backend-node/src/app.js',
   'backend-node/src/middleware/resourceOwnership.js',
@@ -38,7 +40,10 @@ const PROACTIVE_CANARY_CORE_PATHS = [
   'backend-node/src/services/aiClient.js',
   'backend-node/src/services/aiConfigService.js',
   'backend-node/src/services/canvasModelCatalogService.js',
+  'backend-node/src/services/generationCostLedgerService.js',
+  'backend-node/src/services/generationUsageContext.js',
   'backend-node/src/services/imageClient.js',
+  'backend-node/src/services/imageService.js',
   'backend-node/src/services/modelPriceService.js',
   'backend-node/src/services/providerCanaryArtifactService.js',
   'backend-node/src/services/providerCanaryBudgetService.js',
@@ -46,9 +51,12 @@ const PROACTIVE_CANARY_CORE_PATHS = [
   'backend-node/src/services/providerCanaryExecutor.js',
   'backend-node/src/services/providerCanaryFixtureService.js',
   'backend-node/src/services/providerCanarySchedulerService.js',
+  'backend-node/src/services/providerRouteCostService.js',
   'backend-node/src/services/providerRouteStabilityService.js',
   'backend-node/src/services/providerRuntimeFingerprintService.js',
+  'backend-node/src/services/text-generation-billing-service.js',
   'backend-node/src/services/videoClient.js',
+  'backend-node/src/services/videoService.js',
   '.github/workflows/platform-zero-cost-smoke.yml',
   'frontweb/scripts/run-platform-zero-cost-smoke.mjs',
   'frontweb/src/api/providerStability.js',
@@ -58,6 +66,9 @@ const PROACTIVE_CANARY_REQUIRED_TESTS = [
   'backend-node/test/aiConfigPublicView.test.js',
   'backend-node/test/appBackgroundServices.test.js',
   'backend-node/test/canvasModelCatalogService.test.js',
+  'backend-node/test/generationCostLedger.test.js',
+  'backend-node/test/generationRouteCostLedger.test.js',
+  'backend-node/test/imageBilling.test.js',
   'backend-node/test/modelPrice.test.js',
   'backend-node/test/openAIImageOutput.test.js',
   'backend-node/test/providerAssetSignedAccess.test.js',
@@ -73,17 +84,21 @@ const PROACTIVE_CANARY_REQUIRED_TESTS = [
   'backend-node/test/providerCanaryTextConfig.test.js',
   'backend-node/test/providerReconciliation.test.js',
   'backend-node/test/providerRouteAdminRoutes.test.js',
+  'backend-node/test/providerRouteCost.test.js',
   'backend-node/test/providerRouteImageIntegration.test.js',
   'backend-node/test/providerRouteSchema.test.js',
   'backend-node/test/providerRouteStability.test.js',
   'backend-node/test/providerRouteTextIntegration.test.js',
   'backend-node/test/providerRouteVideoIntegration.test.js',
   'backend-node/test/providerRuntimeFingerprint.test.js',
+  'backend-node/test/splitMultiModelProviderConfigs.test.js',
+  'backend-node/test/text-generation-billing.test.js',
   'backend-node/test/videoBilling.test.js',
   'backend-node/test/videoQueryTaskStatusOnce.test.js',
   'frontweb/e2e/platform-zero-cost-smoke.spec.js',
   'frontweb/e2e/provider-stability-admin.spec.js',
   'frontweb/test/platformZeroCostSmokeContract.test.js',
+  'frontweb/test/providerRouteCostAdmin.test.js',
   'frontweb/test/providerStabilityAdmin.test.js',
 ];
 
@@ -111,12 +126,11 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   }
 });
 
-test('本轮触及的既有稳定性锁使用同一批准原因且保留历史证据', () => {
+test('本轮触及的稳定性锁使用同一批准原因且保留历史证据', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  const existing = manifest.features.filter(({ featureId }) => featureId !== PROACTIVE_CANARY_FEATURE_ID);
-  assert.equal(existing.length >= 4, true);
-  for (const feature of existing) {
-    assert.equal(feature.unlock?.reason, '2026-08-18 主动巡检书面规格获批，实施阶段 0+1');
+  assert.equal(manifest.features.length >= 5, true);
+  for (const feature of manifest.features) {
+    assert.equal(feature.unlock?.reason, '2026-08-20 线路成本分离与多模型配置拆分本地 TDD 授权');
     assert.match(feature.unlock?.approvedBy || '', /product-owner/);
     assert.equal(feature.evidence.length > 0, true);
   }
