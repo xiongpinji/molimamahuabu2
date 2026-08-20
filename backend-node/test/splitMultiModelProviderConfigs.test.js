@@ -5,11 +5,17 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const modelPriceService = require('../src/services/modelPriceService');
+const providerRouteCostService = require('../src/services/providerRouteCostService');
+const externalModelEvidenceService = require('../src/services/externalModelEvidenceService');
+const splitTool = require('../scripts/split-multi-model-provider-configs');
 
 const script = path.resolve(__dirname, '../scripts/split-multi-model-provider-configs.js');
+const EVIDENCE_CONTRACT = 'toapis-video-real-verification-v1';
 
 function fixture(models = ['model-primary', 'model-secondary', 'model-third']) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-split-models-'));
@@ -28,6 +34,142 @@ function fixture(models = ['model-primary', 'model-secondary', 'model-third']) {
     .run(JSON.stringify(models), JSON.stringify({ private_token: 'settings-secret', public_note: 'safe' }), now, now, now);
   db.close();
   return { dir, dbPath, configId: Number(info.lastInsertRowid) };
+}
+
+function writeBinding(item, value) {
+  const bindingPath = path.join(item.dir, 'binding.json');
+  fs.writeFileSync(bindingPath, JSON.stringify(value));
+  return bindingPath;
+}
+
+function validBinding(sourceConfigId) {
+  return {
+    schema_version: 1,
+    source_config_id: sourceConfigId,
+    models: [
+      {
+        model: 'seedance-2-fast',
+        logical_model_id: 'seedance-2-fast',
+        evidence_contract: EVIDENCE_CONTRACT,
+        evidence_sha256: 'a'.repeat(64),
+        route_cost: {
+          currency: 'CNY',
+          cost_unit: 'second',
+          micros_per_unit: 280000,
+          resolution_prices: {
+            '480p': { micros_per_unit: 280000 },
+            '720p': { micros_per_unit: 560000 },
+          },
+        },
+      },
+      {
+        model: 'seedance-2-mini',
+        logical_model_id: 'seedance-2-mini',
+        evidence_contract: EVIDENCE_CONTRACT,
+        evidence_sha256: 'a'.repeat(64),
+        route_cost: {
+          currency: 'CNY',
+          cost_unit: 'second',
+          micros_per_unit: 100000,
+          resolution_prices: {
+            '480p': { micros_per_unit: 100000 },
+            '720p': { micros_per_unit: 200000 },
+          },
+        },
+      },
+    ],
+  };
+}
+
+function evidenceFixture() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-evidence-split-'));
+  const dbPath = path.join(dir, 'fixture.sqlite');
+  const db = new Database(dbPath);
+  runMigrationsAndEnsure(db);
+  db.exec(`ALTER TABLE ai_service_configs ADD COLUMN verification_checked_at TEXT;
+    ALTER TABLE ai_service_configs ADD COLUMN verification_error TEXT;
+    ALTER TABLE ai_service_configs ADD COLUMN verified_capabilities TEXT;`);
+  const now = '2026-08-20T00:00:00.000Z';
+  const evidence = JSON.stringify({
+    contract_version: EVIDENCE_CONTRACT,
+    results: [
+      { artifact: { output_file: 'fast.mp4' } },
+      { artifact: { output_file: 'mini.mp4' } },
+    ],
+  });
+  const evidenceSha256 = crypto.createHash('sha256').update(evidence).digest('hex');
+  const capabilities = Object.fromEntries(['seedance-2-fast', 'seedance-2-mini'].map((model) => [
+    model,
+    {
+      evidence_contract: EVIDENCE_CONTRACT,
+      evidence_sha256: evidenceSha256,
+      resolutions: ['480p', '720p'],
+      aspectRatios: ['16:9'],
+      durations: [5, 10, 15],
+      maxReferences: 9,
+      maxVideoReferences: 3,
+      maxAudioReferences: 3,
+      supportsAudio: true,
+    },
+  ]));
+  const settings = {
+    canvas_capabilities_by_model: {
+      'seedance-2-fast': capabilities['seedance-2-fast'],
+      'seedance-2-mini': capabilities['seedance-2-mini'],
+    },
+  };
+  const info = db.prepare(`INSERT INTO ai_service_configs
+    (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+     endpoint, query_endpoint, priority, is_default, is_active, settings, logical_model_id,
+     failover_enabled, verification_status, verified_at, verification_evidence,
+     verified_capabilities, canary_paused, created_at, updated_at)
+    VALUES ('video', 'toapis', 'toapis_video', 'ToAPIs Seedance',
+      'https://fixture.invalid/v1', 'fixture-key', ?, 'seedance-2-fast',
+      '/videos/generations', '/videos/generations/{taskId}', 100, 1, 1, ?, NULL,
+      1, 'verified', ?, 'safe-real-generation-summary', ?, 0, ?, ?)`).run(
+    JSON.stringify(['seedance-2-fast', 'seedance-2-mini']),
+    JSON.stringify(settings),
+    now,
+    JSON.stringify(capabilities),
+    now,
+    now,
+  );
+  for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
+    const fast = model.endsWith('fast');
+    modelPriceService.set(db, model, fast ? 107 : 50, {
+      category: 'video',
+      status: 'enabled',
+      billing_unit: 'second',
+      cost_unit: 'second',
+      resolution_prices: {
+        '480p': { credits: fast ? 107 : 50, cost_micros_per_second: 1 },
+        '720p': { credits: fast ? 214 : 100, cost_micros_per_second: 1 },
+      },
+    });
+  }
+  const allowedRoot = path.join(dir, 'release-evidence');
+  const evidenceRoot = path.join(allowedRoot, 'external-models-v1');
+  fs.mkdirSync(path.join(evidenceRoot, 'public', 'toapis'), { recursive: true });
+  fs.writeFileSync(path.join(evidenceRoot, 'toapis-video-verification.json'), evidence);
+  fs.writeFileSync(path.join(evidenceRoot, 'public', 'toapis', 'fast.mp4'), 'fast');
+  fs.writeFileSync(path.join(evidenceRoot, 'public', 'toapis', 'mini.mp4'), 'mini');
+  fs.writeFileSync(path.join(evidenceRoot, 'manifest.json'), JSON.stringify({
+    contract_version: 'external-model-release-evidence-manifest-v1',
+    evidence: {
+      [EVIDENCE_CONTRACT]: {
+        file: 'toapis-video-verification.json',
+        sha256: evidenceSha256,
+      },
+    },
+  }));
+  db.close();
+  return {
+    dir,
+    dbPath,
+    configId: Number(info.lastInsertRowid),
+    evidenceSha256,
+    evidenceRoots: { root: evidenceRoot, allowedRoot },
+  };
 }
 
 function cleanup(item) {
@@ -168,4 +310,83 @@ test('重复执行不会创建更多克隆，也不会启用或公开拆出的�
   assert.deepEqual(rows(item.dbPath), afterFirst);
   assert.equal(afterFirst.filter((row) => row.is_active === 1).length, 1);
   assert.equal(afterFirst.filter((row) => row.logical_model_id != null).length, 1);
+});
+
+test('证据绑定模式要求唯一参数组合并拒绝未知绑定字段', (t) => {
+  const item = fixture();
+  t.after(() => cleanup(item));
+  const binding = validBinding(item.configId);
+  const bindingPath = writeBinding(item, binding);
+  const fingerprint = JSON.parse(run([
+    '--db', item.dbPath, '--config-id', String(item.configId),
+  ]).stdout).fingerprint;
+
+  for (const args of [
+    ['--db', item.dbPath, '--config-id', String(item.configId), '--apply-evidence-bound'],
+    ['--db', item.dbPath, '--config-id', String(item.configId), '--apply',
+      '--apply-evidence-bound', '--expected-fingerprint', fingerprint, '--binding-file', bindingPath],
+    ['--db', item.dbPath, '--db', item.dbPath, '--config-id', String(item.configId)],
+  ]) {
+    const result = run(args);
+    assert.notEqual(result.status, 0);
+    assert.equal(rows(item.dbPath).length, 1);
+  }
+
+  const unsafe = structuredClone(binding);
+  unsafe.models[0].api_key = 'must-never-appear';
+  const unsafePath = writeBinding(item, unsafe);
+  assert.throws(() => splitTool.readBindingFile(unsafePath), { code: 'INVALID_BINDING' });
+});
+
+test('证据绑定拆分原子生成两个启用已验证且巡检暂停的单模型线路', (t) => {
+  const item = evidenceFixture();
+  t.after(() => cleanup(item));
+  const db = new Database(item.dbPath);
+  const target = splitTool.readTarget(db, item.configId);
+  const binding = validBinding(item.configId);
+  for (const model of binding.models) model.evidence_sha256 = item.evidenceSha256;
+  const result = splitTool.applyEvidenceBoundPlan(db, {
+    configId: item.configId,
+    expectedFingerprint: splitTool.fingerprint(target),
+    binding,
+  }, {
+    readTrustedEvidence: (model) => externalModelEvidenceService.readTrustedEvidence(
+      model,
+      item.evidenceRoots,
+    ),
+  });
+  assert.equal(result.status, 'applied');
+  assert.deepEqual(result.routes.map((route) => route.model).sort(), [
+    'seedance-2-fast', 'seedance-2-mini',
+  ]);
+  const configs = db.prepare(`SELECT id, model, default_model, logical_model_id, is_active,
+      is_default, verification_status, verified_capabilities, settings, canary_paused
+    FROM ai_service_configs WHERE deleted_at IS NULL ORDER BY id`).all();
+  assert.equal(configs.length, 2);
+  for (const config of configs) {
+    const model = JSON.parse(config.model)[0];
+    assert.equal(config.default_model, model);
+    assert.equal(config.logical_model_id, model);
+    assert.equal(config.is_active, 1);
+    assert.equal(config.verification_status, 'verified');
+    assert.equal(config.canary_paused, 1);
+    assert.deepEqual(Object.keys(JSON.parse(config.verified_capabilities)), [model]);
+    assert.deepEqual(
+      Object.keys(JSON.parse(config.settings).canvas_capabilities_by_model),
+      [model],
+    );
+    const cost = providerRouteCostService.getRouteCost(db, config.id);
+    assert.equal(cost.cost_unit, 'second');
+    assert.equal(
+      cost.resolution_prices['720p'].micros_per_unit,
+      model.endsWith('fast') ? 560000 : 200000,
+    );
+  }
+  const audit = db.prepare(`SELECT user_id, event_type, resource_type, resource_id, outcome, code
+    FROM audit_events WHERE event_type = 'provider.config.evidence_bound_split'`).get();
+  assert.deepEqual(
+    [audit.user_id, audit.resource_type, audit.resource_id, audit.outcome],
+    ['system/cli', 'ai_service_config', String(item.configId), 'success'],
+  );
+  db.close();
 });
