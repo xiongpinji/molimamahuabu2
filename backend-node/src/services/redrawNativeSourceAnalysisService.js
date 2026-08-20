@@ -95,6 +95,7 @@ async function ffprobeVideo(sourcePath, timeoutMs) {
 
 const SHEET_COLUMNS = 4;
 const SHEET_FRAMES = 12;
+const DEFAULT_FONT_CANDIDATES = process.platform === 'win32' ? ['/Windows/Fonts/arial.ttf'] : [];
 
 function sheetPlan(durationMs, mode) {
   const sampleRate = mode === 'lower_third' ? 2 : 1;
@@ -113,12 +114,27 @@ function sheetPlan(durationMs, mode) {
   return pages;
 }
 
-function sheetFilter(mode, page) {
+function filterPath(filePath) {
+  return String(filePath).replace(/\\/g, '/');
+}
+
+function selectFontFile(candidates = DEFAULT_FONT_CANDIDATES) {
+  return candidates.find((candidate) => {
+    try {
+      return fs.existsSync(candidate);
+    } catch (_) {
+      return false;
+    }
+  }) || null;
+}
+
+function sheetFilter(mode, page, options = {}) {
   const rows = Math.ceil(page.frameCount / SHEET_COLUMNS);
   const prefix = mode === 'lower_third' ? 'crop=iw:ih/3:0:ih*2/3,' : '';
   const offset = page.startSeconds.toFixed(3);
-  const fontFile = '/Windows/Fonts/arial.ttf';
-  const timestamp = `drawtext=fontfile=${fontFile}:text='page+${offset}s %{pts\\:hms}':x=4:y=4:fontsize=12:fontcolor=white:box=1:boxcolor=black@0.75`;
+  const fontFile = selectFontFile(options.fontCandidates);
+  const fontOption = fontFile ? `fontfile=${filterPath(fontFile)}:` : '';
+  const timestamp = `drawtext=${fontOption}text='page+${offset}s %{pts\\:hms}':x=4:y=4:fontsize=12:fontcolor=white:box=1:boxcolor=black@0.75`;
   return `${prefix}fps=${page.sampleRate},scale=240:-1,${timestamp},tile=${SHEET_COLUMNS}x${rows}:nb_frames=${page.frameCount}:padding=4:margin=4:color=black`;
 }
 
@@ -251,6 +267,16 @@ function relativeToStorage(storageRoot, absolutePath) {
   return path.relative(storageRoot, absolutePath).replace(/\\/g, '/');
 }
 
+function safeMediaProbeMetadata(probe, sheetCount) {
+  return {
+    duration_ms: Number(probe.duration_ms) || 0,
+    width: Number(probe.width) || 0,
+    height: Number(probe.height) || 0,
+    codec: probe.codec ? String(probe.codec) : 'unknown',
+    sheet_count: Number(sheetCount) || 0,
+  };
+}
+
 async function analyzeNativeSource(ctx = {}, input = {}) {
   const db = ctx.db;
   if (!db) throw codedError('REDRAW_NATIVE_DB_REQUIRED', '缺少数据库');
@@ -307,6 +333,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
     const parsed = parseJsonObject(vision.text);
     const facts = normalizeSourceFacts(parsed.source_facts || parsed);
     assertStrictNativeFacts(facts, probe);
+    const mediaProbe = safeMediaProbeMetadata(probe, sheets.length);
     const output = {
       schema_version: '2.0',
       work_id: Number(work.id),
@@ -346,6 +373,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
         source_asset_id: Number(sourceAsset.id),
         provider_task_id: String(vision.provider_task_id),
         schema_version: '2.0',
+        media_probe: mediaProbe,
         sha256: resultHash,
         facts_hash: facts.facts_hash,
       },
@@ -381,5 +409,6 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
 module.exports = {
   analyzeNativeSource,
   buildPrompt,
+  sheetFilter,
   parseJsonObject,
 };

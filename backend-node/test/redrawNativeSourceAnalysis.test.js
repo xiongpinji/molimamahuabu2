@@ -176,12 +176,36 @@ test('analyzeNativeSource creates contact sheets, strict facts JSON and a readab
     assert.equal(saved.schema_version, '2.0');
     assert.equal(saved.raw_hash, 'a'.repeat(64));
     assert.equal(saved.facts.facts_hash, result.facts.facts_hash);
-    assert.equal(JSON.parse(asset.metadata).schema_version, '2.0');
+    const metadata = JSON.parse(asset.metadata);
+    assert.equal(metadata.schema_version, '2.0');
+    assert.deepEqual(Object.keys(metadata.media_probe).sort(), ['codec', 'duration_ms', 'height', 'sheet_count', 'width']);
+    assert.equal(typeof metadata.media_probe.duration_ms, 'number');
+    assert.equal(typeof metadata.media_probe.width, 'number');
+    assert.equal(typeof metadata.media_probe.height, 'number');
+    assert.equal(typeof metadata.media_probe.codec, 'string');
+    assert.equal(metadata.media_probe.sheet_count, 2);
+    assert.equal(JSON.stringify(metadata.media_probe).includes(storageRoot), false);
+    assert.equal(/(?:https?:\/\/|file:\/\/|[a-zA-Z]:\\|\\\\)/.test(JSON.stringify(metadata.media_probe)), false);
     assert.equal(calls[0].imageSources.every((source) => !fs.existsSync(source.localAbsPath)), true);
   } finally {
     db.close();
     fs.rmSync(storageRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
+});
+
+test('sheetFilter adds fontfile only when an injected candidate exists', () => {
+  const page = { frameCount: 1, startSeconds: 0, sampleRate: 1 };
+  const withFont = nativeAnalysis.sheetFilter('full', page, {
+    fontCandidates: [__filename],
+  });
+  assert.match(withFont, /drawtext=fontfile=/);
+  assert.match(withFont, /redrawNativeSourceAnalysis\.test\.js/);
+
+  const withoutFont = nativeAnalysis.sheetFilter('full', page, {
+    fontCandidates: [path.join(os.tmpdir(), 'missing-redraw-font.ttf')],
+  });
+  assert.match(withoutFont, /drawtext=text=/);
+  assert.doesNotMatch(withoutFont, /fontfile=/);
 });
 
 test('analyzeNativeSource samples the full duration and includes a distinct late frame', async () => {

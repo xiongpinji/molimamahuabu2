@@ -28,7 +28,8 @@ function assertPlainObject(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`${name} 必须是对象`);
   }
-  if (Object.getPrototypeOf(value) !== Object.prototype) {
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
     throw new Error(`${name} 不允许继承字段`);
   }
 }
@@ -36,6 +37,11 @@ function assertPlainObject(value, name) {
 function assertAllowedKeys(value, name, allowed) {
   assertPlainObject(value, name);
   const allowedSet = new Set(allowed);
+  for (const key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) {
+      throw new Error(`${name}.${key} 继承字段`);
+    }
+  }
   for (const key of Object.keys(value)) {
     if (DANGEROUS_KEYS.has(key)) {
       throw new Error(`${name}.${key} 危险字段`);
@@ -68,7 +74,7 @@ function safeText(value, name, maxLength = 500) {
   const text = value.trim();
   if (!text) throw new Error(`${name} 必须提供`);
   if (text.length > maxLength) throw new Error(`${name} 过长`);
-  if (/(?:https?:\/\/|www\.|file:\/\/|[a-zA-Z]:\\|\\\\|\/(?:tmp|var|opt|home|users|mnt|etc)\/|\.mp4\b|\.mov\b|api[_-]?key|bearer\s+|prompt\s*:)/i.test(text)) {
+  if (/(?:https?:\/\/|www\.|file:\/\/|^[a-zA-Z]:[\\/]|^\\\\|^(?:\.{1,2}[\\/])|\\|(?:^|\/)[^/\s]+\.(?:png|jpe?g|webp|gif|bmp|svg|mp4|mov|webm|m4v|avi|json|txt)\b|api[_-]?key|bearer\s+|prompt\s*:)/i.test(text)) {
     throw new Error(`${name} 包含危险路径或URL`);
   }
   return text;
@@ -97,6 +103,8 @@ function normalizeRanges(value, name, durationMs) {
   let previousEnd = -1;
   return value.map((item, index) => {
     const range = rangeObject(item, `${name}[${index}]`, durationMs);
+    return range;
+  }).sort((a, b) => (a.start_ms - b.start_ms) || (a.end_ms - b.end_ms)).map((range) => {
     if (range.start_ms < previousEnd) throw new Error(`${name} 时间码必须单调且不能重叠`);
     previousEnd = range.end_ms;
     return range;
@@ -111,9 +119,13 @@ function uniqueId(id, name, seen) {
   return value;
 }
 
-function normalizeStringArray(value, name) {
+function normalizeStringArray(value, name, options = {}) {
   assertNonEmptyArray(value, name);
-  return value.map((item, index) => safeText(String(item), `${name}[${index}]`, 500)).sort();
+  const normalized = value.map((item, index) => {
+    if (typeof item !== 'string') throw new Error(`${name}[${index}] 必须是文本`);
+    return safeText(item, `${name}[${index}]`, 500);
+  });
+  return options.sort ? normalized.sort() : normalized;
 }
 
 function normalizeCharacters(value) {
@@ -130,7 +142,10 @@ function normalizeCharacters(value) {
     if (character.relationship != null) normalized.relationship = safeText(character.relationship, `characters[${index}].relationship`, 200);
     if (character.relationships != null) {
       assertArray(character.relationships, `characters[${index}].relationships`);
-      normalized.relationships = character.relationships.map((item, relIndex) => safeText(String(item), `characters[${index}].relationships[${relIndex}]`, 200)).sort();
+      normalized.relationships = character.relationships.map((item, relIndex) => {
+        if (typeof item !== 'string') throw new Error(`characters[${index}].relationships[${relIndex}] 必须是文本`);
+        return safeText(item, `characters[${index}].relationships[${relIndex}]`, 200);
+      }).sort();
     } else {
       normalized.relationships = [];
     }
@@ -330,8 +345,8 @@ function normalizeEpisodeFactsV2(raw) {
     props: normalizeProps(raw.props, durationMs),
     shots: normalizeShots(raw.shots, durationMs, characterIds),
     causal_chain: normalizeStringArray(raw.causal_chain, 'causal_chain'),
-    locked_facts: normalizeStringArray(raw.locked_facts, 'locked_facts'),
-    reversals: normalizeStringArray(raw.reversals, 'reversals'),
+    locked_facts: normalizeStringArray(raw.locked_facts, 'locked_facts', { sort: true }),
+    reversals: normalizeStringArray(raw.reversals, 'reversals', { sort: true }),
     episode_hook: safeText(raw.episode_hook, 'episode_hook', 500),
   };
   normalized.facts_hash = createHash('sha256').update(stableStringify(normalized)).digest('hex');

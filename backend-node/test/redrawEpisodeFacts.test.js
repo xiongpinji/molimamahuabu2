@@ -105,17 +105,59 @@ test('v2 事实连续覆盖整集并绑定人物、说话人、文字和环境�
 
 test('v2 facts hash is canonical, semantic and input-safe', () => {
   const raw = genericThreeShotFacts();
+  raw.scenes[0].source_ranges = [
+    { start_ms: 0, end_ms: 6_000 },
+    { start_ms: 6_000, end_ms: 12_300 },
+  ];
+  raw.props[0].evidence_ranges = [
+    { start_ms: 1_800, end_ms: 3_000 },
+    { start_ms: 3_000, end_ms: 4_500 },
+  ];
   const before = JSON.stringify(raw);
   const first = normalizeEpisodeFactsV2(raw);
   const reordered = genericThreeShotFacts();
   reordered.characters.reverse();
   reordered.shots[1].visible_character_ids.reverse();
+  reordered.scenes[0].source_ranges = [
+    { start_ms: 6_000, end_ms: 12_300 },
+    { start_ms: 0, end_ms: 6_000 },
+  ];
+  reordered.props[0].evidence_ranges = [
+    { start_ms: 3_000, end_ms: 4_500 },
+    { start_ms: 1_800, end_ms: 3_000 },
+  ];
   const second = normalizeEpisodeFactsV2(reordered);
   const changed = genericThreeShotFacts();
   changed.shots[0].continuous_action = '她停下检查密封餐袋';
   assert.equal(JSON.stringify(raw), before);
   assert.equal(first.facts_hash, second.facts_hash);
   assert.notEqual(first.facts_hash, normalizeEpisodeFactsV2(changed).facts_hash);
+});
+
+test('v2 rejects inherited enumerable keys while accepting null-prototype plain data', () => {
+  const nullProto = Object.assign(Object.create(null), genericThreeShotFacts());
+  assert.equal(normalizeEpisodeFactsV2(nullProto).schema_version, '2.0');
+
+  Object.defineProperty(Object.prototype, 'model', {
+    value: 'leaked-model',
+    enumerable: true,
+    configurable: true,
+  });
+  try {
+    assert.throws(() => normalizeEpisodeFactsV2(genericThreeShotFacts()), /继承字段|model/);
+
+    const inheritedTop = Object.create({ model: 'x' });
+    Object.assign(inheritedTop, genericThreeShotFacts());
+    assert.throws(() => normalizeEpisodeFactsV2(inheritedTop), /继承字段|model/);
+
+    assert.throws(() => normalizeEpisodeFactsV2(invalid((raw) => {
+      const inheritedShot = Object.create({ model: 'x' });
+      Object.assign(inheritedShot, raw.shots[0]);
+      raw.shots[0] = inheritedShot;
+    })), /继承字段|model/);
+  } finally {
+    delete Object.prototype.model;
+  }
 });
 
 test('v2 rejects unsafe or non-contract top-level data', () => {
@@ -156,6 +198,33 @@ test('v2 rejects dialogue, audio, text region, confidence and required shot fiel
   assert.throws(() => normalizeEpisodeFactsV2(invalid((raw) => { raw.shots[0].audio_contract.ambient_audio = 'keep_original'; })), /ambient_audio/);
   assert.throws(() => normalizeEpisodeFactsV2(invalid((raw) => { raw.shots[0].confidence.speaker_mapping = Number.NaN; })), /confidence/);
   assert.throws(() => normalizeEpisodeFactsV2(invalid((raw) => { raw.shots[0].confidence.text_regions = 1.2; })), /confidence/);
+});
+
+test('v2 rejects non-string narrative arrays and dangerous file path text', () => {
+  for (const value of [{ text: '解释' }, ['解释'], () => '解释']) {
+    assert.throws(() => normalizeEpisodeFactsV2(invalid((raw) => { raw.story = [value]; })), /story|文本|string/);
+    assert.throws(() => normalizeEpisodeFactsV2(invalid((raw) => { raw.causal_chain = [value]; })), /causal_chain|文本|string/);
+    assert.throws(() => normalizeEpisodeFactsV2(invalid((raw) => { raw.characters[0].relationships = [value]; })), /relationships|文本|string/);
+  }
+
+  for (const value of [
+    'uploads/private/frame.png',
+    './x.jpg',
+    '../x',
+    'folder\\x',
+    'C:\\x',
+    '\\\\server\\share\\x.png',
+    'file:///tmp/x.png',
+    'http://example.test/x.png',
+    'scene/output/video.webm',
+  ]) {
+    assert.throws(() => normalizeEpisodeFactsV2(invalid((raw) => { raw.shots[0].composition = value; })), /危险|路径|URL/);
+  }
+
+  const ordinarySlash = normalizeEpisodeFactsV2(invalid((raw) => {
+    raw.shots[0].composition = '乔安在门口决定进/退';
+  }));
+  assert.equal(ordinarySlash.shots[0].composition, '乔安在门口决定进/退');
 });
 
 module.exports = { genericThreeShotFacts };
