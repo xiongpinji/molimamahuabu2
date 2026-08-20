@@ -694,6 +694,7 @@ test('CLI 证据绑定资格失败只输出固定错误码且不泄露配置或�
   db.close();
   const binding = validBinding(item.configId);
   for (const model of binding.models) model.evidence_sha256 = 'b'.repeat(64);
+  const bindingRaw = JSON.stringify(binding);
   const bindingPath = writeBinding(item, binding);
   const result = run([
     '--db', item.dbPath,
@@ -704,9 +705,13 @@ test('CLI 证据绑定资格失败只输出固定错误码且不泄露配置或�
   ]);
   assert.notEqual(result.status, 0);
   assert.equal(result.stdout, '');
-  assert.match(result.stderr, /^(?:UNTRUSTED_MODEL_EVIDENCE|EVIDENCE_MISMATCH)\r?\n$/);
+  assert.match(result.stderr, /^EVIDENCE_MISMATCH\r?\n$/);
   const output = `${result.stdout}${result.stderr}`;
   for (const privateValue of [
+    bindingRaw,
+    '"model":"seedance-2-mini"',
+    '"logical_model_id":"seedance-2-mini"',
+    'b'.repeat(64),
     'fixture-key',
     'fixture.invalid',
     'safe-real-generation-summary',
