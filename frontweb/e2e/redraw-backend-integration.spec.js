@@ -14,6 +14,11 @@ import {
   buildLocalCaseManifest,
   redrawLatinAmericanCase,
 } from './fixtures/redraw-latin-american-case.js'
+import {
+  genericLocalization,
+  genericRedrawProject,
+  genericSourceFacts,
+} from './fixtures/redraw-generic-project.js'
 
 const require = createRequire(import.meta.url)
 const backendRoot = fileURLToPath(new URL('../../backend-node/', import.meta.url))
@@ -53,23 +58,55 @@ const owner = {
 }
 
 const defaultSourceFacts = {
+  schema_version: '2.0',
   duration_ms: 16_000,
+  story: ['旧手机消息让阿岚发现三年前事件仍在继续'],
   characters: [{ id: 'c1', source_name: '阿岚', relationships: [] }],
   scenes: [{ id: 's1', location: '天台', time: '夜', source_ranges: [{ start_ms: 0, end_ms: 16_000 }] }],
   props: [{ id: 'p1', name: '旧手机', evidence_ranges: [{ start_ms: 1_000, end_ms: 3_000 }] }],
   shots: [
     {
-      id: 'shot-1', start_ms: 0, end_ms: 8_000,
+      id: 'shot-1',
+      index: 1,
+      start_ms: 0,
+      end_ms: 8_000,
+      composition: '阿岚站在天台边，旧手机屏幕映出三年前的时间',
+      camera_movement: '手持轻微前推',
+      opening_state: '阿岚站在天台边',
+      continuous_action: '阿岚低头查看旧手机',
+      ending_state: '屏幕亮起陌生消息',
+      visible_character_ids: ['c1'],
       dialogue: [{
-        speaker_id: 'c1', text: '别回头', start_ms: 1_000, end_ms: 3_000,
-        emotion: '紧张', overlap_group: null,
+        id: 'shot-1-turn-1',
+        speaker_id: 'c1',
+        source_text: '别回头',
+        start_ms: 1_000,
+        end_ms: 3_000,
       }],
-      screen_text: '三年前', opening_state: '阿岚站在天台边',
-      continuous_action: '阿岚低头查看旧手机', ending_state: '屏幕亮起陌生消息',
+      text_regions: [{
+        id: 'shot-1-text-1',
+        kind: 'screen_text',
+        source_text: '三年前',
+        polygon: [[0.22, 0.12], [0.46, 0.12], [0.46, 0.24], [0.22, 0.24]],
+      }],
+      audio_contract: { dialogue_mode: 'spoken', ambient_audio: 'preserve_or_rebuild' },
+      confidence: { character_mapping: 0.99, speaker_mapping: 0.99, text_regions: 0.99, shot_boundary: 0.99 },
     },
     {
-      id: 'shot-2', start_ms: 8_000, end_ms: 16_000, dialogue: [], screen_text: '',
-      opening_state: '屏幕显示未来日期', continuous_action: '阿岚抬头环顾天台', ending_state: '阿岚转身离开',
+      id: 'shot-2',
+      index: 2,
+      start_ms: 8_000,
+      end_ms: 16_000,
+      composition: '屏幕显示未来日期，阿岚抬头环顾空旷天台',
+      camera_movement: '定机位微抖',
+      opening_state: '屏幕显示未来日期',
+      continuous_action: '阿岚抬头环顾天台',
+      ending_state: '阿岚转身离开',
+      visible_character_ids: ['c1'],
+      dialogue: [],
+      text_regions: [],
+      audio_contract: { dialogue_mode: 'silent', ambient_audio: 'preserve_or_rebuild' },
+      confidence: { character_mapping: 0.99, speaker_mapping: 0.99, text_regions: 0.99, shot_boundary: 0.99 },
     },
   ],
   causal_chain: ['手机消息促使阿岚离开'],
@@ -88,19 +125,30 @@ const artifactDurations = activeCase
   : generationDurations
 const expectedShotCount = sourceFacts.shots.length
 const expectedOutputDuration = artifactDurations.reduce((sum, duration) => sum + duration, 0)
-const expectedAssetCount = sourceFacts.characters.length * 2
-  + sourceFacts.scenes.length
-  + sourceFacts.props.length
+const expectedAssetCount = sourceFacts.schema_version === '2.0'
+  ? sourceFacts.characters.length * 2
+  : sourceFacts.characters.length * 2 + sourceFacts.scenes.length + sourceFacts.props.length
 const expectedAssetCredits = expectedAssetCount * 5
 const localizationOverrides = activeCase?.localization || {
-  name_map: { 阿岚: 'Aran' },
+  name_map: { c1: 'Aran' },
   culture_map: { 天台: 'rooftop' },
   glossary: { 旧手机: 'old phone' },
   dialogue: [{
     shot_id: 'shot-1',
-    turns: [{ speaker_id: 'c1', localized_text: "Don't look back" }],
+    turns: [{ id: 'shot-1-turn-1', speaker_id: 'c1', localized_text: "Don't look back" }],
   }],
+  text_map: { 'shot-1:shot-1-text-1': 'Three years ago' },
+  confidence: {
+    names: 0.99,
+    dialogue_semantics: 0.99,
+    dialogue_timing: 0.99,
+    culture: 0.99,
+    screen_text: 0.99,
+  },
 }
+let activeAnalysisFacts = sourceFacts
+let activeLocalizationOverrides = localizationOverrides
+let providerCallCounts = { asset: 0, video: 0, dialogue: 0 }
 const expectedDialogueSegmentCount = sourceFacts.shots.reduce(
   (count, shot) => count + (Array.isArray(shot.dialogue) ? shot.dialogue.length : 0),
   0,
@@ -270,16 +318,20 @@ test.beforeAll(async () => {
     VALUES ('text', 'local-fake', '本地英文复刻模拟器', 'fake-localizer', 'fake-localizer',
       1, 1, 10, ?, ?, ?)
   `).run(JSON.stringify({
-    redraw_locale_capabilities: [{
-      locale: 'en-US', market: 'US', status: 'verified',
-      evidence: {
-        text: {
-          provider: 'local-fake', model: 'fake-localizer',
-          task_id: 'local-fixture-localization-evidence', terminal_status: 'completed',
-          artifact_id: analysisEvidenceAssetId,
+    redraw_locale_capabilities: ['en-US|US', 'es-ES|ES'].map((target) => {
+      const [locale, market] = target.split('|')
+      return {
+        locale, market, status: 'verified',
+        evidence: {
+          text: {
+            provider: 'local-fake', model: 'fake-localizer',
+            task_id: `local-fixture-localization-${locale}`,
+            terminal_status: 'completed',
+            artifact_id: analysisEvidenceAssetId,
+          },
         },
-      },
-    }],
+      }
+    }),
   }), now, now)
   database.prepare(`
     INSERT INTO ai_service_configs
@@ -288,21 +340,26 @@ test.beforeAll(async () => {
   `).run(
     JSON.stringify(['fake-character', 'fake-clean-plate']),
     JSON.stringify({
-      redraw_locale_capabilities: [{
-        locale: 'en-US', market: 'US', status: 'verified',
-        evidence: {
-          character_image: {
-            provider: 'local-fake', model: 'fake-character',
-            task_id: 'local-fixture-character-evidence', terminal_status: 'completed',
-            artifact_id: analysisEvidenceAssetId,
+      redraw_locale_capabilities: ['en-US|US', 'es-ES|ES'].map((target) => {
+        const [locale, market] = target.split('|')
+        return {
+          locale, market, status: 'verified',
+          evidence: {
+            character_image: {
+              provider: 'local-fake', model: 'fake-character',
+              task_id: `local-fixture-character-${locale}`,
+              terminal_status: 'completed',
+              artifact_id: analysisEvidenceAssetId,
+            },
+            clean_plate_image: {
+              provider: 'local-fake', model: 'fake-clean-plate',
+              task_id: `local-fixture-clean-plate-${locale}`,
+              terminal_status: 'completed',
+              artifact_id: analysisEvidenceAssetId,
+            },
           },
-          clean_plate_image: {
-            provider: 'local-fake', model: 'fake-clean-plate',
-            task_id: 'local-fixture-clean-plate-evidence', terminal_status: 'completed',
-            artifact_id: analysisEvidenceAssetId,
-          },
-        },
-      }],
+        }
+      }),
     }),
     now,
     now,
@@ -314,18 +371,22 @@ test.beforeAll(async () => {
     VALUES ('tts', 'local-fake-tts', '本地音色模拟器', ?, 'fake-tts', 1, 0, 8, '{}', ?, ?)
   `).run(JSON.stringify(['fake-tts']), now, now).lastInsertRowid)
   database.prepare('UPDATE ai_service_configs SET settings = ? WHERE id = ?').run(JSON.stringify({
-    redraw_locale_capabilities: [{
-      locale: 'en-US', market: 'US', status: 'verified',
-      evidence: {
-        tts: {
-          provider: 'local-fake-tts', model: 'fake-tts',
-          task_id: 'local-fixture-tts-evidence', terminal_status: 'completed',
-          artifact_id: analysisEvidenceAssetId,
-          ai_service_config_id: ttsConfigId,
-          config_updated_at: ttsConfigUpdatedAt,
+    redraw_locale_capabilities: ['en-US|US', 'es-ES|ES'].map((target) => {
+      const [locale, market] = target.split('|')
+      return {
+        locale, market, status: 'verified',
+        evidence: {
+          tts: {
+            provider: 'local-fake-tts', model: 'fake-tts',
+            task_id: `local-fixture-tts-${locale}`,
+            terminal_status: 'completed',
+            artifact_id: analysisEvidenceAssetId,
+            ai_service_config_id: ttsConfigId,
+            config_updated_at: ttsConfigUpdatedAt,
+          },
         },
-      },
-    }],
+      }
+    }),
   }), ttsConfigId)
   videoConfigUpdatedAt = now
   videoConfigId = Number(database.prepare(`
@@ -335,18 +396,22 @@ test.beforeAll(async () => {
       1, 1, 7, '{}', ?, ?)
   `).run(JSON.stringify(['fake-video']), now, now).lastInsertRowid)
   database.prepare('UPDATE ai_service_configs SET settings = ? WHERE id = ?').run(JSON.stringify({
-    redraw_locale_capabilities: [{
-      locale: 'en-US', market: 'US', status: 'verified',
-      evidence: {
-        video: {
-          provider: 'local-fake-video', model: 'fake-video',
-          task_id: 'local-fixture-video-evidence', terminal_status: 'completed',
-          artifact_id: analysisEvidenceAssetId,
-          config_id: videoConfigId,
-          config_updated_at: videoConfigUpdatedAt,
+    redraw_locale_capabilities: ['en-US|US', 'es-ES|ES'].map((target) => {
+      const [locale, market] = target.split('|')
+      return {
+        locale, market, status: 'verified',
+        evidence: {
+          video: {
+            provider: 'local-fake-video', model: 'fake-video',
+            task_id: `local-fixture-video-${locale}`,
+            terminal_status: 'completed',
+            artifact_id: analysisEvidenceAssetId,
+            config_id: videoConfigId,
+            config_updated_at: videoConfigUpdatedAt,
+          },
         },
-      },
-    }],
+      }
+    }),
   }), videoConfigId)
   nativeVideoConfigId = Number(database.prepare(`
     INSERT INTO ai_service_configs
@@ -407,9 +472,9 @@ test.beforeAll(async () => {
           },
         }
       }
-      if (locale !== 'en-US') throw new Error('本地语言包未就绪')
+      if (!['en-US', 'es-ES'].includes(locale)) throw new Error('本地语言包未就绪')
       return {
-        id: 'en-US@fixture',
+        id: `${locale}@fixture`,
         model_manifest_sha256: 'a'.repeat(64),
         calibration_manifest_sha256: 'b'.repeat(64),
       }
@@ -431,14 +496,29 @@ test.beforeAll(async () => {
     storage: { local_path: storageRoot, base_url: '' },
   }, database, log, {
     localizationProvider: async (input) => ({
-      provider_task_id: 'local-fixture-localization-1',
-      result: {
-        ...input.input.source_facts,
-        facts_hash: buildLocalizationInput(input.input.source_facts, { locale: input.locale }).source_facts_hash,
-        ...localizationOverrides,
-      },
+      provider_task_id: `local-fixture-localization-${input.locale || 'default'}`,
+      result: input.input.source_facts?.schema_version === '2.0'
+        ? {
+            facts_hash: buildLocalizationInput(input.input.source_facts, { locale: input.locale }).source_facts_hash,
+            locale: input.locale,
+            market: input.market,
+            confidence: {
+              names: 0.99,
+              dialogue_semantics: 0.99,
+              dialogue_timing: 0.99,
+              culture: 0.99,
+              screen_text: 0.99,
+            },
+            ...activeLocalizationOverrides,
+          }
+        : {
+            ...input.input.source_facts,
+            facts_hash: buildLocalizationInput(input.input.source_facts, { locale: input.locale }).source_facts_hash,
+            ...activeLocalizationOverrides,
+          },
     }),
     assetGenerationProvider: async ({ taskId, asset }) => {
+      providerCallCounts.asset += 1
       const kind = String(asset.kind)
       const providerArtifact = providerArtifacts[kind]
       const artifactId = insertProviderArtifact(kind === 'voice'
@@ -492,6 +572,7 @@ test.beforeAll(async () => {
       return result
     },
     dialogueProvider: async ({ segment }) => {
+      providerCallCounts.dialogue += 1
       const safeSegmentId = String(segment.segment_id).replace(/[^a-zA-Z0-9_-]/g, '-')
       const relativePath = `redraw-local-provider/dialogue-${safeSegmentId}.mp3`
       const absolutePath = path.join(storageRoot, relativePath)
@@ -541,6 +622,10 @@ test.beforeAll(async () => {
     },
     localeVerifier,
     redrawOptions: {
+      uploadLimits: {
+        minDurationMs: 1_000,
+        maxDurationMs: 60_000,
+      },
       uploadService: {
         async expandSourceUpload(file, ...args) {
           uploadedHeaderHex = fs.readFileSync(file.path).subarray(0, 12).toString('hex')
@@ -555,9 +640,10 @@ test.beforeAll(async () => {
           category: 'live_action',
           verification_evidence_json: JSON.stringify({ artifact_id: analysisEvidenceAssetId }),
         }],
-        listLocaleCapabilities: () => [{
-          locale: 'en-US', market: 'US', status: 'full_output', blocking: [],
-        }],
+        listLocaleCapabilities: () => [
+          { locale: 'en-US', market: 'US', status: 'full_output', blocking: [] },
+          { locale: 'es-ES', market: 'ES', status: 'full_output', blocking: [] },
+        ],
       },
       canReadArtifact: (assetId) => {
         const asset = database.prepare('SELECT local_path FROM assets WHERE id = ? AND deleted_at IS NULL').get(Number(assetId))
@@ -617,6 +703,7 @@ test.beforeAll(async () => {
           }
         },
         videoProcessor: async (db, _logger, videoGenerationId) => {
+          providerCallCounts.video += 1
           const row = db.prepare(`
             SELECT shot.shot_index
             FROM redraw_shots shot
@@ -661,7 +748,7 @@ test.beforeAll(async () => {
             status: 'completed',
             provider_task_id: 'local-fixture-analysis-1',
             result_asset_id: analysisEvidenceAssetId,
-            facts: sourceFacts,
+            facts: activeAnalysisFacts,
           }),
         },
       },
@@ -679,7 +766,195 @@ test.afterAll(async () => {
   if (tempRoot) fs.rmSync(tempRoot, { recursive: true, force: true })
 })
 
+function resetProviderFixture(facts = sourceFacts, localization = localizationOverrides) {
+  activeAnalysisFacts = facts
+  activeLocalizationOverrides = localization
+  providerCallCounts = { asset: 0, video: 0, dialogue: 0 }
+  uploadedHeaderHex = ''
+  runtimeErrors.length = 0
+}
+
+function createGenericSourceVideo() {
+  const videoPath = path.join(tempRoot, 'generic-source-12s.mp4')
+  runFfmpeg([
+    '-hide_banner', '-loglevel', 'error',
+    '-f', 'lavfi', '-i', 'color=c=darkgreen:size=320x180:rate=12',
+    '-f', 'lavfi', '-i', 'sine=frequency=380:sample_rate=44100',
+    '-t', '12', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
+    '-shortest', '-y', videoPath,
+  ], '通用三镜源片生成')
+  return videoPath
+}
+
+async function createProjectFromRedraw(page, project, automationPolicy = null) {
+  await page.goto('/redraw')
+  await page.getByRole('button', { name: '新建转绘项目' }).click()
+  await page.locator('.create-field').filter({ hasText: '项目名称' }).locator('input')
+    .fill(project.title)
+  if (project.execution_mode === 'auto') {
+    await page.getByText('auto', { exact: true }).click()
+  }
+  await page.locator('.create-field').filter({ hasText: '目标语言' }).locator('input')
+    .fill(project.default_locale)
+  await page.locator('.create-field').filter({ hasText: '目标市场' }).locator('input')
+    .fill(project.default_market)
+  if (project.budget_limit_credits != null) {
+    await page.locator('.create-field').filter({ hasText: '预算上限' }).locator('input')
+      .fill(String(project.budget_limit_credits))
+  }
+  if (project.max_auto_attempts_per_shot != null) {
+    await page.locator('.create-field').filter({ hasText: '自动尝试上限' }).locator('input')
+      .fill(String(project.max_auto_attempts_per_shot))
+  }
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+      && /\/api\/v1\/redraw\/projects$/.test(new URL(response.url()).pathname)
+  ))
+  await page.getByRole('button', { name: '创建' }).click()
+  const response = await responsePromise
+  const payload = JSON.parse(await response.text())
+  expect(response.status(), JSON.stringify(payload)).toBe(201)
+  const projectId = Number(payload.data.id)
+  if (automationPolicy) {
+    database.prepare('UPDATE redraw_projects SET automation_policy_json = ? WHERE id = ?')
+      .run(JSON.stringify(automationPolicy), projectId)
+    const savedPolicy = database.prepare('SELECT automation_policy_json FROM redraw_projects WHERE id = ?')
+      .get(projectId)
+    expect(JSON.parse(savedPolicy.automation_policy_json)).toEqual(automationPolicy)
+  }
+  return projectId
+}
+
+async function createGenericProjectFromRedraw(page) {
+  return createProjectFromRedraw(page, genericRedrawProject.project, {
+    analysis_confidence_thresholds: {
+      character_mapping: 0.9,
+      speaker_mapping: 0.75,
+      text_regions: 0.9,
+      shot_boundary: 0.9,
+    },
+  })
+}
+
+test('通用三镜项目完成前链分析并在低说话人置信度下降级 safe', async ({ page }) => {
+  resetProviderFixture(genericSourceFacts, genericLocalization)
+  const browserErrors = []
+  page.on('pageerror', (error) => browserErrors.push(`pageerror:${error.message}`))
+  page.on('requestfailed', (request) => {
+    browserErrors.push(`requestfailed:${request.method()} ${request.url()} ${request.failure()?.errorText || ''}`)
+  })
+  const genericVideoPath = createGenericSourceVideo()
+  const projectId = await createGenericProjectFromRedraw(page)
+  await expect(page).toHaveURL(new RegExp(`/redraw/projects/${projectId}/works/new\\?step=1`))
+  const createdProject = await browserApi(page, `/api/v1/redraw/projects/${projectId}`)
+  expect(createdProject.body.data).toMatchObject({
+    execution_mode: 'auto',
+    default_locale: genericRedrawProject.target.locale,
+    default_market: genericRedrawProject.target.market,
+  })
+  expect(JSON.stringify(createdProject.body.data)).toContain('es-ES')
+  expect(JSON.stringify(createdProject.body.data)).toContain('ES')
+  expect(JSON.stringify(createdProject.body.data)).not.toContain('en-US')
+  await expect(page.getByText('原始模式').locator('..').getByText('auto', { exact: true })).toBeVisible()
+
+  await page.locator('input[type="file"][accept*="video/mp4"]').setInputFiles(genericVideoPath)
+  const uploadResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+      && /\/api\/v1\/redraw\/projects\/\d+\/works$/.test(new URL(response.url()).pathname)
+  ))
+  await page.getByRole('button', { name: '上传源片', exact: true }).click()
+  const uploadResponse = await uploadResponsePromise
+  const uploadPayload = JSON.parse(await uploadResponse.text())
+  expect(uploadResponse.status(), JSON.stringify(uploadPayload)).toBe(201)
+  const workId = Number(uploadPayload.data.items[0].id)
+  await expect.poll(() => uploadedHeaderHex).toBe(
+    fs.readFileSync(genericVideoPath).subarray(0, 12).toString('hex'),
+  )
+
+  const analysisStart = await browserApi(page, `/api/v1/redraw/works/${workId}/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      locale: genericRedrawProject.target.locale,
+      market: genericRedrawProject.target.market,
+      aspect_ratio: '16:9',
+      style_preset_id: 1,
+    }),
+  })
+  expect([201, 202], JSON.stringify(analysisStart.body)).toContain(analysisStart.status)
+
+  let analyzed
+  await expect.poll(async () => {
+    const result = await browserApi(page, `/api/v1/redraw/works/${workId}`)
+    analyzed = result.body?.data
+    return analyzed?.analysis_decision?.effective_mode || ''
+  }, { timeout: 15_000, message: JSON.stringify(analyzed) }).toBe('safe')
+
+  expect(analyzed).toMatchObject({
+    workflow_phase: 'analysis_review',
+    current_step: 1,
+    analysis_decision: {
+      action: 'needs_review',
+      effective_mode: 'safe',
+      reason_codes: ['speaker_mapping_low_confidence'],
+    },
+  })
+  expect(analyzed.shots).toHaveLength(0)
+  const sourceVersions = database.prepare(`
+    SELECT id, locale, market, source_facts_json FROM redraw_versions
+    WHERE work_id = ? ORDER BY id
+  `).all(workId)
+  expect(sourceVersions).toHaveLength(1)
+  expect(sourceVersions[0]).toMatchObject({ locale: 'source', market: '' })
+  const persistedFacts = JSON.parse(sourceVersions[0].source_facts_json)
+  expect(persistedFacts).toMatchObject({
+    duration_ms: 12_000,
+  })
+  expect(persistedFacts.shots.map((shot) => [shot.id, shot.start_ms, shot.end_ms])).toEqual([
+    ['generic-1', 0, 4_000],
+    ['generic-2', 4_000, 8_000],
+    ['generic-3', 8_000, 12_000],
+  ])
+  expect(persistedFacts.characters.map((character) => character.id).sort()).toEqual(['c1', 'c2'])
+  expect(persistedFacts.characters.map((character) => character.source_name).sort()).toEqual(['周启', '林薇'])
+  expect(JSON.stringify(persistedFacts)).not.toContain('阿岚')
+  expect(persistedFacts.shots).toHaveLength(3)
+  expect(persistedFacts.shots.filter((shot) => shot.audio_contract.dialogue_mode === 'silent')).toHaveLength(1)
+  expect(persistedFacts.shots.some((shot) => shot.text_regions.length > 0)).toBe(true)
+
+  await page.reload()
+  await expect(page.getByText('服务端分析摘要')).toBeVisible()
+  await expect(page.getByText('原始模式').locator('..').getByText('auto', { exact: true })).toBeVisible()
+  await expect(page.getByText('有效模式').locator('..').getByText('safe', { exact: true })).toBeVisible()
+  expect(await page.evaluate(() => Object.keys(window.localStorage)
+    .filter((key) => /redraw|workflow/i.test(key))
+    .sort())).toEqual([])
+  expect(await page.evaluate(() => Object.keys(window.sessionStorage)
+    .filter((key) => /redraw|workflow/i.test(key))
+    .sort())).toEqual([])
+  const refreshed = await browserApi(page, `/api/v1/redraw/works/${workId}`)
+  expect(refreshed.body.data.analysis_decision).toMatchObject({
+    action: 'needs_review',
+    effective_mode: 'safe',
+    reason_codes: ['speaker_mapping_low_confidence'],
+  })
+  expect(refreshed.body.data.analysis_billing).toMatchObject({ held: 0, released: 0 })
+  expect(refreshed.body.data.localization_billing).toMatchObject({ held: 0, charged: 0, released: 0 })
+  expect(database.prepare('SELECT COUNT(*) AS count FROM redraw_assets').get().count).toBe(0)
+  expect(database.prepare('SELECT COUNT(*) AS count FROM redraw_asset_batches').get().count).toBe(0)
+  expect(database.prepare('SELECT COUNT(*) AS count FROM video_generations').get().count).toBe(0)
+  expect(database.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'held'").get().count).toBe(0)
+  expect(database.prepare(`
+    SELECT COUNT(*) AS count FROM tenant_usage_reservations
+    WHERE resource_type IN ('redraw_localization', 'redraw_asset', 'redraw_shot', 'redraw_dialogue')
+  `).get().count).toBe(0)
+  expect(providerCallCounts).toEqual({ asset: 0, video: 0, dialogue: 0 })
+  expect(browserErrors, JSON.stringify(browserErrors)).toEqual([])
+  expect(runtimeErrors, JSON.stringify(runtimeErrors)).toEqual([])
+})
+
 test('真实前后端与本地模拟供应商完成转绘同链', async ({ page }) => {
+  resetProviderFixture()
   if (process.env.REDRAW_E2E_CASE === 'latam-real-source') {
     expect(sourceVideoPath).toBe(path.resolve(process.env.REDRAW_E2E_SOURCE_VIDEO))
     expect(sourceFacts.duration_ms).toBe(redrawLatinAmericanCase.sourceFacts.duration_ms)
@@ -690,11 +965,28 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
   page.on('requestfailed', (request) => {
     browserErrors.push(`requestfailed:${request.method()} ${request.url()} ${request.failure()?.errorText || ''}`)
   })
-  await page.goto('/redraw')
-
-  const status = await page.evaluate(async () => (await fetch('/api/v1/redraw/projects')).status)
-  expect(status).toBe(200)
-  await page.getByRole('button', { name: '新建转绘项目' }).click()
+  await createProjectFromRedraw(page, {
+    title: '本地模拟供应商验收项目',
+    execution_mode: 'auto',
+    default_locale: 'en-US',
+    default_market: 'US',
+    budget_limit_credits: 100,
+    max_auto_attempts_per_shot: 1,
+  }, {
+    analysis_confidence_thresholds: {
+      character_mapping: 0.9,
+      speaker_mapping: 0.9,
+      text_regions: 0.9,
+      shot_boundary: 0.9,
+    },
+    localization_thresholds: {
+      names: 0.9,
+      dialogue_semantics: 0.9,
+      dialogue_timing: 0.9,
+      culture: 0.9,
+      screen_text: 0.9,
+    },
+  })
   await expect(page).toHaveURL(/\/redraw\/projects\/\d+\/works\/new\?step=1/)
 
   await page.locator('input[type="file"][accept*="video/mp4"]').setInputFiles(sourceVideoPath)
@@ -796,7 +1088,12 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     const sourceRef = asset.source_ref && typeof asset.source_ref === 'object'
       ? asset.source_ref
       : {}
-    const sourceCharacterKey = [sourceRef.stable_id, sourceRef.id, sourceRef.source_character_id]
+    const sourceCharacterKey = [
+      sourceRef.stable_id,
+      sourceRef.id,
+      sourceRef.source_character_id,
+      sourceRef.source_character_key,
+    ]
       .map((value) => String(value || '').trim())
       .find(Boolean)
     const actor = castById.get(sourceCharacterKey) || {
@@ -903,9 +1200,15 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
   expect(voiceAssets).toHaveLength(sourceFacts.characters.length)
   const voiceAssignments = []
   for (const characterAsset of characterAssets) {
-    const stableId = String(characterAsset.source_ref?.stable_id || characterAsset.source_ref?.id || '')
+    const stableId = String(characterAsset.source_ref?.stable_id
+      || characterAsset.source_ref?.id
+      || characterAsset.source_ref?.source_character_key
+      || '')
     const voiceAsset = voiceAssets.find((candidate) => (
-      String(candidate.source_ref?.stable_id || candidate.source_ref?.id || '') === stableId
+      String(candidate.source_ref?.stable_id
+        || candidate.source_ref?.id
+        || candidate.source_ref?.source_character_key
+        || '') === stableId
     ))
     expect(voiceAsset, `角色 ${stableId} 缺少匹配音色`).toBeTruthy()
     const voiceAssignment = await browserApi(page, `/api/v1/redraw/assets/${characterAsset.id}/voice`, {

@@ -2157,6 +2157,183 @@ test('作品详情只投影可恢复分析决策白名单且不公开 task resul
   }
 });
 
+test('作品详情只投影可恢复本地化决策白名单且不公开 task result', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db, {
+      default_locale: 'es-ES',
+      default_market: 'ES',
+      execution_mode: 'auto',
+      budget_limit_credits: 100,
+      max_auto_attempts_per_shot: 1,
+    });
+    const workId = insertWork(db, projectId, {
+      current_version: 1,
+      current_step: 1,
+      status: 'needs_attention',
+    });
+    const factsHash = 'projection-localization-facts-hash';
+    const versionId = insertVersion(db, workId, {
+      locale: 'es-ES',
+      market: 'ES',
+      status: 'needs_attention',
+      source_facts_json: JSON.stringify(routeSourceFacts()),
+      facts_hash: factsHash,
+      localization_task_id: 'task-localization-safe-projection',
+    });
+    const decision = {
+      action: 'needs_review',
+      effective_mode: 'safe',
+      reason_codes: ['speaker_confidence_low'],
+      policy_version: 1,
+      version_id: versionId,
+      evidence: { facts_hash: factsHash },
+      effective_analysis_state: 'analysis_review',
+    };
+    db.prepare(`INSERT INTO async_tasks
+      (id, type, status, progress, message, result, metadata, resource_id, tenant_id, user_id, created_at, updated_at)
+      VALUES ('task-localization-safe-projection', 'redraw_localization', 'needs_attention', 100, '本地化需审核', ?, ?, ?, 'tenant-a', 'user-a', ?, ?)
+    `).run(
+      JSON.stringify({
+        status: 'needs_attention',
+        work_id: workId,
+        version_id: versionId,
+        facts_hash: factsHash,
+        localization_decision: {
+          action: decision.action,
+          effective_mode: decision.effective_mode,
+          reason_codes: decision.reason_codes,
+          policy_version: decision.policy_version,
+          evidence_hash: factsHash,
+          effective_analysis_state: decision.effective_analysis_state,
+          private_prompt: 'should-not-leak',
+          metadata_json: { leaked: true },
+        },
+        provider_payload: { apiKey: 'secret' },
+      }),
+      JSON.stringify({ private: true }),
+      String(workId),
+      NOW,
+      NOW,
+    );
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const result = captureResponse();
+    handlers.getWork(request({ id: workId }), result);
+
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(result.body.data.localization_decision, decision);
+    assert.deepEqual(Object.keys(result.body.data.localization_decision).sort(), [
+      'action',
+      'effective_analysis_state',
+      'effective_mode',
+      'evidence',
+      'policy_version',
+      'reason_codes',
+      'version_id',
+    ]);
+    assert.equal(result.body.data.localization_task.result, undefined);
+    assert.equal(result.body.data.localization_task.metadata, undefined);
+    assert.equal(JSON.stringify(result.body.data).includes('private'), false);
+    assert.equal(JSON.stringify(result.body.data).includes('private_prompt'), false);
+    assert.equal(JSON.stringify(result.body.data).includes('apiKey'), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('作品详情拒绝失配或非法的本地化决策投影', () => {
+  const invalidCases = [
+    {
+      name: 'stale version',
+      patch: (_decision, context) => ({ version_id: context.versionId + 1 }),
+    },
+    {
+      name: 'stale hash',
+      patch: () => ({ facts_hash: 'stale-hash', localization_decision: { evidence_hash: 'stale-hash' } }),
+    },
+    {
+      name: 'stale policy',
+      patch: () => ({ localization_decision: { policy_version: 2 } }),
+    },
+    {
+      name: 'invalid action',
+      patch: () => ({ localization_decision: { action: 'run_provider' } }),
+    },
+    {
+      name: 'unsafe reason code',
+      patch: () => ({ localization_decision: { reason_codes: ['speaker_confidence_low', 'C:\\private\\prompt.txt'] } }),
+    },
+    {
+      name: 'unsafe effective state',
+      patch: () => ({ localization_decision: { effective_analysis_state: 'https://provider.example/task' } }),
+    },
+  ];
+
+  for (const testCase of invalidCases) {
+    const db = createDb();
+    try {
+      const projectId = insertProject(db, {
+        default_locale: 'es-ES',
+        default_market: 'ES',
+        execution_mode: 'auto',
+        budget_limit_credits: 100,
+        max_auto_attempts_per_shot: 1,
+      });
+      const workId = insertWork(db, projectId, { current_version: 1, current_step: 1 });
+      const factsHash = 'projection-localization-facts-hash';
+      const versionId = insertVersion(db, workId, {
+        locale: 'es-ES',
+        market: 'ES',
+        source_facts_json: JSON.stringify(routeSourceFacts()),
+        facts_hash: factsHash,
+        localization_task_id: `task-localization-invalid-${testCase.name.replace(/\W+/g, '-')}`,
+      });
+      const decision = {
+        action: 'needs_review',
+        effective_mode: 'safe',
+        reason_codes: ['speaker_confidence_low'],
+        policy_version: 1,
+        evidence_hash: factsHash,
+        effective_analysis_state: 'analysis_review',
+      };
+      const context = { workId, versionId, factsHash };
+      const patch = testCase.patch(decision, context);
+      const payload = {
+        status: 'needs_attention',
+        work_id: workId,
+        version_id: versionId,
+        facts_hash: factsHash,
+        localization_decision: decision,
+        ...patch,
+      };
+      if (patch.localization_decision) {
+        payload.localization_decision = { ...decision, ...patch.localization_decision };
+      }
+      db.prepare(`INSERT INTO async_tasks
+        (id, type, status, progress, message, result, resource_id, tenant_id, user_id, created_at, updated_at)
+        VALUES (?, 'redraw_localization', 'needs_attention', 100, '本地化需审核', ?, ?, 'tenant-a', 'user-a', ?, ?)
+      `).run(
+        `task-localization-invalid-${testCase.name.replace(/\W+/g, '-')}`,
+        JSON.stringify(payload),
+        String(workId),
+        NOW,
+        NOW,
+      );
+      const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+      const result = captureResponse();
+      handlers.getWork(request({ id: workId }), result);
+
+      assert.equal(result.statusCode, 200, testCase.name);
+      assert.equal(result.body.data.localization_decision, null, testCase.name);
+      assert.equal(JSON.stringify(result.body.data).includes('private'), false, testCase.name);
+    } finally {
+      db.close();
+    }
+  }
+});
+
 test('作品详情按真实本地化 reservation 投影退款证据且隔离错误资源', () => {
   const db = createDb();
   try {

@@ -124,6 +124,56 @@ function safeExportErrorMessage(value) {
   return 'export failed';
 }
 
+const LOCALIZATION_DECISION_ACTIONS = new Set(['advance', 'needs_review', 'blocked']);
+const LOCALIZATION_DECISION_MODES = new Set(['auto', 'safe']);
+const LOCALIZATION_DECISION_STATES = new Set([
+  'source',
+  'analyzing',
+  'analysis_review',
+  'asset_review',
+  'blocked',
+  'needs_attention',
+  'localization_needs_attention',
+]);
+
+function safeDecisionToken(value) {
+  const token = String(value || '').trim();
+  return /^[a-z0-9_.:-]+$/i.test(token) ? token : '';
+}
+
+function publicLocalizationDecision(task, currentVersion, project) {
+  if (!task || !currentVersion || !project) return null;
+  const result = parseJSON(task.result, null);
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
+  if (Number(result.version_id) !== Number(currentVersion.id)) return null;
+  const factsHash = String(currentVersion.facts_hash || '').trim();
+  if (!factsHash || String(result.facts_hash || '').trim() !== factsHash) return null;
+  const decision = result.localization_decision;
+  if (!decision || typeof decision !== 'object' || Array.isArray(decision)) return null;
+  if (!LOCALIZATION_DECISION_ACTIONS.has(decision.action)) return null;
+  if (!LOCALIZATION_DECISION_MODES.has(decision.effective_mode)) return null;
+  if (!Array.isArray(decision.reason_codes)) return null;
+  if (String(decision.evidence_hash || '').trim() !== factsHash) return null;
+  if (Number(decision.policy_version) !== Number(project.policy_version || 1)) return null;
+  const reasonCodes = decision.reason_codes.map(safeDecisionToken);
+  if (reasonCodes.some((code) => !code)) return null;
+  const projected = {
+    action: decision.action,
+    effective_mode: decision.effective_mode,
+    reason_codes: [...reasonCodes].sort(),
+    policy_version: Number(decision.policy_version),
+    version_id: Number(currentVersion.id),
+    evidence: { facts_hash: factsHash },
+  };
+  const effectiveState = safeDecisionToken(decision.effective_analysis_state);
+  if (effectiveState && LOCALIZATION_DECISION_STATES.has(effectiveState)) {
+    projected.effective_analysis_state = effectiveState;
+  } else if (decision.effective_analysis_state != null) {
+    return null;
+  }
+  return projected;
+}
+
 function mapProject(row) {
   if (!row) return null;
   return {
@@ -166,6 +216,7 @@ function mapWork(row, sourceAsset = null, extras = {}) {
     provider_task_id: row.provider_task_id,
     analysis_quote: extras.analysisQuote || null,
     analysis_decision: extras.analysisDecision || null,
+    localization_decision: extras.localizationDecision || null,
     task_status: task?.status || null,
     task_progress: Number.isFinite(Number(task?.progress)) ? Number(task.progress) : null,
     task_message: task?.message || null,
@@ -2085,11 +2136,13 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
       const analysisTask = findOwnedAnalysisTask(work, currentOwner);
       const localizationTask = findOwnedLocalizationTask(work, currentVersion, currentOwner);
       const assetBatch = findCurrentAssetBatch(currentVersion, currentOwner);
+      const project = findOwnedProject(work.project_id, currentOwner);
       const analysisDecision = redrawLocalizationOrchestrator.getAnalysisAutomationDecision(db, {
         workId: work.id,
         tenantId: currentOwner.tenantId,
         userId: currentOwner.userId,
       });
+      const localizationDecision = publicLocalizationDecision(localizationTask, currentVersion, project);
       const projectedWork = { ...work };
       projectedWork.current_version = currentVersion ? Number(currentVersion.version) : 0;
       if (
@@ -2109,6 +2162,7 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
           versionId: currentVersion?.id || null,
           analysisQuote: quoteAnalysis(db, log),
           analysisDecision,
+          localizationDecision,
         }),
         analysis_task: publicTask(analysisTask),
         localization_task: publicTask(localizationTask),
