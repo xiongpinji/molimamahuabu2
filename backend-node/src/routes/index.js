@@ -172,6 +172,8 @@ function setupRouter(cfg, db, log) {
   r.get('/admin/provider-stability/canary/summary', requireAdmin, requireBillingManager, providerStability.getCanarySummary);
   r.get('/admin/provider-stability/canary/runs', requireAdmin, requireBillingManager, providerStability.listCanaryRuns);
   r.post('/admin/provider-stability/canary/runs/:runId/reconcile', requireAdmin, requireBillingManager, providerStability.reconcileCanaryRun);
+  r.get('/admin/provider-stability/routes/:configId/cost', requireAdmin, requireBillingManager, providerStability.getRouteCost);
+  r.put('/admin/provider-stability/routes/:configId/cost', requireAdmin, requireBillingManager, providerStability.updateRouteCost);
   r.patch('/admin/provider-stability/routes/:configId', requireAdmin, requireBillingManager, providerStability.updateRoute);
   r.post('/admin/provider-stability/routes/:configId/reset-health', requireAdmin, requireBillingManager, providerStability.resetHealth);
   r.post('/admin/provider-stability/routes/:configId/verify-from-generation', requireAdmin, requireBillingManager, providerStability.verifyFromGeneration);

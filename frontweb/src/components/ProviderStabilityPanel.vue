@@ -111,9 +111,13 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" min-width="280" fixed="right">
+        <el-table-column label="供应商成本" min-width="150">
+          <template #default="{ row }">{{ routeCostLabel(row.route_cost) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" min-width="330" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openEdit(row)">策略</el-button>
+            <el-button link type="primary" @click="openCost(row)">成本</el-button>
             <el-button link type="primary" @click="resetHealth(row)">重置健康</el-button>
             <el-button link type="success" @click="verifyFromGeneration(row)">生成记录验证</el-button>
             <el-button link :type="row.admin_paused ? 'success' : 'warning'" @click="togglePause(row)">
@@ -244,6 +248,51 @@
         <el-button type="primary" :loading="saving" @click="savePolicy">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="costVisible" title="供应商线路成本" width="min(620px, 94vw)">
+      <el-alert
+        title="用户积分价格与供应商实际成本相互独立"
+        description="此处仅用于后台核算实际供应商成本，不会修改前端用户积分定价。"
+        type="info"
+        :closable="false"
+        show-icon
+      />
+      <el-form class="cost-form" label-width="128px">
+        <el-form-item label="计费单位">
+          <el-select v-model="costForm.cost_unit">
+            <el-option label="每次请求" value="request" />
+            <el-option label="每张图片" value="image" />
+            <el-option label="每秒视频" value="second" />
+            <el-option label="Token" value="token" />
+          </el-select>
+        </el-form-item>
+        <template v-if="costForm.cost_unit === 'token'">
+          <el-form-item label="输入/千 Token">
+            <el-input-number v-model="costForm.input_yuan" :min="0" :precision="6" :step="0.001" />
+          </el-form-item>
+          <el-form-item label="输出/千 Token">
+            <el-input-number v-model="costForm.output_yuan" :min="0" :precision="6" :step="0.001" />
+          </el-form-item>
+        </template>
+        <el-form-item v-else label="基础单价（元）">
+          <el-input-number v-model="costForm.unit_yuan" :min="0.000001" :precision="6" :step="0.01" />
+        </el-form-item>
+        <el-form-item v-if="costForm.cost_unit !== 'token'" label="分辨率档位">
+          <div class="resolution-costs">
+            <div v-for="(tier, index) in costForm.resolution_prices" :key="index" class="resolution-cost-row">
+              <el-input v-model="tier.resolution" placeholder="例如 720p / 2k" maxlength="32" />
+              <el-input-number v-model="tier.yuan" :min="0.000001" :precision="6" :step="0.01" />
+              <el-button link type="danger" @click="removeResolutionCost(index)">删除</el-button>
+            </div>
+            <el-button @click="addResolutionCost">添加档位</el-button>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="costVisible = false">取消</el-button>
+        <el-button type="primary" :loading="costSaving" @click="saveRouteCost">保存成本</el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
@@ -266,6 +315,16 @@ const pausingIds = ref(new Set())
 const editVisible = ref(false)
 const editingId = ref(null)
 const editForm = ref({ logical_model_id: '', priority: 0, failover_enabled: false })
+const costVisible = ref(false)
+const costSaving = ref(false)
+const costEditingId = ref(null)
+const costForm = ref({
+  cost_unit: 'request',
+  unit_yuan: 0.000001,
+  input_yuan: 0,
+  output_yuan: 0,
+  resolution_prices: [],
+})
 
 const unknownStates = new Set(['submission_unknown', 'result_unknown', 'artifact_unreadable'])
 const priorityTypes = new Set(['route_opened', 'provider_request_needs_attention', 'provider_artifact_unreadable'])
@@ -294,6 +353,28 @@ function formatTime(value) {
 function formatMoney(value) {
   const amount = Number(value)
   return `¥${(Number.isFinite(amount) ? amount / 1_000_000 : 0).toFixed(2)}`
+}
+
+function microsToYuan(value) {
+  const amount = Number(value)
+  return Number.isFinite(amount) ? amount / 1_000_000 : 0
+}
+
+function yuanToMicros(value) {
+  const amount = Number(value)
+  if (!Number.isFinite(amount) || amount < 0) throw new Error('请输入有效的供应商成本')
+  const micros = Math.round(amount * 1_000_000)
+  if (!Number.isSafeInteger(micros)) throw new Error('供应商成本超出安全范围')
+  return micros
+}
+
+function routeCostLabel(cost) {
+  if (!cost) return '未配置'
+  if (cost.cost_unit === 'token') {
+    return `输入 ${formatMoney(cost.input_cost_micros_per_1k)} / 输出 ${formatMoney(cost.output_cost_micros_per_1k)}`
+  }
+  const unit = ({ request: '次', image: '张', second: '秒' })[cost.cost_unit] || cost.cost_unit
+  return `${formatMoney(cost.micros_per_unit)} / ${unit}`
 }
 
 function budgetPercent(used, limit) {
@@ -443,6 +524,65 @@ function openEdit(row) {
   editVisible.value = true
 }
 
+async function openCost(row) {
+  costEditingId.value = row.id
+  try {
+    const cost = await providerStabilityAPI.getRouteCost(row.id)
+    const unit = cost?.cost_unit || ({ video: 'second', image: 'image' })[row.service_type] || 'request'
+    costForm.value = {
+      cost_unit: unit,
+      unit_yuan: Math.max(0.000001, microsToYuan(cost?.micros_per_unit)),
+      input_yuan: microsToYuan(cost?.input_cost_micros_per_1k),
+      output_yuan: microsToYuan(cost?.output_cost_micros_per_1k),
+      resolution_prices: Object.entries(cost?.resolution_prices || {}).map(([resolution, tier]) => ({
+        resolution,
+        yuan: microsToYuan(tier?.micros_per_unit),
+      })),
+    }
+    costVisible.value = true
+  } catch (error) {
+    showError(error, '供应商线路成本加载失败')
+  }
+}
+
+function addResolutionCost() {
+  costForm.value.resolution_prices.push({ resolution: '', yuan: 0.000001 })
+}
+
+function removeResolutionCost(index) {
+  costForm.value.resolution_prices.splice(index, 1)
+}
+
+async function saveRouteCost() {
+  costSaving.value = true
+  try {
+    const tiers = {}
+    for (const tier of costForm.value.resolution_prices) {
+      const resolution = String(tier.resolution || '').trim().toLowerCase()
+      if (!resolution || Object.prototype.hasOwnProperty.call(tiers, resolution)) {
+        throw new Error('分辨率档位不能为空或重复')
+      }
+      tiers[resolution] = { micros_per_unit: yuanToMicros(tier.yuan) }
+    }
+    const token = costForm.value.cost_unit === 'token'
+    await providerStabilityAPI.updateRouteCost(costEditingId.value, {
+      currency: 'CNY',
+      cost_unit: costForm.value.cost_unit,
+      micros_per_unit: token ? 0 : yuanToMicros(costForm.value.unit_yuan),
+      input_cost_micros_per_1k: token ? yuanToMicros(costForm.value.input_yuan) : 0,
+      output_cost_micros_per_1k: token ? yuanToMicros(costForm.value.output_yuan) : 0,
+      resolution_prices: token ? {} : tiers,
+    })
+    costVisible.value = false
+    ElMessage.success('供应商线路成本已保存')
+    await loadAll()
+  } catch (error) {
+    showError(error, '供应商线路成本保存失败')
+  } finally {
+    costSaving.value = false
+  }
+}
+
 async function savePolicy() {
   saving.value = true
   try {
@@ -588,6 +728,9 @@ onMounted(loadAll)
 .run-meta { flex-wrap: wrap; color: #8d94a3; font-size: 12px; }
 .load-more { justify-self: center; }
 .priority-alert { margin-bottom: 8px; }
+.cost-form { margin-top: 16px; }
+.resolution-costs { display: grid; gap: 8px; width: 100%; }
+.resolution-cost-row { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(150px, 1fr) auto; gap: 8px; }
 small { display: block; margin-top: 4px; color: #8d94a3; }
 
 @media (max-width: 760px) {
@@ -601,5 +744,6 @@ small { display: block; margin-top: 4px; color: #8d94a3; }
   .budget-grid { grid-template-columns: minmax(0, 1fr); }
   .run-row { grid-template-columns: minmax(0, 1fr); }
   .run-meta { display: grid; gap: 4px; }
+  .resolution-cost-row { grid-template-columns: minmax(0, 1fr); }
 }
 </style>

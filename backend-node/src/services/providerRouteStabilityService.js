@@ -1195,6 +1195,20 @@ function resetHealth(db, configId, actor = 'admin', now = new Date().toISOString
   return db.prepare('SELECT * FROM provider_route_health WHERE config_id = ?').get(configId);
 }
 
+function getRouteCostForAdmin(db, configId) {
+  const config = aiConfigService.getConfig(db, configId);
+  if (!config) {
+    const error = new Error('provider route does not exist');
+    error.code = 'PROVIDER_ROUTE_NOT_FOUND';
+    throw error;
+  }
+  return routeCostService.getRouteCost(db, configId);
+}
+
+function updateRouteCostForAdmin(db, configId, input) {
+  return routeCostService.setRouteCost(db, configId, input);
+}
+
 function verificationError() {
   const error = new Error('验证产物不可读');
   error.code = 'VERIFICATION_ARTIFACT_UNREADABLE';
@@ -1245,6 +1259,8 @@ module.exports = {
   getCanaryAdminSummary,
   listCanaryRuns,
   reconcileCanaryRun,
+  getRouteCostForAdmin,
+  updateRouteCostForAdmin,
   resetHealth,
   resolveCanaryMode,
   listFreshCandidateEvidence,

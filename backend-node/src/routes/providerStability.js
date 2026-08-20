@@ -59,6 +59,7 @@ function safeConfigSummary(db, config) {
     canary_paused: Boolean(config.canary_paused),
     verification_status: config.verification_status,
     verified_at: config.verified_at,
+    route_cost: stability.getRouteCostForAdmin(db, config.id),
     health,
     last_switch_at: lastSwitch?.created_at || null,
   };
@@ -251,6 +252,56 @@ module.exports = function providerStabilityRoutes(db, log, options = {}) {
           code: error?.code || 'UNKNOWN',
         });
         return response.internalError(res, '更新线路失败');
+      }
+    },
+
+    getRouteCost(req, res) {
+      const id = configId(req, res);
+      if (id == null) return;
+      try {
+        return response.success(res, stability.getRouteCostForAdmin(db, id));
+      } catch (error) {
+        if (error?.code === 'PROVIDER_ROUTE_NOT_FOUND') {
+          return response.notFound(res, '配置不存在');
+        }
+        log.error('provider route cost read failed', {
+          config_id: id,
+          code: error?.code || 'UNKNOWN',
+        });
+        return response.internalError(res, '读取线路成本失败');
+      }
+    },
+
+    updateRouteCost(req, res) {
+      const id = configId(req, res);
+      if (id == null) return;
+      const body = req.body || {};
+      const allowed = new Set([
+        'currency', 'cost_unit', 'micros_per_unit', 'input_cost_micros_per_1k',
+        'output_cost_micros_per_1k', 'resolution_prices',
+      ]);
+      if (!Object.keys(body).length || Object.keys(body).some((key) => !allowed.has(key))) {
+        return response.badRequest(res, '线路成本参数无效');
+      }
+      try {
+        const saved = db.transaction(() => {
+          const cost = stability.updateRouteCostForAdmin(db, id, body);
+          recordAdminAudit(db, req, 'provider.route.cost.updated', id);
+          return cost;
+        }).immediate();
+        return response.success(res, saved);
+      } catch (error) {
+        if (error?.code === 'INVALID_PROVIDER_ROUTE_COST') {
+          return response.badRequest(res, '线路成本参数无效');
+        }
+        if (error?.code === 'PROVIDER_ROUTE_NOT_FOUND') {
+          return response.notFound(res, '配置不存在');
+        }
+        log.error('provider route cost update failed', {
+          config_id: id,
+          code: error?.code || 'UNKNOWN',
+        });
+        return response.internalError(res, '更新线路成本失败');
       }
     },
 

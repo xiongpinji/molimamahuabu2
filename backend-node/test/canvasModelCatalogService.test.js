@@ -4,6 +4,7 @@ const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const catalog = require('../src/services/canvasModelCatalogService');
 const prices = require('../src/services/modelPriceService');
+const routeCosts = require('../src/services/providerRouteCostService');
 
 const { parseModels, safeCapabilities, providerCapabilities } = catalog;
 
@@ -220,17 +221,17 @@ test('canvas public items hide route, relay, evidence, and cost metadata for log
     (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
      priority, is_active, settings, logical_model_id, verification_status, created_at, updated_at)
     VALUES ('video', ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'verified', ?, ?)`);
-  insert.run(
+  const routeA = insert.run(
     'private-relay-a', 'private-protocol-a', 'Private Route A', 'https://relay-a.example/v1',
     'private-key-a', JSON.stringify(['safe-public-video']), 'safe-public-video', 100,
     settings, null, now, now,
   );
-  insert.run(
+  const routeA2 = insert.run(
     'private-relay-a2', 'private-protocol-a2', 'Private Route A2', 'https://relay-a2.example/v1',
     'private-key-a2', JSON.stringify(['safe-public-video']), 'safe-public-video', 95,
     settings, null, now, now,
   );
-  insert.run(
+  const routeB = insert.run(
     'private-relay-b', 'private-protocol-b', 'Private Route B', 'https://relay-b.example/v1',
     'private-key-b', JSON.stringify(['private-upstream-video']), 'private-upstream-video', 90,
     settings, 'logical-public-video', now, now,
@@ -243,6 +244,17 @@ test('canvas public items hide route, relay, evidence, and cost metadata for log
       resolution_prices: {
         '480p': { credits: 4, cost_micros_per_second: 50000 },
         '720p': { credits: 7, cost_micros_per_second: 110000 },
+      },
+    });
+  }
+  for (const configId of [routeA.lastInsertRowid, routeA2.lastInsertRowid, routeB.lastInsertRowid]) {
+    routeCosts.setRouteCost(db, Number(configId), {
+      currency: 'CNY',
+      cost_unit: 'second',
+      micros_per_unit: 91001,
+      resolution_prices: {
+        '480p': { micros_per_unit: 52001 },
+        '720p': { micros_per_unit: 121001 },
       },
     });
   }
@@ -267,6 +279,7 @@ test('canvas public items hide route, relay, evidence, and cost metadata for log
   for (const privateKey of [
     '"provider"', '"protocol"', '"config_id"', '"upstream_model"', '"base_url"',
     '"relay_url"', '"evidence_sha256"', '"cost_micros_per_second"',
+    '"micros_per_unit"', '"input_cost_micros_per_1k"', '"output_cost_micros_per_1k"',
   ]) assert.equal(serialized.includes(privateKey), false, privateKey);
   for (const privateValue of [
     'private-relay', 'private-protocol', 'private-upstream-video', 'private-key', 'cfg-',
