@@ -17,6 +17,23 @@ function parseJson(value, fallback = {}) {
   }
 }
 
+function speakerKey(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value);
+  return null;
+}
+
+function firstSpeakerKey(...candidates) {
+  for (const candidate of candidates) {
+    const key = speakerKey(candidate);
+    if (key) return key;
+  }
+  return null;
+}
+
 function evidenceFromPayload(value) {
   const payload = parseJson(value, {});
   const snapshot = payload.snapshot && typeof payload.snapshot === 'object' ? payload.snapshot : {};
@@ -441,10 +458,19 @@ function validateTtsBatch(db, versionId, turns = [], options = {}) {
   const bySpeaker = new Map();
   for (const character of characters) {
     const payload = parseJson(character.source_ref_json);
-    const speakerId = payload.source_ref?.character_id ?? payload.source_ref?.id;
+    const sourceRef = payload.source_ref && typeof payload.source_ref === 'object' ? payload.source_ref : {};
+    const nestedSourceRef = sourceRef.source_ref && typeof sourceRef.source_ref === 'object'
+      ? sourceRef.source_ref
+      : {};
+    const speakerId = firstSpeakerKey(
+      nestedSourceRef.source_character_key,
+      sourceRef.source_character_key,
+      sourceRef.character_id,
+      sourceRef.id,
+    );
     const voiceSnapshot = payload.snapshot?.voice_snapshot;
-    if (speakerId != null && voiceSnapshot) {
-      bySpeaker.set(String(speakerId), { character, snapshot: voiceSnapshot });
+    if (speakerId && voiceSnapshot) {
+      bySpeaker.set(speakerId, { character, snapshot: voiceSnapshot });
     }
   }
 
@@ -466,7 +492,7 @@ function validateTtsBatch(db, versionId, turns = [], options = {}) {
     }
   }
   for (const [index, turn] of turns.entries()) {
-    const speakerId = String(turn?.speaker_id || '');
+    const speakerId = speakerKey(turn?.speaker_id) || '';
     const assigned = bySpeaker.get(speakerId);
     if (!assigned) {
       issues.push({ turn_index: index, speaker_id: speakerId, reason: 'speaker_voice_missing' });
