@@ -187,6 +187,121 @@ test('旧的不完整 redraw_projects 表可在迁移前补齐 owner 索引依�
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_redraw_projects_owner'").get());
 });
 
+test('通用转绘项目保存 A/B、预算、尝试上限和追加式事件', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const projectColumns = db.prepare('PRAGMA table_info(redraw_projects)').all();
+  const columns = projectColumns.map((row) => row.name);
+  for (const name of [
+    'execution_mode',
+    'budget_limit_credits',
+    'max_auto_attempts_per_shot',
+    'policy_version',
+    'automation_policy_json',
+  ]) assert.ok(columns.includes(name), name);
+  const columnMap = new Map(projectColumns.map((row) => [row.name, row]));
+  assert.deepEqual(
+    {
+      execution_mode: columnMap.get('execution_mode').dflt_value,
+      policy_version: columnMap.get('policy_version').dflt_value,
+      automation_policy_json: columnMap.get('automation_policy_json').dflt_value,
+    },
+    {
+      execution_mode: "'safe'",
+      policy_version: '1',
+      automation_policy_json: "'{}'",
+    },
+  );
+
+  assert.equal(
+    db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='redraw_workflow_events'").get().name,
+    'redraw_workflow_events',
+  );
+  assert.ok(db.prepare(`
+    SELECT 1 FROM pragma_index_list('redraw_workflow_events')
+    WHERE name = 'idx_redraw_workflow_events_project'
+  `).get());
+  assert.deepEqual(
+    db.prepare('PRAGMA index_info(idx_redraw_workflow_events_project)').all().map((row) => row.name),
+    ['tenant_id', 'user_id', 'project_id', 'id'],
+  );
+  assert.deepEqual(
+    db.prepare('PRAGMA foreign_key_list(redraw_workflow_events)').all().map((row) => ({
+      table: row.table,
+      from: row.from,
+      to: row.to,
+    })),
+    [{ table: 'redraw_projects', from: 'project_id', to: 'id' }],
+  );
+
+  const projectId = insertProject(db);
+  assert.deepEqual(
+    db.prepare('SELECT execution_mode, policy_version, automation_policy_json FROM redraw_projects WHERE id = ?')
+      .get(projectId),
+    { execution_mode: 'safe', policy_version: 1, automation_policy_json: '{}' },
+  );
+  assert.throws(() => db.prepare(`
+    INSERT INTO redraw_projects
+      (tenant_id, user_id, title, execution_mode, created_at, updated_at)
+    VALUES ('tenant-a', 'user-a', 'bad mode', 'manual', ?, ?)
+  `).run(NOW, NOW), /CHECK/);
+  assert.throws(() => db.prepare(`
+    INSERT INTO redraw_projects
+      (tenant_id, user_id, title, budget_limit_credits, created_at, updated_at)
+    VALUES ('tenant-a', 'user-a', 'bad budget', 0, ?, ?)
+  `).run(NOW, NOW), /CHECK/);
+  assert.throws(() => db.prepare(`
+    INSERT INTO redraw_projects
+      (tenant_id, user_id, title, max_auto_attempts_per_shot, created_at, updated_at)
+    VALUES ('tenant-a', 'user-a', 'bad attempts', 6, ?, ?)
+  `).run(NOW, NOW), /CHECK/);
+  assert.throws(() => db.prepare(`
+    INSERT INTO redraw_projects
+      (tenant_id, user_id, title, policy_version, created_at, updated_at)
+    VALUES ('tenant-a', 'user-a', 'bad version', 0, ?, ?)
+  `).run(NOW, NOW), /CHECK/);
+
+  const eventId = db.prepare(`
+    INSERT INTO redraw_workflow_events
+      (tenant_id, user_id, project_id, resource_type, resource_id, from_state, to_state,
+       reason_code, evidence_hash, created_at)
+    VALUES
+      ('tenant-a', 'user-a', ?, 'project', 'project-1', 'draft', 'active',
+       'policy-selected', 'sha256:abc', ?)
+  `).run(projectId, NOW).lastInsertRowid;
+  assert.throws(() => db.prepare(`
+    UPDATE redraw_workflow_events SET metadata_json = '{"changed":true}' WHERE id = ?
+  `).run(eventId), /redraw workflow events are immutable/);
+  assert.throws(() => db.prepare('DELETE FROM redraw_workflow_events WHERE id = ?').run(eventId), /redraw workflow events are immutable/);
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+});
+
+test('旧的不完整 redraw_projects 表可补齐通用策略列和追加式事件表', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_projects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT,
+      execution_mode TEXT NOT NULL DEFAULT 'safe'
+    );
+  `);
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  const columns = columnNames(db, 'redraw_projects');
+  for (const name of [
+    'execution_mode',
+    'budget_limit_credits',
+    'max_auto_attempts_per_shot',
+    'policy_version',
+    'automation_policy_json',
+  ]) assert.ok(columns.includes(name), name);
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'redraw_workflow_events'").get());
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'redraw_workflow_events_immutable_update'").get());
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'redraw_workflow_events_immutable_delete'").get());
+});
+
 test('旧的租户级源片唯一索引会安全重建为租户用户级索引', () => {
   const db = new Database(':memory:');
   db.exec(`

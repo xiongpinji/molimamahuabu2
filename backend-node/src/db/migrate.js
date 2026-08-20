@@ -43,16 +43,40 @@ function runMigrations(database) {
   for (const file of files) {
     const fullPath = path.join(migrationsDir, file);
     const sql = fs.readFileSync(fullPath, 'utf8');
-    const statements = sql
-      .split(';')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
+    const statements = splitSqlStatements(sql);
     if (statements.length <= 1) {
       runOne(database, sql, file, -1);
     } else {
       statements.forEach((stmt, i) => runOne(database, stmt + ';', file, i));
     }
   }
+}
+
+function splitSqlStatements(sql) {
+  const statements = [];
+  let buffer = '';
+  let inTrigger = false;
+  for (const line of sql.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    const upper = trimmed.toUpperCase();
+    if (!inTrigger && upper.startsWith('CREATE TRIGGER')) inTrigger = true;
+    buffer += `${line}\n`;
+    if (inTrigger) {
+      if (upper.endsWith('END;')) {
+        statements.push(buffer.trim().replace(/;$/, ''));
+        buffer = '';
+        inTrigger = false;
+      }
+      continue;
+    }
+    if (trimmed.endsWith(';')) {
+      statements.push(buffer.trim().replace(/;$/, ''));
+      buffer = '';
+    }
+  }
+  const tail = buffer.trim();
+  if (tail) statements.push(tail.replace(/;$/, ''));
+  return statements.filter((statement) => statement.length > 0);
 }
 
 /**
@@ -705,7 +729,41 @@ function ensureRedrawCompatibility(database) {
     { name: 'created_at', type: 'TEXT' },
     { name: 'updated_at', type: 'TEXT' },
     { name: 'deleted_at', type: 'TEXT' },
+    { name: 'execution_mode', type: 'TEXT NOT NULL DEFAULT \'safe\' CHECK (execution_mode IN (\'safe\', \'auto\'))' },
+    { name: 'budget_limit_credits', type: 'INTEGER CHECK (budget_limit_credits IS NULL OR budget_limit_credits > 0)' },
+    { name: 'max_auto_attempts_per_shot', type: 'INTEGER CHECK (max_auto_attempts_per_shot IS NULL OR max_auto_attempts_per_shot BETWEEN 1 AND 5)' },
+    { name: 'policy_version', type: 'INTEGER NOT NULL DEFAULT 1 CHECK (policy_version > 0)' },
+    { name: 'automation_policy_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
   ]);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS redraw_workflow_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      project_id INTEGER NOT NULL,
+      resource_type TEXT NOT NULL,
+      resource_id TEXT NOT NULL,
+      from_state TEXT,
+      to_state TEXT NOT NULL,
+      reason_code TEXT NOT NULL,
+      evidence_hash TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(project_id) REFERENCES redraw_projects(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_redraw_workflow_events_project
+      ON redraw_workflow_events(tenant_id, user_id, project_id, id DESC);
+
+    CREATE TRIGGER IF NOT EXISTS redraw_workflow_events_immutable_update
+    BEFORE UPDATE ON redraw_workflow_events
+    BEGIN SELECT RAISE(ABORT, 'redraw workflow events are immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS redraw_workflow_events_immutable_delete
+    BEFORE DELETE ON redraw_workflow_events
+    BEGIN SELECT RAISE(ABORT, 'redraw workflow events are immutable'); END;
+  `);
 
   ensureColumns(database, 'redraw_style_presets', [
     { name: 'tenant_id', type: 'TEXT' },
