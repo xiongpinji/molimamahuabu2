@@ -26,7 +26,14 @@ const PROACTIVE_CANARY_ACCEPTANCE = [
   '巡检不污染用户资产、生成记录和积分',
   '管理员可见线路证据预算，普通用户不泄露供应商与成本',
 ];
-const EVIDENCE_BOUND_SPLIT_EVIDENCE = [
+const PROACTIVE_CANARY_EVIDENCE = [
+  'docs/superpowers/specs/2026-08-18-platform-stability-proactive-canary-design.md',
+  'docs/superpowers/plans/2026-08-18-platform-stability-proactive-canary-foundation.md',
+  'docs/verification/platform-stability/provider-canary-readiness.json',
+  'docs/verification/platform-stability/platform-feature-inventory.json',
+  'docs/verification/platform-stability/proactive-canary-verification.md',
+  'docs/verification/platform-stability/route-mapping-and-disk-operations-20260819.md',
+  'docs/superpowers/plans/2026-08-20-provider-route-cost-and-multi-model-split.md',
   'docs/verification/platform-stability/provider-readiness-binding-candidate-20260820.md',
   'docs/superpowers/specs/2026-08-20-evidence-bound-multi-model-split-design.md',
   'docs/superpowers/plans/2026-08-20-evidence-bound-multi-model-split.md',
@@ -144,9 +151,7 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   for (const testPath of PROACTIVE_CANARY_REQUIRED_TESTS) {
     assert.ok(feature.requiredTests.includes(testPath), `功能锁缺少影响测试: ${testPath}`);
   }
-  for (const evidencePath of EVIDENCE_BOUND_SPLIT_EVIDENCE) {
-    assert.ok(feature.evidence.includes(evidencePath), `功能锁缺少证据: ${evidencePath}`);
-  }
+  assert.deepEqual(feature.evidence, PROACTIVE_CANARY_EVIDENCE);
   assert.deepEqual(feature.unlock, PROACTIVE_CANARY_UNLOCK);
 });
 
