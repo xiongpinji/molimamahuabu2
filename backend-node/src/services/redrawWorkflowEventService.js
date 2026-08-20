@@ -6,17 +6,8 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const FORMAT_OR_CONTROL = /[\p{Cf}\p{Cc}]/gu;
 const URL_VALUE = /\b(?:https?:\/\/|file:\/\/)/i;
 const ABSOLUTE_PATH_VALUE = /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/;
-const SENSITIVE_COMPACT = [
-  'auth',
-  'authorization',
-  'apikey',
-  'token',
-  'secret',
-  'password',
-  'credential',
-  'bearer',
-  'providerresponse',
-];
+const SENSITIVE_VALUE_COMPACT = ['authorization', 'apikey', 'token', 'secret', 'password', 'credential', 'bearer', 'providerresponse'];
+const SENSITIVE_KEY_TOKENS = new Set(['token', 'secret', 'password', 'credential', 'bearer', 'url', 'path']);
 
 function invalid(message) {
   const error = new Error(message);
@@ -28,10 +19,35 @@ function normalizeForScan(value) {
   return String(value).normalize('NFKC').replace(FORMAT_OR_CONTROL, '');
 }
 
+function keyTokens(value) {
+  return normalizeForScan(value)
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+
+function assertSafeKey(value) {
+  const tokens = keyTokens(value);
+  const compact = tokens.join('');
+  if (['raw', 'rawresponse', 'responsebody', 'providerresponse'].includes(compact)) {
+    throw invalid('workflow event metadata contains sensitive key');
+  }
+  if (compact === 'apikey' || tokens.some((token) => SENSITIVE_KEY_TOKENS.has(token))) {
+    throw invalid('workflow event metadata contains sensitive key');
+  }
+  if (tokens[0] === 'auth' || tokens[0] === 'authorization') {
+    throw invalid('workflow event metadata contains sensitive key');
+  }
+}
+
 function assertNoSensitiveText(value, label) {
   const normalized = normalizeForScan(value);
+  if (label === 'key') {
+    assertSafeKey(value);
+  }
   const compact = normalized.toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (SENSITIVE_COMPACT.some((term) => compact.includes(term))) {
+  if (SENSITIVE_VALUE_COMPACT.some((term) => compact.includes(term))) {
     throw invalid(`workflow event metadata contains sensitive ${label}`);
   }
   if (URL_VALUE.test(normalized) || ABSOLUTE_PATH_VALUE.test(normalized.trim())) {
