@@ -14,7 +14,7 @@ const evidenceService = require('./providerCanaryEvidenceService');
 const executorService = require('./providerCanaryExecutor');
 const fixtureService = require('./providerCanaryFixtureService');
 const inventoryService = require('./providerCanaryInventoryService');
-const modelPriceService = require('./modelPriceService');
+const routeCostService = require('./providerRouteCostService');
 const providerRouteStabilityService = require('./providerRouteStabilityService');
 const runtimeService = require('./providerRuntimeFingerprintService');
 
@@ -651,17 +651,14 @@ async function runZeroCostSweep(db, log, options = {}) {
   return summary;
 }
 
-function priceSnapshot(db, config) {
-  const model = String(config.logical_model_id || config.default_model || config.model?.[0] || '').trim();
-  return modelPriceService.list(db).find((row) => row.model.toLowerCase() === model.toLowerCase()) || null;
-}
-
 function costHash(db, config) {
-  const price = priceSnapshot(db, config);
-  const tiers = price
-    ? Object.entries(price.resolution_prices || {}).map(([resolution, value]) => ({ resolution, ...value }))
-    : [];
-  return evidenceService.costFingerprint(price, tiers);
+  const cost = routeCostService.getRouteCost(db, config.id);
+  if (!cost) {
+    const error = new Error('provider canary route cost is not configured');
+    error.code = 'PROVIDER_CANARY_COST_NOT_CONFIGURED';
+    throw error;
+  }
+  return routeCostService.fingerprintRouteCost(cost);
 }
 
 function blockEvent(db, candidate, reason, now) {

@@ -8,6 +8,8 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const modelPriceService = require('../src/services/modelPriceService');
+const routeCostService = require('../src/services/providerRouteCostService');
 
 const SAFE_PUBLIC_DNS = [{ address: '93.184.216.34', family: 4 }];
 
@@ -159,6 +161,10 @@ test('route mapping failure records the affected route first actionable blocker'
   });
   prices.set(db, blocked.default_model, 10, {
     category: 'video', cost_micros_per_unit: 10,
+  });
+  require('../src/services/providerRouteCostService').setRouteCost(db, ready.id, {
+    cost_unit: 'second',
+    micros_per_unit: 10,
   });
   const probes = { ...allHealthyProbes };
   delete probes.mappings;
@@ -650,6 +656,47 @@ test('due profiles sort by expiry, impact, priority, then cost and skip unresolv
     estimateCost: (_db, route) => (route.id === 2 ? 20 : route.id === 3 ? 10 : 1),
   });
   assert.deepEqual(result.map((row) => row.config.id), [3, 2, 1]);
+});
+
+test('due profiles reserve independent route cost for configs sharing one logical model', () => {
+  const scheduler = loadScheduler();
+  const db = new Database(':memory:');
+  try {
+    runMigrationsAndEnsure(db);
+    const first = config(25, { logical_model_id: 'shared-video', priority: 20 });
+    const second = config(26, { logical_model_id: 'shared-video', priority: 10 });
+    insertRoute(db, first);
+    insertRoute(db, second);
+    modelPriceService.set(db, 'shared-video', 10, {
+      category: 'video',
+      billing_unit: 'second',
+      cost_unit: 'second',
+      cost_micros_per_unit: 46_000,
+    });
+    routeCostService.setRouteCost(db, first.id, {
+      cost_unit: 'request', micros_per_unit: 46_000,
+    });
+    routeCostService.setRouteCost(db, second.id, {
+      cost_unit: 'request', micros_per_unit: 100_000,
+    });
+
+    const rows = scheduler.selectDueProfiles(db, {
+      now: '2026-08-18T00:00:00.000Z',
+      configs: [first, second],
+      evidenceRows: [],
+      capabilityFingerprint: (_serviceType, _profile, route) => `hash-${route.id}`,
+      providerScopeKey: (route) => `scope-${route.id}`,
+    });
+    assert.deepEqual(rows.map((row) => ({
+      config_id: row.config.id,
+      reserved_cost_micros: row.reservedCostMicros,
+    })), [
+      { config_id: 25, reserved_cost_micros: 46_000 },
+      { config_id: 26, reserved_cost_micros: 100_000 },
+    ]);
+  } finally {
+    db.close();
+  }
 });
 
 test('fixture failure happens before reservation and leaves the global slot free', async (t) => {

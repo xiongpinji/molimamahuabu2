@@ -81,6 +81,22 @@ function createFixtureDb(filename = ':memory:') {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (model, resolution)
     );
+    CREATE TABLE provider_route_costs (
+      config_id INTEGER PRIMARY KEY,
+      currency TEXT NOT NULL,
+      cost_unit TEXT NOT NULL,
+      micros_per_unit INTEGER NOT NULL,
+      input_cost_micros_per_1k INTEGER NOT NULL,
+      output_cost_micros_per_1k INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE provider_route_resolution_costs (
+      config_id INTEGER NOT NULL,
+      resolution TEXT NOT NULL,
+      micros_per_unit INTEGER NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (config_id, resolution)
+    );
   `);
   const insertConfig = db.prepare(`INSERT INTO ai_service_configs
     (id, service_type, provider, base_url, api_key, api_protocol, model, default_model, priority,
@@ -168,6 +184,16 @@ function createFixtureDb(filename = ':memory:') {
   db.prepare(`INSERT INTO model_resolution_prices
     (model, resolution, credits, cost_micros_per_second, updated_at)
     VALUES ('video-paused', '720p', 25, 10000, ?)`)
+    .run(NOW);
+  const insertRouteCost = db.prepare(`INSERT INTO provider_route_costs
+    (config_id, currency, cost_unit, micros_per_unit, input_cost_micros_per_1k,
+     output_cost_micros_per_1k, updated_at)
+    VALUES (?, 'CNY', ?, ?, 0, 0, ?)`);
+  insertRouteCost.run(11, 'image', 46_000, NOW);
+  insertRouteCost.run(12, 'second', 0, NOW);
+  insertRouteCost.run(14, 'second', 0, NOW);
+  db.prepare(`INSERT INTO provider_route_resolution_costs
+    (config_id, resolution, micros_per_unit, updated_at) VALUES (14, '720p', 10000, ?)`)
     .run(NOW);
   return db;
 }
@@ -298,6 +324,35 @@ test('sanitizeRouteRef is the first 16 hex characters of the required route iden
     .slice(0, 16);
   assert.equal(inventory.sanitizeRouteRef(config), expected);
   assert.equal(inventory.sanitizeRouteRef(config).includes('relay'), false);
+});
+
+test('readiness requires cost for the exact config even when its logical model has priced siblings', () => {
+  const inventory = require('../src/services/providerCanaryInventoryService');
+  const db = createFixtureDb();
+  try {
+    db.prepare(`INSERT INTO ai_service_configs
+      (id, service_type, provider, base_url, api_key, api_protocol, model, default_model,
+       priority, is_active, settings, logical_model_id, verification_status, updated_at, deleted_at)
+      VALUES (15, 'image', 'second-image-provider', 'https://second.invalid/v1', 'test-key',
+        'openai', '["second-upstream"]', 'second-upstream', 60, 1, ?, 'image-ready',
+        'verified', ?, NULL)`)
+      .run(JSON.stringify({ canvas_capabilities: { resolutions: ['1k'] } }), NOW);
+    const report = inventory.buildCanaryReadiness(db, {
+      now: NOW,
+      runtimeFingerprints: { image: 'image-runtime', video: 'video-runtime' },
+    });
+    const missing = report.routes.find((row) => row.route_ref
+      === inventory.sanitizeRouteRef({
+        id: 15,
+        provider: 'second-image-provider',
+        base_url: 'https://second.invalid/v1',
+      }));
+    assert.equal(missing.user_price_status, 'configured');
+    assert.equal(missing.cost_status, 'missing');
+    assert.equal(missing.blockers.includes('missing_cost'), true);
+  } finally {
+    db.close();
+  }
 });
 
 test('invalid route URLs use one deterministic sentinel without aborting or leaking input', () => {

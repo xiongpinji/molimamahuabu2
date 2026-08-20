@@ -14,6 +14,7 @@ const videoClient = require('../src/services/videoClient');
 const budget = require('../src/services/providerCanaryBudgetService');
 const evidence = require('../src/services/providerCanaryEvidenceService');
 const modelPrice = require('../src/services/modelPriceService');
+const routeCost = require('../src/services/providerRouteCostService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 const NOW = '2026-08-18T00:00:00.000Z';
@@ -67,6 +68,14 @@ function addConfig(db, serviceType, suffix = 'a') {
     input_cost_micros_per_1k: serviceType === 'text' ? 1000 : 0,
     output_cost_micros_per_1k: serviceType === 'text' ? 2000 : 0,
   });
+  routeCost.setRouteCost(db, config.id, serviceType === 'text' ? {
+    cost_unit: 'token',
+    input_cost_micros_per_1k: 1000,
+    output_cost_micros_per_1k: 2000,
+  } : {
+    cost_unit: serviceType === 'video' ? 'second' : 'image',
+    micros_per_unit: 1000,
+  }, { now: NOW });
   return aiConfigService.getConfig(db, config.id);
 }
 
@@ -92,6 +101,9 @@ function addHttpImageConfig(db, server, suffix) {
     cost_unit: 'image',
     cost_micros_per_unit: 1000,
   });
+  routeCost.setRouteCost(db, config.id, {
+    cost_unit: 'image', micros_per_unit: 1000,
+  }, { now: NOW });
   return aiConfigService.getConfig(db, config.id);
 }
 
@@ -118,6 +130,9 @@ function addHttpVideoConfig(db, server, suffix) {
     cost_unit: 'second',
     cost_micros_per_unit: 1000,
   });
+  routeCost.setRouteCost(db, config.id, {
+    cost_unit: 'second', micros_per_unit: 1000,
+  }, { now: NOW });
   return aiConfigService.getConfig(db, config.id);
 }
 
@@ -285,10 +300,35 @@ test('estimateCanaryCost uses the configured model cost and rejects zero or miss
     assert.equal(executor.estimateCanaryCost(db, video, capabilityFor('video')), 5000);
     db.prepare('UPDATE model_credit_prices SET cost_micros_per_unit = 0 WHERE model = ?')
       .run(image.logical_model_id);
+    db.prepare('UPDATE provider_route_costs SET micros_per_unit = 0 WHERE config_id = ?')
+      .run(image.id);
     assert.throws(
       () => executor.estimateCanaryCost(db, image, capabilityFor('image')),
       (error) => error.code === 'PROVIDER_CANARY_COST_NOT_POSITIVE',
     );
+  } finally {
+    db.close();
+  }
+});
+
+test('estimateCanaryCost uses exact config route cost for configs sharing one logical model', () => {
+  const executor = loadExecutor();
+  const db = createDb();
+  try {
+    const first = addConfig(db, 'image', 'shared-a');
+    const secondInitial = addConfig(db, 'image', 'shared-b');
+    db.prepare('UPDATE ai_service_configs SET logical_model_id = ? WHERE id = ?')
+      .run(first.logical_model_id, secondInitial.id);
+    routeCost.setRouteCost(db, first.id, {
+      cost_unit: 'image', micros_per_unit: 46_000,
+    }, { now: NOW });
+    routeCost.setRouteCost(db, secondInitial.id, {
+      cost_unit: 'image', micros_per_unit: 100_000,
+    }, { now: NOW });
+    const second = aiConfigService.getConfig(db, secondInitial.id);
+
+    assert.equal(executor.estimateCanaryCost(db, first, capabilityFor('image')), 46_000);
+    assert.equal(executor.estimateCanaryCost(db, second, capabilityFor('image')), 100_000);
   } finally {
     db.close();
   }

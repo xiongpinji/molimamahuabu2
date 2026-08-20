@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const defaultLog = require('../logger');
 const aiConfigService = require('./aiConfigService');
 const modelPriceService = require('./modelPriceService');
+const routeCostService = require('./providerRouteCostService');
 const evidenceService = require('./providerCanaryEvidenceService');
 const runtimeService = require('./providerRuntimeFingerprintService');
 const budgetService = require('./providerCanaryBudgetService');
@@ -122,29 +123,21 @@ function currentPriceCoversCapability(db, config, capability = {}) {
     const resolution = String(capability.resolution || '').trim().toLowerCase();
     if (resolution) {
       const tier = price.resolution_prices?.[resolution];
-      return positiveInteger(tier?.credits) && positiveInteger(tier?.cost_micros_per_second);
+      if (!positiveInteger(tier?.credits)) return false;
     }
-    return positiveInteger(price.cost_micros_per_unit);
   }
-  if (String(price.cost_unit || '').trim().toLowerCase() === 'token') {
-    return positiveInteger(price.input_cost_micros_per_1k)
-      || positiveInteger(price.output_cost_micros_per_1k);
-  }
-  return positiveInteger(price.cost_micros_per_unit);
+  return routeCostService.routeCostCoversCapability(db, config.id, capability);
 }
 
 function evidenceFingerprints(db, config) {
   try {
-    const price = priceSnapshot(db, config);
-    const tiers = price
-      ? Object.entries(price.resolution_prices || {})
-        .map(([resolution, value]) => ({ resolution, ...value }))
-      : [];
+    const cost = routeCostService.getRouteCost(db, config.id);
+    if (!cost) return null;
     const runtime = runtimeService.runtimeFingerprintForConfig(config);
     if (!runtime.ok || !runtime.fingerprint) return null;
     return {
       configFingerprint: evidenceService.configFingerprint(config),
-      costFingerprint: evidenceService.costFingerprint(price, tiers),
+      costFingerprint: routeCostService.fingerprintRouteCost(cost),
       runtimeFingerprint: runtime.fingerprint,
     };
   } catch (_) {

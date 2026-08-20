@@ -68,7 +68,7 @@ function routeModel(config) {
 function costStatus(price, resolutionCosts) {
   if (!price) return 'missing';
   const values = [
-    price.cost_micros_per_unit,
+    price.micros_per_unit ?? price.cost_micros_per_unit,
     price.input_cost_micros_per_1k,
     price.output_cost_micros_per_1k,
     ...resolutionCosts,
@@ -117,27 +117,39 @@ function readPrices(db) {
     ORDER BY model COLLATE NOCASE`).all();
 }
 
-function readResolutionPrices(db) {
-  const columns = tableColumns(db, 'model_resolution_prices');
+function readRouteCosts(db) {
+  const columns = tableColumns(db, 'provider_route_costs');
   if (!columns) return [];
-  const names = ['model', 'cost_micros_per_second', 'updated_at'];
-  const order = columns.has('resolution') ? 'model COLLATE NOCASE, resolution' : 'model COLLATE NOCASE';
+  const names = [
+    'config_id', 'micros_per_unit', 'input_cost_micros_per_1k',
+    'output_cost_micros_per_1k', 'updated_at',
+  ];
   return db.prepare(`SELECT ${names.map((name) => projected(columns, name)).join(', ')}
-    FROM model_resolution_prices
-    ORDER BY ${order}`).all();
+    FROM provider_route_costs
+    ORDER BY config_id`).all();
+}
+
+function readRouteResolutionCosts(db) {
+  const columns = tableColumns(db, 'provider_route_resolution_costs');
+  if (!columns) return [];
+  const names = ['config_id', 'micros_per_unit', 'updated_at'];
+  return db.prepare(`SELECT ${names.map((name) => projected(columns, name)).join(', ')}
+    FROM provider_route_resolution_costs
+    ORDER BY config_id, resolution COLLATE NOCASE`).all();
 }
 
 function buildCanaryReadiness(db, options = {}) {
   const configs = readConfigs(db);
   const prices = readPrices(db);
-  const resolutionPrices = readResolutionPrices(db);
+  const routeCosts = readRouteCosts(db);
+  const routeResolutionCosts = readRouteResolutionCosts(db);
   const priceByModel = new Map(prices.map((price) => [String(price.model).toLowerCase(), price]));
-  const resolutionCostsByModel = new Map();
-  for (const tier of resolutionPrices) {
-    const key = String(tier.model).toLowerCase();
-    const costs = resolutionCostsByModel.get(key) || [];
-    costs.push(tier.cost_micros_per_second);
-    resolutionCostsByModel.set(key, costs);
+  const routeCostByConfig = new Map(routeCosts.map((cost) => [cost.config_id, cost]));
+  const resolutionCostsByConfig = new Map();
+  for (const tier of routeResolutionCosts) {
+    const costs = resolutionCostsByConfig.get(tier.config_id) || [];
+    costs.push(tier.micros_per_unit);
+    resolutionCostsByConfig.set(tier.config_id, costs);
   }
   const runtimeFingerprints = options.runtimeFingerprints || {};
 
@@ -151,7 +163,10 @@ function buildCanaryReadiness(db, options = {}) {
       && price.credits > 0
       ? 'configured'
       : 'missing';
-    const routeCostStatus = costStatus(price, resolutionCostsByModel.get(modelKey) || []);
+    const routeCostStatus = costStatus(
+      routeCostByConfig.get(config.id),
+      resolutionCostsByConfig.get(config.id) || [],
+    );
     const declared = capabilitiesDeclared(config);
     let runtimeFingerprint = null;
     if (typeof options.runtimeFingerprintResolver === 'function') {
@@ -192,7 +207,7 @@ function buildCanaryReadiness(db, options = {}) {
       blockers: BLOCKERS.filter((blocker) => checks[blocker]),
     };
   });
-  const timestamps = [...configs, ...prices, ...resolutionPrices]
+  const timestamps = [...configs, ...prices, ...routeCosts, ...routeResolutionCosts]
     .map((row) => String(row.updated_at || '').trim())
     .filter(Boolean)
     .sort();

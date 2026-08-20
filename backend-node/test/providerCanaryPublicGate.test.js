@@ -12,6 +12,7 @@ const catalog = require('../src/services/canvasModelCatalogService');
 const evidenceService = require('../src/services/providerCanaryEvidenceService');
 const imageClient = require('../src/services/imageClient');
 const modelPriceService = require('../src/services/modelPriceService');
+const routeCostService = require('../src/services/providerRouteCostService');
 const runtimeService = require('../src/services/providerRuntimeFingerprintService');
 const stability = require('../src/services/providerRouteStabilityService');
 const videoClient = require('../src/services/videoClient');
@@ -67,7 +68,7 @@ function addConfig(db, values = {}) {
     maxAudioReferences: 1,
     supportsAudio: true,
   };
-  return Number(db.prepare(`INSERT INTO ai_service_configs
+  const configId = Number(db.prepare(`INSERT INTO ai_service_configs
     (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
      priority, is_default, is_active, settings, logical_model_id, failover_enabled,
      verification_status, created_at, updated_at)
@@ -86,6 +87,15 @@ function addConfig(db, values = {}) {
       failover_enabled: values.failover_enabled ?? 1,
       now: NOW,
     }).lastInsertRowid);
+  routeCostService.setRouteCost(db, configId, {
+    cost_unit: 'second',
+    micros_per_unit: 500,
+    resolution_prices: {
+      '480p': { micros_per_unit: 500 },
+      '720p': { micros_per_unit: 1000 },
+    },
+  }, { now: NOW });
+  return configId;
 }
 
 function addPublicConfig(db, values) {
@@ -107,6 +117,20 @@ function addPublicConfig(db, values) {
   });
   db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
     .run(config.id);
+  routeCostService.setRouteCost(db, config.id, values.serviceType === 'text' ? {
+    cost_unit: 'token',
+    input_cost_micros_per_1k: 1000,
+    output_cost_micros_per_1k: 2000,
+  } : values.serviceType === 'video' ? {
+    cost_unit: 'second',
+    micros_per_unit: 1000,
+    resolution_prices: Object.fromEntries(
+      (capabilities.resolutions || []).map((resolution) => [resolution, { micros_per_unit: 1000 }]),
+    ),
+  } : {
+    cost_unit: 'image',
+    micros_per_unit: 1000,
+  }, { now: NOW });
   return config;
 }
 
@@ -134,12 +158,11 @@ function addLegacyPublicConfig(db, values) {
   return { config, upstreamModel };
 }
 
-function costFingerprint(db, logicalModelId = 'seedance-logical') {
-  const price = modelPriceService.list(db)
-    .find((row) => row.model.toLowerCase() === logicalModelId.toLowerCase());
-  const tiers = Object.entries(price?.resolution_prices || {})
-    .map(([resolution, value]) => ({ resolution, ...value }));
-  return evidenceService.costFingerprint(price || null, tiers);
+function costFingerprint(db, configId) {
+  const cost = routeCostService.getRouteCost(db, configId);
+  return cost
+    ? routeCostService.fingerprintRouteCost(cost)
+    : evidenceService.costFingerprint(null, []);
 }
 
 function addEvidence(db, configId, capability, suffix, state = 'fresh') {
@@ -152,7 +175,7 @@ function addEvidence(db, configId, capability, suffix, state = 'fresh') {
   const normalized = evidenceService.normalizeCapability(serviceType, capability);
   const capabilityFingerprint = evidenceService.capabilityFingerprint(serviceType, normalized);
   const runId = `public-gate-${configId}-${suffix}`;
-  const cost = costFingerprint(db, logicalModelId);
+  const cost = costFingerprint(db, configId);
   db.prepare(`INSERT INTO provider_canary_runs
     (id, idempotency_key, config_id, logical_model_id, service_type, capability_fingerprint,
      config_fingerprint, cost_fingerprint, runtime_fingerprint, provider_scope_key, state,
@@ -427,33 +450,33 @@ test('enforce 不信任成本缺失、零成本或缺少对应分辨率 tier 的
       name: 'missing price',
       capability: REQUESTED,
       mutate(db) {
-        db.prepare("DELETE FROM model_resolution_prices WHERE model = 'seedance-logical'").run();
         db.prepare("DELETE FROM model_credit_prices WHERE model = 'seedance-logical'").run();
       },
     },
     {
       name: 'zero base cost',
       capability: { ...REQUESTED, resolution: null },
-      mutate(db) {
-        db.prepare("DELETE FROM model_resolution_prices WHERE model = 'seedance-logical'").run();
-        db.prepare("UPDATE model_credit_prices SET cost_micros_per_unit = 0 WHERE model = 'seedance-logical'")
-          .run();
+      mutate(db, configId) {
+        db.prepare('DELETE FROM provider_route_resolution_costs WHERE config_id = ?').run(configId);
+        db.prepare('UPDATE provider_route_costs SET micros_per_unit = 0 WHERE config_id = ?')
+          .run(configId);
       },
     },
     {
       name: 'missing resolution tier',
       capability: REQUESTED,
-      mutate(db) {
-        db.prepare("DELETE FROM model_resolution_prices WHERE model = 'seedance-logical' AND resolution = '720p'")
-          .run();
+      mutate(db, configId) {
+        db.prepare("DELETE FROM provider_route_resolution_costs WHERE config_id = ? AND resolution = '720p'")
+          .run(configId);
       },
     },
     {
       name: 'zero resolution tier cost',
       capability: REQUESTED,
-      mutate(db) {
-        db.prepare(`UPDATE model_resolution_prices SET cost_micros_per_second = 0
-          WHERE model = 'seedance-logical' AND resolution = '720p'`).run();
+      mutate(db, configId) {
+        db.pragma('ignore_check_constraints = ON');
+        db.prepare(`UPDATE provider_route_resolution_costs SET micros_per_unit = 0
+          WHERE config_id = ? AND resolution = '720p'`).run(configId);
       },
     },
   ];
@@ -462,7 +485,7 @@ test('enforce 不信任成本缺失、零成本或缺少对应分辨率 tier 的
       const db = createDb();
       try {
         const configId = addConfig(db, { name: `price-${scenario.name}`, priority: 100 });
-        scenario.mutate(db);
+        scenario.mutate(db, configId);
         addEvidence(db, configId, scenario.capability, `price-${scenario.name}`);
         let candidates = [];
         try {

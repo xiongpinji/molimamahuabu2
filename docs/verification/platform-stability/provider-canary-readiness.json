@@ -40,11 +40,12 @@
       "service_type": "image",
       "capabilities_declared": true,
       "user_price_status": "configured",
-      "cost_status": "positive",
+      "cost_status": "missing",
       "priority": 80,
       "runtime_fingerprint": "image-runtime",
       "blockers": [
         "missing_logical_model_id",
+        "missing_cost",
         "legacy_connection_only_verification"
       ]
     },

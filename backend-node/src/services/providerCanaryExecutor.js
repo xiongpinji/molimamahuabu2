@@ -4,7 +4,7 @@ const aiClient = require('./aiClient');
 const aiConfigService = require('./aiConfigService');
 const imageClient = require('./imageClient');
 const videoClient = require('./videoClient');
-const modelPriceService = require('./modelPriceService');
+const routeCostService = require('./providerRouteCostService');
 const budgetService = require('./providerCanaryBudgetService');
 const evidenceService = require('./providerCanaryEvidenceService');
 const artifactService = require('./providerCanaryArtifactService');
@@ -126,19 +126,15 @@ function buildCanaryRequest(_db, config, capability, fixtures = {}) {
   };
 }
 
-function configuredModel(config) {
-  return String(config.logical_model_id || config.default_model || config.model?.[0] || '').trim();
-}
-
 function estimateCanaryCost(db, config, capability = {}) {
   requireSingleOutput(capability);
   const serviceType = String(config?.service_type || '').trim().toLowerCase();
-  const model = configuredModel(config);
-  if (!model) throw serviceError('PROVIDER_CANARY_COST_NOT_CONFIGURED', 'provider canary cost model is missing');
   let quote;
   try {
-    quote = modelPriceService.quoteCost(db, model, {
-      quantity: serviceType === 'video' ? capability.duration : 1,
+    quote = routeCostService.quoteRouteCost(db, {
+      configId: positiveConfigId(config),
+      count: 1,
+      duration: serviceType === 'video' ? capability.duration : undefined,
       resolution: capability.resolution,
       inputTokens: serviceType === 'text' ? 32 : 0,
       outputTokens: serviceType === 'text' ? 16 : 0,
