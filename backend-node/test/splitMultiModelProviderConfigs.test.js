@@ -12,6 +12,7 @@ const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const modelPriceService = require('../src/services/modelPriceService');
 const providerRouteCostService = require('../src/services/providerRouteCostService');
 const externalModelEvidenceService = require('../src/services/externalModelEvidenceService');
+const auditEventService = require('../src/services/auditEventService');
 const splitTool = require('../scripts/split-multi-model-provider-configs');
 
 const script = path.resolve(__dirname, '../scripts/split-multi-model-provider-configs.js');
@@ -191,6 +192,42 @@ function rows(dbPath) {
     FROM ai_service_configs ORDER BY id`).all();
   db.close();
   return result;
+}
+
+function fourTableSnapshot(db) {
+  return {
+    configs: db.prepare('SELECT * FROM ai_service_configs ORDER BY id').all(),
+    costs: db.prepare('SELECT * FROM provider_route_costs ORDER BY config_id').all(),
+    tiers: db.prepare(`SELECT * FROM provider_route_resolution_costs
+      ORDER BY config_id, resolution`).all(),
+    audit: db.prepare('SELECT * FROM audit_events ORDER BY rowid').all(),
+  };
+}
+
+function evidenceBoundInput(db, item, binding = validBinding(item.configId)) {
+  for (const model of binding.models) model.evidence_sha256 = item.evidenceSha256;
+  return {
+    input: {
+      configId: item.configId,
+      expectedFingerprint: splitTool.fingerprint(splitTool.readTarget(db, item.configId)),
+      binding,
+    },
+    overrides: {
+      readTrustedEvidence: (model) => externalModelEvidenceService.readTrustedEvidence(
+        model,
+        item.evidenceRoots,
+      ),
+    },
+  };
+}
+
+function captureError(operation) {
+  try {
+    operation();
+  } catch (error) {
+    return error;
+  }
+  assert.fail('expected operation to throw');
 }
 
 test('无参数失败且 dry-run 只输出脱敏稳定计划、不写数据库', (t) => {
@@ -439,4 +476,240 @@ test('证据绑定拆分拒绝完全重复的源模型且四表零变化', (t) =
   assertDuplicateSourceModelsRejected(t, [
     'seedance-2-fast', 'seedance-2-fast', 'seedance-2-mini',
   ]);
+});
+
+const evidenceQualificationFailures = [
+  {
+    name: '缺少逐模型证据',
+    code: 'MISSING_MODEL_EVIDENCE',
+    mutate: (db, _binding, item) => db.prepare(
+      'UPDATE ai_service_configs SET verified_capabilities = ? WHERE id = ?',
+    ).run('{}', item.configId),
+  },
+  {
+    name: '绑定证据摘要不匹配',
+    code: 'EVIDENCE_MISMATCH',
+    mutate: (_db, binding) => { binding.models[0].evidence_sha256 = 'b'.repeat(64); },
+  },
+  {
+    name: '公开模型价格停用',
+    code: 'MODEL_PRICE_NOT_CONFIGURED',
+    mutate: (db) => db.prepare(
+      "UPDATE model_credit_prices SET status = 'disabled' WHERE model = 'seedance-2-mini'",
+    ).run(),
+  },
+  {
+    name: '成本缺少能力分辨率档位',
+    code: 'ROUTE_COST_CAPABILITY_MISMATCH',
+    mutate: (_db, binding) => { delete binding.models[1].route_cost.resolution_prices['720p']; },
+  },
+  {
+    name: '绑定模型集合漂移',
+    code: 'BINDING_MODEL_SET_MISMATCH',
+    mutate: (_db, binding) => { binding.models[1].model = 'seedance-2-extra'; },
+  },
+  {
+    name: '受保护证据文件缺失',
+    code: 'UNTRUSTED_MODEL_EVIDENCE',
+    mutate: (_db, _binding, item) => fs.rmSync(path.join(
+      item.evidenceRoots.root,
+      'toapis-video-verification.json',
+    )),
+  },
+  {
+    name: '成本单价为零',
+    code: 'INVALID_PROVIDER_ROUTE_COST',
+    mutate: (_db, binding) => { binding.models[0].route_cost.micros_per_unit = 0; },
+  },
+  {
+    name: '成本单价超过安全整数',
+    code: 'INVALID_PROVIDER_ROUTE_COST',
+    mutate: (_db, binding) => {
+      binding.models[0].route_cost.micros_per_unit = Number.MAX_SAFE_INTEGER + 1;
+    },
+  },
+  {
+    name: '视频成本单位不是秒',
+    code: 'ROUTE_COST_CAPABILITY_MISMATCH',
+    mutate: (_db, binding) => { binding.models[0].route_cost.cost_unit = 'request'; },
+  },
+  {
+    name: '来源配置已停用',
+    code: 'SOURCE_NOT_ELIGIBLE',
+    mutate: (db, _binding, item) => db.prepare(
+      'UPDATE ai_service_configs SET is_active = 0 WHERE id = ?',
+    ).run(item.configId),
+  },
+  {
+    name: '公开逻辑模型集合漂移',
+    code: 'PUBLIC_MODEL_SET_CHANGED',
+    mutate: (_db, binding) => { binding.models[1].logical_model_id = 'renamed-mini'; },
+  },
+];
+
+for (const scenario of evidenceQualificationFailures) {
+  test(`证据绑定资格失败：${scenario.name}时四表零变化`, (t) => {
+    const item = evidenceFixture();
+    t.after(() => cleanup(item));
+    const db = new Database(item.dbPath);
+    const binding = validBinding(item.configId);
+    for (const model of binding.models) model.evidence_sha256 = item.evidenceSha256;
+    scenario.mutate(db, binding, item);
+    const target = splitTool.readTarget(db, item.configId);
+    const before = fourTableSnapshot(db);
+    const error = captureError(() => splitTool.applyEvidenceBoundPlan(db, {
+      configId: item.configId,
+      expectedFingerprint: splitTool.fingerprint(target),
+      binding,
+    }, {
+      readTrustedEvidence: (model) => externalModelEvidenceService.readTrustedEvidence(
+        model,
+        item.evidenceRoots,
+      ),
+    }));
+    assert.equal(error.code, scenario.code);
+    assert.deepEqual(fourTableSnapshot(db), before);
+    db.close();
+  });
+}
+
+test('证据绑定拆分拒绝已存在的相同供应商模型线路且四表零变化', (t) => {
+  const item = evidenceFixture();
+  t.after(() => cleanup(item));
+  const db = new Database(item.dbPath);
+  db.prepare(`INSERT INTO ai_service_configs
+      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+       endpoint, query_endpoint, priority, is_default, is_active, settings, logical_model_id,
+       failover_enabled, verification_status, verified_at, verification_evidence,
+       verified_capabilities, canary_paused, created_at, updated_at)
+    SELECT service_type, provider, api_protocol, name || ' duplicate', base_url, api_key,
+      ?, ?, endpoint, query_endpoint, priority + 1, 0, 1, settings, NULL,
+      0, verification_status, verified_at, verification_evidence,
+      verified_capabilities, canary_paused, created_at, updated_at
+    FROM ai_service_configs WHERE id = ?`).run(
+    JSON.stringify(['seedance-2-mini']),
+    'seedance-2-mini',
+    item.configId,
+  );
+  const { input, overrides } = evidenceBoundInput(db, item);
+  const before = fourTableSnapshot(db);
+  const error = captureError(() => splitTool.applyEvidenceBoundPlan(db, input, overrides));
+  assert.equal(error.code, 'DUPLICATE_PROVIDER_ROUTE');
+  assert.deepEqual(fourTableSnapshot(db), before);
+  db.close();
+});
+
+test('证据绑定拆分拒绝过期指纹且四表零变化', (t) => {
+  const item = evidenceFixture();
+  t.after(() => cleanup(item));
+  const db = new Database(item.dbPath);
+  const binding = validBinding(item.configId);
+  for (const model of binding.models) model.evidence_sha256 = item.evidenceSha256;
+  const staleFingerprint = splitTool.fingerprint(splitTool.readTarget(db, item.configId));
+  db.prepare('UPDATE ai_service_configs SET priority = priority + 1 WHERE id = ?')
+    .run(item.configId);
+  const before = fourTableSnapshot(db);
+  const error = captureError(() => splitTool.applyEvidenceBoundPlan(db, {
+    configId: item.configId,
+    expectedFingerprint: staleFingerprint,
+    binding,
+  }, {
+    readTrustedEvidence: (model) => externalModelEvidenceService.readTrustedEvidence(
+      model,
+      item.evidenceRoots,
+    ),
+  }));
+  assert.equal(error.code, 'STALE_FINGERPRINT');
+  assert.deepEqual(fourTableSnapshot(db), before);
+  db.close();
+});
+
+test('证据绑定拆分重复执行返回固定幂等错误且不新增克隆、成本或审计', (t) => {
+  const item = evidenceFixture();
+  t.after(() => cleanup(item));
+  const db = new Database(item.dbPath);
+  const { input, overrides } = evidenceBoundInput(db, item);
+  splitTool.applyEvidenceBoundPlan(db, input, overrides);
+  const before = fourTableSnapshot(db);
+  const current = splitTool.readTarget(db, item.configId);
+  const error = captureError(() => splitTool.applyEvidenceBoundPlan(db, {
+    ...input,
+    expectedFingerprint: splitTool.fingerprint(current),
+  }, overrides));
+  assert.equal(error.code, 'ALREADY_EVIDENCE_BOUND_SPLIT');
+  assert.deepEqual(fourTableSnapshot(db), before);
+  db.close();
+});
+
+test('成本或审计失败时源配置、克隆、成本和审计全部回滚', async (t) => {
+  for (const failure of [
+    { stage: 'cost', code: 'FIXTURE_COST_FAILURE' },
+    { stage: 'audit', code: 'FIXTURE_AUDIT_FAILURE' },
+  ]) {
+    await t.test(failure.stage, (subtest) => {
+      const item = evidenceFixture();
+      subtest.after(() => cleanup(item));
+      const db = new Database(item.dbPath);
+      const { input, overrides } = evidenceBoundInput(db, item);
+      const before = fourTableSnapshot(db);
+      let costCalls = 0;
+      const error = captureError(() => splitTool.applyEvidenceBoundPlan(db, input, {
+        ...overrides,
+        setRouteCost: (...args) => {
+          costCalls += 1;
+          if (failure.stage === 'cost' && costCalls === 2) {
+            const injected = new Error(failure.code);
+            injected.code = failure.code;
+            throw injected;
+          }
+          return providerRouteCostService.setRouteCost(...args);
+        },
+        recordAudit: (...args) => {
+          if (failure.stage === 'audit') {
+            const injected = new Error(failure.code);
+            injected.code = failure.code;
+            throw injected;
+          }
+          return auditEventService.record(...args);
+        },
+      }));
+      assert.equal(error.code, failure.code);
+      assert.deepEqual(fourTableSnapshot(db), before);
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM provider_route_costs').get().count, 0);
+      assert.equal(
+        db.prepare('SELECT COUNT(*) AS count FROM provider_route_resolution_costs').get().count,
+        0,
+      );
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM audit_events').get().count, 0);
+      db.close();
+    });
+  }
+});
+
+test('CLI 证据绑定资格失败只输出固定错误码且不泄露配置或绑定内容', (t) => {
+  const item = evidenceFixture();
+  t.after(() => cleanup(item));
+  const db = new Database(item.dbPath);
+  const fingerprint = splitTool.fingerprint(splitTool.readTarget(db, item.configId));
+  db.close();
+  const binding = validBinding(item.configId);
+  for (const model of binding.models) model.evidence_sha256 = 'b'.repeat(64);
+  const bindingPath = writeBinding(item, binding);
+  const result = run([
+    '--db', item.dbPath,
+    '--config-id', String(item.configId),
+    '--apply-evidence-bound',
+    '--expected-fingerprint', fingerprint,
+    '--binding-file', bindingPath,
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, '');
+  assert.match(result.stderr, /^(?:UNTRUSTED_MODEL_EVIDENCE|EVIDENCE_MISMATCH)\r?\n$/);
+  const output = `${result.stdout}${result.stderr}`;
+  for (const privateValue of [
+    'fixture-key',
+    'fixture.invalid',
+    'safe-real-generation-summary',
+    'seedance-2-mini":',
+  ]) assert.equal(output.includes(privateValue), false, privateValue);
 });
