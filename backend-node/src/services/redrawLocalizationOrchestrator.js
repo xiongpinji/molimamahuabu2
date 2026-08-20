@@ -80,6 +80,73 @@ function getOwnedWork(db, input) {
   return work;
 }
 
+function safeAutomationDecision(value, evidenceHash) {
+  const decision = value?.automation_decision || value;
+  if (!decision || typeof decision !== 'object' || Array.isArray(decision)) return null;
+  if (!['advance', 'needs_review', 'blocked'].includes(decision.action)) return null;
+  if (!['auto', 'safe'].includes(decision.effective_mode)) return null;
+  if (!Array.isArray(decision.reason_codes)) return null;
+  if (typeof decision.evidence_hash !== 'string' || decision.evidence_hash !== evidenceHash) return null;
+  if (typeof decision.effective_analysis_state !== 'string') return null;
+  const policyVersion = Number(decision.policy_version);
+  return {
+    action: decision.action,
+    effective_mode: decision.effective_mode,
+    reason_codes: [...decision.reason_codes].map(String).sort(),
+    policy_version: Number.isFinite(policyVersion) ? policyVersion : 0,
+    evidence_hash: decision.evidence_hash,
+    effective_analysis_state: decision.effective_analysis_state,
+  };
+}
+
+function getAnalysisAutomationDecision(db, input = {}) {
+  const normalized = {
+    ...input,
+    ...ownerFromInput(input),
+    workId: Number(input.workId ?? input.work_id),
+  };
+  let work;
+  try {
+    work = getOwnedWork(db, normalized);
+  } catch (error) {
+    if (error.code === 'REDRAW_LOCALIZATION_WORK_NOT_FOUND') return null;
+    throw error;
+  }
+  if (!work.task_id) return null;
+  const sourceVersion = db.prepare(`
+    SELECT id, facts_hash
+    FROM redraw_versions
+    WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+      AND source_facts_json IS NOT NULL AND TRIM(source_facts_json) != ''
+      AND deleted_at IS NULL
+    ORDER BY version ASC, id ASC
+    LIMIT 1
+  `).get(normalized.workId, normalized.tenantId, normalized.userId);
+  if (!sourceVersion?.facts_hash) return null;
+  const task = db.prepare(`
+    SELECT result
+    FROM async_tasks
+    WHERE id = ? AND type = 'redraw_analysis'
+      AND resource_id = ? AND tenant_id = ? AND user_id = ?
+      AND deleted_at IS NULL
+    LIMIT 1
+  `).get(String(work.task_id), String(normalized.workId), normalized.tenantId, normalized.userId);
+  const parsed = parseJson(task?.result, null);
+  return safeAutomationDecision(parsed, sourceVersion.facts_hash);
+}
+
+function analysisGateQuote(db, input) {
+  const decision = getAnalysisAutomationDecision(db, input);
+  if (!decision || decision.action !== 'advance') {
+    return {
+      priced: false,
+      code: 'REDRAW_LOCALIZATION_ANALYSIS_NOT_ADVANCED',
+      automation_decision: decision,
+    };
+  }
+  return null;
+}
+
 function buildLocalizationSnapshot(db, input = {}) {
   const normalized = {
     ...input,
@@ -124,6 +191,8 @@ function buildLocalizationSnapshot(db, input = {}) {
 
 function quoteLocalization(db, input = {}) {
   const snapshot = buildLocalizationSnapshot(db, input);
+  const blocked = analysisGateQuote(db, input);
+  if (blocked) return blocked;
   const capability = redrawCapability.resolveVerifiedLocaleCapability(db, {
     locale: trim(input.locale),
     market: trim(input.market),
@@ -485,6 +554,7 @@ module.exports = {
   stableValue,
   stableHash,
   buildLocalizationSnapshot,
+  getAnalysisAutomationDecision,
   quoteLocalization,
   startLocalization,
   reconcileOrphanedTasks,

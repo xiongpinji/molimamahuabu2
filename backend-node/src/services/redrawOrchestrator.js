@@ -457,9 +457,85 @@ function analysisThresholds(project) {
   return policy.analysis_confidence_thresholds || policy.thresholds || {};
 }
 
+function parseAutomationPolicy(project) {
+  if (project?.automation_policy_json == null || String(project.automation_policy_json).trim() === '') {
+    return { ok: false, code: 'project_policy_missing', policy: null };
+  }
+  try {
+    const parsed = typeof project.automation_policy_json === 'string'
+      ? JSON.parse(project.automation_policy_json)
+      : project.automation_policy_json;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, code: 'project_policy_missing', policy: null };
+    }
+    return { ok: true, policy: parsed };
+  } catch (_) {
+    return { ok: false, code: 'project_policy_invalid', policy: null };
+  }
+}
+
+function decisionFromReason(reasonCode, factsHash, projectStatus = 'blocked', policyVersion = 0) {
+  return {
+    action: projectStatus === 'blocked' ? 'blocked' : 'needs_review',
+    effective_mode: 'safe',
+    reason_codes: [reasonCode],
+    policy_version: Number(policyVersion || 0),
+    evidence_hash: factsHash,
+    effective_analysis_state: projectStatus,
+  };
+}
+
+function enrichAutomationDecision(decision, outcome, factsHash) {
+  if (!decision) return null;
+  return {
+    action: decision.action,
+    effective_mode: decision.effective_mode,
+    reason_codes: Array.isArray(decision.reason_codes) ? [...decision.reason_codes] : [],
+    policy_version: Number(outcome?.project?.policy_version || 0),
+    evidence_hash: factsHash,
+    effective_analysis_state: outcome?.projectStatus || (decision.action === 'advance' ? 'asset_review' : 'analysis_review'),
+  };
+}
+
+function persistedAutomationDecision(task, factsHash) {
+  const parsed = parseJson(task?.result, null);
+  const decision = parsed?.automation_decision;
+  if (
+    !decision
+    || !['advance', 'needs_review', 'blocked'].includes(decision.action)
+    || !['auto', 'safe'].includes(decision.effective_mode)
+    || !Array.isArray(decision.reason_codes)
+    || typeof decision.evidence_hash !== 'string'
+    || decision.evidence_hash !== factsHash
+    || typeof decision.effective_analysis_state !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    action: decision.action,
+    effective_mode: decision.effective_mode,
+    reason_codes: [...decision.reason_codes].sort(),
+    policy_version: Number(decision.policy_version || 0),
+    evidence_hash: decision.evidence_hash,
+    effective_analysis_state: decision.effective_analysis_state,
+  };
+}
+
 function automationOutcome(db, work, normalized) {
   const project = readProjectPolicy(db, work);
   if (!project) {
+    const columns = tableColumns(db, 'redraw_works');
+    if (columns.has('project_id') && work.project_id) {
+      return {
+        project: null,
+        decision: decisionFromReason('project_policy_missing', normalized.facts_hash),
+        projectStatus: 'blocked',
+        workStatus: 'needs_attention',
+        versionStatus: 'needs_attention',
+        currentStep: 1,
+        errorMessage: 'project_policy_missing',
+      };
+    }
     return {
       project: null,
       decision: null,
@@ -474,16 +550,33 @@ function automationOutcome(db, work, normalized) {
     gates: analysisGates(normalized),
   };
   if (input.execution_mode === 'auto') {
-    input.budget_configured = project.budget_limit_credits != null;
+    const parsedPolicy = parseAutomationPolicy(project);
+    if (!parsedPolicy.ok) {
+      return {
+        project,
+        decision: decisionFromReason(parsedPolicy.code, normalized.facts_hash, 'blocked', project.policy_version),
+        projectStatus: 'blocked',
+        workStatus: 'needs_attention',
+        versionStatus: 'needs_attention',
+        currentStep: 1,
+        errorMessage: parsedPolicy.code,
+      };
+    }
+    const budget = Number(project.budget_limit_credits);
+    input.budget_configured = Number.isFinite(budget) && budget > 0;
     input.confidence = analysisConfidence(normalized);
-    input.thresholds = analysisThresholds(project);
+    input.thresholds = parsedPolicy.policy.analysis_confidence_thresholds || parsedPolicy.policy.thresholds || {};
   }
   const decision = evaluateAutomationDecision(input);
   const blocked = decision.action === 'blocked';
   const advance = decision.action === 'advance';
+  const enrichedDecision = enrichAutomationDecision(decision, {
+    project,
+    projectStatus: advance ? 'asset_review' : (blocked ? 'blocked' : 'analysis_review'),
+  }, normalized.facts_hash);
   return {
     project,
-    decision,
+    decision: enrichedDecision,
     projectStatus: advance ? 'asset_review' : (blocked ? 'blocked' : 'analysis_review'),
     workStatus: advance ? 'asset_review' : 'needs_attention',
     versionStatus: advance ? 'asset_review' : 'needs_attention',
@@ -607,12 +700,36 @@ function writeFactsOnce(db, work, normalized, outcome = null) {
   return { version, changed };
 }
 
+function existingSourceFactsVersion(db, workId) {
+  return db.prepare(
+    'SELECT * FROM redraw_versions WHERE work_id = ? AND source_facts_json IS NOT NULL ORDER BY id ASC LIMIT 1'
+  ).get(workId);
+}
+
 function finalizeCompletedAnalysis(db, log, task, work, result, options = {}) {
   try {
     assertAssetReadable(db, options.assetReader, work.source_asset_id, '源片');
     const resultAssetId = result.result_asset_id || result.result_asset?.id;
     assertAssetReadable(db, options.assetReader, resultAssetId, '分析结果');
     const normalized = normalizeSourceFacts(result.facts || result.source_facts);
+    const existingVersion = existingSourceFactsVersion(db, work.id);
+    if (existingVersion) {
+      if (existingVersion.facts_hash !== normalized.facts_hash) {
+        const error = codedError('SOURCE_FACTS_HASH_CONFLICT', '源片事实 hash 冲突，请人工确认后再继续');
+        error.existing_hash = existingVersion.facts_hash;
+        error.incoming_hash = normalized.facts_hash;
+        throw error;
+      }
+      const decision = persistedAutomationDecision(task, normalized.facts_hash);
+      if (!decision && work.project_id) throw codedError('AUTOMATION_DECISION_MISSING', '自动化分析决策缺失');
+      return {
+        status: 'completed',
+        facts_hash: normalized.facts_hash,
+        version_id: existingVersion.id,
+        result_asset_id: resultAssetId,
+        automation_decision: decision,
+      };
+    }
     const outcome = automationOutcome(db, work, normalized);
     const { version, changed } = db.transaction(() => writeFactsOnce(db, work, normalized, outcome))();
     if (changed || task.status !== 'completed') {

@@ -12,6 +12,7 @@ function autoInput(overrides = {}) {
     gates: { media: true, timeline: true, facts: true },
     confidence: { character_mapping: 0.99, speaker_mapping: 0.99, text_regions: 0.99, shot_boundary: 0.99 },
     thresholds: { character_mapping: 0.95, speaker_mapping: 0.90, text_regions: 0.95, shot_boundary: 0.95 },
+    budget_configured: true,
     ...overrides,
   };
 }
@@ -79,7 +80,14 @@ test('deterministic gate 失败阻断且 reason 稳定排序', () => {
   });
 });
 
-test('auto 预算显式未配置时阻断，省略预算字段不阻断纯函数示例', () => {
+test('auto 预算缺失或显式未配置时阻断', () => {
+  const omitted = autoInput();
+  delete omitted.budget_configured;
+  assert.deepEqual(evaluateAutomationDecision(omitted), {
+    action: 'blocked',
+    effective_mode: 'safe',
+    reason_codes: ['budget_not_configured'],
+  });
   assert.equal(evaluateAutomationDecision(autoInput()).action, 'advance');
   assert.deepEqual(evaluateAutomationDecision(autoInput({ budget_configured: false })), {
     action: 'blocked',

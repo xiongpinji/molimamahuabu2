@@ -159,6 +159,7 @@ function mapWork(row, sourceAsset = null, extras = {}) {
     task_id: row.task_id,
     provider_task_id: row.provider_task_id,
     analysis_quote: extras.analysisQuote || null,
+    analysis_decision: extras.analysisDecision || null,
     task_status: task?.status || null,
     task_progress: Number.isFinite(Number(task?.progress)) ? Number(task.progress) : null,
     task_message: task?.message || null,
@@ -1964,6 +1965,11 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
       const analysisTask = findOwnedAnalysisTask(work, currentOwner);
       const localizationTask = findOwnedLocalizationTask(work, currentVersion, currentOwner);
       const assetBatch = findCurrentAssetBatch(currentVersion, currentOwner);
+      const analysisDecision = redrawLocalizationOrchestrator.getAnalysisAutomationDecision(db, {
+        workId: work.id,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+      });
       const projectedWork = { ...work };
       projectedWork.current_version = currentVersion ? Number(currentVersion.version) : 0;
       if (
@@ -1982,6 +1988,7 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
           task: analysisTask,
           versionId: currentVersion?.id || null,
           analysisQuote: quoteAnalysis(db, log),
+          analysisDecision,
         }),
         analysis_task: publicTask(analysisTask),
         localization_task: publicTask(localizationTask),

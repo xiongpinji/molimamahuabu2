@@ -140,10 +140,10 @@ function insertVersion(db, workId, values = {}) {
   return db.prepare(`
     INSERT INTO redraw_versions
       (work_id, tenant_id, user_id, version, locale, market, localization_level,
-       style_snapshot_json, localization_task_id, status, created_at, updated_at, deleted_at)
+       source_facts_json, facts_hash, style_snapshot_json, localization_task_id, status, created_at, updated_at, deleted_at)
     VALUES
       (@work_id, @tenant_id, @user_id, @version, @locale, @market, @localization_level,
-       @style_snapshot_json, @localization_task_id, @status, @created_at, @updated_at, @deleted_at)
+       @source_facts_json, @facts_hash, @style_snapshot_json, @localization_task_id, @status, @created_at, @updated_at, @deleted_at)
   `).run({
     work_id: workId,
     tenant_id: 'tenant-a',
@@ -152,6 +152,8 @@ function insertVersion(db, workId, values = {}) {
     locale: 'en-US',
     market: 'US',
     localization_level: 'faithful',
+    source_facts_json: null,
+    facts_hash: null,
     style_snapshot_json: '{}',
     localization_task_id: null,
     status: 'ready_to_generate',
@@ -186,6 +188,48 @@ function insertRedrawAsset(db, versionId, values = {}) {
     deleted_at: null,
     ...values,
   }).lastInsertRowid;
+}
+
+function routeSourceFacts() {
+  return {
+    schema_version: '1.0',
+    duration_ms: 10_000,
+    episode_hook: { id: 'hook-1', text: 'locked hook' },
+    causal_chain: [],
+    reversals: [],
+    locked_facts: [{ id: 'fact-1', text: 'locked fact' }],
+    characters: [{ id: 'c1', source_name: '小满', relationships: [] }],
+    scenes: [{ id: 's1', location: '天台', time: '夜', source_ranges: [{ start_ms: 0, end_ms: 10_000 }] }],
+    props: [{ id: 'p1', name: '旧手机', evidence_ranges: [{ start_ms: 1_000, end_ms: 2_000 }] }],
+    shots: [{
+      id: 'shot-1',
+      start_ms: 0,
+      end_ms: 10_000,
+      dialogue: [{ speaker_id: 'c1', text: '别回头' }],
+      opening_state: '小满站在天台',
+      continuous_action: '小满看旧手机',
+      ending_state: '小满离开',
+    }],
+  };
+}
+
+function insertAnalysisDecision(db, workId, factsHash, decisionOverrides = {}) {
+  const decision = {
+    action: 'advance',
+    effective_mode: 'auto',
+    reason_codes: [],
+    policy_version: 1,
+    evidence_hash: factsHash,
+    effective_analysis_state: 'asset_review',
+    ...decisionOverrides,
+  };
+  db.prepare(`
+    INSERT INTO async_tasks
+      (id, type, status, progress, message, result, resource_id, tenant_id, user_id, created_at, updated_at, completed_at)
+    VALUES (?, 'redraw_analysis', 'completed', 100, '分析完成', ?, ?, 'tenant-a', 'user-a', ?, ?, ?)
+  `).run(`task-analysis-${workId}`, JSON.stringify({ automation_decision: decision }), String(workId), NOW, NOW, NOW);
+  db.prepare('UPDATE redraw_works SET task_id = ? WHERE id = ?').run(`task-analysis-${workId}`, workId);
+  return decision;
 }
 
 function setupIdentityPackRouteFixture(values = {}) {
@@ -1636,6 +1680,63 @@ test('本地化报价未配置能力或价格返回 409 且无副作用', () => 
   }
 });
 
+test('真实本地化报价在分析未 advance 时服务端拒绝且无副作用', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 1 });
+    const factsHash = 'route-facts-hash-safe-review';
+    insertVersion(db, workId, {
+      locale: 'source',
+      market: '',
+      status: 'needs_attention',
+      source_facts_json: JSON.stringify(routeSourceFacts()),
+      facts_hash: factsHash,
+      style_snapshot_json: JSON.stringify({ tone: 'thriller' }),
+    });
+    insertAnalysisDecision(db, workId, factsHash, {
+      action: 'needs_review',
+      effective_mode: 'safe',
+      reason_codes: ['safe_mode_requires_review'],
+      effective_analysis_state: 'analysis_review',
+    });
+    insertRedrawLocaleCapabilityConfig(db, [{
+      locale: 'en-US',
+      market: 'US',
+      status: 'verified',
+      evidence: {
+        text: {
+          provider: 'verified-provider',
+          model: 'gpt-localize',
+          task_id: 'verified-localization-text',
+          terminal_status: 'completed',
+          artifact_id: 'readable-localization-artifact',
+        },
+      },
+    }]);
+    prices.set(db, 'gpt-localize', 7, { category: 'text' });
+    creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      canReadArtifact: () => true,
+      localizationOrchestrator: undefined,
+    }));
+
+    const result = captureResponse();
+    handlers.localizationQuote(request({
+      id: workId,
+      body: { locale: 'en-US', market: 'US', localization_level: 'faithful' },
+    }), result);
+
+    assert.equal(result.statusCode, 409);
+    assert.equal(result.body.error.code, 'REDRAW_LOCALIZATION_ANALYSIS_NOT_ADVANCED');
+    assert.equal(result.body.error.details.quote.automation_decision.action, 'needs_review');
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_localization'").get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
 test('本地化版本提交走异步 orchestrator 并返回 202 草稿版本和服务端账单', async () => {
   const db = createDb();
   try {
@@ -1728,6 +1829,7 @@ test('本地化版本提交默认真实 orchestrator 无 provider 时同步拒�
     };
     db.prepare('UPDATE redraw_versions SET source_facts_json = ?, facts_hash = ? WHERE id = ?')
       .run(JSON.stringify(sourceFacts), 'source-facts-hash', sourceVersionId);
+    insertAnalysisDecision(db, workId, 'source-facts-hash');
     insertRedrawLocaleCapabilityConfig(db, [{
       locale: 'en-US',
       market: 'US',
@@ -1866,6 +1968,65 @@ test('作品详情独立返回分析、本地化、资产批次任务和 workflo
     assert.equal(result.body.data.asset_batch.task_id, 'task-asset-batch-processing');
     assert.equal(result.body.data.workflow_phase, 'asset_generating');
     assert.equal(result.body.data.task_status, 'completed');
+  } finally {
+    db.close();
+  }
+});
+
+test('作品详情只投影可恢复分析决策白名单且不公开 task result', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, {
+      current_version: 1,
+      current_step: 1,
+      status: 'needs_attention',
+      task_id: 'task-analysis-safe-projection',
+    });
+    const factsHash = 'projection-facts-hash';
+    insertVersion(db, workId, {
+      locale: 'source',
+      market: '',
+      status: 'needs_attention',
+      source_facts_json: JSON.stringify(routeSourceFacts()),
+      facts_hash: factsHash,
+    });
+    const decision = {
+      action: 'blocked',
+      effective_mode: 'safe',
+      reason_codes: ['project_policy_missing'],
+      policy_version: 3,
+      evidence_hash: factsHash,
+      effective_analysis_state: 'blocked',
+    };
+    db.prepare(`INSERT INTO async_tasks
+      (id, type, status, progress, message, result, metadata, resource_id, tenant_id, user_id, created_at, updated_at)
+      VALUES ('task-analysis-safe-projection', 'redraw_analysis', 'completed', 100, '分析完成', ?, ?, ?, 'tenant-a', 'user-a', ?, ?)
+    `).run(
+      JSON.stringify({
+        automation_decision: {
+          ...decision,
+          internal_path: 'C:\\private\\analysis.json',
+          metadata_json: { leaked: true },
+        },
+        result_asset_id: 'private-asset',
+      }),
+      JSON.stringify({ private: true }),
+      String(workId),
+      NOW,
+      NOW,
+    );
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const result = captureResponse();
+    handlers.getWork(request({ id: workId }), result);
+
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(result.body.data.analysis_decision, decision);
+    assert.equal(result.body.data.analysis_task.result, undefined);
+    assert.equal(result.body.data.analysis_task.metadata, undefined);
+    assert.equal(JSON.stringify(result.body.data).includes('private'), false);
+    assert.equal(JSON.stringify(result.body.data).includes('internal_path'), false);
   } finally {
     db.close();
   }

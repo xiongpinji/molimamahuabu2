@@ -582,14 +582,27 @@ test('startAnalysis uses analyzing status with real migrated redraw schema', asy
 test('auto analysis with low speaker confidence saves facts but stays in analysis_review without localization side effects', async () => {
   const db = setupAutomationDb({ executionMode: 'auto', budget: 30 });
 
-  const { result } = await completeAutomationAnalysis(db, validFactsV2({ speaker_mapping: 0.71 }));
+  const { started, result } = await completeAutomationAnalysis(db, validFactsV2({ speaker_mapping: 0.71 }));
 
   assert.equal(result.status, 'completed');
   assert.deepEqual(result.automation_decision, {
     action: 'needs_review',
     effective_mode: 'safe',
     reason_codes: ['speaker_mapping_low_confidence'],
+    policy_version: 1,
+    evidence_hash: result.facts_hash,
+    effective_analysis_state: 'analysis_review',
   });
+  const persisted = JSON.parse(db.prepare('SELECT result FROM async_tasks WHERE id = ?').get(started.task_id).result);
+  assert.deepEqual(persisted.automation_decision, result.automation_decision);
+  assert.deepEqual(Object.keys(persisted.automation_decision).sort(), [
+    'action',
+    'effective_analysis_state',
+    'effective_mode',
+    'evidence_hash',
+    'policy_version',
+    'reason_codes',
+  ]);
   assert.deepEqual(
     db.prepare('SELECT status, current_step FROM redraw_works WHERE id = 1').get(),
     { status: 'needs_attention', current_step: 1 },
@@ -626,12 +639,15 @@ test('safe analysis waits for manual review even with v2 confidence', async () =
     action: 'needs_review',
     effective_mode: 'safe',
     reason_codes: ['safe_mode_requires_review'],
+    policy_version: 1,
+    evidence_hash: result.facts_hash,
+    effective_analysis_state: 'analysis_review',
   });
   assert.equal(db.prepare("SELECT to_state FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().to_state, 'analysis_review');
   db.close();
 });
 
-test('auto analysis blocks with stable error when budget or thresholds are missing', async () => {
+test('auto analysis blocks with stable error when budget, project policy, or thresholds are missing', async () => {
   const noBudget = setupAutomationDb({ executionMode: 'auto', budget: null });
   await completeAutomationAnalysis(noBudget, validFactsV2());
   assert.deepEqual(
@@ -641,7 +657,34 @@ test('auto analysis blocks with stable error when budget or thresholds are missi
   assert.equal(noBudget.prepare("SELECT to_state FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().to_state, 'blocked');
   noBudget.close();
 
-  const noThresholds = setupAutomationDb({ executionMode: 'auto', budget: 30, policy: {} });
+  const noPolicy = setupAutomationDb({ executionMode: 'auto', budget: 30, policy: null });
+  await completeAutomationAnalysis(noPolicy, validFactsV2());
+  assert.deepEqual(
+    dbPick(noPolicy, 'SELECT status, error_msg FROM redraw_works WHERE id = 1'),
+    { status: 'needs_attention', error_msg: 'project_policy_missing' },
+  );
+  noPolicy.close();
+
+  const invalidPolicy = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+  invalidPolicy.prepare("UPDATE redraw_projects SET automation_policy_json = '{invalid-json' WHERE id = 1").run();
+  await completeAutomationAnalysis(invalidPolicy, validFactsV2());
+  assert.deepEqual(
+    dbPick(invalidPolicy, 'SELECT status, error_msg FROM redraw_works WHERE id = 1'),
+    { status: 'needs_attention', error_msg: 'project_policy_invalid' },
+  );
+  invalidPolicy.close();
+
+  const missingProject = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+  missingProject.prepare("UPDATE redraw_projects SET tenant_id = 'tenant-other' WHERE id = 1").run();
+  await completeAutomationAnalysis(missingProject, validFactsV2());
+  assert.deepEqual(
+    dbPick(missingProject, 'SELECT status, error_msg FROM redraw_works WHERE id = 1'),
+    { status: 'needs_attention', error_msg: 'project_policy_missing' },
+  );
+  assert.equal(missingProject.prepare("SELECT COUNT(*) AS n FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().n, 0);
+  missingProject.close();
+
+  const noThresholds = setupAutomationDb({ executionMode: 'auto', budget: 30, policy: { analysis_confidence_thresholds: {} } });
   await completeAutomationAnalysis(noThresholds, validFactsV2());
   assert.deepEqual(
     dbPick(noThresholds, 'SELECT status, error_msg FROM redraw_works WHERE id = 1'),
@@ -652,6 +695,43 @@ test('auto analysis blocks with stable error when budget or thresholds are missi
   );
   assert.equal(noThresholds.prepare("SELECT to_state FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().to_state, 'blocked');
   noThresholds.close();
+});
+
+test('same facts hash finalize is idempotent and reuses persisted automation decision without new event', async () => {
+  const db = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+
+  const { started, result: first } = await completeAutomationAnalysis(db, validFactsV2());
+  const taskAfterFirst = db.prepare('SELECT result, updated_at FROM async_tasks WHERE id = ?').get(started.task_id);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().n, 1);
+
+  const second = await redraw.runAnalyzeTask(db, log, started.task_id, {
+    provider: { pollAnalysisTask: async () => ({ status: 'completed', result_asset_id: 102, facts: validFactsV2() }) },
+    assetReader: { canRead: (asset) => Boolean(asset?.local_path) },
+  });
+
+  assert.deepEqual(second.automation_decision, first.automation_decision);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().n, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM redraw_versions WHERE work_id = 1 AND source_facts_json IS NOT NULL').get().n, 1);
+  const taskAfterSecond = db.prepare('SELECT result, updated_at FROM async_tasks WHERE id = ?').get(started.task_id);
+  assert.deepEqual(taskAfterSecond, taskAfterFirst);
+  db.close();
+});
+
+test('same facts hash finalize fails closed when persisted automation decision is missing', async () => {
+  const db = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+
+  const { started } = await completeAutomationAnalysis(db, validFactsV2());
+  db.prepare("UPDATE async_tasks SET result = ? WHERE id = ?").run(JSON.stringify({ status: 'completed' }), started.task_id);
+
+  const second = await redraw.runAnalyzeTask(db, log, started.task_id, {
+    provider: { pollAnalysisTask: async () => ({ status: 'completed', result_asset_id: 102, facts: validFactsV2() }) },
+    assetReader: { canRead: (asset) => Boolean(asset?.local_path) },
+  });
+
+  assert.equal(second.status, 'failed');
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().n, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM redraw_versions WHERE work_id = 1 AND source_facts_json IS NOT NULL').get().n, 1);
+  db.close();
 });
 
 test('v1 facts in safe project remain compatible and require analysis review', async () => {

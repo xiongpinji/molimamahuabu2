@@ -78,7 +78,7 @@ function evaluateAutomationDecision(rawInput = {}) {
     return sortedDecision('needs_review', 'safe', ['safe_mode_requires_review']);
   }
 
-  if (input.budget_configured === false) {
+  if (input.budget_configured !== true) {
     return sortedDecision('blocked', 'safe', ['budget_not_configured']);
   }
 
