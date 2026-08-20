@@ -1088,6 +1088,9 @@ function ensureRedrawMigrationColumns(database) {
 }
 /** 对已打开的 database 执行迁移与兜底补列（供 app 启动时调用） */
 function runMigrationsAndEnsure(database) {
+  if (database.inTransaction) {
+    throw new Error('runMigrationsAndEnsure requires no active transaction');
+  }
   ensureRedrawMigrationColumns(database);
   runMigrations(database);
   ensureAllColumns(database);

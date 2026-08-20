@@ -52,6 +52,15 @@ function columnNames(db, table) {
   return db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name);
 }
 
+function schemaSnapshot(db) {
+  return db.prepare(`
+    SELECT type, name, tbl_name, sql
+    FROM sqlite_master
+    WHERE name NOT LIKE 'sqlite_%'
+    ORDER BY type, name
+  `).all();
+}
+
 function insertProject(db, tenantId = 'tenant-a', userId = 'user-a') {
   return db.prepare(`
     INSERT INTO redraw_projects
@@ -428,10 +437,16 @@ test('旧 15 秒 redraw_works CHECK 升级遇到外层事务会拒绝且保留�
   `);
   db.exec('BEGIN');
   db.prepare("INSERT INTO migration_marker (id, value) VALUES (1, 'outer transaction stays open')").run();
+  const beforeSchema = schemaSnapshot(db);
+  const beforeTables = tableNames(db).sort();
+  const beforeWorksColumns = columnNames(db, 'redraw_works');
 
-  assert.throws(() => runMigrationsAndEnsure(db), /redraw_works duration constraint migration requires no active transaction/);
+  assert.throws(() => runMigrationsAndEnsure(db), /runMigrationsAndEnsure requires no active transaction/);
   assert.equal(db.inTransaction, true);
   assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+  assert.deepEqual(schemaSnapshot(db), beforeSchema);
+  assert.deepEqual(tableNames(db).sort(), beforeTables);
+  assert.deepEqual(columnNames(db, 'redraw_works'), beforeWorksColumns);
   assert.equal(
     db.prepare('SELECT value FROM migration_marker WHERE id = 1').get().value,
     'outer transaction stays open',
