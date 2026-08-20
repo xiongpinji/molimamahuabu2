@@ -118,6 +118,67 @@ function tableExists(database, table) {
     .get(table);
 }
 
+function quoteIdent(name) {
+  return `"${String(name).replace(/"/g, '""')}"`;
+}
+
+function ensureRedrawWorkDurationConstraint(database) {
+  if (!tableExists(database, 'redraw_works')) return;
+  const table = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'redraw_works'")
+    .get();
+  const sql = table?.sql || '';
+  const oldDurationCheck = /duration_ms\s+INTEGER\s+NOT\s+NULL\s+CHECK\s*\(\s*duration_ms\s+BETWEEN\s+15000\s+AND\s+3600000\s*\)/i;
+  if (!oldDurationCheck.test(sql)) return;
+
+  const tempTable = '__redraw_works_duration_rebuild';
+  const createTempSql = sql
+    .replace(
+      /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"redraw_works"|`redraw_works`|\[redraw_works\]|redraw_works)\s*\(/i,
+      `CREATE TABLE ${quoteIdent(tempTable)} (`,
+    )
+    .replace(oldDurationCheck, 'duration_ms INTEGER NOT NULL CHECK (duration_ms BETWEEN 12000 AND 3600000)');
+  if (createTempSql === sql || !createTempSql.startsWith(`CREATE TABLE ${quoteIdent(tempTable)}`)) {
+    throw new Error('Unsupported redraw_works DDL for duration constraint migration');
+  }
+
+  const columns = database.prepare('PRAGMA table_info(redraw_works)').all().map((column) => column.name);
+  const columnSql = columns.map(quoteIdent).join(', ');
+  const indexes = database.prepare(`
+    SELECT name, sql
+    FROM sqlite_master
+    WHERE type = 'index'
+      AND tbl_name = 'redraw_works'
+      AND sql IS NOT NULL
+    ORDER BY name
+  `).all();
+  const foreignKeysEnabled = database.pragma('foreign_keys', { simple: true }) ? 1 : 0;
+
+  try {
+    database.pragma('foreign_keys = OFF');
+    database.exec('BEGIN');
+    database.exec(`DROP TABLE IF EXISTS ${quoteIdent(tempTable)}`);
+    database.exec(createTempSql);
+    database.exec(`
+      INSERT INTO ${quoteIdent(tempTable)} (${columnSql})
+      SELECT ${columnSql} FROM redraw_works
+    `);
+    database.exec('DROP TABLE redraw_works');
+    database.exec(`ALTER TABLE ${quoteIdent(tempTable)} RENAME TO redraw_works`);
+    for (const index of indexes) {
+      database.exec(index.sql);
+    }
+    database.exec('COMMIT');
+  } catch (error) {
+    try {
+      database.exec('ROLLBACK');
+    } catch (_) {}
+    throw error;
+  } finally {
+    database.pragma(`foreign_keys = ${foreignKeysEnabled ? 'ON' : 'OFF'}`);
+  }
+}
+
 function ensureRedrawWorkSourceIndex(database) {
   if (!tableExists(database, 'redraw_works')) return;
   database.transaction(() => {
@@ -1026,6 +1087,7 @@ function runMigrationsAndEnsure(database) {
   runMigrations(database);
   ensureAllColumns(database);
   ensureRedrawCompatibility(database);
+  ensureRedrawWorkDurationConstraint(database);
   ensureRedrawWorkSourceIndex(database);
 }
 

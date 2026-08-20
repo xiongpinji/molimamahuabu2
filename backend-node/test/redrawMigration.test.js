@@ -302,6 +302,99 @@ test('旧的不完整 redraw_projects 表可补齐通用策略列和追加式事
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'redraw_workflow_events_immutable_delete'").get());
 });
 
+test('redraw_works 接受 12 秒源片并拒绝低于 12 秒', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const projectId = insertProject(db);
+
+  assert.doesNotThrow(() => insertWork(db, projectId, {
+    source_fingerprint: 'fingerprint-12s',
+    duration_ms: 12000,
+  }));
+  assert.throws(() => insertWork(db, projectId, {
+    source_fingerprint: 'fingerprint-11999ms',
+    duration_ms: 11999,
+  }), /CHECK/);
+});
+
+test('旧 15 秒 redraw_works CHECK 可幂等升级为 12 秒且保留数据索引外键状态', () => {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  db.exec(`
+    CREATE TABLE redraw_projects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT,
+      title TEXT,
+      created_at TEXT,
+      updated_at TEXT
+    );
+    CREATE TABLE redraw_works (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      source_asset_id INTEGER NOT NULL,
+      source_fingerprint TEXT NOT NULL,
+      duration_ms INTEGER NOT NULL CHECK (duration_ms BETWEEN 15000 AND 3600000),
+      current_version INTEGER NOT NULL DEFAULT 0 CHECK (current_version >= 0),
+      current_step INTEGER NOT NULL DEFAULT 1 CHECK (current_step BETWEEN 1 AND 4),
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      FOREIGN KEY(project_id) REFERENCES redraw_projects(id)
+    );
+    CREATE INDEX idx_redraw_work_custom
+      ON redraw_works(tenant_id, updated_at);
+    CREATE TABLE redraw_work_notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      work_id INTEGER NOT NULL,
+      note TEXT,
+      FOREIGN KEY(work_id) REFERENCES redraw_works(id)
+    );
+    INSERT INTO redraw_projects
+      (tenant_id, user_id, title, created_at, updated_at)
+    VALUES ('tenant-a', 'user-a', 'legacy project', '${NOW}', '${NOW}');
+    INSERT INTO redraw_works
+      (project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint,
+       duration_ms, current_version, current_step, status, created_at, updated_at, deleted_at)
+    VALUES
+      (1, 'tenant-a', 'user-a', 'legacy work', 101, 'legacy-fingerprint',
+       15000, 0, 1, 'draft', '${NOW}', '${NOW}', NULL);
+    INSERT INTO redraw_work_notes (work_id, note) VALUES (1, 'keep child fk');
+  `);
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+
+  const ddl = db.prepare(`
+    SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'redraw_works'
+  `).get().sql;
+  assert.match(ddl, /duration_ms INTEGER NOT NULL CHECK \(duration_ms BETWEEN 12000 AND 3600000\)/);
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_redraw_work_custom'").get());
+  assert.ok(db.prepare('SELECT note FROM redraw_work_notes WHERE work_id = 1').get());
+  assert.equal(db.prepare('SELECT duration_ms FROM redraw_works WHERE id = 1').get().duration_ms, 15000);
+  assert.doesNotThrow(() => db.prepare(`
+    INSERT INTO redraw_works
+      (project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint,
+       duration_ms, current_version, current_step, status, created_at, updated_at, deleted_at)
+    VALUES
+      (1, 'tenant-a', 'user-a', 'new 12s', 102, 'new-12s',
+       12000, 0, 1, 'draft', ?, ?, NULL)
+  `).run(NOW, NOW));
+  assert.throws(() => db.prepare(`
+    INSERT INTO redraw_works
+      (project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint,
+       duration_ms, current_version, current_step, status, created_at, updated_at, deleted_at)
+    VALUES
+      (1, 'tenant-a', 'user-a', 'too short', 103, 'new-11999',
+       11999, 0, 1, 'draft', ?, ?, NULL)
+  `).run(NOW, NOW), /CHECK/);
+});
+
 test('旧的租户级源片唯一索引会安全重建为租户用户级索引', () => {
   const db = new Database(':memory:');
   db.exec(`

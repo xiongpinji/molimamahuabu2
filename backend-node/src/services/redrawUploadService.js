@@ -69,7 +69,7 @@ function sha256File(filePath) {
 
 function durationRange(limits = {}) {
   return {
-    min: Number(limits.minDurationMs ?? 15000),
+    min: Number(limits.minDurationMs ?? 12000),
     max: Number(limits.maxDurationMs ?? 3600000),
   };
 }
@@ -277,7 +277,7 @@ async function expandZipUpload(file, limits, probeVideo) {
         },
         {
           maxBytes: limits.zipMaxEntryBytes ?? limits.maxBytes,
-          minDurationMs: limits.zipMinDurationMs ?? 15000,
+          minDurationMs: limits.zipMinDurationMs ?? 12000,
           maxDurationMs: limits.zipMaxDurationMs ?? 180000,
         },
         probeVideo,

@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS redraw_works (
   title TEXT NOT NULL,
   source_asset_id INTEGER NOT NULL,
   source_fingerprint TEXT NOT NULL,
-  duration_ms INTEGER NOT NULL CHECK (duration_ms BETWEEN 15000 AND 3600000),
+  duration_ms INTEGER NOT NULL CHECK (duration_ms BETWEEN 12000 AND 3600000),
   current_version INTEGER NOT NULL DEFAULT 0 CHECK (current_version >= 0),
   current_step INTEGER NOT NULL DEFAULT 1 CHECK (current_step BETWEEN 1 AND 4),
   status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'analyzing', 'asset_review', 'ready_to_generate', 'generating', 'composing', 'completed', 'failed', 'needs_attention')),
