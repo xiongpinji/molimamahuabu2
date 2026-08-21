@@ -1,7 +1,0 @@
-{
-  "schemaVersion": 1,
-  "release": "usmercari-authenticated-static-media",
-  "allowedPaths": [
-    "backend-node/src/services/usmercariVideoClient.js"
-  ]
-}

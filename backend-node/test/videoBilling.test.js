@@ -2,16 +2,26 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 
-const videoService = require('../src/services/videoService');
+const rawVideoService = require('../src/services/videoService');
 const videoClient = require('../src/services/videoClient');
+const aiConfig = require('../src/services/aiConfigService');
 const taskService = require('../src/services/taskService');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
-const aiConfig = require('../src/services/aiConfigService');
 const routeCosts = require('../src/services/providerRouteCostService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 
 const log = { info() {}, warn() {}, error() {} };
+const videoService = {
+  ...rawVideoService,
+  create(db, logger, request, options = {}) {
+    return rawVideoService.create(db, logger, request, { ...options, evidenceRoots });
+  },
+  processVideoGeneration(db, logger, id, runtime = {}) {
+    return rawVideoService.processVideoGeneration(db, logger, id, { ...runtime, evidenceRoots });
+  },
+};
 
 function setup() {
   const db = new Database(':memory:');
@@ -25,6 +35,349 @@ function setup() {
   prices.set(db, 'seedance 2.0', 12);
   return db;
 }
+
+function configureToapis(db, {
+  model = 'seedance-2-fast',
+  verificationStatus = 'verified',
+  apiKey = 'test-key',
+  durations,
+  resolutions = ['480p', '720p'],
+  pricedResolutions = resolutions,
+} = {}) {
+  const officialDurations = durations || (model === 'seedance-2-mini'
+    ? [4, 8, 10, 12, 15]
+    : [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+  const config = aiConfig.createConfig(db, log, {
+    service_type: 'video',
+    provider: 'toapis',
+    api_protocol: 'toapis_video',
+    name: 'ToAPIs 视频测试',
+    base_url: 'https://toapis.com',
+    api_key: apiKey,
+    model: [model],
+    default_model: model,
+    is_active: true,
+    is_default: true,
+  });
+  if (verificationStatus !== 'pending') {
+    aiConfig.recordVerification(db, config.id, {
+      status: verificationStatus,
+      capabilities: {
+        [model]: withExternalModelEvidence(model, {
+          durations: officialDurations,
+          resolutions,
+          supportsFirstFrame: true,
+          supportsLastFrame: true,
+          supportsImageReference: true,
+          supportsVideoReference: true,
+          supportsAudioReference: true,
+          supportsAudio: true,
+        }),
+      },
+    });
+  }
+  const resolutionPrices = Object.fromEntries(pricedResolutions.map((resolution) => [
+    resolution,
+    {
+      credits: model === 'seedance-2-mini' && resolution === '720p' ? 595 : model === 'seedance-2-mini' ? 294 : 511,
+      cost_micros_per_second: model === 'seedance-2-mini' && resolution === '720p'
+        ? 678900
+        : model === 'seedance-2-mini' ? 335800 : 584000,
+    },
+  ]));
+  prices.set(db, model, Object.values(resolutionPrices)[0]?.credits || 1, {
+    category: 'video',
+    cost_unit: 'second',
+    resolution_prices: resolutionPrices,
+  });
+  credits.setAccountBalance(db, 'user-1', 100000);
+  return config;
+}
+
+function generationSideEffects(db) {
+  const hasCostTable = Boolean(db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'generation_cost_records'"
+  ).get());
+  return {
+    tasks: db.prepare('SELECT COUNT(*) AS count FROM async_tasks').get().count,
+    videos: db.prepare('SELECT COUNT(*) AS count FROM video_generations').get().count,
+    reservations: db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count,
+    costs: hasCostTable
+      ? db.prepare('SELECT COUNT(*) AS count FROM generation_cost_records').get().count
+      : 0,
+  };
+}
+
+test('ToAPIs pending strict config blocks generic same-model fallback before every side effect', () => {
+  for (const billingEnabled of [false, true]) {
+    const db = setup();
+    let scheduled = 0;
+    aiConfig.createConfig(db, log, {
+      service_type: 'video', provider: 'openai', api_protocol: 'openai',
+      name: 'generic fallback', base_url: 'https://example.invalid', api_key: 'generic-key',
+      model: ['seedance-2-fast'], default_model: 'seedance-2-fast', is_active: true,
+    });
+    configureToapis(db, { verificationStatus: 'pending' });
+
+    assert.throws(() => videoService.create(db, log, {
+      drama_id: 1,
+      storyboard_id: 1,
+      model: 'seedance-2-fast',
+      prompt: 'pending config must not submit',
+      duration: 4,
+      resolution: '480p',
+    }, {
+      billingEnabled,
+      userId: billingEnabled ? 'user-1' : undefined,
+      schedule() { scheduled += 1; },
+    }), (error) => error.code === 'MODEL_NOT_VERIFIED');
+    assert.deepEqual(generationSideEffects(db), { tasks: 0, videos: 0, reservations: 0, costs: 0 });
+    assert.equal(scheduled, 0);
+    db.close();
+  }
+});
+
+test('ToAPIs missing protected credential fails before task, reservation, cost record or schedule', () => {
+  const previousKey = process.env.TOAPIS_API_KEY;
+  delete process.env.TOAPIS_API_KEY;
+  const db = setup();
+  let scheduled = 0;
+  try {
+    configureToapis(db, { apiKey: '' });
+    assert.throws(() => videoService.create(db, log, {
+      drama_id: 1, storyboard_id: 1, model: 'seedance-2-fast',
+      prompt: 'missing key', duration: 4, resolution: '480p',
+    }, {
+      billingEnabled: true, userId: 'user-1', schedule() { scheduled += 1; },
+    }), (error) => error.code === 'MODEL_NOT_VERIFIED');
+    assert.deepEqual(generationSideEffects(db), { tasks: 0, videos: 0, reservations: 0, costs: 0 });
+    assert.equal(scheduled, 0);
+  } finally {
+    if (previousKey === undefined) delete process.env.TOAPIS_API_KEY;
+    else process.env.TOAPIS_API_KEY = previousKey;
+    db.close();
+  }
+});
+
+test('ToAPIs rejects missing price tier, Mini 5 seconds, 1080P and omitted resolution before side effects', () => {
+  const cases = [
+    {
+      configure: { model: 'seedance-2-fast', pricedResolutions: [] },
+      body: { model: 'seedance-2-fast', duration: 4, resolution: '480p' },
+      code: 'MODEL_RESOLUTION_PRICE_REQUIRED',
+    },
+    {
+      configure: { model: 'seedance-2-fast', pricedResolutions: ['480p'] },
+      body: { model: 'seedance-2-fast', duration: 4, resolution: '720p' },
+      code: 'MODEL_RESOLUTION_PRICE_REQUIRED',
+    },
+    {
+      configure: { model: 'seedance-2-mini' },
+      body: { model: 'seedance-2-mini', duration: 5, resolution: '480p' },
+      code: 'INVALID_VIDEO_DURATION',
+    },
+    {
+      configure: { model: 'seedance-2-fast', durations: [4] },
+      body: { model: 'seedance-2-fast', duration: 5, resolution: '480p' },
+      code: 'INVALID_VIDEO_DURATION',
+    },
+    {
+      configure: { model: 'seedance-2-fast', resolutions: ['480p'], pricedResolutions: ['480p', '720p'] },
+      body: { model: 'seedance-2-fast', duration: 4, resolution: '720p' },
+      code: 'MODEL_RESOLUTION_PRICE_REQUIRED',
+    },
+    {
+      configure: { model: 'seedance-2-fast' },
+      body: { model: 'seedance-2-fast', duration: 4, resolution: '1080p' },
+      code: 'MODEL_RESOLUTION_PRICE_REQUIRED',
+    },
+    {
+      configure: { model: 'seedance-2-fast' },
+      body: { model: 'seedance-2-fast', duration: 4 },
+      code: 'MODEL_RESOLUTION_PRICE_REQUIRED',
+    },
+    {
+      configure: { model: 'seedance-2-fast' },
+      body: { model: 'seedance-2-fast', prompt: '', duration: 4, resolution: '480p' },
+      code: 'INVALID_VIDEO_REQUEST',
+    },
+  ];
+  for (const scenario of cases) {
+    const db = setup();
+    let scheduled = 0;
+    configureToapis(db, scenario.configure);
+    assert.throws(() => videoService.create(db, log, {
+      drama_id: 1,
+      storyboard_id: 1,
+      prompt: 'strict request validation',
+      ...scenario.body,
+    }, {
+      billingEnabled: true, userId: 'user-1', schedule() { scheduled += 1; },
+    }), (error) => error.code === scenario.code, `${scenario.body.model}:${scenario.body.duration}:${scenario.body.resolution}`);
+    assert.deepEqual(generationSideEffects(db), { tasks: 0, videos: 0, reservations: 0, costs: 0 });
+    assert.equal(scheduled, 0);
+    db.close();
+  }
+});
+
+test('verified ToAPIs Fast 480P 4-second request reserves exact credits and defers provider cost', () => {
+  const db = setup();
+  let scheduled = 0;
+  const config = configureToapis(db, { model: 'seedance-2-fast' });
+
+  const created = videoService.create(db, log, {
+    drama_id: 1,
+    storyboard_id: 1,
+    model: 'seedance-2-fast',
+    prompt: 'verified four second request',
+    duration: 4,
+    resolution: '480p',
+  }, {
+    billingEnabled: true, userId: 'user-1', schedule() { scheduled += 1; },
+  });
+
+  const row = db.prepare('SELECT duration, resolution, credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
+  assert.deepEqual({ duration: row.duration, resolution: row.resolution }, { duration: 4, resolution: '480p' });
+  assert.equal(credits.getReservation(db, row.credit_reservation_id).amount, 2044);
+  assert.deepEqual(
+    db.prepare('SELECT model, quantity, resolution, cost_micros, cost_source FROM generation_cost_records').get(),
+    { model: 'seedance-2-fast', quantity: 0, resolution: '480p', cost_micros: 0, cost_source: 'unavailable' },
+  );
+  assert.equal(scheduled, 1);
+
+  assert.throws(() => videoService.create(db, log, {
+    drama_id: 1,
+    storyboard_id: 1,
+    model: 'seedance-2-fast',
+    prompt: 'different resolution must not reuse',
+    duration: 4,
+    resolution: '720p',
+  }, {
+    billingEnabled: true, userId: 'user-1', schedule() { scheduled += 1; },
+  }), (error) => error.code === 'VIDEO_GENERATION_ACTIVE');
+  assert.deepEqual(generationSideEffects(db), { tasks: 1, videos: 1, reservations: 1, costs: 1 });
+  assert.equal(scheduled, 1);
+
+  aiConfig.recordVerification(db, config.id, { status: 'pending', capabilities: {} });
+  assert.throws(() => videoService.create(db, log, {
+    drama_id: 1,
+    storyboard_id: 1,
+    model: 'seedance-2-fast',
+    prompt: 'active task must not bypass downgraded verification',
+    duration: 4,
+    resolution: '480p',
+  }, {
+    billingEnabled: true, userId: 'user-1', schedule() { scheduled += 1; },
+  }), (error) => error.code === 'MODEL_NOT_VERIFIED');
+  assert.deepEqual(generationSideEffects(db), { tasks: 1, videos: 1, reservations: 1, costs: 1 });
+  assert.equal(scheduled, 1);
+  db.close();
+});
+
+test('ToAPIs protected environment credential is valid but cannot replace model capability evidence', () => {
+  const previousKey = process.env.TOAPIS_API_KEY;
+  process.env.TOAPIS_API_KEY = 'environment-test-key';
+  const db = setup();
+  try {
+    const config = configureToapis(db, { apiKey: '' });
+    aiConfig.recordVerification(db, config.id, {
+      status: 'verified',
+      capabilities: {
+        'another-model': { durations: [4], resolutions: ['480p'] },
+      },
+    });
+    assert.throws(() => videoService.create(db, log, {
+      drama_id: 1, storyboard_id: 1, model: 'seedance-2-fast',
+      prompt: 'wrong capability object', duration: 4, resolution: '480p',
+    }, { billingEnabled: false, schedule() {} }), (error) => error.code === 'MODEL_NOT_VERIFIED');
+    assert.deepEqual(generationSideEffects(db), { tasks: 0, videos: 0, reservations: 0, costs: 0 });
+
+    aiConfig.recordVerification(db, config.id, {
+      status: 'verified',
+      capabilities: {
+        'seedance-2-fast': withExternalModelEvidence('seedance-2-fast', {
+          durations: [4], resolutions: ['480p'],
+          supportsFirstFrame: true, supportsLastFrame: true,
+          supportsImageReference: true, supportsVideoReference: true,
+          supportsAudioReference: true, supportsAudio: true,
+        }),
+      },
+    });
+    const created = videoService.create(db, log, {
+      drama_id: 1, storyboard_id: 1, model: 'seedance-2-fast',
+      prompt: 'environment credential accepted', duration: 4, resolution: '480p',
+    }, { billingEnabled: false, schedule() {} });
+    assert.ok(created.id);
+  } finally {
+    if (previousKey === undefined) delete process.env.TOAPIS_API_KEY;
+    else process.env.TOAPIS_API_KEY = previousKey;
+    db.close();
+  }
+});
+
+test('scheduled ToAPIs Fast 4-second task reaches provider adapter and preserves indeterminate submission for review', async () => {
+  const db = setup();
+  configureToapis(db, { model: 'seedance-2-fast' });
+  let scheduled;
+  let submitted;
+  const originalCall = videoClient.callVideoApi;
+  videoClient.callVideoApi = async (_db, _log, options) => {
+    submitted = options;
+    return { indeterminate: true, error: 'test indeterminate result' };
+  };
+  try {
+    const created = videoService.create(db, log, {
+      drama_id: 1, storyboard_id: 1, model: 'seedance-2-fast',
+      prompt: 'four second async path', duration: 4, resolution: '480p',
+    }, {
+      billingEnabled: true,
+      userId: 'user-1',
+      schedule(callback) { scheduled = callback; },
+    });
+    assert.equal(typeof scheduled, 'function');
+    await scheduled();
+    assert.equal(submitted.model, 'seedance-2-fast');
+    assert.equal(submitted.duration, 4);
+    assert.equal(submitted.resolution, '480p');
+    const row = db.prepare('SELECT status, error_msg FROM video_generations WHERE id = ?').get(created.id);
+    assert.equal(row.status, 'needs_attention');
+    assert.match(row.error_msg, /^VIDEO_SUBMISSION_INDETERMINATE:/);
+  } finally {
+    videoClient.callVideoApi = originalCall;
+    db.close();
+  }
+});
+
+test('ToAPIs verification downgrade after reservation prevents supplier POST and refunds locally', async () => {
+  const db = setup();
+  const config = configureToapis(db, { model: 'seedance-2-fast' });
+  let scheduled;
+  let supplierCalls = 0;
+  const originalCall = videoClient.callVideoApi;
+  videoClient.callVideoApi = async () => {
+    supplierCalls += 1;
+    return { task_id: 'must-not-exist' };
+  };
+  try {
+    const created = videoService.create(db, log, {
+      drama_id: 1, storyboard_id: 1, model: 'seedance-2-fast',
+      prompt: 'downgrade before submit', duration: 4, resolution: '480p',
+    }, {
+      billingEnabled: true,
+      userId: 'user-1',
+      schedule(callback) { scheduled = callback; },
+    });
+    aiConfig.recordVerification(db, config.id, { status: 'pending', capabilities: {} });
+    await scheduled();
+    assert.equal(supplierCalls, 0);
+    const row = db.prepare('SELECT status, credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
+    assert.equal(row.status, 'failed');
+    assert.equal(credits.getReservation(db, row.credit_reservation_id).status, 'refunded');
+  } finally {
+    videoClient.callVideoApi = originalCall;
+    db.close();
+  }
+});
 
 function create(db, userId) {
   return videoService.create(db, log, {
@@ -57,30 +410,47 @@ test('视频任务按每秒单价乘用户选择时长预扣积分', () => {
   db.close();
 });
 
-test('视频任务持久化参考图、参考视频与参考音频供异步生成读取', () => {
+test('视频任务按模型能力分别持久化图片、音频和视频参考', () => {
   const db = setup();
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO ai_service_configs
+    (service_type, provider, name, base_url, api_key, model, default_model, is_default, is_active, settings, created_at, updated_at)
+    VALUES ('video', 'custom', '全媒体参考', 'https://video.example', 'test-key', ?, 'omni-model', 1, 1, ?, ?, ?)`)
+    .run(JSON.stringify(['omni-model']), JSON.stringify({
+      canvas_capabilities: {
+        referenceTypes: ['image', 'audio', 'video'],
+        maxImageReferences: 10,
+        maxAudioReferences: 1,
+        maxVideoReferences: 1,
+      },
+    }), now, now);
+
   const created = videoService.create(db, log, {
     drama_id: 1,
-    model: 'seedance 2.0',
-    prompt: '全能参考链路',
-    duration: 5,
-    reference_image_urls: ['/static/reference.png'],
-    reference_video_urls: ['/static/reference-1.mp4', '/static/reference-2.mp4', '/static/reference-3.mp4'],
-    reference_audio_urls: ['/static/reference-1.mp3', '/static/reference-2.mp3', '/static/reference-3.mp3'],
-  }, { billingEnabled: true, userId: 'user-1', schedule() {} });
-
-  const row = db.prepare(`SELECT first_frame_url, reference_image_urls, reference_video_url, reference_audio_url,
-      reference_video_urls, reference_audio_urls
+    model: 'omni-model',
+    prompt: '全媒体参考入库测试',
+    reference_image_urls: ['/static/ref-1.jpg', '/static/ref-2.jpg'],
+    reference_audio_urls: ['/static/voice.wav'],
+    reference_video_urls: ['/static/motion.mp4'],
+  }, { schedule() {} });
+  const row = db.prepare(`SELECT reference_image_urls, reference_audio_urls, reference_video_urls
     FROM video_generations WHERE id = ?`).get(created.id);
-  assert.equal(row.first_frame_url, '/static/reference.png');
-  assert.deepEqual(JSON.parse(row.reference_image_urls), ['/static/reference.png']);
-  assert.equal(row.reference_video_url, '/static/reference-1.mp4');
-  assert.equal(row.reference_audio_url, '/static/reference-1.mp3');
-  assert.deepEqual(JSON.parse(row.reference_video_urls), ['/static/reference-1.mp4', '/static/reference-2.mp4', '/static/reference-3.mp4']);
-  assert.deepEqual(JSON.parse(row.reference_audio_urls), ['/static/reference-1.mp3', '/static/reference-2.mp3', '/static/reference-3.mp3']);
-  assert.deepEqual(videoService.getById(db, created.id).reference_image_urls, ['/static/reference.png']);
-  assert.deepEqual(videoService.getById(db, created.id).reference_video_urls, ['/static/reference-1.mp4', '/static/reference-2.mp4', '/static/reference-3.mp4']);
-  assert.deepEqual(videoService.getById(db, created.id).reference_audio_urls, ['/static/reference-1.mp3', '/static/reference-2.mp3', '/static/reference-3.mp3']);
+  assert.deepEqual(JSON.parse(row.reference_image_urls), ['/static/ref-1.jpg', '/static/ref-2.jpg']);
+  assert.deepEqual(JSON.parse(row.reference_audio_urls), ['/static/voice.wav']);
+  assert.deepEqual(JSON.parse(row.reference_video_urls), ['/static/motion.mp4']);
+  db.close();
+});
+
+test('video-v1 在创建付费任务前拒绝音频参考', () => {
+  const db = setup();
+  assert.throws(() => videoService.create(db, log, {
+    drama_id: 1,
+    model: 'video-v1',
+    prompt: '不支持的音频参考',
+    reference_audio_urls: ['/static/voice.wav'],
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} }), (error) => error.code === 'UNSUPPORTED_VIDEO_REFERENCE');
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM video_generations').get().count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count, 0);
   db.close();
 });
 
@@ -234,37 +604,51 @@ test('视频任务拒绝 5 到 15 秒之外或非整数的时长', () => {
   }
 });
 
-test('fumin 参考媒体超限在建任务和预扣积分前拒绝', () => {
-  const db = setup();
+test('iCreat Seedance Mini 和 Fast 的 4 秒任务可创建并进入供应商调用', async () => {
+  const originalCallVideoApi = videoClient.callVideoApi;
   const originalGetDefaultVideoConfig = videoClient.getDefaultVideoConfig;
-  prices.set(db, 'fumin-seedance-2.0-fast', 107, {
-    category: 'video',
-    cost_unit: 'second',
-    cost_micros_per_second: 280000,
+  const submitted = [];
+  videoClient.getDefaultVideoConfig = (_db, model) => ({
+    model,
+    default_model: model,
+    provider: 'icreat',
+    settings: '{}',
   });
+  videoClient.callVideoApi = async (_db, _log, payload) => {
+    submitted.push({ model: payload.model, duration: payload.duration });
+    return { error: '结束测试任务，不访问外部供应商' };
+  };
+
   try {
-    videoClient.getDefaultVideoConfig = () => ({
-      provider: 'fumin',
-      api_protocol: 'fumin_video',
-      default_model: 'fumin-seedance-2.0-fast',
-    });
+    for (const model of [
+      'bytedance/seedance-2-0-mini',
+      'bytedance/seedance-2-0-fast',
+    ]) {
+      const db = setup();
+      credits.setAccountBalance(db, 'user-1', 1000);
+      prices.set(db, model, 60, { category: 'video', cost_unit: 'second' });
+      const created = videoService.create(db, log, {
+        drama_id: 1,
+        model,
+        prompt: 'iCreat 4 秒任务',
+        duration: 4,
+      }, { billingEnabled: true, userId: 'user-1', schedule() {} });
 
-    assert.throws(() => videoService.create(db, log, {
-      drama_id: 1,
-      storyboard_id: 1,
-      model: 'fumin-seedance-2.0-fast',
-      prompt: '超限参考图不应进入队列',
-      duration: 15,
-      reference_image_urls: Array.from({ length: 10 }, (_, index) => `/static/reference-${index + 1}.png`),
-    }, { billingEnabled: true, userId: 'user-1', schedule() {} }), /最多支持 9 张/);
-
-    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM video_generations').get().count, 0);
-    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count, 0);
-    assert.equal(credits.getAccount(db, 'user-1').held, 0);
+      const row = db.prepare('SELECT duration, credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
+      assert.equal(row.duration, 4);
+      assert.equal(credits.getReservation(db, row.credit_reservation_id).amount, 240);
+      await videoService.processVideoGeneration(db, log, created.id);
+      db.close();
+    }
   } finally {
+    videoClient.callVideoApi = originalCallVideoApi;
     videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;
-    db.close();
   }
+
+  assert.deepEqual(submitted, [
+    { model: 'bytedance/seedance-2-0-mini', duration: 4 },
+    { model: 'bytedance/seedance-2-0-fast', duration: 4 },
+  ]);
 });
 
 test('已有处理中任务时仍校验时长且不静默复用不同秒数', () => {

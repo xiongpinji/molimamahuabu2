@@ -29,14 +29,18 @@ export const dramaAPI = {
   saveProgress(id, data) {
     return request.put(`/dramas/${id}/progress`, data)
   },
-  saveCanvasLayout(id, canvasLayout, workflowGroups) {
+  saveCanvasLayout(id, canvasLayout, workflowGroups, baseUpdatedAt) {
     const body = {}
     if (canvasLayout != null) body.canvas_layout = canvasLayout
     if (workflowGroups !== undefined) body.workflow_groups = workflowGroups
+    if (baseUpdatedAt) body.base_updated_at = baseUpdatedAt
     return request.put(`/dramas/${id}/canvas-layout`, body)
   },
   getStoryboards(episodeId) {
     return request.get(`/episodes/${episodeId}/storyboards`)
+  },
+  rematchStoryboardAssets(episodeId) {
+    return request.post(`/episodes/${episodeId}/storyboards/rematch-assets`)
   },
   generateStoryboard(episodeId, options) {
     // 兼容旧调用方式: generateStoryboard(episodeId, model, style)

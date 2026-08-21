@@ -31,7 +31,8 @@ function routes(db, cfg, log, options = {}) {
         response.created(res, rec);
       } catch (err) {
         log.error('images create', { error: err.message });
-        if (['MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED'].includes(err.code)) {
+        if (['MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED', 'MODEL_RESOLUTION_PRICE_REQUIRED',
+          'MODEL_NOT_VERIFIED', 'MODEL_CREDENTIAL_MISSING'].includes(err.code)) {
           return response.error(res, 503, err.code, err.message);
         }
         if (['IMAGE_CONFIG_NOT_FOUND', 'IMAGE_CONFIG_MODEL_MISMATCH'].includes(err.code)) {
@@ -43,7 +44,9 @@ function routes(db, cfg, log, options = {}) {
         if (err.code === 'INSUFFICIENT_CREDITS') {
           return response.error(res, 402, err.code, '积分不足，请充值后重试');
         }
-        if (err.code === 'UNSUPPORTED_BILLING_MODEL') {
+        if (['UNSUPPORTED_BILLING_MODEL', 'IMAGE_RESOLUTION_REQUIRED',
+          'IMAGE_RESOLUTION_NOT_VERIFIED', 'IMAGE_REFERENCE_NOT_VERIFIED',
+          'IMAGE_REFERENCE_LIMIT_EXCEEDED', 'INVALID_IMAGE_QUANTITY'].includes(err.code)) {
           return response.badRequest(res, err.message);
         }
         response.internalError(res, err.message);
@@ -139,7 +142,11 @@ function routes(db, cfg, log, options = {}) {
     upload: (req, res) => {
       try {
         const body = req.body || {};
-        const item = imageService.upload(db, log, body);
+        const item = imageService.upload(db, log, body, {
+          billingEnabled: options.billingEnabled,
+          userId: req.user?.id,
+          tenantId: req.tenant?.id,
+        });
         response.created(res, item);
       } catch (err) {
         log.error('images upload', { error: err.message });

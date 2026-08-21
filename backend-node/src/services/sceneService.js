@@ -354,12 +354,14 @@ async function generateSceneFourViewImage(db, log, cfg, sceneId, modelName, styl
         tenantId: options.tenantId,
         userId: options.userId,
         requestedModel: options.textModel,
+        sceneKey: 'scene_image_prompt',
         resourceType: 'scene_image_prompt',
         resourceId: sceneId,
         operation: 'scene_image_prompt',
       });
       fourViewDescription = await aiClient.generateText(db, log, 'text', userMsg, systemPrompt, {
         model: textBilling.model,
+        scene_key: 'scene_image_prompt',
         max_tokens: 4000,
       });
     } catch (err) {
@@ -400,6 +402,7 @@ async function generateSceneFourViewImage(db, log, cfg, sceneId, modelName, styl
       billingEnabled: Boolean(options.billingEnabled),
       userId: options.userId,
       tenantId: options.tenantId,
+      resolution: options.resolution,
     });
   } catch (err) {
     textGenerationBilling.settle(db, log, textBilling, 'failed', err.message);
@@ -457,12 +460,14 @@ async function generateSceneSingleImage(db, log, cfg, sceneId, modelName, style,
         tenantId: options.tenantId,
         userId: options.userId,
         requestedModel: options.textModel,
+        sceneKey: 'scene_single_image_prompt',
         resourceType: 'scene_single_image_prompt',
         resourceId: sceneId,
         operation: 'scene_single_image_prompt',
       });
       singleViewDescription = await aiClient.generateText(db, log, 'text', userMsg, systemPrompt, {
         model: textBilling.model,
+        scene_key: 'scene_single_image_prompt',
         max_tokens: 4000,
       });
     } catch (err) {
@@ -502,6 +507,7 @@ async function generateSceneSingleImage(db, log, cfg, sceneId, modelName, style,
       billingEnabled: Boolean(options.billingEnabled),
       userId: options.userId,
       tenantId: options.tenantId,
+      resolution: options.resolution,
     });
   } catch (err) {
     textGenerationBilling.settle(db, log, textBilling, 'failed', err.message);
@@ -554,6 +560,7 @@ async function generateScenePanoramaImage(db, log, cfg, sceneId, modelName, styl
     billingEnabled: Boolean(options.billingEnabled),
     userId: options.userId,
     tenantId: options.tenantId,
+    resolution: options.resolution,
   });
   log.info('[场景全景图] 图片生成任务已提交', { scene_id: sceneId, image_gen_id: imageGeneration?.id });
   return { ok: true, image_generation: imageGeneration };

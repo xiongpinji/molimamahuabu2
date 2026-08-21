@@ -11,6 +11,7 @@ function baseOptions(secure) {
 }
 
 function setSessionCookie(res, token, secure) {
+  if (typeof res.cookie !== 'function') return;
   res.cookie(COOKIE_NAME, token, {
     ...baseOptions(secure),
     maxAge: MAX_AGE_MS,
@@ -18,6 +19,7 @@ function setSessionCookie(res, token, secure) {
 }
 
 function clearSessionCookie(res, secure) {
+  if (typeof res.clearCookie !== 'function') return;
   res.clearCookie(COOKIE_NAME, baseOptions(secure));
 }
 

@@ -11,7 +11,7 @@
       @change="update('imageModel', $event)"
     >
       <el-option label="跟随项目默认" value="" />
-      <el-option v-for="model in imageModelOptions" :key="`image-${model}`" :label="model" :value="model" />
+      <el-option v-for="option in imageModelOptions" :key="`image-${option.value}`" :label="option.label" :value="option.value" />
     </el-select>
     <el-select
       v-if="mode === 'video' || mode === 'both'"
@@ -20,10 +20,10 @@
       class="model-select"
       :disabled="!videoModelOptions.length"
       :placeholder="videoModelOptions.length ? '视频模型' : '平台默认'"
-      @change="update('videoModel', $event)"
+      @change="onVideoModelChange"
     >
       <el-option label="跟随项目默认" value="" />
-      <el-option v-for="model in videoModelOptions" :key="`video-${model}`" :label="model" :value="model" />
+      <el-option v-for="option in videoModelOptions" :key="`video-${option.value}`" :label="option.label" :value="option.value" />
     </el-select>
     <el-select
       v-if="mode === 'audio' || mode === 'both'"
@@ -35,7 +35,7 @@
       @change="update('audioModel', $event)"
     >
       <el-option label="跟随项目默认" value="" />
-      <el-option v-for="model in audioModelOptions" :key="`audio-${model}`" :label="model" :value="model" />
+      <el-option v-for="option in audioModelOptions" :key="`audio-${option.value}`" :label="option.label" :value="option.value" />
     </el-select>
     <el-select
       v-if="!modelsOnly && mode !== 'audio'"
@@ -53,16 +53,19 @@
       <el-option label="21:9 宽银幕" value="21:9" />
     </el-select>
     <el-select
-      v-if="!modelsOnly && (mode === 'video' || mode === 'both')"
-      :model-value="options.videoResolution || '480p'"
+      v-if="!modelsOnly && (mode === 'video' || mode === 'both') && videoResolutionOptions.length"
+      :model-value="options.videoResolution || videoResolutionOptions[0]"
       size="small"
       class="resolution-select"
       placeholder="清晰度"
       @change="update('videoResolution', $event)"
     >
-      <el-option label="480p 标清" value="480p" />
-      <el-option label="720p 高清" value="720p" />
-      <el-option label="1080p 超清" value="1080p" />
+      <el-option
+        v-for="resolution in videoResolutionOptions"
+        :key="resolution"
+        :label="resolution.toUpperCase()"
+        :value="resolution"
+      />
     </el-select>
     <el-select
       v-if="!modelsOnly && (mode === 'video' || mode === 'both')"
@@ -73,7 +76,7 @@
       @change="update('videoDuration', $event)"
     >
       <el-option
-        v-for="duration in VIDEO_DURATION_OPTIONS"
+        v-for="duration in videoDurationOptions"
         :key="duration"
         :label="`${duration} 秒`"
         :value="duration"
@@ -89,6 +92,7 @@
       controls-position="right"
       @change="update('videoDuration', $event)"
     />
+    <span v-if="selectedVideoModel?.publicNote && !compact" class="model-note">{{ selectedVideoModel.publicNote }}</span>
     <span v-if="!compact" class="options-hint">单镜与批量生成共用</span>
   </div>
 </template>
@@ -97,7 +101,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { aiAPI } from '@/api/ai'
 import { useCanvasContext } from '@/composables/useCanvasContext'
-import { VIDEO_DURATION_OPTIONS } from '@/utils/videoDuration'
+import { canvasModelEntry, canvasModelOptions } from '@/utils/canvasModelCapabilities'
+import { videoDurationOptionsForCapability } from '@/utils/videoDuration'
 
 const props = defineProps({
   mode: { type: String, default: 'both' },
@@ -109,38 +114,24 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'change'])
 
 const ctx = useCanvasContext()
-const imageConfigs = ref([])
-const videoConfigs = ref([])
-const audioConfigs = ref([])
+const modelCatalog = ref([])
 const options = computed(() => props.modelValue || ctx?.generationOptions?.value || {})
 
-const imageModelOptions = computed(() => withCurrent(
-  publicModelNames(imageConfigs.value),
-  options.value.imageModel,
+const imageModelOptions = computed(() => canvasModelOptions(modelCatalog.value, 'image'))
+const videoModelOptions = computed(() => canvasModelOptions(modelCatalog.value, 'video'))
+const audioModelOptions = computed(() => canvasModelOptions(modelCatalog.value, 'audio'))
+const selectedVideoModel = computed(() => (
+  canvasModelEntry(modelCatalog.value, 'video', options.value.videoModel) || null
 ))
-const videoModelOptions = computed(() => withCurrent(
-  publicModelNames(videoConfigs.value),
-  options.value.videoModel,
-))
-const audioModelOptions = computed(() => withCurrent(
-  publicModelNames(audioConfigs.value),
-  options.value.audioModel,
+const videoResolutionOptions = computed(() => {
+  const declared = selectedVideoModel.value?.capabilities?.resolutions
+  return Array.isArray(declared) ? declared : ['480p', '720p']
+})
+const videoDurationOptions = computed(() => videoDurationOptionsForCapability(
+  selectedVideoModel.value?.capabilities,
 ))
 
-function publicModelNames(value) {
-  return [...new Set((Array.isArray(value) ? value : [])
-    .map((model) => String(model || '').trim())
-    .filter(Boolean))]
-}
-
-function withCurrent(models, current) {
-  const value = String(current || '').trim()
-  if (!value || models.includes(value)) return models
-  return [value, ...models]
-}
-
-function update(field, value) {
-  const patch = { [field]: value }
+function updatePatch(patch) {
   if (props.modelValue) {
     const next = { ...options.value, ...patch }
     emit('update:modelValue', next)
@@ -151,15 +142,28 @@ function update(field, value) {
   emit('change', patch, { ...options.value, ...patch })
 }
 
+function update(field, value) {
+  updatePatch({ [field]: value })
+}
+
+function onVideoModelChange(value) {
+  const selected = canvasModelEntry(modelCatalog.value, 'video', value)
+  const resolutions = Array.isArray(selected?.capabilities?.resolutions)
+    ? selected.capabilities.resolutions
+    : ['480p', '720p']
+  const durations = videoDurationOptionsForCapability(selected?.capabilities)
+  const currentResolution = String(options.value.videoResolution || '').trim().toLowerCase()
+  const currentDuration = Number(options.value.videoDuration || 5)
+  updatePatch({
+    videoModel: value,
+    videoResolution: resolutions.includes(currentResolution) ? currentResolution : (resolutions[0] || ''),
+    videoDuration: durations.includes(currentDuration) ? currentDuration : durations[0],
+  })
+}
+
 onMounted(async () => {
-  const [images, videos, audios] = await Promise.allSettled([
-    aiAPI.listImageModels(),
-    aiAPI.listVideoModels(),
-    aiAPI.listAudioModels(),
-  ])
-  if (images.status === 'fulfilled') imageConfigs.value = Array.isArray(images.value) ? images.value : []
-  if (videos.status === 'fulfilled') videoConfigs.value = Array.isArray(videos.value) ? videos.value : []
-  if (audios.status === 'fulfilled') audioConfigs.value = Array.isArray(audios.value) ? audios.value : []
+  const catalog = await aiAPI.listCanvasModels().catch(() => [])
+  modelCatalog.value = Array.isArray(catalog) ? catalog : []
 })
 </script>
 
@@ -184,6 +188,14 @@ onMounted(async () => {
 .options-hint {
   color: #52525b;
   font-size: 10px;
+  white-space: nowrap;
+}
+.model-note {
+  max-width: 220px;
+  overflow: hidden;
+  color: #a1a1aa;
+  font-size: 10px;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .compact { gap: 5px; }

@@ -27,15 +27,14 @@ function adminRedeemInput(db, req) {
   }
   return input;
 }
-function routes(db, log) {
+function routes(db, log, runtime = {}) {
   return {
     getAccount: (req, res) => {
       try {
         const userId = String(req.user.id);
         const tenantId = req.tenant?.id;
         const account = tenantId
-          ? creditLedger.getTenantAccount(db, tenantId)
-            || { tenant_id: tenantId, available: 0, held: 0, spent: 0 }
+          ? creditLedger.getTenantAccountBreakdown(db, tenantId, runtime.nowValue ?? Date.now())
           : creditLedger.getAccount(db, userId)
             || { user_id: userId, available: 0, held: 0, spent: 0 };
         response.success(res, account);
@@ -317,7 +316,7 @@ function routes(db, log) {
     },
     listPublicCatalog: (_req, res) => {
       try {
-        response.success(res, modelPrice.listPublic(db));
+        response.success(res, modelPrice.listPublic(db, runtime));
       } catch (error) {
         log.error('billing list public catalog', { error: error.message });
         response.internalError(res, error.message);

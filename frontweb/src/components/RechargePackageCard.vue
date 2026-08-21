@@ -36,21 +36,22 @@
       <div class="package-price-row">
         <div class="package-price"><small>¥</small>{{ amountYuan }}</div>
         <div class="package-credit-total">
-          <strong>{{ formatNumber(item.credits) }}</strong>
-          <span>到账积分 · {{ creditsPerYuan }} 积分/元</span>
+          <strong>{{ formatNumber(baseCredits) }}</strong>
+          <span>充值到账 · 永久积分 · {{ creditsPerYuan }} 积分/元</span>
         </div>
       </div>
 
       <div class="package-metrics">
         <div>
-          <span>基础积分</span>
-          <strong>{{ formatNumber(baseCredits) }}</strong>
+          <span>充值到账</span>
+          <strong>{{ formatNumber(baseCredits) }} 永久积分</strong>
         </div>
-        <div v-if="bonusCredits > 0" class="bonus-metric">
-          <span>额外赠送</span>
-          <strong>+{{ formatNumber(bonusCredits) }}</strong>
+        <div v-if="dailyBonusCredits > 0" class="bonus-metric">
+          <span>每日赠送</span>
+          <strong>+{{ formatNumber(dailyBonusCredits) }}</strong>
         </div>
       </div>
+      <p v-if="dailyBonusCredits > 0" class="daily-bonus-rule">连续 30 天 · 每日仅限当日使用 · 次日 00:00 清零</p>
 
       <button
         type="button"
@@ -74,6 +75,7 @@ const props = defineProps({
   disabled: { type: Boolean, default: false },
   loading: { type: Boolean, default: false },
   preview: { type: Boolean, default: false },
+  disabledLabel: { type: String, default: '支付通道准备中' },
 })
 const emit = defineEmits(['purchase'])
 
@@ -82,10 +84,10 @@ const accentColor = computed(() => normalizeAccentColor(props.item.accent_color)
 const metrics = computed(() => packageCreditMetrics(props.item))
 const amountYuan = computed(() => metrics.value.amountYuan.toFixed(2))
 const baseCredits = computed(() => metrics.value.baseCredits)
-const bonusCredits = computed(() => metrics.value.bonusCredits)
+const dailyBonusCredits = computed(() => metrics.value.dailyBonusCredits)
 const creditsPerYuan = computed(() => metrics.value.creditsPerYuan)
 const buttonLabel = computed(() => props.disabled
-  ? '支付通道准备中'
+  ? props.disabledLabel
   : (props.item.button_text || '立即购买'))
 const validityText = computed(() => {
   if (!props.item.ends_at) return '长期有效'
@@ -184,6 +186,7 @@ function purchase() {
 .package-metrics span { color: #96969d; font-size: 12px; }
 .package-metrics strong { overflow: hidden; font-size: 18px; text-overflow: ellipsis; }
 .package-metrics .bonus-metric strong { color: var(--package-accent); }
+.daily-bonus-rule { margin: 10px 0 18px; color: #bdbdc3; font-size: 12px; line-height: 1.6; }
 .package-purchase { width: 100%; min-height: 48px; margin-top: auto; padding: 0 18px; border: 0; border-radius: 14px; color: #160804; font: inherit; font-weight: 800; background: linear-gradient(110deg, #f4f4f5, color-mix(in srgb, var(--package-accent) 74%, #fff)); cursor: pointer; }
 .package-purchase:hover:not(:disabled),
 .package-purchase:focus-visible:not(:disabled) { filter: brightness(1.08); }

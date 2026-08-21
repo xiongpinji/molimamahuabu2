@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test'
 
 const catalog = [
-  { category: 'text', model: 'text-model', display_name: '文字模型', credits: 5, billing_unit: 'request' },
-  { category: 'image', model: 'image-model', display_name: '图片模型', credits: 8, billing_unit: 'request' },
-  { category: 'video', model: 'video-model', display_name: '视频模型', credits: 12, billing_unit: 'second' },
+  { category: 'text', model: 'text-model', display_name: '文字模型', public_note: '适合文字扩写与改写', credits: 5, billing_unit: 'request' },
+  { category: 'image', model: 'image-model', display_name: '图片模型', public_note: '适合图片创作', credits: 8, billing_unit: 'request' },
+  { category: 'video', model: 'video-model', display_name: '视频模型', public_note: '适合视频创作', credits: 12, billing_unit: 'second' },
 ]
 
 async function prepare(page, onRequest) {
@@ -48,6 +48,76 @@ async function prepare(page, onRequest) {
     })
   })
 }
+
+test('首页模型选择器展示公开目录名称与所选模型备注', async ({ page }) => {
+  const homeCatalog = [
+    { category: 'video', model: 'video-public-raw', display_name: '视频公开版', public_note: '适合广告分镜与短剧预演', credits: 12, billing_unit: 'second' },
+    { category: 'video', model: 'video-without-note', display_name: '视频简洁版', public_note: '   ', credits: 10, billing_unit: 'second' },
+  ]
+  await prepare(page, async (_request, url) => (
+    url.pathname === '/api/v1/billing/catalog' ? homeCatalog : undefined
+  ))
+
+  await page.goto('/')
+
+  const modelSelect = page.getByLabel('生成模型')
+  await expect(modelSelect).toHaveValue('video-public-raw')
+  await expect(modelSelect.locator('option:checked')).toHaveText('视频公开版')
+  await expect(page.locator('.home-model-note')).toHaveText('适合广告分镜与短剧预演')
+  await expect(modelSelect.locator('option')).toHaveCount(2)
+
+  await modelSelect.selectOption('video-without-note')
+  await expect(modelSelect.locator('option:checked')).toHaveText('视频简洁版')
+  await expect(page.locator('.home-model-note')).toHaveCount(0)
+})
+
+test('自由创作刷新公开目录后更新默认模型与备注且空备注不占空间', async ({ page }) => {
+  let catalogReads = 0
+  let submitted
+  const catalogs = [
+    [
+      { category: 'text', model: 'first-public-raw', display_name: '初始公开文字模型', public_note: '初始目录备注', credits: 12, billing_unit: 'request' },
+    ],
+    [
+      { category: 'text', model: 'refreshed-public-raw', display_name: '刷新后公开文字模型', public_note: '刷新后的目录备注', credits: 14, billing_unit: 'request' },
+      { category: 'text', model: 'refreshed-no-note', display_name: '刷新后无备注模型', public_note: '', credits: 9, billing_unit: 'request' },
+    ],
+  ]
+  await prepare(page, async (request, url) => {
+    if (url.pathname === '/api/v1/billing/catalog') {
+      const response = catalogs[Math.min(catalogReads, catalogs.length - 1)]
+      catalogReads += 1
+      return response
+    }
+    if (request.method() === 'POST' && url.pathname === '/api/v1/canvas/text/generate') {
+      submitted = request.postDataJSON()
+      return { content: '刷新目录后的文字结果。', model: submitted.model }
+    }
+    return undefined
+  })
+
+  await page.goto('/free-create?mode=text')
+
+  const modelField = page.locator('.form-item').filter({ hasText: '模型' })
+  const modelSelect = modelField.getByRole('combobox')
+  await expect(modelField.getByText('初始公开文字模型', { exact: true })).toBeVisible()
+  await expect(modelField.locator('.model-public-note')).toHaveText('初始目录备注')
+
+  await page.reload()
+
+  await expect(modelField.getByText('刷新后公开文字模型', { exact: true })).toBeVisible()
+  await expect(modelField.locator('.model-public-note')).toHaveText('刷新后的目录备注')
+  await expect(modelField.getByText('初始公开文字模型', { exact: true })).toHaveCount(0)
+
+  await modelField.locator('.el-select').click()
+  await page.getByRole('option', { name: '刷新后无备注模型' }).click()
+  await expect(modelField.getByText('刷新后无备注模型', { exact: true })).toBeVisible()
+  await expect(modelField.locator('.model-public-note')).toHaveCount(0)
+  await page.locator('.prompt-input textarea').fill('使用刷新后的模型生成文字')
+  await page.getByRole('button', { name: '生成文字' }).click()
+  await expect(page.getByText('刷新目录后的文字结果。')).toBeVisible()
+  expect(submitted.model).toBe('refreshed-no-note')
+})
 
 test('首页文字生成会自动提交独立文本接口并刷新余额', async ({ page }) => {
   let submitted

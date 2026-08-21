@@ -359,7 +359,8 @@ async function extractStoryboardVoice({ db, cfg, log, storyboardId, videoId, cha
   ).get(vid, sid, Number(storyboard.drama_id));
   if (!video) return { ok: false, status: 404, code: 'VIDEO_NOT_FOUND', error: '已完成的分镜视频不存在' };
 
-  const storageRoot = resolveStoragePath(cfg || {});
+  const effectiveCfg = cfg || require('../config').loadConfig();
+  const storageRoot = resolveStoragePath(effectiveCfg);
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'local-mini-drama-voice-'));
   let sourcePath = resolveVideoLocalFile(storageRoot, video);
   let generatedPath = null;

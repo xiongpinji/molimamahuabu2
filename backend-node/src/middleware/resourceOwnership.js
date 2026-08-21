@@ -2,11 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const userAuth = require('../services/userAuthService');
 const sessionCookie = require('../services/sessionCookieService');
-const {
-  EXPIRES_PARAM,
-  SIGNATURE_PARAM,
-  verifyProviderAssetRequest,
-} = require('../services/providerAssetUrlService');
+const providerAssetUrl = require('../services/providerAssetUrlService');
 
 const RECHARGE_PACKAGE_UPLOAD_PREFIX = 'uploads/recharge-packages/';
 
@@ -243,13 +239,15 @@ function createStaticOwnershipMiddleware({ db, enabled, secret, storageRoot } = 
   return (req, res, next) => {
     if (!enabled) return next();
     if (!userAuth.validSecret(secret)) return res.status(503).end();
-    const expires = req.query?.[EXPIRES_PARAM];
-    const signature = req.query?.[SIGNATURE_PARAM];
+    const expires = req.query?.[providerAssetUrl.EXPIRES_PARAM];
+    const signature = req.query?.[providerAssetUrl.SIGNATURE_PARAM];
     if (expires != null || signature != null) {
-      const requestPath = `/static${String(req.path || '').startsWith('/') ? '' : '/'}${String(req.path || '')}`;
-      if (!verifyProviderAssetRequest({ pathname: requestPath, expires, signature, secret })) {
-        return res.status(401).end();
-      }
+      if (!providerAssetUrl.verifyProviderAssetRequest({
+        pathname: `${req.baseUrl || ''}${req.path || ''}`,
+        expires,
+        signature,
+        secret,
+      })) return res.status(401).end();
       return next();
     }
     const match = /^Bearer\s+(.+)$/i.exec(String(req.get('authorization') || ''));
@@ -277,6 +275,7 @@ function createStaticOwnershipMiddleware({ db, enabled, secret, storageRoot } = 
     }
     const project = /^\/projects\/(\d+)_/.exec(pathValue);
     const relativePath = pathValue.replace(/^\/+/, '');
+    const redrawSource = /^redraw-sources\/([a-f0-9]{64})\.[a-z0-9]+$/i.exec(relativePath);
     if (isRechargePackageImagePath(relativePath)) {
       if (!isExistingRechargePackageImage(storageRoot, relativePath)) {
         return res.status(404).end();
@@ -284,7 +283,16 @@ function createStaticOwnershipMiddleware({ db, enabled, secret, storageRoot } = 
       req.user = user;
       return next();
     }
-    const owned = project
+    const owned = redrawSource
+      ? db.prepare(`SELECT w.id FROM redraw_works w
+          WHERE w.source_fingerprint = ? AND w.deleted_at IS NULL
+            AND (w.user_id = ? OR EXISTS (
+              SELECT 1 FROM tenant_members m
+              WHERE m.tenant_id = w.tenant_id AND m.user_id = ? AND m.status = 'active'
+            ))
+          LIMIT 1`)
+        .get(redrawSource[1].toLowerCase(), user.id, user.id)
+      : project
       ? db.prepare(`SELECT d.id FROM dramas d
           WHERE d.id = ? AND d.deleted_at IS NULL
             AND (d.user_id = ? OR EXISTS (

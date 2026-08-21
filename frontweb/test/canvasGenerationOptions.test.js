@@ -161,18 +161,25 @@ test('画布摄影参数会追加到生图提示词且不重复追加', () => {
   assert.equal(buildCanvasPhotographyPrompt(prompt, storyboard), prompt)
 })
 
-test('画布模型选择包含分镜图片专用配置并保留图片模型兜底', () => {
-  assert.match(generationOptionsSource, /aiAPI\.listImageModels\(\)/)
-  assert.match(generationOptionsSource, /publicModelNames\(imageConfigs\.value\)/)
+test('画布模型选择只使用公开目录且不回插已失效模型', () => {
+  assert.match(generationOptionsSource, /getFreeNodeModelOptionEntries/)
+  assert.doesNotMatch(generationOptionsSource, /aiAPI\.list/)
+  assert.doesNotMatch(generationOptionsSource, /fallbackModels/)
+  assert.doesNotMatch(generationOptionsSource, /withCurrent/)
   assert.doesNotMatch(generationOptionsSource, /aiAPI\.list\(/)
+  assert.match(generationOptionsSource, /当前模型已不可用，请重新选择/)
+  assert.match(generationOptionsSource, /getFreeNodeModelCatalogStatus/)
+  assert.match(generationOptionsSource, /modelCatalogStatus\.value === 'loaded'/)
+  assert.match(generationOptionsSource, /模型目录加载失败，请重试/)
+  assert.match(generationOptionsSource, /reloadFreeNodeModelCatalog/)
 })
 
-test('画布音频模式加载已配置 TTS 模型并提供模型选择', () => {
+test('画布音频模式从公开目录提供模型选择和备注', () => {
   assert.match(generationOptionsSource, /v-if="mode === 'audio' \|\| mode === 'both'"/)
   assert.match(generationOptionsSource, /:model-value="options\.audioModel \|\| ''"/)
   assert.match(generationOptionsSource, /@change="update\('audioModel', \$event\)"/)
-  assert.match(generationOptionsSource, /aiAPI\.listAudioModels\(\)/)
-  assert.match(generationOptionsSource, /publicModelNames\(audioConfigs\.value\)/)
+  assert.match(generationOptionsSource, /selectedAudioModelNote/)
+  assert.equal((generationOptionsSource.match(/v-else-if="selected(?:Image|Video|Audio)ModelNote" class="model-public-note"/g) || []).length, 3)
 })
 
 test('画布音频模型合并所有启用 TTS 配置并去重', () => {

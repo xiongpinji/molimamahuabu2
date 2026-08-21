@@ -3,7 +3,7 @@
     <div class="panel-heading">
       <div>
         <h2>充值套餐</h2>
-        <p>编辑用户端套餐广告、金额、积分和限时规则。推荐套餐由后端事务保证全局唯一。</p>
+        <p>编辑用户端套餐广告、永久基础积分和每日赠送。推荐套餐由后端事务保证全局唯一。</p>
       </div>
       <el-button type="primary" :disabled="managementLocked" @click="startCreate">新增套餐</el-button>
     </div>
@@ -46,7 +46,7 @@
               <div v-else class="sortable-placeholder" aria-hidden="true">图</div>
               <div class="sortable-copy">
                 <strong>{{ item.name }}</strong>
-                <span>¥{{ Number(item.amount_yuan).toFixed(2) }} · {{ Number(item.credits).toLocaleString('zh-CN') }} 积分</span>
+                <span>¥{{ Number(item.amount_yuan).toFixed(2) }} · {{ Number(item.credits).toLocaleString('zh-CN') }} 永久积分 · 每日赠送 {{ Number(item.daily_bonus_credits || 0).toLocaleString('zh-CN') }}</span>
                 <small>{{ item.status === 'active' ? '启用' : '停用' }}<template v-if="item.is_featured"> · 推荐</template></small>
               </div>
               <span class="drag-handle" aria-hidden="true">⋮⋮</span>
@@ -83,7 +83,8 @@
           <label><span>按钮文案</span><el-input v-model.trim="draft.button_text" maxlength="20" show-word-limit /></label>
           <label><span>强调色</span><el-color-picker v-model="draft.accent_color" color-format="hex" /></label>
           <label><span>售价（元）</span><el-input-number v-model="draft.amount_yuan" :min="0.01" :max="50000" :precision="2" /></label>
-          <label><span>到账积分</span><el-input-number v-model="draft.credits" :min="1" :max="100000000" :step="1" /></label>
+          <label><span>基础积分（永久）</span><el-input-number :model-value="baseCreditsPreview" disabled /></label>
+          <label><span>每日赠送积分</span><el-input-number v-model="draft.daily_bonus_credits" :min="0" :max="100000000" :step="1" /></label>
           <label><span>开始时间</span><el-date-picker v-model="draft.starts_at" type="datetime" placeholder="立即生效" /></label>
           <label><span>结束时间</span><el-date-picker v-model="draft.ends_at" type="datetime" placeholder="长期有效" /></label>
           <label><span>状态</span><el-select v-model="draft.status"><el-option label="启用" value="active" /><el-option label="停用" value="inactive" /></el-select></label>
@@ -110,7 +111,7 @@
           </label>
         </fieldset>
 
-        <div class="recommend-note">推荐套餐由后端事务保证全局唯一；保存新的推荐套餐后，原推荐会自动取消。</div>
+        <div class="recommend-note">每日赠送固定连续 30 天，购买当日为第 1 天；每日仅限当日使用，按上海时区次日 00:00 清零。会员有效期内不可重复购买任何会员档。</div>
         <div class="save-bar">
           <el-button :disabled="managementLocked" @click="resetDraft">重置草稿</el-button>
           <el-button type="primary" :loading="Boolean(saving)" :disabled="managementLocked" @click="saveItem">
@@ -156,6 +157,7 @@ let loadPromise = null
 
 const operationBusy = computed(() => Boolean(saving.value) || sorting.value || uploading.value || loadingPackages.value)
 const managementLocked = computed(() => !hasLoadedPackages.value || loadFailed.value || operationBusy.value)
+const baseCreditsPreview = computed(() => Math.round(Number(draft.amount_yuan || 0) * 100))
 
 const emptyDraft = () => ({
   id: '',
@@ -166,7 +168,7 @@ const emptyDraft = () => ({
   button_text: '立即购买',
   amount_yuan: 10,
   amount_cents: 1000,
-  credits: 1000,
+  daily_bonus_credits: 0,
   starts_at: null,
   ends_at: null,
   image_url: '',
@@ -192,6 +194,9 @@ function normalizePackage(item, index = 0) {
     button_text: String(item.button_text || '立即购买'),
     amount_yuan: amountCents / 100,
     amount_cents: amountCents,
+    daily_bonus_credits: Number.isSafeInteger(Number(item.daily_bonus_credits))
+      ? Math.max(Number(item.daily_bonus_credits), 0)
+      : 0,
     starts_at: item.starts_at ? new Date(item.starts_at) : null,
     ends_at: item.ends_at ? new Date(item.ends_at) : null,
     image_url: String(item.image_url || ''),
@@ -210,7 +215,7 @@ function toPayload(item) {
     ad_subtitle: item.ad_subtitle,
     button_text: item.button_text,
     amount_yuan: Number(item.amount_yuan).toFixed(2),
-    credits: Number(item.credits),
+    daily_bonus_credits: Number(item.daily_bonus_credits),
     starts_at: item.starts_at ? new Date(item.starts_at).toISOString() : null,
     ends_at: item.ends_at ? new Date(item.ends_at).toISOString() : null,
     image_url: item.image_url,
@@ -228,7 +233,7 @@ function validate(item) {
   const adSubtitle = String(item.ad_subtitle || '').trim()
   const buttonText = String(item.button_text || '').trim()
   const amount = Number(item.amount_yuan)
-  const credits = Number(item.credits)
+  const dailyBonusCredits = Number(item.daily_bonus_credits)
   const imageUrl = String(item.image_url || '').trim()
 
   if (!name) return '请填写套餐名称'
@@ -240,7 +245,7 @@ function validate(item) {
   if (!buttonText) return '请填写按钮文案'
   if (buttonText.length > 20) return '按钮文案不能超过 20 个字符'
   if (!Number.isFinite(amount) || amount < 0.01 || amount > 50000 || Math.round(amount * 100) / 100 !== amount) return '售价必须为 0.01 至 50000 元且最多两位小数'
-  if (!Number.isSafeInteger(credits) || credits < 1 || credits > 100000000) return '到账积分必须为 1 至 100000000 的整数'
+  if (!Number.isSafeInteger(dailyBonusCredits) || dailyBonusCredits < 0 || dailyBonusCredits > 100000000) return '每日赠送积分必须为 0 至 100000000 的整数'
   if (item.starts_at && item.ends_at && new Date(item.starts_at) >= new Date(item.ends_at)) return '结束时间必须晚于开始时间'
   if (!imageUrl) return '请填写广告图片'
   if (!isValidPackageImage(imageUrl)) return '广告图片必须来自套餐上传目录或有效的 HTTPS 地址'

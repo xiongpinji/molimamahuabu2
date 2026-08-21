@@ -153,7 +153,7 @@ test('分镜图片内部润色与连戏快照按独立文本模型调用计费',
   const originalText = aiClient.generateText;
   const originalImage = imageClient.callImageApi;
   let textCalls = 0;
-  aiConfig.createConfig(db, log, {
+  const textConfig = aiConfig.createConfig(db, log, {
     service_type: 'text',
     provider: 'openai',
     name: '测试文本模型',
@@ -163,6 +163,8 @@ test('分镜图片内部润色与连戏快照按独立文本模型调用计费',
     default_model: 'GPT-5.5',
     is_default: true,
   });
+  db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
+    .run(textConfig.id);
   credits.setTenantAccountBalance(db, 'tenant-a', 50);
   prices.set(db, 'dall-e-3', 10);
   prices.set(db, 'GPT-5.5', 5);

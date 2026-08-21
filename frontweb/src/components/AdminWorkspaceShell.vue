@@ -29,8 +29,14 @@
 </template>
 
 <script setup>
+import { onBeforeUnmount, onMounted } from 'vue'
 import AdminWorkspaceNav from '@/components/AdminWorkspaceNav.vue'
 import PlatformHeader from '@/components/PlatformHeader.vue'
+
+const adminThemeClass = 'admin-workspace-active'
+
+onMounted(() => document.documentElement.classList.add(adminThemeClass))
+onBeforeUnmount(() => document.documentElement.classList.remove(adminThemeClass))
 
 defineProps({
   title: { type: String, required: true },
@@ -189,6 +195,14 @@ defineProps({
 .admin-workspace__body :deep(.el-table th.el-table__cell),
 .admin-workspace__body :deep(.el-table td.el-table__cell) {
   background-color: var(--el-table-tr-bg-color) !important;
+}
+
+.admin-workspace__body :deep(.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell) {
+  background-color: var(--el-table-tr-bg-color) !important;
+}
+
+.admin-workspace__body :deep(.el-table .el-table__body tr.el-table__row:hover > td.el-table__cell) {
+  background-color: var(--el-table-row-hover-bg-color) !important;
 }
 
 .admin-workspace__body :deep(.el-table th.el-table__cell) {

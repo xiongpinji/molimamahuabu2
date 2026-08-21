@@ -198,28 +198,49 @@
           </button>
         </div>
         <div class="preview-canvas">
+          <div
+            v-if="editorOperation === 'grid_crop'"
+            ref="gridCropSurface"
+            class="grid-crop-surface"
+            aria-label="可移动宫格裁剪框"
+          >
+            <img
+              ref="gridCropImage"
+              :src="data.url"
+              alt="宫格裁剪原图"
+              draggable="false"
+              @load="handleGridCropImageLoad"
+            />
+            <div class="grid-preview grid-crop-overlay">
+              <div
+                v-for="(box, index) in gridCropBoxes"
+                :key="box.id"
+                class="grid-crop-box"
+                :class="{ active: gridActiveBoxId === box.id }"
+                :style="gridCropBoxStyle(box)"
+                :aria-label="`第 ${box.row + 1} 行第 ${box.column + 1} 列裁剪框`"
+                @pointerdown="beginGridCropMove($event, box.id)"
+              >
+                <span class="grid-crop-box-label">{{ index + 1 }}</span>
+                <button
+                  v-for="handle in gridResizeHandles"
+                  :key="handle"
+                  type="button"
+                  class="grid-crop-handle"
+                  :class="`handle-${handle}`"
+                  :aria-label="`调整第 ${index + 1} 个裁剪框 ${handle}`"
+                  @pointerdown.stop="beginGridCropResize($event, box.id, handle)"
+                />
+              </div>
+            </div>
+          </div>
           <img
+            v-else
             :src="data.url"
             :alt="`${operationLabel(editorOperation)}预览`"
             :style="editorPreviewStyle"
             draggable="false"
           />
-          <div
-            v-if="editorOperation === 'grid_crop'"
-            class="grid-preview grid-selection"
-            :style="gridPreviewStyle"
-            aria-label="宫格选择"
-          >
-            <button
-              v-for="cell in gridCells"
-              :key="cell.key"
-              type="button"
-              :class="{ selected: gridSelectedCells.includes(cell.key) }"
-              :aria-label="`第 ${cell.row + 1} 行第 ${cell.column + 1} 列`"
-              :aria-pressed="gridSelectedCells.includes(cell.key)"
-              @click="toggleGridCell(cell.key)"
-            />
-          </div>
         </div>
         <div class="preview-caption">
           <strong>{{ operationLabel(editorOperation) }}</strong>
@@ -671,36 +692,27 @@
         <template v-else-if="editorOperation === 'grid_crop'">
           <div class="grid-quick-sizes" aria-label="手动网格">
             <button
-              v-for="size in gridQuickSizes"
-              :key="size"
+              v-for="layout in gridQuickLayouts"
+              :key="layout.label"
               type="button"
-              :class="{ active: gridForm.rows === size && gridForm.columns === size }"
-              @click="applyGridSize(size)"
+              :class="{ active: gridForm.rows === layout.rows && gridForm.columns === layout.columns }"
+              @click="applyGridLayout(layout)"
             >
-              {{ size }}x{{ size }}
+              {{ layout.label }}
             </button>
           </div>
           <el-form-item label="行数">
-            <el-input-number v-model="gridForm.rows" :min="1" :max="7" @change="resetGridSelection" />
+            <el-input-number v-model="gridForm.rows" :min="1" :max="7" @change="resetGridBoxes" />
           </el-form-item>
           <el-form-item label="列数">
-            <el-input-number v-model="gridForm.columns" :min="1" :max="7" @change="resetGridSelection" />
-          </el-form-item>
-          <el-form-item :label="`宫格间距 ${gridForm.spacing}px`">
-            <el-slider v-model="gridForm.spacing" :min="0" :max="48" :step="1" />
+            <el-input-number v-model="gridForm.columns" :min="1" :max="7" @change="resetGridBoxes" />
           </el-form-item>
           <div class="grid-selection-actions">
-            <el-button size="small" @click="selectAllGridCells">全选</el-button>
-            <el-button size="small" @click="gridSelectedCells = []">取消全选</el-button>
-            <el-button size="small" @click="invertGridSelection">反选</el-button>
-            <el-button size="small" :disabled="!gridSelectedCells.length" @click="duplicateGridSelection">
-              复制选区（{{ gridDuplicateCells.length }}）
-            </el-button>
+            <el-button size="small" @click="resetGridBoxes">重置均分</el-button>
             <el-button size="small" @click="redetectGrid">重新识别</el-button>
-            <el-checkbox v-model="gridSnapEnabled">吸附对齐</el-checkbox>
-            <span>已选择 {{ gridSelectedCells.length }} / {{ gridCells.length }} 格</span>
+            <span>可独立移动和缩放 {{ gridCropBoxes.length }} 个裁剪框</span>
           </div>
-          <p class="crop-hint">点击左侧宫格选择需要分别导出的区域，每个选中区域会生成一份新素材。</p>
+          <p class="crop-hint">拖动框体调整位置，拖动八个控制点调整大小；框之间可以重叠或留空。</p>
         </template>
 
         <template v-else-if="editorOperation === 'adjust'">
@@ -882,6 +894,11 @@ import {
 } from '@element-plus/icons-vue'
 import { imageToolsAPI } from '@/api/imageTools'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import {
+  createGridCropBoxes,
+  moveGridCropBox,
+  resizeGridCropBox,
+} from '@/utils/gridCropBoxes'
 import { detectPortraitFacesInImage } from '@/utils/portraitFaceDetection'
 
 const props = defineProps({
@@ -922,11 +939,19 @@ const markerColors = ['#a1a1aa', '#60a5fa', '#34d399', '#fbbf24', '#f87171']
 const compressForm = ref({ format: 'webp', quality: 80 })
 const mirrorDirection = ref('horizontal')
 const rotateAngle = ref(90)
-const gridQuickSizes = Object.freeze([2, 3, 4, 5, 6, 7])
-const gridForm = ref({ rows: 3, columns: 3, spacing: 0 })
-const gridSelectedCells = ref([])
-const gridDuplicateCells = ref([])
-const gridSnapEnabled = ref(true)
+const gridQuickLayouts = Object.freeze([
+  { label: '4 宫格', rows: 2, columns: 2 },
+  { label: '6 宫格', rows: 2, columns: 3 },
+  { label: '9 宫格', rows: 3, columns: 3 },
+])
+const gridForm = ref({ rows: 2, columns: 3 })
+const gridCropBoxes = ref(createGridCropBoxes(2, 3))
+const gridActiveBoxId = ref('0:0')
+const gridCropImage = ref(null)
+const gridCropSurface = ref(null)
+const gridCropImageSize = ref({ width: 0, height: 0 })
+const gridResizeHandles = Object.freeze(['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'])
+let activeGridPointer = null
 const DEFAULT_ADJUST_FORM = Object.freeze({
   exposure: 0,
   brightness: 1,
@@ -1245,19 +1270,6 @@ const editorPreviewStyle = computed(() => {
   return style
 })
 
-const gridPreviewStyle = computed(() => ({
-  '--grid-rows': gridForm.value.rows,
-  '--grid-columns': gridForm.value.columns,
-}))
-const gridCells = computed(() => Array.from(
-  { length: gridForm.value.rows * gridForm.value.columns },
-  (_, index) => {
-    const row = Math.floor(index / gridForm.value.columns)
-    const column = index % gridForm.value.columns
-    return { row, column, key: `${row}:${column}` }
-  },
-))
-
 const editorPreviewHint = computed(() => {
   if (['adjust', 'lut', 'mirror', 'rotate', 'grid_crop'].includes(editorOperation.value)) {
     return '参数变化会即时显示；应用后生成新素材，原图保持不变'
@@ -1399,7 +1411,7 @@ function selectOperation(item) {
       description: '保持主体与构图不变，重塑环境光、空气透视与整体氛围',
     }
   }
-  if (item.operation === 'grid_crop') resetGridSelection()
+  if (item.operation === 'grid_crop') resetGridBoxes()
   if (item.operation === 'selection_cutout') resetSelectionEditor()
   if (item.operation === 'markup_retouch') resetMarkupEditor()
   editorVisible.value = true
@@ -1416,7 +1428,7 @@ function switchEditorOperation(operation) {
   destroyCropper()
   editorOperation.value = operation
   editorVariantLabel.value = ''
-  if (operation === 'grid_crop') resetGridSelection()
+  if (operation === 'grid_crop') resetGridBoxes()
   if (operation === 'selection_cutout') resetSelectionEditor()
   if (['crop', 'selection_cutout'].includes(operation)) nextTick(initCropper)
 }
@@ -1650,6 +1662,7 @@ function destroyEditor() {
   clearTimeout(menuCloseTimer)
   destroyCropper()
   destroyPortraitCropper()
+  finishGridCropPointer()
   activeMarkupStroke = null
   activeSelectionBrushStroke = null
 }
@@ -1819,29 +1832,98 @@ function removeMarkupLayer(index) {
   markupRedoStrokes.value = []
 }
 
-function selectAllGridCells() {
-  gridSelectedCells.value = gridCells.value.map((cell) => cell.key)
+function resetGridBoxes() {
+  gridCropBoxes.value = createGridCropBoxes(gridForm.value.rows, gridForm.value.columns)
+  gridActiveBoxId.value = gridCropBoxes.value[0]?.id || ''
 }
 
-function applyGridSize(size) {
-  gridForm.value = { ...gridForm.value, rows: size, columns: size }
-  resetGridSelection()
+function applyGridLayout(layout) {
+  gridForm.value = { rows: layout.rows, columns: layout.columns }
+  resetGridBoxes()
 }
 
-function resetGridSelection() {
-  gridDuplicateCells.value = []
-  nextTick(selectAllGridCells)
+function handleGridCropImageLoad(event) {
+  const image = event.currentTarget
+  gridCropImageSize.value = {
+    width: image?.naturalWidth || 0,
+    height: image?.naturalHeight || 0,
+  }
 }
 
-function invertGridSelection() {
-  const selected = new Set(gridSelectedCells.value)
-  gridSelectedCells.value = gridCells.value
-    .map((cell) => cell.key)
-    .filter((key) => !selected.has(key))
+function gridCropBoxStyle(box) {
+  return {
+    left: `${box.left * 100}%`,
+    top: `${box.top * 100}%`,
+    width: `${box.width * 100}%`,
+    height: `${box.height * 100}%`,
+  }
 }
 
-function duplicateGridSelection() {
-  gridDuplicateCells.value = [...gridSelectedCells.value]
+function gridCropPointerDelta(event, session) {
+  return {
+    x: (event.clientX - session.startX) / session.bounds.width,
+    y: (event.clientY - session.startY) / session.bounds.height,
+  }
+}
+
+function finishGridCropPointer(event) {
+  if (!activeGridPointer) return
+  const surface = gridCropSurface.value
+  if (event?.pointerId !== undefined && surface?.hasPointerCapture?.(event.pointerId)) {
+    surface.releasePointerCapture(event.pointerId)
+  }
+  window.removeEventListener('pointermove', updateGridCropPointer, true)
+  window.removeEventListener('pointerup', finishGridCropPointer, true)
+  window.removeEventListener('pointercancel', finishGridCropPointer, true)
+  activeGridPointer = null
+}
+
+function updateGridCropPointer(event) {
+  const session = activeGridPointer
+  if (!session || nodeBusy.value) return
+  const delta = gridCropPointerDelta(event, session)
+  const nextBox = session.handle
+    ? resizeGridCropBox(
+      session.startBox,
+      session.handle,
+      delta.x,
+      delta.y,
+      16 / (gridCropImageSize.value.width || 16),
+      16 / (gridCropImageSize.value.height || 16),
+    )
+    : moveGridCropBox(session.startBox, delta.x, delta.y)
+  gridCropBoxes.value = gridCropBoxes.value.map((box) => (
+    box.id === session.id ? nextBox : box
+  ))
+}
+
+function beginGridCropPointer(event, id, handle = '') {
+  if (nodeBusy.value || event.button !== 0) return
+  const bounds = gridCropSurface.value?.getBoundingClientRect()
+  const startBox = gridCropBoxes.value.find((box) => box.id === id)
+  if (!bounds?.width || !bounds.height || !startBox) return
+  gridActiveBoxId.value = id
+  activeGridPointer = {
+    id,
+    handle,
+    startX: event.clientX,
+    startY: event.clientY,
+    bounds,
+    startBox: { ...startBox },
+  }
+  gridCropSurface.value?.setPointerCapture?.(event.pointerId)
+  window.addEventListener('pointermove', updateGridCropPointer, true)
+  window.addEventListener('pointerup', finishGridCropPointer, true)
+  window.addEventListener('pointercancel', finishGridCropPointer, true)
+  event.preventDefault()
+}
+
+function beginGridCropMove(event, id) {
+  beginGridCropPointer(event, id)
+}
+
+function beginGridCropResize(event, id, handle) {
+  beginGridCropPointer(event, id, handle)
 }
 
 async function redetectGrid() {
@@ -1895,16 +1977,10 @@ async function redetectGrid() {
       columns: boundaryCount(edgeProjection(true)),
       rows: boundaryCount(edgeProjection(false)),
     }
-    resetGridSelection()
+    resetGridBoxes()
   } catch {
     ElMessage.warning('未能读取图像内容，请使用自定义行列')
   }
-}
-
-function toggleGridCell(key) {
-  gridSelectedCells.value = gridSelectedCells.value.includes(key)
-    ? gridSelectedCells.value.filter((value) => value !== key)
-    : [...gridSelectedCells.value, key]
 }
 
 function toggleVariationTag(tag) {
@@ -1943,13 +2019,10 @@ function operationParameters() {
   if (editorOperation.value === 'mirror') return { direction: mirrorDirection.value }
   if (editorOperation.value === 'rotate') return { angle: rotateAngle.value }
   if (editorOperation.value === 'grid_crop') {
-    if (!gridSelectedCells.value.length) throw new Error('请至少选择一个宫格区域')
+    if (!gridCropBoxes.value.length) throw new Error('请至少保留一个宫格裁剪框')
     return {
       ...gridForm.value,
-      selectedCells: [...gridSelectedCells.value],
-      duplicateCells: [...gridDuplicateCells.value],
-      spacing: gridForm.value.spacing,
-      snap: gridSnapEnabled.value,
+      boxes: gridCropBoxes.value.map((box) => ({ ...box })),
     }
   }
   if (editorOperation.value === 'adjust') return { ...adjustForm.value, curves: adjustCurves.value }
@@ -2756,29 +2829,25 @@ function requestFullscreen() {
 .grid-preview {
   position: absolute;
   inset: 0;
-  display: grid;
   pointer-events: none;
 }
 
-.grid-selection {
-  grid-template-columns: repeat(var(--grid-columns), 1fr);
-  grid-template-rows: repeat(var(--grid-rows), 1fr);
-  pointer-events: auto;
-}
-
-.grid-selection button {
+.grid-crop-surface {
   position: relative;
-  z-index: 1;
-  min-width: 0;
-  padding: 0;
-  background: rgb(9 9 11 / 58%);
-  border: 1px solid rgb(255 255 255 / 72%);
-  cursor: pointer;
+  display: inline-block;
+  max-width: 100%;
+  max-height: 430px;
+  line-height: 0;
 }
 
-.grid-selection button.selected {
-  background: rgb(99 102 241 / 16%);
-  box-shadow: 0 0 0 2px #818cf8 inset;
+.grid-crop-surface > img {
+  width: auto;
+  max-width: 100%;
+  max-height: 430px;
+}
+
+.grid-crop-overlay {
+  pointer-events: none;
 }
 
 .grid-selection-actions {
@@ -2792,7 +2861,7 @@ function requestFullscreen() {
 
 .grid-quick-sizes {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
   margin-bottom: 14px;
 }
@@ -2812,13 +2881,76 @@ function requestFullscreen() {
   border-color: #6366f1;
 }
 
-.grid-preview::before {
-  grid-area: 1 / 1 / -1 / -1;
+.grid-crop-box {
+  position: absolute;
+  z-index: 1;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  border: 2px solid rgb(255 255 255 / 88%);
+  background: rgb(99 102 241 / 14%);
+  pointer-events: auto;
+  cursor: move;
+  touch-action: none;
+}
+
+.grid-crop-box.active {
+  z-index: 2;
+  border-color: #a5b4fc;
+  box-shadow: 0 0 0 2px rgb(99 102 241 / 55%) inset;
+}
+
+.grid-crop-box-label {
+  position: absolute;
+  top: 3px;
+  left: 4px;
+  min-width: 16px;
+  padding: 1px 4px;
+  color: #fff;
+  background: rgb(9 9 11 / 72%);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.grid-crop-handle {
+  position: absolute;
+  z-index: 3;
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border: 1px solid #312e81;
+  border-radius: 50%;
+  background: #e0e7ff;
+  pointer-events: auto;
+  cursor: nwse-resize;
+}
+
+.grid-crop-handle.handle-nw,
+.grid-crop-handle.handle-se { cursor: nwse-resize; }
+.grid-crop-handle.handle-ne,
+.grid-crop-handle.handle-sw { cursor: nesw-resize; }
+.grid-crop-handle.handle-n,
+.grid-crop-handle.handle-s { cursor: ns-resize; }
+.grid-crop-handle.handle-e,
+.grid-crop-handle.handle-w { cursor: ew-resize; }
+.grid-crop-handle.handle-nw { top: -6px; left: -6px; }
+.grid-crop-handle.handle-n { top: -6px; left: calc(50% - 5px); }
+.grid-crop-handle.handle-ne { top: -6px; right: -6px; }
+.grid-crop-handle.handle-e { top: calc(50% - 5px); right: -6px; }
+.grid-crop-handle.handle-se { right: -6px; bottom: -6px; }
+.grid-crop-handle.handle-s { bottom: -6px; left: calc(50% - 5px); }
+.grid-crop-handle.handle-sw { bottom: -6px; left: -6px; }
+.grid-crop-handle.handle-w { top: calc(50% - 5px); left: -6px; }
+
+.grid-crop-overlay::after {
+  position: absolute;
+  inset: 0;
   content: "";
-  background:
-    repeating-linear-gradient(to right, transparent 0, transparent calc(100% - 1px), rgba(255, 255, 255, 0.76) calc(100% - 1px), rgba(255, 255, 255, 0.76) 100%),
-    repeating-linear-gradient(to bottom, transparent 0, transparent calc(100% - 1px), rgba(255, 255, 255, 0.76) calc(100% - 1px), rgba(255, 255, 255, 0.76) 100%);
-  background-size: calc(100% / var(--grid-columns)) 100%, 100% calc(100% / var(--grid-rows));
+  border: 1px solid rgb(255 255 255 / 30%);
+  pointer-events: none;
 }
 
 .preview-caption {

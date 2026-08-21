@@ -3,6 +3,7 @@
     v-model="visible"
     :title="title || `从素材库选择${typeDisplayName}`"
     width="760px"
+    :z-index="3500"
     destroy-on-close
     append-to-body
   >
@@ -107,6 +108,7 @@
       v-model="previewVisible"
       :title="previewItem?.name || '素材预览'"
       width="720px"
+      :z-index="3600"
       append-to-body
       destroy-on-close
     >

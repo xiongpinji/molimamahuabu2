@@ -77,7 +77,7 @@
             <el-table-column prop="base_url" label="Base URL" min-width="170" show-overflow-tooltip />
             <el-table-column prop="default_model" label="默认模型" min-width="130" show-overflow-tooltip>
               <template #default="{ row }">
-                {{ row.default_model || (Array.isArray(row.model) && row.model[0]) || '—' }}
+                {{ normalizeModelOption(row.default_model) || (Array.isArray(row.model) && normalizeModelOption(row.model[0])) || '—' }}
               </template>
             </el-table-column>
             <el-table-column label="模型 → 中转站" min-width="260">
@@ -127,6 +127,13 @@
               <template #default="{ row }">
                 <el-tag v-if="row.is_default" type="success" size="small">✓</el-tag>
                 <span v-else class="no-default">—</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="画布状态（验证状态）" width="140">
+              <template #default="{ row }">
+                <el-tag v-if="row.verification_status === 'verified'" type="success" size="small">已验证</el-tag>
+                <el-tag v-else-if="row.verification_status === 'failed'" type="danger" size="small">验证失败</el-tag>
+                <el-tag v-else type="warning" size="small">待验证</el-tag>
               </template>
             </el-table-column>
             <el-table-column label="操作" width="240" fixed="right">
@@ -371,8 +378,13 @@
             <el-option label="xAI Grok Imagine（官方 prompt + aspect_ratio，/v1/videos/generations）" value="xai" />
             <el-option label="DeepWL Grok（统一 JSON / Imagine / OpenAI 兼容）" value="deepwl_grok" />
             <el-option label="iCreat Seedance（提交 / 状态 / 结果三段式任务）" value="icreat_task" />
+            <el-option label="DJPSD 开放 API（图片 / 视频异步任务）" value="djpsd_openapi" />
             <el-option label="USMercari 视频（异步提交 / 批量轮询）" value="usmercari_media" />
-            <el-option label="fumin Seedance 2.0（异步任务）" value="fumin_video" />
+            <el-option label="ToAPIs 视频（Seedance 2 异步生成）" value="toapis_video" />
+            <el-option label="飞拓视频（H3-2K / Seedance 2.5）" value="feituo_open" />
+            <el-option label="灵境视频（Seedance 2.0 Fast / 最多 9 图）" value="lingjing_open" />
+            <el-option label="Fumin Seedance 2.0（5–15 秒 / 9 图 + 3 视频 + 3 音频）" value="fumin_video" />
+            <el-option label="USMercari 图片（文生图 / 公网参考图）" value="usmercari_image" />
             <el-option label="DJPSD Seedance 2.0（异步任务）" value="djpsd" />
             <el-option label="NanoBanana" value="nano_banana" />
           </el-select>
@@ -384,6 +396,15 @@
           :closable="false"
           show-icon
           title="Seedance 2.0 支持 5 / 10 / 15 秒；其他时长会向上适配。连接测试只读取任务列表，不会扣费。"
+          style="margin-bottom: 18px"
+        />
+
+        <el-alert
+          v-if="['image', 'storyboard_image', 'video'].includes(form.service_type) && form.api_protocol === 'djpsd_openapi'"
+          type="info"
+          :closable="false"
+          show-icon
+          title="图片与视频均走 DJPSD 异步媒体任务；连接测试只查询不存在的任务，不会创建或扣费。"
           style="margin-bottom: 18px"
         />
 
@@ -547,6 +568,17 @@ input_reference = (图片文件，可选)</pre>
                   <b>创建：</b><code>POST /v1/task/submit/{model}</code>；<b>查询：</b><code>POST /v1/task/query-status</code>；<b>取结果：</b><code>POST /v1/task/get-result</code><br>
                   <b>模型：</b><code>bytedance/seedance-2-0-fast</code>、<code>bytedance/seedance-2-0-mini</code><br>
                   <b>认证：</b><code>Authorization: Bearer {api_key}</code>，并发送 <code>X-ICREAT-AI-GROUP: default</code>。连接测试只查询不存在的任务，不会提交计费任务。
+                </div>
+              </el-collapse-item>
+              <el-collapse-item name="toapis-video">
+                <template #title><span class="ph-tag ph-tag-vid">视频</span> ToAPIs — Seedance 2 异步生成</template>
+                <div class="ph-body">
+                  <b>Base URL：</b><code>https://toapis.com</code><br>
+                  <b>接口：</b><code>POST /v1/videos/generations</code>（创建），<code>GET /v1/videos/generations/{taskId}</code>（查询）<br>
+                  <b>模型：</b><code>seedance-2-fast</code>、<code>seedance-2-mini</code><br>
+                  <b>分辨率：</b>仅支持 <code>480P</code>、<code>720P</code>；不支持 1080P。<br>
+                  <b>开放门禁：</b>这些模型必须在真实生成验证成功后才可在前端可见；连接测试不能代替真实生成验证。<br>
+                  <b>参考素材：</b>支持参考图、参考视频和参考音频；首尾帧模式与全能参考模式互斥，不得同时使用。
                 </div>
               </el-collapse-item>
               <el-collapse-item name="jimeng-ai-api-vid">
@@ -868,13 +900,13 @@ input_reference = (图片文件，可选)</pre>
           <template #label><span class="form-label-tip">默认时长</span></template>
           <el-select v-model="form.video_duration" style="width: 100%">
             <el-option
-              v-for="duration in VIDEO_DURATION_OPTIONS"
+              v-for="duration in adminVideoDurationOptions"
               :key="duration"
               :label="`${duration} 秒`"
               :value="duration"
             />
           </el-select>
-          <p class="field-tip">视频节点未单独选择时长时使用；可选 5–15 秒。</p>
+          <p class="field-tip">视频节点未单独选择时长时使用；当前模型可选 {{ adminVideoDurationOptions.join('、') }} 秒。</p>
         </el-form-item>
         <el-form-item v-if="isDeepSeekOfficialForm">
           <template #label>
@@ -1131,7 +1163,15 @@ input_reference = (图片文件，可选)</pre>
       <p v-if="testResult === null">正在测试…</p>
       <template v-else-if="testResult">
         <el-alert
-          v-if="testServiceType === 'image' || testServiceType === 'storyboard_image' || testServiceType === 'video'"
+          v-if="testProvider === 'usmercari_image'"
+          type="success"
+          title="只读连通性测试成功"
+          description="本次只检查 API Key、网络和模型列表，不会把模型标记为 verified。只有完成真实生成、结果文件校验和定价后才能通过用户目录门禁。"
+          show-icon
+          :closable="false"
+        />
+        <el-alert
+          v-else-if="testServiceType === 'image' || testServiceType === 'storyboard_image' || testServiceType === 'video'"
           type="success"
           title="连接成功"
           description="API Key 有效，网络已连通。提示：测试仅验证 Key 合法性，不实际生成图片/视频，模型名填错、账号未开通该功能或配额不足时实际生成仍可能报错。"
@@ -1205,12 +1245,13 @@ import {
   AIHUBCC_VIDEO_MODELS,
   isAihubccFlowImageModel,
 } from '@/utils/aihubccModelCatalog'
+import { normalizeModelOption, parseModelList } from '@/utils/modelSelection'
 import { generationSettingsAPI } from '@/api/prompts'
 import PromptEditor from '@/components/PromptEditor.vue'
 import SceneModelMap from '@/components/SceneModelMap.vue'
 import Sd2AssetManagement from '@/components/Sd2AssetManagement.vue'
 import ProviderStabilityPanel from '@/components/ProviderStabilityPanel.vue'
-import { VIDEO_DURATION_OPTIONS, mergeVideoDurationSetting, readVideoDurationSetting } from '@/utils/videoDuration'
+import { mergeVideoDurationSetting, readVideoDurationSetting, videoDurationOptionsForCapability } from '@/utils/videoDuration'
 import { buildAiConfigRelayAssociations } from '@/utils/aiConfigRelayAssociation'
 
 const activeTab = ref('configs')
@@ -1218,7 +1259,8 @@ const importFileRef = ref(null)
 const router = useRouter()
 
 function openPricing(row) {
-  const model = row.default_model || (Array.isArray(row.model) ? row.model[0] : '')
+  const model = normalizeModelOption(row.default_model)
+    || (Array.isArray(row.model) ? normalizeModelOption(row.model[0]) : '')
   router.push({ name: 'billing-admin', query: { tab: 'models', model } })
 }
 
@@ -1313,7 +1355,31 @@ const form = ref({
 })
 const presetModelPick = ref('')
 
-const formModelList = computed(() => parseModelText(form.value.modelText))
+const formModelList = computed(() => parseModelList(form.value.modelText))
+const TOAPIS_ADMIN_VIDEO_CAPABILITIES = Object.freeze({
+  'seedance-2-fast': Object.freeze({ durations: Object.freeze(Array.from({ length: 12 }, (_, index) => index + 4)) }),
+  'seedance-2-mini': Object.freeze({ durations: Object.freeze([4, 8, 10, 12, 15]) }),
+})
+const FEITUO_ADMIN_VIDEO_CAPABILITIES = Object.freeze({
+  'xuan-video-v1-6e7b4763634e6206': Object.freeze({ durations: Object.freeze([15]) }),
+  'xuan-seedance-2.5': Object.freeze({ durations: Object.freeze(Array.from({ length: 27 }, (_, index) => index + 4)) }),
+})
+const LINGJING_ADMIN_VIDEO_CAPABILITIES = Object.freeze({
+  'lingjing-video-v1': Object.freeze({ durations: Object.freeze([4, 5, 6, 8, 10, 11, 15]) }),
+})
+function adminVideoCapabilityFor(config = {}) {
+  if (config.service_type !== 'video') return null
+  const isToapis = config.api_protocol === 'toapis_video' || config.provider === 'toapis'
+  const isFeituo = config.api_protocol === 'feituo_open' || config.provider === 'feituo'
+  const isLingjing = config.api_protocol === 'lingjing_open' || config.provider === 'lingjing'
+  const model = normalizeModelOption(config.default_model)
+    || (Array.isArray(config.model) ? normalizeModelOption(config.model[0]) : '')
+  if (isToapis) return TOAPIS_ADMIN_VIDEO_CAPABILITIES[model] || null
+  if (isLingjing) return LINGJING_ADMIN_VIDEO_CAPABILITIES[model] || null
+  return isFeituo ? FEITUO_ADMIN_VIDEO_CAPABILITIES[model] || null : null
+}
+const adminVideoCapability = computed(() => adminVideoCapabilityFor(form.value))
+const adminVideoDurationOptions = computed(() => videoDurationOptionsForCapability(adminVideoCapability.value))
 const auditedImageToolReferenceConfig = computed(() => (
   isAuditedImageToolReferenceConfig({
     serviceType: form.value.service_type,
@@ -1329,12 +1395,25 @@ watch(
   () => {
     const list = formModelList.value
     if (list.length === 0) return
-    const current = form.value.default_model
+    const current = normalizeModelOption(form.value.default_model)
     if (!current || !list.includes(current)) {
       form.value.default_model = list[0] || ''
+    } else if (form.value.default_model !== current) {
+      form.value.default_model = current
     }
   },
   { immediate: true }
+)
+
+watch(
+  () => [form.value.service_type, form.value.api_protocol, form.value.provider, form.value.default_model],
+  () => {
+    const allowed = adminVideoDurationOptions.value
+    const current = Number(form.value.video_duration)
+    if (form.value.service_type === 'video' && !allowed.includes(current)) {
+      form.value.video_duration = allowed[0]
+    }
+  },
 )
 
 function onServiceTypeChange() {
@@ -1433,7 +1512,9 @@ const providerConfigs = {
   ],
   image: [
     { id: 'aihubcc', name: 'AIHubCC 图片', models: AIHUBCC_IMAGE_MODELS },
-    { id: 'fumin_image', name: 'fumin GPT Image 2', models: ['fumin-gpt-image-2', 'fumin-gpt-image-2-4K'] },
+    { id: 'fumin_image', name: 'Fumin GPT Image', models: ['fumin-gpt-image-2', 'fumin-gpt-image-2-4K'] },
+    { id: 'token6688', name: 'Token6688 图片', models: ['doubao-seedream-5-0', 'token6688-gpt-image-2', 'gemini-3-pro-image'] },
+    { id: 'usmercari_image', name: 'USMercari 图片', models: ['gpt-image-2-2-4k', 'nano-banana-2'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
@@ -1446,7 +1527,9 @@ const providerConfigs = {
   ],
   storyboard_image: [
     { id: 'aihubcc', name: 'AIHubCC 图片', models: AIHUBCC_IMAGE_MODELS },
-    { id: 'fumin_image', name: 'fumin GPT Image 2', models: ['fumin-gpt-image-2', 'fumin-gpt-image-2-4K'] },
+    { id: 'fumin_image', name: 'Fumin GPT Image', models: ['fumin-gpt-image-2', 'fumin-gpt-image-2-4K'] },
+    { id: 'token6688', name: 'Token6688 图片', models: ['doubao-seedream-5-0', 'token6688-gpt-image-2', 'gemini-3-pro-image'] },
+    { id: 'usmercari_image', name: 'USMercari 图片', models: ['gpt-image-2-2-4k', 'nano-banana-2'] },
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
@@ -1458,9 +1541,14 @@ const providerConfigs = {
   ],
   video: [
     { id: 'aihubcc', name: 'AIHubCC 视频', models: AIHUBCC_VIDEO_MODELS },
-    { id: 'fumin', name: 'fumin Seedance 2.0', models: ['fumin-seedance-2.0-fast', 'fumin-seedance-2.0-mini'] },
+    { id: 'fumin', name: 'Fumin Seedance 2.0', models: ['fumin-seedance-2.0-fast', 'fumin-seedance-2.0-mini'] },
+    { id: 'token6688', name: 'Token6688 Seedance 特价按次', models: ['seedance-2-0-special-mini-720p', 'seedance-2-0-special-fast-720p', 'seedance-2-0-special-full-720p'] },
     { id: 'usmercari', name: 'USMercari MiniMax H3 / Seedance', models: ['MiniMax H3', 'seedance-2.0-fast', 'seedance-2.0-mini'] },
+    { id: 'toapis', name: 'ToAPIs Seedance 2', models: ['seedance-2-fast', 'seedance-2-mini'] },
+    { id: 'feituo', name: '飞拓 H3-2K / Seedance 2.5', models: ['xuan-video-v1-6e7b4763634e6206', 'xuan-seedance-2.5'] },
+    { id: 'lingjing', name: '灵境 Seedance 2.0 Fast（9 图参考）', models: ['lingjing-video-v1'] },
     { id: 'icreat', name: 'iCreat Seedance', models: ['bytedance/seedance-2-0-fast', 'bytedance/seedance-2-0-mini'] },
+    { id: 'djpsd_openapi', name: 'DJPSD 开放 API', models: ['video-v1'] },
     { id: 'djpsd', name: 'DJPSD / Seedance 2.0', models: ['seedance 2.0'] },
     { id: 'klingai', name: '可灵官方 Omni (api-beijing.klingai.com)', models: ['kling-video-o1', 'kling-v3-omni'] },
     { id: 'ffir', name: '飞儿API / 可灵 Omni-Video (ffir.cn)', models: ['kling-video-o1', 'kling-v3-omni'] },
@@ -1499,6 +1587,8 @@ const providerConfigs = {
 /** 厂商 id → 默认接口规范（api_protocol） */
 const providerProtocolMap = {
   aihubcc: 'aihubcc',
+  token6688: 'token6688',
+  usmercari_image: 'usmercari_image',
   // image / storyboard_image
   volcengine: 'volcengine',
   volces: 'volcengine',
@@ -1520,10 +1610,14 @@ const providerProtocolMap = {
   deepwl_grok: 'deepwl_grok',
   icreat: 'icreat_task',
   icreat_task: 'icreat_task',
+  djpsd_openapi: 'djpsd_openapi',
   usmercari: 'usmercari_media',
   usmercari_media: 'usmercari_media',
   fumin: 'fumin_video',
   fumin_video: 'fumin_video',
+  toapis: 'toapis_video',
+  feituo: 'feituo_open',
+  lingjing: 'lingjing_open',
   djpsd: 'djpsd',
   minimax: 'openai',
   openai: 'openai',
@@ -1540,6 +1634,8 @@ function getBaseUrlForProvider(provider) {
   if (!provider) return ''
   const p = String(provider).toLowerCase()
   if (p === 'aihubcc') return 'https://aihubcc.cc/v1'
+  if (p === 'token6688' || p === 'tokengo') return 'https://qd.token6688.com'
+  if (p === 'usmercari_image') return 'https://chat-ai.mercarimx.com'
   if (p === 'gemini' || p === 'google') return 'https://generativelanguage.googleapis.com'
   if (p === 'minimax') return 'https://api.minimaxi.com/v1'
   if (p === 'volces' || p === 'volcengine') return 'https://ark.cn-beijing.volces.com/api/v3'
@@ -1559,10 +1655,11 @@ function getBaseUrlForProvider(provider) {
   if (p === 'deepwl' || p === 'deepwl_grok') return 'https://zx1.deepwl.net'
   if (p === 'icreat' || p === 'icreat_task') return 'https://api.icreat.ai'
   if (p === 'usmercari' || p === 'usmercari_media') return 'https://ai.usmercari.com'
-  if (p === 'fumin' || p === 'fumin_video') return 'https://fumin.ai'
-  if (p === 'fumin_image') return 'https://fumin.ai/v1'
+  if (p === 'toapis') return 'https://toapis.com'
+  if (p === 'feituo') return 'https://feituokuajing.com'
+  if (p === 'lingjing') return 'https://seed.alimyun.xyz/api/open/v1'
   if (p === 'agnes') return 'https://apihub.agnes-ai.com/v1'
-  if (p === 'djpsd') return 'https://shiping.djpsd.com'
+  if (p === 'djpsd_openapi' || p === 'djpsd') return 'https://shiping.djpsd.com'
   return 'https://api.chatfire.site/v1'
 }
 
@@ -1639,6 +1736,12 @@ const modelIdentifierTip = computed(() => {
   if ((serviceType === 'image' || serviceType === 'storyboard_image') && provider === 'aihubcc') {
     return 'GPT/价格页图片模型走 /images/generations；Flow 的 Gemini/Imagen 模型由系统自动切换到 /chat/completions。'
   }
+  if ((serviceType === 'image' || serviceType === 'storyboard_image') && provider === 'token6688') {
+    return 'Token6688 的 GPT Image 2 使用独立模型标识 token6688-gpt-image-2，避免与其他供应商同名模型互相覆盖。'
+  }
+  if ((serviceType === 'image' || serviceType === 'storyboard_image') && provider === 'usmercari_image') {
+    return 'gpt-image-2-2-4k 只开放已实测的 1K/2K；nano-banana-2 开放 1K/2K/4K。模型名会原样提交。'
+  }
   if (serviceType === 'video' && provider === 'aihubcc') {
     return 'Omni、Seedance、Grok 与 Flow Veo 均走 /videos 异步任务；veo-clean 是视频后处理，不属于普通生成模型。'
   }
@@ -1676,7 +1779,10 @@ const endpointPreviewInfo = computed(() => {
       submitPath = endpoint || '/tts'
     }
   } else if (service_type === 'image' || service_type === 'storyboard_image') {
-    if ((proto === 'aihubcc' || p === 'aihubcc') && isAihubccFlowImageModel(form.value.default_model)) {
+    if (proto === 'djpsd_openapi' || p === 'djpsd_openapi') {
+      submitPath = endpoint || '/v1/media/generate'
+      queryPath = query_endpoint || '/v1/media/status?task_id={taskId}'
+    } else if ((proto === 'aihubcc' || p === 'aihubcc') && isAihubccFlowImageModel(form.value.default_model)) {
       submitPath = '/chat/completions'
     } else if (endpoint) {
       submitPath = endpoint
@@ -1698,7 +1804,15 @@ const endpointPreviewInfo = computed(() => {
       submitPath = '/images/generations'  // openai 兼容：base_url 已含 /v1
     }
   } else if (service_type === 'video') {
-    if (proto === 'usmercari_media' || p === 'usmercari') {
+    if (proto === 'toapis_video' || p === 'toapis') {
+      submitPath = endpoint || '/v1/videos/generations'
+    } else if (proto === 'lingjing_open' || p === 'lingjing') {
+      submitPath = endpoint || '/videos'
+      queryPath = query_endpoint || '/videos/{taskId}'
+    } else if (proto === 'feituo_open' || p === 'feituo') {
+      submitPath = endpoint || '/api/open/v1/video/generate'
+      queryPath = query_endpoint || '/api/open/v1/video/status?jobId={taskId}'
+    } else if (proto === 'usmercari_media' || p === 'usmercari') {
       submitPath = endpoint || '/cpa-file/submit/video'
       queryPath = '/cpa-file/fetch'
     } else if (proto === 'fumin_video' || p === 'fumin' || p === 'fumin_video') {
@@ -1738,6 +1852,8 @@ const endpointPreviewInfo = computed(() => {
         ? /\/v1\/video\/create/i.test(endpoint)
         : !(/grok[-_ ]*imagine|grok.*video/i.test(model))
       submitPath = isUnified ? '/v1/video/create' : '/v1/videos'
+    } else if (proto === 'djpsd_openapi' || p === 'djpsd_openapi') {
+      submitPath = '/v1/media/generate'
     } else if (proto === 'djpsd' || p === 'djpsd') {
       submitPath = '/api/v1/video-jobs'
     } else if (proto === 'veo3') {
@@ -1763,6 +1879,10 @@ const endpointPreviewInfo = computed(() => {
 
     if (query_endpoint) {
       queryPath = query_endpoint
+    } else if (proto === 'toapis_video' || p === 'toapis') {
+      queryPath = '/v1/videos/generations/{taskId}'
+    } else if (proto === 'lingjing_open' || p === 'lingjing') {
+      queryPath = '/videos/{taskId}'
     } else if (proto === 'aihubcc' || p === 'aihubcc') {
       queryPath = '/videos/{taskId}'
     } else if (proto === 'icreat_task' || p === 'icreat') {
@@ -1787,6 +1907,8 @@ const endpointPreviewInfo = computed(() => {
         ? /\/v1\/video\/create/i.test(endpoint)
         : !(/grok[-_ ]*imagine|grok.*video/i.test(model))
       queryPath = isUnified ? '/v1/video/query?id={taskId}' : '/v1/videos/{taskId}'
+    } else if (proto === 'djpsd_openapi' || p === 'djpsd_openapi') {
+      queryPath = '/v1/media/status?task_id={taskId}'
     } else if (proto === 'djpsd' || p === 'djpsd') {
       queryPath = '/api/v1/video-jobs/{taskId}'
     } else if (proto === 'veo3') {
@@ -1849,6 +1971,11 @@ function onProviderChange(providerId) {
     form.value.endpoint = '/images/generations'
     form.value.query_endpoint = '/videos/{taskId}'
   }
+  if (providerId === 'usmercari_image' && (st === 'image' || st === 'storyboard_image')) {
+    form.value.api_protocol = 'usmercari_image'
+    form.value.endpoint = '/v1/images/generations'
+    form.value.query_endpoint = ''
+  }
   if (providerId === 'aihubcc' && st === 'video') {
     form.value.endpoint = '/videos'
     form.value.query_endpoint = '/videos/{taskId}'
@@ -1876,6 +2003,20 @@ function onProviderChange(providerId) {
     form.value.endpoint = '/api/v1/video-jobs'
     form.value.query_endpoint = '/api/v1/video-jobs/{taskId}'
   }
+  if (st === 'video' && providerId === 'djpsd_openapi') {
+    form.value.api_protocol = 'djpsd_openapi'
+    form.value.endpoint = '/v1/media/generate'
+    form.value.query_endpoint = '/v1/media/status?task_id={taskId}'
+  }
+  if (providerId === 'token6688' && (st === 'image' || st === 'storyboard_image')) {
+    form.value.endpoint = '/v1/images/generations'
+    form.value.query_endpoint = ''
+  }
+  if (providerId === 'token6688' && st === 'video') {
+    form.value.endpoint = '/v1/videos/generations'
+    form.value.query_endpoint = '/v1/tasks/{taskId}'
+    form.value.video_duration = 15
+  }
   if (st === 'video' && (providerId === 'deepwl' || providerId === 'deepwl_grok')) {
     form.value.api_protocol = 'deepwl_grok'
     form.value.endpoint = '/v1/video/create'
@@ -1891,15 +2032,21 @@ function onProviderChange(providerId) {
     form.value.endpoint = '/cpa-file/submit/video'
     form.value.query_endpoint = '/cpa-file/fetch'
   }
-  if (st === 'video' && (providerId === 'fumin' || providerId === 'fumin_video')) {
-    form.value.api_protocol = 'fumin_video'
-    form.value.endpoint = '/api/v3/contents/generations/tasks'
-    form.value.query_endpoint = '/api/v3/contents/generations/tasks/{taskId}'
+  if (st === 'video' && providerId === 'toapis') {
+    form.value.api_protocol = 'toapis_video'
+    form.value.endpoint = '/v1/videos/generations'
+    form.value.query_endpoint = '/v1/videos/generations/{taskId}'
   }
-  if ((st === 'image' || st === 'storyboard_image') && providerId === 'fumin_image') {
-    form.value.api_protocol = 'openai'
-    form.value.endpoint = '/images/generations'
-    form.value.query_endpoint = ''
+  if (st === 'video' && providerId === 'feituo') {
+    form.value.api_protocol = 'feituo_open'
+    form.value.endpoint = '/api/open/v1/video/generate'
+    form.value.query_endpoint = '/api/open/v1/video/status?jobId={taskId}'
+  }
+  if (st === 'video' && providerId === 'lingjing') {
+    form.value.api_protocol = 'lingjing_open'
+    form.value.endpoint = '/videos'
+    form.value.query_endpoint = '/videos/{taskId}'
+    form.value.video_duration = 4
   }
   if ((st === 'image' || st === 'storyboard_image') && providerId === 'kling') {
     form.value.endpoint = '/v1/images/generations'
@@ -1948,6 +2095,20 @@ function serviceTypeLabel(t) {
   return map[t] || t
 }
 
+const VERIFICATION_STATUS_META = {
+  pending: { label: '待验证', type: 'warning' },
+  verified: { label: '已验证', type: 'success' },
+  failed: { label: '验证失败', type: 'danger' },
+}
+
+function isUsmercariImageConfig(row) {
+  return row?.provider === 'usmercari_image' || row?.api_protocol === 'usmercari_image'
+}
+
+function verificationStatusMeta(value) {
+  return VERIFICATION_STATUS_META[value] || VERIFICATION_STATUS_META.pending
+}
+
 function voicePolicyDescription(row) {
   const policy = videoVoicePolicyForConfig(row)
   if (!policy) return '未识别模型能力，请在配置中填写视频模型。'
@@ -1981,11 +2142,7 @@ async function loadList() {
 }
 
 function parseModelText(text) {
-  if (!text || !String(text).trim()) return []
-  return String(text)
-    .split(/[\n,，]/)
-    .map((s) => s.trim())
-    .filter(Boolean)
+  return parseModelList(text)
 }
 
 function resetForm() {
@@ -2023,9 +2180,10 @@ function openAdd() {
 
 function openEdit(row) {
   editingId.value = row.id
-  const model = Array.isArray(row.model) ? row.model : (row.model ? [row.model] : [])
-  const modelList = model.map((m) => String(m).trim()).filter(Boolean)
-  const defaultInList = row.default_model && modelList.includes(row.default_model)
+  const modelList = parseModelList(row.model)
+  const normalizedDefaultModel = normalizeModelOption(row.default_model)
+  const defaultInList = normalizedDefaultModel && modelList.includes(normalizedDefaultModel)
+  const effectiveDefaultModel = defaultInList ? normalizedDefaultModel : (modelList[0] || '')
   // TTS / 可灵 Omni 等从 settings 解析
   let voice_id = row.voice_id || ''
   let group_id = row.group_id || ''
@@ -2058,8 +2216,12 @@ function openEdit(row) {
     endpoint: row.endpoint || '',
     query_endpoint: row.query_endpoint || '',
     modelText: modelList.join('\n'),
-    default_model: defaultInList ? row.default_model : (modelList[0] || ''),
-    video_duration: readVideoDurationSetting(row.settings),
+    default_model: effectiveDefaultModel,
+    video_duration: readVideoDurationSetting(row.settings, adminVideoCapabilityFor({
+      ...row,
+      model: modelList,
+      default_model: effectiveDefaultModel,
+    })),
     deepseek_thinking: deepseekSettings.thinking,
     deepseek_reasoning_effort: deepseekSettings.effort,
     priority: row.priority ?? 0,
@@ -2077,18 +2239,19 @@ async function submit() {
   await formRef.value?.validate?.().catch(() => {})
   saving.value = true
   try {
-    let modelList = parseModelText(form.value.modelText)
+    let modelList = parseModelList(form.value.modelText)
     if (form.value.service_type === 'jimeng2_character_auth' && modelList.length === 0) {
       modelList = ['-']
     }
-    const defaultModel = form.value.default_model && modelList.includes(form.value.default_model)
-      ? form.value.default_model
+    const normalizedDefaultModel = normalizeModelOption(form.value.default_model)
+    const defaultModel = normalizedDefaultModel && modelList.includes(normalizedDefaultModel)
+      ? normalizedDefaultModel
       : modelList[0] || null
     // 视频默认时长 / TTS / 可灵 Omni 官方 AKSK / DeepSeek V4 参数打包进 settings
     let settings = undefined
     if (form.value.service_type === 'video') {
       const prev = editingId.value ? list.value.find((r) => r.id === editingId.value) : null
-      const baseS = mergeVideoDurationSetting(prev?.settings, form.value.video_duration)
+      const baseS = mergeVideoDurationSetting(prev?.settings, form.value.video_duration, adminVideoCapability.value)
       if (form.value.api_protocol === 'kling_omni') {
         if ((form.value.kling_access_key || '').trim()) baseS.kling_access_key = form.value.kling_access_key.trim()
         else delete baseS.kling_access_key
@@ -2266,7 +2429,7 @@ async function openTest(row) {
   testResult.value = null
   testError.value = ''
   testServiceType.value = row.service_type || 'text'
-  testProvider.value = row.provider || ''
+  testProvider.value = row.api_protocol === 'usmercari_image' ? 'usmercari_image' : (row.provider || '')
   try {
     await aiAPI.testConnection({
       config_id: row.id,
@@ -2275,6 +2438,8 @@ async function openTest(row) {
   } catch (e) {
     testResult.value = false
     testError.value = e?.message || '请求失败'
+  } finally {
+    await loadList()
   }
 }
 

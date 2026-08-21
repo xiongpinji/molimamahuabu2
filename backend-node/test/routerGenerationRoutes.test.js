@@ -1,10 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const express = require('express');
 
 const { setupRouter } = require('../src/routes');
+const { createProviderAssetUrl } = require('../src/services/redrawSourceConditioningService');
 
 function routeSet(router) {
   return new Set(router.stack
@@ -40,6 +44,129 @@ test('keeps voice preview before user auth middleware', () => {
   assert.notEqual(previewIndex, -1);
   assert.notEqual(authIndex, -1);
   assert.equal(previewIndex < authIndex, true);
+});
+
+test('serves a signed redraw provider asset through setupRouter before user auth', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-provider-router-'));
+  const conditioningRoot = path.join(storageRoot, 'redraw-conditioning');
+  fs.mkdirSync(conditioningRoot, { recursive: true });
+  const bytes = Buffer.from('signed-redraw-provider-video-fixture');
+  const segmentSha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  fs.writeFileSync(path.join(conditioningRoot, `${segmentSha256}.mp4`), bytes);
+  const secret = 'router-provider-asset-secret-'.padEnd(64, 'x');
+  const storageBaseUrl = 'https://media.example.test/static';
+  const signed = createProviderAssetUrl({
+    storageBaseUrl,
+    segmentSha256,
+    signingSecret: secret,
+    ttlSeconds: 300,
+  });
+  const db = new Database(':memory:');
+  db.exec('CREATE TABLE prompt_overrides (key TEXT PRIMARY KEY, content TEXT, updated_at TEXT)');
+  const app = express();
+  app.use('/api/v1', setupRouter({
+    storage: { local_path: storageRoot, base_url: storageBaseUrl },
+  }, db, { error() {}, warn() {}, info() {} }, {
+    providerAssetSecret: secret,
+  }));
+  const server = await new Promise((resolve) => {
+    const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
+  });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => db.close());
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+
+  const providerUrl = new URL(signed.url);
+  const localUrl = `http://127.0.0.1:${server.address().port}${providerUrl.pathname}${providerUrl.search}`;
+  const response = await fetch(localUrl, {
+    headers: {
+      'x-forwarded-host': providerUrl.host,
+      'x-forwarded-proto': 'https',
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'video/mp4');
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+
+  const directHttpResponse = await fetch(localUrl);
+  assert.equal(directHttpResponse.status, 403);
+  const wrongHostResponse = await fetch(localUrl, {
+    headers: {
+      'x-forwarded-host': 'evil.example.test',
+      'x-forwarded-proto': 'https',
+    },
+  });
+  assert.equal(wrongHostResponse.status, 403);
+  const ambiguousHostResponse = await fetch(localUrl, {
+    headers: {
+      host: providerUrl.host,
+      'x-forwarded-host': `${providerUrl.host}, evil.example.test`,
+      'x-forwarded-proto': 'https',
+    },
+  });
+  assert.equal(ambiguousHostResponse.status, 403);
+
+  const source = fs.readFileSync(path.join(__dirname, '../src/routes/index.js'), 'utf8');
+  const providerRouteIndex = source.indexOf("r.use('/redraw-provider-assets'");
+  const authIndex = source.indexOf('r.use(requireUser)');
+  assert.notEqual(providerRouteIndex, -1);
+  assert.equal(providerRouteIndex < authIndex, true);
+});
+
+test('does not reuse PLATFORM_JWT_SECRET for redraw provider asset signatures', async (t) => {
+  const previousJwtSecret = process.env.PLATFORM_JWT_SECRET;
+  const previousProviderSecret = process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET;
+  process.env.PLATFORM_JWT_SECRET = 'jwt-secret-must-not-sign-provider-assets'.padEnd(64, 'j');
+  delete process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET;
+  t.after(() => {
+    if (previousJwtSecret === undefined) delete process.env.PLATFORM_JWT_SECRET;
+    else process.env.PLATFORM_JWT_SECRET = previousJwtSecret;
+    if (previousProviderSecret === undefined) delete process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET;
+    else process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET = previousProviderSecret;
+  });
+
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-provider-key-separation-'));
+  const conditioningRoot = path.join(storageRoot, 'redraw-conditioning');
+  fs.mkdirSync(conditioningRoot, { recursive: true });
+  const bytes = Buffer.from('provider-key-separation-fixture');
+  const segmentSha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  fs.writeFileSync(path.join(conditioningRoot, `${segmentSha256}.mp4`), bytes);
+  const storageBaseUrl = 'https://media.example.test/static';
+  const signedWithJwt = createProviderAssetUrl({
+    storageBaseUrl,
+    segmentSha256,
+    signingSecret: process.env.PLATFORM_JWT_SECRET,
+    ttlSeconds: 300,
+  });
+  const db = new Database(':memory:');
+  db.exec('CREATE TABLE prompt_overrides (key TEXT PRIMARY KEY, content TEXT, updated_at TEXT)');
+  const app = express();
+  app.use('/api/v1', setupRouter({
+    storage: { local_path: storageRoot, base_url: storageBaseUrl },
+  }, db, { error() {}, warn() {}, info() {} }));
+  const server = await new Promise((resolve) => {
+    const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
+  });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => db.close());
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+
+  const providerUrl = new URL(signedWithJwt.url);
+  const response = await fetch(
+    `http://127.0.0.1:${server.address().port}${providerUrl.pathname}${providerUrl.search}`,
+    {
+      headers: {
+        'x-forwarded-host': providerUrl.host,
+        'x-forwarded-proto': 'https',
+      },
+    },
+  );
+  assert.equal(response.status, 503);
+  const source = fs.readFileSync(path.join(__dirname, '../src/routes/index.js'), 'utf8');
+  assert.doesNotMatch(
+    source,
+    /providerAssetSecret[\s\S]{0,240}process\.env\.PLATFORM_JWT_SECRET/,
+  );
 });
 
 test('keeps tenant recovery routes before tenant context middleware', () => {

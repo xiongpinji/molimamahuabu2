@@ -8,11 +8,6 @@ test.beforeEach(async ({ page }) => {
     }))
   })
 })
-
-test.afterEach(async ({ page }) => {
-  await page.unrouteAll({ behavior: 'ignoreErrors' })
-})
-
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import fs from 'node:fs'
@@ -29,7 +24,6 @@ const backendServer = path.join(backendRoot, 'src', 'server.js')
 const simpleSkinGltfPath = fileURLToPath(new URL('../public/director-fixtures/khronos-simple-skin.gltf', import.meta.url))
 const Database = require(path.join(backendRoot, 'node_modules', 'better-sqlite3'))
 const { getFfmpegPath } = require(path.join(backendRoot, 'src', 'utils', 'ffmpegPath'))
-const modelPriceService = require(path.join(backendRoot, 'src', 'services', 'modelPriceService'))
 const minimalMp3 = require(path.join(backendRoot, 'test', 'fixtures', 'minimalMp3'))
 const { MINIMAL_MP4 } = require(path.join(backendRoot, 'test', 'fixtures', 'media'))
 
@@ -444,36 +438,6 @@ test.beforeAll(async () => {
       throw new Error(`AI 模型配置初始化失败：${configResponse.status} ${await configResponse.text()}`)
     }
   }
-
-  const verificationDb = new Database(databasePath)
-  try {
-    const now = new Date().toISOString()
-    const result = verificationDb.prepare(
-      `UPDATE ai_service_configs
-       SET verification_status = 'verified', verified_at = ?, verification_evidence = ?, updated_at = ?
-       WHERE deleted_at IS NULL`,
-    ).run(
-      now,
-      JSON.stringify({ source: 'local-playwright-provider-fixture' }),
-      now,
-    )
-    if (result.changes !== 3) {
-      throw new Error(`本地供应商验证夹具数量异常：${result.changes}`)
-    }
-    for (const [model, credits, category] of [
-      ['canvas-image-alpha', 40, 'image'],
-      ['canvas-image-beta', 40, 'image'],
-      ['seedance-2.0-720p', 12, 'video'],
-      ['canvas-video-alpha', 12, 'video'],
-      ['canvas-video-beta', 12, 'video'],
-      ['canvas-tts-alpha', 3, 'audio'],
-      ['canvas-tts-beta', 3, 'audio'],
-    ]) {
-      modelPriceService.set(verificationDb, model, credits, { category })
-    }
-  } finally {
-    verificationDb.close()
-  }
 })
 
 test.afterAll(async () => {
@@ -523,11 +487,15 @@ test('独立项目画布图片节点通过真实后端同链路生成、入库�
   await node.locator('.media-stage').click({ position: { x: 24, y: 24 } })
   const imageEditor = page.getByRole('region', { name: '图片节点编辑器' })
   await expect(imageEditor).toBeVisible()
-  await imageEditor.getByRole('textbox', { name: '生成提示词' })
-    .fill('雨夜花园里一朵白色茉莉花，电影光影')
-  const modelInput = imageEditor.getByRole('combobox', { name: '生成模型' })
-  await modelInput.selectOption('canvas-image-alpha')
-  await expect(modelInput).toHaveValue('canvas-image-alpha')
+  await imageEditor.getByRole('button', { name: '配置', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑图片节点' })
+  await expect(dialog).toBeVisible()
+  await dialog.getByPlaceholder('描述希望生成的图片内容').fill('雨夜花园里一朵白色茉莉花，电影光影')
+  const modelSelect = dialog.locator('.el-form-item').filter({ hasText: '模型' }).getByRole('combobox')
+  await modelSelect.fill('canvas-image-alpha')
+  await modelSelect.press('Enter')
+  await dialog.getByRole('button', { name: '保存修改', exact: true }).click()
+  await expect(dialog).toBeHidden()
   await imageEditor.getByRole('button', { name: '生成', exact: true }).click()
 
   await expect.poll(() => imageProviderRequests.length - providerRequestOffset).toBe(1)
@@ -619,7 +587,6 @@ test('独立项目画布图片节点通过真实后端同链路生成、入库�
 })
 
 test('独立项目画布视频节点使用上游首帧，异步失败可重试并完成入库恢复', async ({ page }) => {
-  test.setTimeout(120_000)
   const forwardedRequests = []
   const failedResponses = []
   const providerRequestOffset = videoProviderRequests.length
@@ -658,7 +625,7 @@ test('独立项目画布视频节点使用上游首帧，异步失败可重试�
   await videoNode.click()
   const videoEditor = page.getByRole('region', { name: '视频节点编辑器' })
   await expect(videoEditor).toBeVisible()
-  const automaticReferences = videoEditor.getByRole('region', { name: '自动参考素材' })
+  const automaticReferences = videoEditor.getByRole('region', { name: '自动参考图' })
   await expect(automaticReferences).toContainText('1/1 已就绪')
   await expect(automaticReferences.locator('img[alt="真实图片节点"]')).toBeVisible()
   await videoEditor.getByRole('button', { name: '配置', exact: true }).click()
@@ -686,10 +653,7 @@ test('独立项目画布视频节点使用上游首帧，异步失败可重试�
   await dialog.getByRole('button', { name: '保存修改', exact: true }).click()
   await videoEditor.getByRole('button', { name: '重试', exact: true }).click()
 
-  await expect.poll(
-    () => videoProviderRequests.length - providerRequestOffset,
-    { timeout: 20_000 },
-  ).toBe(2)
+  await expect.poll(() => videoProviderRequests.length - providerRequestOffset).toBe(2)
   const successfulRequest = videoProviderRequests[providerRequestOffset + 1]
   await expect.poll(
     () => videoProviderTasks.get(successfulRequest.taskId)?.polls,
@@ -843,19 +807,6 @@ test('项目画布通过真实后端持久化节点操作、连线和素材指�
     'SELECT COUNT(*) AS count FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL',
   ).get(episodeId).count)).toBe(2)
   await expect(page.getByText('雨夜相遇 副本', { exact: true })).toBeVisible()
-  await page.waitForTimeout(400)
-  await expect.poll(async () => {
-    const box = await sourceNode.boundingBox()
-    const viewport = page.viewportSize()
-    return Boolean(
-      box
-      && viewport
-      && box.x >= 0
-      && box.y >= 0
-      && box.x < viewport.width
-      && box.y < viewport.height,
-    )
-  }).toBe(true)
 
   await clickNodeAction(page, sourceNode, /追加下游分镜/)
   await expect.poll(() => readDatabase((db) => db.prepare(

@@ -97,14 +97,14 @@
       />
       <video
         v-else-if="data.kind === 'video' && primaryResultUrl"
-        :src="primaryResultUrl"
+        :src="videoPlaybackUrl"
         class="node-media"
         controls
         muted
         playsinline
         title="双击全屏查看"
         @click.stop="scheduleMediaOpen"
-        @dblclick.stop="openMediaPreview(primaryResultUrl, 'video')"
+        @dblclick.stop="openMediaPreview(videoPlaybackUrl, 'video')"
       />
       <audio v-else-if="data.kind === 'audio' && primaryResultUrl" :src="primaryResultUrl" class="node-audio" controls />
       <div v-else class="media-empty">
@@ -145,7 +145,7 @@
       v-if="data.kind === 'video' && primaryResultUrl && data.savedAssetId && isLocalVideoSource"
       :node-id="id"
       :data="data"
-      :source-url="primaryResultUrl"
+      :source-url="videoPlaybackUrl"
       @suspend-editor="closeEditor"
     />
 
@@ -175,10 +175,21 @@
         <div v-if="data.kind === 'video'" class="video-mode-toolbar">
           <div class="video-mode-tabs" role="tablist" aria-label="视频参考模式">
             <button
+              v-if="!supportsAnyReferenceMode"
+              type="button"
+              class="active"
+              role="tab"
+              aria-selected="true"
+              disabled
+              title="当前模型仅开放纯提示词生成"
+            >纯提示词</button>
+            <button
               type="button"
               :class="{ active: videoReferenceMode === 'first-last' }"
+              :disabled="!supportsFirstLastMode"
               role="tab"
               :aria-selected="videoReferenceMode === 'first-last'"
+              :title="supportsFirstLastMode ? '使用首帧或首尾帧生成' : '当前模型未开放首尾帧参考'"
               @click="setVideoReferenceMode('first-last')"
             >
               首尾帧
@@ -186,21 +197,25 @@
             <button
               type="button"
               :class="{ active: videoReferenceMode === 'multi' }"
+              :disabled="!supportsImageReferenceMode"
               role="tab"
               :aria-selected="videoReferenceMode === 'multi'"
+              :title="supportsImageReferenceMode ? '使用多张参考图生成' : '当前模型未开放多图参考'"
               @click="setVideoReferenceMode('multi')"
             >
               多图参考
             </button>
-            <button type="button" role="tab" aria-selected="false" disabled title="当前生成链路尚未开放动作模仿">动作模仿</button>
+            <button type="button" role="tab" aria-selected="false" disabled title="供应商未声明独立动作模仿接口">动作模仿</button>
             <button
               type="button"
               :class="{ active: videoReferenceMode === 'omni' }"
+              :disabled="!supportsOmniReferenceMode"
               role="tab"
               :aria-selected="videoReferenceMode === 'omni'"
+              :title="supportsOmniReferenceMode ? '使用图片、视频或音频参考' : '当前模型未开放全能参考'"
               @click="setVideoReferenceMode('omni')"
             >全能参考</button>
-            <button type="button" role="tab" aria-selected="false" disabled title="当前生成链路尚未开放视频编辑">视频编辑</button>
+            <button type="button" role="tab" aria-selected="false" disabled title="供应商未声明视频编辑接口">视频编辑</button>
           </div>
           <label class="camera-pill">
             <span>运镜</span>
@@ -228,7 +243,7 @@
               ref="referenceFileInput"
               class="file-input"
               type="file"
-              :accept="data.kind === 'video' ? 'image/*,video/*,audio/*' : 'image/*'"
+              :accept="referenceMediaAccept"
               @change="uploadReferenceFile"
             />
           </div>
@@ -240,7 +255,7 @@
               :data-frame-slot="frameSlot.key"
               :data-reference-state="frameSlot.reference?.ready ? 'ready' : 'empty'"
               :data-reference-enabled="frameSlot.reference?.enabled !== false ? 'true' : 'false'"
-              :title="frameSlot.reference?.kind === 'image' ? `右键引用为 @图片${referenceOrdinal(frameSlot.reference)}` : frameSlot.label"
+              :title="frameSlot.reference ? `右键引用为 @图片${referenceSubmissionOrdinal(frameSlot.reference)}` : frameSlot.label"
               @mousedown.right.prevent
               @contextmenu.prevent.stop="frameSlot.reference?.kind === 'image' && insertReferenceToken(frameSlot.reference)"
             >
@@ -253,10 +268,10 @@
                 title="取消参考图"
                 @click.stop="removeReference(frameSlot.reference)"
               >×</button>
-              <img v-if="frameSlot.reference?.url" :src="frameSlot.reference.url" :alt="frameSlot.reference.title" />
+              <img v-if="referencePreviewUrl(frameSlot.reference)" :src="referencePreviewUrl(frameSlot.reference)" :alt="frameSlot.reference.title" />
               <span v-else class="reference-placeholder">等待{{ frameSlot.label }}图片</span>
               <figcaption :title="frameSlot.reference?.title || frameSlot.label">
-                {{ frameSlot.label }} · {{ frameSlot.reference ? `图片${referenceOrdinal(frameSlot.reference)}` : '未设置' }}
+                {{ frameSlot.label }} · {{ frameSlot.reference ? `图片${referenceSubmissionOrdinal(frameSlot.reference)}` : '未设置' }}
               </figcaption>
             </figure>
           </div>
@@ -267,11 +282,11 @@
               class="reference-card"
               :data-reference-state="reference.ready ? 'ready' : 'pending'"
               :data-reference-enabled="reference.enabled !== false ? 'true' : 'false'"
-              :title="reference.kind === 'image' ? `右键引用为 @图片${referenceOrdinal(reference)}` : reference.title"
+              :title="canInsertReferenceToken(reference) ? `右键引用为 @${referenceTypeLabel(reference.kind)}${referenceSubmissionOrdinal(reference)}` : reference.title"
               @mousedown.right.prevent
-              @contextmenu.prevent.stop="reference.kind === 'image' && insertReferenceToken(reference)"
+              @contextmenu.prevent.stop="canInsertReferenceToken(reference) && insertReferenceToken(reference)"
             >
-              <span class="reference-index">{{ referenceOrdinal(reference) }}</span>
+              <span class="reference-index">{{ referenceSubmissionOrdinal(reference) || '—' }}</span>
               <button
                 class="reference-remove"
                 type="button"
@@ -279,11 +294,11 @@
                 :title="reference.kind === 'image' ? '取消参考图' : '取消参考素材'"
                 @click.stop="removeReference(reference)"
               >×</button>
-              <img v-if="reference.url && reference.kind === 'image'" :src="reference.url" :alt="reference.title" />
-              <video v-else-if="reference.url && reference.kind === 'video'" :src="reference.url" muted preload="metadata" />
-              <audio v-else-if="reference.url && reference.kind === 'audio'" :src="reference.url" controls preload="metadata" />
+              <img v-if="referencePreviewUrl(reference) && reference.kind === 'image'" :src="referencePreviewUrl(reference)" :alt="reference.title" />
+              <video v-else-if="referencePreviewUrl(reference) && reference.kind === 'video'" :src="referencePreviewUrl(reference)" muted preload="metadata" />
+              <audio v-else-if="referencePreviewUrl(reference) && reference.kind === 'audio'" :src="referencePreviewUrl(reference)" controls preload="metadata" />
               <span v-else class="reference-placeholder">等待{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}</span>
-              <figcaption :title="reference.title">{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}{{ referenceOrdinal(reference) }}{{ reference.enabled === false ? '（未启用）' : '' }}</figcaption>
+              <figcaption :title="reference.title">{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}{{ referenceSubmissionOrdinal(reference) || '未采用' }}{{ reference.enabled === false ? '（未启用）' : '' }}</figcaption>
             </figure>
           </div>
           <p v-else-if="data.kind === 'video'" class="reference-empty">把图片、视频或音频节点连接到视频节点；首尾帧、多图参考和全能参考会按当前模式真实提交。</p>
@@ -322,7 +337,7 @@
               :title="candidate.title"
               @mousedown.prevent="selectReferenceMention(candidate)"
             >
-              <img :src="candidate.url" alt="" />
+              <img v-if="referencePreviewUrl(candidate)" :src="referencePreviewUrl(candidate)" alt="" />
               <span>{{ candidate.label }}</span>
             </button>
             <p v-if="!filteredReferenceCandidates.length">没有可引用的图片节点</p>
@@ -355,7 +370,7 @@
             <span v-for="badge in currentModelCapabilityBadges" :key="badge">{{ badge }}</span>
           </div>
 
-          <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
+          <label v-if="data.kind === 'image' || capability.resolutions?.length" class="editor-field">
             <span>风格</span>
             <input v-model="draft.style" aria-label="风格" placeholder="电影感、写实…" @blur="saveDraft" />
           </label>
@@ -368,7 +383,7 @@
           <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
             <span>清晰度</span>
             <select v-model="draft.resolution" aria-label="清晰度" @change="saveDraft">
-              <option v-for="value in capability.resolutions || []" :key="value" :value="value">{{ value }}</option>
+              <option v-for="value in capability.resolutions || []" :key="value" :value="value">{{ String(value).toUpperCase() }}</option>
             </select>
           </label>
           <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
@@ -397,7 +412,7 @@
               <option value="light-leak">漏光</option>
             </select>
           </label>
-          <label v-if="data.kind === 'video' && capability.supportsAudio !== false" class="editor-check">
+          <label v-if="data.kind === 'video' && capability.supportsAudio === true" class="editor-check">
             <input v-model="draft.includeAudio" type="checkbox" aria-label="生成音频" @change="saveDraft" />
             <span>同步音频</span>
           </label>
@@ -473,21 +488,22 @@
         <p v-if="data.status === 'failed' && data.error" class="editor-error" role="alert">{{ data.error }}</p>
 
         <div class="editor-footer">
+          <!-- canvas-credit-callout-v1 -->
           <span v-if="canGenerate" class="billing-cost" aria-live="polite">
             <template v-if="estimatedCredits">本次预计扣除 <strong>{{ estimatedCredits }}</strong> 积分</template>
             <template v-else>积分待管理员配置</template>
             <small>· {{ draft.quantity || 1 }} 次</small>
           </span>
-          <span v-if="canGenerate && capability.declared === false" class="billing-note">保守参数 · 最终由供应商校验</span>
+          <span v-if="canGenerate && capability.declared === false" class="capability-note">保守参数 · 最终由供应商校验</span>
           <span v-if="!canGenerate" class="local-draft-note">本地草稿仅保存内容；绑定项目后的独立画布才能运行模型与挂载素材。</span>
           <button v-if="canTranslate" type="button" class="advanced-button" aria-label="中英互译" title="中文与英文互译（按文本模型计费）" @click.stop="translateNode">中/英</button>
           <button v-if="canGenerate" type="button" class="advanced-button" aria-label="配置" title="节点完整配置" @click.stop="openConfig">参数</button>
-          <button v-if="canGenerate" type="button" class="advanced-button" aria-label="运行下游" title="按依赖顺序运行当前节点及其下游" @click.stop="runSubgraph">运行下游</button>
+          <button v-if="canGenerate" type="button" class="advanced-button" aria-label="运行下游" title="按依赖顺序运行当前节点及其下游" :disabled="estimatedCredits == null" @click.stop="runSubgraph">运行下游</button>
           <button
             v-if="canGenerate"
             type="button"
             class="run-button"
-            :disabled="data.status === 'running' || !draft.content.trim()"
+            :disabled="data.status === 'running' || !draft.content.trim() || estimatedCredits == null"
             :aria-label="isGenerationRunning ? '节点生成进行中' : (data.kind === 'text' ? 'AI 生成文本' : (data.status === 'failed' ? '重试' : '生成'))"
             @click.stop="runNode"
           >
@@ -502,10 +518,12 @@
       <div
         v-if="mediaPreviewUrl"
         class="image-lightbox nodrag nopan"
+        :class="{ 'is-pan-ready': mediaPreviewSpacePressed, 'is-panning': mediaPreviewDragging }"
         role="dialog"
         aria-modal="true"
         :aria-label="mediaPreviewKind === 'image' ? '图片全屏预览' : '视频全屏预览'"
         @click.self="closeMediaPreview"
+        @wheel="onMediaPreviewWheel"
       >
         <button
           type="button"
@@ -513,7 +531,16 @@
           title="关闭"
           @click="closeMediaPreview"
         >×</button>
-        <img v-if="mediaPreviewKind === 'image'" :src="mediaPreviewUrl" :alt="data.title || '图片预览'" />
+        <span v-if="mediaPreviewKind === 'image'" class="lightbox-zoom-hint">Ctrl/⌘ + 滚轮缩放 · 空格 + 左键拖动 · {{ Math.round(mediaPreviewScale * 100) }}%</span>
+        <img
+          v-if="mediaPreviewKind === 'image'"
+          :src="mediaPreviewUrl"
+          :alt="data.title || '图片预览'"
+          draggable="false"
+          :style="{ transform: `translate3d(${mediaPreviewOffset.x}px, ${mediaPreviewOffset.y}px, 0) scale(${mediaPreviewScale})` }"
+          @dragstart.prevent
+          @pointerdown.stop="startMediaPreviewPan"
+        />
         <video v-else :src="mediaPreviewUrl" controls autoplay playsinline />
       </div>
     </Teleport>
@@ -534,8 +561,13 @@ import { normalizeGenerationProgress } from '@/utils/canvasGenerationProgress'
 import { imageModelCapabilityBadges } from '@/utils/canvasModelCapabilities'
 import {
   normalizeFreeCanvasVideoReferenceMode,
-  resolveFreeCanvasVideoReferenceInput,
+  normalizeFreeCanvasSubmissionReferences,
+  planFreeCanvasVideoReferences,
+  selectFreeCanvasVideoReferenceMode,
 } from '@/utils/freeCanvasGeneration'
+import { videoDurationOptionsForCapability } from '@/utils/videoDuration'
+import { canvasResultPlaybackUrl } from '@/utils/mediaUrl'
+import { isProtectedStaticMediaUrl, loadProtectedMediaPreview } from '@/utils/protectedMediaPreview'
 import ImageNodeToolbar from './ImageNodeToolbar.vue'
 import VideoNodeToolbar from './VideoNodeToolbar.vue'
 
@@ -557,6 +589,11 @@ const editorDock = ref('bottom')
 const editorPanelStyle = ref({})
 const mediaPreviewUrl = ref('')
 const mediaPreviewKind = ref('image')
+const mediaPreviewScale = ref(1)
+const mediaPreviewOffset = reactive({ x: 0, y: 0 })
+const mediaPreviewSpacePressed = ref(false)
+const mediaPreviewDragging = ref(false)
+let mediaPreviewPanOrigin = null
 let draftSaveTimer = null
 let draftDirty = false
 let editorPositionFrame = null
@@ -565,6 +602,9 @@ let mediaOpenTimer = null
 const mentionStart = ref(-1)
 const mentionEnd = ref(-1)
 const mentionQuery = ref('')
+const referencePreviewUrls = ref(new Map())
+let referencePreviewRun = 0
+let referenceObjectUrls = new Set()
 const draft = reactive({
   title: '',
   content: '',
@@ -606,7 +646,41 @@ const promptPlaceholder = computed(() => props.data.kind === 'audio' ? '输入�
 const canGenerate = computed(() => typeof ctx?.runFreeCanvasNode === 'function')
 const canTranslate = computed(() => typeof ctx?.translateFreeCanvasNode === 'function' && Boolean(draft.content.trim()))
 const canUpload = computed(() => typeof ctx?.uploadFreeCanvasNodeFile === 'function')
-const canUploadReference = computed(() => typeof ctx?.uploadFreeCanvasReferenceMedia === 'function')
+function capabilityAllows(name, fallback = true) {
+  if (capability.value?.declared === false) return fallback
+  return capability.value?.[name] === true
+}
+const supportsFirstLastMode = computed(() => (
+  capabilityAllows('supportsFirstFrame') || capabilityAllows('supportsLastFrame')
+))
+const supportsImageReferenceMode = computed(() => capabilityAllows('supportsImageReference'))
+const supportsOmniReferenceMode = computed(() => (
+  capability.value.supportsOmniReference === true
+  || capability.value.supportsVideoReference === true
+  || capability.value.supportsAudioReference === true
+  || capability.value?.declared === false
+))
+const supportsAnyReferenceMode = computed(() => (
+  supportsFirstLastMode.value
+  || supportsImageReferenceMode.value
+  || supportsOmniReferenceMode.value
+))
+const canUploadReference = computed(() => {
+  if (typeof ctx?.uploadFreeCanvasReferenceMedia !== 'function') return false
+  if (props.data.kind !== 'video') return true
+  if (videoReferenceMode.value === 'first-last') return supportsFirstLastMode.value
+  if (videoReferenceMode.value === 'multi') return supportsImageReferenceMode.value
+  return supportsOmniReferenceMode.value
+})
+const referenceMediaAccept = computed(() => {
+  if (props.data.kind !== 'video') return 'image/*'
+  if (videoReferenceMode.value === 'first-last' || videoReferenceMode.value === 'multi') return 'image/*'
+  const accepted = []
+  if (capabilityAllows('supportsImageReference')) accepted.push('image/*')
+  if (capabilityAllows('supportsVideoReference')) accepted.push('video/*')
+  if (capabilityAllows('supportsAudioReference')) accepted.push('audio/*')
+  return accepted.join(',') || 'image/*'
+})
 const canMountAsset = computed(() => typeof ctx?.openFreeNodeAssetLibrary === 'function')
 const modelOptions = computed(() => ctx?.getFreeNodeModelOptions?.(props.data.kind, props.id) || [])
 const currentModelMetadata = computed(() => (
@@ -621,6 +695,17 @@ const capability = computed(() => (
 const currentModelCapabilityBadges = computed(() => (
   props.data.kind === 'image' ? imageModelCapabilityBadges(capability.value) : []
 ))
+const videoReferenceCapabilityKey = computed(() => [
+  capability.value.declared,
+  capability.value.supportsFirstFrame,
+  capability.value.supportsLastFrame,
+  capability.value.supportsImageReference,
+  capability.value.supportsVideoReference,
+  capability.value.supportsAudioReference,
+  capability.value.maxImageReferences ?? capability.value.maxReferences,
+  capability.value.maxVideoReferences,
+  capability.value.maxAudioReferences,
+].join('|'))
 const estimatedCredits = computed(() => ctx?.getFreeNodeEstimatedCredits?.(
   props.data.kind,
   draft.model,
@@ -643,16 +728,17 @@ const inputReferences = computed(() => (
     ? (ctx?.getFreeNodeInputReferences?.(props.id) || [])
     : []
 ))
+const submittedInputReferences = computed(() => normalizeFreeCanvasSubmissionReferences(inputReferences.value))
 const firstLastFrameSlots = computed(() => {
-  const imageReferences = inputReferences.value.filter((reference) => reference.kind === 'image')
+  const imageReferences = submittedInputReferences.value.filter((reference) => reference.kind === 'image')
   return [
     { key: 'first', label: '首帧', reference: imageReferences[0] || null },
     { key: 'last', label: '尾帧', reference: imageReferences[1] || null },
   ]
 })
-const videoReferenceMode = computed(() => normalizeFreeCanvasVideoReferenceMode(
-  draft.videoReferenceMode,
-  inputReferences.value,
+const videoReferenceMode = computed(() => selectFreeCanvasVideoReferenceMode(
+  capability.value,
+  normalizeFreeCanvasVideoReferenceMode(draft.videoReferenceMode, inputReferences.value),
 ))
 const referenceCandidates = computed(() => (
   props.data.kind === 'video'
@@ -669,12 +755,60 @@ const filteredReferenceCandidates = computed(() => {
 })
 const showReferenceMention = computed(() => props.data.kind === 'video' && mentionStart.value >= 0)
 const readyReferenceCount = computed(() => inputReferences.value.filter((reference) => reference.ready).length)
+function referencePreviewUrl(reference) {
+  const url = String(reference?.url || '')
+  if (!url) return ''
+  const key = String(reference?.nodeId || '')
+  return referencePreviewUrls.value.get(key) || (isProtectedStaticMediaUrl(url) ? '' : url)
+}
+
+async function refreshReferencePreviews() {
+  const run = ++referencePreviewRun
+  const next = new Map()
+  const nextObjectUrls = new Set()
+  const references = [...inputReferences.value, ...referenceCandidates.value]
+  const seen = new Set()
+  for (const reference of references) {
+    const nodeId = String(reference?.nodeId || '')
+    const url = String(reference?.url || '')
+    if (!nodeId || !url || seen.has(nodeId)) continue
+    seen.add(nodeId)
+    if (!isProtectedStaticMediaUrl(url)) {
+      next.set(nodeId, url)
+      continue
+    }
+    try {
+      const preview = await loadProtectedMediaPreview(url)
+      if (run !== referencePreviewRun) {
+        if (preview.startsWith('blob:')) URL.revokeObjectURL(preview)
+        return
+      }
+      if (preview) {
+        next.set(nodeId, preview)
+        if (preview.startsWith('blob:')) nextObjectUrls.add(preview)
+      }
+    } catch (_) {
+      // 受保护素材加载失败时保留占位符，不把未授权地址交给媒体标签。
+    }
+  }
+  if (run !== referencePreviewRun) return
+  referenceObjectUrls.forEach((url) => {
+    if (!nextObjectUrls.has(url)) URL.revokeObjectURL(url)
+  })
+  referenceObjectUrls = nextObjectUrls
+  referencePreviewUrls.value = next
+}
 const voiceListId = computed(() => `free-node-voices-${String(props.id || 'node').replace(/[^a-zA-Z0-9_-]/g, '-')}`)
 const resultUrls = computed(() => [...new Set([
   ...(Array.isArray(props.data.resultUrls) ? props.data.resultUrls : []),
   props.data.url,
 ].filter(Boolean))])
 const primaryResultUrl = computed(() => String(props.data.url || resultUrls.value[0] || ''))
+const videoPlaybackUrl = computed(() => canvasResultPlaybackUrl({
+  kind: props.data.kind,
+  url: primaryResultUrl.value,
+  savedAssetLocalPath: props.data.savedAssetLocalPath,
+}))
 const isLocalVideoSource = computed(() => Boolean(
   props.data.savedAssetLocalPath
   || primaryResultUrl.value.startsWith('/static/'),
@@ -701,7 +835,7 @@ function syncDraft() {
   draft.aspectRatio = props.data.aspectRatio || '16:9'
   draft.duration = Number(props.data.duration) || 5
   draft.style = props.data.style || ''
-  draft.resolution = props.data.resolution || (props.data.kind === 'image' ? '2K' : '720p')
+  draft.resolution = String(props.data.resolution || (props.data.kind === 'image' ? '1k' : '720p')).toLowerCase()
   draft.quantity = Math.min(4, Math.max(1, Number(props.data.quantity) || 1))
   draft.negativePrompt = props.data.negativePrompt || ''
   draft.voiceId = props.data.voiceId || ''
@@ -723,11 +857,35 @@ async function onModelChange() {
   const resolutions = Array.isArray(capability.value.resolutions) ? capability.value.resolutions : []
   const normalizedResolution = String(draft.resolution || '').trim().toLowerCase()
   if (resolutions.length && !resolutions.includes(normalizedResolution)) draft.resolution = resolutions[0]
+  else if (capability.value.declared === true && Array.isArray(capability.value.resolutions) && !resolutions.length) draft.resolution = ''
   else if (normalizedResolution) draft.resolution = normalizedResolution
   const quantities = Array.isArray(capability.value.quantities) && capability.value.quantities.length
     ? capability.value.quantities.map(Number)
     : [1]
   if (!quantities.includes(Number(draft.quantity))) draft.quantity = quantities[0]
+  const durations = videoDurationOptionsForCapability(capability.value)
+  if (props.data.kind === 'video' && !durations.includes(Number(draft.duration))) {
+    draft.duration = durations[0]
+  }
+  if (props.data.kind === 'video' && capability.value.supportsAudio !== true) {
+    draft.includeAudio = false
+  }
+  if (props.data.kind === 'video') {
+    const currentModeSupported = (
+      (videoReferenceMode.value === 'first-last' && supportsFirstLastMode.value)
+      || (videoReferenceMode.value === 'multi' && supportsImageReferenceMode.value)
+      || (videoReferenceMode.value === 'omni' && supportsOmniReferenceMode.value)
+    )
+    if (!currentModeSupported) {
+      draft.videoReferenceMode = supportsFirstLastMode.value
+        ? 'first-last'
+        : supportsImageReferenceMode.value
+          ? 'multi'
+          : supportsOmniReferenceMode.value
+            ? 'omni'
+            : ''
+    }
+  }
   await saveDraft()
 }
 
@@ -861,13 +1019,27 @@ async function selectReferenceMention(candidate) {
   contentInput.value?.setSelectionRange(cursor, cursor)
 }
 
-function referenceOrdinal(reference) {
-  const matchingReferences = inputReferences.value.filter((item) => item.kind === reference.kind)
-  return Math.max(1, matchingReferences.findIndex((item) => item.edgeId === reference.edgeId) + 1)
+function referenceSubmissionOrdinal(reference) {
+  const matchingReferences = submittedInputReferences.value.filter((item) => item.kind === reference?.kind)
+  return matchingReferences.findIndex((item) => (
+    item === reference
+    || (reference?.edgeId && item.edgeId === reference.edgeId)
+    || (reference?.nodeId && item.nodeId === reference.nodeId)
+  )) + 1
+}
+
+function canInsertReferenceToken(reference) {
+  return referenceSubmissionOrdinal(reference) > 0
+}
+
+function referenceTypeLabel(kind) {
+  return ({ image: '图片', video: '视频', audio: '音频' }[kind] || '素材')
 }
 
 async function insertReferenceToken(reference) {
   if (props.data.kind !== 'video') return
+  const ordinal = referenceSubmissionOrdinal(reference)
+  if (ordinal < 1) return
   const input = contentInput.value
   const value = String(draft.content || '')
   const liveSelection = input && document.activeElement === input
@@ -880,7 +1052,7 @@ async function insertReferenceToken(reference) {
   const end = liveSelection ? liveSelection.end : start
   const before = value.slice(0, start)
   const after = value.slice(end)
-  const token = `@图片${referenceOrdinal(reference)}`
+  const token = `@${referenceTypeLabel(reference?.kind)}${ordinal}`
   const leadingSpace = before && !/\s$/.test(before) ? ' ' : ''
   const trailingSpace = after && !/^\s/.test(after) ? ' ' : ''
   const insertion = `${leadingSpace}${token}${trailingSpace || (after ? '' : ' ')}`
@@ -1058,6 +1230,8 @@ function openMediaPreview(url, kind = 'image') {
   }
   if (!url) return
   openEditor()
+  mediaPreviewScale.value = 1
+  resetMediaPreviewPan()
   mediaPreviewUrl.value = String(url)
   mediaPreviewKind.value = kind
 }
@@ -1072,7 +1246,61 @@ function scheduleMediaOpen() {
 
 function closeMediaPreview() {
   mediaPreviewUrl.value = ''
+  mediaPreviewScale.value = 1
+  resetMediaPreviewPan()
   mediaPreviewKind.value = 'image'
+}
+
+function resetMediaPreviewPan() {
+  mediaPreviewOffset.x = 0
+  mediaPreviewOffset.y = 0
+  mediaPreviewSpacePressed.value = false
+  mediaPreviewDragging.value = false
+  mediaPreviewPanOrigin = null
+}
+
+function startMediaPreviewPan(event) {
+  if (mediaPreviewKind.value !== 'image') return
+  if (event.button !== 0 || !mediaPreviewSpacePressed.value) return
+  event.preventDefault()
+  mediaPreviewDragging.value = true
+  mediaPreviewPanOrigin = {
+    pointerId: event.pointerId,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    offsetX: mediaPreviewOffset.x,
+    offsetY: mediaPreviewOffset.y,
+  }
+}
+
+function onMediaPreviewPointerMove(event) {
+  if (!mediaPreviewDragging.value || !mediaPreviewPanOrigin) return
+  if (event.pointerId !== mediaPreviewPanOrigin.pointerId) return
+  event.preventDefault()
+  mediaPreviewOffset.x = mediaPreviewPanOrigin.offsetX + event.clientX - mediaPreviewPanOrigin.clientX
+  mediaPreviewOffset.y = mediaPreviewPanOrigin.offsetY + event.clientY - mediaPreviewPanOrigin.clientY
+}
+
+function stopMediaPreviewPan(event) {
+  if (event?.pointerId != null && mediaPreviewPanOrigin?.pointerId !== event.pointerId) return
+  mediaPreviewDragging.value = false
+  mediaPreviewPanOrigin = null
+}
+
+function onMediaPreviewKeyup(event) {
+  if (event.code !== 'Space') return
+  mediaPreviewSpacePressed.value = false
+  stopMediaPreviewPan()
+}
+
+function onMediaPreviewWheel(event) {
+  if (mediaPreviewKind.value !== 'image') return
+  if (!event.ctrlKey && !event.metaKey) return
+  event.preventDefault()
+  event.stopPropagation()
+  const delta = event.deltaY < 0 ? 0.15 : -0.15
+  mediaPreviewScale.value = Math.min(5, Math.max(0.25,
+    Number((mediaPreviewScale.value + delta).toFixed(2))))
 }
 
 function openAssetLibrary() {
@@ -1115,21 +1343,23 @@ function updateReference(reference, patch) {
 
 async function setVideoReferenceMode(mode) {
   if (props.data.kind !== 'video') return
-  draft.videoReferenceMode = normalizeFreeCanvasVideoReferenceMode(mode)
+  if (mode === 'first-last' && !supportsFirstLastMode.value) return
+  if (mode === 'multi' && !supportsImageReferenceMode.value) return
+  if (mode === 'omni' && !supportsOmniReferenceMode.value) return
+  const nextMode = normalizeFreeCanvasVideoReferenceMode(mode)
+  draft.videoReferenceMode = nextMode
   await saveDraft()
-  let imageIndex = 0
-  inputReferences.value.forEach((reference) => {
-    if (reference.kind === 'image') {
-      const index = imageIndex++
-      const input = resolveFreeCanvasVideoReferenceInput(draft.videoReferenceMode, index)
-      const enabled = draft.videoReferenceMode === 'multi'
-        || index === 0
-        || (draft.videoReferenceMode === 'first-last' && index === 1)
-      updateReference(reference, { input, enabled })
-      return
-    }
-    updateReference(reference, { enabled: draft.videoReferenceMode === 'omni' })
-  })
+  syncVideoReferenceEdges(nextMode)
+}
+
+function syncVideoReferenceEdges(mode) {
+  planFreeCanvasVideoReferences(capability.value, mode, inputReferences.value)
+    .forEach(({ reference, input, enabled }) => {
+      const patch = {}
+      if (reference.slot !== input) patch.input = input
+      if (reference.enabled !== enabled) patch.enabled = enabled
+      if (Object.keys(patch).length) updateReference(reference, patch)
+    })
 }
 
 function removeReference(reference) {
@@ -1173,6 +1403,11 @@ async function copyResultReference() {
 }
 
 function onEditorKeydown(event) {
+  if (event.code === 'Space' && mediaPreviewUrl.value && mediaPreviewKind.value === 'image') {
+    event.preventDefault()
+    mediaPreviewSpacePressed.value = true
+    return
+  }
   if (event.key !== 'Escape') return
   if (mediaOpenTimer) {
     window.clearTimeout(mediaOpenTimer)
@@ -1192,41 +1427,34 @@ function onEditorKeydown(event) {
 
 onMounted(() => {
   window.addEventListener('keydown', onEditorKeydown)
+  window.addEventListener('keyup', onMediaPreviewKeyup)
+  window.addEventListener('pointermove', onMediaPreviewPointerMove)
+  window.addEventListener('pointerup', stopMediaPreviewPan)
   window.addEventListener('resize', updateEditorPosition)
   if (isSelected.value) nextTick(startEditorPositionTracking)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onEditorKeydown)
+  window.removeEventListener('keyup', onMediaPreviewKeyup)
+  window.removeEventListener('pointermove', onMediaPreviewPointerMove)
+  window.removeEventListener('pointerup', stopMediaPreviewPan)
   window.removeEventListener('resize', updateEditorPosition)
   stopEditorPositionTracking()
   if (draftSaveTimer) window.clearTimeout(draftSaveTimer)
   if (mediaOpenTimer) window.clearTimeout(mediaOpenTimer)
+  referencePreviewRun += 1
+  referenceObjectUrls.forEach((url) => URL.revokeObjectURL(url))
+  referenceObjectUrls = new Set()
 })
 
 watch(() => props.data, () => {
   if (!draftDirty) syncDraft()
 }, { deep: true, immediate: true })
 watch(
-  () => `${videoReferenceMode.value}|${inputReferences.value.map((reference) => `${reference.edgeId}:${reference.kind}:${reference.slot}:${reference.enabled !== false}`).join('|')}`,
+  () => `${videoReferenceCapabilityKey.value}|${videoReferenceMode.value}|${inputReferences.value.map((reference) => `${reference.edgeId}:${reference.kind}:${reference.slot}:${reference.enabled !== false}:${reference.ready !== false}:${reference.url || ''}:${reference.order || 0}:${reference.weight || 1}`).join('|')}`,
   () => {
     if (props.data.kind !== 'video') return
-    let imageIndex = 0
-    inputReferences.value.forEach((reference) => {
-      const isImage = reference.kind === 'image'
-      const index = isImage ? imageIndex++ : -1
-      const input = isImage
-        ? resolveFreeCanvasVideoReferenceInput(videoReferenceMode.value, index)
-        : reference.slot
-      const enabled = isImage
-        ? videoReferenceMode.value === 'multi'
-          || index === 0
-          || (videoReferenceMode.value === 'first-last' && index === 1)
-        : videoReferenceMode.value === 'omni'
-      const patch = {}
-      if (reference.slot !== input) patch.input = input
-      if (reference.enabled !== enabled) patch.enabled = enabled
-      if (Object.keys(patch).length) updateReference(reference, patch)
-    })
+    syncVideoReferenceEdges(videoReferenceMode.value)
   },
   { flush: 'post', immediate: true },
 )
@@ -1246,6 +1474,7 @@ watch(() => ctx?.focusedNodeId?.value, (focusedId) => {
   editorHidden.value = false
   nextTick(startEditorPositionTracking)
 }, { immediate: true })
+watch([inputReferences, referenceCandidates], refreshReferencePreviews, { deep: true, immediate: true })
 </script>
 
 <style scoped>
@@ -1825,7 +2054,7 @@ watch(() => ctx?.focusedNodeId?.value, (focusedId) => {
 }
 .billing-cost strong { color: #ffb15c; font-size: 18px; font-weight: 900; }
 .billing-cost small { color: #d6a875; font-size: 11px; font-weight: 600; }
-.billing-note, .editor-footer .local-draft-note { color: #71717a; font-size: 11px; }
+.capability-note, .editor-footer .local-draft-note { color: #71717a; font-size: 11px; }
 .editor-footer .local-draft-note { margin-right: auto; }
 .generation-progress { display: grid; gap: 7px; margin-top: 16px; }
 .generation-progress > div { display: flex; align-items: center; justify-content: space-between; color: #a1a1aa; font-size: 11px; }
@@ -1848,6 +2077,7 @@ watch(() => ctx?.focusedNodeId?.value, (focusedId) => {
   position: absolute;
   top: 22px;
   right: 22px;
+  z-index: 2;
   display: grid;
   width: 42px;
   height: 42px;
@@ -1861,7 +2091,23 @@ watch(() => ctx?.focusedNodeId?.value, (focusedId) => {
   cursor: pointer;
 }
 .image-lightbox > img,
-.image-lightbox > video { max-width: 100%; max-height: 100%; border-radius: 12px; object-fit: contain; }
+.image-lightbox > video { max-width: calc(100vw - 56px); max-height: calc(100vh - 56px); border-radius: 12px; object-fit: contain; }
+.image-lightbox > img { transform-origin: center; transition: transform 100ms ease-out; user-select: none; }
+.image-lightbox.is-pan-ready > img { cursor: grab; }
+.image-lightbox.is-panning > img { cursor: grabbing; transition: none; }
+.lightbox-zoom-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  z-index: 1;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: rgba(24, 24, 27, 0.86);
+  color: #d4d4d8;
+  font-size: 12px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
 .run-button {
   display: grid;
   width: 40px;

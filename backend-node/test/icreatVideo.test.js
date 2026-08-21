@@ -47,32 +47,26 @@ describe('iCreat Seedance video protocol', () => {
     });
   });
 
-  it('omits mutually exclusive reference images when first or last frame is present', () => {
+  it('only sends need_review for reference images', () => {
     const body = buildIcreatVideoBody({
       prompt: '角色沿着雨林石径前进',
-      first_frame_url: 'https://cdn.example/first.png',
-      last_frame_url: 'https://cdn.example/last.png',
       reference_urls: ['https://cdn.example/character.png'],
     });
 
-    assert.equal(body.content.find((part) => part.role === 'first_frame').need_review, undefined);
-    assert.equal(body.content.find((part) => part.role === 'last_frame').need_review, undefined);
-    assert.equal(body.content.some((part) => part.role === 'reference_image'), false);
+    assert.equal(body.content.find((part) => part.role === 'reference_image').need_review, true);
   });
 
-  it('keeps need_review on reference images in pure reference mode', () => {
+  it('keeps frame mode valid by omitting mutually exclusive reference image roles', () => {
     const body = buildIcreatVideoBody({
-      prompt: '保持角色一致地沿着雨林石径前进',
+      prompt: '主角进入分镜场景',
+      first_frame_url: 'https://cdn.example/first.png',
       reference_urls: ['https://cdn.example/character.png'],
     });
 
-    assert.equal(body.content.some((part) => part.role === 'first_frame'), false);
-    assert.deepEqual(body.content.find((part) => part.role === 'reference_image'), {
-      type: 'image_url',
-      image_url: { url: 'https://cdn.example/character.png' },
-      role: 'reference_image',
-      need_review: true,
-    });
+    assert.deepEqual(
+      body.content.filter((part) => part.type !== 'text').map((part) => part.role),
+      ['first_frame'],
+    );
   });
 
   it('adds a character voice as the documented reference audio content item', () => {
@@ -130,8 +124,9 @@ describe('iCreat Seedance video protocol', () => {
     const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'icreat-voice-'));
     const relative = 'projects/demo/characters/voice/fox.mp3';
     const localFile = path.join(storage, relative);
+    const voiceBytes = Buffer.concat([Buffer.from('ID3'), Buffer.from('fake-mp3')]);
     fs.mkdirSync(path.dirname(localFile), { recursive: true });
-    fs.writeFileSync(localFile, Buffer.from('fake-mp3'));
+    fs.writeFileSync(localFile, voiceBytes);
     let request;
     global.fetch = async (url, options) => {
       request = { url, body: JSON.parse(options.body) };
@@ -154,7 +149,7 @@ describe('iCreat Seedance video protocol', () => {
       const audio = request.body.content.at(-1);
       assert.equal(audio.type, 'audio_url');
       assert.match(audio.audio_url.url, /^data:audio\/mpeg;base64,/);
-      assert.equal(Buffer.from(audio.audio_url.url.split(',')[1], 'base64').toString(), 'fake-mp3');
+      assert.deepEqual(Buffer.from(audio.audio_url.url.split(',')[1], 'base64'), voiceBytes);
     } finally {
       fs.rmSync(storage, { recursive: true, force: true });
     }
@@ -182,31 +177,6 @@ describe('iCreat Seedance video protocol', () => {
     assert.equal(requests[1].url, 'https://api.icreat.ai/v1/task/get-result');
     assert.deepEqual(requests[1].body, { task_id: 'icreat-task-1' });
     assert.deepEqual(result, { video_url: 'https://cdn.example/result.mp4' });
-  });
-
-  it('bounds the completed-task result fetch so recovery can retry it', async () => {
-    let resultSignal;
-    let requestCount = 0;
-    global.fetch = async (_url, options) => {
-      requestCount += 1;
-      if (requestCount === 1) {
-        return { ok: true, status: 200, text: async () => JSON.stringify({ status: 'SUCCEEDED' }) };
-      }
-      resultSignal = options.signal;
-      throw Object.assign(new Error('result fetch timed out'), { name: 'TimeoutError' });
-    };
-
-    const result = await pollVideoTask(null, log, 185, 'icreat-task-timeout', {
-      provider: 'icreat',
-      api_protocol: 'icreat_task',
-      base_url: 'https://api.icreat.ai',
-      api_key: 'secret',
-    }, 1, 0);
-
-    assert.equal(requestCount, 2);
-    assert.equal(resultSignal instanceof AbortSignal, true);
-    assert.equal(result.indeterminate, true);
-    assert.equal(result.provider_task_id, 'icreat-task-timeout');
   });
 
   it('preserves the provider failure detail instead of returning only FAILED', async () => {

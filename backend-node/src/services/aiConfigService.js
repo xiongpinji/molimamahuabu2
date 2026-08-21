@@ -208,12 +208,30 @@ function verificationSettingsFingerprint(settings) {
     const connectionSettings = {};
     for (const key of Object.keys(parsed).sort()) {
       const normalizedKey = key.toLowerCase();
-      if (CONNECTION_SETTING_KEYS.has(normalizedKey)
-          || ['canvas_capabilities', 'canvas_capabilities_by_model', 'capabilities'].includes(normalizedKey)) {
+      if (CONNECTION_SETTING_KEYS.has(normalizedKey)) {
         connectionSettings[key] = stableJsonValue(parsed[key], key);
       }
     }
     return JSON.stringify(connectionSettings);
+  } catch (_) {
+    return String(settings || '');
+  }
+}
+
+function routeEvidenceSettingsFingerprint(settings) {
+  try {
+    if (settings == null || settings === '') return '{}';
+    const parsed = typeof settings === 'string' ? JSON.parse(settings) : settings;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return String(settings || '');
+    const routeSettings = {};
+    for (const key of Object.keys(parsed).sort()) {
+      const normalizedKey = key.toLowerCase();
+      if (CONNECTION_SETTING_KEYS.has(normalizedKey)
+          || ['canvas_capabilities', 'canvas_capabilities_by_model', 'capabilities'].includes(normalizedKey)) {
+        routeSettings[key] = stableJsonValue(parsed[key], key);
+      }
+    }
+    return JSON.stringify(routeSettings);
   } catch (_) {
     return String(settings || '');
   }
@@ -490,10 +508,12 @@ function updateConfig(db, log, id, req) {
       })
       : req.settings;
     params.push(nextSettings);
-    const settingsChanged = verificationSettingsFingerprint(nextSettings)
+    const connectionSettingsChanged = verificationSettingsFingerprint(nextSettings)
       !== verificationSettingsFingerprint(existing.settings);
-    connectivityChanged ||= settingsChanged;
-    routeEvidenceChanged ||= settingsChanged;
+    const routeSettingsChanged = routeEvidenceSettingsFingerprint(nextSettings)
+      !== routeEvidenceSettingsFingerprint(existing.settings);
+    connectivityChanged ||= connectionSettingsChanged;
+    routeEvidenceChanged ||= routeSettingsChanged;
   }
   if (typeof req.is_default === 'boolean') {
     updates.push('is_default = ?');

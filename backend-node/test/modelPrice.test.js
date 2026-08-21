@@ -34,6 +34,31 @@ test('保存并读取整数积分价格', () => {
   assert.equal(prices.requirePrice(db, 'gpt-image-2'), 18);
 });
 
+test('保存模型展示名称和公开备注时去掉首尾空格', () => {
+  const db = makeDb();
+  const saved = prices.set(db, 'video-model', 7, {
+    category: 'video',
+    display_name: '  极速视频  ',
+    public_note: '  支持 480P，适合快速预览。  ',
+  });
+
+  assert.equal(saved.display_name, '极速视频');
+  assert.equal(saved.public_note, '支持 480P，适合快速预览。');
+  const listed = prices.list(db).find((row) => row.model === 'video-model');
+  assert.equal(listed.display_name, '极速视频');
+  assert.equal(listed.public_note, '支持 480P，适合快速预览。');
+});
+
+test('公开备注最多允许 500 个字符', () => {
+  const db = makeDb();
+  assert.throws(
+    () => prices.set(db, 'video-model', 7, { public_note: '注'.repeat(501) }),
+    (error) => error.code === 'INVALID_MODEL_PRICE',
+  );
+  const saved = prices.set(db, 'video-model', 7, { public_note: '注'.repeat(500) });
+  assert.equal(saved.public_note.length, 500);
+});
+
 test('拒绝零值和小数价格', () => {
   const db = makeDb();
   assert.throws(() => prices.set(db, 'gpt-image-2', 0), (error) => error.code === 'INVALID_MODEL_PRICE');
@@ -221,6 +246,76 @@ test('按条计费的视频模型不会再乘视频时长且供应商成本只�
   });
 });
 
+test('模型计费列表返回所属中转站标识且不泄露密钥', () => {
+  const db = makeDb();
+  db.exec(`CREATE TABLE ai_service_configs (
+    id INTEGER PRIMARY KEY,
+    service_type TEXT NOT NULL,
+    provider TEXT,
+    name TEXT,
+    base_url TEXT,
+    api_key TEXT,
+    model TEXT,
+    default_model TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    deleted_at TEXT
+  )`);
+  db.prepare(`INSERT INTO ai_service_configs
+    (id, service_type, provider, name, base_url, api_key, model, default_model, is_active)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(
+      1, 'video', 'usmercari', 'USMercari 三模型视频', 'https://chat-ai.mercarimx.com/v1', 'secret-a',
+      JSON.stringify(['MiniMax H3', 'seedance-2.0-fast']), 'MiniMax H3', 1,
+      2, 'image', 'other-provider', '其他图片站', 'https://images.example/v1', 'secret-b',
+      JSON.stringify(['gpt-image-2']), 'gpt-image-2', 1,
+    );
+
+  const rows = prices.list(db);
+  const minimax = rows.find((row) => row.model.toLowerCase() === 'minimax h3');
+  const image = rows.find((row) => row.model.toLowerCase() === 'gpt-image-2');
+  assert.equal(minimax.provider, 'usmercari');
+  assert.equal(minimax.provider_name, 'USMercari 三模型视频');
+  assert.equal(minimax.provider_base_url, 'https://chat-ai.mercarimx.com/v1');
+  assert.equal(image.provider, 'other-provider');
+  assert.equal(JSON.stringify(rows).includes('secret-a'), false);
+  assert.equal(JSON.stringify(rows).includes('secret-b'), false);
+});
+
+test('视频按次计费时分辨率积分档位仍按一次收取，供应商成本保持按秒', () => {
+  const db = makeDb();
+  prices.set(db, 'request-resolution-video', 2, {
+    category: 'video',
+    billing_unit: 'request',
+    cost_unit: 'second',
+    resolution_prices: {
+      '480p': { credits: 2, cost_micros_per_second: 50000 },
+      '720p': { credits: 5, cost_micros_per_second: 120000 },
+    },
+  });
+
+  assert.equal(prices.calculateCharge(db, 'request-resolution-video', {
+    duration: 15,
+    resolution: '480p',
+  }), 2);
+  assert.equal(prices.calculateCharge(db, 'request-resolution-video', {
+    duration: 5,
+    resolution: '720p',
+  }), 5);
+  assert.deepEqual(prices.quoteCost(db, 'request-resolution-video', {
+    quantity: 15,
+    resolution: '720p',
+  }), {
+    model: 'request-resolution-video',
+    cost_unit: 'second',
+    quantity: 15,
+    cost_micros: 1800000,
+    input_tokens: 0,
+    output_tokens: 0,
+    reasoning_tokens: 0,
+    resolution: '720p',
+  });
+});
+
 test('视频模型按 480P 和 720P 分别计算积分与每秒成本', () => {
   const db = makeDb();
   const saved = prices.set(db, 'resolution-video', 2, {
@@ -256,19 +351,33 @@ test('未配置分辨率档位的视频模型继续使用原有按秒积分与�
   assert.equal(prices.quoteCost(db, 'legacy-video', { quantity: 6, resolution: '720p' }).cost_micros, 540000);
 });
 
+test('iCreat Seedance 2.0 Mini 和 Fast 接受官方支持的 4 秒并按秒计费', () => {
+  const db = makeDb();
+  for (const model of [
+    'bytedance/seedance-2-0-mini',
+    'bytedance/seedance-2-0-fast',
+  ]) {
+    prices.set(db, model, 60, { category: 'video', cost_unit: 'second' });
+    assert.equal(prices.calculateCharge(db, model, { duration: 4 }), 240);
+  }
+});
+
 test('公开价格目录只返回用户价格字段且管理端仍保留完整成本', () => {
   const db = makeDb();
   db.exec(`CREATE TABLE ai_service_configs (
     id INTEGER PRIMARY KEY,
     service_type TEXT,
+    provider TEXT,
+    api_protocol TEXT,
     model TEXT,
     default_model TEXT,
     is_active INTEGER DEFAULT 1,
+    verification_status TEXT,
     deleted_at TEXT
   )`);
   db.prepare(`INSERT INTO ai_service_configs
-    (service_type, model, default_model, is_active, deleted_at)
-    VALUES ('video', ?, 'public-video', 1, NULL)`)
+    (service_type, provider, api_protocol, model, default_model, is_active, verification_status, deleted_at)
+    VALUES ('video', 'fixture', 'openai', ?, 'public-video', 1, 'verified', NULL)`)
     .run(JSON.stringify(['public-video']));
   prices.set(db, 'public-video', 3, {
     display_name: '公开视频模型',
@@ -288,6 +397,7 @@ test('公开价格目录只返回用户价格字段且管理端仍保留完整�
   assert.deepEqual(publicItem, {
     model: 'public-video',
     display_name: '公开视频模型',
+    public_note: '',
     category: 'video',
     credits: 3,
     status: 'enabled',

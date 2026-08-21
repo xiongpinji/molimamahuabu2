@@ -34,18 +34,6 @@ function baseCanvasLayout(extra = {}) {
   }
 }
 
-function inferredModelCatalog(canvasLayout) {
-  const seen = new Set()
-  return (canvasLayout?.free_nodes || []).flatMap((node) => {
-    const kind = String(node?.data?.kind || '').trim()
-    const model = String(node?.data?.model || '').trim()
-    const key = `${kind}:${model}`
-    if (!kind || !model || seen.has(key)) return []
-    seen.add(key)
-    return [{ kind, model }]
-  })
-}
-
 function installStaticAndApiMocks(page, state) {
   return page.route('**/*', async (route) => {
     const request = route.request()
@@ -97,7 +85,7 @@ function installStaticAndApiMocks(page, state) {
     }
 
     if (method === 'GET' && pathname === '/api/v1/canvas/model-catalog') {
-      await route.fulfill(apiData(state.modelCatalog ?? inferredModelCatalog(state.canvasLayout)))
+      await route.fulfill(apiData(state.modelCatalog || []))
       return
     }
 
@@ -564,14 +552,6 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await page.mouse.up()
 
     await expect.poll(() => state.canvasLayout.free_nodes[0].position).not.toEqual(originalPosition)
-
-    await page.getByRole('button', { name: '添加元素' }).click()
-    await page.getByRole('menu', { name: '添加节点菜单' })
-      .getByRole('menuitem', { name: /^图片 图片生成节点$/ })
-      .click()
-    await expect(page.locator('.vue-flow__node[data-id^="free:image:"]')).toHaveCount(2)
-    await expect(page.locator('.vue-flow__node[data-id^="free:image:"].selected')).toHaveCount(1)
-    await expect(page.getByRole('region', { name: '图片节点编辑器' })).toBeVisible()
   })
 
   test('新建图片节点后点击空白处保持节点可见', async ({ page }) => {
@@ -642,8 +622,11 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await node.click()
     const editor = page.getByRole('region', { name: '图片节点编辑器' })
     await expect(editor).toBeVisible()
-    await expect(editor.getByRole('combobox', { name: '生成模型' }).locator('option[value="canvas-image-alpha"]'))
-      .toHaveText('canvas-image-alpha')
+    await expect(editor.getByRole('combobox', { name: '生成模型' }).locator('option')).toHaveText([
+      '默认图片模型',
+      'canvas-image-alpha',
+      'canvas-image-beta',
+    ])
     await editor.getByRole('combobox', { name: '生成模型' }).selectOption('canvas-image-beta')
     await expect.poll(() => freeNode(state.canvasLayout, 'free:image:mount')?.data?.model).toBe('canvas-image-beta')
 
@@ -665,7 +648,7 @@ test.describe('独立自由画布节点真实运行闭环', () => {
 
     await node.click({ button: 'right' })
     const menu = page.getByRole('menu', { name: '节点操作' })
-    await menu.getByRole('menuitem', { name: /^创建副本 克隆到右下方$/ }).click()
+    await menu.getByRole('menuitem', { name: /^复制节点 克隆到右下方$/ }).click()
     await expect.poll(() => state.canvasLayout.free_nodes.length).toBe(2)
     const copied = state.canvasLayout.free_nodes.find((item) => item.id !== 'free:image:mount')
     expect(copied).toMatchObject({
@@ -683,6 +666,79 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await copiedNode.click({ button: 'right' })
     await page.getByRole('menu', { name: '节点操作' }).getByRole('menuitem', { name: /删除节点/ }).click()
     await expect.poll(() => state.canvasLayout.free_nodes.length).toBe(1)
+  })
+
+  test('图片和视频节点的模型选择器完整展示目录中的可选模型', async ({ page }) => {
+    const state = {
+      canvasLayout: baseCanvasLayout({
+        free_nodes: [
+          {
+            id: 'free:image:model-selector',
+            type: 'homeCanvasNode',
+            position: { x: 180, y: 180 },
+            data: {
+              kind: 'image',
+              title: '图片模型选择',
+              content: '雨夜站台',
+              model: 'canvas-image-alpha',
+              aspectRatio: '16:9',
+            },
+          },
+          {
+            id: 'free:video:model-selector',
+            type: 'homeCanvasNode',
+            position: { x: 880, y: 180 },
+            data: {
+              kind: 'video',
+              title: '视频模型选择',
+              content: '列车驶入站台',
+              model: 'canvas-video-alpha',
+              aspectRatio: '16:9',
+              duration: 5,
+            },
+          },
+        ],
+      }),
+      assets: [],
+      modelCatalog: [
+        { kind: 'image', model: 'canvas-image-alpha' },
+        { kind: 'image', model: 'canvas-image-beta' },
+        { kind: 'video', model: 'canvas-video-alpha' },
+        { kind: 'video', model: 'canvas-video-beta' },
+      ],
+      imageRequests: [],
+      videoRequests: [],
+      audioRequests: [],
+      assetRequests: [],
+    }
+    await installStaticAndApiMocks(page, state)
+
+    await page.goto('/canvas/3')
+
+    const imageNode = page.locator('.vue-flow__node[data-id="free:image:model-selector"]')
+    await imageNode.click()
+    const imageEditor = page.getByRole('region', { name: '图片节点编辑器' })
+    const imageModelSelect = imageEditor.getByRole('combobox', { name: '生成模型' })
+    await expect(imageModelSelect.locator('option')).toHaveText([
+      '默认图片模型',
+      'canvas-image-alpha',
+      'canvas-image-beta',
+    ])
+    await imageModelSelect.selectOption('canvas-image-beta')
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:image:model-selector')?.data?.model).toBe('canvas-image-beta')
+    await imageEditor.getByRole('button', { name: '关闭编辑器' }).click()
+
+    const videoNode = page.locator('.vue-flow__node[data-id="free:video:model-selector"]')
+    await videoNode.click()
+    const videoEditor = page.getByRole('region', { name: '视频节点编辑器' })
+    const videoModelSelect = videoEditor.getByRole('combobox', { name: '生成模型' })
+    await expect(videoModelSelect.locator('option')).toHaveText([
+      '默认视频模型',
+      'canvas-video-alpha',
+      'canvas-video-beta',
+    ])
+    await videoModelSelect.selectOption('canvas-video-beta')
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:video:model-selector')?.data?.model).toBe('canvas-video-beta')
   })
 
   test('图片节点生成后使用项目 ID 请求、自动入库并刷新恢复', async ({ page }) => {
@@ -722,9 +778,7 @@ test.describe('独立自由画布节点真实运行闭环', () => {
       prompt: '生成一张雨夜花园图',
       model: 'lib-image-e2e',
       aspect_ratio: '16:9',
-      resolution: '2k',
       size: '2048x1152',
-      n: 1,
     }])
     expect(state.imageRequests[0]).not.toHaveProperty('storyboard_id')
     expect(state.imageRequests[0]).not.toHaveProperty('storyboardId')
@@ -808,7 +862,7 @@ test.describe('独立自由画布节点真实运行闭环', () => {
       .toBe('A natural English translation.')
   })
 
-  test('图片节点多结果逐个生成、保留结果列表并入库当前结果', async ({ page }) => {
+  test('图片节点多结果逐个生成、自动入库并可切换主结果', async ({ page }) => {
     const state = {
       canvasLayout: baseCanvasLayout({
         free_nodes: [{
@@ -840,13 +894,17 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await editor.getByRole('button', { name: '生成', exact: true }).click()
 
     await expect.poll(() => state.imageRequests.length).toBe(2)
-    await expect.poll(() => state.assetRequests.length).toBe(1)
+    await expect.poll(() => state.assetRequests.length).toBe(2)
     await expect.poll(() => freeNode(state.canvasLayout, 'free:image:multi')?.data).toMatchObject({
       status: 'success',
-      url: '/static/free-image.png',
+      url: '/static/free-image-2.png',
       resultUrls: ['/static/free-image.png', '/static/free-image-2.png'],
-      savedAssetId: '901',
+      savedAssetId: '902',
     })
+    await expect(node.getByRole('button', { name: '设为当前结果' })).toHaveCount(2)
+    await node.getByRole('button', { name: '设为当前结果' }).first().click()
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:image:multi')?.data?.url)
+      .toBe('/static/free-image.png')
   })
 
   test('视频节点失败后可重试，并携带上游首帧引用且不污染分镜字段', async ({ page }) => {
@@ -884,21 +942,11 @@ test.describe('独立自由画布节点真实运行闭环', () => {
               model: 'grok-video-e2e',
               aspectRatio: '16:9',
               duration: 5,
-              videoReferenceMode: 'first-last',
             },
           },
         ],
       }),
       assets: [],
-      modelCatalog: [{
-        kind: 'video',
-        model: 'grok-video-e2e',
-        capabilities: {
-          supportsFirstFrame: true,
-          supportsLastFrame: true,
-          maxImageReferences: 2,
-        },
-      }],
       imageRequests: [],
       videoRequests: [],
       audioRequests: [],
@@ -912,7 +960,7 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await node.click()
     const editor = page.getByRole('region', { name: '视频节点编辑器' })
     await expect(editor).toBeVisible()
-    const automaticReferences = editor.getByRole('region', { name: '自动参考素材' })
+    const automaticReferences = editor.getByRole('region', { name: '自动参考图' })
     await expect(automaticReferences).toContainText('1/1 已就绪')
     await expect(automaticReferences.locator('img[alt="上游首帧"]')).toBeVisible()
     await expect(automaticReferences.locator('[data-reference-state="ready"]')).toHaveCount(1)
@@ -928,9 +976,9 @@ test.describe('独立自由画布节点真实运行闭环', () => {
       drama_id: 3,
       prompt: '镜头从花园推向人物',
       model: 'grok-video-e2e',
-      reference_mode: 'first_last',
       image_url: '/static/upstream-first.png',
       first_frame_url: '/static/upstream-first.png',
+      reference_image_urls: ['/static/upstream-first.png'],
       aspect_ratio: '16:9',
       duration: 5,
     })

@@ -19,6 +19,21 @@ test('同一分镜存在处理中视频时复用现有任务', () => {
   assert.equal(videoService.findActiveForStoryboard(db, 19).id, 11);
 });
 
+test('同一分镜存在状态未知视频时保持防重门禁', () => {
+  const db = new Database(':memory:');
+  db.exec(`CREATE TABLE video_generations (
+    id INTEGER PRIMARY KEY,
+    storyboard_id INTEGER,
+    status TEXT,
+    deleted_at TEXT,
+    created_at TEXT
+  )`);
+  db.prepare('INSERT INTO video_generations (id, storyboard_id, status, created_at) VALUES (?, ?, ?, ?)')
+    .run(12, 19, 'needs_attention', '2026-08-08T00:00:00.000Z');
+
+  assert.equal(videoService.findActiveForStoryboard(db, 19).id, 12);
+});
+
 test('已完成或失败的视频不阻止重新生成', () => {
   const db = new Database(':memory:');
   db.exec(`CREATE TABLE video_generations (

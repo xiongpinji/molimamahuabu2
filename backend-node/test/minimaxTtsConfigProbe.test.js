@@ -3,12 +3,13 @@ const assert = require('node:assert/strict');
 
 const { testConnection } = require('../src/services/aiConfigService');
 
-test('MiniMax TTS 配置测试使用只读 get_voice 探针，不提交付费生成', async () => {
+test('MiniMax TTS 配置测试使用官方 t2a_v2 协议', async () => {
   const originalFetch = global.fetch;
   let request;
   global.fetch = async (url, options) => {
     request = { url, options, body: JSON.parse(options.body) };
     return new Response(JSON.stringify({
+      data: { audio: '494433' },
       base_resp: { status_code: 0, status_msg: 'success' },
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
@@ -25,9 +26,11 @@ test('MiniMax TTS 配置测试使用只读 get_voice 探针，不提交付费生
     global.fetch = originalFetch;
   }
 
-  assert.equal(request.url, 'https://api.minimaxi.com/v1/get_voice');
+  assert.equal(request.url, 'https://api.minimaxi.com/v1/t2a_v2');
   assert.equal(request.options.headers.Authorization, 'Bearer test-key');
-  assert.deepEqual(request.body, { voice_type: 'all' });
+  assert.equal(request.body.model, 'speech-2.8-hd');
+  assert.equal(request.body.output_format, 'hex');
+  assert.equal(request.body.voice_setting.voice_id, 'male-qn-qingse');
 });
 
 test('非 MiniMax TTS 配置保持原有连接探针', async () => {

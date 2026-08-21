@@ -1,6 +1,7 @@
 const { randomUUID } = require('crypto');
 const path = require('path');
 const creditLedger = require('./creditLedgerService');
+const dailyBonus = require('./dailyRechargeBonusService');
 
 const CREDIT_RATIO = 100;
 const MIN_AMOUNT_CENTS = 100;
@@ -74,6 +75,7 @@ function ensureSchema(db) {
   }
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_recharge_packages_featured
     ON recharge_packages(is_featured) WHERE is_featured = 1`);
+  dailyBonus.ensureSchema(db);
 }
 
 function parseAmountCents(value, code, message) {
@@ -151,7 +153,8 @@ function rethrowPackageWriteError(error) {
 function normalizePackage(input) {
   const name = String(input.name || '').trim();
   const amountCents = parsePackageAmount(input.amountYuan ?? input.amount_yuan);
-  const credits = Number(input.credits);
+  const credits = amountCents;
+  const dailyBonusCredits = Number(input.dailyBonusCredits ?? input.daily_bonus_credits);
   const startsAt = normalizeOptionalDate(input.startsAt ?? input.starts_at);
   const endsAt = normalizeOptionalDate(input.endsAt ?? input.ends_at);
   const imageUrl = String(input.imageUrl ?? input.image_url ?? '').trim();
@@ -185,7 +188,8 @@ function normalizePackage(input) {
     || !/^#[0-9a-f]{6}$/.test(accentColor)
     || !Number.isSafeInteger(sortOrder) || sortOrder < 0
     || isFeatured == null
-    || !Number.isSafeInteger(credits) || credits <= 0 || credits > 100_000_000
+    || !Number.isSafeInteger(dailyBonusCredits)
+    || dailyBonusCredits < 0 || dailyBonusCredits > 100_000_000
     || !['active', 'inactive'].includes(status)
     || (startsAt && endsAt && startsAt >= endsAt)) {
     throw rechargeError('INVALID_RECHARGE_PACKAGE', '套餐名称、售价、积分、时间或状态不合法');
@@ -207,6 +211,8 @@ function normalizePackage(input) {
     name,
     amount_cents: amountCents,
     credits,
+    daily_bonus_credits: dailyBonusCredits,
+    benefit_version: 'daily_30d_v1',
     starts_at: startsAt,
     ends_at: endsAt,
     image_url: imageUrl,
@@ -233,10 +239,12 @@ function createPackage(db, input) {
           SET is_featured = 0, updated_at = ? WHERE is_featured = 1`).run(now);
       }
       db.prepare(`INSERT INTO recharge_packages
-        (id, name, amount_cents, credits, starts_at, ends_at, image_url, badge_text, ad_title,
-          ad_subtitle, button_text, accent_color, sort_order, is_featured, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(id, value.name, value.amount_cents, value.credits, value.starts_at,
+        (id, name, amount_cents, credits, daily_bonus_credits, benefit_version,
+          starts_at, ends_at, image_url, badge_text, ad_title, ad_subtitle,
+          button_text, accent_color, sort_order, is_featured, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, value.name, value.amount_cents, value.credits,
+          value.daily_bonus_credits, value.benefit_version, value.starts_at,
           value.ends_at, value.image_url, value.badge_text, value.ad_title, value.ad_subtitle,
           value.button_text, value.accent_color, value.sort_order, value.is_featured,
           value.status, now, now);
@@ -262,11 +270,13 @@ function updatePackage(db, packageIdValue, input) {
           SET is_featured = 0, updated_at = ? WHERE is_featured = 1 AND id <> ?`).run(now, id);
       }
       db.prepare(`UPDATE recharge_packages
-        SET name = ?, amount_cents = ?, credits = ?, starts_at = ?, ends_at = ?,
+        SET name = ?, amount_cents = ?, credits = ?, daily_bonus_credits = ?,
+          benefit_version = ?, starts_at = ?, ends_at = ?,
           image_url = ?, badge_text = ?, ad_title = ?, ad_subtitle = ?, button_text = ?,
           accent_color = ?, sort_order = ?, is_featured = ?, status = ?, updated_at = ?
         WHERE id = ?`)
-        .run(value.name, value.amount_cents, value.credits, value.starts_at, value.ends_at,
+        .run(value.name, value.amount_cents, value.credits, value.daily_bonus_credits,
+          value.benefit_version, value.starts_at, value.ends_at,
           value.image_url, value.badge_text, value.ad_title, value.ad_subtitle, value.button_text,
           value.accent_color, value.sort_order, value.is_featured, value.status, now, id);
     })();
@@ -326,52 +336,73 @@ function createOrder(db, input) {
   const userId = String(input.userId || '');
   requireActiveMembership(db, tenantId, userId);
   const clientOrderKey = normalizeClientOrderKey(input.clientOrderKey);
-  const existing = db.prepare(`SELECT * FROM tenant_recharge_orders
-    WHERE tenant_id = ? AND created_by = ? AND client_order_key = ?`)
-    .get(tenantId, userId, clientOrderKey);
-  if (existing) {
-    const samePayload = input.packageId
-      ? existing.order_kind === 'package' && existing.package_id === String(input.packageId)
-      : existing.order_kind === 'custom' && existing.amount_cents === parseCustomAmount(input.amountYuan);
-    if (!samePayload) {
-      throw rechargeError('RECHARGE_ORDER_IDEMPOTENCY_CONFLICT', '同一充值请求不能修改金额或套餐');
+  return db.transaction(() => {
+    const existing = db.prepare(`SELECT * FROM tenant_recharge_orders
+      WHERE tenant_id = ? AND created_by = ? AND client_order_key = ?`)
+      .get(tenantId, userId, clientOrderKey);
+    if (existing) {
+      const samePayload = input.packageId
+        ? existing.order_kind === 'package' && existing.package_id === String(input.packageId)
+        : existing.order_kind === 'custom' && existing.amount_cents === parseCustomAmount(input.amountYuan);
+      if (!samePayload) {
+        throw rechargeError('RECHARGE_ORDER_IDEMPOTENCY_CONFLICT', '同一充值请求不能修改金额或套餐');
+      }
+      return existing;
     }
-    return existing;
-  }
 
-  const now = new Date(input.now || Date.now()).toISOString();
-  let orderKind = 'custom';
-  let packageId = null;
-  let packageName = null;
-  let amountCents;
-  let credits;
-  if (input.packageId) {
-    const selected = db.prepare(`SELECT * FROM recharge_packages
-      WHERE id = ? AND status = 'active'
-        AND (starts_at IS NULL OR starts_at <= ?)
-        AND (ends_at IS NULL OR ends_at > ?)`)
-      .get(String(input.packageId), now, now);
-    if (!selected) {
-      throw rechargeError('RECHARGE_PACKAGE_NOT_AVAILABLE', '充值套餐不存在或不在有效期内');
+    const nowValue = input.now || Date.now();
+    const now = new Date(nowValue).toISOString();
+    let orderKind = 'custom';
+    let packageId = null;
+    let packageName = null;
+    let amountCents;
+    let credits;
+    let dailyBonusCredits = 0;
+    let benefitDays = 0;
+    let benefitVersion = 'custom_v1';
+    if (input.packageId) {
+      if (dailyBonus.getActiveMembership(db, tenantId, nowValue)) {
+        throw rechargeError('RECHARGE_MEMBERSHIP_ACTIVE', '当前会员权益尚未到期，只能使用自定义充值');
+      }
+      const pending = db.prepare(`SELECT * FROM tenant_recharge_orders
+        WHERE tenant_id = ? AND order_kind = 'package' AND status = 'pending'
+        ORDER BY created_at DESC LIMIT 1`).get(tenantId);
+      if (pending) {
+        if (pending.created_by === userId && pending.package_id === String(input.packageId)) return pending;
+        throw rechargeError('RECHARGE_PACKAGE_ORDER_PENDING', '请先完成当前待支付会员订单');
+      }
+      const selected = db.prepare(`SELECT * FROM recharge_packages
+        WHERE id = ? AND status = 'active'
+          AND (starts_at IS NULL OR starts_at <= ?)
+          AND (ends_at IS NULL OR ends_at > ?)`)
+        .get(String(input.packageId), now, now);
+      if (!selected) {
+        throw rechargeError('RECHARGE_PACKAGE_NOT_AVAILABLE', '充值套餐不存在或不在有效期内');
+      }
+      orderKind = 'package';
+      packageId = selected.id;
+      packageName = selected.name;
+      amountCents = selected.amount_cents;
+      credits = selected.credits;
+      dailyBonusCredits = selected.daily_bonus_credits;
+      benefitDays = dailyBonus.BENEFIT_DAYS;
+      benefitVersion = selected.benefit_version;
+    } else {
+      amountCents = parseCustomAmount(input.amountYuan);
+      credits = Math.round(amountCents * CREDIT_RATIO / 100);
     }
-    orderKind = 'package';
-    packageId = selected.id;
-    packageName = selected.name;
-    amountCents = selected.amount_cents;
-    credits = selected.credits;
-  } else {
-    amountCents = parseCustomAmount(input.amountYuan);
-    credits = Math.round(amountCents * CREDIT_RATIO / 100);
-  }
-  const id = randomUUID();
-  const outTradeNo = `MOLI${id.replaceAll('-', '').toUpperCase()}`;
-  db.prepare(`INSERT INTO tenant_recharge_orders
-    (id, tenant_id, created_by, client_order_key, out_trade_no, order_kind,
-      package_id, package_name, amount_cents, credits, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`)
-    .run(id, tenantId, userId, clientOrderKey, outTradeNo, orderKind,
-      packageId, packageName, amountCents, credits, now, now);
-  return db.prepare('SELECT * FROM tenant_recharge_orders WHERE id = ?').get(id);
+    const id = randomUUID();
+    const outTradeNo = `MOLI${id.replaceAll('-', '').toUpperCase()}`;
+    db.prepare(`INSERT INTO tenant_recharge_orders
+      (id, tenant_id, created_by, client_order_key, out_trade_no, order_kind,
+        package_id, package_name, amount_cents, credits, base_credits,
+        daily_bonus_credits, benefit_days, benefit_version, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`)
+      .run(id, tenantId, userId, clientOrderKey, outTradeNo, orderKind,
+        packageId, packageName, amountCents, credits, credits,
+        dailyBonusCredits, benefitDays, benefitVersion, now, now);
+    return db.prepare('SELECT * FROM tenant_recharge_orders WHERE id = ?').get(id);
+  }).immediate();
 }
 
 function listOrders(db, tenantIdValue, userIdValue, limitValue = 100) {
@@ -391,6 +422,77 @@ function notificationAmountCents(value) {
   } catch (_) {
     throw rechargeError('ALIPAY_AMOUNT_MISMATCH', '支付宝通知金额不合法');
   }
+}
+
+function settleVerifiedTrade(db, {
+  outTradeNo, alipayTradeNo, amountCents, now: nowValue = Date.now(),
+}) {
+  ensureSchema(db);
+  creditLedger.ensureSchema(db);
+  try {
+    return db.transaction(() => {
+      const order = db.prepare('SELECT * FROM tenant_recharge_orders WHERE out_trade_no = ?')
+        .get(outTradeNo);
+      if (!order) throw rechargeError('RECHARGE_ORDER_NOT_FOUND', '充值订单不存在');
+      if (order.amount_cents !== amountCents) {
+        throw rechargeError('ALIPAY_AMOUNT_MISMATCH', '支付宝交易金额与订单不一致');
+      }
+      if (order.status === 'paid') {
+        if (order.alipay_trade_no !== alipayTradeNo) {
+          throw rechargeError('ALIPAY_ORDER_CONFLICT', '充值订单已绑定其他支付宝交易');
+        }
+        return { credited: false, order };
+      }
+
+      const now = new Date(nowValue).toISOString();
+      const changed = db.prepare(`UPDATE tenant_recharge_orders
+        SET status = 'paid', alipay_trade_no = ?, paid_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'pending'`)
+        .run(alipayTradeNo, now, now, order.id);
+      if (changed.changes !== 1) {
+        throw rechargeError('ALIPAY_ORDER_CONFLICT', '充值订单状态冲突');
+      }
+      const dailyBenefit = order.benefit_version === 'daily_30d_v1';
+      const creditedAmount = dailyBenefit ? order.base_credits : order.credits;
+      creditLedger.adjustTenantBalance(db, {
+        tenantId: order.tenant_id,
+        actorUserId: order.created_by,
+        eventType: 'recharge',
+        amount: creditedAmount,
+        reason: `支付宝充值到账：${order.package_name || '自定义充值'}`,
+        referenceType: 'alipay_recharge_order',
+        referenceId: order.id,
+      });
+      if (dailyBenefit) {
+        dailyBonus.createMembership(db, {
+          tenantId: order.tenant_id,
+          orderId: order.id,
+          packageId: order.package_id,
+          packageName: order.package_name,
+          dailyBonusCredits: order.daily_bonus_credits,
+          now: nowValue,
+        });
+        dailyBonus.materializeTodayBucket(db, order.tenant_id, nowValue);
+      }
+      return {
+        credited: true,
+        order: db.prepare('SELECT * FROM tenant_recharge_orders WHERE id = ?').get(order.id),
+      };
+    }).immediate();
+  } catch (error) {
+    if (String(error.code || '').includes('CONSTRAINT_UNIQUE')) {
+      throw rechargeError('ALIPAY_ORDER_CONFLICT', '支付宝交易号已被其他订单使用');
+    }
+    throw error;
+  }
+}
+
+function getMembershipStatus(db, tenantId, nowValue = Date.now()) {
+  ensureSchema(db);
+  const membership = dailyBonus.getActiveMembership(db, tenantId, nowValue);
+  return membership
+    ? { active: true, ...membership }
+    : { active: false, ends_on: null };
 }
 
 function processNotification(db, payload, gateway) {
@@ -415,50 +517,54 @@ function processNotification(db, payload, gateway) {
     throw rechargeError('ALIPAY_NOTIFICATION_INVALID', '支付宝通知缺少订单号');
   }
   const amountCents = notificationAmountCents(payload.total_amount);
+  return settleVerifiedTrade(db, { outTradeNo, alipayTradeNo, amountCents });
+}
 
-  try {
-    return db.transaction(() => {
-      const order = db.prepare('SELECT * FROM tenant_recharge_orders WHERE out_trade_no = ?')
-        .get(outTradeNo);
-      if (!order) throw rechargeError('RECHARGE_ORDER_NOT_FOUND', '充值订单不存在');
-      if (order.amount_cents !== amountCents) {
-        throw rechargeError('ALIPAY_AMOUNT_MISMATCH', '支付宝通知金额与订单不一致');
-      }
-      if (order.status === 'paid') {
-        if (order.alipay_trade_no !== alipayTradeNo) {
-          throw rechargeError('ALIPAY_ORDER_CONFLICT', '充值订单已绑定其他支付宝交易');
-        }
-        return { credited: false, order };
-      }
+function queriedField(result, camelName, snakeName) {
+  return result?.[camelName] ?? result?.[snakeName];
+}
 
-      const now = new Date().toISOString();
-      const changed = db.prepare(`UPDATE tenant_recharge_orders
-        SET status = 'paid', alipay_trade_no = ?, paid_at = ?, updated_at = ?
-        WHERE id = ? AND status = 'pending'`)
-        .run(alipayTradeNo, now, now, order.id);
-      if (changed.changes !== 1) {
-        throw rechargeError('ALIPAY_ORDER_CONFLICT', '充值订单状态冲突');
-      }
-      creditLedger.adjustTenantBalance(db, {
-        tenantId: order.tenant_id,
-        actorUserId: order.created_by,
-        eventType: 'recharge',
-        amount: order.credits,
-        reason: `支付宝充值到账：${order.package_name || '自定义充值'}`,
-        referenceType: 'alipay_recharge_order',
-        referenceId: order.id,
-      });
-      return {
-        credited: true,
-        order: db.prepare('SELECT * FROM tenant_recharge_orders WHERE id = ?').get(order.id),
-      };
-    })();
-  } catch (error) {
-    if (String(error.code || '').includes('CONSTRAINT_UNIQUE')) {
-      throw rechargeError('ALIPAY_ORDER_CONFLICT', '支付宝交易号已被其他订单使用');
-    }
-    throw error;
+async function reconcileOrder(db, input, gateway) {
+  ensureSchema(db);
+  creditLedger.ensureSchema(db);
+  if (!gateway?.configured || typeof gateway.queryTrade !== 'function') {
+    throw rechargeError('ALIPAY_NOT_CONFIGURED', '支付宝充值尚未配置');
   }
+  const order = db.prepare(`SELECT * FROM tenant_recharge_orders
+    WHERE id = ? AND tenant_id = ? AND created_by = ?`)
+    .get(String(input.orderId || ''), String(input.tenantId || ''), String(input.userId || ''));
+  if (!order) throw rechargeError('RECHARGE_ORDER_NOT_FOUND', '充值订单不存在');
+  if (order.status === 'paid') return { credited: false, order };
+
+  let result;
+  try {
+    result = await gateway.queryTrade(order.out_trade_no);
+  } catch (_) {
+    throw rechargeError('ALIPAY_QUERY_FAILED', '支付宝交易查询失败，请稍后重试');
+  }
+  const code = String(result?.code || '');
+  const subCode = String(queriedField(result, 'subCode', 'sub_code') || '');
+  if (code !== '10000') {
+    if (subCode === 'ACQ.TRADE_NOT_EXIST') return { credited: false, order };
+    throw rechargeError('ALIPAY_QUERY_FAILED', '支付宝交易查询失败，请稍后重试');
+  }
+  const tradeStatus = String(queriedField(result, 'tradeStatus', 'trade_status') || '');
+  if (!['TRADE_SUCCESS', 'TRADE_FINISHED'].includes(tradeStatus)) {
+    return { credited: false, order };
+  }
+  const outTradeNo = String(queriedField(result, 'outTradeNo', 'out_trade_no') || '');
+  const alipayTradeNo = String(queriedField(result, 'tradeNo', 'trade_no') || '');
+  if (outTradeNo !== order.out_trade_no || !alipayTradeNo) {
+    throw rechargeError('ALIPAY_ORDER_CONFLICT', '支付宝查询结果与充值订单不匹配');
+  }
+  const sellerId = queriedField(result, 'sellerId', 'seller_id');
+  if (sellerId != null && String(sellerId) !== gateway.sellerId) {
+    throw rechargeError('ALIPAY_IDENTITY_MISMATCH', '支付宝查询结果收款商户不匹配');
+  }
+  const amountCents = notificationAmountCents(
+    queriedField(result, 'totalAmount', 'total_amount'),
+  );
+  return settleVerifiedTrade(db, { outTradeNo, alipayTradeNo, amountCents });
 }
 
 module.exports = {
@@ -470,8 +576,11 @@ module.exports = {
   updatePackage,
   listPackages,
   listAvailablePackages,
+  getMembershipStatus,
   reorderPackages,
   createOrder,
   listOrders,
+  settleVerifiedTrade,
   processNotification,
+  reconcileOrder,
 };

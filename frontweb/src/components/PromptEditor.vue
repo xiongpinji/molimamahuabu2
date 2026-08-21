@@ -365,13 +365,13 @@ onMounted(() => load())
 }
 
 .locked-content {
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
+  background: #101c2e;
+  border: 1px solid #294866;
   border-radius: 8px;
   padding: 10px 14px;
   font-size: 12px;
   font-family: 'Consolas', 'Monaco', monospace;
-  color: #1e40af;
+  color: #9ac7ff;
   white-space: pre-wrap;
   line-height: 1.6;
   user-select: none;

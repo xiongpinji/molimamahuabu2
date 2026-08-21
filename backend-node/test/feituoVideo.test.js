@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const Database = require('better-sqlite3');
 const {
   FEITUO_MODELS,
   normalizeFeituoBaseUrl,
@@ -13,19 +14,76 @@ const {
 } = require('../src/services/feituoVideoClient');
 const { callVideoApi, pollVideoTask } = require('../src/services/videoClient');
 const { testConnection } = require('../src/services/aiConfigService');
+const aiConfigService = require('../src/services/aiConfigService');
+const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const modelPriceService = require('../src/services/modelPriceService');
 
 const log = { info() {}, warn() {}, error() {} };
 const originalFetch = global.fetch;
+const XUAN_SEEDANCE_MODEL = 'xuan-seedance-2.5';
+
+function setupVerifiedFeituoDb(t) {
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+  const now = new Date().toISOString();
+  const capabilities = {
+    [XUAN_SEEDANCE_MODEL]: {
+      resolutions: ['480p', '720p'],
+      durations: Array.from({ length: 27 }, (_, index) => index + 4),
+      supportsFirstFrame: false,
+      supportsLastFrame: false,
+      supportsImageReference: true,
+      supportsVideoReference: true,
+      supportsAudioReference: true,
+      supportsAudio: false,
+      maxReferences: 30,
+      maxVideoReferences: 10,
+      maxAudioReferences: 10,
+    },
+  };
+  const configId = Number(db.prepare(
+    `INSERT INTO ai_service_configs
+      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+       is_active, is_default, priority, verification_status, verified_capabilities, settings,
+       created_at, updated_at)
+     VALUES ('video', 'feituo', 'feituo_open', '飞拓测试', 'https://feituokuajing.com',
+       'test-key', ?, ?, 1, 1, 0, 'verified', ?, ?, ?, ?)`,
+  ).run(
+    JSON.stringify([XUAN_SEEDANCE_MODEL]),
+    XUAN_SEEDANCE_MODEL,
+    JSON.stringify(capabilities),
+    JSON.stringify({ real_generation_verified_models: [XUAN_SEEDANCE_MODEL] }),
+    now,
+    now,
+  ).lastInsertRowid);
+  modelPriceService.set(db, XUAN_SEEDANCE_MODEL, 350, {
+    category: 'video',
+    status: 'enabled',
+    displayName: 'Seedance 2.5（飞拓）',
+    publicNote: '支持 480P、720P，按秒计费',
+    billingUnit: 'second',
+    costUnit: 'second',
+    cost_micros_per_unit: 400000,
+    resolution_prices: {
+      '480p': { credits: 350, cost_micros_per_second: 400000 },
+      '720p': { credits: 350, cost_micros_per_second: 400000 },
+    },
+  });
+  return { db, config: aiConfigService.getConfig(db, configId) };
+}
 
 afterEach(() => {
   global.fetch = originalFetch;
 });
 
 describe('Feituo Open video protocol', () => {
-  it('contains only the two models that passed real generation verification', () => {
+  it('contains the legacy protocol models and the two xuan models approved for production routing', () => {
     assert.deepEqual(Object.keys(FEITUO_MODELS).sort(), [
       'sdas-lm-hailuo-h3-2k',
       'sdas-my-seedance-2.0-fast-upscaled-1080p',
+      'xuan-seedance-2.5',
+      'xuan-video-v1-6e7b4763634e6206',
     ]);
   });
 
@@ -153,7 +211,8 @@ describe('Feituo Open video protocol', () => {
     }), { state: 'failed', error: 'provider rejected prompt' });
   });
 
-  it('routes the config through production submit and poll entry points', async () => {
+  it('routes the verified xuan config through production submit and poll entry points', async (t) => {
+    const { db, config } = setupVerifiedFeituoDb(t);
     const requests = [];
     global.fetch = async (url, options) => {
       requests.push({ url, options });
@@ -175,31 +234,14 @@ describe('Feituo Open video protocol', () => {
         }),
       };
     };
-    const row = {
-      id: 15,
-      service_type: 'video',
-      provider: 'feituo',
-      api_protocol: 'feituo_open',
-      base_url: 'https://feituokuajing.com',
-      api_key: 'secret',
-      model: ['sdas-lm-hailuo-h3-2k'],
-      default_model: 'sdas-lm-hailuo-h3-2k',
-      is_default: false,
-      is_active: true,
-    };
-    const db = {
-      prepare(sql) {
-        return { all: () => sql.includes('SELECT * FROM ai_service_configs') ? [row] : [] };
-      },
-    };
-
     const submitted = await callVideoApi(db, log, {
-      model: 'sdas-lm-hailuo-h3-2k',
+      model: XUAN_SEEDANCE_MODEL,
       prompt: 'test',
-      duration: 5,
+      duration: 4,
+      resolution: '720p',
       aspect_ratio: '16:9',
     });
-    const completed = await pollVideoTask(null, log, 1, submitted.task_id, row, 1, 0);
+    const completed = await pollVideoTask(null, log, 1, submitted.task_id, config, 1, 0);
 
     assert.deepEqual(submitted, { task_id: 'routed-job', status: 'submitted' });
     assert.match(requests[1].url, /^https:\/\/feituokuajing\.com\/api\/open\/v1\/video\/status\?jobId=routed-job&_\=\d+$/);
@@ -207,7 +249,8 @@ describe('Feituo Open video protocol', () => {
     assert.deepEqual(completed, { video_url: 'https://files.example/routed.mp4' });
   });
 
-  it('uploads protected short-drama references once before submitting them to Feituo', async (t) => {
+  it('uploads protected short-drama references once before submitting them to verified xuan Seedance', async (t) => {
+    const { db } = setupVerifiedFeituoDb(t);
     const storagePath = fs.mkdtempSync(path.join(os.tmpdir(), 'feituo-shortdrama-'));
     t.after(() => fs.rmSync(storagePath, { recursive: true, force: true }));
     const relativePath = 'projects/0050/frames/first.jpg';
@@ -234,31 +277,13 @@ describe('Feituo Open video protocol', () => {
       };
     };
 
-    const row = {
-      id: 13,
-      service_type: 'video',
-      provider: 'feituo',
-      api_protocol: 'feituo_open',
-      base_url: 'https://feituokuajing.com',
-      api_key: 'secret',
-      model: ['sdas-lm-hailuo-h3-2k'],
-      default_model: 'sdas-lm-hailuo-h3-2k',
-      is_default: false,
-      is_active: true,
-    };
-    const db = {
-      prepare(sql) {
-        return { all: () => sql.includes('SELECT * FROM ai_service_configs') ? [row] : [] };
-      },
-    };
-
     const submitted = await callVideoApi(db, log, {
-      model: 'sdas-lm-hailuo-h3-2k',
+      model: XUAN_SEEDANCE_MODEL,
       prompt: '@image1 延续上一镜动作',
-      duration: 5,
+      duration: 4,
+      resolution: '720p',
       aspect_ratio: '16:9',
       image_url: protectedUrl,
-      first_frame_url: protectedUrl,
       reference_urls: [protectedUrl],
       storage_local_path: storagePath,
       video_gen_id: 197,

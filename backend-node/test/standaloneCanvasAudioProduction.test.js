@@ -10,6 +10,7 @@ const Database = require('better-sqlite3');
 const createAudioRoutes = require('../src/routes/audio');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const { createStaticOwnershipMiddleware } = require('../src/middleware/resourceOwnership');
+const creditLedger = require('../src/services/creditLedgerService');
 const userAuth = require('../src/services/userAuthService');
 const { isProbableMp3 } = require('../src/services/ttsService');
 const validMp3Bytes = require('./fixtures/minimalMp3');
@@ -200,6 +201,66 @@ test('自由画布音频按项目目录保存、确认计费并可经授权静�
   assert.equal(forbiddenResponse.status, 404);
 });
 
+test('TTS 已完成后本地积分确认失败保持预扣且不得改成可退款失败', async (t) => {
+  let providerCalls = 0;
+  const provider = http.createServer((_req, res) => {
+    providerCalls += 1;
+    res.writeHead(200, { 'content-type': 'audio/mpeg' });
+    res.end(validMp3Bytes);
+  });
+  const providerServer = await listen(provider);
+  t.after(() => close(providerServer));
+
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'standalone-audio-settle-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+  insertUser(db, 'user-a', 'a@example.com');
+  insertTenant(db, 'tenant-a', 'user-a');
+  const dramaId = insertDrama(db, 'tenant-a', 'user-a', '结算异常项目');
+  insertTtsConfig(db, `http://127.0.0.1:${providerServer.address().port}`, 'tts-canvas');
+  setPriceAndBalance(db, 'tenant-a', 'tts-canvas', 7, 20);
+
+  const originalSettleGeneration = creditLedger.settleGeneration;
+  creditLedger.settleGeneration = (_db, _reservationId, target) => {
+    assert.equal(target, 'completed');
+    const error = new Error('simulated ledger failure');
+    error.code = 'LEDGER_WRITE_FAILED';
+    throw error;
+  };
+  t.after(() => {
+    creditLedger.settleGeneration = originalSettleGeneration;
+  });
+
+  const routes = createAudioRoutes(db, { info() {}, error() {} }, {
+    storage: { local_path: storageRoot },
+  }, { billingEnabled: true });
+  const res = createResponse();
+  await routes.extract(makeRequest({
+    drama_id: dramaId,
+    text: '供应商已经成功返回音频',
+    tts_model: 'tts-canvas',
+  }), res);
+
+  assert.equal(providerCalls, 1);
+  assert.equal(res.statusCode, 502);
+  assert.equal(res.body.error.code, 'PROVIDER_STATUS_UNKNOWN');
+  assert.deepEqual(
+    db.prepare('SELECT available, held, spent FROM tenant_credit_accounts WHERE tenant_id = ?').get('tenant-a'),
+    { available: 13, held: 7, spent: 0 },
+  );
+  assert.equal(
+    db.prepare("SELECT status FROM tenant_usage_reservations WHERE tenant_id = 'tenant-a'").get().status,
+    'held',
+  );
+  assert.deepEqual(
+    db.prepare("SELECT event_type FROM audit_events WHERE tenant_id = 'tenant-a' ORDER BY rowid").all()
+      .map((row) => row.event_type),
+    ['generation.audio.created', 'generation.audio.needs_attention'],
+  );
+});
+
 test('未设置 default_model 时按实际首个模型调用并计费', async (t) => {
   let providerModel = null;
   const provider = http.createServer((req, res) => {
@@ -354,7 +415,7 @@ test('公开模式拒绝当前项目之外的 storyboard 且不读取或回写',
   );
 });
 
-test('TTS 供应商返回空音频时不落盘、不扣费并退款', async (t) => {
+test('TTS 供应商返回空音频时不落盘并保持积分待人工处理', async (t) => {
   const provider = http.createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'audio/mpeg' });
     res.end();
@@ -383,15 +444,15 @@ test('TTS 供应商返回空音频时不落盘、不扣费并退款', async (t) 
     tts_model: 'tts-canvas',
   }), res);
 
-  assert.equal(res.statusCode, 500);
+  assert.equal(res.statusCode, 502);
   assert.equal(listMp3Files(storageRoot).length, 0);
   assert.deepEqual(
     db.prepare('SELECT available, held, spent FROM tenant_credit_accounts WHERE tenant_id = ?').get('tenant-a'),
-    { available: 20, held: 0, spent: 0 },
+    { available: 13, held: 7, spent: 0 },
   );
   assert.equal(
     db.prepare("SELECT status FROM tenant_usage_reservations WHERE tenant_id = 'tenant-a'").get().status,
-    'refunded',
+    'held',
   );
 });
 
@@ -412,7 +473,7 @@ for (const scenario of [
     payload: validMp3Bytes.subarray(0, 100),
   },
 ]) {
-  test(`TTS 供应商 HTTP 200 返回非空${scenario.name}时失败、退款并记录审计`, async (t) => {
+  test(`TTS 供应商 HTTP 200 返回非空${scenario.name}时保持积分并记录待人工审计`, async (t) => {
     const provider = http.createServer((_req, res) => {
       res.writeHead(200, { 'content-type': scenario.contentType });
       res.end(scenario.payload);
@@ -441,27 +502,27 @@ for (const scenario of [
       tts_model: 'tts-canvas',
     }), res);
 
-    assert.equal(res.statusCode, 500);
+    assert.equal(res.statusCode, 502);
     assert.equal(listMp3Files(storageRoot).length, 0);
     assert.deepEqual(
       db.prepare('SELECT available, held, spent FROM tenant_credit_accounts WHERE tenant_id = ?').get('tenant-a'),
-      { available: 20, held: 0, spent: 0 },
+      { available: 13, held: 7, spent: 0 },
     );
     assert.equal(
       db.prepare("SELECT status FROM tenant_usage_reservations WHERE tenant_id = 'tenant-a'").get().status,
-      'refunded',
+      'held',
     );
     assert.deepEqual(
       db.prepare("SELECT event_type, outcome FROM audit_events WHERE tenant_id = 'tenant-a' ORDER BY rowid").all(),
       [
         { event_type: 'generation.audio.created', outcome: 'success' },
-        { event_type: 'generation.audio.failed', outcome: 'failed' },
+        { event_type: 'generation.audio.needs_attention', outcome: 'needs_attention' },
       ],
     );
   });
 }
 
-test('TTS 供应商失败后退款并记录失败审计', async (t) => {
+test('TTS 供应商 5xx 后保持积分并记录待人工审计', async (t) => {
   const provider = http.createServer((_req, res) => {
     res.writeHead(500, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: { message: 'provider failed' } }));
@@ -490,20 +551,20 @@ test('TTS 供应商失败后退款并记录失败审计', async (t) => {
     tts_model: 'tts-canvas',
   }), res);
 
-  assert.equal(res.statusCode, 500);
+  assert.equal(res.statusCode, 502);
   assert.deepEqual(
     db.prepare('SELECT available, held, spent FROM tenant_credit_accounts WHERE tenant_id = ?').get('tenant-a'),
-    { available: 20, held: 0, spent: 0 },
+    { available: 13, held: 7, spent: 0 },
   );
   assert.equal(
     db.prepare("SELECT status FROM tenant_usage_reservations WHERE tenant_id = 'tenant-a'").get().status,
-    'refunded',
+    'held',
   );
   assert.deepEqual(
     db.prepare("SELECT event_type, outcome FROM audit_events WHERE tenant_id = 'tenant-a' ORDER BY rowid").all(),
     [
       { event_type: 'generation.audio.created', outcome: 'success' },
-      { event_type: 'generation.audio.failed', outcome: 'failed' },
+      { event_type: 'generation.audio.needs_attention', outcome: 'needs_attention' },
     ],
   );
 });

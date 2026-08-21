@@ -22,14 +22,36 @@ test('图片和视频预览都可通过关闭操作及 Escape 退出', () => {
   assert.match(nodeSource, /if \(mediaPreviewUrl\.value\) \{[\s\S]*closeMediaPreview\(\)/)
 })
 
+test('图片全屏预览支持 Ctrl 或 Command 加滚轮缩放并在开关时复位', () => {
+  assert.match(nodeSource, /const mediaPreviewScale = ref\(1\)/)
+  assert.match(nodeSource, /@wheel="onMediaPreviewWheel"/)
+  assert.match(nodeSource, /if \(!event\.ctrlKey && !event\.metaKey\) return/)
+  assert.match(nodeSource, /mediaPreviewScale\.value = Math\.min\(5, Math\.max\(0\.25,/)
+  assert.match(nodeSource, /:style="\{ transform: `translate3d\(\$\{mediaPreviewOffset\.x\}px, \$\{mediaPreviewOffset\.y\}px, 0\) scale\(\$\{mediaPreviewScale\}\)` \}"/)
+  assert.match(nodeSource, /mediaPreviewScale\.value = 1[\s\S]*mediaPreviewUrl\.value = String\(url\)/)
+  assert.match(nodeSource, /mediaPreviewUrl\.value = ''[\s\S]*mediaPreviewScale\.value = 1/)
+})
+
+test('图片全屏预览支持按住空格后用鼠标左键拖动且在关闭时复位', () => {
+  assert.match(nodeSource, /const mediaPreviewOffset = reactive\(\{ x: 0, y: 0 \}\)/)
+  assert.match(nodeSource, /const mediaPreviewSpacePressed = ref\(false\)/)
+  assert.match(nodeSource, /@pointerdown\.stop="startMediaPreviewPan"/)
+  assert.match(nodeSource, /event\.code === 'Space'/)
+  assert.match(nodeSource, /event\.button !== 0 \|\| !mediaPreviewSpacePressed\.value/)
+  assert.match(nodeSource, /window\.addEventListener\('pointermove', onMediaPreviewPointerMove\)/)
+  assert.match(nodeSource, /window\.addEventListener\('pointerup', stopMediaPreviewPan\)/)
+  assert.match(nodeSource, /translate3d\(\$\{mediaPreviewOffset\.x\}px, \$\{mediaPreviewOffset\.y\}px, 0\) scale\(\$\{mediaPreviewScale\}\)/)
+  assert.match(nodeSource, /mediaPreviewOffset\.x = 0[\s\S]*mediaPreviewOffset\.y = 0/)
+  assert.match(nodeSource, /空格 \+ 左键拖动/)
+})
+
 test('独立画布支持将本地图片直接拖入并在落点创建图片节点', () => {
   assert.match(canvasSource, /@dragover="onCanvasImageDragOver"/)
   assert.match(canvasSource, /@drop="onCanvasImageDrop"/)
-  assert.match(canvasSource, /collectDroppedImageFiles/)
-  assert.match(canvasSource, /createDroppedImageNodeSpecs/)
+  assert.match(canvasSource, /collectDroppedImageFiles\(event\.dataTransfer\)/)
   assert.match(canvasSource, /screenToFlowPosition\(event\.clientX, event\.clientY\)/)
   assert.match(canvasSource, /createFreeCanvasNode\('image', spec\.position, spec\.data\)/)
-  assert.match(canvasSource, /uploadAPI\.uploadMedia\(spec\.file, \{ dramaId: drama\.value\.id \}\)/)
+  assert.match(canvasSource, /uploadFreeCanvasNodeFile\(nodeId, file\)/)
 })
 
 test('连线悬停时可直接运行下游图片节点', () => {
@@ -42,6 +64,7 @@ test('连线悬停时可直接运行下游图片节点', () => {
 })
 
 test('请求失败优先展示服务端的具体失败原因', () => {
+  assert.match(requestSource, /import \{ apiErrorMessage, userHttpErrorMessage \} from '\.\/httpError'/)
   assert.match(httpErrorSource, /function apiErrorMessage\(payload, fallback = ''\)/)
   assert.match(httpErrorSource, /payload\.provider_message/)
   assert.match(requestSource, /apiErrorMessage\(error\.response\?\.data\)/)

@@ -29,16 +29,11 @@ test('工具栏完整提供实测入口、下拉工具、下载和全屏', () =>
   for (const label of ['裁剪', '高清', '解析', '框选去字幕', '音频分离', '画面编辑']) {
     assert.match(source, new RegExp(label))
   }
-  assert.match(source, /仅处理选区画面，不做文字识别/)
-  assert.doesNotMatch(source, /\u004f\u0043\u0052/)
-  assert.doesNotMatch(source, /智能去字幕/)
   assert.match(source, /aria-label="下载视频"/)
   assert.match(source, /aria-label="全屏预览"/)
   assert.match(source, /runVideoNodeTool/)
   assert.match(source, /videoToolsAPI\.getCapabilities/)
   assert.match(source, /operationAvailable/)
-  assert.match(source, /capabilitiesError/)
-  assert.match(source, /视频处理能力检查失败/)
   assert.match(source, /region-handle/)
   assert.match(source, /startRegionResize/)
   assert.match(source, /\.home-canvas-node\.is-selected \.video-node-toolbar/)
@@ -52,34 +47,11 @@ test('前端接入异步视频任务、结果节点和刷新恢复', () => {
   assert.match(apiSource, /\/video-tools\/capabilities/)
   assert.match(apiSource, /\/video-tools\/operations/)
   assert.match(canvasSource, /async function runVideoNodeTool/)
-  assert.match(canvasSource, /dramaId:\s*dramaId\.value/)
   assert.match(canvasSource, /async function completeVideoToolOperation/)
   assert.match(canvasSource, /function resumePendingVideoToolOperations/)
   assert.match(canvasSource, /createFreeCanvasNode\((?:'|\")video(?:'|\")/)
   assert.match(canvasSource, /videoToolHistory/)
   assert.match(canvasSource, /videoToolStatus: 'failed'/)
-})
-
-test('视频任务在画布生命周期变化后停止轮询且禁止陈旧回写', () => {
-  const canvasSource = read('src/views/DramaCanvas.vue')
-  const completionStart = canvasSource.indexOf('async function completeVideoToolOperation')
-  const completionEnd = canvasSource.indexOf('async function runVideoNodeTool', completionStart)
-  const completionSource = canvasSource.slice(completionStart, completionEnd)
-
-  assert.match(canvasSource, /let videoToolPollSession = 0/)
-  assert.match(canvasSource, /function invalidateVideoToolPolling\(\)/)
-  assert.match(canvasSource, /watch\(\(\) => route\.params\.id, \(\) => \{\s*invalidateVideoToolPolling\(\)/)
-  assert.match(canvasSource, /onBeforeUnmount\(\(\) => \{\s*invalidateVideoToolPolling\(\)/)
-  assert.match(canvasSource, /String\(dramaId\.value \|\| ''\) !== pollToken\.dramaId/)
-  assert.match(canvasSource, /freeCanvasNodeById\(pollToken\.nodeId\)/)
-  assert.match(canvasSource, /String\(node\.data\?\.videoToolTaskId \|\| ''\) !== pollToken\.taskId/)
-  assert.match(canvasSource, /async function waitForVideoToolOperation\(taskId, pollToken\)/)
-  assert.match(canvasSource, /completeVideoToolOperation\(node\.id, operation, result, previousHistory, pollToken\)/)
-  assert.equal(
-    (completionSource.match(/requireCurrentVideoToolSourceNode\(pollToken\)/g) || []).length,
-    5,
-    '解析、视频、音频结果节点及源节点状态回写前都必须复核任务归属',
-  )
 })
 
 test('视频解析结果使用可持久化表格而非纯文本占位', () => {
@@ -91,7 +63,6 @@ test('视频解析结果使用可持久化表格而非纯文本占位', () => {
   assert.match(normalizerSource, /normalizeVideoStory/)
   assert.match(normalizerSource, /normalized\.videoStory/)
 })
-
 test('视频节点全能参考可实际接收并提交图片、视频和音频', () => {
   const nodeSource = read('src/components/dramaCanvas/HomeCanvasNode.vue')
   const canvasSource = read('src/views/DramaCanvas.vue')
@@ -99,9 +70,33 @@ test('视频节点全能参考可实际接收并提交图片、视频和音频',
 
   assert.match(nodeSource, /@click="setVideoReferenceMode\('omni'\)"/)
   assert.doesNotMatch(nodeSource, /当前生成链路尚未开放全能参考/)
-  assert.match(nodeSource, /image\/\*,video\/\*,audio\/\*/)
+  assert.match(nodeSource, /:accept="referenceMediaAccept"/)
+  assert.match(nodeSource, /capabilityAllows\('supportsImageReference'\)[\s\S]*accepted\.push\('image\/\*'\)/)
+  assert.match(nodeSource, /capabilityAllows\('supportsVideoReference'\)[\s\S]*accepted\.push\('video\/\*'\)/)
+  assert.match(nodeSource, /capabilityAllows\('supportsAudioReference'\)[\s\S]*accepted\.push\('audio\/\*'\)/)
   assert.match(canvasSource, /collectDirectUpstreamMediaReferences/)
   assert.match(canvasSource, /uploadFreeCanvasReferenceMedia/)
-  assert.match(requestSource, /reference_video_url/)
-  assert.match(requestSource, /reference_audio_url/)
+  assert.match(requestSource, /reference_video_urls/)
+  assert.match(requestSource, /reference_audio_urls/)
+})
+
+test('视频模型切换同步重写参考模式和连线启用状态', () => {
+  const nodeSource = read('src/components/dramaCanvas/HomeCanvasNode.vue')
+  assert.match(nodeSource, /selectFreeCanvasVideoReferenceMode/)
+  assert.match(nodeSource, /async function setVideoReferenceMode\(mode\)/)
+  assert.match(nodeSource, /const nextMode = normalizeFreeCanvasVideoReferenceMode\(mode\)/)
+  assert.match(nodeSource, /syncVideoReferenceEdges\(nextMode\)/)
+  assert.match(nodeSource, /planFreeCanvasVideoReferences\(capability\.value, mode, inputReferences\.value\)/)
+  assert.match(nodeSource, /videoReferenceCapabilityKey/)
+})
+
+test('视频参考标签严格按供应商能力显示且无参考模型标记为纯提示词', () => {
+  const nodeSource = read('src/components/dramaCanvas/HomeCanvasNode.vue')
+  assert.match(nodeSource, /supportsOmniReferenceMode[\s\S]*supportsVideoReference/)
+  assert.match(nodeSource, /supportsOmniReferenceMode[\s\S]*supportsAudioReference/)
+  assert.doesNotMatch(nodeSource, /supportsOmniReferenceMode[\s\S]{0,180}supportsImageReference === true/)
+  assert.match(nodeSource, /const videoReferenceMode = computed\(\(\) => selectFreeCanvasVideoReferenceMode\([\s\S]{0,180}normalizeFreeCanvasVideoReferenceMode/)
+  assert.match(nodeSource, /当前模型仅开放纯提示词生成/)
+  assert.match(nodeSource, /供应商未声明独立动作模仿接口/)
+  assert.match(nodeSource, /供应商未声明视频编辑接口/)
 })

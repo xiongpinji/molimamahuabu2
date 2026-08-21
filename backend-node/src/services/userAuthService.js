@@ -3,7 +3,11 @@ const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const audit = require('./auditEventService');
 
-const TOKEN_TTL = '2h';
+const DEFAULT_TOKEN_TTL = '12h';
+
+function resolveTokenTtl(env = process.env) {
+  return String(env?.PLATFORM_JWT_TTL || '').trim() || DEFAULT_TOKEN_TTL;
+}
 
 function authError(code, message) {
   const error = new Error(message);
@@ -168,7 +172,7 @@ function issueToken(user, secret, tokenVersion = 0) {
   if (!validSecret(secret)) throw authError('AUTH_NOT_CONFIGURED', '用户登录密钥未安全配置');
   return jwt.sign({ email: user.email, role: user.role, ver: Number(tokenVersion) || 0 }, secret, {
     subject: user.id,
-    expiresIn: TOKEN_TTL,
+    expiresIn: resolveTokenTtl(),
     algorithm: 'HS256',
   });
 }
@@ -196,5 +200,6 @@ module.exports = {
   issueToken,
   verifyToken,
   validSecret,
+  resolveTokenTtl,
   normalizeEmail,
 };

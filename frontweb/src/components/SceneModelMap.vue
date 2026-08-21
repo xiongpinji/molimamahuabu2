@@ -397,7 +397,7 @@ onMounted(() => {
 
 .page-desc {
   margin: 0;
-  color: #666;
+  color: var(--text-muted, #a3a3a3);
   font-size: 14px;
   line-height: 1.6;
 }
@@ -407,38 +407,38 @@ onMounted(() => {
 }
 
 .scene-key {
-  background: #f5f7fa;
+  background: rgba(59, 130, 246, .16);
   padding: 2px 8px;
   border-radius: 4px;
   font-family: 'Courier New', monospace;
   font-size: 13px;
-  color: #409eff;
+  color: #8cc8ff;
   width: fit-content;
 }
 
 .scene-key-label {
   font-size: 12px;
-  color: #666;
+  color: var(--text-muted, #a3a3a3);
 }
 
 .model-override {
-  background: #e6f7ff;
+  background: rgba(56, 189, 248, .16);
   padding: 2px 8px;
   border-radius: 4px;
   font-family: 'Courier New', monospace;
   font-size: 13px;
-  color: #096dd9;
+  color: #7dd3fc;
 }
 
 .text-muted {
-  color: #999;
+  color: var(--text-secondary, #999);
   font-size: 13px;
 }
 
 .field-tip {
   margin: 6px 0 0;
   font-size: 12px;
-  color: #999;
+  color: var(--text-secondary, #999);
   line-height: 1.4;
 }
 </style>

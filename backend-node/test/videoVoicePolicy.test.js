@@ -53,16 +53,9 @@ test('公开视频模型接口不下发声音策略等后台配置元数据', ()
   const now = new Date().toISOString();
   db.prepare(
     `INSERT INTO ai_service_configs
-      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
-       is_active, is_default, verification_status, verification_evidence, created_at, updated_at)
-     VALUES ('video', 'gemini', 'gemini', 'Veo', 'https://example.com', 'secret', ?, ?, 1, 1, 'verified', ?, ?, ?)`
-  ).run(
-    JSON.stringify(['veo-2.0-generate-001', 'veo-3.1-generate-preview']),
-    'veo-3.1-generate-preview',
-    JSON.stringify({ source: 'public-view-test' }),
-    now,
-    now,
-  );
+      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, is_active, is_default, created_at, updated_at)
+     VALUES ('video', 'gemini', 'gemini', 'Veo', 'https://example.com', 'secret', ?, ?, 1, 1, ?, ?)`
+  ).run(JSON.stringify(['veo-2.0-generate-001', 'veo-3.1-generate-preview']), 'veo-3.1-generate-preview', now, now);
   let payload;
   const res = {
     status() { return this; },

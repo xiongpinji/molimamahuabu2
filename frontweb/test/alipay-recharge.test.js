@@ -136,7 +136,8 @@ test('套餐卡完整展示结构化广告与积分明细，禁用时不发出�
   }
   assert.match(packageCard, /packageCreditMetrics/)
   assert.match(packageCard, /baseCredits/)
-  assert.match(packageCard, /bonusCredits/)
+  assert.match(packageCard, /dailyBonusCredits/)
+  assert.match(packageCard, /连续 30 天/)
   assert.match(packageCard, /creditsPerYuan/)
   assert.match(packageCard, /if\s*\(props\.disabled\s*\|\|\s*props\.preview\)\s*return/)
   assert.match(packageCard, /height:\s*230px/)
@@ -270,13 +271,13 @@ function setValidPackage(id, name) {
 test('套餐管理器提供全字段草稿、创建更新与用户端实时预览', () => {
   for (const text of [
     '套餐名称', '角标文案', '广告主标题', '广告副标题', '按钮文案',
-    '售价（元）', '到账积分', '开始时间', '结束时间', '强调色', '推荐套餐', '状态',
+    '售价（元）', '基础积分（永久）', '每日赠送积分', '开始时间', '结束时间', '强调色', '推荐套餐', '状态',
   ]) {
     assert.match(adminPanel, new RegExp(text))
   }
   for (const field of [
     'name', 'badge_text', 'ad_title', 'ad_subtitle', 'button_text', 'amount_yuan',
-    'credits', 'starts_at', 'ends_at', 'image_url', 'accent_color', 'sort_order',
+    'daily_bonus_credits', 'starts_at', 'ends_at', 'image_url', 'accent_color', 'sort_order',
     'is_featured', 'status',
   ]) {
     if (field === 'sort_order') assert.match(adminPanel, /sort_order:\s*packages\.value\.length/)
@@ -371,7 +372,7 @@ test('套餐草稿归一化分转元并生成完整保存 payload', () => {
     ad_subtitle: '本周有效',
     button_text: '',
     amount_cents: 1234,
-    credits: 1500,
+    daily_bonus_credits: 1500,
     starts_at: '2026-08-01T00:00:00.000Z',
     ends_at: '2026-08-31T00:00:00.000Z',
     image_url: '/static/uploads/recharge-packages/summer.png',
@@ -391,7 +392,7 @@ test('套餐草稿归一化分转元并生成完整保存 payload', () => {
     ad_subtitle: '本周有效',
     button_text: '立即购买',
     amount_yuan: '12.34',
-    credits: 1500,
+    daily_bonus_credits: 1500,
     starts_at: '2026-08-01T00:00:00.000Z',
     ends_at: '2026-08-31T00:00:00.000Z',
     image_url: '/static/uploads/recharge-packages/summer.png',
@@ -477,18 +478,18 @@ test('切换套餐使用独立草稿且保存失败保留当前图片', async ()
   assert.deepEqual(harness.messages.error, ['save failed'])
 })
 
-test('到账积分允许任意正整数并按原值保存', () => {
-  assert.match(adminPanel, /v-model="draft\.credits"[^>]*:step="1"/)
-  assert.doesNotMatch(adminPanel, /v-model="draft\.credits"[^>]*step-strictly/)
+test('每日赠送积分允许任意非负整数并按原值保存', () => {
+  assert.match(adminPanel, /v-model="draft\.daily_bonus_credits"[^>]*:step="1"/)
+  assert.doesNotMatch(adminPanel, /v-model="draft\.daily_bonus_credits"[^>]*step-strictly/)
   const { toPayload } = createAdminPanelHarness()
   assert.equal(toPayload({
     name: '非整百套餐',
     badge_text: '',
-    ad_title: '到账 1501 积分',
+    ad_title: '每日赠送 1501 积分',
     ad_subtitle: '',
     button_text: '立即购买',
     amount_yuan: 15,
-    credits: 1501,
+    daily_bonus_credits: 1501,
     starts_at: null,
     ends_at: null,
     image_url: '/static/uploads/recharge-packages/1501.png',
@@ -496,7 +497,7 @@ test('到账积分允许任意正整数并按原值保存', () => {
     sort_order: 0,
     is_featured: false,
     status: 'active',
-  }).credits, 1501)
+  }).daily_bonus_credits, 1501)
 })
 
 test('创建成功后列表刷新失败仍锁定服务端 ID，重试只能更新', async () => {

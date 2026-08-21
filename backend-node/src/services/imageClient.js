@@ -12,9 +12,18 @@ const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
 const { resolveKlingBearerToken } = require('./klingJwt');
 const creditLedger = require('./creditLedgerService');
 const auditEvent = require('./auditEventService');
+const generationCost = require('./generationCostLedgerService');
+const assetService = require('./assetService');
 const aihubccClient = require('./aihubccClient');
-const fuminImageClient = require('./fuminImageClient');
+const token6688Client = require('./token6688Client');
+const mediaModelSelection = require('./mediaModelSelectionService');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
+const { aspectRatioLabelFromPixelSize } = require('./mediaAspectRatioSpec');
+const { downloadPublicImage } = require('./publicImageDownload');
+const usmercariImageClient = require('./usmercariImageClient');
+const fuminImageClient = require('./fuminImageClient');
+const modelPriceService = require('./modelPriceService');
+const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 const providerRouteStability = require('./providerRouteStabilityService');
 const { classifyProviderFailure } = require('./providerErrorClassifier');
 
@@ -68,6 +77,73 @@ async function compressImageBuffer(buffer, mimeType, targetKB = 2048, log = null
   return { buffer, mimeType };
 }
 
+/**
+ * 压缩 JSON 请求中的 inline 参考图，避免多图同时触发供应商请求体限制。
+ * 公网 HTTPS URL 不下载、不改写，交给供应商按 URL 拉取；仅处理 data:image/*;base64 引用。
+ * @param {string[]} resolvedRefs - resolveImageRef 后的引用列表
+ * @param {{ totalBytes?: number, log?: object }} options
+ * @returns {Promise<string[]>}
+ */
+async function compressResolvedImageRefsForJson(resolvedRefs, options = {}) {
+  const refs = Array.isArray(resolvedRefs) ? resolvedRefs : [];
+  const totalBytes = Number(options.totalBytes || 5 * 1024 * 1024);
+  const log = options.log || null;
+  const inlineRefs = refs.filter((value) => /^data:image\/[^;]+;base64,/i.test(String(value || '')));
+  let remainingBytes = totalBytes;
+  let remainingInline = inlineRefs.length;
+  const output = [];
+
+  for (const ref of refs) {
+    const match = /^data:(image\/[^;]+);base64,(.*)$/i.exec(String(ref || ''));
+    if (!match) {
+      output.push(ref);
+      continue;
+    }
+
+    const buffer = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
+    const fairShare = remainingInline > 0 ? Math.floor(remainingBytes / remainingInline) : totalBytes;
+    const targetBytes = Math.max(256 * 1024, Math.min(2 * 1024 * 1024, fairShare));
+    let prepared = buffer;
+    let mimeType = match[1].toLowerCase();
+
+    if (buffer.length > targetBytes) {
+      const compressed = await compressImageBuffer(buffer, mimeType, Math.floor(targetBytes / 1024), log);
+      prepared = compressed.buffer;
+      mimeType = compressed.mimeType;
+
+      // Highly detailed images can remain above the target at quality 30; reduce dimensions once more.
+      if (prepared.length > targetBytes && getSharp()) {
+        try {
+          const metadata = await getSharp()(prepared).metadata();
+          const scale = Math.sqrt(targetBytes / prepared.length) * 0.9;
+          const width = Math.max(320, Math.floor((metadata.width || 1024) * scale));
+          const height = Math.max(320, Math.floor((metadata.height || 1024) * scale));
+          prepared = await getSharp()(prepared)
+            .resize({ width, height, fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: 45 })
+            .toBuffer();
+          mimeType = 'image/jpeg';
+        } catch (error) {
+          if (log) log.warn('[参考图压缩] 尺寸压缩失败，保留质量压缩结果', { error: error.message });
+        }
+      }
+    }
+
+    if (log && prepared.length !== buffer.length) {
+      log.info('[参考图压缩] JSON 提交前处理', {
+        original_kb: Math.round(buffer.length / 1024),
+        compressed_kb: Math.round(prepared.length / 1024),
+        remaining_budget_kb: Math.round(Math.max(0, remainingBytes - prepared.length) / 1024),
+      });
+    }
+    output.push(`data:${mimeType};base64,${prepared.toString('base64')}`);
+    remainingBytes = Math.max(0, remainingBytes - prepared.length);
+    remainingInline -= 1;
+  }
+
+  return output;
+}
+
 // 惰性加载配置，避免循环依赖与启动顺序问题
 let _appConfig = null;
 function getAppConfig() {
@@ -88,9 +164,12 @@ function getProxyExpireHours() {
  */
 function inferProtocol(provider, model) {
   const p = String(provider || '').toLowerCase();
+  if (p === 'token6688' || p === 'tokengo') return 'token6688';
   if (p === 'aihubcc' || p === 'aihubcc_image') return 'aihubcc';
+  if (p === 'djpsd_openapi' || p === 'djpsd') return 'djpsd_openapi';
   if (p === 'dashscope' || p === 'qwen_image') return 'dashscope';
   if (p === 'nano_banana') return 'nano_banana';
+  if (p === 'usmercari_image') return 'usmercari_image';
   if (p === 'gemini' || p === 'google') return 'gemini';
   if (p === 'volces' || p === 'volcengine' || p === 'volc') return 'volcengine';
   if (/seedream|doubao/i.test(model || '')) return 'volcengine';
@@ -99,6 +178,15 @@ function inferProtocol(provider, model) {
   if (p === 'agnes' || /agnes-image|apihub\.agnes-ai\.com/i.test(String(model || ''))) return 'agnes';
   if (p === 'fumin_image') return 'openai';
   return 'openai';
+}
+
+function isAihubccBaseUrl(baseUrl) {
+  try {
+    const hostname = new URL(String(baseUrl || '')).hostname.toLowerCase();
+    return hostname === 'aihubcc.cc' || hostname.endsWith('.aihubcc.cc');
+  } catch (_) {
+    return false;
+  }
 }
 
 function providerErrorMeta(data, httpStatus, overrides = {}) {
@@ -146,11 +234,7 @@ async function callAihubccImageApi(config, log, opts = {}) {
   if (gptImage2 && rawRefs.length > 20) {
     return {
       error: 'AIHubCC gpt-image-2 最多支持 20 张参考图，请移除超出的参考图后再生成',
-      route_meta: {
-        phase: 'prepare',
-        requestBodySent: false,
-        explicitlyRejected: true,
-      },
+      route_meta: { phase: 'prepare', requestBodySent: false, explicitlyRejected: true },
     };
   }
   const refs = rawRefs
@@ -161,13 +245,10 @@ async function callAihubccImageApi(config, log, opts = {}) {
   if (gptImage2 && rawRefs.length > 0 && refs.length !== rawRefs.length) {
     return {
       error: 'AIHubCC gpt-image-2 参考图无法读取，请重新上传后再生成',
-      route_meta: {
-        phase: 'prepare',
-        requestBodySent: false,
-        explicitlyRejected: true,
-      },
+      route_meta: { phase: 'prepare', requestBodySent: false, explicitlyRejected: true },
     };
   }
+  const preparedRefs = gptImage2Edit ? refs : await compressResolvedImageRefsForJson(refs, { log });
   const flowModel = aihubccClient.isFlowImageModel(model);
   const asyncModel = aihubccClient.isAsyncImageModel(model);
   const requestSize = /^gpt-image-2(?:-1k)?$/i.test(model)
@@ -197,14 +278,14 @@ async function callAihubccImageApi(config, log, opts = {}) {
       ? aihubccClient.buildFlowImageBody({
           model,
           prompt: opts.prompt,
-          referenceUrls: refs,
+          referenceUrls: preparedRefs,
         })
       : aihubccClient.buildImageBody({
           model,
           prompt: opts.prompt,
           size: requestSize,
           quality: opts.quality,
-          referenceUrls: refs,
+          referenceUrls: preparedRefs,
         });
   }
   const url = aihubccClient.getSubmitUrl(config, endpoint);
@@ -283,6 +364,252 @@ async function callAihubccImageApi(config, log, opts = {}) {
   return { ...polled, route_meta: { providerTaskId: taskId } };
 }
 
+function normalizeDjpsdOpenApiBaseUrl(value) {
+  return String(value || 'https://shiping.djpsd.com').trim().replace(/\/+$/, '').replace(/\/v1$/i, '');
+}
+
+function buildDjpsdOpenApiImageUrl(baseUrl, endpoint, defaultPath) {
+  const root = normalizeDjpsdOpenApiBaseUrl(baseUrl);
+  const raw = String(endpoint || defaultPath).trim();
+  if (!/^https?:\/\//i.test(raw)) return root + (raw.startsWith('/') ? raw : `/${raw}`);
+  const url = new URL(raw);
+  if (url.origin !== new URL(root).origin) {
+    throw new Error('DJPSD 开放 API 端点必须与 Base URL 同源');
+  }
+  return url.toString();
+}
+
+function buildDjpsdOpenApiImageQueryUrl(config, taskId) {
+  const encoded = encodeURIComponent(String(taskId));
+  let queryEndpoint = String(config.query_endpoint || '/v1/media/status?task_id={taskId}').trim();
+  if (/\{taskId\}|\{task_id\}|\{id\}/i.test(queryEndpoint)) {
+    queryEndpoint = queryEndpoint.replace(/\{taskId\}|\{task_id\}|\{id\}/gi, encoded);
+  } else {
+    const root = normalizeDjpsdOpenApiBaseUrl(config.base_url);
+    const queryUrl = new URL(queryEndpoint, `${root}/`);
+    queryUrl.searchParams.set('task_id', String(taskId));
+    queryEndpoint = queryUrl.toString();
+  }
+  return buildDjpsdOpenApiImageUrl(
+    config.base_url,
+    queryEndpoint,
+    '/v1/media/status?task_id={taskId}',
+  );
+}
+
+function buildDjpsdOpenApiImageBody(opts = {}) {
+  return {
+    model: opts.model || 'image-v1',
+    prompt: opts.prompt || '',
+    params: {
+      aspect_ratio: aspectRatioLabelFromPixelSize(opts.size),
+      images: Array.isArray(opts.images) ? opts.images.filter(Boolean) : [],
+    },
+  };
+}
+
+function resolveDjpsdOpenApiImageResultUrl(baseUrl, value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return new URL(raw, `${normalizeDjpsdOpenApiBaseUrl(baseUrl)}/`).toString();
+}
+
+function parseDjpsdOpenApiImagePollResponse(payload, baseUrl) {
+  const data = payload?.data || payload || {};
+  const state = String(data.state || data.status || data.task_status || '').toLowerCase();
+  const resultType = String(data.result_type || '').toLowerCase();
+  if (resultType && resultType !== 'image') {
+    return { state: 'failed', error: 'DJPSD 开放 API 返回的不是图片结果' };
+  }
+  const imageUrl = resolveDjpsdOpenApiImageResultUrl(
+    baseUrl,
+    data.image_url || data.result_url,
+  );
+  if (imageUrl) return { state: 'completed', imageUrl };
+  if (state === 'failed' || state === 'error') {
+    return { state: 'failed', error: data.error || data.message || 'DJPSD 开放 API 图片生成失败' };
+  }
+  if (data.is_final || ['success', 'succeeded', 'completed', 'done'].includes(state)) {
+    return { state: 'failed', error: 'DJPSD 开放 API 任务已结束但未返回图片地址' };
+  }
+  return { state: 'processing' };
+}
+
+function parseDjpsdOpenApiImageDataUrl(value) {
+  const match = String(value || '').match(/^data:([\w/+.-]+);base64,(.+)$/is);
+  if (!match) throw new Error('参考图 data URL 格式无效');
+  const mimeType = match[1].toLowerCase();
+  if (!mimeType.startsWith('image/')) throw new Error('只允许图片 data URL');
+  const bytes = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
+  if (!bytes.length) throw new Error('参考图 data URL 内容为空');
+  if (bytes.length > 20 * 1024 * 1024) throw new Error('参考图超过 20MB 限制');
+  return { bytes, mimeType };
+}
+
+function djpsdImageExtension(mimeType) {
+  if (mimeType === 'image/png') return 'png';
+  if (mimeType === 'image/webp') return 'webp';
+  if (mimeType === 'image/gif') return 'gif';
+  return 'jpg';
+}
+
+async function uploadDjpsdOpenApiImageReference(config, rawValue, opts, index) {
+  const raw = String(rawValue || '').trim();
+  if (!raw) return '';
+  const root = normalizeDjpsdOpenApiBaseUrl(config.base_url);
+  try {
+    const url = new URL(raw, `${root}/`);
+    if (url.origin === new URL(root).origin && url.pathname.startsWith('/uploads/')) {
+      return `${url.pathname}${url.search}`;
+    }
+  } catch (_) {}
+
+  const resolved = resolveImageRef(raw, opts.files_base_url, opts.storage_local_path);
+  let image;
+  if (String(resolved || '').startsWith('data:')) {
+    image = parseDjpsdOpenApiImageDataUrl(resolved);
+  } else if (/^https?:\/\//i.test(String(resolved || ''))) {
+    image = await downloadPublicImage(resolved);
+  } else {
+    throw new Error('参考图不是可上传的本地图片、data URL 或公网 HTTP(S) 图片');
+  }
+
+  const form = new FormData();
+  form.append(
+    'file',
+    new Blob([image.bytes], { type: image.mimeType }),
+    `reference-${index + 1}.${djpsdImageExtension(image.mimeType)}`,
+  );
+  const uploadUrl = buildDjpsdOpenApiImageUrl(config.base_url, '/v1/media/upload', '/v1/media/upload');
+  const res = await fetch(uploadUrl, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${config.api_key || ''}` },
+    body: form,
+  });
+  const responseText = await res.text();
+  let data = {};
+  try { data = responseText ? JSON.parse(responseText) : {}; } catch (_) {}
+  if (!res.ok) {
+    const message = data.detail || data.message || responseText || `HTTP ${res.status}`;
+    throw new Error(`参考图上传失败: ${String(message).slice(0, 300)}`);
+  }
+  const uploadedUrl = String(data.url || data.data?.url || '').trim();
+  if (!uploadedUrl) throw new Error('参考图上传成功但未返回 URL');
+  return uploadedUrl;
+}
+
+function formatDjpsdOpenApiImageUnknownSubmitError(error) {
+  const detail = error?.message || String(error || '连接中断');
+  return `DJPSD 图片创建请求连接中断，供应商可能已受理或扣费，但本平台未收到任务编号（结果未知）。为避免重复扣费，请先核对供应商任务记录，不要连续重试。原始错误: ${detail}`;
+}
+
+async function pollDjpsdOpenApiImageTask(config, log, taskId, opts = {}) {
+  const maxAttempts = Math.max(1, Number(opts.max_poll_attempts || process.env.DJPSD_IMAGE_MAX_ATTEMPTS || 720));
+  const intervalMs = Math.max(0, Number(opts.poll_interval_ms ?? process.env.DJPSD_IMAGE_POLL_INTERVAL_MS ?? 5000));
+  const queryUrl = buildDjpsdOpenApiImageQueryUrl(config, taskId);
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      const res = await fetch(queryUrl, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${config.api_key || ''}` },
+      });
+      const raw = await res.text();
+      let data = {};
+      try { data = raw ? JSON.parse(raw) : {}; } catch (_) {}
+      if (res.status === 401 || res.status === 403) {
+        return { error: data.detail || data.message || `DJPSD 开放 API Key 无效 (${res.status})` };
+      }
+      if (res.ok) {
+        const parsed = parseDjpsdOpenApiImagePollResponse(data, config.base_url);
+        log.info('[DJPSD OpenAPI image] 轮询状态', {
+          image_gen_id: opts.image_gen_id,
+          task_id: String(taskId),
+          round: attempt + 1,
+          state: parsed.state,
+        });
+        if (parsed.state === 'completed') return { image_url: parsed.imageUrl };
+        if (parsed.state === 'failed') return { error: parsed.error };
+      }
+    } catch (error) {
+      log.warn('[DJPSD OpenAPI image] 轮询请求失败', {
+        image_gen_id: opts.image_gen_id,
+        task_id: String(taskId),
+        round: attempt + 1,
+        error: error.message,
+      });
+    }
+    if (attempt + 1 < maxAttempts && intervalMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+  return {
+    error: `DJPSD 图片任务 ${taskId} 最终状态未知，供应商任务仍可能处理中；为避免重复扣费，请勿重新提交`,
+  };
+}
+
+async function callDjpsdOpenApiImageApi(config, log, opts = {}) {
+  let submitUrl;
+  try {
+    submitUrl = buildDjpsdOpenApiImageUrl(config.base_url, config.endpoint, '/v1/media/generate');
+    buildDjpsdOpenApiImageQueryUrl(config, 'connectivity-check');
+  } catch (error) {
+    return { error: `DJPSD 开放 API 配置错误: ${error.message}` };
+  }
+
+  const refs = Array.isArray(opts.reference_image_urls)
+    ? opts.reference_image_urls.map((value) => String(value || '').trim()).filter(Boolean)
+    : [];
+  const images = [];
+  try {
+    for (let index = 0; index < refs.length; index += 1) {
+      images.push(await uploadDjpsdOpenApiImageReference(config, refs[index], opts, index));
+    }
+  } catch (error) {
+    return { error: `DJPSD 开放 API ${error.message}` };
+  }
+
+  const body = buildDjpsdOpenApiImageBody({ ...opts, images });
+  log.info('[DJPSD OpenAPI image] 创建任务', {
+    image_gen_id: opts.image_gen_id,
+    url: submitUrl,
+    model: body.model,
+    aspect_ratio: body.params.aspect_ratio,
+    image_count: images.length,
+  });
+  let res;
+  try {
+    res = await fetch(submitUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.api_key || ''}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    return { error: formatDjpsdOpenApiImageUnknownSubmitError(error) };
+  }
+  const raw = await res.text();
+  let data = {};
+  try { data = raw ? JSON.parse(raw) : {}; } catch (_) {}
+  if (!res.ok) {
+    const message = data.detail || data.message || raw || `HTTP ${res.status}`;
+    return { error: `DJPSD 开放 API 创建图片任务失败: ${String(message).slice(0, 300)}` };
+  }
+  const direct = parseDjpsdOpenApiImagePollResponse(data, config.base_url);
+  if (direct.state === 'completed') return { image_url: direct.imageUrl };
+  if (direct.state === 'failed') return { error: direct.error };
+  const responseData = data?.data || data || {};
+  const taskId = responseData.task_id ?? responseData.id;
+  if (taskId == null) {
+    return {
+      error: 'DJPSD 开放 API 创建成功但未返回任务编号（结果未知）。供应商可能已受理或扣费，请先核对供应商任务记录，不要连续重试。',
+    };
+  }
+  return pollDjpsdOpenApiImageTask(config, log, taskId, opts);
+}
+
 /**
  * 获取默认图片配置：优先使用前端勾选的「默认」配置（is_default），同类型内按优先级（priority）排序；
  * 可选按 preferredProvider / preferredModel 进一步筛选。
@@ -291,21 +618,114 @@ async function callAihubccImageApi(config, log, opts = {}) {
  * @param {string} [preferredProvider] - 指定供应商（如 openai / dashscope），只在该 provider 的配置中选
  * @param {string} [imageServiceType] - 'image' 文本生成图片（角色/场景/道具），'storyboard_image' 分镜图片生成（支持参考图）；缺省为 'image'
  */
-function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType) {
+function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType, preferredConfigId) {
   const candidates = getImageConfigCandidates(
     db,
     preferredModel,
     preferredProvider,
     imageServiceType,
+    preferredConfigId,
   );
   if (candidates.length > 0) return candidates[0];
   const logicalRoute = findLogicalImageRoute(db, preferredModel, imageServiceType);
   if (logicalRoute) return aiConfigService.getConfig(db, logicalRoute.id);
-  const hasVerificationStatus = db.prepare('PRAGMA table_info(ai_service_configs)').all()
-    .some((column) => column.name === 'verification_status');
-  return preferredModel && !hasVerificationStatus
+  return preferredModel && !hasColumn(db, 'ai_service_configs', 'verification_status')
     ? canvasProviderConfigService.getConfig('image', preferredModel)
     : null;
+}
+
+function requiresImageVerification(config) {
+  return String(config?.provider || '').toLowerCase() === 'usmercari_image'
+    || String(config?.api_protocol || '').toLowerCase() === 'usmercari_image';
+}
+
+function hasVerifiedImageModel(config, preferredModel) {
+  if (!requiresImageVerification(config)) return true;
+  if (config.verification_status !== 'verified') return false;
+  const selection = mediaModelSelection.parseQualifiedSelection(preferredModel);
+  const model = String(selection?.upstreamModel || preferredModel || config.default_model || config.model?.[0] || '').trim();
+  const key = Object.keys(config.verified_capabilities || {})
+    .find((item) => String(item).trim().toLowerCase() === model.toLowerCase());
+  const capabilities = key ? config.verified_capabilities[key] : null;
+  return Boolean(capabilities && typeof capabilities === 'object' && !Array.isArray(capabilities));
+}
+
+function imageGateError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function verifiedImageCapabilities(config, model) {
+  let all = config?.verified_capabilities || {};
+  try {
+    if (typeof all === 'string') all = JSON.parse(all || '{}');
+  } catch (_) {
+    all = {};
+  }
+  const target = String(model || '').trim().toLowerCase();
+  const key = Object.keys(all || {}).find((item) => String(item).trim().toLowerCase() === target);
+  const capabilities = key ? all[key] : null;
+  return capabilities && typeof capabilities === 'object' && !Array.isArray(capabilities)
+    ? capabilities
+    : null;
+}
+
+function assertUsmercariImageSubmitReady(db, config, model, opts, evidenceRoots) {
+  const target = String(model || '').trim().toLowerCase();
+  const official = usmercariImageClient.USMERCARI_IMAGE_MODELS[target];
+  if (!official || config?.verification_status !== 'verified') {
+    throw imageGateError('MODEL_NOT_VERIFIED', `${target || 'USMercari 图片模型'} 尚未通过真实生成验证`);
+  }
+  if (!aiConfigService.hasConnectionCredential(config)) {
+    throw imageGateError('MODEL_CREDENTIAL_MISSING', `${target} 未配置有效的 USMercari API Key`);
+  }
+  const capabilities = verifiedImageCapabilities(config, target);
+  if (!capabilities || !hasTrustedEvidenceBinding(target, capabilities, evidenceRoots)
+      || capabilities.supportsTextToImage !== true) {
+    throw imageGateError('MODEL_NOT_VERIFIED', `${target} 的真实生成证据与当前发布不一致`);
+  }
+  const resolution = usmercariImageClient.normalizeResolution(opts?.resolution);
+  const verifiedResolutions = Array.isArray(capabilities.resolutions)
+    ? capabilities.resolutions.map((item) => String(item || '').trim().toLowerCase())
+    : [];
+  if (!official.resolutions.includes(resolution) || !verifiedResolutions.includes(resolution)) {
+    throw imageGateError('IMAGE_RESOLUTION_NOT_VERIFIED', `${target} 的 ${resolution} 尚未通过真实生成验证`);
+  }
+  const references = Array.isArray(opts?.reference_image_urls)
+    ? opts.reference_image_urls.filter(Boolean)
+    : [];
+  if (references.length > 0 && capabilities.supportsImageReference !== true) {
+    throw imageGateError('IMAGE_REFERENCE_NOT_VERIFIED', `${target} 尚未通过参考图真实验证`);
+  }
+  const maxReferences = Math.min(Number(official.maxReferences), Number(capabilities.maxReferences));
+  if (!Number.isSafeInteger(maxReferences) || maxReferences < 0 || references.length > maxReferences) {
+    throw imageGateError('IMAGE_REFERENCE_LIMIT_EXCEEDED', `${target} 的参考图数量超过已验证上限`);
+  }
+  const quantity = Number(opts?.n ?? 1);
+  if (quantity !== 1) throw imageGateError('INVALID_IMAGE_QUANTITY', 'USMercari 图片数量目前仅开放已实测的 1 张');
+  const price = modelPriceService.list(db)
+    .find((item) => String(item.model || '').trim().toLowerCase() === target);
+  const credits = modelPriceService.calculateCharge(db, target, { resolution, quantity });
+  if (!price || price.category !== 'image' || price.status !== 'enabled'
+      || !Number.isSafeInteger(credits) || credits <= 0
+      || !Number.isSafeInteger(price.resolution_prices?.[resolution]?.credits)
+      || price.resolution_prices[resolution].credits !== credits) {
+    throw imageGateError('MODEL_RESOLUTION_PRICE_REQUIRED', `${target} 的 ${resolution} 积分待管理员配置`);
+  }
+  return { capabilities, quantity, references, resolution };
+}
+
+function isVerifiedImageFallbackConfig(config) {
+  const status = config?.verification_status;
+  return status == null || status === '' || status === 'verified';
+}
+
+function isUsmercariImageConfig(config, model) {
+  const provider = String(config?.provider || '').trim().toLowerCase();
+  const protocol = String(config?.api_protocol || '').trim().toLowerCase()
+    || inferProtocol(provider, model || getModelFromConfig(config));
+  return protocol === 'usmercari_image';
 }
 
 function imageConfigError(code, message) {
@@ -353,7 +773,9 @@ function getImageConfigById(db, configId, preferredModel) {
   const numericId = normalizeImageConfigId(configId);
 
   const config = aiConfigService.getConfig(db, numericId);
-  if (!config || !['image', 'storyboard_image'].includes(config.service_type)) {
+  if (!config || ![
+    'image', 'storyboard_image', 'redraw_character', 'redraw_scene', 'redraw_prop',
+  ].includes(config.service_type)) {
     throw imageConfigError('IMAGE_CONFIG_NOT_FOUND', '图片模型配置不存在');
   }
   if (!config.is_active) {
@@ -370,8 +792,11 @@ function getImageConfigById(db, configId, preferredModel) {
   }
 
   if (preferredModel) {
-    const wantedModel = String(preferredModel).trim().toLowerCase();
-    const models = Array.isArray(config.model) ? config.model : (config.model != null ? [config.model] : []);
+    const selection = mediaModelSelection.parseQualifiedSelection(preferredModel);
+    const wantedModel = String(selection?.upstreamModel || preferredModel).trim().toLowerCase();
+    const models = [config.default_model, ...(Array.isArray(config.model)
+      ? config.model
+      : (config.model != null ? [config.model] : []))];
     const hasModel = models.some((model) => String(model).trim().toLowerCase() === wantedModel);
     if (!hasModel) {
       throw imageConfigError('IMAGE_CONFIG_MODEL_MISMATCH', '图片模型配置不包含请求模型');
@@ -381,22 +806,38 @@ function getImageConfigById(db, configId, preferredModel) {
   return config;
 }
 
-function getImageConfigCandidates(db, preferredModel, preferredProvider, imageServiceType) {
+function getImageConfigCandidates(db, preferredModel, preferredProvider, imageServiceType, preferredConfigId) {
   const serviceType = imageServiceType || 'image';
   let configs = aiConfigService.listConfigs(db, serviceType);
-  if (serviceType === 'storyboard_image') {
-    const fallbackConfigs = aiConfigService.listConfigs(db, 'image');
+  const redrawServiceTypes = new Set(['redraw_character', 'redraw_scene', 'redraw_prop']);
+  const fallbackServiceTypes = serviceType === 'storyboard_image'
+    ? ['image']
+    : redrawServiceTypes.has(serviceType)
+      ? ['storyboard_image', 'image']
+      : [];
+  for (const fallbackServiceType of fallbackServiceTypes) {
+    const fallbackConfigs = aiConfigService.listConfigs(db, fallbackServiceType);
     const ids = new Set(configs.map((config) => String(config.id)));
     configs = [...configs, ...fallbackConfigs.filter((config) => !ids.has(String(config.id)))];
   }
-  const hasVerificationStatus = db.prepare('PRAGMA table_info(ai_service_configs)').all()
-    .some((column) => column.name === 'verification_status');
   let active = configs.filter((c) => c.is_active);
-  if (hasVerificationStatus) {
+  if (hasColumn(db, 'ai_service_configs', 'verification_status')) {
     const verifiedIds = new Set(db.prepare(
       "SELECT id FROM ai_service_configs WHERE deleted_at IS NULL AND verification_status = 'verified'",
     ).all().map((row) => String(row.id)));
     active = active.filter((config) => verifiedIds.has(String(config.id)));
+  }
+  active = active.filter((config) => hasVerifiedImageModel(config, preferredModel));
+  if (preferredConfigId != null && String(preferredConfigId).trim()) {
+    const selected = active.filter((config) => String(config.id) === String(preferredConfigId));
+    if (selected.length > 0) active = selected;
+  }
+  if (preferredModel && usmercariImageClient.USMERCARI_IMAGE_MODELS[String(preferredModel || '').trim().toLowerCase()]) {
+    active = active.filter((config) => isUsmercariImageConfig(config, preferredModel));
+  }
+  if (mediaModelSelection.parseQualifiedSelection(preferredModel)) {
+    const selected = mediaModelSelection.resolveQualifiedConfig(active, preferredModel);
+    return selected ? [selected] : [];
   }
   if (preferredProvider && String(preferredProvider).trim()) {
     const want = String(preferredProvider).trim().toLowerCase();
@@ -578,6 +1019,7 @@ function buildImageUrl(config) {
 }
 
 function getModelFromConfig(config, preferredModel) {
+  if (config?.canvas_selected_model) return config.canvas_selected_model;
   const models = Array.isArray(config.model) ? config.model : (config.model != null ? [config.model] : []);
   if (preferredModel) {
     const wantedModel = String(preferredModel).trim().toLowerCase();
@@ -586,6 +1028,30 @@ function getModelFromConfig(config, preferredModel) {
   }
   if (config.default_model && models.includes(config.default_model)) return config.default_model;
   return models[0] || 'dall-e-3';
+}
+
+function configuredImageReferenceLimit(config, model) {
+  const provider = String(config?.provider || '').toLowerCase();
+  const protocol = String(config?.api_protocol || '').toLowerCase();
+  if (provider === 'token6688' || provider === 'tokengo' || protocol === 'token6688') {
+    return token6688Client.IMAGE_REFERENCE_LIMITS[String(model || '').trim()] ?? 0;
+  }
+  if (requiresImageVerification(config)) {
+    const target = String(model || '').trim().toLowerCase();
+    const key = Object.keys(config?.verified_capabilities || {})
+      .find((item) => String(item).trim().toLowerCase() === target);
+    const limit = Number(key ? config.verified_capabilities[key]?.maxReferences : 0);
+    return Number.isInteger(limit) && limit >= 0 ? limit : 0;
+  }
+  try {
+    const settings = typeof config?.settings === 'string'
+      ? JSON.parse(config.settings || '{}')
+      : (config?.settings || {});
+    const limit = Number(settings?.canvas_capabilities?.maxReferences);
+    return Number.isInteger(limit) && limit >= 0 ? limit : 0;
+  } catch (_) {
+    return 0;
+  }
 }
 
 function resolveImageModel(db, preferredModel, preferredProvider, imageServiceType = 'image') {
@@ -624,6 +1090,18 @@ function imageMimeFromOutputFormat(format) {
   if (normalized === 'jpg' || normalized === 'jpeg') return 'image/jpeg';
   if (normalized === 'webp') return 'image/webp';
   return 'image/png';
+}
+
+function imageMimeFromBase64(base64, requestedFormat) {
+  const bytes = Buffer.from(String(base64 || '').replace(/\s/g, ''), 'base64');
+  if (bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return 'image/png';
+  }
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP') {
+    return 'image/webp';
+  }
+  return imageMimeFromOutputFormat(requestedFormat);
 }
 
 function formatGptImageUnknownResultError(error) {
@@ -677,7 +1155,7 @@ function extractOpenAIImageResult(data, outputFormat) {
   if (itemImageUrl) return { image_url: itemImageUrl };
   const itemBase64 = normalizeProviderImageOutput(item?.b64_json, {
     allowRawBase64: true,
-    mimeType: imageMimeFromOutputFormat(outputFormat),
+    mimeType: imageMimeFromBase64(item?.b64_json, outputFormat),
   });
   if (itemBase64) {
     return { image_url: itemBase64 };
@@ -687,7 +1165,10 @@ function extractOpenAIImageResult(data, outputFormat) {
   const resultUrl = normalizeProviderImageOutput(data.result?.url);
   if (resultUrl) return { image_url: resultUrl };
   const firstImage = Array.isArray(data.images)
-    ? normalizeProviderImageOutput(data.images[0], { allowRawBase64: true, mimeType: 'image/png' })
+    ? normalizeProviderImageOutput(data.images[0], {
+        allowRawBase64: true,
+        mimeType: imageMimeFromBase64(data.images[0], 'png'),
+      })
     : null;
   if (!firstImage) return null;
   return { image_url: firstImage };
@@ -1031,7 +1512,10 @@ async function callKlingImageApi(config, log, opts) {
   const m = model || 'kling-image';
 
   const rawRefs = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
-  const resolvedRefs = rawRefs.map((r) => resolveImageRef(r, files_base_url, storage_local_path)).filter(Boolean);
+  const resolvedRefs = await compressResolvedImageRefsForJson(
+    rawRefs.map((r) => resolveImageRef(r, files_base_url, storage_local_path)).filter(Boolean),
+    { log },
+  );
 
   const body = {
     model: m,
@@ -1494,6 +1978,40 @@ function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
   } catch (_) {
     return path.isAbsolute(s) ? null : toPublicUrl(s);
   }
+}
+
+function resolveUsmercariPublicImageRef(value, filesBaseUrl, storageLocalPath) {
+  if (!value || !String(value).trim()) return null;
+  const raw = String(value).trim();
+  const base = String(filesBaseUrl || '').trim().replace(/\/+$/, '');
+  let baseUrl;
+  try {
+    baseUrl = new URL(base);
+    if (!usmercariImageClient.parseStorageBaseUrl(base)) return null;
+  } catch (_) {
+    return null;
+  }
+  if (/^https?:\/\//i.test(raw)) {
+    return usmercariImageClient.isAllowedStoragePublicImageUrl(raw, base) ? raw : null;
+  }
+
+  let relative = raw.split(/[?#]/, 1)[0];
+  if (path.isAbsolute(relative) && !/^[/\\]static[/\\]/i.test(relative)) {
+    if (!storageLocalPath) return null;
+    const storageRoot = path.resolve(storageLocalPath);
+    const absolute = path.resolve(relative);
+    const withinRoot = absolute !== storageRoot && absolute.startsWith(storageRoot + path.sep);
+    if (!withinRoot) return null;
+    relative = path.relative(storageRoot, absolute);
+  }
+  relative = relative.replace(/\\/g, '/').replace(/^\/+/, '');
+  let decoded;
+  try { decoded = decodeURIComponent(relative); } catch (_) { return null; }
+  if (decoded.split('/').includes('..')) return null;
+  const baseEndsWithStatic = /\/static\/?$/i.test(baseUrl.pathname);
+  if (baseEndsWithStatic) relative = relative.replace(/^static\//i, '');
+  const resolved = `${base}/${relative}`;
+  return usmercariImageClient.isAllowedStoragePublicImageUrl(resolved, base) ? resolved : null;
 }
 
 // 通义万象：支持参考图（角色/场景），content 为 [text, image, image, ...]；本地调试时参考图可转 base64
@@ -2040,12 +2558,13 @@ async function callGeminiImageApi(db, config, log, opts) {
  * @param {object} opts - { prompt, model?, size?, quality?, drama_id, preferred_provider?, character_id?, image_type?, image_gen_id, user_negative_prompt? }
  * @returns {Promise<{ image_url?: string, error?: string }>}
  */
-async function submitImageWithConfig(db, log, config, opts) {
+async function submitImageWithConfig(db, log, config, opts, runtime = {}) {
   const {
     prompt,
     model: preferredModel,
     size,
     quality,
+    resolution,
     image_gen_id,
     imageServiceType,
     reference_image_urls,
@@ -2060,6 +2579,27 @@ async function submitImageWithConfig(db, log, config, opts) {
     : model;
   // api_protocol 显式指定接口规范，优先级高于 provider 推断；未设置时按 provider 自动判断
   const protocol = (config.api_protocol || '').toLowerCase() || inferProtocol(provider, model);
+  if (usmercariImageClient.USMERCARI_IMAGE_MODELS[String(model || '').trim().toLowerCase()]
+      && protocol !== 'usmercari_image') {
+    throw imageGateError('MODEL_PROTOCOL_MISMATCH', `${model} 必须使用已验证的 USMercari 图片协议配置`);
+  }
+  const referenceCount = Array.isArray(reference_image_urls)
+    ? reference_image_urls.filter(Boolean).length
+    : 0;
+  if (provider === 'fumin_image' && referenceCount > 0) {
+    return {
+      error: 'fumin GPT Image 当前不支持参考图（供应商文档未声明该能力），请改用已验证支持参考图的图片模型',
+      route_meta: { phase: 'prepare', requestBodySent: false, explicitlyRejected: true },
+    };
+  }
+  const referenceLimit = configuredImageReferenceLimit(config, model);
+  if (referenceCount > referenceLimit) {
+    return {
+      error: referenceLimit === 0
+        ? `${model} 当前不支持参考图`
+        : `${model} 最多支持 ${referenceLimit} 个图片参考`,
+    };
+  }
 
   const effectivePrompt = prompt || '';
 
@@ -2075,7 +2615,7 @@ async function submitImageWithConfig(db, log, config, opts) {
     ref_label_injected: false,
   });
 
-  if (protocol === 'aihubcc') {
+  if (protocol === 'aihubcc' || isAihubccBaseUrl(config.base_url)) {
     const result = await callAihubccImageApi(config, log, {
       prompt: effectivePrompt,
       model,
@@ -2087,6 +2627,32 @@ async function submitImageWithConfig(db, log, config, opts) {
       storage_local_path: opts.storage_local_path,
     });
     return result;
+  }
+
+  if (protocol === 'token6688') {
+    return token6688Client.callImageApi(config, log, {
+      prompt: effectivePrompt,
+      model,
+      size,
+      quality,
+      image_gen_id,
+      reference_image_urls: opts.reference_image_urls,
+      files_base_url: opts.files_base_url,
+    });
+  }
+
+  if (protocol === 'djpsd_openapi' || protocol === 'djpsd_media') {
+    return callDjpsdOpenApiImageApi(config, log, {
+      prompt: effectivePrompt,
+      model,
+      size,
+      image_gen_id,
+      reference_image_urls: opts.reference_image_urls,
+      files_base_url: opts.files_base_url,
+      storage_local_path: opts.storage_local_path,
+      poll_interval_ms: opts.poll_interval_ms,
+      max_poll_attempts: opts.max_poll_attempts,
+    });
   }
 
   const explicitNegativePrompt = user_negative_prompt ?? opts.negative_prompt;
@@ -2138,7 +2704,10 @@ async function submitImageWithConfig(db, log, config, opts) {
   const isSeedream = isVolc || /seedream|doubao/i.test(model);
   // 解析参考图：本地路径/localhost URL → base64，公网 URL → 直接传
   const rawRefs = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
-  const resolvedRefs = rawRefs.map((r) => resolveImageRef(r, files_base_url, storage_local_path)).filter(Boolean);
+  const resolvedRefs = await compressResolvedImageRefsForJson(
+    rawRefs.map((r) => resolveImageRef(r, files_base_url, storage_local_path)).filter(Boolean),
+    { log },
+  );
   if (provider === 'fumin_image' && resolvedRefs.length > 0) {
     return {
       error: 'fumin GPT Image 当前不支持参考图（供应商文档未声明该能力），请改用已验证支持参考图的图片模型',
@@ -2306,15 +2875,73 @@ function updateImageRouteRequestState(db, requestId, state, now = new Date().toI
     .run(state, now, requestId);
 }
 
-async function callImageApi(db, log, opts) {
+async function callImageApi(db, log, opts, runtime = {}) {
   const preferredModel = String(opts.model || '').trim() || null;
   const preferredProvider = opts.preferred_provider ?? opts.preferredProvider;
+  const preferredConfigId = opts.preferred_config_id ?? opts.preferredConfigId;
   const requestedCapabilities = {
     resolution: opts.resolution || opts.quality,
     aspectRatio: opts.aspect_ratio || opts.aspectRatio,
     referenceImageCount: Array.isArray(opts.reference_image_urls)
       ? opts.reference_image_urls.filter(Boolean).length
       : 0,
+  };
+  const submitSelectedImageConfig = async (config, selectedOpts) => {
+    const model = getModelFromConfig(config, selectedOpts.model);
+    const provider = String(config.provider || '').toLowerCase();
+    const protocol = String(config.api_protocol || '').toLowerCase() || inferProtocol(provider, model);
+    if (protocol === 'usmercari_image') {
+      const rawReferences = Array.isArray(selectedOpts.reference_image_urls)
+        ? selectedOpts.reference_image_urls.filter(Boolean)
+        : [];
+      const referenceLimit = configuredImageReferenceLimit(config, model);
+      if (rawReferences.length > referenceLimit) {
+        return {
+          error: referenceLimit === 0
+            ? `${model} 当前不支持参考图`
+            : `${model} 最多支持 ${referenceLimit} 个图片参考`,
+        };
+      }
+      log.info('[图生] callImageApi 路由', {
+        image_gen_id: selectedOpts.image_gen_id,
+        protocol,
+        api_protocol_raw: config.api_protocol || '(empty→auto)',
+        provider,
+        model,
+        size: selectedOpts.size,
+        imageServiceType: selectedOpts.imageServiceType,
+        ref_count: rawReferences.length,
+        ref_label_injected: false,
+      });
+      const submit = assertUsmercariImageSubmitReady(db, config, model, {
+        n: selectedOpts.n ?? 1,
+        reference_image_urls: rawReferences,
+        resolution: selectedOpts.resolution || '1k',
+      }, runtime.evidenceRoots);
+      const resolvedReferences = rawReferences
+        .map((reference) => resolveUsmercariPublicImageRef(
+          reference,
+          selectedOpts.files_base_url,
+          selectedOpts.storage_local_path,
+        ))
+        .filter(Boolean);
+      if (resolvedReferences.length !== rawReferences.length) {
+        return { error: 'USMercari 参考图无法组成公网 URL，请检查 STORAGE_BASE_URL 与素材路径' };
+      }
+      return usmercariImageClient.callUsmercariImageApi(config, log, {
+        prompt: selectedOpts.prompt || '',
+        model,
+        n: submit.quantity,
+        aspect_ratio: selectedOpts.aspect_ratio || '1:1',
+        resolution: submit.resolution,
+        image_gen_id: selectedOpts.image_gen_id,
+        reference_image_urls: resolvedReferences,
+        files_base_url: selectedOpts.files_base_url,
+        storage_local_path: selectedOpts.storage_local_path,
+        allowed_reference_base_url: selectedOpts.files_base_url,
+      });
+    }
+    return submitImageWithConfig(db, log, config, selectedOpts, runtime);
   };
   const explicitConfigId = resolveExplicitImageConfigId(opts);
   let logicalModelId = preferredModel;
@@ -2323,7 +2950,7 @@ async function callImageApi(db, log, opts) {
   if (explicitConfigId != null) {
     const config = getImageConfigById(db, explicitConfigId, preferredModel);
     if (providerRouteStability.resolveCanaryMode(undefined, log) !== 'enforce') {
-      return stripImageRouteMeta(await submitImageWithConfig(db, log, config, opts));
+      return stripImageRouteMeta(await submitSelectedImageConfig(config, opts));
     }
     logicalModelId = String(config.logical_model_id || '').trim();
     if (!logicalModelId) throw new Error('未配置与当前图片生成参数匹配的已验证模型');
@@ -2353,9 +2980,16 @@ async function callImageApi(db, log, opts) {
       preferredModel,
       preferredProvider,
       opts.imageServiceType,
+      preferredConfigId,
     );
     if (candidates.length === 0) {
-      const fallback = getDefaultImageConfig(db, preferredModel, preferredProvider, opts.imageServiceType);
+      const fallback = getDefaultImageConfig(
+        db,
+        preferredModel,
+        preferredProvider,
+        opts.imageServiceType,
+        preferredConfigId,
+      );
       if (fallback) candidates.push(fallback);
     }
     if (candidates.length === 0) {
@@ -2364,7 +2998,7 @@ async function callImageApi(db, log, opts) {
     let lastResult = null;
     for (let index = 0; index < candidates.length; index += 1) {
       const config = candidates[index];
-      lastResult = await submitImageWithConfig(db, log, config, opts);
+      lastResult = await submitSelectedImageConfig(config, opts);
       if (lastResult?.image_url) return stripImageRouteMeta(lastResult);
       const classification = classifyProviderFailure(lastResult?.route_meta || {});
       if (!classification.mayFailover || index + 1 >= candidates.length) break;
@@ -2434,7 +3068,7 @@ async function callImageApi(db, log, opts) {
     }
     let result;
     try {
-      result = await submitImageWithConfig(db, log, config, { ...opts, model: undefined });
+      result = await submitSelectedImageConfig(config, { ...opts, model: undefined });
     } catch (error) {
       result = {
         indeterminate: true,
@@ -2562,7 +3196,57 @@ function settleImageCredit(db, log, imageGenId, outcome, message = '') {
   }
 }
 
-function createAndGenerateImage(db, log, opts) {
+async function verifyStrictLocalImageArtifact(storagePath, localPath) {
+  if (!localPath) throw new Error('图片未生成本地文件');
+  const storageRoot = path.resolve(storagePath);
+  const absolutePath = path.resolve(storageRoot, localPath);
+  const relative = path.relative(storageRoot, absolutePath);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('图片本地文件路径越出存储目录');
+  const stat = fs.statSync(absolutePath);
+  if (!stat.isFile() || stat.size <= 0) throw new Error('图片本地文件为空');
+  const sharp = getSharp();
+  if (!sharp) throw new Error('图片校验组件 sharp 不可用');
+  const metadata = await sharp(fs.readFileSync(absolutePath)).metadata();
+  if (!metadata.width || !metadata.height || !metadata.format) throw new Error('图片文件不可读取');
+  const mimeByFormat = {
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    webp: 'image/webp',
+    gif: 'image/gif',
+    avif: 'image/avif',
+  };
+  return {
+    fileSize: stat.size,
+    width: metadata.width,
+    height: metadata.height,
+    mimeType: mimeByFormat[metadata.format] || `image/${metadata.format}`,
+  };
+}
+
+function createStrictGeneratedAsset(db, row, persisted, artifact) {
+  return assetService.create(db, null, {
+    drama_id: row.drama_id ?? null,
+    storyboard_id: row.storyboard_id ?? null,
+    name: `生成图片 ${row.id}`,
+    type: 'image',
+    category: row.scene_id != null ? 'scene' : row.character_id != null ? 'character' : 'generation',
+    url: persisted.url,
+    local_path: persisted.local_path,
+    file_size: artifact.fileSize,
+    mime_type: artifact.mimeType,
+    width: artifact.width,
+    height: artifact.height,
+    image_gen_id: row.id,
+    metadata: {
+      source: 'image_generation',
+      model: row.model || null,
+      resolution: row.resolution || null,
+      quantity: row.quantity || 1,
+    },
+  });
+}
+
+function createAndGenerateImage(db, log, opts, runtime = {}) {
   const {
     drama_id,
     character_id,
@@ -2571,6 +3255,9 @@ function createAndGenerateImage(db, log, opts) {
     prompt,
     model,
     size,
+    resolution,
+    n,
+    quantity,
     quality,
     provider,
     user_negative_prompt,
@@ -2596,15 +3283,45 @@ function createAndGenerateImage(db, log, opts) {
 
   let billedModel = null;
   let billedCredits = null;
+  let billingRequest = null;
+  let requestSnapshot = null;
+  const requestedQuantity = Number(n ?? quantity ?? 1);
+  try {
+    const imageService = require('./imageService');
+    billingRequest = imageService.resolveImageBillingRequest(db, {
+      model: effectiveModel,
+      provider,
+      resolution,
+      n: requestedQuantity,
+    }, 'image', {
+      requirePricing: billingEnabled === true,
+      allowMissingModel: !billingEnabled,
+      evidenceRoots: runtime.evidenceRoots,
+    });
+  } catch (error) {
+    if (billingEnabled || ['MODEL_NOT_VERIFIED', 'MODEL_CREDENTIAL_MISSING', 'IMAGE_RESOLUTION_REQUIRED', 'IMAGE_RESOLUTION_NOT_VERIFIED', 'IMAGE_REFERENCE_NOT_VERIFIED', 'IMAGE_REFERENCE_LIMIT_EXCEEDED', 'INVALID_IMAGE_QUANTITY'].includes(error.code)) {
+      throw error;
+    }
+  }
+  if (billingRequest) {
+    effectiveModel = billingRequest.model || effectiveModel;
+    requestSnapshot = billingRequest.requestSnapshot || null;
+  }
+  const isStrictUsmercari = billingRequest?.protocol === 'usmercari_image'
+    || requestSnapshot?.protocol === 'usmercari_image';
   if (billingEnabled) {
     if (!userId) {
       const error = new Error('请先登录');
       error.code = 'UNAUTHORIZED';
       throw error;
     }
-    const modelPriceService = require('./modelPriceService');
-    billedModel = modelPriceService.canonicalModel(effectiveModel || '');
-    billedCredits = modelPriceService.requirePrice(db, billedModel);
+    billedModel = billingRequest?.model;
+    billedCredits = billingRequest?.credits;
+    if (!billedModel || !Number.isSafeInteger(Number(billedCredits))) {
+      const modelPriceService = require('./modelPriceService');
+      billedModel = modelPriceService.canonicalModel(effectiveModel || '');
+      billedCredits = modelPriceService.requirePrice(db, billedModel);
+    }
   }
   const active = findActiveAssetImage(db, charIdNum, sceneIdNum, {
     billingEnabled,
@@ -2639,8 +3356,8 @@ function createAndGenerateImage(db, log, opts) {
     }
     const billingColumns = billingEnabled ? ', tenant_id, user_id, credit_reservation_id' : '';
     const billingValues = billingEnabled ? ', ?, ?, NULL' : '';
-    const sql = 'INSERT INTO image_generations (drama_id, character_id, scene_id, image_type, provider, prompt, negative_prompt, model, size, quality, status, task_id, created_at, updated_at' + billingColumns + ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'pending\', ?, ?, ?' + billingValues + ')';
-    const values = [dramaIdNum, charIdNum, sceneIdNum, imageType, provider || 'openai', prompt || '', negRow, effectiveModel, size || null, quality || null, taskId, now, now];
+    const sql = 'INSERT INTO image_generations (drama_id, character_id, scene_id, image_type, provider, prompt, negative_prompt, model, size, resolution, quantity, request_snapshot, quality, status, task_id, created_at, updated_at' + billingColumns + ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'pending\', ?, ?, ?' + billingValues + ')';
+    const values = [dramaIdNum, charIdNum, sceneIdNum, imageType, billingRequest?.provider || provider || 'openai', prompt || '', negRow, effectiveModel, size || null, billingRequest?.resolution || null, billingRequest?.quantity || requestedQuantity || 1, requestSnapshot ? JSON.stringify(requestSnapshot) : null, quality || null, taskId, now, now];
     if (billingEnabled) values.push(tenantId ? String(tenantId) : null, String(userId));
     const info = db.prepare(sql).run(...values);
     const imageGenId = info.lastInsertRowid;
@@ -2658,6 +3375,13 @@ function createAndGenerateImage(db, log, opts) {
       db.prepare('UPDATE image_generations SET credit_reservation_id = ? WHERE id = ?').run(reservation.id, imageGenId);
       db.prepare('UPDATE async_tasks SET credit_reservation_id = ?, model = ? WHERE id = ?')
         .run(reservation.id, billedModel, taskId);
+      generationCost.record(db, {
+        reservationId: reservation.id,
+        model: billedModel,
+        resolution: billingRequest?.resolution || null,
+        quantity: billingRequest?.quantity || 1,
+        usageSource: 'configured',
+      });
       auditEvent.record(db, {
         userId,
         tenantId,
@@ -2682,8 +3406,12 @@ function createAndGenerateImage(db, log, opts) {
         '正在等待图片生成服务...',
         () => runWithGenerationLimit('image', () => callImageApi(db, log, {
           prompt,
-          model,
+          model: effectiveModel,
+          preferred_provider: billingRequest?.provider || undefined,
+          preferred_config_id: billingRequest?.configId || requestSnapshot?.config_id || undefined,
           size,
+          resolution: billingRequest?.resolution || undefined,
+          n: billingRequest?.quantity || 1,
           quality,
           drama_id: drama_id,
           character_id: character_id,
@@ -2694,46 +3422,82 @@ function createAndGenerateImage(db, log, opts) {
           tenantId: tenantId || undefined,
           creditReservationId: db.prepare('SELECT credit_reservation_id FROM image_generations WHERE id = ?')
             .get(imageGenId)?.credit_reservation_id || undefined,
-        }))
+        }, runtime))
       );
       const now2 = new Date().toISOString();
       if (result.error) {
+        const resultError = result.indeterminate ? `供应商最终状态未知：${result.error}` : result.error;
         db.prepare(
           'UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?'
-        ).run('failed', result.error, now2, imageGenId);
-        taskService.updateTaskError(db, taskId, result.error);
-        settleImageCredit(db, log, imageGenId, 'failed', result.error);
+        ).run('failed', resultError, now2, imageGenId);
+        taskService.updateTaskError(db, taskId, resultError);
+        settleImageCredit(db, log, imageGenId, 'failed', resultError);
         if (charIdNum != null) {
           try {
-            db.prepare('UPDATE characters SET error_msg = ?, updated_at = ? WHERE id = ?').run(result.error, now2, charIdNum);
+            db.prepare('UPDATE characters SET error_msg = ?, updated_at = ? WHERE id = ?').run(resultError, now2, charIdNum);
           } catch (_) {}
         }
         if (sceneIdNum != null) {
           try {
-            db.prepare('UPDATE scenes SET error_msg = ?, updated_at = ? WHERE id = ?').run(result.error, now2, sceneIdNum);
+            db.prepare('UPDATE scenes SET error_msg = ?, updated_at = ? WHERE id = ?').run(resultError, now2, sceneIdNum);
           } catch (_) {}
         }
-        log.error('Image generation failed', { image_gen_id: imageGenId, error: result.error });
+        log.error('Image generation failed', { image_gen_id: imageGenId, error: resultError });
         return;
       }
       let localPath = null;
-      try {
-        const loadConfig = require('../config').loadConfig;
-        const cfg = loadConfig();
-        const storagePath = path.isAbsolute(cfg.storage?.local_path)
-          ? cfg.storage.local_path
-          : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
-        const category = sceneIdNum != null ? 'scenes' : (charIdNum != null ? 'characters' : 'images');
-        const projectSubdir = storageLayout.getProjectStorageSubdir(db, dramaIdNum);
-        localPath = await uploadService.downloadImageToLocal(
-          storagePath,
-          result.image_url,
-          category,
-          log,
-          'ig',
-          projectSubdir
-        );
-      } catch (_) {}
+      const cfg = loadConfig();
+      const storagePath = path.isAbsolute(cfg.storage?.local_path)
+        ? cfg.storage.local_path
+        : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
+      const category = sceneIdNum != null ? 'scenes' : (charIdNum != null ? 'characters' : 'images');
+      const projectSubdir = storageLayout.getProjectStorageSubdir(db, dramaIdNum);
+      localPath = await uploadService.downloadImageToLocal(
+        storagePath,
+        result.image_url,
+        category,
+        log,
+        'ig',
+        projectSubdir
+      );
+      if (isStrictUsmercari) {
+        let artifact;
+        try {
+          artifact = await verifyStrictLocalImageArtifact(storagePath, localPath);
+        } catch (saveErr) {
+          const msg = `图片本地保存失败：${saveErr.message || saveErr}`;
+          db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
+            .run('failed', msg.slice(0, 500), now2, imageGenId);
+          taskService.updateTaskError(db, taskId, msg);
+          settleImageCredit(db, log, imageGenId, 'failed', msg);
+          return;
+        }
+        const persistedUrl = '/static/' + String(localPath).replace(/^\/+/, '');
+        const rowForAsset = db.prepare('SELECT * FROM image_generations WHERE id = ?').get(imageGenId);
+        db.transaction(() => {
+          db.prepare(
+            'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?'
+          ).run('completed', persistedUrl, localPath, now2, now2, imageGenId);
+          createStrictGeneratedAsset(db, { ...rowForAsset, id: imageGenId }, { url: persistedUrl, local_path: localPath }, artifact);
+          taskService.updateTaskResult(db, taskId, { image_generation_id: imageGenId, image_url: persistedUrl, local_path: localPath, status: 'completed' });
+          if (charIdNum != null) {
+            db.prepare('UPDATE characters SET image_url = ?, local_path = ?, updated_at = ? WHERE id = ?')
+              .run(persistedUrl, localPath, now2, charIdNum);
+          }
+          if (sceneIdNum != null) {
+            if (imageType === 'scene_panorama') {
+              db.prepare('UPDATE scenes SET panorama_image_url = ?, panorama_local_path = ?, updated_at = ? WHERE id = ?')
+                .run(persistedUrl, localPath, now2, sceneIdNum);
+            } else {
+              db.prepare('UPDATE scenes SET image_url = ?, local_path = ?, updated_at = ? WHERE id = ?')
+                .run(persistedUrl, localPath, now2, sceneIdNum);
+            }
+          }
+        })();
+        settleImageCredit(db, log, imageGenId, 'completed');
+        log.info('Image generation completed', { image_gen_id: imageGenId, local_path: localPath });
+        return;
+      }
       // 兼容旧库无 completed_at：先试完整 UPDATE，失败则只更新必有列
       try {
         db.prepare(
@@ -2933,9 +3697,16 @@ module.exports = {
   resolveImageModel,
   getReferenceImageCapability,
   callAihubccImageApi,
+  compressResolvedImageRefsForJson,
+  buildDjpsdOpenApiImageBody,
+  parseDjpsdOpenApiImagePollResponse,
+  callDjpsdOpenApiImageApi,
+  buildToken6688ImageBody: token6688Client.buildImageBody,
+  callToken6688ImageApi: token6688Client.callImageApi,
   getOpenAIImageOutputOptions,
   normalizeGptImageSize,
   imageMimeFromOutputFormat,
+  imageMimeFromBase64,
   formatGptImageUnknownResultError,
   MAX_PROVIDER_IMAGE_BASE64_LENGTH,
   normalizeProviderImageOutput,

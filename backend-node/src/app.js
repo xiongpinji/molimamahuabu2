@@ -7,6 +7,7 @@ const { loadConfig } = require('./config/index.js');
 const logger = require('./logger.js');
 const { setupRouter } = require('./routes/index.js');
 const { createStaticOwnershipMiddleware } = require('./middleware/resourceOwnership');
+const { mountReleaseEvidenceAssets } = require('./middleware/releaseEvidenceAssets');
 
 function resolveStorageRoot(config, cwd = process.cwd()) {
   const configured = config.storage?.local_path;
@@ -52,11 +53,45 @@ function createApp() {
   applyVendorLock(db, logger, config);
   const log = logger;
 
-  const taskService = require('./services/taskService');
-  taskService.failOrphanedAsyncTasksOnStartup(db, log);
-
-  // 后台服务与静态资源共用同一个绝对存储根目录。
   const storageRoot = resolveStorageRoot(config);
+
+  const redrawOrchestrator = require('./services/redrawOrchestrator');
+  const redrawResume = redrawOrchestrator.resumeRedrawTasks(
+    db,
+    log,
+    redrawOrchestrator.createStartupResumeOptions(db, log, { storageRoot })
+  ).catch((error) => {
+    log.error('Resume redraw analysis tasks failed', { error: error.message });
+  });
+
+  const taskService = require('./services/taskService');
+  redrawResume
+    .finally(() => {
+      try {
+        require('./services/redrawLocalizationOrchestrator').reconcileOrphanedTasks(db, log);
+      } catch (error) {
+        log.error('Startup redraw localization reconcile failed', { error: error.message });
+      }
+      try {
+        require('./services/redrawAssetBatchService').reconcileOrphanedBatches(db, log);
+      } catch (error) {
+        log.error('Startup redraw asset batch reconcile failed', { error: error.message });
+      }
+      try {
+        require('./services/redrawDialogueOrchestrator').reconcileOrphanedDialogueTasks(db, log);
+      } catch (error) {
+        log.error('Startup redraw dialogue reconcile failed', { error: error.message });
+      }
+      try {
+        require('./services/redrawCompositionService').recoverInterruptedCompositions(db);
+      } catch (error) {
+        log.error('Startup redraw composition recover failed', { error: error.message });
+      }
+      taskService.failOrphanedAsyncTasksOnStartup(db, log);
+    })
+    .catch((error) => {
+      log.error('Startup orphan cleanup failed', { error: error.message });
+    });
 
   const { resumeProcessingVideoGenerations } = require('./services/videoService');
   resumeProcessingVideoGenerations(db, log);
@@ -90,6 +125,9 @@ function createApp() {
       next();
     });
   }
+
+  // 仅公开 root-owned 的模型验证成品；用户素材仍受 /static 租户鉴权保护。
+  mountReleaseEvidenceAssets(app);
 
   // 静态资源目录：统一转为绝对路径（打包 exe 下相对路径可能解析异常）
   try {

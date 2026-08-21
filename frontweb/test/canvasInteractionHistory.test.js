@@ -5,6 +5,7 @@ import {
   createCanvasInteractionHistory,
   createCanvasInteractionState,
   redoCanvasInteractionHistory,
+  restoreCanvasInteractionFreeNodes,
   serializeCanvasInteractionState,
   undoCanvasInteractionHistory,
 } from '../src/utils/canvasInteractionHistory.js'
@@ -21,6 +22,33 @@ test('画布布局历史支持提交、撤销、重做并保留视口', () => {
   history = redoCanvasInteractionHistory(history)
   assert.deepEqual(history.present, second)
   assert.equal(serializeCanvasInteractionState(history.present), serializeCanvasInteractionState(second))
+})
+
+test('自由节点新增和删除可通过同一历史快照撤销重做', () => {
+  const node = {
+    id: 'free:text:1',
+    type: 'homeCanvasNode',
+    position: { x: 120, y: 80 },
+    data: { kind: 'text', title: '文本', content: '测试内容' },
+  }
+  const empty = createCanvasInteractionState([])
+  const created = createCanvasInteractionState([node])
+  let history = createCanvasInteractionHistory(empty)
+
+  history = commitCanvasInteractionHistory(history, empty, created)
+  history = undoCanvasInteractionHistory(history)
+  assert.deepEqual(restoreCanvasInteractionFreeNodes([node], history.present), [])
+
+  history = redoCanvasInteractionHistory(history)
+  assert.deepEqual(restoreCanvasInteractionFreeNodes([], history.present), [{
+    ...node,
+    selected: false,
+    dragging: false,
+  }])
+
+  history = commitCanvasInteractionHistory(history, created, empty)
+  history = undoCanvasInteractionHistory(history)
+  assert.equal(restoreCanvasInteractionFreeNodes([], history.present)[0].data.content, '测试内容')
 })
 
 test('无效节点位置不会进入历史快照，历史分支提交会清空重做栈', () => {

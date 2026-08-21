@@ -1,9 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
+const packageJson = require('../package.json');
 
 const modelPrices = require('../src/services/modelPriceService');
 const { runProductionPreflight } = require('../src/services/productionPreflightService');
+const {
+  evidenceRoots,
+  withExternalModelEvidence,
+} = require('./helpers/externalModelEvidenceFixture');
 
 function createDb() {
   const db = new Database(':memory:');
@@ -14,6 +19,22 @@ function createDb() {
     password_salt TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'user',
     status TEXT NOT NULL DEFAULT 'active'
+  );
+  CREATE TABLE scenes (
+    id INTEGER PRIMARY KEY,
+    polished_prompt_single TEXT
+  );
+  CREATE TABLE ai_service_configs (
+    id INTEGER PRIMARY KEY,
+    service_type TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    default_model TEXT NOT NULL,
+    api_protocol TEXT,
+    verified_capabilities TEXT NOT NULL DEFAULT '{}',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    verification_status TEXT NOT NULL DEFAULT 'unverified',
+    deleted_at TEXT
   )`);
   db.prepare(`INSERT INTO platform_users
     (id, email, password_hash, password_salt, role, status)
@@ -22,6 +43,12 @@ function createDb() {
   modelPrices.set(db, 'GPT-5.5', 2, { category: 'text' });
   modelPrices.set(db, 'gpt-image-2', 8, { category: 'image' });
   modelPrices.set(db, 'seedance 2.0', 25, { category: 'video' });
+  const insertConfig = db.prepare(`INSERT INTO ai_service_configs
+    (id, service_type, provider, model, default_model, is_active, verification_status)
+    VALUES (?, ?, ?, ?, ?, 1, 'verified')`);
+  insertConfig.run(1, 'text', 'openai', '["GPT-5.5"]', 'GPT-5.5');
+  insertConfig.run(2, 'image', 'openai', '["gpt-image-2"]', 'gpt-image-2');
+  insertConfig.run(3, 'video', 'openai', '["seedance 2.0"]', 'seedance 2.0');
   return db;
 }
 
@@ -48,6 +75,7 @@ function productionEnv() {
     PLATFORM_EMAIL_VERIFICATION_ENABLED: 'true',
     PLATFORM_JWT_SECRET: 'j'.repeat(40),
     PLATFORM_ADMIN_TOKEN: 'a'.repeat(40),
+    REDRAW_PROVIDER_ASSET_HMAC_SECRET: 'r'.repeat(40),
     PLATFORM_BOOTSTRAP_ADMIN_EMAIL: 'admin@example.com',
     SMTP_HOST: 'smtp.example.com',
     SMTP_PORT: '465',
@@ -73,6 +101,7 @@ test('安全生产配置、管理员和模型价格齐全时预检通过且不�
     const serialized = JSON.stringify(report);
     assert.equal(serialized.includes(env.PLATFORM_JWT_SECRET), false);
     assert.equal(serialized.includes(env.PLATFORM_ADMIN_TOKEN), false);
+    assert.equal(serialized.includes(env.REDRAW_PROVIDER_ASSET_HMAC_SECRET), false);
   } finally {
     db.close();
   }
@@ -223,6 +252,127 @@ test('关闭新用户注册时仍要求邮箱服务可用于已有用户找回�
       report.checks.find((check) => check.id === 'registration_email_verification')?.status,
       'fail',
     );
+  } finally {
+    db.close();
+  }
+});
+test('转绘供应商素材必须使用独立 HMAC 密钥且不得复用 JWT 或管理员令牌', () => {
+  const db = createDb();
+  try {
+    const missing = productionEnv();
+    delete missing.REDRAW_PROVIDER_ASSET_HMAC_SECRET;
+    const missingReport = runProductionPreflight({ config: productionConfig(), env: missing, db });
+    assert.equal(
+      missingReport.checks.find((check) => check.id === 'redraw_provider_asset_secret')?.status,
+      'fail',
+    );
+
+    const reused = productionEnv();
+    reused.REDRAW_PROVIDER_ASSET_HMAC_SECRET = reused.PLATFORM_JWT_SECRET;
+    const reusedReport = runProductionPreflight({ config: productionConfig(), env: reused, db });
+    assert.equal(
+      reusedReport.checks.find((check) => check.id === 'redraw_provider_asset_secret')?.status,
+      'fail',
+    );
+
+    const ready = productionEnv();
+    const readyReport = runProductionPreflight({ config: productionConfig(), env: ready, db });
+    assert.equal(
+      readyReport.checks.find((check) => check.id === 'redraw_provider_asset_secret')?.status,
+      'pass',
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('语言验证预检默认关闭时通过，启用后必须阻止过期 ready 且不泄露路径', () => {
+  const db = createDb();
+  try {
+    const disabledEnv = productionEnv();
+    disabledEnv.REDRAW_LOCALE_VERIFIER_ENABLED = 'false';
+    const disabled = runProductionPreflight({
+      config: productionConfig(),
+      env: disabledEnv,
+      db,
+    });
+    const disabledCheck = disabled.checks.find((check) => check.id === 'redraw_locale_verifier');
+    assert.equal(disabledCheck?.status, 'pass');
+    assert.match(disabledCheck?.message || '', /disabled|关闭/);
+
+    const sensitiveManifestPath = 'C:\\secure\\enabled-packs.json';
+    const enabledEnv = {
+      ...productionEnv(),
+      REDRAW_LOCALE_VERIFIER_ENABLED: 'true',
+      REDRAW_LOCALE_PACK_REGISTRY_PATH: sensitiveManifestPath,
+      REDRAW_LOCALE_PACK_SIGNATURE_PATH: 'C:\\secure\\enabled-packs.sig',
+      REDRAW_LOCALE_PACK_PUBLIC_KEY_PATH: 'C:\\secure\\ed25519-public.pem',
+      REDRAW_LOCALE_VERIFIER_READY_PATH: 'C:\\secure\\ready.json',
+      REDRAW_LOCALE_VERIFIER_SOCKET: 'C:\\secure\\redraw-locale.sock',
+      REDRAW_LOCALE_VERIFIER_TIMEOUT_MS: '180000',
+    };
+    const stale = runProductionPreflight({
+      config: productionConfig(),
+      env: enabledEnv,
+      db,
+      localeRegistry: {
+        assertReady(locale) {
+          assert.equal(locale, 'en-US');
+          const error = new Error(`${sensitiveManifestPath} expired`);
+          error.code = 'REDRAW_LOCALE_VERIFIER_NOT_READY';
+          throw error;
+        },
+      },
+    });
+    const staleCheck = stale.checks.find((check) => check.id === 'redraw_locale_verifier');
+    assert.equal(staleCheck?.status, 'fail');
+    assert.match(staleCheck?.message || '', /REDRAW_LOCALE_VERIFIER_NOT_READY/);
+    assert.equal(JSON.stringify(stale).includes(sensitiveManifestPath), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('package exposes a read-only redraw locale preflight command', () => {
+  assert.equal(
+    packageJson.scripts['preflight:redraw-locale'],
+    'node scripts/preproduction-check.js --redraw-locale',
+  );
+});
+
+test('production preflight rejects drift between ToAPIs DB capabilities and shared evidence', () => {
+  const db = createDb();
+  const capabilities = Object.fromEntries(['seedance-2-fast', 'seedance-2-mini'].map((model) => [
+    model,
+    withExternalModelEvidence(model, { resolutions: ['480p', '720p'] }),
+  ]));
+  db.prepare(`INSERT INTO ai_service_configs
+    (id, service_type, provider, model, default_model, api_protocol, verified_capabilities, is_active, verification_status)
+    VALUES (4, 'video', 'toapis', ?, 'seedance-2-fast', 'toapis_video', ?, 1, 'verified')`)
+    .run(JSON.stringify(['seedance-2-fast', 'seedance-2-mini']), JSON.stringify(capabilities));
+  try {
+    const ready = runProductionPreflight({
+      config: productionConfig(), env: productionEnv(), db, evidenceRoots,
+    });
+    assert.equal(ready.checks.find((check) => check.id === 'external_model_evidence_binding')?.status, 'pass');
+
+    capabilities['seedance-2-mini'].evidence_sha256 = '0'.repeat(64);
+    db.prepare('UPDATE ai_service_configs SET verified_capabilities = ? WHERE id = 4')
+      .run(JSON.stringify(capabilities));
+    const blocked = runProductionPreflight({
+      config: productionConfig(), env: productionEnv(), db, evidenceRoots,
+    });
+    assert.equal(blocked.checks.find((check) => check.id === 'external_model_evidence_binding')?.status, 'fail');
+    assert.equal(blocked.ready, false);
+
+    delete capabilities['seedance-2-mini'];
+    db.prepare('UPDATE ai_service_configs SET verified_capabilities = ? WHERE id = 4')
+      .run(JSON.stringify(capabilities));
+    const missing = runProductionPreflight({
+      config: productionConfig(), env: productionEnv(), db, evidenceRoots,
+    });
+    assert.equal(missing.checks.find((check) => check.id === 'external_model_evidence_binding')?.status, 'fail');
+    assert.equal(missing.ready, false);
   } finally {
     db.close();
   }

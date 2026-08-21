@@ -9,6 +9,26 @@ const modelPrice = require('../services/modelPriceService');
 const { randomUUID } = require('crypto');
 const textGenerationBilling = require('../services/text-generation-billing-service');
 
+function respondImageGenerationError(res, err) {
+  if (['MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED', 'TEXT_MODEL_NOT_CONFIGURED'].includes(err.code)) {
+    response.error(res, 503, err.code, err.message);
+    return true;
+  }
+  if (['MODEL_NOT_VERIFIED', 'MODEL_CREDENTIAL_MISSING', 'IMAGE_RESOLUTION_REQUIRED', 'IMAGE_RESOLUTION_NOT_VERIFIED', 'IMAGE_REFERENCE_NOT_VERIFIED', 'IMAGE_REFERENCE_LIMIT_EXCEEDED', 'INVALID_IMAGE_QUANTITY'].includes(err.code)) {
+    response.error(res, 400, err.code, err.message);
+    return true;
+  }
+  if (err.code === 'INSUFFICIENT_CREDITS') {
+    response.error(res, 402, err.code, '积分不足，请兑换积分后重试');
+    return true;
+  }
+  if (err.code === 'UNAUTHORIZED') {
+    response.error(res, 401, err.code, err.message);
+    return true;
+  }
+  return false;
+}
+
 function resolveTextModel(db, requestedModel) {
   const config = requestedModel
     ? aiClient.getConfigForModel(db, 'text', requestedModel)
@@ -208,6 +228,7 @@ function routes(db, log, cfg, generationOptions = {}) {
             userId: req.user?.id,
             tenantId: req.tenant?.id,
             textModel: body.text_model_name || body.text_model || undefined,
+            resolution: body.resolution || undefined,
           },
         );
         if (!out.ok) {
@@ -222,6 +243,7 @@ function routes(db, log, cfg, generationOptions = {}) {
       } catch (err) {
         log.error('scenes generateImage', { error: err.message });
         if (textGenerationBilling.respondError(response, res, err)) return;
+        if (respondImageGenerationError(res, err)) return;
         response.internalError(res, err.message);
       }
     },
@@ -269,6 +291,7 @@ function routes(db, log, cfg, generationOptions = {}) {
             userId: req.user?.id,
             tenantId: req.tenant?.id,
             textModel: body.text_model_name || body.text_model || undefined,
+            resolution: body.resolution || undefined,
           },
         );
         if (!out.ok) {
@@ -280,6 +303,7 @@ function routes(db, log, cfg, generationOptions = {}) {
       } catch (err) {
         log.error('scenes generate-four-view-image', { error: err.message });
         if (textGenerationBilling.respondError(response, res, err)) return;
+        if (respondImageGenerationError(res, err)) return;
         response.internalError(res, err.message);
       }
     },
@@ -288,7 +312,7 @@ function routes(db, log, cfg, generationOptions = {}) {
         const body = req.body || {};
         const out = await sceneService.generateScenePanoramaImage(
           db, log, cfg, req.params.scene_id, body.model || undefined, body.style || undefined,
-          { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id, tenantId: req.tenant?.id }
+          { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id, tenantId: req.tenant?.id, resolution: body.resolution || undefined }
         );
         if (!out.ok) {
           if (out.error === 'scene not found') return response.notFound(res, '场景不存在');
@@ -298,6 +322,7 @@ function routes(db, log, cfg, generationOptions = {}) {
         response.success(res, { message: '场景全景图生成任务已提交', image_generation: out.image_generation });
       } catch (err) {
         log.error('scenes generate-panorama-image', { error: err.message });
+        if (respondImageGenerationError(res, err)) return;
         response.internalError(res, err.message);
       }
     },

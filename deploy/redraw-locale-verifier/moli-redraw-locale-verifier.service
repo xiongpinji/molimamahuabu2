@@ -1,0 +1,28 @@
+[Unit]
+Description=Moli Drama redraw locale verifier
+
+[Service]
+Type=simple
+User=moli-drama
+Group=moli-drama
+WorkingDirectory=/opt/moli-drama/shared/redraw-locale-verifier
+EnvironmentFile=-/opt/moli-drama/shared/redraw-locale-verifier/verifier.env
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+ExecStart=/opt/moli-drama/shared/redraw-locale-verifier/venv/bin/python -m redraw_locale_worker.server
+Restart=on-failure
+RestartSec=15s
+MemoryMax=5G
+CPUQuota=300%
+TasksMax=64
+PrivateNetwork=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/run/moli-drama /var/tmp/moli-redraw-locale
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

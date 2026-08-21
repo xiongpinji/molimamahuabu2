@@ -318,6 +318,16 @@ test('独立画布图谱不生成剧集骨架且保留自由节点和连线', ()
   assert.match(adapterSource, /if \(options\.standalone\) \{[\s\S]*return buildStandaloneCanvasGraph\(savedLayout, options\.projectAssets\)/)
 })
 
+test('项目素材旧网格自动迁移为不遮挡操作按钮的纵向间距并保留手动位置', () => {
+  assert.match(adapterSource, /const PROJECT_ASSET_ROW_H = 320/)
+  assert.match(adapterSource, /const usesLegacyGrid = Math\.abs\(position\.x - legacyPosition\.x\) < 0\.5[\s\S]*Math\.abs\(position\.y - legacyPosition\.y\) < 0\.5/)
+  assert.match(adapterSource, /return usesLegacyGrid \? fallback : position/)
+  assert.match(adapterSource, /const legacyPosition = \{ x: 48 \+ column \* 288, y: 64 \+ row \* 210 \}/)
+  assert.match(adapterSource, /const fallback = \{ x: 48 \+ column \* 288, y: 64 \+ row \* PROJECT_ASSET_ROW_H \}/)
+  assert.match(adapterSource, /position: resolveProjectAssetPosition\(savedLayout, id, legacyPosition, fallback\)/)
+  assert.match(adapterSource, /projectAssets\.length \* PROJECT_ASSET_ROW_H/)
+})
+
 test('独立画布菜单用配置节点替代图片视频直接上传', () => {
   assert.match(contextMenuSource, /standalone/)
   assert.match(contextMenuSource, /type: 'text'[\s\S]*label: '文本'/)

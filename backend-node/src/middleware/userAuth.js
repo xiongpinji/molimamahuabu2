@@ -1,6 +1,7 @@
 const auth = require('../services/userAuthService');
+const sessionCookie = require('../services/sessionCookieService');
 
-function createUserAuthMiddleware({ enabled, secret, db } = {}) {
+function createUserAuthMiddleware({ enabled, secret, db, secureCookies = false } = {}) {
   return (req, res, next) => {
     if (!enabled) return next();
     if (!auth.validSecret(secret)) {
@@ -28,6 +29,7 @@ function createUserAuthMiddleware({ enabled, secret, db } = {}) {
       } else {
         req.user = { id: claims.id, email: claims.email, role: claims.role };
       }
+      sessionCookie.setSessionCookie(res, match[1], secureCookies);
       return next();
     } catch {
       return res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: '登录已失效，请重新登录' } });

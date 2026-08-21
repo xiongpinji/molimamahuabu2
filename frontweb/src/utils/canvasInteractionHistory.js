@@ -13,12 +13,21 @@ function normalizeViewport(viewport) {
 export function createCanvasInteractionState(nodes = [], viewport = {}, edges = [], suppressedEdgeIds = []) {
   const positions = {}
   const groups = []
+  const freeNodes = []
   for (const node of nodes || []) {
     if (!node?.id || !node.position) continue
     const x = Number(node.position.x)
     const y = Number(node.position.y)
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue
     positions[String(node.id)] = { x, y }
+    if (node.type === 'homeCanvasNode') {
+      freeNodes.push({
+        id: String(node.id),
+        type: 'homeCanvasNode',
+        position: { x, y },
+        data: clone(node.data || {}),
+      })
+    }
     if (node.type !== 'canvasGroup') continue
     const childNodeIds = [...new Set((node.data?.childNodeIds || []).map(String).filter(Boolean))]
     const width = Number(node.data?.width)
@@ -36,6 +45,7 @@ export function createCanvasInteractionState(nodes = [], viewport = {}, edges = 
   return {
     nodes: positions,
     groups,
+    freeNodes,
     viewport: normalizeViewport(viewport),
     edges: clone(edges || []),
     suppressedEdgeIds: [...new Set((suppressedEdgeIds || []).map(String))].sort(),
@@ -46,10 +56,19 @@ export function serializeCanvasInteractionState(state) {
   return JSON.stringify({
     nodes: Object.fromEntries(Object.entries(state?.nodes || {}).sort(([a], [b]) => a.localeCompare(b))),
     groups: [...(state?.groups || [])].sort((a, b) => String(a.id).localeCompare(String(b.id))),
+    freeNodes: [...(state?.freeNodes || [])].sort((a, b) => String(a.id).localeCompare(String(b.id))),
     viewport: normalizeViewport(state?.viewport),
     edges: state?.edges || [],
     suppressedEdgeIds: [...new Set((state?.suppressedEdgeIds || []).map(String))].sort(),
   })
+}
+
+export function restoreCanvasInteractionFreeNodes(nodes = [], state = {}) {
+  if (!Array.isArray(state?.freeNodes)) return nodes
+  return [
+    ...(nodes || []).filter((node) => node.type !== 'homeCanvasNode'),
+    ...clone(state.freeNodes).map((node) => ({ ...node, selected: false, dragging: false })),
+  ]
 }
 
 export function createCanvasInteractionHistory(state, limit = 50) {

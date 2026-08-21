@@ -26,8 +26,8 @@ function updateLanguage(cfg, log) {
 /** GET /settings/generation — 获取生成相关全局设置 */
 function getGenerationSettings(db) {
   return (req, res) => {
-    const concurrency = settingsService.getGlobalSetting(db, 'pipeline_concurrency', 3);
-    const video_concurrency = settingsService.getGlobalSetting(db, 'pipeline_video_concurrency', 3);
+    const concurrency = settingsService.getGlobalSetting(db, 'pipeline_concurrency', 1);
+    const video_concurrency = settingsService.getGlobalSetting(db, 'pipeline_video_concurrency', 1);
     const video_generation_timeout_minutes = resolveVideoGenerationTimeoutMinutes(loadConfig());
     response.success(res, { concurrency, video_concurrency, video_generation_timeout_minutes });
   };
@@ -51,8 +51,8 @@ function updateGenerationSettings(db) {
       }
       settingsService.setGlobalSetting(db, 'pipeline_video_concurrency', n);
     }
-    const saved = settingsService.getGlobalSetting(db, 'pipeline_concurrency', 3);
-    const saved_video = settingsService.getGlobalSetting(db, 'pipeline_video_concurrency', 3);
+    const saved = settingsService.getGlobalSetting(db, 'pipeline_concurrency', 1);
+    const saved_video = settingsService.getGlobalSetting(db, 'pipeline_video_concurrency', 1);
     const video_generation_timeout_minutes = resolveVideoGenerationTimeoutMinutes(loadConfig());
     response.success(res, {
       concurrency: saved,

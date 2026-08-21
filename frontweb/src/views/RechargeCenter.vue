@@ -10,6 +10,7 @@
           <div class="credit-balance" aria-label="当前可用积分">
             <span>可用积分</span>
             <strong>{{ loadState === 'ready' ? account.available.toLocaleString('zh-CN') : '--' }}</strong>
+            <small v-if="loadState === 'ready'">永久 {{ account.permanentAvailable.toLocaleString('zh-CN') }} · 今日赠送 {{ account.dailyBonusAvailable.toLocaleString('zh-CN') }}</small>
           </div>
           <button
             type="button"
@@ -78,6 +79,15 @@
           :closable="false"
           show-icon
         />
+        <el-alert
+          v-else-if="membership.active"
+          class="channel-alert"
+          title="会员权益生效中"
+          :description="`当前会员权益有效至 ${membershipEndsText()}。有效期内不可重复购买会员档；自定义充值仍可使用。`"
+          type="info"
+          :closable="false"
+          show-icon
+        />
 
         <section class="recharge-stage">
           <template v-if="mode === 'packages'">
@@ -86,7 +96,8 @@
                 v-for="item in rechargePackages"
                 :key="item.id"
                 :item="item"
-                :disabled="!rechargeConfig.configured"
+                :disabled="!rechargeConfig.configured || membership.active"
+                :disabled-label="membership.active ? '会员有效期内不可重复购买' : '支付通道准备中'"
                 :loading="payingTarget === item.id"
                 @purchase="startPackageRecharge"
               />
@@ -165,6 +176,7 @@ const rechargeConfig = ref({
   max_amount_yuan: '50000.00',
 })
 const rechargePackages = ref([])
+const membership = ref({ active: false, ends_on: null })
 const rechargeOrders = ref([])
 const ordersOpen = ref(false)
 const payingTarget = ref('')
@@ -196,15 +208,19 @@ function loadRechargeCenter() {
       listRechargePackages(requestConfig),
       listAlipayRechargeOrders(requestConfig),
     ])
-    .then(([credit, config, packages, orders]) => {
+    .then(([credit, config, packagePayload, orders]) => {
       if (!isMounted || generation !== loadGeneration || controller.signal.aborted) return
       const nextAccount = normalizeCreditAccount(credit)
       const nextConfig = { ...rechargeConfig.value, ...config }
-      const nextPackages = Array.isArray(packages) ? packages : []
+      const nextPackages = Array.isArray(packagePayload?.packages) ? packagePayload.packages : []
+      const nextMembership = packagePayload?.membership?.active
+        ? packagePayload.membership
+        : { active: false, ends_on: null }
       const nextOrders = Array.isArray(orders) ? orders : []
       account.value = nextAccount
       rechargeConfig.value = nextConfig
       rechargePackages.value = nextPackages
+      membership.value = nextMembership
       rechargeOrders.value = nextOrders
       loadState.value = 'ready'
     })
@@ -243,6 +259,7 @@ async function beginRecharge(payload, target) {
 }
 
 function startPackageRecharge(item) {
+  if (membership.value.active) return ElMessage.warning('当前会员未到期，只能使用自定义充值')
   return beginRecharge({ package_id: item.id }, item.id)
 }
 
@@ -256,6 +273,10 @@ function formatYuan(amountCents) {
 
 function formatDate(value) {
   return value ? new Date(value).toLocaleString('zh-CN') : '-'
+}
+
+function membershipEndsText() {
+  return membership.value.ends_on || account.value.membershipEndsOn || '-'
 }
 
 function statusLabel(status) {
@@ -307,6 +328,7 @@ onBeforeUnmount(() => {
 .credit-balance { display: grid; gap: 2px; padding-right: 12px; text-align: right; }
 .credit-balance span { color: #919197; font-size: 11px; }
 .credit-balance strong { color: #ff936b; font-size: 17px; }
+.credit-balance small { color: #77777d; font-size: 10px; white-space: nowrap; }
 .recharge-content { max-width: 1600px; margin: 0 auto; padding: 56px 34px 80px; }
 .recharge-loading-state,
 .recharge-load-error { display: grid; max-width: 620px; min-height: 360px; margin: 42px auto 0; padding: 42px; border: 1px solid #303030; border-radius: 24px; place-items: center; align-content: center; text-align: center; background: #151515; box-shadow: 0 26px 60px rgba(0, 0, 0, .28); }
@@ -327,7 +349,7 @@ onBeforeUnmount(() => {
 .hero-eyebrow { color: #ff8e64; font-size: 12px; font-weight: 800; letter-spacing: .22em; }
 .recharge-hero h1 { margin: 12px 0 14px; font-size: clamp(34px, 4.8vw, 58px); line-height: 1.08; letter-spacing: -.045em; }
 .recharge-hero p { max-width: 670px; margin: 0 auto; color: #a7a7ad; font-size: 15px; line-height: 1.8; }
-.mode-switch { display: grid; grid-template-columns: 1fr 1fr; width: min(390px, 100%); margin: 38px auto 28px; padding: 5px; border: 1px solid #2a2a2a; border-radius: 999px; background: #151515; }
+.mode-switch { position: sticky; top: 82px; z-index: 12; display: grid; grid-template-columns: 1fr 1fr; width: min(390px, 100%); margin: 38px auto 28px; padding: 5px; border: 1px solid #2a2a2a; border-radius: 999px; background: #151515; }
 .mode-switch button { min-height: 50px; border: 0; border-radius: 999px; color: #97979d; font: inherit; font-weight: 800; background: transparent; cursor: pointer; }
 .mode-switch button:hover,
 .mode-switch button:focus-visible { color: #fff; outline: none; }
@@ -358,6 +380,7 @@ onBeforeUnmount(() => {
   .history-button,
   .back-button { padding: 0 10px; }
   .recharge-content { padding: 40px 16px 58px; }
+  .mode-switch { top: 78px; }
   .recharge-hero h1 { font-size: 36px; }
   .recharge-grid { grid-template-columns: 1fr; }
   .recharge-grid :deep(.recharge-package-card--featured) { transform: none; }

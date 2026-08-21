@@ -27,7 +27,7 @@ function setup({ withPrice = true } = {}) {
     `INSERT INTO props (drama_id, name, prompt, created_at, updated_at)
      VALUES (?, '旧式手机', '一部磨损的黑色旧式手机', ?, ?)`,
   ).run(dramaId, now, now).lastInsertRowid);
-  const config = aiConfig.createConfig(db, log, {
+  const imageConfig = aiConfig.createConfig(db, log, {
     service_type: 'image',
     provider: 'openai',
     name: '测试图片模型',
@@ -37,8 +37,10 @@ function setup({ withPrice = true } = {}) {
     default_model: 'gpt-image-2',
     is_default: true,
   });
-  db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
-    .run(config.id);
+  if (db.prepare('PRAGMA table_info(ai_service_configs)').all().some((column) => column.name === 'verification_status')) {
+    db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
+      .run(imageConfig.id);
+  }
   credits.setTenantAccountBalance(db, 'tenant-a', 20);
   if (withPrice) prices.set(db, 'gpt-image-2', 5);
   return { db, dramaId, propId };

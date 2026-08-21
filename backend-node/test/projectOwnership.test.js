@@ -131,139 +131,47 @@ test('静态媒体支持 HttpOnly 会话 Cookie，并只允许当前用户生成
   assert.equal(otherRes.statusCode, 404);
 });
 
-test('公开模式登录后只放行受控目录内的套餐广告图', async () => {
+test('静态转绘源片按 source fingerprint 校验登录所有者和租户成员', () => {
   const { db } = setup();
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-recharge-static-'));
-  const packageDir = path.join(tempRoot, 'uploads', 'recharge-packages');
-  const adjacentDir = path.join(tempRoot, 'uploads', 'other');
-  const emptyStorageRoot = path.join(tempRoot, 'empty-storage');
-  let server;
-  try {
-    fs.mkdirSync(packageDir, { recursive: true });
-    fs.mkdirSync(adjacentDir, { recursive: true });
-    fs.mkdirSync(emptyStorageRoot);
-    fs.writeFileSync(path.join(packageDir, 'valid.webp'), Buffer.from('524946460400000057454250', 'hex'));
-    fs.writeFileSync(path.join(packageDir, 'blocked.gif'), Buffer.from('GIF89a', 'ascii'));
-    fs.writeFileSync(path.join(packageDir, 'blocked.html'), '<html>blocked</html>');
-    fs.mkdirSync(path.join(packageDir, 'directory.webp'));
-    fs.writeFileSync(path.join(adjacentDir, 'valid.webp'), Buffer.from('524946460400000057454250', 'hex'));
+  const token = auth.issueToken({ id: 'user-1', email: 'one@example.com', role: 'user' }, SECRET);
+  const otherToken = auth.issueToken({ id: 'user-2', email: 'two@example.com', role: 'user' }, SECRET);
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO tenants (id, name, slug, status, created_by, created_at, updated_at)
+    VALUES ('team-redraw', 'Redraw Team', 'team-redraw', 'active', 'user-1', ?, ?)`).run(now, now);
+  db.prepare(`INSERT INTO tenant_members (tenant_id, user_id, role, status, created_at, updated_at)
+    VALUES ('team-redraw', 'user-1', 'member', 'active', ?, ?)`).run(now, now);
+  const projectId = db.prepare(`
+    INSERT INTO redraw_projects
+      (tenant_id, user_id, title, default_locale, default_market, localization_level, status, created_at, updated_at)
+    VALUES ('team-redraw', 'user-1', '转绘项目', 'en-US', 'US', 'faithful', 'draft', ?, ?)
+  `).run(now, now).lastInsertRowid;
+  const sha = 'a'.repeat(64);
+  db.prepare(`
+    INSERT INTO redraw_works
+      (project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint, duration_ms,
+       current_version, current_step, status, created_at, updated_at, deleted_at)
+    VALUES (?, 'team-redraw', 'user-1', '源片', 1, ?, 90000, 0, 1, 'draft', ?, ?, NULL)
+  `).run(projectId, sha, now, now);
 
-    const app = express();
-    app.use('/static', createStaticOwnershipMiddleware({
-      db,
-      enabled: true,
-      secret: SECRET,
-      storageRoot: tempRoot,
-    }), express.static(tempRoot));
-    server = await new Promise((resolve) => {
-      const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
-    });
-    const baseUrl = `http://127.0.0.1:${server.address().port}`;
-    const token = auth.issueToken({ id: 'user-1', email: 'one@example.com', role: 'user' }, SECRET);
-    const authorized = { headers: { authorization: `Bearer ${token}` } };
+  const middleware = createStaticOwnershipMiddleware({ db, enabled: true, secret: SECRET });
+  const ownedRes = response();
+  let called = false;
+  middleware({
+    path: `/redraw-sources/${sha}.mp4`,
+    query: {},
+    get(name) {
+      return name === 'authorization' ? `Bearer ${token}` : '';
+    },
+  }, ownedRes, () => { called = true; });
+  assert.equal(called, true);
 
-    const allowed = await fetch(`${baseUrl}/static/uploads/recharge-packages/valid.webp`, authorized);
-    assert.equal(allowed.status, 200);
-    assert.deepEqual(Buffer.from(await allowed.arrayBuffer()), Buffer.from('524946460400000057454250', 'hex'));
-    assert.equal((await fetch(`${baseUrl}/static//uploads/recharge-packages/valid.webp`, authorized)).status, 200);
-
-    assert.equal((await fetch(`${baseUrl}/static/uploads/recharge-packages/valid.webp`)).status, 401);
-    db.prepare("UPDATE platform_users SET status = 'disabled' WHERE id = 'user-1'").run();
-    assert.equal((await fetch(`${baseUrl}/static/uploads/recharge-packages/valid.webp`, authorized)).status, 401);
-    db.prepare("UPDATE platform_users SET status = 'active', token_version = 1 WHERE id = 'user-1'").run();
-    assert.equal((await fetch(`${baseUrl}/static/uploads/recharge-packages/valid.webp`, authorized)).status, 401);
-    db.prepare("UPDATE platform_users SET token_version = 0 WHERE id = 'user-1'").run();
-    assert.equal((await fetch(`${baseUrl}/static/uploads/other/valid.webp`, authorized)).status, 404);
-    assert.equal((await fetch(`${baseUrl}/static/uploads/recharge-packages/%252e%252e%252fother%252fvalid.webp`, authorized)).status, 404);
-    assert.equal((await fetch(`${baseUrl}/static/uploads/recharge-packages/blocked.gif`, authorized)).status, 404);
-    assert.equal((await fetch(`${baseUrl}/static/uploads/recharge-packages/blocked.html`, authorized)).status, 404);
-
-    const assertGateDenied = (middleware, requestPath) => {
-      const denied = response();
-      let called = false;
-      middleware({
-        path: requestPath,
-        get(name) { return name === 'authorization' ? `Bearer ${token}` : ''; },
-      }, denied, () => { called = true; });
-      assert.equal(called, false);
-      assert.equal(denied.statusCode, 404);
-    };
-    const gate = createStaticOwnershipMiddleware({
-      db,
-      enabled: true,
-      secret: SECRET,
-      storageRoot: tempRoot,
-    });
-    assertGateDenied(gate, '/uploads/recharge-packages/missing.webp');
-    assertGateDenied(gate, '/uploads/recharge-packages/directory.webp');
-    assertGateDenied(createStaticOwnershipMiddleware({
-      db,
-      enabled: true,
-      secret: SECRET,
-      storageRoot: emptyStorageRoot,
-    }), '/uploads/recharge-packages/missing.webp');
-  } finally {
-    if (server) await new Promise((resolve) => server.close(resolve));
-    db.close();
-    fs.rmSync(tempRoot, { recursive: true, force: true });
-  }
-});
-
-test('套餐广告图静态链拒绝目录链接和文件链接逃逸存储根', async (t) => {
-  const { db } = setup();
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-recharge-link-storage-'));
-  const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-recharge-link-outside-'));
-  const packageDir = path.join(tempRoot, 'uploads', 'recharge-packages');
-  const outsideFile = path.join(outsideRoot, 'secret.webp');
-  const linkedDirectory = path.join(packageDir, 'linkdir');
-  const linkedFile = path.join(packageDir, 'linked-file.webp');
-  let directoryLinkError = null;
-  let fileLinkError = null;
-  let server;
-  try {
-    fs.mkdirSync(packageDir, { recursive: true });
-    fs.writeFileSync(path.join(packageDir, 'valid.webp'), Buffer.from('524946460400000057454250', 'hex'));
-    fs.writeFileSync(outsideFile, Buffer.from('524946460400000057454250', 'hex'));
-    try {
-      fs.symlinkSync(outsideRoot, linkedDirectory, process.platform === 'win32' ? 'junction' : 'dir');
-    } catch (error) {
-      directoryLinkError = error;
-    }
-    try {
-      fs.symlinkSync(outsideFile, linkedFile, 'file');
-    } catch (error) {
-      fileLinkError = error;
-    }
-
-    const app = express();
-    app.use('/static', createStaticOwnershipMiddleware({
-      db,
-      enabled: true,
-      secret: SECRET,
-      storageRoot: tempRoot,
-    }), express.static(tempRoot));
-    server = await new Promise((resolve) => {
-      const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
-    });
-    const baseUrl = `http://127.0.0.1:${server.address().port}`;
-    const token = auth.issueToken({ id: 'user-1', email: 'one@example.com', role: 'user' }, SECRET);
-    const authorized = { headers: { authorization: `Bearer ${token}` } };
-
-    assert.equal((await fetch(`${baseUrl}/static/uploads/recharge-packages/valid.webp`, authorized)).status, 200);
-    await t.test('目录链接指向存储根外时返回 404', {
-      skip: directoryLinkError ? `无法创建${process.platform === 'win32' ? ' junction' : ' symlink'}: ${directoryLinkError.code || 'unknown'}` : false,
-    }, async () => {
-      assert.equal((await fetch(`${baseUrl}/static/uploads/recharge-packages/linkdir/secret.webp`, authorized)).status, 404);
-    });
-    await t.test('文件链接指向存储根外时返回 404', {
-      skip: fileLinkError ? `无法创建文件 symlink: ${fileLinkError.code || 'unknown'}` : false,
-    }, async () => {
-      assert.equal((await fetch(`${baseUrl}/static/uploads/recharge-packages/linked-file.webp`, authorized)).status, 404);
-    });
-  } finally {
-    if (server) await new Promise((resolve) => server.close(resolve));
-    db.close();
-    fs.rmSync(tempRoot, { recursive: true, force: true });
-    fs.rmSync(outsideRoot, { recursive: true, force: true });
-  }
+  const otherRes = response();
+  middleware({
+    path: `/redraw-sources/${sha}.mp4`,
+    query: {},
+    get(name) {
+      return name === 'authorization' ? `Bearer ${otherToken}` : '';
+    },
+  }, otherRes, () => {});
+  assert.equal(otherRes.statusCode, 404);
 });

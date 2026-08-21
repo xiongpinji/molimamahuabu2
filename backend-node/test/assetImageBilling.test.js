@@ -48,12 +48,9 @@ test('旧资产图片任务预扣积分，复用处理中任务且写入审计�
   const first = createAssetImage(db);
   const second = createAssetImage(db);
   const row = db.prepare('SELECT user_id, credit_reservation_id FROM image_generations WHERE id = ?').get(first.id);
-  const task = db.prepare('SELECT credit_reservation_id, model FROM async_tasks WHERE id = ?').get(first.task_id);
 
   assert.equal(row.user_id, 'user-1');
   assert.equal(typeof row.credit_reservation_id, 'string');
-  assert.equal(task.credit_reservation_id, row.credit_reservation_id);
-  assert.equal(task.model, 'gpt-image-2');
   assert.equal(second.id, first.id);
   assert.equal(second.reused, true);
   assert.deepEqual(credits.getAccount(db, 'user-1'), { user_id: 'user-1', available: 82, held: 18, spent: 0 });

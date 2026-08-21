@@ -128,16 +128,6 @@ function buildVideoBody({
   video_url,
 } = {}) {
   const name = String(model || '').trim();
-  if (name.toLowerCase() === 'lingjing-video-v1') {
-    const length = Number(seconds ?? duration);
-    return {
-      model: name,
-      prompt: prompt || '',
-      duration: Number.isFinite(length) ? Math.min(15, Math.max(1, Math.round(length))) : 5,
-      ratio: normalizeAspectRatio(aspect_ratio),
-      reference_images: reference_urls.filter(Boolean).slice(0, 12),
-    };
-  }
   const isOmni = /^omni-fast/i.test(name);
   const isFlow = isFlowVideoModel(name);
   const body = {
@@ -248,7 +238,17 @@ async function pollTask(config, taskId, { maxAttempts = 180, intervalMs = 5000, 
   const delay = Number.isFinite(Number(intervalMs)) ? Math.max(0, Number(intervalMs)) : 5000;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-    const result = await requestJson(getQueryUrl(config, taskId), { headers: authHeaders(config), timeoutMs: 60000 });
+    let result;
+    try {
+      result = await requestJson(getQueryUrl(config, taskId), { headers: authHeaders(config), timeoutMs: 60000 });
+    } catch (error) {
+      log?.warn?.('[AIHubCC poll] 查询暂时失败，继续轮询同一任务', {
+        task_id: taskId,
+        attempt: attempt + 1,
+        error: error.message,
+      });
+      continue;
+    }
     const payload = result.data || {};
     const status = extractStatus(payload);
     const url = extractMediaUrl(payload, config);

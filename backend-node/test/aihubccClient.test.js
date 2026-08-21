@@ -86,20 +86,19 @@ test('AIHubCC video body maps Omni and Seedance fields', () => {
   assert.deepEqual(seedance.reference_image_urls, ['https://example.com/character.png']);
 });
 
-test('lingjing video body uses ratio and ordered reference_images', () => {
-  assert.deepEqual(client.buildVideoBody({
+test('AIHubCC does not translate Lingjing public models into its private schema', () => {
+  const body = client.buildVideoBody({
     model: 'lingjing-video-v1',
     prompt: 'animate',
     duration: 15,
     aspect_ratio: '9:16',
     reference_urls: ['uploads/one.png', 'uploads/two.png'],
-  }), {
-    model: 'lingjing-video-v1',
-    prompt: 'animate',
-    duration: 15,
-    ratio: '9:16',
-    reference_images: ['uploads/one.png', 'uploads/two.png'],
   });
+  assert.equal(body.model, 'lingjing-video-v1');
+  assert.equal(body.aspect_ratio, '9:16');
+  assert.deepEqual(body.reference_image_urls, ['uploads/one.png', 'uploads/two.png']);
+  assert.equal(body.ratio, undefined);
+  assert.equal(body.reference_images, undefined);
 });
 
 
@@ -145,4 +144,33 @@ test('AIHubCC extracts direct, nested and relative media URLs', () => {
   assert.equal(client.extractStatus({ data: { task_status: 'SUCCESS' } }), 'success');
   assert.equal(client.extractUploadPath({ path: 'uploads/a.png' }), 'uploads/a.png');
   assert.equal(client.extractUploadPath({ data: { path: 'uploads/b.png' } }), 'uploads/b.png');
+});
+
+test('AIHubCC polling retries a transient network failure without resubmitting the task', async (t) => {
+  const originalFetch = global.fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    if (calls === 1) throw new TypeError('fetch failed');
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        status: 'completed',
+        image_url: 'https://cdn.example.com/result.png',
+      }),
+    };
+  };
+
+  const result = await client.pollTask(
+    { base_url: 'https://aihubcc.cc/v1', api_key: 'secret' },
+    'task-1',
+    { maxAttempts: 2, intervalMs: 0, mediaType: 'image', log: { info() {}, warn() {} } },
+  );
+
+  assert.equal(calls, 2);
+  assert.deepEqual(result, { image_url: 'https://cdn.example.com/result.png' });
 });

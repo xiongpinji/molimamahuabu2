@@ -5,6 +5,7 @@ const Database = require('better-sqlite3');
 const aiConfigService = require('../src/services/aiConfigService');
 const { toPublicConfig } = aiConfigService;
 const aiConfigRoutes = require('../src/routes/aiConfig');
+const modelPriceService = require('../src/services/modelPriceService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 test('AI 配置公开视图不返回供应商密钥', () => {
@@ -19,6 +20,136 @@ test('AI 配置公开视图不返回供应商密钥', () => {
   assert.equal(settings.kling_access_key, undefined);
   assert.equal(settings.kling_secret_key, undefined);
   assert.equal(settings.deepseek_thinking, 'enabled');
+});
+
+test('普通用户视频模型接口只返回管理员启用、已验证且已定价的模型名称', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE ai_service_configs (
+      id INTEGER PRIMARY KEY,
+      service_type TEXT NOT NULL,
+      provider TEXT,
+      api_protocol TEXT,
+      name TEXT,
+      base_url TEXT,
+      api_key TEXT,
+      model TEXT,
+      default_model TEXT,
+      endpoint TEXT,
+      query_endpoint TEXT,
+      priority INTEGER DEFAULT 0,
+      is_default INTEGER DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
+      verification_status TEXT NOT NULL DEFAULT 'unverified',
+      settings TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      deleted_at TEXT
+    );
+  `);
+  db.prepare(`
+    INSERT INTO ai_service_configs
+      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, is_default, is_active, verification_status)
+    VALUES ('video', 'grok', 'openai', 'Grok 视频', 'https://private.example', 'secret', ?, 'grok-video-3', 1, 1, 'verified')
+  `).run(JSON.stringify(['grok-video-3', 'grok-video-3-fast']));
+  db.prepare(`
+    INSERT INTO ai_service_configs
+      (service_type, provider, name, model, is_active)
+    VALUES ('video', 'disabled', '停用模型', ?, 0)
+  `).run(JSON.stringify(['disabled-model']));
+  modelPriceService.set(db, 'grok-video-3', 20, { category: 'video' });
+  modelPriceService.set(db, 'grok-video-3-fast', 25, { category: 'video' });
+  modelPriceService.set(db, 'disabled-model', 30, { category: 'video' });
+
+  let payload;
+  const res = {
+    status() { return this; },
+    json(body) { payload = body; },
+  };
+  aiConfigRoutes(db, {}, {}).listPublicVideoModels({ query: {} }, res);
+
+  assert.equal(payload.success, true);
+  assert.deepEqual(payload.data, ['grok-video-3', 'grok-video-3-fast']);
+  db.close();
+});
+
+test('普通用户图像模型接口只返回管理员启用、已验证且已定价的模型名称', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE ai_service_configs (
+      id INTEGER PRIMARY KEY,
+      service_type TEXT NOT NULL,
+      provider TEXT,
+      api_protocol TEXT,
+      name TEXT,
+      base_url TEXT,
+      api_key TEXT,
+      model TEXT,
+      default_model TEXT,
+      endpoint TEXT,
+      query_endpoint TEXT,
+      priority INTEGER DEFAULT 0,
+      is_default INTEGER DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
+      verification_status TEXT NOT NULL DEFAULT 'unverified',
+      settings TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      deleted_at TEXT
+    );
+  `);
+  db.prepare(`
+    INSERT INTO ai_service_configs
+      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, is_default, is_active, verification_status)
+    VALUES ('image', 'lib', 'openai', '通用图片', 'https://private.example', 'secret', ?, 'lib-image', 1, 1, 'verified')
+  `).run(JSON.stringify(['lib-image']));
+  db.prepare(`
+    INSERT INTO ai_service_configs
+      (service_type, provider, name, model, default_model, is_active, verification_status)
+    VALUES ('storyboard_image', 'lib', '分镜图片', ?, 'lib-storyboard', 1, 'verified')
+  `).run(JSON.stringify(['lib-storyboard']));
+  db.prepare(`
+    INSERT INTO ai_service_configs
+      (service_type, provider, name, model, is_active)
+    VALUES ('image', 'disabled', '停用图片', ?, 0)
+  `).run(JSON.stringify(['disabled-image']));
+  modelPriceService.set(db, 'lib-image', 12, { category: 'image' });
+  modelPriceService.set(db, 'lib-storyboard', 13, { category: 'image' });
+  modelPriceService.set(db, 'disabled-image', 14, { category: 'image' });
+
+  let payload;
+  const res = {
+    status() { return this; },
+    json(body) { payload = body; },
+  };
+  aiConfigRoutes(db, {}, {}).listPublicImageModels({ query: {} }, res);
+
+  assert.equal(payload.success, true);
+  assert.deepEqual(payload.data, ['lib-image', 'lib-storyboard']);
+  db.close();
+});
+
+test('普通用户音频模型接口只返回管理员启用的模型名称', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  db.prepare(`
+    INSERT INTO ai_service_configs
+      (service_type, provider, name, base_url, api_key, model, default_model,
+       is_default, is_active, verification_status)
+    VALUES ('tts', 'voice', '平台音色', 'https://private.example', 'secret', ?,
+      'voice-1', 1, 1, 'verified')
+  `).run(JSON.stringify(['voice-1']));
+
+  let payload;
+  const res = {
+    status() { return this; },
+    json(body) { payload = body; },
+  };
+  aiConfigRoutes(db, {}, {}).listPublicAudioModels({ query: {} }, res);
+
+  assert.equal(payload.success, true);
+  assert.deepEqual(payload.data, ['voice-1']);
+  db.close();
 });
 
 test('管理员脱敏视图保留逻辑模型与验证状态', () => {
@@ -138,152 +269,5 @@ test('普通用户模型目录只返回已验证逻辑模型并合并供应商',
   for (const secret of ['relay-', 'upstream-', 'private-', 'supplier-secret', '987654321']) {
     assert.equal(serialized.includes(secret), false, secret);
   }
-  db.close();
-});
-
-test('普通用户视频模型接口只返回管理员启用的模型名称', () => {
-  const db = new Database(':memory:');
-  db.exec(`
-    CREATE TABLE ai_service_configs (
-      id INTEGER PRIMARY KEY,
-      service_type TEXT NOT NULL,
-      provider TEXT,
-      api_protocol TEXT,
-      name TEXT,
-      base_url TEXT,
-      api_key TEXT,
-      model TEXT,
-      default_model TEXT,
-      endpoint TEXT,
-      query_endpoint TEXT,
-      priority INTEGER DEFAULT 0,
-      is_default INTEGER DEFAULT 0,
-      is_active INTEGER DEFAULT 1,
-      verification_status TEXT,
-      settings TEXT,
-      created_at TEXT,
-      updated_at TEXT,
-      deleted_at TEXT
-    );
-  `);
-  db.prepare(`
-    INSERT INTO ai_service_configs
-      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, is_default, is_active)
-    VALUES ('video', 'grok', 'openai', 'Grok 视频', 'https://private.example', 'secret', ?, 'grok-video-3', 1, 1)
-  `).run(JSON.stringify(['grok-video-3', 'grok-video-3-fast']));
-  db.prepare(`
-    INSERT INTO ai_service_configs
-      (service_type, provider, name, model, is_active)
-    VALUES ('video', 'disabled', '停用模型', ?, 0)
-  `).run(JSON.stringify(['disabled-model']));
-  db.exec("UPDATE ai_service_configs SET verification_status = 'verified' WHERE is_active = 1;");
-
-  let payload;
-  const res = {
-    status() { return this; },
-    json(body) { payload = body; },
-  };
-  aiConfigRoutes(db, {}, {}).listPublicVideoModels({ query: {} }, res);
-
-  assert.equal(payload.success, true);
-  assert.deepEqual(payload.data, ['grok-video-3', 'grok-video-3-fast']);
-  db.close();
-});
-
-test('普通用户图像模型接口只返回管理员启用的模型名称', () => {
-  const db = new Database(':memory:');
-  db.exec(`
-    CREATE TABLE ai_service_configs (
-      id INTEGER PRIMARY KEY,
-      service_type TEXT NOT NULL,
-      provider TEXT,
-      api_protocol TEXT,
-      name TEXT,
-      base_url TEXT,
-      api_key TEXT,
-      model TEXT,
-      default_model TEXT,
-      endpoint TEXT,
-      query_endpoint TEXT,
-      priority INTEGER DEFAULT 0,
-      is_default INTEGER DEFAULT 0,
-      is_active INTEGER DEFAULT 1,
-      verification_status TEXT,
-      settings TEXT,
-      created_at TEXT,
-      updated_at TEXT,
-      deleted_at TEXT
-    );
-  `);
-  db.prepare(`
-    INSERT INTO ai_service_configs
-      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, is_default, is_active)
-    VALUES ('image', 'lib', 'openai', '通用图片', 'https://private.example', 'secret', ?, 'lib-image', 1, 1)
-  `).run(JSON.stringify(['lib-image']));
-  db.prepare(`
-    INSERT INTO ai_service_configs
-      (service_type, provider, name, model, default_model, is_active)
-    VALUES ('storyboard_image', 'lib', '分镜图片', ?, 'lib-storyboard', 1)
-  `).run(JSON.stringify(['lib-storyboard']));
-  db.prepare(`
-    INSERT INTO ai_service_configs
-      (service_type, provider, name, model, is_active)
-    VALUES ('image', 'disabled', '停用图片', ?, 0)
-  `).run(JSON.stringify(['disabled-image']));
-  db.exec("UPDATE ai_service_configs SET verification_status = 'verified' WHERE is_active = 1;");
-
-  let payload;
-  const res = {
-    status() { return this; },
-    json(body) { payload = body; },
-  };
-  aiConfigRoutes(db, {}, {}).listPublicImageModels({ query: {} }, res);
-
-  assert.equal(payload.success, true);
-  assert.deepEqual(payload.data, ['lib-image', 'lib-storyboard']);
-  db.close();
-});
-
-test('普通用户音频模型接口只返回管理员启用的模型名称', () => {
-  const db = new Database(':memory:');
-  db.exec(`
-    CREATE TABLE ai_service_configs (
-      id INTEGER PRIMARY KEY,
-      service_type TEXT NOT NULL,
-      provider TEXT,
-      api_protocol TEXT,
-      name TEXT,
-      base_url TEXT,
-      api_key TEXT,
-      model TEXT,
-      default_model TEXT,
-      endpoint TEXT,
-      query_endpoint TEXT,
-      priority INTEGER DEFAULT 0,
-      is_default INTEGER DEFAULT 0,
-      is_active INTEGER DEFAULT 1,
-      verification_status TEXT,
-      settings TEXT,
-      created_at TEXT,
-      updated_at TEXT,
-      deleted_at TEXT
-    );
-  `);
-  db.prepare(`
-    INSERT INTO ai_service_configs
-      (service_type, provider, name, base_url, api_key, model, default_model, is_default, is_active)
-    VALUES ('tts', 'voice', '平台音色', 'https://private.example', 'secret', ?, 'voice-1', 1, 1)
-  `).run(JSON.stringify(['voice-1']));
-  db.exec("UPDATE ai_service_configs SET verification_status = 'verified' WHERE is_active = 1;");
-
-  let payload;
-  const res = {
-    status() { return this; },
-    json(body) { payload = body; },
-  };
-  aiConfigRoutes(db, {}, {}).listPublicAudioModels({ query: {} }, res);
-
-  assert.equal(payload.success, true);
-  assert.deepEqual(payload.data, ['voice-1']);
   db.close();
 });

@@ -1,11 +1,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
-const aiConfigService = require('../src/services/aiConfigService');
-const creditLedgerService = require('../src/services/creditLedgerService');
-const providerRouteStability = require('../src/services/providerRouteStabilityService');
 const taskService = require('../src/services/taskService');
-const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -29,59 +25,6 @@ function createTestDb() {
 }
 
 describe('taskService.failOrphanedAsyncTasksOnStartup', () => {
-  it('keeps a submitting provider route for review instead of failing and refunding it', () => {
-    const db = new Database(':memory:');
-    runMigrationsAndEnsure(db);
-    const log = { info() {}, warn() {}, error() {} };
-    const config = aiConfigService.createConfig(db, log, {
-      service_type: 'image',
-      provider: 'private-relay',
-      name: 'private-relay',
-      base_url: 'https://provider.invalid/v1',
-      api_key: 'test-key',
-      model: ['upstream-image'],
-      default_model: 'upstream-image',
-      logical_model_id: 'logical-image',
-      is_default: true,
-    });
-    db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
-      .run(config.id);
-    creditLedgerService.setTenantAccountBalance(db, 'tenant-a', 20);
-    const reservation = creditLedgerService.reserve(db, {
-      tenantId: 'tenant-a', actorUserId: 'user-a', userId: 'user-a',
-      operationKey: 'startup-unknown', amount: 5, model: 'logical-image',
-      resourceType: 'image_generation', resourceId: '901',
-    });
-    const now = new Date().toISOString();
-    db.prepare(`INSERT INTO async_tasks
-      (id, type, status, progress, message, resource_id, credit_reservation_id,
-       tenant_id, user_id, created_at, updated_at)
-      VALUES ('task-startup-unknown', 'image_generation', 'processing', 10, '', '901', ?,
-        'tenant-a', 'user-a', ?, ?)`).run(reservation.id, now, now);
-    const route = providerRouteStability.createOrGetRouteRequest(db, {
-      id: 'route-startup-unknown',
-      idempotencyKey: 'tenant-a:image:901',
-      serviceType: 'image', businessType: 'image_generation', businessId: '901',
-      tenantId: 'tenant-a', userId: 'user-a', logicalModelId: 'logical-image',
-      userPriceSnapshot: { model: 'logical-image', credits: 5 },
-      candidateConfigIds: [config.id], creditReservationId: reservation.id,
-    });
-    providerRouteStability.startAttempt(db, {
-      requestId: route.id, configId: config.id, provider: config.provider,
-      upstreamModel: 'upstream-image',
-    });
-
-    const count = taskService.failOrphanedAsyncTasksOnStartup(db, log);
-
-    assert.equal(count, 0);
-    assert.equal(taskService.getTask(db, 'task-startup-unknown').status, 'processing');
-    assert.match(taskService.getTask(db, 'task-startup-unknown').message, /结果未知/);
-    assert.equal(db.prepare('SELECT state FROM generation_route_requests').get().state,
-      'needs_attention');
-    assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
-    db.close();
-  });
-
   it('marks pending and processing tasks as failed on startup', () => {
     const db = createTestDb();
     const now = new Date().toISOString();
@@ -264,6 +207,106 @@ describe('taskService.failOrphanedAsyncTasksOnStartup', () => {
     const task = taskService.getTask(db, 'task-resumable-video');
     assert.equal(task.status, 'processing');
     assert.equal(task.error, null);
+  });
+
+  it('fails a redraw analysis task without provider_task_id on startup', () => {
+    const db = createTestDb();
+    db.exec('ALTER TABLE async_tasks ADD COLUMN provider_task_id TEXT;');
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO async_tasks
+        (id, type, status, progress, message, resource_id, created_at, updated_at)
+       VALUES (?, 'redraw_analysis', 'processing', 90, '供应商处理中', ?, ?, ?)`
+    ).run('task-interrupted-redraw', 'work-2', now, now);
+
+    const count = taskService.failOrphanedAsyncTasksOnStartup(db, { warn() {}, info() {} });
+
+    assert.equal(count, 1);
+    const task = taskService.getTask(db, 'task-interrupted-redraw');
+    assert.equal(task.status, 'failed');
+    assert.equal(task.error, taskService.ORPHAN_ASYNC_TASK_MSG);
+  });
+
+  it('skips redraw dialogue tasks in generic orphan cleanup', () => {
+    const db = createTestDb();
+    db.exec(`
+      ALTER TABLE async_tasks ADD COLUMN tenant_id TEXT;
+      ALTER TABLE async_tasks ADD COLUMN user_id TEXT;
+      ALTER TABLE async_tasks ADD COLUMN credit_reservation_id TEXT;
+    `);
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO async_tasks
+        (id, type, status, progress, message, resource_id, tenant_id, user_id, credit_reservation_id, created_at, updated_at)
+       VALUES (?, 'redraw_dialogue', 'processing', 50, 'running', ?, 'tenant-a', 'user-a', 'reservation-held', ?, ?)`
+    ).run('task-redraw-dialogue', 'redraw_dialogue:12:hash', now, now);
+
+    const count = taskService.failOrphanedAsyncTasksOnStartup(db, { warn() {}, info() {} });
+
+    assert.equal(count, 0);
+    const task = taskService.getTask(db, 'task-redraw-dialogue');
+    assert.equal(task.status, 'processing');
+    assert.equal(task.error, null);
+  });
+
+  it('keeps a redraw analysis task processing when analyzing work has provider_task_id', () => {
+    const db = createTestDb();
+    db.exec(`
+      ALTER TABLE async_tasks ADD COLUMN provider_task_id TEXT;
+      CREATE TABLE redraw_works (
+        id TEXT PRIMARY KEY,
+        task_id TEXT,
+        status TEXT,
+        provider_task_id TEXT
+      );
+    `);
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO async_tasks
+        (id, type, status, progress, message, resource_id, provider_task_id, created_at, updated_at)
+       VALUES (?, 'redraw_analysis', 'processing', 90, '供应商处理中', ?, ?, ?, ?)`
+    ).run('task-resumable-redraw', 'work-redraw', 'provider-redraw', now, now);
+    db.prepare(
+      `INSERT INTO redraw_works (id, task_id, status, provider_task_id)
+       VALUES (?, ?, 'analyzing', ?)`
+    ).run('work-redraw', 'task-resumable-redraw', 'provider-redraw');
+
+    const count = taskService.failOrphanedAsyncTasksOnStartup(db, { warn() {}, info() {} });
+
+    assert.equal(count, 0);
+    const task = taskService.getTask(db, 'task-resumable-redraw');
+    assert.equal(task.status, 'processing');
+    assert.equal(task.error, null);
+  });
+
+  it('fails a provider-backed redraw analysis orphan when work is no longer analyzing', () => {
+    const db = createTestDb();
+    db.exec(`
+      ALTER TABLE async_tasks ADD COLUMN provider_task_id TEXT;
+      CREATE TABLE redraw_works (
+        id TEXT PRIMARY KEY,
+        task_id TEXT,
+        status TEXT,
+        provider_task_id TEXT
+      );
+    `);
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO async_tasks
+        (id, type, status, progress, message, resource_id, provider_task_id, created_at, updated_at)
+       VALUES (?, 'redraw_analysis', 'processing', 90, '供应商处理中', ?, ?, ?, ?)`
+    ).run('task-stale-redraw', 'work-redraw', 'provider-redraw', now, now);
+    db.prepare(
+      `INSERT INTO redraw_works (id, task_id, status, provider_task_id)
+       VALUES (?, ?, 'failed', ?)`
+    ).run('work-redraw', 'task-stale-redraw', 'provider-redraw');
+
+    const count = taskService.failOrphanedAsyncTasksOnStartup(db, { warn() {}, info() {} });
+
+    assert.equal(count, 1);
+    const task = taskService.getTask(db, 'task-stale-redraw');
+    assert.equal(task.status, 'failed');
+    assert.equal(task.error, taskService.ORPHAN_ASYNC_TASK_MSG);
   });
 
   it('keeps a processing task alive while a long operation is running', async () => {

@@ -195,7 +195,6 @@ test('文本生成结果未知时保留预扣等待人工核对', (t) => {
     'unknown',
   );
 });
-
 test('关闭公开计费时只解析请求模型且不创建预扣', (t) => {
   const db = setup({ withPrice: false });
   t.after(() => db.close());

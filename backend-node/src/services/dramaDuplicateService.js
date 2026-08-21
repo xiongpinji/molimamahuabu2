@@ -31,14 +31,15 @@ function duplicateDrama(db, cfg, log, dramaId, { userId, tenantId } = {}) {
     title,
   });
   if (source.folder_id != null) {
-    return dramaService.updateDrama(
+    const updated = dramaService.updateDrama(
       db,
       log,
-      duplicated.id,
+      duplicated.drama_id,
       { folder_id: source.folder_id },
       userId,
       tenantId,
     );
+    return updated ? duplicated : null;
   }
   return duplicated;
 }

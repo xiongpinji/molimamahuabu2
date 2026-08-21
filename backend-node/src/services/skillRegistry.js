@@ -213,6 +213,7 @@ function listSkillsForModule(module, capability) {
   return SKILLS
     .filter((skill) => (
       skill.enabled
+      && skill.listed !== false
       && skill.module_capabilities[module] === capability
     ))
     .map(publicRegistrySkill);
