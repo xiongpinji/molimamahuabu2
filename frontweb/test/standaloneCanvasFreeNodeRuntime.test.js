@@ -48,7 +48,8 @@ test('首页与项目画布向节点提供带 value 和 label 的模型选项', 
 })
 
 test('每种自由生成节点在底部醒目显示随参数变化的本次积分', () => {
-  assert.match(nodeSource, /v-if="canGenerate" class="billing-cost canvas-credit-callout-v1" aria-live="polite"/)
+  assert.match(nodeSource, /<!-- canvas-credit-callout-v1 -->/)
+  assert.match(nodeSource, /v-if="canGenerate" class="billing-cost" aria-live="polite"/)
   assert.match(nodeSource, /本次预计扣除/)
   assert.match(nodeSource, /<strong>\{\{ estimatedCredits \}\}<\/strong>/)
   assert.match(nodeSource, /积分待管理员配置/)
