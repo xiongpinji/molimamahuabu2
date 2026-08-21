@@ -45,16 +45,58 @@ function loadDefaultAcceptance() {
   };
 }
 
+function requiredEvidenceKinds(feature) {
+  return new Set([
+    'contract',
+    ...(Array.isArray(feature.acceptance_chain) ? feature.acceptance_chain : []),
+    'ci',
+    'production',
+    'lock',
+  ]);
+}
+
+function validateEvidencePaths(evidence, repoRoot, featureId, addError) {
+  for (const item of evidence) {
+    if (!item || typeof item.path !== 'string') continue;
+    if (path.isAbsolute(item.path)) {
+      addError('unsafe_evidence_path', { feature_id: featureId });
+      continue;
+    }
+
+    const resolvedPath = path.resolve(repoRoot, item.path);
+    const relativePath = path.relative(repoRoot, resolvedPath);
+    if (
+      relativePath === '..'
+      || relativePath.startsWith(`..${path.sep}`)
+      || path.isAbsolute(relativePath)
+    ) {
+      addError('unsafe_evidence_path', { feature_id: featureId });
+      continue;
+    }
+
+    try {
+      if (!fs.statSync(resolvedPath).isFile()) {
+        addError('missing_evidence_path', { feature_id: featureId });
+        continue;
+      }
+      fs.accessSync(resolvedPath, fs.constants.R_OK);
+    } catch {
+      addError('missing_evidence_path', { feature_id: featureId });
+    }
+  }
+}
+
 function validateAcceptance(acceptance, options = {}) {
   const schema = options.schema || readJson(SCHEMA_PATH);
   const inventory = options.inventory || readJson(INVENTORY_PATH);
   const inventorySha256 = options.inventorySha256 || sha256(INVENTORY_PATH);
+  const repoRoot = options.repoRoot || REPO_ROOT;
   const errors = [];
   const errorCodes = new Set();
-  const addError = (code) => {
+  const addError = (code, details = {}) => {
     if (errorCodes.has(code)) return;
     errorCodes.add(code);
-    errors.push({ code });
+    errors.push({ code, ...details });
   };
 
   const ajv = new Ajv2020({ allErrors: true });
@@ -71,7 +113,8 @@ function validateAcceptance(acceptance, options = {}) {
     addError('source_inventory_mismatch');
   }
 
-  const knownFeatureIds = new Set(features.map((feature) => feature.feature_id));
+  const featuresById = new Map(features.map((feature) => [feature.feature_id, feature]));
+  const knownFeatureIds = new Set(featuresById.keys());
   const decisions = acceptance && Array.isArray(acceptance.decisions)
     ? acceptance.decisions
     : [];
@@ -98,6 +141,69 @@ function validateAcceptance(acceptance, options = {}) {
 
   for (const decision of decisionsByFeature.values()) {
     if (Object.hasOwn(summary, decision.status)) summary[decision.status] += 1;
+
+    const featureId = decision.feature_id;
+    const evidence = Array.isArray(decision.evidence) ? decision.evidence : [];
+    validateEvidencePaths(evidence, repoRoot, featureId, addError);
+
+    if (
+      (decision.status === 'blocked' || decision.status === 'not_applicable')
+      && (typeof decision.reason !== 'string' || decision.reason.length === 0)
+    ) {
+      addError('schema');
+    }
+
+    if (decision.status === 'not_applicable') {
+      const hasApproval = typeof decision.approved_by === 'string'
+        && decision.approved_by.length > 0;
+      const hasProductDecision = evidence.some(
+        (item) => item && item.kind === 'lock' && item.result === 'pass',
+      );
+      if (!hasApproval || !hasProductDecision) {
+        addError('missing_approval', { feature_id: featureId });
+      }
+    }
+
+    if (decision.status !== 'locked_pass' && decision.status !== 'locked_fixed') {
+      continue;
+    }
+
+    if (decision.status === 'locked_fixed') {
+      const hasDefectId = typeof decision.defect_id === 'string'
+        && decision.defect_id.length > 0;
+      const hasFixCommit = /^[a-f0-9]{40}$/.test(decision.fix_commit || '');
+      if (!hasDefectId || !hasFixCommit) {
+        addError('missing_fix_metadata', { feature_id: featureId });
+      }
+    } else if (decision.defect_id !== undefined || decision.fix_commit !== undefined) {
+      addError('unexpected_fix_metadata', { feature_id: featureId });
+    }
+
+    const candidateCommit = decision.candidate_commit;
+    if (
+      !/^[a-f0-9]{40}$/.test(candidateCommit || '')
+      || evidence.some((item) => (
+        !item
+        || !/^[a-f0-9]{40}$/.test(item.candidate_commit || '')
+        || item.candidate_commit !== candidateCommit
+      ))
+    ) {
+      addError('candidate_mismatch', { feature_id: featureId });
+    }
+
+    if (evidence.some((item) => !item || item.result !== 'pass')) {
+      addError('non_passing_evidence', { feature_id: featureId });
+    }
+
+    const presentKinds = new Set(evidence.map((item) => item && item.kind));
+    const missingKind = [...requiredEvidenceKinds(featuresById.get(featureId))]
+      .find((kind) => !presentKinds.has(kind));
+    if (missingKind) {
+      addError('missing_evidence', {
+        feature_id: featureId,
+        kind: missingKind,
+      });
+    }
   }
 
   const valid = errors.length === 0;
@@ -111,5 +217,6 @@ function validateAcceptance(acceptance, options = {}) {
 
 module.exports = {
   loadDefaultAcceptance,
+  requiredEvidenceKinds,
   validateAcceptance,
 };
