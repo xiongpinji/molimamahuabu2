@@ -661,17 +661,21 @@ describeRootEvidence('shared evidence path and freshness safety', () => {
   });
 
   it('rejects group/other-writable manifest, evidence JSON and public asset on POSIX', { skip: process.platform === 'win32' }, () => {
-    for (const relative of [
+    for (const relativePath of [
       '.',
       'evidence',
       path.join('evidence', 'public'),
       path.join('evidence', 'public', 'usmercari'),
       'manifest.json',
       USMERCARI_FILE,
-      path.join('public', 'usmercari', `${USMERCARI_CASES[0].join('-')}.png`),
+      (fixture) => {
+        const evidence = JSON.parse(fs.readFileSync(path.join(fixture.evidenceRoot, USMERCARI_FILE), 'utf8'));
+        return path.join('public', 'usmercari', evidence.results[0].output_file);
+      },
     ]) {
       const fixture = makeFixture({ toapis: false, usmercari: true });
       try {
+        const relative = typeof relativePath === 'function' ? relativePath(fixture) : relativePath;
         const target = relative === '.'
           ? fixture.root
           : relative.startsWith(`evidence${path.sep}`) || relative === 'evidence'
