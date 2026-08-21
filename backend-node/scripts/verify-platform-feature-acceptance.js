@@ -231,8 +231,83 @@ function validateAcceptance(acceptance, options = {}) {
   };
 }
 
+function writeJson(stream, payload) {
+  stream.write(`${JSON.stringify(payload)}\n`);
+}
+
+function runCli(argv = process.argv.slice(2)) {
+  if (argv.length === 1 && argv[0] === '--help') {
+    writeJson(process.stdout, {
+      valid: true,
+      usage: [
+        'node scripts/verify-platform-feature-acceptance.js',
+        'node scripts/verify-platform-feature-acceptance.js --require-complete',
+      ],
+    });
+    return 0;
+  }
+
+  if (argv.length > 1 || (argv.length === 1 && argv[0] !== '--require-complete')) {
+    writeJson(process.stderr, {
+      valid: false,
+      error: 'INVALID_ARGUMENTS',
+    });
+    return 2;
+  }
+
+  let loaded;
+  try {
+    loaded = loadDefaultAcceptance();
+  } catch {
+    writeJson(process.stderr, {
+      valid: false,
+      error: 'ACCEPTANCE_INVALID',
+    });
+    return 1;
+  }
+
+  const result = validateAcceptance(loaded.acceptance, {
+    schema: loaded.schema,
+    inventory: loaded.inventory,
+    inventorySha256: loaded.inventorySha256,
+    repoRoot: loaded.repoRoot,
+  });
+
+  if (!result.valid) {
+    writeJson(process.stderr, {
+      valid: false,
+      error: 'ACCEPTANCE_INVALID',
+      errors: result.errors,
+      summary: result.summary,
+    });
+    return 1;
+  }
+
+  if (argv[0] === '--require-complete' && !result.complete) {
+    writeJson(process.stderr, {
+      valid: true,
+      complete: false,
+      error: 'ACCEPTANCE_INCOMPLETE',
+      summary: result.summary,
+    });
+    return 1;
+  }
+
+  writeJson(process.stdout, {
+    valid: true,
+    complete: result.complete,
+    summary: result.summary,
+  });
+  return 0;
+}
+
 module.exports = {
   loadDefaultAcceptance,
   requiredEvidenceKinds,
+  runCli,
   validateAcceptance,
 };
+
+if (require.main === module) {
+  process.exitCode = runCli();
+}

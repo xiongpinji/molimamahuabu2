@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
 const {
@@ -20,6 +21,8 @@ function codes(result) {
 const CANDIDATE_COMMIT = 'a'.repeat(40);
 const OTHER_COMMIT = 'b'.repeat(40);
 const EVIDENCE_PATH = 'backend-node/test/platformFeatureAcceptance.test.js';
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const BACKEND_ROOT = path.join(REPO_ROOT, 'backend-node');
 const IMAGE_GENERATION_EVIDENCE_KINDS = [
   'contract',
   'auth',
@@ -72,6 +75,27 @@ function validateDecision(decision) {
   });
 }
 
+function runAcceptanceCli(args = []) {
+  return spawnSync(process.execPath, [
+    'scripts/verify-platform-feature-acceptance.js',
+    ...args,
+  ], {
+    cwd: BACKEND_ROOT,
+    encoding: 'utf8',
+  });
+}
+
+function parseJsonOutput(output) {
+  return JSON.parse(output.trim());
+}
+
+function assertSafeCliOutput(result) {
+  const output = `${result.stdout}\n${result.stderr}`;
+  assert.doesNotMatch(output, /at\s+.+\(.+:\d+:\d+\)/);
+  assert.doesNotMatch(output, /sk-[A-Za-z0-9]/);
+  assert.doesNotMatch(output, /https?:\/\//);
+}
+
 test('default acceptance ledger is valid but incomplete', () => {
   const {
     acceptance,
@@ -96,6 +120,70 @@ test('default acceptance ledger is valid but incomplete', () => {
     locked_fixed: 0,
     not_applicable: 0,
   });
+});
+
+test('CLI accepts structurally valid incomplete ledger', () => {
+  const result = runAcceptanceCli();
+
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.equal(result.stderr, '');
+  assertSafeCliOutput(result);
+  const report = parseJsonOutput(result.stdout);
+  assert.equal(report.valid, true);
+  assert.equal(report.complete, false);
+  assert.deepEqual(report.summary, {
+    total: 140,
+    unverified: 124,
+    blocked: 16,
+    locked_pass: 0,
+    locked_fixed: 0,
+    not_applicable: 0,
+  });
+});
+
+test('--require-complete rejects current incomplete ledger without printing ready', () => {
+  const result = runAcceptanceCli(['--require-complete']);
+
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, '');
+  assertSafeCliOutput(result);
+  const report = parseJsonOutput(result.stderr);
+  assert.equal(report.valid, true);
+  assert.equal(report.complete, false);
+  assert.equal(report.error, 'ACCEPTANCE_INCOMPLETE');
+  assert.equal(report.summary.unverified, 124);
+  assert.equal(report.summary.blocked, 16);
+});
+
+test('CLI prints help as JSON without evaluating the ledger', () => {
+  const result = runAcceptanceCli(['--help']);
+
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.equal(result.stderr, '');
+  assertSafeCliOutput(result);
+  const report = parseJsonOutput(result.stdout);
+  assert.equal(report.valid, true);
+  assert.deepEqual(report.usage, [
+    'node scripts/verify-platform-feature-acceptance.js',
+    'node scripts/verify-platform-feature-acceptance.js --require-complete',
+  ]);
+});
+
+test('CLI rejects unknown, missing-value, and invalid-value arguments safely', () => {
+  for (const args of [
+    ['--unknown'],
+    ['--ledger'],
+    ['--require-complete=true'],
+  ]) {
+    const result = runAcceptanceCli(args);
+
+    assert.equal(result.status, 2, args.join(' '));
+    assert.equal(result.stdout, '');
+    assertSafeCliOutput(result);
+    const report = parseJsonOutput(result.stderr);
+    assert.equal(report.valid, false);
+    assert.equal(report.error, 'INVALID_ARGUMENTS');
+  }
 });
 
 test('source inventory hash drift invalidates the ledger', () => {

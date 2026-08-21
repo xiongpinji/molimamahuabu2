@@ -19,6 +19,8 @@
     "audit:incremental-release": "node scripts/verify-incremental-release-scope.js",
     "audit:canvas-reference-sequence": "node scripts/verify-canvas-reference-sequence-contract.js",
     "audit:feature-lock": "node scripts/verify-feature-lock-manifest.js",
+    "audit:platform-feature-acceptance": "node scripts/verify-platform-feature-acceptance.js",
+    "audit:platform-feature-acceptance:complete": "node scripts/verify-platform-feature-acceptance.js --require-complete",
     "fetch:redraw-full-frame-models-local": "node scripts/fetch-redraw-full-frame-models-local.js"
   },
   "engines": {
