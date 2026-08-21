@@ -738,7 +738,7 @@ test('canvas public items hide route, relay, evidence, and cost metadata for log
   const items = catalog.list(db).filter((row) => (
     row.model === 'safe-public-video' || row.model === 'logical-public-video'
   ));
-  assert.equal(items.length, 2);
+  assert.deepEqual(items.map((item) => item.model), ['logical-public-video']);
   for (const item of items) {
     assert.deepEqual(Object.keys(item).sort(), [
       'billing_unit', 'capabilities', 'credits', 'default_voice_id', 'kind', 'label', 'model',

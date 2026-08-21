@@ -7,10 +7,10 @@ const COST_UNITS = ['request', 'image', 'second', 'token'];
 const BILLING_UNITS = ['request', 'second'];
 const VIDEO_RESOLUTIONS = ['480p', '720p'];
 const IMAGE_RESOLUTIONS = ['1k', '2k', '4k'];
-const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'feituo_open']);
+const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'feituo_open', 'lingjing_open']);
 const toapisVideoClient = require('./toapisVideoClient');
 const feituoVideoClient = require('./feituoVideoClient');
-const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
+const { evidenceContractForModel, hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 const SERVICE_CATEGORIES = {
   text: 'text',
   image: 'image',
@@ -375,8 +375,10 @@ function listPublic(db, options = {}) {
     if (isStrictPublicConfig(row)) {
       strictUpstreamKeys.add(`${entry.kind}:${entry.upstreamModel.toLowerCase()}`);
     }
-    addConfig(entry.model, entry.upstreamModel, row);
-    addLogicalConfig(entry.upstreamModel, row);
+    const logicalModel = String(row.logical_model_id || '').trim();
+    if (entry.duplicated && !logicalModel && !isStrictPublicConfig(row)) continue;
+    const publicModel = logicalModel || entry.upstreamModel;
+    addConfig(publicModel, entry.upstreamModel, row);
   }
   for (const row of rows.filter((item) => !mediaModelSelection.KIND_BY_SERVICE[item.service_type])) {
     if (!row.is_active) continue;
@@ -396,10 +398,9 @@ function listPublic(db, options = {}) {
     const strictUpstreamKey = `${row.category}:${String(upstreamModel).toLowerCase()}`;
     if (strictUpstreamKeys.has(strictUpstreamKey)
         && !entries.some((entry) => isStrictPublicConfig(entry.config))) return [];
-    const protectedUsmercariModel = ['gpt-image-2-2-4k', 'nano-banana-2']
-      .includes(String(upstreamModel).toLowerCase());
+    const protectedExternalModel = Boolean(evidenceContractForModel(upstreamModel));
     const strictEntries = entries.filter((entry) => isStrictPublicConfig(entry.config));
-    const candidates = protectedUsmercariModel || strictEntries.length ? strictEntries : entries;
+    const candidates = protectedExternalModel || strictEntries.length ? strictEntries : entries;
     const matched = candidates.find((entry) => isPublicConfigReady(
       entry.config,
       row,
@@ -440,6 +441,7 @@ function strictPublicProtocol(config) {
   if (values.includes('usmercari_image')) return 'usmercari_image';
   if (values.some((value) => value === 'toapis' || value === 'toapis_video')) return 'toapis_video';
   if (values.some((value) => value === 'feituo' || value === 'feituo_open')) return 'feituo_open';
+  if (values.some((value) => value === 'lingjing' || value === 'lingjing_open')) return 'lingjing_open';
   return null;
 }
 

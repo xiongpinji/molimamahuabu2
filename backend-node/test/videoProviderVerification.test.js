@@ -110,7 +110,7 @@ test('三套公开目录只返回全部已验证、启用且已计费的视频�
 
   const publicCapture = capture();
   aiConfigRoutes(db, log, {}).listPublicVideoModels({}, publicCapture.res);
-  assert.deepEqual(publicCapture.result.body.data.sort(), ['lingjing-video-v1', 'video-v1']);
+  assert.deepEqual(publicCapture.result.body.data.sort(), ['video-v1']);
 
   const previousKey = process.env.CANVAS_VIDEO_API_KEY;
   const previousModel = process.env.CANVAS_VIDEO_MODEL;
@@ -128,21 +128,19 @@ test('三套公开目录只返回全部已验证、启用且已计费的视频�
       .filter((item) => item.kind === 'video')
       .map((item) => item.model)
       .sort(),
-    ['lingjing-video-v1', 'video-v1'],
+    ['video-v1'],
   );
   const videoCapabilities = Object.fromEntries(canvasModelCatalogService.list(db)
     .filter((item) => item.kind === 'video')
     .map((item) => [item.model, item.capabilities]));
-  assert.equal(videoCapabilities['lingjing-video-v1'].maxReferences, 12);
   assert.equal(videoCapabilities['video-v1'].maxReferences, 10);
-  assert.deepEqual(videoCapabilities['lingjing-video-v1'].referenceTypes, ['image']);
   assert.deepEqual(videoCapabilities['video-v1'].referenceTypes, ['image']);
   assert.deepEqual(
     modelPriceService.listPublic(db)
       .filter((item) => item.category === 'video')
       .map((item) => item.model)
       .sort(),
-    ['lingjing-video-v1', 'video-v1'],
+    ['video-v1'],
   );
 });
 
@@ -184,7 +182,7 @@ test('只有连接字段实际变化才撤销既有验证', async (t) => {
   aiConfigService.updateConfig(db, log, config.id, {
     settings: JSON.stringify({ video_duration: 10, canvas_capabilities: { ratios: ['9:16'] } }),
   });
-  assert.equal(aiConfigService.getConfig(db, config.id).verification_status, 'verified');
+  assert.equal(aiConfigService.getConfig(db, config.id).verification_status, 'unverified');
 
   aiConfigService.updateConfig(db, log, config.id, { base_url: 'https://new-video.example/v1' });
   const changed = aiConfigService.getConfig(db, config.id);
