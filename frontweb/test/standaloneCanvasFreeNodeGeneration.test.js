@@ -566,6 +566,16 @@ test('右键媒体序号与实际提交数组共享过滤、排序和去重顺�
   assert.deepEqual(payload.reference_video_urls, ['/static/motion-a.mp4', '/static/motion-b.mp4'])
 })
 
+test('不同上游节点 URL 相同时仍按真实提交数组去重', () => {
+  const references = normalizeFreeCanvasSubmissionReferences([
+    { edgeId: 'edge-a', nodeId: 'image-a', kind: 'image', url: '/static/shared.png', ready: true, order: 0 },
+    { edgeId: 'edge-b', nodeId: 'image-b', kind: 'image', url: '/static/shared.png', ready: true, order: 1 },
+    { edgeId: 'edge-a-duplicate', nodeId: 'image-a', kind: 'image', url: '/static/shared.png', ready: true, order: 2 },
+  ])
+
+  assert.deepEqual(references.map((reference) => reference.edgeId), ['edge-a'])
+})
+
 test('首尾帧按实际提交序列取前两张且不会把同一张图重复提交', () => {
   const payload = buildFreeCanvasGenerationRequest({
     kind: 'video',

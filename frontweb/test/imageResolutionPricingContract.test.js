@@ -22,9 +22,9 @@ test('GPT 图片模型不暴露 4K 档但 Nano 保留 4K', () => {
 test('只有两个 USMercari 图片模型启用分档且其他图片保留单一价格', () => {
   assert.match(source, /function usesImageResolutionPricing\(item\)[\s\S]*item\?\.category === 'image'[\s\S]*USMERCARI_IMAGE_MODELS\.has/)
   assert.match(source, /v-if="usesImageResolutionPricing\(item\)"/)
-  assert.match(source, /v-if="item\.category !== 'video' && !usesImageResolutionPricing\(item\)"/)
+  assert.match(source, /v-if="!usesVideoResolutionPricing\(item\) && !usesImageResolutionPricing\(item\)"/)
   assert.match(source, /v-if="usesImageResolutionPricing\(newModel\)"/)
-  assert.match(source, /v-if="newModel\.category !== 'video' && !usesImageResolutionPricing\(newModel\)"/)
+  assert.match(source, /v-if="!usesVideoResolutionPricing\(newModel\) && !usesImageResolutionPricing\(newModel\)"/)
 })
 
 test('公开备注会显示并跟随价格配置保存', () => {
@@ -38,5 +38,5 @@ test('公开备注会显示并跟随价格配置保存', () => {
 test('视频模型仍保留 480P 720P 每秒分档', () => {
   assert.match(source, /480P 用户收费（积分\/秒）/)
   assert.match(source, /720P API 成本（元\/秒）/)
-  assert.match(source, /if \(category === 'video'\) return \['480p', '720p'\]/)
+  assert.match(source, /if \(category === 'video'\) return usesVideoResolutionPricing\(itemOrCategory\) \? \['480p', '720p'\] : \[\]/)
 })

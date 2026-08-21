@@ -323,7 +323,7 @@ test('工具栏提供替换、下载、全屏、历史与标记色入口', () =>
 })
 
 test('宫格裁剪提交全部独立裁剪框且每个框可移动和八向缩放', () => {
-  assert.match(toolbarSource, /gridCropBoxes = ref\(createGridCropBoxes\(2, 3\)\)/)
+  assert.match(toolbarSource, /gridCropBoxes = ref\(createGridCropBoxes\(3, 3\)\)/)
   assert.match(toolbarSource, /v-for="\(box, index\) in gridCropBoxes"/)
   assert.match(toolbarSource, /@pointerdown="beginGridCropMove\(\$event, box\.id\)"/)
   assert.match(toolbarSource, /@pointerdown\.stop="beginGridCropResize\(\$event, box\.id, handle\)"/)
@@ -332,9 +332,22 @@ test('宫格裁剪提交全部独立裁剪框且每个框可移动和八向缩�
 })
 
 test('宫格裁剪支持 1x1 至 7x7 并可重置为均分布局', () => {
-  assert.match(toolbarSource, /gridForm = ref\(\{ rows: 2, columns: 3 \}\)/)
+  assert.match(toolbarSource, /gridForm = ref\(\{ rows: 3, columns: 3, spacing: 0 \}\)/)
   assert.match(toolbarSource, /v-model="gridForm\.rows" :min="1" :max="7" @change="resetGridBoxes"/)
   assert.match(toolbarSource, /v-model="gridForm\.columns" :min="1" :max="7" @change="resetGridBoxes"/)
   assert.match(toolbarSource, /function resetGridBoxes\(\) \{[\s\S]*createGridCropBoxes\(gridForm\.value\.rows, gridForm\.value\.columns\)/)
   assert.match(toolbarSource, /可独立移动和缩放 \{\{ gridCropBoxes\.length \}\} 个裁剪框/)
+})
+
+test('宫格裁剪同时保留主线的间距、反选、复制、识别和吸附控制', () => {
+  assert.match(toolbarSource, /v-model="gridForm\.spacing"/)
+  assert.match(toolbarSource, /invertGridSelection/)
+  assert.match(toolbarSource, /duplicateGridSelection/)
+  assert.match(toolbarSource, /function clearGridSelection\(\) \{[\s\S]*gridSelectedCells\.value = \[\][\s\S]*gridDuplicateCells\.value = \[\]/)
+  assert.match(toolbarSource, /function toggleGridCell\(id\) \{[\s\S]*gridDuplicateCells\.value = gridDuplicateCells\.value\.filter/)
+  assert.match(toolbarSource, /redetectGrid/)
+  assert.match(toolbarSource, /gridSnapEnabled/)
+  assert.match(toolbarSource, /duplicateCells: \[\.\.\.gridDuplicateCells\.value\]/)
+  assert.match(toolbarSource, /spacing: gridForm\.value\.spacing/)
+  assert.match(toolbarSource, /snap: gridSnapEnabled\.value/)
 })

@@ -72,6 +72,7 @@ function configureToapis(db, {
           supportsVideoReference: true,
           supportsAudioReference: true,
           supportsAudio: true,
+          maxReferences: 9,
         }),
       },
     });
@@ -808,6 +809,79 @@ test('USMercari 多图参考入库时不混入首帧字段', () => {
 
     const row = db.prepare('SELECT first_frame_url, reference_image_urls FROM video_generations WHERE id = ?').get(created.id);
     assert.equal(row.first_frame_url, null);
+    assert.deepEqual(JSON.parse(row.reference_image_urls), ['/static/reference-1.png', '/static/reference-2.png']);
+  } finally {
+    videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;
+    db.close();
+  }
+});
+
+test('ToAPIs 全能参考保持首帧字段与请求快照互斥', () => {
+  const db = setup();
+  const previousStorageBaseUrl = process.env.STORAGE_BASE_URL;
+  try {
+    process.env.STORAGE_BASE_URL = 'https://cdn.example/static';
+    configureToapis(db);
+    const now = new Date().toISOString();
+    const insertAsset = db.prepare(`INSERT INTO assets
+      (drama_id, name, type, url, local_path, metadata, created_at, updated_at)
+      VALUES (1, ?, 'image', ?, ?, '{}', ?, ?)`);
+    for (const name of ['reference-1.png', 'reference-2.png']) {
+      const relativePath = `projects/0001/assets/${name}`;
+      insertAsset.run(name, `/static/${relativePath}`, relativePath, now, now);
+    }
+    const created = videoService.create(db, log, {
+      drama_id: 1,
+      model: 'seedance-2-fast',
+      prompt: '全能参考链路',
+      duration: 4,
+      resolution: '480p',
+      reference_mode: 'omni',
+      reference_image_urls: [
+        'https://cdn.example/static/projects/0001/assets/reference-1.png',
+        'https://cdn.example/static/projects/0001/assets/reference-2.png',
+      ],
+      generate_audio: false,
+    }, { billingEnabled: false, schedule() {} });
+
+    const row = db.prepare(
+      'SELECT first_frame_url, reference_mode, request_snapshot FROM video_generations WHERE id = ?',
+    ).get(created.id);
+    const snapshot = JSON.parse(row.request_snapshot);
+    assert.equal(row.first_frame_url, null);
+    assert.equal(row.reference_mode, 'omni');
+    assert.equal(snapshot.first_frame_url, null);
+    assert.equal(snapshot.reference_mode, 'omni');
+    assert.deepEqual(snapshot.reference_image_urls, [
+      'https://cdn.example/static/projects/0001/assets/reference-1.png',
+      'https://cdn.example/static/projects/0001/assets/reference-2.png',
+    ]);
+  } finally {
+    if (previousStorageBaseUrl === undefined) delete process.env.STORAGE_BASE_URL;
+    else process.env.STORAGE_BASE_URL = previousStorageBaseUrl;
+    db.close();
+  }
+});
+
+test('普通视频参考链把第一张参考图保存为首帧证据', () => {
+  const db = setup();
+  const originalGetDefaultVideoConfig = videoClient.getDefaultVideoConfig;
+  try {
+    videoClient.getDefaultVideoConfig = () => ({
+      provider: 'mock',
+      api_protocol: 'openai_compat',
+      default_model: 'seedance 2.0',
+    });
+    const created = videoService.create(db, log, {
+      drama_id: 1,
+      model: 'seedance 2.0',
+      prompt: '首帧参考链路',
+      duration: 5,
+      reference_image_urls: ['/static/reference-1.png', '/static/reference-2.png'],
+    }, { billingEnabled: false, schedule() {} });
+
+    const row = db.prepare('SELECT first_frame_url, reference_image_urls FROM video_generations WHERE id = ?').get(created.id);
+    assert.equal(row.first_frame_url, '/static/reference-1.png');
     assert.deepEqual(JSON.parse(row.reference_image_urls), ['/static/reference-1.png', '/static/reference-2.png']);
   } finally {
     videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;

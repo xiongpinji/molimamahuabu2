@@ -841,9 +841,9 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
     const referenceMode = selectedVideoReferenceMode
     const firstFrameReference = imageReferences[0]
     const lastFrameReference = imageReferences[1]
-    const hasOmniReferences = imageReferences.length > 2
-      || videoReferences.length > 0
-      || audioReferences.length > 0
+    const hasOmniReferences = rawReferences.filter((reference) => (reference.kind || 'image') === 'image').length > 2
+      || rawReferences.some((reference) => reference.kind === 'video')
+      || rawReferences.some((reference) => reference.kind === 'audio')
       || (nodeData.characterReferenceUrls || []).length > 0
     if (explicitMode && referenceMode === 'first-last' && hasOmniReferences) {
       throw new Error('首尾帧模式与全能参考模式互斥，请移除全能参考素材或切换模式')

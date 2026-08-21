@@ -1268,7 +1268,11 @@ function create(db, log, req, options = {}) {
         .run(options.tenantId, options.userId, task.id);
     }
     const refs = referenceImageUrls.length ? JSON.stringify(referenceImageUrls) : null;
-    const persistedFirstFrameUrl = firstFrameUrl;
+    const firstReferenceFallback = ['usmercari', 'usmercari_media'].includes(videoProtocol)
+      || isToapisVideo
+      ? null
+      : referenceImageUrls[0] || null;
+    const persistedFirstFrameUrl = firstFrameUrl || firstReferenceFallback;
     const referenceVideoUrl = referenceVideoUrls[0] || null;
     const referenceAudioUrl = referenceAudioUrls[0] || null;
     db.prepare(`INSERT INTO video_generations
@@ -2062,7 +2066,10 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
         }
       } catch (_) {}
     }
-    const rowForAspect = { ...row, aspect_ratio: aspectForVideo || row.aspect_ratio };
+    const rowForAspect = {
+      ...row,
+      aspect_ratio: snapshotHasAspectRatio ? aspectForVideo : (aspectForVideo || row.aspect_ratio),
+    };
     if (existingProviderTaskId) {
       await pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspect, existingProviderTaskId, config);
       return;
