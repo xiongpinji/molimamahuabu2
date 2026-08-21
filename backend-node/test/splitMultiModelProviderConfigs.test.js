@@ -115,7 +115,7 @@ test('证据夹具兼容已由实时 release 补齐的验证列', () => {
   }
 });
 
-function evidenceFixture() {
+function evidenceFixture(options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-evidence-split-'));
   const dbPath = path.join(dir, 'fixture.sqlite');
   const db = new Database(dbPath);
@@ -144,12 +144,14 @@ function evidenceFixture() {
       supportsAudio: true,
     },
   ]));
-  const settings = {
-    canvas_capabilities_by_model: {
-      'seedance-2-fast': capabilities['seedance-2-fast'],
-      'seedance-2-mini': capabilities['seedance-2-mini'],
-    },
-  };
+  const settings = options.omitSettingsCapabilities
+    ? {}
+    : {
+      canvas_capabilities_by_model: {
+        'seedance-2-fast': capabilities['seedance-2-fast'],
+        'seedance-2-mini': capabilities['seedance-2-mini'],
+      },
+    };
   const info = db.prepare(`INSERT INTO ai_service_configs
     (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
      endpoint, query_endpoint, priority, is_default, is_active, settings, logical_model_id,
@@ -480,6 +482,41 @@ test('证据绑定拆分原子生成两个启用已验证且巡检暂停的单�
     [audit.user_id, audit.resource_type, audit.resource_id, audit.outcome],
     ['system/cli', 'ai_service_config', String(item.configId), 'success'],
   );
+  db.close();
+});
+
+test('源设置缺少能力镜像时从已验证能力补齐每条线路的巡检组合', (t) => {
+  const item = evidenceFixture({ omitSettingsCapabilities: true });
+  t.after(() => cleanup(item));
+  const db = new Database(item.dbPath);
+  const { input, overrides } = evidenceBoundInput(db, item);
+
+  splitTool.applyEvidenceBoundPlan(db, input, overrides);
+
+  const configs = db.prepare(`SELECT service_type, model, default_model, settings
+    FROM ai_service_configs WHERE deleted_at IS NULL ORDER BY id`).all();
+  assert.equal(configs.length, 2);
+  for (const config of configs) {
+    const model = JSON.parse(config.model)[0];
+    assert.deepEqual(
+      Object.keys(JSON.parse(config.settings).canvas_capabilities_by_model),
+      [model],
+    );
+    const profiles = providerCanarySchedulerService.enumerateCapabilityProfiles(config);
+    assert.equal(profiles.length, 12);
+    assert.deepEqual(
+      [...new Set(profiles.map((profile) => profile.referenceImageCount))],
+      [9],
+    );
+    assert.deepEqual(
+      [...new Set(profiles.map((profile) => profile.referenceVideoCount))],
+      [3],
+    );
+    assert.deepEqual(
+      [...new Set(profiles.map((profile) => profile.referenceAudioCount))],
+      [3],
+    );
+  }
   db.close();
 });
 

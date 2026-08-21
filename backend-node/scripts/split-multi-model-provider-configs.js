@@ -177,18 +177,11 @@ function sameSet(left, right) {
   return JSON.stringify(lowerSet(left)) === JSON.stringify(lowerSet(right));
 }
 
-function filteredSettings(value, model) {
+function filteredSettings(value, model, verifiedCapability) {
   const settings = parseObject(value || '{}', 'INVALID_MODEL_CONFIGURATION');
-  const perModel = settings.canvas_capabilities_by_model;
-  if (perModel == null) return JSON.stringify(settings);
-  const entries = parseObject(perModel, 'INVALID_MODEL_CONFIGURATION');
-  const capability = valueForModel(entries, model);
-  if (!capability || typeof capability !== 'object' || Array.isArray(capability)) {
-    fail('MISSING_MODEL_CAPABILITY');
-  }
   return JSON.stringify({
     ...settings,
-    canvas_capabilities_by_model: { [model]: capability },
+    canvas_capabilities_by_model: { [model]: verifiedCapability },
   });
 }
 
@@ -275,7 +268,7 @@ function validateEvidenceBoundPlan(db, input, overrides = {}) {
     return {
       ...binding,
       capability,
-      settings: filteredSettings(source.settings, binding.model),
+      settings: filteredSettings(source.settings, binding.model, capability),
       normalized_cost: cost,
     };
   });

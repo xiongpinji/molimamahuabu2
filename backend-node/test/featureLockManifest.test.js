@@ -39,8 +39,8 @@ const PROACTIVE_CANARY_EVIDENCE = [
   'docs/superpowers/plans/2026-08-20-evidence-bound-multi-model-split.md',
 ];
 const PROACTIVE_CANARY_UNLOCK = {
-  reason: '2026-08-20 逐模型证据绑定拆分本地 TDD 授权',
-  approvedBy: 'product-owner 2026-08-20 evidence-bound-model-split-local-tdd',
+  reason: '2026-08-21 证据绑定能力镜像缺失修复授权',
+  approvedBy: 'product-owner 2026-08-21 evidence-bound-settings-repair',
   impactTests: [
     'backend-node/test/providerCanaryInventory.test.js',
     'backend-node/test/providerCanaryScheduler.test.js',
