@@ -101,10 +101,7 @@ test('证据夹具兼容已由实时 release 补齐的验证列', () => {
   const db = new Database(path.join(dir, 'fixture.sqlite'));
   try {
     runMigrationsAndEnsure(db);
-    db.exec(`ALTER TABLE ai_service_configs ADD COLUMN verification_checked_at TEXT;
-      ALTER TABLE ai_service_configs ADD COLUMN verification_error TEXT;
-      ALTER TABLE ai_service_configs ADD COLUMN verified_capabilities TEXT;`);
-
+    ensureEvidenceFixtureColumns(db);
     ensureEvidenceFixtureColumns(db);
 
     const columns = db.prepare('PRAGMA table_info(ai_service_configs)').all()
@@ -206,10 +203,10 @@ function evidenceFixture() {
   }
   const allowedRoot = path.join(dir, 'release-evidence');
   const evidenceRoot = path.join(allowedRoot, 'external-models-v1');
-  fs.mkdirSync(path.join(evidenceRoot, 'public', 'toapis'), { recursive: true });
-  fs.writeFileSync(path.join(evidenceRoot, 'toapis-video-verification.json'), evidence);
-  fs.writeFileSync(path.join(evidenceRoot, 'public', 'toapis', 'fast.mp4'), 'fast');
-  fs.writeFileSync(path.join(evidenceRoot, 'public', 'toapis', 'mini.mp4'), 'mini');
+  fs.mkdirSync(path.join(evidenceRoot, 'public', 'toapis'), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(evidenceRoot, 'toapis-video-verification.json'), evidence, { mode: 0o600 });
+  fs.writeFileSync(path.join(evidenceRoot, 'public', 'toapis', 'fast.mp4'), 'fast', { mode: 0o600 });
+  fs.writeFileSync(path.join(evidenceRoot, 'public', 'toapis', 'mini.mp4'), 'mini', { mode: 0o600 });
   fs.writeFileSync(path.join(evidenceRoot, 'manifest.json'), JSON.stringify({
     contract_version: 'external-model-release-evidence-manifest-v1',
     evidence: {
@@ -218,7 +215,7 @@ function evidenceFixture() {
         sha256: evidenceSha256,
       },
     },
-  }));
+  }), { mode: 0o600 });
   db.close();
   return {
     dir,
