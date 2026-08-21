@@ -480,7 +480,7 @@
 
         <div class="editor-footer">
           <!-- canvas-credit-callout-v1 -->
-          <span v-if="canGenerate" class="billing-cost" aria-live="polite">
+          <span v-if="canGenerate" class="billing-cost canvas-credit-callout-v1" aria-live="polite">
             <template v-if="estimatedCredits">本次预计扣除 <strong>{{ estimatedCredits }}</strong> 积分</template>
             <template v-else>积分待管理员配置</template>
             <small>· {{ draft.quantity || 1 }} 次</small>

@@ -17,10 +17,10 @@ test('管理端提供 480P 和 720P 的积分及每秒成本配置', () => {
 })
 
 test('画布积分提示保留受保护合同并传递节点分辨率', () => {
-  assert.match(nodeSource, /class="billing-cost"\s+aria-live="polite"/)
+  assert.match(nodeSource, /class="billing-cost canvas-credit-callout-v1"\s+aria-live="polite"/)
   assert.match(nodeSource, /本次预计扣除/)
   assert.match(nodeSource, /积分待管理员配置/)
-  assert.match(nodeSource, /class="billing-note"/)
+  assert.doesNotMatch(nodeSource, /class="billing-note"/)
   assert.match(nodeSource, /\.billing-cost\s*\{/)
   assert.match(nodeSource, /\.billing-cost strong\s*\{/)
   assert.match(nodeSource, /draft\.resolution/)
