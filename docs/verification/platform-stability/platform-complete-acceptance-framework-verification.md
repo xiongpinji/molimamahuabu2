@@ -6,10 +6,10 @@ Scope: Stage 0 local framework only. No deploy, no SSH, no production data write
 
 Fresh same-run verification command window:
 
-- Start captured before the first verification command: `2026-08-22T00:52:18.4241323+08:00`
-- End captured after the final post-report secret rescan: `2026-08-22T01:02:03.1603020+08:00`
-- Validated candidate SHA at start: `de85ce6542955ef9227094ca047a726ea2f33b2d`
-- Commands in this strict rerun: 19 Task7 verification/scope/cleanup commands before the report update plus 1 post-report secret rescan. All validation exits matched the expected result. One command, `node scripts/verify-platform-feature-acceptance.js --require-complete`, intentionally exited 1 with `ACCEPTANCE_INCOMPLETE`.
+- Start captured before the first verification command: `2026-08-22T01:36:41.0058791+08:00`
+- End captured after the final Task7 verification and cleanup command before this report update: `2026-08-22T01:43:40.3515905+08:00`
+- Validated candidate SHA at start: `56325ff6323cd0ad9ad38202c0350bc125e9a098`
+- Commands in this strict rerun: 19 Task7 verification/scope/cleanup command groups before the report update. All validation exits matched the expected result. One command, `node scripts/verify-platform-feature-acceptance.js --require-complete`, intentionally exited 1 with `ACCEPTANCE_INCOMPLETE`.
 
 ## Bound Source
 
@@ -56,7 +56,7 @@ No network install was run.
 
 Backend focused gates:
 
-- `node --test --test-concurrency=1 test/platformFeatureInventory.test.js test/platformFeatureAcceptance.test.js test/featureLockManifest.test.js test/incrementalReleaseScope.test.js` -> exit 0, 58 tests passed, 0 failed, duration `5375.9849ms`.
+- `node --test --test-concurrency=1 test/platformFeatureInventory.test.js test/platformFeatureAcceptance.test.js test/featureLockManifest.test.js test/incrementalReleaseScope.test.js` -> exit 0, 57 tests passed, 0 failed, duration `5443.3571ms`.
 - `npm run audit:platform-feature-acceptance` -> exit 0, JSON reported `valid=true`, `complete=false`, total 140, unverified 124, blocked 16.
 - `node scripts/verify-platform-feature-acceptance.js --require-complete` -> exit 1, JSON reported `ACCEPTANCE_INCOMPLETE`; this is the expected Stage 0 block.
 - `node scripts/verify-feature-lock-manifest.js --base origin/main` -> exit 0, `ready=true`, `features=6`, `protectedFeaturesFromBase=5`, `changedPaths=501`, `baseRef=origin/main`.
@@ -64,20 +64,22 @@ Backend focused gates:
 
 Backend full suite:
 
-- `npm test` in `backend-node` -> exit 0, 1269 tests, 1264 passed, 0 failed, 5 skipped, duration `214601.584ms`. npm emitted only the existing unknown project config warning for the better-sqlite mirror setting.
+- `npm test` in `backend-node` -> exit 0, 1268 tests, 1263 passed, 0 failed, 5 skipped, duration `206178.8503ms`. npm emitted only the existing unknown project config warning for the better-sqlite mirror setting.
 
 Frontend local gates:
 
-- `node --test test/*.test.js` in `frontweb` -> exit 0, 677 tests, 677 passed, 0 failed, 0 skipped, duration `18077.2066ms`.
-- `npm run build` in `frontweb` -> exit 0, Vite build completed in `19.81s` with chunk-size warnings only.
-- `npx --no-install playwright test e2e/platform-zero-cost-smoke.spec.js e2e/provider-stability-admin.spec.js --workers=1` in `frontweb` -> exit 0, 7 tests passed in `18.2s`.
+- `node --test test/*.test.js` in `frontweb` -> exit 0, 677 tests, 677 passed, 0 failed, 0 skipped, duration `19527.8704ms`.
+- `npm run build` in `frontweb` -> exit 0, Vite build completed in `21.41s` with chunk-size warnings only.
+- `npx --no-install playwright test e2e/platform-zero-cost-smoke.spec.js e2e/provider-stability-admin.spec.js --workers=1` in `frontweb` -> exit 0, 7 tests passed in `18.0s`.
 - Playwright `safe-trace.json` reported `generation_write_requests=0`, `non_login_write_requests=0`, `runtime_failures=0`, and `result=passed`. The trace only included login/me reads, page reads for `/`, `/canvas`, `/factory`, `/script-analysis`, and public model-catalog reads. The temporary `frontweb/platform-smoke-artifacts/` directory was removed with `git clean -fd -- frontweb/platform-smoke-artifacts/` after reading the trace.
 
 Static and scope checks:
 
 - `git diff --check origin/main...HEAD` -> exit 0.
-- `git status --short --branch` before Playwright cleanup -> branch ahead 11 / behind 529 plus `?? frontweb/platform-smoke-artifacts/`.
-- `git status --short --branch` after targeted cleanup -> branch ahead 11 / behind 529 with no file changes before this report update.
+- `git status --short --branch` before Playwright cleanup -> branch ahead 14 / behind 529 plus `?? frontweb/platform-smoke-artifacts/`.
+- `frontweb/test-results/.last-run.json` was verified as a regular generated file inside `frontweb/test-results`, not a junction or symlink.
+- Targeted cleanup removed `frontweb/platform-smoke-artifacts/` and the ignored Playwright test-results artifact using exact-path `git clean` commands.
+- `git status --short --branch` after targeted cleanup -> branch ahead 14 / behind 529 with no file changes before this report update.
 
 ## Secret Scan
 
@@ -85,14 +87,14 @@ Command:
 
 `rg -n --hidden --glob '!node_modules' --glob '!dist' "sk-[A-Za-z0-9_-]{16,}|Authorization:\s*Bearer\s+[A-Za-z0-9._-]{12,}" backend-node frontweb docs deploy`
 
-Exit: 0. The final post-report rescan returned 24 raw hits. Each hit was reviewed individually. No production credential or provider key was identified; all hits were either deliberate test placeholders, redaction fixtures, documentation placeholders, or regex false positives. Raw token-shaped placeholder strings are intentionally not reproduced here to avoid creating new scan hits in this report.
+Exit: 0. The same-run scan returned 24 raw hits. Each hit was reviewed individually. No production credential or provider key was identified; all hits were either deliberate test placeholders, redaction fixtures, documentation placeholders, or regex false positives. Raw token-shaped placeholder strings are intentionally not reproduced here to avoid creating new scan hits in this report.
 
 | Path | Line | Category | Explanation |
 | --- | ---: | --- | --- |
 | `deploy/release-scopes/platform-stability-proactive-canary.json` | 84 | false positive | Route-mapping documentation path contains a substring that matches the key prefix pattern. |
 | `frontweb/e2e/provider-stability-admin.spec.js` | 240 | test placeholder | Admin stability E2E verifies secret redaction with synthetic placeholder values. |
 | `docs/configuration.md` | 92 | documentation placeholder | Example API-key placeholder, not a real key. |
-| `backend-node/test/featureLockManifest.test.js` | 58 | false positive | Route-mapping documentation path contains a substring that matches the key prefix pattern. |
+| `backend-node/test/featureLockManifest.test.js` | 66 | false positive | Route-mapping documentation path contains a substring that matches the key prefix pattern. |
 | `docs/verification/platform-stability/feature-lock-manifest.json` | 271 | false positive | Route-mapping documentation path contains a substring that matches the key prefix pattern. |
 | `backend-node/test/openAIImageOutput.test.js` | 187 | test placeholder | Synthetic provider ID used by an output-shape test. |
 | `backend-node/test/jimengMaterialHub.test.js` | 47 | test placeholder | Synthetic token-fingerprint fixture. |
@@ -126,7 +128,10 @@ Exit: 0. The final post-report rescan returned 24 raw hits. Each hit was reviewe
 - `b9f92ed0` -> feature lock manifest entry and framework evidence shell.
 - `d863609b` -> protected incremental release scope manifest.
 - `21afee17` -> previous verification report commit.
-- `de85ce65` -> previous correction commit; this strict rerun validates this candidate SHA.
+- `de85ce65` -> previous strict verification report commit.
+- `cfe3c543` -> previous strict verification report correction commit.
+- `c34080d8` -> Task4 contract fix.
+- `56325ff6` -> lock follow-up; this strict rerun validates this candidate SHA.
 
 ## Limits
 
