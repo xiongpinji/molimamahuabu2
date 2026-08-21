@@ -43,6 +43,14 @@ const COMPLETE_ACCEPTANCE_EVIDENCE = [
   'docs/superpowers/plans/2026-08-21-platform-complete-acceptance-framework.md',
   'docs/verification/platform-stability/platform-complete-acceptance-framework-verification.md',
 ];
+const COMPLETE_ACCEPTANCE_UNLOCK = {
+  reason: '2026-08-22 按批准计划修正验收门禁非法参数合同',
+  approvedBy: 'product-owner Stage0 标准执行确认',
+  impactTests: [
+    'backend-node/test/platformFeatureAcceptance.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+  ],
+};
 const PROACTIVE_CANARY_ACCEPTANCE = [
   '公开线路只有匹配的新鲜真实证据才能进入严格候选',
   '巡检预算日月原子受限且未知结果保留占用',
@@ -177,7 +185,7 @@ test('平台完整验收框架锁定为 shared locked_pass 且不提前锁定业
   assert.deepEqual(feature.requiredTests, COMPLETE_ACCEPTANCE_REQUIRED_TESTS);
   assert.deepEqual(feature.evidence, COMPLETE_ACCEPTANCE_EVIDENCE);
   assert.equal(feature.fixCommit, null);
-  assert.equal(feature.unlock, null);
+  assert.deepEqual(feature.unlock, COMPLETE_ACCEPTANCE_UNLOCK);
   assert.equal(manifest.features.some((featureLock) => /canvas|factory|script-analysis/.test(featureLock.featureId)), false);
 });
 

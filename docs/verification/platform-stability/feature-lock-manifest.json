@@ -318,7 +318,14 @@
         "docs/verification/platform-stability/platform-complete-acceptance-framework-verification.md"
       ],
       "fixCommit": null,
-      "unlock": null
+      "unlock": {
+        "reason": "2026-08-22 按批准计划修正验收门禁非法参数合同",
+        "approvedBy": "product-owner Stage0 标准执行确认",
+        "impactTests": [
+          "backend-node/test/platformFeatureAcceptance.test.js",
+          "backend-node/test/featureLockManifest.test.js"
+        ]
+      }
     }
   ]
 }
