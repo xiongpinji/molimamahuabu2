@@ -39,8 +39,8 @@ const PROACTIVE_CANARY_EVIDENCE = [
   'docs/superpowers/plans/2026-08-20-evidence-bound-multi-model-split.md',
 ];
 const PROACTIVE_CANARY_UNLOCK = {
-  reason: '2026-08-21 证据绑定能力镜像缺失修复授权',
-  approvedBy: 'product-owner 2026-08-21 evidence-bound-settings-repair',
+  reason: '2026-08-21 PR #171 主线合并冲突修复与全量回归授权',
+  approvedBy: 'product-owner 2026-08-21 pr-171-merge-regression',
   impactTests: [
     'backend-node/test/providerCanaryInventory.test.js',
     'backend-node/test/providerCanaryScheduler.test.js',
@@ -155,13 +155,13 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   assert.deepEqual(feature.unlock, PROACTIVE_CANARY_UNLOCK);
 });
 
-test('其余稳定性锁保留既有批准原因且所有锁保留历史证据', () => {
+test('其余稳定性锁保留当前批准原因且所有锁保留历史证据', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   assert.equal(manifest.features.length >= 5, true);
   for (const feature of manifest.features) {
     if (feature.featureId !== PROACTIVE_CANARY_FEATURE_ID) {
-      assert.equal(feature.unlock?.reason, '2026-08-20 线路成本分离与多模型配置拆分本地 TDD 授权');
-      assert.match(feature.unlock?.approvedBy || '', /product-owner/);
+      assert.equal(feature.unlock?.reason, '2026-08-21 PR #171 主线合并冲突修复与全量回归授权');
+      assert.equal(feature.unlock?.approvedBy, 'product-owner 2026-08-21 pr-171-merge-regression');
     }
     assert.equal(feature.evidence.length > 0, true);
   }
