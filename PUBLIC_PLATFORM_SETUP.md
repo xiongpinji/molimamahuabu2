@@ -22,6 +22,20 @@ REDRAW_LOCALE_VERIFIER_ENABLED=false
 - `REDRAW_LOCALE_VERIFIER_ENABLED=false` 是默认关闭态，只表示不会阻断公开平台其他业务；关闭态不等于转绘 en-US production voice 能力可用。启用前必须准备签名 registry、ready attestation、Unix socket、公钥、签名文件和超时配置，并通过 `npm run preflight:redraw-locale`。
 - 转绘音色语言验证不能回退到 TTS 自报字段、请求 locale、voice id 或文件名；没有离线 Worker evidence 时不得写入 production voice verified evidence。
 
+## 支付宝充值变量
+
+```text
+ALIPAY_APP_ID=<支付宝应用 ID>
+ALIPAY_SELLER_ID=<收款商户 sellerId>
+ALIPAY_PRIVATE_KEY=<应用私钥，或改用 ALIPAY_PRIVATE_KEY_PATH>
+ALIPAY_PUBLIC_KEY=<支付宝公钥，或改用 ALIPAY_PUBLIC_KEY_PATH>
+ALIPAY_KEY_TYPE=PKCS8
+ALIPAY_NOTIFY_URL=https://你的域名/api/v1/billing/recharge/alipay/notify
+ALIPAY_RETURN_URL=https://你的域名/tenant-console?section=recharge
+```
+
+缺少任一必要项时，充值入口保持停用且不会创建支付订单。密钥只允许注入后端环境或仅服务账号可读的文件；完整商户准备、小额验收和回调检查见 [`docs/ALIPAY_RECHARGE_SETUP.md`](docs/ALIPAY_RECHARGE_SETUP.md)。
+
 ## 前端构建变量
 
 ```text
@@ -33,10 +47,11 @@ VITE_PUBLIC_PLATFORM_MODE=true
 ## 上线前人工确认
 
 1. 通过 `/billing-admin` 为 `GPT-5.5`、`gpt-image-2`、`seedance 2.0` 分别设置正整数积分价格；未定价模型会禁止生成。
-2. 设置 `PLATFORM_BOOTSTRAP_ADMIN_EMAIL`，临时开放注册或预先创建对应账号。该账号登录后，用 Bearer JWT 和 `X-Platform-Admin-Token` 调用 `POST /api/v1/auth/bootstrap-admin`，保存返回的新 JWT并立即关闭公开注册；再创建普通测试用户。当前版本尚未提供支付渠道或自动充值。
-3. 在隔离测试账户中执行一次真实小额生成，核对供应商账单、预扣、成功确认、明确失败退款和状态未知冻结。
-4. 配置 HTTPS、反向代理请求体上限、数据库与素材备份、日志脱敏、限流及告警。
-5. 按 [`docs/PREPRODUCTION_OPERATIONS.md`](docs/PREPRODUCTION_OPERATIONS.md) 执行生产预检、数据库备份和只读恢复演练；自动预检的 `ready` 必须为 `true`。
+2. 设置 `PLATFORM_BOOTSTRAP_ADMIN_EMAIL`，临时开放注册或预先创建对应账号。该账号登录后，用 Bearer JWT 和 `X-Platform-Admin-Token` 调用 `POST /api/v1/auth/bootstrap-admin`，保存返回的新 JWT并立即关闭公开注册；再创建普通测试用户。
+3. 按支付宝配置文档完成应用、电脑网站支付、密钥和 HTTPS 回调设置；用低金额套餐完成一次小额真实充值，确认异步通知验签、订单状态和积分只入账一次。
+4. 在隔离测试账户中执行一次真实小额生成，核对供应商账单、预扣、成功确认、明确失败退款和状态未知冻结。
+5. 配置 HTTPS、反向代理请求体上限、数据库与素材备份、日志脱敏、限流及告警。
+6. 按 [`docs/PREPRODUCTION_OPERATIONS.md`](docs/PREPRODUCTION_OPERATIONS.md) 执行生产预检、数据库备份和只读恢复演练；自动预检的 `ready` 必须为 `true`。
 
 ## 当前禁止事项
 

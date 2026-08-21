@@ -1,5 +1,7 @@
 'use strict';
 
+const { USMERCARI_MODELS } = require('./usmercariVideoClient');
+
 const TYPE_LABELS = { image: '图片', audio: '音频', video: '视频' };
 
 function parseSettings(settings) {
@@ -15,6 +17,28 @@ function knownCapabilities(config = {}, model = '') {
   const protocol = String(config.api_protocol || '').trim().toLowerCase();
   const provider = String(config.provider || '').trim().toLowerCase();
   if (protocol === 'usmercari_media' || provider === 'usmercari' || provider === 'usmercari_media') {
+    const spec = Object.entries(USMERCARI_MODELS)
+      .find(([name]) => name.toLowerCase() === normalizedModel)?.[1];
+    if (spec) {
+      const referenceTypes = [
+        spec.maxImages > 0 ? 'image' : '',
+        spec.maxVideos > 0 ? 'video' : '',
+        spec.maxAudio > 0 ? 'audio' : '',
+      ].filter(Boolean);
+      return {
+        referenceTypes,
+        maxImageReferences: spec.maxImages,
+        maxVideoReferences: spec.maxVideos,
+        maxAudioReferences: spec.maxAudio,
+        aspectRatios: ['16:9'],
+        resolutions: [...spec.resolutions],
+        durations: [...spec.durations],
+        quantities: [1],
+        supportsFirstFrame: spec.maxImages > 0,
+        supportsLastFrame: spec.maxImages > 1,
+        supportsAudio: true,
+      };
+    }
     return {
       referenceTypes: ['image', 'video', 'audio'],
       maxImageReferences: 4,
@@ -45,7 +69,19 @@ function knownCapabilities(config = {}, model = '') {
     };
   }
   if (normalizedModel === 'lingjing-video-v1') {
-    return { referenceTypes: ['image'], maxImageReferences: 12, maxAudioReferences: 0, maxVideoReferences: 0 };
+    return {
+      referenceTypes: ['image'],
+      maxImageReferences: 9,
+      maxAudioReferences: 0,
+      maxVideoReferences: 0,
+      aspectRatios: ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'],
+      resolutions: [],
+      durations: [4, 5, 6, 8, 10, 11, 15],
+      quantities: [1],
+      supportsFirstFrame: false,
+      supportsLastFrame: false,
+      supportsAudio: false,
+    };
   }
   if (normalizedModel === 'video-v1' || protocol === 'djpsd_openapi' || provider === 'djpsd_openapi') {
     return { referenceTypes: ['image'], maxImageReferences: 10, maxAudioReferences: 0, maxVideoReferences: 0 };
@@ -84,6 +120,17 @@ function resolve(config = {}, model = '') {
     maxAudioReferences: normalizeLimit(declared.maxAudioReferences, inferred.maxAudioReferences),
     maxVideoReferences: normalizeLimit(declared.maxVideoReferences, inferred.maxVideoReferences),
   };
+  for (const [type, key] of [
+    ['image', 'supportsImageReference'],
+    ['video', 'supportsVideoReference'],
+    ['audio', 'supportsAudioReference'],
+  ]) {
+    capabilities[key] = typeof declared[key] === 'boolean'
+      ? declared[key]
+      : referenceTypes.includes(type);
+  }
+  capabilities.supportsFirstFrame = declared.supportsFirstFrame === true || inferred.supportsFirstFrame === true;
+  capabilities.supportsLastFrame = declared.supportsLastFrame === true || inferred.supportsLastFrame === true;
   capabilities.maxReferences = capabilities.maxImageReferences;
   return capabilities;
 }

@@ -2,7 +2,11 @@ const fs = require('fs');
 const path = require('path');
 const userAuth = require('../services/userAuthService');
 const sessionCookie = require('../services/sessionCookieService');
-const providerAssetUrl = require('../services/providerAssetUrlService');
+const {
+  EXPIRES_PARAM,
+  SIGNATURE_PARAM,
+  verifyProviderAssetRequest,
+} = require('../services/providerAssetUrlService');
 
 const RECHARGE_PACKAGE_UPLOAD_PREFIX = 'uploads/recharge-packages/';
 
@@ -239,12 +243,15 @@ function createStaticOwnershipMiddleware({ db, enabled, secret, storageRoot } = 
   return (req, res, next) => {
     if (!enabled) return next();
     if (!userAuth.validSecret(secret)) return res.status(503).end();
-    if (providerAssetUrl.verifyProviderAssetRequest({
-      pathname: `${req.baseUrl || ''}${req.path || ''}`,
-      expires: req.query?.[providerAssetUrl.EXPIRES_PARAM],
-      signature: req.query?.[providerAssetUrl.SIGNATURE_PARAM],
-      secret,
-    })) return next();
+    const expires = req.query?.[EXPIRES_PARAM];
+    const signature = req.query?.[SIGNATURE_PARAM];
+    if (expires != null || signature != null) {
+      const requestPath = `/static${String(req.path || '').startsWith('/') ? '' : '/'}${String(req.path || '')}`;
+      if (!verifyProviderAssetRequest({ pathname: requestPath, expires, signature, secret })) {
+        return res.status(401).end();
+      }
+      return next();
+    }
     const match = /^Bearer\s+(.+)$/i.exec(String(req.get('authorization') || ''));
     const token = match?.[1] || sessionCookie.readSessionCookie(req);
     if (!token) return res.status(401).end();

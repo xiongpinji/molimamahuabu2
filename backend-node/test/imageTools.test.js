@@ -35,6 +35,13 @@ const TEST_UPSCALE_FILES = Object.freeze({
   },
 });
 
+function createVerifiedConfig(db, log, input) {
+  const config = aiConfigService.createConfig(db, log, input);
+  db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
+    .run(config.id);
+  return config;
+}
+
 function bufferSha256(value) {
   return createHash('sha256').update(value).digest('hex').toUpperCase();
 }
@@ -360,7 +367,7 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   const supportedDb = new Database(':memory:');
   t.after(() => supportedDb.close());
   runMigrationsAndEnsure(supportedDb);
-  aiConfigService.createConfig(supportedDb, log, {
+  createVerifiedConfig(supportedDb, log, {
     service_type: 'storyboard_image',
     provider: 'aihubcc',
     api_protocol: 'aihubcc',
@@ -424,7 +431,7 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   const undeclaredDb = new Database(':memory:');
   t.after(() => undeclaredDb.close());
   runMigrationsAndEnsure(undeclaredDb);
-  aiConfigService.createConfig(undeclaredDb, log, {
+  createVerifiedConfig(undeclaredDb, log, {
     service_type: 'storyboard_image',
     provider: 'aihubcc',
     api_protocol: 'aihubcc',
@@ -460,7 +467,7 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   const unsupportedDb = new Database(':memory:');
   t.after(() => unsupportedDb.close());
   runMigrationsAndEnsure(unsupportedDb);
-  aiConfigService.createConfig(unsupportedDb, log, {
+  createVerifiedConfig(unsupportedDb, log, {
     service_type: 'storyboard_image',
     provider: 'openai',
     api_protocol: 'openai',
@@ -526,7 +533,7 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
     const strictDb = new Database(':memory:');
     t.after(() => strictDb.close());
     runMigrationsAndEnsure(strictDb);
-    aiConfigService.createConfig(strictDb, log, {
+    createVerifiedConfig(strictDb, log, {
       service_type: config.service_type,
       provider: config.provider,
       api_protocol: config.api_protocol,
@@ -597,7 +604,7 @@ test('人像能力必须在严格审计适配器上独立显式声明', (t) => {
     const db = new Database(':memory:');
     t.after(() => db.close());
     runMigrationsAndEnsure(db);
-    aiConfigService.createConfig(db, log, {
+    createVerifiedConfig(db, log, {
       service_type: 'storyboard_image',
       provider: 'aihubcc',
       api_protocol: 'aihubcc',
@@ -659,7 +666,7 @@ test('图片节点能力会读取路由创建后保存的 AIHubCC 参考图配�
   handlers.capabilities({}, beforeRes);
   assert.equal(beforeRes.payload.data.operations.upscale.available, false);
 
-  aiConfigService.createConfig(db, log, {
+  createVerifiedConfig(db, log, {
     service_type: 'storyboard_image',
     provider: 'aihubcc',
     api_protocol: 'aihubcc',
@@ -734,7 +741,7 @@ test('真实图片供应商请求把存储根内绝对参考图编码为 data UR
   const db = new Database(':memory:');
   t.after(() => db.close());
   runMigrationsAndEnsure(db);
-  aiConfigService.createConfig(db, { info() {} }, {
+  createVerifiedConfig(db, { info() {} }, {
     service_type: 'storyboard_image',
     provider: 'volcengine',
     api_protocol: 'volcengine',
@@ -801,7 +808,7 @@ test('真实图片供应商 HTTP 错误日志不记录上游响应正文', async
       logEntries.push({ level: 'error', message, details });
     },
   };
-  aiConfigService.createConfig(db, log, {
+  createVerifiedConfig(db, log, {
     service_type: 'storyboard_image',
     provider: 'volcengine',
     api_protocol: 'volcengine',
@@ -861,7 +868,7 @@ test('真实图片供应商成功响应解析失败或无图片时不记录上�
       logEntries.push({ level: 'error', message, details });
     },
   };
-  aiConfigService.createConfig(db, log, {
+  createVerifiedConfig(db, log, {
     service_type: 'storyboard_image',
     provider: 'volcengine',
     api_protocol: 'volcengine',
@@ -3426,7 +3433,7 @@ test('AIHubCC gpt-image-2-3.5k 配置开放全部已审计图片节点能力', (
   t.after(() => db.close());
   runMigrationsAndEnsure(db);
   const log = { info() {}, error() {} };
-  aiConfigService.createConfig(db, log, {
+  createVerifiedConfig(db, log, {
     service_type: 'storyboard_image',
     provider: 'aihubcc',
     api_protocol: 'aihubcc',

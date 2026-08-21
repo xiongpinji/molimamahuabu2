@@ -135,6 +135,7 @@ test('图片工具条和下拉菜单计入编辑器下边界且关闭操作取�
   assert.doesNotMatch(localCanvasSource, /panCanvasForNodeEditor/)
   assert.doesNotMatch(dramaCanvasSource, /panCanvasForNodeEditor/)
   assert.match(nodeSource, /function closeEditor\(\) \{[\s\S]*window\.clearTimeout\(mediaOpenTimer\)/)
+  assert.match(nodeSource, /function closeEditor\(\) \{[\s\S]*ctx\?\.clearFocusedNode\?\.\(\)/)
   assert.match(nodeSource, /@suspend-editor="closeEditor"/)
   assert.match(imageToolbarSource, /function openToolbarMenu\(menu\) \{[\s\S]*emit\('suspend-editor'\)/)
   assert.match(imageToolbarSource, /function selectOperation\(item\) \{[\s\S]*emit\('suspend-editor'\)/)
@@ -148,6 +149,9 @@ test('选中节点可从主体按住左键拖动且编辑器按视口等比适�
   assert.match(nodeSource, /const maximumViewportScale = Math\.max\(0\.01, Math\.min\(/)
   assert.match(nodeSource, /transform: `scale\(\$\{editorScale\}\)`/)
   assert.match(nodeSource, /visibility: hasUsableDock \? 'visible' : 'hidden'/)
+  assert.match(nodeSource, /width:\s*860px/)
+  assert.match(nodeSource, /max-height:\s*none/)
+  assert.match(nodeSource, /overflow:\s*visible/)
 })
 
 test('图片视频节点使用大画幅预览，运行中明确显示生成状态且画布支持高倍缩放', () => {
@@ -162,4 +166,18 @@ test('图片视频节点使用大画幅预览，运行中明确显示生成状�
 test('独立画布只读取用户可访问的模型目录，不请求管理员模型配置接口', () => {
   assert.match(dramaCanvasSource, /request\.get\('\/canvas\/model-catalog'\)/)
   assert.doesNotMatch(dramaCanvasSource, /aiAPI\.list\(/)
+})
+
+test('图片模型在两套节点编辑器中都显示用户可读的能力范围', () => {
+  assert.match(nodeSource, /imageModelCapabilityBadges/)
+  assert.match(nodeSource, /class="model-capability-badges"/)
+  assert.match(nodeSource, /v-for="badge in currentModelCapabilityBadges"/)
+  assert.match(dramaCanvasSource, /imageModelCapabilityBadges/)
+  assert.match(dramaCanvasSource, /class="free-node-model-capabilities"/)
+  assert.match(dramaCanvasSource, /v-for="badge in freeNodeSelectedCapabilityBadges"/)
+})
+
+test('连续创建节点时同步单选状态，避免新节点编辑器被误判为多选', () => {
+  assert.match(dramaCanvasSource, /async function createFreeCanvasNode\([\s\S]*applySelectedFreeNodeIds\(\[id\]\)[\s\S]*focusedNodeId\.value = id[\s\S]*await focusCanvasNode\(id\)/)
+  assert.match(nodeSource, /watch\(\(\) => ctx\?\.focusedNodeId\?\.value,[\s\S]*editorHidden\.value = false[\s\S]*immediate: true/)
 })

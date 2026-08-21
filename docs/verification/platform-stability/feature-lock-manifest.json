@@ -1,0 +1,289 @@
+{
+  "schemaVersion": 1,
+  "baselineCommit": "8f9a66cd708d5db96fbee573a2f4aa7de182a6fe",
+  "features": [
+    {
+      "featureId": "stability.provider-route-contract",
+      "module": "shared",
+      "status": "locked_fixed",
+      "acceptance": [
+        "逻辑模型与供应商配置分离，只有已验证且能力匹配的配置进入候选池",
+        "路由请求和供应商尝试具有稳定状态与幂等键",
+        "熔断冷却后的半开供应商只允许一个请求创建探测 attempt"
+      ],
+      "protectedPaths": [
+        "backend-node/migrations/59_provider_route_stability.sql",
+        "backend-node/src/db/migrate.js",
+        "backend-node/src/services/aiConfigService.js",
+        "backend-node/src/services/providerRouteStabilityService.js"
+      ],
+      "requiredTests": [
+        "backend-node/test/providerRouteSchema.test.js",
+        "backend-node/test/providerRouteStability.test.js",
+        "backend-node/test/aiConfigPublicView.test.js",
+        "backend-node/test/canvasModelCatalogService.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
+        "docs/superpowers/plans/2026-08-15-platform-stability-foundation.md",
+        "docs/verification/platform-stability/foundation-verification.md",
+        "docs/verification/platform-stability/provider-reconciliation-grace-20260816.md",
+        "docs/tasks/2026-08-16-provider-failover-protection-phase.md",
+        "docs/superpowers/plans/2026-08-20-provider-route-cost-and-multi-model-split.md"
+      ],
+      "fixCommit": "54eb8e940982cd9c4b65e91b934d8593a6b1975b",
+      "unlock": {
+        "reason": "2026-08-20 线路成本分离与多模型配置拆分本地 TDD 授权",
+        "approvedBy": "product-owner 2026-08-20 route-cost-model-split-local-tdd",
+        "impactTests": [
+          "backend-node/test/providerCanaryInvalidation.test.js",
+          "backend-node/test/providerCanaryPublicGate.test.js",
+          "backend-node/test/providerCanaryAdminRoutes.test.js",
+          "backend-node/test/providerRouteStability.test.js",
+          "backend-node/test/providerRouteCost.test.js",
+          "backend-node/test/generationRouteCostLedger.test.js"
+        ]
+      }
+    },
+    {
+      "featureId": "stability.safe-provider-failover",
+      "module": "shared",
+      "status": "locked_fixed",
+      "acceptance": [
+        "图片、视频和文本只在明确未受理且同逻辑模型同能力的已验证配置间切换",
+        "策略拒绝、参数错误、结果未知和不可读产物均不得自动重提",
+        "只有备用 attempt 实际创建后才写管理员 route_switched 安全事件"
+      ],
+      "protectedPaths": [
+        "backend-node/src/services/providerErrorClassifier.js",
+        "backend-node/src/services/imageClient.js",
+        "backend-node/src/services/imageService.js",
+        "backend-node/src/services/videoClient.js",
+        "backend-node/src/services/videoService.js",
+        "backend-node/src/services/aiClient.js"
+      ],
+      "requiredTests": [
+        "backend-node/test/providerErrorClassification.test.js",
+        "backend-node/test/providerRouteImageIntegration.test.js",
+        "backend-node/test/providerRouteVideoIntegration.test.js",
+        "backend-node/test/providerRouteTextIntegration.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
+        "docs/superpowers/plans/2026-08-15-platform-stability-foundation.md",
+        "docs/verification/platform-stability/foundation-verification.md",
+        "docs/verification/platform-stability/image-legacy-failover-compatibility.md",
+        "docs/verification/platform-stability/provider-reconciliation-grace-20260816.md",
+        "docs/tasks/2026-08-16-provider-failover-protection-phase.md",
+        "docs/tasks/2026-08-16-image-node-gpt-image-reference-repair.md",
+        "docs/superpowers/plans/2026-08-20-provider-route-cost-and-multi-model-split.md"
+      ],
+      "fixCommit": "54eb8e940982cd9c4b65e91b934d8593a6b1975b",
+      "unlock": {
+        "reason": "2026-08-20 线路成本分离与多模型配置拆分本地 TDD 授权",
+        "approvedBy": "product-owner 2026-08-20 route-cost-model-split-local-tdd",
+        "impactTests": [
+          "backend-node/test/providerCanaryExecutor.test.js",
+          "backend-node/test/providerCanaryTextConfig.test.js",
+          "backend-node/test/providerCanaryFixtures.test.js",
+          "backend-node/test/providerCanaryArtifacts.test.js",
+          "backend-node/test/imageBilling.test.js",
+          "backend-node/test/text-generation-billing.test.js",
+          "backend-node/test/videoBilling.test.js"
+        ]
+      }
+    },
+    {
+      "featureId": "stability.unknown-state-billing-reconciliation",
+      "module": "shared",
+      "status": "locked_fixed",
+      "acceptance": [
+        "提交或结果未知时任务进入人工核对且积分保持冻结",
+        "只有明确失败且未创建供应商任务时自动退款，重复对账幂等"
+      ],
+      "protectedPaths": [
+        "backend-node/src/app.js",
+        "backend-node/src/services/taskService.js",
+        "backend-node/src/services/billingReconciliationService.js",
+        "backend-node/src/services/providerReconciliationService.js",
+        "backend-node/src/services/text-generation-billing-service.js"
+      ],
+      "requiredTests": [
+        "backend-node/test/providerReconciliation.test.js",
+        "backend-node/test/billingReconciliation.test.js",
+        "backend-node/test/taskService.test.js",
+        "backend-node/test/text-generation-billing.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
+        "docs/superpowers/plans/2026-08-15-platform-stability-foundation.md",
+        "docs/verification/platform-stability/foundation-verification.md",
+        "docs/verification/platform-stability/provider-reconciliation-grace-20260816.md",
+        "docs/superpowers/plans/2026-08-20-provider-route-cost-and-multi-model-split.md"
+      ],
+      "fixCommit": "51a91f1e3eb5dc3636adb1c8a47e45f22a60e000",
+      "unlock": {
+        "reason": "2026-08-20 线路成本分离与多模型配置拆分本地 TDD 授权",
+        "approvedBy": "product-owner 2026-08-20 route-cost-model-split-local-tdd",
+        "impactTests": [
+          "backend-node/test/providerCanaryBudget.test.js",
+          "backend-node/test/providerCanaryExecutor.test.js",
+          "backend-node/test/providerCanaryScheduler.test.js",
+          "backend-node/test/appBackgroundServices.test.js",
+          "backend-node/test/generationCostLedger.test.js",
+          "backend-node/test/generationRouteCostLedger.test.js"
+        ]
+      }
+    },
+    {
+      "featureId": "stability.admin-provider-observability",
+      "module": "shared",
+      "status": "locked_fixed",
+      "acceptance": [
+        "管理员可查看模型中转关联、健康熔断、任务积分状态与安全告警摘要",
+        "普通用户目录和生成界面不暴露中转、配置 ID、成本、密钥或内部错误"
+      ],
+      "protectedPaths": [
+        "backend-node/src/routes/aiConfig.js",
+        "backend-node/src/routes/index.js",
+        "backend-node/src/routes/providerStability.js",
+        "backend-node/src/services/canvasModelCatalogService.js",
+        "frontweb/src/api/providerStability.js",
+        "frontweb/src/components/AIConfigContent.vue",
+        "frontweb/src/components/ProviderStabilityPanel.vue"
+      ],
+      "requiredTests": [
+        "backend-node/test/providerRouteAdminRoutes.test.js",
+        "backend-node/test/aiConfigPublicView.test.js",
+        "frontweb/test/providerStabilityAdmin.test.js",
+        "frontweb/test/aiConfigRelayAssociation.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
+        "docs/superpowers/plans/2026-08-15-platform-stability-foundation.md",
+        "docs/verification/platform-stability/foundation-verification.md",
+        "docs/superpowers/plans/2026-08-20-provider-route-cost-and-multi-model-split.md"
+      ],
+      "fixCommit": "f960703ce43e67900b6a294e61d36cf40f2a1d1e",
+      "unlock": {
+        "reason": "2026-08-20 线路成本分离与多模型配置拆分本地 TDD 授权",
+        "approvedBy": "product-owner 2026-08-20 route-cost-model-split-local-tdd",
+        "impactTests": [
+          "backend-node/test/providerCanaryAdminRoutes.test.js",
+          "backend-node/test/canvasModelCatalogService.test.js",
+          "backend-node/test/aiConfigPublicView.test.js",
+          "frontweb/test/providerStabilityAdmin.test.js",
+          "frontweb/test/providerRouteCostAdmin.test.js"
+        ]
+      }
+    },
+    {
+      "featureId": "stability.proactive-canary-and-public-evidence",
+      "module": "shared",
+      "status": "locked_fixed",
+      "acceptance": [
+        "公开线路只有匹配的新鲜真实证据才能进入严格候选",
+        "巡检预算日月原子受限且未知结果保留占用",
+        "巡检不污染用户资产、生成记录和积分",
+        "管理员可见线路证据预算，普通用户不泄露供应商与成本"
+      ],
+      "protectedPaths": [
+        "backend-node/migrations/60_provider_canary_guard.sql",
+        "backend-node/migrations/61_provider_canary_reconcile_claim.sql",
+        "backend-node/migrations/62_provider_canary_admin_pagination.sql",
+        "backend-node/migrations/63_provider_route_costs.sql",
+        "backend-node/scripts/split-multi-model-provider-configs.js",
+        "backend-node/scripts/verify-feature-lock-manifest.js",
+        "backend-node/src/app.js",
+        "backend-node/src/middleware/resourceOwnership.js",
+        "backend-node/src/routes/index.js",
+        "backend-node/src/routes/providerStability.js",
+        "backend-node/src/services/aiClient.js",
+        "backend-node/src/services/aiConfigService.js",
+        "backend-node/src/services/canvasModelCatalogService.js",
+        "backend-node/src/services/generationCostLedgerService.js",
+        "backend-node/src/services/generationUsageContext.js",
+        "backend-node/src/services/imageClient.js",
+        "backend-node/src/services/imageService.js",
+        "backend-node/src/services/modelPriceService.js",
+        "backend-node/src/services/providerCanaryArtifactService.js",
+        "backend-node/src/services/providerCanaryBudgetService.js",
+        "backend-node/src/services/providerCanaryEvidenceService.js",
+        "backend-node/src/services/providerCanaryExecutor.js",
+        "backend-node/src/services/providerCanaryFixtureService.js",
+        "backend-node/src/services/providerCanarySchedulerService.js",
+        "backend-node/src/services/providerRouteCostService.js",
+        "backend-node/src/services/providerRouteStabilityService.js",
+        "backend-node/src/services/providerRuntimeFingerprintService.js",
+        "backend-node/src/services/text-generation-billing-service.js",
+        "backend-node/src/services/videoClient.js",
+        "backend-node/src/services/videoService.js",
+        ".github/workflows/platform-zero-cost-smoke.yml",
+        "frontweb/scripts/run-platform-zero-cost-smoke.mjs",
+        "frontweb/src/api/providerStability.js",
+        "frontweb/src/components/ProviderStabilityPanel.vue"
+      ],
+      "requiredTests": [
+        "backend-node/test/aiConfigPublicView.test.js",
+        "backend-node/test/appBackgroundServices.test.js",
+        "backend-node/test/canvasModelCatalogService.test.js",
+        "backend-node/test/generationCostLedger.test.js",
+        "backend-node/test/generationRouteCostLedger.test.js",
+        "backend-node/test/imageBilling.test.js",
+        "backend-node/test/modelPrice.test.js",
+        "backend-node/test/openAIImageOutput.test.js",
+        "backend-node/test/providerAssetSignedAccess.test.js",
+        "backend-node/test/providerCanaryAdminRoutes.test.js",
+        "backend-node/test/providerCanaryArtifacts.test.js",
+        "backend-node/test/providerCanaryBudget.test.js",
+        "backend-node/test/providerCanaryEvidence.test.js",
+        "backend-node/test/providerCanaryExecutor.test.js",
+        "backend-node/test/providerCanaryFixtures.test.js",
+        "backend-node/test/providerCanaryInvalidation.test.js",
+        "backend-node/test/providerCanaryPublicGate.test.js",
+        "backend-node/test/providerCanaryScheduler.test.js",
+        "backend-node/test/providerCanaryTextConfig.test.js",
+        "backend-node/test/providerReconciliation.test.js",
+        "backend-node/test/providerRouteAdminRoutes.test.js",
+        "backend-node/test/providerRouteCost.test.js",
+        "backend-node/test/providerRouteImageIntegration.test.js",
+        "backend-node/test/providerRouteSchema.test.js",
+        "backend-node/test/providerRouteStability.test.js",
+        "backend-node/test/providerRouteTextIntegration.test.js",
+        "backend-node/test/providerRouteVideoIntegration.test.js",
+        "backend-node/test/providerRuntimeFingerprint.test.js",
+        "backend-node/test/splitMultiModelProviderConfigs.test.js",
+        "backend-node/test/text-generation-billing.test.js",
+        "backend-node/test/videoBilling.test.js",
+        "backend-node/test/videoQueryTaskStatusOnce.test.js",
+        "frontweb/e2e/platform-zero-cost-smoke.spec.js",
+        "frontweb/e2e/provider-stability-admin.spec.js",
+        "frontweb/test/platformZeroCostSmokeContract.test.js",
+        "frontweb/test/providerRouteCostAdmin.test.js",
+        "frontweb/test/providerStabilityAdmin.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-18-platform-stability-proactive-canary-design.md",
+        "docs/superpowers/plans/2026-08-18-platform-stability-proactive-canary-foundation.md",
+        "docs/verification/platform-stability/provider-canary-readiness.json",
+        "docs/verification/platform-stability/platform-feature-inventory.json",
+        "docs/verification/platform-stability/proactive-canary-verification.md",
+        "docs/verification/platform-stability/route-mapping-and-disk-operations-20260819.md",
+        "docs/superpowers/plans/2026-08-20-provider-route-cost-and-multi-model-split.md"
+      ],
+      "fixCommit": null,
+      "unlock": {
+        "reason": "2026-08-20 线路成本分离与多模型配置拆分本地 TDD 授权",
+        "approvedBy": "product-owner 2026-08-20 route-cost-model-split-local-tdd",
+        "impactTests": [
+          "backend-node/test/providerCanaryInventory.test.js",
+          "backend-node/test/providerCanaryScheduler.test.js",
+          "backend-node/test/providerRouteCost.test.js",
+          "backend-node/test/generationRouteCostLedger.test.js",
+          "backend-node/test/splitMultiModelProviderConfigs.test.js",
+          "frontweb/test/providerRouteCostAdmin.test.js"
+        ]
+      }
+    }
+  ]
+}

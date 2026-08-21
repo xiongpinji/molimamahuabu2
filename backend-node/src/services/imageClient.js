@@ -23,6 +23,9 @@ const { downloadPublicImage } = require('./publicImageDownload');
 const usmercariImageClient = require('./usmercariImageClient');
 const modelPriceService = require('./modelPriceService');
 const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
+const fuminImageClient = require('./fuminImageClient');
+const providerRouteStability = require('./providerRouteStabilityService');
+const { classifyProviderFailure } = require('./providerErrorClassifier');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
 const IMAGE_HTTP_TIMEOUT_MS = 600000;
@@ -37,7 +40,7 @@ function mergeNegativePromptFragments(auto, user) {
   return a || u || '';
 }
 
-/** 角色/场景/道具资产生图：请求里显式传入 model 且资产上存有负面词时，与自动负面片段合并后传给图生 API */
+/** 角色/场景/道具资产生图：仅当请求显式传入模型时使用资产上已保存的负面词。 */
 function resolveAssetUserNegativeForApi(explicitModelName, storedNegative) {
   const hasModel = explicitModelName != null && String(explicitModelName).trim().length > 0;
   const neg = storedNegative != null ? String(storedNegative).trim() : '';
@@ -116,32 +119,116 @@ function inferProtocol(provider, model) {
   if (p === 'kling' || p === 'klingai') return 'kling';
   if (/^kling-/i.test(model || '')) return 'kling';
   if (p === 'agnes' || /agnes-image|apihub\.agnes-ai\.com/i.test(String(model || ''))) return 'agnes';
+  if (p === 'fumin_image') return 'openai';
   return 'openai';
+}
+
+function providerErrorMeta(data, httpStatus, overrides = {}) {
+  const message = String(data?.error?.message || data?.message || data?.error || '');
+  let providerCode = String(data?.error?.code || data?.code || '').trim();
+  if (/no available channel/i.test(message)) providerCode = 'NO_AVAILABLE_CHANNEL';
+  const providerTaskId = aihubccClient.extractTaskId(data);
+  const explicitlyRejected = [400, 401, 413, 422, 429].includes(Number(httpStatus))
+    || providerCode === 'NO_AVAILABLE_CHANNEL';
+  return {
+    httpStatus: Number.isInteger(Number(httpStatus)) ? Number(httpStatus) : undefined,
+    providerCode: providerCode || undefined,
+    providerTaskId: providerTaskId || undefined,
+    explicitlyRejected,
+    ...overrides,
+  };
+}
+
+async function aihubccReferenceToFile(value, index = 0) {
+  const source = String(value || '').trim();
+  const dataMatch = source.match(/^data:(image\/(?:png|jpe?g|webp));base64,([A-Za-z0-9+/=\s]+)$/i);
+  let bytes;
+  let mimeType;
+  if (dataMatch) {
+    mimeType = dataMatch[1].toLowerCase().replace('image/jpg', 'image/jpeg');
+    bytes = Buffer.from(dataMatch[2].replace(/\s+/g, ''), 'base64');
+  } else if (/^https?:\/\//i.test(source)) {
+    throw new Error('远程参考图必须先保存为本地素材');
+  } else {
+    throw new Error('参考图无法转换为上传文件');
+  }
+  if (!bytes.length) throw new Error('参考图内容为空');
+  if (bytes.length > 20 * 1024 * 1024) throw new Error('参考图超过 20MB 限制');
+  const extension = mimeType === 'image/png' ? 'png' : mimeType === 'image/webp' ? 'webp' : 'jpg';
+  return {
+    blob: new Blob([bytes], { type: mimeType }),
+    filename: `reference-${index + 1}.${extension}`,
+  };
 }
 
 async function callAihubccImageApi(config, log, opts = {}) {
   const model = String(opts.model || 'gpt-image-2').trim();
   const rawRefs = Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.filter(Boolean) : [];
+  const gptImage2 = /^gpt-image-2$/i.test(model);
+  if (gptImage2 && rawRefs.length > 20) {
+    return {
+      error: 'AIHubCC gpt-image-2 最多支持 20 张参考图，请移除超出的参考图后再生成',
+      route_meta: {
+        phase: 'prepare',
+        requestBodySent: false,
+        explicitlyRejected: true,
+      },
+    };
+  }
   const refs = rawRefs
     .map((value) => resolveImageRef(value, opts.files_base_url, opts.storage_local_path))
     .filter(Boolean)
-    .slice(0, 6);
+    .slice(0, gptImage2 ? 20 : 6);
+  const gptImage2Edit = gptImage2 && refs.length > 0;
+  if (gptImage2 && rawRefs.length > 0 && refs.length !== rawRefs.length) {
+    return {
+      error: 'AIHubCC gpt-image-2 参考图无法读取，请重新上传后再生成',
+      route_meta: {
+        phase: 'prepare',
+        requestBodySent: false,
+        explicitlyRejected: true,
+      },
+    };
+  }
   const flowModel = aihubccClient.isFlowImageModel(model);
   const asyncModel = aihubccClient.isAsyncImageModel(model);
-  const endpoint = flowModel ? '/chat/completions' : (asyncModel ? '/videos' : (config.endpoint || '/images/generations'));
-  const body = flowModel
-    ? aihubccClient.buildFlowImageBody({
-        model,
-        prompt: opts.prompt,
-        referenceUrls: refs,
-      })
-    : aihubccClient.buildImageBody({
-        model,
-        prompt: opts.prompt,
-        size: opts.size,
-        quality: opts.quality,
-        referenceUrls: refs,
-      });
+  const requestSize = /^gpt-image-2(?:-1k)?$/i.test(model)
+    ? normalizeGptImageSize(opts.size)
+    : opts.size;
+  const endpoint = gptImage2Edit
+    ? '/images/edits'
+    : (flowModel ? '/chat/completions' : (asyncModel ? '/videos' : (config.endpoint || '/images/generations')));
+  let body;
+  if (gptImage2Edit) {
+    let files;
+    try {
+      files = await Promise.all(refs.map(aihubccReferenceToFile));
+    } catch (error) {
+      return {
+        error: `AIHubCC gpt-image-2 参考图准备失败: ${error.message}`,
+        route_meta: { phase: 'prepare', requestBodySent: false, explicitlyRejected: true },
+      };
+    }
+    body = new FormData();
+    body.append('model', model);
+    body.append('prompt', opts.prompt || '');
+    body.append('size', requestSize || '1024x1024');
+    for (const file of files) body.append('image[]', file.blob, file.filename);
+  } else {
+    body = flowModel
+      ? aihubccClient.buildFlowImageBody({
+          model,
+          prompt: opts.prompt,
+          referenceUrls: refs,
+        })
+      : aihubccClient.buildImageBody({
+          model,
+          prompt: opts.prompt,
+          size: requestSize,
+          quality: opts.quality,
+          referenceUrls: refs,
+        });
+  }
   const url = aihubccClient.getSubmitUrl(config, endpoint);
   log.info('[AIHubCC image] 提交', {
     image_gen_id: opts.image_gen_id,
@@ -155,34 +242,67 @@ async function callAihubccImageApi(config, log, opts = {}) {
   try {
     result = await aihubccClient.requestJson(url, {
       method: 'POST',
-      headers: aihubccClient.authHeaders(config, true),
-      body: JSON.stringify(body),
+      headers: aihubccClient.authHeaders(config, !gptImage2Edit),
+      body: gptImage2Edit ? body : JSON.stringify(body),
       timeoutMs: IMAGE_HTTP_TIMEOUT_MS,
     });
   } catch (error) {
-    return { error: `AIHubCC 图片请求失败: ${error.message}` };
+    return {
+      error: `AIHubCC 图片请求失败: ${error.message}`,
+      route_meta: {
+        phase: 'submit',
+        requestBodySent: true,
+        transportCode: error?.cause?.code || error?.code,
+      },
+    };
   }
   if (!result.response.ok) {
-    return { error: `AIHubCC 图片请求失败: ${result.response.status} ${(result.data?.error?.message || result.data?.message || result.raw || '').slice(0, 300)}` };
+    return {
+      error: `AIHubCC 图片请求失败: ${result.response.status} ${(result.data?.error?.message || result.data?.message || result.raw || '').slice(0, 300)}`,
+      route_meta: providerErrorMeta(result.data, result.response.status),
+    };
   }
   if (flowModel) {
-    const flowUrl = aihubccClient.extractFlowImageUrl(result.data, config);
+    const flowUrl = normalizeProviderImageOutput(aihubccClient.extractFlowImageUrl(result.data, config));
     return flowUrl
       ? { image_url: flowUrl }
-      : { error: 'AIHubCC Flow 图片接口未在 choices[0].message.content 返回图片地址' };
+      : {
+          indeterminate: true,
+          error: 'AIHubCC Flow 图片接口未在 choices[0].message.content 返回图片地址',
+          route_meta: providerErrorMeta(result.data, result.response.status, { artifactReadable: false }),
+        };
   }
-  const direct = aihubccClient.extractMediaUrl(result.data, config);
+  const openAIResult = extractOpenAIImageResult(result.data);
+  if (openAIResult) return openAIResult;
+  const direct = normalizeProviderImageOutput(aihubccClient.extractMediaUrl(result.data, config));
   if (direct) return { image_url: direct };
-  const b64 = result.data?.data?.[0]?.b64_json;
-  if (b64) return { image_url: `data:image/png;base64,${String(b64).replace(/\s/g, '')}` };
+  const b64 = normalizeProviderImageOutput(result.data?.data?.[0]?.b64_json, {
+    allowRawBase64: true,
+    mimeType: 'image/png',
+  });
+  if (b64) return { image_url: b64 };
   const taskId = aihubccClient.extractTaskId(result.data);
-  if (!taskId) return { error: 'AIHubCC 图片接口未返回图片地址或任务编号' };
-  return aihubccClient.pollTask(config, taskId, {
+  if (!taskId) {
+    log.warn('[AIHubCC image] 结果未知', summarizeImageResponse(
+      result.data,
+      result.raw,
+      result.response.status,
+      opts.image_gen_id,
+      model,
+    ));
+    return {
+      indeterminate: true,
+      error: 'AIHubCC 图片接口未返回图片地址或任务编号',
+      route_meta: providerErrorMeta(result.data, result.response.status, { artifactReadable: false }),
+    };
+  }
+  const polled = await aihubccClient.pollTask(config, taskId, {
     mediaType: 'image',
     maxAttempts: Number(process.env.AIHUBCC_IMAGE_MAX_ATTEMPTS || 720),
     intervalMs: Number(process.env.AIHUBCC_POLL_INTERVAL_MS || 5000),
     log,
   });
+  return { ...polled, route_meta: { providerTaskId: taskId } };
 }
 
 function normalizeDjpsdOpenApiBaseUrl(value) {
@@ -448,7 +568,11 @@ function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServi
     preferredConfigId,
   );
   if (candidates.length > 0) return candidates[0];
-  return preferredModel
+  const logicalRoute = findLogicalImageRoute(db, preferredModel, imageServiceType);
+  if (logicalRoute) return aiConfigService.getConfig(db, logicalRoute.id);
+  const hasVerificationStatus = db.prepare('PRAGMA table_info(ai_service_configs)').all()
+    .some((column) => column.name === 'verification_status');
+  return preferredModel && !hasVerificationStatus
     ? canvasProviderConfigService.getConfig('image', preferredModel)
     : null;
 }
@@ -471,6 +595,12 @@ function hasVerifiedImageModel(config, preferredModel) {
 
 function imageGateError(code, message) {
   const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function imageConfigError(code, message) {
+  const error = new Error(message || code);
   error.code = code;
   return error;
 }
@@ -547,6 +677,73 @@ function isUsmercariImageConfig(config, model) {
   return protocol === 'usmercari_image';
 }
 
+function hasColumn(db, table, columnName) {
+  return db.prepare(`PRAGMA table_info(${table})`).all()
+    .some((column) => column.name === columnName);
+}
+
+function normalizeImageConfigId(configId) {
+  if (typeof configId === 'number') {
+    if (Number.isSafeInteger(configId) && configId > 0) return configId;
+    throw imageConfigError('IMAGE_CONFIG_NOT_FOUND', '图片模型配置不存在');
+  }
+  if (typeof configId === 'string') {
+    const trimmed = configId.trim();
+    if (/^[0-9]+$/.test(trimmed)) {
+      const numericId = Number(trimmed);
+      if (Number.isSafeInteger(numericId) && numericId > 0) return numericId;
+    }
+  }
+  throw imageConfigError('IMAGE_CONFIG_NOT_FOUND', '图片模型配置不存在');
+}
+
+function resolveExplicitImageConfigId(opts = {}) {
+  const hasSnake = Object.prototype.hasOwnProperty.call(opts, 'config_id');
+  const hasCamel = Object.prototype.hasOwnProperty.call(opts, 'configId');
+  if (!hasSnake && !hasCamel) return null;
+  if (!hasSnake) return normalizeImageConfigId(opts.configId);
+  if (!hasCamel) return normalizeImageConfigId(opts.config_id);
+
+  const snakeId = normalizeImageConfigId(opts.config_id);
+  const camelId = normalizeImageConfigId(opts.configId);
+  if (snakeId !== camelId) {
+    throw imageConfigError('IMAGE_CONFIG_NOT_FOUND', '图片模型配置不存在');
+  }
+  return snakeId;
+}
+
+function getImageConfigById(db, configId, preferredModel) {
+  const numericId = normalizeImageConfigId(configId);
+
+  const config = aiConfigService.getConfig(db, numericId);
+  if (!config || !['image', 'storyboard_image'].includes(config.service_type)) {
+    throw imageConfigError('IMAGE_CONFIG_NOT_FOUND', '图片模型配置不存在');
+  }
+  if (!config.is_active) {
+    throw imageConfigError('IMAGE_CONFIG_INACTIVE', '图片模型配置已停用');
+  }
+
+  if (hasColumn(db, 'ai_service_configs', 'verification_status')) {
+    const row = db.prepare(
+      'SELECT verification_status FROM ai_service_configs WHERE id = ? AND deleted_at IS NULL',
+    ).get(numericId);
+    if (row?.verification_status !== 'verified') {
+      throw imageConfigError('IMAGE_CONFIG_UNVERIFIED', '图片模型配置未通过真实生成验证');
+    }
+  }
+
+  if (preferredModel) {
+    const wantedModel = String(preferredModel).trim().toLowerCase();
+    const models = Array.isArray(config.model) ? config.model : (config.model != null ? [config.model] : []);
+    const hasModel = models.some((model) => String(model).trim().toLowerCase() === wantedModel);
+    if (!hasModel) {
+      throw imageConfigError('IMAGE_CONFIG_MODEL_MISMATCH', '图片模型配置不包含请求模型');
+    }
+  }
+
+  return config;
+}
+
 function getImageConfigCandidates(db, preferredModel, preferredProvider, imageServiceType, preferredConfigId) {
   const serviceType = imageServiceType || 'image';
   let configs = aiConfigService.listConfigs(db, serviceType);
@@ -585,9 +782,10 @@ function getImageConfigCandidates(db, preferredModel, preferredProvider, imageSe
     }
   }
   if (preferredModel) {
+    const wantedModel = String(preferredModel).trim().toLowerCase();
     const matching = active.filter((c) => {
       const models = Array.isArray(c.model) ? c.model : (c.model != null ? [c.model] : []);
-      return models.includes(preferredModel);
+      return models.some((model) => String(model).trim().toLowerCase() === wantedModel);
     });
     const isDefaultModel = matching.some((config) => config.is_default);
     active = isDefaultModel
@@ -755,7 +953,11 @@ function buildImageUrl(config) {
 function getModelFromConfig(config, preferredModel) {
   if (config?.canvas_selected_model) return config.canvas_selected_model;
   const models = Array.isArray(config.model) ? config.model : (config.model != null ? [config.model] : []);
-  if (preferredModel && models.includes(preferredModel)) return preferredModel;
+  if (preferredModel) {
+    const wantedModel = String(preferredModel).trim().toLowerCase();
+    const matchedModel = models.find((model) => String(model).trim().toLowerCase() === wantedModel);
+    if (matchedModel) return matchedModel;
+  }
   if (config.default_model && models.includes(config.default_model)) return config.default_model;
   return models[0] || 'dall-e-3';
 }
@@ -837,6 +1039,128 @@ function imageMimeFromBase64(base64, requestedFormat) {
 function formatGptImageUnknownResultError(error) {
   const detail = error?.message || String(error || '连接中断');
   return `图片生成连接中断，供应商可能已受理或扣费，但本平台未收到结果（结果未知）。为避免重复扣费，请先核对生成记录或供应商账单，不要连续重试。原始错误: ${detail}`;
+}
+
+const MAX_PROVIDER_IMAGE_BASE64_LENGTH = 32 * 1024 * 1024;
+
+function validProviderImageBase64(value) {
+  if (!value || value.length > MAX_PROVIDER_IMAGE_BASE64_LENGTH || value.length % 4 !== 0) return false;
+  return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value);
+}
+
+/** 将供应商产物收窄为可下载 HTTP(S) 或受支持的 Base64 图片 data URL。 */
+function normalizeProviderImageOutput(value, options = {}) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const dataMatch = trimmed.match(/^data:image\/(png|jpeg|jpg|webp);base64,([\s\S]+)$/i);
+  if (dataMatch) {
+    const encoded = dataMatch[2].replace(/\s/g, '');
+    if (!validProviderImageBase64(encoded)) return null;
+    return `data:image/${dataMatch[1].toLowerCase()};base64,${encoded}`;
+  }
+
+  if (/^https?:\/\//i.test(trimmed) && !/\s/.test(trimmed)) {
+    try {
+      const parsed = new URL(trimmed);
+      if ((parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.hostname) return trimmed;
+    } catch (_) {}
+  }
+
+  if (!options.allowRawBase64) return null;
+  const encoded = trimmed.replace(/\s/g, '');
+  if (!validProviderImageBase64(encoded)) return null;
+  const mimeType = /^(?:image\/)(?:png|jpeg|jpg|webp)$/i.test(String(options.mimeType || ''))
+    ? String(options.mimeType).toLowerCase()
+    : 'image/png';
+  return `data:${mimeType};base64,${encoded}`;
+}
+
+/** 按固定优先级提取 OpenAI 兼容同步生图结果，不接触日志或计费状态。 */
+function extractOpenAIImageResult(data, outputFormat) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const item = Array.isArray(data.data) ? data.data[0] : null;
+  const itemUrl = normalizeProviderImageOutput(item?.url);
+  if (itemUrl) return { image_url: itemUrl };
+  const itemImageUrl = normalizeProviderImageOutput(item?.image_url);
+  if (itemImageUrl) return { image_url: itemImageUrl };
+  const itemBase64 = normalizeProviderImageOutput(item?.b64_json, {
+    allowRawBase64: true,
+    mimeType: imageMimeFromOutputFormat(outputFormat),
+  });
+  if (itemBase64) {
+    return { image_url: itemBase64 };
+  }
+  const topImageUrl = normalizeProviderImageOutput(data.image_url);
+  if (topImageUrl) return { image_url: topImageUrl };
+  const resultUrl = normalizeProviderImageOutput(data.result?.url);
+  if (resultUrl) return { image_url: resultUrl };
+  const firstImage = Array.isArray(data.images)
+    ? normalizeProviderImageOutput(data.images[0], { allowRawBase64: true, mimeType: 'image/png' })
+    : null;
+  if (!firstImage) return null;
+  return { image_url: firstImage };
+}
+
+const SAFE_IMAGE_RESPONSE_KEYS = new Set([
+  'id', 'request_id', 'requestId', 'task_id', 'taskId', 'created', 'status',
+  'data', 'images', 'image_url', 'result', 'usage', 'output', 'diagnostic',
+]);
+const SAFE_IMAGE_ITEM_KEYS = new Set(['id', 'url', 'image_url', 'b64_json', 'created', 'status']);
+
+function safeResponseIdentifier(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
+  const text = String(value).trim();
+  if (
+    !text
+    || text.length > 128
+    || /^(?:sk-|bearer(?:[\s_:.-]|$))/i.test(text)
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(text)
+  ) return undefined;
+  return text;
+}
+
+function safeModelLabel(value) {
+  if (typeof value !== 'string') return undefined;
+  const text = value.trim();
+  if (!text || text.length > 160 || /(?:https?:\/\/|data:|bearer\s|sk-|[?&](?:signature|token|key)=)/i.test(text)) {
+    return undefined;
+  }
+  return text;
+}
+
+/** 供应商响应日志摘要：仅返回固定白名单元数据，不复制正文、URL、Base64 或密钥。 */
+function summarizeImageResponse(data, raw, httpStatus, imageGenId, model) {
+  const payload = data && typeof data === 'object' && !Array.isArray(data) ? data : null;
+  const firstItem = Array.isArray(payload?.data) && payload.data[0] && typeof payload.data[0] === 'object'
+    ? payload.data[0]
+    : null;
+  const summary = {
+    response_bytes: Buffer.byteLength(typeof raw === 'string' || Buffer.isBuffer(raw) ? raw : '', 'utf8'),
+    response_keys: payload ? Object.keys(payload).filter((key) => SAFE_IMAGE_RESPONSE_KEYS.has(key)) : [],
+    first_item_keys: firstItem ? Object.keys(firstItem).filter((key) => SAFE_IMAGE_ITEM_KEYS.has(key)) : [],
+  };
+  const upstreamRequestId = safeResponseIdentifier(payload?.request_id ?? payload?.requestId ?? payload?.id);
+  const upstreamTaskId = safeResponseIdentifier(payload?.task_id ?? payload?.taskId ?? payload?.result?.task_id ?? payload?.result?.taskId);
+  if (upstreamRequestId !== undefined) summary.upstream_request_id = upstreamRequestId;
+  if (upstreamTaskId !== undefined) summary.upstream_task_id = upstreamTaskId;
+  if (Number.isInteger(Number(httpStatus))) summary.http_status = Number(httpStatus);
+  if (typeof imageGenId === 'number' && Number.isSafeInteger(imageGenId)) summary.image_gen_id = imageGenId;
+  else {
+    const safeGenerationId = safeResponseIdentifier(imageGenId);
+    if (safeGenerationId !== undefined) summary.image_gen_id = safeGenerationId;
+  }
+  const safeModel = safeModelLabel(model);
+  if (safeModel !== undefined) summary.model = safeModel;
+  return summary;
+}
+
+function openAIImageIndeterminateResult(reason) {
+  return {
+    indeterminate: true,
+    error: `图片生成请求已成功返回，但${reason || '未收到可读取的图片产物'}，供应商结果未知。为避免重复扣费，请先核对供应商生成记录，不要连续重试。`,
+  };
 }
 
 // 通义万象 size：格式 "宽*高"，总像素须在 589824(768*768)～1638400(1280*1280) 之间
@@ -1536,7 +1860,7 @@ function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
 
   let relPath = null;
   const isStaticPath = /^\/?static\//.test(s);
-  const absoluteInput = path.isAbsolute(s) && !isStaticPath;
+  const absoluteInput = (path.isAbsolute(s) || path.win32.isAbsolute(s)) && !isStaticPath;
   if (s.startsWith('http://') || s.startsWith('https://')) {
     if (!isLocalhost || !storageLocalPath) return s;
     // 从 URL 中提取 /static/ 之后的相对路径；或去掉 baseUrl 前缀
@@ -1719,8 +2043,7 @@ async function callDashScopeImageApi(config, log, opts) {
       enable_interleave: !hasRefs,
       size: dashScopeSize(size),
       stream,
-      // 多张参考图时注入 negative_prompt，防止生成分割/拼贴布局
-      ...(hasRefs ? { negative_prompt: negative_prompt || ANTI_SPLIT_NEGATIVE_PROMPT } : (negative_prompt ? { negative_prompt } : {})),
+      ...(negative_prompt ? { negative_prompt } : {}),
     },
   };
   const contentSummary = content.map((p) => (p.text != null ? 'text' : p.image && p.image.startsWith('data:') ? 'image(base64)' : 'image(url)'));
@@ -2161,7 +2484,7 @@ async function callGeminiImageApi(db, config, log, opts) {
  * @param {object} opts - { prompt, model?, size?, quality?, drama_id, preferred_provider?, character_id?, image_type?, image_gen_id, user_negative_prompt? }
  * @returns {Promise<{ image_url?: string, error?: string }>}
  */
-async function callImageApi(db, log, opts, runtime = {}) {
+async function submitImageWithConfig(db, log, config, opts) {
   const {
     prompt,
     model: preferredModel,
@@ -2178,61 +2501,13 @@ async function callImageApi(db, log, opts, runtime = {}) {
     reference_image_urls,
     files_base_url,
     storage_local_path,
-    system_prompt,
     user_negative_prompt,
-    billingEnabled = false,
-    userId,
-    schedule,
   } = opts;
-  const preferredProvider = preferred_provider ?? opts.preferredProvider;
-  const preferredConfigId = preferred_config_id ?? opts.preferredConfigId;
-  const candidates = getImageConfigCandidates(
-    db,
-    preferredModel,
-    preferredProvider,
-    imageServiceType,
-    preferredConfigId,
-  );
-  const config = opts._imageConfigOverride
-    || candidates[0]
-    || getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType, preferredConfigId);
-  if (!config) {
-    throw new Error('未配置图片模型，请在「AI 配置」中添加 image 类型且已启用的配置');
-  }
   const model = getModelFromConfig(config, preferredModel);
-  const configKey = config.id != null
-    ? `id:${config.id}`
-    : [config.base_url, config.endpoint, config.provider, model].join('|');
-  const attempted = new Set(Array.isArray(opts._attemptedImageConfigKeys)
-    ? opts._attemptedImageConfigKeys.map(String)
-    : []);
-  attempted.add(configKey);
-  const nextConfig = candidates.find((candidate) => {
-    const candidateModel = getModelFromConfig(candidate, preferredModel);
-    const key = candidate.id != null
-      ? `id:${candidate.id}`
-      : [candidate.base_url, candidate.endpoint, candidate.provider, candidateModel].join('|');
-    return !attempted.has(key) && isVerifiedImageFallbackConfig(candidate);
-  });
-  const switchToNextConfig = (error, status) => {
-    if (!nextConfig) return null;
-    log.warn('Image API provider unavailable, switching verified model', {
-      image_gen_id,
-      status,
-      error,
-      from_config_id: config.id,
-      from_model: model,
-      to_config_id: nextConfig.id,
-      to_model: getModelFromConfig(nextConfig, preferredModel),
-    });
-    return callImageApi(db, log, {
-      ...opts,
-      model: preferredModel || undefined,
-      _imageConfigOverride: nextConfig,
-      _attemptedImageConfigKeys: Array.from(attempted),
-    }, runtime);
-  };
   const provider = (config.provider || '').toLowerCase();
+  const requestModel = provider === 'fumin_image'
+    ? fuminImageClient.resolveFuminImageModel(model)
+    : model;
   // api_protocol 显式指定接口规范，优先级高于 provider 推断；未设置时按 provider 自动判断
   const protocol = (config.api_protocol || '').toLowerCase() || inferProtocol(provider, model);
   if (usmercariImageClient.USMERCARI_IMAGE_MODELS[String(model || '').trim().toLowerCase()]
@@ -2243,7 +2518,7 @@ async function callImageApi(db, log, opts, runtime = {}) {
     ? reference_image_urls.filter(Boolean).length
     : 0;
   const referenceLimit = configuredImageReferenceLimit(config, model);
-  if (referenceCount > referenceLimit) {
+  if (provider !== 'fumin_image' && referenceCount > referenceLimit) {
     return {
       error: referenceLimit === 0
         ? `${model} 当前不支持参考图`
@@ -2251,24 +2526,7 @@ async function callImageApi(db, log, opts, runtime = {}) {
     };
   }
 
-  // ── 参考图标签注入：为所有非 Gemini 模型将标签注入 prompt 文本 ─────────────────────────────
-  // Gemini 通过 parts 结构处理（interleaved text+image），不需要文字注入。
-  // 其他所有模型（Doubao/DashScope/NanoBanana/OpenAI-compat 等）通过文字告知模型各参考图用途，
-  // 避免模型模仿参考图的宫格/四视图布局，同时抑制生成分割画面。
-  let effectivePrompt = prompt || '';
-  if (
-    protocol !== 'gemini' &&
-    Array.isArray(reference_image_urls) && reference_image_urls.length > 0 &&
-    system_prompt
-  ) {
-    const refLines = String(system_prompt).split('\n').filter(l => /^Image\s+\d+:/i.test(l));
-    if (refLines.length > 0) {
-      const refHeader = refLines
-        .map(l => `[${l} — FOR REFERENCE ONLY, DO NOT copy its layout or framing]`)
-        .join('\n');
-      effectivePrompt = `${refHeader}\n\n[GENERATE THIS SCENE — single continuous image, no grid, no split panels]:\n${effectivePrompt}`;
-    }
-  }
+  const effectivePrompt = prompt || '';
 
   log.info('[图生] callImageApi 路由', {
     image_gen_id,
@@ -2279,8 +2537,7 @@ async function callImageApi(db, log, opts, runtime = {}) {
     size,
     imageServiceType,
     ref_count: Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.length : 0,
-    ref_label_injected: effectivePrompt !== (prompt || ''),
-    effectivePrompt
+    ref_label_injected: false,
   });
 
   if (protocol === 'aihubcc') {
@@ -2294,12 +2551,7 @@ async function callImageApi(db, log, opts, runtime = {}) {
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
     });
-    const safeSubmissionFailure = /^AIHubCC 图片请求失败:\s*(?:400|401|403|404|408|413|422|429|500|502|503|504)\b/.test(
-      String(result?.error || ''),
-    );
-    return safeSubmissionFailure && nextConfig
-      ? switchToNextConfig(result.error)
-      : result;
+    return result;
   }
 
   if (protocol === 'token6688') {
@@ -2334,7 +2586,7 @@ async function callImageApi(db, log, opts, runtime = {}) {
       n: opts.n ?? 1,
       reference_image_urls: rawReferences,
       resolution: resolution || '1k',
-    }, runtime.evidenceRoots);
+    }, opts.evidenceRoots);
     const resolvedReferences = rawReferences
       .map((reference) => resolveUsmercariPublicImageRef(reference, files_base_url, storage_local_path))
       .filter(Boolean);
@@ -2359,8 +2611,11 @@ async function callImageApi(db, log, opts, runtime = {}) {
   const refCountForNeg = Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.filter(Boolean).length : 0;
   // Seedream/Volcengine 模型强制启用安全词负面提示，其他模型仅在多参考图时启用
   const isVolcOrSeedream = (protocol === 'volcengine' || /seedream|doubao/i.test(model));
-  const autoNegativePrompt = (refCountForNeg > 1 || isVolcOrSeedream) ? ANTI_SPLIT_NEGATIVE_PROMPT : '';
-  const userNegFragment = (user_negative_prompt && String(user_negative_prompt).trim()) || '';
+  const explicitNegativePrompt = user_negative_prompt ?? opts.negative_prompt;
+  const userNegFragment = (explicitNegativePrompt && String(explicitNegativePrompt).trim()) || '';
+  const autoNegativePrompt = !userNegFragment && (refCountForNeg > 1 || isVolcOrSeedream)
+    ? ANTI_SPLIT_NEGATIVE_PROMPT
+    : '';
   const mergedNegativePrompt = mergeNegativePromptFragments(autoNegativePrompt, userNegFragment);
 
   if (protocol === 'dashscope') {
@@ -2409,6 +2664,12 @@ async function callImageApi(db, log, opts, runtime = {}) {
   // 解析参考图：本地路径/localhost URL → base64，公网 URL → 直接传
   const rawRefs = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
   const resolvedRefs = rawRefs.map((r) => resolveImageRef(r, files_base_url, storage_local_path)).filter(Boolean);
+  if (provider === 'fumin_image' && resolvedRefs.length > 0) {
+    return {
+      error: 'fumin GPT Image 当前不支持参考图（供应商文档未声明该能力），请改用已验证支持参考图的图片模型',
+      route_meta: { phase: 'prepare', requestBodySent: false, explicitlyRejected: true },
+    };
+  }
   if (resolvedRefs.length > 0) {
     log.info('Image API request with reference images', {
       url: url.slice(0, 60), model, image_gen_id,
@@ -2422,14 +2683,14 @@ async function callImageApi(db, log, opts, runtime = {}) {
   if (isSeedream && size) effectiveSize = fixSeedreamSize(size);
   else if (isAgnes && size) effectiveSize = fixAgnesImageSize(size);
 
-  const isGptImage = protocol === 'openai' && !isAgnes && /^gpt-image-/i.test(String(model || ''));
+  const isGptImage = protocol === 'openai' && !isAgnes && /^gpt-image-/i.test(String(requestModel || ''));
   const outputOptions = isGptImage
-    ? getOpenAIImageOutputOptions(model, quality)
+    ? getOpenAIImageOutputOptions(requestModel, quality)
     : {};
   if (isGptImage) effectiveSize = normalizeGptImageSize(effectiveSize);
 
   const body = {
-    model,
+    model: requestModel,
     prompt: effectivePrompt,
     // doubao-seedream API 不使用 n，其他 OpenAI 兼容接口保留
     ...(!isSeedream ? { n: 1 } : {}),
@@ -2468,10 +2729,18 @@ async function callImageApi(db, log, opts, runtime = {}) {
     raw = out.raw;
   } catch (e) {
     log.error('Image API network error', { image_gen_id, error: e.message, url: url.slice(0, 80) });
-    if (isGptImage) return { error: formatGptImageUnknownResultError(e) };
-    return { error: e.message && e.message.includes('timeout')
-      ? e.message
-      : ('图片生成网络请求失败: ' + e.message) };
+    return {
+      error: isGptImage
+        ? formatGptImageUnknownResultError(e)
+        : e.message && e.message.includes('timeout')
+          ? e.message
+          : ('图片生成网络请求失败: ' + e.message),
+      route_meta: {
+        phase: 'submit',
+        requestBodySent: true,
+        transportCode: e?.cause?.code || e?.code,
+      },
+    };
   }
   if (httpStatus < 200 || httpStatus >= 300) {
     log.error('Image API failed', {
@@ -2479,55 +2748,305 @@ async function callImageApi(db, log, opts, runtime = {}) {
       response_bytes: Buffer.byteLength(raw || '', 'utf8'),
     });
     let errMsg = '图片生成请求失败: ' + httpStatus;
+    let errorPayload = null;
     try {
-      const errJson = JSON.parse(raw);
-      const msg = errJson.error?.message || errJson.message || errJson.error;
+      errorPayload = JSON.parse(raw);
+      const msg = errorPayload.error?.message || errorPayload.message || errorPayload.error;
       if (msg) errMsg += ' - ' + (typeof msg === 'string' ? msg : JSON.stringify(msg).slice(0, 200));
     } catch (_) {
       if (raw && raw.length) errMsg += ' - ' + raw.slice(0, 200);
     }
-    if (nextConfig && [400, 401, 403, 404, 408, 409, 413, 422, 429, 500, 502, 503, 504].includes(httpStatus)) {
-      return switchToNextConfig(errMsg, httpStatus);
-    }
-    return { error: errMsg };
+    return { error: errMsg, route_meta: providerErrorMeta(errorPayload, httpStatus) };
   }
   let data;
   try {
     data = JSON.parse(raw);
   } catch (e) {
-    log.warn('Image API response parse error', {
-      image_gen_id,
-      response_bytes: Buffer.byteLength(raw || '', 'utf8'),
-    });
+    log.warn('Image API response parse error', summarizeImageResponse(null, raw, httpStatus, image_gen_id, model));
+    if (protocol === 'openai') return {
+      ...openAIImageIndeterminateResult('响应正文无法解析，未收到可读取的图片产物'),
+      route_meta: { httpStatus, artifactReadable: false },
+    };
     return { error: '图片生成返回格式异常' };
   }
-  // 兼容多种返回格式：OpenAI 风格 data[].url / b64_json，部分厂商 data[].image_url 或 data.output 等
-  // Stable Diffusion WebUI（/sdapi/v1/txt2img|img2img）：顶层 images 为 PNG base64 字符串数组，无 data 数组
-  const item = data.data && data.data[0];
-  let imageUrl = item && (item.url || item.image_url);
-  if (!imageUrl && item?.b64_json) {
-    const normalizedBase64 = String(item.b64_json).replace(/\s/g, '');
-    const mimeType = imageMimeFromBase64(normalizedBase64, outputOptions.output_format);
-    imageUrl = `data:${mimeType};base64,${normalizedBase64}`;
-  }
-  if (!imageUrl && Array.isArray(data.images) && data.images.length > 0) {
-    const first = data.images[0];
-    if (typeof first === 'string' && first.length > 0) {
-      imageUrl = first.startsWith('data:') ? first : `data:image/png;base64,${first.replace(/\s/g, '')}`;
+  const imageResult = extractOpenAIImageResult(data, outputOptions.output_format);
+  if (!imageResult) {
+    const summary = summarizeImageResponse(data, raw, httpStatus, image_gen_id, model);
+    if (protocol === 'openai') {
+      log.warn('Image API result indeterminate', summary);
+      return {
+        ...openAIImageIndeterminateResult('响应中没有可读取的图片产物'),
+        route_meta: providerErrorMeta(data, httpStatus, { artifactReadable: false }),
+      };
     }
-  }
-  if (!imageUrl) {
-    log.warn('Image API no image URL in response', {
-      image_gen_id,
-      model,
-      response_keys: data ? Object.keys(data) : [],
-      response_bytes: Buffer.byteLength(raw || '', 'utf8'),
-      has_data_array: !!(data.data && Array.isArray(data.data)),
-      first_item_keys: (data.data && data.data[0]) ? Object.keys(data.data[0]) : [],
-    });
+    log.warn('Image API no image URL in response', summary);
     return { error: '未返回图片地址' };
   }
-  return { image_url: imageUrl };
+  return imageResult;
+}
+
+function stripImageRouteMeta(result) {
+  if (!result || typeof result !== 'object') return result;
+  const { route_meta, provider_task_id, ...safe } = result;
+  return safe;
+}
+
+function safeImageRouteFailure(classification, result) {
+  const category = classification.category;
+  if (category === 'policy_rejected') {
+    return { error: '图片生成请求被内容安全策略拒绝，请调整提示词后重试。' };
+  }
+  if (category === 'validation_error') {
+    return { error: '图片生成参数不受支持，请检查参考图数量、尺寸或其他生成参数。' };
+  }
+  if (['provider_unavailable', 'rate_limited', 'auth_unavailable', 'transport_not_sent'].includes(category)) {
+    return { error: '图片生成服务暂时不可用，请稍后再试。' };
+  }
+  if (result?.indeterminate || ['artifact_unreadable', 'result_unknown', 'submission_unknown', 'forbidden_unknown'].includes(category)) {
+    return {
+      indeterminate: true,
+      error: '图片生成结果未知，为避免重复提交或重复扣费，请先核对生成记录，不要连续重试。',
+    };
+  }
+  return { error: '图片生成失败，请稍后再试。' };
+}
+
+function findLogicalImageRoute(db, logicalModelId, imageServiceType) {
+  if (!logicalModelId || !hasColumn(db, 'ai_service_configs', 'logical_model_id')) return null;
+  const serviceTypes = imageServiceType === 'storyboard_image'
+    ? ['storyboard_image', 'image']
+    : [imageServiceType || 'image'];
+  for (const serviceType of serviceTypes) {
+    const row = db.prepare(`SELECT id, service_type FROM ai_service_configs
+      WHERE deleted_at IS NULL AND is_active = 1 AND service_type = ?
+        AND logical_model_id = ? COLLATE NOCASE AND verification_status = 'verified'
+      ORDER BY priority DESC, id ASC LIMIT 1`).get(serviceType, String(logicalModelId).trim());
+    if (row) return row;
+  }
+  return null;
+}
+
+function updateImageRouteRequestState(db, requestId, state, now = new Date().toISOString()) {
+  db.prepare('UPDATE generation_route_requests SET state = ?, updated_at = ? WHERE id = ?')
+    .run(state, now, requestId);
+}
+
+async function callImageApi(db, log, opts, runtime = {}) {
+  opts = runtime?.evidenceRoots && !opts.evidenceRoots ? { ...opts, evidenceRoots: runtime.evidenceRoots } : opts;
+  const preferredModel = String(opts.model || '').trim() || null;
+  const preferredProvider = opts.preferred_provider ?? opts.preferredProvider;
+  const requestedCapabilities = {
+    resolution: opts.resolution || opts.quality,
+    aspectRatio: opts.aspect_ratio || opts.aspectRatio,
+    referenceImageCount: Array.isArray(opts.reference_image_urls)
+      ? opts.reference_image_urls.filter(Boolean).length
+      : 0,
+  };
+  const explicitConfigId = resolveExplicitImageConfigId(opts);
+  let logicalModelId = preferredModel;
+  let logicalRoute;
+  let selected;
+  if (explicitConfigId != null) {
+    const config = getImageConfigById(db, explicitConfigId, preferredModel);
+    if (providerRouteStability.resolveCanaryMode(undefined, log) !== 'enforce') {
+      return stripImageRouteMeta(await submitImageWithConfig(db, log, config, opts));
+    }
+    logicalModelId = String(config.logical_model_id || '').trim();
+    if (!logicalModelId) throw new Error('未配置与当前图片生成参数匹配的已验证模型');
+    logicalRoute = { id: config.id, service_type: config.service_type };
+    const explicitSelection = providerRouteStability.selectVerifiedCandidates(db, {
+      serviceType: config.service_type,
+      logicalModelId,
+      primaryConfigId: config.id,
+      capabilities: requestedCapabilities,
+      canaryMode: 'enforce',
+      log,
+    });
+    selected = {
+      ...explicitSelection,
+      candidates: explicitSelection.candidates.filter((candidate) => candidate.id === config.id),
+    };
+  } else {
+    logicalRoute = findLogicalImageRoute(db, preferredModel, opts.imageServiceType);
+  }
+
+  if (!logicalRoute) {
+    if (providerRouteStability.resolveCanaryMode(undefined, log) === 'enforce') {
+      throw new Error('未配置与当前图片生成参数匹配的已验证模型');
+    }
+    const candidates = getImageConfigCandidates(
+      db,
+      preferredModel,
+      preferredProvider,
+      opts.imageServiceType,
+    );
+    if (candidates.length === 0) {
+      const fallback = getDefaultImageConfig(db, preferredModel, preferredProvider, opts.imageServiceType);
+      if (fallback) candidates.push(fallback);
+    }
+    if (candidates.length === 0) {
+      throw new Error('未配置图片模型，请在「AI 配置」中添加 image 类型且已启用的配置');
+    }
+    let lastResult = null;
+    for (let index = 0; index < candidates.length; index += 1) {
+      const config = candidates[index];
+      lastResult = await submitImageWithConfig(db, log, config, opts);
+      if (lastResult?.image_url) return stripImageRouteMeta(lastResult);
+      const classification = classifyProviderFailure(lastResult?.route_meta || {});
+      if (!classification.mayFailover || index + 1 >= candidates.length) break;
+      log.warn('Legacy image route switching after definitive non-acceptance', {
+        image_gen_id: opts.image_gen_id,
+        from_config_id: config.id,
+        category: classification.category,
+      });
+    }
+    return stripImageRouteMeta(lastResult);
+  }
+
+  selected ||= providerRouteStability.selectVerifiedCandidates(db, {
+    serviceType: logicalRoute.service_type,
+    logicalModelId,
+    primaryConfigId: logicalRoute.id,
+    capabilities: requestedCapabilities,
+    log,
+  });
+  if (selected.candidates.length === 0) {
+    throw new Error('未配置与当前图片生成参数匹配的已验证模型');
+  }
+
+  const routeId = crypto.randomUUID();
+  const businessId = opts.image_gen_id == null ? routeId : String(opts.image_gen_id);
+  const owner = String(opts.tenantId || opts.userId || 'local');
+  const route = providerRouteStability.createOrGetRouteRequest(db, {
+    id: routeId,
+    idempotencyKey: `${owner}:image:${businessId}`,
+    serviceType: logicalRoute.service_type,
+    businessType: 'image_generation',
+    businessId,
+    tenantId: opts.tenantId,
+    userId: opts.userId,
+    logicalModelId,
+    capabilities: requestedCapabilities,
+    userPriceSnapshot: selected.userPriceSnapshot,
+    candidateConfigIds: selected.candidates.map((candidate) => candidate.id),
+    creditReservationId: opts.creditReservationId,
+  });
+  if (route.state !== 'created') {
+    return safeImageRouteFailure({ category: 'result_unknown' }, { indeterminate: true });
+  }
+
+  let lastFailure = null;
+  let pendingSwitch = null;
+  for (let index = 0; index < selected.candidates.length; index += 1) {
+    const config = selected.candidates[index];
+    const upstreamModel = getModelFromConfig(config);
+    const attempt = providerRouteStability.startAttempt(db, {
+      requestId: route.id,
+      configId: config.id,
+      provider: config.provider || 'configured',
+      upstreamModel,
+    });
+    if (!attempt) continue;
+    if (pendingSwitch) {
+      providerRouteStability.recordRouteSwitch(db, {
+        requestId: route.id,
+        tenantId: opts.tenantId,
+        logicalModelId,
+        configId: pendingSwitch.configId,
+        targetConfigId: config.id,
+        category: pendingSwitch.category,
+      });
+      pendingSwitch = null;
+    }
+    let result;
+    try {
+      result = await submitImageWithConfig(db, log, config, { ...opts, model: undefined });
+    } catch (error) {
+      result = {
+        indeterminate: true,
+        error: '图片生成结果未知，请勿重复提交。',
+        route_meta: {
+          phase: 'submit',
+          requestBodySent: true,
+          transportCode: error?.cause?.code || error?.code,
+        },
+      };
+      log.error('Image route attempt ended without a structured result', {
+        image_gen_id: opts.image_gen_id,
+        config_id: config.id,
+        error_code: error?.code || null,
+      });
+    }
+    const routeMeta = result?.route_meta || {};
+    if (routeMeta.providerTaskId) {
+      providerRouteStability.recordAcceptedTask(db, {
+        requestId: route.id,
+        attemptNo: attempt.attempt_no,
+        providerTaskId: routeMeta.providerTaskId,
+      });
+    }
+    if (result?.image_url) {
+      providerRouteStability.recordArtifactVerified(db, {
+        requestId: route.id,
+        attemptNo: attempt.attempt_no,
+        configId: config.id,
+      });
+      if (opts.image_gen_id != null && hasColumn(db, 'image_generations', 'config_id')) {
+        db.prepare('UPDATE image_generations SET config_id = ? WHERE id = ?')
+          .run(config.id, opts.image_gen_id);
+      }
+      return stripImageRouteMeta(result);
+    }
+
+    const classification = classifyProviderFailure(routeMeta);
+    const uncertainAttempt = ['submission_unknown', 'result_unknown', 'artifact_unreadable', 'forbidden_unknown']
+      .includes(classification.category);
+    providerRouteStability.finishAttempt(db, {
+      requestId: route.id,
+      attemptNo: attempt.attempt_no,
+      state: uncertainAttempt ? classification.category : 'failed',
+      httpStatus: routeMeta.httpStatus,
+      errorCategory: classification.category,
+    });
+    providerRouteStability.recordFailureAndHealth(db, {
+      requestId: route.id,
+      tenantId: opts.tenantId,
+      configId: config.id,
+      logicalModelId,
+      classification,
+    });
+    lastFailure = { classification, result };
+    const hasNext = index + 1 < selected.candidates.length;
+    if (!classification.mayFailover || !hasNext) {
+      const requestState = ['submission_unknown', 'result_unknown', 'artifact_unreadable', 'forbidden_unknown']
+        .includes(classification.category) ? 'needs_attention' : 'failed';
+      updateImageRouteRequestState(db, route.id, requestState);
+      return safeImageRouteFailure(classification, result);
+    }
+    pendingSwitch = { configId: config.id, category: classification.category };
+    log.warn('Image route switching after definitive non-acceptance', {
+      image_gen_id: opts.image_gen_id,
+      logical_model_id: logicalModelId,
+      from_config_id: config.id,
+      category: classification.category,
+    });
+  }
+  const finalCategory = lastFailure?.classification?.category || 'provider_unavailable';
+  const uncertain = ['submission_unknown', 'result_unknown', 'artifact_unreadable', 'forbidden_unknown']
+    .includes(finalCategory);
+  updateImageRouteRequestState(db, route.id, uncertain ? 'needs_attention' : 'failed');
+  return safeImageRouteFailure(lastFailure?.classification || { category: finalCategory }, lastFailure?.result);
+}
+
+async function callImageApiForConfigId(db, log, configId, opts = {}) {
+  const explicitConfigId = normalizeImageConfigId(configId);
+  const requestConfigId = resolveExplicitImageConfigId(opts);
+  if (requestConfigId != null && requestConfigId !== explicitConfigId) {
+    throw imageConfigError('IMAGE_CONFIG_NOT_FOUND', '图片模型配置不存在');
+  }
+  const preferredModel = String(opts.model || '').trim() || null;
+  const config = getImageConfigById(db, explicitConfigId, preferredModel);
+  return submitImageWithConfig(db, log, config, opts);
 }
 
 /**
@@ -2545,12 +3064,12 @@ function findActiveAssetImage(db, characterId, sceneId, options = {}, imageType 
   const typeValue = imageType ? [String(imageType)] : [];
   if (characterId != null) {
     return db.prepare(
-      "SELECT * FROM image_generations WHERE character_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL" + ownerClause + typeClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
+      "SELECT * FROM image_generations WHERE character_id = ? AND status IN ('pending', 'processing', 'needs_attention') AND deleted_at IS NULL" + ownerClause + typeClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
     ).get(Number(characterId), ...ownerValue, ...typeValue) || null;
   }
   if (sceneId != null) {
     return db.prepare(
-      "SELECT * FROM image_generations WHERE scene_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL" + ownerClause + typeClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
+      "SELECT * FROM image_generations WHERE scene_id = ? AND status IN ('pending', 'processing', 'needs_attention') AND deleted_at IS NULL" + ownerClause + typeClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
     ).get(Number(sceneId), ...ownerValue, ...typeValue) || null;
   }
   return null;
@@ -2567,6 +3086,22 @@ function settleImageCredit(db, log, imageGenId, outcome, message = '') {
     log?.error('[资产图生] 积分结算失败，保留原预扣状态', { id: row.id, error: error.message });
     return null;
   }
+}
+
+function markAssetImageNeedsAttention(db, log, imageGenId, taskId, message, timestamp, options = {}) {
+  const safeMessage = String(message || '图片生成结果未知，请勿重复提交，等待管理员核对').slice(0, 500);
+  db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
+    .run('needs_attention', safeMessage, timestamp, imageGenId);
+  taskService.updateTaskStatus(db, taskId, 'needs_attention', 90, safeMessage);
+  try { db.prepare('UPDATE async_tasks SET error = ? WHERE id = ?').run(safeMessage, taskId); } catch (_) {}
+  if (options.artifactUnreadable) {
+    providerRouteStability.recordBusinessArtifactUnreadable(db, {
+      businessType: 'image_generation',
+      businessId: imageGenId,
+      now: timestamp,
+    });
+  }
+  settleImageCredit(db, log, imageGenId, 'failed', safeMessage);
 }
 
 async function verifyStrictLocalImageArtifact(storagePath, localPath) {
@@ -2771,6 +3306,7 @@ function createAndGenerateImage(db, log, opts, runtime = {}) {
 
   const scheduleTask = typeof schedule === 'function' ? schedule : (callback) => setImmediate(callback);
   scheduleTask(async () => {
+    let providerArtifactReturned = false;
     try {
       db.prepare('UPDATE image_generations SET status = ? WHERE id = ?').run('processing', imageGenId);
       const result = await taskService.withTaskHeartbeat(
@@ -2791,11 +3327,19 @@ function createAndGenerateImage(db, log, opts, runtime = {}) {
           image_type,
           image_gen_id: imageGenId,
           user_negative_prompt: user_negative_prompt || undefined,
+          userId: userId || undefined,
+          tenantId: tenantId || undefined,
+          creditReservationId: db.prepare('SELECT credit_reservation_id FROM image_generations WHERE id = ?')
+            .get(imageGenId)?.credit_reservation_id || undefined,
         }, runtime))
       );
       const now2 = new Date().toISOString();
       if (result.error) {
         const resultError = result.indeterminate ? `供应商最终状态未知：${result.error}` : result.error;
+        if (result.indeterminate) {
+          markAssetImageNeedsAttention(db, log, imageGenId, taskId, resultError, now2);
+          return;
+        }
         db.prepare(
           'UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?'
         ).run('failed', resultError, now2, imageGenId);
@@ -2814,6 +3358,7 @@ function createAndGenerateImage(db, log, opts, runtime = {}) {
         log.error('Image generation failed', { image_gen_id: imageGenId, error: resultError });
         return;
       }
+      providerArtifactReturned = Boolean(result.image_url);
       let localPath = null;
       const cfg = loadConfig();
       const storagePath = path.isAbsolute(cfg.storage?.local_path)
@@ -2829,16 +3374,18 @@ function createAndGenerateImage(db, log, opts, runtime = {}) {
         'ig',
         projectSubdir
       );
+      if (!localPath) {
+        const msg = '图片本地保存失败：未生成本地文件；供应商结果未知，请勿重复提交，等待管理员核对';
+        markAssetImageNeedsAttention(db, log, imageGenId, taskId, msg, now2, { artifactUnreadable: true });
+        return;
+      }
       if (isStrictUsmercari) {
         let artifact;
         try {
           artifact = await verifyStrictLocalImageArtifact(storagePath, localPath);
         } catch (saveErr) {
-          const msg = `图片本地保存失败：${saveErr.message || saveErr}`;
-          db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
-            .run('failed', msg.slice(0, 500), now2, imageGenId);
-          taskService.updateTaskError(db, taskId, msg);
-          settleImageCredit(db, log, imageGenId, 'failed', msg);
+          const msg = `图片本地保存失败：${saveErr.message || saveErr}；供应商结果未知，请勿重复提交，等待管理员核对`;
+          markAssetImageNeedsAttention(db, log, imageGenId, taskId, msg, now2, { artifactUnreadable: true });
           return;
         }
         const persistedUrl = '/static/' + String(localPath).replace(/^\/+/, '');
@@ -2870,12 +3417,12 @@ function createAndGenerateImage(db, log, opts, runtime = {}) {
       // 兼容旧库无 completed_at：先试完整 UPDATE，失败则只更新必有列
       try {
         db.prepare(
-          'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?'
+          'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, error_msg = NULL, completed_at = ?, updated_at = ? WHERE id = ?'
         ).run('completed', result.image_url, localPath, now2, now2, imageGenId);
       } catch (e) {
         if ((e.message || '').includes('completed_at')) {
           db.prepare(
-            'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, updated_at = ? WHERE id = ?'
+            'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, error_msg = NULL, updated_at = ? WHERE id = ?'
           ).run('completed', result.image_url, localPath, now2, imageGenId);
         } else {
           throw e;
@@ -2899,7 +3446,7 @@ function createAndGenerateImage(db, log, opts, runtime = {}) {
             image_url: result.image_url,
             local_path: localPath,
           });
-          db.prepare('UPDATE characters SET image_url = ?, local_path = ?, extra_images = ?, updated_at = ? WHERE id = ?').run(
+          db.prepare('UPDATE characters SET image_url = ?, local_path = ?, extra_images = ?, error_msg = NULL, updated_at = ? WHERE id = ?').run(
             result.image_url,
             localPath,
             extraJson,
@@ -2908,7 +3455,7 @@ function createAndGenerateImage(db, log, opts, runtime = {}) {
           );
         } catch (e) {
           if ((e.message || '').includes('local_path') || (e.message || '').includes('extra_images')) {
-            db.prepare('UPDATE characters SET image_url = ?, updated_at = ? WHERE id = ?').run(result.image_url, now2, charIdNum);
+            db.prepare('UPDATE characters SET image_url = ?, error_msg = NULL, updated_at = ? WHERE id = ?').run(result.image_url, now2, charIdNum);
           } else {
             throw e;
           }
@@ -2930,13 +3477,13 @@ function createAndGenerateImage(db, log, opts, runtime = {}) {
             if (!Array.isArray(extras)) extras = [];
             if (oldPath && !extras.includes(oldPath)) extras.push(oldPath);
             const extraJson = extras.length ? JSON.stringify(extras) : null;
-            db.prepare('UPDATE scenes SET image_url = ?, local_path = ?, extra_images = ?, updated_at = ? WHERE id = ?').run(
+            db.prepare('UPDATE scenes SET image_url = ?, local_path = ?, extra_images = ?, error_msg = NULL, updated_at = ? WHERE id = ?').run(
               result.image_url, localPath, extraJson, now2, sceneIdNum
             );
           }
         } catch (e) {
           if ((e.message || '').includes('local_path') || (e.message || '').includes('extra_images')) {
-            db.prepare('UPDATE scenes SET image_url = ?, updated_at = ? WHERE id = ?').run(result.image_url, now2, sceneIdNum);
+            db.prepare('UPDATE scenes SET image_url = ?, error_msg = NULL, updated_at = ? WHERE id = ?').run(result.image_url, now2, sceneIdNum);
           } else {
             throw e;
           }
@@ -2947,6 +3494,11 @@ function createAndGenerateImage(db, log, opts, runtime = {}) {
     } catch (err) {
       const now2 = new Date().toISOString();
       const errMsg = (err && err.message) ? String(err.message).slice(0, 500) : 'Unknown error';
+      if (providerArtifactReturned) {
+        const msg = `图片本地保存失败：${errMsg}；供应商结果未知，请勿重复提交，等待管理员核对`;
+        markAssetImageNeedsAttention(db, log, imageGenId, taskId, msg, now2, { artifactUnreadable: true });
+        return;
+      }
       try {
         db.prepare(
           'UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?'
@@ -3061,6 +3613,7 @@ const { runWithGenerationLimit } = require('./generationConcurrency');
 
 module.exports = {
   getImageConfigCandidates,
+  getImageConfigById,
   getDefaultImageConfig,
   resolveImageModel,
   getReferenceImageCapability,
@@ -3075,9 +3628,17 @@ module.exports = {
   imageMimeFromOutputFormat,
   imageMimeFromBase64,
   formatGptImageUnknownResultError,
+  MAX_PROVIDER_IMAGE_BASE64_LENGTH,
+  normalizeProviderImageOutput,
+  extractOpenAIImageResult,
+  summarizeImageResponse,
   buildKlingImageQueryUrl,
   parseKlingImagePollResult,
   callImageApi: (...args) => runWithGenerationLimit('image', () => callImageApi(...args)),
+  callImageApiForConfigId: (...args) => runWithGenerationLimit(
+    'image',
+    () => callImageApiForConfigId(...args),
+  ),
   createAndGenerateImage,
   settleImageCredit,
   resolveAssetUserNegativeForApi,

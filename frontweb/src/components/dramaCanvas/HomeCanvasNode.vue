@@ -357,6 +357,9 @@
             <span v-if="currentModelMetadata.publicNote">{{ currentModelMetadata.publicNote }}</span>
             <em v-if="currentModelMetadata.verificationStatus === 'verified'">已验证</em>
           </p>
+          <div v-if="data.kind === 'image' && currentModelMetadata && currentModelCapabilityBadges.length" class="model-capability-badges" aria-label="模型能力范围">
+            <span v-for="badge in currentModelCapabilityBadges" :key="badge">{{ badge }}</span>
+          </div>
 
           <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
             <span>风格</span>
@@ -542,6 +545,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import { normalizeGenerationProgress } from '@/utils/canvasGenerationProgress'
+import { imageModelCapabilityBadges } from '@/utils/canvasModelCapabilities'
 import {
   normalizeFreeCanvasVideoReferenceMode,
   normalizeFreeCanvasSubmissionReferences,
@@ -659,6 +663,9 @@ const capability = computed(() => (
   ctx?.getFreeNodeModelCapability?.(props.data.kind, draft.model)
   || currentModelMetadata.value?.capabilities
   || {}
+))
+const currentModelCapabilityBadges = computed(() => (
+  props.data.kind === 'image' ? imageModelCapabilityBadges(capability.value) : []
 ))
 const estimatedCredits = computed(() => ctx?.getFreeNodeEstimatedCredits?.(
   props.data.kind,
@@ -993,6 +1000,7 @@ function closeEditor() {
   editorHidden.value = true
   editorFullscreen.value = false
   stopEditorPositionTracking()
+  ctx?.clearFocusedNode?.()
 }
 
 function updateEditorPosition() {
@@ -1342,6 +1350,11 @@ watch(isSelected, (selected) => {
     closeMediaPreview()
   }
 })
+watch(() => ctx?.focusedNodeId?.value, (focusedId) => {
+  if (String(focusedId || '') !== String(props.id)) return
+  editorHidden.value = false
+  nextTick(startEditorPositionTracking)
+}, { immediate: true })
 </script>
 
 <style scoped>
@@ -1882,6 +1895,21 @@ watch(isSelected, (selected) => {
 .model-metadata strong { color: #e4e4e7; font-weight: 600; }
 .model-metadata span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-metadata em { color: #86efac; font-style: normal; white-space: nowrap; }
+.model-capability-badges {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.model-capability-badges span {
+  border: 1px solid #3f3f46;
+  border-radius: 999px;
+  background: #202024;
+  color: #d4d4d8;
+  padding: 4px 8px;
+  font-size: 11px;
+  line-height: 1.2;
+}
 .field-wide { grid-column: span 2; }
 .editor-check { display: flex; align-items: flex-end; gap: 8px; padding: 0 4px 9px; color: #d4d4d8; font-size: 11px; }
 .editor-footer {

@@ -17,9 +17,9 @@ const canvasSource = readFileSync(
   'utf8',
 )
 
-test('项目素材以正式节点进入两类画布且图片视频音频均暴露参考输出端口', () => {
+test('项目素材以正式节点进入两类画布且图片、视频、音频均暴露参考输出端口', () => {
   assert.match(nodeSource, /import \{ Handle, Position \} from '@vue-flow\/core'/)
-  assert.match(nodeSource, /<Handle[\s\S]{0,180}?v-if="\['image', 'video', 'audio'\]\.includes\(assetType\)"[\s\S]{0,180}?type="source"[\s\S]{0,180}?:position="Position\.Right"/)
+  assert.match(nodeSource, /<Handle[\s\S]{0,220}?\['image', 'video', 'audio'\]\.includes\(assetType\)[\s\S]{0,180}?type="source"[\s\S]{0,180}?:position="Position\.Right"/)
   assert.doesNotMatch(nodeSource, /<Handle[^>]*type="target"/)
 
   const projectAssetDefinitions = adapterSource.match(/type: 'canvasProjectAsset',[\s\S]{0,220}?data: \{ asset \},/g) || []
@@ -88,6 +88,7 @@ test('项目图片素材连线后会成为可用的下游参考图', () => {
       edgeId: 'manual:project-asset:77:free:video:target',
       title: '项目雨夜参考图',
       url: 'https://example.com/project-rain.png',
+      kind: 'image',
       ready: true,
       slot: 'reference-image',
       enabled: true,

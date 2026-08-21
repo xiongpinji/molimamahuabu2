@@ -176,6 +176,13 @@ function contractProbeEnv(repoRoot, sourceEnv = process.env) {
   return env;
 }
 
+function restoreEnvSnapshot(target, snapshot) {
+  for (const key of Object.keys(target)) {
+    if (!Object.prototype.hasOwnProperty.call(snapshot, key)) delete target[key];
+  }
+  for (const [key, value] of Object.entries(snapshot)) target[key] = value;
+}
+
 function tempDir(t, prefix) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -374,8 +381,21 @@ test('safeWorkerEnv keeps only the allowlist and fixed Python UTF-8 setting', ()
       PYTHONUTF8: '1',
     });
   } finally {
-    process.env = previous;
+    restoreEnvSnapshot(process.env, previous);
   }
+});
+
+test('restoreEnvSnapshot removes variables absent from the baseline', () => {
+  const target = {
+    PATH: 'changed-path',
+    TEMP: 'temp',
+    TMP: 'tmp',
+    OPENAI_API_KEY: 'secret',
+  };
+
+  restoreEnvSnapshot(target, { PATH: 'original-path' });
+
+  assert.deepEqual(target, { PATH: 'original-path' });
 });
 
 test('detectFrames sends sorted JSONL, returns sorted sanitized detections, and uses safe env', async (t) => {
@@ -554,9 +574,36 @@ test('runFetchModels rejects a missing auditor Python before fetch or staging', 
   assert.equal(randomCalls, 0);
   assert.equal(fs.existsSync(outputDir), false);
   assert.deepEqual(
-    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.rff-')),
     [],
   );
+});
+
+test('runFetchModels keeps the Windows staging path within the Torch wheel extraction budget', async (t) => {
+  const parent = tempDir(t, 'redraw-model-short-staging-');
+  const outputDir = path.join(parent, 'cache');
+  const randomHex = 'a'.repeat(32);
+  const deps = buildSuccessfulFetchDeps(randomHex);
+  const createVenv = deps.createVenv;
+  let stagingBasename;
+  deps.createVenv = async (staging, runtimeName) => {
+    stagingBasename ??= path.basename(staging);
+    await createVenv(staging, runtimeName);
+  };
+
+  await runFetchModels({ outputDir }, deps);
+
+  assert.equal(stagingBasename, `.rff-${randomHex}`);
+  const windowsParent = `C:\\${'p'.repeat(61)}`;
+  assert.equal(windowsParent.length, 64);
+  const longestTorchMember = 'torch/include/ATen/ops/_fake_quantize_per_tensor_affine_cachemask_tensor_qparams_compositeexplicitautograd_dispatch.h';
+  const extractionPath = path.win32.join(
+    windowsParent,
+    stagingBasename,
+    'runtime/main/.venv/Lib/site-packages',
+    longestTorchMember,
+  );
+  assert(extractionPath.length < 260, `Torch extraction path is ${extractionPath.length} characters`);
 });
 
 test('auditor Python preflight requires an absolute interpreter and safe version probe', async () => {
@@ -601,6 +648,29 @@ test('auditor Python preflight requires an absolute interpreter and safe version
   ]) {
     await assert.rejects(
       preflightRuntimePython(invalidDeps),
+      (error) => assertStableFetchError(error, 'python_preflight'),
+    );
+  }
+});
+
+test('auditor worker package declares the Python 3.12 runtime contract', () => {
+  const pyproject = fs.readFileSync(path.resolve(
+    __dirname,
+    '../../workers/redraw-full-frame-auditor/pyproject.toml',
+  ), 'utf8');
+
+  assert.match(pyproject, /^requires-python = ">=3\.12,<3\.13"$/m);
+});
+
+test('auditor Python preflight rejects non-3.12 runtimes with a stable stage', async () => {
+  const python = process.platform === 'win32' ? 'C:\\runtime\\python.exe' : '/runtime/python';
+
+  for (const version of ['Python 3.11.9', 'Python 3.13.0', 'Python 2.12.13']) {
+    await assert.rejects(
+      preflightRuntimePython({
+        env: { REDRAW_AUDITOR_PYTHON: python },
+        spawnProcess: async () => `${version}\n`,
+      }),
       (error) => assertStableFetchError(error, 'python_preflight'),
     );
   }
@@ -663,8 +733,9 @@ test('runFetchModels builds separate main and text runtimes with a v2 lock', asy
       assert.deepEqual(Object.keys(lock.runtimes), ['main', 'text']);
       assert.equal(lock.runtimes.main.python_version, versionByRuntime.main);
       assert.equal(lock.runtimes.text.python_version, versionByRuntime.text);
-      assert.equal(lock.runtimes.main.interpreter_path, 'runtime/main/.venv/Scripts/python.exe');
-      assert.equal(lock.runtimes.text.interpreter_path, 'runtime/text/.venv/Scripts/python.exe');
+      const interpreterSuffix = process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python';
+      assert.equal(lock.runtimes.main.interpreter_path, `runtime/main/.venv/${interpreterSuffix}`);
+      assert.equal(lock.runtimes.text.interpreter_path, `runtime/text/.venv/${interpreterSuffix}`);
       assert.equal(lock.runtimes.main.pip_freeze_path, 'runtime/main/pip-freeze.txt');
       assert.equal(lock.runtimes.text.pip_freeze_path, 'runtime/text/pip-freeze.txt');
       for (const runtimeName of ['main', 'text']) {
@@ -747,7 +818,7 @@ test('runFetchModels restores a pre-existing empty output directory when publish
   assert.deepEqual(fs.readdirSync(outputDir), []);
   assert.equal(fs.existsSync(path.join(outputDir, 'model-lock.json')), false);
   assert.deepEqual(
-    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.rff-')),
     [],
   );
 });
@@ -796,7 +867,7 @@ test('runFetchModels reports publish failure when restoring a removed empty outp
   assert.equal(restoreMkdirCalls, 1);
   assert.equal(fs.existsSync(outputDir), false);
   assert.deepEqual(
-    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.rff-')),
     [],
   );
 });
@@ -820,7 +891,7 @@ test('runFetchModels does not create a missing output directory when publish ren
 
   assert.equal(fs.existsSync(outputDir), false);
   assert.deepEqual(
-    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.rff-')),
     [],
   );
 });
@@ -864,7 +935,7 @@ test('runFetchModels removes staging when Paddle wheel download fails', async (t
   assert.equal(fs.existsSync(outputDir), false);
   assert.equal(fs.existsSync(path.join(outputDir, 'model-lock.json')), false);
   assert.deepEqual(
-    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.rff-')),
     [],
   );
 });
@@ -974,7 +1045,7 @@ test('runFetchModels builds a fixture cache, validates lock, and leaves no final
   }), (error) => assertStableFetchError(error, 'bootstrap'));
   assert.equal(fs.existsSync(bootstrapFailed), false);
   assert.deepEqual(
-    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.rff-')),
     [],
   );
 });
@@ -1082,7 +1153,7 @@ test('runCli emits only stable sanitized install and bootstrap stages', async (t
     /private|Authorization|secret-token|secret-key|worker\.py|paddleocr\.py|https?:/i,
   );
   assert.deepEqual(
-    fs.readdirSync(parent).filter((entry) => entry.startsWith('.redraw-full-frame-staging-')),
+    fs.readdirSync(parent).filter((entry) => entry.startsWith('.rff-')),
     [],
   );
 });

@@ -5,7 +5,7 @@ import {
 
 const QUICK_GENERATION_MODES = new Set(['text', 'image', 'video'])
 const IMAGE_RESOLUTIONS = ['1k', '2k', '4k']
-const STRICT_CATALOG_PROTOCOLS = new Set(['usmercari_image', 'toapis_video'])
+const STRICT_CATALOG_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'lingjing_open'])
 const VERIFIED_IMAGE_MODELS = Object.freeze({
   'gpt-image-2-2-4k': Object.freeze({ resolutions: Object.freeze(['1k', '2k']), quantities: Object.freeze([1]), maxReferences: 6 }),
   'nano-banana-2': Object.freeze({ resolutions: Object.freeze(['1k', '2k', '4k']), quantities: Object.freeze([1]), maxReferences: 6 }),
@@ -19,8 +19,14 @@ const VERIFIED_VIDEO_MODELS = Object.freeze({
     resolutions: Object.freeze(['480p', '720p']),
     durations: Object.freeze([4, 8, 10, 12, 15]),
   }),
+  'lingjing-video-v1': Object.freeze({
+    resolutions: Object.freeze([]),
+    durations: Object.freeze([4, 5, 6, 8, 10, 11, 15]),
+  }),
 })
 const STRICT_CATALOG_PROVIDER_PROTOCOLS = Object.freeze({
+  lingjing: 'lingjing_open',
+  lingjing_open: 'lingjing_open',
   toapis: 'toapis_video',
   toapis_video: 'toapis_video',
   usmercari: 'usmercari_image',
@@ -31,7 +37,10 @@ function catalogProtocol(item = {}) {
   const protocol = String(item.protocol || item.api_protocol || '').trim().toLowerCase()
   if (STRICT_CATALOG_PROTOCOLS.has(protocol)) return protocol
   const provider = String(item.provider || '').trim().toLowerCase()
-  if (STRICT_CATALOG_PROVIDER_PROTOCOLS[provider]) return STRICT_CATALOG_PROVIDER_PROTOCOLS[provider]
+  const category = String(item.kind || item.category || '').trim().toLowerCase()
+  const providerProtocol = STRICT_CATALOG_PROVIDER_PROTOCOLS[provider]
+  if ((providerProtocol === 'usmercari_image' && category === 'image')
+      || (['toapis_video', 'lingjing_open'].includes(providerProtocol) && category === 'video')) return providerProtocol
   const model = String(item.model || '').trim().toLowerCase()
   if (verifiedImageModel(model)) return 'usmercari_image'
   if (verifiedVideoModel(model)) return 'toapis_video'
@@ -182,13 +191,18 @@ export function normalizeQuickGenerationCatalog(items = []) {
       const verifiedModel = item.category === 'image'
         ? verifiedImageModel(item.model)
         : verifiedVideoModel(item.model)
-      if (!verifiedModel || !item.capabilities.resolutions?.length) return false
+      if (!verifiedModel) return false
+      if (item.protocol === 'lingjing_open') {
+        return item.capabilities.resolutions?.length === 0 && Boolean(item.capabilities.durations?.length)
+      }
+      if (!item.capabilities.resolutions?.length) return false
       return item.protocol !== 'toapis_video' || item.capabilities.durations?.length
     })
 }
 
 export function quickGenerationResolutions(model = {}, mode = '') {
   const category = String(mode || model.category || model.kind || '').trim().toLowerCase()
+  const hasDeclaredResolutionContract = Array.isArray(model?.capabilities?.resolutions)
   const declared = Array.isArray(model?.capabilities?.resolutions)
     ? model.capabilities.resolutions.map((value) => String(value || '').trim().toLowerCase()).filter(Boolean)
     : []
@@ -197,6 +211,7 @@ export function quickGenerationResolutions(model = {}, mode = '') {
     .map((value) => String(value || '').trim().toLowerCase())
     .filter(Boolean)
   if (priced.length) return [...new Set(priced)]
+  if (category === 'video' && hasDeclaredResolutionContract) return []
   return category === 'image' ? ['1k', '2k'] : category === 'video' ? ['720p'] : []
 }
 
@@ -215,6 +230,9 @@ export function normalizeQuickGenerationDraft(value = {}, modelMetadata = {}) {
   const requestedDuration = Math.trunc(Number(value.duration) || durationOptions[0] || 5)
   const resolutionOptions = hasModelMetadata ? quickGenerationResolutions(modelMetadata, mode) : []
   const requestedResolution = String(value.resolution || (mode === 'image' ? '1k' : '720p')).trim().toLowerCase()
+  const hasDeclaredVideoResolutions = mode === 'video'
+    && hasModelMetadata
+    && Array.isArray(modelMetadata?.capabilities?.resolutions)
   const quantityOptions = Array.isArray(capability.quantities) && capability.quantities.length
     ? capability.quantities.map(Number).filter(Number.isSafeInteger)
     : [1, 2, 3, 4]
@@ -231,7 +249,9 @@ export function normalizeQuickGenerationDraft(value = {}, modelMetadata = {}) {
       : Math.min(15, Math.max(5, requestedDuration)),
     resolution: mode === 'image'
       ? normalizeImageResolution(value.resolution)
-      : (resolutionOptions.length && !resolutionOptions.includes(requestedResolution)
+      : (hasDeclaredVideoResolutions && !resolutionOptions.length
+        ? ''
+        : resolutionOptions.length && !resolutionOptions.includes(requestedResolution)
         ? resolutionOptions[0]
         : requestedResolution || '720p'),
     quantity: quantityOptions.includes(requestedQuantity)
@@ -313,23 +333,33 @@ export function buildQuickGenerationRequest(input = {}) {
   }
   const capability = effectiveVideoCapability(input.model, providedCapability)
   const declaredResolutions = uniqueNormalizedStrings(capability.resolutions)
-  const requestedResolution = String(input.resolution || '720p').trim().toLowerCase() || '720p'
+  const hasDeclaredResolutionContract = Array.isArray(capability.resolutions)
+  const requestedResolution = String(input.resolution || (hasDeclaredResolutionContract ? '' : '720p')).trim().toLowerCase()
   if (declaredResolutions.length && !declaredResolutions.includes(requestedResolution)) {
     throw new Error(`当前模型视频清晰度仅支持 ${declaredResolutions.join('、')}`)
   }
   body.duration = assertVideoDurationAllowed(input.duration, capability)
-  body.resolution = requestedResolution
+  if (declaredResolutions.length || !hasDeclaredResolutionContract) body.resolution = requestedResolution || '720p'
   if (input.generateAudio === true && capability.supportsAudio !== true) {
     throw new Error('当前模型未开放同步音频')
   }
   if (capability.supportsAudio === true) body.generate_audio = input.generateAudio === true
   if (referenceImageUrl) {
-    if (capability.supportsFirstFrame === false) throw new Error('当前模型未开放首帧参考')
-    body.reference_mode = 'first_last'
-    body.first_frame_url = referenceImageUrl.startsWith('/static/')
+    const normalizedReferenceUrl = referenceImageUrl.startsWith('/static/')
       ? referenceImageUrl.slice('/static/'.length)
       : referenceImageUrl
-    body.image_url = referenceImageUrl
+    const useFirstFrame = capability.supportsFirstFrame === true
+      || (capability.supportsFirstFrame !== false && capability.supportsImageReference !== true)
+    if (useFirstFrame) {
+      body.reference_mode = 'first_last'
+      body.first_frame_url = normalizedReferenceUrl
+      body.image_url = referenceImageUrl
+    } else if (capability.supportsImageReference === true) {
+      body.reference_mode = 'omni'
+      body.reference_image_urls = [normalizedReferenceUrl]
+    } else {
+      throw new Error('当前模型未开放图片参考')
+    }
   }
   return { endpoint: '/videos', body }
 }

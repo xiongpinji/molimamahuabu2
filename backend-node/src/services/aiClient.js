@@ -2,7 +2,10 @@
 const aiConfigService = require('./aiConfigService');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
 const generationUsageContext = require('./generationUsageContext');
+const providerRouteStability = require('./providerRouteStabilityService');
+const { classifyProviderFailure } = require('./providerErrorClassifier');
 const { applyDeepSeekChatOptions } = require('./deepseekConfig');
+const { randomUUID } = require('crypto');
 const https = require('https');
 const http = require('http');
 const crypto = require('crypto');
@@ -27,6 +30,53 @@ function buildResponsesBody({ model, prompt, systemPrompt, maxTokens }) {
     ...(systemPrompt ? { instructions: systemPrompt } : {}),
     ...(maxTokens != null ? { max_output_tokens: maxTokens } : {}),
   };
+}
+
+function parseProviderPayload(raw) {
+  try {
+    const value = JSON.parse(raw || '{}');
+    return value && typeof value === 'object' ? value : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function textProviderMeta(payload, httpStatus, overrides = {}) {
+  const message = String(payload?.error?.message || payload?.message || payload?.error || '');
+  let providerCode = String(payload?.error?.code || payload?.error?.type || payload?.code || '').trim();
+  if (/no available channel/i.test(message)) providerCode = 'NO_AVAILABLE_CHANNEL';
+  const providerTaskId = payload?.task_id || payload?.job_id || payload?.data?.task_id || null;
+  const explicitlyRejected = [400, 401, 413, 422, 429].includes(Number(httpStatus))
+    || providerCode.toUpperCase() === 'NO_AVAILABLE_CHANNEL';
+  return {
+    httpStatus: Number.isInteger(Number(httpStatus)) ? Number(httpStatus) : undefined,
+    providerCode: providerCode || undefined,
+    providerTaskId: providerTaskId ? String(providerTaskId) : undefined,
+    explicitlyRejected,
+    ...overrides,
+  };
+}
+
+function providerHttpError(status, raw) {
+  const error = new Error(`HTTP ${status}`);
+  error.code = 'AI_PROVIDER_HTTP_ERROR';
+  error.routeMeta = textProviderMeta(parseProviderPayload(raw), status, {
+    phase: 'response',
+    requestBodySent: true,
+  });
+  error.receivedTextLength = 0;
+  return error;
+}
+
+function providerTransportError(error, receivedTextLength = 0) {
+  if (!error || typeof error !== 'object') return error;
+  error.receivedTextLength = Math.max(Number(error.receivedTextLength || 0), receivedTextLength);
+  error.routeMeta = error.routeMeta || {
+    phase: 'submit',
+    requestBodySent: true,
+    transportCode: error?.cause?.code || error.code,
+  };
+  return error;
 }
 
 /**
@@ -57,7 +107,7 @@ function postJSONNonStream(url, headers, body, timeoutMs = 120000) {
       res.on('end', () => {
         const raw = Buffer.concat(chunks).toString('utf-8');
         if (res.statusCode < 200 || res.statusCode >= 300) {
-          return reject(new Error(`HTTP ${res.statusCode}: ${raw.slice(0, 500)}`));
+          return reject(providerHttpError(res.statusCode, raw));
         }
         try {
           const json = JSON.parse(raw);
@@ -68,11 +118,16 @@ function postJSONNonStream(url, headers, body, timeoutMs = 120000) {
           resolve({ status: res.statusCode, body: null, raw, headers: res.headers });
         }
       });
-      res.on('error', reject);
+      res.on('error', (error) => reject(providerTransportError(error)));
     });
 
-    const timer = setTimeout(() => { req.destroy(); reject(new Error(`AI non-stream request timeout after ${timeoutMs}ms`)); }, timeoutMs);
-    req.on('error', (e) => { clearTimeout(timer); reject(e); });
+    const timer = setTimeout(() => {
+      const error = new Error(`AI non-stream request timeout after ${timeoutMs}ms`);
+      error.code = 'AI_NON_STREAM_TIMEOUT';
+      req.destroy(error);
+      reject(providerTransportError(error));
+    }, timeoutMs);
+    req.on('error', (e) => { clearTimeout(timer); reject(providerTransportError(e)); });
     req.on('close', () => clearTimeout(timer));
     req.write(bodyStr);
     req.end();
@@ -197,7 +252,7 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
         const error = new Error(`AI stream silence timeout after ${silenceTimeoutMs}ms`);
         error.code = 'AI_STREAM_SILENCE_TIMEOUT';
         error.receivedTextLength = receivedTextLength;
-        reject(error);
+        reject(providerTransportError(error, receivedTextLength));
       }, silenceTimeoutMs);
     };
 
@@ -209,7 +264,7 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
         res.on('data', (c) => errChunks.push(c));
         res.on('end', () => {
           clearTimeout(silenceTimer);
-          reject(new Error(`HTTP ${statusCode}: ${Buffer.concat(errChunks).toString('utf-8').slice(0, 500)}`));
+          reject(providerHttpError(statusCode, Buffer.concat(errChunks).toString('utf-8')));
         });
         return;
       }
@@ -280,6 +335,10 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
             upstreamError.retryableTransient = retryableTransient;
             upstreamError.usage = usage;
             upstreamError.receivedTextLength = accumulated.length;
+            upstreamError.routeMeta = textProviderMeta(evt, statusCode, {
+              phase: 'stream',
+              requestBodySent: true,
+            });
             clearTimeout(silenceTimer);
             reject(upstreamError);
             res.destroy();
@@ -323,20 +382,36 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
           },
         });
       });
-      res.on('error', (e) => { clearTimeout(silenceTimer); reject(e); });
+      res.on('error', (e) => {
+        clearTimeout(silenceTimer);
+        reject(providerTransportError(e, receivedTextLength));
+      });
     });
 
-    req.on('error', (e) => { clearTimeout(silenceTimer); reject(e); });
+    req.on('error', (e) => {
+      clearTimeout(silenceTimer);
+      reject(providerTransportError(e, receivedTextLength));
+    });
     resetSilenceTimer(); // 连接建立阶段也需要计时
     req.write(bodyStr);
     req.end();
   });
 }
 
-async function postJSONStreamWithEmptyRetry(url, headers, body, silenceTimeoutMs, onProgress, log, model) {
+async function postJSONStreamWithEmptyRetry(
+  url,
+  headers,
+  body,
+  silenceTimeoutMs,
+  onProgress,
+  log,
+  model,
+  allowEmptyRetry = true,
+) {
   let response = null;
   let combinedUsage = null;
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  const maxAttempts = allowEmptyRetry ? 2 : 1;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       response = await postJSONStream(url, headers, body, silenceTimeoutMs, onProgress);
     } catch (error) {
@@ -351,10 +426,10 @@ async function postJSONStreamWithEmptyRetry(url, headers, body, silenceTimeoutMs
     log.warn('AI stream completed without text', {
       model,
       attempt,
-      will_retry: attempt === 1,
+      will_retry: attempt < maxAttempts,
       ...(response.diagnostics || {}),
     });
-    if (attempt === 1) await new Promise((resolve) => setTimeout(resolve, 250));
+    if (attempt < maxAttempts) await new Promise((resolve) => setTimeout(resolve, 250));
   }
   return response;
 }
@@ -397,6 +472,11 @@ function getConfigForModel(db, serviceType, modelName) {
     const models = Array.isArray(config.model) ? config.model : [config.model];
     if (models.includes(modelName)) return config;
   }
+  const logicalName = String(modelName || '').trim().toLowerCase();
+  const logicalConfig = configs.find((config) => config.is_active
+    && config.verification_status === 'verified'
+    && String(config.logical_model_id || '').trim().toLowerCase() === logicalName);
+  if (logicalConfig) return logicalConfig;
   return canvasProviderConfigService.getConfig(serviceType, modelName);
 }
 
@@ -468,13 +548,187 @@ function getTextRateLimitRetryDelays(env = process.env) {
   return delays.length > 0 ? delays : [5000, 15000];
 }
 
-async function generateText(db, log, serviceType, userPrompt, systemPrompt, options = {}) {
+function findTextLogicalRoute(db, serviceType, preferredModel, sceneKey) {
+  try {
+    let config = null;
+    if (sceneKey) config = getConfigFromModelMap(db, sceneKey)?.config || null;
+    if (!config && preferredModel) config = getConfigForModel(db, serviceType, preferredModel);
+    if (!config && preferredModel === undefined) config = getDefaultConfig(db, serviceType);
+    const requested = String(preferredModel || '').trim();
+    const logicalModelId = requested
+      && String(config?.logical_model_id || '').trim().toLowerCase() === requested.toLowerCase()
+      ? requested
+      : String(config?.logical_model_id || '').trim();
+    if (!config || !logicalModelId || config.verification_status !== 'verified') return null;
+    const row = db.prepare(`SELECT id FROM ai_service_configs
+      WHERE id = ? AND deleted_at IS NULL AND is_active = 1 AND service_type = 'text'
+        AND verification_status = 'verified' AND logical_model_id = ? COLLATE NOCASE`).get(
+      config.id,
+      logicalModelId,
+    );
+    return row ? { logicalModelId, primaryConfigId: row.id } : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function safeTextRouteError(category) {
+  const error = new Error('文本生成失败，请稍后重试。');
+  if (category === 'policy_rejected') {
+    error.code = 'TEXT_POLICY_REJECTED';
+    error.message = '文本生成请求被内容安全策略拒绝，请调整内容后重试。';
+    return error;
+  }
+  if (category === 'validation_error') {
+    error.code = 'TEXT_VALIDATION_ERROR';
+    error.message = '文本生成参数不受支持，请检查输入后重试。';
+    return error;
+  }
+  if (['provider_unavailable', 'rate_limited', 'auth_unavailable', 'transport_not_sent'].includes(category)) {
+    error.code = 'TEXT_PROVIDER_UNAVAILABLE';
+    error.message = '文本生成服务暂时不可用，请稍后再试。';
+    return error;
+  }
+  error.code = 'TEXT_RESULT_UNKNOWN';
+  error.message = '文本生成结果未知，为避免重复生成或重复扣费，请勿连续重试，等待管理员核对。';
+  return error;
+}
+
+function updateTextRouteState(db, requestId, state) {
+  db.prepare('UPDATE generation_route_requests SET state = ?, updated_at = ? WHERE id = ?')
+    .run(state, new Date().toISOString(), requestId);
+}
+
+async function executeTextRoute(db, log, serviceType, options, invoke) {
+  if (options._routeConfig) return invoke(options);
+  const routeConfig = findTextLogicalRoute(db, serviceType, options.model, options.scene_key);
+  if (!routeConfig) {
+    if (providerRouteStability.resolveCanaryMode(undefined, log) === 'enforce') {
+      throw safeTextRouteError('provider_unavailable');
+    }
+    return invoke(options);
+  }
+
+  const selected = providerRouteStability.selectVerifiedCandidates(db, {
+    serviceType: 'text',
+    logicalModelId: routeConfig.logicalModelId,
+    primaryConfigId: routeConfig.primaryConfigId,
+  });
+  if (selected.candidates.length === 0) {
+    throw safeTextRouteError('provider_unavailable');
+  }
+  const routeId = randomUUID();
+  const owner = String(options.tenantId || options.userId || 'local');
+  const externalKey = String(options.idempotency_key || options.idempotencyKey || '').trim();
+  const businessId = String(options.business_id || options.businessId || externalKey || routeId);
+  const route = providerRouteStability.createOrGetRouteRequest(db, {
+    id: routeId,
+    idempotencyKey: `${owner}:text:${externalKey || routeId}`,
+    serviceType: 'text',
+    businessType: 'text_generation',
+    businessId,
+    tenantId: options.tenantId,
+    userId: options.userId,
+    logicalModelId: routeConfig.logicalModelId,
+    userPriceSnapshot: selected.userPriceSnapshot,
+    candidateConfigIds: selected.candidates.map((candidate) => candidate.id),
+    creditReservationId: options.creditReservationId,
+  });
+  if (route.state !== 'created') throw safeTextRouteError('result_unknown');
+
+  let lastFailure = null;
+  let pendingSwitch = null;
+  for (let index = 0; index < selected.candidates.length; index += 1) {
+    const config = selected.candidates[index];
+    const attempt = providerRouteStability.startAttempt(db, {
+      requestId: route.id,
+      configId: config.id,
+      provider: config.provider || 'configured',
+      upstreamModel: getModelFromConfig(config),
+    });
+    if (!attempt) continue;
+    if (pendingSwitch) {
+      providerRouteStability.recordRouteSwitch(db, {
+        requestId: route.id,
+        tenantId: options.tenantId,
+        logicalModelId: routeConfig.logicalModelId,
+        configId: pendingSwitch.configId,
+        targetConfigId: config.id,
+        category: pendingSwitch.category,
+      });
+      pendingSwitch = null;
+    }
+    try {
+      const content = await invoke({
+        ...options,
+        model: undefined,
+        scene_key: null,
+        _routeConfig: config,
+        _safeRoute: true,
+      });
+      if (!String(content || '')) {
+        const emptyError = new Error('AI 返回内容为空');
+        emptyError.routeMeta = { httpStatus: 200, phase: 'stream', requestBodySent: true };
+        throw emptyError;
+      }
+      providerRouteStability.recordArtifactVerified(db, {
+        requestId: route.id,
+        attemptNo: attempt.attempt_no,
+        configId: config.id,
+      });
+      return content;
+    } catch (error) {
+      const receivedTextLength = Number(error?.receivedTextLength || 0);
+      const meta = {
+        ...(error?.routeMeta || { phase: 'submit', requestBodySent: true }),
+        ...(receivedTextLength > 0 ? { providerTaskId: 'stream-content-received' } : {}),
+      };
+      const classification = classifyProviderFailure(meta);
+      const uncertain = ['submission_unknown', 'result_unknown', 'artifact_unreadable', 'forbidden_unknown']
+        .includes(classification.category);
+      providerRouteStability.finishAttempt(db, {
+        requestId: route.id,
+        attemptNo: attempt.attempt_no,
+        state: uncertain ? classification.category : 'failed',
+        httpStatus: meta.httpStatus,
+        errorCategory: classification.category,
+      });
+      providerRouteStability.recordFailureAndHealth(db, {
+        requestId: route.id,
+        tenantId: options.tenantId,
+        configId: config.id,
+        logicalModelId: routeConfig.logicalModelId,
+        classification,
+      });
+      lastFailure = { classification };
+      const hasNext = index + 1 < selected.candidates.length;
+      if (classification.mayFailover && hasNext) {
+        pendingSwitch = { configId: config.id, category: classification.category };
+        log.warn('Text route switching after definitive non-acceptance', {
+          logical_model_id: routeConfig.logicalModelId,
+          from_config_id: config.id,
+          category: classification.category,
+        });
+        continue;
+      }
+      updateTextRouteState(db, route.id, uncertain ? 'needs_attention' : 'failed');
+      throw safeTextRouteError(classification.category);
+    }
+  }
+  const finalCategory = lastFailure?.classification?.category || 'provider_unavailable';
+  const uncertain = ['submission_unknown', 'result_unknown', 'artifact_unreadable', 'forbidden_unknown']
+    .includes(finalCategory);
+  updateTextRouteState(db, route.id, uncertain ? 'needs_attention' : 'failed');
+  throw safeTextRouteError(finalCategory);
+}
+
+async function generateTextSingleConfig(db, log, serviceType, userPrompt, systemPrompt, options = {}) {
   const { model: preferredModel, temperature = 0.7, json_mode = false, min_max_tokens = null, streamCallback = null, scene_key = null } = options;
 
   // F2: 若传入 scene_key，优先从 ai_model_map 查找对应的模型路由配置
-  let config = null;
+  let config = options._routeConfig || null;
   let routedModelOverride = null;
-  if (scene_key) {
+  if (!config && scene_key) {
     const mapped = getConfigFromModelMap(db, scene_key);
     if (mapped) {
       config = mapped.config;
@@ -584,6 +838,7 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
       },
       log,
       model,
+      !options._safeRoute,
     );
     generationUsageContext.capture(response.usage);
     if (!response.body) throw new Error('AI 返回内容为空');
@@ -592,6 +847,7 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
       text_length: response.body.length,
       elapsed_ms: Date.now() - startMs,
     });
+    generationUsageContext.captureRoute(config.id);
     return response.body;
   }
   log.info('AI generateText request', { url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)', json_mode, stream: true });
@@ -621,6 +877,7 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
       text_length: fallback.body.length,
       elapsed_ms: Date.now() - startMs,
     });
+    generationUsageContext.captureRoute(config.id);
     return fallback.body;
   };
   let res;
@@ -638,12 +895,13 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
         }
         // 调用者提供的流式回调（如分镜增量解析），传入当前已积累的完整文本
         if (streamCallback && accumulated) streamCallback(accumulated);
-      }, log, model);
+      }, log, model, !options._safeRoute);
       res.usage = mergeProviderUsage(priorStreamUsage, res.usage);
       break;
     } catch (error) {
       priorStreamUsage = mergeProviderUsage(priorStreamUsage, error?.usage);
       if (error && typeof error === 'object') error.usage = priorStreamUsage;
+      if (options._safeRoute) throw error;
       const isRetryableRateLimit = error?.code === 'AI_UPSTREAM_ERROR'
         && error.upstreamType === 'rate_limit_error'
         && Number(error.receivedTextLength || 0) === 0;
@@ -702,22 +960,64 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
   const content = res.body;
   const elapsedMs = Date.now() - startMs;
   if (!content) {
+    if (options._safeRoute) {
+      const error = new Error('AI 返回内容为空');
+      error.routeMeta = { httpStatus: 200, phase: 'stream', requestBodySent: true };
+      throw error;
+    }
     return runNonStreamFallback('empty_stream', res.usage, res.diagnostics || {});
   }
   generationUsageContext.capture(res.usage);
   log.info('AI raw response received', { model, text_length: content.length, elapsed_ms: elapsedMs });
+  generationUsageContext.captureRoute(config.id);
   return content;
+}
+
+async function generateText(db, log, serviceType, userPrompt, systemPrompt, options = {}) {
+  return executeTextRoute(
+    db,
+    log,
+    serviceType,
+    options,
+    (routeOptions) => generateTextSingleConfig(
+      db, log, serviceType, userPrompt, systemPrompt, routeOptions,
+    ),
+  );
+}
+
+async function generateTextForConfigId(
+  db,
+  log,
+  configId,
+  userPrompt,
+  systemPrompt,
+  options = {},
+) {
+  const numericId = Number(configId);
+  const config = Number.isSafeInteger(numericId) && numericId > 0
+    ? aiConfigService.getConfig(db, numericId)
+    : null;
+  if (!config || !config.is_active || config.service_type !== 'text') {
+    throw new Error('指定的文本模型配置不存在、已停用或类型不匹配');
+  }
+  return generateTextSingleConfig(db, log, 'text', userPrompt, systemPrompt, {
+    ...options,
+    model: undefined,
+    scene_key: null,
+    _routeConfig: config,
+    _safeRoute: true,
+  });
 }
 
 /**
  * 与 generateText 相同的路由与鉴权，但将模型增量以 delta 回调给调用方；返回完整拼接文本。
  * @param {(delta: string) => void} onDelta 仅增量片段（UTF-8 字符串）
  */
-async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt, options = {}, onDelta) {
+async function streamGenerateTextSingleConfig(db, log, serviceType, userPrompt, systemPrompt, options = {}, onDelta) {
   const { model: preferredModel, temperature = 0.7, json_mode = false, min_max_tokens = null, scene_key = null } = options;
-  let config = null;
+  let config = options._routeConfig || null;
   let routedModelOverride = null;
-  if (scene_key) {
+  if (!config && scene_key) {
     const mapped = getConfigFromModelMap(db, scene_key);
     if (mapped) {
       config = mapped.config;
@@ -809,6 +1109,7 @@ async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt
     },
     log,
     model,
+    !options._safeRoute,
   );
   const content = res.body;
   generationUsageContext.capture(res.usage);
@@ -816,7 +1117,20 @@ async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt
     throw new Error('AI 返回内容为空');
   }
   log.info('AI streamGenerateText done', { model, text_length: content.length, elapsed_ms: Date.now() - startMs });
+  generationUsageContext.captureRoute(config.id);
   return content;
+}
+
+async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt, options = {}, onDelta) {
+  return executeTextRoute(
+    db,
+    log,
+    serviceType,
+    options,
+    (routeOptions) => streamGenerateTextSingleConfig(
+      db, log, serviceType, userPrompt, systemPrompt, routeOptions, onDelta,
+    ),
+  );
 }
 
 /**
@@ -860,7 +1174,7 @@ function resolveEntityImageSource(entity, cfg) {
  * imageSource: { localAbsPath: string } 或 { imageUrl: string }
  * 使用 OpenAI vision 消息格式（兼容 GPT-4o / Gemini openai-compat / Qwen-VL 等）。
  */
-async function generateTextWithVision(db, log, serviceType, userPrompt, systemPrompt, imageSource, options = {}) {
+async function generateTextWithVisionSingleConfig(db, log, serviceType, userPrompt, systemPrompt, imageSource, options = {}) {
   const detailed = await generateTextWithVisionDetailed(
     db,
     log,
@@ -938,9 +1252,9 @@ async function generateTextWithVisionDetailed(db, log, serviceType, userPrompt, 
 
   // 复用 generateText 的配置查找逻辑
   const { model: preferredModel, temperature = 0.3, max_tokens = 500 } = options;
-  let config = preferredModel
+  let config = options._routeConfig || (preferredModel
     ? getConfigForModel(db, serviceType, preferredModel)
-    : getDefaultConfig(db, serviceType);
+    : getDefaultConfig(db, serviceType));
   if (!config) config = getDefaultConfig(db, 'text');
   if (!config) throw new Error(`未配置文本模型，请在「AI 配置」中添加 ${serviceType} 类型的配置`);
   const model = getModelFromConfig(config, preferredModel);
@@ -1018,6 +1332,7 @@ async function generateTextWithVisionDetailed(db, log, serviceType, userPrompt, 
     error.code = 'VISION_PROVIDER_RESPONSE_ID_MISSING';
     throw error;
   }
+  generationUsageContext.captureRoute(config.id);
   log.info('[Vision] 请求成功', { model, elapsed_ms: Date.now() - startMs, result_len: responseText.length, result_preview: responseText.slice(0, 100) });
   return {
     text: responseText.trim(),
@@ -1031,6 +1346,18 @@ async function generateTextWithVisionDetailed(db, log, serviceType, userPrompt, 
       image_count: resolvedImages.length,
     },
   };
+}
+
+async function generateTextWithVision(db, log, serviceType, userPrompt, systemPrompt, imageSource, options = {}) {
+  return executeTextRoute(
+    db,
+    log,
+    serviceType,
+    options,
+    (routeOptions) => generateTextWithVisionSingleConfig(
+      db, log, serviceType, userPrompt, systemPrompt, imageSource, routeOptions,
+    ),
+  );
 }
 
 const EXTRACT_PROMPTS = {
@@ -1128,6 +1455,10 @@ module.exports = {
   getModelFromConfig,
   resolveTextModel,
   generateText: (...args) => runWithGenerationLimit('text', () => generateText(...args)),
+  generateTextForConfigId: (...args) => runWithGenerationLimit(
+    'text',
+    () => generateTextForConfigId(...args),
+  ),
   streamGenerateText: (...args) => runWithGenerationLimit('text', () => streamGenerateText(...args)),
   generateTextWithVision: (...args) => runWithGenerationLimit('text', () => generateTextWithVision(...args)),
   generateTextWithVisionDetailed: (...args) => runWithGenerationLimit('text', () => generateTextWithVisionDetailed(...args)),

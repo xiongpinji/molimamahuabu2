@@ -580,7 +580,7 @@
                     :disabled="!canImportToCanvas"
                     @click="openFactoryImportPreview"
                   >
-                    预览导入短剧工厂
+                    导入短剧工厂（非主流程）
                   </el-button>
                 </details>
               </div>

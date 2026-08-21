@@ -2313,7 +2313,7 @@ test('原生对白 provider completed 后下载保存失败保留 held/attention
   assert.equal(providerSubmits, 1);
 });
 
-test('generate_audio 行但缺少原生快照证据时下载失败仍按 legacy failed/refund', async (t) => {
+test('generate_audio 行但缺少原生快照证据时下载失败仍由线路稳定门禁挂起且不写原生审计', async (t) => {
   const state = setup();
   const originalCallVideoApi = videoClient.callVideoApi;
   const originalPollVideoTask = videoClient.pollVideoTask;
@@ -2362,12 +2362,12 @@ test('generate_audio 行但缺少原生快照证据时下载失败仍按 legacy 
     evidenceRoots,
   }), created.task_id);
 
-  assert.equal(result.status, 'failed');
+  assert.equal(result.status, 'needs_attention');
   assert.equal(providerSubmits, 1);
-  assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'failed');
-  assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(result.task_id).status, 'failed');
-  assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(result.video_generation_id).status, 'failed');
-  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'refunded');
+  assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(result.task_id).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(result.video_generation_id).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'held');
   assert.equal(nativeAudit(state.db, shotId, result.task_id), null);
 });
 

@@ -504,7 +504,7 @@ test('异步供应商同一创建链持久化任务编号后轮询完成并只�
   }
 });
 
-async function runRejectedVendorVideoCase({ videoUrl, payload, expectedError }) {
+async function runRejectedVendorVideoCase({ videoUrl, payload, fetchError, expectedError }) {
   const previousCwd = process.cwd();
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-mini-drama-bad-video-'));
   const configRoot = path.join(tempRoot, 'configs');
@@ -573,11 +573,13 @@ async function runRejectedVendorVideoCase({ videoUrl, payload, expectedError }) 
     ).run(episodeId, '拒绝镜头', '供应商返回垃圾视频', 'grok-video-3', now, now).lastInsertRowid);
 
     videoClient.callVideoApi = async () => ({ video_url: videoUrl });
-    global.fetch = async () => ({
-      ok: true,
-      status: 200,
-      arrayBuffer: async () => payload,
-    });
+    global.fetch = fetchError
+      ? async () => { throw fetchError; }
+      : async () => ({
+        ok: true,
+        status: 200,
+        arrayBuffer: async () => payload,
+      });
 
     const created = videoService.create(db, { info() {}, warn() {}, error() {} }, {
       drama_id: dramaId,
@@ -597,20 +599,28 @@ async function runRejectedVendorVideoCase({ videoUrl, payload, expectedError }) 
     const row = db.prepare(
       'SELECT status, error_msg, local_path, task_id, credit_reservation_id FROM video_generations WHERE id = ?'
     ).get(created.id);
-    assert.equal(row.status, 'failed');
+    assert.equal(row.status, fetchError ? 'processing' : 'failed');
     assert.match(row.error_msg, expectedError);
     assert.equal(row.local_path, null);
     const task = taskService.getTask(db, row.task_id);
-    assert.equal(task.status, 'failed');
-    assert.match(task.error, expectedError);
+    assert.equal(task.status, fetchError ? 'processing' : 'failed');
+    assert.match(fetchError ? task.message : task.error, expectedError);
     const storyboard = db.prepare('SELECT video_url, local_path FROM storyboards WHERE id = ?').get(storyboardId);
     assert.equal(storyboard.video_url, null);
     assert.equal(storyboard.local_path, null);
-    assert.equal(credits.getReservation(db, row.credit_reservation_id).status, 'refunded');
-    assert.deepEqual(credits.getAccount(db, 'user-1'), { user_id: 'user-1', available: 100, held: 0, spent: 0 });
-    videoService.settleVideoCredit(db, { error() {} }, row, 'failed', '重复失败结算');
-    assert.equal(credits.getReservation(db, row.credit_reservation_id).status, 'refunded');
-    assert.deepEqual(credits.getAccount(db, 'user-1'), { user_id: 'user-1', available: 100, held: 0, spent: 0 });
+    const expectedReservationStatus = fetchError ? 'held' : 'refunded';
+    assert.equal(credits.getReservation(db, row.credit_reservation_id).status, expectedReservationStatus);
+    assert.deepEqual(
+      credits.getAccount(db, 'user-1'),
+      fetchError
+        ? { user_id: 'user-1', available: 89, held: 11, spent: 0 }
+        : { user_id: 'user-1', available: 100, held: 0, spent: 0 }
+    );
+    if (!fetchError) {
+      videoService.settleVideoCredit(db, { error() {} }, row, 'failed', '重复失败结算');
+      assert.equal(credits.getReservation(db, row.credit_reservation_id).status, 'refunded');
+      assert.deepEqual(credits.getAccount(db, 'user-1'), { user_id: 'user-1', available: 100, held: 0, spent: 0 });
+    }
     const storedFiles = fs.existsSync(storagePath)
       ? fs.readdirSync(storagePath, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile())
       : [];
@@ -656,4 +666,12 @@ test('供应商声明视频但返回垃圾或不完整结构时拒绝完成并�
   for (const item of cases) {
     await runRejectedVendorVideoCase(item);
   }
+});
+
+test('供应商视频链接暂时不可读取时保持待核对并保留预扣', async () => {
+  await runRejectedVendorVideoCase({
+    videoUrl: 'https://cdn.example/pending.mp4',
+    fetchError: new Error('connect ETIMEDOUT'),
+    expectedError: /结果未知.*请勿重新提交/,
+  });
 });

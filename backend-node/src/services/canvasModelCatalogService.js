@@ -1,11 +1,15 @@
 const aiConfigService = require('./aiConfigService');
+const canvasProviderConfigService = require('./canvasProviderConfigService');
 const mediaModelSelection = require('./mediaModelSelectionService');
 const modelPriceService = require('./modelPriceService');
+const providerRouteStabilityService = require('./providerRouteStabilityService');
 const { IMAGE_REFERENCE_LIMITS } = require('./token6688Client');
 const videoReferenceCapabilityService = require('./videoReferenceCapabilityService');
-const { USMERCARI_VIDEO_DURATIONS } = require('./usmercariVideoClient');
+const { USMERCARI_MODELS } = require('./usmercariVideoClient');
+const { FUMIN_MODELS } = require('./fuminVideoClient');
 const toapisVideoClient = require('./toapisVideoClient');
 const feituoVideoClient = require('./feituoVideoClient');
+const lingjingVideoClient = require('./lingjingVideoClient');
 const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 
 const KIND_BY_SERVICE = {
@@ -16,11 +20,15 @@ const KIND_BY_SERVICE = {
   tts: 'audio',
 };
 
-// 供应商确认的分模型媒体上限；与 usmercariVideoClient.USMERCARI_MODELS 保持一致
-const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'feituo_open']);
+const PRIVATE_CATALOG_FRAGMENTS = Object.freeze([
+  'provider', 'protocol', 'config', 'upstream', 'relay', 'evidence', 'cost',
+  'credential', 'secret', 'token', 'password', 'accesskey', 'apikey',
+  'baseurl', 'hostname', 'domain', 'endpoint',
+]);
+
+const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'feituo_open', 'lingjing_open']);
 
 const USMERCARI_VIDEO_CAPABILITIES = Object.freeze({
-  durations: USMERCARI_VIDEO_DURATIONS,
   aspectRatios: Object.freeze(['16:9']),
   supportsFirstFrame: true,
   supportsLastFrame: true,
@@ -28,20 +36,17 @@ const USMERCARI_VIDEO_CAPABILITIES = Object.freeze({
   supportsAudioReference: true,
   supportsAudio: true,
 });
-
-const USMERCARI_MODEL_MEDIA_LIMITS = Object.freeze({
-  'MiniMax H3': Object.freeze({
-    maxReferences: 5, maxVideoReferences: 0, maxAudioReferences: 3,
-    supportsVideoReference: false, resolutions: Object.freeze(['480p']),
-  }),
-  'seedance-2.0-fast': Object.freeze({
-    maxReferences: 9, maxVideoReferences: 3, maxAudioReferences: 3,
-    supportsVideoReference: true, resolutions: Object.freeze(['480p', '720p']),
-  }),
-  'seedance-2.0-mini': Object.freeze({
-    maxReferences: 9, maxVideoReferences: 3, maxAudioReferences: 3,
-    supportsVideoReference: true, resolutions: Object.freeze(['480p', '720p']),
-  }),
+const FUMIN_VIDEO_CAPABILITIES = Object.freeze({
+  durations: Object.freeze([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
+  aspectRatios: Object.freeze(['16:9']),
+  resolutions: Object.freeze(['480p']),
+  maxReferences: 9,
+  maxVideoReferences: 3,
+  maxAudioReferences: 3,
+  supportsImageReference: true,
+  supportsVideoReference: true,
+  supportsAudioReference: true,
+  supportsAudio: true,
 });
 
 function providerCapabilities(provider, model) {
@@ -56,10 +61,23 @@ function providerCapabilities(provider, model) {
       api_protocol: 'token6688',
     }, model);
   }
+  if (['fumin', 'fumin_video'].includes(normalizedProvider)) {
+    if (!Object.prototype.hasOwnProperty.call(FUMIN_MODELS, String(model))) return {};
+    return { ...FUMIN_VIDEO_CAPABILITIES };
+  }
   if (!['usmercari', 'usmercari_media'].includes(normalizedProvider)) return {};
-  const limits = USMERCARI_MODEL_MEDIA_LIMITS[String(model)];
-  if (!limits) return {};
-  return { ...USMERCARI_VIDEO_CAPABILITIES, ...limits };
+  const spec = USMERCARI_MODELS[String(model)];
+  if (!spec) return {};
+  return {
+    ...USMERCARI_VIDEO_CAPABILITIES,
+    maxReferences: spec.maxImages,
+    maxImageReferences: spec.maxImages,
+    maxVideoReferences: spec.maxVideos,
+    maxAudioReferences: spec.maxAudio,
+    supportsVideoReference: spec.maxVideos > 0,
+    durations: spec.durations,
+    resolutions: spec.resolutions,
+  };
 }
 
 function parseModels(value, fallback) {
@@ -72,6 +90,20 @@ function parseModels(value, fallback) {
     return value.split(',').map((item) => item.trim()).filter(Boolean);
   }
   return fallback ? [String(fallback).trim()].filter(Boolean) : [];
+}
+
+function isPrivateCatalogField(key) {
+  const normalized = String(key).replace(/[^a-z0-9]/gi, '').toLowerCase();
+  return normalized === 'base'
+    || PRIVATE_CATALOG_FRAGMENTS.some((fragment) => normalized.includes(fragment));
+}
+
+function publicCapabilityValue(value) {
+  if (Array.isArray(value)) return value.map(publicCapabilityValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !isPrivateCatalogField(key))
+    .map(([key, item]) => [key, publicCapabilityValue(item)]));
 }
 
 function orderedModels(config) {
@@ -124,20 +156,26 @@ function isRealGenerationVerified(config, model) {
 }
 
 function safeCapabilities(settings, config = {}, model = '') {
+  const resolvedModel = typeof config === 'string' && !model ? config : model;
+  const resolvedConfig = typeof config === 'string' && !model ? {} : config;
   try {
     const parsed = typeof settings === 'string' ? JSON.parse(settings) : settings;
-    const perModel = parsed?.canvas_capabilities_by_model?.[model];
-    const value = perModel || parsed?.canvas_capabilities;
-    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
-    const provider = String(config.provider || '').toLowerCase();
-    return (provider === 'token6688' || provider === 'tokengo')
-      ? (TOKEN6688_IMAGE_CAPABILITIES[model] || {})
-      : {};
+    const base = parsed?.canvas_capabilities;
+    const perModel = parsed?.canvas_capabilities_by_model?.[resolvedModel];
+    const baseValue = base && typeof base === 'object' && !Array.isArray(base) ? base : {};
+    const value = perModel && typeof perModel === 'object' && !Array.isArray(perModel)
+      ? { ...baseValue, ...perModel }
+      : baseValue;
+    if (Object.keys(value).length) return publicCapabilityValue(value);
+    const provider = String(resolvedConfig.provider || '').toLowerCase();
+    return publicCapabilityValue((provider === 'token6688' || provider === 'tokengo')
+      ? (TOKEN6688_IMAGE_CAPABILITIES[resolvedModel] || {})
+      : {});
   } catch (_) {
-    const provider = String(config.provider || '').toLowerCase();
-    return (provider === 'token6688' || provider === 'tokengo')
-      ? (TOKEN6688_IMAGE_CAPABILITIES[model] || {})
-      : {};
+    const provider = String(resolvedConfig.provider || '').toLowerCase();
+    return publicCapabilityValue((provider === 'token6688' || provider === 'tokengo')
+      ? (TOKEN6688_IMAGE_CAPABILITIES[resolvedModel] || {})
+      : {});
   }
 }
 
@@ -161,6 +199,7 @@ function strictVerifiedProtocol(config) {
   if (values.includes('usmercari_image')) return 'usmercari_image';
   if (values.some((value) => value === 'toapis' || value === 'toapis_video')) return 'toapis_video';
   if (values.some((value) => value === 'feituo' || value === 'feituo_open')) return 'feituo_open';
+  if (values.some((value) => value === 'lingjing' || value === 'lingjing_open')) return 'lingjing_open';
   return null;
 }
 
@@ -178,11 +217,16 @@ function verifiedModelCapabilities(config, model, price, evidenceRoots) {
   const feituoOfficial = protocol === 'feituo_open'
     ? feituoVideoClient.FEITUO_MODELS[target]
     : null;
+  const lingjingOfficial = protocol === 'lingjing_open' && target === lingjingVideoClient.PUBLIC_MODEL
+    ? lingjingVideoClient.LINGJING_VIDEO_SPEC
+    : null;
   if (protocol === 'feituo_open' && (!target.startsWith('xuan-') || !feituoOfficial)) return false;
   const allowedResolutions = protocol === 'usmercari_image'
     ? modelPriceService.IMAGE_RESOLUTIONS
     : protocol === 'feituo_open'
       ? feituoOfficial.resolutions
+      : protocol === 'lingjing_open'
+        ? []
       : modelPriceService.VIDEO_RESOLUTIONS;
   const resolutions = Array.isArray(capabilities.resolutions)
     ? [...new Set(capabilities.resolutions
@@ -190,10 +234,10 @@ function verifiedModelCapabilities(config, model, price, evidenceRoots) {
       .filter((resolution) => allowedResolutions.includes(resolution)))]
     : [];
   let publicCapabilities = { ...publicCapabilitySource, resolutions };
-  if (protocol === 'toapis_video' || protocol === 'feituo_open') {
+  if (protocol === 'toapis_video' || protocol === 'feituo_open' || protocol === 'lingjing_open') {
     const official = protocol === 'toapis_video'
       ? toapisVideoClient.TOAPIS_VIDEO_MODELS[target]
-      : feituoOfficial;
+      : protocol === 'feituo_open' ? feituoOfficial : lingjingOfficial;
     const verifiedDurations = new Set(Array.isArray(capabilities.durations)
       ? capabilities.durations.map(Number).filter(Number.isSafeInteger)
       : []);
@@ -202,6 +246,33 @@ function verifiedModelCapabilities(config, model, price, evidenceRoots) {
       : [];
     if (!durations.length) return false;
     publicCapabilities = { ...publicCapabilities, durations };
+  }
+  if (protocol === 'lingjing_open') {
+    const ratios = Array.isArray(capabilities.aspectRatios)
+      ? lingjingOfficial.aspectRatios.filter((ratio) => capabilities.aspectRatios.includes(ratio))
+      : [];
+    const maxReferences = Number(capabilities.maxReferences);
+    if (!lingjingOfficial
+        || resolutions.length !== 0
+        || ratios.length !== lingjingOfficial.aspectRatios.length
+        || capabilities.supportsImageReference !== true
+        || capabilities.supportsFirstFrame !== false
+        || capabilities.supportsLastFrame !== false
+        || capabilities.supportsVideoReference !== false
+        || capabilities.supportsAudioReference !== false
+        || capabilities.supportsAudio !== false
+        || !Number.isSafeInteger(maxReferences)
+        || maxReferences < 0
+        || maxReferences > lingjingVideoClient.MAX_IMAGE_REFERENCES) return false;
+    return price.category === 'video'
+      && price.billing_unit === 'second'
+      && price.cost_unit === 'second'
+      && Number.isSafeInteger(price.credits)
+      && price.credits > 0
+      && Number.isSafeInteger(price.cost_micros_per_unit)
+      && price.cost_micros_per_unit > 0
+      ? { ...publicCapabilities, aspectRatios: ratios, resolutions: [] }
+      : false;
   }
   if ((protocol === 'usmercari_image' && capabilities.supportsTextToImage !== true)
       || !resolutions.length || !price) return false;
@@ -220,52 +291,152 @@ function verifiedModelCapabilities(config, model, price, evidenceRoots) {
   return allPriced ? publicCapabilities : false;
 }
 
+function verifiedConfigIds(db) {
+  const hasVerificationStatus = db.prepare('PRAGMA table_info(ai_service_configs)')
+    .all()
+    .some((column) => column.name === 'verification_status');
+  if (!hasVerificationStatus) return null;
+  return new Set(db.prepare(`SELECT id FROM ai_service_configs
+    WHERE deleted_at IS NULL AND verification_status = 'verified'`).all().map((row) => row.id));
+}
+
+function uniqueSorted(values) {
+  return [...new Set(values.filter((value) => value !== null && value !== undefined && value !== ''))]
+    .sort((left, right) => (typeof left === 'number' && typeof right === 'number'
+      ? left - right
+      : String(left).localeCompare(String(right), 'en')));
+}
+
+function evidenceCapabilityEnvelope(rows) {
+  const capabilities = rows.map((row) => row.capability).filter(Boolean);
+  const maximum = (field) => capabilities.reduce((value, capability) => (
+    Math.max(value, Number(capability[field]) || 0)
+  ), 0);
+  const maxImageReferences = maximum('referenceImageCount');
+  const maxVideoReferences = maximum('referenceVideoCount');
+  const maxAudioReferences = maximum('referenceAudioCount');
+  return publicCapabilityValue({
+    resolutions: uniqueSorted(capabilities.map((capability) => capability.resolution)),
+    aspectRatios: uniqueSorted(capabilities.map((capability) => capability.aspectRatio)),
+    durations: uniqueSorted(capabilities.map((capability) => capability.duration).filter(Boolean)),
+    maxReferences: maxImageReferences,
+    maxImageReferences,
+    maxVideoReferences,
+    maxAudioReferences,
+    supportsImageReference: maxImageReferences > 0,
+    supportsVideoReference: maxVideoReferences > 0,
+    supportsAudioReference: maxAudioReferences > 0,
+    supportsAudio: capabilities.some((capability) => capability.requiresAudio === true),
+    supportsFirstFrame: capabilities.some((capability) => capability.firstFrame === true),
+    supportsLastFrame: capabilities.some((capability) => capability.lastFrame === true),
+  });
+}
+
+function recordPublicUnavailableTransition(db, logicalModelId, configIds, now) {
+  if (!logicalModelId || !configIds.length) return false;
+  const placeholders = configIds.map(() => '?').join(',');
+  return db.transaction(() => {
+    const history = db.prepare(`SELECT MAX(verified_at) AS last_verified_at
+      FROM provider_canary_evidence
+      WHERE config_id IN (${placeholders}) AND verified_at IS NOT NULL`).get(...configIds);
+    if (!history?.last_verified_at) return false;
+    const previous = db.prepare(`SELECT MAX(created_at) AS last_event_at
+      FROM provider_stability_events
+      WHERE event_type = 'provider_canary_public_unavailable'
+        AND logical_model_id = ? COLLATE NOCASE`).get(logicalModelId);
+    if (previous?.last_event_at && previous.last_event_at >= history.last_verified_at) return false;
+    db.prepare(`INSERT INTO provider_stability_events
+      (severity, event_type, logical_model_id, safe_details, created_at)
+      VALUES ('error', 'provider_canary_public_unavailable', ?, ?, ?)`)
+      .run(logicalModelId, JSON.stringify({ category: 'fresh_evidence_unavailable' }), now);
+    return true;
+  }).immediate();
+}
+
+function enforceFreshEvidenceCatalog(db, items, configsByKey, now) {
+  const result = [];
+  for (const item of items) {
+    const key = `${item.kind}:${item.model.toLowerCase()}`;
+    const configs = configsByKey.get(key) || [];
+    const evidence = providerRouteStabilityService.listFreshCandidateEvidence(db, configs, now);
+    if (!evidence.length) {
+      const logicalModelId = configs
+        .map((config) => String(config.logical_model_id || '').trim())
+        .find(Boolean);
+      recordPublicUnavailableTransition(db, logicalModelId, configs.map((config) => config.id), now);
+      continue;
+    }
+    const capabilities = evidenceCapabilityEnvelope(evidence);
+    const resolutions = new Set(capabilities.resolutions || []);
+    result.push({
+      ...item,
+      resolution_prices: Object.fromEntries(Object.entries(item.resolution_prices || {})
+        .filter(([resolution]) => resolutions.has(String(resolution).toLowerCase()))),
+      capabilities,
+    });
+  }
+  return result;
+}
+
 function list(db, options = {}) {
   const prices = new Map(modelPriceService.list(db)
     .filter((row) => row.status === 'enabled')
     .map((row) => [String(row.model).toLowerCase(), row]));
+  const verifiedIds = verifiedConfigIds(db);
   const configs = aiConfigService.listConfigs(db);
-  const configuredModelEntries = configs
-    .filter((config) => KIND_BY_SERVICE[config.service_type])
+  const eligibleConfigs = configs.filter((config) => config.is_active !== false
+    && KIND_BY_SERVICE[config.service_type]
+    && (!verifiedIds || verifiedIds.has(config.id)));
+  const configuredModelEntries = eligibleConfigs
     .flatMap((config) => orderedModels(config).map((model) => ({
       config,
       model,
       key: `${KIND_BY_SERVICE[config.service_type]}:${model.toLowerCase()}`,
     })));
-  const strictKeys = new Set(configuredModelEntries
+  const strictBlockEntries = configs
+    .filter((config) => config.is_active !== false && KIND_BY_SERVICE[config.service_type])
+    .flatMap((config) => orderedModels(config).map((model) => ({
+      config,
+      key: `${KIND_BY_SERVICE[config.service_type]}:${model.toLowerCase()}`,
+    })));
+  const strictKeys = new Set([
+    `video:${lingjingVideoClient.PUBLIC_MODEL}`,
+    ...strictBlockEntries
     .filter(({ config }) => strictVerifiedProtocol(config))
-    .map(({ key }) => key));
+    .map(({ key }) => key),
+  ]);
 
-  const mediaCandidates = mediaModelSelection.listEntries(configs)
+  const mediaCandidates = mediaModelSelection.listEntries(eligibleConfigs)
     .filter((entry) => {
       const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
       return !strictKeys.has(upstreamKey) || !!strictVerifiedProtocol(entry.config);
     });
-  const mediaCounts = new Map();
-  for (const entry of mediaCandidates) {
-    const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
-    mediaCounts.set(upstreamKey, (mediaCounts.get(upstreamKey) || 0) + 1);
-  }
   const mediaEntries = mediaCandidates.map((entry) => {
-    const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
-    const model = mediaCounts.get(upstreamKey) > 1
-      ? `cfg-${entry.config.id}::${entry.upstreamModel}`
-      : entry.upstreamModel;
+    const logicalModel = String(entry.config.logical_model_id || '').trim();
+    const model = logicalModel || entry.upstreamModel;
     return { ...entry, model };
   });
-  const nonMediaEntries = configs
+  const nonMediaEntries = eligibleConfigs
     .filter((config) => !mediaModelSelection.KIND_BY_SERVICE[config.service_type])
-    .flatMap((config) => orderedModels(config).map((model) => ({
+    .flatMap((config) => orderedModels(config).map((upstreamModel) => ({
       config,
       kind: KIND_BY_SERVICE[config.service_type],
-      model,
-      upstreamModel: model,
+      model: String(config.logical_model_id || '').trim() || upstreamModel,
+      upstreamModel,
     })));
+  const allEntries = [...mediaEntries, ...nonMediaEntries];
+  const configsByKey = new Map();
+  for (const entry of allEntries) {
+    const key = `${entry.kind}:${entry.model.toLowerCase()}`;
+    if (!configsByKey.has(key)) configsByKey.set(key, []);
+    if (!configsByKey.get(key).some((config) => config.id === entry.config.id)) {
+      configsByKey.get(key).push(entry.config);
+    }
+  }
   const seen = new Set();
-  const configured = [...mediaEntries, ...nonMediaEntries]
-    .filter((entry) => entry.config.is_active !== false
-      && entry.kind
-      && aiConfigService.isVerifiedConfig(entry.config)
+  let configured = allEntries
+    .filter((entry) => entry.kind
+      && (!verifiedIds || aiConfigService.isVerifiedConfig(entry.config))
       && isRealGenerationVerified(entry.config, entry.upstreamModel))
     .map((entry) => {
       const { config, kind, model, upstreamModel } = entry;
@@ -284,26 +455,41 @@ function list(db, options = {}) {
       return {
         kind,
         model,
-        upstream_model: upstreamModel,
         label: price?.display_name || model,
         public_note: price?.public_note || null,
-        provider: String(config.provider || '').toLowerCase(),
-        config_id: config.id,
         default_voice_id: config.service_type === 'tts' ? String(config.voice_id || '').trim() : '',
         credits: price?.credits || null,
         billing_unit: price?.billing_unit || null,
-        resolution_prices: resolutionPrices,
+        resolution_prices: Object.fromEntries(Object.entries(resolutionPrices)
+          .map(([resolution, tier]) => [resolution, { credits: tier.credits }])),
         verification_status: config.verification_status || 'pending',
-        protocol: config.api_protocol || config.provider || '',
-        capabilities: verifiedCapabilities || (kind === 'video'
+        capabilities: publicCapabilityValue(verifiedCapabilities || (kind === 'video'
           ? {
             ...videoReferenceCapabilityService.resolve(config, upstreamModel),
             ...providerCapabilities(config.provider, upstreamModel),
           }
-          : safeCapabilities(config.settings, config, upstreamModel)),
+          : safeCapabilities(config.settings, config, upstreamModel))),
       };
     })
     .filter(Boolean);
+  if (verifiedIds === null) {
+    for (const item of canvasProviderConfigService.listSafe()) {
+      const key = `${item.kind}:${item.model.toLowerCase()}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        configured.push(item);
+      }
+    }
+  }
+  if (verifiedIds !== null
+      && providerRouteStabilityService.resolveCanaryMode(options.canaryMode, options.log) === 'enforce') {
+    configured = enforceFreshEvidenceCatalog(
+      db,
+      configured,
+      configsByKey,
+      options.now || new Date().toISOString(),
+    );
+  }
   return configured;
 }
 

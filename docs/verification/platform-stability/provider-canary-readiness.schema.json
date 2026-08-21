@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Provider canary readiness inventory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evidence_scope",
+    "evidence_source",
+    "generated_at",
+    "summary",
+    "routes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "evidence_scope": {
+      "const": "local_fixture"
+    },
+    "evidence_source": {
+      "const": "deterministic_test_fixture"
+    },
+    "generated_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_routes",
+        "public_routes",
+        "ready_for_paid_canary",
+        "blocked_routes"
+      ],
+      "properties": {
+        "total_routes": { "type": "integer", "minimum": 0 },
+        "public_routes": { "type": "integer", "minimum": 0 },
+        "ready_for_paid_canary": { "type": "integer", "minimum": 0 },
+        "blocked_routes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "routes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "route_ref",
+          "logical_model_id",
+          "service_type",
+          "capabilities_declared",
+          "user_price_status",
+          "cost_status",
+          "priority",
+          "runtime_fingerprint",
+          "blockers"
+        ],
+        "properties": {
+          "route_ref": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{16}$"
+          },
+          "logical_model_id": {
+            "type": ["string", "null"],
+            "minLength": 1
+          },
+          "service_type": {
+            "type": "string",
+            "minLength": 1
+          },
+          "capabilities_declared": {
+            "type": "boolean"
+          },
+          "user_price_status": {
+            "enum": ["configured", "missing"]
+          },
+          "cost_status": {
+            "enum": ["positive", "missing", "not_positive"]
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "runtime_fingerprint": {
+            "type": ["string", "null"]
+          },
+          "blockers": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "missing_logical_model_id",
+                "missing_user_price",
+                "missing_cost",
+                "cost_not_positive",
+                "missing_capabilities",
+                "missing_runtime_mapping",
+                "legacy_connection_only_verification",
+                "admin_paused"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

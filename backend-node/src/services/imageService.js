@@ -82,12 +82,13 @@ const storageLayout = require('./storageLayout');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
 const creditLedger = require('./creditLedgerService');
+const generationCost = require('./generationCostLedgerService');
 const auditEvent = require('./auditEventService');
 const textGenerationBilling = require('./text-generation-billing-service');
 const aiConfigService = require('./aiConfigService');
 const modelPriceService = require('./modelPriceService');
-const generationCost = require('./generationCostLedgerService');
 const assetService = require('./assetService');
+const providerRouteStability = require('./providerRouteStabilityService');
 const { resolveUsmercariApiKey } = require('./usmercariVideoClient');
 const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 const { getGridLayout, isGridFrameType, getGridCells } = require('./gridLayout');
@@ -262,7 +263,10 @@ function resolveImageBillingRequest(db, req, imageServiceType, options = {}) {
   const requestedModel = String(req.model || '').trim();
   const requestedCanonical = requestedModel ? requestedModel.toLowerCase() : '';
   const requestedIsStrict = USMERCARI_IMAGE_MODELS.has(requestedCanonical);
-  let config = findConfiguredImageModel(db, imageServiceType, requestedModel);
+  const hasExplicitConfig = req.config_id != null;
+  let config = hasExplicitConfig
+    ? imageClient.getImageConfigById(db, req.config_id, requestedModel || undefined)
+    : findConfiguredImageModel(db, imageServiceType, requestedModel);
   if (!config && !requestedIsStrict) {
     config = imageClient.getDefaultImageConfig(db, req.model, req.provider, imageServiceType);
   }
@@ -270,10 +274,11 @@ function resolveImageBillingRequest(db, req, imageServiceType, options = {}) {
     || config?.default_model
     || configuredImageModels(config)[0];
   if (!rawSelectedModel && options.allowMissingModel) return null;
-  const selectedModel = modelPriceService.canonicalModel(
+  const selectedModel = String(rawSelectedModel).trim();
+  const billingModel = modelPriceService.canonicalModel(
     rawSelectedModel,
   );
-  const strictUsmercari = USMERCARI_IMAGE_MODELS.has(selectedModel)
+  const strictUsmercari = USMERCARI_IMAGE_MODELS.has(billingModel)
     || String(config?.provider || '').toLowerCase() === 'usmercari_image'
     || String(config?.api_protocol || '').toLowerCase() === 'usmercari_image';
   const referenceImages = Array.isArray(req.reference_images)
@@ -289,14 +294,14 @@ function resolveImageBillingRequest(db, req, imageServiceType, options = {}) {
     if (!config || config.verification_status !== 'verified') {
       throw imageRequestError('MODEL_NOT_VERIFIED', `${selectedModel} 尚未通过真实生成验证`);
     }
-    if (USMERCARI_IMAGE_MODELS.has(selectedModel) && !isUsmercariImageConfig(config)) {
+    if (USMERCARI_IMAGE_MODELS.has(billingModel) && !isUsmercariImageConfig(config)) {
       throw imageRequestError('MODEL_PROTOCOL_MISMATCH', `${selectedModel} 必须使用已验证的 USMercari 图片协议配置`);
     }
     if (!resolveUsmercariApiKey(config)) {
       throw imageRequestError('MODEL_CREDENTIAL_MISSING', `${selectedModel} 未配置有效的 USMercari API Key`);
     }
-    capabilities = normalizeUsmercariCapabilities(config, selectedModel);
-    if (!hasTrustedEvidenceBinding(selectedModel, capabilities, options.evidenceRoots)) {
+    capabilities = normalizeUsmercariCapabilities(config, billingModel);
+    if (!hasTrustedEvidenceBinding(billingModel, capabilities, options.evidenceRoots)) {
       throw imageRequestError('MODEL_NOT_VERIFIED', `${selectedModel} 的真实生成证据与当前发布不一致`);
     }
     if (!capabilities || !capabilities.supportsTextToImage) {
@@ -324,16 +329,16 @@ function resolveImageBillingRequest(db, req, imageServiceType, options = {}) {
   if (!strictUsmercari && !resolution) resolution = null;
   if (requirePricing) modelPriceService.ensureSchema(db);
   const credits = requirePricing
-    ? modelPriceService.calculateCharge(db, selectedModel, { resolution, quantity })
+    ? modelPriceService.calculateCharge(db, billingModel, { resolution, quantity })
     : null;
   const cost = requirePricing
-    ? modelPriceService.quoteCost(db, selectedModel, { resolution, quantity })
+    ? modelPriceService.quoteCost(db, billingModel, { resolution, quantity })
     : null;
   const protocol = String(config?.api_protocol || config?.provider || '').trim().toLowerCase();
   return {
     model: selectedModel,
     provider: config?.provider || req.provider || 'openai',
-    configId: config?.id ?? null,
+    configId: hasExplicitConfig ? (config?.id ?? null) : null,
     protocol,
     resolution,
     quantity,
@@ -344,7 +349,7 @@ function resolveImageBillingRequest(db, req, imageServiceType, options = {}) {
       model: selectedModel,
       provider: config?.provider || req.provider || 'openai',
       protocol,
-      config_id: config?.id ?? null,
+      config_id: hasExplicitConfig ? (config?.id ?? null) : null,
       resolution,
       quantity,
       reference_images: referenceImages,
@@ -358,11 +363,61 @@ function resolveImageBillingRequest(db, req, imageServiceType, options = {}) {
 function settleImageCredit(db, log, row, outcome, message = '') {
   if (!row?.credit_reservation_id) return null;
   try {
-    return creditLedger.settleGeneration(db, row.credit_reservation_id, outcome, message);
+    const actual = db.prepare('SELECT * FROM image_generations WHERE credit_reservation_id = ?')
+      .get(row.credit_reservation_id) || row;
+    const settled = creditLedger.settleGeneration(db, row.credit_reservation_id, outcome, message);
+    try {
+      if (outcome === 'completed') {
+        generationCost.record(db, {
+          reservationId: row.credit_reservation_id,
+          model: actual.model || settled?.model,
+          configId: actual.config_id,
+          count: 1,
+          resolution: actual.size,
+          usageSource: 'provider',
+        });
+      } else if (settled?.status === 'held') {
+        generationCost.record(db, {
+          reservationId: row.credit_reservation_id,
+          model: actual.model || settled?.model,
+          usageSource: 'unknown',
+        });
+      }
+    } catch (costError) {
+      log?.error?.('[图生] 成本记录失败，保留未计成本标记', {
+        id: actual.id,
+        error: costError.message,
+      });
+    }
+    return settled;
   } catch (error) {
     log?.error('[图生] 积分结算失败，保留原预扣状态', { id: row.id, error: error.message });
     return null;
   }
+}
+
+function markImageNeedsAttention(db, log, row, message, timestamp, options = {}) {
+  const safeMessage = String(message || '图片生成结果未知，请勿重复提交，等待管理员核对').slice(0, 500);
+  db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
+    .run('needs_attention', safeMessage, timestamp, row.id);
+  if (row.task_id) {
+    taskService.updateTaskStatus(db, row.task_id, 'needs_attention', 90, safeMessage);
+    try { db.prepare('UPDATE async_tasks SET error = ? WHERE id = ?').run(safeMessage, row.task_id); } catch (_) {}
+  }
+  if (row.scene_id != null) {
+    try { db.prepare('UPDATE scenes SET error_msg = ?, updated_at = ? WHERE id = ?').run(safeMessage, timestamp, row.scene_id); } catch (_) {}
+  }
+  if (row.storyboard_id != null) {
+    try { db.prepare('UPDATE storyboards SET error_msg = ?, updated_at = ? WHERE id = ?').run(safeMessage, timestamp, row.storyboard_id); } catch (_) {}
+  }
+  if (options.artifactUnreadable) {
+    providerRouteStability.recordBusinessArtifactUnreadable(db, {
+      businessType: 'image_generation',
+      businessId: row.id,
+      now: timestamp,
+    });
+  }
+  settleImageCredit(db, log, row, 'failed', safeMessage);
 }
 
 const LAST_FRAME_TYPES = new Set(['last', 'storyboard_last', 'tail', 'last_frame']);
@@ -1133,7 +1188,7 @@ function findActiveForTarget(db, storyboardId, frameType, options = {}) {
     `SELECT * FROM image_generations
      WHERE storyboard_id = ?
        AND (frame_type = ? OR (frame_type IS NULL AND ? IS NULL))
-       AND status IN ('pending', 'processing')
+       AND status IN ('pending', 'processing', 'needs_attention')
        AND deleted_at IS NULL
        ${ownerClause}
      ORDER BY created_at DESC, id DESC
@@ -1144,6 +1199,11 @@ function findActiveForTarget(db, storyboardId, frameType, options = {}) {
 function create(db, log, req, options = {}) {
   const now = new Date().toISOString();
   const frameType = req.frame_type ?? null;
+  const imageServiceType = req.storyboard_id ? 'storyboard_image' : 'image';
+  const selectedConfig = req.config_id != null
+    ? imageClient.getImageConfigById(db, req.config_id, req.model)
+    : imageClient.getDefaultImageConfig(db, req.model, req.provider, imageServiceType);
+  const selectedConfigId = req.config_id != null ? (selectedConfig?.id ?? null) : null;
   const active = findActiveForTarget(db, req.storyboard_id, frameType, options);
   if (active) {
     log.info('Duplicate image generation prevented', {
@@ -1164,9 +1224,12 @@ function create(db, log, req, options = {}) {
     }
     return { ...getById(db, active.id), reused: true };
   }
+  let generationModel = req.model
+    || selectedConfig?.default_model
+    || (Array.isArray(selectedConfig?.model) ? selectedConfig.model[0] : selectedConfig?.model)
+    || null;
   let billedModel = null;
   let billedCredits = null;
-  const imageServiceType = req.storyboard_id ? 'storyboard_image' : 'image';
   if (options.billingEnabled) {
     if (!options.userId) {
       const error = new Error('请先登录');
@@ -1227,15 +1290,16 @@ function create(db, log, req, options = {}) {
     const billingValues = options.billingEnabled ? ', ?, ?, NULL' : '';
     const params = [
       req.storyboard_id ?? null, Number(req.drama_id) || 0, sceneId,
-      billingRequest?.provider || req.provider || 'openai',
-      mergedPrompt, req.negative_prompt ?? null, billedModel || req.model || null, frameType,
+      billingRequest?.provider || selectedConfig?.provider || req.provider || 'openai',
+      selectedConfigId,
+      mergedPrompt, req.negative_prompt ?? null, generationModel, frameType,
       refImagesJson, useFirstFrameLayoutLock, reqSize, resolution, quantity, requestSnapshot,
       taskId, now, now,
     ];
     if (options.billingEnabled) params.push(options.tenantId || null, String(options.userId));
     const info = db.prepare(
-      `INSERT INTO image_generations (storyboard_id, drama_id, scene_id, provider, prompt, negative_prompt, model, frame_type, reference_images, use_first_frame_layout_lock, size, resolution, quantity, request_snapshot, status, task_id, created_at, updated_at${billingColumns})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?${billingValues})`
+      `INSERT INTO image_generations (storyboard_id, drama_id, scene_id, provider, config_id, prompt, negative_prompt, model, frame_type, reference_images, use_first_frame_layout_lock, size, resolution, quantity, request_snapshot, status, task_id, created_at, updated_at${billingColumns})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?${billingValues})`
     ).run(...params);
     const imageGenId = info.lastInsertRowid;
     if (!imageGenId) throw new Error('insert failed');
@@ -1253,6 +1317,7 @@ function create(db, log, req, options = {}) {
       generationCost.record(db, {
         reservationId: reservation.id,
         model: billedModel,
+        configId: selectedConfigId,
         resolution,
         quantity,
         usageSource: 'configured',
@@ -1425,13 +1490,15 @@ async function processImageGeneration(db, log, imageGenId, runtime = {}) {
     }
 
     // ── Step 1: 获取 AI 配置 ──────────────────────────────────────────
-    const config = imageClient.getDefaultImageConfig(
-      db,
-      requestSnapshot.model || row.model,
-      requestSnapshot.provider || null,
-      imageServiceType,
-      requestSnapshot.config_id || null,
-    );
+    const config = row.config_id != null
+      ? imageClient.getImageConfigById(db, row.config_id, row.model)
+      : imageClient.getDefaultImageConfig(
+        db,
+        requestSnapshot.model || row.model,
+        requestSnapshot.provider || null,
+        imageServiceType,
+        requestSnapshot.config_id || null,
+      );
     if (!config) {
       log.error('[图生] ✗ 未找到图片 AI 配置', { id: imageGenId, imageServiceType, elapsed: elapsed() });
       db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?').run(
@@ -2160,6 +2227,7 @@ async function processImageGeneration(db, log, imageGenId, runtime = {}) {
     }
 
     const result = await taskService.withTaskHeartbeat(db, row.task_id, '正在等待图片生成服务...', () => imageClient.callImageApi(db, log, {
+      ...(row.config_id != null ? { config_id: row.config_id } : {}),
       prompt: finalPrompt,
       model: requestSnapshot.model || row.model,
       preferred_provider: requestSnapshot.provider || undefined,
@@ -2177,6 +2245,9 @@ async function processImageGeneration(db, log, imageGenId, runtime = {}) {
       storage_local_path: storageLocalPath,
       system_prompt: apiSystemPrompt,
       negative_prompt: row.negative_prompt || undefined,
+      userId: row.user_id || undefined,
+      tenantId: row.tenant_id || undefined,
+      creditReservationId: row.credit_reservation_id || undefined,
       frame_identity_lock: isFrameIdentityLock,
     }, runtime));
     log.info('[图生] Step4 图生 API 返回', { id: imageGenId, api_ms: Date.now() - tApi, has_error: !!result.error, elapsed: elapsed() });
@@ -2186,6 +2257,10 @@ async function processImageGeneration(db, log, imageGenId, runtime = {}) {
       const providerError = result.indeterminate
         ? `供应商最终状态未知：${result.error}`
         : result.error;
+      if (result.indeterminate) {
+        markImageNeedsAttention(db, log, row, providerError, now2);
+        return;
+      }
       db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?').run(
         'failed', (providerError || '').slice(0, 500), now2, imageGenId
       );
@@ -2210,18 +2285,8 @@ async function processImageGeneration(db, log, imageGenId, runtime = {}) {
       result.image_url,
     ].map((item) => String(item || '').trim()).filter((item, index, all) => item && all.indexOf(item) === index);
     if (providerImageUrls.length < requestedQuantity) {
-      const msg = `图片生成结果数量不足：请求 ${requestedQuantity} 张，实际返回 ${providerImageUrls.length} 张`;
-      db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?').run(
-        'failed', msg, now2, imageGenId
-      );
-      if (row.task_id) taskService.updateTaskError(db, row.task_id, msg);
-      if (row.scene_id != null) {
-        try { db.prepare('UPDATE scenes SET error_msg = ?, updated_at = ? WHERE id = ?').run(msg, now2, row.scene_id); } catch (_) {}
-      }
-      if (row.storyboard_id != null) {
-        try { db.prepare('UPDATE storyboards SET error_msg = ?, updated_at = ? WHERE id = ?').run(msg, now2, row.storyboard_id); } catch (_) {}
-      }
-      settleImageCredit(db, log, row, 'failed', msg);
+      const msg = `图片生成结果数量不足：请求 ${requestedQuantity} 张，实际返回 ${providerImageUrls.length} 张；完整结果未知，请勿重复提交，等待管理员核对`;
+      markImageNeedsAttention(db, log, row, msg, now2, { artifactUnreadable: true });
       return;
     }
     const storagePath = path.isAbsolute(cfg.storage?.local_path)
@@ -2266,18 +2331,8 @@ async function processImageGeneration(db, log, imageGenId, runtime = {}) {
       log.warn('[图生] Step5 保存失败', { id: imageGenId, err: saveErrorMsg, elapsed: elapsed() });
     }
     if (persistedImages.length !== requestedQuantity) {
-      const msg = (`图片本地保存失败：${saveErrorMsg || '未生成完整本地文件'}；未标记完成，请重试生成`).slice(0, 500);
-      db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?').run(
-        'failed', msg, now2, imageGenId,
-      );
-      if (row.task_id) taskService.updateTaskError(db, row.task_id, msg);
-      if (row.scene_id != null) {
-        try { db.prepare('UPDATE scenes SET error_msg = ?, updated_at = ? WHERE id = ?').run(msg, now2, row.scene_id); } catch (_) {}
-      }
-      if (row.storyboard_id != null) {
-        try { db.prepare('UPDATE storyboards SET error_msg = ?, updated_at = ? WHERE id = ?').run(msg, now2, row.storyboard_id); } catch (_) {}
-      }
-      settleImageCredit(db, log, row, 'failed', msg);
+      const msg = (`图片本地保存失败：${saveErrorMsg || '未生成完整本地文件'}；供应商结果未知，请勿重复提交，等待管理员核对`).slice(0, 500);
+      markImageNeedsAttention(db, log, row, msg, now2, { artifactUnreadable: true });
       return;
     }
     log.info('[图生] Step5 保存完成', {
@@ -2294,7 +2349,7 @@ async function processImageGeneration(db, log, imageGenId, runtime = {}) {
     // ── Step 6: 写库 & 任务完成 ──────────────────────────────────────
     db.transaction(() => {
       db.prepare(
-        'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, result_images = ?, completed_at = ?, updated_at = ? WHERE id = ?'
+        'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, result_images = ?, error_msg = NULL, completed_at = ?, updated_at = ? WHERE id = ?'
       ).run(
         'completed',
         persistedImageUrl,
@@ -2316,12 +2371,12 @@ async function processImageGeneration(db, log, imageGenId, runtime = {}) {
         if (oldPath && !sceneExtras.includes(oldPath)) sceneExtras.push(oldPath);
         const sceneExtraJson = sceneExtras.length ? JSON.stringify(sceneExtras) : null;
         try {
-          db.prepare("UPDATE scenes SET image_url = ?, local_path = ?, extra_images = ?, status = 'generated', updated_at = ? WHERE id = ?").run(
+          db.prepare("UPDATE scenes SET image_url = ?, local_path = ?, extra_images = ?, error_msg = NULL, status = 'generated', updated_at = ? WHERE id = ?").run(
             persistedImageUrl, localPath, sceneExtraJson, now2, row.scene_id,
           );
         } catch (error) {
           if (!(error.message || '').includes('extra_images')) throw error;
-          db.prepare("UPDATE scenes SET image_url = ?, local_path = ?, status = 'generated', updated_at = ? WHERE id = ?").run(
+          db.prepare("UPDATE scenes SET image_url = ?, local_path = ?, error_msg = NULL, status = 'generated', updated_at = ? WHERE id = ?").run(
             persistedImageUrl, localPath, now2, row.scene_id,
           );
         }

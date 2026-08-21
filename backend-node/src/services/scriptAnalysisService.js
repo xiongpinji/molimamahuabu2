@@ -407,15 +407,13 @@ function validateProductionPackage(value, {
       throw new Error(`模型返回的 ${key} 必须是数组`);
     }
   }
-  if (value.schema_version === '2.0') {
-    for (const key of ['character_bible', 'scene_bible', 'prop_bible']) {
-      value[key].forEach((item, index) => {
-        if (!item || typeof item !== 'object' || Array.isArray(item)
-          || !String(item.description || '').trim()) {
-          throw new Error(`模型返回的 ${key}[${index}].description 不能为空`);
-        }
-      });
-    }
+  for (const key of ['character_bible', 'scene_bible', 'prop_bible']) {
+    value[key].forEach((item, index) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)
+        || !String(item.description || '').trim()) {
+        throw new Error(`模型返回的 ${key}[${index}].description 不能为空`);
+      }
+    });
   }
   if (!value.review || typeof value.review !== 'object' || Array.isArray(value.review)) {
     throw new Error('模型返回的 review 必须是对象');
@@ -448,7 +446,7 @@ function validateProductionPackage(value, {
       }
       for (const shot of scene.shots) {
         if (!shot?.shot_number) throw new Error('每个镜头必须包含 shot_number');
-        if (value.schema_version === '2.0' && !String(shot.description || '').trim()) {
+        if (!String(shot.description || '').trim()) {
           throw new Error('每个镜头必须包含非空 description');
         }
         if (!Array.isArray(shot.source_basis) || shot.source_basis.length === 0) {
@@ -486,7 +484,7 @@ function validateProductionPackage(value, {
   return value;
 }
 
-async function runAnalysis({ db, log, project, skill, strategyPreset }) {
+async function runAnalysis({ db, log, project, skill, strategyPreset, generationOptions = {} }) {
   const selectedSkill = skill || resolveScriptAnalysisSkill();
   const raw = await aiClient.generateText(
     db,
@@ -499,6 +497,7 @@ async function runAnalysis({ db, log, project, skill, strategyPreset }) {
       temperature: 0.3,
       json_mode: true,
       max_tokens: 12000,
+      ...generationOptions,
     },
   );
   const normalized = normalizeProductionPackage(
@@ -518,7 +517,15 @@ async function runAnalysis({ db, log, project, skill, strategyPreset }) {
   });
 }
 
-async function runRevision({ db, log, project, currentPackage, note, skill }) {
+async function runRevision({
+  db,
+  log,
+  project,
+  currentPackage,
+  note,
+  skill,
+  generationOptions = {},
+}) {
   const selectedSkill = skill || resolveScriptAnalysisSkill();
   const raw = await aiClient.generateText(
     db,
@@ -531,6 +538,7 @@ async function runRevision({ db, log, project, currentPackage, note, skill }) {
       temperature: 0.2,
       json_mode: true,
       max_tokens: 12000,
+      ...generationOptions,
     },
   );
   const normalized = normalizeProductionPackage(

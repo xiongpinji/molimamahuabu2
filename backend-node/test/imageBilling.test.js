@@ -5,6 +5,8 @@ const Database = require('better-sqlite3');
 const imageService = require('../src/services/imageService');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
+const aiConfig = require('../src/services/aiConfigService');
+const routeCosts = require('../src/services/providerRouteCostService');
 const taskService = require('../src/services/taskService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const imageRoutes = require('../src/routes/images');
@@ -63,6 +65,11 @@ test('图片任务创建与积分预扣在同一事务并关联用户', () => {
   assert.equal(event.user_id, 'user-1');
   assert.equal(event.resource_type, 'image');
   assert.equal(event.resource_id, String(image.id));
+  assert.deepEqual(
+    db.prepare('SELECT cost_micros, config_id, cost_source FROM generation_cost_records WHERE reservation_id = ?')
+      .get(row.credit_reservation_id),
+    { cost_micros: 0, config_id: null, cost_source: 'unavailable' },
+  );
 });
 
 test('服务重启清理图片任务时能通过任务关联退回预扣积分', () => {
@@ -131,6 +138,29 @@ test('图片成功后确认预扣积分', () => {
   assert.equal(credits.getReservation(db, row.credit_reservation_id).status, 'confirmed');
 });
 
+test('图片成功只按最终持久化 config_id 的线路成本结算', () => {
+  const db = setup(100);
+  prices.set(db, 'gpt-image-2', 18);
+  const config = aiConfig.createConfig(db, log, {
+    service_type: 'image', provider: 'image-cost-route', name: '图片成本线路',
+    base_url: 'https://image-cost.invalid/v1', api_key: 'test-key',
+    model: ['image-upstream'], default_model: 'image-upstream',
+    logical_model_id: 'gpt-image-2', is_active: true,
+  });
+  routeCosts.setRouteCost(db, config.id, { cost_unit: 'request', micros_per_unit: 46_000 });
+  const image = create(db);
+  db.prepare('UPDATE image_generations SET config_id = ? WHERE id = ?').run(config.id, image.id);
+  const row = db.prepare('SELECT * FROM image_generations WHERE id = ?').get(image.id);
+
+  imageService.settleImageCredit(db, log, row, 'completed');
+
+  assert.deepEqual(
+    db.prepare('SELECT config_id, cost_micros, cost_source FROM generation_cost_records WHERE reservation_id = ?')
+      .get(row.credit_reservation_id),
+    { config_id: config.id, cost_micros: 46_000, cost_source: 'provider_route' },
+  );
+});
+
 test('图片明确失败后退回预扣积分', () => {
   const db = setup(100);
   prices.set(db, 'gpt-image-2', 18);
@@ -138,13 +168,20 @@ test('图片明确失败后退回预扣积分', () => {
   const row = db.prepare('SELECT credit_reservation_id FROM image_generations WHERE id = ?').get(image.id);
   imageService.settleImageCredit(db, log, row, 'failed', '供应商明确拒绝请求');
   assert.equal(credits.getReservation(db, row.credit_reservation_id).status, 'refunded');
+  assert.deepEqual(credits.getAccount(db, 'user-1'), { user_id: 'user-1', available: 100, held: 0, spent: 0 });
 });
 
-test('图片结果未知时保持冻结', () => {
+test('同步 2xx 无可读产物的结果未知错误经过图片结算后保持冻结', () => {
   const db = setup(100);
   prices.set(db, 'gpt-image-2', 18);
   const image = create(db);
   const row = db.prepare('SELECT credit_reservation_id FROM image_generations WHERE id = ?').get(image.id);
-  imageService.settleImageCredit(db, log, row, 'failed', '网络中断，供应商结果未知，请勿重复提交');
+  imageService.settleImageCredit(db, log, row, 'failed', '图片生成响应成功但没有可读取产物，供应商结果未知；请核对供应商记录，不要连续重试');
   assert.equal(credits.getReservation(db, row.credit_reservation_id).status, 'held');
+  assert.equal(
+    db.prepare('SELECT cost_source FROM generation_cost_records WHERE reservation_id = ?')
+      .get(row.credit_reservation_id).cost_source,
+    'unknown',
+  );
+  assert.deepEqual(credits.getAccount(db, 'user-1'), { user_id: 'user-1', available: 82, held: 18, spent: 0 });
 });

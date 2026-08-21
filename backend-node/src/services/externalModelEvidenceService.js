@@ -10,14 +10,17 @@ const CONTRACT_BY_MODEL = Object.freeze({
   'seedance-2-mini': 'toapis-video-real-verification-v1',
   'gpt-image-2-2-4k': 'usmercari-image-real-verification-v1',
   'nano-banana-2': 'usmercari-image-real-verification-v1',
+  'lingjing-video-v1': 'lingjing-video-real-verification-v1',
 });
 const EVIDENCE_FILE_BY_CONTRACT = Object.freeze({
   'toapis-video-real-verification-v1': 'toapis-video-verification.json',
   'usmercari-image-real-verification-v1': 'usmercari-image-verification.json',
+  'lingjing-video-real-verification-v1': 'lingjing-video-verification.json',
 });
 const PUBLIC_PROVIDER_BY_CONTRACT = Object.freeze({
   'toapis-video-real-verification-v1': 'toapis',
   'usmercari-image-real-verification-v1': 'usmercari',
+  'lingjing-video-real-verification-v1': 'lingjing',
 });
 
 function evidenceContractForModel(model) {
@@ -102,9 +105,9 @@ function hasProtectedPublicAssets(root, contract, evidence, requireRootOwnership
   if (!secureRelativePath(root, 'public', 'directory', requireRootOwnership)
       || !secureRelativePath(root, path.join('public', provider), 'directory', requireRootOwnership)) return false;
   for (const result of results) {
-    const outputFile = String(contract === 'toapis-video-real-verification-v1'
-      ? result?.artifact?.output_file
-      : result?.output_file || '');
+    const outputFile = String(contract === 'usmercari-image-real-verification-v1'
+      ? result?.output_file
+      : result?.artifact?.output_file || '');
     if (!outputFile || path.basename(outputFile) !== outputFile) return false;
     if (!secureRelativePath(root, path.join('public', provider, outputFile), 'file', requireRootOwnership)) return false;
   }

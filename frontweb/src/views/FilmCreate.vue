@@ -1770,7 +1770,7 @@
             <span v-if="selectedVideoModelPublicNote" class="film-image-model-note">{{ selectedVideoModelPublicNote }}</span>
           </el-form-item>
           <el-form-item label="分辨率">
-            <el-select v-model="videoResolution" style="width: 160px">
+            <el-select v-model="videoResolution" style="width: 160px" @change="() => saveProjectSettings(false)">
               <el-option
                 v-for="resolution in selectedVideoResolutionOptions"
                 :key="resolution"
@@ -5305,6 +5305,7 @@ async function loadDrama() {
       selectedImageModel.value = savedImageModel
     }
     syncSelectedImageResolution(d.metadata?.image_resolution || imageResolution.value)
+    syncVideoSelectionForModel(selectedVideoModel.value)
     storyboardIncludeNarration.value = !!(d.metadata && d.metadata.storyboard_include_narration)
     storyboardUniversalOmni.value = !!(d.metadata && d.metadata.storyboard_universal_omni)
     storyboardUseFirstLastFrame.value = !!(d.metadata && d.metadata.storyboard_use_first_last_frame)

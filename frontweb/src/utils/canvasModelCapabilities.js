@@ -36,13 +36,44 @@ function normalizeCapabilities(kind, value) {
       const limit = Number(declared[key] ?? defaults[key])
       capabilities[key] = Number.isInteger(limit) && limit >= 0 ? limit : defaults[key]
     }
+    for (const [type, key] of [
+      ['image', 'supportsImageReference'],
+      ['video', 'supportsVideoReference'],
+      ['audio', 'supportsAudioReference'],
+    ]) {
+      capabilities[key] = typeof declared[key] === 'boolean'
+        ? declared[key]
+        : capabilities.referenceTypes.includes(type)
+    }
+    capabilities.supportsFirstFrame = declared.supportsFirstFrame === true
+    capabilities.supportsLastFrame = declared.supportsLastFrame === true
   }
   capabilities.declared = Boolean(Object.keys(declared).length)
   return capabilities
 }
 
+function opaqueConfigId(value) {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : null
+  }
+  if (typeof value !== 'string' || !/^\d+$/.test(value.trim())) return null
+  const number = Number(value.trim())
+  return Number.isSafeInteger(number) && number > 0 ? number : null
+}
+
+function catalogConfigId(items, normalizedItem) {
+  const direct = opaqueConfigId(normalizedItem?.config_id ?? normalizedItem?.configId)
+  if (direct !== null) return direct
+  const source = (Array.isArray(items) ? items : []).find((item) => (
+    String(item?.kind || '') === normalizedItem?.kind
+    && normalizeModelOption(item?.model) === normalizedItem?.model
+  ))
+  return opaqueConfigId(source?.config_id ?? source?.configId)
+}
+
 export function normalizeCanvasModelCatalog(items = []) {
   return normalizeQuickGenerationCatalog(items).map((item) => ({
+    configId: catalogConfigId(items, item),
     model: item.model,
     label: item.label,
     publicNote: item.publicNote,
@@ -112,7 +143,17 @@ export function canvasModelSelectionDecision(catalog, kind, model, catalogStatus
 }
 
 const CATALOG_ONLY_IMAGE_MODELS = new Set(['gpt-image-2-2-4k', 'nano-banana-2'])
-const CATALOG_ONLY_VIDEO_MODELS = new Set(['seedance-2-fast', 'seedance-2-mini'])
+const CATALOG_ONLY_VIDEO_MODELS = new Set([
+  'minimax h3',
+  'seedance-2.0-fast',
+  'seedance-2.0-mini',
+  'seedance-2-fast',
+  'seedance-2-mini',
+  'xuan-video-v1-6e7b4763634e6206',
+  'xuan-seedance-2.5',
+  'sdas-my-seedance-2.0-fast-upscaled-1080p',
+  'lingjing-video-v1',
+])
 
 export function filterCanvasCatalogFallbackModels(models = [], kind = '') {
   const uniqueModels = [...new Set((Array.isArray(models) ? models : [])
@@ -139,6 +180,56 @@ function supportsRequirements(entry, kind, requirements = {}) {
   return referenceCount <= limit
 }
 
+function safePositiveInteger(value) {
+  const number = Number(value)
+  return Number.isSafeInteger(number) && number > 0 ? number : 0
+}
+
+function imageReferenceCapability(capabilities = {}) {
+  const limit = safePositiveInteger(capabilities.maxReferences ?? capabilities.maxImageReferences)
+  const supported = capabilities.supportsImageReference === true
+    || capabilities.supportsReferenceImages === true
+    || limit > 0
+  const declaredUnsupported = capabilities.supportsImageReference === false
+    || capabilities.supportsReferenceImages === false
+    || (Object.prototype.hasOwnProperty.call(capabilities, 'maxReferences') && limit === 0)
+  return { limit, supported, declaredUnsupported }
+}
+
+export function imageModelCapabilityBadges(capabilities = {}) {
+  const badges = ['文生图']
+  const reference = imageReferenceCapability(capabilities)
+  if (reference.supported) badges.push(`图生图：最多 ${reference.limit} 张参考图`)
+  else badges.push(reference.declaredUnsupported ? '参考图：不支持' : '参考图：能力未标明')
+
+  const resolutions = Array.isArray(capabilities.resolutions)
+    ? capabilities.resolutions.map(String).filter(Boolean)
+    : []
+  if (resolutions.length) badges.push(`清晰度：${resolutions.join(' / ')}`)
+
+  const aspectRatios = Array.isArray(capabilities.aspectRatios)
+    ? capabilities.aspectRatios.map(String).filter(Boolean)
+    : []
+  if (aspectRatios.length) {
+    badges.push(aspectRatios.length <= 5
+      ? `画面比例：${aspectRatios.join(' / ')}`
+      : `画面比例：${aspectRatios.length} 种`)
+  }
+
+  const quantities = Array.isArray(capabilities.quantities)
+    ? capabilities.quantities.map(Number).filter((value) => Number.isSafeInteger(value) && value > 0)
+    : []
+  if (quantities.length === 1) badges.push(`每次 ${quantities[0]} 张`)
+  else if (quantities.length > 1) badges.push(`每次可生成：${quantities.join(' / ')} 张`)
+  return badges
+}
+
+export function imageModelCapabilityLabel(capabilities = {}) {
+  const reference = imageReferenceCapability(capabilities)
+  if (reference.supported) return `文生图 · 图生图（${reference.limit} 张参考图）`
+  return `文生图 · ${reference.declaredUnsupported ? '不支持参考图' : '参考图能力未标明'}`
+}
+
 export function canvasModelEntry(catalog, kind, model, requirements = {}) {
   const kindEntries = normalizeCanvasModelCatalog(catalog).filter((item) => item.kind === kind)
   return kindEntries.find((item) => item.model === model)
@@ -146,14 +237,21 @@ export function canvasModelEntry(catalog, kind, model, requirements = {}) {
     || null
 }
 
+export function canvasModelRoute(catalog, kind, model) {
+  return normalizeCanvasModelCatalog(catalog).find((item) => item.kind === kind && item.model === model)
+}
+
 export function canvasModelOptions(catalog, kind, requirements = {}) {
   return normalizeCanvasModelCatalog(catalog)
     .filter((item) => item.kind === kind)
     .map((item) => {
       const disabled = !supportsRequirements(item, kind, requirements)
+      const capabilityLabel = kind === 'image' ? `｜${imageModelCapabilityLabel(item.capabilities)}` : ''
       const option = {
         value: item.model,
-        label: disabled ? `${item.label}（不支持参考图）` : item.label,
+        label: disabled
+          ? `${item.label}${capabilityLabel}（超出参考图上限）`
+          : `${item.label}${capabilityLabel}`,
       }
       if (disabled) option.disabled = true
       return option
@@ -178,7 +276,7 @@ export function estimateCanvasCredits(catalog, kind, model, quantity = 1, durati
     ? entry.capabilities.quantities.map(Number)
     : []
   if (entry?.capabilities?.declared && declaredQuantities.length && !declaredQuantities.includes(normalizedQuantity)) return null
-  if (kind === 'video' && entry?.protocol === 'toapis_video') {
+  if (kind === 'video' && entry?.capabilities?.declared) {
     const durations = Array.isArray(entry.capabilities?.durations)
       ? entry.capabilities.durations.map(Number)
       : []

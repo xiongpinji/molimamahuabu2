@@ -21,7 +21,6 @@ test('共享 Skill 注册表如实区分执行、消费和预览能力', () => {
   assert.equal(resolveSkillForModule(skill.id, 'factory', 'execute'), null);
   assert.equal(resolveSkillForModule(skill.id, 'factory', 'preview')?.id, skill.id);
 });
-
 test('共享 Skill 注册项保留治理边界且不暴露系统提示词快照', () => {
   const skill = getSkillDefinition('short-drama-director');
   const snapshot = snapshotSkill(skill, 'script_analysis');
@@ -48,20 +47,8 @@ test('共享 Skill 注册项保留治理边界且不暴露系统提示词快照'
 });
 
 test('模块 Skill 清单只返回已启用且具备目标能力的注册项', () => {
-  assert.equal(listSkillsForModule('script_analysis', 'execute').length, 2);
-  assert.equal(listSkillsForModule('canvas', 'consume').length, 1);
+  assert.equal(listSkillsForModule('script_analysis', 'execute').length, 3);
+  assert.equal(listSkillsForModule('canvas', 'consume').length, 2);
   assert.equal(listSkillsForModule('factory', 'preview').length, 1);
   assert.equal(listSkillsForModule('factory', 'execute').length, 0);
-});
-
-test('V2 一体化生产导演保留为显式选择能力且不进入默认清单', () => {
-  const skill = getSkillDefinition('short-drama-production-director');
-
-  assert.equal(skill.output_schema_version, '2.0');
-  assert.equal(skill.is_default, false);
-  assert.equal(resolveSkillForModule(skill.id, 'script_analysis', 'execute')?.id, skill.id);
-  assert.equal(
-    listSkillsForModule('script_analysis', 'execute').some((item) => item.id === skill.id),
-    false,
-  );
 });

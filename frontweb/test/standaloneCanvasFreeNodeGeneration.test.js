@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  buildFreeCanvasReferenceMentionCandidates,
   buildFreeCanvasGenerationRequest,
   buildFreeCanvasProjectAssetPayload,
   collectDirectUpstreamImageReferences,
@@ -12,6 +13,10 @@ import {
   normalizeFreeCanvasSubmissionReferences,
   normalizeFreeCanvasNode,
   normalizeFreeCanvasNodeData,
+  normalizeFreeCanvasVideoReferenceMode,
+  planFreeCanvasVideoReferences,
+  pollFreeCanvasTask,
+  resolveFreeCanvasVideoReferenceInput,
   resolveFreeCanvasResultUrl,
 } from '../src/utils/freeCanvasGeneration.js'
 import * as freeCanvasGeneration from '../src/utils/freeCanvasGeneration.js'
@@ -24,6 +29,158 @@ import {
   canvasModelOptions,
   normalizeCanvasModelCatalog,
 } from '../src/utils/canvasModelCapabilities.js'
+
+test('自由节点任务轮询容忍瞬时断网并继续查询同一 task_id', async () => {
+  const calls = []
+  const task = await pollFreeCanvasTask('task-video-1', {
+    maxAttempts: 3,
+    intervalMs: 0,
+    sleep: async () => {},
+    getTask: async (taskId) => {
+      calls.push(taskId)
+      if (calls.length === 1) throw new Error('Network Error')
+      if (calls.length === 2) return { status: 'processing', progress: 40 }
+      return { status: 'completed', result: { video_url: 'https://cdn.example/result.mp4' } }
+    },
+  })
+
+  assert.equal(task.status, 'completed')
+  assert.deepEqual(calls, ['task-video-1', 'task-video-1', 'task-video-1'])
+})
+
+test('自由节点查询中断时保留已提交状态并明确禁止重复提交', async () => {
+  let calls = 0
+  await assert.rejects(
+    pollFreeCanvasTask('task-video-2', {
+      maxAttempts: 2,
+      intervalMs: 0,
+      sleep: async () => {},
+      getTask: async () => {
+        calls += 1
+        throw new Error('Network Error')
+      },
+    }),
+    (error) => error.code === 'FREE_CANVAS_TASK_STATUS_UNAVAILABLE'
+      && /任务已提交/.test(error.message)
+      && /不要重复提交/.test(error.message),
+  )
+  assert.equal(calls, 2)
+})
+
+test('自由节点 needs_attention 状态直接提示禁止重复提交', async () => {
+  await assert.rejects(
+    pollFreeCanvasTask('task-video-3', {
+      maxAttempts: 1,
+      intervalMs: 0,
+      sleep: async () => {},
+      getTask: async () => ({
+        status: 'needs_attention',
+        error: '供应商提交结果未知，请勿重复提交',
+      }),
+    }),
+    (error) => error.code === 'FREE_CANVAS_TASK_NEEDS_ATTENTION'
+      && /请勿重复提交/.test(error.message),
+  )
+})
+
+test('参考图 @ 候选按连线顺序生成图片1、图片2、图片3及同序号 token', () => {
+  const candidates = buildFreeCanvasReferenceMentionCandidates([
+    { nodeId: 'image-a', title: '角色图', url: '/a.png', ready: true, enabled: true },
+    { nodeId: 'image-b', title: '场景图', url: '/b.png', ready: true, enabled: true },
+    { nodeId: 'image-c', title: '道具图', url: '/c.png', ready: true, enabled: true },
+  ])
+
+  assert.deepEqual(candidates.map(({ label, mentionToken }) => ({ label, mentionToken })), [
+    { label: '图片1', mentionToken: '@图片1' },
+    { label: '图片2', mentionToken: '@图片2' },
+    { label: '图片3', mentionToken: '@图片3' },
+  ])
+})
+
+test('未就绪参考图不会让后续 @ 候选序号与卡片序号错位', () => {
+  const candidates = buildFreeCanvasReferenceMentionCandidates([
+    { nodeId: 'image-pending', title: '待生成', url: '', ready: false, enabled: true },
+    { nodeId: 'image-ready', title: '已生成', url: '/ready.png', ready: true, enabled: true },
+  ])
+
+  assert.equal(candidates.length, 1)
+  assert.equal(candidates[0].label, '图片2')
+  assert.equal(candidates[0].mentionToken, '@图片2')
+})
+
+test('MiniMax H3 只采用前三张参考图且未采用素材不生成 @图片 token', () => {
+  const references = Array.from({ length: 4 }, (_, index) => ({
+    nodeId: `image-${index + 1}`,
+    kind: 'image',
+    title: `参考图 ${index + 1}`,
+    url: `/static/reference-${index + 1}.png`,
+    ready: true,
+    enabled: true,
+    order: index,
+  }))
+  const capability = {
+    declared: true,
+    referenceTypes: ['image', 'audio'],
+    maxImageReferences: 3,
+    maxAudioReferences: 3,
+    maxVideoReferences: 0,
+    supportsImageReference: true,
+    supportsAudioReference: true,
+    supportsVideoReference: false,
+  }
+  const planned = planFreeCanvasVideoReferences(capability, 'omni', references)
+  assert.deepEqual(planned.map(({ enabled }) => enabled), [true, true, true, false])
+
+  const adopted = planned.filter(({ enabled }) => enabled).map(({ reference }) => reference)
+  assert.deepEqual(
+    buildFreeCanvasReferenceMentionCandidates(adopted).map(({ mentionToken }) => mentionToken),
+    ['@图片1', '@图片2', '@图片3'],
+  )
+  assert.deepEqual(buildFreeCanvasGenerationRequest({
+    kind: 'video',
+    content: '只使用已采用的三张参考图',
+    model: 'MiniMax H3',
+    videoReferenceMode: 'omni',
+    aspectRatio: '16:9',
+    duration: 15,
+    resolution: '1440p',
+  }, { dramaId: 7, upstreamReferences: references, capability }).reference_image_urls, [
+    '/static/reference-1.png',
+    '/static/reference-2.png',
+    '/static/reference-3.png',
+  ])
+})
+
+test('国内 Seedance FAST 和 MINI 按 9 图、3 视频、3 音频能力采用全部参考素材', () => {
+  const references = [
+    ...Array.from({ length: 9 }, (_, index) => ({
+      kind: 'image', url: `/static/image-${index + 1}.png`, ready: true, order: index,
+    })),
+    ...Array.from({ length: 3 }, (_, index) => ({
+      kind: 'video', url: `/static/video-${index + 1}.mp4`, ready: true, order: 9 + index,
+    })),
+    ...Array.from({ length: 3 }, (_, index) => ({
+      kind: 'audio', url: `/static/audio-${index + 1}.mp3`, ready: true, order: 12 + index,
+    })),
+  ]
+  const capability = {
+    declared: true,
+    referenceTypes: ['image', 'video', 'audio'],
+    maxReferences: 9,
+    maxImageReferences: 9,
+    maxVideoReferences: 3,
+    maxAudioReferences: 3,
+    supportsImageReference: true,
+    supportsVideoReference: true,
+    supportsAudioReference: true,
+  }
+
+  for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
+    const planned = planFreeCanvasVideoReferences(capability, 'omni', references)
+    assert.equal(planned.length, 15, model)
+    assert.equal(planned.every(({ enabled }) => enabled), true, model)
+  }
+})
 
 test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数值和状态', () => {
   assert.equal(normalizeFreeCanvasNodeData({ kind: 'scene' }), null)
@@ -46,6 +203,7 @@ test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数�
     pronunciationTones: [' 重庆/(chong2)(qing4) ', ''],
     cameraMovement: 'push-in',
     effect: 'film-grain',
+    videoReferenceMode: 'first-last',
     characterReferenceUrls: [' https://cdn.example/character.png ', ''],
     taskId: 42,
     progress: 145,
@@ -77,6 +235,7 @@ test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数�
     pronunciationTones: ['重庆/(chong2)(qing4)'],
     cameraMovement: 'push-in',
     effect: 'film-grain',
+    videoReferenceMode: 'first-last',
     characterReferenceUrls: ['https://cdn.example/character.png'],
     taskId: '42',
     progress: 100,
@@ -120,6 +279,23 @@ test('画布生成结果识别器保留线上图片和视频去重合同', () =>
     category: 'canvas-result',
     metadata: { auto_saved: true },
   }), false)
+})
+
+test('视频节点在没有参考图时仍可保存首尾帧模式', () => {
+  assert.equal(normalizeFreeCanvasVideoReferenceMode('first-last', []), 'first-last')
+})
+
+test('视频节点可持久化全能参考模式', () => {
+  assert.equal(normalizeFreeCanvasVideoReferenceMode('omni', []), 'omni')
+})
+
+test('首尾帧模式将前两张参考图映射为首帧和尾帧', () => {
+  assert.equal(resolveFreeCanvasVideoReferenceInput('first-last', 0), 'first-frame')
+  assert.equal(resolveFreeCanvasVideoReferenceInput('first-last', 1), 'last-frame')
+  assert.equal(resolveFreeCanvasVideoReferenceInput('first-last', 2), 'reference-image')
+  assert.equal(resolveFreeCanvasVideoReferenceInput('multi', 0), 'reference-image')
+  assert.equal(resolveFreeCanvasVideoReferenceInput('omni', 0), 'reference-image')
+  assert.equal(resolveFreeCanvasVideoReferenceInput('omni', 1), 'reference-image')
 })
 
 test('电影级光影校正失败重试参数可安全持久化并在刷新后恢复', () => {
@@ -276,15 +452,22 @@ test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => 
     characterReferenceUrls: ['https://cdn.example/character.png'],
   }, {
     dramaId: 7,
-    upstreamUrls: ['https://cdn.example/first.png', 'https://cdn.example/ref.png'],
+    upstreamReferences: [
+      { url: 'https://cdn.example/first.png', slot: 'first-frame' },
+      { url: 'https://cdn.example/last.png', slot: 'last-frame' },
+      { url: 'https://cdn.example/ref.png', slot: 'reference-image' },
+    ],
   })
   assert.deepEqual(videoPayload, {
     drama_id: 7,
     prompt: '镜头推近\n镜头运动：push-in\n视觉特效：film-grain\n音频要求：生成与画面同步的对白、环境音或音效。',
     model: 'kling',
+    image_url: 'https://cdn.example/first.png',
+    first_frame_url: 'https://cdn.example/first.png',
+    last_frame_url: 'https://cdn.example/last.png',
     reference_image_urls: [
       'https://cdn.example/first.png',
-      'https://cdn.example/ref.png',
+      'https://cdn.example/last.png',
       'https://cdn.example/character.png',
     ],
     aspect_ratio: '9:16',
@@ -466,8 +649,8 @@ test('图片模型只有显式声明后才开放参考图并优先选择兼容�
 
   assert.equal(catalog[0].capabilities.maxReferences, 0)
   assert.deepEqual(canvasModelOptions(catalog, 'image', { referenceCount: 2 }), [
-    { value: 'text-to-image-only', label: 'text-to-image-only（不支持参考图）', disabled: true },
-    { value: 'reference-image', label: 'reference-image' },
+    { value: 'text-to-image-only', label: 'text-to-image-only｜文生图 · 不支持参考图（超出参考图上限）', disabled: true },
+    { value: 'reference-image', label: 'reference-image｜文生图 · 图生图（6 张参考图）' },
   ])
   assert.equal(canvasModelEntry(catalog, 'image', '', { referenceCount: 2 }).model, 'reference-image')
 })
@@ -563,6 +746,31 @@ test('文本连线内容按契约进入下游图片、视频和音频模型输�
   }).prompt, '雨夜车站\n\n电影光影')
 })
 
+test('只有图片自由节点请求携带合法目录配置身份', () => {
+  const imagePayload = buildFreeCanvasGenerationRequest({
+    kind: 'image',
+    content: '一张雨夜街道',
+    model: 'image-a',
+  }, { dramaId: 7, configId: '42' })
+  assert.equal(imagePayload.config_id, 42)
+
+  for (const configId of [true, '1e2', '1.0', '+42', 0, Number.MAX_SAFE_INTEGER + 1]) {
+    const payload = buildFreeCanvasGenerationRequest({
+      kind: 'image',
+      content: '一张雨夜街道',
+      model: 'image-a',
+    }, { dramaId: 7, configId })
+    assert.equal('config_id' in payload, false)
+  }
+
+  const nonImagePayloads = [
+    buildFreeCanvasGenerationRequest({ kind: 'text', content: '旁白', model: 'text-a' }, { dramaId: 7, configId: 42 }),
+    buildFreeCanvasGenerationRequest({ kind: 'video', content: '推镜', model: 'video-a' }, { dramaId: 7, configId: 42 }),
+    buildFreeCanvasGenerationRequest({ kind: 'audio', content: '对白', model: 'audio-a' }, { dramaId: 7, configId: 42 }),
+  ]
+  for (const payload of nonImagePayloads) assert.equal('config_id' in payload, false)
+})
+
 test('文本自由节点构造真实 AI 生成请求', () => {
   assert.deepEqual(buildFreeCanvasGenerationRequest({
     kind: 'text',
@@ -632,8 +840,8 @@ test('collectDirectUpstreamImageReferences 同时呈现已就绪和等待生成�
   ]
 
   assert.deepEqual(collectDirectUpstreamImageReferences(nodes, edges, 'video'), [
-    { nodeId: 'image-ready', edgeId: 'manual:ready', title: '首帧', url: '/static/first.png', ready: true, slot: 'reference-image', enabled: true, order: 0, weight: 1 },
-    { nodeId: 'image-pending', edgeId: 'manual:pending', title: '尾帧', url: '', ready: false, slot: 'reference-image', enabled: true, order: 1, weight: 1 },
+    { kind: 'image', nodeId: 'image-ready', edgeId: 'manual:ready', title: '首帧', url: '/static/first.png', ready: true, slot: 'reference-image', enabled: true, order: 0, weight: 1 },
+    { kind: 'image', nodeId: 'image-pending', edgeId: 'manual:pending', title: '尾帧', url: '', ready: false, slot: 'reference-image', enabled: true, order: 1, weight: 1 },
   ])
 })
 
@@ -681,8 +889,6 @@ test('全能参考收集图片、视频、音频并构造真实视频请求字�
     drama_id: 7,
     prompt: '跟随参考动作',
     model: 'MiniMax H3',
-    image_url: '/static/first.png',
-    first_frame_url: '/static/first.png',
     reference_image_urls: ['/static/first.png'],
     reference_video_urls: ['/static/motion.mp4'],
     reference_audio_urls: ['/static/voice.mp3'],

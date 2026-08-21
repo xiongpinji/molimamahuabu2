@@ -314,3 +314,54 @@ test('图片分辨率价格拒绝视频档位且有分档时必须明确选择�
     (error) => error.code === 'INVALID_MODEL_PRICE',
   );
 });
+
+test('公开价格目录只返回用户价格字段且管理端仍保留完整成本', () => {
+  const db = makeDb();
+  db.exec(`CREATE TABLE ai_service_configs (
+    id INTEGER PRIMARY KEY,
+    service_type TEXT,
+    model TEXT,
+    default_model TEXT,
+    is_active INTEGER DEFAULT 1,
+    deleted_at TEXT
+  )`);
+  db.prepare(`INSERT INTO ai_service_configs
+    (service_type, model, default_model, is_active, deleted_at)
+    VALUES ('video', ?, 'public-video', 1, NULL)`)
+    .run(JSON.stringify(['public-video']));
+  prices.set(db, 'public-video', 3, {
+    display_name: '公开视频模型',
+    category: 'video',
+    billing_unit: 'second',
+    cost_unit: 'second',
+    cost_micros_per_unit: 91000,
+    input_cost_micros_per_1k: 1200,
+    output_cost_micros_per_1k: 3400,
+    resolution_prices: {
+      '480p': { credits: 3, cost_micros_per_second: 51000 },
+      '720p': { credits: 6, cost_micros_per_second: 121000 },
+    },
+  });
+
+  const publicItem = prices.listPublic(db).find((row) => row.model === 'public-video');
+  assert.deepEqual(publicItem, {
+    model: 'public-video',
+    display_name: '公开视频模型',
+    category: 'video',
+    credits: 3,
+    status: 'enabled',
+    billing_unit: 'second',
+    resolution_prices: {
+      '480p': { credits: 3 },
+      '720p': { credits: 6 },
+    },
+  });
+  assert.equal(/cost/i.test(JSON.stringify(publicItem)), false);
+
+  const adminItem = prices.list(db).find((row) => row.model === 'public-video');
+  assert.equal(adminItem.cost_unit, 'second');
+  assert.equal(adminItem.cost_micros_per_unit, 91000);
+  assert.equal(adminItem.input_cost_micros_per_1k, 1200);
+  assert.equal(adminItem.output_cost_micros_per_1k, 3400);
+  assert.equal(adminItem.resolution_prices['720p'].cost_micros_per_second, 121000);
+});

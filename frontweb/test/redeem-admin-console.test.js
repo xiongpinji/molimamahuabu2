@@ -26,6 +26,12 @@ const reconciliationApi = fs.readFileSync(
   new URL('../src/api/billingReconciliation.js', import.meta.url),
   'utf8',
 )
+const routerSource = fs.readFileSync(new URL('../src/router/index.js', import.meta.url), 'utf8')
+const dramaCanvasSource = fs.readFileSync(new URL('../src/views/DramaCanvas.vue', import.meta.url), 'utf8')
+const homeCanvasNodeSource = fs.readFileSync(
+  new URL('../src/components/dramaCanvas/HomeCanvasNode.vue', import.meta.url),
+  'utf8',
+)
 
 test('统一管理后台提供账号、兑换码、积分、对账和模型计费入口', () => {
   for (const label of ['账号管理', '兑换码', '积分流水', '积分对账', '模型计费']) {
@@ -108,6 +114,23 @@ test('未配置的默认模型首次保存时按启用状态提交', () => {
     adminSource,
     /status:\s*item\.status === 'unconfigured' \? 'enabled' : item\.status/,
   )
+})
+
+test('模型中转关联只在管理员模型配置页呈现', () => {
+  assert.match(aiConfigContentSource, /模型 → 中转站/)
+  assert.match(aiConfigContentSource, /buildAiConfigRelayAssociations/)
+  assert.match(aiConfigContentSource, /\{\{\s*association\.model\s*\}\}[\s\S]*\{\{\s*association\.detail\s*\}\}/)
+  assert.doesNotMatch(aiConfigContentSource, /v-html/)
+  assert.match(
+    routerSource,
+    /path:\s*['"]\/ai-config['"][\s\S]*?roles:\s*\['admin'\][\s\S]*?requiresAuth:\s*true/,
+  )
+  for (const publicCanvasSource of [dramaCanvasSource, homeCanvasNodeSource]) {
+    assert.doesNotMatch(
+      publicCanvasSource,
+      /模型 → 中转站|buildAiConfigRelayAssociations|未识别域名|hostname|#configId/,
+    )
+  }
 })
 
 test('管理端支持批量签发后一次性本地导出并清除明文', () => {

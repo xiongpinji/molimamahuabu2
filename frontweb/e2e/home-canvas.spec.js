@@ -76,6 +76,30 @@ const generatedMentionHomeCanvasState = {
       : node
   )),
 }
+const numberedMentionHomeCanvasState = {
+  ...mentionHomeCanvasState,
+  nodes: [
+    mentionHomeCanvasState.nodes[0],
+    {
+      ...mentionHomeCanvasState.nodes[0],
+      id: 'e2e:image-reference-2',
+      position: { x: 360, y: 680 },
+      data: { ...mentionHomeCanvasState.nodes[0].data, title: '雨夜街道' },
+    },
+    {
+      ...mentionHomeCanvasState.nodes[0],
+      id: 'e2e:image-reference-3',
+      position: { x: 360, y: 940 },
+      data: { ...mentionHomeCanvasState.nodes[0].data, title: '跑车侧面' },
+    },
+    mentionHomeCanvasState.nodes[1],
+  ],
+  edges: [
+    { id: 'e2e:reference-1', source: 'e2e:image-reference', target: 'e2e:video-target', type: 'smoothstep', data: { contract: { input: 'reference-image', order: 0 } } },
+    { id: 'e2e:reference-2', source: 'e2e:image-reference-2', target: 'e2e:video-target', type: 'smoothstep', data: { contract: { input: 'reference-image', order: 1 } } },
+    { id: 'e2e:reference-3', source: 'e2e:image-reference-3', target: 'e2e:video-target', type: 'smoothstep', data: { contract: { input: 'reference-image', order: 2 } } },
+  ],
+}
 const editorFitHomeCanvasState = {
   version: 1,
   nodes: [
@@ -566,17 +590,8 @@ test('视频提示词输入 @ 不会列出未连线的图片节点', async ({ pa
   await expect(page.locator('.vue-flow__edge')).toHaveCount(0)
 })
 
-test('视频节点已连接的图片仍可被 @ 引用且不会重复连线', async ({ page }) => {
-  const connectedState = {
-    ...mentionHomeCanvasState,
-    edges: [{
-      id: 'e2e:image-reference-to-video',
-      source: 'e2e:image-reference',
-      target: 'e2e:video-target',
-      type: 'smoothstep',
-    }],
-  }
-  await loadHomeCanvasState(page, connectedState)
+test('视频节点三张已连接参考图按序显示并插入带序号的 @ 引用', async ({ page }) => {
+  await loadHomeCanvasState(page, numberedMentionHomeCanvasState)
 
   const videoNode = page.locator('.vue-flow__node[data-id="e2e:video-target"]')
   await videoNode.click()
@@ -586,11 +601,15 @@ test('视频节点已连接的图片仍可被 @ 引用且不会重复连线', as
 
   const mentionMenu = page.getByLabel('@选择参考图')
   await expect(mentionMenu).toBeVisible()
-  await expect(mentionMenu.getByRole('button', { name: '女主角定妆照' })).toBeVisible()
-  await mentionMenu.getByRole('button', { name: '女主角定妆照' }).click()
+  const candidates = mentionMenu.getByRole('button')
+  await expect(candidates).toHaveCount(3)
+  await expect(candidates.nth(0)).toHaveAccessibleName('图片1')
+  await expect(candidates.nth(1)).toHaveAccessibleName('图片2')
+  await expect(candidates.nth(2)).toHaveAccessibleName('图片3')
+  await mentionMenu.getByRole('button', { name: '图片3' }).click()
 
-  await expect(promptInput).toHaveValue('沿用参考角色 @女主角定妆照 ')
-  await expect(page.locator('.vue-flow__edge')).toHaveCount(1)
+  await expect(promptInput).toHaveValue('沿用参考角色 @图片3 ')
+  await expect(page.locator('.vue-flow__edge')).toHaveCount(3)
 })
 
 test('生成结果数组中的图片可被 @ 引用并支持双击全屏预览', async ({ page }) => {
@@ -670,7 +689,7 @@ test('视频节点展示参考模式与图片序列，并将模式切换写回�
   await expect(editor.getByRole('tab', { name: '多图参考' })).toHaveAttribute('aria-selected', 'true')
   await expect(editor.locator('.reference-card figcaption')).toHaveText('图片1')
   await expect(editor.getByRole('tab', { name: '动作模仿' })).toBeDisabled()
-  await expect(editor.getByRole('tab', { name: '全能参考' })).toBeDisabled()
+  await expect(editor.getByRole('tab', { name: '全能参考' })).toBeEnabled()
   await expect(editor.getByRole('tab', { name: '视频编辑' })).toBeDisabled()
 
   const promptInput = editor.getByRole('textbox', { name: '生成提示词' })
@@ -688,6 +707,9 @@ test('视频节点展示参考模式与图片序列，并将模式切换写回�
 
   await editor.getByRole('tab', { name: '首尾帧' }).click()
   await expect(editor.getByRole('tab', { name: '首尾帧' })).toHaveAttribute('aria-selected', 'true')
+  await expect(editor.locator('.first-last-frame-slot')).toHaveCount(2)
+  await expect(editor.locator('[data-frame-slot="first"] figcaption')).toHaveText('首帧 · 图片1')
+  await expect(editor.locator('[data-frame-slot="last"] figcaption')).toHaveText('尾帧 · 未设置')
   await expect.poll(async () => page.evaluate((storageKey) => {
     const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
     return state.edges?.[0]?.data?.contract?.input || ''
@@ -698,6 +720,73 @@ test('视频节点展示参考模式与图片序列，并将模式切换写回�
     const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
     return state.edges?.[0]?.data?.contract?.input || ''
   }, homeCanvasStorageKey)).toBe('reference-image')
+})
+
+test('视频节点无参考图时保存首尾帧模式，并在新增两张参考图后恢复首尾帧槽位', async ({ page }) => {
+  await loadHomeCanvasState(page, mentionHomeCanvasState)
+
+  await page.locator('.vue-flow__node[data-id="e2e:video-target"]').click()
+  let editor = page.getByRole('region', { name: '视频节点编辑器' })
+  await editor.getByRole('tab', { name: '首尾帧' }).click()
+  await expect(editor.getByRole('tab', { name: '首尾帧' })).toHaveAttribute('aria-selected', 'true')
+  await expect(editor.locator('.first-last-frame-slot')).toHaveCount(2)
+  await expect(editor.locator('[data-frame-slot="first"] figcaption')).toHaveText('首帧 · 未设置')
+  await expect(editor.locator('[data-frame-slot="last"] figcaption')).toHaveText('尾帧 · 未设置')
+  await expect.poll(async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return state.nodes?.find((node) => node.id === 'e2e:video-target')?.data?.videoReferenceMode || ''
+  }, homeCanvasStorageKey)).toBe('first-last')
+
+  const firstLastState = {
+    ...mentionHomeCanvasState,
+    nodes: [
+      ...mentionHomeCanvasState.nodes.map((node) => (
+        node.id === 'e2e:video-target'
+          ? { ...node, data: { ...node.data, videoReferenceMode: 'first-last' } }
+          : node
+      )),
+      {
+        id: 'e2e:image-reference-last',
+        type: 'homeCanvasNode',
+        position: { x: 360, y: 720 },
+        data: {
+          kind: 'image',
+          title: '尾帧参考图',
+          content: '',
+          url: mentionHomeCanvasState.nodes[0].data.url,
+        },
+      },
+    ],
+    edges: [
+      {
+        id: 'e2e:first-reference-to-video',
+        source: 'e2e:image-reference',
+        target: 'e2e:video-target',
+        type: 'smoothstep',
+        data: { contract: { input: 'reference-image', enabled: true, order: 0, weight: 1 } },
+      },
+      {
+        id: 'e2e:last-reference-to-video',
+        source: 'e2e:image-reference-last',
+        target: 'e2e:video-target',
+        type: 'smoothstep',
+        data: { contract: { input: 'reference-image', enabled: true, order: 1, weight: 1 } },
+      },
+    ],
+  }
+  await loadHomeCanvasState(page, firstLastState)
+  await page.locator('.vue-flow__node[data-id="e2e:video-target"]').click()
+  editor = page.getByRole('region', { name: '视频节点编辑器' })
+  await expect(editor.getByRole('tab', { name: '首尾帧' })).toHaveAttribute('aria-selected', 'true')
+  await expect(editor.locator('.first-last-frame-slot')).toHaveCount(2)
+  await expect(editor.locator('[data-frame-slot="first"] img')).toHaveCount(1)
+  await expect(editor.locator('[data-frame-slot="last"] img')).toHaveCount(1)
+  await expect(editor.locator('[data-frame-slot="first"] figcaption')).toHaveText('首帧 · 图片1')
+  await expect(editor.locator('[data-frame-slot="last"] figcaption')).toHaveText('尾帧 · 图片2')
+  await expect.poll(async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return state.edges?.map((edge) => edge.data?.contract?.input).join(',') || ''
+  }, homeCanvasStorageKey)).toBe('first-frame,last-frame')
 })
 
 test('选中节点后按 Delete 删除，编辑输入时不会误删', async ({ page }) => {

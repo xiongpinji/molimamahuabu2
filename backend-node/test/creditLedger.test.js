@@ -14,6 +14,47 @@ function setup(available = 100) {
   return db;
 }
 
+test('旧版积分调整表升级后保留历史流水并支持充值入账', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE tenant_credit_adjustments (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_user_id TEXT,
+      event_type TEXT NOT NULL CHECK (event_type IN ('redeem', 'admin_adjust')),
+      amount INTEGER NOT NULL CHECK (amount != 0),
+      reason TEXT NOT NULL,
+      reference_type TEXT NOT NULL,
+      reference_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (tenant_id, reference_type, reference_id)
+    );
+    INSERT INTO tenant_credit_adjustments
+      (id, tenant_id, actor_user_id, event_type, amount, reason,
+        reference_type, reference_id, created_at)
+    VALUES
+      ('old-adjustment', 'tenant-1', 'admin-1', 'admin_adjust', 20, '历史调整',
+        'admin_adjustment', 'old-reference', '2026-08-01T00:00:00.000Z');
+  `);
+
+  creditLedger.ensureSchema(db);
+  const credited = creditLedger.adjustTenantBalance(db, {
+    tenantId: 'tenant-1',
+    actorUserId: 'user-1',
+    eventType: 'recharge',
+    amount: 100,
+    reason: '支付宝充值到账',
+    referenceType: 'alipay_recharge_order',
+    referenceId: 'order-1',
+  });
+
+  assert.equal(credited.event_type, 'recharge');
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_credit_adjustments').get().count, 2);
+  assert.equal(db.prepare(`SELECT event_type FROM tenant_credit_adjustments
+    WHERE id = 'old-adjustment'`).get().event_type, 'admin_adjust');
+  assert.equal(creditLedger.getTenantAccount(db, 'tenant-1').available, 100);
+});
+
 test('预扣额度后可用余额减少且冻结额度增加', () => {
   const db = setup(100);
   const reservation = creditLedger.reserve(db, {

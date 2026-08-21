@@ -19,14 +19,6 @@ function respondRechargeError(res, error) {
     response.error(res, 409, error.code, error.message);
     return true;
   }
-  if (error.code === 'ALIPAY_QUERY_FAILED') {
-    response.error(res, 502, error.code, error.message);
-    return true;
-  }
-  if (['ALIPAY_AMOUNT_MISMATCH', 'ALIPAY_ORDER_CONFLICT', 'ALIPAY_IDENTITY_MISMATCH'].includes(error.code)) {
-    response.error(res, 409, error.code, error.message);
-    return true;
-  }
   return false;
 }
 
@@ -114,22 +106,6 @@ function routes(db, log, gateway) {
       } catch (error) {
         if (respondRechargeError(res, error)) return;
         log.error('alipay recharge list orders', { error: error.message });
-        response.internalError(res, error.message);
-      }
-    },
-    reconcileOrder: async (req, res) => {
-      try {
-        response.success(res, await recharge.reconcileOrder(db, {
-          tenantId: req.tenant.id,
-          userId: req.user.id,
-          orderId: req.params.orderId,
-        }, gateway));
-      } catch (error) {
-        if (respondRechargeError(res, error)) return;
-        log.error('alipay recharge reconcile order', {
-          code: error.code,
-          orderId: String(req.params?.orderId || ''),
-        });
         response.internalError(res, error.message);
       }
     },

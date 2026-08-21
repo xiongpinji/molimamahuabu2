@@ -7,6 +7,9 @@ const { buildFeituoStatusUrl } = require('./feituoVideoClient');
 const token6688Client = require('./token6688Client');
 const usmercariVideoClient = require('./usmercariVideoClient');
 const toapisVideoClient = require('./toapisVideoClient');
+const lingjingVideoClient = require('./lingjingVideoClient');
+const fuminVideoClient = require('./fuminVideoClient');
+const fuminImageClient = require('./fuminImageClient');
 
 function normalizeApiKeyForService(serviceType, apiKey) {
   if (serviceType === 'jimeng2_character_auth' && apiKey != null) {
@@ -115,6 +118,10 @@ function resolveVideoSettingsDurations(context = {}) {
   if (protocols.some((protocol) => ['toapis', 'toapis_video'].includes(protocol))) {
     return toapisVideoClient.TOAPIS_VIDEO_MODELS[String(configuredModel || '').trim().toLowerCase()]?.durations || null;
   }
+  if (protocols.some((value) => ['lingjing', 'lingjing_open'].includes(value))
+      && String(configuredModel || '').trim().toLowerCase() === lingjingVideoClient.PUBLIC_MODEL) {
+    return lingjingVideoClient.DURATIONS;
+  }
   if (allowsUsmercariFourSecondDuration(context)) {
     return Array.from({ length: 12 }, (_, index) => index + 4);
   }
@@ -158,6 +165,27 @@ function normalizeCreateSettings(serviceType, settings, context = {}) {
   return JSON.stringify(parseVideoSettings(settings, context));
 }
 
+function validateFuminModelKeyIsolation({ provider, serviceType, model }) {
+  const normalizedProvider = String(provider || '').toLowerCase();
+  if (!['fumin', 'fumin_video'].includes(normalizedProvider) || String(serviceType || '').toLowerCase() !== 'video') {
+    return;
+  }
+  const models = Array.isArray(model) ? model : model == null ? [] : [model];
+  const names = models.map((item) => String(item || '').trim()).filter(Boolean);
+  const invalid = names.filter((item) => !fuminVideoClient.FUMIN_MODELS[item]
+    && !Object.values(fuminVideoClient.FUMIN_MODELS).includes(item));
+  if (invalid.length) {
+    const error = new Error(`fumin 模型未经真实生成验证，禁止配置: ${invalid.join(', ')}`);
+    error.code = 'INVALID_FUMIN_MODEL';
+    throw error;
+  }
+  if (names.length > 1) {
+    const error = new Error('fumin FAST 与 MINI 必须分别建立配置，每条配置只能绑定一个模型和一个 API Key');
+    error.code = 'INVALID_FUMIN_MODEL_KEY_ISOLATION';
+    throw error;
+  }
+}
+
 function mergeVideoSettings(existingSettings, incomingSettings, context = {}) {
   let existing = {};
   try {
@@ -179,7 +207,11 @@ function verificationSettingsFingerprint(settings) {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return String(settings || '');
     const connectionSettings = {};
     for (const key of Object.keys(parsed).sort()) {
-      if (CONNECTION_SETTING_KEYS.has(key.toLowerCase())) connectionSettings[key] = parsed[key];
+      const normalizedKey = key.toLowerCase();
+      if (CONNECTION_SETTING_KEYS.has(normalizedKey)
+          || ['canvas_capabilities', 'canvas_capabilities_by_model', 'capabilities'].includes(normalizedKey)) {
+        connectionSettings[key] = stableJsonValue(parsed[key], key);
+      }
     }
     return JSON.stringify(connectionSettings);
   } catch (_) {
@@ -187,10 +219,54 @@ function verificationSettingsFingerprint(settings) {
   }
 }
 
+function stableJsonValue(value, key = '') {
+  if (Array.isArray(value)) {
+    const items = value.map((item) => stableJsonValue(item));
+    if (!CAPABILITY_SET_ARRAY_KEYS.has(key)) return items;
+    return [...new Map(items
+      .map((item) => [JSON.stringify(item), item])
+      .sort(([left], [right]) => left.localeCompare(right))).values()];
+  }
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.keys(value).sort().map((childKey) => (
+    [childKey, stableJsonValue(value[childKey], childKey)]
+  )));
+}
+
+function tableColumns(db, table) {
+  return new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name));
+}
+
+function isMissingCanaryEvidenceTable(error) {
+  return error?.code === 'SQLITE_ERROR'
+    && /no such table:\s*provider_canary_evidence\b/i.test(String(error.message || ''));
+}
+
+function invalidateConfigEvidence(db, configId, reason, now) {
+  try {
+    require('./providerCanaryEvidenceService').invalidateConfig(db, configId, reason, now);
+  } catch (error) {
+    if (!isMissingCanaryEvidenceTable(error)) throw error;
+  }
+}
+
+function setPausedEvidenceState(db, configId, paused, now) {
+  try {
+    const nextState = paused ? 'disabled' : 'never_verified';
+    db.prepare(`UPDATE provider_canary_evidence
+      SET state = ?, invalidated_at = ?, invalidation_reason = 'admin_invalidated', updated_at = ?
+      WHERE config_id = ?`).run(nextState, now, now, configId);
+  } catch (error) {
+    if (!isMissingCanaryEvidenceTable(error)) throw error;
+  }
+}
+
 function createConfig(db, log, req) {
   const now = new Date().toISOString();
   const model = modelToDb(req.model);
   const serviceType = req.service_type || 'text';
+  validateFuminModelKeyIsolation({ provider: req.provider, serviceType, model: req.model });
+  fuminImageClient.validateFuminImageModels({ provider: req.provider, serviceType, model: req.model });
   const settings = normalizeCreateSettings(serviceType, req.settings, req);
   let endpoint = req.endpoint || '';
   let queryEndpoint = req.query_endpoint || '';
@@ -270,12 +346,19 @@ function createConfig(db, log, req) {
       }
     } else if (p === 'usmercari_image') {
       if (st === 'image' || st === 'storyboard_image') endpoint = '/v1/images/generations';
+    } else if (p === 'fumin' || p === 'fumin_video') {
+      if (st === 'video') {
+        endpoint = '/api/v3/contents/generations/tasks';
+        queryEndpoint = '/api/v3/contents/generations/tasks/{taskId}';
+      }
+    } else if (p === 'fumin_image') {
+      if (st === 'image' || st === 'storyboard_image') endpoint = '/images/generations';
     }
   }
   const defaultModel = req.default_model != null ? String(req.default_model).trim() || null : null;
   const info = db.prepare(
-    `INSERT INTO ai_service_configs (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, endpoint, query_endpoint, priority, is_default, is_active, settings, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
+    `INSERT INTO ai_service_configs (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, endpoint, query_endpoint, priority, is_default, is_active, settings, logical_model_id, failover_enabled, verification_status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'unverified', ?, ?)`
   ).run(
     serviceType,
     req.provider || '',
@@ -290,6 +373,8 @@ function createConfig(db, log, req) {
     req.priority ?? 0,
     req.is_default ? 1 : 0,
     settings,
+    req.logical_model_id != null ? String(req.logical_model_id).trim() || null : null,
+    req.failover_enabled ? 1 : 0,
     now,
     now
   );
@@ -302,6 +387,16 @@ function createConfig(db, log, req) {
 function updateConfig(db, log, id, req) {
   const existing = getConfig(db, id);
   if (!existing) return null;
+  validateFuminModelKeyIsolation({
+    provider: req.provider != null ? req.provider : existing.provider,
+    serviceType: req.service_type != null ? req.service_type : existing.service_type,
+    model: req.model !== undefined ? req.model : existing.model,
+  });
+  fuminImageClient.validateFuminImageModels({
+    provider: req.provider != null ? req.provider : existing.provider,
+    serviceType: req.service_type != null ? req.service_type : existing.service_type,
+    model: req.model !== undefined ? req.model : existing.model,
+  });
   const videoContextChanged = req.provider != null
     || req.api_protocol != null
     || req.model != null
@@ -318,6 +413,9 @@ function updateConfig(db, log, id, req) {
   const updates = [];
   const params = [];
   let connectivityChanged = false;
+  let routeEvidenceChanged = false;
+  let pauseChanged = false;
+  let nextCanaryPaused = existing.canary_paused === true;
   if (req.name != null) {
     updates.push('name = ?');
     params.push(req.name);
@@ -326,16 +424,19 @@ function updateConfig(db, log, id, req) {
     updates.push('provider = ?');
     params.push(req.provider);
     connectivityChanged ||= String(req.provider) !== String(existing.provider || '');
+    routeEvidenceChanged ||= String(req.provider) !== String(existing.provider || '');
   }
   if (req.api_protocol != null) {
     updates.push('api_protocol = ?');
     params.push(req.api_protocol);
     connectivityChanged ||= String(req.api_protocol) !== String(existing.api_protocol || '');
+    routeEvidenceChanged ||= String(req.api_protocol) !== String(existing.api_protocol || '');
   }
   if (req.base_url != null) {
     updates.push('base_url = ?');
     params.push(req.base_url);
     connectivityChanged ||= String(req.base_url) !== String(existing.base_url || '');
+    routeEvidenceChanged ||= String(req.base_url) !== String(existing.base_url || '');
   }
   if (req.api_key != null) {
     updates.push('api_key = ?');
@@ -343,34 +444,40 @@ function updateConfig(db, log, id, req) {
     const nextApiKey = normalizeApiKeyForService(st, req.api_key);
     params.push(nextApiKey);
     connectivityChanged ||= String(nextApiKey || '') !== String(existing.api_key || '');
+    routeEvidenceChanged ||= String(nextApiKey || '') !== String(existing.api_key || '');
   }
   if (req.model != null) {
     updates.push('model = ?');
     const nextModel = modelToDb(req.model);
     params.push(nextModel);
     connectivityChanged ||= nextModel !== modelToDb(existing.model);
+    routeEvidenceChanged ||= nextModel !== modelToDb(existing.model);
   }
   if (req.default_model !== undefined) {
     updates.push('default_model = ?');
     const nextDefaultModel = req.default_model != null ? String(req.default_model).trim() || null : null;
     params.push(nextDefaultModel);
     connectivityChanged ||= nextDefaultModel !== existing.default_model;
+    routeEvidenceChanged ||= nextDefaultModel !== existing.default_model;
   }
   if (req.priority != null) {
     updates.push('priority = ?');
     params.push(req.priority);
+    routeEvidenceChanged ||= Number(req.priority) !== Number(existing.priority || 0);
   }
   if (req.endpoint !== undefined) {
     updates.push('endpoint = ?');
     const nextEndpoint = req.endpoint || '';
     params.push(nextEndpoint);
     connectivityChanged ||= String(nextEndpoint) !== String(existing.endpoint || '');
+    routeEvidenceChanged ||= String(nextEndpoint) !== String(existing.endpoint || '');
   }
   if (req.query_endpoint !== undefined) {
     updates.push('query_endpoint = ?');
     const nextQueryEndpoint = req.query_endpoint || '';
     params.push(nextQueryEndpoint);
     connectivityChanged ||= String(nextQueryEndpoint) !== String(existing.query_endpoint || '');
+    routeEvidenceChanged ||= String(nextQueryEndpoint) !== String(existing.query_endpoint || '');
   }
   if (req.settings != null) {
     updates.push('settings = ?');
@@ -383,35 +490,75 @@ function updateConfig(db, log, id, req) {
       })
       : req.settings;
     params.push(nextSettings);
-    connectivityChanged ||= verificationSettingsFingerprint(nextSettings)
+    const settingsChanged = verificationSettingsFingerprint(nextSettings)
       !== verificationSettingsFingerprint(existing.settings);
+    connectivityChanged ||= settingsChanged;
+    routeEvidenceChanged ||= settingsChanged;
   }
   if (typeof req.is_default === 'boolean') {
     updates.push('is_default = ?');
     params.push(req.is_default ? 1 : 0);
+    routeEvidenceChanged ||= req.is_default !== existing.is_default;
   }
   if (typeof req.is_active === 'boolean') {
     updates.push('is_active = ?');
     params.push(req.is_active ? 1 : 0);
+    routeEvidenceChanged ||= req.is_active !== existing.is_active;
+  }
+  if (req.logical_model_id !== undefined) {
+    updates.push('logical_model_id = ?');
+    const nextLogicalModelId = req.logical_model_id != null ? String(req.logical_model_id).trim() || null : null;
+    params.push(nextLogicalModelId);
+    routeEvidenceChanged ||= nextLogicalModelId !== existing.logical_model_id;
+  }
+  if (typeof req.failover_enabled === 'boolean') {
+    updates.push('failover_enabled = ?');
+    params.push(req.failover_enabled ? 1 : 0);
+    routeEvidenceChanged ||= req.failover_enabled !== existing.failover_enabled;
+  }
+  if (typeof req.canary_paused === 'boolean') {
+    const columns = tableColumns(db, 'ai_service_configs');
+    if (columns.has('canary_paused')) {
+      nextCanaryPaused = req.canary_paused;
+      pauseChanged = nextCanaryPaused !== existing.canary_paused;
+      updates.push('canary_paused = ?');
+      params.push(nextCanaryPaused ? 1 : 0);
+    }
   }
   if (connectivityChanged) {
+    const columns = tableColumns(db, 'ai_service_configs');
     updates.push("verification_status = 'unverified'");
-    updates.push('verification_checked_at = NULL');
-    updates.push('verified_at = NULL');
-    updates.push('verification_error = NULL');
+    if (columns.has('verification_checked_at')) updates.push('verification_checked_at = NULL');
+    if (columns.has('verified_at')) updates.push('verified_at = NULL');
+    if (columns.has('verification_error')) updates.push('verification_error = NULL');
   }
   if (updates.length === 0) return existing;
-  params.push(new Date().toISOString(), id);
-  db.prepare('UPDATE ai_service_configs SET ' + updates.join(', ') + ', updated_at = ? WHERE id = ?').run(...params);
-  if (req.is_default === true) clearOtherDefault(db, existing.service_type, id);
+  const now = new Date().toISOString();
+  params.push(now, id);
+  const applyUpdate = () => {
+    db.prepare('UPDATE ai_service_configs SET ' + updates.join(', ') + ', updated_at = ? WHERE id = ?').run(...params);
+    if (req.is_default === true) clearOtherDefault(db, existing.service_type, id);
+    if (routeEvidenceChanged || pauseChanged) {
+      invalidateConfigEvidence(db, id, pauseChanged ? 'admin_invalidated' : 'config_changed', now);
+    }
+    if (pauseChanged) setPausedEvidenceState(db, id, nextCanaryPaused, now);
+    return getConfig(db, id);
+  };
+  const updated = db.inTransaction ? applyUpdate() : db.transaction(applyUpdate)();
   log.info('AI config updated', { config_id: id });
-  return getConfig(db, id);
+  return updated;
 }
 
 function deleteConfig(db, log, id) {
   const now = new Date().toISOString();
-  const result = db.prepare('UPDATE ai_service_configs SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL').run(now, id);
-  if (result.changes === 0) return false;
+  const applyDelete = () => {
+    const result = db.prepare('UPDATE ai_service_configs SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL').run(now, id);
+    if (result.changes === 0) return false;
+    invalidateConfigEvidence(db, id, 'admin_invalidated', now);
+    return true;
+  };
+  const deleted = db.inTransaction ? applyDelete() : db.transaction(applyDelete)();
+  if (!deleted) return false;
   log.info('AI config deleted', { config_id: id });
   return true;
 }
@@ -470,11 +617,15 @@ function rowToConfig(r) {
     priority: r.priority ?? 0,
     is_default: !!r.is_default,
     is_active: r.is_active == null ? true : !!r.is_active,
+    logical_model_id: r.logical_model_id ? String(r.logical_model_id).trim() : null,
+    failover_enabled: !!r.failover_enabled,
+    canary_paused: !!r.canary_paused,
     verification_status: String(r.verification_status || 'pending'),
     verification_checked_at: r.verification_checked_at || null,
     verified_capabilities: parseObject(r.verified_capabilities),
     verified_at: r.verified_at || null,
     verification_error: r.verification_error || null,
+    verification_evidence: r.verification_evidence || null,
     settings: r.settings,
     created_at: r.created_at,
     updated_at: r.updated_at,
@@ -509,6 +660,10 @@ const SENSITIVE_SETTING_KEYS = new Set([
 const CONNECTION_SETTING_KEYS = new Set([
   ...SENSITIVE_SETTING_KEYS,
   'kling_secret_key_base64', 'icreat_group',
+]);
+const CAPABILITY_SET_ARRAY_KEYS = new Set([
+  'aspectRatios', 'durations', 'features', 'modelFeatures', 'models', 'resolutions',
+  'requiredFeatures', 'supportedFeatures',
 ]);
 
 function redactSettings(settings) {
@@ -724,6 +879,57 @@ async function testConnection(opts) {
       .map((item) => String(item || '').trim()).filter(Boolean);
     const missing = requested.filter((item) => !available.has(item));
     if (missing.length) throw new Error(`ToAPIs 模型目录缺少: ${missing.join(', ')}`);
+    return;
+  }
+
+  // 灵境连接测试只读取模型目录，禁止创建付费任务；真实验证状态由成片证据单独写入。
+  if ((provider === 'lingjing' || protocol === 'lingjing_open') && serviceType === 'video') {
+    if (!opts.api_key) throw new Error('api_key 必填');
+    const res = await fetch(lingjingVideoClient.buildLingjingModelsUrl(base), {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${opts.api_key}` },
+    });
+    const raw = await res.text();
+    let data = null;
+    try { data = raw ? JSON.parse(raw) : null; } catch (_) {}
+    if (res.status === 401 || res.status === 403) throw new Error(`灵境 API Key 无效 (${res.status})`);
+    if (!res.ok) throw new Error(`灵境连接失败 (${res.status})`);
+    const available = new Set((Array.isArray(data?.models) ? data.models : Array.isArray(data?.data) ? data.data : [])
+      .map((item) => String(item?.model_key || item?.id || item?.name || item || '').trim()).filter(Boolean));
+    if (available.size && !available.has(lingjingVideoClient.UPSTREAM_MODEL)) {
+      throw new Error(`灵境模型目录缺少上游模型: ${lingjingVideoClient.UPSTREAM_MODEL}`);
+    }
+    return;
+  }
+
+  // fumin 连接测试只读取模型目录，禁止提交会扣费的视频任务。
+  if ((provider === 'fumin' || provider === 'fumin_video') && serviceType === 'video') {
+    if (!opts.api_key) throw new Error('api_key 必填');
+    const url = `${fuminVideoClient.normalizeFuminBaseUrl(base)}/v1/models`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${opts.api_key}` },
+    });
+    await res.text();
+    if (res.status === 401 || res.status === 403) throw new Error(`fumin API Key 无效 (${res.status})`);
+    if (!res.ok) throw new Error(`fumin 连接失败 (${res.status})`);
+    // 该目录是能力提示，不是视频模型可用性的权威来源：实测时 MINI
+    // 可能不出现在列表中，但同一 Key 仍可成功提交对应的生成任务。
+    // 连接测试只负责验证网络和鉴权，避免把目录延迟/裁剪误报成模型不可用。
+    return;
+  }
+
+  // fumin 图片连接测试只读取模型目录，禁止测试按钮提交付费图片任务。
+  if (provider === 'fumin_image' && (serviceType === 'image' || serviceType === 'storyboard_image')) {
+    if (!opts.api_key) throw new Error('api_key 必填');
+    const url = `${fuminImageClient.normalizeFuminImageBaseUrl(base)}/models`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${opts.api_key}` },
+    });
+    await res.text();
+    if (res.status === 401 || res.status === 403) throw new Error(`fumin API Key 无效 (${res.status})`);
+    if (!res.ok) throw new Error(`fumin 图片连接失败 (${res.status})`);
     return;
   }
 
@@ -1168,19 +1374,35 @@ function applyVendorLock(db, log, cfg) {
  */
 function bulkUpdateApiKey(db, log, newKey) {
   const now = new Date().toISOString();
-  const info = db.prepare(
-    `UPDATE ai_service_configs
-      SET api_key = ?,
-          verification_status = 'unverified',
-          verification_checked_at = NULL,
-          verified_at = NULL,
-          verification_error = NULL,
-          verified_capabilities = '{}',
-          updated_at = ?
-      WHERE deleted_at IS NULL`
-  ).run(newKey, now);
-  log.info('Bulk update api_key', { updated: info.changes });
-  return info.changes;
+  const applyUpdate = () => {
+    const ids = db.prepare(`SELECT id FROM ai_service_configs
+      WHERE deleted_at IS NULL AND api_key IS NOT ? ORDER BY id`).all(newKey).map((row) => row.id);
+    if (!ids.length) return 0;
+    const columns = tableColumns(db, 'ai_service_configs');
+    const assignments = ['api_key = ?'];
+    if (columns.has('verification_status')) assignments.push("verification_status = 'unverified'");
+    if (columns.has('verification_checked_at')) assignments.push('verification_checked_at = NULL');
+    if (columns.has('verified_at')) assignments.push('verified_at = NULL');
+    if (columns.has('verification_error')) assignments.push('verification_error = NULL');
+    if (columns.has('verified_capabilities')) assignments.push("verified_capabilities = '{}'");
+    if (columns.has('updated_at')) assignments.push('updated_at = ?');
+    const update = db.prepare(`UPDATE ai_service_configs SET ${assignments.join(', ')}
+      WHERE id = ? AND deleted_at IS NULL AND api_key IS NOT ?`);
+    let updated = 0;
+    for (const id of ids) {
+      const params = [newKey];
+      if (columns.has('updated_at')) params.push(now);
+      params.push(id, newKey);
+      const info = update.run(...params);
+      if (info.changes === 0) continue;
+      invalidateConfigEvidence(db, id, 'admin_invalidated', now);
+      updated += info.changes;
+    }
+    return updated;
+  };
+  const updated = db.inTransaction ? applyUpdate() : db.transaction(applyUpdate).immediate();
+  log.info('Bulk update api_key', { updated });
+  return updated;
 }
 
 module.exports = {
@@ -1195,6 +1417,8 @@ module.exports = {
   applyVendorLock,
   bulkUpdateApiKey,
   hasConnectionCredential,
+  validateFuminModelKeyIsolation,
+  validateFuminImageModels: fuminImageClient.validateFuminImageModels,
   toPublicConfig,
   isVerifiedConfig,
   redactVerificationError,

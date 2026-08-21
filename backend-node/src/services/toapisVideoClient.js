@@ -13,9 +13,9 @@ const TOAPIS_VIDEO_MODELS = Object.freeze({
     ...TOAPIS_VIDEO_COMMON_CAPABILITIES,
     durations: Object.freeze([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
     resolutions: Object.freeze(['480p', '720p']),
-    maxReferences: 1,
-    maxVideoReferences: 1,
-    maxAudioReferences: 1,
+    maxReferences: 9,
+    maxVideoReferences: 3,
+    maxAudioReferences: 3,
   }),
   'seedance-2-mini': Object.freeze({
     ...TOAPIS_VIDEO_COMMON_CAPABILITIES,
@@ -146,8 +146,23 @@ function assertPublicHttpsUrl(value, field) {
   return raw;
 }
 
-function assertReferenceUrls(values, field) {
-  return values.map((value) => assertPublicHttpsUrl(value, field));
+function trustedAssetUrls(values) {
+  return new Set((Array.isArray(values) ? values : [])
+    .map((value) => String(value || '').trim())
+    .filter((value) => /^asset:\/\/pa_[A-Za-z0-9_-]+$/.test(value)));
+}
+
+function assertReferenceUrl(value, field, trustedAssets) {
+  const raw = String(value || '').trim();
+  if (/^asset:/i.test(raw)) {
+    if (/^asset:\/\/pa_[A-Za-z0-9_-]+$/.test(raw) && trustedAssets.has(raw)) return raw;
+    throw new Error(`ToAPIs ${field} 必须是公网 HTTPS URL 或可信虚拟人像素材`);
+  }
+  return assertPublicHttpsUrl(raw, field);
+}
+
+function assertReferenceUrls(values, field, trustedAssets) {
+  return values.map((value) => assertReferenceUrl(value, field, trustedAssets));
 }
 
 function validateToapisVideoOptions(opts = {}) {
@@ -169,16 +184,17 @@ function validateToapisVideoOptions(opts = {}) {
     throw new Error(`ToAPIs Seedance 2 不支持画幅 ${aspectRatio}`);
   }
 
+  const trustedAssets = trustedAssetUrls(opts.trusted_asset_urls);
   const firstFrameRaw = String(opts.first_frame_url || opts.image_url || '').trim();
   const lastFrameRaw = String(opts.last_frame_url || '').trim();
-  const images = assertReferenceUrls(uniqueValues(opts.reference_urls), '参考图');
-  const videos = assertReferenceUrls(uniqueValues(opts.reference_video_urls), '参考视频');
+  const images = assertReferenceUrls(uniqueValues(opts.reference_urls), '参考图', trustedAssets);
+  const videos = assertReferenceUrls(uniqueValues(opts.reference_video_urls), '参考视频', trustedAssets);
   const audio = assertReferenceUrls(uniqueValues([
     ...(Array.isArray(opts.reference_audio_urls) ? opts.reference_audio_urls : []),
     opts.voice_reference_url,
-  ]), '参考音频');
-  const firstFrame = firstFrameRaw ? assertPublicHttpsUrl(firstFrameRaw, '首帧') : '';
-  const lastFrame = lastFrameRaw ? assertPublicHttpsUrl(lastFrameRaw, '尾帧') : '';
+  ]), '参考音频', trustedAssets);
+  const firstFrame = firstFrameRaw ? assertReferenceUrl(firstFrameRaw, '首帧', trustedAssets) : '';
+  const lastFrame = lastFrameRaw ? assertReferenceUrl(lastFrameRaw, '尾帧', trustedAssets) : '';
   if (images.length > spec.maxReferences) throw new Error(`ToAPIs 模型 ${model} 最多支持 ${spec.maxReferences} 张参考图`);
   if (videos.length > spec.maxVideoReferences) throw new Error(`ToAPIs 模型 ${model} 最多支持 ${spec.maxVideoReferences} 个参考视频`);
   if (audio.length > spec.maxAudioReferences) throw new Error(`ToAPIs 模型 ${model} 最多支持 ${spec.maxAudioReferences} 个参考音频`);
@@ -235,10 +251,20 @@ function sanitizeProviderMessage(value) {
     .slice(0, 180);
 }
 
-function indeterminateCreateError(message) {
+function formatProviderError(payload) {
+  const code = String(payload?.error?.code || payload?.code || '').trim();
+  const message = extractError(payload);
+  if (/PrivacyInformation|real person/i.test(`${code} ${message}`)) {
+    return '该供应商禁止使用疑似真人参考图，请改用非真人或卡通素材，或切换其他已验证模型；本次未生成';
+  }
+  return sanitizeProviderMessage(message);
+}
+
+function indeterminateCreateError(message, routeMeta = {}) {
   return {
     indeterminate: true,
     error: `ToAPIs 创建请求结果未知，供应商可能已受理或扣费但本平台未取得 task_id；为避免重复扣费，不得自动重试。${message || ''}`.trim(),
+    route_meta: { phase: 'submit', requestBodySent: true, ...routeMeta },
   };
 }
 
@@ -277,22 +303,34 @@ async function readJsonResponse(response) {
 
 async function callToapisVideoApi(config, log, opts = {}, requestOpts = {}) {
   const apiKey = resolveToapisApiKey(config);
-  if (!apiKey) return { error: 'ToAPIs API Key 未配置' };
+  if (!apiKey) return {
+    error: 'ToAPIs API Key 未配置',
+    route_meta: { phase: 'validation', requestBodySent: false, providerCode: 'AUTH_INVALID', explicitlyRejected: true },
+  };
   let body;
   try {
     body = buildToapisVideoBody(opts);
   } catch (error) {
-    return { error: error.message };
+    return {
+      error: error.message,
+      route_meta: { phase: 'validation', requestBodySent: false, providerCode: 'INVALID_ARGUMENT', explicitlyRejected: true },
+    };
   }
   let baseUrl;
   try {
     baseUrl = normalizeToapisBaseUrl(config?.base_url);
   } catch (error) {
-    return { error: error.message };
+    return {
+      error: error.message,
+      route_meta: { phase: 'validation', requestBodySent: false, providerCode: 'INVALID_ARGUMENT', explicitlyRejected: true },
+    };
   }
   const url = `${baseUrl}/v1/videos/generations`;
   const fetchImpl = requestOpts.fetchImpl || globalThis.fetch;
-  if (typeof fetchImpl !== 'function') return { error: 'ToAPIs fetch 不可用' };
+  if (typeof fetchImpl !== 'function') return {
+    error: 'ToAPIs fetch 不可用',
+    route_meta: { phase: 'connect', requestBodySent: false },
+  };
   log?.info?.('[ToAPIs 视频] 创建任务', {
     video_gen_id: opts.video_gen_id,
     model: body.model,
@@ -310,22 +348,39 @@ async function callToapisVideoApi(config, log, opts = {}, requestOpts = {}) {
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-  } catch (_) {
-    return indeterminateCreateError('连接中断。');
+  } catch (error) {
+    return indeterminateCreateError('连接中断。', { transportCode: error?.cause?.code || error?.code });
   }
   const { raw, payload } = await readJsonResponse(response);
   if (!response.ok) {
     if (response.status === 408 || response.status >= 500) {
-      return indeterminateCreateError(`HTTP ${response.status}。`);
+      return indeterminateCreateError(`HTTP ${response.status}。`, { httpStatus: response.status });
     }
-    if (!payload) return indeterminateCreateError(`HTTP ${response.status} 返回非 JSON 响应。`);
-    const message = sanitizeProviderMessage(extractError(payload));
-    return { error: `ToAPIs 创建视频任务失败 (${response.status})${message ? `: ${message}` : ''}` };
+    if (!payload) return indeterminateCreateError(`HTTP ${response.status} 返回非 JSON 响应。`, {
+      httpStatus: response.status,
+    });
+    const message = formatProviderError(payload);
+    return {
+      error: `ToAPIs 创建视频任务失败 (${response.status})${message ? `: ${message}` : ''}`,
+      route_meta: {
+        phase: 'submit',
+        requestBodySent: true,
+        httpStatus: response.status,
+        providerCode: String(payload?.error?.code || payload?.code || '').trim() || undefined,
+        explicitlyRejected: [400, 401, 413, 422, 429].includes(Number(response.status)),
+      },
+    };
   }
-  if (!payload) return indeterminateCreateError('返回非 JSON 响应。');
+  if (!payload) return indeterminateCreateError('返回非 JSON 响应。', { httpStatus: response.status });
   const taskId = payload.id ?? payload.task_id ?? payload?.data?.id ?? payload?.data?.task_id;
-  if (taskId == null || String(taskId).trim() === '') return indeterminateCreateError('未取得 task_id。');
-  return { task_id: String(taskId), status: String(payload.status || payload?.data?.status || 'processing').toLowerCase() };
+  if (taskId == null || String(taskId).trim() === '') {
+    return indeterminateCreateError('未取得 task_id。', { httpStatus: response.status });
+  }
+  return {
+    task_id: String(taskId),
+    status: String(payload.status || payload?.data?.status || 'processing').toLowerCase(),
+    route_meta: { httpStatus: response.status, providerTaskId: String(taskId) },
+  };
 }
 
 async function fetchToapisTask(config, taskId, opts = {}) {
@@ -355,7 +410,7 @@ async function fetchToapisTask(config, taskId, opts = {}) {
     return { state: 'processing', retryable: true, error: `ToAPIs 查询返回非 JSON 响应 (${response.status || 'unknown'})` };
   }
   if (!response.ok) {
-    const message = sanitizeProviderMessage(extractError(payload));
+    const message = formatProviderError(payload);
     return { state: 'failed', error: `ToAPIs 查询任务失败 (${response.status})${message ? `: ${message}` : ''}` };
   }
   return parseToapisTask(payload);

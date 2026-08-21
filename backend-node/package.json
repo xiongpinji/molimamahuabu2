@@ -20,6 +20,7 @@
     "audit:canvas-credit-contract": "node scripts/audit-canvas-credit-contract.js",
     "audit:incremental-release": "node scripts/verify-incremental-release-scope.js",
     "audit:canvas-reference-sequence": "node scripts/verify-canvas-reference-sequence-contract.js",
+    "audit:feature-lock": "node scripts/verify-feature-lock-manifest.js",
     "verify:usmercari-image": "node scripts/verify-usmercari-image-models.js",
     "verify:icreat-mini-reference-video": "node scripts/run-icreat-mini-reference-video-case.js",
     "verify:redraw-clean-plate-local": "node scripts/run-redraw-clean-plate-local-case.js --fixture",
@@ -42,7 +43,7 @@
     "@volcengine/openapi": "^1.36.2",
     "adm-zip": "^0.6.0",
     "alipay-sdk": "^4.14.0",
-    "better-sqlite3": "^11.6.0",
+    "better-sqlite3": "^12.11.1",
     "buffer": "^6.0.3",
     "cors": "^2.8.5",
     "express": "^4.22.2",
@@ -61,5 +62,9 @@
       "protobufjs": "^7.6.3",
       "uuid": "^11.1.1"
     }
+  },
+  "devDependencies": {
+    "ajv": "8.17.1",
+    "ajv-formats": "3.0.1"
   }
 }

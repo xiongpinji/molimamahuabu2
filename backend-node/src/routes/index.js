@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const response = require('../response');
 const dramaRoutes = require('./drama');
 const taskRoutes = require('./task');
@@ -34,6 +35,7 @@ const billingRoutes = require('./billing');
 const alipayRechargeRoutes = require('./alipay-recharge');
 const tenantRoutes = require('./tenants');
 const platformAccountRoutes = require('./platformAccounts');
+const providerStabilityRoutes = require('./providerStability');
 const { createEmailService } = require('../services/emailService');
 const { createRateLimitMiddleware } = require('../middleware/rateLimit');
 const { createModelGenerationGuard } = require('../middleware/modelGenerationGuard');
@@ -102,6 +104,12 @@ function setupRouter(cfg, db, log, options = {}) {
   const uploadHandlers = uploadModule.routes(cfg, log, db, { publicPlatformEnabled });
   const tenants = tenantRoutes(db, log);
   const platformAccounts = platformAccountRoutes(db, log);
+  const providerStorageRoot = cfg.storage?.local_path
+    ? path.resolve(process.cwd(), cfg.storage.local_path)
+    : path.join(process.cwd(), 'data', 'storage');
+  const providerStability = providerStabilityRoutes(db, log, {
+    storageRoot: providerStorageRoot,
+  });
   const requirePlatformPermission = (permission) => createPlatformPermissionMiddleware(
     permission,
     { enabled: publicPlatformEnabled },
@@ -183,6 +191,16 @@ function setupRouter(cfg, db, log, options = {}) {
   r.put('/billing/plans/:planId', requireAdmin, requireBillingManager, billing.upsertPlan);
   r.get('/billing/prices', requireAdmin, requireBillingManager, billing.listPrices);
   r.put('/billing/prices/:model', requireAdmin, requireBillingManager, billing.updatePrice);
+  r.get('/admin/provider-stability/routes', requireAdmin, requireBillingManager, providerStability.listRoutes);
+  r.get('/admin/provider-stability/events', requireAdmin, requireBillingManager, providerStability.listEvents);
+  r.get('/admin/provider-stability/canary/summary', requireAdmin, requireBillingManager, providerStability.getCanarySummary);
+  r.get('/admin/provider-stability/canary/runs', requireAdmin, requireBillingManager, providerStability.listCanaryRuns);
+  r.post('/admin/provider-stability/canary/runs/:runId/reconcile', requireAdmin, requireBillingManager, providerStability.reconcileCanaryRun);
+  r.get('/admin/provider-stability/routes/:configId/cost', requireAdmin, requireBillingManager, providerStability.getRouteCost);
+  r.put('/admin/provider-stability/routes/:configId/cost', requireAdmin, requireBillingManager, providerStability.updateRouteCost);
+  r.patch('/admin/provider-stability/routes/:configId', requireAdmin, requireBillingManager, providerStability.updateRoute);
+  r.post('/admin/provider-stability/routes/:configId/reset-health', requireAdmin, requireBillingManager, providerStability.resetHealth);
+  r.post('/admin/provider-stability/routes/:configId/verify-from-generation', requireAdmin, requireBillingManager, providerStability.verifyFromGeneration);
   r.get('/billing/admin/recharge-packages', requireAdmin, requireBillingManager, alipayRecharge.listAdminPackages);
   r.post('/billing/admin/recharge-packages', requireAdmin, requireBillingManager, alipayRecharge.createAdminPackage);
   r.post('/billing/admin/recharge-packages/image', requireAdmin, requireBillingManager, uploadHandlers.multerRechargePackageImageSingle, uploadHandlers.uploadRechargePackageImage);
@@ -206,7 +224,6 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/billing/recharge/packages', alipayRecharge.listPackages);
   r.get('/billing/recharge/alipay/orders', alipayRecharge.listOrders);
   r.post('/billing/recharge/alipay/orders', alipayRecharge.createOrder);
-  r.post('/billing/recharge/alipay/orders/:orderId/reconcile', alipayRecharge.reconcileOrder);
   r.get('/video-models', aiConfig.listPublicVideoModels);
   r.get('/image-models', aiConfig.listPublicImageModels);
   r.get('/canvas/model-catalog', (req, res) => {

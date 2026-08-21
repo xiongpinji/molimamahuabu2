@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "release": "image-model-relay-repair",
+  "allowedPaths": [
+    "backend-node/migrations/58_image_generation_config_route.sql",
+    "backend-node/scripts/deactivate-aihubcc-gpt-image-2-2k.js",
+    "backend-node/src/db/migrate.js",
+    "backend-node/src/routes/images.js",
+    "backend-node/src/services/canvasModelCatalogService.js",
+    "backend-node/src/services/imageClient.js",
+    "backend-node/src/services/imageService.js",
+    "deploy/release-scopes/image-model-relay-repair.json",
+    "frontweb/src/components/AIConfigContent.vue",
+    "frontweb/src/utils/aiConfigRelayAssociation.js",
+    "frontweb/src/utils/canvasModelCapabilities.js",
+    "frontweb/src/utils/freeCanvasGeneration.js",
+    "frontweb/src/views/DramaCanvas.vue"
+  ]
+}

@@ -1,0 +1,13 @@
+# canvas-reference-numbered-mentions-v1: changes require explicit approval from the repository owner.
+/.github/CODEOWNERS @xiongpinji
+/.github/workflows/dependency-security.yml @xiongpinji
+/backend-node/package.json @xiongpinji
+/backend-node/scripts/verify-canvas-reference-sequence-contract.js @xiongpinji
+/backend-node/test/canvasReferenceSequenceContract.test.js @xiongpinji
+/frontweb/src/utils/freeCanvasGeneration.js @xiongpinji
+/frontweb/src/views/DramaCanvas.vue @xiongpinji
+/frontweb/src/views/HomeCanvas.vue @xiongpinji
+/frontweb/src/components/dramaCanvas/HomeCanvasNode.vue @xiongpinji
+/frontweb/test/standaloneCanvasFreeNodeGeneration.test.js @xiongpinji
+/frontweb/test/standaloneCanvasFreeNodeRuntime.test.js @xiongpinji
+/frontweb/e2e/home-canvas.spec.js @xiongpinji

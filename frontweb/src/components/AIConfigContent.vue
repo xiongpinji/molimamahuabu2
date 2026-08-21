@@ -80,6 +80,21 @@
                 {{ normalizeModelOption(row.default_model) || (Array.isArray(row.model) && normalizeModelOption(row.model[0])) || '—' }}
               </template>
             </el-table-column>
+            <el-table-column label="模型 → 中转站" min-width="260">
+              <template #default="{ row }">
+                <div v-if="row.relay_associations.length" class="relay-associations">
+                  <div
+                    v-for="association in row.relay_associations"
+                    :key="`${row.id}:${association.model}`"
+                    class="relay-association"
+                  >
+                    <span class="relay-model">{{ association.model }}</span>
+                    <span class="relay-detail">{{ association.detail }}</span>
+                  </div>
+                </div>
+                <span v-else class="no-default">—</span>
+              </template>
+            </el-table-column>
             <el-table-column prop="service_type" label="类型" width="148">
               <template #default="{ row }">
                 <span :class="['type-badge', 'type-' + row.service_type]">
@@ -132,6 +147,11 @@
               </template>
             </el-table-column>
           </el-table>
+        </div>
+      </el-tab-pane>
+      <el-tab-pane label="稳定性" name="stability">
+        <div class="tab-content">
+          <ProviderStabilityPanel />
         </div>
       </el-tab-pane>
       <el-tab-pane label="高级设置（提示词）" name="prompts">
@@ -363,6 +383,7 @@
             <el-option label="ToAPIs 视频（Seedance 2 异步生成）" value="toapis_video" />
             <el-option label="飞拓视频（H3-2K / Seedance 2.5）" value="feituo_open" />
             <el-option label="USMercari 图片（文生图 / 公网参考图）" value="usmercari_image" />
+            <el-option label="fumin Seedance 2.0（异步任务）" value="fumin_video" />
             <el-option label="DJPSD Seedance 2.0（异步任务）" value="djpsd" />
             <el-option label="NanoBanana" value="nano_banana" />
           </el-select>
@@ -1228,7 +1249,9 @@ import { generationSettingsAPI } from '@/api/prompts'
 import PromptEditor from '@/components/PromptEditor.vue'
 import SceneModelMap from '@/components/SceneModelMap.vue'
 import Sd2AssetManagement from '@/components/Sd2AssetManagement.vue'
-import { mergeVideoDurationSetting, readVideoDurationSetting, videoDurationOptionsForCapability } from '@/utils/videoDuration'
+import ProviderStabilityPanel from '@/components/ProviderStabilityPanel.vue'
+import { VIDEO_DURATION_OPTIONS, mergeVideoDurationSetting, readVideoDurationSetting, videoDurationOptionsForCapability } from '@/utils/videoDuration'
+import { buildAiConfigRelayAssociations } from '@/utils/aiConfigRelayAssociation'
 
 const activeTab = ref('configs')
 const importFileRef = ref(null)
@@ -1485,6 +1508,7 @@ const providerConfigs = {
     { id: 'aihubcc', name: 'AIHubCC 图片', models: AIHUBCC_IMAGE_MODELS },
     { id: 'token6688', name: 'Token6688 图片', models: ['doubao-seedream-5-0', 'token6688-gpt-image-2', 'gemini-3-pro-image'] },
     { id: 'usmercari_image', name: 'USMercari 图片', models: ['gpt-image-2-2-4k', 'nano-banana-2'] },
+    { id: 'fumin_image', name: 'fumin GPT Image 2', models: ['fumin-gpt-image-2', 'fumin-gpt-image-2-4K'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
@@ -1499,6 +1523,7 @@ const providerConfigs = {
     { id: 'aihubcc', name: 'AIHubCC 图片', models: AIHUBCC_IMAGE_MODELS },
     { id: 'token6688', name: 'Token6688 图片', models: ['doubao-seedream-5-0', 'token6688-gpt-image-2', 'gemini-3-pro-image'] },
     { id: 'usmercari_image', name: 'USMercari 图片', models: ['gpt-image-2-2-4k', 'nano-banana-2'] },
+    { id: 'fumin_image', name: 'fumin GPT Image 2', models: ['fumin-gpt-image-2', 'fumin-gpt-image-2-4K'] },
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
@@ -1511,9 +1536,10 @@ const providerConfigs = {
   video: [
     { id: 'aihubcc', name: 'AIHubCC 视频', models: AIHUBCC_VIDEO_MODELS },
     { id: 'token6688', name: 'Token6688 Seedance 特价按次', models: ['seedance-2-0-special-mini-720p', 'seedance-2-0-special-fast-720p', 'seedance-2-0-special-full-720p'] },
-    { id: 'usmercari', name: 'USMercari MiniMax H3 / Seedance', models: ['MiniMax H3', 'seedance-2.0-fast', 'seedance-2.0-mini'] },
     { id: 'toapis', name: 'ToAPIs Seedance 2', models: ['seedance-2-fast', 'seedance-2-mini'] },
     { id: 'feituo', name: '飞拓 H3-2K / Seedance 2.5', models: ['xuan-video-v1-6e7b4763634e6206', 'xuan-seedance-2.5'] },
+    { id: 'fumin', name: 'fumin Seedance 2.0', models: ['fumin-seedance-2.0-fast', 'fumin-seedance-2.0-mini'] },
+    { id: 'usmercari', name: 'USMercari MiniMax H3 / Seedance', models: ['MiniMax H3', 'seedance-2.0-fast', 'seedance-2.0-mini'] },
     { id: 'icreat', name: 'iCreat Seedance', models: ['bytedance/seedance-2-0-fast', 'bytedance/seedance-2-0-mini'] },
     { id: 'djpsd_openapi', name: 'DJPSD 开放 API', models: ['video-v1'] },
     { id: 'djpsd', name: 'DJPSD / Seedance 2.0', models: ['seedance 2.0'] },
@@ -1561,6 +1587,7 @@ const providerProtocolMap = {
   volces: 'volcengine',
   volc: 'volcengine',
   nano_banana: 'nano_banana',
+  fumin_image: 'openai',
   dashscope: 'dashscope',
   qwen_image: 'dashscope',
   gemini: 'gemini',
@@ -1581,6 +1608,8 @@ const providerProtocolMap = {
   usmercari_media: 'usmercari_media',
   toapis: 'toapis_video',
   feituo: 'feituo_open',
+  fumin: 'fumin_video',
+  fumin_video: 'fumin_video',
   djpsd: 'djpsd',
   minimax: 'openai',
   openai: 'openai',
@@ -1620,6 +1649,8 @@ function getBaseUrlForProvider(provider) {
   if (p === 'usmercari' || p === 'usmercari_media') return 'https://ai.usmercari.com'
   if (p === 'toapis') return 'https://toapis.com'
   if (p === 'feituo') return 'https://feituokuajing.com'
+  if (p === 'fumin' || p === 'fumin_video') return 'https://fumin.ai'
+  if (p === 'fumin_image') return 'https://fumin.ai/v1'
   if (p === 'agnes') return 'https://apihub.agnes-ai.com/v1'
   if (p === 'djpsd_openapi' || p === 'djpsd') return 'https://shiping.djpsd.com'
   return 'https://api.chatfire.site/v1'
@@ -1774,6 +1805,9 @@ const endpointPreviewInfo = computed(() => {
     } else if (proto === 'usmercari_media' || p === 'usmercari') {
       submitPath = endpoint || '/cpa-file/submit/video'
       queryPath = '/cpa-file/fetch'
+    } else if (proto === 'fumin_video' || p === 'fumin' || p === 'fumin_video') {
+      submitPath = endpoint || '/api/v3/contents/generations/tasks'
+      queryPath = query_endpoint || '/api/v3/contents/generations/tasks/{taskId}'
     } else if (proto === 'icreat_task' || p === 'icreat') {
       submitPath = endpoint || '/v1/task/submit/{model}'
     } else if (proto === 'aihubcc' || p === 'aihubcc') {
@@ -1996,6 +2030,16 @@ function onProviderChange(providerId) {
     form.value.endpoint = '/api/open/v1/video/generate'
     form.value.query_endpoint = '/api/open/v1/video/status?jobId={taskId}'
   }
+  if (st === 'video' && (providerId === 'fumin' || providerId === 'fumin_video')) {
+    form.value.api_protocol = 'fumin_video'
+    form.value.endpoint = '/api/v3/contents/generations/tasks'
+    form.value.query_endpoint = '/api/v3/contents/generations/tasks/{taskId}'
+  }
+  if ((st === 'image' || st === 'storyboard_image') && providerId === 'fumin_image') {
+    form.value.api_protocol = 'openai'
+    form.value.endpoint = '/images/generations'
+    form.value.query_endpoint = ''
+  }
   if ((st === 'image' || st === 'storyboard_image') && providerId === 'kling') {
     form.value.endpoint = '/v1/images/generations'
     form.value.query_endpoint = '/v1/images/generations/{taskId}'
@@ -2077,7 +2121,11 @@ function onRowEdit(row) {
 async function loadList() {
   loading.value = true
   try {
-    list.value = await aiAPI.list()
+    const configs = await aiAPI.list()
+    list.value = configs.map((row) => ({
+      ...row,
+      relay_associations: buildAiConfigRelayAssociations(row),
+    }))
   } catch (_) {
     list.value = []
   } finally {
@@ -2726,6 +2774,22 @@ onMounted(() => {
   background: rgba(99, 102, 241, 0.12);
   color: #6366f1;
   border-color: rgba(99, 102, 241, 0.25);
+}
+
+.relay-associations {
+  display: grid;
+  gap: 6px;
+}
+.relay-association {
+  display: grid;
+  line-height: 1.35;
+}
+.relay-model {
+  font-weight: 600;
+}
+.relay-detail {
+  color: #909399;
+  font-size: 12px;
 }
 
 .no-default {

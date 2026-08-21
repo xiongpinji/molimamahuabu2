@@ -12,6 +12,8 @@ const novelImport = require('../src/services/novelImportService');
 const prices = require('../src/services/modelPriceService');
 const storyGeneration = require('../src/services/storyGenerationService');
 const textBilling = require('../src/services/text-generation-billing-service');
+const usageContext = require('../src/services/generationUsageContext');
+const routeCosts = require('../src/services/providerRouteCostService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 const log = { info() {}, warn() {}, error() {} };
@@ -89,6 +91,33 @@ test('文本生成计费上下文按实际模型预扣并确认租户积分', (t
   assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 5);
 });
 
+test('文本成功按最终线路和实际 token 用量记录成本', (t) => {
+  const db = setup();
+  t.after(() => db.close());
+  const config = aiConfig.listConfigs(db).find((row) => row.service_type === 'text');
+  routeCosts.setRouteCost(db, config.id, {
+    cost_unit: 'token', input_cost_micros_per_1k: 1_000,
+    output_cost_micros_per_1k: 3_000,
+  });
+  const billing = textBilling.begin(db, {
+    enabled: true, tenantId: 'tenant-a', userId: 'user-1', requestedModel: 'GPT-5.5',
+    resourceType: 'canvas_text', resourceId: 'node-cost', operation: 'canvas_text',
+  });
+  usageContext.captureRoute(config.id);
+  usageContext.capture({ prompt_tokens: 1_000, completion_tokens: 2_000 });
+
+  textBilling.settle(db, log, billing, 'completed');
+
+  assert.deepEqual(
+    db.prepare(`SELECT config_id, cost_micros, input_tokens, output_tokens, cost_source
+      FROM generation_cost_records WHERE reservation_id = ?`).get(billing.reservationId),
+    {
+      config_id: config.id, cost_micros: 7_000, input_tokens: 1_000,
+      output_tokens: 2_000, cost_source: 'provider_route',
+    },
+  );
+});
+
 test('文本生成计费上下文拒绝未定价和已停用模型', (t) => {
   const missingDb = setup({ withPrice: false });
   const disabledDb = setup({ status: 'disabled' });
@@ -139,6 +168,32 @@ test('文本生成明确失败时退回预扣积分', (t) => {
   assert.deepEqual(credits.getTenantAccount(db, 'tenant-a'), {
     tenant_id: 'tenant-a', available: 20, held: 0, spent: 0,
   });
+});
+
+test('文本生成结果未知时保留预扣等待人工核对', (t) => {
+  const db = setup();
+  t.after(() => db.close());
+  const billing = textBilling.begin(db, {
+    enabled: true,
+    tenantId: 'tenant-a',
+    userId: 'user-1',
+    requestedModel: 'GPT-5.5',
+    resourceType: 'canvas_text',
+    resourceId: 'node-unknown',
+    operation: 'canvas_text',
+  });
+
+  const settled = textBilling.settle(db, log, billing, 'needs_attention');
+
+  assert.equal(settled.status, 'held');
+  assert.deepEqual(credits.getTenantAccount(db, 'tenant-a'), {
+    tenant_id: 'tenant-a', available: 15, held: 5, spent: 0,
+  });
+  assert.equal(
+    db.prepare('SELECT cost_source FROM generation_cost_records WHERE reservation_id = ?')
+      .get(billing.reservationId).cost_source,
+    'unknown',
+  );
 });
 
 test('关闭公开计费时只解析请求模型且不创建预扣', (t) => {

@@ -2,14 +2,26 @@ const fs = require('fs');
 const path = require('path');
 let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
 
-const USMERCARI_MODELS = Object.freeze({
-  'MiniMax H3': Object.freeze({ maxImages: 5, maxVideos: 0, maxAudio: 3, resolutions: Object.freeze(['480p']) }),
-  'seedance-2.0-fast': Object.freeze({ maxImages: 9, maxVideos: 3, maxAudio: 3, resolutions: Object.freeze(['480p', '720p']) }),
-  'seedance-2.0-mini': Object.freeze({ maxImages: 9, maxVideos: 3, maxAudio: 3, resolutions: Object.freeze(['480p', '720p']) }),
-});
 const USMERCARI_VIDEO_DURATIONS = Object.freeze(
   Array.from({ length: 12 }, (_, index) => index + 4),
 );
+const MINIMAX_H3_DURATIONS = Object.freeze(
+  Array.from({ length: 11 }, (_, index) => index + 5),
+);
+const USMERCARI_MODELS = Object.freeze({
+  'MiniMax H3': Object.freeze({
+    maxImages: 3, maxVideos: 0, maxAudio: 3,
+    resolutions: Object.freeze(['1440p']), durations: MINIMAX_H3_DURATIONS,
+  }),
+  'seedance-2.0-fast': Object.freeze({
+    maxImages: 9, maxVideos: 3, maxAudio: 3,
+    resolutions: Object.freeze(['480p', '720p']), durations: USMERCARI_VIDEO_DURATIONS,
+  }),
+  'seedance-2.0-mini': Object.freeze({
+    maxImages: 9, maxVideos: 3, maxAudio: 3,
+    resolutions: Object.freeze(['480p', '720p']), durations: USMERCARI_VIDEO_DURATIONS,
+  }),
+});
 
 const DEFAULT_EXTENSION = Object.freeze({ image: 'png', audio: 'mp3', video: 'mp4' });
 const DEFAULT_MIME = Object.freeze({ image: 'image/png', audio: 'audio/mpeg', video: 'video/mp4' });
@@ -46,12 +58,12 @@ function validateUsmercariVideoOptions(opts = {}) {
   if (!spec) throw new Error(`USMercari 模型 ${model || '(empty)'} 未经真实生成验证，禁止提交`);
 
   const duration = Number(opts.duration ?? 5);
-  if (!Number.isSafeInteger(duration) || !USMERCARI_VIDEO_DURATIONS.includes(duration)) {
-    throw new Error('USMercari 三个视频模型时长必须是 4 到 15 秒之间的整数');
+  if (!Number.isSafeInteger(duration) || !spec.durations.includes(duration)) {
+    throw new Error(`USMercari 模型 ${model} 时长必须是 ${spec.durations[0]} 到 ${spec.durations.at(-1)} 秒之间的整数`);
   }
   const aspectRatio = String(opts.aspect_ratio || '16:9').trim().replace('：', ':');
   if (aspectRatio !== '16:9') throw new Error('USMercari 三个视频模型目前仅开放已实测的 16:9 画幅');
-  const resolution = String(opts.resolution || '480p').trim().toLowerCase();
+  const resolution = String(opts.resolution || spec.resolutions[0]).trim().toLowerCase();
   if (!spec.resolutions.includes(resolution)) {
     throw new Error(`USMercari 模型 ${model} 不支持 ${resolution}；只开放已实测的 ${spec.resolutions.join('、')}`);
   }
@@ -142,11 +154,26 @@ function mimeForExtension(extension, kind) {
   return known[String(extension || '').toLowerCase()] || DEFAULT_MIME[kind];
 }
 
-function resolveStorageFile(source, storageLocalPath) {
+function resolveStorageFile(source, storageLocalPath, filesBaseUrl) {
   if (!storageLocalPath) return '';
   const raw = String(source || '').trim();
-  if (!raw || /^data:/i.test(raw) || /^https?:\/\//i.test(raw)) return '';
-  const relative = decodeURIComponent(raw.replace(/^\/static\//i, '').replace(/^static[\\/]/i, '')).replace(/^[/\\]+/, '');
+  if (!raw || /^data:/i.test(raw)) return '';
+  let storagePath = raw;
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const sourceUrl = new URL(raw);
+      const baseUrl = new URL(String(filesBaseUrl || '').replace(/\/+$/, ''));
+      const basePath = baseUrl.pathname.replace(/\/+$/, '');
+      if (sourceUrl.origin !== baseUrl.origin
+          || (sourceUrl.pathname !== basePath && !sourceUrl.pathname.startsWith(`${basePath}/`))) {
+        return '';
+      }
+      storagePath = sourceUrl.pathname.slice(basePath.length);
+    } catch (_) {
+      return '';
+    }
+  }
+  const relative = decodeURIComponent(storagePath.replace(/^\/static\//i, '').replace(/^static[\\/]/i, '')).replace(/^[/\\]+/, '');
   const root = path.resolve(storageLocalPath);
   const candidate = path.resolve(root, relative);
   if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) return '';
@@ -209,7 +236,7 @@ async function mediaUploadPayload(kind, source, opts = {}) {
     };
   }
 
-  const localFile = resolveStorageFile(raw, opts.storage_local_path);
+  const localFile = resolveStorageFile(raw, opts.storage_local_path, opts.files_base_url);
   if (localFile) {
     const bytes = fs.readFileSync(localFile);
     const extension = extensionFrom(localFile, DEFAULT_EXTENSION[kind]);
@@ -296,7 +323,10 @@ async function uploadUsmercariMedia(config, kind, source, opts = {}) {
 
 async function prepareUsmercariVideoBody(config, opts = {}) {
   const checked = validateUsmercariVideoOptions(opts);
-  const uploadOpts = { storage_local_path: opts.storage_local_path };
+  const uploadOpts = {
+    storage_local_path: opts.storage_local_path,
+    files_base_url: opts.files_base_url,
+  };
   const [imageId, endImageId, imageIds, videoReferenceIds, audioReferenceIds] = await Promise.all([
     checked.firstFrame ? uploadUsmercariMedia(config, 'image', checked.firstFrame, uploadOpts) : '',
     checked.lastFrame ? uploadUsmercariMedia(config, 'image', checked.lastFrame, uploadOpts) : '',

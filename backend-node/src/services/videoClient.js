@@ -1,6 +1,7 @@
 // ? Go pkg/video + VideoGenerationService ????????? API??????(????)
 const fs = require('fs');
 const path = require('path');
+const { randomUUID } = require('crypto');
 const dnsCore = require('dns');
 const dns = require('dns').promises;
 const http = require('http');
@@ -19,7 +20,10 @@ const toapisVideoClient = require('./toapisVideoClient');
 const providerAssetUrl = require('./providerAssetUrlService');
 const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 const modelPriceService = require('./modelPriceService');
+const fuminVideoClient = require('./fuminVideoClient');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
+const providerRouteStability = require('./providerRouteStabilityService');
+const { classifyProviderFailure } = require('./providerErrorClassifier');
 const { snapshotVoiceMap } = require('./storyboardVoiceLockService');
 const storyboardVoicePromptService = require('./storyboardVoicePromptService');
 const {
@@ -56,9 +60,26 @@ function inferVideoProtocol(provider) {
   if (p === 'feituo' || p === 'feituo_open') return 'feituo_open';
   if (p === 'usmercari' || p === 'usmercari_media') return 'usmercari_media';
   if (p === 'toapis' || p === 'toapis_video') return 'toapis_video';
+  if (p === 'fumin' || p === 'fumin_video') return 'fumin_video';
   if (p === 'xai' || p === 'grok') return 'xai';
   if (p === 'agnes') return 'agnes';
   return 'openai';
+}
+
+function providerErrorMeta(data, httpStatus, overrides = {}) {
+  const message = String(data?.error?.message || data?.message || data?.error || '');
+  let providerCode = String(data?.error?.code || data?.code || '').trim();
+  if (/no available channel/i.test(message)) providerCode = 'NO_AVAILABLE_CHANNEL';
+  const providerTaskId = aihubccClient.extractTaskId(data);
+  const explicitlyRejected = [400, 401, 413, 422, 429].includes(Number(httpStatus))
+    || providerCode === 'NO_AVAILABLE_CHANNEL';
+  return {
+    httpStatus: Number.isInteger(Number(httpStatus)) ? Number(httpStatus) : undefined,
+    providerCode: providerCode || undefined,
+    providerTaskId: providerTaskId || undefined,
+    explicitlyRejected,
+    ...overrides,
+  };
 }
 
 function normalizeDjpsdBaseUrl(baseUrl) {
@@ -329,6 +350,7 @@ function resolveVideoProtocol(config, modelHint) {
   if (provider === 'toapis' || provider === 'toapis_video') protocol = 'toapis_video';
   if (provider === 'token6688' || provider === 'tokengo') protocol = 'token6688';
   if (provider === 'djpsd_openapi' || protocol === 'djpsd_media') protocol = 'djpsd_openapi';
+  if (provider === 'fumin' || provider === 'fumin_video') protocol = 'fumin_video';
   if (provider === 'aihubcc' || provider === 'aihubcc_video') protocol = 'aihubcc';
   const baseLower = String(config.base_url || '').toLowerCase();
   const modelLower = String(modelHint || '').toLowerCase();
@@ -769,6 +791,25 @@ async function resolveImageInputForAgnesAsync(db, rawUrl, files_base_url, storag
   return null;
 }
 
+async function resolveFuminReferenceImageAsync(db, rawUrl, files_base_url, storage_local_path, log, video_gen_id, index) {
+  const raw = String(rawUrl || '').trim();
+  if (!raw) return null;
+  if (raw.startsWith('asset://')) return raw;
+  const resolved = await resolveImageInputForAgnesAsync(
+    db,
+    raw,
+    files_base_url,
+    storage_local_path,
+    log,
+    video_gen_id,
+    `fumin_${index}`,
+  );
+  if (!resolved) {
+    throw new Error(`参考图 ${Number(index) + 1} 无法转换为中转站可读取的公网地址`);
+  }
+  return providerAssetUrl.signProviderAssetUrl(resolved, { filesBaseUrl: files_base_url });
+}
+
 /**
  * 火山 Seedance 系列：按模型版本归一化时长（秒）。
  * - 2.x：4–15
@@ -1205,6 +1246,33 @@ function configSupportsVideoModel(config, preferredModel) {
   return models.some((model) => normalize(model) === normalize(requested));
 }
 
+function hasColumn(db, table, column) {
+  try {
+    return db.prepare(`PRAGMA table_info(${table})`).all()
+      .some((item) => item.name === column);
+  } catch (_) {
+    return false;
+  }
+}
+
+function findLogicalVideoRoute(db, logicalModelId) {
+  if (!logicalModelId || !hasColumn(db, 'ai_service_configs', 'logical_model_id')) return null;
+  try {
+    return db.prepare(`SELECT id, service_type FROM ai_service_configs
+      WHERE deleted_at IS NULL AND is_active = 1 AND service_type = 'video'
+        AND logical_model_id = ? COLLATE NOCASE AND verification_status = 'verified'
+      ORDER BY priority DESC, id ASC LIMIT 1`).get(String(logicalModelId).trim()) || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function getVideoConfigById(db, configId) {
+  const id = Number(configId);
+  if (!Number.isSafeInteger(id) || id <= 0) return null;
+  return aiConfigService.getConfig(db, id);
+}
+
 // ??????????????????listConfigs ?? is_default DESC, priority DESC ??
 function getDefaultVideoConfig(db, preferredModel, evidenceRoots, preferredConfigId) {
   // Compatibility: the redraw path may pass the exact config id as the third
@@ -1280,6 +1348,8 @@ function getDefaultVideoConfig(db, preferredModel, evidenceRoots, preferredConfi
       const requested = normalize(preferredModel);
       if (models.some((model) => normalize(model) === requested)) return c;
     }
+    const logicalRoute = findLogicalVideoRoute(db, preferredModel);
+    if (logicalRoute) return getVideoConfigById(db, logicalRoute.id);
     return canvasProviderConfigService.getConfig('video', preferredModel);
   }
   const defaultOne = active.find((c) => c.is_default);
@@ -1550,7 +1620,7 @@ function buildQueryUrl(config, taskId) {
   else if (proto === 'icreat_task') defaultEp = '/v1/task/query-status';
   else if (proto === 'usmercari_media') defaultEp = '/cpa-file/fetch';
   else if (proto === 'toapis_video') defaultEp = '/v1/videos/generations/{taskId}';
-  else if (proto === 'usmercari_media') defaultEp = '/cpa-file/fetch';
+  else if (proto === 'fumin_video') return fuminVideoClient.buildFuminQueryUrl(config, taskId);
   else defaultEp = '/video/task/{taskId}';
   let ep = config.query_endpoint || defaultEp;
   if (
@@ -5009,7 +5079,7 @@ function requestPublicImage(url, maxBytes) {
  * ?????? API?ChatFire/?? ? ?????
  * @returns {Promise<{ task_id?: string, video_url?: string, error?: string }>}
  */
-async function callVideoApi(db, log, opts, runtime = {}) {
+async function submitVideoWithConfig(db, log, config, opts) {
   const {
     prompt: inputPrompt,
     model: preferredModel,
@@ -5030,10 +5100,6 @@ async function callVideoApi(db, log, opts, runtime = {}) {
     first_frame_local_path,
     last_frame_local_path,
   } = opts;
-  const config = getDefaultVideoConfig(db, preferredModel, runtime.evidenceRoots);
-  if (!config) {
-    throw new Error('???????????AI ?????? video ?????????');
-  }
   const model = getModelFromConfig(config, preferredModel);
   const provider = (config.provider || '').toLowerCase();
   const protocol = resolveVideoProtocol(config, preferredModel);
@@ -5216,8 +5282,8 @@ async function callVideoApi(db, log, opts, runtime = {}) {
       aspect_ratio,
       resolution,
       image_url: hasMultimodalReferences ? '' : signAsset(opts.image_url),
-      first_frame_url: signAsset(opts.first_frame_url),
-      last_frame_url: signAsset(opts.last_frame_url),
+      first_frame_url: hasMultimodalReferences ? '' : signAsset(opts.first_frame_url),
+      last_frame_url: hasMultimodalReferences ? '' : signAsset(opts.last_frame_url),
       reference_urls: signAssets(opts.reference_urls),
       reference_video_urls: signAssets(opts.reference_video_urls),
       reference_audio_urls: signAssets(opts.reference_audio_urls),
@@ -5227,7 +5293,7 @@ async function callVideoApi(db, log, opts, runtime = {}) {
       video_gen_id,
     };
     try {
-      assertToapisVideoSubmitReady(db, config, model, toapisRequest, runtime.evidenceRoots);
+      assertToapisVideoSubmitReady(db, config, model, toapisRequest, opts.evidenceRoots);
     } catch (error) {
       return { error: error.message };
     }
@@ -5251,6 +5317,34 @@ async function callVideoApi(db, log, opts, runtime = {}) {
       reference_audio_urls: opts.reference_audio_urls,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
+      video_gen_id,
+    });
+  }
+
+  if (protocol === 'fumin_video') {
+    const rawReferences = [...new Set([
+      image_url,
+      first_frame_url,
+      last_frame_url,
+      ...(Array.isArray(opts.reference_urls) ? opts.reference_urls : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean))];
+    return fuminVideoClient.callFuminVideoApi(config, log, {
+      ...opts,
+      model,
+      prompt,
+      image_url: undefined,
+      first_frame_url: undefined,
+      last_frame_url: undefined,
+      reference_urls: rawReferences,
+      resolve_image: (raw, index) => resolveFuminReferenceImageAsync(
+        db,
+        raw,
+        opts.files_base_url,
+        opts.storage_local_path,
+        log,
+        video_gen_id,
+        index,
+      ),
       video_gen_id,
     });
   }
@@ -5562,34 +5656,50 @@ async function callVideoApi(db, log, opts, runtime = {}) {
     has_last_frame: !!lastForApi,
     frame_count: (firstForApi ? 1 : 0) + (lastForApi ? 1 : 0),
   });
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: 'Bearer ' + (config.api_key || ''),
-    },
-    body: JSON.stringify(body),
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + (config.api_key || ''),
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    return {
+      indeterminate: true,
+      error: '视频生成提交结果未知，请勿重复提交。',
+      route_meta: {
+        phase: 'submit',
+        requestBodySent: true,
+        transportCode: error?.cause?.code || error?.code,
+      },
+    };
+  }
   const raw = await res.text();
   log.info('Video API raw response', { video_gen_id, status: res.status, raw: raw.slice(0, 1000) });
-  if (!res.ok) {
-    log.error('Video API failed', { status: res.status, body: raw.slice(0, 500) });
-    let errMsg = '????????: ' + res.status;
-    try {
-      const errJson = JSON.parse(raw);
-      const msg = errJson.error?.message || errJson.message || errJson.error;
-      if (msg) errMsg += ' - ' + (typeof msg === 'string' ? msg : JSON.stringify(msg).slice(0, 200));
-    } catch (_) {
-      if (raw && raw.length) errMsg += ' - ' + raw.slice(0, 200);
-    }
-    return { error: errMsg };
-  }
   let data;
   try {
     data = JSON.parse(raw);
-  } catch (e) {
-    log.error('Video API response JSON parse failed', { video_gen_id, raw: raw.slice(0, 1000), parse_error: e.message });
-    return { error: '??????????: ' + e.message + ' | raw: ' + raw.slice(0, 200) };
+  } catch (_) {
+    data = null;
+  }
+  if (!res.ok) {
+    log.error('Video API failed', { status: res.status, body: raw.slice(0, 500) });
+    let errMsg = '????????: ' + res.status;
+    const msg = data?.error?.message || data?.message || data?.error;
+    if (msg) errMsg += ' - ' + (typeof msg === 'string' ? msg : JSON.stringify(msg).slice(0, 200));
+    else if (raw && raw.length) errMsg += ' - ' + raw.slice(0, 200);
+    return { error: errMsg, route_meta: providerErrorMeta(data, res.status) };
+  }
+  if (!data) {
+    log.error('Video API response JSON parse failed', { video_gen_id, raw: raw.slice(0, 1000) });
+    return {
+      indeterminate: true,
+      error: '视频生成提交结果未知，请勿重复提交。',
+      route_meta: providerErrorMeta(null, res.status, { phase: 'submit', requestBodySent: true }),
+    };
   }
   log.info('Video API parsed response', { video_gen_id, data: JSON.stringify(data).slice(0, 500) });
   const taskId = data.id || data.task_id || (data.data && data.data.id);
@@ -5601,15 +5711,299 @@ async function callVideoApi(db, log, opts, runtime = {}) {
   }
   if (taskId) {
     log.info('Video API returned task_id', { video_gen_id, task_id: taskId, status });
-    return { task_id: taskId, status: status || 'processing' };
+    return {
+      task_id: taskId,
+      status: status || 'processing',
+      route_meta: providerErrorMeta(data, res.status, { providerTaskId: String(taskId) }),
+    };
   }
   log.error('Video API: no task_id or video_url in response', { video_gen_id, data: JSON.stringify(data).slice(0, 500) });
-  return { error: '??? task_id ? video_url?????: ' + JSON.stringify(data).slice(0, 300) };
+  return {
+    indeterminate: true,
+    error: '视频生成提交结果未知，请勿重复提交。',
+    route_meta: providerErrorMeta(data, res.status, { phase: 'submit', requestBodySent: true }),
+  };
+}
+
+function stripVideoRouteMeta(result) {
+  if (!result || typeof result !== 'object') return result;
+  const { route_meta, provider_task_id, ...safe } = result;
+  return safe;
+}
+
+function exactVideoConfigId(value) {
+  const id = typeof value === 'string' && /^[1-9]\d*$/.test(value)
+    ? Number(value)
+    : value;
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new Error('指定的视频模型配置不存在或已停用');
+  }
+  return id;
+}
+
+async function callVideoApiForConfigId(db, log, configId, opts = {}) {
+  const explicitConfigId = exactVideoConfigId(configId);
+  const requestConfigId = opts.config_id ?? opts.configId;
+  if (requestConfigId != null && exactVideoConfigId(requestConfigId) !== explicitConfigId) {
+    throw new Error('指定的视频模型配置不存在或已停用');
+  }
+  const config = getVideoConfigById(db, explicitConfigId);
+  if (!config || !config.is_active || String(config.service_type).toLowerCase() !== 'video') {
+    throw new Error('指定的视频模型配置不存在、已停用或不是 video 类型');
+  }
+  return submitVideoWithConfig(db, log, config, opts);
+}
+
+function safeVideoRouteFailure(classification, result) {
+  const category = classification.category;
+  if (category === 'policy_rejected') {
+    return { error: '视频生成请求被内容安全策略拒绝，请调整提示词后重试。' };
+  }
+  if (category === 'validation_error') {
+    return { error: '视频生成参数不受支持，请检查参考素材、时长、分辨率或其他参数。' };
+  }
+  if (['provider_unavailable', 'rate_limited', 'auth_unavailable', 'transport_not_sent'].includes(category)) {
+    return { error: '视频生成服务暂时不可用，请稍后再试。' };
+  }
+  if (result?.indeterminate || ['artifact_unreadable', 'result_unknown', 'submission_unknown', 'forbidden_unknown'].includes(category)) {
+    return {
+      indeterminate: true,
+      error: '视频生成结果未知，为避免重复提交或重复扣费，请先核对生成记录，不要连续重试。',
+    };
+  }
+  return { error: '视频生成失败，请稍后再试。' };
+}
+
+function updateVideoRouteRequestState(db, requestId, state, now = new Date().toISOString()) {
+  db.prepare('UPDATE generation_route_requests SET state = ?, updated_at = ? WHERE id = ?')
+    .run(state, now, requestId);
+}
+
+function recordDirectVideoAccepted(db, requestId, attemptNo, now = new Date().toISOString()) {
+  db.transaction(() => {
+    db.prepare(`UPDATE generation_route_attempts SET state = 'accepted'
+      WHERE request_id = ? AND attempt_no = ?`).run(requestId, attemptNo);
+    db.prepare("UPDATE generation_route_requests SET state = 'accepted', updated_at = ? WHERE id = ?")
+      .run(now, requestId);
+  })();
+}
+
+function persistAcceptedVideoRoute(db, opts, configId, providerTaskId) {
+  if (opts.video_gen_id == null || !hasColumn(db, 'video_generations', 'config_id')) return;
+  if (providerTaskId) {
+    db.prepare(`UPDATE video_generations SET config_id = ?, provider_task_id = ?, updated_at = ?
+      WHERE id = ?`).run(configId, String(providerTaskId), new Date().toISOString(), opts.video_gen_id);
+    return;
+  }
+  db.prepare('UPDATE video_generations SET config_id = ?, updated_at = ? WHERE id = ?')
+    .run(configId, new Date().toISOString(), opts.video_gen_id);
+}
+
+async function callVideoApi(db, log, opts, runtime = {}) {
+  opts = {
+    ...opts,
+    evidenceRoots: runtime.evidenceRoots ?? opts.evidenceRoots,
+  };
+  const preferredModel = String(opts.model || '').trim() || null;
+  const capabilities = {
+    resolution: opts.resolution,
+    aspectRatio: opts.aspect_ratio || opts.aspectRatio,
+    duration: opts.duration,
+    referenceImageCount: Array.isArray(opts.reference_urls) ? opts.reference_urls.filter(Boolean).length : 0,
+    referenceVideoCount: Array.isArray(opts.reference_video_urls)
+      ? opts.reference_video_urls.filter(Boolean).length
+      : 0,
+    referenceAudioCount: Array.isArray(opts.reference_audio_urls)
+      ? opts.reference_audio_urls.filter(Boolean).length
+      : 0,
+  };
+  const explicitConfigId = opts.config_id ?? opts.configId;
+  let logicalModelId = preferredModel;
+  let logicalRoute;
+  let selected;
+  if (explicitConfigId != null) {
+    const config = getVideoConfigById(db, explicitConfigId);
+    if (!config || !config.is_active) throw new Error('指定的视频模型配置不存在或已停用');
+    if (providerRouteStability.resolveCanaryMode(undefined, log) !== 'enforce') {
+      return stripVideoRouteMeta(await submitVideoWithConfig(db, log, config, opts));
+    }
+    logicalModelId = String(config.logical_model_id || '').trim();
+    if (!logicalModelId) throw new Error('未配置与当前视频生成参数匹配的已验证模型');
+    logicalRoute = { id: config.id };
+    const explicitSelection = providerRouteStability.selectVerifiedCandidates(db, {
+      serviceType: 'video',
+      logicalModelId,
+      primaryConfigId: config.id,
+      capabilities,
+      canaryMode: 'enforce',
+      log,
+    });
+    selected = {
+      ...explicitSelection,
+      candidates: explicitSelection.candidates.filter((candidate) => candidate.id === config.id),
+    };
+  } else {
+    logicalRoute = findLogicalVideoRoute(db, preferredModel);
+  }
+
+  if (!logicalRoute) {
+    if (providerRouteStability.resolveCanaryMode(undefined, log) === 'enforce') {
+      throw new Error('未配置与当前视频生成参数匹配的已验证模型');
+    }
+    const config = getDefaultVideoConfig(db, preferredModel, opts.evidenceRoots);
+    if (!config) throw new Error('未配置视频模型，请在「AI 配置」中添加 video 类型且已启用的配置');
+    return stripVideoRouteMeta(await submitVideoWithConfig(db, log, config, opts));
+  }
+
+  selected ||= providerRouteStability.selectVerifiedCandidates(db, {
+    serviceType: 'video',
+    logicalModelId,
+    primaryConfigId: logicalRoute.id,
+    capabilities,
+    log,
+  });
+  if (selected.candidates.length === 0) {
+    throw new Error('未配置与当前视频生成参数匹配的已验证模型');
+  }
+
+  const routeId = randomUUID();
+  const businessId = opts.video_gen_id == null ? routeId : String(opts.video_gen_id);
+  const owner = String(opts.tenantId || opts.userId || 'local');
+  const route = providerRouteStability.createOrGetRouteRequest(db, {
+    id: routeId,
+    idempotencyKey: `${owner}:video:${businessId}`,
+    serviceType: 'video',
+    businessType: 'video_generation',
+    businessId,
+    tenantId: opts.tenantId,
+    userId: opts.userId,
+    logicalModelId,
+    capabilities,
+    userPriceSnapshot: selected.userPriceSnapshot,
+    candidateConfigIds: selected.candidates.map((candidate) => candidate.id),
+    creditReservationId: opts.creditReservationId,
+  });
+  if (route.state !== 'created') {
+    return safeVideoRouteFailure({ category: 'result_unknown' }, { indeterminate: true });
+  }
+
+  let lastFailure = null;
+  let pendingSwitch = null;
+  for (let index = 0; index < selected.candidates.length; index += 1) {
+    const config = selected.candidates[index];
+    const attempt = providerRouteStability.startAttempt(db, {
+      requestId: route.id,
+      configId: config.id,
+      provider: config.provider || 'configured',
+      upstreamModel: getModelFromConfig(config),
+    });
+    if (!attempt) continue;
+    if (pendingSwitch) {
+      providerRouteStability.recordRouteSwitch(db, {
+        requestId: route.id,
+        tenantId: opts.tenantId,
+        logicalModelId,
+        configId: pendingSwitch.configId,
+        targetConfigId: config.id,
+        category: pendingSwitch.category,
+      });
+      pendingSwitch = null;
+    }
+    let result;
+    try {
+      result = await submitVideoWithConfig(db, log, config, { ...opts, model: undefined });
+    } catch (error) {
+      result = {
+        indeterminate: true,
+        error: '视频生成提交结果未知，请勿重复提交。',
+        route_meta: {
+          phase: 'submit',
+          requestBodySent: true,
+          transportCode: error?.cause?.code || error?.code,
+        },
+      };
+      log.error('Video route attempt ended without a structured result', {
+        video_gen_id: opts.video_gen_id,
+        config_id: config.id,
+        error_code: error?.code || null,
+      });
+    }
+    const routeMeta = result?.route_meta || {};
+    const providerTaskId = result?.task_id || routeMeta.providerTaskId;
+    if (providerTaskId) {
+      providerRouteStability.recordAcceptedTask(db, {
+        requestId: route.id,
+        attemptNo: attempt.attempt_no,
+        providerTaskId: String(providerTaskId),
+      });
+      persistAcceptedVideoRoute(db, opts, config.id, providerTaskId);
+      const acceptedResult = stripVideoRouteMeta(result);
+      delete acceptedResult.error;
+      delete acceptedResult.indeterminate;
+      return {
+        ...acceptedResult,
+        task_id: String(providerTaskId),
+        status: result?.status || 'processing',
+        config_id: config.id,
+        route_request_id: route.id,
+        route_attempt_no: attempt.attempt_no,
+      };
+    }
+    if (result?.video_url) {
+      recordDirectVideoAccepted(db, route.id, attempt.attempt_no);
+      persistAcceptedVideoRoute(db, opts, config.id, null);
+      return {
+        ...stripVideoRouteMeta(result),
+        config_id: config.id,
+        route_request_id: route.id,
+        route_attempt_no: attempt.attempt_no,
+      };
+    }
+
+    const classification = classifyProviderFailure(routeMeta);
+    const uncertainAttempt = ['submission_unknown', 'result_unknown', 'artifact_unreadable', 'forbidden_unknown']
+      .includes(classification.category);
+    providerRouteStability.finishAttempt(db, {
+      requestId: route.id,
+      attemptNo: attempt.attempt_no,
+      state: uncertainAttempt ? classification.category : 'failed',
+      httpStatus: routeMeta.httpStatus,
+      errorCategory: classification.category,
+    });
+    providerRouteStability.recordFailureAndHealth(db, {
+      requestId: route.id,
+      tenantId: opts.tenantId,
+      configId: config.id,
+      logicalModelId,
+      classification,
+    });
+    lastFailure = { classification, result };
+    const hasNext = index + 1 < selected.candidates.length;
+    if (!classification.mayFailover || !hasNext) {
+      const requestState = uncertainAttempt ? 'needs_attention' : 'failed';
+      updateVideoRouteRequestState(db, route.id, requestState);
+      return safeVideoRouteFailure(classification, result);
+    }
+    pendingSwitch = { configId: config.id, category: classification.category };
+    log.warn('Video route switching after definitive non-acceptance', {
+      video_gen_id: opts.video_gen_id,
+      logical_model_id: logicalModelId,
+      from_config_id: config.id,
+      category: classification.category,
+    });
+  }
+  const finalCategory = lastFailure?.classification?.category || 'provider_unavailable';
+  const uncertain = ['submission_unknown', 'result_unknown', 'artifact_unreadable', 'forbidden_unknown']
+    .includes(finalCategory);
+  updateVideoRouteRequestState(db, route.id, uncertain ? 'needs_attention' : 'failed');
+  return safeVideoRouteFailure(lastFailure?.classification || { category: finalCategory },
+    lastFailure?.result);
 }
 
 /**
  * ??????????????????/ChatFire ? ???? DashScope?
  */
+const STRICT_SINGLE_PROVIDER_REQUEST = Symbol('strict-single-provider-request');
 async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 300, intervalMs = 10000, requestOpts = {}) {
   const provider = (config.provider || '').toLowerCase();
   const protocol = resolveVideoProtocol(config);
@@ -5630,6 +6024,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isUsmercari = protocol === 'usmercari_media';
   const isToken6688 = protocol === 'token6688';
   const isToapis = protocol === 'toapis_video';
+  const isFumin = protocol === 'fumin_video';
+  const strictSingleRequest = requestOpts[STRICT_SINGLE_PROVIDER_REQUEST] === true;
+  const fetchImpl = requestOpts.fetchImpl || globalThis.fetch;
   /** 轮询日志里响应体最大字符数（即梦/方舟等 JSON 可能较长）；0 表示不截断（慎用） */
   const pollLogBodyMax = (() => {
     const v = String(process.env.VIDEO_POLL_LOG_MAX || '16384').trim();
@@ -5655,7 +6052,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
       if (isToapis) {
         const pollRound = attempt + 1;
         const result = await toapisVideoClient.fetchToapisTask(config, taskId, {
-          fetchImpl: requestOpts.fetchImpl,
+          fetchImpl,
         });
         log.info('[ToAPIs 视频] 轮询状态', {
           video_gen_id: videoGenId,
@@ -5742,13 +6139,16 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           Authorization: 'Bearer ' + usmercariVideoClient.resolveUsmercariApiKey(config),
           'Content-Type': 'application/json',
         };
+      } else if (isFumin) {
+        url = fuminVideoClient.buildFuminQueryUrl(config, taskId);
+        headers = { Authorization: 'Bearer ' + (config.api_key || '') };
       } else {
         url = queryUrl();
         headers = { Authorization: 'Bearer ' + (config.api_key || '') };
       }
       const pollRound = attempt + 1;
       log.info('[poll] 发起查询', { video_gen_id: videoGenId, round: pollRound, url });
-      const res = await fetch(url, { method, headers, ...(requestBody ? { body: requestBody } : {}) });
+      const res = await fetchImpl(url, { method, headers, ...(requestBody ? { body: requestBody } : {}) });
       const raw = await res.text();
       const bodyLogged =
         pollLogBodyMax === Infinity
@@ -5866,6 +6266,19 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         continue;
       }
 
+      if (isFumin) {
+        const result = fuminVideoClient.parseFuminStatusPayload(data);
+        log.info('[fumin 视频] 轮询状态', {
+          video_gen_id: videoGenId,
+          round: pollRound,
+          state: result.state,
+          has_video_url: !!result.videoUrl,
+        });
+        if (result.state === 'completed') return { video_url: result.videoUrl };
+        if (result.state === 'failed') return { error: result.error };
+        continue;
+      }
+
       if (isDeepwlGrok) {
         const status = extractPollTaskStatus(data);
         const videoUrl = pickDeepwlGrokVideoUrl(data);
@@ -5889,6 +6302,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         }
         if (status === 'succeeded' || status === 'completed' || status === 'done') {
           const mode = resolveDeepwlGrokMode(config);
+          if (strictSingleRequest) return { artifact_unreadable: true };
           if (mode !== 'unified') {
             const contentUrl = await fetchDeepwlGrokContentUrl(config, taskId, log, videoGenId);
             if (contentUrl) {
@@ -5919,7 +6333,8 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           return { error: aihubccClient.extractError(data) || `AIHubCC 任务失败: ${status || 'unknown'}` };
         }
         if (aihubccClient.isDoneStatus(status)) {
-          const contentResponse = await fetch(aihubccClient.getContentUrl(config, taskId), {
+          if (strictSingleRequest) return { artifact_unreadable: true };
+          const contentResponse = await fetchImpl(aihubccClient.getContentUrl(config, taskId), {
             headers: aihubccClient.authHeaders(config),
           });
           const contentRaw = await contentResponse.text();
@@ -5948,6 +6363,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           return { error: `iCreat 任务失败或不存在: ${status}${detail}` };
         }
         if (['SUCCEEDED', 'COMPLETED', 'DONE', 'SUCCESS'].includes(status)) {
+          if (strictSingleRequest) return { artifact_unreadable: true };
           const settings = parseConfigSettingsJson(config);
           const resultUrl = buildIcreatTaskUrl(config, settings.icreat_result_endpoint || '/v1/task/get-result', taskId);
           const resultFetchOptions = {
@@ -5962,7 +6378,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
             resultFetchOptions.signal = AbortSignal.timeout(30_000);
           }
-          const resultResponse = await fetch(resultUrl, resultFetchOptions);
+          const resultResponse = await fetchImpl(resultUrl, resultFetchOptions);
           const resultRaw = await resultResponse.text();
           let resultData;
           try { resultData = JSON.parse(resultRaw); } catch (_) { resultData = null; }
@@ -5988,7 +6404,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
             log.info('[Kling poll] 视频生成完成', { video_gen_id: videoGenId, video_url: videoUrl });
             return { video_url: videoUrl };
           }
-          return { error: '可灵任务完成但未返回视频地址' };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: '可灵任务完成但未返回视频地址' };
         }
         if (status === 'failed') {
           const errMsg = data?.data?.task_status_msg || '任务失败';
@@ -6013,7 +6431,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           return { video_url: videoUrlOmni };
         }
         if (st === 'succeed' || st === 'success' || st === 'completed' || st === 'succeeded' || st === 'done') {
-          return { error: 'Kling Omni 标记完成但未解析到视频地址' };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Kling Omni 标记完成但未解析到视频地址' };
         }
         if (st === 'failed' || st === 'error') {
           const errMsg = data?.data?.task_status_msg || data?.task_status_msg || data?.message || '任务失败';
@@ -6037,7 +6457,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         }
         if (status === 'succeeded' || status === 'completed' || status === 'done') {
           log.warn('[Veo3 poll] completed but no video_url', { data: JSON.stringify(data).slice(0, 500) });
-          return { error: 'Veo3 completed but no video URL: ' + JSON.stringify(data).slice(0, 300) };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Veo3 completed but no video URL: ' + JSON.stringify(data).slice(0, 300) };
         }
         continue;
       }
@@ -6058,7 +6480,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         }
         if (status === 'succeeded' || status === 'completed' || status === 'done') {
           log.warn('[Sora poll] ????????? video_url', { video_gen_id: videoGenId, data: JSON.stringify(data).slice(0, 500) });
-          return { error: 'Sora ?????????????????: ' + JSON.stringify(data).slice(0, 300) };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Sora ?????????????????: ' + JSON.stringify(data).slice(0, 300) };
         }
         // queued / processing / running ? ????
         continue;
@@ -6079,7 +6503,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         }
         if (status === 'succeeded' || status === 'completed' || status === 'done') {
           log.warn('[Agnes poll] 标记完成但未返回 video_url', { video_gen_id: videoGenId, data: JSON.stringify(data).slice(0, 500) });
-          return { error: 'Agnes 任务完成但未返回视频地址: ' + JSON.stringify(data).slice(0, 300) };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Agnes 任务完成但未返回视频地址: ' + JSON.stringify(data).slice(0, 300) };
         }
         continue;
       }
@@ -6104,7 +6530,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         }
         if (state === 'success' || state === 'succeeded' || state === 'completed' || state === 'done') {
           log.warn('[Vidu poll] ???????? video_url', { data: JSON.stringify(data).slice(0, 500) });
-          return { error: 'Vidu ??????????' };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Vidu ??????????' };
         }
         continue;
       }
@@ -6116,7 +6544,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         if (data.done === true) {
           const videoUri = data.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri;
           if (videoUri) return { video_url: videoUri };
-          return { error: 'Gemini ??????????????' };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Gemini ??????????????' };
         }
         continue;
       }
@@ -6180,10 +6610,153 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   };
 }
 
+async function queryVideoTaskStatusOnce(db, log, taskId, config, requestOpts = {}) {
+  const baseFetch = requestOpts.fetchImpl || globalThis.fetch;
+  let requestCount = 0;
+  let observedStatus = null;
+  let observedQueryCategory = null;
+  let observedBodyWasJson = null;
+
+  const safeQueryCategoryForError = (error, transport = false) => {
+    if (error?.code === 'PROVIDER_QUERY_REQUEST_LIMIT') return 'query_request_limit';
+    if (error?.code === 'PROVIDER_QUERY_PROTOCOL_ERROR') return 'query_protocol_error';
+    if (error?.code === 'PROVIDER_QUERY_VALIDATION_ERROR') return 'validation_error';
+    if (error?.name === 'AbortError'
+        || error?.name === 'TimeoutError'
+        || ['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT'].includes(error?.code)) {
+      return 'result_unknown';
+    }
+    return transport && error instanceof TypeError ? 'provider_unavailable' : 'query_protocol_error';
+  };
+
+  const safeQueryCategoryForStatus = (status) => {
+    if (status === 401) return 'auth_unavailable';
+    if (status === 403) return 'forbidden_unknown';
+    if (status === 404 || status === 408) return 'result_unknown';
+    if (status === 429) return 'rate_limited';
+    if (status >= 500) return 'provider_unavailable';
+    return 'validation_error';
+  };
+
+  const trustedArtifactUrl = (value) => {
+    if (!isPlausibleHttpVideoUrl(value)) return false;
+    try {
+      const parsed = new URL(String(value).trim());
+      const embedded = `${parsed.pathname}${parsed.search}`;
+      return ['http:', 'https:'].includes(parsed.protocol)
+        && !parsed.username
+        && !parsed.password
+        && !/(?:file|javascript|data):/i.test(embedded);
+    } catch (_) {
+      return false;
+    }
+  };
+
+  if (config?.base_url) {
+    try {
+      const parsed = new URL(String(config.base_url));
+      if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('unsupported provider URL');
+    } catch (_) {
+      return { state: 'query_failed', category: 'validation_error' };
+    }
+  }
+
+  const fetchOnce = async (url, options = {}) => {
+    if (requestCount >= 1) {
+      const error = new Error('single provider task query exceeded one request');
+      error.code = 'PROVIDER_QUERY_REQUEST_LIMIT';
+      throw error;
+    }
+    try {
+      const parsed = new URL(String(url));
+      if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('unsupported query URL');
+    } catch (_) {
+      const error = new Error('invalid provider query URL');
+      error.code = 'PROVIDER_QUERY_VALIDATION_ERROR';
+      observedQueryCategory = 'validation_error';
+      throw error;
+    }
+    requestCount += 1;
+    const bounded = { ...options, redirect: 'manual' };
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+      bounded.signal = AbortSignal.timeout(30_000);
+    }
+    let response;
+    try {
+      response = await baseFetch(url, bounded);
+    } catch (error) {
+      observedQueryCategory = safeQueryCategoryForError(error, true);
+      throw error;
+    }
+    observedStatus = Number(response?.status);
+    return {
+      ok: response?.ok,
+      status: response?.status,
+      headers: response?.headers,
+      async text() {
+        let raw;
+        try {
+          raw = await response.text();
+        } catch (error) {
+          observedQueryCategory = safeQueryCategoryForError(error);
+          throw error;
+        }
+        try {
+          JSON.parse(raw);
+          observedBodyWasJson = true;
+        } catch (_) {
+          observedBodyWasJson = false;
+        }
+        return raw;
+      },
+    };
+  };
+  let result;
+  try {
+    result = await pollVideoTask(db, { info() {}, warn() {}, error() {} }, null, taskId, config, 1, 0, {
+      fetchImpl: fetchOnce,
+      [STRICT_SINGLE_PROVIDER_REQUEST]: true,
+    });
+  } catch (error) {
+    const category = observedQueryCategory || safeQueryCategoryForError(error);
+    return category === 'result_unknown'
+      ? { state: 'unknown', category }
+      : { state: 'query_failed', category };
+  }
+  if (Number.isFinite(observedStatus) && (observedStatus < 200 || observedStatus >= 300)) {
+    return { state: 'query_failed', category: safeQueryCategoryForStatus(observedStatus) };
+  }
+  if (observedQueryCategory) {
+    return observedQueryCategory === 'result_unknown'
+      ? { state: 'unknown', category: observedQueryCategory }
+      : { state: 'query_failed', category: observedQueryCategory };
+  }
+  if (observedBodyWasJson === false) {
+    return { state: 'query_failed', category: 'query_protocol_error' };
+  }
+  if (result?.video_url) {
+    return trustedArtifactUrl(result.video_url)
+      ? { state: 'succeeded', artifactUrl: result.video_url }
+      : { state: 'artifact_unreadable' };
+  }
+  if (result?.artifact_unreadable
+      || (Object.prototype.hasOwnProperty.call(result || {}, 'video_url') && !result.video_url)) {
+    return { state: 'artifact_unreadable' };
+  }
+  if (result?.indeterminate) return { state: 'unknown', category: 'result_unknown' };
+  if (result?.error) {
+    return requestCount === 0
+      ? { state: 'query_failed', category: 'validation_error' }
+      : { state: 'failed', category: 'provider_task_failed' };
+  }
+  return { state: 'unknown', category: 'result_unknown' };
+}
+
 const { runWithGenerationLimit } = require('./generationConcurrency');
 
 module.exports = {
   getDefaultVideoConfig,
+  getVideoConfigById,
   getVideoArtifactFetchOptions,
   callAihubccVideoApi,
   callXaiVideoApi,
@@ -6192,11 +6765,16 @@ module.exports = {
   buildToken6688VideoBody: token6688Client.buildVideoBody,
   callToken6688VideoApi: token6688Client.callVideoApi,
   callVideoApi: (...args) => runWithGenerationLimit('video', () => callVideoApi(...args)),
+  callVideoApiForConfigId: (...args) => runWithGenerationLimit(
+    'video',
+    () => callVideoApiForConfigId(...args),
+  ),
   pollVideoTask,
   getSupportedVideoDurationsForModel: aihubccClient.getSupportedVideoDurationsForModel,
   normalizeVideoDurationForModel: aihubccClient.normalizeVideoDurationForModel,
   inferVideoProtocol,
   resolveVideoProtocol,
+  queryVideoTaskStatusOnce,
   normalizeAspectRatioForApi,
   isPlausibleHttpVideoUrl,
   pickProxyVideoUrl,

@@ -3,13 +3,12 @@ const assert = require('node:assert/strict');
 
 const { testConnection } = require('../src/services/aiConfigService');
 
-test('MiniMax TTS 配置测试使用官方无生成 Get Voice 探针', async () => {
+test('MiniMax TTS 配置测试使用只读 get_voice 探针，不提交付费生成', async () => {
   const originalFetch = global.fetch;
   let request;
   global.fetch = async (url, options) => {
     request = { url, options, body: JSON.parse(options.body) };
     return new Response(JSON.stringify({
-      system_voice: [{ voice_id: 'male-qn-qingse' }],
       base_resp: { status_code: 0, status_msg: 'success' },
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };

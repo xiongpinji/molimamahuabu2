@@ -15,14 +15,14 @@ function listPublicVideoModels(db, runtime) {
     const publicModels = modelPriceService.listPublic(db, runtime)
       .filter((item) => item.category === 'video')
       .map((item) => item.model);
-    const strictCatalog = canvasModelCatalogService.list(db, runtime)
-      .filter((item) => item.kind === 'video'
-        && ['toapis', 'toapis_video'].includes(String(item.protocol || '').toLowerCase()));
     const allConfigs = aiConfigService.listConfigs(db, 'video');
     const strictModels = new Set(allConfigs.filter(isStrictToapisVideoConfig)
       .flatMap((config) => [config.default_model, ...(Array.isArray(config.model) ? config.model : [config.model])])
       .map((model) => String(model || '').trim().toLowerCase())
       .filter(Boolean));
+    const strictCatalog = canvasModelCatalogService.list(db, runtime)
+      .filter((item) => item.kind === 'video'
+        && strictModels.has(String(item.model || '').trim().toLowerCase()));
     const list = [...new Set([
       ...publicModels.filter((model) => {
         const key = String(model || '').trim().toLowerCase().split('::').pop();
@@ -68,7 +68,9 @@ function listPublicAudioModels(db, billingEnabled) {
 function publicModelNames(configs) {
   const names = configs
     .filter((config) => config.is_active !== false)
+    .filter((config) => config.verification_status == null || config.verification_status === 'verified')
     .flatMap((config) => {
+      if (config.logical_model_id) return [config.logical_model_id];
       const models = Array.isArray(config.model) ? config.model : [config.model];
       return [config.default_model, ...models];
     })
@@ -112,7 +114,12 @@ function vendorLock(cfg) {
 }
 
 function isVideoSettingsError(error) {
-  return error?.code === 'INVALID_VIDEO_DURATION' || error?.code === 'INVALID_VIDEO_SETTINGS';
+  return [
+    'INVALID_VIDEO_DURATION',
+    'INVALID_VIDEO_SETTINGS',
+    'INVALID_FUMIN_MODEL',
+    'INVALID_FUMIN_MODEL_KEY_ISOLATION',
+  ].includes(error?.code);
 }
 
 function create(db, log, cfg) {

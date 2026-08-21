@@ -685,7 +685,7 @@ async function preflightRuntimePython(deps = {}) {
       cwd: path.resolve(__dirname, '../..'),
       env: sanitizeEnv(deps.env),
     })).trim();
-    if (!/^Python [0-9]+\.[0-9]+\.[0-9]+$/.test(version)) throw error(MODEL_ERROR);
+    if (!/^Python 3\.12\.[0-9]+$/.test(version)) throw error(MODEL_ERROR);
     return python;
   } catch (err) {
     throw sanitizedError(err, 'python_preflight');
@@ -849,7 +849,7 @@ async function runFetchModels(options, injectedDeps = {}) {
   await deps.preflightRuntimePython(deps);
   const parent = path.dirname(outputDir);
   await fsp.mkdir(parent, { recursive: true });
-  const staging = path.join(parent, `.redraw-full-frame-staging-${deps.randomHex()}`);
+  const staging = path.join(parent, `.rff-${deps.randomHex()}`);
   let complete = false;
   let stage = 'unknown';
   try {

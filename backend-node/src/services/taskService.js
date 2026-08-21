@@ -1,5 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const creditLedger = require('./creditLedgerService');
+const providerReconciliation = require('./providerReconciliationService');
 
 function createTask(db, log, taskType, resourceId) {
   const id = uuidv4();
@@ -81,7 +82,8 @@ function updateTaskResult(db, taskId, result) {
   const now = new Date().toISOString();
   const resultStr = typeof result === 'string' ? result : JSON.stringify(result || {});
   db.prepare(
-    `UPDATE async_tasks SET status = 'completed', progress = 100, result = ?, completed_at = ?, updated_at = ?
+    `UPDATE async_tasks SET status = 'completed', progress = 100, message = '', error = NULL,
+       result = ?, completed_at = ?, updated_at = ?
      WHERE id = ?`
   ).run(resultStr, now, now, taskId);
 }
@@ -226,7 +228,18 @@ function reconcileOrphanedRedrawLocalizationTasks(db, log) {
   }
 }
 
+function reconcileProviderRequestsOnStartup(db, log) {
+  try {
+    providerReconciliation.reconcileProviderRequests(db, log, new Date().toISOString(), {
+      submittingGraceMs: 0,
+    });
+  } catch (error) {
+    if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
+  }
+}
+
 function failOrphanedAsyncTasksOnStartup(db, log) {
+  reconcileProviderRequestsOnStartup(db, log);
   let rows = selectOrphanedAsyncTasks(db);
   reconcileOrphanedRedrawLocalizationTasks(db, log);
   rows = rows.filter((row) => {
@@ -328,6 +341,17 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
       })();
       rows = rows.filter((row) => !keepOutOfGenericCleanup.has(row.id));
     }
+  } catch (error) {
+    if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
+  }
+  try {
+    const protectedReservations = new Set(db.prepare(`SELECT credit_reservation_id
+      FROM generation_route_requests
+      WHERE credit_reservation_id IS NOT NULL
+        AND state IN ('running', 'accepted', 'needs_attention')`).all()
+      .map((row) => row.credit_reservation_id));
+    rows = rows.filter((row) => !row.credit_reservation_id
+      || !protectedReservations.has(row.credit_reservation_id));
   } catch (error) {
     if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
   }

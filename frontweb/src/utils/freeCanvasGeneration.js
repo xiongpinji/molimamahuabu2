@@ -1,6 +1,7 @@
 import { assetMediaUrl } from './mediaUrl.js'
 import { imageModelMaxReferences, validateQuickImageSelection } from './homeQuickGeneration.js'
 import { assertVideoDurationAllowed } from './videoDuration.js'
+import { normalizeGenerationProgress } from './canvasGenerationProgress.js'
 
 const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
 const FREE_NODE_STATUSES = new Set(['idle', 'queued', 'running', 'success', 'failed'])
@@ -51,6 +52,58 @@ const VIDEO_TOOL_RETRY_PARAMETERS = Object.freeze({
 })
 const ASSET_TYPES = new Set(['image', 'video', 'audio'])
 
+function freeCanvasTaskError(message, code) {
+  const error = new Error(message)
+  error.code = code
+  return error
+}
+
+export async function pollFreeCanvasTask(taskId, options = {}) {
+  const {
+    maxAttempts = 60,
+    intervalMs = 3000,
+    onProgress,
+    getTask,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  } = options
+  if (typeof getTask !== 'function') throw new TypeError('getTask 必须是函数')
+
+  let lastPollingError = null
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (attempt > 0) await sleep(intervalMs)
+    let task
+    try {
+      task = await getTask(taskId)
+      lastPollingError = null
+    } catch (error) {
+      lastPollingError = error
+      continue
+    }
+    const progress = normalizeGenerationProgress(task?.progress)
+    if (progress !== null) await onProgress?.(progress)
+    if (task?.status === 'completed') return task
+    if (task?.status === 'failed') {
+      throw freeCanvasTaskError(task?.error || task?.message || '自由节点生成失败', 'FREE_CANVAS_TASK_FAILED')
+    }
+    if (task?.status === 'needs_attention') {
+      throw freeCanvasTaskError(
+        task?.error || task?.message || '任务提交结果未知，请勿重复提交',
+        'FREE_CANVAS_TASK_NEEDS_ATTENTION',
+      )
+    }
+  }
+  if (lastPollingError) {
+    throw freeCanvasTaskError(
+      '任务已提交，但当前无法查询状态；系统会继续保留任务，请不要重复提交',
+      'FREE_CANVAS_TASK_STATUS_UNAVAILABLE',
+    )
+  }
+  throw freeCanvasTaskError(
+    '任务已提交且仍在处理中；系统会继续跟踪，请不要重复提交',
+    'FREE_CANVAS_TASK_RESULT_PENDING',
+  )
+}
+
 function cleanString(value) {
   return String(value ?? '').trim()
 }
@@ -68,13 +121,129 @@ export function normalizeFreeCanvasVideoReferenceMode(value, references = []) {
   )) ? 'first-last' : 'multi'
 }
 
+function hasDeclaredVideoReferenceCapability(capability = {}) {
+  if (Array.isArray(capability?.referenceTypes)) return true
+  return [
+    'supportsFirstFrame',
+    'supportsLastFrame',
+    'supportsImageReference',
+    'supportsVideoReference',
+    'supportsAudioReference',
+    'supportsOmniReference',
+  ].some((key) => typeof capability?.[key] === 'boolean')
+}
+
+function usesLegacyVideoReferenceCapability(capability = {}) {
+  return capability?.declared === false
+    || (capability?.declared !== true && !hasDeclaredVideoReferenceCapability(capability))
+}
+
+export function selectFreeCanvasVideoReferenceMode(capability = {}, currentMode = '') {
+  const mode = cleanString(currentMode)
+  const legacyFallback = usesLegacyVideoReferenceCapability(capability)
+  const referenceTypes = new Set((Array.isArray(capability?.referenceTypes)
+    ? capability.referenceTypes
+    : []).map((value) => cleanString(value).toLowerCase()))
+  const supportsFirstLast = legacyFallback
+    || capability?.supportsFirstFrame === true
+    || capability?.supportsLastFrame === true
+  const supportsImage = legacyFallback
+    || capability?.supportsImageReference === true
+    || (capability?.supportsImageReference !== false && referenceTypes.has('image'))
+  const supportsVideo = legacyFallback
+    || capability?.supportsVideoReference === true
+    || (capability?.supportsVideoReference !== false && referenceTypes.has('video'))
+  const supportsAudio = legacyFallback
+    || capability?.supportsAudioReference === true
+    || (capability?.supportsAudioReference !== false && referenceTypes.has('audio'))
+  const supportsOmni = legacyFallback
+    || capability?.supportsOmniReference === true
+    || supportsVideo
+    || supportsAudio
+  const supported = (
+    (mode === 'first-last' && supportsFirstLast)
+    || (mode === 'multi' && supportsImage)
+    || (mode === 'omni' && supportsOmni)
+  )
+  if (supported) return mode
+  if (supportsFirstLast) return 'first-last'
+  if (supportsImage) return 'multi'
+  if (supportsOmni) return 'omni'
+  return ''
+}
+
 export function resolveFreeCanvasVideoReferenceInput(mode, index) {
   const normalizedMode = normalizeFreeCanvasVideoReferenceMode(mode)
-  if (normalizedMode === 'omni') return index === 0 ? 'first-frame' : 'reference-image'
   if (normalizedMode !== 'first-last') return 'reference-image'
   if (index === 0) return 'first-frame'
   if (index === 1) return 'last-frame'
   return 'reference-image'
+}
+
+export function planFreeCanvasVideoReferences(capability = {}, currentMode = '', references = []) {
+  const mode = selectFreeCanvasVideoReferenceMode(capability, currentMode)
+  const legacyFallback = usesLegacyVideoReferenceCapability(capability)
+  const source = Array.isArray(references) ? references : []
+  const seen = new Set()
+  const candidates = source
+    .filter((reference) => reference?.ready !== false && cleanString(reference?.url))
+    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0) || Number(b.weight || 1) - Number(a.weight || 1))
+    .filter((reference) => {
+      const kind = ['image', 'video', 'audio'].includes(reference?.kind) ? reference.kind : 'image'
+      const key = `${kind}\u0000${cleanString(reference?.url)}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  const ordinalByReference = new Map()
+  for (const kind of ['image', 'video', 'audio']) {
+    candidates.filter((reference) => (reference.kind || 'image') === kind)
+      .forEach((reference, index) => ordinalByReference.set(reference, index))
+  }
+  const imageLimit = legacyFallback
+    ? nonNegativeInteger(capability.maxImageReferences ?? capability.maxReferences, 3)
+    : nonNegativeInteger(capability.maxImageReferences ?? capability.maxReferences, 0)
+  const videoLimit = legacyFallback
+    ? nonNegativeInteger(capability.maxVideoReferences, 10)
+    : nonNegativeInteger(capability.maxVideoReferences, 0)
+  const audioLimit = legacyFallback
+    ? nonNegativeInteger(capability.maxAudioReferences, 10)
+    : nonNegativeInteger(capability.maxAudioReferences, 0)
+  const supportsFirst = legacyFallback || capability.supportsFirstFrame === true
+  const supportsLast = legacyFallback || capability.supportsLastFrame === true
+  const referenceTypes = new Set((Array.isArray(capability.referenceTypes)
+    ? capability.referenceTypes
+    : []).map((value) => cleanString(value).toLowerCase()))
+  const supportsImage = legacyFallback
+    || capability.supportsImageReference === true
+    || (capability.supportsImageReference !== false && referenceTypes.has('image'))
+  const supportsVideo = legacyFallback
+    || capability.supportsVideoReference === true
+    || (capability.supportsVideoReference !== false && referenceTypes.has('video'))
+  const supportsAudio = legacyFallback
+    || capability.supportsAudioReference === true
+    || (capability.supportsAudioReference !== false && referenceTypes.has('audio'))
+  return source.map((reference) => {
+    const kind = ['image', 'video', 'audio'].includes(reference?.kind) ? reference.kind : 'image'
+    const index = ordinalByReference.has(reference) ? ordinalByReference.get(reference) : -1
+    let enabled = false
+    if (index >= 0 && kind === 'image') {
+      enabled = mode === 'first-last'
+        ? (index === 0 && supportsFirst) || (index === 1 && supportsLast)
+        : ['multi', 'omni'].includes(mode) && supportsImage && index < imageLimit
+    } else if (index >= 0 && kind === 'video') {
+      enabled = mode === 'omni' && supportsVideo && index < videoLimit
+    } else if (index >= 0 && kind === 'audio') {
+      enabled = mode === 'omni' && supportsAudio && index < audioLimit
+    }
+    return {
+      reference,
+      input: kind === 'image' && index >= 0
+        ? resolveFreeCanvasVideoReferenceInput(mode, index)
+        : reference?.slot,
+      enabled,
+    }
+  })
 }
 
 function positiveNumber(value) {
@@ -90,6 +259,15 @@ function finiteNumber(value) {
 function positiveInteger(value) {
   const number = Number(value)
   return Number.isInteger(number) && number > 0 ? number : undefined
+}
+
+function opaqueConfigId(value) {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : undefined
+  }
+  if (typeof value !== 'string' || !/^\d+$/.test(value.trim())) return undefined
+  const number = Number(value.trim())
+  return Number.isSafeInteger(number) && number > 0 ? number : undefined
 }
 
 function nonNegativeInteger(value, fallback = 0) {
@@ -541,7 +719,54 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
   const maxReferences = verifiedMaxReferences == null
     ? configuredMaxReferences
     : Math.min(configuredMaxReferences, verifiedMaxReferences)
-  const references = normalizeFreeCanvasSubmissionReferences(options.upstreamReferences)
+  const rawReferences = normalizeFreeCanvasSubmissionReferences(options.upstreamReferences)
+  const requestedVideoReferenceMode = nodeData.kind === 'video'
+    ? normalizeFreeCanvasVideoReferenceMode(nodeData.videoReferenceMode, options.upstreamReferences)
+    : ''
+  if (nodeData.kind === 'video'
+      && capabilityDeclared
+      && !FREE_VIDEO_REFERENCE_MODES.has(cleanString(nodeData.videoReferenceMode))) {
+    const labels = { image: '图片', audio: '音频', video: '视频' }
+    const referenceTypes = uniqueStrings(capability.referenceTypes).map((value) => value.toLowerCase())
+    const supportKeys = {
+      image: 'supportsImageReference',
+      video: 'supportsVideoReference',
+      audio: 'supportsAudioReference',
+    }
+    const supportsReference = (type) => {
+      const declaredSupport = capability[supportKeys[type]]
+      if (declaredSupport === true) return true
+      if (declaredSupport === false) return false
+      return referenceTypes.includes(type)
+    }
+    const limits = {
+      image: nonNegativeInteger(capability.maxImageReferences ?? capability.maxReferences, 0),
+      video: nonNegativeInteger(capability.maxVideoReferences, 0),
+      audio: nonNegativeInteger(capability.maxAudioReferences, 0),
+    }
+    for (const type of ['image', 'video', 'audio']) {
+      const count = rawReferences.filter((reference) => (reference.kind || 'image') === type).length
+      const isFirstLastImage = type === 'image' && requestedVideoReferenceMode === 'first-last'
+      if (count && !isFirstLastImage && !supportsReference(type)) {
+        throw new Error(`${nodeData.model || '当前视频模型'} 当前不支持${labels[type]}参考`)
+      }
+      if (count > limits[type] && !isFirstLastImage) {
+        throw new Error(`${nodeData.model || '当前视频模型'} 最多支持 ${limits[type]} 个${labels[type]}参考`)
+      }
+    }
+  }
+  const selectedVideoReferenceMode = nodeData.kind === 'video'
+    ? selectFreeCanvasVideoReferenceMode(capability, requestedVideoReferenceMode)
+    : ''
+  const references = nodeData.kind === 'video'
+    ? planFreeCanvasVideoReferences(
+      capability,
+      selectedVideoReferenceMode,
+      (options.upstreamReferences || []).filter((reference) => reference?.enabled !== false),
+    )
+      .filter(({ enabled }) => enabled)
+      .map(({ reference, input }) => ({ ...reference, slot: input }))
+    : rawReferences
   const imageReferences = references.filter((reference) => (reference.kind || 'image') === 'image')
   const upstreamImageUrls = uniqueStrings([
     ...(imageReferences.length ? [] : (options.upstreamUrls || [])),
@@ -586,6 +811,7 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
       drama_id: dramaId,
       prompt: content,
       model: nodeData.model,
+      config_id: opaqueConfigId(options.configId),
       aspect_ratio: nodeData.aspectRatio,
       style: nodeData.style,
       resolution,
@@ -600,7 +826,10 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
     const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
     const labels = { image: '图片', audio: '音频', video: '视频' }
     const resolutions = uniqueStrings(capability.resolutions).map((value) => value.toLowerCase())
-    const resolution = cleanString(nodeData.resolution || '720p').toLowerCase()
+    const hasDeclaredResolutionContract = capabilityDeclared && Array.isArray(capability.resolutions)
+    const resolution = hasDeclaredResolutionContract && !resolutions.length
+      ? ''
+      : cleanString(nodeData.resolution || '720p').toLowerCase()
     if (resolutions.length && !resolutions.includes(resolution)) {
       throw new Error(`当前模型视频清晰度仅支持 ${resolutions.join('、')}`)
     }
@@ -608,7 +837,8 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
       ? assertVideoDurationAllowed(nodeData.duration, capability)
       : nodeData.duration
     const explicitMode = FREE_VIDEO_REFERENCE_MODES.has(cleanString(nodeData.videoReferenceMode))
-    const referenceMode = normalizeFreeCanvasVideoReferenceMode(nodeData.videoReferenceMode, references)
+      && Boolean(selectedVideoReferenceMode)
+    const referenceMode = selectedVideoReferenceMode
     const firstFrameReference = imageReferences[0]
     const lastFrameReference = imageReferences[1]
     const hasOmniReferences = imageReferences.length > 2
@@ -675,6 +905,7 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
       ['audio', audioReferenceUrls, maxAudioReferences],
       ['video', videoReferenceUrls, maxVideoReferences],
     ]) {
+      if (type === 'image' && explicitMode && referenceMode === 'first-last') continue
       if (urls.length > limit) {
         throw new Error(`${nodeData.model || '当前视频模型'} 最多支持 ${limit} 个${labels[type]}参考`)
       }
@@ -745,7 +976,6 @@ export function collectDirectUpstreamResultUrls(nodes = [], edges = [], targetNo
 export function collectDirectUpstreamImageReferences(nodes = [], edges = [], targetNodeId = '') {
   return collectDirectUpstreamMediaReferences(nodes, edges, targetNodeId)
     .filter((reference) => reference.kind === 'image')
-    .map(({ kind, ...reference }) => reference)
 }
 
 export function collectDirectUpstreamMediaReferences(nodes = [], edges = [], targetNodeId = '') {
@@ -771,6 +1001,7 @@ export function collectDirectUpstreamMediaReferences(nodes = [], edges = [], tar
       edgeId: String(edge?.id || ''),
       title: cleanString(source.data?.title || source.data?.label || source.data?.asset?.name) || `${{ image: '图片', audio: '音频', video: '视频' }[sourceKind]}节点`,
       url,
+      kind: sourceKind,
       ready: Boolean(url),
       slot: cleanString(contract.input) || `reference-${sourceKind}`,
       enabled: contract.enabled !== false,

@@ -9,6 +9,39 @@ const { setupRouter } = require('./routes/index.js');
 const { createStaticOwnershipMiddleware } = require('./middleware/resourceOwnership');
 const { mountReleaseEvidenceAssets } = require('./middleware/releaseEvidenceAssets');
 
+function resolveStorageRoot(config, cwd = process.cwd()) {
+  const configured = config.storage?.local_path;
+  return configured
+    ? path.resolve(cwd, configured)
+    : path.join(cwd, 'data', 'storage');
+}
+
+function startBackgroundServices(options) {
+  const providerReconciliation = options.providerReconciliation
+    || require('./services/providerReconciliationService');
+  const providerCanary = options.providerCanary
+    || require('./services/providerCanarySchedulerService');
+  const env = options.env || process.env;
+  providerReconciliation.startProviderReconciliation(options.db, options.log, {
+    intervalMs: Number(env.PROVIDER_RECONCILIATION_INTERVAL_MS) || 60_000,
+  });
+  providerCanary.startProviderCanaryScheduler(options.db, options.log, {
+    mode: env.PROVIDER_CANARY_MODE,
+    paidEnabled: env.PROVIDER_CANARY_PAID_ENABLED,
+    intervalMs: 300_000,
+    storageRoot: options.storageRoot,
+    healthUrl: options.healthUrl,
+  });
+  return {
+    stop() {
+      return {
+        scheduler: providerCanary.stopProviderCanaryScheduler(),
+        reconciliation: providerReconciliation.stopProviderReconciliation(),
+      };
+    },
+  };
+}
+
 function createApp() {
   const config = loadConfig();
   const db = getDb(config.database);
@@ -20,11 +53,7 @@ function createApp() {
   applyVendorLock(db, logger, config);
   const log = logger;
 
-  const storageRoot = config.storage?.local_path
-    ? (path.isAbsolute(config.storage.local_path)
-        ? config.storage.local_path
-        : path.join(process.cwd(), config.storage.local_path))
-    : path.join(process.cwd(), 'data', 'storage');
+  const storageRoot = resolveStorageRoot(config);
 
   const redrawOrchestrator = require('./services/redrawOrchestrator');
   const redrawResume = redrawOrchestrator.resumeRedrawTasks(
@@ -66,6 +95,17 @@ function createApp() {
 
   const { resumeProcessingVideoGenerations } = require('./services/videoService');
   resumeProcessingVideoGenerations(db, log);
+
+  const healthHost = ['0.0.0.0', '::'].includes(String(config.server.host || ''))
+    ? '127.0.0.1'
+    : String(config.server.host || '127.0.0.1');
+  const healthUrlHost = healthHost.includes(':') ? `[${healthHost}]` : healthHost;
+  const backgroundServices = startBackgroundServices({
+    db,
+    log,
+    storageRoot,
+    healthUrl: `http://${healthUrlHost}:${config.server.port}/health`,
+  });
 
   const app = express();
   app.use(express.json({ limit: '10mb' }));
@@ -159,7 +199,12 @@ function createApp() {
     }
   });
 
-  return { app, config, db };
+  return {
+    app,
+    config,
+    db,
+    stopBackgroundServices: () => backgroundServices.stop(),
+  };
 }
 
-module.exports = { createApp };
+module.exports = { createApp, resolveStorageRoot, startBackgroundServices };

@@ -28,7 +28,7 @@ function setup({ withPrice = true } = {}) {
     `INSERT INTO props (drama_id, name, prompt, created_at, updated_at)
      VALUES (?, '旧式手机', '一部磨损的黑色旧式手机', ?, ?)`,
   ).run(dramaId, now, now).lastInsertRowid);
-  aiConfig.createConfig(db, log, {
+  const config = aiConfig.createConfig(db, log, {
     service_type: 'image',
     provider: 'openai',
     name: '测试图片模型',
@@ -38,6 +38,8 @@ function setup({ withPrice = true } = {}) {
     default_model: 'gpt-image-2',
     is_default: true,
   });
+  db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
+    .run(config.id);
   credits.setTenantAccountBalance(db, 'tenant-a', 20);
   if (withPrice) prices.set(db, 'gpt-image-2', 5);
   return { db, dramaId, propId };
@@ -142,7 +144,7 @@ test('道具生图未显式传模型时按默认图片配置计费', (t) => {
   assert.equal(credits.getReservation(db, task.credit_reservation_id).model, 'gpt-image-2');
 });
 
-test('USMercari 道具生图按显式档位预扣并记录人民币成本', (t) => {
+test('USMercari 道具生图按显式档位预扣且创建阶段不猜线路成本', (t) => {
   const { db, propId } = setup();
   t.after(() => db.close());
   installUsmercariPropModel(db);
@@ -158,8 +160,9 @@ test('USMercari 道具生图按显式档位预扣并记录人民币成本', (t) 
 
   assert.equal(reservation.amount, 87);
   assert.equal(cost.resolution, '2k');
-  assert.equal(cost.quantity, 1);
-  assert.equal(cost.cost_micros, 100000);
+  assert.equal(cost.quantity, 0);
+  assert.equal(cost.cost_micros, 0);
+  assert.equal(cost.cost_source, 'unavailable');
 });
 
 test('USMercari 道具生图缺少档位时不创建任务或预扣', (t) => {

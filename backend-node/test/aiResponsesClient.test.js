@@ -17,7 +17,7 @@ async function listen(server) {
   return server.address().port;
 }
 
-function setupTextConfig(baseUrl) {
+function setupTextConfig(baseUrl, overrides = {}) {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
   aiConfig.createConfig(db, log, {
@@ -29,6 +29,7 @@ function setupTextConfig(baseUrl) {
     model: ['test-chat-model'],
     default_model: 'test-chat-model',
     is_default: true,
+    ...overrides,
   });
   return db;
 }
@@ -52,6 +53,46 @@ test('responses request uses input and max_output_tokens', () => {
     instructions: 'system',
     max_output_tokens: 32,
   });
+});
+
+test('responses protocol sends a streaming request and consumes output-text deltas', async (t) => {
+  let requestBody = null;
+  const provider = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      requestBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.end([
+        `data: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'streamed ' })}`,
+        `data: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'response' })}`,
+        'data: [DONE]',
+        '',
+      ].join('\n\n'));
+    });
+  });
+  const port = await listen(provider);
+  t.after(() => provider.close());
+  const db = setupTextConfig(`http://127.0.0.1:${port}/v1`, {
+    api_protocol: 'responses',
+    endpoint: '/responses',
+  });
+  t.after(() => db.close());
+
+  const text = await aiClient.generateText(
+    db,
+    log,
+    'text',
+    'hello',
+    'system',
+    { max_tokens: 32 },
+  );
+
+  assert.equal(text, 'streamed response');
+  assert.equal(requestBody.stream, true);
+  assert.equal(requestBody.input, 'hello');
+  assert.equal(requestBody.instructions, 'system');
+  assert.equal(requestBody.max_output_tokens, 32);
 });
 
 test('chat stream consumes a final unterminated SSE event with message content', async (t) => {

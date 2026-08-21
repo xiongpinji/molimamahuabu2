@@ -2,7 +2,7 @@
 
 日期：2026-08-16
 
-范围：仅验证 Paddle wheel 分阶段下载、证据读取、本地安装、路径身份防逃逸、错误脱敏、原子清理和 Node 回归。未执行真实网络、真实 pip、依赖安装、venv 创建、模型 bootstrap、四组件 smoke、密钥读取、供应商调用、数据库写入、SSH、部署或 push。
+范围：原始实现阶段仅验证 Paddle wheel 分阶段下载、证据读取、本地安装、路径身份防逃逸、错误脱敏、原子清理和 Node 回归。该阶段未执行真实网络、真实 pip、依赖安装、venv 创建、模型 bootstrap、四组件 smoke、密钥读取、供应商调用、数据库写入、SSH、部署或 push。2026-08-17 的干净 PR 重放执行了 Git fetch 和锁文件约束下的 `npm ci`，但仍未执行官方模型下载、真实 pip、venv 创建、模型 bootstrap 或四组件 smoke。
 
 ## 验证基线
 
@@ -62,4 +62,28 @@
 
 本报告只代表本地静态检查和本地测试通过。它不代表官方缓存下载成功，不代表依赖安装成功，不代表 venv 可创建，不代表模型 bootstrap 成功，不代表 person、tracker、face、text 四组件真实 smoke 可用，不代表可部署。
 
-本次没有执行真实网络、真实 pip、安装依赖、venv、模型 bootstrap、四组件 smoke、密钥读取、供应商请求、数据库操作、SSH、部署或 push。
+原始实现验证没有执行真实网络、真实 pip、安装依赖、venv、模型 bootstrap、四组件 smoke、密钥读取、供应商请求、数据库操作、SSH、部署或 push。2026-08-17 干净 PR 重放仅为同步源码和安装锁定的 Node 测试依赖联网；没有对模型源或供应商发起请求，没有读取密钥，没有创建 main/text venv，没有执行 Python 包安装、模型 bootstrap、四组件 smoke、数据库操作、SSH 或部署。
+
+## 干净 PR 重放验证（2026-08-17）
+
+- 基线：最新 `origin/main`，HEAD `71829a250790b5addcc8ab22dc824132e2e32796`。
+- 分支：`codex/redraw-paddle-wheel-clean-pr-20260817`。
+- 迁移方式：从最终已审查实现机械投影最小闭包；规范化换行后与来源文件逐一比对，`normalized_mismatches=0`。未迁移来源分支的其他业务提交。
+- 基线全量：`tests 878; pass 875; fail 2; skipped 1`。两项既有失败为 `canvasReferenceSequenceContract.test.js` 的 mention token 拒绝门禁，以及 `releaseArchiveGuard.test.js` 的数据盘停止阈值门禁。
+- Paddle Node 定向：`tests 53; pass 49; fail 0; skipped 4`。跳过均为 Windows symlink 权限或未显式提供审核 Python 的合同探针。
+- 显式指定 bundled Python 后 detector：`tests 40; pass 39; fail 0; skipped 1`；Node/Python v2 合同探针通过，仅剩 Windows symlink EPERM 跳过。
+- Python worker：`Ran 61; OK; skipped 1`。普通沙箱首次运行因 hard-link 权限产生 `PermissionError`，在正常 Windows 文件权限下新鲜复跑通过；没有执行网络、安装或模型下载。
+- 语法与格式：相关 Node 文件 `node --check` 全部 exit 0，7 个 Python 文件 `py_compile` exit 0，`git diff --check` exit 0。
+- 迁移后全量两次均为 `tests 931; pass 923; fail 3; skipped 5`。除上述两项基线失败外，`providerRouteImageIntegration.test.js` 的备用图片落盘用例只在全量高负载中失败；该文件单独复跑 `14/14`，全文件集仅匹配该用例 `169/169`，前半套回归为 `tests 572; pass 570; fail 1; skipped 1`（唯一失败是既有 mention token 门禁），与两组 Paddle 测试联合为 `tests 67; pass 63; fail 0; skipped 4`。新增文件未修改图片路由、图片服务或该测试，因此本报告把它记录为现有负载敏感测试隔离警告，不把它描述为本功能通过的全量绿灯。
+
+结论：Paddle wheel 功能定向合同全部通过，迁移未引入可稳定复现的业务回归；仓库全量仍不是绿灯，合并审查必须同时看到两项确定的基线失败和一项负载敏感图片用例警告。本地证据不等于官方缓存、双 venv、真实四组件 smoke 或部署验收。
+
+## 合并前 Python 版本门禁修复（2026-08-17）
+
+- 实现提交：`32bc6032`。worker 包声明与固定 cp312 wheel 合同统一为 Python 3.12；前置探针只接受 `Python 3.12.x`，其他主次版本在随机 staging 和模型请求之前稳定拒绝为 `python_preflight`。
+- TDD 红灯：新增 2 项测试首次运行 `pass 0; fail 2`；分别证明包元数据仍排斥 3.12，以及 3.11 仍被旧探针接受。
+- 定向绿灯：Python 版本门禁 3 项 `pass 3; fail 0`。
+- Node 联合：显式使用 bundled Python 后，模型锁与 detector 共 `tests 56; pass 53; fail 0; skipped 3`；跳过均为 Windows 链接权限。
+- Python worker：`Ran 61; OK; skipped 1`；唯一跳过为 Windows symlink 权限。
+- 静态检查：两个 Node 文件语法检查、7 个 Python 文件编译检查和 `git diff --check` 均为 exit 0。
+- 本次修复未执行真实网络、pip、venv、官方模型下载、模型 bootstrap、四组件 smoke、供应商调用、数据库操作、SSH、部署或合并。

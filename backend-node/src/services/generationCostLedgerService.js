@@ -1,5 +1,5 @@
-const modelPrice = require('./modelPriceService');
 const creditLedger = require('./creditLedgerService');
+const routeCost = require('./providerRouteCostService');
 
 const PERIOD_LENGTHS = {
   day: 10,
@@ -20,6 +20,9 @@ function ensureSchema(db) {
       output_tokens INTEGER NOT NULL DEFAULT 0,
       reasoning_tokens INTEGER NOT NULL DEFAULT 0,
       usage_source TEXT NOT NULL DEFAULT 'configured',
+      config_id INTEGER,
+      cost_snapshot_json TEXT,
+      cost_source TEXT NOT NULL DEFAULT 'unavailable',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -32,26 +35,92 @@ function ensureSchema(db) {
       ON generation_cost_records(model, created_at DESC);
   `);
   const columns = db.prepare('PRAGMA table_info(generation_cost_records)').all();
-  if (!columns.some((column) => column.name === 'resolution')) {
-    db.exec('ALTER TABLE generation_cost_records ADD COLUMN resolution TEXT');
+  const columnNames = new Set(columns.map((column) => column.name));
+  const additions = [
+    ['resolution', 'TEXT'],
+    ['config_id', 'INTEGER'],
+    ['cost_snapshot_json', 'TEXT'],
+    ['cost_source', "TEXT NOT NULL DEFAULT 'unavailable'"],
+  ];
+  for (const [name, type] of additions) {
+    if (!columnNames.has(name)) db.exec(`ALTER TABLE generation_cost_records ADD COLUMN ${name} ${type}`);
   }
+}
+
+function positiveConfigId(value) {
+  if (value == null || value === '') return null;
+  const configId = Number(value);
+  if (!Number.isSafeInteger(configId) || configId <= 0) {
+    const error = new Error('configId must be a positive safe integer');
+    error.code = 'INVALID_GENERATION_COST_CONFIG';
+    throw error;
+  }
+  return configId;
+}
+
+function usageInteger(value) {
+  const number = Number(value || 0);
+  return Number.isSafeInteger(number) && number >= 0 ? number : 0;
+}
+
+function unavailableSource(value) {
+  return String(value || '').trim().toLowerCase() === 'unknown' ? 'unknown' : 'unavailable';
+}
+
+function unavailableQuote(input, configId) {
+  const resolution = String(input.resolution || '').trim().toLowerCase() || null;
+  return {
+    config_id: configId,
+    resolution,
+    cost_unit: 'unavailable',
+    quantity: 0,
+    cost_micros: 0,
+    input_tokens: usageInteger(input.inputTokens),
+    output_tokens: usageInteger(input.outputTokens),
+    reasoning_tokens: usageInteger(input.reasoningTokens),
+    cost_source: unavailableSource(input.costSource || input.usageSource),
+    cost_snapshot: null,
+  };
 }
 
 function record(db, input) {
   ensureSchema(db);
-  const quote = modelPrice.quoteCost(db, input.model, {
-    quantity: input.quantity,
-    resolution: input.resolution,
-    inputTokens: input.inputTokens,
-    outputTokens: input.outputTokens,
-    reasoningTokens: input.reasoningTokens,
-    resolution: input.resolution,
-  });
+  const reservationId = String(input.reservationId);
+  const settledSnapshot = db.prepare(`SELECT * FROM generation_cost_records
+    WHERE reservation_id = ? AND cost_source = 'provider_route'`).get(reservationId);
+  if (settledSnapshot) return settledSnapshot;
+  const model = String(input.model || '').trim();
+  if (!model) {
+    const error = new Error('model is required');
+    error.code = 'INVALID_GENERATION_COST_MODEL';
+    throw error;
+  }
+  const configId = positiveConfigId(input.configId ?? input.config_id);
+  let quote = unavailableQuote(input, configId);
+  if (configId != null) {
+    try {
+      const routed = routeCost.quoteRouteCost(db, {
+        configId,
+        count: input.count ?? input.quantity ?? 1,
+        duration: input.duration,
+        inputTokens: input.inputTokens,
+        outputTokens: input.outputTokens,
+        reasoningTokens: input.reasoningTokens,
+        resolution: input.resolution,
+      });
+      quote = { ...routed, cost_source: 'provider_route' };
+    } catch (error) {
+      const safeUnavailable = String(error?.code || '').startsWith('PROVIDER_ROUTE_')
+        || String(error?.code || '').startsWith('INVALID_PROVIDER_ROUTE_');
+      if (!safeUnavailable) throw error;
+    }
+  }
   const now = new Date().toISOString();
   db.prepare(`INSERT INTO generation_cost_records
       (reservation_id, model, resolution, cost_unit, quantity, cost_micros, input_tokens,
-       output_tokens, reasoning_tokens, usage_source, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       output_tokens, reasoning_tokens, usage_source, config_id, cost_snapshot_json, cost_source,
+       created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(reservation_id) DO UPDATE SET
       model = excluded.model,
       resolution = excluded.resolution,
@@ -62,10 +131,13 @@ function record(db, input) {
       output_tokens = excluded.output_tokens,
       reasoning_tokens = excluded.reasoning_tokens,
       usage_source = excluded.usage_source,
+      config_id = excluded.config_id,
+      cost_snapshot_json = excluded.cost_snapshot_json,
+      cost_source = excluded.cost_source,
       updated_at = excluded.updated_at`)
     .run(
-      String(input.reservationId),
-      quote.model,
+      reservationId,
+      model,
       quote.resolution || null,
       quote.cost_unit,
       quote.quantity,
@@ -73,12 +145,15 @@ function record(db, input) {
       quote.input_tokens,
       quote.output_tokens,
       quote.reasoning_tokens,
-      String(input.usageSource || 'configured'),
+      String(input.usageSource || quote.cost_source),
+      quote.config_id,
+      quote.cost_snapshot ? JSON.stringify(quote.cost_snapshot) : null,
+      quote.cost_source,
       now,
       now,
     );
   return db.prepare('SELECT * FROM generation_cost_records WHERE reservation_id = ?')
-    .get(String(input.reservationId));
+    .get(reservationId);
 }
 
 function getSettings(db) {
@@ -133,7 +208,7 @@ function report(db, period = 'day') {
       SUM(COALESCE(c.input_tokens, 0)) AS input_tokens,
       SUM(COALESCE(c.output_tokens, 0)) AS output_tokens,
       SUM(COALESCE(c.reasoning_tokens, 0)) AS reasoning_tokens,
-      SUM(CASE WHEN c.reservation_id IS NULL OR c.usage_source = 'unavailable' THEN 1 ELSE 0 END)
+      SUM(CASE WHEN c.reservation_id IS NULL OR c.cost_source != 'provider_route' THEN 1 ELSE 0 END)
         AS uncosted_usage_count
     FROM confirmed_usage u
     LEFT JOIN generation_cost_records c ON c.reservation_id = u.reservation_id

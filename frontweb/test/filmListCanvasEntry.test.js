@@ -50,6 +50,21 @@ test('统一导航暴露首页、画布、剧本分析、短剧工厂与右上�
   assert.match(dramaCanvasSource, /html\.light \.drama-canvas-page \.canvas-topbar \.header-actions \.el-button[\s\S]*background:\s*#151515 !important/)
 })
 
+test('画布页顶部操作入口保持单行并按视口为浮动账户卡让位', () => {
+  assert.match(
+    platformHeaderSource,
+    /\.platform-header__actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*flex-wrap:\s*nowrap;/,
+  )
+  assert.match(
+    platformHeaderSource,
+    /\.platform-header--account-badge \.platform-header__actions\s*\{[^}]*margin-right:\s*clamp\(0px,\s*calc\(1040px - 50vw\),\s*240px\);/,
+  )
+  assert.match(
+    platformHeaderSource,
+    /@media \(max-width:\s*1280px\)[\s\S]*?\.platform-header__button-label\s*\{\s*display:\s*none;/,
+  )
+})
+
 test('首页提供紫黑工作台、快速生成器和真实最近项目入口', () => {
   assert.match(filmListSource, /class="home-workbench"/)
   assert.match(filmListSource, /你好，今天想生成点什么？/)

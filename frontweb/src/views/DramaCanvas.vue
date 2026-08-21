@@ -589,6 +589,9 @@
             <button type="button" class="free-node-model-retry" @click="loadFreeCanvasModelConfigs">重试</button>
           </p>
           <p v-else-if="freeNodeSelectedModelNote" class="free-node-model-note">{{ freeNodeSelectedModelNote }}</p>
+          <div v-if="freeNodeKind === 'image' && freeNodeSelectedCapabilityBadges.length" class="free-node-model-capabilities" aria-label="模型能力范围">
+            <span v-for="badge in freeNodeSelectedCapabilityBadges" :key="badge">{{ badge }}</span>
+          </div>
           <p v-else-if="freeNodeModelUnavailable" class="free-node-model-unavailable">当前模型已不可用，请重新选择</p>
         </el-form-item>
         <el-form-item v-if="['image', 'video'].includes(freeNodeKind)" label="画面比例">
@@ -662,6 +665,7 @@ import {
 } from '@/utils/dramaCanvasAdapter'
 import { preserveCanvasNodeRuntimeMeasurements, virtualizeCanvasGraph } from '@/utils/canvasVirtualization'
 import {
+  CANVAS_KEYBOARD_PAN_INITIAL_STEP,
   CANVAS_KEYBOARD_PAN_SPEED,
   canvasKeyboardPanDelta,
   canvasKeyboardPanVector,
@@ -684,11 +688,12 @@ import {
   collectDirectUpstreamTextInputs,
   getFreeCanvasNodeResultUrl,
   normalizeFreeCanvasSubmissionReferences,
+  planFreeCanvasVideoReferences,
+  pollFreeCanvasTask as pollFreeCanvasTaskStatus,
   resolveFreeCanvasResultUrl,
 } from '@/utils/freeCanvasGeneration'
 import {
   calculateBatchGenerationProgress,
-  normalizeGenerationProgress,
 } from '@/utils/canvasGenerationProgress'
 import {
   collectDroppedImageFiles,
@@ -709,7 +714,8 @@ import {
   canvasModelSelectionDecision,
   createCanvasModelCatalogLoader,
   estimateCanvasCredits,
-  filterCanvasCatalogFallbackModels,
+  canvasModelRoute,
+  imageModelCapabilityBadges,
   normalizeCanvasModelCatalog,
 } from '@/utils/canvasModelCapabilities'
 import {
@@ -945,7 +951,6 @@ const freeNodeForm = ref({ title: '', content: '', url: '', model: '', aspectRat
 const FREE_CANVAS_DEFAULTS_STORAGE_KEY = 'moli_canvas_free_node_defaults'
 const FREE_CANVAS_GENERATION_HISTORY_LIMIT = 20
 const CANVAS_VIRTUALIZATION_MIN_NODES = 80
-const CANVAS_KEYBOARD_PAN_STEP = 56
 const freeCanvasModelCatalog = ref([])
 const freeCanvasModelCatalogState = ref({ status: 'idle', error: null })
 const freeCanvasVoiceOptions = ref([])
@@ -1001,8 +1006,8 @@ function persistFreeCanvasNodeDefaults(kind, data) {
   }
 }
 
-function getFreeNodeModelOptions(kind) {
-  return getFreeNodeModelOptionEntries(kind)
+function getFreeNodeModelOptions(kind, nodeOrId) {
+  return getFreeNodeModelOptionEntriesForNode(kind, nodeOrId)
 }
 
 function getFreeNodeModelOptionEntries(kind) {
@@ -1014,20 +1019,20 @@ function getFreeNodeModelOptionEntriesForNode(kind, nodeOrId) {
     ? freeCanvasNodeInputReferences(nodeOrId).filter((reference) => reference.ready && reference.enabled !== false).length
     : 0
   const catalogOptions = canvasModelOptions(freeCanvasModelCatalog.value, kind, { referenceCount })
-  if (catalogOptions.length) return catalogOptions
-  const serviceType = canvasModelServiceType(kind)
-  return serviceType
-    ? filterCanvasCatalogFallbackModels(
-      getSelectableModelsAcrossConfigs(freeCanvasModelConfigs.value, serviceType),
-      kind,
-    )
-      .map((model) => ({ value: model, label: model }))
-    : []
+  return catalogOptions
 }
 
-const freeNodeSelectedModelEntry = computed(() => getFreeNodeModelOptionEntriesForNode(freeNodeKind.value, freeNodeEditingId.value)
-  .find((item) => item.value === normalizeModelOption(freeNodeForm.value.model)) || null)
-const freeNodeSelectedModelNote = computed(() => String(freeNodeSelectedModelEntry.value?.note || '').trim())
+const freeNodeSelectedModelMetadata = computed(() => canvasModelEntry(
+  freeCanvasModelCatalog.value,
+  freeNodeKind.value,
+  normalizeModelOption(freeNodeForm.value.model),
+))
+const freeNodeSelectedModelNote = computed(() => String(freeNodeSelectedModelMetadata.value?.publicNote || '').trim())
+const freeNodeSelectedCapabilityBadges = computed(() => (
+  freeNodeKind.value === 'image' && freeNodeSelectedModelMetadata.value
+    ? imageModelCapabilityBadges(freeNodeSelectedModelMetadata.value.capabilities || {})
+    : []
+))
 const freeNodeModelDecision = computed(() => canvasModelSelectionDecision(
   freeCanvasModelCatalog.value,
   freeNodeKind.value,
@@ -2483,11 +2488,12 @@ async function createFreeCanvasNode(kind, flowPosition = null, initialData = {})
       data,
     },
   ]
+  applySelectedFreeNodeIds([id])
   focusedNodeId.value = id
-  applyVirtualizedGraph()
   commitInteractionHistory(previousState)
   await persistCanvasState({ layoutOnly: true })
   await nextTick()
+  await focusCanvasNode(id)
   document.querySelector(`.vue-flow__node[data-id="${id}"] .node-title-input`)?.focus()
   return id
 }
@@ -2607,7 +2613,7 @@ async function duplicateFreeCanvasNode(nodeOrId) {
   if (!isStandaloneCanvas.value || source?.type !== 'homeCanvasNode') return null
   const previousState = currentInteractionState()
   const kind = source.data?.kind || 'text'
-  const id = `free:${kind}:${Date.now()}`
+  const id = `free:${kind}:${Date.now()}:${freeNodeSequence++}`
   const hasResult = Boolean(source.data?.url)
   const data = {
     ...source.data,
@@ -2636,6 +2642,7 @@ async function duplicateFreeCanvasNode(nodeOrId) {
   applyVirtualizedGraph()
   commitInteractionHistory(previousState)
   await persistCanvasState({ layoutOnly: true })
+  await focusCanvasNode(id)
   ElMessage.success('已复制节点')
   return id
 }
@@ -2699,20 +2706,16 @@ function freeCanvasGenerationId(kind, submitResult, taskResult) {
   return ''
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+async function pollFreeCanvasTask(taskId, options = {}) {
+  return pollFreeCanvasTaskStatus(taskId, { ...options, getTask: taskAPI.get })
 }
 
-async function pollFreeCanvasTask(taskId, { maxAttempts = 60, intervalMs = 3000, onProgress } = {}) {
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    if (attempt > 0) await sleep(intervalMs)
-    const task = await taskAPI.get(taskId)
-    const progress = normalizeGenerationProgress(task?.progress)
-    if (progress !== null) await onProgress?.(progress)
-    if (task?.status === 'completed') return task
-    if (task?.status === 'failed') throw new Error(task?.error || task?.message || '自由节点生成失败')
-  }
-  throw new Error('自由节点生成超时')
+function isFreeCanvasTaskStillPending(error) {
+  return [
+    'FREE_CANVAS_TASK_NEEDS_ATTENTION',
+    'FREE_CANVAS_TASK_STATUS_UNAVAILABLE',
+    'FREE_CANVAS_TASK_RESULT_PENDING',
+  ].includes(error?.code)
 }
 
 async function resolveFreeCanvasFinalUrl(kind, submitResult, taskResult) {
@@ -2922,9 +2925,18 @@ function freeCanvasNodeInputReferences(nodeOrId) {
 function freeCanvasReferenceCandidates(nodeOrId) {
   const targetNode = freeCanvasNodeById(nodeOrId)
   if (!targetNode) return []
+  const adoptedReferences = (references) => targetNode.data?.kind === 'video'
+    ? planFreeCanvasVideoReferences(
+      getFreeNodeModelCapability('video', targetNode.data?.model),
+      targetNode.data?.videoReferenceMode,
+      references,
+    ).filter(({ enabled }) => enabled).map(({ reference }) => reference)
+    : references
   return buildFreeCanvasReferenceMentionCandidates(
-    normalizeFreeCanvasSubmissionReferences(
-      collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id),
+    adoptedReferences(
+      normalizeFreeCanvasSubmissionReferences(
+        collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id),
+      ),
     ),
   )
 }
@@ -2994,7 +3006,7 @@ async function createFreeCanvasReferenceNode({ targetNode, kind = 'image', url, 
   return nodeId
 }
 
-async function uploadFreeCanvasReferenceImage(nodeOrId, file) {
+async function uploadFreeCanvasReferenceMedia(nodeOrId, file) {
   const targetNode = freeCanvasNodeById(nodeOrId)
   if (!targetNode || !['image', 'video'].includes(targetNode.data?.kind)) return
   const kind = ['image', 'audio', 'video'].find((type) => file?.type?.startsWith(`${type}/`))
@@ -3019,8 +3031,6 @@ async function uploadFreeCanvasReferenceImage(nodeOrId, file) {
     ElMessage.error(error?.message || '参考素材上传失败')
   }
 }
-
-const uploadFreeCanvasReferenceMedia = uploadFreeCanvasReferenceImage
 
 function updateFreeCanvasReference(edgeId, patch = {}) {
   const mutate = (edge) => {
@@ -3146,12 +3156,14 @@ async function runFreeCanvasNode(nodeOrId) {
     if (!catalogEntry) throw new Error('当前节点没有已验证且已定价的可用模型')
     const generationData = { ...node.data, model: catalogEntry.model }
     const capability = getFreeNodeModelCapability(kind, catalogEntry.model)
+    const modelRoute = canvasModelRoute(freeCanvasModelCatalog.value, kind, node.data?.model)
     requestPayload = buildFreeCanvasGenerationRequest(generationData, {
       dramaId: dramaId.value,
       upstreamUrls,
       upstreamReferences,
       upstreamTexts,
       maxReferences: capability.maxReferences,
+      ...(kind === 'image' ? { configId: modelRoute?.configId } : {}),
       capability,
     })
   } catch (error) {
@@ -3187,6 +3199,7 @@ async function runFreeCanvasNode(nodeOrId) {
     ? Math.min(4, Math.max(1, Number(node.data?.quantity) || 1))
     : 1
   await patchFreeCanvasNodeData(node.id, {
+    model: requestPayload.model || node.data?.model || '',
     status: 'running',
     generationActive: true,
     generationBatchSize: quantity,
@@ -3280,6 +3293,24 @@ async function runFreeCanvasNode(nodeOrId) {
   } catch (error) {
     const errorMessage = error?.message || '自由节点生成失败'
     const completedResultUrls = completedResults.map((result) => result.resultUrl)
+    if (isFreeCanvasTaskStillPending(error) && taskId) {
+      await updateFreeCanvasGenerationHistory(node.id, historyId, {
+        status: 'running',
+        taskId,
+        resultUrls: [...completedResultUrls],
+        error: errorMessage,
+      })
+      await patchFreeCanvasNodeData(node.id, {
+        status: 'running',
+        generationActive: false,
+        url: previousUrl,
+        resultUrls: previousResultUrls,
+        taskId,
+        error: errorMessage,
+      })
+      ElMessage.warning(errorMessage)
+      return { ok: false, pending: true, nodeId: String(node.id), taskId, error: errorMessage }
+    }
     await updateFreeCanvasGenerationHistory(node.id, historyId, {
       status: 'failed',
       completedAt: new Date().toISOString(),
@@ -3415,6 +3446,17 @@ async function resumeFreeCanvasNodeTask(nodeOrId) {
       const latestNode = freeCanvasNodeById(node.id)
       if (String(latestNode?.data?.taskId || '') !== taskId || latestNode?.data?.status !== 'running') return
       const errorMessage = error?.message || '自由节点生成失败'
+      if (isFreeCanvasTaskStillPending(error)) {
+        await patchFreeCanvasNodeData(node.id, {
+          status: 'running',
+          generationActive: false,
+          url: latestNode?.data?.url || '',
+          taskId,
+          error: errorMessage,
+        })
+        ElMessage.warning(errorMessage)
+        return
+      }
       await patchFreeCanvasNodeData(node.id, {
         status: 'failed',
         generationActive: false,
@@ -4406,8 +4448,7 @@ async function duplicateStoryboardNode(node) {
   await persistCanvasState({ layoutOnly: true })
   if (filterEpisodeId.value !== episodeId) filterEpisodeId.value = episodeId
   await refreshCanvas(false)
-  focusedNodeId.value = null
-  scheduleVirtualization()
+  await focusCanvasNode(targetNodeId, { includeNodeIds: [node.id] })
   ElMessage.success('已复制分镜到画布')
   return targetNodeId
 }
@@ -6096,10 +6137,32 @@ function openNodeConfig(node) {
 
 function focusNodeForConfig(node, options = {}) {
   if (!node?.id) return
+  const focusChanged = focusedNodeId.value !== node.id
   focusedNodeId.value = node.id
   const storyboard = storyboardForNode(node)
   if (options?.syncStoryboard !== false && storyboard?.id) applySelectedStoryboardIds([storyboard.id])
   scheduleVirtualization()
+  if (focusChanged && PANEL_NODE_TYPES.has(node.type)) void fitFocusedNodePanel(node.id)
+}
+
+async function fitFocusedNodePanel(nodeId) {
+  await nextTick()
+  await new Promise((resolve) => window.requestAnimationFrame(resolve))
+  if (focusedNodeId.value !== nodeId) return
+  const api = canvasFlowApi.value
+  if (!api?.fitView) return
+  api.updateNodeInternals?.([String(nodeId)])
+  await nextTick()
+  await new Promise((resolve) => window.requestAnimationFrame(resolve))
+  if (focusedNodeId.value !== nodeId) return
+  await api.fitView({
+    nodes: [String(nodeId)],
+    padding: 0.08,
+    duration: 240,
+    maxZoom: 1,
+    includeHiddenNodes: false,
+  })
+  syncCanvasViewportFromFlow()
 }
 
 function openCanvasCreateMenuAt(clientX, clientY, connectionSource = null, flowPosition = null) {
@@ -6459,7 +6522,6 @@ provide(CANVAS_CONTEXT_KEY, {
   getFreeNodeInputReferences: freeCanvasNodeInputReferences,
   getFreeNodeReferenceCandidates: freeCanvasReferenceCandidates,
   uploadFreeCanvasReferenceMedia,
-  uploadFreeCanvasReferenceImage,
   attachFreeCanvasReference,
   updateFreeCanvasReference,
   detachFreeCanvasReference,
@@ -6971,7 +7033,7 @@ async function fitCanvasView() {
   }
 }
 
-async function focusCanvasNode(nodeId) {
+async function focusCanvasNode(nodeId, options = {}) {
   if (!nodeId) return
   const node = findGraphNode(nodeId)
   focusedNodeId.value = nodeId
@@ -6979,6 +7041,21 @@ async function focusCanvasNode(nodeId) {
   await nextTick()
   const api = canvasFlowApi.value
   if (!api?.fitView && !api?.setCenter) return
+  const fitNodeIds = [...new Set([
+    String(nodeId),
+    ...(Array.isArray(options.includeNodeIds) ? options.includeNodeIds.map(String) : []),
+  ])]
+  if (fitNodeIds.length > 1 && api.fitView) {
+    await api.fitView({ nodes: fitNodeIds, padding: 0.35, duration: 320, includeHiddenNodes: false })
+    await nextTick()
+    api.updateNodeInternals?.(fitNodeIds)
+    const relatedViewport = api.getViewport?.()
+    if (relatedViewport) {
+      currentViewport.value = { x: relatedViewport.x, y: relatedViewport.y, zoom: relatedViewport.zoom }
+      scheduleVirtualization()
+    }
+    return
+  }
   if (!node) {
     await api.fitView?.({ nodes: [String(nodeId)], padding: 0.55, duration: 320, includeHiddenNodes: false })
     await nextTick()
@@ -7204,8 +7281,8 @@ function panCanvasByKeyboard(key) {
   if (!['w', 'a', 's', 'd'].includes(key)) return false
   const vector = canvasKeyboardPanVector([key])
   return panCanvasByKeyboardDelta({
-    x: vector.x * CANVAS_KEYBOARD_PAN_STEP,
-    y: vector.y * CANVAS_KEYBOARD_PAN_STEP,
+    x: vector.x * CANVAS_KEYBOARD_PAN_INITIAL_STEP,
+    y: vector.y * CANVAS_KEYBOARD_PAN_INITIAL_STEP,
   })
 }
 
@@ -8942,6 +9019,22 @@ html.light .drama-canvas-page .canvas-topbar .header-actions .el-button:hover {
 }
 .canvas-free-node-dialog .free-node-model-note { color: #9ca3af; }
 .canvas-free-node-dialog .free-node-model-unavailable { color: #f59e0b; }
+.canvas-free-node-dialog .free-node-model-capabilities {
+  display: flex;
+  width: 100%;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.canvas-free-node-dialog .free-node-model-capabilities span {
+  border: 1px solid #3f3f46;
+  border-radius: 999px;
+  background: #202024;
+  color: #d4d4d8;
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 1.2;
+}
 .canvas-free-node-dialog .free-node-model-retry {
   margin-left: 6px;
   border: 0;

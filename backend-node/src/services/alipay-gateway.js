@@ -111,12 +111,6 @@ function createAlipayGateway(env = process.env, dependencies = {}) {
       }
       return safePaymentUrl;
     },
-    async queryTrade(outTradeNo) {
-      requireConfigured();
-      return sdk.exec('alipay.trade.query', {
-        bizContent: { out_trade_no: String(outTradeNo || '') },
-      }, { validateSign: true });
-    },
     verifyNotification(payload) {
       requireConfigured();
       return sdk.checkNotifySignV2(payload);

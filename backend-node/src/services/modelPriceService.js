@@ -133,6 +133,45 @@ function readRow(db, model) {
   return withResolutionPrices(db, row);
 }
 
+function stableCostSnapshot(row) {
+  if (!row) return null;
+  return JSON.stringify({
+    model: String(row.model || '').toLowerCase(),
+    category: row.category,
+    credits: row.credits,
+    status: row.status,
+    billing_unit: billingUnit(row.model, row.category, row.billing_unit),
+    cost_unit: row.cost_unit,
+    cost_micros_per_unit: row.cost_micros_per_unit,
+    input_cost_micros_per_1k: row.input_cost_micros_per_1k,
+    output_cost_micros_per_1k: row.output_cost_micros_per_1k,
+    resolution_prices: Object.fromEntries(Object.entries(row.resolution_prices || {})
+      .sort(([left], [right]) => left.localeCompare(right))),
+  });
+}
+
+function invalidateLogicalModelEvidence(db, logicalModelId, now) {
+  try {
+    const hasLogicalModelColumn = hasTable(db, 'ai_service_configs')
+      && db.prepare('PRAGMA table_info(ai_service_configs)').all()
+        .some((column) => column.name === 'logical_model_id');
+    const logicalModelIds = hasLogicalModelColumn
+      ? db.prepare(`SELECT DISTINCT logical_model_id FROM ai_service_configs
+          WHERE deleted_at IS NULL AND logical_model_id = ? COLLATE NOCASE`)
+        .all(logicalModelId).map((row) => row.logical_model_id)
+      : [];
+    const evidenceService = require('./providerCanaryEvidenceService');
+    for (const mappedId of logicalModelIds.length ? logicalModelIds : [logicalModelId]) {
+      evidenceService.invalidateLogicalModel(db, mappedId, 'cost_changed', now);
+    }
+  } catch (error) {
+    if (error?.code !== 'SQLITE_ERROR'
+        || !/no such table:\s*provider_canary_evidence\b/i.test(String(error.message || ''))) {
+      throw error;
+    }
+  }
+}
+
 function hasTable(db, name) {
   return Boolean(db.prepare(
     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -310,6 +349,9 @@ function list(db) {
 
 function listPublic(db, options = {}) {
   if (!hasTable(db, 'ai_service_configs')) return [];
+  const configColumns = new Set(db.prepare('PRAGMA table_info(ai_service_configs)').all()
+    .map((column) => column.name));
+  const requiresVerificationStatus = configColumns.has('verification_status');
   const rows = db.prepare(`SELECT * FROM ai_service_configs
     WHERE deleted_at IS NULL`).all();
   const configsByModel = new Map();
@@ -321,21 +363,29 @@ function listPublic(db, options = {}) {
     entries.push({ config, upstreamModel: String(upstreamModel || model).trim() });
     configsByModel.set(key, entries);
   };
+  const addLogicalConfig = (upstreamModel, config) => {
+    const logicalModel = String(config.logical_model_id || '').trim();
+    if (logicalModel) addConfig(logicalModel, upstreamModel, config);
+  };
   for (const entry of mediaModelSelection.listEntries(rows)) {
     const row = entry.config;
     if (!row.is_active) continue;
-    if (!isStrictPublicConfig(row) && row.verification_status !== 'verified') continue;
+    if (!isStrictPublicConfig(row) && requiresVerificationStatus && row.verification_status !== 'verified') continue;
     if (!isRealGenerationVerified(row, entry.upstreamModel)) continue;
     if (isStrictPublicConfig(row)) {
       strictUpstreamKeys.add(`${entry.kind}:${entry.upstreamModel.toLowerCase()}`);
     }
     addConfig(entry.model, entry.upstreamModel, row);
+    addLogicalConfig(entry.upstreamModel, row);
   }
   for (const row of rows.filter((item) => !mediaModelSelection.KIND_BY_SERVICE[item.service_type])) {
     if (!row.is_active) continue;
-    if (row.verification_status !== 'verified') continue;
+    if (requiresVerificationStatus && row.verification_status !== 'verified') continue;
     for (const model of [...parseConfiguredModels(row.model), String(row.default_model || '').trim()]) {
-      if (model && isRealGenerationVerified(row, model)) addConfig(model, model, row);
+      if (model && isRealGenerationVerified(row, model)) {
+        addConfig(model, model, row);
+        addLogicalConfig(model, row);
+      }
     }
   }
   return list(db).flatMap((row) => {
@@ -364,7 +414,20 @@ function listPublic(db, options = {}) {
       resolution_prices: Object.fromEntries(Object.entries(row.resolution_prices || {})
         .filter(([resolution]) => resolutions.includes(String(resolution).toLowerCase()))),
     }];
-  });
+  }).map(publicPriceView);
+}
+
+function publicPriceView(row) {
+  return {
+    model: row.model,
+    display_name: row.display_name,
+    category: row.category,
+    credits: row.credits,
+    status: row.status,
+    billing_unit: row.billing_unit,
+    resolution_prices: Object.fromEntries(Object.entries(row.resolution_prices || {})
+      .map(([resolution, tier]) => [resolution, { credits: tier.credits }])),
+  };
 }
 
 function isStrictPublicConfig(config) {
@@ -505,7 +568,8 @@ function set(db, value, creditsValue, options = {}) {
     throw priceError('INVALID_MODEL_PRICE', '只有图片或视频模型可以配置分辨率价格');
   }
   const updatedAt = new Date().toISOString();
-  db.transaction(() => {
+  let saved;
+  const applySet = () => {
     db.prepare(`INSERT INTO model_credit_prices
         (model, display_name, public_note, category, credits, status, billing_unit, cost_unit, cost_micros_per_unit,
          input_cost_micros_per_1k, output_cost_micros_per_1k, updated_at)
@@ -541,8 +605,13 @@ function set(db, value, creditsValue, options = {}) {
         }
       }
     }
-  })();
-  const saved = readRow(db, model);
+    saved = readRow(db, model);
+    if (stableCostSnapshot(existing) !== stableCostSnapshot(saved)) {
+      invalidateLogicalModelEvidence(db, model, updatedAt);
+    }
+  };
+  if (db.inTransaction) applySet();
+  else db.transaction(applySet)();
   return { ...saved, billing_unit: billingUnit(saved.model, saved.category, saved.billing_unit) };
 }
 

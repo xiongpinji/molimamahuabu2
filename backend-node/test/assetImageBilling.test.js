@@ -333,7 +333,7 @@ test('旧资产 strict USMercari 非计费入口也拒绝 n=2 而不创建任务
   }
 });
 
-test('旧资产 strict USMercari 成功保存本站静态图，下载失败退款且不建资产', async (t) => {
+test('旧资产 strict USMercari 成功保存本站静态图，远程图本地保存失败则挂起且不建资产', async (t) => {
   const db = setup(500);
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'asset-usmercari-'));
   const previousStoragePath = process.env.STORAGE_LOCAL_PATH;
@@ -408,10 +408,25 @@ test('旧资产 strict USMercari 成功保存本站静态图，下载失败退�
   await failedScheduled();
   const failedRow = db.prepare('SELECT status, error_msg, credit_reservation_id FROM image_generations WHERE id = ?').get(failed.id);
 
-  assert.equal(failedRow.status, 'failed');
+  assert.equal(failedRow.status, 'needs_attention');
   assert.match(failedRow.error_msg, /本地保存失败|未生成本地文件/);
+  assert.doesNotMatch(failedRow.error_msg, /重试/);
   assert.equal(db.prepare('SELECT COUNT(*) count FROM assets WHERE image_gen_id = ?').get(failed.id).count, 0);
-  assert.equal(credits.getReservation(db, failedRow.credit_reservation_id).status, 'refunded');
+  assert.equal(credits.getReservation(db, failedRow.credit_reservation_id).status, 'held');
+
+  const reused = imageClient.createAndGenerateImage(db, log, {
+    drama_id: 1,
+    character_id: 13,
+    prompt: 'strict download failure',
+    model: 'nano-banana-2',
+    provider: 'usmercari_image',
+    resolution: '1k',
+    billingEnabled: true,
+    userId: 'user-1',
+    schedule() { assert.fail('needs_attention 任务不得再次调度'); },
+  }, { evidenceRoots });
+  assert.equal(reused.id, failed.id);
+  assert.equal(reused.reused, true);
 });
 
 test('旧资产异步提交前证据失效时不调用 USMercari', async (t) => {

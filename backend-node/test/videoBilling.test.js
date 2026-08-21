@@ -8,6 +8,7 @@ const aiConfig = require('../src/services/aiConfigService');
 const taskService = require('../src/services/taskService');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
+const routeCosts = require('../src/services/providerRouteCostService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 
@@ -219,7 +220,7 @@ test('ToAPIs rejects missing price tier, Mini 5 seconds, 1080P and omitted resol
   }
 });
 
-test('verified ToAPIs Fast 480P 4-second request reserves exact credits and cost once', () => {
+test('verified ToAPIs Fast 480P 4-second request reserves exact credits and defers route cost', () => {
   const db = setup();
   let scheduled = 0;
   const config = configureToapis(db, { model: 'seedance-2-fast' });
@@ -239,8 +240,8 @@ test('verified ToAPIs Fast 480P 4-second request reserves exact credits and cost
   assert.deepEqual({ duration: row.duration, resolution: row.resolution }, { duration: 4, resolution: '480p' });
   assert.equal(credits.getReservation(db, row.credit_reservation_id).amount, 2044);
   assert.deepEqual(
-    db.prepare('SELECT model, quantity, resolution, cost_micros FROM generation_cost_records').get(),
-    { model: 'seedance-2-fast', quantity: 4, resolution: '480p', cost_micros: 2336000 },
+    db.prepare('SELECT model, quantity, resolution, cost_micros, cost_source FROM generation_cost_records').get(),
+    { model: 'seedance-2-fast', quantity: 0, resolution: '480p', cost_micros: 0, cost_source: 'unavailable' },
   );
   assert.equal(scheduled, 1);
 
@@ -783,6 +784,135 @@ test('供应商请求使用已计费时长，不被旧分镜时长覆盖', async
     assert.equal(capturedDuration, 8);
   } finally {
     videoClient.callVideoApi = originalCallVideoApi;
+    videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;
+    db.close();
+  }
+});
+
+test('USMercari 多图参考入库时不混入首帧字段', () => {
+  const db = setup();
+  const originalGetDefaultVideoConfig = videoClient.getDefaultVideoConfig;
+  try {
+    videoClient.getDefaultVideoConfig = () => ({
+      provider: 'usmercari',
+      api_protocol: 'usmercari_media',
+      default_model: 'MiniMax H3',
+    });
+    const created = videoService.create(db, log, {
+      drama_id: 1,
+      model: 'MiniMax H3',
+      prompt: '多图参考链路',
+      duration: 5,
+      reference_image_urls: ['/static/reference-1.png', '/static/reference-2.png'],
+    }, { billingEnabled: false, schedule() {} });
+
+    const row = db.prepare('SELECT first_frame_url, reference_image_urls FROM video_generations WHERE id = ?').get(created.id);
+    assert.equal(row.first_frame_url, null);
+    assert.deepEqual(JSON.parse(row.reference_image_urls), ['/static/reference-1.png', '/static/reference-2.png']);
+  } finally {
+    videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;
+    db.close();
+  }
+});
+
+test('视频任务按所选 480P 或 720P 分辨率预扣积分但创建阶段不猜供应商成本', () => {
+  const db = setup();
+  prices.set(db, 'seedance 2.0', 3, {
+    category: 'video',
+    cost_unit: 'second',
+    resolution_prices: {
+      '480p': { credits: 3, cost_micros_per_second: 50000 },
+      '720p': { credits: 5, cost_micros_per_second: 120000 },
+    },
+  });
+
+  const amounts = [];
+  for (const [userId, resolution] of [['user-1', '480P'], ['user-2', '720p']]) {
+    const created = videoService.create(db, log, {
+      drama_id: 1,
+      storyboard_id: 1,
+      model: 'seedance 2.0',
+      prompt: `${resolution} 视频计费测试`,
+      duration: 5,
+      resolution,
+    }, { billingEnabled: true, userId, schedule() {} });
+    const row = db.prepare('SELECT credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
+    amounts.push(credits.getReservation(db, row.credit_reservation_id).amount);
+  }
+
+  assert.deepEqual(amounts, [15, 25]);
+  assert.deepEqual(
+    db.prepare('SELECT resolution, cost_micros, cost_source FROM generation_cost_records ORDER BY resolution').all(),
+    [
+      { resolution: '480p', cost_micros: 0, cost_source: 'unavailable' },
+      { resolution: '720p', cost_micros: 0, cost_source: 'unavailable' },
+    ],
+  );
+  db.close();
+});
+
+test('视频成功按最终 config_id 与分辨率线路成本结算', () => {
+  const db = setup();
+  prices.set(db, 'seedance 2.0', 3, {
+    category: 'video', cost_unit: 'second',
+    resolution_prices: { '720p': { credits: 5, cost_micros_per_second: 1 } },
+  });
+  const config = aiConfig.createConfig(db, log, {
+    service_type: 'video', provider: 'video-cost-route', name: '视频成本线路',
+    base_url: 'https://video-cost.invalid/v1', api_key: 'test-key',
+    model: ['video-upstream'], default_model: 'video-upstream',
+    logical_model_id: 'seedance 2.0', is_active: true,
+  });
+  routeCosts.setRouteCost(db, config.id, {
+    cost_unit: 'second', micros_per_unit: 50_000,
+    resolution_prices: { '720p': { micros_per_unit: 120_000 } },
+  });
+  const created = videoService.create(db, log, {
+    drama_id: 1, storyboard_id: 1, model: 'seedance 2.0',
+    prompt: '线路成本结算', duration: 5, resolution: '720p',
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} });
+  db.prepare('UPDATE video_generations SET config_id = ? WHERE id = ?').run(config.id, created.id);
+  const row = db.prepare('SELECT * FROM video_generations WHERE id = ?').get(created.id);
+
+  videoService.settleVideoCredit(db, log, row, 'completed');
+
+  assert.deepEqual(
+    db.prepare('SELECT config_id, cost_micros, cost_source FROM generation_cost_records WHERE reservation_id = ?')
+      .get(row.credit_reservation_id),
+    { config_id: config.id, cost_micros: 600_000, cost_source: 'provider_route' },
+  );
+  db.close();
+});
+
+test('fumin 参考媒体超限在建任务和预扣积分前拒绝', () => {
+  const db = setup();
+  const originalGetDefaultVideoConfig = videoClient.getDefaultVideoConfig;
+  prices.set(db, 'fumin-seedance-2.0-fast', 107, {
+    category: 'video',
+    cost_unit: 'second',
+    cost_micros_per_second: 280000,
+  });
+  try {
+    videoClient.getDefaultVideoConfig = () => ({
+      provider: 'fumin',
+      api_protocol: 'fumin_video',
+      default_model: 'fumin-seedance-2.0-fast',
+    });
+
+    assert.throws(() => videoService.create(db, log, {
+      drama_id: 1,
+      storyboard_id: 1,
+      model: 'fumin-seedance-2.0-fast',
+      prompt: '超限参考图不应进入队列',
+      duration: 15,
+      reference_image_urls: Array.from({ length: 10 }, (_, index) => `/static/reference-${index + 1}.png`),
+    }, { billingEnabled: true, userId: 'user-1', schedule() {} }),
+    (error) => error.code === 'VIDEO_REFERENCE_LIMIT_EXCEEDED');
+
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM video_generations').get().count, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count, 0);
+    assert.equal(credits.getAccount(db, 'user-1').held, 0);
+  } finally {
     videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;
     db.close();
   }

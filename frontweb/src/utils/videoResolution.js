@@ -1,7 +1,7 @@
 export const VIDEO_RESOLUTION_OPTIONS = Object.freeze(['480p', '720p', '1080p'])
 
 const USMERCARI_VIDEO_RESOLUTIONS = Object.freeze({
-  'MiniMax H3': Object.freeze(['480p']),
+  'MiniMax H3': Object.freeze(['1440p']),
   'seedance-2.0-fast': Object.freeze(['480p', '720p']),
   'seedance-2.0-mini': Object.freeze(['480p', '720p']),
 })

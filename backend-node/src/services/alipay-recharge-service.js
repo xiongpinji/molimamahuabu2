@@ -393,14 +393,35 @@ function notificationAmountCents(value) {
   }
 }
 
-function settleVerifiedTrade(db, { outTradeNo, alipayTradeNo, amountCents }) {
+function processNotification(db, payload, gateway) {
+  ensureSchema(db);
+  creditLedger.ensureSchema(db);
+  if (!gateway?.configured) {
+    throw rechargeError('ALIPAY_NOT_CONFIGURED', '支付宝充值尚未配置');
+  }
+  if (!gateway.verifyNotification(payload)) {
+    throw rechargeError('ALIPAY_INVALID_SIGNATURE', '支付宝通知验签失败');
+  }
+  if (String(payload.app_id || '') !== gateway.appId
+    || String(payload.seller_id || '') !== gateway.sellerId) {
+    throw rechargeError('ALIPAY_IDENTITY_MISMATCH', '支付宝通知应用或收款商户不匹配');
+  }
+  if (!['TRADE_SUCCESS', 'TRADE_FINISHED'].includes(String(payload.trade_status || ''))) {
+    throw rechargeError('ALIPAY_TRADE_NOT_SUCCESS', '支付宝交易尚未成功');
+  }
+  const outTradeNo = String(payload.out_trade_no || '');
+  const alipayTradeNo = String(payload.trade_no || '');
+  if (!outTradeNo || !alipayTradeNo) {
+    throw rechargeError('ALIPAY_NOTIFICATION_INVALID', '支付宝通知缺少订单号');
+  }
+  const amountCents = notificationAmountCents(payload.total_amount);
   try {
     return db.transaction(() => {
       const order = db.prepare('SELECT * FROM tenant_recharge_orders WHERE out_trade_no = ?')
         .get(outTradeNo);
       if (!order) throw rechargeError('RECHARGE_ORDER_NOT_FOUND', '充值订单不存在');
       if (order.amount_cents !== amountCents) {
-        throw rechargeError('ALIPAY_AMOUNT_MISMATCH', '支付宝交易金额与订单不一致');
+        throw rechargeError('ALIPAY_AMOUNT_MISMATCH', '支付宝通知金额与订单不一致');
       }
       if (order.status === 'paid') {
         if (order.alipay_trade_no !== alipayTradeNo) {
@@ -439,78 +460,6 @@ function settleVerifiedTrade(db, { outTradeNo, alipayTradeNo, amountCents }) {
   }
 }
 
-function processNotification(db, payload, gateway) {
-  ensureSchema(db);
-  creditLedger.ensureSchema(db);
-  if (!gateway?.configured) {
-    throw rechargeError('ALIPAY_NOT_CONFIGURED', '支付宝充值尚未配置');
-  }
-  if (!gateway.verifyNotification(payload)) {
-    throw rechargeError('ALIPAY_INVALID_SIGNATURE', '支付宝通知验签失败');
-  }
-  if (String(payload.app_id || '') !== gateway.appId
-    || String(payload.seller_id || '') !== gateway.sellerId) {
-    throw rechargeError('ALIPAY_IDENTITY_MISMATCH', '支付宝通知应用或收款商户不匹配');
-  }
-  if (!['TRADE_SUCCESS', 'TRADE_FINISHED'].includes(String(payload.trade_status || ''))) {
-    throw rechargeError('ALIPAY_TRADE_NOT_SUCCESS', '支付宝交易尚未成功');
-  }
-  const outTradeNo = String(payload.out_trade_no || '');
-  const alipayTradeNo = String(payload.trade_no || '');
-  if (!outTradeNo || !alipayTradeNo) {
-    throw rechargeError('ALIPAY_NOTIFICATION_INVALID', '支付宝通知缺少订单号');
-  }
-  const amountCents = notificationAmountCents(payload.total_amount);
-  return settleVerifiedTrade(db, { outTradeNo, alipayTradeNo, amountCents });
-}
-
-function queriedField(result, camelName, snakeName) {
-  return result?.[camelName] ?? result?.[snakeName];
-}
-
-async function reconcileOrder(db, input, gateway) {
-  ensureSchema(db);
-  creditLedger.ensureSchema(db);
-  if (!gateway?.configured || typeof gateway.queryTrade !== 'function') {
-    throw rechargeError('ALIPAY_NOT_CONFIGURED', '支付宝充值尚未配置');
-  }
-  const order = db.prepare(`SELECT * FROM tenant_recharge_orders
-    WHERE id = ? AND tenant_id = ? AND created_by = ?`)
-    .get(String(input.orderId || ''), String(input.tenantId || ''), String(input.userId || ''));
-  if (!order) throw rechargeError('RECHARGE_ORDER_NOT_FOUND', '充值订单不存在');
-  if (order.status === 'paid') return { credited: false, order };
-
-  let result;
-  try {
-    result = await gateway.queryTrade(order.out_trade_no);
-  } catch (_) {
-    throw rechargeError('ALIPAY_QUERY_FAILED', '支付宝交易查询失败，请稍后重试');
-  }
-  const code = String(result?.code || '');
-  const subCode = String(queriedField(result, 'subCode', 'sub_code') || '');
-  if (code !== '10000') {
-    if (subCode === 'ACQ.TRADE_NOT_EXIST') return { credited: false, order };
-    throw rechargeError('ALIPAY_QUERY_FAILED', '支付宝交易查询失败，请稍后重试');
-  }
-  const tradeStatus = String(queriedField(result, 'tradeStatus', 'trade_status') || '');
-  if (!['TRADE_SUCCESS', 'TRADE_FINISHED'].includes(tradeStatus)) {
-    return { credited: false, order };
-  }
-  const outTradeNo = String(queriedField(result, 'outTradeNo', 'out_trade_no') || '');
-  const alipayTradeNo = String(queriedField(result, 'tradeNo', 'trade_no') || '');
-  if (outTradeNo !== order.out_trade_no || !alipayTradeNo) {
-    throw rechargeError('ALIPAY_ORDER_CONFLICT', '支付宝查询结果与充值订单不匹配');
-  }
-  const sellerId = queriedField(result, 'sellerId', 'seller_id');
-  if (sellerId != null && String(sellerId) !== gateway.sellerId) {
-    throw rechargeError('ALIPAY_IDENTITY_MISMATCH', '支付宝查询结果收款商户不匹配');
-  }
-  const amountCents = notificationAmountCents(
-    queriedField(result, 'totalAmount', 'total_amount'),
-  );
-  return settleVerifiedTrade(db, { outTradeNo, alipayTradeNo, amountCents });
-}
-
 module.exports = {
   CREDIT_RATIO,
   MIN_AMOUNT_CENTS,
@@ -524,5 +473,4 @@ module.exports = {
   createOrder,
   listOrders,
   processNotification,
-  reconcileOrder,
 };
