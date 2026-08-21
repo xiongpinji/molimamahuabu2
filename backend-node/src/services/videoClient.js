@@ -1234,6 +1234,7 @@ function configSupportsVideoModel(config, preferredModel) {
   const models = [
     ...(Array.isArray(config?.model) ? config.model : [config?.model]),
     config?.default_model,
+    config?.logical_model_id,
   ].map((value) => String(value || '').trim().toLowerCase()).filter(Boolean);
   const requested = String(preferredModel || '').trim().toLowerCase();
   if (!requested) return true;

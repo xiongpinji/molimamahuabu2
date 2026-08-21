@@ -385,7 +385,7 @@ describe('USMercari image protocol', () => {
         model: 'nano-banana-2',
         prompt: 'must stay on the reviewed provider',
         resolution: '1k',
-        _imageConfigOverride: config,
+        config_id: config.id,
       }, { evidenceRoots }), (error) => error.code === 'MODEL_PROTOCOL_MISMATCH');
       assert.equal(posts, 0);
     } finally {

@@ -10,6 +10,7 @@ const credits = require('../src/services/creditLedgerService');
 const imageClient = require('../src/services/imageClient');
 const rawImageService = require('../src/services/imageService');
 const prices = require('../src/services/modelPriceService');
+const routeCosts = require('../src/services/providerRouteCostService');
 const uploadService = require('../src/services/uploadService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const storageLayout = require('../src/services/storageLayout');
@@ -84,6 +85,14 @@ function installModel(db, model, resolutions, options = {}) {
     category: 'image',
     cost_unit: 'image',
     resolution_prices: Object.fromEntries(resolutions.map((resolution) => [resolution, COSTS[resolution]])),
+  });
+  routeCosts.setRouteCost(db, config.id, {
+    cost_unit: 'image',
+    micros_per_unit: COSTS[resolutions[0]].cost_micros_per_unit,
+    resolution_prices: Object.fromEntries(resolutions.map((resolution) => [
+      resolution,
+      { micros_per_unit: COSTS[resolution].cost_micros_per_unit },
+    ])),
   });
   return config.id;
 }
@@ -257,9 +266,10 @@ test('USMercari 非计费内部入口同样禁止未验证的 GPT 4K', () => {
 test('USMercari 图片按分辨率预扣并持久化不可变请求及人民币成本快照', () => {
   const { db, dramaId } = setup();
   try {
-    installModel(db, 'gpt-image-2-2-4k', ['1k', '2k']);
+    const configId = installModel(db, 'gpt-image-2-2-4k', ['1k', '2k']);
     const created = createImage(db, dramaId, {
       model: 'gpt-image-2-2-4k',
+      config_id: configId,
       resolution: '2K',
       reference_images: ['/static/ref-a.png'],
     });

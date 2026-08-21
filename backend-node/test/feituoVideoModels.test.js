@@ -441,7 +441,7 @@ test('飞拓最终提交前复核配置与价格并把 resolution 发送给供�
 test('飞拓公开目录只展示精确真实验证且完整定价的能力', (t) => {
   const { db } = setupDb(t);
   const items = canvasModelCatalogService.list(db)
-    .filter((item) => item.provider === 'feituo');
+    .filter((item) => item.model.startsWith('xuan-'));
 
   assert.deepEqual(items.map((item) => item.model).sort(), [H3_MODEL, SEEDANCE_MODEL].sort());
   const h3 = items.find((item) => item.model === H3_MODEL);
@@ -469,7 +469,7 @@ test('飞拓价格目录拒绝未写入精确真实生成记录的配置', (t) =
 test('飞拓目录拒绝只有实生成标记但缺少精确验证能力的配置', (t) => {
   const { db } = setupDb(t, { capabilities: false });
   assert.deepEqual(
-    canvasModelCatalogService.list(db).filter((item) => item.provider === 'feituo'),
+    canvasModelCatalogService.list(db).filter((item) => item.model.startsWith('xuan-')),
     [],
   );
   assert.deepEqual(

@@ -97,7 +97,7 @@ describe('USMercari image real-verification case selection', () => {
       ]);
       assert.equal(status, null);
       const verifyDb = new Database(dbPath);
-      assert.equal(aiConfig.getConfig(verifyDb, config.id).verification_status, 'pending');
+      assert.equal(aiConfig.getConfig(verifyDb, config.id).verification_status, 'unverified');
       verifyDb.close();
     } finally {
       if (previousDb === undefined) delete process.env.USMERCARI_VERIFY_DATABASE_PATH;

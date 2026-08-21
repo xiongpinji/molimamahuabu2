@@ -104,7 +104,7 @@ test('公共计费目录对 USMercari 图片复用真实验证和完整档位价
   captured = capture();
   handlers.listPublicCatalog({}, captured.res);
   assert.equal(captured.result.body.data.length, 1);
-  assert.equal(captured.result.body.data[0].public_note, '仅开放已验证档位');
+  assert.equal(captured.result.body.data[0].public_note, undefined);
   assert.deepEqual(Object.keys(captured.result.body.data[0].resolution_prices), ['1k', '2k']);
   db.close();
 });

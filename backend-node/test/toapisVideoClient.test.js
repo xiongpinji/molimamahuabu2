@@ -17,9 +17,9 @@ test('ToAPIs 视频模型能力按模型分别限制分辨率、时长和参考�
   assert.deepEqual(TOAPIS_VIDEO_MODELS['seedance-2-mini'].resolutions, ['480p', '720p']);
   assert.deepEqual(TOAPIS_VIDEO_MODELS['seedance-2-fast'].durations, [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
   assert.deepEqual(TOAPIS_VIDEO_MODELS['seedance-2-mini'].durations, [4, 8, 10, 12, 15]);
-  assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-fast'].maxReferences, 1);
-  assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-fast'].maxVideoReferences, 1);
-  assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-fast'].maxAudioReferences, 1);
+  assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-fast'].maxReferences, 9);
+  assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-fast'].maxVideoReferences, 3);
+  assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-fast'].maxAudioReferences, 3);
   assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-fast'].supportsAudio, true);
   assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-mini'].maxReferences, 9);
   assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-mini'].maxVideoReferences, 3);
@@ -40,9 +40,9 @@ test('ToAPIs 视频模型能力按模型分别限制分辨率、时长和参考�
       resolution: '480p',
       duration: 4,
       prompt: 'x',
-      reference_urls: ['https://moli.example/a.png', 'https://moli.example/b.png'],
+      reference_urls: Array.from({ length: 10 }, (_, index) => `https://moli.example/${index}.png`),
     }),
-    /最多支持 1 张参考图/,
+    /最多支持 9 张参考图/,
   );
 });
 
@@ -218,7 +218,11 @@ test('ToAPIs POST 使用注入 fetch，规范化 base URL，并把不确定创�
     { fetchImpl },
   );
 
-  assert.deepEqual(result, { task_id: 'tsk_1', status: 'queued' });
+  assert.deepEqual(result, {
+    task_id: 'tsk_1',
+    status: 'queued',
+    route_meta: { httpStatus: 200, providerTaskId: 'tsk_1' },
+  });
   assert.equal(calls[0].url, 'https://toapis.com/v1/videos/generations');
   assert.equal(calls[0].init.headers.Authorization, 'Bearer secret-key');
 

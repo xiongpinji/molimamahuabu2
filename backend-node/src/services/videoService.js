@@ -2098,6 +2098,12 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
     if (FEITUO_MODELS[normalizedProcessingModel] && normalizedProcessingModel.startsWith('xuan-')) {
       feituoReadyState(db, normalizedProcessingModel);
     }
+    const persistedConfigId = row.ai_service_config_id || row.config_id || null;
+    const requestedLogicalModel = String(snapshot.model ?? row.model ?? '').trim().toLowerCase();
+    const selectedLogicalModel = String(config.logical_model_id || '').trim().toLowerCase();
+    const allowLogicalFailover = !persistedConfigId
+      && selectedLogicalModel
+      && selectedLogicalModel === requestedLogicalModel;
     providerSubmissionStarted = true;
     const result = await videoClient.callVideoApi(db, log, {
       prompt: snapshot.prompt ?? row.prompt,
@@ -2123,8 +2129,10 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
       files_base_url: filesBaseUrl,
       storage_local_path: storageLocalPath,
       video_gen_id: videoGenId,
-      config_id: config.id,
-      ai_service_config_id: config.id,
+      ...(allowLogicalFailover ? {} : {
+        config_id: config.id,
+        ai_service_config_id: config.id,
+      }),
       ai_service_config_updated_at: config.updated_at || config.verified_at || null,
       video_capability: pinnedCapability || undefined,
       provider_asset_expires_at: (() => {

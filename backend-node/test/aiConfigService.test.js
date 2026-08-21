@@ -21,12 +21,12 @@ test('USMercari 图片配置公开验证元数据但不泄露 Key', () => {
     default_model: 'gpt-image-2-2-4k',
   });
 
-  assert.equal(config.verification_status, 'pending');
+  assert.equal(config.verification_status, 'unverified');
   assert.deepEqual(config.verified_capabilities, {});
   const safe = aiConfig.toPublicConfig(config);
   assert.equal(safe.api_key, undefined);
   assert.equal(safe.has_api_key, true);
-  assert.equal(safe.verification_status, 'pending');
+  assert.equal(safe.verification_status, 'unverified');
   db.close();
 });
 
@@ -54,7 +54,7 @@ test('USMercari 图片连接测试只读取模型目录且不会升级真实验�
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, 'https://chat-ai.mercarimx.com/v1/models');
   assert.equal(requests[0].options.method, 'GET');
-  assert.equal(aiConfig.getConfig(db, config.id).verification_status, 'pending');
+  assert.equal(aiConfig.getConfig(db, config.id).verification_status, 'unverified');
   db.close();
 });
 
@@ -76,7 +76,7 @@ test('USMercari 图片真实验证只能通过受控写回升级状态', () => {
     verification_status: 'verified',
     verified_capabilities: { 'nano-banana-2': { resolutions: ['1k'] } },
   });
-  assert.equal(manual.verification_status, 'pending');
+  assert.equal(manual.verification_status, 'unverified');
   assert.deepEqual(manual.verified_capabilities, {});
 
   const verified = aiConfig.recordVerification(db, config.id, {
@@ -219,7 +219,7 @@ test('ToAPIs 连接测试只 GET 官方模型目录且不会升级真实验证�
   assert.equal(requests[0].url, 'https://toapis.com/v1/models?type=video');
   assert.equal(requests[0].options.method, 'GET');
   assert.equal(requests[0].options.body, undefined);
-  assert.equal(aiConfig.getConfig(db, config.id).verification_status, 'pending');
+  assert.equal(aiConfig.getConfig(db, config.id).verification_status, 'unverified');
   db.close();
 });
 

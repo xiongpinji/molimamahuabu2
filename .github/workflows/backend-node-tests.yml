@@ -47,6 +47,10 @@ jobs:
         working-directory: backend-node
         run: npm test
 
+      - name: Run root-owned release evidence guard tests
+        working-directory: backend-node
+        run: sudo "$(command -v node)" --test --test-concurrency=1 test/sharedExternalModelReleaseGuard.test.js
+
       - name: Audit feature locks
         working-directory: backend-node
         run: npm run audit:feature-lock

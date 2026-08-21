@@ -39,8 +39,8 @@ const PROACTIVE_CANARY_EVIDENCE = [
   'docs/superpowers/plans/2026-08-20-evidence-bound-multi-model-split.md',
 ];
 const PROACTIVE_CANARY_UNLOCK = {
-  reason: '2026-08-21 PR #171 主线合并冲突修复与全量回归授权',
-  approvedBy: 'product-owner 2026-08-21 pr-171-merge-regression',
+  reason: '2026-08-21 PR #171 供应商路由与发布门禁收口授权',
+  approvedBy: 'product-owner 2026-08-21 pr-171-provider-route-closure',
   impactTests: [
     'backend-node/test/providerCanaryInventory.test.js',
     'backend-node/test/providerCanaryScheduler.test.js',
@@ -160,8 +160,8 @@ test('其余稳定性锁保留当前批准原因且所有锁保留历史证据',
   assert.equal(manifest.features.length >= 5, true);
   for (const feature of manifest.features) {
     if (feature.featureId !== PROACTIVE_CANARY_FEATURE_ID) {
-      assert.equal(feature.unlock?.reason, '2026-08-21 PR #171 主线合并冲突修复与全量回归授权');
-      assert.equal(feature.unlock?.approvedBy, 'product-owner 2026-08-21 pr-171-merge-regression');
+      assert.equal(feature.unlock?.reason, '2026-08-21 PR #171 供应商路由与发布门禁收口授权');
+      assert.equal(feature.unlock?.approvedBy, 'product-owner 2026-08-21 pr-171-provider-route-closure');
     }
     assert.equal(feature.evidence.length > 0, true);
   }
