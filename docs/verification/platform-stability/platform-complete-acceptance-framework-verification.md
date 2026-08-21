@@ -4,7 +4,9 @@ Date: 2026-08-22
 
 Scope: Stage 0 local framework only. No deploy, no SSH, no production data write, no paid provider call, no enforce mode, and no AI music change.
 
-Same-run verification ended at `2026-08-22T00:16:14+08:00`. The validated code candidate before this report update was `d863609bad84116f97d9aa229584e8bb9e3a78e9`.
+Fresh same-run verification completed at `2026-08-22T00:44:16.4735630+08:00`. The validated code candidate before this report correction was `21afee17c591f46461e49e9c83faaf67bdd2b2c7`.
+
+The exact first command start timestamp was not instrumented before this verification pass. All command results below are fresh outputs from this same local verification pass, and no production, provider, SSH, paid, deploy, enforce, or AI music action was executed.
 
 ## Bound Source
 
@@ -17,7 +19,7 @@ Same-run verification ended at `2026-08-22T00:16:14+08:00`. The validated code c
 
 ## Incremental Scope
 
-`git diff --name-only origin/main...HEAD | Sort-Object` matched the release scope manifest exactly:
+`git diff --name-only origin/main...HEAD | Sort-Object` exited 0 and matched the release scope manifest exactly:
 
 1. `backend-node/package.json`
 2. `backend-node/scripts/verify-platform-feature-acceptance.js`
@@ -36,6 +38,8 @@ Dependency lock files were not modified. Same-run hashes:
 
 - `backend-node/package-lock.json`: `5d0e78029afa39a209190f71e98047519e764ed9b45d337135cbc70d67cfa726`
 - `frontweb/package-lock.json`: `18ba50e97964d491cbd15ce54eb3fb65be4470f04fa9f1d03845fb7b307ce82d`
+- `backend-node/node_modules` was a junction to `C:\Users\canqu\Documents\茉莉妈妈2\worktrees\platform-stability-proactive-canary-plan-20260818\backend-node\node_modules`; its target lock hash matched.
+- `frontweb/node_modules` was a junction to `C:\Users\canqu\Documents\茉莉妈妈2\worktrees\canvas-image-node-repair-20260814\frontweb\node_modules`; its target lock hash matched.
 
 ## Red Evidence
 
@@ -49,27 +53,28 @@ Backend focused gates:
 
 - `node --test --test-concurrency=1 test/platformFeatureInventory.test.js test/platformFeatureAcceptance.test.js test/featureLockManifest.test.js test/incrementalReleaseScope.test.js` -> exit 0, 58 tests passed.
 - `npm run audit:platform-feature-acceptance` -> exit 0, JSON reported `valid=true`, `complete=false`, total 140, unverified 124, blocked 16.
-- `npm run audit:platform-feature-acceptance:complete` -> exit 1, JSON reported `ACCEPTANCE_INCOMPLETE`; this is the expected Stage 0 block.
-- `node scripts/verify-platform-feature-acceptance.js --require-complete` -> exit 1, JSON reported `ACCEPTANCE_INCOMPLETE`.
+- `node scripts/verify-platform-feature-acceptance.js --require-complete` -> exit 1, JSON reported `ACCEPTANCE_INCOMPLETE`; this is the expected Stage 0 block.
 - `node scripts/verify-feature-lock-manifest.js --base origin/main` -> exit 0, `ready=true`, `features=6`, `protectedFeaturesFromBase=5`.
 - `node --check scripts/verify-platform-feature-acceptance.js` -> exit 0.
 
 Backend full suite:
 
-- `npm test` in `backend-node` -> exit 0, 1269 tests, 1264 passed, 0 failed, 5 skipped.
+- `npm test` in `backend-node` -> exit 0, 1269 tests, 1264 passed, 0 failed, 5 skipped, duration `208690.35ms`.
 
 Frontend local gates:
 
-- `node --test test/*.test.js` in `frontweb` -> exit 0, 677 tests passed.
-- `npm run build` in `frontweb` -> exit 0, Vite build completed with chunk-size warnings only.
-- `npx --no-install playwright test e2e/platform-zero-cost-smoke.spec.js e2e/provider-stability-admin.spec.js --workers=1` in `frontweb` -> exit 0, 7 tests passed.
-- Playwright `safe-trace.json` reported `generation_write_requests=0`, `non_login_write_requests=0`, `runtime_failures=0`, and `result=passed`.
+- `node --test test/*.test.js` in `frontweb` -> exit 0, 677 tests, 677 passed, 0 failed, 0 skipped, duration `18090.3586ms`.
+- `npm run build` in `frontweb` -> exit 0, Vite build completed in `19.30s` with chunk-size warnings only.
+- `npx --no-install playwright test e2e/platform-zero-cost-smoke.spec.js e2e/provider-stability-admin.spec.js --workers=1` in `frontweb` -> exit 0, 7 tests passed in `18.1s`.
+- Playwright `safe-trace.json` reported `generation_write_requests=0`, `non_login_write_requests=0`, `runtime_failures=0`, and `result=passed`. The temporary `frontweb/platform-smoke-artifacts/` directory contained only `safe-trace.json` and four sanitized screenshots and was removed with `git clean -fd -- frontweb/platform-smoke-artifacts/` after reading the trace.
 
 Static and scope checks:
 
 - `git diff --check origin/main...HEAD` -> exit 0.
+- `git status --short` after Playwright before cleanup -> `?? frontweb/platform-smoke-artifacts/`; after targeted cleanup -> only `M docs/verification/platform-stability/platform-complete-acceptance-framework-verification.md` before committing this report correction.
 - Secret scan command for OpenAI-style key and bearer-token patterns returned only known placeholders or false positives:
-  - Test placeholder API-key strings in backend/frontend tests.
+  - Test placeholder API-key strings in backend/frontend tests: `sk-never-return-this`, `sk-abcdefghijklmnop`, `sk-lifecycle-secret`, `sk-private-config-a`, `sk-provider-key-shaped-value`.
+  - Test redaction fixtures in `backend-node/test/redrawFullFrameDetectorProcess.test.js`: `Authorization: Bearer secret-token`.
   - Documentation placeholder API-key strings in `docs/configuration.md`.
   - Path or task-id false positives involving route-mapping documentation and script-analysis task IDs.
 
@@ -84,6 +89,7 @@ Static and scope checks:
 - `f6279fb3` -> CLI and package acceptance gate.
 - `b9f92ed0` -> feature lock manifest entry and framework evidence shell.
 - `d863609b` -> protected incremental release scope manifest.
+- `21afee17` -> previous verification report commit, found stale by this pass because it documented `d863609b` rather than the current candidate.
 
 ## Limits
 
