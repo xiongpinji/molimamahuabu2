@@ -112,7 +112,7 @@ function normalizeResolutionPrices(value) {
   return result;
 }
 
-function normalizedPayload(configId, input) {
+function normalizeRouteCostInput(configId, input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw costError('INVALID_PROVIDER_ROUTE_COST', 'cost payload must be an object');
   }
@@ -170,7 +170,7 @@ function setRouteCost(db, configIdValue, input, options = {}) {
   const config = db.prepare(`SELECT id FROM ai_service_configs
     WHERE id = ? AND deleted_at IS NULL`).get(configId);
   if (!config) throw costError('PROVIDER_ROUTE_NOT_FOUND', 'provider route does not exist');
-  const snapshot = normalizedPayload(configId, input);
+  const snapshot = normalizeRouteCostInput(configId, input);
   const now = normalizedNow(options.now);
   let saved;
   const apply = () => {
@@ -308,6 +308,7 @@ module.exports = {
   COST_UNITS,
   fingerprintRouteCost,
   getRouteCost,
+  normalizeRouteCostInput,
   quoteRouteCost,
   routeCostCoversCapability,
   setRouteCost,

@@ -45,6 +45,36 @@ function insertEvidence(db, configId, state = 'failing') {
     .run(configId, `capability-${configId}`, JSON.stringify({ serviceType: 'image' }), state, NOW, NOW);
 }
 
+test('线路成本规范化可在写事务前复用且不访问数据库', () => {
+  const normalized = routeCost.normalizeRouteCostInput(16, {
+    currency: 'cny',
+    cost_unit: 'second',
+    micros_per_unit: 280000,
+    resolution_prices: {
+      '720P': { micros_per_unit: 560000 },
+      '480p': { micros_per_unit: 280000 },
+    },
+  });
+  assert.deepEqual(normalized, {
+    schema_version: 1,
+    config_id: 16,
+    currency: 'CNY',
+    cost_unit: 'second',
+    micros_per_unit: 280000,
+    input_cost_micros_per_1k: 0,
+    output_cost_micros_per_1k: 0,
+    resolution_prices: {
+      '480p': { micros_per_unit: 280000 },
+      '720p': { micros_per_unit: 560000 },
+    },
+  });
+  assert.throws(() => routeCost.normalizeRouteCostInput(16, {
+    currency: 'CNY',
+    cost_unit: 'second',
+    micros_per_unit: 0,
+  }), { code: 'INVALID_PROVIDER_ROUTE_COST' });
+});
+
 test('same logical model keeps independent supplier cost per config id', () => {
   const db = makeDb();
   try {

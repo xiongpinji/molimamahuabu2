@@ -269,19 +269,25 @@
         "docs/verification/platform-stability/platform-feature-inventory.json",
         "docs/verification/platform-stability/proactive-canary-verification.md",
         "docs/verification/platform-stability/route-mapping-and-disk-operations-20260819.md",
-        "docs/superpowers/plans/2026-08-20-provider-route-cost-and-multi-model-split.md"
+        "docs/superpowers/plans/2026-08-20-provider-route-cost-and-multi-model-split.md",
+        "docs/verification/platform-stability/provider-readiness-binding-candidate-20260820.md",
+        "docs/superpowers/specs/2026-08-20-evidence-bound-multi-model-split-design.md",
+        "docs/superpowers/plans/2026-08-20-evidence-bound-multi-model-split.md"
       ],
       "fixCommit": null,
       "unlock": {
-        "reason": "2026-08-20 线路成本分离与多模型配置拆分本地 TDD 授权",
-        "approvedBy": "product-owner 2026-08-20 route-cost-model-split-local-tdd",
+        "reason": "2026-08-21 证据绑定能力镜像缺失修复授权",
+        "approvedBy": "product-owner 2026-08-21 evidence-bound-settings-repair",
         "impactTests": [
           "backend-node/test/providerCanaryInventory.test.js",
           "backend-node/test/providerCanaryScheduler.test.js",
           "backend-node/test/providerRouteCost.test.js",
           "backend-node/test/generationRouteCostLedger.test.js",
           "backend-node/test/splitMultiModelProviderConfigs.test.js",
-          "frontweb/test/providerRouteCostAdmin.test.js"
+          "frontweb/test/providerRouteCostAdmin.test.js",
+          "backend-node/test/canvasModelCatalogService.test.js",
+          "backend-node/test/providerCanaryPublicGate.test.js",
+          "backend-node/test/providerRouteVideoIntegration.test.js"
         ]
       }
     }
