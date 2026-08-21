@@ -217,3 +217,46 @@ scope 当前 88 条且保持字典序；写本文前的 11 条工作树差异全
 - 没有启用 `enforce`，没有修改生产数据库、用户资产、积分或 AI 音乐；临时 SQLite 和受保护证据 fixture 仅用于本地测试。
 - 生产实时指纹、生产绑定文件、数据库备份、部署锁、从实时 `/opt/moli-drama/current` 构建候选、共享发布门禁和逐线路付费授权仍是后续独立门禁。
 - 本地绿灯不等于线上稳定，不证明所有模型已恢复，也不授权把未完成真实生成、成功终态和可读产物验证的模型开放到生产目录。
+
+## 2026-08-21 生产证据绑定拆分与能力镜像修复候选
+
+### 已执行的生产 shadow 变更
+
+- 从实时 `/opt/moli-drama/current` 构建并通过共享门禁激活 release
+  `/opt/moli-drama/releases/provider-evidence-binding-pr174-20260821-d506196a-r3`；运行模式保持
+  `PROVIDER_CANARY_MODE=shadow`，没有启用 `enforce`，没有触碰 AI 音乐。
+- 在部署锁和 current CAS 下，对生产数据库先创建并校验备份
+  `/root/data/disk/moli-drama-backups/database-evidence-bound-split-20260821T060602Z.sqlite`，
+  SHA-256 为 `a46629ae1f628679c79b4fbb8c3259453ceacd8bfe8c0304ea27a7d4a8620f6c`，
+  `PRAGMA quick_check` 为 `ok`。
+- ToAPIs FAST/MINI 从配置 16 拆为独立配置 16/27，各自绑定逐模型可信证据、公开逻辑模型、
+  线路成本和 480p/720p 成本档；两条线路均保持 `canary_paused=1`。拆分审计事件为
+  `provider.config.evidence_bound_split`，没有发起供应商请求或付费生成。
+- 变更前后活动任务和账本计数保持不变：异步处理中 5、图片处理中 5、视频处理中 0、
+  线路 running/accepted 0、needs_attention 7、held 预占 19 笔/2765 积分。
+
+### 验收发现与 TDD 修复
+
+生产回读确认公开目录和路由能力均正确，但两条线路的 `settings.canvas_capabilities_by_model`
+为空；主动巡检调度器只读取该 settings 能力镜像，因此配置 16/27 的巡检组合数为 0。
+根因是拆分脚本只缩窄既有 settings 镜像，源配置仅有可信 `verified_capabilities` 时不会补齐镜像。
+
+- 新增生产形态回归后首次运行失败：`canvas_capabilities_by_model` 为 `undefined`。
+- 最小修复把已经完成证据摘要、可信文件和模型集合校验的逐模型 `verified_capabilities`
+  同步写入每条线路的 settings 镜像，不引入新的证据来源。
+- 聚焦回归转绿：缺少源镜像时 FAST/MINI 各产生 12 个巡检组合，并保留 9 张图片、
+  3 个视频、3 个音频参考上限。
+- 拆分、巡检调度、巡检清单、公开门禁、线路成本和画布目录关联回归 130/130 通过；
+  后端完整 `npm test` 为 1246 项、1241 通过、0 失败、5 跳过。
+- 功能锁与增量范围 15/15 通过，真实锁审计相对 `origin/main` 返回
+  `ready=true`、5 个锁、5 条变更路径；本轮使用
+  `2026-08-21 证据绑定能力镜像缺失修复授权` 的 fresh unlock，没有删除历史 evidence、
+  acceptance、protected paths 或 required tests。
+
+### 当前边界
+
+- 本节中的源码修复仍是本地候选，尚未推送、创建 PR、合入或部署。
+- 生产配置 16/27 继续暂停主动巡检；在源码修复受保护发布并完成生产 settings 精准修复前，
+  不允许解暂停或执行付费巡检。
+- 内置浏览器会话已失效并跳转登录页，因此没有把浏览器画布操作记为验收通过；
+  后端生产快照的公开目录和 shadow 路由读回已通过，但不能替代登录态浏览器验收。
