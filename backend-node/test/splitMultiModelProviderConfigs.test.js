@@ -86,14 +86,44 @@ function validBinding(sourceConfigId) {
   };
 }
 
+function ensureEvidenceFixtureColumns(db) {
+  const existing = new Set(db.prepare('PRAGMA table_info(ai_service_configs)').all()
+    .map((column) => column.name));
+  for (const name of ['verification_checked_at', 'verification_error', 'verified_capabilities']) {
+    if (!existing.has(name)) {
+      db.exec(`ALTER TABLE ai_service_configs ADD COLUMN ${name} TEXT`);
+    }
+  }
+}
+
+test('证据夹具兼容已由实时 release 补齐的验证列', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-evidence-schema-'));
+  const db = new Database(path.join(dir, 'fixture.sqlite'));
+  try {
+    runMigrationsAndEnsure(db);
+    db.exec(`ALTER TABLE ai_service_configs ADD COLUMN verification_checked_at TEXT;
+      ALTER TABLE ai_service_configs ADD COLUMN verification_error TEXT;
+      ALTER TABLE ai_service_configs ADD COLUMN verified_capabilities TEXT;`);
+
+    ensureEvidenceFixtureColumns(db);
+
+    const columns = db.prepare('PRAGMA table_info(ai_service_configs)').all()
+      .map((column) => column.name);
+    for (const name of ['verification_checked_at', 'verification_error', 'verified_capabilities']) {
+      assert.equal(columns.filter((column) => column === name).length, 1);
+    }
+  } finally {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function evidenceFixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-evidence-split-'));
   const dbPath = path.join(dir, 'fixture.sqlite');
   const db = new Database(dbPath);
   runMigrationsAndEnsure(db);
-  db.exec(`ALTER TABLE ai_service_configs ADD COLUMN verification_checked_at TEXT;
-    ALTER TABLE ai_service_configs ADD COLUMN verification_error TEXT;
-    ALTER TABLE ai_service_configs ADD COLUMN verified_capabilities TEXT;`);
+  ensureEvidenceFixtureColumns(db);
   const now = '2026-08-20T00:00:00.000Z';
   const evidence = JSON.stringify({
     contract_version: EVIDENCE_CONTRACT,
