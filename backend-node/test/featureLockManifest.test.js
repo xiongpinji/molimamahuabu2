@@ -26,6 +26,33 @@ const PROACTIVE_CANARY_ACCEPTANCE = [
   '巡检不污染用户资产、生成记录和积分',
   '管理员可见线路证据预算，普通用户不泄露供应商与成本',
 ];
+const PROACTIVE_CANARY_EVIDENCE = [
+  'docs/superpowers/specs/2026-08-18-platform-stability-proactive-canary-design.md',
+  'docs/superpowers/plans/2026-08-18-platform-stability-proactive-canary-foundation.md',
+  'docs/verification/platform-stability/provider-canary-readiness.json',
+  'docs/verification/platform-stability/platform-feature-inventory.json',
+  'docs/verification/platform-stability/proactive-canary-verification.md',
+  'docs/verification/platform-stability/route-mapping-and-disk-operations-20260819.md',
+  'docs/superpowers/plans/2026-08-20-provider-route-cost-and-multi-model-split.md',
+  'docs/verification/platform-stability/provider-readiness-binding-candidate-20260820.md',
+  'docs/superpowers/specs/2026-08-20-evidence-bound-multi-model-split-design.md',
+  'docs/superpowers/plans/2026-08-20-evidence-bound-multi-model-split.md',
+];
+const PROACTIVE_CANARY_UNLOCK = {
+  reason: '2026-08-20 逐模型证据绑定拆分本地 TDD 授权',
+  approvedBy: 'product-owner 2026-08-20 evidence-bound-model-split-local-tdd',
+  impactTests: [
+    'backend-node/test/providerCanaryInventory.test.js',
+    'backend-node/test/providerCanaryScheduler.test.js',
+    'backend-node/test/providerRouteCost.test.js',
+    'backend-node/test/generationRouteCostLedger.test.js',
+    'backend-node/test/splitMultiModelProviderConfigs.test.js',
+    'frontweb/test/providerRouteCostAdmin.test.js',
+    'backend-node/test/canvasModelCatalogService.test.js',
+    'backend-node/test/providerCanaryPublicGate.test.js',
+    'backend-node/test/providerRouteVideoIntegration.test.js',
+  ],
+};
 const PROACTIVE_CANARY_CORE_PATHS = [
   'backend-node/migrations/60_provider_canary_guard.sql',
   'backend-node/migrations/61_provider_canary_reconcile_claim.sql',
@@ -124,14 +151,18 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   for (const testPath of PROACTIVE_CANARY_REQUIRED_TESTS) {
     assert.ok(feature.requiredTests.includes(testPath), `功能锁缺少影响测试: ${testPath}`);
   }
+  assert.deepEqual(feature.evidence, PROACTIVE_CANARY_EVIDENCE);
+  assert.deepEqual(feature.unlock, PROACTIVE_CANARY_UNLOCK);
 });
 
-test('本轮触及的稳定性锁使用同一批准原因且保留历史证据', () => {
+test('其余稳定性锁保留既有批准原因且所有锁保留历史证据', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   assert.equal(manifest.features.length >= 5, true);
   for (const feature of manifest.features) {
-    assert.equal(feature.unlock?.reason, '2026-08-20 线路成本分离与多模型配置拆分本地 TDD 授权');
-    assert.match(feature.unlock?.approvedBy || '', /product-owner/);
+    if (feature.featureId !== PROACTIVE_CANARY_FEATURE_ID) {
+      assert.equal(feature.unlock?.reason, '2026-08-20 线路成本分离与多模型配置拆分本地 TDD 授权');
+      assert.match(feature.unlock?.approvedBy || '', /product-owner/);
+    }
     assert.equal(feature.evidence.length > 0, true);
   }
 });
