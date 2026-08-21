@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const path = require('node:path');
 const test = require('node:test');
 
 const {
@@ -197,6 +198,44 @@ test('evidence paths must point to existing files', () => {
   assert.ok(codes(result).has('missing_evidence_path'));
 });
 
+test('absolute evidence paths use the stable missing path error', () => {
+  const result = validateDecision({
+    feature_id: 'canvas.share.link',
+    status: 'blocked',
+    reason: 'Independent acceptance coverage is unavailable.',
+    evidence: [evidence('lock', {
+      path: path.resolve(__dirname, 'platformFeatureAcceptance.test.js'),
+    })],
+  });
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(codes(result), new Set(['missing_evidence_path']));
+});
+
+test('evidence paths cannot escape the repository with dot-dot', () => {
+  const result = validateDecision({
+    feature_id: 'canvas.share.link',
+    status: 'blocked',
+    reason: 'Independent acceptance coverage is unavailable.',
+    evidence: [evidence('lock', { path: '../outside-evidence.txt' })],
+  });
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(codes(result), new Set(['missing_evidence_path']));
+});
+
+test('evidence paths cannot point to directories', () => {
+  const result = validateDecision({
+    feature_id: 'canvas.share.link',
+    status: 'blocked',
+    reason: 'Independent acceptance coverage is unavailable.',
+    evidence: [evidence('lock', { path: 'backend-node/test' })],
+  });
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(codes(result), new Set(['missing_evidence_path']));
+});
+
 test('locked evidence cannot contain fail or blocked results', () => {
   for (const evidenceResult of ['fail', 'blocked']) {
     const completeEvidence = imageGenerationEvidence();
@@ -225,6 +264,20 @@ test('locked evidence must bind every record to one candidate commit', () => {
 
   assert.equal(result.valid, false);
   assert.ok(codes(result).has('candidate_mismatch'));
+});
+
+test('locked_pass rejects defect and fix metadata as schema invalid', () => {
+  const result = validateDecision({
+    feature_id: 'canvas.api.image_generation',
+    status: 'locked_pass',
+    defect_id: 'DEF-1',
+    fix_commit: OTHER_COMMIT,
+    candidate_commit: CANDIDATE_COMMIT,
+    evidence: imageGenerationEvidence(),
+  });
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(codes(result), new Set(['schema']));
 });
 
 test('blocked decisions without a reason fail schema validation', () => {

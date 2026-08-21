@@ -59,7 +59,7 @@ function validateEvidencePaths(evidence, repoRoot, featureId, addError) {
   for (const item of evidence) {
     if (!item || typeof item.path !== 'string') continue;
     if (path.isAbsolute(item.path)) {
-      addError('unsafe_evidence_path', { feature_id: featureId });
+      addError('missing_evidence_path', { feature_id: featureId });
       continue;
     }
 
@@ -70,7 +70,7 @@ function validateEvidencePaths(evidence, repoRoot, featureId, addError) {
       || relativePath.startsWith(`..${path.sep}`)
       || path.isAbsolute(relativePath)
     ) {
-      addError('unsafe_evidence_path', { feature_id: featureId });
+      addError('missing_evidence_path', { feature_id: featureId });
       continue;
     }
 
@@ -176,7 +176,7 @@ function validateAcceptance(acceptance, options = {}) {
         addError('missing_fix_metadata', { feature_id: featureId });
       }
     } else if (decision.defect_id !== undefined || decision.fix_commit !== undefined) {
-      addError('unexpected_fix_metadata', { feature_id: featureId });
+      addError('schema');
     }
 
     const candidateCommit = decision.candidate_commit;
