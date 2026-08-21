@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
@@ -234,6 +236,67 @@ test('evidence paths cannot point to directories', () => {
 
   assert.equal(result.valid, false);
   assert.deepEqual(codes(result), new Set(['missing_evidence_path']));
+});
+
+test('evidence paths cannot escape through an in-repo filesystem link', (t) => {
+  const { repoRoot } = loadDefaultAcceptance();
+  const outsideDirectory = fs.mkdtempSync(path.join(
+    os.tmpdir(),
+    'moli-platform-evidence-outside-',
+  ));
+  const outsideFile = path.join(outsideDirectory, 'outside-evidence.txt');
+  const linkPath = path.join(
+    repoRoot,
+    'backend-node',
+    'test',
+    `.platform-evidence-link-${process.pid}-${Date.now()}`,
+  );
+  fs.writeFileSync(outsideFile, 'outside evidence', 'utf8');
+  t.after(() => {
+    try {
+      fs.unlinkSync(linkPath);
+    } catch (error) {
+      if (error.code === 'EPERM' || error.code === 'EISDIR') {
+        fs.rmdirSync(linkPath);
+      } else if (error.code !== 'ENOENT') {
+        throw error;
+      }
+    }
+    fs.unlinkSync(outsideFile);
+    fs.rmdirSync(outsideDirectory);
+  });
+
+  fs.symlinkSync(
+    outsideDirectory,
+    linkPath,
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+  const linkedEvidencePath = path.relative(
+    repoRoot,
+    path.join(linkPath, path.basename(outsideFile)),
+  );
+  const result = validateDecision({
+    feature_id: 'canvas.share.link',
+    status: 'blocked',
+    reason: 'Independent acceptance coverage is unavailable.',
+    evidence: [evidence('lock', { path: linkedEvidencePath })],
+  });
+
+  assert.equal(fs.realpathSync.native(path.join(linkPath, path.basename(outsideFile))), outsideFile);
+  assert.equal(result.valid, false);
+  assert.deepEqual(codes(result), new Set(['missing_evidence_path']));
+});
+
+test('ordinary in-repo evidence files remain valid', () => {
+  const result = validateDecision({
+    feature_id: 'canvas.share.link',
+    status: 'blocked',
+    reason: 'Independent acceptance coverage is unavailable.',
+    evidence: [evidence('lock')],
+  });
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.errors, []);
 });
 
 test('locked evidence cannot contain fail or blocked results', () => {

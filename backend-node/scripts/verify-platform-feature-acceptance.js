@@ -56,6 +56,13 @@ function requiredEvidenceKinds(feature) {
 }
 
 function validateEvidencePaths(evidence, repoRoot, featureId, addError) {
+  let canonicalRepoRoot;
+  try {
+    canonicalRepoRoot = fs.realpathSync.native(repoRoot);
+  } catch {
+    canonicalRepoRoot = null;
+  }
+
   for (const item of evidence) {
     if (!item || typeof item.path !== 'string') continue;
     if (path.isAbsolute(item.path)) {
@@ -75,11 +82,20 @@ function validateEvidencePaths(evidence, repoRoot, featureId, addError) {
     }
 
     try {
-      if (!fs.statSync(resolvedPath).isFile()) {
+      const canonicalPath = fs.realpathSync.native(resolvedPath);
+      const canonicalRelativePath = canonicalRepoRoot
+        ? path.relative(canonicalRepoRoot, canonicalPath)
+        : '..';
+      if (
+        canonicalRelativePath === '..'
+        || canonicalRelativePath.startsWith(`..${path.sep}`)
+        || path.isAbsolute(canonicalRelativePath)
+        || !fs.statSync(canonicalPath).isFile()
+      ) {
         addError('missing_evidence_path', { feature_id: featureId });
         continue;
       }
-      fs.accessSync(resolvedPath, fs.constants.R_OK);
+      fs.accessSync(canonicalPath, fs.constants.R_OK);
     } catch {
       addError('missing_evidence_path', { feature_id: featureId });
     }
