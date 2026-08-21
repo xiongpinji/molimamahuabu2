@@ -198,62 +198,121 @@ test('视频金额只接受 5 到 15 秒整数并按秒相乘', () => {
   }
 });
 
-test('按条计费的视频模型不会再乘视频时长且供应商成本只记录一次', () => {
+test('iCreat Seedance 2.0 Mini 和 Fast 接受官方支持的 4 秒并按秒计费', () => {
   const db = makeDb();
-  const saved = prices.set(db, 'sdas-my-seedance-2.0-fast-upscaled-1080p', 860, {
-    display_name: 'Seedance 2.0 Fast 480P 超分 1080P',
-    category: 'video',
-    billing_unit: 'request',
-    cost_unit: 'request',
-    cost_micros_per_unit: 2800000,
-  });
-
-  assert.equal(saved.billing_unit, 'request');
-  assert.equal(prices.calculateCharge(db, saved.model, { duration: 15 }), 860);
-  assert.deepEqual(prices.quoteCost(db, saved.model, { quantity: 15 }), {
-    model: 'sdas-my-seedance-2.0-fast-upscaled-1080p',
-    cost_unit: 'request',
-    quantity: 1,
-    cost_micros: 2800000,
-    input_tokens: 0,
-    output_tokens: 0,
-    reasoning_tokens: 0,
-  });
+  for (const model of [
+    'bytedance/seedance-2-0-mini',
+    'bytedance/seedance-2-0-fast',
+  ]) {
+    prices.set(db, model, 60, { category: 'video', cost_unit: 'second' });
+    assert.equal(prices.calculateCharge(db, model, { duration: 4 }), 240);
+  }
 });
 
-test('视频模型按 480P 和 720P 分别计算积分与每秒成本', () => {
+test('视频分档存在时必须明确选择已定价分辨率且不回退基础价格', () => {
   const db = makeDb();
-  const saved = prices.set(db, 'resolution-video', 2, {
+  prices.set(db, 'tiered-video', 3, {
     category: 'video',
     cost_unit: 'second',
-    cost_micros_per_unit: 80000,
+    cost_micros_per_unit: 90000,
     resolution_prices: {
-      '480p': { credits: 2, cost_micros_per_second: 50000 },
+      '480p': { credits: 3, cost_micros_per_second: 90000 },
       '720p': { credits: 5, cost_micros_per_second: 140000 },
     },
   });
 
-  assert.deepEqual(saved.resolution_prices, {
-    '480p': { credits: 2, cost_micros_per_second: 50000 },
-    '720p': { credits: 5, cost_micros_per_second: 140000 },
-  });
-  assert.equal(prices.calculateCharge(db, 'resolution-video', { duration: 8, resolution: '480P' }), 16);
-  assert.equal(prices.calculateCharge(db, 'resolution-video', { duration: 8, resolution: '720p' }), 40);
-  assert.equal(prices.quoteCost(db, 'resolution-video', { quantity: 8, resolution: '480p' }).cost_micros, 400000);
-  assert.equal(prices.quoteCost(db, 'resolution-video', { quantity: 8, resolution: '720P' }).cost_micros, 1120000);
-  assert.deepEqual(prices.list(db).find((row) => row.model === 'resolution-video').resolution_prices, saved.resolution_prices);
+  for (const resolution of [undefined, '1080p']) {
+    assert.throws(
+      () => prices.calculateCharge(db, 'tiered-video', { duration: 5, resolution }),
+      (error) => error.code === 'MODEL_RESOLUTION_PRICE_REQUIRED',
+    );
+    assert.throws(
+      () => prices.quoteCost(db, 'tiered-video', { quantity: 5, resolution }),
+      (error) => error.code === 'MODEL_RESOLUTION_PRICE_REQUIRED',
+    );
+  }
 });
 
-test('未配置分辨率档位的视频模型继续使用原有按秒积分与成本', () => {
+test('调用方可显式允许 ToAPIs 4 秒而旧模型仍保持 5 到 15 秒', () => {
   const db = makeDb();
-  prices.set(db, 'legacy-video', 3, {
+  prices.set(db, 'seedance-2-fast', 511, {
     category: 'video',
-    cost_unit: 'second',
-    cost_micros_per_unit: 90000,
+    resolution_prices: {
+      '480p': { credits: 511, cost_micros_per_second: 584000 },
+      '720p': { credits: 511, cost_micros_per_second: 584000 },
+    },
+  });
+  prices.set(db, 'legacy-video', 3, { category: 'video' });
+
+  assert.equal(prices.calculateCharge(db, 'seedance-2-fast', {
+    duration: 4,
+    resolution: '480p',
+    allowedDurations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+  }), 2044);
+  assert.throws(
+    () => prices.calculateCharge(db, 'legacy-video', { duration: 4 }),
+    (error) => error.code === 'INVALID_VIDEO_DURATION' && /5 到 15 秒/.test(error.message),
+  );
+});
+
+test('图片模型按 1K/2K/4K 分别计算每张积分与人民币微元成本', () => {
+  const db = makeDb();
+  const gpt = prices.set(db, 'gpt-image-2-2-4k', 70, {
+    category: 'image',
+    cost_unit: 'image',
+    resolution_prices: {
+      '1K': { credits: 70, cost_micros_per_unit: 80000 },
+      '2k': { credits: 87, cost_micros_per_unit: 100000 },
+    },
+  });
+  const nano = prices.set(db, 'nano-banana-2', 70, {
+    category: 'image',
+    cost_unit: 'image',
+    resolution_prices: {
+      '1k': { credits: 70, cost_micros_per_unit: 80000 },
+      '2k': { credits: 87, cost_micros_per_unit: 100000 },
+      '4k': { credits: 105, cost_micros_per_unit: 120000 },
+    },
   });
 
-  assert.equal(prices.calculateCharge(db, 'legacy-video', { duration: 6, resolution: '720p' }), 18);
-  assert.equal(prices.quoteCost(db, 'legacy-video', { quantity: 6, resolution: '720p' }).cost_micros, 540000);
+  assert.deepEqual(gpt.resolution_prices, {
+    '1k': { credits: 70, cost_micros_per_unit: 80000 },
+    '2k': { credits: 87, cost_micros_per_unit: 100000 },
+  });
+  assert.equal(prices.calculateCharge(db, gpt.model, { resolution: '1k', quantity: 2 }), 140);
+  assert.equal(prices.calculateCharge(db, gpt.model, { resolution: '2K', quantity: 2 }), 174);
+  assert.equal(prices.quoteCost(db, nano.model, { resolution: '4k', quantity: 3 }).cost_micros, 360000);
+  assert.throws(
+    () => prices.calculateCharge(db, gpt.model, { resolution: '4k', quantity: 1 }),
+    (error) => error.code === 'MODEL_RESOLUTION_PRICE_REQUIRED',
+  );
+});
+
+test('图片分辨率价格拒绝视频档位且有分档时必须明确选择已定价档位', () => {
+  const db = makeDb();
+  assert.throws(
+    () => prices.set(db, 'bad-image', 70, {
+      category: 'image',
+      resolution_prices: { '1080p': { credits: 70, cost_micros_per_unit: 80000 } },
+    }),
+    (error) => error.code === 'INVALID_MODEL_PRICE' && /图片分辨率/.test(error.message),
+  );
+  prices.set(db, 'tiered-image', 70, {
+    category: 'image',
+    resolution_prices: { '1k': { credits: 70, cost_micros_per_unit: 80000 } },
+  });
+  assert.throws(
+    () => prices.calculateCharge(db, 'tiered-image', { quantity: 1 }),
+    (error) => error.code === 'MODEL_RESOLUTION_PRICE_REQUIRED',
+  );
+  assert.throws(
+    () => prices.quoteCost(db, 'tiered-image', { resolution: '2k', quantity: 1 }),
+    (error) => error.code === 'MODEL_RESOLUTION_PRICE_REQUIRED',
+  );
+  assert.throws(
+    () => prices.quoteCost(db, 'tiered-image', { resolution: '1k', quantity: 1.5 }),
+    (error) => error.code === 'INVALID_MODEL_PRICE',
+  );
 });
 
 test('公开价格目录只返回用户价格字段且管理端仍保留完整成本', () => {

@@ -132,6 +132,7 @@ export function getDramaGenerationOptions(drama) {
     aspectRatio: meta.aspect_ratio || '16:9',
     style: meta.style_prompt_en || meta.style_prompt_zh || drama?.style || '',
     videoResolution: meta.video_resolution || '480p',
+    videoDuration: Number(meta.video_duration) || 5,
     imageModel: meta.image_model || '',
     videoModel: meta.video_model || '',
     audioModel: meta.audio_model || '',

@@ -146,3 +146,32 @@ test('AIHubCC extracts direct, nested and relative media URLs', () => {
   assert.equal(client.extractUploadPath({ path: 'uploads/a.png' }), 'uploads/a.png');
   assert.equal(client.extractUploadPath({ data: { path: 'uploads/b.png' } }), 'uploads/b.png');
 });
+
+test('AIHubCC polling retries a transient network failure without resubmitting the task', async (t) => {
+  const originalFetch = global.fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    if (calls === 1) throw new TypeError('fetch failed');
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        status: 'completed',
+        image_url: 'https://cdn.example.com/result.png',
+      }),
+    };
+  };
+
+  const result = await client.pollTask(
+    { base_url: 'https://aihubcc.cc/v1', api_key: 'secret' },
+    'task-1',
+    { maxAttempts: 2, intervalMs: 0, mediaType: 'image', log: { info() {}, warn() {} } },
+  );
+
+  assert.equal(calls, 2);
+  assert.deepEqual(result, { image_url: 'https://cdn.example.com/result.png' });
+});

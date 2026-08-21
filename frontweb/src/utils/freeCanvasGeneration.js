@@ -723,6 +723,38 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
   const requestedVideoReferenceMode = nodeData.kind === 'video'
     ? normalizeFreeCanvasVideoReferenceMode(nodeData.videoReferenceMode, options.upstreamReferences)
     : ''
+  if (nodeData.kind === 'video'
+      && capabilityDeclared
+      && !FREE_VIDEO_REFERENCE_MODES.has(cleanString(nodeData.videoReferenceMode))) {
+    const labels = { image: '图片', audio: '音频', video: '视频' }
+    const referenceTypes = uniqueStrings(capability.referenceTypes).map((value) => value.toLowerCase())
+    const supportKeys = {
+      image: 'supportsImageReference',
+      video: 'supportsVideoReference',
+      audio: 'supportsAudioReference',
+    }
+    const supportsReference = (type) => {
+      const declaredSupport = capability[supportKeys[type]]
+      if (declaredSupport === true) return true
+      if (declaredSupport === false) return false
+      return referenceTypes.includes(type)
+    }
+    const limits = {
+      image: nonNegativeInteger(capability.maxImageReferences ?? capability.maxReferences, 0),
+      video: nonNegativeInteger(capability.maxVideoReferences, 0),
+      audio: nonNegativeInteger(capability.maxAudioReferences, 0),
+    }
+    for (const type of ['image', 'video', 'audio']) {
+      const count = rawReferences.filter((reference) => (reference.kind || 'image') === type).length
+      const isFirstLastImage = type === 'image' && requestedVideoReferenceMode === 'first-last'
+      if (count && !isFirstLastImage && !supportsReference(type)) {
+        throw new Error(`${nodeData.model || '当前视频模型'} 当前不支持${labels[type]}参考`)
+      }
+      if (count > limits[type] && !isFirstLastImage) {
+        throw new Error(`${nodeData.model || '当前视频模型'} 最多支持 ${limits[type]} 个${labels[type]}参考`)
+      }
+    }
+  }
   const selectedVideoReferenceMode = nodeData.kind === 'video'
     ? selectFreeCanvasVideoReferenceMode(capability, requestedVideoReferenceMode)
     : ''
@@ -809,9 +841,9 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
     const referenceMode = selectedVideoReferenceMode
     const firstFrameReference = imageReferences[0]
     const lastFrameReference = imageReferences[1]
-    const hasOmniReferences = imageReferences.length > 2
-      || videoReferences.length > 0
-      || audioReferences.length > 0
+    const hasOmniReferences = rawReferences.filter((reference) => (reference.kind || 'image') === 'image').length > 2
+      || rawReferences.some((reference) => reference.kind === 'video')
+      || rawReferences.some((reference) => reference.kind === 'audio')
       || (nodeData.characterReferenceUrls || []).length > 0
     if (explicitMode && referenceMode === 'first-last' && hasOmniReferences) {
       throw new Error('首尾帧模式与全能参考模式互斥，请移除全能参考素材或切换模式')

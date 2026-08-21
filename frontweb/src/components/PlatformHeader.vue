@@ -181,6 +181,8 @@ async function handleAccountCommand(command) {
   align-items: center;
   gap: 18px;
   min-height: 64px;
+  box-sizing: border-box;
+  min-width: 0;
   max-width: 1600px;
   margin: 0 auto;
   padding: 0 28px;
@@ -216,6 +218,7 @@ async function handleAccountCommand(command) {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+  min-width: 0;
   margin-left: auto;
   flex: 0 0 auto;
   flex-wrap: nowrap;
@@ -294,11 +297,30 @@ async function handleAccountCommand(command) {
 @media (max-width: 860px) {
   .platform-header--account-badge { min-height: 124px; }
   .platform-header--account-badge .platform-header__actions { margin-right: 0; }
-  .platform-header__inner { gap: 8px; padding: 0 12px; }
+  .platform-header__inner {
+    max-width: 100%;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 12px;
+  }
   .platform-header__separator,
   .platform-header__button-label { display: none; }
   .platform-header__account-label { display: none; }
-  .platform-header__title { max-width: 34vw; }
+  .platform-header__title {
+    flex: 1 1 120px;
+    max-width: none;
+  }
+  .platform-header__actions {
+    flex: 0 0 auto;
+    margin-left: 0;
+  }
+  :deep(.platform-primary-nav) {
+    order: 10;
+    max-width: 100%;
+    min-width: 0;
+    flex: 1 1 100%;
+    overflow-x: auto;
+  }
   .platform-header__button { width: 40px; padding: 0 !important; }
 }
 

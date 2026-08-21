@@ -5,6 +5,9 @@ const port = new URL(baseURL).port || '3013'
 
 export default defineConfig({
   testDir: './e2e',
+  projects: [
+    { name: 'chromium', use: { browserName: 'chromium' } },
+  ],
   timeout: 30_000,
   expect: { timeout: 5_000 },
   fullyParallel: false,

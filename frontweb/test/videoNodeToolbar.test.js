@@ -91,7 +91,6 @@ test('视频解析结果使用可持久化表格而非纯文本占位', () => {
   assert.match(normalizerSource, /normalizeVideoStory/)
   assert.match(normalizerSource, /normalized\.videoStory/)
 })
-
 test('视频节点全能参考可实际接收并提交图片、视频和音频', () => {
   const nodeSource = read('src/components/dramaCanvas/HomeCanvasNode.vue')
   const canvasSource = read('src/views/DramaCanvas.vue')
@@ -99,9 +98,12 @@ test('视频节点全能参考可实际接收并提交图片、视频和音频',
 
   assert.match(nodeSource, /@click="setVideoReferenceMode\('omni'\)"/)
   assert.doesNotMatch(nodeSource, /当前生成链路尚未开放全能参考/)
-  assert.match(nodeSource, /image\/\*,video\/\*,audio\/\*/)
+  assert.match(nodeSource, /:accept="referenceMediaAccept"/)
+  assert.match(nodeSource, /capabilityAllows\('supportsImageReference'\)[\s\S]*accepted\.push\('image\/\*'\)/)
+  assert.match(nodeSource, /capabilityAllows\('supportsVideoReference'\)[\s\S]*accepted\.push\('video\/\*'\)/)
+  assert.match(nodeSource, /capabilityAllows\('supportsAudioReference'\)[\s\S]*accepted\.push\('audio\/\*'\)/)
   assert.match(canvasSource, /collectDirectUpstreamMediaReferences/)
   assert.match(canvasSource, /uploadFreeCanvasReferenceMedia/)
-  assert.match(requestSource, /reference_video_url/)
-  assert.match(requestSource, /reference_audio_url/)
+  assert.match(requestSource, /reference_video_urls/)
+  assert.match(requestSource, /reference_audio_urls/)
 })

@@ -642,8 +642,11 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await node.click()
     const editor = page.getByRole('region', { name: '图片节点编辑器' })
     await expect(editor).toBeVisible()
-    await expect(editor.getByRole('combobox', { name: '生成模型' }).locator('option[value="canvas-image-alpha"]'))
-      .toHaveText('canvas-image-alpha')
+    await expect(editor.getByRole('combobox', { name: '生成模型' }).locator('option')).toHaveText([
+      '默认图片模型',
+      'canvas-image-alpha',
+      'canvas-image-beta',
+    ])
     await editor.getByRole('combobox', { name: '生成模型' }).selectOption('canvas-image-beta')
     await expect.poll(() => freeNode(state.canvasLayout, 'free:image:mount')?.data?.model).toBe('canvas-image-beta')
 
@@ -683,6 +686,79 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await copiedNode.click({ button: 'right' })
     await page.getByRole('menu', { name: '节点操作' }).getByRole('menuitem', { name: /删除节点/ }).click()
     await expect.poll(() => state.canvasLayout.free_nodes.length).toBe(1)
+  })
+
+  test('图片和视频节点的模型选择器完整展示目录中的可选模型', async ({ page }) => {
+    const state = {
+      canvasLayout: baseCanvasLayout({
+        free_nodes: [
+          {
+            id: 'free:image:model-selector',
+            type: 'homeCanvasNode',
+            position: { x: 180, y: 180 },
+            data: {
+              kind: 'image',
+              title: '图片模型选择',
+              content: '雨夜站台',
+              model: 'canvas-image-alpha',
+              aspectRatio: '16:9',
+            },
+          },
+          {
+            id: 'free:video:model-selector',
+            type: 'homeCanvasNode',
+            position: { x: 880, y: 180 },
+            data: {
+              kind: 'video',
+              title: '视频模型选择',
+              content: '列车驶入站台',
+              model: 'canvas-video-alpha',
+              aspectRatio: '16:9',
+              duration: 5,
+            },
+          },
+        ],
+      }),
+      assets: [],
+      modelCatalog: [
+        { kind: 'image', model: 'canvas-image-alpha' },
+        { kind: 'image', model: 'canvas-image-beta' },
+        { kind: 'video', model: 'canvas-video-alpha' },
+        { kind: 'video', model: 'canvas-video-beta' },
+      ],
+      imageRequests: [],
+      videoRequests: [],
+      audioRequests: [],
+      assetRequests: [],
+    }
+    await installStaticAndApiMocks(page, state)
+
+    await page.goto('/canvas/3')
+
+    const imageNode = page.locator('.vue-flow__node[data-id="free:image:model-selector"]')
+    await imageNode.click()
+    const imageEditor = page.getByRole('region', { name: '图片节点编辑器' })
+    const imageModelSelect = imageEditor.getByRole('combobox', { name: '生成模型' })
+    await expect(imageModelSelect.locator('option')).toHaveText([
+      '默认图片模型',
+      'canvas-image-alpha',
+      'canvas-image-beta',
+    ])
+    await imageModelSelect.selectOption('canvas-image-beta')
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:image:model-selector')?.data?.model).toBe('canvas-image-beta')
+    await imageEditor.getByRole('button', { name: '关闭编辑器' }).click()
+
+    const videoNode = page.locator('.vue-flow__node[data-id="free:video:model-selector"]')
+    await videoNode.click()
+    const videoEditor = page.getByRole('region', { name: '视频节点编辑器' })
+    const videoModelSelect = videoEditor.getByRole('combobox', { name: '生成模型' })
+    await expect(videoModelSelect.locator('option')).toHaveText([
+      '默认视频模型',
+      'canvas-video-alpha',
+      'canvas-video-beta',
+    ])
+    await videoModelSelect.selectOption('canvas-video-beta')
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:video:model-selector')?.data?.model).toBe('canvas-video-beta')
   })
 
   test('图片节点生成后使用项目 ID 请求、自动入库并刷新恢复', async ({ page }) => {

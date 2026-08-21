@@ -711,10 +711,10 @@ import {
   canvasModelCapability,
   canvasModelEntry,
   canvasModelOptions,
-  canvasModelRoute,
   canvasModelSelectionDecision,
   createCanvasModelCatalogLoader,
   estimateCanvasCredits,
+  canvasModelRoute,
   imageModelCapabilityBadges,
   normalizeCanvasModelCatalog,
 } from '@/utils/canvasModelCapabilities'

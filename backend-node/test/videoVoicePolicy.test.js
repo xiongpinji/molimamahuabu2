@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const aiConfigRoutes = require('../src/routes/aiConfig');
+const modelPriceService = require('../src/services/modelPriceService');
 const {
   classifyVideoVoicePolicy,
   enrichVideoConfig,
@@ -63,6 +64,8 @@ test('公开视频模型接口不下发声音策略等后台配置元数据', ()
     now,
     now,
   );
+  modelPriceService.set(db, 'veo-3.1-generate-preview', 1, { category: 'video' });
+  modelPriceService.set(db, 'veo-2.0-generate-001', 1, { category: 'video' });
   let payload;
   const res = {
     status() { return this; },

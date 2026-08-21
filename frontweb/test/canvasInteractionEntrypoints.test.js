@@ -136,7 +136,7 @@ test('右键空白画布提供 LibTV 式添加节点入口并使用点击位置'
   assert.match(canvasSource, /contextMenuFlowPos\.value = flowPos/)
   assert.match(canvasSource, /if \(type === 'open-director-stage'\) \{[\s\S]*openDirectorStage\(\)/)
   assert.match(canvasSource, /pendingFlowPosition\.value = flowPosition/)
-  assert.match(canvasSource, /openCreateDialog\(type, flowPosition, connectionSource\)/)
+  assert.match(canvasSource, /void openCreateDialog\(type, flowPosition, connectionSource\)/)
 })
 
 test('右键和上传落点优先使用 VueFlow 原生坐标投影', () => {

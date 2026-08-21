@@ -8,7 +8,7 @@ export function formatModelPrice(item = {}) {
   if (item.credits == null) return `尚未定价（按${unit}），当前禁止生成`
   const tiers = item.resolution_prices || {}
   if (item.category === 'video' && tiers['480p']?.credits && tiers['720p']?.credits) {
-    return `480P ${tiers['480p'].credits} 积分/秒 · 720P ${tiers['720p'].credits} 积分/秒`
+    return `480P ${tiers['480p'].credits} 积分/${unit} · 720P ${tiers['720p'].credits} 积分/${unit}`
   }
   return `当前 ${item.credits} 积分/${unit}`
 }

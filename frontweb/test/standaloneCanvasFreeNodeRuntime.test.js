@@ -24,6 +24,7 @@ test('自由节点配置面板保存并回填模型、比例和时长字段，�
   assert.match(canvasSource, /aspectRatio: node\?\.data\?\.aspectRatio \|\| kindDefaults\.aspectRatio \|\| '16:9'/)
   assert.match(canvasSource, /duration: node\?\.data\?\.duration \|\| kindDefaults\.duration \|\| 5/)
   assert.match(canvasSource, /request\.get\('\/canvas\/model-catalog'\)/)
+  assert.match(canvasSource, /canvasModelOptions\(freeCanvasModelCatalog\.value, kind, \{ referenceCount \}\)/)
   assert.doesNotMatch(canvasSource, /aiAPI\.list\(/)
   assert.match(canvasSource, /function getFreeNodeModelOptions\(kind, nodeOrId\) \{[\s\S]{0,220}getFreeNodeModelOptionEntriesForNode\(kind, nodeOrId\)/)
   assert.match(canvasSource, /v-for="option in getFreeNodeModelOptionEntriesForNode\(freeNodeKind, freeNodeEditingId\)"[\s\S]{0,180}:key="option\.value"[\s\S]{0,180}:value="option\.value"/)
@@ -34,6 +35,30 @@ test('自由节点配置面板保存并回填模型、比例和时长字段，�
   assert.match(canvasSource, /function persistFreeCanvasNodeDefaults\(kind, data\)/)
   assert.match(canvasSource, /const defaults = loadFreeCanvasNodeDefaults\(\)/)
   assert.match(nodeSource, /ctx\?\.getFreeNodeModelOptions\?\.\(props\.data\.kind, props\.id\)/)
+  assert.match(nodeSource, /<select[\s\S]*v-model="draft\.model"[\s\S]*aria-label="生成模型"/)
+  assert.match(nodeSource, /<option v-for="option in modelOptions" :key="option\.value" :value="option\.value" :disabled="option\.disabled">\{\{ option\.label \}\}<\/option>/)
+  assert.doesNotMatch(nodeSource, /<datalist v-if="modelOptions\.length"/)
+})
+
+test('首页与项目画布向节点提供带 value 和 label 的模型选项', () => {
+  assert.match(homeCanvasSource, /canvasModelOptions,/)
+  assert.match(homeCanvasSource, /function getFreeNodeModelOptions\(kind\) \{\s*return canvasModelOptions\(homeCanvasModelCatalog\.value, kind\)\s*\}/)
+  assert.match(canvasSource, /function getFreeNodeModelOptions\(kind, nodeOrId\) \{\s*return getFreeNodeModelOptionEntriesForNode\(kind, nodeOrId\)\s*\}/)
+  assert.doesNotMatch(canvasSource, /getFreeNodeModelOptionEntriesForNode\(kind, nodeOrId\)\.map\(\(item\) => item\.value\)/)
+})
+
+test('每种自由生成节点在底部醒目显示随参数变化的本次积分', () => {
+  assert.match(nodeSource, /<!-- canvas-credit-callout-v1 -->/)
+  assert.match(nodeSource, /v-if="canGenerate" class="billing-cost" aria-live="polite"/)
+  assert.match(nodeSource, /本次预计扣除/)
+  assert.match(nodeSource, /<strong>\{\{ estimatedCredits \}\}<\/strong>/)
+  assert.match(nodeSource, /积分待管理员配置/)
+  assert.match(nodeSource, /getFreeNodeEstimatedCredits\?\.\([\s\S]*draft\.quantity,[\s\S]*draft\.duration/)
+  assert.doesNotMatch(nodeSource, /class="billing-note">\{\{ estimatedCredits/)
+  assert.match(nodeSource, /\.billing-cost\s*\{[\s\S]*border:\s*1px solid rgba\(255, 177, 92, 0\.65\)/)
+  assert.match(nodeSource, /\.billing-cost\s*\{[\s\S]*background:\s*rgba\(124, 64, 20, 0\.42\)/)
+  assert.match(nodeSource, /\.billing-cost\s*\{[\s\S]*font-weight:\s*800/)
+  assert.match(nodeSource, /\.billing-cost strong\s*\{[\s\S]*color:\s*#ffb15c[\s\S]*font-size:\s*18px[\s\S]*font-weight:\s*900/)
   assert.match(nodeSource, /<option v-for="option in modelOptions"[\s\S]{0,160}:value="option\.value"[\s\S]{0,160}\{\{ option\.label \}\}/)
 })
 
@@ -51,15 +76,15 @@ test('HomeCanvasNode 提供状态显示和配置生成入口，并通过画布�
   assert.match(nodeSource, /@click\.stop="runNode"/)
 })
 
-test('选中自由节点展开专属编辑器，视频节点展示自动采用的媒体连线', () => {
+test('选中自由节点展开专属编辑器，视频节点可见展示自动采用的媒体连线', () => {
   assert.match(nodeSource, /v-if="isSelected && !hasMultiSelection && !editorHidden"[\s\S]*class="node-expanded-editor canvas-node-panel nodrag nopan"/)
   assert.match(nodeSource, /:aria-label="editorLabel"/)
   assert.match(nodeSource, /:aria-label="data\.kind === 'video' \? '自动参考素材' : '自动参考图'"/)
   assert.match(nodeSource, /ctx\?\.getFreeNodeInputReferences\?\.\(props\.id\)/)
   assert.match(nodeSource, /reference\.ready \? 'ready' : 'pending'/)
+  assert.match(nodeSource, /把图片、视频或音频节点连接到视频节点；首尾帧、多图参考和全能参考会按当前模式真实提交/)
   assert.match(nodeSource, /<img v-if="reference\.url && reference\.kind === 'image'"/)
   assert.match(nodeSource, /<span v-else class="reference-placeholder">/)
-  assert.match(nodeSource, /把图片、视频或音频节点连接到视频节点/)
   assert.match(canvasSource, /getFreeNodeInputReferences: freeCanvasNodeInputReferences/)
   assert.match(canvasSource, /视频节点已采用该\$\{mediaLabel\}作为参考素材/)
 })
@@ -80,6 +105,7 @@ test('图片编辑器上传参考图，视频编辑器上传图片、视频或�
   assert.match(nodeSource, /function handleEditorInput\(event\) \{[\s\S]*handlePromptInput\(event\)[\s\S]*scheduleDraftSave\(\)/)
   assert.match(nodeSource, /v-if="showReferenceMention"[\s\S]*aria-label="@选择参考图"/)
   assert.match(nodeSource, /@mousedown\.prevent="selectReferenceMention\(candidate\)"/)
+  assert.match(nodeSource, /const mentionToken = String\(candidate\?\.mentionToken \|\| ''\)[\s\S]*draft\.content = `\$\{draft\.content\.slice\(0, mentionStart\.value\)\}\$\{mentionToken\} \$\{draft\.content\.slice\(mentionEnd\.value\)\}`/)
   assert.match(nodeSource, /canvas-reference-numbered-mentions-v1/)
   assert.match(nodeSource, /<span>\{\{ candidate\.label \}\}<\/span>/)
   assert.match(nodeSource, /candidate\?\.mentionToken/)
@@ -194,8 +220,13 @@ test('画布保存使用串行队列并在执行时构造最新布局', () => {
   assert.match(canvasSource, /let canvasPersistQueue = Promise\.resolve\(\)/)
   assert.match(canvasSource, /function persistCanvasState\(options = \{\}\) \{[\s\S]*const runPersist = \(\) => persistCanvasStateNow\(options\)[\s\S]*canvasPersistQueue = canvasPersistQueue\.then\(runPersist, runPersist\)[\s\S]*return canvasPersistQueue[\s\S]*\}/)
   assert.match(canvasSource, /async function persistCanvasStateNow\(\{ layoutOnly = false, groupsOnly = false \} = \{\}\)/)
-  assert.match(canvasSource, /async function persistCanvasStateNow[\s\S]*syncRenderedNodesToGraph\(\)[\s\S]*const persistedGraphNodes = stripLocalImagePreviewsForPersistence\(allGraphNodes\.value\)[\s\S]*buildCanvasLayoutPayload\([\s\S]*persistedGraphNodes,[\s\S]*currentViewport\.value,[\s\S]*layoutCache\.value/)
+  assert.match(canvasSource, /async function persistCanvasStateNow[\s\S]*syncRenderedNodesToGraph\(\)[\s\S]*const persistedGraphNodes = stripLocalImagePreviewsForPersistence\(allGraphNodes\.value\)[\s\S]*withCanvasPersistedState\(buildCanvasLayoutPayload\(\s*persistedGraphNodes,[\s\S]*currentViewport\.value,[\s\S]*layoutCache\.value/)
   assert.match(canvasSource, /async function persistCanvasStateNow[\s\S]*const updated = await layoutPersistence\.update/)
+})
+
+test('更新自由节点参考素材后使用现有持久化队列保存，不调用不存在的 scheduleSave', () => {
+  assert.match(canvasSource, /function updateFreeCanvasReference\(edgeId, patch = \{\}\)[\s\S]*void persistCanvasState\(\{ layoutOnly: true \}\)/)
+  assert.doesNotMatch(canvasSource, /\bscheduleSave\s*\(/)
 })
 
 test('自由节点素材入库使用 single-flight 并在 create 前检查已入库状态', () => {

@@ -19,11 +19,11 @@ test('MiniMax H3 前端只开放 1440P，Seedance 2.0 档位不变', () => {
 })
 
 test('短剧工厂按当前视频模型显示并提交唯一可用清晰度', () => {
-  assert.match(filmCreateSource, /v-for="resolution in videoResolutionOptions"/)
-  assert.match(filmCreateSource, /coerceVideoResolutionForModel/)
-  assert.match(filmCreateSource, /resolution:\s*effectiveVideoResolution\(sbModel\)/)
-  assert.match(filmCreateSource, /resolution:\s*effectiveVideoResolution\(selectedVideoModel\.value\)/)
-  assert.doesNotMatch(filmCreateSource, /resolution:\s*videoResolution\.value\s*\|\|\s*undefined/)
+  assert.match(filmCreateSource, /v-for="resolution in selectedVideoResolutionOptions"/)
+  assert.match(filmCreateSource, /selectedVideoResolutionOptions\s*=\s*computed\(\(\)\s*=>\s*videoResolutionOptionsForModel\(selectedVideoModel\.value\)\)/)
+  assert.match(filmCreateSource, /const selection = requireStoryboardVideoGenerationOptions\(sb\)/)
+  assert.match(filmCreateSource, /resolution:\s*selection\.resolution\s*\|\|\s*undefined/)
+  assert.doesNotMatch(filmCreateSource, /buildVideoGenerationRequest\(\{[\s\S]*?resolution:\s*videoResolution\.value/)
 })
 
 test('管理员保存两套 H3 时锁定固定按次价格并清除分辨率价格档', () => {

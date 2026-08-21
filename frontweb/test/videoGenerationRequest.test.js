@@ -118,3 +118,47 @@ test('短剧工厂为两个飞拓模型启用全能模式并按模型限制参�
   assert.equal(fast.length, 4)
   assert.equal(other.length, 12)
 })
+
+test('飞拓新模型不按旧模型名静默裁剪引用并由统一能力显式拒绝超限', () => {
+  const images = ['1.png', '2.png', '3.png']
+  assert.deepEqual(limitFeituoShortDramaReferenceImages('xuan-seedance-2.5', images), images)
+  assert.throws(
+    () => buildVideoGenerationRequest({
+      model: 'xuan-seedance-2.5',
+      prompt: '完整参考请求',
+      resolution: '720p',
+      duration: 4,
+      referenceImageUrls: images,
+      capability: {
+        declared: true,
+        resolutions: ['480p', '720p'],
+        durations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        supportsImageReference: true,
+        maxReferences: 2,
+      },
+    }),
+    /最多支持 2 张参考图/,
+  )
+})
+
+test('飞拓新模型不按旧模型名静默裁剪引用并由统一能力显式拒绝超限', () => {
+  const images = ['1.png', '2.png', '3.png']
+  assert.deepEqual(limitFeituoShortDramaReferenceImages('xuan-seedance-2.5', images), images)
+  assert.throws(
+    () => buildVideoGenerationRequest({
+      model: 'xuan-seedance-2.5',
+      prompt: '完整参考请求',
+      resolution: '720p',
+      duration: 4,
+      referenceImageUrls: images,
+      capability: {
+        declared: true,
+        resolutions: ['480p', '720p'],
+        durations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        supportsImageReference: true,
+        maxReferences: 2,
+      },
+    }),
+    /最多支持 2 张参考图/,
+  )
+})

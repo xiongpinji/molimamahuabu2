@@ -1,6 +1,9 @@
 import request from '@/utils/request'
 
 export const aiAPI = {
+  listCanvasModels() {
+    return request.get('/canvas/model-catalog')
+  },
   listVideoModels() {
     return request.get('/video-models')
   },

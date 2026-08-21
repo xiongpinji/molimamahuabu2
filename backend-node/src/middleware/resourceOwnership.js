@@ -277,6 +277,7 @@ function createStaticOwnershipMiddleware({ db, enabled, secret, storageRoot } = 
     }
     const project = /^\/projects\/(\d+)_/.exec(pathValue);
     const relativePath = pathValue.replace(/^\/+/, '');
+    const redrawSource = /^redraw-sources\/([a-f0-9]{64})\.[a-z0-9]+$/i.exec(relativePath);
     if (isRechargePackageImagePath(relativePath)) {
       if (!isExistingRechargePackageImage(storageRoot, relativePath)) {
         return res.status(404).end();
@@ -284,7 +285,16 @@ function createStaticOwnershipMiddleware({ db, enabled, secret, storageRoot } = 
       req.user = user;
       return next();
     }
-    const owned = project
+    const owned = redrawSource
+      ? db.prepare(`SELECT w.id FROM redraw_works w
+          WHERE w.source_fingerprint = ? AND w.deleted_at IS NULL
+            AND (w.user_id = ? OR EXISTS (
+              SELECT 1 FROM tenant_members m
+              WHERE m.tenant_id = w.tenant_id AND m.user_id = ? AND m.status = 'active'
+            ))
+          LIMIT 1`)
+        .get(redrawSource[1].toLowerCase(), user.id, user.id)
+      : project
       ? db.prepare(`SELECT d.id FROM dramas d
           WHERE d.id = ? AND d.deleted_at IS NULL
             AND (d.user_id = ? OR EXISTS (

@@ -47,6 +47,7 @@ function addRoute(db, values) {
     priority: values.priority,
     logical_model_id: 'logical-image',
     failover_enabled: Boolean(values.failover),
+    settings: values.settings,
   });
   db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
     .run(config.id);
@@ -409,6 +410,7 @@ test('用户提示词和负面词原样提交且不注入参考图布局说明',
   addRoute(db, {
     provider: 'private-primary', baseUrl: `http://127.0.0.1:${provider.address().port}`,
     upstreamModel: 'upstream-primary', priority: 100,
+    settings: JSON.stringify({ canvas_capabilities: { maxReferences: 2 } }),
   });
 
   await imageClient.callImageApi(db, log, {
@@ -437,7 +439,9 @@ test('主供应商明确未受理后备用成功只结算一次积分', async (t
     req.on('end', () => {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({
-        data: [{ b64_json: Buffer.from('readable-image-result').toString('base64') }],
+        data: [{
+          b64_json: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        }],
       }));
     });
   });

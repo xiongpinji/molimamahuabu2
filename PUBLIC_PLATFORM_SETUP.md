@@ -8,14 +8,19 @@
 PUBLIC_PLATFORM_MODE=true
 PLATFORM_JWT_SECRET=<至少 32 字节的独立随机密钥>
 PLATFORM_ADMIN_TOKEN=<至少 32 字符的独立随机令牌>
+REDRAW_PROVIDER_ASSET_HMAC_SECRET=<至少 32 字符的独立随机密钥>
 PLATFORM_BOOTSTRAP_ADMIN_EMAIL=<首个管理员的已验证邮箱>
 PLATFORM_REGISTRATION_ENABLED=false
+REDRAW_LOCALE_VERIFIER_ENABLED=false
 ```
 
 - `PLATFORM_JWT_SECRET` 用于签发用户登录令牌，不能与管理员令牌或模型 API 密钥复用。
 - `PLATFORM_ADMIN_TOKEN` 通过 `X-Platform-Admin-Token` 请求头传递；用户 JWT 始终使用 `Authorization: Bearer ...`，两者不能混用。
+- `REDRAW_PROVIDER_ASSET_HMAC_SECRET` 只用于给视频供应商读取转绘镜头片段的短期 URL 签名，不能复用 JWT、管理员令牌或模型 API 密钥；缺失时转绘视频必须失败关闭。
 - `PLATFORM_BOOTSTRAP_ADMIN_EMAIL` 锁定首管理员身份。仅凭邮箱不会自动提权；对应账号登录后还必须携带 `X-Platform-Admin-Token` 调用 `POST /api/v1/auth/bootstrap-admin`。该接口只在数据库从未存在任何 `admin` 账号时成功一次，并返回提升后的新 JWT；管理员即使被停用也不会重新开放引导。
 - 默认关闭公开注册。正式开放前还需要验证码、邮件验证、注册限流和用户协议确认。
+- `REDRAW_LOCALE_VERIFIER_ENABLED=false` 是默认关闭态，只表示不会阻断公开平台其他业务；关闭态不等于转绘 en-US production voice 能力可用。启用前必须准备签名 registry、ready attestation、Unix socket、公钥、签名文件和超时配置，并通过 `npm run preflight:redraw-locale`。
+- 转绘音色语言验证不能回退到 TTS 自报字段、请求 locale、voice id 或文件名；没有离线 Worker evidence 时不得写入 production voice verified evidence。
 
 ## 支付宝充值变量
 

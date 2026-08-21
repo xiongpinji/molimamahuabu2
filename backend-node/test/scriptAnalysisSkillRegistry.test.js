@@ -43,7 +43,6 @@ test('剧本分析 Skill 清单只暴露安全元数据', () => {
   });
   assert.equal(Object.hasOwn(skills[2], 'system_prompt'), false);
 });
-
 test('剧本分析 Skill 支持默认解析并生成不可变版本快照', () => {
   const selected = resolveScriptAnalysisSkill();
   assert.equal(selected.id, 'short-drama-production-director');

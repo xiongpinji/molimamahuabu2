@@ -10,6 +10,7 @@ const {
   getOpenAIImageOutputOptions,
   normalizeGptImageSize,
   imageMimeFromOutputFormat,
+  imageMimeFromBase64,
   formatGptImageUnknownResultError,
   MAX_PROVIDER_IMAGE_BASE64_LENGTH,
   normalizeProviderImageOutput,
@@ -52,6 +53,16 @@ test('base64 图片 MIME 与请求输出格式保持一致', () => {
   assert.equal(imageMimeFromOutputFormat('jpeg'), 'image/jpeg');
   assert.equal(imageMimeFromOutputFormat('webp'), 'image/webp');
   assert.equal(imageMimeFromOutputFormat(), 'image/png');
+});
+
+test('base64 图片 MIME 优先使用实际文件格式', () => {
+  const pngBase64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64');
+  const jpegBase64 = Buffer.from([0xff, 0xd8, 0xff, 0xe0]).toString('base64');
+  const webpBase64 = Buffer.from('RIFF1234WEBP', 'ascii').toString('base64');
+  assert.equal(imageMimeFromBase64(pngBase64, 'jpeg'), 'image/png');
+  assert.equal(imageMimeFromBase64(jpegBase64, 'png'), 'image/jpeg');
+  assert.equal(imageMimeFromBase64(webpBase64, 'png'), 'image/webp');
+  assert.equal(imageMimeFromBase64(Buffer.from('unknown').toString('base64'), 'jpeg'), 'image/jpeg');
 });
 
 test('GPT Image 同步连接中断明确提示结果未知与重复扣费风险', () => {

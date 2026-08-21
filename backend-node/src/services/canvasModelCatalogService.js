@@ -393,15 +393,24 @@ function list(db, options = {}) {
       model,
       key: `${KIND_BY_SERVICE[config.service_type]}:${model.toLowerCase()}`,
     })));
+  const strictBlockEntries = configs
+    .filter((config) => config.is_active !== false && KIND_BY_SERVICE[config.service_type])
+    .flatMap((config) => orderedModels(config).map((model) => ({
+      config,
+      key: `${KIND_BY_SERVICE[config.service_type]}:${model.toLowerCase()}`,
+    })));
   const strictKeys = new Set([
     `video:${lingjingVideoClient.PUBLIC_MODEL}`,
-    ...configuredModelEntries
+    ...strictBlockEntries
     .filter(({ config }) => strictVerifiedProtocol(config))
     .map(({ key }) => key),
   ]);
 
   const mediaCandidates = mediaModelSelection.listEntries(eligibleConfigs)
     .filter((entry) => {
+      if (entry.duplicated
+          && !String(entry.config.logical_model_id || '').trim()
+          && !strictVerifiedProtocol(entry.config)) return false;
       const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
       return !strictKeys.has(upstreamKey) || !!strictVerifiedProtocol(entry.config);
     });

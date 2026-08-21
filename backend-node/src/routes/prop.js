@@ -50,11 +50,13 @@ function generateImage(db, log, generationOptions = {}) {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return response.badRequest(res, '无效的ID');
     const model = req.body?.model != null ? String(req.body.model).trim() || null : null;
+    const resolution = req.body?.resolution != null ? String(req.body.resolution).trim() : null;
     const style = req.body?.style != null ? String(req.body.style).trim() || null : null;
     const useQuadGrid = req.body?.use_quad_grid === true;
     try {
       const taskId = propImageGenerationService.generatePropImage(db, log, id, {
         model,
+        resolution,
         style,
         useQuadGrid,
         billingEnabled: Boolean(generationOptions.billingEnabled),
@@ -66,14 +68,19 @@ function generateImage(db, log, generationOptions = {}) {
     } catch (err) {
       if (err.message === '道具不存在') return response.notFound(res, err.message);
       if (err.message === '道具没有图片提示词') return response.badRequest(res, err.message);
-      if (['MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED', 'IMAGE_MODEL_NOT_CONFIGURED'].includes(err.code)) {
+      if (['MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED', 'MODEL_RESOLUTION_PRICE_REQUIRED',
+        'MODEL_NOT_VERIFIED', 'MODEL_CREDENTIAL_MISSING', 'IMAGE_MODEL_NOT_CONFIGURED'].includes(err.code)) {
         return response.error(res, 503, err.code, err.message);
       }
       if (err.code === 'INSUFFICIENT_CREDITS') {
         return response.error(res, 402, err.code, '积分不足，请兑换积分后重试');
       }
       if (err.code === 'UNAUTHORIZED') return response.error(res, 401, err.code, err.message);
-      if (err.code === 'UNSUPPORTED_BILLING_MODEL') return response.badRequest(res, err.message);
+      if (['UNSUPPORTED_BILLING_MODEL', 'IMAGE_RESOLUTION_REQUIRED',
+        'IMAGE_RESOLUTION_NOT_VERIFIED', 'IMAGE_REFERENCE_NOT_VERIFIED',
+        'IMAGE_REFERENCE_LIMIT_EXCEEDED', 'INVALID_IMAGE_QUANTITY'].includes(err.code)) {
+        return response.badRequest(res, err.message);
+      }
       log.error('generatePropImage failed', { error: err.message });
       response.internalError(res, err.message || '生成失败');
     }

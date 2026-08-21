@@ -22,6 +22,10 @@ function createDb() {
       priority INTEGER DEFAULT 0,
       is_default INTEGER DEFAULT 0,
       is_active INTEGER DEFAULT 1,
+      verification_status TEXT NOT NULL DEFAULT 'unverified',
+      verification_checked_at TEXT,
+      verified_at TEXT,
+      verification_error TEXT,
       settings TEXT,
       created_at TEXT,
       updated_at TEXT,
@@ -82,8 +86,8 @@ test('更新视频默认时长会保留数据库中的敏感设置并拒绝非�
   const db = createDb();
   const info = db.prepare(`
     INSERT INTO ai_service_configs
-      (service_type, provider, name, base_url, api_key, model, settings)
-    VALUES ('video', 'klingai', '可灵视频', 'https://example.test', 'secret', ?, ?)
+      (service_type, provider, name, base_url, api_key, model, verification_status, settings)
+    VALUES ('video', 'klingai', '可灵视频', 'https://example.test', 'secret', ?, 'verified', ?)
   `).run(
     JSON.stringify(['kling-video-o1']),
     JSON.stringify({
@@ -109,6 +113,10 @@ test('更新视频默认时长会保留数据库中的敏感设置并拒绝非�
   assert.equal(settings.kling_access_key, 'access-secret');
   assert.equal(settings.kling_secret_key, 'signing-secret');
   assert.equal(settings.keep_me, true);
+  assert.equal(
+    db.prepare('SELECT verification_status FROM ai_service_configs WHERE id = ?').get(info.lastInsertRowid).verification_status,
+    'verified',
+  );
 
   const invalid = captureResponse();
   routes.update({

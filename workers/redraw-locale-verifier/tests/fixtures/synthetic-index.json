@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "samples": [
+    {"id": "a", "duration_ms": 1000, "latency_ms": 40, "peak_rss_bytes": 1024, "cpu_seconds": 0.10, "status": "ok"},
+    {"id": "b", "duration_ms": 2000, "latency_ms": 60, "peak_rss_bytes": 2048, "cpu_seconds": 0.11, "status": "ok"},
+    {"id": "c", "duration_ms": 3000, "latency_ms": 70, "peak_rss_bytes": 4096, "cpu_seconds": 0.12, "status": "ok"},
+    {"id": "d", "duration_ms": 4000, "latency_ms": 90, "peak_rss_bytes": 3072, "cpu_seconds": 0.09, "status": "ok"},
+    {"id": "e", "duration_ms": 5000, "latency_ms": 120, "peak_rss_bytes": 2048, "cpu_seconds": 0.10, "status": "failed", "error_code": "TIMEOUT"}
+  ]
+}

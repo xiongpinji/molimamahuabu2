@@ -33,7 +33,7 @@
           <el-form-item label="时长" class="meta-item narrow">
             <el-select v-model="form.duration" @change="saveMeta">
               <el-option
-                v-for="duration in VIDEO_DURATION_OPTIONS"
+                v-for="duration in storyboardVideoDurationOptions"
                 :key="duration"
                 :label="`${duration} 秒`"
                 :value="duration"
@@ -132,7 +132,7 @@
         <div class="reference-strip">
           <div class="reference-head">
             <span>引用素材</span>
-            <span class="reference-count">{{ allReferenceAssets.length }}/10</span>
+            <span class="reference-count">{{ allReferenceAssets.length }}</span>
           </div>
           <div v-if="allReferenceAssets.length" class="reference-list">
             <span
@@ -386,10 +386,9 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { aiAPI } from '@/api/ai'
 import { storyboardsAPI } from '@/api/storyboards'
 import { assetsAPI } from '@/api/assets'
 import { characterAPI } from '@/api/characters'
@@ -416,7 +415,8 @@ import { appendVoicePromptToVideoPrompt, buildVoicePromptPreview, videoVoicePoli
 import { dramaUsesFirstLastFrame } from '@/utils/storyboardMedia'
 import { GRID_LAYOUTS } from '@/utils/gridLayout'
 import { isCanvasNodeBusyStatus } from '@/utils/canvasNodeStatus'
-import { VIDEO_DURATION_OPTIONS } from '@/utils/videoDuration'
+import { canvasModelCapability } from '@/utils/canvasModelCapabilities'
+import { videoDurationOptionsForCapability } from '@/utils/videoDuration'
 import CanvasStoryboardImageUpload from './CanvasStoryboardImageUpload.vue'
 import CanvasGenerationOptions from './CanvasGenerationOptions.vue'
 import CanvasNodeExecutionStrip from './CanvasNodeExecutionStrip.vue'
@@ -443,7 +443,6 @@ const lightingStyle = ref('')
 const gridFrameType = ref('single')
 const imageModel = ref('')
 const videoModel = ref('')
-const videoConfigs = ref([])
 const tailLinking = ref(false)
 const assetLibraryVisible = ref(false)
 const assetAssigning = ref(false)
@@ -474,7 +473,7 @@ const referenceAssets = computed(() => collectStoryboardReferenceAssets(ctx?.dra
 
 // 素材库中指派给本镜的素材（storyboard_id 关联）
 const assignedAssets = ref([])
-const allReferenceAssets = computed(() => [...referenceAssets.value, ...assignedAssets.value].slice(0, 10))
+const allReferenceAssets = computed(() => [...referenceAssets.value, ...assignedAssets.value])
 const ASSET_ATTACH_TARGETS = {
   reference: { type: 'image', title: '从素材库指派参考图', message: '已指派素材到本镜参考图' },
   first_frame: { type: 'image', title: '从素材库选择首帧', message: '已将素材设为本镜首帧' },
@@ -485,10 +484,20 @@ const ASSET_ATTACH_TARGETS = {
 const assetLibraryType = computed(() => ASSET_ATTACH_TARGETS[assetAttachTarget.value]?.type || 'image')
 const assetLibraryTitle = computed(() => ASSET_ATTACH_TARGETS[assetAttachTarget.value]?.title || '从素材库选择素材')
 
-const projectGenerationOptions = computed(() => getDramaGenerationOptions(ctx?.drama?.value))
+const projectGenerationOptions = computed(() => (
+  ctx?.getGenerationOptions?.() || getDramaGenerationOptions(ctx?.drama?.value)
+))
 const effectiveVideoModel = computed(() => String(
   videoModel.value || projectGenerationOptions.value.videoModel || '',
 ).trim())
+const storyboardVideoCapability = computed(() => canvasModelCapability(
+  projectGenerationOptions.value.modelCatalog || [],
+  'video',
+  effectiveVideoModel.value,
+))
+const storyboardVideoDurationOptions = computed(() => videoDurationOptionsForCapability(
+  storyboardVideoCapability.value,
+))
 const storyboardGenerationOptions = computed(() => ({
   ...projectGenerationOptions.value,
   imageModel: imageModel.value || getStoryboardImageModel(props.storyboard, ctx?.drama?.value),
@@ -679,6 +688,7 @@ function resetFields() {
 watch(() => props.storyboard, (sb) => syncForm(sb), { immediate: true, deep: true })
 
 watch(() => props.storyboard?.id, () => loadAssignedAssets(), { immediate: true })
+watch(() => props.storyboard?.id, () => loadStoredImageSettings(), { immediate: true })
 watch(() => props.storyboard?.id, (id, previousId) => {
   if (id && id !== previousId) {
     imageModel.value = Object.prototype.hasOwnProperty.call(props.storyboard || {}, 'image_model')
@@ -690,24 +700,8 @@ watch(() => props.storyboard?.id, (id, previousId) => {
     gridFrameType.value = Object.prototype.hasOwnProperty.call(props.storyboard || {}, 'grid_frame_type')
       ? props.storyboard.grid_frame_type || 'single'
       : 'single'
-    loadStoredImageSettings()
   }
 })
-
-onMounted(async () => {
-  await Promise.all([loadVideoModels(), loadStoredImageSettings()])
-})
-
-async function loadVideoModels() {
-  try {
-    const rows = await aiAPI.listVideoModels()
-    videoConfigs.value = [...new Set((Array.isArray(rows) ? rows : [])
-      .map((model) => String(model || '').trim())
-      .filter(Boolean))]
-  } catch (_) {
-    videoConfigs.value = []
-  }
-}
 
 async function loadStoredImageSettings() {
   if (!props.storyboard?.id) return
@@ -912,7 +906,7 @@ async function onAssetLibraryPick(asset) {
     }
     await loadAssignedAssets()
     if (!assignedAssets.value.some((item) => String(item.id) === String(savedAsset.id))) {
-      assignedAssets.value = [...assignedAssets.value, normalizeAssignedAsset(savedAsset)].slice(0, 10)
+      assignedAssets.value = [...assignedAssets.value, normalizeAssignedAsset(savedAsset)]
     }
     await ctx?.refreshDrama?.(true)
     const successMessage = ASSET_ATTACH_TARGETS[target]?.message || '已指派素材到本镜'
@@ -1256,11 +1250,22 @@ function setPanelNodeStatus(ids, payload, mode = 'set') {
   })
 }
 
+function panelGenerationReferences() {
+  const seen = new Set()
+  return allReferenceAssets.value.flatMap((asset) => {
+    const url = toAbsoluteMediaUrl(
+      asset.absoluteUrl || asset.url || asset.asset_url || asset.display_url || asset.local_path,
+    )
+    if (!url || seen.has(url)) return []
+    seen.add(url)
+    const type = String(asset.type || '').toLowerCase()
+    const kind = type.includes('video') ? 'video' : type.includes('audio') ? 'audio' : 'image'
+    return [{ kind, url }]
+  })
+}
+
 function panelGenerationReferenceUrls() {
-  return [...new Set(allReferenceAssets.value
-    .map((asset) => asset.absoluteUrl || asset.url || asset.asset_url || asset.display_url || asset.local_path)
-    .map((url) => toAbsoluteMediaUrl(url))
-    .filter(Boolean))]
+  return panelGenerationReferences().map((reference) => reference.url)
 }
 
 function panelResultNodeId(step, sbId) {
@@ -1358,6 +1363,7 @@ async function runStep(step) {
         ...genOpts,
         videoModel: videoModel.value || genOpts.videoModel,
         upstreamReferenceUrls: panelGenerationReferenceUrls(),
+        upstreamReferences: panelGenerationReferences(),
       })
     }
     else if (step === 'audio') {
