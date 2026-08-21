@@ -236,23 +236,12 @@ function writeJson(stream, payload) {
 }
 
 function runCli(argv = process.argv.slice(2)) {
-  if (argv.length === 1 && argv[0] === '--help') {
-    writeJson(process.stdout, {
-      valid: true,
-      usage: [
-        'node scripts/verify-platform-feature-acceptance.js',
-        'node scripts/verify-platform-feature-acceptance.js --require-complete',
-      ],
-    });
-    return 0;
-  }
-
   if (argv.length > 1 || (argv.length === 1 && argv[0] !== '--require-complete')) {
     writeJson(process.stderr, {
       valid: false,
       error: 'INVALID_ARGUMENTS',
     });
-    return 2;
+    return 1;
   }
 
   let loaded;

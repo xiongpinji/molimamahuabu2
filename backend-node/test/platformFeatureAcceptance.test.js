@@ -155,29 +155,17 @@ test('--require-complete rejects current incomplete ledger without printing read
   assert.equal(report.summary.blocked, 16);
 });
 
-test('CLI prints help as JSON without evaluating the ledger', () => {
-  const result = runAcceptanceCli(['--help']);
-
-  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  assert.equal(result.stderr, '');
-  assertSafeCliOutput(result);
-  const report = parseJsonOutput(result.stdout);
-  assert.equal(report.valid, true);
-  assert.deepEqual(report.usage, [
-    'node scripts/verify-platform-feature-acceptance.js',
-    'node scripts/verify-platform-feature-acceptance.js --require-complete',
-  ]);
-});
-
-test('CLI rejects unknown, missing-value, and invalid-value arguments safely', () => {
+test('CLI rejects help, unknown, missing-value, invalid-value, and multi-arg inputs safely', () => {
   for (const args of [
+    ['--help'],
     ['--unknown'],
     ['--ledger'],
     ['--require-complete=true'],
+    ['--require-complete', '--unknown'],
   ]) {
     const result = runAcceptanceCli(args);
 
-    assert.equal(result.status, 2, args.join(' '));
+    assert.equal(result.status, 1, args.join(' '));
     assert.equal(result.stdout, '');
     assertSafeCliOutput(result);
     const report = parseJsonOutput(result.stderr);
