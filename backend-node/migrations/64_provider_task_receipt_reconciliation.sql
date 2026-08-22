@@ -19,10 +19,18 @@ BEGIN
   SELECT RAISE(ABORT, 'provider receipt identity is immutable');
 END;
 
+CREATE TRIGGER IF NOT EXISTS generation_route_attempts_provider_task_id_insert_null
+BEFORE INSERT ON generation_route_attempts
+WHEN NEW.provider_task_id IS NOT NULL
+BEGIN
+  SELECT RAISE(ABORT, 'provider task id is immutable');
+END;
+
 CREATE TRIGGER IF NOT EXISTS generation_route_attempts_provider_task_id_immutable
 BEFORE UPDATE OF provider_task_id ON generation_route_attempts
 WHEN NEW.provider_task_id IS NULL
-  OR trim(NEW.provider_task_id) = ''
+  OR trim(NEW.provider_task_id,
+    char(9) || char(10) || char(11) || char(12) || char(13) || ' ') = ''
   OR (OLD.provider_task_id IS NOT NULL
     AND OLD.provider_task_id IS NOT NEW.provider_task_id)
 BEGIN

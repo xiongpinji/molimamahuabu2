@@ -116,7 +116,7 @@ function insertZeroCostCheck(db, overrides = {}) {
     VALUES (@config_id, @state, @category, @safe_summary, @checked_at, @updated_at)`).run(check);
 }
 
-function insertMinimalProviderReceipt(db) {
+function insertMinimalProviderReceipt(db, providerTaskId = null) {
   const request = {
     id: 'provider-receipt-request-1',
     idempotency_key: 'provider-receipt-idempotency-1',
@@ -143,14 +143,15 @@ function insertMinimalProviderReceipt(db) {
     upstream_model: 'image-model-v1',
     config_fingerprint: 'config-fingerprint-1',
     query_protocol: 'polling-v1',
+    provider_task_id: providerTaskId,
     state: 'submitting',
     started_at: request.created_at,
   };
   return db.prepare(`INSERT INTO generation_route_attempts
     (request_id, attempt_no, config_id, provider, upstream_model,
-     config_fingerprint, query_protocol, state, started_at)
+     config_fingerprint, query_protocol, provider_task_id, state, started_at)
     VALUES (@request_id, @attempt_no, @config_id, @provider, @upstream_model,
-     @config_fingerprint, @query_protocol, @state, @started_at)`).run(attempt).lastInsertRowid;
+     @config_fingerprint, @query_protocol, @provider_task_id, @state, @started_at)`).run(attempt).lastInsertRowid;
 }
 
 test('provider stability migration creates the routing schema and remains idempotent', () => {
@@ -310,9 +311,34 @@ test('provider receipt identity fields cannot be changed or backfilled', () => {
   }
 });
 
+for (const [label, insertedTaskId] of [
+  ['non-empty', 'provider-task-on-insert'],
+  ['empty', ''],
+  ['space', ' '],
+  ['tab', '\t'],
+  ['newline', '\n'],
+]) {
+  test(`provider task id rejects ${label} value on insert`, () => {
+    const db = new Database(':memory:');
+    try {
+      runMigrationsAndEnsure(db);
+
+      assert.throws(
+        () => insertMinimalProviderReceipt(db, insertedTaskId),
+        /provider task id is immutable/,
+      );
+    } finally {
+      db.close();
+    }
+  });
+}
+
 for (const [label, invalidTaskId] of [
   ['empty', ''],
-  ['blank', '   '],
+  ['spaces', '   '],
+  ['tab', '\t'],
+  ['newline', '\n'],
+  ['CRLF', '\r\n'],
 ]) {
   test(`provider task id rejects ${label} initial binding`, () => {
     const db = new Database(':memory:');
