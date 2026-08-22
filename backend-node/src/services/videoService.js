@@ -1340,6 +1340,39 @@ function resolveVideosDir(storagePath, projectSubdir) {
   return { dir: path.join(storagePath, 'videos'), relPrefix: 'videos' };
 }
 
+function ensureContainedVideoOutputDir(safetyRoot, outputDir) {
+  const rootPath = path.resolve(String(safetyRoot || ''));
+  if (!fs.existsSync(rootPath)) fs.mkdirSync(rootPath, { recursive: true });
+  if (!fs.statSync(rootPath).isDirectory()) throw new Error('Unsafe video output root');
+  const canonicalRoot = fs.realpathSync(rootPath);
+  const relativeDir = path.relative(rootPath, path.resolve(outputDir));
+  if (!relativeDir || path.isAbsolute(relativeDir) || relativeDir === '..'
+      || relativeDir.startsWith(`..${path.sep}`)) {
+    throw new Error('Unsafe video output directory');
+  }
+
+  let current = rootPath;
+  for (const segment of relativeDir.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    if (!fs.existsSync(current)) fs.mkdirSync(current);
+    const stat = fs.lstatSync(current);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('Unsafe video output directory');
+    const canonicalCurrent = fs.realpathSync(current);
+    if (!isCanonicalChild(canonicalRoot, canonicalCurrent)) {
+      throw new Error('Unsafe video output directory');
+    }
+  }
+  return canonicalRoot;
+}
+
+function removeContainedPartialFile(canonicalRoot, filePath) {
+  if (!canonicalRoot || !filePath || !fs.existsSync(filePath)) return;
+  const canonicalFile = fs.realpathSync(filePath);
+  if (!isCanonicalChild(canonicalRoot, canonicalFile)) return;
+  const stat = fs.lstatSync(filePath);
+  if (stat.isFile() || stat.isSymbolicLink()) fs.rmSync(filePath, { force: true });
+}
+
 function hasIsoBmffFileStructure(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length < 16) return false;
   let offset = 0;
@@ -1388,15 +1421,25 @@ function validateDownloadedVideoBuffer(buffer, ext) {
 async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir = null, fetchOptions = {}) {
   if (!videoUrl || typeof videoUrl !== 'string') return { localPath: null };
   const { dir, relPrefix } = resolveVideosDir(storagePath, projectSubdir);
+  const downloadOptions = fetchOptions || {};
+  const {
+    fetchImpl: injectedFetch,
+    safetyRoot,
+    requireContainedOutput,
+    ...requestOptions
+  } = downloadOptions;
+  const fetchImpl = injectedFetch || fetch;
   let filePath = null;
+  let canonicalSafetyRoot = null;
   try {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (requireContainedOutput) {
+      canonicalSafetyRoot = ensureContainedVideoOutputDir(safetyRoot, dir);
+    } else if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
     const ext = (videoUrl.split('?')[0].match(/\.(mp4|webm|mov)$/i) || [])[1] || 'mp4';
     const name = `vg_${videoGenId}_${randomUUID().slice(0, 8)}.${ext}`;
     filePath = path.join(dir, name);
-    const downloadOptions = fetchOptions || {};
-    const fetchImpl = downloadOptions.fetchImpl || fetch;
-    const { fetchImpl: _fetchImpl, ...requestOptions } = downloadOptions;
     const res = await fetchImpl(videoUrl, { method: 'GET', ...requestOptions });
     if (!res.ok) {
       log.warn('Download video failed', { status: res.status, videoGenId });
@@ -1413,13 +1456,19 @@ async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, proj
       log.warn('Downloaded video rejected', { videoGenId, reason: message });
       return { localPath: null, error: message };
     }
+    if (requireContainedOutput) {
+      canonicalSafetyRoot = ensureContainedVideoOutputDir(safetyRoot, dir);
+    }
     fs.writeFileSync(filePath, buf);
     const relativePath = `${relPrefix}/${name}`.replace(/\\/g, '/');
     log.info('Video saved to local', { videoGenId, local_path: relativePath, projectSubdir: projectSubdir || '(root)' });
     return { localPath: relativePath };
   } catch (e) {
     if (filePath) {
-      try { fs.rmSync(filePath, { force: true }); } catch (_) {}
+      try {
+        if (requireContainedOutput) removeContainedPartialFile(canonicalSafetyRoot, filePath);
+        else fs.rmSync(filePath, { force: true });
+      } catch (_) {}
     }
     log.warn('Download video error', { videoGenId });
     return {
@@ -1677,6 +1726,8 @@ async function prepareReconciledVideoArtifact(db, log, row, artifactUrl, provide
     const fetchOptions = {
       ...videoClient.getVideoArtifactFetchOptions(providerConfig, artifactUrl),
       ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+      safetyRoot: storagePath,
+      requireContainedOutput: true,
     };
     const downloaded = await downloadVideoToLocal(
       storagePath,
@@ -1689,14 +1740,15 @@ async function prepareReconciledVideoArtifact(db, log, row, artifactUrl, provide
     if (!downloaded.localPath) throw reconciledArtifactError();
 
     cleanup.localPath = downloaded.localPath;
-    cleanup.boundaryFrames = expectedReconciledBoundaryFrames(downloaded.localPath, row.id);
+    const stagingFrameId = `${row.id}_${randomUUID()}`;
+    cleanup.boundaryFrames = expectedReconciledBoundaryFrames(downloaded.localPath, stagingFrameId);
     const normalizeImpl = options.normalizeImpl || maybeNormalizeVideoAfterDownload;
     normalizeImpl(storagePath, downloaded.localPath, row, row.id, log);
     const extractBoundaryFramesImpl = options.extractBoundaryFramesImpl || extractVideoBoundaryFrames;
     const boundaryFrames = extractBoundaryFramesImpl(
       storagePath,
       downloaded.localPath,
-      row.id,
+      stagingFrameId,
       log,
       options.extractionOptions || {},
     );

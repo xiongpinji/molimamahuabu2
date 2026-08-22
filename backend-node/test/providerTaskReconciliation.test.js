@@ -20,6 +20,7 @@ const TASK_ID = 'task-reconcile';
 const ROUTE_ID = 'route-reconcile';
 const PROVIDER_TASK_ID = 'provider-task-reconcile';
 const SNAPSHOT_TABLES = [
+  'dramas',
   'video_generations',
   'async_tasks',
   'generation_route_requests',
@@ -198,6 +199,8 @@ function setupReconciliationFixture(t) {
 async function fixtureVideoFetch(url, requestOptions) {
   assert.equal(url, ARTIFACT_URL);
   assert.equal(Object.hasOwn(requestOptions, 'fetchImpl'), false);
+  assert.equal(Object.hasOwn(requestOptions, 'safetyRoot'), false);
+  assert.equal(Object.hasOwn(requestOptions, 'requireContainedOutput'), false);
   assert.deepEqual(requestOptions.headers, { Authorization: 'Bearer test-key' });
   return {
     ok: true,
@@ -351,6 +354,51 @@ test('prepareReconciledVideoArtifact reports a safe file-write failure without d
   assert.doesNotMatch(JSON.stringify(state.log.entries), /artifact\.example|test-key/);
 });
 
+test('prepareReconciledVideoArtifact rejects a storage parent link before fetch or external writes', async (t) => {
+  const state = setupReconciliationFixture(t);
+  const beforeDb = databaseSnapshot(state.db);
+  const outsidePath = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-prepare-link-outside-'));
+  const markerPath = path.join(outsidePath, 'marker.txt');
+  const projectsLink = path.join(state.storagePath, 'projects');
+  fs.writeFileSync(markerPath, 'outside-marker');
+  fs.symlinkSync(outsidePath, projectsLink, process.platform === 'win32' ? 'junction' : 'dir');
+  t.after(() => fs.rmSync(outsidePath, { recursive: true, force: true }));
+  const beforeOutside = listFiles(outsidePath);
+  let fetchCalls = 0;
+
+  const outcome = await videoService.prepareReconciledVideoArtifact(
+    state.db,
+    state.log,
+    state.video,
+    ARTIFACT_URL,
+    state.config,
+    {
+      storagePath: state.storagePath,
+      fetchImpl: async (...args) => {
+        fetchCalls += 1;
+        return fixtureVideoFetch(...args);
+      },
+    },
+  ).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  );
+
+  assert.deepEqual({
+    rejected: Boolean(outcome.error),
+    fetchCalls,
+    outsideFiles: listFiles(outsidePath),
+    marker: fs.readFileSync(markerPath, 'utf8'),
+  }, {
+    rejected: true,
+    fetchCalls: 0,
+    outsideFiles: beforeOutside,
+    marker: 'outside-marker',
+  });
+  assertSafeArtifactError(outcome.error);
+  assert.equal(databaseSnapshot(state.db), beforeDb);
+});
+
 test('prepareReconciledVideoArtifact removes the staged video when normalize throws', async (t) => {
   const state = setupReconciliationFixture(t);
   const before = databaseSnapshot(state.db);
@@ -376,9 +424,17 @@ test('prepareReconciledVideoArtifact removes the staged video when normalize thr
   assert.doesNotMatch(JSON.stringify(state.log.entries), /provider-body-secret/);
 });
 
-test('prepareReconciledVideoArtifact removes staged video and partial frames when extraction throws', async (t) => {
+test('prepareReconciledVideoArtifact uses unique staging frames and preserves old fixed frames on extraction failure', async (t) => {
   const state = setupReconciliationFixture(t);
   const before = databaseSnapshot(state.db);
+  const videosPath = path.join(state.storagePath, state.projectSubdir, 'videos');
+  const oldFirstPath = path.join(videosPath, `vg_${state.video.id}_first.jpg`);
+  const oldLastPath = path.join(videosPath, `vg_${state.video.id}_last.jpg`);
+  fs.mkdirSync(videosPath, { recursive: true });
+  fs.writeFileSync(oldFirstPath, 'old-first-frame');
+  fs.writeFileSync(oldLastPath, 'old-last-frame');
+  let stagingFrameId = null;
+  let stagedFirstPath = null;
 
   await assert.rejects(
     videoService.prepareReconciledVideoArtifact(
@@ -391,11 +447,12 @@ test('prepareReconciledVideoArtifact removes staged video and partial frames whe
         storagePath: state.storagePath,
         fetchImpl: fixtureVideoFetch,
         extractBoundaryFramesImpl(storagePath, localPath, videoGenId) {
-          const framePath = path.join(
+          stagingFrameId = videoGenId;
+          stagedFirstPath = path.join(
             path.dirname(path.join(storagePath, localPath)),
             `vg_${videoGenId}_first.jpg`,
           );
-          fs.writeFileSync(framePath, 'partial-frame');
+          fs.writeFileSync(stagedFirstPath, 'partial-frame');
           throw new Error('frame provider-body-secret');
         },
       },
@@ -403,7 +460,22 @@ test('prepareReconciledVideoArtifact removes staged video and partial frames whe
     assertSafeArtifactError,
   );
 
-  assert.deepEqual(listFiles(state.storagePath), []);
+  assert.deepEqual({
+    stagingFrameIsUnique: String(stagingFrameId) !== String(state.video.id),
+    oldFirst: fs.existsSync(oldFirstPath) ? fs.readFileSync(oldFirstPath, 'utf8') : null,
+    oldLast: fs.existsSync(oldLastPath) ? fs.readFileSync(oldLastPath, 'utf8') : null,
+    stagedFirstExists: stagedFirstPath ? fs.existsSync(stagedFirstPath) : null,
+    files: listFiles(state.storagePath),
+  }, {
+    stagingFrameIsUnique: true,
+    oldFirst: 'old-first-frame',
+    oldLast: 'old-last-frame',
+    stagedFirstExists: false,
+    files: [
+      `${state.projectSubdir}/videos/vg_${state.video.id}_first.jpg`,
+      `${state.projectSubdir}/videos/vg_${state.video.id}_last.jpg`,
+    ],
+  });
   assert.equal(databaseSnapshot(state.db), before);
   assert.doesNotMatch(JSON.stringify(state.log.entries), /provider-body-secret/);
 });
