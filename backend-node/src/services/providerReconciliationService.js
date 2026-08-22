@@ -63,24 +63,27 @@ function recordEventOnce(db, route, eventType, input = {}) {
 
 function holdForReview(db, route, now, eventType) {
   return db.transaction(() => {
+    let stateChanges = 0;
+    let linkedChanges = 0;
     if (route.attempt_no != null && route.attempt_state === 'submitting') {
-      db.prepare(`UPDATE generation_route_attempts
+      stateChanges += db.prepare(`UPDATE generation_route_attempts
         SET state = 'submission_unknown', error_category = 'submission_unknown',
           safe_error_summary = 'category=submission_unknown', finished_at = ?
-        WHERE request_id = ? AND attempt_no = ?`).run(now, route.id, route.attempt_no);
+        WHERE request_id = ? AND attempt_no = ?`).run(now, route.id, route.attempt_no).changes;
     }
-    db.prepare("UPDATE generation_route_requests SET state = 'needs_attention', updated_at = ? WHERE id = ?")
-      .run(now, route.id);
+    stateChanges += db.prepare(`UPDATE generation_route_requests
+      SET state = 'needs_attention', updated_at = ?
+      WHERE id = ? AND state <> 'needs_attention'`).run(now, route.id).changes;
     if (route.credit_reservation_id) {
-      db.prepare(`UPDATE async_tasks SET status = 'processing', progress = 90, message = ?,
+      linkedChanges += db.prepare(`UPDATE async_tasks SET status = 'needs_attention', progress = 90, message = ?,
         error = NULL, completed_at = NULL, updated_at = ?
         WHERE credit_reservation_id = ? AND status IN ('pending', 'processing', 'failed')
-          AND deleted_at IS NULL`).run(UNKNOWN_MESSAGE, now, route.credit_reservation_id);
+          AND deleted_at IS NULL`).run(UNKNOWN_MESSAGE, now, route.credit_reservation_id).changes;
       for (const table of ['image_generations', 'video_generations']) {
         try {
-          db.prepare(`UPDATE ${table} SET status = 'processing', error_msg = ?, updated_at = ?
+          linkedChanges += db.prepare(`UPDATE ${table} SET status = 'needs_attention', error_msg = ?, updated_at = ?
             WHERE credit_reservation_id = ? AND status IN ('pending', 'processing', 'failed')
-              AND deleted_at IS NULL`).run(UNKNOWN_MESSAGE, now, route.credit_reservation_id);
+              AND deleted_at IS NULL`).run(UNKNOWN_MESSAGE, now, route.credit_reservation_id).changes;
         } catch (error) {
           if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
         }
@@ -92,7 +95,7 @@ function holdForReview(db, route, now, eventType) {
       creditState: 'held_for_review',
       safeDetails: { category: route.error_category || 'submission_unknown' },
     });
-    return inserted;
+    return inserted || stateChanges + linkedChanges > 0;
   })();
 }
 
@@ -142,8 +145,7 @@ function reconcileProviderRequests(db, log, nowValue = new Date().toISOString(),
       const eventType = artifactUnreadable
         ? 'provider_artifact_unreadable'
         : 'provider_request_needs_attention';
-      if (route.state === 'needs_attention' && hasEvent(db, route.id, eventType)) continue;
-      holdForReview(db, route, now, eventType);
+      if (!holdForReview(db, route, now, eventType)) continue;
       summary.processed += 1;
       summary.needs_attention += 1;
       continue;

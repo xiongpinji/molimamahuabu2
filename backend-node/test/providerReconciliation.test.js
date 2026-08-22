@@ -89,6 +89,69 @@ test('submitting 未知请求转 needs_attention 并保持积分冻结且重复�
     WHERE request_id = ? AND event_type = 'provider_request_needs_attention'`).get('route-unknown-submit').count, 1);
 });
 
+test('已有 needs_attention 事件仍把遗留图片任务收口且保持预扣', (t) => {
+  const { db, config } = setup();
+  t.after(() => db.close());
+  const reservation = reserve(db, 'existing-needs-attention');
+  const { route } = createRoute(db, config, reservation, 'existing-needs-attention');
+  const now = '2026-08-15T12:00:00.000Z';
+
+  db.prepare(`INSERT INTO async_tasks
+    (id, type, status, progress, message, resource_id, created_at, updated_at,
+     user_id, model, credit_reservation_id, tenant_id)
+    VALUES ('task-existing-needs-attention', 'image_generation', 'processing', 90,
+      '供应商提交结果未知，等待管理员核对，请勿重新提交', '101', ?, ?,
+      'user-a', 'logical-image', ?, 'tenant-a')`)
+    .run(now, now, reservation.id);
+  db.prepare(`INSERT INTO image_generations
+    (id, provider, prompt, model, status, task_id, error_msg, created_at, updated_at,
+     user_id, credit_reservation_id, tenant_id)
+    VALUES (101, 'private-relay', 'test prompt', 'logical-image', 'processing',
+      'task-existing-needs-attention', '供应商提交结果未知，等待管理员核对，请勿重新提交',
+      ?, ?, 'user-a', ?, 'tenant-a')`)
+    .run(now, now, reservation.id);
+  db.prepare(`UPDATE generation_route_attempts
+    SET state = 'submission_unknown', error_category = 'submission_unknown',
+        safe_error_summary = 'category=submission_unknown', finished_at = ?
+    WHERE request_id = ?`).run(now, route.id);
+  db.prepare("UPDATE generation_route_requests SET state = 'needs_attention', updated_at = ? WHERE id = ?")
+    .run(now, route.id);
+  db.prepare(`INSERT INTO provider_stability_events
+    (severity, event_type, request_id, tenant_id, user_ref, logical_model_id,
+     config_id, task_state, credit_state, safe_details, created_at)
+    VALUES ('warning', 'provider_request_needs_attention', ?, 'tenant-a', 'user-a',
+      'logical-image', ?, 'needs_attention', 'held_for_review',
+      '{"category":"submission_unknown"}', ?)`)
+    .run(route.id, config.id, now);
+
+  const result = providerReconciliation.reconcileProviderRequests(
+    db,
+    log,
+    '2026-08-15T12:01:00.000Z',
+  );
+  const updatedAfterFirst = db.prepare(
+    'SELECT updated_at FROM generation_route_requests WHERE id = ?',
+  ).get(route.id).updated_at;
+  const second = providerReconciliation.reconcileProviderRequests(
+    db,
+    log,
+    '2026-08-15T12:02:00.000Z',
+  );
+
+  assert.equal(result.needs_attention, 1);
+  assert.equal(second.processed, 0);
+  assert.equal(db.prepare(
+    'SELECT updated_at FROM generation_route_requests WHERE id = ?',
+  ).get(route.id).updated_at, updatedAfterFirst);
+  assert.equal(db.prepare("SELECT status FROM async_tasks WHERE id = 'task-existing-needs-attention'").get().status,
+    'needs_attention');
+  assert.equal(db.prepare('SELECT status FROM image_generations WHERE id = 101').get().status,
+    'needs_attention');
+  assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM provider_stability_events
+    WHERE request_id = ? AND event_type = 'provider_request_needs_attention'`).get(route.id).count, 1);
+});
+
 test('仍在正常等待窗口内的 submitting 请求不会被提前标记为结果未知', (t) => {
   const { db, config } = setup();
   t.after(() => db.close());

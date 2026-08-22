@@ -22,6 +22,7 @@ const {
 const PROACTIVE_CANARY_FEATURE_ID = 'stability.proactive-canary-and-public-evidence';
 const ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID = 'stability.admin-provider-observability';
 const COMPLETE_ACCEPTANCE_FRAMEWORK_ID = 'stability.platform-complete-acceptance-framework';
+const UNKNOWN_STATE_RECONCILIATION_FEATURE_ID = 'stability.unknown-state-billing-reconciliation';
 const COMPLETE_ACCEPTANCE_ACCEPTANCE = [
   '来源功能清单与验收决策账本通过 SHA 和 feature_id 一致性绑定',
   '未登记功能保持 unverified，阻断功能不能伪装为通过',
@@ -81,6 +82,18 @@ const SHARED_FOUNDATION_UNLOCK = {
     'backend-node/test/platformSharedFoundationInventory.test.js',
     'backend-node/test/subscriptionBillingRoutes.test.js',
     'frontweb/e2e/platform-shared-foundation-backend-integration.spec.js',
+  ],
+};
+const UNKNOWN_STATE_RECONCILIATION_UNLOCK = {
+  reason: '2026-08-22 结果未知任务稳定收口标准执行授权',
+  approvedBy: 'product-owner 2026-08-22 stable-runtime-standard-execution',
+  impactTests: [
+    'backend-node/test/providerReconciliation.test.js',
+    'backend-node/test/billingReconciliation.test.js',
+    'backend-node/test/taskService.test.js',
+    'backend-node/test/providerRouteImageIntegration.test.js',
+    'backend-node/test/providerRouteVideoIntegration.test.js',
+    'backend-node/test/featureLockManifest.test.js',
   ],
 };
 const PROACTIVE_CANARY_CORE_PATHS = [
@@ -210,11 +223,24 @@ test('公共运行底座触碰管理员路由时保留新的批准解锁与完�
   assert.deepEqual(feature.unlock, SHARED_FOUNDATION_UNLOCK);
 });
 
+test('结果未知状态收口保留本轮批准解锁和同批证据', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const feature = manifest.features.find(
+    ({ featureId }) => featureId === UNKNOWN_STATE_RECONCILIATION_FEATURE_ID,
+  );
+  assert.ok(feature, `缺少功能锁 ${UNKNOWN_STATE_RECONCILIATION_FEATURE_ID}`);
+  assert.deepEqual(feature.unlock, UNKNOWN_STATE_RECONCILIATION_UNLOCK);
+  assert.ok(feature.evidence.includes(
+    'docs/verification/platform-stability/provider-needs-attention-state-closure-20260822.md',
+  ));
+});
+
 test('其余稳定性锁保留当前批准原因且所有锁保留历史证据', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   assert.equal(manifest.features.length >= 5, true);
   for (const feature of manifest.features) {
-    if (![PROACTIVE_CANARY_FEATURE_ID, ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID, COMPLETE_ACCEPTANCE_FRAMEWORK_ID].includes(feature.featureId)) {
+    if (![PROACTIVE_CANARY_FEATURE_ID, ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
+      COMPLETE_ACCEPTANCE_FRAMEWORK_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].includes(feature.featureId)) {
       assert.equal(feature.unlock?.reason, '2026-08-21 PR #171 供应商路由与发布门禁收口授权');
       assert.equal(feature.unlock?.approvedBy, 'product-owner 2026-08-21 pr-171-provider-route-closure');
     }

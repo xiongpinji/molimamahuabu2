@@ -29,7 +29,7 @@ function createTestDb() {
 }
 
 describe('taskService.failOrphanedAsyncTasksOnStartup', () => {
-  it('keeps a submitting provider route for review instead of failing and refunding it', () => {
+  it('marks a submitting provider route needs_attention without failing or refunding it', () => {
     const db = new Database(':memory:');
     runMigrationsAndEnsure(db);
     const log = { info() {}, warn() {}, error() {} };
@@ -74,7 +74,7 @@ describe('taskService.failOrphanedAsyncTasksOnStartup', () => {
     const count = taskService.failOrphanedAsyncTasksOnStartup(db, log);
 
     assert.equal(count, 0);
-    assert.equal(taskService.getTask(db, 'task-startup-unknown').status, 'processing');
+    assert.equal(taskService.getTask(db, 'task-startup-unknown').status, 'needs_attention');
     assert.match(taskService.getTask(db, 'task-startup-unknown').message, /结果未知/);
     assert.equal(db.prepare('SELECT state FROM generation_route_requests').get().state,
       'needs_attention');
