@@ -1155,14 +1155,25 @@ test('reconcileRequest refunds only explicit provider task failure and is termin
   assert.equal(cost.cost_micros, 0);
 });
 
-test('DJPSD OpenAPI and Token6688 reconciliation hold credits without an artifact and refund explicit failure', async (t) => {
+test('DJPSD legacy/OpenAPI and Token6688 reconciliation hold credits without an artifact and refund explicit failure', async (t) => {
   const protocols = [
+    {
+      name: 'DJPSD legacy',
+      provider: 'djpsd',
+      configProtocol: 'djpsd',
+      baseUrl: 'https://relay.invalid',
+      completedCases: ['success', 'succeeded', 'completed'].map((status) => ({
+        name: status,
+        payload: { code: 200, data: { status } },
+      })),
+      failed: { code: 200, data: { status: 'failed', error_message: 'provider detail must stay internal' } },
+    },
     {
       name: 'DJPSD OpenAPI',
       provider: 'djpsd_openapi',
       configProtocol: 'djpsd_openapi',
       baseUrl: 'https://relay.invalid/openapi',
-      completed: { data: { state: 'completed' } },
+      completedCases: [{ name: 'completed', payload: { data: { state: 'completed' } } }],
       failed: { data: { state: 'failed', message: 'provider detail must stay internal' } },
     },
     {
@@ -1170,41 +1181,46 @@ test('DJPSD OpenAPI and Token6688 reconciliation hold credits without an artifac
       provider: 'token6688',
       configProtocol: 'token6688',
       baseUrl: 'https://relay.invalid/v1',
-      completed: { status: 'completed', result: { videos: [] } },
+      completedCases: [{
+        name: 'completed',
+        payload: { status: 'completed', result: { videos: [] } },
+      }],
       failed: { status: 'failed', error: { message: 'provider detail must stay internal' } },
     },
   ];
 
   for (const protocol of protocols) {
-    await t.test(`${protocol.name} completed without URL`, async (subtest) => {
-      const state = setupReconciliationFixture(subtest, protocol);
-      let queryCount = 0;
-      const result = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
-        now: NOW,
-        queryFetchImpl: async () => {
-          queryCount += 1;
-          return {
-            ok: true,
-            status: 200,
-            text: async () => JSON.stringify(protocol.completed),
-          };
-        },
-      });
+    for (const completedCase of protocol.completedCases) {
+      await t.test(`${protocol.name} ${completedCase.name} without URL`, async (subtest) => {
+        const state = setupReconciliationFixture(subtest, protocol);
+        let queryCount = 0;
+        const result = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
+          now: NOW,
+          queryFetchImpl: async () => {
+            queryCount += 1;
+            return {
+              ok: true,
+              status: 200,
+              text: async () => JSON.stringify(completedCase.payload),
+            };
+          },
+        });
 
-      assert.equal(queryCount, 1);
-      assert.equal(result.error_category, 'artifact_unreadable');
-      assert.equal(result.task_state, 'needs_attention');
-      assert.equal(result.credit_state, 'held');
-      assert.equal(getReservation(state.db, state.reservation.id).status, 'held');
-      assert.equal(getVideo(state.db).status, 'needs_attention');
-      assert.equal(getTask(state.db).status, 'needs_attention');
-      assert.equal(getRoute(state.db).state, 'needs_attention');
-      assert.equal(getAttempt(state.db).state, 'needs_attention');
-      assert.equal(state.db.prepare(`SELECT COUNT(*) AS count FROM credit_ledger
-        WHERE reservation_id = ? AND event_type = 'refund'`).get(state.reservation.id).count, 0);
-      assert.equal(countReconciledSafeEvents(state.db), 0);
-      assert.equal(countReconciledAuditEvents(state.db), 0);
-    });
+        assert.equal(queryCount, 1);
+        assert.equal(result.error_category, 'artifact_unreadable');
+        assert.equal(result.task_state, 'needs_attention');
+        assert.equal(result.credit_state, 'held');
+        assert.equal(getReservation(state.db, state.reservation.id).status, 'held');
+        assert.equal(getVideo(state.db).status, 'needs_attention');
+        assert.equal(getTask(state.db).status, 'needs_attention');
+        assert.equal(getRoute(state.db).state, 'needs_attention');
+        assert.equal(getAttempt(state.db).state, 'needs_attention');
+        assert.equal(state.db.prepare(`SELECT COUNT(*) AS count FROM credit_ledger
+          WHERE reservation_id = ? AND event_type = 'refund'`).get(state.reservation.id).count, 0);
+        assert.equal(countReconciledSafeEvents(state.db), 0);
+        assert.equal(countReconciledAuditEvents(state.db), 0);
+      });
+    }
 
     await t.test(`${protocol.name} explicit failure`, async (subtest) => {
       const state = setupReconciliationFixture(subtest, protocol);

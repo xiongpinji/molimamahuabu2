@@ -70,6 +70,69 @@ test('单次任务查询对会二次取结果的协议严格只发一个网络�
   }
 });
 
+test('旧版 DJPSD 完成但无视频时严格单次查询保持产物不可读', async (t) => {
+  for (const status of ['success', 'succeeded', 'completed']) {
+    await t.test(status, async () => {
+      let requests = 0;
+      const result = await queryVideoTaskStatusOnce(null, log, 'saved-task-id', {
+        provider: 'djpsd',
+        api_protocol: 'djpsd',
+        base_url: 'https://relay.invalid',
+        api_key: 'test-key',
+      }, {
+        async fetchImpl() {
+          requests += 1;
+          return jsonResponse({ code: 200, data: { status } });
+        },
+      });
+      assert.deepEqual(result, { state: 'artifact_unreadable' });
+      assert.equal(requests, 1);
+    });
+  }
+});
+
+test('旧版 DJPSD 显式失败仍是供应商任务失败', async (t) => {
+  for (const status of ['failed', 'error']) {
+    await t.test(status, async () => {
+      let requests = 0;
+      const result = await queryVideoTaskStatusOnce(null, log, 'saved-task-id', {
+        provider: 'djpsd',
+        api_protocol: 'djpsd',
+        base_url: 'https://relay.invalid',
+        api_key: 'test-key',
+      }, {
+        async fetchImpl() {
+          requests += 1;
+          return jsonResponse({
+            code: 200,
+            data: { status, error_message: 'provider detail must stay internal' },
+          });
+        },
+      });
+      assert.deepEqual(result, { state: 'failed', category: 'provider_task_failed' });
+      assert.equal(requests, 1);
+      assert.doesNotMatch(JSON.stringify(result), /provider detail/);
+    });
+  }
+});
+
+test('普通轮询保留旧版 DJPSD 完成无视频的旧错误行为', async () => {
+  let requests = 0;
+  const result = await pollVideoTask(null, log, null, 'saved-task-id', {
+    provider: 'djpsd',
+    api_protocol: 'djpsd',
+    base_url: 'https://relay.invalid',
+    api_key: 'test-key',
+  }, 1, 0, {
+    async fetchImpl() {
+      requests += 1;
+      return jsonResponse({ code: 200, data: { status: 'completed' } });
+    },
+  });
+  assert.deepEqual(result, { error: '任务已完成但未返回视频地址' });
+  assert.equal(requests, 1);
+});
+
 test('DJPSD OpenAPI 和 Token6688 完成但无视频时只查询一次并保持产物不可读', async (t) => {
   const cases = [
     {

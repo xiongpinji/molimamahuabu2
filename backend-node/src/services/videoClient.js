@@ -6188,6 +6188,8 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
       }
 
       if (isDjpsd) {
+        const body = data?.data?.data || data?.data || data || {};
+        const status = String(body.status || '').toLowerCase();
         const result = parseDjpsdPollResponse(data);
         log.info('[DJPSD poll] 状态', {
           video_gen_id: videoGenId,
@@ -6195,7 +6197,12 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           state: result.state,
         });
         if (result.state === 'completed') return { video_url: result.videoUrl };
-        if (result.state === 'failed') return { error: result.error };
+        if (result.state === 'failed') {
+          if (strictSingleRequest && ['success', 'succeeded', 'completed'].includes(status)) {
+            return { artifact_unreadable: true };
+          }
+          return { error: result.error };
+        }
         continue;
       }
 
