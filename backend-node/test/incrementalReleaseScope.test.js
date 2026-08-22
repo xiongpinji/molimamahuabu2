@@ -42,6 +42,42 @@ const videoAudioCreditManifestPath = path.join(
   'release-scopes',
   'video-audio-credit-reconciliation-20260822.json',
 );
+const providerTaskReceiptManifestPath = path.join(
+  repoRoot,
+  'deploy',
+  'release-scopes',
+  'provider-task-receipt-reconciliation-20260822.json',
+);
+const PROVIDER_TASK_RECEIPT_ALLOWED_PATHS = [
+  'backend-node/migrations/64_provider_task_receipt_reconciliation.sql',
+  'backend-node/src/app.js',
+  'backend-node/src/routes/index.js',
+  'backend-node/src/routes/providerStability.js',
+  'backend-node/src/services/creditLedgerService.js',
+  'backend-node/src/services/providerRouteStabilityService.js',
+  'backend-node/src/services/providerTaskReconciliationService.js',
+  'backend-node/src/services/videoClient.js',
+  'backend-node/src/services/videoService.js',
+  'backend-node/test/creditLedger.test.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/imageAssetModelFailover.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/providerReconciliation.test.js',
+  'backend-node/test/providerRouteImageIntegration.test.js',
+  'backend-node/test/providerRouteSchema.test.js',
+  'backend-node/test/providerRouteStability.test.js',
+  'backend-node/test/providerRouteTextIntegration.test.js',
+  'backend-node/test/providerRouteVideoIntegration.test.js',
+  'backend-node/test/providerTaskAdminRoutes.test.js',
+  'backend-node/test/providerTaskReconciliation.test.js',
+  'backend-node/test/storyboardImageFailure.test.js',
+  'backend-node/test/taskService.test.js',
+  'deploy/release-scopes/provider-task-receipt-reconciliation-20260822.json',
+  'docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md',
+  'docs/superpowers/specs/2026-08-22-provider-task-receipt-reconciliation-design.md',
+  'docs/verification/platform-stability/feature-lock-manifest.json',
+  'docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md',
+];
 const COMPLETE_ACCEPTANCE_ALLOWED_PATHS = [
   'backend-node/package.json',
   'backend-node/scripts/verify-platform-feature-acceptance.js',
@@ -215,6 +251,10 @@ function assertExactNeedsAttentionClosureScope(allowedPaths) {
 
 function assertExactVideoAudioCreditScope(allowedPaths) {
   assert.deepEqual(allowedPaths, VIDEO_AUDIO_CREDIT_ALLOWED_PATHS);
+}
+
+function assertExactProviderTaskReceiptScope(allowedPaths) {
+  assert.deepEqual(allowedPaths, PROVIDER_TASK_RECEIPT_ALLOWED_PATHS);
 }
 
 function createFixture() {
@@ -483,6 +523,41 @@ test('视频音频与冻结积分收口发布范围拒绝同数量偷换任一�
   assert.equal(swapped.length, VIDEO_AUDIO_CREDIT_ALLOWED_PATHS.length);
   assert.throws(
     () => assertExactVideoAudioCreditScope(swapped),
+    { name: 'AssertionError' },
+  );
+});
+
+test('供应商任务不可变凭证发布范围是逐项精确 28 文件白名单', () => {
+  const { manifest, allowedPaths } = loadManifest(providerTaskReceiptManifestPath);
+  assert.equal(manifest.release, 'provider-task-receipt-reconciliation-20260822');
+  assertExactProviderTaskReceiptScope(allowedPaths);
+  assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
+
+  for (const forbidden of [
+    'backend-node/data',
+    'backend-node/uploads',
+    'storage',
+    'assets',
+    'ai-music',
+    'moli-music',
+    'deploy/install-protected-release-guard.sh',
+    'shared/release-guard',
+  ]) {
+    assert.equal(
+      allowedPaths.some((entry) => entry === forbidden || entry.startsWith(`${forbidden}/`)),
+      false,
+      `发布范围不得包含: ${forbidden}`,
+    );
+  }
+});
+
+test('供应商任务不可变凭证发布范围拒绝同数量偷换任一文件', () => {
+  const swapped = [...PROVIDER_TASK_RECEIPT_ALLOWED_PATHS];
+  const index = swapped.indexOf('backend-node/src/services/providerTaskReconciliationService.js');
+  swapped[index] = 'backend-node/data/drama_generator.db';
+  assert.equal(swapped.length, PROVIDER_TASK_RECEIPT_ALLOWED_PATHS.length);
+  assert.throws(
+    () => assertExactProviderTaskReceiptScope(swapped),
     { name: 'AssertionError' },
   );
 });
