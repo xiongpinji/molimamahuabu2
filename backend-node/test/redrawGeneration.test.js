@@ -550,6 +550,14 @@ async function pngBytes({ width, height, channels = 3, fill = 255, color }) {
   }).png().toBuffer();
 }
 
+async function assertReferenceIdentityPng(bytes, label) {
+  const metadata = await sharp(bytes).metadata();
+  assert.strictEqual(metadata.format, 'png', `${label} must be a decodable PNG`);
+  assert.strictEqual(`image/${metadata.format}`, 'image/png', `${label} MIME must match asset metadata`);
+  assert.strictEqual(metadata.width, 864, `${label} PNG width must match asset metadata`);
+  assert.strictEqual(metadata.height, 1296, `${label} PNG height must match asset metadata`);
+}
+
 function referenceBundleTextEvidencePack(input) {
   const pack = {
     schema_version: 'text-clean-plate-reference-v1',
@@ -635,8 +643,8 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
   const voiceBytes = (id) => Buffer.from(`generation-reference-bundle-voice:${id}`);
   const voiceSha = (id) => crypto.createHash('sha256').update(voiceBytes(id)).digest('hex');
   const imageBytesById = new Map([
-    [state.actorAImageId, Buffer.from(`generation-reference-bundle-image:${state.actorAImageId}`)],
-    [state.actorBImageId, Buffer.from(`generation-reference-bundle-image:${state.actorBImageId}`)],
+    [state.actorAImageId, await pngBytes({ width: 864, height: 1296, color: { r: 96, g: 72, b: 64 } })],
+    [state.actorBImageId, await pngBytes({ width: 864, height: 1296, color: { r: 64, g: 80, b: 112 } })],
     [state.subtitleCleanImageId, await pngBytes({ width: 64, height: 64, color: { r: 240, g: 240, b: 240 } })],
     [state.screenCleanImageId, await pngBytes({ width: 64, height: 64, color: { r: 220, g: 230, b: 240 } })],
   ]);
@@ -647,6 +655,8 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
   for (const id of [state.actorAImageId, state.actorBImageId, state.subtitleCleanImageId, state.screenCleanImageId]) {
     putStorageFile(storageRoot, `redraw/${id}.png`, imageBytes(id));
   }
+  await assertReferenceIdentityPng(imageBytes(state.actorAImageId), 'actor A identity image');
+  await assertReferenceIdentityPng(imageBytes(state.actorBImageId), 'actor B identity image');
   for (const id of [state.actorAVoiceAssetId, state.actorBVoiceAssetId]) {
     putStorageFile(storageRoot, `redraw/${id}.mp3`, voiceBytes(id));
   }
@@ -661,11 +671,13 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
     id: state.actorAImageId,
     localPath: `redraw/${state.actorAImageId}.png`,
     sha256: imageSha(state.actorAImageId),
+    metadata: { sha256: imageSha(state.actorAImageId), width: 864, height: 1296 },
   });
   insertReferenceBundleAsset(state.db, {
     id: state.actorBImageId,
     localPath: `redraw/${state.actorBImageId}.png`,
     sha256: imageSha(state.actorBImageId),
+    metadata: { sha256: imageSha(state.actorBImageId), width: 864, height: 1296 },
   });
   insertReferenceBundleAsset(state.db, {
     id: state.subtitleCleanImageId,
