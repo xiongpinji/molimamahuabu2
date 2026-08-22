@@ -322,15 +322,7 @@ function buildAttemptReceipt(db, input) {
     upstreamModel,
     queryProtocol,
     capabilities,
-    configFingerprint: evidenceService.configFingerprint({
-      serviceType: config.service_type || input.serviceType,
-      apiKey: config.api_key,
-      baseUrl: config.base_url,
-      protocol: queryProtocol,
-      provider: config.provider,
-      upstreamModel,
-      capabilities,
-    }),
+    configFingerprint: evidenceService.configFingerprint(config),
   };
 }
 

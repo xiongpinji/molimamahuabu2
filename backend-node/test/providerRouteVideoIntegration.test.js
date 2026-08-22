@@ -57,6 +57,7 @@ function addRoute(db, values) {
     priority: values.priority,
     logical_model_id: 'logical-video',
     failover_enabled: Boolean(values.failover),
+    settings: { canvas_capabilities: { durations: [5] } },
   });
   db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
     .run(config.id);

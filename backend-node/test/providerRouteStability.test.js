@@ -6,6 +6,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const aiConfigService = require('../src/services/aiConfigService');
 const modelPriceService = require('../src/services/modelPriceService');
 const evidenceService = require('../src/services/providerCanaryEvidenceService');
 const stability = require('../src/services/providerRouteStabilityService');
@@ -126,19 +127,7 @@ test('route requests and attempts are idempotent and preserve accepted provider 
     });
     assert.equal(attempt.attempt_no, 1);
     assert.equal(attempt.provider, 'relay');
-    const expectedFingerprint = evidenceService.configFingerprint({
-      serviceType: 'image',
-      apiKey: 'secret',
-      baseUrl: 'https://relay.example/v1',
-      protocol: 'openai',
-      provider: 'relay',
-      upstreamModel: 'upstream-image',
-      capabilities: {
-        resolutions: ['2k'],
-        aspectRatios: ['16:9'],
-        maxReferences: 9,
-      },
-    });
+    const expectedFingerprint = evidenceService.configFingerprint(aiConfigService.getConfig(db, configId));
     assert.match(attempt.config_fingerprint, /^[0-9a-f]{64}$/);
     assert.equal(attempt.config_fingerprint, expectedFingerprint);
     assert.equal(attempt.query_protocol, 'openai');
