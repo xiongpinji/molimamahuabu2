@@ -218,6 +218,34 @@ test('道具生图供应商明确失败时写回任务并退还预扣积分', as
   assert.equal(credits.getReservation(db, reservationId).status, 'refunded');
 });
 
+test('道具生图供应商结果未知时立即转待核对并保持预扣', async (t) => {
+  const { db, propId } = setup();
+  const originalCall = imageClient.callImageApi;
+  imageClient.callImageApi = async () => ({
+    indeterminate: true,
+    error: '提交后连接中断，无法确认最终结果',
+  });
+  t.after(() => {
+    imageClient.callImageApi = originalCall;
+    db.close();
+  });
+  const taskId = propImages.generatePropImage(db, log, propId, billingOptions());
+  const reservationId = taskService.getTask(db, taskId).credit_reservation_id;
+
+  await propImages.processPropImageGeneration(db, log, taskId, propId, billingOptions());
+
+  const task = taskService.getTask(db, taskId);
+  assert.equal(task.status, 'needs_attention');
+  assert.equal(task.completed_at, null);
+  assert.match(task.message, /请勿重复提交/);
+  assert.equal(credits.getReservation(db, reservationId).status, 'held');
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM tenant_credit_ledger
+    WHERE reservation_id = ? AND event_type = 'refund'`).get(reservationId).count, 0);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM audit_events
+    WHERE event_type = 'generation.prop_image.needs_attention' AND resource_id = ?`)
+    .get(`prop_${propId}`).count, 1);
+});
+
 test('道具生图成功后确认预扣积分并保存图片', async (t) => {
   const { db, propId } = setup();
   const originalCall = imageClient.callImageApi;

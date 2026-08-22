@@ -184,7 +184,9 @@ function reconcileLegacyHeldReservations(db, now, options, summary) {
   });
   for (const row of rows) {
     if (row.evidence.providerRoutes.length) continue;
-    if (!row.evidence.images.length && !row.evidence.videos.length) continue;
+    const hasLegacyMedia = row.evidence.images.length || row.evidence.videos.length;
+    const hasPropImageTask = row.evidence.tasks.some((task) => task.type === 'prop_image_generation');
+    if (!hasLegacyMedia && !hasPropImageTask) continue;
     if (row.safety_status === 'indeterminate') {
       if (!markLegacyHeldForReview(db, row, now)) continue;
       summary.processed += 1;
