@@ -290,6 +290,42 @@
           "backend-node/test/providerRouteVideoIntegration.test.js"
         ]
       }
+    },
+    {
+      "featureId": "stability.platform-complete-acceptance-framework",
+      "module": "shared",
+      "status": "locked_pass",
+      "acceptance": [
+        "来源功能清单与验收决策账本通过 SHA 和 feature_id 一致性绑定",
+        "未登记功能保持 unverified，阻断功能不能伪装为通过",
+        "锁定功能必须覆盖适用证据链、Hosted CI、生产回读和功能锁证据"
+      ],
+      "protectedPaths": [
+        "backend-node/scripts/verify-platform-feature-acceptance.js",
+        "docs/verification/platform-stability/platform-feature-inventory.json",
+        "docs/verification/platform-stability/platform-feature-inventory.schema.json",
+        "docs/verification/platform-stability/platform-feature-acceptance.json",
+        "docs/verification/platform-stability/platform-feature-acceptance.schema.json"
+      ],
+      "requiredTests": [
+        "backend-node/test/platformFeatureInventory.test.js",
+        "backend-node/test/platformFeatureAcceptance.test.js",
+        "backend-node/test/featureLockManifest.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-21-platform-complete-acceptance-lock-design.md",
+        "docs/superpowers/plans/2026-08-21-platform-complete-acceptance-framework.md",
+        "docs/verification/platform-stability/platform-complete-acceptance-framework-verification.md"
+      ],
+      "fixCommit": null,
+      "unlock": {
+        "reason": "2026-08-22 修复 Hosted CI 跨平台验收清单哈希",
+        "approvedBy": "product-owner 开始处理下一步确认",
+        "impactTests": [
+          "backend-node/test/platformFeatureAcceptance.test.js",
+          "backend-node/test/featureLockManifest.test.js"
+        ]
+      }
     }
   ]
 }

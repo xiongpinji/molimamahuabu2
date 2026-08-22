@@ -20,6 +20,37 @@ const {
 } = require('../scripts/verify-feature-lock-manifest');
 
 const PROACTIVE_CANARY_FEATURE_ID = 'stability.proactive-canary-and-public-evidence';
+const COMPLETE_ACCEPTANCE_FRAMEWORK_ID = 'stability.platform-complete-acceptance-framework';
+const COMPLETE_ACCEPTANCE_ACCEPTANCE = [
+  '来源功能清单与验收决策账本通过 SHA 和 feature_id 一致性绑定',
+  '未登记功能保持 unverified，阻断功能不能伪装为通过',
+  '锁定功能必须覆盖适用证据链、Hosted CI、生产回读和功能锁证据',
+];
+const COMPLETE_ACCEPTANCE_PROTECTED_PATHS = [
+  'backend-node/scripts/verify-platform-feature-acceptance.js',
+  'docs/verification/platform-stability/platform-feature-inventory.json',
+  'docs/verification/platform-stability/platform-feature-inventory.schema.json',
+  'docs/verification/platform-stability/platform-feature-acceptance.json',
+  'docs/verification/platform-stability/platform-feature-acceptance.schema.json',
+];
+const COMPLETE_ACCEPTANCE_REQUIRED_TESTS = [
+  'backend-node/test/platformFeatureInventory.test.js',
+  'backend-node/test/platformFeatureAcceptance.test.js',
+  'backend-node/test/featureLockManifest.test.js',
+];
+const COMPLETE_ACCEPTANCE_EVIDENCE = [
+  'docs/superpowers/specs/2026-08-21-platform-complete-acceptance-lock-design.md',
+  'docs/superpowers/plans/2026-08-21-platform-complete-acceptance-framework.md',
+  'docs/verification/platform-stability/platform-complete-acceptance-framework-verification.md',
+];
+const COMPLETE_ACCEPTANCE_UNLOCK = {
+  reason: '2026-08-22 修复 Hosted CI 跨平台验收清单哈希',
+  approvedBy: 'product-owner 开始处理下一步确认',
+  impactTests: [
+    'backend-node/test/platformFeatureAcceptance.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+  ],
+};
 const PROACTIVE_CANARY_ACCEPTANCE = [
   '公开线路只有匹配的新鲜真实证据才能进入严格候选',
   '巡检预算日月原子受限且未知结果保留占用',
@@ -137,7 +168,25 @@ test('共享稳定性锁定清单引用的保护路径、测试和证据全部�
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   assert.equal(manifest.features.every((feature) => feature.module === 'shared'), true);
   assert.equal(manifest.features.some((feature) => /canvas|factory|script-analysis/.test(feature.featureId)), false);
-  assert.equal(manifest.features.every((feature) => feature.status === 'locked_fixed'), true);
+  assert.equal(
+    manifest.features.every((feature) => ['locked_pass', 'locked_fixed'].includes(feature.status)),
+    true,
+  );
+});
+
+test('平台完整验收框架锁定为 shared locked_pass 且不提前锁定业务功能', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const feature = manifest.features.find(({ featureId }) => featureId === COMPLETE_ACCEPTANCE_FRAMEWORK_ID);
+  assert.ok(feature, `缺少功能锁 ${COMPLETE_ACCEPTANCE_FRAMEWORK_ID}`);
+  assert.equal(feature.module, 'shared');
+  assert.equal(feature.status, 'locked_pass');
+  assert.deepEqual(feature.acceptance, COMPLETE_ACCEPTANCE_ACCEPTANCE);
+  assert.deepEqual(feature.protectedPaths, COMPLETE_ACCEPTANCE_PROTECTED_PATHS);
+  assert.deepEqual(feature.requiredTests, COMPLETE_ACCEPTANCE_REQUIRED_TESTS);
+  assert.deepEqual(feature.evidence, COMPLETE_ACCEPTANCE_EVIDENCE);
+  assert.equal(feature.fixCommit, null);
+  assert.deepEqual(feature.unlock, COMPLETE_ACCEPTANCE_UNLOCK);
+  assert.equal(manifest.features.some((featureLock) => /canvas|factory|script-analysis/.test(featureLock.featureId)), false);
 });
 
 test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件与测试', () => {
@@ -159,7 +208,7 @@ test('其余稳定性锁保留当前批准原因且所有锁保留历史证据',
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   assert.equal(manifest.features.length >= 5, true);
   for (const feature of manifest.features) {
-    if (feature.featureId !== PROACTIVE_CANARY_FEATURE_ID) {
+    if (![PROACTIVE_CANARY_FEATURE_ID, COMPLETE_ACCEPTANCE_FRAMEWORK_ID].includes(feature.featureId)) {
       assert.equal(feature.unlock?.reason, '2026-08-21 PR #171 供应商路由与发布门禁收口授权');
       assert.equal(feature.unlock?.approvedBy, 'product-owner 2026-08-21 pr-171-provider-route-closure');
     }

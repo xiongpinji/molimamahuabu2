@@ -1,0 +1,106 @@
+{
+  "schema_version": "1.0.0",
+  "source_inventory": {
+    "path": "docs/verification/platform-stability/platform-feature-inventory.json",
+    "sha256": "17a189cc3c65ed39d4bcfb15ee2b3ec2f78adb4552300dff5a3880bf3b95e87c",
+    "feature_count": 140
+  },
+  "decisions": [
+    {
+      "feature_id": "canvas.billing.project_node_callout",
+      "status": "blocked",
+      "reason": "当前项目画布业务节点未发现独立的预计积分提示验收；缺少该功能的独立验收覆盖。",
+      "evidence": []
+    },
+    {
+      "feature_id": "canvas.share.link",
+      "status": "blocked",
+      "reason": "仅找到相邻画布交互结构测试；缺少该功能的独立验收覆盖。",
+      "evidence": []
+    },
+    {
+      "feature_id": "short_drama_factory.script.tabs",
+      "status": "blocked",
+      "reason": "现有测试仅覆盖制作页或来源边界，未独立验证两个剧本页签切换；缺少该功能的独立验收覆盖。",
+      "evidence": []
+    },
+    {
+      "feature_id": "short_drama_factory.character.reference",
+      "status": "blocked",
+      "reason": "现有测试覆盖素材复用或角色生图，未独立验证角色参考图上传与主图绑定；缺少该功能的独立验收覆盖。",
+      "evidence": []
+    },
+    {
+      "feature_id": "short_drama_factory.scene.reference",
+      "status": "blocked",
+      "reason": "现有测试覆盖素材复用或场景生图，未独立验证场景参考图上传与主图绑定；缺少该功能的独立验收覆盖。",
+      "evidence": []
+    },
+    {
+      "feature_id": "short_drama_factory.prop.reference",
+      "status": "blocked",
+      "reason": "现有测试覆盖素材复用或道具生图，未独立验证道具参考图上传与主图绑定；缺少该功能的独立验收覆盖。",
+      "evidence": []
+    },
+    {
+      "feature_id": "short_drama_factory.storyboard.batch_video_generation",
+      "status": "blocked",
+      "reason": "现有测试覆盖任务轮询或单分镜视频生成，未独立验证批量端点的逐镜结果、失败与计费；缺少该功能的独立验收覆盖。",
+      "evidence": []
+    },
+    {
+      "feature_id": "short_drama_factory.result.preview",
+      "status": "blocked",
+      "reason": "现有制作页测试未独立打开并核验图片、视频、音频或合成结果；缺少该功能的独立验收覆盖。",
+      "evidence": []
+    },
+    {
+      "feature_id": "short_drama_factory.project.download",
+      "status": "blocked",
+      "reason": "现有测试未独立验证项目 ZIP 可打开及内容；缺少该功能的独立验收覆盖。",
+      "evidence": []
+    },
+    {
+      "feature_id": "short_drama_factory.storyboard.download",
+      "status": "blocked",
+      "reason": "现有工作区测试未独立验证下载文件内容；缺少该功能的独立验收覆盖。",
+      "evidence": []
+    },
+    {
+      "feature_id": "short_drama_factory.billing.generation_callout",
+      "status": "blocked",
+      "reason": "当前短剧工厂只显示生成前检查，未发现每个生成按钮的独立预计积分提示；缺少该功能的独立验收覆盖。",
+      "evidence": []
+    },
+    {
+      "feature_id": "short_drama_factory.api.import",
+      "status": "blocked",
+      "reason": "现有测试仅覆盖相邻项目工作区或生成路由结构，未独立验证归档、小说及示例导入结果；缺少该功能的独立验收覆盖。",
+      "evidence": []
+    },
+    {
+      "feature_id": "short_drama_factory.api.export",
+      "status": "blocked",
+      "reason": "现有测试未独立验证导出归档可打开及内容；缺少该功能的独立验收覆盖。",
+      "evidence": []
+    },
+    {
+      "feature_id": "script_analysis.script.upload",
+      "status": "blocked",
+      "reason": "现有测试仅覆盖相邻页面结构，未独立验证文件选择、读取与内容写入；缺少该功能的独立验收覆盖。",
+      "evidence": []
+    },
+    {
+      "feature_id": "script_analysis.results.download",
+      "status": "blocked",
+      "reason": "当前页面与剧本分析公开 API 未发现结果下载入口；缺少该功能的独立验收覆盖。",
+      "evidence": []
+    },
+    {
+      "feature_id": "script_analysis.billing.visibility",
+      "status": "blocked",
+      "reason": "后端存在分析运行与修订计费，但前端缺少预计扣费展示及该提示的独立验收；缺少该功能的独立验收覆盖。",
+      "evidence": []
+    }
+  ]
+}
