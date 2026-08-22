@@ -20,7 +20,7 @@ const INITIAL_UPDATED_AT = '2026-08-12T00:00:00.000Z';
 const REVIEWED_AT = '2026-08-13T00:00:00.000Z';
 const IMAGE_BYTES = Buffer.from('identity-evidence-image');
 
-function setup() {
+function setup(overrides = {}) {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-character-identity-'));
@@ -40,9 +40,15 @@ function setup() {
   db.prepare(`INSERT INTO redraw_versions
     (work_id, tenant_id, user_id, version, locale, market, source_facts_json,
      facts_hash, status, created_at, updated_at)
-    VALUES (?, 'tenant-a', 'user-a', 1, 'en-US', 'US', '{}', 'facts-a',
+    VALUES (?, 'tenant-a', 'user-a', 1, ?, ?, '{}', 'facts-a',
       'asset_review', ?, ?)`)
-    .run(workId, INITIAL_UPDATED_AT, INITIAL_UPDATED_AT);
+    .run(
+      workId,
+      Object.prototype.hasOwnProperty.call(overrides, 'locale') ? overrides.locale : 'en-US',
+      Object.prototype.hasOwnProperty.call(overrides, 'market') ? overrides.market : 'US',
+      INITIAL_UPDATED_AT,
+      INITIAL_UPDATED_AT,
+    );
   const versionId = Number(db.prepare('SELECT id FROM redraw_versions LIMIT 1').get().id);
   return { db, root, versionId };
 }
@@ -321,6 +327,8 @@ test('完整身份包使用服务端证据并生成稳定的 64 位小写哈希'
       artifact: first.identity_pack.artifact,
       pack_sha256: first.identity_pack.pack_sha256,
       ready: true,
+      persona_origin: 'fictional_ai_generated',
+      target_country: 'US',
     });
   } finally {
     close(state);
@@ -367,8 +375,8 @@ test('身份包成功保存后精准失效当前角色依赖镜头，CAS 失败�
   }
 });
 
-test('完整虚构美国角色身份包保存、读取和绑定一致投影政策字段', () => {
-  const state = setup();
+test('完整虚构角色身份包由服务端版本市场派生政策字段', () => {
+  const state = setup({ locale: 'es-ES', market: 'ES' });
   try {
     fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
     fs.writeFileSync(path.join(state.root, 'wardrobe-102.png'), Buffer.from('wardrobe-reference-image'));
@@ -377,17 +385,17 @@ test('完整虚构美国角色身份包保存、读取和绑定一致投影政�
     const characterId = addCharacter(state);
 
     const saved = saveIdentityPack(context(state), characterId, completeInput(INITIAL_UPDATED_AT, {
-      persona_origin: 'fictional_ai_generated',
-      target_country: 'US',
+      persona_origin: 'real_person',
+      target_country: 'CN',
     }));
     const read = readIdentityPack(saved);
 
     assert.equal(saved.identity_pack.persona_origin, 'fictional_ai_generated');
-    assert.equal(saved.identity_pack.target_country, 'US');
+    assert.equal(saved.identity_pack.target_country, 'ES');
     assert.match(saved.identity_pack.pack_sha256, /^[0-9a-f]{64}$/);
     assert.equal(saved.identity_pack.pack_sha256, canonicalPackHash(saved.identity_pack));
     assert.equal(read.persona_origin, 'fictional_ai_generated');
-    assert.equal(read.target_country, 'US');
+    assert.equal(read.target_country, 'ES');
     assert.equal(read.ready, true);
     assert.equal(identityPackStatus(read).ready, true);
     assert.equal(identityPackStatus(read).hash_valid, true);
@@ -398,7 +406,7 @@ test('完整虚构美国角色身份包保存、读取和绑定一致投影政�
       pack_sha256: saved.identity_pack.pack_sha256,
       ready: true,
       persona_origin: 'fictional_ai_generated',
-      target_country: 'US',
+      target_country: 'ES',
     });
   } finally {
     close(state);
@@ -419,7 +427,7 @@ test('历史身份包缺少政策字段时保留原哈希且仍为 ready', () =>
   assert.equal(identityPackStatus(read).hash_valid, true);
 });
 
-test('service 直接调用不会把非法角色政策值写入身份包', () => {
+test('service 直接调用忽略客户端伪造政策值并写入服务端国家', () => {
   const state = setup();
   try {
     fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
@@ -437,13 +445,37 @@ test('service 直接调用不会把非法角色政策值写入身份包', () => 
         policyFields,
       ));
 
-      assert.equal(Object.hasOwn(saved.identity_pack, 'persona_origin'), false);
-      assert.equal(Object.hasOwn(saved.identity_pack, 'target_country'), false);
+      assert.equal(saved.identity_pack.persona_origin, 'fictional_ai_generated');
+      assert.equal(saved.identity_pack.target_country, 'US');
       assert.equal(saved.identity_pack.ready, true);
       assert.equal(saved.identity_pack_status.hash_valid, true);
     }
   } finally {
     close(state);
+  }
+});
+
+test('service 在版本 market 缺失或无效时 fail closed 且不写库', () => {
+  const cases = ['', 'us', 'USA', '1S'];
+  for (const market of cases) {
+    const state = setup({ market });
+    try {
+      fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+      fs.writeFileSync(path.join(state.root, 'wardrobe-102.png'), Buffer.from('wardrobe-reference-image'));
+      addProviderAsset(state);
+      addProviderAsset(state, { id: 102, localPath: 'wardrobe-102.png' });
+      const characterId = addCharacter(state);
+      const before = rowSnapshot(state.db, characterId);
+
+      assert.throws(
+        () => saveIdentityPack(context(state), characterId, completeInput()),
+        (error) => error.code === 'REDRAW_IDENTITY_VERSION_POLICY_INVALID',
+        market,
+      );
+      assert.deepEqual(rowSnapshot(state.db, characterId), before, market);
+    } finally {
+      close(state);
+    }
   }
 });
 

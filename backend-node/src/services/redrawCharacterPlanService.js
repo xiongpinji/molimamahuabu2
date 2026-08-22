@@ -76,13 +76,11 @@ function expectedCharacters(version) {
   }
   const characters = [];
   const keys = new Set();
-  const targetNames = new Map();
   for (const item of raw) {
+    const sourceName = String(item?.source_name ?? item?.display_name ?? item?.name ?? item?.source_character_name ?? '').trim();
     const character = {
       source_character_key: String(item?.source_character_key ?? item?.stable_id ?? item?.id ?? '').trim(),
-      target_name: String(item?.target_name ?? item?.localized_name ?? item?.name ?? '').trim(),
-      adult_status: String(item?.adult_status ?? '').trim(),
-      persona_origin: String(item?.persona_origin ?? '').trim(),
+      source_name: sourceName,
     };
     if (!character.source_character_key) {
       missing.push('source_character_key_missing');
@@ -93,16 +91,8 @@ function expectedCharacters(version) {
       continue;
     }
     keys.add(character.source_character_key);
-    if (!character.target_name) {
-      missing.push(`${character.source_character_key}:source_target_name_missing`);
-    } else {
-      const normalizedTarget = character.target_name.toLowerCase();
-      if (targetNames.has(normalizedTarget)) missing.push(`${character.source_character_key}:source_duplicate_target_name`);
-      else targetNames.set(normalizedTarget, character.source_character_key);
-    }
-    if (character.adult_status !== 'verified_18_plus') missing.push(`${character.source_character_key}:source_age_not_adult`);
-    if (character.persona_origin !== 'fictional_ai_generated') {
-      missing.push(`${character.source_character_key}:source_persona_not_fictional_ai`);
+    if (!character.source_name) {
+      missing.push(`${character.source_character_key}:source_name_missing`);
     }
     characters.push(character);
   }
@@ -333,7 +323,7 @@ function buildCharacterPlan(ctx = {}, versionId) {
     const pack = readIdentityPack(row);
     const status = identityPackStatus(pack);
     const expectedItem = expectedByKey.get(key);
-    const targetName = String(expectedItem?.target_name || row.localized_name || pack?.target_actor_label || '').trim();
+    const targetName = String(row.localized_name || pack?.target_actor_label || '').trim();
     if (targetName) {
       const normalized = targetName.toLowerCase();
       if (targetNames.has(normalized)) missing.push(`${key}:duplicate_target_name`);
@@ -349,8 +339,9 @@ function buildCharacterPlan(ctx = {}, versionId) {
     if (pack?.persona_origin !== 'fictional_ai_generated') missing.push(`${key}:persona_not_fictional_ai`);
     if (!expectedItem) {
       missing.push(`${key}:unexpected_character`);
-    } else if (String(row.localized_name || '').trim() !== expectedItem.target_name
-      || String(pack?.target_actor_label || '').trim() !== expectedItem.target_name) {
+    } else if (!targetName
+      || String(row.localized_name || '').trim() !== targetName
+      || String(pack?.target_actor_label || '').trim() !== targetName) {
       missing.push(`${key}:target_name_mismatch`);
     }
     const voice = voiceForCharacter(ctx, version, row, key, missing);

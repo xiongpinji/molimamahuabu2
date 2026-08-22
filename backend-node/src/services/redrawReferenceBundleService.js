@@ -82,6 +82,18 @@ function parseDialogueArray(value) {
   }
 }
 
+function normalizeLocale(value) {
+  const locale = String(value || '').trim();
+  if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$/.test(locale)) fail(DIALOGUE_CODE);
+  return locale;
+}
+
+function normalizeMarket(value, code = DIALOGUE_CODE) {
+  const market = String(value || '').trim();
+  if (!/^[A-Z]{2}$/.test(market)) fail(code);
+  return market;
+}
+
 function assertPlainObject(value, code = INPUT_CODE) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail(code);
 }
@@ -656,7 +668,8 @@ function assertAssetDigest(ctx, assetId, expectedSha, kind, code) {
   return asset;
 }
 
-function verifyIdentities(ctx, faces, nameMap) {
+function verifyIdentities(ctx, shot, faces, nameMap) {
+  const targetCountry = normalizeMarket(shot.market, IDENTITY_CODE);
   return faces.map((face) => {
     const row = ctx.db.prepare(`
       SELECT * FROM redraw_assets
@@ -677,7 +690,7 @@ function verifyIdentities(ctx, faces, nameMap) {
       || pack.identity_consistency_confirmed !== true
       || pack.adult_status !== 'verified_18_plus'
       || pack.persona_origin !== 'fictional_ai_generated'
-      || pack.target_country !== 'US'
+      || pack.target_country !== targetCountry
       || ![...REQUIRED_VIEWS].every((view) => views.has(view))
       || pack.pack_sha256 !== identityHash(pack)
       || !pack.artifact || Number(pack.artifact.asset_id) !== Number(row.asset_id)
@@ -771,7 +784,8 @@ function isSilenceToken(value) {
 }
 
 function verifyDialogue(shot, nameMap, boundCharacters) {
-  if (shot.locale !== 'en-US' || shot.market !== 'US') fail(DIALOGUE_CODE);
+  const locale = normalizeLocale(shot.locale);
+  normalizeMarket(shot.market);
   const facts = parseJson(shot.source_facts_json, {});
   if (!HEX_64.test(String(facts.script_sha256 || ''))
     || facts.name_map_source_sha256 !== sha256(stableJson(nameMap))
@@ -785,7 +799,7 @@ function verifyDialogue(shot, nameMap, boundCharacters) {
   if (sourceSilent !== localizedSilent) fail(DIALOGUE_CODE);
   const common = {
     localized_script_version_id: Number(shot.version_id),
-    target_locale: shot.locale,
+    target_locale: locale,
     script_sha256: facts.script_sha256,
     character_name_map_sha256: sha256(stableJson(nameMap)),
   };
@@ -846,7 +860,7 @@ async function buildBundle(ctx, input, options = {}) {
 
   const nameMap = parseJson(shot.name_map_json, {});
   const dialogue = verifyDialogue(shot, nameMap, new Set(faces.map((face) => face.source_character_key)));
-  const identityEvidence = verifyIdentities(ctx, faces, nameMap);
+  const identityEvidence = verifyIdentities(ctx, shot, faces, nameMap);
   const textEvidence = verifyTexts({ ...ctx, sourceFingerprint: shot.source_fingerprint }, texts);
   const faceCoverageSha256 = sha256(stableJson(faces));
   const textCoverageSha256 = sha256(stableJson(texts));
@@ -1027,6 +1041,8 @@ function promptTimeRange(entry) {
 }
 
 function buildGenerationPrompt(bundle, identityBindings) {
+  const targetLocale = normalizeLocale(bundle.locale);
+  const targetMarket = normalizeMarket(bundle.market, PROJECTION_CODE);
   const nameByCharacter = new Map(identityBindings.map((entry) => [
     entry.source_character_key,
     entry.target_character_name,
@@ -1043,9 +1059,9 @@ function buildGenerationPrompt(bundle, identityBindings) {
     });
     dialogueSection = [
       'Dialogue mode: spoken.',
-      'English dialogue timing:',
+      'Dialogue timing:',
       ...dialogueLines,
-      'Generate synchronized US English speech audio for the approved dialogue timing only.',
+      `Generate synchronized ${targetLocale} speech audio for the approved dialogue timing only.`,
     ];
   } else if (bundle.dialogue.kind === 'silent' && bundle.dialogue.speech_required === false) {
     dialogueSection = [
@@ -1057,10 +1073,10 @@ function buildGenerationPrompt(bundle, identityBindings) {
     fail(PROJECTION_CODE);
   }
   return [
-    'Create a 1:1 live-action redraw of this short-drama shot for a US English audience.',
+    `Create a 1:1 live-action redraw of this short-drama shot for target locale ${targetLocale} and market ${targetMarket}.`,
     'Use the approved fictional AI-generated adult character references and the silent motion reference only.',
     'Keep the same plot beats, blocking, camera framing, pacing, and visible text coverage.',
-    'Target locale: en-US.',
+    `Target locale: ${targetLocale}.`,
     'Character mapping:',
     ...characterLines,
     ...dialogueSection,
@@ -1102,7 +1118,7 @@ async function projectReferenceBundleForGeneration(rawCtx, shotId) {
     }));
     return {
       prompt: buildGenerationPrompt(bundle, identityBindings),
-      targetLocale: 'en-US',
+      targetLocale: normalizeLocale(bundle.locale),
       generateAudio: true,
       referenceImageUrls: [...imageByIdentity.values()],
       referenceVideoUrl,

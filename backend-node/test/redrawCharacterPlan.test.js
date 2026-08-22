@@ -27,8 +27,8 @@ function sha256(value) {
 function defaultSourceFacts() {
   return {
     characters: [
-      { source_character_key: 'char-b', target_name: 'Brian Miller', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
-      { source_character_key: 'char-a', target_name: 'Alice Carter', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
+      { source_character_key: 'char-b', source_name: 'B' },
+      { source_character_key: 'char-a', source_name: 'A' },
     ],
   };
 }
@@ -199,7 +199,7 @@ function addVoice(state, sourceKey, input = {}) {
     );
   const character = state.db.prepare(`SELECT id, source_ref_json, updated_at FROM redraw_assets
     WHERE kind = 'character' AND version_id = ? AND localized_name = ?`)
-    .get(state.versionId, sourceKey === 'char-a' ? 'Alice Carter' : 'Brian Miller');
+    .get(state.versionId, input.targetName || (sourceKey === 'char-a' ? 'Alice Carter' : 'Brian Miller'));
   const payload = JSON.parse(character.source_ref_json);
   payload.snapshot = { ...(payload.snapshot || {}), voice_snapshot: evidence };
   state.db.prepare(`UPDATE redraw_assets SET voice_asset_id = ?, source_ref_json = ?, updated_at = ?
@@ -450,25 +450,6 @@ test('角色计划在声音文件读取期间 realpath 漂移时 fail closed', (
   }
 });
 
-test('角色计划拒绝源事实中的未成年、未知年龄和真人来源', () => {
-  const cases = [
-    ['minor', { adult_status: 'minor' }, 'char-a:source_age_not_adult'],
-    ['unknown', { adult_status: 'unknown' }, 'char-a:source_age_not_adult'],
-    ['empty', { adult_status: '' }, 'char-a:source_age_not_adult'],
-    ['real_person', { persona_origin: 'real_person' }, 'char-a:source_persona_not_fictional_ai'],
-  ];
-  for (const [reason, patch, expectedMissing] of cases) {
-    const state = makeReadyState({ sourceKey: 'char-a', patch });
-    try {
-      const plan = buildCharacterPlan(context(state), state.versionId);
-      assert.equal(plan.ready, false, reason);
-      assert.equal(plan.missing.includes(expectedMissing), true, reason);
-    } finally {
-      close(state);
-    }
-  }
-});
-
 test('角色计划拒绝无效、空缺、重复或不可作为唯一合同的源事实', () => {
   const invalidFactsCases = [
     ['invalid_json', '{bad json', 'source_facts_invalid'],
@@ -476,29 +457,23 @@ test('角色计划拒绝无效、空缺、重复或不可作为唯一合同的�
     ['empty', { characters: [] }, 'source_characters_missing'],
     ['missing_key', {
       characters: [
-        { target_name: 'Alice Carter', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
-        { source_character_key: 'char-b', target_name: 'Brian Miller', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
+        { source_name: 'Alice' },
+        { source_character_key: 'char-b', source_name: 'Brian' },
       ],
     }, 'source_character_key_missing'],
     ['duplicate_key', {
       characters: [
-        { source_character_key: 'char-a', target_name: 'Alice Carter', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
-        { source_character_key: 'char-a', target_name: 'Alicia Carter', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
-        { source_character_key: 'char-b', target_name: 'Brian Miller', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
+        { source_character_key: 'char-a', source_name: 'Alice' },
+        { source_character_key: 'char-a', source_name: 'Alicia' },
+        { source_character_key: 'char-b', source_name: 'Brian' },
       ],
     }, 'char-a:source_duplicate_character_key'],
-    ['blank_target', {
+    ['blank_source_name', {
       characters: [
-        { source_character_key: 'char-a', target_name: ' ', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
-        { source_character_key: 'char-b', target_name: 'Brian Miller', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
+        { source_character_key: 'char-a', source_name: ' ' },
+        { source_character_key: 'char-b', source_name: 'Brian' },
       ],
-    }, 'char-a:source_target_name_missing'],
-    ['duplicate_target', {
-      characters: [
-        { source_character_key: 'char-a', target_name: 'Alice Carter', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
-        { source_character_key: 'char-b', target_name: 'Alice Carter', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
-      ],
-    }, 'char-b:source_duplicate_target_name'],
+    }, 'char-a:source_name_missing'],
   ];
   for (const [reason, facts, expectedMissing] of invalidFactsCases) {
     const state = setup(facts);
@@ -518,18 +493,36 @@ test('角色计划拒绝无效、空缺、重复或不可作为唯一合同的�
   }
 });
 
-test('角色计划以源事实 target_name 为准并拒绝 row 或 pack 名称漂移', () => {
-  const state = makeReadyState({
-    sourceKey: 'char-a',
-    patch: { target_name: 'Canonical Alice' },
-  });
+test('角色计划以本地化角色行和身份包目标名为准，不要求源事实写目标身份', () => {
+  const state = makeReadyState();
   try {
     const plan = buildCharacterPlan(context(state), state.versionId);
     const character = plan.characters.find((item) => item.source_character_key === 'char-a');
 
-    assert.equal(plan.ready, false);
-    assert.equal(plan.missing.includes('char-a:target_name_mismatch'), true);
-    assert.equal(character.target_name, 'Canonical Alice');
+    assert.equal(plan.ready, true);
+    assert.deepEqual(plan.missing, []);
+    assert.equal(character.target_name, 'Alice Carter');
+  } finally {
+    close(state);
+  }
+});
+
+test('角色计划支持 es-ES/ES 本地化角色名、声音和服务端身份国家', () => {
+  const state = setup();
+  try {
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es-ES', market = 'ES' WHERE id = ?")
+      .run(state.versionId);
+    addCharacter(state, 'char-b', 'Diego Martín');
+    addCharacter(state, 'char-a', 'Lucía Romero');
+    addVoice(state, 'char-a', { locale: 'es-ES', market: 'ES', detectedLocale: 'es-ES', targetName: 'Lucía Romero' });
+    addVoice(state, 'char-b', { locale: 'es-ES', market: 'ES', detectedLocale: 'es-ES', targetName: 'Diego Martín' });
+
+    const plan = buildCharacterPlan(context(state), state.versionId);
+
+    assert.equal(plan.ready, true);
+    assert.deepEqual(plan.missing, []);
+    assert.deepEqual(plan.characters.map((item) => item.target_name), ['Lucía Romero', 'Diego Martín']);
+    assert.deepEqual(plan.characters.map((item) => item.voice.language), ['es-ES', 'es-ES']);
   } finally {
     close(state);
   }

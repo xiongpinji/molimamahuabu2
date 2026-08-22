@@ -284,7 +284,7 @@ function setupIdentityPackRouteFixture(values = {}) {
       'image/png', 640, 960, ?, ?)`).run(wardrobeLocalPath, NOW, NOW);
   const projectId = insertProject(db);
   const workId = insertWork(db, projectId, { current_version: 1, current_step: 2 });
-  const versionId = insertVersion(db, workId, { status: 'asset_review' });
+  const versionId = insertVersion(db, workId, { status: 'asset_review', ...(values.version || {}) });
   const assetId = insertRedrawAsset(db, versionId, {
     kind: values.kind || 'character',
     source_ref_json: JSON.stringify({
@@ -5159,16 +5159,13 @@ test('批量生成显式历史版本返回冲突且零调用零冻结', async ()
 });
 
 test('角色身份包 API 保存服务端证据、重置审核且响应不泄露存储路径', () => {
-  const fixture = setupIdentityPackRouteFixture();
+  const fixture = setupIdentityPackRouteFixture({ version: { locale: 'es-ES', market: 'ES' } });
   try {
     const result = captureResponse();
     fixture.handlers.saveRedrawCharacterIdentityPack(
       request({
         id: fixture.assetId,
-        body: completeIdentityPackRequest({
-          persona_origin: ' fictional_ai_generated ',
-          target_country: ' US ',
-        }),
+        body: completeIdentityPackRequest(),
       }),
       result,
     );
@@ -5181,7 +5178,7 @@ test('角色身份包 API 保存服务端证据、重置审核且响应不泄露
     assert.equal(result.body.data.identity_pack.source_character_key, 'source-character-maya');
     assert.equal(result.body.data.identity_pack.target_actor_label, 'Actor Maya');
     assert.equal(result.body.data.identity_pack.persona_origin, 'fictional_ai_generated');
-    assert.equal(result.body.data.identity_pack.target_country, 'US');
+    assert.equal(result.body.data.identity_pack.target_country, 'ES');
     assert.deepEqual(result.body.data.identity_pack.confirmed_views, ['front', 'profile', 'full_body']);
     assert.deepEqual(result.body.data.identity_pack.artifact, {
       asset_id: 701,
@@ -5221,7 +5218,7 @@ test('角色身份包 API 保存服务端证据、重置审核且响应不泄露
   }
 });
 
-test('角色身份包 API 接受 camelCase 虚构美国政策字段并保持安全响应', () => {
+test('角色身份包 API 接受 camelCase 非政策字段并保持安全响应', () => {
   const fixture = setupIdentityPackRouteFixture();
   try {
     const result = captureResponse();
@@ -5229,8 +5226,6 @@ test('角色身份包 API 接受 camelCase 虚构美国政策字段并保持安�
       request({
         id: fixture.assetId,
         body: completeIdentityPackRequest({
-          personaOrigin: ' fictional_ai_generated ',
-          targetCountry: ' US ',
           wardrobeReferenceAssetId: 702,
           wardrobeConsistencyConfirmed: true,
         }),
@@ -5258,6 +5253,10 @@ test('角色身份包 API 严格拒绝非法、重复和未知政策字段且数
     const invalidPatches = [
       { persona_origin: 'real_person' },
       { target_country: 'CN' },
+      { persona_origin: 'fictional_ai_generated' },
+      { target_country: 'US' },
+      { personaOrigin: 'fictional_ai_generated' },
+      { targetCountry: 'US' },
       { persona_origin: 1 },
       { target_country: true },
       { target_country: 'us' },

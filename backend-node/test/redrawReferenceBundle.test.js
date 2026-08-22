@@ -78,8 +78,8 @@ function setup(overrides = {}) {
     VALUES (?, 'tenant-a', 'user-a', 1, ?, ?, ?, ?, ?, 1, 'asset_review', ?, ?)`)
     .run(
       workId,
-      overrides.locale || 'en-US',
-      overrides.market || 'US',
+      Object.prototype.hasOwnProperty.call(overrides, 'locale') ? overrides.locale : 'en-US',
+      Object.prototype.hasOwnProperty.call(overrides, 'market') ? overrides.market : 'US',
       JSON.stringify(nameMap),
       JSON.stringify(facts),
       factsHash(facts),
@@ -105,6 +105,7 @@ function setup(overrides = {}) {
     id: 201,
     sourceCharacterKey: 'character-001',
     targetActorLabel: 'Actor Ethan',
+    targetCountry: overrides.market || 'US',
     assetId: 301,
     sha256: assetSha(301),
   });
@@ -112,6 +113,7 @@ function setup(overrides = {}) {
     id: 202,
     sourceCharacterKey: 'character-002',
     targetActorLabel: 'Actor Maya',
+    targetCountry: overrides.market || 'US',
     assetId: 302,
     sha256: assetSha(302),
   });
@@ -641,8 +643,10 @@ test('重读参考包时重新校验并投影生成用白名单 URL', async () =
     assert.equal(projected.targetLocale, 'en-US');
     assert.equal(projected.generateAudio, true);
     assert.match(projected.prompt, /Dialogue mode: spoken\./);
-    assert.match(projected.prompt, /English dialogue timing:/);
-    assert.match(projected.prompt, /Generate synchronized US English speech audio for the approved dialogue timing only\./);
+    assert.match(projected.prompt, /Target locale: en-US\./);
+    assert.match(projected.prompt, /target locale en-US and market US/);
+    assert.match(projected.prompt, /Dialogue timing:/);
+    assert.match(projected.prompt, /Generate synchronized en-US speech audio for the approved dialogue timing only\./);
     assert.match(projected.prompt, /Ethan/);
     assert.match(projected.prompt, /Maya/);
     assert.match(projected.prompt, /Come with me\./);
@@ -676,6 +680,57 @@ test('重读参考包时重新校验并投影生成用白名单 URL', async () =
     });
     assert.equal(JSON.stringify(projected).includes('source/source.mp4'), false);
     assert.equal(JSON.stringify(projected).includes('sk-'), false);
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('es-ES/ES 参考包对白、身份国家和投影 locale 使用当前版本合同', async () => {
+  const state = setup({
+    locale: 'es-ES',
+    market: 'ES',
+    nameMap: { 'character-001': 'Diego', 'character-002': 'Lucía' },
+    dialogue: [
+      { speaker_id: 'character-001', localized_text: 'Ven conmigo.', start_ms: 0, end_ms: 2400 },
+      { speaker_id: 'character-002', localized_text: 'No sin pruebas.', start_ms: 2500, end_ms: 5000 },
+    ],
+  });
+  try {
+    updateRedrawAsset(state.db, state.actorAId, { localized_name: 'Actor Diego' });
+    updateJsonColumn(state.db, 'redraw_assets', state.actorAId, 'source_ref_json', (payload) => {
+      payload.identity_pack.target_actor_label = 'Actor Diego';
+      recalcIdentityPackHash(payload);
+    });
+    updateRedrawAsset(state.db, state.actorBId, { localized_name: 'Actor Lucía' });
+    updateJsonColumn(state.db, 'redraw_assets', state.actorBId, 'source_ref_json', (payload) => {
+      payload.identity_pack.target_actor_label = 'Actor Lucía';
+      recalcIdentityPackHash(payload);
+    });
+
+    const saved = await saveReferenceBundle(ctx(state), validInput(state));
+
+    assert.equal(saved.bundle.locale, 'es-ES');
+    assert.equal(saved.bundle.market, 'ES');
+    assert.equal(saved.bundle.dialogue.target_locale, 'es-ES');
+    assert.deepEqual(saved.bundle.face_tracks.map((entry) => entry.target_country), ['ES', 'ES']);
+    assert.deepEqual(saved.bundle.dialogue.turns.map((entry) => entry.localized_text), ['Ven conmigo.', 'No sin pruebas.']);
+
+    const projected = await projectReferenceBundleForGeneration(ctx(state, {
+      createReferenceUrl({ asset_id: assetId, kind }) {
+        return `/static/redraw-reference/${kind}/${assetId}`;
+      },
+    }), state.shotId);
+
+    assert.equal(projected.targetLocale, 'es-ES');
+    assert.match(projected.prompt, /Target locale: es-ES\./);
+    assert.match(projected.prompt, /target locale es-ES and market ES/);
+    assert.match(projected.prompt, /Dialogue timing:/);
+    assert.match(projected.prompt, /Generate synchronized es-ES speech audio for the approved dialogue timing only\./);
+    assert.match(projected.prompt, /Diego: Ven conmigo\./);
+    assert.match(projected.prompt, /Lucía: No sin pruebas\./);
+    assert.equal(projected.prompt.includes('US English'), false);
+    assert.equal(projected.prompt.includes('Target locale: en-US.'), false);
+    assert.equal(/[\u3400-\u9fff]/.test(projected.prompt), false);
   } finally {
     state.cleanup();
   }
@@ -1253,15 +1308,30 @@ test('文字净景缺失、重复、数量、unresolved、类型、时间、审�
   }
 });
 
-test('语言市场、名字映射、对白绑定或剧本证据漂移时拒绝', async () => {
+test('无效语言市场、名字映射、对白绑定或剧本证据漂移时拒绝', async () => {
   const cases = [
     {
-      name: 'locale drift',
-      setup: () => setup({ locale: 'zh-CN' }),
+      name: 'locale missing',
+      setup: () => setup({ locale: '' }),
     },
     {
-      name: 'market drift',
-      setup: () => setup({ market: 'CN' }),
+      name: 'market missing',
+      setup: () => setup({ market: '' }),
+    },
+    {
+      name: 'market invalid',
+      setup: () => setup({ market: 'usa' }),
+    },
+    {
+      name: 'identity country mismatch',
+      setup: () => setup({ locale: 'es-ES', market: 'ES' }),
+      mutateDb(state) {
+        updateJsonColumn(state.db, 'redraw_assets', state.actorAId, 'source_ref_json', (payload) => {
+          payload.identity_pack.target_country = 'US';
+          recalcIdentityPackHash(payload);
+        });
+      },
+      code: 'REDRAW_REFERENCE_BUNDLE_IDENTITY_PACK_REQUIRED',
     },
     {
       name: 'name missing',
@@ -1291,7 +1361,7 @@ test('语言市场、名字映射、对白绑定或剧本证据漂移时拒绝',
       await assertRejectsUnchanged(
         state,
         validInput(state),
-        'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED',
+        entry.code || 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED',
       );
     } finally {
       state.cleanup();

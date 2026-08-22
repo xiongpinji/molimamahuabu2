@@ -6,7 +6,6 @@ const { invalidateCharacterDependents } = require('./redrawDependencyInvalidatio
 
 const SCHEMA_VERSION = 'target-actor-identity-v1';
 const PERSONA_ORIGIN = 'fictional_ai_generated';
-const TARGET_COUNTRY = 'US';
 const WARDROBE_LABEL = '整集主服装';
 const REQUIRED_VIEWS = ['front', 'profile', 'full_body'];
 const SUPPORTED_IMAGE_MIME_TYPES = new Set([
@@ -127,7 +126,22 @@ function identityPolicyFields(pack) {
     : '';
   return {
     ...(personaOrigin === PERSONA_ORIGIN ? { persona_origin: PERSONA_ORIGIN } : {}),
-    ...(targetCountry === TARGET_COUNTRY ? { target_country: TARGET_COUNTRY } : {}),
+    ...(/^[A-Z]{2}$/.test(targetCountry) ? { target_country: targetCountry } : {}),
+  };
+}
+
+function currentVersionPolicy(ctx) {
+  const row = ctx.db.prepare(`
+    SELECT market FROM redraw_versions
+    WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+  `).get(ctx.versionId, ctx.tenantId, ctx.userId);
+  const market = String(row?.market || '').trim();
+  if (!/^[A-Z]{2}$/.test(market)) {
+    throw codedError('REDRAW_IDENTITY_VERSION_POLICY_INVALID', '身份包版本国家无效');
+  }
+  return {
+    persona_origin: PERSONA_ORIGIN,
+    target_country: market,
   };
 }
 
@@ -535,6 +549,7 @@ function saveIdentityPack(ctx, assetId, input = {}) {
     throw codedError('REDRAW_IDENTITY_CONFLICT', '角色资产已被其他操作更新');
   }
 
+  const versionPolicy = currentVersionPolicy(identityContext);
   const reviewedAt = nextServerTimestamp(ctx, row.updated_at);
   const identityPack = {
     schema_version: SCHEMA_VERSION,
@@ -554,7 +569,7 @@ function saveIdentityPack(ctx, assetId, input = {}) {
     ready: false,
     reviewed_by: userId,
     reviewed_at: reviewedAt,
-    ...identityPolicyFields(input),
+    ...versionPolicy,
   };
   identityPack.ready = packCompleteness(identityPack).ready;
   identityPack.pack_sha256 = canonicalPackHash(identityPack);
