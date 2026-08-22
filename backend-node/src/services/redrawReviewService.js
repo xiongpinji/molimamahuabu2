@@ -315,28 +315,54 @@ function reviewAsset(db, assetId, input = {}) {
   }
   const now = new Date().toISOString();
   const version = db.prepare('SELECT work_id FROM redraw_versions WHERE id = ?').get(current.version_id);
-  const transaction = db.transaction(() => {
-    db.prepare(`
+  if (action === 'rejected') {
+    db.transaction(() => {
+      const result = db.prepare(`
+        UPDATE redraw_assets
+        SET approval_status = ?, approved_by = ?, approved_at = ?, version_number = ?,
+            status = ?, updated_at = ?
+        WHERE id = ? AND updated_at = ?
+      `).run(action, String(reviewerId), now, Number(current.version_number),
+        'needs_attention',
+        now, Number(current.id), String(expectedUpdatedAt));
+      if (result.changes !== 1) {
+        throw codedError('REDRAW_REVIEW_CONFLICT', '资产已被其他操作更新，请刷新后重试');
+      }
+      db.prepare(`UPDATE redraw_versions SET status = 'asset_review', updated_at = ? WHERE id = ?`).run(now, current.version_id);
+      db.prepare(`UPDATE redraw_works SET status = 'asset_review', current_step = 2, updated_at = ? WHERE id = ?`).run(now, version?.work_id);
+    })();
+    return db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(current.id));
+  }
+  db.transaction(() => {
+    const result = db.prepare(`
       UPDATE redraw_assets
       SET approval_status = ?, approved_by = ?, approved_at = ?, version_number = ?,
           status = ?, updated_at = ?
       WHERE id = ? AND updated_at = ?
     `).run(action, String(reviewerId), now, Number(current.version_number),
-      action === 'rejected' ? 'needs_attention' : current.status,
+      current.status,
       now, Number(current.id), String(expectedUpdatedAt));
-    if (action === 'rejected') {
-      db.prepare(`UPDATE redraw_versions SET status = 'asset_review', updated_at = ? WHERE id = ?`).run(now, current.version_id);
-      db.prepare(`UPDATE redraw_works SET status = 'asset_review', current_step = 2, updated_at = ? WHERE id = ?`).run(now, version?.work_id);
-    } else {
-      const gate = evaluateGenerationGate(db, current.version_id, { tenantId: current.tenant_id, userId: current.user_id }, {
-        preparationContext: input.preparationContext,
-        preparationGate: input.preparationGate,
-      });
-      db.prepare(`UPDATE redraw_versions SET status = ?, updated_at = ? WHERE id = ?`)
-        .run(gate.ok ? 'ready_to_generate' : 'asset_review', now, current.version_id);
-      db.prepare(`UPDATE redraw_works SET status = ?, current_step = ?, updated_at = ? WHERE id = ?`)
-        .run(gate.ok ? 'ready_to_generate' : 'asset_review', gate.current_step, now, version?.work_id);
+    if (result.changes !== 1) {
+      throw codedError('REDRAW_REVIEW_CONFLICT', '资产已被其他操作更新，请刷新后重试');
     }
+  })();
+  const gate = evaluateGenerationGate(db, current.version_id, { tenantId: current.tenant_id, userId: current.user_id }, {
+    preparationContext: input.preparationContext,
+    preparationGate: input.preparationGate,
+  });
+  db.transaction(() => {
+    const stillCurrent = db.prepare(`
+      SELECT id
+      FROM redraw_assets
+      WHERE id = ? AND version_id = ? AND tenant_id = ? AND user_id = ?
+        AND approval_status = 'approved' AND updated_at = ? AND deleted_at IS NULL
+      LIMIT 1
+    `).get(Number(current.id), Number(current.version_id), String(current.tenant_id), String(current.user_id), now);
+    if (!stillCurrent) return;
+    db.prepare(`UPDATE redraw_versions SET status = ?, updated_at = ? WHERE id = ?`)
+      .run(gate.ok ? 'ready_to_generate' : 'asset_review', now, current.version_id);
+    db.prepare(`UPDATE redraw_works SET status = ?, current_step = ?, updated_at = ? WHERE id = ?`)
+      .run(gate.ok ? 'ready_to_generate' : 'asset_review', gate.current_step, now, version?.work_id);
   })();
   return db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(current.id));
 }

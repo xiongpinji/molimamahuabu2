@@ -215,7 +215,7 @@ test('视频生成门禁只把内部受信 preparationContext 合并进准备门
   }
 });
 
-test('审核资产批准时在事务内用受信 preparationContext 重算生成门禁', () => {
+test('审核资产批准后在写事务外用受信 preparationContext 重算生成门禁', () => {
   const state = setup();
   try {
     const scene = addAsset(state.db, { id: 82, kind: 'scene', approvalStatus: 'pending' });
@@ -230,6 +230,7 @@ test('审核资产批准时在事务内用受信 preparationContext 重算生成
       expectedUpdatedAt: scene.updated_at,
       preparationContext: { storageRoot: 'C:\\trusted\\storage', assetReader: { owns: () => true } },
       preparationGate(ctx) {
+        assert.equal(state.db.inTransaction, false);
         captured = ctx;
         return { ok: true, ready_shot_ids: [1], missing: [] };
       },
@@ -239,6 +240,78 @@ test('审核资产批准时在事务内用受信 preparationContext 重算生成
     assert.equal(captured.storageRoot, 'C:\\trusted\\storage');
     assert.equal(captured.tenantId, 'tenant-a');
     assert.equal(state.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(state.versionId).status, 'ready_to_generate');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('审核资产批准先持久化审批，再按事务外生成门禁更新 advisory 状态', () => {
+  const cases = [
+    { gateOk: true, expectedVersionStatus: 'ready_to_generate', expectedWorkStatus: 'ready_to_generate', expectedStep: 3 },
+    { gateOk: false, expectedVersionStatus: 'asset_review', expectedWorkStatus: 'asset_review', expectedStep: 2 },
+  ];
+  for (const entry of cases) {
+    const state = setup();
+    try {
+      const scene = addAsset(state.db, { id: entry.gateOk ? 83 : 84, kind: 'scene', approvalStatus: 'pending' });
+      addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: scene.id }]);
+      state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
+      let gateCalls = 0;
+      const reviewed = reviewAsset(state.db, scene.id, {
+        action: 'approved',
+        reviewerId: 'user-a',
+        tenantId: 'tenant-a',
+        userId: 'user-a',
+        expectedUpdatedAt: scene.updated_at,
+        preparationGate() {
+          gateCalls += 1;
+          assert.equal(state.db.inTransaction, false);
+          return entry.gateOk
+            ? { ok: true, ready_shot_ids: [1], missing: [] }
+            : { ok: false, ready_shot_ids: [], missing: [{ reason_code: 'preparation_required' }] };
+        },
+      });
+
+      assert.equal(gateCalls, 1);
+      assert.equal(reviewed.approval_status, 'approved');
+      assert.equal(state.db.prepare('SELECT approval_status FROM redraw_assets WHERE id = ?').get(scene.id).approval_status, 'approved');
+      assert.equal(state.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(state.versionId).status, entry.expectedVersionStatus);
+      const work = state.db.prepare('SELECT status, current_step FROM redraw_works WHERE id = ?').get(state.workId);
+      assert.equal(work.status, entry.expectedWorkStatus);
+      assert.equal(work.current_step, entry.expectedStep);
+    } finally {
+      state.db.close();
+    }
+  }
+});
+
+test('审核资产批准后的并发漂移不会把版本误标 ready 且不回滚审批', () => {
+  const state = setup();
+  try {
+    const scene = addAsset(state.db, { id: 85, kind: 'scene', approvalStatus: 'pending' });
+    addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: scene.id }]);
+    state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
+    const reviewed = reviewAsset(state.db, scene.id, {
+      action: 'approved',
+      reviewerId: 'user-a',
+      tenantId: 'tenant-a',
+      userId: 'user-a',
+      expectedUpdatedAt: scene.updated_at,
+      preparationGate() {
+        assert.equal(state.db.inTransaction, false);
+        state.db.prepare("UPDATE redraw_assets SET updated_at = '2026-08-22T10:00:00.000Z' WHERE id = ?").run(scene.id);
+        return { ok: true, ready_shot_ids: [1], missing: [] };
+      },
+    });
+
+    assert.equal(reviewed.approval_status, 'approved');
+    const asset = state.db.prepare('SELECT approval_status, updated_at FROM redraw_assets WHERE id = ?').get(scene.id);
+    assert.equal(asset.approval_status, 'approved');
+    assert.equal(asset.updated_at, '2026-08-22T10:00:00.000Z');
+    assert.equal(state.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(state.versionId).status, 'asset_review');
+    const work = state.db.prepare('SELECT status, current_step FROM redraw_works WHERE id = ?').get(state.workId);
+    assert.equal(work.status, 'asset_review');
+    assert.equal(work.current_step, 2);
   } finally {
     state.db.close();
   }
@@ -357,14 +430,21 @@ test('审核使用 expected_updated_at 乐观锁且只允许 approved/rejected',
   const state = setup();
   try {
     const asset = addAsset(state.db, { id: 31, kind: 'character' });
+    let gateCalls = 0;
     assert.throws(
       () => reviewAsset(state.db, asset.id, {
         action: 'approved',
         reviewerId: 'user-a',
         expectedUpdatedAt: 'stale',
+        preparationGate() {
+          gateCalls += 1;
+          return { ok: true, ready_shot_ids: [], missing: [] };
+        },
       }),
       (error) => error.code === 'REDRAW_REVIEW_CONFLICT',
     );
+    assert.equal(gateCalls, 0);
+    assert.equal(state.db.prepare('SELECT approval_status FROM redraw_assets WHERE id = ?').get(asset.id).approval_status, 'pending');
     assert.throws(
       () => reviewAsset(state.db, asset.id, {
         action: 'pending',
