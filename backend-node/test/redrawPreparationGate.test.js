@@ -500,6 +500,78 @@ test('准备门禁同步复核身份、净景和运动物理文件 SHA', () => {
   }
 });
 
+test('准备门禁物理复核绑定当前路径文件身份并拒绝关闭失败', () => {
+  const cases = [
+    {
+      reason: 'character_reference_invalid',
+      expectedStatCalls: true,
+      makeFs() {
+        let statCalls = 0;
+        const fakeFdStat = {
+          dev: 1,
+          ino: 10,
+          size: 14,
+          mtimeMs: 100,
+          ctimeMs: 100,
+          isFile: () => true,
+        };
+        return {
+          statCalls: () => statCalls,
+          fs: {
+            realpathSync: fs.realpathSync.bind(fs),
+            openSync: fs.openSync.bind(fs),
+            readSync: fs.readSync.bind(fs),
+            closeSync: fs.closeSync.bind(fs),
+            fstatSync: () => fakeFdStat,
+            statSync: () => {
+              statCalls += 1;
+              return statCalls === 1 ? fakeFdStat : { ...fakeFdStat, ino: 99 };
+            },
+          },
+        };
+      },
+    },
+    {
+      reason: 'character_reference_invalid',
+      makeFs() {
+        return {
+          statCalls: () => 0,
+          fs: {
+            realpathSync: fs.realpathSync.bind(fs),
+            openSync: fs.openSync.bind(fs),
+            readSync: fs.readSync.bind(fs),
+            fstatSync: fs.fstatSync.bind(fs),
+            statSync: fs.statSync.bind(fs),
+            closeSync: () => {
+              throw new Error('private close failure path C:\\secret\\asset.png');
+            },
+          },
+        };
+      },
+    },
+  ];
+  for (const entry of cases) {
+    const state = setup();
+    try {
+      makeBundle(state);
+      const injected = entry.makeFs();
+      const gate = evaluatePreparationGate({
+        ...context(state),
+        fs: injected.fs,
+      }, state.versionId);
+      assert.equal(gate.ok, false, entry.reason);
+      assert.equal(gate.missing.some((item) => item.reason_code === entry.reason), true, entry.reason);
+      if (entry.expectedStatCalls) assert.equal(injected.statCalls() > 0, true);
+      const serialized = JSON.stringify(gate);
+      assert.equal(serialized.includes('private close failure'), false);
+      assert.equal(serialized.includes('C:\\secret'), false);
+      assert.equal(serialized.includes(state.storageRoot), false);
+    } finally {
+      state.cleanup();
+    }
+  }
+});
+
 test('准备门禁 fail closed：角色计划未锁、stale、缺人脸、缺文字净化、hash 漂移和旧候选均阻断', () => {
   const cases = [
     {

@@ -200,15 +200,19 @@ function verifyPhysicalAsset(ctx, asset, expectedSha) {
     || relativePath.split('/').some((part) => part === '..')) return false;
   const io = ctx.fs || fs;
   let fd = null;
+  let closeError = false;
+  let verified = false;
   try {
     const realRoot = io.realpathSync(storageRoot);
     const targetPath = path.resolve(realRoot, relativePath);
     if (!isWithinRoot(realRoot, targetPath)) return false;
     const realBefore = io.realpathSync(targetPath);
     if (!isWithinRoot(realRoot, realBefore)) return false;
+    const pathStatBefore = io.statSync(realBefore);
     fd = io.openSync(realBefore, 'r');
     const beforeStat = io.fstatSync(fd);
     if (!beforeStat.isFile()) return false;
+    if (!statSame(beforeStat, pathStatBefore)) return false;
     const hash = crypto.createHash('sha256');
     const buffer = Buffer.allocUnsafe(1024 * 1024);
     for (;;) {
@@ -218,15 +222,20 @@ function verifyPhysicalAsset(ctx, asset, expectedSha) {
     }
     const afterStat = io.fstatSync(fd);
     const realAfter = io.realpathSync(targetPath);
-    if (realBefore !== realAfter || !statSame(beforeStat, afterStat)) return false;
-    return hash.digest('hex') === String(expectedSha);
+    const currentStat = io.statSync(realAfter);
+    verified = realBefore === realAfter
+      && isWithinRoot(realRoot, realAfter)
+      && statSame(beforeStat, afterStat)
+      && statSame(afterStat, currentStat)
+      && hash.digest('hex') === String(expectedSha);
   } catch (_) {
     return false;
   } finally {
     if (fd != null) {
-      try { io.closeSync(fd); } catch (_) {}
+      try { io.closeSync(fd); } catch (_) { closeError = true; }
     }
   }
+  return verified && !closeError;
 }
 
 function loadProviderAsset(ctx, assetId, type, expectedSha, owner) {
