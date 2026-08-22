@@ -18,6 +18,26 @@ const proactiveCanaryManifestPath = path.join(
   'release-scopes',
   'platform-stability-proactive-canary.json',
 );
+const completeAcceptanceManifestPath = path.join(
+  repoRoot,
+  'deploy',
+  'release-scopes',
+  'platform-complete-acceptance-framework.json',
+);
+const COMPLETE_ACCEPTANCE_ALLOWED_PATHS = [
+  'backend-node/package.json',
+  'backend-node/scripts/verify-platform-feature-acceptance.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/platformFeatureAcceptance.test.js',
+  'deploy/release-scopes/platform-complete-acceptance-framework.json',
+  'docs/superpowers/plans/2026-08-21-platform-complete-acceptance-framework.md',
+  'docs/superpowers/specs/2026-08-21-platform-complete-acceptance-lock-design.md',
+  'docs/verification/platform-stability/feature-lock-manifest.json',
+  'docs/verification/platform-stability/platform-complete-acceptance-framework-verification.md',
+  'docs/verification/platform-stability/platform-feature-acceptance.json',
+  'docs/verification/platform-stability/platform-feature-acceptance.schema.json',
+];
 const PROACTIVE_CANARY_ALLOWED_PATHS = [
   '.github/workflows/platform-zero-cost-smoke.yml',
   'backend-node/migrations/60_provider_canary_guard.sql',
@@ -111,6 +131,10 @@ const PROACTIVE_CANARY_ALLOWED_PATHS = [
 
 function assertExactProactiveCanaryScope(allowedPaths) {
   assert.deepEqual(allowedPaths, PROACTIVE_CANARY_ALLOWED_PATHS);
+}
+
+function assertExactCompleteAcceptanceScope(allowedPaths) {
+  assert.deepEqual(allowedPaths, COMPLETE_ACCEPTANCE_ALLOWED_PATHS);
 }
 
 function createFixture() {
@@ -237,6 +261,43 @@ test('主动巡检发布范围拒绝同数量偷换任一文件', () => {
   assert.equal(swapped.length, PROACTIVE_CANARY_ALLOWED_PATHS.length);
   assert.throws(
     () => assertExactProactiveCanaryScope(swapped),
+    { name: 'AssertionError' },
+  );
+});
+
+test('完整验收框架发布范围是精确 12 文件白名单且排除生产数据与业务源文件', () => {
+  const { manifest, allowedPaths } = loadManifest(completeAcceptanceManifestPath);
+  assert.equal(manifest.release, 'platform-complete-acceptance-framework');
+  assertExactCompleteAcceptanceScope(allowedPaths);
+  assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
+
+  for (const forbidden of [
+    'backend-node/data',
+    'backend-node/uploads',
+    'backend-node/src',
+    'frontweb/src',
+    'storage',
+    'assets',
+    'ai-music',
+    'moli-music',
+    'deploy/install-protected-release-guard.sh',
+    'shared/release-guard',
+  ]) {
+    assert.equal(
+      allowedPaths.some((entry) => entry === forbidden || entry.startsWith(`${forbidden}/`)),
+      false,
+      `发布范围不得包含: ${forbidden}`,
+    );
+  }
+});
+
+test('完整验收框架发布范围拒绝同数量偷换任一文件', () => {
+  const swapped = [...COMPLETE_ACCEPTANCE_ALLOWED_PATHS];
+  const index = swapped.indexOf('backend-node/scripts/verify-platform-feature-acceptance.js');
+  swapped[index] = 'backend-node/data/drama_generator.db';
+  assert.equal(swapped.length, COMPLETE_ACCEPTANCE_ALLOWED_PATHS.length);
+  assert.throws(
+    () => assertExactCompleteAcceptanceScope(swapped),
     { name: 'AssertionError' },
   );
 });

@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://moli.local/schemas/platform-feature-acceptance.schema.json",
+  "title": "Platform feature acceptance ledger",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_inventory", "decisions"],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "source_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "feature_count"],
+      "properties": {
+        "path": {
+          "const": "docs/verification/platform-stability/platform-feature-inventory.json"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "feature_count": {
+          "const": 140
+        }
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/decision"
+      }
+    }
+  },
+  "$defs": {
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["feature_id", "status", "evidence"],
+      "properties": {
+        "feature_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": ["blocked", "locked_pass", "locked_fixed", "not_applicable"]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approved_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "defect_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fix_commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "candidate_commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "evidence": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path", "result", "recorded_at", "candidate_commit"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "contract",
+            "auth",
+            "api",
+            "task",
+            "provider",
+            "artifact",
+            "writeback",
+            "billing",
+            "download",
+            "browser",
+            "ci",
+            "production",
+            "lock"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "result": {
+          "enum": ["pass", "fail", "blocked"]
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "candidate_commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

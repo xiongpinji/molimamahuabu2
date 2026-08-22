@@ -21,6 +21,8 @@
     "audit:incremental-release": "node scripts/verify-incremental-release-scope.js",
     "audit:canvas-reference-sequence": "node scripts/verify-canvas-reference-sequence-contract.js",
     "audit:feature-lock": "node scripts/verify-feature-lock-manifest.js",
+    "audit:platform-feature-acceptance": "node scripts/verify-platform-feature-acceptance.js",
+    "audit:platform-feature-acceptance:complete": "node scripts/verify-platform-feature-acceptance.js --require-complete",
     "verify:usmercari-image": "node scripts/verify-usmercari-image-models.js",
     "verify:icreat-mini-reference-video": "node scripts/run-icreat-mini-reference-video-case.js",
     "verify:redraw-clean-plate-local": "node scripts/run-redraw-clean-plate-local-case.js --fixture",
