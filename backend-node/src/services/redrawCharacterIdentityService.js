@@ -431,11 +431,42 @@ function resolveWardrobe(ctx, input = {}) {
   if (!isInside(rootRealPath, realPath)) {
     throw codedError('REDRAW_IDENTITY_WARDROBE_PATH_INVALID', '角色服装参考符号链接越界');
   }
+  let fd = null;
   let bytes;
   try {
-    bytes = fsApi.readFileSync(realPath);
-  } catch (_) {
+    const constants = fsApi.constants || fs.constants;
+    const flags = constants.O_RDONLY | (constants.O_NOFOLLOW || 0);
+    fd = fsApi.openSync(candidatePath, flags);
+    const fdBefore = fsApi.fstatSync(fd);
+    if (!fdBefore.isFile()) {
+      throw codedError('REDRAW_IDENTITY_WARDROBE_NOT_READABLE', '角色服装参考资产不是可读文件');
+    }
+    const realPathAfter = fsApi.realpathSync(candidatePath);
+    if (!samePath(realPath, realPathAfter) || !isInside(rootRealPath, realPathAfter)) {
+      throw codedError('REDRAW_IDENTITY_WARDROBE_CHANGED', '角色服装参考路径在读取期间发生变化');
+    }
+    if (!sameFileIdentity(fdBefore, fsApi.statSync(realPathAfter))) {
+      throw codedError('REDRAW_IDENTITY_WARDROBE_CHANGED', '角色服装参考文件身份在读取期间发生变化');
+    }
+    bytes = fsApi.readFileSync(fd);
+    const fdAfter = fsApi.fstatSync(fd);
+    const realPathFinal = fsApi.realpathSync(candidatePath);
+    if (!samePath(realPathAfter, realPathFinal)
+      || !sameOpenFileState(fdBefore, fdAfter)
+      || !sameFileIdentity(fdAfter, fsApi.statSync(realPathFinal))) {
+      throw codedError('REDRAW_IDENTITY_WARDROBE_CHANGED', '角色服装参考图在读取期间发生变化');
+    }
+  } catch (error) {
+    if (error?.code?.startsWith('REDRAW_IDENTITY_')) throw error;
     throw codedError('REDRAW_IDENTITY_WARDROBE_NOT_READABLE', '角色服装参考图不可读取');
+  } finally {
+    if (fd !== null) {
+      try {
+        fsApi.closeSync(fd);
+      } catch (_) {
+        throw codedError('REDRAW_IDENTITY_WARDROBE_NOT_READABLE', '角色服装参考图读取句柄关闭失败');
+      }
+    }
   }
   return {
     label: WARDROBE_LABEL,

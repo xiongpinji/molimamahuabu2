@@ -659,6 +659,56 @@ test('文件打开后 realpath 漂移时关闭同一 fd 并拒绝写库', () => 
   }
 });
 
+test('服装参考图 realpath 漂移时拒绝写入身份哈希', () => {
+  const state = setup();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-wardrobe-toctou-'));
+  try {
+    const wardrobe = path.join(state.root, 'wardrobe-102.png');
+    const outsideFile = path.join(outside, 'replaced.png');
+    fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    fs.writeFileSync(wardrobe, Buffer.from('wardrobe-reference-image'));
+    fs.writeFileSync(outsideFile, Buffer.from('replaced-wardrobe-image'));
+    addProviderAsset(state);
+    addProviderAsset(state, { id: 102, localPath: 'wardrobe-102.png' });
+    const characterId = addCharacter(state);
+    const before = rowSnapshot(state.db, characterId);
+    let wardrobeRealpathCalls = 0;
+    let opened = 0;
+    let closed = 0;
+    const injectedFs = {
+      constants: fs.constants,
+      realpathSync(value) {
+        if (path.resolve(value) === path.resolve(wardrobe)) {
+          wardrobeRealpathCalls += 1;
+          if (wardrobeRealpathCalls > 1) return fs.realpathSync(outsideFile);
+        }
+        return fs.realpathSync(value);
+      },
+      openSync(...args) {
+        opened += 1;
+        return fs.openSync(...args);
+      },
+      fstatSync: (...args) => fs.fstatSync(...args),
+      statSync: (...args) => fs.statSync(...args),
+      readFileSync: (...args) => fs.readFileSync(...args),
+      closeSync(...args) {
+        closed += 1;
+        return fs.closeSync(...args);
+      },
+    };
+
+    assert.throws(
+      () => saveIdentityPack(context(state, { fs: injectedFs }), characterId, completeInput()),
+      (error) => error.code === 'REDRAW_IDENTITY_WARDROBE_CHANGED',
+    );
+    assert.equal(opened, 2);
+    assert.equal(closed, 2);
+    assert.deepEqual(rowSnapshot(state.db, characterId), before);
+  } finally {
+    close(state, [outside]);
+  }
+});
+
 test('无效图片尺寸失败且不改库', () => {
   const state = setup();
   try {
