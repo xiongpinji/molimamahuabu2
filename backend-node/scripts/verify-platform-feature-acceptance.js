@@ -31,8 +31,13 @@ function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
+function sha256NormalizedText(value) {
+  const normalized = String(value).replace(/\r\n?/g, '\n');
+  return crypto.createHash('sha256').update(normalized, 'utf8').digest('hex');
+}
+
 function sha256(filePath) {
-  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+  return sha256NormalizedText(fs.readFileSync(filePath, 'utf8'));
 }
 
 function loadDefaultAcceptance() {
@@ -294,6 +299,7 @@ module.exports = {
   loadDefaultAcceptance,
   requiredEvidenceKinds,
   runCli,
+  sha256NormalizedText,
   validateAcceptance,
 };
 

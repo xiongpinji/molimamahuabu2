@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "source_inventory": {
     "path": "docs/verification/platform-stability/platform-feature-inventory.json",
-    "sha256": "62f60e01bb46ac850bc044fdc4a674af0f5d729bb13cf8d9523524942b5a10f3",
+    "sha256": "17a189cc3c65ed39d4bcfb15ee2b3ec2f78adb4552300dff5a3880bf3b95e87c",
     "feature_count": 140
   },
   "decisions": [

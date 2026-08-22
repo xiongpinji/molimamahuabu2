@@ -44,8 +44,8 @@ const COMPLETE_ACCEPTANCE_EVIDENCE = [
   'docs/verification/platform-stability/platform-complete-acceptance-framework-verification.md',
 ];
 const COMPLETE_ACCEPTANCE_UNLOCK = {
-  reason: '2026-08-22 按批准计划修正验收门禁非法参数合同',
-  approvedBy: 'product-owner Stage0 标准执行确认',
+  reason: '2026-08-22 修复 Hosted CI 跨平台验收清单哈希',
+  approvedBy: 'product-owner 开始处理下一步确认',
   impactTests: [
     'backend-node/test/platformFeatureAcceptance.test.js',
     'backend-node/test/featureLockManifest.test.js',

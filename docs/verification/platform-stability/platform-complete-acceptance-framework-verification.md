@@ -154,3 +154,16 @@ Merge candidate `e833c0a2a35dbce03075faae2e9d48cf27528ad0` incorporates current 
 - The full-tree credential-shape scan returned 73 matching lines / 74 matching strings. Review classified 55 as regex substring false positives in synthetic `task-` or route `disk-` identifiers and 19 as explicit test placeholders, redaction fixtures, or documentation examples. The 12-file PR diff itself returned 0 credential-shape matches.
 
 No real provider call, paid action, production read or write, release candidate creation, deployment, `enforce` activation, shared release-guard change, or AI music change occurred during this revalidation. Hosted CI remains pending until the branch is pushed.
+
+## Hosted CI Cross-platform Hash Fix — 2026-08-22
+
+The first hosted backend run exposed an operating-system-dependent source inventory hash: the ledger had been bound to CRLF working-tree bytes on Windows, while GitHub Actions checked out the same JSON with LF bytes. This produced `source_inventory_mismatch` before the intended acceptance-path assertions.
+
+- TDD red: the new LF/CRLF stability test failed because the verifier had no newline-normalized hashing contract.
+- Minimal fix: the verifier now normalizes textual line endings before hashing, and the checked-in ledger binds to the normalized hash `17a189cc3c65ed39d4bcfb15ee2b3ec2f78adb4552300dff5a3880bf3b95e87c`.
+- Focused acceptance test: 20 passed, 0 failed.
+- Inventory, acceptance, feature-lock, and incremental-scope group: 58 passed, 0 failed.
+- Feature-lock audit against current `origin/main`: `ready=true`, 6 features, 5 protected base features, 12 changed paths.
+- The previously failed canvas upload E2E passed 3 consecutive local repetitions; the hosted failure was a transient status-text race after the upload and model load had already succeeded, so no unrelated product or E2E file was added to this PR.
+
+Production remained paused throughout this correction. No production candidate, database write, paid generation, provider call, shared release-guard change, activation, or AI music change occurred.

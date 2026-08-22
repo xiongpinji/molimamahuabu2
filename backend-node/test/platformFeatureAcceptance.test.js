@@ -7,6 +7,7 @@ const test = require('node:test');
 
 const {
   loadDefaultAcceptance,
+  sha256NormalizedText,
   validateAcceptance,
 } = require('../scripts/verify-platform-feature-acceptance');
 
@@ -192,6 +193,13 @@ test('source inventory hash drift invalidates the ledger', () => {
 
   assert.equal(result.valid, false);
   assert.ok(codes(result).has('source_inventory_mismatch'));
+});
+
+test('source inventory hash is stable across LF and CRLF checkouts', () => {
+  const lf = '{\n  "features": []\n}\n';
+  const crlf = lf.replaceAll('\n', '\r\n');
+
+  assert.equal(sha256NormalizedText(lf), sha256NormalizedText(crlf));
 });
 
 test('unknown and duplicate feature decisions are rejected', () => {
