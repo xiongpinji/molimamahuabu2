@@ -7,7 +7,11 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
-const { evaluatePreparationGate } = require('../src/services/redrawPreparationGateService');
+const {
+  evaluatePreparationGate,
+  preparationEvidenceHash,
+} = require('../src/services/redrawPreparationGateService');
+const { canonicalCoverageSha256 } = require('../src/services/redrawFullFrameCoverageService');
 const { canonicalBundleHash } = require('../src/services/redrawReferenceBundleService');
 
 const NOW = '2026-08-22T00:00:00.000Z';
@@ -212,11 +216,12 @@ function setup() {
       persona_origin: 'fictional_ai_generated',
     }],
   };
+  const factsHash = sha256(stableJson(facts));
   const versionId = Number(db.prepare(`INSERT INTO redraw_versions
     (work_id, tenant_id, user_id, version, locale, market, source_facts_json,
-     reference_bundle_required, status, created_at, updated_at)
-    VALUES (?, 'tenant-a', 'user-a', 1, 'en-US', 'US', ?, 1, 'asset_review', ?, ?)`)
-    .run(workId, JSON.stringify(facts), NOW, NOW).lastInsertRowid);
+     facts_hash, reference_bundle_required, status, created_at, updated_at)
+    VALUES (?, 'tenant-a', 'user-a', 1, 'en-US', 'US', ?, ?, 1, 'asset_review', ?, ?)`)
+    .run(workId, JSON.stringify(facts), factsHash, NOW, NOW).lastInsertRowid);
   const pack = identityPack({
     sourceKey: 'char-a',
     targetName: 'Alice Carter',
@@ -278,6 +283,49 @@ function setup() {
     VALUES (?, ?, 'tenant-a', 'user-a', 'shot-001', 1, 1, 0, 5000, 5000,
       '[]', 'draft', 'reference_ready', 3, ?, ?)`)
     .run(workId, versionId, NOW, NOW).lastInsertRowid);
+  const coverageManifest = {
+    schema_version: 'redraw-full-frame-coverage-v1',
+    status: 'reviewed',
+    source: { sha256: sourceFingerprint, duration_ms: 15000 },
+    models: {},
+    shots: [{ shot_id: 'shot-001', start_ms: 0, end_ms: 5000 }],
+    frames: [],
+    person_tracks: [],
+    text_tracks: [],
+    review: {
+      status: 'reviewed', reviewed: true, required_review_point_count: 0,
+      reviewed_point_count: 0, reviewer: 'codex-local-review',
+    },
+    unresolved_person_count: 0,
+    unresolved_text_region_count: 0,
+    approval_status: 'pending',
+    ready_for_reference: false,
+    analysis_sha256: null,
+  };
+  coverageManifest.analysis_sha256 = canonicalCoverageSha256(coverageManifest);
+  const coverageBytes = Buffer.from(`${JSON.stringify(coverageManifest)}\n`);
+  const coveragePath = 'redraw-full-frame/version-1/redraw-full-frame-reviewed-manifest.json';
+  writeFile(storageRoot, coveragePath, coverageBytes);
+  insertAsset(db, {
+    id: 701,
+    type: 'document',
+    mimeType: 'application/json',
+    localPath: coveragePath,
+    sha256: sha256(coverageBytes),
+  });
+  db.prepare(`INSERT INTO redraw_assets
+    (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+     asset_id, version_number, approval_status, approved_by, approved_at,
+     status, created_at, updated_at)
+    VALUES (204, ?, 'tenant-a', 'user-a', 'scene', ?, 'reviewed coverage', 701, 1,
+      'approved', 'user-a', ?, 'generated', ?, ?)`)
+    .run(versionId, JSON.stringify({
+      source_ref: { stable_id: 'full-frame-reviewed-coverage' },
+      snapshot: {
+        mode: 'full_frame_reviewed_coverage', version_id: versionId, facts_hash: factsHash,
+        source_fingerprint: sourceFingerprint, analysis_sha256: coverageManifest.analysis_sha256,
+      },
+    }), NOW, NOW, NOW);
   return {
     db,
     storageRoot,
@@ -294,6 +342,15 @@ function setup() {
       sha256: sha256(textCleanBytes),
       sourceFingerprint,
     }).pack_sha256,
+    coverageBinding: {
+      analysis_sha256: coverageManifest.analysis_sha256,
+      approved_by: 'user-a',
+      approved_at: NOW,
+      facts_hash: factsHash,
+      source_fingerprint: sourceFingerprint,
+      requirement_keys: [],
+      requirement_hash: sha256(stableJson([])),
+    },
     cleanup() {
       db.close();
       fs.rmSync(storageRoot, { recursive: true, force: true });
@@ -313,15 +370,6 @@ function context(state) {
       owns: () => true,
     },
   };
-}
-
-function preparationEvidenceHash(shot) {
-  return sha256(stableJson({
-    version_id: Number(shot.version_id),
-    shot_id: Number(shot.id),
-    preparation_version: Number(shot.preparation_version),
-    reference_bundle_hash: shot.reference_bundle_hash,
-  }));
 }
 
 function makeBundle(state, overrides = {}) {
@@ -399,17 +447,29 @@ function makeBundle(state, overrides = {}) {
     .run(stableJson(bundle), referenceHash, NOW, state.shotId);
   const shot = state.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(state.shotId);
   const plan = evaluatePreparationGate(context(state), state.versionId);
+  const snapshot = {
+    schema_version: 'redraw-reference-preparation-v2',
+    version_id: state.versionId,
+    shot_id: state.shotId,
+    character_plan_hash: plan.character_plan_hash,
+    reference_bundle_hash: referenceHash,
+    status: 'completed',
+    requirements: [],
+    clean_results: [],
+    coverage_analysis_sha256: state.coverageBinding.analysis_sha256,
+    coverage_approved_by: state.coverageBinding.approved_by,
+    coverage_approved_at: state.coverageBinding.approved_at,
+    coverage_facts_hash: state.coverageBinding.facts_hash,
+    coverage_source_fingerprint: state.coverageBinding.source_fingerprint,
+    coverage_requirement_keys: state.coverageBinding.requirement_keys,
+    coverage_requirement_hash: state.coverageBinding.requirement_hash,
+  };
   state.db.prepare(`UPDATE redraw_shots
     SET preparation_snapshot_json = ?, preparation_evidence_hash = ?
     WHERE id = ?`)
     .run(
-      stableJson({
-        version_id: state.versionId,
-        shot_id: state.shotId,
-        character_plan_hash: plan.character_plan_hash,
-        reference_bundle_hash: referenceHash,
-      }),
-      preparationEvidenceHash(shot),
+      stableJson(snapshot),
+      preparationEvidenceHash({ ...shot, preparation_snapshot_json: stableJson(snapshot) }),
       state.shotId,
     );
 }

@@ -181,7 +181,7 @@ function assertRequirements(value) {
   }).sort((left, right) => left.kind.localeCompare(right.kind) || left.key.localeCompare(right.key));
 }
 
-async function reviewedCoverage(ctx, shots, deps) {
+async function reviewedCoverage(ctx, shots, deps, scope) {
   const injected = typeof deps.getReviewedCoverage === 'function';
   let coverage;
   try {
@@ -208,6 +208,45 @@ async function reviewedCoverage(ctx, shots, deps) {
   if (stableJson(expected) !== stableJson(actual)) {
     throw codedError('REDRAW_REFERENCE_PREPARATION_COVERAGE_INVALID', '全帧审核未覆盖当前版本全部镜头');
   }
+  const binding = coverage.coverage_binding;
+  if (!binding || binding.schema_version !== 'redraw-coverage-preparation-binding-v1'
+    || Number(binding.version_id) !== ctx.versionId
+    || !HEX_64.test(trim(binding.analysis_sha256))
+    || !trim(binding.approved_by) || !trim(binding.approved_at)
+    || !HEX_64.test(trim(binding.facts_hash)) || !HEX_64.test(trim(binding.source_fingerprint))
+    || binding.facts_hash !== scope?.facts_hash || binding.source_fingerprint !== scope?.source_fingerprint
+    || !Array.isArray(binding.shots)) {
+    throw codedError('REDRAW_REFERENCE_PREPARATION_COVERAGE_INVALID', '全帧审核绑定不合法');
+  }
+  const bindingById = new Map();
+  for (const item of binding.shots) {
+    const id = Number(item?.shot_id);
+    const keys = Array.isArray(item?.requirement_keys) ? [...item.requirement_keys].map(trim).sort() : null;
+    if (!Number.isSafeInteger(id) || id <= 0 || bindingById.has(id) || !keys
+      || keys.some((key) => !/^(person_clean|text_clean):[A-Za-z0-9._:-]{1,160}$/.test(key))
+      || new Set(keys).size !== keys.length || item.requirement_hash !== sha256(keys)) {
+      throw codedError('REDRAW_REFERENCE_PREPARATION_COVERAGE_INVALID', '全帧审核绑定不合法');
+    }
+    bindingById.set(id, { requirement_keys: keys, requirement_hash: item.requirement_hash });
+  }
+  if (stableJson([...bindingById.keys()].sort((a, b) => a - b)) !== stableJson(actual)) {
+    throw codedError('REDRAW_REFERENCE_PREPARATION_COVERAGE_INVALID', '全帧审核绑定未覆盖全部镜头');
+  }
+  for (const [id, descriptor] of byId) {
+    const keys = descriptor.requirements.map((item) => `${item.kind}:${item.key}`).sort();
+    const shotBinding = bindingById.get(id);
+    if (stableJson(keys) !== stableJson(shotBinding.requirement_keys)) {
+      throw codedError('REDRAW_REFERENCE_PREPARATION_COVERAGE_INVALID', '全帧审核要求绑定不一致');
+    }
+    descriptor.coverage_binding = {
+      analysis_sha256: binding.analysis_sha256,
+      approved_by: binding.approved_by,
+      approved_at: binding.approved_at,
+      facts_hash: binding.facts_hash,
+      source_fingerprint: binding.source_fingerprint,
+      ...shotBinding,
+    };
+  }
   return { ...coverage, shots: actual.map((id) => byId.get(id)), byId };
 }
 
@@ -218,7 +257,19 @@ function parseBundle(row) {
   return bundle;
 }
 
-function isCurrentReady(row, characterPlanHash) {
+function currentCoverageBinding(snapshot, descriptor) {
+  const binding = descriptor?.coverage_binding;
+  return snapshot?.schema_version === 'redraw-reference-preparation-v2'
+    && snapshot.coverage_analysis_sha256 === binding?.analysis_sha256
+    && snapshot.coverage_approved_by === binding?.approved_by
+    && snapshot.coverage_approved_at === binding?.approved_at
+    && snapshot.coverage_facts_hash === binding?.facts_hash
+    && snapshot.coverage_source_fingerprint === binding?.source_fingerprint
+    && stableJson(snapshot.coverage_requirement_keys) === stableJson(binding?.requirement_keys)
+    && snapshot.coverage_requirement_hash === binding?.requirement_hash;
+}
+
+function isCurrentReady(row, characterPlanHash, descriptor) {
   if (row.preparation_state !== 'reference_ready' || !parseBundle(row)) return false;
   const snapshot = parseObject(row.preparation_snapshot_json, null);
   if (!snapshot
@@ -227,7 +278,8 @@ function isCurrentReady(row, characterPlanHash) {
     || Number(snapshot.preparation_version) !== Number(row.preparation_version)
     || snapshot.character_plan_hash !== characterPlanHash
     || snapshot.reference_bundle_hash !== row.reference_bundle_hash
-    || snapshot.status !== 'completed') return false;
+    || snapshot.status !== 'completed'
+    || !currentCoverageBinding(snapshot, descriptor)) return false;
   return row.preparation_evidence_hash === preparationEvidenceHash(row);
 }
 
@@ -241,6 +293,7 @@ async function reusableCleanResults(ctx, row, descriptor, expectedBaseline, char
     || Number(snapshot.shot_id) !== Number(row.id)
     || Number(snapshot.preparation_version) !== Number(row.preparation_version)
     || snapshot.character_plan_hash !== characterPlanHash
+    || !currentCoverageBinding(snapshot, descriptor)
     || stableJson(snapshot.requirements) !== stableJson(descriptor.requirements.map((item) => ({ kind: item.kind, key: item.key })))
     || !Array.isArray(snapshot.clean_results)) return [];
   const reusable = [];
@@ -325,7 +378,7 @@ async function buildQuote(rawCtx, input = {}, deps = {}) {
   const shotIds = normalizeShotIds(input.shot_ids ?? input.shotIds);
   const selected = selectShots(shots, shotIds);
   const plan = await currentCharacterPlan(ctx, deps);
-  const coverage = await reviewedCoverage(ctx, shots, deps);
+  const coverage = await reviewedCoverage(ctx, shots, deps, scope);
   const decision = automationDecision(scope, coverage);
   const snapshot = baseline(scope, plan.plan_hash, coverage);
   const reused = [];
@@ -336,11 +389,11 @@ async function buildQuote(rawCtx, input = {}, deps = {}) {
   let credits = 0;
   let priced = true;
   for (const shot of selected) {
-    if (isCurrentReady(shot, plan.plan_hash)) {
+    const descriptor = coverage.byId.get(Number(shot.id));
+    if (isCurrentReady(shot, plan.plan_hash, descriptor)) {
       reused.push(Number(shot.id));
       continue;
     }
-    const descriptor = coverage.byId.get(Number(shot.id));
     const reusable = await reusableCleanResults(ctx, shot, descriptor, snapshot, plan.plan_hash, deps);
     reusableByShot.set(Number(shot.id), reusable);
     const reusableKeys = new Set(reusable.map((item) => `${item.kind}:${item.key}`));
@@ -420,7 +473,7 @@ async function quoteVersionPreparation(ctx, input = {}, deps = {}) {
 async function assertBaselineCurrent(ctx, expected, deps) {
   const scope = readScope(ctx);
   const plan = currentCharacterPlan(ctx, deps);
-  const coverage = await reviewedCoverage(ctx, readShots(ctx), deps);
+  const coverage = await reviewedCoverage(ctx, readShots(ctx), deps, scope);
   const current = {
     version_id: Number(scope.id),
     version_updated_at: scope.updated_at,
@@ -467,7 +520,7 @@ function claimShot(ctx, shot, descriptor, baselineSnapshot, characterPlanHash, r
     && previous.idempotency_key_hash === idemHash) return { status: 'failed' };
   const now = timestamp(ctx, shot.updated_at);
   const snapshot = {
-    schema_version: 'redraw-reference-preparation-v1',
+    schema_version: 'redraw-reference-preparation-v2',
     version_id: ctx.versionId,
     shot_id: Number(shot.id),
     preparation_version: Number(shot.preparation_version),
@@ -475,6 +528,13 @@ function claimShot(ctx, shot, descriptor, baselineSnapshot, characterPlanHash, r
     version_snapshot_hash: baselineSnapshot.snapshot_hash,
     version_recovery_hash: baselineSnapshot.recovery_hash,
     version_updated_at: baselineSnapshot.version_updated_at,
+    coverage_analysis_sha256: descriptor.coverage_binding.analysis_sha256,
+    coverage_approved_by: descriptor.coverage_binding.approved_by,
+    coverage_approved_at: descriptor.coverage_binding.approved_at,
+    coverage_facts_hash: descriptor.coverage_binding.facts_hash,
+    coverage_source_fingerprint: descriptor.coverage_binding.source_fingerprint,
+    coverage_requirement_keys: descriptor.coverage_binding.requirement_keys,
+    coverage_requirement_hash: descriptor.coverage_binding.requirement_hash,
     request_hash: request,
     idempotency_key_hash: idemHash,
     status: 'processing',
@@ -737,7 +797,8 @@ async function prepareVersionReferences(rawCtx, input = {}, deps = {}) {
   };
   for (const original of built.selected) {
     const shot = built.ctx.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(Number(original.id));
-    if (isCurrentReady(shot, built.plan.plan_hash)) {
+    const descriptor = built.coverage.byId.get(Number(shot.id));
+    if (isCurrentReady(shot, built.plan.plan_hash, descriptor)) {
       result.reused_shot_ids.push(Number(shot.id));
       continue;
     }
@@ -745,7 +806,7 @@ async function prepareVersionReferences(rawCtx, input = {}, deps = {}) {
       built.ctx,
       built,
       shot,
-      built.coverage.byId.get(Number(shot.id)),
+      descriptor,
       idempotencyKey,
       deps,
     );

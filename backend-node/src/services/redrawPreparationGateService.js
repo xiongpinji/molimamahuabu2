@@ -5,7 +5,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { buildCharacterPlan } = require('./redrawCharacterPlanService');
-const { canonicalBundleHash } = require('./redrawReferenceBundleService');
+const {
+  canonicalBundleHash,
+  loadReviewedReferenceCoverageBinding,
+} = require('./redrawReferenceBundleService');
 
 const HEX_64 = /^[0-9a-f]{64}$/;
 
@@ -128,6 +131,19 @@ function expectedPreparationHash(shot) {
     preparation_version: Number(shot.preparation_version),
     reference_bundle_hash: shot.reference_bundle_hash,
   };
+  if (snapshot.schema_version === 'redraw-reference-preparation-v2') {
+    evidence.coverage_binding = {
+      analysis_sha256: String(snapshot.coverage_analysis_sha256 || ''),
+      approved_by: String(snapshot.coverage_approved_by || ''),
+      approved_at: String(snapshot.coverage_approved_at || ''),
+      facts_hash: String(snapshot.coverage_facts_hash || ''),
+      source_fingerprint: String(snapshot.coverage_source_fingerprint || ''),
+      requirement_keys: Array.isArray(snapshot.coverage_requirement_keys)
+        ? snapshot.coverage_requirement_keys.map(String)
+        : [],
+      requirement_hash: String(snapshot.coverage_requirement_hash || ''),
+    };
+  }
   if (personCleanEvidence.length > 0) evidence.person_clean_evidence = personCleanEvidence;
   return sha256(stableJson(evidence));
 }
@@ -280,28 +296,18 @@ function packHash(pack) {
   return HEX_64.test(expected) && sha256(stableJson(body)) === expected ? expected : '';
 }
 
-function currentReviewedCoverage(ctx, shot, analysisSha256) {
-  const rows = ctx.db.prepare(`
-    SELECT * FROM redraw_assets
-    WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND kind = 'scene'
-      AND status = 'generated' AND approval_status = 'approved'
-      AND asset_id IS NOT NULL AND deleted_at IS NULL
-  `).all(Number(shot.version_id), String(shot.tenant_id || ''), String(shot.user_id || ''));
-  const matches = rows.filter((row) => {
-    const payload = parseJsonAny(row.source_ref_json, {});
-    return payload.source_ref?.stable_id === 'full-frame-reviewed-coverage'
-      && payload.snapshot?.mode === 'full_frame_reviewed_coverage'
-      && Number(payload.snapshot?.version_id) === Number(shot.version_id)
-      && payload.snapshot?.analysis_sha256 === analysisSha256;
-  });
-  if (matches.length !== 1) return false;
-  const asset = ctx.db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(Number(matches[0].asset_id));
-  const digest = assetSha(asset);
-  return HEX_64.test(digest)
-    && Boolean(loadProviderAsset({ ...ctx, __requirePhysicalEvidence: true }, asset.id, String(asset.type || ''), digest, {
+function coverageAnalysisCurrent(ctx, shot, analysisSha256) {
+  try {
+    const binding = ctx.__coverageBinding || loadReviewedReferenceCoverageBinding({
+      ...ctx,
       tenantId: shot.tenant_id,
       userId: shot.user_id,
-    }));
+      versionId: shot.version_id,
+    });
+    return binding.analysis_sha256 === analysisSha256;
+  } catch (_) {
+    return false;
+  }
 }
 
 function readCurrentCleanResultEvidence(ctx, shot, requirement, redrawAssetId) {
@@ -353,7 +359,7 @@ function readCurrentCleanResultEvidence(ctx, shot, requirement, redrawAssetId) {
     if (!loadProviderAsset(physicalCtx, sourceAssetId, 'image', String(pack.source.sha256 || ''), owner)
       || !loadProviderAsset(physicalCtx, row.mask_asset_id, 'image', String(pack.mask.sha256 || ''), owner)
       || !loadProviderAsset(physicalCtx, row.clean_plate_asset_id, 'image', String(pack.artifact.sha256 || ''), owner)
-      || !currentReviewedCoverage(physicalCtx, shot, pack.analysis_sha256)) return null;
+      || !coverageAnalysisCurrent(physicalCtx, shot, pack.analysis_sha256)) return null;
     return {
       schema_version: person ? 'redraw-person-clean-evidence-v1' : 'redraw-text-clean-evidence-v1',
       kind: requirement.kind,
@@ -538,7 +544,6 @@ function validateBundleShape(ctx, shot, bundle, plan, missing) {
     addMissing(missing, 'reference_bundle', shot.id, 'coverage_review_not_current', shotAnchor);
   }
   if (!Array.isArray(bundle.face_tracks)
-    || bundle.face_tracks.length === 0
     || Number(review.recognizable_face_count) !== Number(review.mapped_face_count)
     || Number(review.unresolved_face_count) !== 0
     || Number(review.mapped_face_count) !== bundle.face_tracks.length) {
@@ -574,7 +579,7 @@ function validateBundleShape(ctx, shot, bundle, plan, missing) {
   }
 }
 
-function validateShot(ctx, shot, version, characterPlan, missing) {
+function validateShot(ctx, shot, version, characterPlan, coverageBinding, missing) {
   const shotAnchor = `shot-${Number(shot.id)}`;
   if (String(shot.tenant_id || '') !== String(version.tenant_id || '')
     || String(shot.user_id || '') !== String(version.user_id || '')) {
@@ -605,6 +610,22 @@ function validateShot(ctx, shot, version, characterPlan, missing) {
     || snapshot.character_plan_hash !== characterPlan.hash
     || snapshot.reference_bundle_hash !== shot.reference_bundle_hash) {
     addMissing(missing, 'shot', shot.id, 'preparation_evidence_mismatch', shotAnchor);
+  }
+  const currentCoverage = coverageBinding?.shots?.find((item) => Number(item.shot_id) === Number(shot.id));
+  const snapshotRequirementKeys = Array.isArray(snapshot?.requirements)
+    ? snapshot.requirements.map((item) => `${String(item?.kind || '')}:${String(item?.key || '')}`).sort()
+    : null;
+  if (Number(version.reference_bundle_required || 0) === 1 && (!currentCoverage
+    || snapshot?.schema_version !== 'redraw-reference-preparation-v2'
+    || snapshot.coverage_analysis_sha256 !== coverageBinding.analysis_sha256
+    || snapshot.coverage_approved_by !== coverageBinding.approved_by
+    || snapshot.coverage_approved_at !== coverageBinding.approved_at
+    || snapshot.coverage_facts_hash !== coverageBinding.facts_hash
+    || snapshot.coverage_source_fingerprint !== coverageBinding.source_fingerprint
+    || stableJson(snapshot.coverage_requirement_keys) !== stableJson(currentCoverage.requirement_keys)
+    || snapshot.coverage_requirement_hash !== currentCoverage.requirement_hash
+    || stableJson(snapshotRequirementKeys) !== stableJson(currentCoverage.requirement_keys))) {
+    addMissing(missing, 'shot', shot.id, 'coverage_binding_not_current', shotAnchor);
   }
   const personRequirements = Array.isArray(snapshot?.requirements)
     ? snapshot.requirements.filter((item) => item?.kind === 'person_clean')
@@ -663,13 +684,27 @@ function evaluatePreparationGate(ctx = {}, versionId) {
     addMissing(missing, 'version', version.id, 'shots_missing', `version-${Number(version.id)}-shots`);
   }
   const readyShotIds = [];
+  let coverageBinding = null;
+  if (Number(version.reference_bundle_required || 0) === 1) {
+    try {
+      coverageBinding = loadReviewedReferenceCoverageBinding({
+        ...ctx,
+        tenantId: owner.tenantId,
+        userId: owner.userId,
+        versionId: version.id,
+      });
+    } catch (_) {
+      addMissing(missing, 'version', version.id, 'coverage_binding_not_current', `version-${Number(version.id)}-coverage`);
+    }
+  }
   const gateCtx = {
     ...ctx,
     __requirePhysicalEvidence: Number(version.reference_bundle_required || 0) === 1,
+    __coverageBinding: coverageBinding,
   };
   for (const shot of shots) {
     const before = missing.size;
-    validateShot(gateCtx, shot, version, characterPlan, missing);
+    validateShot(gateCtx, shot, version, characterPlan, coverageBinding, missing);
     if (missing.size === before) readyShotIds.push(Number(shot.id));
   }
   const missingList = sortedMissing(missing);

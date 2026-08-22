@@ -2,6 +2,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const { canonicalCoverageSha256 } = require('./redrawFullFrameCoverageService');
 const { validateReviewedCoverageManifest } = require('./redrawFullFrameReviewService');
 const { verifyMotionReference } = require('./redrawMotionReferenceService');
 
@@ -362,6 +363,59 @@ function cleanRequirement(ctx, evidence, manifest, shot, track, kind) {
   };
 }
 
+function coverageRequirementKeys(manifest, shot) {
+  if (!Array.isArray(manifest.person_tracks) || !Array.isArray(manifest.text_tracks)) fail(COVERAGE_EVIDENCE_CODE);
+  return [
+    ...manifest.person_tracks
+      .filter((track) => trackTimeRanges(manifest, shot, track).length > 0)
+      .map((track) => `person_clean:${String(track.track_key || '')}`),
+    ...manifest.text_tracks
+      .filter((track) => trackTimeRanges(manifest, shot, track).length > 0)
+      .map((track) => `text_clean:${String(track.region_key || '')}`),
+  ].sort();
+}
+
+function buildCoverageBinding(scope, rows, indexed, manifest) {
+  if (manifest.schema_version !== 'redraw-full-frame-coverage-v1'
+    || manifest.status !== 'reviewed'
+    || manifest.review?.status !== 'reviewed'
+    || manifest.review?.reviewed !== true
+    || manifest.review?.required_review_point_count !== manifest.review?.reviewed_point_count
+    || manifest.approval_status !== 'pending'
+    || manifest.ready_for_reference !== false
+    || canonicalCoverageSha256(manifest) !== manifest.analysis_sha256) fail(COVERAGE_EVIDENCE_CODE);
+  assertCoverageMatchesVersion(scope, rows, manifest, indexed);
+  const shots = rows.map((shot) => {
+    const keys = coverageRequirementKeys(manifest, shot);
+    if (keys.some((key) => !/^(person_clean|text_clean):[A-Za-z0-9._:-]{1,160}$/.test(key))
+      || new Set(keys).size !== keys.length) fail(COVERAGE_EVIDENCE_CODE);
+    return {
+      shot_id: Number(shot.id),
+      requirement_keys: keys,
+      requirement_hash: sha256(stableJson(keys)),
+    };
+  });
+  return {
+    schema_version: 'redraw-coverage-preparation-binding-v1',
+    version_id: Number(scope.id),
+    analysis_sha256: manifest.analysis_sha256,
+    approved_by: String(indexed.row.approved_by || ''),
+    approved_at: String(indexed.row.approved_at || ''),
+    facts_hash: scope.facts_hash,
+    source_fingerprint: scope.source_fingerprint,
+    shots,
+  };
+}
+
+function loadReviewedReferenceCoverageBinding(rawCtx) {
+  const ctx = normalizeContext(rawCtx);
+  const scope = coverageScope(ctx);
+  const rows = shotRows(ctx);
+  const indexed = coverageEvidenceRow(ctx, scope);
+  const evidence = { ...indexed, ...readCoverageManifest(ctx, indexed) };
+  return buildCoverageBinding(scope, rows, evidence, evidence.manifest);
+}
+
 async function loadReviewedReferenceCoverage(rawCtx) {
   const ctx = normalizeContext(rawCtx);
   const scope = coverageScope(ctx);
@@ -375,6 +429,7 @@ async function loadReviewedReferenceCoverage(rawCtx) {
     fail(COVERAGE_EVIDENCE_CODE);
   }
   assertCoverageMatchesVersion(scope, rows, manifest, evidence);
+  const coverageBinding = buildCoverageBinding(scope, rows, evidence, manifest);
   const descriptors = rows.map((shot) => {
     const persons = manifest.person_tracks.filter((track) => trackTimeRanges(manifest, shot, track).length > 0);
     const texts = manifest.text_tracks.filter((track) => trackTimeRanges(manifest, shot, track).length > 0);
@@ -402,7 +457,7 @@ async function loadReviewedReferenceCoverage(rawCtx) {
       },
     };
   });
-  return { status: 'approved', shots: descriptors };
+  return { status: 'approved', shots: descriptors, coverage_binding: coverageBinding };
 }
 
 function sourceKey(row) {
@@ -1070,6 +1125,7 @@ async function projectReferenceBundleForGeneration(rawCtx, shotId) {
 
 module.exports = {
   loadReviewedReferenceCoverage,
+  loadReviewedReferenceCoverageBinding,
   buildTrustedReferenceBundleInput,
   saveReferenceBundle,
   loadCurrentReferenceBundle,

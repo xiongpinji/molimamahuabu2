@@ -26,6 +26,7 @@ const {
   buildTrustedReferenceBundleInput,
   canonicalBundleHash,
   loadReviewedReferenceCoverage,
+  saveReferenceBundle,
 } = require('../src/services/redrawReferenceBundleService');
 const {
   prepareVersionReferences,
@@ -37,6 +38,7 @@ const {
 const NOW = '2026-08-22T08:00:00.000Z';
 const NEXT = '2026-08-22T08:00:01.000Z';
 const PLAN_HASH = 'a'.repeat(64);
+const FAKE_COVERAGE_SHA = 'b'.repeat(64);
 
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -108,7 +110,7 @@ function markReady(db, shotId) {
   const referenceHash = canonicalBundleHash(bundle);
   const shot = db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(shotId);
   const snapshot = {
-    schema_version: 'redraw-reference-preparation-v1',
+    schema_version: 'redraw-reference-preparation-v2',
     version_id: 1,
     shot_id: shotId,
     preparation_version: Number(shot.preparation_version),
@@ -116,10 +118,18 @@ function markReady(db, shotId) {
     reference_bundle_hash: referenceHash,
     request_hash: sha256(`ready:${shotId}`),
     status: 'completed',
+    coverage_analysis_sha256: FAKE_COVERAGE_SHA,
+    coverage_approved_by: 'user-a',
+    coverage_approved_at: NOW,
+    coverage_facts_hash: db.prepare('SELECT facts_hash FROM redraw_versions WHERE id = 1').get().facts_hash,
+    coverage_source_fingerprint: db.prepare('SELECT source_fingerprint FROM redraw_works WHERE id = 1').get().source_fingerprint,
+    coverage_requirement_keys: [`person_clean:people-${shotId}`],
+    coverage_requirement_hash: sha256(stableJson([`person_clean:people-${shotId}`])),
   };
   const projected = {
     ...shot,
     reference_bundle_hash: referenceHash,
+    preparation_snapshot_json: stableJson(snapshot),
   };
   db.prepare(`UPDATE redraw_shots
     SET preparation_state = 'reference_ready', reference_bundle_json = ?,
@@ -134,13 +144,25 @@ function markReady(db, shotId) {
 
 function coverageFor(db, requirements = {}) {
   const shots = db.prepare('SELECT id, shot_id FROM redraw_shots ORDER BY id').all();
+  const factsHash = db.prepare('SELECT facts_hash FROM redraw_versions WHERE id = 1').get().facts_hash;
+  const sourceFingerprint = db.prepare('SELECT source_fingerprint FROM redraw_works WHERE id = 1').get().source_fingerprint;
+  const descriptors = shots.map((shot) => ({
+    shot_id: shot.id,
+    source_shot_id: shot.shot_id,
+    requirements: requirements[shot.id] || [{ kind: 'person_clean', key: `people-${shot.id}` }],
+  }));
   return {
     status: 'approved',
-    shots: shots.map((shot) => ({
-      shot_id: shot.id,
-      source_shot_id: shot.shot_id,
-      requirements: requirements[shot.id] || [{ kind: 'person_clean', key: `people-${shot.id}` }],
-    })),
+    shots: descriptors,
+    coverage_binding: {
+      schema_version: 'redraw-coverage-preparation-binding-v1', version_id: 1,
+      analysis_sha256: FAKE_COVERAGE_SHA, approved_by: 'user-a', approved_at: NOW,
+      facts_hash: factsHash, source_fingerprint: sourceFingerprint,
+      shots: descriptors.map((descriptor) => {
+        const keys = descriptor.requirements.map((item) => `${item.kind}:${item.key}`).sort();
+        return { shot_id: descriptor.shot_id, requirement_keys: keys, requirement_hash: sha256(stableJson(keys)) };
+      }),
+    },
   };
 }
 
@@ -952,9 +974,11 @@ test('默认服务端路径从已批准全帧证据读取覆盖并用当前净�
     assert.equal(initial.action, 'blocked');
     assert.deepEqual(initial.items.map((item) => [item.kind, item.key]), [['text_clean', 'subtitle-a']]);
     assert.equal(JSON.stringify(initial).includes(state.ctx.storageRoot), false);
+    const coverage = await loadReviewedReferenceCoverage(state.ctx);
+    const coverageShot = coverage.coverage_binding.shots[0];
 
     const snapshot = {
-      schema_version: 'redraw-reference-preparation-v1',
+      schema_version: 'redraw-reference-preparation-v2',
       version_id: 1,
       shot_id: 1,
       preparation_version: 1,
@@ -962,6 +986,13 @@ test('默认服务端路径从已批准全帧证据读取覆盖并用当前净�
       version_snapshot_hash: initial.version_snapshot_hash,
       request_hash: sha256('previous-attempt'),
       idempotency_key_hash: sha256('previous-attempt'),
+      coverage_analysis_sha256: coverage.coverage_binding.analysis_sha256,
+      coverage_approved_by: coverage.coverage_binding.approved_by,
+      coverage_approved_at: coverage.coverage_binding.approved_at,
+      coverage_facts_hash: coverage.coverage_binding.facts_hash,
+      coverage_source_fingerprint: coverage.coverage_binding.source_fingerprint,
+      coverage_requirement_keys: coverageShot.requirement_keys,
+      coverage_requirement_hash: coverageShot.requirement_hash,
       status: 'failed',
       requirements: [{ kind: 'text_clean', key: 'subtitle-a' }],
       clean_results: [{ kind: 'text_clean', key: 'subtitle-a', status: 'completed', redraw_asset_id: 202 }],
@@ -983,7 +1014,8 @@ test('默认服务端路径从已批准全帧证据读取覆盖并用当前净�
     });
     assert.deepEqual(result.prepared_shot_ids, [1]);
     const shot = state.db.prepare(`SELECT preparation_state, reference_bundle_json,
-      reference_bundle_hash, preparation_evidence_hash FROM redraw_shots WHERE id = 1`).get();
+      reference_bundle_hash, preparation_snapshot_json, preparation_evidence_hash
+      FROM redraw_shots WHERE id = 1`).get();
     const bundle = JSON.parse(shot.reference_bundle_json);
     assert.equal(shot.preparation_state, 'reference_ready');
     assert.equal(canonicalBundleHash(bundle), shot.reference_bundle_hash);
@@ -991,10 +1023,7 @@ test('默认服务端路径从已批准全帧证据读取覆盖并用当前净�
     assert.equal(bundle.coverage_review.mapped_text_region_count, 1);
     assert.equal(bundle.text_regions[0].region_key, 'subtitle-a');
     assert.equal(bundle.text_regions[0].text_clean_redraw_asset_id, 202);
-    assert.equal(preparationEvidenceHash({
-      id: 1, version_id: 1, preparation_version: 1,
-      reference_bundle_hash: shot.reference_bundle_hash,
-    }), shot.preparation_evidence_hash);
+    assert.equal(preparationEvidenceHash({ ...shot, id: 1, version_id: 1, preparation_version: 1 }), shot.preparation_evidence_hash);
   } finally {
     state.cleanup();
   }
@@ -1068,7 +1097,8 @@ test('真实人物净景经人工批准后可恢复，且物理文件删除或�
     assert.equal(cleanResult.evidence.redraw_asset_id, unknownResult.redraw_asset_id);
     assert.equal(cleanResult.evidence.clean_plate_asset_id, 303);
     assert.equal(cleanResult.evidence.clean_plate_sha256, state.personCleanSha);
-    assert.equal(evaluatePreparationGate(state.ctx, 1).ok, true);
+    const gate = evaluatePreparationGate(state.ctx, 1);
+    assert.equal(gate.ok, true, JSON.stringify(gate));
 
     fs.writeFileSync(path.join(state.ctx.storageRoot, 'redraw/person-clean.png'), 'tampered-person-clean');
     const drifted = evaluatePreparationGate(state.ctx, 1);
@@ -1213,5 +1243,67 @@ test('受信参考包 builder 拒绝客户端路径、URL、哈希、供应商�
     }
   } finally {
     state.cleanup();
+  }
+});
+
+test('当前覆盖含人物时旧 ready 空 requirements 即使旧哈希自洽也必须 fail closed', async () => {
+  const state = await setupDefaultServerPath({ includePerson: true, includeText: false });
+  try {
+    const quote = await quoteVersionPreparation(state.ctx, { version_id: 1 });
+    const input = await buildTrustedReferenceBundleInput(state.ctx, { shot_id: 1, clean_results: [] });
+    const saved = await saveReferenceBundle(state.ctx, { ...input, expected_updated_at: NOW });
+    const current = state.db.prepare('SELECT * FROM redraw_shots WHERE id = 1').get();
+    const legacy = {
+      schema_version: 'redraw-reference-preparation-v1', version_id: 1, shot_id: 1,
+      preparation_version: 1, character_plan_hash: quote.character_plan_hash,
+      reference_bundle_hash: saved.reference_bundle_hash, status: 'completed',
+      requirements: [], clean_results: [],
+    };
+    const projected = { ...current, preparation_snapshot_json: stableJson(legacy) };
+    state.db.prepare(`UPDATE redraw_shots SET preparation_state = 'reference_ready',
+      preparation_snapshot_json = ?, preparation_evidence_hash = ? WHERE id = 1`)
+      .run(stableJson(legacy), preparationEvidenceHash(projected));
+    const gate = evaluatePreparationGate(state.ctx, 1);
+    assert.equal(gate.ok, false);
+    assert.ok(gate.missing.some((item) => item.reason_code === 'coverage_binding_not_current'));
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('当前覆盖无净景要求时合法新 coverage binding 仍可 reference_ready', async () => {
+  const state = await setupDefaultServerPath({ includePerson: false, includeText: false });
+  try {
+    const quote = await quoteVersionPreparation(state.ctx, { version_id: 1 });
+    const result = await prepareVersionReferences(state.ctx, {
+      version_id: 1, idempotency_key: 'empty-current-coverage', quote_hash: quote.quote_hash,
+    });
+    assert.deepEqual(result.prepared_shot_ids, [1]);
+    const snapshot = JSON.parse(state.db.prepare('SELECT preparation_snapshot_json FROM redraw_shots WHERE id = 1').get().preparation_snapshot_json);
+    assert.match(snapshot.coverage_analysis_sha256, /^[a-f0-9]{64}$/);
+    assert.deepEqual(snapshot.coverage_requirement_keys, []);
+    assert.match(snapshot.coverage_requirement_hash, /^[a-f0-9]{64}$/);
+    const gate = evaluatePreparationGate(state.ctx, 1);
+    assert.equal(gate.ok, true, JSON.stringify(gate));
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('当前覆盖索引缺少 approved_by 或 approved_at 时准备门禁 fail closed', async () => {
+  for (const column of ['approved_by', 'approved_at']) {
+    const state = await setupDefaultServerPath({ includePerson: false, includeText: false });
+    try {
+      const quote = await quoteVersionPreparation(state.ctx, { version_id: 1 });
+      await prepareVersionReferences(state.ctx, {
+        version_id: 1, idempotency_key: `coverage-approval-${column}`, quote_hash: quote.quote_hash,
+      });
+      state.db.prepare(`UPDATE redraw_assets SET ${column} = NULL WHERE id = 204`).run();
+      const gate = evaluatePreparationGate(state.ctx, 1);
+      assert.equal(gate.ok, false);
+      assert.ok(gate.missing.some((item) => item.reason_code === 'coverage_binding_not_current'));
+    } finally {
+      state.cleanup();
+    }
   }
 });
