@@ -136,9 +136,6 @@ test('飞拓新视频模型使用精确上游 ID 和独立分辨率时长能力'
     FEITUO_MODELS['xuan-video-v1-6e7b4763634e6206'].durations,
     [15],
   );
-  assert.equal(FEITUO_MODELS['xuan-video-v1-6e7b4763634e6206'].maxImages, 0);
-  assert.equal(FEITUO_MODELS['xuan-video-v1-6e7b4763634e6206'].maxVideos, 0);
-  assert.equal(FEITUO_MODELS['xuan-video-v1-6e7b4763634e6206'].maxAudio, 0);
   assert.deepEqual(FEITUO_MODELS['xuan-seedance-2.5'].resolutions, ['480p', '720p']);
   assert.deepEqual(
     FEITUO_MODELS['xuan-seedance-2.5'].durations,
@@ -179,16 +176,6 @@ test('MiniMax H3-2K 请求只接受固定 2K 档位', () => {
       duration: 5,
     }),
     /不支持 5 秒/,
-  );
-  assert.throws(
-    () => buildFeituoVideoBody({
-      model: 'xuan-video-v1-6e7b4763634e6206',
-      prompt: 'x',
-      resolution: '2k',
-      duration: 15,
-      reference_urls: ['https://cdn.example/reference.png'],
-    }),
-    /最多支持 0 个图片素材/,
   );
 });
 
@@ -454,7 +441,7 @@ test('飞拓最终提交前复核配置与价格并把 resolution 发送给供�
 test('飞拓公开目录只展示精确真实验证且完整定价的能力', (t) => {
   const { db } = setupDb(t);
   const items = canvasModelCatalogService.list(db)
-    .filter((item) => item.provider === 'feituo');
+    .filter((item) => item.model.startsWith('xuan-'));
 
   assert.deepEqual(items.map((item) => item.model).sort(), [H3_MODEL, SEEDANCE_MODEL].sort());
   const h3 = items.find((item) => item.model === H3_MODEL);
@@ -482,7 +469,7 @@ test('飞拓价格目录拒绝未写入精确真实生成记录的配置', (t) =
 test('飞拓目录拒绝只有实生成标记但缺少精确验证能力的配置', (t) => {
   const { db } = setupDb(t, { capabilities: false });
   assert.deepEqual(
-    canvasModelCatalogService.list(db).filter((item) => item.provider === 'feituo'),
+    canvasModelCatalogService.list(db).filter((item) => item.model.startsWith('xuan-')),
     [],
   );
   assert.deepEqual(

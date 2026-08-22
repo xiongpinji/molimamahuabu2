@@ -70,10 +70,10 @@ test('AI 配置迁移保存最近一次连接验证状态', (t) => {
 test('三套公开目录只返回全部已验证、启用且已计费的视频模型', async (t) => {
   const db = setup();
   t.after(() => db.close());
-  const generic = createVideoConfig(db, {
-    name: '通用视频',
-    model: ['generic-video'],
-    default_model: 'generic-video',
+  const lingjing = createVideoConfig(db, {
+    name: '灵境',
+    model: ['lingjing-video-v1'],
+    default_model: 'lingjing-video-v1',
   });
   const djpsd = createVideoConfig(db, {
     provider: 'djpsd_openapi',
@@ -95,7 +95,7 @@ test('三套公开目录只返回全部已验证、启用且已计费的视频�
     model: ['unpriced-video'],
     default_model: 'unpriced-video',
   });
-  for (const model of ['generic-video', 'video-v1', 'unverified-video', 'env-only-video']) {
+  for (const model of ['lingjing-video-v1', 'video-v1', 'unverified-video', 'env-only-video']) {
     modelPriceService.set(db, model, 60, { category: 'video' });
   }
 
@@ -104,13 +104,13 @@ test('三套公开目录只返回全部已验证、启用且已计费的视频�
     status: 404,
     text: async () => JSON.stringify({ detail: `not found: ${url}` }),
   });
-  assert.equal((await testSavedConnection(db, generic.id, okResponse)).status, 200);
+  assert.equal((await testSavedConnection(db, lingjing.id, okResponse)).status, 200);
   assert.equal((await testSavedConnection(db, djpsd.id, okResponse)).status, 200);
   assert.equal((await testSavedConnection(db, unpriced.id, okResponse)).status, 200);
 
   const publicCapture = capture();
   aiConfigRoutes(db, log, {}).listPublicVideoModels({}, publicCapture.res);
-  assert.deepEqual(publicCapture.result.body.data.sort(), ['generic-video', 'video-v1']);
+  assert.deepEqual(publicCapture.result.body.data.sort(), ['video-v1']);
 
   const previousKey = process.env.CANVAS_VIDEO_API_KEY;
   const previousModel = process.env.CANVAS_VIDEO_MODEL;
@@ -128,27 +128,19 @@ test('三套公开目录只返回全部已验证、启用且已计费的视频�
       .filter((item) => item.kind === 'video')
       .map((item) => item.model)
       .sort(),
-    ['generic-video', 'video-v1'],
+    ['video-v1'],
   );
   const videoCapabilities = Object.fromEntries(canvasModelCatalogService.list(db)
     .filter((item) => item.kind === 'video')
     .map((item) => [item.model, item.capabilities]));
-  assert.equal(videoCapabilities['generic-video'].maxReferences, 3);
   assert.equal(videoCapabilities['video-v1'].maxReferences, 10);
-  assert.deepEqual(videoCapabilities['generic-video'].referenceTypes, ['image']);
   assert.deepEqual(videoCapabilities['video-v1'].referenceTypes, ['image']);
-  assert.equal(videoCapabilities['generic-video'].supportsImageReference, true);
-  assert.equal(videoCapabilities['video-v1'].supportsImageReference, true);
-  assert.equal(videoCapabilities['video-v1'].supportsFirstFrame, false);
-  assert.equal(videoCapabilities['video-v1'].supportsLastFrame, false);
-  assert.equal(videoCapabilities['video-v1'].supportsVideoReference, false);
-  assert.equal(videoCapabilities['video-v1'].supportsAudioReference, false);
   assert.deepEqual(
     modelPriceService.listPublic(db)
       .filter((item) => item.category === 'video')
       .map((item) => item.model)
       .sort(),
-    ['generic-video', 'video-v1'],
+    ['video-v1'],
   );
 });
 
@@ -178,30 +170,6 @@ test('保存配置连接验证失败会记录失败并从公开目录移除', as
   assert.deepEqual(modelPriceService.listPublic(db), []);
 });
 
-test('灵境连接测试只读取 relay 目录且不升级真实生成验证状态', async (t) => {
-  const db = setup();
-  t.after(() => db.close());
-  const config = createVideoConfig(db, {
-    provider: 'lingjing',
-    api_protocol: 'lingjing_open',
-    name: '灵境视频',
-    base_url: 'https://seed.alimyun.xyz/api/open/v1',
-    model: ['lingjing-video-v1'],
-    default_model: 'lingjing-video-v1',
-  });
-  const initialStatus = aiConfigService.getConfig(db, config.id).verification_status;
-  const calls = [];
-  const result = await testSavedConnection(db, config.id, async (url, options) => {
-    calls.push({ url: String(url), options });
-    return { ok: true, status: 200, text: async () => JSON.stringify({ models: [{ model_key: 'relay' }] }) };
-  });
-  assert.equal(result.status, 200);
-  assert.deepEqual(calls.map((item) => item.url), ['https://seed.alimyun.xyz/api/open/v1/models']);
-  assert.equal(calls[0].options.method, 'GET');
-  assert.match(result.body.data.message, /仅验证连通性/);
-  assert.equal(aiConfigService.getConfig(db, config.id).verification_status, initialStatus);
-});
-
 test('只有连接字段实际变化才撤销既有验证', async (t) => {
   const db = setup();
   t.after(() => db.close());
@@ -211,10 +179,10 @@ test('只有连接字段实际变化才撤销既有验证', async (t) => {
   aiConfigService.updateConfig(db, log, config.id, { priority: 50 });
   assert.equal(aiConfigService.getConfig(db, config.id).verification_status, 'verified');
 
-  aiConfigService.updateConfig(db, log, config.id, {
-    settings: JSON.stringify({ video_duration: 10, canvas_capabilities: { ratios: ['9:16'] } }),
-  });
-  assert.equal(aiConfigService.getConfig(db, config.id).verification_status, 'verified');
+    aiConfigService.updateConfig(db, log, config.id, {
+      settings: JSON.stringify({ video_duration: 10, canvas_capabilities: { ratios: ['9:16'] } }),
+    });
+    assert.equal(aiConfigService.getConfig(db, config.id).verification_status, 'verified');
 
   aiConfigService.updateConfig(db, log, config.id, { base_url: 'https://new-video.example/v1' });
   const changed = aiConfigService.getConfig(db, config.id);

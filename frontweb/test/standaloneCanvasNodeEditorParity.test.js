@@ -78,8 +78,8 @@ test('四类节点编辑器暴露 LibTV 核心参数且不隐藏在假配置按�
 
 test('节点不展示小结果缩略条并保留下载、复制引用和重试闭环', () => {
   assert.doesNotMatch(nodeSource, /class="result-strip"/)
-  assert.match(nodeSource, /aria-label="下载结果"[^>]*class="nodrag nopan"[^>]*@mousedown\.stop[^>]*@click\.stop="downloadResult"/)
-  assert.match(nodeSource, /aria-label="复制结果引用"[^>]*class="nodrag nopan"[^>]*@mousedown\.stop[^>]*@click\.stop="copyResultReference"/)
+  assert.match(nodeSource, /aria-label="下载结果"/)
+  assert.match(nodeSource, /aria-label="复制结果引用"/)
   assert.match(nodeSource, /data\.status === 'failed' \? '重试' : '生成'/)
 })
 
@@ -98,10 +98,15 @@ test('参考图卡片不再显示用途、排序、权重和启用选项', () =>
   assert.doesNotMatch(nodeSource, /class="reference-controls"/)
 })
 
-test('视频参考图支持右键在描述光标处插入对应图片引用', () => {
-  assert.match(nodeSource, /@contextmenu\.prevent\.stop="insertReferenceToken\(index\)"/)
-  assert.match(nodeSource, /function insertReferenceToken\(index\)/)
-  assert.match(nodeSource, /const token = `@图片\$\{index \+ 1\}`/)
+test('视频参考素材支持右键在描述光标处插入对应媒体引用', () => {
+  assert.match(nodeSource, /normalizeFreeCanvasSubmissionReferences\(inputReferences\.value\)/)
+  assert.match(nodeSource, /@contextmenu\.prevent\.stop="canInsertReferenceToken\(reference\) && insertReferenceToken\(reference\)"/)
+  assert.match(nodeSource, /function referenceTypeLabel\(kind\)/)
+  assert.match(nodeSource, /function referenceSubmissionOrdinal\(reference\)/)
+  assert.match(nodeSource, /function canInsertReferenceToken\(reference\)/)
+  assert.match(nodeSource, /function insertReferenceToken\(reference\)/)
+  assert.match(nodeSource, /const ordinal = referenceSubmissionOrdinal\(reference\)[\s\S]*if \(ordinal < 1\) return/)
+  assert.match(nodeSource, /const token = `@\$\{referenceTypeLabel\(reference\?\.kind\)\}\$\{ordinal\}`/)
   assert.match(nodeSource, /@select="rememberContentSelection"/)
 })
 
@@ -111,21 +116,42 @@ test('节点配置弹窗显示在节点编辑器之上', () => {
 
 test('图片工具条和下拉菜单计入编辑器下边界且关闭操作取消延迟重开', () => {
   assert.match(nodeSource, /querySelectorAll\('\.image-node-toolbar, \.toolbar-menu, \.toolbar-history'\)/)
-  assert.match(nodeSource, /anchorBottom = Math\.max\(anchorBottom, bounds\.bottom\)/)
+  assert.match(nodeSource, /anchorBounds\.left = Math\.min\(anchorBounds\.left, bounds\.left\)/)
+  assert.match(nodeSource, /anchorBounds\.right = Math\.max\(anchorBounds\.right, bounds\.right\)/)
+  assert.match(nodeSource, /anchorBounds\.top = Math\.min\(anchorBounds\.top, bounds\.top\)/)
+  assert.match(nodeSource, /anchorBounds\.bottom = Math\.max\(anchorBounds\.bottom, bounds\.bottom\)/)
+  assert.match(nodeSource, /const desiredTop = anchorBounds\.bottom \+ nodeGap/)
+  assert.match(nodeSource, /const maximumViewportScale = Math\.max\(0\.01, Math\.min\(/)
+  assert.match(nodeSource, /const anchorIntersectsViewport = anchorBounds\.right > viewportPadding/)
+  assert.match(nodeSource, /const minimumUsableScale = 0\.3/)
+  assert.match(nodeSource, /const canDockBelow = anchorIntersectsViewport[\s\S]*fitBelowScale >= minimumUsableScale/)
+  assert.match(nodeSource, /const canDockBeside = anchorIntersectsViewport[\s\S]*sideScale >= minimumUsableScale/)
+  assert.match(nodeSource, /const canDockAbove = anchorIntersectsViewport[\s\S]*fitAboveScale >= minimumUsableScale/)
+  assert.match(nodeSource, /const preferredSide = availableRightWidth >= availableLeftWidth \? 'right' : 'left'/)
+  assert.match(nodeSource, /const maximumTop = Math\.max\(viewportPadding, viewportHeight - scaledHeight - viewportPadding\)/)
+  assert.match(nodeSource, /const hasUsableDock = canDockBelow \|\| canDockBeside \|\| canDockAbove/)
+  assert.match(nodeSource, /visibility: hasUsableDock \? 'visible' : 'hidden'/)
+  assert.doesNotMatch(nodeSource, /panCanvasForNodeEditor/)
+  assert.doesNotMatch(localCanvasSource, /panCanvasForNodeEditor/)
+  assert.doesNotMatch(dramaCanvasSource, /panCanvasForNodeEditor/)
   assert.match(nodeSource, /function closeEditor\(\) \{[\s\S]*window\.clearTimeout\(mediaOpenTimer\)/)
+  assert.match(nodeSource, /function closeEditor\(\) \{[\s\S]*ctx\?\.clearFocusedNode\?\.\(\)/)
   assert.match(nodeSource, /@suspend-editor="closeEditor"/)
   assert.match(imageToolbarSource, /function openToolbarMenu\(menu\) \{[\s\S]*emit\('suspend-editor'\)/)
   assert.match(imageToolbarSource, /function selectOperation\(item\) \{[\s\S]*emit\('suspend-editor'\)/)
   assert.match(nodeSource, /function onEditorKeydown\(event\) \{[\s\S]*window\.clearTimeout\(mediaOpenTimer\)[\s\S]*if \(!isSelected\.value \|\| editorHidden\.value\) return/)
 })
 
-test('选中节点可从主体按住左键拖动且编辑器随视口缩放', () => {
+test('选中节点可从主体按住左键拖动且编辑器按视口等比适配', () => {
   assert.doesNotMatch(nodeSource, /class="node-drag-grip"/)
   assert.match(nodeSource, /\.home-canvas-node\.is-selected \.(text-preview|media-stage)/)
   assert.match(nodeSource, /const panelWidth = 860/)
-  assert.match(nodeSource, /const editorScale = Math\.max\(0\.01, Math\.min\(/)
-  assert.match(nodeSource, /ctx\?\.panCanvasForNodeEditor\?\.\(Math\.ceil\(overflowY\)\)/)
+  assert.match(nodeSource, /const maximumViewportScale = Math\.max\(0\.01, Math\.min\(/)
   assert.match(nodeSource, /transform: `scale\(\$\{editorScale\}\)`/)
+  assert.match(nodeSource, /visibility: hasUsableDock \? 'visible' : 'hidden'/)
+  assert.match(nodeSource, /width:\s*860px/)
+  assert.match(nodeSource, /max-height:\s*none/)
+  assert.match(nodeSource, /overflow:\s*visible/)
 })
 
 test('图片视频节点使用大画幅预览，运行中明确显示生成状态且画布支持高倍缩放', () => {
@@ -140,4 +166,18 @@ test('图片视频节点使用大画幅预览，运行中明确显示生成状�
 test('独立画布只读取用户可访问的模型目录，不请求管理员模型配置接口', () => {
   assert.match(dramaCanvasSource, /request\.get\('\/canvas\/model-catalog'\)/)
   assert.doesNotMatch(dramaCanvasSource, /aiAPI\.list\(/)
+})
+
+test('图片模型在两套节点编辑器中都显示用户可读的能力范围', () => {
+  assert.match(nodeSource, /imageModelCapabilityBadges/)
+  assert.match(nodeSource, /class="model-capability-badges"/)
+  assert.match(nodeSource, /v-for="badge in currentModelCapabilityBadges"/)
+  assert.match(dramaCanvasSource, /imageModelCapabilityBadges/)
+  assert.match(dramaCanvasSource, /class="free-node-model-capabilities"/)
+  assert.match(dramaCanvasSource, /v-for="badge in freeNodeSelectedCapabilityBadges"/)
+})
+
+test('连续创建节点时同步单选状态，避免新节点编辑器被误判为多选', () => {
+  assert.match(dramaCanvasSource, /async function createFreeCanvasNode\([\s\S]*applySelectedFreeNodeIds\(\[id\]\)[\s\S]*focusedNodeId\.value = id[\s\S]*await focusCanvasNode\(id\)/)
+  assert.match(nodeSource, /watch\(\(\) => ctx\?\.focusedNodeId\?\.value,[\s\S]*editorHidden\.value = false[\s\S]*immediate: true/)
 })

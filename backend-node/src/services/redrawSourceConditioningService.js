@@ -13,7 +13,8 @@ const { getFfmpegPath, getFfprobePath } = require('../utils/ffmpegPath');
 const execFileAsync = promisify(execFile);
 const CONDITIONING_DIR = 'redraw-conditioning';
 const PROVIDER_ASSET_ROUTE = '/api/v1/redraw-provider-assets';
-const SEGMENT_VERSION = 'h264-aac-v1';
+const DEFAULT_SEGMENT_VERSION = 'h264-aac-v1';
+const STRIPPED_SEGMENT_VERSION = 'h264-video-only-v1';
 const DEFAULT_TTL_SECONDS = 30 * 60;
 const MAX_TTL_SECONDS = 30 * 60;
 const DURATION_TOLERANCE_MS = 100;
@@ -216,7 +217,15 @@ function safeSourcePath(storageRoot, localPath) {
   return real;
 }
 
-function parseProbe(raw, requireConditioningCodecs) {
+function normalizeAudioMode(value) {
+  return value === 'strip' ? 'strip' : 'preserve';
+}
+
+function segmentVersion(audioMode) {
+  return audioMode === 'strip' ? STRIPPED_SEGMENT_VERSION : DEFAULT_SEGMENT_VERSION;
+}
+
+function parseProbe(raw, requirements) {
   let parsed;
   try {
     parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -233,8 +242,14 @@ function parseProbe(raw, requireConditioningCodecs) {
     || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
     throw codedError('REDRAW_SOURCE_CONDITIONING_PROBE_INVALID', 'ffprobe 未返回有效视频时长或尺寸');
   }
-  if (requireConditioningCodecs && (video.codec_name !== 'h264' || audio?.codec_name !== 'aac')) {
-    throw codedError('REDRAW_SOURCE_CONDITIONING_CODEC_INVALID', 'conditioning segment 必须是 H.264/AAC MP4');
+  if (requirements?.videoCodec === 'h264' && video.codec_name !== 'h264') {
+    throw codedError('REDRAW_SOURCE_CONDITIONING_CODEC_INVALID', 'conditioning segment 必须是 H.264 MP4');
+  }
+  if (requirements?.audioMode === 'preserve' && audio?.codec_name !== 'aac') {
+    throw codedError('REDRAW_SOURCE_CONDITIONING_CODEC_INVALID', 'conditioning segment 必须包含 AAC 音轨');
+  }
+  if (requirements?.audioMode === 'strip' && audio) {
+    throw codedError('REDRAW_SOURCE_CONDITIONING_CODEC_INVALID', 'conditioning segment 不得保留源音轨');
   }
   return {
     durationMs: Math.round(durationSeconds * 1000),
@@ -245,7 +260,7 @@ function parseProbe(raw, requireConditioningCodecs) {
   };
 }
 
-async function probeVideo(filePath, input, requireConditioningCodecs) {
+async function probeVideo(filePath, input, requirements) {
   const runner = input.execFile || execFileAsync;
   let result;
   try {
@@ -263,7 +278,7 @@ async function probeVideo(filePath, input, requireConditioningCodecs) {
   } catch (error) {
     throw codedError('REDRAW_SOURCE_CONDITIONING_PROBE_FAILED', `ffprobe 校验失败: ${error.message}`);
   }
-  return parseProbe(result?.stdout ?? result, requireConditioningCodecs);
+  return parseProbe(result?.stdout ?? result, requirements);
 }
 
 function normalizeBoundary(value, name) {
@@ -283,10 +298,11 @@ function readMetadata(filePath) {
   }
 }
 
-function conditioningKey(sourceAssetId, sourceFingerprint, startMs, endMs) {
+function conditioningKey(sourceAssetId, sourceFingerprint, startMs, endMs, audioMode) {
   return crypto.createHash('sha256')
     .update(JSON.stringify({
-      version: SEGMENT_VERSION,
+      version: segmentVersion(audioMode),
+      audio_mode: audioMode,
       source_asset_id: sourceAssetId,
       source_fingerprint: sourceFingerprint,
       start_ms: startMs,
@@ -298,6 +314,8 @@ function conditioningKey(sourceAssetId, sourceFingerprint, startMs, endMs) {
 function auditSnapshot(metadata, signed, shotId) {
   return {
     schema_version: '1.0',
+    segment_version: metadata.version,
+    audio_mode: metadata.audio_mode,
     shot_id: shotId,
     source_asset_id: metadata.source_asset_id,
     source_fingerprint: metadata.source_fingerprint,
@@ -316,7 +334,8 @@ function auditSnapshot(metadata, signed, shotId) {
 }
 
 async function cachedMetadata(metadata, expected, input, storageRoot) {
-  if (!metadata || metadata.version !== SEGMENT_VERSION
+  if (!metadata || metadata.version !== expected.version
+    || metadata.audio_mode !== expected.audio_mode
     || metadata.source_asset_id !== expected.source_asset_id
     || metadata.source_fingerprint !== expected.source_fingerprint
     || metadata.start_ms !== expected.start_ms
@@ -331,7 +350,10 @@ async function cachedMetadata(metadata, expected, input, storageRoot) {
   } catch (_) {
     return null;
   }
-  const probe = await probeVideo(absolute, input, true);
+  const probe = await probeVideo(absolute, input, {
+    videoCodec: 'h264',
+    audioMode: expected.audio_mode,
+  });
   const expectedDuration = expected.end_ms - expected.start_ms;
   if (Math.abs(probe.durationMs - expectedDuration) > DURATION_TOLERANCE_MS
     || probe.width !== metadata.width || probe.height !== metadata.height) return null;
@@ -354,6 +376,9 @@ async function generateSegment(sourcePath, targetTemp, sourceProbe, expected, in
   const startSeconds = (expected.start_ms / 1000).toFixed(3);
   const durationSeconds = ((expected.end_ms - expected.start_ms) / 1000).toFixed(3);
   try {
+    const audioArgs = expected.audio_mode === 'strip'
+      ? ['-an']
+      : ['-map', '0:a:0?', '-c:a', 'aac'];
     await runner(input.ffmpegPath || getFfmpegPath(), [
       '-y',
       '-v', 'error',
@@ -361,10 +386,9 @@ async function generateSegment(sourcePath, targetTemp, sourceProbe, expected, in
       '-ss', startSeconds,
       '-t', durationSeconds,
       '-map', '0:v:0',
-      '-map', '0:a:0?',
       '-c:v', 'libx264',
       '-pix_fmt', 'yuv420p',
-      '-c:a', 'aac',
+      ...audioArgs,
       '-movflags', '+faststart',
       '-avoid_negative_ts', 'make_zero',
       targetTemp,
@@ -379,7 +403,10 @@ async function generateSegment(sourcePath, targetTemp, sourceProbe, expected, in
   if (!fs.existsSync(targetTemp) || fs.statSync(targetTemp).size <= 0) {
     throw codedError('REDRAW_SOURCE_CONDITIONING_FFMPEG_FAILED', 'ffmpeg 未生成可读 segment');
   }
-  const probe = await probeVideo(targetTemp, input, true);
+  const probe = await probeVideo(targetTemp, input, {
+    videoCodec: 'h264',
+    audioMode: expected.audio_mode,
+  });
   const expectedDuration = expected.end_ms - expected.start_ms;
   if (Math.abs(probe.durationMs - expectedDuration) > DURATION_TOLERANCE_MS) {
     throw codedError('REDRAW_SOURCE_CONDITIONING_DURATION_MISMATCH', 'conditioning segment 时长与 shot 边界不一致');
@@ -407,6 +434,7 @@ async function prepareSourceConditioning(rawInput = {}) {
   }
   const startMs = normalizeBoundary(input.startMs, 'start_ms');
   const endMs = normalizeBoundary(input.endMs, 'end_ms');
+  const audioMode = normalizeAudioMode(input.audioMode);
   if (endMs <= startMs) throw codedError('REDRAW_SOURCE_CONDITIONING_BOUNDARY_INVALID', 'end_ms 必须大于 start_ms');
 
   const asset = input.db.prepare('SELECT id, local_path, deleted_at FROM assets WHERE id = ? AND deleted_at IS NULL')
@@ -424,6 +452,8 @@ async function prepareSourceConditioning(rawInput = {}) {
   }
 
   const expected = {
+    version: segmentVersion(audioMode),
+    audio_mode: audioMode,
     source_asset_id: sourceAssetId,
     source_fingerprint: sourceFingerprint,
     start_ms: startMs,
@@ -434,7 +464,7 @@ async function prepareSourceConditioning(rawInput = {}) {
     throw codedError('REDRAW_SOURCE_CONDITIONING_PATH_INVALID', 'conditioning 存储目录越界');
   }
   fs.mkdirSync(conditioningRoot, { recursive: true });
-  const key = conditioningKey(sourceAssetId, sourceFingerprint, startMs, endMs);
+  const key = conditioningKey(sourceAssetId, sourceFingerprint, startMs, endMs, audioMode);
   const metadataPath = path.join(conditioningRoot, `${key}.json`);
   let metadata = await cachedMetadata(readMetadata(metadataPath), expected, input, storageRoot);
   let reused = Boolean(metadata);
@@ -457,7 +487,6 @@ async function prepareSourceConditioning(rawInput = {}) {
         fs.renameSync(targetTemp, finalPath);
       }
       metadata = {
-        version: SEGMENT_VERSION,
         ...expected,
         segment_duration_ms: probe.durationMs,
         width: probe.width,
@@ -492,6 +521,7 @@ async function prepareSourceConditioning(rawInput = {}) {
       start_ms: metadata.start_ms,
       end_ms: metadata.end_ms,
       segment_sha256: metadata.segment_sha256,
+      audio_mode: metadata.audio_mode,
     },
     auditSnapshot: auditSnapshot(metadata, signed, shotId),
   };

@@ -136,7 +136,7 @@ function voiceInput(state, sourceRef) {
   };
 }
 
-function voiceResult(assetId, providerTaskId = 'provider-voice-1') {
+function voiceResult(assetId, providerTaskId = 'provider-voice-1', voiceEvidenceOverrides = {}) {
   return {
     status: 'completed',
     provider_task_id: providerTaskId,
@@ -169,6 +169,7 @@ function voiceResult(assetId, providerTaskId = 'provider-voice-1') {
       detected_locale: 'en-US',
       is_cloned: false,
       authorization_asset_id: null,
+      ...voiceEvidenceOverrides,
     },
   };
 }
@@ -377,9 +378,156 @@ test('去人净景使用人物遮罩并保留源场景版本', async () => {
   assert.equal(result.status, 'needs_attention');
   assert.equal(result.approval_status, 'pending');
   assert.equal(result.review_status, 'needs_review');
+  const snapshot = JSON.parse(result.source_ref_json).snapshot;
+  assert.equal(snapshot.mode, 'clean_plate');
+  assert.equal(snapshot.source_asset_id, 401);
+  assert.equal(snapshot.mask_asset_id, 402);
+  assert.equal(snapshot.input_frame_fingerprint, 'frame-1');
+  assert.equal(snapshot.model, 'redraw-clean-plate');
   assert.equal(state.db.prepare('SELECT local_path FROM assets WHERE id = 401').get().local_path, 'scene.png');
   fs.rmSync(root, { recursive: true, force: true });
   state.db.close();
+});
+
+test('文字净景快照只保留脱敏模式、类型和区域', async () => {
+  for (const [shotId, textKind, sourceId, maskId, cleanId] of [
+    ['shot-4', 'text_subtitle', 431, 432, 433],
+    ['shot-8', 'text_screen', 435, 436, 437],
+  ]) {
+    const state = setup();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-text-clean-plate-'));
+    for (const [id, file] of [[sourceId, 'source.png'], [maskId, 'mask.png'], [cleanId, 'clean.png']]) {
+      fs.writeFileSync(path.join(root, file), file);
+      addAsset(state.db, id, file);
+    }
+    const ctx = context(state, root);
+    const textRegions = [{
+      kind: textKind,
+      shape: 'polygon',
+      points: [[120, 590], [1160, 590], [1160, 690], [120, 690]],
+      source: 'manual_fixture',
+    }];
+    const result = await generateCleanPlate({
+      ...ctx,
+      provider: async ({ input }) => {
+        assert.equal(input.source_asset_id, sourceId);
+        assert.equal(input.mask_asset_id, maskId);
+        assert.equal(input.mode, 'text_clean_plate');
+        return {
+          status: 'completed',
+          asset_id: cleanId,
+          quality: {
+            width: 1280,
+            height: 720,
+            mask_area_changed: true,
+            non_mask_similarity: 0.98,
+          },
+        };
+      },
+    }, {
+      shotId,
+      source_asset_id: sourceId,
+      width: 1280,
+      height: 720,
+    }, {
+      mode: 'text_clean_plate',
+      mask_asset_id: maskId,
+      textKind,
+      textRegions,
+    });
+
+    const snapshot = JSON.parse(result.source_ref_json).snapshot;
+    assert.deepEqual(Object.keys(snapshot).sort(), ['mode', 'text_kind', 'text_regions']);
+    assert.equal(snapshot.mode, 'text_clean_plate');
+    assert.equal(snapshot.text_kind, textKind);
+    assert.deepEqual(snapshot.text_regions, textRegions);
+    assert.equal(JSON.stringify(snapshot).includes('ocr_text'), false);
+    assert.equal(JSON.stringify(snapshot).includes(root), false);
+    assert.equal(result.clean_plate_asset_id, cleanId);
+    assert.equal(result.approval_status, 'pending');
+    assert.equal(state.db.prepare('SELECT local_path FROM assets WHERE id = ?').get(sourceId).local_path, 'source.png');
+    fs.rmSync(root, { recursive: true, force: true });
+    state.db.close();
+  }
+});
+
+test('文字净景拒绝未知类型、混入 region/OCR、绝对路径和未知字段且不调用 provider', async () => {
+  const cases = [
+    { name: '未知文字类型', mutate: (input) => { input.textKind = 'text_unknown'; } },
+    { name: '混入 region', mutate: (input) => { input.region = { kind: 'text_subtitle', polygon: [[0, 0], [1, 0], [1, 1]] }; } },
+    { name: '混入 ocr_text', mutate: (input) => { input.textRegions[0].ocr_text = '不得落盘的原文'; } },
+    { name: '混入绝对路径', mutate: (input) => { input.textRegions[0].path = path.resolve('/tmp/ocr.json'); } },
+    { name: '混入未知字段', mutate: (input) => { input.textRegions[0].unexpected = 'reject'; } },
+  ];
+  for (const invalidCase of cases) {
+    const state = setup();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-text-clean-plate-invalid-'));
+    for (const [id, file] of [[431, 'source.png'], [432, 'mask.png'], [433, 'clean.png']]) {
+      fs.writeFileSync(path.join(root, file), file);
+      addAsset(state.db, id, file);
+    }
+    let providerCalls = 0;
+    const ctx = {
+      ...context(state, root),
+      provider: async () => { providerCalls += 1; return { status: 'completed', asset_id: 433 }; },
+    };
+    const input = {
+      mode: 'text_clean_plate',
+      mask_asset_id: 432,
+      textKind: 'text_subtitle',
+      textRegions: [{
+        kind: 'text_subtitle',
+        shape: 'polygon',
+        points: [[0, 0], [100, 0], [100, 100]],
+      }],
+    };
+    invalidCase.mutate(input);
+    await assert.rejects(
+      () => generateCleanPlate(ctx, { shotId: 'shot-4', source_asset_id: 431, width: 1280, height: 720 }, input),
+      (error) => String(error.code || '').startsWith('REDRAW_TEXT_CLEAN_PLATE_'),
+      invalidCase.name,
+    );
+    assert.equal(providerCalls, 0);
+    fs.rmSync(root, { recursive: true, force: true });
+    state.db.close();
+  }
+});
+
+test('文字净景质量或 provider 失败保留源文件、清景为空且审批待处理', async () => {
+  for (const providerResult of [
+    {
+      status: 'completed',
+      asset_id: 433,
+      quality: { width: 640, height: 720, mask_area_changed: true, non_mask_similarity: 0.98 },
+    },
+    { status: 'failed', error: '供应商拒绝' },
+  ]) {
+    const state = setup();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-text-clean-plate-failure-'));
+    for (const [id, file] of [[431, 'source.png'], [432, 'mask.png'], [433, 'clean.png']]) {
+      fs.writeFileSync(path.join(root, file), file);
+      addAsset(state.db, id, file);
+    }
+    const ctx = {
+      ...context(state, root),
+      provider: async () => providerResult,
+    };
+    await assert.rejects(
+      () => generateCleanPlate(ctx, { shotId: 'shot-4', source_asset_id: 431, width: 1280, height: 720 }, {
+        mode: 'text_clean_plate',
+        mask_asset_id: 432,
+        textKind: 'text_subtitle',
+        textRegions: [{ kind: 'text_subtitle', shape: 'polygon', points: [[0, 0], [100, 0], [100, 100]] }],
+      }),
+    );
+    const row = state.db.prepare('SELECT status, approval_status, clean_plate_asset_id FROM redraw_assets').get();
+    assert.equal(row.status, 'failed');
+    assert.equal(row.approval_status, 'pending');
+    assert.equal(row.clean_plate_asset_id, null);
+    assert.equal(state.db.prepare('SELECT local_path FROM assets WHERE id = 431').get().local_path, 'source.png');
+    fs.rmSync(root, { recursive: true, force: true });
+    state.db.close();
+  }
 });
 
 test('没有可审计遮罩时不提交去人生成', async () => {
@@ -420,8 +568,11 @@ test('去人净景质量门禁失败时只退回本次积分', async () => {
       }, { source_asset_id: 411, width: 1280, height: 720 }, { mask_asset_id: 412 }),
       /质量/,
     );
-    const row = state.db.prepare('SELECT status, credit_reservation_id FROM redraw_assets').get();
+    const row = state.db.prepare('SELECT status, approval_status, clean_plate_asset_id, credit_reservation_id FROM redraw_assets').get();
     assert.equal(row.status, 'failed');
+    assert.equal(row.approval_status, 'pending');
+    assert.equal(row.clean_plate_asset_id, null);
+    assert.equal(state.db.prepare('SELECT local_path FROM assets WHERE id = 411').get().local_path, 'scene.png');
     assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'refunded');
     fs.rmSync(root, { recursive: true, force: true });
     state.db.close();
@@ -443,8 +594,11 @@ test('去人 provider 明确失败时按生成失败退款', async () => {
     }, { source_asset_id: 421 }, { mask_asset_id: 422 }),
     /供应商拒绝/,
   );
-  const row = state.db.prepare('SELECT status, error_code, credit_reservation_id FROM redraw_assets').get();
+  const row = state.db.prepare('SELECT status, approval_status, clean_plate_asset_id, error_code, credit_reservation_id FROM redraw_assets').get();
   assert.equal(row.status, 'failed');
+  assert.equal(row.approval_status, 'pending');
+  assert.equal(row.clean_plate_asset_id, null);
+  assert.equal(state.db.prepare('SELECT local_path FROM assets WHERE id = 421').get().local_path, 'scene.png');
   assert.equal(row.error_code, 'REDRAW_ASSET_GENERATION_FAILED');
   assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'refunded');
   fs.rmSync(root, { recursive: true, force: true });
@@ -490,6 +644,90 @@ test('finalizeAssetAttempt 按资产类型写入 voice 与 clean plate 目标字
   assert.equal(scene.asset_id, null);
   assert.equal(scene.status, 'needs_attention');
   assert.equal(scene.review_status, 'needs_review');
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('finalizeAssetAttempt allows provider-generated voice evidence without preselected voice id', () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-provider-voice-'));
+  fs.writeFileSync(path.join(root, 'voice.mp3'), 'voice');
+  addTypedAsset(state.db, 511, 'voice.mp3', 'audio', 'audio/mpeg', 3.2);
+  const ctx = context(state, root);
+  addDraftPlaceholder(state.db, state, {
+    kind: 'voice',
+    sourceRef: { id: 'v-provider-generated', is_cloned: false },
+  });
+  const voiceAttempt = createAssetAttempt(ctx, voiceInput(state, {
+    id: 'v-provider-generated',
+    is_cloned: false,
+  }));
+
+  const voice = finalizeAssetAttempt(ctx, voiceAttempt.id, voiceResult(511));
+
+  assert.equal(voice.voice_asset_id, 511);
+  assert.equal(voice.status, 'generated');
+  const sourcePayload = JSON.parse(state.db.prepare('SELECT source_ref_json FROM redraw_assets WHERE id = ?')
+    .get(voiceAttempt.id).source_ref_json);
+  assert.equal(sourcePayload.snapshot.voice_evidence.voice_id, 'fixture-voice');
+  assert.equal(credits.getReservation(state.db, voice.credit_reservation_id).status, 'confirmed');
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('finalizeAssetAttempt rejects provider voice id that differs from explicit expected voice id', () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-voice-mismatch-'));
+  fs.writeFileSync(path.join(root, 'voice.mp3'), 'voice');
+  addTypedAsset(state.db, 512, 'voice.mp3', 'audio', 'audio/mpeg', 3.2);
+  const ctx = context(state, root);
+  addDraftPlaceholder(state.db, state, {
+    kind: 'voice',
+    sourceRef: { id: 'v-expected', voice_id: 'expected-voice', is_cloned: false },
+  });
+  const voiceAttempt = createAssetAttempt(ctx, voiceInput(state, {
+    id: 'v-expected',
+    voice_id: 'expected-voice',
+    is_cloned: false,
+  }));
+
+  const voice = finalizeAssetAttempt(ctx, voiceAttempt.id, voiceResult(512));
+
+  assert.equal(voice.status, 'needs_attention');
+  const row = state.db.prepare('SELECT error_code, voice_asset_id, credit_reservation_id FROM redraw_assets WHERE id = ?')
+    .get(voiceAttempt.id);
+  assert.equal(row.error_code, 'REDRAW_VOICE_EVIDENCE_INCOMPLETE');
+  assert.equal(row.voice_asset_id, 512);
+  assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'held');
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('finalizeAssetAttempt rejects provider-generated voice evidence with empty voice id', () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-empty-voice-'));
+  fs.writeFileSync(path.join(root, 'voice.mp3'), 'voice');
+  addTypedAsset(state.db, 513, 'voice.mp3', 'audio', 'audio/mpeg', 3.2);
+  const ctx = context(state, root);
+  addDraftPlaceholder(state.db, state, {
+    kind: 'voice',
+    sourceRef: { id: 'v-empty', is_cloned: false },
+  });
+  const voiceAttempt = createAssetAttempt(ctx, voiceInput(state, {
+    id: 'v-empty',
+    is_cloned: false,
+  }));
+
+  const voice = finalizeAssetAttempt(ctx, voiceAttempt.id, voiceResult(513, 'provider-voice-empty', {
+    voice_id: '',
+  }));
+
+  assert.equal(voice.status, 'needs_attention');
+  const row = state.db.prepare('SELECT error_code, voice_asset_id, credit_reservation_id FROM redraw_assets WHERE id = ?')
+    .get(voiceAttempt.id);
+  assert.equal(row.error_code, 'REDRAW_VOICE_EVIDENCE_INCOMPLETE');
+  assert.equal(row.voice_asset_id, 513);
+  assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'held');
   fs.rmSync(root, { recursive: true, force: true });
   state.db.close();
 });

@@ -331,10 +331,15 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/redraw/projects', redraw.listProjects);
   r.post('/redraw/projects', redraw.createProject);
   r.get('/redraw/projects/:id', redraw.getProject);
+  r.put('/redraw/projects/:id/policy', redraw.updateProjectPolicy);
+  r.get('/redraw/projects/:id/events', redraw.listProjectEvents);
   r.post('/redraw/projects/:id/works', redraw.uploadSource, redraw.createWorks);
   r.get('/redraw/works/:id', redraw.getWork);
   r.put('/redraw/shots/:id', redraw.updateShot);
+  r.get('/redraw/shots/:id/reference-bundle', redraw.getReferenceBundle);
+  r.put('/redraw/shots/:id/reference-bundle', redraw.saveReferenceBundle);
   r.post('/redraw/shots/:id/generate', redraw.generateShot);
+  r.post('/redraw/shots/:id/native-audio-review', redraw.nativeAudioReview);
   r.post('/redraw/works/:id/generate-batch', redraw.generateBatch);
   r.get('/redraw/style-presets', redraw.listStylePresets);
   r.get('/redraw/locales', redraw.listLocales);
@@ -342,6 +347,7 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/redraw/works/:id/localization-quote', redraw.localizationQuote);
   r.post('/redraw/works/:id/versions', redraw.createVersion);
   r.get('/redraw/versions/:id/assets', redraw.listVersionAssets);
+  r.get('/redraw/assets/:id/preview/:variant', redraw.previewRedrawAsset);
   r.get('/redraw/versions/:id/voices', redraw.listProductionVoices);
   r.get('/redraw/versions/:versionId/voices/:voiceAssetId/preview', redraw.previewProductionVoice);
   r.post('/redraw/versions/:id/assets/batch-quote', redraw.assetBatchQuote);
@@ -355,6 +361,7 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/redraw/exports/:id/download/:kind', redraw.downloadExport);
   r.get('/redraw/versions/:id/generation-gate', redraw.generationGate);
   r.get('/redraw/assets/:id/quote', redraw.assetQuote);
+  r.put('/redraw/assets/:id/identity-pack', redraw.saveRedrawCharacterIdentityPack);
   r.put('/redraw/assets/:id', redraw.updateRedrawAsset);
   r.post('/redraw/assets/:id/voice', redraw.assignVoice);
   r.post('/redraw/assets/:id/generate', redraw.generateRedrawAsset);
@@ -583,6 +590,7 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/episodes/:episode_id/props/extract', prop.extractProps);
   r.post('/episodes/:episode_id/characters/extract', stub.episodeCharactersExtract);
   r.get('/episodes/:episode_id/storyboards', storyboards.episodeStoryboardsGet);
+  r.post('/episodes/:episode_id/storyboards/rematch-assets', storyboards.episodeStoryboardsRematchAssets);
   r.post('/episodes/:episode_id/finalize', drama.finalizeEpisode);
   r.get('/episodes/:episode_id/download', drama.downloadEpisodeVideo);
 

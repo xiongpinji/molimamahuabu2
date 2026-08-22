@@ -97,14 +97,14 @@
       />
       <video
         v-else-if="data.kind === 'video' && primaryResultUrl"
-        :src="videoPlaybackUrl"
+        :src="primaryResultUrl"
         class="node-media"
         controls
         muted
         playsinline
         title="双击全屏查看"
         @click.stop="scheduleMediaOpen"
-        @dblclick.stop="openMediaPreview(videoPlaybackUrl, 'video')"
+        @dblclick.stop="openMediaPreview(primaryResultUrl, 'video')"
       />
       <audio v-else-if="data.kind === 'audio' && primaryResultUrl" :src="primaryResultUrl" class="node-audio" controls />
       <div v-else class="media-empty">
@@ -145,7 +145,7 @@
       v-if="data.kind === 'video' && primaryResultUrl && data.savedAssetId && isLocalVideoSource"
       :node-id="id"
       :data="data"
-      :source-url="videoPlaybackUrl"
+      :source-url="primaryResultUrl"
       @suspend-editor="closeEditor"
     />
 
@@ -175,15 +175,6 @@
         <div v-if="data.kind === 'video'" class="video-mode-toolbar">
           <div class="video-mode-tabs" role="tablist" aria-label="视频参考模式">
             <button
-              v-if="!supportsAnyReferenceMode"
-              type="button"
-              class="active"
-              role="tab"
-              aria-selected="true"
-              disabled
-              title="当前模型仅开放纯提示词生成"
-            >纯提示词</button>
-            <button
               type="button"
               :class="{ active: videoReferenceMode === 'first-last' }"
               :disabled="!supportsFirstLastMode"
@@ -205,7 +196,7 @@
             >
               多图参考
             </button>
-            <button type="button" role="tab" aria-selected="false" disabled title="供应商未声明独立动作模仿接口">动作模仿</button>
+            <button type="button" role="tab" aria-selected="false" disabled title="当前生成链路尚未开放动作模仿">动作模仿</button>
             <button
               type="button"
               :class="{ active: videoReferenceMode === 'omni' }"
@@ -215,7 +206,7 @@
               :title="supportsOmniReferenceMode ? '使用图片、视频或音频参考' : '当前模型未开放全能参考'"
               @click="setVideoReferenceMode('omni')"
             >全能参考</button>
-            <button type="button" role="tab" aria-selected="false" disabled title="供应商未声明视频编辑接口">视频编辑</button>
+            <button type="button" role="tab" aria-selected="false" disabled title="当前生成链路尚未开放视频编辑">视频编辑</button>
           </div>
           <label class="camera-pill">
             <span>运镜</span>
@@ -370,7 +361,7 @@
             <span v-for="badge in currentModelCapabilityBadges" :key="badge">{{ badge }}</span>
           </div>
 
-          <label v-if="data.kind === 'image' || capability.resolutions?.length" class="editor-field">
+          <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
             <span>风格</span>
             <input v-model="draft.style" aria-label="风格" placeholder="电影感、写实…" @blur="saveDraft" />
           </label>
@@ -380,7 +371,7 @@
               <option v-for="value in capability.aspectRatios || []" :key="value" :value="value">{{ value }}</option>
             </select>
           </label>
-          <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
+          <label v-if="data.kind === 'image' || capability.resolutions?.length" class="editor-field">
             <span>清晰度</span>
             <select v-model="draft.resolution" aria-label="清晰度" @change="saveDraft">
               <option v-for="value in capability.resolutions || []" :key="value" :value="value">{{ String(value).toUpperCase() }}</option>
@@ -488,9 +479,8 @@
         <p v-if="data.status === 'failed' && data.error" class="editor-error" role="alert">{{ data.error }}</p>
 
         <div class="editor-footer">
-          <!-- canvas-credit-callout-v1 -->
-          <span v-if="canGenerate" class="billing-cost" aria-live="polite">
-            <template v-if="estimatedCredits">本次预计扣除 <strong>{{ estimatedCredits }}</strong> 积分</template>
+          <span v-if="canGenerate" class="billing-cost canvas-credit-callout-v1" aria-live="polite">
+            <template v-if="estimatedCredits != null">本次预计扣除 <strong>{{ estimatedCredits }}</strong> 积分</template>
             <template v-else>积分待管理员配置</template>
             <small>· {{ draft.quantity || 1 }} 次</small>
           </span>
@@ -518,7 +508,6 @@
       <div
         v-if="mediaPreviewUrl"
         class="image-lightbox nodrag nopan"
-        :class="{ 'is-pan-ready': mediaPreviewSpacePressed, 'is-panning': mediaPreviewDragging }"
         role="dialog"
         aria-modal="true"
         :aria-label="mediaPreviewKind === 'image' ? '图片全屏预览' : '视频全屏预览'"
@@ -531,15 +520,12 @@
           title="关闭"
           @click="closeMediaPreview"
         >×</button>
-        <span v-if="mediaPreviewKind === 'image'" class="lightbox-zoom-hint">Ctrl/⌘ + 滚轮缩放 · 空格 + 左键拖动 · {{ Math.round(mediaPreviewScale * 100) }}%</span>
+        <span v-if="mediaPreviewKind === 'image'" class="lightbox-zoom-hint">Ctrl/⌘ + 滚轮缩放 · {{ Math.round(mediaPreviewScale * 100) }}%</span>
         <img
           v-if="mediaPreviewKind === 'image'"
           :src="mediaPreviewUrl"
           :alt="data.title || '图片预览'"
-          draggable="false"
-          :style="{ transform: `translate3d(${mediaPreviewOffset.x}px, ${mediaPreviewOffset.y}px, 0) scale(${mediaPreviewScale})` }"
-          @dragstart.prevent
-          @pointerdown.stop="startMediaPreviewPan"
+          :style="{ transform: `scale(${mediaPreviewScale})` }"
         />
         <video v-else :src="mediaPreviewUrl" controls autoplay playsinline />
       </div>
@@ -562,11 +548,9 @@ import { imageModelCapabilityBadges } from '@/utils/canvasModelCapabilities'
 import {
   normalizeFreeCanvasVideoReferenceMode,
   normalizeFreeCanvasSubmissionReferences,
-  planFreeCanvasVideoReferences,
-  selectFreeCanvasVideoReferenceMode,
+  resolveFreeCanvasVideoReferenceInput,
 } from '@/utils/freeCanvasGeneration'
 import { videoDurationOptionsForCapability } from '@/utils/videoDuration'
-import { canvasResultPlaybackUrl } from '@/utils/mediaUrl'
 import { isProtectedStaticMediaUrl, loadProtectedMediaPreview } from '@/utils/protectedMediaPreview'
 import ImageNodeToolbar from './ImageNodeToolbar.vue'
 import VideoNodeToolbar from './VideoNodeToolbar.vue'
@@ -590,10 +574,6 @@ const editorPanelStyle = ref({})
 const mediaPreviewUrl = ref('')
 const mediaPreviewKind = ref('image')
 const mediaPreviewScale = ref(1)
-const mediaPreviewOffset = reactive({ x: 0, y: 0 })
-const mediaPreviewSpacePressed = ref(false)
-const mediaPreviewDragging = ref(false)
-let mediaPreviewPanOrigin = null
 let draftSaveTimer = null
 let draftDirty = false
 let editorPositionFrame = null
@@ -655,15 +635,10 @@ const supportsFirstLastMode = computed(() => (
 ))
 const supportsImageReferenceMode = computed(() => capabilityAllows('supportsImageReference'))
 const supportsOmniReferenceMode = computed(() => (
-  capability.value.supportsOmniReference === true
+  capability.value.supportsImageReference === true
   || capability.value.supportsVideoReference === true
   || capability.value.supportsAudioReference === true
   || capability.value?.declared === false
-))
-const supportsAnyReferenceMode = computed(() => (
-  supportsFirstLastMode.value
-  || supportsImageReferenceMode.value
-  || supportsOmniReferenceMode.value
 ))
 const canUploadReference = computed(() => {
   if (typeof ctx?.uploadFreeCanvasReferenceMedia !== 'function') return false
@@ -695,17 +670,6 @@ const capability = computed(() => (
 const currentModelCapabilityBadges = computed(() => (
   props.data.kind === 'image' ? imageModelCapabilityBadges(capability.value) : []
 ))
-const videoReferenceCapabilityKey = computed(() => [
-  capability.value.declared,
-  capability.value.supportsFirstFrame,
-  capability.value.supportsLastFrame,
-  capability.value.supportsImageReference,
-  capability.value.supportsVideoReference,
-  capability.value.supportsAudioReference,
-  capability.value.maxImageReferences ?? capability.value.maxReferences,
-  capability.value.maxVideoReferences,
-  capability.value.maxAudioReferences,
-].join('|'))
 const estimatedCredits = computed(() => ctx?.getFreeNodeEstimatedCredits?.(
   props.data.kind,
   draft.model,
@@ -736,9 +700,9 @@ const firstLastFrameSlots = computed(() => {
     { key: 'last', label: '尾帧', reference: imageReferences[1] || null },
   ]
 })
-const videoReferenceMode = computed(() => selectFreeCanvasVideoReferenceMode(
-  capability.value,
-  normalizeFreeCanvasVideoReferenceMode(draft.videoReferenceMode, inputReferences.value),
+const videoReferenceMode = computed(() => normalizeFreeCanvasVideoReferenceMode(
+  draft.videoReferenceMode,
+  inputReferences.value,
 ))
 const referenceCandidates = computed(() => (
   props.data.kind === 'video'
@@ -755,6 +719,7 @@ const filteredReferenceCandidates = computed(() => {
 })
 const showReferenceMention = computed(() => props.data.kind === 'video' && mentionStart.value >= 0)
 const readyReferenceCount = computed(() => inputReferences.value.filter((reference) => reference.ready).length)
+
 function referencePreviewUrl(reference) {
   const url = String(reference?.url || '')
   if (!url) return ''
@@ -798,17 +763,13 @@ async function refreshReferencePreviews() {
   referenceObjectUrls = nextObjectUrls
   referencePreviewUrls.value = next
 }
+
 const voiceListId = computed(() => `free-node-voices-${String(props.id || 'node').replace(/[^a-zA-Z0-9_-]/g, '-')}`)
 const resultUrls = computed(() => [...new Set([
   ...(Array.isArray(props.data.resultUrls) ? props.data.resultUrls : []),
   props.data.url,
 ].filter(Boolean))])
 const primaryResultUrl = computed(() => String(props.data.url || resultUrls.value[0] || ''))
-const videoPlaybackUrl = computed(() => canvasResultPlaybackUrl({
-  kind: props.data.kind,
-  url: primaryResultUrl.value,
-  savedAssetLocalPath: props.data.savedAssetLocalPath,
-}))
 const isLocalVideoSource = computed(() => Boolean(
   props.data.savedAssetLocalPath
   || primaryResultUrl.value.startsWith('/static/'),
@@ -857,7 +818,6 @@ async function onModelChange() {
   const resolutions = Array.isArray(capability.value.resolutions) ? capability.value.resolutions : []
   const normalizedResolution = String(draft.resolution || '').trim().toLowerCase()
   if (resolutions.length && !resolutions.includes(normalizedResolution)) draft.resolution = resolutions[0]
-  else if (capability.value.declared === true && Array.isArray(capability.value.resolutions) && !resolutions.length) draft.resolution = ''
   else if (normalizedResolution) draft.resolution = normalizedResolution
   const quantities = Array.isArray(capability.value.quantities) && capability.value.quantities.length
     ? capability.value.quantities.map(Number)
@@ -1231,7 +1191,6 @@ function openMediaPreview(url, kind = 'image') {
   if (!url) return
   openEditor()
   mediaPreviewScale.value = 1
-  resetMediaPreviewPan()
   mediaPreviewUrl.value = String(url)
   mediaPreviewKind.value = kind
 }
@@ -1247,50 +1206,7 @@ function scheduleMediaOpen() {
 function closeMediaPreview() {
   mediaPreviewUrl.value = ''
   mediaPreviewScale.value = 1
-  resetMediaPreviewPan()
   mediaPreviewKind.value = 'image'
-}
-
-function resetMediaPreviewPan() {
-  mediaPreviewOffset.x = 0
-  mediaPreviewOffset.y = 0
-  mediaPreviewSpacePressed.value = false
-  mediaPreviewDragging.value = false
-  mediaPreviewPanOrigin = null
-}
-
-function startMediaPreviewPan(event) {
-  if (mediaPreviewKind.value !== 'image') return
-  if (event.button !== 0 || !mediaPreviewSpacePressed.value) return
-  event.preventDefault()
-  mediaPreviewDragging.value = true
-  mediaPreviewPanOrigin = {
-    pointerId: event.pointerId,
-    clientX: event.clientX,
-    clientY: event.clientY,
-    offsetX: mediaPreviewOffset.x,
-    offsetY: mediaPreviewOffset.y,
-  }
-}
-
-function onMediaPreviewPointerMove(event) {
-  if (!mediaPreviewDragging.value || !mediaPreviewPanOrigin) return
-  if (event.pointerId !== mediaPreviewPanOrigin.pointerId) return
-  event.preventDefault()
-  mediaPreviewOffset.x = mediaPreviewPanOrigin.offsetX + event.clientX - mediaPreviewPanOrigin.clientX
-  mediaPreviewOffset.y = mediaPreviewPanOrigin.offsetY + event.clientY - mediaPreviewPanOrigin.clientY
-}
-
-function stopMediaPreviewPan(event) {
-  if (event?.pointerId != null && mediaPreviewPanOrigin?.pointerId !== event.pointerId) return
-  mediaPreviewDragging.value = false
-  mediaPreviewPanOrigin = null
-}
-
-function onMediaPreviewKeyup(event) {
-  if (event.code !== 'Space') return
-  mediaPreviewSpacePressed.value = false
-  stopMediaPreviewPan()
 }
 
 function onMediaPreviewWheel(event) {
@@ -1346,20 +1262,27 @@ async function setVideoReferenceMode(mode) {
   if (mode === 'first-last' && !supportsFirstLastMode.value) return
   if (mode === 'multi' && !supportsImageReferenceMode.value) return
   if (mode === 'omni' && !supportsOmniReferenceMode.value) return
-  const nextMode = normalizeFreeCanvasVideoReferenceMode(mode)
-  draft.videoReferenceMode = nextMode
+  draft.videoReferenceMode = normalizeFreeCanvasVideoReferenceMode(mode)
   await saveDraft()
-  syncVideoReferenceEdges(nextMode)
-}
-
-function syncVideoReferenceEdges(mode) {
-  planFreeCanvasVideoReferences(capability.value, mode, inputReferences.value)
-    .forEach(({ reference, input, enabled }) => {
-      const patch = {}
-      if (reference.slot !== input) patch.input = input
-      if (reference.enabled !== enabled) patch.enabled = enabled
-      if (Object.keys(patch).length) updateReference(reference, patch)
+  let imageIndex = 0
+  inputReferences.value.forEach((reference) => {
+    if (reference.kind === 'image') {
+      const index = imageIndex++
+      const input = resolveFreeCanvasVideoReferenceInput(draft.videoReferenceMode, index)
+      const enabled = draft.videoReferenceMode === 'multi'
+        || (draft.videoReferenceMode === 'omni' && capabilityAllows('supportsImageReference'))
+        || (draft.videoReferenceMode === 'first-last' && index === 0)
+        || (draft.videoReferenceMode === 'first-last' && index === 1)
+      updateReference(reference, { input, enabled })
+      return
+    }
+    updateReference(reference, {
+      enabled: draft.videoReferenceMode === 'omni'
+        && (reference.kind === 'video'
+          ? capabilityAllows('supportsVideoReference')
+          : capabilityAllows('supportsAudioReference')),
     })
+  })
 }
 
 function removeReference(reference) {
@@ -1403,11 +1326,6 @@ async function copyResultReference() {
 }
 
 function onEditorKeydown(event) {
-  if (event.code === 'Space' && mediaPreviewUrl.value && mediaPreviewKind.value === 'image') {
-    event.preventDefault()
-    mediaPreviewSpacePressed.value = true
-    return
-  }
   if (event.key !== 'Escape') return
   if (mediaOpenTimer) {
     window.clearTimeout(mediaOpenTimer)
@@ -1427,17 +1345,11 @@ function onEditorKeydown(event) {
 
 onMounted(() => {
   window.addEventListener('keydown', onEditorKeydown)
-  window.addEventListener('keyup', onMediaPreviewKeyup)
-  window.addEventListener('pointermove', onMediaPreviewPointerMove)
-  window.addEventListener('pointerup', stopMediaPreviewPan)
   window.addEventListener('resize', updateEditorPosition)
   if (isSelected.value) nextTick(startEditorPositionTracking)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onEditorKeydown)
-  window.removeEventListener('keyup', onMediaPreviewKeyup)
-  window.removeEventListener('pointermove', onMediaPreviewPointerMove)
-  window.removeEventListener('pointerup', stopMediaPreviewPan)
   window.removeEventListener('resize', updateEditorPosition)
   stopEditorPositionTracking()
   if (draftSaveTimer) window.clearTimeout(draftSaveTimer)
@@ -1451,10 +1363,30 @@ watch(() => props.data, () => {
   if (!draftDirty) syncDraft()
 }, { deep: true, immediate: true })
 watch(
-  () => `${videoReferenceCapabilityKey.value}|${videoReferenceMode.value}|${inputReferences.value.map((reference) => `${reference.edgeId}:${reference.kind}:${reference.slot}:${reference.enabled !== false}:${reference.ready !== false}:${reference.url || ''}:${reference.order || 0}:${reference.weight || 1}`).join('|')}`,
+  () => `${videoReferenceMode.value}|${inputReferences.value.map((reference) => `${reference.edgeId}:${reference.kind}:${reference.slot}:${reference.enabled !== false}`).join('|')}`,
   () => {
     if (props.data.kind !== 'video') return
-    syncVideoReferenceEdges(videoReferenceMode.value)
+    let imageIndex = 0
+    inputReferences.value.forEach((reference) => {
+      const isImage = reference.kind === 'image'
+      const index = isImage ? imageIndex++ : -1
+      const input = isImage
+        ? resolveFreeCanvasVideoReferenceInput(videoReferenceMode.value, index)
+        : reference.slot
+      const enabled = isImage
+        ? videoReferenceMode.value === 'multi'
+          || (videoReferenceMode.value === 'omni' && capabilityAllows('supportsImageReference'))
+          || (videoReferenceMode.value === 'first-last' && index === 0)
+          || (videoReferenceMode.value === 'first-last' && index === 1)
+        : videoReferenceMode.value === 'omni'
+          && (reference.kind === 'video'
+            ? capabilityAllows('supportsVideoReference')
+            : capabilityAllows('supportsAudioReference'))
+      const patch = {}
+      if (reference.slot !== input) patch.input = input
+      if (reference.enabled !== enabled) patch.enabled = enabled
+      if (Object.keys(patch).length) updateReference(reference, patch)
+    })
   },
   { flush: 'post', immediate: true },
 )
@@ -2077,7 +2009,6 @@ watch([inputReferences, referenceCandidates], refreshReferencePreviews, { deep: 
   position: absolute;
   top: 22px;
   right: 22px;
-  z-index: 2;
   display: grid;
   width: 42px;
   height: 42px;
@@ -2091,10 +2022,8 @@ watch([inputReferences, referenceCandidates], refreshReferencePreviews, { deep: 
   cursor: pointer;
 }
 .image-lightbox > img,
-.image-lightbox > video { max-width: calc(100vw - 56px); max-height: calc(100vh - 56px); border-radius: 12px; object-fit: contain; }
-.image-lightbox > img { transform-origin: center; transition: transform 100ms ease-out; user-select: none; }
-.image-lightbox.is-pan-ready > img { cursor: grab; }
-.image-lightbox.is-panning > img { cursor: grabbing; transition: none; }
+.image-lightbox > video { max-width: 100%; max-height: 100%; border-radius: 12px; object-fit: contain; }
+.image-lightbox > img { transform-origin: center; transition: transform 100ms ease-out; }
 .lightbox-zoom-hint {
   position: absolute;
   left: 50%;

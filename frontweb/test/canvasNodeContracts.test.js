@@ -28,8 +28,15 @@ test('自由节点连接只允许真实模型能够消费的输入契约', () =>
     allowed: true,
     output: 'audio',
     input: 'reference-audio',
-    label: '音频 → 视频参考音频',
+    label: '音频 → 视频音色参考',
     slots: ['reference-audio'],
+  })
+  assert.deepEqual(resolveCanvasNodeConnection('video', 'video'), {
+    allowed: true,
+    output: 'video',
+    input: 'reference-video',
+    label: '视频 → 视频动作参考',
+    slots: ['reference-video'],
   })
 })
 

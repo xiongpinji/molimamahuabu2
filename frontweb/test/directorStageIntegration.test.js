@@ -12,9 +12,8 @@ test('DR-005 镜头可绑定持久化相机并驱动主相机', () => {
   assert.match(stageSource, /selectedShot\.cameraId/)
   assert.match(stageSource, /timeline\.value\.cameras\.find\(\(camera\) => camera\.id === shot\.cameraId\)/)
   assert.match(stageSource, /camera\.fov = Number\(boundCamera\.fov\)/)
-  assert.match(stageSource, /const position = cameraObject\.transform\.position/)
-  assert.match(stageSource, /const keepsTargetLocked = Boolean\(lookAtObject\) \|\| boundCamera\.lookAtMode === 'manual'/)
-  assert.match(stageSource, /setCamera\(position, target, keepsTargetLocked \? null : boundCamera\.quaternion\)/)
+  assert.match(stageSource, /resolveDirectorCameraFrame\(timeline\.value, boundCamera\)/)
+  assert.match(stageSource, /setCamera\(frame\.position, frame\.target, frame\.quaternion\)/)
   assert.match(stageSource, /camera\.quaternion\.set\(\.\.\.quaternion\)/)
 })
 
@@ -115,7 +114,7 @@ test('G005 时间轴支持持久化循环播放并在非循环结尾停止', () 
 })
 
 test('G005 姿势预设和语义控制写入真实骨骼持久化状态', () => {
-  for (const name of ['站立', 'T型', '行走', '跑步', '坐姿', '蹲下', '单膝跪', '双膝跪', '叉腰', '倚靠', '鞠躬', '思考', '格斗', '踢球', '投掷', '推', '招手', '指向', '抱臂', '看手机']) {
+  for (const name of ['站立', 'T型', '行走', '跑步', '坐姿', '蹲下', '单膝跪', '双膝跪', '叉腰', '倚靠', '鞠躬', '思考', '格斗', '踢球', '投掷', '推进', '招手', '伸手', '抱臂', '看手机']) {
     assert.ok(stageSource.includes(`pose('${name}'`), `缺少姿势预设：${name}`)
   }
   for (const label of ['身体前倾', '身体转身', '身体侧倾', '躯干前倾', '躯干扭转', '躯干侧倾', '头部点头', '头部转头', '头部歪头']) {
@@ -133,18 +132,20 @@ test('G005 自动关键帧驱动对象与绑定相机的插值运动', () => {
   assert.match(stageSource, /upsertMotionKeyframe/)
   assert.match(stageSource, /interpolateMotionTransform/)
   assert.match(stageSource, /object\.position\.set\(\.\.\.transform\.position\)/)
-  assert.match(stageSource, /if \(activeCamera && timeline\.value\.sequence\.animationViewMode === 'follow'\)[\s\S]*?setCamera\(transform\.position, target\)/)
+  assert.match(stageSource, /const activeCamera = timeline\.value\.cameras\.find/)
+  assert.match(stageSource, /resolveDirectorCameraFrame\(timeline\.value, activeCamera, transform\.position\)/)
+  assert.match(stageSource, /setCamera\(frame\.position, frame\.target, frame\.quaternion\)/)
   assert.match(stageSource, /class="motion-keyframe"/)
 })
 
 test('G005 程序化角色库、空对象和群众阵列进入统一场景系统', () => {
-  for (const label of ['标准素体', '女性素体', '宽厚素体', '壮实素体', '纤细素体', '少年素体', '儿童素体', '二头身', '+ 群众阵列', '+ 新建组']) {
+  for (const label of ['男性素体', '女性素体', '宽厚素体', '健壮素体', '纤细素体', '少年素体', '儿童素体', '二头身', '群众 3×3', '+ 空对象']) {
     assert.ok(stageSource.includes(label), `缺少创建入口：${label}`)
   }
   assert.match(stageSource, /function makeHumanoidObject/)
   assert.match(stageSource, /function addRoleArchetype/)
-  assert.match(stageSource, /function confirmCrowdArray/)
-  assert.match(stageSource, /appendConfiguredCrowd/)
+  assert.match(stageSource, /function addCrowd\(\)/)
+  assert.match(stageSource, /for \(let index = 0; index < 9; index \+= 1\)/)
   assert.match(stageSource, /entry\.type === 'humanoid'/)
   assert.match(stageSource, /parentId: groupId/)
 })
@@ -188,8 +189,9 @@ test('G005 相机支持跟随、注视目标、构图线和机位截图', () => 
   for (const label of ['相机跟随目标', '相机注视模式', '注视模式', '构图辅助线', '机位截图回写画布']) {
     assert.ok(stageSource.includes(label), `缺少相机交互：${label}`)
   }
-  assert.match(stageSource, /boundCamera\.followTargetId/)
-  assert.match(stageSource, /boundCamera\.lookAtTargetId/)
+  assert.match(stageSource, /selectedCamera\.followTargetId/)
+  assert.match(stageSource, /selectedCamera\.value\.lookAtTargetId/)
+  assert.match(stageSource, /resolveDirectorCameraFrame/)
   assert.match(stageSource, /class="composition-guides"/)
   assert.match(stageSource, /@click="captureToCanvasAsset"/)
 })
@@ -274,12 +276,13 @@ test('图片节点导演台入口显示当前参考图并保持其他入口兼�
   assert.match(stageSource, /function applyEntryContext\(\)/)
   assert.match(canvasSource, /const directorStageEntry = ref\(null\)/)
   assert.match(canvasSource, /:entry-context="directorStageEntry"/)
-  assert.match(canvasSource, /directorStageEntry\.value = DIRECTOR_STAGE_ENTRY_MODES\.has\(entryContext\?\.mode\)/)
+  assert.match(canvasSource, /const resolvedEntry = DIRECTOR_STAGE_ENTRY_MODES\.has\(entryContext\?\.mode\)/)
+  assert.match(canvasSource, /directorStageEntry\.value = DIRECTOR_STAGE_ENTRY_MODES\.has\(resolvedEntry\?\.mode\)/)
   assert.match(canvasSource, /directorStageEntry\.value = null/)
 })
 
 test('图片节点灯光入口定位真实 3D 灯光控制且不修改原图', () => {
-  assert.match(canvasSource, /const DIRECTOR_STAGE_ENTRY_MODES = new Set\(\['director_stage', 'lighting', 'angle', 'pose'\]\)/)
+  assert.match(canvasSource, /const DIRECTOR_STAGE_ENTRY_MODES = new Set\(\['director_stage', 'lighting', 'angle', 'pose', 'visual_direction'\]\)/)
   assert.match(canvasSource, /DIRECTOR_STAGE_ENTRY_MODES\.has\(entryContext\?\.mode\)/)
   assert.match(stageSource, /const lightingEntry = computed\(\(\) => props\.entryContext\?\.mode === 'lighting'\)/)
   assert.match(stageSource, /3D 灯光预演，不直接修改原图/)
@@ -293,7 +296,7 @@ test('图片节点灯光入口定位真实 3D 灯光控制且不修改原图', (
 })
 
 test('图片节点角度入口定位真实机位控制且不静默创建机位', () => {
-  assert.match(canvasSource, /const DIRECTOR_STAGE_ENTRY_MODES = new Set\(\['director_stage', 'lighting', 'angle', 'pose'\]\)/)
+  assert.match(canvasSource, /const DIRECTOR_STAGE_ENTRY_MODES = new Set\(\['director_stage', 'lighting', 'angle', 'pose', 'visual_direction'\]\)/)
   assert.match(stageSource, /const angleEntry = computed\(\(\) => props\.entryContext\?\.mode === 'angle'\)/)
   assert.match(stageSource, /3D 机位角度预演，不直接修改原图/)
   assert.match(stageSource, /ref="addCameraButtonRef"/)
@@ -336,8 +339,8 @@ test('DR-014 导演台卸载显式释放监听器、播放帧、场景对象和�
 })
 
 test('导演台提供人物创建、女性体型切换与自由旋转入口', () => {
-  assert.match(stageSource, /@click="addRoleArchetype\(ROLE_ARCHETYPES\[0\]\)">\+ 人物/)
-  assert.match(stageSource, /v-for="role in \[ROLE_ARCHETYPES\[0\], ROLE_ARCHETYPES\[1\]/)
+  assert.match(stageSource, /v-for="role in ROLE_ARCHETYPES"/)
+  assert.match(stageSource, /@click="addRoleArchetype\(ROLE_ARCHETYPES\[1\]\)"/)
   assert.match(stageSource, /\{ mode: 'rotate', label: '旋转工具'/)
   assert.match(stageSource, /:aria-label="tool\.label" @click="setTransformMode\(tool\.mode\)"/)
 })

@@ -6,6 +6,7 @@ const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const billing = require('../src/services/redrawBillingService');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
+const ICREAT_MINI_MODEL = 'bytedance/seedance-2-0-mini';
 
 function setup() {
   const db = new Database(':memory:');
@@ -92,6 +93,7 @@ test('源片 fingerprint、shot 边界和 segment hash 进入快照且边界变�
       start_ms: 1000,
       end_ms: 7000,
       segment_sha256: 'a'.repeat(64),
+      audio_mode: 'strip',
     };
     const first = billing.reserveShotGeneration(db, shotInput({ count: 1, sourceConditioning }));
     const second = billing.reserveShotGeneration(db, shotInput({
@@ -244,6 +246,35 @@ test('按次计费模型也拒绝 5 到 15 秒之外或非整数的 duration 且
     } finally {
       db.close();
     }
+  }
+});
+
+test('仅精确 iCreat Mini 可按 4 秒报价且其它模型仍拒绝 4 秒', () => {
+  const db = setup();
+  try {
+    prices.set(db, ICREAT_MINI_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    const quote = billing.quoteShotGeneration(db, shotInput({
+      model: ICREAT_MINI_MODEL,
+      duration: 4,
+      resolution: '480p',
+      count: 1,
+    }));
+    assert.equal(quote.success, true);
+    assert.equal(quote.unit_amount, 16);
+    assert.equal(quote.snapshot.duration, 4);
+
+    for (const model of ['bytedance/seedance-2-0-fast', 'seedance 2.0']) {
+      assert.throws(
+        () => billing.quoteShotGeneration(db, shotInput({ model, duration: 4, count: 1 })),
+        (error) => error.code === 'INVALID_VIDEO_DURATION',
+      );
+    }
+  } finally {
+    db.close();
   }
 });
 

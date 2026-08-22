@@ -23,8 +23,8 @@
 - [x] 核对生产实时配置、目录和平台价格，不重复建模或覆盖无关配置。
 - [x] Mini 真实生成成功且结果文件可读取。
 - [x] Fast 真实生成成功且结果文件可读取。
-- [x] 后端专项测试、全量测试和前端生产构建通过。
-- [ ] 双轴代码复审通过。
+- [x] 后端专项测试、669 项全量测试和前端生产构建通过。
+- [x] 双轴代码复审通过。
 - [x] 从实时生产 `current` 构建候选，共享门禁、备份、活动任务和生产预检通过。
 - [x] 生产写入两模型配置并从公开模型、画布模型、计费模型三套目录回读可选择状态。
 - [x] 切换后健康、日志与 AI 音乐隔离检查通过。
@@ -47,20 +47,24 @@
 
 ## 修复与验证
 
+- 首轮规格复审发现仅修复计费层仍不完整：视频创建和实际执行层会继续按通用 5 秒下限拒绝 iCreat 4 秒任务。先新增完整创建链失败用例，再仅对两个目标模型把创建、配置默认值和执行层下限放宽到 4 秒。
+- 新回归测试覆盖 Mini / Fast 的 4 秒任务创建、240 积分预扣和进入供应商调用；本地目标测试组合 45/45 通过。
 - 修复 `calculateCharge()` 原先把 iCreat 的官方 4 秒时长误判为无效的问题，仅对两个目标模型放宽下限为 4 秒，并新增 Mini / Fast 4 秒计费回归测试。
-- 本地专项：`modelPrice`、`icreatVideo`、`canvasModelCatalogService`、`videoProviderVerification` 共 31 项通过。
 - 本地后端全量 `npm test` 退出码 0；前端生产 `npm run build` 通过；积分卡片审计确认源码和构建产物均保留 `canvas-credit-callout-v1`。
 - 前端历史静态测试仍有 6 个与本次无关的 `canvasInteractionEntrypoints` 旧正则断言失败；本次没有修改前端源码，也没有把这些历史失败宣称为通过。
-- 候选发布中专项测试 26/26 通过，生产预检、数据库完整性、模型价格检查和共享积分门禁通过。
+- 最终候选发布中专项测试 40/40 通过，生产预检、数据库完整性、模型价格检查和共享积分门禁通过。
+- 首轮规格复审发现并拦截 4 秒创建链遗漏；修复后再次执行标准轴和规格轴复审，两轴均为 `APPROVE`、0 个剩余问题。
 
 ## 生产发布证据
 
-- 修改前数据库备份：`/opt/moli-drama/shared/backups/database-20260804T150100134Z.sqlite`，8,040,448 字节，SHA-256 `18d2799bd5af34e102cd05ec1b2262309d0eea7bb52acae5f7346190705fadc4`，备份验证有效、完整性 `ok`。
+- 配置写入前数据库备份：`/opt/moli-drama/shared/backups/database-20260804T150100134Z.sqlite`，8,040,448 字节，SHA-256 `18d2799bd5af34e102cd05ec1b2262309d0eea7bb52acae5f7346190705fadc4`，备份验证有效、完整性 `ok`。
+- 最终切换前数据库备份：`/opt/moli-drama/shared/backups/database-20260804T153137182Z.sqlite`，8,040,448 字节，SHA-256 `d97bf4527f14bc9ac010255db875ebe644cc927692e2eecbeb33ea1c7d976369`，独立验证 `valid=true`、完整性 `ok`。
 - 原生产 release：`/opt/moli-drama/releases/djpsd-face-mask-eb588c0-20260804T184033CST`。
-- 新生产 release：`/opt/moli-drama/releases/icreat-seedance-4s-20260804T230950CST`，从切换时实时 `current` 克隆，仅覆盖本任务源码和测试，并通过共享保护激活器 CAS 切换。
-- 发布后 `moli-drama.service` 为 `active`，`MainPID=2033333`、`NRestarts=0`，工作目录指向 `/opt/moli-drama/current/backend-node`；本机健康接口正常，正式站 HTTP 200，近十分钟错误日志为 0，数据库完整性 `ok`，图片和视频活动生成任务均为 0。
+- 首次接入 release：`/opt/moli-drama/releases/icreat-seedance-4s-20260804T230950CST`。
+- 最终生产 release：`/opt/moli-drama/releases/icreat-seedance-4s-runtime-20260804T232722CST`，从切换时实时 `current` 克隆，仅覆盖本任务源码和测试，并通过共享保护激活器 CAS 切换。
+- 发布后 `moli-drama.service` 为 `active`，`MainPID=2039716`、`NRestarts=0`，工作目录指向 `/opt/moli-drama/current/backend-node`；本机健康接口正常，正式站 HTTP 200，近十分钟错误日志为 0，数据库完整性 `ok`，图片和视频活动生成任务均为 0。
 - AI 音乐 `server.js` / `worker.js` 仍为 2026-07-07 启动的 PID `206874` / `206895`，8787 端口继续监听，未被本次发布重启或修改。
 
 ## 当前结论
 
-充值后的两次真实生成和结果文件读取均已通过；两个 iCreat Seedance 2.0 模型已经以管理员显示名、本站积分价格和已核实能力进入生产画布目录。4 秒合法时长已修复并部署，当前生产服务与受保护积分卡片合同正常。
+充值后的两次真实生成和结果文件读取均已通过；两个 iCreat Seedance 2.0 模型已经以管理员显示名、本站积分价格和已核实能力进入生产画布目录。4 秒任务已在计费、创建和执行三层修复并部署，当前生产服务与受保护积分卡片合同正常。

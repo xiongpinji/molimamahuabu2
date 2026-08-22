@@ -5,8 +5,10 @@ import {
   canvasModelCapability,
   canvasModelEntry,
   canvasModelOptions,
+  canvasModelRoute,
   estimateCanvasCredits,
   filterCanvasCatalogFallbackModels,
+  imageModelCapabilityBadges,
   normalizeCanvasModelCatalog,
 } from '../src/utils/canvasModelCapabilities.js'
 import * as canvasModelCapabilities from '../src/utils/canvasModelCapabilities.js'
@@ -95,8 +97,8 @@ test('canvas model options show admin labels but retain model IDs and price the 
   ]
 
   assert.deepEqual(canvasModelOptions(catalog, 'image'), [
-    { value: 'image-v1', label: '写实图片 Pro' },
-    { value: 'image-v2', label: 'image-v2' },
+    { value: 'image-v1', label: '写实图片 Pro｜文生图 · 不支持参考图' },
+    { value: 'image-v2', label: 'image-v2｜文生图 · 不支持参考图' },
   ])
   assert.equal(canvasModelEntry(catalog, 'image', '').model, 'image-v1')
   assert.equal(canvasModelEntry(catalog, 'image', 'missing'), null)
@@ -201,9 +203,71 @@ test('严格目录图片模型不会从旧 AI 配置回退重新暴露', () => {
   assert.deepEqual(filterCanvasCatalogFallbackModels(['nano-banana-2'], 'video'), ['nano-banana-2'])
 })
 
-test('video capability fallback stays generic while protected models require the verified catalog', () => {
-  assert.deepEqual(canvasModelCapability([], 'video', 'legacy-video').durations, [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
-  assert.deepEqual(filterCanvasCatalogFallbackModels(['legacy-video', 'lingjing-video-v1'], 'video'), ['legacy-video'])
+test('video capability fallback includes every supported duration from 5 to 15 seconds', () => {
+  assert.deepEqual(canvasModelCapability([], 'video', 'lingjing-video-v1').durations, [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+})
+
+test('model catalog keeps a strict opaque config route out of user-facing labels', () => {
+  const catalog = normalizeCanvasModelCatalog([
+    { kind: 'image', model: 'image-a', label: '图片模型 A', config_id: 42 },
+    { kind: 'image', model: 'image-b', label: '图片模型 B', config_id: '0043' },
+    { kind: 'image', model: 'bad-boolean', config_id: true },
+    { kind: 'image', model: 'bad-exponent', config_id: '1e2' },
+    { kind: 'image', model: 'bad-decimal', config_id: '1.0' },
+    { kind: 'image', model: 'bad-sign', config_id: '+44' },
+    { kind: 'image', model: 'bad-zero', config_id: 0 },
+    { kind: 'image', model: 'bad-unsafe', config_id: Number.MAX_SAFE_INTEGER + 1 },
+  ])
+
+  assert.equal(canvasModelRoute(catalog, 'image', 'image-a').configId, 42)
+  assert.equal(canvasModelRoute(catalog, 'image', 'image-b').configId, 43)
+  assert.equal(canvasModelRoute(catalog, 'image', 'image-a').label, '图片模型 A')
+  for (const model of ['bad-boolean', 'bad-exponent', 'bad-decimal', 'bad-sign', 'bad-zero', 'bad-unsafe']) {
+    assert.equal(canvasModelRoute(catalog, 'image', model).configId, null)
+  }
+  assert.equal(catalog.some((item) => item.label.includes('#42') || item.label.includes('config')), false)
+})
+
+test('image model options and selected details explain each model capability range', () => {
+  const catalog = [
+    {
+      kind: 'image', model: 'gpt-image-2', label: 'GPT Image 2',
+      capabilities: {
+        maxReferences: 20,
+        supportsImageReference: true,
+        resolutions: ['1K', '2K'],
+        aspectRatios: ['16:9', '9:16', '1:1'],
+        quantities: [1],
+      },
+    },
+    {
+      kind: 'image', model: 'fumin-gpt-image-2-4K', label: 'fumin GPT Image 2 4K',
+      capabilities: {
+        maxReferences: 0,
+        supportsImageReference: false,
+        resolutions: ['4K'],
+        quantities: [1],
+      },
+    },
+  ]
+
+  assert.deepEqual(canvasModelOptions(catalog, 'image').map(({ label }) => label), [
+    'GPT Image 2｜文生图 · 图生图（20 张参考图）',
+    'fumin GPT Image 2 4K｜文生图 · 不支持参考图',
+  ])
+  assert.deepEqual(imageModelCapabilityBadges(catalog[0].capabilities), [
+    '文生图',
+    '图生图：最多 20 张参考图',
+    '清晰度：1K / 2K',
+    '画面比例：16:9 / 9:16 / 1:1',
+    '每次 1 张',
+  ])
+  assert.deepEqual(imageModelCapabilityBadges(catalog[1].capabilities), [
+    '文生图',
+    '参考图：不支持',
+    '清晰度：4K',
+    '每次 1 张',
+  ])
 })
 
 test('local canvas binding preserves existing project nodes and remaps collisions', () => {

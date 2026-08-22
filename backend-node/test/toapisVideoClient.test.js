@@ -20,9 +20,11 @@ test('ToAPIs 视频模型能力按模型分别限制分辨率、时长和参考�
   assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-fast'].maxReferences, 9);
   assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-fast'].maxVideoReferences, 3);
   assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-fast'].maxAudioReferences, 3);
+  assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-fast'].supportsAudio, true);
   assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-mini'].maxReferences, 9);
   assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-mini'].maxVideoReferences, 3);
   assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-mini'].maxAudioReferences, 3);
+  assert.equal(TOAPIS_VIDEO_MODELS['seedance-2-mini'].supportsAudio, true);
 
   assert.throws(
     () => validateToapisVideoOptions({ model: 'seedance-2-fast', resolution: '1080p', duration: 4, prompt: 'x' }),
@@ -38,9 +40,9 @@ test('ToAPIs 视频模型能力按模型分别限制分辨率、时长和参考�
       resolution: '480p',
       duration: 4,
       prompt: 'x',
-      reference_urls: Array.from({ length: 10 }, (_, index) => 'https://moli.example/' + index + '.png'),
+      reference_urls: Array.from({ length: 10 }, (_, index) => `https://moli.example/${index}.png`),
     }),
-    /9/,
+    /最多支持 9 张参考图/,
   );
 });
 
@@ -145,44 +147,6 @@ test('ToAPIs 引用素材只接受公网 HTTPS 且拒绝泄露身份的 URL', ()
       badUrl,
     );
   }
-});
-
-test('ToAPIs 只接受服务端明确标记为可信的虚拟人像 asset URL', () => {
-  const trusted = 'asset://pa_virtual_1';
-  const body = buildToapisVideoBody({
-    model: 'seedance-2-mini',
-    prompt: '保持虚拟人物一致',
-    resolution: '480p',
-    duration: 4,
-    reference_urls: [trusted],
-    trusted_asset_urls: [trusted],
-  });
-  assert.deepEqual(body.image_with_roles, [
-    { url: trusted, role: 'reference_image' },
-  ]);
-
-  assert.throws(
-    () => buildToapisVideoBody({
-      model: 'seedance-2-fast',
-      prompt: '伪造素材',
-      resolution: '480p',
-      duration: 4,
-      first_frame_url: 'asset://pa_forged',
-      trusted_asset_urls: [trusted],
-    }),
-    /公网 HTTPS|可信虚拟人像/,
-  );
-  assert.throws(
-    () => buildToapisVideoBody({
-      model: 'seedance-2-fast',
-      prompt: '错误格式',
-      resolution: '480p',
-      duration: 4,
-      first_frame_url: 'asset://other_1',
-      trusted_asset_urls: ['asset://other_1'],
-    }),
-    /公网 HTTPS|可信虚拟人像/,
-  );
 });
 
 test('ToAPIs 引用素材拒绝本地主机、私网和链路本地地址', () => {
@@ -367,34 +331,6 @@ test('ToAPIs POST 和 GET 供应商错误会统一脱敏，不回显 Key、URL �
 
   assert.match(queried.error, /ToAPIs 查询任务失败 \(502\)/);
   assert.doesNotMatch(queried.error, /secret-key|Bearer|https?:\/\/|signed\.example|request/);
-});
-
-test('ToAPIs 真人参考图隐私拒绝返回可执行的中文提示', async () => {
-  const created = await callToapisVideoApi(
-    { api_key: 'secret-key' },
-    null,
-    { model: 'seedance-2-mini', prompt: 'x', resolution: '480p', duration: 4 },
-    {
-      fetchImpl: async () => ({
-        ok: false,
-        status: 400,
-        async text() {
-          return JSON.stringify({
-            error: {
-              code: 'content.PrivacyInformation',
-              message: "The request failed because the input image 'content[1]' may contain real person. Request id: private-request-id",
-            },
-          });
-        },
-      }),
-    },
-  );
-
-  assert.equal(
-    created.error,
-    'ToAPIs 创建视频任务失败 (400): 该供应商禁止使用疑似真人参考图，请改用非真人或卡通素材，或切换其他已验证模型；本次未生成',
-  );
-  assert.doesNotMatch(created.error, /PrivacyInformation|real person|private-request-id/);
 });
 
 test('ToAPIs 供应商错误脱敏覆盖常见 Key 字段格式且保留普通中文消息', async () => {

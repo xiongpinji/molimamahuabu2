@@ -397,15 +397,6 @@ test('批量换钥只更新实际变化的非删除配置并精准失效其全�
 test('批量换钥失效证据失败时整体回滚密钥与验证状态', () => {
   const { db, configs } = fixture();
   try {
-    const columns = new Set(db.prepare('PRAGMA table_info(ai_service_configs)').all()
-      .map((column) => column.name));
-    for (const [name, definition] of [
-      ['verification_checked_at', 'TEXT'],
-      ['verification_error', 'TEXT'],
-      ['verified_capabilities', 'TEXT'],
-    ]) {
-      if (!columns.has(name)) db.exec(`ALTER TABLE ai_service_configs ADD COLUMN ${name} ${definition}`);
-    }
     const before = db.prepare(`SELECT id, api_key, verification_status, verified_at, updated_at
       FROM ai_service_configs ORDER BY id`).all();
     db.exec(`CREATE TRIGGER reject_bulk_key_invalidation

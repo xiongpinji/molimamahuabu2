@@ -1,4 +1,4 @@
-const { createHash } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 
 const creditLedger = require('./creditLedgerService');
 const localizationService = require('./localizationService');
@@ -80,6 +80,84 @@ function getOwnedWork(db, input) {
   return work;
 }
 
+function safeAutomationDecision(value, evidenceHash, versionId, currentPolicyVersion) {
+  const result = value?.automation_decision ? value : null;
+  const decision = result?.automation_decision || value;
+  if (!decision || typeof decision !== 'object' || Array.isArray(decision)) return null;
+  if (!['advance', 'needs_review', 'blocked'].includes(decision.action)) return null;
+  if (!['auto', 'safe'].includes(decision.effective_mode)) return null;
+  if (!Array.isArray(decision.reason_codes)) return null;
+  if (typeof decision.evidence_hash !== 'string' || decision.evidence_hash !== evidenceHash) return null;
+  if (typeof decision.effective_analysis_state !== 'string') return null;
+  if (Number(result?.version_id) !== Number(versionId)) return null;
+  if (Number(decision.policy_version) !== Number(currentPolicyVersion)) return null;
+  return {
+    action: decision.action,
+    effective_mode: decision.effective_mode,
+    reason_codes: [...decision.reason_codes].map(String).sort(),
+    policy_version: Number(decision.policy_version),
+    evidence_hash: decision.evidence_hash,
+    effective_analysis_state: decision.effective_analysis_state,
+  };
+}
+
+function getAnalysisAutomationDecision(db, input = {}) {
+  const normalized = {
+    ...input,
+    ...ownerFromInput(input),
+    workId: Number(input.workId ?? input.work_id),
+  };
+  let work;
+  try {
+    work = getOwnedWork(db, normalized);
+  } catch (error) {
+    if (error.code === 'REDRAW_LOCALIZATION_WORK_NOT_FOUND') return null;
+    throw error;
+  }
+  if (!work.task_id) return null;
+  if (!work.project_id) return null;
+  const sourceVersion = db.prepare(`
+    SELECT id, facts_hash
+    FROM redraw_versions
+    WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+      AND locale = 'source'
+      AND source_facts_json IS NOT NULL AND TRIM(source_facts_json) != ''
+      AND deleted_at IS NULL
+    ORDER BY CASE WHEN version = ? THEN 0 ELSE 1 END, version DESC, id DESC
+    LIMIT 1
+  `).get(normalized.workId, normalized.tenantId, normalized.userId, Number(work.current_version || 0));
+  if (!sourceVersion?.facts_hash) return null;
+  const project = db.prepare(`
+    SELECT policy_version
+    FROM redraw_projects
+    WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+    LIMIT 1
+  `).get(Number(work.project_id), normalized.tenantId, normalized.userId);
+  if (!project) return null;
+  const task = db.prepare(`
+    SELECT result
+    FROM async_tasks
+    WHERE id = ? AND type = 'redraw_analysis'
+      AND resource_id = ? AND tenant_id = ? AND user_id = ?
+      AND deleted_at IS NULL
+    LIMIT 1
+  `).get(String(work.task_id), String(normalized.workId), normalized.tenantId, normalized.userId);
+  const parsed = parseJson(task?.result, null);
+  return safeAutomationDecision(parsed, sourceVersion.facts_hash, sourceVersion.id, project.policy_version);
+}
+
+function analysisGateQuote(db, input) {
+  const decision = getAnalysisAutomationDecision(db, input);
+  if (!decision || decision.action !== 'advance') {
+    return {
+      priced: false,
+      code: 'REDRAW_LOCALIZATION_ANALYSIS_NOT_ADVANCED',
+      automation_decision: decision,
+    };
+  }
+  return null;
+}
+
 function buildLocalizationSnapshot(db, input = {}) {
   const normalized = {
     ...input,
@@ -89,19 +167,26 @@ function buildLocalizationSnapshot(db, input = {}) {
     market: trim(input.market),
     localizationLevel: trim(input.localizationLevel ?? input.localization_level) || 'faithful',
   };
-  getOwnedWork(db, normalized);
+  const work = getOwnedWork(db, normalized);
   const sourceVersion = db.prepare(`
     SELECT *
     FROM redraw_versions
     WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+      AND locale = 'source'
       AND source_facts_json IS NOT NULL AND TRIM(source_facts_json) != ''
       AND deleted_at IS NULL
-    ORDER BY version ASC, id ASC
+    ORDER BY CASE WHEN version = ? THEN 0 ELSE 1 END, version DESC, id DESC
     LIMIT 1
-  `).get(normalized.workId, normalized.tenantId, normalized.userId);
+  `).get(normalized.workId, normalized.tenantId, normalized.userId, Number(work.current_version || 0));
   if (!sourceVersion) {
     throw codedError('REDRAW_LOCALIZATION_SOURCE_REQUIRED', '本地化需要先完成源片事实确认');
   }
+  const project = db.prepare(`
+    SELECT policy_version, budget_limit_credits
+    FROM redraw_projects
+    WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+    LIMIT 1
+  `).get(Number(work.project_id), normalized.tenantId, normalized.userId);
   const sourceFacts = parseJson(sourceVersion.source_facts_json, null);
   if (!sourceFacts || typeof sourceFacts !== 'object' || Array.isArray(sourceFacts)) {
     throw codedError('REDRAW_LOCALIZATION_SOURCE_REQUIRED', '源片事实不可读取');
@@ -119,11 +204,15 @@ function buildLocalizationSnapshot(db, input = {}) {
     input: localizationInput,
     source_version_id: Number(sourceVersion.id),
     facts_hash: sourceVersion.facts_hash || localizationInput.source_facts_hash,
+    policy_version: Number(project?.policy_version || 0),
+    budget_limit_credits: project?.budget_limit_credits == null ? null : Number(project.budget_limit_credits),
   };
 }
 
 function quoteLocalization(db, input = {}) {
   const snapshot = buildLocalizationSnapshot(db, input);
+  const blocked = analysisGateQuote(db, input);
+  if (blocked) return blocked;
   const capability = redrawCapability.resolveVerifiedLocaleCapability(db, {
     locale: trim(input.locale),
     market: trim(input.market),
@@ -158,6 +247,169 @@ function quoteLocalization(db, input = {}) {
     quote_hash: stableHash({ snapshot: fullSnapshot, credits }),
     snapshot: fullSnapshot,
   };
+}
+
+function tableExists(db, table) {
+  return !!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+}
+
+function projectState(db, input) {
+  return db.prepare(`
+    SELECT w.id AS work_id, w.project_id, w.status AS work_status, w.current_step, w.current_version,
+           p.execution_mode, p.policy_version, p.budget_limit_credits, p.automation_policy_json
+    FROM redraw_works w
+    LEFT JOIN redraw_projects p
+      ON p.id = w.project_id AND p.tenant_id = w.tenant_id AND p.user_id = w.user_id
+    WHERE w.id = ? AND w.tenant_id = ? AND w.user_id = ?
+    LIMIT 1
+  `).get(Number(input.workId), String(input.tenantId), String(input.userId));
+}
+
+function localizationDecision(db, input, normalized) {
+  if (input.source_facts?.schema_version !== '2.0') return null;
+  const state = projectState(db, input);
+  const currentSource = db.prepare(`
+    SELECT id, facts_hash
+    FROM redraw_versions
+    WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+      AND locale = 'source' AND source_facts_json IS NOT NULL AND TRIM(source_facts_json) != ''
+      AND deleted_at IS NULL
+    ORDER BY CASE WHEN version = ? THEN 0 ELSE 1 END, version DESC, id DESC
+    LIMIT 1
+  `).get(Number(input.workId), String(input.tenantId), String(input.userId), Number(state?.current_version || 0));
+  const policy = parseJson(state?.automation_policy_json, {});
+  const thresholds = policy?.localization_thresholds;
+  const reasonCodes = [];
+  let action = 'advance';
+  if (Number(currentSource?.id) !== Number(input.sourceVersionId)
+    || String(currentSource?.facts_hash || '') !== String(normalized.facts_hash)) {
+    action = 'blocked';
+    reasonCodes.push('localization_source_drift');
+  } else if (Number(state?.policy_version || 0) !== Number(input.policyVersion || 0)) {
+    action = 'blocked';
+    reasonCodes.push('localization_policy_drift');
+  } else if (state?.budget_limit_credits == null || Number(state.budget_limit_credits) < Number(input.credits || 0)) {
+    action = 'blocked';
+    reasonCodes.push('localization_budget_drift');
+  } else if (String(state?.execution_mode || 'auto') !== 'auto') {
+    action = 'needs_review';
+    reasonCodes.push('safe_mode_requires_review');
+  } else if (!thresholds || typeof thresholds !== 'object' || Array.isArray(thresholds)) {
+    action = 'blocked';
+    reasonCodes.push('localization_thresholds_missing');
+  } else {
+    for (const key of ['names', 'dialogue_semantics', 'dialogue_timing', 'culture', 'screen_text']) {
+      const threshold = Number(thresholds[key]);
+      const confidence = Number(normalized.confidence?.[key]);
+      if (!Number.isFinite(threshold) || !Number.isFinite(confidence) || confidence < threshold) {
+        action = 'needs_review';
+        reasonCodes.push('localization_confidence_below_threshold');
+        break;
+      }
+    }
+  }
+  return {
+    action,
+    effective_mode: action === 'advance' ? 'auto' : 'safe',
+    reason_codes: reasonCodes,
+    policy_version: Number(state?.policy_version || 0),
+    evidence_hash: normalized.facts_hash,
+  };
+}
+
+function confirmReservationInTransaction(db, reservationId) {
+  if (!reservationId) return null;
+  const row = creditLedger.getReservation(db, reservationId);
+  if (!row) throw new Error('额度预扣记录不存在');
+  if (row.status !== 'held') return row;
+  const now = new Date().toISOString();
+  if (row.tenant_id) {
+    const changed = db.prepare(`
+      UPDATE tenant_credit_accounts
+      SET held = held - ?, spent = spent + ?, updated_at = ?
+      WHERE tenant_id = ? AND held >= ?
+    `).run(row.amount, row.amount, now, row.tenant_id, row.amount);
+    if (changed.changes !== 1) throw new Error('租户额度账户状态不一致');
+    db.prepare(`
+      UPDATE tenant_usage_reservations
+      SET status = 'confirmed', reason = 'generation_completed', updated_at = ?
+      WHERE id = ? AND status = 'held'
+    `).run(now, row.id);
+    db.prepare(`
+      INSERT OR IGNORE INTO tenant_credit_ledger
+        (id, reservation_id, tenant_id, actor_user_id, event_type,
+         available_delta, held_delta, spent_delta, reason, created_at)
+      VALUES (?, ?, ?, ?, 'confirm', 0, ?, ?, 'generation_completed', ?)
+    `).run(randomUUID(), row.id, row.tenant_id, row.actor_user_id, -row.amount, row.amount, now);
+    return creditLedger.getReservation(db, row.id);
+  }
+  db.prepare(`
+    UPDATE credit_accounts
+    SET held = held - ?, spent = spent + ?, updated_at = ?
+    WHERE user_id = ? AND held >= ?
+  `).run(row.amount, row.amount, now, row.user_id, row.amount);
+  db.prepare(`
+    UPDATE usage_reservations
+    SET status = 'confirmed', reason = 'generation_completed', updated_at = ?
+    WHERE id = ? AND status = 'held'
+  `).run(now, row.id);
+  db.prepare(`
+    INSERT OR IGNORE INTO credit_ledger
+      (id, reservation_id, user_id, event_type, available_delta, held_delta, spent_delta, reason, created_at)
+    VALUES (?, ?, ?, 'confirm', 0, ?, ?, 'generation_completed', ?)
+  `).run(randomUUID(), row.id, row.user_id, -row.amount, row.amount, now);
+  return creditLedger.getReservation(db, row.id);
+}
+
+function recordLocalizationEvent(db, input, decision, toState) {
+  if (!tableExists(db, 'redraw_workflow_events')) return;
+  const state = projectState(db, input);
+  db.prepare(`
+    INSERT INTO redraw_workflow_events
+      (tenant_id, user_id, project_id, resource_type, resource_id,
+       from_state, to_state, reason_code, evidence_hash, metadata_json, created_at)
+    VALUES (?, ?, ?, 'redraw_work', ?, ?, ?, 'localization_completed', ?, ?, ?)
+  `).run(
+    String(input.tenantId),
+    String(input.userId),
+    Number(state?.project_id || 0),
+    String(input.workId),
+    String(state?.work_status || ''),
+    toState,
+    decision.evidence_hash,
+    JSON.stringify({ localization_decision: decision }),
+    new Date().toISOString(),
+  );
+}
+
+function finalizeLocalization(db, taskId, reservationId, input, normalized, decision, materialize) {
+  return db.transaction(() => {
+    const materialized = materialize();
+    let toState = 'asset_review';
+    if (decision?.action && decision.action !== 'advance') {
+      toState = decision.action === 'blocked' ? 'blocked' : 'needs_review';
+      db.prepare(`
+        UPDATE redraw_versions
+        SET status = ?, updated_at = ?
+        WHERE id = ?
+      `).run(toState, new Date().toISOString(), Number(materialized.id));
+      db.prepare(`
+        UPDATE redraw_works
+        SET current_step = 1, status = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND user_id = ?
+      `).run(toState, new Date().toISOString(), Number(input.workId), String(input.tenantId), String(input.userId));
+    }
+    if (decision) recordLocalizationEvent(db, input, decision, toState);
+    taskService.updateTaskResult(db, taskId, {
+      status: 'completed',
+      work_id: Number(input.workId),
+      version_id: materialized.id,
+      facts_hash: normalized.facts_hash,
+      ...(decision ? { localization_decision: decision } : {}),
+    });
+    confirmReservationInTransaction(db, reservationId);
+    return materialized;
+  }).immediate();
 }
 
 function findExistingDraft(db, input) {
@@ -365,30 +617,44 @@ function runLocalizationJob(db, records, deps) {
       const normalized = localizationService.normalizeLocalizationResult(
         providerResult.result,
         quote.snapshot.input.source_facts,
+        {
+          locale: quote.snapshot.input.locale,
+          market: quote.snapshot.input.market,
+        },
       );
-      const materialized = localizationService.materializeLocalizationDraft(db, {
+      const decisionInput = {
         tenantId: quote.snapshot.input.tenantId || records.tenantId,
         userId: quote.snapshot.input.userId || records.userId,
-      }, draftVersionId, {
         workId: Number(quote.snapshot.input.workId || records.workId),
-        locale: quote.snapshot.input.locale,
-        market: quote.snapshot.input.market,
-        localizationLevel: quote.snapshot.input.localization_level,
-        sourceFacts: normalized.source_facts,
-        sourceFactsHash: normalized.facts_hash,
-        glossary: normalized.glossary,
-        nameMap: normalized.name_map,
-        cultureMap: normalized.culture_map,
-        dialogue: normalized.dialogue,
-        styleSnapshot: quote.snapshot.input.style_snapshot,
-        modelSnapshot: quote.snapshot,
-      });
-      markCompleted(db, taskId, reservationId, {
-        status: 'completed',
-        work_id: Number(records.workId),
-        version_id: materialized.id,
-        facts_hash: normalized.facts_hash,
-      });
+        source_facts: quote.snapshot.input.source_facts,
+        sourceVersionId: quote.snapshot.source_version_id,
+        policyVersion: quote.snapshot.policy_version,
+        budgetLimitCredits: quote.snapshot.budget_limit_credits,
+        credits: quote.credits,
+      };
+      const decision = localizationDecision(db, decisionInput, normalized);
+      const owner = {
+        tenantId: quote.snapshot.input.tenantId || records.tenantId,
+        userId: quote.snapshot.input.userId || records.userId,
+      };
+      const materialized = finalizeLocalization(db, taskId, reservationId, decisionInput, normalized, decision, () => (
+        localizationService.materializeLocalizationDraft(db, owner, draftVersionId, {
+          workId: Number(quote.snapshot.input.workId || records.workId),
+          locale: quote.snapshot.input.locale,
+          market: quote.snapshot.input.market,
+          localizationLevel: quote.snapshot.input.localization_level,
+          sourceVersionId: quote.snapshot.source_version_id,
+          sourceFacts: quote.snapshot.input.source_facts,
+          sourceFactsHash: normalized.facts_hash,
+          glossary: normalized.glossary,
+          nameMap: normalized.name_map,
+          cultureMap: normalized.culture_map,
+          textMap: normalized.text_map,
+          dialogue: normalized.dialogue,
+          styleSnapshot: quote.snapshot.input.style_snapshot,
+          modelSnapshot: quote.snapshot,
+        })
+      ));
       return { status: 'completed', version_id: materialized.id };
     } catch (error) {
       const task = taskService.getTask(db, taskId);
@@ -485,6 +751,7 @@ module.exports = {
   stableValue,
   stableHash,
   buildLocalizationSnapshot,
+  getAnalysisAutomationDecision,
   quoteLocalization,
   startLocalization,
   reconcileOrphanedTasks,

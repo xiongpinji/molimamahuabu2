@@ -2,6 +2,11 @@ import { test, expect } from '@playwright/test'
 
 const homeCanvasStorageKey = 'moli-mama.home-canvas.v1'
 const pendingHomeCanvasStateKey = 'moli-mama.e2e.pending-home-canvas-state'
+const referenceImageDataUrls = [
+  'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22120%22%3E%3Crect width=%22200%22 height=%22120%22 fill=%22%23f27645%22/%3E%3C/svg%3E',
+  'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22120%22%3E%3Crect width=%22200%22 height=%22120%22 fill=%22%234563f2%22/%3E%3C/svg%3E',
+  'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22120%22%3E%3Crect width=%22200%22 height=%22120%22 fill=%22%2345b86b%22/%3E%3C/svg%3E',
+]
 const seededHomeCanvasState = {
   version: 1,
   nodes: [{
@@ -49,7 +54,7 @@ const mentionHomeCanvasState = {
         kind: 'image',
         title: '女主角定妆照',
         content: '',
-        url: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22120%22%3E%3Crect width=%22200%22 height=%22120%22 fill=%22%23f27645%22/%3E%3C/svg%3E',
+        url: referenceImageDataUrls[0],
       },
     },
     {
@@ -84,13 +89,13 @@ const numberedMentionHomeCanvasState = {
       ...mentionHomeCanvasState.nodes[0],
       id: 'e2e:image-reference-2',
       position: { x: 360, y: 680 },
-      data: { ...mentionHomeCanvasState.nodes[0].data, title: '雨夜街道' },
+      data: { ...mentionHomeCanvasState.nodes[0].data, title: '雨夜街道', url: referenceImageDataUrls[1] },
     },
     {
       ...mentionHomeCanvasState.nodes[0],
       id: 'e2e:image-reference-3',
       position: { x: 360, y: 940 },
-      data: { ...mentionHomeCanvasState.nodes[0].data, title: '跑车侧面' },
+      data: { ...mentionHomeCanvasState.nodes[0].data, title: '跑车侧面', url: referenceImageDataUrls[2] },
     },
     mentionHomeCanvasState.nodes[1],
   ],
@@ -621,7 +626,7 @@ test('视频节点无参考图时保存首尾帧模式，并在新增两张参�
           kind: 'image',
           title: '尾帧参考图',
           content: '',
-          url: mentionHomeCanvasState.nodes[0].data.url,
+          url: referenceImageDataUrls[1],
         },
       },
     ],

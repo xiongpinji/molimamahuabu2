@@ -35,6 +35,16 @@
 - [x] 定向回归测试通过。
 - [x] 完整后端测试通过。
 - [x] 真实供应商生成成功并验证结果文件。
-- [ ] 从生产实时 `/opt/moli-drama/current` 构建候选。
-- [ ] 共享受保护发布门禁、备份、活动任务、健康、日志和 AI 音乐进程检查通过。
-- [ ] 生产切换并回读生效代码。
+- [x] 从生产实时 `/opt/moli-drama/current` 构建候选。
+- [x] 共享受保护发布门禁、备份、活动任务、健康、日志和 AI 音乐进程检查通过。
+- [x] 生产切换并回读生效代码。
+
+## 生产发布记录
+
+- 原 release：`/opt/moli-drama/releases/image-reference-runtime-hotfix-ad577bb-20260804T171850CST`。
+- 新 release：`/opt/moli-drama/releases/djpsd-face-mask-eb588c0-20260804T184033CST`；从切换前实时 `current` 完整复制，只覆盖本任务的后端源码、测试和任务文档。
+- 候选验证：DJPSD 视频专项 8/8；共享门禁 `canvas-credit-callout-v1` 源码与构建均通过；生产预检全部通过。
+- 备份：`database-20260804T104113308Z.sqlite`，8,019,968 字节，SHA-256 `5d1b265a35295e2175163e0962cf2c39027911589c95b0e042baa9bfeb9316a6`，独立验证 `valid: true`、SQLite 完整性 `ok`。
+- 切换：共享 `activate-protected-release.sh` 在部署锁和 CAS 检查下完成；切换前后四类活动任务均为 0。
+- 上线回读：`current` 和主进程工作目录均指向新 release；服务 `active/running`、`NRestarts=0`；健康页和首页均为 HTTP 200；生产专项 8/8；近十分钟错误日志 0。
+- AI 音乐隔离：服务进程和工作进程 PID 仍为 206874、206895，未被本次发布重启。

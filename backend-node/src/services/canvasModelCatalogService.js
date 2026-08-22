@@ -407,6 +407,9 @@ function list(db, options = {}) {
 
   const mediaCandidates = mediaModelSelection.listEntries(eligibleConfigs)
     .filter((entry) => {
+      if (entry.duplicated
+          && !String(entry.config.logical_model_id || '').trim()
+          && !strictVerifiedProtocol(entry.config)) return false;
       const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
       return !strictKeys.has(upstreamKey) || !!strictVerifiedProtocol(entry.config);
     });

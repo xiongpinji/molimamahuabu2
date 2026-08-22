@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - 'backend-node/**'
+      - 'frontweb/**'
+      - 'docs/verification/platform-stability/**'
+      - 'deploy/release-scopes/platform-stability-foundation.json'
       - '.github/workflows/backend-node-tests.yml'
 
 permissions:
@@ -21,13 +24,20 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: "24"
           cache: npm
           cache-dependency-path: backend-node/package-lock.json
+
+      - name: Install ffmpeg test dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
 
       - name: Install backend dependencies
         working-directory: backend-node
@@ -36,3 +46,11 @@ jobs:
       - name: Run backend tests
         working-directory: backend-node
         run: npm test
+
+      - name: Run root-owned release evidence guard tests
+        working-directory: backend-node
+        run: sudo "$(command -v node)" --test --test-concurrency=1 test/sharedExternalModelReleaseGuard.test.js
+
+      - name: Audit feature locks
+        working-directory: backend-node
+        run: npm run audit:feature-lock

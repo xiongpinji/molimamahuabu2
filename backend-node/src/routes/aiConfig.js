@@ -15,10 +15,6 @@ function listPublicVideoModels(db, runtime) {
     const publicModels = modelPriceService.listPublic(db, runtime)
       .filter((item) => item.category === 'video')
       .map((item) => item.model);
-    const strictCatalog = canvasModelCatalogService.list(db, runtime)
-      .filter((item) => item.kind === 'video'
-        && ['toapis', 'toapis_video', 'lingjing', 'lingjing_open']
-          .includes(String(item.protocol || '').toLowerCase()));
     const allConfigs = aiConfigService.listConfigs(db, 'video');
     const strictModels = new Set([
       'lingjing-video-v1',
@@ -27,6 +23,9 @@ function listPublicVideoModels(db, runtime) {
       .map((model) => String(model || '').trim().toLowerCase())
       .filter(Boolean),
     ]);
+    const strictCatalog = canvasModelCatalogService.list(db, runtime)
+      .filter((item) => item.kind === 'video'
+        && strictModels.has(String(item.model || '').trim().toLowerCase()));
     const list = [...new Set([
       ...publicModels.filter((model) => {
         const key = String(model || '').trim().toLowerCase().split('::').pop();

@@ -3164,20 +3164,69 @@ async function runGridCrop(sourcePath, parameters) {
   if (rows > metadata.height || columns > metadata.width) {
     fail('IMAGE_TOOL_INVALID_INPUT', '宫格数量不能超过图片像素尺寸');
   }
-  if (parameters.boxes !== undefined) {
-    const cells = normalizeFreeGridBoxes(parameters.boxes, rows, columns, metadata);
-    return {
-      metadata,
-      format,
-      normalized: { rows, columns, boxes: cells.map(({ box }) => box) },
-      cells,
-    };
-  }
   if (
     spacing >= Math.floor(metadata.width / columns)
     || spacing >= Math.floor(metadata.height / rows)
   ) {
     fail('IMAGE_TOOL_INVALID_INPUT', '宫格间距必须小于单格尺寸');
+  }
+  if (parameters.boxes !== undefined) {
+    const allCells = normalizeFreeGridBoxes(parameters.boxes, rows, columns, metadata);
+    const allCellKeys = new Set(allCells.map(({ row, column }) => `${row}:${column}`));
+    const selectedCells = parameters.selectedCells === undefined
+      ? [...allCellKeys]
+      : parameters.selectedCells;
+    if (
+      !Array.isArray(selectedCells)
+      || selectedCells.length === 0
+      || selectedCells.some((key) => typeof key !== 'string' || !allCellKeys.has(key))
+      || new Set(selectedCells).size !== selectedCells.length
+    ) {
+      fail('IMAGE_TOOL_INVALID_INPUT', 'selectedCells 必须包含至少一个有效且不重复的宫格坐标');
+    }
+    const selectedCellKeys = new Set(selectedCells);
+    const duplicateCells = parameters.duplicateCells ?? [];
+    if (
+      !Array.isArray(duplicateCells)
+      || duplicateCells.some((key) => typeof key !== 'string' || !selectedCellKeys.has(key))
+      || new Set(duplicateCells).size !== duplicateCells.length
+    ) {
+      fail('IMAGE_TOOL_INVALID_INPUT', 'duplicateCells 只能包含已选中的有效宫格坐标');
+    }
+    const duplicateCellKeys = new Set(duplicateCells);
+    const spacingBefore = Math.floor(spacing / 2);
+    const spacingAfter = spacing - spacingBefore;
+    const cells = [];
+    for (const cell of allCells) {
+      const key = `${cell.row}:${cell.column}`;
+      if (!selectedCellKeys.has(key)) continue;
+      const spacedCell = {
+        ...cell,
+        left: cell.left + spacingBefore,
+        top: cell.top + spacingBefore,
+        width: cell.width - spacingBefore - spacingAfter,
+        height: cell.height - spacingBefore - spacingAfter,
+      };
+      if (spacedCell.width < 16 || spacedCell.height < 16) {
+        fail('IMAGE_TOOL_INVALID_INPUT', '宫格间距导致裁剪框小于 16×16 像素');
+      }
+      cells.push(spacedCell);
+      if (duplicateCellKeys.has(key)) cells.push({ ...spacedCell, copyIndex: 1 });
+    }
+    return {
+      metadata,
+      format,
+      normalized: {
+        rows,
+        columns,
+        spacing,
+        snap,
+        boxes: allCells.map(({ box }) => box),
+        selectedCells,
+        duplicateCells,
+      },
+      cells,
+    };
   }
   const allCellKeys = new Set(Array.from(
     { length: rows * columns },

@@ -35,9 +35,8 @@ test('公开备注会显示并跟随价格配置保存', () => {
   assert.match(source, /public_note:\s*newModel\.public_note/)
 })
 
-test('普通视频模型保留 480P 720P 每秒分档，固定按次模型不生成分档', () => {
+test('视频模型仍保留 480P 720P 每秒分档', () => {
   assert.match(source, /480P 用户收费（积分\/秒）/)
   assert.match(source, /720P API 成本（元\/秒）/)
   assert.match(source, /if \(category === 'video'\) return usesVideoResolutionPricing\(itemOrCategory\) \? \['480p', '720p'\] : \[\]/)
-  assert.match(source, /FIXED_REQUEST_VIDEO_MODELS/)
 })

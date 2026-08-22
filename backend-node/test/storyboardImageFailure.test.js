@@ -8,6 +8,7 @@ const credits = require('../src/services/creditLedgerService');
 const imageClient = require('../src/services/imageClient');
 const imageService = require('../src/services/imageService');
 const prices = require('../src/services/modelPriceService');
+const providerRouteStability = require('../src/services/providerRouteStabilityService');
 const uploadService = require('../src/services/uploadService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
@@ -116,6 +117,28 @@ test('分镜图片供应商返回远程图但本地保存失败时不标记完�
       prompt: '雨后森林中的小狐狸',
       frame_type: 'storyboard_first',
     }, { schedule() {} });
+    const configId = db.prepare("SELECT id FROM ai_service_configs WHERE service_type = 'storyboard_image'").get().id;
+    const route = providerRouteStability.createOrGetRouteRequest(db, {
+      id: 'route-local-save-failure',
+      idempotencyKey: 'route-local-save-failure',
+      serviceType: 'storyboard_image',
+      businessType: 'image_generation',
+      businessId: String(created.id),
+      logicalModelId: 'dall-e-3',
+      userPriceSnapshot: null,
+      candidateConfigIds: [configId],
+    });
+    const attempt = providerRouteStability.startAttempt(db, {
+      requestId: route.id,
+      configId,
+      provider: 'openai',
+      upstreamModel: 'dall-e-3',
+    });
+    providerRouteStability.recordArtifactVerified(db, {
+      requestId: route.id,
+      attemptNo: attempt.attempt_no,
+      configId,
+    });
 
     await imageService.processImageGeneration(db, log, created.id);
 
@@ -129,21 +152,65 @@ test('分镜图片供应商返回远程图但本地保存失败时不标记完�
       'SELECT first_frame_image_id, image_url, local_path, error_msg FROM storyboards WHERE id = ?'
     ).get(storyboardId);
 
-    assert.equal(image.status, 'failed');
+    assert.equal(image.status, 'needs_attention');
     assert.equal(image.model, 'dall-e-3');
     assert.equal(image.image_url, null);
     assert.equal(image.local_path, null);
     assert.match(image.error_msg, /本地保存失败/);
-    assert.equal(task.status, 'failed');
+    assert.equal(task.status, 'needs_attention');
     assert.equal(task.error, image.error_msg);
     assert.equal(storyboard.first_frame_image_id, null);
     assert.equal(storyboard.image_url, null);
     assert.equal(storyboard.local_path, null);
     assert.equal(storyboard.error_msg, image.error_msg);
-    assert.equal(imageService.findActiveForTarget(db, storyboardId, 'storyboard_first'), null);
+    assert.doesNotMatch(image.error_msg, /重试/);
+    assert.equal(imageService.findActiveForTarget(db, storyboardId, 'storyboard_first').id, created.id);
+    assert.equal(db.prepare('SELECT state FROM generation_route_requests WHERE id = ?').get(route.id).state, 'needs_attention');
+    assert.deepEqual(
+      db.prepare('SELECT state, error_category FROM generation_route_attempts WHERE request_id = ?').get(route.id),
+      { state: 'artifact_unreadable', error_category: 'artifact_unreadable' },
+    );
   } finally {
     imageClient.callImageApi = originalCall;
     uploadService.downloadImageToLocal = originalDownload;
+    db.close();
+  }
+});
+
+test('分镜图片供应商结果未知时挂起任务且阻止重复提交', async () => {
+  const { db, dramaId, storyboardId } = setup();
+  const originalCall = imageClient.callImageApi;
+  imageClient.callImageApi = async () => ({
+    indeterminate: true,
+    error: '图片生成结果未知，为避免重复提交或重复扣费，请先核对生成记录，不要连续重试。',
+  });
+
+  try {
+    const created = imageService.create(db, log, {
+      drama_id: dramaId,
+      storyboard_id: storyboardId,
+      model: 'dall-e-3',
+      prompt: '雨后森林中的小狐狸',
+      frame_type: 'single',
+    }, { schedule() {} });
+
+    await imageService.processImageGeneration(db, log, created.id);
+
+    const image = db.prepare(
+      'SELECT status, error_msg, task_id FROM image_generations WHERE id = ?'
+    ).get(created.id);
+    const task = db.prepare(
+      'SELECT status, error, completed_at FROM async_tasks WHERE id = ?'
+    ).get(image.task_id);
+
+    assert.equal(image.status, 'needs_attention');
+    assert.match(image.error_msg, /结果未知/);
+    assert.equal(task.status, 'needs_attention');
+    assert.equal(task.error, image.error_msg);
+    assert.equal(task.completed_at, null);
+    assert.equal(imageService.findActiveForTarget(db, storyboardId, 'single').id, created.id);
+  } finally {
+    imageClient.callImageApi = originalCall;
     db.close();
   }
 });
@@ -153,7 +220,7 @@ test('分镜图片内部润色与连戏快照按独立文本模型调用计费',
   const originalText = aiClient.generateText;
   const originalImage = imageClient.callImageApi;
   let textCalls = 0;
-  const textConfig = aiConfig.createConfig(db, log, {
+  aiConfig.createConfig(db, log, {
     service_type: 'text',
     provider: 'openai',
     name: '测试文本模型',
@@ -163,8 +230,6 @@ test('分镜图片内部润色与连戏快照按独立文本模型调用计费',
     default_model: 'GPT-5.5',
     is_default: true,
   });
-  db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
-    .run(textConfig.id);
   credits.setTenantAccountBalance(db, 'tenant-a', 50);
   prices.set(db, 'dall-e-3', 10);
   prices.set(db, 'GPT-5.5', 5);

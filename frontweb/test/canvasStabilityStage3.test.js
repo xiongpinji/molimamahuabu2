@@ -27,22 +27,9 @@ test('图片全屏预览支持 Ctrl 或 Command 加滚轮缩放并在开关时�
   assert.match(nodeSource, /@wheel="onMediaPreviewWheel"/)
   assert.match(nodeSource, /if \(!event\.ctrlKey && !event\.metaKey\) return/)
   assert.match(nodeSource, /mediaPreviewScale\.value = Math\.min\(5, Math\.max\(0\.25,/)
-  assert.match(nodeSource, /:style="\{ transform: `translate3d\(\$\{mediaPreviewOffset\.x\}px, \$\{mediaPreviewOffset\.y\}px, 0\) scale\(\$\{mediaPreviewScale\}\)` \}"/)
+  assert.match(nodeSource, /:style="\{ transform: `scale\(\$\{mediaPreviewScale\}\)` \}"/)
   assert.match(nodeSource, /mediaPreviewScale\.value = 1[\s\S]*mediaPreviewUrl\.value = String\(url\)/)
   assert.match(nodeSource, /mediaPreviewUrl\.value = ''[\s\S]*mediaPreviewScale\.value = 1/)
-})
-
-test('图片全屏预览支持按住空格后用鼠标左键拖动且在关闭时复位', () => {
-  assert.match(nodeSource, /const mediaPreviewOffset = reactive\(\{ x: 0, y: 0 \}\)/)
-  assert.match(nodeSource, /const mediaPreviewSpacePressed = ref\(false\)/)
-  assert.match(nodeSource, /@pointerdown\.stop="startMediaPreviewPan"/)
-  assert.match(nodeSource, /event\.code === 'Space'/)
-  assert.match(nodeSource, /event\.button !== 0 \|\| !mediaPreviewSpacePressed\.value/)
-  assert.match(nodeSource, /window\.addEventListener\('pointermove', onMediaPreviewPointerMove\)/)
-  assert.match(nodeSource, /window\.addEventListener\('pointerup', stopMediaPreviewPan\)/)
-  assert.match(nodeSource, /translate3d\(\$\{mediaPreviewOffset\.x\}px, \$\{mediaPreviewOffset\.y\}px, 0\) scale\(\$\{mediaPreviewScale\}\)/)
-  assert.match(nodeSource, /mediaPreviewOffset\.x = 0[\s\S]*mediaPreviewOffset\.y = 0/)
-  assert.match(nodeSource, /空格 \+ 左键拖动/)
 })
 
 test('独立画布支持将本地图片直接拖入并在落点创建图片节点', () => {

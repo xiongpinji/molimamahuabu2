@@ -26,13 +26,22 @@ function readName(asset) {
 }
 
 function normalizeAsset(asset) {
-  return {
+  const normalized = {
     asset_id: asset.asset_id ?? asset.assetId ?? asset.id,
     kind: asset.kind,
     version_number: asset.version_number ?? asset.versionNumber,
     approval_status: asset.approval_status ?? asset.approvalStatus,
     name: readName(asset),
   };
+  const binding = asset.identity_binding ?? asset.identityBinding;
+  if (normalized.kind === 'character' && binding && typeof binding === 'object') {
+    normalized.source_character_key = String(binding.source_character_key || '').trim();
+    normalized.target_actor_label = String(binding.target_actor_label || '').trim();
+    normalized.identity_pack_sha256 = String(
+      binding.identity_pack_sha256 ?? binding.pack_sha256 ?? '',
+    ).trim();
+  }
+  return normalized;
 }
 
 function referenceText(value) {

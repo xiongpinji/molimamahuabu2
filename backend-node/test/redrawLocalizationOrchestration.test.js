@@ -51,6 +51,63 @@ function sourceFacts() {
   };
 }
 
+function v2SourceFacts() {
+  return {
+    schema_version: '2.0',
+    facts_hash: 'a'.repeat(64),
+    locale: 'en-US',
+    market: 'US',
+    duration_ms: 8_000,
+    characters: [
+      { id: 'c1', source_name: '小满', relationships: [] },
+      { id: 'c2', source_name: '阿岚', relationships: [] },
+    ],
+    shots: [
+      {
+        id: 'shot-1',
+        start_ms: 0,
+        end_ms: 4_000,
+        composition: 'medium two shot',
+        camera_movement: 'slow push',
+        opening_state: '小满站在门口',
+        continuous_action: '小满看向阿岚',
+        ending_state: '阿岚低头',
+        visible_character_ids: ['c1', 'c2'],
+        text_regions: [],
+        audio_contract: { ambience: 'quiet room' },
+        dialogue: [{
+          id: 'turn-1',
+          speaker_id: 'c1',
+          source_text: '别回头',
+          start_ms: 500,
+          end_ms: 2_500,
+          emotion: 'urgent',
+          overlap_group: null,
+        }],
+      },
+      {
+        id: 'shot-2',
+        start_ms: 4_000,
+        end_ms: 8_000,
+        composition: 'insert phone',
+        camera_movement: 'static',
+        opening_state: '手机屏幕亮起',
+        continuous_action: '屏幕显示来电',
+        ending_state: '小满伸手',
+        visible_character_ids: ['c1'],
+        text_regions: [{
+          id: 'screen-1',
+          kind: 'phone_screen',
+          source_text: '给妈妈打电话',
+          polygon: [[0, 0], [1, 0], [1, 1], [0, 1]],
+        }],
+        audio_contract: { ambience: 'phone buzz' },
+        dialogue: [],
+      },
+    ],
+  };
+}
+
 function localizedResult(overrides = {}) {
   return {
     ...sourceFacts(),
@@ -62,6 +119,29 @@ function localizedResult(overrides = {}) {
       shot_id: 'shot-1',
       turns: [{ speaker_id: 'c1', localized_text: "Don't look back" }],
     }],
+    ...overrides,
+  };
+}
+
+function v2LocalizedResult(overrides = {}) {
+  const facts = v2SourceFacts();
+  return {
+    facts_hash: facts.facts_hash,
+    name_map: { c1: 'Mateo', c2: 'Diego' },
+    culture_map: { honorifics: 'Use first names in casual dialogue' },
+    glossary: { family_title: 'Mom' },
+    dialogue: [{
+      shot_id: 'shot-1',
+      turns: [{ id: 'turn-1', target_text: 'Do not look back' }],
+    }],
+    text_map: { 'shot-2:screen-1': 'CALL MOM' },
+    confidence: {
+      names: 0.92,
+      dialogue_semantics: 0.93,
+      dialogue_timing: 0.94,
+      culture: 0.91,
+      screen_text: 0.9,
+    },
     ...overrides,
   };
 }
@@ -90,11 +170,13 @@ function createDb(options = {}) {
     );
     CREATE TABLE redraw_works (
       id INTEGER PRIMARY KEY,
+      project_id INTEGER,
       tenant_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
       current_version INTEGER NOT NULL DEFAULT 0,
       current_step INTEGER NOT NULL DEFAULT 1,
-      status TEXT NOT NULL DEFAULT 'fact_confirmed',
+      status TEXT NOT NULL DEFAULT 'fact_confirmed' CHECK (status IN ('draft', 'fact_confirmed', 'analyzing', 'asset_review', 'ready_to_generate', 'generating', 'composing', 'completed', 'failed', 'needs_attention', 'needs_review', 'blocked')),
+      task_id TEXT,
       updated_at TEXT
     );
     CREATE TABLE redraw_versions (
@@ -110,6 +192,7 @@ function createDb(options = {}) {
       glossary_json TEXT NOT NULL DEFAULT '{}',
       name_map_json TEXT NOT NULL DEFAULT '{}',
       culture_map_json TEXT NOT NULL DEFAULT '{}',
+      text_map_json TEXT NOT NULL DEFAULT '{}',
       style_snapshot_json TEXT NOT NULL DEFAULT '{}',
       capability_snapshot_json TEXT NOT NULL DEFAULT '{}',
       localization_task_id TEXT,
@@ -118,10 +201,35 @@ function createDb(options = {}) {
       localization_idempotency_key TEXT,
       localization_model_snapshot_json TEXT NOT NULL DEFAULT '{}',
       facts_hash TEXT,
-      status TEXT NOT NULL DEFAULT 'draft',
+      status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'analyzing', 'asset_review', 'ready_to_generate', 'generating', 'composing', 'completed', 'failed', 'needs_attention', 'needs_review', 'blocked')),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT
+    );
+    CREATE TABLE redraw_projects (
+      id INTEGER PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      execution_mode TEXT DEFAULT 'safe',
+      budget_limit_credits INTEGER,
+      automation_policy_json TEXT,
+      policy_version INTEGER DEFAULT 1,
+      updated_at TEXT,
+      deleted_at TEXT
+    );
+    CREATE TABLE redraw_workflow_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      project_id INTEGER NOT NULL,
+      resource_type TEXT NOT NULL,
+      resource_id TEXT NOT NULL,
+      from_state TEXT,
+      to_state TEXT NOT NULL,
+      reason_code TEXT NOT NULL,
+      evidence_hash TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
     );
     CREATE UNIQUE INDEX uq_redraw_version_number ON redraw_versions(work_id, version);
     CREATE UNIQUE INDEX uq_redraw_version_localization_key
@@ -165,6 +273,7 @@ function createDb(options = {}) {
       prompt TEXT NOT NULL DEFAULT '',
       negative_prompt TEXT NOT NULL DEFAULT '',
       compiled_prompt_json TEXT NOT NULL DEFAULT '{}',
+      draft_json TEXT NOT NULL DEFAULT '{}',
       status TEXT NOT NULL DEFAULT 'draft',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -211,10 +320,17 @@ function createDb(options = {}) {
     }));
   }
   const now = new Date().toISOString();
-  const facts = sourceFacts();
-  const factsHash = buildLocalizationInput(facts, { locale: 'source' }).source_facts_hash;
-  db.prepare('INSERT INTO redraw_works (id, tenant_id, user_id, current_version, current_step, status, updated_at) VALUES (1, ?, ?, 1, 1, ?, ?)')
-    .run('tenant-a', 'user-a', 'fact_confirmed', now);
+  const facts = options.sourceFacts || sourceFacts();
+  const factsHash = facts.schema_version === '2.0'
+    ? facts.facts_hash
+    : buildLocalizationInput(facts, { locale: 'source' }).source_facts_hash;
+  db.prepare(`
+    INSERT INTO redraw_projects
+      (id, tenant_id, user_id, execution_mode, budget_limit_credits, automation_policy_json, policy_version, updated_at)
+    VALUES (1, 'tenant-a', 'user-a', ?, ?, ?, 1, ?)
+  `).run(options.executionMode || 'auto', options.budgetLimit ?? 30, JSON.stringify(options.automationPolicy || {}), now);
+  db.prepare('INSERT INTO redraw_works (id, project_id, tenant_id, user_id, current_version, current_step, status, task_id, updated_at) VALUES (1, 1, ?, ?, 1, 1, ?, ?, ?)')
+    .run('tenant-a', 'user-a', 'fact_confirmed', 'task-analysis', now);
   const sourceVersionId = Number(db.prepare(`
     INSERT INTO redraw_versions
       (work_id, tenant_id, user_id, version, locale, market, localization_level,
@@ -242,7 +358,31 @@ function createDb(options = {}) {
     now,
     now,
   ));
+  setAnalysisDecision(db, {
+    action: 'advance',
+    effective_mode: 'auto',
+    reason_codes: [],
+    policy_version: 1,
+    evidence_hash: factsHash,
+    effective_analysis_state: 'asset_review',
+  }, sourceVersionId);
   return db;
+}
+
+function setAnalysisDecision(db, decision, versionId = 1) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO async_tasks
+      (id, type, status, progress, message, result, resource_id, tenant_id, user_id, created_at, updated_at, completed_at)
+    VALUES ('task-analysis', 'redraw_analysis', 'completed', 100, '分析完成', ?, '1', 'tenant-a', 'user-a', ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET result = excluded.result, updated_at = excluded.updated_at
+  `).run(JSON.stringify({
+    status: 'completed',
+    work_id: 1,
+    version_id: versionId,
+    facts_hash: decision.evidence_hash,
+    automation_decision: decision,
+  }), now, now, now);
 }
 
 function quoteInput(overrides = {}) {
@@ -296,6 +436,133 @@ test('quotes only when verified text capability and model price are available', 
   db.close();
 });
 
+test('quote fails closed before capability and pricing when analysis decision did not advance', () => {
+  for (const decision of [
+    {
+      action: 'needs_review',
+      effective_mode: 'safe',
+      reason_codes: ['speaker_mapping_low_confidence'],
+      policy_version: 1,
+      evidence_hash: buildLocalizationInput(sourceFacts(), { locale: 'source' }).source_facts_hash,
+      effective_analysis_state: 'analysis_review',
+    },
+    {
+      action: 'blocked',
+      effective_mode: 'safe',
+      reason_codes: ['project_policy_missing'],
+      policy_version: 1,
+      evidence_hash: buildLocalizationInput(sourceFacts(), { locale: 'source' }).source_facts_hash,
+      effective_analysis_state: 'blocked',
+    },
+  ]) {
+    const db = createDb({ capability: false, price: false });
+    setAnalysisDecision(db, decision);
+    const quote = quoteLocalization(db, quoteInput());
+    assert.equal(quote.priced, false);
+    assert.equal(quote.code, 'REDRAW_LOCALIZATION_ANALYSIS_NOT_ADVANCED');
+    assert.deepEqual(quote.automation_decision, decision);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_localization'").get().count, 0);
+    db.close();
+  }
+});
+
+test('start fails closed before draft, reservation, task, and provider when analysis decision is missing or stale', () => {
+  for (const setup of [
+    (db) => db.prepare('UPDATE async_tasks SET result = NULL WHERE id = ?').run('task-analysis'),
+    (db) => setAnalysisDecision(db, {
+      action: 'advance',
+      effective_mode: 'auto',
+      reason_codes: [],
+      policy_version: 1,
+      evidence_hash: 'stale-facts-hash',
+      effective_analysis_state: 'asset_review',
+    }),
+    (db) => setAnalysisDecision(db, {
+      action: 'needs_review',
+      effective_mode: 'safe',
+      reason_codes: ['safe_mode_requires_review'],
+      policy_version: 1,
+      evidence_hash: buildLocalizationInput(sourceFacts(), { locale: 'source' }).source_facts_hash,
+      effective_analysis_state: 'analysis_review',
+    }),
+  ]) {
+    const db = createDb();
+    setup(db);
+    const provider = providerReturning(localizedResult());
+    assert.throws(
+      () => startLocalization(db, { info() {}, warn() {}, error() {} }, {
+        ...quoteInput(),
+        idempotencyKey: 'idem-analysis-gate',
+        quoteHash: 'client-quote',
+      }, { provider, schedule: (job) => job() }),
+      (error) => error.code === 'REDRAW_LOCALIZATION_ANALYSIS_NOT_ADVANCED',
+    );
+    assert.equal(provider.calls.length, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_localization'").get().count, 0);
+    db.close();
+  }
+});
+
+test('quote and start fail closed when current project policy version drifted after analysis advance', () => {
+  const db = createDb({ capability: false, price: false });
+  db.prepare("UPDATE redraw_projects SET policy_version = 2, execution_mode = 'safe' WHERE id = 1").run();
+  const provider = providerReturning(localizedResult());
+
+  const quote = quoteLocalization(db, quoteInput());
+  assert.equal(quote.priced, false);
+  assert.equal(quote.code, 'REDRAW_LOCALIZATION_ANALYSIS_NOT_ADVANCED');
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_localization'").get().count, 0);
+
+  assert.throws(
+    () => startLocalization(db, { info() {}, warn() {}, error() {} }, {
+      ...quoteInput(),
+      idempotencyKey: 'idem-policy-drift',
+      quoteHash: 'stale-quote',
+    }, { provider, schedule: (job) => job() }),
+    (error) => error.code === 'REDRAW_LOCALIZATION_ANALYSIS_NOT_ADVANCED',
+  );
+  assert.equal(provider.calls.length, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count, 1);
+  db.close();
+});
+
+test('old advance decision from another source version cannot unlock current localization', () => {
+  const db = createDb({ capability: false, price: false });
+  const facts = sourceFacts();
+  const nextFacts = {
+    ...facts,
+    episode_hook: { id: 'hook-2', text: 'new hook' },
+  };
+  const nextHash = buildLocalizationInput(nextFacts, { locale: 'source' }).source_facts_hash;
+  const nextVersionId = Number(db.prepare(`
+    INSERT INTO redraw_versions
+      (work_id, tenant_id, user_id, version, locale, market, localization_level,
+       source_facts_json, facts_hash, status, created_at, updated_at)
+    VALUES (1, 'tenant-a', 'user-a', 2, 'source', '', 'faithful', ?, ?, 'asset_review', ?, ?)
+  `).run(JSON.stringify(nextFacts), nextHash, new Date().toISOString(), new Date().toISOString()).lastInsertRowid);
+  db.prepare('UPDATE redraw_works SET current_version = 2 WHERE id = 1').run();
+  setAnalysisDecision(db, {
+    action: 'advance',
+    effective_mode: 'auto',
+    reason_codes: [],
+    policy_version: 1,
+    evidence_hash: nextHash,
+    effective_analysis_state: 'asset_review',
+  }, 1);
+
+  const quote = quoteLocalization(db, quoteInput());
+  assert.equal(quote.priced, false);
+  assert.equal(quote.code, 'REDRAW_LOCALIZATION_ANALYSIS_NOT_ADVANCED');
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_localization'").get().count, 0);
+  assert.equal(nextVersionId > 1, true);
+  db.close();
+});
+
 test('quote returns unpriced codes for unavailable capability and price', () => {
   const noCapability = createDb({ capability: false });
   assert.deepEqual(
@@ -334,6 +601,225 @@ test('starts localization, writes provider task id, materializes draft, complete
   assert.equal(draft.status, 'asset_review');
   assert.equal(draft.localization_task_id, started.task_id);
   assert.equal(draft.localization_credit_reservation_id, started.reservation_id);
+  db.close();
+});
+
+test('v2 localization auto advances only when all confidence thresholds pass and records safe decision', async () => {
+  const db = createDb({
+    sourceFacts: v2SourceFacts(),
+    automationPolicy: {
+      localization_thresholds: {
+        names: 0.9,
+        dialogue_semantics: 0.9,
+        dialogue_timing: 0.9,
+        culture: 0.9,
+        screen_text: 0.9,
+      },
+    },
+  });
+  const started = await startWithQuote(db, { idempotencyKey: 'idem-v2-auto' }, {
+    provider: providerReturning(v2LocalizedResult()),
+  });
+  await started.completion;
+
+  const task = taskService.getTask(db, started.task_id);
+  const result = JSON.parse(task.result);
+  assert.equal(task.status, 'completed');
+  assert.equal(result.localization_decision.action, 'advance');
+  assert.equal(result.localization_decision.effective_mode, 'auto');
+  assert.equal(result.localization_decision.evidence_hash, v2SourceFacts().facts_hash);
+  assert.deepEqual(db.prepare('SELECT current_step, status FROM redraw_works WHERE id = 1').get(), {
+    current_step: 2,
+    status: 'asset_review',
+  });
+  const version = db.prepare('SELECT text_map_json FROM redraw_versions WHERE id = ?').get(started.draft_version_id);
+  assert.deepEqual(JSON.parse(version.text_map_json), { 'shot-2:screen-1': 'CALL MOM' });
+  const shot = db.prepare("SELECT draft_json, compiled_prompt_json FROM redraw_shots WHERE version_id = ? AND shot_id = 'shot-2'")
+    .get(started.draft_version_id);
+  assert.equal(JSON.parse(shot.draft_json).text_regions[0].target_text, 'CALL MOM');
+  assert.equal(JSON.parse(shot.compiled_prompt_json).text_regions[0].target_text, 'CALL MOM');
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_asset_batch'").get().count, 0);
+  assert.deepEqual(db.prepare('SELECT reason_code, to_state FROM redraw_workflow_events').get(), {
+    reason_code: 'localization_completed',
+    to_state: 'asset_review',
+  });
+  db.close();
+});
+
+test('v2 localization safe or low confidence stops at needs_review without asset generation task', async () => {
+  for (const item of [
+    {
+      name: 'safe',
+      db: createDb({
+        sourceFacts: v2SourceFacts(),
+        executionMode: 'safe',
+        automationPolicy: {
+          localization_thresholds: {
+            names: 0.9,
+            dialogue_semantics: 0.9,
+            dialogue_timing: 0.9,
+            culture: 0.9,
+            screen_text: 0.9,
+          },
+        },
+      }),
+      result: v2LocalizedResult(),
+      reason: 'safe_mode_requires_review',
+    },
+    {
+      name: 'low confidence',
+      db: createDb({
+        sourceFacts: v2SourceFacts(),
+        automationPolicy: {
+          localization_thresholds: {
+            names: 0.9,
+            dialogue_semantics: 0.9,
+            dialogue_timing: 0.9,
+            culture: 0.9,
+            screen_text: 0.9,
+          },
+        },
+      }),
+      result: v2LocalizedResult({ confidence: { ...v2LocalizedResult().confidence, screen_text: 0.5 } }),
+      reason: 'localization_confidence_below_threshold',
+    },
+  ]) {
+    const started = await startWithQuote(item.db, { idempotencyKey: `idem-v2-${item.name}` }, {
+      provider: providerReturning(item.result),
+    });
+    await started.completion;
+
+    const task = taskService.getTask(item.db, started.task_id);
+    const result = JSON.parse(task.result);
+    assert.equal(result.localization_decision.action, 'needs_review', item.name);
+    assert.equal(result.localization_decision.effective_mode, 'safe', item.name);
+    assert.deepEqual(result.localization_decision.reason_codes, [item.reason], item.name);
+    assert.deepEqual(item.db.prepare('SELECT current_step, status FROM redraw_works WHERE id = 1').get(), {
+      current_step: 1,
+      status: 'needs_review',
+    }, item.name);
+    assert.equal(item.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(started.draft_version_id).status, 'needs_review', item.name);
+    assert.equal(item.db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_asset_batch'").get().count, 0, item.name);
+    assert.deepEqual(item.db.prepare('SELECT reason_code, to_state FROM redraw_workflow_events ORDER BY id DESC LIMIT 1').get(), {
+      reason_code: 'localization_completed',
+      to_state: 'needs_review',
+    }, item.name);
+    item.db.close();
+  }
+});
+
+test('v2 localization blocks when thresholds are missing or policy and budget drift before auto advance', async () => {
+  for (const item of [
+    {
+      name: 'missing thresholds',
+      db: createDb({ sourceFacts: v2SourceFacts(), automationPolicy: {} }),
+      mutate: null,
+      reason: 'localization_thresholds_missing',
+    },
+    {
+      name: 'policy drift',
+      db: createDb({
+        sourceFacts: v2SourceFacts(),
+        automationPolicy: {
+          localization_thresholds: {
+            names: 0.9,
+            dialogue_semantics: 0.9,
+            dialogue_timing: 0.9,
+            culture: 0.9,
+            screen_text: 0.9,
+          },
+        },
+      }),
+      mutate: (db) => db.prepare('UPDATE redraw_projects SET policy_version = 2 WHERE id = 1').run(),
+      reason: 'localization_policy_drift',
+    },
+    {
+      name: 'budget drift',
+      db: createDb({
+        sourceFacts: v2SourceFacts(),
+        automationPolicy: {
+          localization_thresholds: {
+            names: 0.9,
+            dialogue_semantics: 0.9,
+            dialogue_timing: 0.9,
+            culture: 0.9,
+            screen_text: 0.9,
+          },
+        },
+      }),
+      mutate: (db) => db.prepare('UPDATE redraw_projects SET budget_limit_credits = 5 WHERE id = 1').run(),
+      reason: 'localization_budget_drift',
+    },
+  ]) {
+    let mutated = false;
+    const provider = providerReturning(v2LocalizedResult());
+    const started = await startWithQuote(item.db, { idempotencyKey: `idem-v2-block-${item.name}` }, {
+      provider: async (input) => {
+        if (item.mutate && !mutated) {
+          mutated = true;
+          item.mutate(item.db);
+        }
+        return provider(input);
+      },
+    });
+    await started.completion;
+
+    const task = taskService.getTask(item.db, started.task_id);
+    const result = JSON.parse(task.result);
+    assert.equal(result.localization_decision.action, 'blocked', item.name);
+    assert.equal(result.localization_decision.effective_mode, 'safe', item.name);
+    assert.deepEqual(result.localization_decision.reason_codes, [item.reason], item.name);
+    assert.deepEqual(item.db.prepare('SELECT current_step, status FROM redraw_works WHERE id = 1').get(), {
+      current_step: 1,
+      status: 'blocked',
+    }, item.name);
+    assert.equal(item.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(started.draft_version_id).status, 'blocked', item.name);
+    assert.equal(item.db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_asset_batch'").get().count, 0, item.name);
+    assert.deepEqual(item.db.prepare('SELECT reason_code, to_state FROM redraw_workflow_events ORDER BY id DESC LIMIT 1').get(), {
+      reason_code: 'localization_completed',
+      to_state: 'blocked',
+    }, item.name);
+    item.db.close();
+  }
+});
+
+test('v2 localization finalize failure rolls back materialization and does not confirm reservation', async () => {
+  const db = createDb({
+    sourceFacts: v2SourceFacts(),
+    automationPolicy: {
+      localization_thresholds: {
+        names: 0.9,
+        dialogue_semantics: 0.9,
+        dialogue_timing: 0.9,
+        culture: 0.9,
+        screen_text: 0.9,
+      },
+    },
+  });
+  db.exec(`
+    CREATE TRIGGER fail_localization_completed
+    BEFORE INSERT ON redraw_workflow_events
+    WHEN NEW.reason_code = 'localization_completed'
+    BEGIN
+      SELECT RAISE(ABORT, 'forced localization finalize failure');
+    END;
+  `);
+
+  const started = await startWithQuote(db, { idempotencyKey: 'idem-v2-finalize-fail' }, {
+    provider: providerReturning(v2LocalizedResult()),
+  });
+  await assert.rejects(started.completion, /forced localization finalize failure/);
+
+  assert.equal(taskService.getTask(db, started.task_id).status, 'failed');
+  assert.equal(credits.getReservation(db, started.reservation_id).status, 'refunded');
+  assert.equal(db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(started.draft_version_id).status, 'draft');
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_shots WHERE version_id = ?').get(started.draft_version_id).count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_assets WHERE version_id = ?').get(started.draft_version_id).count, 0);
+  assert.deepEqual(db.prepare('SELECT current_version, current_step, status FROM redraw_works WHERE id = 1').get(), {
+    current_version: 1,
+    current_step: 1,
+    status: 'fact_confirmed',
+  });
   db.close();
 });
 
@@ -456,7 +942,7 @@ test('quote hash changes are rejected with the fresh quote and no side effects',
       return true;
     },
   );
-  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM async_tasks').get().count, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count, 0);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
   db.close();
 });
@@ -475,7 +961,7 @@ test('insufficient balance blocks before draft, task, reservation, and provider 
   );
   assert.equal(provider.calls.length, 0);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count, 1);
-  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM async_tasks').get().count, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count, 0);
   db.close();
 });
 

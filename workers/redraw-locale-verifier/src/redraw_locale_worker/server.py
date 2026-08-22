@@ -16,16 +16,18 @@ MAX_RESPONSE_BYTES = 256 * 1024
 READY_TTL_SECONDS = 10
 READY_REFRESH_SECONDS = 5
 _UnixStreamServerBase = getattr(socketserver, "UnixStreamServer", socketserver.TCPServer)
-FORBIDDEN_RESPONSE_FIELDS = frozenset({"transcript", "transcript_text", "approved_text"})
+FORBIDDEN_RESPONSE_FIELDS = frozenset({"transcript", "transcript_text", "approved_text", "provider_task_id", "task_id"})
 
 
 @dataclass(frozen=True)
 class LocaleServerConfig:
-    pack: dict
+    pack: dict | None
     allowed_root: Path
+    pack_by_id: object = None
     asr: object = None
     accent: object = None
     verifier: object = None
+    native_verifier: object = None
     ready_path: Path | None = None
     socket_path: Path | None = None
 
@@ -89,10 +91,11 @@ class LocaleRequestHandler(socketserver.StreamRequestHandler):
 
         config = self.server.config
         try:
-            verifier = config.verifier or _default_verifier()
+            pack = _select_pack(config, request["locale_pack"])
+            verifier = _select_verifier(config, request["action"])
             result = verifier(
                 request,
-                config.pack,
+                pack,
                 allowed_root=config.allowed_root,
                 asr=config.asr,
                 accent=config.accent,
@@ -116,66 +119,94 @@ class LocaleRequestHandler(socketserver.StreamRequestHandler):
         self.wfile.flush()
 
 
-def make_test_server(verifier, *, pack, allowed_root, asr=None, accent=None):
+def make_test_server(verifier, *, pack=None, pack_by_id=None, allowed_root, asr=None, accent=None, native_verifier=None):
     config = LocaleServerConfig(
         pack=pack,
+        pack_by_id=pack_by_id,
         allowed_root=Path(allowed_root).resolve(),
         asr=asr,
         accent=accent,
         verifier=verifier,
+        native_verifier=native_verifier,
     )
     return LocaleTcpTestServer(("127.0.0.1", 0), LocaleRequestHandler, config=config)
 
 
-def build_ready_payload(pack, *, now=None, pid=None, ttl_seconds=READY_TTL_SECONDS):
+def build_ready_payload(pack, *, pack_by_id=None, now=None, pid=None, ttl_seconds=READY_TTL_SECONDS):
     if not isinstance(pack, dict):
         raise TypeError("LOCALE_READY_ATTESTATION_INVALID")
-    locale_pack = pack.get("id") if "id" in pack else pack.get("locale_pack")
-    model_hash = pack.get("model_manifest_sha256")
-    calibration_hash = pack.get("calibration_manifest_sha256")
-    if (
-        not isinstance(locale_pack, str)
-        or not locale_pack.strip()
-        or not isinstance(model_hash, str)
-        or HEX_SHA256_RE.fullmatch(model_hash) is None
-        or not isinstance(calibration_hash, str)
-        or HEX_SHA256_RE.fullmatch(calibration_hash) is None
-    ):
-        raise ValueError("LOCALE_READY_ATTESTATION_INVALID")
+    index = None
+    primary_pack = pack
+    if pack_by_id is not None:
+        index = _validated_pack_index(pack_by_id)
+        if not index:
+            raise ValueError("LOCALE_READY_ATTESTATION_INVALID")
+        primary_pack = index.get("en-US@1")
+        if primary_pack is None:
+            if len(index) != 1:
+                raise ValueError("LOCALE_READY_ATTESTATION_INVALID")
+            primary_pack = next(iter(index.values()))
+        if _pack_identifier(pack) != _pack_identifier(primary_pack):
+            raise ValueError("LOCALE_READY_ATTESTATION_INVALID")
+    primary = _ready_attestation(primary_pack)
     timestamp = _timestamp(now)
-    return {
+    payload = {
         "schema_version": 1,
         "pid": os.getpid() if pid is None else int(pid),
-        "locale_pack": locale_pack,
-        "model_manifest_sha256": model_hash,
-        "calibration_manifest_sha256": calibration_hash,
+        "locale_pack": primary["id"],
+        "model_manifest_sha256": primary["model_manifest_sha256"],
+        "calibration_manifest_sha256": primary["calibration_manifest_sha256"],
         "expires_at": timestamp + ttl_seconds,
     }
+    if pack_by_id is not None:
+        attestations = [_ready_attestation(index[pack_id]) for pack_id in sorted(index)]
+        payload["enabled_pack_ids"] = [item["id"] for item in attestations]
+        payload["pack_attestations"] = attestations
+    return payload
 
 
-def write_ready(path, pack, *, now=None, pid=None):
+def write_ready(path, pack, *, pack_by_id=None, now=None, pid=None):
     ready_path = Path(path)
     ready_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = build_ready_payload(pack, now=now, pid=pid)
+    payload = build_ready_payload(pack, pack_by_id=pack_by_id, now=now, pid=pid)
     temp_path = ready_path.with_suffix(".tmp")
     temp_path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
     os.replace(temp_path, ready_path)
 
 
-def write_ready_after_startup_checks(path, pack, *, model_hash_check, smoke_checks, now=None, pid=None):
-    run_startup_checks(pack, model_hash_check=model_hash_check, smoke_checks=smoke_checks)
-    write_ready(path, pack, now=now, pid=pid)
+def write_ready_after_startup_checks(path, pack, *, model_hash_check, smoke_checks, pack_by_id=None, now=None, pid=None):
+    run_startup_checks(pack, pack_by_id=pack_by_id, model_hash_check=model_hash_check, smoke_checks=smoke_checks)
+    write_ready(path, pack, pack_by_id=pack_by_id, now=now, pid=pid)
 
 
-def run_startup_checks(pack, *, model_hash_check, smoke_checks):
-    if not callable(model_hash_check) or not isinstance(smoke_checks, (list, tuple)) or len(smoke_checks) != 2:
+def run_startup_checks(pack, *, model_hash_check, smoke_checks, pack_by_id=None):
+    if not callable(model_hash_check):
         raise TypeError("LOCALE_STARTUP_CHECK_INVALID")
-    if not all(callable(check) for check in smoke_checks):
-        raise TypeError("LOCALE_STARTUP_CHECK_INVALID")
+    if pack_by_id is None:
+        if not isinstance(smoke_checks, (list, tuple)) or len(smoke_checks) != 2 or not all(callable(check) for check in smoke_checks):
+            raise TypeError("LOCALE_STARTUP_CHECK_INVALID")
+        model_hash_check(pack)
+        for check in smoke_checks:
+            check()
+        return
 
-    model_hash_check(pack)
-    for check in smoke_checks:
-        check()
+    index = _validated_pack_index(pack_by_id)
+    required_smokes = {"asr"}
+    if index and any(_pack_requires_accent(item) for item in index.values()):
+        required_smokes.add("accent")
+    if (
+        not index
+        or not isinstance(smoke_checks, dict)
+        or set(smoke_checks) != required_smokes
+        or not all(callable(check) for check in smoke_checks.values())
+    ):
+        raise TypeError("LOCALE_STARTUP_CHECK_INVALID")
+    for pack_id in sorted(index):
+        current_pack = index[pack_id]
+        model_hash_check(current_pack)
+        smoke_checks["asr"]()
+        if _pack_requires_accent(current_pack):
+            smoke_checks["accent"]()
 
 
 def is_ready_expired(payload, *, now=None):
@@ -204,9 +235,10 @@ def safe_unlink_socket(path):
 
 
 class ReadyRefresher:
-    def __init__(self, ready_path, pack, *, interval_seconds=READY_REFRESH_SECONDS):
+    def __init__(self, ready_path, pack, *, pack_by_id=None, interval_seconds=READY_REFRESH_SECONDS):
         self.ready_path = Path(ready_path)
         self.pack = pack
+        self.pack_by_id = pack_by_id
         self.interval_seconds = interval_seconds
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -220,16 +252,18 @@ class ReadyRefresher:
 
     def _run(self):
         while not self._stop.wait(self.interval_seconds):
-            write_ready(self.ready_path, self.pack)
+            write_ready(self.ready_path, self.pack, pack_by_id=self.pack_by_id)
 
 
-def create_unix_server(socket_path, *, pack, allowed_root, asr, accent, ready_path=None):
+def create_unix_server(socket_path, *, pack, pack_by_id=None, allowed_root, asr, accent, ready_path=None):
     config = LocaleServerConfig(
         pack=pack,
+        pack_by_id=pack_by_id,
         allowed_root=Path(allowed_root).resolve(),
         asr=asr,
         accent=accent,
-        verifier=_default_verifier(),
+        verifier=_default_verifier("verify"),
+        native_verifier=_default_verifier("verify_native_audio"),
         ready_path=Path(ready_path) if ready_path is not None else None,
         socket_path=Path(socket_path),
     )
@@ -237,15 +271,23 @@ def create_unix_server(socket_path, *, pack, allowed_root, asr, accent, ready_pa
     return LocaleUnixServer(str(socket_path), LocaleRequestHandler, config=config)
 
 
-def run_server(socket_path, *, pack, allowed_root, asr, accent, ready_path, model_hash_check, smoke_checks):
+def run_server(socket_path, *, pack, pack_by_id=None, allowed_root, asr, accent, ready_path, model_hash_check, smoke_checks):
     _safe_unlink_file(ready_path)
     server = None
     refresher = None
     try:
-        run_startup_checks(pack, model_hash_check=model_hash_check, smoke_checks=smoke_checks)
-        server = create_unix_server(socket_path, pack=pack, allowed_root=allowed_root, asr=asr, accent=accent, ready_path=ready_path)
-        write_ready(ready_path, pack)
-        refresher = ReadyRefresher(ready_path, pack)
+        run_startup_checks(pack, pack_by_id=pack_by_id, model_hash_check=model_hash_check, smoke_checks=smoke_checks)
+        server = create_unix_server(
+            socket_path,
+            pack=pack,
+            pack_by_id=pack_by_id,
+            allowed_root=allowed_root,
+            asr=asr,
+            accent=accent,
+            ready_path=ready_path,
+        )
+        write_ready(ready_path, pack, pack_by_id=pack_by_id)
+        refresher = ReadyRefresher(ready_path, pack, pack_by_id=pack_by_id)
         refresher.start()
         server.serve_forever()
     finally:
@@ -291,10 +333,104 @@ def _safe_unlink_file(path):
         pass
 
 
-def _default_verifier():
-    from .verifier import verify_audio
+def _parse_pack_document(value):
+    if not isinstance(value, dict):
+        raise ValueError("LOCALE_PACK_INVALID")
+    if "packs" not in value:
+        pack = dict(value)
+        pack_id = _pack_identifier(pack)
+        if pack_id is None:
+            raise ValueError("LOCALE_PACK_INVALID")
+        pack.setdefault("locale_pack", pack_id)
+        return pack, None
+    if set(value) != {"packs"} or not isinstance(value["packs"], list) or not value["packs"]:
+        raise ValueError("LOCALE_PACK_INVALID")
 
-    return verify_audio
+    index = {}
+    for item in value["packs"]:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"].strip():
+            raise ValueError("LOCALE_PACK_INVALID")
+        pack = dict(item)
+        pack.setdefault("locale_pack", pack["id"])
+        pack_id = _pack_identifier(pack)
+        if pack_id is None or pack_id in index:
+            raise ValueError("LOCALE_PACK_INVALID")
+        index[pack_id] = pack
+    primary = index.get("en-US@1")
+    if primary is None:
+        if len(index) != 1:
+            raise ValueError("LOCALE_PACK_INVALID")
+        primary = next(iter(index.values()))
+    return primary, index
+
+
+def _ready_attestation(pack):
+    pack_id = _pack_identifier(pack)
+    model_hash = pack.get("model_manifest_sha256") if isinstance(pack, dict) else None
+    calibration_hash = pack.get("calibration_manifest_sha256") if isinstance(pack, dict) else None
+    if (
+        pack_id is None
+        or not isinstance(model_hash, str)
+        or HEX_SHA256_RE.fullmatch(model_hash) is None
+        or not isinstance(calibration_hash, str)
+        or HEX_SHA256_RE.fullmatch(calibration_hash) is None
+    ):
+        raise ValueError("LOCALE_READY_ATTESTATION_INVALID")
+    return {
+        "id": pack_id,
+        "model_manifest_sha256": model_hash,
+        "calibration_manifest_sha256": calibration_hash,
+    }
+
+
+def _pack_requires_accent(pack):
+    return not isinstance(pack, dict) or pack.get("scope") != "language"
+
+
+def _select_pack(config, requested_pack_id):
+    if config.pack_by_id is not None:
+        index = _validated_pack_index(config.pack_by_id)
+        if index is None or requested_pack_id not in index:
+            raise ProtocolError("LOCALE_PACK_UNSUPPORTED")
+        return index[requested_pack_id]
+    if _pack_identifier(config.pack) != requested_pack_id:
+        raise ProtocolError("LOCALE_PACK_UNSUPPORTED")
+    return config.pack
+
+
+def _validated_pack_index(pack_by_id):
+    if not isinstance(pack_by_id, dict):
+        return None
+    index = {}
+    for key, pack in pack_by_id.items():
+        pack_id = _pack_identifier(pack)
+        if not isinstance(key, str) or not key.strip() or key != pack_id or pack_id in index:
+            return None
+        index[pack_id] = pack
+    return index
+
+
+def _pack_identifier(pack):
+    if not isinstance(pack, dict):
+        return None
+    pack_id = pack.get("id")
+    locale_pack = pack.get("locale_pack")
+    if pack_id is not None and locale_pack is not None and pack_id != locale_pack:
+        return None
+    value = pack_id if pack_id is not None else locale_pack
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _select_verifier(config, action):
+    if action == "verify_native_audio":
+        return config.native_verifier or _default_verifier(action)
+    return config.verifier or _default_verifier(action)
+
+
+def _default_verifier(action="verify"):
+    from .verifier import verify_audio, verify_native_audio
+
+    return verify_native_audio if action == "verify_native_audio" else verify_audio
 
 
 def main():
@@ -307,36 +443,51 @@ def main():
         expected_model_hash = _required_env("REDRAW_LOCALE_VERIFIER_MODEL_MANIFEST_SHA256")
         smoke_audio = _required_env("REDRAW_LOCALE_VERIFIER_SMOKE_AUDIO")
         asr_model_dir = _required_env("REDRAW_LOCALE_VERIFIER_ASR_MODEL_DIR")
-        accent_runtime_dir = _required_env("REDRAW_LOCALE_VERIFIER_ACCENT_RUNTIME_DIR")
 
-        pack = json.loads(Path(pack_path).read_text(encoding="utf-8"))
-        if not isinstance(pack, dict):
-            raise ValueError("LOCALE_PACK_INVALID")
-        pack.setdefault("locale_pack", pack.get("id"))
+        pack_document = json.loads(Path(pack_path).read_text(encoding="utf-8"))
+        pack, pack_by_id = _parse_pack_document(pack_document)
+        packs = pack_by_id.values() if pack_by_id is not None else (pack,)
         manifest_bytes = Path(model_manifest_path).read_bytes()
         actual_model_hash = hashlib.sha256(manifest_bytes).hexdigest()
-        if actual_model_hash != expected_model_hash or pack.get("model_manifest_sha256") != expected_model_hash:
+        if actual_model_hash != expected_model_hash or any(
+            item.get("model_manifest_sha256") != expected_model_hash for item in packs
+        ):
             raise ValueError("LOCALE_MODEL_MANIFEST_HASH_INVALID")
 
         from .engines import CommonAccentEngine, FasterWhisperEngine
 
         asr = FasterWhisperEngine(asr_model_dir)
-        accent = CommonAccentEngine(accent_runtime_dir)
+        accent_required = pack_by_id is None or any(_pack_requires_accent(item) for item in pack_by_id.values())
+        accent = None
+        if accent_required:
+            accent_runtime_dir = _required_env("REDRAW_LOCALE_VERIFIER_ACCENT_RUNTIME_DIR")
+            accent = CommonAccentEngine(accent_runtime_dir)
         smoke_path = Path(smoke_audio).resolve(strict=True)
 
-        def model_hash_check(_pack):
-            if hashlib.sha256(Path(model_manifest_path).read_bytes()).hexdigest() != expected_model_hash:
+        def model_hash_check(checked_pack):
+            if (
+                hashlib.sha256(Path(model_manifest_path).read_bytes()).hexdigest() != expected_model_hash
+                or checked_pack.get("model_manifest_sha256") != expected_model_hash
+            ):
                 raise ValueError("LOCALE_MODEL_MANIFEST_HASH_INVALID")
+
+        if pack_by_id is None:
+            smoke_checks = [lambda: asr.infer(smoke_path), lambda: accent.infer(smoke_path)]
+        else:
+            smoke_checks = {"asr": lambda: asr.infer(smoke_path)}
+            if accent is not None:
+                smoke_checks["accent"] = lambda: accent.infer(smoke_path)
 
         run_server(
             socket_path,
             pack=pack,
+            pack_by_id=pack_by_id,
             allowed_root=allowed_root,
             asr=asr,
             accent=accent,
             ready_path=ready_path,
             model_hash_check=model_hash_check,
-            smoke_checks=[lambda: asr.infer(smoke_path), lambda: accent.infer(smoke_path)],
+            smoke_checks=smoke_checks,
         )
     except Exception as exc:  # noqa: BLE001 - startup must fail closed without secret details.
         raise SystemExit(f"LOCALE_SERVER_STARTUP_FAILED:{type(exc).__name__}") from None

@@ -128,6 +128,16 @@ function buildVideoBody({
   video_url,
 } = {}) {
   const name = String(model || '').trim();
+  if (name.toLowerCase() === 'lingjing-video-v1') {
+    const length = Number(seconds ?? duration);
+    return {
+      model: name,
+      prompt: prompt || '',
+      duration: Number.isFinite(length) ? Math.min(15, Math.max(1, Math.round(length))) : 5,
+      ratio: normalizeAspectRatio(aspect_ratio),
+      reference_images: reference_urls.filter(Boolean).slice(0, 12),
+    };
+  }
   const isOmni = /^omni-fast/i.test(name);
   const isFlow = isFlowVideoModel(name);
   const body = {

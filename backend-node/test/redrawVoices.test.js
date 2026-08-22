@@ -582,6 +582,120 @@ test('批量 TTS 前重新检查语言、说话人和台词时长', () => {
   state.db.close();
 });
 
+test('批量 TTS 按 v2 source_character_key 匹配角色音色并兼容 legacy speaker key', () => {
+  const state = setup();
+  const now = new Date().toISOString();
+  addAudioAsset(state.db, 812, 'voice-812.mp3', now);
+  addAudioAsset(state.db, 813, 'voice-813.mp3', now);
+  addAudioAsset(state.db, 814, 'voice-814.mp3', now);
+  const v2Evidence = verifiedVoice(812, 'fr-v2-source-key');
+  const legacyIdEvidence = verifiedVoice(813, 'fr-legacy-id');
+  const legacyNumberEvidence = verifiedVoice(814, 'fr-legacy-number');
+  state.db.prepare(`INSERT INTO redraw_assets
+    (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+     asset_id, voice_asset_id, version_number, approval_status, status, created_at, updated_at)
+    VALUES
+      (?, ?, 'tenant-a', 'user-a', 'character', ?, 'V2 角色', 1812, 812, 1, 'pending', 'generated', ?, ?),
+      (?, ?, 'tenant-a', 'user-a', 'character', ?, 'Legacy ID 角色', 1813, 813, 1, 'pending', 'generated', ?, ?),
+      (?, ?, 'tenant-a', 'user-a', 'character', ?, 'Legacy number 角色', 1814, 814, 1, 'pending', 'generated', ?, ?),
+      (?, ?, 'tenant-a', 'user-a', 'character', ?, 'Invalid 角色', 1815, 812, 1, 'pending', 'generated', ?, ?)`)
+    .run(
+      812,
+      state.versionId,
+      JSON.stringify({
+        source_ref: {
+          kind: 'character',
+          source_character_key: ' c-real ',
+          source_ref: { source_character_key: 'c-forged' },
+          character_id: 'legacy-wrong',
+          id: 'legacy-id-wrong',
+        },
+        snapshot: { voice_snapshot: v2Evidence },
+      }),
+      now,
+      now,
+      813,
+      state.versionId,
+      JSON.stringify({
+        source_ref: { character_id: 'legacy-c-2' },
+        snapshot: { voice_snapshot: legacyIdEvidence },
+      }),
+      now,
+      now,
+      814,
+      state.versionId,
+      JSON.stringify({
+        source_ref: { id: 3001 },
+        snapshot: { voice_snapshot: legacyNumberEvidence },
+      }),
+      now,
+      now,
+      815,
+      state.versionId,
+      JSON.stringify({
+        source_ref: {
+          kind: 'character',
+          source_character_key: { value: 'object-key' },
+          character_id: ['array-key'],
+          id: true,
+        },
+        snapshot: { voice_snapshot: v2Evidence },
+      }),
+      now,
+      now,
+    );
+  const turnBase = {
+    localized_text: 'Ne regarde pas en arriere',
+    start_ms: 0,
+    end_ms: 2000,
+    estimated_duration_ms: 1800,
+  };
+
+  const validation = validateTtsBatch(state.db, state.versionId, [
+    { ...turnBase, speaker_id: 'c-real' },
+    { ...turnBase, speaker_id: 'legacy-c-2' },
+    { ...turnBase, speaker_id: 3001 },
+    { ...turnBase, speaker_id: 'c-forged' },
+    { ...turnBase, speaker_id: 'legacy-wrong' },
+    { ...turnBase, speaker_id: 'object-key' },
+    { ...turnBase, speaker_id: '[object Object]' },
+    { ...turnBase, speaker_id: 'array-key' },
+    { ...turnBase, speaker_id: 'true' },
+    { ...turnBase, speaker_id: { value: 'c-1' } },
+    { ...turnBase, speaker_id: ['c-1'] },
+    { ...turnBase, speaker_id: true },
+  ], validationOptions());
+
+  assert.equal(validation.ok, false);
+  assert.equal(validation.requests.length, 0);
+  assert.deepEqual(validation.issues.map((issue) => issue.reason), [
+    'speaker_voice_missing',
+    'speaker_voice_missing',
+    'speaker_voice_missing',
+    'speaker_voice_missing',
+    'speaker_voice_missing',
+    'speaker_voice_missing',
+    'speaker_voice_missing',
+    'speaker_voice_missing',
+    'speaker_voice_missing',
+  ]);
+  assert.deepEqual(validation.issues.map((issue) => issue.turn_index), [3, 4, 5, 6, 7, 8, 9, 10, 11]);
+
+  const ready = validateTtsBatch(state.db, state.versionId, [
+    { ...turnBase, speaker_id: 'c-real' },
+    { ...turnBase, speaker_id: 'legacy-c-2' },
+    { ...turnBase, speaker_id: 3001 },
+  ], validationOptions());
+  assert.equal(ready.ok, true);
+  assert.deepEqual(ready.requests.map((request) => request.voice_id), [
+    'fr-v2-source-key',
+    'fr-legacy-id',
+    'fr-legacy-number',
+  ]);
+  assert.deepEqual(ready.requests.map((request) => request.character_asset_id), [812, 813, 814]);
+  state.db.close();
+});
+
 test('缺少授权的克隆音色不进入生产目录且不能绑定角色', () => {
   const state = setup();
   const now = new Date().toISOString();

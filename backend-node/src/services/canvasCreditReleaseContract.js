@@ -57,8 +57,8 @@ function requireMatch(content, pattern, message) {
 function validateSource(content) {
   requireMatch(
     content,
-    /class="billing-cost"\s+aria-live="polite"/,
-    '缺少醒目积分卡片 billing-cost 或无障碍状态声明',
+    /class="(?=[^"]*\bbilling-cost\b)(?=[^"]*\bcanvas-credit-callout-v1\b)[^"]*"\s+aria-live="polite"/,
+    '缺少醒目积分卡片 billing-cost、canvas-credit-callout-v1 或无障碍状态声明',
   );
   requireMatch(
     content,
@@ -172,9 +172,9 @@ function validateBuild(releaseRoot) {
   if (files.length === 0) throw contractError('生产构建目录为空或不存在');
 
   const scriptReady = files.some((file) => (
-    fileContainsAll(file, ['本次预计扣除', 'billing-cost', '积分待管理员配置'])
+    fileContainsAll(file, ['本次预计扣除', 'billing-cost', CONTRACT, '积分待管理员配置'])
   ));
-  if (!scriptReady) throw contractError('生产构建缺少预计积分文案或 billing-cost 类名');
+  if (!scriptReady) throw contractError(`生产构建缺少预计积分文案、billing-cost 或 ${CONTRACT} 类名`);
 
   const styleReady = files.some(buildStyleSatisfiesContract);
   if (!styleReady) throw contractError('生产构建缺少醒目积分样式或关键字重');

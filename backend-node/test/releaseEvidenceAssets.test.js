@@ -15,10 +15,8 @@ function fixture() {
   const publicRoot = path.join(root, 'public');
   fs.mkdirSync(path.join(publicRoot, 'bootstrap'), { recursive: true });
   fs.mkdirSync(path.join(publicRoot, 'feituo'), { recursive: true });
-  fs.mkdirSync(path.join(publicRoot, 'lingjing'), { recursive: true });
   fs.writeFileSync(path.join(publicRoot, 'bootstrap', 'proof.mp4'), 'verified artifact');
   fs.writeFileSync(path.join(publicRoot, 'feituo', 'proof.mp4'), 'verified feituo artifact');
-  fs.writeFileSync(path.join(publicRoot, 'lingjing', 'proof.mp4'), 'verified lingjing artifact');
   fs.writeFileSync(path.join(publicRoot, 'bootstrap', 'unsafe.html'), '<script>alert(1)</script>');
   fs.writeFileSync(path.join(publicRoot, 'bootstrap', '.secret.mp4'), 'hidden');
   return { root, publicRoot };
@@ -62,11 +60,6 @@ test('verification assets are anonymously readable without exposing dotfiles', a
     const feituo = await fetch(`${base}/verification-assets/feituo/proof.mp4`);
     assert.equal(feituo.status, 200);
     assert.equal(await feituo.text(), 'verified feituo artifact');
-    const lingjing = await fetch(`${base}/verification-assets/lingjing/proof.mp4`);
-    assert.equal(lingjing.status, 200);
-    assert.equal(await lingjing.text(), 'verified lingjing artifact');
-    const lingjingHtml = await fetch(`${base}/verification-assets/lingjing/unsafe.html`);
-    assert.equal(lingjingHtml.status, 404);
     const hidden = await fetch(`${base}/verification-assets/bootstrap/.secret.mp4`);
     assert.equal(hidden.status, 404);
     const unsafeHtml = await fetch(`${base}/verification-assets/bootstrap/unsafe.html`);

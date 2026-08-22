@@ -26,8 +26,10 @@ test('自由节点配置面板保存并回填模型、比例和时长字段，�
   assert.match(canvasSource, /request\.get\('\/canvas\/model-catalog'\)/)
   assert.match(canvasSource, /canvasModelOptions\(freeCanvasModelCatalog\.value, kind, \{ referenceCount \}\)/)
   assert.doesNotMatch(canvasSource, /aiAPI\.list\(/)
-  assert.match(canvasSource, /filterCanvasCatalogFallbackModels\([\s\S]*getSelectableModelsAcrossConfigs\(freeCanvasModelConfigs\.value, serviceType\)/)
-  assert.doesNotMatch(canvasSource, /v-model="freeNodeForm\.model"[\s\S]{0,180}allow-create/)
+  assert.match(canvasSource, /function getFreeNodeModelOptions\(kind, nodeOrId\) \{[\s\S]{0,220}getFreeNodeModelOptionEntriesForNode\(kind, nodeOrId\)/)
+  assert.match(canvasSource, /v-for="option in getFreeNodeModelOptionEntriesForNode\(freeNodeKind, freeNodeEditingId\)"[\s\S]{0,180}:key="option\.value"[\s\S]{0,180}:value="option\.value"/)
+  assert.doesNotMatch(canvasSource, /getSelectableModelsAcrossConfigs\(freeCanvasModelConfigs\.value, serviceType\)/)
+  assert.doesNotMatch(canvasSource, /allow-create/)
   assert.match(canvasSource, /FREE_CANVAS_DEFAULTS_STORAGE_KEY/)
   assert.match(canvasSource, /function loadFreeCanvasNodeDefaults\(\)/)
   assert.match(canvasSource, /function persistFreeCanvasNodeDefaults\(kind, data\)/)
@@ -41,12 +43,12 @@ test('自由节点配置面板保存并回填模型、比例和时长字段，�
 test('首页与项目画布向节点提供带 value 和 label 的模型选项', () => {
   assert.match(homeCanvasSource, /canvasModelOptions,/)
   assert.match(homeCanvasSource, /function getFreeNodeModelOptions\(kind\) \{\s*return canvasModelOptions\(homeCanvasModelCatalog\.value, kind\)\s*\}/)
-  assert.match(canvasSource, /function getFreeNodeModelOptions\(kind\) \{\s*return getFreeNodeModelOptionEntries\(kind\)\s*\}/)
-  assert.doesNotMatch(canvasSource, /getFreeNodeModelOptionEntries\(kind\)\.map\(\(item\) => item\.value\)/)
+  assert.match(canvasSource, /function getFreeNodeModelOptions\(kind, nodeOrId\) \{\s*return getFreeNodeModelOptionEntriesForNode\(kind, nodeOrId\)\s*\}/)
+  assert.doesNotMatch(canvasSource, /getFreeNodeModelOptionEntriesForNode\(kind, nodeOrId\)\.map\(\(item\) => item\.value\)/)
 })
 
 test('每种自由生成节点在底部醒目显示随参数变化的本次积分', () => {
-  assert.match(nodeSource, /v-if="canGenerate" class="billing-cost" aria-live="polite"/)
+  assert.match(nodeSource, /v-if="canGenerate" class="billing-cost canvas-credit-callout-v1" aria-live="polite"/)
   assert.match(nodeSource, /本次预计扣除/)
   assert.match(nodeSource, /<strong>\{\{ estimatedCredits \}\}<\/strong>/)
   assert.match(nodeSource, /积分待管理员配置/)
@@ -56,6 +58,7 @@ test('每种自由生成节点在底部醒目显示随参数变化的本次积�
   assert.match(nodeSource, /\.billing-cost\s*\{[\s\S]*background:\s*rgba\(124, 64, 20, 0\.42\)/)
   assert.match(nodeSource, /\.billing-cost\s*\{[\s\S]*font-weight:\s*800/)
   assert.match(nodeSource, /\.billing-cost strong\s*\{[\s\S]*color:\s*#ffb15c[\s\S]*font-size:\s*18px[\s\S]*font-weight:\s*900/)
+  assert.match(nodeSource, /<option v-for="option in modelOptions"[\s\S]{0,160}:value="option\.value"[\s\S]{0,160}\{\{ option\.label \}\}/)
 })
 
 test('HomeCanvasNode 提供状态显示和配置生成入口，并通过画布上下文调用父级', () => {
@@ -79,11 +82,22 @@ test('选中自由节点展开专属编辑器，视频节点可见展示自动�
   assert.match(nodeSource, /ctx\?\.getFreeNodeInputReferences\?\.\(props\.id\)/)
   assert.match(nodeSource, /reference\.ready \? 'ready' : 'pending'/)
   assert.match(nodeSource, /把图片、视频或音频节点连接到视频节点；首尾帧、多图参考和全能参考会按当前模式真实提交/)
+  assert.match(nodeSource, /<img v-if="referencePreviewUrl\(reference\) && reference\.kind === 'image'"/)
+  assert.match(nodeSource, /loadProtectedMediaPreview\(url\)/)
+  assert.match(nodeSource, /<span v-else class="reference-placeholder">/)
   assert.match(canvasSource, /getFreeNodeInputReferences: freeCanvasNodeInputReferences/)
   assert.match(canvasSource, /视频节点已采用该\$\{mediaLabel\}作为参考素材/)
 })
 
-test('图片和视频编辑器可上传参考素材，视频 @ 只列出已经直连的上游图片', () => {
+test('视频节点首尾帧模式写回节点并持续映射后续参考图', () => {
+  assert.match(nodeSource, /@click="setVideoReferenceMode\('first-last'\)"/)
+  assert.match(nodeSource, /draft\.videoReferenceMode = normalizeFreeCanvasVideoReferenceMode\(mode\)/)
+  assert.match(nodeSource, /videoReferenceMode: videoReferenceMode\.value/)
+  assert.match(nodeSource, /watch\([\s\S]*inputReferences\.value\.map[\s\S]*let imageIndex = 0[\s\S]*reference\.kind === 'image'[\s\S]*const index = isImage \? imageIndex\+\+ : -1[\s\S]*resolveFreeCanvasVideoReferenceInput\(videoReferenceMode\.value, index\)/)
+  assert.match(nodeSource, /reference\.enabled !== enabled[\s\S]*updateReference\(reference, patch\)/)
+})
+
+test('图片编辑器上传参考图，视频编辑器上传图片、视频或音频且 @ 只列出直连图片', () => {
   assert.match(nodeSource, /v-if="canUploadReference" type="button" :aria-label="data\.kind === 'video' \? '上传参考素材' : '上传参考图'"/)
   assert.match(nodeSource, /v-if="canUploadReference"\s+ref="referenceFileInput"/)
   assert.match(nodeSource, /ctx\?\.uploadFreeCanvasReferenceMedia\?\.\(props\.id, file\)/)
@@ -92,18 +106,20 @@ test('图片和视频编辑器可上传参考素材，视频 @ 只列出已经�
   assert.match(nodeSource, /v-if="showReferenceMention"[\s\S]*aria-label="@选择参考图"/)
   assert.match(nodeSource, /@mousedown\.prevent="selectReferenceMention\(candidate\)"/)
   assert.match(nodeSource, /const mentionToken = String\(candidate\?\.mentionToken \|\| ''\)[\s\S]*draft\.content = `\$\{draft\.content\.slice\(0, mentionStart\.value\)\}\$\{mentionToken\} \$\{draft\.content\.slice\(mentionEnd\.value\)\}`/)
+  assert.match(nodeSource, /canvas-reference-numbered-mentions-v1/)
+  assert.match(nodeSource, /<span>\{\{ candidate\.label \}\}<\/span>/)
+  assert.match(nodeSource, /candidate\?\.mentionToken/)
+  assert.doesNotMatch(nodeSource, /@\$\{candidate\.title\}/)
   assert.match(nodeSource, /ctx\?\.attachFreeCanvasReference\?\.\(props\.id, sourceNodeId\)/)
   assert.doesNotMatch(nodeSource, /<select[\s\S]{0,160}aria-label="@选择参考图"/)
   assert.match(canvasSource, /async function uploadFreeCanvasReferenceMedia\(nodeOrId, file\)/)
-  assert.doesNotMatch(canvasSource, /const uploadFreeCanvasReferenceMedia = uploadFreeCanvasReferenceImage/)
   assert.match(canvasSource, /await createFreeCanvasReferenceNode\(\{[\s\S]*targetNode,[\s\S]*url,/)
   assert.match(canvasSource, /function attachFreeCanvasReference\(targetNodeOrId, sourceNodeOrId\)/)
   assert.match(canvasSource, /onConnect\(\{ source: sourceNode\.id, target: targetNode\.id \}\)/)
   assert.match(canvasSource, /uploadFreeCanvasReferenceMedia,\s*\n\s*attachFreeCanvasReference,/)
-  assert.match(canvasSource, /function freeCanvasReferenceCandidates\(nodeOrId\)[\s\S]{0,500}buildFreeCanvasReferenceMentionCandidates\([\s\S]*collectDirectUpstreamImageReferences/)
-  assert.match(generationSource, /export function buildFreeCanvasReferenceMentionCandidates\(references = \[\]\)[\s\S]*reference\.nodeId && reference\.ready && reference\.enabled !== false/)
-  assert.match(homeCanvasSource, /function freeCanvasReferenceCandidates\(nodeOrId\)[\s\S]{0,500}buildFreeCanvasReferenceMentionCandidates\([\s\S]*collectDirectUpstreamImageReferences/)
+  assert.match(canvasSource, /function freeCanvasReferenceCandidates\(nodeOrId\)[\s\S]{0,700}planFreeCanvasVideoReferences[\s\S]{0,700}return buildFreeCanvasReferenceMentionCandidates\(\s*adoptedReferences\([\s\S]{0,300}collectDirectUpstreamImageReferences/)
   assert.doesNotMatch(canvasSource, /function freeCanvasReferenceCandidates[\s\S]{0,500}allGraphNodes\.value\s*\.filter/)
+  assert.match(homeCanvasSource, /function freeCanvasReferenceCandidates\(nodeOrId\)[\s\S]{0,500}buildFreeCanvasReferenceMentionCandidates\([\s\S]*collectDirectUpstreamImageReferences/)
   assert.doesNotMatch(homeCanvasSource, /function freeCanvasReferenceCandidates[\s\S]{0,600}!connectedNodeIds\.has/)
 })
 
@@ -132,9 +148,10 @@ test('自由节点右键支持复制和删除，复制节点清除运行任务�
 
 test('独立画布支持 WASD 平移和宽容连线', () => {
   assert.match(canvasSource, /v-bind="canvasConnectionInteractionOptions"/)
-  assert.match(canvasSource, /const CANVAS_KEYBOARD_PAN_STEP = 56/)
+  assert.match(canvasSource, /CANVAS_KEYBOARD_PAN_INITIAL_STEP,[\s\S]*from '@\/utils\/canvasKeyboardPan'/)
   assert.match(canvasSource, /function panCanvasByKeyboard\(key\)/)
   assert.match(canvasSource, /\['w', 'a', 's', 'd'\]\.includes\(key\)/)
+  assert.match(canvasSource, /vector\.x \* CANVAS_KEYBOARD_PAN_INITIAL_STEP/)
   assert.match(canvasSource, /canvasFlowApi\.value\?\.setViewport\?\.\(nextViewport, \{ duration: 0 \}\)/)
 })
 
@@ -153,12 +170,15 @@ test('自由节点保留最近生成历史并可从右键查看', () => {
 test('独立画布自由节点走真实生成分支，禁止污染剧集 runCanvasNodeStep', () => {
   assert.match(canvasSource, /import request from '@\/utils\/request'/)
   assert.match(canvasSource, /collectDirectUpstreamImageReferences/)
+  assert.match(canvasSource, /canvasModelRoute/)
   assert.match(canvasSource, /buildFreeCanvasGenerationRequest/)
   assert.match(canvasSource, /buildFreeCanvasProjectAssetPayload/)
   assert.match(canvasSource, /resolveFreeCanvasResultUrl/)
   assert.match(canvasSource, /async function runFreeCanvasNode\(nodeOrId\)/)
   assert.match(canvasSource, /if \(!isStandaloneCanvas\.value \|\| node\?\.type !== 'homeCanvasNode'\)/)
-  assert.match(canvasSource, /const catalogEntry = canvasModelEntry\(freeCanvasModelCatalog\.value, kind, node\.data\?\.model, \{[\s\S]*referenceCount: kind === 'image' \? upstreamUrls\.length : 0,[\s\S]*\}\)[\s\S]*const generationData = \{ \.\.\.node\.data, model: catalogEntry\.model \}[\s\S]*requestPayload = buildFreeCanvasGenerationRequest\(generationData, \{[\s\S]*dramaId: dramaId\.value,[\s\S]*upstreamUrls,[\s\S]*upstreamReferences/)
+  assert.match(canvasSource, /const upstreamReferences = freeCanvasNodeInputReferences\(node\)[\s\S]*const upstreamUrls = upstreamReferences[\s\S]*const generationData = \{ \.\.\.node\.data, model: catalogEntry\.model \}[\s\S]*requestPayload = buildFreeCanvasGenerationRequest\(generationData, \{[\s\S]*dramaId: dramaId\.value,[\s\S]*upstreamUrls,[\s\S]*upstreamReferences/)
+  assert.match(canvasSource, /const modelRoute = canvasModelRoute\(freeCanvasModelCatalog\.value, kind, node\.data\?\.model\)/)
+  assert.match(canvasSource, /\.\.\.\(kind === 'image' \? \{ configId: modelRoute\?\.configId \} : \{\}\)/)
   assert.match(canvasSource, /if \(kind === 'image'\) submitResult = await imagesAPI\.create\(requestPayload\)/)
   assert.match(canvasSource, /else if \(kind === 'video'\) submitResult = await videosAPI\.create\(requestPayload\)/)
   assert.match(canvasSource, /else if \(kind === 'audio'\) submitResult = await request\.post\('\/audio\/extract', requestPayload\)/)
@@ -168,9 +188,12 @@ test('独立画布自由节点走真实生成分支，禁止污染剧集 runCanv
 
 test('自由节点运行结果可轮询、失败写回、成功自动入库并保留旧 url', () => {
   assert.match(canvasSource, /async function pollFreeCanvasTask\(taskId/)
-  assert.match(canvasSource, /if \(task\?\.status === 'completed'\) return task/)
-  assert.match(canvasSource, /if \(task\?\.status === 'failed'\) throw new Error/)
-  assert.match(canvasSource, /throw new Error\('自由节点生成超时'\)/)
+  assert.match(canvasSource, /pollFreeCanvasTaskStatus\(taskId, \{ \.\.\.options, getTask: taskAPI\.get \}\)/)
+  assert.match(canvasSource, /FREE_CANVAS_TASK_NEEDS_ATTENTION/)
+  assert.match(generationSource, /if \(task\?\.status === 'completed'\) return task/)
+  assert.match(generationSource, /FREE_CANVAS_TASK_STATUS_UNAVAILABLE/)
+  assert.match(generationSource, /FREE_CANVAS_TASK_RESULT_PENDING/)
+  assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{\s*model: requestPayload\.model \|\| node\.data\?\.model \|\| '',\s*status: 'running'/)
   assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{[\s\S]*status: 'running'[\s\S]*error: ''/)
   assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{[\s\S]*status: 'success'[\s\S]*url: resultUrl[\s\S]*assetSaveStatus: 'running'[\s\S]*assetSaveError: ''/)
   assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{[\s\S]*status: 'failed'[\s\S]*error: errorMessage/)
@@ -188,6 +211,9 @@ test('自由节点运行结果可轮询、失败写回、成功自动入库并�
   assert.match(canvasSource, /async function retryFreeCanvasAssetSave\(nodeOrId\)/)
   assert.match(canvasSource, /retryFreeCanvasAssetSave,\s*\r?\n/)
   assert.match(canvasSource, /save-node-result-asset[\s\S]*saveFreeCanvasResultAsset\(node, node\.data\?\.kind, nodeResultUrl\(node\), null, node\.data\?\.taskId \|\| ''\)[\s\S]*ElMessage\.error\(error\?\.message \|\| '存入素材库失败'\)/)
+  assert.match(canvasSource, /function resumePendingFreeCanvasTasks\(\)[\s\S]*node\?\.data\?\.status !== 'running'[\s\S]*void resumeFreeCanvasNodeTask\(node\)/)
+  assert.match(canvasSource, /async function resumeFreeCanvasNodeTask\(nodeOrId\)[\s\S]*await pollFreeCanvasTask\(taskId,[\s\S]*isFreeCanvasTaskStillPending\(error\)[\s\S]*status: 'running'[\s\S]*generationActive: false[\s\S]*status: 'failed'/)
+  assert.match(canvasSource, /await loadForDrama\(drama\.value, filterEpisodeId\.value\)[\s\S]*rebuildGraph\(\)[\s\S]*resumePendingFreeCanvasTasks\(\)/)
 })
 
 test('画布保存使用串行队列并在执行时构造最新布局', () => {

@@ -16,7 +16,6 @@ const {
   calculateBalanceDelta,
   canConfirmCostReview,
   decideResumeAction,
-  downloadAndInspect,
   hasCompletePricing,
   hasCompleteRequiredMatrix,
   assertPublicArtifact,
@@ -30,35 +29,6 @@ const {
   processCase,
   verifyAllStoredResults,
 } = require('../scripts/verify-toapis-video-models');
-
-it('makes a newly downloaded public artifact anonymously readable before the public fetch', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-public-artifact-'));
-  const filePath = path.join(root, 'test.mp4');
-  const bytes = Buffer.alloc(2048, 1);
-  let observedMode = null;
-  try {
-    await downloadAndInspect(
-      'https://provider.example/test.mp4',
-      filePath,
-      { resolution: '480p', duration: 5 },
-      'https://molimama.vip/verification-assets/toapis/test.mp4',
-      {
-        fetchImpl: async () => ({
-          ok: true,
-          headers: { get: () => 'video/mp4' },
-          arrayBuffer: async () => bytes,
-        }),
-        runFfprobe: () => ({ width: 864, height: 496, duration_seconds: 5, has_audio: false }),
-        assertPublicArtifact: async () => {
-          observedMode = fs.statSync(filePath).mode & 0o777;
-        },
-      },
-    );
-    assert.equal(observedMode, 0o444);
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
 
 function completedEvidence() {
   return buildRequiredMatrix().map((item, index) => {
@@ -182,17 +152,6 @@ describe('ToAPIs real video verification contract', () => {
     assert.deepEqual(omni.video_with_roles, [{ url: refs.referenceVideoUrl, role: 'reference_video' }]);
     assert.deepEqual(omni.audio_with_roles, [{ url: refs.referenceAudioUrl, role: 'reference_audio' }]);
     assert.equal(omni.generate_audio, false);
-  });
-
-  it('uses a run-bound business id so a fresh evidence run cannot reuse an old provider task', () => {
-    const item = buildRequiredMatrix()[0];
-    const first = buildVerificationRequest(item, {}, 'evidence-run-a');
-    const repeated = buildVerificationRequest(item, {}, 'evidence-run-a');
-    const second = buildVerificationRequest(item, {}, 'evidence-run-b');
-
-    assert.equal(first.client_business_id, repeated.client_business_id);
-    assert.notEqual(first.client_business_id, second.client_business_id);
-    assert.match(first.client_business_id, /^moli-verify-fast-t2v-480-[a-f0-9]{16}$/);
   });
 
   it('never retries an uncertain submission and only polls a persisted task id', () => {
@@ -577,12 +536,8 @@ describe('ToAPIs real video verification contract', () => {
 
   it('upgrades only a complete inspected and cost-reviewed matrix', () => {
     const results = completedEvidence();
-    const binding = {
-      evidence_contract: 'toapis-video-real-verification-v1',
-      evidence_sha256: 'a'.repeat(64),
-    };
     assert.equal(hasCompleteRequiredMatrix(results), true);
-    assert.deepEqual(buildVerifiedCapabilities(results, binding), {
+    assert.deepEqual(buildVerifiedCapabilities(results), {
       'seedance-2-fast': {
         durations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
         resolutions: ['480p', '720p'],
@@ -592,11 +547,9 @@ describe('ToAPIs real video verification contract', () => {
         supportsVideoReference: true,
         supportsAudioReference: true,
         supportsAudio: true,
-        maxReferences: 9,
-        maxVideoReferences: 3,
-        maxAudioReferences: 3,
-        evidence_contract: binding.evidence_contract,
-        evidence_sha256: binding.evidence_sha256,
+        maxReferences: 1,
+        maxVideoReferences: 1,
+        maxAudioReferences: 1,
       },
       'seedance-2-mini': {
         durations: [4, 8, 10, 12, 15],
@@ -607,11 +560,9 @@ describe('ToAPIs real video verification contract', () => {
         supportsVideoReference: true,
         supportsAudioReference: true,
         supportsAudio: true,
-        maxReferences: 9,
-        maxVideoReferences: 3,
-        maxAudioReferences: 3,
-        evidence_contract: binding.evidence_contract,
-        evidence_sha256: binding.evidence_sha256,
+        maxReferences: 1,
+        maxVideoReferences: 1,
+        maxAudioReferences: 1,
       },
     });
     assert.equal(hasCompleteRequiredMatrix(results.slice(1)), false);

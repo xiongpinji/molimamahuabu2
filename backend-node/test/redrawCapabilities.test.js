@@ -39,12 +39,14 @@ function createDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       service_type TEXT,
       provider TEXT,
+      api_protocol TEXT,
       name TEXT,
       model TEXT,
       is_active INTEGER DEFAULT 1,
       is_default INTEGER DEFAULT 0,
       priority INTEGER DEFAULT 0,
       settings TEXT,
+      updated_at TEXT,
       deleted_at TEXT
     );
   `);
@@ -58,6 +60,33 @@ function validEvidence(artifactId = 1) {
     task_id: 'task-a',
     terminal_status: 'completed',
     artifact_id: artifactId,
+  };
+}
+
+function validNativeEvidence(configId, configUpdatedAt, artifactId = 41, language = 'es') {
+  return {
+    contract: 'redraw-native-dialogue-audio-v1',
+    provider: 'provider-a',
+    protocol: 'feituo_open',
+    model: 'model-a',
+    config_id: configId,
+    config_updated_at: configUpdatedAt,
+    provider_task_id: 'provider-native-task',
+    terminal_status: 'completed',
+    artifact_id: artifactId,
+    artifact_sha256: 'a'.repeat(64),
+    media: { video_stream: true, audio_stream: true },
+    locale_verification: {
+      language,
+      language_verified: true,
+      locale_verified: false,
+    },
+    human_review: {
+      status: 'passed',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    },
   };
 }
 
@@ -82,16 +111,18 @@ function insertStyle(db, values) {
 function insertConfig(db, entries, values = {}) {
   db.prepare(`
     INSERT INTO ai_service_configs
-      (service_type, provider, name, model, is_active, settings, deleted_at)
+      (service_type, provider, api_protocol, name, model, is_active, settings, updated_at, deleted_at)
     VALUES
-      (@service_type, @provider, @name, @model, @is_active, @settings, @deleted_at)
+      (@service_type, @provider, @api_protocol, @name, @model, @is_active, @settings, @updated_at, @deleted_at)
   `).run({
     service_type: 'video',
     provider: 'provider-a',
+    api_protocol: 'feituo_open',
     name: 'Locale capability config',
     model: 'model-a',
     is_active: 1,
     settings: JSON.stringify({ redraw_locale_capabilities: entries }),
+    updated_at: NOW,
     deleted_at: null,
     ...values,
   });
@@ -173,6 +204,16 @@ test('summarizeLocaleCapability maps verified outputs to production status', () 
     clean_plate_image: true,
     tts: true,
     video: true,
+    native_dialogue_audio: false,
+  }), 'full_output');
+  assert.equal(summarizeLocaleCapability({
+    text: true,
+    subtitles: true,
+    character_image: true,
+    clean_plate_image: true,
+    tts: false,
+    video: true,
+    native_dialogue_audio: true,
   }), 'full_output');
   assert.equal(summarizeLocaleCapability({
     text: true,
@@ -181,6 +222,7 @@ test('summarizeLocaleCapability maps verified outputs to production status', () 
     clean_plate_image: true,
     tts: true,
     video: true,
+    native_dialogue_audio: false,
   }), 'asset_pending');
   assert.equal(summarizeLocaleCapability({
     text: true,
@@ -189,6 +231,7 @@ test('summarizeLocaleCapability maps verified outputs to production status', () 
     clean_plate_image: false,
     tts: true,
     video: true,
+    native_dialogue_audio: false,
   }), 'asset_pending');
   assert.equal(summarizeLocaleCapability({
     text: true,
@@ -197,6 +240,7 @@ test('summarizeLocaleCapability maps verified outputs to production status', () 
     clean_plate_image: true,
     tts: false,
     video: true,
+    native_dialogue_audio: false,
   }), 'subtitle_only');
   assert.equal(summarizeLocaleCapability({
     text: true,
@@ -205,6 +249,7 @@ test('summarizeLocaleCapability maps verified outputs to production status', () 
     clean_plate_image: true,
     tts: false,
     video: false,
+    native_dialogue_audio: false,
   }), 'voice_pending');
   assert.equal(summarizeLocaleCapability({
     text: true,
@@ -213,6 +258,7 @@ test('summarizeLocaleCapability maps verified outputs to production status', () 
     clean_plate_image: true,
     tts: true,
     video: true,
+    native_dialogue_audio: false,
   }), 'blocking');
 });
 
@@ -253,6 +299,59 @@ test('resolveVerifiedLocaleCapability returns only exact verified readable local
   }), null);
 });
 
+test('resolveVerifiedLocaleCapability accepts native dialogue audio only with exact carrier evidence', () => {
+  const db = createDb();
+  insertConfig(db, [
+    {
+      language: 'es',
+      locale: 'es',
+      target_language: 'es',
+      target_locale: null,
+      market: '',
+      status: 'verified',
+      evidence: {
+        native_dialogue_audio: validNativeEvidence(1, NOW, 41),
+      },
+    },
+    {
+      language: 'fr',
+      locale: 'fr',
+      target_language: 'fr',
+      target_locale: null,
+      market: '',
+      status: 'verified',
+      evidence: {
+        native_dialogue_audio: {
+          ...validNativeEvidence(1, NOW, 42, 'fr'),
+          contract: 'wrong-contract',
+        },
+      },
+    },
+  ]);
+
+  assert.deepEqual(resolveVerifiedLocaleCapability(db, {
+    locale: 'es',
+    market: '',
+    capability: 'native_dialogue_audio',
+    canReadArtifact: (id) => id === 41,
+  }), {
+    provider: 'provider-a',
+    model: 'model-a',
+    evidence: validNativeEvidence(1, NOW, 41),
+    carrier_config_id: 1,
+    carrier_service_type: 'video',
+    carrier_provider: 'provider-a',
+    carrier_updated_at: NOW,
+    protocol: 'feituo_open',
+  });
+  assert.equal(resolveVerifiedLocaleCapability(db, {
+    locale: 'fr',
+    market: '',
+    capability: 'native_dialogue_audio',
+    canReadArtifact: (id) => id === 42,
+  }), null);
+});
+
 test('listLocaleCapabilities ignores unreadable evidence and returns blocking reasons', () => {
   const db = createDb();
   insertConfig(db, [
@@ -280,6 +379,22 @@ test('listLocaleCapabilities ignores unreadable evidence and returns blocking re
         text: validEvidence(5),
         subtitles: validEvidence(6),
         video: validEvidence(7),
+      },
+    },
+    {
+      language: 'es',
+      locale: 'es',
+      target_language: 'es',
+      target_locale: null,
+      market: '',
+      status: 'verified',
+      evidence: {
+        text: validEvidence(1),
+        subtitles: validEvidence(2),
+        character_image: validEvidence(23),
+        clean_plate_image: validEvidence(24),
+        video: validEvidence(4),
+        native_dialogue_audio: validNativeEvidence(1, NOW, 41),
       },
     },
     {
@@ -342,9 +457,237 @@ test('listLocaleCapabilities ignores unreadable evidence and returns blocking re
   });
 
   assert.deepEqual(rows, [
-    { locale: 'de-DE', market: 'DE', status: 'blocking', blocking: ['text'] },
-    { locale: 'en-US', market: 'US', status: 'full_output', blocking: [] },
-    { locale: 'ja-JP', market: 'JP', status: 'subtitle_only', blocking: ['character_image', 'clean_plate_image', 'tts'] },
-    { locale: 'ko-KR', market: 'KR', status: 'blocking', blocking: ['subtitles'] },
+    { locale: 'de-DE', market: 'DE', language: 'de-DE', region_status: 'verified', audio_mode: 'replace', native_dialogue_audio: false, locale_verified: true, status: 'blocking', blocking: ['text'] },
+    { locale: 'en-US', market: 'US', language: 'en-US', region_status: 'verified', audio_mode: 'replace', native_dialogue_audio: false, locale_verified: true, status: 'full_output', blocking: [] },
+    { locale: 'es', market: '', language: 'es', region_status: 'unverified', audio_mode: 'native', native_dialogue_audio: true, locale_verified: false, status: 'full_output', blocking: [] },
+    { locale: 'ja-JP', market: 'JP', language: 'ja-JP', region_status: 'verified', audio_mode: null, native_dialogue_audio: false, locale_verified: true, status: 'subtitle_only', blocking: ['character_image', 'clean_plate_image', 'tts', 'native_dialogue_audio'] },
+    { locale: 'ko-KR', market: 'KR', language: 'ko-KR', region_status: 'verified', audio_mode: 'replace', native_dialogue_audio: false, locale_verified: true, status: 'blocking', blocking: ['subtitles'] },
   ]);
+});
+
+test('listLocaleCapabilities hides native dialogue audio when evidence drifts or review is incomplete', () => {
+  const db = createDb();
+  insertConfig(db, [
+    {
+      language: 'es',
+      locale: 'es',
+      target_language: 'es',
+      target_locale: null,
+      market: '',
+      status: 'verified',
+      evidence: {
+        text: validEvidence(1),
+        subtitles: validEvidence(2),
+        character_image: validEvidence(3),
+        clean_plate_image: validEvidence(4),
+        video: validEvidence(5),
+        native_dialogue_audio: {
+          ...validNativeEvidence(1, NOW, 41),
+          model: 'drifted-model',
+        },
+      },
+    },
+    {
+      language: 'pt',
+      locale: 'pt',
+      target_language: 'pt',
+      target_locale: null,
+      market: '',
+      status: 'verified',
+      evidence: {
+        text: validEvidence(6),
+        subtitles: validEvidence(7),
+        character_image: validEvidence(8),
+        clean_plate_image: validEvidence(9),
+        video: validEvidence(10),
+        native_dialogue_audio: validNativeEvidence(1, NOW, 404, 'pt'),
+      },
+    },
+    {
+      language: 'it',
+      locale: 'it',
+      target_language: 'it',
+      target_locale: null,
+      market: '',
+      status: 'verified',
+      evidence: {
+        text: validEvidence(11),
+        subtitles: validEvidence(12),
+        character_image: validEvidence(13),
+        clean_plate_image: validEvidence(14),
+        video: validEvidence(15),
+        native_dialogue_audio: {
+          ...validNativeEvidence(1, NOW, 43, 'it'),
+          human_review: { status: 'pending' },
+        },
+      },
+    },
+  ]);
+
+  assert.deepEqual(listLocaleCapabilities(db, (id) => id !== 404), [
+    { locale: 'es', market: '', language: 'es', region_status: 'unverified', audio_mode: null, native_dialogue_audio: false, locale_verified: false, status: 'subtitle_only', blocking: ['tts', 'native_dialogue_audio'] },
+    { locale: 'it', market: '', language: 'it', region_status: 'unverified', audio_mode: null, native_dialogue_audio: false, locale_verified: false, status: 'subtitle_only', blocking: ['tts', 'native_dialogue_audio'] },
+    { locale: 'pt', market: '', language: 'pt', region_status: 'unverified', audio_mode: null, native_dialogue_audio: false, locale_verified: false, status: 'subtitle_only', blocking: ['tts', 'native_dialogue_audio'] },
+  ]);
+});
+
+test('listLocaleCapabilities requires every native human review field to be present and passed', () => {
+  for (const missingField of ['speaker_order', 'lip_sync', 'extra_dialogue']) {
+    const db = createDb();
+    const humanReview = {
+      status: 'passed',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    };
+    delete humanReview[missingField];
+    insertConfig(db, [{
+      language: 'es',
+      locale: 'es',
+      target_language: 'es',
+      target_locale: null,
+      market: '',
+      status: 'verified',
+      evidence: {
+        text: validEvidence(1),
+        subtitles: validEvidence(2),
+        character_image: validEvidence(3),
+        clean_plate_image: validEvidence(4),
+        video: validEvidence(5),
+        native_dialogue_audio: {
+          ...validNativeEvidence(1, NOW, 41),
+          human_review: humanReview,
+        },
+      },
+    }]);
+
+    assert.deepEqual(listLocaleCapabilities(db, (id) => id === 41 || (id >= 1 && id <= 5)), [{
+      locale: 'es',
+      market: '',
+      language: 'es',
+      region_status: 'unverified',
+      audio_mode: null,
+      native_dialogue_audio: false,
+      locale_verified: false,
+      status: 'subtitle_only',
+      blocking: ['tts', 'native_dialogue_audio'],
+    }], missingField);
+  }
+});
+
+test('listLocaleCapabilities does not promote manually overridden native review evidence', () => {
+  const db = createDb();
+  insertConfig(db, [{
+    language: 'es',
+    locale: 'es',
+    target_language: 'es',
+    target_locale: null,
+    market: '',
+    status: 'verified',
+    evidence: {
+      text: validEvidence(1),
+      subtitles: validEvidence(2),
+      character_image: validEvidence(3),
+      clean_plate_image: validEvidence(4),
+      video: validEvidence(5),
+      native_dialogue_audio: {
+        ...validNativeEvidence(1, NOW, 41),
+        human_review: {
+          status: 'passed',
+          speaker_order: 'passed',
+          lip_sync: 'passed',
+          extra_dialogue: 'passed',
+          manual_override: true,
+        },
+      },
+    },
+  }]);
+
+  assert.deepEqual(listLocaleCapabilities(db, (id) => id === 41 || (id >= 1 && id <= 5)), [{
+    locale: 'es',
+    market: '',
+    language: 'es',
+    region_status: 'unverified',
+    audio_mode: null,
+    native_dialogue_audio: false,
+    locale_verified: false,
+    status: 'subtitle_only',
+    blocking: ['tts', 'native_dialogue_audio'],
+  }]);
+  assert.equal(resolveVerifiedLocaleCapability(db, {
+    locale: 'es',
+    market: '',
+    capability: 'native_dialogue_audio',
+    canReadArtifact: (id) => id === 41,
+  }), null);
+});
+
+test('native dialogue audio cannot promote language evidence into a regional locale', () => {
+  const db = createDb();
+  insertConfig(db, [{
+    language: 'es',
+    locale: 'es-MX',
+    target_language: 'es',
+    target_locale: 'es-MX',
+    market: 'MX',
+    status: 'verified',
+    evidence: {
+      text: validEvidence(1),
+      subtitles: validEvidence(2),
+      character_image: validEvidence(3),
+      clean_plate_image: validEvidence(4),
+      video: validEvidence(5),
+      native_dialogue_audio: validNativeEvidence(1, NOW, 41),
+    },
+  }]);
+
+  assert.equal(resolveVerifiedLocaleCapability(db, {
+    locale: 'es-MX',
+    market: 'MX',
+    capability: 'native_dialogue_audio',
+    canReadArtifact: (id) => id === 41,
+  }), null);
+  assert.deepEqual(listLocaleCapabilities(db, (id) => id === 41 || (id >= 1 && id <= 5)), [{
+    locale: 'es-MX',
+    market: 'MX',
+    language: 'es',
+    region_status: 'unverified',
+    audio_mode: null,
+    native_dialogue_audio: false,
+    locale_verified: false,
+    status: 'subtitle_only',
+    blocking: ['tts', 'native_dialogue_audio'],
+  }]);
+});
+
+test('regional TTS capabilities keep replace audio and verified region status', () => {
+  const db = createDb();
+  insertConfig(db, [{
+    language: 'en',
+    locale: 'en-US',
+    target_language: 'en',
+    target_locale: 'en-US',
+    market: 'US',
+    status: 'verified',
+    evidence: {
+      text: validEvidence(1),
+      subtitles: validEvidence(2),
+      character_image: validEvidence(3),
+      clean_plate_image: validEvidence(4),
+      video: validEvidence(5),
+      tts: validEvidence(6),
+    },
+  }], { service_type: 'tts' });
+
+  assert.deepEqual(listLocaleCapabilities(db, (id) => id >= 1 && id <= 6), [{
+    locale: 'en-US',
+    market: 'US',
+    language: 'en',
+    region_status: 'verified',
+    audio_mode: 'replace',
+    native_dialogue_audio: false,
+    locale_verified: true,
+    status: 'full_output',
+    blocking: [],
+  }]);
 });

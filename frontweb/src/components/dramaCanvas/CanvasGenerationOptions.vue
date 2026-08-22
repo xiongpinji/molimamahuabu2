@@ -54,7 +54,7 @@
     </el-select>
     <el-select
       v-if="!modelsOnly && (mode === 'video' || mode === 'both') && videoResolutionOptions.length"
-      :model-value="options.videoResolution || videoResolutionOptions[0]"
+      :model-value="options.videoResolution || '480p'"
       size="small"
       class="resolution-select"
       placeholder="清晰度"
@@ -148,9 +148,8 @@ function update(field, value) {
 
 function onVideoModelChange(value) {
   const selected = canvasModelEntry(modelCatalog.value, 'video', value)
-  const resolutions = Array.isArray(selected?.capabilities?.resolutions)
-    ? selected.capabilities.resolutions
-    : ['480p', '720p']
+  const declaredResolutions = selected?.capabilities?.resolutions
+  const resolutions = Array.isArray(declaredResolutions) ? declaredResolutions : ['480p', '720p']
   const durations = videoDurationOptionsForCapability(selected?.capabilities)
   const currentResolution = String(options.value.videoResolution || '').trim().toLowerCase()
   const currentDuration = Number(options.value.videoDuration || 5)

@@ -88,6 +88,7 @@ const textGenerationBilling = require('./text-generation-billing-service');
 const aiConfigService = require('./aiConfigService');
 const modelPriceService = require('./modelPriceService');
 const assetService = require('./assetService');
+const providerRouteStability = require('./providerRouteStabilityService');
 const { resolveUsmercariApiKey } = require('./usmercariVideoClient');
 const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 const { getGridLayout, isGridFrameType, getGridCells } = require('./gridLayout');
@@ -395,6 +396,30 @@ function settleImageCredit(db, log, row, outcome, message = '') {
     log?.error('[图生] 积分结算失败，保留原预扣状态', { id: row.id, error: error.message });
     return null;
   }
+}
+
+function markImageNeedsAttention(db, log, row, message, timestamp, options = {}) {
+  const safeMessage = String(message || '图片生成结果未知，请勿重复提交，等待管理员核对').slice(0, 500);
+  db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
+    .run('needs_attention', safeMessage, timestamp, row.id);
+  if (row.task_id) {
+    taskService.updateTaskStatus(db, row.task_id, 'needs_attention', 90, safeMessage);
+    try { db.prepare('UPDATE async_tasks SET error = ? WHERE id = ?').run(safeMessage, row.task_id); } catch (_) {}
+  }
+  if (row.scene_id != null) {
+    try { db.prepare('UPDATE scenes SET error_msg = ?, updated_at = ? WHERE id = ?').run(safeMessage, timestamp, row.scene_id); } catch (_) {}
+  }
+  if (row.storyboard_id != null) {
+    try { db.prepare('UPDATE storyboards SET error_msg = ?, updated_at = ? WHERE id = ?').run(safeMessage, timestamp, row.storyboard_id); } catch (_) {}
+  }
+  if (options.artifactUnreadable) {
+    providerRouteStability.recordBusinessArtifactUnreadable(db, {
+      businessType: 'image_generation',
+      businessId: row.id,
+      now: timestamp,
+    });
+  }
+  settleImageCredit(db, log, row, 'failed', safeMessage);
 }
 
 const LAST_FRAME_TYPES = new Set(['last', 'storyboard_last', 'tail', 'last_frame']);
@@ -1165,7 +1190,7 @@ function findActiveForTarget(db, storyboardId, frameType, options = {}) {
     `SELECT * FROM image_generations
      WHERE storyboard_id = ?
        AND (frame_type = ? OR (frame_type IS NULL AND ? IS NULL))
-       AND status IN ('pending', 'processing')
+       AND status IN ('pending', 'processing', 'needs_attention')
        AND deleted_at IS NULL
        ${ownerClause}
      ORDER BY created_at DESC, id DESC
@@ -1289,6 +1314,7 @@ function create(db, log, req, options = {}) {
       generationCost.record(db, {
         reservationId: reservation.id,
         model: billedModel,
+        configId: billingRequest?.configId,
         resolution,
         quantity,
         usageSource: 'configured',
@@ -2231,6 +2257,10 @@ async function processImageGeneration(db, log, imageGenId, runtime = {}) {
       const providerError = result.indeterminate
         ? `供应商最终状态未知：${result.error}`
         : result.error;
+      if (result.indeterminate) {
+        markImageNeedsAttention(db, log, row, providerError, now2);
+        return;
+      }
       db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?').run(
         'failed', (providerError || '').slice(0, 500), now2, imageGenId
       );
@@ -2255,18 +2285,8 @@ async function processImageGeneration(db, log, imageGenId, runtime = {}) {
       result.image_url,
     ].map((item) => String(item || '').trim()).filter((item, index, all) => item && all.indexOf(item) === index);
     if (providerImageUrls.length < requestedQuantity) {
-      const msg = `图片生成结果数量不足：请求 ${requestedQuantity} 张，实际返回 ${providerImageUrls.length} 张`;
-      db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?').run(
-        'failed', msg, now2, imageGenId
-      );
-      if (row.task_id) taskService.updateTaskError(db, row.task_id, msg);
-      if (row.scene_id != null) {
-        try { db.prepare('UPDATE scenes SET error_msg = ?, updated_at = ? WHERE id = ?').run(msg, now2, row.scene_id); } catch (_) {}
-      }
-      if (row.storyboard_id != null) {
-        try { db.prepare('UPDATE storyboards SET error_msg = ?, updated_at = ? WHERE id = ?').run(msg, now2, row.storyboard_id); } catch (_) {}
-      }
-      settleImageCredit(db, log, row, 'failed', msg);
+      const msg = `图片生成结果数量不足：请求 ${requestedQuantity} 张，实际返回 ${providerImageUrls.length} 张；完整结果未知，请勿重复提交，等待管理员核对`;
+      markImageNeedsAttention(db, log, row, msg, now2, { artifactUnreadable: true });
       return;
     }
     const storagePath = path.isAbsolute(cfg.storage?.local_path)
@@ -2311,18 +2331,8 @@ async function processImageGeneration(db, log, imageGenId, runtime = {}) {
       log.warn('[图生] Step5 保存失败', { id: imageGenId, err: saveErrorMsg, elapsed: elapsed() });
     }
     if (persistedImages.length !== requestedQuantity) {
-      const msg = (`图片本地保存失败：${saveErrorMsg || '未生成完整本地文件'}；未标记完成，请重试生成`).slice(0, 500);
-      db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?').run(
-        'failed', msg, now2, imageGenId,
-      );
-      if (row.task_id) taskService.updateTaskError(db, row.task_id, msg);
-      if (row.scene_id != null) {
-        try { db.prepare('UPDATE scenes SET error_msg = ?, updated_at = ? WHERE id = ?').run(msg, now2, row.scene_id); } catch (_) {}
-      }
-      if (row.storyboard_id != null) {
-        try { db.prepare('UPDATE storyboards SET error_msg = ?, updated_at = ? WHERE id = ?').run(msg, now2, row.storyboard_id); } catch (_) {}
-      }
-      settleImageCredit(db, log, row, 'failed', msg);
+      const msg = (`图片本地保存失败：${saveErrorMsg || '未生成完整本地文件'}；供应商结果未知，请勿重复提交，等待管理员核对`).slice(0, 500);
+      markImageNeedsAttention(db, log, row, msg, now2, { artifactUnreadable: true });
       return;
     }
     log.info('[图生] Step5 保存完成', {

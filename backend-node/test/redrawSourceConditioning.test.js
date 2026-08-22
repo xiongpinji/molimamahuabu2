@@ -116,6 +116,49 @@ test('源片按 shot 毫秒边界生成并复用经 ffprobe 校验的 H.264/AAC 
   assert.match(first.referenceVideoUrl, /^https:\/\/media\.example\.test\/api\/v1\/redraw-provider-assets\/[a-f0-9]{64}\.mp4\?/);
 });
 
+test('iCreat 原生音轨 conditioning 使用独立无音轨缓存且默认 AAC 行为不变', async (t) => {
+  if (!hasLocalFfmpeg()) return t.skip('ffmpeg unavailable');
+  const storageRoot = makeTempRoot(t);
+  const sourceRelativePath = 'redraw-sources/source.mp4';
+  const sourcePath = path.join(storageRoot, sourceRelativePath);
+  createSourceVideo(sourcePath);
+  const sourceFingerprint = sha256File(sourcePath);
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+  const now = new Date(NOW_MS).toISOString();
+  const sourceAssetId = db.prepare(`
+    INSERT INTO assets
+      (name, type, category, url, local_path, mime_type, created_at, updated_at)
+    VALUES ('source.mp4', 'video', 'redraw-source', '/static/redraw-sources/source.mp4', ?, 'video/mp4', ?, ?)
+  `).run(sourceRelativePath, now, now).lastInsertRowid;
+  const base = {
+    db,
+    shot: { id: 91 },
+    sourceAssetId,
+    sourceFingerprint,
+    startMs: 0,
+    endMs: 4000,
+    storageRoot,
+    storageBaseUrl: 'https://media.example.test/static',
+    signingSecret: SIGNING_SECRET,
+    nowMs: NOW_MS,
+  };
+
+  const preserved = await prepareSourceConditioning(base);
+  const stripped = await prepareSourceConditioning({ ...base, audioMode: 'strip' });
+  const strippedAgain = await prepareSourceConditioning({ ...base, audioMode: 'strip' });
+
+  assert.notEqual(preserved.segmentSha256, stripped.segmentSha256);
+  assert.equal(preserved.auditSnapshot.audio_codec, 'aac');
+  assert.equal(preserved.auditSnapshot.audio_mode, 'preserve');
+  assert.equal(stripped.auditSnapshot.audio_codec, null);
+  assert.equal(stripped.auditSnapshot.audio_mode, 'strip');
+  assert.equal(stripped.billingSnapshot.audio_mode, 'strip');
+  assert.equal(strippedAgain.reused, true);
+  assert.equal(strippedAgain.segmentSha256, stripped.segmentSha256);
+});
+
 test('provider asset URL 使用限时 HMAC 且对过期、坏签名、HTTP、localhost 和缺 secret fail closed', () => {
   const segmentSha256 = crypto.createHash('sha256').update('segment').digest('hex');
   const defaultWindow = createProviderAssetUrl({

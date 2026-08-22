@@ -265,7 +265,7 @@ test('missing or tampered artifacts reject before database side effects', () => 
     fs.writeFileSync(path.join(current.publicDir, 'h3-2k.mp4'), Buffer.alloc(2048, 9));
     assert.throws(() => loadVerifiedEvidence(current.evidencePath, current.publicDir), /哈希不匹配/);
     assert.equal(current.db.prepare('SELECT COUNT(*) count FROM ai_service_configs').get().count, 1);
-    assert.equal(current.db.prepare('SELECT COUNT(*) count FROM model_credit_prices').get().count, 0);
+    assert.equal(current.db.prepare('SELECT COUNT(*) count FROM model_credit_prices WHERE model LIKE ?').get('xuan-%').count, 0);
   } finally {
     current.db.close();
     fs.rmSync(current.root, { recursive: true, force: true });

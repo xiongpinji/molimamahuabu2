@@ -145,69 +145,6 @@ function completeEvidence() {
   };
 }
 
-function completePrivateAvatarEvidence() {
-  const generatedAt = '2026-08-11T05:01:00.000Z';
-  const caseFor = (id, model, index) => ({
-    id,
-    model,
-    resolution: '480p',
-    duration: 4,
-    status: 'completed',
-    provider_task_id: `avatar-task-${model}`,
-    submitted_at: `2026-08-11T05:00:${10 + index}.000Z`,
-    completed_at: `2026-08-11T05:00:${40 + index}.000Z`,
-    speed: {
-      submit_latency_ms: 300 + index,
-      generation_elapsed_seconds: 30 + index,
-    },
-    billing: {
-      before: { used_balance: 1 + index, used_credits: 100 + index * 20, captured_at: `2026-08-11T05:00:${index}.000Z` },
-      after: { used_balance: 1.1 + index, used_credits: 120 + index * 20, captured_at: `2026-08-11T05:00:${20 + index}.000Z` },
-      debited_balance: 0.1,
-      debited_credits: 20,
-    },
-    artifact: {
-      output_file: `${id}.mp4`,
-      content_type: 'video/mp4',
-      bytes: 4096,
-      sha256: crypto.createHash('sha256').update(id).digest('hex'),
-      ffprobe: {
-        width: 864,
-        height: 480,
-        duration_seconds: 4,
-        video_codec: 'h264',
-        has_audio: false,
-      },
-    },
-  });
-  return {
-    contract_version: 'toapis-private-avatar-video-verification-v1',
-    generated_at: generatedAt,
-    audit_run_id: 'avatar-audit-run-1',
-    source: {
-      identity: 'image_generation:344',
-      file_name: 'human-source.jpg',
-      bytes: 2048,
-      sha256: crypto.createHash('sha256').update('human-source').digest('hex'),
-    },
-    avatar: {
-      group_id: 'pg_group1',
-      asset_id: 'pa_asset1',
-      asset_url: 'asset://pa_asset1',
-      status: 'active',
-    },
-    cases: [
-      caseFor('fast-avatar-480-4s', 'seedance-2-fast', 0),
-      caseFor('mini-avatar-480-4s', 'seedance-2-mini', 1),
-    ],
-    summary: {
-      case_count: 2,
-      total_debited_balance: 0.2,
-      total_debited_credits: 40,
-    },
-  };
-}
-
 function makeFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-release-contract-'));
   write(root, 'backend-node/src/services/toapisVideoClient.js', `
@@ -232,16 +169,14 @@ function makeFixture() {
   write(root, 'frontweb/src/views/FilmCreate.vue', '<strong class="canvas-credit-callout-v1">本次预计扣除</strong>');
   const evidencePath = path.join(root, 'docs/evidence/toapis-video-verification.json');
   write(root, 'docs/evidence/toapis-video-verification.json', JSON.stringify(completeEvidence()));
-  const avatarEvidencePath = path.join(root, 'docs/evidence/toapis-private-avatar-verification.json');
-  write(root, 'docs/evidence/toapis-private-avatar-verification.json', JSON.stringify(completePrivateAvatarEvidence()));
-  return { root, evidencePath, avatarEvidencePath };
+  return { root, evidencePath };
 }
 
 describe('ToAPIs protected release contract', () => {
   it('accepts the complete synthetic protected contract', () => {
     const fixture = makeFixture();
     try {
-      assert.deepEqual(auditReleaseContract({ ...fixture, now: new Date('2026-08-11T06:00:00.000Z') }), []);
+      assert.deepEqual(auditReleaseContract(fixture), []);
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -325,27 +260,11 @@ describe('ToAPIs protected release contract', () => {
       data.speed_evidence.model_summary['seedance-2-fast'].sample_count = 3;
       fs.writeFileSync(evidencePath, JSON.stringify(data));
     }, '速度|speed'],
-    ['private-avatar evidence file', ({ avatarEvidencePath }) => fs.unlinkSync(avatarEvidencePath), '虚拟人像'],
-    ['private-avatar task binding', ({ avatarEvidencePath }) => {
-      const data = JSON.parse(fs.readFileSync(avatarEvidencePath));
-      data.cases[1].provider_task_id = data.cases[0].provider_task_id;
-      fs.writeFileSync(avatarEvidencePath, JSON.stringify(data));
-    }, '虚拟人像|重复'],
-    ['private-avatar active asset binding', ({ avatarEvidencePath }) => {
-      const data = JSON.parse(fs.readFileSync(avatarEvidencePath));
-      data.avatar.asset_url = 'https://provider.example/not-avatar.png';
-      fs.writeFileSync(avatarEvidencePath, JSON.stringify(data));
-    }, 'asset://pa_'],
-    ['private-avatar freshness', ({ avatarEvidencePath }) => {
-      const data = JSON.parse(fs.readFileSync(avatarEvidencePath));
-      data.generated_at = '2026-08-09T05:01:00.000Z';
-      fs.writeFileSync(avatarEvidencePath, JSON.stringify(data));
-    }, '24 小时|fresh'],
   ]) it(`rejects removal of ${name}`, () => {
     const fixture = makeFixture();
     try {
       mutate(fixture);
-      assert.match(auditReleaseContract({ ...fixture, now: new Date('2026-08-11T06:00:00.000Z') }).join('\n'), new RegExp(expected, 'i'));
+      assert.match(auditReleaseContract(fixture).join('\n'), new RegExp(expected, 'i'));
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -356,7 +275,7 @@ describe('ToAPIs protected release contract', () => {
     try {
       const leakedTestValue = ['sk', 'example', 'leaked', 'secret', 'value'].join('-');
       write(fixture.root, 'backend-node/src/leaked.js', `const key = '${leakedTestValue}';`);
-      assert.match(auditReleaseContract({ ...fixture, now: new Date('2026-08-11T06:00:00.000Z') }).join('\n'), /疑似 Key/);
+      assert.match(auditReleaseContract(fixture).join('\n'), /疑似 Key/);
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }

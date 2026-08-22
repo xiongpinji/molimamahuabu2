@@ -137,11 +137,18 @@ function runRedrawLocaleVerifierPreflight({ env = process.env, localeRegistry } 
   }
   try {
     const registry = localeRegistry || createRedrawLocaleRegistryFromEnv(env);
-    registry.assertReady('en-US');
+    const packs = registry.listReadyPacks();
+    if (!Array.isArray(packs) || packs.length === 0
+      || packs.some((pack) => !pack || typeof pack.id !== 'string' || !pack.id.trim())) {
+      const error = new Error('REDRAW_LOCALE_VERIFIER_NOT_READY');
+      error.code = 'REDRAW_LOCALE_VERIFIER_NOT_READY';
+      throw error;
+    }
+    const packIds = packs.map((pack) => pack.id).sort();
     return {
       id: REDRAW_LOCALE_PRECHECK_ID,
       status: 'pass',
-      message: 'Redraw locale verifier enabled and en-US pack ready.',
+      message: `Redraw locale verifier enabled; ready packs: ${packIds.join(', ')}.`,
       code: 'REDRAW_LOCALE_VERIFIER_READY',
     };
   } catch (error) {

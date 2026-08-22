@@ -1,3 +1,5 @@
+const NATIVE_AUDIO_DOWNLOAD_FAILURE_CODE = 'REDRAW_NATIVE_AUDIO_DOWNLOAD_FAILED';
+
 /** 轮询/同步返回的 video_url 须为 http(s)，避免中转 FAILURE 时 result_url 为错误文案 */
 function resolveRemoteVideoUrl(videoUrl, fallbackError) {
   if (videoUrl && videoClient.isPlausibleHttpVideoUrl(videoUrl)) {
@@ -1430,7 +1432,11 @@ function create(db, log, req, options = {}) {
         .run(options.tenantId, options.userId, task.id);
     }
     const refs = referenceImageUrls.length ? JSON.stringify(referenceImageUrls) : null;
-    const persistedFirstFrameUrl = firstFrameUrl;
+    const firstReferenceFallback = ['usmercari', 'usmercari_media'].includes(videoProtocol)
+      || isToapisVideo
+      ? null
+      : referenceImageUrls[0] || null;
+    const persistedFirstFrameUrl = firstFrameUrl || firstReferenceFallback;
     const referenceVideoUrl = referenceVideoUrls[0] || null;
     const referenceAudioUrl = referenceAudioUrls[0] || null;
     db.prepare(`INSERT INTO video_generations
@@ -1830,6 +1836,29 @@ function resolveStoragePath(cfg) {
     : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
 }
 
+function isPinnedNativeAudioGeneration(row) {
+  if (Number(row?.generate_audio) !== 1) return false;
+  const parsed = parseRequestSnapshotForProcessing(row.request_snapshot);
+  if (!parsed.valid || parsed.snapshot?.generate_audio !== true) return false;
+  const snapshot = parsed.snapshot;
+  return !!(
+    snapshot.locale_pack
+    && /^[0-9a-f]{64}$/.test(String(snapshot.prompt_hash || ''))
+    && /^[0-9a-f]{64}$/.test(String(snapshot.dialogue_snapshot_hash || ''))
+    && snapshot.config_updated_at
+    && Number(snapshot.ai_service_config_id) === Number(row.ai_service_config_id)
+    && String(snapshot.model || '') === String(row.model || '')
+  );
+}
+
+function compactDownloadFailureMessage(error) {
+  const raw = String(error?.message || error || '视频成片下载或保存失败，请人工确认后处理');
+  return raw
+    .replace(/https?:\/\/[^\s"'<>]+/g, '[url]')
+    .replace(/[A-Za-z]:\\[^\s"'<>]+/g, '[path]')
+    .slice(0, 500);
+}
+
 async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, videoUrl, logLabel, providerConfig) {
   const now = new Date().toISOString();
   let localPath = null;
@@ -1855,18 +1884,26 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     localPath = downloaded.localPath;
     downloadError = downloaded.error || null;
     downloadIndeterminate = downloaded.indeterminate === true;
-    maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
-    boundaryFrames = extractVideoBoundaryFrames(storagePath, localPath, videoGenId, log);
+    if (!localPath && !downloadError) downloadError = '视频成片下载或保存失败，请人工确认后处理';
+    if (localPath) {
+      maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
+      boundaryFrames = extractVideoBoundaryFrames(storagePath, localPath, videoGenId, log);
+    }
   } catch (error) {
-    downloadError = error?.message || '视频产物下载或校验失败';
+    downloadError = compactDownloadFailureMessage(error);
   }
   if (!localPath) {
     const message = `${downloadError || '供应商视频链接暂时不可读取（结果未知）'}，请勿重新提交，等待管理员核对`;
-    if (downloadIndeterminate || markVideoArtifactUnreadable(db, videoGenId)) {
-      db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
-        .run('processing', message.slice(0, 500), now, videoGenId);
+    if (isPinnedNativeAudioGeneration(row)) {
+      const nativeAudioMessage = `${NATIVE_AUDIO_DOWNLOAD_FAILURE_CODE}: ${compactDownloadFailureMessage(downloadError)}`.slice(0, 500);
+      setVideoGenNeedsAttention(db, videoGenId, row.task_id, nativeAudioMessage, now);
       markVideoCostUnknown(db, log, row);
-      if (row.task_id) taskService.updateTaskStatus(db, row.task_id, 'processing', 90, message);
+      log.error('Native audio video artifact download failed after provider completion', { id: videoGenId });
+      return false;
+    }
+    if (downloadIndeterminate || markVideoArtifactUnreadable(db, videoGenId)) {
+      setVideoGenNeedsAttention(db, videoGenId, row.task_id, message, now);
+      markVideoCostUnknown(db, log, row);
       log.warn('Video artifact unreadable; request held for review', { id: videoGenId });
       return false;
     }
@@ -2110,10 +2147,12 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
       ? cfg.storage.local_path
       : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
     const existingProviderTaskId = knownProviderTaskId;
-    const config = processingVideoConfig(db, row.model, row.ai_service_config_id, runtime.evidenceRoots);
+    const config = processingVideoConfig(db, row.model, row.ai_service_config_id || row.config_id, runtime.evidenceRoots);
     if (!config) {
       if (existingProviderTaskId) {
         keepVideoProcessing(db, row, videoGenId, '视频模型配置暂不可用，已保留供应商任务 ID，恢复配置后继续查询', now);
+      } else if (row.ai_service_config_id) {
+        setVideoGenNeedsAttention(db, videoGenId, row.task_id, '固定模型配置暂不可用，请恢复固定配置后人工处理，拒绝供应商提交', now);
       } else {
         setVideoGenFailed(db, videoGenId, '未配置视频模型', now);
         if (row.task_id) taskService.updateTaskError(db, row.task_id, '未配置视频模型');
@@ -2250,6 +2289,12 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
     if (FEITUO_MODELS[normalizedProcessingModel] && normalizedProcessingModel.startsWith('xuan-')) {
       feituoReadyState(db, normalizedProcessingModel);
     }
+    const persistedConfigId = row.ai_service_config_id || row.config_id || null;
+    const requestedLogicalModel = String(snapshot.model ?? row.model ?? '').trim().toLowerCase();
+    const selectedLogicalModel = String(config.logical_model_id || '').trim().toLowerCase();
+    const allowLogicalFailover = !persistedConfigId
+      && selectedLogicalModel
+      && selectedLogicalModel === requestedLogicalModel;
     providerSubmissionStarted = true;
     const result = await videoClient.callVideoApi(db, log, {
       prompt: snapshot.prompt ?? row.prompt,
@@ -2277,7 +2322,10 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
       files_base_url: filesBaseUrl,
       storage_local_path: storageLocalPath,
       video_gen_id: videoGenId,
-      ai_service_config_id: row.ai_service_config_id || undefined,
+      ...(allowLogicalFailover ? {} : {
+        config_id: config.id,
+        ai_service_config_id: config.id,
+      }),
       ai_service_config_updated_at: config.updated_at || config.verified_at || null,
       video_capability: pinnedCapability || undefined,
       userId: row.user_id || undefined,
@@ -2417,6 +2465,7 @@ function attach(db, log, body) {
   return getById(db, id);
 }
 module.exports = {
+  NATIVE_AUDIO_DOWNLOAD_FAILURE_CODE,
   list,
   getById,
   create,

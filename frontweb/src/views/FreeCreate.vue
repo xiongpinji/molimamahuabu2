@@ -275,11 +275,9 @@ const selectedDurationOptions = computed(() => quickGenerationDurations(selected
 const supportsReferenceImage = computed(() => {
   if (mode.value === 'image') return selectedModel.value?.capabilities?.supportsImageReference !== false
   if (mode.value !== 'video') return false
-  const capability = selectedModel.value?.capabilities || {}
-  if (capability.declared === true) {
-    return capability.supportsFirstFrame === true || capability.supportsImageReference === true
-  }
-  return capability.supportsFirstFrame !== false
+  return selectedModel.value?.protocol === 'toapis_video'
+    ? selectedModel.value?.capabilities?.supportsFirstFrame === true
+    : selectedModel.value?.capabilities?.supportsFirstFrame !== false
 })
 const quantityOptions = computed(() => {
   const declared = selectedModel.value?.capabilities?.quantities
@@ -349,7 +347,6 @@ function syncSelectedParameters() {
   const allowed = selectedResolutions.value
   const current = String(resolution.value || '').trim().toLowerCase()
   if (allowed.length && !allowed.includes(current)) resolution.value = allowed[0]
-  else if (mode.value === 'video' && Array.isArray(selectedModel.value?.capabilities?.resolutions) && !allowed.length) resolution.value = ''
   else if (current) resolution.value = current
   if (!quantityOptions.value.includes(Number(quantity.value))) quantity.value = quantityOptions.value[0] || 1
   if (!selectedDurationOptions.value.includes(Number(duration.value))) duration.value = selectedDurationOptions.value[0] || 5

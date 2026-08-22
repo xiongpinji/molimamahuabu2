@@ -14,36 +14,35 @@ function viewSource(path) {
 const filmCreateSource = viewSource('../src/views/FilmCreate.vue')
 
 test('FilmCreate 仅用公开画布目录呈现视频模型元数据且仍提交原始 model', () => {
-  assert.match(filmCreateSource, /request\.get\('\/canvas\/model-catalog'\)/)
-  assert.match(filmCreateSource, /intersectFilmCreateVideoModels/)
-  assert.equal((filmCreateSource.match(/:label="model\.label" :value="model\.value"/g) || []).length, 3)
-  assert.equal((filmCreateSource.match(/class="sb-video-model-note"/g) || []).length, 3)
-  assert.match(filmCreateSource, /const selectedVideoModelNote = computed/)
-  assert.match(filmCreateSource, /function getStoryboardVideoModelNote\(sb\)/)
+  assert.match(filmCreateSource, /aiAPI\.listCanvasModels\(\)/)
+  assert.match(filmCreateSource, /normalizeCanvasModelCatalog/)
+  assert.match(filmCreateSource, /:label="item\.label"/)
+  assert.match(filmCreateSource, /:value="item\.model"/)
+  assert.match(filmCreateSource, /const selectedVideoModelPublicNote = computed/)
   assert.match(filmCreateSource, /model:\s*sbModel/)
 })
 
 test('FilmCreate 目录失败、空目录与旧失效选择不回退且阻止视频生成', () => {
-  assert.match(filmCreateSource, /createFilmCreateModelCatalogLoader/)
-  assert.match(filmCreateSource, /videoModelCatalogLoader\.forceRefresh\(\)/)
-  assert.match(filmCreateSource, /function ensureVideoModelAvailable\(model/)
+  assert.match(filmCreateSource, /const videoModelCatalogStatus = ref\('idle'\)/)
+  assert.match(filmCreateSource, /async function refreshVideoModelCatalogBeforeGeneration\(\)/)
+  assert.match(filmCreateSource, /function requireVideoModelAvailable\(model\)/)
   assert.match(filmCreateSource, /模型目录加载失败/)
   assert.match(filmCreateSource, /当前没有公开可用的视频模型/)
   assert.match(filmCreateSource, /所选视频模型.*已失效/)
-  assert.match(filmCreateSource, /if \(!selectedVideoModel\.value && videoModelOptions\.value\.length\)/)
-  assert.doesNotMatch(filmCreateSource, /if \(!models\.includes\(selectedVideoModel\.value\)\)/)
+  assert.match(filmCreateSource, /if \(!selectedVideoModel\.value && models\.length\)/)
+  assert.doesNotMatch(filmCreateSource, /selectedWasAvailable/)
   assert.match(filmCreateSource, /async function onGenerateSbVideo\(sb\)[\s\S]{0,400}await refreshVideoModelCatalogBeforeGeneration\(\)/)
   assert.match(filmCreateSource, /async function startBatchVideoGeneration\(\)[\s\S]{0,400}await refreshVideoModelCatalogBeforeGeneration\(\)/)
   assert.match(filmCreateSource, /async function startOneClickPipeline\(\)[\s\S]{0,400}await refreshVideoModelCatalogBeforeGeneration\(\)/)
   assert.match(filmCreateSource, /async function startRepairPipeline\(\)[\s\S]{0,400}await refreshVideoModelCatalogBeforeGeneration\(\)/)
-  assert.match(filmCreateSource, /onMounted\(async \(\) => \{[\s\S]{0,300}await loadVideoModelOptions\(\)/)
+  assert.match(filmCreateSource, /onMounted\(async \(\) => \{[\s\S]{0,300}loadVideoModelOptions\(\)/)
 })
 
 test('视频模型交集仅保留 AI 配置和公开目录共有项及原始值元数据', () => {
   assert.equal(typeof intersectFilmCreateVideoModels, 'function')
   const options = intersectFilmCreateVideoModels(['A', 'B'], [
     { kind: 'image', model: 'A', label: '图片 A', note: '不应进入视频选项' },
-    { kind: 'video', model: 'B', label: '公开视频 B', note: '管理员备注' },
+    { kind: 'video', model: 'B', label: '公开视频 B', public_note: '管理员备注' },
   ])
   assert.deepEqual(options, [{ value: 'B', label: '公开视频 B', note: '管理员备注' }])
 })
@@ -104,8 +103,8 @@ test('loaded 后 force refresh 删除旧模型会阻断旧页选择', async () =
   const loader = createFilmCreateModelCatalogLoader(async () => {
     calls += 1
     return calls === 1
-      ? [{ kind: 'video', model: 'B', label: '公开视频 B', note: '旧备注' }]
-      : [{ kind: 'video', model: 'A', label: '公开视频 A', note: '新备注' }]
+      ? [{ kind: 'video', model: 'B', label: '公开视频 B', public_note: '旧备注' }]
+      : [{ kind: 'video', model: 'A', label: '公开视频 A', public_note: '新备注' }]
   })
   let catalog = await loader.load()
   let options = intersectFilmCreateVideoModels(['A', 'B'], catalog)
@@ -121,15 +120,12 @@ test('loaded 后 force refresh 删除旧模型会阻断旧页选择', async () =
   )
 })
 
-test('其他普通用户模型选择器仍保留公开备注绑定', () => {
+test('其他普通用户模型选择器仅绑定服务端公开备注字段', () => {
   const filmListSource = viewSource('../src/views/FilmList.vue')
   const freeCreateSource = viewSource('../src/views/FreeCreate.vue')
   const homeCanvasNodeSource = viewSource('../src/components/dramaCanvas/HomeCanvasNode.vue')
 
-  assert.match(filmListSource, /homeSelectedModelNote/)
-  assert.match(filmListSource, /home-model-note/)
-  assert.match(freeCreateSource, /selectedModelNote/)
-  assert.match(freeCreateSource, /model-public-note/)
-  assert.match(homeCanvasNodeSource, /selectedModelNote/)
-  assert.match(homeCanvasNodeSource, /model-public-note/)
+  assert.match(filmListSource, /homeSelectedModel\?\.publicNote/)
+  assert.match(freeCreateSource, /selectedModel\?\.publicNote/)
+  assert.match(homeCanvasNodeSource, /currentModelMetadata\?\.publicNote/)
 })

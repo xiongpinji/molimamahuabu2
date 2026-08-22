@@ -1,5 +1,10 @@
 'use strict';
 
+const {
+  identityPackStatus,
+  identityBindingForAsset,
+} = require('./redrawCharacterIdentityService');
+
 function codedError(code, message) {
   return Object.assign(new Error(message), { code });
 }
@@ -63,11 +68,17 @@ function normalizeReference(value, fallbackKind = null) {
   }
   const assetId = Number(rawId);
   if (!['character', 'scene', 'prop', 'voice'].includes(inferredKind) || !Number.isInteger(assetId) || assetId <= 0) return null;
-  return {
+  const normalized = {
     kind: inferredKind,
     asset_id: assetId,
     anchor: String(value.anchor || `asset-${assetId}-${inferredKind}`),
   };
+  if (inferredKind === 'character') {
+    normalized.source_character_key = String(value.source_character_key || '').trim();
+    normalized.target_actor_label = String(value.target_actor_label || '').trim();
+    normalized.identity_pack_sha256 = String(value.identity_pack_sha256 || '').trim();
+  }
+  return normalized;
 }
 
 function collectReferences(value, output, fallbackKind = null) {
@@ -118,42 +129,105 @@ function evaluateGenerationGate(db, versionId, owner = {}) {
     blocking.push({ code: 'shots_missing', reason: '当前版本没有可生成分镜' });
   }
   const missing = new Map();
-  let invalidReferenceCount = 0;
-  let unapprovedReferenceCount = 0;
+  const invalidReferenceKeys = new Set();
+  const unapprovedReferenceKeys = new Set();
+  const characterIdentityPackRequired = new Set();
+  const characterIdentityBindingStale = new Set();
   for (const shot of shots) {
     const shotId = shot.shot_id || Number(shot.id) || Number(shot.shot_index);
     for (const reference of readShotReferences(shot)) {
       const row = findAsset(db, version, reference);
-      if (isApprovedAsset(row)) continue;
-      if (row) unapprovedReferenceCount += 1;
-      else invalidReferenceCount += 1;
-      const assetId = row ? Number(row.id) : reference.asset_id;
+      if (!isApprovedAsset(row)) {
+        const assetId = row ? Number(row.id) : reference.asset_id;
+        const key = referenceKey(reference.kind, assetId);
+        if (row) unapprovedReferenceKeys.add(key);
+        else invalidReferenceKeys.add(key);
+        const item = missing.get(key) || {
+          kind: reference.kind,
+          asset_id: assetId,
+          shot_ids: [],
+          anchor: reference.anchor || `asset-${assetId}-${reference.kind}`,
+        };
+        if (!item.shot_ids.includes(shotId)) item.shot_ids.push(shotId);
+        missing.set(key, item);
+        continue;
+      }
+      if (reference.kind !== 'character') continue;
+
+      const currentBinding = identityBindingForAsset(row);
+      const assetId = Number(row.id);
       const key = referenceKey(reference.kind, assetId);
-      const item = missing.get(key) || {
-        kind: reference.kind,
-        asset_id: assetId,
-        shot_ids: [],
-        anchor: reference.anchor || `asset-${assetId}-${reference.kind}`,
-      };
-      if (!item.shot_ids.includes(shotId)) item.shot_ids.push(shotId);
-      missing.set(key, item);
+      let code = null;
+      let reason = null;
+      if (!currentBinding) {
+        code = 'character_identity_pack_required';
+        reason = '角色资产缺少当前可用的真人身份包';
+        characterIdentityPackRequired.add(key);
+      } else {
+        const bindingComplete = Boolean(
+          reference.source_character_key
+          && reference.target_actor_label
+          && /^[0-9a-f]{64}$/.test(reference.identity_pack_sha256),
+        );
+        const bindingMatches = bindingComplete
+          && reference.source_character_key === currentBinding.source_character_key
+          && reference.target_actor_label === currentBinding.target_actor_label
+          && reference.identity_pack_sha256 === currentBinding.pack_sha256;
+        if (!bindingMatches) {
+          code = 'character_identity_binding_stale';
+          reason = '分镜角色身份绑定缺失或已过期，请重新保存分镜';
+          characterIdentityBindingStale.add(key);
+        }
+      }
+      if (code) {
+        const item = missing.get(key) || {
+          kind: reference.kind,
+          asset_id: assetId,
+          shot_ids: [],
+          anchor: reference.anchor || `asset-${assetId}-${reference.kind}`,
+          code,
+          reason,
+        };
+        if (!item.shot_ids.includes(shotId)) item.shot_ids.push(shotId);
+        if (currentBinding) {
+          item.source_character_key = reference.source_character_key || null;
+          item.target_actor_label = reference.target_actor_label || null;
+          item.identity_pack_sha256 = reference.identity_pack_sha256 || null;
+          item.expected_identity_pack_sha256 = currentBinding.pack_sha256;
+        }
+        missing.set(key, item);
+      }
     }
   }
   const items = [...missing.values()].sort((left, right) => (
     left.shot_ids[0] - right.shot_ids[0] || left.kind.localeCompare(right.kind) || left.asset_id - right.asset_id
   ));
-  if (invalidReferenceCount > 0) {
+  if (invalidReferenceKeys.size > 0) {
     blocking.push({
       code: 'asset_reference_invalid',
       reason: '分镜引用不属于当前版本的转绘资产',
-      asset_count: invalidReferenceCount,
+      asset_count: invalidReferenceKeys.size,
     });
   }
-  if (unapprovedReferenceCount > 0) {
+  if (unapprovedReferenceKeys.size > 0) {
     blocking.push({
       code: 'asset_not_approved',
       reason: '存在尚未生成或批准的分镜引用资产',
-      asset_count: unapprovedReferenceCount,
+      asset_count: unapprovedReferenceKeys.size,
+    });
+  }
+  if (characterIdentityPackRequired.size > 0) {
+    blocking.push({
+      code: 'character_identity_pack_required',
+      reason: '存在缺少当前可用真人身份包的角色资产',
+      asset_count: characterIdentityPackRequired.size,
+    });
+  }
+  if (characterIdentityBindingStale.size > 0) {
+    blocking.push({
+      code: 'character_identity_binding_stale',
+      reason: '存在缺失或已漂移的逐镜角色身份绑定',
+      asset_count: characterIdentityBindingStale.size,
     });
   }
   return {
@@ -198,6 +272,11 @@ function reviewAsset(db, assetId, input = {}) {
     if (!Number.isInteger(expectedVersion) || expectedVersion !== Number(current.version_number)) {
       throw codedError('REDRAW_REVIEW_VERSION_CONFLICT', '资产版本已变化，请刷新后重试');
     }
+  }
+  if (action === 'approved'
+    && current.kind === 'character'
+    && !identityPackStatus(current).ready) {
+    throw codedError('REDRAW_CHARACTER_IDENTITY_REQUIRED', '角色资产必须先完成真人身份包审核');
   }
   const now = new Date().toISOString();
   const version = db.prepare('SELECT work_id FROM redraw_versions WHERE id = ?').get(current.version_id);

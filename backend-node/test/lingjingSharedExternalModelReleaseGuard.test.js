@@ -196,10 +196,10 @@ function fixture(mutate) {
   return { root, candidate, evidenceRoot };
 }
 
-function run(item) {
+function run(item, expectedCurrent = item.candidate) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (/evidence.*(?:path|root)|(?:path|root).*evidence|verify.*output.*dir/i.test(key)) delete env[key];
-  return spawnSync(process.execPath, [GUARD, item.candidate, item.evidenceRoot], { encoding: 'utf8', env, windowsHide: true });
+  return spawnSync(process.execPath, [GUARD, item.candidate, item.evidenceRoot, expectedCurrent], { encoding: 'utf8', env, windowsHide: true });
 }
 
 test('shared external-model guard registers the isolated Lingjing evidence contract', () => {

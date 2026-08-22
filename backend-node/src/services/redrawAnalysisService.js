@@ -1,4 +1,5 @@
 const { createHash } = require('crypto');
+const { normalizeEpisodeFactsV2 } = require('./redrawEpisodeFactsService');
 
 function assertObject(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -73,7 +74,7 @@ function stableStringify(value) {
   return JSON.stringify(value);
 }
 
-function normalizeSourceFacts(raw) {
+function normalizeSourceFactsV1(raw) {
   assertObject(raw, 'source_facts');
   const durationMs = numberMs(raw.duration_ms, 'duration_ms');
   if (durationMs <= 0) throw new Error('duration_ms 必须大于 0');
@@ -167,4 +168,9 @@ function normalizeSourceFacts(raw) {
   return normalized;
 }
 
-module.exports = { normalizeSourceFacts, stableStringify };
+function normalizeSourceFacts(raw) {
+  if (raw?.schema_version === '2.0') return normalizeEpisodeFactsV2(raw);
+  return normalizeSourceFactsV1(raw);
+}
+
+module.exports = { normalizeSourceFacts, normalizeSourceFactsV1, stableStringify };

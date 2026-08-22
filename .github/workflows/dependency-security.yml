@@ -51,6 +51,12 @@ jobs:
       - name: Audit image node release boundaries
         run: npm --prefix backend-node run audit:image-node-release
 
+      - name: Audit protected canvas credit callout
+        run: npm --prefix backend-node run audit:canvas-credit-contract
+
+      - name: Audit protected canvas reference sequence contract
+        run: npm --prefix backend-node run audit:canvas-reference-sequence
+
       - name: Audit CPU cutout Python dependencies
         run: |
           python -m pip install --disable-pip-version-check pip-audit==2.10.0

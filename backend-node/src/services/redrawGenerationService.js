@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 
@@ -15,7 +16,11 @@ const redrawBillingService = require('./redrawBillingService');
 const redrawReviewService = require('./redrawReviewService');
 const redrawCapabilityService = require('./redrawCapabilityService');
 const redrawSourceConditioningService = require('./redrawSourceConditioningService');
+const redrawReferenceBundleService = require('./redrawReferenceBundleService');
+const { compileNativeDialoguePrompt } = require('./redrawNativeDialoguePromptService');
+const redrawNativeAudioService = require('./redrawNativeAudioService');
 const { FEITUO_MODELS, buildFeituoVideoBody } = require('./feituoVideoClient');
+const { TOAPIS_VIDEO_MODELS, validateToapisVideoOptions } = require('./toapisVideoClient');
 const { runWithGenerationLimit } = require('./generationConcurrency');
 
 const execFileAsync = promisify(execFile);
@@ -24,6 +29,45 @@ const INTERRUPTED_MESSAGE = '供应商状态未知/服务重启，请勿重新�
 const DEFAULT_GENERATION_CONCURRENCY = 3;
 const DEFAULT_RECOVERY_WAIT_MS = 60 * 60 * 1000;
 const DEFAULT_RECOVERY_POLL_MS = 1000;
+const ICREAT_MINI_MODEL = 'bytedance/seedance-2-0-mini';
+const CLIENT_GENERATION_CONTROL_FIELDS = [
+  'model',
+  'locale',
+  'prompt',
+  'generate_audio',
+  'generateAudio',
+  'ai_service_config_id',
+  'aiServiceConfigId',
+  'config_id',
+  'configId',
+  'provider',
+  'credit_amount',
+  'creditAmount',
+  'credits',
+  'price',
+  'reservation_id',
+  'reservationId',
+];
+const CLIENT_REFERENCE_BUNDLE_CONTROL_FIELDS = [
+  'reference_bundle',
+  'referenceBundle',
+  'face_tracks',
+  'faceTracks',
+  'text_regions',
+  'textRegions',
+  'motion_reference',
+  'motionReference',
+  'reference_urls',
+  'referenceUrls',
+  'reference_hash',
+  'referenceHash',
+  'reference_path',
+  'referencePath',
+  'reference_url',
+  'referenceUrl',
+  'reviewer_status',
+  'reviewerStatus',
+];
 
 function codedError(code, message, details) {
   const error = new Error(message);
@@ -56,18 +100,54 @@ function now(ctx) {
   return ctx.clock ? ctx.clock() : new Date().toISOString();
 }
 
-function normalizeDuration(value) {
+function monotonicTimestamp(base, candidate) {
+  const baseMs = Date.parse(base || '');
+  const candidateMs = Date.parse(candidate || '');
+  if (!Number.isFinite(baseMs) || !Number.isFinite(candidateMs) || candidateMs > baseMs) {
+    return candidate;
+  }
+  return new Date(baseMs + 1).toISOString();
+}
+
+function sha256File(absPath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(absPath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.once('error', reject);
+    stream.once('end', () => resolve(hash.digest('hex')));
+  });
+}
+
+function sha256FileSync(absPath) {
+  const fd = fs.openSync(absPath, 'r');
+  try {
+    const hash = crypto.createHash('sha256');
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let bytesRead = 0;
+    do {
+      bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+    return hash.digest('hex');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function normalizeDuration(value, options = {}) {
   const duration = Number(value);
-  if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) {
-    throw codedError('INVALID_VIDEO_DURATION', '视频时长必须是 5 到 15 秒之间的整数');
+  const minimum = options.allowFourSeconds === true ? 4 : 5;
+  if (!Number.isSafeInteger(duration) || duration < minimum || duration > 15) {
+    throw codedError('INVALID_VIDEO_DURATION', `视频时长必须是 ${minimum} 到 15 秒之间的整数`);
   }
   return duration;
 }
 
-function durationFromShotMs(shot) {
+function durationFromShotMs(shot, options = {}) {
   const derived = Math.ceil(Number(shot?.duration_ms || 0) / 1000);
   if (!Number.isSafeInteger(derived) || derived <= 0) return 5;
-  return Math.max(5, Math.min(15, derived));
+  return Math.max(options.allowFourSeconds === true ? 4 : 5, Math.min(15, derived));
 }
 
 function normalizeResolution(value) {
@@ -142,10 +222,16 @@ function listVerifiedGenerationCapabilities(db, version, canReadArtifact = () =>
   return capabilities;
 }
 
+function isIcreatMiniCapability(capability) {
+  return String(capability?.protocol || '').trim().toLowerCase() === 'icreat_task'
+    && String(capability?.model || '').trim().toLowerCase() === ICREAT_MINI_MODEL;
+}
+
 function supportsVideoConditioning(capability) {
   const model = String(capability?.model || '').trim();
-  return String(capability?.protocol || '').trim().toLowerCase() === 'feituo_open'
-    && Number(FEITUO_MODELS[model]?.maxVideos || 0) > 0;
+  return isIcreatMiniCapability(capability)
+    || (String(capability?.protocol || '').trim().toLowerCase() === 'feituo_open'
+      && Number(FEITUO_MODELS[model]?.maxVideos || 0) > 0);
 }
 
 function resolveVerifiedGenerationCapability(db, version, canReadArtifact = () => false, options = {}) {
@@ -164,10 +250,14 @@ function assertVideoConditioningCapability(capability, options = {}) {
   const model = String(capability?.model || '').trim();
   const protocol = String(capability?.protocol || '').trim().toLowerCase();
   const spec = FEITUO_MODELS[model];
-  const maxVideos = options.allowDeclaredLimit
-    ? Number(capability?.max_videos ?? capability?.maxVideos ?? spec?.maxVideos ?? 0)
-    : Number(spec?.maxVideos || 0);
-  if (protocol !== 'feituo_open' || maxVideos <= 0 || (!options.allowDeclaredLimit && !spec)) {
+  const icreatMini = isIcreatMiniCapability(capability);
+  const declaredMaxVideos = Number(capability?.max_videos ?? capability?.maxVideos ?? spec?.maxVideos ?? 0);
+  const maxVideos = icreatMini
+    ? 3
+    : options.allowDeclaredLimit
+      ? declaredMaxVideos
+      : Number(spec?.maxVideos || 0);
+  if (!icreatMini && (protocol !== 'feituo_open' || maxVideos <= 0 || (!options.allowDeclaredLimit && !spec))) {
     throw codedError('REDRAW_VIDEO_CONDITIONING_UNSUPPORTED', '当前已验证视频模型不支持源片视频 conditioning', {
       config_id: capability?.config_id ?? null,
       model: model || null,
@@ -183,7 +273,8 @@ function selectShot(db, ctx, shotInput) {
     throw codedError('REDRAW_SHOT_NOT_FOUND', '转绘镜头不存在');
   }
   const rows = db.prepare(`
-    SELECT s.*, v.work_id, v.style_snapshot_json, v.locale AS version_locale,
+    SELECT s.*, v.work_id, v.style_snapshot_json, v.reference_bundle_required,
+           v.locale AS version_locale,
            v.market AS version_market,
            v.status AS version_status, v.deleted_at AS version_deleted_at,
            w.source_asset_id, w.source_fingerprint, w.duration_ms AS source_duration_ms
@@ -275,19 +366,237 @@ function buildGenerationInput(shot, input, parsed, verifiedModel) {
   };
 }
 
+function rejectClientGenerationControl(input) {
+  for (const field of CLIENT_GENERATION_CONTROL_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(input || {}, field)) {
+      throw codedError('REDRAW_GENERATION_INPUT_INVALID', '转绘分镜生成的模型、语言、提示词、音频和积分只能由服务端决定');
+    }
+  }
+  for (const field of CLIENT_REFERENCE_BUNDLE_CONTROL_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(input || {}, field)) {
+      throw codedError('REDRAW_GENERATION_INPUT_INVALID', '转绘参考包只能由服务端审核结果决定');
+    }
+  }
+}
+
+function languageFromLocale(locale) {
+  const language = String(locale || '').trim().split('-')[0].toLowerCase();
+  return /^[a-z]{2,8}$/.test(language) ? language : '';
+}
+
+function nativeCapabilityForVersion(db, version, canReadArtifact) {
+  const language = languageFromLocale(version?.locale || version?.version_locale);
+  if (!language) return null;
+  return redrawCapabilityService.resolveVerifiedLocaleCapability(db, {
+    capability: 'native_dialogue_audio',
+    locale: language,
+    market: '',
+    canReadArtifact,
+  });
+}
+
+function assertReadyNativePack(ctx, language) {
+  const registry = ctx.localeVerifier;
+  if (!registry || typeof registry.assertReady !== 'function') {
+    throw codedError('REDRAW_LOCALE_VERIFIER_NOT_READY', '语言验证 Worker 未就绪');
+  }
+  return registry.assertReady({ language, scope: 'language' });
+}
+
+function assertNativeAudioCapability(capability) {
+  if (!capability) {
+    throw codedError('REDRAW_NO_VERIFIED_NATIVE_AUDIO', '当前语言没有已验证的原生对白声画能力');
+  }
+  const model = String(capability.model || '').trim().toLowerCase();
+  const protocol = String(capability.protocol || '').trim().toLowerCase();
+  const spec = protocol === 'toapis_video' ? TOAPIS_VIDEO_MODELS[model] : null;
+  if (capability.supportsAudio === false
+    || (!isIcreatMiniCapability({ protocol, model }) && spec?.supportsAudio !== true)) {
+    throw codedError('REDRAW_NATIVE_AUDIO_UNSUPPORTED', '当前已验证视频模型不支持同步音频');
+  }
+  return {
+    config_id: Number(capability.carrier_config_id ?? capability.config_id),
+    config_updated_at: String((capability.carrier_updated_at ?? capability.config_updated_at) || ''),
+    provider: String((capability.carrier_provider ?? capability.provider) || '').trim(),
+    protocol,
+    model,
+  };
+}
+
+function buildNativeDialogues(shot) {
+  const rows = strictJsonArray(shot.localized_dialogue_json, 'localized_dialogue_json');
+  return rows.map((item) => ({
+    speaker_id: String((item.speaker_id ?? item.speakerId ?? item.speaker) || '').trim(),
+    start_ms: Number(item.start_ms ?? item.startMs),
+    end_ms: Number(item.end_ms ?? item.endMs),
+    text: String((item.text ?? item.localized_text ?? item.line) || '').trim(),
+  }));
+}
+
+function hasNativeDialogueRows(shot) {
+  return strictJsonArray(shot.localized_dialogue_json, 'localized_dialogue_json').length > 0;
+}
+
+function buildNativeGeneration(shot, parsed, nativeCapability, pack) {
+  const selected = assertNativeAudioCapability(nativeCapability);
+  const compiled = parsed.compiled;
+  const allowFourSeconds = isIcreatMiniCapability(selected);
+  const duration = normalizeDuration(
+    compiled.duration ?? parsed.draft.duration ?? durationFromShotMs(shot, { allowFourSeconds }),
+    { allowFourSeconds },
+  );
+  const resolution = normalizeResolution(compiled.resolution ?? parsed.draft.resolution ?? '720p');
+  const aspectRatio = normalizeAspectRatio(compiled.aspect_ratio ?? compiled.aspectRatio
+    ?? parsed.draft.aspect_ratio ?? parsed.draft.aspectRatio ?? '16:9');
+  const promptBundle = compileNativeDialoguePrompt({
+    shot: { id: shot.id, start_ms: Number(shot.start_ms), end_ms: Number(shot.end_ms) },
+    basePrompt: String(compiled.text || compiled.prompt || shot.prompt || '').trim(),
+    language: pack.language,
+    promptLanguageLabel: pack.prompt_language_label,
+    localePack: pack,
+    modelPin: {
+      config_id: selected.config_id,
+      config_updated_at: selected.config_updated_at,
+      model: selected.model,
+    },
+    dialogues: buildNativeDialogues(shot),
+  });
+  return {
+    ...promptBundle,
+    prompt: promptBundle.prompt,
+    model: selected.model,
+    duration,
+    resolution,
+    aspect_ratio: aspectRatio,
+    count: 1,
+    locale: pack.language,
+    attempt: Number(parsed.draft.generation?.attempt ?? parsed.draft.attempt ?? 1),
+    provider: selected.provider,
+    protocol: selected.protocol,
+    aiServiceConfigId: selected.config_id,
+    aiServiceConfigUpdatedAt: selected.config_updated_at,
+    localePack: pack.id,
+    generateAudio: true,
+    nativeDialogue: true,
+  };
+}
+
+function canonicalIdentityBindings(value) {
+  const bindings = Array.isArray(value) ? value : [];
+  return bindings.map((binding) => ({
+    ...(binding?.track_key ? { track_key: String(binding.track_key || '').trim() } : {}),
+    ...(binding?.reference_image_asset_id ? { reference_image_asset_id: Number(binding.reference_image_asset_id) } : {}),
+    ...(binding?.redraw_asset_id ? { redraw_asset_id: Number(binding.redraw_asset_id) } : {}),
+    source_character_key: String(binding?.source_character_key || '').trim(),
+    ...(binding?.target_character_name ? { target_character_name: String(binding.target_character_name || '').trim() } : {}),
+    target_actor_label: String(binding?.target_actor_label || '').trim(),
+    identity_pack_sha256: String(binding?.identity_pack_sha256 || '').trim(),
+  })).sort((left, right) => (
+    Number(left.redraw_asset_id || 0) - Number(right.redraw_asset_id || 0)
+    || String(left.track_key || '').localeCompare(String(right.track_key || ''))
+    || Number(left.reference_image_asset_id || 0) - Number(right.reference_image_asset_id || 0)
+    || left.source_character_key.localeCompare(right.source_character_key)
+    || String(left.target_character_name || '').localeCompare(String(right.target_character_name || ''))
+    || left.target_actor_label.localeCompare(right.target_actor_label)
+    || left.identity_pack_sha256.localeCompare(right.identity_pack_sha256)
+  ));
+}
+
+function buildRequestSnapshot(generation, sourceConditioning, referenceImageUrls, identityBindings, referenceBundleSnapshot = null) {
+  return {
+    prompt: generation.prompt,
+    model: generation.model,
+    duration: generation.duration,
+    aspect_ratio: generation.aspect_ratio,
+    resolution: generation.resolution,
+    reference_image_urls: referenceImageUrls,
+    reference_video_urls: [sourceConditioning.referenceVideoUrl],
+    identity_bindings: canonicalIdentityBindings(identityBindings),
+    generate_audio: generation.generateAudio === true,
+    ...(generation.targetLocale ? { target_locale: generation.targetLocale } : {}),
+    ai_service_config_id: generation.aiServiceConfigId,
+    config_updated_at: generation.aiServiceConfigUpdatedAt,
+    locale: generation.locale,
+    ...(generation.localePack ? { locale_pack: generation.localePack } : {}),
+    ...(generation.prompt_hash ? { prompt_hash: generation.prompt_hash } : {}),
+    ...(generation.dialogue_snapshot_hash ? { dialogue_snapshot_hash: generation.dialogue_snapshot_hash } : {}),
+    ...(referenceBundleSnapshot ? { reference_bundle: referenceBundleSnapshot } : {}),
+  };
+}
+
+function sameRequestSnapshot(storedSnapshot, expectedSnapshot) {
+  if (!expectedSnapshot) return true;
+  const stored = storedSnapshot && typeof storedSnapshot === 'object' ? storedSnapshot : {};
+  for (const key of [
+    'generate_audio',
+    'target_locale',
+    'prompt_hash',
+    'dialogue_snapshot_hash',
+    'ai_service_config_id',
+    'config_updated_at',
+    'locale_pack',
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(expectedSnapshot, key)
+      && stored[key] !== expectedSnapshot[key]) {
+      return false;
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(expectedSnapshot, 'identity_bindings')) {
+    const storedIdentityBindings = Object.prototype.hasOwnProperty.call(stored, 'identity_bindings')
+      ? stored.identity_bindings
+      : [];
+    if (!Array.isArray(storedIdentityBindings)
+      || JSON.stringify(canonicalIdentityBindings(storedIdentityBindings))
+        !== JSON.stringify(canonicalIdentityBindings(expectedSnapshot.identity_bindings))) {
+      return false;
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(expectedSnapshot, 'reference_bundle')) {
+    const expectedBundle = expectedSnapshot.reference_bundle || {};
+    const storedBundle = stored.reference_bundle || {};
+    for (const key of [
+      'schema_version',
+      'coverage_sha256',
+      'source_sha256',
+      'motion_sha256',
+      'dialogue_script_sha256',
+      'character_name_map_sha256',
+    ]) {
+      if (storedBundle[key] !== expectedBundle[key]) return false;
+    }
+  }
+  return true;
+}
+
+function normalizeReferencePointer(value, fallbackKind = null) {
+  const kind = String(value.kind || value.type || value.asset_kind || fallbackKind || '').trim();
+  let rawId = value.redraw_asset_id ?? value.redrawAssetId ?? value.asset_id ?? value.assetId;
+  let inferredKind = kind;
+  for (const candidate of ['character', 'scene', 'prop', 'voice']) {
+    const candidateId = value[`${candidate}_asset_id`] ?? value[`${candidate}AssetId`];
+    if (rawId == null && candidateId != null) {
+      rawId = candidateId;
+      inferredKind = candidate;
+    }
+  }
+  if (rawId == null && value.clean_plate_asset_id != null) {
+    rawId = value.clean_plate_asset_id;
+    inferredKind = 'scene';
+  }
+  const id = Number(rawId);
+  if (!['character', 'scene', 'prop', 'voice'].includes(inferredKind)
+    || !Number.isInteger(id) || id <= 0) return null;
+  return { kind: inferredKind, id };
+}
+
 function parseReferenceValue(value, fallbackKind = null, out = []) {
   if (Array.isArray(value)) {
     for (const item of value) parseReferenceValue(item, fallbackKind, out);
     return out;
   }
   if (!value || typeof value !== 'object') return out;
-  const kind = String(value.kind || value.type || value.asset_kind || fallbackKind || '').trim();
-  let rawId = value.redraw_asset_id ?? value.redrawAssetId ?? value.asset_id ?? value.assetId;
-  if (rawId == null && value.clean_plate_asset_id != null) rawId = value.clean_plate_asset_id;
-  const id = Number(rawId);
-  if (['character', 'scene', 'prop', 'voice'].includes(kind) && Number.isInteger(id) && id > 0) {
-    out.push({ kind, id });
-  }
+  const normalized = normalizeReferencePointer(value, fallbackKind);
+  if (normalized) out.push(normalized);
   for (const key of ['references', 'assets', 'asset_references', 'assetReferences']) {
     if (value[key] != null) parseReferenceValue(value[key], fallbackKind, out);
   }
@@ -330,7 +639,72 @@ function collectReferenceImageUrls(db, shot, parsed) {
   return urls;
 }
 
+function collectIdentityBindings(parsed) {
+  const bindings = [];
+  const seen = new Set();
+  function collect(value) {
+    if (Array.isArray(value)) {
+      for (const item of value) collect(item);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    const normalized = normalizeReferencePointer(value);
+    if (normalized?.kind === 'character') {
+      const key = `${normalized.kind}:${normalized.id}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        bindings.push({
+          redraw_asset_id: normalized.id,
+          source_character_key: String(value.source_character_key || '').trim(),
+          target_actor_label: String(value.target_actor_label || '').trim(),
+          identity_pack_sha256: String(value.identity_pack_sha256 || '').trim(),
+        });
+      }
+    }
+    for (const key of ['references', 'assets', 'asset_references', 'assetReferences']) {
+      if (value[key] != null) collect(value[key]);
+    }
+  }
+  collect(parsed.references);
+  collect(parsed.draft.references || parsed.draft.assets || parsed.draft.asset_references);
+  return canonicalIdentityBindings(bindings);
+}
+
 function preflightVideoGeneration(generation, sourceConditioning, referenceImageUrls) {
+  if (generation.protocol === 'toapis_video') {
+    try {
+      validateToapisVideoOptions({
+        model: generation.model,
+        prompt: generation.prompt,
+        duration: generation.duration,
+        aspect_ratio: generation.aspect_ratio,
+        resolution: generation.resolution,
+        reference_urls: referenceImageUrls,
+        reference_video_urls: [sourceConditioning.referenceVideoUrl],
+        generate_audio: generation.generateAudio === true,
+      });
+    } catch (error) {
+      throw codedError('REDRAW_GENERATION_INPUT_INVALID', error.message);
+    }
+    return;
+  }
+  if (generation.protocol === 'icreat_task') {
+    try {
+      videoClient.buildIcreatVideoBody({
+        model: generation.model,
+        prompt: generation.prompt,
+        duration: generation.duration,
+        aspect_ratio: generation.aspect_ratio,
+        resolution: generation.resolution,
+        reference_urls: referenceImageUrls,
+        reference_video_urls: [sourceConditioning.referenceVideoUrl],
+        generate_audio: generation.generateAudio === true,
+      });
+    } catch (error) {
+      throw codedError('REDRAW_GENERATION_INPUT_INVALID', error.message);
+    }
+    return;
+  }
   if (!FEITUO_MODELS[generation.model]) return;
   try {
     buildFeituoVideoBody({
@@ -375,6 +749,15 @@ function findReusable(db, shot, attempt, expectedGeneration = null) {
     }
     if (!sameConditioning(storedConditioning, expectedGeneration.sourceConditioning)) return null;
   }
+  if (expectedGeneration?.requestSnapshot) {
+    let storedSnapshot;
+    try {
+      storedSnapshot = strictJson(video.request_snapshot, 'request_snapshot');
+    } catch (_) {
+      return null;
+    }
+    if (!sameRequestSnapshot(storedSnapshot, expectedGeneration.requestSnapshot)) return null;
+  }
   const draft = strictJson(shot.draft_json, 'draft_json');
   if (Number(draft.generation?.attempt ?? draft.attempt ?? 1) !== Number(attempt)) return null;
   const task = video.task_id
@@ -397,6 +780,7 @@ function mergeDraft(draft, patch) {
       ...patch.generation,
     },
     ...(patch.new_video_ref ? { new_video_ref: patch.new_video_ref } : {}),
+    ...(patch.native_audio_validation ? { native_audio_validation: patch.native_audio_validation } : {}),
   });
 }
 
@@ -425,6 +809,7 @@ function conditioningIdentity(value) {
     start_ms: Number(value.start_ms),
     end_ms: Number(value.end_ms),
     segment_sha256: String(value.segment_sha256 || ''),
+    audio_mode: String(value.audio_mode || 'preserve'),
   };
 }
 
@@ -432,7 +817,7 @@ function sameConditioning(left, right) {
   return JSON.stringify(conditioningIdentity(left)) === JSON.stringify(conditioningIdentity(right));
 }
 
-async function prepareServerSourceConditioning(ctx, shot) {
+async function prepareServerSourceConditioning(ctx, shot, generation) {
   const prepare = typeof ctx.prepareSourceConditioning === 'function'
     ? ctx.prepareSourceConditioning
     : redrawSourceConditioningService.prepareSourceConditioning;
@@ -444,6 +829,9 @@ async function prepareServerSourceConditioning(ctx, shot) {
     sourceFingerprint: shot.source_fingerprint,
     startMs: shot.start_ms,
     endMs: shot.end_ms,
+    audioMode: generation?.generateAudio === true && isIcreatMiniCapability(generation)
+      ? 'strip'
+      : 'preserve',
     storageRoot: ctx.storageRoot,
     storageBaseUrl: ctx.storageBaseUrl,
     signingSecret: ctx.providerAssetSecret,
@@ -456,34 +844,127 @@ async function prepareServerSourceConditioning(ctx, shot) {
   return result;
 }
 
+async function prepareReferenceBundleConditioning(ctx, shot) {
+  const projection = await redrawReferenceBundleService.projectReferenceBundleForGeneration({
+    ...ctx,
+    versionId: Number(shot.version_id),
+  }, Number(shot.id));
+  const snapshot = projection.referenceBundleSnapshot || {};
+  const sourceConditioning = {
+    referenceVideoUrl: projection.referenceVideoUrl,
+    billingSnapshot: {
+      mode: 'redraw_reference_bundle',
+      source_asset_id: Number(shot.source_asset_id),
+      source_fingerprint: String(shot.source_fingerprint || ''),
+      start_ms: Number(shot.start_ms),
+      end_ms: Number(shot.end_ms),
+      segment_sha256: String(snapshot.motion_sha256 || ''),
+      audio_mode: 'strip',
+      coverage_sha256: String(snapshot.coverage_sha256 || ''),
+    },
+    auditSnapshot: {
+      schema_version: 'redraw-reference-bundle-generation-v1',
+      mode: 'redraw_reference_bundle',
+      shot_id: Number(shot.id),
+      source_asset_id: Number(shot.source_asset_id),
+      source_fingerprint: String(shot.source_fingerprint || ''),
+      start_ms: Number(shot.start_ms),
+      end_ms: Number(shot.end_ms),
+      segment_sha256: String(snapshot.motion_sha256 || ''),
+      audio_mode: 'strip',
+      coverage_sha256: String(snapshot.coverage_sha256 || ''),
+      reference_bundle: snapshot,
+    },
+  };
+  return {
+    sourceConditioning,
+    prompt: String(projection.prompt || ''),
+    targetLocale: String(projection.targetLocale || ''),
+    generateAudio: projection.generateAudio === true,
+    referenceImageUrls: projection.referenceImageUrls || [],
+    identityBindings: projection.identityBindings || [],
+    referenceBundleSnapshot: snapshot,
+  };
+}
+
 async function generateShot(ctx, input = {}) {
   const { db } = ctx;
   if (!db || !ctx.tenantId || !ctx.userId) throw codedError('REDRAW_CONTEXT_INVALID', '缺少转绘生成上下文');
+  rejectClientGenerationControl(input);
   rejectClientVideoConditioning(input);
   const shot = selectShot(db, ctx, input);
   const parsed = parseShotPayload(shot);
   ensureGateOpen(db, ctx, shot.version_id);
-  const hasCapabilityOverride = typeof ctx.resolveVideoConditioningCapability === 'function';
-  const verifiedCapability = resolveVerifiedGenerationCapability(db, {
+  const versionIdentity = {
     locale: shot.version_locale,
     market: shot.version_market,
-  }, ctx.canReadArtifact, { requireSourceConditioning: !hasCapabilityOverride });
-  const generation = buildGenerationInput(shot, input, parsed, verifiedCapability?.model);
-  const conditioningCapability = hasCapabilityOverride
-    ? ctx.resolveVideoConditioningCapability(db, generation.model, verifiedCapability)
-    : verifiedCapability;
-  const selectedCapability = assertVideoConditioningCapability(conditioningCapability, {
-    allowDeclaredLimit: hasCapabilityOverride,
-  });
-  generation.provider = selectedCapability.provider || null;
-  generation.protocol = selectedCapability.protocol || null;
-  generation.aiServiceConfigId = Number(selectedCapability.config_id) || null;
-  generation.aiServiceConfigUpdatedAt = String(selectedCapability.config_updated_at || '');
+  };
+  const requiresReferenceBundle = Number(shot.reference_bundle_required || 0) === 1;
+  const requiresNativeDialogue = !requiresReferenceBundle && hasNativeDialogueRows(shot);
+  const nativeCapability = nativeCapabilityForVersion(db, versionIdentity, ctx.canReadArtifact);
+  const language = languageFromLocale(shot.version_locale);
+  const nativePack = requiresNativeDialogue ? assertReadyNativePack(ctx, language) : null;
+  let generation;
+  let selectedCapability;
+  if (requiresNativeDialogue) {
+    const override = nativeCapability && typeof ctx.resolveVideoConditioningCapability === 'function'
+      ? ctx.resolveVideoConditioningCapability(db, nativeCapability?.model, nativeCapability)
+      : nativeCapability;
+    generation = buildNativeGeneration(shot, parsed, override, nativePack);
+    selectedCapability = {
+      config_id: generation.aiServiceConfigId,
+      config_updated_at: generation.aiServiceConfigUpdatedAt,
+      provider: generation.provider,
+      protocol: generation.protocol,
+      model: generation.model,
+    };
+  } else {
+    const hasCapabilityOverride = typeof ctx.resolveVideoConditioningCapability === 'function';
+    const verifiedCapability = resolveVerifiedGenerationCapability(db, versionIdentity, ctx.canReadArtifact, { requireSourceConditioning: !hasCapabilityOverride });
+    generation = buildGenerationInput(shot, input, parsed, verifiedCapability?.model);
+    const conditioningCapability = hasCapabilityOverride
+      ? ctx.resolveVideoConditioningCapability(db, generation.model, verifiedCapability)
+      : verifiedCapability;
+    selectedCapability = assertVideoConditioningCapability(conditioningCapability, {
+      allowDeclaredLimit: hasCapabilityOverride,
+    });
+    generation.provider = selectedCapability.provider || null;
+    generation.protocol = selectedCapability.protocol || null;
+    generation.aiServiceConfigId = Number(selectedCapability.config_id) || null;
+    generation.aiServiceConfigUpdatedAt = String(selectedCapability.config_updated_at || '');
+  }
   if (!Number.isSafeInteger(generation.attempt) || generation.attempt <= 0) {
     throw codedError('INVALID_REDRAW_GENERATION_INPUT', 'attempt 必须是正整数');
   }
-  const sourceConditioning = await prepareServerSourceConditioning(ctx, shot);
+  if (requiresReferenceBundle) {
+    assertNativeAudioCapability(selectedCapability);
+  }
+  let referenceBundleProjection = null;
+  const sourceConditioning = requiresReferenceBundle
+    ? (referenceBundleProjection = await prepareReferenceBundleConditioning(ctx, shot)).sourceConditioning
+    : await prepareServerSourceConditioning(ctx, shot, generation);
   generation.sourceConditioning = sourceConditioning.billingSnapshot;
+  if (requiresReferenceBundle) {
+    generation.prompt = referenceBundleProjection.prompt;
+    generation.locale = referenceBundleProjection.targetLocale || 'en-US';
+    generation.targetLocale = referenceBundleProjection.targetLocale || 'en-US';
+    generation.generateAudio = referenceBundleProjection.generateAudio === true;
+  }
+  const referenceImageUrls = requiresReferenceBundle
+    ? referenceBundleProjection.referenceImageUrls
+    : collectReferenceImageUrls(db, shot, parsed);
+  const identityBindings = requiresReferenceBundle
+    ? referenceBundleProjection.identityBindings
+    : collectIdentityBindings(parsed);
+  preflightVideoGeneration(generation, sourceConditioning, referenceImageUrls);
+  const requestSnapshot = buildRequestSnapshot(
+    generation,
+    sourceConditioning,
+    referenceImageUrls,
+    identityBindings,
+    referenceBundleProjection?.referenceBundleSnapshot || null,
+  );
+  generation.requestSnapshot = requestSnapshot;
   const reusable = findReusable(db, shot, generation.attempt, generation);
   if (reusable) return enrichGenerationResult(db, { ...reusable, attempt: generation.attempt });
   if (shot.video_generation_id) {
@@ -495,8 +976,6 @@ async function generateShot(ctx, input = {}) {
       throw codedError('REDRAW_SHOT_CONFLICT', '镜头已有不同参数的生成任务，请刷新后重试');
     }
   }
-  const referenceImageUrls = collectReferenceImageUrls(db, shot, parsed);
-  preflightVideoGeneration(generation, sourceConditioning, referenceImageUrls);
   if (typeof ctx.beforeCreateTransaction === 'function') {
     await ctx.beforeCreateTransaction({ shot, generation });
   }
@@ -543,9 +1022,9 @@ async function generateShot(ctx, input = {}) {
       `).run('单镜视频生成已开始', String(ctx.tenantId), String(ctx.userId), generation.model, JSON.stringify(metadata), timestamp, task.id);
       const videoId = db.prepare(`INSERT INTO video_generations
         (provider, ai_service_config_id, prompt, model, duration, aspect_ratio, resolution, reference_image_urls,
-         reference_video_urls, source_conditioning_json, status, task_id, tenant_id, user_id,
+         reference_video_urls, source_conditioning_json, generate_audio, request_snapshot, status, task_id, tenant_id, user_id,
          credit_reservation_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, NULL, ?, ?)`)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, NULL, ?, ?)`)
         .run(
           generation.provider,
           generation.aiServiceConfigId,
@@ -566,6 +1045,8 @@ async function generateShot(ctx, input = {}) {
               model: generation.model,
             },
           }),
+          generation.generateAudio === true ? 1 : 0,
+          JSON.stringify(requestSnapshot),
           task.id,
           String(ctx.tenantId),
           String(ctx.userId),
@@ -589,6 +1070,12 @@ async function generateShot(ctx, input = {}) {
           resolution: generation.resolution,
           aspect_ratio: generation.aspect_ratio,
           source_conditioning: sourceConditioning.billingSnapshot,
+          generate_audio: generation.generateAudio === true,
+          locale_pack: generation.localePack,
+          prompt_hash: generation.prompt_hash,
+          dialogue_snapshot_hash: generation.dialogue_snapshot_hash,
+          ai_service_config_id: generation.aiServiceConfigId,
+          config_updated_at: generation.aiServiceConfigUpdatedAt,
           count: 1,
           attempt: generation.attempt,
         },
@@ -845,6 +1332,435 @@ function terminalTaskResult(task, video, shot) {
   };
 }
 
+function needsNativeAudioValidation(row, _shot) {
+  if (Number(row?.generate_audio) !== 1) return false;
+  const snapshot = strictJson(row.request_snapshot, 'video_generations.request_snapshot');
+  return snapshot.generate_audio === true && !!(snapshot.locale_pack && snapshot.dialogue_snapshot_hash);
+}
+
+function isNativeAudioDownloadFailure(row, message) {
+  return String(row?.error_msg || message || '').includes(videoService.NATIVE_AUDIO_DOWNLOAD_FAILURE_CODE);
+}
+
+function nativeAudioDownloadFailureError(row, message) {
+  const clean = String(row?.error_msg || message || '原生对白视频下载失败，请人工确认后处理')
+    .replace(new RegExp(`^${videoService.NATIVE_AUDIO_DOWNLOAD_FAILURE_CODE}:\\s*`), '')
+    .slice(0, 500);
+  const error = new Error(clean);
+  error.code = videoService.NATIVE_AUDIO_DOWNLOAD_FAILURE_CODE;
+  return error;
+}
+
+function compactNativeAudioEvidence(evidence) {
+  return {
+    contract: evidence.contract,
+    artifact_sha256: evidence.artifact_sha256,
+    audio_stream: evidence.audio_stream,
+    video_duration_ms: evidence.video_duration_ms,
+    silence: evidence.silence,
+    verification: evidence.verification,
+    validation_hash: evidence.validation_hash,
+  };
+}
+
+function sha256Text(value) {
+  return crypto.createHash('sha256').update(String(value || ''), 'utf8').digest('hex');
+}
+
+function nativeAudioCandidate(row, evidence = null) {
+  const snapshot = strictJson(row.request_snapshot, 'video_generations.request_snapshot');
+  return {
+    video_generation_id: row.id,
+    provider: String(row.provider || ''),
+    model: String(row.model || ''),
+    config_id: Number(row.ai_service_config_id) || null,
+    config_updated_at: String(snapshot.config_updated_at || ''),
+    provider_task_id_sha256: sha256Text(row.provider_task_id || ''),
+    ...(evidence?.artifact_sha256 ? { artifact_sha256: evidence.artifact_sha256 } : {}),
+    artifact_locator_sha256: sha256Text(`${row.video_url || ''}\n${row.local_path || ''}`),
+  };
+}
+
+function nativeAudioValidationInput(ctx, row, shot, draft) {
+  const generation = draft.generation || {};
+  const snapshot = strictJson(row.request_snapshot, 'video_generations.request_snapshot');
+  const language = languageFromLocale(snapshot.locale || generation.locale || shot.version_locale)
+    || languageFromLocale(generation.locale_pack);
+  const pack = assertReadyNativePack(ctx, language);
+  return {
+    storageRoot: ctx.storageRoot,
+    videoPath: row.local_path,
+    approvedText: buildNativeDialogues(shot).map((line) => line.text).join('\n'),
+    expectedLanguage: pack.language,
+    localePack: pack,
+    expectedDurationMs: Number(row.duration) > 0 ? Number(row.duration) * 1000 : undefined,
+    localeVerifier: ctx.localeVerifier,
+    videoInvocation: {
+      provider: String(row.provider || ''),
+      model: String(row.model || ''),
+      aiServiceConfigId: Number(row.ai_service_config_id),
+      configUpdatedAt: String(snapshot.config_updated_at || generation.config_updated_at || ''),
+      providerTaskId: String(row.provider_task_id || ''),
+      artifactSha256: null,
+    },
+  };
+}
+
+async function validateShotNativeAudio(ctx, row, shot) {
+  const draft = strictJson(shot.draft_json, 'draft_json');
+  const validator = ctx.nativeAudioValidator || redrawNativeAudioService.validateNativeAudio;
+  const evidence = await validator(nativeAudioValidationInput(ctx, row, shot, draft));
+  return {
+    ...compactNativeAudioEvidence(evidence),
+    status: 'verified',
+    human_review: { status: 'pending' },
+  };
+}
+
+function nativeAudioFailureAudit(row, error, stage, humanReviewStatus, evidence = null) {
+  const safeMessage = String(error?.message || error || '原生对白音轨验证失败').slice(0, 500);
+  return {
+    ...(evidence ? compactNativeAudioEvidence(evidence) : {}),
+    status: evidence ? 'verified' : 'failed',
+    failure_stage: stage,
+    error_code: error?.code || 'REDRAW_NATIVE_AUDIO_VALIDATION_FAILED',
+    error_message: safeMessage,
+    candidate: nativeAudioCandidate(row, evidence),
+    human_review: { status: humanReviewStatus },
+  };
+}
+
+function nativeAudioAuditFromShotOrTask(shot, task) {
+  const draft = strictJson(shot.draft_json, 'draft_json');
+  if (draft.native_audio_validation) return { draft, audit: draft.native_audio_validation };
+  const taskResult = strictJson(task.result, 'async_tasks.result');
+  return { draft, audit: taskResult.native_audio_validation || null };
+}
+
+function reviewConflict(message = '原生音轨审核证据已变化，请刷新后重试') {
+  throw codedError('REDRAW_NATIVE_AUDIO_REVIEW_CONFLICT', message);
+}
+
+function reviewUnavailable(message = '当前原生音轨候选不可人工批准') {
+  throw codedError('REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE', message);
+}
+
+function sameNativeAudioReview(review, input, reviewerId) {
+  if (!review || review.status !== input.decision) return false;
+  if (String(review.reviewer_id || '') !== String(reviewerId || '')) return false;
+  if (input.decision === 'approved') {
+    return review.speaker_order === 'passed'
+      && review.lip_sync === 'passed'
+      && review.extra_dialogue === 'passed';
+  }
+  return String(review.reason || '') === String(input.reason || '');
+}
+
+function manualOverrideForAudit(audit) {
+  const verification = audit?.verification || {};
+  if (verification.language_verified !== true) return true;
+  if (Object.prototype.hasOwnProperty.call(verification, 'dialogue_similarity')
+    && Number(verification.dialogue_similarity) < 0.8) return true;
+  return false;
+}
+
+async function reviewNativeAudio(ctx, input = {}) {
+  const { db } = ctx;
+  if (!db || !ctx.tenantId || !ctx.userId) throw codedError('REDRAW_CONTEXT_INVALID', '缺少转绘生成上下文');
+  const shot = selectShot(db, ctx, { shotId: input.shotId ?? input.shot_id });
+  const video = shot.video_generation_id
+    ? db.prepare(`SELECT * FROM video_generations
+      WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+      LIMIT 1`).get(Number(shot.video_generation_id), String(ctx.tenantId), String(ctx.userId))
+    : null;
+  if (!video) throw codedError('REDRAW_VIDEO_NOT_FOUND', '单镜视频记录不存在');
+  const task = video.task_id ? getTask(db, video.task_id, ctx) : null;
+  if (!task || String(task.resource_id) !== String(shot.id)) {
+    throw codedError('REDRAW_SHOT_TASK_NOT_FOUND', '单镜视频任务不存在');
+  }
+  const { draft, audit } = nativeAudioAuditFromShotOrTask(shot, task);
+  const validationHash = String(input.validation_hash || input.validationHash || '').trim().toLowerCase();
+  if (!audit || String(audit.validation_hash || '').toLowerCase() !== validationHash) {
+    reviewConflict();
+  }
+  const decision = String(input.decision || '').trim();
+  const existingReview = audit.human_review || {};
+  if (['approved', 'rejected'].includes(String(existingReview.status || ''))
+    && sameNativeAudioReview(existingReview, { ...input, decision }, ctx.userId)) {
+    const ref = draft.new_video_ref || {};
+    return enrichGenerationResult(db, {
+      status: shot.status,
+      task_id: task.id,
+      video_generation_id: video.id,
+      asset_id: ref.asset_id || null,
+      reservation_id: taskMetadata(task).reservation_id || null,
+    });
+  }
+  if (String(input.expected_updated_at || input.expectedUpdatedAt || '') !== String(shot.updated_at || '')) {
+    reviewConflict('分镜已被其他操作更新，请刷新后重试');
+  }
+  if (['approved', 'rejected'].includes(String(existingReview.status || ''))) {
+    reviewConflict('原生音轨已按不同决定审核，请刷新后重试');
+  }
+  const expectedUpdatedAt = String(input.expected_updated_at || input.expectedUpdatedAt || '');
+  if (decision === 'rejected') {
+    const timestamp = monotonicTimestamp(shot.updated_at, now(ctx));
+    const review = {
+      status: 'rejected',
+      reviewer_id: String(ctx.userId),
+      reason: String(input.reason || '').trim().slice(0, 500),
+      reviewed_at: timestamp,
+    };
+    db.transaction(() => {
+      const changed = db.prepare(`
+        UPDATE redraw_shots
+        SET status = 'needs_attention',
+            error_code = 'REDRAW_NATIVE_AUDIO_REJECTED',
+            error_message = ?,
+            draft_json = ?,
+            updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'needs_attention'
+          AND video_generation_id = ? AND updated_at IS ? AND deleted_at IS NULL
+          AND draft_json IS ?
+      `).run(
+        review.reason,
+        mergeDraft(draft, { generation: {}, native_audio_validation: { ...audit, human_review: review } }),
+        timestamp,
+        shot.id,
+        String(ctx.tenantId),
+        String(ctx.userId),
+        video.id,
+        expectedUpdatedAt,
+        shot.draft_json,
+      );
+      if (changed.changes !== 1) reviewConflict('分镜已被其他操作更新，请刷新后重试');
+      db.prepare(`
+        UPDATE async_tasks
+        SET status = 'needs_attention', progress = 90, message = ?, error = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND user_id = ?
+      `).run(review.reason, review.reason, timestamp, task.id, String(ctx.tenantId), String(ctx.userId));
+      db.prepare(`
+        UPDATE video_generations
+        SET status = 'needs_attention', error_msg = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND user_id = ?
+      `).run(review.reason, timestamp, video.id, String(ctx.tenantId), String(ctx.userId));
+    })();
+    return enrichGenerationResult(db, {
+      status: 'needs_attention',
+      task_id: task.id,
+      video_generation_id: video.id,
+      reservation_id: taskMetadata(task).reservation_id || null,
+    });
+  }
+  if (decision !== 'approved') throw codedError('REDRAW_NATIVE_AUDIO_REVIEW_INVALID', '原生音轨审核决定无效');
+  if (String(existingReview.status || '') !== 'available') {
+    reviewUnavailable('当前原生音轨候选不可人工批准');
+  }
+  if (String(video.status || '') !== 'needs_attention') {
+    reviewUnavailable('当前原生音轨候选状态不可人工批准');
+  }
+  if (!audit.audio_stream || !audit.candidate || !audit.candidate.artifact_sha256) {
+    reviewUnavailable('原生音轨候选缺少可批准的音轨证据');
+  }
+  const verifier = ctx.artifactVerifier || verifyVideoArtifact;
+  let verification;
+  try {
+    verification = await verifier(ctx, video.id, {
+      allowedStatuses: ['needs_attention'],
+      requireAudio: true,
+      expectedSha256: audit.candidate.artifact_sha256,
+    });
+  } catch (error) {
+    if (error.code === 'REDRAW_VIDEO_ARTIFACT_INVALID') {
+      reviewUnavailable(error.message || '当前原生音轨候选不可人工批准');
+    }
+    throw error;
+  }
+  const timestamp = monotonicTimestamp(shot.updated_at, now(ctx));
+  const importer = ctx.assetImporter || ((database, logger, videoGenerationId) => (
+    assetService.importFromVideo(database, logger, videoGenerationId)
+  ));
+  const metadata = taskMetadata(task);
+  return db.transaction(() => {
+    const fresh = db.prepare(`
+      SELECT s.*, t.status AS task_status, v.status AS video_status
+      FROM redraw_shots s
+      JOIN video_generations v ON v.id = s.video_generation_id
+        AND v.tenant_id = s.tenant_id AND v.user_id = s.user_id AND v.deleted_at IS NULL
+      JOIN async_tasks t ON t.id = v.task_id
+        AND t.tenant_id = s.tenant_id AND t.user_id = s.user_id AND t.deleted_at IS NULL
+      WHERE s.id = ? AND s.tenant_id = ? AND s.user_id = ? AND s.deleted_at IS NULL
+      LIMIT 1
+    `).get(shot.id, String(ctx.tenantId), String(ctx.userId));
+    if (!fresh || Number(fresh.video_generation_id) !== Number(video.id) || String(fresh.updated_at || '') !== expectedUpdatedAt) {
+      reviewConflict('分镜已被其他操作更新，请刷新后重试');
+    }
+    const freshDraft = strictJson(fresh.draft_json, 'draft_json');
+    const freshAudit = freshDraft.native_audio_validation || {};
+    if (String(freshAudit.validation_hash || '').toLowerCase() !== validationHash
+      || String(freshAudit.candidate?.artifact_sha256 || '').toLowerCase() !== String(audit.candidate.artifact_sha256 || '').toLowerCase()) {
+      reviewConflict();
+    }
+    const claimed = db.prepare(`
+      UPDATE redraw_shots
+      SET status = 'pending', error_code = 'REDRAW_NATIVE_AUDIO_REVIEW_FINALIZING', updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND user_id = ?
+        AND status = 'needs_attention' AND video_generation_id = ?
+        AND updated_at IS ? AND deleted_at IS NULL
+    `).run(timestamp, shot.id, String(ctx.tenantId), String(ctx.userId), video.id, expectedUpdatedAt);
+    if (claimed.changes !== 1) reviewConflict('原生音轨审核正在由其他操作处理，请刷新后重试');
+    let actualSha256;
+    let realAbsPath;
+    try {
+      const relativePath = String(video.local_path || '').replace(/^\/static\//, '').replace(/\\/g, '/');
+      const realStorageRoot = fs.realpathSync.native(resolveStorageRoot(ctx));
+      realAbsPath = fs.realpathSync.native(path.resolve(realStorageRoot, relativePath));
+      if (!isInside(realStorageRoot, realAbsPath)) reviewUnavailable('视频成片路径越界');
+      actualSha256 = sha256FileSync(realAbsPath);
+    } catch (error) {
+      if (error.code && String(error.code).startsWith('REDRAW_')) throw error;
+      reviewUnavailable('视频成片文件不可读取');
+    }
+    if (actualSha256 !== String(freshAudit.candidate.artifact_sha256 || '').toLowerCase()) {
+      reviewUnavailable('视频成片哈希与审核候选不一致');
+    }
+    const imported = importer(db, ctx.log || logNoop, video.id);
+    if (imported && typeof imported.then === 'function') {
+      throw codedError('REDRAW_VIDEO_ASSET_IMPORT_INVALID', '视频成片素材入库必须同步完成');
+    }
+    if (!imported?.id) {
+      throw codedError('REDRAW_VIDEO_ASSET_IMPORT_FAILED', '视频成片素材入库失败，请人工确认后处理');
+    }
+    const review = {
+      status: 'approved',
+      reviewer_id: String(ctx.userId),
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+      manual_override: manualOverrideForAudit(audit),
+      reviewed_at: timestamp,
+    };
+    const newVideoRef = {
+      asset_id: imported.id,
+      video_generation_id: video.id,
+      video_url: video.video_url || null,
+      local_path: video.local_path,
+      probe: verification,
+    };
+    const approvedAudit = { ...freshAudit, human_review: review };
+    db.prepare(`
+      UPDATE video_generations
+      SET status = 'completed', error_msg = NULL, updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND user_id = ?
+    `).run(timestamp, video.id, String(ctx.tenantId), String(ctx.userId));
+    db.prepare(`
+      UPDATE redraw_shots
+      SET status = 'completed', error_code = NULL, error_message = NULL,
+          draft_json = ?, updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND user_id = ?
+    `).run(
+      mergeDraft(draft, {
+        generation: { completed_at: timestamp },
+        native_audio_validation: approvedAudit,
+        new_video_ref: newVideoRef,
+      }),
+      timestamp,
+      shot.id,
+      String(ctx.tenantId),
+      String(ctx.userId),
+    );
+    advanceVersionIfAllShotsCompleted(db, ctx, shot.version_id, timestamp);
+    taskService.updateTaskResult(db, task.id, {
+      status: 'completed',
+      shot_id: shot.id,
+      video_generation_id: video.id,
+      asset_id: imported.id,
+      video_url: video.video_url || null,
+      local_path: video.local_path,
+      probe: verification,
+      native_audio_validation: approvedAudit,
+    });
+    redrawBillingService.settleShotGeneration(db, metadata.reservation_id, 'completed');
+    return enrichGenerationResult(db, {
+      status: 'completed',
+      task_id: task.id,
+      video_generation_id: video.id,
+      asset_id: imported.id,
+      reservation_id: metadata.reservation_id || null,
+    });
+  })();
+}
+
+function markNativeAudioNeedsAttention(db, task, shot, row, error, timestamp, options = {}) {
+  const safeMessage = String(error?.message || error || '原生对白音轨验证失败').slice(0, 500);
+  const audit = options.audit || nativeAudioFailureAudit(
+    row,
+    error,
+    options.stage || 'native_audio_validation',
+    options.humanReviewStatus || 'unavailable',
+    options.evidence || null,
+  );
+  const draft = strictJson(shot.draft_json, 'draft_json');
+  try {
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE redraw_shots
+        SET status = 'needs_attention',
+            error_code = 'REDRAW_NATIVE_AUDIO_VALIDATION_FAILED',
+            error_message = ?,
+            draft_json = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).run(safeMessage, mergeDraft(draft, {
+        generation: {},
+        native_audio_validation: audit,
+      }), timestamp, shot.id);
+      db.prepare(`
+        UPDATE async_tasks
+        SET status = 'needs_attention', progress = 90, message = ?, error = ?,
+            result = NULL, completed_at = NULL, updated_at = ?
+        WHERE id = ?
+      `).run(safeMessage, safeMessage, timestamp, task.id);
+      db.prepare(`
+        UPDATE video_generations
+        SET status = 'needs_attention', error_msg = ?, updated_at = ?
+        WHERE id = ? AND task_id = ?
+      `).run(safeMessage, timestamp, row.id, task.id);
+      setVersionGenerationStep(db, {
+        tenantId: shot.tenant_id,
+        userId: shot.user_id,
+      }, shot.version_id, timestamp);
+    })();
+    return;
+  } catch (persistError) {
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE redraw_shots
+        SET status = 'needs_attention',
+            error_code = 'REDRAW_NATIVE_AUDIO_VALIDATION_FAILED',
+            error_message = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).run(safeMessage, timestamp, shot.id);
+      db.prepare(`
+        UPDATE async_tasks
+        SET status = 'needs_attention', progress = 90, message = ?, error = ?,
+            result = ?, completed_at = NULL, updated_at = ?
+        WHERE id = ?
+      `).run(safeMessage, safeMessage, JSON.stringify({ native_audio_validation: audit }), timestamp, task.id);
+      db.prepare(`
+        UPDATE video_generations
+        SET status = 'needs_attention', error_msg = ?, updated_at = ?
+        WHERE id = ? AND task_id = ?
+      `).run(safeMessage, timestamp, row.id, task.id);
+      setVersionGenerationStep(db, {
+        tenantId: shot.tenant_id,
+        userId: shot.user_id,
+      }, shot.version_id, timestamp);
+    })();
+  }
+}
+
 async function runShotGeneration(ctx, taskId) {
   const { db } = ctx;
   const ownerCtx = ctx.tenantId && ctx.userId ? ctx : null;
@@ -878,6 +1794,7 @@ async function runShotGeneration(ctx, taskId) {
         providerAssetStorageBaseUrl: ctx.storageBaseUrl,
         providerAssetTtlSeconds: ctx.providerAssetTtlSeconds,
         providerAssetNowMs: ctx.providerAssetNowMs,
+        evidenceRoots: ctx.evidenceRoots,
       })
     )));
   if (!recoveredRemoteTerminal) await processor(db, ctx.log || logNoop, video.id);
@@ -890,16 +1807,36 @@ async function runShotGeneration(ctx, taskId) {
       verification = await verifier(ctx, row.id, {});
     } catch (error) {
       const timestamp = now(ctx);
-      updateNeedsAttention(db, task.id, shot.id, error.message, timestamp, row.id);
+      if (needsNativeAudioValidation(row, shot)) {
+        markNativeAudioNeedsAttention(db, task, shot, row, error, timestamp, {
+          stage: 'artifact_verification',
+          humanReviewStatus: 'unavailable',
+        });
+      } else {
+        updateNeedsAttention(db, task.id, shot.id, error.message, timestamp, row.id);
+      }
       return { status: 'needs_attention', error: error.message, task_id: task.id, video_generation_id: row.id };
     }
   }
   const outcome = classifyVideoOutcome(row, verification);
   const timestamp = now(ctx);
   if (outcome.status === 'completed') {
+    let nativeAudioValidation = null;
+    if (needsNativeAudioValidation(row, shot)) {
+      try {
+        nativeAudioValidation = await validateShotNativeAudio(ctx, row, shot);
+      } catch (error) {
+        markNativeAudioNeedsAttention(db, task, shot, row, error, timestamp, {
+          stage: 'native_audio_validation',
+          humanReviewStatus: 'available',
+        });
+        return { status: 'needs_attention', error: error.message, task_id: task.id, video_generation_id: row.id };
+      }
+    }
     const importer = ctx.assetImporter || ((database, logger, videoGenerationId) => (
       assetService.importFromVideo(database, logger, videoGenerationId)
     ));
+    let finalizationStage = 'finalization';
     try {
       return db.transaction(() => {
         const claimed = db.prepare(`
@@ -915,6 +1852,22 @@ async function runShotGeneration(ctx, taskId) {
           if (concurrentResult && !concurrentResult.degrade) return concurrentResult;
           throw codedError('REDRAW_VIDEO_FINALIZATION_CONFLICT', '单镜视频正在由其他任务收口，请勿重复导入');
         }
+        const draft = strictJson(shot.draft_json, 'draft_json');
+        if (nativeAudioValidation) {
+          finalizationStage = 'native_audio_evidence_write';
+          db.prepare(`
+            UPDATE redraw_shots
+            SET draft_json = ?, updated_at = ?
+            WHERE id = ?
+          `).run(mergeDraft(draft, {
+            generation: {},
+            native_audio_validation: nativeAudioValidation,
+          }), timestamp, shot.id);
+        }
+        const updatedDraft = nativeAudioValidation
+          ? strictJson(db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shot.id).draft_json, 'draft_json')
+          : draft;
+        finalizationStage = 'asset_register';
         imported = importer(db, ctx.log || logNoop, row.id);
         if (imported && typeof imported.then === 'function') {
           throw codedError('REDRAW_VIDEO_ASSET_IMPORT_INVALID', '视频成片素材入库必须同步完成');
@@ -922,7 +1875,6 @@ async function runShotGeneration(ctx, taskId) {
         if (!imported?.id) {
           throw codedError('REDRAW_VIDEO_ASSET_IMPORT_FAILED', '视频成片素材入库失败，请人工确认后处理');
         }
-        const draft = strictJson(shot.draft_json, 'draft_json');
         const newVideoRef = {
           asset_id: imported.id,
           video_generation_id: row.id,
@@ -935,7 +1887,7 @@ async function runShotGeneration(ctx, taskId) {
           SET status = 'completed', video_generation_id = ?, error_code = NULL, error_message = NULL,
               draft_json = ?, updated_at = ?
           WHERE id = ?
-        `).run(row.id, mergeDraft(draft, { generation: { completed_at: timestamp }, new_video_ref: newVideoRef }), timestamp, shot.id);
+        `).run(row.id, mergeDraft(updatedDraft, { generation: { completed_at: timestamp }, new_video_ref: newVideoRef }), timestamp, shot.id);
         advanceVersionIfAllShotsCompleted(db, {
           tenantId: shot.tenant_id,
           userId: shot.user_id,
@@ -949,12 +1901,21 @@ async function runShotGeneration(ctx, taskId) {
           local_path: row.local_path,
           probe: verification,
         });
+        finalizationStage = 'settlement';
         redrawBillingService.settleShotGeneration(db, metadata.reservation_id, 'completed');
         return { status: 'completed', task_id: task.id, video_generation_id: row.id, asset_id: imported.id };
       })();
     } catch (error) {
-      updateNeedsAttention(db, task.id, shot.id, error.message, timestamp, row.id);
-      return { status: 'needs_attention', task_id: task.id, video_generation_id: row.id };
+      if (nativeAudioValidation) {
+        markNativeAudioNeedsAttention(db, task, shot, row, error, timestamp, {
+          stage: finalizationStage,
+          humanReviewStatus: 'available',
+          evidence: nativeAudioValidation,
+        });
+      } else {
+        updateNeedsAttention(db, task.id, shot.id, error.message, timestamp, row.id);
+      }
+      return { status: 'needs_attention', error: error.message, task_id: task.id, video_generation_id: row.id };
     }
   }
   if (outcome.status === 'failed') {
@@ -978,6 +1939,14 @@ async function runShotGeneration(ctx, taskId) {
       updateNeedsAttention(db, task.id, shot.id, error.message, timestamp, row.id);
       return { status: 'needs_attention', error: error.message, task_id: task.id, video_generation_id: row.id };
     }
+  }
+  if (needsNativeAudioValidation(row, shot) && isNativeAudioDownloadFailure(row, outcome.error)) {
+    const error = nativeAudioDownloadFailureError(row, outcome.error);
+    markNativeAudioNeedsAttention(db, task, shot, row, error, timestamp, {
+      stage: 'download',
+      humanReviewStatus: 'unavailable',
+    });
+    return { status: 'needs_attention', error: error.message, task_id: task.id, video_generation_id: row.id };
   }
   updateNeedsAttention(db, task.id, shot.id, outcome.error, timestamp, row.id);
   return { status: 'needs_attention', error: outcome.error, task_id: task.id, video_generation_id: row.id };
@@ -1358,11 +2327,10 @@ function resolveStorageRoot(ctx) {
   return path.isAbsolute(storagePath) ? storagePath : path.join(process.cwd(), storagePath);
 }
 
-async function defaultProbe(absPath) {
+async function defaultProbe(absPath, options = {}) {
   const { stdout } = await execFileAsync(getFfprobePath(), [
     '-v', 'error',
-    '-select_streams', 'v:0',
-    '-show_entries', 'stream=width,height:format=duration',
+    '-show_entries', 'stream=codec_type,width,height,channels,sample_rate:format=duration',
     '-of', 'json',
     absPath,
   ], {
@@ -1372,17 +2340,29 @@ async function defaultProbe(absPath) {
     windowsHide: true,
   });
   const parsed = JSON.parse(stdout);
-  const stream = parsed.streams?.[0] || {};
-  return {
+  const videoStream = parsed.streams?.find((stream) => stream.codec_type === 'video') || {};
+  const audioStream = parsed.streams?.find((stream) => stream.codec_type === 'audio') || null;
+  const result = {
     duration: Number(parsed.format?.duration),
-    width: Number(stream.width),
-    height: Number(stream.height),
+    width: Number(videoStream.width),
+    height: Number(videoStream.height),
   };
+  if (options.requireAudio) {
+    result.hasAudio = !!audioStream && (
+      Number(audioStream.channels) > 0
+      || Number(audioStream.sample_rate) > 0
+      || Number(audioStream.duration) > 0
+    );
+  }
+  return result;
 }
 
-async function verifyVideoArtifact(ctx, videoGenerationId) {
+async function verifyVideoArtifact(ctx, videoGenerationId, options = {}) {
   const row = ctx.db.prepare('SELECT * FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(Number(videoGenerationId));
-  if (!row || row.status !== 'completed' || !row.local_path) {
+  const allowedStatuses = Array.isArray(options.allowedStatuses) && options.allowedStatuses.length
+    ? new Set(options.allowedStatuses.map((status) => String(status)))
+    : new Set(['completed']);
+  if (!row || !allowedStatuses.has(String(row.status || '')) || !row.local_path) {
     throw codedError('REDRAW_VIDEO_ARTIFACT_INVALID', '视频成片记录不完整');
   }
   const storageRoot = resolveStorageRoot(ctx);
@@ -1403,9 +2383,27 @@ async function verifyVideoArtifact(ctx, videoGenerationId) {
   if (!isInside(realStorageRoot, realAbsPath)) {
     throw codedError('REDRAW_VIDEO_ARTIFACT_INVALID', '视频成片路径越界');
   }
-  const probe = ctx.probeRunner ? await ctx.probeRunner(absPath, row) : await defaultProbe(absPath);
+  const expectedSha256 = String(options.expectedSha256 || options.expected_sha256 || '').trim().toLowerCase();
+  if (expectedSha256) {
+    if (!/^[a-f0-9]{64}$/.test(expectedSha256)) {
+      throw codedError('REDRAW_VIDEO_ARTIFACT_INVALID', '视频成片哈希证据无效');
+    }
+    let actualSha256;
+    try {
+      actualSha256 = await sha256File(realAbsPath);
+    } catch (_) {
+      throw codedError('REDRAW_VIDEO_ARTIFACT_INVALID', '视频成片文件不可读取');
+    }
+    if (actualSha256 !== expectedSha256) {
+      throw codedError('REDRAW_VIDEO_ARTIFACT_INVALID', '视频成片哈希与审核候选不一致');
+    }
+  }
+  const probe = ctx.probeRunner ? await ctx.probeRunner(absPath, row, options) : await defaultProbe(absPath, options);
   if (!(probe?.duration > 0 && probe?.width > 0 && probe?.height > 0)) {
     throw codedError('REDRAW_VIDEO_ARTIFACT_INVALID', '视频成片元数据无效');
+  }
+  if (options.requireAudio && probe.hasAudio !== true) {
+    throw codedError('REDRAW_VIDEO_ARTIFACT_INVALID', '视频成片缺少可验证音轨');
   }
   return { duration: probe.duration, width: probe.width, height: probe.height };
 }
@@ -1418,6 +2416,7 @@ module.exports = {
   runShotGeneration,
   markInterruptedShotGenerationsNeedsAttention,
   verifyVideoArtifact,
+  reviewNativeAudio,
   classifyVideoOutcome,
   resolveVerifiedGenerationModel,
   resolveVerifiedGenerationCapability,

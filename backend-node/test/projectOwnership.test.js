@@ -175,3 +175,48 @@ test('静态转绘源片按 source fingerprint 校验登录所有者和租户成
   }, otherRes, () => {});
   assert.equal(otherRes.statusCode, 404);
 });
+
+test('静态转绘源片按 source fingerprint 校验登录所有者和租户成员', () => {
+  const { db } = setup();
+  const token = auth.issueToken({ id: 'user-1', email: 'one@example.com', role: 'user' }, SECRET);
+  const otherToken = auth.issueToken({ id: 'user-2', email: 'two@example.com', role: 'user' }, SECRET);
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO tenants (id, name, slug, status, created_by, created_at, updated_at)
+    VALUES ('team-redraw', 'Redraw Team', 'team-redraw', 'active', 'user-1', ?, ?)`).run(now, now);
+  db.prepare(`INSERT INTO tenant_members (tenant_id, user_id, role, status, created_at, updated_at)
+    VALUES ('team-redraw', 'user-1', 'member', 'active', ?, ?)`).run(now, now);
+  const projectId = db.prepare(`
+    INSERT INTO redraw_projects
+      (tenant_id, user_id, title, default_locale, default_market, localization_level, status, created_at, updated_at)
+    VALUES ('team-redraw', 'user-1', '转绘项目', 'en-US', 'US', 'faithful', 'draft', ?, ?)
+  `).run(now, now).lastInsertRowid;
+  const sha = 'a'.repeat(64);
+  db.prepare(`
+    INSERT INTO redraw_works
+      (project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint, duration_ms,
+       current_version, current_step, status, created_at, updated_at, deleted_at)
+    VALUES (?, 'team-redraw', 'user-1', '源片', 1, ?, 90000, 0, 1, 'draft', ?, ?, NULL)
+  `).run(projectId, sha, now, now);
+
+  const middleware = createStaticOwnershipMiddleware({ db, enabled: true, secret: SECRET });
+  const ownedRes = response();
+  let called = false;
+  middleware({
+    path: `/redraw-sources/${sha}.mp4`,
+    query: {},
+    get(name) {
+      return name === 'authorization' ? `Bearer ${token}` : '';
+    },
+  }, ownedRes, () => { called = true; });
+  assert.equal(called, true);
+
+  const otherRes = response();
+  middleware({
+    path: `/redraw-sources/${sha}.mp4`,
+    query: {},
+    get(name) {
+      return name === 'authorization' ? `Bearer ${otherToken}` : '';
+    },
+  }, otherRes, () => {});
+  assert.equal(otherRes.statusCode, 404);
+});

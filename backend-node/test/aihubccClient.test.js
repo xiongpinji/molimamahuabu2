@@ -86,19 +86,20 @@ test('AIHubCC video body maps Omni and Seedance fields', () => {
   assert.deepEqual(seedance.reference_image_urls, ['https://example.com/character.png']);
 });
 
-test('AIHubCC does not translate Lingjing public models into its private schema', () => {
-  const body = client.buildVideoBody({
+test('lingjing video body uses ratio and ordered reference_images', () => {
+  assert.deepEqual(client.buildVideoBody({
     model: 'lingjing-video-v1',
     prompt: 'animate',
     duration: 15,
     aspect_ratio: '9:16',
     reference_urls: ['uploads/one.png', 'uploads/two.png'],
+  }), {
+    model: 'lingjing-video-v1',
+    prompt: 'animate',
+    duration: 15,
+    ratio: '9:16',
+    reference_images: ['uploads/one.png', 'uploads/two.png'],
   });
-  assert.equal(body.model, 'lingjing-video-v1');
-  assert.equal(body.aspect_ratio, '9:16');
-  assert.deepEqual(body.reference_image_urls, ['uploads/one.png', 'uploads/two.png']);
-  assert.equal(body.ratio, undefined);
-  assert.equal(body.reference_images, undefined);
 });
 
 

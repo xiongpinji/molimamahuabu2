@@ -711,10 +711,10 @@ import {
   canvasModelCapability,
   canvasModelEntry,
   canvasModelOptions,
-  canvasModelRoute,
   canvasModelSelectionDecision,
   createCanvasModelCatalogLoader,
   estimateCanvasCredits,
+  canvasModelRoute,
   imageModelCapabilityBadges,
   normalizeCanvasModelCatalog,
 } from '@/utils/canvasModelCapabilities'
@@ -841,7 +841,7 @@ const generationOverrides = ref({})
 const layoutSaveState = ref('idle')
 const layoutDirty = ref(false)
 const layoutPersistence = createCanvasLayoutPersistence(({ canvasLayout, workflowGroups }) => (
-  dramaAPI.saveCanvasLayout(dramaId.value, canvasLayout, workflowGroups)
+  dramaAPI.saveCanvasLayout(dramaId.value, canvasLayout, workflowGroups, drama.value?.updated_at)
 ))
 let canvasPersistQueue = Promise.resolve()
 const freeCanvasAssetSaveFlights = new Map()

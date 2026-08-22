@@ -1,5 +1,15 @@
 <template>
   <section class="redraw-source-step">
+    <div class="source-stage-strip" aria-label="八阶段状态">
+      <span
+        v-for="stage in eightStageState"
+        :key="stage.key"
+        :class="stage.status"
+      >
+        {{ stage.label }}
+      </span>
+    </div>
+
     <div v-if="!['analysis_review', 'localizing', 'localization_needs_attention', 'failed'].includes(workflowPhase)" class="source-card">
       <div class="section-heading">
         <div>
@@ -31,7 +41,11 @@
         <label class="field">
           <span>语言 / 地区</span>
           <div class="inline-fields">
-            <el-select v-model="locale" placeholder="语言">
+            <el-select
+              v-model="locale"
+              :placeholder="localeOptions.length ? '语言' : '暂无已验证语言'"
+              :disabled="!localeOptions.length"
+            >
               <el-option
                 v-for="item in localeOptions"
                 :key="`${item.locale}-${item.market}`"
@@ -39,7 +53,11 @@
                 :value="item.locale"
               />
             </el-select>
-            <el-select v-model="market" placeholder="地区">
+            <el-select
+              v-model="market"
+              :placeholder="localeOptions.length ? '地区' : '暂无已验证地区'"
+              :disabled="!localeOptions.length"
+            >
               <el-option
                 v-for="item in localeOptions"
                 :key="`${item.locale}-${item.market}-market`"
@@ -48,6 +66,9 @@
               />
             </el-select>
           </div>
+          <small v-if="!localeOptions.length" class="locale-capability-empty">
+            暂无通过验收的语言/地区，请管理员完成语言能力校准后开放。
+          </small>
         </label>
         <label class="field">
           <span>输出比例</span>
@@ -152,6 +173,7 @@ import {
   createLocalizationQuoteRequestGate,
   isCurrentLocalizationConfirmation,
   redrawWorkflowPhase,
+  resolveEightStageState,
   shouldResetLocalizationIdempotencyKey,
   taskStateFromWork,
 } from '@/utils/redrawWorkspaceState'
@@ -164,6 +186,10 @@ const props = defineProps({
   initialWork: {
     type: Object,
     default: null,
+  },
+  events: {
+    type: Array,
+    default: () => [],
   },
 })
 
@@ -203,6 +229,10 @@ const canStartAnalysis = computed(() => canStartRedrawAnalysis({
   freeStyle: freeStyle.value,
 }))
 const canSubmitLocalization = computed(() => canConfirmLocalization(workState.value))
+const eightStageState = computed(() => resolveEightStageState({
+  ...(workState.value || {}),
+  events: props.events,
+}))
 
 function onFileChange(event) {
   selectedFile.value = event.target.files?.[0] || null
@@ -478,6 +508,35 @@ onUnmounted(() => {
   border: 1px solid #2a2a2a;
   border-radius: 8px;
   background: #151515;
+}
+
+.source-stage-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.source-stage-strip span {
+  padding: 5px 9px;
+  border: 1px solid #333;
+  border-radius: 999px;
+  color: #a5a5a5;
+  font-size: 12px;
+}
+
+.source-stage-strip .completed {
+  border-color: #2f6f4e;
+  color: #66d49a;
+}
+
+.source-stage-strip .active {
+  border-color: #ff7139;
+  color: #fff;
+}
+
+.source-stage-strip .needs_attention {
+  border-color: #b63b3b;
+  color: #ff8585;
 }
 
 .section-heading,

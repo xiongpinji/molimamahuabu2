@@ -69,7 +69,7 @@ test('model UI gate rejects removal of verification fields from config conversio
   try {
     const file = path.join(target, 'backend-node/src/services/aiConfigService.js');
     const source = fs.readFileSync(file, 'utf8')
-      .replace('verification_status: r.verification_status || null,', '');
+      .replace("verification_status: String(r.verification_status || 'pending'),", '');
     fs.writeFileSync(file, source);
     assert.throws(() => auditModelUiContract(target), /verification_status/);
   } finally {
@@ -108,7 +108,7 @@ test('model UI gate rejects using the canonical billing name as the provider rou
   try {
     const file = path.join(target, 'backend-node/src/services/videoService.js');
     const source = fs.readFileSync(file, 'utf8')
-      .replace("body.provider || 'chatfire', prompt, model, duration", "body.provider || 'chatfire', prompt, billingModel || model, duration");
+      .replace("body.provider || videoConfig?.provider || 'chatfire', prompt, model, duration", "body.provider || videoConfig?.provider || 'chatfire', prompt, billingModel || model, duration");
     fs.writeFileSync(file, source);
     assert.throws(() => auditModelUiContract(target), /prompt, model, duration/);
   } finally {
@@ -150,20 +150,20 @@ test('model UI gate rejects deleting or renaming public model metadata', () => {
   );
   assertMutationRejected(
     'frontweb/src/views/FreeCreate.vue',
-    (source) => source.replace('selectedModel.value?.public_note', 'selectedModel.value?.description'),
-    /FreeCreate\.vue.*public_note/,
+    (source) => source.replace('selectedModel?.publicNote', 'selectedModel?.description'),
+    /FreeCreate\.vue.*publicNote/,
   );
 });
 
 test('model UI gate rejects deleting backend or frontend canvas note mappings', () => {
   assertMutationRejected(
     'backend-node/src/services/canvasModelCatalogService.js',
-    (source) => source.replace("note: price.public_note || '',", ''),
-    /canvasModelCatalogService\.js.*note/,
+    (source) => source.replace('public_note: price?.public_note || null,', ''),
+    /canvasModelCatalogService\.js.*public_note/,
   );
   assertMutationRejected(
     'frontweb/src/utils/canvasModelCapabilities.js',
-    (source) => source.replace('note: item.note,', ''),
+    (source) => source.replace('note: item.publicNote,', ''),
     /canvasModelCapabilities\.js.*note/,
   );
 });
@@ -171,16 +171,19 @@ test('model UI gate rejects deleting backend or frontend canvas note mappings', 
 test('model UI gate rejects FilmCreate catalog removal or AI-list-only fallback', () => {
   assertMutationRejected(
     'frontweb/src/views/FilmCreate.vue',
-    (source) => source.replace("request.get('/canvas/model-catalog')", "request.get('/video-models')"),
-    /FilmCreate\.vue.*canvas\/model-catalog/,
+    (source) => source.replace(
+      'const catalogRows = await aiAPI.listCanvasModels()',
+      'const catalogRows = await aiAPI.listVideoModels()',
+    ),
+    /FilmCreate\.vue.*unified canvas model catalog/,
   );
   assertMutationRejected(
     'frontweb/src/views/FilmCreate.vue',
     (source) => source.replace(
-      'videoModelOptions.value = intersectFilmCreateVideoModels(models, catalogResult.value)',
-      'videoModelOptions.value = models.map((model) => ({ value: model, label: model, note: \'\' }))',
+      'videoModelCatalog.value = normalizeCanvasModelCatalog(Array.isArray(catalogRows) ? catalogRows : [])',
+      'videoModelCatalog.value = []',
     ),
-    /FilmCreate\.vue.*intersectFilmCreateVideoModels/,
+    /FilmCreate\.vue.*unified canvas model catalog/,
   );
 });
 
@@ -276,27 +279,27 @@ test('source comment stripping removes executable-looking comments without corru
   assert.doesNotMatch(stripped, /freeNodeSelectedModelNote/);
 });
 
-test('model UI gate ignores FilmCreate intersection tokens hidden in line comments', () => {
-  const realCall = 'videoModelOptions.value = intersectFilmCreateVideoModels(models, catalogResult.value)';
+test('model UI gate ignores FilmCreate catalog normalization hidden in line comments', () => {
+  const realCall = 'videoModelCatalog.value = normalizeCanvasModelCatalog(Array.isArray(catalogRows) ? catalogRows : [])';
   assertMutationRejected(
     'frontweb/src/views/FilmCreate.vue',
     (source) => source.replace(
       realCall,
-      `videoModelOptions.value = models.map((model) => ({ value: model, label: model, note: '' }))\n// ${realCall}`,
+      `videoModelCatalog.value = []\n// ${realCall}`,
     ),
-    /FilmCreate\.vue.*intersectFilmCreateVideoModels/,
+    /FilmCreate\.vue.*unified canvas model catalog/,
   );
 });
 
-test('model UI gate ignores FilmCreate intersection tokens hidden in ordinary strings', () => {
-  const realCall = 'videoModelOptions.value = intersectFilmCreateVideoModels(models, catalogResult.value)';
+test('model UI gate ignores FilmCreate catalog normalization hidden in ordinary strings', () => {
+  const realCall = 'videoModelCatalog.value = normalizeCanvasModelCatalog(Array.isArray(catalogRows) ? catalogRows : [])';
   assertMutationRejected(
     'frontweb/src/views/FilmCreate.vue',
     (source) => source.replace(
       realCall,
-      `videoModelOptions.value = models.map((model) => ({ value: model, label: model, note: '' }))\nconst oldContractText = "${realCall}"`,
+      `videoModelCatalog.value = []\nconst oldContractText = "${realCall}"`,
     ),
-    /FilmCreate\.vue.*intersectFilmCreateVideoModels/,
+    /FilmCreate\.vue.*unified canvas model catalog/,
   );
 });
 
@@ -304,10 +307,10 @@ test('model UI gate ignores model catalog calls hidden in block comments', () =>
   assertMutationRejected(
     'frontweb/src/views/FilmCreate.vue',
     (source) => source.replace(
-      "request.get('/canvas/model-catalog')",
-      "request.get('/video-models') /* request.get('/canvas/model-catalog') */",
+      'const catalogRows = await aiAPI.listCanvasModels()',
+      'const catalogRows = await aiAPI.listVideoModels() /* aiAPI.listCanvasModels() */',
     ),
-    /FilmCreate\.vue.*canvas\/model-catalog/,
+    /FilmCreate\.vue.*unified canvas model catalog/,
   );
 });
 
@@ -352,9 +355,9 @@ test('model UI gate rejects backend property mappings hidden in ordinary strings
   assertMutationRejected(
     'backend-node/src/services/aiConfigService.js',
     (source) => `${source.replace(
-      'verification_status: r.verification_status || null,',
+      "verification_status: String(r.verification_status || 'pending'),",
       'status: r.status || null,',
-    )}\nconst contractDecoy = "verification_status: r.verification_status || null";`,
+    )}\nconst contractDecoy = "verification_status: String(r.verification_status || 'pending')";`,
     /aiConfigService\.js.*verification_status/,
   );
 });
@@ -376,16 +379,16 @@ test('model UI gate rejects executable string comparisons hidden in ordinary str
   );
 });
 
-test('model UI gate rejects selectedVideoModelNote hidden in ordinary strings', () => {
+test('model UI gate rejects selectedVideoModel public note hidden in ordinary strings', () => {
   assertMutationRejected(
     'frontweb/src/components/dramaCanvas/CanvasGenerationOptions.vue',
-    (source) => `${source.replaceAll('selectedVideoModelNote', 'removedSelectedModelNote')}\nconst contractDecoy = "selectedVideoModelNote";`,
-    /CanvasGenerationOptions\.vue.*selectedVideoModelNote/,
+    (source) => `${source.replaceAll('selectedVideoModel?.publicNote', 'selectedVideoModel?.description')}\nconst contractDecoy = "selectedVideoModel?.publicNote";`,
+    /CanvasGenerationOptions\.vue.*publicNote/,
   );
 });
 
 test('model UI gate rejects Vue bindings hidden inside unrelated attribute strings', () => {
-  const contract = ':disabled="isGenerationRunning ||';
+  const contract = ':disabled="data.status === \'running\' ||';
   assertMutationRejected(
     'frontweb/src/components/dramaCanvas/HomeCanvasNode.vue',
     (source) => `${source.replace(contract, ':disabled="!draft.content.trim() ||')}\n<span data-contract='${contract}' />`,
@@ -397,7 +400,7 @@ test('model UI gate rejects protected credit markup and text hidden in ordinary 
   assertMutationRejected(
     'frontweb/src/components/dramaCanvas/HomeCanvasNode.vue',
     (source) => `${source
-      .replace('class="canvas-credit-callout-v1"', 'class="credit-callout"')
+      .replace('class="billing-cost canvas-credit-callout-v1"', 'class="billing-cost credit-callout"')
       .replace('本次预计扣除', '预计扣除')}\nconst contractDecoy = "canvas-credit-callout-v1 本次预计扣除";`,
     /HomeCanvasNode\.vue.*canvas credit callout/,
   );
@@ -425,30 +428,32 @@ function deadPublicAudioProjection(db, res) {
   );
 });
 
-test('model UI gate rejects selectedVideoModelNote and intersection contracts moved into dead functions', () => {
-  const selectedNote = "const selectedVideoModelNote = computed(() => String(selectedVideoModel.value?.note || '').trim())";
+test('model UI gate rejects selectedVideoModel and catalog normalization moved into dead functions', () => {
+  const selectedModel = `const selectedVideoModel = computed(() => (
+  canvasModelEntry(modelCatalog.value, 'video', options.value.videoModel) || null
+))`;
   assertMutationRejected(
     'frontweb/src/components/dramaCanvas/CanvasGenerationOptions.vue',
     (source) => source
-      .replace(selectedNote, "const selectedVideoModelNote = computed(() => '')")
-      .replace('</script>', `function deadSelectedVideoModelNoteContract() {
-  ${selectedNote}
-  return selectedVideoModelNote
+      .replace(selectedModel, 'const selectedVideoModel = computed(() => null)')
+      .replace('</script>', `function deadSelectedVideoModelContract() {
+  ${selectedModel}
+  return selectedVideoModel
 }
 </script>`),
-    /CanvasGenerationOptions\.vue.*selectedVideoModelNote scoped mapping/,
+    /CanvasGenerationOptions\.vue.*selectedVideoModel scoped mapping/,
   );
 
-  const intersection = 'videoModelOptions.value = intersectFilmCreateVideoModels(models, catalogResult.value)';
+  const catalogNormalization = 'videoModelCatalog.value = normalizeCanvasModelCatalog(Array.isArray(catalogRows) ? catalogRows : [])';
   assertMutationRejected(
     'frontweb/src/views/FilmCreate.vue',
     (source) => source
-      .replace(intersection, "videoModelOptions.value = models.map((model) => ({ value: model, label: model, note: '' }))")
-      .replace('</script>', `function deadFilmCreateIntersection(models, catalogResult) {
-  ${intersection}
+      .replace(catalogNormalization, 'videoModelCatalog.value = []')
+      .replace('</script>', `function deadFilmCreateCatalogNormalization(catalogRows) {
+  ${catalogNormalization}
 }
 </script>`),
-    /FilmCreate\.vue.*scoped model intersection/,
+    /FilmCreate\.vue.*unified canvas model catalog/,
   );
 });
 

@@ -185,5 +185,6 @@ test('管理员、首页、画布与短剧工厂均使用灵境专用目录能�
   assert.match(homeNode, /data\.kind === 'image' \|\| capability\.resolutions\?\.length/)
   assert.match(generationOptions, /videoResolutionOptions\.length/)
   assert.match(filmCreate, /selectedVideoResolutionOptions\.length/)
-  assert.match(filmCreate, /strictLingjing[\s\S]*lingjing_open/)
+  assert.match(filmCreate, /selectedVideoResolutionOptions\.length/)
+  assert.doesNotMatch(filmCreate, /strictLingjing/)
 })

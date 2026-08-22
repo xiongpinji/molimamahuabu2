@@ -26,6 +26,12 @@ const reconciliationApi = fs.readFileSync(
   new URL('../src/api/billingReconciliation.js', import.meta.url),
   'utf8',
 )
+const routerSource = fs.readFileSync(new URL('../src/router/index.js', import.meta.url), 'utf8')
+const dramaCanvasSource = fs.readFileSync(new URL('../src/views/DramaCanvas.vue', import.meta.url), 'utf8')
+const homeCanvasNodeSource = fs.readFileSync(
+  new URL('../src/components/dramaCanvas/HomeCanvasNode.vue', import.meta.url),
+  'utf8',
+)
 
 test('统一管理后台提供账号、兑换码、积分、对账和模型计费入口', () => {
   for (const label of ['账号管理', '兑换码', '积分流水', '积分对账', '模型计费']) {
@@ -52,6 +58,16 @@ test('模型收费、兑换码生成和用户兑换都有明确入口与字段',
   assert.match(aiConfigContentSource, /设置定价/)
   assert.match(aiConfigContentSource, /tab:\s*'models'/)
   assert.match(aiConfigContentSource, /model:/)
+  assert.match(adminSource, /前端显示名称/)
+  assert.match(adminSource, /连接验证并启用计费后自动进入画布，无需修改前端代码/)
+})
+
+test('AI 配置明确展示画布验证状态并在连接测试后刷新', () => {
+  assert.match(aiConfigContentSource, /画布状态/)
+  for (const label of ['已验证', '验证失败', '待验证']) {
+    assert.match(aiConfigContentSource, new RegExp(label))
+  }
+  assert.match(aiConfigContentSource, /async function openTest\(row\)[\s\S]*await aiAPI\.testConnection\([\s\S]*finally \{[\s\S]*await loadList\(\)/)
 })
 
 test('租户控制台使用兑换码而不是创建支付订单', () => {
@@ -98,6 +114,23 @@ test('未配置的默认模型首次保存时按启用状态提交', () => {
     adminSource,
     /status:\s*item\.status === 'unconfigured' \? 'enabled' : item\.status/,
   )
+})
+
+test('模型中转关联只在管理员模型配置页呈现', () => {
+  assert.match(aiConfigContentSource, /模型 → 中转站/)
+  assert.match(aiConfigContentSource, /buildAiConfigRelayAssociations/)
+  assert.match(aiConfigContentSource, /\{\{\s*association\.model\s*\}\}[\s\S]*\{\{\s*association\.detail\s*\}\}/)
+  assert.doesNotMatch(aiConfigContentSource, /v-html/)
+  assert.match(
+    routerSource,
+    /path:\s*['"]\/ai-config['"][\s\S]*?roles:\s*\['admin'\][\s\S]*?requiresAuth:\s*true/,
+  )
+  for (const publicCanvasSource of [dramaCanvasSource, homeCanvasNodeSource]) {
+    assert.doesNotMatch(
+      publicCanvasSource,
+      /模型 → 中转站|buildAiConfigRelayAssociations|未识别域名|hostname|#configId/,
+    )
+  }
 })
 
 test('管理端支持批量签发后一次性本地导出并清除明文', () => {

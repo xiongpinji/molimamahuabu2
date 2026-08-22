@@ -31,6 +31,7 @@ test('画布生成参数从项目元数据读取模型、画幅和清晰度', ()
     metadata: JSON.stringify({
       aspect_ratio: '9:16',
       video_resolution: '720p',
+      video_duration: 8,
       image_model: 'image-model-a',
       video_model: 'video-model-b',
       audio_model: 'tts-model-c',
@@ -41,6 +42,7 @@ test('画布生成参数从项目元数据读取模型、画幅和清晰度', ()
     aspectRatio: '9:16',
     style: '默认风格',
     videoResolution: '720p',
+    videoDuration: 8,
     imageModel: 'image-model-a',
     videoModel: 'video-model-b',
     audioModel: 'tts-model-c',
@@ -161,25 +163,22 @@ test('画布摄影参数会追加到生图提示词且不重复追加', () => {
   assert.equal(buildCanvasPhotographyPrompt(prompt, storyboard), prompt)
 })
 
-test('画布模型选择只使用公开目录且不回插已失效模型', () => {
-  assert.match(generationOptionsSource, /getFreeNodeModelOptionEntries/)
-  assert.doesNotMatch(generationOptionsSource, /aiAPI\.list/)
-  assert.doesNotMatch(generationOptionsSource, /fallbackModels/)
-  assert.doesNotMatch(generationOptionsSource, /withCurrent/)
-  assert.doesNotMatch(generationOptionsSource, /aiAPI\.list\(/)
-  assert.match(generationOptionsSource, /当前模型已不可用，请重新选择/)
-  assert.match(generationOptionsSource, /getFreeNodeModelCatalogStatus/)
-  assert.match(generationOptionsSource, /modelCatalogStatus\.value === 'loaded'/)
-  assert.match(generationOptionsSource, /模型目录加载失败，请重试/)
-  assert.match(generationOptionsSource, /reloadFreeNodeModelCatalog/)
+test('项目画布模型选择统一读取已验证计费目录并显示管理员名称', () => {
+  assert.match(generationOptionsSource, /aiAPI\.listCanvasModels\(\)/)
+  assert.match(generationOptionsSource, /canvasModelOptions\(modelCatalog\.value, 'image'\)/)
+  assert.match(generationOptionsSource, /:label="option\.label"/)
+  assert.match(generationOptionsSource, /:value="option\.value"/)
+  assert.doesNotMatch(generationOptionsSource, /aiAPI\.listImageModels\(\)/)
+  assert.doesNotMatch(generationOptionsSource, /aiAPI\.listVideoModels\(\)/)
+  assert.doesNotMatch(generationOptionsSource, /function withCurrent\(/)
+  assert.doesNotMatch(generationOptionsSource, /request\.get\('\/canvas\/model-catalog'\)/)
 })
 
-test('画布音频模式从公开目录提供模型选择和备注', () => {
+test('画布音频模式使用统一目录提供模型选择', () => {
   assert.match(generationOptionsSource, /v-if="mode === 'audio' \|\| mode === 'both'"/)
   assert.match(generationOptionsSource, /:model-value="options\.audioModel \|\| ''"/)
   assert.match(generationOptionsSource, /@change="update\('audioModel', \$event\)"/)
-  assert.match(generationOptionsSource, /selectedAudioModelNote/)
-  assert.equal((generationOptionsSource.match(/v-else-if="selected(?:Image|Video|Audio)ModelNote" class="model-public-note"/g) || []).length, 3)
+  assert.match(generationOptionsSource, /canvasModelOptions\(modelCatalog\.value, 'audio'\)/)
 })
 
 test('画布音频模型合并所有启用 TTS 配置并去重', () => {
@@ -194,13 +193,15 @@ test('画布音频模型合并所有启用 TTS 配置并去重', () => {
   )
 })
 
-test('视频生成参数组件提供 5 到 15 秒的单镜时长选择', () => {
+test('视频生成参数组件按当前目录能力提供清晰度和时长选择', () => {
   assert.match(generationOptionsSource, /class="duration-select"/)
   assert.match(generationOptionsSource, /Number\(options\.videoDuration \|\| 5\)/)
   assert.match(generationOptionsSource, /@change="update\('videoDuration', \$event\)"/)
-  assert.match(generationOptionsSource, /v-for="duration in VIDEO_DURATION_OPTIONS"/)
+  assert.match(generationOptionsSource, /v-for="duration in videoDurationOptions"/)
+  assert.match(generationOptionsSource, /v-for="resolution in videoResolutionOptions"/)
   assert.match(generationOptionsSource, /:value="duration"/)
-  assert.match(generationOptionsSource, /import \{ VIDEO_DURATION_OPTIONS \} from '@\/utils\/videoDuration'/)
+  assert.match(generationOptionsSource, /videoDurationOptionsForCapability/)
+  assert.doesNotMatch(generationOptionsSource, /value="1080p"/)
 })
 
 test('生成参数组件显式区分音频模式，避免暴露不适用的视频配置', () => {

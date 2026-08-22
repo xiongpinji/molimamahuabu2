@@ -37,8 +37,8 @@ for (const [contract, file, provider, outputFile, result] of [
     'lingjing-video-real-verification-v1',
     'lingjing-video-verification.json',
     'lingjing',
-    'lingjing-video.mp4',
-    { artifact: { output_file: 'lingjing-video.mp4' } },
+    'video.mp4',
+    { artifact: { output_file: 'video.mp4' } },
   ],
 ]) {
   const bytes = Buffer.from(JSON.stringify({ contract_version: contract, results: [result] }));

@@ -79,6 +79,82 @@ function validFacts() {
   };
 }
 
+function validFactsV2(confidence = {}) {
+  const shotConfidence = {
+    character_mapping: 0.99,
+    speaker_mapping: 0.99,
+    text_regions: 0.99,
+    shot_boundary: 0.99,
+    ...confidence,
+  };
+  return {
+    schema_version: '2.0',
+    duration_ms: 10_000,
+    story: ['雨夜订单暴露旧案'],
+    characters: [
+      { id: 'c1', source_name: '乔安', display_name: '乔安', relationship: '骑手' },
+      { id: 'c2', source_name: '陆沉', display_name: '陆沉', relationship: '客户' },
+    ],
+    scenes: [{ id: 's1', location: '便利店门口', time: '雨夜', source_ranges: [{ start_ms: 0, end_ms: 10_000 }] }],
+    props: [{ id: 'p1', name: '密封餐袋', evidence_ranges: [{ start_ms: 1_800, end_ms: 4_500 }] }],
+    shots: [
+      {
+        id: 'shot-a',
+        index: 1,
+        start_ms: 0,
+        end_ms: 5_000,
+        composition: '半身跟拍，乔安从便利店门口冲进雨幕',
+        camera_movement: '轻微手持前推',
+        opening_state: '乔安扣紧雨衣帽檐',
+        continuous_action: '她把密封餐袋护在胸前跑向路边',
+        ending_state: '她停在黑色轿车旁',
+        visible_character_ids: ['c1'],
+        dialogue: [{
+          id: 't1',
+          speaker_id: 'c1',
+          start_ms: 900,
+          end_ms: 2_200,
+          source_text: '尾号八七的订单到了',
+        }],
+        text_regions: [{
+          id: 'txt1',
+          kind: 'subtitle',
+          source_text: '订单超时 00:31',
+          polygon: [[0.22, 0.82], [0.78, 0.82], [0.78, 0.91], [0.22, 0.91]],
+        }],
+        audio_contract: { dialogue_mode: 'spoken', ambient_audio: 'preserve_or_rebuild' },
+        confidence: shotConfidence,
+      },
+      {
+        id: 'shot-b',
+        index: 2,
+        start_ms: 5_000,
+        end_ms: 10_000,
+        composition: '车窗反射中陆沉抬眼看向乔安',
+        camera_movement: '定机位微抖',
+        opening_state: '车窗缓慢下降',
+        continuous_action: '陆沉接过餐袋并露出戒指',
+        ending_state: '乔安认出戒指后后退半步',
+        visible_character_ids: ['c1', 'c2'],
+        dialogue: [{
+          id: 't2',
+          speaker_id: 'c2',
+          start_ms: 5_500,
+          end_ms: 6_500,
+          source_text: '你终于来了',
+        }],
+        text_regions: [],
+        audio_contract: { dialogue_mode: 'spoken', ambient_audio: 'preserve_or_rebuild' },
+        confidence: shotConfidence,
+      },
+    ],
+    causal_chain: ['超时订单让乔安遇见陆沉'],
+    locked_facts: ['乔安在雨夜送达密封餐袋'],
+    reversals: ['订单客户知道乔安会来'],
+    episode_hook: '餐袋封条出现旧案编号',
+  };
+}
+
 function createDb() {
   const db = new Database(':memory:');
   db.exec(`
@@ -243,6 +319,53 @@ function addStrictMigratedRedrawFixture(db) {
   `).run(now, now);
   creditLedger.setAccountBalance(db, 'user-1', 100);
   prices.set(db, 'GPT-5.5', 6);
+}
+
+function setupAutomationDb(options = {}) {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  addVerifiedConfig(db);
+  addStrictMigratedRedrawFixture(db);
+  creditLedger.setTenantAccountBalance(db, 'tenant-1', 100);
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO assets (id, local_path, created_at, updated_at) VALUES (102, 'uploads/result.json', ?, ?)")
+    .run(now, now);
+  db.prepare(`
+    UPDATE redraw_projects
+    SET execution_mode = ?,
+        budget_limit_credits = ?,
+        automation_policy_json = ?,
+        updated_at = ?
+    WHERE id = 1
+  `).run(
+    options.executionMode || 'safe',
+    options.budget === undefined ? null : options.budget,
+    JSON.stringify(options.policy === undefined ? {
+      analysis_confidence_thresholds: {
+        character_mapping: 0.95,
+        speaker_mapping: 0.90,
+        text_regions: 0.95,
+        shot_boundary: 0.95,
+      },
+    } : options.policy),
+    now,
+  );
+  return db;
+}
+
+function dbPick(db, sql) {
+  return db.prepare(sql).get();
+}
+
+async function completeAutomationAnalysis(db, facts) {
+  const started = await redraw.startAnalysis(db, log, { workId: 1, userId: 'user-1', tenantId: 'tenant-1' }, {
+    provider: { startAnalysis: async () => ({ provider_task_id: 'provider-auto' }) },
+  });
+  const result = await redraw.runAnalyzeTask(db, log, started.task_id, {
+    provider: { pollAnalysisTask: async () => ({ status: 'completed', result_asset_id: 102, facts }) },
+    assetReader: { canRead: (asset) => Boolean(asset?.local_path) },
+  });
+  return { started, result };
 }
 
 async function startWork(db, providerTaskId = 'provider-1') {
@@ -454,6 +577,286 @@ test('startAnalysis uses analyzing status with real migrated redraw schema', asy
   assert.equal(taskService.getTask(db, started.task_id).status, 'processing');
   assert.equal(db.prepare('SELECT status FROM redraw_works WHERE id = ?').get(1).status, 'analyzing');
   assert.equal(db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(started.reservation_id).status, 'held');
+});
+
+test('auto analysis with low speaker confidence saves facts but stays in analysis_review without localization side effects', async () => {
+  const db = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+
+  const { started, result } = await completeAutomationAnalysis(db, validFactsV2({ speaker_mapping: 0.71 }));
+
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(result.automation_decision, {
+    action: 'needs_review',
+    effective_mode: 'safe',
+    reason_codes: ['speaker_mapping_low_confidence'],
+    policy_version: 1,
+    evidence_hash: result.facts_hash,
+    effective_analysis_state: 'analysis_review',
+  });
+  const persisted = JSON.parse(db.prepare('SELECT result FROM async_tasks WHERE id = ?').get(started.task_id).result);
+  assert.deepEqual(persisted.automation_decision, result.automation_decision);
+  assert.deepEqual(Object.keys(persisted.automation_decision).sort(), [
+    'action',
+    'effective_analysis_state',
+    'effective_mode',
+    'evidence_hash',
+    'policy_version',
+    'reason_codes',
+  ]);
+  assert.deepEqual(
+    db.prepare('SELECT status, current_step FROM redraw_works WHERE id = 1').get(),
+    { status: 'needs_attention', current_step: 1 },
+  );
+  assert.equal(db.prepare('SELECT status FROM redraw_versions WHERE work_id = 1').get().status, 'needs_attention');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM redraw_versions WHERE work_id = 1 AND facts_hash IS NOT NULL').get().n, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().n, 1);
+  assert.equal(db.prepare("SELECT to_state FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().to_state, 'analysis_review');
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM async_tasks WHERE type = 'redraw_localization'").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM tenant_usage_reservations WHERE resource_type = 'redraw_localization'").get().n, 0);
+  db.close();
+});
+
+test('auto analysis advances when all gates and confidence pass', async () => {
+  const db = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+
+  const { result } = await completeAutomationAnalysis(db, validFactsV2());
+
+  assert.equal(result.automation_decision.action, 'advance');
+  assert.deepEqual(
+    db.prepare('SELECT status, current_step FROM redraw_works WHERE id = 1').get(),
+    { status: 'asset_review', current_step: 2 },
+  );
+  assert.equal(db.prepare('SELECT status FROM redraw_versions WHERE work_id = 1').get().status, 'asset_review');
+  db.close();
+});
+
+test('safe analysis waits for manual review even with v2 confidence', async () => {
+  const db = setupAutomationDb({ executionMode: 'safe' });
+
+  const { result } = await completeAutomationAnalysis(db, validFactsV2());
+
+  assert.deepEqual(result.automation_decision, {
+    action: 'needs_review',
+    effective_mode: 'safe',
+    reason_codes: ['safe_mode_requires_review'],
+    policy_version: 1,
+    evidence_hash: result.facts_hash,
+    effective_analysis_state: 'analysis_review',
+  });
+  assert.equal(db.prepare("SELECT to_state FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().to_state, 'analysis_review');
+  db.close();
+});
+
+test('auto analysis blocks with stable error when budget, project policy, or thresholds are missing', async () => {
+  const noBudget = setupAutomationDb({ executionMode: 'auto', budget: null });
+  await completeAutomationAnalysis(noBudget, validFactsV2());
+  assert.deepEqual(
+    dbPick(noBudget, 'SELECT status, error_msg FROM redraw_works WHERE id = 1'),
+    { status: 'needs_attention', error_msg: 'budget_not_configured' },
+  );
+  assert.equal(noBudget.prepare("SELECT to_state FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().to_state, 'blocked');
+  noBudget.close();
+
+  const noPolicy = setupAutomationDb({ executionMode: 'auto', budget: 30, policy: null });
+  await completeAutomationAnalysis(noPolicy, validFactsV2());
+  assert.deepEqual(
+    dbPick(noPolicy, 'SELECT status, error_msg FROM redraw_works WHERE id = 1'),
+    { status: 'needs_attention', error_msg: 'project_policy_missing' },
+  );
+  noPolicy.close();
+
+  const invalidPolicy = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+  invalidPolicy.prepare("UPDATE redraw_projects SET automation_policy_json = '{invalid-json' WHERE id = 1").run();
+  await completeAutomationAnalysis(invalidPolicy, validFactsV2());
+  assert.deepEqual(
+    dbPick(invalidPolicy, 'SELECT status, error_msg FROM redraw_works WHERE id = 1'),
+    { status: 'needs_attention', error_msg: 'project_policy_invalid' },
+  );
+  invalidPolicy.close();
+
+  const missingProject = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+  missingProject.prepare("UPDATE redraw_projects SET tenant_id = 'tenant-other' WHERE id = 1").run();
+  await completeAutomationAnalysis(missingProject, validFactsV2());
+  assert.deepEqual(
+    dbPick(missingProject, 'SELECT status, error_msg FROM redraw_works WHERE id = 1'),
+    { status: 'needs_attention', error_msg: 'project_policy_missing' },
+  );
+  assert.equal(missingProject.prepare("SELECT COUNT(*) AS n FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().n, 0);
+  missingProject.close();
+
+  const noThresholds = setupAutomationDb({ executionMode: 'auto', budget: 30, policy: { analysis_confidence_thresholds: {} } });
+  await completeAutomationAnalysis(noThresholds, validFactsV2());
+  assert.deepEqual(
+    dbPick(noThresholds, 'SELECT status, error_msg FROM redraw_works WHERE id = 1'),
+    {
+      status: 'needs_attention',
+      error_msg: 'character_mapping_threshold_missing,shot_boundary_threshold_missing,speaker_mapping_threshold_missing,text_regions_threshold_missing',
+    },
+  );
+  assert.equal(noThresholds.prepare("SELECT to_state FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().to_state, 'blocked');
+  noThresholds.close();
+});
+
+test('same facts hash finalize is idempotent and reuses persisted automation decision without new event', async () => {
+  const db = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+
+  const { started, result: first } = await completeAutomationAnalysis(db, validFactsV2());
+  const taskAfterFirst = db.prepare('SELECT result, updated_at FROM async_tasks WHERE id = ?').get(started.task_id);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().n, 1);
+
+  const second = await redraw.runAnalyzeTask(db, log, started.task_id, {
+    provider: { pollAnalysisTask: async () => ({ status: 'completed', result_asset_id: 102, facts: validFactsV2() }) },
+    assetReader: { canRead: (asset) => Boolean(asset?.local_path) },
+  });
+
+  assert.deepEqual(second.automation_decision, first.automation_decision);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().n, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM redraw_versions WHERE work_id = 1 AND source_facts_json IS NOT NULL').get().n, 1);
+  const taskAfterSecond = db.prepare('SELECT result, updated_at FROM async_tasks WHERE id = ?').get(started.task_id);
+  assert.deepEqual(taskAfterSecond, taskAfterFirst);
+  db.close();
+});
+
+test('partial completed facts replay restores task result and settles held reservation once from event evidence', async () => {
+  const db = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+  const started = await redraw.startAnalysis(db, log, { workId: 1, userId: 'user-1', tenantId: 'tenant-1' }, {
+    provider: { startAnalysis: async () => ({ provider_task_id: 'provider-partial' }) },
+  });
+  const normalized = normalizeSourceFacts(validFactsV2());
+  const now = new Date().toISOString();
+  const versionId = Number(db.prepare(`
+    INSERT INTO redraw_versions
+      (work_id, tenant_id, user_id, version, locale, market, localization_level,
+       source_facts_json, facts_hash, status, created_at, updated_at)
+    VALUES (1, 'tenant-1', 'user-1', 1, 'source', '', 'faithful', ?, ?, 'asset_review', ?, ?)
+  `).run(JSON.stringify(normalized), normalized.facts_hash, now, now).lastInsertRowid);
+  db.prepare("UPDATE redraw_works SET current_version = 1, current_step = 2, status = 'asset_review' WHERE id = 1").run();
+  db.prepare(`
+    INSERT INTO redraw_workflow_events
+      (tenant_id, user_id, project_id, resource_type, resource_id, from_state, to_state,
+       reason_code, evidence_hash, metadata_json, created_at)
+    VALUES ('tenant-1', 'user-1', 1, 'version', ?, 'analyzing', 'asset_review',
+      'analysis_completed', ?, ?, ?)
+  `).run(String(versionId), normalized.facts_hash, JSON.stringify({
+    action: 'advance',
+    effective_mode: 'auto',
+    reason_codes: [],
+    policy_version: 1,
+  }), now);
+
+  const replay = await redraw.runAnalyzeTask(db, log, started.task_id, {
+    provider: { pollAnalysisTask: async () => ({ status: 'completed', result_asset_id: 102, facts: validFactsV2() }) },
+    assetReader: { canRead: (asset) => Boolean(asset?.local_path) },
+  });
+
+  assert.equal(replay.status, 'completed');
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().n, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM redraw_versions WHERE work_id = 1 AND source_facts_json IS NOT NULL').get().n, 1);
+  const taskResult = JSON.parse(db.prepare('SELECT result FROM async_tasks WHERE id = ?').get(started.task_id).result);
+  assert.equal(taskResult.version_id, versionId);
+  assert.deepEqual(taskResult.automation_decision, {
+    action: 'advance',
+    effective_mode: 'auto',
+    reason_codes: [],
+    policy_version: 1,
+    evidence_hash: normalized.facts_hash,
+    effective_analysis_state: 'asset_review',
+  });
+  assert.equal(db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(started.reservation_id).status, 'confirmed');
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM tenant_credit_ledger WHERE reservation_id = ? AND event_type = 'confirm'").get(started.reservation_id).n, 1);
+
+  const second = await redraw.runAnalyzeTask(db, log, started.task_id, {
+    provider: { pollAnalysisTask: async () => ({ status: 'completed', result_asset_id: 102, facts: validFactsV2() }) },
+    assetReader: { canRead: (asset) => Boolean(asset?.local_path) },
+  });
+  assert.equal(second.status, 'completed');
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM tenant_credit_ledger WHERE reservation_id = ? AND event_type = 'confirm'").get(started.reservation_id).n, 1);
+  db.close();
+});
+
+test('same facts hash finalize fails closed when persisted automation decision is missing', async () => {
+  const db = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+
+  const { started } = await completeAutomationAnalysis(db, validFactsV2());
+  db.prepare("UPDATE async_tasks SET result = ? WHERE id = ?").run(JSON.stringify({ status: 'completed' }), started.task_id);
+  db.prepare('UPDATE redraw_projects SET policy_version = 2 WHERE id = 1').run();
+
+  const second = await redraw.runAnalyzeTask(db, log, started.task_id, {
+    provider: { pollAnalysisTask: async () => ({ status: 'completed', result_asset_id: 102, facts: validFactsV2() }) },
+    assetReader: { canRead: (asset) => Boolean(asset?.local_path) },
+  });
+
+  assert.equal(second.status, 'failed');
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().n, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM redraw_versions WHERE work_id = 1 AND source_facts_json IS NOT NULL').get().n, 1);
+  db.close();
+});
+
+test('analysis finalize rolls back facts, event, task result, and ledger when task result update throws', async () => {
+  const db = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+  const original = taskService.updateTaskResult;
+  taskService.updateTaskResult = () => { throw new Error('updateTaskResult injected failure'); };
+  try {
+    const { started, result } = await completeAutomationAnalysis(db, validFactsV2());
+    assert.equal(result.status, 'failed');
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM redraw_versions WHERE work_id = 1 AND source_facts_json IS NOT NULL').get().n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().n, 0);
+    assert.equal(db.prepare('SELECT result FROM async_tasks WHERE id = ?').get(started.task_id).result, null);
+    assert.equal(db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(started.reservation_id).status, 'held');
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM tenant_credit_ledger WHERE reservation_id = ?').get(started.reservation_id).n, 1);
+  } finally {
+    taskService.updateTaskResult = original;
+    db.close();
+  }
+});
+
+test('analysis finalize rolls back facts, event, task result, and ledger when settle throws', async () => {
+  const db = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+  const original = creditLedger.settleGeneration;
+  creditLedger.settleGeneration = () => { throw new Error('settle injected failure'); };
+  try {
+    const { started, result } = await completeAutomationAnalysis(db, validFactsV2());
+    assert.equal(result.status, 'failed');
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM redraw_versions WHERE work_id = 1 AND source_facts_json IS NOT NULL').get().n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().n, 0);
+    assert.equal(db.prepare('SELECT result FROM async_tasks WHERE id = ?').get(started.task_id).result, null);
+    assert.equal(db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(started.reservation_id).status, 'held');
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM tenant_credit_ledger WHERE reservation_id = ?').get(started.reservation_id).n, 1);
+  } finally {
+    creditLedger.settleGeneration = original;
+    db.close();
+  }
+});
+
+test('v1 facts in safe project remain compatible and require analysis review', async () => {
+  const db = setupAutomationDb({ executionMode: 'safe' });
+
+  const { result } = await completeAutomationAnalysis(db, validFacts());
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.automation_decision.action, 'needs_review');
+  assert.equal(db.prepare("SELECT to_state FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().to_state, 'analysis_review');
+  db.close();
+});
+
+test('workflow event failure rolls back facts writes', async () => {
+  const db = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+  db.exec(`
+    CREATE TRIGGER fail_analysis_completed_event
+    BEFORE INSERT ON redraw_workflow_events
+    WHEN NEW.reason_code = 'analysis_completed'
+    BEGIN
+      SELECT RAISE(ABORT, 'event append failed');
+    END;
+  `);
+
+  const { result } = await completeAutomationAnalysis(db, validFactsV2());
+
+  assert.equal(result.status, 'failed');
+  assert.equal(db.prepare('SELECT status FROM redraw_works WHERE id = 1').get().status, 'analyzing');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM redraw_versions WHERE work_id = 1 AND source_facts_json IS NOT NULL').get().n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM redraw_workflow_events').get().n, 0);
+  db.close();
 });
 
 test('startAnalysis writes requested redraw settings into async task metadata', async () => {
@@ -1020,7 +1423,8 @@ test('createApp resumes redraw analysis tasks after orphan cleanup', async () =>
       return row?.status === 'confirmed';
     }, 1000);
 
-    assert.equal(created.db.prepare('SELECT status FROM redraw_works WHERE id = ?').get(1).status, 'asset_review');
+    assert.equal(created.db.prepare('SELECT status FROM redraw_works WHERE id = ?').get(1).status, 'needs_attention');
+    assert.equal(created.db.prepare("SELECT to_state FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().to_state, 'analysis_review');
     assert.equal(taskService.getTask(created.db, 'task-startup').status, 'completed');
     assert.equal(created.db.prepare('SELECT status FROM usage_reservations WHERE id = ?').get(held.id).status, 'confirmed');
     assert.equal(creditLedger.getAccount(created.db, 'user-1').spent, 6);

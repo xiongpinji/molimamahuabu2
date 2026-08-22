@@ -37,6 +37,17 @@ test('资产步骤展示三视图、场景分段、物品、音色和审核定�
   assert.match(reviewGateSource, /scrollIntoView/)
 })
 
+test('资产卡使用鉴权 Blob 展示真实人物图片且释放本地预览 URL', () => {
+  assert.match(apiSource, /getAssetPreview\(assetId,\s*variant\)/)
+  assert.match(apiSource, /assets\/\$\{assetId\}\/preview\/\$\{encodeURIComponent\(variant\)\}/)
+  assert.match(assetCardSource, /<img[^>]+:src="previewUrl"/)
+  assert.match(assetCardSource, /redrawAPI\.getAssetPreview/)
+  assert.match(assetCardSource, /URL\.createObjectURL/)
+  assert.match(assetCardSource, /URL\.revokeObjectURL/)
+  assert.match(assetCardSource, /尚未生成身份包图片/)
+  assert.doesNotMatch(assetCardSource, /v-for="view in \['正面', '侧面', '背面'\]"/)
+})
+
 test('资产状态纯函数不会在前端伪造 approved，且门禁才开放第三步', () => {
   assert.match(stateSource, /approval_status/)
   assert.match(stateSource, /generationGate/)

@@ -3,16 +3,22 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const { getFfmpegPath, hasLocalFfmpeg, hasLocalFfprobe } = require('../src/utils/ffmpegPath');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const taskService = require('../src/services/taskService');
 const videoClient = require('../src/services/videoClient');
 const videoService = require('../src/services/videoService');
 const redrawOrchestrator = require('../src/services/redrawOrchestrator');
+const { identityBindingForAsset } = require('../src/services/redrawCharacterIdentityService');
+const { saveReferenceBundle } = require('../src/services/redrawReferenceBundleService');
 const { resetGenerationConcurrencyForTests } = require('../src/services/generationConcurrency');
+const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 const {
   generateShot,
   generateBatch,
@@ -22,11 +28,61 @@ const {
   runShotGeneration,
   verifyVideoArtifact,
   classifyVideoOutcome,
+  reviewNativeAudio,
+  assertVideoConditioningCapability,
 } = require('../src/services/redrawGenerationService');
 
 const log = { info() {}, warn() {}, error() {} };
 const FEITUO_FAST_MODEL = 'sdas-my-seedance-2.0-fast-upscaled-1080p';
+const TOAPIS_NATIVE_MODEL = 'seedance-2-fast';
+const ICREAT_MINI_MODEL = 'bytedance/seedance-2-0-mini';
 const SIGNED_SOURCE_VIDEO_URL = 'https://media.example.test/api/redraw-provider-assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4?expires=1786147800&signature=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const REFERENCE_BUNDLE_SOURCE_BYTES = Buffer.from('generation-reference-bundle-source-video');
+const REFERENCE_BUNDLE_SOURCE_SHA256 = crypto.createHash('sha256').update(REFERENCE_BUNDLE_SOURCE_BYTES).digest('hex');
+const REFERENCE_BUNDLE_MOTION_BYTES = Buffer.from('generation-reference-bundle-motion-video');
+const REFERENCE_BUNDLE_MOTION_SHA256 = crypto.createHash('sha256').update(REFERENCE_BUNDLE_MOTION_BYTES).digest('hex');
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function canonicalIdentityPack(input = {}) {
+  const {
+    sourceCharacterKey = 'source-character-1',
+    targetActorLabel = 'Actor Maya',
+    artifactAssetId = 101,
+    artifactSeed = 'canonical actor portrait',
+    ...overrides
+  } = input;
+  const pack = {
+    schema_version: 'target-actor-identity-v1',
+    source_character_key: sourceCharacterKey,
+    target_actor_label: targetActorLabel,
+    artifact: {
+      asset_id: Number(artifactAssetId),
+      sha256: crypto.createHash('sha256').update(artifactSeed).digest('hex'),
+      width: 640,
+      height: 960,
+      mime_type: 'image/png',
+    },
+    confirmed_views: ['front', 'profile', 'full_body'],
+    live_action_human_confirmed: true,
+    adult_status: 'verified_18_plus',
+    identity_consistency_confirmed: true,
+    ready: true,
+    reviewed_by: 'user-a',
+    reviewed_at: '2026-08-06T00:00:00.000Z',
+    ...overrides,
+  };
+  return {
+    ...pack,
+    pack_sha256: crypto.createHash('sha256').update(stableJson(pack)).digest('hex'),
+  };
+}
 
 function setup(overrides = {}) {
   const db = new Database(':memory:');
@@ -69,13 +125,29 @@ function addBaseAsset(db, input) {
 
 function addRedrawAsset(db, versionId, input) {
   const now = new Date().toISOString();
+  const hasIdentityPack = Object.hasOwn(input, 'identityPack');
+  const identityPack = input.kind === 'character'
+    ? (hasIdentityPack ? input.identityPack : canonicalIdentityPack({
+        sourceCharacterKey: input.sourceCharacterKey || `source-character-${input.assetId}`,
+        targetActorLabel: input.targetActorLabel || input.name || 'Actor Maya',
+        artifactAssetId: input.assetId,
+        artifactSeed: `canonical actor portrait ${input.assetId}`,
+      }))
+    : null;
+  const sourceRef = input.kind === 'character'
+    ? {
+        source_ref: { stable_id: identityPack?.source_character_key || `source-character-${input.assetId}` },
+        ...(identityPack ? { identity_pack: identityPack } : {}),
+      }
+    : {};
   return db.prepare(`INSERT INTO redraw_assets
     (version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
      asset_id, clean_plate_asset_id, approval_status, status, created_at, updated_at)
-    VALUES (?, 'tenant-a', 'user-a', ?, '{}', ?, ?, ?, ?, ?, ?, ?)`)
+    VALUES (?, 'tenant-a', 'user-a', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       versionId,
       input.kind,
+      JSON.stringify(sourceRef),
       input.name || input.kind,
       input.assetId || null,
       input.cleanPlateAssetId || null,
@@ -91,7 +163,26 @@ function addShot(db, versionId, overrides = {}) {
   const durationMs = overrides.durationMs || overrides.duration_ms || 6000;
   const startMs = overrides.startMs || overrides.start_ms || 0;
   const endMs = overrides.endMs || overrides.end_ms || (startMs + durationMs);
-  const references = overrides.references || [];
+  const references = (overrides.references || []).map((reference) => {
+    const historicalCharacterId = reference?.character_asset_id ?? reference?.characterAssetId;
+    const referenceKind = String(reference?.kind || (historicalCharacterId != null ? 'character' : ''));
+    if (referenceKind !== 'character' || overrides.bindCharacterIdentity === false) {
+      return reference;
+    }
+    const redrawAssetId = Number(
+      reference.redraw_asset_id ?? reference.redrawAssetId ?? reference.asset_id ?? reference.assetId
+        ?? historicalCharacterId,
+    );
+    const row = db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(redrawAssetId);
+    const binding = identityBindingForAsset(row);
+    if (!binding) return reference;
+    return {
+      ...reference,
+      source_character_key: binding.source_character_key,
+      target_actor_label: binding.target_actor_label,
+      identity_pack_sha256: binding.pack_sha256,
+    };
+  });
   const compiled = overrides.compiledPrompt || {
     text: 'compiled hero prompt',
     negative_prompt: 'low quality',
@@ -101,7 +192,7 @@ function addShot(db, versionId, overrides = {}) {
     aspect_ratio: '9:16',
   };
   const draft = overrides.draft || { attempt: 1, model: 'seedance 2.0' };
-  return db.prepare(`INSERT INTO redraw_shots
+  const shotId = db.prepare(`INSERT INTO redraw_shots
     (version_id, tenant_id, user_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
      references_json, prompt, negative_prompt, compiled_prompt_json, draft_json, status, created_at, updated_at)
     VALUES (?, 'tenant-a', 'user-a', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -120,6 +211,161 @@ function addShot(db, versionId, overrides = {}) {
       now,
       now,
     ).lastInsertRowid;
+  if (Object.prototype.hasOwnProperty.call(overrides, 'localized_dialogue_json')) {
+    db.prepare('UPDATE redraw_shots SET localized_dialogue_json = ? WHERE id = ?')
+      .run(overrides.localized_dialogue_json, shotId);
+  }
+  if (Object.prototype.hasOwnProperty.call(overrides, 'source_dialogue_json')) {
+    db.prepare('UPDATE redraw_shots SET source_dialogue_json = ? WHERE id = ?')
+      .run(overrides.source_dialogue_json, shotId);
+  }
+  return shotId;
+}
+
+function nativePack(overrides = {}) {
+  return {
+    id: 'es@1',
+    language: 'es',
+    locale: null,
+    scope: 'language',
+    prompt_language_label: '西班牙语',
+    model_manifest_sha256: 'a'.repeat(64),
+    calibration_manifest_sha256: 'b'.repeat(64),
+    thresholds: {
+      language_probability_min: 0.8,
+      dialogue_similarity_min: 0.8,
+      speech_chars_per_second_max: 20,
+    },
+    ...overrides,
+  };
+}
+
+function nativeAudioEvidence(overrides = {}) {
+  return {
+    contract: 'redraw-native-audio-validation-v1',
+    artifact_sha256: 'a'.repeat(64),
+    audio_stream: { codec: 'aac', channels: 2, sample_rate: 44100, duration_ms: 4980 },
+    video_duration_ms: 5000,
+    silence: { rms_db: -24.1, threshold_db: -45 },
+    verification: {
+      detected_language: 'es',
+      detected_locale: null,
+      language_verified: true,
+      locale_verified: false,
+      transcript_sha256: 'b'.repeat(64),
+      dialogue_similarity: 0.91,
+      speech_chars_per_second: 8,
+    },
+    validation_hash: 'c'.repeat(64),
+    ...overrides,
+  };
+}
+
+function writeTinyMp4(t, storageRoot, relativePath, options = {}) {
+  if (!hasLocalFfmpeg() || !hasLocalFfprobe()) {
+    t.skip('ffmpeg/ffprobe unavailable');
+    return false;
+  }
+  const output = path.join(storageRoot, relativePath);
+  fs.mkdirSync(path.dirname(output), { recursive: true });
+  const args = options.audio === false
+    ? [
+        '-y',
+        '-f', 'lavfi',
+        '-i', 'testsrc=size=16x16:rate=1:duration=1',
+        '-c:v', 'mpeg4',
+        output,
+      ]
+    : [
+        '-y',
+        '-f', 'lavfi',
+        '-i', 'testsrc=size=16x16:rate=1:duration=1',
+        '-f', 'lavfi',
+        '-i', 'sine=frequency=1000:duration=1',
+        '-shortest',
+        '-c:v', 'mpeg4',
+        '-c:a', 'aac',
+        output,
+      ];
+  execFileSync(getFfmpegPath(), args, { stdio: 'ignore' });
+  return true;
+}
+
+function addNativeDialogueCapability(db, overrides = {}) {
+  const now = overrides.updatedAt || new Date('2026-08-06T00:00:00.000Z').toISOString();
+  const model = overrides.model || TOAPIS_NATIVE_MODEL;
+  const provider = overrides.provider || 'toapis';
+  const protocol = overrides.protocol || 'toapis_video';
+  const language = overrides.language || 'es';
+  const inserted = db.prepare(`
+    INSERT INTO ai_service_configs
+      (service_type, provider, api_protocol, name, model, default_model, base_url, api_key,
+       is_active, is_default, priority, settings, created_at, updated_at)
+    VALUES ('video', ?, ?, '原生对白验证', ?, ?, ?, 'secret', 1, 1, 0, '{}', ?, ?)
+  `).run(provider, protocol, model, model, overrides.baseUrl || 'https://toapis.com', now, now);
+  const configId = Number(inserted.lastInsertRowid);
+  const evidence = {
+    contract: 'redraw-native-dialogue-audio-v1',
+    provider,
+    protocol,
+    model,
+    config_id: configId,
+    config_updated_at: overrides.evidenceUpdatedAt || now,
+    provider_task_id: 'provider-native-dialogue-real',
+    terminal_status: 'completed',
+    artifact_id: overrides.artifactId || 771,
+    artifact_sha256: 'd'.repeat(64),
+    media: { video_stream: true, audio_stream: true },
+    locale_verification: {
+      language,
+      language_verified: true,
+      locale_verified: false,
+    },
+    human_review: {
+      status: 'passed',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    },
+  };
+  db.prepare('UPDATE ai_service_configs SET settings = ? WHERE id = ?').run(JSON.stringify({
+    redraw_locale_capabilities: [{
+      language,
+      locale: language,
+      target_language: language,
+      target_locale: null,
+      market: '',
+      status: 'verified',
+      evidence: {
+        video: {
+          config_id: configId,
+          config_updated_at: now,
+          provider,
+          model,
+          task_id: 'video-task',
+          terminal_status: 'completed',
+          artifact_id: 772,
+        },
+        native_dialogue_audio: overrides.evidence || evidence,
+      },
+    }],
+  }), configId);
+  db.prepare(`UPDATE ai_service_configs
+    SET verification_status = 'verified',
+        verification_checked_at = ?,
+        verified_at = ?,
+        verified_capabilities = ?,
+        updated_at = ?
+    WHERE id = ?`)
+    .run(now, now, JSON.stringify({
+      [model]: withExternalModelEvidence(model, {
+        durations: overrides.durations || [5],
+        resolutions: ['480p', '720p'],
+        supportsAudio: true,
+        supportsVideoReference: true,
+      }),
+    }), now, configId);
+  return { configId, updatedAt: now, model };
 }
 
 function ctx(db, overrides = {}) {
@@ -130,6 +376,9 @@ function ctx(db, overrides = {}) {
     userId: 'user-a',
     clock: () => '2026-08-06T00:00:00.000Z',
     canReadArtifact: () => true,
+    localeVerifier: {
+      assertReady: () => nativePack(),
+    },
     resolveVideoConditioningCapability: (_database, model, capability) => ({
       config_id: capability?.config_id,
       config_updated_at: capability?.config_updated_at,
@@ -167,6 +416,374 @@ function ctx(db, overrides = {}) {
 
 function count(db, table, where = '1=1') {
   return db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where}`).get().count;
+}
+
+function referenceBundleIdentityPack(input) {
+  const pack = {
+    schema_version: 'target-actor-identity-v1',
+    source_character_key: input.sourceCharacterKey,
+    target_actor_label: input.targetActorLabel,
+    artifact: {
+      asset_id: Number(input.assetId),
+      sha256: input.sha256,
+      width: 864,
+      height: 1296,
+      mime_type: 'image/png',
+    },
+    confirmed_views: ['front', 'profile', 'full_body'],
+    live_action_human_confirmed: true,
+    adult_status: 'verified_18_plus',
+    identity_consistency_confirmed: true,
+    persona_origin: 'fictional_ai_generated',
+    target_country: 'US',
+    ready: true,
+    reviewed_by: 'user-a',
+    reviewed_at: '2026-08-14T00:05:00.000Z',
+  };
+  pack.pack_sha256 = crypto.createHash('sha256').update(stableJson(pack)).digest('hex');
+  return pack;
+}
+
+function referenceBundleTextPack(input) {
+  const pack = {
+    schema_version: 'text-clean-plate-reference-v1',
+    region_key: input.regionKey,
+    kind: input.kind,
+    artifact: {
+      asset_id: Number(input.assetId),
+      sha256: input.sha256,
+      width: 864,
+      height: 496,
+      mime_type: 'image/png',
+    },
+    source_fingerprint: REFERENCE_BUNDLE_SOURCE_SHA256,
+    ready: true,
+    reviewed_by: 'user-a',
+    reviewed_at: '2026-08-14T00:05:00.000Z',
+  };
+  pack.pack_sha256 = crypto.createHash('sha256').update(stableJson(pack)).digest('hex');
+  return pack;
+}
+
+function putStorageFile(storageRoot, relativePath, bytes) {
+  const absPath = path.join(storageRoot, relativePath);
+  fs.mkdirSync(path.dirname(absPath), { recursive: true });
+  fs.writeFileSync(absPath, bytes);
+}
+
+function insertReferenceBundleAsset(db, input) {
+  const now = '2026-08-14T00:00:00.000Z';
+  db.prepare(`INSERT INTO assets
+    (id, name, type, category, url, local_path, mime_type, metadata, created_at, updated_at)
+    VALUES (?, ?, ?, 'redraw', ?, ?, ?, ?, ?, ?)`)
+    .run(
+      input.id,
+      input.name || `asset-${input.id}`,
+      input.type || 'image',
+      input.url || '',
+      input.localPath,
+      input.mimeType || 'image/png',
+      JSON.stringify(input.metadata || { sha256: input.sha256, width: 864, height: 496 }),
+      now,
+      now,
+    );
+  return input.id;
+}
+
+async function setupReferenceBundleGenerationFixture(t, options = {}) {
+  const state = setup();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-generation-reference-bundle-'));
+  t.after(() => {
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  });
+  state.storageRoot = storageRoot;
+  state.sourceAssetId = 9001;
+  state.motionAssetId = 9006;
+  state.actorAImageId = 9002;
+  state.actorBImageId = 9003;
+  state.subtitleCleanImageId = 9004;
+  state.screenCleanImageId = 9005;
+  const imageBytes = (id) => Buffer.from(`generation-reference-bundle-image:${id}`);
+  const imageSha = (id) => crypto.createHash('sha256').update(imageBytes(id)).digest('hex');
+  putStorageFile(storageRoot, 'source/source.mp4', REFERENCE_BUNDLE_SOURCE_BYTES);
+  putStorageFile(storageRoot, `redraw-conditioning/${REFERENCE_BUNDLE_MOTION_SHA256}.mp4`, REFERENCE_BUNDLE_MOTION_BYTES);
+  for (const id of [state.actorAImageId, state.actorBImageId, state.subtitleCleanImageId, state.screenCleanImageId]) {
+    putStorageFile(storageRoot, `redraw/${id}.png`, imageBytes(id));
+  }
+  insertReferenceBundleAsset(state.db, {
+    id: state.sourceAssetId,
+    type: 'video',
+    localPath: 'source/source.mp4',
+    mimeType: 'video/mp4',
+    sha256: REFERENCE_BUNDLE_SOURCE_SHA256,
+  });
+  insertReferenceBundleAsset(state.db, {
+    id: state.actorAImageId,
+    localPath: `redraw/${state.actorAImageId}.png`,
+    sha256: imageSha(state.actorAImageId),
+  });
+  insertReferenceBundleAsset(state.db, {
+    id: state.actorBImageId,
+    localPath: `redraw/${state.actorBImageId}.png`,
+    sha256: imageSha(state.actorBImageId),
+  });
+  insertReferenceBundleAsset(state.db, {
+    id: state.subtitleCleanImageId,
+    localPath: `redraw/${state.subtitleCleanImageId}.png`,
+    sha256: imageSha(state.subtitleCleanImageId),
+  });
+  insertReferenceBundleAsset(state.db, {
+    id: state.screenCleanImageId,
+    localPath: `redraw/${state.screenCleanImageId}.png`,
+    sha256: imageSha(state.screenCleanImageId),
+  });
+  prices.set(state.db, 'seedance 2.0', 2, {
+    category: 'video',
+    billing_unit: 'second',
+    resolution_prices: { '480p': { credits: 2 }, '720p': { credits: 3 } },
+  });
+  prices.set(state.db, ICREAT_MINI_MODEL, 2, {
+    category: 'video',
+    billing_unit: 'second',
+    resolution_prices: { '480p': { credits: 2 }, '720p': { credits: 3 } },
+  });
+  addVerifiedGenerationCapability(state.db, ICREAT_MINI_MODEL, {
+    locale: 'en-US',
+    market: 'US',
+    provider: 'icreat',
+    apiProtocol: 'icreat_task',
+    configModel: ICREAT_MINI_MODEL,
+  });
+  const now = '2026-08-14T00:00:00.000Z';
+  const nameMap = { 'character-001': 'Ethan', 'character-002': 'Maya' };
+  const sourceFacts = {
+    script_sha256: '5'.repeat(64),
+    name_map_source_sha256: crypto.createHash('sha256').update(stableJson(nameMap)).digest('hex'),
+  };
+  state.db.prepare(`UPDATE redraw_works
+    SET source_asset_id = ?, source_fingerprint = ?, updated_at = ?
+    WHERE id = ?`)
+    .run(state.sourceAssetId, REFERENCE_BUNDLE_SOURCE_SHA256, now, state.workId);
+  state.db.prepare(`UPDATE redraw_versions
+    SET locale = 'en-US', market = 'US', name_map_json = ?, source_facts_json = ?,
+        facts_hash = ?, reference_bundle_required = ?, status = 'ready_to_generate', updated_at = ?
+    WHERE id = ?`)
+    .run(
+      JSON.stringify(nameMap),
+      JSON.stringify(sourceFacts),
+      crypto.createHash('sha256').update(stableJson(sourceFacts)).digest('hex'),
+      options.referenceBundleRequired === false ? 0 : 1,
+      now,
+      state.versionId,
+    );
+  const shotId = addShot(state.db, state.versionId, {
+    durationMs: 5000,
+    endMs: 5000,
+    references: [],
+    compiledPrompt: {
+      text: '原始中文提示词不允许进入供应商。',
+      model: ICREAT_MINI_MODEL,
+      duration: 5,
+      resolution: '480p',
+      aspect_ratio: '16:9',
+    },
+    prompt: '镜头原始中文 prompt 也不允许进入供应商。',
+    source_dialogue_json: JSON.stringify([
+      { speaker_id: 'character-001', text: '跟我走。', start_ms: 0, end_ms: 2400 },
+      { speaker_id: 'character-002', text: '没有证据我不走。', start_ms: 2500, end_ms: 5000 },
+    ]),
+    localized_dialogue_json: JSON.stringify([
+      { speaker_id: 'character-001', localized_text: 'Come with me.', start_ms: 0, end_ms: 2400 },
+      { speaker_id: 'character-002', localized_text: 'Not without proof.', start_ms: 2500, end_ms: 5000 },
+    ]),
+  });
+  state.shotId = shotId;
+  state.db.prepare('UPDATE redraw_shots SET work_id = ? WHERE id = ?').run(state.workId, shotId);
+  const actorAId = addRedrawAsset(state.db, state.versionId, {
+    kind: 'character',
+    name: 'Actor Ethan',
+    assetId: state.actorAImageId,
+    sourceCharacterKey: 'character-001',
+    targetActorLabel: 'Actor Ethan',
+    identityPack: referenceBundleIdentityPack({
+      sourceCharacterKey: 'character-001',
+      targetActorLabel: 'Actor Ethan',
+      assetId: state.actorAImageId,
+      sha256: imageSha(state.actorAImageId),
+    }),
+  });
+  const actorBId = addRedrawAsset(state.db, state.versionId, {
+    kind: 'character',
+    name: 'Actor Maya',
+    assetId: state.actorBImageId,
+    sourceCharacterKey: 'character-002',
+    targetActorLabel: 'Actor Maya',
+    identityPack: referenceBundleIdentityPack({
+      sourceCharacterKey: 'character-002',
+      targetActorLabel: 'Actor Maya',
+      assetId: state.actorBImageId,
+      sha256: imageSha(state.actorBImageId),
+    }),
+  });
+  const subtitleCleanId = addRedrawAsset(state.db, state.versionId, {
+    kind: 'scene',
+    name: 'subtitle clean',
+    cleanPlateAssetId: state.subtitleCleanImageId,
+  });
+  state.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?')
+    .run(JSON.stringify({
+      source_ref: { stable_id: 'text-001', kind: 'text_subtitle' },
+      snapshot: { mode: 'text_clean_plate' },
+      text_clean_plate_pack: referenceBundleTextPack({
+        regionKey: 'text-001',
+        kind: 'text_subtitle',
+        assetId: state.subtitleCleanImageId,
+        sha256: imageSha(state.subtitleCleanImageId),
+      }),
+    }), subtitleCleanId);
+  const screenCleanId = addRedrawAsset(state.db, state.versionId, {
+    kind: 'scene',
+    name: 'screen clean',
+    cleanPlateAssetId: state.screenCleanImageId,
+  });
+  state.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?')
+    .run(JSON.stringify({
+      source_ref: { stable_id: 'text-002', kind: 'text_screen' },
+      snapshot: { mode: 'text_clean_plate' },
+      text_clean_plate_pack: referenceBundleTextPack({
+        regionKey: 'text-002',
+        kind: 'text_screen',
+        assetId: state.screenCleanImageId,
+        sha256: imageSha(state.screenCleanImageId),
+      }),
+    }), screenCleanId);
+  const faceCoverageSha256 = crypto.createHash('sha256').update(stableJson([
+    { identity_redraw_asset_id: Number(actorAId), source_character_key: 'character-001', time_ranges: [[0, 5000]], track_key: 'face-001' },
+    { identity_redraw_asset_id: Number(actorBId), source_character_key: 'character-002', time_ranges: [[2500, 5000]], track_key: 'face-002' },
+  ])).digest('hex');
+  const textCoverageSha256 = crypto.createHash('sha256').update(stableJson([
+    { kind: 'text_subtitle', region_key: 'text-001', text_clean_redraw_asset_id: Number(subtitleCleanId), time_ranges: [[0, 2500]] },
+    { kind: 'text_screen', region_key: 'text-002', text_clean_redraw_asset_id: Number(screenCleanId), time_ranges: [[2500, 5000]] },
+  ])).digest('hex');
+  insertReferenceBundleAsset(state.db, {
+    id: state.motionAssetId,
+    type: 'video',
+    localPath: `redraw-conditioning/${REFERENCE_BUNDLE_MOTION_SHA256}.mp4`,
+    mimeType: 'video/mp4',
+    sha256: REFERENCE_BUNDLE_MOTION_SHA256,
+    metadata: {
+      redraw_motion_reference: {
+        schema_version: 'redraw-motion-reference-v1',
+        tenant_id: 'tenant-a',
+        user_id: 'user-a',
+        version_id: state.versionId,
+        shot_id: shotId,
+        source_asset_id: state.sourceAssetId,
+        source_fingerprint: REFERENCE_BUNDLE_SOURCE_SHA256,
+        clip_start_ms: 0,
+        clip_end_ms: 5000,
+        face_coverage_sha256: faceCoverageSha256,
+        text_coverage_sha256: textCoverageSha256,
+      },
+    },
+  });
+  state.referenceBundleInput = {
+    shot_id: shotId,
+    expected_updated_at: state.db.prepare('SELECT updated_at FROM redraw_shots WHERE id = ?').get(shotId).updated_at,
+    motion_reference_asset_id: state.motionAssetId,
+    face_tracks: [
+      { track_key: 'face-002', source_character_key: 'character-002', time_ranges: [[2500, 5000]], identity_redraw_asset_id: Number(actorBId) },
+      { track_key: 'face-001', source_character_key: 'character-001', time_ranges: [[0, 5000]], identity_redraw_asset_id: Number(actorAId) },
+    ],
+    text_regions: [
+      { region_key: 'text-002', kind: 'text_screen', time_ranges: [[2500, 5000]], text_clean_redraw_asset_id: Number(screenCleanId) },
+      { region_key: 'text-001', kind: 'text_subtitle', time_ranges: [[0, 2500]], text_clean_redraw_asset_id: Number(subtitleCleanId) },
+    ],
+    coverage_review: {
+      recognizable_face_count: 2,
+      mapped_face_count: 2,
+      unresolved_face_count: 0,
+      recognizable_text_region_count: 2,
+      mapped_text_region_count: 2,
+      unresolved_text_region_count: 0,
+      status: 'approved',
+    },
+  };
+  if (options.saveBundle !== false) {
+    state.savedReferenceBundle = await saveReferenceBundle({
+      db: state.db,
+      tenantId: 'tenant-a',
+      userId: 'user-a',
+      versionId: state.versionId,
+      storageRoot,
+      now: '2026-08-14T00:05:00.000Z',
+      probeRunner: async () => ({
+        duration_ms: 5000,
+        width: 864,
+        height: 496,
+        mime_type: 'video/mp4',
+        video_codec: 'h264',
+        audio_stream_count: 0,
+      }),
+    }, state.referenceBundleInput);
+  }
+  return state;
+}
+
+function assertReferenceBundlePreflightClean(state, providerCalls) {
+  assert.equal(count(state.db, 'video_generations'), 0);
+  assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+  assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+  assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+  assert.equal(providerCalls, 0);
+}
+
+function referenceBundleAudioCapability(state) {
+  return {
+    provider: 'icreat',
+    protocol: 'icreat_task',
+    model: ICREAT_MINI_MODEL,
+    config_id: 1,
+    config_updated_at: state.now,
+    supportsAudio: true,
+    max_videos: 3,
+  };
+}
+
+async function assertReferenceBundleGenerationRejects(t, mutate, expectedCode) {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  let providerCalls = 0;
+  mutate(state);
+  await assert.rejects(
+    () => generateShot(ctx(state.db, {
+      storageRoot: state.storageRoot,
+      versionId: state.versionId,
+      resolveVideoConditioningCapability: () => referenceBundleAudioCapability(state),
+      createReferenceUrl: ({ asset_id: assetId }) => `https://cdn.example.test/reference/${assetId}.png`,
+      prepareSourceConditioning: async () => assert.fail('raw source conditioning must not run'),
+      videoProcessor: async () => { providerCalls += 1; },
+      schedule() {},
+    }), { shotId: state.shotId }),
+    (error) => {
+      assert.equal(error.code, expectedCode);
+      const serialized = JSON.stringify(error);
+      assert.equal(/[A-Za-z]:[\\/]/.test(serialized), false);
+      assert.equal(serialized.includes('sk-'), false);
+      assert.equal(serialized.includes('Authorization'), false);
+      assert.equal(serialized.includes('http://'), false);
+      assert.equal(serialized.includes('https://'), false);
+      return true;
+    },
+  );
+  assertReferenceBundlePreflightClean(state, providerCalls);
+}
+
+function nativeAudit(db, shotId, taskId) {
+  const draft = JSON.parse(db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
+  if (draft.native_audio_validation) return draft.native_audio_validation;
+  const task = db.prepare('SELECT result FROM async_tasks WHERE id = ?').get(taskId);
+  if (!task?.result) return null;
+  return JSON.parse(task.result).native_audio_validation || null;
 }
 
 function workflowState(db, versionId) {
@@ -258,6 +875,28 @@ test('ID9 iCreat verified 模型在 reserve/video row/provider 前以 conditioni
   }
 });
 
+test('仅精确 iCreat Mini capability 支持源片 conditioning', () => {
+  const exact = {
+    config_id: 7,
+    config_updated_at: '2026-08-11T00:00:00.000Z',
+    provider: 'icreat',
+    protocol: 'icreat_task',
+    model: ICREAT_MINI_MODEL,
+  };
+
+  assert.deepEqual(assertVideoConditioningCapability(exact), { ...exact, max_videos: 3 });
+  for (const patch of [
+    { protocol: 'openai' },
+    { model: 'bytedance/seedance-2-0-fast' },
+    { model: 'bytedance/seedance-2-0' },
+  ]) {
+    assert.throws(
+      () => assertVideoConditioningCapability({ ...exact, ...patch }),
+      (error) => error.code === 'REDRAW_VIDEO_CONDITIONING_UNSUPPORTED',
+    );
+  }
+});
+
 test('视频能力证据必须绑定 exact config/provider/model 才能在 conditioning 与 reserve 前通过', async () => {
   for (const mismatch of ['provider', 'model', 'config_id', 'config_updated_at']) {
     const state = setup();
@@ -328,6 +967,1410 @@ test('视频能力证据必须绑定 exact config/provider/model 才能在 condi
   }
 });
 
+test('原生对白单镜拒绝客户端覆盖 prompt/model/locale/generate_audio/config/provider/价格且零副作用', async () => {
+  const state = setup();
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    const shotId = addShot(state.db, state.versionId, {
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 1000, end_ms: 2200, text: 'Hola, pequeño.' },
+      ]),
+    });
+    const forbiddenInputs = [
+      { model: TOAPIS_NATIVE_MODEL },
+      { locale: 'en-US' },
+      { prompt: 'attacker prompt' },
+      { generate_audio: false },
+      { ai_service_config_id: 1 },
+      { provider: 'attacker' },
+      { credits: 1 },
+    ];
+
+    for (const input of forbiddenInputs) {
+      await assert.rejects(
+        () => generateShot(ctx(state.db, { videoProcessor: async () => assert.fail('provider must not run') }), { shotId, ...input }),
+        (error) => error.code === 'REDRAW_GENERATION_INPUT_INVALID',
+        JSON.stringify(input),
+      );
+    }
+
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+    assert.equal(count(state.db, 'video_generations'), 0);
+    assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+    assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('原生对白生成在 reserve 前要求 ready pack、verified native capability、supportsAudio、pinned config 和合法对白窗口', async () => {
+  for (const scenario of ['pack', 'capability', 'configDrift', 'supportsAudio', 'dialogue']) {
+    const state = setup();
+    try {
+      state.db.prepare('DELETE FROM ai_service_configs').run();
+      addNativeDialogueCapability(state.db, scenario === 'capability'
+        ? { evidence: { contract: 'redraw-native-dialogue-audio-v1' } }
+        : scenario === 'configDrift'
+          ? { evidenceUpdatedAt: '2026-08-06T00:00:01.000Z' }
+        : {});
+      state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+      const shotId = addShot(state.db, state.versionId, {
+        durationMs: 6000,
+        startMs: 0,
+        endMs: 6000,
+        localized_dialogue_json: JSON.stringify(scenario === 'dialogue'
+          ? [{ speaker_id: 'Valeria', start_ms: 5000, end_ms: 7000, text: 'Hola, pequeño.' }]
+          : [{ speaker_id: 'Valeria', start_ms: 1000, end_ms: 2200, text: 'Hola, pequeño.' }]),
+      });
+      const localeVerifier = scenario === 'pack'
+        ? { assertReady: () => { const error = new Error('not ready'); error.code = 'REDRAW_LOCALE_VERIFIER_NOT_READY'; throw error; } }
+        : { assertReady: () => nativePack() };
+      const resolveVideoConditioningCapability = scenario === 'supportsAudio'
+        ? () => ({ provider: 'toapis', protocol: 'toapis_video', model: TOAPIS_NATIVE_MODEL, config_id: 1, config_updated_at: state.now, supportsAudio: false, maxVideoReferences: 1 })
+        : undefined;
+
+      await assert.rejects(
+        () => generateShot(ctx(state.db, {
+          localeVerifier,
+          resolveVideoConditioningCapability,
+          videoProcessor: async () => assert.fail('provider must not run'),
+        }), { shotId }),
+        (error) => [
+          'REDRAW_LOCALE_VERIFIER_NOT_READY',
+          'REDRAW_NO_VERIFIED_NATIVE_AUDIO',
+          'REDRAW_NATIVE_AUDIO_UNSUPPORTED',
+          'REDRAW_NATIVE_DIALOGUE_PROMPT_INVALID',
+        ].includes(error.code),
+        scenario,
+      );
+
+      assert.equal(count(state.db, 'tenant_usage_reservations'), 0, scenario);
+      assert.equal(count(state.db, 'video_generations'), 0, scenario);
+      assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0, scenario);
+      assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0, scenario);
+    } finally {
+      state.db.close();
+    }
+  }
+});
+
+test('原生对白生成持久化 generate_audio、prompt/dialogue/config/locale pack 快照且强制 ToAPIs 同步音频', async () => {
+  const state = setup();
+  const originalCallVideoApi = videoClient.callVideoApi;
+  let scheduled;
+  let captured;
+  try {
+    videoClient.callVideoApi = async (_db, _log, opts) => {
+      captured = opts;
+      return { task_id: 'provider-native-shot-1', status: 'queued' };
+    };
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    const native = addNativeDialogueCapability(state.db);
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      startMs: 0,
+      endMs: 5000,
+      compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+      ]),
+    });
+
+    const created = await generateShot(ctx(state.db, {
+      resolveVideoConditioningCapability: undefined,
+      evidenceRoots,
+      schedule(callback) { scheduled = callback; },
+    }), { shotId });
+    const video = state.db.prepare('SELECT * FROM video_generations WHERE id = ?').get(created.video_generation_id);
+    const snapshot = JSON.parse(video.request_snapshot);
+
+    assert.equal(video.generate_audio, 1);
+    assert.equal(snapshot.generate_audio, true);
+    assert.match(snapshot.prompt_hash, /^[0-9a-f]{64}$/);
+    assert.match(snapshot.dialogue_snapshot_hash, /^[0-9a-f]{64}$/);
+    assert.equal(snapshot.ai_service_config_id, native.configId);
+    assert.equal(snapshot.config_updated_at, native.updatedAt);
+    assert.equal(snapshot.locale_pack, 'es@1');
+    assert.equal(snapshot.model, TOAPIS_NATIVE_MODEL);
+    assert.equal(snapshot.locale, 'es');
+
+    await scheduled();
+    assert.equal(captured.generate_audio, true);
+    assert.equal(captured.prompt, snapshot.prompt);
+    assert.equal(captured.ai_service_config_id, native.configId);
+  } finally {
+    videoClient.callVideoApi = originalCallVideoApi;
+    state.db.close();
+  }
+});
+
+test('已验证 iCreat Mini 原生英文路径使用 4 秒无源音轨 conditioning 并固定配置证据', async () => {
+  const state = setup();
+  let scheduled;
+  let capturedConditioning;
+  let capturedVideoRequest;
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    const native = addNativeDialogueCapability(state.db, {
+      provider: 'icreat',
+      protocol: 'icreat_task',
+      model: ICREAT_MINI_MODEL,
+      baseUrl: 'https://api.icreat.ai',
+      language: 'en',
+      durations: [4],
+    });
+    prices.set(state.db, ICREAT_MINI_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'en-US', market = 'US' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 4000,
+      startMs: 0,
+      endMs: 4000,
+      compiledPrompt: {
+        text: 'Keep the live-action school entrance shot.',
+        duration: 4,
+        resolution: '480p',
+        aspect_ratio: '9:16',
+      },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Mateo', start_ms: 700, end_ms: 2400, text: 'Dude, who are you?' },
+      ]),
+    });
+
+    const created = await generateShot(ctx(state.db, {
+      resolveVideoConditioningCapability: undefined,
+      evidenceRoots,
+      localeVerifier: {
+        assertReady: () => nativePack({
+          id: 'en@1',
+          language: 'en',
+          prompt_language_label: '美式英语',
+        }),
+      },
+      prepareSourceConditioning: async (input) => {
+        capturedConditioning = input;
+        return {
+          referenceVideoUrl: SIGNED_SOURCE_VIDEO_URL,
+          billingSnapshot: {
+            source_asset_id: 1,
+            source_fingerprint: 'f'.repeat(64),
+            start_ms: 0,
+            end_ms: 4000,
+            segment_sha256: 'a'.repeat(64),
+            audio_mode: input.audioMode,
+          },
+          auditSnapshot: {
+            schema_version: '1.0',
+            shot_id: Number(input.shot.id),
+            source_asset_id: 1,
+            source_fingerprint: 'f'.repeat(64),
+            start_ms: 0,
+            end_ms: 4000,
+            segment_sha256: 'a'.repeat(64),
+            audio_mode: input.audioMode,
+          },
+        };
+      },
+      videoProcessor: async (db, _log, videoGenerationId) => {
+        const row = db.prepare('SELECT request_snapshot FROM video_generations WHERE id = ?')
+          .get(videoGenerationId);
+        capturedVideoRequest = JSON.parse(row.request_snapshot);
+        db.prepare("UPDATE video_generations SET status = 'failed', error_msg = 'test stop' WHERE id = ?")
+          .run(videoGenerationId);
+      },
+      schedule(callback) { scheduled = callback; },
+    }), { shotId });
+    const video = state.db.prepare('SELECT * FROM video_generations WHERE id = ?').get(created.video_generation_id);
+    const snapshot = JSON.parse(video.request_snapshot);
+
+    assert.equal(capturedConditioning.audioMode, 'strip');
+    assert.equal(video.model, ICREAT_MINI_MODEL);
+    assert.equal(video.duration, 4);
+    assert.equal(video.generate_audio, 1);
+    assert.equal(snapshot.config_updated_at, native.updatedAt);
+    assert.equal(snapshot.generate_audio, true);
+    assert.equal(JSON.parse(video.source_conditioning_json).audio_mode, 'strip');
+
+    await scheduled();
+    assert.equal(capturedVideoRequest.model, ICREAT_MINI_MODEL);
+    assert.equal(capturedVideoRequest.duration, 4);
+    assert.equal(capturedVideoRequest.generate_audio, true);
+    assert.deepEqual(capturedVideoRequest.reference_video_urls, [SIGNED_SOURCE_VIDEO_URL]);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('同语言有原生声画能力但当前镜头无对白时走普通视频路径', async () => {
+  const state = setup();
+  let providerCalls = 0;
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    prices.set(state.db, FEITUO_FAST_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '720p': { credits: 4 } },
+    });
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '720p': { credits: 4 } },
+    });
+    addVerifiedGenerationCapability(state.db, FEITUO_FAST_MODEL, {
+      id: 14,
+      provider: 'feituo',
+      apiProtocol: 'feituo_open',
+      locale: 'es',
+      market: '',
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 6000,
+      startMs: 0,
+      endMs: 6000,
+      compiledPrompt: { text: 'silent cinematic shot', duration: 6, resolution: '720p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([]),
+    });
+
+    const created = await generateShot(ctx(state.db, {
+      schedule() {},
+      videoProcessor: async () => { providerCalls += 1; },
+    }), { shotId });
+    const video = state.db.prepare('SELECT * FROM video_generations WHERE id = ?').get(created.video_generation_id);
+    const snapshot = JSON.parse(video.request_snapshot);
+
+    assert.equal(providerCalls, 0);
+    assert.equal(video.prompt, 'silent cinematic shot');
+    assert.equal(video.generate_audio, 0);
+    assert.equal(snapshot.generate_audio, false);
+    assert.equal(Object.prototype.hasOwnProperty.call(snapshot, 'prompt_hash'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(snapshot, 'dialogue_snapshot_hash'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(snapshot, 'locale_pack'), false);
+    assert.equal(state.db.prepare('SELECT amount, status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).amount, 24);
+
+    await runShotGeneration(ctx(state.db, {
+      videoProcessor: async () => { providerCalls += 1; },
+    }), created.task_id);
+    assert.equal(providerCalls, 1);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('同一原生对白/config 快照跨幂等键只保留一条 active generation，快照改变不误复用', async () => {
+  const state = setup();
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      startMs: 0,
+      endMs: 5000,
+      compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+      ]),
+    });
+
+    const first = await generateShot(ctx(state.db, { schedule() {}, resolveVideoConditioningCapability: undefined }), { shotId });
+    const second = await generateShot(ctx(state.db, { schedule() {}, resolveVideoConditioningCapability: undefined }), { shotId, idempotency_key: 'different-client-key' });
+    assert.equal(second.video_generation_id, first.video_generation_id);
+    assert.equal(count(state.db, 'video_generations'), 1);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+
+    const snapshot = JSON.parse(state.db.prepare('SELECT request_snapshot FROM video_generations WHERE id = ?').get(first.video_generation_id).request_snapshot);
+    state.db.prepare("UPDATE redraw_shots SET status = 'draft', video_generation_id = NULL, localized_dialogue_json = ? WHERE id = ?")
+      .run(JSON.stringify([{ speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: '¿Te has perdido?' }]), shotId);
+    await generateShot(ctx(state.db, { schedule() {}, resolveVideoConditioningCapability: undefined }), { shotId });
+    const snapshots = state.db.prepare('SELECT request_snapshot FROM video_generations ORDER BY id').all()
+      .map((row) => JSON.parse(row.request_snapshot));
+    assert.equal(snapshots.length, 2);
+    assert.notEqual(snapshots[1].dialogue_snapshot_hash, snapshot.dialogue_snapshot_hash);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('原生对白视频 completed 后先验证音轨，写入 draft evidence 后再入库资产并确认结算', async () => {
+  const state = setup();
+  let validationInput = null;
+  let importerCalls = 0;
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      startMs: 0,
+      endMs: 5000,
+      compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+      ]),
+    });
+
+    const result = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      resolveVideoConditioningCapability: undefined,
+      videoProcessor: async (db, _log, videoId) => {
+        db.prepare(`UPDATE video_generations
+          SET status = 'completed', provider_task_id = 'provider-native-ok',
+              video_url = 'https://cdn.test/native.mp4', local_path = 'videos/native.mp4'
+          WHERE id = ?`).run(videoId);
+      },
+      artifactVerifier: async () => ({ duration: 5, width: 720, height: 1280 }),
+      nativeAudioValidator: async (input) => {
+        validationInput = input;
+        return {
+          contract: 'redraw-native-audio-validation-v1',
+          artifact_sha256: 'a'.repeat(64),
+          audio_stream: { codec: 'aac', channels: 2, sample_rate: 44100, duration_ms: 4980 },
+          video_duration_ms: 5000,
+          silence: { rms_db: -24.1, threshold_db: -45 },
+          verification: {
+            detected_language: 'es',
+            detected_locale: null,
+            language_verified: true,
+            locale_verified: false,
+            transcript_sha256: 'b'.repeat(64),
+            dialogue_similarity: 0.91,
+            speech_chars_per_second: 8,
+          },
+          validation_hash: 'c'.repeat(64),
+        };
+      },
+      assetImporter: () => {
+        importerCalls += 1;
+        const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
+        assert.equal(draft.native_audio_validation.status, 'verified');
+        return { id: 818 };
+      },
+    }), { shotId });
+
+    assert.equal(result.status, 'completed', result.error);
+    assert.equal(importerCalls, 1);
+    assert.equal(validationInput.videoPath, 'videos/native.mp4');
+    assert.equal(validationInput.approvedText, 'Hola, pequeño.');
+    assert.equal(validationInput.localePack.id, 'es@1');
+    assert.equal(validationInput.expectedLanguage, 'es');
+    assert.equal(validationInput.videoInvocation.providerTaskId, 'provider-native-ok');
+    assert.equal(validationInput.videoInvocation.model, TOAPIS_NATIVE_MODEL);
+    const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
+    assert.equal(draft.native_audio_validation.status, 'verified');
+    assert.deepEqual(draft.native_audio_validation.human_review, { status: 'pending' });
+    assert.equal(draft.native_audio_validation.validation_hash, 'c'.repeat(64));
+    assert.equal(draft.new_video_ref.asset_id, 818);
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(result.reservation_id).status, 'confirmed');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('原生对白 post-provider 音轨验证失败保持 candidate、needs_attention 和 held，跨 key 不重提', async () => {
+  const state = setup();
+  let providerCalls = 0;
+  let validationCalls = 0;
+  let importerCalls = 0;
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      startMs: 0,
+      endMs: 5000,
+      compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+      ]),
+    });
+
+    const first = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      resolveVideoConditioningCapability: undefined,
+      videoProcessor: async (db, _log, videoId) => {
+        providerCalls += 1;
+        db.prepare(`UPDATE video_generations
+          SET status = 'completed', provider_task_id = 'provider-native-bad',
+              video_url = 'https://cdn.test/native-bad.mp4', local_path = 'videos/native-bad.mp4'
+          WHERE id = ?`).run(videoId);
+      },
+      artifactVerifier: async () => ({ duration: 5, width: 720, height: 1280 }),
+      nativeAudioValidator: async () => {
+        validationCalls += 1;
+        const error = new Error('语言/台词验证失败');
+        error.code = 'REDRAW_NATIVE_AUDIO_WORKER_EVIDENCE_INVALID';
+        throw error;
+      },
+      assetImporter: () => {
+        importerCalls += 1;
+        return { id: 919 };
+      },
+    }), { shotId });
+
+    assert.equal(first.status, 'needs_attention');
+    assert.equal(providerCalls, 1);
+    assert.equal(validationCalls, 1);
+    assert.equal(importerCalls, 0);
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(first.video_generation_id).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(first.reservation_id).status, 'held');
+    const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
+    assert.equal(draft.native_audio_validation.status, 'failed');
+    assert.equal(draft.native_audio_validation.human_review.status, 'available');
+    assert.equal(draft.native_audio_validation.candidate.provider_task_id_sha256.length, 64);
+    assert.equal(JSON.stringify(draft.native_audio_validation).includes('provider-native-bad'), false);
+    assert.equal(JSON.stringify(draft.native_audio_validation).includes('videos/native-bad.mp4'), false);
+
+    const second = await generateShot(ctx(state.db, {
+      resolveVideoConditioningCapability: undefined,
+      videoProcessor: async () => { providerCalls += 1; },
+    }), { shotId, idempotency_key: 'different-client-key-after-validation-failure' });
+    assert.equal(second.video_generation_id, first.video_generation_id);
+    assert.equal(second.status, 'needs_attention');
+    assert.equal(providerCalls, 1);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('原生对白人工批准用 validation hash 和 updated_at 做 CAS，一次导入结算且重复同决定幂等', async () => {
+  const state = setup();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-native-review-cas-'));
+  let providerCalls = 0;
+  let importerCalls = 0;
+  try {
+    fs.mkdirSync(path.join(storageRoot, 'videos'), { recursive: true });
+    fs.writeFileSync(path.join(storageRoot, 'videos', 'native-manual.mp4'), 'native manual artifact');
+    const artifactSha256 = crypto.createHash('sha256').update('native manual artifact').digest('hex');
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      startMs: 0,
+      endMs: 5000,
+      compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+      ]),
+    });
+    state.db.prepare(`
+      CREATE TRIGGER block_native_audio_settlement_once
+      BEFORE UPDATE OF status ON tenant_usage_reservations
+      WHEN NEW.status = 'confirmed'
+      BEGIN
+        SELECT RAISE(ABORT, 'settlement blocked');
+      END
+    `).run();
+
+    const held = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      resolveVideoConditioningCapability: undefined,
+      videoProcessor: async (db, _log, videoId) => {
+        providerCalls += 1;
+        db.prepare(`UPDATE video_generations
+          SET status = 'completed', provider_task_id = 'provider-native-manual',
+              video_url = 'https://cdn.test/native-manual.mp4', local_path = 'videos/native-manual.mp4'
+          WHERE id = ?`).run(videoId);
+      },
+      artifactVerifier: async () => ({ duration: 5, width: 720, height: 1280 }),
+      nativeAudioValidator: async () => nativeAudioEvidence({
+        artifact_sha256: artifactSha256,
+        verification: {
+          detected_language: 'es',
+          detected_locale: null,
+          language_verified: false,
+          locale_verified: false,
+          transcript_sha256: 'b'.repeat(64),
+          dialogue_similarity: 0.61,
+          speech_chars_per_second: 8,
+        },
+      }),
+      assetImporter: () => { throw new Error('manual review required'); },
+    }), { shotId });
+    assert.equal(held.status, 'needs_attention');
+    state.db.prepare('DROP TRIGGER block_native_audio_settlement_once').run();
+    const beforeReview = state.db.prepare('SELECT updated_at FROM redraw_shots WHERE id = ?').get(shotId).updated_at;
+
+    await assert.rejects(
+      () => reviewNativeAudio(ctx(state.db), {
+        shotId,
+        validation_hash: 'd'.repeat(64),
+        expected_updated_at: beforeReview,
+        decision: 'approved',
+        speaker_order: 'passed',
+        lip_sync: 'passed',
+        extra_dialogue: 'passed',
+      }),
+      (error) => error.code === 'REDRAW_NATIVE_AUDIO_REVIEW_CONFLICT',
+    );
+    await assert.rejects(
+      () => reviewNativeAudio(ctx(state.db), {
+        shotId,
+        validation_hash: 'c'.repeat(64),
+        expected_updated_at: '2026-08-05T00:00:00.000Z',
+        decision: 'approved',
+        speaker_order: 'passed',
+        lip_sync: 'passed',
+        extra_dialogue: 'passed',
+      }),
+      (error) => error.code === 'REDRAW_NATIVE_AUDIO_REVIEW_CONFLICT',
+    );
+
+    state.db.prepare(`
+      CREATE TRIGGER block_native_audio_manual_settlement_once
+      BEFORE UPDATE OF status ON tenant_usage_reservations
+      WHEN NEW.status = 'confirmed'
+      BEGIN
+        SELECT RAISE(ABORT, 'manual settlement blocked');
+      END
+    `).run();
+    await assert.rejects(
+      () => reviewNativeAudio(ctx(state.db, {
+        storageRoot,
+        artifactVerifier: async () => ({ duration: 5, width: 720, height: 1280 }),
+        assetImporter: () => {
+          importerCalls += 1;
+          return { id: 1100 };
+        },
+      }), {
+        shotId,
+        validation_hash: 'c'.repeat(64),
+        expected_updated_at: beforeReview,
+        decision: 'approved',
+        speaker_order: 'passed',
+        lip_sync: 'passed',
+        extra_dialogue: 'passed',
+      }),
+      /manual settlement blocked/,
+    );
+    state.db.prepare('DROP TRIGGER block_native_audio_manual_settlement_once').run();
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(held.reservation_id).status, 'held');
+    assert.equal(state.db.prepare('SELECT updated_at FROM redraw_shots WHERE id = ?').get(shotId).updated_at, beforeReview);
+    assert.equal(importerCalls, 1);
+
+    const approved = await reviewNativeAudio(ctx(state.db, {
+      storageRoot,
+      artifactVerifier: async () => ({ duration: 5, width: 720, height: 1280 }),
+      assetImporter: (db, _log, videoId) => {
+        importerCalls += 1;
+        assert.equal(videoId, held.video_generation_id);
+        return { id: 1200 };
+      },
+    }), {
+      shotId,
+      validation_hash: 'c'.repeat(64),
+      expected_updated_at: beforeReview,
+      decision: 'approved',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    });
+
+    assert.equal(approved.status, 'completed');
+    assert.equal(providerCalls, 1);
+    assert.equal(importerCalls, 2);
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(held.reservation_id).status, 'confirmed');
+    const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
+    assert.equal(draft.new_video_ref.asset_id, 1200);
+    assert.deepEqual(draft.native_audio_validation.human_review, {
+      status: 'approved',
+      reviewer_id: 'user-a',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+      manual_override: true,
+      reviewed_at: '2026-08-06T00:00:00.001Z',
+    });
+
+    const duplicate = await reviewNativeAudio(ctx(state.db, {
+      assetImporter: () => {
+        importerCalls += 1;
+        return { id: 1300 };
+      },
+    }), {
+      shotId,
+      validation_hash: 'c'.repeat(64),
+      expected_updated_at: beforeReview,
+      decision: 'approved',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    });
+    assert.equal(duplicate.status, 'completed');
+    assert.equal(duplicate.asset_id, 1200);
+    assert.equal(importerCalls, 2);
+  } finally {
+    state.db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('原生对白人工批准使用默认本地 MP4 verifier 接受 needs_attention 候选但仍拒绝不可读和无音轨', async (t) => {
+  const state = setup();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-native-review-'));
+  t.after(() => {
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  });
+  if (!writeTinyMp4(t, storageRoot, 'videos/native-manual-default.mp4')) {
+    state.db.close();
+    return;
+  }
+  if (!writeTinyMp4(t, storageRoot, 'videos/native-manual-no-audio.mp4', { audio: false })) {
+    state.db.close();
+    return;
+  }
+  let providerCalls = 0;
+  let importerCalls = 0;
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      startMs: 0,
+      endMs: 5000,
+      compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+      ]),
+    });
+    state.db.prepare(`
+      CREATE TRIGGER block_native_audio_default_settlement_once
+      BEFORE UPDATE OF status ON tenant_usage_reservations
+      WHEN NEW.status = 'confirmed'
+      BEGIN
+        SELECT RAISE(ABORT, 'default verifier settlement blocked');
+      END
+    `).run();
+    const held = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      resolveVideoConditioningCapability: undefined,
+      videoProcessor: async (db, _log, videoId) => {
+        providerCalls += 1;
+        db.prepare(`UPDATE video_generations
+          SET status = 'completed', provider_task_id = 'provider-native-default-review',
+              video_url = 'https://cdn.test/native-manual-default.mp4',
+              local_path = 'videos/native-manual-default.mp4'
+          WHERE id = ?`).run(videoId);
+      },
+      artifactVerifier: async () => ({ duration: 1, width: 16, height: 16 }),
+      nativeAudioValidator: async () => nativeAudioEvidence({
+        verification: {
+          detected_language: 'es',
+          detected_locale: null,
+          language_verified: false,
+          locale_verified: false,
+          transcript_sha256: 'b'.repeat(64),
+          dialogue_similarity: 0.61,
+          speech_chars_per_second: 8,
+        },
+      }),
+      assetImporter: () => { throw new Error('manual review required'); },
+    }), { shotId });
+    state.db.prepare('DROP TRIGGER block_native_audio_default_settlement_once').run();
+    assert.equal(held.status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(held.video_generation_id).status, 'needs_attention');
+    const beforeReview = state.db.prepare('SELECT updated_at FROM redraw_shots WHERE id = ?').get(shotId).updated_at;
+
+    state.db.prepare("UPDATE video_generations SET local_path = 'videos/missing-native-review.mp4' WHERE id = ?")
+      .run(held.video_generation_id);
+    await assert.rejects(
+      () => reviewNativeAudio(ctx(state.db, { storageRoot }), {
+        shotId,
+        validation_hash: 'c'.repeat(64),
+        expected_updated_at: beforeReview,
+        decision: 'approved',
+        speaker_order: 'passed',
+        lip_sync: 'passed',
+        extra_dialogue: 'passed',
+      }),
+      (error) => error.code === 'REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE',
+    );
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(held.reservation_id).status, 'held');
+
+    const draftWithoutAudio = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
+    const originalAudit = draftWithoutAudio.native_audio_validation;
+    draftWithoutAudio.native_audio_validation = {
+      ...draftWithoutAudio.native_audio_validation,
+      audio_stream: null,
+      candidate: {
+        ...draftWithoutAudio.native_audio_validation.candidate,
+        artifact_sha256: null,
+      },
+    };
+    state.db.prepare('UPDATE redraw_shots SET draft_json = ? WHERE id = ?')
+      .run(JSON.stringify(draftWithoutAudio), shotId);
+    state.db.prepare("UPDATE video_generations SET local_path = 'videos/native-manual-default.mp4' WHERE id = ?")
+      .run(held.video_generation_id);
+    await assert.rejects(
+      () => reviewNativeAudio(ctx(state.db, { storageRoot }), {
+        shotId,
+        validation_hash: 'c'.repeat(64),
+        expected_updated_at: beforeReview,
+        decision: 'approved',
+        speaker_order: 'passed',
+        lip_sync: 'passed',
+        extra_dialogue: 'passed',
+      }),
+      (error) => error.code === 'REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE',
+    );
+    state.db.prepare('UPDATE redraw_shots SET draft_json = ? WHERE id = ?')
+      .run(JSON.stringify({
+        ...draftWithoutAudio,
+        native_audio_validation: nativeAudioEvidence({
+          status: 'verified',
+          human_review: { status: 'available' },
+          candidate: originalAudit.candidate,
+        }),
+      }), shotId);
+    state.db.prepare("UPDATE video_generations SET local_path = 'videos/native-manual-no-audio.mp4' WHERE id = ?")
+      .run(held.video_generation_id);
+    await assert.rejects(
+      () => reviewNativeAudio(ctx(state.db, { storageRoot }), {
+        shotId,
+        validation_hash: 'c'.repeat(64),
+        expected_updated_at: beforeReview,
+        decision: 'approved',
+        speaker_order: 'passed',
+        lip_sync: 'passed',
+        extra_dialogue: 'passed',
+      }),
+      (error) => error.code === 'REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE',
+    );
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(held.reservation_id).status, 'held');
+
+    state.db.prepare("UPDATE video_generations SET local_path = 'videos/native-manual-default.mp4' WHERE id = ?")
+      .run(held.video_generation_id);
+    const defaultSha256 = crypto.createHash('sha256')
+      .update(fs.readFileSync(path.join(storageRoot, 'videos/native-manual-default.mp4')))
+      .digest('hex');
+    const draftWithActualHash = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
+    draftWithActualHash.native_audio_validation.artifact_sha256 = defaultSha256;
+    draftWithActualHash.native_audio_validation.candidate.artifact_sha256 = defaultSha256;
+    state.db.prepare('UPDATE redraw_shots SET draft_json = ? WHERE id = ?')
+      .run(JSON.stringify(draftWithActualHash), shotId);
+    const approved = await reviewNativeAudio(ctx(state.db, {
+      storageRoot,
+      assetImporter: (db, _log, videoId) => {
+        importerCalls += 1;
+        assert.equal(videoId, held.video_generation_id);
+        return { id: 1400 };
+      },
+    }), {
+      shotId,
+      validation_hash: 'c'.repeat(64),
+      expected_updated_at: beforeReview,
+      decision: 'approved',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    });
+
+    assert.equal(approved.status, 'completed');
+    assert.equal(providerCalls, 1);
+    assert.equal(importerCalls, 1);
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'completed');
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(held.video_generation_id).status, 'completed');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(held.reservation_id).status, 'confirmed');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('原生对白人工批准 verifier await 期间分镜证据变化则 409 且不完成不结算', async () => {
+  const state = setup();
+  let providerCalls = 0;
+  let importerCalls = 0;
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      startMs: 0,
+      endMs: 5000,
+      compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+      ]),
+    });
+    state.db.prepare(`
+      CREATE TRIGGER block_native_audio_race_settlement_once
+      BEFORE UPDATE OF status ON tenant_usage_reservations
+      WHEN NEW.status = 'confirmed'
+      BEGIN
+        SELECT RAISE(ABORT, 'manual review required');
+      END
+    `).run();
+    const held = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      resolveVideoConditioningCapability: undefined,
+      videoProcessor: async (db, _log, videoId) => {
+        providerCalls += 1;
+        db.prepare(`UPDATE video_generations
+          SET status = 'completed', provider_task_id = 'provider-native-race',
+              video_url = 'https://cdn.test/native-race.mp4', local_path = 'videos/native-race.mp4'
+          WHERE id = ?`).run(videoId);
+      },
+      artifactVerifier: async () => ({ duration: 5, width: 720, height: 1280 }),
+      nativeAudioValidator: async () => nativeAudioEvidence({
+        verification: {
+          detected_language: 'es',
+          detected_locale: null,
+          language_verified: false,
+          locale_verified: false,
+          transcript_sha256: 'b'.repeat(64),
+          dialogue_similarity: 0.61,
+          speech_chars_per_second: 8,
+        },
+      }),
+      assetImporter: () => ({ id: 1000 }),
+    }), { shotId });
+    state.db.prepare('DROP TRIGGER block_native_audio_race_settlement_once').run();
+    const beforeReview = state.db.prepare('SELECT updated_at FROM redraw_shots WHERE id = ?').get(shotId).updated_at;
+
+    await assert.rejects(
+      () => reviewNativeAudio(ctx(state.db, {
+        artifactVerifier: async () => {
+          const row = state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId);
+          const draft = JSON.parse(row.draft_json);
+          draft.native_audio_validation.validation_hash = 'e'.repeat(64);
+          draft.native_audio_validation.candidate.artifact_sha256 = 'f'.repeat(64);
+          state.db.prepare('UPDATE redraw_shots SET draft_json = ?, updated_at = ? WHERE id = ?')
+            .run(JSON.stringify(draft), '2026-08-06T00:00:00.001Z', shotId);
+          return { duration: 5, width: 720, height: 1280 };
+        },
+        assetImporter: () => {
+          importerCalls += 1;
+          return { id: 1500 };
+        },
+      }), {
+        shotId,
+        validation_hash: 'c'.repeat(64),
+        expected_updated_at: beforeReview,
+        decision: 'approved',
+        speaker_order: 'passed',
+        lip_sync: 'passed',
+        extra_dialogue: 'passed',
+      }),
+      (error) => error.code === 'REDRAW_NATIVE_AUDIO_REVIEW_CONFLICT',
+    );
+
+    assert.equal(providerCalls, 1);
+    assert.equal(importerCalls, 0);
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(held.video_generation_id).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(held.task_id).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(held.reservation_id).status, 'held');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('原生对白人工批准在导入前重新校验 artifact sha，文件替换则拒绝且不导入不结算', async () => {
+  const state = setup();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-native-review-sha-'));
+  let providerCalls = 0;
+  let importerCalls = 0;
+  try {
+    fs.mkdirSync(path.join(storageRoot, 'videos'), { recursive: true });
+    fs.writeFileSync(path.join(storageRoot, 'videos', 'native-sha.mp4'), 'original artifact');
+    const expectedSha256 = crypto.createHash('sha256').update('original artifact').digest('hex');
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      startMs: 0,
+      endMs: 5000,
+      compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+      ]),
+    });
+    state.db.prepare(`
+      CREATE TRIGGER block_native_audio_sha_settlement_once
+      BEFORE UPDATE OF status ON tenant_usage_reservations
+      WHEN NEW.status = 'confirmed'
+      BEGIN
+        SELECT RAISE(ABORT, 'manual review required');
+      END
+    `).run();
+    const held = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      resolveVideoConditioningCapability: undefined,
+      videoProcessor: async (db, _log, videoId) => {
+        providerCalls += 1;
+        db.prepare(`UPDATE video_generations
+          SET status = 'completed', provider_task_id = 'provider-native-sha',
+              video_url = 'https://cdn.test/native-sha.mp4', local_path = 'videos/native-sha.mp4'
+          WHERE id = ?`).run(videoId);
+      },
+      artifactVerifier: async () => ({ duration: 5, width: 720, height: 1280 }),
+      nativeAudioValidator: async () => nativeAudioEvidence({ artifact_sha256: expectedSha256 }),
+      assetImporter: () => ({ id: 1000 }),
+    }), { shotId });
+    state.db.prepare('DROP TRIGGER block_native_audio_sha_settlement_once').run();
+    const beforeReview = state.db.prepare('SELECT updated_at FROM redraw_shots WHERE id = ?').get(shotId).updated_at;
+
+    await assert.rejects(
+      () => reviewNativeAudio(ctx(state.db, {
+        storageRoot,
+        probeRunner: async () => {
+          fs.writeFileSync(path.join(storageRoot, 'videos', 'native-sha.mp4'), 'tampered artifact');
+          return { duration: 5, width: 720, height: 1280, hasAudio: true };
+        },
+        assetImporter: () => {
+          importerCalls += 1;
+          return { id: 1600 };
+        },
+      }), {
+        shotId,
+        validation_hash: 'c'.repeat(64),
+        expected_updated_at: beforeReview,
+        decision: 'approved',
+        speaker_order: 'passed',
+        lip_sync: 'passed',
+        extra_dialogue: 'passed',
+      }),
+      (error) => error.code === 'REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE',
+    );
+
+    assert.equal(providerCalls, 1);
+    assert.equal(importerCalls, 0);
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(held.video_generation_id).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(held.task_id).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(held.reservation_id).status, 'held');
+  } finally {
+    state.db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('原生对白人工驳回只记录审核原因，保留候选和 held 且拒绝不同决定冲突', async () => {
+  const state = setup();
+  let providerCalls = 0;
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      startMs: 0,
+      endMs: 5000,
+      compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+      ]),
+    });
+
+    const held = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      resolveVideoConditioningCapability: undefined,
+      videoProcessor: async (db, _log, videoId) => {
+        providerCalls += 1;
+        db.prepare(`UPDATE video_generations
+          SET status = 'completed', provider_task_id = 'provider-native-rejected',
+              video_url = 'https://cdn.test/native-rejected.mp4', local_path = 'videos/native-rejected.mp4'
+          WHERE id = ?`).run(videoId);
+      },
+      artifactVerifier: async () => ({ duration: 5, width: 720, height: 1280 }),
+      nativeAudioValidator: async () => nativeAudioEvidence({
+        verification: {
+          detected_language: 'es',
+          detected_locale: null,
+          language_verified: false,
+          locale_verified: false,
+          transcript_sha256: 'b'.repeat(64),
+          dialogue_similarity: 0.61,
+          speech_chars_per_second: 8,
+        },
+      }),
+      assetImporter: () => { throw new Error('asset register failed'); },
+    }), { shotId });
+    const beforeReview = state.db.prepare('SELECT updated_at FROM redraw_shots WHERE id = ?').get(shotId).updated_at;
+
+    const rejected = await reviewNativeAudio(ctx(state.db), {
+      shotId,
+      validation_hash: 'c'.repeat(64),
+      expected_updated_at: beforeReview,
+      decision: 'rejected',
+      reason: '对白顺序不可接受',
+    });
+
+    assert.equal(rejected.status, 'needs_attention');
+    assert.equal(providerCalls, 1);
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(held.reservation_id).status, 'held');
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(held.video_generation_id).status, 'needs_attention');
+    const audit = nativeAudit(state.db, shotId, held.task_id);
+    assert.equal(audit.candidate.provider_task_id_sha256.length, 64);
+    assert.deepEqual(audit.human_review, {
+      status: 'rejected',
+      reviewer_id: 'user-a',
+      reason: '对白顺序不可接受',
+      reviewed_at: '2026-08-06T00:00:00.001Z',
+    });
+
+    await assert.rejects(
+      () => reviewNativeAudio(ctx(state.db), {
+        shotId,
+        validation_hash: 'c'.repeat(64),
+        expected_updated_at: beforeReview,
+        decision: 'approved',
+        speaker_order: 'passed',
+        lip_sync: 'passed',
+        extra_dialogue: 'passed',
+      }),
+      (error) => error.code === 'REDRAW_NATIVE_AUDIO_REVIEW_CONFLICT',
+    );
+  } finally {
+    state.db.close();
+  }
+});
+
+test('原生对白 post-provider 故障矩阵均保留 held/attention/candidate/验证证据且跨 key 不重提', async () => {
+  const cases = [
+    {
+      mode: 'artifact_failed',
+      stage: 'artifact_verification',
+      humanReview: 'unavailable',
+      artifactVerifier: async () => {
+        throw Object.assign(new Error('artifact unreadable'), { code: 'REDRAW_VIDEO_ARTIFACT_INVALID' });
+      },
+      expectVerifiedEvidence: false,
+    },
+    {
+      mode: 'native_validator_failed',
+      stage: 'native_audio_validation',
+      humanReview: 'available',
+      nativeAudioValidator: async () => {
+        throw Object.assign(new Error('dialogue mismatch'), { code: 'REDRAW_NATIVE_AUDIO_WORKER_EVIDENCE_INVALID' });
+      },
+      expectVerifiedEvidence: false,
+    },
+    {
+      mode: 'evidence_transaction_write_failed',
+      stage: 'native_audio_evidence_write',
+      humanReview: 'available',
+      beforeRun(db) {
+        db.prepare(`
+          CREATE TRIGGER block_native_audio_draft
+          BEFORE UPDATE OF draft_json ON redraw_shots
+          WHEN NEW.draft_json LIKE '%native_audio_validation%'
+          BEGIN
+            SELECT RAISE(ABORT, 'native evidence write blocked');
+          END
+        `).run();
+      },
+      expectVerifiedEvidence: true,
+    },
+    {
+      mode: 'asset_register_failed',
+      stage: 'asset_register',
+      humanReview: 'available',
+      assetImporter: () => {
+        throw new Error('asset register failed');
+      },
+      expectVerifiedEvidence: true,
+    },
+    {
+      mode: 'settlement_failed',
+      stage: 'settlement',
+      humanReview: 'available',
+      assetImporter: (db) => {
+        db.prepare(`
+          CREATE TRIGGER block_native_audio_settlement
+          BEFORE UPDATE OF status ON tenant_usage_reservations
+          WHEN NEW.status = 'confirmed'
+          BEGIN
+            SELECT RAISE(ABORT, 'settlement blocked');
+          END
+        `).run();
+        return { id: 1000 };
+      },
+      expectVerifiedEvidence: true,
+    },
+  ];
+
+  for (const scenario of cases) {
+    const state = setup();
+    let providerCalls = 0;
+    let validationCalls = 0;
+    let importerCalls = 0;
+    try {
+      state.db.prepare('DELETE FROM ai_service_configs').run();
+      addNativeDialogueCapability(state.db);
+      prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+        category: 'video',
+        billing_unit: 'second',
+        resolution_prices: { '480p': { credits: 4 } },
+      });
+      state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+      const shotId = addShot(state.db, state.versionId, {
+        durationMs: 5000,
+        startMs: 0,
+        endMs: 5000,
+        compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+        localized_dialogue_json: JSON.stringify([
+          { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+        ]),
+      });
+      scenario.beforeRun?.(state.db);
+
+      const first = await generateShot(ctx(state.db, {
+        awaitCompletion: true,
+        resolveVideoConditioningCapability: undefined,
+        videoProcessor: async (db, _log, videoId) => {
+          providerCalls += 1;
+          db.prepare(`UPDATE video_generations
+            SET status = 'completed', provider_task_id = ?,
+                video_url = ?, local_path = ?
+            WHERE id = ?`).run(`provider-${scenario.mode}`, `https://cdn.test/${scenario.mode}.mp4`, `videos/${scenario.mode}.mp4`, videoId);
+        },
+        artifactVerifier: scenario.artifactVerifier || (async () => ({ duration: 5, width: 720, height: 1280 })),
+        nativeAudioValidator: async (...args) => {
+          validationCalls += 1;
+          if (scenario.nativeAudioValidator) return scenario.nativeAudioValidator(...args);
+          return nativeAudioEvidence();
+        },
+        assetImporter: (...args) => {
+          importerCalls += 1;
+          if (scenario.assetImporter) return scenario.assetImporter(...args);
+          return { id: 1000 };
+        },
+      }), { shotId });
+
+      assert.equal(first.status, 'needs_attention', scenario.mode);
+      assert.equal(providerCalls, 1, scenario.mode);
+      assert.equal(validationCalls, scenario.mode === 'artifact_failed' ? 0 : 1, scenario.mode);
+      assert.equal(importerCalls, ['asset_register_failed', 'settlement_failed'].includes(scenario.mode) ? 1 : 0, scenario.mode);
+      assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention', scenario.mode);
+      assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(first.task_id).status, 'needs_attention', scenario.mode);
+      assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(first.video_generation_id).status, 'needs_attention', scenario.mode);
+      assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(first.reservation_id).status, 'held', scenario.mode);
+
+      const audit = nativeAudit(state.db, shotId, first.task_id);
+      assert.equal(audit.status, scenario.expectVerifiedEvidence ? 'verified' : 'failed', scenario.mode);
+      assert.equal(audit.failure_stage, scenario.stage, scenario.mode);
+      assert.equal(audit.human_review.status, scenario.humanReview, scenario.mode);
+      assert.equal(audit.candidate.provider_task_id_sha256.length, 64, scenario.mode);
+      assert.equal(audit.candidate.provider, 'toapis', scenario.mode);
+      assert.equal(audit.candidate.model, TOAPIS_NATIVE_MODEL, scenario.mode);
+      assert.equal(audit.candidate.config_id > 0, true, scenario.mode);
+      assert.equal(audit.candidate.artifact_locator_sha256.length, 64, scenario.mode);
+      assert.equal(JSON.stringify(audit).includes(`provider-${scenario.mode}`), false, scenario.mode);
+      assert.equal(JSON.stringify(audit).includes(`videos/${scenario.mode}.mp4`), false, scenario.mode);
+      if (scenario.expectVerifiedEvidence) {
+        assert.equal(audit.validation_hash, 'c'.repeat(64), scenario.mode);
+        assert.equal(audit.candidate.artifact_sha256, 'a'.repeat(64), scenario.mode);
+        assert.equal(audit.verification.transcript_sha256, 'b'.repeat(64), scenario.mode);
+      }
+
+      const second = await generateShot(ctx(state.db, {
+        resolveVideoConditioningCapability: undefined,
+        videoProcessor: async () => { providerCalls += 1; },
+      }), { shotId, idempotency_key: `different-key-${scenario.mode}` });
+      assert.equal(second.status, 'needs_attention', scenario.mode);
+      assert.equal(second.video_generation_id, first.video_generation_id, scenario.mode);
+      assert.equal(providerCalls, 1, scenario.mode);
+    } finally {
+      state.db.close();
+    }
+  }
+});
+
+test('原生对白 provider completed 后下载保存失败保留 held/attention/download candidate 且跨 key 不重提', async (t) => {
+  const state = setup();
+  const originalCallVideoApi = videoClient.callVideoApi;
+  const originalPollVideoTask = videoClient.pollVideoTask;
+  const originalFetch = global.fetch;
+  let providerSubmits = 0;
+  t.after(() => {
+    videoClient.callVideoApi = originalCallVideoApi;
+    videoClient.pollVideoTask = originalPollVideoTask;
+    global.fetch = originalFetch;
+    state.db.close();
+  });
+  state.db.prepare('DELETE FROM ai_service_configs').run();
+  addNativeDialogueCapability(state.db);
+  prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+    category: 'video',
+    billing_unit: 'second',
+    resolution_prices: { '480p': { credits: 4 } },
+  });
+  state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+  const shotId = addShot(state.db, state.versionId, {
+    durationMs: 5000,
+    startMs: 0,
+    endMs: 5000,
+    compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+    localized_dialogue_json: JSON.stringify([
+      { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+    ]),
+  });
+
+  videoClient.callVideoApi = async (_db, _log, input) => {
+    providerSubmits += 1;
+    assert.equal(input.generate_audio, true);
+    assert.equal(input.model, TOAPIS_NATIVE_MODEL);
+    return { task_id: 'provider-native-download-failure' };
+  };
+  videoClient.pollVideoTask = async () => ({
+    video_url: 'https://cdn.test/native-download-failure.mp4?signature=secret',
+  });
+  global.fetch = async () => {
+    throw new Error('provider artifact download failed');
+  };
+
+  const first = await generateShot(ctx(state.db, {
+    awaitCompletion: true,
+    resolveVideoConditioningCapability: undefined,
+    evidenceRoots,
+    nativeAudioValidator: async () => assert.fail('native validator must not run when download failed'),
+    assetImporter: () => assert.fail('asset import must not run when download failed'),
+  }), { shotId });
+
+  assert.equal(first.status, 'needs_attention', first.error);
+  assert.equal(providerSubmits, 1);
+  assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(first.task_id).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(first.video_generation_id).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(first.reservation_id).status, 'held');
+  const audit = nativeAudit(state.db, shotId, first.task_id);
+  assert.equal(audit.status, 'failed');
+  assert.equal(audit.failure_stage, 'download');
+  assert.equal(audit.human_review.status, 'unavailable');
+  assert.equal(audit.candidate.provider_task_id_sha256.length, 64);
+  assert.equal(audit.candidate.artifact_locator_sha256.length, 64);
+  assert.equal(JSON.stringify(audit).includes('provider-native-download-failure'), false);
+  assert.equal(JSON.stringify(audit).includes('native-download-failure.mp4'), false);
+  assert.equal(JSON.stringify(audit).includes('signature=secret'), false);
+
+  const second = await generateShot(ctx(state.db, {
+    resolveVideoConditioningCapability: undefined,
+    videoProcessor: async () => { providerSubmits += 1; },
+  }), { shotId, idempotency_key: 'different-key-after-native-download-failure' });
+  assert.equal(second.status, 'needs_attention');
+  assert.equal(second.video_generation_id, first.video_generation_id);
+  assert.equal(providerSubmits, 1);
+});
+
+test('generate_audio 行但缺少原生快照证据时下载失败仍由线路稳定门禁挂起且不写原生审计', async (t) => {
+  const state = setup();
+  const originalCallVideoApi = videoClient.callVideoApi;
+  const originalPollVideoTask = videoClient.pollVideoTask;
+  const originalFetch = global.fetch;
+  let providerSubmits = 0;
+  t.after(() => {
+    videoClient.callVideoApi = originalCallVideoApi;
+    videoClient.pollVideoTask = originalPollVideoTask;
+    global.fetch = originalFetch;
+    state.db.close();
+  });
+  state.db.prepare('DELETE FROM ai_service_configs').run();
+  addNativeDialogueCapability(state.db);
+  prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+    category: 'video',
+    billing_unit: 'second',
+    resolution_prices: { '480p': { credits: 4 } },
+  });
+  state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+  const shotId = addShot(state.db, state.versionId, {
+    durationMs: 5000,
+    startMs: 0,
+    endMs: 5000,
+    compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+    localized_dialogue_json: JSON.stringify([
+      { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+    ]),
+  });
+  const created = await generateShot(ctx(state.db, {
+    resolveVideoConditioningCapability: undefined,
+    schedule() {},
+  }), { shotId });
+  state.db.prepare('UPDATE video_generations SET request_snapshot = ? WHERE id = ?')
+    .run(JSON.stringify({ generate_audio: true, model: TOAPIS_NATIVE_MODEL }), created.video_generation_id);
+
+  videoClient.callVideoApi = async (_db, _log, input) => {
+    providerSubmits += 1;
+    assert.equal(input.generate_audio, true);
+    return { task_id: 'provider-body-audio-not-native-snapshot' };
+  };
+  videoClient.pollVideoTask = async () => ({ video_url: 'https://cdn.test/legacy-download-failure.mp4' });
+  global.fetch = async () => { throw new Error('provider artifact download failed'); };
+
+  const result = await runShotGeneration(ctx(state.db, {
+    resolveVideoConditioningCapability: undefined,
+    evidenceRoots,
+  }), created.task_id);
+
+  assert.equal(result.status, 'needs_attention');
+  assert.equal(providerSubmits, 1);
+  assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(result.task_id).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(result.video_generation_id).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'held');
+  assert.equal(nativeAudit(state.db, shotId, result.task_id), null);
+});
+
 test('ID14 Feituo Fast 将服务端 source segment 与已审批图片引用共同持久化且计费快照不含签名', async () => {
   const state = setup();
   try {
@@ -363,9 +2406,22 @@ test('ID14 Feituo Fast 将服务端 source segment 与已审批图片引用共�
     const video = state.db.prepare('SELECT * FROM video_generations WHERE id = ?').get(result.video_generation_id);
     const task = state.db.prepare('SELECT metadata FROM async_tasks WHERE id = ?').get(result.task_id);
     const metadata = JSON.parse(task.metadata).redraw_shot;
+    const requestSnapshot = JSON.parse(video.request_snapshot);
+    const identityPack = JSON.parse(
+      state.db.prepare('SELECT source_ref_json FROM redraw_assets WHERE id = ?').get(redrawAssetId).source_ref_json,
+    ).identity_pack;
 
     assert.equal(video.model, FEITUO_FAST_MODEL);
     assert.deepEqual(JSON.parse(video.reference_image_urls), ['https://cdn.example.test/character.png']);
+    assert.deepEqual(requestSnapshot.identity_bindings, [{
+      redraw_asset_id: Number(redrawAssetId),
+      source_character_key: identityPack.source_character_key,
+      target_actor_label: identityPack.target_actor_label,
+      identity_pack_sha256: identityPack.pack_sha256,
+    }]);
+    assert.equal(JSON.stringify(requestSnapshot).includes('identity_pack'), true);
+    assert.equal(JSON.stringify(requestSnapshot).includes('artifact'), false);
+    assert.equal(JSON.stringify(requestSnapshot).includes('local_path'), false);
     assert.deepEqual(JSON.parse(video.reference_video_urls), [SIGNED_SOURCE_VIDEO_URL]);
     assert.equal(JSON.parse(video.source_conditioning_json).start_ms, 2000);
     assert.equal(JSON.parse(video.source_conditioning_json).end_ms, 8000);
@@ -449,6 +2505,84 @@ test('冻结配置在首次供应商提交前被改写时零提交并保持 held
   assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
   assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(created.task_id).status, 'needs_attention');
   assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'held');
+});
+
+test('冻结配置在首次供应商提交前停用或删除时 needs_attention 保持 held 且不重提', async (t) => {
+  const originalCallVideoApi = videoClient.callVideoApi;
+  t.after(() => { videoClient.callVideoApi = originalCallVideoApi; });
+
+  for (const unavailable of ['inactive', 'deleted']) {
+    const state = setup();
+    let providerCalls = 0;
+    let scheduled;
+    try {
+      videoClient.callVideoApi = async () => {
+        providerCalls += 1;
+        return { error: '固定配置不可用时不得调用供应商' };
+      };
+      const shotId = addShot(state.db, state.versionId);
+      const created = await generateShot(ctx(state.db, {
+        schedule(callback) { scheduled = callback; },
+      }), { shotId });
+      const configId = state.db.prepare('SELECT ai_service_config_id FROM video_generations WHERE id = ?')
+        .get(created.video_generation_id).ai_service_config_id;
+      if (unavailable === 'inactive') {
+        state.db.prepare('UPDATE ai_service_configs SET is_active = 0 WHERE id = ?').run(configId);
+      } else {
+        state.db.prepare('UPDATE ai_service_configs SET deleted_at = ? WHERE id = ?').run(state.now, configId);
+      }
+
+      await scheduled();
+
+      assert.equal(providerCalls, 0, unavailable);
+      assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(created.video_generation_id).status, 'needs_attention', unavailable);
+      assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention', unavailable);
+      assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(created.task_id).status, 'needs_attention', unavailable);
+      assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'held', unavailable);
+
+      const rerun = await runShotGeneration(ctx(state.db), created.task_id);
+      assert.equal(rerun.status, 'needs_attention', unavailable);
+      await assert.rejects(
+        () => retryShot(ctx(state.db, {
+          videoProcessor: async () => { providerCalls += 1; },
+        }), { shotId }),
+        (error) => error.code === 'REDRAW_SHOT_RETRY_REQUIRED',
+        unavailable,
+      );
+      assert.equal(providerCalls, 0, unavailable);
+    } finally {
+      state.db.close();
+    }
+  }
+});
+
+test('无 pinned config 的旧视频配置缺失仍按明确失败退款路径处理', async () => {
+  const state = setup();
+  const originalCallVideoApi = videoClient.callVideoApi;
+  let providerCalls = 0;
+  try {
+    videoClient.callVideoApi = async () => {
+      providerCalls += 1;
+      return { error: '缺配置时不得调用供应商' };
+    };
+    const shotId = addShot(state.db, state.versionId);
+    const created = await generateShot(ctx(state.db, { schedule: () => {} }), { shotId });
+    state.db.prepare('UPDATE video_generations SET ai_service_config_id = NULL, source_conditioning_json = NULL WHERE id = ?')
+      .run(created.video_generation_id);
+    state.db.prepare('UPDATE ai_service_configs SET deleted_at = ?').run(state.now);
+
+    const result = await runShotGeneration(ctx(state.db), created.task_id);
+
+    assert.equal(providerCalls, 0);
+    assert.equal(result.status, 'failed');
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(created.video_generation_id).status, 'failed');
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'failed');
+    assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(created.task_id).status, 'failed');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'refunded');
+  } finally {
+    videoClient.callVideoApi = originalCallVideoApi;
+    state.db.close();
+  }
 });
 
 test('冻结配置的 key 或 endpoint 在首次提交前轮换时零提交并保持 held', async (t) => {
@@ -604,7 +2738,7 @@ test('verified 生成模型跳过坏配置并按确定顺序选中后续有效�
     const result = await generateShot(ctx(state.db, {
       canReadArtifact: (artifactId) => artifactId === `artifact-${model}`,
       schedule() {},
-    }), { shotId, model: 'client-forged-model' });
+    }), { shotId });
 
     assert.equal(result.status, 'processing');
     assert.equal(state.db.prepare('SELECT model FROM tenant_usage_reservations').get().model, model);
@@ -636,7 +2770,6 @@ test('批量生成全是坏 capability 配置时 fail closed 且不冻结不提�
     }), {
       versionId: state.versionId,
       shotIds: [shotId],
-      model: 'client-forged-model',
     });
 
     assert.equal(batch.results[0].error_code, 'REDRAW_NO_VERIFIED_VIDEO_MODEL');
@@ -773,6 +2906,179 @@ test('重复相同 attempt 复用已有 processing task/video/reservation', asyn
   }
 });
 
+test('旧非角色 generation 快照缺少 identity_bindings 时仍按空集合复用', async () => {
+  const state = setup();
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const first = await generateShot(ctx(state.db, { schedule() {} }), { shotId });
+    const video = state.db.prepare('SELECT request_snapshot FROM video_generations WHERE id = ?')
+      .get(first.video_generation_id);
+    const legacySnapshot = JSON.parse(video.request_snapshot);
+    delete legacySnapshot.identity_bindings;
+    state.db.prepare('UPDATE video_generations SET request_snapshot = ? WHERE id = ?')
+      .run(JSON.stringify(legacySnapshot), first.video_generation_id);
+
+    const second = await generateShot(ctx(state.db, { schedule() {} }), { shotId });
+
+    assert.equal(second.reused, true);
+    assert.equal(second.video_generation_id, first.video_generation_id);
+    assert.equal(count(state.db, 'video_generations'), 1);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('角色 generation 快照缺少 identity_bindings 时保持 fail closed', async () => {
+  const state = setup();
+  try {
+    const baseAssetId = addBaseAsset(state.db, { name: 'actor', url: 'https://cdn.test/actor.png' });
+    const redrawAssetId = addRedrawAsset(state.db, state.versionId, {
+      kind: 'character',
+      name: 'Actor Maya',
+      assetId: baseAssetId,
+    });
+    const shotId = addShot(state.db, state.versionId, {
+      references: [{ kind: 'character', asset_id: Number(redrawAssetId) }],
+    });
+    const first = await generateShot(ctx(state.db, { schedule() {} }), { shotId });
+    const video = state.db.prepare('SELECT request_snapshot FROM video_generations WHERE id = ?')
+      .get(first.video_generation_id);
+    const legacySnapshot = JSON.parse(video.request_snapshot);
+    delete legacySnapshot.identity_bindings;
+    state.db.prepare('UPDATE video_generations SET request_snapshot = ? WHERE id = ?')
+      .run(JSON.stringify(legacySnapshot), first.video_generation_id);
+
+    await assert.rejects(
+      () => generateShot(ctx(state.db, { schedule() {} }), { shotId }),
+      (error) => error.code === 'REDRAW_SHOT_CONFLICT',
+    );
+    assert.equal(count(state.db, 'video_generations'), 1);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('角色身份 hash 更新会先关闭旧镜头门禁，重绑后 request snapshot 也不会误复用旧生成', async () => {
+  const state = setup();
+  try {
+    const baseAssetId = addBaseAsset(state.db, { name: 'actor', url: 'https://cdn.test/actor.png' });
+    const firstPack = canonicalIdentityPack({
+      sourceCharacterKey: 'source-character-stable',
+      targetActorLabel: 'Actor Maya',
+      artifactAssetId: baseAssetId,
+      artifactSeed: 'actor portrait revision one',
+    });
+    const redrawAssetId = addRedrawAsset(state.db, state.versionId, {
+      kind: 'character',
+      name: 'Actor Maya',
+      assetId: baseAssetId,
+      identityPack: firstPack,
+    });
+    const shotId = addShot(state.db, state.versionId, {
+      references: [{ character_asset_id: Number(redrawAssetId) }],
+    });
+    const first = await generateShot(ctx(state.db, { schedule() {} }), { shotId });
+    const firstSnapshot = JSON.parse(
+      state.db.prepare('SELECT request_snapshot FROM video_generations WHERE id = ?').get(first.video_generation_id).request_snapshot,
+    );
+    assert.deepEqual(firstSnapshot.identity_bindings, [{
+      redraw_asset_id: Number(redrawAssetId),
+      source_character_key: firstPack.source_character_key,
+      target_actor_label: firstPack.target_actor_label,
+      identity_pack_sha256: firstPack.pack_sha256,
+    }]);
+
+    const secondPack = canonicalIdentityPack({
+      sourceCharacterKey: firstPack.source_character_key,
+      targetActorLabel: firstPack.target_actor_label,
+      artifactAssetId: baseAssetId,
+      artifactSeed: 'actor portrait revision two',
+      reviewed_at: '2026-08-06T01:00:00.000Z',
+    });
+    state.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?')
+      .run(JSON.stringify({
+        source_ref: { stable_id: firstPack.source_character_key },
+        identity_pack: secondPack,
+      }), redrawAssetId);
+
+    await assert.rejects(
+      () => generateShot(ctx(state.db, { schedule() {} }), { shotId }),
+      (error) => error.code === 'REDRAW_ASSET_REVIEW_REQUIRED'
+        && error.details.missing[0].code === 'character_identity_binding_stale',
+    );
+
+    const binding = identityBindingForAsset(
+      state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(redrawAssetId),
+    );
+    state.db.prepare(`UPDATE redraw_shots
+      SET status = 'draft', references_json = ?
+      WHERE id = ?`).run(JSON.stringify([{
+      character_asset_id: Number(redrawAssetId),
+      source_character_key: binding.source_character_key,
+      target_actor_label: binding.target_actor_label,
+      identity_pack_sha256: binding.pack_sha256,
+    }]), shotId);
+
+    await assert.rejects(
+      () => generateShot(ctx(state.db, { schedule() {} }), { shotId }),
+      (error) => error.code === 'REDRAW_SHOT_CONFLICT',
+    );
+    assert.equal(count(state.db, 'video_generations'), 1);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('角色 identity bindings 按集合 canonical 排序，A/B 引用反序仍复用同一生成', async () => {
+  const state = setup();
+  try {
+    const baseA = addBaseAsset(state.db, { name: 'actor-a', url: 'https://cdn.test/actor-a.png' });
+    const baseB = addBaseAsset(state.db, { name: 'actor-b', url: 'https://cdn.test/actor-b.png' });
+    const redrawA = addRedrawAsset(state.db, state.versionId, {
+      kind: 'character',
+      name: 'Actor A',
+      assetId: baseA,
+    });
+    const redrawB = addRedrawAsset(state.db, state.versionId, {
+      kind: 'character',
+      name: 'Actor B',
+      assetId: baseB,
+    });
+    const shotId = addShot(state.db, state.versionId, {
+      references: [
+        { kind: 'character', asset_id: Number(redrawB) },
+        { kind: 'character', asset_id: Number(redrawA) },
+      ],
+    });
+
+    const first = await generateShot(ctx(state.db, { schedule() {} }), { shotId });
+    const firstSnapshot = JSON.parse(
+      state.db.prepare('SELECT request_snapshot FROM video_generations WHERE id = ?').get(first.video_generation_id).request_snapshot,
+    );
+    assert.deepEqual(
+      firstSnapshot.identity_bindings.map((binding) => binding.redraw_asset_id),
+      [Number(redrawA), Number(redrawB)],
+    );
+
+    const storedReferences = JSON.parse(
+      state.db.prepare('SELECT references_json FROM redraw_shots WHERE id = ?').get(shotId).references_json,
+    );
+    state.db.prepare('UPDATE redraw_shots SET references_json = ? WHERE id = ?')
+      .run(JSON.stringify(storedReferences.reverse()), shotId);
+    const second = await generateShot(ctx(state.db, { schedule() {} }), { shotId });
+
+    assert.equal(second.reused, true);
+    assert.equal(second.video_generation_id, first.video_generation_id);
+    assert.equal(count(state.db, 'video_generations'), 1);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+  } finally {
+    state.db.close();
+  }
+});
+
 test('两个 draft 并发生成由 CAS 保证 loser 复用 winner 且只冻结调度一次', async () => {
   const state = setup();
   let hookCalls = 0;
@@ -842,10 +3148,10 @@ test('并发 loser 传入不同客户端模型时仍复用 verified 生成链且
       beforeCreateTransaction,
       schedule: () => { scheduled += 1; },
     });
-    const loserPromise = generateShot(context, { shotId, model: 'other-video-model' });
+    const loserPromise = generateShot(context, { shotId });
     await firstEntered;
     assert.equal(hookCalls, 1, 'beforeCreateTransaction hook must pause the first creator');
-    const winner = await generateShot(context, { shotId, model: 'seedance 2.0' });
+    const winner = await generateShot(context, { shotId });
     releaseFirst();
     const loser = await loserPromise;
 
@@ -1488,6 +3794,32 @@ test('default ffprobe 调用设置超时、buffer、killSignal 和 Windows 隐�
   assert.match(source, /windowsHide:\s*true/);
 });
 
+test('verifyVideoArtifact 默认不要求音轨，requireAudio 时拒绝无音轨 MP4', async (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-video-no-audio-'));
+  let db;
+  try {
+    if (!writeTinyMp4(t, tempRoot, 'videos/no-audio.mp4', { audio: false })) return;
+    db = new Database(':memory:');
+    runMigrationsAndEnsure(db);
+    const now = new Date().toISOString();
+    const videoId = db.prepare(`INSERT INTO video_generations
+      (status, local_path, created_at, updated_at) VALUES ('completed', 'videos/no-audio.mp4', ?, ?)`)
+      .run(now, now).lastInsertRowid;
+
+    const verified = await verifyVideoArtifact({ db, storageRoot: tempRoot }, videoId);
+    assert.equal(verified.width, 16);
+    assert.equal(verified.height, 16);
+    assert.ok(verified.duration > 0);
+    await assert.rejects(
+      () => verifyVideoArtifact({ db, storageRoot: tempRoot }, videoId, { requireAudio: true }),
+      (error) => error.code === 'REDRAW_VIDEO_ARTIFACT_INVALID',
+    );
+  } finally {
+    db?.close();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('verifyVideoArtifact 路径越界和缺文件 fail closed，probeRunner 成功时返回元数据', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-video-artifact-'));
   try {
@@ -1610,7 +3942,6 @@ test('批量生成使用 verified capability 模型贯穿报价、冻结、视�
     }), {
       versionId: state.versionId,
       shotIds: [shotId],
-      model: 'client-forged-model',
     });
 
     assert.equal(typeof scheduled, 'function');
@@ -1661,7 +3992,6 @@ test('批量生成在本地化物化镜头缺省 duration 时从 duration_ms 推
     }), {
       versionId: state.versionId,
       shotIds: [shotId],
-      model: 'client-forged-model',
     });
 
     assert.equal(typeof scheduled, 'function');
@@ -2324,5 +4654,252 @@ test('供应商回读已先落 completed 终态时启动 mark 仍安排 shot 与
     assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'confirmed');
   } finally {
     state.db.close();
+  }
+});
+
+test('reference bundle required 的单镜生成使用安全参考包投影且不调用源片 conditioning', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  let providerCalls = 0;
+  const result = await generateShot(ctx(state.db, {
+    storageRoot: state.storageRoot,
+    versionId: state.versionId,
+    probeRunner: async () => ({
+      duration_ms: 5000,
+      width: 864,
+      height: 496,
+      mime_type: 'video/mp4',
+      video_codec: 'h264',
+      audio_stream_count: 0,
+    }),
+    resolveVideoConditioningCapability: () => referenceBundleAudioCapability(state),
+    createReferenceUrl: ({ asset_id: assetId, kind }) => `https://cdn.example.test/reference/${kind}/${assetId}`,
+    prepareSourceConditioning: async () => assert.fail('raw source conditioning must not run'),
+    videoProcessor: async () => { providerCalls += 1; },
+    schedule() {},
+  }), { shotId: state.shotId });
+
+  assert.equal(result.status, 'processing');
+  assert.equal(providerCalls, 0);
+  assert.equal(count(state.db, 'video_generations'), 1);
+  assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+  const video = state.db.prepare('SELECT * FROM video_generations').get();
+  const snapshot = JSON.parse(video.request_snapshot);
+  const sourceConditioning = JSON.parse(video.source_conditioning_json);
+  assert.equal(snapshot.reference_bundle.schema_version, 'redraw-reference-bundle-v1');
+  assert.equal(snapshot.reference_bundle.motion_sha256, REFERENCE_BUNDLE_MOTION_SHA256);
+  assert.equal(snapshot.locale, 'en-US');
+  assert.equal(video.generate_audio, 1);
+  assert.equal(snapshot.generate_audio, true);
+  assert.equal(video.prompt, snapshot.prompt);
+  assert.match(snapshot.prompt, /Ethan/);
+  assert.match(snapshot.prompt, /Maya/);
+  assert.match(snapshot.prompt, /Come with me\./);
+  assert.match(snapshot.prompt, /Not without proof\./);
+  assert.equal(snapshot.prompt.includes('原始中文提示词'), false);
+  assert.equal(snapshot.prompt.includes('镜头原始中文'), false);
+  assert.deepEqual(snapshot.reference_video_urls, [`https://cdn.example.test/reference/motion/${state.motionAssetId}`]);
+  assert.deepEqual(JSON.parse(video.reference_video_urls), [`https://cdn.example.test/reference/motion/${state.motionAssetId}`]);
+  assert.deepEqual(JSON.parse(video.reference_image_urls), [
+    `https://cdn.example.test/reference/identity/${state.actorAImageId}`,
+    `https://cdn.example.test/reference/identity/${state.actorBImageId}`,
+  ]);
+  assert.deepEqual(snapshot.identity_bindings.map((binding) => binding.source_character_key), [
+    'character-001',
+    'character-002',
+  ]);
+  assert.equal(sourceConditioning.mode, 'redraw_reference_bundle');
+  assert.equal(sourceConditioning.audio_mode, 'strip');
+  assert.equal(sourceConditioning.segment_sha256, REFERENCE_BUNDLE_MOTION_SHA256);
+  const serialized = JSON.stringify({ snapshot, sourceConditioning });
+  assert.equal(serialized.includes(SIGNED_SOURCE_VIDEO_URL), false);
+  assert.equal(/[A-Za-z]:\\\\/.test(serialized), false);
+  assert.equal(/[\u3400-\u9fff]/.test(serialized), false);
+  assert.equal(serialized.includes('sk-'), false);
+  assert.equal(serialized.includes('Authorization'), false);
+});
+
+test('reference bundle required 的本地假 provider 收到同一安全英文 prompt', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  let capturedPrompt = null;
+  let capturedSnapshotPrompt = null;
+  const result = await generateShot(ctx(state.db, {
+    storageRoot: state.storageRoot,
+    versionId: state.versionId,
+    awaitCompletion: true,
+    probeRunner: async () => ({
+      duration_ms: 5000,
+      width: 864,
+      height: 496,
+      mime_type: 'video/mp4',
+      video_codec: 'h264',
+      audio_stream_count: 0,
+    }),
+    resolveVideoConditioningCapability: () => referenceBundleAudioCapability(state),
+    createReferenceUrl: ({ asset_id: assetId, kind }) => `https://cdn.example.test/reference/${kind}/${assetId}`,
+    prepareSourceConditioning: async () => assert.fail('raw source conditioning must not run'),
+    videoProcessor: async (db, _log, videoGenerationId) => {
+      const row = db.prepare('SELECT prompt, request_snapshot FROM video_generations WHERE id = ?').get(videoGenerationId);
+      capturedPrompt = row.prompt;
+      capturedSnapshotPrompt = JSON.parse(row.request_snapshot).prompt;
+      db.prepare("UPDATE video_generations SET status = 'failed', error_msg = 'local fake provider stopped before submit' WHERE id = ?")
+        .run(videoGenerationId);
+    },
+  }), { shotId: state.shotId });
+
+  assert.equal(result.status, 'failed');
+  assert.equal(capturedPrompt, capturedSnapshotPrompt);
+  assert.match(capturedPrompt, /Ethan/);
+  assert.match(capturedPrompt, /Maya/);
+  assert.match(capturedPrompt, /Come with me\./);
+  assert.equal(/[\u3400-\u9fff]/.test(capturedPrompt), false);
+  assert.equal(capturedPrompt.includes('原始中文提示词'), false);
+  assert.equal(capturedPrompt.includes('镜头原始中文'), false);
+});
+
+test('reference bundle required 缺失或漂移时在冻结积分和建视频前失败', async (t) => {
+  await assertReferenceBundleGenerationRejects(
+    t,
+    (state) => {
+      state.db.prepare(`UPDATE redraw_shots
+        SET reference_bundle_json = '{}', reference_bundle_hash = NULL, reference_bundle_updated_at = NULL
+        WHERE id = ?`).run(state.shotId);
+    },
+    'REDRAW_REFERENCE_BUNDLE_NOT_FOUND',
+  );
+  await assertReferenceBundleGenerationRejects(
+    t,
+    (state) => {
+      const row = state.db.prepare('SELECT reference_bundle_json FROM redraw_shots WHERE id = ?').get(state.shotId);
+      const bundle = JSON.parse(row.reference_bundle_json);
+      bundle.coverage_sha256 = '0'.repeat(64);
+      state.db.prepare('UPDATE redraw_shots SET reference_bundle_json = ? WHERE id = ?')
+        .run(JSON.stringify(bundle), state.shotId);
+    },
+    'REDRAW_REFERENCE_BUNDLE_CONFLICT',
+  );
+});
+
+test('reference bundle required 要求同步音频能力且在副作用前失败', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  let providerCalls = 0;
+  let scheduleCalls = 0;
+  await assert.rejects(
+    () => generateShot(ctx(state.db, {
+      storageRoot: state.storageRoot,
+      versionId: state.versionId,
+      probeRunner: async () => ({
+        duration_ms: 5000,
+        width: 864,
+        height: 496,
+        mime_type: 'video/mp4',
+        video_codec: 'h264',
+        audio_stream_count: 0,
+      }),
+      resolveVideoConditioningCapability: () => ({
+        provider: 'icreat',
+        protocol: 'icreat_task',
+        model: ICREAT_MINI_MODEL,
+        config_id: 1,
+        config_updated_at: state.now,
+        supportsAudio: false,
+        max_videos: 3,
+      }),
+      createReferenceUrl: ({ asset_id: assetId, kind }) => `https://cdn.example.test/reference/${kind}/${assetId}`,
+      prepareSourceConditioning: async () => assert.fail('raw source conditioning must not run'),
+      videoProcessor: async () => { providerCalls += 1; },
+      schedule() { scheduleCalls += 1; },
+    }), { shotId: state.shotId }),
+    (error) => error.code === 'REDRAW_NATIVE_AUDIO_UNSUPPORTED',
+  );
+  assert.equal(count(state.db, 'video_generations'), 0);
+  assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+  assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+  assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+  assert.equal(providerCalls, 0);
+  assert.equal(scheduleCalls, 0);
+});
+
+test('reference bundle required 的运动、身份、文本和对白证据过期时不产生副作用', async (t) => {
+  const staleCases = [
+    ['motion has audio', (state) => {
+      const metadata = JSON.parse(state.db.prepare('SELECT metadata FROM assets WHERE id = ?').get(state.motionAssetId).metadata);
+      metadata.redraw_motion_reference.clip_end_ms = 4900;
+      state.db.prepare('UPDATE assets SET metadata = ? WHERE id = ?').run(JSON.stringify(metadata), state.motionAssetId);
+    }],
+    ['identity stale', (state) => {
+      const row = state.db.prepare('SELECT source_ref_json FROM redraw_assets WHERE asset_id = ?').get(state.actorAImageId);
+      const payload = JSON.parse(row.source_ref_json);
+      payload.identity_pack.ready = false;
+      state.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE asset_id = ?')
+        .run(JSON.stringify(payload), state.actorAImageId);
+    }],
+    ['text clean stale', (state) => {
+      const row = state.db.prepare('SELECT source_ref_json FROM redraw_assets WHERE clean_plate_asset_id = ?').get(state.subtitleCleanImageId);
+      const payload = JSON.parse(row.source_ref_json);
+      payload.text_clean_plate_pack.ready = false;
+      state.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE clean_plate_asset_id = ?')
+        .run(JSON.stringify(payload), state.subtitleCleanImageId);
+    }],
+    ['dialogue stale', (state) => {
+      state.db.prepare('UPDATE redraw_shots SET localized_dialogue_json = ? WHERE id = ?')
+        .run(JSON.stringify([{ speaker_id: 'character-001', localized_text: '中文对白', start_ms: 0, end_ms: 1000 }]), state.shotId);
+    }],
+  ];
+  for (const [name, mutate] of staleCases) {
+    const expectedCode = {
+      'motion has audio': 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE',
+      'identity stale': 'REDRAW_REFERENCE_BUNDLE_IDENTITY_PACK_REQUIRED',
+      'text clean stale': 'REDRAW_REFERENCE_BUNDLE_TEXT_COVERAGE_REQUIRED',
+      'dialogue stale': 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED',
+    }[name];
+    await assertReferenceBundleGenerationRejects(t, mutate, expectedCode);
+  }
+});
+
+test('reference bundle required 超过 9 个身份和客户端参考包控制字段都在前置阶段拒绝', async (t) => {
+  await assertReferenceBundleGenerationRejects(
+    t,
+    (state) => {
+      const row = state.db.prepare('SELECT reference_bundle_json FROM redraw_shots WHERE id = ?').get(state.shotId);
+      const bundle = JSON.parse(row.reference_bundle_json);
+      for (let index = 0; index < 8; index += 1) {
+        bundle.face_tracks.push({
+          ...bundle.face_tracks[0],
+          track_key: `face-extra-${index}`,
+          source_character_key: `character-extra-${index}`,
+        });
+      }
+      state.db.prepare('UPDATE redraw_shots SET reference_bundle_json = ?, reference_bundle_hash = ? WHERE id = ?')
+        .run(JSON.stringify(bundle), 'f'.repeat(64), state.shotId);
+    },
+    'REDRAW_REFERENCE_BUNDLE_CONFLICT',
+  );
+
+  for (const [field, value] of [
+    ['reference_bundle', {}],
+    ['referenceBundle', {}],
+    ['face_tracks', []],
+    ['text_regions', []],
+    ['motion_reference', {}],
+    ['reference_urls', ['https://evil.example.test/ref.png']],
+    ['reference_hash', 'a'.repeat(64)],
+    ['reference_path', 'C:\\tmp\\ref.png'],
+    ['reviewer_status', 'approved'],
+  ]) {
+    const state = await setupReferenceBundleGenerationFixture(t);
+    let providerCalls = 0;
+    await assert.rejects(
+      () => generateShot(ctx(state.db, {
+        storageRoot: state.storageRoot,
+        versionId: state.versionId,
+        resolveVideoConditioningCapability: () => referenceBundleAudioCapability(state),
+        createReferenceUrl: ({ asset_id: assetId }) => `https://cdn.example.test/reference/${assetId}.png`,
+        videoProcessor: async () => { providerCalls += 1; },
+        schedule() {},
+      }), { shotId: state.shotId, [field]: value }),
+      (error) => error.code === 'REDRAW_GENERATION_INPUT_INVALID',
+      field,
+    );
+    assertReferenceBundlePreflightClean(state, providerCalls);
   }
 });

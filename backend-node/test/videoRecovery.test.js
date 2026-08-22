@@ -70,10 +70,10 @@ test('服务重启后按 provider_task_id 恢复轮询且不重复提交供应�
        VALUES ('video', 'aihubcc_video', 'aihubcc', ?, ?, ?, ?, ?, 1, 1, 0, ?, ?)`
     ).run(
       '本地恢复轮询供应商',
-      'https://video.example/v1',
+      'https://seed.alimyun.xyz/api/open/v1',
       'artifact-secret',
-      JSON.stringify(['recovery-video-v1']),
-      'recovery-video-v1',
+      JSON.stringify(['legacy-video-v1']),
+      'legacy-video-v1',
       now,
       now
     );
@@ -83,7 +83,7 @@ test('服务重启后按 provider_task_id 恢复轮询且不重复提交供应�
       db.prepare(
         `INSERT INTO video_generations
           (provider, prompt, model, status, task_id, provider_task_id, created_at, updated_at)
-         VALUES ('aihubcc_video', ?, 'recovery-video-v1', 'processing', ?, ?, ?, ?)`
+         VALUES ('aihubcc_video', ?, 'legacy-video-v1', 'processing', ?, ?, ?, ?)`
       ).run('恢复轮询测试', task.id, 'provider-task-83047', now, now).lastInsertRowid
     );
 
@@ -95,7 +95,7 @@ test('服务重启后按 provider_task_id 恢复轮询且不重复提交供应�
       pollCount += 1;
       assert.equal(receivedVideoId, videoId);
       assert.equal(providerTaskId, 'provider-task-83047');
-      return { video_url: 'https://video.example/v1/videos/provider-task-83047/content' };
+      return { video_url: 'https://seed.alimyun.xyz/api/open/v1/videos/provider-task-83047/content' };
     };
     global.fetch = async (_url, options = {}) => {
       assert.equal(options.headers?.Authorization, 'Bearer artifact-secret');
@@ -119,7 +119,7 @@ test('服务重启后按 provider_task_id 恢复轮询且不重复提交供应�
     assert.equal(completed.provider_task_id, 'provider-task-83047');
     assert.equal(
       completed.video_url,
-      'https://video.example/v1/videos/provider-task-83047/content'
+      'https://seed.alimyun.xyz/api/open/v1/videos/provider-task-83047/content'
     );
     assert.ok(completed.local_path);
     const localVideoBytes = fs.readFileSync(path.join(storageRoot, completed.local_path.replace(/^\/static\//, '')));

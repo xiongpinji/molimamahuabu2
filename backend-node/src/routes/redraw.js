@@ -12,8 +12,10 @@ const redrawOrchestrator = require('../services/redrawOrchestrator');
 const redrawLocalizationOrchestrator = require('../services/redrawLocalizationOrchestrator');
 const redrawAssetService = require('../services/redrawAssetService');
 const redrawReviewService = require('../services/redrawReviewService');
+const redrawCharacterIdentityService = require('../services/redrawCharacterIdentityService');
 const redrawShotService = require('../services/redrawShotService');
 const redrawGenerationService = require('../services/redrawGenerationService');
+const redrawReferenceBundleService = require('../services/redrawReferenceBundleService');
 const redrawBillingService = require('../services/redrawBillingService');
 const redrawAssetBatchService = require('../services/redrawAssetBatchService');
 const redrawDialogueOrchestrator = require('../services/redrawDialogueOrchestrator');
@@ -21,6 +23,8 @@ const redrawVoiceService = require('../services/redrawVoiceService');
 const redrawCompositionService = require('../services/redrawCompositionService');
 const redrawExportService = require('../services/redrawExportService');
 const redrawNativeSourceAnalysisService = require('../services/redrawNativeSourceAnalysisService');
+const redrawProjectPolicyService = require('../services/redrawProjectPolicyService');
+const redrawWorkflowEventService = require('../services/redrawWorkflowEventService');
 const assetService = require('../services/assetService');
 const uploadServiceModule = require('../services/uploadService');
 
@@ -120,6 +124,56 @@ function safeExportErrorMessage(value) {
   return 'export failed';
 }
 
+const LOCALIZATION_DECISION_ACTIONS = new Set(['advance', 'needs_review', 'blocked']);
+const LOCALIZATION_DECISION_MODES = new Set(['auto', 'safe']);
+const LOCALIZATION_DECISION_STATES = new Set([
+  'source',
+  'analyzing',
+  'analysis_review',
+  'asset_review',
+  'blocked',
+  'needs_attention',
+  'localization_needs_attention',
+]);
+
+function safeDecisionToken(value) {
+  const token = String(value || '').trim();
+  return /^[a-z0-9_.:-]+$/i.test(token) ? token : '';
+}
+
+function publicLocalizationDecision(task, currentVersion, project) {
+  if (!task || !currentVersion || !project) return null;
+  const result = parseJSON(task.result, null);
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
+  if (Number(result.version_id) !== Number(currentVersion.id)) return null;
+  const factsHash = String(currentVersion.facts_hash || '').trim();
+  if (!factsHash || String(result.facts_hash || '').trim() !== factsHash) return null;
+  const decision = result.localization_decision;
+  if (!decision || typeof decision !== 'object' || Array.isArray(decision)) return null;
+  if (!LOCALIZATION_DECISION_ACTIONS.has(decision.action)) return null;
+  if (!LOCALIZATION_DECISION_MODES.has(decision.effective_mode)) return null;
+  if (!Array.isArray(decision.reason_codes)) return null;
+  if (String(decision.evidence_hash || '').trim() !== factsHash) return null;
+  if (Number(decision.policy_version) !== Number(project.policy_version || 1)) return null;
+  const reasonCodes = decision.reason_codes.map(safeDecisionToken);
+  if (reasonCodes.some((code) => !code)) return null;
+  const projected = {
+    action: decision.action,
+    effective_mode: decision.effective_mode,
+    reason_codes: [...reasonCodes].sort(),
+    policy_version: Number(decision.policy_version),
+    version_id: Number(currentVersion.id),
+    evidence_hash: factsHash,
+  };
+  const effectiveState = safeDecisionToken(decision.effective_analysis_state);
+  if (effectiveState && LOCALIZATION_DECISION_STATES.has(effectiveState)) {
+    projected.effective_analysis_state = effectiveState;
+  } else if (decision.effective_analysis_state != null) {
+    return null;
+  }
+  return projected;
+}
+
 function mapProject(row) {
   if (!row) return null;
   return {
@@ -131,6 +185,12 @@ function mapProject(row) {
     default_market: row.default_market,
     localization_level: row.localization_level,
     status: row.status,
+    execution_mode: row.execution_mode || 'safe',
+    budget_limit_credits: row.budget_limit_credits == null ? null : Number(row.budget_limit_credits),
+    max_auto_attempts_per_shot: row.max_auto_attempts_per_shot == null
+      ? null
+      : Number(row.max_auto_attempts_per_shot),
+    policy_version: Number(row.policy_version || 1),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -155,6 +215,8 @@ function mapWork(row, sourceAsset = null, extras = {}) {
     task_id: row.task_id,
     provider_task_id: row.provider_task_id,
     analysis_quote: extras.analysisQuote || null,
+    analysis_decision: extras.analysisDecision || null,
+    localization_decision: extras.localizationDecision || null,
     task_status: task?.status || null,
     task_progress: Number.isFinite(Number(task?.progress)) ? Number(task.progress) : null,
     task_message: task?.message || null,
@@ -334,12 +396,26 @@ function codedRouteError(code, message, details) {
 }
 
 const SAFE_GENERATION_FIELDS = new Set([
-  'model', 'duration', 'resolution', 'aspect_ratio', 'aspectRatio', 'locale',
+  'duration', 'resolution', 'aspect_ratio', 'aspectRatio', 'idempotency_key', 'idempotencyKey',
   'negative_prompt', 'negativePrompt',
 ]);
 const SAFE_BATCH_GENERATION_FIELDS = new Set([
   ...SAFE_GENERATION_FIELDS,
   'shot_ids', 'shotIds', 'version_id', 'versionId', 'count',
+]);
+const NATIVE_AUDIO_REVIEW_APPROVE_FIELDS = new Set([
+  'validation_hash',
+  'expected_updated_at',
+  'decision',
+  'speaker_order',
+  'lip_sync',
+  'extra_dialogue',
+]);
+const NATIVE_AUDIO_REVIEW_REJECT_FIELDS = new Set([
+  'validation_hash',
+  'expected_updated_at',
+  'decision',
+  'reason',
 ]);
 const LOCALIZATION_CLIENT_CONTROL_FIELDS = new Set([
   'dialogue',
@@ -391,9 +467,278 @@ const DIALOGUE_CLIENT_CONTROL_FIELDS = new Set([
 ]);
 const DIALOGUE_START_FIELDS = new Set(['quote_hash', 'idempotency_key']);
 const VOICE_ASSIGN_FIELDS = new Set(['voice_asset_id', 'expected_updated_at']);
+const IDENTITY_PACK_FIELDS = new Set([
+  'target_actor_label', 'targetActorLabel',
+  'confirmed_views', 'confirmedViews',
+  'live_action_human_confirmed', 'liveActionHumanConfirmed',
+  'adult_status', 'adultStatus',
+  'identity_consistency_confirmed', 'identityConsistencyConfirmed',
+  'persona_origin', 'personaOrigin',
+  'target_country', 'targetCountry',
+  'expected_updated_at', 'expectedUpdatedAt',
+]);
+const IDENTITY_PACK_FIELD_ALIASES = [
+  ['target_actor_label', 'targetActorLabel'],
+  ['confirmed_views', 'confirmedViews'],
+  ['live_action_human_confirmed', 'liveActionHumanConfirmed'],
+  ['adult_status', 'adultStatus'],
+  ['identity_consistency_confirmed', 'identityConsistencyConfirmed'],
+  ['persona_origin', 'personaOrigin'],
+  ['target_country', 'targetCountry'],
+  ['expected_updated_at', 'expectedUpdatedAt'],
+];
+const IDENTITY_PACK_VIEWS = new Set(['front', 'profile', 'full_body']);
+const REFERENCE_BUNDLE_FIELDS = new Set([
+  'expected_updated_at',
+  'motion_reference_asset_id',
+  'face_tracks',
+  'text_regions',
+  'coverage_review',
+]);
+const PROJECT_POLICY_FIELDS = new Set([
+  'execution_mode',
+  'budget_limit_credits',
+  'max_auto_attempts_per_shot',
+  'expected_updated_at',
+]);
+const PROJECT_CREATE_FIELDS = new Set([
+  'title',
+  'default_locale',
+  'default_market',
+  'localization_level',
+  'execution_mode',
+  'budget_limit_credits',
+  'max_auto_attempts_per_shot',
+]);
+const PROJECT_CREATE_STRICT_FIELDS = new Set([
+  'default_locale',
+  'default_market',
+  'localization_level',
+  'execution_mode',
+  'budget_limit_credits',
+  'max_auto_attempts_per_shot',
+]);
+const PROJECT_POLICY_DANGEROUS_FIELDS = new Set(['__proto__', 'constructor', 'prototype']);
+const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 
 function generationInputError(message) {
   return codedRouteError('REDRAW_GENERATION_INPUT_INVALID', message);
+}
+
+function identityPackInputError(message) {
+  return codedRouteError('REDRAW_CHARACTER_IDENTITY_INPUT_INVALID', message);
+}
+
+function projectCreateInputError(message) {
+  return codedRouteError('REDRAW_PROJECT_CREATE_INVALID', message);
+}
+
+function strictCreateProjectRequested(body) {
+  return [...PROJECT_CREATE_STRICT_FIELDS].some((field) => hasOwn(body, field));
+}
+
+function validateProjectCreateBody(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw projectCreateInputError('转绘项目参数必须是对象');
+  }
+  const proto = Object.getPrototypeOf(body);
+  if (proto !== Object.prototype && proto !== null) {
+    throw projectCreateInputError('转绘项目参数必须是普通对象');
+  }
+  for (const key of Object.keys(body)) {
+    if (PROJECT_POLICY_DANGEROUS_FIELDS.has(key) || !PROJECT_CREATE_FIELDS.has(key)) {
+      throw projectCreateInputError(`转绘项目不接受字段 ${key}`);
+    }
+  }
+}
+
+function normalizeCreateLocale(value) {
+  if (typeof value !== 'string') throw projectCreateInputError('default_locale 必须是单一语言代码');
+  const locale = value.trim();
+  if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$/.test(locale)) {
+    throw projectCreateInputError('default_locale 必须是有效单一语言代码');
+  }
+  return locale;
+}
+
+function normalizeCreateMarket(value) {
+  if (typeof value !== 'string') throw projectCreateInputError('default_market 必须是单一国家或地区代码');
+  const market = value.trim();
+  if (!/^[A-Z]{2}$/.test(market)) {
+    throw projectCreateInputError('default_market 必须是 2 位大写国家或地区代码');
+  }
+  return market;
+}
+
+function normalizeCreateLocalizationLevel(value) {
+  if (value == null || value === '') return 'faithful';
+  if (typeof value !== 'string') throw projectCreateInputError('localization_level 必须是字符串');
+  const level = value.trim();
+  if (!level) throw projectCreateInputError('localization_level 不能为空');
+  return level;
+}
+
+function identityPackInput(body) {
+  if (body == null || typeof body !== 'object' || Array.isArray(body)) {
+    throw identityPackInputError('角色身份包参数必须是对象');
+  }
+  for (const key of Object.keys(body)) {
+    if (!IDENTITY_PACK_FIELDS.has(key)) {
+      throw identityPackInputError(`角色身份包不接受字段 ${key}`);
+    }
+  }
+  for (const [snake, camel] of IDENTITY_PACK_FIELD_ALIASES) {
+    if (Object.prototype.hasOwnProperty.call(body, snake)
+      && Object.prototype.hasOwnProperty.call(body, camel)) {
+      throw identityPackInputError(`${snake} 与 ${camel} 不能同时提交`);
+    }
+  }
+  const read = (snake, camel) => (Object.prototype.hasOwnProperty.call(body, snake)
+    ? body[snake]
+    : body[camel]);
+  const targetActorLabelValue = read('target_actor_label', 'targetActorLabel');
+  if (typeof targetActorLabelValue !== 'string') {
+    throw identityPackInputError('target_actor_label 必须是字符串');
+  }
+  const targetActorLabel = targetActorLabelValue.trim();
+  if (!targetActorLabel || targetActorLabel.length > 100) {
+    throw identityPackInputError('target_actor_label 必须为 1 到 100 个字符');
+  }
+  const confirmedViewsValue = read('confirmed_views', 'confirmedViews');
+  if (!Array.isArray(confirmedViewsValue)) {
+    throw identityPackInputError('confirmed_views 必须是数组');
+  }
+  const confirmedViews = [];
+  const seenViews = new Set();
+  for (const value of confirmedViewsValue) {
+    if (typeof value !== 'string') {
+      throw identityPackInputError('confirmed_views 只能包含 front、profile、full_body');
+    }
+    const view = value.trim().toLowerCase();
+    if (!IDENTITY_PACK_VIEWS.has(view)) {
+      throw identityPackInputError('confirmed_views 只能包含 front、profile、full_body');
+    }
+    if (!seenViews.has(view)) {
+      seenViews.add(view);
+      confirmedViews.push(view);
+    }
+  }
+  const liveActionHumanConfirmed = read('live_action_human_confirmed', 'liveActionHumanConfirmed');
+  if (typeof liveActionHumanConfirmed !== 'boolean') {
+    throw identityPackInputError('live_action_human_confirmed 必须是布尔值');
+  }
+  const adultStatusValue = read('adult_status', 'adultStatus');
+  if (typeof adultStatusValue !== 'string'
+    || !['verified_18_plus', 'unverified'].includes(adultStatusValue.trim())) {
+    throw identityPackInputError('adult_status 必须是 verified_18_plus 或 unverified');
+  }
+  const identityConsistencyConfirmed = read(
+    'identity_consistency_confirmed',
+    'identityConsistencyConfirmed',
+  );
+  if (typeof identityConsistencyConfirmed !== 'boolean') {
+    throw identityPackInputError('identity_consistency_confirmed 必须是布尔值');
+  }
+  const hasPersonaOrigin = Object.prototype.hasOwnProperty.call(body, 'persona_origin')
+    || Object.prototype.hasOwnProperty.call(body, 'personaOrigin');
+  const personaOriginValue = read('persona_origin', 'personaOrigin');
+  if (hasPersonaOrigin && (typeof personaOriginValue !== 'string'
+    || personaOriginValue.trim() !== 'fictional_ai_generated')) {
+    throw identityPackInputError('persona_origin 必须是 fictional_ai_generated');
+  }
+  const hasTargetCountry = Object.prototype.hasOwnProperty.call(body, 'target_country')
+    || Object.prototype.hasOwnProperty.call(body, 'targetCountry');
+  const targetCountryValue = read('target_country', 'targetCountry');
+  if (hasTargetCountry && (typeof targetCountryValue !== 'string'
+    || targetCountryValue.trim() !== 'US')) {
+    throw identityPackInputError('target_country 必须是 US');
+  }
+  const expectedUpdatedAtValue = read('expected_updated_at', 'expectedUpdatedAt');
+  if (typeof expectedUpdatedAtValue !== 'string' || !expectedUpdatedAtValue.trim()) {
+    throw identityPackInputError('expected_updated_at 必须是非空字符串');
+  }
+  return {
+    target_actor_label: targetActorLabel,
+    confirmed_views: confirmedViews,
+    live_action_human_confirmed: liveActionHumanConfirmed,
+    adult_status: adultStatusValue.trim(),
+    identity_consistency_confirmed: identityConsistencyConfirmed,
+    ...(hasPersonaOrigin ? { persona_origin: personaOriginValue.trim() } : {}),
+    ...(hasTargetCountry ? { target_country: targetCountryValue.trim() } : {}),
+    expected_updated_at: expectedUpdatedAtValue.trim(),
+  };
+}
+
+function sanitizeIdentityPackResponse(value) {
+  if (Array.isArray(value)) return value.map(sanitizeIdentityPackResponse);
+  if (value && typeof value === 'object') {
+    const entries = [];
+    for (const [key, item] of Object.entries(value)) {
+      const normalized = String(key).replace(/[^a-z0-9]/gi, '').toLowerCase();
+      if (normalized === 'sourcerefjson' || normalized === 'storageroot' || normalized.endsWith('path')) continue;
+      entries.push([key, sanitizeIdentityPackResponse(item)]);
+    }
+    return Object.fromEntries(entries);
+  }
+  return value;
+}
+
+function referenceBundleInput(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw codedRouteError('REDRAW_REFERENCE_BUNDLE_INPUT_INVALID', '参考包参数必须是对象');
+  }
+  for (const key of Object.keys(body)) {
+    if (!REFERENCE_BUNDLE_FIELDS.has(key)) {
+      throw codedRouteError('REDRAW_REFERENCE_BUNDLE_INPUT_INVALID', `参考包不接受字段 ${key}`);
+    }
+  }
+  return Object.fromEntries(
+    [...REFERENCE_BUNDLE_FIELDS]
+      .filter((key) => Object.prototype.hasOwnProperty.call(body, key))
+      .map((key) => [key, body[key]]),
+  );
+}
+
+function sanitizeReferenceBundle(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (/^(?:[a-zA-Z]:[\\/]|\/|\\\\|file:\/\/|https?:\/\/)/i.test(trimmed)) return undefined;
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(sanitizeReferenceBundle).filter((item) => item !== undefined);
+  }
+  if (value && typeof value === 'object') {
+    const entries = [];
+    for (const [key, item] of Object.entries(value)) {
+      const normalized = String(key).replace(/[^a-z0-9]/gi, '').toLowerCase();
+      if (normalized === 'storageroot'
+        || normalized === 'reviewer'
+        || normalized === 'reviewerid'
+        || normalized === 'reviewedby'
+        || normalized === 'tenant'
+        || normalized.endsWith('tenantid')
+        || normalized === 'user'
+        || normalized.endsWith('userid')
+        || normalized.endsWith('path')
+        || normalized.endsWith('url')) {
+        continue;
+      }
+      const sanitized = sanitizeReferenceBundle(item);
+      if (sanitized !== undefined) entries.push([key, sanitized]);
+    }
+    return Object.fromEntries(entries);
+  }
+  return value;
+}
+
+function referenceBundleResponse(result) {
+  return {
+    shot_id: Number(result?.shot_id),
+    reference_bundle_hash: result?.reference_bundle_hash || null,
+    reference_bundle_updated_at: result?.reference_bundle_updated_at || null,
+    bundle: sanitizeReferenceBundle(result?.bundle || {}),
+  };
 }
 
 function rejectAliasPair(input, snake, camel) {
@@ -456,6 +801,55 @@ function batchGenerationInput(body) {
   }
   if (Object.prototype.hasOwnProperty.call(sanitized, 'count')) sanitized.count = 1;
   return sanitized;
+}
+
+function nativeAudioReviewInput(body) {
+  if (body == null || typeof body !== 'object' || Array.isArray(body)) {
+    throw codedRouteError('REDRAW_NATIVE_AUDIO_REVIEW_INVALID', '原生音轨审核参数必须是对象');
+  }
+  const decision = String(body.decision || '').trim();
+  const allowed = decision === 'rejected'
+    ? NATIVE_AUDIO_REVIEW_REJECT_FIELDS
+    : NATIVE_AUDIO_REVIEW_APPROVE_FIELDS;
+  for (const key of Object.keys(body)) {
+    if (!allowed.has(key)) {
+      throw codedRouteError('REDRAW_NATIVE_AUDIO_REVIEW_INVALID', `原生音轨审核不接受字段 ${key}`);
+    }
+  }
+  const validationHash = String(body.validation_hash || '').trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(validationHash)) {
+    throw codedRouteError('REDRAW_NATIVE_AUDIO_REVIEW_INVALID', 'validation_hash 必须是 64 位 hex');
+  }
+  const expectedUpdatedAt = String(body.expected_updated_at || '').trim();
+  if (!expectedUpdatedAt || Number.isNaN(Date.parse(expectedUpdatedAt))) {
+    throw codedRouteError('REDRAW_NATIVE_AUDIO_REVIEW_INVALID', 'expected_updated_at 必须是 ISO 时间');
+  }
+  if (decision === 'approved') {
+    for (const key of ['speaker_order', 'lip_sync', 'extra_dialogue']) {
+      if (body[key] !== 'passed') {
+        throw codedRouteError('REDRAW_NATIVE_AUDIO_REVIEW_INVALID', `${key} 必须为 passed`);
+      }
+    }
+    return {
+      validation_hash: validationHash,
+      expected_updated_at: expectedUpdatedAt,
+      decision,
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    };
+  }
+  if (decision === 'rejected') {
+    const reason = String(body.reason || '').trim();
+    if (!reason) throw codedRouteError('REDRAW_NATIVE_AUDIO_REVIEW_INVALID', '驳回必须填写 reason');
+    return {
+      validation_hash: validationHash,
+      expected_updated_at: expectedUpdatedAt,
+      decision,
+      reason,
+    };
+  }
+  throw codedRouteError('REDRAW_NATIVE_AUDIO_REVIEW_INVALID', 'decision 必须是 approved 或 rejected');
 }
 
 function localizationInputError(code, message, details) {
@@ -806,8 +1200,13 @@ function sendLocalizationError(res, error, fallbackMessage, log, context = {}) {
 
 function sendRedrawError(res, error, fallbackMessage, log, context = {}) {
   const code = String(error?.code || '');
+  if (code === 'REDRAW_IDENTITY_PROJECTION_FAILED') {
+    log?.error?.({ err: error, ...context }, fallbackMessage);
+    return response.error(res, 500, code, fallbackMessage);
+  }
   if (['REDRAW_WORK_NOT_FOUND', 'REDRAW_VERSION_NOT_FOUND', 'REDRAW_SHOT_NOT_FOUND',
-    'REDRAW_SHOT_TASK_NOT_FOUND', 'REDRAW_VIDEO_NOT_FOUND'].includes(code)) {
+    'REDRAW_SHOT_TASK_NOT_FOUND', 'REDRAW_VIDEO_NOT_FOUND',
+    'REDRAW_REFERENCE_BUNDLE_NOT_FOUND'].includes(code)) {
     return response.error(res, 404, code, error.message || fallbackMessage, error.details);
   }
   if (code === 'INSUFFICIENT_CREDITS') {
@@ -815,7 +1214,8 @@ function sendRedrawError(res, error, fallbackMessage, log, context = {}) {
   }
   if (['REDRAW_ASSET_REVIEW_REQUIRED', 'REDRAW_SHOT_CONFLICT', 'REDRAW_VERSION_CONFLICT',
     'REDRAW_SHOT_EDIT_CONFLICT', 'REDRAW_RETRY_UNCERTAIN', 'REDRAW_SHOT_RETRY_REQUIRED',
-    'REDRAW_SHOT_PRICING_UNCONFIGURED'].includes(code)) {
+    'REDRAW_SHOT_PRICING_UNCONFIGURED', 'REDRAW_NATIVE_AUDIO_REVIEW_CONFLICT',
+    'REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE', 'REDRAW_REFERENCE_BUNDLE_CONFLICT'].includes(code)) {
     return response.error(res, 409, code, error.message || fallbackMessage, error.details);
   }
   if (code.startsWith('REDRAW_') || code.startsWith('INVALID_')) {
@@ -881,6 +1281,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   const orchestrator = options.orchestrator || redrawOrchestrator;
   const shotService = options.shotService || redrawShotService;
   const generationService = options.generationService || redrawGenerationService;
+  const referenceBundleService = options.referenceBundleService || redrawReferenceBundleService;
   const localizationOrchestrator = options.localizationOrchestrator || redrawLocalizationOrchestrator;
   const assetBatchService = options.assetBatchService || {
     quoteAssetBatch: (ctx, input) => redrawAssetBatchService.quoteAssetBatch(db, { ...ctx, ...input }),
@@ -1118,7 +1519,8 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       ? db.prepare(`
         SELECT * FROM redraw_versions
         WHERE work_id = ? AND tenant_id = ? AND user_id = ?
-          AND version = ? AND COALESCE(status, '') != 'draft' AND deleted_at IS NULL
+          AND version = ? AND COALESCE(locale, '') != 'source'
+          AND COALESCE(status, '') != 'draft' AND deleted_at IS NULL
         LIMIT 1
       `).get(work.id, currentOwner.tenantId, currentOwner.userId, versionNumber)
       : null;
@@ -1126,6 +1528,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     return db.prepare(`
       SELECT * FROM redraw_versions
       WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+        AND COALESCE(locale, '') != 'source'
         AND COALESCE(status, '') != 'draft' AND deleted_at IS NULL
       ORDER BY version DESC, id DESC
       LIMIT 1
@@ -1530,22 +1933,71 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     if (!currentOwner.tenantId || !currentOwner.userId) {
       return response.badRequest(res, '缺少租户或用户身份');
     }
-    const title = String(req.body?.title || '').trim();
+    const body = req.body || {};
+    try {
+      validateProjectCreateBody(body);
+    } catch (error) {
+      return response.error(res, 400, error.code || 'REDRAW_PROJECT_CREATE_INVALID', error.message || '转绘项目参数无效');
+    }
+
+    const title = String(body.title || '').trim();
     if (!title) return response.badRequest(res, '请输入转绘项目标题');
+
+    const strictCreate = strictCreateProjectRequested(body);
+    let defaultLocale = 'en-US';
+    let defaultMarket = '';
+    let localizationLevel = 'faithful';
+    let policy = {
+      execution_mode: 'safe',
+      budget_limit_credits: null,
+      max_auto_attempts_per_shot: null,
+    };
+    try {
+      if (strictCreate) {
+        defaultLocale = normalizeCreateLocale(body.default_locale);
+        defaultMarket = normalizeCreateMarket(body.default_market);
+        localizationLevel = normalizeCreateLocalizationLevel(body.localization_level);
+      }
+      if (
+        hasOwn(body, 'execution_mode')
+        || hasOwn(body, 'budget_limit_credits')
+        || hasOwn(body, 'max_auto_attempts_per_shot')
+      ) {
+        policy = redrawProjectPolicyService.normalizeProjectPolicy({
+          ...(hasOwn(body, 'execution_mode') ? { execution_mode: body.execution_mode } : {}),
+          ...(hasOwn(body, 'budget_limit_credits')
+            ? { budget_limit_credits: body.budget_limit_credits }
+            : {}),
+          ...(hasOwn(body, 'max_auto_attempts_per_shot')
+            ? { max_auto_attempts_per_shot: body.max_auto_attempts_per_shot }
+            : {}),
+        });
+      }
+    } catch (error) {
+      const code = String(error.code || '').startsWith('REDRAW_PROJECT_POLICY_')
+        ? error.code
+        : 'REDRAW_PROJECT_CREATE_INVALID';
+      return response.error(res, 400, code, error.message || '转绘项目参数无效');
+    }
 
     const now = new Date().toISOString();
     const result = db.prepare(`
       INSERT INTO redraw_projects
         (tenant_id, user_id, title, default_locale, default_market, localization_level,
-         status, created_at, updated_at, deleted_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, NULL)
+         status, execution_mode, budget_limit_credits, max_auto_attempts_per_shot,
+         policy_version, automation_policy_json, created_at, updated_at, deleted_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, 1, ?, ?, ?, NULL)
     `).run(
       currentOwner.tenantId,
       currentOwner.userId,
       title,
-      String(req.body?.default_locale || 'en-US').trim() || 'en-US',
-      String(req.body?.default_market || '').trim(),
-      String(req.body?.localization_level || 'faithful').trim() || 'faithful',
+      defaultLocale,
+      defaultMarket,
+      localizationLevel,
+      policy.execution_mode,
+      policy.budget_limit_credits,
+      policy.max_auto_attempts_per_shot,
+      redrawProjectPolicyService.serverAutomationPolicySnapshotJson(),
       now,
       now,
     );
@@ -1556,6 +2008,81 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     const project = findOwnedProject(req.params.id, owner(req));
     if (!project) return response.notFound(res, '转绘项目不存在');
     return response.success(res, mapProject(project));
+  }
+
+  function updateProjectPolicy(req, res) {
+    const currentOwner = owner(req);
+    if (!findOwnedProject(req.params.id, currentOwner)) {
+      return response.error(res, 404, 'REDRAW_PROJECT_NOT_FOUND', '转绘项目不存在');
+    }
+    const body = req.body || {};
+    for (const key of Object.keys(body)) {
+      if (PROJECT_POLICY_DANGEROUS_FIELDS.has(key)) {
+        return response.error(
+          res,
+          400,
+          'REDRAW_PROJECT_POLICY_INVALID',
+          `项目策略不接受字段 ${key}`,
+        );
+      }
+      if (!PROJECT_POLICY_FIELDS.has(key)) {
+        return response.error(
+          res,
+          400,
+          'REDRAW_PROJECT_POLICY_UNKNOWN_FIELD',
+          `项目策略不接受字段 ${key}`,
+        );
+      }
+    }
+    if (!hasOwn(body, 'expected_updated_at') || !String(body.expected_updated_at || '').trim()) {
+      return response.error(
+        res,
+        400,
+        'REDRAW_PROJECT_POLICY_EXPECTED_UPDATED_AT_REQUIRED',
+        'expected_updated_at 必填',
+      );
+    }
+    try {
+      const updated = redrawProjectPolicyService.updateProjectPolicy(db, {
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        projectId: Number(req.params.id),
+        expectedUpdatedAt: body.expected_updated_at,
+        input: {
+          ...(hasOwn(body, 'execution_mode') ? { execution_mode: body.execution_mode } : {}),
+          ...(hasOwn(body, 'budget_limit_credits')
+            ? { budget_limit_credits: body.budget_limit_credits }
+            : {}),
+          ...(hasOwn(body, 'max_auto_attempts_per_shot')
+            ? { max_auto_attempts_per_shot: body.max_auto_attempts_per_shot }
+            : {}),
+        },
+      });
+      return response.success(res, updated);
+    } catch (error) {
+      if (error.code === 'REDRAW_PROJECT_NOT_FOUND') {
+        return response.error(res, 404, error.code, error.message || '转绘项目不存在');
+      }
+      if (error.code === 'REDRAW_PROJECT_POLICY_CONFLICT') {
+        return response.error(res, 409, error.code, error.message || '项目策略已被其他操作更新');
+      }
+      if (String(error.code || '').startsWith('REDRAW_PROJECT_POLICY_')) {
+        return response.error(res, 400, error.code, error.message || '项目策略参数无效');
+      }
+      log?.error?.({ err: error, projectId: req.params.id }, 'redraw project policy update failed');
+      return response.error(res, 500, 'INTERNAL_ERROR', '更新项目策略失败');
+    }
+  }
+
+  function listProjectEvents(req, res) {
+    const currentOwner = owner(req);
+    const project = findOwnedProject(req.params.id, currentOwner);
+    if (!project) return response.error(res, 404, 'REDRAW_PROJECT_NOT_FOUND', '转绘项目不存在');
+    return response.success(res, redrawWorkflowEventService.listProjectWorkflowEvents(db, {
+      tenantId: currentOwner.tenantId,
+      userId: currentOwner.userId,
+      projectId: Number(project.id),
+    }));
   }
 
   async function createWorks(req, res) {
@@ -1610,6 +2137,13 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
       const analysisTask = findOwnedAnalysisTask(work, currentOwner);
       const localizationTask = findOwnedLocalizationTask(work, currentVersion, currentOwner);
       const assetBatch = findCurrentAssetBatch(currentVersion, currentOwner);
+      const project = findOwnedProject(work.project_id, currentOwner);
+      const analysisDecision = redrawLocalizationOrchestrator.getAnalysisAutomationDecision(db, {
+        workId: work.id,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+      });
+      const localizationDecision = publicLocalizationDecision(localizationTask, currentVersion, project);
       const projectedWork = { ...work };
       projectedWork.current_version = currentVersion ? Number(currentVersion.version) : 0;
       if (
@@ -1628,6 +2162,8 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
           task: analysisTask,
           versionId: currentVersion?.id || null,
           analysisQuote: quoteAnalysis(db, log),
+          analysisDecision,
+          localizationDecision,
         }),
         analysis_task: publicTask(analysisTask),
         localization_task: publicTask(localizationTask),
@@ -1635,6 +2171,7 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
         workflow_phase: workflowPhase(projectedWork, analysisTask, localizationTask, assetBatch),
         analysis_billing: analysisBilling(work, currentOwner),
         localization_billing: localizationBilling(work, localizationTask, currentOwner),
+        reference_bundle_required: Number(currentVersion?.reference_bundle_required || 0) === 1,
         shots,
         batches,
       });
@@ -1651,9 +2188,18 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
       if (!reference || typeof reference !== 'object' || Array.isArray(reference)) {
         throw codedRouteError('REDRAW_SHOT_INVALID', 'references 项无效');
       }
-      const id = Number(reference.redraw_asset_id ?? reference.redrawAssetId ?? reference.asset_id ?? reference.assetId);
+      const historicalCharacterId = reference.character_asset_id ?? reference.characterAssetId;
+      const explicitKind = reference.kind == null ? null : String(reference.kind);
+      if (historicalCharacterId != null && explicitKind !== null && explicitKind !== 'character') {
+        throw codedRouteError('REDRAW_SHOT_INVALID', '分镜引用包含未知资产');
+      }
+      const id = Number(
+        reference.redraw_asset_id ?? reference.redrawAssetId ?? reference.asset_id ?? reference.assetId
+          ?? historicalCharacterId,
+      );
       const asset = Number.isSafeInteger(id) ? assetsById.get(id) : null;
-      if (!asset || (reference.kind && String(reference.kind) !== String(asset.kind))) {
+      const referenceKind = historicalCharacterId != null ? 'character' : explicitKind;
+      if (!asset || (referenceKind && referenceKind !== String(asset.kind))) {
         throw codedRouteError('REDRAW_SHOT_INVALID', '分镜引用包含未知资产');
       }
       if (!asset.localized_name) throw codedRouteError('REDRAW_SHOT_INVALID', '分镜引用资产缺少名称');
@@ -1725,6 +2271,9 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
         asset_id: asset.id,
         name: `__redraw_asset_${asset.id}`,
         display_name: asset.localized_name,
+        identity_binding: asset.kind === 'character'
+          ? redrawCharacterIdentityService.identityBindingForAsset(asset)
+          : null,
       }));
       const editableKeys = [
         'start_ms', 'end_ms', 'opening_state', 'continuous_action', 'ending_state',
@@ -1832,7 +2381,60 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
       tenantId: currentOwner.tenantId,
       userId: currentOwner.userId,
       canReadArtifact,
+      localeVerifier: options.localeVerifier,
     };
+  }
+
+  function referenceBundleContext(shot, currentOwner) {
+    const context = {
+      ...(options.referenceBundleOptions || {}),
+      db,
+      log,
+      cfg,
+      tenantId: currentOwner.tenantId,
+      userId: currentOwner.userId,
+      versionId: Number(shot.version_id),
+      storageRoot: storageRootFromConfig(cfg),
+      canReadArtifact,
+    };
+    const probeRunner = options.referenceBundleOptions?.probeRunner
+      || options.referenceBundleProbeRunner
+      || options.probeRunner
+      || options.generationOptions?.probeRunner;
+    if (probeRunner) context.probeRunner = probeRunner;
+    if (!context.now && options.clock) context.now = options.clock;
+    return context;
+  }
+
+  async function getReferenceBundle(req, res) {
+    const currentOwner = owner(req);
+    const shot = findOwnedShot(req.params.id, currentOwner);
+    if (!shot) return response.error(res, 404, 'REDRAW_SHOT_NOT_FOUND', '转绘镜头不存在');
+    try {
+      const result = await referenceBundleService.loadCurrentReferenceBundle(
+        referenceBundleContext(shot, currentOwner),
+        Number(shot.id),
+      );
+      return response.success(res, referenceBundleResponse(result));
+    } catch (error) {
+      return sendRedrawError(res, error, '读取逐镜参考包失败', log, { shotId: shot.id });
+    }
+  }
+
+  async function saveReferenceBundle(req, res) {
+    const currentOwner = owner(req);
+    const shot = findOwnedShot(req.params.id, currentOwner);
+    if (!shot) return response.error(res, 404, 'REDRAW_SHOT_NOT_FOUND', '转绘镜头不存在');
+    try {
+      const input = referenceBundleInput(req.body);
+      const result = await referenceBundleService.saveReferenceBundle(
+        referenceBundleContext(shot, currentOwner),
+        { shot_id: Number(shot.id), ...input },
+      );
+      return response.success(res, referenceBundleResponse(result));
+    } catch (error) {
+      return sendRedrawError(res, error, '保存逐镜参考包失败', log, { shotId: shot.id });
+    }
   }
 
   async function generateShot(req, res) {
@@ -1878,6 +2480,22 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
       return response.accepted(res, result);
     } catch (error) {
       return sendRedrawError(res, error, '提交转绘批量生成失败', log, { workId: work.id });
+    }
+  }
+
+  async function nativeAudioReview(req, res) {
+    const currentOwner = owner(req);
+    const shot = findOwnedShot(req.params.id, currentOwner);
+    if (!shot) return response.error(res, 404, 'REDRAW_SHOT_NOT_FOUND', '转绘镜头不存在');
+    try {
+      const input = {
+        ...nativeAudioReviewInput(req.body || {}),
+        shotId: shot.id,
+      };
+      const result = await generationService.reviewNativeAudio(generationContext(currentOwner), input);
+      return response.accepted(res, { shot_id: shot.id, ...result });
+    } catch (error) {
+      return sendRedrawError(res, error, '审核原生音轨失败', log, { shotId: shot.id });
     }
   }
 
@@ -1948,6 +2566,58 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
       tenantId: currentOwner.tenantId,
       userId: currentOwner.userId,
     }, { kind: req.query?.kind }));
+  }
+
+  function previewRedrawAsset(req, res) {
+    const currentOwner = owner(req);
+    const redrawAsset = findOwnedAsset(req.params.id, currentOwner);
+    if (!redrawAsset) return response.notFound(res, '资产预览不存在');
+    const variant = String(req.params.variant || '').trim().toLowerCase();
+    const providerAssetId = variant === 'primary'
+      ? redrawAsset.asset_id
+      : variant === 'clean_plate' && redrawAsset.kind === 'scene'
+        ? redrawAsset.clean_plate_asset_id
+        : null;
+    if (!providerAssetId) return response.notFound(res, '资产预览不存在');
+    const providerAsset = db.prepare(
+      'SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL',
+    ).get(Number(providerAssetId));
+    const mime = String(providerAsset?.mime_type || '').trim().toLowerCase();
+    if (!providerAsset || providerAsset.type !== 'image'
+      || !/^image\/(?:png|jpe?g|webp|avif)$/.test(mime)) {
+      return response.notFound(res, '资产预览不存在');
+    }
+    const root = storageRootFromConfig(cfg);
+    const candidate = safeStoragePath(root, providerAsset.local_path);
+    let absolutePath;
+    try {
+      const realRoot = fs.realpathSync(root);
+      const realCandidate = candidate ? fs.realpathSync(candidate) : null;
+      const relative = realCandidate ? path.relative(realRoot, realCandidate) : '';
+      if (!realCandidate || !relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+        return response.notFound(res, '资产预览不存在');
+      }
+      absolutePath = realCandidate;
+    } catch (_) {
+      return response.notFound(res, '资产预览不存在');
+    }
+    if (typeof res.setHeader === 'function') {
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+      res.setHeader('Content-Disposition', 'inline');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    }
+    if (typeof res.sendFile === 'function') {
+      return res.sendFile(absolutePath, (error) => {
+        if (error && !res.headersSent) response.notFound(res, '资产预览不存在');
+      });
+    }
+    const stream = fs.createReadStream(absolutePath);
+    stream.once('error', () => {
+      if (!res.headersSent) response.notFound(res, '资产预览不存在');
+      else if (typeof res.destroy === 'function') res.destroy();
+    });
+    return stream.pipe(res);
   }
 
   function listProductionVoices(req, res) {
@@ -2446,6 +3116,54 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     }
   }
 
+  function saveRedrawCharacterIdentityPack(req, res) {
+    const currentOwner = owner(req);
+    const asset = findOwnedAsset(req.params.id, currentOwner);
+    if (!asset) {
+      return response.error(res, 404, 'REDRAW_ASSET_NOT_FOUND', '转绘资产不存在');
+    }
+    try {
+      const saved = redrawCharacterIdentityService.saveIdentityPack({
+        db,
+        assetId: Number(asset.id),
+        versionId: Number(asset.version_id),
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        reviewerId: currentOwner.userId,
+        storageRoot: storageRootFromConfig(cfg),
+        canReadArtifact,
+        assetReader: {
+          canRead: (row) => Boolean(row && canReadArtifact(row.id)),
+        },
+      }, asset.id, identityPackInput(req.body));
+      const projected = redrawAssetService.listAssets(db, {
+        versionId: Number(asset.version_id),
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+      }).find((item) => Number(item.id) === Number(saved.id));
+      if (!projected) {
+        throw codedRouteError('REDRAW_IDENTITY_PROJECTION_FAILED', '保存角色身份包后无法读取当前资产投影');
+      }
+      const safeAsset = sanitizeIdentityPackResponse(projected);
+      return response.success(res, {
+        asset: safeAsset,
+        identity_pack: safeAsset.identity_pack,
+        identity_pack_status: safeAsset.identity_pack_status,
+        version_id: Number(asset.version_id),
+        status: 'asset_review',
+        current_step: 2,
+      });
+    } catch (error) {
+      if (['REDRAW_ASSET_NOT_FOUND', 'REDRAW_IDENTITY_ASSET_NOT_FOUND'].includes(error.code)) {
+        return response.error(res, 404, 'REDRAW_ASSET_NOT_FOUND', '转绘资产不存在');
+      }
+      if (['REDRAW_IDENTITY_CONFLICT', 'REDRAW_CHARACTER_IDENTITY_CONFLICT'].includes(error.code)) {
+        return response.error(res, 409, error.code, error.message || '角色资产已被其他操作更新');
+      }
+      return sendRedrawError(res, error, '保存角色身份包失败', log, { assetId: asset.id });
+    }
+  }
+
   function updateRedrawAsset(req, res) {
     const currentOwner = owner(req);
     const asset = findOwnedAsset(req.params.id, currentOwner);
@@ -2675,14 +3393,20 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     listProjects,
     createProject,
     getProject,
+    updateProjectPolicy,
+    listProjectEvents,
     createWorks,
     getWork,
     updateShot,
+    getReferenceBundle,
+    saveReferenceBundle,
     generateShot,
+    nativeAudioReview,
     generateBatch,
     localizationQuote,
     createVersion,
     listVersionAssets,
+    previewRedrawAsset,
     listProductionVoices,
     previewProductionVoice,
     assignVoice,
@@ -2697,6 +3421,7 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     downloadExport,
     generationGate,
     assetQuote,
+    saveRedrawCharacterIdentityPack,
     updateRedrawAsset,
     generateRedrawAsset,
     reviewRedrawAsset,

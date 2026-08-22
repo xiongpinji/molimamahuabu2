@@ -35,6 +35,13 @@ const TEST_UPSCALE_FILES = Object.freeze({
   },
 });
 
+function createVerifiedConfig(db, log, input) {
+  const config = aiConfigService.createConfig(db, log, input);
+  db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
+    .run(config.id);
+  return config;
+}
+
 function bufferSha256(value) {
   return createHash('sha256').update(value).digest('hex').toUpperCase();
 }
@@ -77,13 +84,6 @@ function responseRecorder() {
       return this;
     },
   };
-}
-
-function createVerifiedConfig(db, log, config) {
-  const created = aiConfigService.createConfig(db, log, config);
-  db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
-    .run(created.id);
-  return created;
 }
 
 function fakeSmartCutoutTool(root, extraArgs = [], overrides = {}) {
@@ -253,7 +253,7 @@ test('扩图只在本地参考图供应商能力可用时开放', async () => {
   assert.equal(localRes.payload.data.operations.outpaint.model, 'doubao-seedream-4-5');
   assert.deepEqual(
     localRes.payload.data.operations.outpaint.aspectRatios,
-    ['16:9', '2:1', '9:16', '1:1', '4:3', '3:4'],
+    ['16:9', '9:16', '1:1', '4:3', '3:4'],
   );
   assert.equal(localRes.payload.data.operations.markup_retouch.available, true);
   assert.equal(localRes.payload.data.operations.markup_retouch.engine, 'provider-image-edit');
@@ -386,6 +386,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
       supports_panorama: true,
       supports_panorama_scene: true,
       supports_image_ideation: true,
+      supports_portrait_texture: true,
+      supports_portrait_emotion: true,
       supports_angle_ideation: true,
       supports_character_views: true,
       supports_narrative_grid: true,
@@ -411,6 +413,10 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   assert.equal(supportedRes.payload.data.operations.panorama_scene.available, true);
   assert.equal(supportedRes.payload.data.operations.image_ideation.available, true);
   assert.equal(supportedRes.payload.data.operations.image_ideation.protocol, 'aihubcc');
+  assert.equal(supportedRes.payload.data.operations.portrait_texture.available, true);
+  assert.equal(supportedRes.payload.data.operations.portrait_texture.protocol, 'aihubcc');
+  assert.equal(supportedRes.payload.data.operations.portrait_emotion.available, true);
+  assert.equal(supportedRes.payload.data.operations.portrait_emotion.protocol, 'aihubcc');
   for (const operation of [
     'angle_ideation',
     'character_views',
@@ -446,6 +452,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   assert.equal(undeclaredRes.payload.data.operations.panorama.available, false);
   assert.equal(undeclaredRes.payload.data.operations.panorama_scene.available, false);
   assert.equal(undeclaredRes.payload.data.operations.image_ideation.available, false);
+  assert.equal(undeclaredRes.payload.data.operations.portrait_texture.available, false);
+  assert.equal(undeclaredRes.payload.data.operations.portrait_emotion.available, false);
   for (const operation of [
     'angle_ideation',
     'character_views',
@@ -480,6 +488,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   assert.equal(unsupportedRes.payload.data.operations.panorama.available, false);
   assert.equal(unsupportedRes.payload.data.operations.panorama_scene.available, false);
   assert.equal(unsupportedRes.payload.data.operations.image_ideation.available, false);
+  assert.equal(unsupportedRes.payload.data.operations.portrait_texture.available, false);
+  assert.equal(unsupportedRes.payload.data.operations.portrait_emotion.available, false);
   for (const operation of [
     'angle_ideation',
     'character_views',
@@ -574,6 +584,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
     assert.equal(strictRes.payload.data.operations.panorama.available, false, config.name);
     assert.equal(strictRes.payload.data.operations.panorama_scene.available, false, config.name);
     assert.equal(strictRes.payload.data.operations.image_ideation.available, false, config.name);
+    assert.equal(strictRes.payload.data.operations.portrait_texture.available, false, config.name);
+    assert.equal(strictRes.payload.data.operations.portrait_emotion.available, false, config.name);
     for (const operation of [
       'angle_ideation',
       'character_views',
@@ -584,6 +596,63 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
       assert.equal(strictRes.payload.data.operations[operation].available, false, config.name);
     }
   }
+});
+
+test('人像能力必须在严格审计适配器上独立显式声明', (t) => {
+  const log = { info() {}, error() {} };
+  const operationsFor = (settings, name) => {
+    const db = new Database(':memory:');
+    t.after(() => db.close());
+    runMigrationsAndEnsure(db);
+    createVerifiedConfig(db, log, {
+      service_type: 'storyboard_image',
+      provider: 'aihubcc',
+      api_protocol: 'aihubcc',
+      name,
+      base_url: 'https://aihubcc.cc/v1',
+      api_key: 'test-key',
+      model: ['gpt-image-2-3.5k'],
+      default_model: 'gpt-image-2-3.5k',
+      is_default: true,
+      settings: JSON.stringify(settings),
+    });
+    const handlers = createImageToolRoutes(db, log);
+    const res = responseRecorder();
+    handlers.capabilities({}, res);
+    return res.payload.data.operations;
+  };
+
+  const ideationOnly = operationsFor(
+    { supports_image_ideation: true },
+    '仅声明画面联想',
+  );
+  assert.equal(ideationOnly.image_ideation.available, true);
+  assert.equal(ideationOnly.portrait_texture.available, false);
+  assert.equal(ideationOnly.portrait_emotion.available, false);
+
+  const textureOnly = operationsFor(
+    { supports_portrait_texture: true },
+    '仅声明人像质感',
+  );
+  assert.equal(textureOnly.portrait_texture.available, true);
+  assert.equal(textureOnly.portrait_emotion.available, false);
+
+  const emotionOnly = operationsFor(
+    { supports_portrait_emotion: true },
+    '仅声明人像情绪',
+  );
+  assert.equal(emotionOnly.portrait_texture.available, false);
+  assert.equal(emotionOnly.portrait_emotion.available, true);
+
+  const bothPortraitOperations = operationsFor(
+    {
+      supports_portrait_texture: true,
+      supports_portrait_emotion: true,
+    },
+    '显式声明两个人像能力',
+  );
+  assert.equal(bothPortraitOperations.portrait_texture.available, true);
+  assert.equal(bothPortraitOperations.portrait_emotion.available, true);
 });
 
 test('图片节点能力会读取路由创建后保存的 AIHubCC 参考图配置', (t) => {
@@ -683,7 +752,10 @@ test('真实图片供应商请求把存储根内绝对参考图编码为 data UR
     model: ['doubao-seedream-4-5'],
     default_model: 'doubao-seedream-4-5',
     is_default: true,
-    settings: JSON.stringify({ supports_outpaint: true }),
+    settings: JSON.stringify({
+      supports_outpaint: true,
+      canvas_capabilities: { maxReferences: 2 },
+    }),
   });
 
   const result = await imageClient.callImageApi(db, {
@@ -1737,13 +1809,13 @@ test('扩图通过参考图供应商生成本地派生素材并保留原图', as
       sourceNodeId: 'image-node-outpaint',
       operation: 'outpaint',
       parameters: {
-        aspectRatio: '2:1',
-        direction: 'all',
+        aspectRatio: '16:9',
+        direction: 'right',
         top: 10,
         bottom: 20,
         left: 0,
         right: 60,
-        prompt: '向四周扩展为超广角镜头',
+        prompt: '向右延伸室内窗景',
       },
     },
   }, res);
@@ -1751,10 +1823,10 @@ test('扩图通过参考图供应商生成本地派生素材并保留原图', as
   assert.equal(res.statusCode, 201, JSON.stringify(res.payload));
   assert.equal(res.payload.data.operation, 'outpaint');
   assert.equal(generationRequest.referenceImage, sourcePath);
-  assert.equal(generationRequest.aspectRatio, '2:1');
-  assert.match(generationRequest.prompt, /向四周均匀延伸/);
+  assert.equal(generationRequest.aspectRatio, '16:9');
+  assert.match(generationRequest.prompt, /向右延伸/);
   assert.match(generationRequest.prompt, /上方 10%.*右侧 60%/);
-  assert.match(generationRequest.prompt, /向四周扩展为超广角镜头/);
+  assert.match(generationRequest.prompt, /向右延伸室内窗景/);
   const resultAsset = assetService.getById(db, res.payload.data.resultAssetId);
   assert.ok(resultAsset);
   assert.notEqual(resultAsset.id, sourceAsset.id);
@@ -1762,19 +1834,19 @@ test('扩图通过参考图供应商生成本地派生素材并保留原图', as
   assert.equal(resultAsset.metadata.engine, 'provider-image-edit');
   assert.equal(resultAsset.metadata.engineVersion, 'volcengine:doubao-seedream-4-5');
   assert.deepEqual(resultAsset.metadata.parameters, {
-    aspectRatio: '2:1',
-    direction: 'all',
+    aspectRatio: '16:9',
+    direction: 'right',
     top: 10,
     bottom: 20,
     left: 0,
     right: 60,
-    prompt: '向四周扩展为超广角镜头',
+    prompt: '向右延伸室内窗景',
   });
   assert.equal(fs.existsSync(sourcePath), true);
   assert.equal(fs.existsSync(resultAsset.local_path), true);
   const outputMetadata = await sharp(resultAsset.local_path).metadata();
-  assert.equal(outputMetadata.width, 3840);
-  assert.equal(outputMetadata.height, 1920);
+  assert.equal(outputMetadata.width, 160);
+  assert.equal(outputMetadata.height, 90);
   const task = taskService.getTask(db, res.payload.data.taskId);
   assert.equal(task.status, 'completed');
   assert.equal(JSON.parse(task.result).resultAssetId, resultAsset.id);
@@ -2896,6 +2968,75 @@ test('宫格裁剪仅返回选中派生素材并保留首图兼容字段', async
   }
   assert.equal(db.prepare('SELECT COUNT(*) AS total FROM assets').get().total, 4);
   assert.equal(fs.existsSync(sourcePath), true);
+});
+
+test('自由宫格裁剪对选中框应用间距并保留复制和吸附快照', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-image-tools-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+
+  const now = new Date().toISOString();
+  const dramaId = db.prepare(
+    `INSERT INTO dramas (title, status, created_at, updated_at)
+     VALUES ('自由宫格裁剪测试', 'draft', ?, ?)`,
+  ).run(now, now).lastInsertRowid;
+  const sourcePath = path.join(storageRoot, 'source.png');
+  await sharp({
+    create: {
+      width: 64,
+      height: 64,
+      channels: 4,
+      background: '#ffffff',
+    },
+  }).png().toFile(sourcePath);
+  const sourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'source.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/source.png',
+    local_path: sourcePath,
+  });
+  const handlers = createImageToolRoutes(db, { info() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+  });
+  const res = responseRecorder();
+
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-free-grid',
+      operation: 'grid_crop',
+      parameters: {
+        rows: 2,
+        columns: 2,
+        spacing: 2,
+        snap: false,
+        boxes: [
+          { id: '0:0', row: 0, column: 0, left: 0, top: 0, width: 0.5, height: 0.5 },
+          { id: '0:1', row: 0, column: 1, left: 0.5, top: 0, width: 0.5, height: 0.5 },
+          { id: '1:0', row: 1, column: 0, left: 0, top: 0.5, width: 0.5, height: 0.5 },
+          { id: '1:1', row: 1, column: 1, left: 0.5, top: 0.5, width: 0.5, height: 0.5 },
+        ],
+        selectedCells: ['0:1'],
+        duplicateCells: ['0:1'],
+      },
+    },
+  }, res);
+
+  assert.equal(res.statusCode, 201, JSON.stringify(res.payload));
+  assert.equal(res.payload.data.resultAssets.length, 2);
+  for (const item of res.payload.data.resultAssets) {
+    const resultAsset = assetService.getById(db, item.id);
+    assert.equal(resultAsset.metadata.parameters.spacing, 2);
+    assert.equal(resultAsset.metadata.parameters.snap, false);
+    assert.deepEqual(resultAsset.metadata.parameters.duplicateCells, ['0:1']);
+    const metadata = await sharp(resultAsset.local_path).metadata();
+    assert.equal(metadata.width, 30);
+    assert.equal(metadata.height, 30);
+  }
 });
 
 test('图片调整保存完整参数并通过 CPU 生成差异素材', async (t) => {

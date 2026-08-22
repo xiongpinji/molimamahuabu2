@@ -25,9 +25,9 @@ const fastCapability = Object.freeze({
   resolutions: ['480p', '720p'],
   durations: Array.from({ length: 12 }, (_, index) => index + 4),
   quantities: [1],
-  maxReferences: 1,
-  maxVideoReferences: 1,
-  maxAudioReferences: 1,
+  maxReferences: 9,
+  maxVideoReferences: 3,
+  maxAudioReferences: 3,
   supportsFirstFrame: true,
   supportsLastFrame: true,
   supportsImageReference: true,
@@ -155,7 +155,7 @@ test('画布能力目录同步 ToAPIs 分辨率、时长、展示名和公开备
   assert.deepEqual(canvasModelCapability(catalog, 'video', 'seedance-2-mini').durations, [4, 8, 10, 12, 15])
 })
 
-test('画布首尾帧与全能参考按模式互斥并严格采用真实验证上限', () => {
+test('画布首尾帧与全能参考互斥且全能模式完整透传图片视频音频数组', () => {
   const references = [
     { kind: 'image', url: 'https://cdn.example/first.png', slot: 'first-frame', order: 0 },
     { kind: 'image', url: 'https://cdn.example/second.png', slot: 'reference-image', order: 1 },
@@ -164,15 +164,10 @@ test('画布首尾帧与全能参考按模式互斥并严格采用真实验证�
     { kind: 'audio', url: 'https://cdn.example/voice-a.mp3', slot: 'reference-audio', order: 4 },
     { kind: 'audio', url: 'https://cdn.example/voice-b.mp3', slot: 'reference-audio', order: 5 },
   ]
-  const firstLastRequest = buildFreeCanvasGenerationRequest({
+  assert.throws(() => buildFreeCanvasGenerationRequest({
     kind: 'video', content: '跟随参考素材', model: 'seedance-2-fast', aspectRatio: '16:9',
     duration: 8, resolution: '480p', videoReferenceMode: 'first-last', includeAudio: false,
-  }, { dramaId: 7, upstreamReferences: references, capability: fastCapability })
-  assert.equal(firstLastRequest.reference_mode, 'first_last')
-  assert.equal(firstLastRequest.first_frame_url, 'https://cdn.example/first.png')
-  assert.equal(firstLastRequest.last_frame_url, 'https://cdn.example/second.png')
-  assert.equal('reference_video_urls' in firstLastRequest, false)
-  assert.equal('reference_audio_urls' in firstLastRequest, false)
+  }, { dramaId: 7, upstreamReferences: references, capability: fastCapability }), /首尾帧模式与全能参考模式互斥/)
 
   const request = buildFreeCanvasGenerationRequest({
     kind: 'video', content: '跟随参考素材', model: 'seedance-2-fast', aspectRatio: '16:9',
@@ -181,12 +176,15 @@ test('画布首尾帧与全能参考按模式互斥并严格采用真实验证�
   assert.equal(request.reference_mode, 'omni')
   assert.deepEqual(request.reference_image_urls, [
     'https://cdn.example/first.png',
+    'https://cdn.example/second.png',
   ])
   assert.deepEqual(request.reference_video_urls, [
     'https://cdn.example/motion-a.mp4',
+    'https://cdn.example/motion-b.mp4',
   ])
   assert.deepEqual(request.reference_audio_urls, [
     'https://cdn.example/voice-a.mp3',
+    'https://cdn.example/voice-b.mp3',
   ])
   assert.equal(request.generate_audio, false)
   assert.equal('first_frame_url' in request, false)

@@ -6,6 +6,8 @@ const path = require('path');
 const AdmZip = require('adm-zip');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const { hasLocalFfprobe } = require('../src/utils/ffmpegPath');
+const { MINIMAL_MP4 } = require('./fixtures/media');
 const {
   validateSourceFile,
   safeZipEntry,
@@ -92,15 +94,15 @@ test('validateSourceFile rejects a spoofed mp4 before probing video facts', asyn
   assert.equal(probed, false);
 });
 
-test('validateSourceFile accepts the 15s and 60min single-file boundaries', async (t) => {
+test('validateSourceFile accepts the 12s and 60min single-file boundaries by default', async (t) => {
   const dir = makeTempDir(t);
   const filePath = path.join(dir, 'source.mp4');
   writeMp4(filePath, 'boundary');
   const upload = makeUpload(filePath, { size: fs.statSync(filePath).size });
-  const limits = { maxBytes: 1024, minDurationMs: 15000, maxDurationMs: 3600000 };
+  const limits = { maxBytes: 1024, maxDurationMs: 3600000 };
 
   const min = await validateSourceFile(upload, limits, async () => ({
-    duration_ms: 15000,
+    duration_ms: 12000,
     width: 1280,
     height: 720,
   }));
@@ -111,9 +113,25 @@ test('validateSourceFile accepts the 15s and 60min single-file boundaries', asyn
   }));
 
   assert.equal(min.kind, 'mp4');
-  assert.equal(min.duration_ms, 15000);
+  assert.equal(min.duration_ms, 12000);
   assert.equal(max.duration_ms, 3600000);
   assert.match(min.sha256, /^[a-f0-9]{64}$/);
+});
+
+test('validateSourceFile respects an explicit 15s minimum override', async (t) => {
+  const dir = makeTempDir(t);
+  const filePath = path.join(dir, 'explicit-min.mp4');
+  writeMp4(filePath, 'explicit-min');
+  const upload = makeUpload(filePath, { size: fs.statSync(filePath).size });
+
+  await assert.rejects(
+    () => validateSourceFile(
+      upload,
+      { maxBytes: 1024, minDurationMs: 15000, maxDurationMs: 3600000 },
+      async () => ({ duration_ms: 12000, width: 1280, height: 720 }),
+    ),
+    (error) => error?.code === 'REDRAW_SOURCE_DURATION_OUT_OF_RANGE',
+  );
 });
 
 test('expandSourceUpload rejects zip path traversal and cleans extraction temp files', async (t) => {
@@ -197,7 +215,7 @@ test('expandSourceUpload enforces zip entry count and total expanded size limits
   );
 });
 
-test('expandSourceUpload validates zip item duration between 15s and 180s and returns only controlled urls', async (t) => {
+test('expandSourceUpload validates zip item duration between 12s and 180s by default and returns only controlled urls', async (t) => {
   const dir = makeTempDir(t);
   const storageRoot = path.join(dir, 'storage');
   const zipPath = path.join(dir, 'sources.zip');
@@ -214,7 +232,6 @@ test('expandSourceUpload validates zip item duration between 15s and 180s and re
         maxBytes: 1024 * 1024,
         zipMaxEntries: 20,
         zipMaxTotalBytes: 1024 * 1024,
-        zipMinDurationMs: 15000,
         zipMaxDurationMs: 180000,
         assetUrlPrefix: '/static/redraw-sources',
       },
@@ -229,12 +246,11 @@ test('expandSourceUpload validates zip item duration between 15s and 180s and re
       maxBytes: 1024 * 1024,
       zipMaxEntries: 20,
       zipMaxTotalBytes: 1024 * 1024,
-      zipMinDurationMs: 15000,
       zipMaxDurationMs: 180000,
       assetUrlPrefix: '/static/redraw-sources',
       storageRoot,
     },
-    async () => ({ duration_ms: 180000, width: 1280, height: 720 }),
+    async () => ({ duration_ms: 12000, width: 1280, height: 720 }),
   );
 
   assert.equal(items.length, 1);
@@ -244,7 +260,7 @@ test('expandSourceUpload validates zip item duration between 15s and 180s and re
   assert.equal(JSON.stringify(items).includes(dir), false);
   assert.equal(JSON.stringify(items).includes(storageRoot), false);
   assert.equal(fs.existsSync(path.join(storageRoot, items[0].local_path)), true);
-  assert.equal(items[0].duration_ms, 180000);
+  assert.equal(items[0].duration_ms, 12000);
 });
 
 test('expandSourceUpload returns one item for a single source upload', async (t) => {
@@ -271,6 +287,27 @@ test('expandSourceUpload returns one item for a single source upload', async (t)
   assert.equal(items[0].url, `/static/${items[0].local_path}`);
   assert.equal(JSON.stringify(items).includes(dir), false);
   assert.equal(JSON.stringify(items).includes(storageRoot), false);
+  assert.equal(fs.existsSync(path.join(storageRoot, items[0].local_path)), true);
+});
+
+test('expandSourceUpload uses the resolved ffprobe when the production route does not inject one', async (t) => {
+  if (!hasLocalFfprobe()) return t.skip('ffprobe unavailable');
+  const dir = makeTempDir(t);
+  const storageRoot = path.join(dir, 'storage');
+  const filePath = path.join(dir, 'real-minimal.mp4');
+  fs.writeFileSync(filePath, MINIMAL_MP4);
+
+  const items = await expandSourceUpload(makeUpload(filePath), {
+    maxBytes: 1024 * 1024,
+    minDurationMs: 1,
+    maxDurationMs: 1000,
+    storageRoot,
+  });
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0].width, 16);
+  assert.equal(items[0].height, 16);
+  assert.equal(items[0].duration_ms > 0, true);
   assert.equal(fs.existsSync(path.join(storageRoot, items[0].local_path)), true);
 });
 

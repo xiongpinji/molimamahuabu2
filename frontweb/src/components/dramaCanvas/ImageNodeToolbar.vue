@@ -707,10 +707,35 @@
           <el-form-item label="列数">
             <el-input-number v-model="gridForm.columns" :min="1" :max="7" @change="resetGridBoxes" />
           </el-form-item>
+          <el-form-item :label="`宫格间距 ${gridForm.spacing}px`">
+            <el-slider v-model="gridForm.spacing" :min="0" :max="48" :step="1" />
+          </el-form-item>
+          <div
+            class="grid-cell-selection"
+            :style="gridCellSelectionStyle"
+            aria-label="宫格选择"
+          >
+            <button
+              v-for="box in gridCropBoxes"
+              :key="box.id"
+              type="button"
+              :class="{ selected: gridSelectedCells.includes(box.id) }"
+              :aria-label="`第 ${box.row + 1} 行第 ${box.column + 1} 列`"
+              :aria-pressed="gridSelectedCells.includes(box.id)"
+              @click="toggleGridCell(box.id)"
+            />
+          </div>
           <div class="grid-selection-actions">
+            <el-button size="small" @click="selectAllGridCells">全选</el-button>
+            <el-button size="small" @click="clearGridSelection">取消全选</el-button>
+            <el-button size="small" @click="invertGridSelection">反选</el-button>
+            <el-button size="small" :disabled="!gridSelectedCells.length" @click="duplicateGridSelection">
+              复制选区（{{ gridDuplicateCells.length }}）
+            </el-button>
             <el-button size="small" @click="resetGridBoxes">重置均分</el-button>
             <el-button size="small" @click="redetectGrid">重新识别</el-button>
-            <span>可独立移动和缩放 {{ gridCropBoxes.length }} 个裁剪框</span>
+            <el-checkbox v-model="gridSnapEnabled">吸附对齐</el-checkbox>
+            <span>已选择 {{ gridSelectedCells.length }} / {{ gridCropBoxes.length }} 格；可独立移动和缩放 {{ gridCropBoxes.length }} 个裁剪框</span>
           </div>
           <p class="crop-hint">拖动框体调整位置，拖动八个控制点调整大小；框之间可以重叠或留空。</p>
         </template>
@@ -943,9 +968,16 @@ const gridQuickLayouts = Object.freeze([
   { label: '4 宫格', rows: 2, columns: 2 },
   { label: '6 宫格', rows: 2, columns: 3 },
   { label: '9 宫格', rows: 3, columns: 3 },
+  { label: '4x4', rows: 4, columns: 4 },
+  { label: '5x5', rows: 5, columns: 5 },
+  { label: '6x6', rows: 6, columns: 6 },
+  { label: '7x7', rows: 7, columns: 7 },
 ])
-const gridForm = ref({ rows: 2, columns: 3 })
-const gridCropBoxes = ref(createGridCropBoxes(2, 3))
+const gridForm = ref({ rows: 3, columns: 3, spacing: 0 })
+const gridCropBoxes = ref(createGridCropBoxes(3, 3))
+const gridSelectedCells = ref(gridCropBoxes.value.map((box) => box.id))
+const gridDuplicateCells = ref([])
+const gridSnapEnabled = ref(true)
 const gridActiveBoxId = ref('0:0')
 const gridCropImage = ref(null)
 const gridCropSurface = ref(null)
@@ -1834,11 +1866,49 @@ function removeMarkupLayer(index) {
 
 function resetGridBoxes() {
   gridCropBoxes.value = createGridCropBoxes(gridForm.value.rows, gridForm.value.columns)
+  gridSelectedCells.value = gridCropBoxes.value.map((box) => box.id)
+  gridDuplicateCells.value = []
   gridActiveBoxId.value = gridCropBoxes.value[0]?.id || ''
 }
 
+const gridCellSelectionStyle = computed(() => ({
+  gridTemplateColumns: `repeat(${gridForm.value.columns}, minmax(0, 1fr))`,
+  gridTemplateRows: `repeat(${gridForm.value.rows}, minmax(0, 1fr))`,
+}))
+
+function selectAllGridCells() {
+  gridSelectedCells.value = gridCropBoxes.value.map((box) => box.id)
+}
+
+function clearGridSelection() {
+  gridSelectedCells.value = []
+  gridDuplicateCells.value = []
+}
+
+function invertGridSelection() {
+  const selected = new Set(gridSelectedCells.value)
+  gridSelectedCells.value = gridCropBoxes.value
+    .map((box) => box.id)
+    .filter((id) => !selected.has(id))
+  gridDuplicateCells.value = gridDuplicateCells.value
+    .filter((id) => gridSelectedCells.value.includes(id))
+}
+
+function duplicateGridSelection() {
+  gridDuplicateCells.value = [...gridSelectedCells.value]
+}
+
+function toggleGridCell(id) {
+  if (gridSelectedCells.value.includes(id)) {
+    gridSelectedCells.value = gridSelectedCells.value.filter((value) => value !== id)
+    gridDuplicateCells.value = gridDuplicateCells.value.filter((value) => value !== id)
+    return
+  }
+  gridSelectedCells.value = [...gridSelectedCells.value, id]
+}
+
 function applyGridLayout(layout) {
-  gridForm.value = { rows: layout.rows, columns: layout.columns }
+  gridForm.value = { ...gridForm.value, rows: layout.rows, columns: layout.columns }
   resetGridBoxes()
 }
 
@@ -1881,7 +1951,13 @@ function finishGridCropPointer(event) {
 function updateGridCropPointer(event) {
   const session = activeGridPointer
   if (!session || nodeBusy.value) return
-  const delta = gridCropPointerDelta(event, session)
+  const rawDelta = gridCropPointerDelta(event, session)
+  const delta = gridSnapEnabled.value
+    ? {
+        x: Math.round(rawDelta.x * (gridCropImageSize.value.width || 1000)) / (gridCropImageSize.value.width || 1000),
+        y: Math.round(rawDelta.y * (gridCropImageSize.value.height || 1000)) / (gridCropImageSize.value.height || 1000),
+      }
+    : rawDelta
   const nextBox = session.handle
     ? resizeGridCropBox(
       session.startBox,
@@ -2019,10 +2095,14 @@ function operationParameters() {
   if (editorOperation.value === 'mirror') return { direction: mirrorDirection.value }
   if (editorOperation.value === 'rotate') return { angle: rotateAngle.value }
   if (editorOperation.value === 'grid_crop') {
-    if (!gridCropBoxes.value.length) throw new Error('请至少保留一个宫格裁剪框')
+    if (!gridCropBoxes.value.length || !gridSelectedCells.value.length) throw new Error('请至少选择一个宫格区域')
     return {
       ...gridForm.value,
       boxes: gridCropBoxes.value.map((box) => ({ ...box })),
+      selectedCells: [...gridSelectedCells.value],
+      duplicateCells: [...gridDuplicateCells.value],
+      spacing: gridForm.value.spacing,
+      snap: gridSnapEnabled.value,
     }
   }
   if (editorOperation.value === 'adjust') return { ...adjustForm.value, curves: adjustCurves.value }
@@ -2857,6 +2937,26 @@ function requestFullscreen() {
   gap: 8px;
   margin-bottom: 12px;
   color: #a1a1aa;
+}
+
+.grid-cell-selection {
+  display: grid;
+  min-height: 132px;
+  margin-bottom: 12px;
+}
+
+.grid-cell-selection button {
+  min-width: 0;
+  min-height: 28px;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 72%);
+  background: rgb(9 9 11 / 58%);
+  cursor: pointer;
+}
+
+.grid-cell-selection button.selected {
+  background: rgb(99 102 241 / 16%);
+  box-shadow: 0 0 0 2px #818cf8 inset;
 }
 
 .grid-quick-sizes {

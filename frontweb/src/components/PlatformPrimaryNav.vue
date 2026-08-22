@@ -25,6 +25,7 @@
       剧本分析
     </RouterLink>
     <RouterLink
+      v-if="redrawEntryVisible"
       to="/redraw"
       class="platform-primary-nav__link"
       :class="{ 'is-active': redrawActive }"
@@ -46,9 +47,13 @@
 <script setup>
 import { computed } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
+import { shouldShowRedrawEntry } from '@/utils/redrawEntryVisibility'
 
 const route = useRoute()
 
+const redrawEntryVisible = shouldShowRedrawEntry({
+  isProduction: import.meta.env.PROD,
+})
 const homeActive = computed(() => route.name === 'list')
 const canvasActive = computed(() => ['canvas-projects', 'standalone-canvas', 'home-canvas-local'].includes(route.name))
 const scriptAnalysisActive = computed(() => route.name === 'script-analysis')

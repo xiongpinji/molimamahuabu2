@@ -4,7 +4,12 @@ const creditLedger = require('./creditLedgerService');
 const modelPrice = require('./modelPriceService');
 const taskService = require('./taskService');
 const { normalizeSourceFacts } = require('./redrawAnalysisService');
+const {
+  evaluateAutomationDecision,
+  requiredAnalysisConfidenceKeys,
+} = require('./redrawAutomationPolicyService');
 const redrawGenerationService = require('./redrawGenerationService');
+const { appendWorkflowEvent } = require('./redrawWorkflowEventService');
 
 const DEFAULT_RESUME_QUERY_TIMEOUT_MS = 10_000;
 const RESUME_ERROR_SNIPPET_LIMIT = 512;
@@ -21,6 +26,15 @@ function parseSettings(row) {
     return typeof row.settings === 'string' ? JSON.parse(row.settings) : row.settings;
   } catch (_) {
     return {};
+  }
+}
+
+function parseJson(value, fallback = {}) {
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : fallback;
+  } catch (_) {
+    return fallback;
   }
 }
 
@@ -394,8 +408,250 @@ function markNeedsAttention(db, task, work, message) {
   );
 }
 
-function writeFactsOnce(db, work, normalized) {
+function readProjectPolicy(db, work) {
+  const columns = tableColumns(db, 'redraw_works');
+  if (!columns.has('project_id') || !columns.has('tenant_id') || !columns.has('user_id') || !work.project_id) return null;
+  try {
+    return db.prepare(`
+      SELECT id, tenant_id, user_id, execution_mode, budget_limit_credits,
+             automation_policy_json, policy_version, updated_at
+      FROM redraw_projects
+      WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+    `).get(Number(work.project_id), String(work.tenant_id || ''), String(work.user_id || '')) || null;
+  } catch (error) {
+    if (/no such table|no such column/i.test(String(error.message || ''))) return null;
+    throw error;
+  }
+}
+
+function analysisGates(normalized) {
+  return {
+    media: Number(normalized.duration_ms) > 0 && Array.isArray(normalized.shots) && normalized.shots.length > 0,
+    timeline: Array.isArray(normalized.shots) && normalized.shots.length > 0,
+    facts: Array.isArray(normalized.characters) && normalized.characters.length > 0
+      && Array.isArray(normalized.scenes) && normalized.scenes.length > 0
+      && Array.isArray(normalized.props) && normalized.props.length > 0,
+  };
+}
+
+function analysisConfidence(normalized) {
+  const result = {};
+  for (const key of requiredAnalysisConfidenceKeys) {
+    let min = null;
+    let complete = true;
+    for (const shot of normalized.shots || []) {
+      const value = shot?.confidence?.[key];
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        complete = false;
+        break;
+      }
+      min = min == null ? value : Math.min(min, value);
+    }
+    if (complete && min != null) result[key] = min;
+  }
+  return result;
+}
+
+function parseAutomationPolicy(project) {
+  if (project?.automation_policy_json == null || String(project.automation_policy_json).trim() === '') {
+    return { ok: false, code: 'project_policy_missing', policy: null };
+  }
+  try {
+    const parsed = typeof project.automation_policy_json === 'string'
+      ? JSON.parse(project.automation_policy_json)
+      : project.automation_policy_json;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, code: 'project_policy_missing', policy: null };
+    }
+    return { ok: true, policy: parsed };
+  } catch (_) {
+    return { ok: false, code: 'project_policy_invalid', policy: null };
+  }
+}
+
+function decisionFromReason(reasonCode, factsHash, projectStatus = 'blocked', policyVersion = 0) {
+  return {
+    action: projectStatus === 'blocked' ? 'blocked' : 'needs_review',
+    effective_mode: 'safe',
+    reason_codes: [reasonCode],
+    policy_version: Number(policyVersion || 0),
+    evidence_hash: factsHash,
+    effective_analysis_state: projectStatus,
+  };
+}
+
+function enrichAutomationDecision(decision, outcome, factsHash) {
+  if (!decision) return null;
+  return {
+    action: decision.action,
+    effective_mode: decision.effective_mode,
+    reason_codes: Array.isArray(decision.reason_codes) ? [...decision.reason_codes] : [],
+    policy_version: Number(outcome?.project?.policy_version || 0),
+    evidence_hash: factsHash,
+    effective_analysis_state: outcome?.projectStatus || (decision.action === 'advance' ? 'asset_review' : 'analysis_review'),
+  };
+}
+
+function taskResultPayload(work, version, resultAssetId, factsHash, decision) {
+  return {
+    status: 'completed',
+    work_id: work.id,
+    version_id: Number(version.id),
+    result_asset_id: resultAssetId,
+    facts_hash: factsHash,
+    automation_decision: decision,
+  };
+}
+
+function persistedAutomationDecision(task, factsHash, versionId, policyVersion) {
+  const parsed = parseJson(task?.result, null);
+  const decision = parsed?.automation_decision;
+  if (
+    !decision
+    || Number(parsed?.version_id) !== Number(versionId)
+    || !['advance', 'needs_review', 'blocked'].includes(decision.action)
+    || !['auto', 'safe'].includes(decision.effective_mode)
+    || !Array.isArray(decision.reason_codes)
+    || typeof decision.evidence_hash !== 'string'
+    || decision.evidence_hash !== factsHash
+    || Number(decision.policy_version) !== Number(policyVersion)
+    || typeof decision.effective_analysis_state !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    action: decision.action,
+    effective_mode: decision.effective_mode,
+    reason_codes: [...decision.reason_codes].sort(),
+    policy_version: Number(decision.policy_version || 0),
+    evidence_hash: decision.evidence_hash,
+    effective_analysis_state: decision.effective_analysis_state,
+  };
+}
+
+function projectPolicyVersion(db, work) {
+  const project = readProjectPolicy(db, work);
+  return project ? Number(project.policy_version || 0) : 0;
+}
+
+function eventAutomationDecision(db, work, version, factsHash) {
+  if (!work.project_id) return null;
+  const policyVersion = projectPolicyVersion(db, work);
+  if (!policyVersion) return null;
+  const row = db.prepare(`
+    SELECT *
+    FROM redraw_workflow_events
+    WHERE tenant_id = ? AND user_id = ? AND project_id = ?
+      AND resource_type = 'version' AND resource_id = ?
+      AND reason_code = 'analysis_completed' AND evidence_hash = ?
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(String(work.tenant_id || ''), String(work.user_id || ''), Number(work.project_id), String(version.id), factsHash);
+  const metadata = parseJson(row?.metadata_json, null);
+  if (
+    !metadata
+    || !['advance', 'needs_review', 'blocked'].includes(metadata.action)
+    || !['auto', 'safe'].includes(metadata.effective_mode)
+    || !Array.isArray(metadata.reason_codes)
+    || Number(metadata.policy_version) !== policyVersion
+  ) {
+    return null;
+  }
+  return {
+    action: metadata.action,
+    effective_mode: metadata.effective_mode,
+    reason_codes: [...metadata.reason_codes].map(String).sort(),
+    policy_version: policyVersion,
+    evidence_hash: factsHash,
+    effective_analysis_state: String(row.to_state || ''),
+  };
+}
+
+function reservationIsHeld(db, reservationId) {
+  return creditLedger.getReservation(db, reservationId)?.status === 'held';
+}
+
+function atomicFinalize(db, work) {
+  try {
+    return db.transaction(work)();
+  } catch (error) {
+    error.atomic_finalize_failed = true;
+    throw error;
+  }
+}
+
+function automationOutcome(db, work, normalized) {
+  const project = readProjectPolicy(db, work);
+  if (!project) {
+    const columns = tableColumns(db, 'redraw_works');
+    if (columns.has('project_id') && work.project_id) {
+      return {
+        project: null,
+        decision: decisionFromReason('project_policy_missing', normalized.facts_hash),
+        projectStatus: 'blocked',
+        workStatus: 'needs_attention',
+        versionStatus: 'needs_attention',
+        currentStep: 1,
+        errorMessage: 'project_policy_missing',
+      };
+    }
+    return {
+      project: null,
+      decision: null,
+      workStatus: 'asset_review',
+      versionStatus: 'asset_review',
+      currentStep: 2,
+      errorMessage: null,
+    };
+  }
+  const input = {
+    execution_mode: project.execution_mode || 'safe',
+    gates: analysisGates(normalized),
+  };
+  if (input.execution_mode === 'auto') {
+    const parsedPolicy = parseAutomationPolicy(project);
+    if (!parsedPolicy.ok) {
+      return {
+        project,
+        decision: decisionFromReason(parsedPolicy.code, normalized.facts_hash, 'blocked', project.policy_version),
+        projectStatus: 'blocked',
+        workStatus: 'needs_attention',
+        versionStatus: 'needs_attention',
+        currentStep: 1,
+        errorMessage: parsedPolicy.code,
+      };
+    }
+    const budget = Number(project.budget_limit_credits);
+    input.budget_configured = Number.isFinite(budget) && budget > 0;
+    input.confidence = analysisConfidence(normalized);
+    input.thresholds = parsedPolicy.policy.analysis_confidence_thresholds || parsedPolicy.policy.thresholds || {};
+  }
+  const decision = evaluateAutomationDecision(input);
+  const blocked = decision.action === 'blocked';
+  const advance = decision.action === 'advance';
+  const enrichedDecision = enrichAutomationDecision(decision, {
+    project,
+    projectStatus: advance ? 'asset_review' : (blocked ? 'blocked' : 'analysis_review'),
+  }, normalized.facts_hash);
+  return {
+    project,
+    decision: enrichedDecision,
+    projectStatus: advance ? 'asset_review' : (blocked ? 'blocked' : 'analysis_review'),
+    workStatus: advance ? 'asset_review' : 'needs_attention',
+    versionStatus: advance ? 'asset_review' : 'needs_attention',
+    currentStep: advance ? 2 : 1,
+    errorMessage: blocked ? decision.reason_codes.join(',') : null,
+  };
+}
+
+function writeFactsOnce(db, work, normalized, outcome = null) {
   const now = new Date().toISOString();
+  const state = outcome || {
+    workStatus: 'asset_review',
+    versionStatus: 'asset_review',
+    currentStep: 2,
+    errorMessage: null,
+  };
   let changed = true;
   let version = db.prepare(
     'SELECT * FROM redraw_versions WHERE work_id = ? AND source_facts_json IS NOT NULL ORDER BY id ASC LIMIT 1'
@@ -411,9 +667,14 @@ function writeFactsOnce(db, work, normalized) {
   } else {
     const existing = db.prepare('SELECT * FROM redraw_versions WHERE work_id = ? ORDER BY id ASC LIMIT 1').get(work.id);
     if (existing) {
-      db.prepare('UPDATE redraw_versions SET source_facts_json = ?, facts_hash = ?, updated_at = ? WHERE id = ?')
-        .run(JSON.stringify(normalized), normalized.facts_hash, now, existing.id);
-      version = { ...existing, source_facts_json: JSON.stringify(normalized), facts_hash: normalized.facts_hash };
+      db.prepare('UPDATE redraw_versions SET source_facts_json = ?, facts_hash = ?, status = ?, updated_at = ? WHERE id = ?')
+        .run(JSON.stringify(normalized), normalized.facts_hash, state.versionStatus, now, existing.id);
+      version = {
+        ...existing,
+        source_facts_json: JSON.stringify(normalized),
+        facts_hash: normalized.facts_hash,
+        status: state.versionStatus,
+      };
     } else {
       const id = insertDynamic(db, 'redraw_versions', {
         work_id: work.id,
@@ -425,7 +686,7 @@ function writeFactsOnce(db, work, normalized) {
         localization_level: 'faithful',
         source_facts_json: JSON.stringify(normalized),
         facts_hash: normalized.facts_hash,
-        status: 'asset_review',
+        status: state.versionStatus,
         created_at: now,
         updated_at: now,
       }).lastInsertRowid;
@@ -465,13 +726,49 @@ function writeFactsOnce(db, work, normalized) {
     });
   }
   updateDynamic(db, 'redraw_works', {
-    status: 'asset_review',
+    status: state.workStatus,
     current_version: Number(version.version || 1),
-    current_step: 2,
-    error_msg: null,
+    current_step: state.currentStep,
+    error_msg: state.errorMessage,
     updated_at: now,
   }, 'id', work.id);
+  if (version.status !== state.versionStatus) {
+    updateDynamic(db, 'redraw_versions', { status: state.versionStatus, updated_at: now }, 'id', version.id);
+    version = { ...version, status: state.versionStatus };
+  }
+  if (outcome?.project) {
+    appendWorkflowEvent(db, {
+      tenantId: String(outcome.project.tenant_id || ''),
+      userId: String(outcome.project.user_id || ''),
+      projectId: Number(outcome.project.id),
+      resourceType: 'version',
+      resourceId: String(version.id),
+      fromState: String(work.status || ''),
+      toState: outcome.projectStatus,
+      reasonCode: 'analysis_completed',
+      evidenceHash: normalized.facts_hash,
+      metadata: {
+        action: outcome.decision.action,
+        effective_mode: outcome.decision.effective_mode,
+        reason_codes: outcome.decision.reason_codes,
+        policy_version: Number(outcome.project.policy_version || 0),
+      },
+      createdAt: now,
+    });
+  }
   return { version, changed };
+}
+
+function existingSourceFactsVersion(db, work) {
+  const columns = tableColumns(db, 'redraw_versions');
+  const localeClause = columns.has('locale') ? "AND locale = 'source'" : '';
+  return db.prepare(
+    `SELECT *
+     FROM redraw_versions
+     WHERE work_id = ? ${localeClause} AND source_facts_json IS NOT NULL
+     ORDER BY CASE WHEN version = ? THEN 0 ELSE 1 END, version DESC, id DESC
+     LIMIT 1`
+  ).get(work.id, Number(work.current_version || 0));
 }
 
 function finalizeCompletedAnalysis(db, log, task, work, result, options = {}) {
@@ -480,27 +777,67 @@ function finalizeCompletedAnalysis(db, log, task, work, result, options = {}) {
     const resultAssetId = result.result_asset_id || result.result_asset?.id;
     assertAssetReadable(db, options.assetReader, resultAssetId, '分析结果');
     const normalized = normalizeSourceFacts(result.facts || result.source_facts);
-    const { version, changed } = db.transaction(() => writeFactsOnce(db, work, normalized))();
-    if (changed || task.status !== 'completed') {
-      taskService.updateTaskResult(db, task.id, {
+    const existingVersion = existingSourceFactsVersion(db, work);
+    if (existingVersion) {
+      if (existingVersion.facts_hash !== normalized.facts_hash) {
+        const error = codedError('SOURCE_FACTS_HASH_CONFLICT', '源片事实 hash 冲突，请人工确认后再继续');
+        error.existing_hash = existingVersion.facts_hash;
+        error.incoming_hash = normalized.facts_hash;
+        throw error;
+      }
+      const policyVersion = projectPolicyVersion(db, work);
+      const decision = persistedAutomationDecision(task, normalized.facts_hash, existingVersion.id, policyVersion)
+        || eventAutomationDecision(db, work, existingVersion, normalized.facts_hash);
+      if (!decision && work.project_id) throw codedError('AUTOMATION_DECISION_MISSING', '自动化分析决策缺失');
+      const alreadyComplete = task.status === 'completed'
+        && persistedAutomationDecision(task, normalized.facts_hash, existingVersion.id, policyVersion)
+        && !reservationIsHeld(db, task.credit_reservation_id || work.credit_reservation_id);
+      if (!alreadyComplete && decision) {
+        atomicFinalize(db, () => {
+          taskService.updateTaskResult(
+            db,
+            task.id,
+            taskResultPayload(work, existingVersion, resultAssetId, normalized.facts_hash, decision),
+          );
+          creditLedger.settleGeneration(db, task.credit_reservation_id || work.credit_reservation_id, 'completed');
+        });
+      }
+      return {
         status: 'completed',
-        work_id: work.id,
-        version_id: version.id,
-        result_asset_id: resultAssetId,
         facts_hash: normalized.facts_hash,
-      });
-      creditLedger.settleGeneration(db, task.credit_reservation_id || work.credit_reservation_id, 'completed');
+        version_id: existingVersion.id,
+        result_asset_id: resultAssetId,
+        automation_decision: decision,
+      };
     }
+    const committed = atomicFinalize(db, () => {
+      const outcome = automationOutcome(db, work, normalized);
+      const { version } = writeFactsOnce(db, work, normalized, outcome);
+      if (task.status !== 'completed') {
+        taskService.updateTaskResult(
+          db,
+          task.id,
+          taskResultPayload(work, version, resultAssetId, normalized.facts_hash, outcome.decision),
+        );
+      }
+      creditLedger.settleGeneration(db, task.credit_reservation_id || work.credit_reservation_id, 'completed');
+      return { version, decision: outcome.decision };
+    });
     return {
       status: 'completed',
       facts_hash: normalized.facts_hash,
-      version_id: version.id,
+      version_id: committed.version.id,
       result_asset_id: resultAssetId,
+      automation_decision: committed.decision,
     };
   } catch (error) {
     if (error.code === 'SOURCE_FACTS_HASH_CONFLICT') {
       markNeedsAttention(db, task, work, error.message);
       return { status: 'needs_attention', error: error.message };
+    }
+    if (error.atomic_finalize_failed) {
+      log?.warn?.('redraw analysis atomic finalize failed', { task_id: task.id, work_id: work.id, message: error.message });
+      return { status: 'failed', error: error.message };
     }
     markFailure(db, log, task, work, error.message);
     return { status: 'failed', error: error.message };

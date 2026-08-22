@@ -11,7 +11,7 @@ const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'f
 const toapisVideoClient = require('./toapisVideoClient');
 const feituoVideoClient = require('./feituoVideoClient');
 const lingjingVideoClient = require('./lingjingVideoClient');
-const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
+const { evidenceContractForModel, hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 const SERVICE_CATEGORIES = {
   text: 'text',
   image: 'image',
@@ -350,6 +350,9 @@ function list(db) {
 
 function listPublic(db, options = {}) {
   if (!hasTable(db, 'ai_service_configs')) return [];
+  const configColumns = new Set(db.prepare('PRAGMA table_info(ai_service_configs)').all()
+    .map((column) => column.name));
+  const requiresVerificationStatus = configColumns.has('verification_status');
   const rows = db.prepare(`SELECT * FROM ai_service_configs
     WHERE deleted_at IS NULL`).all();
   const configsByModel = new Map();
@@ -373,17 +376,16 @@ function listPublic(db, options = {}) {
     if (!row.is_active) continue;
     const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
     if (strictUpstreamKeys.has(upstreamKey) && !isStrictPublicConfig(row)) continue;
-    if (!isStrictPublicConfig(row) && row.verification_status !== 'verified') continue;
+    if (!isStrictPublicConfig(row) && requiresVerificationStatus && row.verification_status !== 'verified') continue;
     if (!isRealGenerationVerified(row, entry.upstreamModel)) continue;
     const logicalModel = String(row.logical_model_id || '').trim();
-    const publicModel = logicalModel || (strictUpstreamKeys.has(upstreamKey) && isStrictPublicConfig(row)
-      ? entry.upstreamModel
-      : entry.model);
+    if (entry.duplicated && !logicalModel && !isStrictPublicConfig(row)) continue;
+    const publicModel = logicalModel || entry.upstreamModel;
     addConfig(publicModel, entry.upstreamModel, row);
   }
   for (const row of rows.filter((item) => !mediaModelSelection.KIND_BY_SERVICE[item.service_type])) {
     if (!row.is_active) continue;
-    if (row.verification_status !== 'verified') continue;
+    if (requiresVerificationStatus && row.verification_status !== 'verified') continue;
     const logicalModel = String(row.logical_model_id || '').trim();
     for (const model of [...parseConfiguredModels(row.model), String(row.default_model || '').trim()]) {
       if (model && isRealGenerationVerified(row, model)) addConfig(logicalModel || model, model, row);
@@ -397,11 +399,9 @@ function listPublic(db, options = {}) {
     const strictUpstreamKey = `${row.category}:${String(upstreamModel).toLowerCase()}`;
     if (strictUpstreamKeys.has(strictUpstreamKey)
         && !entries.some((entry) => isStrictPublicConfig(entry.config))) return [];
-    const protectedUsmercariModel = ['gpt-image-2-2-4k', 'nano-banana-2']
-      .includes(String(upstreamModel).toLowerCase());
-    const protectedLingjingModel = String(upstreamModel).toLowerCase() === lingjingVideoClient.PUBLIC_MODEL;
+    const protectedExternalModel = Boolean(evidenceContractForModel(upstreamModel));
     const strictEntries = entries.filter((entry) => isStrictPublicConfig(entry.config));
-    const candidates = protectedUsmercariModel || protectedLingjingModel || strictEntries.length ? strictEntries : entries;
+    const candidates = protectedExternalModel || strictEntries.length ? strictEntries : entries;
     const matched = candidates.find((entry) => isPublicConfigReady(
       entry.config,
       row,

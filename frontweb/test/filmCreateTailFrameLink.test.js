@@ -36,6 +36,6 @@ test('媒体列表刷新失败时仍使用分镜本地路径展示已提取的�
   const end = source.indexOf('/** 尾帧图', start)
   const getter = source.slice(start, end)
 
-  assert.match(getter, /if \(sb\?\.image_url \|\| sb\?\.local_path\)/)
-  assert.match(getter, /local_path: sb\.local_path/)
+  assert.match(getter, /sb\?\.first_frame_image_url[\s\S]*sb\?\.image_url/)
+  assert.match(getter, /local_path: sb\.first_frame_local_path \|\| sb\.local_path/)
 })

@@ -136,7 +136,7 @@ test('默认模型候选包含已启用的跨模型备用，并保留指定供�
   }
 });
 
-test('默认图片中转明确失败时切换到启用的其他图片模型', async () => {
+test('默认图片中转返回 503 时不自动重复提交到其他图片模型', async () => {
   const db = createDb();
   const primaryRequests = [];
   const fallbackRequests = [];
@@ -208,15 +208,11 @@ test('默认图片中转明确失败时切换到启用的其他图片模型', as
       image_gen_id: 991,
     });
 
-    assert.deepEqual(result, { image_url: 'https://result.example/fallback.png' });
+    assert.match(result.error, /503/);
     assert.equal(primaryRequests.length, 1);
-    assert.equal(fallbackRequests.length, 1);
+    assert.equal(fallbackRequests.length, 0);
     assert.equal(primaryRequests[0].authorization, 'Bearer primary-key');
-    assert.equal(fallbackRequests[0].authorization, 'Bearer fallback-key');
     assert.equal(primaryRequests[0].body.model, 'gpt-image-2-2k');
-    assert.equal(fallbackRequests[0].body.model, 'image-v1-4k');
-    assert.equal(fallbackRequests[0].body.prompt, primaryRequests[0].body.prompt);
-    assert.equal(fallbackRequests[0].body.size, primaryRequests[0].body.size);
   } finally {
     db.close();
     if (primaryServer) await close(primaryServer);
@@ -224,7 +220,7 @@ test('默认图片中转明确失败时切换到启用的其他图片模型', as
   }
 });
 
-test('AIHubCC 图片请求 413 时自动切换到其他可用图片模型', async () => {
+test('AIHubCC 图片请求 413 时不静默切换模型重新提交', async () => {
   const db = createDb();
   let primaryServer;
   let fallbackServer;
@@ -294,9 +290,9 @@ test('AIHubCC 图片请求 413 时自动切换到其他可用图片模型', asyn
       imageServiceType: 'storyboard_image',
     });
 
-    assert.deepEqual(result, { image_url: 'https://result.example/after-413.png' });
+    assert.match(result.error, /413/);
     assert.equal(primaryRequests, 1);
-    assert.equal(fallbackRequests, 1);
+    assert.equal(fallbackRequests, 0);
   } finally {
     db.close();
     if (primaryServer) await close(primaryServer);

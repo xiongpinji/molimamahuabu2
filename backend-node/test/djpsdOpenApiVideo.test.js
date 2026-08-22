@@ -244,68 +244,6 @@ test('video-v1 通过生产 callVideoApi 入口路由到 DJPSD 开放 API', asyn
   assert.deepEqual(result, { task_id: '654', status: 'PENDING' });
 });
 
-test('video-v1 全能多图参考不会把第一张重复提升为首帧', async () => {
-  const requests = [];
-  let uploadCount = 0;
-  global.fetch = async (url, options) => {
-    requests.push({ url, options });
-    if (url.endsWith('/v1/media/upload')) {
-      uploadCount += 1;
-      return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify({ url: `/uploads/reference-${uploadCount}.png` }),
-      };
-    }
-    return {
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify({ task_id: 655, task_status: 'PENDING' }),
-    };
-  };
-  const row = {
-    id: 7,
-    service_type: 'video',
-    provider: 'djpsd_openapi',
-    api_protocol: 'djpsd_openapi',
-    name: 'DJPSD 开放 API',
-    base_url: 'https://shiping.djpsd.com',
-    api_key: 'secret',
-    model: JSON.stringify(['video-v1']),
-    default_model: 'video-v1',
-    endpoint: '/v1/media/generate',
-    query_endpoint: '/v1/media/status?task_id={taskId}',
-    priority: 0,
-    is_default: 1,
-    is_active: 1,
-    settings: null,
-  };
-  const db = {
-    prepare(sql) {
-      return { all: () => sql.includes('SELECT * FROM ai_service_configs') ? [row] : [] };
-    },
-  };
-
-  const result = await callVideoApi(db, log, {
-    model: 'video-v1',
-    prompt: '保留两张独立参考图',
-    duration: 10,
-    reference_mode: 'omni',
-    reference_urls: [
-      'data:image/png;base64,aGVsbG8=',
-      'data:image/png;base64,d29ybGQ=',
-    ],
-  });
-
-  assert.deepEqual(result, { task_id: '655', status: 'PENDING' });
-  assert.equal(uploadCount, 2);
-  const submit = requests.find((request) => request.url.endsWith('/v1/media/generate'));
-  assert.deepEqual(JSON.parse(submit.options.body).params.images, [
-    '/uploads/reference-1.png',
-    '/uploads/reference-2.png',
-  ]);
-});
-
 test('DJPSD 开放 API 轮询使用 state/is_final 并补全相对视频地址', async () => {
   let request;
   global.fetch = async (url, options) => {

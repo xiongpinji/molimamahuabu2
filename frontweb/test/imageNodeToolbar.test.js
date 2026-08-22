@@ -227,7 +227,6 @@ test('执行图片工具成功后保留原图并新建结果节点，失败保�
   assert.match(canvasSource, /imageToolsAPI\.createOperation/)
   assert.match(canvasSource, /imageToolsAPI\.getOperation\(taskId\)/)
   assert.match(canvasSource, /accepted\?\.status === 'processing'/)
-  assert.match(canvasSource, /await patchFreeCanvasNodeData\(node\.id, \{\s*imageToolTaskId: '',\s*imageToolStatus: 'running'/)
   assert.match(canvasSource, /parseImageToolTaskResult\(task\)/)
   assert.match(canvasSource, /resumePendingImageToolOperations/)
   assert.match(canvasSource, /await createFreeCanvasNode\('image'/)
@@ -305,7 +304,7 @@ test('生成导演台、灯光、角度和姿势入口桥接当前图片且不�
   assert.match(canvasSource, /const directorStageEntry = ref\(null\)/)
   assert.match(canvasSource, /:entry-context="directorStageEntry"/)
   assert.match(canvasSource, /function openDirectorStage\(entryContext = null\)/)
-  assert.match(canvasSource, /directorStageEntry\.value = DIRECTOR_STAGE_ENTRY_MODES\.has\(entryContext\?\.mode\)/)
+  assert.match(canvasSource, /directorStageEntry\.value = DIRECTOR_STAGE_ENTRY_MODES\.has\(resolvedEntry\?\.mode\)/)
   assert.doesNotMatch(toolbarSource, /DIRECTOR_STAGE_OPERATIONS = new Set\(\[[^\]]*(?:cinematic_relight|angle_ideation)/)
 })
 
@@ -323,23 +322,32 @@ test('工具栏提供替换、下载、全屏、历史与标记色入口', () =>
   assert.match(nodeSource, /var\(--image-node-marker/)
 })
 
-test('宫格裁剪只提交用户选中的格子且保留全选与取消入口', () => {
-  assert.match(toolbarSource, /gridSelectedCells = ref\(\[\]\)/)
-  assert.match(toolbarSource, /const gridCells = computed/)
-  assert.match(toolbarSource, /toggleGridCell\(cell\.key\)/)
-  assert.match(toolbarSource, /selectAllGridCells/)
-  assert.match(toolbarSource, /gridSelectedCells = \[\]/)
-  assert.match(toolbarSource, /selectedCells: \[\.\.\.gridSelectedCells\.value\]/)
+test('宫格裁剪提交全部独立裁剪框且每个框可移动和八向缩放', () => {
+  assert.match(toolbarSource, /gridCropBoxes = ref\(createGridCropBoxes\(3, 3\)\)/)
+  assert.match(toolbarSource, /v-for="\(box, index\) in gridCropBoxes"/)
+  assert.match(toolbarSource, /@pointerdown="beginGridCropMove\(\$event, box\.id\)"/)
+  assert.match(toolbarSource, /@pointerdown\.stop="beginGridCropResize\(\$event, box\.id, handle\)"/)
+  assert.match(toolbarSource, /const gridResizeHandles = Object\.freeze\(\['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'\]\)/)
+  assert.match(toolbarSource, /boxes: gridCropBoxes\.value\.map\(\(box\) => \(\{ \.\.\.box \}\)\)/)
 })
 
-test('宫格裁剪提供 2x2 至 7x7、间距、反选、复制、识别和吸附控制', () => {
-  assert.match(toolbarSource, /v-for="size in gridQuickSizes"/)
-  assert.match(toolbarSource, /const gridQuickSizes = Object\.freeze\(\[2, 3, 4, 5, 6, 7\]\)/)
+test('宫格裁剪支持 1x1 至 7x7 并可重置为均分布局', () => {
   assert.match(toolbarSource, /gridForm = ref\(\{ rows: 3, columns: 3, spacing: 0 \}\)/)
+  assert.match(toolbarSource, /v-model="gridForm\.rows" :min="1" :max="7" @change="resetGridBoxes"/)
+  assert.match(toolbarSource, /v-model="gridForm\.columns" :min="1" :max="7" @change="resetGridBoxes"/)
+  assert.match(toolbarSource, /function resetGridBoxes\(\) \{[\s\S]*createGridCropBoxes\(gridForm\.value\.rows, gridForm\.value\.columns\)/)
+  assert.match(toolbarSource, /可独立移动和缩放 \{\{ gridCropBoxes\.length \}\} 个裁剪框/)
+})
+
+test('宫格裁剪同时保留主线的间距、反选、复制、识别和吸附控制', () => {
   assert.match(toolbarSource, /v-model="gridForm\.spacing"/)
   assert.match(toolbarSource, /invertGridSelection/)
   assert.match(toolbarSource, /duplicateGridSelection/)
+  assert.match(toolbarSource, /function clearGridSelection\(\) \{[\s\S]*gridSelectedCells\.value = \[\][\s\S]*gridDuplicateCells\.value = \[\]/)
+  assert.match(toolbarSource, /function toggleGridCell\(id\) \{[\s\S]*gridDuplicateCells\.value = gridDuplicateCells\.value\.filter/)
   assert.match(toolbarSource, /redetectGrid/)
   assert.match(toolbarSource, /gridSnapEnabled/)
+  assert.match(toolbarSource, /duplicateCells: \[\.\.\.gridDuplicateCells\.value\]/)
   assert.match(toolbarSource, /spacing: gridForm\.value\.spacing/)
+  assert.match(toolbarSource, /snap: gridSnapEnabled\.value/)
 })

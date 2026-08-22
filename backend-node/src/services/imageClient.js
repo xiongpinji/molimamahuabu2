@@ -3172,12 +3172,12 @@ function findActiveAssetImage(db, characterId, sceneId, options = {}, imageType 
   const typeValue = imageType ? [String(imageType)] : [];
   if (characterId != null) {
     return db.prepare(
-      "SELECT * FROM image_generations WHERE character_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL" + ownerClause + typeClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
+      "SELECT * FROM image_generations WHERE character_id = ? AND status IN ('pending', 'processing', 'needs_attention') AND deleted_at IS NULL" + ownerClause + typeClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
     ).get(Number(characterId), ...ownerValue, ...typeValue) || null;
   }
   if (sceneId != null) {
     return db.prepare(
-      "SELECT * FROM image_generations WHERE scene_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL" + ownerClause + typeClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
+      "SELECT * FROM image_generations WHERE scene_id = ? AND status IN ('pending', 'processing', 'needs_attention') AND deleted_at IS NULL" + ownerClause + typeClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
     ).get(Number(sceneId), ...ownerValue, ...typeValue) || null;
   }
   return null;
@@ -3194,6 +3194,22 @@ function settleImageCredit(db, log, imageGenId, outcome, message = '') {
     log?.error('[资产图生] 积分结算失败，保留原预扣状态', { id: row.id, error: error.message });
     return null;
   }
+}
+
+function markAssetImageNeedsAttention(db, log, imageGenId, taskId, message, timestamp, options = {}) {
+  const safeMessage = String(message || '图片生成结果未知，请勿重复提交，等待管理员核对').slice(0, 500);
+  db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
+    .run('needs_attention', safeMessage, timestamp, imageGenId);
+  taskService.updateTaskStatus(db, taskId, 'needs_attention', 90, safeMessage);
+  try { db.prepare('UPDATE async_tasks SET error = ? WHERE id = ?').run(safeMessage, taskId); } catch (_) {}
+  if (options.artifactUnreadable) {
+    providerRouteStability.recordBusinessArtifactUnreadable(db, {
+      businessType: 'image_generation',
+      businessId: imageGenId,
+      now: timestamp,
+    });
+  }
+  settleImageCredit(db, log, imageGenId, 'failed', safeMessage);
 }
 
 async function verifyStrictLocalImageArtifact(storagePath, localPath) {
@@ -3398,6 +3414,7 @@ function createAndGenerateImage(db, log, opts, runtime = {}) {
 
   const scheduleTask = typeof schedule === 'function' ? schedule : (callback) => setImmediate(callback);
   scheduleTask(async () => {
+    let providerArtifactReturned = false;
     try {
       db.prepare('UPDATE image_generations SET status = ? WHERE id = ?').run('processing', imageGenId);
       const result = await taskService.withTaskHeartbeat(
@@ -3427,6 +3444,10 @@ function createAndGenerateImage(db, log, opts, runtime = {}) {
       const now2 = new Date().toISOString();
       if (result.error) {
         const resultError = result.indeterminate ? `供应商最终状态未知：${result.error}` : result.error;
+        if (result.indeterminate) {
+          markAssetImageNeedsAttention(db, log, imageGenId, taskId, resultError, now2);
+          return;
+        }
         db.prepare(
           'UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?'
         ).run('failed', resultError, now2, imageGenId);
@@ -3445,6 +3466,7 @@ function createAndGenerateImage(db, log, opts, runtime = {}) {
         log.error('Image generation failed', { image_gen_id: imageGenId, error: resultError });
         return;
       }
+      providerArtifactReturned = Boolean(result.image_url);
       let localPath = null;
       const cfg = loadConfig();
       const storagePath = path.isAbsolute(cfg.storage?.local_path)
@@ -3460,16 +3482,18 @@ function createAndGenerateImage(db, log, opts, runtime = {}) {
         'ig',
         projectSubdir
       );
+      if (!localPath) {
+        const msg = '图片本地保存失败：未生成本地文件；供应商结果未知，请勿重复提交，等待管理员核对';
+        markAssetImageNeedsAttention(db, log, imageGenId, taskId, msg, now2, { artifactUnreadable: true });
+        return;
+      }
       if (isStrictUsmercari) {
         let artifact;
         try {
           artifact = await verifyStrictLocalImageArtifact(storagePath, localPath);
         } catch (saveErr) {
-          const msg = `图片本地保存失败：${saveErr.message || saveErr}`;
-          db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
-            .run('failed', msg.slice(0, 500), now2, imageGenId);
-          taskService.updateTaskError(db, taskId, msg);
-          settleImageCredit(db, log, imageGenId, 'failed', msg);
+          const msg = `图片本地保存失败：${saveErr.message || saveErr}；供应商结果未知，请勿重复提交，等待管理员核对`;
+          markAssetImageNeedsAttention(db, log, imageGenId, taskId, msg, now2, { artifactUnreadable: true });
           return;
         }
         const persistedUrl = '/static/' + String(localPath).replace(/^\/+/, '');
@@ -3578,6 +3602,11 @@ function createAndGenerateImage(db, log, opts, runtime = {}) {
     } catch (err) {
       const now2 = new Date().toISOString();
       const errMsg = (err && err.message) ? String(err.message).slice(0, 500) : 'Unknown error';
+      if (providerArtifactReturned) {
+        const msg = `图片本地保存失败：${errMsg}；供应商结果未知，请勿重复提交，等待管理员核对`;
+        markAssetImageNeedsAttention(db, log, imageGenId, taskId, msg, now2, { artifactUnreadable: true });
+        return;
+      }
       try {
         db.prepare(
           'UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?'

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const redrawRoutes = require('../src/routes/redraw');
@@ -10,8 +11,60 @@ const { setupRouter } = require('../src/routes');
 const creditLedger = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const realRedrawOrchestrator = require('../src/services/redrawOrchestrator');
+const redrawCapabilityService = require('../src/services/redrawCapabilityService');
+const redrawAssetService = require('../src/services/redrawAssetService');
 
 const NOW = '2026-08-06T00:00:00.000Z';
+const EXPECTED_SERVER_AUTOMATION_POLICY = {
+  schema_version: 'redraw-server-automation-policy-v1',
+  analysis_confidence_thresholds: {
+    character_mapping: 0.9,
+    speaker_mapping: 0.9,
+    text_regions: 0.9,
+    shot_boundary: 0.9,
+  },
+  localization_thresholds: {
+    names: 0.9,
+    dialogue_semantics: 0.9,
+    dialogue_timing: 0.9,
+    culture: 0.9,
+    screen_text: 0.9,
+  },
+};
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function canonicalIdentityPack(input = {}) {
+  const pack = {
+    schema_version: 'target-actor-identity-v1',
+    source_character_key: input.sourceCharacterKey || 'source-character-maya',
+    target_actor_label: input.targetActorLabel || 'Actor Maya',
+    artifact: {
+      asset_id: Number(input.artifactAssetId || 701),
+      sha256: crypto.createHash('sha256').update(input.artifactSeed || 'canonical actor portrait').digest('hex'),
+      width: 640,
+      height: 960,
+      mime_type: 'image/png',
+    },
+    confirmed_views: ['front', 'profile', 'full_body'],
+    live_action_human_confirmed: true,
+    adult_status: 'verified_18_plus',
+    identity_consistency_confirmed: true,
+    ready: true,
+    reviewed_by: 'user-a',
+    reviewed_at: NOW,
+  };
+  return {
+    ...pack,
+    pack_sha256: crypto.createHash('sha256').update(stableJson(pack)).digest('hex'),
+  };
+}
 
 function captureResponse() {
   return {
@@ -103,10 +156,10 @@ function insertVersion(db, workId, values = {}) {
   return db.prepare(`
     INSERT INTO redraw_versions
       (work_id, tenant_id, user_id, version, locale, market, localization_level,
-       style_snapshot_json, localization_task_id, status, created_at, updated_at, deleted_at)
+       source_facts_json, facts_hash, style_snapshot_json, localization_task_id, status, created_at, updated_at, deleted_at)
     VALUES
       (@work_id, @tenant_id, @user_id, @version, @locale, @market, @localization_level,
-       @style_snapshot_json, @localization_task_id, @status, @created_at, @updated_at, @deleted_at)
+       @source_facts_json, @facts_hash, @style_snapshot_json, @localization_task_id, @status, @created_at, @updated_at, @deleted_at)
   `).run({
     work_id: workId,
     tenant_id: 'tenant-a',
@@ -115,6 +168,8 @@ function insertVersion(db, workId, values = {}) {
     locale: 'en-US',
     market: 'US',
     localization_level: 'faithful',
+    source_facts_json: null,
+    facts_hash: null,
     style_snapshot_json: '{}',
     localization_task_id: null,
     status: 'ready_to_generate',
@@ -149,6 +204,112 @@ function insertRedrawAsset(db, versionId, values = {}) {
     deleted_at: null,
     ...values,
   }).lastInsertRowid;
+}
+
+function routeSourceFacts() {
+  return {
+    schema_version: '1.0',
+    duration_ms: 10_000,
+    episode_hook: { id: 'hook-1', text: 'locked hook' },
+    causal_chain: [],
+    reversals: [],
+    locked_facts: [{ id: 'fact-1', text: 'locked fact' }],
+    characters: [{ id: 'c1', source_name: '小满', relationships: [] }],
+    scenes: [{ id: 's1', location: '天台', time: '夜', source_ranges: [{ start_ms: 0, end_ms: 10_000 }] }],
+    props: [{ id: 'p1', name: '旧手机', evidence_ranges: [{ start_ms: 1_000, end_ms: 2_000 }] }],
+    shots: [{
+      id: 'shot-1',
+      start_ms: 0,
+      end_ms: 10_000,
+      dialogue: [{ speaker_id: 'c1', text: '别回头' }],
+      opening_state: '小满站在天台',
+      continuous_action: '小满看旧手机',
+      ending_state: '小满离开',
+    }],
+  };
+}
+
+function insertAnalysisDecision(db, workId, factsHash, decisionOverrides = {}, versionId = 1) {
+  const decision = {
+    action: 'advance',
+    effective_mode: 'auto',
+    reason_codes: [],
+    policy_version: 1,
+    evidence_hash: factsHash,
+    effective_analysis_state: 'asset_review',
+    ...decisionOverrides,
+  };
+  db.prepare(`
+    INSERT INTO async_tasks
+      (id, type, status, progress, message, result, resource_id, tenant_id, user_id, created_at, updated_at, completed_at)
+    VALUES (?, 'redraw_analysis', 'completed', 100, '分析完成', ?, ?, 'tenant-a', 'user-a', ?, ?, ?)
+  `).run(`task-analysis-${workId}`, JSON.stringify({
+    status: 'completed',
+    work_id: workId,
+    version_id: versionId,
+    facts_hash: factsHash,
+    automation_decision: decision,
+  }), String(workId), NOW, NOW, NOW);
+  db.prepare('UPDATE redraw_works SET task_id = ? WHERE id = ?').run(`task-analysis-${workId}`, workId);
+  return decision;
+}
+
+function setupIdentityPackRouteFixture(values = {}) {
+  const db = createDb();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-identity-route-'));
+  const artifactBytes = Buffer.from(values.artifactBody || 'canonical actor portrait');
+  const localPath = values.localPath || 'redraw-assets/actor.png';
+  fs.mkdirSync(path.dirname(path.join(storageRoot, localPath)), { recursive: true });
+  fs.writeFileSync(path.join(storageRoot, localPath), artifactBytes);
+  db.prepare(`INSERT INTO assets
+    (id, name, type, category, url, local_path, mime_type, width, height, created_at, updated_at)
+    VALUES (701, 'Actor Maya', 'image', 'redraw', '/static/redraw-assets/actor.png', ?,
+      'image/png', 640, 960, ?, ?)`).run(localPath, NOW, NOW);
+  const projectId = insertProject(db);
+  const workId = insertWork(db, projectId, { current_version: 1, current_step: 2 });
+  const versionId = insertVersion(db, workId, { status: 'asset_review' });
+  const assetId = insertRedrawAsset(db, versionId, {
+    kind: values.kind || 'character',
+    source_ref_json: JSON.stringify({
+      source_ref: {
+        stable_id: 'source-character-maya',
+        absolute_path: 'C:\\private\\actor.png',
+        local_path: 'private/actor.png',
+        storageRoot: 'C:\\private',
+      },
+    }),
+    approval_status: 'approved',
+  });
+  db.prepare(`UPDATE redraw_assets
+    SET approved_by = 'old-reviewer', approved_at = ?
+    WHERE id = ?`).run(NOW, Number(assetId));
+  const handlers = redrawRoutes(db, { error() {}, warn() {}, info() {} }, routeDeps({
+    cfg: { storage: { local_path: storageRoot } },
+  }));
+  return {
+    db,
+    storageRoot,
+    artifactBytes,
+    versionId: Number(versionId),
+    assetId: Number(assetId),
+    handlers,
+    close() {
+      db.close();
+      fs.rmSync(storageRoot, { recursive: true, force: true });
+    },
+  };
+}
+
+function completeIdentityPackRequest(overrides = {}) {
+  return {
+    target_actor_label: '  Actor Maya  ',
+    confirmed_views: ['full_body', 'front', 'profile', 'front'],
+    live_action_human_confirmed: true,
+    adult_status: 'verified_18_plus',
+    identity_consistency_confirmed: true,
+    expected_updated_at: NOW,
+    ...overrides,
+  };
 }
 
 function insertAssetBatch(db, versionId, values = {}) {
@@ -483,6 +644,181 @@ function verifiedVideoCapability(model = 'seedance 2.0', overrides = {}) {
   };
 }
 
+function nativeDialogueEvidence(configId, configUpdatedAt, artifactId = 771) {
+  return {
+    contract: 'redraw-native-dialogue-audio-v1',
+    provider: 'test-provider',
+    protocol: 'feituo_open',
+    model: 'seedance-2-fast',
+    config_id: configId,
+    config_updated_at: configUpdatedAt,
+    provider_task_id: 'provider-native-dialogue-real',
+    terminal_status: 'completed',
+    artifact_id: artifactId,
+    artifact_sha256: 'd'.repeat(64),
+    media: { video_stream: true, audio_stream: true },
+    locale_verification: {
+      language: 'es',
+      language_verified: true,
+      locale_verified: false,
+    },
+    human_review: {
+      status: 'passed',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    },
+  };
+}
+
+function insertNativeAudioReviewCandidate(db, storageRoot, localPath, values = {}) {
+  creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
+  const projectId = insertProject(db);
+  const sourceFingerprint = crypto.createHash('sha256').update(String(localPath || Math.random())).digest('hex');
+  const workId = insertWork(db, projectId, {
+    current_version: 1,
+    current_step: 3,
+    status: 'generating',
+    source_fingerprint: sourceFingerprint,
+  });
+  const versionId = insertVersion(db, workId, { locale: 'es', market: '', status: 'generating' });
+  const artifactSha256 = values.artifactSha256 || 'd'.repeat(64);
+  const audit = {
+    contract: 'redraw-native-audio-validation-v1',
+    artifact_sha256: artifactSha256,
+    audio_stream: { codec: 'aac', channels: 2, sample_rate: 44100, duration_ms: 5000 },
+    video_duration_ms: 5000,
+    silence: { rms_db: -24, threshold_db: -45 },
+    verification: {
+      detected_language: 'es',
+      detected_locale: null,
+      language_verified: false,
+      locale_verified: false,
+      transcript_sha256: 'b'.repeat(64),
+      dialogue_similarity: 0.61,
+      speech_chars_per_second: 8,
+    },
+    validation_hash: 'c'.repeat(64),
+    status: 'verified',
+    candidate: {
+      video_generation_id: null,
+      artifact_sha256: artifactSha256,
+      artifact_locator_sha256: 'e'.repeat(64),
+    },
+    human_review: { status: 'available' },
+  };
+  const shotId = insertShot(db, versionId, {
+    status: 'needs_attention',
+    localized_dialogue_json: JSON.stringify([
+      { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+    ]),
+    draft_json: JSON.stringify({
+      revision: 1,
+      generation: { reservation_id: null },
+      native_audio_validation: audit,
+    }),
+  });
+  const reservation = creditLedger.reserve(db, {
+    tenantId: 'tenant-a',
+    actorUserId: 'user-a',
+    operationKey: `route-native-review-${shotId}-${String(localPath || 'missing').replace(/[^a-z0-9]/gi, '-')}`,
+    model: 'seedance-2-fast',
+    resourceType: 'redraw_shot',
+    resourceId: String(shotId),
+    amount: 4,
+  });
+  const taskId = `task-native-review-${shotId}`;
+  db.prepare(`INSERT INTO async_tasks
+    (id, type, status, progress, message, resource_id, tenant_id, user_id, metadata, credit_reservation_id, created_at, updated_at)
+    VALUES (?, 'redraw_shot', 'needs_attention', 90, 'manual review', ?, 'tenant-a', 'user-a', ?, ?, ?, ?)`)
+    .run(taskId, String(shotId), JSON.stringify({ redraw_shot: { reservation_id: reservation.id } }), reservation.id, NOW, NOW);
+  const videoId = db.prepare(`INSERT INTO video_generations
+    (status, task_id, tenant_id, user_id, provider, model, ai_service_config_id, duration,
+     generate_audio, request_snapshot, local_path, created_at, updated_at)
+    VALUES ('needs_attention', ?, 'tenant-a', 'user-a', 'test-provider', 'seedance-2-fast', 1, 5,
+            1, ?, ?, ?, ?)`)
+    .run(taskId, JSON.stringify({
+      generate_audio: true,
+      locale_pack: 'es@1',
+      dialogue_snapshot_hash: 'a'.repeat(64),
+      config_updated_at: NOW,
+    }), localPath, NOW, NOW).lastInsertRowid;
+  audit.candidate.video_generation_id = Number(videoId);
+  db.prepare('UPDATE redraw_shots SET video_generation_id = ?, draft_json = ? WHERE id = ?')
+    .run(videoId, JSON.stringify({
+      revision: 1,
+      generation: { reservation_id: reservation.id, task_id: taskId, video_generation_id: videoId },
+      native_audio_validation: audit,
+    }), shotId);
+  if (values.writeFile !== false && localPath) {
+    const file = path.join(storageRoot, localPath);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, values.fileBody || 'native route artifact');
+  }
+  return { shotId, videoId, taskId, reservationId: reservation.id };
+}
+
+function insertNativeDialogueLocaleConfig(db, values = {}) {
+  const now = values.updated_at || NOW;
+  const language = values.language || 'es';
+  const locale = values.locale || 'es';
+  const targetLocale = Object.prototype.hasOwnProperty.call(values, 'target_locale') ? values.target_locale : null;
+  const market = Object.prototype.hasOwnProperty.call(values, 'market') ? values.market : '';
+  const configId = Number(db.prepare(`
+    INSERT INTO ai_service_configs
+      (service_type, provider, api_protocol, name, model, default_model, is_active, is_default, priority, settings, created_at, updated_at)
+    VALUES ('video', 'test-provider', 'feituo_open', '原生对白能力', 'seedance-2-fast', 'seedance-2-fast', 1, 1, 0, '{}', ?, ?)
+  `).run(NOW, now).lastInsertRowid);
+  db.prepare('UPDATE ai_service_configs SET settings = ? WHERE id = ?').run(JSON.stringify({
+    redraw_locale_capabilities: [{
+      language,
+      locale,
+      target_language: language,
+      target_locale: targetLocale,
+      market,
+      status: 'verified',
+      evidence: {
+        text: {
+          provider: 'test-provider',
+          model: 'seedance-2-fast',
+          task_id: 'text-task',
+          terminal_status: 'completed',
+          artifact_id: 772,
+        },
+        subtitles: {
+          provider: 'test-provider',
+          model: 'seedance-2-fast',
+          task_id: 'subtitles-task',
+          terminal_status: 'completed',
+          artifact_id: 773,
+        },
+        character_image: {
+          provider: 'test-provider',
+          model: 'seedance-2-fast',
+          task_id: 'character-task',
+          terminal_status: 'completed',
+          artifact_id: 774,
+        },
+        clean_plate_image: {
+          provider: 'test-provider',
+          model: 'seedance-2-fast',
+          task_id: 'clean-plate-task',
+          terminal_status: 'completed',
+          artifact_id: 775,
+        },
+        video: {
+          provider: 'test-provider',
+          model: 'seedance-2-fast',
+          task_id: 'video-task',
+          terminal_status: 'completed',
+          artifact_id: 776,
+        },
+        native_dialogue_audio: values.evidence || nativeDialogueEvidence(configId, now),
+      },
+    }],
+  }), configId);
+}
+
 test('转绘项目列表与创建按租户和用户隔离', () => {
   const db = createDb();
   try {
@@ -511,6 +847,126 @@ test('转绘项目列表与创建按租户和用户隔离', () => {
     assert.equal(created.body.data.default_locale, 'ja-JP');
     assert.equal(created.body.data.tenant_id, 'tenant-a');
     assert.equal(created.body.data.user_id, 'user-a');
+  } finally {
+    db.close();
+  }
+});
+
+test('创建转绘项目原子保存并投影新项目策略', () => {
+  const db = createDb();
+  try {
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const created = captureResponse();
+    handlers.createProject(request({
+      body: {
+        title: '英语自动复刻项目',
+        default_locale: 'en-US',
+        default_market: 'US',
+        localization_level: 'localized',
+        execution_mode: 'auto',
+        budget_limit_credits: 120,
+        max_auto_attempts_per_shot: 3,
+      },
+    }), created);
+    assert.equal(created.statusCode, 201);
+    assert.deepEqual(
+      {
+        execution_mode: created.body.data.execution_mode,
+        budget_limit_credits: created.body.data.budget_limit_credits,
+        max_auto_attempts_per_shot: created.body.data.max_auto_attempts_per_shot,
+        policy_version: created.body.data.policy_version,
+        default_locale: created.body.data.default_locale,
+        default_market: created.body.data.default_market,
+      },
+      {
+        execution_mode: 'auto',
+        budget_limit_credits: 120,
+        max_auto_attempts_per_shot: 3,
+        policy_version: 1,
+        default_locale: 'en-US',
+        default_market: 'US',
+      },
+    );
+    assert.equal(JSON.stringify(created.body.data).includes('automation_policy_json'), false);
+
+    const stored = db.prepare(`
+      SELECT execution_mode, budget_limit_credits, max_auto_attempts_per_shot,
+             policy_version, default_locale, default_market, automation_policy_json
+      FROM redraw_projects WHERE id = ?
+    `).get(created.body.data.id);
+    const storedPolicy = JSON.parse(stored.automation_policy_json);
+    delete stored.automation_policy_json;
+    assert.deepEqual(stored, {
+      execution_mode: 'auto',
+      budget_limit_credits: 120,
+      max_auto_attempts_per_shot: 3,
+      policy_version: 1,
+      default_locale: 'en-US',
+      default_market: 'US',
+    });
+    assert.deepEqual(storedPolicy, EXPECTED_SERVER_AUTOMATION_POLICY);
+
+    const own = captureResponse();
+    handlers.getProject(request({ id: created.body.data.id }), own);
+    assert.equal(own.statusCode, 200);
+    assert.equal(own.body.data.execution_mode, 'auto');
+    assert.equal(own.body.data.budget_limit_credits, 120);
+    assert.equal(own.body.data.max_auto_attempts_per_shot, 3);
+    assert.equal(own.body.data.policy_version, 1);
+
+    const listed = captureResponse();
+    handlers.listProjects(request(), listed);
+    assert.equal(listed.statusCode, 200);
+    assert.equal(listed.body.data[0].execution_mode, 'auto');
+    assert.equal(listed.body.data[0].budget_limit_credits, 120);
+    assert.equal(listed.body.data[0].max_auto_attempts_per_shot, 3);
+    assert.equal(listed.body.data[0].policy_version, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('创建转绘项目严格拒绝新合同非法策略目标与客户端注入且零写入', () => {
+  const db = createDb();
+  try {
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+    const cases = [
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'manual', budget_limit_credits: 10, max_auto_attempts_per_shot: 1 },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'auto', max_auto_attempts_per_shot: 1 },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'auto', budget_limit_credits: 10 },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'auto', budget_limit_credits: 10, max_auto_attempts_per_shot: 6 },
+      { title: 'bad', default_locale: '', default_market: 'US', execution_mode: 'safe' },
+      { title: 'bad', default_locale: ['en-US', 'es-ES'], default_market: 'US', execution_mode: 'safe' },
+      { title: 'bad', default_locale: 'en-US-Latn-FOO', default_market: 'US', execution_mode: 'safe' },
+      { title: 'bad', default_locale: 'en-US', default_market: '', execution_mode: 'safe' },
+      { title: 'bad', default_locale: 'en-US', default_market: ['US', 'GB'], execution_mode: 'safe' },
+      { title: 'bad', default_locale: 'en-US', default_market: 'us', execution_mode: 'safe' },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'safe', spent_credits: 1 },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'safe', held_credits: 1 },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'safe', model: 'client' },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'safe', provider: 'client' },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'safe', reservation_id: 'client' },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'safe', automation_policy_json: '{}' },
+      { title: 'bad', default_locale: 'en-US', default_market: 'US', execution_mode: 'safe', thresholds: { speaker_mapping: 0.1 } },
+      JSON.parse('{"title":"bad","default_locale":"en-US","default_market":"US","execution_mode":"safe","__proto__":{"polluted":true}}'),
+    ];
+    for (const body of cases) {
+      const res = captureResponse();
+      handlers.createProject(request({ body }), res);
+      assert.equal(res.statusCode, 400, JSON.stringify(body));
+    }
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_projects').get().count, 0);
+
+    const legacy = captureResponse();
+    handlers.createProject(request({ body: { title: '旧客户端项目' } }), legacy);
+    assert.equal(legacy.statusCode, 201);
+    assert.equal(legacy.body.data.execution_mode, 'safe');
+    assert.equal(legacy.body.data.default_locale, 'en-US');
+    assert.equal(legacy.body.data.default_market, '');
+    assert.equal(legacy.body.data.budget_limit_credits, null);
+    assert.equal(legacy.body.data.max_auto_attempts_per_shot, null);
+    assert.equal(legacy.body.data.policy_version, 1);
   } finally {
     db.close();
   }
@@ -769,6 +1225,130 @@ test('风格和语言目录来自能力服务且仅暴露验证结果', () => {
     handlers.listLocales(request(), locales);
     assert.equal(locales.statusCode, 200);
     assert.deepEqual(locales.body.data, [{ locale: 'en-US', market: 'US', status: 'full_output', blocking: [] }]);
+  } finally {
+    db.close();
+  }
+});
+
+test('语言目录真实响应只暴露已验证原生对白语言级能力', () => {
+  const db = createDb();
+  try {
+    insertNativeDialogueLocaleConfig(db);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      capabilityService: redrawCapabilityService,
+      canReadArtifact: (assetId) => [771, 772, 773, 774, 775, 776].includes(Number(assetId)),
+    }));
+
+    const locales = captureResponse();
+    handlers.listLocales(request(), locales);
+
+    assert.equal(locales.statusCode, 200);
+    assert.deepEqual(locales.body.data, [{
+      locale: 'es',
+      market: '',
+      language: 'es',
+      region_status: 'unverified',
+      audio_mode: 'native',
+      native_dialogue_audio: true,
+      locale_verified: false,
+      status: 'full_output',
+      blocking: [],
+    }]);
+  } finally {
+    db.close();
+  }
+});
+
+test('语言目录真实响应不展示 human review 缺字段的原生对白能力', () => {
+  const db = createDb();
+  try {
+    const evidence = nativeDialogueEvidence(1, NOW);
+    delete evidence.human_review.lip_sync;
+    insertNativeDialogueLocaleConfig(db, { evidence });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      capabilityService: redrawCapabilityService,
+      canReadArtifact: (assetId) => [771, 772, 773, 774, 775, 776].includes(Number(assetId)),
+    }));
+
+    const locales = captureResponse();
+    handlers.listLocales(request(), locales);
+
+    assert.equal(locales.statusCode, 200);
+    assert.deepEqual(locales.body.data, [{
+      locale: 'es',
+      market: '',
+      language: 'es',
+      region_status: 'unverified',
+      audio_mode: null,
+      native_dialogue_audio: false,
+      locale_verified: false,
+      status: 'subtitle_only',
+      blocking: ['tts', 'native_dialogue_audio'],
+    }]);
+  } finally {
+    db.close();
+  }
+});
+
+test('语言目录真实响应不展示人工覆盖通过的原生对白能力', () => {
+  const db = createDb();
+  try {
+    const evidence = nativeDialogueEvidence(1, NOW);
+    evidence.human_review.manual_override = true;
+    insertNativeDialogueLocaleConfig(db, { evidence });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      capabilityService: redrawCapabilityService,
+      canReadArtifact: (assetId) => [771, 772, 773, 774, 775, 776].includes(Number(assetId)),
+    }));
+
+    const locales = captureResponse();
+    handlers.listLocales(request(), locales);
+
+    assert.equal(locales.statusCode, 200);
+    assert.deepEqual(locales.body.data, [{
+      locale: 'es',
+      market: '',
+      language: 'es',
+      region_status: 'unverified',
+      audio_mode: null,
+      native_dialogue_audio: false,
+      locale_verified: false,
+      status: 'subtitle_only',
+      blocking: ['tts', 'native_dialogue_audio'],
+    }]);
+  } finally {
+    db.close();
+  }
+});
+
+test('语言目录真实响应不把原生对白语言证据提升为地区能力', () => {
+  const db = createDb();
+  try {
+    insertNativeDialogueLocaleConfig(db, {
+      locale: 'es-MX',
+      target_locale: 'es-MX',
+      market: 'MX',
+    });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      capabilityService: redrawCapabilityService,
+      canReadArtifact: (assetId) => [771, 772, 773, 774, 775, 776].includes(Number(assetId)),
+    }));
+
+    const locales = captureResponse();
+    handlers.listLocales(request(), locales);
+
+    assert.equal(locales.statusCode, 200);
+    assert.deepEqual(locales.body.data, [{
+      locale: 'es-MX',
+      market: 'MX',
+      language: 'es',
+      region_status: 'unverified',
+      audio_mode: null,
+      native_dialogue_audio: false,
+      locale_verified: false,
+      status: 'subtitle_only',
+      blocking: ['tts', 'native_dialogue_audio'],
+    }]);
   } finally {
     db.close();
   }
@@ -1242,6 +1822,63 @@ test('本地化报价未配置能力或价格返回 409 且无副作用', () => 
   }
 });
 
+test('真实本地化报价在分析未 advance 时服务端拒绝且无副作用', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 1 });
+    const factsHash = 'route-facts-hash-safe-review';
+    const sourceVersionId = insertVersion(db, workId, {
+      locale: 'source',
+      market: '',
+      status: 'needs_attention',
+      source_facts_json: JSON.stringify(routeSourceFacts()),
+      facts_hash: factsHash,
+      style_snapshot_json: JSON.stringify({ tone: 'thriller' }),
+    });
+    insertAnalysisDecision(db, workId, factsHash, {
+      action: 'needs_review',
+      effective_mode: 'safe',
+      reason_codes: ['safe_mode_requires_review'],
+      effective_analysis_state: 'analysis_review',
+    }, sourceVersionId);
+    insertRedrawLocaleCapabilityConfig(db, [{
+      locale: 'en-US',
+      market: 'US',
+      status: 'verified',
+      evidence: {
+        text: {
+          provider: 'verified-provider',
+          model: 'gpt-localize',
+          task_id: 'verified-localization-text',
+          terminal_status: 'completed',
+          artifact_id: 'readable-localization-artifact',
+        },
+      },
+    }]);
+    prices.set(db, 'gpt-localize', 7, { category: 'text' });
+    creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      canReadArtifact: () => true,
+      localizationOrchestrator: undefined,
+    }));
+
+    const result = captureResponse();
+    handlers.localizationQuote(request({
+      id: workId,
+      body: { locale: 'en-US', market: 'US', localization_level: 'faithful' },
+    }), result);
+
+    assert.equal(result.statusCode, 409);
+    assert.equal(result.body.error.code, 'REDRAW_LOCALIZATION_ANALYSIS_NOT_ADVANCED');
+    assert.equal(result.body.error.details.quote.automation_decision.action, 'needs_review');
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_localization'").get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
 test('本地化版本提交走异步 orchestrator 并返回 202 草稿版本和服务端账单', async () => {
   const db = createDb();
   try {
@@ -1334,6 +1971,7 @@ test('本地化版本提交默认真实 orchestrator 无 provider 时同步拒�
     };
     db.prepare('UPDATE redraw_versions SET source_facts_json = ?, facts_hash = ? WHERE id = ?')
       .run(JSON.stringify(sourceFacts), 'source-facts-hash', sourceVersionId);
+    insertAnalysisDecision(db, workId, 'source-facts-hash', {}, sourceVersionId);
     insertRedrawLocaleCapabilityConfig(db, [{
       locale: 'en-US',
       market: 'US',
@@ -1477,6 +2115,248 @@ test('作品详情独立返回分析、本地化、资产批次任务和 workflo
   }
 });
 
+test('作品详情只投影可恢复分析决策白名单且不公开 task result', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, {
+      current_version: 1,
+      current_step: 1,
+      status: 'needs_attention',
+      task_id: 'task-analysis-safe-projection',
+    });
+    const factsHash = 'projection-facts-hash';
+    const sourceVersionId = insertVersion(db, workId, {
+      locale: 'source',
+      market: '',
+      status: 'needs_attention',
+      source_facts_json: JSON.stringify(routeSourceFacts()),
+      facts_hash: factsHash,
+    });
+    const decision = {
+      action: 'blocked',
+      effective_mode: 'safe',
+      reason_codes: ['project_policy_missing'],
+      policy_version: 1,
+      evidence_hash: factsHash,
+      effective_analysis_state: 'blocked',
+    };
+    db.prepare(`INSERT INTO async_tasks
+      (id, type, status, progress, message, result, metadata, resource_id, tenant_id, user_id, created_at, updated_at)
+      VALUES ('task-analysis-safe-projection', 'redraw_analysis', 'completed', 100, '分析完成', ?, ?, ?, 'tenant-a', 'user-a', ?, ?)
+    `).run(
+      JSON.stringify({
+        status: 'completed',
+        work_id: workId,
+        version_id: sourceVersionId,
+        facts_hash: factsHash,
+        automation_decision: {
+          ...decision,
+          internal_path: 'C:\\private\\analysis.json',
+          metadata_json: { leaked: true },
+        },
+        result_asset_id: 'private-asset',
+      }),
+      JSON.stringify({ private: true }),
+      String(workId),
+      NOW,
+      NOW,
+    );
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const result = captureResponse();
+    handlers.getWork(request({ id: workId }), result);
+
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(result.body.data.analysis_decision, decision);
+    assert.equal(result.body.data.analysis_task.result, undefined);
+    assert.equal(result.body.data.analysis_task.metadata, undefined);
+    assert.equal(JSON.stringify(result.body.data).includes('private'), false);
+    assert.equal(JSON.stringify(result.body.data).includes('internal_path'), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('作品详情只投影可恢复本地化决策白名单且不公开 task result', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db, {
+      default_locale: 'es-ES',
+      default_market: 'ES',
+      execution_mode: 'auto',
+      budget_limit_credits: 100,
+      max_auto_attempts_per_shot: 1,
+    });
+    const workId = insertWork(db, projectId, {
+      current_version: 1,
+      current_step: 1,
+      status: 'needs_attention',
+    });
+    const factsHash = 'a'.repeat(64);
+    const versionId = insertVersion(db, workId, {
+      locale: 'es-ES',
+      market: 'ES',
+      status: 'needs_attention',
+      source_facts_json: JSON.stringify(routeSourceFacts()),
+      facts_hash: factsHash,
+      localization_task_id: 'task-localization-safe-projection',
+    });
+    const decision = {
+      action: 'needs_review',
+      effective_mode: 'safe',
+      reason_codes: ['speaker_confidence_low'],
+      policy_version: 1,
+      version_id: versionId,
+      evidence_hash: factsHash,
+      effective_analysis_state: 'analysis_review',
+    };
+    db.prepare(`INSERT INTO async_tasks
+      (id, type, status, progress, message, result, metadata, resource_id, tenant_id, user_id, created_at, updated_at)
+      VALUES ('task-localization-safe-projection', 'redraw_localization', 'needs_attention', 100, '本地化需审核', ?, ?, ?, 'tenant-a', 'user-a', ?, ?)
+    `).run(
+      JSON.stringify({
+        status: 'needs_attention',
+        work_id: workId,
+        version_id: versionId,
+        facts_hash: factsHash,
+        localization_decision: {
+          action: decision.action,
+          effective_mode: decision.effective_mode,
+          reason_codes: decision.reason_codes,
+          policy_version: decision.policy_version,
+          evidence_hash: factsHash,
+          effective_analysis_state: decision.effective_analysis_state,
+          private_prompt: 'should-not-leak',
+          metadata_json: { leaked: true },
+        },
+        provider_payload: { apiKey: 'secret' },
+      }),
+      JSON.stringify({ private: true }),
+      String(workId),
+      NOW,
+      NOW,
+    );
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const result = captureResponse();
+    handlers.getWork(request({ id: workId }), result);
+
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(result.body.data.localization_decision, decision);
+    assert.deepEqual(Object.keys(result.body.data.localization_decision).sort(), [
+      'action',
+      'effective_analysis_state',
+      'effective_mode',
+      'evidence_hash',
+      'policy_version',
+      'reason_codes',
+      'version_id',
+    ]);
+    assert.match(result.body.data.localization_decision.evidence_hash, /^[a-f0-9]{64}$/);
+    assert.equal(result.body.data.localization_decision.evidence, undefined);
+    assert.equal(result.body.data.localization_task.result, undefined);
+    assert.equal(result.body.data.localization_task.metadata, undefined);
+    assert.equal(JSON.stringify(result.body.data).includes('private'), false);
+    assert.equal(JSON.stringify(result.body.data).includes('private_prompt'), false);
+    assert.equal(JSON.stringify(result.body.data).includes('apiKey'), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('作品详情拒绝失配或非法的本地化决策投影', () => {
+  const invalidCases = [
+    {
+      name: 'stale version',
+      patch: (_decision, context) => ({ version_id: context.versionId + 1 }),
+    },
+    {
+      name: 'stale hash',
+      patch: () => ({ facts_hash: 'stale-hash', localization_decision: { evidence_hash: 'stale-hash' } }),
+    },
+    {
+      name: 'stale policy',
+      patch: () => ({ localization_decision: { policy_version: 2 } }),
+    },
+    {
+      name: 'invalid action',
+      patch: () => ({ localization_decision: { action: 'run_provider' } }),
+    },
+    {
+      name: 'unsafe reason code',
+      patch: () => ({ localization_decision: { reason_codes: ['speaker_confidence_low', 'C:\\private\\prompt.txt'] } }),
+    },
+    {
+      name: 'unsafe effective state',
+      patch: () => ({ localization_decision: { effective_analysis_state: 'https://provider.example/task' } }),
+    },
+  ];
+
+  for (const testCase of invalidCases) {
+    const db = createDb();
+    try {
+      const projectId = insertProject(db, {
+        default_locale: 'es-ES',
+        default_market: 'ES',
+        execution_mode: 'auto',
+        budget_limit_credits: 100,
+        max_auto_attempts_per_shot: 1,
+      });
+      const workId = insertWork(db, projectId, { current_version: 1, current_step: 1 });
+      const factsHash = 'a'.repeat(64);
+      const versionId = insertVersion(db, workId, {
+        locale: 'es-ES',
+        market: 'ES',
+        source_facts_json: JSON.stringify(routeSourceFacts()),
+        facts_hash: factsHash,
+        localization_task_id: `task-localization-invalid-${testCase.name.replace(/\W+/g, '-')}`,
+      });
+      const decision = {
+        action: 'needs_review',
+        effective_mode: 'safe',
+        reason_codes: ['speaker_confidence_low'],
+        policy_version: 1,
+        evidence_hash: factsHash,
+        effective_analysis_state: 'analysis_review',
+      };
+      const context = { workId, versionId, factsHash };
+      const patch = testCase.patch(decision, context);
+      const payload = {
+        status: 'needs_attention',
+        work_id: workId,
+        version_id: versionId,
+        facts_hash: factsHash,
+        localization_decision: decision,
+        ...patch,
+      };
+      if (patch.localization_decision) {
+        payload.localization_decision = { ...decision, ...patch.localization_decision };
+      }
+      db.prepare(`INSERT INTO async_tasks
+        (id, type, status, progress, message, result, resource_id, tenant_id, user_id, created_at, updated_at)
+        VALUES (?, 'redraw_localization', 'needs_attention', 100, '本地化需审核', ?, ?, 'tenant-a', 'user-a', ?, ?)
+      `).run(
+        `task-localization-invalid-${testCase.name.replace(/\W+/g, '-')}`,
+        JSON.stringify(payload),
+        String(workId),
+        NOW,
+        NOW,
+      );
+      const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+      const result = captureResponse();
+      handlers.getWork(request({ id: workId }), result);
+
+      assert.equal(result.statusCode, 200, testCase.name);
+      assert.equal(result.body.data.localization_decision, null, testCase.name);
+      assert.equal(JSON.stringify(result.body.data).includes('private'), false, testCase.name);
+    } finally {
+      db.close();
+    }
+  }
+});
+
 test('作品详情按真实本地化 reservation 投影退款证据且隔离错误资源', () => {
   const db = createDb();
   try {
@@ -1558,6 +2438,11 @@ test('分析完成但未本地化时仍停留步骤 1 和 analysis_review phase'
       current_step: 2,
       status: 'asset_review',
       task_id: 'task-analysis-done',
+    });
+    insertVersion(db, workId, {
+      locale: 'source',
+      market: '',
+      status: 'asset_review',
     });
     db.prepare(`INSERT INTO async_tasks
       (id, type, status, progress, message, resource_id, tenant_id, user_id, created_at, updated_at)
@@ -3048,6 +3933,90 @@ test('分镜更新要求乐观锁并只写白名单且按批准资产重新规�
   }
 });
 
+test('编辑历史角色指针镜头时 snake/camel 引用均由服务端重新绑定身份', () => {
+  for (const pointerField of ['character_asset_id', 'characterAssetId']) {
+    const db = createDb();
+    try {
+      const projectId = insertProject(db);
+      const workId = insertWork(db, projectId, { current_version: 1 });
+      const versionId = insertVersion(db, workId);
+      const pack = canonicalIdentityPack({ artifactSeed: pointerField });
+      const assetId = insertRedrawAsset(db, versionId, {
+        source_ref_json: JSON.stringify({
+          source_ref: { stable_id: pack.source_character_key },
+          identity_pack: pack,
+        }),
+      });
+      const shotId = insertShot(db, versionId, {
+        references_json: JSON.stringify([{
+          [pointerField]: Number(assetId),
+          source_character_key: 'forged-source',
+          target_actor_label: 'Forged Actor',
+          identity_pack_sha256: 'forged-hash',
+        }]),
+      });
+      const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+      const updated = captureResponse();
+
+      handlers.updateShot(request({ id: shotId, body: {
+        updated_at: NOW,
+        start_ms: 1000,
+        end_ms: 7000,
+        prompt: 'legacy character shot edited',
+      } }), updated);
+
+      assert.equal(updated.statusCode, 200, pointerField);
+      assert.equal(updated.body.data.prompt, 'legacy character shot edited');
+      assert.equal(updated.body.data.start_ms, 1000);
+      assert.equal(updated.body.data.end_ms, 7000);
+      assert.deepEqual(updated.body.data.references, [{
+        asset_id: Number(assetId),
+        kind: 'character',
+        version_number: 1,
+        approval_status: 'approved',
+        name: 'Maya',
+        source_character_key: pack.source_character_key,
+        target_actor_label: pack.target_actor_label,
+        identity_pack_sha256: pack.pack_sha256,
+      }]);
+      assert.deepEqual(
+        JSON.parse(db.prepare('SELECT references_json FROM redraw_shots WHERE id = ?').get(shotId).references_json),
+        updated.body.data.references,
+      );
+    } finally {
+      db.close();
+    }
+  }
+});
+
+test('历史角色指针显式声明非 character kind 时拒绝更新', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const pack = canonicalIdentityPack();
+    const assetId = insertRedrawAsset(db, versionId, {
+      source_ref_json: JSON.stringify({ identity_pack: pack }),
+    });
+    const shotId = insertShot(db, versionId, {
+      references_json: JSON.stringify([{ kind: 'prop', character_asset_id: Number(assetId) }]),
+    });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+    const result = captureResponse();
+
+    handlers.updateShot(request({ id: shotId, body: {
+      updated_at: NOW,
+      prompt: 'must reject conflicting historical kind',
+    } }), result);
+
+    assert.equal(result.statusCode, 400);
+    assert.equal(result.body.error.code, 'REDRAW_SHOT_INVALID');
+  } finally {
+    db.close();
+  }
+});
+
 test('分镜更新的 version 锁校验 draft revision 并拒绝未知或未审批引用', () => {
   const db = createDb();
   try {
@@ -3181,9 +4150,9 @@ test('单镜生成与显式重试统一调用 generation service 并返回 202',
     const handlers = redrawRoutes(db, { error() {} }, routeDeps({ generationService }));
 
     const first = captureResponse();
-    await handlers.generateShot(request({ id: shotId, body: { model: 'seedance 2.0' } }), first);
+    await handlers.generateShot(request({ id: shotId, body: {} }), first);
     const duplicate = captureResponse();
-    await handlers.generateShot(request({ id: shotId, body: { model: 'seedance 2.0' } }), duplicate);
+    await handlers.generateShot(request({ id: shotId, body: {} }), duplicate);
     const retry = captureResponse();
     await handlers.generateShot(request({ id: shotId, body: { retry: true } }), retry);
 
@@ -3225,6 +4194,337 @@ test('分镜更新和生成对跨租户或跨用户统一返回 404 且不调用
     assert.equal(userGenerate.statusCode, 404);
     assert.equal(userGenerate.body.error.code, 'REDRAW_SHOT_NOT_FOUND');
     assert.equal(calls, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('参考包 API PUT 仅传递服务端 shot 身份并返回脱敏投影', async () => {
+  const db = createDb();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-reference-bundle-route-'));
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    const input = {
+      expected_updated_at: NOW,
+      motion_reference_asset_id: 305,
+      face_tracks: [{ track_key: 'face-1' }],
+      text_regions: [{ region_key: 'subtitle-1' }],
+      coverage_review: { status: 'approved' },
+    };
+    const calls = [];
+    const referenceBundleService = {
+      async saveReferenceBundle(context, savedInput) {
+        calls.push({ context, input: savedInput });
+        return {
+          shot_id: shotId,
+          reference_bundle_hash: 'a'.repeat(64),
+          reference_bundle_updated_at: '2026-08-06T00:01:00.000Z',
+          bundle: {
+            schema_version: 'redraw-reference-bundle-v1',
+            shot_id: shotId,
+            coverage_review: {
+              reviewed_at: '2026-08-06T00:01:00.000Z',
+              reviewed_by: 'user-a',
+            },
+            local_path: 'private/reference.json',
+            nested: {
+              url: 'https://private.example/reference',
+              absolute_path: 'C:\\private\\reference.json',
+              tenant_id: 'tenant-a',
+              user_id: 'user-a',
+              safe_value: 'visible',
+            },
+          },
+          raw_service_field: 'must-not-leak',
+        };
+      },
+    };
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      cfg: { storage: { local_path: storageRoot } },
+      referenceBundleService,
+    }));
+    const result = captureResponse();
+
+    await handlers.saveReferenceBundle(request({ id: shotId, body: input }), result);
+
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(Object.keys(result.body.data).sort(), [
+      'bundle',
+      'reference_bundle_hash',
+      'reference_bundle_updated_at',
+      'shot_id',
+    ]);
+    assert.equal(result.body.data.shot_id, Number(shotId));
+    assert.equal(result.body.data.reference_bundle_hash, 'a'.repeat(64));
+    assert.equal(result.body.data.bundle.nested.safe_value, 'visible');
+    const serialized = JSON.stringify(result.body.data);
+    for (const secret of [
+      'raw_service_field', 'local_path', 'absolute_path', 'https://private.example',
+      'reviewed_by', 'tenant_id', 'user_id', 'C:\\\\private',
+    ]) assert.equal(serialized.includes(secret), false, secret);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].input, { shot_id: Number(shotId), ...input });
+    assert.equal(calls[0].context.db, db);
+    assert.equal(calls[0].context.tenantId, 'tenant-a');
+    assert.equal(calls[0].context.userId, 'user-a');
+    assert.equal(calls[0].context.versionId, Number(versionId));
+    assert.equal(calls[0].context.storageRoot, storageRoot);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('作品详情只读投影当前版本参考包门禁且更新与生成 payload 均不能控制', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?')
+      .run(versionId);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const before = captureResponse();
+    handlers.getWork(request({ id: workId }), before);
+    assert.equal(before.statusCode, 200);
+    assert.equal(before.body.data.reference_bundle_required, true);
+
+    const updated = captureResponse();
+    handlers.updateShot(request({
+      id: shotId,
+      body: { updated_at: NOW, reference_bundle_required: false },
+    }), updated);
+    assert.equal(updated.statusCode, 200, JSON.stringify(updated.body));
+    assert.equal(
+      db.prepare('SELECT reference_bundle_required FROM redraw_versions WHERE id = ?')
+        .get(versionId).reference_bundle_required,
+      1,
+    );
+
+    let generationCalls = 0;
+    const generationHandlers = redrawRoutes(db, { error() {} }, routeDeps({
+      generationService: {
+        async generateShot() { generationCalls += 1; return {}; },
+        async retryShot() { generationCalls += 1; return {}; },
+      },
+    }));
+    const generated = captureResponse();
+    await generationHandlers.generateShot(request({
+      id: shotId,
+      body: { reference_bundle_required: false },
+    }), generated);
+    assert.equal(generated.statusCode, 400);
+    assert.equal(generated.body.error.code, 'REDRAW_GENERATION_INPUT_INVALID');
+    assert.equal(generationCalls, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('没有参考包门禁的旧版本作品详情稳定返回 false', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    insertVersion(db, workId);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+    const result = captureResponse();
+    handlers.getWork(request({ id: workId }), result);
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.data.reference_bundle_required, false);
+  } finally {
+    db.close();
+  }
+});
+
+test('参考包 API PUT 对未知、客户端控制和 camelCase 字段 fail closed', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    let calls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      referenceBundleService: {
+        async saveReferenceBundle() { calls += 1; },
+      },
+    }));
+    const forbiddenFields = [
+      'shot_id', 'reference_bundle_hash', 'hash', 'path', 'local_path', 'url',
+      'reviewer', 'reviewed_by', 'status', 'tenant_id', 'tenantId', 'user_id', 'userId',
+      'expectedUpdatedAt', 'motionReferenceAssetId', 'faceTracks', 'textRegions', 'coverageReview',
+    ];
+
+    for (const field of forbiddenFields) {
+      const result = captureResponse();
+      await handlers.saveReferenceBundle(request({
+        id: shotId,
+        body: {
+          expected_updated_at: NOW,
+          motion_reference_asset_id: 305,
+          face_tracks: [],
+          text_regions: [],
+          coverage_review: {},
+          [field]: 'client-controlled',
+        },
+      }), result);
+      assert.equal(result.statusCode, 400, field);
+      assert.equal(result.body.error.code, 'REDRAW_REFERENCE_BUNDLE_INPUT_INVALID', field);
+    }
+    const nonObject = captureResponse();
+    await handlers.saveReferenceBundle(request({ id: shotId, body: [] }), nonObject);
+    assert.equal(nonObject.statusCode, 400);
+    assert.equal(nonObject.body.error.code, 'REDRAW_REFERENCE_BUNDLE_INPUT_INVALID');
+    assert.equal(calls, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('参考包 API GET 使用 service 同一读取快照且不二次读取 shot', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    const updatedAt = '2026-08-06T00:02:00.000Z';
+    const concurrentUpdatedAt = '2026-08-06T00:03:00.000Z';
+    db.prepare('UPDATE redraw_shots SET reference_bundle_updated_at = ? WHERE id = ?')
+      .run(updatedAt, shotId);
+    let ownedShotReads = 0;
+    const observedDb = new Proxy(db, {
+      get(target, property) {
+        if (property !== 'prepare') return Reflect.get(target, property, target);
+        return (sql) => {
+          if (/FROM\s+redraw_shots\s+s[\s\S]+JOIN\s+redraw_versions\s+v/i.test(String(sql))) {
+            ownedShotReads += 1;
+          }
+          return target.prepare(sql);
+        };
+      },
+    });
+    const calls = [];
+    const handlers = redrawRoutes(observedDb, { error() {} }, routeDeps({
+      referenceBundleService: {
+        async loadCurrentReferenceBundle(context, id) {
+          calls.push({ context, id });
+          db.prepare('UPDATE redraw_shots SET reference_bundle_updated_at = ? WHERE id = ?')
+            .run(concurrentUpdatedAt, shotId);
+          return {
+            shot_id: id,
+            reference_bundle_hash: 'b'.repeat(64),
+            reference_bundle_updated_at: updatedAt,
+            bundle: {
+              schema_version: 'redraw-reference-bundle-v1',
+              safe: true,
+              storageRoot: 'C:\\private',
+              source_url: 'https://private.example/source',
+              reviewed_by: 'user-a',
+            },
+            internal: 'must-not-leak',
+          };
+        },
+      },
+    }));
+    const result = captureResponse();
+
+    await handlers.getReferenceBundle(request({ id: shotId }), result);
+
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(result.body.data, {
+      shot_id: Number(shotId),
+      reference_bundle_hash: 'b'.repeat(64),
+      reference_bundle_updated_at: updatedAt,
+      bundle: {
+        schema_version: 'redraw-reference-bundle-v1',
+        safe: true,
+      },
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].id, Number(shotId));
+    assert.equal(calls[0].context.versionId, Number(versionId));
+    assert.equal(ownedShotReads, 1);
+    assert.equal(
+      db.prepare('SELECT reference_bundle_updated_at FROM redraw_shots WHERE id = ?').get(shotId)
+        .reference_bundle_updated_at,
+      concurrentUpdatedAt,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('参考包 API 对跨 owner 与不存在镜头统一 404 且不调用 service', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    let calls = 0;
+    const referenceBundleService = {
+      async saveReferenceBundle() { calls += 1; },
+      async loadCurrentReferenceBundle() { calls += 1; },
+    };
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({ referenceBundleService }));
+    const requests = [
+      ['getReferenceBundle', request({ id: shotId, tenantId: 'tenant-b' })],
+      ['getReferenceBundle', request({ id: shotId, userId: 'user-b' })],
+      ['getReferenceBundle', request({ id: 999999 })],
+      ['saveReferenceBundle', request({ id: shotId, tenantId: 'tenant-b', body: {} })],
+      ['saveReferenceBundle', request({ id: shotId, userId: 'user-b', body: {} })],
+      ['saveReferenceBundle', request({ id: 999999, body: {} })],
+    ];
+
+    for (const [method, req] of requests) {
+      const result = captureResponse();
+      await handlers[method](req, result);
+      assert.equal(result.statusCode, 404, method);
+      assert.equal(result.body.error.code, 'REDRAW_SHOT_NOT_FOUND', method);
+    }
+    assert.equal(calls, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('参考包 API 稳定映射未找到、CAS 冲突和输入错误', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    const baseBody = {
+      expected_updated_at: NOW,
+      motion_reference_asset_id: 305,
+      face_tracks: [],
+      text_regions: [],
+      coverage_review: {},
+    };
+    const cases = [
+      ['getReferenceBundle', 'REDRAW_REFERENCE_BUNDLE_NOT_FOUND', 404],
+      ['saveReferenceBundle', 'REDRAW_REFERENCE_BUNDLE_CONFLICT', 409],
+      ['saveReferenceBundle', 'REDRAW_REFERENCE_BUNDLE_FACE_COVERAGE_REQUIRED', 400],
+    ];
+    for (const [method, code, status] of cases) {
+      const referenceBundleService = {
+        async saveReferenceBundle() { throw Object.assign(new Error('参考包错误'), { code }); },
+        async loadCurrentReferenceBundle() { throw Object.assign(new Error('参考包错误'), { code }); },
+      };
+      const handlers = redrawRoutes(db, { error() {} }, routeDeps({ referenceBundleService }));
+      const result = captureResponse();
+      await handlers[method](request({ id: shotId, body: baseBody }), result);
+      assert.equal(result.statusCode, status, code);
+      assert.equal(result.body.error.code, code);
+    }
   } finally {
     db.close();
   }
@@ -3305,12 +4605,14 @@ test('批量生成严格绑定作品当前版本并拒绝 singular shot_id', asy
         return { version_id: input.versionId, results: [{ shot_id: 1, status: 'processing', billing: { held: 6 } }], skipped: [] };
       },
     };
-    const handlers = redrawRoutes(db, { error() {} }, routeDeps({ generationService }));
+    const localeVerifier = { assertReady: () => ({ id: 'en@route-test' }) };
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({ generationService, localeVerifier }));
 
     const current = captureResponse();
     await handlers.generateBatch(request({ id: workId, body: {} }), current);
     assert.equal(current.statusCode, 202);
     assert.equal(calls[0].input.versionId, versionId);
+    assert.equal(calls[0].context.localeVerifier, localeVerifier);
 
     const mismatch = captureResponse();
     await handlers.generateBatch(request({ id: workId, body: { version_id: otherVersionId } }), mismatch);
@@ -3399,7 +4701,7 @@ test('无 verified 生成能力时单镜生成 fail closed 且不冻结不提交
     }));
 
     const result = captureResponse();
-    await handlers.generateShot(request({ id: shotId, body: { model: 'seedance 2.0' } }), result);
+    await handlers.generateShot(request({ id: shotId, body: {} }), result);
 
     assert.equal(result.statusCode, 400);
     assert.equal(result.body.error.code, 'REDRAW_NO_VERIFIED_VIDEO_MODEL');
@@ -3464,6 +4766,13 @@ test('生成接口严格拒绝内部控制字段、未知字段与非 1 count', 
     const handlers = redrawRoutes(db, { error() {} }, routeDeps({ generationService }));
     const invalidSingle = [
       { attempt: 2 },
+      { model: 'seedance 2.0' },
+      { locale: 'en-US' },
+      { prompt: 'attacker prompt' },
+      { generate_audio: false },
+      { ai_service_config_id: 1 },
+      { provider: 'attacker' },
+      { credits: 1 },
       { operation_key: 'attacker-key' },
       { awaitCompletion: true },
       { schedule: 'inline' },
@@ -3494,6 +4803,124 @@ test('生成接口严格拒绝内部控制字段、未知字段与非 1 count', 
     assert.equal(calls, 0);
   } finally {
     db.close();
+  }
+});
+
+test('原生音轨人工审核接口严格 body、owner 隔离且不需要供应商 provider', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId, { status: 'needs_attention' });
+    const calls = [];
+    const generationService = {
+      reviewNativeAudio: async (ctx, input) => {
+        calls.push({ ctx, input });
+        return { status: 'completed', shot_id: input.shotId, video_generation_id: 77, asset_id: 88 };
+      },
+      resolveVerifiedGenerationModel: () => null,
+    };
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({ generationService }));
+    const validBody = {
+      validation_hash: 'c'.repeat(64),
+      expected_updated_at: NOW,
+      decision: 'approved',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    };
+
+    for (const body of [
+      { ...validBody, unknown: true },
+      { ...validBody, validation_hash: 'x' },
+      { ...validBody, expected_updated_at: 'not-iso' },
+      { ...validBody, decision: 'accept' },
+      { ...validBody, speaker_order: 'failed' },
+      { ...validBody, lip_sync: 'failed' },
+      { ...validBody, extra_dialogue: 'failed' },
+      { validation_hash: 'c'.repeat(64), expected_updated_at: NOW, decision: 'rejected' },
+      { validation_hash: 'c'.repeat(64), expected_updated_at: NOW, decision: 'rejected', reason: '' },
+      { validation_hash: 'c'.repeat(64), expected_updated_at: NOW, decision: 'rejected', reason: 'bad', speaker_order: 'passed' },
+    ]) {
+      const result = captureResponse();
+      await handlers.nativeAudioReview(request({ id: shotId, body }), result);
+      assert.equal(result.statusCode, 400, JSON.stringify(body));
+      assert.equal(result.body.error.code, 'REDRAW_NATIVE_AUDIO_REVIEW_INVALID');
+    }
+    assert.equal(calls.length, 0);
+
+    const otherTenant = captureResponse();
+    await handlers.nativeAudioReview(request({ id: shotId, tenantId: 'tenant-b', body: validBody }), otherTenant);
+    assert.equal(otherTenant.statusCode, 404);
+    assert.equal(calls.length, 0);
+
+    const approved = captureResponse();
+    await handlers.nativeAudioReview(request({ id: shotId, body: validBody }), approved);
+    assert.equal(approved.statusCode, 202);
+    assert.equal(approved.body.data.status, 'completed');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].ctx.tenantId, 'tenant-a');
+    assert.equal(calls[0].ctx.userId, 'user-a');
+    assert.deepEqual(calls[0].input, {
+      shotId,
+      validation_hash: 'c'.repeat(64),
+      expected_updated_at: NOW,
+      decision: 'approved',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    });
+  } finally {
+    db.close();
+  }
+});
+
+test('原生音轨人工审核真实路由将不可读和无音轨候选映射为 409', async () => {
+  const db = createDb();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-route-native-review-'));
+  try {
+    const missing = insertNativeAudioReviewCandidate(db, storageRoot, 'videos/missing.mp4', { writeFile: false });
+    const noAudioSha256 = crypto.createHash('sha256').update('no audio route artifact').digest('hex');
+    const noAudio = insertNativeAudioReviewCandidate(db, storageRoot, 'videos/no-audio.mp4', {
+      fileBody: 'no audio route artifact',
+      artifactSha256: noAudioSha256,
+    });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      cfg: { storage: { local_path: storageRoot } },
+      generationOptions: {
+        probeRunner: async (_absPath, _row, options) => ({
+          duration: 5,
+          width: 720,
+          height: 1280,
+          hasAudio: options.requireAudio ? false : undefined,
+        }),
+        assetImporter: () => {
+          throw new Error('asset importer must not run');
+        },
+      },
+    }));
+    const body = {
+      validation_hash: 'c'.repeat(64),
+      expected_updated_at: NOW,
+      decision: 'approved',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    };
+
+    const missingResult = captureResponse();
+    await handlers.nativeAudioReview(request({ id: missing.shotId, body }), missingResult);
+    assert.equal(missingResult.statusCode, 409);
+    assert.equal(missingResult.body.error.code, 'REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE');
+
+    const noAudioResult = captureResponse();
+    await handlers.nativeAudioReview(request({ id: noAudio.shotId, body }), noAudioResult);
+    assert.equal(noAudioResult.statusCode, 409);
+    assert.equal(noAudioResult.body.error.code, 'REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE');
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
   }
 });
 
@@ -3668,7 +5095,319 @@ test('批量生成显式历史版本返回冲突且零调用零冻结', async ()
   }
 });
 
-test('第三步和本地化确认 API 已真实注册在总路由', () => {
+test('角色身份包 API 保存服务端证据、重置审核且响应不泄露存储路径', () => {
+  const fixture = setupIdentityPackRouteFixture();
+  try {
+    const result = captureResponse();
+    fixture.handlers.saveRedrawCharacterIdentityPack(
+      request({
+        id: fixture.assetId,
+        body: completeIdentityPackRequest({
+          persona_origin: ' fictional_ai_generated ',
+          target_country: ' US ',
+        }),
+      }),
+      result,
+    );
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.success, true);
+    assert.equal(result.body.data.version_id, fixture.versionId);
+    assert.equal(result.body.data.status, 'asset_review');
+    assert.equal(result.body.data.current_step, 2);
+    assert.equal(result.body.data.identity_pack.source_character_key, 'source-character-maya');
+    assert.equal(result.body.data.identity_pack.target_actor_label, 'Actor Maya');
+    assert.equal(result.body.data.identity_pack.persona_origin, 'fictional_ai_generated');
+    assert.equal(result.body.data.identity_pack.target_country, 'US');
+    assert.deepEqual(result.body.data.identity_pack.confirmed_views, ['front', 'profile', 'full_body']);
+    assert.deepEqual(result.body.data.identity_pack.artifact, {
+      asset_id: 701,
+      sha256: crypto.createHash('sha256').update(fixture.artifactBytes).digest('hex'),
+      width: 640,
+      height: 960,
+      mime_type: 'image/png',
+    });
+    assert.equal(result.body.data.identity_pack.reviewed_by, 'user-a');
+    assert.equal(result.body.data.identity_pack.ready, true);
+    assert.equal(result.body.data.identity_pack_status.ready, true);
+    assert.match(result.body.data.identity_pack.pack_sha256, /^[0-9a-f]{64}$/);
+    const { pack_sha256: _storedHash, ...canonicalFields } = result.body.data.identity_pack;
+    assert.equal(
+      result.body.data.identity_pack.pack_sha256,
+      crypto.createHash('sha256').update(stableJson(canonicalFields)).digest('hex'),
+    );
+    const stored = fixture.db.prepare(`SELECT approval_status, approved_by, approved_at
+      FROM redraw_assets WHERE id = ?`).get(fixture.assetId);
+    assert.deepEqual(stored, { approval_status: 'pending', approved_by: null, approved_at: null });
+    assert.deepEqual(result.body.data.asset.identity_pack, result.body.data.identity_pack);
+    const serialized = JSON.stringify(result.body.data);
+    assert.equal(serialized.includes('source_ref_json'), false);
+    assert.equal(serialized.includes('storageRoot'), false);
+    assert.equal(serialized.includes('"path"'), false);
+    assert.equal(serialized.includes('local_path'), false);
+    assert.equal(serialized.includes('absolute_path'), false);
+    assert.equal(serialized.includes('C:\\\\private'), false);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('角色身份包 API 接受 camelCase 虚构美国政策字段并保持安全响应', () => {
+  const fixture = setupIdentityPackRouteFixture();
+  try {
+    const result = captureResponse();
+    fixture.handlers.saveRedrawCharacterIdentityPack(
+      request({
+        id: fixture.assetId,
+        body: completeIdentityPackRequest({
+          personaOrigin: ' fictional_ai_generated ',
+          targetCountry: ' US ',
+        }),
+      }),
+      result,
+    );
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.data.identity_pack.persona_origin, 'fictional_ai_generated');
+    assert.equal(result.body.data.identity_pack.target_country, 'US');
+    assert.equal(result.body.data.identity_pack_status.ready, true);
+    const serialized = JSON.stringify(result.body.data);
+    assert.equal(serialized.includes('source_ref_json'), false);
+    assert.equal(serialized.includes('storageRoot'), false);
+    assert.equal(serialized.includes('local_path'), false);
+    assert.equal(serialized.includes('absolute_path'), false);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('角色身份包 API 严格拒绝非法、重复和未知政策字段且数据库不变', () => {
+  const fixture = setupIdentityPackRouteFixture();
+  try {
+    const invalidPatches = [
+      { persona_origin: 'real_person' },
+      { target_country: 'CN' },
+      { persona_origin: 1 },
+      { target_country: true },
+      { target_country: 'us' },
+      { persona_origin: 'fictional_ai_generated', personaOrigin: 'fictional_ai_generated' },
+      { target_country: 'US', targetCountry: 'US' },
+      { unknown_policy: 'fictional_ai_generated' },
+    ];
+    const before = fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
+      approved_at, updated_at FROM redraw_assets WHERE id = ?`).get(fixture.assetId);
+
+    for (const patch of invalidPatches) {
+      const result = captureResponse();
+      fixture.handlers.saveRedrawCharacterIdentityPack(
+        request({ id: fixture.assetId, body: completeIdentityPackRequest(patch) }),
+        result,
+      );
+      assert.equal(result.statusCode, 400, JSON.stringify(patch));
+      assert.equal(result.body.error.code, 'REDRAW_CHARACTER_IDENTITY_INPUT_INVALID');
+      assert.deepEqual(
+        fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
+          approved_at, updated_at FROM redraw_assets WHERE id = ?`).get(fixture.assetId),
+        before,
+        JSON.stringify(patch),
+      );
+    }
+  } finally {
+    fixture.close();
+  }
+});
+
+test('角色身份包 API 投影缺失时拒绝回退 raw saved 且不泄露路径', () => {
+  const fixture = setupIdentityPackRouteFixture();
+  const originalListAssets = redrawAssetService.listAssets;
+  try {
+    const before = fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
+      approved_at, updated_at FROM redraw_assets WHERE id = ?`).get(fixture.assetId);
+    redrawAssetService.listAssets = () => [];
+    const result = captureResponse();
+    fixture.handlers.saveRedrawCharacterIdentityPack(
+      request({ id: fixture.assetId, body: completeIdentityPackRequest() }),
+      result,
+    );
+    assert.equal(result.statusCode, 500);
+    assert.equal(result.body.success, false);
+    assert.equal(result.body.error.code, 'REDRAW_IDENTITY_PROJECTION_FAILED');
+    const serialized = JSON.stringify(result.body);
+    assert.equal(serialized.includes('storageRoot'), false);
+    assert.equal(serialized.includes('local_path'), false);
+    assert.equal(serialized.includes('absolute_path'), false);
+    assert.equal(serialized.includes('C:\\\\private'), false);
+    const after = fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
+      approved_at, updated_at FROM redraw_assets WHERE id = ?`).get(fixture.assetId);
+    assert.notDeepEqual(after, before);
+    assert.equal(after.approval_status, 'pending');
+    assert.equal(after.approved_by, null);
+  } finally {
+    redrawAssetService.listAssets = originalListAssets;
+    fixture.close();
+  }
+});
+
+test('角色身份包 API 拒绝客户端控制和未知字段且不修改数据库', () => {
+  const fixture = setupIdentityPackRouteFixture();
+  try {
+    const forbiddenFields = [
+      'source_character_key', 'artifact', 'sha256', 'pack_sha256', 'ready',
+      'reviewed_by', 'reviewed_at', 'asset_id', 'version_id', 'tenant_id', 'user_id',
+      'path', 'url', 'approval_status', 'status', 'unexpected_field',
+    ];
+    const before = fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
+      approved_at, updated_at FROM redraw_assets WHERE id = ?`).get(fixture.assetId);
+
+    for (const field of forbiddenFields) {
+      const result = captureResponse();
+      fixture.handlers.saveRedrawCharacterIdentityPack(
+        request({
+          id: fixture.assetId,
+          body: completeIdentityPackRequest({ [field]: field === 'artifact' ? {} : 'forged' }),
+        }),
+        result,
+      );
+      assert.equal(result.statusCode, 400, field);
+      assert.equal(result.body.error.code, 'REDRAW_CHARACTER_IDENTITY_INPUT_INVALID', field);
+      assert.deepEqual(
+        fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
+          approved_at, updated_at FROM redraw_assets WHERE id = ?`).get(fixture.assetId),
+        before,
+        field,
+      );
+    }
+
+    const aliases = captureResponse();
+    fixture.handlers.saveRedrawCharacterIdentityPack(
+      request({
+        id: fixture.assetId,
+        body: completeIdentityPackRequest({ targetActorLabel: 'Duplicate alias' }),
+      }),
+      aliases,
+    );
+    assert.equal(aliases.statusCode, 400);
+    assert.equal(aliases.body.error.code, 'REDRAW_CHARACTER_IDENTITY_INPUT_INVALID');
+    assert.deepEqual(
+      fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
+        approved_at, updated_at FROM redraw_assets WHERE id = ?`).get(fixture.assetId),
+      before,
+    );
+  } finally {
+    fixture.close();
+  }
+});
+
+test('角色身份包 API 对跨 owner 统一返回 404', () => {
+  const fixture = setupIdentityPackRouteFixture();
+  try {
+    for (const ownerPatch of [
+      { tenantId: 'tenant-b', userId: 'user-a' },
+      { tenantId: 'tenant-a', userId: 'user-b' },
+    ]) {
+      const result = captureResponse();
+      fixture.handlers.saveRedrawCharacterIdentityPack(
+        request({ id: fixture.assetId, body: completeIdentityPackRequest(), ...ownerPatch }),
+        result,
+      );
+      assert.equal(result.statusCode, 404);
+    }
+  } finally {
+    fixture.close();
+  }
+});
+
+test('角色身份包 API 拒绝非角色资产并把 CAS 冲突映射为 409', () => {
+  const nonCharacter = setupIdentityPackRouteFixture({ kind: 'prop' });
+  try {
+    const invalidKind = captureResponse();
+    nonCharacter.handlers.saveRedrawCharacterIdentityPack(
+      request({ id: nonCharacter.assetId, body: completeIdentityPackRequest() }),
+      invalidKind,
+    );
+    assert.equal(invalidKind.statusCode, 400);
+    assert.equal(invalidKind.body.error.code, 'REDRAW_IDENTITY_ASSET_INVALID_KIND');
+  } finally {
+    nonCharacter.close();
+  }
+
+  const conflict = setupIdentityPackRouteFixture();
+  try {
+    const result = captureResponse();
+    conflict.handlers.saveRedrawCharacterIdentityPack(
+      request({
+        id: conflict.assetId,
+        body: completeIdentityPackRequest({ expected_updated_at: '2026-08-05T00:00:00.000Z' }),
+      }),
+      result,
+    );
+    assert.equal(result.statusCode, 409);
+    assert.equal(result.body.error.code, 'REDRAW_IDENTITY_CONFLICT');
+  } finally {
+    conflict.close();
+  }
+});
+
+test('角色身份包 API 允许保存明确未完成的包并保持 ready=false', () => {
+  const fixture = setupIdentityPackRouteFixture();
+  try {
+    const result = captureResponse();
+    fixture.handlers.saveRedrawCharacterIdentityPack(
+      request({
+        id: fixture.assetId,
+        body: {
+          targetActorLabel: 'Actor Maya',
+          confirmedViews: ['front'],
+          liveActionHumanConfirmed: false,
+          adultStatus: 'unverified',
+          identityConsistencyConfirmed: false,
+          expectedUpdatedAt: NOW,
+        },
+      }),
+      result,
+    );
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.data.identity_pack.ready, false);
+    assert.equal(result.body.data.identity_pack_status.ready, false);
+    assert.deepEqual(result.body.data.identity_pack_status.missing_views, ['profile', 'full_body']);
+    assert.deepEqual(result.body.data.identity_pack_status.missing_confirmations, [
+      'live_action_human_confirmed',
+      'adult_status',
+      'identity_consistency_confirmed',
+    ]);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('角色身份包 API 严格校验允许字段类型和值', () => {
+  const fixture = setupIdentityPackRouteFixture();
+  try {
+    const invalidPatches = [
+      { target_actor_label: '' },
+      { target_actor_label: 'a'.repeat(101) },
+      { confirmed_views: 'front' },
+      { confirmed_views: ['front', 'rear'] },
+      { live_action_human_confirmed: 1 },
+      { adult_status: 'unknown' },
+      { identity_consistency_confirmed: 'true' },
+      { expected_updated_at: ' ' },
+    ];
+    for (const patch of invalidPatches) {
+      const result = captureResponse();
+      fixture.handlers.saveRedrawCharacterIdentityPack(
+        request({ id: fixture.assetId, body: completeIdentityPackRequest(patch) }),
+        result,
+      );
+      assert.equal(result.statusCode, 400, JSON.stringify(patch));
+      assert.equal(result.body.error.code, 'REDRAW_CHARACTER_IDENTITY_INPUT_INVALID');
+    }
+  } finally {
+    fixture.close();
+  }
+});
+
+test('第三步、角色身份包和本地化确认 API 已真实注册在总路由', () => {
   const db = createDb();
   try {
     const router = setupRouter({}, db, { error() {}, warn() {}, info() {} });
@@ -3678,20 +5417,284 @@ test('第三步和本地化确认 API 已真实注册在总路由', () => {
         .map((method) => `${method.toUpperCase()} ${layer.route.path}`)));
     assert.equal(routes.has('GET /redraw/works/:id'), true);
     assert.equal(routes.has('PUT /redraw/shots/:id'), true);
+    assert.equal(routes.has('GET /redraw/shots/:id/reference-bundle'), true);
+    assert.equal(routes.has('PUT /redraw/shots/:id/reference-bundle'), true);
     assert.equal(routes.has('POST /redraw/shots/:id/generate'), true);
+    assert.equal(routes.has('POST /redraw/shots/:id/native-audio-review'), true);
     assert.equal(routes.has('POST /redraw/works/:id/generate-batch'), true);
     assert.equal(routes.has('POST /redraw/works/:id/localization-quote'), true);
     assert.equal(routes.has('POST /redraw/works/:id/versions'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/assets/batch-quote'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/assets/batches'), true);
+    assert.equal(routes.has('GET /redraw/assets/:id/preview/:variant'), true);
+    assert.equal(routes.has('PUT /redraw/assets/:id/identity-pack'), true);
     assert.equal(routes.has('GET /redraw/versions/:id/voices'), true);
     assert.equal(routes.has('GET /redraw/versions/:versionId/voices/:voiceAssetId/preview'), true);
     assert.equal(routes.has('POST /redraw/assets/:id/voice'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/dialogue/quote'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/dialogue/start'), true);
     assert.equal(routes.has('GET /redraw/versions/:id/dialogue/tasks/:taskId'), true);
+    assert.equal(routes.has('PUT /redraw/projects/:id/policy'), true);
+    assert.equal(routes.has('GET /redraw/projects/:id/events'), true);
   } finally {
     db.close();
+  }
+});
+
+test('项目策略 API 严格白名单、CAS 更新并追加脱敏事件', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const missingCas = captureResponse();
+    handlers.updateProjectPolicy(request({
+      id: projectId,
+      body: { execution_mode: 'safe' },
+    }), missingCas);
+    assert.equal(missingCas.statusCode, 400);
+    assert.equal(missingCas.body.error.code, 'REDRAW_PROJECT_POLICY_EXPECTED_UPDATED_AT_REQUIRED');
+
+    for (const field of ['default_market', 'default_locale', 'spent_credits', 'reservation_id', 'provider', 'model', 'apiKey', 'base_url', 'automation_policy_json', 'thresholds']) {
+      const bad = captureResponse();
+      handlers.updateProjectPolicy(request({
+        id: projectId,
+        body: { execution_mode: 'safe', expected_updated_at: NOW, [field]: 'client' },
+      }), bad);
+      assert.equal(bad.statusCode, 400, field);
+      assert.equal(bad.body.error.code, 'REDRAW_PROJECT_POLICY_UNKNOWN_FIELD', field);
+    }
+
+    const ok = captureResponse();
+    handlers.updateProjectPolicy(request({
+      id: projectId,
+      body: {
+        execution_mode: 'auto',
+        budget_limit_credits: 100,
+        max_auto_attempts_per_shot: 2,
+        expected_updated_at: NOW,
+      },
+    }), ok);
+    assert.equal(ok.statusCode, 200);
+    assert.deepEqual(
+      {
+        execution_mode: ok.body.data.execution_mode,
+        budget_limit_credits: ok.body.data.budget_limit_credits,
+        max_auto_attempts_per_shot: ok.body.data.max_auto_attempts_per_shot,
+        policy_version: ok.body.data.policy_version,
+      },
+      {
+        execution_mode: 'auto',
+        budget_limit_credits: 100,
+        max_auto_attempts_per_shot: 2,
+        policy_version: 2,
+      },
+    );
+    assert.ok(ok.body.data.updated_at);
+    assert.deepEqual(db.prepare(`
+      SELECT default_market, default_locale FROM redraw_projects WHERE id = ?
+    `).get(projectId), {
+      default_market: 'US',
+      default_locale: 'en-US',
+    });
+    const storedPolicy = db.prepare('SELECT automation_policy_json FROM redraw_projects WHERE id = ?')
+      .get(projectId);
+    assert.deepEqual(JSON.parse(storedPolicy.automation_policy_json), EXPECTED_SERVER_AUTOMATION_POLICY);
+
+    const events = captureResponse();
+    handlers.listProjectEvents(request({ id: projectId }), events);
+    assert.equal(events.statusCode, 200);
+    assert.equal(events.body.data.length, 1);
+    assert.equal(events.body.data[0].reason_code, 'project_policy_updated');
+    assert.match(events.body.data[0].evidence_hash, /^[a-f0-9]{64}$/);
+    const serialized = JSON.stringify(events.body.data);
+    assert.equal(serialized.includes('metadata_json'), false);
+    assert.equal(serialized.includes('apiKey'), false);
+    assert.equal(serialized.includes('http'), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('项目策略 API 对跨 owner 统一 404，CAS 冲突 409 且不追加事件', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const foreignPut = captureResponse();
+    handlers.updateProjectPolicy(request({
+      id: projectId,
+      tenantId: 'tenant-b',
+      body: {
+        execution_mode: 'safe',
+        expected_updated_at: NOW,
+      },
+    }), foreignPut);
+    assert.equal(foreignPut.statusCode, 404);
+    assert.equal(foreignPut.body.error.code, 'REDRAW_PROJECT_NOT_FOUND');
+
+    const conflict = captureResponse();
+    handlers.updateProjectPolicy(request({
+      id: projectId,
+      body: {
+        execution_mode: 'auto',
+        budget_limit_credits: 100,
+        max_auto_attempts_per_shot: 2,
+        expected_updated_at: '2026-08-05T00:00:00.000Z',
+      },
+    }), conflict);
+    assert.equal(conflict.statusCode, 409);
+    assert.equal(conflict.body.error.code, 'REDRAW_PROJECT_POLICY_CONFLICT');
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_workflow_events').get().count, 0);
+
+    const foreignList = captureResponse();
+    handlers.listProjectEvents(request({ id: projectId, userId: 'user-b' }), foreignList);
+    assert.equal(foreignList.statusCode, 404);
+    assert.equal(foreignList.body.error.code, 'REDRAW_PROJECT_NOT_FOUND');
+  } finally {
+    db.close();
+  }
+});
+
+test('项目策略 API 拒绝继承字段和原型污染键且零写入', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+    const before = db.prepare(`
+      SELECT execution_mode, budget_limit_credits, max_auto_attempts_per_shot,
+             policy_version, updated_at, automation_policy_json
+      FROM redraw_projects WHERE id = ?
+    `).get(projectId);
+
+    const inheritedPolicy = Object.create({
+      execution_mode: 'auto',
+      budget_limit_credits: 100,
+      max_auto_attempts_per_shot: 2,
+      expected_updated_at: NOW,
+    });
+    const inherited = captureResponse();
+    handlers.updateProjectPolicy(request({ id: projectId, body: inheritedPolicy }), inherited);
+    assert.equal(inherited.statusCode, 400);
+    assert.equal(inherited.body.error.code, 'REDRAW_PROJECT_POLICY_EXPECTED_UPDATED_AT_REQUIRED');
+
+    const inheritedCas = Object.assign(Object.create({ expected_updated_at: NOW }), {
+      execution_mode: 'safe',
+    });
+    const cas = captureResponse();
+    handlers.updateProjectPolicy(request({ id: projectId, body: inheritedCas }), cas);
+    assert.equal(cas.statusCode, 400);
+    assert.equal(cas.body.error.code, 'REDRAW_PROJECT_POLICY_EXPECTED_UPDATED_AT_REQUIRED');
+
+    const literalProto = { __proto__: { execution_mode: 'safe', expected_updated_at: NOW } };
+    const literal = captureResponse();
+    handlers.updateProjectPolicy(request({ id: projectId, body: literalProto }), literal);
+    assert.equal(literal.statusCode, 400);
+    assert.equal(literal.body.error.code, 'REDRAW_PROJECT_POLICY_EXPECTED_UPDATED_AT_REQUIRED');
+
+    const jsonProto = JSON.parse(`{"__proto__":{"execution_mode":"safe"},"execution_mode":"safe","expected_updated_at":"${NOW}"}`);
+    const ownProto = captureResponse();
+    handlers.updateProjectPolicy(request({ id: projectId, body: jsonProto }), ownProto);
+    assert.equal(ownProto.statusCode, 400);
+    assert.equal(ownProto.body.error.code, 'REDRAW_PROJECT_POLICY_INVALID');
+
+    assert.deepEqual(db.prepare(`
+      SELECT execution_mode, budget_limit_credits, max_auto_attempts_per_shot,
+             policy_version, updated_at, automation_policy_json
+      FROM redraw_projects WHERE id = ?
+    `).get(projectId), before);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_workflow_events').get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('转绘图片预览仅返回当前 owner 的存储根内图片', () => {
+  const db = createDb();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-preview-'));
+  const outsidePath = path.join(path.dirname(storageRoot), `${path.basename(storageRoot)}-outside.png`);
+  try {
+    fs.mkdirSync(path.join(storageRoot, 'redraw-assets'), { recursive: true });
+    const imagePath = path.join(storageRoot, 'redraw-assets', 'actor.png');
+    fs.writeFileSync(imagePath, 'real actor preview');
+    db.prepare(`INSERT INTO assets
+      (id, name, type, category, url, local_path, mime_type, created_at, updated_at)
+      VALUES (701, 'Mateo', 'image', 'redraw', '/static/unsafe-actor.png', 'redraw-assets/actor.png', 'image/png', ?, ?)`)
+      .run(NOW, NOW);
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const assetId = insertRedrawAsset(db, versionId, { localized_name: 'Mateo' });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      cfg: { storage: { local_path: storageRoot } },
+    }));
+
+    const sent = { path: null, headers: {} };
+    const ownerResponse = captureResponse();
+    ownerResponse.setHeader = (name, value) => { sent.headers[name] = value; };
+    ownerResponse.sendFile = (filename, callback) => {
+      sent.path = filename;
+      callback?.();
+      return ownerResponse;
+    };
+    handlers.previewRedrawAsset({
+      params: { id: String(assetId), variant: 'primary' },
+      tenant: { id: 'tenant-a' },
+      user: { id: 'user-a' },
+    }, ownerResponse);
+
+    assert.equal(sent.path, fs.realpathSync(imagePath));
+    assert.equal(sent.headers['Content-Type'], 'image/png');
+    assert.equal(sent.headers['Cache-Control'], 'private, no-store, max-age=0');
+    assert.equal(sent.headers['X-Content-Type-Options'], 'nosniff');
+
+    const foreign = captureResponse();
+    handlers.previewRedrawAsset({
+      params: { id: String(assetId), variant: 'primary' },
+      tenant: { id: 'tenant-b' },
+      user: { id: 'user-a' },
+    }, foreign);
+    assert.equal(foreign.statusCode, 404);
+
+    const invalidVariant = captureResponse();
+    handlers.previewRedrawAsset({
+      params: { id: String(assetId), variant: 'source' },
+      tenant: { id: 'tenant-a' },
+      user: { id: 'user-a' },
+    }, invalidVariant);
+    assert.equal(invalidVariant.statusCode, 404);
+
+    db.prepare(`INSERT INTO assets
+      (id, name, type, category, local_path, mime_type, created_at, updated_at)
+      VALUES (702, 'not-image', 'video', 'redraw', 'redraw-assets/actor.png', 'video/mp4', ?, ?)`)
+      .run(NOW, NOW);
+    const nonImageAssetId = insertRedrawAsset(db, versionId, { asset_id: 702, localized_name: '错误媒体' });
+    const nonImage = captureResponse();
+    handlers.previewRedrawAsset({
+      params: { id: String(nonImageAssetId), variant: 'primary' },
+      tenant: { id: 'tenant-a' },
+      user: { id: 'user-a' },
+    }, nonImage);
+    assert.equal(nonImage.statusCode, 404);
+
+    fs.writeFileSync(outsidePath, 'outside image');
+    db.prepare(`INSERT INTO assets
+      (id, name, type, category, local_path, mime_type, created_at, updated_at)
+      VALUES (703, 'outside', 'image', 'redraw', ?, 'image/png', ?, ?)`)
+      .run(`../${path.basename(outsidePath)}`, NOW, NOW);
+    const outsideAssetId = insertRedrawAsset(db, versionId, { asset_id: 703, localized_name: '越界媒体' });
+    const outside = captureResponse();
+    handlers.previewRedrawAsset({
+      params: { id: String(outsideAssetId), variant: 'primary' },
+      tenant: { id: 'tenant-a' },
+      user: { id: 'user-a' },
+    }, outside);
+    assert.equal(outside.statusCode, 404);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+    fs.rmSync(outsidePath, { force: true });
   }
 });
 

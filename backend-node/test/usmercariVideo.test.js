@@ -40,13 +40,16 @@ describe('USMercari async video protocol', () => {
   it('exposes the supplier-confirmed per-model media limits', () => {
     assert.deepEqual(USMERCARI_VIDEO_DURATIONS, [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     assert.deepEqual(USMERCARI_MODELS['MiniMax H3'], {
-      maxImages: 5, maxVideos: 0, maxAudio: 3, resolutions: ['480p'],
+      maxImages: 3, maxVideos: 0, maxAudio: 3, resolutions: ['1440p'],
+      durations: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
     });
     assert.deepEqual(USMERCARI_MODELS['seedance-2.0-fast'], {
       maxImages: 9, maxVideos: 3, maxAudio: 3, resolutions: ['480p', '720p'],
+      durations: USMERCARI_VIDEO_DURATIONS,
     });
     assert.deepEqual(USMERCARI_MODELS['seedance-2.0-mini'], {
       maxImages: 9, maxVideos: 3, maxAudio: 3, resolutions: ['480p', '720p'],
+      durations: USMERCARI_VIDEO_DURATIONS,
     });
   });
 
@@ -68,7 +71,7 @@ describe('USMercari async video protocol', () => {
       prompt: '电影感森林晨雾',
       duration: 5,
       aspect_ratio: '16:9',
-      resolution: '480p',
+      resolution: '1440p',
       image_url: 'https://cdn.example/first.png',
     }), {
       model: 'MiniMax H3',
@@ -76,19 +79,20 @@ describe('USMercari async video protocol', () => {
       duration: 5,
       metadata: {
         aspect_ratio: '16:9',
-        resolution: '480p',
+        resolution: '1440p',
         image_url: 'https://cdn.example/first.png',
       },
     });
     assert.throws(() => buildUsmercariVideoBody({ model: 'unknown', prompt: 'x' }), /未经真实生成验证/);
     for (const model of Object.keys(USMERCARI_MODELS)) {
-      for (const duration of [4, 15]) {
+      const durations = USMERCARI_MODELS[model].durations;
+      for (const duration of [durations[0], durations.at(-1)]) {
         assert.equal(buildUsmercariVideoBody({ model, prompt: 'x', duration }).duration, duration);
       }
-      for (const duration of [3, 16]) {
+      for (const duration of [durations[0] - 1, durations.at(-1) + 1]) {
         assert.throws(
           () => buildUsmercariVideoBody({ model, prompt: 'x', duration }),
-          /4 到 15 秒/,
+          /秒之间的整数/,
         );
       }
     }

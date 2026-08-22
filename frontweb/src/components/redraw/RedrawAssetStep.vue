@@ -38,7 +38,15 @@
       @preview-stop="stopVoicePreview"
     />
     <div class="asset-grid">
-      <RedrawAssetCard v-for="asset in visibleAssets" :key="asset.id" :asset="asset" :quote="asset.quote_credits || quote" @generate="generate" @review="review" />
+      <RedrawAssetCard
+        v-for="asset in visibleAssets"
+        :key="asset.id"
+        :asset="asset"
+        :quote="asset.quote_credits || quote"
+        @generate="generate"
+        @review="review"
+        @identity-saved="handleIdentitySaved"
+      />
       <p v-if="!visibleAssets.length" class="empty-state">当前类型暂无资产</p>
     </div>
   </section>
@@ -48,6 +56,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { redrawAPI } from '@/api/redraw'
+import { isRedrawCharacterIdentityPackReady } from '@/utils/redrawCharacterIdentity'
 import {
   ASSET_KINDS,
   assetBatchCredits,
@@ -332,6 +341,10 @@ async function generate(asset) {
 
 async function review(asset, action) {
   try {
+    if (action === 'approved' && asset?.kind === 'character' && !isRedrawCharacterIdentityPackReady(asset)) {
+      ElMessage.warning('角色身份包未就绪，不能批准')
+      return
+    }
     const result = await redrawAPI.reviewAsset(asset.id, { action, expected_updated_at: asset.updated_at })
     if (result?.current_step || result?.status) {
       emit('work-updated', {
@@ -343,6 +356,18 @@ async function review(asset, action) {
     await refresh()
     ElMessage.success(action === 'approved' ? '资产已批准' : '资产已退回')
   } catch (error) { ElMessage.error(error.message || '审核失败') }
+}
+
+async function handleIdentitySaved() {
+  try {
+    await refresh()
+    if (props.work?.id) {
+      const nextWork = await redrawAPI.getWork(props.work.id)
+      emit('work-updated', nextWork)
+    }
+  } catch (error) {
+    ElMessage.error(error.message || '身份包保存后刷新失败')
+  }
 }
 
 async function pollBatchWork() {

@@ -383,8 +383,8 @@
             <el-option label="ToAPIs 视频（Seedance 2 异步生成）" value="toapis_video" />
             <el-option label="飞拓视频（H3-2K / Seedance 2.5）" value="feituo_open" />
             <el-option label="灵境视频（Seedance 2.0 Fast / 最多 9 图）" value="lingjing_open" />
-            <el-option label="Fumin Seedance 2.0（5–15 秒 / 9 图 + 3 视频 + 3 音频）" value="fumin_video" />
             <el-option label="USMercari 图片（文生图 / 公网参考图）" value="usmercari_image" />
+            <el-option label="fumin Seedance 2.0（异步任务）" value="fumin_video" />
             <el-option label="DJPSD Seedance 2.0（异步任务）" value="djpsd" />
             <el-option label="NanoBanana" value="nano_banana" />
           </el-select>
@@ -1251,7 +1251,7 @@ import PromptEditor from '@/components/PromptEditor.vue'
 import SceneModelMap from '@/components/SceneModelMap.vue'
 import Sd2AssetManagement from '@/components/Sd2AssetManagement.vue'
 import ProviderStabilityPanel from '@/components/ProviderStabilityPanel.vue'
-import { mergeVideoDurationSetting, readVideoDurationSetting, videoDurationOptionsForCapability } from '@/utils/videoDuration'
+import { VIDEO_DURATION_OPTIONS, mergeVideoDurationSetting, readVideoDurationSetting, videoDurationOptionsForCapability } from '@/utils/videoDuration'
 import { buildAiConfigRelayAssociations } from '@/utils/aiConfigRelayAssociation'
 
 const activeTab = ref('configs')
@@ -1512,9 +1512,9 @@ const providerConfigs = {
   ],
   image: [
     { id: 'aihubcc', name: 'AIHubCC 图片', models: AIHUBCC_IMAGE_MODELS },
-    { id: 'fumin_image', name: 'Fumin GPT Image', models: ['fumin-gpt-image-2', 'fumin-gpt-image-2-4K'] },
     { id: 'token6688', name: 'Token6688 图片', models: ['doubao-seedream-5-0', 'token6688-gpt-image-2', 'gemini-3-pro-image'] },
     { id: 'usmercari_image', name: 'USMercari 图片', models: ['gpt-image-2-2-4k', 'nano-banana-2'] },
+    { id: 'fumin_image', name: 'fumin GPT Image 2', models: ['fumin-gpt-image-2', 'fumin-gpt-image-2-4K'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
@@ -1527,9 +1527,9 @@ const providerConfigs = {
   ],
   storyboard_image: [
     { id: 'aihubcc', name: 'AIHubCC 图片', models: AIHUBCC_IMAGE_MODELS },
-    { id: 'fumin_image', name: 'Fumin GPT Image', models: ['fumin-gpt-image-2', 'fumin-gpt-image-2-4K'] },
     { id: 'token6688', name: 'Token6688 图片', models: ['doubao-seedream-5-0', 'token6688-gpt-image-2', 'gemini-3-pro-image'] },
     { id: 'usmercari_image', name: 'USMercari 图片', models: ['gpt-image-2-2-4k', 'nano-banana-2'] },
+    { id: 'fumin_image', name: 'fumin GPT Image 2', models: ['fumin-gpt-image-2', 'fumin-gpt-image-2-4K'] },
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
@@ -1541,12 +1541,12 @@ const providerConfigs = {
   ],
   video: [
     { id: 'aihubcc', name: 'AIHubCC 视频', models: AIHUBCC_VIDEO_MODELS },
-    { id: 'fumin', name: 'Fumin Seedance 2.0', models: ['fumin-seedance-2.0-fast', 'fumin-seedance-2.0-mini'] },
     { id: 'token6688', name: 'Token6688 Seedance 特价按次', models: ['seedance-2-0-special-mini-720p', 'seedance-2-0-special-fast-720p', 'seedance-2-0-special-full-720p'] },
-    { id: 'usmercari', name: 'USMercari MiniMax H3 / Seedance', models: ['MiniMax H3', 'seedance-2.0-fast', 'seedance-2.0-mini'] },
     { id: 'toapis', name: 'ToAPIs Seedance 2', models: ['seedance-2-fast', 'seedance-2-mini'] },
     { id: 'feituo', name: '飞拓 H3-2K / Seedance 2.5', models: ['xuan-video-v1-6e7b4763634e6206', 'xuan-seedance-2.5'] },
     { id: 'lingjing', name: '灵境 Seedance 2.0 Fast（9 图参考）', models: ['lingjing-video-v1'] },
+    { id: 'fumin', name: 'fumin Seedance 2.0', models: ['fumin-seedance-2.0-fast', 'fumin-seedance-2.0-mini'] },
+    { id: 'usmercari', name: 'USMercari MiniMax H3 / Seedance', models: ['MiniMax H3', 'seedance-2.0-fast', 'seedance-2.0-mini'] },
     { id: 'icreat', name: 'iCreat Seedance', models: ['bytedance/seedance-2-0-fast', 'bytedance/seedance-2-0-mini'] },
     { id: 'djpsd_openapi', name: 'DJPSD 开放 API', models: ['video-v1'] },
     { id: 'djpsd', name: 'DJPSD / Seedance 2.0', models: ['seedance 2.0'] },
@@ -1613,11 +1613,11 @@ const providerProtocolMap = {
   djpsd_openapi: 'djpsd_openapi',
   usmercari: 'usmercari_media',
   usmercari_media: 'usmercari_media',
-  fumin: 'fumin_video',
-  fumin_video: 'fumin_video',
   toapis: 'toapis_video',
   feituo: 'feituo_open',
   lingjing: 'lingjing_open',
+  fumin: 'fumin_video',
+  fumin_video: 'fumin_video',
   djpsd: 'djpsd',
   minimax: 'openai',
   openai: 'openai',
@@ -1658,6 +1658,8 @@ function getBaseUrlForProvider(provider) {
   if (p === 'toapis') return 'https://toapis.com'
   if (p === 'feituo') return 'https://feituokuajing.com'
   if (p === 'lingjing') return 'https://seed.alimyun.xyz/api/open/v1'
+  if (p === 'fumin' || p === 'fumin_video') return 'https://fumin.ai'
+  if (p === 'fumin_image') return 'https://fumin.ai/v1'
   if (p === 'agnes') return 'https://apihub.agnes-ai.com/v1'
   if (p === 'djpsd_openapi' || p === 'djpsd') return 'https://shiping.djpsd.com'
   return 'https://api.chatfire.site/v1'
@@ -2047,6 +2049,16 @@ function onProviderChange(providerId) {
     form.value.endpoint = '/videos'
     form.value.query_endpoint = '/videos/{taskId}'
     form.value.video_duration = 4
+  }
+  if (st === 'video' && (providerId === 'fumin' || providerId === 'fumin_video')) {
+    form.value.api_protocol = 'fumin_video'
+    form.value.endpoint = '/api/v3/contents/generations/tasks'
+    form.value.query_endpoint = '/api/v3/contents/generations/tasks/{taskId}'
+  }
+  if ((st === 'image' || st === 'storyboard_image') && providerId === 'fumin_image') {
+    form.value.api_protocol = 'openai'
+    form.value.endpoint = '/images/generations'
+    form.value.query_endpoint = ''
   }
   if ((st === 'image' || st === 'storyboard_image') && providerId === 'kling') {
     form.value.endpoint = '/v1/images/generations'

@@ -5,10 +5,6 @@ const packageJson = require('../package.json');
 
 const modelPrices = require('../src/services/modelPriceService');
 const { runProductionPreflight } = require('../src/services/productionPreflightService');
-const {
-  evidenceRoots,
-  withExternalModelEvidence,
-} = require('./helpers/externalModelEvidenceFixture');
 
 function createDb() {
   const db = new Database(':memory:');
@@ -30,8 +26,6 @@ function createDb() {
     provider TEXT NOT NULL,
     model TEXT NOT NULL,
     default_model TEXT NOT NULL,
-    api_protocol TEXT,
-    verified_capabilities TEXT NOT NULL DEFAULT '{}',
     is_active INTEGER NOT NULL DEFAULT 1,
     verification_status TEXT NOT NULL DEFAULT 'unverified',
     deleted_at TEXT
@@ -316,8 +310,7 @@ test('语言验证预检默认关闭时通过，启用后必须阻止过期 read
       env: enabledEnv,
       db,
       localeRegistry: {
-        assertReady(locale) {
-          assert.equal(locale, 'en-US');
+        listReadyPacks() {
           const error = new Error(`${sensitiveManifestPath} expired`);
           error.code = 'REDRAW_LOCALE_VERIFIER_NOT_READY';
           throw error;
@@ -333,47 +326,71 @@ test('语言验证预检默认关闭时通过，启用后必须阻止过期 read
   }
 });
 
+test('语言验证预检检查全部签名 pack 且消息只列 pack id', () => {
+  const db = createDb();
+  try {
+    const env = {
+      ...productionEnv(),
+      REDRAW_LOCALE_VERIFIER_ENABLED: 'true',
+    };
+    let calls = 0;
+    const report = runProductionPreflight({
+      config: productionConfig(),
+      env,
+      db,
+      localeRegistry: {
+        listReadyPacks() {
+          calls += 1;
+          return [
+            { id: 'en-US@1', model_path: 'C:\\secret\\model.bin' },
+            { id: 'es@1', transcript: 'Hola, pequeño.' },
+          ];
+        },
+      },
+    });
+    const check = report.checks.find((item) => item.id === 'redraw_locale_verifier');
+    assert.equal(calls, 1);
+    assert.equal(check?.status, 'pass');
+    assert.match(check?.message || '', /en-US@1/);
+    assert.match(check?.message || '', /es@1/);
+    assert.equal(check?.message.includes('C:\\secret'), false);
+    assert.equal(check?.message.includes('Hola, pequeño.'), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('语言验证预检在任一签名 pack 未 ready 时失败并隐藏底层细节', () => {
+  const db = createDb();
+  try {
+    const sensitive = 'C:\\secret\\es-model.bin: Hola, pequeño.';
+    const report = runProductionPreflight({
+      config: productionConfig(),
+      env: {
+        ...productionEnv(),
+        REDRAW_LOCALE_VERIFIER_ENABLED: 'true',
+      },
+      db,
+      localeRegistry: {
+        listReadyPacks() {
+          const error = new Error(sensitive);
+          error.code = 'REDRAW_LOCALE_VERIFIER_NOT_READY';
+          throw error;
+        },
+      },
+    });
+    const check = report.checks.find((item) => item.id === 'redraw_locale_verifier');
+    assert.equal(check?.status, 'fail');
+    assert.equal(check?.code, 'REDRAW_LOCALE_VERIFIER_NOT_READY');
+    assert.equal(JSON.stringify(check).includes(sensitive), false);
+  } finally {
+    db.close();
+  }
+});
+
 test('package exposes a read-only redraw locale preflight command', () => {
   assert.equal(
     packageJson.scripts['preflight:redraw-locale'],
     'node scripts/preproduction-check.js --redraw-locale',
   );
-});
-
-test('production preflight rejects drift between ToAPIs DB capabilities and shared evidence', () => {
-  const db = createDb();
-  const capabilities = Object.fromEntries(['seedance-2-fast', 'seedance-2-mini'].map((model) => [
-    model,
-    withExternalModelEvidence(model, { resolutions: ['480p', '720p'] }),
-  ]));
-  db.prepare(`INSERT INTO ai_service_configs
-    (id, service_type, provider, model, default_model, api_protocol, verified_capabilities, is_active, verification_status)
-    VALUES (4, 'video', 'toapis', ?, 'seedance-2-fast', 'toapis_video', ?, 1, 'verified')`)
-    .run(JSON.stringify(['seedance-2-fast', 'seedance-2-mini']), JSON.stringify(capabilities));
-  try {
-    const ready = runProductionPreflight({
-      config: productionConfig(), env: productionEnv(), db, evidenceRoots,
-    });
-    assert.equal(ready.checks.find((check) => check.id === 'external_model_evidence_binding')?.status, 'pass');
-
-    capabilities['seedance-2-mini'].evidence_sha256 = '0'.repeat(64);
-    db.prepare('UPDATE ai_service_configs SET verified_capabilities = ? WHERE id = 4')
-      .run(JSON.stringify(capabilities));
-    const blocked = runProductionPreflight({
-      config: productionConfig(), env: productionEnv(), db, evidenceRoots,
-    });
-    assert.equal(blocked.checks.find((check) => check.id === 'external_model_evidence_binding')?.status, 'fail');
-    assert.equal(blocked.ready, false);
-
-    delete capabilities['seedance-2-mini'];
-    db.prepare('UPDATE ai_service_configs SET verified_capabilities = ? WHERE id = 4')
-      .run(JSON.stringify(capabilities));
-    const missing = runProductionPreflight({
-      config: productionConfig(), env: productionEnv(), db, evidenceRoots,
-    });
-    assert.equal(missing.checks.find((check) => check.id === 'external_model_evidence_binding')?.status, 'fail');
-    assert.equal(missing.ready, false);
-  } finally {
-    db.close();
-  }
 });

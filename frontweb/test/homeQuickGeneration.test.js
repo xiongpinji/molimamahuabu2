@@ -140,30 +140,6 @@ test('首页目录不能因缺少 protocol 而放行 provider 或受保护模型
   assert.equal(catalog[0].protocol, 'toapis_video')
 })
 
-test('USMercari 视频模型不会被供应商级图片协议规则过滤', () => {
-  const catalog = normalizeQuickGenerationCatalog([{
-    kind: 'video',
-    model: 'MiniMax H3',
-    label: 'MiniMax H3（USMercari）',
-    provider: 'usmercari',
-    protocol: 'usmercari_media',
-    verification_status: 'verified',
-    credits: 950,
-    billing_unit: 'request',
-    capabilities: {
-      resolutions: ['480p'],
-      durations: [15],
-      quantities: [1],
-      referenceTypes: ['image', 'audio'],
-      maxImageReferences: 1,
-      maxAudioReferences: 1,
-    },
-  }])
-
-  assert.deepEqual(catalog.map((item) => item.model), ['MiniMax H3'])
-  assert.equal(catalog[0].protocol, 'usmercari_media')
-})
-
 test('首页草稿只接受文字、图片和视频并携带一次性自动生成标记', () => {
   assert.deepEqual(normalizeQuickGenerationDraft({
     mode: 'text',

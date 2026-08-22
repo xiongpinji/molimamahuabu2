@@ -534,10 +534,9 @@ const homeSupportsReferenceImage = computed(() => {
   if (homeMediaType.value === 'text') return false
   const capability = homeSelectedModel.value?.capabilities || {}
   if (homeMediaType.value === 'image') return capability.supportsImageReference !== false
-  if (capability.declared === true) {
-    return capability.supportsFirstFrame === true || capability.supportsImageReference === true
-  }
-  return capability.supportsFirstFrame !== false
+  return homeSelectedModel.value?.protocol === 'toapis_video'
+    ? capability.supportsFirstFrame === true
+    : capability.supportsFirstFrame !== false
 })
 
 async function onHomeReferenceChange(event) {
@@ -582,7 +581,6 @@ function syncHomeResolution() {
   const allowed = homeResolutions.value
   const current = String(homeResolution.value || '').trim().toLowerCase()
   if (allowed.length && !allowed.includes(current)) homeResolution.value = allowed[0]
-  else if (homeMediaType.value === 'video' && Array.isArray(homeSelectedModel.value?.capabilities?.resolutions) && !allowed.length) homeResolution.value = ''
   else if (current) homeResolution.value = current
   if (!homeQuantityOptions.value.includes(Number(homeQuantity.value))) homeQuantity.value = homeQuantityOptions.value[0] || 1
   if (!homeDurationOptions.value.includes(Number(homeDuration.value))) homeDuration.value = homeDurationOptions.value[0] || 5
@@ -957,7 +955,7 @@ async function onImportFile(e) {
   importing.value = true
   try {
     const data = await dramaAPI.importDrama(file)
-    ElMessage.success(`导入成功：${data?.title || '项目'}`) 
+    ElMessage.success(`导入成功：${data?.title || '项目'}`)
     loadList()
   } catch (e) {
     const msg = e.response?.data?.message || e.message || '导入失败'
