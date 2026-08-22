@@ -1764,6 +1764,92 @@ async function prepareReconciledVideoArtifact(db, log, row, artifactUrl, provide
   }
 }
 
+function applyReconciledVideoSuccess(db, log, row, prepared, options = {}) {
+  const now = options.now || new Date().toISOString();
+  const localPath = String(prepared?.localPath || '').replace(/\\/g, '/');
+  if (!localPath) throw reconciledArtifactError();
+  const publicVideoUrl = `/static/${localPath.replace(/^\/static\//, '')}`;
+  const boundaryFrames = prepared.boundaryFrames || {};
+  const updated = db.prepare(`UPDATE video_generations
+    SET status = 'completed', video_url = ?, local_path = ?, output_first_frame_url = ?,
+      output_last_frame_url = ?, error_msg = NULL, completed_at = ?, updated_at = ?
+    WHERE id = ? AND status = 'needs_attention' AND deleted_at IS NULL`)
+    .run(
+      publicVideoUrl,
+      localPath,
+      boundaryFrames.output_first_frame_url || null,
+      boundaryFrames.output_last_frame_url || null,
+      now,
+      now,
+      row.id,
+    );
+  if (updated.changes !== 1) throw new Error('视频对账成功状态已变化');
+
+  if (row.task_id) {
+    taskService.updateTaskResult(db, row.task_id, {
+      video_generation_id: row.id,
+      video_url: publicVideoUrl,
+      local_path: localPath,
+      output_first_frame_url: boundaryFrames.output_first_frame_url || null,
+      output_last_frame_url: boundaryFrames.output_last_frame_url || null,
+      status: 'completed',
+    });
+  }
+  const settled = creditLedger.confirm(db, row.credit_reservation_id);
+  if (settled?.status !== 'confirmed') throw new Error('视频对账积分确认失败');
+  generationCost.record(db, {
+    reservationId: row.credit_reservation_id,
+    model: row.model || settled.model,
+    configId: options.configId ?? row.config_id,
+    count: 1,
+    duration: row.duration,
+    resolution: row.resolution,
+    usageSource: 'provider',
+  });
+  auditEvent.record(db, {
+    userId: settled.user_id,
+    tenantId: settled.tenant_id,
+    eventType: 'generation.video.reconciled',
+    resourceType: 'video',
+    resourceId: row.id,
+    outcome: 'success',
+    code: 'PROVIDER_TASK_SUCCEEDED',
+  });
+  log?.info?.('Video provider task reconciled', { request_id: options.requestId, state: 'completed' });
+  return { videoUrl: publicVideoUrl, localPath, reservation: settled };
+}
+
+function applyReconciledVideoFailure(db, log, row, options = {}) {
+  const now = options.now || new Date().toISOString();
+  const message = '供应商任务已明确失败';
+  const updated = db.prepare(`UPDATE video_generations
+    SET status = 'failed', error_msg = ?, completed_at = ?, updated_at = ?
+    WHERE id = ? AND status = 'needs_attention' AND deleted_at IS NULL`)
+    .run(message, now, now, row.id);
+  if (updated.changes !== 1) throw new Error('视频对账失败状态已变化');
+
+  if (row.task_id) taskService.updateTaskError(db, row.task_id, message);
+  const settled = creditLedger.refund(db, row.credit_reservation_id, 'provider_task_failed');
+  if (settled?.status !== 'refunded') throw new Error('视频对账积分退款失败');
+  generationCost.record(db, {
+    reservationId: row.credit_reservation_id,
+    model: row.model || settled.model,
+    configId: options.configId ?? row.config_id,
+    usageSource: 'unknown',
+  });
+  auditEvent.record(db, {
+    userId: settled.user_id,
+    tenantId: settled.tenant_id,
+    eventType: 'generation.video.reconciled',
+    resourceType: 'video',
+    resourceId: row.id,
+    outcome: 'failed',
+    code: 'PROVIDER_TASK_FAILED',
+  });
+  log?.info?.('Video provider task reconciled', { request_id: options.requestId, state: 'failed' });
+  return { reservation: settled };
+}
+
 function ensureBoundaryFrames(db, log, selector = {}, options = {}) {
   const generationId = Number(selector.video_generation_id || 0);
   const videoUrl = String(selector.video_url || '').trim();
@@ -2468,5 +2554,7 @@ module.exports = {
   extractVideoBoundaryFrames,
   prepareReconciledVideoArtifact,
   discardReconciledVideoArtifact,
+  applyReconciledVideoSuccess,
+  applyReconciledVideoFailure,
   ensureBoundaryFrames,
 };

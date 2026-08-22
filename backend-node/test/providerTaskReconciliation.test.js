@@ -9,9 +9,20 @@ const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const aiConfigService = require('../src/services/aiConfigService');
 const creditLedgerService = require('../src/services/creditLedgerService');
 const generationCostLedgerService = require('../src/services/generationCostLedgerService');
+const providerRouteCostService = require('../src/services/providerRouteCostService');
+const providerRouteStabilityService = require('../src/services/providerRouteStabilityService');
 const storageLayout = require('../src/services/storageLayout');
 const videoService = require('../src/services/videoService');
 const { MINIMAL_MP4 } = require('./fixtures/media');
+
+let reconciliation;
+try {
+  reconciliation = require('../src/services/providerTaskReconciliationService');
+} catch (error) {
+  if (error?.code !== 'MODULE_NOT_FOUND'
+      || !String(error.message).includes('providerTaskReconciliationService')) throw error;
+  reconciliation = {};
+}
 
 const NOW = '2026-08-22T00:00:00.000Z';
 const ARTIFACT_URL = 'https://artifact.example/video.mp4';
@@ -19,6 +30,7 @@ const VIDEO_ID = 7001;
 const TASK_ID = 'task-reconcile';
 const ROUTE_ID = 'route-reconcile';
 const PROVIDER_TASK_ID = 'provider-task-reconcile';
+const LATE_NOW = '2026-08-22T00:02:01.000Z';
 const SNAPSHOT_TABLES = [
   'dramas',
   'video_generations',
@@ -77,16 +89,54 @@ function countAuditEvents(db) {
     .get(String(VIDEO_ID)).count;
 }
 
-function setupReconciliationFixture(t) {
-  const db = new Database(':memory:');
+function getAttempt(db) {
+  return db.prepare(`SELECT * FROM generation_route_attempts
+    WHERE request_id = ? ORDER BY attempt_no DESC LIMIT 1`).get(ROUTE_ID);
+}
+
+function getTask(db) {
+  return db.prepare('SELECT * FROM async_tasks WHERE id = ?').get(TASK_ID);
+}
+
+function countReconciledSafeEvents(db) {
+  return db.prepare(`SELECT COUNT(*) AS count FROM provider_stability_events
+    WHERE request_id = ? AND event_type = 'provider_task_reconciled'`).get(ROUTE_ID).count;
+}
+
+function countReconciledAuditEvents(db) {
+  return db.prepare(`SELECT COUNT(*) AS count FROM audit_events
+    WHERE resource_id = ? AND event_type = 'generation.video.reconciled'`)
+    .get(String(VIDEO_ID)).count;
+}
+
+function assertSafeResult(result) {
+  assert.deepEqual(Object.keys(result).sort(), [
+    'checked_at',
+    'credit_state',
+    'error_category',
+    'reconcilable',
+    'reconciled',
+    'request_id',
+    'task_state',
+  ]);
+  assert.doesNotMatch(
+    JSON.stringify(result),
+    /provider-task-reconcile|artifact\.example|test-key|toapis|seedance|config_fingerprint|api_key|base_url/,
+  );
+}
+
+function setupReconciliationFixture(t, options = {}) {
+  const db = new Database(options.databasePath || ':memory:');
   runMigrationsAndEnsure(db);
   generationCostLedgerService.ensureSchema(db);
   const storagePath = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-reconciled-video-'));
   const log = recordingLog();
-  t.after(() => {
-    db.close();
-    fs.rmSync(storagePath, { recursive: true, force: true });
-  });
+  if (options.cleanup !== false) {
+    t.after(() => {
+      db.close();
+      fs.rmSync(storagePath, { recursive: true, force: true });
+    });
+  }
 
   db.prepare(`INSERT INTO dramas
     (id, title, style, status, metadata, created_at, updated_at)
@@ -114,6 +164,10 @@ function setupReconciliationFixture(t) {
     settings: { canvas_capabilities: { durations: [5], resolutions: ['480p'] } },
   });
   const config = aiConfigService.getConfig(db, createdConfig.id);
+  providerRouteCostService.setRouteCost(db, config.id, {
+    cost_unit: 'second',
+    micros_per_unit: 1000,
+  }, { now: NOW });
 
   db.prepare(`INSERT INTO async_tasks
     (id, type, status, progress, message, resource_id, user_id, model, provider_task_id,
@@ -158,14 +212,28 @@ function setupReconciliationFixture(t) {
       NOW,
       NOW,
     );
+  const receipt = providerRouteStabilityService.buildAttemptReceipt(db, {
+    configId: config.id,
+    serviceType: 'video',
+    upstreamModel: 'seedance-2-fast',
+    queryProtocol: 'toapis_video',
+  });
   db.prepare(`INSERT INTO generation_route_attempts
     (request_id, attempt_no, config_id, provider, upstream_model, state,
      config_fingerprint, query_protocol, started_at, finished_at)
-    VALUES (?, 1, ?, 'toapis', 'seedance-2-fast', 'accepted', ?, 'toapis_video', ?, ?)`)
-    .run(ROUTE_ID, config.id, 'a'.repeat(64), NOW, NOW);
-  db.prepare(`UPDATE generation_route_attempts SET provider_task_id = ?
-    WHERE request_id = ? AND attempt_no = 1`)
-    .run(PROVIDER_TASK_ID, ROUTE_ID);
+    VALUES (?, 1, ?, 'toapis', 'seedance-2-fast', 'needs_attention', ?, 'toapis_video', ?, ?)`)
+    .run(
+      ROUTE_ID,
+      config.id,
+      options.configFingerprint === undefined ? receipt.configFingerprint : options.configFingerprint,
+      NOW,
+      NOW,
+    );
+  if (options.bindProviderTask !== false) {
+    db.prepare(`UPDATE generation_route_attempts SET provider_task_id = ?
+      WHERE request_id = ? AND attempt_no = 1`)
+      .run(PROVIDER_TASK_ID, ROUTE_ID);
+  }
   db.prepare(`INSERT INTO generation_cost_records
     (reservation_id, model, resolution, cost_unit, quantity, cost_micros, usage_source,
      config_id, cost_source, created_at, updated_at)
@@ -190,6 +258,9 @@ function setupReconciliationFixture(t) {
     log,
     config,
     video: getVideo(db),
+    route: getRoute(db),
+    attempt: getAttempt(db),
+    task: getTask(db),
     reservation,
     storagePath,
     projectSubdir,
@@ -559,4 +630,461 @@ test('discardReconciledVideoArtifact does not follow a storage child link outsid
 
   assert.equal(fs.readFileSync(outsideVideo, 'utf8'), 'outside-video');
   assert.equal(fs.readFileSync(outsideFrame, 'utf8'), 'outside-frame');
+});
+
+test('provider task reconciliation exports fixed lease, debounce, and transaction apply boundaries', () => {
+  assert.equal(reconciliation.RECONCILE_LEASE_MS, 120_000);
+  assert.equal(reconciliation.RECONCILE_DEBOUNCE_MS, 60_000);
+  assert.equal(typeof reconciliation.reconcileRequest, 'function');
+  assert.equal(typeof videoService.applyReconciledVideoSuccess, 'function');
+  assert.equal(typeof videoService.applyReconciledVideoFailure, 'function');
+});
+
+test('reconcileRequest performs one query and confirms readable success atomically', async (t) => {
+  const state = setupReconciliationFixture(t);
+  let queryCount = 0;
+
+  const result = await reconciliation.reconcileRequest(state.db, state.log, state.route.id, {
+    now: NOW,
+    storagePath: state.storagePath,
+    queryTaskStatusOnce: async () => {
+      queryCount += 1;
+      return { state: 'succeeded', artifactUrl: ARTIFACT_URL };
+    },
+    fetchImpl: fixtureVideoFetch,
+  });
+  const repeated = await reconciliation.reconcileRequest(state.db, state.log, state.route.id, {
+    now: NOW,
+    queryTaskStatusOnce: async () => {
+      queryCount += 1;
+      return { state: 'failed', category: 'provider_task_failed' };
+    },
+  });
+
+  assert.equal(queryCount, 1);
+  assert.deepEqual(result, {
+    request_id: state.route.id,
+    task_state: 'completed',
+    error_category: null,
+    reconciled: true,
+    reconcilable: false,
+    credit_state: 'confirmed',
+    checked_at: NOW,
+  });
+  assert.deepEqual(repeated, result);
+  assertSafeResult(result);
+  assert.equal(getReservation(state.db, state.reservation.id).status, 'confirmed');
+  const video = getVideo(state.db);
+  assert.equal(video.status, 'completed');
+  assert.match(video.video_url, /^\/static\//);
+  assert.equal(fs.statSync(path.join(state.storagePath, video.local_path)).size, MINIMAL_MP4.length);
+  assert.equal(getTask(state.db).status, 'completed');
+  assert.equal(getRoute(state.db).state, 'succeeded');
+  assert.equal(getAttempt(state.db).state, 'succeeded');
+  assert.equal(getAttempt(state.db).reconcile_claim_token, null);
+  assert.equal(countReconciledSafeEvents(state.db), 1);
+  assert.equal(countReconciledAuditEvents(state.db), 1);
+  const event = state.db.prepare(`SELECT * FROM provider_stability_events
+    WHERE request_id = ? AND event_type = 'provider_task_reconciled'`).get(ROUTE_ID);
+  assert.doesNotMatch(
+    JSON.stringify(event),
+    /provider-task-reconcile|artifact\.example|test-key|config_fingerprint|api_key|base_url/,
+  );
+  const cost = state.db.prepare('SELECT * FROM generation_cost_records WHERE reservation_id = ?')
+    .get(state.reservation.id);
+  assert.equal(cost.cost_source, 'provider_route');
+  assert.equal(cost.cost_micros, 5000);
+});
+
+test('reconcileRequest gates incomplete, non-video, non-needs-attention, missing business, and non-held work before query', async (t) => {
+  const cases = [
+    ['missing provider task id', { bindProviderTask: false }, () => {}],
+    ['missing config fingerprint', { configFingerprint: null }, () => {}],
+    ['image service', {}, (state) => state.db.prepare(
+      "UPDATE generation_route_requests SET service_type = 'image' WHERE id = ?"
+    ).run(ROUTE_ID)],
+    ['route not needs_attention', {}, (state) => state.db.prepare(
+      "UPDATE generation_route_requests SET state = 'running' WHERE id = ?"
+    ).run(ROUTE_ID)],
+    ['attempt not needs_attention', {}, (state) => state.db.prepare(
+      "UPDATE generation_route_attempts SET state = 'accepted' WHERE request_id = ?"
+    ).run(ROUTE_ID)],
+    ['video not needs_attention', {}, (state) => state.db.prepare(
+      "UPDATE video_generations SET status = 'processing' WHERE id = ?"
+    ).run(VIDEO_ID)],
+    ['task not needs_attention', {}, (state) => state.db.prepare(
+      "UPDATE async_tasks SET status = 'processing' WHERE id = ?"
+    ).run(TASK_ID)],
+    ['business record missing', {}, (state) => state.db.prepare(
+      'UPDATE video_generations SET deleted_at = ? WHERE id = ?'
+    ).run(NOW, VIDEO_ID)],
+    ['reservation not held', {}, (state) => creditLedgerService.confirm(
+      state.db,
+      state.reservation.id,
+    )],
+    ['current config missing', {}, (state) => state.db.prepare(
+      'UPDATE ai_service_configs SET deleted_at = ? WHERE id = ?'
+    ).run(NOW, state.config.id)],
+    ['video task receipt mismatch', {}, (state) => state.db.prepare(
+      "UPDATE video_generations SET provider_task_id = 'different-task' WHERE id = ?"
+    ).run(VIDEO_ID)],
+    ['async task reservation mismatch', {}, (state) => state.db.prepare(
+      "UPDATE async_tasks SET credit_reservation_id = 'different-reservation' WHERE id = ?"
+    ).run(TASK_ID)],
+  ];
+
+  for (const [name, fixtureOptions, mutate] of cases) {
+    await t.test(name, async (subtest) => {
+      const state = setupReconciliationFixture(subtest, fixtureOptions);
+      mutate(state);
+      let queryCount = 0;
+      const result = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
+        now: NOW,
+        queryTaskStatusOnce: async () => {
+          queryCount += 1;
+          return { state: 'processing' };
+        },
+      });
+      assert.equal(queryCount, 0);
+      assert.equal(result.reconciled, false);
+      assert.equal(result.reconcilable, false);
+      assertSafeResult(result);
+      assert.equal(countReconciledSafeEvents(state.db), 0);
+      assert.equal(countReconciledAuditEvents(state.db), 0);
+    });
+  }
+});
+
+test('reconcileRequest blocks current key, base URL, protocol, provider, model, and capability drift before query', async (t) => {
+  const cases = [
+    ['key', 'UPDATE ai_service_configs SET api_key = ? WHERE id = ?', ['rotated-key']],
+    ['base URL', 'UPDATE ai_service_configs SET base_url = ? WHERE id = ?', ['https://changed.example/v1']],
+    ['protocol', 'UPDATE ai_service_configs SET api_protocol = ? WHERE id = ?', ['feituo_video']],
+    ['provider', 'UPDATE ai_service_configs SET provider = ? WHERE id = ?', ['feituo']],
+    [
+      'model',
+      'UPDATE ai_service_configs SET model = ?, default_model = ? WHERE id = ?',
+      [JSON.stringify(['another-model']), 'another-model'],
+    ],
+    [
+      'capability',
+      'UPDATE ai_service_configs SET settings = ? WHERE id = ?',
+      [JSON.stringify({ canvas_capabilities: { durations: [10], resolutions: ['720p'] } })],
+    ],
+  ];
+
+  for (const [name, sql, params] of cases) {
+    await t.test(name, async (subtest) => {
+      const state = setupReconciliationFixture(subtest);
+      state.db.prepare(sql).run(...params, state.config.id);
+      let queryCount = 0;
+      const result = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
+        now: NOW,
+        queryTaskStatusOnce: async () => {
+          queryCount += 1;
+          return { state: 'processing' };
+        },
+      });
+      assert.equal(queryCount, 0);
+      assert.equal(result.reconcilable, false);
+      assertSafeResult(result);
+    });
+  }
+});
+
+test('reconcileRequest uses the immutable attempt receipt without requiring a duplicate task receipt', async (t) => {
+  const state = setupReconciliationFixture(t);
+  state.db.prepare('UPDATE async_tasks SET provider_task_id = NULL WHERE id = ?').run(TASK_ID);
+  let queryCount = 0;
+
+  const result = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
+    now: NOW,
+    queryTaskStatusOnce: async () => {
+      queryCount += 1;
+      return { state: 'processing' };
+    },
+  });
+
+  assert.equal(queryCount, 1);
+  assert.equal(result.task_state, 'needs_attention');
+  assert.equal(result.credit_state, 'held');
+  assert.equal(result.error_category, 'result_unknown');
+});
+
+test('safe reconciliation DTO suppresses an unsafe legacy error category', async (t) => {
+  const state = setupReconciliationFixture(t);
+  state.db.prepare(`UPDATE generation_route_requests SET state = 'running' WHERE id = ?`)
+    .run(ROUTE_ID);
+  state.db.prepare(`UPDATE generation_route_attempts SET error_category = ? WHERE request_id = ?`)
+    .run('https://secret.example/?api_key=leaked', ROUTE_ID);
+
+  const result = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
+    now: NOW,
+    queryTaskStatusOnce: async () => assert.fail('query must not run'),
+  });
+
+  assert.equal(result.error_category, null);
+  assert.doesNotMatch(JSON.stringify(result), /secret|api_key|https?:\/\//i);
+
+  state.db.prepare(`UPDATE video_generations SET status = ? WHERE id = ?`)
+    .run('https://secret.example/task', VIDEO_ID);
+  state.db.prepare(`UPDATE generation_route_attempts SET reconcile_checked_at = ? WHERE request_id = ?`)
+    .run('https://secret.example/checked', ROUTE_ID);
+  const unsafeState = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, { now: NOW });
+  assert.equal(unsafeState.task_state, null);
+  assert.equal(unsafeState.checked_at, null);
+  assert.doesNotMatch(JSON.stringify(unsafeState), /secret|https?:\/\//i);
+
+  state.db.prepare(`UPDATE video_generations SET status = 'needs_attention' WHERE id = ?`).run(VIDEO_ID);
+  state.db.prepare(`UPDATE generation_route_attempts SET error_category = ? WHERE request_id = ?`)
+    .run('submission_unknown', ROUTE_ID);
+  const safeLegacy = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, { now: NOW });
+  assert.equal(safeLegacy.error_category, 'submission_unknown');
+});
+
+test('reconcileRequest permits only one query across two database connections', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-reconcile-concurrent-'));
+  const databasePath = path.join(root, 'reconcile.sqlite');
+  const state = setupReconciliationFixture(t, { databasePath, cleanup: false });
+  const secondDb = new Database(databasePath);
+  let releaseQuery;
+  let queryCount = 0;
+  t.after(() => {
+    secondDb.close();
+    state.db.close();
+    fs.rmSync(state.storagePath, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const first = reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
+    now: NOW,
+    storagePath: state.storagePath,
+    queryTaskStatusOnce: async () => {
+      queryCount += 1;
+      return new Promise((resolve) => { releaseQuery = resolve; });
+    },
+    fetchImpl: fixtureVideoFetch,
+  });
+  await Promise.resolve();
+  const second = await reconciliation.reconcileRequest(secondDb, state.log, ROUTE_ID, {
+    now: NOW,
+    queryTaskStatusOnce: async () => {
+      queryCount += 1;
+      return { state: 'processing' };
+    },
+  });
+  assert.equal(second.reconcilable, false);
+  releaseQuery({ state: 'succeeded', artifactUrl: ARTIFACT_URL });
+  const firstResult = await first;
+
+  assert.equal(queryCount, 1);
+  assert.equal(firstResult.task_state, 'completed');
+  assert.equal(countReconciledSafeEvents(state.db), 1);
+});
+
+test('reconcileRequest honors a live 120 second lease and 60 second debounce', async (t) => {
+  const cases = [
+    ['live lease', (state) => state.db.prepare(`UPDATE generation_route_attempts
+      SET reconcile_claim_token = 'other-claim', reconcile_lease_until = ? WHERE request_id = ?`)
+      .run(LATE_NOW, ROUTE_ID)],
+    ['debounce', (state) => state.db.prepare(`UPDATE generation_route_attempts
+      SET reconcile_checked_at = ? WHERE request_id = ?`).run(NOW, ROUTE_ID)],
+  ];
+  for (const [name, mutate] of cases) {
+    await t.test(name, async (subtest) => {
+      const state = setupReconciliationFixture(subtest);
+      mutate(state);
+      let queryCount = 0;
+      const result = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
+        now: NOW,
+        queryTaskStatusOnce: async () => {
+          queryCount += 1;
+          return { state: 'processing' };
+        },
+      });
+      assert.equal(queryCount, 0);
+      assert.equal(result.reconcilable, false);
+      assertSafeResult(result);
+    });
+  }
+});
+
+test('reconcileRequest refunds only explicit provider task failure and is terminally idempotent', async (t) => {
+  const state = setupReconciliationFixture(t);
+  let queryCount = 0;
+  const options = {
+    now: NOW,
+    queryTaskStatusOnce: async () => {
+      queryCount += 1;
+      return { state: 'failed', category: 'provider_task_failed' };
+    },
+  };
+
+  const first = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, options);
+  const second = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, options);
+
+  assert.equal(queryCount, 1);
+  assert.deepEqual(first, {
+    request_id: ROUTE_ID,
+    task_state: 'failed',
+    error_category: 'provider_task_failed',
+    reconciled: true,
+    reconcilable: false,
+    credit_state: 'refunded',
+    checked_at: NOW,
+  });
+  assert.deepEqual(second, first);
+  assertSafeResult(first);
+  assert.equal(getReservation(state.db, state.reservation.id).status, 'refunded');
+  assert.equal(getVideo(state.db).status, 'failed');
+  assert.equal(getTask(state.db).status, 'failed');
+  assert.equal(getRoute(state.db).state, 'failed');
+  assert.equal(getAttempt(state.db).state, 'failed');
+  assert.equal(countReconciledSafeEvents(state.db), 1);
+  assert.equal(countReconciledAuditEvents(state.db), 1);
+  const cost = state.db.prepare('SELECT * FROM generation_cost_records WHERE reservation_id = ?')
+    .get(state.reservation.id);
+  assert.equal(cost.cost_source, 'unknown');
+  assert.equal(cost.cost_micros, 0);
+});
+
+test('reconcileRequest keeps credits held for processing, query faults, unsafe success, and unreadable artifacts', async (t) => {
+  const outcomes = [
+    ['processing', async () => ({ state: 'processing' }), 'result_unknown', null],
+    ['timeout', async () => { const error = new Error('secret timeout'); error.name = 'TimeoutError'; throw error; }, 'result_unknown', null],
+    ['401', async () => ({ state: 'query_failed', category: 'auth_unavailable' }), 'auth_unavailable', null],
+    ['403', async () => ({ state: 'query_failed', category: 'forbidden_unknown' }), 'forbidden_unknown', null],
+    ['404', async () => ({ state: 'unknown', category: 'result_unknown' }), 'result_unknown', null],
+    ['408', async () => ({ state: 'unknown', category: 'result_unknown' }), 'result_unknown', null],
+    ['429', async () => ({ state: 'query_failed', category: 'rate_limited' }), 'rate_limited', null],
+    ['5xx', async () => ({ state: 'query_failed', category: 'provider_unavailable' }), 'provider_unavailable', null],
+    ['non-JSON', async () => ({ state: 'query_failed', category: 'query_protocol_error' }), 'query_protocol_error', null],
+    ['redirect', async () => ({ state: 'query_failed', category: 'query_protocol_error' }), 'query_protocol_error', null],
+    ['success without direct artifact', async () => ({ state: 'succeeded' }), 'artifact_unreadable', null],
+    [
+      'unreadable artifact',
+      async () => ({ state: 'succeeded', artifactUrl: ARTIFACT_URL }),
+      'artifact_unreadable',
+      async () => ({ ok: true, status: 200, async arrayBuffer() { return Buffer.from('not-video'); } }),
+    ],
+  ];
+
+  for (const [name, queryTaskStatusOnce, category, fetchImpl] of outcomes) {
+    await t.test(name, async (subtest) => {
+      const state = setupReconciliationFixture(subtest);
+      let queryCount = 0;
+      const result = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
+        now: NOW,
+        storagePath: state.storagePath,
+        queryTaskStatusOnce: async (...args) => {
+          queryCount += 1;
+          return queryTaskStatusOnce(...args);
+        },
+        ...(fetchImpl ? { fetchImpl } : {}),
+      });
+      assert.equal(queryCount, 1);
+      assert.equal(result.error_category, category);
+      assert.equal(result.task_state, 'needs_attention');
+      assert.equal(result.credit_state, 'held');
+      assert.equal(result.reconciled, false);
+      assert.equal(result.reconcilable, false);
+      assert.equal(result.checked_at, NOW);
+      assertSafeResult(result);
+      assert.equal(getReservation(state.db, state.reservation.id).status, 'held');
+      assert.equal(getVideo(state.db).status, 'needs_attention');
+      assert.equal(getTask(state.db).status, 'needs_attention');
+      assert.equal(getRoute(state.db).state, 'needs_attention');
+      assert.equal(getAttempt(state.db).state, 'needs_attention');
+      assert.equal(getAttempt(state.db).reconcile_claim_token, null);
+      assert.equal(countReconciledSafeEvents(state.db), 0);
+      assert.equal(countReconciledAuditEvents(state.db), 0);
+      assert.deepEqual(listFiles(state.storagePath), []);
+      assert.doesNotMatch(JSON.stringify(state.log.entries), /secret timeout|test-key|provider-task-reconcile/);
+    });
+  }
+});
+
+test('terminal write failure rolls route, media, task, credits, cost, event, and audit back', async (t) => {
+  const cases = [
+    ['success', { state: 'succeeded', artifactUrl: ARTIFACT_URL }, fixtureVideoFetch],
+    ['failure', { state: 'failed', category: 'provider_task_failed' }, null],
+  ];
+
+  for (const [name, outcome, fetchImpl] of cases) {
+    await t.test(name, async (subtest) => {
+      const state = setupReconciliationFixture(subtest);
+      const costBefore = state.db.prepare(
+        'SELECT * FROM generation_cost_records WHERE reservation_id = ?'
+      ).get(state.reservation.id);
+      state.db.exec(`CREATE TRIGGER abort_reconciled_audit
+        BEFORE INSERT ON audit_events
+        WHEN NEW.event_type = 'generation.video.reconciled'
+        BEGIN SELECT RAISE(ABORT, 'forced terminal write failure'); END`);
+
+      await assert.rejects(
+        reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
+          now: NOW,
+          storagePath: state.storagePath,
+          queryTaskStatusOnce: async () => outcome,
+          ...(fetchImpl ? { fetchImpl } : {}),
+        }),
+        /forced terminal write failure/,
+      );
+
+      assert.equal(getReservation(state.db, state.reservation.id).status, 'held');
+      assert.equal(getVideo(state.db).status, 'needs_attention');
+      assert.equal(getTask(state.db).status, 'needs_attention');
+      assert.equal(getRoute(state.db).state, 'needs_attention');
+      assert.equal(getAttempt(state.db).state, 'needs_attention');
+      assert.equal(getAttempt(state.db).reconcile_checked_at, null);
+      assert.deepEqual(
+        state.db.prepare('SELECT * FROM generation_cost_records WHERE reservation_id = ?')
+          .get(state.reservation.id),
+        costBefore,
+      );
+      assert.equal(countReconciledSafeEvents(state.db), 0);
+      assert.equal(countReconciledAuditEvents(state.db), 0);
+      assert.deepEqual(listFiles(state.storagePath), []);
+    });
+  }
+});
+
+test('late old claim loses CAS, discards its staged artifact, and cannot overwrite newer state', async (t) => {
+  const state = setupReconciliationFixture(t);
+  let resolveOldQuery;
+  let queryCount = 0;
+  const oldRequest = reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
+    now: NOW,
+    storagePath: state.storagePath,
+    queryTaskStatusOnce: async () => {
+      queryCount += 1;
+      return new Promise((resolve) => { resolveOldQuery = resolve; });
+    },
+    fetchImpl: fixtureVideoFetch,
+  });
+  await Promise.resolve();
+
+  const newer = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
+    now: LATE_NOW,
+    queryTaskStatusOnce: async () => {
+      queryCount += 1;
+      return { state: 'processing' };
+    },
+  });
+  resolveOldQuery({ state: 'succeeded', artifactUrl: ARTIFACT_URL });
+  const late = await oldRequest;
+
+  assert.equal(queryCount, 2);
+  assert.equal(newer.task_state, 'needs_attention');
+  assert.equal(newer.checked_at, LATE_NOW);
+  assert.deepEqual(late, newer);
+  assert.equal(getReservation(state.db, state.reservation.id).status, 'held');
+  assert.equal(getVideo(state.db).status, 'needs_attention');
+  assert.equal(getTask(state.db).status, 'needs_attention');
+  assert.equal(getRoute(state.db).state, 'needs_attention');
+  assert.equal(getAttempt(state.db).state, 'needs_attention');
+  assert.equal(getAttempt(state.db).reconcile_checked_at, LATE_NOW);
+  assert.equal(countReconciledSafeEvents(state.db), 0);
+  assert.equal(countReconciledAuditEvents(state.db), 0);
+  assert.deepEqual(listFiles(state.storagePath), []);
 });
