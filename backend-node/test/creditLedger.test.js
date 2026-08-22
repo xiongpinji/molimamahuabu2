@@ -238,6 +238,49 @@ test('相同 id 的租户迁移副本不抢占用户预扣结算', () => {
   assert.equal(creditLedger.getAccount(db, 'user-1').spent, 20);
 });
 
+test('显式积分作用域在相同 id 下只查询并结算指定账户', () => {
+  const db = setup(100);
+  const userHeld = creditLedger.reserve(db, {
+    userId: 'user-1', operationKey: 'video:scoped-user', amount: 20,
+    model: 'seedance-2.0', resourceType: 'video', resourceId: 'scoped-video',
+  });
+  creditLedger.setTenantAccountBalance(db, 'tenant-1', 100);
+  const tenantHeld = creditLedger.reserve(db, {
+    tenantId: 'tenant-1', actorUserId: 'user-1', operationKey: 'video:scoped-tenant', amount: 30,
+    model: 'seedance-2.0', resourceType: 'video', resourceId: 'scoped-video',
+  });
+  db.prepare('UPDATE tenant_usage_reservations SET id = ? WHERE id = ?')
+    .run(userHeld.id, tenantHeld.id);
+  db.prepare('UPDATE tenant_credit_ledger SET reservation_id = ? WHERE reservation_id = ?')
+    .run(userHeld.id, tenantHeld.id);
+
+  assert.equal(creditLedger.getReservation(db, userHeld.id).user_id, 'user-1');
+  assert.equal(
+    creditLedger.getReservationForScope(db, userHeld.id, { tenantId: 'tenant-1' }).tenant_id,
+    'tenant-1',
+  );
+  assert.equal(
+    creditLedger.getReservationForScope(db, userHeld.id, { userId: 'user-1' }).user_id,
+    'user-1',
+  );
+
+  creditLedger.confirmForScope(db, userHeld.id, { tenantId: 'tenant-1' });
+  assert.equal(db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(userHeld.id).status, 'confirmed');
+  assert.equal(db.prepare('SELECT status FROM usage_reservations WHERE id = ?').get(userHeld.id).status, 'held');
+  assert.deepEqual(creditLedger.getTenantAccount(db, 'tenant-1'), {
+    tenant_id: 'tenant-1', available: 70, held: 0, spent: 30,
+  });
+  assert.deepEqual(creditLedger.getAccount(db, 'user-1'), {
+    user_id: 'user-1', available: 80, held: 20, spent: 0,
+  });
+
+  creditLedger.refundForScope(db, userHeld.id, { userId: 'user-1' }, 'provider_task_failed');
+  assert.equal(db.prepare('SELECT status FROM usage_reservations WHERE id = ?').get(userHeld.id).status, 'refunded');
+  assert.deepEqual(creditLedger.getAccount(db, 'user-1'), {
+    user_id: 'user-1', available: 100, held: 0, spent: 0,
+  });
+});
+
 test('生成明确失败时退款', () => {
   const db = setup(100);
   const held = creditLedger.reserve(db, {

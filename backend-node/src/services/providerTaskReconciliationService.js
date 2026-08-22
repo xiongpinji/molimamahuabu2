@@ -47,6 +47,17 @@ function normalizeNow(value) {
   return parsed.toISOString();
 }
 
+function reservationScopeForRoute(route) {
+  const tenantId = String(route.tenant_id || '').trim();
+  if (tenantId) return { tenantId };
+  const userId = String(route.user_id || '').trim();
+  return userId ? { userId } : null;
+}
+
+function sameReservationScope(left, right) {
+  return sameValue(left?.tenantId, right?.tenantId) && sameValue(left?.userId, right?.userId);
+}
+
 function loadReconciliationState(db, requestId) {
   const route = db.prepare('SELECT * FROM generation_route_requests WHERE id = ?').get(requestId);
   if (!route) throw codedError('PROVIDER_TASK_REQUEST_NOT_FOUND', '普通生成请求不存在');
@@ -59,10 +70,11 @@ function loadReconciliationState(db, requestId) {
   const task = video?.task_id
     ? db.prepare('SELECT * FROM async_tasks WHERE id = ? AND deleted_at IS NULL').get(video.task_id) || null
     : null;
-  const reservation = route.credit_reservation_id
-    ? creditLedger.getReservation(db, route.credit_reservation_id) || null
+  const reservationScope = reservationScopeForRoute(route);
+  const reservation = route.credit_reservation_id && reservationScope
+    ? creditLedger.getReservationForScope(db, route.credit_reservation_id, reservationScope) || null
     : null;
-  return { db, requestId, route, attempt, video, task, reservation, config: null };
+  return { db, requestId, route, attempt, video, task, reservation, reservationScope, config: null };
 }
 
 function sameValue(left, right) {
@@ -70,8 +82,8 @@ function sameValue(left, right) {
 }
 
 function currentReceipt(state) {
-  const { route, attempt, video, task, reservation } = state;
-  if (!attempt || !video || !task || !reservation) return null;
+  const { route, attempt, video, task, reservation, reservationScope } = state;
+  if (!attempt || !video || !task || !reservation || !reservationScope) return null;
   if (route.service_type !== 'video' || route.business_type !== 'video_generation') return null;
   if (route.state !== 'needs_attention'
       || attempt.state !== 'needs_attention'
@@ -91,7 +103,20 @@ function currentReceipt(state) {
   if (!sameValue(video.credit_reservation_id, route.credit_reservation_id)
       || !sameValue(task.credit_reservation_id, route.credit_reservation_id)
       || !sameValue(reservation.id, route.credit_reservation_id)
-      || reservation.status !== 'held') return null;
+      || reservation.status !== 'held'
+      || reservation.resource_type !== 'video'
+      || !sameValue(reservation.resource_id, video.id)) return null;
+  if (reservationScope.tenantId) {
+    if (!sameValue(reservation.tenant_id, reservationScope.tenantId)
+        || !sameValue(video.tenant_id, reservationScope.tenantId)
+        || !sameValue(task.tenant_id, reservationScope.tenantId)
+        || !sameValue(video.user_id, route.user_id)
+        || !sameValue(task.user_id, route.user_id)) return null;
+  } else if (!sameValue(reservation.user_id, reservationScope.userId)
+      || !sameValue(video.user_id, reservationScope.userId)
+      || !sameValue(task.user_id, reservationScope.userId)
+      || !sameValue(video.tenant_id, route.tenant_id)
+      || !sameValue(task.tenant_id, route.tenant_id)) return null;
 
   const config = aiConfigService.getConfig(state.db, attempt.config_id);
   if (!config || !aiConfigService.hasConnectionCredential(config)) return null;
@@ -193,6 +218,8 @@ function claimForReconciliation(db, requestId, options = {}) {
       configId: state.attempt.config_id,
       config: state.config,
       video: state.video,
+      reservationId: state.reservation.id,
+      reservationScope: state.reservationScope,
     };
   }).immediate();
 }
@@ -215,7 +242,9 @@ function claimMatches(state, claim) {
     && state.attempt.attempt_no === claim.attemptNo
     && state.attempt.request_id === claim.requestId
     && state.attempt.provider_task_id === claim.providerTaskId
-    && state.attempt.reconcile_claim_token === claim.token;
+    && state.attempt.reconcile_claim_token === claim.token
+    && sameValue(state.route.credit_reservation_id, claim.reservationId)
+    && sameReservationScope(state.reservationScope, claim.reservationScope);
 }
 
 function releaseClaimAsUnknown(db, claim, category, now) {
@@ -307,6 +336,7 @@ function finishTerminal(db, log, claim, terminalState, prepared) {
       now: claim.now,
       requestId: claim.requestId,
       configId: claim.configId,
+      reservationScope: state.reservationScope,
     };
     if (terminalState === 'succeeded') {
       videoService.applyReconciledVideoSuccess(db, log, state.video, prepared, applyOptions);

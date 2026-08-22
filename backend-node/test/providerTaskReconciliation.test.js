@@ -71,6 +71,10 @@ function getReservation(db, reservationId) {
   return db.prepare('SELECT * FROM usage_reservations WHERE id = ?').get(reservationId);
 }
 
+function getTenantReservation(db, reservationId) {
+  return db.prepare('SELECT * FROM tenant_usage_reservations WHERE id = ?').get(reservationId);
+}
+
 function getVideo(db) {
   return db.prepare('SELECT * FROM video_generations WHERE id = ?').get(VIDEO_ID);
 }
@@ -131,6 +135,8 @@ function setupReconciliationFixture(t, options = {}) {
   generationCostLedgerService.ensureSchema(db);
   const storagePath = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-reconciled-video-'));
   const log = recordingLog();
+  const userId = options.userId || 'user-reconcile';
+  const tenantId = options.tenantId || null;
   if (options.cleanup !== false) {
     t.after(() => {
       db.close();
@@ -170,22 +176,24 @@ function setupReconciliationFixture(t, options = {}) {
   }, { now: NOW });
 
   db.prepare(`INSERT INTO async_tasks
-    (id, type, status, progress, message, resource_id, user_id, model, provider_task_id,
+    (id, type, status, progress, message, resource_id, user_id, tenant_id, model, provider_task_id,
      created_at, updated_at)
     VALUES (?, 'video_generation', 'needs_attention', 90, '等待人工对账', ?,
-      'user-reconcile', 'logical-video', ?, ?, ?)`)
-    .run(TASK_ID, String(VIDEO_ID), PROVIDER_TASK_ID, NOW, NOW);
+      ?, ?, 'logical-video', ?, ?, ?)`)
+    .run(TASK_ID, String(VIDEO_ID), userId, tenantId, PROVIDER_TASK_ID, NOW, NOW);
   db.prepare(`INSERT INTO video_generations
     (id, drama_id, storyboard_id, provider, prompt, model, duration, aspect_ratio, resolution,
-     status, task_id, provider_task_id, config_id, user_id, created_at, updated_at)
+     status, task_id, provider_task_id, config_id, user_id, tenant_id, created_at, updated_at)
     VALUES (?, 1, 1, 'toapis', 'fixture prompt', 'seedance-2-fast', 5, '16:9', '480p',
-      'needs_attention', ?, ?, ?, 'user-reconcile', ?, ?)`)
-    .run(VIDEO_ID, TASK_ID, PROVIDER_TASK_ID, config.id, NOW, NOW);
+      'needs_attention', ?, ?, ?, ?, ?, ?, ?)`)
+    .run(VIDEO_ID, TASK_ID, PROVIDER_TASK_ID, config.id, userId, tenantId, NOW, NOW);
 
-  creditLedgerService.setAccountBalance(db, 'user-reconcile', 100);
+  if (tenantId) creditLedgerService.setTenantAccountBalance(db, tenantId, 100);
+  else creditLedgerService.setAccountBalance(db, userId, 100);
   const reservation = creditLedgerService.reserve(db, {
     operationKey: 'video-reconcile-7001',
-    userId: 'user-reconcile',
+    userId,
+    ...(tenantId ? { tenantId, actorUserId: userId } : {}),
     model: 'logical-video',
     resourceType: 'video',
     resourceId: String(VIDEO_ID),
@@ -197,14 +205,16 @@ function setupReconciliationFixture(t, options = {}) {
     .run(reservation.id, TASK_ID);
 
   db.prepare(`INSERT INTO generation_route_requests
-    (id, idempotency_key, service_type, business_type, business_id, user_id,
+    (id, idempotency_key, service_type, business_type, business_id, tenant_id, user_id,
      logical_model_id, capability_fingerprint, candidate_config_ids, state,
      credit_reservation_id, final_config_id, created_at, updated_at)
-    VALUES (?, 'video-reconcile-7001', 'video', 'video_generation', ?, 'user-reconcile',
+    VALUES (?, 'video-reconcile-7001', 'video', 'video_generation', ?, ?, ?,
       'logical-video', ?, ?, 'needs_attention', ?, ?, ?, ?)`)
     .run(
       ROUTE_ID,
       String(VIDEO_ID),
+      tenantId,
+      userId,
       'b'.repeat(64),
       JSON.stringify([config.id]),
       reservation.id,
@@ -265,6 +275,37 @@ function setupReconciliationFixture(t, options = {}) {
     storagePath,
     projectSubdir,
   };
+}
+
+function addSameIdUserReservation(db, reservationId, userId) {
+  creditLedgerService.setAccountBalance(db, userId, 100);
+  const held = creditLedgerService.reserve(db, {
+    operationKey: 'video-reconcile-user-collision',
+    userId,
+    model: 'logical-video',
+    resourceType: 'video',
+    resourceId: String(VIDEO_ID),
+    amount: 7,
+  });
+  db.prepare('UPDATE usage_reservations SET id = ? WHERE id = ?').run(reservationId, held.id);
+  db.prepare('UPDATE credit_ledger SET reservation_id = ? WHERE reservation_id = ?')
+    .run(reservationId, held.id);
+}
+
+function addSameIdTenantReservation(db, reservationId, tenantId, actorUserId) {
+  creditLedgerService.setTenantAccountBalance(db, tenantId, 100);
+  const held = creditLedgerService.reserve(db, {
+    operationKey: 'video-reconcile-tenant-collision',
+    tenantId,
+    actorUserId,
+    model: 'logical-video',
+    resourceType: 'video',
+    resourceId: String(VIDEO_ID),
+    amount: 7,
+  });
+  db.prepare('UPDATE tenant_usage_reservations SET id = ? WHERE id = ?').run(reservationId, held.id);
+  db.prepare('UPDATE tenant_credit_ledger SET reservation_id = ? WHERE reservation_id = ?')
+    .run(reservationId, held.id);
 }
 
 async function fixtureVideoFetch(url, requestOptions) {
@@ -696,6 +737,89 @@ test('reconcileRequest performs one query and confirms readable success atomical
   assert.equal(cost.cost_micros, 5000);
 });
 
+test('tenant reconciliation settles only the tenant reservation when a held user reservation has the same id', async (t) => {
+  const cases = [
+    ['success', { state: 'succeeded', artifactUrl: ARTIFACT_URL }, 'confirmed', fixtureVideoFetch],
+    ['failure', { state: 'failed', category: 'provider_task_failed' }, 'refunded', null],
+  ];
+  for (const [name, outcome, expectedStatus, fetchImpl] of cases) {
+    await t.test(name, async (subtest) => {
+      const state = setupReconciliationFixture(subtest, {
+        tenantId: 'tenant-reconcile',
+        userId: 'tenant-actor',
+      });
+      addSameIdUserReservation(state.db, state.reservation.id, 'tenant-actor');
+      const userAccountBefore = creditLedgerService.getAccount(state.db, 'tenant-actor');
+      const userLedgerBefore = state.db.prepare('SELECT * FROM credit_ledger ORDER BY created_at, id').all();
+      let queryCount = 0;
+
+      const result = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
+        now: NOW,
+        storagePath: state.storagePath,
+        queryTaskStatusOnce: async () => {
+          queryCount += 1;
+          return outcome;
+        },
+        ...(fetchImpl ? { fetchImpl } : {}),
+      });
+
+      assert.equal(queryCount, 1);
+      assert.equal(result.credit_state, expectedStatus);
+      assert.equal(getTenantReservation(state.db, state.reservation.id).status, expectedStatus);
+      assert.equal(getReservation(state.db, state.reservation.id).status, 'held');
+      assert.deepEqual(creditLedgerService.getAccount(state.db, 'tenant-actor'), userAccountBefore);
+      assert.deepEqual(
+        state.db.prepare('SELECT * FROM credit_ledger ORDER BY created_at, id').all(),
+        userLedgerBefore,
+      );
+      assert.deepEqual(
+        creditLedgerService.getTenantAccount(state.db, 'tenant-reconcile'),
+        expectedStatus === 'confirmed'
+          ? { tenant_id: 'tenant-reconcile', available: 95, held: 0, spent: 5 }
+          : { tenant_id: 'tenant-reconcile', available: 100, held: 0, spent: 0 },
+      );
+      assert.equal(
+        state.db.prepare(`SELECT COUNT(*) AS count FROM tenant_credit_ledger
+          WHERE reservation_id = ? AND event_type = ?`).get(
+          state.reservation.id,
+          expectedStatus === 'confirmed' ? 'confirm' : 'refund',
+        ).count,
+        1,
+      );
+    });
+  }
+});
+
+test('user reconciliation settles only its user reservation when a held tenant reservation has the same id', async (t) => {
+  const state = setupReconciliationFixture(t);
+  addSameIdTenantReservation(state.db, state.reservation.id, 'tenant-collision', 'user-reconcile');
+  const tenantAccountBefore = creditLedgerService.getTenantAccount(state.db, 'tenant-collision');
+  const tenantLedgerBefore = state.db.prepare(
+    'SELECT * FROM tenant_credit_ledger ORDER BY created_at, id'
+  ).all();
+  let queryCount = 0;
+
+  const result = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
+    now: NOW,
+    storagePath: state.storagePath,
+    queryTaskStatusOnce: async () => {
+      queryCount += 1;
+      return { state: 'succeeded', artifactUrl: ARTIFACT_URL };
+    },
+    fetchImpl: fixtureVideoFetch,
+  });
+
+  assert.equal(queryCount, 1);
+  assert.equal(result.credit_state, 'confirmed');
+  assert.equal(getReservation(state.db, state.reservation.id).status, 'confirmed');
+  assert.equal(getTenantReservation(state.db, state.reservation.id).status, 'held');
+  assert.deepEqual(creditLedgerService.getTenantAccount(state.db, 'tenant-collision'), tenantAccountBefore);
+  assert.deepEqual(
+    state.db.prepare('SELECT * FROM tenant_credit_ledger ORDER BY created_at, id').all(),
+    tenantLedgerBefore,
+  );
+});
+
 test('reconcileRequest gates incomplete, non-video, non-needs-attention, missing business, and non-held work before query', async (t) => {
   const cases = [
     ['missing provider task id', { bindProviderTask: false }, () => {}],
@@ -722,6 +846,21 @@ test('reconcileRequest gates incomplete, non-video, non-needs-attention, missing
       state.db,
       state.reservation.id,
     )],
+    ['reservation resource type is not video', {}, (state) => state.db.prepare(
+      "UPDATE usage_reservations SET resource_type = 'image' WHERE id = ?"
+    ).run(state.reservation.id)],
+    ['reservation belongs to another video', {}, (state) => state.db.prepare(
+      "UPDATE usage_reservations SET resource_id = '7002' WHERE id = ?"
+    ).run(state.reservation.id)],
+    ['reservation user differs from route', {}, (state) => state.db.prepare(
+      "UPDATE usage_reservations SET user_id = 'other-user' WHERE id = ?"
+    ).run(state.reservation.id)],
+    ['video user differs from route', {}, (state) => state.db.prepare(
+      "UPDATE video_generations SET user_id = 'other-user' WHERE id = ?"
+    ).run(VIDEO_ID)],
+    ['task user differs from route', {}, (state) => state.db.prepare(
+      "UPDATE async_tasks SET user_id = 'other-user' WHERE id = ?"
+    ).run(TASK_ID)],
     ['current config missing', {}, (state) => state.db.prepare(
       'UPDATE ai_service_configs SET deleted_at = ? WHERE id = ?'
     ).run(NOW, state.config.id)],
@@ -751,6 +890,40 @@ test('reconcileRequest gates incomplete, non-video, non-needs-attention, missing
       assertSafeResult(result);
       assert.equal(countReconciledSafeEvents(state.db), 0);
       assert.equal(countReconciledAuditEvents(state.db), 0);
+    });
+  }
+});
+
+test('tenant reconciliation requires reservation, video, and task tenant identity before query', async (t) => {
+  const cases = [
+    ['reservation tenant', (state) => state.db.prepare(
+      "UPDATE tenant_usage_reservations SET tenant_id = 'other-tenant' WHERE id = ?"
+    ).run(state.reservation.id)],
+    ['video tenant', (state) => state.db.prepare(
+      "UPDATE video_generations SET tenant_id = 'other-tenant' WHERE id = ?"
+    ).run(VIDEO_ID)],
+    ['task tenant', (state) => state.db.prepare(
+      "UPDATE async_tasks SET tenant_id = 'other-tenant' WHERE id = ?"
+    ).run(TASK_ID)],
+  ];
+  for (const [name, mutate] of cases) {
+    await t.test(name, async (subtest) => {
+      const state = setupReconciliationFixture(subtest, {
+        tenantId: 'tenant-reconcile',
+        userId: 'tenant-actor',
+      });
+      mutate(state);
+      let queryCount = 0;
+      const result = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
+        now: NOW,
+        queryTaskStatusOnce: async () => {
+          queryCount += 1;
+          return { state: 'processing' };
+        },
+      });
+      assert.equal(queryCount, 0);
+      assert.equal(result.reconcilable, false);
+      assert.equal(countReconciledSafeEvents(state.db), 0);
     });
   }
 });

@@ -250,6 +250,24 @@ function getReservation(db, id) {
     || null;
 }
 
+function normalizeReservationScope(scope = {}) {
+  const tenantId = scope.tenantId == null ? '' : String(scope.tenantId).trim();
+  const userId = scope.userId == null ? '' : String(scope.userId).trim();
+  if (Boolean(tenantId) === Boolean(userId)) throw new Error('额度预扣作用域不明确');
+  return tenantId ? { tenantId } : { userId };
+}
+
+function getReservationForScope(db, id, scope) {
+  ensureSchema(db);
+  const normalized = normalizeReservationScope(scope);
+  if (normalized.tenantId) {
+    return db.prepare(`SELECT * FROM tenant_usage_reservations
+      WHERE id = ? AND tenant_id = ?`).get(String(id), normalized.tenantId) || null;
+  }
+  return db.prepare(`SELECT * FROM usage_reservations
+    WHERE id = ? AND user_id = ?`).get(String(id), normalized.userId) || null;
+}
+
 function validateReservationInput(input) {
   const amount = Number(input.amount);
   const accountId = input.tenantId || input.userId;
@@ -383,6 +401,18 @@ function settle(db, reservationId, target, reason) {
   })();
 }
 
+function settleForScope(db, reservationId, scope, target, reason) {
+  const normalized = normalizeReservationScope(scope);
+  return db.transaction(() => {
+    const row = getReservationForScope(db, reservationId, normalized);
+    if (!row) throw new Error('额度预扣记录不存在');
+    if (row.status !== 'held') return row;
+    return normalized.tenantId
+      ? settleTenant(db, row, target, reason)
+      : settleUser(db, row, target, reason);
+  })();
+}
+
 function settleUser(db, row, target, reason) {
   const now = new Date().toISOString();
   if (target === 'confirmed') {
@@ -405,7 +435,7 @@ function settleUser(db, row, target, reason) {
       reason || null,
       now
     );
-  return getReservation(db, row.id);
+  return getReservationForScope(db, row.id, { userId: row.user_id });
 }
 
 function settleTenant(db, row, target, reason) {
@@ -434,7 +464,7 @@ function settleTenant(db, row, target, reason) {
       reason || null,
       now,
     );
-  return getReservation(db, row.id);
+  return getReservationForScope(db, row.id, { tenantId: row.tenant_id });
 }
 
 function confirm(db, reservationId) {
@@ -443,6 +473,14 @@ function confirm(db, reservationId) {
 
 function refund(db, reservationId, reason) {
   return settle(db, reservationId, 'refunded', reason || 'generation_failed');
+}
+
+function confirmForScope(db, reservationId, scope) {
+  return settleForScope(db, reservationId, scope, 'confirmed', 'generation_completed');
+}
+
+function refundForScope(db, reservationId, scope, reason) {
+  return settleForScope(db, reservationId, scope, 'refunded', reason || 'generation_failed');
 }
 
 function settleGeneration(db, reservationId, outcome, message = '') {
@@ -466,9 +504,12 @@ module.exports = {
   adjustTenantBalance,
   listTenantAdjustments,
   getReservation,
+  getReservationForScope,
   claim,
   reserve,
   confirm,
   refund,
+  confirmForScope,
+  refundForScope,
   settleGeneration,
 };

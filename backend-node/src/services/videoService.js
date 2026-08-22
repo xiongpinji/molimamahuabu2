@@ -1795,7 +1795,11 @@ function applyReconciledVideoSuccess(db, log, row, prepared, options = {}) {
       status: 'completed',
     });
   }
-  const settled = creditLedger.confirm(db, row.credit_reservation_id);
+  const settled = creditLedger.confirmForScope(
+    db,
+    row.credit_reservation_id,
+    options.reservationScope,
+  );
   if (settled?.status !== 'confirmed') throw new Error('视频对账积分确认失败');
   generationCost.record(db, {
     reservationId: row.credit_reservation_id,
@@ -1829,7 +1833,12 @@ function applyReconciledVideoFailure(db, log, row, options = {}) {
   if (updated.changes !== 1) throw new Error('视频对账失败状态已变化');
 
   if (row.task_id) taskService.updateTaskError(db, row.task_id, message);
-  const settled = creditLedger.refund(db, row.credit_reservation_id, 'provider_task_failed');
+  const settled = creditLedger.refundForScope(
+    db,
+    row.credit_reservation_id,
+    options.reservationScope,
+    'provider_task_failed',
+  );
   if (settled?.status !== 'refunded') throw new Error('视频对账积分退款失败');
   generationCost.record(db, {
     reservationId: row.credit_reservation_id,
