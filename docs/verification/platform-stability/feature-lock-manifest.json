@@ -100,9 +100,11 @@
         "backend-node/test/providerRouteImageIntegration.test.js",
         "backend-node/test/providerRouteVideoIntegration.test.js",
         "backend-node/test/providerRouteTextIntegration.test.js",
+        "backend-node/test/feituoVideoModels.test.js",
         "backend-node/test/imageAssetModelFailover.test.js",
         "backend-node/test/providerTaskReconciliation.test.js",
         "backend-node/test/storyboardImageFailure.test.js",
+        "backend-node/test/toapisVideoIntegration.test.js",
         "backend-node/test/videoQueryTaskStatusOnce.test.js"
       ],
       "evidence": [
@@ -167,15 +169,31 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 旧版 DJPSD 严格完成无产物安全收口获批",
+          "approvedBy": "product-owner 2026-08-23 legacy-djpsd-strict-completed-artifact-unreadable",
+          "impactTests": [
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/creditLedger.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 旧版 DJPSD 严格完成无产物安全收口获批",
-        "approvedBy": "product-owner 2026-08-23 legacy-djpsd-strict-completed-artifact-unreadable",
+        "reason": "2026-08-23 全异步视频协议无产物分类统一收口获批",
+        "approvedBy": "product-owner 2026-08-23 async-video-protocol-artifact-unreadable",
         "impactTests": [
           "backend-node/test/videoQueryTaskStatusOnce.test.js",
           "backend-node/test/providerTaskReconciliation.test.js",
           "backend-node/test/providerRouteVideoIntegration.test.js",
+          "backend-node/test/toapisVideoIntegration.test.js",
+          "backend-node/test/feituoVideoModels.test.js",
           "backend-node/test/videoBilling.test.js",
           "backend-node/test/creditLedger.test.js",
           "backend-node/test/providerReconciliation.test.js",
@@ -276,15 +294,31 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 旧版 DJPSD 严格完成无产物安全收口获批",
+          "approvedBy": "product-owner 2026-08-23 legacy-djpsd-strict-completed-artifact-unreadable",
+          "impactTests": [
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/creditLedger.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 旧版 DJPSD 严格完成无产物安全收口获批",
-        "approvedBy": "product-owner 2026-08-23 legacy-djpsd-strict-completed-artifact-unreadable",
+        "reason": "2026-08-23 全异步视频协议无产物分类统一收口获批",
+        "approvedBy": "product-owner 2026-08-23 async-video-protocol-artifact-unreadable",
         "impactTests": [
           "backend-node/test/videoQueryTaskStatusOnce.test.js",
           "backend-node/test/providerTaskReconciliation.test.js",
           "backend-node/test/providerRouteVideoIntegration.test.js",
+          "backend-node/test/toapisVideoIntegration.test.js",
+          "backend-node/test/feituoVideoModels.test.js",
           "backend-node/test/videoBilling.test.js",
           "backend-node/test/creditLedger.test.js",
           "backend-node/test/providerReconciliation.test.js",
@@ -420,6 +454,7 @@
         "backend-node/test/appBackgroundServices.test.js",
         "backend-node/test/canvasModelCatalogService.test.js",
         "backend-node/test/creditLedger.test.js",
+        "backend-node/test/feituoVideoModels.test.js",
         "backend-node/test/generationCostLedger.test.js",
         "backend-node/test/generationRouteCostLedger.test.js",
         "backend-node/test/imageAssetModelFailover.test.js",
@@ -452,6 +487,7 @@
         "backend-node/test/storyboardImageFailure.test.js",
         "backend-node/test/taskService.test.js",
         "backend-node/test/text-generation-billing.test.js",
+        "backend-node/test/toapisVideoIntegration.test.js",
         "backend-node/test/videoBilling.test.js",
         "backend-node/test/videoQueryTaskStatusOnce.test.js",
         "frontweb/e2e/platform-zero-cost-smoke.spec.js",
@@ -524,15 +560,31 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 旧版 DJPSD 严格完成无产物安全收口获批",
+          "approvedBy": "product-owner 2026-08-23 legacy-djpsd-strict-completed-artifact-unreadable",
+          "impactTests": [
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/creditLedger.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 旧版 DJPSD 严格完成无产物安全收口获批",
-        "approvedBy": "product-owner 2026-08-23 legacy-djpsd-strict-completed-artifact-unreadable",
+        "reason": "2026-08-23 全异步视频协议无产物分类统一收口获批",
+        "approvedBy": "product-owner 2026-08-23 async-video-protocol-artifact-unreadable",
         "impactTests": [
           "backend-node/test/videoQueryTaskStatusOnce.test.js",
           "backend-node/test/providerTaskReconciliation.test.js",
           "backend-node/test/providerRouteVideoIntegration.test.js",
+          "backend-node/test/toapisVideoIntegration.test.js",
+          "backend-node/test/feituoVideoModels.test.js",
           "backend-node/test/videoBilling.test.js",
           "backend-node/test/creditLedger.test.js",
           "backend-node/test/providerReconciliation.test.js",
