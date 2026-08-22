@@ -70,11 +70,12 @@ function includesNormalized(items, value, lowerCase = false) {
   return items.some((item) => (lowerCase ? String(item).toLowerCase() : String(item)) === expected);
 }
 
-function capabilitiesForConfig(config) {
+function capabilitiesForConfig(config, upstreamModel) {
   const settings = parseJson(config.settings);
   const base = parseJson(settings.canvas_capabilities);
-  const upstreamModel = config.default_model || (Array.isArray(config.model) ? config.model[0] : null);
-  const perModel = parseJson(settings.canvas_capabilities_by_model?.[upstreamModel]);
+  const selectedModel = upstreamModel || config.default_model
+    || (Array.isArray(config.model) ? config.model[0] : null);
+  const perModel = parseJson(settings.canvas_capabilities_by_model?.[selectedModel]);
   return { ...base, ...perModel };
 }
 
@@ -296,10 +297,49 @@ function createOrGetRouteRequest(db, input) {
   return routeRequest(db.prepare('SELECT * FROM generation_route_requests WHERE id = ?').get(input.id));
 }
 
+function normalizedQueryProtocol(input, config) {
+  for (const value of [input.queryProtocol, config.api_protocol, config.provider, 'auto']) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized) return normalized;
+  }
+  return 'auto';
+}
+
+function buildAttemptReceipt(db, input) {
+  const config = aiConfigService.getConfig(db, input.configId);
+  if (!config) {
+    const error = new Error('供应商配置不存在');
+    error.code = 'PROVIDER_TASK_CONFIG_NOT_FOUND';
+    throw error;
+  }
+  const upstreamModel = String(input.upstreamModel || config.default_model || '').trim();
+  if (!upstreamModel) throw new TypeError('upstream model is required');
+  const queryProtocol = normalizedQueryProtocol(input, config);
+  const capabilities = capabilitiesForConfig(config, upstreamModel);
+  return {
+    serviceType: String(config.service_type || input.serviceType || '').trim().toLowerCase(),
+    provider: config.provider,
+    upstreamModel,
+    queryProtocol,
+    capabilities,
+    configFingerprint: evidenceService.configFingerprint({
+      serviceType: config.service_type || input.serviceType,
+      apiKey: config.api_key,
+      baseUrl: config.base_url,
+      protocol: queryProtocol,
+      provider: config.provider,
+      upstreamModel,
+      capabilities,
+    }),
+  };
+}
+
 function startAttempt(db, input) {
   return db.transaction(() => {
-    const request = db.prepare('SELECT id FROM generation_route_requests WHERE id = ?').get(input.requestId);
+    const request = db.prepare('SELECT id, service_type FROM generation_route_requests WHERE id = ?')
+      .get(input.requestId);
     if (!request) throw new Error('路由请求不存在');
+    const receipt = buildAttemptReceipt(db, { ...input, serviceType: request.service_type });
     const now = input.now || new Date().toISOString();
     const health = db.prepare(`SELECT state, open_until FROM provider_route_health
       WHERE config_id = ?`).get(input.configId);
@@ -311,9 +351,19 @@ function startAttempt(db, input) {
     const attemptNo = Number(db.prepare(`SELECT COALESCE(MAX(attempt_no), 0) + 1 AS attempt_no
       FROM generation_route_attempts WHERE request_id = ?`).get(input.requestId).attempt_no);
     const info = db.prepare(`INSERT INTO generation_route_attempts
-      (request_id, attempt_no, config_id, provider, upstream_model, state, started_at)
-      VALUES (?, ?, ?, ?, ?, 'submitting', ?)`)
-      .run(input.requestId, attemptNo, input.configId, input.provider, input.upstreamModel, now);
+      (request_id, attempt_no, config_id, provider, upstream_model, config_fingerprint,
+       query_protocol, state, provider_task_id, started_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'submitting', NULL, ?)`)
+      .run(
+        input.requestId,
+        attemptNo,
+        input.configId,
+        receipt.provider,
+        receipt.upstreamModel,
+        receipt.configFingerprint,
+        receipt.queryProtocol,
+        now,
+      );
     db.prepare("UPDATE generation_route_requests SET state = 'running', updated_at = ? WHERE id = ?")
       .run(now, input.requestId);
     return db.prepare('SELECT * FROM generation_route_attempts WHERE id = ?').get(info.lastInsertRowid);
@@ -341,13 +391,32 @@ function finishAttempt(db, input) {
 }
 
 function recordAcceptedTask(db, input) {
-  const now = input.now || new Date().toISOString();
-  db.prepare(`UPDATE generation_route_attempts
-    SET state = 'accepted', provider_task_id = ?
-    WHERE request_id = ? AND attempt_no = ?`)
-    .run(input.providerTaskId, input.requestId, input.attemptNo);
-  db.prepare("UPDATE generation_route_requests SET state = 'accepted', updated_at = ? WHERE id = ?")
-    .run(now, input.requestId);
+  const providerTaskId = String(input.providerTaskId || '').trim();
+  if (!providerTaskId) {
+    const error = new Error('供应商任务号不能为空');
+    error.code = 'PROVIDER_TASK_RECEIPT_INVALID';
+    throw error;
+  }
+  return db.transaction(() => {
+    const attempt = db.prepare(`SELECT * FROM generation_route_attempts
+      WHERE request_id = ? AND attempt_no = ?`).get(input.requestId, input.attemptNo);
+    if (!attempt) throw new Error('路由尝试不存在');
+    if (attempt.provider_task_id != null) {
+      if (attempt.provider_task_id === providerTaskId) return attempt;
+      const error = new Error('供应商任务号与已固化凭证冲突');
+      error.code = 'PROVIDER_TASK_RECEIPT_CONFLICT';
+      throw error;
+    }
+    const now = input.now || new Date().toISOString();
+    db.prepare(`UPDATE generation_route_attempts
+      SET state = 'accepted', provider_task_id = ?
+      WHERE request_id = ? AND attempt_no = ? AND provider_task_id IS NULL`)
+      .run(providerTaskId, input.requestId, input.attemptNo);
+    db.prepare("UPDATE generation_route_requests SET state = 'accepted', updated_at = ? WHERE id = ?")
+      .run(now, input.requestId);
+    return db.prepare(`SELECT * FROM generation_route_attempts
+      WHERE request_id = ? AND attempt_no = ?`).get(input.requestId, input.attemptNo);
+  })();
 }
 
 function recordArtifactVerified(db, input) {
@@ -1278,6 +1347,7 @@ function verifyConfigFromGenerationEvidence(db, input) {
 module.exports = {
   createOrGetRouteRequest,
   selectVerifiedCandidates,
+  buildAttemptReceipt,
   startAttempt,
   finishAttempt,
   recordAcceptedTask,

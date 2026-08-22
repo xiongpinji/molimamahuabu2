@@ -7,6 +7,7 @@ const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const modelPriceService = require('../src/services/modelPriceService');
+const evidenceService = require('../src/services/providerCanaryEvidenceService');
 const stability = require('../src/services/providerRouteStabilityService');
 
 function createDb() {
@@ -19,17 +20,19 @@ function createDb() {
 function addConfig(db, values = {}) {
   const now = '2026-08-15T00:00:00.000Z';
   return Number(db.prepare(`INSERT INTO ai_service_configs
-    (service_type, provider, name, base_url, api_key, model, default_model, priority,
+    (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, priority,
      is_default, is_active, settings, logical_model_id, failover_enabled,
      verification_status, created_at, updated_at)
-    VALUES (@service_type, @provider, @name, @base_url, 'secret', @model, @default_model,
+    VALUES (@service_type, @provider, @api_protocol, @name, @base_url, @api_key, @model, @default_model,
      @priority, 0, @is_active, @settings, @logical_model_id, @failover_enabled,
      @verification_status, @created_at, @updated_at)`)
     .run({
       service_type: 'image',
       provider: 'relay',
+      api_protocol: '  OPENAI  ',
       name: 'Relay',
       base_url: 'https://relay.example/v1',
+      api_key: 'secret',
       model: JSON.stringify(['upstream-image']),
       default_model: 'upstream-image',
       priority: 10,
@@ -117,11 +120,29 @@ test('route requests and attempts are idempotent and preserve accepted provider 
     const attempt = stability.startAttempt(db, {
       requestId: first.id,
       configId,
-      provider: 'relay',
+      provider: 'caller-provider-must-not-override-db',
       upstreamModel: 'upstream-image',
       now: input.now,
     });
     assert.equal(attempt.attempt_no, 1);
+    assert.equal(attempt.provider, 'relay');
+    const expectedFingerprint = evidenceService.configFingerprint({
+      serviceType: 'image',
+      apiKey: 'secret',
+      baseUrl: 'https://relay.example/v1',
+      protocol: 'openai',
+      provider: 'relay',
+      upstreamModel: 'upstream-image',
+      capabilities: {
+        resolutions: ['2k'],
+        aspectRatios: ['16:9'],
+        maxReferences: 9,
+      },
+    });
+    assert.match(attempt.config_fingerprint, /^[0-9a-f]{64}$/);
+    assert.equal(attempt.config_fingerprint, expectedFingerprint);
+    assert.equal(attempt.query_protocol, 'openai');
+    assert.equal(attempt.provider_task_id, null);
     const failed = stability.finishAttempt(db, {
       requestId: first.id,
       attemptNo: attempt.attempt_no,
@@ -160,6 +181,121 @@ test('route requests and attempts are idempotent and preserve accepted provider 
         safe_error_summary: null,
       },
     );
+  } finally {
+    db.close();
+  }
+});
+
+test('attempt receipt construction fails closed before inserting when config identity is unavailable', () => {
+  const db = createDb();
+  try {
+    const configId = addConfig(db);
+    stability.createOrGetRouteRequest(db, {
+      id: 'missing-receipt-config',
+      idempotencyKey: 'missing-receipt-config',
+      serviceType: 'image',
+      businessType: 'image_generation',
+      logicalModelId: 'logical-image',
+      userPriceSnapshot: { model: 'logical-image', credits: 40 },
+      candidateConfigIds: [configId],
+    });
+
+    assert.throws(
+      () => stability.startAttempt(db, {
+        requestId: 'missing-receipt-config',
+        configId: configId + 999,
+        provider: 'caller-value-must-not-be-used',
+        upstreamModel: 'upstream-image',
+      }),
+      (error) => error.code === 'PROVIDER_TASK_CONFIG_NOT_FOUND',
+    );
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM generation_route_attempts').get().count, 0);
+
+    db.prepare("UPDATE ai_service_configs SET base_url = '' WHERE id = ?").run(configId);
+    assert.throws(() => stability.startAttempt(db, {
+      requestId: 'missing-receipt-config',
+      configId,
+      provider: 'relay',
+      upstreamModel: 'upstream-image',
+    }));
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM generation_route_attempts').get().count, 0);
+    assert.equal(
+      db.prepare('SELECT state FROM generation_route_requests WHERE id = ?').get('missing-receipt-config').state,
+      'created',
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('accepted provider task receipt is write-once, same-value idempotent, and conflict-atomic', () => {
+  const db = createDb();
+  try {
+    const configId = addConfig(db);
+    stability.createOrGetRouteRequest(db, {
+      id: 'accepted-task-write-once',
+      idempotencyKey: 'accepted-task-write-once',
+      serviceType: 'image',
+      businessType: 'image_generation',
+      logicalModelId: 'logical-image',
+      userPriceSnapshot: { model: 'logical-image', credits: 40 },
+      candidateConfigIds: [configId],
+    });
+    const attempt = stability.startAttempt(db, {
+      requestId: 'accepted-task-write-once',
+      configId,
+      provider: 'relay',
+      upstreamModel: 'upstream-image',
+    });
+
+    stability.recordAcceptedTask(db, {
+      requestId: 'accepted-task-write-once',
+      attemptNo: attempt.attempt_no,
+      providerTaskId: 'provider-task-fixed',
+      now: '2026-08-15T00:01:00.000Z',
+    });
+    const acceptedAfterFirstWrite = db.prepare('SELECT state, updated_at FROM generation_route_requests WHERE id = ?')
+      .get('accepted-task-write-once');
+    stability.recordAcceptedTask(db, {
+      requestId: 'accepted-task-write-once',
+      attemptNo: attempt.attempt_no,
+      providerTaskId: 'provider-task-fixed',
+      now: '2026-08-15T00:02:00.000Z',
+    });
+    assert.deepEqual(
+      db.prepare('SELECT state, updated_at FROM generation_route_requests WHERE id = ?')
+        .get('accepted-task-write-once'),
+      acceptedAfterFirstWrite,
+    );
+    const acceptedBeforeConflict = db.prepare(`SELECT state, provider_task_id
+      FROM generation_route_attempts WHERE request_id = ? AND attempt_no = ?`)
+      .get('accepted-task-write-once', attempt.attempt_no);
+    const requestBeforeConflict = db.prepare('SELECT state, updated_at FROM generation_route_requests WHERE id = ?')
+      .get('accepted-task-write-once');
+
+    assert.throws(
+      () => stability.recordAcceptedTask(db, {
+        requestId: 'accepted-task-write-once',
+        attemptNo: attempt.attempt_no,
+        providerTaskId: 'provider-task-conflict',
+      }),
+      (error) => error.code === 'PROVIDER_TASK_RECEIPT_CONFLICT',
+    );
+    assert.deepEqual(
+      db.prepare(`SELECT state, provider_task_id FROM generation_route_attempts
+        WHERE request_id = ? AND attempt_no = ?`).get('accepted-task-write-once', attempt.attempt_no),
+      acceptedBeforeConflict,
+    );
+    assert.deepEqual(
+      db.prepare('SELECT state, updated_at FROM generation_route_requests WHERE id = ?')
+        .get('accepted-task-write-once'),
+      requestBeforeConflict,
+    );
+    assert.throws(() => stability.recordAcceptedTask(db, {
+      requestId: 'accepted-task-write-once',
+      attemptNo: attempt.attempt_no,
+      providerTaskId: '   ',
+    }));
   } finally {
     db.close();
   }

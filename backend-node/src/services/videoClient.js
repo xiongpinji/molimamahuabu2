@@ -5897,6 +5897,7 @@ async function callVideoApi(db, log, opts, runtime = {}) {
       configId: config.id,
       provider: config.provider || 'configured',
       upstreamModel: getModelFromConfig(config),
+      queryProtocol: resolveVideoProtocol(config),
     });
     if (!attempt) continue;
     if (pendingSwitch) {
