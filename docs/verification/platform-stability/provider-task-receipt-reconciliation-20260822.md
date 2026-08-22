@@ -1,6 +1,55 @@
 # 供应商任务不可变凭证与安全对账验证证据
 
-## 2026-08-23 全异步视频协议无产物分类刷新（当前）
+## 2026-08-23 按任务状态判定对账结果刷新（当前）
+
+- 本地基线仍为未 fetch 的 `origin/main` 快照 `f17f87472b48668e5854969f445c916826eb40ac`；本轮结构修复起点为 `9bd27ba7ed43fc36da90150216d7c45c312e72e1`，锁候选 A 为 `979c9bfe6095217804712f088408e23092bbae11`。候选 A 只更新三个实际触及锁的 fresh unlock/history 与锁测试；发布范围仍与实际差异保持同一 29 个唯一精确路径。
+- Node.js `v24.17.0`、npm `11.13.0`，时区 `Asia/Shanghai`。本节结果全部在候选 A 上新鲜运行，不复用 `ec81ed7a` / `68a18fb4` 或下方任何历史候选数字。
+- 当前结论只适用于本地候选：ToAPIs、Feituo、USMercari、Fumin 等结构化协议以供应商任务状态判定完成无产物或明确失败，不再依赖错误文案。完成无可信 HTTP 产物保持 `artifact_unreadable` / `held`；明确失败即使携带“完成但未返回视频地址”文案也保持 `provider_task_failed` / `refunded`。它不是 Hosted CI、真实供应商、账单或生产验收。
+
+### 本轮 TDD
+
+| 时间（UTC+08:00） | 命令 | exit | 统计 | 结论 |
+| --- | --- | ---: | --- | --- |
+| 2026-08-23 06:14:51–06:14:52 | `cd backend-node; node --test test/featureLockManifest.test.js test/incrementalReleaseScope.test.js` | 1 | 27 tests；26 pass；1 fail；0 skip | 原样门禁正确返回 `FEATURE_LOCKED`：`videoClient.js` 在上一候选后再次变化，safe failover、unknown billing、proactive canary 三锁缺少本轮 fresh unlock；scope 已保持 29 项深相等。 |
+| 2026-08-23 06:15:49–06:15:50 | 同上，先增强状态判定批准与完整历史合同 | 1 | 27 tests；25 pass；2 fail；0 skip | 预期红灯固定两个缺口：manifest 仍使用上一轮批准且尚未把它追加进历史；有效基线审计仍被三锁拒绝。 |
+| 2026-08-23 06:16:56–06:16:57 | 同上 | 0 | 27 tests；27 pass；0 fail；0 skip | 三个触及锁切换为本轮专属批准，并把全异步协议批准追加进 `unlockHistory`；历史 evidence、route/admin 未触及锁、required tests 与保护范围均保留。 |
+
+### 候选 A 新鲜验证
+
+| 时间（UTC+08:00） | 命令 | exit | 通过 / 失败 / skip | 结果 |
+| --- | --- | ---: | --- | --- |
+| 2026-08-23 06:18:17–06:18:18 | 锁/范围 2 文件测试 | 0 | 27 / 0 / 0 | fresh unlock、完整历史、29 路径深相等与同数量偷换反例全部通过。 |
+| 2026-08-23 06:18:28–06:18:29 | `node scripts/verify-feature-lock-manifest.js --base origin/main` | 0 | 不适用 | `ready=true`；6 features；29 changed paths；6 个基线保护锁。 |
+| 2026-08-23 06:19:43–06:20:16 | 下方 11 文件 Task 1–5 精确集 | 0 | 314 / 0 / 0 | 迁移、凭证、路由、对账、管理员、单次查询、积分与成本同批通过。 |
+| 2026-08-23 06:20:32–06:21:04 | `providerTaskReconciliation.test.js` + `videoQueryTaskStatusOnce.test.js` focused 集 | 0 | 188 / 0 / 0 | 状态优先 direct 分类与 reconcile held/refunded 分支同批通过。 |
+| 2026-08-23 06:21:17–06:21:20 | `toapisVideoIntegration.test.js` + `feituoVideoModels.test.js` 协议回归 | 0 | 27 / 0 / 0 | ToAPIs 和 Feituo 精确协议、能力、价格、提交前门禁及轮询合同通过。 |
+| 2026-08-23 06:21:35–06:21:49 | 文件名不区分大小写包含 `video` 的全部 39 个测试文件 | 0 | 395 / 0 / 0；17 suites | all-video 集覆盖全部视频客户端、协议、路由、账单、恢复、快照与工具合同。 |
+| 2026-08-23 06:22:01–06:22:08 | `node --test test/providerRouteSchema.test.js`，迁移第 1 轮 | 0 | 21 / 0 / 0 | 幂等合同通过；隔离夹具日志计得 197 条 migration 64 执行记录。 |
+| 2026-08-23 06:22:20–06:22:27 | 同上，迁移第 2 轮 | 0 | 21 / 0 / 0 | 第二轮仍通过，仍计得 197 条 migration 64 执行记录。 |
+| 2026-08-23 06:22:39–06:39:53 | `cd backend-node; npm test` | 0 | 2872 / 0 / 10；共 2882 tests、36 suites | 完整串行后端回归结束；10 项 skip 按 runner 原样记录。npm 另输出 `better_sqlite3_binary_host_mirror` 项目配置将在下一主版本停止支持的警告，不把警告记作测试失败。 |
+| 2026-08-23 06:40:29–06:40:31 | 6 个计划语法检查、`git diff --check origin/main...HEAD`、scope 深比较、禁区及文案分类残留检查 | 0 | 6 个语法检查；29 / 29 paths；文案分类残留 0 | diff 无空白错误；scope 与实际排序路径逐项相等且均唯一；通配符、目录、数据库、uploads、storage、assets、AI 音乐与 shared release guard 命中 0；生产代码不存在 `strictSingleRequest && result.error`、目标错误文案或按目标文案相等判定的残留。 |
+
+关键测试集的精确命令为：
+
+```powershell
+node --test test/providerRouteSchema.test.js test/providerRouteStability.test.js test/providerRouteVideoIntegration.test.js test/providerTaskReconciliation.test.js test/providerTaskAdminRoutes.test.js test/videoQueryTaskStatusOnce.test.js test/videoBilling.test.js test/generationRouteCostLedger.test.js test/creditLedger.test.js test/providerReconciliation.test.js test/providerCanaryAdminRoutes.test.js
+node --test test/providerTaskReconciliation.test.js test/videoQueryTaskStatusOnce.test.js
+node --test test/toapisVideoIntegration.test.js test/feituoVideoModels.test.js
+$allVideoTests = Get-ChildItem test -File -Filter '*.test.js' | Where-Object { $_.Name -match 'video' } | Sort-Object Name | ForEach-Object { $_.FullName }
+node --test $allVideoTests
+```
+
+### 本轮断言、接口面与秘密扫描
+
+- `backend-node/test/videoQueryTaskStatusOnce.test.js:73` 起锁定所有单响应异步协议完成但无可信产物的 strict 分类，第 203 行断言每个场景只查询一次；第 253 行起专门把四种结构化协议的显式失败状态与误导性的完成无产物文案组合，第 306–307 行仍断言 `provider_task_failed` 且查询数为 1。这是本地 direct contract，不是真实供应商查询。
+- `backend-node/test/providerTaskReconciliation.test.js:1160` 起覆盖支持协议的安全对账：第 1267 行断言查询数为 1，第 1270–1271 行断言安全 DTO 和数据库预扣均为 `held`；显式失败在第 1298 行断言查询数为 1，第 1301–1302 行断言两者均为 `refunded`。既有成功合同第 733 行断言查询数为 1，第 745 行断言预扣为 `confirmed`。
+- 2026-08-23 06:41:00 的接口面扫描确认对账服务只有 1 个 `queryVideoTaskStatusOnce` 绑定（第 366 行），提交入口 `callVideoApi` / `submitVideo` / `createVideo` / `generateVideo` 匹配为 0。submit count 0 是本地静态接口面证据，不是真实供应商请求记录。
+- 2026-08-23 06:40:48–06:40:49 对 `origin/main...HEAD` 新增行的脱敏扫描为 2 个规则命中、1 个唯一位置：`backend-node/test/providerTaskAdminRoutes.test.js:348` 的同一本地安全哨兵分别匹配 `bearer-token` 与 `authorization-value`；值只记录为 `[REDACTED]`。OpenAI 风格 token 与 URL userinfo 命中 0。
+- 2026-08-23 06:41:00 的 `git status --short` 只有既存 `?? data/`。未读取、检查、清理、暂存或提交其内部内容，因此不宣称工作树 clean。
+- 本轮未执行 fetch、真实供应商查询/提交、付费调用、SSH、生产迁移或写入、push、PR、Hosted CI、部署、共享 release guard 激活或 `enforce`。
+- 本地 fixture、临时 SQLite 和 loopback HTTP 只证明代码合同；它们不构成第三方供应商、真实账单或生产接受证据。
+
+## 2026-08-23 全异步视频协议无产物分类刷新（历史保留）
 
 - 本地基线仍为未 fetch 的 `origin/main` 快照 `f17f87472b48668e5854969f445c916826eb40ac`；本轮协议收口起点为 `b3353b53db6abdcc697f907607440c1a0d94c221`，锁候选 A 为 `ec81ed7a10c6567e5464e5b7d6937ad8a82aaef4`。候选 A 只更新三个实际触及锁的 fresh unlock/history、ToAPIs/Feituo 影响测试与锁测试；真实发布范围仍为 29 个唯一精确路径。
 - Node.js `v24.17.0`、npm `11.13.0`，时区 `Asia/Shanghai`。本节结果全部在候选 A 上新鲜运行，不复用 `08114607` / `414c7bce` 或下方任何历史候选数字。
