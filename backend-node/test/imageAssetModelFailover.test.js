@@ -37,6 +37,12 @@ function addImageConfig(db, values) {
     endpoint: '/images/generations',
     priority: values.priority,
     is_default: values.isDefault,
+    settings: JSON.stringify({
+      canvas_capabilities: {
+        supportsTextToImage: true,
+        resolutions: ['1792x1024'],
+      },
+    }),
     logical_model_id: values.logicalModel,
     failover_enabled: Boolean(values.failover),
   });
