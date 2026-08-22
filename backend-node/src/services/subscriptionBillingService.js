@@ -126,11 +126,17 @@ function createOrder(db, input) {
   const userId = String(input.userId || '');
   tenants.requireManager(db, tenantId, userId);
   const clientOrderKey = normalizeClientOrderKey(input.clientOrderKey);
+  const planId = String(input.planId || '').trim().toLowerCase();
   const existing = db.prepare(`SELECT * FROM tenant_billing_orders
     WHERE tenant_id = ? AND client_order_key = ?`).get(tenantId, clientOrderKey);
-  if (existing) return existing;
+  if (existing) {
+    if (existing.plan_id !== planId) {
+      throw billingError('BILLING_ORDER_IDEMPOTENCY_CONFLICT', '同一套餐订单请求不能修改套餐');
+    }
+    return existing;
+  }
   const plan = db.prepare("SELECT * FROM billing_plans WHERE id = ? AND status = 'active'")
-    .get(String(input.planId || '').trim().toLowerCase());
+    .get(planId);
   if (!plan) throw billingError('PLAN_NOT_FOUND', '套餐不存在');
   const now = new Date().toISOString();
   const id = randomUUID();

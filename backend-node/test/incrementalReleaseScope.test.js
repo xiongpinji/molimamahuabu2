@@ -24,6 +24,12 @@ const completeAcceptanceManifestPath = path.join(
   'release-scopes',
   'platform-complete-acceptance-framework.json',
 );
+const sharedFoundationManifestPath = path.join(
+  repoRoot,
+  'deploy',
+  'release-scopes',
+  'platform-complete-acceptance-shared-foundation.json',
+);
 const COMPLETE_ACCEPTANCE_ALLOWED_PATHS = [
   'backend-node/package.json',
   'backend-node/scripts/verify-platform-feature-acceptance.js',
@@ -128,6 +134,30 @@ const PROACTIVE_CANARY_ALLOWED_PATHS = [
   'frontweb/test/providerRouteCostAdmin.test.js',
   'frontweb/test/providerStabilityAdmin.test.js',
 ];
+const SHARED_FOUNDATION_ALLOWED_PATHS = [
+  '.github/workflows/frontend-e2e.yml',
+  'backend-node/src/middleware/resourceOwnership.js',
+  'backend-node/src/routes/auth.js',
+  'backend-node/src/routes/billing.js',
+  'backend-node/src/routes/index.js',
+  'backend-node/src/services/creditLedgerService.js',
+  'backend-node/src/services/subscriptionBillingService.js',
+  'backend-node/src/services/userAuthService.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/platformSharedAssetAcceptance.test.js',
+  'backend-node/test/platformSharedAuthAcceptance.test.js',
+  'backend-node/test/platformSharedBillingAcceptance.test.js',
+  'backend-node/test/platformSharedCatalogAcceptance.test.js',
+  'backend-node/test/platformSharedFoundationInventory.test.js',
+  'backend-node/test/subscriptionBillingRoutes.test.js',
+  'deploy/release-scopes/platform-complete-acceptance-shared-foundation.json',
+  'docs/superpowers/plans/2026-08-22-platform-complete-acceptance-shared-foundation.md',
+  'docs/verification/platform-stability/feature-lock-manifest.json',
+  'docs/verification/platform-stability/platform-shared-foundation-verification.md',
+  'frontweb/e2e/platform-shared-foundation-backend-integration.spec.js',
+  'frontweb/package.json',
+];
 
 function assertExactProactiveCanaryScope(allowedPaths) {
   assert.deepEqual(allowedPaths, PROACTIVE_CANARY_ALLOWED_PATHS);
@@ -135,6 +165,10 @@ function assertExactProactiveCanaryScope(allowedPaths) {
 
 function assertExactCompleteAcceptanceScope(allowedPaths) {
   assert.deepEqual(allowedPaths, COMPLETE_ACCEPTANCE_ALLOWED_PATHS);
+}
+
+function assertExactSharedFoundationScope(allowedPaths) {
+  assert.deepEqual(allowedPaths, SHARED_FOUNDATION_ALLOWED_PATHS);
 }
 
 function createFixture() {
@@ -298,6 +332,41 @@ test('完整验收框架发布范围拒绝同数量偷换任一文件', () => {
   assert.equal(swapped.length, COMPLETE_ACCEPTANCE_ALLOWED_PATHS.length);
   assert.throws(
     () => assertExactCompleteAcceptanceScope(swapped),
+    { name: 'AssertionError' },
+  );
+});
+
+test('公共运行底座发布范围是精确 22 文件白名单且排除运行数据与受保护服务', () => {
+  const { manifest, allowedPaths } = loadManifest(sharedFoundationManifestPath);
+  assert.equal(manifest.release, 'platform-complete-acceptance-shared-foundation');
+  assertExactSharedFoundationScope(allowedPaths);
+  assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
+
+  for (const forbidden of [
+    'backend-node/data',
+    'backend-node/uploads',
+    'storage',
+    'assets',
+    'ai-music',
+    'moli-music',
+    'deploy/install-protected-release-guard.sh',
+    'shared/release-guard',
+  ]) {
+    assert.equal(
+      allowedPaths.some((entry) => entry === forbidden || entry.startsWith(`${forbidden}/`)),
+      false,
+      `发布范围不得包含: ${forbidden}`,
+    );
+  }
+});
+
+test('公共运行底座发布范围拒绝同数量偷换任一文件', () => {
+  const swapped = [...SHARED_FOUNDATION_ALLOWED_PATHS];
+  const index = swapped.indexOf('backend-node/src/services/userAuthService.js');
+  swapped[index] = 'backend-node/data/drama_generator.db';
+  assert.equal(swapped.length, SHARED_FOUNDATION_ALLOWED_PATHS.length);
+  assert.throws(
+    () => assertExactSharedFoundationScope(swapped),
     { name: 'AssertionError' },
   );
 });

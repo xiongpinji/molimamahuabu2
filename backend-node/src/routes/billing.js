@@ -286,6 +286,9 @@ function routes(db, log, runtime = {}) {
       } catch (error) {
         if (['INVALID_ORDER'].includes(error.code)) return response.badRequest(res, error.message);
         if (['TENANT_NOT_FOUND', 'PLAN_NOT_FOUND'].includes(error.code)) return response.notFound(res, error.message);
+        if (error.code === 'BILLING_ORDER_IDEMPOTENCY_CONFLICT') {
+          return response.error(res, 409, error.code, error.message);
+        }
         log.error('billing create order', { error: error.message });
         response.internalError(res, error.message);
       }

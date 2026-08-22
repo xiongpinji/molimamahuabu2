@@ -166,14 +166,16 @@
       ],
       "fixCommit": "f960703ce43e67900b6a294e61d36cf40f2a1d1e",
       "unlock": {
-        "reason": "2026-08-21 PR #171 供应商路由与发布门禁收口授权",
-        "approvedBy": "product-owner 2026-08-21 pr-171-provider-route-closure",
+        "reason": "2026-08-22 公共运行底座阶段 1 书面计划获批",
+        "approvedBy": "product-owner 2026-08-22 platform-shared-foundation",
         "impactTests": [
-          "backend-node/test/providerCanaryAdminRoutes.test.js",
-          "backend-node/test/canvasModelCatalogService.test.js",
-          "backend-node/test/aiConfigPublicView.test.js",
-          "frontweb/test/providerStabilityAdmin.test.js",
-          "frontweb/test/providerRouteCostAdmin.test.js"
+          "backend-node/test/platformSharedAssetAcceptance.test.js",
+          "backend-node/test/platformSharedAuthAcceptance.test.js",
+          "backend-node/test/platformSharedBillingAcceptance.test.js",
+          "backend-node/test/platformSharedCatalogAcceptance.test.js",
+          "backend-node/test/platformSharedFoundationInventory.test.js",
+          "backend-node/test/subscriptionBillingRoutes.test.js",
+          "frontweb/e2e/platform-shared-foundation-backend-integration.spec.js"
         ]
       }
     },
@@ -276,18 +278,16 @@
       ],
       "fixCommit": null,
       "unlock": {
-        "reason": "2026-08-21 PR #171 供应商路由与发布门禁收口授权",
-        "approvedBy": "product-owner 2026-08-21 pr-171-provider-route-closure",
+        "reason": "2026-08-22 公共运行底座阶段 1 书面计划获批",
+        "approvedBy": "product-owner 2026-08-22 platform-shared-foundation",
         "impactTests": [
-          "backend-node/test/providerCanaryInventory.test.js",
-          "backend-node/test/providerCanaryScheduler.test.js",
-          "backend-node/test/providerRouteCost.test.js",
-          "backend-node/test/generationRouteCostLedger.test.js",
-          "backend-node/test/splitMultiModelProviderConfigs.test.js",
-          "frontweb/test/providerRouteCostAdmin.test.js",
-          "backend-node/test/canvasModelCatalogService.test.js",
-          "backend-node/test/providerCanaryPublicGate.test.js",
-          "backend-node/test/providerRouteVideoIntegration.test.js"
+          "backend-node/test/platformSharedAssetAcceptance.test.js",
+          "backend-node/test/platformSharedAuthAcceptance.test.js",
+          "backend-node/test/platformSharedBillingAcceptance.test.js",
+          "backend-node/test/platformSharedCatalogAcceptance.test.js",
+          "backend-node/test/platformSharedFoundationInventory.test.js",
+          "backend-node/test/subscriptionBillingRoutes.test.js",
+          "frontweb/e2e/platform-shared-foundation-backend-integration.spec.js"
         ]
       }
     },

@@ -260,13 +260,27 @@ function validateReservationInput(input) {
   return amount;
 }
 
+function assertMatchingReservation(existing, input) {
+  const sameScope = existing.tenant_id
+    ? existing.tenant_id === String(input.tenantId)
+    : existing.user_id === String(input.userId);
+  const sameRequest = sameScope
+    && existing.model === String(input.model)
+    && existing.resource_type === String(input.resourceType)
+    && existing.resource_id === String(input.resourceId);
+  if (sameRequest) return existing;
+  const error = new Error('同一积分预扣请求不能修改账户、模型或资源');
+  error.code = 'CREDIT_RESERVATION_IDEMPOTENCY_CONFLICT';
+  throw error;
+}
+
 function reserve(db, input) {
   ensureSchema(db);
   const amount = validateReservationInput(input);
   if (input.tenantId) return reserveTenant(db, input, amount);
   return db.transaction(() => {
     const existing = db.prepare('SELECT * FROM usage_reservations WHERE operation_key = ?').get(String(input.operationKey));
-    if (existing) return existing;
+    if (existing) return assertMatchingReservation(existing, input);
     return createUserReservation(db, input, amount);
   })();
 }
@@ -277,7 +291,7 @@ function reserveTenant(db, input, amount) {
     const operationKey = String(input.operationKey);
     const existing = db.prepare(`SELECT * FROM tenant_usage_reservations
       WHERE tenant_id = ? AND operation_key = ?`).get(tenantId, operationKey);
-    if (existing) return existing;
+    if (existing) return assertMatchingReservation(existing, input);
     return createTenantReservation(db, input, amount);
   })();
 }
@@ -339,7 +353,9 @@ function claim(db, input) {
       ? db.prepare(`SELECT * FROM tenant_usage_reservations
         WHERE tenant_id = ? AND operation_key = ?`).get(String(input.tenantId), String(input.operationKey))
       : db.prepare('SELECT * FROM usage_reservations WHERE operation_key = ?').get(String(input.operationKey));
-    if (existing) return { reservation: existing, created: false };
+    if (existing) {
+      return { reservation: assertMatchingReservation(existing, input, amount), created: false };
+    }
     let reservation = input.tenantId
       ? createTenantReservation(db, input, amount)
       : createUserReservation(db, input, amount);

@@ -57,6 +57,33 @@ test('租户可读取有效套餐并创建自己的待支付订单', () => {
   assert.equal(created.result.body.data.status, 'pending');
 });
 
+test('同一订单幂等键改换套餐返回 409 而不是 500', () => {
+  const { db, tenant } = setup();
+  subscriptions.upsertPlan(db, 'studio', {
+    name: '团队版',
+    price_cents: 29900,
+    monthly_credits: 5000,
+    currency: 'CNY',
+    status: 'active',
+  });
+  const handlers = billingRoutes(db, log);
+
+  handlers.createOrder({
+    user: { id: 'owner-1' },
+    tenant,
+    body: { plan_id: 'creator', client_order_key: 'checkout-conflict' },
+  }, capture().res);
+  const conflict = capture();
+  handlers.createOrder({
+    user: { id: 'owner-1' },
+    tenant,
+    body: { plan_id: 'studio', client_order_key: 'checkout-conflict' },
+  }, conflict.res);
+
+  assert.equal(conflict.result.status, 409);
+  assert.equal(conflict.result.body.error.code, 'BILLING_ORDER_IDEMPOTENCY_CONFLICT');
+});
+
 test('平台管理员可新增或更新套餐配置', () => {
   const { db } = setup();
   const handlers = billingRoutes(db, log);

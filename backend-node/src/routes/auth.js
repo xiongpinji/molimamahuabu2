@@ -206,6 +206,7 @@ function createAuthRoutes(db, options = {}) {
   }
 
   function logout(req, res) {
+    if (req.user?.id) auth.invalidateTokens(db, req.user.id);
     sessionCookie.clearSessionCookie(res, options.secureCookies);
     return response.success(res, { message: '已退出登录' });
   }
