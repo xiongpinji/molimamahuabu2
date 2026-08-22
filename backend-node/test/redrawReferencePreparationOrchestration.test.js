@@ -16,10 +16,16 @@ const {
   canonicalizeModelLock,
   canonicalSha256: canonicalModelLockSha256,
 } = require('../src/services/redrawFullFrameModelLockService');
-const { preparationEvidenceHash } = require('../src/services/redrawPreparationGateService');
+const {
+  evaluatePreparationGate,
+  preparationEvidenceHash,
+} = require('../src/services/redrawPreparationGateService');
+const { prepareReferenceCleanRequirement } = require('../src/services/redrawAssetService');
+const { reviewAsset } = require('../src/services/redrawReviewService');
 const {
   buildTrustedReferenceBundleInput,
   canonicalBundleHash,
+  loadReviewedReferenceCoverage,
 } = require('../src/services/redrawReferenceBundleService');
 const {
   prepareVersionReferences,
@@ -264,7 +270,9 @@ function textCleanPack(input) {
   return pack;
 }
 
-async function setupDefaultServerPath() {
+async function setupDefaultServerPath(options = {}) {
+  const includePerson = options.includePerson === true;
+  const includeText = options.includeText !== false;
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-reference-default-'));
@@ -273,6 +281,7 @@ async function setupDefaultServerPath() {
   const wardrobeSha = writeStoredFile(storageRoot, 'redraw/wardrobe.png', Buffer.from('wardrobe'));
   const voiceSha = writeStoredFile(storageRoot, 'redraw/voice.mp3', Buffer.from('voice'));
   const cleanSha = writeStoredFile(storageRoot, 'redraw/text-clean.png', Buffer.from('text-clean'));
+  const personCleanSha = writeStoredFile(storageRoot, 'redraw/person-clean.png', Buffer.from('person-clean'));
   const motionBytes = Buffer.from('motion-reference');
   const motionSha = writeStoredFile(storageRoot, `redraw-conditioning/${sha256(motionBytes)}.mp4`, motionBytes);
   const evidenceBase = 'redraw-full-frame/version-1';
@@ -285,8 +294,15 @@ async function setupDefaultServerPath() {
   }
   const maskBytes = await sharp(maskPixels, { raw: { width: 64, height: 64, channels: 1 } })
     .toColourspace('b-w').png().toBuffer();
+  const personMaskPixels = Buffer.alloc(64 * 64);
+  for (let y = 8; y < 40; y += 1) {
+    for (let x = 8; x < 28; x += 1) personMaskPixels[(y * 64) + x] = 255;
+  }
+  const personMaskBytes = await sharp(personMaskPixels, { raw: { width: 64, height: 64, channels: 1 } })
+    .toColourspace('b-w').png().toBuffer();
   const frameSha = writeStoredFile(storageRoot, `${evidenceBase}/frames/frame-0.png`, frameBytes);
   const maskSha = writeStoredFile(storageRoot, `${evidenceBase}/masks/text-0.png`, maskBytes);
+  const personMaskSha = writeStoredFile(storageRoot, `${evidenceBase}/masks/person-0.png`, personMaskBytes);
 
   for (const asset of [
     { id: 101, type: 'video', mimeType: 'video/mp4', localPath: 'source/source.mp4', sha256: sourceSha },
@@ -294,8 +310,10 @@ async function setupDefaultServerPath() {
     { id: 401, type: 'image', mimeType: 'image/png', localPath: 'redraw/wardrobe.png', sha256: wardrobeSha },
     { id: 501, type: 'audio', mimeType: 'audio/mpeg', localPath: 'redraw/voice.mp3', sha256: voiceSha },
     { id: 302, type: 'image', mimeType: 'image/png', localPath: 'redraw/text-clean.png', sha256: cleanSha },
+    { id: 303, type: 'image', mimeType: 'image/png', localPath: 'redraw/person-clean.png', sha256: personCleanSha },
     { id: 801, type: 'image', mimeType: 'image/png', localPath: `${evidenceBase}/frames/frame-0.png`, sha256: frameSha },
     { id: 802, type: 'image', mimeType: 'image/png', localPath: `${evidenceBase}/masks/text-0.png`, sha256: maskSha },
+    { id: 803, type: 'image', mimeType: 'image/png', localPath: `${evidenceBase}/masks/person-0.png`, sha256: personMaskSha },
   ]) insertStoredAsset(db, asset);
   db.prepare(`INSERT INTO redraw_projects
     (id, tenant_id, user_id, title, execution_mode, budget_limit_credits,
@@ -375,11 +393,23 @@ async function setupDefaultServerPath() {
     frames: [{
       frame_index: 0, timestamp_ticks: 0, timestamp_ms: 0, shot_id: 'shot-1',
       path: 'frames/frame-0.png', sha256: frameSha, width: 64, height: 64,
-      person_region_ids: [], text_region_ids: ['text-region-0'],
+      person_region_ids: includePerson ? ['person-region-0'] : [],
+      text_region_ids: includeText ? ['text-region-0'] : [],
       review_point_reasons: [], review_status: 'not_required',
     }],
-    personTracks: [],
-    textTracks: [{
+    personTracks: includePerson ? [{
+      track_key: 'person-a', kind: 'story_role', source_character_key: 'char-a',
+      target_strategy: 'fixed_actor', frame_ranges: [{ start_frame: 0, end_frame: 0 }],
+      visibility: [{ start_frame: 0, end_frame: 0, state: 'visible' }],
+      regions: [{
+        region_id: 'person-region-0', frame_index: 0,
+        bbox: { x: 8, y: 8, width: 20, height: 32 },
+        mask: { path: 'masks/person-0.png', sha256: personMaskSha, width: 64, height: 64, mime_type: 'image/png' },
+        association_confidence: 0.99, detector_disagreement: false,
+      }],
+      review_status: 'pending', reviewer: null,
+    }] : [],
+    textTracks: includeText ? [{
       region_key: 'subtitle-a', kind: 'subtitle', treatment: 'translate_subtitle',
       target_text_key: 'subtitle-a', frame_ranges: [{ start_frame: 0, end_frame: 0 }],
       regions: [{
@@ -388,14 +418,16 @@ async function setupDefaultServerPath() {
         mask: { path: 'masks/text-0.png', sha256: maskSha, width: 64, height: 64, mime_type: 'image/png' },
       }],
       review_status: 'pending', reviewer: null,
-    }],
+    }] : [],
     modelLock: validModelLock(),
   });
   const reviewed = JSON.parse(JSON.stringify(generated));
   reviewed.status = 'reviewed';
   reviewed.frames[0].review_status = reviewed.frames[0].review_point_reasons.length ? 'reviewed' : 'not_required';
-  reviewed.text_tracks[0].review_status = 'reviewed';
-  reviewed.text_tracks[0].reviewer = 'codex-local-review';
+  for (const track of [...reviewed.person_tracks, ...reviewed.text_tracks]) {
+    track.review_status = 'reviewed';
+    track.reviewer = 'codex-local-review';
+  }
   reviewed.review = {
     status: 'reviewed', reviewed: true,
     required_review_point_count: reviewed.frames[0].review_point_reasons.length ? 1 : 0,
@@ -425,11 +457,14 @@ async function setupDefaultServerPath() {
       },
     }), NOW, NOW, NOW);
 
-  const faceHash = sha256(stableJson([]));
-  const textHash = sha256(stableJson([{
+  const faceHash = sha256(stableJson(includePerson ? [{
+    track_key: 'person-a', source_character_key: 'char-a', time_ranges: [[0, 12000]],
+    identity_redraw_asset_id: 201,
+  }] : []));
+  const textHash = sha256(stableJson(includeText ? [{
     kind: 'text_subtitle', region_key: 'subtitle-a', text_clean_redraw_asset_id: 202,
     time_ranges: [[0, 12000]],
-  }]));
+  }] : []));
   insertStoredAsset(db, {
     id: 601,
     type: 'video',
@@ -448,12 +483,16 @@ async function setupDefaultServerPath() {
     ctx: {
       db, tenantId: 'tenant-a', userId: 'user-a', versionId: 1, storageRoot,
       now: () => NEXT,
-      assetReader: { canRead: () => true, owns: () => true },
+      assetReader: {
+        canRead: (asset) => Boolean(asset?.local_path && fs.existsSync(path.join(storageRoot, asset.local_path))),
+        owns: () => true,
+      },
       probeRunner: async () => ({
         duration_ms: 12000, width: 64, height: 64, mime_type: 'video/mp4',
         video_codec: 'h264', audio_stream_count: 0,
       }),
     },
+    personCleanSha,
     cleanup() {
       db.close();
       fs.rmSync(storageRoot, { recursive: true, force: true });
@@ -840,6 +879,71 @@ test('start 幂等复用异步任务，reconcile 将中断任务和镜头收口�
   }
 });
 
+test('start 调度同步抛错会脱敏收口且任务不悬挂', async () => {
+  const state = setup();
+  try {
+    const deps = fakeDeps(state, {
+      overrides: {
+        schedule() {
+          throw new Error('Authorization: Bearer sk-local C:\\Users\\canqu\\private-key.txt');
+        },
+      },
+    });
+    const quote = await quoteVersionPreparation(state.ctx, { version_id: 1 }, deps);
+    const started = await startVersionPreparation(state.ctx, {
+      version_id: 1,
+      idempotency_key: 'schedule-sync-failure',
+      quote_hash: quote.quote_hash,
+    }, deps);
+    assert.equal(started.status, 'needs_attention');
+    await assert.rejects(started.completion, (error) => {
+      assert.equal(error.code, 'REDRAW_REFERENCE_PREPARATION_SCHEDULE_FAILED');
+      assert.equal(String(error.message).includes('sk-local'), false);
+      assert.equal(String(error.message).includes('C:\\Users'), false);
+      return true;
+    });
+    const task = state.db.prepare('SELECT status, message, error FROM async_tasks WHERE id = ?').get(started.task_id);
+    assert.equal(task.status, 'needs_attention');
+    assert.equal(['pending', 'processing'].includes(task.status), false);
+    assert.equal(JSON.stringify(task).includes('sk-local'), false);
+    assert.equal(JSON.stringify(task).includes('C:\\Users'), false);
+  } finally {
+    state.close();
+  }
+});
+
+test('start 调度 Promise 拒绝会脱敏收口且任务不悬挂', async () => {
+  const state = setup();
+  try {
+    const deps = fakeDeps(state, {
+      overrides: {
+        schedule() {
+          return Promise.reject(new Error('Key=sk-local; path=C:\\Users\\canqu\\provider.env'));
+        },
+      },
+    });
+    const quote = await quoteVersionPreparation(state.ctx, { version_id: 1 }, deps);
+    const started = await startVersionPreparation(state.ctx, {
+      version_id: 1,
+      idempotency_key: 'schedule-async-failure',
+      quote_hash: quote.quote_hash,
+    }, deps);
+    await assert.rejects(started.completion, (error) => {
+      assert.equal(error.code, 'REDRAW_REFERENCE_PREPARATION_SCHEDULE_FAILED');
+      assert.equal(String(error.message).includes('sk-local'), false);
+      assert.equal(String(error.message).includes('C:\\Users'), false);
+      return true;
+    });
+    const task = state.db.prepare('SELECT status, message, error FROM async_tasks WHERE id = ?').get(started.task_id);
+    assert.equal(['pending', 'processing'].includes(task.status), false);
+    assert.equal(task.status, 'needs_attention');
+    assert.equal(JSON.stringify(task).includes('sk-local'), false);
+    assert.equal(JSON.stringify(task).includes('C:\\Users'), false);
+  } finally {
+    state.close();
+  }
+});
+
 test('默认服务端路径从已批准全帧证据读取覆盖并用当前净景结果保存严格参考包', async () => {
   const state = await setupDefaultServerPath();
   try {
@@ -904,6 +1008,185 @@ test('默认服务端路径对未批准或不匹配的全帧持久化证据稳�
       () => quoteVersionPreparation(state.ctx, { version_id: 1 }),
       'REDRAW_REFERENCE_PREPARATION_COVERAGE_NOT_APPROVED',
     );
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('真实人物净景经人工批准后可恢复，且物理文件删除或漂移会关闭准备门禁', async () => {
+  const state = await setupDefaultServerPath({ includePerson: true, includeText: false });
+  try {
+    let providerCalls = 0;
+    const deps = {
+      quoteCleanRequirement: () => ({ priced: true, credits: 0 }),
+      provider: async () => {
+        providerCalls += 1;
+        return {
+          status: 'completed',
+          asset_id: 303,
+          provider_task_id: 'person-clean-task-1',
+          quality: { width: 64, height: 64, mask_area_changed: true, non_mask_similarity: 0.99 },
+        };
+      },
+    };
+    const firstQuote = await quoteVersionPreparation(state.ctx, { version_id: 1 }, deps);
+    const first = await prepareVersionReferences(state.ctx, {
+      version_id: 1, idempotency_key: 'person-clean-first', quote_hash: firstQuote.quote_hash,
+    }, deps);
+    assert.deepEqual(first.needs_attention_shot_ids, [1]);
+    assert.equal(providerCalls, 1);
+    const interrupted = JSON.parse(state.db.prepare('SELECT preparation_snapshot_json FROM redraw_shots WHERE id = 1').get().preparation_snapshot_json);
+    const unknownResult = interrupted.clean_results.find((item) => item.kind === 'person_clean');
+    assert.equal(unknownResult.status, 'unknown');
+    assert.ok(Number.isSafeInteger(unknownResult.redraw_asset_id));
+    const pending = state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(unknownResult.redraw_asset_id);
+    assert.equal(pending.status, 'needs_attention');
+    assert.equal(pending.approval_status, 'pending');
+    assert.ok(JSON.parse(pending.source_ref_json).person_clean_plate_pack, pending.source_ref_json);
+    const approved = reviewAsset(state.db, unknownResult.redraw_asset_id, {
+      action: 'approved', reviewer_id: 'user-a', tenant_id: 'tenant-a', user_id: 'user-a',
+      expected_updated_at: pending.updated_at, preparationContext: state.ctx,
+    });
+    assert.equal(approved.status, 'needs_attention');
+    assert.equal(approved.approval_status, 'approved');
+    const recoveredQuote = await quoteVersionPreparation(state.ctx, { version_id: 1 }, deps);
+    assert.equal(recoveredQuote.action, 'advance');
+    assert.equal(recoveredQuote.priced, true);
+    assert.deepEqual(recoveredQuote.items, []);
+    assert.deepEqual(recoveredQuote.needs_attention_shot_ids, []);
+    const result = await prepareVersionReferences(state.ctx, {
+      version_id: 1,
+      idempotency_key: 'person-clean-resume',
+      quote_hash: recoveredQuote.quote_hash,
+    }, deps);
+    assert.deepEqual(result.prepared_shot_ids, [1]);
+    assert.equal(providerCalls, 1);
+    const shot = state.db.prepare('SELECT * FROM redraw_shots WHERE id = 1').get();
+    const snapshot = JSON.parse(shot.preparation_snapshot_json);
+    const cleanResult = snapshot.clean_results.find((item) => item.kind === 'person_clean');
+    assert.equal(cleanResult.status, 'completed');
+    assert.equal(cleanResult.evidence.redraw_asset_id, unknownResult.redraw_asset_id);
+    assert.equal(cleanResult.evidence.clean_plate_asset_id, 303);
+    assert.equal(cleanResult.evidence.clean_plate_sha256, state.personCleanSha);
+    assert.equal(evaluatePreparationGate(state.ctx, 1).ok, true);
+
+    fs.writeFileSync(path.join(state.ctx.storageRoot, 'redraw/person-clean.png'), 'tampered-person-clean');
+    const drifted = evaluatePreparationGate(state.ctx, 1);
+    assert.equal(drifted.ok, false);
+    assert.ok(drifted.missing.some((item) => item.reason_code === 'person_cleanup_not_current'));
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('provider unknown 的人物净景即使人工批准也绝不恢复复用', async () => {
+  const state = await setupDefaultServerPath({ includePerson: true, includeText: false });
+  try {
+    const firstQuote = await quoteVersionPreparation(state.ctx, { version_id: 1 });
+    const coverage = await loadReviewedReferenceCoverage(state.ctx);
+    const requirement = coverage.shots[0].requirements.find((item) => item.kind === 'person_clean');
+    const outcome = await prepareReferenceCleanRequirement({
+      ...state.ctx,
+      provider: async () => ({ status: 'unknown', provider_task_id: 'unknown-task-1' }),
+    }, { requirement, operation_key: 'unknown-person-clean-op' });
+    assert.equal(outcome.status, 'unknown');
+    assert.ok(Number.isSafeInteger(outcome.redraw_asset_id));
+    const pending = state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(outcome.redraw_asset_id);
+    reviewAsset(state.db, outcome.redraw_asset_id, {
+      action: 'approved', reviewer_id: 'user-a', tenant_id: 'tenant-a', user_id: 'user-a',
+      expected_updated_at: pending.updated_at, preparationContext: state.ctx,
+    });
+    const interrupted = {
+      schema_version: 'redraw-reference-preparation-v1', version_id: 1, shot_id: 1,
+      preparation_version: 1, character_plan_hash: firstQuote.character_plan_hash,
+      version_snapshot_hash: firstQuote.version_snapshot_hash,
+      request_hash: sha256('unknown-attempt'), idempotency_key_hash: sha256('unknown-attempt'),
+      status: 'unknown', requirements: [{ kind: 'person_clean', key: 'person-a' }],
+      clean_results: [{ kind: 'person_clean', key: 'person-a', status: 'unknown', redraw_asset_id: outcome.redraw_asset_id }],
+    };
+    state.db.prepare(`UPDATE redraw_shots
+      SET preparation_state = 'needs_attention', preparation_snapshot_json = ?,
+          preparation_evidence_hash = ? WHERE id = 1`)
+      .run(stableJson(interrupted), sha256(stableJson(interrupted)));
+    const quote = await quoteVersionPreparation(state.ctx, { version_id: 1 });
+    assert.deepEqual(quote.needs_attention_shot_ids, [1]);
+    assert.equal(quote.items.length, 0);
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('真实文字净景经人工批准后可恢复为当前完成结果', async () => {
+  const state = await setupDefaultServerPath();
+  try {
+    let providerCalls = 0;
+    const deps = {
+      quoteCleanRequirement: () => ({ priced: true, credits: 0 }),
+      provider: async () => {
+        providerCalls += 1;
+        return {
+          status: 'completed', asset_id: 302, provider_task_id: 'text-clean-task-1',
+          quality: { width: 64, height: 64, mask_area_changed: true, non_mask_similarity: 0.99 },
+        };
+      },
+    };
+    const firstQuote = await quoteVersionPreparation(state.ctx, { version_id: 1 }, deps);
+    const first = await prepareVersionReferences(state.ctx, {
+      version_id: 1, idempotency_key: 'text-clean-first', quote_hash: firstQuote.quote_hash,
+    }, deps);
+    assert.deepEqual(first.needs_attention_shot_ids, [1]);
+    const snapshot = JSON.parse(state.db.prepare('SELECT preparation_snapshot_json FROM redraw_shots WHERE id = 1').get().preparation_snapshot_json);
+    const unknownResult = snapshot.clean_results.find((item) => item.kind === 'text_clean');
+    const pending = state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(unknownResult.redraw_asset_id);
+    assert.ok(JSON.parse(pending.source_ref_json).text_clean_plate_pack);
+    reviewAsset(state.db, pending.id, {
+      action: 'approved', reviewer_id: 'user-a', tenant_id: 'tenant-a', user_id: 'user-a',
+      expected_updated_at: pending.updated_at, preparationContext: state.ctx,
+    });
+    const recovered = await quoteVersionPreparation(state.ctx, { version_id: 1 }, deps);
+    assert.deepEqual(recovered.needs_attention_shot_ids, []);
+    assert.deepEqual(recovered.items, []);
+    assert.equal(providerCalls, 1);
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('同镜头人物与文字净景可逐项批准恢复且只生成剩余项', async () => {
+  const state = await setupDefaultServerPath({ includePerson: true, includeText: true });
+  try {
+    const calls = [];
+    const deps = {
+      quoteCleanRequirement: () => ({ priced: true, credits: 0 }),
+      provider: async ({ input }) => {
+        calls.push(input.mode);
+        return {
+          status: 'completed',
+          asset_id: input.mode === 'clean_plate' ? 303 : 302,
+          quality: { width: 64, height: 64, mask_area_changed: true, non_mask_similarity: 0.99 },
+        };
+      },
+    };
+    const runAndApprove = async (idempotencyKey) => {
+      const quote = await quoteVersionPreparation(state.ctx, { version_id: 1 }, deps);
+      const result = await prepareVersionReferences(state.ctx, {
+        version_id: 1, idempotency_key: idempotencyKey, quote_hash: quote.quote_hash,
+      }, deps);
+      assert.deepEqual(result.needs_attention_shot_ids, [1]);
+      const snapshot = JSON.parse(state.db.prepare('SELECT preparation_snapshot_json FROM redraw_shots WHERE id = 1').get().preparation_snapshot_json);
+      const unknown = snapshot.clean_results.find((item) => item.status === 'unknown');
+      const pending = state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(unknown.redraw_asset_id);
+      reviewAsset(state.db, pending.id, {
+        action: 'approved', reviewer_id: 'user-a', tenant_id: 'tenant-a', user_id: 'user-a',
+        expected_updated_at: pending.updated_at, preparationContext: state.ctx,
+      });
+    };
+    await runAndApprove('mixed-clean-first');
+    await runAndApprove('mixed-clean-second');
+    assert.deepEqual(calls, ['clean_plate', 'text_clean_plate']);
+    const finalQuote = await quoteVersionPreparation(state.ctx, { version_id: 1 }, deps);
+    assert.deepEqual(finalQuote.needs_attention_shot_ids, []);
+    assert.deepEqual(finalQuote.items, []);
   } finally {
     state.cleanup();
   }

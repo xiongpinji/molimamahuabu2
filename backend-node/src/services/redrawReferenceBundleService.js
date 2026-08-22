@@ -333,7 +333,12 @@ function cleanRequirement(ctx, evidence, manifest, shot, track, kind) {
     width: frame.width,
     height: frame.height,
     shot_id: shot.shot_id,
-    source_ref: { analysis_sha256: manifest.analysis_sha256, frame_index: Number(frame.frame_index) },
+    source_ref: {
+      stable_id: String(kind === 'person_clean' ? track.track_key : track.region_key),
+      kind: kind === 'person_clean' ? 'person_clean' : textKind(track.kind),
+      analysis_sha256: manifest.analysis_sha256,
+      frame_index: Number(frame.frame_index),
+    },
   };
   if (kind === 'person_clean') {
     return {

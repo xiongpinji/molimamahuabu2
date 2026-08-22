@@ -101,12 +101,35 @@ function sortedMissing(items) {
 }
 
 function expectedPreparationHash(shot) {
-  return sha256(stableJson({
+  const snapshot = parseJsonAny(shot.preparation_snapshot_json, {});
+  const personCleanEvidence = Array.isArray(snapshot.clean_results)
+    ? snapshot.clean_results
+      .filter((result) => result?.kind === 'person_clean' && result?.status === 'completed' && isPlainObject(result.evidence))
+      .map((result) => ({
+        key: String(result.key || ''),
+        redraw_asset_id: Number(result.evidence.redraw_asset_id),
+        clean_plate_asset_id: Number(result.evidence.clean_plate_asset_id),
+        clean_plate_sha256: String(result.evidence.clean_plate_sha256 || ''),
+        source_asset_id: Number(result.evidence.source_asset_id),
+        source_sha256: String(result.evidence.source_sha256 || ''),
+        mask_asset_id: Number(result.evidence.mask_asset_id),
+        mask_sha256: String(result.evidence.mask_sha256 || ''),
+        analysis_sha256: String(result.evidence.analysis_sha256 || ''),
+        frame_index: Number(result.evidence.frame_index),
+        pack_sha256: String(result.evidence.pack_sha256 || ''),
+        approved_by: String(result.evidence.approved_by || ''),
+        approved_at: String(result.evidence.approved_at || ''),
+      }))
+      .sort((left, right) => left.key.localeCompare(right.key))
+    : [];
+  const evidence = {
     version_id: Number(shot.version_id),
     shot_id: Number(shot.id),
     preparation_version: Number(shot.preparation_version),
     reference_bundle_hash: shot.reference_bundle_hash,
-  }));
+  };
+  if (personCleanEvidence.length > 0) evidence.person_clean_evidence = personCleanEvidence;
+  return sha256(stableJson(evidence));
 }
 
 function findVersion(db, versionId, owner) {
@@ -248,6 +271,109 @@ function loadProviderAsset(ctx, assetId, type, expectedSha, owner) {
   if (!assetOwnerTrusted(ctx, asset, owner)) return null;
   if (expectedSha && !verifyPhysicalAsset(ctx, asset, expectedSha)) return null;
   return asset;
+}
+
+function packHash(pack) {
+  if (!isPlainObject(pack)) return '';
+  const expected = String(pack.pack_sha256 || '').trim();
+  const { pack_sha256: _ignored, ...body } = pack;
+  return HEX_64.test(expected) && sha256(stableJson(body)) === expected ? expected : '';
+}
+
+function currentReviewedCoverage(ctx, shot, analysisSha256) {
+  const rows = ctx.db.prepare(`
+    SELECT * FROM redraw_assets
+    WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND kind = 'scene'
+      AND status = 'generated' AND approval_status = 'approved'
+      AND asset_id IS NOT NULL AND deleted_at IS NULL
+  `).all(Number(shot.version_id), String(shot.tenant_id || ''), String(shot.user_id || ''));
+  const matches = rows.filter((row) => {
+    const payload = parseJsonAny(row.source_ref_json, {});
+    return payload.source_ref?.stable_id === 'full-frame-reviewed-coverage'
+      && payload.snapshot?.mode === 'full_frame_reviewed_coverage'
+      && Number(payload.snapshot?.version_id) === Number(shot.version_id)
+      && payload.snapshot?.analysis_sha256 === analysisSha256;
+  });
+  if (matches.length !== 1) return false;
+  const asset = ctx.db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(Number(matches[0].asset_id));
+  const digest = assetSha(asset);
+  return HEX_64.test(digest)
+    && Boolean(loadProviderAsset({ ...ctx, __requirePhysicalEvidence: true }, asset.id, String(asset.type || ''), digest, {
+      tenantId: shot.tenant_id,
+      userId: shot.user_id,
+    }));
+}
+
+function readCurrentCleanResultEvidence(ctx, shot, requirement, redrawAssetId) {
+  try {
+    const key = String(requirement?.key || '').trim();
+    const rowId = Number(redrawAssetId);
+    const person = requirement?.kind === 'person_clean';
+    if ((!person && requirement?.kind !== 'text_clean') || !key
+      || !Number.isSafeInteger(rowId) || rowId <= 0) return null;
+    const expectedKind = person ? 'person_clean' : String(requirement.options?.text_kind || '').trim();
+    const packKey = person ? 'person_clean_plate_pack' : 'text_clean_plate_pack';
+    const packSchema = person ? 'person-clean-plate-reference-v1' : 'text-clean-plate-reference-v1';
+    const expectedMode = person ? 'clean_plate' : 'text_clean_plate';
+    const row = ctx.db.prepare(`
+      SELECT * FROM redraw_assets
+      WHERE id = ? AND version_id = ? AND tenant_id = ? AND user_id = ?
+        AND kind = 'scene' AND approval_status = 'approved' AND deleted_at IS NULL
+    `).get(rowId, Number(shot.version_id), String(shot.tenant_id || ''), String(shot.user_id || ''));
+    const completedNeedsReview = row?.status === 'needs_attention'
+      && !String(row.error_code || '').trim()
+      && !String(row.error_message || '').trim();
+    if (!row || (row.status !== 'generated' && !completedNeedsReview)
+      || !Number(row.mask_asset_id || 0) || !Number(row.clean_plate_asset_id || 0)) return null;
+    const payload = parseJsonAny(row.source_ref_json, {});
+    const ref = isPlainObject(payload.source_ref) ? payload.source_ref : {};
+    const sourceAssetId = Number(ref.source_asset_id || 0);
+    const pack = isPlainObject(payload[packKey]) ? payload[packKey] : null;
+    if (!sourceAssetId || !expectedKind || ref.stable_id !== key || ref.kind !== expectedKind
+      || payload.snapshot?.mode !== expectedMode
+      || !pack || pack.schema_version !== packSchema
+      || (person ? pack.requirement_key : pack.region_key) !== key
+      || (!person && pack.kind !== expectedKind) || pack.ready !== true || !packHash(pack)
+      || Number(pack.source?.asset_id) !== sourceAssetId
+      || Number(pack.mask?.asset_id) !== Number(row.mask_asset_id)
+      || Number(pack.artifact?.asset_id) !== Number(row.clean_plate_asset_id)
+      || pack.input_frame_fingerprint !== pack.source?.sha256
+      || !HEX_64.test(String(pack.analysis_sha256 || ''))
+      || !Number.isSafeInteger(Number(pack.frame_index)) || Number(pack.frame_index) < 0) return null;
+    const expected = requirement.evidence || {};
+    const expectedScene = requirement.scene_asset || requirement.sceneAsset || {};
+    const expectedOptions = requirement.options || {};
+    if ((expectedScene.source_asset_id && Number(expectedScene.source_asset_id) !== sourceAssetId)
+      || (expectedScene.source_fingerprint && expectedScene.source_fingerprint !== pack.source.sha256)
+      || (expectedOptions.mask_asset_id && Number(expectedOptions.mask_asset_id) !== Number(row.mask_asset_id))
+      || (expected.analysis_sha256 && expected.analysis_sha256 !== pack.analysis_sha256)
+      || (expected.frame_index != null && Number(expected.frame_index) !== Number(pack.frame_index))) return null;
+    const physicalCtx = { ...ctx, __requirePhysicalEvidence: true };
+    const owner = { tenantId: shot.tenant_id, userId: shot.user_id };
+    if (!loadProviderAsset(physicalCtx, sourceAssetId, 'image', String(pack.source.sha256 || ''), owner)
+      || !loadProviderAsset(physicalCtx, row.mask_asset_id, 'image', String(pack.mask.sha256 || ''), owner)
+      || !loadProviderAsset(physicalCtx, row.clean_plate_asset_id, 'image', String(pack.artifact.sha256 || ''), owner)
+      || !currentReviewedCoverage(physicalCtx, shot, pack.analysis_sha256)) return null;
+    return {
+      schema_version: person ? 'redraw-person-clean-evidence-v1' : 'redraw-text-clean-evidence-v1',
+      kind: requirement.kind,
+      key,
+      redraw_asset_id: rowId,
+      clean_plate_asset_id: Number(row.clean_plate_asset_id),
+      clean_plate_sha256: String(pack.artifact.sha256),
+      source_asset_id: sourceAssetId,
+      source_sha256: String(pack.source.sha256),
+      mask_asset_id: Number(row.mask_asset_id),
+      mask_sha256: String(pack.mask.sha256),
+      analysis_sha256: String(pack.analysis_sha256),
+      frame_index: Number(pack.frame_index),
+      pack_sha256: String(pack.pack_sha256),
+      approved_by: String(row.approved_by || ''),
+      approved_at: String(row.approved_at || ''),
+    };
+  } catch (_) {
+    return null;
+  }
 }
 
 function loadCharacterRow(ctx, shot, face) {
@@ -480,6 +606,22 @@ function validateShot(ctx, shot, version, characterPlan, missing) {
     || snapshot.reference_bundle_hash !== shot.reference_bundle_hash) {
     addMissing(missing, 'shot', shot.id, 'preparation_evidence_mismatch', shotAnchor);
   }
+  const personRequirements = Array.isArray(snapshot?.requirements)
+    ? snapshot.requirements.filter((item) => item?.kind === 'person_clean')
+    : [];
+  const personResults = Array.isArray(snapshot?.clean_results)
+    ? snapshot.clean_results.filter((item) => item?.kind === 'person_clean' && item?.status === 'completed')
+    : [];
+  if (personRequirements.length !== personResults.length || personRequirements.some((requirement) => {
+    const result = personResults.find((item) => item?.key === requirement?.key);
+    if (!result || !isPlainObject(result.evidence)) return true;
+    const current = readCurrentCleanResultEvidence(ctx, shot, {
+      kind: 'person_clean', key: requirement.key, evidence: result.evidence,
+    }, result.redraw_asset_id);
+    return !current || stableJson(current) !== stableJson(result.evidence);
+  })) {
+    addMissing(missing, 'shot', shot.id, 'person_cleanup_not_current', shotAnchor);
+  }
   if (shot.preparation_evidence_hash !== expectedPreparationHash(shot)) {
     addMissing(missing, 'shot', shot.id, 'preparation_evidence_mismatch', shotAnchor);
   }
@@ -543,4 +685,5 @@ function evaluatePreparationGate(ctx = {}, versionId) {
 module.exports = {
   evaluatePreparationGate,
   preparationEvidenceHash: expectedPreparationHash,
+  readCurrentCleanResultEvidence,
 };

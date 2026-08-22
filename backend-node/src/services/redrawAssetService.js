@@ -1,3 +1,5 @@
+const crypto = require('node:crypto');
+
 const creditLedger = require('./creditLedgerService');
 const aiConfigService = require('./aiConfigService');
 const {
@@ -36,6 +38,10 @@ function stableJson(value) {
   return JSON.stringify(value);
 }
 
+function sha256(value) {
+  return crypto.createHash('sha256').update(String(value)).digest('hex');
+}
+
 function parseJson(value, fallback) {
   if (value && typeof value === 'object') return value;
   try {
@@ -44,6 +50,67 @@ function parseJson(value, fallback) {
   } catch (_) {
     return fallback;
   }
+}
+
+function storedAssetEvidence(db, assetId) {
+  const asset = db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(Number(assetId));
+  const metadata = parseJson(asset?.metadata, {});
+  const digest = String(metadata?.sha256 || asset?.sha256 || '').trim();
+  if (!asset || asset.type !== 'image' || !/^\w+\/[-+.\w]+$/.test(String(asset.mime_type || ''))
+    || !/^[a-f0-9]{64}$/.test(digest)) return null;
+  return { asset_id: Number(asset.id), sha256: digest };
+}
+
+function buildCleanPlatePack(db, attempt, cleanPlateAssetId) {
+  const payload = parseJson(attempt.source_ref_json, {});
+  const ref = payload.source_ref && typeof payload.source_ref === 'object' ? payload.source_ref : {};
+  const snapshot = payload.snapshot && typeof payload.snapshot === 'object' ? payload.snapshot : {};
+  const source = storedAssetEvidence(db, ref.source_asset_id);
+  const mask = storedAssetEvidence(db, attempt.mask_asset_id);
+  const artifact = storedAssetEvidence(db, cleanPlateAssetId);
+  const stableId = String(ref.stable_id || '').trim();
+  const analysisSha256 = String(ref.analysis_sha256 || '').trim();
+  const frameIndex = Number(ref.frame_index);
+  if (!source || !mask || !artifact || !stableId
+    || !/^[a-f0-9]{64}$/.test(analysisSha256) || !Number.isSafeInteger(frameIndex) || frameIndex < 0
+    || ref.source_fingerprint !== source.sha256) return null;
+  if (snapshot.mode === 'clean_plate' && ref.kind === 'person_clean') {
+    const pack = {
+      schema_version: 'person-clean-plate-reference-v1',
+      requirement_key: stableId,
+      analysis_sha256: analysisSha256,
+      frame_index: frameIndex,
+      input_frame_fingerprint: String(snapshot.input_frame_fingerprint || ''),
+      source,
+      mask,
+      artifact,
+      ready: true,
+    };
+    if (pack.input_frame_fingerprint !== source.sha256) return null;
+    return { key: 'person_clean_plate_pack', value: { ...pack, pack_sha256: sha256(stableJson(pack)) } };
+  }
+  if (snapshot.mode === 'text_clean_plate' && ['text_subtitle', 'text_screen'].includes(ref.kind)) {
+    const work = db.prepare(`SELECT w.source_fingerprint FROM redraw_versions v
+      JOIN redraw_works w ON w.id = v.work_id AND w.deleted_at IS NULL
+      WHERE v.id = ? AND v.deleted_at IS NULL`).get(Number(attempt.version_id));
+    const sourceFingerprint = String(work?.source_fingerprint || '').trim();
+    if (!/^[a-f0-9]{64}$/.test(sourceFingerprint)) return null;
+    const pack = {
+      schema_version: 'text-clean-plate-reference-v1',
+      region_key: stableId,
+      kind: ref.kind,
+      artifact,
+      source_fingerprint: sourceFingerprint,
+      analysis_sha256: analysisSha256,
+      frame_index: frameIndex,
+      input_frame_fingerprint: String(ref.source_fingerprint || ''),
+      source,
+      mask,
+      ready: true,
+    };
+    return { key: 'text_clean_plate_pack', value: { ...pack, pack_sha256: sha256(stableJson(pack)) } };
+  }
+  return null;
 }
 
 function voiceDependencyKey(sourceRef = {}) {
@@ -1036,6 +1103,15 @@ async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
   const sourceRef = {
     source_asset_id: sourceAssetId,
     source_fingerprint: String(inputFrameFingerprint),
+    ...(() => {
+      const binding = sceneAsset.source_ref || sceneAsset.sourceRef || {};
+      return {
+        ...(binding.stable_id ? { stable_id: String(binding.stable_id) } : {}),
+        ...(binding.kind ? { kind: String(binding.kind) } : {}),
+        ...(binding.analysis_sha256 ? { analysis_sha256: String(binding.analysis_sha256) } : {}),
+        ...(Number.isSafeInteger(Number(binding.frame_index)) ? { frame_index: Number(binding.frame_index) } : {}),
+      };
+    })(),
     ...(mode === 'clean_plate'
       ? { source_ref: sceneAsset.source_ref || sceneAsset.sourceRef || {} }
       : {
@@ -1113,12 +1189,19 @@ async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
     const finalized = finalizeAssetAttempt(ctx, attempt.id, mode === 'text_clean_plate'
       ? { ...providerResult, clean_plate: true }
       : providerResult);
+    const storedAttempt = db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attempt.id));
+    const pack = buildCleanPlatePack(db, storedAttempt, Number(finalized.clean_plate_asset_id || finalized.asset_id));
+    const sourcePayload = parseJson(storedAttempt.source_ref_json, {});
+    if (pack) sourcePayload[pack.key] = pack.value;
     db.prepare(`
       UPDATE redraw_assets
       SET clean_plate_asset_id = ?, mask_asset_id = ?, status = 'needs_attention',
-          approval_status = 'pending', updated_at = ?
+          approval_status = 'pending', source_ref_json = ?, updated_at = ?
       WHERE id = ?
-    `).run(Number(finalized.clean_plate_asset_id || finalized.asset_id), Number(maskAssetId), new Date().toISOString(), Number(attempt.id));
+    `).run(
+      Number(finalized.clean_plate_asset_id || finalized.asset_id), Number(maskAssetId),
+      JSON.stringify(sourcePayload), new Date().toISOString(), Number(attempt.id),
+    );
     return rowToAsset(db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attempt.id)));
   } catch (error) {
     const row = db.prepare('SELECT status FROM redraw_assets WHERE id = ?').get(Number(attempt.id));
@@ -1168,6 +1251,7 @@ async function prepareReferenceCleanRequirement(ctx, payload = {}) {
   }
   return {
     status: 'unknown',
+    redraw_asset_id: Number(result.id),
     ...(result.generation_task_id ? { provider_task_id: String(result.generation_task_id) } : {}),
     ...(result.credit_reservation_id ? { reservation_id: String(result.credit_reservation_id) } : {}),
   };

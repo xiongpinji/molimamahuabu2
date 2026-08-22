@@ -5,7 +5,10 @@ const crypto = require('node:crypto');
 const { evaluateAutomationDecision, requiredAnalysisConfidenceKeys } = require('./redrawAutomationPolicyService');
 const { prepareReferenceCleanRequirement } = require('./redrawAssetService');
 const { buildCharacterPlan } = require('./redrawCharacterPlanService');
-const { preparationEvidenceHash } = require('./redrawPreparationGateService');
+const {
+  preparationEvidenceHash,
+  readCurrentCleanResultEvidence,
+} = require('./redrawPreparationGateService');
 const {
   buildTrustedReferenceBundleInput,
   canonicalBundleHash,
@@ -237,7 +240,6 @@ async function reusableCleanResults(ctx, row, descriptor, expectedBaseline, char
   if (Number(snapshot.version_id) !== ctx.versionId
     || Number(snapshot.shot_id) !== Number(row.id)
     || Number(snapshot.preparation_version) !== Number(row.preparation_version)
-    || snapshot.version_snapshot_hash !== expectedBaseline.snapshot_hash
     || snapshot.character_plan_hash !== characterPlanHash
     || stableJson(snapshot.requirements) !== stableJson(descriptor.requirements.map((item) => ({ kind: item.kind, key: item.key })))
     || !Array.isArray(snapshot.clean_results)) return [];
@@ -245,10 +247,17 @@ async function reusableCleanResults(ctx, row, descriptor, expectedBaseline, char
   for (const result of snapshot.clean_results) {
     const requirement = descriptor.requirements.find((item) => item.kind === result?.kind && item.key === result?.key);
     const assetId = Number(result?.redraw_asset_id);
-    if (!requirement || result?.status !== 'completed' || !Number.isSafeInteger(assetId) || assetId <= 0) continue;
+    if (!requirement || !['completed', 'unknown'].includes(result?.status)
+      || !Number.isSafeInteger(assetId) || assetId <= 0) continue;
     let current;
     if (typeof deps.isCleanResultCurrent === 'function') {
-      current = await deps.isCleanResultCurrent({ ctx, shot: row, requirement, result });
+      current = result.status === 'completed'
+        ? await deps.isCleanResultCurrent({ ctx, shot: row, requirement, result })
+        : false;
+    } else if (requirement.kind === 'person_clean') {
+      current = readCurrentCleanResultEvidence(ctx, row, requirement, assetId);
+    } else if (result.status === 'unknown') {
+      current = readCurrentCleanResultEvidence(ctx, row, requirement, assetId);
     } else {
       current = Boolean(ctx.db.prepare(`
         SELECT id FROM redraw_assets
@@ -257,7 +266,20 @@ async function reusableCleanResults(ctx, row, descriptor, expectedBaseline, char
           AND clean_plate_asset_id IS NOT NULL AND deleted_at IS NULL
       `).get(assetId, ctx.versionId, ctx.tenantId, ctx.userId));
     }
-    if (current === true) reusable.push(safeResult(result, requirement));
+    if (current === true || (current && typeof current === 'object')) {
+      reusable.push(safeResult({ ...result, status: 'completed', ...(current === true ? {} : { evidence: current }) }, requirement));
+    }
+  }
+  if (snapshot.version_snapshot_hash !== expectedBaseline.snapshot_hash) {
+    const priorVersionTime = Date.parse(String(snapshot.version_updated_at || ''));
+    const approvalTimes = reusable.map((result) => Date.parse(String(result.evidence?.approved_at || '')));
+    const approvalRefresh = snapshot.version_recovery_hash === expectedBaseline.recovery_hash
+      && reusable.length > 0
+      && Number.isFinite(priorVersionTime)
+      && approvalTimes.every((value) => Number.isFinite(value) && value >= priorVersionTime)
+      && approvalTimes.some((value) => value > priorVersionTime)
+      && Math.max(...approvalTimes) === Date.parse(String(expectedBaseline.version_updated_at || ''));
+    if (!approvalRefresh) return [];
   }
   return reusable.sort((left, right) => left.kind.localeCompare(right.kind) || left.key.localeCompare(right.key));
 }
@@ -273,7 +295,16 @@ function baseline(scope, characterPlanHash, coverage) {
     character_plan_hash: characterPlanHash,
     coverage_hash: sha256({ status: coverage.status, shots: coverage.shots }),
   };
-  return { ...value, snapshot_hash: sha256(value) };
+  const recovery = {
+    version_id: value.version_id,
+    facts_hash: value.facts_hash,
+    project_id: value.project_id,
+    project_policy_version: value.project_policy_version,
+    project_updated_at: value.project_updated_at,
+    character_plan_hash: value.character_plan_hash,
+    coverage_hash: value.coverage_hash,
+  };
+  return { ...value, snapshot_hash: sha256(value), recovery_hash: sha256(recovery) };
 }
 
 function selectShots(shots, shotIds) {
@@ -309,16 +340,25 @@ async function buildQuote(rawCtx, input = {}, deps = {}) {
       reused.push(Number(shot.id));
       continue;
     }
-    if (shot.preparation_state === 'needs_attention'
-      || ['unknown', 'needs_attention', 'processing'].includes(snapshotStatus(shot))) {
-      needsAttention.push(Number(shot.id));
-      continue;
-    }
-    missing.push(Number(shot.id));
     const descriptor = coverage.byId.get(Number(shot.id));
     const reusable = await reusableCleanResults(ctx, shot, descriptor, snapshot, plan.plan_hash, deps);
     reusableByShot.set(Number(shot.id), reusable);
     const reusableKeys = new Set(reusable.map((item) => `${item.kind}:${item.key}`));
+    const previous = parseObject(shot.preparation_snapshot_json, {});
+    const unresolvedKeys = Array.isArray(previous.clean_results)
+      ? previous.clean_results
+        .filter((item) => ['unknown', 'needs_attention'].includes(item?.status))
+        .map((item) => `${item.kind}:${item.key}`)
+      : [];
+    const attentionResolved = unresolvedKeys.length > 0
+      && unresolvedKeys.every((key) => reusableKeys.has(key));
+    if ((shot.preparation_state === 'needs_attention'
+      || ['unknown', 'needs_attention', 'processing'].includes(snapshotStatus(shot)))
+      && !attentionResolved) {
+      needsAttention.push(Number(shot.id));
+      continue;
+    }
+    missing.push(Number(shot.id));
     for (const requirement of descriptor.requirements) {
       if (reusableKeys.has(`${requirement.kind}:${requirement.key}`)) continue;
       const quote = typeof deps.quoteCleanRequirement === 'function'
@@ -411,8 +451,18 @@ function requestHash(ctx, idempotencyKey, quote) {
 function claimShot(ctx, shot, descriptor, baselineSnapshot, characterPlanHash, request, idempotencyKey, reusable = []) {
   const previous = parseObject(shot.preparation_snapshot_json, {});
   const idemHash = sha256(idempotencyKey);
-  if (shot.preparation_state === 'needs_attention'
-    || ['unknown', 'needs_attention', 'processing'].includes(previous.status)) return { status: 'needs_attention' };
+  const unresolvedKeys = Array.isArray(previous.clean_results)
+    ? previous.clean_results
+      .filter((item) => ['unknown', 'needs_attention'].includes(item?.status))
+      .map((item) => `${item.kind}:${item.key}`)
+    : [];
+  const reusableKeys = new Set(reusable.map((item) => `${item.kind}:${item.key}`));
+  const attentionResolved = unresolvedKeys.length > 0
+    && unresolvedKeys.every((key) => reusableKeys.has(key));
+  if ((shot.preparation_state === 'needs_attention'
+    || ['unknown', 'needs_attention', 'processing'].includes(previous.status)) && !attentionResolved) {
+    return { status: 'needs_attention' };
+  }
   if (shot.preparation_state === 'failed' && previous.status === 'failed'
     && previous.idempotency_key_hash === idemHash) return { status: 'failed' };
   const now = timestamp(ctx, shot.updated_at);
@@ -423,6 +473,8 @@ function claimShot(ctx, shot, descriptor, baselineSnapshot, characterPlanHash, r
     preparation_version: Number(shot.preparation_version),
     character_plan_hash: characterPlanHash,
     version_snapshot_hash: baselineSnapshot.snapshot_hash,
+    version_recovery_hash: baselineSnapshot.recovery_hash,
+    version_updated_at: baselineSnapshot.version_updated_at,
     request_hash: request,
     idempotency_key_hash: idemHash,
     status: 'processing',
@@ -459,7 +511,14 @@ function normalizeOutcome(value) {
     if (Number.isSafeInteger(assetId) && assetId > 0) return { status: 'completed', redraw_asset_id: assetId, ...providerIdentity(value) };
     return { status: 'failed', error_code: 'REDRAW_REFERENCE_PREPARATION_ASSET_INVALID' };
   }
-  if (UNKNOWN.has(status)) return { status: 'unknown', ...providerIdentity(value) };
+  if (UNKNOWN.has(status)) {
+    const assetId = Number(value.redraw_asset_id ?? value.redrawAssetId ?? value.asset_id ?? value.assetId);
+    return {
+      status: 'unknown',
+      ...(Number.isSafeInteger(assetId) && assetId > 0 ? { redraw_asset_id: assetId } : {}),
+      ...providerIdentity(value),
+    };
+  }
   if (TERMINAL_FAILURE.has(status)) {
     return { status: 'failed', error_code: trim(value.error_code ?? value.errorCode) || 'REDRAW_REFERENCE_PREPARATION_CLEAN_FAILED' };
   }
@@ -495,6 +554,9 @@ function safeResult(result, requirement) {
     ...(result.redraw_asset_id ? { redraw_asset_id: result.redraw_asset_id } : {}),
     ...providerIdentity(result),
     ...(result.error_code ? { error_code: result.error_code } : {}),
+    ...(result.evidence && typeof result.evidence === 'object' && !Array.isArray(result.evidence)
+      ? { evidence: result.evidence }
+      : {}),
   };
 }
 
@@ -612,7 +674,11 @@ async function executeShot(ctx, built, shot, descriptor, idempotencyKey, deps) {
     reference_bundle_hash: saved.reference_bundle_hash,
   };
   delete completedSnapshot.error_code;
-  const projected = { ...current, reference_bundle_hash: saved.reference_bundle_hash };
+  const projected = {
+    ...current,
+    reference_bundle_hash: saved.reference_bundle_hash,
+    preparation_snapshot_json: stableJson(completedSnapshot),
+  };
   const evidence = preparationEvidenceHash(projected);
   ctx.db.transaction(() => {
     const updated = ctx.db.prepare(`
@@ -754,6 +820,10 @@ function setTaskNeedsAttention(ctx, taskId, message) {
   `).run(message, message, now, taskId);
 }
 
+function scheduleFailure() {
+  return codedError('REDRAW_REFERENCE_PREPARATION_SCHEDULE_FAILED', '逐镜参考准备调度失败，状态需要人工确认');
+}
+
 async function startVersionPreparation(rawCtx, input = {}, deps = {}) {
   const ctx = normalizeContext(rawCtx, input);
   const idempotencyKey = normalizeIdempotencyKey(input);
@@ -792,10 +862,19 @@ async function startVersionPreparation(rawCtx, input = {}, deps = {}) {
   let scheduled;
   try {
     scheduled = schedule(job);
-  } catch (error) {
-    scheduled = Promise.reject(error);
+  } catch (_) {
+    setTaskNeedsAttention(ctx, task.id, '逐镜参考准备调度失败，状态需要人工确认');
+    const completion = taskService.trackInFlightTask(task.id, Promise.reject(scheduleFailure()));
+    return { task_id: task.id, status: 'needs_attention', quote, completion };
   }
-  const completion = taskService.trackInFlightTask(task.id, Promise.resolve(scheduled));
+  const completion = taskService.trackInFlightTask(task.id, Promise.resolve(scheduled).catch((error) => {
+    const current = taskService.getTask(ctx.db, task.id);
+    if (current && ['pending', 'processing'].includes(current.status)) {
+      setTaskNeedsAttention(ctx, task.id, '逐镜参考准备调度失败，状态需要人工确认');
+      throw scheduleFailure();
+    }
+    throw error;
+  }));
   return { task_id: task.id, status: 'pending', quote, completion };
 }
 
