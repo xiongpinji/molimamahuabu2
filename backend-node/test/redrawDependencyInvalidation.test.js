@@ -10,6 +10,7 @@ const {
   invalidateShotTimingDependents,
   invalidateTextDependents,
 } = require('../src/services/redrawDependencyInvalidationService');
+const { canonicalBundleHash } = require('../src/services/redrawReferenceBundleService');
 
 const NOW = '2026-08-22T10:00:00.000Z';
 const NEXT = '2026-08-22T10:00:01.000Z';
@@ -61,28 +62,24 @@ function setup() {
       shot: 'shot-char-a',
       refs: [{ kind: 'character', source_character_key: 'char-a' }],
       bundle: bundle({ characters: ['char-a'], speakers: ['char-a'], texts: ['text-a'] }),
-      hash: 'a'.repeat(64),
     },
     {
       id: 2,
       shot: 'shot-char-b',
       refs: [{ kind: 'voice', source_character_key: 'char-b' }],
       bundle: bundle({ characters: ['char-b'], speakers: ['char-b'], texts: ['text-b'] }),
-      hash: 'b'.repeat(64),
     },
     {
       id: 3,
       shot: 'shot-text-c',
       refs: [{ kind: 'text', region_key: 'text-c' }],
       bundle: bundle({ characters: ['char-c'], speakers: [], texts: ['text-c'] }),
-      hash: 'c'.repeat(64),
     },
     {
       id: 4,
       shot: 'shot-unrelated',
       refs: [{ kind: 'character', source_character_key: 'char-z' }],
       bundle: bundle({ characters: ['char-z'], speakers: [], texts: ['text-z'] }),
-      hash: 'd'.repeat(64),
     },
     {
       id: 5,
@@ -109,7 +106,7 @@ function setup() {
       (index + 1) * 5000,
       stableJson(row.refs),
       stableJson(row.bundle),
-      row.hash,
+      row.hash === undefined ? canonicalBundleHash(row.bundle) : row.hash,
       NOW,
       NOW,
       NOW,
@@ -176,7 +173,9 @@ function insertShot(state, input = {}) {
       Number(input.id) * 5000 + 5000,
       stableJson(input.refs || []),
       stableJson(input.bundle || bundle({ characters: [], speakers: [], texts: [] })),
-      input.hash || sha256(`shot:${input.id}`),
+      input.hash === undefined
+        ? canonicalBundleHash(input.bundle || bundle({ characters: [], speakers: [], texts: [] }))
+        : input.hash,
       NOW,
       NOW,
       NOW,
@@ -197,7 +196,7 @@ function shotRows(db) {
   return db.prepare(`
     SELECT id, shot_id, reference_bundle_json, reference_bundle_hash, video_generation_id,
            preparation_state, preparation_version, preparation_evidence_hash, stale_reason_code,
-           updated_at
+           status, draft_json, error_code, error_message, updated_at
     FROM redraw_shots
     ORDER BY id
   `).all();
@@ -214,6 +213,7 @@ function eventRows(db) {
 test('换角色只失效引用该角色的镜头并保留旧候选', () => {
   const state = setup();
   try {
+    const before = shotRows(state.db);
     const affected = invalidateCharacterDependents(ctx(state), {
       source_character_key: 'char-a',
       reason_code: 'character_identity_changed',
@@ -227,7 +227,7 @@ test('换角色只失效引用该角色的镜头并保留旧候选', () => {
     assert.equal(rows[0].stale_reason_code, 'character_identity_changed');
     assert.equal(JSON.parse(rows[0].reference_bundle_json).face_tracks[0].source_character_key, 'char-a');
     assert.equal(rows[1].preparation_state, 'reference_ready');
-    assert.equal(rows[1].reference_bundle_hash, 'b'.repeat(64));
+    assert.equal(rows[1].reference_bundle_hash, before[1].reference_bundle_hash);
     assert.equal(rows[1].video_generation_id, 801);
     assert.equal(rows[2].preparation_state, 'reference_ready');
     assert.equal(rows[3].preparation_state, 'reference_ready');
@@ -250,7 +250,7 @@ test('换角色只失效引用该角色的镜头并保留旧候选', () => {
     assert.deepEqual(JSON.parse(events[0].metadata_json), {
       dependency_kind: 'character',
       dependency_id: 'char-a',
-      old_bundle_hash: 'a'.repeat(64),
+      old_bundle_hash: before[0].reference_bundle_hash,
       old_generation_id: 801,
       previous_preparation_version: 3,
     });
@@ -318,6 +318,50 @@ test('无关镜头保持不变，CAS 失败零部分写入', () => {
   }
 });
 
+test('expected_updated_at_by_shot_id 必须与 affected shot ids 精确一致', () => {
+  const missing = setup();
+  try {
+    const before = shotRows(missing.db);
+    assert.equal(captureCode(() => invalidateCharacterDependents(ctx(missing), {
+      source_character_key: 'char-a',
+      reason_code: 'character_identity_changed',
+      expected_updated_at_by_shot_id: {},
+    })), 'REDRAW_DEPENDENCY_INVALIDATION_CONFLICT');
+    assert.deepEqual(shotRows(missing.db), before);
+    assert.deepEqual(eventRows(missing.db), []);
+  } finally {
+    missing.close();
+  }
+
+  const extra = setup();
+  try {
+    const before = shotRows(extra.db);
+    assert.equal(captureCode(() => invalidateCharacterDependents(ctx(extra), {
+      source_character_key: 'char-a',
+      reason_code: 'character_identity_changed',
+      expected_updated_at_by_shot_id: { 1: NOW, 2: NOW },
+    })), 'REDRAW_DEPENDENCY_INVALIDATION_CONFLICT');
+    assert.deepEqual(shotRows(extra.db), before);
+    assert.deepEqual(eventRows(extra.db), []);
+  } finally {
+    extra.close();
+  }
+
+  const emptyAffected = setup();
+  try {
+    const before = shotRows(emptyAffected.db);
+    assert.equal(captureCode(() => invalidateCharacterDependents(ctx(emptyAffected), {
+      source_character_key: 'missing-character',
+      reason_code: 'character_identity_changed',
+      expected_updated_at_by_shot_id: { 1: NOW },
+    })), 'REDRAW_DEPENDENCY_INVALIDATION_CONFLICT');
+    assert.deepEqual(shotRows(emptyAffected.db), before);
+    assert.deepEqual(eventRows(emptyAffected.db), []);
+  } finally {
+    emptyAffected.close();
+  }
+});
+
 test('只失效已绑定当前参考包的镜头，草稿引用不被误伤', () => {
   const state = setup();
   try {
@@ -333,6 +377,122 @@ test('只失效已绑定当前参考包的镜头，草稿引用不被误伤', ()
     assert.equal(eventRows(state.db).length, 1);
   } finally {
     state.close();
+  }
+});
+
+test('失效 completed 候选时转 pending、仅清 draft generation 指针并保留旧视频证据', () => {
+  const state = setup();
+  try {
+    state.db.prepare(`
+      UPDATE redraw_shots
+      SET status = 'completed',
+          video_generation_id = 801,
+          draft_json = ?,
+          error_code = 'old_error',
+          error_message = 'old message'
+      WHERE id = 1
+    `).run(stableJson({
+      generation: {
+        video_generation_id: 801,
+        provider_task_id: 'old-provider-task',
+      },
+      preserved_notes: ['keep'],
+      reference_evidence: { old: true },
+    }));
+    const affected = invalidateCharacterDependents(ctx(state), {
+      source_character_key: 'char-a',
+      reason_code: 'character_identity_changed',
+      expected_updated_at_by_shot_id: { 1: NOW },
+    });
+    assert.deepEqual(affected, [1]);
+    const row = shotRows(state.db).find((entry) => entry.id === 1);
+    assert.equal(row.status, 'pending');
+    assert.equal(row.video_generation_id, null);
+    assert.equal(row.error_code, null);
+    assert.equal(row.error_message, null);
+    assert.equal(row.preparation_state, 'stale');
+    assert.deepEqual(JSON.parse(row.draft_json), {
+      generation: {},
+      preserved_notes: ['keep'],
+      reference_evidence: { old: true },
+    });
+    assert.equal(['completed', 'processing'].includes(row.status), false);
+    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM video_generations WHERE id = 801').get().count, 1);
+  } finally {
+    state.close();
+  }
+});
+
+test('affected shot 仍在 processing 时整批冲突并零写入', () => {
+  const state = setup();
+  try {
+    state.db.prepare(`
+      UPDATE redraw_shots
+      SET status = 'processing',
+          video_generation_id = 801,
+          draft_json = ?
+      WHERE id = 1
+    `).run(stableJson({ generation: { video_generation_id: 801 }, preserved: true }));
+    const before = shotRows(state.db);
+    assert.equal(captureCode(() => invalidateCharacterDependents(ctx(state), {
+      source_character_key: 'char-a',
+      reason_code: 'character_identity_changed',
+      expected_updated_at_by_shot_id: { 1: NOW },
+    })), 'REDRAW_DEPENDENCY_INVALIDATION_CONFLICT');
+    assert.deepEqual(shotRows(state.db), before);
+    assert.deepEqual(eventRows(state.db), []);
+    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM video_generations WHERE id = 801').get().count, 1);
+  } finally {
+    state.close();
+  }
+});
+
+test('affected shot 的 draft_json malformed 时 fail closed 并回滚', () => {
+  const state = setup();
+  try {
+    state.db.prepare("UPDATE redraw_shots SET draft_json = '{' WHERE id = 1").run();
+    const before = shotRows(state.db);
+    assert.equal(captureCode(() => invalidateCharacterDependents(ctx(state), {
+      source_character_key: 'char-a',
+      reason_code: 'character_identity_changed',
+      expected_updated_at_by_shot_id: { 1: NOW },
+    })), 'REDRAW_DEPENDENCY_INVALIDATION_CONFLICT');
+    assert.deepEqual(shotRows(state.db), before);
+    assert.deepEqual(eventRows(state.db), []);
+  } finally {
+    state.close();
+  }
+});
+
+test('current reference bundle malformed 或 hash drift 时冲突且零写入', () => {
+  const malformed = setup();
+  try {
+    malformed.db.prepare("UPDATE redraw_shots SET reference_bundle_json = '{' WHERE id = 1").run();
+    const before = shotRows(malformed.db);
+    assert.equal(captureCode(() => invalidateCharacterDependents(ctx(malformed), {
+      source_character_key: 'char-a',
+      reason_code: 'character_identity_changed',
+      expected_updated_at_by_shot_id: { 1: NOW },
+    })), 'REDRAW_DEPENDENCY_INVALIDATION_CONFLICT');
+    assert.deepEqual(shotRows(malformed.db), before);
+    assert.deepEqual(eventRows(malformed.db), []);
+  } finally {
+    malformed.close();
+  }
+
+  const drift = setup();
+  try {
+    drift.db.prepare("UPDATE redraw_shots SET reference_bundle_hash = ? WHERE id = 1").run('f'.repeat(64));
+    const before = shotRows(drift.db);
+    assert.equal(captureCode(() => invalidateCharacterDependents(ctx(drift), {
+      source_character_key: 'char-a',
+      reason_code: 'character_identity_changed',
+      expected_updated_at_by_shot_id: { 1: NOW },
+    })), 'REDRAW_DEPENDENCY_INVALIDATION_CONFLICT');
+    assert.deepEqual(shotRows(drift.db), before);
+    assert.deepEqual(eventRows(drift.db), []);
+  } finally {
+    drift.close();
   }
 });
 

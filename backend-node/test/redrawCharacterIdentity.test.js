@@ -14,6 +14,7 @@ const {
   readIdentityPack,
   saveIdentityPack,
 } = require('../src/services/redrawCharacterIdentityService');
+const { canonicalBundleHash } = require('../src/services/redrawReferenceBundleService');
 
 const INITIAL_UPDATED_AT = '2026-08-12T00:00:00.000Z';
 const REVIEWED_AT = '2026-08-13T00:00:00.000Z';
@@ -127,6 +128,12 @@ function rowSnapshot(db, id) {
 }
 
 function addReadyShot(state, sourceCharacterKey = 'character-1') {
+  const referenceBundle = {
+    schema_version: 'redraw-reference-bundle-v1',
+    face_tracks: [{ source_character_key: sourceCharacterKey }],
+    dialogue: { kind: 'silent', turns: [] },
+    text_regions: [],
+  };
   state.db.prepare(`INSERT INTO video_generations
     (id, provider, model, status, tenant_id, user_id, created_at, updated_at)
     VALUES (801, 'fake', 'redraw-local', 'completed', 'tenant-a', 'user-a', ?, ?)`)
@@ -140,13 +147,8 @@ function addReadyShot(state, sourceCharacterKey = 'character-1') {
       0, 5000, 5000, '[]', '[]', '[]', ?, ?, ?, 801, 'reference_ready', 2, 'completed', ?, ?)`)
     .run(
       state.versionId,
-      JSON.stringify({
-        schema_version: 'redraw-reference-bundle-v1',
-        face_tracks: [{ source_character_key: sourceCharacterKey }],
-        dialogue: { kind: 'silent', turns: [] },
-        text_regions: [],
-      }),
-      'a'.repeat(64),
+      JSON.stringify(referenceBundle),
+      canonicalBundleHash(referenceBundle),
       INITIAL_UPDATED_AT,
       INITIAL_UPDATED_AT,
       INITIAL_UPDATED_AT,
@@ -339,10 +341,11 @@ test('身份包成功保存后精准失效当前角色依赖镜头，CAS 失败�
       () => saveIdentityPack(context(state), characterId, completeInput('stale-updated-at')),
       (error) => error.code === 'REDRAW_IDENTITY_CONFLICT',
     );
+    const oldBundleHash = shotState(state.db).reference_bundle_hash;
     assert.deepEqual(shotState(state.db), {
       preparation_state: 'reference_ready',
       preparation_version: 2,
-      reference_bundle_hash: 'a'.repeat(64),
+      reference_bundle_hash: oldBundleHash,
       video_generation_id: 801,
       stale_reason_code: null,
     });
@@ -358,7 +361,7 @@ test('身份包成功保存后精准失效当前角色依赖镜头，CAS 失败�
     });
     const event = state.db.prepare('SELECT reason_code, metadata_json FROM redraw_workflow_events').get();
     assert.equal(event.reason_code, 'character_identity_changed');
-    assert.equal(JSON.parse(event.metadata_json).old_bundle_hash, 'a'.repeat(64));
+    assert.equal(JSON.parse(event.metadata_json).old_bundle_hash, oldBundleHash);
   } finally {
     close(state);
   }

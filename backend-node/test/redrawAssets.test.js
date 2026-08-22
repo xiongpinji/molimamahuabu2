@@ -17,6 +17,7 @@ const {
   updateAsset,
   listAssetVersions,
 } = require('../src/services/redrawAssetService');
+const { canonicalBundleHash } = require('../src/services/redrawReferenceBundleService');
 
 const TTS_CONFIG_ID = 41;
 const TTS_CONFIG_UPDATED_AT = '2026-08-08T00:00:00.000Z';
@@ -92,6 +93,15 @@ function addDraftPlaceholder(db, state, input = {}) {
 }
 
 function addReadyDialogueShot(state, sourceCharacterKey = 'voice-character-1') {
+  const referenceBundle = {
+    schema_version: 'redraw-reference-bundle-v1',
+    face_tracks: [],
+    dialogue: {
+      kind: 'spoken',
+      turns: [{ speaker_id: sourceCharacterKey, localized_text: 'Line', start_ms: 0, end_ms: 900 }],
+    },
+    text_regions: [],
+  };
   state.db.prepare(`INSERT INTO video_generations
     (id, provider, model, status, tenant_id, user_id, created_at, updated_at)
     VALUES (801, 'fake', 'redraw-local', 'completed', 'tenant-a', 'user-a', ?, ?)`)
@@ -107,16 +117,8 @@ function addReadyDialogueShot(state, sourceCharacterKey = 'voice-character-1') {
       state.workId,
       state.versionId,
       JSON.stringify([{ kind: 'voice', source_character_key: sourceCharacterKey }]),
-      JSON.stringify({
-        schema_version: 'redraw-reference-bundle-v1',
-        face_tracks: [],
-        dialogue: {
-          kind: 'spoken',
-          turns: [{ speaker_id: sourceCharacterKey, localized_text: 'Line', start_ms: 0, end_ms: 900 }],
-        },
-        text_regions: [],
-      }),
-      'b'.repeat(64),
+      JSON.stringify(referenceBundle),
+      canonicalBundleHash(referenceBundle),
       TTS_CONFIG_UPDATED_AT,
       TTS_CONFIG_UPDATED_AT,
       TTS_CONFIG_UPDATED_AT,
@@ -730,6 +732,7 @@ test('finalizeAssetAttempt 成功保存语音证据后精准失效声音依赖�
     is_cloned: false,
   }));
 
+  const oldBundleHash = dialogueShotState(state.db).reference_bundle_hash;
   const voice = finalizeAssetAttempt(ctx, voiceAttempt.id, voiceResult(514));
 
   assert.equal(voice.status, 'generated');
@@ -743,7 +746,7 @@ test('finalizeAssetAttempt 成功保存语音证据后精准失效声音依赖�
   });
   const event = state.db.prepare('SELECT reason_code, metadata_json FROM redraw_workflow_events').get();
   assert.equal(event.reason_code, 'voice_changed');
-  assert.equal(JSON.parse(event.metadata_json).old_bundle_hash, 'b'.repeat(64));
+  assert.equal(JSON.parse(event.metadata_json).old_bundle_hash, oldBundleHash);
   fs.rmSync(root, { recursive: true, force: true });
   state.db.close();
 });

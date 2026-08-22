@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 
 const { appendWorkflowEvent } = require('./redrawWorkflowEventService');
+const { canonicalBundleHash } = require('./redrawReferenceBundleService');
 
 const INPUT_CODE = 'REDRAW_DEPENDENCY_INVALIDATION_INPUT_INVALID';
 const NOT_FOUND_CODE = 'REDRAW_DEPENDENCY_INVALIDATION_VERSION_NOT_FOUND';
@@ -42,6 +43,18 @@ function parseJson(value, fallback) {
   } catch (_) {
     return fallback;
   }
+}
+
+function parseJsonStrict(value, fallback, code = CONFLICT_CODE) {
+  if (value == null || value === '') return fallback;
+  if (value && typeof value === 'object') return value;
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  } catch (_) {
+    // handled below
+  }
+  fail(code, 'JSON 证据不合法');
 }
 
 function normalizeContext(ctx = {}) {
@@ -91,7 +104,7 @@ function readVersion(ctx) {
 function readShots(ctx) {
   return ctx.db.prepare(`
     SELECT id, shot_id, references_json, reference_bundle_json, reference_bundle_hash,
-           video_generation_id, preparation_state, preparation_version, updated_at
+           video_generation_id, preparation_state, preparation_version, status, draft_json, updated_at
     FROM redraw_shots
     WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
     ORDER BY id ASC
@@ -166,9 +179,9 @@ function includesKey(set, key) {
 }
 
 function matchCharacter(shot, sourceCharacterKey, dependencyKind) {
-  if (!hasCurrentReferenceBundle(shot)) return false;
+  const bundle = currentReferenceBundle(shot);
+  if (!bundle) return false;
   const refs = parseJson(shot.references_json, []);
-  const bundle = parseJson(shot.reference_bundle_json, {});
   const refKeys = dependencyKind === 'voice' ? refsVoiceKeys(refs) : refsCharacterKeys(refs);
   const bundleKeys = dependencyKind === 'voice' ? bundleSpeakerKeys(bundle) : bundleCharacterKeys(bundle);
   if (dependencyKind === 'voice') {
@@ -178,16 +191,24 @@ function matchCharacter(shot, sourceCharacterKey, dependencyKind) {
 }
 
 function matchText(shot, regionKey) {
-  if (!hasCurrentReferenceBundle(shot)) return false;
+  const bundle = currentReferenceBundle(shot);
+  if (!bundle) return false;
   const refs = parseJson(shot.references_json, []);
-  const bundle = parseJson(shot.reference_bundle_json, {});
   return includesKey(refsTextKeys(refs), regionKey) || includesKey(bundleTextKeys(bundle), regionKey);
 }
 
+function currentReferenceBundle(shot) {
+  if (!HEX_64.test(String(shot.reference_bundle_hash || ''))) return null;
+  const bundle = parseJsonStrict(shot.reference_bundle_json, null);
+  if (!bundle || bundle.schema_version !== 'redraw-reference-bundle-v1') fail(CONFLICT_CODE, '当前参考包证据不合法');
+  if (canonicalBundleHash(bundle) !== String(shot.reference_bundle_hash || '')) {
+    fail(CONFLICT_CODE, '当前参考包证据漂移');
+  }
+  return bundle;
+}
+
 function hasCurrentReferenceBundle(shot) {
-  const bundle = parseJson(shot.reference_bundle_json, {});
-  return HEX_64.test(String(shot.reference_bundle_hash || ''))
-    && bundle?.schema_version === 'redraw-reference-bundle-v1';
+  return currentReferenceBundle(shot) != null;
 }
 
 function expectedMap(input = {}) {
@@ -205,17 +226,28 @@ function expectedMap(input = {}) {
 
 function assertCas(shots, map) {
   if (!map) return;
+  const affectedIds = new Set(shots.map((shot) => Number(shot.id)));
+  if (map.size !== affectedIds.size) fail(CONFLICT_CODE, 'CAS 镜头集合不一致');
+  for (const id of map.keys()) {
+    if (!affectedIds.has(id)) fail(CONFLICT_CODE, 'CAS 镜头集合不一致');
+  }
   for (const shot of shots) {
-    if (map.has(Number(shot.id)) && String(shot.updated_at || '') !== map.get(Number(shot.id))) {
+    if (String(shot.updated_at || '') !== map.get(Number(shot.id))) {
       fail(CONFLICT_CODE, '镜头已被其他操作更新');
     }
   }
 }
 
-function updateAffected(ctx, version, affected, input, dependencyKind, dependencyId, reasonCode, now) {
-  const cas = expectedMap(input);
-  assertCas(affected, cas);
+function resetDraftGeneration(shot) {
+  const draft = parseJsonStrict(shot.draft_json, {});
+  draft.generation = {};
+  return stableJson(draft);
+}
+
+function updateAffected(ctx, version, affected, dependencyKind, dependencyId, reasonCode, now) {
+  const nextDraftById = new Map(affected.map((shot) => [Number(shot.id), resetDraftGeneration(shot)]));
   for (const shot of affected) {
+    const nextDraft = nextDraftById.get(Number(shot.id));
     const nextVersion = Number(shot.preparation_version || 0) + 1;
     const evidence = sha256(stableJson({
       version_id: ctx.versionId,
@@ -233,9 +265,13 @@ function updateAffected(ctx, version, affected, input, dependencyKind, dependenc
           preparation_version = ?,
           preparation_evidence_hash = ?,
           stale_reason_code = ?,
+          status = 'pending',
+          error_code = NULL,
+          error_message = NULL,
           reference_bundle_hash = NULL,
           reference_bundle_updated_at = NULL,
           video_generation_id = NULL,
+          draft_json = ?,
           updated_at = ?
       WHERE id = ? AND version_id = ? AND tenant_id = ? AND user_id = ?
         AND updated_at = ? AND deleted_at IS NULL
@@ -243,6 +279,7 @@ function updateAffected(ctx, version, affected, input, dependencyKind, dependenc
       nextVersion,
       evidence,
       reasonCode,
+      nextDraft,
       now,
       Number(shot.id),
       ctx.versionId,
@@ -280,8 +317,13 @@ function runInvalidation(ctx, input, dependencyKind, dependencyId, reasonCode, m
     const affected = readShots(ctx)
       .filter(matcher)
       .sort((a, b) => Number(a.id) - Number(b.id));
+    const cas = expectedMap(input);
+    assertCas(affected, cas);
+    if (affected.some((shot) => String(shot.status || '') === 'processing')) {
+      fail(CONFLICT_CODE, '镜头正在生成中');
+    }
     if (affected.length === 0) return [];
-    return updateAffected(ctx, version, affected, input, dependencyKind, dependencyId, reasonCode, timestamp(ctx));
+    return updateAffected(ctx, version, affected, dependencyKind, dependencyId, reasonCode, timestamp(ctx));
   };
   if (ctx.db.inTransaction) return execute();
   let begun = false;
