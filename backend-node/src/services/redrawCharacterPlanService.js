@@ -5,6 +5,7 @@ const path = require('node:path');
 const { readIdentityPack, identityPackStatus } = require('./redrawCharacterIdentityService');
 
 const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp']);
+const SUPPORTED_AUDIO_MIME_TYPES = new Set(['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/aac', 'audio/mp4']);
 
 function codedError(code, message, extra = {}) {
   return Object.assign(new Error(message), { code, ...extra });
@@ -51,25 +52,85 @@ function sourceKeyFromPayload(payload = {}) {
   return '';
 }
 
+function parseSourceFacts(value) {
+  try {
+    const facts = JSON.parse(value || '');
+    return facts && typeof facts === 'object' ? { facts, invalid: false } : { facts: {}, invalid: true };
+  } catch (_) {
+    return { facts: {}, invalid: true };
+  }
+}
+
 function expectedCharacters(version) {
-  const facts = parseJson(version.source_facts_json, {});
+  const { facts, invalid } = parseSourceFacts(version.source_facts_json);
   const raw = Array.isArray(facts.characters)
     ? facts.characters
     : Array.isArray(facts.source_characters)
       ? facts.source_characters
-      : [];
-  return raw.map((item) => ({
-    source_character_key: String(item?.source_character_key ?? item?.stable_id ?? item?.id ?? '').trim(),
-    target_name: String(item?.target_name ?? item?.localized_name ?? item?.name ?? '').trim(),
-    adult_status: String(item?.adult_status ?? '').trim(),
-    persona_origin: String(item?.persona_origin ?? '').trim(),
-  })).filter((item) => item.source_character_key);
+      : null;
+  const missing = [];
+  if (invalid) missing.push('source_facts_invalid');
+  if (!Array.isArray(raw) || raw.length === 0) {
+    missing.push('source_characters_missing');
+    return { characters: [], missing };
+  }
+  const characters = [];
+  const keys = new Set();
+  const targetNames = new Map();
+  for (const item of raw) {
+    const character = {
+      source_character_key: String(item?.source_character_key ?? item?.stable_id ?? item?.id ?? '').trim(),
+      target_name: String(item?.target_name ?? item?.localized_name ?? item?.name ?? '').trim(),
+      adult_status: String(item?.adult_status ?? '').trim(),
+      persona_origin: String(item?.persona_origin ?? '').trim(),
+    };
+    if (!character.source_character_key) {
+      missing.push('source_character_key_missing');
+      continue;
+    }
+    if (keys.has(character.source_character_key)) {
+      missing.push(`${character.source_character_key}:source_duplicate_character_key`);
+      continue;
+    }
+    keys.add(character.source_character_key);
+    if (!character.target_name) {
+      missing.push(`${character.source_character_key}:source_target_name_missing`);
+    } else {
+      const normalizedTarget = character.target_name.toLowerCase();
+      if (targetNames.has(normalizedTarget)) missing.push(`${character.source_character_key}:source_duplicate_target_name`);
+      else targetNames.set(normalizedTarget, character.source_character_key);
+    }
+    if (character.adult_status !== 'verified_18_plus') missing.push(`${character.source_character_key}:source_age_not_adult`);
+    if (character.persona_origin !== 'fictional_ai_generated') {
+      missing.push(`${character.source_character_key}:source_persona_not_fictional_ai`);
+    }
+    characters.push(character);
+  }
+  return { characters, missing };
 }
 
 function isInside(root, candidate) {
   const relative = path.relative(root, candidate);
   return Boolean(relative) && !relative.startsWith(`..${path.sep}`)
     && relative !== '..' && !path.isAbsolute(relative);
+}
+
+function samePath(left, right) {
+  const normalize = process.platform === 'win32'
+    ? (value) => path.resolve(value).toLowerCase()
+    : (value) => path.resolve(value);
+  return normalize(left) === normalize(right);
+}
+
+function sameFileIdentity(left, right) {
+  return Boolean(left && right) && left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameOpenFileState(left, right) {
+  return sameFileIdentity(left, right)
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
 }
 
 function readableAsset(ctx, asset) {
@@ -84,24 +145,29 @@ function trustedAssetOwnerHook(ctx, asset, owner) {
     && ctx.assetReader.owns(asset, owner) === true;
 }
 
+function ownerContext(ctx) {
+  return {
+    tenantId: String(ctx.tenantId ?? ctx.tenant_id ?? ''),
+    userId: String(ctx.userId ?? ctx.user_id ?? ''),
+  };
+}
+
 function assertOwnedAsset(ctx, assetId, kind) {
   const asset = ctx.db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(Number(assetId));
   if (!asset || !readableAsset(ctx, asset)) return null;
   if (kind === 'wardrobe') {
     if (asset.type !== 'image' || !SUPPORTED_IMAGE_MIME_TYPES.has(String(asset.mime_type || '').toLowerCase())) return null;
+  } else if (kind === 'voice') {
+    if (asset.type !== 'audio' || !SUPPORTED_AUDIO_MIME_TYPES.has(String(asset.mime_type || '').toLowerCase())) return null;
   }
   if (asset.drama_id != null) {
     const drama = ctx.db.prepare('SELECT tenant_id, user_id FROM dramas WHERE id = ? AND deleted_at IS NULL')
       .get(Number(asset.drama_id));
-    const tenantId = String(ctx.tenantId ?? ctx.tenant_id ?? '');
-    const userId = String(ctx.userId ?? ctx.user_id ?? '');
+    const { tenantId, userId } = ownerContext(ctx);
     const owned = String(drama?.tenant_id ?? '') === tenantId
       && (!String(drama?.user_id ?? '') || String(drama?.user_id ?? '') === userId);
     if (!owned) return null;
-  } else if (kind === 'wardrobe' && !trustedAssetOwnerHook(ctx, asset, {
-    tenantId: String(ctx.tenantId ?? ctx.tenant_id ?? ''),
-    userId: String(ctx.userId ?? ctx.user_id ?? ''),
-  })) {
+  } else if (!trustedAssetOwnerHook(ctx, asset, ownerContext(ctx))) {
     return null;
   }
   return asset;
@@ -115,14 +181,36 @@ function fileSha256(ctx, asset) {
   if (path.posix.isAbsolute(localPath) || path.win32.isAbsolute(localPath)
     || portablePath === '.' || portablePath.split('/').includes('..')) return null;
   const fsApi = ctx.fs || fs;
+  let fd = null;
   try {
     const rootRealPath = fsApi.realpathSync(storageRoot);
     const candidate = path.resolve(rootRealPath, localPath);
-    const realPath = fsApi.realpathSync(candidate);
-    if (!isInside(rootRealPath, realPath)) return null;
-    return sha256(fsApi.readFileSync(realPath));
+    if (!isInside(rootRealPath, candidate)) return null;
+    const realPathBefore = fsApi.realpathSync(candidate);
+    if (!isInside(rootRealPath, realPathBefore)) return null;
+    const constants = fsApi.constants || fs.constants;
+    const flags = constants.O_RDONLY | (constants.O_NOFOLLOW || 0);
+    fd = fsApi.openSync(candidate, flags);
+    const fdBefore = fsApi.fstatSync(fd);
+    if (!fdBefore.isFile()) return null;
+    const realPathAfter = fsApi.realpathSync(candidate);
+    if (!samePath(realPathBefore, realPathAfter) || !isInside(rootRealPath, realPathAfter)) return null;
+    if (!sameFileIdentity(fdBefore, fsApi.statSync(realPathAfter))) return null;
+    const bytes = fsApi.readFileSync(fd);
+    const fdAfter = fsApi.fstatSync(fd);
+    const realPathFinal = fsApi.realpathSync(candidate);
+    if (!samePath(realPathAfter, realPathFinal)
+      || !sameOpenFileState(fdBefore, fdAfter)
+      || !sameFileIdentity(fdAfter, fsApi.statSync(realPathFinal))) return null;
+    return sha256(bytes);
   } catch (_) {
     return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        fsApi.closeSync(fd);
+      } catch (_) {}
+    }
   }
 }
 
@@ -162,10 +250,17 @@ function voiceForCharacter(ctx, version, row, sourceKey, missing) {
     || !evidence.language_verified
     || evidence.detected_locale !== evidence.locale) {
     missing.push(`${sourceKey}:voice_language_mismatch`);
-  } else if (!assertOwnedAsset(ctx, evidence.audio_asset_id, 'voice')) {
-    missing.push(`${sourceKey}:voice_audio_unreadable`);
   } else {
-    voice.ready = true;
+    const audioAsset = assertOwnedAsset(ctx, evidence.audio_asset_id, 'voice');
+    const digest = audioAsset ? fileSha256(ctx, audioAsset) : null;
+    if (!digest) {
+      missing.push(`${sourceKey}:voice_audio_unreadable`);
+    } else if (digest !== voice.sha256) {
+      missing.push(`${sourceKey}:voice_hash_drift`);
+    } else {
+      voice.sha256 = digest;
+      voice.ready = true;
+    }
   }
   return voice;
 }
@@ -207,7 +302,8 @@ function buildCharacterPlan(ctx = {}, versionId) {
   `).get(id, tenantId, userId);
   if (!version) throw codedError('REDRAW_VERSION_NOT_FOUND', '本地化版本不存在');
 
-  const expected = expectedCharacters(version);
+  const sourceContract = expectedCharacters(version);
+  const expected = sourceContract.characters;
   const expectedByKey = new Map(expected.map((item) => [item.source_character_key, item]));
   const rows = ctx.db.prepare(`
     SELECT * FROM redraw_assets
@@ -216,7 +312,7 @@ function buildCharacterPlan(ctx = {}, versionId) {
     ORDER BY id ASC
   `).all(id, tenantId, userId);
   const rowsByKey = new Map();
-  const missing = [];
+  const missing = [...sourceContract.missing];
   for (const row of rows) {
     const key = sourceKeyFromPayload(parseJson(row.source_ref_json, {}));
     if (!key) continue;
@@ -236,7 +332,8 @@ function buildCharacterPlan(ctx = {}, versionId) {
     if (!row) continue;
     const pack = readIdentityPack(row);
     const status = identityPackStatus(pack);
-    const targetName = String(row.localized_name || pack?.target_actor_label || expectedByKey.get(key)?.target_name || '').trim();
+    const expectedItem = expectedByKey.get(key);
+    const targetName = String(expectedItem?.target_name || row.localized_name || pack?.target_actor_label || '').trim();
     if (targetName) {
       const normalized = targetName.toLowerCase();
       if (targetNames.has(normalized)) missing.push(`${key}:duplicate_target_name`);
@@ -250,10 +347,11 @@ function buildCharacterPlan(ctx = {}, versionId) {
     }
     if (pack?.adult_status !== 'verified_18_plus') missing.push(`${key}:age_not_adult`);
     if (pack?.persona_origin !== 'fictional_ai_generated') missing.push(`${key}:persona_not_fictional_ai`);
-    const expectedItem = expectedByKey.get(key);
-    if (expectedItem?.adult_status !== 'verified_18_plus') missing.push(`${key}:source_age_not_adult`);
-    if (expectedItem?.persona_origin !== 'fictional_ai_generated') {
-      missing.push(`${key}:source_persona_not_fictional_ai`);
+    if (!expectedItem) {
+      missing.push(`${key}:unexpected_character`);
+    } else if (String(row.localized_name || '').trim() !== expectedItem.target_name
+      || String(pack?.target_actor_label || '').trim() !== expectedItem.target_name) {
+      missing.push(`${key}:target_name_mismatch`);
     }
     const voice = voiceForCharacter(ctx, version, row, key, missing);
     const wardrobe = wardrobeForCharacter(ctx, key, pack, missing);
@@ -281,7 +379,10 @@ function buildCharacterPlan(ctx = {}, versionId) {
 function assertCharacterPlanReady(ctx, versionId) {
   const plan = buildCharacterPlan(ctx, versionId);
   if (!plan.ready) {
-    throw codedError('REDRAW_CHARACTER_PLAN_NOT_READY', '整集角色计划未就绪', { missing: plan.missing, plan });
+    throw codedError('REDRAW_CHARACTER_PLAN_NOT_READY', '整集角色计划未就绪', {
+      missing: plan.missing,
+      plan_hash: plan.plan_hash,
+    });
   }
   return plan;
 }

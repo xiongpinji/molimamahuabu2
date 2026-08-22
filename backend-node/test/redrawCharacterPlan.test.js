@@ -18,7 +18,6 @@ const TTS_CONFIG_ID = 91;
 const TTS_CONFIG_UPDATED_AT = '2026-08-20T00:00:00.000Z';
 const MODEL_SHA = 'a'.repeat(64);
 const CALIBRATION_SHA = 'b'.repeat(64);
-const AUDIO_SHA = 'c'.repeat(64);
 const TRANSCRIPT_SHA = 'd'.repeat(64);
 
 function sha256(value) {
@@ -53,7 +52,7 @@ function setup(sourceFacts = defaultSourceFacts()) {
      name_map_json, status, created_at, updated_at)
     VALUES (?, 'tenant-a', 'user-a', 1, 'en-US', 'US', ?, 'facts-a', '{}',
       'asset_review', ?, ?)`)
-    .run(workId, JSON.stringify(sourceFacts), NOW, NOW);
+    .run(workId, typeof sourceFacts === 'string' ? sourceFacts : JSON.stringify(sourceFacts), NOW, NOW);
   db.prepare(`INSERT INTO ai_service_configs
     (id, service_type, provider, name, model, default_model, is_active, created_at, updated_at)
     VALUES (?, 'tts', 'fake-tts', 'TTS', ?, 'model-tts', 1, ?, ?)`)
@@ -61,12 +60,13 @@ function setup(sourceFacts = defaultSourceFacts()) {
   return { db, root, versionId: Number(db.prepare('SELECT id FROM redraw_versions LIMIT 1').get().id) };
 }
 
-function close(state) {
+function close(state, extraPaths = []) {
   state.db.close();
   fs.rmSync(state.root, { recursive: true, force: true });
+  for (const extraPath of extraPaths) fs.rmSync(extraPath, { recursive: true, force: true });
 }
 
-function context(state) {
+function context(state, overrides = {}) {
   return {
     db: state.db,
     tenantId: 'tenant-a',
@@ -86,6 +86,7 @@ function context(state) {
         return Boolean(asset?.local_path && fs.existsSync(path.join(state.root, asset.local_path)));
       },
     },
+    ...overrides,
   };
 }
 
@@ -146,20 +147,21 @@ function addCharacter(state, sourceKey, targetName, input = {}) {
 
 function addVoice(state, sourceKey, input = {}) {
   const audioAssetId = input.audioAssetId || sourceKey.charCodeAt(sourceKey.length - 1) + 300;
+  const audioBytes = Buffer.from(`voice-${sourceKey}`);
   addProviderAsset(state, audioAssetId, `${sourceKey}.mp3`, {
     type: 'audio',
     mimeType: 'audio/mpeg',
     duration: 3.2,
     width: null,
     height: null,
-    bytes: Buffer.from(`voice-${sourceKey}`),
+    bytes: audioBytes,
   });
   const evidence = {
     source: 'offline-worker',
     locale: input.locale || 'en-US',
     market: input.market || 'US',
     locale_pack: 'en-US@fixture',
-    audio_sha256: AUDIO_SHA,
+    audio_sha256: input.audioSha256 || sha256(audioBytes),
     transcript_sha256: TRANSCRIPT_SHA,
     model_manifest_sha256: MODEL_SHA,
     calibration_manifest_sha256: CALIBRATION_SHA,
@@ -279,11 +281,36 @@ test('assertCharacterPlanReady fail closed 并带稳定缺口', () => {
   }
 });
 
-test('角色计划拒绝缺角色、重复键、重复目标名和复用身份包', () => {
+test('assertCharacterPlanReady 不泄露完整计划、资产 ID、哈希和角色名', () => {
+  const state = makeReadyState();
+  try {
+    state.db.prepare("UPDATE redraw_assets SET approval_status = 'pending' WHERE kind = 'voice' AND localized_name = 'voice char-a'")
+      .run();
+
+    assert.throws(
+      () => assertCharacterPlanReady(context(state), state.versionId),
+      (error) => {
+        const serialized = JSON.stringify(error);
+        assert.equal(error.code, 'REDRAW_CHARACTER_PLAN_NOT_READY');
+        assert.deepEqual(error.missing, ['char-a:voice_not_approved']);
+        assert.equal(Object.hasOwn(error, 'plan'), false);
+        assert.equal(serialized.includes('Alice Carter'), false);
+        assert.equal(serialized.includes('identity_pack_sha256'), false);
+        assert.equal(serialized.includes('asset_id'), false);
+        assert.equal(serialized.includes('sha256'), false);
+        return true;
+      },
+    );
+  } finally {
+    close(state);
+  }
+});
+
+test('角色计划拒绝缺角色、重复键、目标名漂移和复用身份包', () => {
   const cases = [
     ['missing_character', (state) => state.db.prepare("DELETE FROM redraw_assets WHERE kind = 'character' AND localized_name = 'Alice Carter'").run()],
     ['duplicate_source_character_key', (state) => addCharacter(state, 'char-a', 'Alicia Carter', { assetId: 501, wardrobeAssetId: 601 })],
-    ['duplicate_target_name', (state) => state.db.prepare("UPDATE redraw_assets SET localized_name = 'Alice Carter' WHERE kind = 'character' AND localized_name = 'Brian Miller'").run()],
+    ['target_name_mismatch', (state) => state.db.prepare("UPDATE redraw_assets SET localized_name = 'Alice Carter' WHERE kind = 'character' AND localized_name = 'Brian Miller'").run()],
     ['identity_pack_reused', (state) => {
       const first = state.db.prepare("SELECT source_ref_json FROM redraw_assets WHERE kind = 'character' AND localized_name = 'Alice Carter'").get();
       const payload = JSON.parse(first.source_ref_json);
@@ -356,6 +383,73 @@ test('角色计划拒绝年龄、真人来源、声音语言和服装证据问�
   }
 });
 
+test('角色计划拒绝声音哈希漂移和不可证明 owner 的声音资产', () => {
+  const cases = [
+    ['voice_hash_drift', (state) => {
+      const row = state.db.prepare("SELECT source_ref_json FROM redraw_assets WHERE kind = 'character' AND localized_name = 'Alice Carter'").get();
+      const payload = JSON.parse(row.source_ref_json);
+      payload.snapshot.voice_snapshot.audio_sha256 = 'f'.repeat(64);
+      state.db.prepare("UPDATE redraw_assets SET source_ref_json = ? WHERE kind = 'character' AND localized_name = 'Alice Carter'")
+        .run(JSON.stringify(payload));
+    }],
+    ['voice_audio_unreadable', (state) => {
+      state.db.prepare("UPDATE assets SET drama_id = NULL WHERE local_path = 'char-a.mp3'").run();
+    }],
+    ['voice_audio_unreadable', (state) => {
+      state.db.prepare(`INSERT INTO dramas
+        (id, title, tenant_id, user_id, created_at, updated_at)
+        VALUES (88, 'other voice', 'tenant-b', 'user-b', ?, ?)`).run(NOW, NOW);
+      state.db.prepare("UPDATE assets SET drama_id = 88 WHERE local_path = 'char-a.mp3'").run();
+    }],
+  ];
+  for (const [expectedMissing, mutate] of cases) {
+    const state = makeReadyState();
+    try {
+      mutate(state);
+      const plan = buildCharacterPlan(context(state), state.versionId);
+      assert.equal(plan.ready, false, expectedMissing);
+      assert.equal(plan.missing.includes(`char-a:${expectedMissing}`), true, expectedMissing);
+      assert.equal(plan.characters.find((item) => item.source_character_key === 'char-a').voice.ready, false);
+    } finally {
+      close(state);
+    }
+  }
+});
+
+test('角色计划在声音文件读取期间 realpath 漂移时 fail closed', () => {
+  const state = makeReadyState();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-plan-voice-toctou-'));
+  try {
+    const audio = path.join(state.root, 'char-a.mp3');
+    const outsideFile = path.join(outside, 'replaced.mp3');
+    fs.writeFileSync(outsideFile, Buffer.from('replaced-voice'));
+    let audioRealpathCalls = 0;
+    const injectedFs = {
+      constants: fs.constants,
+      realpathSync(value) {
+        if (path.resolve(value) === path.resolve(audio)) {
+          audioRealpathCalls += 1;
+          if (audioRealpathCalls > 1) return fs.realpathSync(outsideFile);
+        }
+        return fs.realpathSync(value);
+      },
+      openSync: (...args) => fs.openSync(...args),
+      fstatSync: (...args) => fs.fstatSync(...args),
+      statSync: (...args) => fs.statSync(...args),
+      readFileSync: (...args) => fs.readFileSync(...args),
+      closeSync: (...args) => fs.closeSync(...args),
+    };
+
+    const plan = buildCharacterPlan(context(state, { fs: injectedFs }), state.versionId);
+
+    assert.equal(plan.ready, false);
+    assert.equal(plan.missing.includes('char-a:voice_audio_unreadable'), true);
+    assert.equal(plan.characters.find((item) => item.source_character_key === 'char-a').voice.ready, false);
+  } finally {
+    close(state, [outside]);
+  }
+});
+
 test('角色计划拒绝源事实中的未成年、未知年龄和真人来源', () => {
   const cases = [
     ['minor', { adult_status: 'minor' }, 'char-a:source_age_not_adult'],
@@ -372,6 +466,72 @@ test('角色计划拒绝源事实中的未成年、未知年龄和真人来源',
     } finally {
       close(state);
     }
+  }
+});
+
+test('角色计划拒绝无效、空缺、重复或不可作为唯一合同的源事实', () => {
+  const invalidFactsCases = [
+    ['invalid_json', '{bad json', 'source_facts_invalid'],
+    ['not_array', { characters: {} }, 'source_characters_missing'],
+    ['empty', { characters: [] }, 'source_characters_missing'],
+    ['missing_key', {
+      characters: [
+        { target_name: 'Alice Carter', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
+        { source_character_key: 'char-b', target_name: 'Brian Miller', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
+      ],
+    }, 'source_character_key_missing'],
+    ['duplicate_key', {
+      characters: [
+        { source_character_key: 'char-a', target_name: 'Alice Carter', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
+        { source_character_key: 'char-a', target_name: 'Alicia Carter', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
+        { source_character_key: 'char-b', target_name: 'Brian Miller', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
+      ],
+    }, 'char-a:source_duplicate_character_key'],
+    ['blank_target', {
+      characters: [
+        { source_character_key: 'char-a', target_name: ' ', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
+        { source_character_key: 'char-b', target_name: 'Brian Miller', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
+      ],
+    }, 'char-a:source_target_name_missing'],
+    ['duplicate_target', {
+      characters: [
+        { source_character_key: 'char-a', target_name: 'Alice Carter', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
+        { source_character_key: 'char-b', target_name: 'Alice Carter', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
+      ],
+    }, 'char-b:source_duplicate_target_name'],
+  ];
+  for (const [reason, facts, expectedMissing] of invalidFactsCases) {
+    const state = setup(facts);
+    try {
+      addCharacter(state, 'char-b', 'Brian Miller');
+      addCharacter(state, 'char-a', 'Alice Carter');
+      addVoice(state, 'char-a');
+      addVoice(state, 'char-b');
+
+      const plan = buildCharacterPlan(context(state), state.versionId);
+
+      assert.equal(plan.ready, false, reason);
+      assert.equal(plan.missing.includes(expectedMissing), true, reason);
+    } finally {
+      close(state);
+    }
+  }
+});
+
+test('角色计划以源事实 target_name 为准并拒绝 row 或 pack 名称漂移', () => {
+  const state = makeReadyState({
+    sourceKey: 'char-a',
+    patch: { target_name: 'Canonical Alice' },
+  });
+  try {
+    const plan = buildCharacterPlan(context(state), state.versionId);
+    const character = plan.characters.find((item) => item.source_character_key === 'char-a');
+
+    assert.equal(plan.ready, false);
+    assert.equal(plan.missing.includes('char-a:target_name_mismatch'), true);
+    assert.equal(character.target_name, 'Canonical Alice');
+  } finally {
+    close(state);
   }
 });
 
