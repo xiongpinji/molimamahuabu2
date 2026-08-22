@@ -30,6 +30,32 @@ import {
   normalizeCanvasModelCatalog,
 } from '../src/utils/canvasModelCapabilities.js'
 
+test('支持同步音频的视频模型默认开启声音且无声提交必须二次确认', () => {
+  assert.equal(typeof freeCanvasGeneration.defaultFreeCanvasVideoIncludeAudio, 'function')
+  assert.equal(typeof freeCanvasGeneration.resolveFreeCanvasVideoIncludeAudio, 'function')
+  assert.equal(typeof freeCanvasGeneration.requiresSilentVideoConfirmation, 'function')
+  assert.equal(freeCanvasGeneration.defaultFreeCanvasVideoIncludeAudio({ supportsAudio: true }), true)
+  assert.equal(freeCanvasGeneration.defaultFreeCanvasVideoIncludeAudio({ supportsAudio: false }), false)
+  assert.equal(freeCanvasGeneration.requiresSilentVideoConfirmation({
+    kind: 'video', includeAudio: false,
+  }, { supportsAudio: true }), true)
+  assert.equal(freeCanvasGeneration.requiresSilentVideoConfirmation({
+    kind: 'video', includeAudio: true,
+  }, { supportsAudio: true }), false)
+  assert.equal(freeCanvasGeneration.requiresSilentVideoConfirmation({
+    kind: 'image', includeAudio: false,
+  }, { supportsAudio: true }), false)
+  assert.equal(freeCanvasGeneration.resolveFreeCanvasVideoIncludeAudio({
+    kind: 'video',
+  }, { supportsAudio: true }), true)
+  assert.equal(freeCanvasGeneration.resolveFreeCanvasVideoIncludeAudio({
+    kind: 'video', includeAudio: false,
+  }, { supportsAudio: true }), false)
+  assert.equal(freeCanvasGeneration.requiresSilentVideoConfirmation({
+    kind: 'video',
+  }, { supportsAudio: true }), false)
+})
+
 test('自由节点任务轮询容忍瞬时断网并继续查询同一 task_id', async () => {
   const calls = []
   const task = await pollFreeCanvasTask('task-video-1', {

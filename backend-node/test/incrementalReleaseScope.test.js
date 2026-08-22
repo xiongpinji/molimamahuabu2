@@ -36,6 +36,12 @@ const needsAttentionClosureManifestPath = path.join(
   'release-scopes',
   'provider-needs-attention-state-closure-20260822.json',
 );
+const videoAudioCreditManifestPath = path.join(
+  repoRoot,
+  'deploy',
+  'release-scopes',
+  'video-audio-credit-reconciliation-20260822.json',
+);
 const COMPLETE_ACCEPTANCE_ALLOWED_PATHS = [
   'backend-node/package.json',
   'backend-node/scripts/verify-platform-feature-acceptance.js',
@@ -174,6 +180,20 @@ const NEEDS_ATTENTION_CLOSURE_ALLOWED_PATHS = [
   'docs/verification/platform-stability/feature-lock-manifest.json',
   'docs/verification/platform-stability/provider-needs-attention-state-closure-20260822.md',
 ];
+const VIDEO_AUDIO_CREDIT_ALLOWED_PATHS = [
+  'backend-node/src/services/providerReconciliationService.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/providerReconciliation.test.js',
+  'deploy/release-scopes/video-audio-credit-reconciliation-20260822.json',
+  'docs/verification/platform-stability/feature-lock-manifest.json',
+  'docs/verification/platform-stability/video-audio-credit-reconciliation-20260822.md',
+  'frontweb/src/components/dramaCanvas/HomeCanvasNode.vue',
+  'frontweb/src/utils/freeCanvasGeneration.js',
+  'frontweb/src/views/DramaCanvas.vue',
+  'frontweb/test/standaloneCanvasFreeNodeGeneration.test.js',
+  'frontweb/test/toapisVideoCanvasContract.test.js',
+];
 
 function assertExactProactiveCanaryScope(allowedPaths) {
   assert.deepEqual(allowedPaths, PROACTIVE_CANARY_ALLOWED_PATHS);
@@ -189,6 +209,10 @@ function assertExactSharedFoundationScope(allowedPaths) {
 
 function assertExactNeedsAttentionClosureScope(allowedPaths) {
   assert.deepEqual(allowedPaths, NEEDS_ATTENTION_CLOSURE_ALLOWED_PATHS);
+}
+
+function assertExactVideoAudioCreditScope(allowedPaths) {
+  assert.deepEqual(allowedPaths, VIDEO_AUDIO_CREDIT_ALLOWED_PATHS);
 }
 
 function createFixture() {
@@ -422,6 +446,41 @@ test('结果未知状态收口发布范围拒绝同数量偷换任一文件', ()
   assert.equal(swapped.length, NEEDS_ATTENTION_CLOSURE_ALLOWED_PATHS.length);
   assert.throws(
     () => assertExactNeedsAttentionClosureScope(swapped),
+    { name: 'AssertionError' },
+  );
+});
+
+test('视频音频与冻结积分收口发布范围是精确 12 文件白名单', () => {
+  const { manifest, allowedPaths } = loadManifest(videoAudioCreditManifestPath);
+  assert.equal(manifest.release, 'video-audio-credit-reconciliation-20260822');
+  assertExactVideoAudioCreditScope(allowedPaths);
+  assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
+
+  for (const forbidden of [
+    'backend-node/data',
+    'backend-node/uploads',
+    'storage',
+    'assets',
+    'ai-music',
+    'moli-music',
+    'deploy/install-protected-release-guard.sh',
+    'shared/release-guard',
+  ]) {
+    assert.equal(
+      allowedPaths.some((entry) => entry === forbidden || entry.startsWith(`${forbidden}/`)),
+      false,
+      `发布范围不得包含: ${forbidden}`,
+    );
+  }
+});
+
+test('视频音频与冻结积分收口发布范围拒绝同数量偷换任一文件', () => {
+  const swapped = [...VIDEO_AUDIO_CREDIT_ALLOWED_PATHS];
+  const index = swapped.indexOf('backend-node/src/services/providerReconciliationService.js');
+  swapped[index] = 'backend-node/data/drama_generator.db';
+  assert.equal(swapped.length, VIDEO_AUDIO_CREDIT_ALLOWED_PATHS.length);
+  assert.throws(
+    () => assertExactVideoAudioCreditScope(swapped),
     { name: 'AssertionError' },
   );
 });

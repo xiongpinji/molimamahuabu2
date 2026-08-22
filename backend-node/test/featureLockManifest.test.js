@@ -85,8 +85,8 @@ const SHARED_FOUNDATION_UNLOCK = {
   ],
 };
 const UNKNOWN_STATE_RECONCILIATION_UNLOCK = {
-  reason: '2026-08-22 结果未知任务稳定收口标准执行授权',
-  approvedBy: 'product-owner 2026-08-22 stable-runtime-standard-execution',
+  reason: '2026-08-22 视频音频与冻结积分收口本地 TDD 授权',
+  approvedBy: 'product-owner 2026-08-22 video-audio-credit-reconciliation',
   impactTests: [
     'backend-node/test/providerReconciliation.test.js',
     'backend-node/test/billingReconciliation.test.js',
@@ -94,6 +94,8 @@ const UNKNOWN_STATE_RECONCILIATION_UNLOCK = {
     'backend-node/test/providerRouteImageIntegration.test.js',
     'backend-node/test/providerRouteVideoIntegration.test.js',
     'backend-node/test/featureLockManifest.test.js',
+    'frontweb/test/standaloneCanvasFreeNodeGeneration.test.js',
+    'frontweb/test/toapisVideoCanvasContract.test.js',
   ],
 };
 const PROACTIVE_CANARY_CORE_PATHS = [
@@ -232,6 +234,9 @@ test('结果未知状态收口保留本轮批准解锁和同批证据', () => {
   assert.deepEqual(feature.unlock, UNKNOWN_STATE_RECONCILIATION_UNLOCK);
   assert.ok(feature.evidence.includes(
     'docs/verification/platform-stability/provider-needs-attention-state-closure-20260822.md',
+  ));
+  assert.ok(feature.evidence.includes(
+    'docs/verification/platform-stability/video-audio-credit-reconciliation-20260822.md',
   ));
 });
 
