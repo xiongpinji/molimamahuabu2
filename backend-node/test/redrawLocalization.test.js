@@ -11,6 +11,11 @@ const {
   createLocalizationVersion,
   validateLocalizedDialogue,
 } = require('../src/services/localizationService');
+const { evaluateGenerationGate } = require('../src/services/redrawReviewService');
+
+function hasColumn(db, table, column) {
+  return db.prepare(`PRAGMA table_info(${table})`).all().some((row) => row.name === column);
+}
 
 function sourceFacts() {
   return {
@@ -286,6 +291,9 @@ function createDb(options = {}) {
 function createV2Db() {
   const db = createDb();
   db.exec('ALTER TABLE redraw_shots ADD COLUMN draft_json TEXT NOT NULL DEFAULT \'{}\'');
+  if (!hasColumn(db, 'redraw_versions', 'reference_bundle_required')) {
+    db.exec('ALTER TABLE redraw_versions ADD COLUMN reference_bundle_required INTEGER NOT NULL DEFAULT 0');
+  }
   db.prepare('DELETE FROM redraw_shots').run();
   db.prepare('DELETE FROM redraw_versions').run();
   db.prepare('UPDATE redraw_works SET current_version = 1, current_step = 1, status = ? WHERE id = 1')
@@ -487,6 +495,12 @@ test('v2 物化仅保存源片事实白名单并以 source_character_key 幂等�
     ...normalized,
   });
   assert.equal(result.id, draft.id);
+  if (hasColumn(db, 'redraw_versions', 'reference_bundle_required')) {
+    assert.equal(db.prepare('SELECT reference_bundle_required FROM redraw_versions WHERE id = ?').get(draft.id).reference_bundle_required, 1);
+  }
+  const gate = evaluateGenerationGate(db, draft.id, { tenantId: 'tenant-a', userId: 'user-a' });
+  assert.equal(gate.ok, false);
+  assert.equal(gate.blocking[0].code, 'preparation_not_ready');
 
   const shots = db.prepare('SELECT * FROM redraw_shots WHERE version_id = ? ORDER BY shot_index').all(draft.id);
   assert.equal(shots.length, 2);
@@ -578,6 +592,21 @@ test('v2 物化拒绝缺失 text_map 目标且不留下部分版本证据', () =
   assert.deepEqual(JSON.parse(db.prepare('SELECT text_map_json FROM redraw_versions WHERE id = ?').get(draft.id).text_map_json), {});
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_shots WHERE version_id = ?').get(draft.id).count, 0);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_assets WHERE version_id = ?').get(draft.id).count, 0);
+  db.close();
+});
+
+test('v1 物化保持旧版本 reference_bundle_required=0 兼容', () => {
+  const db = createDb();
+  if (!hasColumn(db, 'redraw_versions', 'reference_bundle_required')) {
+    db.exec('ALTER TABLE redraw_versions ADD COLUMN reference_bundle_required INTEGER NOT NULL DEFAULT 0');
+  }
+  const result = createLocalizationVersion(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, localizationPayload());
+  assert.equal(
+    db.prepare('SELECT reference_bundle_required FROM redraw_versions WHERE id = ?').get(result.id).reference_bundle_required,
+    0,
+  );
+  const gate = evaluateGenerationGate(db, result.id, { tenantId: 'tenant-a', userId: 'user-a' });
+  assert.notEqual(gate.blocking[0]?.code, 'preparation_not_ready');
   db.close();
 });
 

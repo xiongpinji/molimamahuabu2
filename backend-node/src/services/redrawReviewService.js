@@ -20,6 +20,10 @@ function parseJson(value, fallback) {
   }
 }
 
+function hasColumn(db, table, column) {
+  return db.prepare(`PRAGMA table_info(${table})`).all().some((row) => row.name === column);
+}
+
 function normalizeOwner(input = {}) {
   return {
     tenantId: input.tenantId ?? input.tenant_id ?? null,
@@ -136,8 +140,9 @@ function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
       };
     }
   }
+  const canReadDraftJson = hasColumn(db, 'redraw_shots', 'draft_json');
   const shots = db.prepare(`
-    SELECT id, shot_id, shot_index, references_json, draft_json
+    SELECT id, shot_id, shot_index, references_json${canReadDraftJson ? ', draft_json' : ''}
     FROM redraw_shots
     WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
     ORDER BY batch_index ASC, shot_index ASC, id ASC

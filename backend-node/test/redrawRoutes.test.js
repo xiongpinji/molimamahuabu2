@@ -13,6 +13,7 @@ const prices = require('../src/services/modelPriceService');
 const realRedrawOrchestrator = require('../src/services/redrawOrchestrator');
 const redrawCapabilityService = require('../src/services/redrawCapabilityService');
 const redrawAssetService = require('../src/services/redrawAssetService');
+const redrawReviewService = require('../src/services/redrawReviewService');
 
 const NOW = '2026-08-06T00:00:00.000Z';
 const EXPECTED_SERVER_AUTOMATION_POLICY = {
@@ -1714,6 +1715,40 @@ test('阶段 2 资产审核路由返回门禁并禁止普通更新接口改审�
     assert.equal(review.body.data.asset.approval_status, 'approved');
     assert.equal(review.body.data.gate.ok, true);
   } finally {
+    db.close();
+  }
+});
+
+test('生成审核门禁未知异常响应脱敏但保留 not found 语义', () => {
+  const db = createDb();
+  const original = redrawReviewService.evaluateGenerationGate;
+  const logs = [];
+  try {
+    const handlers = redrawRoutes(db, { error(error, message) { logs.push({ error, message }); } }, routeDeps());
+    redrawReviewService.evaluateGenerationGate = () => {
+      throw Object.assign(new Error('C:\\private\\gate.json Authorization Bearer sk-secret Key=raw'), {
+        cause: new Error('https://provider.example/private'),
+      });
+    };
+    const result = captureResponse();
+    handlers.generationGate(request({ id: 1 }), result);
+
+    assert.equal(result.statusCode, 500);
+    assert.equal(result.body.error.message, '读取生成审核门禁失败');
+    const serialized = JSON.stringify(result.body);
+    for (const secret of ['C:\\private', 'Authorization', 'sk-secret', 'provider.example', 'Key=raw']) {
+      assert.equal(serialized.includes(secret), false, secret);
+    }
+    assert.equal(logs.length, 1);
+
+    redrawReviewService.evaluateGenerationGate = () => {
+      throw Object.assign(new Error('missing'), { code: 'REDRAW_VERSION_NOT_FOUND' });
+    };
+    const notFound = captureResponse();
+    handlers.generationGate(request({ id: 404 }), notFound);
+    assert.equal(notFound.statusCode, 404);
+  } finally {
+    redrawReviewService.evaluateGenerationGate = original;
     db.close();
   }
 });

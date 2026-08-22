@@ -46,6 +46,27 @@ function insertAsset(db, input) {
     );
 }
 
+function textCleanPack(input) {
+  const pack = {
+    schema_version: 'text-clean-plate-reference-v1',
+    region_key: input.regionKey,
+    kind: input.kind,
+    artifact: {
+      asset_id: input.assetId,
+      sha256: input.sha256,
+      width: 640,
+      height: 360,
+      mime_type: 'image/png',
+    },
+    source_fingerprint: input.sourceFingerprint,
+    ready: true,
+    reviewed_by: 'user-a',
+    reviewed_at: NOW,
+  };
+  pack.pack_sha256 = sha256(stableJson(pack));
+  return pack;
+}
+
 function identityPack(input) {
   const pack = {
     schema_version: 'target-actor-identity-v1',
@@ -100,9 +121,13 @@ function setup() {
   const imageBytes = Buffer.from('identity-image');
   const wardrobeBytes = Buffer.from('wardrobe-image');
   const voiceBytes = Buffer.from('voice-audio');
+  const motionBytes = Buffer.from('motion-reference-video');
+  const textCleanBytes = Buffer.from('text-clean-image');
   writeFile(storageRoot, 'redraw/identity.png', imageBytes);
   writeFile(storageRoot, 'redraw/wardrobe.png', wardrobeBytes);
   writeFile(storageRoot, 'redraw/voice.mp3', voiceBytes);
+  writeFile(storageRoot, 'redraw/motion.mp4', motionBytes);
+  writeFile(storageRoot, 'redraw/text-clean.png', textCleanBytes);
   insertAsset(db, {
     id: 301,
     type: 'image',
@@ -123,6 +148,20 @@ function setup() {
     mimeType: 'audio/mpeg',
     localPath: 'redraw/voice.mp3',
     sha256: sha256(voiceBytes),
+  });
+  insertAsset(db, {
+    id: 601,
+    type: 'video',
+    mimeType: 'video/mp4',
+    localPath: 'redraw/motion.mp4',
+    sha256: sha256(motionBytes),
+  });
+  insertAsset(db, {
+    id: 302,
+    type: 'image',
+    mimeType: 'image/png',
+    localPath: 'redraw/text-clean.png',
+    sha256: sha256(textCleanBytes),
   });
   db.prepare(`INSERT INTO redraw_projects
     (tenant_id, user_id, title, created_at, updated_at)
@@ -188,9 +227,19 @@ function setup() {
     (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
      clean_plate_asset_id, version_number, approval_status, approved_by,
      approved_at, status, created_at, updated_at)
-    VALUES (202, ?, 'tenant-a', 'user-a', 'scene', '{}', 'clean plate',
+    VALUES (202, ?, 'tenant-a', 'user-a', 'scene', ?, 'clean plate',
       302, 1, 'approved', 'user-a', ?, 'generated', ?, ?)`)
-    .run(versionId, NOW, NOW, NOW);
+    .run(versionId, JSON.stringify({
+      source_ref: { stable_id: 'text-001', kind: 'text_subtitle' },
+      snapshot: { mode: 'text_clean_plate' },
+      text_clean_plate_pack: textCleanPack({
+        regionKey: 'text-001',
+        kind: 'text_subtitle',
+        assetId: 302,
+        sha256: sha256(textCleanBytes),
+        sourceFingerprint: sha256('source'),
+      }),
+    }), NOW, NOW, NOW);
   const shotId = Number(db.prepare(`INSERT INTO redraw_shots
     (work_id, version_id, tenant_id, user_id, shot_id, batch_index, shot_index,
      start_ms, end_ms, duration_ms, references_json, status, preparation_state,
@@ -203,6 +252,15 @@ function setup() {
     storageRoot,
     versionId,
     shotId,
+    identityPackHash: pack.pack_sha256,
+    motionHash: sha256(motionBytes),
+    textCleanPackHash: textCleanPack({
+      regionKey: 'text-001',
+      kind: 'text_subtitle',
+      assetId: 302,
+      sha256: sha256(textCleanBytes),
+      sourceFingerprint: sha256('source'),
+    }).pack_sha256,
     cleanup() {
       db.close();
       fs.rmSync(storageRoot, { recursive: true, force: true });
@@ -238,13 +296,13 @@ function makeBundle(state, overrides = {}) {
       track_key: 'face-001',
       source_character_key: 'char-a',
       identity_redraw_asset_id: 201,
-      identity_pack_sha256: 'a'.repeat(64),
+      identity_pack_sha256: state.identityPackHash,
       time_ranges: [[0, 5000]],
     }],
     text_regions: [],
     motion_reference: {
       asset_id: 601,
-      sha256: 'b'.repeat(64),
+      sha256: state.motionHash,
       duration_ms: 5000,
       reviewed_at: NOW,
     },
@@ -433,6 +491,138 @@ test('准备门禁稳定报告 bundle 版本镜头错配、owner 错配、空镜
       const gate = evaluatePreparationGate(context(state), state.versionId);
       assert.equal(gate.ok, false, entry.reason);
       assert.equal(gate.missing.some((item) => item.reason_code === entry.reason), true, entry.reason);
+    } finally {
+      state.cleanup();
+    }
+  }
+});
+
+test('准备门禁拒绝伪造的人物、文字和运动证据', () => {
+  const cases = [
+    {
+      reason: 'face_coverage_missing',
+      mutate(state) {
+        makeBundle(state, {
+          face_tracks: [null],
+        });
+      },
+    },
+    {
+      reason: 'character_reference_invalid',
+      mutate(state) {
+        makeBundle(state, {
+          face_tracks: [{
+            track_key: 'face-001',
+            source_character_key: 'char-a',
+            identity_redraw_asset_id: 999,
+            identity_pack_sha256: state.identityPackHash,
+            time_ranges: [[0, 5000]],
+          }],
+        });
+      },
+    },
+    {
+      reason: 'character_reference_invalid',
+      mutate(state) {
+        makeBundle(state);
+        state.db.prepare("UPDATE redraw_assets SET user_id = 'user-b' WHERE id = 201").run();
+      },
+    },
+    {
+      reason: 'character_reference_invalid',
+      mutate(state) {
+        makeBundle(state, {
+          face_tracks: [{
+            track_key: 'face-001',
+            source_character_key: 'char-a',
+            identity_redraw_asset_id: 201,
+            identity_pack_sha256: '0'.repeat(64),
+            time_ranges: [[0, 5000]],
+          }],
+        });
+      },
+    },
+    {
+      reason: 'text_cleanup_missing',
+      mutate(state) {
+        makeBundle(state, {
+          text_regions: [null],
+          coverage_review: {
+            status: 'approved',
+            reviewed_by: 'user-a',
+            reviewed_at: NOW,
+            recognizable_face_count: 1,
+            mapped_face_count: 1,
+            unresolved_face_count: 0,
+            recognizable_text_region_count: 1,
+            mapped_text_region_count: 1,
+            unresolved_text_region_count: 0,
+          },
+        });
+      },
+    },
+    {
+      reason: 'text_cleanup_missing',
+      mutate(state) {
+        makeBundle(state, {
+          text_regions: [{
+            region_key: 'text-001',
+            kind: 'text_subtitle',
+            time_ranges: [[0, 5000]],
+            text_clean_redraw_asset_id: 999,
+            clean_plate: { pack_sha256: state.textCleanPackHash },
+          }],
+          coverage_review: {
+            status: 'approved',
+            reviewed_by: 'user-a',
+            reviewed_at: NOW,
+            recognizable_face_count: 1,
+            mapped_face_count: 1,
+            unresolved_face_count: 0,
+            recognizable_text_region_count: 1,
+            mapped_text_region_count: 1,
+            unresolved_text_region_count: 0,
+          },
+        });
+      },
+    },
+    {
+      reason: 'motion_reference_not_current',
+      mutate(state) {
+        makeBundle(state, {
+          motion_reference: {
+            asset_id: 999,
+            sha256: state.motionHash,
+            duration_ms: 5000,
+            reviewed_at: NOW,
+          },
+        });
+      },
+    },
+    {
+      reason: 'motion_reference_not_current',
+      mutate(state) {
+        makeBundle(state, {
+          motion_reference: {
+            asset_id: 601,
+            sha256: 'f'.repeat(64),
+            duration_ms: 5000,
+            reviewed_at: NOW,
+          },
+        });
+      },
+    },
+  ];
+  for (const entry of cases) {
+    const state = setup();
+    try {
+      entry.mutate(state);
+      const gate = evaluatePreparationGate(context(state), state.versionId);
+      assert.equal(gate.ok, false, entry.reason);
+      assert.equal(gate.missing.some((item) => item.reason_code === entry.reason), true, entry.reason);
+      const serialized = JSON.stringify(gate);
+      assert.equal(serialized.includes('Alice Carter'), false);
+      assert.equal(serialized.includes(state.storageRoot), false);
     } finally {
       state.cleanup();
     }

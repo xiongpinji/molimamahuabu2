@@ -3044,7 +3044,8 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
       return response.success(res, redrawReviewService.evaluateGenerationGate(db, req.params.id, currentOwner));
     } catch (error) {
       if (error.code === 'REDRAW_VERSION_NOT_FOUND') return response.notFound(res, '本地化版本不存在');
-      return response.internalError(res, error.message || '读取生成审核门禁失败');
+      if (log && typeof log.error === 'function') log.error(error, '读取生成审核门禁失败');
+      return response.internalError(res, '读取生成审核门禁失败');
     }
   }
 
