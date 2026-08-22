@@ -9,6 +9,10 @@ const NOT_FOUND_CODE = 'REDRAW_DEPENDENCY_INVALIDATION_VERSION_NOT_FOUND';
 const CONFLICT_CODE = 'REDRAW_DEPENDENCY_INVALIDATION_CONFLICT';
 const REASON_CODE = /^[a-z][a-z0-9_]{0,63}$/;
 const HEX_64 = /^[0-9a-f]{64}$/;
+const CHARACTER_DEPENDENCY_KINDS = new Set(['character', 'wardrobe']);
+const CHARACTER_REF_KINDS = new Set(['character', 'identity', 'wardrobe']);
+const VOICE_REF_KINDS = new Set(['voice', 'dialogue', 'speaker']);
+const TEXT_REF_KINDS = new Set(['text', 'text_region', 'text_subtitle', 'text_screen']);
 
 function codedError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -94,23 +98,6 @@ function readShots(ctx) {
   `).all(ctx.versionId, ctx.tenantId, ctx.userId);
 }
 
-function collectStrings(value, keys, out = new Set()) {
-  if (value == null) return out;
-  if (Array.isArray(value)) {
-    for (const item of value) collectStrings(item, keys, out);
-    return out;
-  }
-  if (typeof value !== 'object') return out;
-  for (const [key, entry] of Object.entries(value)) {
-    if (keys.has(key) && entry != null) {
-      const normalized = String(entry).trim();
-      if (normalized) out.add(normalized);
-    }
-    collectStrings(entry, keys, out);
-  }
-  return out;
-}
-
 function bundleCharacterKeys(bundle) {
   const keys = new Set();
   for (const face of Array.isArray(bundle.face_tracks) ? bundle.face_tracks : []) {
@@ -138,12 +125,40 @@ function bundleTextKeys(bundle) {
   return keys;
 }
 
+function refKind(ref) {
+  return String(ref?.kind ?? ref?.type ?? ref?.role ?? '').trim().toLowerCase();
+}
+
+function addString(out, value) {
+  const normalized = String(value ?? '').trim();
+  if (normalized) out.add(normalized);
+}
+
 function refsCharacterKeys(references) {
-  return collectStrings(references, new Set(['source_character_key', 'character_key', 'speaker_id']));
+  const keys = new Set();
+  for (const ref of Array.isArray(references) ? references : []) {
+    if (!ref || typeof ref !== 'object' || Array.isArray(ref) || !CHARACTER_REF_KINDS.has(refKind(ref))) continue;
+    addString(keys, ref.source_character_key ?? ref.sourceCharacterKey ?? ref.character_key ?? ref.characterKey);
+  }
+  return keys;
+}
+
+function refsVoiceKeys(references) {
+  const keys = new Set();
+  for (const ref of Array.isArray(references) ? references : []) {
+    if (!ref || typeof ref !== 'object' || Array.isArray(ref) || !VOICE_REF_KINDS.has(refKind(ref))) continue;
+    addString(keys, ref.source_character_key ?? ref.sourceCharacterKey ?? ref.speaker_id ?? ref.speakerId);
+  }
+  return keys;
 }
 
 function refsTextKeys(references) {
-  return collectStrings(references, new Set(['region_key', 'text_region_key']));
+  const keys = new Set();
+  for (const ref of Array.isArray(references) ? references : []) {
+    if (!ref || typeof ref !== 'object' || Array.isArray(ref) || !TEXT_REF_KINDS.has(refKind(ref))) continue;
+    addString(keys, ref.region_key ?? ref.regionKey ?? ref.text_region_key ?? ref.textRegionKey ?? ref.stable_id);
+  }
+  return keys;
 }
 
 function includesKey(set, key) {
@@ -154,7 +169,7 @@ function matchCharacter(shot, sourceCharacterKey, dependencyKind) {
   if (!hasCurrentReferenceBundle(shot)) return false;
   const refs = parseJson(shot.references_json, []);
   const bundle = parseJson(shot.reference_bundle_json, {});
-  const refKeys = refsCharacterKeys(refs);
+  const refKeys = dependencyKind === 'voice' ? refsVoiceKeys(refs) : refsCharacterKeys(refs);
   const bundleKeys = dependencyKind === 'voice' ? bundleSpeakerKeys(bundle) : bundleCharacterKeys(bundle);
   if (dependencyKind === 'voice') {
     return includesKey(refKeys, sourceCharacterKey) || includesKey(bundleKeys, sourceCharacterKey);
@@ -294,6 +309,7 @@ function invalidateCharacterDependents(rawCtx, input = {}) {
   const sourceKey = String(input.source_character_key ?? input.sourceCharacterKey ?? '').trim();
   if (!sourceKey) fail(INPUT_CODE, '缺少角色来源 key');
   const dependencyKind = String(input.dependency_kind ?? input.dependencyKind ?? 'character').trim() || 'character';
+  if (!CHARACTER_DEPENDENCY_KINDS.has(dependencyKind)) fail(INPUT_CODE, '角色依赖类型不合法');
   const reasonCode = normalizeReason(input, dependencyKind === 'wardrobe' ? 'character_wardrobe_changed' : 'character_identity_changed');
   return runInvalidation(
     ctx,
@@ -310,6 +326,7 @@ function invalidateDialogueDependents(rawCtx, input = {}) {
   const sourceKey = String(input.source_character_key ?? input.sourceCharacterKey ?? input.speaker_id ?? input.speakerId ?? '').trim();
   if (!sourceKey) fail(INPUT_CODE, '缺少声音角色 key');
   const dependencyKind = String(input.dependency_kind ?? input.dependencyKind ?? 'voice').trim() || 'voice';
+  if (dependencyKind !== 'voice') fail(INPUT_CODE, '声音依赖类型不合法');
   const reasonCode = normalizeReason(input, 'voice_changed');
   return runInvalidation(
     ctx,

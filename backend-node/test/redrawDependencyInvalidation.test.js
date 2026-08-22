@@ -159,6 +159,30 @@ function bundle({ characters, speakers, texts }) {
   };
 }
 
+function insertShot(state, input = {}) {
+  state.db.prepare(`INSERT INTO redraw_shots
+    (id, work_id, version_id, tenant_id, user_id, shot_id, batch_index, shot_index,
+     start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
+     references_json, reference_bundle_json, reference_bundle_hash, reference_bundle_updated_at,
+     video_generation_id, preparation_state, preparation_version, status, created_at, updated_at)
+    VALUES (?, 1, ?, 'tenant-a', 'user-a', ?, 1, ?, ?, ?, 5000, '[]', '[]',
+      ?, ?, ?, ?, 801, 'reference_ready', 3, 'completed', ?, ?)`)
+    .run(
+      Number(input.id),
+      state.versionId,
+      input.shot || `shot-${input.id}`,
+      Number(input.id),
+      Number(input.id) * 5000,
+      Number(input.id) * 5000 + 5000,
+      stableJson(input.refs || []),
+      stableJson(input.bundle || bundle({ characters: [], speakers: [], texts: [] })),
+      input.hash || sha256(`shot:${input.id}`),
+      NOW,
+      NOW,
+      NOW,
+    );
+}
+
 function ctx(state) {
   return {
     db: state.db,
@@ -307,6 +331,104 @@ test('只失效已绑定当前参考包的镜头，草稿引用不被误伤', ()
     assert.equal(draft.reference_bundle_hash, null);
     assert.equal(draft.video_generation_id, 801);
     assert.equal(eventRows(state.db).length, 1);
+  } finally {
+    state.close();
+  }
+});
+
+test('角色、声音和文字依赖按明确 kind role 白名单匹配，跨域同 key 不误伤', () => {
+  const state = setup();
+  try {
+    insertShot(state, {
+      id: 11,
+      refs: [{ kind: 'voice', source_character_key: 'cross-character' }],
+    });
+    insertShot(state, {
+      id: 12,
+      refs: [{ role: 'character', source_character_key: 'cross-voice' }],
+    });
+    insertShot(state, {
+      id: 13,
+      refs: [{ kind: 'identity', source_character_key: 'cross-voice-identity' }],
+    });
+    insertShot(state, {
+      id: 14,
+      refs: [{ kind: 'character', region_key: 'cross-text' }],
+    });
+    insertShot(state, {
+      id: 15,
+      refs: [{ arbitrary: { source_character_key: 'unknown-character', region_key: 'unknown-text' } }],
+    });
+    insertShot(state, {
+      id: 16,
+      refs: [],
+      bundle: bundle({ characters: ['bundle-face-only'], speakers: [], texts: [] }),
+    });
+    insertShot(state, {
+      id: 17,
+      refs: [],
+      bundle: bundle({ characters: [], speakers: ['bundle-dialogue-only'], texts: [] }),
+    });
+
+    assert.deepEqual(invalidateCharacterDependents(ctx(state), {
+      source_character_key: 'cross-character',
+      reason_code: 'character_identity_changed',
+    }), []);
+    assert.deepEqual(invalidateDialogueDependents(ctx(state), {
+      source_character_key: 'cross-voice',
+      reason_code: 'voice_changed',
+    }), []);
+    assert.deepEqual(invalidateDialogueDependents(ctx(state), {
+      source_character_key: 'cross-voice-identity',
+      reason_code: 'voice_changed',
+    }), []);
+    assert.deepEqual(invalidateTextDependents(ctx(state), {
+      region_key: 'cross-text',
+      reason_code: 'text_region_changed',
+    }), []);
+    assert.deepEqual(invalidateCharacterDependents(ctx(state), {
+      source_character_key: 'unknown-character',
+      reason_code: 'character_identity_changed',
+    }), []);
+    assert.deepEqual(invalidateTextDependents(ctx(state), {
+      region_key: 'unknown-text',
+      reason_code: 'text_region_changed',
+    }), []);
+    assert.deepEqual(invalidateDialogueDependents(ctx(state), {
+      source_character_key: 'bundle-face-only',
+      reason_code: 'voice_changed',
+    }), []);
+    assert.deepEqual(invalidateCharacterDependents(ctx(state), {
+      source_character_key: 'bundle-dialogue-only',
+      reason_code: 'character_identity_changed',
+    }), []);
+    assert.deepEqual(eventRows(state.db), []);
+  } finally {
+    state.close();
+  }
+});
+
+test('dependency_kind 输入只允许各入口合同内的固定种类', () => {
+  const state = setup();
+  try {
+    assert.equal(captureCode(() => invalidateCharacterDependents(ctx(state), {
+      source_character_key: 'char-a',
+      dependency_kind: 'voice',
+      reason_code: 'character_identity_changed',
+    })), 'REDRAW_DEPENDENCY_INVALIDATION_INPUT_INVALID');
+    assert.equal(captureCode(() => invalidateDialogueDependents(ctx(state), {
+      source_character_key: 'char-b',
+      dependency_kind: 'character',
+      reason_code: 'voice_changed',
+    })), 'REDRAW_DEPENDENCY_INVALIDATION_INPUT_INVALID');
+    assert.deepEqual(shotRows(state.db).map((row) => row.preparation_state), [
+      'reference_ready',
+      'reference_ready',
+      'reference_ready',
+      'reference_ready',
+      'reference_ready',
+    ]);
+    assert.deepEqual(eventRows(state.db), []);
   } finally {
     state.close();
   }
