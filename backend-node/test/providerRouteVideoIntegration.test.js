@@ -57,6 +57,7 @@ function addRoute(db, values) {
     priority: values.priority,
     logical_model_id: 'logical-video',
     failover_enabled: Boolean(values.failover),
+    settings: { canvas_capabilities: { durations: [5] } },
   });
   db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
     .run(config.id);
@@ -83,6 +84,44 @@ function waitFor(predicate, timeoutMs = 3000, intervalMs = 20) {
     check();
   });
 }
+
+test('视频供应商 HTTP 提交前已固化实际配置指纹和解析后的查询协议', async (t) => {
+  let db;
+  let receiptAtSubmit = null;
+  const provider = await listen((req, res) => {
+    receiptAtSubmit = db.prepare(`SELECT config_id, provider, upstream_model,
+      config_fingerprint, query_protocol, provider_task_id
+      FROM generation_route_attempts ORDER BY attempt_no DESC LIMIT 1`).get();
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ id: 'receipt-first-task', status: 'processing' }));
+    });
+  });
+  t.after(async () => close(provider));
+
+  db = createDb();
+  t.after(() => db.close());
+  const configId = addRoute(db, {
+    provider: 'deepwl', baseUrl: `http://127.0.0.1:${provider.address().port}`,
+    upstreamModel: 'grok-video-3', priority: 100,
+  });
+
+  const result = await videoClient.callVideoApi(db, log, {
+    prompt: 'user prompt', model: 'logical-video', duration: 5, video_gen_id: 3999,
+  });
+
+  assert.equal(result.task_id, 'receipt-first-task');
+  assert.deepEqual(receiptAtSubmit, {
+    config_id: configId,
+    provider: 'deepwl',
+    upstream_model: 'grok-video-3',
+    config_fingerprint: receiptAtSubmit.config_fingerprint,
+    query_protocol: 'deepwl_grok',
+    provider_task_id: null,
+  });
+  assert.match(receiptAtSubmit.config_fingerprint, /^[0-9a-f]{64}$/);
+});
 
 test('明确未受理才切换到已验证同逻辑视频供应商并固定任务配置', async (t) => {
   const requests = [];
@@ -270,10 +309,15 @@ test('无明确未受理证据的 503 不切换视频供应商', async (t) => {
   const result = await videoClient.callVideoApi(db, log, {
     prompt: 'user prompt', model: 'logical-video', duration: 5, video_gen_id: 4003,
   });
+  const replay = await videoClient.callVideoApi(db, log, {
+    prompt: 'user prompt', model: 'logical-video', duration: 5, video_gen_id: 4003,
+  });
 
   assert.equal(result.indeterminate, true);
   assert.match(result.error, /结果未知/);
+  assert.equal(replay.indeterminate, true);
   assert.deepEqual(requests, ['primary']);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM generation_route_attempts').get().count, 1);
   assert.equal(db.prepare('SELECT error_category FROM generation_route_attempts').get().error_category,
     'submission_unknown');
 });

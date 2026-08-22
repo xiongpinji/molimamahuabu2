@@ -1849,6 +1849,10 @@ function isPollTaskFailed(status) {
   );
 }
 
+function isPollTaskSucceeded(status) {
+  return ['success', 'succeeded', 'completed', 'done'].includes(String(status || '').trim().toLowerCase());
+}
+
 /** 失败时的可读错误（fail_reason、非 http 的 result_url 等） */
 function extractPollFailureMessage(data) {
   if (!data || typeof data !== 'object') return '';
@@ -5897,6 +5901,7 @@ async function callVideoApi(db, log, opts, runtime = {}) {
       configId: config.id,
       provider: config.provider || 'configured',
       upstreamModel: getModelFromConfig(config),
+      queryProtocol: resolveVideoProtocol(config),
     });
     if (!attempt) continue;
     if (pendingSwitch) {
@@ -6187,6 +6192,8 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
       }
 
       if (isDjpsd) {
+        const body = data?.data?.data || data?.data || data || {};
+        const status = String(body.status || '').toLowerCase();
         const result = parseDjpsdPollResponse(data);
         log.info('[DJPSD poll] 状态', {
           video_gen_id: videoGenId,
@@ -6194,7 +6201,12 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           state: result.state,
         });
         if (result.state === 'completed') return { video_url: result.videoUrl };
-        if (result.state === 'failed') return { error: result.error };
+        if (result.state === 'failed') {
+          if (strictSingleRequest && ['success', 'succeeded', 'completed'].includes(status)) {
+            return { artifact_unreadable: true };
+          }
+          return { error: result.error };
+        }
         continue;
       }
 
@@ -6213,15 +6225,22 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           has_video_url: !!videoUrl,
         });
         if (videoUrl && (!resultType || resultType === 'video')) return { video_url: videoUrl };
-        if (resultType && resultType !== 'video') return { error: 'DJPSD 开放 API 返回的不是视频结果' };
+        if (resultType && resultType !== 'video') {
+          return strictSingleRequest && !['failed', 'error'].includes(state)
+            ? { artifact_unreadable: true }
+            : { error: 'DJPSD 开放 API 返回的不是视频结果' };
+        }
         if (['failed', 'error'].includes(state)) return { error: body.error || body.message || 'DJPSD 开放 API 视频生成失败' };
         if (body.is_final || ['success', 'succeeded', 'completed', 'done'].includes(state)) {
-          return { error: 'DJPSD 开放 API 任务已结束但未返回视频地址' };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'DJPSD 开放 API 任务已结束但未返回视频地址' };
         }
         continue;
       }
 
       if (isFeituo) {
+        const status = extractPollTaskStatus(data);
         const result = feituoVideoClient.parseFeituoStatusPayload(data);
         log.info('[飞拓视频] 轮询状态', {
           video_gen_id: videoGenId,
@@ -6229,11 +6248,19 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           state: result.state,
         });
         if (result.state === 'completed') return { video_url: result.videoUrl };
-        if (result.state === 'failed') return { error: result.error };
+        if (result.state === 'failed') {
+          return strictSingleRequest && isPollTaskSucceeded(status)
+            ? { artifact_unreadable: true }
+            : { error: result.error };
+        }
         continue;
       }
 
       if (isUsmercari) {
+        const tasks = Array.isArray(data?.data) ? data.data : [];
+        const task = tasks.find((item) => String(item?.task_id || item?.taskId || '') === String(taskId))
+          || tasks[0];
+        const status = String(task?.status || '').trim().toLowerCase();
         const result = usmercariVideoClient.parseUsmercariFetchPayload(data, taskId, config.base_url);
         log.info('[USMercari 视频] 轮询状态', {
           video_gen_id: videoGenId,
@@ -6242,7 +6269,11 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           progress: result.progress,
         });
         if (result.state === 'completed') return { video_url: result.videoUrl };
-        if (result.state === 'failed') return { error: result.error };
+        if (result.state === 'failed') {
+          return strictSingleRequest && isPollTaskSucceeded(status)
+            ? { artifact_unreadable: true }
+            : { error: result.error };
+        }
         continue;
       }
 
@@ -6262,12 +6293,15 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           return { error: String(message).slice(0, 500) };
         }
         if (['succeeded', 'completed', 'done', 'success'].includes(status) || data.is_final) {
-          return { error: 'Token6688 任务完成但未返回可下载的视频地址' };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Token6688 任务完成但未返回可下载的视频地址' };
         }
         continue;
       }
 
       if (isFumin) {
+        const status = extractPollTaskStatus(data);
         const result = fuminVideoClient.parseFuminStatusPayload(data);
         log.info('[fumin 视频] 轮询状态', {
           video_gen_id: videoGenId,
@@ -6276,7 +6310,11 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           has_video_url: !!result.videoUrl,
         });
         if (result.state === 'completed') return { video_url: result.videoUrl };
-        if (result.state === 'failed') return { error: result.error };
+        if (result.state === 'failed') {
+          return strictSingleRequest && isPollTaskSucceeded(status)
+            ? { artifact_unreadable: true }
+            : { error: result.error };
+        }
         continue;
       }
 
@@ -6567,6 +6605,10 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           });
           return { error: msg || '????????' };
         }
+        if (strictSingleRequest
+            && ['SUCCEEDED', 'SUCCESS', 'COMPLETED', 'DONE'].includes(String(taskStatus || '').toUpperCase())) {
+          return { artifact_unreadable: true };
+        }
         continue;
       }
       const status = extractPollTaskStatus(data);
@@ -6589,6 +6631,11 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           error_hint: failMsg || errMsg || data?.error?.code || data?.message || null,
           parsed_json: sum,
         });
+      }
+      if (strictSingleRequest && ['success', 'succeeded', 'completed', 'done'].includes(status)) {
+        return videoUrl && isPlausibleHttpVideoUrl(videoUrl)
+          ? { video_url: videoUrl }
+          : { artifact_unreadable: true };
       }
       if (isPollTaskFailed(status) || errMsg) {
         const msg = failMsg || errMsg || status || '任务失败';
@@ -6617,6 +6664,7 @@ async function queryVideoTaskStatusOnce(db, log, taskId, config, requestOpts = {
   let observedStatus = null;
   let observedQueryCategory = null;
   let observedBodyWasJson = null;
+  let observedPayload = null;
 
   const safeQueryCategoryForError = (error, transport = false) => {
     if (error?.code === 'PROVIDER_QUERY_REQUEST_LIMIT') return 'query_request_limit';
@@ -6703,7 +6751,7 @@ async function queryVideoTaskStatusOnce(db, log, taskId, config, requestOpts = {
           throw error;
         }
         try {
-          JSON.parse(raw);
+          observedPayload = JSON.parse(raw);
           observedBodyWasJson = true;
         } catch (_) {
           observedBodyWasJson = false;
@@ -6742,6 +6790,10 @@ async function queryVideoTaskStatusOnce(db, log, taskId, config, requestOpts = {
   }
   if (result?.artifact_unreadable
       || (Object.prototype.hasOwnProperty.call(result || {}, 'video_url') && !result.video_url)) {
+    return { state: 'artifact_unreadable' };
+  }
+  if (resolveVideoProtocol(config) === 'toapis_video'
+      && isPollTaskSucceeded(extractPollTaskStatus(observedPayload))) {
     return { state: 'artifact_unreadable' };
   }
   if (result?.indeterminate) return { state: 'unknown', category: 'result_unknown' };

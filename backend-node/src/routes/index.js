@@ -109,6 +109,7 @@ function setupRouter(cfg, db, log, options = {}) {
     : path.join(process.cwd(), 'data', 'storage');
   const providerStability = providerStabilityRoutes(db, log, {
     storageRoot: providerStorageRoot,
+    providerTaskReconciliation: options.providerTaskReconciliation,
   });
   const requirePlatformPermission = (permission) => createPlatformPermissionMiddleware(
     permission,
@@ -196,6 +197,7 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/admin/provider-stability/canary/summary', requireAdmin, requireBillingManager, providerStability.getCanarySummary);
   r.get('/admin/provider-stability/canary/runs', requireAdmin, requireBillingManager, providerStability.listCanaryRuns);
   r.post('/admin/provider-stability/canary/runs/:runId/reconcile', requireAdmin, requireBillingManager, providerStability.reconcileCanaryRun);
+  r.post('/admin/provider-stability/requests/:requestId/reconcile', requireAdmin, requireBillingManager, providerStability.reconcileProviderTask);
   r.get('/admin/provider-stability/routes/:configId/cost', requireAdmin, requireBillingManager, providerStability.getRouteCost);
   r.put('/admin/provider-stability/routes/:configId/cost', requireAdmin, requireBillingManager, providerStability.updateRouteCost);
   r.patch('/admin/provider-stability/routes/:configId', requireAdmin, requireBillingManager, providerStability.updateRoute);

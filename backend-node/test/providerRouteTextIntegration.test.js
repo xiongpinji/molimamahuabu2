@@ -47,6 +47,7 @@ function addRoute(db, values) {
     priority: values.priority,
     logical_model_id: 'logical-text',
     failover_enabled: Boolean(values.failover),
+    settings: JSON.stringify({ canvas_capabilities: {} }),
   });
   db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
     .run(config.id);
