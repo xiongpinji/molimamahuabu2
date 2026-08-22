@@ -58,6 +58,13 @@ jobs:
         working-directory: frontweb
         run: npm run test:e2e:canvas
 
+      - name: Run shared foundation E2E
+        working-directory: frontweb
+        env:
+          VITE_PUBLIC_PLATFORM_MODE: '1'
+          PLAYWRIGHT_REUSE_SERVER: '0'
+        run: npm run test:e2e:shared-foundation
+
       - name: Upload Playwright artifacts
         if: failure()
         uses: actions/upload-artifact@v4

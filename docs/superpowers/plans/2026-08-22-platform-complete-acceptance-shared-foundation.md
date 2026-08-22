@@ -233,6 +233,7 @@ node --test --test-concurrency=1 \
 
 - `backend-node/src/routes/billing.js`
 - `backend-node/src/routes/alipay-recharge.js`
+- `backend-node/src/services/creditLedgerService.js`
 - `backend-node/src/services/billingReconciliationService.js`
 - `backend-node/src/services/subscriptionBillingService.js`
 - `backend-node/src/services/redeem-code-service.js`

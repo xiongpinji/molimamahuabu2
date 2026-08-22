@@ -31,6 +31,29 @@ function isPathInside(parentPath, childPath) {
     && !path.isAbsolute(relative);
 }
 
+function existingStaticFileInside(storageRoot, requestPath) {
+  if (!storageRoot) return true;
+  try {
+    const decoded = decodeURIComponent(String(requestPath || ''));
+    const relativePath = decoded.replace(/^\/+/, '');
+    const segments = relativePath.split('/');
+    if (!relativePath
+      || decoded.includes('\\')
+      || decoded.includes('\0')
+      || path.isAbsolute(relativePath)
+      || segments.some((segment) => !segment || segment === '.' || segment === '..')) {
+      return false;
+    }
+    const realStorageRoot = fs.realpathSync(storageRoot);
+    const lexicalFilePath = path.resolve(realStorageRoot, ...segments);
+    if (!isPathInside(realStorageRoot, lexicalFilePath)) return false;
+    const realFilePath = fs.realpathSync(lexicalFilePath);
+    return isPathInside(realStorageRoot, realFilePath) && fs.statSync(realFilePath).isFile();
+  } catch (_) {
+    return false;
+  }
+}
+
 function isExistingRechargePackageImage(storageRoot, relativePath) {
   if (!storageRoot) return false;
   try {
@@ -243,6 +266,12 @@ function createStaticOwnershipMiddleware({ db, enabled, secret, storageRoot } = 
   return (req, res, next) => {
     if (!enabled) return next();
     if (!userAuth.validSecret(secret)) return res.status(503).end();
+    let pathValue;
+    try {
+      pathValue = decodeURIComponent(String(req.path || ''));
+    } catch (_) {
+      return res.status(404).end();
+    }
     const expires = req.query?.[EXPIRES_PARAM];
     const signature = req.query?.[SIGNATURE_PARAM];
     if (expires != null || signature != null) {
@@ -250,6 +279,7 @@ function createStaticOwnershipMiddleware({ db, enabled, secret, storageRoot } = 
       if (!verifyProviderAssetRequest({ pathname: requestPath, expires, signature, secret })) {
         return res.status(401).end();
       }
+      if (!existingStaticFileInside(storageRoot, pathValue)) return res.status(404).end();
       return next();
     }
     const match = /^Bearer\s+(.+)$/i.exec(String(req.get('authorization') || ''));
@@ -269,14 +299,9 @@ function createStaticOwnershipMiddleware({ db, enabled, secret, storageRoot } = 
     } catch (_) {
       return res.status(401).end();
     }
-    let pathValue;
-    try {
-      pathValue = decodeURIComponent(String(req.path || ''));
-    } catch (_) {
-      return res.status(404).end();
-    }
     const project = /^\/projects\/(\d+)_/.exec(pathValue);
     const relativePath = pathValue.replace(/^\/+/, '');
+    if (!existingStaticFileInside(storageRoot, pathValue)) return res.status(404).end();
     const redrawSource = /^redraw-sources\/([a-f0-9]{64})\.[a-z0-9]+$/i.exec(relativePath);
     if (isRechargePackageImagePath(relativePath)) {
       if (!isExistingRechargePackageImage(storageRoot, relativePath)) {

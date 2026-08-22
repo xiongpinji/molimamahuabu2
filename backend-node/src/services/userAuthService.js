@@ -164,6 +164,13 @@ function getTokenVersion(db, userId) {
   return row ? Number(row.token_version) || 0 : null;
 }
 
+function invalidateTokens(db, userId) {
+  ensureSchema(db);
+  return db.prepare(`UPDATE platform_users
+    SET token_version = token_version + 1, updated_at = ?
+    WHERE id = ?`).run(new Date().toISOString(), String(userId)).changes === 1;
+}
+
 function validSecret(secret) {
   return typeof secret === 'string' && Buffer.byteLength(secret, 'utf8') >= 32;
 }
@@ -196,6 +203,7 @@ module.exports = {
   getUserById,
   getUserByEmail,
   getTokenVersion,
+  invalidateTokens,
   resetPassword,
   issueToken,
   verifyToken,

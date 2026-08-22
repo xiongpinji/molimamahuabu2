@@ -20,6 +20,7 @@ const {
 } = require('../scripts/verify-feature-lock-manifest');
 
 const PROACTIVE_CANARY_FEATURE_ID = 'stability.proactive-canary-and-public-evidence';
+const ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID = 'stability.admin-provider-observability';
 const COMPLETE_ACCEPTANCE_FRAMEWORK_ID = 'stability.platform-complete-acceptance-framework';
 const COMPLETE_ACCEPTANCE_ACCEPTANCE = [
   '来源功能清单与验收决策账本通过 SHA 和 feature_id 一致性绑定',
@@ -69,19 +70,17 @@ const PROACTIVE_CANARY_EVIDENCE = [
   'docs/superpowers/specs/2026-08-20-evidence-bound-multi-model-split-design.md',
   'docs/superpowers/plans/2026-08-20-evidence-bound-multi-model-split.md',
 ];
-const PROACTIVE_CANARY_UNLOCK = {
-  reason: '2026-08-21 PR #171 供应商路由与发布门禁收口授权',
-  approvedBy: 'product-owner 2026-08-21 pr-171-provider-route-closure',
+const SHARED_FOUNDATION_UNLOCK = {
+  reason: '2026-08-22 公共运行底座阶段 1 书面计划获批',
+  approvedBy: 'product-owner 2026-08-22 platform-shared-foundation',
   impactTests: [
-    'backend-node/test/providerCanaryInventory.test.js',
-    'backend-node/test/providerCanaryScheduler.test.js',
-    'backend-node/test/providerRouteCost.test.js',
-    'backend-node/test/generationRouteCostLedger.test.js',
-    'backend-node/test/splitMultiModelProviderConfigs.test.js',
-    'frontweb/test/providerRouteCostAdmin.test.js',
-    'backend-node/test/canvasModelCatalogService.test.js',
-    'backend-node/test/providerCanaryPublicGate.test.js',
-    'backend-node/test/providerRouteVideoIntegration.test.js',
+    'backend-node/test/platformSharedAssetAcceptance.test.js',
+    'backend-node/test/platformSharedAuthAcceptance.test.js',
+    'backend-node/test/platformSharedBillingAcceptance.test.js',
+    'backend-node/test/platformSharedCatalogAcceptance.test.js',
+    'backend-node/test/platformSharedFoundationInventory.test.js',
+    'backend-node/test/subscriptionBillingRoutes.test.js',
+    'frontweb/e2e/platform-shared-foundation-backend-integration.spec.js',
   ],
 };
 const PROACTIVE_CANARY_CORE_PATHS = [
@@ -201,14 +200,21 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
     assert.ok(feature.requiredTests.includes(testPath), `功能锁缺少影响测试: ${testPath}`);
   }
   assert.deepEqual(feature.evidence, PROACTIVE_CANARY_EVIDENCE);
-  assert.deepEqual(feature.unlock, PROACTIVE_CANARY_UNLOCK);
+  assert.deepEqual(feature.unlock, SHARED_FOUNDATION_UNLOCK);
+});
+
+test('公共运行底座触碰管理员路由时保留新的批准解锁与完整影响测试', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const feature = manifest.features.find(({ featureId }) => featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID);
+  assert.ok(feature, `缺少功能锁 ${ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID}`);
+  assert.deepEqual(feature.unlock, SHARED_FOUNDATION_UNLOCK);
 });
 
 test('其余稳定性锁保留当前批准原因且所有锁保留历史证据', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   assert.equal(manifest.features.length >= 5, true);
   for (const feature of manifest.features) {
-    if (![PROACTIVE_CANARY_FEATURE_ID, COMPLETE_ACCEPTANCE_FRAMEWORK_ID].includes(feature.featureId)) {
+    if (![PROACTIVE_CANARY_FEATURE_ID, ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID, COMPLETE_ACCEPTANCE_FRAMEWORK_ID].includes(feature.featureId)) {
       assert.equal(feature.unlock?.reason, '2026-08-21 PR #171 供应商路由与发布门禁收口授权');
       assert.equal(feature.unlock?.approvedBy, 'product-owner 2026-08-21 pr-171-provider-route-closure');
     }
