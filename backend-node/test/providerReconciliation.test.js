@@ -24,6 +24,7 @@ function setup() {
     default_model: 'upstream-image',
     logical_model_id: 'logical-image',
     is_default: true,
+    settings: JSON.stringify({ canvas_capabilities: {} }),
   });
   db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
     .run(config.id);
