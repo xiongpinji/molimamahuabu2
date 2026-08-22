@@ -5,7 +5,7 @@
 - 阶段：阶段 1 本地候选验证完成，待代码审查与 Hosted CI
 - 基线：`origin/main@897dfcbc28e3598fbc47e5731c61dfdeda2c9e80`
 - 计划提交：`5061121ad6cdf671dc74eae07af2f06cdca47266`
-- 实现提交：待本地提交后记录
+- 实现提交：`90c51ca339850645e33f662ac6249a72e35d288a`
 - 范围：来源清单中精确 17 项 `module=shared` 功能；发布白名单精确 22 个文件
 - 结论：本地适用链路与全量门禁已形成同批证据，但 Hosted CI、生产回读和生产写入/支付门禁尚未完成；17 项保持 `unverified`，不得提前写 `locked_pass`
 
