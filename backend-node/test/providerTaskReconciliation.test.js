@@ -129,6 +129,27 @@ function assertSafeResult(result) {
   );
 }
 
+async function assertStaticNotReconcilable(state) {
+  let queryCount = 0;
+  await assert.rejects(
+    reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
+      now: NOW,
+      queryTaskStatusOnce: async () => {
+        queryCount += 1;
+        return { state: 'processing' };
+      },
+    }),
+    (error) => {
+      assert.equal(error.code, 'PROVIDER_TASK_NOT_RECONCILABLE');
+      assert.equal(error.message, '该普通生成请求当前不可对账');
+      return true;
+    },
+  );
+  assert.equal(queryCount, 0);
+  assert.equal(countReconciledSafeEvents(state.db), 0);
+  assert.equal(countReconciledAuditEvents(state.db), 0);
+}
+
 function setupReconciliationFixture(t, options = {}) {
   const db = new Database(options.databasePath || ':memory:');
   runMigrationsAndEnsure(db);
@@ -230,12 +251,13 @@ function setupReconciliationFixture(t, options = {}) {
   });
   db.prepare(`INSERT INTO generation_route_attempts
     (request_id, attempt_no, config_id, provider, upstream_model, state,
-     config_fingerprint, query_protocol, started_at, finished_at)
-    VALUES (?, 1, ?, 'toapis', 'seedance-2-fast', 'needs_attention', ?, 'toapis_video', ?, ?)`)
+      config_fingerprint, query_protocol, started_at, finished_at)
+    VALUES (?, 1, ?, 'toapis', 'seedance-2-fast', 'needs_attention', ?, ?, ?, ?)`)
     .run(
       ROUTE_ID,
-      config.id,
+      options.attemptConfigId === undefined ? config.id : options.attemptConfigId,
       options.configFingerprint === undefined ? receipt.configFingerprint : options.configFingerprint,
+      options.queryProtocol === undefined ? 'toapis_video' : options.queryProtocol,
       NOW,
       NOW,
     );
@@ -820,12 +842,20 @@ test('user reconciliation settles only its user reservation when a held tenant r
   );
 });
 
-test('reconcileRequest gates incomplete, non-video, non-needs-attention, missing business, and non-held work before query', async (t) => {
+test('reconcileRequest rejects every static evidence and identity blocker before query', async (t) => {
   const cases = [
     ['missing provider task id', { bindProviderTask: false }, () => {}],
     ['missing config fingerprint', { configFingerprint: null }, () => {}],
+    ['missing query protocol', { queryProtocol: null }, () => {}],
+    ['invalid config id', { attemptConfigId: 0 }, () => {}],
+    ['missing attempt', {}, (state) => state.db.prepare(
+      'DELETE FROM generation_route_attempts WHERE request_id = ?'
+    ).run(ROUTE_ID)],
     ['image service', {}, (state) => state.db.prepare(
       "UPDATE generation_route_requests SET service_type = 'image' WHERE id = ?"
+    ).run(ROUTE_ID)],
+    ['non-video business type', {}, (state) => state.db.prepare(
+      "UPDATE generation_route_requests SET business_type = 'image_generation' WHERE id = ?"
     ).run(ROUTE_ID)],
     ['route not needs_attention', {}, (state) => state.db.prepare(
       "UPDATE generation_route_requests SET state = 'running' WHERE id = ?"
@@ -839,9 +869,21 @@ test('reconcileRequest gates incomplete, non-video, non-needs-attention, missing
     ['task not needs_attention', {}, (state) => state.db.prepare(
       "UPDATE async_tasks SET status = 'processing' WHERE id = ?"
     ).run(TASK_ID)],
+    ['task is not video generation', {}, (state) => state.db.prepare(
+      "UPDATE async_tasks SET type = 'image_generation' WHERE id = ?"
+    ).run(TASK_ID)],
     ['business record missing', {}, (state) => state.db.prepare(
       'UPDATE video_generations SET deleted_at = ? WHERE id = ?'
     ).run(NOW, VIDEO_ID)],
+    ['task record missing', {}, (state) => state.db.prepare(
+      "UPDATE video_generations SET task_id = 'missing-task' WHERE id = ?"
+    ).run(VIDEO_ID)],
+    ['reservation missing', {}, (state) => state.db.prepare(
+      'UPDATE generation_route_requests SET credit_reservation_id = NULL WHERE id = ?'
+    ).run(ROUTE_ID)],
+    ['route owner missing', {}, (state) => state.db.prepare(
+      'UPDATE generation_route_requests SET user_id = NULL WHERE id = ?'
+    ).run(ROUTE_ID)],
     ['reservation not held', {}, (state) => creditLedgerService.confirm(
       state.db,
       state.reservation.id,
@@ -876,20 +918,7 @@ test('reconcileRequest gates incomplete, non-video, non-needs-attention, missing
     await t.test(name, async (subtest) => {
       const state = setupReconciliationFixture(subtest, fixtureOptions);
       mutate(state);
-      let queryCount = 0;
-      const result = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
-        now: NOW,
-        queryTaskStatusOnce: async () => {
-          queryCount += 1;
-          return { state: 'processing' };
-        },
-      });
-      assert.equal(queryCount, 0);
-      assert.equal(result.reconciled, false);
-      assert.equal(result.reconcilable, false);
-      assertSafeResult(result);
-      assert.equal(countReconciledSafeEvents(state.db), 0);
-      assert.equal(countReconciledAuditEvents(state.db), 0);
+      await assertStaticNotReconcilable(state);
     });
   }
 });
@@ -913,17 +942,7 @@ test('tenant reconciliation requires reservation, video, and task tenant identit
         userId: 'tenant-actor',
       });
       mutate(state);
-      let queryCount = 0;
-      const result = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
-        now: NOW,
-        queryTaskStatusOnce: async () => {
-          queryCount += 1;
-          return { state: 'processing' };
-        },
-      });
-      assert.equal(queryCount, 0);
-      assert.equal(result.reconcilable, false);
-      assert.equal(countReconciledSafeEvents(state.db), 0);
+      await assertStaticNotReconcilable(state);
     });
   }
 });
@@ -931,6 +950,7 @@ test('tenant reconciliation requires reservation, video, and task tenant identit
 test('reconcileRequest blocks current key, base URL, protocol, provider, model, and capability drift before query', async (t) => {
   const cases = [
     ['key', 'UPDATE ai_service_configs SET api_key = ? WHERE id = ?', ['rotated-key']],
+    ['credential', 'UPDATE ai_service_configs SET api_key = ? WHERE id = ?', ['']],
     ['base URL', 'UPDATE ai_service_configs SET base_url = ? WHERE id = ?', ['https://changed.example/v1']],
     ['protocol', 'UPDATE ai_service_configs SET api_protocol = ? WHERE id = ?', ['feituo_video']],
     ['provider', 'UPDATE ai_service_configs SET provider = ? WHERE id = ?', ['feituo']],
@@ -950,19 +970,29 @@ test('reconcileRequest blocks current key, base URL, protocol, provider, model, 
     await t.test(name, async (subtest) => {
       const state = setupReconciliationFixture(subtest);
       state.db.prepare(sql).run(...params, state.config.id);
-      let queryCount = 0;
-      const result = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
-        now: NOW,
-        queryTaskStatusOnce: async () => {
-          queryCount += 1;
-          return { state: 'processing' };
-        },
-      });
-      assert.equal(queryCount, 0);
-      assert.equal(result.reconcilable, false);
-      assertSafeResult(result);
+      await assertStaticNotReconcilable(state);
     });
   }
+});
+
+test('reconcileRequest preserves invalid-id and missing-route coded errors without query', async (t) => {
+  const state = setupReconciliationFixture(t);
+  let queryCount = 0;
+  const options = {
+    queryTaskStatusOnce: async () => {
+      queryCount += 1;
+      return { state: 'processing' };
+    },
+  };
+  await assert.rejects(
+    reconciliation.reconcileRequest(state.db, state.log, 'bad request id!', options),
+    (error) => error.code === 'PROVIDER_TASK_REQUEST_INVALID',
+  );
+  await assert.rejects(
+    reconciliation.reconcileRequest(state.db, state.log, 'route-missing', options),
+    (error) => error.code === 'PROVIDER_TASK_REQUEST_NOT_FOUND',
+  );
+  assert.equal(queryCount, 0);
 });
 
 test('reconcileRequest uses the immutable attempt receipt without requiring a duplicate task receipt', async (t) => {
@@ -984,9 +1014,9 @@ test('reconcileRequest uses the immutable attempt receipt without requiring a du
   assert.equal(result.error_category, 'result_unknown');
 });
 
-test('safe reconciliation DTO suppresses an unsafe legacy error category', async (t) => {
+test('terminal safe reconciliation DTO suppresses unsafe legacy fields', async (t) => {
   const state = setupReconciliationFixture(t);
-  state.db.prepare(`UPDATE generation_route_requests SET state = 'running' WHERE id = ?`)
+  state.db.prepare(`UPDATE generation_route_requests SET state = 'succeeded' WHERE id = ?`)
     .run(ROUTE_ID);
   state.db.prepare(`UPDATE generation_route_attempts SET error_category = ? WHERE request_id = ?`)
     .run('https://secret.example/?api_key=leaked', ROUTE_ID);

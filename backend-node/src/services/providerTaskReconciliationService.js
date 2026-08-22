@@ -356,6 +356,10 @@ function noOpLogger() {
 
 async function reconcileRequest(db, log, requestIdValue, options = {}) {
   const requestId = normalizeRequestId(requestIdValue);
+  const initialState = loadReconciliationState(db, requestId);
+  if (!TERMINAL_ROUTE_STATES.has(initialState.route.state) && !currentReceipt(initialState)) {
+    throw codedError('PROVIDER_TASK_NOT_RECONCILABLE', '该普通生成请求当前不可对账');
+  }
   const claim = claimForReconciliation(db, requestId, options);
   if (!claim.acquired) return safeResult(db, requestId, claim.now);
 
