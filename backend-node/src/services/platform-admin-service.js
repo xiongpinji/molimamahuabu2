@@ -154,10 +154,10 @@ function updateUser(db, userId, input = {}) {
   })();
 }
 
-function listTenants(db) {
+function listTenants(db, nowValue = Date.now()) {
   tenants.ensureSchema(db);
   credits.ensureSchema(db);
-  return db.prepare(`SELECT
+  const rows = db.prepare(`SELECT
       tenants.id,
       tenants.name,
       tenants.slug,
@@ -172,6 +172,17 @@ function listTenants(db) {
     LEFT JOIN tenant_members ON tenant_members.tenant_id = tenants.id
     GROUP BY tenants.id
     ORDER BY tenants.created_at DESC, tenants.name COLLATE NOCASE`).all();
+  return rows.map((row) => {
+    const account = credits.getTenantAccountBreakdown(db, row.id, nowValue);
+    return {
+      ...row,
+      available: account.available,
+      permanent_available: account.permanent_available,
+      daily_bonus_available: account.daily_bonus_available,
+      daily_bonus_expires_at: account.daily_bonus_expires_at,
+      membership_ends_on: account.membership_ends_on,
+    };
+  });
 }
 
 function adjustTenantCredits(db, tenantIdValue, input = {}) {

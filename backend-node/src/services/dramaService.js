@@ -903,6 +903,12 @@ function saveProgress(db, log, dramaId, req) {
 function saveCanvasLayout(db, log, dramaId, req) {
   const drama = getDramaById(db, Number(dramaId));
   if (!drama) return null;
+  const baseUpdatedAt = String(req?.base_updated_at || '').trim();
+  if (baseUpdatedAt && baseUpdatedAt !== String(drama.updated_at || '')) {
+    const err = new Error('画布布局已被其他操作更新，请刷新后重试');
+    err.code = 'CANVAS_LAYOUT_CONFLICT';
+    throw err;
+  }
   const layout = req?.canvas_layout;
   const workflowGroups = req?.workflow_groups;
   if (
@@ -927,7 +933,16 @@ function saveCanvasLayout(db, log, dramaId, req) {
   if (layout) meta.canvas_layout = layout;
   if (workflowGroups !== undefined) meta.workflow_groups = workflowGroups;
   const now = new Date().toISOString();
-  db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(meta), now, dramaId);
+  const updated = baseUpdatedAt
+    ? db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ? AND updated_at = ?')
+      .run(JSON.stringify(meta), now, dramaId, baseUpdatedAt)
+    : db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(meta), now, dramaId);
+  if (baseUpdatedAt && updated.changes !== 1) {
+    const err = new Error('画布布局已被其他操作更新，请刷新后重试');
+    err.code = 'CANVAS_LAYOUT_CONFLICT';
+    throw err;
+  }
   log.info('Canvas state saved', {
     drama_id: dramaId,
     node_count: layout ? Object.keys(layout.nodes || {}).length : undefined,

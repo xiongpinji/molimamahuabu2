@@ -347,6 +347,7 @@ test('公开价格目录只返回用户价格字段且管理端仍保留完整�
   assert.deepEqual(publicItem, {
     model: 'public-video',
     display_name: '公开视频模型',
+    public_note: '',
     category: 'video',
     credits: 3,
     status: 'enabled',

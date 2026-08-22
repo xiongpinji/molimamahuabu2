@@ -75,27 +75,30 @@ test('自定义充值金额只接受范围内且最多两位小数的数字格�
   assert.equal(validCustomAmount('100000', '1.00', '999999.00'), false)
 })
 
-test('套餐基础与赠送积分不会显示负赠送', () => {
-  assert.deepEqual(packageCreditMetrics({ amount_cents: 9900, credits: 12800 }), {
+test('套餐基础与每日赠送积分不会显示负赠送', () => {
+  assert.deepEqual(packageCreditMetrics({ amount_cents: 9900, daily_bonus_credits: 2900 }), {
     amountYuan: 99,
     baseCredits: 9900,
-    bonusCredits: 2900,
-    creditsPerYuan: 129.29,
+    dailyBonusCredits: 2900,
+    benefitDays: 30,
+    creditsPerYuan: 100,
   })
-  assert.equal(packageCreditMetrics({ amount_cents: 1000, credits: 900 }).bonusCredits, 0)
+  assert.equal(packageCreditMetrics({ amount_cents: 1000, daily_bonus_credits: -1 }).dailyBonusCredits, 0)
   assert.deepEqual(packageCreditMetrics(), {
     amountYuan: 0,
     baseCredits: 0,
-    bonusCredits: 0,
+    dailyBonusCredits: 0,
+    benefitDays: 30,
     creditsPerYuan: 0,
   })
-  assert.deepEqual(packageCreditMetrics({ amount_cents: 'not-a-number', credits: 'invalid' }), {
+  assert.deepEqual(packageCreditMetrics({ amount_cents: 'not-a-number', daily_bonus_credits: 'invalid' }), {
     amountYuan: 0,
     baseCredits: 0,
-    bonusCredits: 0,
+    dailyBonusCredits: 0,
+    benefitDays: 30,
     creditsPerYuan: 0,
   })
-  assert.equal(packageCreditMetrics({ amount_cents: 0, credits: 100 }).creditsPerYuan, 0)
+  assert.equal(packageCreditMetrics({ amount_cents: 0, daily_bonus_credits: 100 }).creditsPerYuan, 0)
 })
 
 test('管理员强调色不合法时回退茉莉橙', () => {

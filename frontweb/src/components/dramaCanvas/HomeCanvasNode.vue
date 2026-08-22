@@ -175,6 +175,15 @@
         <div v-if="data.kind === 'video'" class="video-mode-toolbar">
           <div class="video-mode-tabs" role="tablist" aria-label="视频参考模式">
             <button
+              v-if="!supportsAnyReferenceMode"
+              type="button"
+              class="active"
+              role="tab"
+              aria-selected="true"
+              disabled
+              title="当前模型仅开放纯提示词生成"
+            >纯提示词</button>
+            <button
               type="button"
               :class="{ active: videoReferenceMode === 'first-last' }"
               :disabled="!supportsFirstLastMode"
@@ -259,7 +268,7 @@
                 title="取消参考图"
                 @click.stop="removeReference(frameSlot.reference)"
               >×</button>
-              <img v-if="frameSlot.reference?.url" :src="frameSlot.reference.url" :alt="frameSlot.reference.title" />
+              <img v-if="referencePreviewUrl(frameSlot.reference)" :src="referencePreviewUrl(frameSlot.reference)" :alt="frameSlot.reference.title" />
               <span v-else class="reference-placeholder">等待{{ frameSlot.label }}图片</span>
               <figcaption :title="frameSlot.reference?.title || frameSlot.label">
                 {{ frameSlot.label }} · {{ frameSlot.reference ? `图片${referenceSubmissionOrdinal(frameSlot.reference)}` : '未设置' }}
@@ -285,9 +294,9 @@
                 :title="reference.kind === 'image' ? '取消参考图' : '取消参考素材'"
                 @click.stop="removeReference(reference)"
               >×</button>
-              <img v-if="reference.url && reference.kind === 'image'" :src="reference.url" :alt="reference.title" />
-              <video v-else-if="reference.url && reference.kind === 'video'" :src="reference.url" muted preload="metadata" />
-              <audio v-else-if="reference.url && reference.kind === 'audio'" :src="reference.url" controls preload="metadata" />
+              <img v-if="referencePreviewUrl(reference) && reference.kind === 'image'" :src="referencePreviewUrl(reference)" :alt="reference.title" />
+              <video v-else-if="referencePreviewUrl(reference) && reference.kind === 'video'" :src="referencePreviewUrl(reference)" muted preload="metadata" />
+              <audio v-else-if="referencePreviewUrl(reference) && reference.kind === 'audio'" :src="referencePreviewUrl(reference)" controls preload="metadata" />
               <span v-else class="reference-placeholder">等待{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}</span>
               <figcaption :title="reference.title">{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}{{ referenceSubmissionOrdinal(reference) || '未采用' }}{{ reference.enabled === false ? '（未启用）' : '' }}</figcaption>
             </figure>
@@ -328,7 +337,7 @@
               :title="candidate.title"
               @mousedown.prevent="selectReferenceMention(candidate)"
             >
-              <img :src="candidate.url" alt="" />
+              <img v-if="referencePreviewUrl(candidate)" :src="referencePreviewUrl(candidate)" alt="" />
               <span>{{ candidate.label }}</span>
             </button>
             <p v-if="!filteredReferenceCandidates.length">没有可引用的图片节点</p>
@@ -371,7 +380,7 @@
               <option v-for="value in capability.aspectRatios || []" :key="value" :value="value">{{ value }}</option>
             </select>
           </label>
-          <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
+          <label v-if="data.kind === 'image' || capability.resolutions?.length" class="editor-field">
             <span>清晰度</span>
             <select v-model="draft.resolution" aria-label="清晰度" @change="saveDraft">
               <option v-for="value in capability.resolutions || []" :key="value" :value="value">{{ String(value).toUpperCase() }}</option>
@@ -479,9 +488,8 @@
         <p v-if="data.status === 'failed' && data.error" class="editor-error" role="alert">{{ data.error }}</p>
 
         <div class="editor-footer">
-          <!-- canvas-credit-callout-v1 -->
-          <span v-if="canGenerate" class="billing-cost" aria-live="polite">
-            <template v-if="estimatedCredits">本次预计扣除 <strong>{{ estimatedCredits }}</strong> 积分</template>
+          <span v-if="canGenerate" class="billing-cost canvas-credit-callout-v1" aria-live="polite">
+            <template v-if="estimatedCredits != null">本次预计扣除 <strong>{{ estimatedCredits }}</strong> 积分</template>
             <template v-else>积分待管理员配置</template>
             <small>· {{ draft.quantity || 1 }} 次</small>
           </span>
@@ -509,6 +517,7 @@
       <div
         v-if="mediaPreviewUrl"
         class="image-lightbox nodrag nopan"
+        :class="{ 'is-pan-ready': mediaPreviewSpacePressed, 'is-panning': mediaPreviewDragging }"
         role="dialog"
         aria-modal="true"
         :aria-label="mediaPreviewKind === 'image' ? '图片全屏预览' : '视频全屏预览'"
@@ -521,12 +530,15 @@
           title="关闭"
           @click="closeMediaPreview"
         >×</button>
-        <span v-if="mediaPreviewKind === 'image'" class="lightbox-zoom-hint">Ctrl/⌘ + 滚轮缩放 · {{ Math.round(mediaPreviewScale * 100) }}%</span>
+        <span v-if="mediaPreviewKind === 'image'" class="lightbox-zoom-hint">Ctrl/⌘ + 滚轮缩放 · 空格 + 左键拖动 · {{ Math.round(mediaPreviewScale * 100) }}%</span>
         <img
           v-if="mediaPreviewKind === 'image'"
           :src="mediaPreviewUrl"
           :alt="data.title || '图片预览'"
-          :style="{ transform: `scale(${mediaPreviewScale})` }"
+          draggable="false"
+          :style="{ transform: `translate3d(${mediaPreviewOffset.x}px, ${mediaPreviewOffset.y}px, 0) scale(${mediaPreviewScale})` }"
+          @dragstart.prevent
+          @pointerdown.stop="startMediaPreviewPan"
         />
         <video v-else :src="mediaPreviewUrl" controls autoplay playsinline />
       </div>
@@ -552,6 +564,7 @@ import {
   resolveFreeCanvasVideoReferenceInput,
 } from '@/utils/freeCanvasGeneration'
 import { videoDurationOptionsForCapability } from '@/utils/videoDuration'
+import { isProtectedStaticMediaUrl, loadProtectedMediaPreview } from '@/utils/protectedMediaPreview'
 import ImageNodeToolbar from './ImageNodeToolbar.vue'
 import VideoNodeToolbar from './VideoNodeToolbar.vue'
 
@@ -574,6 +587,10 @@ const editorPanelStyle = ref({})
 const mediaPreviewUrl = ref('')
 const mediaPreviewKind = ref('image')
 const mediaPreviewScale = ref(1)
+const mediaPreviewOffset = reactive({ x: 0, y: 0 })
+const mediaPreviewSpacePressed = ref(false)
+const mediaPreviewDragging = ref(false)
+let mediaPreviewPanOrigin = null
 let draftSaveTimer = null
 let draftDirty = false
 let editorPositionFrame = null
@@ -582,6 +599,9 @@ let mediaOpenTimer = null
 const mentionStart = ref(-1)
 const mentionEnd = ref(-1)
 const mentionQuery = ref('')
+const referencePreviewUrls = ref(new Map())
+let referencePreviewRun = 0
+let referenceObjectUrls = new Set()
 const draft = reactive({
   title: '',
   content: '',
@@ -636,6 +656,11 @@ const supportsOmniReferenceMode = computed(() => (
   || capability.value.supportsVideoReference === true
   || capability.value.supportsAudioReference === true
   || capability.value?.declared === false
+))
+const supportsAnyReferenceMode = computed(() => (
+  supportsFirstLastMode.value
+  || supportsImageReferenceMode.value
+  || supportsOmniReferenceMode.value
 ))
 const canUploadReference = computed(() => {
   if (typeof ctx?.uploadFreeCanvasReferenceMedia !== 'function') return false
@@ -697,10 +722,13 @@ const firstLastFrameSlots = computed(() => {
     { key: 'last', label: '尾帧', reference: imageReferences[1] || null },
   ]
 })
-const videoReferenceMode = computed(() => normalizeFreeCanvasVideoReferenceMode(
-  draft.videoReferenceMode,
-  inputReferences.value,
-))
+const videoReferenceMode = computed(() => {
+  const mode = normalizeFreeCanvasVideoReferenceMode(draft.videoReferenceMode, inputReferences.value)
+  if (mode === 'first-last' && supportsFirstLastMode.value) return mode
+  if (mode === 'multi' && supportsImageReferenceMode.value) return mode
+  if (mode === 'omni' && supportsOmniReferenceMode.value) return mode
+  return ''
+})
 const referenceCandidates = computed(() => (
   props.data.kind === 'video'
     ? (ctx?.getFreeNodeReferenceCandidates?.(props.id) || [])
@@ -716,6 +744,51 @@ const filteredReferenceCandidates = computed(() => {
 })
 const showReferenceMention = computed(() => props.data.kind === 'video' && mentionStart.value >= 0)
 const readyReferenceCount = computed(() => inputReferences.value.filter((reference) => reference.ready).length)
+
+function referencePreviewUrl(reference) {
+  const url = String(reference?.url || '')
+  if (!url) return ''
+  const key = String(reference?.nodeId || '')
+  return referencePreviewUrls.value.get(key) || (isProtectedStaticMediaUrl(url) ? '' : url)
+}
+
+async function refreshReferencePreviews() {
+  const run = ++referencePreviewRun
+  const next = new Map()
+  const nextObjectUrls = new Set()
+  const references = [...inputReferences.value, ...referenceCandidates.value]
+  const seen = new Set()
+  for (const reference of references) {
+    const nodeId = String(reference?.nodeId || '')
+    const url = String(reference?.url || '')
+    if (!nodeId || !url || seen.has(nodeId)) continue
+    seen.add(nodeId)
+    if (!isProtectedStaticMediaUrl(url)) {
+      next.set(nodeId, url)
+      continue
+    }
+    try {
+      const preview = await loadProtectedMediaPreview(url)
+      if (run !== referencePreviewRun) {
+        if (preview.startsWith('blob:')) URL.revokeObjectURL(preview)
+        return
+      }
+      if (preview) {
+        next.set(nodeId, preview)
+        if (preview.startsWith('blob:')) nextObjectUrls.add(preview)
+      }
+    } catch (_) {
+      // 受保护素材加载失败时保留占位符，不把未授权地址交给媒体标签。
+    }
+  }
+  if (run !== referencePreviewRun) return
+  referenceObjectUrls.forEach((url) => {
+    if (!nextObjectUrls.has(url)) URL.revokeObjectURL(url)
+  })
+  referenceObjectUrls = nextObjectUrls
+  referencePreviewUrls.value = next
+}
+
 const voiceListId = computed(() => `free-node-voices-${String(props.id || 'node').replace(/[^a-zA-Z0-9_-]/g, '-')}`)
 const resultUrls = computed(() => [...new Set([
   ...(Array.isArray(props.data.resultUrls) ? props.data.resultUrls : []),
@@ -1143,6 +1216,7 @@ function openMediaPreview(url, kind = 'image') {
   if (!url) return
   openEditor()
   mediaPreviewScale.value = 1
+  resetMediaPreviewPan()
   mediaPreviewUrl.value = String(url)
   mediaPreviewKind.value = kind
 }
@@ -1158,7 +1232,50 @@ function scheduleMediaOpen() {
 function closeMediaPreview() {
   mediaPreviewUrl.value = ''
   mediaPreviewScale.value = 1
+  resetMediaPreviewPan()
   mediaPreviewKind.value = 'image'
+}
+
+function resetMediaPreviewPan() {
+  mediaPreviewOffset.x = 0
+  mediaPreviewOffset.y = 0
+  mediaPreviewSpacePressed.value = false
+  mediaPreviewDragging.value = false
+  mediaPreviewPanOrigin = null
+}
+
+function startMediaPreviewPan(event) {
+  if (mediaPreviewKind.value !== 'image') return
+  if (event.button !== 0 || !mediaPreviewSpacePressed.value) return
+  event.preventDefault()
+  mediaPreviewDragging.value = true
+  mediaPreviewPanOrigin = {
+    pointerId: event.pointerId,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    offsetX: mediaPreviewOffset.x,
+    offsetY: mediaPreviewOffset.y,
+  }
+}
+
+function onMediaPreviewPointerMove(event) {
+  if (!mediaPreviewDragging.value || !mediaPreviewPanOrigin) return
+  if (event.pointerId !== mediaPreviewPanOrigin.pointerId) return
+  event.preventDefault()
+  mediaPreviewOffset.x = mediaPreviewPanOrigin.offsetX + event.clientX - mediaPreviewPanOrigin.clientX
+  mediaPreviewOffset.y = mediaPreviewPanOrigin.offsetY + event.clientY - mediaPreviewPanOrigin.clientY
+}
+
+function stopMediaPreviewPan(event) {
+  if (event?.pointerId != null && mediaPreviewPanOrigin?.pointerId !== event.pointerId) return
+  mediaPreviewDragging.value = false
+  mediaPreviewPanOrigin = null
+}
+
+function onMediaPreviewKeyup(event) {
+  if (event.code !== 'Space') return
+  mediaPreviewSpacePressed.value = false
+  stopMediaPreviewPan()
 }
 
 function onMediaPreviewWheel(event) {
@@ -1278,6 +1395,11 @@ async function copyResultReference() {
 }
 
 function onEditorKeydown(event) {
+  if (event.code === 'Space' && mediaPreviewUrl.value && mediaPreviewKind.value === 'image') {
+    event.preventDefault()
+    mediaPreviewSpacePressed.value = true
+    return
+  }
   if (event.key !== 'Escape') return
   if (mediaOpenTimer) {
     window.clearTimeout(mediaOpenTimer)
@@ -1297,15 +1419,24 @@ function onEditorKeydown(event) {
 
 onMounted(() => {
   window.addEventListener('keydown', onEditorKeydown)
+  window.addEventListener('keyup', onMediaPreviewKeyup)
+  window.addEventListener('pointermove', onMediaPreviewPointerMove)
+  window.addEventListener('pointerup', stopMediaPreviewPan)
   window.addEventListener('resize', updateEditorPosition)
   if (isSelected.value) nextTick(startEditorPositionTracking)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onEditorKeydown)
+  window.removeEventListener('keyup', onMediaPreviewKeyup)
+  window.removeEventListener('pointermove', onMediaPreviewPointerMove)
+  window.removeEventListener('pointerup', stopMediaPreviewPan)
   window.removeEventListener('resize', updateEditorPosition)
   stopEditorPositionTracking()
   if (draftSaveTimer) window.clearTimeout(draftSaveTimer)
   if (mediaOpenTimer) window.clearTimeout(mediaOpenTimer)
+  referencePreviewRun += 1
+  referenceObjectUrls.forEach((url) => URL.revokeObjectURL(url))
+  referenceObjectUrls = new Set()
 })
 
 watch(() => props.data, () => {
@@ -1355,6 +1486,7 @@ watch(() => ctx?.focusedNodeId?.value, (focusedId) => {
   editorHidden.value = false
   nextTick(startEditorPositionTracking)
 }, { immediate: true })
+watch([inputReferences, referenceCandidates], refreshReferencePreviews, { deep: true, immediate: true })
 </script>
 
 <style scoped>
@@ -1955,6 +2087,7 @@ watch(() => ctx?.focusedNodeId?.value, (focusedId) => {
 }
 .image-lightbox > button {
   position: absolute;
+  z-index: 2;
   top: 22px;
   right: 22px;
   display: grid;
@@ -1970,8 +2103,15 @@ watch(() => ctx?.focusedNodeId?.value, (focusedId) => {
   cursor: pointer;
 }
 .image-lightbox > img,
-.image-lightbox > video { max-width: 100%; max-height: 100%; border-radius: 12px; object-fit: contain; }
-.image-lightbox > img { transform-origin: center; transition: transform 100ms ease-out; }
+.image-lightbox > video {
+  max-width: calc(100vw - 56px);
+  max-height: calc(100vh - 56px);
+  border-radius: 12px;
+  object-fit: contain;
+}
+.image-lightbox > img { transform-origin: center; transition: transform 100ms ease-out; user-select: none; }
+.image-lightbox.is-pan-ready > img { cursor: grab; }
+.image-lightbox.is-panning > img { cursor: grabbing; transition: none; }
 .lightbox-zoom-hint {
   position: absolute;
   left: 50%;

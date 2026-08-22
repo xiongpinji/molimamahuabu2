@@ -104,7 +104,7 @@
                     <input v-model="homeGenerateAudio" type="checkbox" aria-label="同步音频" />
                     <span>同步音频</span>
                   </label>
-                  <label v-if="homeMediaType === 'image' || homeMediaType === 'video'" class="home-control">
+                  <label v-if="homeMediaType === 'image' || homeResolutions.length" class="home-control">
                     <select v-model="homeResolution" :aria-label="homeMediaType === 'image' ? '图片清晰度' : '视频清晰度'">
                       <option v-for="value in homeResolutions" :key="value" :value="value">{{ value.toUpperCase() }}</option>
                     </select>
@@ -955,7 +955,7 @@ async function onImportFile(e) {
   importing.value = true
   try {
     const data = await dramaAPI.importDrama(file)
-    ElMessage.success(`导入成功：${data?.title || '项目'}`) 
+    ElMessage.success(`导入成功：${data?.title || '项目'}`)
     loadList()
   } catch (e) {
     const msg = e.response?.data?.message || e.message || '导入失败'

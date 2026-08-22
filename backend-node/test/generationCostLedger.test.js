@@ -118,7 +118,6 @@ test('经营台账拒绝未知统计周期', () => {
     (error) => error.code === 'INVALID_LEDGER_PERIOD',
   );
 });
-
 test('经营台账按视频分辨率分别记录和汇总成本', () => {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);

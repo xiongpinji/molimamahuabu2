@@ -33,8 +33,8 @@
       ],
       "fixCommit": "54eb8e940982cd9c4b65e91b934d8593a6b1975b",
       "unlock": {
-        "reason": "2026-08-21 PR #171 供应商路由与发布门禁收口授权",
-        "approvedBy": "product-owner 2026-08-21 pr-171-provider-route-closure",
+        "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
+        "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
         "impactTests": [
           "backend-node/test/providerCanaryInvalidation.test.js",
           "backend-node/test/providerCanaryPublicGate.test.js",
@@ -80,16 +80,13 @@
       ],
       "fixCommit": "54eb8e940982cd9c4b65e91b934d8593a6b1975b",
       "unlock": {
-        "reason": "2026-08-21 PR #171 供应商路由与发布门禁收口授权",
-        "approvedBy": "product-owner 2026-08-21 pr-171-provider-route-closure",
+        "reason": "2026-08-22 PR #177 主线同步视频参考证据修复获批",
+        "approvedBy": "product-owner 2026-08-22 pr-177-main-sync-closure",
         "impactTests": [
-          "backend-node/test/providerCanaryExecutor.test.js",
-          "backend-node/test/providerCanaryTextConfig.test.js",
-          "backend-node/test/providerCanaryFixtures.test.js",
-          "backend-node/test/providerCanaryArtifacts.test.js",
-          "backend-node/test/imageBilling.test.js",
-          "backend-node/test/text-generation-billing.test.js",
-          "backend-node/test/videoBilling.test.js"
+          "backend-node/test/providerRouteVideoIntegration.test.js",
+          "backend-node/test/toapisVideoClient.test.js",
+          "backend-node/test/videoBilling.test.js",
+          "frontweb/e2e/home-canvas.spec.js"
         ]
       }
     },
@@ -124,8 +121,8 @@
       ],
       "fixCommit": "51a91f1e3eb5dc3636adb1c8a47e45f22a60e000",
       "unlock": {
-        "reason": "2026-08-22 结果未知任务稳定收口标准执行授权",
-        "approvedBy": "product-owner 2026-08-22 stable-runtime-standard-execution",
+        "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
+        "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
         "impactTests": [
           "backend-node/test/providerReconciliation.test.js",
           "backend-node/test/billingReconciliation.test.js",
@@ -167,8 +164,8 @@
       ],
       "fixCommit": "f960703ce43e67900b6a294e61d36cf40f2a1d1e",
       "unlock": {
-        "reason": "2026-08-22 公共运行底座阶段 1 书面计划获批",
-        "approvedBy": "product-owner 2026-08-22 platform-shared-foundation",
+        "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
+        "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
         "impactTests": [
           "backend-node/test/platformSharedAssetAcceptance.test.js",
           "backend-node/test/platformSharedAuthAcceptance.test.js",
@@ -279,8 +276,8 @@
       ],
       "fixCommit": null,
       "unlock": {
-        "reason": "2026-08-22 公共运行底座阶段 1 书面计划获批",
-        "approvedBy": "product-owner 2026-08-22 platform-shared-foundation",
+        "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
+        "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
         "impactTests": [
           "backend-node/test/platformSharedAssetAcceptance.test.js",
           "backend-node/test/platformSharedAuthAcceptance.test.js",
@@ -320,8 +317,8 @@
       ],
       "fixCommit": null,
       "unlock": {
-        "reason": "2026-08-22 修复 Hosted CI 跨平台验收清单哈希",
-        "approvedBy": "product-owner 开始处理下一步确认",
+        "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
+        "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
         "impactTests": [
           "backend-node/test/platformFeatureAcceptance.test.js",
           "backend-node/test/featureLockManifest.test.js"

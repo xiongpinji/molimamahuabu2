@@ -133,7 +133,7 @@ function buildVideoBody({
     return {
       model: name,
       prompt: prompt || '',
-      duration: normalizeVideoDurationForModel(name, length),
+      duration: Number.isFinite(length) ? Math.min(15, Math.max(1, Math.round(length))) : 5,
       ratio: normalizeAspectRatio(aspect_ratio),
       reference_images: reference_urls.filter(Boolean).slice(0, 12),
     };
@@ -164,22 +164,6 @@ function buildVideoBody({
     }
   }
   return body;
-}
-
-const LINGJING_VIDEO_DURATIONS = Object.freeze([4, 5, 6, 8, 10, 11, 15]);
-
-function getSupportedVideoDurationsForModel(model) {
-  return String(model || '').trim().toLowerCase() === 'lingjing-video-v1'
-    ? LINGJING_VIDEO_DURATIONS
-    : null;
-}
-
-function normalizeVideoDurationForModel(model, value) {
-  const duration = Number(value);
-  const rounded = Number.isFinite(duration) ? Math.round(duration) : 5;
-  const supported = getSupportedVideoDurationsForModel(model);
-  if (!supported) return rounded;
-  return supported.find((item) => item >= rounded) ?? supported[supported.length - 1];
 }
 
 function extractTaskId(payload) {
@@ -307,8 +291,6 @@ module.exports = {
   buildFlowImageBody,
   extractFlowImageUrl,
   buildVideoBody,
-  getSupportedVideoDurationsForModel,
-  normalizeVideoDurationForModel,
   extractTaskId,
   extractUploadPath,
   extractMediaUrl,

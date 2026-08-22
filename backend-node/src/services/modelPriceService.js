@@ -10,6 +10,7 @@ const IMAGE_RESOLUTIONS = ['1k', '2k', '4k'];
 const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'feituo_open', 'lingjing_open']);
 const toapisVideoClient = require('./toapisVideoClient');
 const feituoVideoClient = require('./feituoVideoClient');
+const lingjingVideoClient = require('./lingjingVideoClient');
 const { evidenceContractForModel, hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 const SERVICE_CATEGORIES = {
   text: 'text',
@@ -356,6 +357,7 @@ function listPublic(db, options = {}) {
     WHERE deleted_at IS NULL`).all();
   const configsByModel = new Map();
   const strictUpstreamKeys = new Set();
+  strictUpstreamKeys.add(`video:${lingjingVideoClient.PUBLIC_MODEL}`);
   const addConfig = (model, upstreamModel, config) => {
     const key = String(model || '').trim().toLowerCase();
     if (!key) return;
@@ -363,18 +365,19 @@ function listPublic(db, options = {}) {
     entries.push({ config, upstreamModel: String(upstreamModel || model).trim() });
     configsByModel.set(key, entries);
   };
-  const addLogicalConfig = (upstreamModel, config) => {
-    const logicalModel = String(config.logical_model_id || '').trim();
-    if (logicalModel) addConfig(logicalModel, upstreamModel, config);
-  };
-  for (const entry of mediaModelSelection.listEntries(rows)) {
-    const row = entry.config;
-    if (!row.is_active) continue;
-    if (!isStrictPublicConfig(row) && requiresVerificationStatus && row.verification_status !== 'verified') continue;
-    if (!isRealGenerationVerified(row, entry.upstreamModel)) continue;
-    if (isStrictPublicConfig(row)) {
+  const mediaEntries = mediaModelSelection.listEntries(rows);
+  for (const entry of mediaEntries) {
+    if (isStrictPublicConfig(entry.config)) {
       strictUpstreamKeys.add(`${entry.kind}:${entry.upstreamModel.toLowerCase()}`);
     }
+  }
+  for (const entry of mediaEntries) {
+    const row = entry.config;
+    if (!row.is_active) continue;
+    const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
+    if (strictUpstreamKeys.has(upstreamKey) && !isStrictPublicConfig(row)) continue;
+    if (!isStrictPublicConfig(row) && requiresVerificationStatus && row.verification_status !== 'verified') continue;
+    if (!isRealGenerationVerified(row, entry.upstreamModel)) continue;
     const logicalModel = String(row.logical_model_id || '').trim();
     if (entry.duplicated && !logicalModel && !isStrictPublicConfig(row)) continue;
     const publicModel = logicalModel || entry.upstreamModel;
@@ -383,14 +386,12 @@ function listPublic(db, options = {}) {
   for (const row of rows.filter((item) => !mediaModelSelection.KIND_BY_SERVICE[item.service_type])) {
     if (!row.is_active) continue;
     if (requiresVerificationStatus && row.verification_status !== 'verified') continue;
+    const logicalModel = String(row.logical_model_id || '').trim();
     for (const model of [...parseConfiguredModels(row.model), String(row.default_model || '').trim()]) {
-      if (model && isRealGenerationVerified(row, model)) {
-        addConfig(model, model, row);
-        addLogicalConfig(model, row);
-      }
+      if (model && isRealGenerationVerified(row, model)) addConfig(logicalModel || model, model, row);
     }
   }
-  return list(db).flatMap((row) => {
+  const publicRows = list(db).flatMap((row) => {
     if (row.status !== 'enabled' || !Number.isSafeInteger(row.credits) || row.credits <= 0) return [];
     const entries = configsByModel.get(row.model.toLowerCase()) || [];
     const selected = mediaModelSelection.parseQualifiedSelection(row.model);
@@ -415,20 +416,18 @@ function listPublic(db, options = {}) {
       resolution_prices: Object.fromEntries(Object.entries(row.resolution_prices || {})
         .filter(([resolution]) => resolutions.includes(String(resolution).toLowerCase()))),
     }];
-  }).map(publicPriceView);
-}
-
-function publicPriceView(row) {
-  return {
+  });
+  return publicRows.map((row) => ({
     model: row.model,
     display_name: row.display_name,
+    public_note: row.public_note,
     category: row.category,
     credits: row.credits,
     status: row.status,
     billing_unit: row.billing_unit,
     resolution_prices: Object.fromEntries(Object.entries(row.resolution_prices || {})
       .map(([resolution, tier]) => [resolution, { credits: tier.credits }])),
-  };
+  }));
 }
 
 function isStrictPublicConfig(config) {
@@ -466,6 +465,8 @@ function verifiedPublicResolutions(config, model) {
     ? VIDEO_RESOLUTIONS
     : protocol === 'feituo_open'
       ? (feituoVideoClient.FEITUO_MODELS[target]?.resolutions || [])
+      : protocol === 'lingjing_open'
+        ? []
       : IMAGE_RESOLUTIONS;
   return Array.isArray(capabilities.resolutions)
     ? [...new Set(capabilities.resolutions
@@ -478,7 +479,7 @@ function isPublicConfigReady(config, price, model = price.model, evidenceRoots) 
   const protocol = strictPublicProtocol(config);
   if (!STRICT_VERIFIED_PROTOCOLS.has(protocol)) return true;
   if ((protocol === 'usmercari_image' && price.category !== 'image')
-      || (protocol === 'toapis_video' && price.category !== 'video')) return false;
+      || (['toapis_video', 'lingjing_open'].includes(protocol) && price.category !== 'video')) return false;
   if (config.verification_status !== 'verified'
       || !hasConnectionCredential(config)) return false;
   const modelCapabilities = verifiedPublicCapabilities(config, model);
@@ -490,14 +491,40 @@ function isPublicConfigReady(config, price, model = price.model, evidenceRoots) 
     ? toapisVideoClient.TOAPIS_VIDEO_MODELS[target]
     : protocol === 'feituo_open'
       ? feituoVideoClient.FEITUO_MODELS[target]
+      : protocol === 'lingjing_open' && target === lingjingVideoClient.PUBLIC_MODEL
+        ? lingjingVideoClient.LINGJING_VIDEO_SPEC
       : null;
   if (protocol === 'feituo_open' && (!target.startsWith('xuan-') || !official)) return false;
-  if (protocol === 'toapis_video' || protocol === 'feituo_open') {
+  if (protocol === 'toapis_video' || protocol === 'feituo_open' || protocol === 'lingjing_open') {
     const durations = Array.isArray(modelCapabilities?.durations) && official
       ? modelCapabilities.durations.map(Number)
         .filter((duration) => Number.isSafeInteger(duration) && official.durations.includes(duration))
       : [];
     if (!durations.length) return false;
+  }
+  if (protocol === 'lingjing_open') {
+    const ratios = Array.isArray(modelCapabilities.aspectRatios)
+      ? official.aspectRatios.filter((ratio) => modelCapabilities.aspectRatios.includes(ratio))
+      : [];
+    const maxReferences = Number(modelCapabilities.maxReferences);
+    return Boolean(official)
+      && resolutions.length === 0
+      && ratios.length === official.aspectRatios.length
+      && modelCapabilities.supportsImageReference === true
+      && modelCapabilities.supportsFirstFrame === false
+      && modelCapabilities.supportsLastFrame === false
+      && modelCapabilities.supportsVideoReference === false
+      && modelCapabilities.supportsAudioReference === false
+      && modelCapabilities.supportsAudio === false
+      && Number.isSafeInteger(maxReferences)
+      && maxReferences >= 0
+      && maxReferences <= lingjingVideoClient.MAX_IMAGE_REFERENCES
+      && price.billing_unit === 'second'
+      && price.cost_unit === 'second'
+      && Number.isSafeInteger(price.credits)
+      && price.credits > 0
+      && Number.isSafeInteger(price.cost_micros_per_unit)
+      && price.cost_micros_per_unit > 0;
   }
   if (protocol === 'feituo_open' && official.resolutions.length === 1) {
     return price.category === 'video'

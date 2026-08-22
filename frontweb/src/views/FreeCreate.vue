@@ -59,7 +59,7 @@
         </div>
 
         <div class="form-section form-row">
-          <div v-if="mode === 'image' || mode === 'video'" class="form-item">
+          <div v-if="mode === 'image' || selectedResolutions.length" class="form-item">
             <div class="form-label">风格</div>
             <el-input v-model="style" placeholder="例如: cinematic, anime..." />
           </div>

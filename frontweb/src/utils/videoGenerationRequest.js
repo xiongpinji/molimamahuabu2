@@ -72,6 +72,7 @@ function buildVideoGenerationRequest({
   const referenceAudioUrlList = normalizeReferenceUrls(referenceAudioUrls)
   const normalizedReferenceMode = String(referenceMode || '').trim()
   const capabilityDeclared = capability?.declared === true
+  const hasDeclaredResolutionContract = capabilityDeclared && Array.isArray(capability.resolutions)
   const hasFrameSlots = Boolean(firstFrameUrl || lastFrameUrl)
   const hasOmniReferences = Boolean(
     referenceImageUrlList?.length
@@ -127,10 +128,14 @@ function buildVideoGenerationRequest({
     reference_video_urls: referenceVideoUrlList,
     reference_audio_urls: referenceAudioUrlList,
     reference_mode: normalizedReferenceMode || undefined,
-    generate_audio: generateAudio ?? undefined,
+    generate_audio: capabilityDeclared && capability.supportsAudio !== true
+      ? undefined
+      : generateAudio ?? undefined,
     style: style || undefined,
     aspect_ratio: aspectRatio || undefined,
-    resolution: resolution || undefined,
+    resolution: hasDeclaredResolutionContract && capability.resolutions.length === 0
+      ? undefined
+      : resolution || undefined,
     duration: duration ?? undefined,
   })
 }

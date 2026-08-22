@@ -105,10 +105,10 @@ function configureReferenceImageCapability() {
       `INSERT INTO ai_service_configs
         (service_type, provider, api_protocol, name, base_url, api_key, model,
          default_model, endpoint, priority, is_default, is_active, settings,
-         verification_status, verification_evidence, created_at, updated_at)
+         verification_status, verified_at, verification_evidence, created_at, updated_at)
        VALUES
         ('storyboard_image', 'aihubcc', 'aihubcc', ?, ?, ?, ?, ?,
-         '/videos', 100, 1, 1, ?, 'verified', ?, ?, ?)`,
+         '/videos', 100, 1, 1, ?, 'verified', ?, ?, ?, ?)`,
     ).run(
       'AIHubCC gpt-image-2-3.5k 图片节点真实同链',
       realAihubccBaseUrl || 'https://example.invalid/v1',
@@ -130,7 +130,8 @@ function configureReferenceImageCapability() {
         supports_frame_backward: true,
         supports_cinematic_relight: true,
       }),
-      JSON.stringify({ source: 'local-playwright-capability-fixture' }),
+      now,
+      JSON.stringify({ source: 'local-playwright-provider-fixture' }),
       now,
       now,
     )

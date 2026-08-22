@@ -4,7 +4,7 @@ const express = require('express');
 
 const SHARED_EVIDENCE_PARENT = '/opt/moli-drama/shared/release-evidence';
 const SHARED_EVIDENCE_PUBLIC = '/opt/moli-drama/shared/release-evidence/external-models-v1/public';
-const SAFE_MEDIA_PATH = /^\/(?:toapis\/[A-Za-z0-9][A-Za-z0-9._~-]*\.mp4|feituo\/[A-Za-z0-9][A-Za-z0-9._~-]*\.mp4|usmercari\/[A-Za-z0-9][A-Za-z0-9._~-]*\.(?:jpg|jpeg|png|webp)|bootstrap\/[A-Za-z0-9][A-Za-z0-9._~-]*\.(?:jpg|jpeg|png|webp|mp4|mp3|m4a|wav))$/;
+const SAFE_MEDIA_PATH = /^\/(?:toapis\/[A-Za-z0-9][A-Za-z0-9._~-]*\.mp4|feituo\/[A-Za-z0-9][A-Za-z0-9._~-]*\.mp4|lingjing\/[A-Za-z0-9][A-Za-z0-9._~-]*\.mp4|usmercari\/[A-Za-z0-9][A-Za-z0-9._~-]*\.(?:jpg|jpeg|png|webp)|bootstrap\/[A-Za-z0-9][A-Za-z0-9._~-]*\.(?:jpg|jpeg|png|webp|mp4|mp3|m4a|wav))$/;
 
 function assertProtectedProductionTree(allowedRoot, publicRoot) {
   let current = publicRoot;

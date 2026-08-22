@@ -5,11 +5,40 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const MANIFEST_CONTRACT = 'external-model-release-evidence-manifest-v1';
+// Paid evidence is refreshed only when the provider wire adapter or exact
+// evidence producer changes. Shared catalog/billing/UI files are still audited
+// below on every release, but do not make unrelated providers pay to re-prove
+// an unchanged upstream request/response contract.
+const FRESHNESS_SURFACES = Object.freeze({
+  toapis: Object.freeze([
+    'backend-node/src/services/toapisVideoClient.js',
+    'backend-node/scripts/verify-toapis-video-models.js',
+  ]),
+  toapisPrivateAvatar: Object.freeze([
+    'backend-node/src/services/toapisPrivateAvatarService.js',
+    'backend-node/src/services/videoService.js',
+    'backend-node/scripts/verify-toapis-private-avatar-video.js',
+  ]),
+  usmercari: Object.freeze([
+    'backend-node/src/services/usmercariImageClient.js',
+    'backend-node/scripts/verify-usmercari-image-models.js',
+  ]),
+  lingjing: Object.freeze([
+    'backend-node/src/services/lingjingVideoClient.js',
+    'backend-node/scripts/verify-lingjing-video-model.js',
+  ]),
+});
+const TRUSTED_UNCHANGED_TOAPIS_STANDARD_SURFACE_SHA256 = Object.freeze({
+  'backend-node/src/services/toapisVideoClient.js': '9c42f9d68d36ce1b61e74c9e70a43868f611f13b3becc2f87c16878fbf458b8c',
+  'backend-node/scripts/verify-toapis-video-models.js': 'b79cf06188c59cfa8ee5f3b24a72c4b45e48d75388e6e60477f0075a7c8169fb',
+});
 const PROVIDERS = Object.freeze({
   toapis: Object.freeze({
     label: 'ToAPIs',
     contract: 'toapis-video-real-verification-v1',
     evidenceFile: 'toapis-video-verification.json',
+    privateAvatarContract: 'toapis-private-avatar-video-verification-v1',
+    privateAvatarEvidenceFile: 'toapis-private-avatar-verification.json',
     clientFile: 'backend-node/src/services/toapisVideoClient.js',
     markers: /\btoapis_video\b|\bseedance-2-(?:fast|mini)\b/,
     surfaceFiles: Object.freeze([
@@ -49,6 +78,27 @@ const PROVIDERS = Object.freeze({
       'frontweb/src/views/FilmCreate.vue',
     ]),
   }),
+  lingjing: Object.freeze({
+    label: 'Lingjing video',
+    contract: 'lingjing-video-real-verification-v1',
+    evidenceFile: 'lingjing-video-verification.json',
+    clientFile: 'backend-node/src/services/lingjingVideoClient.js',
+    markers: /\blingjing_open\b|\blingjing-video-v1\b/,
+    surfaceFiles: Object.freeze([
+      'backend-node/src/routes/aiConfig.js',
+      'backend-node/src/services/aiConfigService.js',
+      'backend-node/src/services/canvasModelCatalogService.js',
+      'backend-node/src/services/modelPriceService.js',
+      'backend-node/src/services/videoClient.js',
+      'backend-node/src/services/videoService.js',
+      'frontweb/src/components/AIConfigContent.vue',
+      'frontweb/src/utils/homeQuickGeneration.js',
+      'frontweb/src/utils/canvasModelCapabilities.js',
+      'frontweb/src/views/FilmCreate.vue',
+      'frontweb/src/views/FilmList.vue',
+      'frontweb/src/views/FreeCreate.vue',
+    ]),
+  }),
 });
 
 const TOAPIS_CASES = Object.freeze([
@@ -60,6 +110,10 @@ const TOAPIS_CASES = Object.freeze([
   Object.freeze({ id: 'mini-first-last-480', model: 'seedance-2-mini', mode: 'first-last', resolution: '480p', duration: 4, audio: false }),
   Object.freeze({ id: 'fast-omni-480', model: 'seedance-2-fast', mode: 'omni', resolution: '480p', duration: 4, audio: false }),
   Object.freeze({ id: 'mini-omni-480', model: 'seedance-2-mini', mode: 'omni', resolution: '480p', duration: 4, audio: false }),
+]);
+const TOAPIS_PRIVATE_AVATAR_CASES = Object.freeze([
+  Object.freeze({ id: 'fast-avatar-480-4s', model: 'seedance-2-fast', resolution: '480p', duration: 4 }),
+  Object.freeze({ id: 'mini-avatar-480-4s', model: 'seedance-2-mini', resolution: '480p', duration: 4 }),
 ]);
 
 const TOAPIS_PRICE_FLOORS = Object.freeze({
@@ -86,6 +140,17 @@ const USMERCARI_PRICES = Object.freeze({
   'nano-banana-2|2k': Object.freeze([0.10, 87]),
   'nano-banana-2|4k': Object.freeze([0.12, 105]),
 });
+
+const LINGJING_CASE = Object.freeze({
+  id: 'relay-image-4s',
+  model: 'lingjing-video-v1',
+  upstreamModel: 'relay',
+  mode: 'omni',
+  duration: 4,
+  aspectRatio: '16:9',
+});
+const LINGJING_DURATIONS = Object.freeze([4, 5, 6, 8, 10, 11, 15]);
+const LINGJING_RATIOS = Object.freeze(['16:9', '9:16', '1:1', '4:3', '3:4', '21:9']);
 
 function fail(message) {
   throw new Error(message);
@@ -123,6 +188,12 @@ function requireRootOwned(stat, label) {
   if (process.platform === 'win32') return;
   if (stat.uid !== 0 || stat.gid !== 0) fail(`${label} must be root:root owned`);
   if ((stat.mode & 0o022) !== 0) fail(`${label} must not be group/other writable`);
+  if (stat.isDirectory() && (stat.mode & 0o555) !== 0o555) {
+    fail(`${label} must be runtime-readable and traversable`);
+  }
+  if (stat.isFile() && (stat.mode & 0o444) !== 0o444) {
+    fail(`${label} must be runtime-readable`);
+  }
 }
 
 function secureDirectory(input, label, rootOwned = false) {
@@ -172,12 +243,44 @@ function candidateSource(candidate, relative, required = true) {
   return fs.readFileSync(real, 'utf8');
 }
 
+function protectedSurfaceChanged(candidate, expectedCurrent, files) {
+  return files.some((relative) => {
+    const candidateText = candidateSource(candidate, relative, false);
+    const currentText = candidateSource(expectedCurrent, relative, false);
+    return candidateText !== currentText;
+  });
+}
+
+function sourceSha256(root, relative) {
+  return sha256(Buffer.from(candidateSource(root, relative, false), 'utf8'));
+}
+
+function trustedUnchangedToapisStandardSurface(candidate, expectedCurrent) {
+  return FRESHNESS_SURFACES.toapis.every((relative) => {
+    const candidateText = candidateSource(candidate, relative, false);
+    const currentText = candidateSource(expectedCurrent, relative, false);
+    return candidateText === currentText
+      && sourceSha256(candidate, relative) === TRUSTED_UNCHANGED_TOAPIS_STANDARD_SURFACE_SHA256[relative];
+  });
+}
+
+function canStartRegexLiteral(source, index) {
+  let cursor = index - 1;
+  while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
+  if (cursor < 0) return true;
+  if ('([{,:;=!?&|+-*%^~<>'.includes(source[cursor])) return true;
+  const prefix = source.slice(0, cursor + 1);
+  return /(?:^|[^\w$])(?:return|throw|case|delete|typeof|void|new|in|of|yield|await)\s*$/.test(prefix);
+}
+
 function stripComments(source) {
   const withoutHtml = String(source || '').replace(/<!--[\s\S]*?-->/g, (value) => '\n'.repeat((value.match(/\n/g) || []).length));
   let output = '';
   let quote = '';
   let lineComment = false;
   let blockComment = false;
+  let regex = false;
+  let regexClass = false;
   let escaped = false;
   for (let index = 0; index < withoutHtml.length; index += 1) {
     const current = withoutHtml[index];
@@ -191,6 +294,15 @@ function stripComments(source) {
       else output += current === '\n' ? '\n' : ' ';
       continue;
     }
+    if (regex) {
+      output += current;
+      if (escaped) escaped = false;
+      else if (current === '\\') escaped = true;
+      else if (current === '[') regexClass = true;
+      else if (current === ']') regexClass = false;
+      else if (current === '/' && !regexClass) regex = false;
+      continue;
+    }
     if (quote) {
       output += current;
       if (escaped) escaped = false;
@@ -201,6 +313,13 @@ function stripComments(source) {
     if (current === '"' || current === "'" || current === '`') { quote = current; output += current; continue; }
     if (current === '/' && next === '/') { output += '  '; lineComment = true; index += 1; continue; }
     if (current === '/' && next === '*') { output += '  '; blockComment = true; index += 1; continue; }
+    if (current === '/' && canStartRegexLiteral(withoutHtml, index)) {
+      regex = true;
+      regexClass = false;
+      escaped = false;
+      output += current;
+      continue;
+    }
     output += current;
   }
   return output;
@@ -209,8 +328,11 @@ function stripComments(source) {
 function maskStrings(source) {
   let output = '';
   let quote = '';
+  let regex = false;
+  let regexClass = false;
   let escaped = false;
-  for (const value of source) {
+  for (let index = 0; index < source.length; index += 1) {
+    const value = source[index];
     if (quote) {
       output += value === '\n' ? '\n' : ' ';
       if (escaped) escaped = false;
@@ -218,8 +340,22 @@ function maskStrings(source) {
       else if (value === quote) quote = '';
       continue;
     }
+    if (regex) {
+      output += value === '\n' ? '\n' : ' ';
+      if (escaped) escaped = false;
+      else if (value === '\\') escaped = true;
+      else if (value === '[') regexClass = true;
+      else if (value === ']') regexClass = false;
+      else if (value === '/' && !regexClass) regex = false;
+      continue;
+    }
     if (value === '"' || value === "'" || value === '`') {
       quote = value;
+      output += ' ';
+    } else if (value === '/' && canStartRegexLiteral(source, index)) {
+      regex = true;
+      regexClass = false;
+      escaped = false;
       output += ' ';
     } else output += value;
   }
@@ -351,6 +487,9 @@ function auditEvidenceBindingRuntime(candidate, surfaces) {
     'evidence_sha256',
     'hasTrustedEvidenceBinding',
   ]) requirePattern(evidenceService, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `evidence binding runtime is missing ${token}`);
+  if (surfaces.lingjing) {
+    requirePattern(evidenceService, new RegExp(PROVIDERS.lingjing.contract), `evidence binding runtime is missing ${PROVIDERS.lingjing.contract}`);
+  }
   if (/EXTERNAL_MODEL_EVIDENCE_(?:ROOT|ALLOWED_ROOT)|evidence[^\n]{0,40}process\.env/i.test(evidenceService)) {
     fail('evidence binding runtime must not accept evidence path environment overrides');
   }
@@ -372,9 +511,75 @@ function auditEvidenceBindingRuntime(candidate, surfaces) {
   }
   if (surfaces.toapis) requirePattern(catalog, /toapis_video/, 'catalog runtime gate is missing ToAPIs strict protocol');
   if (surfaces.usmercari) requirePattern(catalog, /usmercari_image/, 'catalog runtime gate is missing USMercari strict protocol');
+  if (surfaces.lingjing) requirePattern(catalog, /lingjing_open/, 'catalog runtime gate is missing Lingjing strict protocol');
 }
 
-function auditToapisRuntime(candidate) {
+function auditLingjingRuntime(candidate) {
+  const client = stripComments(candidateSource(candidate, 'backend-node/src/services/lingjingVideoClient.js'));
+  for (const [pattern, message] of [
+    [/PUBLIC_MODEL\s*=\s*['"]lingjing-video-v1['"]/, 'Lingjing client public model is not locked'],
+    [/UPSTREAM_MODEL\s*=\s*['"]relay['"]/, 'Lingjing client upstream model is not locked'],
+    [/OFFICIAL_ORIGIN\s*=\s*['"]https:\/\/seed\.alimyun\.xyz['"]/, 'Lingjing client official origin is not locked'],
+    [/\/api\/open\/v1/, 'Lingjing client official API path is not locked'],
+    [/DURATIONS\s*=\s*Object\.freeze\s*\(\s*\[4,\s*5,\s*6,\s*8,\s*10,\s*11,\s*15\]\s*\)/, 'Lingjing client durations differ from the reviewed contract'],
+    [/RATIOS\s*=\s*Object\.freeze\s*\(\s*\[['"]16:9['"],\s*['"]9:16['"],\s*['"]1:1['"],\s*['"]4:3['"],\s*['"]3:4['"],\s*['"]21:9['"]\]\s*\)/, 'Lingjing client ratios differ from the reviewed contract'],
+    [/MAX_IMAGE_REFERENCES\s*=\s*9/, 'Lingjing client image-reference limit is not 9'],
+    [/hostname\s*!==\s*['"]seed\.alimyun\.xyz['"]/, 'Lingjing client does not lock the official host'],
+    [/protocol\s*!==\s*['"]https:['"]/, 'Lingjing client does not require HTTPS'],
+    [/buildLingjingUploadUrl\s*\(/, 'Lingjing client upload endpoint is missing'],
+    [/buildLingjingCreateUrl\s*\(/, 'Lingjing client create endpoint is missing'],
+    [/buildLingjingStatusUrl\s*\(/, 'Lingjing client status endpoint is missing'],
+    [/buildLingjingDownloadUrl\s*\(/, 'Lingjing client download endpoint is missing'],
+    [/captureAudit/, 'Lingjing client cannot capture the paid verification audit receipt'],
+    [/request_body_sha256/, 'Lingjing client audit receipt is missing the normalized request digest'],
+    [/creation_response_sha256/, 'Lingjing client audit receipt is missing the creation response digest'],
+    [/terminal_response_sha256/, 'Lingjing client audit receipt is missing the terminal response digest'],
+    [/reference_sha256/, 'Lingjing client audit receipt is missing the uploaded reference binding'],
+    [/supplier_cost_unavailable/, 'Lingjing client audit receipt is missing the supplier cost declaration'],
+  ]) requirePattern(client, pattern, message);
+
+  const dispatcher = stripComments(candidateSource(candidate, 'backend-node/src/services/videoClient.js'));
+  const dispatch = /\bif\s*\(\s*protocol\s*===\s*['"]lingjing_open['"]\s*\)\s*\{/.exec(dispatcher);
+  if (!dispatch) fail('Lingjing runtime protocol dispatch is missing');
+  const dispatchBlock = balancedBlock(dispatcher, dispatch.index, 'Lingjing dispatch');
+  const submitGateAt = firstIndex(dispatchBlock, [/\bassertLingjingVideoSubmitReady\s*\(/]);
+  const submitAt = firstIndex(dispatchBlock, [/\bcallLingjingVideoApi\s*\(/]);
+  if (submitGateAt < 0 || submitAt < 0 || submitGateAt > submitAt) {
+    fail('Lingjing final verified/evidence/capability/price gate must run before provider submission');
+  }
+  const scopes = functionScopes(dispatcher);
+  const submitGate = scopes.find((scope) => scope.name === 'assertLingjingVideoSubmitReady');
+  if (!submitGate) fail('Lingjing final submit gate is missing');
+  for (const [pattern, message] of [
+    [/verification_status\s*(?:===|!==)\s*['"]verified['"]/, 'Lingjing submit gate does not require verified status'],
+    [/hasConnectionCredential\s*\(/, 'Lingjing submit gate does not require credentials'],
+    [/verified_capabilities|capabilities/, 'Lingjing submit gate does not read verified capabilities'],
+    [/hasTrustedEvidenceBinding\s*\(/, 'Lingjing submit gate does not bind shared evidence'],
+    [/MAX_IMAGE_REFERENCES/, 'Lingjing submit gate does not enforce the official image-reference ceiling'],
+    [/MODEL_PRICE_NOT_CONFIGURED/, 'Lingjing submit gate does not fail closed on missing price'],
+    [/calculateCharge\s*\(/, 'Lingjing submit gate does not recompute the exact charge'],
+  ]) requirePattern(submitGate.source, pattern, message);
+
+  const service = stripComments(candidateSource(candidate, 'backend-node/src/services/videoService.js'));
+  const serviceScopes = functionScopes(service);
+  const ready = serviceScopes.find((scope) => scope.name === 'lingjingReadyState');
+  if (!ready) fail('Lingjing create-time ready gate is missing');
+  for (const [pattern, message] of [
+    [/verification_status\s*(?:===|!==)\s*['"]verified['"]/, 'Lingjing create-time gate does not require verified status'],
+    [/hasConnectionCredential\s*\(/, 'Lingjing create-time gate does not require credentials'],
+    [/verifiedCapabilitiesForModel\s*\(|verified_capabilities/, 'Lingjing create-time gate does not read verified capabilities'],
+    [/hasTrustedEvidenceBinding\s*\(/, 'Lingjing create-time gate does not bind shared evidence'],
+    [/MODEL_NOT_VERIFIED/, 'Lingjing create-time gate is not fail closed'],
+  ]) requirePattern(ready.source, pattern, message);
+  const createScope = serviceScopes.find((scope) => /\blingjingReadyState\s*\(/.test(scope.code)
+    && sideEffectIndex(scope, 'video_generations') >= 0);
+  if (!createScope) fail('Lingjing create-time gate is not connected to the generation side-effect path');
+  requireCallsBeforeSideEffect(createScope, [
+    [/\blingjingReadyState\s*\(/, 'verified configuration/capability/evidence'],
+  ], 'video_generations', 'Lingjing runtime');
+}
+
+function auditToapisRuntime(candidate, options = {}) {
   const client = stripComments(candidateSource(candidate, 'backend-node/src/services/toapisVideoClient.js'));
   const modelTableAt = client.indexOf('TOAPIS_VIDEO_MODELS');
   if (modelTableAt < 0) fail('ToAPIs client model table is missing');
@@ -443,6 +648,69 @@ function auditToapisRuntime(candidate) {
     [/\brequireVerifiedToapisReferenceCapabilities\s*\(/, 'reference capability'],
     [/\brequireToapisResolutionPrice\s*\(/, 'resolution price'],
   ], 'video_generations', 'ToAPIs runtime');
+
+  if (options.auditEvidenceProducer === true) {
+  const verifier = stripComments(candidateSource(candidate, 'backend-node/scripts/verify-toapis-video-models.js'));
+  const verifierScopes = functionScopes(verifier);
+  const paidRun = verifierScopes.find((scope) => scope.name === 'runVerification');
+  const capabilityBuilder = verifierScopes.find((scope) => scope.name === 'buildVerifiedCapabilities');
+  const recorder = verifierScopes.find((scope) => scope.name === 'recordVerificationResult');
+  const evidenceBinding = verifierScopes.find((scope) => scope.name === 'evidenceBindingForFile');
+  const publisher = verifierScopes.find((scope) => scope.name === 'publishVerifiedEvidence');
+  if (!paidRun || !capabilityBuilder || !recorder || !evidenceBinding || !publisher) {
+    fail('ToAPIs paid verification evidence-binding workflow is incomplete');
+  }
+  requirePattern(paidRun.source, /const\s+configId\s*=\s*requireVerificationConfigId\s*\(/,
+    'ToAPIs paid verification does not require a target config id');
+  if (paidRun.source.indexOf('requireVerificationConfigId') > paidRun.source.indexOf('requireApiKey')) {
+    fail('ToAPIs target config id must be required before paid verification credentials are used');
+  }
+  requirePattern(paidRun.source, /publishVerifiedEvidence\s*\([^)]*\{\s*configId\s*,\s*evidencePath\s*\}\s*\)/,
+    'ToAPIs paid verification does not write the final evidence binding to its target config');
+  requirePattern(publisher.source, /hasCompleteRequiredMatrix\s*\(/,
+    'ToAPIs final evidence can be published before all real cases are reviewed');
+  requirePattern(publisher.source, /hasCompletePricing\s*\(/,
+    'ToAPIs final evidence can be published before pricing is reviewed');
+  const publishIndex = publisher.source.indexOf('writeJsonAtomic');
+  if (publishIndex < 0
+      || publisher.source.indexOf('hasCompleteRequiredMatrix') > publishIndex
+      || publisher.source.indexOf('hasCompletePricing') > publishIndex) {
+    fail('ToAPIs final evidence is written before review and pricing gates');
+  }
+  requirePattern(publisher.source, /restoreEvidenceFile\s*\(/,
+    'ToAPIs final evidence is not restored when DB binding writeback fails');
+  requirePattern(paidRun.source, /if\s*\(\s*!error\.preserveExistingVerification\s*\)[\s\S]{0,180}recordVerificationResult\s*\(/,
+    'ToAPIs workflow failures can still invalidate an existing trusted verification');
+  requirePattern(evidenceBinding.source, /createHash\s*\(\s*['"]sha256['"]\s*\)/,
+    'ToAPIs evidence binding does not hash the final evidence bytes');
+  requirePattern(capabilityBuilder.source, /normalizeEvidenceBinding\s*\(/,
+    'ToAPIs verified capabilities do not require a normalized evidence binding');
+  requirePattern(capabilityBuilder.source, /\.\.\.binding/,
+    'ToAPIs verified capabilities do not persist the final evidence binding');
+  requirePattern(recorder.source, /db\.transaction\s*\(/,
+    'ToAPIs config evidence binding is not written transactionally');
+  for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
+    requirePattern(recorder.source, new RegExp(`['"]${model}['"]`),
+      `ToAPIs config writeback does not verify ${model}`);
+  }
+  }
+
+  const preflight = stripComments(candidateSource(candidate, 'backend-node/src/services/productionPreflightService.js'));
+  const preflightScopes = functionScopes(preflight);
+  const bindingCheck = preflightScopes.find((scope) => scope.name === 'externalModelEvidenceBindingsReady');
+  const productionPreflight = preflightScopes.find((scope) => scope.name === 'runProductionPreflight');
+  if (!bindingCheck || !productionPreflight) fail('ToAPIs production DB/evidence preflight is missing');
+  requirePattern(bindingCheck.source, /mediaModelSelection\.orderedModels\s*\(/,
+    'ToAPIs production preflight does not inspect every configured model');
+  requirePattern(bindingCheck.source, /hasTrustedEvidenceBinding\s*\(/,
+    'ToAPIs production preflight does not validate exact evidence bindings');
+  if (/Object\.hasOwn\s*\([^)]*capabilitiesByModel/.test(bindingCheck.source)) {
+    fail('ToAPIs production preflight skips configured models with missing capabilities');
+  }
+  requirePattern(productionPreflight.source, /externalModelEvidenceBindingsReady\s*\(/,
+    'ToAPIs production preflight does not execute the evidence binding audit');
+  requirePattern(productionPreflight.source, /['"]external_model_evidence_binding['"]/,
+    'ToAPIs production preflight does not expose a blocking evidence check');
 }
 
 function auditUsmercariRuntime(candidate) {
@@ -567,7 +835,10 @@ function readManifestEvidence(evidenceRoot, surfaces) {
   const manifest = parseJsonBytes(fs.readFileSync(manifestFile.path), 'evidence manifest');
   if (manifest?.contract_version !== MANIFEST_CONTRACT) fail('evidence manifest contract_version is invalid');
   if (!manifest.evidence || typeof manifest.evidence !== 'object' || Array.isArray(manifest.evidence)) fail('evidence manifest entries are invalid');
-  const knownContracts = new Set(Object.values(PROVIDERS).map((provider) => provider.contract));
+  const knownContracts = new Set(Object.values(PROVIDERS).flatMap((provider) => [
+    provider.contract,
+    provider.privateAvatarContract,
+  ].filter(Boolean)));
   for (const contract of Object.keys(manifest.evidence)) {
     if (!knownContracts.has(contract)) fail(`evidence manifest contains an arbitrary contract: ${contract}`);
   }
@@ -586,6 +857,19 @@ function readManifestEvidence(evidenceRoot, surfaces) {
     const bytes = fs.readFileSync(evidenceFile.path);
     if (sha256(bytes) !== expectedSha) fail(`${provider.label} evidence JSON does not match the manifest SHA-256`);
     output[key] = { evidence: parseJsonBytes(bytes, `${provider.label} evidence JSON`), sha256: expectedSha };
+    if (required && provider.privateAvatarContract) {
+      const avatarRecord = manifest.evidence[provider.privateAvatarContract];
+      if (!avatarRecord) fail(`${provider.label} private-avatar fixed manifest entry is missing`);
+      if (avatarRecord.file !== provider.privateAvatarEvidenceFile) {
+        fail(`${provider.label} private-avatar manifest file must be ${provider.privateAvatarEvidenceFile}`);
+      }
+      const avatarSha = String(avatarRecord.sha256 || '').toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(avatarSha)) fail(`${provider.label} private-avatar manifest SHA-256 is invalid`);
+      const avatarFile = secureFile(evidenceRoot, provider.privateAvatarEvidenceFile, `${provider.label} private-avatar evidence JSON`, { basenameOnly: true, rootOwned: true });
+      const avatarBytes = fs.readFileSync(avatarFile.path);
+      if (sha256(avatarBytes) !== avatarSha) fail(`${provider.label} private-avatar evidence JSON does not match the manifest SHA-256`);
+      output[`${key}PrivateAvatar`] = { evidence: parseJsonBytes(avatarBytes, `${provider.label} private-avatar evidence JSON`), sha256: avatarSha };
+    }
   }
   return output;
 }
@@ -598,15 +882,22 @@ function canonicalTimestamp(value, label) {
   return timestamp;
 }
 
-function auditFreshness(evidence, label, now) {
+function auditFreshness(evidence, label, now, requireRecent = true) {
   const generatedAt = canonicalTimestamp(evidence.generated_at, `${label} generated_at`);
   const validUntil = canonicalTimestamp(evidence.valid_until, `${label} valid_until`);
   if (generatedAt > now) fail(`${label} evidence is generated in the future`);
-  if (now - generatedAt > 24 * 60 * 60 * 1_000) fail(`${label} evidence is stale (maximum age is 24 hours)`);
+  if (requireRecent && now - generatedAt > 24 * 60 * 60 * 1_000) fail(`${label} evidence is stale (maximum age is 24 hours)`);
   if (validUntil <= now) fail(`${label} evidence is expired`);
   if (validUntil <= generatedAt) fail(`${label} valid_until must be after generated_at`);
   if (validUntil - generatedAt > 7 * 24 * 60 * 60 * 1_000) fail(`${label} evidence validity window exceeds 7 days`);
   return { generatedAt, validUntil };
+}
+
+function auditGeneratedAtFreshnessOnly(evidence, label, now, requireRecent = true) {
+  const generatedAt = canonicalTimestamp(evidence.generated_at, `${label} generated_at`);
+  if (generatedAt > now) fail(`${label} evidence is generated in the future`);
+  if (requireRecent && now - generatedAt > 24 * 60 * 60 * 1_000) fail(`${label} evidence is stale (maximum age is 24 hours)`);
+  return { generatedAt };
 }
 
 function moliUrl(value, label, provider = '', expectedFile = '') {
@@ -733,11 +1024,11 @@ function auditToapisSpeedEvidence(evidence, results, freshness) {
   }
 }
 
-function auditToapisEvidence(evidenceRoot, envelope, now) {
+function auditToapisEvidence(evidenceRoot, envelope, now, requireRecent = true) {
   const evidence = envelope.evidence;
   if (evidence?.contract_version !== PROVIDERS.toapis.contract) fail('ToAPIs evidence contract_version is invalid');
   if (evidence.provider_origin !== 'https://toapis.com') fail('ToAPIs evidence provider origin is not official');
-  const freshness = auditFreshness(evidence, 'ToAPIs', now);
+  const freshness = auditFreshness(evidence, 'ToAPIs', now, requireRecent);
   const results = Array.isArray(evidence.results) ? evidence.results : [];
   if (results.length !== TOAPIS_CASES.length) fail('ToAPIs evidence must contain exactly 8 cases');
   const byId = new Map(results.map((result) => [result?.id, result]));
@@ -1224,11 +1515,11 @@ function auditDecodedImage(asset, result, resolution, label) {
   auditImageBand(resolution, width, height, label);
 }
 
-function auditUsmercariEvidence(evidenceRoot, envelope, now) {
+function auditUsmercariEvidence(evidenceRoot, envelope, now, requireRecent = true) {
   const evidence = envelope.evidence;
   if (evidence?.contract_version !== PROVIDERS.usmercari.contract) fail('USMercari image evidence contract_version is invalid');
   if (evidence.provider_origin !== 'https://chat-ai.mercarimx.com') fail('USMercari image evidence official provider origin is invalid');
-  auditFreshness(evidence, 'USMercari image', now);
+  auditFreshness(evidence, 'USMercari image', now, requireRecent);
   const results = Array.isArray(evidence.results) ? evidence.results : [];
   if (results.length !== USMERCARI_CASES.length) fail('USMercari image evidence must contain exactly 7 cases');
   const keyFor = (item) => `${item?.model}|${item?.capability}|${String(item?.requested_resolution || '').toLowerCase()}`;
@@ -1282,41 +1573,275 @@ function auditUsmercariEvidence(evidenceRoot, envelope, now) {
   }
 }
 
+function auditLingjingEvidence(evidenceRoot, envelope, now, requireRecent = true) {
+  const evidence = envelope.evidence;
+  if (evidence?.contract_version !== PROVIDERS.lingjing.contract) fail('Lingjing video evidence contract_version is invalid');
+  if (evidence.provider_origin !== 'https://seed.alimyun.xyz') fail('Lingjing video evidence official provider origin is invalid');
+  const freshness = auditFreshness(evidence, 'Lingjing video', now, requireRecent);
+  const results = Array.isArray(evidence.results) ? evidence.results : [];
+  if (results.length !== 1) fail('Lingjing video evidence must contain exactly one paid 4-second image-reference case');
+  const result = results[0] || {};
+  if (result.id !== LINGJING_CASE.id || result.model !== LINGJING_CASE.model
+      || result.upstream_model !== LINGJING_CASE.upstreamModel || result.mode !== LINGJING_CASE.mode
+      || Number(result.requested_duration) !== LINGJING_CASE.duration
+      || result.requested_aspect_ratio !== LINGJING_CASE.aspectRatio
+      || result.requested_resolution !== null || Number(result.reference_count) !== 1
+      || result.status !== 'completed' || result.submission_state !== 'accepted') {
+    fail('Lingjing video real-case model/mode/duration/reference binding is invalid');
+  }
+  const taskId = String(result.provider_task_id || '').trim();
+  if (!taskId) fail('Lingjing video provider task id is missing');
+  const requestId = String(result.request_id || '');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) {
+    fail('Lingjing video request_id must be a UUID v4');
+  }
+  const request = result.request || {};
+  if (request.model_key !== LINGJING_CASE.upstreamModel
+      || Number(request.duration) !== LINGJING_CASE.duration
+      || request.ratio !== LINGJING_CASE.aspectRatio
+      || Number(request.reference_count) !== 1
+      || request.request_id !== requestId
+      || Object.prototype.hasOwnProperty.call(request, 'resolution')) {
+    fail('Lingjing video provider request binding is invalid');
+  }
+  const providerAudit = result.provider_audit || {};
+  const uploads = Array.isArray(providerAudit.uploads) ? providerAudit.uploads : [];
+  const upload = uploads[0] || {};
+  const supplierCostFields = Array.isArray(providerAudit.supplier_cost_fields)
+    ? providerAudit.supplier_cost_fields : [];
+  const supplierCostUnavailable = providerAudit.supplier_cost_unavailable === true;
+  if (!/^[a-f0-9]{64}$/.test(String(providerAudit.request_body_sha256 || ''))) {
+    fail('Lingjing video normalized request digest is invalid');
+  }
+  if (!/^[a-f0-9]{64}$/.test(String(providerAudit.creation_response_sha256 || ''))
+      || Number(providerAudit.creation_http_status) < 200 || Number(providerAudit.creation_http_status) >= 300
+      || !/^[a-f0-9]{64}$/.test(String(providerAudit.terminal_response_sha256 || ''))
+      || Number(providerAudit.terminal_http_status) < 200 || Number(providerAudit.terminal_http_status) >= 300) {
+    fail('Lingjing video creation or terminal response digest binding is invalid');
+  }
+  if (uploads.length !== 1
+      || !/^[a-f0-9]{64}$/.test(String(upload.reference_sha256 || ''))
+      || !/^uploads\/[A-Za-z0-9._/-]+$/.test(String(upload.upload_path || ''))
+      || String(upload.upload_path || '').includes('..')
+      || !/^[a-f0-9]{64}$/.test(String(upload.upload_response_sha256 || ''))
+      || Number(upload.upload_http_status) < 200 || Number(upload.upload_http_status) >= 300) {
+    fail('Lingjing video reference upload binding is invalid');
+  }
+  if ((supplierCostUnavailable && supplierCostFields.length !== 0)
+      || (!supplierCostUnavailable && supplierCostFields.length === 0)
+      || supplierCostFields.some((field) => !['creation', 'terminal'].includes(field?.source)
+        || !['cost', 'credits', 'credits_used', 'charged_credits', 'charge', 'charged_amount', 'amount'].includes(field?.field)
+        || !['number', 'string'].includes(typeof field?.value))) {
+    fail('Lingjing video supplier cost receipt declaration is invalid');
+  }
+
+  const scope = evidence.verification_scope || {};
+  const capability = scope.documented_capabilities || {};
+  const expectedCase = { duration: 4, aspect_ratio: '16:9', reference_images: 1, resolution: null };
+  if (scope.public_model !== LINGJING_CASE.model || scope.upstream_model !== LINGJING_CASE.upstreamModel
+      || JSON.stringify(scope.real_case) !== JSON.stringify(expectedCase)
+      || !sameValues(capability.durations || [], LINGJING_DURATIONS)
+      || !sameValues(capability.aspect_ratios || [], LINGJING_RATIOS)
+      || !Array.isArray(capability.resolutions) || capability.resolutions.length !== 0
+      || Number(capability.max_image_references) !== 9
+      || Number(capability.max_video_references) !== 0
+      || Number(capability.max_audio_references) !== 0
+      || capability.supports_first_frame !== false || capability.supports_last_frame !== false
+      || capability.supports_audio !== false
+      || !/^[a-f0-9]{64}$/.test(String(scope.reference_image_sha256 || ''))) {
+    fail('Lingjing video documented capability evidence is invalid');
+  }
+  if (upload.reference_sha256 !== scope.reference_image_sha256) {
+    fail('Lingjing video reference upload SHA-256 binding is invalid');
+  }
+
+  const artifact = result.artifact || {};
+  const outputFile = String(artifact.output_file || '');
+  const expectedOutput = `${LINGJING_CASE.id}-${taskId}.mp4`.replace(/[^A-Za-z0-9._~-]+/g, '-');
+  if (!/^[A-Za-z0-9][A-Za-z0-9._~-]*\.mp4$/.test(outputFile)
+      || outputFile !== expectedOutput || artifact.content_type !== 'video/mp4') {
+    fail('Lingjing video output must be a safe MP4 artifact');
+  }
+  const asset = auditAsset(evidenceRoot, artifact, 'Lingjing video relay-image-4s', 'lingjing');
+  moliUrl(artifact.public_url, 'Lingjing video public_url', 'lingjing', asset.outputFile);
+  const probe = artifact.ffprobe || {};
+  const width = Number(probe.width);
+  const height = Number(probe.height);
+  const duration = Number(probe.duration_seconds);
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 64 || height < 64
+      || Math.abs((width / height) - (16 / 9)) > 0.12
+      || !Number.isFinite(duration) || Math.abs(duration - 4) > 2
+      || !String(probe.video_codec || '') || !String(probe.format || '')
+      || typeof probe.has_audio !== 'boolean'
+      || (probe.has_audio ? !String(probe.audio_codec || '').trim() : probe.audio_codec !== null)) {
+    fail('Lingjing video ffprobe evidence is invalid');
+  }
+
+  const startedAt = canonicalTimestamp(result.started_at, 'Lingjing video started_at');
+  const completedAt = canonicalTimestamp(result.completed_at, 'Lingjing video completed_at');
+  const speed = result.speed || {};
+  if (startedAt >= completedAt || completedAt > freshness.generatedAt
+      || !Number.isSafeInteger(Number(speed.submit_latency_ms)) || Number(speed.submit_latency_ms) < 0
+      || !Number.isFinite(Number(speed.generation_elapsed_seconds)) || Number(speed.generation_elapsed_seconds) <= 0
+      || !equalNumber(speed.generation_elapsed_seconds, round((completedAt - startedAt) / 1000))
+      || !Number.isSafeInteger(Number(speed.download_latency_ms)) || Number(speed.download_latency_ms) < 0
+      || !Number.isFinite(Number(speed.total_elapsed_seconds))
+      || Number(speed.total_elapsed_seconds) < Number(speed.generation_elapsed_seconds)) {
+    fail('Lingjing video measured speed evidence is invalid');
+  }
+  const expectedSpeed = {
+    measurement_basis: 'actual_paid_verification_run_not_provider_sla',
+    cases: [{
+      id: result.id,
+      model: result.model,
+      submit_latency_ms: speed.submit_latency_ms,
+      generation_elapsed_seconds: speed.generation_elapsed_seconds,
+      download_latency_ms: speed.download_latency_ms,
+      total_elapsed_seconds: speed.total_elapsed_seconds,
+    }],
+  };
+  if (JSON.stringify(evidence.speed_evidence || null) !== JSON.stringify(expectedSpeed)) {
+    fail('Lingjing video speed summary does not match the measured result');
+  }
+
+  const pricing = evidence.pricing || {};
+  const capturedAt = canonicalTimestamp(pricing.captured_at, 'Lingjing video pricing captured_at');
+  if (capturedAt > freshness.generatedAt
+      || pricing.provider_settings_url !== 'https://seed.alimyun.xyz/api/public/settings'
+      || !/^[a-f0-9]{64}$/.test(String(pricing.response_sha256 || ''))
+      || pricing.model_key !== 'relay' || pricing.public_model !== LINGJING_CASE.model
+      || pricing.billing_mode !== 'per_second'
+      || !equalNumber(pricing.price_per_second_credits, 1)
+      || !equalNumber(pricing.rmb_per_credit, 0.17)
+      || !equalNumber(pricing.cost_yuan_per_second, 0.17)
+      || Number(pricing.credits_per_second) !== ceilDecimalProduct('0.17', 875)
+      || pricing.reviewed !== true) {
+    fail('Lingjing video exact reviewed price is invalid');
+  }
+}
+
+function auditToapisPrivateAvatarEvidence(evidenceRoot, envelope, now, requireRecent = true) {
+  const evidence = envelope.evidence;
+  if (evidence?.contract_version !== PROVIDERS.toapis.privateAvatarContract) fail('ToAPIs private-avatar evidence contract_version is invalid');
+  auditGeneratedAtFreshnessOnly(evidence, 'ToAPIs private-avatar', now, requireRecent);
+  if (!String(evidence.audit_run_id || '').trim()) fail('ToAPIs private-avatar evidence audit_run_id is missing');
+  const source = evidence.source || {};
+  if (!String(source.identity || '').trim() || !String(source.file_name || '').trim()
+      || Number(source.bytes) <= 0 || !/^[a-f0-9]{64}$/.test(String(source.sha256 || '').toLowerCase())) {
+    fail('ToAPIs private-avatar source identity/file SHA binding is invalid');
+  }
+  const avatar = evidence.avatar || {};
+  if (avatar.status !== 'active' || !String(avatar.group_id || '').trim()
+      || !/^pa_[A-Za-z0-9_-]+$/.test(String(avatar.asset_id || ''))
+      || !/^asset:\/\/pa_[A-Za-z0-9_-]+$/.test(String(avatar.asset_url || ''))) {
+    fail('ToAPIs private-avatar active group/asset asset://pa_ binding is invalid');
+  }
+  const cases = Array.isArray(evidence.cases) ? evidence.cases : [];
+  const byId = new Map(cases.map((item) => [item?.id, item]));
+  if (cases.length !== TOAPIS_PRIVATE_AVATAR_CASES.length || byId.size !== cases.length) {
+    fail('ToAPIs private-avatar evidence must contain exactly two unique cases');
+  }
+  const tasks = new Set();
+  for (const expected of TOAPIS_PRIVATE_AVATAR_CASES) {
+    const item = byId.get(expected.id);
+    if (!item) fail(`ToAPIs private-avatar case is missing: ${expected.id}`);
+    if (item.status !== 'completed' || item.model !== expected.model
+        || String(item.resolution || '').toLowerCase() !== expected.resolution
+        || Number(item.duration) !== expected.duration) {
+      fail(`ToAPIs private-avatar case binding is invalid: ${expected.id}`);
+    }
+    const task = String(item.provider_task_id || '');
+    if (!task || tasks.has(task)) fail(`ToAPIs private-avatar provider task must be unique: ${expected.id}`);
+    tasks.add(task);
+    const submittedAt = canonicalTimestamp(item.submitted_at, `ToAPIs private-avatar ${expected.id} submitted_at`);
+    const completedAt = canonicalTimestamp(item.completed_at, `ToAPIs private-avatar ${expected.id} completed_at`);
+    const generationElapsed = Number(item.speed?.generation_elapsed_seconds);
+    if (submittedAt >= completedAt || !Number.isFinite(generationElapsed) || generationElapsed <= 0
+        || !Number.isSafeInteger(Number(item.speed?.submit_latency_ms)) || Number(item.speed.submit_latency_ms) < 0) {
+      fail(`ToAPIs private-avatar speed evidence is invalid: ${expected.id}`);
+    }
+    if (Number(item.billing?.debited_balance) <= 0 || Number(item.billing?.debited_credits) <= 0) {
+      fail(`ToAPIs private-avatar billing evidence is invalid: ${expected.id}`);
+    }
+    const artifact = item.artifact || {};
+    const outputFile = String(artifact.output_file || '');
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.mp4$/.test(outputFile)
+        || !/^video\//i.test(String(artifact.content_type || ''))
+        || Number(artifact.bytes) <= 1024
+        || !/^[a-f0-9]{64}$/.test(String(artifact.sha256 || '').toLowerCase())) {
+      fail(`ToAPIs private-avatar artifact is invalid: ${expected.id}`);
+    }
+    auditAsset(evidenceRoot, artifact, `ToAPIs private-avatar ${expected.id}`, 'toapis');
+    const probe = artifact.ffprobe || {};
+    const width = Number(probe.width);
+    const height = Number(probe.height);
+    const duration = Number(probe.duration_seconds);
+    const shortEdge = Math.min(width, height);
+    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || shortEdge < 400 || shortEdge > 576
+        || !Number.isFinite(duration) || Math.abs(duration - 4) > 1.5
+        || !String(probe.video_codec || '')) {
+      fail(`ToAPIs private-avatar ffprobe evidence is invalid: ${expected.id}`);
+    }
+  }
+  const summary = evidence.summary || {};
+  if (Number(summary.case_count) !== TOAPIS_PRIVATE_AVATAR_CASES.length
+      || Number(summary.total_debited_balance) <= 0
+      || Number(summary.total_debited_credits) <= 0) {
+    fail('ToAPIs private-avatar summary must bind two positive-billing cases');
+  }
+}
+
 function evidencePathEnvironmentNames(env) {
   return Object.keys(env).filter((name) => /evidence.*(?:path|root)|(?:path|root).*evidence|verify.*output.*dir/i.test(name));
 }
 
-function verifyExternalModelRelease(candidateArg, evidenceRootArg, options = {}) {
+function verifyExternalModelRelease(candidateArg, evidenceRootArg, expectedCurrentArg, options = {}) {
   const envNames = evidencePathEnvironmentNames(options.env || process.env);
   if (envNames.length) fail(`evidence path environment overrides are forbidden: ${envNames.join(', ')}`);
   const candidate = secureDirectory(candidateArg, 'CANDIDATE');
+  const expectedCurrent = secureDirectory(expectedCurrentArg, 'EXPECTED_CURRENT');
   const evidenceAllowedRoot = secureDirectory(path.dirname(path.resolve(evidenceRootArg)), 'EVIDENCE_ALLOWED_ROOT', true);
   const evidenceRoot = secureDirectory(evidenceRootArg, 'EVIDENCE_ROOT', true);
   if (!isInside(evidenceAllowedRoot, evidenceRoot)) fail('EVIDENCE_ROOT escapes EVIDENCE_ALLOWED_ROOT');
   const surfaces = {
     toapis: hasSurface(candidate, PROVIDERS.toapis),
     usmercari: hasSurface(candidate, PROVIDERS.usmercari),
+    lingjing: hasSurface(candidate, PROVIDERS.lingjing),
   };
-  if (!surfaces.toapis && !surfaces.usmercari) return { legacy: true, surfaces };
+  if (!surfaces.toapis && !surfaces.usmercari && !surfaces.lingjing) return { legacy: true, surfaces };
+  const toapisFreshnessRequired = surfaces.toapis
+    && (protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.toapis)
+      || !trustedUnchangedToapisStandardSurface(candidate, expectedCurrent));
+  const freshnessRequired = {
+    toapis: toapisFreshnessRequired,
+    toapisPrivateAvatar: protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.toapisPrivateAvatar),
+    usmercari: protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.usmercari),
+    lingjing: protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.lingjing),
+  };
   auditEvidenceBindingRuntime(candidate, surfaces);
-  if (surfaces.toapis) auditToapisRuntime(candidate);
+  if (surfaces.toapis) auditToapisRuntime(candidate, { auditEvidenceProducer: freshnessRequired.toapis });
   if (surfaces.usmercari) auditUsmercariRuntime(candidate);
+  if (surfaces.lingjing) auditLingjingRuntime(candidate);
   auditCallouts(candidate);
   const envelopes = readManifestEvidence(evidenceRoot, surfaces);
   const now = options.now == null ? Date.now() : Number(options.now);
-  if (surfaces.toapis) auditToapisEvidence(evidenceRoot, envelopes.toapis, now);
-  if (surfaces.usmercari) auditUsmercariEvidence(evidenceRoot, envelopes.usmercari, now);
-  return { legacy: false, surfaces };
+  if (surfaces.toapis) {
+    auditToapisEvidence(evidenceRoot, envelopes.toapis, now, freshnessRequired.toapis);
+    auditToapisPrivateAvatarEvidence(evidenceRoot, envelopes.toapisPrivateAvatar, now, freshnessRequired.toapisPrivateAvatar);
+  }
+  if (surfaces.usmercari) auditUsmercariEvidence(evidenceRoot, envelopes.usmercari, now, freshnessRequired.usmercari);
+  if (surfaces.lingjing) auditLingjingEvidence(evidenceRoot, envelopes.lingjing, now, freshnessRequired.lingjing);
+  return { legacy: false, surfaces, freshnessRequired };
 }
 
 function main(argv = process.argv.slice(2)) {
-  if (argv.length !== 2) {
-    process.stderr.write('Usage: verify-external-model-release.js CANDIDATE EVIDENCE_ROOT\n');
+  if (argv.length !== 3) {
+    process.stderr.write('Usage: verify-external-model-release.js CANDIDATE EVIDENCE_ROOT EXPECTED_CURRENT\n');
     process.exitCode = 2;
     return;
   }
   try {
-    const result = verifyExternalModelRelease(argv[0], argv[1]);
+    const result = verifyExternalModelRelease(argv[0], argv[1], argv[2]);
     const providers = Object.entries(result.surfaces).filter(([, enabled]) => enabled).map(([name]) => name);
     process.stdout.write(`EXTERNAL_MODEL_RELEASE_OK ${result.legacy ? 'legacy' : `providers=${providers.join(',')}`}\n`);
   } catch (error) {
@@ -1330,8 +1855,10 @@ if (require.main === module) main();
 module.exports = {
   MANIFEST_CONTRACT,
   PROVIDERS,
+  LINGJING_CASE,
   TOAPIS_CASES,
   USMERCARI_CASES,
+  auditLingjingRuntime,
   decodeBaselineJpeg,
   verifyExternalModelRelease,
 };

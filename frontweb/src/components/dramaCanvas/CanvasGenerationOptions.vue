@@ -53,7 +53,7 @@
       <el-option label="21:9 宽银幕" value="21:9" />
     </el-select>
     <el-select
-      v-if="!modelsOnly && (mode === 'video' || mode === 'both')"
+      v-if="!modelsOnly && (mode === 'video' || mode === 'both') && videoResolutionOptions.length"
       :model-value="options.videoResolution || '480p'"
       size="small"
       class="resolution-select"
@@ -125,7 +125,7 @@ const selectedVideoModel = computed(() => (
 ))
 const videoResolutionOptions = computed(() => {
   const declared = selectedVideoModel.value?.capabilities?.resolutions
-  return Array.isArray(declared) && declared.length ? declared : ['480p', '720p']
+  return Array.isArray(declared) ? declared : ['480p', '720p']
 })
 const videoDurationOptions = computed(() => videoDurationOptionsForCapability(
   selectedVideoModel.value?.capabilities,
@@ -148,15 +148,14 @@ function update(field, value) {
 
 function onVideoModelChange(value) {
   const selected = canvasModelEntry(modelCatalog.value, 'video', value)
-  const resolutions = Array.isArray(selected?.capabilities?.resolutions) && selected.capabilities.resolutions.length
-    ? selected.capabilities.resolutions
-    : ['480p', '720p']
+  const declaredResolutions = selected?.capabilities?.resolutions
+  const resolutions = Array.isArray(declaredResolutions) ? declaredResolutions : ['480p', '720p']
   const durations = videoDurationOptionsForCapability(selected?.capabilities)
   const currentResolution = String(options.value.videoResolution || '').trim().toLowerCase()
   const currentDuration = Number(options.value.videoDuration || 5)
   updatePatch({
     videoModel: value,
-    videoResolution: resolutions.includes(currentResolution) ? currentResolution : resolutions[0],
+    videoResolution: resolutions.includes(currentResolution) ? currentResolution : (resolutions[0] || ''),
     videoDuration: durations.includes(currentDuration) ? currentDuration : durations[0],
   })
 }

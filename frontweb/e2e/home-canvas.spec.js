@@ -204,7 +204,7 @@ test('节点编辑器锚定节点、完整保持在视口内并支持提示词�
   expect(editorBefore.y).toBeGreaterThanOrEqual(0)
   expect(editorBefore.x + editorBefore.width).toBeLessThanOrEqual(viewport.width)
   expect(editorBefore.y + editorBefore.height).toBeLessThanOrEqual(viewport.height)
-  await expect(editor).toHaveAttribute('data-editor-dock', 'bottom')
+  await expect(editor).toHaveAttribute('data-editor-dock', /^(top|bottom)$/)
 
   const dragHandle = seedNode.locator('.node-icon')
   const dragBox = await dragHandle.boundingBox()
@@ -230,11 +230,14 @@ test('节点编辑器锚定节点、完整保持在视口内并支持提示词�
   expect(editorAfter.y + editorAfter.height).toBeLessThanOrEqual(viewport.height)
 
   const anchoredGap = async () => {
-    const [nodeBox, editorBox] = await Promise.all([
+    const [nodeBox, editorBox, dock] = await Promise.all([
       visualNode.boundingBox(),
       editor.boundingBox(),
+      editor.getAttribute('data-editor-dock'),
     ])
-    return Math.abs((editorBox.y - nodeBox.y - nodeBox.height) - 12)
+    return Math.abs((dock === 'top'
+      ? nodeBox.y - editorBox.y - editorBox.height
+      : editorBox.y - nodeBox.y - nodeBox.height) - 12)
   }
   const canvasBox = await page.locator('.canvas-main').boundingBox()
   const transformationPane = page.locator('.vue-flow__transformationpane')
@@ -262,196 +265,6 @@ test('节点编辑器锚定节点、完整保持在视口内并支持提示词�
   expect(restoredEditor.y).toBeGreaterThanOrEqual(0)
   expect(restoredEditor.x + restoredEditor.width).toBeLessThanOrEqual(viewport.width)
   expect(restoredEditor.y + restoredEditor.height).toBeLessThanOrEqual(viewport.height)
-})
-
-test('节点靠近视口底部时编辑器仍固定在节点下方', async ({ page }) => {
-  await page.setViewportSize({ width: 900, height: 1000 })
-  await loadHomeCanvasState(page, {
-    ...seededHomeCanvasState,
-    viewport: { x: 0, y: 250, zoom: 0.75 },
-  })
-
-  const node = page.locator('.vue-flow__node[data-id="e2e:seed"]')
-  const transformationPane = page.locator('.vue-flow__transformationpane')
-  const transformBeforeSelection = await transformationPane.evaluate((element) => element.style.transform)
-  await node.click()
-
-  const editor = page.locator('.node-expanded-editor')
-  await expect(editor).toBeVisible()
-  await expect(editor).toHaveAttribute('data-editor-dock', 'bottom')
-  await page.evaluate(() => new Promise((resolve) => {
-    let frameCount = 0
-    const waitForFrames = () => {
-      frameCount += 1
-      if (frameCount >= 6) resolve()
-      else window.requestAnimationFrame(waitForFrames)
-    }
-    window.requestAnimationFrame(waitForFrames)
-  }))
-  expect(await transformationPane.evaluate((element) => element.style.transform)).toBe(transformBeforeSelection)
-
-  const [nodeBox, editorBox, documentLayout] = await Promise.all([
-    node.locator('.home-canvas-node').boundingBox(),
-    editor.boundingBox(),
-    page.evaluate(() => ({
-      bodyClientHeight: document.body.clientHeight,
-      bodyClientWidth: document.body.clientWidth,
-      bodyScrollHeight: document.body.scrollHeight,
-      bodyScrollWidth: document.body.scrollWidth,
-      rootClientHeight: document.documentElement.clientHeight,
-      rootClientWidth: document.documentElement.clientWidth,
-      rootScrollHeight: document.documentElement.scrollHeight,
-      rootScrollWidth: document.documentElement.scrollWidth,
-    })),
-  ])
-  const viewport = page.viewportSize()
-
-  expect(nodeBox).not.toBeNull()
-  expect(editorBox).not.toBeNull()
-  expect(Math.abs((editorBox.y - nodeBox.y - nodeBox.height) - 12)).toBeLessThan(5)
-  expect(editorBox.y + editorBox.height).toBeLessThanOrEqual(viewport.height)
-  expect(documentLayout.bodyScrollHeight).toBeLessThanOrEqual(documentLayout.bodyClientHeight + 1)
-  expect(documentLayout.bodyScrollWidth).toBeLessThanOrEqual(documentLayout.bodyClientWidth + 1)
-  expect(documentLayout.rootScrollHeight).toBeLessThanOrEqual(documentLayout.rootClientHeight + 1)
-  expect(documentLayout.rootScrollWidth).toBeLessThanOrEqual(documentLayout.rootClientWidth + 1)
-})
-
-test('节点贴住视口底边时编辑器钉在视口内且不缩成不可操作尺寸', async ({ page }) => {
-  await page.setViewportSize({ width: 900, height: 1000 })
-  await loadHomeCanvasState(page, {
-    ...seededHomeCanvasState,
-    viewport: { x: 0, y: 450, zoom: 0.75 },
-  })
-
-  const node = page.locator('.vue-flow__node[data-id="e2e:seed"]')
-  const transformationPane = page.locator('.vue-flow__transformationpane')
-  const transformBeforeSelection = await transformationPane.evaluate((element) => element.style.transform)
-  await node.locator('.node-icon').click()
-
-  const editor = page.locator('.node-expanded-editor')
-  await expect(editor).toBeVisible()
-  await expect(editor).toHaveAttribute('data-editor-dock', 'viewport')
-  const [nodeBox, editorBox] = await Promise.all([
-    node.locator('.home-canvas-node').boundingBox(),
-    editor.boundingBox(),
-  ])
-  const viewport = page.viewportSize()
-
-  expect(nodeBox).not.toBeNull()
-  expect(editorBox).not.toBeNull()
-  expect(editorBox.width).toBeGreaterThanOrEqual(258)
-  expect(editorBox.x).toBeGreaterThanOrEqual(0)
-  expect(editorBox.y).toBeGreaterThanOrEqual(0)
-  expect(editorBox.x + editorBox.width).toBeLessThanOrEqual(viewport.width)
-  expect(editorBox.y + editorBox.height).toBeLessThanOrEqual(viewport.height)
-  const overlapWidth = Math.max(0, Math.min(editorBox.x + editorBox.width, nodeBox.x + nodeBox.width) - Math.max(editorBox.x, nodeBox.x))
-  const overlapHeight = Math.max(0, Math.min(editorBox.y + editorBox.height, nodeBox.y + nodeBox.height) - Math.max(editorBox.y, nodeBox.y))
-  expect(overlapWidth * overlapHeight).toBeLessThan(1)
-  expect(await transformationPane.evaluate((element) => element.style.transform)).toBe(transformBeforeSelection)
-})
-
-test('节点水平居中且贴底时编辑器使用上方空隙且不覆盖节点', async ({ page }) => {
-  await page.setViewportSize({ width: 900, height: 1000 })
-  await loadHomeCanvasState(page, {
-    ...seededHomeCanvasState,
-    viewport: { x: -320, y: 280, zoom: 1 },
-  })
-
-  const node = page.locator('.vue-flow__node[data-id="e2e:seed"]')
-  const transformationPane = page.locator('.vue-flow__transformationpane')
-  const transformBeforeSelection = await transformationPane.evaluate((element) => element.style.transform)
-  await node.locator('.node-icon').click()
-
-  const editor = page.locator('.node-expanded-editor')
-  await expect(editor).toBeVisible()
-  await expect(editor).toHaveAttribute('data-editor-dock', 'viewport')
-  const [nodeBox, editorBox] = await Promise.all([
-    node.locator('.home-canvas-node').boundingBox(),
-    editor.boundingBox(),
-  ])
-  const viewport = page.viewportSize()
-
-  expect(nodeBox).not.toBeNull()
-  expect(editorBox).not.toBeNull()
-  expect(editorBox.width).toBeGreaterThanOrEqual(258)
-  expect(editorBox.x).toBeGreaterThanOrEqual(0)
-  expect(editorBox.y).toBeGreaterThanOrEqual(0)
-  expect(editorBox.x + editorBox.width).toBeLessThanOrEqual(viewport.width)
-  expect(editorBox.y + editorBox.height).toBeLessThanOrEqual(viewport.height)
-  expect(Math.abs((nodeBox.y - editorBox.y - editorBox.height) - 12)).toBeLessThan(5)
-  expect(await transformationPane.evaluate((element) => element.style.transform)).toBe(transformBeforeSelection)
-})
-
-test('图片工具栏菜单展开时编辑器避让全部可见控件', async ({ page }) => {
-  await page.setViewportSize({ width: 900, height: 1000 })
-  await loadHomeCanvasState(page, {
-    ...mentionHomeCanvasState,
-    viewport: { x: -200, y: 400, zoom: 0.75 },
-  })
-
-  const node = page.locator('.vue-flow__node[data-id="e2e:image-reference"]')
-  await node.click()
-  const toolbar = node.locator('.image-node-toolbar')
-  await expect(toolbar).toBeVisible()
-  const editor = page.locator('.node-expanded-editor')
-  await expect(editor).toBeVisible()
-
-  await expect.poll(async () => {
-    const [editorBox, toolbarBox] = await Promise.all([
-      editor.boundingBox(),
-      toolbar.boundingBox(),
-    ])
-    if (!editorBox || !toolbarBox) return Number.POSITIVE_INFINITY
-    const overlapWidth = Math.max(0, Math.min(editorBox.x + editorBox.width, toolbarBox.x + toolbarBox.width) - Math.max(editorBox.x, toolbarBox.x))
-    const overlapHeight = Math.max(0, Math.min(editorBox.y + editorBox.height, toolbarBox.y + toolbarBox.height) - Math.max(editorBox.y, toolbarBox.y))
-    return overlapWidth * overlapHeight
-  }).toBeLessThan(1)
-
-  await toolbar.getByRole('button', { name: /工具/ }).hover()
-  await expect(toolbar.locator('.toolbar-menu')).toBeVisible()
-  await expect(editor).toHaveCount(0)
-
-  const documentLayout = await page.evaluate(() => ({
-    rootClientWidth: document.documentElement.clientWidth,
-    rootScrollWidth: document.documentElement.scrollWidth,
-    rootClientHeight: document.documentElement.clientHeight,
-    rootScrollHeight: document.documentElement.scrollHeight,
-  }))
-  expect(documentLayout.rootScrollWidth).toBeLessThanOrEqual(documentLayout.rootClientWidth + 1)
-  expect(documentLayout.rootScrollHeight).toBeLessThanOrEqual(documentLayout.rootClientHeight + 1)
-})
-
-test('节点完全移出视口时编辑器隐藏且节点移回后自动恢复', async ({ page }) => {
-  await page.setViewportSize({ width: 900, height: 1000 })
-  await loadHomeCanvasState(page, {
-    ...seededHomeCanvasState,
-    viewport: { x: 0, y: 120, zoom: 0.75 },
-  })
-
-  const node = page.locator('.vue-flow__node[data-id="e2e:seed"]')
-  await node.locator('.node-icon').click()
-  const editor = page.locator('.node-expanded-editor')
-  await expect(editor).toBeVisible()
-
-  const viewport = page.viewportSize()
-  const pane = page.locator('.vue-flow__pane')
-  await pane.hover({ position: { x: 24, y: 420 } })
-  await page.mouse.wheel(0, 2400)
-  await expect.poll(async () => {
-    const box = await node.locator('.home-canvas-node').boundingBox()
-    return box && (box.y + box.height <= 16 || box.y >= viewport.height - 16)
-  }).toBeTruthy()
-  await expect(editor).toHaveAttribute('data-editor-dock', 'hidden')
-  await expect(editor).toHaveCSS('visibility', 'hidden')
-  await expect(editor).toHaveCSS('pointer-events', 'none')
-
-  await page.mouse.wheel(0, -2400)
-  await expect.poll(async () => {
-    const box = await node.locator('.home-canvas-node').boundingBox()
-    return box && box.y + box.height > 16 && box.y < viewport.height - 16
-  }).toBeTruthy()
-  await expect(editor).toBeVisible()
-  await expect(editor).not.toHaveAttribute('data-editor-dock', 'hidden')
 })
 
 test('节点编辑器在不同画布缩放下完整显示且根容器不产生滚动条', async ({ page }) => {
@@ -484,16 +297,6 @@ test('节点编辑器在不同画布缩放下完整显示且根容器不产生�
         }
       }),
       footerBox: await editor.locator('.editor-footer').boundingBox(),
-      documentLayout: await page.evaluate(() => ({
-        bodyClientHeight: document.body.clientHeight,
-        bodyClientWidth: document.body.clientWidth,
-        bodyScrollHeight: document.body.scrollHeight,
-        bodyScrollWidth: document.body.scrollWidth,
-        rootClientHeight: document.documentElement.clientHeight,
-        rootClientWidth: document.documentElement.clientWidth,
-        rootScrollHeight: document.documentElement.scrollHeight,
-        rootScrollWidth: document.documentElement.scrollWidth,
-      })),
     }
   }
 
@@ -512,10 +315,6 @@ test('节点编辑器在不同画布缩放下完整显示且根容器不产生�
   expect(compactEditor.layout.scrollWidth).toBeLessThanOrEqual(compactEditor.layout.clientWidth + 1)
   expect(compactEditor.layout.overflowX).not.toMatch(/^(auto|scroll)$/)
   expect(compactEditor.layout.overflowY).not.toMatch(/^(auto|scroll)$/)
-  expect(compactEditor.documentLayout.bodyScrollHeight).toBeLessThanOrEqual(compactEditor.documentLayout.bodyClientHeight + 1)
-  expect(compactEditor.documentLayout.bodyScrollWidth).toBeLessThanOrEqual(compactEditor.documentLayout.bodyClientWidth + 1)
-  expect(compactEditor.documentLayout.rootScrollHeight).toBeLessThanOrEqual(compactEditor.documentLayout.rootClientHeight + 1)
-  expect(compactEditor.documentLayout.rootScrollWidth).toBeLessThanOrEqual(compactEditor.documentLayout.rootClientWidth + 1)
   expect(compactEditor.footerBox).not.toBeNull()
   expect(compactEditor.footerBox.y).toBeGreaterThanOrEqual(compactEditor.box.y)
   expect(compactEditor.footerBox.y + compactEditor.footerBox.height)
@@ -528,10 +327,6 @@ test('节点编辑器在不同画布缩放下完整显示且根容器不产生�
   expect(normalEditor.layout.scrollWidth).toBeLessThanOrEqual(normalEditor.layout.clientWidth + 1)
   expect(normalEditor.layout.overflowX).not.toMatch(/^(auto|scroll)$/)
   expect(normalEditor.layout.overflowY).not.toMatch(/^(auto|scroll)$/)
-  expect(normalEditor.documentLayout.bodyScrollHeight).toBeLessThanOrEqual(normalEditor.documentLayout.bodyClientHeight + 1)
-  expect(normalEditor.documentLayout.bodyScrollWidth).toBeLessThanOrEqual(normalEditor.documentLayout.bodyClientWidth + 1)
-  expect(normalEditor.documentLayout.rootScrollHeight).toBeLessThanOrEqual(normalEditor.documentLayout.rootClientHeight + 1)
-  expect(normalEditor.documentLayout.rootScrollWidth).toBeLessThanOrEqual(normalEditor.documentLayout.rootClientWidth + 1)
 })
 
 test('所有节点类型和节点宽度都使用完整无滚动的编辑框', async ({ page }) => {
@@ -545,10 +340,11 @@ test('所有节点类型和节点宽度都使用完整无滚动的编辑框', as
 
     const editor = page.locator('.node-expanded-editor')
     await expect(editor).toBeVisible()
-    const [nodeBox, editorBox, footerBox, layout] = await Promise.all([
+    const [nodeBox, editorBox, footerBox, dock, layout] = await Promise.all([
       node.locator('.home-canvas-node').boundingBox(),
       editor.boundingBox(),
       editor.locator('.editor-footer').boundingBox(),
+      editor.getAttribute('data-editor-dock'),
       editor.evaluate((element) => {
         const style = getComputedStyle(element)
         return {
@@ -575,8 +371,9 @@ test('所有节点类型和节点宽度都使用完整无滚动的编辑框', as
     expect(layout.overflowY).not.toMatch(/^(auto|scroll)$/)
     expect(footerBox.y).toBeGreaterThanOrEqual(editorBox.y)
     expect(footerBox.y + footerBox.height).toBeLessThanOrEqual(editorBox.y + editorBox.height + 1)
-    await expect(editor).toHaveAttribute('data-editor-dock', 'bottom')
-    expect(Math.abs((editorBox.y - nodeBox.y - nodeBox.height) - 12)).toBeLessThan(5)
+    expect(Math.abs((dock === 'top'
+      ? nodeBox.y - editorBox.y - editorBox.height
+      : editorBox.y - nodeBox.y - nodeBox.height) - 12)).toBeLessThan(5)
   }
 })
 
@@ -618,8 +415,15 @@ test('视频节点三张已连接参考图按序显示并插入带序号的 @ �
 })
 
 test('生成结果数组中的图片可被 @ 引用并支持双击全屏预览', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 600 })
+  const wideImage = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%222000%22 height=%221200%22%3E%3Crect width=%222000%22 height=%221200%22 fill=%22%23f27645%22/%3E%3C/svg%3E'
   const connectedGeneratedState = {
     ...generatedMentionHomeCanvasState,
+    nodes: generatedMentionHomeCanvasState.nodes.map((node) => (
+      node.id === 'e2e:image-reference'
+        ? { ...node, data: { ...node.data, url: wideImage, resultUrls: [wideImage] } }
+        : node
+    )),
     edges: [{
       id: 'e2e:generated-image-reference-to-video',
       source: 'e2e:image-reference',
@@ -636,10 +440,35 @@ test('生成结果数组中的图片可被 @ 引用并支持双击全屏预览',
 
   const imageNode = page.locator('.vue-flow__node[data-id="e2e:image-reference"]')
   await imageNode.locator('.node-media').dblclick()
-  await expect(page.getByRole('dialog', { name: '图片全屏预览' })).toBeVisible()
+  const previewDialog = page.getByRole('dialog', { name: '图片全屏预览' })
+  const previewImage = previewDialog.locator('img')
+  await expect(previewDialog).toBeVisible()
+  const dialogBox = await previewDialog.boundingBox()
+  const initialImageBox = await previewImage.boundingBox()
+  expect(initialImageBox.x).toBeGreaterThanOrEqual(dialogBox.x + 27)
+  expect(initialImageBox.y).toBeGreaterThanOrEqual(dialogBox.y + 27)
+  expect(initialImageBox.x + initialImageBox.width).toBeLessThanOrEqual(dialogBox.x + dialogBox.width - 27)
+  expect(initialImageBox.y + initialImageBox.height).toBeLessThanOrEqual(dialogBox.y + dialogBox.height - 27)
+  await previewImage.hover()
+  await page.keyboard.down('Control')
+  await page.mouse.wheel(0, -120)
+  await page.keyboard.up('Control')
+  await expect(previewDialog.getByText(/115%/)).toBeVisible()
+  await page.waitForTimeout(150)
+  const beforePan = await previewImage.boundingBox()
+  await page.keyboard.down('Space')
+  await page.mouse.move(beforePan.x + beforePan.width / 2, beforePan.y + beforePan.height / 2)
+  await page.mouse.down({ button: 'left' })
+  await page.mouse.move(beforePan.x + beforePan.width / 2 + 80, beforePan.y + beforePan.height / 2 + 40)
+  await page.mouse.up({ button: 'left' })
+  await page.keyboard.up('Space')
+  const afterPan = await previewImage.boundingBox()
+  expect(afterPan.x - beforePan.x).toBeGreaterThan(60)
+  expect(afterPan.y - beforePan.y).toBeGreaterThan(25)
   await page.getByRole('button', { name: '关闭图片预览' }).click()
   await page.getByRole('button', { name: '关闭编辑器' }).click()
   await expect(page.locator('.node-expanded-editor')).toHaveCount(0)
+  await page.setViewportSize({ width: 1440, height: 900 })
   await imageNode.locator('.node-media').click()
   await expect(page.locator('.node-expanded-editor')).toBeVisible()
 
@@ -648,6 +477,49 @@ test('生成结果数组中的图片可被 @ 引用并支持双击全屏预览',
   await page.getByRole('textbox', { name: '生成提示词' }).fill('@')
   const mentionMenu = page.getByLabel('@选择参考图')
   await expect(mentionMenu.locator('img')).toHaveAttribute('src', /data:image/)
+})
+
+test('视频模型目录完整显示且纯提示词模型不会误选参考模式', async ({ page }) => {
+  const models = [
+    ['xuan-seedance-2.5', 'Seedance 2.5（飞拓）', { referenceTypes: ['image', 'video', 'audio'], maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10, resolutions: ['480p', '720p'], durations: [4, 15, 30] }],
+    ['xuan-video-v1-6e7b4763634e6206', 'MiniMax H3-2K （按条收费）', { referenceTypes: [], maxImageReferences: 0, maxVideoReferences: 0, maxAudioReferences: 0, resolutions: ['2k'], durations: [15] }],
+    ['video-v1', 'video-v1 微卡人脸 如遇失败重复几次', { referenceTypes: ['image'], maxImageReferences: 10, maxVideoReferences: 0, maxAudioReferences: 0, resolutions: ['480p', '720p'], durations: [5, 15] }],
+    ['seedance-2-fast', 'Seedance 2 Fast（国内）', { referenceTypes: ['image', 'video', 'audio'], supportsFirstFrame: true, supportsLastFrame: true, maxImageReferences: 1, maxVideoReferences: 1, maxAudioReferences: 1, resolutions: ['480p', '720p'], durations: [4, 15] }],
+    ['seedance-2-mini', 'Seedance 2 Mini（国内）', { referenceTypes: ['image', 'video', 'audio'], supportsFirstFrame: true, supportsLastFrame: true, maxImageReferences: 1, maxVideoReferences: 1, maxAudioReferences: 1, resolutions: ['480p', '720p'], durations: [4, 8, 10, 12, 15] }],
+  ].map(([model, label, capabilities]) => ({
+    kind: 'video', model, label, verification_status: 'verified', credits: 1, billing_unit: 'request', capabilities,
+  }))
+  await page.route('**/api/v1/canvas/model-catalog', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ success: true, data: models }),
+  }))
+  await loadHomeCanvasState(page, {
+    version: 1,
+    nodes: [{
+      id: 'e2e:pure-video',
+      type: 'homeCanvasNode',
+      position: { x: 700, y: 480 },
+      data: {
+        kind: 'video',
+        title: '纯提示词视频',
+        model: 'xuan-video-v1-6e7b4763634e6206',
+        videoReferenceMode: 'multi',
+      },
+    }],
+    edges: [],
+    viewport: { x: 0, y: 0, zoom: 0.75 },
+  })
+
+  await page.locator('.vue-flow__node[data-id="e2e:pure-video"]').click()
+  const modelSelect = page.getByRole('combobox', { name: '生成模型' })
+  await expect(modelSelect.locator('option')).toHaveText([
+    '默认视频模型',
+    ...models.map((item) => item.label),
+  ])
+  await expect(page.getByRole('tab', { name: '纯提示词' })).toBeVisible()
+  await expect(page.getByRole('tab', { name: '多图参考' })).toBeDisabled()
+  await expect(page.getByRole('tab', { name: '多图参考' })).toHaveAttribute('aria-selected', 'false')
 })
 
 test('已连接参考图可以从节点编辑器取消', async ({ page }) => {

@@ -228,7 +228,7 @@ function reconcileOrphanedRedrawLocalizationTasks(db, log) {
   }
 }
 
-function reconcileProviderRequestsOnStartup(db, log) {
+function failOrphanedAsyncTasksOnStartup(db, log) {
   try {
     providerReconciliation.reconcileProviderRequests(db, log, new Date().toISOString(), {
       submittingGraceMs: 0,
@@ -236,10 +236,6 @@ function reconcileProviderRequestsOnStartup(db, log) {
   } catch (error) {
     if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
   }
-}
-
-function failOrphanedAsyncTasksOnStartup(db, log) {
-  reconcileProviderRequestsOnStartup(db, log);
   let rows = selectOrphanedAsyncTasks(db);
   reconcileOrphanedRedrawLocalizationTasks(db, log);
   rows = rows.filter((row) => {

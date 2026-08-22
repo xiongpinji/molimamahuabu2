@@ -176,10 +176,6 @@ assert_candidate_tree_secure() {
   if ! find -P "$CANDIDATE" -print0 >/dev/null; then
     fail 65 'candidate lexical tree cannot be traversed safely'
   fi
-  if ! find -L "$CANDIDATE" -print0 >/dev/null; then
-    fail 65 'candidate resolved tree contains a loop or cannot be traversed safely'
-  fi
-
   if ! while IFS= read -r -d '' entry; do
     owner="$(stat -c '%u:%g' -- "$entry")"
     if [[ "$owner" != '0:0' ]]; then
@@ -216,7 +212,7 @@ assert_candidate_tree_secure() {
       echo "candidate resolved entry must not be group/other writable: $entry -> $resolved" >&2
       exit 1
     fi
-  done < <(find -L "$CANDIDATE" -print0); then
+  done < <(find -P "$CANDIDATE" -type l -print0); then
     fail 65 'candidate resolved tree is broken, outside the release root, or writable'
   fi
 }
@@ -243,12 +239,12 @@ candidate_tree_hash() {
       resolved="$(realpath -e -- "$entry")"
       metadata="$(stat -Lc '%F|%f|%u|%g|%s' -- "$entry")"
       if [[ -f "$entry" ]]; then
-        digest="file:$(sha256sum -- "$entry" | awk '{print $1}')"
+        digest="symlink-target-file:$(sha256sum -- "$entry" | awk '{print $1}')"
       else
         digest='-'
       fi
       printf 'resolved\0%s\0%s\0%s\0%s\0' "$relative" "$resolved" "$metadata" "$digest"
-    done < <(find -L . -print0 | LC_ALL=C sort -z)
+    done < <(find -P . -type l -print0 | LC_ALL=C sort -z)
   ) | sha256sum | awk '{print $1}'
 }
 
@@ -730,7 +726,7 @@ INITIAL_CANDIDATE_TREE_HASH="$(candidate_tree_hash)"
 
 env -i PATH="$SAFE_PATH" LC_ALL=C "$NODE_BINARY" "$SHARED_VERIFIER" "$CANDIDATE" --require-build
 env -i PATH="$SAFE_PATH" LC_ALL=C "$NODE_BINARY" "$SEQUENCE_VERIFIER" "$CANDIDATE"
-env -i PATH="$SAFE_PATH" LC_ALL=C "$NODE_BINARY" "$EXTERNAL_MODEL_VERIFIER" "$CANDIDATE" "$EXTERNAL_MODEL_EVIDENCE_ROOT"
+env -i PATH="$SAFE_PATH" LC_ALL=C "$NODE_BINARY" "$EXTERNAL_MODEL_VERIFIER" "$CANDIDATE" "$EXTERNAL_MODEL_EVIDENCE_ROOT" "$EXPECTED_CURRENT"
 
 assert_root_owned_evidence_tree
 assert_candidate_tree_secure

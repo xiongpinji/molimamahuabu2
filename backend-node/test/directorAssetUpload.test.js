@@ -282,7 +282,7 @@ test('套餐广告图忽略 HTTP base_url 返回同源路径并可创建和更�
     const created = recharge.createPackage(db, {
       name: '上传广告图套餐',
       amountYuan: '10.00',
-      credits: 1000,
+      dailyBonusCredits: 0,
       imageUrl: packageResponse.body.data.url,
       adTitle: '上传广告图',
       status: 'active',
@@ -292,7 +292,7 @@ test('套餐广告图忽略 HTTP base_url 返回同源路径并可创建和更�
     const updated = recharge.updatePackage(db, created.id, {
       name: '上传广告图套餐更新',
       amountYuan: '20.00',
-      credits: 2200,
+      dailyBonusCredits: 200,
       imageUrl: packageResponse.body.data.url,
       adTitle: '上传广告图更新',
       status: 'active',

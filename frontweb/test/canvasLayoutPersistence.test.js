@@ -1,6 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { createCanvasLayoutPersistence } from '../src/utils/canvasLayoutPersistence.js'
+
+const dramaApiSource = readFileSync(fileURLToPath(new URL('../src/api/drama.js', import.meta.url)), 'utf8')
+const dramaCanvasSource = readFileSync(fileURLToPath(new URL('../src/views/DramaCanvas.vue', import.meta.url)), 'utf8')
 
 test('唯一保存协调器将交错布局和导演状态合并到后续快照', async () => {
   const calls = []
@@ -39,4 +44,10 @@ test('保存失败保持 dirty 并允许 flush 重试', async () => {
   await persistence.flush()
   assert.equal(attempts, 2)
   assert.equal(persistence.dirty, false)
+})
+
+test('画布保存携带当前项目更新时间作为并发基线', () => {
+  assert.match(dramaApiSource, /saveCanvasLayout\(id, canvasLayout, workflowGroups, baseUpdatedAt\)/)
+  assert.match(dramaApiSource, /if \(baseUpdatedAt\) body\.base_updated_at = baseUpdatedAt/)
+  assert.match(dramaCanvasSource, /dramaAPI\.saveCanvasLayout\(dramaId\.value, canvasLayout, workflowGroups, drama\.value\?\.updated_at\)/)
 })

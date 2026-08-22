@@ -5,6 +5,11 @@ import { fileURLToPath } from 'node:url'
 
 const source = readFileSync(fileURLToPath(new URL('../src/components/AssetPickerDialog.vue', import.meta.url)), 'utf8')
 
+test('素材选择与预览弹层高于自由节点编辑器，底部操作可真实点击', () => {
+  assert.match(source, /<el-dialog[\s\S]{0,240}v-model="visible"[\s\S]{0,240}:z-index="3500"/)
+  assert.match(source, /<el-dialog[\s\S]{0,240}v-model="previewVisible"[\s\S]{0,240}:z-index="3600"/)
+})
+
 test('素材选择弹窗按项目范围加载项目素材，并合并角色/场景/道具库图片', () => {
   assert.match(source, /assetsAPI\.list\(params, \{ silentError: true \}\)/)
   assert.match(source, /if \(props\.dramaId\) \{[\s\S]*params\.drama_id = props\.dramaId[\s\S]*params\.include_global = 1[\s\S]*\}/)

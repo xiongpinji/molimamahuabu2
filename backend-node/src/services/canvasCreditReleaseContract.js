@@ -12,6 +12,37 @@ const componentRelativePath = path.join(
   'HomeCanvasNode.vue',
 );
 const bundleExtensions = new Set(['.css', '.html', '.js']);
+const protectedModelIds = Object.freeze({
+  image: Object.freeze(['gpt-image-2-2-4k', 'nano-banana-2']),
+  video: Object.freeze([
+    'minimax h3',
+    'seedance-2.0-fast',
+    'seedance-2.0-mini',
+    'seedance-2-fast',
+    'seedance-2-mini',
+    'xuan-video-v1-6e7b4763634e6206',
+    'xuan-seedance-2.5',
+    'sdas-my-seedance-2.0-fast-upscaled-1080p',
+    'lingjing-video-v1',
+  ]),
+});
+const catalogSourceContracts = Object.freeze([
+  ['frontweb/src/api/ai.js', [/listCanvasModels\(\)/, /\/canvas\/model-catalog/]],
+  ['frontweb/src/views/FilmList.vue', [/\/canvas\/model-catalog/]],
+  ['frontweb/src/views/FreeCreate.vue', [/\/canvas\/model-catalog/]],
+  ['frontweb/src/views/DramaCanvas.vue', [/\/canvas\/model-catalog/]],
+  ['frontweb/src/views/HomeCanvas.vue', [/\/canvas\/model-catalog/]],
+  ['frontweb/src/views/FilmCreate.vue', [/listCanvasModels\(\)/]],
+  ['frontweb/src/components/dramaCanvas/CanvasGenerationOptions.vue', [/listCanvasModels\(\)/]],
+  ['frontweb/src/components/dramaCanvas/CanvasStoryboardPanel.vue', [/modelCatalog/]],
+]);
+const forbiddenLegacyModelSources = Object.freeze([
+  /listImageModels\(\)/,
+  /listVideoModels\(\)/,
+  /listAudioModels\(\)/,
+  /\/video-models/,
+  /\/ai-config/,
+]);
 
 function contractError(message) {
   const error = new Error(`[${CONTRACT}] ${message}`);
@@ -26,8 +57,8 @@ function requireMatch(content, pattern, message) {
 function validateSource(content) {
   requireMatch(
     content,
-    /class="billing-cost"\s+aria-live="polite"/,
-    '缺少醒目积分卡片 billing-cost 或无障碍状态声明',
+    /class="(?=[^"]*\bbilling-cost\b)(?=[^"]*\bcanvas-credit-callout-v1\b)[^"]*"\s+aria-live="polite"/,
+    '缺少醒目积分卡片 billing-cost、canvas-credit-callout-v1 或无障碍状态声明',
   );
   requireMatch(
     content,
@@ -47,6 +78,66 @@ function validateSource(content) {
   }
   if (/class="billing-note">\{\{\s*estimatedCredits/.test(content)) {
     throw contractError('检测到旧 billing-note 灰字积分模板');
+  }
+}
+
+function readRequiredSource(releaseRoot, relativePath) {
+  const absolutePath = path.join(releaseRoot, relativePath);
+  if (!fs.existsSync(absolutePath)) throw contractError(`统一公开模型目录源码不存在: ${relativePath}`);
+  return fs.readFileSync(absolutePath, 'utf8');
+}
+
+function validateModelCatalogSources(releaseRoot) {
+  for (const [relativePath, requiredPatterns] of catalogSourceContracts) {
+    const content = readRequiredSource(releaseRoot, relativePath);
+    for (const pattern of requiredPatterns) {
+      requireMatch(content, pattern, `${relativePath} 必须使用统一公开模型目录 /canvas/model-catalog`);
+    }
+    if (relativePath !== 'frontweb/src/api/ai.js') {
+      const legacy = forbiddenLegacyModelSources.find((pattern) => pattern.test(content));
+      if (legacy) throw contractError(`${relativePath} 不得绕过统一公开模型目录读取旧模型配置`);
+    }
+  }
+
+  const capabilities = readRequiredSource(
+    releaseRoot,
+    'frontweb/src/utils/canvasModelCapabilities.js',
+  );
+  const imageBlock = capabilities.match(/const CATALOG_ONLY_IMAGE_MODELS\s*=\s*new Set\(\[([\s\S]*?)\]\)/)?.[1] || '';
+  const videoBlock = capabilities.match(/const CATALOG_ONLY_VIDEO_MODELS\s*=\s*new Set\(\[([\s\S]*?)\]\)/)?.[1] || '';
+  for (const model of protectedModelIds.image) {
+    if (!imageBlock.toLowerCase().includes(`'${model}'`)) {
+      throw contractError(`严格外部模型 ${model} 必须禁止从旧图片配置回退暴露`);
+    }
+  }
+  for (const model of protectedModelIds.video) {
+    if (!videoBlock.toLowerCase().includes(`'${model}'`)) {
+      throw contractError(`严格外部模型 ${model} 必须禁止从旧视频配置回退暴露`);
+    }
+  }
+
+  const nodeEditor = readRequiredSource(
+    releaseRoot,
+    'frontweb/src/components/dramaCanvas/HomeCanvasNode.vue',
+  );
+  for (const token of [
+    'supportsImageReference',
+    'supportsVideoReference',
+    'supportsAudioReference',
+    'supportsFirstFrame',
+    'referenceMediaAccept',
+  ]) {
+    if (!nodeEditor.includes(token)) throw contractError(`视频节点缺少能力驱动门禁: ${token}`);
+  }
+
+  for (const [relativePath, tokens] of [
+    ['frontweb/src/utils/freeCanvasGeneration.js', ['reference_mode', 'capability']],
+    ['frontweb/src/utils/videoGenerationRequest.js', ['reference_mode', 'capability']],
+  ]) {
+    const content = readRequiredSource(releaseRoot, relativePath);
+    for (const token of tokens) {
+      if (!content.includes(token)) throw contractError(`${relativePath} 缺少模型能力请求门禁: ${token}`);
+    }
   }
 }
 
@@ -81,12 +172,26 @@ function validateBuild(releaseRoot) {
   if (files.length === 0) throw contractError('生产构建目录为空或不存在');
 
   const scriptReady = files.some((file) => (
-    fileContainsAll(file, ['本次预计扣除', 'billing-cost', '积分待管理员配置'])
+    fileContainsAll(file, ['本次预计扣除', 'billing-cost', CONTRACT, '积分待管理员配置'])
   ));
-  if (!scriptReady) throw contractError('生产构建缺少预计积分文案或 billing-cost 类名');
+  if (!scriptReady) throw contractError(`生产构建缺少预计积分文案、billing-cost 或 ${CONTRACT} 类名`);
 
   const styleReady = files.some(buildStyleSatisfiesContract);
   if (!styleReady) throw contractError('生产构建缺少醒目积分样式或关键字重');
+
+  const bundleContent = files.map((file) => fs.readFileSync(file, 'utf8')).join('\n').toLowerCase();
+  for (const token of [
+    '/canvas/model-catalog',
+    'supportsimagereference',
+    'supportsvideoreference',
+    'supportsaudioreference',
+    'supportsfirstframe',
+    'reference_mode',
+    ...protectedModelIds.image,
+    ...protectedModelIds.video,
+  ]) {
+    if (!bundleContent.includes(token)) throw contractError(`生产构建缺少统一模型目录门禁标记: ${token}`);
+  }
 }
 
 function auditCanvasCreditReleaseContract({ releaseRoot, requireBuild = false }) {
@@ -94,18 +199,18 @@ function auditCanvasCreditReleaseContract({ releaseRoot, requireBuild = false })
   const componentPath = path.join(root, componentRelativePath);
   const sourceValidated = fs.existsSync(componentPath);
 
-  if (sourceValidated) {
-    validateSource(fs.readFileSync(componentPath, 'utf8'));
-  } else if (!requireBuild) {
-    throw contractError(`源码文件不存在: ${componentRelativePath}`);
-  }
+  if (!sourceValidated) throw contractError(`源码文件不存在: ${componentRelativePath}`);
+  validateSource(fs.readFileSync(componentPath, 'utf8'));
+  validateModelCatalogSources(root);
 
   if (requireBuild) validateBuild(root);
 
   return {
     contract: CONTRACT,
     sourceValidated,
+    modelCatalogSourceValidated: sourceValidated,
     buildValidated: Boolean(requireBuild),
+    modelCatalogBuildValidated: Boolean(requireBuild),
   };
 }
 

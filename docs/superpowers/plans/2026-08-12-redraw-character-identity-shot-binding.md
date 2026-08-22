@@ -70,4 +70,3 @@
 - 只修改当前 linked worktree `redraw-r12-merge-20260809`。
 - 保留任务前未跟踪的 `.superpowers/`、`frontweb/output/` 和 Python `__pycache__`。
 - 不读取供应商 Key，不启动公网隧道，不进行付费 POST，不写生产数据库，不 SSH，不制作生产候选，不 activate，不推送。
-

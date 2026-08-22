@@ -64,8 +64,9 @@ test('Mini 不显示 5 秒且 Mini/Fast 只显示目录已验证已定价的 480
   assert.match(source, /d\.metadata\.video_resolution/)
   assert.match(
     functionSource('loadVideoModelOptions', 'onVideoModelChange'),
-    /selectedWasAvailable[\s\S]*if \(!selectedWasAvailable\) syncVideoSelectionForModel\(selectedVideoModel\.value\)/,
+    /if \(!selectedVideoModel\.value && models\.length\)[\s\S]*syncVideoSelectionForModel\(selectedVideoModel\.value\)/,
   )
+  assert.match(source, /if \(!value \|\| !videoModelMetadata\(value\)\)[\s\S]*已失效，请重新选择后生成/)
 })
 
 test('单条、批量、一键流水线和修复缺失全部通过 buildSbVideoRequestContext 提交', () => {

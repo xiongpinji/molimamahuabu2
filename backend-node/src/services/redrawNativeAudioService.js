@@ -335,7 +335,6 @@ function withTimeout(start, timeoutMs, controller) {
       settle(() => reject(error));
       controller.abort();
     }, timeoutMs);
-      timer.unref?.();
     Promise.resolve()
       .then(() => start(controller.signal))
       .then(

@@ -28,7 +28,7 @@ function packageFixture(overrides = {}) {
   return {
     name: '标准套餐',
     amount_yuan: '10.00',
-    credits: 1000,
+    daily_bonus_credits: 0,
     image_url: 'https://cdn.example.com/recharge-package.webp',
     badge_text: '推荐',
     ad_title: '标准积分套餐',
@@ -122,13 +122,13 @@ test('自定义充值拒绝小于 1 元、超过两位小数和超过 5 万元�
   }
 });
 
-test('管理员限时套餐按售价和积分展示并在下单时保存快照', () => {
+test('管理员限时套餐按售价展示永久积分和每日赠送并在下单时保存快照', () => {
   const { db, tenant } = setup();
   const active = recharge.createPackage(db, {
     name: '暑期限时包',
     adTitle: '暑期限时加赠',
     amountYuan: '9.90',
-    credits: 1500,
+    dailyBonusCredits: 510,
     startsAt: '2026-08-01T00:00:00.000Z',
     endsAt: '2026-08-10T00:00:00.000Z',
     imageUrl: 'https://cdn.example.com/summer.jpg',
@@ -138,7 +138,7 @@ test('管理员限时套餐按售价和积分展示并在下单时保存快照',
     name: '尚未开始',
     adTitle: '秋季预售套餐',
     amountYuan: '19.90',
-    credits: 2500,
+    dailyBonusCredits: 510,
     startsAt: '2026-08-20T00:00:00.000Z',
     endsAt: '2026-08-30T00:00:00.000Z',
     imageUrl: 'https://cdn.example.com/future.jpg',
@@ -148,7 +148,8 @@ test('管理员限时套餐按售价和积分展示并在下单时保存快照',
   const available = recharge.listAvailablePackages(db, '2026-08-03T00:00:00.000Z');
   assert.deepEqual(available.map((item) => item.id), [active.id]);
   assert.equal(available[0].amount_cents, 990);
-  assert.equal(available[0].credits, 1500);
+  assert.equal(available[0].credits, 990);
+  assert.equal(available[0].daily_bonus_credits, 510);
 
   const order = recharge.createOrder(db, {
     tenantId: tenant.id,
@@ -161,7 +162,7 @@ test('管理员限时套餐按售价和积分展示并在下单时保存快照',
     name: '暑期限时包（已调整）',
     adTitle: '暑期加赠已升级',
     amountYuan: '19.90',
-    credits: 2000,
+    dailyBonusCredits: 10,
     startsAt: '2026-08-01T00:00:00.000Z',
     endsAt: '2026-08-10T00:00:00.000Z',
     imageUrl: 'https://cdn.example.com/summer-v2.jpg',
@@ -173,7 +174,8 @@ test('管理员限时套餐按售价和积分展示并在下单时保存快照',
   assert.equal(persisted.package_id, active.id);
   assert.equal(persisted.package_name, '暑期限时包');
   assert.equal(persisted.amount_cents, 990);
-  assert.equal(persisted.credits, 1500);
+  assert.equal(persisted.credits, 990);
+  assert.equal(persisted.daily_bonus_credits, 510);
 });
 
 test('套餐拒绝无效时间、非 HTTPS 广告图且过期后不能下单', () => {
@@ -182,7 +184,7 @@ test('套餐拒绝无效时间、非 HTTPS 广告图且过期后不能下单', (
     name: '缺少广告图',
     adTitle: '体验套餐',
     amountYuan: '0.01',
-    credits: 10,
+    dailyBonusCredits: 9,
     status: 'active',
   }), (error) => error.code === 'INVALID_RECHARGE_PACKAGE');
 
@@ -190,7 +192,7 @@ test('套餐拒绝无效时间、非 HTTPS 广告图且过期后不能下单', (
     name: '一分钱体验包',
     adTitle: '新人一分体验',
     amountYuan: '0.01',
-    credits: 10,
+    dailyBonusCredits: 9,
     imageUrl: 'https://cdn.example.com/trial.jpg',
     status: 'active',
   });
@@ -200,7 +202,7 @@ test('套餐拒绝无效时间、非 HTTPS 广告图且过期后不能下单', (
     name: '错误套餐',
     adTitle: '错误套餐',
     amountYuan: '10',
-    credits: 1000,
+    dailyBonusCredits: 0,
     startsAt: '2026-08-10T00:00:00.000Z',
     endsAt: '2026-08-01T00:00:00.000Z',
     imageUrl: 'http://cdn.example.com/banner.jpg',
@@ -211,7 +213,7 @@ test('套餐拒绝无效时间、非 HTTPS 广告图且过期后不能下单', (
     name: '已结束套餐',
     adTitle: '活动已结束',
     amountYuan: '10',
-    credits: 1200,
+    dailyBonusCredits: 200,
     startsAt: '2026-07-01T00:00:00.000Z',
     endsAt: '2026-08-01T00:00:00.000Z',
     imageUrl: 'https://cdn.example.com/expired.jpg',
@@ -231,7 +233,7 @@ test('套餐结构化展示字段支持 snake_case 与 camelCase 并保存本地
   const created = recharge.createPackage(db, {
     name: '春日加赠包',
     amountYuan: '29.90',
-    credits: 4000,
+    daily_bonus_credits: 1010,
     image_url: '/static/uploads/recharge-packages/spring.webp',
     badge_text: '限时',
     ad_title: '春日积分加赠',
@@ -255,7 +257,7 @@ test('套餐结构化展示字段支持 snake_case 与 camelCase 并保存本地
   const updated = recharge.updatePackage(db, created.id, {
     name: '春日加赠包升级版',
     amountYuan: '39.90',
-    credits: 5500,
+    dailyBonusCredits: 1510,
     imageUrl: 'https://cdn.example.com/spring-v2.webp',
     badgeText: '推荐',
     adTitle: '春日积分升级',
@@ -282,7 +284,7 @@ test('套餐展示字段和广告图拒绝非法值且有效 HTTPS 仍可使用'
     name: '标准套餐',
     adTitle: '标准积分套餐',
     amountYuan: '10',
-    credits: 1000,
+    dailyBonusCredits: 0,
     imageUrl: 'https://cdn.example.com/banner.webp',
     status: 'active',
   };
@@ -582,7 +584,7 @@ test('低于一元的套餐订单仍能按支付宝通知金额正确入账', ()
     name: '一分钱体验包',
     adTitle: '新人一分体验',
     amountYuan: '0.01',
-    credits: 10,
+    dailyBonusCredits: 9,
     imageUrl: 'https://cdn.example.com/trial.jpg',
     status: 'active',
   });
@@ -603,7 +605,10 @@ test('低于一元的套餐订单仍能按支付宝通知金额正确入账', ()
     total_amount: '0.01',
   }, fakeGateway());
 
-  assert.equal(creditLedger.getTenantAccount(db, tenant.id).available, 10);
+  const account = creditLedger.getTenantAccountBreakdown(db, tenant.id);
+  assert.equal(account.permanent_available, 1);
+  assert.equal(account.daily_bonus_available, 9);
+  assert.equal(account.available, 10);
 });
 
 test('伪造签名、身份或金额不匹配的通知不会入账', () => {

@@ -531,7 +531,6 @@ function ensureAllColumns(database) {
     { name: 'verified_at',    type: 'TEXT' },
     { name: 'verification_error', type: 'TEXT' },
     { name: 'settings',       type: 'TEXT' },
-    { name: 'verification_status', type: 'TEXT NOT NULL DEFAULT \'pending\'' },
     { name: 'verified_capabilities', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
     { name: 'verification_error', type: 'TEXT' },
     { name: 'logical_model_id', type: 'TEXT' },

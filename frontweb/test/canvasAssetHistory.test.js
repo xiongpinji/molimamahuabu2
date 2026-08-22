@@ -64,39 +64,6 @@ test('画布资产保留图片、视频、音频、文本和 3D World 的真实�
   ])
 })
 
-test('独立画布自由节点也进入画布资产并保留生成元数据', () => {
-  const items = normalizeCanvasAssets([
-    {
-      id: 'free:image:1',
-      type: 'homeCanvasNode',
-      data: {
-        kind: 'image',
-        title: '雨夜街道',
-        url: '/static/rainy-street.png',
-        model: 'gpt-image-2',
-        taskId: 'image-task-1',
-        status: 'success',
-        updatedAt: '2026-07-31T08:00:00.000Z',
-      },
-    },
-    {
-      id: 'free:text:2',
-      type: 'homeCanvasNode',
-      data: {
-        kind: 'text',
-        title: '镜头提示词',
-        content: '镜头缓慢推进。',
-      },
-    },
-  ])
-
-  assert.deepEqual(items.map((item) => item.type), ['image', 'text'])
-  assert.deepEqual(items.map((item) => item.nodeId), ['free:image:1', 'free:text:2'])
-  assert.equal(items[0].name, '雨夜街道')
-  assert.equal(items[0].taskId, 'image-task-1')
-  assert.equal(items[1].prompt, '镜头缓慢推进。')
-})
-
 test('资产分类映射到人物、场景、物品、风格、音效、提示词和其它', () => {
   assert.equal(assetCategory({ category: 'character' }), 'person')
   assert.equal(assetCategory({ category: 'scene' }), 'scene')

@@ -1,6 +1,7 @@
 const modelPriceService = require('./modelPriceService');
 const mediaModelSelection = require('./mediaModelSelectionService');
 const { createRedrawLocalePackRegistry } = require('./redrawLocalePackRegistry');
+const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 
 const REDRAW_LOCALE_PRECHECK_ID = 'redraw_locale_verifier';
 const REDRAW_LOCALE_DEFAULTS = {
@@ -67,6 +68,29 @@ function addCheck(checks, id, passed, message, code) {
   };
   if (code) check.code = code;
   checks.push(check);
+}
+
+function parseCapabilities(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(String(value || '{}'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function externalModelEvidenceBindingsReady(db, roots) {
+  const configs = db.prepare(`SELECT * FROM ai_service_configs
+    WHERE deleted_at IS NULL AND is_active = 1 AND verification_status = 'verified'`).all();
+  const failures = [];
+  for (const config of configs) {
+    const capabilitiesByModel = parseCapabilities(config.verified_capabilities);
+    for (const model of mediaModelSelection.orderedModels(config)) {
+      if (!hasTrustedEvidenceBinding(model, capabilitiesByModel[model], roots)) failures.push(model);
+    }
+  }
+  return [...new Set(failures)];
 }
 
 function redrawLocaleVerifierOptions(env = process.env) {
@@ -138,7 +162,7 @@ function runRedrawLocaleVerifierPreflight({ env = process.env, localeRegistry } 
   }
 }
 
-function runProductionPreflight({ config, env = process.env, db, localeRegistry }) {
+function runProductionPreflight({ config, env = process.env, db, localeRegistry, evidenceRoots }) {
   const checks = [];
   const jwtSecret = String(env.PLATFORM_JWT_SECRET || '');
   const adminToken = String(env.PLATFORM_ADMIN_TOKEN || '');
@@ -227,6 +251,27 @@ function runProductionPreflight({ config, env = process.env, db, localeRegistry 
   }
 
   try {
+    const mismatched = externalModelEvidenceBindingsReady(db, evidenceRoots);
+    addCheck(
+      checks,
+      'external_model_evidence_binding',
+      mismatched.length === 0,
+      mismatched.length === 0
+        ? '外部模型数据库能力与共享真实验证证据一致'
+        : `外部模型证据绑定漂移：${mismatched.join('、')}`,
+      mismatched.length === 0 ? undefined : 'EXTERNAL_MODEL_EVIDENCE_BINDING_MISMATCH',
+    );
+  } catch {
+    addCheck(
+      checks,
+      'external_model_evidence_binding',
+      false,
+      '外部模型证据绑定无法读取',
+      'EXTERNAL_MODEL_EVIDENCE_BINDING_UNAVAILABLE',
+    );
+  }
+
+  try {
     const sceneColumns = new Set(
       db.prepare('PRAGMA table_info(scenes)').all().map((row) => String(row.name)),
     );
@@ -281,6 +326,7 @@ function runProductionPreflight({ config, env = process.env, db, localeRegistry 
 module.exports = {
   REDRAW_LOCALE_DEFAULTS,
   createRedrawLocaleRegistryFromEnv,
+  externalModelEvidenceBindingsReady,
   runRedrawLocaleVerifierPreflight,
   runProductionPreflight,
 };

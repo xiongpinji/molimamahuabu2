@@ -52,17 +52,20 @@ export function validCustomAmount(amount, min, max) {
 
 export function packageCreditMetrics(item) {
   const rawAmountCents = Number(item?.amount_cents)
-  const rawCredits = Number(item?.credits)
+  const rawDailyBonusCredits = Number(item?.daily_bonus_credits)
   const amountCents = Number.isFinite(rawAmountCents) ? Math.max(rawAmountCents, 0) : 0
-  const credits = Number.isFinite(rawCredits) ? Math.max(rawCredits, 0) : 0
+  const dailyBonusCredits = Number.isSafeInteger(rawDailyBonusCredits)
+    ? Math.max(rawDailyBonusCredits, 0)
+    : 0
   const amountYuan = amountCents / 100
   const baseCredits = Math.round((amountCents * CUSTOM_RECHARGE_RATIO) / 100)
 
   return {
     amountYuan,
     baseCredits,
-    bonusCredits: Math.max(credits - baseCredits, 0),
-    creditsPerYuan: amountYuan > 0 ? Number((credits / amountYuan).toFixed(2)) : 0,
+    dailyBonusCredits,
+    benefitDays: 30,
+    creditsPerYuan: amountYuan > 0 ? Number((baseCredits / amountYuan).toFixed(2)) : 0,
   }
 }
 

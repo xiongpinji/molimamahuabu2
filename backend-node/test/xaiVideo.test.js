@@ -44,24 +44,15 @@ test('xAI grok-imagine request sends reference_images as URL strings', async (t)
   assert.deepEqual(submittedBody.reference_images, [referenceImage]);
 });
 
-test('lingjing open API uploads reference images before creating video', async (t) => {
+test('xAI helper no longer owns the Lingjing upload protocol', async (t) => {
   const originalFetch = global.fetch;
   t.after(() => {
     global.fetch = originalFetch;
   });
 
   const requests = [];
-  let uploadCount = 0;
   global.fetch = async (url, options) => {
     requests.push({ url, options });
-    if (url.endsWith('/uploads')) {
-      uploadCount += 1;
-      return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify({ path: `uploads/test/ref-${uploadCount}.png` }),
-      };
-    }
     return {
       ok: true,
       status: 200,
@@ -89,24 +80,14 @@ test('lingjing open API uploads reference images before creating video', async (
     }
   );
 
-  const uploads = requests.filter(({ url }) => url.endsWith('/uploads'));
-  const creates = requests.filter(({ url }) => url.endsWith('/videos'));
-  assert.equal(uploads.length, 2);
-  assert.equal(creates.length, 1);
-  assert.equal(uploads[0].url, 'https://seed.example/api/open/v1/uploads');
-  assert.equal(uploads[1].url, 'https://seed.example/api/open/v1/uploads');
-  assert.equal(uploads[0].options.body instanceof FormData, true);
-  assert.equal(uploads[1].options.body instanceof FormData, true);
-
-  const createBody = JSON.parse(creates[0].options.body);
-  assert.deepEqual(createBody, {
-    model: 'lingjing-video-v1',
-    prompt: '让 @参考图1 中的人物走入 @参考图2 的场景',
-    duration: 15,
-    ratio: '16:9',
-    reference_images: ['uploads/test/ref-1.png', 'uploads/test/ref-2.png'],
-  });
-  assert.deepEqual(result, { task_id: '42', status: 'pending' });
+  assert.equal(requests.filter(({ url }) => String(url).endsWith('/uploads')).length, 0);
+  const create = requests.find(({ url }) => url === 'https://seed.example/api/open/v1/videos');
+  assert.ok(create);
+  const createBody = JSON.parse(create.options.body);
+  assert.equal(createBody.model, 'lingjing-video-v1');
+  assert.equal('model_key' in createBody, false);
+  assert.equal('request_id' in createBody, false);
+  assert.deepEqual(result, { task_id: '42', status: 'submitted' });
 });
 
 test('xAI errors include FastAPI detail', async (t) => {

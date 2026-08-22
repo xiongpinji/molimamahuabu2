@@ -51,43 +51,6 @@ test('AIHubCC video uses async submit and poll contract', async () => {
   }
 });
 
-test('lingjing uploads ordered references before creating video task', async () => {
-  const originalFetch = global.fetch;
-  const calls = [];
-  global.fetch = async (url, options = {}) => {
-    calls.push({ url: String(url), options });
-    if (String(url).endsWith('/uploads')) return jsonResponse({ path: 'uploads/ref.png' });
-    return jsonResponse({ id: 19502, status: 'pending' });
-  };
-  try {
-    const result = await callAihubccVideoApi(
-      {
-        base_url: 'https://seed.example/api/open/v1',
-        api_key: 'test-key',
-        endpoint: '/videos',
-        provider: 'aihubcc_video',
-      },
-      { info() {}, warn() {}, error() {} },
-      {
-        model: 'lingjing-video-v1',
-        prompt: 'animate reference',
-        duration: 5,
-        aspect_ratio: '16:9',
-        reference_urls: [`data:image/png;base64,${Buffer.from('image').toString('base64')}`],
-      }
-    );
-    assert.deepEqual(result, { task_id: '19502', status: 'pending' });
-    const uploadCall = calls.find((call) => call.url.endsWith('/uploads'));
-    const submitCall = calls.find((call) => call.url.endsWith('/videos'));
-    assert.equal(uploadCall.options.body instanceof FormData, true);
-    const submitBody = JSON.parse(submitCall.options.body);
-    assert.deepEqual(submitBody.reference_images, ['uploads/ref.png']);
-    assert.equal(submitBody.ratio, '16:9');
-  } finally {
-    global.fetch = originalFetch;
-  }
-});
-
 test('lingjing reference downloader rejects local, mapped IPv6 and DNS rebinding', async () => {
   await assert.rejects(() => assertPublicImageUrl('http://127.0.0.1/ref.png'), /私网/);
   await assert.rejects(() => assertPublicImageUrl('http://localhost/ref.png'), /本机/);

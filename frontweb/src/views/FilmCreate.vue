@@ -958,6 +958,16 @@
             <ElButton type="info" plain size="large" @click="onAddSingleStoryboard">
             添加一个分镜
             </ElButton>
+            <el-button
+              type="warning"
+              plain
+              size="large"
+              :loading="storyboardAssetRematching"
+              :disabled="!currentEpisodeId || !storyboards.length || storyboardGenerating || storyboardAssetRematching"
+              @click="onForceMatchStoryboardAssets"
+            >
+              强制匹配场景/角色/物品
+            </el-button>
           </div>
           <template v-if="storyboards.length > 0">
             <div class="sb-batch-right">
@@ -1769,7 +1779,7 @@
             </el-select>
             <span v-if="selectedVideoModelPublicNote" class="film-image-model-note">{{ selectedVideoModelPublicNote }}</span>
           </el-form-item>
-          <el-form-item label="分辨率">
+          <el-form-item v-if="selectedVideoResolutionOptions.length" label="分辨率">
             <el-select v-model="videoResolution" style="width: 160px" @change="() => saveProjectSettings(false)">
               <el-option
                 v-for="resolution in selectedVideoResolutionOptions"
@@ -3097,6 +3107,8 @@ const scriptContent = computed({
 const videoResolution = storeVideoResolution
 const selectedVideoModel = ref('')
 const videoModelCatalog = ref([])
+const videoModelCatalogStatus = ref('idle')
+const videoModelCatalogError = ref('')
 const videoModelOptions = computed(() => videoModelCatalog.value.filter((item) => item.kind === 'video'))
 const selectedVideoModelMetadata = computed(() =>
   videoModelOptions.value.find((item) => item.model === selectedVideoModel.value) || null
@@ -3161,7 +3173,29 @@ const selectedVideoGenerationReady = computed(() =>
   Number.isSafeInteger(selectedVideoGenerationCredits.value) && selectedVideoGenerationCredits.value > 0
 )
 
+function requireVideoModelAvailable(model) {
+  const value = String(model || '').trim()
+  if (videoModelCatalogStatus.value === 'error') {
+    ElMessage.error(`模型目录加载失败${videoModelCatalogError.value ? `：${videoModelCatalogError.value}` : ''}，本次未提交`)
+    return false
+  }
+  if (videoModelCatalogStatus.value !== 'loaded') {
+    ElMessage.error('模型目录尚未加载完成，本次未提交')
+    return false
+  }
+  if (!videoModelOptions.value.length) {
+    ElMessage.error('当前没有公开可用的视频模型，本次未提交，请联系管理员')
+    return false
+  }
+  if (!value || !videoModelMetadata(value)) {
+    ElMessage.error(`所选视频模型${value ? `「${value}」` : ''}已失效，请重新选择后生成`)
+    return false
+  }
+  return true
+}
+
 function requireSelectedVideoGenerationReady() {
+  if (!requireVideoModelAvailable(selectedVideoModel.value)) return false
   if (selectedVideoGenerationReady.value) return true
   ElMessage.error('当前视频模型该清晰度尚未配置有效积分价格，请联系管理员')
   return false
@@ -3318,6 +3352,7 @@ const currentEpisodeVideoUrl = computed(() => {
 const storyboardGenerating = computed(() =>
   isEpisodeExtractRunning(genStore, dramaId.value, currentEpisodeId.value, GEN_RESOURCE.GENERATE_STORYBOARD)
 )
+const storyboardAssetRematching = ref(false)
 /** 分镜批量生成结束后，按镜序逐个润色全能片段（仅勾选全能模式且各镜为 universal 且有正文时） */
 const universalOmniPolishRunning = ref(false)
 const universalOmniPolishAbort = ref(false)
@@ -4276,6 +4311,15 @@ function getSbFirstImage(storyboardId) {
 
   const typed = images.find((i) => i.frame_type === 'storyboard_first')
   if (typed) return typed
+
+  if (sb?.first_frame_image_url || sb?.first_frame_local_path || sb?.image_url || sb?.local_path) {
+    return {
+      id: sb.first_frame_image_id,
+      image_url: sb.first_frame_image_url || sb.image_url,
+      local_path: sb.first_frame_local_path || sb.local_path,
+      frame_type: 'storyboard_first',
+    }
+  }
   // 不再回退到 images[0]，避免把尾帧图片误显示为首帧
   return null
 }
@@ -6924,18 +6968,28 @@ function collectSbSceneOnlyReferenceAbsoluteUrls(sb) {
 }
 
 async function loadVideoModelOptions() {
+  videoModelCatalogStatus.value = 'loading'
+  videoModelCatalogError.value = ''
   try {
     const catalogRows = await aiAPI.listCanvasModels()
     videoModelCatalog.value = normalizeCanvasModelCatalog(Array.isArray(catalogRows) ? catalogRows : [])
     const models = videoModelOptions.value.map((item) => item.model)
-    const selectedWasAvailable = models.includes(selectedVideoModel.value)
-    if (!selectedWasAvailable) {
+    if (!selectedVideoModel.value && models.length) {
       selectedVideoModel.value = models[0] || ''
+      syncVideoSelectionForModel(selectedVideoModel.value)
     }
-    if (!selectedWasAvailable) syncVideoSelectionForModel(selectedVideoModel.value)
-  } catch {
+    videoModelCatalogStatus.value = 'loaded'
+    return true
+  } catch (error) {
     videoModelCatalog.value = []
+    videoModelCatalogStatus.value = 'error'
+    videoModelCatalogError.value = String(error?.message || '')
+    return false
   }
+}
+
+async function refreshVideoModelCatalogBeforeGeneration() {
+  return loadVideoModelOptions()
 }
 
 async function onVideoModelChange() {
@@ -7505,6 +7559,8 @@ async function onRegenerateLayoutDescription(sb) {
 
 async function onGenerateSbVideo(sb) {
   if (!dramaId.value || !sb?.id || !sbCanSubmitVideo(sb)) return
+  await refreshVideoModelCatalogBeforeGeneration()
+  if (!requireVideoModelAvailable(getStoryboardVideoModel(sb))) return
   const lastVideoError = getSbVideoError(sb.id)
   const balanceRetryAllowed = await confirmProviderBalanceRetry(lastVideoError, () =>
     ElMessageBox.confirm(
@@ -7700,6 +7756,33 @@ async function refreshStoryboardsOnly() {
   return refreshStoryboardsForEpisode(currentEpisodeId.value)
 }
 
+async function onForceMatchStoryboardAssets() {
+  const epId = currentEpisodeId.value
+  if (!epId || !storyboards.value.length) return
+  try {
+    await ElMessageBox.confirm(
+      '将根据当前集分镜的地点、动作、对白、描述和提示词，重新校验场景、角色和物品关联。仍有效的人工选择会保留，失效关联会迁移或移除。',
+      '强制匹配分镜资产',
+      { confirmButtonText: '开始匹配', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch (_) {
+    return
+  }
+  storyboardAssetRematching.value = true
+  try {
+    const result = await dramaAPI.rematchStoryboardAssets(epId)
+    await loadDrama()
+    ElMessage.success(
+      `匹配完成：检查 ${result?.total || 0} 镜，更新 ${result?.updated || 0} 镜；`
+      + `角色 ${result?.character_links || 0}、场景 ${result?.scene_links || 0}、物品 ${result?.prop_links || 0} 个关联`,
+    )
+  } catch (error) {
+    ElMessage.error(error?.message || '强制匹配失败')
+  } finally {
+    storyboardAssetRematching.value = false
+  }
+}
+
 async function onGenerateStoryboard() {
   trackFilmCreateAction('generate_storyboard_click')
   const epId = currentEpisodeId.value
@@ -7885,6 +7968,7 @@ async function startBatchImageGeneration() {
 
 async function startBatchVideoGeneration() {
   if (!currentEpisodeId.value || batchVideoRunning.value || pipelineRunning.value) return
+  await refreshVideoModelCatalogBeforeGeneration()
   if (!requireSelectedVideoGenerationReady()) return
   batchVideoErrors.value = []
   batchVideoStopping.value = false
@@ -8216,6 +8300,7 @@ async function pipelineWithRetry(stepName, fn, maxRetries = 3) {
 
 async function startOneClickPipeline() {
   if (!currentEpisodeId.value || pipelineRunning.value) return
+  await refreshVideoModelCatalogBeforeGeneration()
   if (!requireSelectedVideoGenerationReady()) return
   trackFilmCreateAction('one_click_generate_start')
   pipelineErrorLog.value = []
@@ -8683,6 +8768,7 @@ async function runOneClickPipeline(textOnly = false) {
 
 async function startRepairPipeline() {
   if (!currentEpisodeId.value || pipelineRunning.value) return
+  await refreshVideoModelCatalogBeforeGeneration()
   if (!requireSelectedVideoGenerationReady()) return
   pipelineErrorLog.value = []
   pipelineCurrentStep.value = ''

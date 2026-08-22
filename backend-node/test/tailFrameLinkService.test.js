@@ -96,7 +96,12 @@ test('尾帧提取使用制作页当前选中的视频并写入下一分镜首�
     { info() {}, error() {} },
   );
   const result = { status: 200, body: null };
-  const req = { params: { id: '1' }, body: { drama_id: 9, video_id: 101 } };
+  const req = {
+    params: { id: '1' },
+    body: { drama_id: 9, video_id: 101 },
+    user: { id: 'user-1' },
+    tenant: { id: 'tenant-1' },
+  };
   const res = {
     status(code) {
       result.status = code;
@@ -116,4 +121,12 @@ test('尾帧提取使用制作页当前选中的视频并写入下一分镜首�
   const nextStoryboard = db.prepare('SELECT first_frame_image_id, local_path FROM storyboards WHERE id = 2').get();
   assert.equal(nextStoryboard.first_frame_image_id, result.body.new_first_frame_image_id);
   assert.equal(nextStoryboard.local_path, result.body.local_path);
+  const linkedImage = db.prepare(
+    'SELECT frame_type, user_id, tenant_id FROM image_generations WHERE id = ?',
+  ).get(result.body.new_first_frame_image_id);
+  assert.deepEqual(linkedImage, {
+    frame_type: 'storyboard_first',
+    user_id: 'user-1',
+    tenant_id: 'tenant-1',
+  });
 });

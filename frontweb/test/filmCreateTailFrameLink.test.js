@@ -30,3 +30,12 @@ test('一键提取成功后立即同步并刷新下一分镜首帧', () => {
   assert.match(handler, /await loadSingleStoryboardMedia\(nextSb\.id\)/)
   assert.match(handler, /已是最后一个分镜，没有下一个分镜可衔接/)
 })
+
+test('媒体列表刷新失败时仍使用分镜本地路径展示已提取的首帧', () => {
+  const start = source.indexOf('function getSbFirstImage')
+  const end = source.indexOf('/** 尾帧图', start)
+  const getter = source.slice(start, end)
+
+  assert.match(getter, /sb\?\.first_frame_image_url[\s\S]*sb\?\.image_url/)
+  assert.match(getter, /local_path: sb\.first_frame_local_path \|\| sb\.local_path/)
+})

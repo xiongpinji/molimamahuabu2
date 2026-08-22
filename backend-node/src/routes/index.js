@@ -224,6 +224,7 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/billing/recharge/packages', alipayRecharge.listPackages);
   r.get('/billing/recharge/alipay/orders', alipayRecharge.listOrders);
   r.post('/billing/recharge/alipay/orders', alipayRecharge.createOrder);
+  r.post('/billing/recharge/alipay/orders/:orderId/reconcile', alipayRecharge.reconcileOrder);
   r.get('/video-models', aiConfig.listPublicVideoModels);
   r.get('/image-models', aiConfig.listPublicImageModels);
   r.get('/canvas/model-catalog', (req, res) => {
@@ -307,7 +308,6 @@ function setupRouter(cfg, db, log, options = {}) {
   const redraw = redrawRoutes(db, log, {
     cfg,
     ...redrawOptions,
-    localeVerifier,
     localizationProvider: explicitLocalizationProvider || redrawAdapters.localize,
     assetGenerationProvider: explicitAssetGenerationProvider || defaultAssetGenerationProvider,
     dialogueProvider: explicitDialogueProvider || defaultDialogueProvider,
@@ -590,6 +590,7 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/episodes/:episode_id/props/extract', prop.extractProps);
   r.post('/episodes/:episode_id/characters/extract', stub.episodeCharactersExtract);
   r.get('/episodes/:episode_id/storyboards', storyboards.episodeStoryboardsGet);
+  r.post('/episodes/:episode_id/storyboards/rematch-assets', storyboards.episodeStoryboardsRematchAssets);
   r.post('/episodes/:episode_id/finalize', drama.finalizeEpisode);
   r.get('/episodes/:episode_id/download', drama.downloadEpisodeVideo);
 

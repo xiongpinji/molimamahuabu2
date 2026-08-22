@@ -18,7 +18,7 @@
         :max="Number(config.max_amount_yuan)"
         :precision="2"
         :step="1"
-        controls-position="right"
+        :controls="false"
       />
 
       <div class="quick-amounts" :aria-label="`快捷充值金额，共 ${QUICK_RECHARGE_AMOUNTS.length} 项`">
@@ -112,9 +112,9 @@ function submit() {
 .order-summary h3 { margin: 6px 0 0; }
 .ratio { padding: 9px 12px; border: 1px solid rgba(255, 113, 57, .38); border-radius: 999px; color: #ff9b75; font-size: 13px; background: rgba(255, 113, 57, .09); }
 .amount-label { display: block; margin: 30px 0 10px; color: #a7a7ad; font-size: 13px; }
-.amount-input { width: 100%; }
-.amount-input :deep(.el-input__wrapper) { min-height: 86px; padding: 0 24px; border-radius: 18px; background: #101010; box-shadow: inset 0 0 0 1px #3a3a3a; }
-.amount-input :deep(.el-input__inner) { color: #fff; font-size: clamp(34px, 5vw, 52px); font-weight: 900; text-align: left; }
+.amount-input { width: 100%; --el-fill-color-blank: #101010; --el-input-bg-color: #101010; --el-input-text-color: #fff; }
+.amount-input :deep(.el-input__wrapper) { min-height: 64px; padding: 0 20px; border-radius: 16px; background-color: #101010 !important; box-shadow: inset 0 0 0 1px #3a3a3a; }
+.amount-input :deep(.el-input__inner) { color: #fff !important; font-size: clamp(30px, 4vw, 42px); font-weight: 900; line-height: 1; text-align: left; }
 .quick-amounts { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
 .quick-amounts button { min-height: 42px; border: 1px solid #373737; border-radius: 12px; color: #d4d4d7; font: inherit; background: #202020; cursor: pointer; }
 .quick-amounts button:hover,

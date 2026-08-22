@@ -3,9 +3,9 @@ const FEITUO_MODELS = Object.freeze({
     resolutions: Object.freeze(['2k']),
     durations: Object.freeze([15]),
     ratios: Object.freeze(['1:1', '16:9', '9:16', '3:4', '4:3', '21:9']),
-    maxImages: 9,
+    maxImages: 0,
     maxVideos: 0,
-    maxAudio: 3,
+    maxAudio: 0,
   }),
   'xuan-seedance-2.5': Object.freeze({
     resolutions: Object.freeze(['480p', '720p']),
