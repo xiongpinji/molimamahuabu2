@@ -66,6 +66,120 @@ function createRoute(db, config, reservation, suffix) {
   return { route, attempt };
 }
 
+function createLegacyImageFailure(db, reservation, suffix, errorMessage) {
+  const now = '2026-08-15T10:00:00.000Z';
+  const imageId = 900 + Number(suffix);
+  const taskId = `legacy-image-task-${suffix}`;
+  db.prepare(`INSERT INTO async_tasks
+    (id, type, status, progress, message, error, resource_id, created_at, updated_at,
+     user_id, model, credit_reservation_id, tenant_id)
+    VALUES (?, 'image_generation', 'failed', 100, ?, ?, ?, ?, ?,
+      'user-a', 'logical-image', ?, 'tenant-a')`)
+    .run(taskId, errorMessage, errorMessage, String(imageId), now, now, reservation.id);
+  db.prepare(`INSERT INTO image_generations
+    (id, provider, prompt, model, status, task_id, error_msg, created_at, updated_at,
+     user_id, credit_reservation_id, tenant_id)
+    VALUES (?, 'private-relay', 'test prompt', 'logical-image', 'failed', ?, ?, ?, ?,
+      'user-a', ?, 'tenant-a')`)
+    .run(imageId, taskId, errorMessage, now, now, reservation.id);
+  db.prepare(`UPDATE tenant_usage_reservations SET created_at = ?, updated_at = ? WHERE id = ?`)
+    .run(now, now, reservation.id);
+  return { imageId, taskId };
+}
+
+test('遗留结果未知失败转待核对并保持冻结且写管理员告警', (t) => {
+  const { db } = setup();
+  t.after(() => db.close());
+  const reservation = reserve(db, 'legacy-unknown');
+  const linked = createLegacyImageFailure(
+    db,
+    reservation,
+    1,
+    '图片创建成功但未返回图片地址（结果未知）。请先核对供应商记录，不要连续重试。',
+  );
+
+  const first = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:00:00.000Z');
+  const second = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:01:00.000Z');
+
+  assert.equal(first.needs_attention, 1);
+  assert.equal(second.processed, 0);
+  assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
+  assert.equal(db.prepare('SELECT status FROM image_generations WHERE id = ?').get(linked.imageId).status,
+    'needs_attention');
+  assert.equal(db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(linked.taskId).status,
+    'needs_attention');
+  const event = db.prepare(`SELECT severity, credit_state FROM provider_stability_events
+    WHERE request_id = ? AND event_type = 'provider_legacy_generation_needs_attention'`)
+    .get(`legacy-credit:${reservation.id}`);
+  assert.deepEqual(event, { severity: 'error', credit_state: 'held_for_review' });
+});
+
+test('遗留明确失败在安全证据齐全后自动退款且保持幂等', (t) => {
+  const { db } = setup();
+  t.after(() => db.close());
+  const reservation = reserve(db, 'legacy-definite-failure');
+  createLegacyImageFailure(db, reservation, 2, '供应商明确拒绝：请求参数无效');
+
+  const first = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:00:00.000Z');
+  const second = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:01:00.000Z');
+
+  assert.equal(first.refunded, 1);
+  assert.equal(second.refunded, 0);
+  assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'refunded');
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM tenant_credit_ledger
+    WHERE reservation_id = ? AND event_type = 'refund'`).get(reservation.id).count, 1);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM billing_reconciliation_events
+    WHERE reservation_id = ?`).get(reservation.id).count, 1);
+});
+
+test('长期待核对冻结写一次升级告警而不退款或重试', (t) => {
+  const { db, config } = setup();
+  t.after(() => db.close());
+  const reservation = reserve(db, 'held-sla');
+  const { route } = createRoute(db, config, reservation, 'held-sla');
+  db.prepare(`UPDATE generation_route_attempts
+    SET state = 'submission_unknown', error_category = 'submission_unknown',
+        safe_error_summary = 'category=submission_unknown', finished_at = ?
+    WHERE request_id = ?`).run('2026-08-15T10:00:00.000Z', route.id);
+  db.prepare(`UPDATE generation_route_requests SET state = 'needs_attention', updated_at = ? WHERE id = ?`)
+    .run('2026-08-15T10:00:00.000Z', route.id);
+  db.prepare(`INSERT INTO provider_stability_events
+    (severity, event_type, request_id, tenant_id, user_ref, logical_model_id,
+     config_id, task_state, credit_state, safe_details, created_at)
+    VALUES ('warning', 'provider_request_needs_attention', ?, 'tenant-a', 'user-a',
+      'logical-image', ?, 'needs_attention', 'held_for_review',
+      '{"category":"submission_unknown"}', ?)`)
+    .run(route.id, config.id, '2026-08-15T10:00:00.000Z');
+
+  const first = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:00:00.000Z');
+  const second = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:01:00.000Z');
+
+  assert.equal(first.alerted, 1);
+  assert.equal(second.alerted, 0);
+  assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM provider_stability_events
+    WHERE request_id = ? AND event_type = 'provider_credit_hold_sla_breached'`).get(route.id).count, 1);
+});
+
+test('已结算的待核对记录不会误报冻结积分超时', (t) => {
+  const { db, config } = setup();
+  t.after(() => db.close());
+  const reservation = reserve(db, 'settled-review');
+  const { route } = createRoute(db, config, reservation, 'settled-review');
+  db.prepare(`UPDATE generation_route_attempts
+    SET state = 'submission_unknown', error_category = 'submission_unknown', finished_at = ?
+    WHERE request_id = ?`).run('2026-08-15T10:00:00.000Z', route.id);
+  db.prepare(`UPDATE generation_route_requests SET state = 'needs_attention', updated_at = ? WHERE id = ?`)
+    .run('2026-08-15T10:00:00.000Z', route.id);
+  creditLedgerService.settleGeneration(db, reservation.id, 'failed', '管理员已确认失败');
+
+  const result = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:00:00.000Z');
+
+  assert.equal(result.alerted, 0);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM provider_stability_events
+    WHERE request_id = ? AND event_type = 'provider_credit_hold_sla_breached'`).get(route.id).count, 0);
+});
+
 test('submitting 未知请求转 needs_attention 并保持积分冻结且重复对账幂等', (t) => {
   const { db, config } = setup();
   t.after(() => db.close());

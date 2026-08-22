@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "release": "video-audio-credit-reconciliation-20260822",
+  "allowedPaths": [
+    "backend-node/src/services/providerReconciliationService.js",
+    "backend-node/test/featureLockManifest.test.js",
+    "backend-node/test/incrementalReleaseScope.test.js",
+    "backend-node/test/providerReconciliation.test.js",
+    "deploy/release-scopes/video-audio-credit-reconciliation-20260822.json",
+    "docs/verification/platform-stability/feature-lock-manifest.json",
+    "docs/verification/platform-stability/video-audio-credit-reconciliation-20260822.md",
+    "frontweb/src/components/dramaCanvas/HomeCanvasNode.vue",
+    "frontweb/src/utils/freeCanvasGeneration.js",
+    "frontweb/src/views/DramaCanvas.vue",
+    "frontweb/test/standaloneCanvasFreeNodeGeneration.test.js",
+    "frontweb/test/toapisVideoCanvasContract.test.js"
+  ]
+}
