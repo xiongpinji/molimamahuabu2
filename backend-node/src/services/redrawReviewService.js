@@ -4,6 +4,7 @@ const {
   identityPackStatus,
   identityBindingForAsset,
 } = require('./redrawCharacterIdentityService');
+const { evaluatePreparationGate } = require('./redrawPreparationGateService');
 
 function codedError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -115,9 +116,26 @@ function isApprovedAsset(row) {
     && String(row.approval_status) === 'approved');
 }
 
-function evaluateGenerationGate(db, versionId, owner = {}) {
+function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
   if (!db) throw codedError('REDRAW_REVIEW_DB_REQUIRED', '缺少数据库');
   const version = getVersion(db, versionId, owner);
+  if (Number(version.reference_bundle_required || 0) === 1) {
+    const preparationGate = options.preparationGate || evaluatePreparationGate;
+    const preparation = preparationGate({ db, ...normalizeOwner(owner) }, version.id);
+    if (!preparation.ok) {
+      return {
+        ok: false,
+        version_id: Number(version.id),
+        current_step: 2,
+        missing: preparation.missing,
+        blocking: [{
+          code: 'preparation_not_ready',
+          reason: '整集参考准备未完成或已过期',
+          shot_count: preparation.ready_shot_ids.length,
+        }],
+      };
+    }
+  }
   const shots = db.prepare(`
     SELECT id, shot_id, shot_index, references_json, draft_json
     FROM redraw_shots

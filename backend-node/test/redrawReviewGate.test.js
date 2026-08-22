@@ -30,10 +30,18 @@ function canonicalIdentityPack(overrides = {}) {
       height: 960,
       mime_type: 'image/png',
     },
+    wardrobe: {
+      label: '整集主服装',
+      reference_asset_id: 1002,
+      reference_sha256: crypto.createHash('sha256').update('canonical actor wardrobe').digest('hex'),
+      consistency_confirmed: true,
+    },
     confirmed_views: ['front', 'profile', 'full_body'],
     live_action_human_confirmed: true,
     adult_status: 'verified_18_plus',
     identity_consistency_confirmed: true,
+    persona_origin: 'fictional_ai_generated',
+    target_country: 'US',
     ready: true,
     reviewed_by: 'user-a',
     reviewed_at: '2026-08-06T00:00:00.000Z',
@@ -44,10 +52,13 @@ function canonicalIdentityPack(overrides = {}) {
     source_character_key: pack.source_character_key,
     target_actor_label: pack.target_actor_label,
     artifact: pack.artifact,
+    wardrobe: pack.wardrobe,
     confirmed_views: pack.confirmed_views,
     live_action_human_confirmed: pack.live_action_human_confirmed,
     adult_status: pack.adult_status,
     identity_consistency_confirmed: pack.identity_consistency_confirmed,
+    persona_origin: pack.persona_origin,
+    target_country: pack.target_country,
     ready: pack.ready,
     reviewed_by: pack.reviewed_by,
     reviewed_at: pack.reviewed_at,
@@ -140,6 +151,26 @@ test('零分镜版本 fail closed 并返回 shots_missing', () => {
     assert.equal(gate.ok, false);
     assert.deepEqual(gate.blocking, [{ code: 'shots_missing', reason: '当前版本没有可生成分镜' }]);
     assert.deepEqual(gate.missing, []);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('视频生成门禁先执行准备门禁，旧候选不能绕过未完成准备', () => {
+  const state = setup();
+  try {
+    addAsset(state.db, { id: 80, kind: 'scene' });
+    addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: 80 }]);
+    state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
+    state.db.prepare(`UPDATE redraw_shots
+      SET video_generation_id = 9001, preparation_state = 'parsed'
+      WHERE version_id = ?`).run(state.versionId);
+
+    const gate = evaluateGenerationGate(state.db, state.versionId, { tenantId: 'tenant-a', userId: 'user-a' });
+
+    assert.equal(gate.ok, false);
+    assert.equal(gate.blocking[0].code, 'preparation_not_ready');
+    assert.equal(gate.missing[0].reason_code, 'character_plan_not_ready');
   } finally {
     state.db.close();
   }
