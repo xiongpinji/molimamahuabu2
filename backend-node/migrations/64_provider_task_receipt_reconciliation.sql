@@ -21,8 +21,10 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS generation_route_attempts_provider_task_id_immutable
 BEFORE UPDATE OF provider_task_id ON generation_route_attempts
-WHEN OLD.provider_task_id IS NOT NULL
-  AND OLD.provider_task_id IS NOT NEW.provider_task_id
+WHEN NEW.provider_task_id IS NULL
+  OR trim(NEW.provider_task_id) = ''
+  OR (OLD.provider_task_id IS NOT NULL
+    AND OLD.provider_task_id IS NOT NEW.provider_task_id)
 BEGIN
   SELECT RAISE(ABORT, 'provider task id is immutable');
 END;

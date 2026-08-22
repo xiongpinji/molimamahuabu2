@@ -310,6 +310,27 @@ test('provider receipt identity fields cannot be changed or backfilled', () => {
   }
 });
 
+for (const [label, invalidTaskId] of [
+  ['empty', ''],
+  ['blank', '   '],
+]) {
+  test(`provider task id rejects ${label} initial binding`, () => {
+    const db = new Database(':memory:');
+    try {
+      runMigrationsAndEnsure(db);
+      const attemptId = insertMinimalProviderReceipt(db);
+
+      assert.throws(
+        () => db.prepare('UPDATE generation_route_attempts SET provider_task_id = ? WHERE id = ?')
+          .run(invalidTaskId, attemptId),
+        /provider task id is immutable/,
+      );
+    } finally {
+      db.close();
+    }
+  });
+}
+
 test('provider task id binds once and permits idempotent writes', () => {
   const db = new Database(':memory:');
   try {
