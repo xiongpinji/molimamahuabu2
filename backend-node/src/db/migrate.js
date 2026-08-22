@@ -198,6 +198,17 @@ const REDRAW_WORK_VERSION_STATUSES = [
   'blocked',
 ];
 
+const REDRAW_SHOT_PREPARATION_COLUMNS = [
+  {
+    name: 'preparation_state',
+    type: 'TEXT NOT NULL DEFAULT \'parsed\' CHECK (preparation_state IN (\'parsed\', \'localized\', \'identity_bound\', \'clean_ready\', \'reference_ready\', \'needs_review\', \'needs_attention\', \'failed\', \'stale\'))',
+  },
+  { name: 'preparation_version', type: 'INTEGER NOT NULL DEFAULT 1 CHECK (preparation_version > 0)' },
+  { name: 'preparation_evidence_hash', type: 'TEXT' },
+  { name: 'preparation_snapshot_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+  { name: 'stale_reason_code', type: 'TEXT' },
+];
+
 function rebuildTableFromSql(database, tableName, tempTable, createTempSql) {
   if (database.inTransaction) {
     throw new Error(`${tableName} rebuild requires no active transaction`);
@@ -759,6 +770,7 @@ function ensureAllColumns(database) {
     { name: 'end_ms', type: 'INTEGER' },
     { name: 'draft_json', type: 'TEXT' },
     { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    ...REDRAW_SHOT_PREPARATION_COLUMNS,
     { name: 'created_at', type: 'TEXT' },
     { name: 'updated_at', type: 'TEXT' },
     { name: 'deleted_at', type: 'TEXT' },
@@ -1077,6 +1089,7 @@ function ensureRedrawCompatibility(database) {
     { name: 'audio_asset_id', type: 'INTEGER' },
     { name: 'subtitle_asset_id', type: 'INTEGER' },
     { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    ...REDRAW_SHOT_PREPARATION_COLUMNS,
     { name: 'error_code', type: 'TEXT' },
     { name: 'error_message', type: 'TEXT' },
     { name: 'created_at', type: 'TEXT' },
@@ -1170,6 +1183,7 @@ function ensureRedrawMigrationColumns(database) {
       { name: 'batch_index', type: 'INTEGER NOT NULL DEFAULT 1' },
       { name: 'shot_index', type: 'INTEGER NOT NULL DEFAULT 1' },
       { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+      ...REDRAW_SHOT_PREPARATION_COLUMNS,
       { name: 'updated_at', type: 'TEXT' },
     ],
     redraw_exports: [
