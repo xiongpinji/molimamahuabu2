@@ -1,6 +1,49 @@
 # 供应商任务不可变凭证与安全对账验证证据
 
-## 2026-08-23 无产物质量修复刷新（当前）
+## 2026-08-23 旧版 DJPSD 严格完成无产物刷新（当前）
+
+- 本地基线仍为未 fetch 的 `origin/main` 快照 `f17f87472b48668e5854969f445c916826eb40ac`；本轮质量修复起点为 `d5b29c2b066f46819774a8a36512aef54561f785`，锁候选 A 为 `081146075657b0ce5f4b40e90fae43711c3fdd9e`。候选 A 只追加 fresh unlock/history 及其测试；发布范围仍与真实差异保持同一 29 个路径。
+- Node.js `v24.17.0`、npm `11.13.0`，时区 `Asia/Shanghai`。本节全部结果均在候选 A 上重新运行，不复用 `7041397a` / `9d797388` 或下方历史数字。
+- 当前结论仅为本地候选：旧版 DJPSD 严格单次查询把 `success` / `succeeded` / `completed` 且无视频的结果归为 `artifact_unreadable`，对账保持积分 `held`；明确失败仍退款。它不是 Hosted CI、真实供应商、账单或生产验收。
+
+### 本轮 TDD
+
+| 时间（UTC+08:00） | 命令 | exit | 统计 | 结论 |
+| --- | --- | ---: | --- | --- |
+| 2026-08-23 04:47:49–04:47:50 | `cd backend-node; node --test test/featureLockManifest.test.js test/incrementalReleaseScope.test.js` | 1 | 27 tests；26 pass；1 fail；0 skip | 原样门禁正确返回 `FEATURE_LOCKED`：`videoClient.js` 在上次 A 后再次变化，safe failover、unknown billing、proactive canary 三锁缺少本轮 fresh unlock；scope 已正确保持 29 项。 |
+| 2026-08-23 04:49:18–04:49:19 | 同上，先增强 legacy DJPSD 批准与完整历史合同 | 1 | 27 tests；25 pass；2 fail；0 skip | 预期红灯固定两个缺口：新批准及上一质量批准的历史记录尚未写入；有效基线审计仍被三锁拒绝。 |
+| 2026-08-23 04:50:20–04:50:22 | 同上 | 0 | 27 tests；27 pass；0 fail；0 skip | 三个实际触及锁使用 legacy DJPSD 专属 fresh unlock，上一轮批准追加进 `unlockHistory`；route/admin 未触及锁与全部历史 evidence 保持不变。 |
+
+### 候选 A 新鲜验证
+
+| 时间（UTC+08:00） | 命令 | exit | 通过 / 失败 / skip | 结果 |
+| --- | --- | ---: | --- | --- |
+| 2026-08-23 04:51:35–04:51:37 | 锁/范围 2 文件测试及 `node scripts/verify-feature-lock-manifest.js --base origin/main` | 0 | 27 / 0 / 0 | `ready=true`；6 features；29 changed paths；6 个基线保护锁。 |
+| 2026-08-23 04:51:47–04:52:09 | 下方列出的 11 文件 Task 1–5 精确供应商集 | 0 | 236 / 0 / 0 | 旧版 DJPSD 三种完成状态、显式失败、普通轮询兼容及对账分支均通过。 |
+| 2026-08-23 04:52:20–04:52:43 | 下方 7 文件相邻集并显式加入 `videoQueryTaskStatusOnce.test.js`、`providerTaskReconciliation.test.js` | 0 | 191 / 0 / 0 | 图片、文本、视频邻接回归及 legacy DJPSD direct/reconcile 同批通过。 |
+| 2026-08-23 04:53:04–04:53:09 | `node --test test/providerRouteSchema.test.js`，迁移第 1 轮 | 0 | 21 / 0 / 0 | 幂等合同通过；隔离夹具日志含 197 条 migration 64 执行记录。 |
+| 2026-08-23 04:53:09–04:53:15 | 同上，迁移第 2 轮 | 0 | 21 / 0 / 0 | 第二轮仍通过，仍为 197 条 migration 64 执行记录。 |
+| 2026-08-23 04:53:35–05:08:37 | `cd backend-node; npm test` | 0 | 2794 / 0 / 10；共 2804 tests、36 suites | 完整串行后端回归结束；10 项 skip 按 runner 原样记录。npm 另输出一条 `better_sqlite3_binary_host_mirror` 项目配置将在下一主版本停止支持的警告，不把警告记作测试失败。 |
+| 2026-08-23 05:09:06–05:09:08 | 6 个计划语法检查、`git diff --check origin/main...HEAD`、scope 深比较及禁区检查 | 0 | 6 个语法检查；29 / 29 paths | diff 无空白错误；scope 与实际排序路径逐项相等；通配符、目录、数据库、uploads、storage、assets、AI 音乐与 shared release guard 命中 0。 |
+
+Task 1–5 精确集沿用计划的 11 文件命令；相邻集在原 7 文件基础上显式加入本轮 direct/reconcile 两文件：
+
+```powershell
+node --test test/providerRouteSchema.test.js test/providerRouteStability.test.js test/providerRouteVideoIntegration.test.js test/providerTaskReconciliation.test.js test/providerTaskAdminRoutes.test.js test/videoQueryTaskStatusOnce.test.js test/videoBilling.test.js test/generationRouteCostLedger.test.js test/creditLedger.test.js test/providerReconciliation.test.js test/providerCanaryAdminRoutes.test.js
+node --test test/providerRouteImageIntegration.test.js test/providerRouteTextIntegration.test.js test/imageBilling.test.js test/openAIImageOutput.test.js test/text-generation-billing.test.js test/toapisVideoIntegration.test.js test/feituoVideoModels.test.js test/videoQueryTaskStatusOnce.test.js test/providerTaskReconciliation.test.js
+```
+
+### 本轮断言、接口面与秘密扫描
+
+- `backend-node/test/videoQueryTaskStatusOnce.test.js:73–117` 分别锁定旧版 DJPSD 三种完成但无视频的状态与两种显式失败，所有分支均断言网络请求数为 1；`:119` 起锁定普通轮询仍保留旧错误行为。
+- `backend-node/test/providerTaskReconciliation.test.js:1158–1250` 覆盖 DJPSD legacy/OpenAPI 与 Token6688：无产物时第 1209 行断言查询数为 1，第 1212–1219 行断言 `held` 且退款流水为 0；显式失败时第 1240 行断言查询数为 1，第 1243–1250 行断言 `refunded` 且退款流水为 1。
+- 同文件第 731、743 行的既有成功对账合同仍在本轮精确集和全量中通过，分别断言查询数为 1、预扣为 `confirmed`。
+- 2026-08-23 05:09:47 的接口面扫描确认对账服务只有 1 个 `queryVideoTaskStatusOnce` 绑定（第 366 行），提交入口 `callVideoApi` / `submitVideo` / `createVideo` / `generateVideo` 匹配为 0。submit count 0 是本地静态接口面证据，不是一次真实供应商请求记录。
+- 2026-08-23 05:09:27–05:09:28 对 `origin/main...HEAD` 新增行的脱敏扫描仍为 2 个规则命中、1 个唯一位置：`backend-node/test/providerTaskAdminRoutes.test.js:348` 的同一本地安全哨兵分别匹配 `bearer-token` 与 `authorization-value`；值只记录为 `[REDACTED]`。OpenAI 风格 token 与 URL userinfo 命中 0。
+- 写本节前 `git status --short` 只有既存 `?? data/`。未检查或清理其内部内容，未暂存或提交，因此不宣称工作树 clean。
+- 本轮未执行 fetch、真实供应商查询/提交、付费调用、SSH、生产迁移或写入、push、PR、Hosted CI、部署、共享 release guard 激活或 `enforce`。
+
+## 历史无产物质量修复刷新（保留）
 
 - 本地基线仍为未 fetch 的 `origin/main` 快照 `f17f87472b48668e5854969f445c916826eb40ac`；质量修复起点为 `b1610f116ab7d4bae373facca639c4867119bc8d`，锁与范围候选 A 为 `7041397ae7d06f60285dc3e72e378a2c04bdaeef`。
 - Node.js `v24.17.0`、npm `11.13.0`，时区 `Asia/Shanghai`。本节所有结果均在候选 A 上重新运行，不复用下方历史候选数字。
