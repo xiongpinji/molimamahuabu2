@@ -1388,12 +1388,16 @@ function validateDownloadedVideoBuffer(buffer, ext) {
 async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir = null, fetchOptions = {}) {
   if (!videoUrl || typeof videoUrl !== 'string') return { localPath: null };
   const { dir, relPrefix } = resolveVideosDir(storagePath, projectSubdir);
+  let filePath = null;
   try {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const ext = (videoUrl.split('?')[0].match(/\.(mp4|webm|mov)$/i) || [])[1] || 'mp4';
     const name = `vg_${videoGenId}_${randomUUID().slice(0, 8)}.${ext}`;
-    const filePath = path.join(dir, name);
-    const res = await fetch(videoUrl, { method: 'GET', ...fetchOptions });
+    filePath = path.join(dir, name);
+    const downloadOptions = fetchOptions || {};
+    const fetchImpl = downloadOptions.fetchImpl || fetch;
+    const { fetchImpl: _fetchImpl, ...requestOptions } = downloadOptions;
+    const res = await fetchImpl(videoUrl, { method: 'GET', ...requestOptions });
     if (!res.ok) {
       log.warn('Download video failed', { status: res.status, videoGenId });
       return {
@@ -1414,7 +1418,10 @@ async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, proj
     log.info('Video saved to local', { videoGenId, local_path: relativePath, projectSubdir: projectSubdir || '(root)' });
     return { localPath: relativePath };
   } catch (e) {
-    log.warn('Download video error', { videoGenId, error: e.message });
+    if (filePath) {
+      try { fs.rmSync(filePath, { force: true }); } catch (_) {}
+    }
+    log.warn('Download video error', { videoGenId });
     return {
       localPath: null,
       indeterminate: true,
@@ -1591,6 +1598,118 @@ function extractVideoBoundaryFrames(storagePath, localPath, videoGenId, log, opt
   }
   log?.info?.('[视频] 成片首尾帧提取完成', { videoGenId, ...result });
   return result;
+}
+
+function reconciliationProjectStorageSubdir(db, row) {
+  const dramaId = Number(row?.drama_id);
+  if (!Number.isSafeInteger(dramaId) || dramaId <= 0) return storageLayout.LIBRARY;
+  const drama = db.prepare(
+    'SELECT id, title, created_at, metadata FROM dramas WHERE id = ? AND deleted_at IS NULL'
+  ).get(dramaId);
+  return drama ? storageLayout.buildProjectRelativeDir(drama) : storageLayout.LIBRARY;
+}
+
+function reconciledArtifactError() {
+  const error = new Error('视频产物不可读取');
+  error.code = 'PROVIDER_TASK_ARTIFACT_UNREADABLE';
+  return error;
+}
+
+function expectedReconciledBoundaryFrames(localPath, videoGenId) {
+  const normalized = String(localPath || '').replace(/\\/g, '/');
+  const directory = path.posix.dirname(normalized);
+  const prefix = directory === '.' ? '' : `${directory}/`;
+  return {
+    output_first_frame_url: `/static/${prefix}vg_${videoGenId}_first.jpg`,
+    output_last_frame_url: `/static/${prefix}vg_${videoGenId}_last.jpg`,
+  };
+}
+
+function isCanonicalChild(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return Boolean(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative);
+}
+
+function discardReconciledVideoArtifact(prepared) {
+  const storageValue = typeof prepared?.storagePath === 'string' ? prepared.storagePath.trim() : '';
+  if (!storageValue) return;
+
+  let root;
+  try {
+    root = fs.realpathSync(path.resolve(storageValue));
+  } catch (_) {
+    return;
+  }
+
+  const targets = [
+    { value: prepared?.localPath, staticUrl: false },
+    { value: prepared?.boundaryFrames?.output_first_frame_url, staticUrl: true },
+    { value: prepared?.boundaryFrames?.output_last_frame_url, staticUrl: true },
+  ];
+  for (const target of targets) {
+    try {
+      const raw = typeof target.value === 'string' ? target.value.trim() : '';
+      if (!raw) continue;
+      if (target.staticUrl && !raw.startsWith('/static/')) continue;
+      const relative = target.staticUrl ? raw.slice('/static/'.length) : raw;
+      if (!relative || path.win32.isAbsolute(relative) || path.posix.isAbsolute(relative)) continue;
+      const candidate = path.resolve(root, relative);
+      if (!isCanonicalChild(root, candidate) || !fs.existsSync(candidate)) continue;
+      const canonicalCandidate = fs.realpathSync(candidate);
+      if (!isCanonicalChild(root, canonicalCandidate)) continue;
+      const stat = fs.lstatSync(candidate);
+      if (!stat.isFile() && !stat.isSymbolicLink()) continue;
+      fs.rmSync(candidate, { force: true });
+    } catch (_) {}
+  }
+}
+
+async function prepareReconciledVideoArtifact(db, log, row, artifactUrl, providerConfig, options = {}) {
+  const storagePath = options.storagePath || resolveStoragePath(require('../config').loadConfig());
+  const cleanup = {
+    storagePath,
+    localPath: null,
+    boundaryFrames: null,
+  };
+  try {
+    const projectSubdir = reconciliationProjectStorageSubdir(db, row);
+    const fetchOptions = {
+      ...videoClient.getVideoArtifactFetchOptions(providerConfig, artifactUrl),
+      ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    };
+    const downloaded = await downloadVideoToLocal(
+      storagePath,
+      artifactUrl,
+      row.id,
+      log,
+      projectSubdir,
+      fetchOptions,
+    );
+    if (!downloaded.localPath) throw reconciledArtifactError();
+
+    cleanup.localPath = downloaded.localPath;
+    cleanup.boundaryFrames = expectedReconciledBoundaryFrames(downloaded.localPath, row.id);
+    const normalizeImpl = options.normalizeImpl || maybeNormalizeVideoAfterDownload;
+    normalizeImpl(storagePath, downloaded.localPath, row, row.id, log);
+    const extractBoundaryFramesImpl = options.extractBoundaryFramesImpl || extractVideoBoundaryFrames;
+    const boundaryFrames = extractBoundaryFramesImpl(
+      storagePath,
+      downloaded.localPath,
+      row.id,
+      log,
+      options.extractionOptions || {},
+    );
+    return {
+      storagePath,
+      localPath: downloaded.localPath,
+      videoUrl: artifactUrl,
+      boundaryFrames,
+    };
+  } catch (_) {
+    discardReconciledVideoArtifact(cleanup);
+    throw reconciledArtifactError();
+  }
 }
 
 function ensureBoundaryFrames(db, log, selector = {}, options = {}) {
@@ -2295,5 +2414,7 @@ module.exports = {
   shouldNormalizeVideoAfterDownload,
   targetVideoPixelsForAspect,
   extractVideoBoundaryFrames,
+  prepareReconciledVideoArtifact,
+  discardReconciledVideoArtifact,
   ensureBoundaryFrames,
 };
