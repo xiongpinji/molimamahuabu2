@@ -6214,10 +6214,16 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           has_video_url: !!videoUrl,
         });
         if (videoUrl && (!resultType || resultType === 'video')) return { video_url: videoUrl };
-        if (resultType && resultType !== 'video') return { error: 'DJPSD 开放 API 返回的不是视频结果' };
+        if (resultType && resultType !== 'video') {
+          return strictSingleRequest && !['failed', 'error'].includes(state)
+            ? { artifact_unreadable: true }
+            : { error: 'DJPSD 开放 API 返回的不是视频结果' };
+        }
         if (['failed', 'error'].includes(state)) return { error: body.error || body.message || 'DJPSD 开放 API 视频生成失败' };
         if (body.is_final || ['success', 'succeeded', 'completed', 'done'].includes(state)) {
-          return { error: 'DJPSD 开放 API 任务已结束但未返回视频地址' };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'DJPSD 开放 API 任务已结束但未返回视频地址' };
         }
         continue;
       }
@@ -6263,7 +6269,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           return { error: String(message).slice(0, 500) };
         }
         if (['succeeded', 'completed', 'done', 'success'].includes(status) || data.is_final) {
-          return { error: 'Token6688 任务完成但未返回可下载的视频地址' };
+          return strictSingleRequest
+            ? { artifact_unreadable: true }
+            : { error: 'Token6688 任务完成但未返回可下载的视频地址' };
         }
         continue;
       }

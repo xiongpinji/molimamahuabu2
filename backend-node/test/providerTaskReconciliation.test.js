@@ -158,6 +158,9 @@ function setupReconciliationFixture(t, options = {}) {
   const log = recordingLog();
   const userId = options.userId || 'user-reconcile';
   const tenantId = options.tenantId || null;
+  const provider = options.provider || 'toapis';
+  const configProtocol = options.configProtocol || 'toapis_video';
+  const baseUrl = options.baseUrl || 'https://artifact.example/v1';
   if (options.cleanup !== false) {
     t.after(() => {
       db.close();
@@ -180,10 +183,10 @@ function setupReconciliationFixture(t, options = {}) {
 
   const createdConfig = aiConfigService.createConfig(db, log, {
     service_type: 'video',
-    provider: 'toapis',
-    api_protocol: 'toapis_video',
+    provider,
+    api_protocol: configProtocol,
     name: '对账测试线路',
-    base_url: 'https://artifact.example/v1',
+    base_url: baseUrl,
     api_key: 'test-key',
     model: ['seedance-2-fast'],
     default_model: 'seedance-2-fast',
@@ -205,9 +208,9 @@ function setupReconciliationFixture(t, options = {}) {
   db.prepare(`INSERT INTO video_generations
     (id, drama_id, storyboard_id, provider, prompt, model, duration, aspect_ratio, resolution,
      status, task_id, provider_task_id, config_id, user_id, tenant_id, created_at, updated_at)
-    VALUES (?, 1, 1, 'toapis', 'fixture prompt', 'seedance-2-fast', 5, '16:9', '480p',
+    VALUES (?, 1, 1, ?, 'fixture prompt', 'seedance-2-fast', 5, '16:9', '480p',
       'needs_attention', ?, ?, ?, ?, ?, ?, ?)`)
-    .run(VIDEO_ID, TASK_ID, PROVIDER_TASK_ID, config.id, userId, tenantId, NOW, NOW);
+    .run(VIDEO_ID, provider, TASK_ID, PROVIDER_TASK_ID, config.id, userId, tenantId, NOW, NOW);
 
   if (tenantId) creditLedgerService.setTenantAccountBalance(db, tenantId, 100);
   else creditLedgerService.setAccountBalance(db, userId, 100);
@@ -247,17 +250,18 @@ function setupReconciliationFixture(t, options = {}) {
     configId: config.id,
     serviceType: 'video',
     upstreamModel: 'seedance-2-fast',
-    queryProtocol: 'toapis_video',
+    queryProtocol: configProtocol,
   });
   db.prepare(`INSERT INTO generation_route_attempts
     (request_id, attempt_no, config_id, provider, upstream_model, state,
       config_fingerprint, query_protocol, started_at, finished_at)
-    VALUES (?, 1, ?, 'toapis', 'seedance-2-fast', 'needs_attention', ?, ?, ?, ?)`)
+    VALUES (?, 1, ?, ?, 'seedance-2-fast', 'needs_attention', ?, ?, ?, ?)`)
     .run(
       ROUTE_ID,
       options.attemptConfigId === undefined ? config.id : options.attemptConfigId,
+      provider,
       options.configFingerprint === undefined ? receipt.configFingerprint : options.configFingerprint,
-      options.queryProtocol === undefined ? 'toapis_video' : options.queryProtocol,
+      options.queryProtocol === undefined ? configProtocol : options.queryProtocol,
       NOW,
       NOW,
     );
@@ -1149,6 +1153,90 @@ test('reconcileRequest refunds only explicit provider task failure and is termin
     .get(state.reservation.id);
   assert.equal(cost.cost_source, 'unknown');
   assert.equal(cost.cost_micros, 0);
+});
+
+test('DJPSD OpenAPI and Token6688 reconciliation hold credits without an artifact and refund explicit failure', async (t) => {
+  const protocols = [
+    {
+      name: 'DJPSD OpenAPI',
+      provider: 'djpsd_openapi',
+      configProtocol: 'djpsd_openapi',
+      baseUrl: 'https://relay.invalid/openapi',
+      completed: { data: { state: 'completed' } },
+      failed: { data: { state: 'failed', message: 'provider detail must stay internal' } },
+    },
+    {
+      name: 'Token6688',
+      provider: 'token6688',
+      configProtocol: 'token6688',
+      baseUrl: 'https://relay.invalid/v1',
+      completed: { status: 'completed', result: { videos: [] } },
+      failed: { status: 'failed', error: { message: 'provider detail must stay internal' } },
+    },
+  ];
+
+  for (const protocol of protocols) {
+    await t.test(`${protocol.name} completed without URL`, async (subtest) => {
+      const state = setupReconciliationFixture(subtest, protocol);
+      let queryCount = 0;
+      const result = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
+        now: NOW,
+        queryFetchImpl: async () => {
+          queryCount += 1;
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(protocol.completed),
+          };
+        },
+      });
+
+      assert.equal(queryCount, 1);
+      assert.equal(result.error_category, 'artifact_unreadable');
+      assert.equal(result.task_state, 'needs_attention');
+      assert.equal(result.credit_state, 'held');
+      assert.equal(getReservation(state.db, state.reservation.id).status, 'held');
+      assert.equal(getVideo(state.db).status, 'needs_attention');
+      assert.equal(getTask(state.db).status, 'needs_attention');
+      assert.equal(getRoute(state.db).state, 'needs_attention');
+      assert.equal(getAttempt(state.db).state, 'needs_attention');
+      assert.equal(state.db.prepare(`SELECT COUNT(*) AS count FROM credit_ledger
+        WHERE reservation_id = ? AND event_type = 'refund'`).get(state.reservation.id).count, 0);
+      assert.equal(countReconciledSafeEvents(state.db), 0);
+      assert.equal(countReconciledAuditEvents(state.db), 0);
+    });
+
+    await t.test(`${protocol.name} explicit failure`, async (subtest) => {
+      const state = setupReconciliationFixture(subtest, protocol);
+      let queryCount = 0;
+      const result = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, {
+        now: NOW,
+        queryFetchImpl: async () => {
+          queryCount += 1;
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(protocol.failed),
+          };
+        },
+      });
+
+      assert.equal(queryCount, 1);
+      assert.equal(result.error_category, 'provider_task_failed');
+      assert.equal(result.task_state, 'failed');
+      assert.equal(result.credit_state, 'refunded');
+      assert.equal(getReservation(state.db, state.reservation.id).status, 'refunded');
+      assert.equal(getVideo(state.db).status, 'failed');
+      assert.equal(getTask(state.db).status, 'failed');
+      assert.equal(getRoute(state.db).state, 'failed');
+      assert.equal(getAttempt(state.db).state, 'failed');
+      assert.equal(state.db.prepare(`SELECT COUNT(*) AS count FROM credit_ledger
+        WHERE reservation_id = ? AND event_type = 'refund'`).get(state.reservation.id).count, 1);
+      assert.equal(countReconciledSafeEvents(state.db), 1);
+      assert.equal(countReconciledAuditEvents(state.db), 1);
+      assert.doesNotMatch(JSON.stringify(result), /provider detail/);
+    });
+  }
 });
 
 test('reconcileRequest keeps credits held for processing, query faults, unsafe success, and unreadable artifacts', async (t) => {

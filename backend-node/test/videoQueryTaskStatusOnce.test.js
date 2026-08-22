@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { queryVideoTaskStatusOnce } = require('../src/services/videoClient');
+const { pollVideoTask, queryVideoTaskStatusOnce } = require('../src/services/videoClient');
 
 const log = { info() {}, warn() {}, error() {} };
 
@@ -67,6 +67,126 @@ test('单次任务查询对会二次取结果的协议严格只发一个网络�
     );
     assert.deepEqual(result, { state: 'artifact_unreadable' }, scenario.name);
     assert.equal(requests, 1, scenario.name);
+  }
+});
+
+test('DJPSD OpenAPI 和 Token6688 完成但无视频时只查询一次并保持产物不可读', async (t) => {
+  const cases = [
+    {
+      name: 'DJPSD OpenAPI completed without URL',
+      config: {
+        provider: 'djpsd_openapi',
+        api_protocol: 'djpsd_openapi',
+        base_url: 'https://relay.invalid/openapi',
+        api_key: 'test-key',
+      },
+      payload: { data: { state: 'completed' } },
+    },
+    {
+      name: 'DJPSD OpenAPI non-video result',
+      config: {
+        provider: 'djpsd_openapi',
+        api_protocol: 'djpsd_openapi',
+        base_url: 'https://relay.invalid/openapi',
+        api_key: 'test-key',
+      },
+      payload: {
+        data: {
+          state: 'completed',
+          result_type: 'image',
+          url: 'https://cdn.invalid/result.png',
+        },
+      },
+    },
+    {
+      name: 'Token6688 completed without URL',
+      config: {
+        provider: 'token6688',
+        api_protocol: 'token6688',
+        base_url: 'https://relay.invalid/v1',
+        api_key: 'test-key',
+      },
+      payload: { status: 'completed', result: { videos: [] } },
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      let requests = 0;
+      const result = await queryVideoTaskStatusOnce(null, log, 'saved-task-id', scenario.config, {
+        async fetchImpl() {
+          requests += 1;
+          return jsonResponse(scenario.payload);
+        },
+      });
+      assert.deepEqual(result, { state: 'artifact_unreadable' }, scenario.name);
+      assert.equal(requests, 1, scenario.name);
+    });
+  }
+});
+
+test('DJPSD OpenAPI 和 Token6688 的显式失败仍是供应商任务失败', async () => {
+  const cases = [
+    {
+      config: {
+        provider: 'djpsd_openapi', api_protocol: 'djpsd_openapi',
+        base_url: 'https://relay.invalid/openapi', api_key: 'test-key',
+      },
+      payload: { data: { state: 'failed', message: 'provider detail must stay internal' } },
+    },
+    {
+      config: {
+        provider: 'token6688', api_protocol: 'token6688',
+        base_url: 'https://relay.invalid/v1', api_key: 'test-key',
+      },
+      payload: { status: 'failed', error: { message: 'provider detail must stay internal' } },
+    },
+  ];
+
+  for (const scenario of cases) {
+    let requests = 0;
+    const result = await queryVideoTaskStatusOnce(null, log, 'saved-task-id', scenario.config, {
+      async fetchImpl() {
+        requests += 1;
+        return jsonResponse(scenario.payload);
+      },
+    });
+    assert.deepEqual(result, { state: 'failed', category: 'provider_task_failed' });
+    assert.equal(requests, 1);
+    assert.doesNotMatch(JSON.stringify(result), /provider detail/);
+  }
+});
+
+test('普通轮询保留 DJPSD OpenAPI 和 Token6688 完成无视频的旧错误行为', async () => {
+  const cases = [
+    {
+      config: {
+        provider: 'djpsd_openapi', api_protocol: 'djpsd_openapi',
+        base_url: 'https://relay.invalid/openapi', api_key: 'test-key',
+      },
+      payload: { data: { state: 'completed' } },
+      error: 'DJPSD 开放 API 任务已结束但未返回视频地址',
+    },
+    {
+      config: {
+        provider: 'token6688', api_protocol: 'token6688',
+        base_url: 'https://relay.invalid/v1', api_key: 'test-key',
+      },
+      payload: { status: 'completed', result: { videos: [] } },
+      error: 'Token6688 任务完成但未返回可下载的视频地址',
+    },
+  ];
+
+  for (const scenario of cases) {
+    let requests = 0;
+    const result = await pollVideoTask(null, log, null, 'saved-task-id', scenario.config, 1, 0, {
+      async fetchImpl() {
+        requests += 1;
+        return jsonResponse(scenario.payload);
+      },
+    });
+    assert.deepEqual(result, { error: scenario.error });
+    assert.equal(requests, 1);
   }
 });
 
