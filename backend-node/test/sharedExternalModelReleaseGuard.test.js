@@ -14,6 +14,15 @@ const TOAPIS_FILE = 'toapis-video-verification.json';
 const TOAPIS_PRIVATE_AVATAR_FILE = 'toapis-private-avatar-verification.json';
 const USMERCARI_FILE = 'usmercari-image-verification.json';
 
+function describeRootEvidence(name, fn) {
+  const requiresRootFixture = process.platform !== 'win32'
+    && typeof process.getuid === 'function'
+    && process.getuid() !== 0;
+  return describe(name, requiresRootFixture
+    ? { skip: 'requires a root-owned release evidence fixture' }
+    : {}, fn);
+}
+
 const TOAPIS_CASES = Object.freeze([
   { id: 'fast-t2v-480', model: 'seedance-2-fast', mode: 't2v', resolution: '480p', duration: 5, audio: true },
   { id: 'fast-t2v-720', model: 'seedance-2-fast', mode: 't2v', resolution: '720p', duration: 5, audio: false },
@@ -754,7 +763,7 @@ function removeSharedRuntime(candidate) {
   fs.rmSync(path.join(candidate, 'frontweb'), { recursive: true });
 }
 
-describe('shared external model release guard CLI', () => {
+describeRootEvidence('shared external model release guard CLI', () => {
   it('legacy-passes only when neither protected client nor runtime surface exists', () => {
     const fixture = makeFixture({ toapis: false, usmercari: false });
     removeSharedRuntime(fixture.candidate);
@@ -866,7 +875,7 @@ describe('shared external model release guard CLI', () => {
   });
 });
 
-describe('shared evidence path and freshness safety', () => {
+describeRootEvidence('shared evidence path and freshness safety', () => {
   it('accepts stale but unexpired evidence when protected provider surfaces are unchanged', () => {
     const fixture = makeFixture({ toapis: true, usmercari: false });
     try {
@@ -1090,7 +1099,7 @@ describe('shared evidence path and freshness safety', () => {
   });
 });
 
-describe('independent ToAPIs evidence audit', () => {
+describeRootEvidence('independent ToAPIs evidence audit', () => {
   const mutations = [
     ['eight exact cases', (e) => e.results.pop(), /8|case|组合/i],
     ['model binding', (e) => { e.results[0].request.model = 'seedance-2-mini'; }, /model|模型|fast-t2v-480/i],
@@ -1190,7 +1199,7 @@ describe('independent ToAPIs evidence audit', () => {
   });
 });
 
-describe('independent USMercari image evidence audit', () => {
+describeRootEvidence('independent USMercari image evidence audit', () => {
   const mutations = [
     ['seven exact cases', (e) => e.results.pop(), /7|case|组合/i],
     ['GPT 4K success', (e) => { e.results[0].requested_resolution = '4k'; }, /GPT|4K|组合/i],
@@ -1332,7 +1341,7 @@ describe('independent USMercari image evidence audit', () => {
   });
 });
 
-describe('candidate runtime and callout audit', () => {
+describeRootEvidence('candidate runtime and callout audit', () => {
   for (const [name, relative, replacement, expected] of [
     ['strict catalog verification gate', 'backend-node/src/services/canvasModelCatalogService.js', 'const STRICT_VERIFIED_PROTOCOLS = new Set([]);', /catalog|目录|runtime|gate/i],
     ['ToAPIs pre-side-effect gate', 'backend-node/src/services/videoService.js', 'function createVideo() { return reserveCredits(); }', /ToAPIs|runtime|gate/i],

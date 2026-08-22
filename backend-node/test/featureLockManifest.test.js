@@ -24,6 +24,9 @@ const ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID = 'stability.admin-provider-observ
 const COMPLETE_ACCEPTANCE_FRAMEWORK_ID = 'stability.platform-complete-acceptance-framework';
 const SAFE_PROVIDER_FAILOVER_FEATURE_ID = 'stability.safe-provider-failover';
 const UNKNOWN_STATE_RECONCILIATION_FEATURE_ID = 'stability.unknown-state-billing-reconciliation';
+const PROVIDER_ROUTE_CONTRACT_FEATURE_ID = 'stability.provider-route-contract';
+const PR177_FULL_SEMANTIC_MERGE_REASON = '2026-08-22 PR #177 整集转绘与平台稳定性合并获批';
+const PR177_FULL_SEMANTIC_MERGE_APPROVED_BY = 'product-owner 2026-08-22 pr-177-full-semantic-merge';
 const COMPLETE_ACCEPTANCE_ACCEPTANCE = [
   '来源功能清单与验收决策账本通过 SHA 和 feature_id 一致性绑定',
   '未登记功能保持 unverified，阻断功能不能伪装为通过',
@@ -47,8 +50,8 @@ const COMPLETE_ACCEPTANCE_EVIDENCE = [
   'docs/verification/platform-stability/platform-complete-acceptance-framework-verification.md',
 ];
 const COMPLETE_ACCEPTANCE_UNLOCK = {
-  reason: '2026-08-22 修复 Hosted CI 跨平台验收清单哈希',
-  approvedBy: 'product-owner 开始处理下一步确认',
+  reason: PR177_FULL_SEMANTIC_MERGE_REASON,
+  approvedBy: PR177_FULL_SEMANTIC_MERGE_APPROVED_BY,
   impactTests: [
     'backend-node/test/platformFeatureAcceptance.test.js',
     'backend-node/test/featureLockManifest.test.js',
@@ -73,8 +76,8 @@ const PROACTIVE_CANARY_EVIDENCE = [
   'docs/superpowers/plans/2026-08-20-evidence-bound-multi-model-split.md',
 ];
 const SHARED_FOUNDATION_UNLOCK = {
-  reason: '2026-08-22 公共运行底座阶段 1 书面计划获批',
-  approvedBy: 'product-owner 2026-08-22 platform-shared-foundation',
+  reason: PR177_FULL_SEMANTIC_MERGE_REASON,
+  approvedBy: PR177_FULL_SEMANTIC_MERGE_APPROVED_BY,
   impactTests: [
     'backend-node/test/platformSharedAssetAcceptance.test.js',
     'backend-node/test/platformSharedAuthAcceptance.test.js',
@@ -96,8 +99,8 @@ const PR177_VIDEO_REFERENCE_UNLOCK = {
   ],
 };
 const UNKNOWN_STATE_RECONCILIATION_UNLOCK = {
-  reason: '2026-08-22 结果未知任务稳定收口标准执行授权',
-  approvedBy: 'product-owner 2026-08-22 stable-runtime-standard-execution',
+  reason: PR177_FULL_SEMANTIC_MERGE_REASON,
+  approvedBy: PR177_FULL_SEMANTIC_MERGE_APPROVED_BY,
   impactTests: [
     'backend-node/test/providerReconciliation.test.js',
     'backend-node/test/billingReconciliation.test.js',
@@ -105,6 +108,18 @@ const UNKNOWN_STATE_RECONCILIATION_UNLOCK = {
     'backend-node/test/providerRouteImageIntegration.test.js',
     'backend-node/test/providerRouteVideoIntegration.test.js',
     'backend-node/test/featureLockManifest.test.js',
+  ],
+};
+const PROVIDER_ROUTE_CONTRACT_UNLOCK = {
+  reason: PR177_FULL_SEMANTIC_MERGE_REASON,
+  approvedBy: PR177_FULL_SEMANTIC_MERGE_APPROVED_BY,
+  impactTests: [
+    'backend-node/test/providerCanaryInvalidation.test.js',
+    'backend-node/test/providerCanaryPublicGate.test.js',
+    'backend-node/test/providerCanaryAdminRoutes.test.js',
+    'backend-node/test/providerRouteStability.test.js',
+    'backend-node/test/providerRouteCost.test.js',
+    'backend-node/test/generationRouteCostLedger.test.js',
   ],
 };
 const PROACTIVE_CANARY_CORE_PATHS = [
@@ -253,10 +268,8 @@ test('其余稳定性锁保留当前批准原因且所有锁保留历史证据',
     if (feature.featureId === SAFE_PROVIDER_FAILOVER_FEATURE_ID) {
       assert.deepEqual(feature.unlock, PR177_VIDEO_REFERENCE_UNLOCK);
     }
-    else if (![PROACTIVE_CANARY_FEATURE_ID, ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
-      COMPLETE_ACCEPTANCE_FRAMEWORK_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].includes(feature.featureId)) {
-      assert.equal(feature.unlock?.reason, '2026-08-21 PR #171 供应商路由与发布门禁收口授权');
-      assert.equal(feature.unlock?.approvedBy, 'product-owner 2026-08-21 pr-171-provider-route-closure');
+    else if (feature.featureId === PROVIDER_ROUTE_CONTRACT_FEATURE_ID) {
+      assert.deepEqual(feature.unlock, PROVIDER_ROUTE_CONTRACT_UNLOCK);
     }
     assert.equal(feature.evidence.length > 0, true);
   }
@@ -360,6 +373,14 @@ test('清单拒绝非法状态、缺失路径和空验收标准', () => {
 test('CI 在后端全量测试后运行功能锁审计且发布范围无目录通配', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/backend-node-tests.yml'), 'utf8');
   assert.match(workflow, /Run backend tests[\s\S]*npm test[\s\S]*Audit feature locks[\s\S]*npm run audit:feature-lock/);
+  assert.match(workflow, /Run root-owned release evidence guard tests[\s\S]*sudo[^\n]*sharedExternalModelReleaseGuard\.test\.js/);
+  const rootGuardTest = fs.readFileSync(
+    path.join(repoRoot, 'backend-node/test/sharedExternalModelReleaseGuard.test.js'),
+    'utf8',
+  );
+  assert.match(rootGuardTest, /function describeRootEvidence\(name, fn\)/);
+  assert.equal((rootGuardTest.match(/^describeRootEvidence\(/gm) || []).length, 5);
+  assert.equal((rootGuardTest.match(/^describe\(/gm) || []).length, 0);
   const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'backend-node/package.json'), 'utf8'));
   assert.equal(pkg.scripts['audit:feature-lock'], 'node scripts/verify-feature-lock-manifest.js');
   const releaseScope = JSON.parse(fs.readFileSync(
