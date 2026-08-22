@@ -171,9 +171,11 @@ const SHARED_FOUNDATION_ALLOWED_PATHS = [
   'frontweb/package.json',
 ];
 const NEEDS_ATTENTION_CLOSURE_ALLOWED_PATHS = [
+  'backend-node/src/services/propImageGenerationService.js',
   'backend-node/src/services/providerReconciliationService.js',
   'backend-node/test/featureLockManifest.test.js',
   'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/prop-image-billing.test.js',
   'backend-node/test/providerReconciliation.test.js',
   'backend-node/test/taskService.test.js',
   'deploy/release-scopes/provider-needs-attention-state-closure-20260822.json',
@@ -415,7 +417,7 @@ test('公共运行底座发布范围拒绝同数量偷换任一文件', () => {
   );
 });
 
-test('结果未知状态收口发布范围是精确 8 文件白名单', () => {
+test('结果未知状态收口发布范围是精确 10 文件白名单', () => {
   const { manifest, allowedPaths } = loadManifest(needsAttentionClosureManifestPath);
   assert.equal(manifest.release, 'provider-needs-attention-state-closure-20260822');
   assertExactNeedsAttentionClosureScope(allowedPaths);

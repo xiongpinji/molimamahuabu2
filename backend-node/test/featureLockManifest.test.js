@@ -85,17 +85,16 @@ const SHARED_FOUNDATION_UNLOCK = {
   ],
 };
 const UNKNOWN_STATE_RECONCILIATION_UNLOCK = {
-  reason: '2026-08-22 视频音频与冻结积分收口本地 TDD 授权',
-  approvedBy: 'product-owner 2026-08-22 video-audio-credit-reconciliation',
+  reason: '2026-08-22 道具生图结果未知冻结积分收口本地授权',
+  approvedBy: 'product-owner 2026-08-22 prop-image-held-reconciliation',
   impactTests: [
     'backend-node/test/providerReconciliation.test.js',
     'backend-node/test/billingReconciliation.test.js',
-    'backend-node/test/taskService.test.js',
-    'backend-node/test/providerRouteImageIntegration.test.js',
-    'backend-node/test/providerRouteVideoIntegration.test.js',
+    'backend-node/test/prop-image-billing.test.js',
+    'backend-node/test/propImageErrorState.test.js',
+    'backend-node/test/creditLedger.test.js',
     'backend-node/test/featureLockManifest.test.js',
-    'frontweb/test/standaloneCanvasFreeNodeGeneration.test.js',
-    'frontweb/test/toapisVideoCanvasContract.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
 const PROACTIVE_CANARY_CORE_PATHS = [

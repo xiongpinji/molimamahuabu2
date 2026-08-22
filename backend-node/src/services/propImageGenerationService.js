@@ -73,6 +73,29 @@ function failPropImageGeneration(db, log, taskId, propId, message) {
   settlePropImageCredit(db, log, taskId, 'failed', errorMessage);
 }
 
+function markPropImageNeedsAttention(db, log, taskId, propId, message) {
+  const reviewMessage = `供应商最终状态未知：${message || '未取得可验证的生成结果'}。请勿重复提交，等待管理员核对。`;
+  const task = taskService.getTask(db, taskId);
+  taskService.updateTaskStatus(db, taskId, 'needs_attention', 90, reviewMessage);
+  try {
+    db.prepare('UPDATE props SET error_msg = ?, updated_at = ? WHERE id = ?')
+      .run(reviewMessage, new Date().toISOString(), propId);
+  } catch (_) {}
+  try {
+    auditEvent.record(db, {
+      userId: task?.user_id,
+      tenantId: task?.tenant_id,
+      eventType: 'generation.prop_image.needs_attention',
+      resourceType: 'prop_image',
+      resourceId: task?.resource_id || `prop_${propId}`,
+      outcome: 'needs_attention',
+      code: 'PROVIDER_RESULT_UNKNOWN',
+    });
+  } catch (error) {
+    log?.warn?.('道具生图待核对审计写入失败', { task_id: taskId, error: error.message });
+  }
+}
+
 async function processPropImageGeneration(db, log, taskId, propId, opts) {
   taskService.updateTaskStatus(db, taskId, 'processing', 0, '正在生成图片...');
 
@@ -144,14 +167,12 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
     return;
   }
 
+  if (result.indeterminate) {
+    markPropImageNeedsAttention(db, log, taskId, propId, result.error);
+    return;
+  }
   if (result.error) {
-    failPropImageGeneration(
-      db,
-      log,
-      taskId,
-      propId,
-      result.indeterminate ? `供应商最终状态未知：${result.error}` : result.error,
-    );
+    failPropImageGeneration(db, log, taskId, propId, result.error);
     return;
   }
   if (!result.image_url) {

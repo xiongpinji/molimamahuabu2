@@ -87,6 +87,20 @@ function createLegacyImageFailure(db, reservation, suffix, errorMessage) {
   return { imageId, taskId };
 }
 
+function createLegacyPropImageFailure(db, reservation, suffix, errorMessage) {
+  const now = '2026-08-15T10:00:00.000Z';
+  const taskId = `legacy-prop-image-task-${suffix}`;
+  db.prepare(`INSERT INTO async_tasks
+    (id, type, status, progress, message, error, resource_id, created_at, updated_at,
+     user_id, model, credit_reservation_id, tenant_id)
+    VALUES (?, 'prop_image_generation', 'failed', 0, ?, ?, ?, ?, ?,
+      'user-a', 'logical-image', ?, 'tenant-a')`)
+    .run(taskId, errorMessage, errorMessage, `prop_${suffix}`, now, now, reservation.id);
+  db.prepare(`UPDATE tenant_usage_reservations SET created_at = ?, updated_at = ? WHERE id = ?`)
+    .run(now, now, reservation.id);
+  return { taskId };
+}
+
 test('遗留结果未知失败转待核对并保持冻结且写管理员告警', (t) => {
   const { db } = setup();
   t.after(() => db.close());
@@ -112,6 +126,32 @@ test('遗留结果未知失败转待核对并保持冻结且写管理员告警',
     WHERE request_id = ? AND event_type = 'provider_legacy_generation_needs_attention'`)
     .get(`legacy-credit:${reservation.id}`);
   assert.deepEqual(event, { severity: 'error', credit_state: 'held_for_review' });
+});
+
+test('仅有异步任务的道具生图结果未知也转待核对且不退款', (t) => {
+  const { db } = setup();
+  t.after(() => db.close());
+  const reservation = reserve(db, 'legacy-prop-unknown');
+  const linked = createLegacyPropImageFailure(
+    db,
+    reservation,
+    7,
+    '供应商最终状态未知：图片生成结果未知，请先核对生成记录，不要连续重试。',
+  );
+
+  const first = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:00:00.000Z');
+  const second = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:01:00.000Z');
+
+  assert.equal(first.needs_attention, 1);
+  assert.equal(second.processed, 0);
+  assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
+  assert.equal(db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(linked.taskId).status,
+    'needs_attention');
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM tenant_credit_ledger
+    WHERE reservation_id = ? AND event_type = 'refund'`).get(reservation.id).count, 0);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM provider_stability_events
+    WHERE request_id = ? AND event_type = 'provider_legacy_generation_needs_attention'`)
+    .get(`legacy-credit:${reservation.id}`).count, 1);
 });
 
 test('遗留明确失败在安全证据齐全后自动退款且保持幂等', (t) => {
