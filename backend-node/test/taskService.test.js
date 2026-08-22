@@ -1,7 +1,11 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
+const aiConfigService = require('../src/services/aiConfigService');
+const creditLedgerService = require('../src/services/creditLedgerService');
+const providerRouteStability = require('../src/services/providerRouteStabilityService');
 const taskService = require('../src/services/taskService');
+const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -25,6 +29,59 @@ function createTestDb() {
 }
 
 describe('taskService.failOrphanedAsyncTasksOnStartup', () => {
+  it('marks a submitting provider route needs_attention without failing or refunding it', () => {
+    const db = new Database(':memory:');
+    runMigrationsAndEnsure(db);
+    const log = { info() {}, warn() {}, error() {} };
+    const config = aiConfigService.createConfig(db, log, {
+      service_type: 'image',
+      provider: 'private-relay',
+      name: 'private-relay',
+      base_url: 'https://provider.invalid/v1',
+      api_key: 'test-key',
+      model: ['upstream-image'],
+      default_model: 'upstream-image',
+      logical_model_id: 'logical-image',
+      is_default: true,
+    });
+    db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
+      .run(config.id);
+    creditLedgerService.setTenantAccountBalance(db, 'tenant-a', 20);
+    const reservation = creditLedgerService.reserve(db, {
+      tenantId: 'tenant-a', actorUserId: 'user-a', userId: 'user-a',
+      operationKey: 'startup-unknown', amount: 5, model: 'logical-image',
+      resourceType: 'image_generation', resourceId: '901',
+    });
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO async_tasks
+      (id, type, status, progress, message, resource_id, credit_reservation_id,
+       tenant_id, user_id, created_at, updated_at)
+      VALUES ('task-startup-unknown', 'image_generation', 'processing', 10, '', '901', ?,
+        'tenant-a', 'user-a', ?, ?)`).run(reservation.id, now, now);
+    const route = providerRouteStability.createOrGetRouteRequest(db, {
+      id: 'route-startup-unknown',
+      idempotencyKey: 'tenant-a:image:901',
+      serviceType: 'image', businessType: 'image_generation', businessId: '901',
+      tenantId: 'tenant-a', userId: 'user-a', logicalModelId: 'logical-image',
+      userPriceSnapshot: { model: 'logical-image', credits: 5 },
+      candidateConfigIds: [config.id], creditReservationId: reservation.id,
+    });
+    providerRouteStability.startAttempt(db, {
+      requestId: route.id, configId: config.id, provider: config.provider,
+      upstreamModel: 'upstream-image',
+    });
+
+    const count = taskService.failOrphanedAsyncTasksOnStartup(db, log);
+
+    assert.equal(count, 0);
+    assert.equal(taskService.getTask(db, 'task-startup-unknown').status, 'needs_attention');
+    assert.match(taskService.getTask(db, 'task-startup-unknown').message, /结果未知/);
+    assert.equal(db.prepare('SELECT state FROM generation_route_requests').get().state,
+      'needs_attention');
+    assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
+    db.close();
+  });
+
   it('marks pending and processing tasks as failed on startup', () => {
     const db = createTestDb();
     const now = new Date().toISOString();

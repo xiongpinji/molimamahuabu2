@@ -116,19 +116,20 @@
         "docs/superpowers/plans/2026-08-15-platform-stability-foundation.md",
         "docs/verification/platform-stability/foundation-verification.md",
         "docs/verification/platform-stability/provider-reconciliation-grace-20260816.md",
+        "docs/verification/platform-stability/provider-needs-attention-state-closure-20260822.md",
         "docs/superpowers/plans/2026-08-20-provider-route-cost-and-multi-model-split.md"
       ],
       "fixCommit": "51a91f1e3eb5dc3636adb1c8a47e45f22a60e000",
       "unlock": {
-        "reason": "2026-08-21 PR #171 供应商路由与发布门禁收口授权",
-        "approvedBy": "product-owner 2026-08-21 pr-171-provider-route-closure",
+        "reason": "2026-08-22 结果未知任务稳定收口标准执行授权",
+        "approvedBy": "product-owner 2026-08-22 stable-runtime-standard-execution",
         "impactTests": [
-          "backend-node/test/providerCanaryBudget.test.js",
-          "backend-node/test/providerCanaryExecutor.test.js",
-          "backend-node/test/providerCanaryScheduler.test.js",
-          "backend-node/test/appBackgroundServices.test.js",
-          "backend-node/test/generationCostLedger.test.js",
-          "backend-node/test/generationRouteCostLedger.test.js"
+          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/billingReconciliation.test.js",
+          "backend-node/test/taskService.test.js",
+          "backend-node/test/providerRouteImageIntegration.test.js",
+          "backend-node/test/providerRouteVideoIntegration.test.js",
+          "backend-node/test/featureLockManifest.test.js"
         ]
       }
     },

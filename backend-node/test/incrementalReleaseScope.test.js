@@ -30,6 +30,12 @@ const sharedFoundationManifestPath = path.join(
   'release-scopes',
   'platform-complete-acceptance-shared-foundation.json',
 );
+const needsAttentionClosureManifestPath = path.join(
+  repoRoot,
+  'deploy',
+  'release-scopes',
+  'provider-needs-attention-state-closure-20260822.json',
+);
 const COMPLETE_ACCEPTANCE_ALLOWED_PATHS = [
   'backend-node/package.json',
   'backend-node/scripts/verify-platform-feature-acceptance.js',
@@ -158,6 +164,16 @@ const SHARED_FOUNDATION_ALLOWED_PATHS = [
   'frontweb/e2e/platform-shared-foundation-backend-integration.spec.js',
   'frontweb/package.json',
 ];
+const NEEDS_ATTENTION_CLOSURE_ALLOWED_PATHS = [
+  'backend-node/src/services/providerReconciliationService.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/providerReconciliation.test.js',
+  'backend-node/test/taskService.test.js',
+  'deploy/release-scopes/provider-needs-attention-state-closure-20260822.json',
+  'docs/verification/platform-stability/feature-lock-manifest.json',
+  'docs/verification/platform-stability/provider-needs-attention-state-closure-20260822.md',
+];
 
 function assertExactProactiveCanaryScope(allowedPaths) {
   assert.deepEqual(allowedPaths, PROACTIVE_CANARY_ALLOWED_PATHS);
@@ -169,6 +185,10 @@ function assertExactCompleteAcceptanceScope(allowedPaths) {
 
 function assertExactSharedFoundationScope(allowedPaths) {
   assert.deepEqual(allowedPaths, SHARED_FOUNDATION_ALLOWED_PATHS);
+}
+
+function assertExactNeedsAttentionClosureScope(allowedPaths) {
+  assert.deepEqual(allowedPaths, NEEDS_ATTENTION_CLOSURE_ALLOWED_PATHS);
 }
 
 function createFixture() {
@@ -367,6 +387,41 @@ test('公共运行底座发布范围拒绝同数量偷换任一文件', () => {
   assert.equal(swapped.length, SHARED_FOUNDATION_ALLOWED_PATHS.length);
   assert.throws(
     () => assertExactSharedFoundationScope(swapped),
+    { name: 'AssertionError' },
+  );
+});
+
+test('结果未知状态收口发布范围是精确 8 文件白名单', () => {
+  const { manifest, allowedPaths } = loadManifest(needsAttentionClosureManifestPath);
+  assert.equal(manifest.release, 'provider-needs-attention-state-closure-20260822');
+  assertExactNeedsAttentionClosureScope(allowedPaths);
+  assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
+
+  for (const forbidden of [
+    'backend-node/data',
+    'backend-node/uploads',
+    'storage',
+    'assets',
+    'ai-music',
+    'moli-music',
+    'deploy/install-protected-release-guard.sh',
+    'shared/release-guard',
+  ]) {
+    assert.equal(
+      allowedPaths.some((entry) => entry === forbidden || entry.startsWith(`${forbidden}/`)),
+      false,
+      `发布范围不得包含: ${forbidden}`,
+    );
+  }
+});
+
+test('结果未知状态收口发布范围拒绝同数量偷换任一文件', () => {
+  const swapped = [...NEEDS_ATTENTION_CLOSURE_ALLOWED_PATHS];
+  const index = swapped.indexOf('backend-node/src/services/providerReconciliationService.js');
+  swapped[index] = 'backend-node/data/drama_generator.db';
+  assert.equal(swapped.length, NEEDS_ATTENTION_CLOSURE_ALLOWED_PATHS.length);
+  assert.throws(
+    () => assertExactNeedsAttentionClosureScope(swapped),
     { name: 'AssertionError' },
   );
 });
