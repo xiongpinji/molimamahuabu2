@@ -218,7 +218,11 @@ test('节点编辑器锚定节点、完整保持在视口内并支持提示词�
   const editorAfter = await editor.boundingBox()
   expect(nodeAfter).not.toBeNull()
   expect(editorAfter).not.toBeNull()
-  expect(Math.abs((editorAfter.x - editorBefore.x) - (nodeAfter.x - nodeBefore.x))).toBeLessThan(5)
+  const expectedEditorLeftAfter = Math.min(
+    Math.max(16, nodeAfter.x + nodeAfter.width / 2 - editorAfter.width / 2),
+    Math.max(16, viewport.width - editorAfter.width - 16),
+  )
+  expect(Math.abs(editorAfter.x - expectedEditorLeftAfter)).toBeLessThan(5)
   expect(Math.abs((editorAfter.y - editorBefore.y) - (nodeAfter.y - nodeBefore.y))).toBeLessThan(5)
   expect(editorAfter.x).toBeGreaterThanOrEqual(0)
   expect(editorAfter.y).toBeGreaterThanOrEqual(0)

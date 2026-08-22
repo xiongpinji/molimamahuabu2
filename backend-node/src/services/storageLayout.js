@@ -38,11 +38,17 @@ function ensureDramaStorageFolderLabel(db, dramaRow) {
   meta.storage_folder_label = label;
   const metaStr = JSON.stringify(meta);
   try {
-    db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ?').run(
-      metaStr,
-      new Date().toISOString(),
-      dramaRow.id
-    );
+    db.prepare(
+      `UPDATE dramas
+       SET metadata = json_set(
+         CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+         '$.storage_folder_label',
+         ?
+       )
+       WHERE id = ?`
+    ).run(label, dramaRow.id);
+    const latest = db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaRow.id);
+    if (latest?.metadata) return { ...dramaRow, metadata: latest.metadata };
   } catch (_) {}
   return { ...dramaRow, metadata: metaStr };
 }

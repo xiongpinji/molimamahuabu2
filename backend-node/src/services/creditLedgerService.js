@@ -35,40 +35,6 @@ function upgradeAdjustmentEventTypes(db) {
   })();
 }
 
-function upgradeAdjustmentEventTypes(db) {
-  const table = db.prepare(`SELECT sql FROM sqlite_master
-    WHERE type = 'table' AND name = 'tenant_credit_adjustments'`).get();
-  if (!table || String(table.sql).includes("'recharge'")) return;
-  // SQLite 不能直接修改 CHECK 约束，因此在单个事务内重建并保留历史流水。
-  db.transaction(() => {
-    db.exec(`
-      DROP INDEX IF EXISTS idx_credit_adjustments_tenant_created;
-      ALTER TABLE tenant_credit_adjustments RENAME TO tenant_credit_adjustments_legacy;
-      CREATE TABLE tenant_credit_adjustments (
-        id TEXT PRIMARY KEY,
-        tenant_id TEXT NOT NULL,
-        actor_user_id TEXT,
-        event_type TEXT NOT NULL CHECK (event_type IN ('redeem', 'admin_adjust', 'recharge')),
-        amount INTEGER NOT NULL CHECK (amount != 0),
-        reason TEXT NOT NULL,
-        reference_type TEXT NOT NULL,
-        reference_id TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        UNIQUE (tenant_id, reference_type, reference_id)
-      );
-      INSERT INTO tenant_credit_adjustments
-        (id, tenant_id, actor_user_id, event_type, amount, reason,
-          reference_type, reference_id, created_at)
-        SELECT id, tenant_id, actor_user_id, event_type, amount, reason,
-          reference_type, reference_id, created_at
-        FROM tenant_credit_adjustments_legacy;
-      DROP TABLE tenant_credit_adjustments_legacy;
-      CREATE INDEX idx_credit_adjustments_tenant_created
-        ON tenant_credit_adjustments(tenant_id, created_at DESC);
-    `);
-  })();
-}
-
 function ensureSchema(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS credit_accounts (
@@ -323,13 +289,27 @@ function validateReservationInput(input) {
   return amount;
 }
 
+function assertMatchingReservation(existing, input) {
+  const sameScope = existing.tenant_id
+    ? existing.tenant_id === String(input.tenantId)
+    : existing.user_id === String(input.userId);
+  const sameRequest = sameScope
+    && existing.model === String(input.model)
+    && existing.resource_type === String(input.resourceType)
+    && existing.resource_id === String(input.resourceId);
+  if (sameRequest) return existing;
+  const error = new Error('同一积分预扣请求不能修改账户、模型或资源');
+  error.code = 'CREDIT_RESERVATION_IDEMPOTENCY_CONFLICT';
+  throw error;
+}
+
 function reserve(db, input) {
   ensureSchema(db);
   const amount = validateReservationInput(input);
   if (input.tenantId) return reserveTenant(db, input, amount);
   return db.transaction(() => {
     const existing = db.prepare('SELECT * FROM usage_reservations WHERE operation_key = ?').get(String(input.operationKey));
-    if (existing) return existing;
+    if (existing) return assertMatchingReservation(existing, input);
     return createUserReservation(db, input, amount);
   })();
 }
@@ -340,7 +320,7 @@ function reserveTenant(db, input, amount) {
     const operationKey = String(input.operationKey);
     const existing = db.prepare(`SELECT * FROM tenant_usage_reservations
       WHERE tenant_id = ? AND operation_key = ?`).get(tenantId, operationKey);
-    if (existing) return existing;
+    if (existing) return assertMatchingReservation(existing, input);
     return createTenantReservation(db, input, amount);
   }).immediate();
 }
@@ -419,7 +399,9 @@ function claim(db, input) {
       ? db.prepare(`SELECT * FROM tenant_usage_reservations
         WHERE tenant_id = ? AND operation_key = ?`).get(String(input.tenantId), String(input.operationKey))
       : db.prepare('SELECT * FROM usage_reservations WHERE operation_key = ?').get(String(input.operationKey));
-    if (existing) return { reservation: existing, created: false };
+    if (existing) {
+      return { reservation: assertMatchingReservation(existing, input, amount), created: false };
+    }
     let reservation = input.tenantId
       ? createTenantReservation(db, input, amount)
       : createUserReservation(db, input, amount);

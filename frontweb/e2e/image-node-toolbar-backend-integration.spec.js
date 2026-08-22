@@ -105,10 +105,10 @@ function configureReferenceImageCapability() {
       `INSERT INTO ai_service_configs
         (service_type, provider, api_protocol, name, base_url, api_key, model,
          default_model, endpoint, priority, is_default, is_active, settings,
-         created_at, updated_at)
+         verification_status, verified_at, verification_evidence, created_at, updated_at)
        VALUES
         ('storyboard_image', 'aihubcc', 'aihubcc', ?, ?, ?, ?, ?,
-         '/videos', 100, 1, 1, ?, ?, ?)`,
+         '/videos', 100, 1, 1, ?, 'verified', ?, ?, ?, ?)`,
     ).run(
       'AIHubCC gpt-image-2-3.5k 图片节点真实同链',
       realAihubccBaseUrl || 'https://example.invalid/v1',
@@ -130,6 +130,8 @@ function configureReferenceImageCapability() {
         supports_frame_backward: true,
         supports_cinematic_relight: true,
       }),
+      now,
+      JSON.stringify({ source: 'local-playwright-provider-fixture' }),
       now,
       now,
     )
@@ -315,7 +317,7 @@ test('图片工具栏裁剪保留原图并新建结果节点，刷新后形成�
   await node.click()
   const toolbar = node.locator('.image-node-toolbar')
   await expect(toolbar).toBeVisible()
-  await expect(toolbar.locator('.toolbar-icon')).toHaveCount(9)
+  await expect(toolbar.locator('.toolbar-icon')).toHaveCount(10)
   await toolbar.getByRole('button', { name: /工具/ }).hover()
   await expect(toolbar.locator('.toolbar-menu')).toBeVisible()
   await expect(toolbar).not.toContainText('对口型')

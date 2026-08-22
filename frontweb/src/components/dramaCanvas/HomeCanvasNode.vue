@@ -175,6 +175,15 @@
         <div v-if="data.kind === 'video'" class="video-mode-toolbar">
           <div class="video-mode-tabs" role="tablist" aria-label="视频参考模式">
             <button
+              v-if="!supportsAnyReferenceMode"
+              type="button"
+              class="active"
+              role="tab"
+              aria-selected="true"
+              disabled
+              title="当前模型仅开放纯提示词生成"
+            >纯提示词</button>
+            <button
               type="button"
               :class="{ active: videoReferenceMode === 'first-last' }"
               :disabled="!supportsFirstLastMode"
@@ -508,6 +517,7 @@
       <div
         v-if="mediaPreviewUrl"
         class="image-lightbox nodrag nopan"
+        :class="{ 'is-pan-ready': mediaPreviewSpacePressed, 'is-panning': mediaPreviewDragging }"
         role="dialog"
         aria-modal="true"
         :aria-label="mediaPreviewKind === 'image' ? '图片全屏预览' : '视频全屏预览'"
@@ -520,12 +530,15 @@
           title="关闭"
           @click="closeMediaPreview"
         >×</button>
-        <span v-if="mediaPreviewKind === 'image'" class="lightbox-zoom-hint">Ctrl/⌘ + 滚轮缩放 · {{ Math.round(mediaPreviewScale * 100) }}%</span>
+        <span v-if="mediaPreviewKind === 'image'" class="lightbox-zoom-hint">Ctrl/⌘ + 滚轮缩放 · 空格 + 左键拖动 · {{ Math.round(mediaPreviewScale * 100) }}%</span>
         <img
           v-if="mediaPreviewKind === 'image'"
           :src="mediaPreviewUrl"
           :alt="data.title || '图片预览'"
-          :style="{ transform: `scale(${mediaPreviewScale})` }"
+          draggable="false"
+          :style="{ transform: `translate3d(${mediaPreviewOffset.x}px, ${mediaPreviewOffset.y}px, 0) scale(${mediaPreviewScale})` }"
+          @dragstart.prevent
+          @pointerdown.stop="startMediaPreviewPan"
         />
         <video v-else :src="mediaPreviewUrl" controls autoplay playsinline />
       </div>
@@ -574,6 +587,10 @@ const editorPanelStyle = ref({})
 const mediaPreviewUrl = ref('')
 const mediaPreviewKind = ref('image')
 const mediaPreviewScale = ref(1)
+const mediaPreviewOffset = reactive({ x: 0, y: 0 })
+const mediaPreviewSpacePressed = ref(false)
+const mediaPreviewDragging = ref(false)
+let mediaPreviewPanOrigin = null
 let draftSaveTimer = null
 let draftDirty = false
 let editorPositionFrame = null
@@ -640,6 +657,11 @@ const supportsOmniReferenceMode = computed(() => (
   || capability.value.supportsAudioReference === true
   || capability.value?.declared === false
 ))
+const supportsAnyReferenceMode = computed(() => (
+  supportsFirstLastMode.value
+  || supportsImageReferenceMode.value
+  || supportsOmniReferenceMode.value
+))
 const canUploadReference = computed(() => {
   if (typeof ctx?.uploadFreeCanvasReferenceMedia !== 'function') return false
   if (props.data.kind !== 'video') return true
@@ -700,10 +722,13 @@ const firstLastFrameSlots = computed(() => {
     { key: 'last', label: '尾帧', reference: imageReferences[1] || null },
   ]
 })
-const videoReferenceMode = computed(() => normalizeFreeCanvasVideoReferenceMode(
-  draft.videoReferenceMode,
-  inputReferences.value,
-))
+const videoReferenceMode = computed(() => {
+  const mode = normalizeFreeCanvasVideoReferenceMode(draft.videoReferenceMode, inputReferences.value)
+  if (mode === 'first-last' && supportsFirstLastMode.value) return mode
+  if (mode === 'multi' && supportsImageReferenceMode.value) return mode
+  if (mode === 'omni' && supportsOmniReferenceMode.value) return mode
+  return ''
+})
 const referenceCandidates = computed(() => (
   props.data.kind === 'video'
     ? (ctx?.getFreeNodeReferenceCandidates?.(props.id) || [])
@@ -1191,6 +1216,7 @@ function openMediaPreview(url, kind = 'image') {
   if (!url) return
   openEditor()
   mediaPreviewScale.value = 1
+  resetMediaPreviewPan()
   mediaPreviewUrl.value = String(url)
   mediaPreviewKind.value = kind
 }
@@ -1206,7 +1232,50 @@ function scheduleMediaOpen() {
 function closeMediaPreview() {
   mediaPreviewUrl.value = ''
   mediaPreviewScale.value = 1
+  resetMediaPreviewPan()
   mediaPreviewKind.value = 'image'
+}
+
+function resetMediaPreviewPan() {
+  mediaPreviewOffset.x = 0
+  mediaPreviewOffset.y = 0
+  mediaPreviewSpacePressed.value = false
+  mediaPreviewDragging.value = false
+  mediaPreviewPanOrigin = null
+}
+
+function startMediaPreviewPan(event) {
+  if (mediaPreviewKind.value !== 'image') return
+  if (event.button !== 0 || !mediaPreviewSpacePressed.value) return
+  event.preventDefault()
+  mediaPreviewDragging.value = true
+  mediaPreviewPanOrigin = {
+    pointerId: event.pointerId,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    offsetX: mediaPreviewOffset.x,
+    offsetY: mediaPreviewOffset.y,
+  }
+}
+
+function onMediaPreviewPointerMove(event) {
+  if (!mediaPreviewDragging.value || !mediaPreviewPanOrigin) return
+  if (event.pointerId !== mediaPreviewPanOrigin.pointerId) return
+  event.preventDefault()
+  mediaPreviewOffset.x = mediaPreviewPanOrigin.offsetX + event.clientX - mediaPreviewPanOrigin.clientX
+  mediaPreviewOffset.y = mediaPreviewPanOrigin.offsetY + event.clientY - mediaPreviewPanOrigin.clientY
+}
+
+function stopMediaPreviewPan(event) {
+  if (event?.pointerId != null && mediaPreviewPanOrigin?.pointerId !== event.pointerId) return
+  mediaPreviewDragging.value = false
+  mediaPreviewPanOrigin = null
+}
+
+function onMediaPreviewKeyup(event) {
+  if (event.code !== 'Space') return
+  mediaPreviewSpacePressed.value = false
+  stopMediaPreviewPan()
 }
 
 function onMediaPreviewWheel(event) {
@@ -1326,6 +1395,11 @@ async function copyResultReference() {
 }
 
 function onEditorKeydown(event) {
+  if (event.code === 'Space' && mediaPreviewUrl.value && mediaPreviewKind.value === 'image') {
+    event.preventDefault()
+    mediaPreviewSpacePressed.value = true
+    return
+  }
   if (event.key !== 'Escape') return
   if (mediaOpenTimer) {
     window.clearTimeout(mediaOpenTimer)
@@ -1345,11 +1419,17 @@ function onEditorKeydown(event) {
 
 onMounted(() => {
   window.addEventListener('keydown', onEditorKeydown)
+  window.addEventListener('keyup', onMediaPreviewKeyup)
+  window.addEventListener('pointermove', onMediaPreviewPointerMove)
+  window.addEventListener('pointerup', stopMediaPreviewPan)
   window.addEventListener('resize', updateEditorPosition)
   if (isSelected.value) nextTick(startEditorPositionTracking)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onEditorKeydown)
+  window.removeEventListener('keyup', onMediaPreviewKeyup)
+  window.removeEventListener('pointermove', onMediaPreviewPointerMove)
+  window.removeEventListener('pointerup', stopMediaPreviewPan)
   window.removeEventListener('resize', updateEditorPosition)
   stopEditorPositionTracking()
   if (draftSaveTimer) window.clearTimeout(draftSaveTimer)
@@ -2007,6 +2087,7 @@ watch([inputReferences, referenceCandidates], refreshReferencePreviews, { deep: 
 }
 .image-lightbox > button {
   position: absolute;
+  z-index: 2;
   top: 22px;
   right: 22px;
   display: grid;
@@ -2022,8 +2103,15 @@ watch([inputReferences, referenceCandidates], refreshReferencePreviews, { deep: 
   cursor: pointer;
 }
 .image-lightbox > img,
-.image-lightbox > video { max-width: 100%; max-height: 100%; border-radius: 12px; object-fit: contain; }
-.image-lightbox > img { transform-origin: center; transition: transform 100ms ease-out; }
+.image-lightbox > video {
+  max-width: calc(100vw - 56px);
+  max-height: calc(100vh - 56px);
+  border-radius: 12px;
+  object-fit: contain;
+}
+.image-lightbox > img { transform-origin: center; transition: transform 100ms ease-out; user-select: none; }
+.image-lightbox.is-pan-ready > img { cursor: grab; }
+.image-lightbox.is-panning > img { cursor: grabbing; transition: none; }
 .lightbox-zoom-hint {
   position: absolute;
   left: 50%;

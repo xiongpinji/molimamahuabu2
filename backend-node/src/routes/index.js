@@ -145,7 +145,7 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/auth/register/code', authRateLimit, auth.requestRegistrationCode);
   r.post('/auth/register', authRateLimit, auth.register);
   r.post('/auth/login', authRateLimit, auth.login);
-  r.post('/auth/logout', auth.logout);
+  r.post('/auth/logout', requireUser, auth.logout);
   r.post('/auth/password/code', authRateLimit, auth.requestPasswordResetCode);
   r.post('/auth/password/reset', authRateLimit, auth.resetPassword);
   r.post('/billing/recharge/alipay/notify', alipayRecharge.notify);

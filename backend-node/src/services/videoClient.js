@@ -5134,7 +5134,9 @@ async function submitVideoWithConfig(db, log, config, opts, runtime = {}) {
   ({ image_url, first_frame_url, last_frame_url, first_frame_local_path, last_frame_local_path } = opts);
   const referenceMode = String(opts.reference_mode || '').trim().toLowerCase();
   const hasExplicitMultiReferences = ['omni', 'multi', 'multi_reference'].includes(referenceMode);
-  if (!hasExplicitMultiReferences
+  const shouldPromoteFirstReference = !hasExplicitMultiReferences
+    || ['openai_compat', 'aihubcc'].includes(protocol);
+  if (shouldPromoteFirstReference
       && !['usmercari_media', 'icreat_task', 'toapis_video', 'lingjing_open'].includes(protocol)
       && !image_url && !first_frame_url) {
     const firstReferenceUrl = Array.isArray(opts.reference_urls)
