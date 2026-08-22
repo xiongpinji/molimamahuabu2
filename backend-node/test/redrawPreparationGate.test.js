@@ -307,7 +307,11 @@ function context(state) {
     tenantId: 'tenant-a',
     userId: 'user-a',
     storageRoot: state.storageRoot,
-    assetReader: { owns: () => true },
+    canReadArtifact: () => true,
+    assetReader: {
+      canRead: () => true,
+      owns: () => true,
+    },
   };
 }
 
@@ -433,6 +437,66 @@ test('准备门禁返回严格白名单、稳定排序和当前角色计划哈�
     assert.equal(JSON.stringify(gate).includes('Alice Carter'), false);
   } finally {
     state.cleanup();
+  }
+});
+
+test('准备门禁同步复核身份、净景和运动物理文件 SHA', () => {
+  const textBundle = (state) => makeBundle(state, {
+    text_regions: [{
+      region_key: 'text-001',
+      kind: 'text_subtitle',
+      time_ranges: [[0, 5000]],
+      text_clean_redraw_asset_id: 202,
+      clean_plate: { pack_sha256: state.textCleanPackHash },
+    }],
+    coverage_review: {
+      status: 'approved',
+      reviewed_by: 'user-a',
+      reviewed_at: NOW,
+      recognizable_face_count: 1,
+      mapped_face_count: 1,
+      unresolved_face_count: 0,
+      recognizable_text_region_count: 1,
+      mapped_text_region_count: 1,
+      unresolved_text_region_count: 0,
+    },
+  });
+  const cases = [
+    {
+      reason: 'character_reference_invalid',
+      mutate(state) {
+        makeBundle(state);
+        fs.rmSync(path.join(state.storageRoot, 'redraw/identity.png'));
+      },
+    },
+    {
+      reason: 'text_cleanup_missing',
+      mutate(state) {
+        textBundle(state);
+        fs.writeFileSync(path.join(state.storageRoot, 'redraw/text-clean.png'), 'tampered clean plate');
+      },
+    },
+    {
+      reason: 'motion_reference_not_current',
+      mutate(state) {
+        makeBundle(state);
+        fs.writeFileSync(path.join(state.storageRoot, `redraw-conditioning/${state.motionHash}.mp4`), 'tampered motion');
+      },
+    },
+  ];
+  for (const entry of cases) {
+    const state = setup();
+    try {
+      entry.mutate(state);
+      const gate = evaluatePreparationGate(context(state), state.versionId);
+      assert.equal(gate.ok, false, entry.reason);
+      assert.equal(gate.missing.some((item) => item.reason_code === entry.reason), true, entry.reason);
+      const serialized = JSON.stringify(gate);
+      assert.equal(serialized.includes(state.storageRoot), false);
+      assert.equal(serialized.includes('tampered'), false);
+    } finally {
+      state.cleanup();
+    }
   }
 });
 

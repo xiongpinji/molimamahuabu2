@@ -1,6 +1,8 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const { buildCharacterPlan } = require('./redrawCharacterPlanService');
 const { canonicalBundleHash } = require('./redrawReferenceBundleService');
@@ -169,6 +171,64 @@ function assetOwnerTrusted(ctx, asset, owner) {
   return typeof ctx.assetReader?.owns === 'function' && ctx.assetReader.owns(asset, owner) === true;
 }
 
+function statSame(left, right) {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
+}
+
+function isWithinRoot(root, target) {
+  const relative = path.relative(root, target);
+  return relative
+    && !relative.startsWith('..')
+    && !path.isAbsolute(relative);
+}
+
+function verifyPhysicalAsset(ctx, asset, expectedSha) {
+  if (ctx.__requirePhysicalEvidence !== true) return true;
+  if (!asset || !HEX_64.test(String(expectedSha || ''))) return false;
+  if (typeof ctx.canReadArtifact === 'function' && ctx.canReadArtifact(Number(asset.id), asset) !== true) return false;
+  if (typeof ctx.assetReader?.canRead === 'function' && ctx.assetReader.canRead(asset) !== true) return false;
+  const storageRoot = String(ctx.storageRoot || '').trim();
+  const relativePath = String(asset.local_path || '').replace(/\\/g, '/');
+  if (!storageRoot
+    || !relativePath
+    || relativePath.includes('\0')
+    || path.isAbsolute(relativePath)
+    || relativePath.split('/').some((part) => part === '..')) return false;
+  const io = ctx.fs || fs;
+  let fd = null;
+  try {
+    const realRoot = io.realpathSync(storageRoot);
+    const targetPath = path.resolve(realRoot, relativePath);
+    if (!isWithinRoot(realRoot, targetPath)) return false;
+    const realBefore = io.realpathSync(targetPath);
+    if (!isWithinRoot(realRoot, realBefore)) return false;
+    fd = io.openSync(realBefore, 'r');
+    const beforeStat = io.fstatSync(fd);
+    if (!beforeStat.isFile()) return false;
+    const hash = crypto.createHash('sha256');
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    for (;;) {
+      const bytesRead = io.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+    const afterStat = io.fstatSync(fd);
+    const realAfter = io.realpathSync(targetPath);
+    if (realBefore !== realAfter || !statSame(beforeStat, afterStat)) return false;
+    return hash.digest('hex') === String(expectedSha);
+  } catch (_) {
+    return false;
+  } finally {
+    if (fd != null) {
+      try { io.closeSync(fd); } catch (_) {}
+    }
+  }
+}
+
 function loadProviderAsset(ctx, assetId, type, expectedSha, owner) {
   const asset = ctx.db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL LIMIT 1').get(Number(assetId));
   const mime = String(asset?.mime_type || '').toLowerCase();
@@ -177,6 +237,7 @@ function loadProviderAsset(ctx, assetId, type, expectedSha, owner) {
   if (type === 'video' && mime !== 'video/mp4') return null;
   if (expectedSha && assetSha(asset) !== expectedSha) return null;
   if (!assetOwnerTrusted(ctx, asset, owner)) return null;
+  if (expectedSha && !verifyPhysicalAsset(ctx, asset, expectedSha)) return null;
   return asset;
 }
 
@@ -300,6 +361,7 @@ function validateMotion(ctx, shot, motion) {
   if (!assetOwnerTrusted(ctx, row, { tenantId: shot.tenant_id, userId: shot.user_id })) return false;
   const localPath = String(row.local_path || '').replace(/\\/g, '/');
   if (localPath !== `redraw-conditioning/${expectedSha}.mp4`) return false;
+  if (!verifyPhysicalAsset(ctx, row, expectedSha)) return false;
   const metadata = parseJsonAny(row.metadata, {});
   const motionMetadata = metadata?.redraw_motion_reference;
   const work = ctx.db.prepare('SELECT source_asset_id, source_fingerprint FROM redraw_works WHERE id = ? LIMIT 1').get(Number(shot.work_id));
@@ -450,9 +512,13 @@ function evaluatePreparationGate(ctx = {}, versionId) {
     addMissing(missing, 'version', version.id, 'shots_missing', `version-${Number(version.id)}-shots`);
   }
   const readyShotIds = [];
+  const gateCtx = {
+    ...ctx,
+    __requirePhysicalEvidence: Number(version.reference_bundle_required || 0) === 1,
+  };
   for (const shot of shots) {
     const before = missing.size;
-    validateShot(ctx, shot, version, characterPlan, missing);
+    validateShot(gateCtx, shot, version, characterPlan, missing);
     if (missing.size === before) readyShotIds.push(Number(shot.id));
   }
   const missingList = sortedMissing(missing);

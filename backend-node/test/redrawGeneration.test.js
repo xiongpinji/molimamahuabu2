@@ -4894,6 +4894,50 @@ test('reference bundle required 的单镜生成使用安全参考包投影且不
   assert.equal(serialized.includes('Authorization'), false);
 });
 
+test('reference bundle required 在事务内复核运动文件漂移且不冻结积分', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  let providerCalls = 0;
+  let scheduleCalls = 0;
+  let hookCalls = 0;
+  await assert.rejects(
+    () => generateShot(ctx(state.db, {
+      storageRoot: state.storageRoot,
+      versionId: state.versionId,
+      probeRunner: async () => ({
+        duration_ms: 5000,
+        width: 864,
+        height: 496,
+        mime_type: 'video/mp4',
+        video_codec: 'h264',
+        audio_stream_count: 0,
+      }),
+      resolveVideoConditioningCapability: () => referenceBundleAudioCapability(state),
+      createReferenceUrl: ({ asset_id: assetId, kind }) => `https://cdn.example.test/reference/${kind}/${assetId}`,
+      prepareSourceConditioning: async () => assert.fail('raw source conditioning must not run'),
+      beforeCreateTransaction: async () => {
+        hookCalls += 1;
+        fs.writeFileSync(
+          path.join(state.storageRoot, `redraw-conditioning/${REFERENCE_BUNDLE_MOTION_SHA256}.mp4`),
+          'tampered between preflight and reserve',
+        );
+      },
+      videoProcessor: async () => { providerCalls += 1; },
+      schedule() { scheduleCalls += 1; },
+    }), { shotId: state.shotId }),
+    (error) => error.code === 'REDRAW_ASSET_REVIEW_REQUIRED',
+  );
+  assert.equal(hookCalls, 1);
+  assert.equal(providerCalls, 0);
+  assert.equal(scheduleCalls, 0);
+  assert.equal(count(state.db, 'video_generations'), 0);
+  assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+  assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+  assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+  const shot = state.db.prepare('SELECT status, video_generation_id FROM redraw_shots WHERE id = ?').get(state.shotId);
+  assert.notEqual(shot.status, 'processing');
+  assert.equal(shot.video_generation_id, null);
+});
+
 test('reference bundle required 的本地假 provider 收到同一安全英文 prompt', async (t) => {
   const state = await setupReferenceBundleGenerationFixture(t);
   let capturedPrompt = null;
