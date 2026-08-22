@@ -679,7 +679,7 @@ function verifyIdentities(ctx, shot, faces, nameMap) {
     if (!row || row.approval_status !== 'approved') fail(IDENTITY_CODE);
     const payload = parseJson(row.source_ref_json, {});
     const pack = payload.identity_pack;
-    if (!pack || payload.source_ref?.stable_id !== face.source_character_key
+    if (!pack || sourceKey(row) !== face.source_character_key
       || pack.source_character_key !== face.source_character_key
       || row.localized_name !== pack.target_actor_label
       || !nameMap[face.source_character_key]) fail(IDENTITY_CODE);

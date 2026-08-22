@@ -736,6 +736,31 @@ test('es-ES/ES 参考包对白、身份国家和投影 locale 使用当前版本
   }
 });
 
+test('V2 身份素材允许 source_ref.source_character_key 且无 stable_id', async () => {
+  const state = setup();
+  try {
+    updateJsonColumn(state.db, 'redraw_assets', state.actorAId, 'source_ref_json', (payload) => {
+      payload.source_ref = { source_character_key: 'character-001' };
+    });
+
+    const saved = await saveReferenceBundle(ctx(state), validInput(state));
+    assert.equal(saved.bundle.face_tracks[0].source_character_key, 'character-001');
+    assert.equal(saved.bundle.face_tracks[0].identity.target_actor_label, 'Actor Ethan');
+
+    const projected = await projectReferenceBundleForGeneration(ctx(state, {
+      createReferenceUrl({ asset_id: assetId, kind }) {
+        return `/static/redraw-reference/${kind}/${assetId}`;
+      },
+    }), state.shotId);
+
+    assert.equal(projected.targetLocale, 'en-US');
+    assert.deepEqual(projected.identityBindings.map((entry) => entry.source_character_key), ['character-001', 'character-002']);
+    assert.match(projected.prompt, /Actor Ethan/);
+  } finally {
+    state.cleanup();
+  }
+});
+
 test('静默对白保存、重读并投影为非人声环境音合同', async () => {
   const state = setup({ sourceDialogue: [], dialogue: [] });
   try {
