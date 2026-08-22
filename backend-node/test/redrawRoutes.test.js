@@ -42,6 +42,7 @@ function stableJson(value) {
 }
 
 function canonicalIdentityPack(input = {}) {
+  const wardrobeSeed = input.wardrobeSeed || 'canonical actor wardrobe';
   const pack = {
     schema_version: 'target-actor-identity-v1',
     source_character_key: input.sourceCharacterKey || 'source-character-maya',
@@ -53,10 +54,18 @@ function canonicalIdentityPack(input = {}) {
       height: 960,
       mime_type: 'image/png',
     },
+    wardrobe: {
+      label: '整集主服装',
+      reference_asset_id: Number(input.wardrobeAssetId || 702),
+      reference_sha256: crypto.createHash('sha256').update(wardrobeSeed).digest('hex'),
+      consistency_confirmed: input.wardrobeConsistencyConfirmed ?? true,
+    },
     confirmed_views: ['front', 'profile', 'full_body'],
     live_action_human_confirmed: true,
     adult_status: 'verified_18_plus',
     identity_consistency_confirmed: true,
+    persona_origin: 'fictional_ai_generated',
+    target_country: 'US',
     ready: true,
     reviewed_by: 'user-a',
     reviewed_at: NOW,
@@ -259,13 +268,20 @@ function setupIdentityPackRouteFixture(values = {}) {
   const db = createDb();
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-identity-route-'));
   const artifactBytes = Buffer.from(values.artifactBody || 'canonical actor portrait');
+  const wardrobeBytes = Buffer.from(values.wardrobeBody || 'canonical actor wardrobe');
   const localPath = values.localPath || 'redraw-assets/actor.png';
+  const wardrobeLocalPath = values.wardrobeLocalPath || 'redraw-assets/wardrobe.png';
   fs.mkdirSync(path.dirname(path.join(storageRoot, localPath)), { recursive: true });
   fs.writeFileSync(path.join(storageRoot, localPath), artifactBytes);
+  fs.writeFileSync(path.join(storageRoot, wardrobeLocalPath), wardrobeBytes);
   db.prepare(`INSERT INTO assets
     (id, name, type, category, url, local_path, mime_type, width, height, created_at, updated_at)
     VALUES (701, 'Actor Maya', 'image', 'redraw', '/static/redraw-assets/actor.png', ?,
       'image/png', 640, 960, ?, ?)`).run(localPath, NOW, NOW);
+  db.prepare(`INSERT INTO assets
+    (id, name, type, category, url, local_path, mime_type, width, height, created_at, updated_at)
+    VALUES (702, 'Actor Maya wardrobe', 'image', 'redraw', '/static/redraw-assets/wardrobe.png', ?,
+      'image/png', 640, 960, ?, ?)`).run(wardrobeLocalPath, NOW, NOW);
   const projectId = insertProject(db);
   const workId = insertWork(db, projectId, { current_version: 1, current_step: 2 });
   const versionId = insertVersion(db, workId, { status: 'asset_review' });
@@ -291,6 +307,7 @@ function setupIdentityPackRouteFixture(values = {}) {
     db,
     storageRoot,
     artifactBytes,
+    wardrobeBytes,
     versionId: Number(versionId),
     assetId: Number(assetId),
     handlers,
@@ -302,7 +319,7 @@ function setupIdentityPackRouteFixture(values = {}) {
 }
 
 function completeIdentityPackRequest(overrides = {}) {
-  return {
+  const body = {
     target_actor_label: '  Actor Maya  ',
     confirmed_views: ['full_body', 'front', 'profile', 'front'],
     live_action_human_confirmed: true,
@@ -311,6 +328,17 @@ function completeIdentityPackRequest(overrides = {}) {
     expected_updated_at: NOW,
     ...overrides,
   };
+  if (!Object.prototype.hasOwnProperty.call(overrides, 'wardrobe_reference_asset_id')
+    && !Object.prototype.hasOwnProperty.call(overrides, 'wardrobeReferenceAssetId')
+    && !Object.prototype.hasOwnProperty.call(overrides, 'wardrobe')) {
+    body.wardrobe_reference_asset_id = 702;
+  }
+  if (!Object.prototype.hasOwnProperty.call(overrides, 'wardrobe_consistency_confirmed')
+    && !Object.prototype.hasOwnProperty.call(overrides, 'wardrobeConsistencyConfirmed')
+    && !Object.prototype.hasOwnProperty.call(overrides, 'wardrobe')) {
+    body.wardrobe_consistency_confirmed = true;
+  }
+  return body;
 }
 
 function insertAssetBatch(db, versionId, values = {}) {
@@ -5162,6 +5190,12 @@ test('角色身份包 API 保存服务端证据、重置审核且响应不泄露
       height: 960,
       mime_type: 'image/png',
     });
+    assert.deepEqual(result.body.data.identity_pack.wardrobe, {
+      label: '整集主服装',
+      reference_asset_id: 702,
+      reference_sha256: crypto.createHash('sha256').update(fixture.wardrobeBytes).digest('hex'),
+      consistency_confirmed: true,
+    });
     assert.equal(result.body.data.identity_pack.reviewed_by, 'user-a');
     assert.equal(result.body.data.identity_pack.ready, true);
     assert.equal(result.body.data.identity_pack_status.ready, true);
@@ -5197,6 +5231,8 @@ test('角色身份包 API 接受 camelCase 虚构美国政策字段并保持安�
         body: completeIdentityPackRequest({
           personaOrigin: ' fictional_ai_generated ',
           targetCountry: ' US ',
+          wardrobeReferenceAssetId: 702,
+          wardrobeConsistencyConfirmed: true,
         }),
       }),
       result,
@@ -5227,6 +5263,8 @@ test('角色身份包 API 严格拒绝非法、重复和未知政策字段且数
       { target_country: 'us' },
       { persona_origin: 'fictional_ai_generated', personaOrigin: 'fictional_ai_generated' },
       { target_country: 'US', targetCountry: 'US' },
+      { wardrobe_reference_asset_id: 702, wardrobeReferenceAssetId: 702 },
+      { wardrobe_consistency_confirmed: true, wardrobeConsistencyConfirmed: true },
       { unknown_policy: 'fictional_ai_generated' },
     ];
     const before = fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
@@ -5289,7 +5327,8 @@ test('角色身份包 API 拒绝客户端控制和未知字段且不修改数据
     const forbiddenFields = [
       'source_character_key', 'artifact', 'sha256', 'pack_sha256', 'ready',
       'reviewed_by', 'reviewed_at', 'asset_id', 'version_id', 'tenant_id', 'user_id',
-      'path', 'url', 'approval_status', 'status', 'unexpected_field',
+      'path', 'url', 'approval_status', 'status', 'wardrobe_reference_sha256',
+      'wardrobeReferenceSha256', 'wardrobe', 'unexpected_field',
     ];
     const before = fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
       approved_at, updated_at FROM redraw_assets WHERE id = ?`).get(fixture.assetId);
@@ -5396,6 +5435,8 @@ test('角色身份包 API 允许保存明确未完成的包并保持 ready=false
           liveActionHumanConfirmed: false,
           adultStatus: 'unverified',
           identityConsistencyConfirmed: false,
+          wardrobeReferenceAssetId: 702,
+          wardrobeConsistencyConfirmed: false,
           expectedUpdatedAt: NOW,
         },
       }),
@@ -5409,6 +5450,7 @@ test('角色身份包 API 允许保存明确未完成的包并保持 ready=false
       'live_action_human_confirmed',
       'adult_status',
       'identity_consistency_confirmed',
+      'wardrobe',
     ]);
   } finally {
     fixture.close();
@@ -5426,6 +5468,9 @@ test('角色身份包 API 严格校验允许字段类型和值', () => {
       { live_action_human_confirmed: 1 },
       { adult_status: 'unknown' },
       { identity_consistency_confirmed: 'true' },
+      { wardrobe_reference_asset_id: 0 },
+      { wardrobe_reference_asset_id: '702' },
+      { wardrobe_consistency_confirmed: 'true' },
       { expected_updated_at: ' ' },
     ];
     for (const patch of invalidPatches) {

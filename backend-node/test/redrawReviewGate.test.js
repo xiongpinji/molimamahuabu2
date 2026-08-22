@@ -176,6 +176,74 @@ test('视频生成门禁先执行准备门禁，旧候选不能绕过未完成�
   }
 });
 
+test('视频生成门禁只把内部受信 preparationContext 合并进准备门禁', () => {
+  const state = setup();
+  try {
+    addAsset(state.db, { id: 81, kind: 'scene', approvalStatus: 'approved' });
+    addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: 81 }]);
+    state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
+    const trustedAssetReader = { owns: () => true };
+    let captured = null;
+    const gate = evaluateGenerationGate(state.db, state.versionId, { tenantId: 'tenant-a', userId: 'user-a' }, {
+      preparationContext: {
+        tenantId: 'tenant-b',
+        userId: 'user-b',
+        db: 'forged',
+        storageRoot: 'C:\\trusted\\storage',
+        assetReader: trustedAssetReader,
+        canReadArtifact: () => true,
+        probeRunner: () => null,
+        rawSecret: 'must-not-pass',
+      },
+      preparationGate(ctx) {
+        captured = ctx;
+        return { ok: true, ready_shot_ids: [1], missing: [] };
+      },
+    });
+
+    assert.equal(gate.ok, true);
+    assert.equal(captured.db, state.db);
+    assert.equal(captured.tenantId, 'tenant-a');
+    assert.equal(captured.userId, 'user-a');
+    assert.equal(captured.storageRoot, 'C:\\trusted\\storage');
+    assert.equal(captured.assetReader, trustedAssetReader);
+    assert.equal(typeof captured.canReadArtifact, 'function');
+    assert.equal(typeof captured.probeRunner, 'function');
+    assert.equal(Object.prototype.hasOwnProperty.call(captured, 'rawSecret'), false);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('审核资产批准时在事务内用受信 preparationContext 重算生成门禁', () => {
+  const state = setup();
+  try {
+    const scene = addAsset(state.db, { id: 82, kind: 'scene', approvalStatus: 'pending' });
+    addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: scene.id }]);
+    state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
+    let captured = null;
+    const reviewed = reviewAsset(state.db, scene.id, {
+      action: 'approved',
+      reviewerId: 'user-a',
+      tenantId: 'tenant-a',
+      userId: 'user-a',
+      expectedUpdatedAt: scene.updated_at,
+      preparationContext: { storageRoot: 'C:\\trusted\\storage', assetReader: { owns: () => true } },
+      preparationGate(ctx) {
+        captured = ctx;
+        return { ok: true, ready_shot_ids: [1], missing: [] };
+      },
+    });
+
+    assert.equal(reviewed.approval_status, 'approved');
+    assert.equal(captured.storageRoot, 'C:\\trusted\\storage');
+    assert.equal(captured.tenantId, 'tenant-a');
+    assert.equal(state.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(state.versionId).status, 'ready_to_generate');
+  } finally {
+    state.db.close();
+  }
+});
+
 test('未被分镜引用的可选源事实资产不会全局阻塞门禁', () => {
   const state = setup();
   try {

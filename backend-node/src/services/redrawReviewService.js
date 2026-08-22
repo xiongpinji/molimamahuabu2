@@ -24,6 +24,14 @@ function hasColumn(db, table, column) {
   return db.prepare(`PRAGMA table_info(${table})`).all().some((row) => row.name === column);
 }
 
+function trustedPreparationContext(value = {}) {
+  const output = {};
+  for (const key of ['storageRoot', 'fs', 'assetReader', 'canReadArtifact', 'probeRunner']) {
+    if (value[key] !== undefined) output[key] = value[key];
+  }
+  return output;
+}
+
 function normalizeOwner(input = {}) {
   return {
     tenantId: input.tenantId ?? input.tenant_id ?? null,
@@ -125,7 +133,11 @@ function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
   const version = getVersion(db, versionId, owner);
   if (Number(version.reference_bundle_required || 0) === 1) {
     const preparationGate = options.preparationGate || evaluatePreparationGate;
-    const preparation = preparationGate({ db, ...normalizeOwner(owner) }, version.id);
+    const preparation = preparationGate({
+      ...trustedPreparationContext(options.preparationContext),
+      db,
+      ...normalizeOwner(owner),
+    }, version.id);
     if (!preparation.ok) {
       return {
         ok: false,
@@ -316,7 +328,10 @@ function reviewAsset(db, assetId, input = {}) {
       db.prepare(`UPDATE redraw_versions SET status = 'asset_review', updated_at = ? WHERE id = ?`).run(now, current.version_id);
       db.prepare(`UPDATE redraw_works SET status = 'asset_review', current_step = 2, updated_at = ? WHERE id = ?`).run(now, version?.work_id);
     } else {
-      const gate = evaluateGenerationGate(db, current.version_id, { tenantId: current.tenant_id, userId: current.user_id });
+      const gate = evaluateGenerationGate(db, current.version_id, { tenantId: current.tenant_id, userId: current.user_id }, {
+        preparationContext: input.preparationContext,
+        preparationGate: input.preparationGate,
+      });
       db.prepare(`UPDATE redraw_versions SET status = ?, updated_at = ? WHERE id = ?`)
         .run(gate.ok ? 'ready_to_generate' : 'asset_review', now, current.version_id);
       db.prepare(`UPDATE redraw_works SET status = ?, current_step = ?, updated_at = ? WHERE id = ?`)
@@ -329,4 +344,5 @@ function reviewAsset(db, assetId, input = {}) {
 module.exports = {
   evaluateGenerationGate,
   reviewAsset,
+  trustedPreparationContext,
 };

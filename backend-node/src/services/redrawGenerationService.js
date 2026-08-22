@@ -329,6 +329,8 @@ function ensureGateOpen(db, ctx, versionId) {
   const gate = redrawReviewService.evaluateGenerationGate(db, versionId, {
     tenantId: ctx.tenantId,
     userId: ctx.userId,
+  }, {
+    preparationContext: redrawReviewService.trustedPreparationContext(ctx.preparationContext || ctx),
   });
   if (!gate.ok) {
     throw codedError('REDRAW_ASSET_REVIEW_REQUIRED', '转绘资产审核未通过，不能生成单镜视频', {

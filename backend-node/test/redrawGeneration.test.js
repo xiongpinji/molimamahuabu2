@@ -17,6 +17,7 @@ const videoService = require('../src/services/videoService');
 const redrawOrchestrator = require('../src/services/redrawOrchestrator');
 const { identityBindingForAsset } = require('../src/services/redrawCharacterIdentityService');
 const { saveReferenceBundle } = require('../src/services/redrawReferenceBundleService');
+const { evaluatePreparationGate, preparationEvidenceHash } = require('../src/services/redrawPreparationGateService');
 const { resetGenerationConcurrencyForTests } = require('../src/services/generationConcurrency');
 const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 const {
@@ -31,6 +32,7 @@ const {
   reviewNativeAudio,
   assertVideoConditioningCapability,
 } = require('../src/services/redrawGenerationService');
+const redrawReviewService = require('../src/services/redrawReviewService');
 
 const log = { info() {}, warn() {}, error() {} };
 const FEITUO_FAST_MODEL = 'sdas-my-seedance-2.0-fast-upscaled-1080p';
@@ -68,6 +70,12 @@ function canonicalIdentityPack(input = {}) {
       width: 640,
       height: 960,
       mime_type: 'image/png',
+    },
+    wardrobe: {
+      label: '整集主服装',
+      reference_asset_id: Number(input.wardrobeAssetId || artifactAssetId),
+      reference_sha256: crypto.createHash('sha256').update(input.wardrobeSeed || artifactSeed).digest('hex'),
+      consistency_confirmed: input.wardrobeConsistencyConfirmed ?? true,
     },
     confirmed_views: ['front', 'profile', 'full_body'],
     live_action_human_confirmed: true,
@@ -389,6 +397,14 @@ function ctx(db, overrides = {}) {
     }),
     storageBaseUrl: 'https://media.example.test/static',
     providerAssetSecret: 'redraw-generation-test-provider-secret-32-bytes',
+    preparationContext: {
+      storageRoot: overrides.storageRoot,
+      canReadArtifact: () => true,
+      assetReader: {
+        canRead: () => true,
+        owns: () => true,
+      },
+    },
     prepareSourceConditioning: async ({ shot }) => ({
       referenceVideoUrl: SIGNED_SOURCE_VIDEO_URL,
       billingSnapshot: {
@@ -429,6 +445,12 @@ function referenceBundleIdentityPack(input) {
       width: 864,
       height: 1296,
       mime_type: 'image/png',
+    },
+    wardrobe: {
+      label: '整集主服装',
+      reference_asset_id: Number(input.wardrobeAssetId || input.assetId),
+      reference_sha256: input.wardrobeSha256 || input.sha256,
+      consistency_confirmed: input.wardrobeConsistencyConfirmed ?? true,
     },
     confirmed_views: ['front', 'profile', 'full_body'],
     live_action_human_confirmed: true,
@@ -503,12 +525,19 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
   state.actorBImageId = 9003;
   state.subtitleCleanImageId = 9004;
   state.screenCleanImageId = 9005;
+  state.actorAVoiceAssetId = 9007;
+  state.actorBVoiceAssetId = 9008;
+  const voiceBytes = (id) => Buffer.from(`generation-reference-bundle-voice:${id}`);
+  const voiceSha = (id) => crypto.createHash('sha256').update(voiceBytes(id)).digest('hex');
   const imageBytes = (id) => Buffer.from(`generation-reference-bundle-image:${id}`);
   const imageSha = (id) => crypto.createHash('sha256').update(imageBytes(id)).digest('hex');
   putStorageFile(storageRoot, 'source/source.mp4', REFERENCE_BUNDLE_SOURCE_BYTES);
   putStorageFile(storageRoot, `redraw-conditioning/${REFERENCE_BUNDLE_MOTION_SHA256}.mp4`, REFERENCE_BUNDLE_MOTION_BYTES);
   for (const id of [state.actorAImageId, state.actorBImageId, state.subtitleCleanImageId, state.screenCleanImageId]) {
     putStorageFile(storageRoot, `redraw/${id}.png`, imageBytes(id));
+  }
+  for (const id of [state.actorAVoiceAssetId, state.actorBVoiceAssetId]) {
+    putStorageFile(storageRoot, `redraw/${id}.mp3`, voiceBytes(id));
   }
   insertReferenceBundleAsset(state.db, {
     id: state.sourceAssetId,
@@ -537,6 +566,20 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
     localPath: `redraw/${state.screenCleanImageId}.png`,
     sha256: imageSha(state.screenCleanImageId),
   });
+  insertReferenceBundleAsset(state.db, {
+    id: state.actorAVoiceAssetId,
+    type: 'audio',
+    localPath: `redraw/${state.actorAVoiceAssetId}.mp3`,
+    mimeType: 'audio/mpeg',
+    sha256: voiceSha(state.actorAVoiceAssetId),
+  });
+  insertReferenceBundleAsset(state.db, {
+    id: state.actorBVoiceAssetId,
+    type: 'audio',
+    localPath: `redraw/${state.actorBVoiceAssetId}.mp3`,
+    mimeType: 'audio/mpeg',
+    sha256: voiceSha(state.actorBVoiceAssetId),
+  });
   prices.set(state.db, 'seedance 2.0', 2, {
     category: 'video',
     billing_unit: 'second',
@@ -559,6 +602,20 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
   const sourceFacts = {
     script_sha256: '5'.repeat(64),
     name_map_source_sha256: crypto.createHash('sha256').update(stableJson(nameMap)).digest('hex'),
+    characters: [
+      {
+        source_character_key: 'character-001',
+        target_name: 'Actor Ethan',
+        adult_status: 'verified_18_plus',
+        persona_origin: 'fictional_ai_generated',
+      },
+      {
+        source_character_key: 'character-002',
+        target_name: 'Actor Maya',
+        adult_status: 'verified_18_plus',
+        persona_origin: 'fictional_ai_generated',
+      },
+    ],
   };
   state.db.prepare(`UPDATE redraw_works
     SET source_asset_id = ?, source_fingerprint = ?, updated_at = ?
@@ -625,6 +682,50 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
       sha256: imageSha(state.actorBImageId),
     }),
   });
+  const voiceSnapshotFor = (audioAssetId) => ({
+    locale: 'en-US',
+    market: 'US',
+    audio_asset_id: Number(audioAssetId),
+    audio_sha256: voiceSha(audioAssetId),
+    language_verified: true,
+    detected_locale: 'en-US',
+  });
+  const insertVoiceRedrawAsset = (sourceCharacterKey, audioAssetId) => state.db.prepare(`INSERT INTO redraw_assets
+    (version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+     voice_asset_id, approval_status, status, created_at, updated_at)
+    VALUES (?, 'tenant-a', 'user-a', 'voice', ?, ?, ?, 'approved', 'generated', ?, ?)`)
+    .run(
+      state.versionId,
+      JSON.stringify({ source_ref: { stable_id: sourceCharacterKey } }),
+      `${sourceCharacterKey} voice`,
+      audioAssetId,
+      now,
+      now,
+    ).lastInsertRowid;
+  insertVoiceRedrawAsset('character-001', state.actorAVoiceAssetId);
+  insertVoiceRedrawAsset('character-002', state.actorBVoiceAssetId);
+  state.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?')
+    .run(JSON.stringify({
+      source_ref: { stable_id: 'character-001' },
+      identity_pack: referenceBundleIdentityPack({
+        sourceCharacterKey: 'character-001',
+        targetActorLabel: 'Actor Ethan',
+        assetId: state.actorAImageId,
+        sha256: imageSha(state.actorAImageId),
+      }),
+      snapshot: { voice_snapshot: voiceSnapshotFor(state.actorAVoiceAssetId) },
+    }), actorAId);
+  state.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?')
+    .run(JSON.stringify({
+      source_ref: { stable_id: 'character-002' },
+      identity_pack: referenceBundleIdentityPack({
+        sourceCharacterKey: 'character-002',
+        targetActorLabel: 'Actor Maya',
+        assetId: state.actorBImageId,
+        sha256: imageSha(state.actorBImageId),
+      }),
+      snapshot: { voice_snapshot: voiceSnapshotFor(state.actorBVoiceAssetId) },
+    }), actorBId);
   const subtitleCleanId = addRedrawAsset(state.db, state.versionId, {
     kind: 'scene',
     name: 'subtitle clean',
@@ -672,6 +773,13 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
     mimeType: 'video/mp4',
     sha256: REFERENCE_BUNDLE_MOTION_SHA256,
     metadata: {
+      sha256: REFERENCE_BUNDLE_MOTION_SHA256,
+      duration_ms: 5000,
+      width: 864,
+      height: 496,
+      mime_type: 'video/mp4',
+      video_codec: 'h264',
+      audio_stream_count: 0,
       redraw_motion_reference: {
         schema_version: 'redraw-motion-reference-v1',
         tenant_id: 'tenant-a',
@@ -726,6 +834,34 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
         audio_stream_count: 0,
       }),
     }, state.referenceBundleInput);
+    const gateCtx = {
+      db: state.db,
+      tenantId: 'tenant-a',
+      userId: 'user-a',
+      storageRoot,
+      canReadArtifact: () => true,
+      assetReader: {
+        canRead: () => true,
+        owns: () => true,
+      },
+    };
+    const gate = evaluatePreparationGate(gateCtx, state.versionId);
+    const shot = state.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(shotId);
+    state.db.prepare(`UPDATE redraw_shots
+      SET preparation_state = 'reference_ready',
+          preparation_snapshot_json = ?,
+          preparation_evidence_hash = ?
+      WHERE id = ?`)
+      .run(
+        stableJson({
+          version_id: state.versionId,
+          shot_id: shotId,
+          character_plan_hash: gate.character_plan_hash,
+          reference_bundle_hash: state.savedReferenceBundle.reference_bundle_hash,
+        }),
+        preparationEvidenceHash(shot),
+        shotId,
+      );
   }
   return state;
 }
@@ -871,6 +1007,46 @@ test('ID9 iCreat verified 模型在 reserve/video row/provider 前以 conditioni
     assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
     assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
   } finally {
+    state.db.close();
+  }
+});
+
+test('生成预检和事务双检都向准备门禁传入受信上下文且早于 reserve', async () => {
+  const state = setup();
+  const originalGate = redrawReviewService.evaluateGenerationGate;
+  const shotId = addShot(state.db, state.versionId);
+  const calls = [];
+  const reserveRowsAtGate = [];
+  redrawReviewService.evaluateGenerationGate = (db, versionId, owner, options = {}) => {
+    calls.push({ db, versionId, owner, options });
+    reserveRowsAtGate.push(count(db, 'tenant_usage_reservations'));
+    if (!options.preparationContext?.storageRoot) {
+      return {
+        ok: false,
+        missing: [{ reason_code: 'motion_reference_not_current' }],
+        blocking: [{ code: 'preparation_not_ready' }],
+      };
+    }
+    return { ok: true, missing: [], blocking: [], current_step: 3 };
+  };
+  try {
+    const created = await generateShot(ctx(state.db, {
+      preparationContext: {
+        storageRoot: 'C:\\trusted\\storage',
+        assetReader: { owns: () => true },
+        rawSecret: 'must-not-pass',
+      },
+      schedule() {},
+    }), { shotId });
+
+    assert.equal(created.status, 'processing');
+    assert.equal(calls.length, 2);
+    assert.deepEqual(reserveRowsAtGate, [0, 0]);
+    assert.equal(calls.every((call) => call.options.preparationContext.storageRoot === 'C:\\trusted\\storage'), true);
+    assert.equal(calls.every((call) => !Object.prototype.hasOwnProperty.call(call.options.preparationContext, 'rawSecret')), true);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+  } finally {
+    redrawReviewService.evaluateGenerationGate = originalGate;
     state.db.close();
   }
 });
@@ -4764,7 +4940,7 @@ test('reference bundle required 缺失或漂移时在冻结积分和建视频前
         SET reference_bundle_json = '{}', reference_bundle_hash = NULL, reference_bundle_updated_at = NULL
         WHERE id = ?`).run(state.shotId);
     },
-    'REDRAW_REFERENCE_BUNDLE_NOT_FOUND',
+    'REDRAW_ASSET_REVIEW_REQUIRED',
   );
   await assertReferenceBundleGenerationRejects(
     t,
@@ -4775,7 +4951,7 @@ test('reference bundle required 缺失或漂移时在冻结积分和建视频前
       state.db.prepare('UPDATE redraw_shots SET reference_bundle_json = ? WHERE id = ?')
         .run(JSON.stringify(bundle), state.shotId);
     },
-    'REDRAW_REFERENCE_BUNDLE_CONFLICT',
+    'REDRAW_ASSET_REVIEW_REQUIRED',
   );
 });
 
@@ -4846,13 +5022,15 @@ test('reference bundle required 的运动、身份、文本和对白证据过期
     }],
   ];
   for (const [name, mutate] of staleCases) {
-    const expectedCode = {
-      'motion has audio': 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE',
-      'identity stale': 'REDRAW_REFERENCE_BUNDLE_IDENTITY_PACK_REQUIRED',
-      'text clean stale': 'REDRAW_REFERENCE_BUNDLE_TEXT_COVERAGE_REQUIRED',
-      'dialogue stale': 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED',
-    }[name];
-    await assertReferenceBundleGenerationRejects(t, mutate, expectedCode);
+    await assertReferenceBundleGenerationRejects(
+      t,
+      mutate,
+      name === 'identity stale'
+        ? 'REDRAW_REFERENCE_BUNDLE_IDENTITY_PACK_REQUIRED'
+        : name === 'dialogue stale'
+          ? 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED'
+          : 'REDRAW_ASSET_REVIEW_REQUIRED',
+    );
   }
 });
 
@@ -4872,7 +5050,7 @@ test('reference bundle required 超过 9 个身份和客户端参考包控制字
       state.db.prepare('UPDATE redraw_shots SET reference_bundle_json = ?, reference_bundle_hash = ? WHERE id = ?')
         .run(JSON.stringify(bundle), 'f'.repeat(64), state.shotId);
     },
-    'REDRAW_REFERENCE_BUNDLE_CONFLICT',
+    'REDRAW_ASSET_REVIEW_REQUIRED',
   );
 
   for (const [field, value] of [

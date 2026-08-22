@@ -473,6 +473,8 @@ const IDENTITY_PACK_FIELDS = new Set([
   'live_action_human_confirmed', 'liveActionHumanConfirmed',
   'adult_status', 'adultStatus',
   'identity_consistency_confirmed', 'identityConsistencyConfirmed',
+  'wardrobe_reference_asset_id', 'wardrobeReferenceAssetId',
+  'wardrobe_consistency_confirmed', 'wardrobeConsistencyConfirmed',
   'persona_origin', 'personaOrigin',
   'target_country', 'targetCountry',
   'expected_updated_at', 'expectedUpdatedAt',
@@ -483,6 +485,8 @@ const IDENTITY_PACK_FIELD_ALIASES = [
   ['live_action_human_confirmed', 'liveActionHumanConfirmed'],
   ['adult_status', 'adultStatus'],
   ['identity_consistency_confirmed', 'identityConsistencyConfirmed'],
+  ['wardrobe_reference_asset_id', 'wardrobeReferenceAssetId'],
+  ['wardrobe_consistency_confirmed', 'wardrobeConsistencyConfirmed'],
   ['persona_origin', 'personaOrigin'],
   ['target_country', 'targetCountry'],
   ['expected_updated_at', 'expectedUpdatedAt'],
@@ -639,6 +643,20 @@ function identityPackInput(body) {
   if (typeof identityConsistencyConfirmed !== 'boolean') {
     throw identityPackInputError('identity_consistency_confirmed 必须是布尔值');
   }
+  const hasWardrobeReferenceAssetId = Object.prototype.hasOwnProperty.call(body, 'wardrobe_reference_asset_id')
+    || Object.prototype.hasOwnProperty.call(body, 'wardrobeReferenceAssetId');
+  const rawWardrobeReferenceAssetId = read('wardrobe_reference_asset_id', 'wardrobeReferenceAssetId');
+  const wardrobeReferenceAssetId = Number(rawWardrobeReferenceAssetId);
+  if (hasWardrobeReferenceAssetId && (typeof rawWardrobeReferenceAssetId !== 'number'
+    || !Number.isSafeInteger(wardrobeReferenceAssetId) || wardrobeReferenceAssetId <= 0)) {
+    throw identityPackInputError('wardrobe_reference_asset_id 必须是正整数');
+  }
+  const hasWardrobeConsistencyConfirmed = Object.prototype.hasOwnProperty.call(body, 'wardrobe_consistency_confirmed')
+    || Object.prototype.hasOwnProperty.call(body, 'wardrobeConsistencyConfirmed');
+  const wardrobeConsistencyConfirmed = read('wardrobe_consistency_confirmed', 'wardrobeConsistencyConfirmed');
+  if (hasWardrobeConsistencyConfirmed && typeof wardrobeConsistencyConfirmed !== 'boolean') {
+    throw identityPackInputError('wardrobe_consistency_confirmed 必须是布尔值');
+  }
   const hasPersonaOrigin = Object.prototype.hasOwnProperty.call(body, 'persona_origin')
     || Object.prototype.hasOwnProperty.call(body, 'personaOrigin');
   const personaOriginValue = read('persona_origin', 'personaOrigin');
@@ -663,6 +681,8 @@ function identityPackInput(body) {
     live_action_human_confirmed: liveActionHumanConfirmed,
     adult_status: adultStatusValue.trim(),
     identity_consistency_confirmed: identityConsistencyConfirmed,
+    ...(hasWardrobeReferenceAssetId ? { wardrobe_reference_asset_id: wardrobeReferenceAssetId } : {}),
+    ...(hasWardrobeConsistencyConfirmed ? { wardrobe_consistency_confirmed: wardrobeConsistencyConfirmed } : {}),
     ...(hasPersonaOrigin ? { persona_origin: personaOriginValue.trim() } : {}),
     ...(hasTargetCountry ? { target_country: targetCountryValue.trim() } : {}),
     expected_updated_at: expectedUpdatedAtValue.trim(),
@@ -3041,7 +3061,16 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
   function generationGate(req, res) {
     const currentOwner = owner(req);
     try {
-      return response.success(res, redrawReviewService.evaluateGenerationGate(db, req.params.id, currentOwner));
+      return response.success(res, redrawReviewService.evaluateGenerationGate(db, req.params.id, currentOwner, {
+        preparationContext: {
+          storageRoot: storageRootFromConfig(cfg),
+          canReadArtifact,
+          assetReader: {
+            canRead: (row) => Boolean(row && canReadArtifact(row.id)),
+            owns: (row) => Boolean(row && canReadArtifact(row.id)),
+          },
+        },
+      }));
     } catch (error) {
       if (error.code === 'REDRAW_VERSION_NOT_FOUND') return response.notFound(res, '本地化版本不存在');
       if (log && typeof log.error === 'function') log.error(error, '读取生成审核门禁失败');
@@ -3135,6 +3164,7 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
         canReadArtifact,
         assetReader: {
           canRead: (row) => Boolean(row && canReadArtifact(row.id)),
+          owns: (row) => Boolean(row && canReadArtifact(row.id)),
         },
       }, asset.id, identityPackInput(req.body));
       const projected = redrawAssetService.listAssets(db, {
@@ -3308,8 +3338,25 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
         reviewerId: currentOwner.userId,
         tenantId: currentOwner.tenantId,
         userId: currentOwner.userId,
+        preparationContext: {
+          storageRoot: storageRootFromConfig(cfg),
+          canReadArtifact,
+          assetReader: {
+            canRead: (row) => Boolean(row && canReadArtifact(row.id)),
+            owns: (row) => Boolean(row && canReadArtifact(row.id)),
+          },
+        },
       });
-      const gate = redrawReviewService.evaluateGenerationGate(db, asset.version_id, currentOwner);
+      const gate = redrawReviewService.evaluateGenerationGate(db, asset.version_id, currentOwner, {
+        preparationContext: {
+          storageRoot: storageRootFromConfig(cfg),
+          canReadArtifact,
+          assetReader: {
+            canRead: (row) => Boolean(row && canReadArtifact(row.id)),
+            owns: (row) => Boolean(row && canReadArtifact(row.id)),
+          },
+        },
+      });
       return response.success(res, {
         asset: reviewed,
         gate,

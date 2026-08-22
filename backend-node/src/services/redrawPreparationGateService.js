@@ -156,6 +156,30 @@ function sourceKeyFromPayload(payload) {
   return String(ref.source_character_key || ref.stable_id || ref.id || '').trim();
 }
 
+function assetOwnerTrusted(ctx, asset, owner) {
+  if (!asset) return false;
+  if (asset.drama_id != null) {
+    if (!hasTable(ctx.db, 'dramas')) return false;
+    const drama = ctx.db.prepare('SELECT tenant_id, user_id FROM dramas WHERE id = ? AND deleted_at IS NULL LIMIT 1')
+      .get(Number(asset.drama_id));
+    if (!drama) return false;
+    return String(drama.tenant_id || '') === String(owner.tenantId || '')
+      && (!drama.user_id || String(drama.user_id) === String(owner.userId || ''));
+  }
+  return typeof ctx.assetReader?.owns === 'function' && ctx.assetReader.owns(asset, owner) === true;
+}
+
+function loadProviderAsset(ctx, assetId, type, expectedSha, owner) {
+  const asset = ctx.db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL LIMIT 1').get(Number(assetId));
+  const mime = String(asset?.mime_type || '').toLowerCase();
+  if (!asset || String(asset.type || '') !== type) return null;
+  if (type === 'image' && !mime.startsWith('image/')) return null;
+  if (type === 'video' && mime !== 'video/mp4') return null;
+  if (expectedSha && assetSha(asset) !== expectedSha) return null;
+  if (!assetOwnerTrusted(ctx, asset, owner)) return null;
+  return asset;
+}
+
 function loadCharacterRow(ctx, shot, face) {
   return ctx.db.prepare(`
     SELECT *
@@ -188,10 +212,16 @@ function validateFace(ctx, shot, face, plan) {
   if (!row || row.approval_status !== 'approved' || row.status !== 'generated') return false;
   const payload = parseJsonAny(row.source_ref_json, {});
   const pack = isPlainObject(payload?.identity_pack) ? payload.identity_pack : null;
+  const artifactSha = String(pack?.artifact?.sha256 || '').trim();
   return sourceKeyFromPayload(payload) === sourceKey
     && identityPackHash(pack) === packHash
     && String(pack.source_character_key || '').trim() === sourceKey
-    && Number(row.asset_id || 0) === Number(pack.artifact?.asset_id || 0);
+    && Number(row.asset_id || 0) === Number(pack.artifact?.asset_id || 0)
+    && HEX_64.test(artifactSha)
+    && Boolean(loadProviderAsset(ctx, row.asset_id, 'image', artifactSha, {
+      tenantId: shot.tenant_id,
+      userId: shot.user_id,
+    }));
 }
 
 function loadTextRow(ctx, shot, text) {
@@ -224,6 +254,8 @@ function validateText(ctx, shot, text) {
   const payload = parseJsonAny(row.source_ref_json, {});
   const pack = isPlainObject(payload?.text_clean_plate_pack) ? payload.text_clean_plate_pack : null;
   const expectedHash = String(text.clean_plate?.pack_sha256 || text.pack_sha256 || pack?.pack_sha256 || '').trim();
+  const work = ctx.db.prepare('SELECT source_fingerprint FROM redraw_works WHERE id = ? LIMIT 1').get(Number(shot.work_id));
+  const sourceFingerprint = String(work?.source_fingerprint || '').trim();
   return sourceKeyFromPayload(payload) === regionKey
     && payload.source_ref?.kind === kind
     && payload.snapshot?.mode === 'text_clean_plate'
@@ -232,10 +264,16 @@ function validateText(ctx, shot, text) {
     && pack.region_key === regionKey
     && pack.kind === kind
     && pack.ready === true
+    && sourceFingerprint
+    && pack.source_fingerprint === sourceFingerprint
     && textPackHash(pack)
     && (!expectedHash || expectedHash === pack.pack_sha256)
     && Number(pack.artifact?.asset_id || 0) === Number(row.clean_plate_asset_id || 0)
-    && HEX_64.test(String(pack.artifact?.sha256 || ''));
+    && HEX_64.test(String(pack.artifact?.sha256 || ''))
+    && Boolean(loadProviderAsset(ctx, row.clean_plate_asset_id, 'image', String(pack.artifact.sha256), {
+      tenantId: shot.tenant_id,
+      userId: shot.user_id,
+    }));
 }
 
 function assetSha(asset) {
@@ -247,18 +285,47 @@ function validateMotion(ctx, shot, motion) {
   if (!isPlainObject(motion)) return false;
   const assetId = Number(motion.asset_id);
   const expectedSha = String(motion.sha256 || '').trim();
-  if (!Number.isSafeInteger(assetId) || assetId <= 0 || !HEX_64.test(expectedSha)) return false;
+  if (!Number.isSafeInteger(assetId) || assetId <= 0 || !HEX_64.test(expectedSha)
+    || Number(motion.duration_ms) !== Number(shot.duration_ms)
+    || !Number.isSafeInteger(Number(motion.width))
+    || !Number.isSafeInteger(Number(motion.height))
+    || motion.mime_type !== 'video/mp4'
+    || String(motion.codec || motion.video_codec || '') !== 'h264'
+    || Number(motion.audio_tracks ?? motion.audio_stream_count) !== 0
+    || !HEX_64.test(String(motion.face_coverage_sha256 || ''))
+    || !HEX_64.test(String(motion.text_coverage_sha256 || ''))) return false;
   const row = ctx.db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL LIMIT 1').get(assetId);
-  if (!row || String(row.type || '') !== 'video' || !String(row.mime_type || '').startsWith('video/')) return false;
+  if (!row || String(row.type || '') !== 'video' || String(row.mime_type || '') !== 'video/mp4') return false;
   if (assetSha(row) !== expectedSha) return false;
-  if (row.drama_id != null && hasTable(ctx.db, 'dramas')) {
-    const drama = ctx.db.prepare('SELECT tenant_id, user_id FROM dramas WHERE id = ? LIMIT 1').get(Number(row.drama_id));
-    if (drama && (String(drama.tenant_id || '') !== String(shot.tenant_id || '')
-      || String(drama.user_id || '') !== String(shot.user_id || ''))) return false;
-  } else if (ctx.assetReader && typeof ctx.assetReader.owns === 'function' && !ctx.assetReader.owns(row, shot)) {
-    return false;
-  }
+  if (!assetOwnerTrusted(ctx, row, { tenantId: shot.tenant_id, userId: shot.user_id })) return false;
+  const localPath = String(row.local_path || '').replace(/\\/g, '/');
+  if (localPath !== `redraw-conditioning/${expectedSha}.mp4`) return false;
+  const metadata = parseJsonAny(row.metadata, {});
+  const motionMetadata = metadata?.redraw_motion_reference;
+  const work = ctx.db.prepare('SELECT source_asset_id, source_fingerprint FROM redraw_works WHERE id = ? LIMIT 1').get(Number(shot.work_id));
+  if (!isPlainObject(motionMetadata)
+    || motionMetadata.schema_version !== 'redraw-motion-reference-v1'
+    || motionMetadata.tenant_id !== String(shot.tenant_id || '')
+    || motionMetadata.user_id !== String(shot.user_id || '')
+    || Number(motionMetadata.version_id) !== Number(shot.version_id)
+    || Number(motionMetadata.shot_id) !== Number(shot.id)
+    || Number(motionMetadata.source_asset_id) !== Number(work?.source_asset_id)
+    || motionMetadata.source_fingerprint !== String(work?.source_fingerprint || '')
+    || Number(motionMetadata.clip_start_ms) !== Number(shot.start_ms)
+    || Number(motionMetadata.clip_end_ms) !== Number(shot.end_ms)
+    || motionMetadata.face_coverage_sha256 !== motion.face_coverage_sha256
+    || motionMetadata.text_coverage_sha256 !== motion.text_coverage_sha256) return false;
   return true;
+}
+
+function hasDuplicate(values) {
+  const seen = new Set();
+  for (const value of values) {
+    if (!value) return true;
+    if (seen.has(value)) return true;
+    seen.add(value);
+  }
+  return false;
 }
 
 function validateBundleShape(ctx, shot, bundle, plan, missing) {
@@ -270,7 +337,7 @@ function validateBundleShape(ctx, shot, bundle, plan, missing) {
     addMissing(missing, 'reference_bundle', shot.id, 'bundle_shot_mismatch', shotAnchor);
   }
   const review = bundle.coverage_review && typeof bundle.coverage_review === 'object' ? bundle.coverage_review : {};
-  if (review.status !== 'approved' || !review.reviewed_at || !review.reviewed_by) {
+  if ((review.status && review.status !== 'approved') || !review.reviewed_at || !review.reviewed_by) {
     addMissing(missing, 'reference_bundle', shot.id, 'coverage_review_not_current', shotAnchor);
   }
   if (!Array.isArray(bundle.face_tracks)
@@ -281,6 +348,10 @@ function validateBundleShape(ctx, shot, bundle, plan, missing) {
     addMissing(missing, 'reference_bundle', shot.id, 'face_coverage_missing', shotAnchor);
   } else if (!bundle.face_tracks.every((face) => isPlainObject(face))) {
     addMissing(missing, 'reference_bundle', shot.id, 'face_coverage_missing', shotAnchor);
+  } else if (hasDuplicate(bundle.face_tracks.map((face) => String(face.track_key || '').trim()))
+    || hasDuplicate(bundle.face_tracks.map((face) => String(face.source_character_key || '').trim()))
+    || hasDuplicate(bundle.face_tracks.map((face) => String(face.identity_redraw_asset_id || '').trim()))) {
+    addMissing(missing, 'reference_bundle', shot.id, 'character_reference_invalid', shotAnchor);
   } else if (!bundle.face_tracks.every((face) => validateFace(ctx, shot, face, plan))) {
     addMissing(missing, 'reference_bundle', shot.id, 'character_reference_invalid', shotAnchor);
   }
@@ -290,10 +361,18 @@ function validateBundleShape(ctx, shot, bundle, plan, missing) {
   if (!textRegions || !textCountOk || Number(review.mapped_text_region_count) !== textRegions.length) {
     addMissing(missing, 'reference_bundle', shot.id, 'text_cleanup_missing', shotAnchor);
   } else if (Number(review.recognizable_text_region_count) > 0
+    && hasDuplicate(textRegions.map((text) => `${String(text?.region_key || '').trim()}:${String(text?.kind || '').trim()}`))) {
+    addMissing(missing, 'reference_bundle', shot.id, 'text_cleanup_missing', shotAnchor);
+  } else if (Number(review.recognizable_text_region_count) > 0
     && !textRegions.every((text) => validateText(ctx, shot, text))) {
     addMissing(missing, 'reference_bundle', shot.id, 'text_cleanup_missing', shotAnchor);
   }
-  if (!validateMotion(ctx, shot, bundle.motion_reference)) {
+  const motionReference = isPlainObject(bundle.motion_reference) ? {
+    ...bundle.motion_reference,
+    face_coverage_sha256: bundle.motion_reference.face_coverage_sha256 || review.face_coverage_sha256,
+    text_coverage_sha256: bundle.motion_reference.text_coverage_sha256 || review.text_coverage_sha256,
+  } : bundle.motion_reference;
+  if (!validateMotion(ctx, shot, motionReference)) {
     addMissing(missing, 'reference_bundle', shot.id, 'motion_reference_not_current', shotAnchor);
   }
 }

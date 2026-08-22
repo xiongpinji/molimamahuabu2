@@ -40,7 +40,7 @@ function insertAsset(db, input) {
       input.type,
       input.localPath,
       input.mimeType,
-      JSON.stringify({ sha256: input.sha256, width: 640, height: 360 }),
+      JSON.stringify(input.metadata || { sha256: input.sha256, width: 640, height: 360 }),
       NOW,
       NOW,
     );
@@ -123,11 +123,20 @@ function setup() {
   const voiceBytes = Buffer.from('voice-audio');
   const motionBytes = Buffer.from('motion-reference-video');
   const textCleanBytes = Buffer.from('text-clean-image');
+  const sourceFingerprint = sha256('source');
+  const sourceAssetId = 101;
   writeFile(storageRoot, 'redraw/identity.png', imageBytes);
   writeFile(storageRoot, 'redraw/wardrobe.png', wardrobeBytes);
   writeFile(storageRoot, 'redraw/voice.mp3', voiceBytes);
-  writeFile(storageRoot, 'redraw/motion.mp4', motionBytes);
+  writeFile(storageRoot, `redraw-conditioning/${sha256(motionBytes)}.mp4`, motionBytes);
   writeFile(storageRoot, 'redraw/text-clean.png', textCleanBytes);
+  insertAsset(db, {
+    id: sourceAssetId,
+    type: 'video',
+    mimeType: 'video/mp4',
+    localPath: 'source/source.mp4',
+    sha256: sourceFingerprint,
+  });
   insertAsset(db, {
     id: 301,
     type: 'image',
@@ -153,8 +162,30 @@ function setup() {
     id: 601,
     type: 'video',
     mimeType: 'video/mp4',
-    localPath: 'redraw/motion.mp4',
+    localPath: `redraw-conditioning/${sha256(motionBytes)}.mp4`,
     sha256: sha256(motionBytes),
+    metadata: {
+      sha256: sha256(motionBytes),
+      width: 640,
+      height: 360,
+      duration_ms: 5000,
+      mime_type: 'video/mp4',
+      video_codec: 'h264',
+      audio_stream_count: 0,
+      redraw_motion_reference: {
+        schema_version: 'redraw-motion-reference-v1',
+        tenant_id: 'tenant-a',
+        user_id: 'user-a',
+        version_id: 1,
+        shot_id: 1,
+        source_asset_id: sourceAssetId,
+        source_fingerprint: sourceFingerprint,
+        clip_start_ms: 0,
+        clip_end_ms: 5000,
+        face_coverage_sha256: '0'.repeat(64),
+        text_coverage_sha256: sha256(stableJson([])),
+      },
+    },
   });
   insertAsset(db, {
     id: 302,
@@ -170,8 +201,8 @@ function setup() {
   db.prepare(`INSERT INTO redraw_works
     (project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint,
      duration_ms, current_version, current_step, status, created_at, updated_at)
-    VALUES (?, 'tenant-a', 'user-a', '准备门禁作品', 1, ?, 15000, 1, 2, 'asset_review', ?, ?)`)
-    .run(projectId, sha256('source'), NOW, NOW);
+    VALUES (?, 'tenant-a', 'user-a', '准备门禁作品', ?, ?, 15000, 1, 2, 'asset_review', ?, ?)`)
+    .run(projectId, sourceAssetId, sourceFingerprint, NOW, NOW);
   const workId = db.prepare('SELECT id FROM redraw_works LIMIT 1').get().id;
   const facts = {
     characters: [{
@@ -237,7 +268,7 @@ function setup() {
         kind: 'text_subtitle',
         assetId: 302,
         sha256: sha256(textCleanBytes),
-        sourceFingerprint: sha256('source'),
+        sourceFingerprint,
       }),
     }), NOW, NOW, NOW);
   const shotId = Number(db.prepare(`INSERT INTO redraw_shots
@@ -252,6 +283,8 @@ function setup() {
     storageRoot,
     versionId,
     shotId,
+    sourceAssetId,
+    sourceFingerprint,
     identityPackHash: pack.pack_sha256,
     motionHash: sha256(motionBytes),
     textCleanPackHash: textCleanPack({
@@ -259,7 +292,7 @@ function setup() {
       kind: 'text_subtitle',
       assetId: 302,
       sha256: sha256(textCleanBytes),
-      sourceFingerprint: sha256('source'),
+      sourceFingerprint,
     }).pack_sha256,
     cleanup() {
       db.close();
@@ -288,22 +321,52 @@ function preparationEvidenceHash(shot) {
 }
 
 function makeBundle(state, overrides = {}) {
+  const defaultFaces = [{
+    track_key: 'face-001',
+    source_character_key: 'char-a',
+    identity_redraw_asset_id: 201,
+    identity_pack_sha256: state.identityPackHash,
+    time_ranges: [[0, 5000]],
+  }];
+  const defaultTexts = [];
+  const faceTracks = Object.prototype.hasOwnProperty.call(overrides, 'face_tracks') ? overrides.face_tracks : defaultFaces;
+  const textRegions = Object.prototype.hasOwnProperty.call(overrides, 'text_regions') ? overrides.text_regions : defaultTexts;
+  const faceCoverageSha256 = sha256(stableJson(faceTracks.map((entry) => ({
+    identity_redraw_asset_id: Number(entry?.identity_redraw_asset_id),
+    source_character_key: String(entry?.source_character_key || ''),
+    time_ranges: entry?.time_ranges || [],
+    track_key: String(entry?.track_key || ''),
+  })).sort((a, b) => a.track_key.localeCompare(b.track_key))));
+  const textCoverageSha256 = sha256(stableJson(textRegions.map((entry) => ({
+    kind: String(entry?.kind || ''),
+    region_key: String(entry?.region_key || ''),
+    text_clean_redraw_asset_id: Number(entry?.text_clean_redraw_asset_id),
+    time_ranges: entry?.time_ranges || [],
+  })).sort((a, b) => a.region_key.localeCompare(b.region_key))));
+  const metadataRow = state.db.prepare('SELECT metadata FROM assets WHERE id = 601').get();
+  const metadata = JSON.parse(metadataRow.metadata);
+  metadata.redraw_motion_reference.version_id = state.versionId;
+  metadata.redraw_motion_reference.shot_id = state.shotId;
+  metadata.redraw_motion_reference.face_coverage_sha256 = faceCoverageSha256;
+  metadata.redraw_motion_reference.text_coverage_sha256 = textCoverageSha256;
+  state.db.prepare('UPDATE assets SET metadata = ? WHERE id = 601').run(JSON.stringify(metadata));
   const bundle = {
     schema_version: 'redraw-reference-bundle-v1',
     version_id: state.versionId,
     shot_id: state.shotId,
-    face_tracks: [{
-      track_key: 'face-001',
-      source_character_key: 'char-a',
-      identity_redraw_asset_id: 201,
-      identity_pack_sha256: state.identityPackHash,
-      time_ranges: [[0, 5000]],
-    }],
-    text_regions: [],
+    face_tracks: faceTracks,
+    text_regions: textRegions,
     motion_reference: {
       asset_id: 601,
       sha256: state.motionHash,
       duration_ms: 5000,
+      width: 640,
+      height: 360,
+      mime_type: 'video/mp4',
+      codec: 'h264',
+      audio_tracks: 0,
+      face_coverage_sha256: faceCoverageSha256,
+      text_coverage_sha256: textCoverageSha256,
       reviewed_at: NOW,
     },
     coverage_review: {
@@ -500,10 +563,59 @@ test('准备门禁稳定报告 bundle 版本镜头错配、owner 错配、空镜
 test('准备门禁拒绝伪造的人物、文字和运动证据', () => {
   const cases = [
     {
+      reason: 'motion_reference_not_current',
+      mutate(state) {
+        makeBundle(state);
+        delete context(state).assetReader;
+      },
+      run(state) {
+        return evaluatePreparationGate({
+          db: state.db,
+          tenantId: 'tenant-a',
+          userId: 'user-a',
+          storageRoot: state.storageRoot,
+        }, state.versionId);
+      },
+    },
+    {
       reason: 'face_coverage_missing',
       mutate(state) {
         makeBundle(state, {
           face_tracks: [null],
+        });
+      },
+    },
+    {
+      reason: 'character_reference_invalid',
+      mutate(state) {
+        makeBundle(state, {
+          face_tracks: [
+            {
+              track_key: 'face-001',
+              source_character_key: 'char-a',
+              identity_redraw_asset_id: 201,
+              identity_pack_sha256: state.identityPackHash,
+              time_ranges: [[0, 2500]],
+            },
+            {
+              track_key: 'face-001',
+              source_character_key: 'char-a',
+              identity_redraw_asset_id: 201,
+              identity_pack_sha256: state.identityPackHash,
+              time_ranges: [[2500, 5000]],
+            },
+          ],
+          coverage_review: {
+            status: 'approved',
+            reviewed_by: 'user-a',
+            reviewed_at: NOW,
+            recognizable_face_count: 2,
+            mapped_face_count: 2,
+            unresolved_face_count: 0,
+            recognizable_text_region_count: 0,
+            mapped_text_region_count: 0,
+            unresolved_text_region_count: 0,
+          },
         });
       },
     },
@@ -565,6 +677,40 @@ test('准备门禁拒绝伪造的人物、文字和运动证据', () => {
       reason: 'text_cleanup_missing',
       mutate(state) {
         makeBundle(state, {
+          text_regions: [
+            {
+              region_key: 'text-001',
+              kind: 'text_subtitle',
+              time_ranges: [[0, 2500]],
+              text_clean_redraw_asset_id: 202,
+              clean_plate: { pack_sha256: state.textCleanPackHash },
+            },
+            {
+              region_key: 'text-001',
+              kind: 'text_subtitle',
+              time_ranges: [[2500, 5000]],
+              text_clean_redraw_asset_id: 202,
+              clean_plate: { pack_sha256: state.textCleanPackHash },
+            },
+          ],
+          coverage_review: {
+            status: 'approved',
+            reviewed_by: 'user-a',
+            reviewed_at: NOW,
+            recognizable_face_count: 1,
+            mapped_face_count: 1,
+            unresolved_face_count: 0,
+            recognizable_text_region_count: 2,
+            mapped_text_region_count: 2,
+            unresolved_text_region_count: 0,
+          },
+        });
+      },
+    },
+    {
+      reason: 'text_cleanup_missing',
+      mutate(state) {
+        makeBundle(state, {
           text_regions: [{
             region_key: 'text-001',
             kind: 'text_subtitle',
@@ -617,7 +763,7 @@ test('准备门禁拒绝伪造的人物、文字和运动证据', () => {
     const state = setup();
     try {
       entry.mutate(state);
-      const gate = evaluatePreparationGate(context(state), state.versionId);
+      const gate = entry.run ? entry.run(state) : evaluatePreparationGate(context(state), state.versionId);
       assert.equal(gate.ok, false, entry.reason);
       assert.equal(gate.missing.some((item) => item.reason_code === entry.reason), true, entry.reason);
       const serialized = JSON.stringify(gate);
