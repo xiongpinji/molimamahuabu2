@@ -38,6 +38,7 @@ const PERSON_KINDS = new Set(['story_role', 'background_extra']);
 const PERSON_STRATEGIES = new Set(['fixed_actor', 'foreign_adult_extra']);
 const TEXT_KINDS = new Set(['subtitle', 'screen', 'sign', 'ui', 'logo', 'watermark']);
 const TEXT_TREATMENTS = new Set(['translate_subtitle', 'localize_screen', 'remove', 'generalize']);
+const SHOTS_PER_SHEET = 9;
 const REVIEW_REASON_ORDER = Object.freeze([
   'shot_start',
   'shot_end',
@@ -678,8 +679,17 @@ function htmlEscape(value) {
   return String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 }
 
+function expectedSheetCountForShots(shots) {
+  if (!Array.isArray(shots) || shots.length === 0) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
+  return Math.ceil(shots.length / SHOTS_PER_SHEET);
+}
+
+function contactSheetPath(sheetIndex) {
+  return `reviewed-contact-sheets/sheet-${String(sheetIndex + 1).padStart(3, '0')}.jpg`;
+}
+
 async function writeReviewedArtifacts(staging, manifest) {
-  if (!Array.isArray(manifest.shots) || manifest.shots.length !== 9) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
+  const expectedSheetCount = expectedSheetCountForShots(manifest.shots);
   const personByFrame = new Map(manifest.frames.map((frame) => [frame.frame_index, []]));
   const textByFrame = new Map(manifest.frames.map((frame) => [frame.frame_index, []]));
   for (const track of manifest.person_tracks) for (const region of track.regions) personByFrame.get(region.frame_index).push(region);
@@ -690,18 +700,21 @@ async function writeReviewedArtifacts(staging, manifest) {
     await makeOverlay({ framePath: path.join(staging, frame.path), outputPath: path.join(staging, 'reviewed-overlays', 'text', suffix), polygons: textByFrame.get(frame.frame_index).map((item) => item.polygon), color: '#ffcc00' });
   }
   const sheets = [];
-  for (const shot of manifest.shots) {
-    const shotFrames = manifest.frames.filter((frame) => frame.shot_id === shot.shot_id);
-    const selected = shotFrames.filter((frame) => frame.review_point_reasons.length > 0);
+  for (let sheetIndex = 0; sheetIndex < expectedSheetCount; sheetIndex += 1) {
     const rows = [];
-    for (const frame of (selected.length ? selected : [shotFrames[0]])) {
-      const resize = { fit: 'contain', background: '#111111' };
-      const suffix = `frame-${String(frame.frame_index).padStart(6, '0')}.jpg`;
-      rows.push({
-        source: await sharp(path.join(staging, frame.path)).resize(320, 180, resize).jpeg().toBuffer(),
-        person: await sharp(path.join(staging, 'reviewed-overlays', 'person', suffix)).resize(320, 180, resize).jpeg().toBuffer(),
-        text: await sharp(path.join(staging, 'reviewed-overlays', 'text', suffix)).resize(320, 180, resize).jpeg().toBuffer(),
-      });
+    for (const shot of manifest.shots.slice(sheetIndex * SHOTS_PER_SHEET, (sheetIndex + 1) * SHOTS_PER_SHEET)) {
+      const shotFrames = manifest.frames.filter((frame) => frame.shot_id === shot.shot_id);
+      if (shotFrames.length === 0) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
+      const selected = shotFrames.filter((frame) => frame.review_point_reasons.length > 0);
+      for (const frame of (selected.length ? selected : [shotFrames[0]])) {
+        const resize = { fit: 'contain', background: '#111111' };
+        const suffix = `frame-${String(frame.frame_index).padStart(6, '0')}.jpg`;
+        rows.push({
+          source: await sharp(path.join(staging, frame.path)).resize(320, 180, resize).jpeg().toBuffer(),
+          person: await sharp(path.join(staging, 'reviewed-overlays', 'person', suffix)).resize(320, 180, resize).jpeg().toBuffer(),
+          text: await sharp(path.join(staging, 'reviewed-overlays', 'text', suffix)).resize(320, 180, resize).jpeg().toBuffer(),
+        });
+      }
     }
     const composite = [];
     rows.forEach((row, index) => {
@@ -709,16 +722,16 @@ async function writeReviewedArtifacts(staging, manifest) {
       composite.push({ input: row.person, left: 320, top: index * 180 });
       composite.push({ input: row.text, left: 640, top: index * 180 });
     });
-    const relative = `reviewed-contact-sheets/${shot.shot_id}.jpg`;
+    const relative = contactSheetPath(sheetIndex);
     const bytes = await sharp({ create: { width: 960, height: rows.length * 180, channels: 3, background: '#111111' } }).composite(composite).jpeg({ quality: 88 }).toBuffer();
     await writeAtomic(path.join(staging, relative), bytes);
     sheets.push(relative);
   }
-  if (sheets.length !== 9) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
+  if (sheets.length !== expectedSheetCount) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
   const html = [
     '<!doctype html><html><head><meta charset="utf-8"><title>Redraw Full Frame Reviewed</title></head><body>',
     '<h1>Redraw Full Frame Reviewed</h1>',
-    ...manifest.shots.map((shot) => `<section><h2>${htmlEscape(shot.shot_id)}</h2><a href="../reviewed-contact-sheets/${htmlEscape(shot.shot_id)}.jpg">contact sheet</a><ul>${manifest.frames.filter((frame) => frame.shot_id === shot.shot_id && frame.review_point_reasons.length > 0).map((frame) => `<li>frame_index ${frame.frame_index}; reasons ${frame.review_point_reasons.map(htmlEscape).join(', ')}</li>`).join('')}</ul></section>`),
+    ...manifest.shots.map((shot, index) => `<section><h2>${htmlEscape(shot.shot_id)}</h2><a href="../${htmlEscape(contactSheetPath(Math.floor(index / SHOTS_PER_SHEET)))}">contact sheet</a><ul>${manifest.frames.filter((frame) => frame.shot_id === shot.shot_id && frame.review_point_reasons.length > 0).map((frame) => `<li>frame_index ${frame.frame_index}; reasons ${frame.review_point_reasons.map(htmlEscape).join(', ')}</li>`).join('')}</ul></section>`),
     '</body></html>',
   ].join('');
   await writeAtomic(path.join(staging, 'reviewed-review', 'index.html'), html);
@@ -769,7 +782,7 @@ async function validateReviewedCoverageManifest({ evidenceRoot, manifest }) {
       'analysis_sha256',
     ], 'REDRAW_FULL_FRAME_OUTPUT_INVALID');
     if (manifest.schema_version !== 'redraw-full-frame-coverage-v1' || manifest.status !== 'reviewed') fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
-    if (!Array.isArray(manifest.shots) || manifest.shots.length !== 9) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
+    expectedSheetCountForShots(manifest.shots);
     assertExactKeys(manifest.review, ['status', 'reviewed', 'required_review_point_count', 'reviewed_point_count', 'reviewer'], 'REDRAW_FULL_FRAME_OUTPUT_INVALID');
     if (manifest.review.status !== 'reviewed' || manifest.review.reviewed !== true || manifest.review.reviewer !== REVIEWER) fail('REDRAW_FULL_FRAME_APPROVAL_FORBIDDEN');
     if (manifest.review.required_review_point_count !== manifest.review.reviewed_point_count) fail('REDRAW_FULL_FRAME_APPROVAL_FORBIDDEN');
@@ -807,9 +820,12 @@ async function validateReviewedCoverageManifest({ evidenceRoot, manifest }) {
 }
 
 async function verifyOutput(staging, sheets) {
-  if (!Array.isArray(sheets) || sheets.length !== 9) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
   const reviewed = JSON.parse(await fsp.readFile(path.join(staging, 'redraw-full-frame-reviewed-manifest.json'), 'utf8'));
   await validateReviewedCoverageManifest({ evidenceRoot: staging, manifest: reviewed });
+  if (!Array.isArray(sheets) || sheets.length !== expectedSheetCountForShots(reviewed.shots)) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
+  const sheetDir = path.join(staging, 'reviewed-contact-sheets');
+  const actualSheets = (await fsp.readdir(sheetDir)).map((name) => `reviewed-contact-sheets/${name}`).sort();
+  if (stableJson(actualSheets) !== stableJson([...sheets].sort())) fail('REDRAW_FULL_FRAME_OUTPUT_INVALID');
   const required = [
     'redraw-full-frame-reviewed-manifest.json',
     'review-correction-summary.json',
