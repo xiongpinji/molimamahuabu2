@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -72,6 +73,7 @@ const PROVIDER_TASK_RECEIPT_ALLOWED_PATHS = [
   'backend-node/test/providerTaskReconciliation.test.js',
   'backend-node/test/storyboardImageFailure.test.js',
   'backend-node/test/taskService.test.js',
+  'backend-node/test/videoQueryTaskStatusOnce.test.js',
   'deploy/release-scopes/provider-task-receipt-reconciliation-20260822.json',
   'docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md',
   'docs/superpowers/specs/2026-08-22-provider-task-receipt-reconciliation-design.md',
@@ -255,6 +257,17 @@ function assertExactVideoAudioCreditScope(allowedPaths) {
 
 function assertExactProviderTaskReceiptScope(allowedPaths) {
   assert.deepEqual(allowedPaths, PROVIDER_TASK_RECEIPT_ALLOWED_PATHS);
+}
+
+function providerTaskReceiptChangedPaths() {
+  return execFileSync('git', ['diff', '--name-only', 'origin/main...HEAD', '--'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  })
+    .split(/\r?\n/)
+    .map((entry) => entry.trim().replaceAll('\\', '/'))
+    .filter(Boolean)
+    .sort();
 }
 
 function createFixture() {
@@ -527,10 +540,11 @@ test('视频音频与冻结积分收口发布范围拒绝同数量偷换任一�
   );
 });
 
-test('供应商任务不可变凭证发布范围是逐项精确 28 文件白名单', () => {
+test('供应商任务不可变凭证发布范围与 origin/main 到候选的 29 个路径逐项相等', () => {
   const { manifest, allowedPaths } = loadManifest(providerTaskReceiptManifestPath);
   assert.equal(manifest.release, 'provider-task-receipt-reconciliation-20260822');
   assertExactProviderTaskReceiptScope(allowedPaths);
+  assert.deepEqual(allowedPaths, providerTaskReceiptChangedPaths());
   assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
 
   for (const forbidden of [

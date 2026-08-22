@@ -25,6 +25,7 @@
     "backend-node/test/providerTaskReconciliation.test.js",
     "backend-node/test/storyboardImageFailure.test.js",
     "backend-node/test/taskService.test.js",
+    "backend-node/test/videoQueryTaskStatusOnce.test.js",
     "deploy/release-scopes/provider-task-receipt-reconciliation-20260822.json",
     "docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md",
     "docs/superpowers/specs/2026-08-22-provider-task-receipt-reconciliation-design.md",

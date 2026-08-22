@@ -51,6 +51,25 @@ const PROVIDER_TASK_RECEIPT_UNLOCK = {
     'backend-node/test/taskService.test.js',
   ],
 };
+const PROVIDER_TASK_ARTIFACT_QUALITY_UNLOCK = {
+  reason: '2026-08-23 无产物视频任务冻结积分质量修复获批',
+  approvedBy: 'product-owner 2026-08-23 provider-task-artifact-unreadable',
+  impactTests: [
+    'backend-node/test/videoQueryTaskStatusOnce.test.js',
+    'backend-node/test/providerTaskReconciliation.test.js',
+    'backend-node/test/providerRouteVideoIntegration.test.js',
+    'backend-node/test/videoBilling.test.js',
+    'backend-node/test/creditLedger.test.js',
+    'backend-node/test/providerReconciliation.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const PROVIDER_TASK_ARTIFACT_QUALITY_FEATURE_IDS = new Set([
+  SAFE_PROVIDER_FAILOVER_FEATURE_ID,
+  UNKNOWN_STATE_RECONCILIATION_FEATURE_ID,
+  PROACTIVE_CANARY_FEATURE_ID,
+]);
 const COMPLETE_ACCEPTANCE_ACCEPTANCE = [
   '来源功能清单与验收决策账本通过 SHA 和 feature_id 一致性绑定',
   '未登记功能保持 unverified，阻断功能不能伪装为通过',
@@ -297,6 +316,7 @@ const PROVIDER_TASK_LOCK_REQUIREMENTS = {
       'backend-node/test/providerRouteVideoIntegration.test.js',
       'backend-node/test/providerTaskReconciliation.test.js',
       'backend-node/test/storyboardImageFailure.test.js',
+      'backend-node/test/videoQueryTaskStatusOnce.test.js',
     ],
   },
   [UNKNOWN_STATE_RECONCILIATION_FEATURE_ID]: {
@@ -402,13 +422,20 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   assert.deepEqual(feature.evidence.slice(0, PROACTIVE_CANARY_EVIDENCE.length), PROACTIVE_CANARY_EVIDENCE);
 });
 
-test('供应商任务凭证变更覆盖实际触及的五个锁并使用同一新鲜批准记录', () => {
+test('供应商任务凭证与无产物质量修复使用分阶段新鲜批准并保留完整历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   for (const [featureId, requirements] of Object.entries(PROVIDER_TASK_LOCK_REQUIREMENTS)) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
     assert.ok(feature, `缺少功能锁 ${featureId}`);
-    assert.deepEqual(feature.unlock, PROVIDER_TASK_RECEIPT_UNLOCK);
-    assert.deepEqual(feature.unlockHistory, [HISTORICAL_UNLOCK_BY_FEATURE[featureId]]);
+    const qualityFixTouched = PROVIDER_TASK_ARTIFACT_QUALITY_FEATURE_IDS.has(featureId);
+    assert.deepEqual(
+      feature.unlock,
+      qualityFixTouched ? PROVIDER_TASK_ARTIFACT_QUALITY_UNLOCK : PROVIDER_TASK_RECEIPT_UNLOCK,
+    );
+    assert.deepEqual(feature.unlockHistory, [
+      HISTORICAL_UNLOCK_BY_FEATURE[featureId],
+      ...(qualityFixTouched ? [PROVIDER_TASK_RECEIPT_UNLOCK] : []),
+    ]);
     assert.deepEqual(
       feature.evidence.slice(0, HISTORICAL_EVIDENCE_BY_FEATURE[featureId].length),
       HISTORICAL_EVIDENCE_BY_FEATURE[featureId],
@@ -430,7 +457,7 @@ test('供应商任务凭证变更覆盖实际触及的五个锁并使用同一�
   assert.deepEqual(appLocks, [PROACTIVE_CANARY_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].sort());
   for (const featureId of appLocks) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
-    assert.deepEqual(feature.unlock, PROVIDER_TASK_RECEIPT_UNLOCK);
+    assert.deepEqual(feature.unlock, PROVIDER_TASK_ARTIFACT_QUALITY_UNLOCK);
   }
 });
 
