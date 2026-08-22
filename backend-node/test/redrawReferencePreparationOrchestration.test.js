@@ -353,8 +353,8 @@ async function setupDefaultServerPath(options = {}) {
     script_sha256: '9'.repeat(64),
     name_map_source_sha256: sha256(stableJson(nameMap)),
     characters: [{
-      source_character_key: 'char-a', target_name: 'Alice Carter',
-      adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated',
+      source_character_key: 'char-a',
+      source_name: 'Alice',
     }],
     shots: [{ id: 'shot-1', confidence: confidence(0.99) }],
   };

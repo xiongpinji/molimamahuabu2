@@ -211,9 +211,7 @@ function setup() {
   const facts = {
     characters: [{
       source_character_key: 'char-a',
-      target_name: 'Alice Carter',
-      adult_status: 'verified_18_plus',
-      persona_origin: 'fictional_ai_generated',
+      source_name: 'Alice',
     }],
   };
   const factsHash = sha256(stableJson(facts));
