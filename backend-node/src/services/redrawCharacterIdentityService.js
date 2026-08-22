@@ -5,6 +5,7 @@ const path = require('node:path');
 const SCHEMA_VERSION = 'target-actor-identity-v1';
 const PERSONA_ORIGIN = 'fictional_ai_generated';
 const TARGET_COUNTRY = 'US';
+const WARDROBE_LABEL = '整集主服装';
 const REQUIRED_VIEWS = ['front', 'profile', 'full_body'];
 const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   'image/png',
@@ -66,6 +67,19 @@ function sanitizeArtifact(value) {
   };
 }
 
+function sanitizeWardrobe(value) {
+  if (!value || typeof value !== 'object') return null;
+  const assetId = Number(value.reference_asset_id);
+  const digest = String(value.reference_sha256 || '').toLowerCase();
+  if (!Number.isSafeInteger(assetId) || assetId <= 0 || !/^[0-9a-f]{64}$/.test(digest)) return null;
+  return {
+    label: WARDROBE_LABEL,
+    reference_asset_id: assetId,
+    reference_sha256: digest,
+    consistency_confirmed: value.consistency_confirmed === true,
+  };
+}
+
 function packFrom(value) {
   if (!value || typeof value !== 'object') return null;
   if (value.identity_pack && typeof value.identity_pack === 'object') return value.identity_pack;
@@ -87,6 +101,10 @@ function packCompleteness(pack) {
   }
   if (pack?.identity_consistency_confirmed !== true) {
     missingConfirmations.push('identity_consistency_confirmed');
+  }
+  const wardrobe = sanitizeWardrobe(pack?.wardrobe);
+  if (!wardrobe || wardrobe.consistency_confirmed !== true) {
+    missingConfirmations.push('wardrobe');
   }
   const validContract = pack?.schema_version === SCHEMA_VERSION
     && Boolean(String(pack?.source_character_key || '').trim())
@@ -121,6 +139,7 @@ function canonicalPackFields(pack) {
     live_action_human_confirmed: pack?.live_action_human_confirmed === true,
     adult_status: pack?.adult_status === 'verified_18_plus' ? 'verified_18_plus' : null,
     identity_consistency_confirmed: pack?.identity_consistency_confirmed === true,
+    wardrobe: sanitizeWardrobe(pack?.wardrobe),
     ready: packCompleteness(pack).ready,
     reviewed_by: String(pack?.reviewed_by || '').trim() || null,
     reviewed_at: String(pack?.reviewed_at || '').trim() || null,
@@ -159,6 +178,7 @@ function readIdentityPack(row) {
     live_action_human_confirmed: source.live_action_human_confirmed === true,
     adult_status: source.adult_status === 'verified_18_plus' ? 'verified_18_plus' : null,
     identity_consistency_confirmed: source.identity_consistency_confirmed === true,
+    wardrobe: sanitizeWardrobe(source.wardrobe),
     ready: false,
     pack_sha256: /^[0-9a-f]{64}$/.test(String(source.pack_sha256 || ''))
       ? String(source.pack_sha256)
@@ -351,6 +371,83 @@ function resolveArtifact(ctx, row) {
   };
 }
 
+function resolveWardrobe(ctx, input = {}) {
+  const { db, storageRoot, tenantId, userId } = ctx;
+  const assetId = Number(
+    input.wardrobe_reference_asset_id
+      ?? input.wardrobeReferenceAssetId
+      ?? input.wardrobe?.reference_asset_id
+      ?? input.wardrobe?.referenceAssetId,
+  );
+  if (!Number.isSafeInteger(assetId) || assetId <= 0) return null;
+  const asset = db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(assetId);
+  if (asset?.drama_id != null) {
+    const drama = db.prepare('SELECT tenant_id, user_id FROM dramas WHERE id = ? AND deleted_at IS NULL')
+      .get(Number(asset.drama_id));
+    const dramaTenantId = String(drama?.tenant_id ?? '').trim();
+    const dramaUserId = String(drama?.user_id ?? '').trim();
+    const owned = dramaTenantId
+      ? dramaTenantId === tenantId && (!dramaUserId || dramaUserId === userId)
+      : Boolean(dramaUserId) && dramaUserId === userId;
+    if (!owned) {
+      throw codedError('REDRAW_IDENTITY_WARDROBE_NOT_OWNED', '角色服装参考图不属于当前租户用户');
+    }
+  }
+  const hookReadable = typeof ctx.assetReader?.canRead === 'function'
+    ? ctx.assetReader.canRead(asset) === true
+    : typeof ctx.canReadArtifact === 'function'
+      ? ctx.canReadArtifact(assetId) === true
+      : true;
+  if (!hookReadable) {
+    throw codedError('REDRAW_IDENTITY_WARDROBE_NOT_READABLE', '角色服装参考图不可读取');
+  }
+  const mimeType = String(asset?.mime_type || '').trim().toLowerCase();
+  if (!asset || asset.type !== 'image' || !SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
+    throw codedError('REDRAW_IDENTITY_WARDROBE_INVALID', '角色服装参考必须是受支持图片');
+  }
+  const localPath = String(asset.local_path || '').trim();
+  const portablePath = localPath.replace(/\\/g, '/');
+  if (!localPath || path.posix.isAbsolute(localPath) || path.win32.isAbsolute(localPath)
+    || portablePath === '.' || portablePath.split('/').includes('..')) {
+    throw codedError('REDRAW_IDENTITY_WARDROBE_PATH_INVALID', '角色服装参考路径无效');
+  }
+  const fsApi = ctx.fs || fs;
+  let rootRealPath;
+  try {
+    rootRealPath = fsApi.realpathSync(storageRoot);
+  } catch (_) {
+    throw codedError('REDRAW_IDENTITY_WARDROBE_NOT_READABLE', '资产存储根目录不可读取');
+  }
+  const candidatePath = path.resolve(rootRealPath, localPath);
+  if (!isInside(rootRealPath, candidatePath)) {
+    throw codedError('REDRAW_IDENTITY_WARDROBE_PATH_INVALID', '角色服装参考必须位于资产存储目录内');
+  }
+  let realPath;
+  try {
+    realPath = fsApi.realpathSync(candidatePath);
+  } catch (_) {
+    throw codedError('REDRAW_IDENTITY_WARDROBE_NOT_READABLE', '角色服装参考图不可读取');
+  }
+  if (!isInside(rootRealPath, realPath)) {
+    throw codedError('REDRAW_IDENTITY_WARDROBE_PATH_INVALID', '角色服装参考符号链接越界');
+  }
+  let bytes;
+  try {
+    bytes = fsApi.readFileSync(realPath);
+  } catch (_) {
+    throw codedError('REDRAW_IDENTITY_WARDROBE_NOT_READABLE', '角色服装参考图不可读取');
+  }
+  return {
+    label: WARDROBE_LABEL,
+    reference_asset_id: assetId,
+    reference_sha256: sha256(bytes),
+    consistency_confirmed: input.wardrobe_consistency_confirmed === true
+      || input.wardrobeConsistencyConfirmed === true
+      || input.wardrobe?.consistency_confirmed === true
+      || input.wardrobe?.consistencyConfirmed === true,
+  };
+}
+
 function nextServerTimestamp(ctx, previous) {
   const supplied = typeof ctx.now === 'function' ? ctx.now() : ctx.now;
   let next = new Date(supplied || Date.now());
@@ -411,6 +508,7 @@ function saveIdentityPack(ctx, assetId, input = {}) {
       : null,
     identity_consistency_confirmed: input.identity_consistency_confirmed === true
       || input.identityConsistencyConfirmed === true,
+    wardrobe: resolveWardrobe(identityContext, input),
     ready: false,
     reviewed_by: userId,
     reviewed_at: reviewedAt,

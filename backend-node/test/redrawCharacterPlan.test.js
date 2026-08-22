@@ -1,0 +1,376 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const Database = require('better-sqlite3');
+
+const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const { saveIdentityPack } = require('../src/services/redrawCharacterIdentityService');
+const {
+  assertCharacterPlanReady,
+  buildCharacterPlan,
+} = require('../src/services/redrawCharacterPlanService');
+
+const NOW = '2026-08-22T00:00:00.000Z';
+const TTS_CONFIG_ID = 91;
+const TTS_CONFIG_UPDATED_AT = '2026-08-20T00:00:00.000Z';
+const MODEL_SHA = 'a'.repeat(64);
+const CALIBRATION_SHA = 'b'.repeat(64);
+const AUDIO_SHA = 'c'.repeat(64);
+const TRANSCRIPT_SHA = 'd'.repeat(64);
+
+function sha256(value) {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function setup() {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-character-plan-'));
+  db.prepare(`INSERT INTO redraw_projects
+    (tenant_id, user_id, title, created_at, updated_at)
+    VALUES ('tenant-a', 'user-a', '角色计划项目', ?, ?)`).run(NOW, NOW);
+  db.prepare(`INSERT INTO redraw_works
+    (project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint, duration_ms, created_at, updated_at)
+    VALUES (1, 'tenant-a', 'user-a', '角色计划作品', 1, 'source-a', 15000, ?, ?)`).run(NOW, NOW);
+  const workId = db.prepare('SELECT id FROM redraw_works LIMIT 1').get().id;
+  db.prepare(`INSERT INTO redraw_versions
+    (work_id, tenant_id, user_id, version, locale, market, source_facts_json, facts_hash,
+     name_map_json, status, created_at, updated_at)
+    VALUES (?, 'tenant-a', 'user-a', 1, 'en-US', 'US', ?, 'facts-a', '{}',
+      'asset_review', ?, ?)`)
+    .run(workId, JSON.stringify({
+      characters: [
+        { source_character_key: 'char-b', target_name: 'Brian Miller', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
+        { source_character_key: 'char-a', target_name: 'Alice Carter', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
+      ],
+    }), NOW, NOW);
+  db.prepare(`INSERT INTO ai_service_configs
+    (id, service_type, provider, name, model, default_model, is_active, created_at, updated_at)
+    VALUES (?, 'tts', 'fake-tts', 'TTS', ?, 'model-tts', 1, ?, ?)`)
+    .run(TTS_CONFIG_ID, JSON.stringify(['model-tts']), TTS_CONFIG_UPDATED_AT, TTS_CONFIG_UPDATED_AT);
+  return { db, root, versionId: Number(db.prepare('SELECT id FROM redraw_versions LIMIT 1').get().id) };
+}
+
+function close(state) {
+  state.db.close();
+  fs.rmSync(state.root, { recursive: true, force: true });
+}
+
+function context(state) {
+  return {
+    db: state.db,
+    tenantId: 'tenant-a',
+    userId: 'user-a',
+    versionId: state.versionId,
+    storageRoot: state.root,
+    now: NOW,
+    localeRegistry: {
+      assertEvidenceTrusted(evidence) {
+        assert.equal(evidence.source, 'offline-worker');
+        assert.equal(evidence.locale_pack, 'en-US@fixture');
+        return evidence;
+      },
+    },
+    assetReader: {
+      canRead(asset) {
+        return Boolean(asset?.local_path && fs.existsSync(path.join(state.root, asset.local_path)));
+      },
+    },
+  };
+}
+
+function addProviderAsset(state, id, file, input = {}) {
+  fs.writeFileSync(path.join(state.root, file), input.bytes || Buffer.from(`asset-${id}`));
+  state.db.prepare(`INSERT INTO assets
+    (id, drama_id, name, type, category, url, local_path, mime_type, width, height, duration, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'redraw', '', ?, ?, ?, ?, ?, ?, ?)`)
+    .run(
+      id,
+      input.dramaId ?? null,
+      input.name || `asset-${id}`,
+      input.type || 'image',
+      file,
+      input.mimeType || 'image/png',
+      input.width ?? 640,
+      input.height ?? 960,
+      input.duration ?? null,
+      NOW,
+      NOW,
+    );
+}
+
+function addCharacter(state, sourceKey, targetName, input = {}) {
+  addProviderAsset(state, input.assetId || sourceKey.charCodeAt(sourceKey.length - 1) + 100, `${sourceKey}.png`, {
+    bytes: Buffer.from(`identity-${sourceKey}`),
+  });
+  addProviderAsset(state, input.wardrobeAssetId || sourceKey.charCodeAt(sourceKey.length - 1) + 200, `${sourceKey}-wardrobe.png`, {
+    bytes: Buffer.from(`wardrobe-${sourceKey}`),
+  });
+  const assetId = input.assetId || sourceKey.charCodeAt(sourceKey.length - 1) + 100;
+  const id = Number(state.db.prepare(`INSERT INTO redraw_assets
+    (version_id, tenant_id, user_id, kind, source_ref_json, localized_name, localized_description,
+     prompt, asset_id, version_number, approval_status, status, created_at, updated_at)
+    VALUES (?, 'tenant-a', 'user-a', 'character', ?, ?, 'character', 'prompt', ?, 1,
+      'approved', 'generated', ?, ?)`)
+    .run(
+      state.versionId,
+      JSON.stringify({ source_ref: { source_character_key: sourceKey } }),
+      targetName,
+      assetId,
+      NOW,
+      NOW,
+    ).lastInsertRowid);
+  return saveIdentityPack(context(state), id, {
+    expected_updated_at: NOW,
+    target_actor_label: targetName,
+    confirmed_views: ['front', 'profile', 'full_body'],
+    live_action_human_confirmed: true,
+    adult_status: input.adultStatus || 'verified_18_plus',
+    identity_consistency_confirmed: true,
+    persona_origin: input.personaOrigin || 'fictional_ai_generated',
+    target_country: 'US',
+    wardrobe_reference_asset_id: input.wardrobeAssetId || sourceKey.charCodeAt(sourceKey.length - 1) + 200,
+    wardrobe_consistency_confirmed: input.wardrobeConfirmed !== false,
+  });
+}
+
+function addVoice(state, sourceKey, input = {}) {
+  const audioAssetId = input.audioAssetId || sourceKey.charCodeAt(sourceKey.length - 1) + 300;
+  addProviderAsset(state, audioAssetId, `${sourceKey}.mp3`, {
+    type: 'audio',
+    mimeType: 'audio/mpeg',
+    duration: 3.2,
+    width: null,
+    height: null,
+    bytes: Buffer.from(`voice-${sourceKey}`),
+  });
+  const evidence = {
+    source: 'offline-worker',
+    locale: input.locale || 'en-US',
+    market: input.market || 'US',
+    locale_pack: 'en-US@fixture',
+    audio_sha256: AUDIO_SHA,
+    transcript_sha256: TRANSCRIPT_SHA,
+    model_manifest_sha256: MODEL_SHA,
+    calibration_manifest_sha256: CALIBRATION_SHA,
+    asr_model_revision: 'asr-en-20260820',
+    accent_model_revision: 'accent-en-20260820',
+    metrics: { word_error_rate: 0, accent_confidence: 0.99 },
+    completed_at: NOW,
+    provider: 'fake-tts',
+    model: 'model-tts',
+    ai_service_config_id: TTS_CONFIG_ID,
+    config_updated_at: TTS_CONFIG_UPDATED_AT,
+    voice_id: `voice-${sourceKey}`,
+    task_id: `task-${sourceKey}`,
+    terminal_status: 'completed',
+    audio_asset_id: audioAssetId,
+    duration_ms: 3200,
+    real_generation_verified: true,
+    language_verified: input.languageVerified !== false,
+    detected_locale: input.detectedLocale || input.locale || 'en-US',
+    is_cloned: false,
+    authorization_asset_id: null,
+  };
+  state.db.prepare(`INSERT INTO redraw_assets
+    (version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+     voice_asset_id, version_number, approval_status, status, created_at, updated_at)
+    VALUES (?, 'tenant-a', 'user-a', 'voice', ?, ?, ?, 1, ?, 'generated', ?, ?)`)
+    .run(
+      state.versionId,
+      JSON.stringify({ source_ref: { source_character_key: sourceKey }, snapshot: { voice_evidence: evidence } }),
+      `voice ${sourceKey}`,
+      audioAssetId,
+      input.approvalStatus || 'approved',
+      NOW,
+      NOW,
+    );
+  const character = state.db.prepare(`SELECT id, source_ref_json, updated_at FROM redraw_assets
+    WHERE kind = 'character' AND version_id = ? AND localized_name = ?`)
+    .get(state.versionId, sourceKey === 'char-a' ? 'Alice Carter' : 'Brian Miller');
+  const payload = JSON.parse(character.source_ref_json);
+  payload.snapshot = { ...(payload.snapshot || {}), voice_snapshot: evidence };
+  state.db.prepare(`UPDATE redraw_assets SET voice_asset_id = ?, source_ref_json = ?, updated_at = ?
+    WHERE id = ?`).run(audioAssetId, JSON.stringify(payload), `${NOW}.${sourceKey}`, character.id);
+}
+
+function makeReadyState() {
+  const state = setup();
+  addCharacter(state, 'char-b', 'Brian Miller');
+  addCharacter(state, 'char-a', 'Alice Carter');
+  addVoice(state, 'char-a');
+  addVoice(state, 'char-b');
+  return state;
+}
+
+test('buildCharacterPlan 返回严格白名单、稳定排序和 plan_hash', () => {
+  const state = makeReadyState();
+  try {
+    const plan = buildCharacterPlan(context(state), state.versionId);
+
+    assert.equal(plan.version_id, state.versionId);
+    assert.equal(plan.ready, true);
+    assert.deepEqual(plan.missing, []);
+    assert.deepEqual(plan.characters.map((item) => item.source_character_key), ['char-a', 'char-b']);
+    assert.deepEqual(Object.keys(plan).sort(), ['characters', 'missing', 'plan_hash', 'ready', 'version_id']);
+    for (const character of plan.characters) {
+      assert.deepEqual(Object.keys(character).sort(), [
+        'adult_status',
+        'identity_pack_sha256',
+        'source_character_key',
+        'target_name',
+        'voice',
+        'wardrobe',
+      ]);
+      assert.deepEqual(Object.keys(character.voice).sort(), ['asset_id', 'language', 'ready', 'sha256']);
+      assert.deepEqual(Object.keys(character.wardrobe).sort(), ['asset_id', 'label', 'ready', 'sha256']);
+      assert.equal(character.adult_status, 'verified_18_plus');
+      assert.equal(character.voice.language, 'en-US');
+      assert.equal(character.voice.ready, true);
+      assert.equal(character.wardrobe.label, '整集主服装');
+      assert.equal(character.wardrobe.ready, true);
+      assert.match(character.identity_pack_sha256, /^[0-9a-f]{64}$/);
+      assert.match(character.voice.sha256, /^[0-9a-f]{64}$/);
+      assert.match(character.wardrobe.sha256, /^[0-9a-f]{64}$/);
+    }
+    assert.match(plan.plan_hash, /^[0-9a-f]{64}$/);
+    assert.equal(JSON.stringify(plan).includes(state.root), false);
+    assert.equal(JSON.stringify(plan).includes('source_ref_json'), false);
+  } finally {
+    close(state);
+  }
+});
+
+test('assertCharacterPlanReady fail closed 并带稳定缺口', () => {
+  const state = makeReadyState();
+  try {
+    state.db.prepare("UPDATE redraw_assets SET approval_status = 'pending' WHERE kind = 'voice' AND localized_name = 'voice char-a'")
+      .run();
+
+    const plan = buildCharacterPlan(context(state), state.versionId);
+
+    assert.equal(plan.ready, false);
+    assert.deepEqual(plan.missing, ['char-a:voice_not_approved']);
+    assert.throws(
+      () => assertCharacterPlanReady(context(state), state.versionId),
+      (error) => error.code === 'REDRAW_CHARACTER_PLAN_NOT_READY'
+        && error.missing[0] === 'char-a:voice_not_approved',
+    );
+  } finally {
+    close(state);
+  }
+});
+
+test('角色计划拒绝缺角色、重复键、重复目标名和复用身份包', () => {
+  const cases = [
+    ['missing_character', (state) => state.db.prepare("DELETE FROM redraw_assets WHERE kind = 'character' AND localized_name = 'Alice Carter'").run()],
+    ['duplicate_source_character_key', (state) => addCharacter(state, 'char-a', 'Alicia Carter', { assetId: 501, wardrobeAssetId: 601 })],
+    ['duplicate_target_name', (state) => state.db.prepare("UPDATE redraw_assets SET localized_name = 'Alice Carter' WHERE kind = 'character' AND localized_name = 'Brian Miller'").run()],
+    ['identity_pack_reused', (state) => {
+      const first = state.db.prepare("SELECT source_ref_json FROM redraw_assets WHERE kind = 'character' AND localized_name = 'Alice Carter'").get();
+      const payload = JSON.parse(first.source_ref_json);
+      payload.source_ref = { source_character_key: 'char-b' };
+      payload.identity_pack.source_character_key = 'char-b';
+      state.db.prepare("UPDATE redraw_assets SET source_ref_json = ? WHERE kind = 'character' AND localized_name = 'Brian Miller'")
+        .run(JSON.stringify(payload));
+    }],
+  ];
+  for (const [reason, mutate] of cases) {
+    const state = makeReadyState();
+    try {
+      mutate(state);
+      const plan = buildCharacterPlan(context(state), state.versionId);
+      assert.equal(plan.ready, false, reason);
+      assert.equal(plan.missing.some((item) => item.includes(reason)), true, reason);
+    } finally {
+      close(state);
+    }
+  }
+});
+
+test('角色计划拒绝年龄、真人来源、声音语言和服装证据问题', () => {
+  const cases = [
+    ['age_not_adult', (state) => {
+      const row = state.db.prepare("SELECT source_ref_json FROM redraw_assets WHERE kind = 'character' AND localized_name = 'Alice Carter'").get();
+      const payload = JSON.parse(row.source_ref_json);
+      payload.identity_pack.adult_status = 'unknown';
+      state.db.prepare("UPDATE redraw_assets SET source_ref_json = ? WHERE kind = 'character' AND localized_name = 'Alice Carter'")
+        .run(JSON.stringify(payload));
+    }],
+    ['persona_not_fictional_ai', (state) => {
+      const row = state.db.prepare("SELECT source_ref_json FROM redraw_assets WHERE kind = 'character' AND localized_name = 'Alice Carter'").get();
+      const payload = JSON.parse(row.source_ref_json);
+      delete payload.identity_pack.persona_origin;
+      state.db.prepare("UPDATE redraw_assets SET source_ref_json = ? WHERE kind = 'character' AND localized_name = 'Alice Carter'")
+        .run(JSON.stringify(payload));
+    }],
+    ['voice_language_mismatch', (state) => addVoice(state, 'char-a', {
+      audioAssetId: 701,
+      locale: 'es-ES',
+      market: 'ES',
+      detectedLocale: 'es-ES',
+    })],
+    ['wardrobe_missing_reference', (state) => {
+      const row = state.db.prepare("SELECT source_ref_json FROM redraw_assets WHERE kind = 'character' AND localized_name = 'Alice Carter'").get();
+      const payload = JSON.parse(row.source_ref_json);
+      delete payload.identity_pack.wardrobe;
+      state.db.prepare("UPDATE redraw_assets SET source_ref_json = ? WHERE kind = 'character' AND localized_name = 'Alice Carter'")
+        .run(JSON.stringify(payload));
+    }],
+    ['wardrobe_hash_drift', (state) => {
+      const row = state.db.prepare("SELECT source_ref_json FROM redraw_assets WHERE kind = 'character' AND localized_name = 'Alice Carter'").get();
+      const payload = JSON.parse(row.source_ref_json);
+      payload.identity_pack.wardrobe.reference_sha256 = sha256('tampered');
+      state.db.prepare("UPDATE redraw_assets SET source_ref_json = ? WHERE kind = 'character' AND localized_name = 'Alice Carter'")
+        .run(JSON.stringify(payload));
+    }],
+  ];
+  for (const [reason, mutate] of cases) {
+    const state = makeReadyState();
+    try {
+      mutate(state);
+      const plan = buildCharacterPlan(context(state), state.versionId);
+      assert.equal(plan.ready, false, reason);
+      assert.equal(plan.missing.some((item) => item.includes(reason)), true, reason);
+    } finally {
+      close(state);
+    }
+  }
+});
+
+test('角色计划拒绝跨 owner 服装资产', () => {
+  const state = setup();
+  try {
+    state.db.prepare(`INSERT INTO dramas
+      (id, title, tenant_id, user_id, created_at, updated_at)
+      VALUES (77, 'other', 'tenant-b', 'user-b', ?, ?)`).run(NOW, NOW);
+    addProviderAsset(state, 301, 'char-a.png', { bytes: Buffer.from('identity-char-a') });
+    addProviderAsset(state, 401, 'char-a-wardrobe.png', { bytes: Buffer.from('wardrobe-char-a'), dramaId: 77 });
+    const id = Number(state.db.prepare(`INSERT INTO redraw_assets
+      (version_id, tenant_id, user_id, kind, source_ref_json, localized_name, prompt,
+       asset_id, version_number, approval_status, status, created_at, updated_at)
+      VALUES (?, 'tenant-a', 'user-a', 'character', ?, 'Alice Carter', 'prompt', 301,
+        1, 'approved', 'generated', ?, ?)`)
+      .run(state.versionId, JSON.stringify({ source_ref: { source_character_key: 'char-a' } }), NOW, NOW).lastInsertRowid);
+    assert.throws(
+      () => saveIdentityPack(context(state), id, {
+        expected_updated_at: NOW,
+        target_actor_label: 'Alice Carter',
+        confirmed_views: ['front', 'profile', 'full_body'],
+        live_action_human_confirmed: true,
+        adult_status: 'verified_18_plus',
+        identity_consistency_confirmed: true,
+        persona_origin: 'fictional_ai_generated',
+        target_country: 'US',
+        wardrobe_reference_asset_id: 401,
+        wardrobe_consistency_confirmed: true,
+      }),
+      (error) => error.code === 'REDRAW_IDENTITY_WARDROBE_NOT_OWNED',
+    );
+  } finally {
+    close(state);
+  }
+});
