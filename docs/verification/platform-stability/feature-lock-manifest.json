@@ -153,11 +153,25 @@
             "backend-node/test/storyboardImageFailure.test.js",
             "backend-node/test/taskService.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 无产物视频任务冻结积分质量修复获批",
+          "approvedBy": "product-owner 2026-08-23 provider-task-artifact-unreadable",
+          "impactTests": [
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/creditLedger.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 无产物视频任务冻结积分质量修复获批",
-        "approvedBy": "product-owner 2026-08-23 provider-task-artifact-unreadable",
+        "reason": "2026-08-23 旧版 DJPSD 严格完成无产物安全收口获批",
+        "approvedBy": "product-owner 2026-08-23 legacy-djpsd-strict-completed-artifact-unreadable",
         "impactTests": [
           "backend-node/test/videoQueryTaskStatusOnce.test.js",
           "backend-node/test/providerTaskReconciliation.test.js",
@@ -248,11 +262,25 @@
             "backend-node/test/storyboardImageFailure.test.js",
             "backend-node/test/taskService.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 无产物视频任务冻结积分质量修复获批",
+          "approvedBy": "product-owner 2026-08-23 provider-task-artifact-unreadable",
+          "impactTests": [
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/creditLedger.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 无产物视频任务冻结积分质量修复获批",
-        "approvedBy": "product-owner 2026-08-23 provider-task-artifact-unreadable",
+        "reason": "2026-08-23 旧版 DJPSD 严格完成无产物安全收口获批",
+        "approvedBy": "product-owner 2026-08-23 legacy-djpsd-strict-completed-artifact-unreadable",
         "impactTests": [
           "backend-node/test/videoQueryTaskStatusOnce.test.js",
           "backend-node/test/providerTaskReconciliation.test.js",
@@ -482,11 +510,25 @@
             "backend-node/test/storyboardImageFailure.test.js",
             "backend-node/test/taskService.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 无产物视频任务冻结积分质量修复获批",
+          "approvedBy": "product-owner 2026-08-23 provider-task-artifact-unreadable",
+          "impactTests": [
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/creditLedger.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 无产物视频任务冻结积分质量修复获批",
-        "approvedBy": "product-owner 2026-08-23 provider-task-artifact-unreadable",
+        "reason": "2026-08-23 旧版 DJPSD 严格完成无产物安全收口获批",
+        "approvedBy": "product-owner 2026-08-23 legacy-djpsd-strict-completed-artifact-unreadable",
         "impactTests": [
           "backend-node/test/videoQueryTaskStatusOnce.test.js",
           "backend-node/test/providerTaskReconciliation.test.js",
