@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const express = require('express');
 const Database = require('better-sqlite3');
@@ -458,4 +459,116 @@ test('provider task reconcile route returns identical safe DTO for repeated term
   assert.equal(first.body.data.reconcilable, false);
   assert.equal(first.body.data.credit_state, 'confirmed');
   assert.equal(state.queryStats.count, 0);
+});
+
+test('createApp safely rejects literal null JSON before provider task route RBAC', async () => {
+  const previousCwd = process.cwd();
+  const protectedEnv = [
+    'DATABASE_PATH',
+    'HTTP_REQUEST_LOGGING',
+    'LOG_FILE',
+    'PLATFORM_ADMIN_TOKEN',
+    'PLATFORM_JWT_SECRET',
+    'PROVIDER_CANARY_MODE',
+    'PROVIDER_CANARY_PAID_ENABLED',
+    'PUBLIC_PLATFORM_MODE',
+    'STORAGE_BASE_URL',
+    'STORAGE_LOCAL_PATH',
+    'WEB_DIST_PATH',
+  ];
+  const previousEnv = Object.fromEntries(protectedEnv.map((key) => [key, process.env[key]]));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-task-json-body-'));
+  const configRoot = path.join(tempRoot, 'configs');
+  const databasePath = path.join(tempRoot, 'drama.sqlite').replace(/\\/g, '/');
+  const storagePath = path.join(tempRoot, 'storage').replace(/\\/g, '/');
+  fs.mkdirSync(configRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(configRoot, 'config.yaml'),
+    [
+      'app:',
+      '  name: Provider task JSON body integration',
+      '  version: test',
+      'server:',
+      '  host: 127.0.0.1',
+      '  port: 0',
+      '  cors_origins:',
+      '    - http://127.0.0.1:3014',
+      'database:',
+      '  type: sqlite',
+      `  path: ${databasePath}`,
+      'storage:',
+      '  type: local',
+      `  local_path: ${storagePath}`,
+      '  base_url: http://127.0.0.1:0/static',
+      'vendor_lock:',
+      '  enabled: false',
+    ].join('\n'),
+    'utf8',
+  );
+
+  let created;
+  let server;
+  const parserLogs = [];
+  const logger = require('../src/logger');
+  const originalErrorw = logger.errorw;
+  try {
+    process.chdir(tempRoot);
+    for (const key of protectedEnv) delete process.env[key];
+    process.env.PUBLIC_PLATFORM_MODE = 'true';
+    process.env.PLATFORM_JWT_SECRET = JWT_SECRET;
+    process.env.PLATFORM_ADMIN_TOKEN = ADMIN_TOKEN;
+    process.env.PROVIDER_CANARY_MODE = 'off';
+    process.env.WEB_DIST_PATH = path.join(tempRoot, 'missing-web-dist');
+    logger.errorw = (message, details) => parserLogs.push({ message, details });
+
+    const { createApp } = require('../src/app');
+    created = createApp();
+    server = await new Promise((resolve, reject) => {
+      const listening = created.app.listen(0, '127.0.0.1', () => resolve(listening));
+      listening.once('error', reject);
+    });
+    parserLogs.length = 0;
+    const endpoint = '/api/v1/admin/provider-stability/requests/fixture-route-1/reconcile';
+    const response = await fetch(
+      `http://127.0.0.1:${server.address().port}${endpoint}`
+        + '?provider_task_id=provider-task-secret-123'
+        + '&url=https%3A%2F%2Fprivate-provider.example%2Ftask'
+        + '&api_key=provider-api-key-never-return',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: 'null',
+      },
+    );
+    const responseBody = await response.json();
+    assert.equal(response.status, 400);
+    assert.equal(responseBody.error.code, 'INVALID_JSON_BODY');
+    assert.equal(responseBody.error.message, '请求体必须是有效的 JSON 对象');
+    assert.deepEqual(parserLogs, [{
+      message: 'Invalid JSON body',
+      details: { code: 'INVALID_JSON_BODY', path: endpoint },
+    }]);
+    const serialized = JSON.stringify({ responseBody, parserLogs });
+    assert.doesNotMatch(
+      serialized,
+      /Unexpected token|null is not valid JSON|SyntaxError|provider-task-secret-123|private-provider\.example|provider-api-key-never-return|Authorization|Bearer/i,
+    );
+    assert.equal(serialized.includes(tempRoot), false);
+  } finally {
+    if (server) {
+      await new Promise((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+    if (created) await Promise.resolve(created.stopBackgroundServices());
+    const { closeDb } = require('../src/db');
+    closeDb();
+    logger.errorw = originalErrorw;
+    process.chdir(previousCwd);
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 });

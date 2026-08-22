@@ -190,6 +190,18 @@ function createApp() {
   });
 
   app.use((err, req, res, next) => {
+    const isInvalidJsonBody = err?.status === 400 && err?.type === 'entity.parse.failed';
+    if (isInvalidJsonBody) {
+      log.errorw('Invalid JSON body', { code: 'INVALID_JSON_BODY', path: req.path });
+      if (!res.headersSent) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_JSON_BODY', message: '请求体必须是有效的 JSON 对象' },
+          timestamp: new Date().toISOString(),
+        });
+      }
+      return;
+    }
     log.errorw('Unhandled error', { error: err.message, path: req.path });
     if (!res.headersSent) {
       const isFileTooLarge = err.code === 'LIMIT_FILE_SIZE' || (err.message && err.message.includes('File too large'));
