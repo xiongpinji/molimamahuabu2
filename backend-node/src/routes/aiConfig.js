@@ -1,4 +1,6 @@
 const aiConfigService = require('../services/aiConfigService');
+const canvasModelCatalogService = require('../services/canvasModelCatalogService');
+const modelPriceService = require('../services/modelPriceService');
 const response = require('../response');
 
 function list(db) {
@@ -8,26 +10,57 @@ function list(db) {
   };
 }
 
-function listPublicVideoModels(db) {
+function listPublicVideoModels(db, runtime) {
   return (req, res) => {
-    const list = publicModelNames(aiConfigService.listConfigs(db, 'video'));
+    const publicModels = modelPriceService.listPublic(db, runtime)
+      .filter((item) => item.category === 'video')
+      .map((item) => item.model);
+    const allConfigs = aiConfigService.listConfigs(db, 'video');
+    const strictModels = new Set(allConfigs.filter(isStrictToapisVideoConfig)
+      .flatMap((config) => [config.default_model, ...(Array.isArray(config.model) ? config.model : [config.model])])
+      .map((model) => String(model || '').trim().toLowerCase())
+      .filter(Boolean));
+    const strictCatalog = canvasModelCatalogService.list(db, runtime)
+      .filter((item) => item.kind === 'video'
+        && strictModels.has(String(item.model || '').trim().toLowerCase()));
+    const list = [...new Set([
+      ...publicModels.filter((model) => {
+        const key = String(model || '').trim().toLowerCase().split('::').pop();
+        return !strictModels.has(key);
+      }),
+      ...strictCatalog.map((item) => item.model),
+    ])];
     response.success(res, list);
   };
 }
 
-function listPublicImageModels(db) {
+function isStrictToapisVideoConfig(config) {
+  return ['toapis', 'toapis_video'].includes(String(config.provider || '').toLowerCase())
+    || String(config.api_protocol || '').toLowerCase() === 'toapis_video';
+}
+
+function listPublicImageModels(db, runtime) {
   return (req, res) => {
-    const list = publicModelNames(
-      aiConfigService.listConfigs(db)
-        .filter((config) => config.service_type === 'image' || config.service_type === 'storyboard_image'),
-    );
+    const list = modelPriceService.listPublic(db, runtime)
+      .filter((item) => item.category === 'image')
+      .map((item) => item.model);
     response.success(res, list);
   };
 }
 
-function listPublicAudioModels(db) {
+function listPublicAudioModels(db, billingEnabled) {
   return (req, res) => {
-    const list = publicModelNames(aiConfigService.listConfigs(db, 'tts'));
+    const models = publicModelNames(aiConfigService.listConfigs(db, 'tts'));
+    const list = billingEnabled
+      ? models.filter((model) => {
+        try {
+          modelPriceService.requirePrice(db, model);
+          return true;
+        } catch {
+          return false;
+        }
+      })
+      : models;
     response.success(res, list);
   };
 }
@@ -41,7 +74,24 @@ function publicModelNames(configs) {
       const models = Array.isArray(config.model) ? config.model : [config.model];
       return [config.default_model, ...models];
     })
-    .map((model) => String(model || '').trim())
+    .flatMap((model) => {
+      if (model && typeof model === 'object') {
+        return [model.value ?? model.model ?? model.id ?? model.name ?? ''];
+      }
+      const value = String(model || '').trim();
+      if (value.startsWith('{') || value.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(value);
+          return Array.isArray(parsed) ? parsed : [parsed];
+        } catch (_) {}
+      }
+      return [value];
+    })
+    .map((model) => String(
+      model && typeof model === 'object'
+        ? (model.value ?? model.model ?? model.id ?? model.name ?? '')
+        : model || '',
+    ).trim())
     .filter(Boolean);
   return [...new Set(names)];
 }
@@ -159,9 +209,11 @@ function bulkUpdateKey(db, log, cfg) {
 function testConnection(db, log) {
   return async (req, res) => {
     let body = req.body || {};
+    let savedConfigId = null;
     if (body.config_id != null) {
       const saved = aiConfigService.getConfig(db, Number(body.config_id));
       if (!saved) return response.notFound(res, '配置不存在');
+      savedConfigId = saved.id;
       body = saved;
     }
     if (!body.base_url || !aiConfigService.hasConnectionCredential(body)) {
@@ -179,10 +231,26 @@ function testConnection(db, log) {
         service_type: body.service_type,
         settings: body.settings,
       });
-      response.success(res, { message: '连接测试成功' });
+      const connectivityOnly = body.service_type === 'video' && isStrictToapisVideoConfig(body);
+      const verified = savedConfigId == null || connectivityOnly
+        ? null
+        : aiConfigService.setVerificationResult(db, savedConfigId, 'verified');
+      response.success(res, {
+        message: connectivityOnly ? '连接测试成功（仅验证连通性，真实生成验证状态未变更）' : '连接测试成功',
+        ...(verified ? {
+          verification_status: verified.verification_status,
+          verification_checked_at: verified.verification_checked_at,
+          verified_at: verified.verified_at,
+        } : {}),
+      });
     } catch (err) {
-      log.error('AI config test connection failed', { error: err.message });
-      response.badRequest(res, '连接测试失败: ' + (err.message || '未知错误'));
+      const failed = savedConfigId == null
+        ? null
+        : aiConfigService.setVerificationResult(db, savedConfigId, 'failed', err);
+      const safeError = failed?.verification_error
+        || aiConfigService.redactVerificationError(body, err);
+      log.error('AI config test connection failed', { error: safeError });
+      response.badRequest(res, '连接测试失败: ' + safeError);
     }
   };
 }
@@ -242,12 +310,12 @@ function listJimeng2MaterialAssets(log) {
   };
 }
 
-module.exports = function aiConfigRoutes(db, log, cfg) {
+module.exports = function aiConfigRoutes(db, log, cfg, options = {}) {
   return {
     list: list(db),
-    listPublicVideoModels: listPublicVideoModels(db),
-    listPublicImageModels: listPublicImageModels(db),
-    listPublicAudioModels: listPublicAudioModels(db),
+    listPublicVideoModels: listPublicVideoModels(db, options),
+    listPublicImageModels: listPublicImageModels(db, options),
+    listPublicAudioModels: listPublicAudioModels(db, options.billingEnabled),
     get: get(db),
     vendorLock: vendorLock(cfg),
     create: create(db, log, cfg),

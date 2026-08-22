@@ -4,7 +4,7 @@ import { storyboardsAPI } from '@/api/storyboards'
 import { videosAPI } from '@/api/videos'
 import { assetsAPI } from '@/api/assets'
 import request from '@/utils/request'
-import { assetImageUrl, storyboardImageUrl } from '@/utils/mediaUrl'
+import { assetMediaUrl, storyboardImageUrl } from '@/utils/mediaUrl'
 import {
   DEFAULT_PIPELINE,
   collectStoryboardReferenceAssets,
@@ -28,18 +28,22 @@ import {
   classifyVideoVoicePolicy,
 } from '@/utils/videoVoicePolicy'
 import { buildVideoGenerationAudit, buildVideoGenerationRequest } from '@/utils/videoGenerationRequest'
+import {
+  canvasModelCapability,
+  canvasModelEntry,
+  filterCanvasCatalogFallbackModels,
+} from '@/utils/canvasModelCapabilities'
 
-/** 拉取用户在素材库中指派给该分镜的素材（storyboard_id 关联），转为绝对 URL。 */
-async function fetchAssignedAssetUrls(storyboardId) {
+/** 拉取用户指派给该分镜的素材，并保留图片、视频、音频类型。 */
+async function fetchAssignedAssetReferences(storyboardId) {
   if (!storyboardId) return []
   try {
     const res = await assetsAPI.list({ storyboard_id: storyboardId, page: 1, page_size: 20 })
     return (res?.items || [])
-      .map((a) => {
-        const raw = assetImageUrl(a) || a.video_url || a.video_local_path || ''
-        return toAbsoluteMediaUrl(raw)
+      .flatMap((a) => {
+        const url = toAbsoluteMediaUrl(assetMediaUrl(a))
+        return url ? [{ kind: referenceKind(a?.type || a?.mime_type, url), url }] : []
       })
-      .filter(Boolean)
   } catch (_) {
     return []
   }
@@ -97,6 +101,30 @@ function upstreamReferenceUrls(genOpts = {}) {
     .filter(Boolean)
 }
 
+function referenceKind(value, url = '') {
+  const kind = String(value || '').trim().toLowerCase()
+  if (kind.includes('video')) return 'video'
+  if (kind.includes('audio') || kind.includes('voice')) return 'audio'
+  if (/\.(?:mp4|mov|m4v|webm)(?:$|[?#])/i.test(url)) return 'video'
+  if (/\.(?:mp3|wav|m4a|aac|ogg|oga|flac)(?:$|[?#])/i.test(url)) return 'audio'
+  return 'image'
+}
+
+function upstreamReferenceItems(genOpts = {}) {
+  const declared = Array.isArray(genOpts.upstreamReferences) ? genOpts.upstreamReferences : []
+  if (declared.length) {
+    return declared.flatMap((item) => {
+      const url = toAbsoluteMediaUrl(item?.url || item?.absoluteUrl || '')
+      return url ? [{ kind: referenceKind(item?.kind || item?.type, url), url }] : []
+    })
+  }
+  return upstreamReferenceUrls(genOpts).map((url) => ({ kind: referenceKind('', url), url }))
+}
+
+function uniqueUrls(values) {
+  return [...new Set(values.filter(Boolean))]
+}
+
 async function hydrateStoryboardSettings(storyboard) {
   if (!storyboard?.id) return storyboard
   const hasImageSettings = Object.prototype.hasOwnProperty.call(storyboard, 'image_model')
@@ -145,7 +173,9 @@ export async function runImageStep(drama, sb, genOpts, frameKind = '', options =
   const entityRefs = frameType
     ? collectStoryboardReferenceAssets(drama, effectiveStoryboard).map((ref) => ref.absoluteUrl).filter(Boolean)
     : []
-  const assignedRefs = await fetchAssignedAssetUrls(effectiveStoryboard.id)
+  const assignedRefs = (await fetchAssignedAssetReferences(effectiveStoryboard.id))
+    .filter((item) => item.kind === 'image')
+    .map((item) => item.url)
   const referenceImages = [...new Set([...entityRefs, ...assignedRefs, ...upstreamReferenceUrls(genOpts)])].slice(0, 10)
   const isLastFrame = frameKind === 'last'
   const res = await imagesAPI.create({
@@ -180,15 +210,36 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
   const selectedReferenceUrls = collectStoryboardReferenceAssets(drama, sb)
     .map((ref) => ref.absoluteUrl)
     .filter(Boolean)
-  const assignedRefs = await fetchAssignedAssetUrls(sb.id)
-  const referenceUrls = [...new Set([
+  const assignedRefs = await fetchAssignedAssetReferences(sb.id)
+  const typedUpstreamRefs = upstreamReferenceItems(genOpts)
+  const referenceImageUrls = uniqueUrls([
     absoluteFirst,
     ...selectedReferenceUrls,
-    ...assignedRefs,
-    ...upstreamReferenceUrls(genOpts),
+    ...assignedRefs.filter((item) => item.kind === 'image').map((item) => item.url),
+    ...typedUpstreamRefs.filter((item) => item.kind === 'image').map((item) => item.url),
     absoluteLast,
-  ].filter(Boolean))].slice(0, 10)
+  ])
+  const referenceVideoUrls = uniqueUrls([
+    ...assignedRefs.filter((item) => item.kind === 'video').map((item) => item.url),
+    ...typedUpstreamRefs.filter((item) => item.kind === 'video').map((item) => item.url),
+  ])
+  const referenceAudioUrls = uniqueUrls([
+    ...assignedRefs.filter((item) => item.kind === 'audio').map((item) => item.url),
+    ...typedUpstreamRefs.filter((item) => item.kind === 'audio').map((item) => item.url),
+  ])
   const model = getStoryboardVideoModel(sb, genOpts)
+  const catalogEntry = canvasModelEntry(genOpts.modelCatalog || [], 'video', model)
+  const suppliedCapability = genOpts.capability?.declared === true ? genOpts.capability : null
+  if (model && !catalogEntry && !suppliedCapability && !filterCanvasCatalogFallbackModels([model], 'video').length) {
+    throw new Error('当前视频模型目录尚未就绪，请刷新后重试')
+  }
+  const capability = suppliedCapability
+    || catalogEntry?.capabilities
+    || canvasModelCapability(genOpts.modelCatalog || [], 'video', model)
+  const hasDeclaredCapability = capability?.declared === true
+  const referenceMode = hasDeclaredCapability
+    ? (useFirstLast ? 'first_last' : 'omni')
+    : undefined
   const voiceSnapshot = buildStoryboardVoiceSnapshot(drama, sb)
   const voiceCharacters = voiceSnapshot.characters
   const voicePolicy = genOpts.voicePolicy || classifyVideoVoicePolicy({ model })
@@ -214,14 +265,19 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
     storyboardId: sb.id,
     prompt,
     model,
-    imageUrl: absoluteFirst,
-    firstFrameUrl: absoluteFirst,
-    lastFrameUrl: absoluteLast,
-    referenceImageUrls: referenceUrls,
+    imageUrl: referenceMode === 'omni' ? undefined : absoluteFirst,
+    firstFrameUrl: referenceMode === 'omni' ? undefined : absoluteFirst,
+    lastFrameUrl: referenceMode === 'omni' ? undefined : absoluteLast,
+    referenceImageUrls: referenceMode === 'first_last' ? undefined : referenceImageUrls,
+    referenceVideoUrls: referenceMode === 'first_last' ? undefined : referenceVideoUrls,
+    referenceAudioUrls: referenceMode === 'first_last' ? undefined : referenceAudioUrls,
+    capability,
+    referenceMode,
+    generateAudio: capability?.supportsAudio === true ? genOpts.generateAudio === true : undefined,
     style: genOpts.style,
     aspectRatio: genOpts.aspectRatio,
     resolution: genOpts.videoResolution,
-    duration: sb.duration || undefined,
+    duration: sb.duration || genOpts.videoDuration || undefined,
   })
   const requestAudit = buildVideoGenerationAudit({
     payload,

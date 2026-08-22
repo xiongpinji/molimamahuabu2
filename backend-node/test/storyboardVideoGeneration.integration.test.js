@@ -599,11 +599,11 @@ async function runRejectedVendorVideoCase({ videoUrl, payload, fetchError, expec
     const row = db.prepare(
       'SELECT status, error_msg, local_path, task_id, credit_reservation_id FROM video_generations WHERE id = ?'
     ).get(created.id);
-    assert.equal(row.status, fetchError ? 'processing' : 'failed');
+    assert.equal(row.status, fetchError ? 'needs_attention' : 'failed');
     assert.match(row.error_msg, expectedError);
     assert.equal(row.local_path, null);
     const task = taskService.getTask(db, row.task_id);
-    assert.equal(task.status, fetchError ? 'processing' : 'failed');
+    assert.equal(task.status, fetchError ? 'needs_attention' : 'failed');
     assert.match(fetchError ? task.message : task.error, expectedError);
     const storyboard = db.prepare('SELECT video_url, local_path FROM storyboards WHERE id = ?').get(storyboardId);
     assert.equal(storyboard.video_url, null);

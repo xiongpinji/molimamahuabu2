@@ -417,7 +417,7 @@ test('供应商链接不可读取时不标记完成也不结算积分', async (t
 
   const row = db.prepare('SELECT status, local_path, credit_reservation_id FROM video_generations WHERE id = ?')
     .get(video.id);
-  assert.equal(row.status, 'processing', JSON.stringify(row));
+  assert.equal(row.status, 'needs_attention', JSON.stringify(row));
   assert.equal(row.local_path, null);
   assert.equal(creditLedgerService.getReservation(db, row.credit_reservation_id).status, 'held');
   assert.equal(db.prepare('SELECT state FROM generation_route_requests').get().state, 'needs_attention');
@@ -468,5 +468,5 @@ test('服务重启后使用已固定的配置和任务号恢复轮询', async (t
   assert.equal(submissions, 0);
   assert.equal(polledConfigId, backupId);
   assert.equal(db.prepare('SELECT status FROM video_generations WHERE id = ?').get(videoId).status,
-    'processing');
+    'needs_attention');
 });

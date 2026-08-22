@@ -411,3 +411,13 @@ test('getProjectInputError enforces script and locked fact limits', () => {
     /字符串数组/,
   );
 });
+
+test('validateProductionPackage accepts explicit V2 production director package', () => {
+  const value = validV2Package();
+  assert.equal(validateProductionPackage(value, {
+    expectedSchemaVersion: '2.0',
+    requireVisualDirection: true,
+    requireProductionDirection: true,
+    expectedStrategyPreset: 'fusion',
+  }), value);
+});

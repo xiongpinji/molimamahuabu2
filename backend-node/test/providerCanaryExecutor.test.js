@@ -578,7 +578,7 @@ test('real internal image path classifies 2xx without artifact as result_unknown
   t.after(() => db.close());
   const config = addHttpImageConfig(db, primary, 'primary');
   addHttpImageConfig(db, backup, 'backup');
-  const capability = capabilityFor('image');
+  const capability = { ...capabilityFor('image'), referenceImageCount: 0 };
   const run = reserveRun(db, config, capability, 'real-image-empty', 'real-image-scope');
   const options = baseOptions(capability);
   t.after(() => fs.rmSync(options.storageRoot, { recursive: true, force: true }));

@@ -51,6 +51,9 @@ jobs:
       - name: Audit image node release boundaries
         run: npm --prefix backend-node run audit:image-node-release
 
+      - name: Audit protected canvas credit callout
+        run: npm --prefix backend-node run audit:canvas-credit-contract
+
       - name: Audit protected canvas reference sequence contract
         run: npm --prefix backend-node run audit:canvas-reference-sequence
 

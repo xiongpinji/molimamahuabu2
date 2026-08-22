@@ -27,7 +27,7 @@ function adminRedeemInput(db, req) {
   }
   return input;
 }
-function routes(db, log) {
+function routes(db, log, runtime = {}) {
   return {
     getAccount: (req, res) => {
       try {
@@ -317,7 +317,7 @@ function routes(db, log) {
     },
     listPublicCatalog: (_req, res) => {
       try {
-        response.success(res, modelPrice.listPublic(db));
+        response.success(res, modelPrice.listPublic(db, runtime));
       } catch (error) {
         log.error('billing list public catalog', { error: error.message });
         response.internalError(res, error.message);

@@ -752,7 +752,10 @@ test('真实图片供应商请求把存储根内绝对参考图编码为 data UR
     model: ['doubao-seedream-4-5'],
     default_model: 'doubao-seedream-4-5',
     is_default: true,
-    settings: JSON.stringify({ supports_outpaint: true }),
+    settings: JSON.stringify({
+      supports_outpaint: true,
+      canvas_capabilities: { maxReferences: 2 },
+    }),
   });
 
   const result = await imageClient.callImageApi(db, {
@@ -2965,6 +2968,75 @@ test('宫格裁剪仅返回选中派生素材并保留首图兼容字段', async
   }
   assert.equal(db.prepare('SELECT COUNT(*) AS total FROM assets').get().total, 4);
   assert.equal(fs.existsSync(sourcePath), true);
+});
+
+test('自由宫格裁剪对选中框应用间距并保留复制和吸附快照', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-image-tools-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+
+  const now = new Date().toISOString();
+  const dramaId = db.prepare(
+    `INSERT INTO dramas (title, status, created_at, updated_at)
+     VALUES ('自由宫格裁剪测试', 'draft', ?, ?)`,
+  ).run(now, now).lastInsertRowid;
+  const sourcePath = path.join(storageRoot, 'source.png');
+  await sharp({
+    create: {
+      width: 64,
+      height: 64,
+      channels: 4,
+      background: '#ffffff',
+    },
+  }).png().toFile(sourcePath);
+  const sourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'source.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/source.png',
+    local_path: sourcePath,
+  });
+  const handlers = createImageToolRoutes(db, { info() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+  });
+  const res = responseRecorder();
+
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-free-grid',
+      operation: 'grid_crop',
+      parameters: {
+        rows: 2,
+        columns: 2,
+        spacing: 2,
+        snap: false,
+        boxes: [
+          { id: '0:0', row: 0, column: 0, left: 0, top: 0, width: 0.5, height: 0.5 },
+          { id: '0:1', row: 0, column: 1, left: 0.5, top: 0, width: 0.5, height: 0.5 },
+          { id: '1:0', row: 1, column: 0, left: 0, top: 0.5, width: 0.5, height: 0.5 },
+          { id: '1:1', row: 1, column: 1, left: 0.5, top: 0.5, width: 0.5, height: 0.5 },
+        ],
+        selectedCells: ['0:1'],
+        duplicateCells: ['0:1'],
+      },
+    },
+  }, res);
+
+  assert.equal(res.statusCode, 201, JSON.stringify(res.payload));
+  assert.equal(res.payload.data.resultAssets.length, 2);
+  for (const item of res.payload.data.resultAssets) {
+    const resultAsset = assetService.getById(db, item.id);
+    assert.equal(resultAsset.metadata.parameters.spacing, 2);
+    assert.equal(resultAsset.metadata.parameters.snap, false);
+    assert.deepEqual(resultAsset.metadata.parameters.duplicateCells, ['0:1']);
+    const metadata = await sharp(resultAsset.local_path).metadata();
+    assert.equal(metadata.width, 30);
+    assert.equal(metadata.height, 30);
+  }
 });
 
 test('图片调整保存完整参数并通过 CPU 生成差异素材', async (t) => {

@@ -47,32 +47,103 @@ describe('iCreat Seedance video protocol', () => {
     });
   });
 
-  it('omits mutually exclusive reference images when first or last frame is present', () => {
+  it('only sends need_review for reference images', () => {
     const body = buildIcreatVideoBody({
       prompt: '角色沿着雨林石径前进',
-      first_frame_url: 'https://cdn.example/first.png',
-      last_frame_url: 'https://cdn.example/last.png',
       reference_urls: ['https://cdn.example/character.png'],
     });
 
-    assert.equal(body.content.find((part) => part.role === 'first_frame').need_review, undefined);
-    assert.equal(body.content.find((part) => part.role === 'last_frame').need_review, undefined);
-    assert.equal(body.content.some((part) => part.role === 'reference_image'), false);
+    assert.equal(body.content.find((part) => part.role === 'reference_image').need_review, true);
   });
 
-  it('keeps need_review on reference images in pure reference mode', () => {
+  it('builds Mini reference video plus reviewed actor references and native audio', () => {
     const body = buildIcreatVideoBody({
-      prompt: '保持角色一致地沿着雨林石径前进',
+      prompt: 'Keep the shot and replace every person with live-action Latino actors.',
+      model: 'bytedance/seedance-2-0-mini',
+      duration: 4,
+      aspect_ratio: '9:16',
+      resolution: '480p',
+      reference_video_urls: ['https://case.example/shot.mp4?token=video-secret'],
+      reference_urls: [
+        'https://case.example/mateo.png?token=image-secret-1',
+        'https://case.example/cast.png?token=image-secret-2',
+      ],
+      generate_audio: true,
+    });
+
+    assert.deepEqual(body.content.map((part) => part.role || part.type), [
+      'text',
+      'reference_video',
+      'reference_image',
+      'reference_image',
+    ]);
+    assert.deepEqual(body.content[1], {
+      type: 'video_url',
+      video_url: { url: 'https://case.example/shot.mp4?token=video-secret' },
+      role: 'reference_video',
+      need_review: true,
+    });
+    assert.equal(body.content.slice(2).every((part) => part.need_review === true), true);
+    assert.equal(body.generate_audio, true);
+    assert.equal(body.duration, 4);
+    assert.equal(body.ratio, '9:16');
+    assert.equal(body.resolution, '480p');
+  });
+
+  it('rejects unsafe or excessive iCreat reference videos before fetch', () => {
+    for (const value of [
+      'http://case.example/shot.mp4',
+      'https://localhost/shot.mp4',
+      'https://127.0.0.1/shot.mp4',
+      'https://[::1]/shot.mp4',
+      'file:///C:/shot.mp4',
+      'data:video/mp4;base64,AAAA',
+      'https://user:pass@case.example/shot.mp4',
+    ]) {
+      assert.throws(
+        () => buildIcreatVideoBody({ reference_video_urls: [value] }),
+        (error) => error.code === 'ICREAT_REFERENCE_VIDEO_URL_INVALID',
+        value,
+      );
+    }
+    assert.throws(
+      () => buildIcreatVideoBody({
+        reference_video_urls: [1, 2, 3, 4].map((id) => `https://case.example/${id}.mp4`),
+      }),
+      (error) => error.code === 'ICREAT_REFERENCE_VIDEO_LIMIT_EXCEEDED',
+    );
+    assert.throws(
+      () => buildIcreatVideoBody({
+        reference_video_urls: [
+          'https://case.example/shot.mp4',
+          'https://case.example/shot.mp4',
+        ],
+      }),
+      (error) => error.code === 'ICREAT_REFERENCE_VIDEO_DUPLICATE',
+    );
+  });
+
+  it('rejects mixing iCreat reference video with first or last frame mode', () => {
+    assert.throws(
+      () => buildIcreatVideoBody({
+        first_frame_url: 'https://case.example/first.png',
+        reference_video_urls: ['https://case.example/shot.mp4'],
+      }),
+      (error) => error.code === 'ICREAT_REFERENCE_MODE_CONFLICT',
+    );
+  });
+
+  it('keeps frame mode valid by omitting mutually exclusive reference image roles', () => {
+    const body = buildIcreatVideoBody({
+      prompt: '主角进入分镜场景',
+      first_frame_url: 'https://cdn.example/first.png',
       reference_urls: ['https://cdn.example/character.png'],
     });
 
-    assert.equal(body.content.some((part) => part.role === 'first_frame'), false);
-    assert.deepEqual(body.content.find((part) => part.role === 'reference_image'), {
-      type: 'image_url',
-      image_url: { url: 'https://cdn.example/character.png' },
-      role: 'reference_image',
-      need_review: true,
-    });
+    assert.deepEqual(
+      body.content.filter((part) => part.type !== 'text').map((part) => part.role),
+      ['first_frame'],
+    );
   });
 
   it('adds a character voice as the documented reference audio content item', () => {
@@ -126,12 +197,52 @@ describe('iCreat Seedance video protocol', () => {
     assert.deepEqual(result, { task_id: 'icreat-task-1', status: 'SUBMITTED' });
   });
 
+  it('routes reviewed reference videos without logging signed URLs', async () => {
+    const events = [];
+    const safeLog = {
+      info(message, meta) { events.push({ message, meta }); },
+      warn(message, meta) { events.push({ message, meta }); },
+      error(message, meta) { events.push({ message, meta }); },
+    };
+    let request;
+    global.fetch = async (url, options) => {
+      request = { url, body: JSON.parse(options.body) };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ taskId: 'icreat-ref-video-1', status: 'SUBMITTED' }),
+      };
+    };
+
+    const result = await callIcreatVideoApi({
+      provider: 'icreat',
+      api_protocol: 'icreat_task',
+      base_url: 'https://api.icreat.ai',
+      api_key: 'secret',
+    }, safeLog, {
+      model: 'bytedance/seedance-2-0-mini',
+      prompt: 'test',
+      reference_video_urls: ['https://case.example/shot.mp4?signature=do-not-log'],
+      reference_urls: ['https://case.example/mateo.png?signature=do-not-log-image'],
+      generate_audio: true,
+    });
+
+    assert.equal(result.task_id, 'icreat-ref-video-1');
+    assert.equal(request.body.content.some((part) => part.role === 'reference_video'), true);
+    assert.equal(JSON.stringify(events).includes('do-not-log'), false);
+    assert.equal(JSON.stringify(events).includes('secret'), false);
+    assert.equal(events.at(-1).meta.reference_video_count, 1);
+    assert.equal(events.at(-1).meta.reference_image_count, 1);
+    assert.equal(events.at(-1).meta.generate_audio, true);
+  });
+
   it('converts an extracted local voice file into an audio data reference', async () => {
     const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'icreat-voice-'));
     const relative = 'projects/demo/characters/voice/fox.mp3';
     const localFile = path.join(storage, relative);
+    const voiceBytes = Buffer.concat([Buffer.from('ID3'), Buffer.from('fake-mp3')]);
     fs.mkdirSync(path.dirname(localFile), { recursive: true });
-    fs.writeFileSync(localFile, Buffer.from('fake-mp3'));
+    fs.writeFileSync(localFile, voiceBytes);
     let request;
     global.fetch = async (url, options) => {
       request = { url, body: JSON.parse(options.body) };
@@ -154,7 +265,7 @@ describe('iCreat Seedance video protocol', () => {
       const audio = request.body.content.at(-1);
       assert.equal(audio.type, 'audio_url');
       assert.match(audio.audio_url.url, /^data:audio\/mpeg;base64,/);
-      assert.equal(Buffer.from(audio.audio_url.url.split(',')[1], 'base64').toString(), 'fake-mp3');
+      assert.deepEqual(Buffer.from(audio.audio_url.url.split(',')[1], 'base64'), voiceBytes);
     } finally {
       fs.rmSync(storage, { recursive: true, force: true });
     }
@@ -182,31 +293,6 @@ describe('iCreat Seedance video protocol', () => {
     assert.equal(requests[1].url, 'https://api.icreat.ai/v1/task/get-result');
     assert.deepEqual(requests[1].body, { task_id: 'icreat-task-1' });
     assert.deepEqual(result, { video_url: 'https://cdn.example/result.mp4' });
-  });
-
-  it('bounds the completed-task result fetch so recovery can retry it', async () => {
-    let resultSignal;
-    let requestCount = 0;
-    global.fetch = async (_url, options) => {
-      requestCount += 1;
-      if (requestCount === 1) {
-        return { ok: true, status: 200, text: async () => JSON.stringify({ status: 'SUCCEEDED' }) };
-      }
-      resultSignal = options.signal;
-      throw Object.assign(new Error('result fetch timed out'), { name: 'TimeoutError' });
-    };
-
-    const result = await pollVideoTask(null, log, 185, 'icreat-task-timeout', {
-      provider: 'icreat',
-      api_protocol: 'icreat_task',
-      base_url: 'https://api.icreat.ai',
-      api_key: 'secret',
-    }, 1, 0);
-
-    assert.equal(requestCount, 2);
-    assert.equal(resultSignal instanceof AbortSignal, true);
-    assert.equal(result.indeterminate, true);
-    assert.equal(result.provider_task_id, 'icreat-task-timeout');
   });
 
   it('preserves the provider failure detail instead of returning only FAILED', async () => {

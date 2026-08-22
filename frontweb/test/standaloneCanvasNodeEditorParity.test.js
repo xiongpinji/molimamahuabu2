@@ -98,11 +98,15 @@ test('参考图卡片不再显示用途、排序、权重和启用选项', () =>
   assert.doesNotMatch(nodeSource, /class="reference-controls"/)
 })
 
-test('混合参考素材中的图片支持右键在描述光标处插入正确图片引用', () => {
-  assert.match(nodeSource, /@contextmenu\.prevent\.stop="reference\.kind === 'image' && insertReferenceToken\(reference\)"/)
-  assert.match(nodeSource, /function referenceOrdinal\(reference\)/)
+test('视频参考素材支持右键在描述光标处插入对应媒体引用', () => {
+  assert.match(nodeSource, /normalizeFreeCanvasSubmissionReferences\(inputReferences\.value\)/)
+  assert.match(nodeSource, /@contextmenu\.prevent\.stop="canInsertReferenceToken\(reference\) && insertReferenceToken\(reference\)"/)
+  assert.match(nodeSource, /function referenceTypeLabel\(kind\)/)
+  assert.match(nodeSource, /function referenceSubmissionOrdinal\(reference\)/)
+  assert.match(nodeSource, /function canInsertReferenceToken\(reference\)/)
   assert.match(nodeSource, /function insertReferenceToken\(reference\)/)
-  assert.match(nodeSource, /const token = `@图片\$\{referenceOrdinal\(reference\)\}`/)
+  assert.match(nodeSource, /const ordinal = referenceSubmissionOrdinal\(reference\)[\s\S]*if \(ordinal < 1\) return/)
+  assert.match(nodeSource, /const token = `@\$\{referenceTypeLabel\(reference\?\.kind\)\}\$\{ordinal\}`/)
   assert.match(nodeSource, /@select="rememberContentSelection"/)
 })
 
@@ -142,6 +146,9 @@ test('选中节点可从主体按住左键拖动且编辑器按视口等比适�
   assert.doesNotMatch(nodeSource, /class="node-drag-grip"/)
   assert.match(nodeSource, /\.home-canvas-node\.is-selected \.(text-preview|media-stage)/)
   assert.match(nodeSource, /const panelWidth = 860/)
+  assert.match(nodeSource, /const maximumViewportScale = Math\.max\(0\.01, Math\.min\(/)
+  assert.match(nodeSource, /transform: `scale\(\$\{editorScale\}\)`/)
+  assert.match(nodeSource, /visibility: hasUsableDock \? 'visible' : 'hidden'/)
   assert.match(nodeSource, /width:\s*860px/)
   assert.match(nodeSource, /max-height:\s*none/)
   assert.match(nodeSource, /overflow:\s*visible/)

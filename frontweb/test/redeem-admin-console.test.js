@@ -58,6 +58,16 @@ test('模型收费、兑换码生成和用户兑换都有明确入口与字段',
   assert.match(aiConfigContentSource, /设置定价/)
   assert.match(aiConfigContentSource, /tab:\s*'models'/)
   assert.match(aiConfigContentSource, /model:/)
+  assert.match(adminSource, /前端显示名称/)
+  assert.match(adminSource, /连接验证并启用计费后自动进入画布，无需修改前端代码/)
+})
+
+test('AI 配置明确展示画布验证状态并在连接测试后刷新', () => {
+  assert.match(aiConfigContentSource, /画布状态/)
+  for (const label of ['已验证', '验证失败', '待验证']) {
+    assert.match(aiConfigContentSource, new RegExp(label))
+  }
+  assert.match(aiConfigContentSource, /async function openTest\(row\)[\s\S]*await aiAPI\.testConnection\([\s\S]*finally \{[\s\S]*await loadList\(\)/)
 })
 
 test('租户控制台使用兑换码而不是创建支付订单', () => {

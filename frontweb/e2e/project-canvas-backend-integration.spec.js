@@ -1015,7 +1015,7 @@ test('项目画布通过真实后端保存节点配置并在刷新后恢复', as
   await generationSelects.nth(3).click()
   await page.getByRole('option', { name: '9:16 竖屏' }).click()
   await generationSelects.nth(4).click()
-  await page.getByRole('option', { name: '720p 高清' }).click()
+  await page.getByRole('option', { name: '720P', exact: true }).click()
   await generationSelects.nth(5).click()
   await page.getByRole('option', { name: '9 秒', exact: true }).click()
 
@@ -1087,7 +1087,7 @@ test('项目画布通过真实后端保存节点配置并在刷新后恢复', as
   await expect(generation).toContainText('canvas-video-beta')
   await expect(generation).toContainText('canvas-tts-beta')
   await expect(generation).toContainText('9:16 竖屏')
-  await expect(generation).toContainText('720p 高清')
+  await expect(generation).toContainText('720P')
   await expect(generationSelects.nth(5)).toContainText('9 秒')
   const audioButton = panel.getByRole('button', { name: '配音', exact: true })
   await expect(audioButton).toBeEnabled()

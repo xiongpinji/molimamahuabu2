@@ -10,7 +10,7 @@ const runtimeService = require('./providerRuntimeFingerprintService');
 const budgetService = require('./providerCanaryBudgetService');
 const artifactService = require('./providerCanaryArtifactService');
 const auditEvent = require('./auditEventService');
-const { toSafeErrorSummary } = require('./providerErrorClassifier');
+const { classifyProviderFailure, toSafeErrorSummary } = require('./providerErrorClassifier');
 
 const DEFAULT_FAILURE_THRESHOLD = 3;
 const DEFAULT_COOLDOWN_SECONDS = 300;
@@ -366,6 +366,37 @@ function recordArtifactVerified(db, input) {
         open_until = NULL, half_open_claimed_at = NULL, last_error_category = NULL, updated_at = excluded.updated_at`)
       .run(input.configId, now);
   })();
+}
+
+function recordBusinessArtifactUnreadable(db, input) {
+  const route = db.prepare(`SELECT r.id AS request_id, r.logical_model_id, r.tenant_id,
+      a.attempt_no, a.config_id
+    FROM generation_route_requests r
+    JOIN generation_route_attempts a ON a.request_id = r.id
+    WHERE r.business_type = ? AND r.business_id = ?
+    ORDER BY a.attempt_no DESC LIMIT 1`).get(
+    String(input.businessType || ''),
+    String(input.businessId || ''),
+  );
+  if (!route) return false;
+  const classification = classifyProviderFailure({ httpStatus: 200, artifactReadable: false });
+  finishAttempt(db, {
+    requestId: route.request_id,
+    attemptNo: route.attempt_no,
+    state: classification.category,
+    httpStatus: 200,
+    errorCategory: classification.category,
+  });
+  recordFailureAndHealth(db, {
+    requestId: route.request_id,
+    tenantId: route.tenant_id,
+    configId: route.config_id,
+    logicalModelId: route.logical_model_id,
+    classification,
+  });
+  db.prepare("UPDATE generation_route_requests SET state = 'needs_attention', updated_at = ? WHERE id = ?")
+    .run(input.now || new Date().toISOString(), route.request_id);
+  return true;
 }
 
 function stabilitySettings(db, configId) {
@@ -1251,6 +1282,7 @@ module.exports = {
   finishAttempt,
   recordAcceptedTask,
   recordArtifactVerified,
+  recordBusinessArtifactUnreadable,
   recordFailureAndHealth,
   recordRouteSwitch,
   claimHalfOpen,

@@ -21,7 +21,6 @@ test('共享 Skill 注册表如实区分执行、消费和预览能力', () => {
   assert.equal(resolveSkillForModule(skill.id, 'factory', 'execute'), null);
   assert.equal(resolveSkillForModule(skill.id, 'factory', 'preview')?.id, skill.id);
 });
-
 test('共享 Skill 注册项保留治理边界且不暴露系统提示词快照', () => {
   const skill = getSkillDefinition('short-drama-director');
   const snapshot = snapshotSkill(skill, 'script_analysis');

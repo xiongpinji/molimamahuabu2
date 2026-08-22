@@ -126,10 +126,11 @@ function routes(db, cfg, log) {
 
         const insert = db.prepare(`
           INSERT INTO image_generations (
-            drama_id, episode_id, storyboard_id, prompt, provider, model, status,
+            drama_id, episode_id, storyboard_id, prompt, provider, model, frame_type, status,
             image_url, local_path, width, height,
+            user_id, tenant_id,
             created_at, updated_at, completed_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         // 假设有 files_base_url 配置
@@ -143,11 +144,14 @@ function routes(db, cfg, log) {
           prompt,
           'tail-frame',           // provider 不能为 NULL
           'tail-frame-extract',
+          'storyboard_first',
           'completed',
           imageUrl,
           outputRelPath,
           width,
           height,
+          req.user?.id || null,
+          req.tenant?.id || null,
           now,
           now,
           now

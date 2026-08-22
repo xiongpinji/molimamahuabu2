@@ -141,3 +141,124 @@ test('服务重启后按 provider_task_id 恢复轮询且不重复提交供应�
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
+
+test('已提交任务的固定模型配置不可用时转 needs_attention 且不退款或重提', async () => {
+  const db = new Database(':memory:');
+  const originalPoll = videoClient.pollVideoTask;
+  const originalCall = videoClient.callVideoApi;
+  let pollCount = 0;
+  let submitCount = 0;
+  try {
+    runMigrationsAndEnsure(db);
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO ai_service_configs
+        (id, service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+         is_active, is_default, priority, created_at, updated_at)
+       VALUES (14, 'video', 'feituo', 'feituo_open', ?, ?, ?, ?, ?, 1, 1, 0, ?, ?)`
+    ).run(
+      '固定飞拓配置',
+      'https://feituokuajing.com',
+      'artifact-secret',
+      JSON.stringify(['sdas-my-seedance-2.0-fast-upscaled-1080p']),
+      'sdas-my-seedance-2.0-fast-upscaled-1080p',
+      now,
+      now,
+    );
+    const task = taskService.createTask(db, log, 'video_generation', 'pinned-config-recovery');
+    taskService.updateTaskStatus(db, task.id, 'processing', 90, '供应商处理中');
+    const videoId = Number(db.prepare(
+      `INSERT INTO video_generations
+        (provider, prompt, model, status, task_id, provider_task_id, ai_service_config_id,
+         created_at, updated_at)
+       VALUES ('feituo', ?, ?, 'processing', ?, ?, 14, ?, ?)`
+    ).run(
+      '固定模型恢复测试',
+      'sdas-my-seedance-2.0-fast-upscaled-1080p',
+      task.id,
+      'provider-task-pinned-14',
+      now,
+      now,
+    ).lastInsertRowid);
+    db.prepare('UPDATE ai_service_configs SET is_active = 0 WHERE id = 14').run();
+    videoClient.callVideoApi = async () => { submitCount += 1; return { error: '不得提交' }; };
+    videoClient.pollVideoTask = async () => { pollCount += 1; return { error: '不得轮询错误配置' }; };
+
+    videoService.resumeProcessingVideoGenerations(db, log);
+    const attention = await waitFor(() => {
+      const row = db.prepare('SELECT status, error_msg FROM video_generations WHERE id = ?').get(videoId);
+      return row.status === 'needs_attention' ? row : null;
+    });
+
+    assert.match(attention.error_msg, /固定模型配置|请勿重新提交/);
+    assert.equal(taskService.getTask(db, task.id).status, 'needs_attention');
+    assert.equal(submitCount, 0);
+    assert.equal(pollCount, 0);
+  } finally {
+    videoClient.pollVideoTask = originalPoll;
+    videoClient.callVideoApi = originalCall;
+    db.close();
+  }
+});
+
+test('已提交任务的固定配置 key/endpoint 版本被改写时拒绝用未验证配置轮询', async () => {
+  const db = new Database(':memory:');
+  const originalPoll = videoClient.pollVideoTask;
+  const originalCall = videoClient.callVideoApi;
+  let pollCount = 0;
+  let submitCount = 0;
+  try {
+    runMigrationsAndEnsure(db);
+    const now = new Date().toISOString();
+    const model = 'sdas-my-seedance-2.0-fast-upscaled-1080p';
+    db.prepare(
+      `INSERT INTO ai_service_configs
+        (id, service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+         is_active, is_default, priority, created_at, updated_at)
+       VALUES (14, 'video', 'feituo', 'feituo_open', ?, ?, ?, ?, ?, 1, 1, 0, ?, ?)`
+    ).run('固定飞拓配置', 'https://feituokuajing.com', 'secret', JSON.stringify([model]), model, now, now);
+    const task = taskService.createTask(db, log, 'video_generation', 'mutated-config-recovery');
+    taskService.updateTaskStatus(db, task.id, 'processing', 90, '供应商处理中');
+    const capability = {
+      config_id: 14,
+      config_updated_at: now,
+      provider: 'feituo',
+      protocol: 'feituo_open',
+      model,
+    };
+    const videoId = Number(db.prepare(
+      `INSERT INTO video_generations
+        (provider, prompt, model, source_conditioning_json, status, task_id, provider_task_id,
+         ai_service_config_id, created_at, updated_at)
+       VALUES ('feituo', ?, ?, ?, 'processing', ?, ?, 14, ?, ?)`
+    ).run(
+      '固定协议恢复测试',
+      model,
+      JSON.stringify({ segment_sha256: 'a'.repeat(64), video_capability: capability }),
+      task.id,
+      'provider-task-mutated-14',
+      now,
+      now,
+    ).lastInsertRowid);
+    db.prepare(`UPDATE ai_service_configs
+      SET api_key = 'rotated-unverified-key', base_url = 'https://new-endpoint.example.test', updated_at = ?
+      WHERE id = 14`).run('2026-08-08T12:00:00.000Z');
+    videoClient.callVideoApi = async () => { submitCount += 1; return { error: '不得提交' }; };
+    videoClient.pollVideoTask = async () => { pollCount += 1; return { error: '不得使用改写协议轮询' }; };
+
+    videoService.resumeProcessingVideoGenerations(db, log);
+    const attention = await waitFor(() => {
+      const row = db.prepare('SELECT status, error_msg FROM video_generations WHERE id = ?').get(videoId);
+      return row.status === 'needs_attention' ? row : null;
+    });
+
+    assert.match(attention.error_msg, /固定模型配置|配置版本|请勿重新提交/i);
+    assert.equal(taskService.getTask(db, task.id).status, 'needs_attention');
+    assert.equal(submitCount, 0);
+    assert.equal(pollCount, 0);
+  } finally {
+    videoClient.pollVideoTask = originalPoll;
+    videoClient.callVideoApi = originalCall;
+    db.close();
+  }
+});

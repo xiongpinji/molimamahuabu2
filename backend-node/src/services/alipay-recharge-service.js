@@ -415,7 +415,6 @@ function processNotification(db, payload, gateway) {
     throw rechargeError('ALIPAY_NOTIFICATION_INVALID', '支付宝通知缺少订单号');
   }
   const amountCents = notificationAmountCents(payload.total_amount);
-
   try {
     return db.transaction(() => {
       const order = db.prepare('SELECT * FROM tenant_recharge_orders WHERE out_trade_no = ?')

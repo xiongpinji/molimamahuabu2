@@ -43,16 +43,40 @@ function runMigrations(database) {
   for (const file of files) {
     const fullPath = path.join(migrationsDir, file);
     const sql = fs.readFileSync(fullPath, 'utf8');
-    const statements = sql
-      .split(';')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
+    const statements = splitSqlStatements(sql);
     if (statements.length <= 1) {
       runOne(database, sql, file, -1);
     } else {
       statements.forEach((stmt, i) => runOne(database, stmt + ';', file, i));
     }
   }
+}
+
+function splitSqlStatements(sql) {
+  const statements = [];
+  let buffer = '';
+  let inTrigger = false;
+  for (const line of sql.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    const upper = trimmed.toUpperCase();
+    if (!inTrigger && upper.startsWith('CREATE TRIGGER')) inTrigger = true;
+    buffer += `${line}\n`;
+    if (inTrigger) {
+      if (upper.endsWith('END;')) {
+        statements.push(buffer.trim().replace(/;$/, ''));
+        buffer = '';
+        inTrigger = false;
+      }
+      continue;
+    }
+    if (trimmed.endsWith(';')) {
+      statements.push(buffer.trim().replace(/;$/, ''));
+      buffer = '';
+    }
+  }
+  const tail = buffer.trim();
+  if (tail) statements.push(tail.replace(/;$/, ''));
+  return statements.filter((statement) => statement.length > 0);
 }
 
 /**
@@ -86,6 +110,199 @@ function ensureColumns(database, table, columns) {
       }
     }
   }
+}
+
+function tableExists(database, table) {
+  return !!database
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table);
+}
+
+function quoteIdent(name) {
+  return `"${String(name).replace(/"/g, '""')}"`;
+}
+
+function ensureRedrawWorkDurationConstraint(database) {
+  if (!tableExists(database, 'redraw_works')) return;
+  const table = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'redraw_works'")
+    .get();
+  const sql = table?.sql || '';
+  const oldDurationCheck = /duration_ms\s+INTEGER\s+NOT\s+NULL\s+CHECK\s*\(\s*duration_ms\s+BETWEEN\s+15000\s+AND\s+3600000\s*\)/i;
+  if (!oldDurationCheck.test(sql)) return;
+
+  const tempTable = '__redraw_works_duration_rebuild';
+  if (database.inTransaction) {
+    throw new Error('redraw_works duration constraint migration requires no active transaction');
+  }
+  if (tableExists(database, tempTable)) {
+    throw new Error('redraw_works duration rebuild temp table already exists');
+  }
+  const createTempSql = sql
+    .replace(
+      /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"redraw_works"|`redraw_works`|\[redraw_works\]|redraw_works)\s*\(/i,
+      `CREATE TABLE ${quoteIdent(tempTable)} (`,
+    )
+    .replace(oldDurationCheck, 'duration_ms INTEGER NOT NULL CHECK (duration_ms BETWEEN 12000 AND 3600000)');
+  if (createTempSql === sql || !createTempSql.startsWith(`CREATE TABLE ${quoteIdent(tempTable)}`)) {
+    throw new Error('Unsupported redraw_works DDL for duration constraint migration');
+  }
+
+  const columns = database.prepare('PRAGMA table_info(redraw_works)').all().map((column) => column.name);
+  const columnSql = columns.map(quoteIdent).join(', ');
+  const indexes = database.prepare(`
+    SELECT name, sql
+    FROM sqlite_master
+    WHERE type = 'index'
+      AND tbl_name = 'redraw_works'
+      AND sql IS NOT NULL
+    ORDER BY name
+  `).all();
+  const foreignKeysEnabled = database.pragma('foreign_keys', { simple: true }) ? 1 : 0;
+
+  try {
+    database.pragma('foreign_keys = OFF');
+    database.exec('BEGIN');
+    database.exec(createTempSql);
+    database.exec(`
+      INSERT INTO ${quoteIdent(tempTable)} (${columnSql})
+      SELECT ${columnSql} FROM redraw_works
+    `);
+    database.exec('DROP TABLE redraw_works');
+    database.exec(`ALTER TABLE ${quoteIdent(tempTable)} RENAME TO redraw_works`);
+    for (const index of indexes) {
+      database.exec(index.sql);
+    }
+    database.exec('COMMIT');
+  } catch (error) {
+    try {
+      database.exec('ROLLBACK');
+    } catch (_) {}
+    throw error;
+  } finally {
+    database.pragma(`foreign_keys = ${foreignKeysEnabled ? 'ON' : 'OFF'}`);
+  }
+}
+
+const REDRAW_WORK_VERSION_STATUSES = [
+  'draft',
+  'analyzing',
+  'asset_review',
+  'ready_to_generate',
+  'generating',
+  'composing',
+  'completed',
+  'failed',
+  'needs_attention',
+  'needs_review',
+  'blocked',
+];
+
+function rebuildTableFromSql(database, tableName, tempTable, createTempSql) {
+  if (database.inTransaction) {
+    throw new Error(`${tableName} rebuild requires no active transaction`);
+  }
+  if (tableExists(database, tempTable)) {
+    throw new Error(`${tableName} status rebuild temp table already exists`);
+  }
+  if (!createTempSql.startsWith(`CREATE TABLE ${quoteIdent(tempTable)}`)) {
+    throw new Error(`Unsupported ${tableName} DDL for status constraint migration`);
+  }
+
+  const columns = database.prepare(`PRAGMA table_info(${quoteIdent(tableName)})`).all().map((column) => column.name);
+  const columnSql = columns.map(quoteIdent).join(', ');
+  const dependentSql = database.prepare(`
+    SELECT type, name, sql
+    FROM sqlite_master
+    WHERE tbl_name = ?
+      AND type IN ('index', 'trigger')
+      AND sql IS NOT NULL
+    ORDER BY type, name
+  `).all(tableName);
+  const foreignKeysEnabled = database.pragma('foreign_keys', { simple: true }) ? 1 : 0;
+
+  try {
+    database.pragma('foreign_keys = OFF');
+    database.exec('BEGIN');
+    database.exec(createTempSql);
+    database.exec(`
+      INSERT INTO ${quoteIdent(tempTable)} (${columnSql})
+      SELECT ${columnSql} FROM ${quoteIdent(tableName)}
+    `);
+    database.exec(`DROP TABLE ${quoteIdent(tableName)}`);
+    database.exec(`ALTER TABLE ${quoteIdent(tempTable)} RENAME TO ${quoteIdent(tableName)}`);
+    for (const item of dependentSql) {
+      database.exec(item.sql);
+    }
+    database.exec('COMMIT');
+  } catch (error) {
+    try {
+      database.exec('ROLLBACK');
+    } catch (_) {}
+    throw error;
+  } finally {
+    database.pragma(`foreign_keys = ${foreignKeysEnabled ? 'ON' : 'OFF'}`);
+  }
+}
+
+function ensureRedrawStatusConstraint(database, tableName) {
+  if (!tableExists(database, tableName)) return;
+  const table = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(tableName);
+  const sql = table?.sql || '';
+  if (/\bneeds_review\b/i.test(sql) && /\bblocked\b/i.test(sql)) return;
+
+  const statusCheck = /status\s+TEXT\s+NOT\s+NULL\s+DEFAULT\s+'draft'\s+CHECK\s*\(\s*status\s+IN\s*\(([^)]*)\)\s*\)/i;
+  if (!statusCheck.test(sql)) return;
+  const tempTable = `__${tableName}_status_rebuild`;
+  const nextStatusSql = `status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN (${REDRAW_WORK_VERSION_STATUSES.map((status) => `'${status}'`).join(', ')}))`;
+  const createTempSql = sql
+    .replace(
+      new RegExp(`^CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(?:"${tableName}"|\`${tableName}\`|\\[${tableName}\\]|${tableName})\\s*\\(`, 'i'),
+      `CREATE TABLE ${quoteIdent(tempTable)} (`,
+    )
+    .replace(statusCheck, nextStatusSql);
+  if (createTempSql === sql) {
+    throw new Error(`Unsupported ${tableName} DDL for status constraint migration`);
+  }
+  rebuildTableFromSql(database, tableName, tempTable, createTempSql);
+}
+
+function ensureRedrawWorkflowStatusConstraints(database) {
+  ensureRedrawStatusConstraint(database, 'redraw_works');
+  ensureRedrawStatusConstraint(database, 'redraw_versions');
+}
+
+function ensureRedrawWorkSourceIndex(database) {
+  if (!tableExists(database, 'redraw_works')) return;
+  database.transaction(() => {
+    const duplicate = database.prepare(`
+      SELECT tenant_id, user_id, source_fingerprint, COUNT(*) AS count
+      FROM redraw_works
+      WHERE deleted_at IS NULL
+        AND tenant_id IS NOT NULL
+        AND user_id IS NOT NULL
+        AND source_fingerprint IS NOT NULL
+        AND source_fingerprint <> ''
+      GROUP BY tenant_id, user_id, source_fingerprint
+      HAVING COUNT(*) > 1
+      LIMIT 1
+    `).get();
+    if (duplicate) {
+      const error = new Error(
+        `redraw_works active source duplicates: tenant=${duplicate.tenant_id}, user=${duplicate.user_id}, source=${duplicate.source_fingerprint}, count=${duplicate.count}`,
+      );
+      error.code = 'REDRAW_WORK_SOURCE_DUPLICATE';
+      throw error;
+    }
+    database.exec(`
+      DROP INDEX IF EXISTS uq_redraw_work_source;
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_redraw_work_source
+        ON redraw_works(tenant_id, user_id, source_fingerprint)
+        WHERE deleted_at IS NULL;
+    `);
+  })();
 }
 
 /**
@@ -266,6 +483,10 @@ function ensureAllColumns(database) {
     { name: 'deleted_at',   type: 'TEXT' },
   ]);
 
+  ensureColumns(database, 'model_credit_prices', [
+    { name: 'public_note', type: 'TEXT NOT NULL DEFAULT \'\'' },
+  ]);
+
   // --- ai_service_configs ---（兜底建表：旧版 01_init.sql 可能未包含此表）
   try {
     database.exec(`CREATE TABLE IF NOT EXISTS ai_service_configs (
@@ -282,6 +503,10 @@ function ensureAllColumns(database) {
       priority      INTEGER DEFAULT 0,
       is_default    INTEGER DEFAULT 0,
       is_active     INTEGER DEFAULT 1,
+      verification_status TEXT NOT NULL DEFAULT 'unverified',
+      verification_checked_at TEXT,
+      verified_at   TEXT,
+      verification_error TEXT,
       settings      TEXT,
       created_at    TEXT,
       updated_at    TEXT,
@@ -301,10 +526,16 @@ function ensureAllColumns(database) {
     { name: 'priority',       type: 'INTEGER DEFAULT 0' },
     { name: 'is_default',     type: 'INTEGER DEFAULT 0' },
     { name: 'is_active',      type: 'INTEGER DEFAULT 1' },
+    { name: 'verification_status', type: 'TEXT NOT NULL DEFAULT \'unverified\'' },
+    { name: 'verification_checked_at', type: 'TEXT' },
+    { name: 'verified_at',    type: 'TEXT' },
+    { name: 'verification_error', type: 'TEXT' },
     { name: 'settings',       type: 'TEXT' },
+    { name: 'verification_status', type: 'TEXT NOT NULL DEFAULT \'pending\'' },
+    { name: 'verified_capabilities', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'verification_error', type: 'TEXT' },
     { name: 'logical_model_id', type: 'TEXT' },
     { name: 'failover_enabled', type: 'INTEGER NOT NULL DEFAULT 0' },
-    { name: 'verification_status', type: 'TEXT NOT NULL DEFAULT \'unverified\'' },
     { name: 'verified_at', type: 'TEXT' },
     { name: 'verification_evidence', type: 'TEXT' },
     { name: 'created_at',     type: 'TEXT' },
@@ -329,6 +560,8 @@ function ensureAllColumns(database) {
     { name: 'tenant_id',    type: 'TEXT' },
     { name: 'model',        type: 'TEXT' },
     { name: 'credit_reservation_id', type: 'TEXT' },
+    { name: 'provider_task_id', type: 'TEXT' },
+    { name: 'metadata',     type: 'TEXT' },
   ]);
 
   // --- image_generations ---
@@ -386,8 +619,13 @@ function ensureAllColumns(database) {
     { name: 'reference_image_urls', type: 'TEXT' },
     { name: 'reference_video_url',  type: 'TEXT' },
     { name: 'reference_audio_url',  type: 'TEXT' },
+    { name: 'reference_mode',       type: 'TEXT' },
+    { name: 'generate_audio',       type: 'INTEGER NOT NULL DEFAULT 0' },
     { name: 'reference_video_urls', type: 'TEXT' },
+    { name: 'source_conditioning_json', type: 'TEXT' },
+    { name: 'ai_service_config_id', type: 'INTEGER' },
     { name: 'reference_audio_urls', type: 'TEXT' },
+    { name: 'request_snapshot',     type: 'TEXT' },
     { name: 'video_url',            type: 'TEXT' },
     { name: 'local_path',           type: 'TEXT' },
     { name: 'status',               type: 'TEXT' },
@@ -444,6 +682,87 @@ function ensureAllColumns(database) {
     { name: 'created_at',   type: 'TEXT' },
     { name: 'updated_at',   type: 'TEXT' },
     { name: 'deleted_at',   type: 'TEXT' },
+  ]);
+
+  // --- redraw source analysis ---
+  try {
+    database.exec(`CREATE TABLE IF NOT EXISTS redraw_works (
+      id TEXT PRIMARY KEY,
+      user_id TEXT,
+      source_asset_id TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      current_step INTEGER DEFAULT 1,
+      task_id TEXT,
+      provider_task_id TEXT,
+      credit_reservation_id TEXT,
+      error_msg TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      deleted_at TEXT
+    )`);
+    database.exec(`CREATE TABLE IF NOT EXISTS redraw_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      work_id TEXT NOT NULL,
+      source_facts_json TEXT,
+      facts_hash TEXT,
+      text_map_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT,
+      updated_at TEXT,
+      deleted_at TEXT
+    )`);
+    database.exec(`CREATE TABLE IF NOT EXISTS redraw_shots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      work_id TEXT NOT NULL,
+      version_id INTEGER,
+      shot_id TEXT,
+      start_ms INTEGER,
+      end_ms INTEGER,
+      draft_json TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at TEXT,
+      updated_at TEXT,
+      deleted_at TEXT,
+      UNIQUE(work_id, shot_id)
+    )`);
+  } catch (_) {}
+  ensureColumns(database, 'redraw_works', [
+    { name: 'user_id', type: 'TEXT' },
+    { name: 'source_asset_id', type: 'TEXT' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    { name: 'current_step', type: 'INTEGER DEFAULT 1' },
+    { name: 'task_id', type: 'TEXT' },
+    { name: 'provider_task_id', type: 'TEXT' },
+    { name: 'credit_reservation_id', type: 'TEXT' },
+    { name: 'error_msg', type: 'TEXT' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
+  ]);
+  ensureColumns(database, 'redraw_versions', [
+    { name: 'work_id', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'source_facts_json', type: 'TEXT' },
+    { name: 'facts_hash', type: 'TEXT' },
+    { name: 'text_map_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'localization_task_id', type: 'TEXT' },
+    { name: 'localization_credit_reservation_id', type: 'TEXT' },
+    { name: 'localization_input_hash', type: 'TEXT' },
+    { name: 'localization_idempotency_key', type: 'TEXT' },
+    { name: 'localization_model_snapshot_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
+  ]);
+  ensureColumns(database, 'redraw_shots', [
+    { name: 'work_id', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'version_id', type: 'INTEGER' },
+    { name: 'shot_id', type: 'TEXT' },
+    { name: 'start_ms', type: 'INTEGER' },
+    { name: 'end_ms', type: 'INTEGER' },
+    { name: 'draft_json', type: 'TEXT' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
   ]);
 
   // --- character_libraries ---
@@ -560,10 +879,324 @@ function ensureAllColumns(database) {
   } catch (_) {}
 }
 
+/** 转绘工作流旧库兜底：只补列和事实层保护触发器，不改写既有数据。 */
+function ensureRedrawCompatibility(database) {
+  ensureColumns(database, 'redraw_projects', [
+    { name: 'tenant_id', type: 'TEXT' },
+    { name: 'user_id', type: 'TEXT' },
+    { name: 'title', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'default_locale', type: 'TEXT NOT NULL DEFAULT \'en-US\'' },
+    { name: 'default_market', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'localization_level', type: 'TEXT NOT NULL DEFAULT \'faithful\'' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
+    { name: 'execution_mode', type: 'TEXT NOT NULL DEFAULT \'safe\' CHECK (execution_mode IN (\'safe\', \'auto\'))' },
+    { name: 'budget_limit_credits', type: 'INTEGER CHECK (budget_limit_credits IS NULL OR budget_limit_credits > 0)' },
+    { name: 'max_auto_attempts_per_shot', type: 'INTEGER CHECK (max_auto_attempts_per_shot IS NULL OR max_auto_attempts_per_shot BETWEEN 1 AND 5)' },
+    { name: 'policy_version', type: 'INTEGER NOT NULL DEFAULT 1 CHECK (policy_version > 0)' },
+    { name: 'automation_policy_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+  ]);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS redraw_workflow_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      project_id INTEGER NOT NULL,
+      resource_type TEXT NOT NULL,
+      resource_id TEXT NOT NULL,
+      from_state TEXT,
+      to_state TEXT NOT NULL,
+      reason_code TEXT NOT NULL,
+      evidence_hash TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(project_id) REFERENCES redraw_projects(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_redraw_workflow_events_project
+      ON redraw_workflow_events(tenant_id, user_id, project_id, id DESC);
+
+    CREATE TRIGGER IF NOT EXISTS redraw_workflow_events_immutable_update
+    BEFORE UPDATE ON redraw_workflow_events
+    BEGIN SELECT RAISE(ABORT, 'redraw workflow events are immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS redraw_workflow_events_immutable_delete
+    BEFORE DELETE ON redraw_workflow_events
+    BEGIN SELECT RAISE(ABORT, 'redraw workflow events are immutable'); END;
+  `);
+
+  ensureColumns(database, 'redraw_style_presets', [
+    { name: 'tenant_id', type: 'TEXT' },
+    { name: 'user_id', type: 'TEXT' },
+    { name: 'stable_key', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'name', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'category', type: 'TEXT NOT NULL DEFAULT \'live_action\'' },
+    { name: 'sort_order', type: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'version', type: 'INTEGER NOT NULL DEFAULT 1' },
+    { name: 'prompt_template', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'negative_prompt_template', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'preview_asset_id', type: 'INTEGER' },
+    { name: 'compatible_models_json', type: 'TEXT NOT NULL DEFAULT \'[]\'' },
+    { name: 'supported_ratios_json', type: 'TEXT NOT NULL DEFAULT \'[]\'' },
+    { name: 'verification_evidence_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
+  ]);
+
+  ensureColumns(database, 'redraw_works', [
+    { name: 'project_id', type: 'INTEGER' },
+    { name: 'tenant_id', type: 'TEXT' },
+    { name: 'user_id', type: 'TEXT' },
+    { name: 'title', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'source_asset_id', type: 'INTEGER' },
+    { name: 'source_fingerprint', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'duration_ms', type: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'current_version', type: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'current_step', type: 'INTEGER NOT NULL DEFAULT 1' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
+  ]);
+
+  ensureColumns(database, 'redraw_versions', [
+    { name: 'work_id', type: 'INTEGER' },
+    { name: 'tenant_id', type: 'TEXT' },
+    { name: 'user_id', type: 'TEXT' },
+    { name: 'version', type: 'INTEGER NOT NULL DEFAULT 1' },
+    { name: 'locale', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'market', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'localization_level', type: 'TEXT NOT NULL DEFAULT \'faithful\'' },
+    { name: 'source_facts_json', type: 'TEXT' },
+    { name: 'glossary_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'name_map_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'culture_map_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'text_map_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'style_snapshot_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'capability_snapshot_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'localization_task_id', type: 'TEXT' },
+    { name: 'localization_credit_reservation_id', type: 'TEXT' },
+    { name: 'localization_input_hash', type: 'TEXT' },
+    { name: 'localization_idempotency_key', type: 'TEXT' },
+    { name: 'localization_model_snapshot_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'reference_bundle_required', type: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'facts_hash', type: 'TEXT' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
+  ]);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS redraw_asset_batches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version_id INTEGER NOT NULL,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      quote_snapshot_json TEXT NOT NULL DEFAULT '{}',
+      asset_ids_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'partial_failed', 'failed', 'needs_attention')),
+      total_count INTEGER NOT NULL DEFAULT 0 CHECK (total_count >= 0),
+      success_count INTEGER NOT NULL DEFAULT 0 CHECK (success_count >= 0),
+      failed_count INTEGER NOT NULL DEFAULT 0 CHECK (failed_count >= 0),
+      error_code TEXT,
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT,
+      deleted_at TEXT,
+      FOREIGN KEY(version_id) REFERENCES redraw_versions(id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_redraw_asset_batch_idempotency
+      ON redraw_asset_batches(tenant_id, user_id, version_id, idempotency_key)
+      WHERE deleted_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_redraw_asset_batch_version
+      ON redraw_asset_batches(version_id, status, updated_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_redraw_localization_idempotency
+      ON redraw_versions(tenant_id, user_id, work_id, localization_idempotency_key)
+      WHERE localization_idempotency_key IS NOT NULL
+        AND trim(localization_idempotency_key) <> ''
+        AND deleted_at IS NULL;
+  `);
+
+  ensureColumns(database, 'redraw_assets', [
+    { name: 'version_id', type: 'INTEGER' },
+    { name: 'tenant_id', type: 'TEXT' },
+    { name: 'user_id', type: 'TEXT' },
+    { name: 'kind', type: 'TEXT NOT NULL DEFAULT \'character\'' },
+    { name: 'source_ref_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'localized_name', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'localized_description', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'prompt', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'asset_id', type: 'INTEGER' },
+    { name: 'voice_asset_id', type: 'INTEGER' },
+    { name: 'clean_plate_asset_id', type: 'INTEGER' },
+    { name: 'mask_asset_id', type: 'INTEGER' },
+    { name: 'generation_task_id', type: 'TEXT' },
+    { name: 'credit_reservation_id', type: 'TEXT' },
+    { name: 'version_number', type: 'INTEGER NOT NULL DEFAULT 1' },
+    { name: 'approval_status', type: 'TEXT NOT NULL DEFAULT \'pending\'' },
+    { name: 'approved_by', type: 'TEXT' },
+    { name: 'approved_at', type: 'TEXT' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    { name: 'error_code', type: 'TEXT' },
+    { name: 'error_message', type: 'TEXT' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
+  ]);
+
+  ensureColumns(database, 'redraw_shots', [
+    { name: 'version_id', type: 'INTEGER' },
+    { name: 'tenant_id', type: 'TEXT' },
+    { name: 'user_id', type: 'TEXT' },
+    { name: 'batch_index', type: 'INTEGER NOT NULL DEFAULT 1' },
+    { name: 'shot_index', type: 'INTEGER NOT NULL DEFAULT 1' },
+    { name: 'start_ms', type: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'end_ms', type: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'duration_ms', type: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'source_dialogue_json', type: 'TEXT NOT NULL DEFAULT \'[]\'' },
+    { name: 'localized_dialogue_json', type: 'TEXT NOT NULL DEFAULT \'[]\'' },
+    { name: 'references_json', type: 'TEXT NOT NULL DEFAULT \'[]\'' },
+    { name: 'reference_bundle_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'reference_bundle_hash', type: 'TEXT' },
+    { name: 'reference_bundle_updated_at', type: 'TEXT' },
+    { name: 'opening_state', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'continuous_action', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'ending_state', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'prompt', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'negative_prompt', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'compiled_prompt_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'video_generation_id', type: 'INTEGER' },
+    { name: 'audio_asset_id', type: 'INTEGER' },
+    { name: 'subtitle_asset_id', type: 'INTEGER' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    { name: 'error_code', type: 'TEXT' },
+    { name: 'error_message', type: 'TEXT' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
+  ]);
+
+  ensureColumns(database, 'redraw_exports', [
+    { name: 'version_id', type: 'INTEGER' },
+    { name: 'tenant_id', type: 'TEXT' },
+    { name: 'user_id', type: 'TEXT' },
+    { name: 'export_type', type: 'TEXT NOT NULL DEFAULT \'video\'' },
+    { name: 'video_merge_id', type: 'INTEGER' },
+    { name: 'asset_id', type: 'INTEGER' },
+    { name: 'subtitle_asset_id', type: 'INTEGER' },
+    { name: 'project_asset_id', type: 'INTEGER' },
+    { name: 'version_number', type: 'INTEGER NOT NULL DEFAULT 1' },
+    { name: 'manifest_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'pending\'' },
+    { name: 'error_code', type: 'TEXT' },
+    { name: 'error_message', type: 'TEXT' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
+  ]);
+
+  database.exec(`
+    CREATE TRIGGER IF NOT EXISTS redraw_versions_facts_immutable_update
+    BEFORE UPDATE OF source_facts_json, facts_hash ON redraw_versions
+    WHEN (OLD.source_facts_json IS NOT NULL OR OLD.facts_hash IS NOT NULL)
+       AND (NEW.source_facts_json IS NOT OLD.source_facts_json OR NEW.facts_hash IS NOT OLD.facts_hash)
+    BEGIN
+      SELECT RAISE(ABORT, 'redraw source facts immutable');
+    END;
+  `);
+  database.exec(`
+    CREATE TRIGGER IF NOT EXISTS redraw_versions_facts_immutable_delete
+    BEFORE DELETE ON redraw_versions
+    WHEN OLD.source_facts_json IS NOT NULL OR OLD.facts_hash IS NOT NULL
+    BEGIN
+      SELECT RAISE(ABORT, 'redraw source facts immutable');
+    END;
+  `);
+}
+
+/** 49 号迁移前的最小兜底，确保旧 redraw_* 表具备索引依赖列。 */
+function ensureRedrawMigrationColumns(database) {
+  const required = {
+    redraw_projects: [
+      { name: 'tenant_id', type: 'TEXT' },
+      { name: 'user_id', type: 'TEXT' },
+      { name: 'updated_at', type: 'TEXT' },
+    ],
+    redraw_style_presets: [
+      { name: 'stable_key', type: 'TEXT NOT NULL DEFAULT \'\'' },
+      { name: 'version', type: 'INTEGER NOT NULL DEFAULT 1' },
+      { name: 'category', type: 'TEXT NOT NULL DEFAULT \'live_action\'' },
+      { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+      { name: 'sort_order', type: 'INTEGER NOT NULL DEFAULT 0' },
+    ],
+    redraw_works: [
+      { name: 'tenant_id', type: 'TEXT' },
+      { name: 'user_id', type: 'TEXT' },
+      { name: 'source_fingerprint', type: 'TEXT NOT NULL DEFAULT \'\'' },
+      { name: 'updated_at', type: 'TEXT' },
+      { name: 'deleted_at', type: 'TEXT' },
+    ],
+    redraw_versions: [
+      { name: 'work_id', type: 'INTEGER' },
+      { name: 'tenant_id', type: 'TEXT' },
+      { name: 'user_id', type: 'TEXT' },
+      { name: 'version', type: 'INTEGER NOT NULL DEFAULT 1' },
+      { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+      { name: 'updated_at', type: 'TEXT' },
+      { name: 'deleted_at', type: 'TEXT' },
+      { name: 'text_map_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+      { name: 'localization_task_id', type: 'TEXT' },
+      { name: 'localization_credit_reservation_id', type: 'TEXT' },
+      { name: 'localization_input_hash', type: 'TEXT' },
+      { name: 'localization_idempotency_key', type: 'TEXT' },
+      { name: 'localization_model_snapshot_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    ],
+    redraw_assets: [
+      { name: 'version_id', type: 'INTEGER' },
+      { name: 'kind', type: 'TEXT NOT NULL DEFAULT \'character\'' },
+      { name: 'approval_status', type: 'TEXT NOT NULL DEFAULT \'pending\'' },
+      { name: 'updated_at', type: 'TEXT' },
+    ],
+    redraw_shots: [
+      { name: 'version_id', type: 'INTEGER' },
+      { name: 'batch_index', type: 'INTEGER NOT NULL DEFAULT 1' },
+      { name: 'shot_index', type: 'INTEGER NOT NULL DEFAULT 1' },
+      { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+      { name: 'updated_at', type: 'TEXT' },
+    ],
+    redraw_exports: [
+      { name: 'version_id', type: 'INTEGER' },
+      { name: 'export_type', type: 'TEXT NOT NULL DEFAULT \'video\'' },
+      { name: 'version_number', type: 'INTEGER NOT NULL DEFAULT 1' },
+    ],
+  };
+
+  for (const [table, columns] of Object.entries(required)) {
+    if (tableExists(database, table)) ensureColumns(database, table, columns);
+  }
+  ensureRedrawWorkSourceIndex(database);
+}
 /** 对已打开的 database 执行迁移与兜底补列（供 app 启动时调用） */
 function runMigrationsAndEnsure(database) {
+  if (database.inTransaction) {
+    throw new Error('runMigrationsAndEnsure requires no active transaction');
+  }
+  ensureRedrawMigrationColumns(database);
   runMigrations(database);
   ensureAllColumns(database);
+  ensureRedrawCompatibility(database);
+  ensureRedrawWorkDurationConstraint(database);
+  ensureRedrawWorkflowStatusConstraints(database);
+  ensureRedrawWorkSourceIndex(database);
 }
 
 function main() {

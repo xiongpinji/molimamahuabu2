@@ -25,6 +25,7 @@ const audioRoutes = require('./audio');
 const canvasTextRoutes = require('./canvas-text');
 const voiceCatalogRoutes = require('./voiceCatalog');
 const scriptAnalysisRoutes = require('./scriptAnalysis');
+const redrawRoutes = require('./redraw');
 const promptOverridesRoutes = require('./promptOverrides');
 const directorExportRoutes = require('./directorExport');
 const directorReferenceRoutes = require('./directorReference');
@@ -40,8 +41,24 @@ const { createRateLimitMiddleware } = require('../middleware/rateLimit');
 const { createModelGenerationGuard } = require('../middleware/modelGenerationGuard');
 const { PERMISSIONS, createPlatformPermissionMiddleware } = require('../middleware/platformRbac');
 const textGenerationBilling = require('../services/text-generation-billing-service');
+const { createRedrawProviderAdapters } = require('../services/redrawProviderAdapters');
+const { REDRAW_LOCALE_DEFAULTS, createRedrawLocaleRegistryFromEnv } = require('../services/productionPreflightService');
+const { createRedrawLocaleVerifierClient } = require('../services/redrawLocaleVerifierClient');
+const redrawAssetService = require('../services/redrawAssetService');
+const redrawVoiceService = require('../services/redrawVoiceService');
+const { createRedrawProviderAssetsRouter } = require('./redrawProviderAssets');
 
-function setupRouter(cfg, db, log) {
+function createDefaultRedrawLocaleVerifier(options = {}) {
+  if (options.localeVerifier) return options.localeVerifier;
+  const registry = options.localeRegistry || createRedrawLocaleRegistryFromEnv(process.env);
+  return createRedrawLocaleVerifierClient({
+    registry,
+    socketPath: String(process.env.REDRAW_LOCALE_VERIFIER_SOCKET || REDRAW_LOCALE_DEFAULTS.socketPath),
+    timeoutMs: Number(process.env.REDRAW_LOCALE_VERIFIER_TIMEOUT_MS || REDRAW_LOCALE_DEFAULTS.timeoutMs),
+  });
+}
+
+function setupRouter(cfg, db, log, options = {}) {
   const r = express.Router();
   const publicPlatformEnabled = /^(1|true|yes)$/i.test(String(process.env.PUBLIC_PLATFORM_MODE || ''));
   const drama = dramaRoutes(db, cfg, log, { billingEnabled: publicPlatformEnabled });
@@ -121,6 +138,9 @@ function setupRouter(cfg, db, log) {
     db,
   });
   const voiceCatalog = voiceCatalogRoutes(db, cfg, log);
+  const providerAssetSecret = options.providerAssetSecret
+    ?? options.redrawOptions?.providerAssetSecret
+    ?? process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET;
 
   r.post('/auth/register/code', authRateLimit, auth.requestRegistrationCode);
   r.post('/auth/register', authRateLimit, auth.register);
@@ -131,6 +151,10 @@ function setupRouter(cfg, db, log) {
   r.post('/billing/recharge/alipay/notify', alipayRecharge.notify);
   // 试听只暴露已生成的固定目录音频，不依赖项目静态资源权限，也不接受任意路径。
   r.get('/voice-catalog/:id/preview', voiceCatalog.preview);
+  r.use('/redraw-provider-assets', createRedrawProviderAssetsRouter({
+    cfg,
+    signingSecret: providerAssetSecret,
+  }));
   r.use(requireUser);
   // 租户列表必须能在浏览器残留了已删除/无权租户 ID 时用于恢复，因此不依赖当前租户上下文。
   r.post('/auth/bootstrap-admin', requireBootstrapAdminToken, auth.bootstrapAdmin);
@@ -236,6 +260,58 @@ function setupRouter(cfg, db, log) {
   const directorExport = directorExportRoutes(db, cfg, log);
   const directorReference = directorReferenceRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const scriptAnalysis = scriptAnalysisRoutes(db, log);
+  const redrawOptions = options.redrawOptions || {};
+  const explicitLocalizationProvider = options.localizationProvider || redrawOptions.localizationProvider;
+  const explicitAssetGenerationProvider = options.assetGenerationProvider
+    || options.assetProvider
+    || redrawOptions.assetGenerationProvider
+    || redrawOptions.assetProvider;
+  const explicitDialogueProvider = options.dialogueProvider || redrawOptions.dialogueProvider;
+  const needsRedrawAdapters = !explicitLocalizationProvider || !explicitAssetGenerationProvider || !explicitDialogueProvider;
+  const localeRegistry = options.localeRegistry || redrawOptions.localeRegistry
+    || options.evidenceRegistry || redrawOptions.evidenceRegistry
+    || createRedrawLocaleRegistryFromEnv(process.env);
+  redrawAssetService.setDefaultEvidenceRegistry(localeRegistry);
+  redrawVoiceService.setDefaultEvidenceRegistry(localeRegistry);
+  const localeVerifier = options.localeVerifier || redrawOptions.localeVerifier
+    || createDefaultRedrawLocaleVerifier({ ...options, localeRegistry });
+  const redrawAdapters = needsRedrawAdapters
+    ? (options.providerAdapters || (options.createRedrawProviderAdapters || createRedrawProviderAdapters)({
+        db,
+        log,
+        cfg,
+        aiClient: options.aiClient,
+        imageClient: options.imageClient,
+        uploadService: options.uploadService,
+        assetService: options.assetService,
+        ttsService: options.ttsService,
+        ttsConfig: options.ttsConfig,
+        localeVerifier,
+      }))
+    : null;
+  const defaultAssetGenerationProvider = explicitAssetGenerationProvider
+    ? null
+    : async (request = {}) => redrawAdapters.generateAsset({
+        ...request,
+        model: request.model ?? request.input?.model,
+        localeVerifier,
+      });
+  const defaultDialogueProvider = explicitDialogueProvider
+    ? null
+    : async (request = {}) => redrawAdapters.generateAsset({
+        ...request,
+        kind: 'dialogue',
+        model: request.model,
+        localeVerifier,
+      });
+  const redraw = redrawRoutes(db, log, {
+    cfg,
+    ...redrawOptions,
+    localeVerifier,
+    localizationProvider: explicitLocalizationProvider || redrawAdapters.localize,
+    assetGenerationProvider: explicitAssetGenerationProvider || defaultAssetGenerationProvider,
+    dialogueProvider: explicitDialogueProvider || defaultDialogueProvider,
+  });
   r.get('/voice-catalog', voiceCatalog.list);
 
   // ---------- script analysis ----------
@@ -250,6 +326,46 @@ function setupRouter(cfg, db, log) {
   r.post('/script-analysis/projects/:id/review', scriptAnalysis.review);
   r.post('/script-analysis/projects/:id/run', scriptAnalysis.run);
   r.post('/script-analysis/projects/:id/import-to-factory', scriptAnalysis.importToFactory);
+
+  // ---------- redraw ----------
+  r.get('/redraw/projects', redraw.listProjects);
+  r.post('/redraw/projects', redraw.createProject);
+  r.get('/redraw/projects/:id', redraw.getProject);
+  r.put('/redraw/projects/:id/policy', redraw.updateProjectPolicy);
+  r.get('/redraw/projects/:id/events', redraw.listProjectEvents);
+  r.post('/redraw/projects/:id/works', redraw.uploadSource, redraw.createWorks);
+  r.get('/redraw/works/:id', redraw.getWork);
+  r.put('/redraw/shots/:id', redraw.updateShot);
+  r.get('/redraw/shots/:id/reference-bundle', redraw.getReferenceBundle);
+  r.put('/redraw/shots/:id/reference-bundle', redraw.saveReferenceBundle);
+  r.post('/redraw/shots/:id/generate', redraw.generateShot);
+  r.post('/redraw/shots/:id/native-audio-review', redraw.nativeAudioReview);
+  r.post('/redraw/works/:id/generate-batch', redraw.generateBatch);
+  r.get('/redraw/style-presets', redraw.listStylePresets);
+  r.get('/redraw/locales', redraw.listLocales);
+  r.post('/redraw/works/:id/analyze', redraw.uploadReferenceImage, redraw.analyzeWork);
+  r.post('/redraw/works/:id/localization-quote', redraw.localizationQuote);
+  r.post('/redraw/works/:id/versions', redraw.createVersion);
+  r.get('/redraw/versions/:id/assets', redraw.listVersionAssets);
+  r.get('/redraw/assets/:id/preview/:variant', redraw.previewRedrawAsset);
+  r.get('/redraw/versions/:id/voices', redraw.listProductionVoices);
+  r.get('/redraw/versions/:versionId/voices/:voiceAssetId/preview', redraw.previewProductionVoice);
+  r.post('/redraw/versions/:id/assets/batch-quote', redraw.assetBatchQuote);
+  r.post('/redraw/versions/:id/assets/batches', redraw.createAssetBatch);
+  r.post('/redraw/versions/:id/dialogue/quote', redraw.dialogueQuote);
+  r.post('/redraw/versions/:id/dialogue/start', redraw.startDialogue);
+  r.get('/redraw/versions/:id/dialogue/tasks/:taskId', redraw.getDialogueTask);
+  r.post('/redraw/versions/:id/compose', redraw.composeVersion);
+  r.get('/redraw/versions/:id/exports', redraw.listVersionExports);
+  r.get('/redraw/exports/:id', redraw.getExport);
+  r.get('/redraw/exports/:id/download/:kind', redraw.downloadExport);
+  r.get('/redraw/versions/:id/generation-gate', redraw.generationGate);
+  r.get('/redraw/assets/:id/quote', redraw.assetQuote);
+  r.put('/redraw/assets/:id/identity-pack', redraw.saveRedrawCharacterIdentityPack);
+  r.put('/redraw/assets/:id', redraw.updateRedrawAsset);
+  r.post('/redraw/assets/:id/voice', redraw.assignVoice);
+  r.post('/redraw/assets/:id/generate', redraw.generateRedrawAsset);
+  r.post('/redraw/assets/:id/review', redraw.reviewRedrawAsset);
 
   // ---------- dramas ----------
   r.get('/dramas', drama.listDramas);
