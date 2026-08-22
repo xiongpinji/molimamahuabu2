@@ -7,7 +7,9 @@ const { prepareReferenceCleanRequirement } = require('./redrawAssetService');
 const { buildCharacterPlan } = require('./redrawCharacterPlanService');
 const { preparationEvidenceHash } = require('./redrawPreparationGateService');
 const {
+  buildTrustedReferenceBundleInput,
   canonicalBundleHash,
+  loadReviewedReferenceCoverage,
   saveReferenceBundle: defaultSaveReferenceBundle,
 } = require('./redrawReferenceBundleService');
 const { appendWorkflowEvent } = require('./redrawWorkflowEventService');
@@ -177,10 +179,16 @@ function assertRequirements(value) {
 }
 
 async function reviewedCoverage(ctx, shots, deps) {
-  if (typeof deps.getReviewedCoverage !== 'function') {
-    throw codedError('REDRAW_REFERENCE_PREPARATION_COVERAGE_REQUIRED', '缺少已审核全帧覆盖');
+  const injected = typeof deps.getReviewedCoverage === 'function';
+  let coverage;
+  try {
+    coverage = injected
+      ? await deps.getReviewedCoverage({ ctx, version_id: ctx.versionId, shots })
+      : await loadReviewedReferenceCoverage(ctx);
+  } catch (error) {
+    if (injected) throw error;
+    throw codedError('REDRAW_REFERENCE_PREPARATION_COVERAGE_NOT_APPROVED', '全帧覆盖尚未审核');
   }
-  const coverage = await deps.getReviewedCoverage({ ctx, version_id: ctx.versionId, shots });
   if (!coverage || coverage.status !== 'approved' || !Array.isArray(coverage.shots)) {
     throw codedError('REDRAW_REFERENCE_PREPARATION_COVERAGE_NOT_APPROVED', '全帧覆盖尚未审核');
   }
@@ -328,6 +336,7 @@ async function buildQuote(rawCtx, input = {}, deps = {}) {
       });
     }
   }
+  const unpriced = items.length > 0 && !priced;
   const quoteBody = {
     schema_version: 'redraw-reference-preparation-quote-v1',
     version_id: ctx.versionId,
@@ -335,8 +344,10 @@ async function buildQuote(rawCtx, input = {}, deps = {}) {
     character_plan_hash: plan.plan_hash,
     execution_mode: scope.execution_mode,
     effective_mode: decision.effective_mode,
-    action: decision.action,
-    reason_codes: [...decision.reason_codes],
+    action: unpriced ? 'blocked' : decision.action,
+    reason_codes: unpriced
+      ? [...new Set([...decision.reason_codes, 'reference_cost_unpriced'])].sort()
+      : [...decision.reason_codes],
     selected_shot_ids: selected.map((shot) => Number(shot.id)),
     missing_shot_ids: missing,
     reused_shot_ids: reused,
@@ -366,9 +377,10 @@ async function quoteVersionPreparation(ctx, input = {}, deps = {}) {
   return (await buildQuote(ctx, input, deps)).quote;
 }
 
-function assertBaselineCurrent(ctx, expected, deps) {
+async function assertBaselineCurrent(ctx, expected, deps) {
   const scope = readScope(ctx);
   const plan = currentCharacterPlan(ctx, deps);
+  const coverage = await reviewedCoverage(ctx, readShots(ctx), deps);
   const current = {
     version_id: Number(scope.id),
     version_updated_at: scope.updated_at,
@@ -377,7 +389,7 @@ function assertBaselineCurrent(ctx, expected, deps) {
     project_policy_version: Number(scope.policy_version),
     project_updated_at: scope.project_updated_at,
     character_plan_hash: plan.plan_hash,
-    coverage_hash: expected.coverage_hash,
+    coverage_hash: sha256({ status: coverage.status, shots: coverage.shots }),
   };
   if (sha256(current) !== expected.snapshot_hash) {
     throw codedError('REDRAW_REFERENCE_PREPARATION_DRIFT', '准备期间上游版本已变化');
@@ -548,7 +560,7 @@ async function executeShot(ctx, built, shot, descriptor, idempotencyKey, deps) {
     currentUpdatedAt = persistShotSnapshot(ctx, shot.id, currentUpdatedAt, 'clean_ready', snapshot);
   }
   try {
-    assertBaselineCurrent(ctx, built.baseline, deps);
+    await assertBaselineCurrent(ctx, built.baseline, deps);
   } catch (error) {
     snapshot.status = 'needs_attention';
     snapshot.error_code = 'REDRAW_REFERENCE_PREPARATION_DRIFT';
@@ -563,7 +575,10 @@ async function executeShot(ctx, built, shot, descriptor, idempotencyKey, deps) {
         coverage_shot: descriptor,
         clean_results: snapshot.clean_results,
       })
-    : descriptor.reference_bundle_input;
+    : await buildTrustedReferenceBundleInput(ctx, {
+        shot_id: Number(shot.id),
+        clean_results: snapshot.clean_results,
+      });
   if (!bundleInput || typeof bundleInput !== 'object' || Array.isArray(bundleInput)) {
     snapshot.status = 'failed';
     snapshot.error_code = 'REDRAW_REFERENCE_PREPARATION_BUNDLE_INPUT_REQUIRED';

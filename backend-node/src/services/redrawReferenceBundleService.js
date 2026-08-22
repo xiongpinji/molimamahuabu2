@@ -2,6 +2,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const { validateReviewedCoverageManifest } = require('./redrawFullFrameReviewService');
 const { verifyMotionReference } = require('./redrawMotionReferenceService');
 
 const SCHEMA_VERSION = 'redraw-reference-bundle-v1';
@@ -15,6 +16,7 @@ const DIALOGUE_CODE = 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED';
 const MOTION_CODE = 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE';
 const LIMIT_CODE = 'REDRAW_REFERENCE_BUNDLE_REFERENCE_LIMIT_EXCEEDED';
 const PROJECTION_CODE = 'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED';
+const COVERAGE_EVIDENCE_CODE = 'REDRAW_REFERENCE_BUNDLE_COVERAGE_EVIDENCE_REQUIRED';
 const HEX_64 = /^[0-9a-f]{64}$/;
 const INPUT_FIELDS = new Set([
   'shot_id',
@@ -174,6 +176,306 @@ function sha256File(storageRoot, asset, code) {
       }
     }
   }
+}
+
+function coverageScope(ctx) {
+  const row = ctx.db.prepare(`
+    SELECT v.id, v.facts_hash, w.source_fingerprint, w.duration_ms
+    FROM redraw_versions v
+    JOIN redraw_works w
+      ON w.id = v.work_id AND w.tenant_id = v.tenant_id AND w.user_id = v.user_id
+      AND w.deleted_at IS NULL
+    WHERE v.id = ? AND v.tenant_id = ? AND v.user_id = ? AND v.deleted_at IS NULL
+  `).get(ctx.versionId, ctx.tenantId, ctx.userId);
+  if (!row || !HEX_64.test(String(row.facts_hash || '')) || !HEX_64.test(String(row.source_fingerprint || ''))) {
+    fail(COVERAGE_EVIDENCE_CODE);
+  }
+  return row;
+}
+
+function coverageEvidenceRow(ctx, scope) {
+  const rows = ctx.db.prepare(`
+    SELECT ra.*, a.local_path AS artifact_local_path, a.type AS artifact_type,
+           a.mime_type AS artifact_mime_type, a.metadata AS artifact_metadata
+    FROM redraw_assets ra
+    JOIN assets a ON a.id = ra.asset_id AND a.deleted_at IS NULL
+    WHERE ra.version_id = ? AND ra.tenant_id = ? AND ra.user_id = ?
+      AND ra.kind = 'scene' AND ra.status = 'generated' AND ra.approval_status = 'approved'
+      AND ra.asset_id IS NOT NULL AND ra.deleted_at IS NULL
+    ORDER BY ra.version_number DESC, ra.id DESC
+  `).all(ctx.versionId, ctx.tenantId, ctx.userId);
+  for (const row of rows) {
+    const payload = parseJson(row.source_ref_json, {});
+    const snapshot = payload.snapshot;
+    if (payload.source_ref?.stable_id !== 'full-frame-reviewed-coverage'
+      || !snapshot || snapshot.mode !== 'full_frame_reviewed_coverage') continue;
+    if (Number(snapshot.version_id) !== ctx.versionId
+      || snapshot.facts_hash !== scope.facts_hash
+      || snapshot.source_fingerprint !== scope.source_fingerprint
+      || !HEX_64.test(String(snapshot.analysis_sha256 || ''))
+      || !row.approved_by || !row.approved_at) fail(COVERAGE_EVIDENCE_CODE);
+    return { row, snapshot };
+  }
+  fail(COVERAGE_EVIDENCE_CODE);
+}
+
+function readCoverageManifest(ctx, evidence) {
+  const asset = {
+    local_path: evidence.row.artifact_local_path,
+  };
+  const portable = String(asset.local_path || '').replace(/\\/g, '/');
+  if (evidence.row.artifact_type !== 'document'
+    || evidence.row.artifact_mime_type !== 'application/json'
+    || path.posix.basename(portable) !== 'redraw-full-frame-reviewed-manifest.json') {
+    fail(COVERAGE_EVIDENCE_CODE);
+  }
+  const metadata = parseJson(evidence.row.artifact_metadata, {});
+  const digest = sha256File(ctx.storageRoot, asset, COVERAGE_EVIDENCE_CODE);
+  if (!HEX_64.test(String(metadata.sha256 || '')) || digest !== metadata.sha256) fail(COVERAGE_EVIDENCE_CODE);
+  const filePath = resolveLocal(ctx.storageRoot, asset.local_path, COVERAGE_EVIDENCE_CODE);
+  let bytes;
+  let manifest;
+  try {
+    bytes = fs.readFileSync(filePath);
+    manifest = JSON.parse(bytes.toString('utf8'));
+  } catch (_) {
+    fail(COVERAGE_EVIDENCE_CODE);
+  }
+  if (sha256(bytes) !== digest || sha256File(ctx.storageRoot, asset, COVERAGE_EVIDENCE_CODE) !== digest) {
+    fail(COVERAGE_EVIDENCE_CODE);
+  }
+  return { manifest, evidenceRoot: path.dirname(filePath), baseRelative: path.posix.dirname(portable) };
+}
+
+function shotRows(ctx) {
+  return ctx.db.prepare(`
+    SELECT * FROM redraw_shots
+    WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+    ORDER BY batch_index ASC, shot_index ASC, id ASC
+  `).all(ctx.versionId, ctx.tenantId, ctx.userId);
+}
+
+function assertCoverageMatchesVersion(scope, rows, manifest, evidence) {
+  if (manifest.analysis_sha256 !== evidence.snapshot.analysis_sha256
+    || manifest.source?.sha256 !== scope.source_fingerprint
+    || Number(manifest.source?.duration_ms) !== Number(scope.duration_ms)) fail(COVERAGE_EVIDENCE_CODE);
+  const expected = rows.map((row) => ({
+    shot_id: String(row.shot_id || ''), start_ms: Number(row.start_ms), end_ms: Number(row.end_ms),
+  }));
+  const actual = Array.isArray(manifest.shots)
+    ? manifest.shots.map((shot) => ({
+        shot_id: String(shot.shot_id || ''), start_ms: Number(shot.start_ms), end_ms: Number(shot.end_ms),
+      }))
+    : [];
+  if (stableJson(actual) !== stableJson(expected)) fail(COVERAGE_EVIDENCE_CODE);
+}
+
+function trackFrames(manifest, shot, track) {
+  const ranges = Array.isArray(track.frame_ranges) ? track.frame_ranges : [];
+  return manifest.frames.filter((frame) => frame.shot_id === shot.shot_id
+    && ranges.some((range) => frame.frame_index >= range.start_frame && frame.frame_index <= range.end_frame));
+}
+
+function trackTimeRanges(manifest, shot, track) {
+  const frames = trackFrames(manifest, shot, track).sort((left, right) => left.frame_index - right.frame_index);
+  if (frames.length === 0) return [];
+  const indexes = new Map(manifest.frames.map((frame) => [frame.frame_index, frame]));
+  const ranges = [];
+  for (const raw of track.frame_ranges) {
+    const matched = frames.filter((frame) => frame.frame_index >= raw.start_frame && frame.frame_index <= raw.end_frame);
+    if (matched.length === 0) continue;
+    const start = Math.max(Number(shot.start_ms), Number(matched[0].timestamp_ms));
+    const last = matched[matched.length - 1];
+    const next = indexes.get(Number(last.frame_index) + 1);
+    const end = Math.min(Number(shot.end_ms), next?.shot_id === shot.shot_id ? Number(next.timestamp_ms) : Number(shot.end_ms));
+    if (start < end) ranges.push([start - Number(shot.start_ms), end - Number(shot.start_ms)]);
+  }
+  ranges.sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+  const merged = [];
+  for (const range of ranges) {
+    const previous = merged[merged.length - 1];
+    if (previous && range[0] <= previous[1]) previous[1] = Math.max(previous[1], range[1]);
+    else merged.push([...range]);
+  }
+  return merged;
+}
+
+function evidenceAsset(ctx, baseRelative, relativePath, expectedSha) {
+  const target = path.posix.join(baseRelative, String(relativePath || '').replace(/\\/g, '/'));
+  const matches = ctx.db.prepare(`
+    SELECT * FROM assets WHERE category = 'redraw' AND type = 'image' AND deleted_at IS NULL
+  `).all().filter((asset) => String(asset.local_path || '').replace(/\\/g, '/') === target);
+  if (matches.length !== 1) fail(COVERAGE_EVIDENCE_CODE);
+  const asset = matches[0];
+  const metadata = parseJson(asset.metadata, {});
+  if (metadata.sha256 !== expectedSha
+    || sha256File(ctx.storageRoot, asset, COVERAGE_EVIDENCE_CODE) !== expectedSha) fail(COVERAGE_EVIDENCE_CODE);
+  return Number(asset.id);
+}
+
+function textKind(value) {
+  if (value === 'subtitle') return 'text_subtitle';
+  if (['screen', 'ui', 'watermark'].includes(value)) return 'text_screen';
+  fail(COVERAGE_EVIDENCE_CODE);
+}
+
+function cleanRequirement(ctx, evidence, manifest, shot, track, kind) {
+  const frames = trackFrames(manifest, shot, track);
+  const frameIndexes = new Set(frames.map((frame) => Number(frame.frame_index)));
+  const region = track.regions.find((item) => frameIndexes.has(Number(item.frame_index)));
+  const frame = region && manifest.frames.find((item) => Number(item.frame_index) === Number(region.frame_index));
+  if (!region || !frame) fail(COVERAGE_EVIDENCE_CODE);
+  const sceneAssetId = evidenceAsset(ctx, evidence.baseRelative, frame.path, frame.sha256);
+  const maskAssetId = evidenceAsset(ctx, evidence.baseRelative, region.mask?.path, region.mask?.sha256);
+  const sceneAsset = {
+    source_asset_id: sceneAssetId,
+    source_fingerprint: frame.sha256,
+    width: frame.width,
+    height: frame.height,
+    shot_id: shot.shot_id,
+    source_ref: { analysis_sha256: manifest.analysis_sha256, frame_index: Number(frame.frame_index) },
+  };
+  if (kind === 'person_clean') {
+    return {
+      kind,
+      key: String(track.track_key),
+      scene_asset: sceneAsset,
+      options: { mask_asset_id: maskAssetId, input_frame_fingerprint: frame.sha256 },
+    };
+  }
+  const normalizedKind = textKind(track.kind);
+  return {
+    kind,
+    key: String(track.region_key),
+    scene_asset: sceneAsset,
+    options: {
+      mask_asset_id: maskAssetId,
+      input_frame_fingerprint: frame.sha256,
+      text_kind: normalizedKind,
+      text_regions: [{ kind: normalizedKind, shape: 'polygon', points: region.polygon, source: 'ocr_region' }],
+    },
+  };
+}
+
+async function loadReviewedReferenceCoverage(rawCtx) {
+  const ctx = normalizeContext(rawCtx);
+  const scope = coverageScope(ctx);
+  const rows = shotRows(ctx);
+  const indexed = coverageEvidenceRow(ctx, scope);
+  const evidence = { ...indexed, ...readCoverageManifest(ctx, indexed) };
+  let manifest;
+  try {
+    manifest = await validateReviewedCoverageManifest({ evidenceRoot: evidence.evidenceRoot, manifest: evidence.manifest });
+  } catch (_) {
+    fail(COVERAGE_EVIDENCE_CODE);
+  }
+  assertCoverageMatchesVersion(scope, rows, manifest, evidence);
+  const descriptors = rows.map((shot) => {
+    const persons = manifest.person_tracks.filter((track) => trackTimeRanges(manifest, shot, track).length > 0);
+    const texts = manifest.text_tracks.filter((track) => trackTimeRanges(manifest, shot, track).length > 0);
+    return {
+      shot_id: Number(shot.id),
+      source_shot_id: String(shot.shot_id),
+      requirements: [
+        ...persons.map((track) => cleanRequirement(ctx, evidence, manifest, shot, track, 'person_clean')),
+        ...texts.map((track) => cleanRequirement(ctx, evidence, manifest, shot, track, 'text_clean')),
+      ],
+      bundle_evidence: {
+        face_tracks: persons.filter((track) => track.kind === 'story_role').map((track) => ({
+          track_key: track.track_key,
+          source_character_key: track.source_character_key,
+          time_ranges: trackTimeRanges(manifest, shot, track),
+        })),
+        text_regions: texts.map((track) => ({
+          region_key: track.region_key,
+          kind: textKind(track.kind),
+          time_ranges: trackTimeRanges(manifest, shot, track),
+        })),
+        approved_by: indexed.row.approved_by,
+        approved_at: indexed.row.approved_at,
+        analysis_sha256: manifest.analysis_sha256,
+      },
+    };
+  });
+  return { status: 'approved', shots: descriptors };
+}
+
+function sourceKey(row) {
+  const payload = parseJson(row?.source_ref_json, {});
+  return String(payload.source_ref?.source_character_key || payload.source_ref?.stable_id || '').trim();
+}
+
+function currentIdentityAsset(ctx, key) {
+  const matches = ctx.db.prepare(`
+    SELECT * FROM redraw_assets
+    WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND kind = 'character'
+      AND status = 'generated' AND approval_status = 'approved' AND deleted_at IS NULL
+    ORDER BY version_number DESC, id DESC
+  `).all(ctx.versionId, ctx.tenantId, ctx.userId).filter((row) => sourceKey(row) === key);
+  if (matches.length === 0) fail(IDENTITY_CODE);
+  return Number(matches[0].id);
+}
+
+function currentMotionAsset(ctx, shot, faces, texts) {
+  const expected = {
+    tenant_id: ctx.tenantId,
+    user_id: ctx.userId,
+    version_id: ctx.versionId,
+    shot_id: Number(shot.id),
+    source_asset_id: Number(shot.source_asset_id),
+    source_fingerprint: shot.source_fingerprint,
+    clip_start_ms: Number(shot.start_ms),
+    clip_end_ms: Number(shot.end_ms),
+    face_coverage_sha256: sha256(stableJson(faces)),
+    text_coverage_sha256: sha256(stableJson(texts)),
+  };
+  const matches = ctx.db.prepare(`
+    SELECT * FROM assets WHERE type = 'video' AND category = 'redraw' AND deleted_at IS NULL ORDER BY id DESC
+  `).all().filter((asset) => {
+    const motion = parseJson(asset.metadata, {}).redraw_motion_reference;
+    return motion && Object.entries(expected).every(([key, value]) => motion[key] === value);
+  });
+  if (matches.length !== 1) fail(MOTION_CODE);
+  return Number(matches[0].id);
+}
+
+async function buildTrustedReferenceBundleInput(rawCtx, input = {}) {
+  assertPlainObject(input);
+  if (Object.keys(input).some((key) => !['shot_id', 'clean_results'].includes(key))) fail(INPUT_CODE);
+  const ctx = normalizeContext(rawCtx);
+  const shotId = Number(input.shot_id ?? input.shotId);
+  if (!Number.isSafeInteger(shotId) || shotId <= 0 || !Array.isArray(input.clean_results)) fail(INPUT_CODE);
+  const shot = getRows(ctx, shotId).shot;
+  const coverage = await loadReviewedReferenceCoverage(ctx);
+  const descriptor = coverage.shots.find((item) => Number(item.shot_id) === shotId);
+  if (!descriptor) fail(COVERAGE_EVIDENCE_CODE);
+  const cleanByKey = new Map(input.clean_results
+    .filter((item) => item?.status === 'completed')
+    .map((item) => [`${item.kind}:${item.key}`, Number(item.redraw_asset_id)]));
+  const faces = descriptor.bundle_evidence.face_tracks.map((track) => ({
+    ...track,
+    identity_redraw_asset_id: currentIdentityAsset(ctx, track.source_character_key),
+  })).sort((left, right) => left.track_key.localeCompare(right.track_key));
+  const texts = descriptor.bundle_evidence.text_regions.map((region) => {
+    const assetId = cleanByKey.get(`text_clean:${region.region_key}`);
+    if (!Number.isSafeInteger(assetId) || assetId <= 0) fail(TEXT_CODE);
+    return { ...region, text_clean_redraw_asset_id: assetId };
+  }).sort((left, right) => left.region_key.localeCompare(right.region_key));
+  return {
+    shot_id: shotId,
+    motion_reference_asset_id: currentMotionAsset(ctx, shot, faces, texts),
+    face_tracks: faces,
+    text_regions: texts,
+    coverage_review: {
+      status: 'approved',
+      recognizable_face_count: faces.length,
+      mapped_face_count: faces.length,
+      unresolved_face_count: 0,
+      recognizable_text_region_count: texts.length,
+      mapped_text_region_count: texts.length,
+      unresolved_text_region_count: 0,
+    },
+  };
 }
 
 function getRows(ctx, shotId) {
@@ -762,6 +1064,8 @@ async function projectReferenceBundleForGeneration(rawCtx, shotId) {
 }
 
 module.exports = {
+  loadReviewedReferenceCoverage,
+  buildTrustedReferenceBundleInput,
   saveReferenceBundle,
   loadCurrentReferenceBundle,
   projectReferenceBundleForGeneration,

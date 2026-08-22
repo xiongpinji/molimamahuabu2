@@ -1,11 +1,26 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const Database = require('better-sqlite3');
+const sharp = require('sharp');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const {
+  buildGeneratedCoverageManifest,
+  canonicalCoverageSha256,
+} = require('../src/services/redrawFullFrameCoverageService');
+const {
+  canonicalizeModelLock,
+  canonicalSha256: canonicalModelLockSha256,
+} = require('../src/services/redrawFullFrameModelLockService');
 const { preparationEvidenceHash } = require('../src/services/redrawPreparationGateService');
-const { canonicalBundleHash } = require('../src/services/redrawReferenceBundleService');
+const {
+  buildTrustedReferenceBundleInput,
+  canonicalBundleHash,
+} = require('../src/services/redrawReferenceBundleService');
 const {
   prepareVersionReferences,
   quoteVersionPreparation,
@@ -26,7 +41,7 @@ function stableJson(value) {
 }
 
 function sha256(value) {
-  return crypto.createHash('sha256').update(String(value)).digest('hex');
+  return crypto.createHash('sha256').update(Buffer.isBuffer(value) ? value : String(value)).digest('hex');
 }
 
 function confidence(value = 0.99) {
@@ -128,6 +143,322 @@ function insertReadableImage(db, id) {
     (id, name, type, category, local_path, mime_type, metadata, created_at, updated_at)
     VALUES (?, ?, 'image', 'redraw', ?, 'image/png', '{}', ?, ?)`)
     .run(id, `asset-${id}`, `redraw/asset-${id}.png`, NOW, NOW);
+}
+
+function writeStoredFile(storageRoot, relativePath, bytes) {
+  const target = path.join(storageRoot, relativePath);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, bytes);
+  return sha256(bytes);
+}
+
+function insertStoredAsset(db, input) {
+  db.prepare(`INSERT INTO assets
+    (id, name, type, category, local_path, mime_type, metadata, created_at, updated_at)
+    VALUES (?, ?, ?, 'redraw', ?, ?, ?, ?, ?)`)
+    .run(
+      input.id,
+      input.name || `asset-${input.id}`,
+      input.type,
+      input.localPath,
+      input.mimeType,
+      JSON.stringify({ sha256: input.sha256, ...(input.metadata || {}) }),
+      NOW,
+      NOW,
+    );
+}
+
+function validModelLock() {
+  const projects = {
+    face_detector: ['MediaPipe face detection', 'google-ai-edge/mediapipe'],
+    person_detector: ['YOLOX', 'Megvii-BaseDetection/YOLOX'],
+    text_detector: ['PaddleOCR', 'PaddlePaddle/PaddleOCR'],
+    tracker: ['ByteTrack', 'FoundationVision/ByteTrack'],
+  };
+  const components = ['tracker', 'text_detector', 'person_detector', 'face_detector'].map((component) => ({
+    component,
+    project: projects[component][0],
+    repository: projects[component][1],
+    revision: `rev-${component}-20260816`,
+    artifact_name: `${component}.bin`,
+    artifact_path: `${component}/model.bin`,
+    artifact_sha256: 'a'.repeat(64),
+    license_name: `${component}-LICENSE`,
+    license_evidence_path: `${component}/LICENSE.txt`,
+    license_evidence_sha256: 'b'.repeat(64),
+  }));
+  const lock = {
+    schema_version: 'redraw-full-frame-model-lock-v2',
+    runtimes: {
+      main: {
+        python_version: 'Python 3.11.9',
+        interpreter_path: 'runtime/main/.venv/Scripts/python.exe',
+        pip_freeze_path: 'runtime/main/pip-freeze.txt',
+        pip_freeze_sha256: '1'.repeat(64),
+      },
+      text: {
+        python_version: 'Python 3.11.9',
+        interpreter_path: 'runtime/text/.venv/Scripts/python.exe',
+        pip_freeze_path: 'runtime/text/pip-freeze.txt',
+        pip_freeze_sha256: '2'.repeat(64),
+      },
+    },
+    components,
+  };
+  return { ...lock, canonical_sha256: canonicalModelLockSha256(canonicalizeModelLock(lock)) };
+}
+
+function identityPack(input) {
+  const pack = {
+    schema_version: 'target-actor-identity-v1',
+    source_character_key: 'char-a',
+    target_actor_label: 'Alice Carter',
+    artifact: { asset_id: 301, sha256: input.identitySha, width: 64, height: 96, mime_type: 'image/png' },
+    wardrobe: {
+      label: '整集主服装',
+      reference_asset_id: 401,
+      reference_sha256: input.wardrobeSha,
+      consistency_confirmed: true,
+    },
+    confirmed_views: ['front', 'profile', 'full_body'],
+    live_action_human_confirmed: true,
+    adult_status: 'verified_18_plus',
+    identity_consistency_confirmed: true,
+    persona_origin: 'fictional_ai_generated',
+    target_country: 'US',
+    ready: true,
+    reviewed_by: 'user-a',
+    reviewed_at: NOW,
+  };
+  pack.pack_sha256 = sha256(stableJson({
+    artifact: pack.artifact,
+    adult_status: pack.adult_status,
+    confirmed_views: pack.confirmed_views,
+    identity_consistency_confirmed: pack.identity_consistency_confirmed,
+    live_action_human_confirmed: pack.live_action_human_confirmed,
+    persona_origin: pack.persona_origin,
+    ready: pack.ready,
+    reviewed_at: pack.reviewed_at,
+    reviewed_by: pack.reviewed_by,
+    schema_version: pack.schema_version,
+    source_character_key: pack.source_character_key,
+    target_actor_label: pack.target_actor_label,
+    target_country: pack.target_country,
+    wardrobe: pack.wardrobe,
+  }));
+  return pack;
+}
+
+function textCleanPack(input) {
+  const pack = {
+    schema_version: 'text-clean-plate-reference-v1',
+    region_key: 'subtitle-a',
+    kind: 'text_subtitle',
+    artifact: { asset_id: 302, sha256: input.cleanSha, width: 64, height: 64, mime_type: 'image/png' },
+    source_fingerprint: input.sourceSha,
+    ready: true,
+    reviewed_by: 'user-a',
+    reviewed_at: NOW,
+  };
+  pack.pack_sha256 = sha256(stableJson(pack));
+  return pack;
+}
+
+async function setupDefaultServerPath() {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-reference-default-'));
+  const sourceSha = writeStoredFile(storageRoot, 'source/source.mp4', Buffer.from('source-video'));
+  const identitySha = writeStoredFile(storageRoot, 'redraw/identity.png', Buffer.from('identity'));
+  const wardrobeSha = writeStoredFile(storageRoot, 'redraw/wardrobe.png', Buffer.from('wardrobe'));
+  const voiceSha = writeStoredFile(storageRoot, 'redraw/voice.mp3', Buffer.from('voice'));
+  const cleanSha = writeStoredFile(storageRoot, 'redraw/text-clean.png', Buffer.from('text-clean'));
+  const motionBytes = Buffer.from('motion-reference');
+  const motionSha = writeStoredFile(storageRoot, `redraw-conditioning/${sha256(motionBytes)}.mp4`, motionBytes);
+  const evidenceBase = 'redraw-full-frame/version-1';
+  const frameBytes = await sharp({
+    create: { width: 64, height: 64, channels: 3, background: { r: 30, g: 40, b: 50 } },
+  }).png().toBuffer();
+  const maskPixels = Buffer.alloc(64 * 64);
+  for (let y = 48; y < 58; y += 1) {
+    for (let x = 4; x < 40; x += 1) maskPixels[(y * 64) + x] = 255;
+  }
+  const maskBytes = await sharp(maskPixels, { raw: { width: 64, height: 64, channels: 1 } })
+    .toColourspace('b-w').png().toBuffer();
+  const frameSha = writeStoredFile(storageRoot, `${evidenceBase}/frames/frame-0.png`, frameBytes);
+  const maskSha = writeStoredFile(storageRoot, `${evidenceBase}/masks/text-0.png`, maskBytes);
+
+  for (const asset of [
+    { id: 101, type: 'video', mimeType: 'video/mp4', localPath: 'source/source.mp4', sha256: sourceSha },
+    { id: 301, type: 'image', mimeType: 'image/png', localPath: 'redraw/identity.png', sha256: identitySha },
+    { id: 401, type: 'image', mimeType: 'image/png', localPath: 'redraw/wardrobe.png', sha256: wardrobeSha },
+    { id: 501, type: 'audio', mimeType: 'audio/mpeg', localPath: 'redraw/voice.mp3', sha256: voiceSha },
+    { id: 302, type: 'image', mimeType: 'image/png', localPath: 'redraw/text-clean.png', sha256: cleanSha },
+    { id: 801, type: 'image', mimeType: 'image/png', localPath: `${evidenceBase}/frames/frame-0.png`, sha256: frameSha },
+    { id: 802, type: 'image', mimeType: 'image/png', localPath: `${evidenceBase}/masks/text-0.png`, sha256: maskSha },
+  ]) insertStoredAsset(db, asset);
+  db.prepare(`INSERT INTO redraw_projects
+    (id, tenant_id, user_id, title, execution_mode, budget_limit_credits,
+     max_auto_attempts_per_shot, policy_version, automation_policy_json, created_at, updated_at)
+    VALUES (1, 'tenant-a', 'user-a', 'default path', 'auto', 100, 1, 1, ?, ?, ?)`)
+    .run(JSON.stringify({ analysis_confidence_thresholds: confidence(0.9) }), NOW, NOW);
+  db.prepare(`INSERT INTO redraw_works
+    (id, project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint,
+     duration_ms, current_version, current_step, status, created_at, updated_at)
+    VALUES (1, 1, 'tenant-a', 'user-a', 'episode', 101, ?, 12000, 1, 2, 'asset_review', ?, ?)`)
+    .run(sourceSha, NOW, NOW);
+  const nameMap = { 'char-a': 'Alice Carter' };
+  const facts = {
+    schema_version: '2.0',
+    script_sha256: '9'.repeat(64),
+    name_map_source_sha256: sha256(stableJson(nameMap)),
+    characters: [{
+      source_character_key: 'char-a', target_name: 'Alice Carter',
+      adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated',
+    }],
+    shots: [{ id: 'shot-1', confidence: confidence(0.99) }],
+  };
+  const factsHash = sha256(stableJson(facts));
+  db.prepare(`INSERT INTO redraw_versions
+    (id, work_id, tenant_id, user_id, version, locale, market, name_map_json,
+     source_facts_json, facts_hash, reference_bundle_required, status, created_at, updated_at)
+    VALUES (1, 1, 'tenant-a', 'user-a', 1, 'en-US', 'US', ?, ?, ?, 1, 'asset_review', ?, ?)`)
+    .run(JSON.stringify(nameMap), JSON.stringify(facts), factsHash, NOW, NOW);
+  db.prepare(`INSERT INTO redraw_shots
+    (id, work_id, version_id, tenant_id, user_id, shot_id, batch_index, shot_index,
+     start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
+     references_json, preparation_state, preparation_version, preparation_snapshot_json,
+     reference_bundle_json, created_at, updated_at)
+    VALUES (1, 1, 1, 'tenant-a', 'user-a', 'shot-1', 1, 1, 0, 12000, 12000,
+      '[]', '[]', '[]', 'localized', 1, '{}', '{}', ?, ?)`)
+    .run(NOW, NOW);
+
+  const pack = identityPack({ identitySha, wardrobeSha });
+  db.prepare(`INSERT INTO redraw_assets
+    (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+     asset_id, voice_asset_id, version_number, approval_status, approved_by,
+     approved_at, status, created_at, updated_at)
+    VALUES (201, 1, 'tenant-a', 'user-a', 'character', ?, 'Alice Carter',
+      301, 501, 1, 'approved', 'user-a', ?, 'generated', ?, ?)`)
+    .run(JSON.stringify({
+      source_ref: { stable_id: 'char-a' },
+      identity_pack: pack,
+      snapshot: { voice_snapshot: {
+        locale: 'en-US', market: 'US', audio_sha256: voiceSha, audio_asset_id: 501,
+        language_verified: true, detected_locale: 'en-US',
+      } },
+    }), NOW, NOW, NOW);
+  db.prepare(`INSERT INTO redraw_assets
+    (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+     voice_asset_id, version_number, approval_status, approved_by, approved_at,
+     status, created_at, updated_at)
+    VALUES (203, 1, 'tenant-a', 'user-a', 'voice', ?, 'voice char-a', 501, 1,
+      'approved', 'user-a', ?, 'generated', ?, ?)`)
+    .run(JSON.stringify({ source_ref: { stable_id: 'char-a' } }), NOW, NOW, NOW);
+  const cleanPack = textCleanPack({ cleanSha, sourceSha });
+  db.prepare(`INSERT INTO redraw_assets
+    (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+     clean_plate_asset_id, version_number, approval_status, approved_by, approved_at,
+     status, created_at, updated_at)
+    VALUES (202, 1, 'tenant-a', 'user-a', 'scene', ?, 'subtitle clean', 302, 1,
+      'approved', 'user-a', ?, 'generated', ?, ?)`)
+    .run(JSON.stringify({
+      source_ref: { stable_id: 'subtitle-a', kind: 'text_subtitle' },
+      snapshot: { mode: 'text_clean_plate' },
+      text_clean_plate_pack: cleanPack,
+    }), NOW, NOW, NOW);
+
+  const generated = await buildGeneratedCoverageManifest({
+    evidenceRoot: path.join(storageRoot, evidenceBase),
+    source: { sha256: sourceSha, duration_ms: 12000, width: 64, height: 64, frame_count: 1, time_base: { numerator: 1, denominator: 1 } },
+    shots: [{ shot_id: 'shot-1', start_ms: 0, end_ms: 12000 }],
+    frames: [{
+      frame_index: 0, timestamp_ticks: 0, timestamp_ms: 0, shot_id: 'shot-1',
+      path: 'frames/frame-0.png', sha256: frameSha, width: 64, height: 64,
+      person_region_ids: [], text_region_ids: ['text-region-0'],
+      review_point_reasons: [], review_status: 'not_required',
+    }],
+    personTracks: [],
+    textTracks: [{
+      region_key: 'subtitle-a', kind: 'subtitle', treatment: 'translate_subtitle',
+      target_text_key: 'subtitle-a', frame_ranges: [{ start_frame: 0, end_frame: 0 }],
+      regions: [{
+        region_id: 'text-region-0', frame_index: 0,
+        polygon: [{ x: 4, y: 48 }, { x: 40, y: 48 }, { x: 40, y: 58 }],
+        mask: { path: 'masks/text-0.png', sha256: maskSha, width: 64, height: 64, mime_type: 'image/png' },
+      }],
+      review_status: 'pending', reviewer: null,
+    }],
+    modelLock: validModelLock(),
+  });
+  const reviewed = JSON.parse(JSON.stringify(generated));
+  reviewed.status = 'reviewed';
+  reviewed.frames[0].review_status = reviewed.frames[0].review_point_reasons.length ? 'reviewed' : 'not_required';
+  reviewed.text_tracks[0].review_status = 'reviewed';
+  reviewed.text_tracks[0].reviewer = 'codex-local-review';
+  reviewed.review = {
+    status: 'reviewed', reviewed: true,
+    required_review_point_count: reviewed.frames[0].review_point_reasons.length ? 1 : 0,
+    reviewed_point_count: reviewed.frames[0].review_point_reasons.length ? 1 : 0,
+    reviewer: 'codex-local-review',
+  };
+  reviewed.approval_status = 'pending';
+  reviewed.ready_for_reference = false;
+  reviewed.analysis_sha256 = canonicalCoverageSha256(reviewed);
+  const manifestBytes = Buffer.from(`${JSON.stringify(reviewed, null, 2)}\n`);
+  const manifestPath = `${evidenceBase}/redraw-full-frame-reviewed-manifest.json`;
+  const manifestSha = writeStoredFile(storageRoot, manifestPath, manifestBytes);
+  insertStoredAsset(db, {
+    id: 701, type: 'document', mimeType: 'application/json', localPath: manifestPath, sha256: manifestSha,
+  });
+  db.prepare(`INSERT INTO redraw_assets
+    (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+     asset_id, version_number, approval_status, approved_by, approved_at,
+     status, created_at, updated_at)
+    VALUES (204, 1, 'tenant-a', 'user-a', 'scene', ?, 'reviewed full frame coverage',
+      701, 1, 'approved', 'user-a', ?, 'generated', ?, ?)`)
+    .run(JSON.stringify({
+      source_ref: { stable_id: 'full-frame-reviewed-coverage' },
+      snapshot: {
+        mode: 'full_frame_reviewed_coverage', version_id: 1, facts_hash: factsHash,
+        source_fingerprint: sourceSha, analysis_sha256: reviewed.analysis_sha256,
+      },
+    }), NOW, NOW, NOW);
+
+  const faceHash = sha256(stableJson([]));
+  const textHash = sha256(stableJson([{
+    kind: 'text_subtitle', region_key: 'subtitle-a', text_clean_redraw_asset_id: 202,
+    time_ranges: [[0, 12000]],
+  }]));
+  insertStoredAsset(db, {
+    id: 601,
+    type: 'video',
+    mimeType: 'video/mp4',
+    localPath: `redraw-conditioning/${motionSha}.mp4`,
+    sha256: motionSha,
+    metadata: { redraw_motion_reference: {
+      schema_version: 'redraw-motion-reference-v1', tenant_id: 'tenant-a', user_id: 'user-a',
+      version_id: 1, shot_id: 1, source_asset_id: 101, source_fingerprint: sourceSha,
+      clip_start_ms: 0, clip_end_ms: 12000,
+      face_coverage_sha256: faceHash, text_coverage_sha256: textHash,
+    } },
+  });
+  return {
+    db,
+    ctx: {
+      db, tenantId: 'tenant-a', userId: 'user-a', versionId: 1, storageRoot,
+      now: () => NEXT,
+      assetReader: { canRead: () => true, owns: () => true },
+      probeRunner: async () => ({
+        duration_ms: 12000, width: 64, height: 64, mime_type: 'video/mp4',
+        video_codec: 'h264', audio_stream_count: 0,
+      }),
+    },
+    cleanup() {
+      db.close();
+      fs.rmSync(storageRoot, { recursive: true, force: true });
+    },
+  };
 }
 
 function fakeDeps(state, options = {}) {
@@ -506,5 +837,98 @@ test('start 幂等复用异步任务，reconcile 将中断任务和镜头收口�
     assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(first.task_id).status, 'needs_attention');
   } finally {
     state.close();
+  }
+});
+
+test('默认服务端路径从已批准全帧证据读取覆盖并用当前净景结果保存严格参考包', async () => {
+  const state = await setupDefaultServerPath();
+  try {
+    const initial = await quoteVersionPreparation(state.ctx, { version_id: 1 });
+    assert.equal(initial.priced, false);
+    assert.equal(initial.action, 'blocked');
+    assert.deepEqual(initial.items.map((item) => [item.kind, item.key]), [['text_clean', 'subtitle-a']]);
+    assert.equal(JSON.stringify(initial).includes(state.ctx.storageRoot), false);
+
+    const snapshot = {
+      schema_version: 'redraw-reference-preparation-v1',
+      version_id: 1,
+      shot_id: 1,
+      preparation_version: 1,
+      character_plan_hash: initial.character_plan_hash,
+      version_snapshot_hash: initial.version_snapshot_hash,
+      request_hash: sha256('previous-attempt'),
+      idempotency_key_hash: sha256('previous-attempt'),
+      status: 'failed',
+      requirements: [{ kind: 'text_clean', key: 'subtitle-a' }],
+      clean_results: [{ kind: 'text_clean', key: 'subtitle-a', status: 'completed', redraw_asset_id: 202 }],
+      error_code: 'REDRAW_REFERENCE_PREPARATION_CLEAN_FAILED',
+    };
+    state.db.prepare(`UPDATE redraw_shots
+      SET preparation_state = 'failed', preparation_snapshot_json = ?, preparation_evidence_hash = ?
+      WHERE id = 1`).run(stableJson(snapshot), sha256(stableJson(snapshot)));
+
+    const quote = await quoteVersionPreparation(state.ctx, { version_id: 1 });
+    assert.equal(quote.priced, true);
+    assert.equal(quote.credits, 0);
+    assert.equal(quote.action, 'advance');
+    assert.deepEqual(quote.items, []);
+    const result = await prepareVersionReferences(state.ctx, {
+      version_id: 1,
+      idempotency_key: 'default-server-path',
+      quote_hash: quote.quote_hash,
+    });
+    assert.deepEqual(result.prepared_shot_ids, [1]);
+    const shot = state.db.prepare(`SELECT preparation_state, reference_bundle_json,
+      reference_bundle_hash, preparation_evidence_hash FROM redraw_shots WHERE id = 1`).get();
+    const bundle = JSON.parse(shot.reference_bundle_json);
+    assert.equal(shot.preparation_state, 'reference_ready');
+    assert.equal(canonicalBundleHash(bundle), shot.reference_bundle_hash);
+    assert.equal(bundle.coverage_review.reviewed_by, 'user-a');
+    assert.equal(bundle.coverage_review.mapped_text_region_count, 1);
+    assert.equal(bundle.text_regions[0].region_key, 'subtitle-a');
+    assert.equal(bundle.text_regions[0].text_clean_redraw_asset_id, 202);
+    assert.equal(preparationEvidenceHash({
+      id: 1, version_id: 1, preparation_version: 1,
+      reference_bundle_hash: shot.reference_bundle_hash,
+    }), shot.preparation_evidence_hash);
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('默认服务端路径对未批准或不匹配的全帧持久化证据稳定 fail closed', async () => {
+  const state = await setupDefaultServerPath();
+  try {
+    state.db.prepare("UPDATE redraw_assets SET approval_status = 'pending' WHERE id = 204").run();
+    await rejectsCode(
+      () => quoteVersionPreparation(state.ctx, { version_id: 1 }),
+      'REDRAW_REFERENCE_PREPARATION_COVERAGE_NOT_APPROVED',
+    );
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('受信参考包 builder 拒绝客户端路径、URL、哈希、供应商和价格字段', async () => {
+  const state = await setupDefaultServerPath();
+  try {
+    for (const [field, value] of [
+      ['path', 'redraw/client.png'],
+      ['url', 'https://example.test/client.png'],
+      ['hash', 'a'.repeat(64)],
+      ['provider', 'client-provider'],
+      ['price', 1],
+    ]) {
+      await rejectsCode(
+        () => buildTrustedReferenceBundleInput(state.ctx, {
+          shot_id: 1,
+          clean_results: [],
+          [field]: value,
+        }),
+        'REDRAW_REFERENCE_BUNDLE_INPUT_INVALID',
+      );
+    }
+  } finally {
+    state.cleanup();
   }
 });
