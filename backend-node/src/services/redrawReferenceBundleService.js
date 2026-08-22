@@ -283,6 +283,7 @@ function identityHash(pack) {
     source_character_key: pack.source_character_key,
     target_actor_label: pack.target_actor_label,
     target_country: pack.target_country,
+    wardrobe: pack.wardrobe,
   }));
 }
 
@@ -318,8 +319,15 @@ function verifyIdentities(ctx, faces, nameMap) {
       || ![...REQUIRED_VIEWS].every((view) => views.has(view))
       || pack.pack_sha256 !== identityHash(pack)
       || !pack.artifact || Number(pack.artifact.asset_id) !== Number(row.asset_id)
-      || !HEX_64.test(String(pack.artifact.sha256 || ''))) fail(IDENTITY_CODE);
+      || !HEX_64.test(String(pack.artifact.sha256 || ''))
+      || !pack.wardrobe
+      || pack.wardrobe.label !== '整集主服装'
+      || pack.wardrobe.consistency_confirmed !== true
+      || !Number.isSafeInteger(Number(pack.wardrobe.reference_asset_id))
+      || Number(pack.wardrobe.reference_asset_id) <= 0
+      || !HEX_64.test(String(pack.wardrobe.reference_sha256 || ''))) fail(IDENTITY_CODE);
     assertAssetDigest(ctx, pack.artifact.asset_id, pack.artifact.sha256, 'image', IDENTITY_CODE);
+    assertAssetDigest(ctx, pack.wardrobe.reference_asset_id, pack.wardrobe.reference_sha256, 'image', IDENTITY_CODE);
     return {
       redraw_asset_id: row.id,
       source_character_key: face.source_character_key,
@@ -331,6 +339,11 @@ function verifyIdentities(ctx, faces, nameMap) {
       target_country: pack.target_country,
       adult_status: pack.adult_status,
       artifact: pack.artifact,
+      wardrobe: {
+        reference_asset_id: Number(pack.wardrobe.reference_asset_id),
+        reference_sha256: pack.wardrobe.reference_sha256,
+        consistency_confirmed: true,
+      },
       pack_sha256: pack.pack_sha256,
     };
   });

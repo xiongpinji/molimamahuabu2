@@ -2,6 +2,8 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const { invalidateCharacterDependents } = require('./redrawDependencyInvalidationService');
+
 const SCHEMA_VERSION = 'target-actor-identity-v1';
 const PERSONA_ORIGIN = 'fictional_ai_generated';
 const TARGET_COUNTRY = 'US';
@@ -559,24 +561,30 @@ function saveIdentityPack(ctx, assetId, input = {}) {
 
   const sourcePayload = parseJson(row.source_ref_json, {});
   sourcePayload.identity_pack = identityPack;
-  const updated = db.prepare(`
-    UPDATE redraw_assets
-    SET source_ref_json = ?, approval_status = 'pending', approved_by = NULL,
-        approved_at = NULL, updated_at = ?
-    WHERE id = ? AND tenant_id = ? AND user_id = ? AND version_id = ?
-      AND kind = 'character' AND updated_at = ? AND deleted_at IS NULL
-  `).run(
-    JSON.stringify(sourcePayload),
-    reviewedAt,
-    id,
-    tenantId,
-    userId,
-    versionId,
-    expectedUpdatedAt,
-  );
-  if (updated.changes !== 1) {
-    throw codedError('REDRAW_IDENTITY_CONFLICT', '角色资产已被其他操作更新');
-  }
+  db.transaction(() => {
+    const updated = db.prepare(`
+      UPDATE redraw_assets
+      SET source_ref_json = ?, approval_status = 'pending', approved_by = NULL,
+          approved_at = NULL, updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND user_id = ? AND version_id = ?
+        AND kind = 'character' AND updated_at = ? AND deleted_at IS NULL
+    `).run(
+      JSON.stringify(sourcePayload),
+      reviewedAt,
+      id,
+      tenantId,
+      userId,
+      versionId,
+      expectedUpdatedAt,
+    );
+    if (updated.changes !== 1) {
+      throw codedError('REDRAW_IDENTITY_CONFLICT', '角色资产已被其他操作更新');
+    }
+    invalidateCharacterDependents({ ...identityContext, now: reviewedAt }, {
+      source_character_key: identityPack.source_character_key,
+      reason_code: 'character_identity_changed',
+    });
+  })();
   return projectSavedRow(db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(id));
 }
 

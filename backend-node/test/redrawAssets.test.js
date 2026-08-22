@@ -91,6 +91,43 @@ function addDraftPlaceholder(db, state, input = {}) {
   return Number(result.lastInsertRowid);
 }
 
+function addReadyDialogueShot(state, sourceCharacterKey = 'voice-character-1') {
+  state.db.prepare(`INSERT INTO video_generations
+    (id, provider, model, status, tenant_id, user_id, created_at, updated_at)
+    VALUES (801, 'fake', 'redraw-local', 'completed', 'tenant-a', 'user-a', ?, ?)`)
+    .run(TTS_CONFIG_UPDATED_AT, TTS_CONFIG_UPDATED_AT);
+  state.db.prepare(`INSERT INTO redraw_shots
+    (id, work_id, version_id, tenant_id, user_id, shot_id, batch_index, shot_index,
+     start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
+     references_json, reference_bundle_json, reference_bundle_hash, reference_bundle_updated_at,
+     video_generation_id, preparation_state, preparation_version, status, created_at, updated_at)
+    VALUES (701, ?, ?, 'tenant-a', 'user-a', 'shot-voice', 1, 1,
+      0, 5000, 5000, '[]', '[]', ?, ?, ?, ?, 801, 'reference_ready', 2, 'completed', ?, ?)`)
+    .run(
+      state.workId,
+      state.versionId,
+      JSON.stringify([{ kind: 'voice', source_character_key: sourceCharacterKey }]),
+      JSON.stringify({
+        schema_version: 'redraw-reference-bundle-v1',
+        face_tracks: [],
+        dialogue: {
+          kind: 'spoken',
+          turns: [{ speaker_id: sourceCharacterKey, localized_text: 'Line', start_ms: 0, end_ms: 900 }],
+        },
+        text_regions: [],
+      }),
+      'b'.repeat(64),
+      TTS_CONFIG_UPDATED_AT,
+      TTS_CONFIG_UPDATED_AT,
+      TTS_CONFIG_UPDATED_AT,
+    );
+}
+
+function dialogueShotState(db) {
+  return db.prepare(`SELECT preparation_state, preparation_version, reference_bundle_hash,
+    video_generation_id, stale_reason_code FROM redraw_shots WHERE id = 701`).get();
+}
+
 function context(setupResult, root, userId = 'user-a', tenantId = 'tenant-a') {
   return {
     db: setupResult.db,
@@ -671,6 +708,42 @@ test('finalizeAssetAttempt allows provider-generated voice evidence without pres
     .get(voiceAttempt.id).source_ref_json);
   assert.equal(sourcePayload.snapshot.voice_evidence.voice_id, 'fixture-voice');
   assert.equal(credits.getReservation(state.db, voice.credit_reservation_id).status, 'confirmed');
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('finalizeAssetAttempt 成功保存语音证据后精准失效声音依赖镜头', () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-voice-invalidate-'));
+  fs.writeFileSync(path.join(root, 'voice.mp3'), 'voice');
+  addTypedAsset(state.db, 514, 'voice.mp3', 'audio', 'audio/mpeg', 3.2);
+  addReadyDialogueShot(state);
+  const ctx = context(state, root);
+  addDraftPlaceholder(state.db, state, {
+    kind: 'voice',
+    sourceRef: { id: 'v-invalidate', source_character_key: 'voice-character-1', voice_id: 'fixture-voice', is_cloned: false },
+  });
+  const voiceAttempt = createAssetAttempt(ctx, voiceInput(state, {
+    id: 'v-invalidate',
+    source_character_key: 'voice-character-1',
+    voice_id: 'fixture-voice',
+    is_cloned: false,
+  }));
+
+  const voice = finalizeAssetAttempt(ctx, voiceAttempt.id, voiceResult(514));
+
+  assert.equal(voice.status, 'generated');
+  assert.equal(credits.getReservation(state.db, voice.credit_reservation_id).status, 'confirmed');
+  assert.deepEqual(dialogueShotState(state.db), {
+    preparation_state: 'stale',
+    preparation_version: 3,
+    reference_bundle_hash: null,
+    video_generation_id: null,
+    stale_reason_code: 'voice_changed',
+  });
+  const event = state.db.prepare('SELECT reason_code, metadata_json FROM redraw_workflow_events').get();
+  assert.equal(event.reason_code, 'voice_changed');
+  assert.equal(JSON.parse(event.metadata_json).old_bundle_hash, 'b'.repeat(64));
   fs.rmSync(root, { recursive: true, force: true });
   state.db.close();
 });

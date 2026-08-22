@@ -249,6 +249,7 @@ function insertAsset(db, input) {
 let currentStorageRoot = null;
 
 function identityPack(input = {}) {
+  const wardrobeAssetId = input.wardrobeAssetId || ((input.assetId || 301) + 1000);
   const pack = {
     schema_version: 'target-actor-identity-v1',
     source_character_key: input.sourceCharacterKey || 'character-001',
@@ -259,6 +260,12 @@ function identityPack(input = {}) {
       width: 864,
       height: 1296,
       mime_type: 'image/png',
+    },
+    wardrobe: {
+      label: '整集主服装',
+      reference_asset_id: wardrobeAssetId,
+      reference_sha256: input.wardrobeSha256 || assetSha(wardrobeAssetId),
+      consistency_confirmed: input.wardrobeConsistencyConfirmed ?? true,
     },
     confirmed_views: input.confirmedViews || ['front', 'profile', 'full_body'],
     live_action_human_confirmed: true,
@@ -289,6 +296,7 @@ function identityPackHash(pack) {
     source_character_key: pack.source_character_key,
     target_actor_label: pack.target_actor_label,
     target_country: pack.target_country,
+    wardrobe: pack.wardrobe,
   }));
 }
 
@@ -297,11 +305,20 @@ function recalcIdentityPackHash(payload) {
 }
 
 function insertCharacterRedrawAsset(db, versionId, input) {
+  const wardrobeAssetId = input.wardrobeAssetId || (input.assetId + 1000);
   insertAsset(db, {
     id: input.assetId,
     localPath: `redraw/identity-${input.assetId}.png`,
     mimeType: 'image/png',
     sha256: input.sha256,
+    width: 864,
+    height: 1296,
+  });
+  insertAsset(db, {
+    id: wardrobeAssetId,
+    localPath: `redraw/wardrobe-${wardrobeAssetId}.png`,
+    mimeType: 'image/png',
+    sha256: input.wardrobeSha256 || assetSha(wardrobeAssetId),
     width: 864,
     height: 1296,
   });
@@ -1158,6 +1175,12 @@ test('身份包缺视图、未批准、非成年、非虚构 AI、非 US 或哈�
         updateJsonColumn(state.db, 'redraw_assets', state.actorAId, 'source_ref_json', (payload) => {
           payload.identity_pack.target_actor_label = 'Drifted Actor';
         });
+      },
+    },
+    {
+      name: 'wardrobe hash drift',
+      mutateDb(state) {
+        fs.writeFileSync(path.join(state.storageRoot, 'redraw', 'wardrobe-1301.png'), Buffer.from('drifted wardrobe'));
       },
     },
   ];

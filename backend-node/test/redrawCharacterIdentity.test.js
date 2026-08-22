@@ -126,6 +126,38 @@ function rowSnapshot(db, id) {
     FROM redraw_assets WHERE id = ?`).get(id);
 }
 
+function addReadyShot(state, sourceCharacterKey = 'character-1') {
+  state.db.prepare(`INSERT INTO video_generations
+    (id, provider, model, status, tenant_id, user_id, created_at, updated_at)
+    VALUES (801, 'fake', 'redraw-local', 'completed', 'tenant-a', 'user-a', ?, ?)`)
+    .run(INITIAL_UPDATED_AT, INITIAL_UPDATED_AT);
+  state.db.prepare(`INSERT INTO redraw_shots
+    (id, work_id, version_id, tenant_id, user_id, shot_id, batch_index, shot_index,
+     start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
+     references_json, reference_bundle_json, reference_bundle_hash, reference_bundle_updated_at,
+     video_generation_id, preparation_state, preparation_version, status, created_at, updated_at)
+    VALUES (701, 1, ?, 'tenant-a', 'user-a', 'shot-identity', 1, 1,
+      0, 5000, 5000, '[]', '[]', '[]', ?, ?, ?, 801, 'reference_ready', 2, 'completed', ?, ?)`)
+    .run(
+      state.versionId,
+      JSON.stringify({
+        schema_version: 'redraw-reference-bundle-v1',
+        face_tracks: [{ source_character_key: sourceCharacterKey }],
+        dialogue: { kind: 'silent', turns: [] },
+        text_regions: [],
+      }),
+      'a'.repeat(64),
+      INITIAL_UPDATED_AT,
+      INITIAL_UPDATED_AT,
+      INITIAL_UPDATED_AT,
+    );
+}
+
+function shotState(db) {
+  return db.prepare(`SELECT preparation_state, preparation_version, reference_bundle_hash,
+    video_generation_id, stale_reason_code FROM redraw_shots WHERE id = 701`).get();
+}
+
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -288,6 +320,45 @@ test('完整身份包使用服务端证据并生成稳定的 64 位小写哈希'
       pack_sha256: first.identity_pack.pack_sha256,
       ready: true,
     });
+  } finally {
+    close(state);
+  }
+});
+
+test('身份包成功保存后精准失效当前角色依赖镜头，CAS 失败不触发失效', () => {
+  const state = setup();
+  try {
+    fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    fs.writeFileSync(path.join(state.root, 'wardrobe-102.png'), Buffer.from('wardrobe-reference-image'));
+    addProviderAsset(state);
+    addProviderAsset(state, { id: 102, localPath: 'wardrobe-102.png' });
+    addReadyShot(state);
+    const characterId = addCharacter(state);
+
+    assert.throws(
+      () => saveIdentityPack(context(state), characterId, completeInput('stale-updated-at')),
+      (error) => error.code === 'REDRAW_IDENTITY_CONFLICT',
+    );
+    assert.deepEqual(shotState(state.db), {
+      preparation_state: 'reference_ready',
+      preparation_version: 2,
+      reference_bundle_hash: 'a'.repeat(64),
+      video_generation_id: 801,
+      stale_reason_code: null,
+    });
+    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM redraw_workflow_events').get().count, 0);
+
+    saveIdentityPack(context(state), characterId, completeInput());
+    assert.deepEqual(shotState(state.db), {
+      preparation_state: 'stale',
+      preparation_version: 3,
+      reference_bundle_hash: null,
+      video_generation_id: null,
+      stale_reason_code: 'character_identity_changed',
+    });
+    const event = state.db.prepare('SELECT reason_code, metadata_json FROM redraw_workflow_events').get();
+    assert.equal(event.reason_code, 'character_identity_changed');
+    assert.equal(JSON.parse(event.metadata_json).old_bundle_hash, 'a'.repeat(64));
   } finally {
     close(state);
   }

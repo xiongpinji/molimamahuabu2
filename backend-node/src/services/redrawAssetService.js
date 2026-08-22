@@ -4,6 +4,7 @@ const {
   readIdentityPack,
   identityPackStatus,
 } = require('./redrawCharacterIdentityService');
+const { invalidateDialogueDependents } = require('./redrawDependencyInvalidationService');
 
 let defaultEvidenceRegistry = null;
 
@@ -43,6 +44,17 @@ function parseJson(value, fallback) {
   } catch (_) {
     return fallback;
   }
+}
+
+function voiceDependencyKey(sourceRef = {}) {
+  return String(
+    sourceRef.source_character_key
+      ?? sourceRef.sourceCharacterKey
+      ?? sourceRef.speaker_id
+      ?? sourceRef.speakerId
+      ?? sourceRef.id
+      ?? '',
+  ).trim();
 }
 
 function getVersion(ctx) {
@@ -823,6 +835,9 @@ function finalizeAssetAttempt(ctx, attemptId, providerResult = {}) {
   const now = new Date().toISOString();
   if (attempt.kind === 'voice') {
     const sourcePayload = parseJson(attempt.source_ref_json, {});
+    const sourceRef = sourcePayload.source_ref && typeof sourcePayload.source_ref === 'object'
+      ? sourcePayload.source_ref
+      : {};
     const snapshot = sourcePayload.snapshot && typeof sourcePayload.snapshot === 'object'
       ? sourcePayload.snapshot
       : {};
@@ -860,6 +875,19 @@ function finalizeAssetAttempt(ctx, attemptId, providerResult = {}) {
           WHERE id = ?
         `).run(Number(asset.id), JSON.stringify(nextSourcePayload), now, Number(attempt.id));
         if (reservationId) creditLedger.settleGeneration(db, reservationId, 'completed');
+        const dependencyKey = voiceDependencyKey(sourceRef);
+        if (dependencyKey) {
+          invalidateDialogueDependents({
+            ...ctx,
+            tenantId: String(attempt.tenant_id),
+            userId: String(attempt.user_id),
+            versionId: Number(attempt.version_id),
+            now,
+          }, {
+            source_character_key: dependencyKey,
+            reason_code: 'voice_changed',
+          });
+        }
       })();
     } catch (error) {
       return markAssetNeedsAttention(
