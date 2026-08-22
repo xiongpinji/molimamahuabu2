@@ -80,7 +80,7 @@ async function writeModelLock(t) {
   return { cacheRoot, lockPath, validated };
 }
 
-function buildSyntheticCase({ videoPath, width = 64, height = 36, durationMs = 9000, codec = 'h264', frameRate = 1, caseId = 'synthetic-local-case', shots } = {}) {
+function buildSyntheticCase({ videoPath, width = 64, height = 36, durationMs = 9000, codec = 'h264', frameRate = 1, caseId = 'synthetic-local-case', shotCount = 9, shots } = {}) {
   const cast = [
     { id: 'mateo', role: 'protagonist', age_min: 18 },
     { id: 'diego', role: 'classmate', age_min: 18 },
@@ -88,12 +88,12 @@ function buildSyntheticCase({ videoPath, width = 64, height = 36, durationMs = 9
     { id: 'elena', role: 'mother', age_min: 35 },
     { id: 'rafael', role: 'father', age_min: 35 },
   ];
-  const defaultShots = Array.from({ length: 9 }, (_, index) => {
+  const defaultShots = Array.from({ length: shotCount }, (_, index) => {
     const start = index * 1000;
     return {
       id: `shot-${index + 1}`,
       start_ms: start,
-      end_ms: index === 8 ? durationMs : start + 1000,
+      end_ms: index === shotCount - 1 ? durationMs : start + 1000,
       speaking_character_ids: index === 0 ? ['mateo'] : [],
       text_regions: index === 7 ? [] : [
         { region_key: `shot-${index + 1}-subtitle-1`, kind: 'text_subtitle', time_ranges: [[start, Math.min(start + 900, durationMs)]], treatment: 'translate_subtitle' },
@@ -127,11 +127,11 @@ function casePolicyFromCase(caseData) {
   };
 }
 
-async function writeSyntheticVideo(t, root, { width = 64, height = 36, audio = 'ok' } = {}) {
+async function writeSyntheticVideo(t, root, { width = 64, height = 36, audio = 'ok', frameCount = 9 } = {}) {
   if (!hasLocalFfmpeg() || !hasLocalFfprobe()) t.skip('ffmpeg/ffprobe unavailable');
   const frameDir = path.join(root, 'input-frames');
   fs.mkdirSync(frameDir);
-  for (let index = 0; index < 9; index += 1) {
+  for (let index = 0; index < frameCount; index += 1) {
     const bytes = await sharp({
       create: {
         width,
@@ -185,10 +185,10 @@ function fakeDetections(frames, overrides = {}) {
   }));
 }
 
-async function prepareSyntheticRun(t, { caseData } = {}) {
+async function prepareSyntheticRun(t, { caseData, shotCount = 9 } = {}) {
   const root = tempDir(t, 'redraw-local-run-');
-  const videoPath = await writeSyntheticVideo(t, root);
-  const finalCase = caseData || buildSyntheticCase({ videoPath });
+  const videoPath = await writeSyntheticVideo(t, root, { frameCount: shotCount });
+  const finalCase = caseData || buildSyntheticCase({ videoPath, durationMs: shotCount * 1000, shotCount });
   const casePath = path.join(root, 'case.json');
   fs.writeFileSync(casePath, JSON.stringify(finalCase, null, 2));
   const { lockPath, validated } = await writeModelLock(t);
@@ -393,6 +393,44 @@ test('analyze builds offline review artifacts from real ffprobe/ffmpeg frames an
   assert(!JSON.stringify(first).includes('fault'));
 });
 
+test('analyze accepts arbitrary 3 and 12 shot cases and preserves per-shot contact sheets before finalize pagination', async (t) => {
+  for (const shotCount of [3, 12]) {
+    const setup = await prepareSyntheticRun(t, { shotCount });
+    const result = await runner.runAnalyze({
+      source: setup.videoPath,
+      casePath: setup.casePath,
+      modelLockPath: setup.lockPath,
+      outputDir: setup.outputDir,
+    }, setup.deps);
+
+    assert.equal(result.manifest.source.frame_count, shotCount);
+    assert.equal(result.manifest.shots.length, shotCount);
+    assert.equal(result.contact_sheets.length, shotCount);
+    assert.deepEqual(result.contact_sheets, Array.from({ length: shotCount }, (_, index) => `contact-sheets/shot-${index + 1}.jpg`));
+    assert.equal(fs.readdirSync(path.join(setup.outputDir, 'contact-sheets')).length, shotCount);
+
+    const decisions = {
+      schema_version: 'redraw-full-frame-review-decisions-v1',
+      analysis_sha256: result.manifest.analysis_sha256,
+      reviewer: 'codex-local-review',
+      review_points: result.manifest.frames
+        .filter((frame) => frame.review_point_reasons.length > 0)
+        .map((frame) => ({
+          frame_index: frame.frame_index,
+          reasons: frame.review_point_reasons,
+          decision: 'accepted',
+          corrections: [],
+        })),
+    };
+    const reviewedRoot = path.join(setup.root, `reviewed-${shotCount}`);
+    const finalized = await review.finalizeReviewedCoverage({ analysisRoot: setup.outputDir, decisions, outputRoot: reviewedRoot });
+    assert.equal(finalized.reviewed_manifest.shots.length, shotCount);
+    assert.equal(finalized.reviewed_manifest.review.status, 'reviewed');
+    assert.equal(finalized.contact_sheets.length, Math.ceil(shotCount / 9));
+    assert.equal(fs.readdirSync(path.join(reviewedRoot, 'reviewed-contact-sheets')).length, Math.ceil(shotCount / 9));
+  }
+});
+
 test('contact sheets contain portrait frames without stretching them', async (t) => {
   const root = tempDir(t, 'redraw-portrait-contact-');
   const videoPath = await writeSyntheticVideo(t, root, { width: 36, height: 64 });
@@ -446,6 +484,39 @@ test('analyze failure matrix reaches the intended legal-media stages and leaves 
   assert.equal(detectorCalled, true);
   await assertRunRejectsNoFinal(setup2, 'REDRAW_FULL_FRAME_MASK_INVALID', { fault: 'mask_write' });
   await assert.rejects(runner.runAnalyze({ source: setup2.videoPath, casePath: setup2.casePath, modelLockPath: setup2.lockPath, outputDir: path.join(setup2.root, 'unknown-fault') }, { ...setup2.deps, fault: 'unknown' }), /REDRAW_FULL_FRAME_OUTPUT_INVALID/);
+});
+
+test('analyze fails closed for empty, duplicate, extra, and missing policy or case shots', async (t) => {
+  const setup = await prepareSyntheticRun(t, { shotCount: 3 });
+  const basePolicy = casePolicyFromCase(setup.caseData);
+  const extraShot = { id: 'shot-4', start_ms: 3000, end_ms: 4000 };
+
+  for (const shots of [
+    [],
+    [basePolicy.shots[0], basePolicy.shots[0], basePolicy.shots[2]],
+    [...basePolicy.shots, extraShot],
+    basePolicy.shots.slice(0, -1),
+  ]) {
+    await assertRunRejectsNoFinal(setup, 'REDRAW_FULL_FRAME_OUTPUT_INVALID', { casePolicy: { ...basePolicy, shots } });
+  }
+
+  for (const shots of [
+    [],
+    [setup.caseData.shots[0], setup.caseData.shots[0], setup.caseData.shots[2]],
+    [...setup.caseData.shots, { ...setup.caseData.shots[2], id: 'shot-4', start_ms: 3000, end_ms: 4000 }],
+    setup.caseData.shots.slice(0, -1),
+  ]) {
+    const casePath = path.join(setup.root, `bad-shots-${Math.random().toString(16).slice(2)}.json`);
+    fs.writeFileSync(casePath, JSON.stringify({ ...setup.caseData, shots }, null, 2));
+    const outputDir = path.join(setup.root, `bad-shots-${Math.random().toString(16).slice(2)}`);
+    await assert.rejects(runner.runAnalyze({
+      source: setup.videoPath,
+      casePath,
+      modelLockPath: setup.lockPath,
+      outputDir,
+    }, { ...setup.deps, casePolicy: { ...basePolicy, shots: shots.map(({ id, start_ms, end_ms }) => ({ id, start_ms, end_ms })) } }), /REDRAW_FULL_FRAME_/);
+    assert.equal(fs.existsSync(outputDir), false);
+  }
 });
 
 test('analyze fails closed when detector omits frames or emits no candidates for the whole video', async (t) => {

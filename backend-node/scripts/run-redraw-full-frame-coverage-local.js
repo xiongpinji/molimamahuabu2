@@ -186,6 +186,20 @@ function parseTimeBase(value) {
   return { numerator: Number(match[1]), denominator: Number(match[2]) };
 }
 
+function validateShotTimeline(shots, durationMs, code) {
+  if (!Array.isArray(shots) || shots.length === 0) fail(code);
+  const seen = new Set();
+  for (let index = 0; index < shots.length; index += 1) {
+    const shot = shots[index];
+    if (typeof shot.id !== 'string' || shot.id !== `shot-${index + 1}` || seen.has(shot.id)) fail(code);
+    if (!Number.isInteger(shot.start_ms) || !Number.isInteger(shot.end_ms) || shot.end_ms <= shot.start_ms) fail(code);
+    if (index === 0 && shot.start_ms !== 0) fail(code);
+    if (index > 0 && shot.start_ms !== shots[index - 1].end_ms) fail(code);
+    seen.add(shot.id);
+  }
+  if (shots.at(-1).end_ms !== durationMs) fail(code);
+}
+
 function safeEnv() {
   const env = {};
   for (const key of ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP']) {
@@ -326,8 +340,8 @@ function requirePolicy(policy) {
     assertExactKeys(policy.target, ['language', 'locale', 'market']);
     if (typeof policy.case_id !== 'string' || !Number.isInteger(policy.duration_ms) || !/^[a-f0-9]{64}$/i.test(policy.source.sha256)) fail(OUTPUT_INVALID);
     if (!Array.isArray(policy.cast_ids) || policy.cast_ids.length !== 5) fail(OUTPUT_INVALID);
-    if (!Array.isArray(policy.shots) || policy.shots.length !== 9) fail(OUTPUT_INVALID);
     for (const shot of policy.shots) assertExactKeys(shot, ['id', 'start_ms', 'end_ms']);
+    validateShotTimeline(policy.shots, policy.duration_ms, OUTPUT_INVALID);
     return policy;
   } catch (error) {
     sanitizeCatch(error, OUTPUT_INVALID);
@@ -363,16 +377,13 @@ function validateCase(raw, policy = DEFAULT_CASE_POLICY) {
       castIds.add(item.id);
     }
     if (JSON.stringify([...castIds]) !== JSON.stringify(policy.cast_ids)) fail(OUTPUT_INVALID);
-    if (!Array.isArray(raw.shots) || raw.shots.length !== 9) fail(FRAME_GAP);
+    if (!Array.isArray(raw.shots) || raw.shots.length === 0 || raw.shots.length !== policy.shots.length) fail(FRAME_GAP);
+    validateShotTimeline(raw.shots, raw.source.duration_ms, FRAME_GAP);
     for (let index = 0; index < raw.shots.length; index += 1) {
       const shot = raw.shots[index];
       const expectedShot = policy.shots[index];
       assertExactKeys(shot, ['id', 'start_ms', 'end_ms', 'speaking_character_ids', 'text_regions']);
       if (shot.id !== expectedShot.id || shot.start_ms !== expectedShot.start_ms || shot.end_ms !== expectedShot.end_ms) fail(FRAME_GAP);
-      if (shot.id !== `shot-${index + 1}`) fail(FRAME_GAP);
-      if (index === 0 && shot.start_ms !== 0) fail(FRAME_GAP);
-      if (index > 0 && shot.start_ms !== raw.shots[index - 1].end_ms) fail(FRAME_GAP);
-      if (shot.end_ms <= shot.start_ms) fail(FRAME_GAP);
       for (const speakerId of shot.speaking_character_ids) {
         if (!castIds.has(speakerId)) fail(OUTPUT_INVALID);
       }
@@ -386,7 +397,6 @@ function validateCase(raw, policy = DEFAULT_CASE_POLICY) {
         }
       }
     }
-    if (raw.shots.at(-1).end_ms !== raw.source.duration_ms) fail(FRAME_GAP);
     return JSON.parse(JSON.stringify(raw));
   } catch (error) {
     sanitizeCatch(error, OUTPUT_INVALID);
