@@ -79,6 +79,11 @@ function readableAsset(ctx, asset) {
   return true;
 }
 
+function trustedAssetOwnerHook(ctx, asset, owner) {
+  return typeof ctx.assetReader?.owns === 'function'
+    && ctx.assetReader.owns(asset, owner) === true;
+}
+
 function assertOwnedAsset(ctx, assetId, kind) {
   const asset = ctx.db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(Number(assetId));
   if (!asset || !readableAsset(ctx, asset)) return null;
@@ -93,6 +98,11 @@ function assertOwnedAsset(ctx, assetId, kind) {
     const owned = String(drama?.tenant_id ?? '') === tenantId
       && (!String(drama?.user_id ?? '') || String(drama?.user_id ?? '') === userId);
     if (!owned) return null;
+  } else if (kind === 'wardrobe' && !trustedAssetOwnerHook(ctx, asset, {
+    tenantId: String(ctx.tenantId ?? ctx.tenant_id ?? ''),
+    userId: String(ctx.userId ?? ctx.user_id ?? ''),
+  })) {
+    return null;
   }
   return asset;
 }
@@ -240,6 +250,11 @@ function buildCharacterPlan(ctx = {}, versionId) {
     }
     if (pack?.adult_status !== 'verified_18_plus') missing.push(`${key}:age_not_adult`);
     if (pack?.persona_origin !== 'fictional_ai_generated') missing.push(`${key}:persona_not_fictional_ai`);
+    const expectedItem = expectedByKey.get(key);
+    if (expectedItem?.adult_status !== 'verified_18_plus') missing.push(`${key}:source_age_not_adult`);
+    if (expectedItem?.persona_origin !== 'fictional_ai_generated') {
+      missing.push(`${key}:source_persona_not_fictional_ai`);
+    }
     const voice = voiceForCharacter(ctx, version, row, key, missing);
     const wardrobe = wardrobeForCharacter(ctx, key, pack, missing);
     characters.push({

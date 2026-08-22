@@ -25,7 +25,16 @@ function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
-function setup() {
+function defaultSourceFacts() {
+  return {
+    characters: [
+      { source_character_key: 'char-b', target_name: 'Brian Miller', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
+      { source_character_key: 'char-a', target_name: 'Alice Carter', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
+    ],
+  };
+}
+
+function setup(sourceFacts = defaultSourceFacts()) {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-character-plan-'));
@@ -35,18 +44,16 @@ function setup() {
   db.prepare(`INSERT INTO redraw_works
     (project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint, duration_ms, created_at, updated_at)
     VALUES (1, 'tenant-a', 'user-a', '角色计划作品', 1, 'source-a', 15000, ?, ?)`).run(NOW, NOW);
+  db.prepare(`INSERT INTO dramas
+    (id, title, tenant_id, user_id, created_at, updated_at)
+    VALUES (11, 'same owner', 'tenant-a', 'user-a', ?, ?)`).run(NOW, NOW);
   const workId = db.prepare('SELECT id FROM redraw_works LIMIT 1').get().id;
   db.prepare(`INSERT INTO redraw_versions
     (work_id, tenant_id, user_id, version, locale, market, source_facts_json, facts_hash,
      name_map_json, status, created_at, updated_at)
     VALUES (?, 'tenant-a', 'user-a', 1, 'en-US', 'US', ?, 'facts-a', '{}',
       'asset_review', ?, ?)`)
-    .run(workId, JSON.stringify({
-      characters: [
-        { source_character_key: 'char-b', target_name: 'Brian Miller', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
-        { source_character_key: 'char-a', target_name: 'Alice Carter', adult_status: 'verified_18_plus', persona_origin: 'fictional_ai_generated' },
-      ],
-    }), NOW, NOW);
+    .run(workId, JSON.stringify(sourceFacts), NOW, NOW);
   db.prepare(`INSERT INTO ai_service_configs
     (id, service_type, provider, name, model, default_model, is_active, created_at, updated_at)
     VALUES (?, 'tts', 'fake-tts', 'TTS', ?, 'model-tts', 1, ?, ?)`)
@@ -89,7 +96,7 @@ function addProviderAsset(state, id, file, input = {}) {
     VALUES (?, ?, ?, ?, 'redraw', '', ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       id,
-      input.dramaId ?? null,
+      Object.hasOwn(input, 'dramaId') ? input.dramaId : 11,
       input.name || `asset-${id}`,
       input.type || 'image',
       file,
@@ -197,8 +204,16 @@ function addVoice(state, sourceKey, input = {}) {
     WHERE id = ?`).run(audioAssetId, JSON.stringify(payload), `${NOW}.${sourceKey}`, character.id);
 }
 
-function makeReadyState() {
-  const state = setup();
+function makeReadyState(factPatch = null) {
+  const facts = defaultSourceFacts();
+  if (factPatch) {
+    facts.characters = facts.characters.map((character) => (
+      character.source_character_key === factPatch.sourceKey
+        ? { ...character, ...factPatch.patch }
+        : character
+    ));
+  }
+  const state = setup(facts);
   addCharacter(state, 'char-b', 'Brian Miller');
   addCharacter(state, 'char-a', 'Alice Carter');
   addVoice(state, 'char-a');
@@ -341,6 +356,25 @@ test('角色计划拒绝年龄、真人来源、声音语言和服装证据问�
   }
 });
 
+test('角色计划拒绝源事实中的未成年、未知年龄和真人来源', () => {
+  const cases = [
+    ['minor', { adult_status: 'minor' }, 'char-a:source_age_not_adult'],
+    ['unknown', { adult_status: 'unknown' }, 'char-a:source_age_not_adult'],
+    ['empty', { adult_status: '' }, 'char-a:source_age_not_adult'],
+    ['real_person', { persona_origin: 'real_person' }, 'char-a:source_persona_not_fictional_ai'],
+  ];
+  for (const [reason, patch, expectedMissing] of cases) {
+    const state = makeReadyState({ sourceKey: 'char-a', patch });
+    try {
+      const plan = buildCharacterPlan(context(state), state.versionId);
+      assert.equal(plan.ready, false, reason);
+      assert.equal(plan.missing.includes(expectedMissing), true, reason);
+    } finally {
+      close(state);
+    }
+  }
+});
+
 test('角色计划拒绝跨 owner 服装资产', () => {
   const state = setup();
   try {
@@ -372,5 +406,31 @@ test('角色计划拒绝跨 owner 服装资产', () => {
     );
   } finally {
     close(state);
+  }
+});
+
+test('角色计划再验证拒绝缺少 owner 绑定或跨 owner 漂移的服装资产', () => {
+  const cases = [
+    ['wardrobe_owner_missing', null],
+    ['wardrobe_owner_mismatch', 77],
+  ];
+  for (const [reason, dramaId] of cases) {
+    const state = makeReadyState();
+    try {
+      if (dramaId !== null) {
+        state.db.prepare(`INSERT INTO dramas
+          (id, title, tenant_id, user_id, created_at, updated_at)
+          VALUES (?, 'other', 'tenant-b', 'user-b', ?, ?)`).run(dramaId, NOW, NOW);
+      }
+      state.db.prepare("UPDATE assets SET drama_id = ? WHERE local_path = 'char-a-wardrobe.png'")
+        .run(dramaId);
+
+      const plan = buildCharacterPlan(context(state), state.versionId);
+
+      assert.equal(plan.ready, false, reason);
+      assert.equal(plan.missing.includes('char-a:wardrobe_missing_reference'), true, reason);
+    } finally {
+      close(state);
+    }
   }
 });

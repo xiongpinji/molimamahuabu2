@@ -251,6 +251,11 @@ function sameOpenFileState(left, right) {
     && left.ctimeMs === right.ctimeMs;
 }
 
+function trustedAssetOwnerHook(ctx, asset, owner) {
+  return typeof ctx.assetReader?.owns === 'function'
+    && ctx.assetReader.owns(asset, owner) === true;
+}
+
 function resolveArtifact(ctx, row) {
   const { db, storageRoot, tenantId, userId, versionId } = ctx;
   const providerAssetId = Number(row.asset_id);
@@ -381,7 +386,11 @@ function resolveWardrobe(ctx, input = {}) {
   );
   if (!Number.isSafeInteger(assetId) || assetId <= 0) return null;
   const asset = db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(assetId);
-  if (asset?.drama_id != null) {
+  if (asset?.drama_id == null) {
+    if (!trustedAssetOwnerHook(ctx, asset, { tenantId, userId })) {
+      throw codedError('REDRAW_IDENTITY_WARDROBE_NOT_OWNED', '角色服装参考图缺少可信归属绑定');
+    }
+  } else {
     const drama = db.prepare('SELECT tenant_id, user_id FROM dramas WHERE id = ? AND deleted_at IS NULL')
       .get(Number(asset.drama_id));
     const dramaTenantId = String(drama?.tenant_id ?? '').trim();

@@ -31,6 +31,10 @@ function setup() {
      duration_ms, created_at, updated_at)
     VALUES (1, 'tenant-a', 'user-a', '身份测试作品', 1, 'source-a', 15000, ?, ?)`)
     .run(INITIAL_UPDATED_AT, INITIAL_UPDATED_AT);
+  db.prepare(`INSERT INTO dramas
+    (id, title, tenant_id, user_id, created_at, updated_at)
+    VALUES (11, '同租户项目', 'tenant-a', 'user-a', ?, ?)`)
+    .run(INITIAL_UPDATED_AT, INITIAL_UPDATED_AT);
   const workId = db.prepare('SELECT id FROM redraw_works LIMIT 1').get().id;
   db.prepare(`INSERT INTO redraw_versions
     (work_id, tenant_id, user_id, version, locale, market, source_facts_json,
@@ -69,7 +73,7 @@ function addProviderAsset(state, input = {}) {
     VALUES (?, ?, '身份图片', ?, 'redraw', '', ?, ?, ?, ?, ?, ?)`)
     .run(
       id,
-      input.dramaId ?? null,
+      Object.hasOwn(input, 'dramaId') ? input.dramaId : 11,
       input.type || 'image',
       localPath,
       input.mimeType || 'image/png',
@@ -571,6 +575,27 @@ test('当前角色误链到其他租户 drama 图片时拒绝且不写入身份�
     assert.deepEqual(rowSnapshot(state.db, characterId), before);
     assert.equal(before.source_ref_json.includes('pack_sha256'), false);
     assert.equal(before.source_ref_json.includes(crypto.createHash('sha256').update(IMAGE_BYTES).digest('hex')), false);
+  } finally {
+    close(state);
+  }
+});
+
+test('服装参考图缺少可靠 owner 绑定时拒绝且不改库', () => {
+  const state = setup();
+  try {
+    fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    fs.writeFileSync(path.join(state.root, 'wardrobe-102.png'), Buffer.from('wardrobe-reference-image'));
+    addProviderAsset(state);
+    addProviderAsset(state, { id: 102, localPath: 'wardrobe-102.png', dramaId: null });
+    const characterId = addCharacter(state);
+    const before = rowSnapshot(state.db, characterId);
+
+    assert.throws(
+      () => saveIdentityPack(context(state), characterId, completeInput()),
+      (error) => error.code === 'REDRAW_IDENTITY_WARDROBE_NOT_OWNED',
+    );
+    assert.deepEqual(rowSnapshot(state.db, characterId), before);
+    assert.equal(before.source_ref_json.includes('pack_sha256'), false);
   } finally {
     close(state);
   }
