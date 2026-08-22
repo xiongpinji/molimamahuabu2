@@ -138,3 +138,19 @@ Exit: 0. The same-run scan returned 24 raw hits. Each hit was reviewed individua
 This evidence proves the local Stage 0 framework can bind the source inventory to the acceptance ledger, keep unverified features incomplete, keep blocked features from being reported as passed, reject unsafe evidence paths, expose stable CLI failure codes, register the framework in the feature lock manifest, constrain any future candidate to a declared incremental file scope, and run the specified zero-cost local frontend gates without generation or other non-login write requests.
 
 This evidence does not prove that all 140 business features have passed. It also does not prove Hosted CI, real provider generation, production readback, production deployment, enforce mode, or customer acceptance. Those remain explicitly out of scope for this local Stage 0 framework unless separately authorized and recorded with fresh same-run proof.
+
+## Post-main Merge Revalidation — 2026-08-22 08:57 +08:00
+
+Merge candidate `e833c0a2a35dbce03075faae2e9d48cf27528ad0` incorporates current `origin/main` at `0d1bda3806fbbc6435ffd86a14e37c957d616e40`. The conflict resolution retained the current main package scripts and historical lock approvals while preserving this framework's 12-file scope.
+
+- Backend full suite: `npm test` -> exit 0, 2640 tests, 2630 passed, 0 failed, 10 skipped, duration `938321.1295ms`.
+- Frontend full suite: `node --test test/*.test.js` -> exit 0, 870 tests, 870 passed, 0 failed, 0 skipped, duration `42692.0331ms`.
+- Frontend production build: `npm run build` -> exit 0, 1902 modules transformed, build duration `26.88s`; only the existing chunk-size warning remained.
+- Local zero-cost browser gates: `npx --no-install playwright test e2e/platform-zero-cost-smoke.spec.js e2e/provider-stability-admin.spec.js --workers=1` -> exit 0, 7 passed in `20.4s`. `safe-trace.json` reported `generation_write_requests=0`, `non_login_write_requests=0`, `runtime_failures=0`, and `result=passed`; the exact generated artifact directories were removed after inspection.
+- Focused inventory, acceptance, lock, and scope regression: 57 passed, 0 failed, duration `7082.1247ms`.
+- `node scripts/verify-feature-lock-manifest.js --base origin/main` -> exit 0, `ready=true`, 6 features, 5 protected base features, 12 changed paths.
+- Default acceptance validation -> exit 0, `valid=true`, `complete=false`, total 140, unverified 124, blocked 16. `--require-complete` -> expected exit 1 with `ACCEPTANCE_INCOMPLETE`.
+- The indexed diff against current `origin/main` exactly matched all 12 `allowedPaths`; `git diff --cached --check origin/main` exited 0.
+- The full-tree credential-shape scan returned 73 matching lines / 74 matching strings. Review classified 55 as regex substring false positives in synthetic `task-` or route `disk-` identifiers and 19 as explicit test placeholders, redaction fixtures, or documentation examples. The 12-file PR diff itself returned 0 credential-shape matches.
+
+No real provider call, paid action, production read or write, release candidate creation, deployment, `enforce` activation, shared release-guard change, or AI music change occurred during this revalidation. Hosted CI remains pending until the branch is pushed.
