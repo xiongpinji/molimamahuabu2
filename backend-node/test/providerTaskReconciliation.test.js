@@ -1160,6 +1160,20 @@ test('reconcileRequest refunds only explicit provider task failure and is termin
 test('supported parser protocols hold credits without an artifact and refund explicit failure', async (t) => {
   const protocols = [
     {
+      name: 'ToAPIs',
+      provider: 'toapis',
+      configProtocol: 'toapis_video',
+      baseUrl: 'https://toapis.com',
+      completedCases: ['success', 'succeeded', 'completed', 'done'].map((status) => ({
+        name: status,
+        payload: { status, result: { data: [] } },
+      })),
+      failed: {
+        status: 'failed',
+        error: { message: 'ToAPIs 任务完成但未返回视频地址' },
+      },
+    },
+    {
       name: 'DJPSD legacy',
       provider: 'djpsd',
       configProtocol: 'djpsd',
@@ -1198,7 +1212,7 @@ test('supported parser protocols hold credits without an artifact and refund exp
         name: status,
         payload: { status },
       })),
-      failed: { status: 'failed', errorMessage: 'provider detail must stay internal' },
+      failed: { status: 'failed', errorMessage: '飞拓任务完成但未返回视频地址' },
     },
     {
       name: 'USMercari',
@@ -1215,7 +1229,7 @@ test('supported parser protocols hold credits without an artifact and refund exp
         data: [{
           task_id: PROVIDER_TASK_ID,
           status: 'FAILURE',
-          fail_reason: 'provider detail must stay internal',
+          fail_reason: 'USMercari 任务完成但未返回视频地址',
         }],
       },
     },
@@ -1229,7 +1243,7 @@ test('supported parser protocols hold credits without an artifact and refund exp
         name: status,
         payload: { status },
       })),
-      failed: { status: 'failed', error: { message: 'provider detail must stay internal' } },
+      failed: { status: 'failed', error: { message: 'fumin 任务已完成但未返回视频地址' } },
     },
   ];
 

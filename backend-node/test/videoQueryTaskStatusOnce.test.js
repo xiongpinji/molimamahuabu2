@@ -78,11 +78,11 @@ test('所有单响应异步视频协议完成但无可信产物时都归为产�
     api_key: 'test-key',
   });
   const cases = [
-    {
-      name: 'ToAPIs',
+    ...['success', 'succeeded', 'completed', 'done'].map((status) => ({
+      name: `ToAPIs ${status}`,
       config: config('toapis', 'toapis_video', 'https://toapis.com'),
-      payload: { status: 'completed', result: { data: [] } },
-    },
+      payload: { status, result: { data: [] } },
+    })),
     {
       name: 'DJPSD legacy',
       config: config('djpsd', 'djpsd', 'https://relay.invalid'),
@@ -246,6 +246,65 @@ test('Feituo、USMercari 和 Fumin 显式失败才归为供应商任务失败', 
       assert.deepEqual(result, { state: 'failed', category: 'provider_task_failed' });
       assert.equal(requests, 1);
       assert.doesNotMatch(JSON.stringify(result), /provider detail/);
+    });
+  }
+});
+
+test('四种结构化协议的显式失败状态不受完成无产物文案影响', async (t) => {
+  const cases = [
+    ...['failed', 'error', 'cancelled', 'canceled'].map((status) => ({
+      name: `ToAPIs ${status}`,
+      config: {
+        provider: 'toapis',
+        api_protocol: 'toapis_video',
+        base_url: 'https://toapis.com',
+      },
+      payload: {
+        status,
+        error: { message: 'ToAPIs 任务完成但未返回视频地址' },
+      },
+    })),
+    ...['failed', 'error', 'cancelled', 'canceled'].map((status) => ({
+      name: `Feituo ${status}`,
+      config: { provider: 'feituo', api_protocol: 'feituo_open' },
+      payload: { status, errorMessage: '飞拓任务完成但未返回视频地址' },
+    })),
+    {
+      name: 'USMercari FAILURE',
+      config: { provider: 'usmercari', api_protocol: 'usmercari_media' },
+      payload: {
+        data: [{
+          task_id: 'saved-task-id',
+          status: 'FAILURE',
+          fail_reason: 'USMercari 任务完成但未返回视频地址',
+        }],
+      },
+    },
+    ...['failed', 'error', 'cancelled', 'canceled'].map((status) => ({
+      name: `Fumin ${status}`,
+      config: { provider: 'fumin', api_protocol: 'fumin_video' },
+      payload: {
+        status,
+        error: { message: 'fumin 任务已完成但未返回视频地址' },
+      },
+    })),
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      let requests = 0;
+      const result = await queryVideoTaskStatusOnce(null, log, 'saved-task-id', {
+        base_url: 'https://relay.invalid/v1',
+        api_key: 'test-key',
+        ...scenario.config,
+      }, {
+        async fetchImpl() {
+          requests += 1;
+          return jsonResponse(scenario.payload);
+        },
+      });
+      assert.deepEqual(result, { state: 'failed', category: 'provider_task_failed' });
+      assert.equal(requests, 1);
     });
   }
 });
