@@ -70,6 +70,247 @@ test('单次任务查询对会二次取结果的协议严格只发一个网络�
   }
 });
 
+test('所有单响应异步视频协议完成但无可信产物时都归为产物不可读', async (t) => {
+  const config = (provider, apiProtocol, baseUrl = 'https://relay.invalid/v1') => ({
+    provider,
+    api_protocol: apiProtocol,
+    base_url: baseUrl,
+    api_key: 'test-key',
+  });
+  const cases = [
+    {
+      name: 'ToAPIs',
+      config: config('toapis', 'toapis_video', 'https://toapis.com'),
+      payload: { status: 'completed', result: { data: [] } },
+    },
+    {
+      name: 'DJPSD legacy',
+      config: config('djpsd', 'djpsd', 'https://relay.invalid'),
+      payload: { code: 200, data: { status: 'completed' } },
+    },
+    {
+      name: 'DJPSD OpenAPI',
+      config: config('djpsd_openapi', 'djpsd_openapi'),
+      payload: { data: { state: 'completed' } },
+    },
+    ...['success', 'succeeded', 'completed', 'done'].map((status) => ({
+      name: `Feituo ${status}`,
+      config: config('feituo', 'feituo_open'),
+      payload: { status },
+    })),
+    {
+      name: 'USMercari SUCCESS',
+      config: config('usmercari', 'usmercari_media'),
+      payload: { data: [{ task_id: 'saved-task-id', status: 'SUCCESS', data: { items: [] } }] },
+    },
+    {
+      name: 'Token6688',
+      config: config('token6688', 'token6688'),
+      payload: { status: 'completed', result: { videos: [] } },
+    },
+    ...['success', 'succeeded', 'completed', 'done'].map((status) => ({
+      name: `Fumin ${status}`,
+      config: config('fumin', 'fumin_video'),
+      payload: { status },
+    })),
+    {
+      name: 'DeepWL Grok',
+      config: config('deepwl', 'deepwl_grok'),
+      payload: { status: 'completed' },
+    },
+    {
+      name: 'AIHubCC',
+      config: { ...config('aihubcc', 'aihubcc'), query_endpoint: '/videos/{taskId}' },
+      payload: { status: 'completed' },
+    },
+    {
+      name: 'iCreat',
+      config: config('icreat', 'icreat_task'),
+      payload: { status: 'SUCCEEDED' },
+    },
+    {
+      name: 'Kling',
+      config: config('kling', 'kling'),
+      payload: { code: 0, data: { task_status: 'succeed', task_result: { videos: [] } } },
+    },
+    {
+      name: 'Kling Omni',
+      config: config('ffir', 'kling_omni'),
+      payload: { code: 0, data: { task_status: 'completed' } },
+    },
+    {
+      name: 'Veo3',
+      config: config('custom', 'veo3'),
+      payload: { status: 'completed' },
+    },
+    {
+      name: 'Sora',
+      config: config('custom', 'sora'),
+      payload: { status: 'completed' },
+    },
+    {
+      name: 'Agnes',
+      config: config('agnes', 'agnes'),
+      payload: { status: 'completed' },
+    },
+    {
+      name: 'Vidu',
+      config: config('vidu', 'vidu'),
+      payload: { state: 'success', creations: [] },
+    },
+    {
+      name: 'Gemini',
+      config: config('gemini', 'gemini'),
+      payload: { done: true },
+    },
+    {
+      name: 'DashScope',
+      config: config('dashscope', 'dashscope'),
+      payload: { output: { task_status: 'SUCCEEDED' } },
+    },
+    {
+      name: 'Volcengine',
+      config: config('volcengine', 'volcengine'),
+      payload: { status: 'completed' },
+    },
+    {
+      name: 'Volcengine Omni',
+      config: config('custom', 'volcengine_omni'),
+      payload: { status: 'completed' },
+    },
+    {
+      name: 'OpenAI-compatible',
+      config: config('custom', 'openai'),
+      payload: { status: 'completed' },
+    },
+    {
+      name: 'xAI',
+      config: config('xai', 'xai'),
+      payload: { status: 'completed' },
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      let requests = 0;
+      const result = await queryVideoTaskStatusOnce(null, log, 'saved-task-id', scenario.config, {
+        async fetchImpl() {
+          requests += 1;
+          return jsonResponse(scenario.payload);
+        },
+      });
+      assert.deepEqual(result, { state: 'artifact_unreadable' });
+      assert.equal(requests, 1);
+    });
+  }
+});
+
+test('Feituo、USMercari 和 Fumin 显式失败才归为供应商任务失败', async (t) => {
+  const cases = [
+    ...['failed', 'error', 'cancelled'].map((status) => ({
+      name: `Feituo ${status}`,
+      config: { provider: 'feituo', api_protocol: 'feituo_open' },
+      payload: { status, errorMessage: 'provider detail must stay internal' },
+    })),
+    {
+      name: 'USMercari FAILURE',
+      config: { provider: 'usmercari', api_protocol: 'usmercari_media' },
+      payload: {
+        data: [{
+          task_id: 'saved-task-id',
+          status: 'FAILURE',
+          fail_reason: 'provider detail must stay internal',
+        }],
+      },
+    },
+    ...['failed', 'error', 'cancelled'].map((status) => ({
+      name: `Fumin ${status}`,
+      config: { provider: 'fumin', api_protocol: 'fumin_video' },
+      payload: { status, error: { message: 'provider detail must stay internal' } },
+    })),
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      let requests = 0;
+      const result = await queryVideoTaskStatusOnce(null, log, 'saved-task-id', {
+        ...scenario.config,
+        base_url: 'https://relay.invalid/v1',
+        api_key: 'test-key',
+      }, {
+        async fetchImpl() {
+          requests += 1;
+          return jsonResponse(scenario.payload);
+        },
+      });
+      assert.deepEqual(result, { state: 'failed', category: 'provider_task_failed' });
+      assert.equal(requests, 1);
+      assert.doesNotMatch(JSON.stringify(result), /provider detail/);
+    });
+  }
+});
+
+test('普通轮询保留新增 strict 分类协议的旧完成无产物行为', async (t) => {
+  const cases = [
+    {
+      name: 'ToAPIs',
+      config: { provider: 'toapis', api_protocol: 'toapis_video' },
+      baseUrl: 'https://toapis.com',
+      payload: { status: 'completed', result: { data: [] } },
+      error: 'ToAPIs 任务完成但未返回视频地址',
+    },
+    {
+      name: 'Feituo',
+      config: { provider: 'feituo', api_protocol: 'feituo_open' },
+      payload: { status: 'completed' },
+      error: '飞拓任务完成但未返回视频地址',
+    },
+    {
+      name: 'USMercari',
+      config: { provider: 'usmercari', api_protocol: 'usmercari_media' },
+      payload: { data: [{ task_id: 'saved-task-id', status: 'SUCCESS', data: { items: [] } }] },
+      error: 'USMercari 任务完成但未返回视频地址',
+    },
+    {
+      name: 'Fumin',
+      config: { provider: 'fumin', api_protocol: 'fumin_video' },
+      payload: { status: 'completed' },
+      error: 'fumin 任务已完成但未返回视频地址',
+    },
+    {
+      name: 'DashScope',
+      config: { provider: 'dashscope', api_protocol: 'dashscope' },
+      payload: { output: { task_status: 'SUCCEEDED' } },
+      indeterminate: true,
+    },
+    {
+      name: 'OpenAI-compatible',
+      config: { provider: 'custom', api_protocol: 'openai' },
+      payload: { status: 'completed' },
+      indeterminate: true,
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      let requests = 0;
+      const result = await pollVideoTask(null, log, null, 'saved-task-id', {
+        ...scenario.config,
+        base_url: scenario.baseUrl || 'https://relay.invalid/v1',
+        api_key: 'test-key',
+      }, 1, 0, {
+        async fetchImpl() {
+          requests += 1;
+          return jsonResponse(scenario.payload);
+        },
+      });
+      if (scenario.error) assert.deepEqual(result, { error: scenario.error });
+      else assert.equal(result.indeterminate, scenario.indeterminate);
+      assert.equal(requests, 1);
+    });
+  }
+});
+
 test('旧版 DJPSD 完成但无视频时严格单次查询保持产物不可读', async (t) => {
   for (const status of ['success', 'succeeded', 'completed']) {
     await t.test(status, async () => {

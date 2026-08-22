@@ -6063,7 +6063,11 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           progress: result.progress,
         });
         if (result.state === 'completed') return { video_url: result.videoUrl };
-        if (result.state === 'failed') return { error: result.error };
+        if (result.state === 'failed') {
+          return strictSingleRequest && result.error === 'ToAPIs 任务完成但未返回视频地址'
+            ? { artifact_unreadable: true }
+            : { error: result.error };
+        }
         continue;
       }
       let url, headers, method = 'GET', requestBody;
@@ -6243,7 +6247,11 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           state: result.state,
         });
         if (result.state === 'completed') return { video_url: result.videoUrl };
-        if (result.state === 'failed') return { error: result.error };
+        if (result.state === 'failed') {
+          return strictSingleRequest && result.error === '飞拓任务完成但未返回视频地址'
+            ? { artifact_unreadable: true }
+            : { error: result.error };
+        }
         continue;
       }
 
@@ -6256,7 +6264,11 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           progress: result.progress,
         });
         if (result.state === 'completed') return { video_url: result.videoUrl };
-        if (result.state === 'failed') return { error: result.error };
+        if (result.state === 'failed') {
+          return strictSingleRequest && result.error === 'USMercari 任务完成但未返回视频地址'
+            ? { artifact_unreadable: true }
+            : { error: result.error };
+        }
         continue;
       }
 
@@ -6292,7 +6304,11 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           has_video_url: !!result.videoUrl,
         });
         if (result.state === 'completed') return { video_url: result.videoUrl };
-        if (result.state === 'failed') return { error: result.error };
+        if (result.state === 'failed') {
+          return strictSingleRequest && result.error === 'fumin 任务已完成但未返回视频地址'
+            ? { artifact_unreadable: true }
+            : { error: result.error };
+        }
         continue;
       }
 
@@ -6583,6 +6599,10 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           });
           return { error: msg || '????????' };
         }
+        if (strictSingleRequest
+            && ['SUCCEEDED', 'SUCCESS', 'COMPLETED', 'DONE'].includes(String(taskStatus || '').toUpperCase())) {
+          return { artifact_unreadable: true };
+        }
         continue;
       }
       const status = extractPollTaskStatus(data);
@@ -6605,6 +6625,11 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           error_hint: failMsg || errMsg || data?.error?.code || data?.message || null,
           parsed_json: sum,
         });
+      }
+      if (strictSingleRequest && ['success', 'succeeded', 'completed', 'done'].includes(status)) {
+        return videoUrl && isPlausibleHttpVideoUrl(videoUrl)
+          ? { video_url: videoUrl }
+          : { artifact_unreadable: true };
       }
       if (isPollTaskFailed(status) || errMsg) {
         const msg = failMsg || errMsg || status || '任务失败';

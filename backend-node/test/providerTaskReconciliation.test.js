@@ -161,6 +161,7 @@ function setupReconciliationFixture(t, options = {}) {
   const provider = options.provider || 'toapis';
   const configProtocol = options.configProtocol || 'toapis_video';
   const baseUrl = options.baseUrl || 'https://artifact.example/v1';
+  const upstreamModel = options.upstreamModel || 'seedance-2-fast';
   if (options.cleanup !== false) {
     t.after(() => {
       db.close();
@@ -188,8 +189,8 @@ function setupReconciliationFixture(t, options = {}) {
     name: '对账测试线路',
     base_url: baseUrl,
     api_key: 'test-key',
-    model: ['seedance-2-fast'],
-    default_model: 'seedance-2-fast',
+    model: [upstreamModel],
+    default_model: upstreamModel,
     logical_model_id: 'logical-video',
     settings: { canvas_capabilities: { durations: [5], resolutions: ['480p'] } },
   });
@@ -208,9 +209,9 @@ function setupReconciliationFixture(t, options = {}) {
   db.prepare(`INSERT INTO video_generations
     (id, drama_id, storyboard_id, provider, prompt, model, duration, aspect_ratio, resolution,
      status, task_id, provider_task_id, config_id, user_id, tenant_id, created_at, updated_at)
-    VALUES (?, 1, 1, ?, 'fixture prompt', 'seedance-2-fast', 5, '16:9', '480p',
+    VALUES (?, 1, 1, ?, 'fixture prompt', ?, 5, '16:9', '480p',
       'needs_attention', ?, ?, ?, ?, ?, ?, ?)`)
-    .run(VIDEO_ID, provider, TASK_ID, PROVIDER_TASK_ID, config.id, userId, tenantId, NOW, NOW);
+    .run(VIDEO_ID, provider, upstreamModel, TASK_ID, PROVIDER_TASK_ID, config.id, userId, tenantId, NOW, NOW);
 
   if (tenantId) creditLedgerService.setTenantAccountBalance(db, tenantId, 100);
   else creditLedgerService.setAccountBalance(db, userId, 100);
@@ -249,17 +250,18 @@ function setupReconciliationFixture(t, options = {}) {
   const receipt = providerRouteStabilityService.buildAttemptReceipt(db, {
     configId: config.id,
     serviceType: 'video',
-    upstreamModel: 'seedance-2-fast',
+    upstreamModel,
     queryProtocol: configProtocol,
   });
   db.prepare(`INSERT INTO generation_route_attempts
     (request_id, attempt_no, config_id, provider, upstream_model, state,
       config_fingerprint, query_protocol, started_at, finished_at)
-    VALUES (?, 1, ?, ?, 'seedance-2-fast', 'needs_attention', ?, ?, ?, ?)`)
+    VALUES (?, 1, ?, ?, ?, 'needs_attention', ?, ?, ?, ?)`)
     .run(
       ROUTE_ID,
       options.attemptConfigId === undefined ? config.id : options.attemptConfigId,
       provider,
+      upstreamModel,
       options.configFingerprint === undefined ? receipt.configFingerprint : options.configFingerprint,
       options.queryProtocol === undefined ? configProtocol : options.queryProtocol,
       NOW,
@@ -1155,7 +1157,7 @@ test('reconcileRequest refunds only explicit provider task failure and is termin
   assert.equal(cost.cost_micros, 0);
 });
 
-test('DJPSD legacy/OpenAPI and Token6688 reconciliation hold credits without an artifact and refund explicit failure', async (t) => {
+test('supported parser protocols hold credits without an artifact and refund explicit failure', async (t) => {
   const protocols = [
     {
       name: 'DJPSD legacy',
@@ -1185,6 +1187,48 @@ test('DJPSD legacy/OpenAPI and Token6688 reconciliation hold credits without an 
         name: 'completed',
         payload: { status: 'completed', result: { videos: [] } },
       }],
+      failed: { status: 'failed', error: { message: 'provider detail must stay internal' } },
+    },
+    {
+      name: 'Feituo',
+      provider: 'feituo',
+      configProtocol: 'feituo_open',
+      baseUrl: 'https://relay.invalid/v1',
+      completedCases: ['success', 'succeeded', 'completed', 'done'].map((status) => ({
+        name: status,
+        payload: { status },
+      })),
+      failed: { status: 'failed', errorMessage: 'provider detail must stay internal' },
+    },
+    {
+      name: 'USMercari',
+      provider: 'usmercari',
+      configProtocol: 'usmercari_media',
+      baseUrl: 'https://relay.invalid/v1',
+      completedCases: [{
+        name: 'SUCCESS',
+        payload: {
+          data: [{ task_id: PROVIDER_TASK_ID, status: 'SUCCESS', data: { items: [] } }],
+        },
+      }],
+      failed: {
+        data: [{
+          task_id: PROVIDER_TASK_ID,
+          status: 'FAILURE',
+          fail_reason: 'provider detail must stay internal',
+        }],
+      },
+    },
+    {
+      name: 'Fumin',
+      provider: 'fumin',
+      configProtocol: 'fumin_video',
+      baseUrl: 'https://relay.invalid/v1',
+      upstreamModel: 'fumin-seedance-2.0-fast',
+      completedCases: ['success', 'succeeded', 'completed', 'done'].map((status) => ({
+        name: status,
+        payload: { status },
+      })),
       failed: { status: 'failed', error: { message: 'provider detail must stay internal' } },
     },
   ];
