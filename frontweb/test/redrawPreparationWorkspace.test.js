@@ -83,6 +83,139 @@ test('逐镜准备投影显示四类证据、失效来源和只返工当前镜�
   })
 })
 
+test('参考准备明确 4xx 业务拒绝会解锁并轮换幂等键', async () => {
+  const { referencePreparationFailurePolicy, settleReferencePreparationSubmission } = await shotState()
+  for (const status of [400, 402, 409]) {
+    const error = {
+      response: { status, data: { error: { code: 'REDRAW_REFERENCE_PREPARATION_BLOCKED' } } },
+    }
+    assert.deepEqual(referencePreparationFailurePolicy(error, { requestStarted: true }), {
+      outcome: 'rejected',
+      keepLocked: false,
+      resetIdempotency: true,
+      refreshWorkspace: true,
+    })
+    assert.deepEqual(settleReferencePreparationSubmission({
+      idempotencyKey: 'rejected-idempotency-key',
+      requestStarted: true,
+      error,
+    }), {
+      outcome: 'rejected',
+      submitting: false,
+      locked: false,
+      idempotencyKey: '',
+      refreshWorkspace: true,
+    })
+  }
+})
+
+test('参考准备网络、超时、5xx 与未知业务结果保持锁和原幂等键', async () => {
+  const { referencePreparationFailurePolicy, settleReferencePreparationSubmission } = await shotState()
+  const unknownErrors = [
+    new Error('network failed'),
+    Object.assign(new Error('timeout'), { code: 'ECONNABORTED' }),
+    { response: { status: 408, data: { error: { code: 'REQUEST_TIMEOUT' } } } },
+    { response: { status: 500, data: { error: { code: 'INTERNAL_ERROR' } } } },
+    { response: { status: 409, data: { error: { code: 'submission_unknown' } } } },
+    { response: { status: 409, data: { error: { code: 'needs_attention' } } } },
+    {
+      response: {
+        status: 409,
+        data: { error: { code: 'REDRAW_REFERENCE_PREPARATION_SCHEDULE_FAILED' } },
+      },
+    },
+  ]
+  for (const error of unknownErrors) {
+    assert.deepEqual(referencePreparationFailurePolicy(error, { requestStarted: true }), {
+      outcome: 'unknown',
+      keepLocked: true,
+      resetIdempotency: false,
+      refreshWorkspace: false,
+    })
+    assert.deepEqual(settleReferencePreparationSubmission({
+      idempotencyKey: 'unknown-idempotency-key',
+      requestStarted: true,
+      error,
+    }), {
+      outcome: 'unknown',
+      submitting: false,
+      locked: true,
+      idempotencyKey: 'unknown-idempotency-key',
+      refreshWorkspace: false,
+    })
+  }
+})
+
+test('参考准备已受理与 needs_attention 响应都保持提交锁', async () => {
+  const { referencePreparationResultPolicy } = await shotState()
+  assert.deepEqual(referencePreparationResultPolicy({ status: 'pending' }), {
+    outcome: 'accepted',
+    keepLocked: true,
+    resetIdempotency: false,
+  })
+  assert.deepEqual(referencePreparationResultPolicy({ status: 'needs_attention' }), {
+    outcome: 'needs_attention',
+    keepLocked: true,
+    resetIdempotency: false,
+  })
+  for (const status of ['submission_unknown', 'result_unknown']) {
+    assert.deepEqual(referencePreparationResultPolicy({ status }), {
+      outcome: 'unknown',
+      keepLocked: true,
+      resetIdempotency: false,
+    })
+  }
+})
+
+test('参考准备幂等键优先 randomUUID 并安全降级到 getRandomValues', async () => {
+  const { createReferencePreparationIdempotencyKey } = await shotState()
+  let fallbackCalls = 0
+  assert.equal(createReferencePreparationIdempotencyKey({
+    randomUUID: () => '123e4567-e89b-42d3-a456-426614174000',
+    getRandomValues: () => { fallbackCalls += 1 },
+  }), '123e4567-e89b-42d3-a456-426614174000')
+  assert.equal(fallbackCalls, 0)
+
+  const fallbackKey = createReferencePreparationIdempotencyKey({
+    randomUUID() { throw new Error('randomUUID unavailable') },
+    getRandomValues(bytes) {
+      for (let index = 0; index < bytes.length; index += 1) bytes[index] = index
+      return bytes
+    },
+  })
+  assert.match(fallbackKey, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  assert.throws(
+    () => createReferencePreparationIdempotencyKey({}),
+    /安全随机数不可用/,
+  )
+})
+
+test('参考准备 UUID 本地失败会退出 submitting 且不锁死当前版本', async () => {
+  const { settleReferencePreparationSubmission } = await shotState()
+  assert.deepEqual(settleReferencePreparationSubmission({
+    idempotencyKey: '',
+    requestStarted: false,
+    error: Object.assign(new Error('浏览器安全随机数不可用'), {
+      code: 'REDRAW_REFERENCE_PREPARATION_RANDOM_UNAVAILABLE',
+    }),
+  }), {
+    outcome: 'local_error',
+    submitting: false,
+    locked: false,
+    idempotencyKey: '',
+    refreshWorkspace: false,
+  })
+})
+
+test('人工核对后只解锁提交并保留原幂等键', async () => {
+  const { referencePreparationManualReviewState } = await shotState()
+  assert.deepEqual(referencePreparationManualReviewState('same-idempotency-key'), {
+    submitting: false,
+    locked: false,
+    idempotencyKey: 'same-idempotency-key',
+  })
+})
+
 test('参考准备 API 固定路径且执行 payload 只保留三项白名单', async () => {
   for (const pattern of [
     /getCharacterPlan\(versionId\)/,
@@ -142,4 +275,10 @@ test('工作台真实接入角色计划与逐镜准备组件', () => {
   assert.match(shotStepSource, /getPreparationGate/)
   assert.match(shotStepSource, /quoteReferencePreparation/)
   assert.match(shotStepSource, /startReferencePreparation/)
+  assert.match(shotStepSource, /createReferencePreparationIdempotencyKey/)
+  assert.match(shotStepSource, /settleReferencePreparationSubmission/)
+  assert.match(shotStepSource, /referencePreparationManualReviewState/)
+  assert.match(shotStepSource, /settled\.outcome === 'unknown'/)
+  assert.match(shotStepSource, /准备任务状态未知/)
+  assert.doesNotMatch(shotStepSource, /crypto\.randomUUID/)
 })

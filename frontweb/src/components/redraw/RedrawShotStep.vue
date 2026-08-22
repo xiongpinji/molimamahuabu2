@@ -22,6 +22,12 @@
       :closable="false"
       show-icon
     />
+    <el-button
+      v-if="preparationSubmissionLocked && !preparationSubmitting"
+      type="warning"
+      plain
+      @click="openPreparationReview(selectedShotId)"
+    >人工核对准备状态</el-button>
     <RedrawShotPreparationPanel
       v-if="referenceBundleRequired"
       :shots="shots"
@@ -78,8 +84,11 @@ import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { redrawAPI } from '@/api/redraw'
 import {
+  createReferencePreparationIdempotencyKey,
   normalizeShotWorkspace,
+  referencePreparationManualReviewState,
   restoreSelectedShotId,
+  settleReferencePreparationSubmission,
   shouldPollWork,
 } from '@/utils/redrawShotState'
 import RedrawBatchPanel from './RedrawBatchPanel.vue'
@@ -259,28 +268,57 @@ async function startReferencePreparation(input = {}) {
   if (preparationSubmitting.value || preparationSubmissionLocked.value || !resolvedVersionId.value) return
   preparationSubmitting.value = true
   preparationSubmissionLocked.value = true
-  if (!preparationIdempotencyKey.value) preparationIdempotencyKey.value = crypto.randomUUID()
+  let requestStarted = false
   try {
-    const result = await redrawAPI.startReferencePreparation(resolvedVersionId.value, {
+    if (!preparationIdempotencyKey.value) {
+      preparationIdempotencyKey.value = createReferencePreparationIdempotencyKey()
+    }
+    const submission = redrawAPI.startReferencePreparation(resolvedVersionId.value, {
       quote_hash: input.quote_hash,
       idempotency_key: preparationIdempotencyKey.value,
       shot_ids: input.shot_ids,
     })
+    requestStarted = true
+    const result = await submission
+    const settled = settleReferencePreparationSubmission({
+      idempotencyKey: preparationIdempotencyKey.value,
+      requestStarted,
+      result,
+    })
+    preparationSubmissionLocked.value = settled.locked
+    preparationIdempotencyKey.value = settled.idempotencyKey
     await refreshWork({ quiet: true })
     await loadPreparationWorkspace()
-    ElMessage.success(result?.status === 'needs_attention'
-      ? '准备状态需要人工核对'
-      : '逐镜参考准备任务已创建')
+    if (settled.outcome === 'needs_attention') ElMessage.warning('准备状态需要人工核对')
+    else if (settled.outcome === 'unknown') ElMessage.warning('准备任务状态未知，请人工核对')
+    else ElMessage.success('逐镜参考准备任务已创建')
   } catch (error) {
-    preparationError.value = errorReason(error, '逐镜参考准备提交状态未知，请人工核对')
+    const settled = settleReferencePreparationSubmission({
+      idempotencyKey: preparationIdempotencyKey.value,
+      requestStarted,
+      error,
+    })
+    preparationSubmissionLocked.value = settled.locked
+    preparationIdempotencyKey.value = settled.idempotencyKey
+    if (settled.refreshWorkspace) await loadPreparationWorkspace()
+    const fallback = settled.outcome === 'unknown'
+      ? '逐镜参考准备提交状态未知，请人工核对'
+      : '逐镜参考准备提交被拒绝，请重新确认服务端报价'
+    preparationError.value = errorReason(error, fallback)
     ElMessage.error(preparationError.value)
   } finally {
     preparationSubmitting.value = false
   }
 }
 
-function openPreparationReview(shotId) {
-  selectedShotId.value = shotId
+async function openPreparationReview(shotId) {
+  if (shotId != null) selectedShotId.value = shotId
+  await refreshWork({ quiet: true })
+  await loadPreparationWorkspace()
+  const reviewed = referencePreparationManualReviewState(preparationIdempotencyKey.value)
+  preparationSubmitting.value = reviewed.submitting
+  preparationSubmissionLocked.value = reviewed.locked
+  preparationIdempotencyKey.value = reviewed.idempotencyKey
   ElMessage.warning('此镜头只允许人工核对当前证据，不会自动再次提交')
 }
 

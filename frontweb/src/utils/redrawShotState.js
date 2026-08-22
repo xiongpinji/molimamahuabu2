@@ -196,3 +196,99 @@ export function preparationActionState(shot = {}) {
   }
   return { canRetry: false, manualReviewOnly: false, label: '准备参考' }
 }
+
+export function referencePreparationFailurePolicy(error = {}, { requestStarted = true } = {}) {
+  const status = Number(error?.response?.status || error?.response?.data?.status || 0)
+  const responseData = error?.response?.data || {}
+  const errorData = responseData?.error || {}
+  const outcomeText = [
+    error?.code,
+    error?.message,
+    responseData?.status,
+    errorData?.code,
+    errorData?.message,
+    errorData?.details?.status,
+    errorData?.details?.action,
+  ].map((value) => String(value || '').toLowerCase()).join(' ')
+  const unknownOutcome = outcomeText.includes('submission_unknown')
+    || outcomeText.includes('result_unknown')
+    || outcomeText.includes('needs_attention')
+    || outcomeText.includes('schedule_failed')
+  const deterministicRejection = status >= 400 && status < 500 && status !== 408 && !unknownOutcome
+  if (requestStarted && deterministicRejection) {
+    return {
+      outcome: 'rejected',
+      keepLocked: false,
+      resetIdempotency: true,
+      refreshWorkspace: true,
+    }
+  }
+  return {
+    outcome: requestStarted ? 'unknown' : 'local_error',
+    keepLocked: requestStarted,
+    resetIdempotency: !requestStarted,
+    refreshWorkspace: false,
+  }
+}
+
+export function referencePreparationResultPolicy(result = {}) {
+  const status = String(result?.status || '')
+  let outcome = 'accepted'
+  if (status === 'needs_attention') outcome = 'needs_attention'
+  else if (['submission_unknown', 'result_unknown'].includes(status)) outcome = 'unknown'
+  return {
+    outcome,
+    keepLocked: true,
+    resetIdempotency: false,
+  }
+}
+
+export function createReferencePreparationIdempotencyKey(cryptoApi = globalThis.crypto) {
+  if (typeof cryptoApi?.randomUUID === 'function') {
+    try {
+      const uuid = String(cryptoApi.randomUUID()).toLowerCase()
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(uuid)) {
+        return uuid
+      }
+    } catch (_) {}
+  }
+  if (typeof cryptoApi?.getRandomValues === 'function') {
+    try {
+      const bytes = new Uint8Array(16)
+      cryptoApi.getRandomValues(bytes)
+      bytes[6] = (bytes[6] & 0x0f) | 0x40
+      bytes[8] = (bytes[8] & 0x3f) | 0x80
+      const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+    } catch (_) {}
+  }
+  throw Object.assign(new Error('浏览器安全随机数不可用，无法创建参考准备幂等键'), {
+    code: 'REDRAW_REFERENCE_PREPARATION_RANDOM_UNAVAILABLE',
+  })
+}
+
+export function settleReferencePreparationSubmission({
+  idempotencyKey = '',
+  requestStarted = false,
+  error,
+  result,
+} = {}) {
+  const policy = error
+    ? referencePreparationFailurePolicy(error, { requestStarted })
+    : referencePreparationResultPolicy(result)
+  return {
+    outcome: policy.outcome,
+    submitting: false,
+    locked: policy.keepLocked,
+    idempotencyKey: policy.resetIdempotency ? '' : idempotencyKey,
+    refreshWorkspace: policy.refreshWorkspace === true,
+  }
+}
+
+export function referencePreparationManualReviewState(idempotencyKey = '') {
+  return {
+    submitting: false,
+    locked: false,
+    idempotencyKey,
+  }
+}
