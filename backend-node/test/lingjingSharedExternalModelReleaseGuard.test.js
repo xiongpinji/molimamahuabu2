@@ -18,6 +18,15 @@ const GUARD = path.resolve(__dirname, '../../deploy/release-guard/verify-externa
 const CONTRACT = 'lingjing-video-real-verification-v1';
 const EVIDENCE_FILE = 'lingjing-video-verification.json';
 
+function testRootEvidence(name, fn) {
+  const requiresRootFixture = process.platform !== 'win32'
+    && typeof process.getuid === 'function'
+    && process.getuid() !== 0;
+  return test(name, requiresRootFixture
+    ? { skip: 'requires a root-owned release evidence fixture' }
+    : {}, fn);
+}
+
 function write(root, relative, content) {
   const target = path.join(root, relative);
   fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -225,7 +234,7 @@ test('shared guard audits the real candidate Lingjing runtime without changing l
   assert.doesNotThrow(() => auditLingjingRuntime(path.resolve(__dirname, '..', '..')));
 });
 
-test('shared guard accepts the complete isolated Lingjing runtime and evidence', () => {
+testRootEvidence('shared guard accepts the complete isolated Lingjing runtime and evidence', () => {
   const item = fixture();
   try {
     const result = run(item);
@@ -236,7 +245,7 @@ test('shared guard accepts the complete isolated Lingjing runtime and evidence',
   }
 });
 
-test('shared guard accepts an output audio track while Lingjing audio-reference input stays disabled', () => {
+testRootEvidence('shared guard accepts an output audio track while Lingjing audio-reference input stays disabled', () => {
   const item = fixture((evidence) => {
     evidence.results[0].artifact.ffprobe.has_audio = true;
     evidence.results[0].artifact.ffprobe.audio_codec = 'aac';
@@ -262,7 +271,7 @@ for (const [name, mutate, expected] of [
   ['capability', (value) => { value.verification_scope.documented_capabilities.max_image_references = 30; }, /capability/i],
   ['speed', (value) => { value.speed_evidence.cases[0].generation_elapsed_seconds = 1; }, /speed/i],
   ['price', (value) => { value.pricing.credits_per_second = 150; }, /price/i],
-]) test(`shared guard rejects Lingjing ${name} drift`, () => {
+]) testRootEvidence(`shared guard rejects Lingjing ${name} drift`, () => {
   const item = fixture(mutate);
   try {
     const result = run(item);
@@ -273,7 +282,7 @@ for (const [name, mutate, expected] of [
   }
 });
 
-test('shared guard rejects a missing Lingjing evidence file', () => {
+testRootEvidence('shared guard rejects a missing Lingjing evidence file', () => {
   const item = fixture();
   try {
     fs.rmSync(path.join(item.evidenceRoot, EVIDENCE_FILE));
@@ -285,7 +294,7 @@ test('shared guard rejects a missing Lingjing evidence file', () => {
   }
 });
 
-test('shared guard recomputes the Lingjing artifact hash', () => {
+testRootEvidence('shared guard recomputes the Lingjing artifact hash', () => {
   const item = fixture();
   try {
     fs.appendFileSync(path.join(item.evidenceRoot, 'public', 'lingjing', 'relay-image-4s-19502.mp4'), 'tamper');
@@ -297,7 +306,7 @@ test('shared guard recomputes the Lingjing artifact hash', () => {
   }
 });
 
-test('shared guard rejects a configurable Lingjing provider origin', () => {
+testRootEvidence('shared guard rejects a configurable Lingjing provider origin', () => {
   const item = fixture();
   try {
     const target = path.join(item.candidate, 'backend-node/src/services/lingjingVideoClient.js');
@@ -310,7 +319,7 @@ test('shared guard rejects a configurable Lingjing provider origin', () => {
   }
 });
 
-test('shared guard rejects a Lingjing client that cannot capture immutable request and response receipts', () => {
+testRootEvidence('shared guard rejects a Lingjing client that cannot capture immutable request and response receipts', () => {
   const item = fixture();
   try {
     const target = path.join(item.candidate, 'backend-node/src/services/lingjingVideoClient.js');
@@ -323,7 +332,7 @@ test('shared guard rejects a Lingjing client that cannot capture immutable reque
   }
 });
 
-test('shared guard rejects the Lingjing final gate moved after provider submission', () => {
+testRootEvidence('shared guard rejects the Lingjing final gate moved after provider submission', () => {
   const item = fixture();
   try {
     const target = path.join(item.candidate, 'backend-node/src/services/videoClient.js');
