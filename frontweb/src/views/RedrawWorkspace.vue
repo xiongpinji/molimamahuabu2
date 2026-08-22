@@ -58,12 +58,14 @@
           v-else-if="allowedStep === 2"
           :work="work"
           :version-id="work?.version_id"
+          :execution-mode="project?.execution_mode"
           @work-updated="onWorkUpdated"
         />
         <RedrawShotStep
           v-else-if="allowedStep === 3"
           :work="work"
           :version-id="work?.version_id"
+          :execution-mode="project?.execution_mode"
           @work-updated="onWorkUpdated"
         />
         <RedrawEditStep

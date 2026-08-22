@@ -1,6 +1,20 @@
 const ACTIVE_TASK_STATES = new Set(['pending', 'queued', 'processing', 'running'])
 const FAILED_SHOT_STATES = new Set(['failed', 'needs_attention'])
 const REFERENCE_KINDS = new Set(['character', 'scene', 'prop'])
+const PREPARATION_REASON_LABELS = {
+  identity_changed: '角色身份发生变化',
+  character_identity_changed: '角色身份发生变化',
+  voice_changed: '角色声音发生变化',
+  wardrobe_changed: '角色服装发生变化',
+  character_wardrobe_changed: '角色服装发生变化',
+  dialogue_changed: '目标对白发生变化',
+  text_region_changed: '文字覆盖发生变化',
+  shot_timing_changed: '镜头时间范围发生变化',
+  coverage_changed: '人物或文字覆盖发生变化',
+  upstream_version_drift: '上游版本发生变化',
+  clean_plate_status_unknown: '净景结果状态未知',
+  preparation_interrupted: '准备任务中断',
+}
 
 function finiteCredits(value) {
   if (value === null || value === undefined || value === '') return null
@@ -126,4 +140,59 @@ export function formatTimecode(milliseconds) {
   const seconds = Math.floor((total % 60000) / 1000)
   const millis = Math.floor(total % 1000)
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`
+}
+
+function preparationEvidence(label, required, completed) {
+  return {
+    label,
+    required,
+    completed,
+    ready: required === completed,
+  }
+}
+
+export function projectShotPreparation(shot = {}, gate = {}, quote = {}) {
+  const preparation = shot?.preparation && typeof shot.preparation === 'object' ? shot.preparation : {}
+  const snapshotRequirements = Array.isArray(preparation.requirements) ? preparation.requirements : []
+  const quoteRequirements = (Array.isArray(quote?.items) ? quote.items : [])
+    .filter((item) => Number(item?.shot_id) === Number(shot?.id))
+    .map((item) => ({ kind: item.kind, key: item.key }))
+  const requirements = snapshotRequirements.length ? snapshotRequirements : quoteRequirements
+  const results = Array.isArray(preparation.clean_results) ? preparation.clean_results : []
+  const requiredCount = (kind) => requirements.filter((item) => item?.kind === kind).length
+  const completedCount = (kind) => results.filter((item) => (
+    item?.kind === kind && item?.status === 'completed'
+  )).length
+  const personRequired = requiredCount('person_clean')
+  const personCompleted = completedCount('person_clean')
+  const textRequired = requiredCount('text_clean')
+  const textCompleted = completedCount('text_clean')
+  const missing = (Array.isArray(gate?.missing) ? gate.missing : []).filter((item) => (
+    String(item?.resource_type ?? item?.scope) === 'shot'
+      && String(item?.resource_id ?? item?.id) === String(shot?.id)
+  ))
+  const state = String(shot?.preparation_state || preparation.status || 'localized')
+  const staleReasonCode = String(shot?.stale_reason_code || '')
+  return {
+    id: shot?.id,
+    state,
+    personCoverage: preparationEvidence('人物覆盖', personRequired, personCompleted),
+    textCoverage: preparationEvidence('文字覆盖', textRequired, textCompleted),
+    cleanPlate: preparationEvidence('净景', personRequired + textRequired, personCompleted + textCompleted),
+    referenceBundle: {
+      label: '参考包',
+      ready: state === 'reference_ready' && Boolean(shot?.reference_bundle_hash),
+    },
+    missingReasonCodes: missing.map((item) => String(item?.reason_code ?? item?.code ?? '')).filter(Boolean),
+    staleReason: PREPARATION_REASON_LABELS[staleReasonCode]
+      || (state === 'stale' ? '上游证据发生变化' : ''),
+    reworkScope: state === 'stale' ? '只返工此镜头' : '',
+  }
+}
+
+export function preparationActionState(shot = {}) {
+  if (String(shot?.preparation_state) === 'needs_attention') {
+    return { canRetry: false, manualReviewOnly: true, label: '人工核对' }
+  }
+  return { canRetry: false, manualReviewOnly: false, label: '准备参考' }
 }

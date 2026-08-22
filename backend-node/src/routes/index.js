@@ -346,6 +346,10 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/redraw/works/:id/analyze', redraw.uploadReferenceImage, redraw.analyzeWork);
   r.post('/redraw/works/:id/localization-quote', redraw.localizationQuote);
   r.post('/redraw/works/:id/versions', redraw.createVersion);
+  r.get('/redraw/versions/:id/character-plan', redraw.getCharacterPlan);
+  r.get('/redraw/versions/:id/preparation-gate', redraw.preparationGate);
+  r.post('/redraw/versions/:id/reference-preparation-quote', redraw.referencePreparationQuote);
+  r.post('/redraw/versions/:id/reference-preparations', redraw.startReferencePreparation);
   r.get('/redraw/versions/:id/assets', redraw.listVersionAssets);
   r.get('/redraw/assets/:id/preview/:variant', redraw.previewRedrawAsset);
   r.get('/redraw/versions/:id/voices', redraw.listProductionVoices);

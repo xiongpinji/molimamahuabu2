@@ -5487,7 +5487,7 @@ test('角色身份包 API 严格校验允许字段类型和值', () => {
   }
 });
 
-test('第三步、角色身份包和本地化确认 API 已真实注册在总路由', () => {
+test('第三步、角色身份包、本地化确认和参考准备 API 已真实注册在总路由', () => {
   const db = createDb();
   try {
     const router = setupRouter({}, db, { error() {}, warn() {}, info() {} });
@@ -5511,11 +5511,290 @@ test('第三步、角色身份包和本地化确认 API 已真实注册在总路
     assert.equal(routes.has('GET /redraw/versions/:id/voices'), true);
     assert.equal(routes.has('GET /redraw/versions/:versionId/voices/:voiceAssetId/preview'), true);
     assert.equal(routes.has('POST /redraw/assets/:id/voice'), true);
+    assert.equal(routes.has('GET /redraw/versions/:id/character-plan'), true);
+    assert.equal(routes.has('GET /redraw/versions/:id/preparation-gate'), true);
+    assert.equal(routes.has('POST /redraw/versions/:id/reference-preparation-quote'), true);
+    assert.equal(routes.has('POST /redraw/versions/:id/reference-preparations'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/dialogue/quote'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/dialogue/start'), true);
     assert.equal(routes.has('GET /redraw/versions/:id/dialogue/tasks/:taskId'), true);
     assert.equal(routes.has('PUT /redraw/projects/:id/policy'), true);
     assert.equal(routes.has('GET /redraw/projects/:id/events'), true);
+  } finally {
+    db.close();
+  }
+});
+
+test('参考准备 API 按 owner 接线、严格白名单且只传服务端受信上下文', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 2 });
+    const versionId = Number(insertVersion(db, workId, { status: 'asset_review' }));
+    const shotId = Number(insertShot(db, workId, versionId, { preparation_state: 'localized' }));
+    const calls = [];
+    const handlers = redrawRoutes(db, { error() {}, warn() {} }, routeDeps({
+      cfg: { storage: { local_path: 'trusted-storage-root' } },
+      characterPlanService: {
+        buildCharacterPlan(ctx, id) {
+          calls.push({ name: 'character-plan', ctx, id });
+          return { version_id: id, ready: true, plan_hash: 'a'.repeat(64), characters: [] };
+        },
+      },
+      preparationGateService: {
+        evaluatePreparationGate(ctx, id) {
+          calls.push({ name: 'preparation-gate', ctx, id });
+          return { ok: false, version_id: id, ready_shot_ids: [], missing: [] };
+        },
+      },
+      referencePreparationService: {
+        async quoteVersionPreparation(ctx, input, deps) {
+          calls.push({ name: 'quote', ctx, input, deps });
+          return {
+            version_id: ctx.versionId,
+            selected_shot_ids: input.shot_ids || [shotId],
+            action: 'needs_review',
+            effective_mode: 'safe',
+            reason_codes: [],
+            priced: true,
+            credits: 3,
+            confirmation_required: true,
+            quote_hash: 'quote-reference-ready',
+          };
+        },
+        async startVersionPreparation(ctx, input, deps) {
+          calls.push({ name: 'start', ctx, input, deps });
+          return {
+            task_id: 'task-reference-preparation',
+            status: 'pending',
+            quote: { quote_hash: input.quote_hash, credits: 3, priced: true },
+            completion: new Promise(() => {}),
+          };
+        },
+      },
+    }));
+
+    const plan = captureResponse();
+    handlers.getCharacterPlan(request({ id: versionId }), plan);
+    assert.equal(plan.statusCode, 200);
+    assert.equal(plan.body.data.version_id, versionId);
+
+    const gate = captureResponse();
+    handlers.preparationGate(request({ id: versionId }), gate);
+    assert.equal(gate.statusCode, 200);
+
+    db.prepare(`UPDATE redraw_shots SET preparation_state = 'stale', stale_reason_code = 'voice_changed',
+      preparation_snapshot_json = ? WHERE id = ?`).run(JSON.stringify({
+      status: 'stale',
+      requirements: [{ kind: 'person_clean', key: 'person-a', local_path: 'C:/private/mask.png' }],
+      clean_results: [{
+        kind: 'person_clean', key: 'person-a', status: 'completed',
+        provider_task_id: 'private-provider-task', reservation_id: 'private-reservation',
+      }],
+      absolute_path: 'C:/private/reference.png',
+    }), shotId);
+    const work = captureResponse();
+    handlers.getWork(request({ id: workId }), work);
+    assert.equal(work.statusCode, 200);
+    assert.equal(work.body.data.shots[0].preparation_state, 'stale');
+    assert.equal(work.body.data.shots[0].stale_reason_code, 'voice_changed');
+    assert.deepEqual(work.body.data.shots[0].preparation.requirements, [{ kind: 'person_clean', key: 'person-a' }]);
+    assert.equal(JSON.stringify(work.body.data.shots[0]).includes('private'), false);
+
+    const quote = captureResponse();
+    await handlers.referencePreparationQuote(request({
+      id: versionId,
+      body: { shot_ids: [shotId] },
+    }), quote);
+    assert.equal(quote.statusCode, 200);
+    assert.equal(quote.body.data.credits, 3);
+
+    const started = captureResponse();
+    await handlers.startReferencePreparation(request({
+      id: versionId,
+      body: {
+        quote_hash: 'quote-reference-ready',
+        idempotency_key: 'prep-route-once',
+        shot_ids: [shotId],
+      },
+    }), started);
+    assert.equal(started.statusCode, 202);
+    assert.equal(started.body.data.task_id, 'task-reference-preparation');
+    const startCall = calls.find((call) => call.name === 'start');
+    assert.deepEqual(startCall.input, {
+      quote_hash: 'quote-reference-ready',
+      idempotency_key: 'prep-route-once',
+      shot_ids: [shotId],
+    });
+    assert.equal(startCall.ctx.tenantId, 'tenant-a');
+    assert.equal(startCall.ctx.userId, 'user-a');
+    assert.equal(startCall.ctx.versionId, versionId);
+    assert.equal(startCall.ctx.storageRoot.endsWith('trusted-storage-root'), true);
+    assert.equal(typeof startCall.ctx.assetReader.canRead, 'function');
+    assert.equal(typeof startCall.deps.quoteCleanRequirement, 'function');
+    assert.equal(typeof startCall.deps.provider, 'function');
+
+    for (const field of [
+      'model', 'provider', 'price', 'credits', 'credit_amount', 'reservation',
+      'reservation_id', 'reference_bundle_hash', 'referenceBundleHash',
+      'path', 'local_path', 'absolute_path', 'url', 'asset_url',
+    ]) {
+      const forbidden = captureResponse();
+      await handlers.startReferencePreparation(request({
+        id: versionId,
+        body: {
+          quote_hash: 'quote-reference-ready',
+          idempotency_key: `forbidden-${field}`,
+          shot_ids: [shotId],
+          [field]: 'attacker-controlled',
+        },
+      }), forbidden);
+      assert.equal(forbidden.statusCode, 400, field);
+      assert.equal(forbidden.body.error.code, 'REDRAW_REFERENCE_PREPARATION_CLIENT_CONTROL_FORBIDDEN', field);
+    }
+    assert.equal(calls.filter((call) => call.name === 'start').length, 1);
+
+    for (const body of [
+      { shot_ids: [999999] },
+      { shot_ids: [shotId, shotId] },
+      { shot_ids: [] },
+    ]) {
+      const invalidShots = captureResponse();
+      await handlers.referencePreparationQuote(request({ id: versionId, body }), invalidShots);
+      assert.equal(invalidShots.statusCode, 400, JSON.stringify(body));
+      assert.equal(invalidShots.body.error.code, 'REDRAW_REFERENCE_PREPARATION_SHOTS_INVALID');
+    }
+    assert.equal(calls.filter((call) => call.name === 'quote').length, 1);
+
+    for (const req of [
+      request({ id: versionId, tenantId: 'tenant-b' }),
+      request({ id: versionId, userId: 'user-b' }),
+      request({ id: 999999 }),
+    ]) {
+      const foreign = captureResponse();
+      handlers.getCharacterPlan(req, foreign);
+      assert.equal(foreign.statusCode, 404);
+      assert.equal(foreign.body.error.code, 'REDRAW_VERSION_NOT_FOUND');
+    }
+    assert.equal(calls.filter((call) => call.name === 'character-plan').length, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('参考准备默认报价与执行复用已验证净景能力和模型价格且报价不创建 attempt', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 2 });
+    const versionId = Number(insertVersion(db, workId, { status: 'asset_review' }));
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO ai_service_configs
+      (service_type, provider, name, model, default_model, is_active, is_default,
+       priority, settings, created_at, updated_at)
+      VALUES ('image', 'trusted-image-provider', 'trusted image', ?, ?, 1, 1, 10, ?, ?, ?)`)
+      .run(
+        JSON.stringify(['gpt-image-2']),
+        'gpt-image-2',
+        JSON.stringify({ redraw_locale_capabilities: [{
+          locale: 'en-US', market: 'US', status: 'verified',
+          evidence: { clean_plate_image: {
+            provider: 'trusted-image-provider', model: 'gpt-image-2',
+            task_id: 'verified-clean-task', terminal_status: 'completed', artifact_id: 901,
+          } },
+        }] }),
+        now,
+        now,
+      );
+    prices.set(db, 'gpt-image-2', 6, { category: 'image' });
+    let quoted;
+    let prepared;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      prepareReferenceCleanRequirement: async (ctx, payload) => {
+        prepared = { ctx, payload };
+        return { status: 'completed', redraw_asset_id: 701 };
+      },
+      referencePreparationService: {
+        async quoteVersionPreparation(ctx, _input, deps) {
+          quoted = await deps.quoteCleanRequirement({
+            ctx,
+            scope: { locale: 'en-US', market: 'US' },
+            requirement: { kind: 'person_clean', key: 'person-a' },
+          });
+          return quoted;
+        },
+        async startVersionPreparation(ctx, input, deps) {
+          await deps.prepareCleanRequirement({
+            ctx,
+            scope: { locale: 'en-US', market: 'US' },
+            requirement: { kind: 'text_clean', key: 'subtitle-a' },
+            operation_key: 'server-operation-key',
+          });
+          return {
+            task_id: 'task-reference-priced', status: 'pending',
+            quote: { priced: true, credits: 6, quote_hash: input.quote_hash },
+          };
+        },
+      },
+    }));
+    const before = db.prepare('SELECT COUNT(*) AS count FROM redraw_assets').get().count;
+    const responseValue = captureResponse();
+    await handlers.referencePreparationQuote(request({ id: versionId, body: {} }), responseValue);
+    assert.equal(responseValue.statusCode, 200);
+    assert.deepEqual(responseValue.body.data, { priced: true, credits: 6 });
+    assert.deepEqual(quoted, { priced: true, credits: 6 });
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_assets').get().count, before);
+
+    const started = captureResponse();
+    await handlers.startReferencePreparation(request({ id: versionId, body: {
+      quote_hash: 'trusted-quote', idempotency_key: 'trusted-idempotency',
+    } }), started);
+    assert.equal(started.statusCode, 202);
+    assert.equal(prepared.ctx.model, 'gpt-image-2');
+    assert.equal(prepared.ctx.creditAmount, 6);
+    assert.equal(prepared.ctx.operationKey, 'server-operation-key');
+    assert.equal(typeof prepared.ctx.provider, 'function');
+    assert.equal(prepared.payload.requirement.kind, 'text_clean');
+  } finally {
+    db.close();
+  }
+});
+
+test('参考准备 API 对未知异常只返回脱敏错误', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = Number(insertVersion(db, workId));
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      referencePreparationService: {
+        quoteVersionPreparation() {
+          throw new Error('C:\\private\\reference.png https://secret.example/?key=abc');
+        },
+      },
+    }));
+    const result = captureResponse();
+    await handlers.referencePreparationQuote(request({ id: versionId, body: {} }), result);
+    assert.equal(result.statusCode, 500);
+    assert.equal(result.body.error.code, 'INTERNAL_ERROR');
+    assert.equal(JSON.stringify(result.body).includes('private'), false);
+    assert.equal(JSON.stringify(result.body).includes('secret.example'), false);
+
+    const codedHandlers = redrawRoutes(db, { error() {} }, routeDeps({
+      referencePreparationService: {
+        quoteVersionPreparation() {
+          throw Object.assign(new Error('C:\\private\\coded.png https://coded-secret.example/?key=abc'), {
+            code: 'REDRAW_REFERENCE_PREPARATION_PROVIDER_FAILED',
+          });
+        },
+      },
+    }));
+    const codedResult = captureResponse();
+    await codedHandlers.referencePreparationQuote(request({ id: versionId, body: {} }), codedResult);
+    assert.equal(codedResult.statusCode, 500);
+    assert.equal(codedResult.body.error.code, 'INTERNAL_ERROR');
+    assert.equal(JSON.stringify(codedResult.body).includes('private'), false);
+    assert.equal(JSON.stringify(codedResult.body).includes('coded-secret.example'), false);
   } finally {
     db.close();
   }

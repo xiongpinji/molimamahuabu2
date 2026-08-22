@@ -15,6 +15,24 @@
       :closable="false"
       show-icon
     />
+    <el-alert
+      v-if="preparationError"
+      :title="preparationError"
+      type="warning"
+      :closable="false"
+      show-icon
+    />
+    <RedrawShotPreparationPanel
+      v-if="referenceBundleRequired"
+      :shots="shots"
+      :gate="preparationGate"
+      :quote="preparationQuote"
+      :execution-mode="executionMode"
+      :preparing="preparationSubmitting"
+      :submission-locked="preparationSubmissionLocked"
+      @prepare="startReferencePreparation"
+      @manual-review="openPreparationReview"
+    />
     <div v-if="shots.length" class="shot-layout">
       <RedrawBatchPanel
         :batches="batches"
@@ -67,10 +85,12 @@ import {
 import RedrawBatchPanel from './RedrawBatchPanel.vue'
 import RedrawShotEditor from './RedrawShotEditor.vue'
 import RedrawShotPreview from './RedrawShotPreview.vue'
+import RedrawShotPreparationPanel from './RedrawShotPreparationPanel.vue'
 
 const props = defineProps({
   work: { type: Object, default: null },
   versionId: { type: [String, Number], default: null },
+  executionMode: { type: String, default: 'safe' },
 })
 const emit = defineEmits(['work-updated'])
 const localWork = ref(props.work)
@@ -85,6 +105,12 @@ const batchGenerating = ref(false)
 const referenceBundleSaving = ref(false)
 const referenceBundles = ref({})
 const loadError = ref('')
+const preparationError = ref('')
+const preparationGate = ref({ ok: false, missing: [] })
+const preparationQuote = ref(null)
+const preparationSubmitting = ref(false)
+const preparationSubmissionLocked = ref(false)
+const preparationIdempotencyKey = ref('')
 const pollAttempts = ref(0)
 const MAX_POLL_ATTEMPTS = 120
 let pollingTimer = null
@@ -205,6 +231,57 @@ async function loadAssetsAndGate() {
   } catch (error) {
     loadError.value = errorReason(error, '读取资产门禁失败')
   }
+}
+
+async function loadPreparationWorkspace() {
+  if (!resolvedVersionId.value || !referenceBundleRequired.value) {
+    preparationGate.value = { ok: false, missing: [] }
+    preparationQuote.value = null
+    return
+  }
+  const versionId = resolvedVersionId.value
+  try {
+    const [nextGate, nextQuote] = await Promise.all([
+      redrawAPI.getPreparationGate(versionId),
+      redrawAPI.quoteReferencePreparation(versionId, {}),
+    ])
+    if (String(versionId) !== String(resolvedVersionId.value)) return
+    preparationGate.value = nextGate || { ok: false, missing: [] }
+    preparationQuote.value = nextQuote || null
+    preparationError.value = ''
+  } catch (error) {
+    if (String(versionId) !== String(resolvedVersionId.value)) return
+    preparationError.value = errorReason(error, '读取逐镜参考准备状态失败')
+  }
+}
+
+async function startReferencePreparation(input = {}) {
+  if (preparationSubmitting.value || preparationSubmissionLocked.value || !resolvedVersionId.value) return
+  preparationSubmitting.value = true
+  preparationSubmissionLocked.value = true
+  if (!preparationIdempotencyKey.value) preparationIdempotencyKey.value = crypto.randomUUID()
+  try {
+    const result = await redrawAPI.startReferencePreparation(resolvedVersionId.value, {
+      quote_hash: input.quote_hash,
+      idempotency_key: preparationIdempotencyKey.value,
+      shot_ids: input.shot_ids,
+    })
+    await refreshWork({ quiet: true })
+    await loadPreparationWorkspace()
+    ElMessage.success(result?.status === 'needs_attention'
+      ? '准备状态需要人工核对'
+      : '逐镜参考准备任务已创建')
+  } catch (error) {
+    preparationError.value = errorReason(error, '逐镜参考准备提交状态未知，请人工核对')
+    ElMessage.error(preparationError.value)
+  } finally {
+    preparationSubmitting.value = false
+  }
+}
+
+function openPreparationReview(shotId) {
+  selectedShotId.value = shotId
+  ElMessage.warning('此镜头只允许人工核对当前证据，不会自动再次提交')
 }
 
 async function loadReferenceBundle(shotId) {
@@ -390,6 +467,11 @@ watch(() => props.work, (nextWork) => {
   selectedShotId.value = restoreSelectedShotId(state.value.shots, selectedShotId.value)
 }, { immediate: true })
 watch(resolvedVersionId, loadAssetsAndGate)
+watch(resolvedVersionId, () => {
+  preparationSubmissionLocked.value = false
+  preparationIdempotencyKey.value = ''
+  loadPreparationWorkspace()
+})
 watch(
   () => `${referenceBundleRequired.value}:${resolvedVersionId.value || ''}:${shots.value.map((shot) => shot.id).join(',')}`,
   loadAllReferenceBundles,
@@ -400,6 +482,7 @@ watch(shots, syncPolling, { deep: true })
 onMounted(async () => {
   selectedShotId.value = restoreSelectedShotId(shots.value, selectedShotId.value)
   await loadAssetsAndGate()
+  await loadPreparationWorkspace()
   syncPolling()
 })
 onBeforeUnmount(stopPolling)

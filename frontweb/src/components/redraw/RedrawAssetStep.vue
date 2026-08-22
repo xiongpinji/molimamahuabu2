@@ -4,6 +4,7 @@
       <div><p class="eyebrow">02 · 资产审核</p><h2>确认本地化资产后再进入批量转绘</h2></div>
       <el-tag>{{ assets.length }} 项资产</el-tag>
     </div>
+    <RedrawCharacterLibraryPanel :plan="characterPlan" :loading="loading" />
     <nav class="asset-tabs" aria-label="资产类型">
       <button v-for="item in ASSET_KINDS" :key="item.key" type="button" :class="{ active: activeKind === item.key }" @click="activeKind = item.key">{{ item.label }}</button>
     </nav>
@@ -70,6 +71,7 @@ import {
   singleAssetGenerationNotice,
 } from '@/utils/redrawAssetState'
 import RedrawAssetCard from './RedrawAssetCard.vue'
+import RedrawCharacterLibraryPanel from './RedrawCharacterLibraryPanel.vue'
 import RedrawReviewGate from './RedrawReviewGate.vue'
 import RedrawVoicePicker from './RedrawVoicePicker.vue'
 
@@ -201,6 +203,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['work-updated', 'gate-updated'])
 const assets = ref([])
+const characterPlan = ref(null)
 const productionVoices = ref([])
 const gate = ref({ ok: false, missing: [] })
 const activeKind = ref('character')
@@ -284,9 +287,10 @@ async function refresh(options = {}) {
   const quoteBatch = options.quoteBatch !== false
   loading.value = true
   try {
-    const [items, nextGate] = await Promise.all([
+    const [items, nextGate, nextCharacterPlan] = await Promise.all([
       redrawAPI.listAssets(versionId),
       redrawAPI.getGenerationGate(versionId),
+      redrawAPI.getCharacterPlan(versionId),
     ])
     if (!isCurrentVersion(versionId)) return
     const nextAssets = Array.isArray(items) ? items : []
@@ -302,6 +306,7 @@ async function refresh(options = {}) {
     if (quoted.some((asset) => !asset)) return
     if (!isCurrentVersion(versionId)) return
     assets.value = quoted
+    characterPlan.value = nextCharacterPlan || null
     gate.value = nextGate || { ok: false, missing: [] }
     emit('gate-updated', gate.value)
     if (!isCurrentVersion(versionId)) return
