@@ -95,6 +95,22 @@ const ASYNC_VIDEO_PROTOCOL_ARTIFACT_UNLOCK = {
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
+const PROVIDER_TASK_STATUS_DECISION_UNLOCK = {
+  reason: '2026-08-23 供应商任务按状态判定结构安全收口获批',
+  approvedBy: 'product-owner 2026-08-23 provider-task-status-decision-structure',
+  impactTests: [
+    'backend-node/test/videoQueryTaskStatusOnce.test.js',
+    'backend-node/test/providerTaskReconciliation.test.js',
+    'backend-node/test/providerRouteVideoIntegration.test.js',
+    'backend-node/test/toapisVideoIntegration.test.js',
+    'backend-node/test/feituoVideoModels.test.js',
+    'backend-node/test/videoBilling.test.js',
+    'backend-node/test/creditLedger.test.js',
+    'backend-node/test/providerReconciliation.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
 const PROVIDER_TASK_ARTIFACT_QUALITY_FEATURE_IDS = new Set([
   SAFE_PROVIDER_FAILOVER_FEATURE_ID,
   UNKNOWN_STATE_RECONCILIATION_FEATURE_ID,
@@ -457,7 +473,7 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   assert.deepEqual(feature.evidence.slice(0, PROACTIVE_CANARY_EVIDENCE.length), PROACTIVE_CANARY_EVIDENCE);
 });
 
-test('供应商任务凭证与三轮无产物质量修复使用分阶段新鲜批准并保留完整历史', () => {
+test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜批准并保留完整历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   for (const [featureId, requirements] of Object.entries(PROVIDER_TASK_LOCK_REQUIREMENTS)) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
@@ -465,13 +481,14 @@ test('供应商任务凭证与三轮无产物质量修复使用分阶段新鲜�
     const qualityFixTouched = PROVIDER_TASK_ARTIFACT_QUALITY_FEATURE_IDS.has(featureId);
     assert.deepEqual(
       feature.unlock,
-      qualityFixTouched ? ASYNC_VIDEO_PROTOCOL_ARTIFACT_UNLOCK : PROVIDER_TASK_RECEIPT_UNLOCK,
+      qualityFixTouched ? PROVIDER_TASK_STATUS_DECISION_UNLOCK : PROVIDER_TASK_RECEIPT_UNLOCK,
     );
     assert.deepEqual(feature.unlockHistory, [
       HISTORICAL_UNLOCK_BY_FEATURE[featureId],
       ...(qualityFixTouched ? [PROVIDER_TASK_RECEIPT_UNLOCK] : []),
       ...(qualityFixTouched ? [PROVIDER_TASK_ARTIFACT_QUALITY_UNLOCK] : []),
       ...(qualityFixTouched ? [LEGACY_DJPSD_STRICT_ARTIFACT_UNLOCK] : []),
+      ...(qualityFixTouched ? [ASYNC_VIDEO_PROTOCOL_ARTIFACT_UNLOCK] : []),
     ]);
     assert.deepEqual(
       feature.evidence.slice(0, HISTORICAL_EVIDENCE_BY_FEATURE[featureId].length),
@@ -498,7 +515,7 @@ test('供应商任务凭证与三轮无产物质量修复使用分阶段新鲜�
   assert.deepEqual(appLocks, [PROACTIVE_CANARY_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].sort());
   for (const featureId of appLocks) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
-    assert.deepEqual(feature.unlock, ASYNC_VIDEO_PROTOCOL_ARTIFACT_UNLOCK);
+    assert.deepEqual(feature.unlock, PROVIDER_TASK_STATUS_DECISION_UNLOCK);
   }
 });
 
