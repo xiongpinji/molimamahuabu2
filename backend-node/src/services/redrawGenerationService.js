@@ -13,6 +13,7 @@ const videoService = require('./videoService');
 const videoClient = require('./videoClient');
 const assetService = require('./assetService');
 const redrawBillingService = require('./redrawBillingService');
+const redrawGenerationPolicyService = require('./redrawGenerationPolicyService');
 const redrawReviewService = require('./redrawReviewService');
 const redrawCapabilityService = require('./redrawCapabilityService');
 const redrawSourceConditioningService = require('./redrawSourceConditioningService');
@@ -48,6 +49,32 @@ const CLIENT_GENERATION_CONTROL_FIELDS = [
   'price',
   'reservation_id',
   'reservationId',
+  'spent_credits',
+  'spentCredits',
+  'held_credits',
+  'heldCredits',
+  'quote_credits',
+  'quoteCredits',
+  'attempt',
+  'execution_mode',
+  'executionMode',
+  'budget_limit_credits',
+  'budgetLimitCredits',
+  'budget',
+  'max_auto_attempts_per_shot',
+  'maxAutoAttemptsPerShot',
+  'max_attempts',
+  'maxAttempts',
+  'completed_attempts',
+  'completedAttempts',
+  'prior_state',
+  'priorState',
+  'prior_held_reservation',
+  'priorHeldReservation',
+  'reservation',
+  'idempotency_key',
+  'idempotencyKey',
+  'idempotency',
 ];
 const CLIENT_REFERENCE_BUNDLE_CONTROL_FIELDS = [
   'reference_bundle',
@@ -365,7 +392,7 @@ function buildGenerationInput(shot, input, parsed, verifiedModel) {
     aspect_ratio: aspectRatio,
     count: 1,
     locale: input.locale || draft.locale || shot.version_locale || null,
-    attempt: Number(input.attempt ?? draft.generation?.attempt ?? draft.attempt ?? 1),
+    attempt: 1,
   };
 }
 
@@ -473,7 +500,7 @@ function buildNativeGeneration(shot, parsed, nativeCapability, pack) {
     aspect_ratio: aspectRatio,
     count: 1,
     locale: pack.language,
-    attempt: Number(parsed.draft.generation?.attempt ?? parsed.draft.attempt ?? 1),
+    attempt: 1,
     provider: selected.provider,
     protocol: selected.protocol,
     aiServiceConfigId: selected.config_id,
@@ -874,6 +901,63 @@ function findReusable(db, shot, attempt, expectedGeneration = null) {
   };
 }
 
+function generationBillingInput(ctx, shot, generation, styleSnapshot, sourceConditioning, attempt) {
+  return {
+    tenantId: ctx.tenantId,
+    userId: ctx.userId,
+    actorUserId: ctx.userId,
+    versionId: shot.version_id,
+    shotId: String(shot.id),
+    model: generation.model,
+    duration: generation.duration,
+    resolution: generation.resolution,
+    count: 1,
+    locale: generation.locale,
+    styleSnapshot,
+    sourceConditioning: sourceConditioning.billingSnapshot,
+    attempt,
+  };
+}
+
+function throwGenerationPolicyDecision(decision) {
+  if (decision.action === 'needs_review') {
+    throw codedError('REDRAW_GENERATION_NEEDS_REVIEW', '项目生成策略要求转为安全审核模式', decision);
+  }
+  if (decision.action === 'blocked') {
+    throw codedError('REDRAW_GENERATION_POLICY_BLOCKED', '项目生成策略阻止本次提交', decision);
+  }
+}
+
+function evaluateShotGenerationPolicy(db, ctx, shot, generation, styleSnapshot, sourceConditioning) {
+  const snapshot = redrawGenerationPolicyService.projectBudgetSnapshot(db, {
+    tenantId: ctx.tenantId,
+    userId: ctx.userId,
+    versionId: shot.version_id,
+    shotId: shot.id,
+  });
+  const currentAttempt = Math.max(snapshot.completed_attempts, 1);
+  const reusable = findReusable(db, shot, currentAttempt, generation);
+  const proposedAttempt = snapshot.completed_attempts + 1;
+  const quote = redrawBillingService.quoteShotGeneration(db, generationBillingInput(
+    ctx,
+    shot,
+    generation,
+    styleSnapshot,
+    sourceConditioning,
+    proposedAttempt,
+  ));
+  if (!quote.success) {
+    throw codedError('REDRAW_SHOT_PRICING_UNCONFIGURED', quote.message || '单镜视频模型未配置价格');
+  }
+  const decision = redrawGenerationPolicyService.evaluateGenerationPolicy({
+    ...snapshot,
+    quote_credits: quote.amount,
+    exact_reusable: Boolean(reusable),
+  });
+  throwGenerationPolicyDecision(decision);
+  return { decision, reusable, snapshot, quote };
+}
+
 function mergeDraft(draft, patch) {
   return JSON.stringify({
     ...draft,
@@ -1035,9 +1119,6 @@ async function generateShot(ctx, input = {}) {
     generation.aiServiceConfigId = Number(selectedCapability.config_id) || null;
     generation.aiServiceConfigUpdatedAt = String(selectedCapability.config_updated_at || '');
   }
-  if (!Number.isSafeInteger(generation.attempt) || generation.attempt <= 0) {
-    throw codedError('INVALID_REDRAW_GENERATION_INPUT', 'attempt 必须是正整数');
-  }
   if (requiresReferenceBundle) {
     assertNativeAudioCapability(selectedCapability);
   }
@@ -1067,8 +1148,22 @@ async function generateShot(ctx, input = {}) {
     referenceBundleProjection?.referenceBundleSnapshot || null,
   );
   generation.requestSnapshot = requestSnapshot;
-  const reusable = findReusable(db, shot, generation.attempt, generation);
-  if (reusable) return enrichGenerationResult(db, { ...reusable, attempt: generation.attempt });
+  const styleSnapshot = ctx.batchStyleSnapshot ?? parsed.styleSnapshot;
+  const initialPolicy = evaluateShotGenerationPolicy(
+    db,
+    ctx,
+    shot,
+    generation,
+    styleSnapshot,
+    sourceConditioning,
+  );
+  if (initialPolicy.decision.action === 'reuse') {
+    return enrichGenerationResult(db, {
+      ...initialPolicy.reusable,
+      attempt: initialPolicy.decision.attempt,
+    });
+  }
+  generation.attempt = initialPolicy.decision.attempt;
   if (shot.video_generation_id) {
     const existing = db.prepare('SELECT status FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(Number(shot.video_generation_id));
     if (existing?.status === 'failed' && ctx.retryFailedShot !== true) {
@@ -1104,21 +1199,30 @@ async function generateShot(ctx, input = {}) {
         referenceBundleCreateState(db, ctx, shot, requestSnapshot, referenceBundleCreateExpected);
       }
       ensureGateOpen(db, ctx, shot.version_id);
-      const reservation = redrawBillingService.reserveShotGeneration(db, {
-        tenantId: ctx.tenantId,
-        userId: ctx.userId,
-        actorUserId: ctx.userId,
-        versionId: shot.version_id,
-        shotId: String(shot.id),
-        model: generation.model,
-        duration: generation.duration,
-        resolution: generation.resolution,
-        count: 1,
-        locale: generation.locale,
-        styleSnapshot: ctx.batchStyleSnapshot ?? parsed.styleSnapshot,
-        sourceConditioning: sourceConditioning.billingSnapshot,
-        attempt: generation.attempt,
-      });
+      const freshShot = selectShot(db, ctx, { shotId: shot.id });
+      const transactionPolicy = evaluateShotGenerationPolicy(
+        db,
+        ctx,
+        freshShot,
+        generation,
+        styleSnapshot,
+        sourceConditioning,
+      );
+      if (transactionPolicy.decision.action === 'reuse') {
+        return {
+          ...transactionPolicy.reusable,
+          attempt: transactionPolicy.decision.attempt,
+        };
+      }
+      generation.attempt = transactionPolicy.decision.attempt;
+      const reservation = redrawBillingService.reserveShotGeneration(db, generationBillingInput(
+        ctx,
+        shot,
+        generation,
+        styleSnapshot,
+        sourceConditioning,
+        generation.attempt,
+      ));
       if (!reservation.success) {
         throw codedError('REDRAW_SHOT_PRICING_UNCONFIGURED', reservation.message || '单镜视频模型未配置价格');
       }
@@ -1213,7 +1317,7 @@ async function generateShot(ctx, input = {}) {
         reservation_id: reservation.reservation_id,
       };
     });
-    created = requiresReferenceBundle ? createTransaction.immediate() : createTransaction();
+    created = createTransaction.immediate();
   } catch (error) {
     if (error.code !== 'REDRAW_SHOT_CREATE_CONFLICT') throw error;
     const fresh = selectShot(db, ctx, input);
@@ -1223,6 +1327,8 @@ async function generateShot(ctx, input = {}) {
     }
     throw codedError('REDRAW_SHOT_CONFLICT', '转绘镜头生成状态已变化，请刷新后重试');
   }
+
+  if (created.reused) return enrichGenerationResult(db, created);
 
   const enrich = (result) => enrichGenerationResult(db, {
     ...result,
@@ -2316,10 +2422,7 @@ async function retryShot(ctx, input = {}) {
     markRetryUncertain(db, shot, task, video, message, now(ctx));
     throw codedError('REDRAW_RETRY_UNCERTAIN', message);
   }
-  const draft = strictJson(shot.draft_json, 'draft_json');
-  const previousAttempt = Number(draft.generation?.attempt ?? draft.attempt ?? 1);
-  const attempt = Number.isSafeInteger(previousAttempt) && previousAttempt > 0 ? previousAttempt + 1 : 2;
-  return generateShot({ ...ctx, retryFailedShot: true }, { ...input, shotId: shot.id, attempt });
+  return generateShot({ ...ctx, retryFailedShot: true }, { ...input, shotId: shot.id });
 }
 
 async function recoverInterruptedShotGenerations(ctx) {
