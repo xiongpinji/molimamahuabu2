@@ -298,6 +298,7 @@ async function reusableCleanResults(ctx, row, descriptor, expectedBaseline, char
     || stableJson(snapshot.requirements) !== stableJson(descriptor.requirements.map((item) => ({ kind: item.kind, key: item.key })))
     || !Array.isArray(snapshot.clean_results)) return [];
   const reusable = [];
+  const newlyApprovedTimes = [];
   for (const result of snapshot.clean_results) {
     const requirement = descriptor.requirements.find((item) => item.kind === result?.kind && item.key === result?.key);
     const assetId = Number(result?.redraw_asset_id);
@@ -321,18 +322,21 @@ async function reusableCleanResults(ctx, row, descriptor, expectedBaseline, char
       `).get(assetId, ctx.versionId, ctx.tenantId, ctx.userId));
     }
     if (current === true || (current && typeof current === 'object')) {
-      reusable.push(safeResult({ ...result, status: 'completed', ...(current === true ? {} : { evidence: current }) }, requirement));
+      const reusableResult = safeResult({ ...result, status: 'completed', ...(current === true ? {} : { evidence: current }) }, requirement);
+      reusable.push(reusableResult);
+      if (result.status === 'unknown') {
+        newlyApprovedTimes.push(Date.parse(String(reusableResult.evidence?.approved_at || '')));
+      }
     }
   }
   if (snapshot.version_snapshot_hash !== expectedBaseline.snapshot_hash) {
     const priorVersionTime = Date.parse(String(snapshot.version_updated_at || ''));
-    const approvalTimes = reusable.map((result) => Date.parse(String(result.evidence?.approved_at || '')));
     const approvalRefresh = snapshot.version_recovery_hash === expectedBaseline.recovery_hash
-      && reusable.length > 0
+      && newlyApprovedTimes.length > 0
       && Number.isFinite(priorVersionTime)
-      && approvalTimes.every((value) => Number.isFinite(value) && value >= priorVersionTime)
-      && approvalTimes.some((value) => value > priorVersionTime)
-      && Math.max(...approvalTimes) === Date.parse(String(expectedBaseline.version_updated_at || ''));
+      && newlyApprovedTimes.every((value) => Number.isFinite(value) && value >= priorVersionTime)
+      && newlyApprovedTimes.some((value) => value > priorVersionTime)
+      && Math.max(...newlyApprovedTimes) === Date.parse(String(expectedBaseline.version_updated_at || ''));
     if (!approvalRefresh) return [];
   }
   return reusable.sort((left, right) => left.kind.localeCompare(right.kind) || left.key.localeCompare(right.key));

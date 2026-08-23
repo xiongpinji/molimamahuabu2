@@ -1240,6 +1240,138 @@ test('同镜头人物与文字净景可逐项批准恢复且只生成剩余项',
   }
 });
 
+test('版本漂移只由原 unknown 的最新批准解释且更早 completed 仍按当前证据复用', async () => {
+  const state = await setupDefaultServerPath({ includePerson: true, includeText: true });
+  try {
+    let providerCalls = 0;
+    const provider = async ({ input }) => {
+      providerCalls += 1;
+      return {
+        status: 'completed',
+        asset_id: input.mode === 'clean_plate' ? 303 : 302,
+        provider_task_id: `sequential-${providerCalls}`,
+        quality: { width: 64, height: 64, mask_area_changed: true, non_mask_similarity: 0.99 },
+      };
+    };
+    const deps = { quoteCleanRequirement: () => ({ priced: true, credits: 0 }), provider };
+    const prepareUntilUnknown = async (idempotencyKey) => {
+      const quote = await quoteVersionPreparation(state.ctx, { version_id: 1 }, deps);
+      const result = await prepareVersionReferences(state.ctx, {
+        version_id: 1, idempotency_key: idempotencyKey, quote_hash: quote.quote_hash,
+      }, deps);
+      assert.deepEqual(result.needs_attention_shot_ids, [1]);
+      return JSON.parse(state.db.prepare('SELECT preparation_snapshot_json FROM redraw_shots WHERE id = 1').get().preparation_snapshot_json);
+    };
+
+    const firstSnapshot = await prepareUntilUnknown('sequential-first');
+    const pendingPersonResult = firstSnapshot.clean_results.find((item) => item.status === 'unknown');
+    assert.equal(pendingPersonResult.kind, 'person_clean');
+    const pendingPerson = state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(pendingPersonResult.redraw_asset_id);
+    reviewAsset(state.db, pendingPerson.id, {
+      action: 'approved', reviewer_id: 'user-a', tenant_id: 'tenant-a', user_id: 'user-a',
+      expected_updated_at: pendingPerson.updated_at, preparationContext: state.ctx,
+    });
+
+    const interrupted = await prepareUntilUnknown('sequential-second');
+    const completedPerson = interrupted.clean_results.find((item) => item.kind === 'person_clean');
+    const pendingTextResult = interrupted.clean_results.find((item) => item.status === 'unknown');
+    assert.equal(completedPerson.status, 'completed');
+    assert.equal(pendingTextResult.kind, 'text_clean');
+    const priorVersionTime = interrupted.version_updated_at;
+    const priorVersionTimestamp = Date.parse(priorVersionTime);
+    assert.ok(Number.isFinite(priorVersionTimestamp));
+    const earlierApproval = new Date(priorVersionTimestamp - 1000).toISOString();
+    const latestApproval = new Date(priorVersionTimestamp + 1000).toISOString();
+    state.db.prepare('UPDATE redraw_assets SET approved_at = ? WHERE id = ?')
+      .run(earlierApproval, completedPerson.redraw_asset_id);
+
+    const motionAsset = state.db.prepare('SELECT metadata FROM assets WHERE id = 601').get();
+    const motionMetadata = JSON.parse(motionAsset.metadata);
+    motionMetadata.redraw_motion_reference.text_coverage_sha256 = sha256(stableJson([{
+      kind: 'text_subtitle',
+      region_key: pendingTextResult.key,
+      text_clean_redraw_asset_id: pendingTextResult.redraw_asset_id,
+      time_ranges: [[0, 12000]],
+    }]));
+    state.db.prepare('UPDATE assets SET metadata = ? WHERE id = 601').run(JSON.stringify(motionMetadata));
+    const pendingText = state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(pendingTextResult.redraw_asset_id);
+    reviewAsset(state.db, pendingText.id, {
+      action: 'approved', reviewer_id: 'user-a', tenant_id: 'tenant-a', user_id: 'user-a',
+      expected_updated_at: pendingText.updated_at, preparationContext: state.ctx,
+    });
+    state.db.prepare('UPDATE redraw_assets SET approved_at = ? WHERE id = ?')
+      .run(latestApproval, pendingTextResult.redraw_asset_id);
+    state.db.prepare('UPDATE redraw_versions SET updated_at = ? WHERE id = 1').run(latestApproval);
+
+    const persistInterrupted = (value) => state.db.prepare(`UPDATE redraw_shots
+      SET preparation_state = 'needs_attention', preparation_snapshot_json = ?, preparation_evidence_hash = ?
+      WHERE id = 1`).run(stableJson(value), sha256(stableJson(value)));
+    const withoutNewApproval = {
+      ...interrupted,
+      clean_results: interrupted.clean_results.map((item) => ({ ...item, status: 'completed' })),
+    };
+    persistInterrupted(withoutNewApproval);
+    assert.deepEqual(
+      (await quoteVersionPreparation(state.ctx, { version_id: 1 })).needs_attention_shot_ids,
+      [1],
+    );
+    persistInterrupted(interrupted);
+
+    for (const invalidApprovalTime of [
+      'not-a-time',
+      new Date(priorVersionTimestamp - 500).toISOString(),
+      new Date(priorVersionTimestamp + 500).toISOString(),
+    ]) {
+      state.db.prepare('UPDATE redraw_assets SET approved_at = ? WHERE id = ?')
+        .run(invalidApprovalTime, pendingTextResult.redraw_asset_id);
+      assert.deepEqual(
+        (await quoteVersionPreparation(state.ctx, { version_id: 1 })).needs_attention_shot_ids,
+        [1],
+      );
+    }
+    state.db.prepare('UPDATE redraw_assets SET approved_at = ? WHERE id = ?')
+      .run(latestApproval, pendingTextResult.redraw_asset_id);
+
+    state.db.prepare('UPDATE redraw_projects SET policy_version = 2 WHERE id = 1').run();
+    assert.deepEqual(
+      (await quoteVersionPreparation(state.ctx, { version_id: 1 })).needs_attention_shot_ids,
+      [1],
+    );
+    state.db.prepare('UPDATE redraw_projects SET policy_version = 1 WHERE id = 1').run();
+
+    fs.writeFileSync(path.join(state.ctx.storageRoot, 'redraw/person-clean.png'), 'tampered-person-clean');
+    const evidenceDriftQuote = await quoteVersionPreparation(state.ctx, { version_id: 1 });
+    assert.deepEqual(
+      evidenceDriftQuote.items.map((item) => [item.kind, item.key]),
+      [[completedPerson.kind, completedPerson.key]],
+    );
+    fs.writeFileSync(path.join(state.ctx.storageRoot, 'redraw/person-clean.png'), 'person-clean');
+
+    const recoveredQuote = await quoteVersionPreparation(state.ctx, { version_id: 1 });
+    assert.ok(Date.parse(earlierApproval) < Date.parse(priorVersionTime));
+    assert.equal(
+      state.db.prepare('SELECT approved_at FROM redraw_assets WHERE id = ?').get(completedPerson.redraw_asset_id).approved_at,
+      earlierApproval,
+    );
+    assert.equal(
+      state.db.prepare('SELECT approved_at FROM redraw_assets WHERE id = ?').get(pendingTextResult.redraw_asset_id).approved_at,
+      latestApproval,
+    );
+    assert.deepEqual(recoveredQuote.needs_attention_shot_ids, []);
+    assert.deepEqual(recoveredQuote.items, []);
+    const recovered = await prepareVersionReferences(state.ctx, {
+      version_id: 1,
+      idempotency_key: 'sequential-recovery',
+      quote_hash: recoveredQuote.quote_hash,
+    }, deps);
+    assert.deepEqual(recovered.prepared_shot_ids, [1]);
+    assert.equal(providerCalls, 2);
+    assert.equal(state.db.prepare('SELECT preparation_state FROM redraw_shots WHERE id = 1').get().preparation_state, 'reference_ready');
+  } finally {
+    state.cleanup();
+  }
+});
+
 test('受信参考包 builder 拒绝客户端路径、URL、哈希、供应商和价格字段', async () => {
   const state = await setupDefaultServerPath();
   try {
