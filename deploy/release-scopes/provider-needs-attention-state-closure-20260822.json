@@ -2,9 +2,11 @@
   "schemaVersion": 1,
   "release": "provider-needs-attention-state-closure-20260822",
   "allowedPaths": [
+    "backend-node/src/services/propImageGenerationService.js",
     "backend-node/src/services/providerReconciliationService.js",
     "backend-node/test/featureLockManifest.test.js",
     "backend-node/test/incrementalReleaseScope.test.js",
+    "backend-node/test/prop-image-billing.test.js",
     "backend-node/test/providerReconciliation.test.js",
     "backend-node/test/taskService.test.js",
     "deploy/release-scopes/provider-needs-attention-state-closure-20260822.json",

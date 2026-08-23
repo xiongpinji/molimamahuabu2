@@ -107,7 +107,11 @@ const UNKNOWN_STATE_RECONCILIATION_UNLOCK = {
     'backend-node/test/taskService.test.js',
     'backend-node/test/providerRouteImageIntegration.test.js',
     'backend-node/test/providerRouteVideoIntegration.test.js',
+    'backend-node/test/prop-image-billing.test.js',
+    'backend-node/test/propImageErrorState.test.js',
+    'backend-node/test/creditLedger.test.js',
     'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
 const PROVIDER_ROUTE_CONTRACT_UNLOCK = {
@@ -258,6 +262,9 @@ test('结果未知状态收口保留本轮批准解锁和同批证据', () => {
   assert.deepEqual(feature.unlock, UNKNOWN_STATE_RECONCILIATION_UNLOCK);
   assert.ok(feature.evidence.includes(
     'docs/verification/platform-stability/provider-needs-attention-state-closure-20260822.md',
+  ));
+  assert.ok(feature.evidence.includes(
+    'docs/verification/platform-stability/video-audio-credit-reconciliation-20260822.md',
   ));
 });
 

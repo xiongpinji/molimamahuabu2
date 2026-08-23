@@ -1,4 +1,5 @@
 const creditLedger = require('./creditLedgerService');
+const billingReconciliation = require('./billingReconciliationService');
 
 const DEFINITE_FAILURES = new Set([
   'auth_unavailable',
@@ -11,6 +12,7 @@ const DEFINITE_FAILURES = new Set([
 const UNKNOWN_MESSAGE = '供应商提交结果未知，等待管理员核对，请勿重新提交';
 const DEFAULT_INTERVAL_MS = 60_000;
 const DEFAULT_SUBMITTING_GRACE_MS = 20 * 60_000;
+const DEFAULT_REVIEW_SLA_MS = 60 * 60_000;
 let reconciliationTimer = null;
 
 function routeRows(db, limit = 100) {
@@ -119,13 +121,101 @@ function refundDefiniteFailure(db, route, now) {
   return true;
 }
 
+function isReviewSlaBreached(route, now, reviewSlaMs) {
+  if (route.state !== 'needs_attention') return false;
+  const updatedAt = Date.parse(route.updated_at || '');
+  return Number.isFinite(updatedAt) && Date.parse(now) - updatedAt >= reviewSlaMs;
+}
+
+function recordReviewSlaOnce(db, route, now, reviewSlaMs) {
+  if (!isReviewSlaBreached(route, now, reviewSlaMs)) return false;
+  if (!route.credit_reservation_id) return false;
+  const reservation = creditLedger.getReservation(db, route.credit_reservation_id);
+  if (!reservation || reservation.status !== 'held') return false;
+  return recordEventOnce(db, route, 'provider_credit_hold_sla_breached', {
+    severity: 'error',
+    now,
+    taskState: 'needs_attention',
+    creditState: 'held_for_review',
+    safeDetails: { category: route.error_category || 'submission_unknown' },
+  });
+}
+
+function markLegacyHeldForReview(db, row, now) {
+  const route = {
+    id: `legacy-credit:${row.reservation_id}`,
+    tenant_id: row.tenant_id || null,
+    user_id: row.user_id || row.actor_user_id || null,
+    logical_model_id: row.model || null,
+    state: 'needs_attention',
+  };
+  return db.transaction(() => {
+    let changes = db.prepare(`UPDATE async_tasks
+      SET status = 'needs_attention', progress = 90, message = ?, error = NULL,
+        completed_at = NULL, updated_at = ?
+      WHERE credit_reservation_id = ? AND status IN ('pending', 'processing', 'failed')
+        AND deleted_at IS NULL`).run(UNKNOWN_MESSAGE, now, row.reservation_id).changes;
+    for (const table of ['image_generations', 'video_generations']) {
+      try {
+        changes += db.prepare(`UPDATE ${table}
+          SET status = 'needs_attention', error_msg = ?, updated_at = ?
+          WHERE credit_reservation_id = ? AND status IN ('pending', 'processing', 'failed')
+            AND deleted_at IS NULL`).run(UNKNOWN_MESSAGE, now, row.reservation_id).changes;
+      } catch (error) {
+        if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
+      }
+    }
+    const inserted = recordEventOnce(db, route, 'provider_legacy_generation_needs_attention', {
+      severity: 'error',
+      now,
+      taskState: 'needs_attention',
+      creditState: 'held_for_review',
+      safeDetails: { category: 'submission_unknown' },
+    });
+    return inserted || changes > 0;
+  })();
+}
+
+function reconcileLegacyHeldReservations(db, now, options, summary) {
+  const rows = billingReconciliation.listAnomalies(db, {
+    olderThanMinutes: options.legacyGraceMinutes ?? 5,
+    limit: options.limit,
+    now,
+  });
+  for (const row of rows) {
+    if (row.evidence.providerRoutes.length) continue;
+    const hasLegacyMedia = row.evidence.images.length || row.evidence.videos.length;
+    const hasPropImageTask = row.evidence.tasks.some((task) => task.type === 'prop_image_generation');
+    if (!hasLegacyMedia && !hasPropImageTask) continue;
+    if (row.safety_status === 'indeterminate') {
+      if (!markLegacyHeldForReview(db, row, now)) continue;
+      summary.processed += 1;
+      summary.needs_attention += 1;
+      continue;
+    }
+    if (row.safety_status !== 'definite_failure') continue;
+    billingReconciliation.refundReservation(db, {
+      reservationId: row.reservation_id,
+      idempotencyKey: `provider-auto-refund:${row.reservation_id}`,
+      reason: '系统对账确认生成明确失败并自动返还冻结积分',
+      actorUserId: null,
+    });
+    summary.processed += 1;
+    summary.refunded += 1;
+  }
+}
+
 function reconcileProviderRequests(db, log, nowValue = new Date().toISOString(), options = {}) {
   const now = new Date(nowValue).toISOString();
   const configuredGraceMs = Number(options.submittingGraceMs);
   const submittingGraceMs = Number.isFinite(configuredGraceMs) && configuredGraceMs >= 0
     ? configuredGraceMs
     : DEFAULT_SUBMITTING_GRACE_MS;
-  const summary = { processed: 0, needs_attention: 0, refunded: 0, resumable: 0 };
+  const configuredReviewSlaMs = Number(options.reviewSlaMs);
+  const reviewSlaMs = Number.isFinite(configuredReviewSlaMs) && configuredReviewSlaMs >= 0
+    ? configuredReviewSlaMs
+    : DEFAULT_REVIEW_SLA_MS;
+  const summary = { processed: 0, needs_attention: 0, refunded: 0, resumable: 0, alerted: 0 };
   for (const route of routeRows(db, options.limit)) {
     if (route.service_type === 'video' && route.provider_task_id) {
       summary.resumable += 1;
@@ -145,9 +235,11 @@ function reconcileProviderRequests(db, log, nowValue = new Date().toISOString(),
       const eventType = artifactUnreadable
         ? 'provider_artifact_unreadable'
         : 'provider_request_needs_attention';
-      if (!holdForReview(db, route, now, eventType)) continue;
-      summary.processed += 1;
-      summary.needs_attention += 1;
+      const heldForReview = holdForReview(db, route, now, eventType);
+      const alerted = recordReviewSlaOnce(db, route, now, reviewSlaMs);
+      if (heldForReview) summary.needs_attention += 1;
+      if (alerted) summary.alerted += 1;
+      if (heldForReview || alerted) summary.processed += 1;
       continue;
     }
     if (route.state === 'failed' && DEFINITE_FAILURES.has(route.error_category)) {
@@ -157,6 +249,7 @@ function reconcileProviderRequests(db, log, nowValue = new Date().toISOString(),
       }
     }
   }
+  reconcileLegacyHeldReservations(db, now, options, summary);
   if (summary.processed) log?.warn?.('Provider reconciliation updated requests', summary);
   return summary;
 }

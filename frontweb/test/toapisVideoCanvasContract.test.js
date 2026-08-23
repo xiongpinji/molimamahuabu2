@@ -197,6 +197,7 @@ test('首页与两种画布组件使用目录能力且缺价时保持积分门�
   const generationOptions = source('src/components/dramaCanvas/CanvasGenerationOptions.vue')
   const homeNode = source('src/components/dramaCanvas/HomeCanvasNode.vue')
   const dramaCanvas = source('src/views/DramaCanvas.vue')
+  const resultVideoTag = homeNode.match(/<video\s+v-else-if="data\.kind === 'video' && primaryResultUrl"[\s\S]*?\/>/)?.[0] || ''
 
   assert.match(filmList, /v-for="value in homeDurationOptions"/)
   assert.match(filmList, /request\.get\('\/canvas\/model-catalog'\)/)
@@ -213,7 +214,14 @@ test('首页与两种画布组件使用目录能力且缺价时保持积分门�
   assert.match(homeNode, /:disabled="data\.status === 'running' \|\| !draft\.content\.trim\(\) \|\| estimatedCredits == null"/)
   assert.match(homeNode, /capability(?:\.value)?\.supportsVideoReference/)
   assert.match(homeNode, /capability(?:\.value)?\.supportsAudioReference/)
+  assert.match(homeNode, /draft\.includeAudio\s*=\s*defaultFreeCanvasVideoIncludeAudio\(capability\.value\)/)
+  assert.match(homeNode, /draft\.includeAudio\s*=\s*resolveFreeCanvasVideoIncludeAudio\(props\.data,\s*capability\.value\)/)
   assert.match(dramaCanvas, /capability,\s*\n\s*\}\)/)
+  assert.match(dramaCanvas, /generationData\.includeAudio\s*=\s*resolveFreeCanvasVideoIncludeAudio\(generationData, capability\)/)
+  assert.match(dramaCanvas, /requiresSilentVideoConfirmation\(generationData, capability\)/)
+  assert.match(dramaCanvas, /当前未开启同步音频，继续后将生成无声视频/)
+  assert.ok(resultVideoTag)
+  assert.doesNotMatch(resultVideoTag, /\bmuted\b/)
   assert.match(dramaCanvas, /const catalogEntry = canvasModelEntry\(freeCanvasModelCatalog\.value, kind/)
   assert.match(dramaCanvas, /if \(!catalogEntry\) throw new Error\('当前节点没有已验证且已定价的可用模型'\)/)
 })

@@ -100,7 +100,6 @@
         :src="primaryResultUrl"
         class="node-media"
         controls
-        muted
         playsinline
         title="双击全屏查看"
         @click.stop="scheduleMediaOpen"
@@ -414,7 +413,7 @@
           </label>
           <label v-if="data.kind === 'video' && capability.supportsAudio === true" class="editor-check">
             <input v-model="draft.includeAudio" type="checkbox" aria-label="生成音频" @change="saveDraft" />
-            <span>同步音频</span>
+            <span>同步音频（关闭将生成无声视频）</span>
           </label>
           <label v-if="data.kind === 'audio'" class="editor-field field-model">
             <span>音色</span>
@@ -559,8 +558,10 @@ import { useCanvasContext } from '@/composables/useCanvasContext'
 import { normalizeGenerationProgress } from '@/utils/canvasGenerationProgress'
 import { imageModelCapabilityBadges } from '@/utils/canvasModelCapabilities'
 import {
+  defaultFreeCanvasVideoIncludeAudio,
   normalizeFreeCanvasVideoReferenceMode,
   normalizeFreeCanvasSubmissionReferences,
+  resolveFreeCanvasVideoIncludeAudio,
   resolveFreeCanvasVideoReferenceInput,
 } from '@/utils/freeCanvasGeneration'
 import { videoDurationOptionsForCapability } from '@/utils/videoDuration'
@@ -834,7 +835,7 @@ function syncDraft() {
     : ''
   draft.cameraMovement = props.data.cameraMovement || ''
   draft.effect = props.data.effect || ''
-  draft.includeAudio = props.data.includeAudio === true
+  draft.includeAudio = resolveFreeCanvasVideoIncludeAudio(props.data, capability.value)
   draft.videoReferenceMode = props.data.videoReferenceMode || ''
 }
 
@@ -852,8 +853,8 @@ async function onModelChange() {
   if (props.data.kind === 'video' && !durations.includes(Number(draft.duration))) {
     draft.duration = durations[0]
   }
-  if (props.data.kind === 'video' && capability.value.supportsAudio !== true) {
-    draft.includeAudio = false
+  if (props.data.kind === 'video') {
+    draft.includeAudio = defaultFreeCanvasVideoIncludeAudio(capability.value)
   }
   if (props.data.kind === 'video') {
     const currentModeSupported = (

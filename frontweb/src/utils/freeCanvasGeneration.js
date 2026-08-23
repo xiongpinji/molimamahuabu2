@@ -52,6 +52,23 @@ const VIDEO_TOOL_RETRY_PARAMETERS = Object.freeze({
 })
 const ASSET_TYPES = new Set(['image', 'video', 'audio'])
 
+export function defaultFreeCanvasVideoIncludeAudio(capability = {}) {
+  return capability?.supportsAudio === true
+}
+
+export function resolveFreeCanvasVideoIncludeAudio(nodeData = {}, capability = {}) {
+  if (nodeData?.kind !== 'video' || capability?.supportsAudio !== true) return false
+  if (!Object.hasOwn(nodeData, 'includeAudio')) return true
+  return nodeData.includeAudio === true
+}
+
+export function requiresSilentVideoConfirmation(nodeData = {}, capability = {}) {
+  return nodeData?.kind === 'video'
+    && capability?.supportsAudio === true
+    && Object.hasOwn(nodeData, 'includeAudio')
+    && nodeData?.includeAudio !== true
+}
+
 function freeCanvasTaskError(message, code) {
   const error = new Error(message)
   error.code = code

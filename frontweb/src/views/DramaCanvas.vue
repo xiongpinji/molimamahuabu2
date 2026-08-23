@@ -690,7 +690,9 @@ import {
   normalizeFreeCanvasSubmissionReferences,
   planFreeCanvasVideoReferences,
   pollFreeCanvasTask as pollFreeCanvasTaskStatus,
+  requiresSilentVideoConfirmation,
   resolveFreeCanvasResultUrl,
+  resolveFreeCanvasVideoIncludeAudio,
 } from '@/utils/freeCanvasGeneration'
 import {
   calculateBatchGenerationProgress,
@@ -3156,6 +3158,24 @@ async function runFreeCanvasNode(nodeOrId) {
     if (!catalogEntry) throw new Error('当前节点没有已验证且已定价的可用模型')
     const generationData = { ...node.data, model: catalogEntry.model }
     const capability = getFreeNodeModelCapability(kind, catalogEntry.model)
+    if (kind === 'video') {
+      generationData.includeAudio = resolveFreeCanvasVideoIncludeAudio(generationData, capability)
+    }
+    if (requiresSilentVideoConfirmation(generationData, capability)) {
+      try {
+        await ElMessageBox.confirm(
+          '当前未开启同步音频，继续后将生成无声视频。是否继续？',
+          '确认生成无声视频',
+          {
+            type: 'warning',
+            confirmButtonText: '继续生成',
+            cancelButtonText: '返回开启声音',
+          },
+        )
+      } catch {
+        return { ok: false, cancelled: true, nodeId: String(node.id) }
+      }
+    }
     const modelRoute = canvasModelRoute(freeCanvasModelCatalog.value, kind, node.data?.model)
     requestPayload = buildFreeCanvasGenerationRequest(generationData, {
       dramaId: dramaId.value,
