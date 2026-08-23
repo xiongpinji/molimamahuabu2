@@ -56,13 +56,16 @@ export function assertRequestAllowed(method, value, allowedOrigin = '') {
   if (url.origin !== expectedOrigin) {
     throw new Error(`ZERO_COST_SMOKE_CROSS_ORIGIN_REQUEST:${normalizedMethod}:${pathname}`)
   }
-  if (['GET', 'HEAD'].includes(normalizedMethod)) {
-    if (!pathname.startsWith('/api/')) return
-    if (ALLOWED_API_READ_PATHS.has(pathname)) return
-    throw new Error(`ZERO_COST_SMOKE_FORBIDDEN_API_READ:${normalizedMethod}:${pathname}`)
-  }
+  if (['GET', 'HEAD'].includes(normalizedMethod)) return
   if (normalizedMethod === 'POST' && pathname === LOGIN_PATH) return
   throw new Error(`ZERO_COST_SMOKE_FORBIDDEN_WRITE:${normalizedMethod}:${pathname}`)
+}
+
+export function isNonLoginWriteRequest(method, value) {
+  const normalizedMethod = String(method || 'GET').toUpperCase()
+  const pathname = normalizePathname(value)
+  if (['GET', 'HEAD', 'OPTIONS'].includes(normalizedMethod)) return false
+  return normalizedMethod !== 'POST' || pathname !== LOGIN_PATH
 }
 
 function isAllowedApiRequest(method, pathname) {
@@ -111,12 +114,15 @@ function fixturePage(pathname) {
     '/script-analysis': ['剧本分析', '从原剧本到可执行分镜', '导演工作区'],
   }[pathname]
   if (!labels) return null
+  const modelCatalogRead = pathname === '/canvas'
+    ? `<script>fetch('${PUBLIC_MODEL_CATALOG_PATH}', { method: 'GET', credentials: 'same-origin' }).catch(() => {})</script>`
+    : ''
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>${labels[0]}</title></head>
 <body><header class="platform-header"><strong>茉莉妈妈</strong><nav>首页 画布 剧本分析 短剧工厂</nav></header>
 <main class="${pathname === '/script-analysis' ? 'script-analysis-page' : 'film-list'}" data-smoke-page="${pathname}">
 <section class="${pathname === '/script-analysis' ? 'workspace-hero' : 'smoke-first-screen'}"><h1>${labels[1]}</h1><p>${labels[2]}</p></section>
-</main></body></html>`
+</main>${modelCatalogRead}</body></html>`
 }
 
 function loginFixturePage() {
@@ -385,11 +391,27 @@ export async function runSmoke({ localFixture = false } = {}) {
       viewport: { width: 1440, height: 900 },
     })
     const page = await context.newPage()
+    let lastCatalogStatus = 0
+    const catalogResponsePromise = page.waitForResponse((response) => {
+      const responseURL = new URL(response.url())
+      return responseURL.origin === config.baseURL
+        && responseURL.pathname === PUBLIC_MODEL_CATALOG_PATH
+        && response.request().method() === 'GET'
+        && response.status() >= 200
+        && response.status() < 300
+    }, { timeout: 60_000 }).catch(() => null)
 
     page.on('pageerror', () => runtimeFailures.push('pageerror'))
     page.on('response', (response) => {
       const responseURL = new URL(response.url())
       const request = response.request()
+      if (
+        responseURL.origin === config.baseURL
+        && responseURL.pathname === PUBLIC_MODEL_CATALOG_PATH
+        && request.method() === 'GET'
+      ) {
+        lastCatalogStatus = response.status()
+      }
       if (
         responseURL.origin === config.baseURL
         && isAllowedApiRequest(request.method(), responseURL.pathname)
@@ -422,9 +444,11 @@ export async function runSmoke({ localFixture = false } = {}) {
       try {
         assertRequestAllowed(request.method(), requestURL.href, config.baseURL)
       } catch (error) {
-        nonLoginWriteCount += 1
-        if (/\/(?:images|videos|canvas\/text\/generate)(?:\/|$)/.test(requestURL.pathname)) {
-          generationWriteCount += 1
+        if (isNonLoginWriteRequest(request.method(), requestURL.href)) {
+          nonLoginWriteCount += 1
+          if (/\/(?:images|videos|canvas\/text\/generate)(?:\/|$)/.test(requestURL.pathname)) {
+            generationWriteCount += 1
+          }
         }
         violations.push(error.message)
         return route.abort('blockedbyclient')
@@ -450,13 +474,11 @@ export async function runSmoke({ localFixture = false } = {}) {
       await writeSanitizedScreenshot(page, outputDir, screenshotName, config.email)
     }
 
-    const catalog = await page.evaluate(async (pathname) => {
-      const response = await fetch(pathname, { method: 'GET', credentials: 'same-origin' })
-      return { status: response.status, body: await response.json().catch(() => null) }
-    }, PUBLIC_MODEL_CATALOG_PATH)
-    safeTrace.push({ step: 'public-model-catalog', pathname: PUBLIC_MODEL_CATALOG_PATH, status: catalog.status })
-    if (catalog.status >= 500 || catalog.status < 200 || catalog.status >= 300 || !catalog.body) {
-      throw new Error(`ZERO_COST_SMOKE_MODEL_CATALOG_FAILED:${catalog.status}`)
+    const catalogResponse = await catalogResponsePromise
+    const catalogStatus = catalogResponse?.status() || lastCatalogStatus
+    safeTrace.push({ step: 'public-model-catalog', pathname: PUBLIC_MODEL_CATALOG_PATH, status: catalogStatus })
+    if (!catalogResponse) {
+      throw new Error(`ZERO_COST_SMOKE_MODEL_CATALOG_FAILED:${catalogStatus}`)
     }
     if (violations.length || nonLoginWriteCount !== 0 || generationWriteCount !== 0) {
       throw new Error(`ZERO_COST_SMOKE_WRITE_DETECTED:${violations[0] || 'unknown'}`)

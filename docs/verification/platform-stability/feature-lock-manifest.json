@@ -735,16 +735,26 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 TTS 主动巡检按字符成本获批",
+          "approvedBy": "product-owner 2026-08-23 provider-tts-character-cost",
+          "impactTests": [
+            "backend-node/test/providerCanaryExecutor.test.js",
+            "backend-node/test/providerRouteCost.test.js",
+            "backend-node/test/providerRouteSchema.test.js",
+            "frontweb/test/providerRouteCostAdmin.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 TTS 主动巡检按字符成本获批",
-        "approvedBy": "product-owner 2026-08-23 provider-tts-character-cost",
+        "reason": "2026-08-23 平台零成本巡检复用已认证目录响应并修正只读分类获批",
+        "approvedBy": "product-owner 2026-08-23 platform-zero-cost-smoke-read-auth",
         "impactTests": [
-          "backend-node/test/providerCanaryExecutor.test.js",
-          "backend-node/test/providerRouteCost.test.js",
-          "backend-node/test/providerRouteSchema.test.js",
-          "frontweb/test/providerRouteCostAdmin.test.js",
+          "frontweb/test/platformZeroCostSmokeContract.test.js",
+          "frontweb/e2e/platform-zero-cost-smoke.spec.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
