@@ -1159,6 +1159,59 @@ function ensureRedrawCompatibility(database) {
       SELECT RAISE(ABORT, 'redraw source facts immutable');
     END;
   `);
+
+  ensureRedrawCandidateReleaseContract(database);
+}
+
+function ensureRedrawCandidateReleaseContract(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS redraw_candidate_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      version_id INTEGER NOT NULL,
+      shot_id INTEGER NOT NULL,
+      video_generation_id INTEGER NOT NULL,
+      candidate_sha256 TEXT NOT NULL,
+      dependency_hash TEXT NOT NULL,
+      review_version INTEGER NOT NULL CHECK (review_version > 0),
+      decision TEXT NOT NULL CHECK (decision IN ('approved', 'rejected', 'needs_review')),
+      decision_source TEXT NOT NULL CHECK (decision_source IN ('automatic', 'human')),
+      reason_codes_json TEXT NOT NULL DEFAULT '[]',
+      metrics_json TEXT NOT NULL DEFAULT '{}',
+      reviewer_id TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(version_id) REFERENCES redraw_versions(id),
+      FOREIGN KEY(shot_id) REFERENCES redraw_shots(id)
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_redraw_candidate_review_version
+      ON redraw_candidate_reviews(tenant_id, user_id, shot_id, video_generation_id, review_version);
+
+    CREATE TRIGGER IF NOT EXISTS redraw_candidate_reviews_immutable_update
+    BEFORE UPDATE ON redraw_candidate_reviews
+    BEGIN
+      SELECT RAISE(ABORT, 'redraw candidate reviews are immutable');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS redraw_candidate_reviews_immutable_delete
+    BEFORE DELETE ON redraw_candidate_reviews
+    BEGIN
+      SELECT RAISE(ABORT, 'redraw candidate reviews are immutable');
+    END;
+  `);
+
+  if (tableExists(database, 'redraw_shots')) {
+    ensureColumns(database, 'redraw_shots', [
+      { name: 'approved_candidate_review_id', type: 'INTEGER' },
+    ]);
+  }
+  if (tableExists(database, 'redraw_exports')) {
+    ensureColumns(database, 'redraw_exports', [
+      { name: 'release_hash', type: 'TEXT' },
+      { name: 'quality_summary_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    ]);
+  }
 }
 
 /** 49 号迁移前的最小兜底，确保旧 redraw_* 表具备索引依赖列。 */
@@ -1210,12 +1263,15 @@ function ensureRedrawMigrationColumns(database) {
       { name: 'shot_index', type: 'INTEGER NOT NULL DEFAULT 1' },
       { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
       ...REDRAW_SHOT_PREPARATION_COLUMNS,
+      { name: 'approved_candidate_review_id', type: 'INTEGER' },
       { name: 'updated_at', type: 'TEXT' },
     ],
     redraw_exports: [
       { name: 'version_id', type: 'INTEGER' },
       { name: 'export_type', type: 'TEXT NOT NULL DEFAULT \'video\'' },
       { name: 'version_number', type: 'INTEGER NOT NULL DEFAULT 1' },
+      { name: 'release_hash', type: 'TEXT' },
+      { name: 'quality_summary_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
     ],
   };
 
@@ -1230,6 +1286,7 @@ function runMigrationsAndEnsure(database) {
     throw new Error('runMigrationsAndEnsure requires no active transaction');
   }
   ensureRedrawMigrationColumns(database);
+  ensureRedrawCandidateReleaseContract(database);
   runMigrations(database);
   ensureProviderRouteCostUnitConstraint(database);
   ensureAllColumns(database);

@@ -1165,3 +1165,208 @@ test('源视频 conditioning 列迁移可重复执行并兼容单列已存在的
   assert.ok(columns.includes('reference_video_urls'));
   assert.ok(columns.includes('source_conditioning_json'));
 });
+
+test('候选审核追加保存并由镜头和导出绑定当前批准哈希', () => {
+  const db = new Database(':memory:');
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+
+  const reviewColumns = new Map(
+    db.prepare('PRAGMA table_info(redraw_candidate_reviews)').all().map((column) => [column.name, column]),
+  );
+  const expectedColumns = {
+    id: ['INTEGER', 0, null],
+    tenant_id: ['TEXT', 1, null],
+    user_id: ['TEXT', 1, null],
+    version_id: ['INTEGER', 1, null],
+    shot_id: ['INTEGER', 1, null],
+    video_generation_id: ['INTEGER', 1, null],
+    candidate_sha256: ['TEXT', 1, null],
+    dependency_hash: ['TEXT', 1, null],
+    review_version: ['INTEGER', 1, null],
+    decision: ['TEXT', 1, null],
+    decision_source: ['TEXT', 1, null],
+    reason_codes_json: ['TEXT', 1, "'[]'"],
+    metrics_json: ['TEXT', 1, "'{}'"],
+    reviewer_id: ['TEXT', 0, null],
+    created_at: ['TEXT', 1, null],
+  };
+  assert.deepEqual(
+    Object.fromEntries(
+      [...reviewColumns].map(([name, column]) => [name, [column.type, column.notnull, column.dflt_value]]),
+    ),
+    expectedColumns,
+  );
+  assert.equal(reviewColumns.get('id').pk, 1);
+
+  const reviewTableSql = tableSql(db, 'redraw_candidate_reviews');
+  assert.match(reviewTableSql, /review_version INTEGER NOT NULL CHECK \(review_version > 0\)/);
+  assert.match(reviewTableSql, /decision TEXT NOT NULL CHECK \(decision IN \('approved', 'rejected', 'needs_review'\)\)/);
+  assert.match(reviewTableSql, /decision_source TEXT NOT NULL CHECK \(decision_source IN \('automatic', 'human'\)\)/);
+  assert.deepEqual(
+    db.prepare('PRAGMA foreign_key_list(redraw_candidate_reviews)').all()
+      .map((row) => [row.from, row.table, row.to])
+      .sort((left, right) => left[0].localeCompare(right[0])),
+    [
+      ['shot_id', 'redraw_shots', 'id'],
+      ['version_id', 'redraw_versions', 'id'],
+    ],
+  );
+  assert.deepEqual(
+    db.prepare('PRAGMA index_info(uq_redraw_candidate_review_version)').all().map((row) => row.name),
+    ['tenant_id', 'user_id', 'shot_id', 'video_generation_id', 'review_version'],
+  );
+
+  const shotColumns = new Map(db.prepare('PRAGMA table_info(redraw_shots)').all().map((column) => [column.name, column]));
+  assert.deepEqual(
+    {
+      type: shotColumns.get('approved_candidate_review_id').type,
+      notnull: shotColumns.get('approved_candidate_review_id').notnull,
+      default: shotColumns.get('approved_candidate_review_id').dflt_value,
+    },
+    { type: 'INTEGER', notnull: 0, default: null },
+  );
+  const exportColumns = new Map(db.prepare('PRAGMA table_info(redraw_exports)').all().map((column) => [column.name, column]));
+  assert.deepEqual(
+    {
+      releaseHash: [exportColumns.get('release_hash').type, exportColumns.get('release_hash').notnull],
+      qualitySummary: [
+        exportColumns.get('quality_summary_json').type,
+        exportColumns.get('quality_summary_json').notnull,
+        exportColumns.get('quality_summary_json').dflt_value,
+      ],
+    },
+    { releaseHash: ['TEXT', 0], qualitySummary: ['TEXT', 1, "'{}'"] },
+  );
+
+  const projectId = insertProject(db);
+  const workId = insertWork(db, projectId);
+  const versionId = insertVersion(db, workId);
+  const shotId = db.prepare(`
+    INSERT INTO redraw_shots
+      (version_id, batch_index, shot_index, start_ms, end_ms, duration_ms, status, created_at, updated_at)
+    VALUES (?, 1, 1, 0, 5000, 5000, 'draft', ?, ?)
+  `).run(versionId, NOW, NOW).lastInsertRowid;
+  const insertReview = db.prepare(`
+    INSERT INTO redraw_candidate_reviews
+      (tenant_id, user_id, version_id, shot_id, video_generation_id, candidate_sha256,
+       dependency_hash, review_version, decision, decision_source, reviewer_id, created_at)
+    VALUES
+      ('tenant-a', 'user-a', ?, ?, ?, 'candidate-hash',
+       'dependency-hash', ?, ?, ?, NULL, ?)
+  `);
+  const reviewId = insertReview.run(versionId, shotId, 501, 1, 'approved', 'automatic', NOW).lastInsertRowid;
+  assert.deepEqual(
+    db.prepare('SELECT reason_codes_json, metrics_json FROM redraw_candidate_reviews WHERE id = ?').get(reviewId),
+    { reason_codes_json: '[]', metrics_json: '{}' },
+  );
+  assert.throws(
+    () => insertReview.run(versionId, shotId, 501, 1, 'rejected', 'human', NOW),
+    /UNIQUE/,
+  );
+  const nextReviewId = insertReview.run(versionId, shotId, 501, 2, 'rejected', 'human', NOW).lastInsertRowid;
+  assert.notEqual(nextReviewId, reviewId);
+  assert.equal(
+    db.prepare('SELECT COUNT(*) AS count FROM redraw_candidate_reviews WHERE shot_id = ?').get(shotId).count,
+    2,
+  );
+  assert.throws(
+    () => insertReview.run(versionId, shotId, 502, 0, 'approved', 'automatic', NOW),
+    /CHECK/,
+  );
+  assert.throws(
+    () => insertReview.run(versionId, shotId, 503, 1, 'invalid', 'automatic', NOW),
+    /CHECK/,
+  );
+  assert.throws(
+    () => insertReview.run(versionId, shotId, 504, 1, 'approved', 'client', NOW),
+    /CHECK/,
+  );
+  assert.throws(
+    () => db.prepare("UPDATE redraw_candidate_reviews SET decision = 'rejected' WHERE id = ?").run(reviewId),
+    /immutable/,
+  );
+  assert.throws(
+    () => db.prepare('DELETE FROM redraw_candidate_reviews WHERE id = ?').run(reviewId),
+    /immutable/,
+  );
+  db.close();
+});
+
+test('旧的不完整镜头和导出表可幂等补齐候选 release 列且保留旧行', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_shots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version_id INTEGER,
+      batch_index INTEGER NOT NULL DEFAULT 1,
+      shot_index INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'draft',
+      updated_at TEXT,
+      legacy_marker TEXT
+    );
+    CREATE TABLE redraw_exports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version_id INTEGER,
+      export_type TEXT NOT NULL DEFAULT 'video',
+      version_number INTEGER NOT NULL DEFAULT 1,
+      legacy_marker TEXT
+    );
+    INSERT INTO redraw_shots
+      (version_id, batch_index, shot_index, status, updated_at, legacy_marker)
+    VALUES (7, 2, 3, 'processing', '${NOW}', 'keep-shot');
+    INSERT INTO redraw_exports
+      (version_id, export_type, version_number, legacy_marker)
+    VALUES (7, 'video', 4, 'keep-export');
+  `);
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+
+  const shotColumns = new Map(db.prepare('PRAGMA table_info(redraw_shots)').all().map((column) => [column.name, column]));
+  assert.deepEqual(
+    {
+      type: shotColumns.get('approved_candidate_review_id').type,
+      notnull: shotColumns.get('approved_candidate_review_id').notnull,
+      default: shotColumns.get('approved_candidate_review_id').dflt_value,
+    },
+    { type: 'INTEGER', notnull: 0, default: null },
+  );
+  const exportColumns = new Map(db.prepare('PRAGMA table_info(redraw_exports)').all().map((column) => [column.name, column]));
+  assert.deepEqual(
+    {
+      releaseHash: [exportColumns.get('release_hash').type, exportColumns.get('release_hash').notnull],
+      qualitySummary: [
+        exportColumns.get('quality_summary_json').type,
+        exportColumns.get('quality_summary_json').notnull,
+        exportColumns.get('quality_summary_json').dflt_value,
+      ],
+    },
+    { releaseHash: ['TEXT', 0], qualitySummary: ['TEXT', 1, "'{}'"] },
+  );
+  assert.deepEqual(
+    db.prepare('SELECT version_id, batch_index, shot_index, status, updated_at, legacy_marker, approved_candidate_review_id FROM redraw_shots WHERE id = 1').get(),
+    {
+      version_id: 7,
+      batch_index: 2,
+      shot_index: 3,
+      status: 'processing',
+      updated_at: NOW,
+      legacy_marker: 'keep-shot',
+      approved_candidate_review_id: null,
+    },
+  );
+  assert.deepEqual(
+    db.prepare('SELECT version_id, export_type, version_number, legacy_marker, release_hash, quality_summary_json FROM redraw_exports WHERE id = 1').get(),
+    {
+      version_id: 7,
+      export_type: 'video',
+      version_number: 4,
+      legacy_marker: 'keep-export',
+      release_hash: null,
+      quality_summary_json: '{}',
+    },
+  );
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'redraw_candidate_reviews'").get());
+  db.close();
+});
