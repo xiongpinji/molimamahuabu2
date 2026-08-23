@@ -25,6 +25,20 @@ const COMPLETE_ACCEPTANCE_FRAMEWORK_ID = 'stability.platform-complete-acceptance
 const UNKNOWN_STATE_RECONCILIATION_FEATURE_ID = 'stability.unknown-state-billing-reconciliation';
 const PROVIDER_ROUTE_CONTRACT_FEATURE_ID = 'stability.provider-route-contract';
 const SAFE_PROVIDER_FAILOVER_FEATURE_ID = 'stability.safe-provider-failover';
+const PROVIDER_TASK_LIVE_COMPAT_EVIDENCE =
+  'docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md';
+const PROVIDER_TASK_LIVE_COMPAT_UNLOCK = {
+  reason: '2026-08-23 供应商任务实时候选三处兼容修复获批',
+  approvedBy: 'product-owner 2026-08-23 provider-task-live-candidate-compatibility',
+  impactTests: [
+    'backend-node/test/providerTaskLiveCompatibility.test.js',
+    'backend-node/test/providerRouteSchema.test.js',
+    'backend-node/test/providerRouteVideoIntegration.test.js',
+    'backend-node/test/providerTaskReconciliation.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+  ],
+};
 const PROVIDER_TASK_RECEIPT_EVIDENCE = [
   'docs/superpowers/specs/2026-08-22-provider-task-receipt-reconciliation-design.md',
   'docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md',
@@ -112,6 +126,12 @@ const PROVIDER_TASK_STATUS_DECISION_UNLOCK = {
   ],
 };
 const PROVIDER_TASK_ARTIFACT_QUALITY_FEATURE_IDS = new Set([
+  SAFE_PROVIDER_FAILOVER_FEATURE_ID,
+  UNKNOWN_STATE_RECONCILIATION_FEATURE_ID,
+  PROACTIVE_CANARY_FEATURE_ID,
+]);
+const PROVIDER_TASK_LIVE_COMPAT_FEATURE_IDS = new Set([
+  PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
   SAFE_PROVIDER_FAILOVER_FEATURE_ID,
   UNKNOWN_STATE_RECONCILIATION_FEATURE_ID,
   PROACTIVE_CANARY_FEATURE_ID,
@@ -479,9 +499,13 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
     assert.ok(feature, `缺少功能锁 ${featureId}`);
     const qualityFixTouched = PROVIDER_TASK_ARTIFACT_QUALITY_FEATURE_IDS.has(featureId);
+    const liveCompatTouched = PROVIDER_TASK_LIVE_COMPAT_FEATURE_IDS.has(featureId);
+    const previousUnlock = qualityFixTouched
+      ? PROVIDER_TASK_STATUS_DECISION_UNLOCK
+      : PROVIDER_TASK_RECEIPT_UNLOCK;
     assert.deepEqual(
       feature.unlock,
-      qualityFixTouched ? PROVIDER_TASK_STATUS_DECISION_UNLOCK : PROVIDER_TASK_RECEIPT_UNLOCK,
+      liveCompatTouched ? PROVIDER_TASK_LIVE_COMPAT_UNLOCK : previousUnlock,
     );
     assert.deepEqual(feature.unlockHistory, [
       HISTORICAL_UNLOCK_BY_FEATURE[featureId],
@@ -489,6 +513,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       ...(qualityFixTouched ? [PROVIDER_TASK_ARTIFACT_QUALITY_UNLOCK] : []),
       ...(qualityFixTouched ? [LEGACY_DJPSD_STRICT_ARTIFACT_UNLOCK] : []),
       ...(qualityFixTouched ? [ASYNC_VIDEO_PROTOCOL_ARTIFACT_UNLOCK] : []),
+      ...(liveCompatTouched ? [previousUnlock] : []),
     ]);
     assert.deepEqual(
       feature.evidence.slice(0, HISTORICAL_EVIDENCE_BY_FEATURE[featureId].length),
@@ -503,10 +528,14 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     for (const evidencePath of PROVIDER_TASK_RECEIPT_EVIDENCE) {
       assert.ok(feature.evidence.includes(evidencePath), `${featureId} 缺少证据: ${evidencePath}`);
     }
-    assert.deepEqual(
-      feature.evidence.slice(-PROVIDER_TASK_RECEIPT_EVIDENCE.length),
-      PROVIDER_TASK_RECEIPT_EVIDENCE,
-    );
+    if (liveCompatTouched) {
+      assert.equal(feature.evidence.at(-1), PROVIDER_TASK_LIVE_COMPAT_EVIDENCE);
+    } else {
+      assert.deepEqual(
+        feature.evidence.slice(-PROVIDER_TASK_RECEIPT_EVIDENCE.length),
+        PROVIDER_TASK_RECEIPT_EVIDENCE,
+      );
+    }
   }
   const appLocks = manifest.features
     .filter((feature) => feature.protectedPaths.includes('backend-node/src/app.js'))
@@ -515,7 +544,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
   assert.deepEqual(appLocks, [PROACTIVE_CANARY_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].sort());
   for (const featureId of appLocks) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
-    assert.deepEqual(feature.unlock, PROVIDER_TASK_STATUS_DECISION_UNLOCK);
+    assert.deepEqual(feature.unlock, PROVIDER_TASK_LIVE_COMPAT_UNLOCK);
   }
 });
 
@@ -537,6 +566,26 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
   assert.ok(unknownState.evidence.includes(
     'docs/verification/platform-stability/video-audio-credit-reconciliation-20260822.md',
   ));
+});
+
+test('实时候选兼容修复刷新四个运行时功能锁并登记补丁测试与证据', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  for (const featureId of [
+    PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
+    SAFE_PROVIDER_FAILOVER_FEATURE_ID,
+    UNKNOWN_STATE_RECONCILIATION_FEATURE_ID,
+    PROACTIVE_CANARY_FEATURE_ID,
+  ]) {
+    const feature = manifest.features.find((entry) => entry.featureId === featureId);
+    assert.ok(feature, `缺少功能锁 ${featureId}`);
+    assert.deepEqual(feature.unlock, PROVIDER_TASK_LIVE_COMPAT_UNLOCK);
+    assert.ok(feature.unlockHistory.some((entry) => (
+      entry.reason === PROVIDER_TASK_STATUS_DECISION_UNLOCK.reason
+        || entry.reason === PROVIDER_TASK_RECEIPT_UNLOCK.reason
+    )), `${featureId} 缺少上一阶段批准历史`);
+    assert.ok(feature.requiredTests.includes('backend-node/test/providerTaskLiveCompatibility.test.js'));
+    assert.equal(feature.evidence.at(-1), PROVIDER_TASK_LIVE_COMPAT_EVIDENCE);
+  }
 });
 
 test('显式 --base 拒绝不存在的 Git 引用且不能静默按零变更放行', () => {

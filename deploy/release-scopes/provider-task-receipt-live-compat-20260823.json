@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "release": "provider-task-receipt-live-compat-20260823",
+  "runtimeRepairPaths": [
+    "backend-node/src/db/migrate.js",
+    "backend-node/src/services/videoClient.js",
+    "backend-node/src/services/videoService.js"
+  ],
+  "allowedPaths": [
+    "backend-node/scripts/apply-provider-task-live-compat.js",
+    "backend-node/src/db/migrate.js",
+    "backend-node/src/services/videoClient.js",
+    "backend-node/src/services/videoService.js",
+    "backend-node/test/featureLockManifest.test.js",
+    "backend-node/test/incrementalReleaseScope.test.js",
+    "backend-node/test/providerTaskLiveCompatibility.test.js",
+    "deploy/release-scopes/provider-task-receipt-live-compat-20260823.json",
+    "docs/verification/platform-stability/feature-lock-manifest.json",
+    "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md"
+  ]
+}
