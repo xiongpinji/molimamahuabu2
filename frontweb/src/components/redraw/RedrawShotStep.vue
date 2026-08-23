@@ -183,7 +183,10 @@ function referenceBundleEvidence(response, shotId) {
         && Number(bundle?.motion_reference?.audio_stream_count) === 0
     ),
     dialogue: Boolean(
-      bundle?.dialogue?.target_locale === 'en-US'
+      String(bundle?.dialogue?.target_locale || '').trim()
+        && bundle.dialogue.target_locale === bundle?.locale
+        && String(bundle?.dialogue?.target_market || '').trim()
+        && bundle.dialogue.target_market === bundle?.market
         && Array.isArray(bundle?.dialogue?.turns)
         && !/[\u3400-\u9fff]/.test(JSON.stringify(bundle.dialogue.turns))
     ),

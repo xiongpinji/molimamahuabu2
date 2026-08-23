@@ -15,6 +15,40 @@ const referenceBundleSource = source('../src/components/redraw/RedrawReferenceBu
 const batchSource = source('../src/components/redraw/RedrawBatchPanel.vue')
 const previewSource = source('../src/components/redraw/RedrawShotPreview.vue')
 
+function evaluateReferenceBundleEvidence(response, shotId) {
+  const functionSource = stepSource.slice(
+    stepSource.indexOf('function referenceBundleEvidence'),
+    stepSource.indexOf('function setReferenceBundleState'),
+  )
+  const factory = new Function('HEX_SHA256', `${functionSource}; return referenceBundleEvidence`)
+  return factory(/^[a-f0-9]{64}$/i)(response, shotId)
+}
+
+function readyReferenceBundle(locale, market, dialogue = {}) {
+  return {
+    shot_id: 7,
+    reference_bundle_hash: 'a'.repeat(64),
+    reference_bundle_updated_at: '2026-08-23T08:00:00.000Z',
+    bundle: {
+      schema_version: 'redraw-reference-bundle-v2',
+      locale,
+      market,
+      coverage_review: {
+        recognizable_face_count: 0,
+        mapped_face_count: 0,
+        unresolved_face_count: 0,
+        recognizable_text_region_count: 0,
+        mapped_text_region_count: 0,
+        unresolved_text_region_count: 0,
+      },
+      face_tracks: [],
+      text_regions: [],
+      motion_reference: { asset_id: 1, sha256: 'b'.repeat(64), audio_stream_count: 0 },
+      dialogue: { target_locale: locale, target_market: market, turns: [], ...dialogue },
+    },
+  }
+}
+
 async function shotState() {
   try {
     return await import('../src/utils/redrawShotState.js')
@@ -214,6 +248,16 @@ test('强制参考包版本仅以 GET 完整证据放行保存后单镜与批量
   assert.match(editorSource, /props\.referenceBundleRequired/)
   assert.match(editorSource, /props\.referenceBundleSaving \|\| !props\.referenceBundleState\.ready/)
   assert.match(editorSource, /canvas-credit-callout-v1/)
+})
+
+test('参考包对白就绪绑定当前 locale 和 market 且不硬编码美国英语', () => {
+  assert.doesNotMatch(stepSource, /target_locale\s*===\s*'en-US'/)
+  assert.equal(evaluateReferenceBundleEvidence(readyReferenceBundle('en-US', 'US'), 7).ready, true)
+  assert.equal(evaluateReferenceBundleEvidence(readyReferenceBundle('es-ES', 'ES'), 7).ready, true)
+  assert.equal(evaluateReferenceBundleEvidence(readyReferenceBundle('es-ES', 'ES', { target_locale: 'en-US' }), 7).ready, false)
+  assert.equal(evaluateReferenceBundleEvidence(readyReferenceBundle('es-ES', 'ES', { target_market: 'US' }), 7).ready, false)
+  assert.equal(evaluateReferenceBundleEvidence(readyReferenceBundle('es-ES', 'ES', { target_locale: '' }), 7).ready, false)
+  assert.equal(evaluateReferenceBundleEvidence(readyReferenceBundle('es-ES', 'ES', { target_market: '' }), 7).ready, false)
 })
 
 test('第三步工作台覆盖批次、编辑、计费、重试、对照预览和后端轮询', () => {
