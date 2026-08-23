@@ -16,6 +16,7 @@ const evidence = require('../src/services/providerCanaryEvidenceService');
 const modelPrice = require('../src/services/modelPriceService');
 const routeCost = require('../src/services/providerRouteCostService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const validMp3Bytes = require('./fixtures/minimalMp3');
 
 const NOW = '2026-08-18T00:00:00.000Z';
 const log = { info() {}, warn() {}, error() {} };
@@ -61,21 +62,35 @@ function addConfig(db, serviceType, suffix = 'a') {
   db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
     .run(config.id);
   modelPrice.set(db, config.logical_model_id, 10, {
-    category: serviceType,
+    category: serviceType === 'tts' ? 'audio' : serviceType,
     billing_unit: serviceType === 'video' ? 'second' : 'request',
-    cost_unit: serviceType === 'video' ? 'second' : serviceType === 'text' ? 'token' : 'image',
+    cost_unit: serviceType === 'video'
+      ? 'second'
+      : serviceType === 'text'
+        ? 'token'
+        : serviceType === 'tts'
+          ? 'request'
+          : 'image',
     cost_micros_per_unit: serviceType === 'text' ? 0 : 1000,
     input_cost_micros_per_1k: serviceType === 'text' ? 1000 : 0,
     output_cost_micros_per_1k: serviceType === 'text' ? 2000 : 0,
   });
-  routeCost.setRouteCost(db, config.id, serviceType === 'text' ? {
-    cost_unit: 'token',
-    input_cost_micros_per_1k: 1000,
-    output_cost_micros_per_1k: 2000,
-  } : {
-    cost_unit: serviceType === 'video' ? 'second' : 'image',
-    micros_per_unit: 1000,
-  }, { now: NOW });
+  routeCost.setRouteCost(db, config.id,
+    serviceType === 'text'
+      ? {
+        cost_unit: 'token',
+        input_cost_micros_per_1k: 1000,
+        output_cost_micros_per_1k: 2000,
+      }
+      : {
+        cost_unit: serviceType === 'video'
+          ? 'second'
+          : serviceType === 'tts'
+            ? 'request'
+            : 'image',
+        micros_per_unit: 1000,
+      },
+    { now: NOW });
   return aiConfigService.getConfig(db, config.id);
 }
 
@@ -137,17 +152,18 @@ function addHttpVideoConfig(db, server, suffix) {
 }
 
 function capabilityFor(serviceType) {
+  const hasMediaReferences = !['text', 'tts'].includes(serviceType);
   const capability = {
     serviceType,
-    generationType: serviceType === 'text' ? 'text' : `${serviceType}_generation`,
+    generationType: ['text', 'tts'].includes(serviceType) ? serviceType : `${serviceType}_generation`,
     count: 1,
-    referenceImageCount: serviceType === 'text' ? 0 : 2,
+    referenceImageCount: hasMediaReferences ? 2 : 0,
     referenceVideoCount: serviceType === 'video' ? 1 : 0,
     referenceAudioCount: serviceType === 'video' ? 1 : 0,
     firstFrame: serviceType === 'video',
     lastFrame: false,
   };
-  if (serviceType !== 'text') {
+  if (hasMediaReferences) {
     capability.resolution = serviceType === 'video' ? '720p' : '1k';
     capability.aspectRatio = '16:9';
   }
@@ -222,30 +238,38 @@ function baseOptions(capability, overrides = {}) {
   };
 }
 
-test('buildCanaryRequest is fixed safe input and pins image and video requests to one config', () => {
+test('buildCanaryRequest is fixed safe input and pins image, video, and TTS requests to one config', () => {
   const executor = loadExecutor();
   const db = createDb();
   try {
     const image = addConfig(db, 'image');
     const video = addConfig(db, 'video');
+    const tts = addConfig(db, 'tts');
     const imageCapability = capabilityFor('image');
     const videoCapability = capabilityFor('video');
+    const ttsCapability = capabilityFor('tts');
     const imageRequest = executor.buildCanaryRequest(
       db, image, imageCapability, fixturesFor(imageCapability),
     );
     const videoRequest = executor.buildCanaryRequest(
       db, video, videoCapability, fixturesFor(videoCapability),
     );
+    const ttsRequest = executor.buildCanaryRequest(
+      db, tts, ttsCapability, fixturesFor(ttsCapability),
+    );
 
     assert.equal(imageRequest.config_id, image.id);
     assert.equal(videoRequest.config_id, video.id);
+    assert.equal(ttsRequest.config_id, tts.id);
+    assert.equal(typeof ttsRequest.text, 'string');
+    assert.ok(ttsRequest.text.length > 0);
     assert.equal(imageRequest.size, imageCapability.resolution);
     assert.deepEqual(imageRequest.reference_image_urls, fixtures().imageUrls);
     assert.deepEqual(videoRequest.reference_urls, fixtures().imageUrls);
     assert.deepEqual(videoRequest.reference_video_urls, fixtures().videoUrls);
     assert.deepEqual(videoRequest.reference_audio_urls, fixtures().audioUrls);
     assert.equal(videoRequest.first_frame_url, fixtures().firstFrameUrl);
-    const serialized = JSON.stringify({ imageRequest, videoRequest });
+    const serialized = JSON.stringify({ imageRequest, videoRequest, ttsRequest });
     assert.match(serialized, /蓝色圆形|blue circle/i);
     assert.doesNotMatch(serialized, /人物|人像|user|sk-private/);
   } finally {
@@ -253,7 +277,7 @@ test('buildCanaryRequest is fixed safe input and pins image and video requests t
   }
 });
 
-for (const serviceType of ['image', 'video']) {
+for (const serviceType of ['image', 'video', 'tts']) {
   test(`${serviceType} canary fails closed before submission when output count is not one`, async (t) => {
     const executor = loadExecutor();
     const db = createDb();
@@ -274,6 +298,7 @@ for (const serviceType of ['image', 'video']) {
       clients: {
         async callImageApi() { submissions += 1; },
         async callVideoApi() { submissions += 1; },
+        async synthesizeTts() { submissions += 1; },
       },
     });
     t.after(() => fs.rmSync(options.storageRoot, { recursive: true, force: true }));
@@ -296,8 +321,10 @@ test('estimateCanaryCost uses the configured model cost and rejects zero or miss
   try {
     const image = addConfig(db, 'image');
     const video = addConfig(db, 'video');
+    const tts = addConfig(db, 'tts');
     assert.equal(executor.estimateCanaryCost(db, image, capabilityFor('image')), 1000);
     assert.equal(executor.estimateCanaryCost(db, video, capabilityFor('video')), 5000);
+    assert.equal(executor.estimateCanaryCost(db, tts, capabilityFor('tts')), 1000);
     db.prepare('UPDATE model_credit_prices SET cost_micros_per_unit = 0 WHERE model = ?')
       .run(image.logical_model_id);
     db.prepare('UPDATE provider_route_costs SET micros_per_unit = 0 WHERE config_id = ?')
@@ -937,4 +964,157 @@ test('text success verifies a non-empty digest, writes fresh evidence, and never
   assert.doesNotMatch(JSON.stringify(calls[0]), /sk-private|人物|用户/);
   assert.equal(db.prepare('SELECT state FROM provider_canary_evidence').get().state, 'fresh');
   assert.deepEqual(rowCounts(db), before);
+});
+
+test('TTS canary submits once to the exact config, verifies the isolated MP3, and writes fresh evidence', async (t) => {
+  const executor = loadExecutor();
+  const db = createDb();
+  t.after(() => db.close());
+  const config = addConfig(db, 'tts', 'success');
+  const capability = capabilityFor('tts');
+  const run = reserveRun(db, config, capability, 'tts-success');
+  const before = rowCounts(db);
+  const calls = [];
+  const options = baseOptions(capability, {
+    clients: {
+      async synthesizeTts(_db, _log, request) {
+        calls.push(request);
+        const relativePath = `${request.storage_subdir}/tts_sbx_success.mp3`;
+        const filePath = path.join(request.storage_base, ...relativePath.split('/'));
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, validMp3Bytes);
+        return {
+          local_path: relativePath,
+          provider_task_id: 'tts-task-success',
+          status: 'completed',
+        };
+      },
+    },
+  });
+  t.after(() => fs.rmSync(options.storageRoot, { recursive: true, force: true }));
+
+  const result = await executor.executeCanaryRun(db, log, run, options);
+  const stored = db.prepare(`SELECT state, provider_task_id, artifact_path, actual_cost_micros
+    FROM provider_canary_runs WHERE id = ?`).get(run.id);
+  assert.equal(result.state, 'succeeded');
+  assert.equal(result.submitCount, 1);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].config.id, config.id);
+  assert.equal(calls[0].storage_base, options.storageRoot);
+  assert.equal(calls[0].storage_subdir, `_system/provider-canary/runs/${run.id}`);
+  assert.equal(calls[0].storyboard_id, null);
+  assert.match(calls[0].text, /测试/);
+  assert.doesNotMatch(calls[0].text, /人物|人像|用户/);
+  assert.deepEqual(stored, {
+    state: 'succeeded',
+    provider_task_id: 'tts-task-success',
+    artifact_path: `_system/provider-canary/runs/${run.id}/tts_sbx_success.mp3`,
+    actual_cost_micros: 40_000,
+  });
+  assert.equal(db.prepare('SELECT state FROM provider_canary_evidence').get().state, 'fresh');
+  assert.deepEqual(rowCounts(db), before);
+});
+
+test('TTS completed without a readable MP3 stays held as artifact_unreadable and is never retried', async (t) => {
+  const executor = loadExecutor();
+  const db = createDb();
+  t.after(() => db.close());
+  const config = addConfig(db, 'tts', 'bad-audio');
+  const capability = capabilityFor('tts');
+  const run = reserveRun(db, config, capability, 'tts-bad-audio');
+  let submissions = 0;
+  const options = baseOptions(capability, {
+    clients: {
+      async synthesizeTts(_db, _log, request) {
+        submissions += 1;
+        const relativePath = `${request.storage_subdir}/tts_sbx_invalid.mp3`;
+        const filePath = path.join(request.storage_base, ...relativePath.split('/'));
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, Buffer.from('not mp3'));
+        return { local_path: relativePath, provider_task_id: 'tts-task-invalid' };
+      },
+    },
+  });
+  t.after(() => fs.rmSync(options.storageRoot, { recursive: true, force: true }));
+
+  const result = await executor.executeCanaryRun(db, log, run, options);
+  const stored = db.prepare(`SELECT state, provider_task_id, actual_cost_micros, safe_error_summary
+    FROM provider_canary_runs WHERE id = ?`).get(run.id);
+  assert.equal(result.state, 'artifact_unreadable');
+  assert.equal(result.submitCount, 1);
+  assert.equal(submissions, 1);
+  assert.equal(stored.state, 'artifact_unreadable');
+  assert.equal(stored.provider_task_id, 'tts-task-invalid');
+  assert.equal(stored.actual_cost_micros, null);
+  assert.match(stored.safe_error_summary, /^category=artifact_unreadable/);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM provider_canary_evidence WHERE state = 'fresh'").get().count, 0);
+});
+
+test('TTS unknown submit outcome stays held with its provider task id and is never retried', async (t) => {
+  const executor = loadExecutor();
+  const db = createDb();
+  t.after(() => db.close());
+  const config = addConfig(db, 'tts', 'unknown');
+  const capability = capabilityFor('tts');
+  const run = reserveRun(db, config, capability, 'tts-unknown');
+  let submissions = 0;
+  const options = baseOptions(capability, {
+    clients: {
+      async synthesizeTts() {
+        submissions += 1;
+        const error = new Error('private relay URL and key must not be stored');
+        error.code = 'PROVIDER_STATUS_UNKNOWN';
+        error.status = 'unknown';
+        error.unknown = true;
+        error.provider_task_id = 'tts-task-unknown';
+        throw error;
+      },
+    },
+  });
+  t.after(() => fs.rmSync(options.storageRoot, { recursive: true, force: true }));
+
+  const result = await executor.executeCanaryRun(db, log, run, options);
+  const stored = db.prepare(`SELECT state, provider_task_id, actual_cost_micros, safe_error_summary
+    FROM provider_canary_runs WHERE id = ?`).get(run.id);
+  assert.equal(result.state, 'submission_unknown');
+  assert.equal(result.submitCount, 1);
+  assert.equal(submissions, 1);
+  assert.equal(stored.provider_task_id, 'tts-task-unknown');
+  assert.equal(stored.actual_cost_micros, null);
+  assert.doesNotMatch(stored.safe_error_summary, /private|relay|key/);
+});
+
+test('TTS explicit pre-acceptance rejection refunds the canary budget once', async (t) => {
+  const executor = loadExecutor();
+  const db = createDb();
+  t.after(() => db.close());
+  const config = addConfig(db, 'tts', 'rejected');
+  const capability = capabilityFor('tts');
+  const run = reserveRun(db, config, capability, 'tts-rejected');
+  let submissions = 0;
+  const options = baseOptions(capability, {
+    clients: {
+      async synthesizeTts() {
+        submissions += 1;
+        const error = new Error('private provider response');
+        error.route_meta = {
+          httpStatus: 400,
+          phase: 'submit',
+          requestBodySent: false,
+          explicitlyRejected: true,
+        };
+        throw error;
+      },
+    },
+  });
+  t.after(() => fs.rmSync(options.storageRoot, { recursive: true, force: true }));
+
+  const result = await executor.executeCanaryRun(db, log, run, options);
+  const stored = db.prepare(`SELECT state, actual_cost_micros, safe_error_summary
+    FROM provider_canary_runs WHERE id = ?`).get(run.id);
+  assert.equal(result.state, 'failed');
+  assert.equal(result.submitCount, 1);
+  assert.equal(submissions, 1);
+  assert.equal(stored.actual_cost_micros, 0);
+  assert.equal(stored.safe_error_summary, 'category=validation_error status=400');
 });

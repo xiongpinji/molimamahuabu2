@@ -210,6 +210,68 @@ test('capability profiles form deterministic exact dimension combinations and us
   assert.equal(profiles.some((row) => row.resolution === '720p' && row.duration === 15), true);
 });
 
+test('TTS declares exactly one request-priced profile and admin pause remains a blocker', (t) => {
+  const scheduler = loadScheduler();
+  const { db } = setup(t);
+  const route = config(31, {
+    service_type: 'tts',
+    provider: 'openai',
+    api_protocol: 'openai',
+    logical_model_id: 'logical-tts-ready',
+    capabilities: { supportsTts: true },
+  });
+  insertRoute(db, route);
+  db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
+    .run(route.id);
+  modelPriceService.set(db, route.logical_model_id, 10, {
+    category: 'audio',
+    billing_unit: 'request',
+    cost_unit: 'request',
+    cost_micros_per_unit: 1000,
+  });
+  routeCostService.setRouteCost(db, route.id, {
+    cost_unit: 'request',
+    micros_per_unit: 1000,
+  });
+
+  const profiles = scheduler.enumerateCapabilityProfiles(route);
+  assert.equal(profiles.length, 1);
+  assert.deepEqual(profiles[0], {
+    serviceType: 'tts',
+    generationType: 'tts',
+    resolution: null,
+    aspectRatio: null,
+    duration: 0,
+    count: 1,
+    referenceImageCount: 0,
+    referenceVideoCount: 0,
+    referenceAudioCount: 0,
+    requiresAudio: false,
+    firstFrame: false,
+    lastFrame: false,
+    slotSemantics: [],
+    modelFeatures: [],
+    userPriceContract: null,
+  });
+
+  const due = scheduler.selectDueProfiles(db, {
+    now: '2026-08-18T00:00:00.000Z',
+    configs: [route],
+  });
+  assert.equal(due.length, 1);
+  assert.equal(due[0].reservedCostMicros, 1000);
+  assert.equal(due[0].blockedReason, null);
+
+  const paused = { ...route, canary_paused: true };
+  const blocked = scheduler.selectDueProfiles(db, {
+    now: '2026-08-18T00:00:00.000Z',
+    configs: [paused],
+  });
+  assert.equal(blocked.length, 1);
+  assert.equal(blocked[0].blockedReason, 'canary_paused');
+  assert.equal(blocked[0].reservedCostMicros, null);
+});
+
 test('per-model declarations override base declarations without cross-dimension inference', () => {
   const scheduler = loadScheduler();
   const route = config(1, {

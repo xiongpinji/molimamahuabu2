@@ -3,6 +3,7 @@
 const aiClient = require('./aiClient');
 const aiConfigService = require('./aiConfigService');
 const imageClient = require('./imageClient');
+const ttsService = require('./ttsService');
 const videoClient = require('./videoClient');
 const routeCostService = require('./providerRouteCostService');
 const budgetService = require('./providerCanaryBudgetService');
@@ -13,6 +14,7 @@ const { classifyProviderFailure, toSafeErrorSummary } = require('./providerError
 const SAFE_MEDIA_PROMPT = '生成一个蓝色圆形位于白色背景中央。';
 const SAFE_TEXT_PROMPT = '只返回固定短词 CANARY_OK';
 const SAFE_TEXT_SYSTEM_PROMPT = '严格按要求返回，不添加解释。';
+const SAFE_TTS_TEXT = '这是一段系统连通性测试语音。';
 
 function serviceError(code, message) {
   const error = new Error(message);
@@ -88,7 +90,7 @@ function buildCanaryRequest(_db, config, capability, fixtures = {}) {
   requireSingleOutput(capability);
   const configId = positiveConfigId(config);
   const serviceType = String(config.service_type || '').trim().toLowerCase();
-  if (!['image', 'storyboard_image', 'video', 'text'].includes(serviceType)) {
+  if (!['image', 'storyboard_image', 'video', 'text', 'tts'].includes(serviceType)) {
     throw serviceError('PROVIDER_CANARY_SERVICE_UNSUPPORTED', 'provider canary service type is unsupported');
   }
   if (serviceType === 'text') {
@@ -98,6 +100,9 @@ function buildCanaryRequest(_db, config, capability, fixtures = {}) {
       system_prompt: SAFE_TEXT_SYSTEM_PROMPT,
       options: { max_tokens: 16, temperature: 0 },
     };
+  }
+  if (serviceType === 'tts') {
+    return { config_id: configId, text: SAFE_TTS_TEXT };
   }
   const refs = exactFixtures(fixtures, capability);
   const aspectRatio = capability?.aspectRatio ?? capability?.aspect_ratio ?? null;
@@ -190,7 +195,9 @@ function safeMeta(errorOrResult, fallback = {}) {
       ? meta.httpStatus
       : fallback.httpStatus,
     providerCode: meta.providerCode ?? fallback.providerCode,
-    providerTaskId: meta.providerTaskId ?? fallback.providerTaskId,
+    providerTaskId: meta.providerTaskId
+      ?? errorOrResult?.provider_task_id
+      ?? fallback.providerTaskId,
     phase: meta.phase ?? fallback.phase,
     requestBodySent: meta.requestBodySent ?? fallback.requestBodySent,
     transportCode: meta.transportCode || errorOrResult?.code,
@@ -283,11 +290,13 @@ async function executeCanaryRun(db, log, runInput, options = {}) {
     )),
     pollVideoTask: options.clients?.pollVideoTask || videoClient.pollVideoTask,
     generateTextForConfigId: options.clients?.generateTextForConfigId || aiClient.generateTextForConfigId,
+    synthesizeTts: options.clients?.synthesizeTts || ttsService.synthesize,
   };
   const artifacts = {
     materializeImage: options.artifacts?.materializeImage || artifactService.materializeImage,
     materializeVideo: options.artifacts?.materializeVideo || artifactService.materializeVideo,
     verifyText: options.artifacts?.verifyText || artifactService.verifyText,
+    verifyAudio: options.artifacts?.verifyAudio || artifactService.verifyAudio,
   };
   let submitCount = 0;
   budgetService.claimForExecution(db, run.id, now);
@@ -306,6 +315,14 @@ async function executeCanaryRun(db, log, runInput, options = {}) {
         request.system_prompt,
         request.options,
       );
+    } else if (run.service_type === 'tts') {
+      result = await clients.synthesizeTts(db, log, {
+        text: request.text,
+        storyboard_id: null,
+        config,
+        storage_base: options.storageRoot,
+        storage_subdir: `_system/provider-canary/runs/${run.id}`,
+      });
     } else {
       throw serviceError('PROVIDER_CANARY_SERVICE_UNSUPPORTED', 'provider canary service type is unsupported');
     }
@@ -357,6 +374,11 @@ async function executeCanaryRun(db, log, runInput, options = {}) {
     }
   }
 
+  if (run.service_type === 'tts') {
+    providerTaskId = String(result?.provider_task_id || '').trim() || null;
+    if (providerTaskId) budgetService.markAccepted(db, run.id, providerTaskId, now);
+  }
+
   const meta = safeMeta(result);
   if (result && typeof result === 'object' && result.error
       && !(result.image_url || result.video_url)) {
@@ -382,6 +404,7 @@ async function executeCanaryRun(db, log, runInput, options = {}) {
   }
 
   if (run.service_type !== 'text'
+      && run.service_type !== 'tts'
       && !result?.image_url
       && !result?.video_url) {
     markVerifying(db, run.id, now);
@@ -412,6 +435,11 @@ async function executeCanaryRun(db, log, runInput, options = {}) {
         storageRoot: options.storageRoot,
         runId: run.id,
         ...(options.artifactOptions || {}),
+      });
+    } else if (run.service_type === 'tts') {
+      summary = artifacts.verifyAudio(result.local_path, {
+        storageRoot: options.storageRoot,
+        runId: run.id,
       });
     } else {
       summary = artifacts.verifyText(result);

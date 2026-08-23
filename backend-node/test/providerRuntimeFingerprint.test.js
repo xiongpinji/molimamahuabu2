@@ -185,6 +185,57 @@ test('catalog-supported text and image protocols with runtime branches have mapp
   }
 });
 
+test('MiniMax and OpenAI TTS mappings fingerprint the real synthesis and model-selection runtime', (t) => {
+  const common = {
+    'src/services/providerErrorClassifier.js': 'classifier\n',
+    'src/services/ttsService.js': 'tts client v1\n',
+    'src/services/ttsConfigSelectionService.js': 'tts model selector v1\n',
+  };
+  const rootA = createRuntimeRoot(t, 'tts-a', common);
+  const rootB = createRuntimeRoot(t, 'tts-b', common);
+  const configs = [
+    { service_type: 'tts', provider: 'minimax', api_protocol: 'minimax' },
+    { service_type: 'tts', provider: 'openai', api_protocol: 'openai' },
+  ];
+
+  for (const config of configs) {
+    const baseline = runtimeService.runtimeFingerprintForConfig(config, { repoRoot: rootA });
+    assert.equal(baseline.ok, true, JSON.stringify(baseline));
+    assert.deepEqual(baseline.files, [
+      'src/middleware/resourceOwnership.js',
+      'src/services/providerAssetUrlService.js',
+      'src/services/providerCanaryArtifactService.js',
+      'src/services/providerCanaryFixtureService.js',
+      'src/services/providerErrorClassifier.js',
+      'src/services/ttsConfigSelectionService.js',
+      'src/services/ttsService.js',
+      'src/services/userAuthService.js',
+      'src/utils/ffmpegPath.js',
+    ]);
+
+    fs.writeFileSync(path.join(rootB, 'src', 'services', 'ttsService.js'), 'tts client v2\n');
+    assert.notEqual(
+      baseline.fingerprint,
+      runtimeService.runtimeFingerprintForConfig(config, { repoRoot: rootB }).fingerprint,
+    );
+    fs.writeFileSync(path.join(rootB, 'src', 'services', 'ttsService.js'), 'tts client v1\n');
+    fs.writeFileSync(path.join(rootB, 'src', 'services', 'ttsConfigSelectionService.js'), 'tts selector v2\n');
+    assert.notEqual(
+      baseline.fingerprint,
+      runtimeService.runtimeFingerprintForConfig(config, { repoRoot: rootB }).fingerprint,
+    );
+    fs.writeFileSync(path.join(rootB, 'src', 'services', 'ttsConfigSelectionService.js'), 'tts model selector v1\n');
+  }
+
+  const unknown = runtimeService.runtimeFingerprintForConfig(
+    { service_type: 'tts', provider: 'custom', api_protocol: 'invented-tts' },
+    { repoRoot: rootA },
+  );
+  assert.equal(unknown.ok, false);
+  assert.equal(unknown.code, 'missing_runtime_mapping');
+  assert.equal(unknown.fingerprint, null);
+});
+
 test('video protocols without submission dispatch stay unmapped while wired protocols remain mapped', (t) => {
   const root = createRuntimeRoot(t, 'video-dispatch', {
     'src/services/videoClient.js': 'video common\n',
