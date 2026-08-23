@@ -561,10 +561,16 @@ function sameRequestSnapshot(storedSnapshot, expectedSnapshot) {
       'coverage_sha256',
       'source_sha256',
       'motion_sha256',
+      'dialogue_kind',
+      'speech_required',
+      'source_dialogue_sha256',
       'dialogue_script_sha256',
       'character_name_map_sha256',
+      'localization_binding_sha256',
     ]) {
-      if (storedBundle[key] !== expectedBundle[key]) return false;
+      if (!Object.prototype.hasOwnProperty.call(storedBundle, key)
+        || !Object.prototype.hasOwnProperty.call(expectedBundle, key)
+        || storedBundle[key] !== expectedBundle[key]) return false;
     }
   }
   return true;
@@ -846,7 +852,7 @@ async function prepareServerSourceConditioning(ctx, shot, generation) {
   return result;
 }
 
-async function prepareReferenceBundleConditioning(ctx, shot) {
+async function prepareReferenceBundleGeneration(ctx, shot) {
   const projection = await redrawReferenceBundleService.projectReferenceBundleForGeneration({
     ...ctx,
     versionId: Number(shot.version_id),
@@ -943,7 +949,7 @@ async function generateShot(ctx, input = {}) {
   }
   let referenceBundleProjection = null;
   const sourceConditioning = requiresReferenceBundle
-    ? (referenceBundleProjection = await prepareReferenceBundleConditioning(ctx, shot)).sourceConditioning
+    ? (referenceBundleProjection = await prepareReferenceBundleGeneration(ctx, shot)).sourceConditioning
     : await prepareServerSourceConditioning(ctx, shot, generation);
   generation.sourceConditioning = sourceConditioning.billingSnapshot;
   if (requiresReferenceBundle) {
@@ -980,6 +986,13 @@ async function generateShot(ctx, input = {}) {
   }
   if (typeof ctx.beforeCreateTransaction === 'function') {
     await ctx.beforeCreateTransaction({ shot, generation });
+  }
+  if (requiresReferenceBundle) {
+    const currentProjection = await prepareReferenceBundleGeneration(ctx, shot);
+    if (JSON.stringify(currentProjection.referenceBundleSnapshot)
+      !== JSON.stringify(referenceBundleProjection.referenceBundleSnapshot)) {
+      throw codedError('REDRAW_SHOT_CONFLICT', '当前参考包绑定已变更，请刷新后重试');
+    }
   }
   let created;
   try {

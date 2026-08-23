@@ -724,18 +724,43 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
   const nameMap = { 'character-001': 'Ethan', 'character-002': 'Maya' };
   const sourceFacts = {
     schema_version: '2.0',
-    script_sha256: '5'.repeat(64),
-    name_map_source_sha256: crypto.createHash('sha256').update(stableJson(nameMap)).digest('hex'),
+    duration_ms: 12000,
     characters: [
       {
-        source_character_key: 'character-001',
-        source_name: 'Ethan source',
+        id: 'character-001',
+        source_name: '角色一',
+        display_name: '角色一',
+        relationship: '主角',
       },
       {
-        source_character_key: 'character-002',
-        source_name: 'Maya source',
+        id: 'character-002',
+        source_name: '角色二',
+        display_name: '角色二',
+        relationship: '证人',
       },
     ],
+    shots: [{
+      id: 'shot-1',
+      index: 1,
+      start_ms: 0,
+      end_ms: 12000,
+      dialogue: [
+        {
+          id: 'turn-001',
+          speaker_id: 'character-001',
+          source_text: '跟我走。',
+          start_ms: 0,
+          end_ms: 2400,
+        },
+        {
+          id: 'turn-002',
+          speaker_id: 'character-002',
+          source_text: '没有证据我不走。',
+          start_ms: 2500,
+          end_ms: 5000,
+        },
+      ],
+    }],
   };
   const factsHash = crypto.createHash('sha256').update(stableJson(sourceFacts)).digest('hex');
   state.db.prepare(`UPDATE redraw_works
@@ -1245,6 +1270,27 @@ function referenceBundleAudioCapability(state) {
     config_updated_at: state.now,
     supportsAudio: true,
     max_videos: 3,
+  };
+}
+
+function referenceBundleGenerationDeps(state, overrides = {}) {
+  return {
+    storageRoot: state.storageRoot,
+    versionId: state.versionId,
+    probeRunner: async () => ({
+      duration_ms: 12000,
+      width: 864,
+      height: 496,
+      mime_type: 'video/mp4',
+      video_codec: 'h264',
+      audio_stream_count: 0,
+    }),
+    resolveVideoConditioningCapability: () => referenceBundleAudioCapability(state),
+    createReferenceUrl: ({ asset_id: assetId, kind }) => `https://cdn.example.test/reference/${kind}/${assetId}`,
+    prepareSourceConditioning: async () => assert.fail('raw source conditioning must not run'),
+    videoProcessor: async () => {},
+    schedule() {},
+    ...overrides,
   };
 }
 
@@ -5198,23 +5244,9 @@ test('供应商回读已先落 completed 终态时启动 mark 仍安排 shot 与
 test('reference bundle required 的单镜生成使用安全参考包投影且不调用源片 conditioning', async (t) => {
   const state = await setupReferenceBundleGenerationFixture(t);
   let providerCalls = 0;
-  const result = await generateShot(ctx(state.db, {
-    storageRoot: state.storageRoot,
-    versionId: state.versionId,
-    probeRunner: async () => ({
-      duration_ms: 12000,
-      width: 864,
-      height: 496,
-      mime_type: 'video/mp4',
-      video_codec: 'h264',
-      audio_stream_count: 0,
-    }),
-    resolveVideoConditioningCapability: () => referenceBundleAudioCapability(state),
-    createReferenceUrl: ({ asset_id: assetId, kind }) => `https://cdn.example.test/reference/${kind}/${assetId}`,
-    prepareSourceConditioning: async () => assert.fail('raw source conditioning must not run'),
+  const result = await generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
     videoProcessor: async () => { providerCalls += 1; },
-    schedule() {},
-  }), { shotId: state.shotId });
+  })), { shotId: state.shotId });
 
   assert.equal(result.status, 'processing');
   assert.equal(providerCalls, 0);
@@ -5225,6 +5257,21 @@ test('reference bundle required 的单镜生成使用安全参考包投影且不
   const sourceConditioning = JSON.parse(video.source_conditioning_json);
   assert.equal(snapshot.reference_bundle.schema_version, 'redraw-reference-bundle-v2');
   assert.equal(snapshot.reference_bundle.motion_sha256, REFERENCE_BUNDLE_MOTION_SHA256);
+  assert.equal(snapshot.reference_bundle.dialogue_kind, 'spoken');
+  assert.equal(snapshot.reference_bundle.speech_required, true);
+  for (const key of [
+    'source_dialogue_sha256',
+    'dialogue_script_sha256',
+    'character_name_map_sha256',
+    'localization_binding_sha256',
+  ]) {
+    assert.match(snapshot.reference_bundle[key], /^[0-9a-f]{64}$/, key);
+  }
+  const persistedSourceFacts = JSON.parse(state.db.prepare(
+    'SELECT source_facts_json FROM redraw_versions WHERE id = ?',
+  ).get(state.versionId).source_facts_json);
+  assert.equal(Object.hasOwn(persistedSourceFacts, 'script_sha256'), false);
+  assert.equal(Object.hasOwn(persistedSourceFacts, 'name_map_source_sha256'), false);
   assert.equal(snapshot.locale, 'en-US');
   assert.equal(video.generate_audio, 1);
   assert.equal(snapshot.generate_audio, true);
@@ -5256,26 +5303,39 @@ test('reference bundle required 的单镜生成使用安全参考包投影且不
   assert.equal(serialized.includes('Authorization'), false);
 });
 
+test('reference bundle required 的单镜生成不复用缺失 V2 对白绑定字段的旧 generation', async (t) => {
+  for (const [name, mutateSnapshot] of [
+    ['missing localization binding', (snapshot) => { delete snapshot.reference_bundle.localization_binding_sha256; }],
+    ['missing source dialogue', (snapshot) => { delete snapshot.reference_bundle.source_dialogue_sha256; }],
+    ['drifted source dialogue', (snapshot) => { snapshot.reference_bundle.source_dialogue_sha256 = '0'.repeat(64); }],
+  ]) {
+    await t.test(name, async (innerT) => {
+      const state = await setupReferenceBundleGenerationFixture(innerT);
+      const deps = referenceBundleGenerationDeps(state);
+      const first = await generateShot(ctx(state.db, deps), { shotId: state.shotId });
+      const row = state.db.prepare('SELECT request_snapshot FROM video_generations WHERE id = ?').get(first.video_generation_id);
+      const storedSnapshot = JSON.parse(row.request_snapshot);
+      mutateSnapshot(storedSnapshot);
+      state.db.prepare('UPDATE video_generations SET request_snapshot = ? WHERE id = ?')
+        .run(JSON.stringify(storedSnapshot), first.video_generation_id);
+
+      await assert.rejects(
+        () => generateShot(ctx(state.db, deps), { shotId: state.shotId }),
+        (error) => error.code === 'REDRAW_SHOT_CONFLICT',
+      );
+      assert.equal(count(state.db, 'video_generations'), 1);
+      assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+    });
+  }
+});
+
 test('reference bundle required 在事务内复核运动文件漂移且不冻结积分', async (t) => {
   const state = await setupReferenceBundleGenerationFixture(t);
   let providerCalls = 0;
   let scheduleCalls = 0;
   let hookCalls = 0;
   await assert.rejects(
-    () => generateShot(ctx(state.db, {
-      storageRoot: state.storageRoot,
-      versionId: state.versionId,
-      probeRunner: async () => ({
-        duration_ms: 12000,
-        width: 864,
-        height: 496,
-        mime_type: 'video/mp4',
-        video_codec: 'h264',
-        audio_stream_count: 0,
-      }),
-      resolveVideoConditioningCapability: () => referenceBundleAudioCapability(state),
-      createReferenceUrl: ({ asset_id: assetId, kind }) => `https://cdn.example.test/reference/${kind}/${assetId}`,
-      prepareSourceConditioning: async () => assert.fail('raw source conditioning must not run'),
+    () => generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
       beforeCreateTransaction: async () => {
         hookCalls += 1;
         fs.writeFileSync(
@@ -5285,8 +5345,8 @@ test('reference bundle required 在事务内复核运动文件漂移且不冻结
       },
       videoProcessor: async () => { providerCalls += 1; },
       schedule() { scheduleCalls += 1; },
-    }), { shotId: state.shotId }),
-    (error) => error.code === 'REDRAW_ASSET_REVIEW_REQUIRED',
+    })), { shotId: state.shotId }),
+    (error) => error.code === 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE',
   );
   assert.equal(hookCalls, 1);
   assert.equal(providerCalls, 0);
@@ -5298,6 +5358,35 @@ test('reference bundle required 在事务内复核运动文件漂移且不冻结
   const shot = state.db.prepare('SELECT status, video_generation_id FROM redraw_shots WHERE id = ?').get(state.shotId);
   assert.notEqual(shot.status, 'processing');
   assert.equal(shot.video_generation_id, null);
+});
+
+test('reference bundle required 在首次预检后重读当前对白绑定且不冻结积分', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  let providerCalls = 0;
+  let scheduleCalls = 0;
+  let hookCalls = 0;
+  await assert.rejects(
+    () => generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
+      beforeCreateTransaction: async () => {
+        hookCalls += 1;
+        state.db.prepare('UPDATE redraw_shots SET localized_dialogue_json = ? WHERE id = ?')
+          .run(JSON.stringify([
+            { speaker_id: 'character-001', localized_text: 'Wait here.', start_ms: 0, end_ms: 2400 },
+            { speaker_id: 'character-002', localized_text: 'I need proof.', start_ms: 2500, end_ms: 5000 },
+          ]), state.shotId);
+      },
+      videoProcessor: async () => { providerCalls += 1; },
+      schedule() { scheduleCalls += 1; },
+    })), { shotId: state.shotId }),
+    (error) => error.code === 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED',
+  );
+  assert.equal(hookCalls, 1);
+  assert.equal(providerCalls, 0);
+  assert.equal(scheduleCalls, 0);
+  assert.equal(count(state.db, 'video_generations'), 0);
+  assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+  assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+  assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
 });
 
 test('reference bundle required 的本地假 provider 收到同一安全英文 prompt', async (t) => {
