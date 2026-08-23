@@ -21,9 +21,9 @@ export const genericRedrawProject = {
     { id: 'p1', name: '旧收据', evidence_ranges: [{ start_ms: 4_400, end_ms: 7_300 }] },
   ],
   shots: [
-    { id: 'generic-1', index: 1, start_ms: 0, end_ms: 4_000 },
-    { id: 'generic-2', index: 2, start_ms: 4_000, end_ms: 8_000 },
-    { id: 'generic-3', index: 3, start_ms: 8_000, end_ms: 12_000 },
+    { id: 'shot-1', index: 1, start_ms: 0, end_ms: 4_000 },
+    { id: 'shot-2', index: 2, start_ms: 4_000, end_ms: 8_000 },
+    { id: 'shot-3', index: 3, start_ms: 8_000, end_ms: 12_000 },
   ],
 }
 
@@ -36,7 +36,7 @@ export const genericSourceFacts = {
   props: genericRedrawProject.props,
   shots: [
     {
-      id: 'generic-1',
+      id: 'shot-1',
       index: 1,
       start_ms: 0,
       end_ms: 4_000,
@@ -63,7 +63,7 @@ export const genericSourceFacts = {
       confidence: { character_mapping: 0.96, speaker_mapping: 0.71, text_regions: 0.97, shot_boundary: 0.98 },
     },
     {
-      id: 'generic-2',
+      id: 'shot-2',
       index: 2,
       start_ms: 4_000,
       end_ms: 8_000,
@@ -85,16 +85,16 @@ export const genericSourceFacts = {
       confidence: { character_mapping: 0.95, speaker_mapping: 0.69, text_regions: 0.96, shot_boundary: 0.97 },
     },
     {
-      id: 'generic-3',
+      id: 'shot-3',
       index: 3,
       start_ms: 8_000,
       end_ms: 12_000,
-      composition: '旧收据上的地址被雨水晕开，镜头停在日期上',
+      composition: '周启独自看着旧收据上的地址被雨水晕开，镜头停在日期上',
       camera_movement: '缓慢下摇到特写',
-      opening_state: '收据被放在玻璃柜台上',
-      continuous_action: '雨水顺着林薇袖口滴到纸面',
+      opening_state: '周启把收据放在玻璃柜台上',
+      continuous_action: '雨水顺着周启袖口滴到纸面',
       ending_state: '日期旁露出失踪者姓名首字母',
-      visible_character_ids: ['c1'],
+      visible_character_ids: ['c2'],
       dialogue: [],
       text_regions: [],
       audio_contract: { dialogue_mode: 'silent', ambient_audio: 'preserve_or_rebuild' },
@@ -108,22 +108,22 @@ export const genericSourceFacts = {
 }
 
 export const genericLocalization = {
-  name_map: { c1: 'Clara', c2: 'Diego' },
+  name_map: { c1: 'Clara Vega', c2: 'Diego Santos' },
   culture_map: { 便利店后巷: 'callejon tras la tienda' },
   glossary: { 旧收据: 'recibo antiguo' },
   dialogue: [
     {
-      shot_id: 'generic-1',
+      shot_id: 'shot-1',
       turns: [{ id: 'g1-t1', speaker_id: 'c1', localized_text: 'Fue aqui.' }],
     },
     {
-      shot_id: 'generic-2',
+      shot_id: 'shot-2',
       turns: [{ id: 'g2-t1', speaker_id: 'c2', localized_text: 'No sigas.' }],
     },
-    { shot_id: 'generic-3', turns: [] },
+    { shot_id: 'shot-3', turns: [] },
   ],
   text_map: {
-    'generic-1:g1-text-1': 'Cerrado',
+    'shot-1:g1-text-1': 'Cerrado',
   },
   confidence: {
     names: 0.99,
@@ -132,4 +132,37 @@ export const genericLocalization = {
     culture: 0.99,
     screen_text: 0.99,
   },
+}
+
+export const genericReferencePreparationCase = {
+  schema_version: 'redraw-generic-reference-preparation-fixture-v1',
+  characters: [
+    {
+      source_character_key: 'c1',
+      target_actor_label: 'Clara Vega',
+      identity: { relative_path: 'generic-preparation/characters/c1/identity.png', color: '#b54d63' },
+      replacement_identity: { relative_path: 'generic-preparation/characters/c1/identity-v2.png', color: '#d07487' },
+      voice: { relative_path: 'generic-preparation/characters/c1/voice.mp3', frequency: 540 },
+      wardrobe: { relative_path: 'generic-preparation/characters/c1/wardrobe.png', color: '#27496d' },
+    },
+    {
+      source_character_key: 'c2',
+      target_actor_label: 'Diego Santos',
+      identity: { relative_path: 'generic-preparation/characters/c2/identity.png', color: '#8a5a36' },
+      voice: { relative_path: 'generic-preparation/characters/c2/voice.mp3', frequency: 680 },
+      wardrobe: { relative_path: 'generic-preparation/characters/c2/wardrobe.png', color: '#4a3f69' },
+    },
+  ],
+  shots: [
+    { source_shot_id: 'shot-1', character_keys: ['c1'], color: '#315c7d' },
+    { source_shot_id: 'shot-2', character_keys: ['c1', 'c2'], color: '#4e6e58' },
+    { source_shot_id: 'shot-3', character_keys: ['c2'], color: '#76513b' },
+  ].map((shot) => ({
+    ...shot,
+    representative_frame: { relative_path: `generic-preparation/shots/${shot.source_shot_id}/frame.png` },
+    person_mask: { relative_path: `generic-preparation/shots/${shot.source_shot_id}/person-mask.png` },
+    text_mask: { relative_path: `generic-preparation/shots/${shot.source_shot_id}/text-mask.png` },
+    clean_plate: { relative_path: `generic-preparation/shots/${shot.source_shot_id}/clean.png` },
+    motion_reference: { relative_path: `generic-preparation/shots/${shot.source_shot_id}/motion.mp4` },
+  })),
 }
