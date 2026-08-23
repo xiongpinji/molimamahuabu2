@@ -472,6 +472,29 @@ function makeBundle(state, overrides = {}) {
     );
 }
 
+function makeTextBundle(state) {
+  makeBundle(state, {
+    text_regions: [{
+      region_key: 'text-001',
+      kind: 'text_subtitle',
+      time_ranges: [[0, 5000]],
+      text_clean_redraw_asset_id: 202,
+      clean_plate: { pack_sha256: state.textCleanPackHash },
+    }],
+    coverage_review: {
+      status: 'approved',
+      reviewed_by: 'user-a',
+      reviewed_at: NOW,
+      recognizable_face_count: 1,
+      mapped_face_count: 1,
+      unresolved_face_count: 0,
+      recognizable_text_region_count: 1,
+      mapped_text_region_count: 1,
+      unresolved_text_region_count: 0,
+    },
+  });
+}
+
 test('准备门禁返回严格白名单、稳定排序和当前角色计划哈希', () => {
   const state = setup();
   try {
@@ -495,6 +518,118 @@ test('准备门禁返回严格白名单、稳定排序和当前角色计划哈�
     assert.equal(JSON.stringify(gate).includes('Alice Carter'), false);
   } finally {
     state.cleanup();
+  }
+});
+
+test('准备门禁接受已批准且证据完整的 needs_attention 文字净景', () => {
+  const state = setup();
+  try {
+    makeTextBundle(state);
+    state.db.prepare(`UPDATE redraw_assets
+      SET status = 'needs_attention', error_code = NULL, error_message = NULL
+      WHERE id = 202`).run();
+
+    const gate = evaluatePreparationGate(context(state), state.versionId);
+
+    assert.equal(gate.ok, true);
+    assert.deepEqual(gate.ready_shot_ids, [state.shotId]);
+    assert.deepEqual(gate.missing, []);
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('准备门禁拒绝未完成或证据漂移的 needs_attention 文字净景', () => {
+  const cases = [
+    {
+      label: '错误码未清空',
+      mutate(state) {
+        state.db.prepare(`UPDATE redraw_assets
+          SET status = 'needs_attention', error_code = 'TEXT_CLEAN_FAILED', error_message = NULL
+          WHERE id = 202`).run();
+      },
+    },
+    {
+      label: '错误信息未清空',
+      mutate(state) {
+        state.db.prepare(`UPDATE redraw_assets
+          SET status = 'needs_attention', error_code = NULL, error_message = 'provider failed'
+          WHERE id = 202`).run();
+      },
+    },
+    {
+      label: '仍待批准',
+      mutate(state) {
+        state.db.prepare(`UPDATE redraw_assets
+          SET status = 'needs_attention', approval_status = 'pending', error_code = NULL, error_message = NULL
+          WHERE id = 202`).run();
+      },
+    },
+    {
+      label: '已拒绝',
+      mutate(state) {
+        state.db.prepare(`UPDATE redraw_assets
+          SET status = 'needs_attention', approval_status = 'rejected', error_code = NULL, error_message = NULL
+          WHERE id = 202`).run();
+      },
+    },
+    {
+      label: '生成失败',
+      mutate(state) {
+        state.db.prepare(`UPDATE redraw_assets
+          SET status = 'failed', approval_status = 'approved', error_code = NULL, error_message = NULL
+          WHERE id = 202`).run();
+      },
+    },
+    {
+      label: '缺少净景资产',
+      mutate(state) {
+        state.db.prepare(`UPDATE redraw_assets
+          SET status = 'needs_attention', error_code = NULL, error_message = NULL,
+              clean_plate_asset_id = NULL
+          WHERE id = 202`).run();
+      },
+    },
+    {
+      label: '净景包哈希漂移',
+      mutate(state) {
+        const row = state.db.prepare('SELECT source_ref_json FROM redraw_assets WHERE id = 202').get();
+        const payload = JSON.parse(row.source_ref_json);
+        payload.text_clean_plate_pack.pack_sha256 = '0'.repeat(64);
+        state.db.prepare(`UPDATE redraw_assets
+          SET status = 'needs_attention', error_code = NULL, error_message = NULL,
+              source_ref_json = ?
+          WHERE id = 202`).run(JSON.stringify(payload));
+      },
+    },
+    {
+      label: '净景物理文件漂移',
+      mutate(state) {
+        state.db.prepare(`UPDATE redraw_assets
+          SET status = 'needs_attention', error_code = NULL, error_message = NULL
+          WHERE id = 202`).run();
+        fs.writeFileSync(path.join(state.storageRoot, 'redraw/text-clean.png'), 'tampered text clean');
+      },
+    },
+  ];
+
+  for (const entry of cases) {
+    const state = setup();
+    try {
+      makeTextBundle(state);
+      entry.mutate(state);
+
+      const gate = evaluatePreparationGate(context(state), state.versionId);
+
+      assert.equal(gate.ok, false, entry.label);
+      assert.equal(
+        gate.missing.some((item) => item.reason_code === 'text_cleanup_missing'),
+        true,
+        entry.label,
+      );
+    } finally {
+      state.cleanup();
+    }
   }
 });
 

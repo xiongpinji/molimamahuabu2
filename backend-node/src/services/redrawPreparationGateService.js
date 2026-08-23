@@ -453,7 +453,12 @@ function validateText(ctx, shot, text) {
     || rowId <= 0
     || !validRanges(text.time_ranges, shot.duration_ms)) return false;
   const row = loadTextRow(ctx, shot, text);
-  if (!row || row.approval_status !== 'approved' || row.status !== 'generated' || !Number(row.clean_plate_asset_id || 0)) return false;
+  const completedNeedsReview = row?.status === 'needs_attention'
+    && !String(row.error_code || '').trim()
+    && !String(row.error_message || '').trim();
+  if (!row || row.approval_status !== 'approved'
+    || (row.status !== 'generated' && !completedNeedsReview)
+    || !Number(row.clean_plate_asset_id || 0)) return false;
   const payload = parseJsonAny(row.source_ref_json, {});
   const pack = isPlainObject(payload?.text_clean_plate_pack) ? payload.text_clean_plate_pack : null;
   const expectedHash = String(text.clean_plate?.pack_sha256 || text.pack_sha256 || pack?.pack_sha256 || '').trim();
