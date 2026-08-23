@@ -14,6 +14,7 @@ const videoClient = require('./videoClient');
 const assetService = require('./assetService');
 const redrawBillingService = require('./redrawBillingService');
 const redrawGenerationPolicyService = require('./redrawGenerationPolicyService');
+const redrawCandidateReviewService = require('./redrawCandidateReviewService');
 const redrawReviewService = require('./redrawReviewService');
 const redrawCapabilityService = require('./redrawCapabilityService');
 const redrawSourceConditioningService = require('./redrawSourceConditioningService');
@@ -2065,12 +2066,12 @@ async function runShotGeneration(ctx, taskId) {
     const importer = ctx.assetImporter || ((database, logger, videoGenerationId) => (
       assetService.importFromVideo(database, logger, videoGenerationId)
     ));
-    let finalizationStage = 'finalization';
+    let finalizationStage = 'candidate_asset_register';
     try {
-      return db.transaction(() => {
+      db.transaction(() => {
         const claimed = db.prepare(`
           UPDATE redraw_shots
-          SET status = 'pending', error_code = 'REDRAW_VIDEO_FINALIZING', updated_at = ?
+          SET status = 'pending', error_code = 'REDRAW_CANDIDATE_REVIEWING', updated_at = ?
           WHERE id = ? AND status = 'processing' AND video_generation_id = ?
         `).run(timestamp, shot.id, row.id);
         if (claimed.changes !== 1) {
@@ -2118,28 +2119,20 @@ async function runShotGeneration(ctx, taskId) {
         `).run(timestamp, row.id, task.id);
         db.prepare(`
           UPDATE redraw_shots
-          SET status = 'completed', video_generation_id = ?, error_code = NULL, error_message = NULL,
+          SET status = 'pending', video_generation_id = ?, error_code = 'REDRAW_CANDIDATE_REVIEWING',
+              error_message = NULL,
               draft_json = ?, updated_at = ?
           WHERE id = ?
-        `).run(row.id, mergeDraft(updatedDraft, { generation: { completed_at: timestamp }, new_video_ref: newVideoRef }), timestamp, shot.id);
-        advanceVersionIfAllShotsCompleted(db, {
-          tenantId: shot.tenant_id,
-          userId: shot.user_id,
-        }, shot.version_id, timestamp);
-        taskService.updateTaskResult(db, task.id, {
-          status: 'completed',
-          shot_id: shot.id,
-          video_generation_id: row.id,
-          asset_id: imported.id,
-          video_url: row.video_url || null,
-          local_path: row.local_path,
-          probe: verification,
-        });
-        finalizationStage = 'settlement';
-        redrawBillingService.settleShotGeneration(db, metadata.reservation_id, 'completed');
-        return { status: 'completed', task_id: task.id, video_generation_id: row.id, asset_id: imported.id };
+        `).run(row.id, mergeDraft(updatedDraft, {
+          generation: { candidate_at: timestamp },
+          new_video_ref: newVideoRef,
+        }), timestamp, shot.id);
       })();
     } catch (error) {
+      if (error.code === 'REDRAW_VIDEO_FINALIZATION_CONFLICT') {
+        const concurrent = await waitForConcurrentFinalization(db, task, ownerCtx);
+        if (concurrent) return concurrent;
+      }
       if (nativeAudioValidation) {
         markNativeAudioNeedsAttention(db, task, shot, row, error, timestamp, {
           stage: finalizationStage,
@@ -2151,6 +2144,101 @@ async function runShotGeneration(ctx, taskId) {
       }
       return { status: 'needs_attention', error: error.message, task_id: task.id, video_generation_id: row.id };
     }
+
+    let review;
+    finalizationStage = nativeAudioValidation ? 'settlement' : 'candidate_quality_review';
+    try {
+      review = await redrawCandidateReviewService.reviewCandidate({
+        ...ctx,
+        tenantId: ctx.tenantId || shot.tenant_id,
+        userId: ctx.userId || shot.user_id,
+      }, {
+        shot_id: shot.id,
+        video_generation_id: row.id,
+        decision_source: 'automatic',
+      });
+    } catch (error) {
+      const attentionAt = monotonicTimestamp(timestamp, now(ctx));
+      if (nativeAudioValidation) {
+        markNativeAudioNeedsAttention(db, task, shot, row, error, attentionAt, {
+          stage: finalizationStage,
+          humanReviewStatus: 'available',
+          evidence: nativeAudioValidation,
+        });
+      } else {
+        updateCandidateNeedsAttention(db, task.id, shot.id, error.message, attentionAt);
+      }
+      return {
+        status: 'needs_attention',
+        error: error.message,
+        task_id: task.id,
+        video_generation_id: row.id,
+        asset_id: imported.id,
+      };
+    }
+    if (review.decision !== 'approved') {
+      return {
+        status: 'needs_attention',
+        error: review.decision === 'rejected'
+          ? '逐镜候选质量未通过，等待人工处理'
+          : '逐镜候选等待人工审核',
+        task_id: task.id,
+        video_generation_id: row.id,
+        asset_id: imported.id,
+        candidate_review_id: review.id,
+      };
+    }
+
+    finalizationStage = 'approved_candidate_finalize';
+    try {
+      db.transaction(() => {
+        const approvedShot = db.prepare(`
+          SELECT draft_json FROM redraw_shots
+          WHERE id = ? AND approved_candidate_review_id = ? AND status = 'completed'
+        `).get(shot.id, review.id);
+        if (!approvedShot) throw codedError('REDRAW_CANDIDATE_APPROVAL_CONFLICT', '当前批准候选已变化');
+        const approvedAt = monotonicTimestamp(
+          db.prepare('SELECT updated_at FROM redraw_shots WHERE id = ?').get(shot.id).updated_at,
+          now(ctx),
+        );
+        db.prepare(`
+          UPDATE redraw_shots
+          SET draft_json = ?, error_code = NULL, error_message = NULL, updated_at = ?
+          WHERE id = ? AND approved_candidate_review_id = ? AND status = 'completed'
+        `).run(
+          mergeDraft(strictJson(approvedShot.draft_json, 'draft_json'), { generation: { completed_at: approvedAt } }),
+          approvedAt, shot.id, review.id,
+        );
+        advanceVersionIfAllShotsCompleted(db, {
+          tenantId: shot.tenant_id,
+          userId: shot.user_id,
+        }, shot.version_id, approvedAt);
+        taskService.updateTaskResult(db, task.id, {
+          status: 'completed',
+          shot_id: shot.id,
+          video_generation_id: row.id,
+          asset_id: imported.id,
+          candidate_review_id: review.id,
+          video_url: row.video_url || null,
+          local_path: row.local_path,
+          probe: verification,
+        });
+      })();
+    } catch (error) {
+      ctx.log?.error?.('Approved redraw candidate enrichment failed', {
+        shot_id: shot.id,
+        video_generation_id: row.id,
+        stage: finalizationStage,
+        error: error.message,
+      });
+    }
+    return {
+      status: 'completed',
+      task_id: task.id,
+      video_generation_id: row.id,
+      asset_id: imported.id,
+      candidate_review_id: review.id,
+    };
   }
   if (outcome.status === 'failed') {
     try {
@@ -2434,6 +2522,47 @@ async function retryShot(ctx, input = {}) {
     throw codedError('REDRAW_RETRY_UNCERTAIN', message);
   }
   return generateShot({ ...ctx, retryFailedShot: true }, { ...input, shotId: shot.id });
+}
+
+function updateCandidateNeedsAttention(db, taskId, shotId, message, timestamp) {
+  const safeMessage = String(message || '逐镜候选质量验证异常，请人工确认后处理').slice(0, 500);
+  db.transaction(() => {
+    db.prepare(`
+      UPDATE redraw_shots
+      SET status = 'needs_attention', approved_candidate_review_id = NULL,
+          error_code = 'REDRAW_CANDIDATE_REVIEW_FAILED', error_message = ?, updated_at = ?
+      WHERE id = ?
+    `).run(safeMessage, timestamp, shotId);
+    db.prepare(`
+      UPDATE async_tasks
+      SET status = 'needs_attention', progress = 90, message = ?, error = ?,
+          completed_at = NULL, updated_at = ?
+      WHERE id = ?
+    `).run(safeMessage, safeMessage, timestamp, taskId);
+    const shot = db.prepare(`
+      SELECT version_id, tenant_id, user_id
+      FROM redraw_shots
+      WHERE id = ? AND deleted_at IS NULL
+    `).get(shotId);
+    if (shot?.version_id && shot?.tenant_id && shot?.user_id) {
+      setVersionGenerationStep(db, {
+        tenantId: shot.tenant_id,
+        userId: shot.user_id,
+      }, shot.version_id, timestamp);
+    }
+  })();
+}
+
+async function waitForConcurrentFinalization(db, task, ownerCtx) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+    const freshTask = getTask(db, task.id, ownerCtx);
+    const freshVideo = getVideoForTask(db, freshTask, ownerCtx);
+    const freshShot = getShotForTask(db, freshTask, ownerCtx);
+    const terminal = terminalTaskResult(freshTask, freshVideo, freshShot);
+    if (terminal && !terminal.degrade) return terminal;
+  }
+  return null;
 }
 
 async function recoverInterruptedShotGenerations(ctx) {

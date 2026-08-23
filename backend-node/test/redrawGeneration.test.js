@@ -413,6 +413,19 @@ function ctx(db, overrides = {}) {
     }),
     storageBaseUrl: 'https://media.example.test/static',
     providerAssetSecret: 'redraw-generation-test-provider-secret-32-bytes',
+    candidateHasher: () => 'c'.repeat(64),
+    candidateDependencyHasher: () => 'd'.repeat(64),
+    candidateExecutionMode: 'auto',
+    candidateQualityVerifier: async () => ({
+      decision: 'approved',
+      reason_codes: [],
+      metrics: {
+        media: { readable: true },
+        dependencies: { current: true },
+        identity: { stable: true },
+        lip_sync: { evidence_available: true, passed: true },
+      },
+    }),
     preparationContext: {
       storageRoot: overrides.storageRoot,
       canReadArtifact: () => true,
@@ -3859,6 +3872,86 @@ test('awaitCompletion 成功后写回成片素材、task result 并确认账单'
     assert.equal(draft.new_video_ref.video_url, 'https://cdn.test/video.mp4');
     assert.equal(JSON.parse(task.result).asset_id, 77);
     assert.equal(reservation.status, 'confirmed');
+    assert.ok(Number(shot.approved_candidate_review_id) > 0);
+    const review = state.db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = ?')
+      .get(shot.approved_candidate_review_id);
+    assert.equal(review.decision, 'approved');
+    assert.equal(review.decision_source, 'automatic');
+    assert.equal(JSON.parse(task.result).candidate_review_id, review.id);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('A 模式供应商 completed 只保存候选并保持 held，自动审核不得伪装批准', async () => {
+  const state = setup();
+  let qualityInput = null;
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const result = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      candidateExecutionMode: 'safe',
+      candidateQualityVerifier: async (_reviewCtx, input) => {
+        qualityInput = input;
+        return {
+          decision: 'approved',
+          reason_codes: [],
+          metrics: { media: {}, dependencies: {}, identity: {}, lip_sync: {} },
+        };
+      },
+      videoProcessor: async (db, _log, id) => {
+        db.prepare("UPDATE video_generations SET status = 'completed', video_url = ?, local_path = ? WHERE id = ?")
+          .run('https://cdn.test/safe.mp4', 'videos/safe.mp4', id);
+      },
+      artifactVerifier: async () => ({ duration: 6, width: 720, height: 1280 }),
+      assetImporter: () => ({ id: 901 }),
+    }), { shotId });
+
+    const shot = state.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(shotId);
+    const review = state.db.prepare('SELECT * FROM redraw_candidate_reviews WHERE shot_id = ?').get(shotId);
+    assert.equal(result.status, 'needs_attention');
+    assert.deepEqual(qualityInput, {
+      version_id: state.versionId,
+      shot_id: shotId,
+      video_generation_id: result.video_generation_id,
+      candidate_sha256: 'c'.repeat(64),
+      dependency_hash: 'd'.repeat(64),
+    });
+    assert.equal(review.decision, 'needs_review');
+    assert.equal(shot.approved_candidate_review_id, null);
+    assert.equal(JSON.parse(shot.draft_json).new_video_ref.asset_id, 901);
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(result.video_generation_id).status, 'completed');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations').get().status, 'held');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('候选质量验证异常保留已入库 candidate、needs_attention 与 held', async () => {
+  const state = setup();
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const result = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      candidateQualityVerifier: async () => {
+        throw Object.assign(new Error('质量验证器不可用'), { code: 'REDRAW_CANDIDATE_QUALITY_UNAVAILABLE' });
+      },
+      videoProcessor: async (db, _log, id) => {
+        db.prepare("UPDATE video_generations SET status = 'completed', video_url = ?, local_path = ? WHERE id = ?")
+          .run('https://cdn.test/quality-error.mp4', 'videos/quality-error.mp4', id);
+      },
+      artifactVerifier: async () => ({ duration: 6, width: 720, height: 1280 }),
+      assetImporter: () => ({ id: 902 }),
+    }), { shotId });
+
+    const shot = state.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(shotId);
+    assert.equal(result.status, 'needs_attention');
+    assert.equal(result.asset_id, 902);
+    assert.equal(JSON.parse(shot.draft_json).new_video_ref.asset_id, 902);
+    assert.equal(shot.approved_candidate_review_id, null);
+    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM redraw_candidate_reviews').get().count, 0);
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(result.video_generation_id).status, 'completed');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations').get().status, 'held');
   } finally {
     state.db.close();
   }
@@ -5293,6 +5386,14 @@ test('启动 mark 对带 provider_task_id 的镜头安排只回读恢复并完�
     const marked = markInterruptedShotGenerationsNeedsAttention(state.db, log, {
       schedule: (callback) => { scheduled = callback; },
       recoveryContext: {
+        candidateHasher: () => 'c'.repeat(64),
+        candidateDependencyHasher: () => 'd'.repeat(64),
+        candidateExecutionMode: 'auto',
+        candidateQualityVerifier: async () => ({
+          decision: 'approved',
+          reason_codes: [],
+          metrics: { media: {}, dependencies: {}, identity: {}, lip_sync: {} },
+        }),
         videoRecoveryProcessor: async (db, _log, videoId) => {
           recoveryCalls += 1;
           db.prepare("UPDATE video_generations SET status = 'completed', video_url = 'https://cdn.test/startup.mp4', local_path = 'videos/startup.mp4' WHERE id = ?")
