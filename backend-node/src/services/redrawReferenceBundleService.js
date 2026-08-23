@@ -6,7 +6,8 @@ const { canonicalCoverageSha256 } = require('./redrawFullFrameCoverageService');
 const { validateReviewedCoverageManifest } = require('./redrawFullFrameReviewService');
 const { verifyMotionReference } = require('./redrawMotionReferenceService');
 
-const SCHEMA_VERSION = 'redraw-reference-bundle-v1';
+const SCHEMA_VERSION = 'redraw-reference-bundle-v2';
+const LOCALIZATION_BINDING_CONTRACT = 'redraw-localization-binding-v1';
 const INPUT_CODE = 'REDRAW_REFERENCE_BUNDLE_INPUT_INVALID';
 const NOT_FOUND_CODE = 'REDRAW_REFERENCE_BUNDLE_NOT_FOUND';
 const CONFLICT_CODE = 'REDRAW_REFERENCE_BUNDLE_CONFLICT';
@@ -783,25 +784,114 @@ function isSilenceToken(value) {
   return SILENCE_TOKENS.has(String(value || '').trim().toLowerCase().replace(/\s+/g, ' '));
 }
 
-function verifyDialogue(shot, nameMap, boundCharacters) {
-  const locale = normalizeLocale(shot.locale);
-  normalizeMarket(shot.market);
-  const facts = parseJson(shot.source_facts_json, {});
-  if (!HEX_64.test(String(facts.script_sha256 || ''))
-    || facts.name_map_source_sha256 !== sha256(stableJson(nameMap))
-    || containsChinese(nameMap)) {
-    fail(DIALOGUE_CODE);
+function normalizeNameMap(value) {
+  assertPlainObject(value, DIALOGUE_CODE);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) fail(DIALOGUE_CODE);
+  const entries = Object.keys(value).map((rawKey) => ({
+    key: String(rawKey).trim(),
+    name: String(value[rawKey] || '').trim(),
+  })).sort((left, right) => left.key.localeCompare(right.key));
+  const keys = new Set();
+  const names = new Set();
+  for (const entry of entries) {
+    if (!entry.key || !entry.name || keys.has(entry.key) || names.has(entry.name)
+      || ['__proto__', 'prototype', 'constructor'].includes(entry.key)
+      || containsChinese(entry.name)) fail(DIALOGUE_CODE);
+    keys.add(entry.key);
+    names.add(entry.name);
   }
-  const sourceDialogue = parseDialogueArray(shot.source_dialogue_json);
-  const dialogue = parseDialogueArray(shot.localized_dialogue_json);
+  return Object.fromEntries(entries.map((entry) => [entry.key, entry.name]));
+}
+
+function canonicalSourceDialogue(value, durationMs) {
+  return parseDialogueArray(value).map((entry) => {
+    assertPlainObject(entry, DIALOGUE_CODE);
+    const normalized = {
+      id: String(entry.id || '').trim(),
+      speaker_id: String(entry.speaker_id || '').trim(),
+      source_text: String(entry.source_text ?? entry.text ?? '').trim(),
+      start_ms: Number(entry.start_ms),
+      end_ms: Number(entry.end_ms),
+    };
+    if (!normalized.speaker_id || !normalized.source_text
+      || !Number.isInteger(normalized.start_ms) || !Number.isInteger(normalized.end_ms)
+      || normalized.start_ms < 0 || normalized.start_ms >= normalized.end_ms
+      || normalized.end_ms > durationMs) fail(DIALOGUE_CODE);
+    return normalized;
+  }).sort((left, right) => left.start_ms - right.start_ms
+    || left.end_ms - right.end_ms
+    || left.speaker_id.localeCompare(right.speaker_id)
+    || left.id.localeCompare(right.id));
+}
+
+function canonicalLocalizedDialogue(value, durationMs, nameMap, boundCharacters) {
+  if (containsChinese(value)) fail(DIALOGUE_CODE);
+  return parseDialogueArray(value).map((entry) => {
+    assertPlainObject(entry, DIALOGUE_CODE);
+    const speaker = String(entry.speaker_id || '').trim();
+    const text = String(entry.localized_text || '').trim();
+    const start = Number(entry.start_ms);
+    const end = Number(entry.end_ms);
+    if (!boundCharacters.has(speaker) || !nameMap[speaker] || !text || isSilenceToken(text)
+      || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start >= end || end > durationMs) {
+      fail(DIALOGUE_CODE);
+    }
+    return { speaker_id: speaker, localized_text: text, start_ms: start, end_ms: end };
+  }).sort((left, right) => left.start_ms - right.start_ms
+    || left.end_ms - right.end_ms
+    || left.speaker_id.localeCompare(right.speaker_id));
+}
+
+function localizationBinding(shot, nameMap, sourceDialogue, localizedDialogue) {
+  const sourceDialogueSha256 = sha256(stableJson(sourceDialogue));
+  const scriptSha256 = sha256(stableJson(localizedDialogue));
+  const characterNameMapSha256 = sha256(stableJson(nameMap));
+  const binding = {
+    contract: LOCALIZATION_BINDING_CONTRACT,
+    version_id: Number(shot.version_id),
+    facts_hash: String(shot.facts_hash || ''),
+    target: {
+      locale: normalizeLocale(shot.locale),
+      market: normalizeMarket(shot.market),
+    },
+    shot: {
+      id: Number(shot.id),
+      shot_id: String(shot.shot_id || '').trim(),
+      start_ms: Number(shot.start_ms),
+      end_ms: Number(shot.end_ms),
+      duration_ms: Number(shot.duration_ms),
+    },
+    source_dialogue_sha256: sourceDialogueSha256,
+    script_sha256: scriptSha256,
+    character_name_map_sha256: characterNameMapSha256,
+  };
+  if (!HEX_64.test(binding.facts_hash) || !binding.shot.shot_id) fail(DIALOGUE_CODE);
+  return {
+    ...binding,
+    localization_binding_sha256: sha256(stableJson(binding)),
+  };
+}
+
+function verifyDialogue(shot, nameMap, boundCharacters) {
+  const durationMs = Number(shot.duration_ms);
+  const sourceDialogue = canonicalSourceDialogue(shot.source_dialogue_json, durationMs);
+  const rawDialogue = parseDialogueArray(shot.localized_dialogue_json);
   const sourceSilent = sourceDialogue.length === 0;
-  const localizedSilent = dialogue.length === 0;
+  const localizedSilent = rawDialogue.length === 0;
   if (sourceSilent !== localizedSilent) fail(DIALOGUE_CODE);
+  const dialogue = sourceSilent
+    ? []
+    : canonicalLocalizedDialogue(rawDialogue, durationMs, nameMap, boundCharacters);
+  const binding = localizationBinding(shot, nameMap, sourceDialogue, dialogue);
   const common = {
     localized_script_version_id: Number(shot.version_id),
-    target_locale: locale,
-    script_sha256: facts.script_sha256,
-    character_name_map_sha256: sha256(stableJson(nameMap)),
+    target_locale: binding.target.locale,
+    target_market: binding.target.market,
+    source_dialogue_sha256: binding.source_dialogue_sha256,
+    script_sha256: binding.script_sha256,
+    character_name_map_sha256: binding.character_name_map_sha256,
+    localization_binding_sha256: binding.localization_binding_sha256,
   };
   if (sourceSilent) {
     return {
@@ -811,24 +901,11 @@ function verifyDialogue(shot, nameMap, boundCharacters) {
       turns: [],
     };
   }
-  if (containsChinese(dialogue)) fail(DIALOGUE_CODE);
-  const normalized = dialogue.map((entry) => {
-    assertPlainObject(entry, DIALOGUE_CODE);
-    const speaker = String(entry.speaker_id || '').trim();
-    const text = String(entry.localized_text || '').trim();
-    const start = Number(entry.start_ms);
-    const end = Number(entry.end_ms);
-    if (!boundCharacters.has(speaker) || !nameMap[speaker] || !text || isSilenceToken(text)
-      || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start >= end || end > Number(shot.duration_ms)) {
-      fail(DIALOGUE_CODE);
-    }
-    return { speaker_id: speaker, localized_text: text, start_ms: start, end_ms: end };
-  }).sort((a, b) => a.start_ms - b.start_ms || a.end_ms - b.end_ms || a.speaker_id.localeCompare(b.speaker_id));
   return {
     ...common,
     kind: 'spoken',
     speech_required: true,
-    turns: normalized,
+    turns: dialogue,
   };
 }
 
@@ -858,7 +935,7 @@ async function buildBundle(ctx, input, options = {}) {
   if (texts.length !== coverageReview.mapped_text_region_count) fail(TEXT_CODE);
   assertFaceOneToOne(faces);
 
-  const nameMap = parseJson(shot.name_map_json, {});
+  const nameMap = normalizeNameMap(parseJson(shot.name_map_json, {}));
   const dialogue = verifyDialogue(shot, nameMap, new Set(faces.map((face) => face.source_character_key)));
   const identityEvidence = verifyIdentities(ctx, shot, faces, nameMap);
   const textEvidence = verifyTexts({ ...ctx, sourceFingerprint: shot.source_fingerprint }, texts);
@@ -893,8 +970,8 @@ async function buildBundle(ctx, input, options = {}) {
     shot_id: ids.shotId,
     version_id: ctx.versionId,
     duration_ms: durationMs,
-    locale: shot.locale,
-    market: shot.market,
+    locale: dialogue.target_locale,
+    market: dialogue.target_market,
     source: {
       asset_id: Number(shot.source_asset_id),
       sha256: shot.source_fingerprint,
@@ -987,6 +1064,16 @@ async function loadCurrentReferenceBundle(rawCtx, shotId) {
   const bundle = parseJson(shot.reference_bundle_json, null);
   if (!bundle || bundle.schema_version !== SCHEMA_VERSION || !shot.reference_bundle_hash) fail(NOT_FOUND_CODE);
   if (canonicalBundleHash(bundle) !== shot.reference_bundle_hash) fail(CONFLICT_CODE);
+  const currentNameMap = normalizeNameMap(parseJson(shot.name_map_json, {}));
+  const currentDialogue = verifyDialogue(
+    shot,
+    currentNameMap,
+    new Set(Array.isArray(bundle.face_tracks)
+      ? bundle.face_tracks.map((entry) => String(entry?.source_character_key || '').trim()).filter(Boolean)
+      : []),
+  );
+  if (stableJson(bundle.name_map) !== stableJson(currentNameMap)
+    || stableJson(bundle.dialogue) !== stableJson(currentDialogue)) fail(DIALOGUE_CODE);
   const input = {
     shot_id: id,
     expected_updated_at: shot.updated_at,
@@ -1130,8 +1217,10 @@ async function projectReferenceBundleForGeneration(rawCtx, shotId) {
         motion_sha256: bundle.motion_reference.sha256,
         dialogue_kind: bundle.dialogue.kind,
         speech_required: bundle.dialogue.speech_required,
+        source_dialogue_sha256: bundle.dialogue.source_dialogue_sha256,
         dialogue_script_sha256: bundle.dialogue.script_sha256,
         character_name_map_sha256: bundle.dialogue.character_name_map_sha256,
+        localization_binding_sha256: bundle.dialogue.localization_binding_sha256,
       },
     };
   } catch (_) {

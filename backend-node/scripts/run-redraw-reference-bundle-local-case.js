@@ -29,8 +29,12 @@ const HEX_64 = /^[a-f0-9]{64}$/;
 const REVIEWED_AT = '2026-08-14T00:05:00.000Z';
 const UPDATED_AT = '2026-08-14T00:00:00.000Z';
 const SOURCE_FACTS = Object.freeze({
-  script_sha256: '5'.repeat(64),
-  dialogue_sha256: '7'.repeat(64),
+  schema_version: '2.0',
+  duration_ms: 5000,
+  characters: [
+    { id: 'character-001', source_name: '角色一', display_name: '角色一', relationship: '主角' },
+    { id: 'character-002', source_name: '角色二', display_name: '角色二', relationship: '证人' },
+  ],
 });
 
 function codedError(code, message) {
@@ -351,10 +355,7 @@ async function createFixture(deps = {}) {
     const screen = await writeImage(path.join(root, 'redraw', 'text-clean-304.png'), 864, 496, 'screen clean plate', ['#f9fafb', '#dcfce7', '#16a34a']);
 
     const nameMap = { 'character-001': 'Ethan', 'character-002': 'Maya' };
-    const sourceFacts = {
-      ...SOURCE_FACTS,
-      name_map_source_sha256: sha256(stableJson(nameMap)),
-    };
+    const sourceFacts = SOURCE_FACTS;
     const faceTracks = [
       { track_key: 'face-001', source_character_key: 'character-001', time_ranges: [[0, 5000]], identity_redraw_asset_id: 201 },
       { track_key: 'face-002', source_character_key: 'character-002', time_ranges: [[2500, 5000]], identity_redraw_asset_id: 202 },

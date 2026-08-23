@@ -29,6 +29,7 @@ const TEXT_COVERAGE_SHA256 = sha256(stableJson([
   { kind: 'text_screen', region_key: 'text-002', text_clean_redraw_asset_id: 204, time_ranges: [[2500, 5000]] },
 ]));
 const PNG_BYTES = Buffer.from('reference-bundle-image');
+const LOCALIZATION_BINDING_CONTRACT = 'redraw-localization-binding-v1';
 
 function setup(overrides = {}) {
   const db = new Database(':memory:');
@@ -41,7 +42,7 @@ function setup(overrides = {}) {
   fs.writeFileSync(path.join(storageRoot, 'source', 'source.mp4'), SOURCE_BYTES);
   fs.writeFileSync(path.join(storageRoot, 'redraw-conditioning', `${MOTION_SHA256}.mp4`), MOTION_BYTES);
   const now = INITIAL_UPDATED_AT;
-  const nameMap = overrides.nameMap || { 'character-001': 'Ethan', 'character-002': 'Maya' };
+  const nameMap = overrides.nameMap || { ' character-002 ': ' Maya ', 'character-001': ' Ethan ' };
   const facts = sourceFacts(nameMap, overrides.sourceFacts || {});
   const sourceDialogueJson = Object.prototype.hasOwnProperty.call(overrides, 'source_dialogue_json')
     ? overrides.source_dialogue_json
@@ -82,7 +83,7 @@ function setup(overrides = {}) {
       Object.prototype.hasOwnProperty.call(overrides, 'market') ? overrides.market : 'US',
       JSON.stringify(nameMap),
       JSON.stringify(facts),
-      factsHash(facts),
+      Object.prototype.hasOwnProperty.call(overrides, 'factsHash') ? overrides.factsHash : factsHash(facts),
       now,
       now,
     ).lastInsertRowid);
@@ -174,11 +175,27 @@ function setup(overrides = {}) {
   };
 }
 
-function sourceFacts(nameMap, overrides = {}) {
+function sourceFacts(_nameMap, overrides = {}) {
   return {
-    script_sha256: '5'.repeat(64),
-    name_map_source_sha256: sha256(stableJson(nameMap)),
-    dialogue_sha256: '7'.repeat(64),
+    schema_version: '2.0',
+    duration_ms: 5000,
+    characters: [
+      { id: 'character-001', source_name: '角色一', display_name: '角色一', relationship: '主角' },
+      { id: 'character-002', source_name: '角色二', display_name: '角色二', relationship: '证人' },
+    ],
+    shots: [{
+      id: 'shot-001',
+      index: 1,
+      start_ms: 0,
+      end_ms: 5000,
+      dialogue: [{
+        id: 'turn-001',
+        speaker_id: 'character-001',
+        source_text: '跟我走。',
+        start_ms: 0,
+        end_ms: 2400,
+      }],
+    }],
     ...overrides,
   };
 }
@@ -205,6 +222,82 @@ function stableJson(value) {
     return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
   }
   return JSON.stringify(value);
+}
+
+function canonicalSourceDialogue(value) {
+  return value.map((entry) => ({
+    id: String(entry.id || '').trim(),
+    speaker_id: String(entry.speaker_id || '').trim(),
+    source_text: String(entry.source_text ?? entry.text ?? '').trim(),
+    start_ms: Number(entry.start_ms),
+    end_ms: Number(entry.end_ms),
+  })).sort((left, right) => left.start_ms - right.start_ms
+    || left.end_ms - right.end_ms
+    || left.speaker_id.localeCompare(right.speaker_id)
+    || left.id.localeCompare(right.id));
+}
+
+function canonicalLocalizedDialogue(value) {
+  return value.map((entry) => ({
+    speaker_id: String(entry.speaker_id || '').trim(),
+    localized_text: String(entry.localized_text || '').trim(),
+    start_ms: Number(entry.start_ms),
+    end_ms: Number(entry.end_ms),
+  })).sort((left, right) => left.start_ms - right.start_ms
+    || left.end_ms - right.end_ms
+    || left.speaker_id.localeCompare(right.speaker_id));
+}
+
+function canonicalNameMap(value) {
+  return Object.fromEntries(Object.keys(value).map((rawKey) => [
+    String(rawKey).trim(),
+    String(value[rawKey] || '').trim(),
+  ]).sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function expectedDialogueEvidence(state) {
+  const row = state.db.prepare(`
+    SELECT s.id, s.shot_id, s.start_ms, s.end_ms, s.duration_ms,
+           s.source_dialogue_json, s.localized_dialogue_json,
+           v.id AS version_id, v.locale, v.market, v.name_map_json, v.facts_hash
+    FROM redraw_shots s
+    JOIN redraw_versions v ON v.id = s.version_id
+    WHERE s.id = ?
+  `).get(state.shotId);
+  const sourceDialogueSha256 = sha256(stableJson(canonicalSourceDialogue(JSON.parse(row.source_dialogue_json))));
+  const scriptSha256 = sha256(stableJson(canonicalLocalizedDialogue(JSON.parse(row.localized_dialogue_json))));
+  const characterNameMapSha256 = sha256(stableJson(canonicalNameMap(JSON.parse(row.name_map_json))));
+  const binding = {
+    contract: LOCALIZATION_BINDING_CONTRACT,
+    version_id: Number(row.version_id),
+    facts_hash: row.facts_hash,
+    target: { locale: row.locale, market: row.market },
+    shot: {
+      id: Number(row.id),
+      shot_id: row.shot_id,
+      start_ms: Number(row.start_ms),
+      end_ms: Number(row.end_ms),
+      duration_ms: Number(row.duration_ms),
+    },
+    source_dialogue_sha256: sourceDialogueSha256,
+    script_sha256: scriptSha256,
+    character_name_map_sha256: characterNameMapSha256,
+  };
+  return {
+    source_dialogue_sha256: sourceDialogueSha256,
+    script_sha256: scriptSha256,
+    character_name_map_sha256: characterNameMapSha256,
+    localization_binding_sha256: sha256(stableJson(binding)),
+  };
+}
+
+function assertDialogueEvidence(dialogue, expected, locale, market) {
+  assert.equal(dialogue.target_locale, locale);
+  assert.equal(dialogue.target_market, market);
+  assert.equal(dialogue.source_dialogue_sha256, expected.source_dialogue_sha256);
+  assert.equal(dialogue.script_sha256, expected.script_sha256);
+  assert.equal(dialogue.character_name_map_sha256, expected.character_name_map_sha256);
+  assert.equal(dialogue.localization_binding_sha256, expected.localization_binding_sha256);
 }
 
 function textCoverageHash(input) {
@@ -560,7 +653,7 @@ test('保存参考包时规范排序、脱敏并写入稳定哈希', async () =>
       'text_regions',
       'version_id',
     ].sort());
-    assert.equal(bundle.schema_version, 'redraw-reference-bundle-v1');
+    assert.equal(bundle.schema_version, 'redraw-reference-bundle-v2');
     assert.equal(bundle.locale, 'en-US');
     assert.equal(bundle.market, 'US');
     assert.deepEqual(bundle.face_tracks.map((entry) => entry.track_key), ['face-001', 'face-002']);
@@ -593,14 +686,19 @@ test('保存参考包时规范排序、脱敏并写入稳定哈希', async () =>
     assert.match(bundle.face_tracks[1].identity_pack_sha256, /^[0-9a-f]{64}$/);
     assert.deepEqual(bundle.text_regions.map((entry) => entry.region_key), ['text-001', 'text-002']);
     assert.equal(bundle.dialogue.localized_script_version_id, state.versionId);
-    assert.equal(bundle.dialogue.target_locale, 'en-US');
+    const expectedDialogue = expectedDialogueEvidence(state);
+    assertDialogueEvidence(bundle.dialogue, expectedDialogue, 'en-US', 'US');
     assert.equal(bundle.dialogue.kind, 'spoken');
     assert.equal(bundle.dialogue.speech_required, true);
-    assert.equal(bundle.dialogue.script_sha256, '5'.repeat(64));
-    assert.equal(bundle.dialogue.character_name_map_sha256, sha256(stableJson({ 'character-001': 'Ethan', 'character-002': 'Maya' })));
     assert.deepEqual(bundle.dialogue.turns.map((entry) => entry.speaker_id), ['character-001', 'character-002']);
     assert.deepEqual(bundle.name_map, { 'character-001': 'Ethan', 'character-002': 'Maya' });
     assert.match(bundle.coverage_sha256, /^[0-9a-f]{64}$/);
+
+    const persistedFacts = JSON.parse(state.db.prepare(
+      'SELECT source_facts_json FROM redraw_versions WHERE id = ?',
+    ).get(state.versionId).source_facts_json);
+    assert.equal(Object.hasOwn(persistedFacts, 'script_sha256'), false);
+    assert.equal(Object.hasOwn(persistedFacts, 'name_map_source_sha256'), false);
 
     const serialized = JSON.stringify(bundle);
     assert.equal(/[\u3400-\u9fff]/.test(serialized), false);
@@ -669,14 +767,16 @@ test('重读参考包时重新校验并投影生成用白名单 URL', async () =
     assert.equal(projected.identityBindings.length, 2);
     assert.deepEqual(projected.identityBindings.map((entry) => entry.target_character_name), ['Ethan', 'Maya']);
     assert.deepEqual(projected.referenceBundleSnapshot, {
-      schema_version: 'redraw-reference-bundle-v1',
+      schema_version: 'redraw-reference-bundle-v2',
       coverage_sha256: loaded.bundle.coverage_sha256,
       source_sha256: SOURCE_FINGERPRINT,
       motion_sha256: MOTION_SHA256,
       dialogue_kind: 'spoken',
       speech_required: true,
+      source_dialogue_sha256: loaded.bundle.dialogue.source_dialogue_sha256,
       dialogue_script_sha256: loaded.bundle.dialogue.script_sha256,
       character_name_map_sha256: loaded.bundle.dialogue.character_name_map_sha256,
+      localization_binding_sha256: loaded.bundle.dialogue.localization_binding_sha256,
     });
     assert.equal(JSON.stringify(projected).includes('source/source.mp4'), false);
     assert.equal(JSON.stringify(projected).includes('sk-'), false);
@@ -708,10 +808,11 @@ test('es-ES/ES 参考包对白、身份国家和投影 locale 使用当前版本
     });
 
     const saved = await saveReferenceBundle(ctx(state), validInput(state));
+    const expectedDialogue = expectedDialogueEvidence(state);
 
     assert.equal(saved.bundle.locale, 'es-ES');
     assert.equal(saved.bundle.market, 'ES');
-    assert.equal(saved.bundle.dialogue.target_locale, 'es-ES');
+    assertDialogueEvidence(saved.bundle.dialogue, expectedDialogue, 'es-ES', 'ES');
     assert.deepEqual(saved.bundle.face_tracks.map((entry) => entry.target_country), ['ES', 'ES']);
     assert.deepEqual(saved.bundle.dialogue.turns.map((entry) => entry.localized_text), ['Ven conmigo.', 'No sin pruebas.']);
 
@@ -765,9 +866,11 @@ test('静默对白保存、重读并投影为非人声环境音合同', async ()
   const state = setup({ sourceDialogue: [], dialogue: [] });
   try {
     const saved = await saveReferenceBundle(ctx(state), validInput(state));
+    const expectedDialogue = expectedDialogueEvidence(state);
     assert.equal(saved.bundle.dialogue.kind, 'silent');
     assert.equal(saved.bundle.dialogue.speech_required, false);
     assert.deepEqual(saved.bundle.dialogue.turns, []);
+    assertDialogueEvidence(saved.bundle.dialogue, expectedDialogue, 'en-US', 'US');
     assert.equal(canonicalBundleHash(saved.bundle), saved.reference_bundle_hash);
 
     const loaded = await loadCurrentReferenceBundle(ctx(state), state.shotId);
@@ -793,14 +896,16 @@ test('静默对白保存、重读并投影为非人声环境音合同', async ()
     assert.equal(projected.prompt.includes('sk-'), false);
     assert.equal(projected.prompt.includes('Authorization'), false);
     assert.deepEqual(projected.referenceBundleSnapshot, {
-      schema_version: 'redraw-reference-bundle-v1',
+      schema_version: 'redraw-reference-bundle-v2',
       coverage_sha256: loaded.bundle.coverage_sha256,
       source_sha256: SOURCE_FINGERPRINT,
       motion_sha256: MOTION_SHA256,
       dialogue_kind: 'silent',
       speech_required: false,
+      source_dialogue_sha256: loaded.bundle.dialogue.source_dialogue_sha256,
       dialogue_script_sha256: loaded.bundle.dialogue.script_sha256,
       character_name_map_sha256: loaded.bundle.dialogue.character_name_map_sha256,
+      localization_binding_sha256: loaded.bundle.dialogue.localization_binding_sha256,
     });
   } finally {
     state.cleanup();
@@ -815,6 +920,13 @@ test('源与本地化对白空值不一致、非法 JSON 或非数组时拒绝�
     { name: 'localized invalid json', overrides: { localized_dialogue_json: '[' } },
     { name: 'source non-array', overrides: { source_dialogue_json: '{}' } },
     { name: 'localized non-array', overrides: { localized_dialogue_json: '"dialogue"' } },
+    { name: 'source speaker empty', overrides: { sourceDialogue: [{ speaker_id: ' ', text: '跟我走。', start_ms: 0, end_ms: 2400 }] } },
+    { name: 'source text empty', overrides: { sourceDialogue: [{ speaker_id: 'character-001', text: ' ', start_ms: 0, end_ms: 2400 }] } },
+    { name: 'source time non-integer', overrides: { sourceDialogue: [{ speaker_id: 'character-001', text: '跟我走。', start_ms: 0.5, end_ms: 2400 }] } },
+    { name: 'source time out of duration', overrides: { sourceDialogue: [{ speaker_id: 'character-001', text: '跟我走。', start_ms: 0, end_ms: 5001 }] } },
+    { name: 'localized text empty', overrides: { dialogue: [{ speaker_id: 'character-001', localized_text: ' ', start_ms: 0, end_ms: 2400 }] } },
+    { name: 'localized Chinese residue', overrides: { dialogue: [{ speaker_id: 'character-001', localized_text: '等一下。', start_ms: 0, end_ms: 2400 }] } },
+    { name: 'localized time out of duration', overrides: { dialogue: [{ speaker_id: 'character-001', localized_text: 'Wait.', start_ms: 0, end_ms: 5001 }] } },
   ];
   for (const entry of cases) {
     const state = setup(entry.overrides);
@@ -955,44 +1067,56 @@ test('重读参考包时拒绝保存后仍有效的文字净景证据漂移', as
   }
 });
 
-test('重读参考包时拒绝保存后仍有效的剧本证据漂移', async () => {
-  const savedState = setup();
-  let savedRow;
-  try {
-    await saveReferenceBundle(ctx(savedState), validInput(savedState));
-    savedRow = currentShot(savedState.db, savedState.shotId);
-  } finally {
-    savedState.cleanup();
+test('V2 目标绑定任一当前组成漂移都拒绝旧参考包', async () => {
+  const cases = [
+    ['name map', (state) => state.db.prepare('UPDATE redraw_versions SET name_map_json = ? WHERE id = ?')
+      .run(JSON.stringify({ 'character-001': 'Ethan II', 'character-002': 'Maya' }), state.versionId)],
+    ['localized dialogue', (state) => state.db.prepare('UPDATE redraw_shots SET localized_dialogue_json = ? WHERE id = ?')
+      .run(JSON.stringify([{ speaker_id: 'character-001', localized_text: 'Wait.', start_ms: 0, end_ms: 2400 }]), state.shotId)],
+    ['source dialogue', (state) => state.db.prepare('UPDATE redraw_shots SET source_dialogue_json = ? WHERE id = ?')
+      .run(JSON.stringify([{ speaker_id: 'character-001', text: '等一下。', start_ms: 0, end_ms: 2400 }]), state.shotId)],
+    ['locale', (state) => state.db.prepare("UPDATE redraw_versions SET locale = 'es-MX' WHERE id = ?").run(state.versionId)],
+    ['market', (state) => state.db.prepare("UPDATE redraw_versions SET market = 'MX' WHERE id = ?").run(state.versionId)],
+    ['facts hash', (state) => {
+      state.db.exec('DROP TRIGGER redraw_versions_facts_immutable_update');
+      state.db.prepare('UPDATE redraw_versions SET facts_hash = ? WHERE id = ?').run('f'.repeat(64), state.versionId);
+    }],
+    ['timeline', (state) => state.db.prepare('UPDATE redraw_shots SET end_ms = 4900, duration_ms = 4900 WHERE id = ?')
+      .run(state.shotId)],
+  ];
+  for (const [name, mutate] of cases) {
+    const state = setup();
+    try {
+      await saveReferenceBundle(ctx(state), validInput(state));
+      mutate(state);
+      await assert.rejects(
+        () => loadCurrentReferenceBundle(ctx(state), state.shotId),
+        (error) => error.code === 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED',
+        name,
+      );
+    } finally {
+      state.cleanup();
+    }
   }
+});
 
-  const driftState = setup({ sourceFacts: { script_sha256: '6'.repeat(64) } });
+test('旧 V1 包即使重算 bundle hash 也要求重建', async () => {
+  const state = setup();
   try {
-    driftState.db.prepare(`
-      UPDATE redraw_shots
-      SET reference_bundle_json = ?, reference_bundle_hash = ?,
-          reference_bundle_updated_at = ?, updated_at = ?
-      WHERE id = ?
-    `).run(
-      savedRow.reference_bundle_json,
-      savedRow.reference_bundle_hash,
-      savedRow.reference_bundle_updated_at,
-      savedRow.updated_at,
-      driftState.shotId,
+    await saveReferenceBundle(ctx(state), validInput(state));
+    const legacy = JSON.parse(currentShot(state.db, state.shotId).reference_bundle_json);
+    legacy.schema_version = 'redraw-reference-bundle-v1';
+    delete legacy.dialogue.source_dialogue_sha256;
+    delete legacy.dialogue.localization_binding_sha256;
+    state.db.prepare('UPDATE redraw_shots SET reference_bundle_json = ?, reference_bundle_hash = ? WHERE id = ?')
+      .run(JSON.stringify(legacy), canonicalBundleHash(legacy), state.shotId);
+
+    await assert.rejects(
+      () => loadCurrentReferenceBundle(ctx(state), state.shotId),
+      (error) => error.code === 'REDRAW_REFERENCE_BUNDLE_NOT_FOUND',
     );
-    const before = currentShot(driftState.db, driftState.shotId);
-
-    const loadError = await captureAnyError(() => loadCurrentReferenceBundle(ctx(driftState), driftState.shotId));
-    assert.equal(loadError.code, 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED');
-
-    const projectionError = await captureAnyError(() => projectReferenceBundleForGeneration(ctx(driftState, {
-      createReferenceUrl() {
-        return '/static/redraw-reference/unused';
-      },
-    }), driftState.shotId));
-    assert.equal(projectionError.code, 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED');
-    assertShotUnchanged(driftState.db, driftState.shotId, before);
   } finally {
-    driftState.cleanup();
+    state.cleanup();
   }
 });
 
@@ -1333,7 +1457,7 @@ test('文字净景缺失、重复、数量、unresolved、类型、时间、审�
   }
 });
 
-test('无效语言市场、名字映射、对白绑定或剧本证据漂移时拒绝', async () => {
+test('无效语言市场、姓名映射、对白绑定或 facts hash 时拒绝', async () => {
   const cases = [
     {
       name: 'locale missing',
@@ -1367,16 +1491,22 @@ test('无效语言市场、名字映射、对白绑定或剧本证据漂移时�
       setup: () => setup({ dialogue: [{ speaker_id: 'character-999', localized_text: 'Wait.', start_ms: 0, end_ms: 1000 }] }),
     },
     {
-      name: 'script drift',
-      setup: () => setup({ sourceFacts: { script_sha256: 'not-a-sha256' } }),
+      name: 'facts hash invalid',
+      setup: () => setup({ factsHash: 'not-a-sha256' }),
     },
     {
-      name: 'name map drift',
-      setup: () => setup(),
-      mutateDb(state) {
-        state.db.prepare('UPDATE redraw_versions SET name_map_json = ? WHERE id = ?')
-          .run(JSON.stringify({ 'character-001': 'Ethan', 'character-002': 'Mia' }), state.versionId);
-      },
+      name: 'name map duplicate trimmed key',
+      setup: () => setup({
+        nameMap: { 'character-001': 'Ethan', ' character-001 ': 'Ethan II', 'character-002': 'Maya' },
+      }),
+    },
+    {
+      name: 'name map duplicate target',
+      setup: () => setup({ nameMap: { 'character-001': 'Ethan', 'character-002': 'Ethan' } }),
+    },
+    {
+      name: 'name map Chinese target',
+      setup: () => setup({ nameMap: { 'character-001': '伊森', 'character-002': 'Maya' } }),
     },
   ];
   for (const entry of cases) {
