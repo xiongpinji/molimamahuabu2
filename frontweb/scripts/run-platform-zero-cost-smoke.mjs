@@ -483,7 +483,7 @@ export async function runSmoke({ localFixture = false } = {}) {
     if (violations.length || nonLoginWriteCount !== 0 || generationWriteCount !== 0) {
       throw new Error(`ZERO_COST_SMOKE_WRITE_DETECTED:${violations[0] || 'unknown'}`)
     }
-    if (fixture?.received.nonLoginWrites !== 0) throw new Error('ZERO_COST_SMOKE_FIXTURE_RECEIVED_WRITE')
+    if (fixture && fixture.received.nonLoginWrites !== 0) throw new Error('ZERO_COST_SMOKE_FIXTURE_RECEIVED_WRITE')
 
     safeTrace.push({
       step: 'summary',

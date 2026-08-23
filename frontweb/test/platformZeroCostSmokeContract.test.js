@@ -179,6 +179,13 @@ test('本地 fixture 只允许回环地址并由脚本启停', async () => {
   assert.match(runner, /local-test-only/)
 })
 
+test('生产巡检未启动本地 fixture 时不误报 fixture 写入', async () => {
+  const { runner } = await readSources()
+
+  assert.match(runner, /if \(fixture && fixture\.received\.nonLoginWrites !== 0\)/)
+  assert.doesNotMatch(runner, /fixture\?\.received\.nonLoginWrites !== 0/)
+})
+
 test('两个浏览器上下文都禁用 Service Worker 绕过请求门禁', async () => {
   const { runner, spec } = await readSources()
 
