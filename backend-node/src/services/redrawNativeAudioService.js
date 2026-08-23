@@ -392,6 +392,49 @@ function compactAudioStream(stream, duration) {
   };
 }
 
+function projectNativeAudioQualityEvidence(validation, contract = {}) {
+  const dialogueMode = contract.dialogueMode;
+  const evidenceHash = validation?.validation_hash;
+  const language = validation?.verification?.detected_language ?? null;
+  const hasAudio = validation?.audio_stream?.codec_type === 'audio';
+  if (!['dialogue', 'silent'].includes(dialogueMode)
+    || !isSha256(evidenceHash)
+    || !isBoolean(contract.speakerVoiceMatches)
+    || !isBoolean(contract.ambientAudioSafe)) {
+    throw codedError('REDRAW_NATIVE_AUDIO_QUALITY_EVIDENCE_INVALID', '原生音频质量证据无效');
+  }
+
+  if (dialogueMode === 'silent') {
+    if (contract.approvedText !== '' || contract.dialogueDetected !== false) {
+      throw codedError('REDRAW_NATIVE_AUDIO_SILENT_DIALOGUE_INVALID', '静默镜头不得包含目标台词或检测到对白');
+    }
+    return {
+      has_audio: hasAudio,
+      dialogue_mode: 'silent',
+      language: null,
+      exact_target_text: null,
+      speaker_voice_matches: contract.speakerVoiceMatches,
+      ambient_audio_safe: contract.ambientAudioSafe,
+      evidence_hash: evidenceHash,
+    };
+  }
+
+  if (typeof language !== 'string' || !language
+    || validation?.verification?.language_verified !== true
+    || !isBoolean(contract.exactTargetText)) {
+    throw codedError('REDRAW_NATIVE_AUDIO_QUALITY_EVIDENCE_INVALID', '原生音频质量证据无效');
+  }
+  return {
+    has_audio: hasAudio,
+    dialogue_mode: 'dialogue',
+    language,
+    exact_target_text: contract.exactTargetText,
+    speaker_voice_matches: contract.speakerVoiceMatches,
+    ambient_audio_safe: contract.ambientAudioSafe,
+    evidence_hash: evidenceHash,
+  };
+}
+
 function normalizeInvocation(value, artifactSha256) {
   const invocation = {
     provider: String(value?.provider || ''),
@@ -433,6 +476,10 @@ function isProbability(value) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
 }
 
+function isBoolean(value) {
+  return typeof value === 'boolean';
+}
+
 function codedError(code, message = code) {
   const error = new Error(message);
   error.code = code;
@@ -441,5 +488,6 @@ function codedError(code, message = code) {
 
 module.exports = {
   CONTRACT,
+  projectNativeAudioQualityEvidence,
   validateNativeAudio,
 };
