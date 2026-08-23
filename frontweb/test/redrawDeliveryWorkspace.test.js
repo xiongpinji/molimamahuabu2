@@ -97,6 +97,7 @@ test('release readiness 列出精确镜头原因且下载仅接受服务端受�
   }).blockers, [{ shot_id: 7, reason_code: 'candidate_not_approved' }])
   assert.equal(controlledReleaseDownloadUrl('/api/v1/redraw/exports/8/download/mp4'), '/api/v1/redraw/exports/8/download/mp4')
   assert.equal(controlledReleaseDownloadUrl('/api/v1/redraw/exports/8'), '/api/v1/redraw/exports/8')
+  assert.equal(controlledReleaseDownloadUrl('/api/v1/redraw/exports/8?url=https://attacker.invalid'), '')
   assert.equal(controlledReleaseDownloadUrl('https://attacker.invalid/file.mp4'), '')
   assert.equal(controlledReleaseDownloadUrl('C:/secret.mp4'), '')
   for (const label of ['整集 readiness', '镜头', '原因', 'MP4', 'SRT', 'VTT', '报告下载']) {
@@ -104,6 +105,10 @@ test('release readiness 列出精确镜头原因且下载仅接受服务端受�
   }
   assert.match(releaseSource, /getReleaseReadiness/)
   assert.match(releaseSource, /createRelease/)
+  assert.match(releaseSource, /status === 'completed'/)
+  assert.match(releaseSource, /downloadReleaseArtifact\(relativeUrl, report\)/)
+  assert.match(releaseSource, /JSON\.stringify\(result, null, 2\)/)
+  assert.doesNotMatch(releaseSource, /window\.open|location\.href/)
   assert.match(editStepSource, /RedrawEpisodeReleasePanel/)
   assert.match(workspaceSource, /生成与 QA/)
   assert.match(workspaceSource, /合并与导出/)

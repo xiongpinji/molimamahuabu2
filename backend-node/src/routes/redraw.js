@@ -2013,6 +2013,101 @@ function parseManifestSafe(row) {
   return parseJSON(row?.manifest_json, {});
 }
 
+function reportInteger(value, minimum = 0) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= minimum ? number : null;
+}
+
+function reportHash(value) {
+  const digest = String(value || '').trim().toLowerCase();
+  return SHA256_PATTERN.test(digest) ? digest : null;
+}
+
+function reportToken(value, pattern, maxLength) {
+  const token = String(value || '').trim();
+  return token && token.length <= maxLength && pattern.test(token) ? token : null;
+}
+
+function reportQualitySummary(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const approved = reportInteger(value.approved_shot_count);
+  const automatic = reportInteger(value.automatic_review_count);
+  const human = reportInteger(value.human_review_count);
+  if (value.decision !== 'approved' || approved == null || automatic == null || human == null
+    || automatic + human !== approved) return null;
+  return {
+    decision: 'approved',
+    approved_shot_count: approved,
+    automatic_review_count: automatic,
+    human_review_count: human,
+  };
+}
+
+function reportEpisodeRelease(value, expectedHash) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || value.schema_version !== 'redraw-episode-release-v1'
+    || !Array.isArray(value.shots) || value.shots.length === 0) return null;
+  const qualitySummary = reportQualitySummary(value.quality_summary);
+  const releaseHash = reportHash(value.release_hash);
+  const projectId = numericId(value.project_id);
+  const workId = numericId(value.work_id);
+  const versionId = numericId(value.version_id);
+  const locale = reportToken(value.locale, /^[a-z0-9][a-z0-9._-]*$/i, 32);
+  const rawMarket = String(value.market || '').trim();
+  const market = rawMarket === '' ? '' : reportToken(rawMarket, /^[a-z0-9][a-z0-9 ._-]*$/i, 64);
+  if (!qualitySummary || !releaseHash || releaseHash !== expectedHash
+    || !projectId || !workId || !versionId || !locale || market == null
+    || qualitySummary.approved_shot_count !== value.shots.length) return null;
+  const shots = value.shots.map((shot) => {
+    if (!shot || typeof shot !== 'object' || Array.isArray(shot)) return null;
+    const startMs = reportInteger(shot.start_ms);
+    const endMs = reportInteger(shot.end_ms, 1);
+    const item = {
+      shot_id: numericId(shot.shot_id),
+      shot_index: reportInteger(shot.shot_index, 1),
+      start_ms: startMs,
+      end_ms: endMs,
+      candidate_review_id: numericId(shot.candidate_review_id),
+      candidate_sha256: reportHash(shot.candidate_sha256),
+      audio_sha256: reportHash(shot.audio_sha256),
+      subtitle_sha256: reportHash(shot.subtitle_sha256),
+      dependency_hash: reportHash(shot.dependency_hash),
+    };
+    return Object.values(item).some((entry) => entry == null) || endMs <= startMs ? null : item;
+  });
+  if (shots.some((shot) => shot == null)) return null;
+  return {
+    schema_version: 'redraw-episode-release-v1',
+    project_id: projectId,
+    work_id: workId,
+    version_id: versionId,
+    locale,
+    market,
+    shots,
+    quality_summary: qualitySummary,
+    release_hash: releaseHash,
+  };
+}
+
+function completedReleaseReport(row, manifest) {
+  if (row.status !== 'completed') return null;
+  const releaseHash = reportHash(row.release_hash);
+  if (!releaseHash) return null;
+  const episodeRelease = reportEpisodeRelease(
+    manifest.episode_release || manifest.plan?.episode_release,
+    releaseHash,
+  );
+  const qualitySummary = reportQualitySummary(parseJSON(row.quality_summary_json, null));
+  if (!episodeRelease || !qualitySummary
+    || JSON.stringify(qualitySummary) !== JSON.stringify(episodeRelease.quality_summary)) return null;
+  try {
+    redrawEpisodeReleaseService.assertReleaseHash(episodeRelease, releaseHash);
+  } catch (_) {
+    return null;
+  }
+  return { release_hash: releaseHash, quality_summary: qualitySummary, episode_release: episodeRelease };
+}
+
 function exportSummary(row) {
   const manifest = parseManifestSafe(row);
   const inputs = manifest.plan || manifest.inputs || {};
@@ -2044,7 +2139,11 @@ function exportSummary(row) {
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
-  if (row.status === 'completed') summary.downloads = releaseDownloadUrls(row.id);
+  if (row.status === 'completed') {
+    summary.downloads = releaseDownloadUrls(row.id);
+    const report = completedReleaseReport(row, manifest);
+    if (report) Object.assign(summary, report);
+  }
   return summary;
 }
 

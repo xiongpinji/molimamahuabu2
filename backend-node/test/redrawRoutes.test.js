@@ -6221,6 +6221,20 @@ test('交付工作台生成摘要按 owner 返回预算、attempt 和规范 prov
       },
     );
 
+    db.prepare('UPDATE redraw_shots SET deleted_at = ? WHERE id IN (?, ?)')
+      .run(NOW, shotId, heldShotId);
+    const afterSoftDelete = captureResponse();
+    handlers.generationSummary(request({ id: versionId }), afterSoftDelete);
+    assert.equal(afterSoftDelete.statusCode, 200);
+    assert.deepEqual(afterSoftDelete.body.data.budget, {
+      limit: 30,
+      spent: 10,
+      held: 5,
+      remaining: 15,
+    });
+    assert.equal(afterSoftDelete.body.data.shots.some((shot) => shot.shot_id === shotId), false);
+    assert.equal(afterSoftDelete.body.data.shots.some((shot) => shot.shot_id === heldShotId), false);
+
     const foreign = captureResponse();
     handlers.generationSummary(request({ id: versionId, tenantId: 'tenant-b' }), foreign);
     assert.equal(foreign.statusCode, 404);
@@ -6402,6 +6416,95 @@ test('release readiness 与创建只使用服务端 hash、Task6 服务和受控
     });
     assert.equal(JSON.stringify(created.body).includes('C:'), false);
     assert.equal(builds.every((item) => item.tenantId === 'tenant-a' && item.input.version_id === versionId), true);
+
+    const auditQuality = {
+      decision: 'approved',
+      approved_shot_count: 1,
+      automatic_review_count: 0,
+      human_review_count: 1,
+    };
+    const auditShot = {
+      shot_id: 7,
+      shot_index: 1,
+      start_ms: 0,
+      end_ms: 5000,
+      candidate_review_id: 19,
+      candidate_sha256: 'c'.repeat(64),
+      audio_sha256: 'd'.repeat(64),
+      subtitle_sha256: 'e'.repeat(64),
+      dependency_hash: 'f'.repeat(64),
+    };
+    const auditUnsignedRelease = {
+      schema_version: 'redraw-episode-release-v1',
+      project_id: projectId,
+      work_id: workId,
+      version_id: versionId,
+      locale: 'en-US',
+      market: 'US',
+      shots: [auditShot],
+      quality_summary: auditQuality,
+    };
+    const auditReleaseHash = crypto.createHash('sha256').update(stableJson(auditUnsignedRelease)).digest('hex');
+    const auditRelease = { ...auditUnsignedRelease, release_hash: auditReleaseHash };
+    const taintedRelease = {
+      ...auditRelease,
+      provider_raw: { api_key: 'secret-provider-key', url: 'https://provider.invalid/raw' },
+      absolute_path: 'C:\\private\\episode.mp4',
+      shots: [{
+        ...auditShot,
+        provider: 'attacker-provider',
+        local_path: 'C:\\private\\candidate.mp4',
+        external_url: 'https://attacker.invalid/candidate.mp4',
+      }],
+      quality_summary: { ...auditQuality, provider_metrics: { raw: true } },
+    };
+    const insertAuditExport = db.prepare(`INSERT INTO redraw_exports
+      (version_id, tenant_id, user_id, export_type, version_number, manifest_json,
+       release_hash, quality_summary_json, status, created_at, updated_at)
+      VALUES (?, 'tenant-a', 'user-a', 'video', ?, ?, ?, ?, ?, ?, ?)`);
+    const completedExportId = Number(insertAuditExport.run(
+      versionId,
+      2,
+      JSON.stringify({
+        episode_release: taintedRelease,
+        provider_raw: { api_key: 'secret-provider-key' },
+        outputs: { absolute_path: 'C:\\private\\episode.mp4', external_url: 'https://provider.invalid/file' },
+      }),
+      auditReleaseHash,
+      JSON.stringify({ ...auditQuality, provider_raw: { score: 1 } }),
+      'completed',
+      NOW,
+      NOW,
+    ).lastInsertRowid);
+    const completedReport = captureResponse();
+    handlers.getExport(request({ id: completedExportId }), completedReport);
+    assert.equal(completedReport.statusCode, 200);
+    assert.equal(completedReport.body.data.release_hash, auditReleaseHash);
+    assert.deepEqual(completedReport.body.data.quality_summary, auditQuality);
+    assert.deepEqual(completedReport.body.data.episode_release, auditRelease);
+    assert.equal(completedReport.body.data.downloads.report, `/api/v1/redraw/exports/${completedExportId}`);
+    assert.equal(/C:\\|https?:\/\/|provider_raw|api_key|external_url|local_path/
+      .test(JSON.stringify(completedReport.body.data)), false);
+
+    for (const [status, versionNumber] of [['pending', 3], ['failed', 4]]) {
+      const exportId = Number(insertAuditExport.run(
+        versionId,
+        versionNumber,
+        JSON.stringify({ episode_release: taintedRelease }),
+        auditReleaseHash,
+        JSON.stringify(auditQuality),
+        status,
+        NOW,
+        NOW,
+      ).lastInsertRowid);
+      const notAReport = captureResponse();
+      handlers.getExport(request({ id: exportId }), notAReport);
+      assert.equal(notAReport.statusCode, 200);
+      assert.equal(Object.hasOwn(notAReport.body.data, 'release_hash'), false, status);
+      assert.equal(Object.hasOwn(notAReport.body.data, 'quality_summary'), false, status);
+      assert.equal(Object.hasOwn(notAReport.body.data, 'episode_release'), false, status);
+      assert.equal(Object.hasOwn(notAReport.body.data, 'downloads'), false, status);
+    }
 
     forceBlocked = true;
     const blocked = captureResponse();
