@@ -1293,6 +1293,129 @@ test('候选审核追加保存并由镜头和导出绑定当前批准哈希', ()
   db.close();
 });
 
+test('fresh redraw_shots 状态合同同时保留旧状态并支持候选审核四阶段', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const projectId = insertProject(db);
+  const workId = insertWork(db, projectId);
+  const versionId = insertVersion(db, workId);
+  const statuses = [
+    'draft', 'pending', 'processing', 'completed', 'failed', 'needs_attention',
+    'candidate_ready', 'needs_review', 'approved', 'included',
+  ];
+
+  assert.match(tableSql(db, 'redraw_shots'), /candidate_ready/);
+  assert.match(tableSql(db, 'redraw_shots'), /needs_review/);
+  assert.match(tableSql(db, 'redraw_shots'), /approved/);
+  assert.match(tableSql(db, 'redraw_shots'), /included/);
+  for (const [index, status] of statuses.entries()) {
+    assert.doesNotThrow(() => db.prepare(`
+      INSERT INTO redraw_shots
+        (version_id, batch_index, shot_index, start_ms, end_ms, duration_ms, status, created_at, updated_at)
+      VALUES (?, 1, ?, 0, 5000, 5000, ?, ?, ?)
+    `).run(versionId, index + 1, status, NOW, NOW), status);
+  }
+  assert.throws(() => db.prepare(`
+    INSERT INTO redraw_shots
+      (version_id, batch_index, shot_index, start_ms, end_ms, duration_ms, status, created_at, updated_at)
+    VALUES (?, 1, 99, 0, 5000, 5000, 'unknown_status', ?, ?)
+  `).run(versionId, NOW, NOW), /CHECK/);
+  db.close();
+});
+
+test('legacy redraw_shots 状态重建保留所有列、行、索引、触发器和外键', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_versions (id INTEGER PRIMARY KEY);
+    INSERT INTO redraw_versions (id) VALUES (7);
+    CREATE TABLE redraw_shots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version_id INTEGER NOT NULL,
+      status TEXT
+        CHECK (status IN ('draft', 'pending', 'processing', 'completed', 'failed', 'needs_attention', 'legacy_review')),
+      updated_at TEXT NOT NULL,
+      legacy_marker TEXT NOT NULL,
+      FOREIGN KEY(version_id) REFERENCES redraw_versions(id)
+    );
+    CREATE INDEX idx_redraw_shots_legacy_marker ON redraw_shots(legacy_marker);
+    CREATE TRIGGER redraw_shots_legacy_guard
+    BEFORE UPDATE OF legacy_marker ON redraw_shots
+    BEGIN SELECT RAISE(ABORT, 'legacy marker immutable'); END;
+    INSERT INTO redraw_shots
+      (id, version_id, status, updated_at, legacy_marker)
+    VALUES (41, 7, 'legacy_review', '${NOW}', 'keep-me');
+    CREATE TABLE redraw_shot_notes (
+      id INTEGER PRIMARY KEY,
+      shot_id INTEGER NOT NULL,
+      note TEXT NOT NULL,
+      FOREIGN KEY(shot_id) REFERENCES redraw_shots(id)
+    );
+    INSERT INTO redraw_shot_notes (id, shot_id, note) VALUES (1, 41, 'keep-child');
+  `);
+  db.pragma('foreign_keys = ON');
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  const sql = tableSql(db, 'redraw_shots');
+  for (const status of ['legacy_review', 'candidate_ready', 'needs_review', 'approved', 'included']) {
+    assert.match(sql, new RegExp(status));
+  }
+  assert.deepEqual(
+    db.prepare('SELECT id, version_id, status, updated_at, legacy_marker FROM redraw_shots WHERE id = 41').get(),
+    { id: 41, version_id: 7, status: 'legacy_review', updated_at: NOW, legacy_marker: 'keep-me' },
+  );
+  assert.equal(db.prepare('PRAGMA table_info(redraw_shots)').all().find((row) => row.name === 'status').notnull, 0);
+  assert.deepEqual(
+    db.prepare('PRAGMA foreign_key_list(redraw_shots)').all().map((row) => [row.from, row.table, row.to]),
+    [['version_id', 'redraw_versions', 'id']],
+  );
+  assert.deepEqual(
+    db.prepare('PRAGMA foreign_key_list(redraw_shot_notes)').all().map((row) => [row.from, row.table, row.to]),
+    [['shot_id', 'redraw_shots', 'id']],
+  );
+  assert.deepEqual(db.prepare('SELECT shot_id, note FROM redraw_shot_notes WHERE id = 1').get(), {
+    shot_id: 41,
+    note: 'keep-child',
+  });
+  assert.deepEqual(
+    db.prepare('PRAGMA index_info(idx_redraw_shots_legacy_marker)').all().map((row) => row.name),
+    ['legacy_marker'],
+  );
+  assert.throws(
+    () => db.prepare("UPDATE redraw_shots SET legacy_marker = 'changed' WHERE id = 41").run(),
+    /legacy marker immutable/,
+  );
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check(redraw_shots)').all(), []);
+  db.close();
+});
+
+test('redraw_shots 状态重建遇到孤儿外键时 fail closed 且不破坏原表', () => {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = OFF');
+  db.exec(`
+    CREATE TABLE redraw_versions (id INTEGER PRIMARY KEY);
+    CREATE TABLE redraw_shots (
+      id INTEGER PRIMARY KEY,
+      version_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'completed')),
+      updated_at TEXT,
+      FOREIGN KEY(version_id) REFERENCES redraw_versions(id)
+    );
+    INSERT INTO redraw_shots (id, version_id, status, updated_at)
+    VALUES (9, 404, 'completed', '${NOW}');
+  `);
+  db.pragma('foreign_keys = ON');
+  const beforeSql = tableSql(db, 'redraw_shots');
+  const beforeRow = db.prepare('SELECT * FROM redraw_shots WHERE id = 9').get();
+
+  assert.throws(() => runMigrationsAndEnsure(db), /redraw_shots.*foreign key check failed/i);
+  assert.equal(tableSql(db, 'redraw_shots'), beforeSql);
+  assert.deepEqual(db.prepare('SELECT * FROM redraw_shots WHERE id = 9').get(), beforeRow);
+  assert.equal(tableNames(db).includes('__redraw_shots_status_rebuild'), false);
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+  db.close();
+});
+
 test('旧的不完整镜头和导出表可幂等补齐候选 release 列且保留旧行', () => {
   const db = new Database(':memory:');
   db.exec(`

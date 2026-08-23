@@ -298,9 +298,71 @@ function taskReservationId(task) {
   return metadata?.redraw_shot?.reservation_id || metadata?.reservation_id || null;
 }
 
-function persistReview(ctx, current, input, evidence) {
+function advanceVersionWhenAllShotsApproved(db, ctx, versionId, timestamp) {
+  const gate = db.prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE
+        WHEN s.video_generation_id IS NOT NULL
+          AND s.approved_candidate_review_id IS NOT NULL
+          AND s.status IN ('approved', 'included', 'completed')
+          AND EXISTS (
+            SELECT 1
+            FROM redraw_candidate_reviews r
+            WHERE r.id = s.approved_candidate_review_id
+              AND r.tenant_id = s.tenant_id
+              AND r.user_id = s.user_id
+              AND r.shot_id = s.id
+              AND r.video_generation_id = s.video_generation_id
+              AND r.decision = 'approved'
+          )
+        THEN 0 ELSE 1
+      END) AS incomplete
+    FROM redraw_shots s
+    WHERE s.version_id = ? AND s.tenant_id = ? AND s.user_id = ? AND s.deleted_at IS NULL
+  `).get(Number(versionId), String(ctx.tenantId), String(ctx.userId));
+  if (!gate || Number(gate.total) < 1 || Number(gate.incomplete || 0) !== 0) return false;
+  db.prepare(`
+    UPDATE redraw_versions
+    SET status = 'composing', updated_at = ?
+    WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+  `).run(timestamp, Number(versionId), String(ctx.tenantId), String(ctx.userId));
+  db.prepare(`
+    UPDATE redraw_works
+    SET status = 'composing', current_step = 4, updated_at = ?
+    WHERE id = (
+      SELECT work_id FROM redraw_versions
+      WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+    )
+      AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+  `).run(
+    timestamp,
+    Number(versionId),
+    String(ctx.tenantId),
+    String(ctx.userId),
+    String(ctx.tenantId),
+    String(ctx.userId),
+  );
+  return true;
+}
+
+function isSqliteReviewConflict(error) {
+  return ['SQLITE_BUSY', 'SQLITE_LOCKED', 'SQLITE_CONSTRAINT_UNIQUE', 'SQLITE_CONSTRAINT_PRIMARYKEY']
+    .includes(String(error?.code || ''));
+}
+
+function persistReview(ctx, baseline, input, evidence) {
   const { db } = ctx;
-  return db.transaction(() => {
+  const transaction = db.transaction(() => {
+    const current = snapshot(ctx, input);
+    if (current.candidate_sha256 !== baseline.candidate_sha256
+      || current.dependency_hash !== baseline.dependency_hash) {
+      throw codedError('REDRAW_CANDIDATE_REVIEW_STALE', '审核期间候选或依赖已变化', 409);
+    }
+    if (input.decision_source === 'human'
+      && String(input.candidate_sha256 || '').toLowerCase() !== current.candidate_sha256) {
+      throw codedError('REDRAW_CANDIDATE_REVIEW_CONFLICT', '候选文件哈希已变化', 409);
+    }
     const duplicate = currentMatchingReview(ctx, current);
     if (duplicate?.decision_source === input.decision_source) {
       if (duplicate.decision === evidence.decision) return projectReview(duplicate);
@@ -313,13 +375,8 @@ function persistReview(ctx, current, input, evidence) {
     if (duplicate && duplicate.decision !== 'needs_review') {
       throw codedError('REDRAW_CANDIDATE_REVIEW_CONFLICT', '当前候选已有终态审核结论', 409);
     }
-    const freshShot = db.prepare(`
-      SELECT updated_at, video_generation_id
-      FROM redraw_shots
-      WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
-    `).get(Number(current.shot.id), String(ctx.tenantId), String(ctx.userId));
-    if (!freshShot || String(freshShot.updated_at) !== String(input.expected_updated_at)
-      || Number(freshShot.video_generation_id) !== Number(current.video.id)) {
+    if (String(current.shot.updated_at) !== String(input.expected_updated_at)
+      || Number(current.shot.video_generation_id) !== Number(current.video.id)) {
       throw codedError('REDRAW_CANDIDATE_REVIEW_CONFLICT', '镜头已被其他操作更新', 409);
     }
     const nextVersion = Number(db.prepare(`
@@ -345,17 +402,28 @@ function persistReview(ctx, current, input, evidence) {
     );
     const reviewId = Number(inserted.lastInsertRowid);
     const approved = evidence.decision === 'approved';
+    const shotDraft = parseJson(current.shot.draft_json || '{}', {});
+    const nextDraft = approved
+      ? {
+          ...shotDraft,
+          generation: {
+            ...(shotDraft.generation && typeof shotDraft.generation === 'object' ? shotDraft.generation : {}),
+            completed_at: createdAt,
+          },
+        }
+      : shotDraft;
     const shotUpdate = db.prepare(`
       UPDATE redraw_shots
-      SET approved_candidate_review_id = ?, status = ?, error_code = ?, error_message = ?, updated_at = ?
+      SET approved_candidate_review_id = ?, status = ?, error_code = ?, error_message = ?,
+          draft_json = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND user_id = ? AND updated_at = ?
         AND video_generation_id = ? AND deleted_at IS NULL
     `).run(
       approved ? reviewId : null,
-      approved ? 'completed' : 'needs_attention',
+      approved ? 'approved' : 'needs_review',
       approved ? null : 'REDRAW_CANDIDATE_REVIEW_REQUIRED',
       approved ? null : (evidence.decision === 'rejected' ? '逐镜候选质量未通过，等待人工处理' : '逐镜候选等待人工审核'),
-      createdAt, Number(current.shot.id), String(ctx.tenantId), String(ctx.userId),
+      stableJson(nextDraft), createdAt, Number(current.shot.id), String(ctx.tenantId), String(ctx.userId),
       String(input.expected_updated_at), Number(current.video.id),
     );
     if (shotUpdate.changes !== 1) throw codedError('REDRAW_CANDIDATE_REVIEW_CONFLICT', '镜头已被其他操作更新', 409);
@@ -367,43 +435,74 @@ function persistReview(ctx, current, input, evidence) {
     if (task) {
       if (approved) {
         const priorResult = parseJson(task.result || '{}', {});
-        const shotDraft = parseJson(current.shot.draft_json || '{}', {});
-        db.prepare(`
+        const candidateRef = shotDraft.new_video_ref || {};
+        const taskUpdate = db.prepare(`
           UPDATE async_tasks
           SET status = 'completed', progress = 100, message = '', error = NULL,
               result = ?, completed_at = ?, updated_at = ?
-          WHERE id = ?
+          WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
         `).run(stableJson({
           ...priorResult,
           status: 'completed',
           shot_id: Number(current.shot.id),
           video_generation_id: Number(current.video.id),
-          asset_id: priorResult.asset_id || shotDraft.new_video_ref?.asset_id || null,
+          asset_id: priorResult.asset_id || candidateRef.asset_id || null,
           candidate_review_id: reviewId,
           video_url: current.video.video_url || null,
           local_path: current.video.local_path,
-        }), createdAt, createdAt, task.id);
+          probe: priorResult.probe || candidateRef.probe || null,
+        }), createdAt, createdAt, task.id, String(ctx.tenantId), String(ctx.userId));
+        if (taskUpdate.changes !== 1) {
+          throw codedError('REDRAW_CANDIDATE_REVIEW_CONFLICT', '候选任务已被其他操作更新', 409);
+        }
         const reservationId = taskReservationId(task);
         if (reservationId) redrawBillingService.settleShotGeneration(db, reservationId, 'completed');
       } else {
         const message = evidence.decision === 'rejected'
           ? '逐镜候选质量未通过，等待人工处理'
           : '逐镜候选等待人工审核';
-        db.prepare(`
+        const taskUpdate = db.prepare(`
           UPDATE async_tasks
           SET status = 'needs_attention', progress = 90, message = ?, error = ?,
               result = ?, completed_at = NULL, updated_at = ?
-          WHERE id = ?
+          WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
         `).run(message, message, stableJson({
           status: 'candidate',
           shot_id: Number(current.shot.id),
           video_generation_id: Number(current.video.id),
           candidate_review_id: reviewId,
-        }), createdAt, task.id);
+        }), createdAt, task.id, String(ctx.tenantId), String(ctx.userId));
+        if (taskUpdate.changes !== 1) {
+          throw codedError('REDRAW_CANDIDATE_REVIEW_CONFLICT', '候选任务已被其他操作更新', 409);
+        }
+      }
+    }
+    if (approved) {
+      advanceVersionWhenAllShotsApproved(db, ctx, current.shot.version_id, createdAt);
+      if (typeof ctx.beforeCandidateApprovalCommit === 'function') {
+        const hookResult = ctx.beforeCandidateApprovalCommit({
+          db,
+          review_id: reviewId,
+          shot_id: Number(current.shot.id),
+          video_generation_id: Number(current.video.id),
+          timestamp: createdAt,
+        });
+        if (hookResult && typeof hookResult.then === 'function') {
+          throw codedError('REDRAW_CANDIDATE_APPROVAL_HOOK_INVALID', '候选批准事务钩子必须同步完成');
+        }
       }
     }
     return projectReview(db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = ?').get(reviewId));
-  })();
+  });
+  try {
+    return transaction.immediate();
+  } catch (error) {
+    if (error?.code?.startsWith?.('REDRAW_')) throw error;
+    if (isSqliteReviewConflict(error)) {
+      throw codedError('REDRAW_CANDIDATE_REVIEW_CONFLICT', '候选审核并发冲突', 409);
+    }
+    throw error;
+  }
 }
 
 async function reviewCandidate(ctx, rawInput = {}) {
@@ -454,12 +553,8 @@ async function reviewCandidate(ctx, rawInput = {}) {
   }
 
   if (typeof ctx.beforeCandidateReviewCommit === 'function') await ctx.beforeCandidateReviewCommit({ ...before, evidence });
-  const after = snapshot(ctx, input);
-  if (after.candidate_sha256 !== before.candidate_sha256 || after.dependency_hash !== before.dependency_hash) {
-    throw codedError('REDRAW_CANDIDATE_REVIEW_STALE', '审核期间候选或依赖已变化', 409);
-  }
   const expectedUpdatedAt = input.expected_updated_at || before.shot.updated_at;
-  return persistReview(ctx, after, {
+  return persistReview(ctx, before, {
     ...input,
     expected_updated_at: expectedUpdatedAt,
     reviewer_id: input.decision_source === 'human' ? String(ctx.userId || '') : null,

@@ -9,6 +9,8 @@ const crypto = require('node:crypto');
 const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const credits = require('../src/services/creditLedgerService');
+const taskService = require('../src/services/taskService');
 const {
   reviewCandidate,
   getCurrentCandidateReview,
@@ -102,6 +104,28 @@ function shot(state) {
   return state.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(state.shotId);
 }
 
+function attachHeldGeneration(state) {
+  credits.setTenantAccountBalance(state.db, 'tenant-a', 100);
+  const reservation = credits.reserve(state.db, {
+    tenantId: 'tenant-a',
+    actorUserId: 'user-a',
+    operationKey: `candidate-review:${state.shotId}`,
+    model: 'verified-video-model',
+    resourceType: 'redraw_shot',
+    resourceId: state.shotId,
+    amount: 12,
+  });
+  const task = taskService.createTask(state.db, { info() {}, warn() {}, error() {} }, 'redraw_shot', String(state.shotId));
+  state.db.prepare(`
+    UPDATE async_tasks
+    SET status = 'processing', tenant_id = 'tenant-a', user_id = 'user-a', metadata = ?
+    WHERE id = ?
+  `).run(JSON.stringify({ redraw_shot: { reservation_id: reservation.id } }), task.id);
+  state.db.prepare('UPDATE video_generations SET task_id = ? WHERE id = ?').run(task.id, state.videoId);
+  state.db.prepare("UPDATE redraw_shots SET status = 'candidate_ready' WHERE id = ?").run(state.shotId);
+  return { reservation, task };
+}
+
 test('auto 质量全过时追加审核并以 updated_at CAS 绑定当前候选', async (t) => {
   const state = setup(t);
   const review = await reviewCandidate(state.ctx, {
@@ -112,7 +136,7 @@ test('auto 质量全过时追加审核并以 updated_at CAS 绑定当前候选',
 
   assert.equal(review.decision, 'approved');
   assert.equal(shot(state).approved_candidate_review_id, review.id);
-  assert.equal(shot(state).status, 'completed');
+  assert.equal(shot(state).status, 'approved');
   assert.match(review.candidate_sha256, /^[a-f0-9]{64}$/);
   assert.match(review.dependency_hash, /^[a-f0-9]{64}$/);
   assert.equal(getCurrentCandidateReview(state.ctx, { shot_id: state.shotId }).id, review.id);
@@ -128,7 +152,7 @@ test('A 自动结果始终 needs_review，B 边界结果也降级等待人工', 
   });
   assert.equal(safeReview.decision, 'needs_review');
   assert.equal(shot(safe).approved_candidate_review_id, null);
-  assert.equal(shot(safe).status, 'needs_attention');
+  assert.equal(shot(safe).status, 'needs_review');
 
   const boundary = setup(t, { mode: 'auto' });
   boundary.ctx.candidateQualityVerifier = async () => quality({
@@ -142,7 +166,7 @@ test('A 自动结果始终 needs_review，B 边界结果也降级等待人工', 
   });
   assert.equal(boundaryReview.decision, 'needs_review');
   assert.deepEqual(boundaryReview.reason_codes, ['lip_sync_evidence_missing']);
-  assert.equal(shot(boundary).status, 'needs_attention');
+  assert.equal(shot(boundary).status, 'needs_review');
 });
 
 test('人工批准必须提交当前 expected_updated_at 与 candidate_sha256', async (t) => {
@@ -198,6 +222,93 @@ test('人工批准必须提交当前 expected_updated_at 与 candidate_sha256', 
   assert.equal(approved.decision, 'approved');
   assert.equal(approved.reviewer_id, 'user-a');
   assert.equal(shot(state).approved_candidate_review_id, approved.id);
+  assert.equal(shot(state).status, 'approved');
+});
+
+test('A 模式 held 候选可由人工双 CAS 批准并原子完成任务和结算', async (t) => {
+  const state = setup(t, { mode: 'safe' });
+  const generation = attachHeldGeneration(state);
+  const automatic = await reviewCandidate(state.ctx, {
+    shot_id: state.shotId,
+    video_generation_id: state.videoId,
+    decision_source: 'automatic',
+  });
+  assert.equal(automatic.decision, 'needs_review');
+  assert.equal(shot(state).status, 'needs_review');
+  assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(generation.task.id).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(generation.reservation.id).status, 'held');
+
+  const approved = await reviewCandidate(state.ctx, {
+    shot_id: state.shotId,
+    video_generation_id: state.videoId,
+    decision_source: 'human',
+    decision: 'approved',
+    expected_updated_at: shot(state).updated_at,
+    candidate_sha256: automatic.candidate_sha256,
+  });
+
+  assert.equal(approved.decision, 'approved');
+  assert.equal(shot(state).status, 'approved');
+  assert.equal(shot(state).approved_candidate_review_id, approved.id);
+  assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(generation.task.id).status, 'completed');
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(generation.reservation.id).status, 'confirmed');
+  assert.deepEqual(
+    state.db.prepare(`
+      SELECT v.status AS version_status, w.status AS work_status, w.current_step
+      FROM redraw_versions v JOIN redraw_works w ON w.id = v.work_id
+      WHERE v.id = ?
+    `).get(state.versionId),
+    { version_status: 'composing', work_status: 'composing', current_step: 4 },
+  );
+});
+
+test('全镜门禁只接受当前批准，带有效批准指针的 legacy completed 可兼容', async (t) => {
+  async function addSecondCandidate(state) {
+    state.db.prepare(`INSERT INTO redraw_shots
+      (version_id, tenant_id, user_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
+       prompt, compiled_prompt_json, draft_json, preparation_state, preparation_evidence_hash,
+       video_generation_id, status, created_at, updated_at)
+      VALUES (?, 'tenant-a', 'user-a', 1, 2, 5000, 10000, 5000,
+        'prompt-2', '{}', '{}', 'reference_ready', ?, NULL, 'candidate_ready', ?, ?)`)
+      .run(state.versionId, sha256('dependency-v2'), FIRST, FIRST);
+    const shotId = Number(state.db.prepare('SELECT last_insert_rowid() AS id').get().id);
+    state.db.prepare(`INSERT INTO video_generations
+      (tenant_id, user_id, local_path, video_url, status, created_at, updated_at)
+      VALUES ('tenant-a', 'user-a', 'candidate.mp4', 'https://result.test/candidate-2.mp4', 'completed', ?, ?)`)
+      .run(FIRST, FIRST);
+    const videoId = Number(state.db.prepare('SELECT last_insert_rowid() AS id').get().id);
+    state.db.prepare('UPDATE redraw_shots SET video_generation_id = ? WHERE id = ?').run(videoId, shotId);
+    return { shotId, videoId };
+  }
+
+  await t.test('未绑定批准指针的 completed 不得推进', async (st) => {
+    const state = setup(st);
+    const second = await addSecondCandidate(state);
+    state.db.prepare("UPDATE redraw_shots SET status = 'completed' WHERE id = ?").run(state.shotId);
+    await reviewCandidate(state.ctx, {
+      shot_id: second.shotId,
+      video_generation_id: second.videoId,
+      decision_source: 'automatic',
+    });
+    assert.equal(state.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(state.versionId).status, 'generating');
+  });
+
+  await t.test('有效批准指针绑定的 legacy completed 可推进', async (st) => {
+    const state = setup(st);
+    const second = await addSecondCandidate(state);
+    await reviewCandidate(state.ctx, {
+      shot_id: state.shotId,
+      video_generation_id: state.videoId,
+      decision_source: 'automatic',
+    });
+    state.db.prepare("UPDATE redraw_shots SET status = 'completed' WHERE id = ?").run(state.shotId);
+    await reviewCandidate(state.ctx, {
+      shot_id: second.shotId,
+      video_generation_id: second.videoId,
+      decision_source: 'automatic',
+    });
+    assert.equal(state.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(state.versionId).status, 'composing');
+  });
 });
 
 test('人工驳回可追加；重复同决定幂等，冲突的人工作终态返回 409', async (t) => {
@@ -218,9 +329,13 @@ test('人工驳回可追加；重复同决定幂等，冲突的人工作终态�
     reason_codes: ['human_rejected'],
     reviewer_id: 'reviewer-a',
   };
-  const first = await reviewCandidate(state.ctx, input);
-  const duplicate = await reviewCandidate(state.ctx, input);
+  state.ctx.beforeCandidateReviewCommit = async () => new Promise((resolve) => setImmediate(resolve));
+  const [first, duplicate] = await Promise.all([
+    reviewCandidate(state.ctx, input),
+    reviewCandidate(state.ctx, input),
+  ]);
   assert.equal(first.id, duplicate.id);
+  assert.equal(shot(state).status, 'needs_review');
   assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM redraw_candidate_reviews').get().count, 2);
 
   await assert.rejects(

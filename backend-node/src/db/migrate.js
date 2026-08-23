@@ -208,8 +208,21 @@ const REDRAW_SHOT_PREPARATION_COLUMNS = [
   { name: 'preparation_snapshot_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
   { name: 'stale_reason_code', type: 'TEXT' },
 ];
+const REDRAW_SHOT_STATUSES = [
+  'draft',
+  'pending',
+  'processing',
+  'completed',
+  'failed',
+  'needs_attention',
+  'candidate_ready',
+  'needs_review',
+  'approved',
+  'included',
+];
+const REDRAW_SHOT_STATUS_DEFINITION = /\bstatus\s+TEXT(?:\s+NOT\s+NULL)?(?:\s+DEFAULT\s+'(?:''|[^'])*')?(?:\s+CHECK\s*\(\s*status\s+IN\s*\(([^)]*)\)\s*\))?/i;
 
-function rebuildTableFromSql(database, tableName, tempTable, createTempSql) {
+function rebuildTableFromSql(database, tableName, tempTable, createTempSql, options = {}) {
   if (database.inTransaction) {
     throw new Error(`${tableName} rebuild requires no active transaction`);
   }
@@ -240,10 +253,22 @@ function rebuildTableFromSql(database, tableName, tempTable, createTempSql) {
       INSERT INTO ${quoteIdent(tempTable)} (${columnSql})
       SELECT ${columnSql} FROM ${quoteIdent(tableName)}
     `);
+    if (options.verifyForeignKeys === true) {
+      const copiedViolations = database.prepare(`PRAGMA foreign_key_check(${quoteIdent(tempTable)})`).all();
+      if (copiedViolations.length > 0) {
+        throw new Error(`${tableName} foreign key check failed (${copiedViolations.length} violations)`);
+      }
+    }
     database.exec(`DROP TABLE ${quoteIdent(tableName)}`);
     database.exec(`ALTER TABLE ${quoteIdent(tempTable)} RENAME TO ${quoteIdent(tableName)}`);
     for (const item of dependentSql) {
       database.exec(item.sql);
+    }
+    if (options.verifyForeignKeys === true) {
+      const finalViolations = database.prepare('PRAGMA foreign_key_check').all();
+      if (finalViolations.length > 0) {
+        throw new Error(`${tableName} foreign key check failed (${finalViolations.length} violations)`);
+      }
     }
     database.exec('COMMIT');
   } catch (error) {
@@ -309,6 +334,65 @@ function ensureRedrawStatusConstraint(database, tableName) {
 function ensureRedrawWorkflowStatusConstraints(database) {
   ensureRedrawStatusConstraint(database, 'redraw_works');
   ensureRedrawStatusConstraint(database, 'redraw_versions');
+}
+
+function sqlString(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function preflightRedrawShotStatusConstraint(database) {
+  const tableName = 'redraw_shots';
+  if (!tableExists(database, tableName)) return;
+  const table = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName);
+  const statusMatch = String(table?.sql || '').match(REDRAW_SHOT_STATUS_DEFINITION);
+  if (!statusMatch) throw new Error('Unsupported redraw_shots DDL for candidate status constraint migration');
+  if (statusMatch[1]
+    && REDRAW_SHOT_STATUSES.every((status) => statusMatch[1].includes(sqlString(status)))) return;
+  if (tableExists(database, '__redraw_shots_status_rebuild')) {
+    throw new Error('Cannot rebuild redraw_shots: temporary table already exists');
+  }
+  const violations = database.prepare(`PRAGMA foreign_key_check(${quoteIdent(tableName)})`).all();
+  if (violations.length > 0) {
+    throw new Error(`${tableName} foreign key check failed (${violations.length} violations)`);
+  }
+}
+
+function ensureRedrawShotStatusConstraint(database) {
+  const tableName = 'redraw_shots';
+  if (!tableExists(database, tableName)) return;
+  const table = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName);
+  const sql = table?.sql || '';
+  const statusMatch = sql.match(REDRAW_SHOT_STATUS_DEFINITION);
+  if (!statusMatch) {
+    throw new Error('Unsupported redraw_shots DDL for candidate status constraint migration');
+  }
+
+  const statuses = new Set(REDRAW_SHOT_STATUSES);
+  if (statusMatch[1]) {
+    for (const match of statusMatch[1].matchAll(/'((?:''|[^'])*)'/g)) {
+      statuses.add(match[1].replace(/''/g, "'"));
+    }
+  }
+  for (const row of database.prepare('SELECT DISTINCT status FROM redraw_shots WHERE status IS NOT NULL').all()) {
+    statuses.add(String(row.status));
+  }
+  const requiredPresent = statusMatch[1]
+    && REDRAW_SHOT_STATUSES.every((status) => statusMatch[1].includes(sqlString(status)));
+  if (requiredPresent) return;
+
+  const tempTable = '__redraw_shots_status_rebuild';
+  const baseDefinition = statusMatch[0].replace(/\s+CHECK\s*\([\s\S]*$/i, '');
+  const replacement = `${baseDefinition} CHECK (status IN (${[...statuses].map(sqlString).join(', ')}))`;
+  const createTempSql = sql
+    .replace(
+      /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"redraw_shots"|`redraw_shots`|\[redraw_shots\]|redraw_shots)\s*\(/i,
+      `CREATE TABLE ${quoteIdent(tempTable)} (`,
+    )
+    .replace(REDRAW_SHOT_STATUS_DEFINITION, replacement);
+  if (createTempSql === sql) {
+    throw new Error('Unsupported redraw_shots DDL for candidate status constraint migration');
+  }
+  rebuildTableFromSql(database, tableName, tempTable, createTempSql, { verifyForeignKeys: true });
 }
 
 function ensureRedrawWorkSourceIndex(database) {
@@ -1479,6 +1563,7 @@ function runMigrationsAndEnsure(database) {
   if (database.inTransaction) {
     throw new Error('runMigrationsAndEnsure requires no active transaction');
   }
+  preflightRedrawShotStatusConstraint(database);
   ensureRedrawCandidateReleaseContract(database);
   ensureRedrawMigrationColumns(database);
   runMigrations(database);
@@ -1487,6 +1572,7 @@ function runMigrationsAndEnsure(database) {
   ensureRedrawCompatibility(database);
   ensureRedrawWorkDurationConstraint(database);
   ensureRedrawWorkflowStatusConstraints(database);
+  ensureRedrawShotStatusConstraint(database);
   ensureRedrawWorkSourceIndex(database);
 }
 

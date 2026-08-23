@@ -1405,9 +1405,24 @@ function advanceVersionIfAllShotsCompleted(db, ctx, versionId, timestamp) {
   const gate = db.prepare(`
     SELECT
       COUNT(*) AS total,
-      SUM(CASE WHEN status = 'completed' AND video_generation_id IS NOT NULL THEN 0 ELSE 1 END) AS incomplete
-    FROM redraw_shots
-    WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+      SUM(CASE
+        WHEN s.video_generation_id IS NOT NULL
+          AND s.approved_candidate_review_id IS NOT NULL
+          AND s.status IN ('approved', 'included', 'completed')
+          AND EXISTS (
+            SELECT 1
+            FROM redraw_candidate_reviews r
+            WHERE r.id = s.approved_candidate_review_id
+              AND r.tenant_id = s.tenant_id
+              AND r.user_id = s.user_id
+              AND r.shot_id = s.id
+              AND r.video_generation_id = s.video_generation_id
+              AND r.decision = 'approved'
+          )
+        THEN 0 ELSE 1
+      END) AS incomplete
+    FROM redraw_shots s
+    WHERE s.version_id = ? AND s.tenant_id = ? AND s.user_id = ? AND s.deleted_at IS NULL
   `).get(Number(versionId), String(ctx.tenantId), String(ctx.userId));
   if (!gate || Number(gate.total) < 1 || Number(gate.incomplete || 0) !== 0) return false;
   db.prepare(`
@@ -1529,37 +1544,51 @@ function updateNeedsAttention(db, taskId, shotId, message, timestamp, videoGener
   })();
 }
 
-function terminalStatus(row) {
-  const status = String(row?.status || '');
-  return ['completed', 'failed', 'needs_attention'].includes(status) ? status : null;
-}
-
 function terminalTaskResult(task, video, shot) {
-  const statuses = [terminalStatus(task), terminalStatus(video), terminalStatus(shot)];
-  if (!statuses.some(Boolean)) return null;
-  const unique = new Set(statuses.filter(Boolean));
-  if (unique.size !== 1 || statuses.some((status) => !status)) {
-    return { status: 'needs_attention', error: '单镜视频本地终态不一致，请人工确认后处理', degrade: true };
-  }
-  const status = statuses[0];
-  if (status === 'completed') {
+  const taskStatus = String(task?.status || '');
+  const videoStatus = String(video?.status || '');
+  const shotStatus = String(shot?.status || '');
+  const approvedShot = ['approved', 'included', 'completed'].includes(shotStatus);
+  if (taskStatus === 'completed' && videoStatus === 'completed' && approvedShot) {
     const result = strictJson(task.result, 'async_tasks.result');
     const draft = strictJson(shot.draft_json, 'draft_json');
     const ref = draft.new_video_ref || {};
     return {
-      status,
+      status: 'completed',
       task_id: task.id,
       video_generation_id: video.id,
       asset_id: result.asset_id || ref.asset_id || null,
       new_video_ref: ref,
     };
   }
-  return {
-    status,
-    error: task.error || task.message || video.error_msg || shot.error_message || null,
-    task_id: task.id,
-    video_generation_id: video.id,
-  };
+  if (taskStatus === 'needs_attention' && videoStatus === 'completed'
+    && ['needs_review', 'needs_attention'].includes(shotStatus)) {
+    return {
+      status: 'needs_attention',
+      error: task.error || task.message || shot.error_message || null,
+      task_id: task.id,
+      video_generation_id: video.id,
+    };
+  }
+  if (taskStatus === 'failed' && videoStatus === 'failed' && shotStatus === 'failed') {
+    return {
+      status: 'failed',
+      error: task.error || task.message || video.error_msg || shot.error_message || null,
+      task_id: task.id,
+      video_generation_id: video.id,
+    };
+  }
+  const terminalStatuses = new Set(['completed', 'failed', 'needs_attention', 'approved', 'included', 'needs_review']);
+  if (![taskStatus, videoStatus, shotStatus].some((status) => terminalStatuses.has(status))) return null;
+  if (shotStatus === 'candidate_ready' && taskStatus === 'processing' && videoStatus === 'completed') return null;
+  return { status: 'needs_attention', error: '单镜视频本地终态不一致，请人工确认后处理', degrade: true };
+}
+
+function terminalStatus(row) {
+  const status = String(row?.status || '');
+  return ['completed', 'failed', 'needs_attention', 'approved', 'included', 'needs_review'].includes(status)
+    ? status
+    : null;
 }
 
 function needsNativeAudioValidation(row, _shot) {
@@ -1694,6 +1723,15 @@ function manualOverrideForAudit(audit) {
   return false;
 }
 
+function candidateReviewSha256(ctx, db, shotId, videoId, fallback) {
+  if (typeof ctx.candidateHasher !== 'function') return fallback;
+  return ctx.candidateHasher({
+    ctx,
+    shot: db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(shotId),
+    video: db.prepare('SELECT * FROM video_generations WHERE id = ?').get(videoId),
+  });
+}
+
 async function reviewNativeAudio(ctx, input = {}) {
   const { db } = ctx;
   if (!db || !ctx.tenantId || !ctx.userId) throw codedError('REDRAW_CONTEXT_INVALID', '缺少转绘生成上下文');
@@ -1718,8 +1756,45 @@ async function reviewNativeAudio(ctx, input = {}) {
   if (['approved', 'rejected'].includes(String(existingReview.status || ''))
     && sameNativeAudioReview(existingReview, { ...input, decision }, ctx.userId)) {
     const ref = draft.new_video_ref || {};
+    if (decision === 'approved' && !['approved', 'included', 'completed'].includes(String(shot.status))) {
+      if (!ref.asset_id || String(video.status) !== 'completed') {
+        reviewUnavailable('当前原生音轨候选不可人工批准');
+      }
+      const retryExpectedUpdatedAt = String(input.expected_updated_at || input.expectedUpdatedAt || '');
+      if (retryExpectedUpdatedAt !== String(shot.updated_at || '')) {
+        reviewConflict('分镜已被其他操作更新，请刷新后重试');
+      }
+      try {
+        const candidateReview = await redrawCandidateReviewService.reviewCandidate(ctx, {
+          shot_id: shot.id,
+          video_generation_id: video.id,
+          decision_source: 'human',
+          decision: 'approved',
+          expected_updated_at: retryExpectedUpdatedAt,
+          candidate_sha256: candidateReviewSha256(
+            ctx,
+            db,
+            shot.id,
+            video.id,
+            String(audit.candidate?.artifact_sha256 || ''),
+          ),
+          reason_codes: ['native_audio_human_approved'],
+        });
+        return enrichGenerationResult(db, {
+          status: 'completed',
+          task_id: task.id,
+          video_generation_id: video.id,
+          asset_id: ref.asset_id,
+          candidate_review_id: candidateReview.id,
+          reservation_id: taskMetadata(task).reservation_id || null,
+        });
+      } catch (error) {
+        updateCandidateNeedsAttention(db, task.id, shot.id, error.message, monotonicTimestamp(shot.updated_at, now(ctx)));
+        throw error;
+      }
+    }
     return enrichGenerationResult(db, {
-      status: shot.status,
+      status: ['approved', 'included', 'completed'].includes(String(shot.status)) ? 'completed' : shot.status,
       task_id: task.id,
       video_generation_id: video.id,
       asset_id: ref.asset_id || null,
@@ -1744,7 +1819,7 @@ async function reviewNativeAudio(ctx, input = {}) {
     db.transaction(() => {
       const changed = db.prepare(`
         UPDATE redraw_shots
-        SET status = 'needs_attention',
+        SET status = 'needs_review',
             error_code = 'REDRAW_NATIVE_AUDIO_REJECTED',
             error_message = ?,
             draft_json = ?,
@@ -1771,9 +1846,9 @@ async function reviewNativeAudio(ctx, input = {}) {
       `).run(review.reason, review.reason, timestamp, task.id, String(ctx.tenantId), String(ctx.userId));
       db.prepare(`
         UPDATE video_generations
-        SET status = 'needs_attention', error_msg = ?, updated_at = ?
+        SET status = 'completed', error_msg = NULL, updated_at = ?
         WHERE id = ? AND tenant_id = ? AND user_id = ?
-      `).run(review.reason, timestamp, video.id, String(ctx.tenantId), String(ctx.userId));
+      `).run(timestamp, video.id, String(ctx.tenantId), String(ctx.userId));
     })();
     return enrichGenerationResult(db, {
       status: 'needs_attention',
@@ -1810,8 +1885,7 @@ async function reviewNativeAudio(ctx, input = {}) {
   const importer = ctx.assetImporter || ((database, logger, videoGenerationId) => (
     assetService.importFromVideo(database, logger, videoGenerationId)
   ));
-  const metadata = taskMetadata(task);
-  return db.transaction(() => {
+  const staged = db.transaction(() => {
     const fresh = db.prepare(`
       SELECT s.*, t.status AS task_status, v.status AS video_status
       FROM redraw_shots s
@@ -1885,7 +1959,8 @@ async function reviewNativeAudio(ctx, input = {}) {
     `).run(timestamp, video.id, String(ctx.tenantId), String(ctx.userId));
     db.prepare(`
       UPDATE redraw_shots
-      SET status = 'completed', error_code = NULL, error_message = NULL,
+      SET status = 'candidate_ready', approved_candidate_review_id = NULL,
+          error_code = NULL, error_message = NULL,
           draft_json = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND user_id = ?
     `).run(
@@ -1899,26 +1974,31 @@ async function reviewNativeAudio(ctx, input = {}) {
       String(ctx.tenantId),
       String(ctx.userId),
     );
-    advanceVersionIfAllShotsCompleted(db, ctx, shot.version_id, timestamp);
-    taskService.updateTaskResult(db, task.id, {
-      status: 'completed',
+    return { actualSha256, imported, timestamp };
+  }).immediate();
+  try {
+    const candidateReview = await redrawCandidateReviewService.reviewCandidate(ctx, {
       shot_id: shot.id,
       video_generation_id: video.id,
-      asset_id: imported.id,
-      video_url: video.video_url || null,
-      local_path: video.local_path,
-      probe: verification,
-      native_audio_validation: approvedAudit,
+      decision_source: 'human',
+      decision: 'approved',
+      expected_updated_at: staged.timestamp,
+      candidate_sha256: candidateReviewSha256(ctx, db, shot.id, video.id, staged.actualSha256),
+      reason_codes: ['native_audio_human_approved'],
     });
-    redrawBillingService.settleShotGeneration(db, metadata.reservation_id, 'completed');
     return enrichGenerationResult(db, {
       status: 'completed',
       task_id: task.id,
       video_generation_id: video.id,
-      asset_id: imported.id,
-      reservation_id: metadata.reservation_id || null,
+      asset_id: staged.imported.id,
+      candidate_review_id: candidateReview.id,
+      reservation_id: taskMetadata(task).reservation_id || null,
     });
-  })();
+  } catch (error) {
+    const attentionAt = monotonicTimestamp(staged.timestamp, now(ctx));
+    updateCandidateNeedsAttention(db, task.id, shot.id, error.message, attentionAt);
+    throw error;
+  }
 }
 
 function markNativeAudioNeedsAttention(db, task, shot, row, error, timestamp, options = {}) {
@@ -2119,7 +2199,7 @@ async function runShotGeneration(ctx, taskId) {
         `).run(timestamp, row.id, task.id);
         db.prepare(`
           UPDATE redraw_shots
-          SET status = 'pending', video_generation_id = ?, error_code = 'REDRAW_CANDIDATE_REVIEWING',
+          SET status = 'candidate_ready', video_generation_id = ?, error_code = 'REDRAW_CANDIDATE_REVIEWING',
               error_message = NULL,
               draft_json = ?, updated_at = ?
           WHERE id = ?
@@ -2189,49 +2269,6 @@ async function runShotGeneration(ctx, taskId) {
       };
     }
 
-    finalizationStage = 'approved_candidate_finalize';
-    try {
-      db.transaction(() => {
-        const approvedShot = db.prepare(`
-          SELECT draft_json FROM redraw_shots
-          WHERE id = ? AND approved_candidate_review_id = ? AND status = 'completed'
-        `).get(shot.id, review.id);
-        if (!approvedShot) throw codedError('REDRAW_CANDIDATE_APPROVAL_CONFLICT', '当前批准候选已变化');
-        const approvedAt = monotonicTimestamp(
-          db.prepare('SELECT updated_at FROM redraw_shots WHERE id = ?').get(shot.id).updated_at,
-          now(ctx),
-        );
-        db.prepare(`
-          UPDATE redraw_shots
-          SET draft_json = ?, error_code = NULL, error_message = NULL, updated_at = ?
-          WHERE id = ? AND approved_candidate_review_id = ? AND status = 'completed'
-        `).run(
-          mergeDraft(strictJson(approvedShot.draft_json, 'draft_json'), { generation: { completed_at: approvedAt } }),
-          approvedAt, shot.id, review.id,
-        );
-        advanceVersionIfAllShotsCompleted(db, {
-          tenantId: shot.tenant_id,
-          userId: shot.user_id,
-        }, shot.version_id, approvedAt);
-        taskService.updateTaskResult(db, task.id, {
-          status: 'completed',
-          shot_id: shot.id,
-          video_generation_id: row.id,
-          asset_id: imported.id,
-          candidate_review_id: review.id,
-          video_url: row.video_url || null,
-          local_path: row.local_path,
-          probe: verification,
-        });
-      })();
-    } catch (error) {
-      ctx.log?.error?.('Approved redraw candidate enrichment failed', {
-        shot_id: shot.id,
-        video_generation_id: row.id,
-        stage: finalizationStage,
-        error: error.message,
-      });
-    }
     return {
       status: 'completed',
       task_id: task.id,
