@@ -1107,6 +1107,39 @@ test('重读参考包时重新校验并投影生成用白名单 URL', async () =
   }
 });
 
+test('不同源角色允许映射同一非中文目标名且绑定哈希与投影稳定', async () => {
+  const state = setup({
+    nameMap: { 'character-001': 'Alex', 'character-002': 'Alex' },
+  });
+  try {
+    await saveReferenceBundle(ctx(state), validInput(state));
+    const loaded = await loadCurrentReferenceBundle(ctx(state), state.shotId);
+    const expectedDialogue = expectedDialogueEvidence(state);
+    assert.deepEqual(loaded.bundle.name_map, {
+      'character-001': 'Alex',
+      'character-002': 'Alex',
+    });
+    assert.equal(
+      loaded.bundle.dialogue.character_name_map_sha256,
+      expectedDialogue.character_name_map_sha256,
+    );
+    assert.equal(
+      loaded.bundle.dialogue.localization_binding_sha256,
+      expectedDialogue.localization_binding_sha256,
+    );
+
+    const createReferenceUrl = ({ asset_id: assetId, sha256: digest, kind }) => (
+      `/static/redraw-reference/${kind}/${assetId}-${digest.slice(0, 8)}`
+    );
+    const first = await projectReferenceBundleForGeneration(ctx(state, { createReferenceUrl }), state.shotId);
+    const second = await projectReferenceBundleForGeneration(ctx(state, { createReferenceUrl }), state.shotId);
+    assert.deepEqual(first.identityBindings.map((entry) => entry.target_character_name), ['Alex', 'Alex']);
+    assert.deepEqual(second.referenceBundleSnapshot, first.referenceBundleSnapshot);
+  } finally {
+    state.cleanup();
+  }
+});
+
 test('es-ES/ES 参考包对白、身份国家和投影 locale 使用当前版本合同', async () => {
   const state = setup({
     locale: 'es-ES',
@@ -1879,10 +1912,6 @@ test('无效语言市场、姓名映射、对白绑定或 facts hash 时拒绝',
       setup: () => setup({
         nameMap: { 'character-001': 'Ethan', ' character-001 ': 'Ethan II', 'character-002': 'Maya' },
       }),
-    },
-    {
-      name: 'name map duplicate target',
-      setup: () => setup({ nameMap: { 'character-001': 'Ethan', 'character-002': 'Ethan' } }),
     },
     {
       name: 'name map Chinese target',

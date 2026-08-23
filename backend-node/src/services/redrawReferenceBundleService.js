@@ -793,13 +793,11 @@ function normalizeNameMap(value) {
     name: String(value[rawKey] || '').trim(),
   })).sort((left, right) => left.key.localeCompare(right.key));
   const keys = new Set();
-  const names = new Set();
   for (const entry of entries) {
-    if (!entry.key || !entry.name || keys.has(entry.key) || names.has(entry.name)
+    if (!entry.key || !entry.name || keys.has(entry.key)
       || ['__proto__', 'prototype', 'constructor'].includes(entry.key)
       || containsChinese(entry.name)) fail(DIALOGUE_CODE);
     keys.add(entry.key);
-    names.add(entry.name);
   }
   return Object.fromEntries(entries.map((entry) => [entry.key, entry.name]));
 }
