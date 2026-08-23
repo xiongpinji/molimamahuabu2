@@ -81,6 +81,16 @@ const PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK = {
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
+const PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK = {
+  reason: '2026-08-23 平台零成本巡检生产模式 fixture 写入误报修复获批',
+  approvedBy: 'product-owner 2026-08-23 platform-zero-cost-smoke-fixture-guard',
+  impactTests: [
+    'frontweb/test/platformZeroCostSmokeContract.test.js',
+    'frontweb/e2e/platform-zero-cost-smoke.spec.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
 const PROVIDER_ROUTE_TTS_CHARACTER_COST_UNLOCK = {
   reason: '2026-08-23 TTS 线路按字符成本与旧库约束升级获批',
   approvedBy: 'product-owner 2026-08-23 provider-tts-character-cost',
@@ -559,13 +569,14 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   assert.deepEqual(feature.evidence.slice(0, PROACTIVE_CANARY_EVIDENCE.length), PROACTIVE_CANARY_EVIDENCE);
 });
 
-test('零成本巡检修复刷新功能锁并保留 TTS 批准历史与证据', () => {
+test('零成本巡检 fixture 误报修复刷新功能锁并保留上一批准历史与证据', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
-  assert.deepEqual(feature.unlock, PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-1), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-2), PROVIDER_READINESS_TTS_UNLOCK);
+  assert.deepEqual(feature.unlock, PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-2), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-3), PROVIDER_READINESS_TTS_UNLOCK);
   assert.deepEqual(feature.evidence.slice(-PROVIDER_READINESS_TTS_EVIDENCE.length), PROVIDER_READINESS_TTS_EVIDENCE);
   for (const testPath of PROVIDER_READINESS_TTS_REQUIRED_TESTS) {
     assert.ok(feature.requiredTests.includes(testPath), `TTS 功能锁缺少影响测试: ${testPath}`);
@@ -583,7 +594,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       ? PROVIDER_TASK_STATUS_DECISION_UNLOCK
       : PROVIDER_TASK_RECEIPT_UNLOCK;
     assert.deepEqual(feature.unlock, featureId === PROACTIVE_CANARY_FEATURE_ID
-      ? PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK
+      ? PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK
       : (featureId === PROVIDER_ROUTE_CONTRACT_FEATURE_ID
         ? PROVIDER_ROUTE_TTS_CHARACTER_COST_UNLOCK
         : (featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
@@ -600,7 +611,11 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
         ? [PROVIDER_TASK_LIVE_COMPAT_UNLOCK]
         : []),
       ...(featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? [PROVIDER_READINESS_TTS_UNLOCK, PROVIDER_TTS_CHARACTER_COST_UNLOCK]
+        ? [
+          PROVIDER_READINESS_TTS_UNLOCK,
+          PROVIDER_TTS_CHARACTER_COST_UNLOCK,
+          PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK,
+        ]
         : []),
       ...(featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID ? [PROVIDER_TASK_RECEIPT_UNLOCK] : []),
     ]);
@@ -641,7 +656,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     assert.deepEqual(
       feature.unlock,
       featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK
+        ? PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK
         : PROVIDER_TASK_LIVE_COMPAT_UNLOCK,
     );
   }
@@ -680,7 +695,7 @@ test('实时候选兼容修复刷新四个运行时功能锁并登记补丁测�
     assert.deepEqual(
       feature.unlock,
       featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK
+        ? PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK
         : (featureId === PROVIDER_ROUTE_CONTRACT_FEATURE_ID
           ? PROVIDER_ROUTE_TTS_CHARACTER_COST_UNLOCK
           : PROVIDER_TASK_LIVE_COMPAT_UNLOCK),

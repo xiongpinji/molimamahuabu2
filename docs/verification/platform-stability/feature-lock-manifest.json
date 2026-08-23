@@ -747,11 +747,21 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 平台零成本巡检复用已认证目录响应并修正只读分类获批",
+          "approvedBy": "product-owner 2026-08-23 platform-zero-cost-smoke-read-auth",
+          "impactTests": [
+            "frontweb/test/platformZeroCostSmokeContract.test.js",
+            "frontweb/e2e/platform-zero-cost-smoke.spec.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 平台零成本巡检复用已认证目录响应并修正只读分类获批",
-        "approvedBy": "product-owner 2026-08-23 platform-zero-cost-smoke-read-auth",
+        "reason": "2026-08-23 平台零成本巡检生产模式 fixture 写入误报修复获批",
+        "approvedBy": "product-owner 2026-08-23 platform-zero-cost-smoke-fixture-guard",
         "impactTests": [
           "frontweb/test/platformZeroCostSmokeContract.test.js",
           "frontweb/e2e/platform-zero-cost-smoke.spec.js",
