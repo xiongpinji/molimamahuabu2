@@ -1805,13 +1805,17 @@ test('通用三镜项目高置信度分析后完成 es-ES 本地化并物化三�
     version_id: expect.any(Number),
   })
   const localizedVersion = database.prepare(`
-    SELECT id, locale, market, status FROM redraw_versions WHERE id = ?
+    SELECT id, locale, market, status, facts_hash, source_facts_json, name_map_json
+    FROM redraw_versions WHERE id = ?
   `).get(Number(localized.version_id))
   expect(localizedVersion).toMatchObject({
     locale: genericRedrawProject.target.locale,
     market: genericRedrawProject.target.market,
     status: 'asset_review',
   })
+  const localizedSourceFacts = JSON.parse(localizedVersion.source_facts_json)
+  expect(localizedSourceFacts).not.toHaveProperty('script_sha256')
+  expect(localizedSourceFacts).not.toHaveProperty('name_map_source_sha256')
   const localizedShots = database.prepare(`
     SELECT shot_id, start_ms, end_ms FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
   `).all(Number(localized.version_id))
@@ -1840,7 +1844,8 @@ test('通用三镜项目高置信度分析后完成 es-ES 本地化并物化三�
   preparationResponses.forEach(assertNoPreparationLeaks)
 
   let preparedRows = database.prepare(`
-    SELECT id, shot_id, preparation_state, reference_bundle_json, reference_bundle_hash
+    SELECT id, shot_id, start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
+           preparation_state, reference_bundle_json, reference_bundle_hash
     FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
   `).all(Number(localized.version_id))
   expect(preparedRows.map((shot) => [shot.shot_id, shot.preparation_state])).toEqual([
@@ -1853,7 +1858,57 @@ test('通用三镜项目高置信度分析后完成 es-ES 本地化并物化三�
     ['shot-2', [{ speaker_id: 'c2', localized_text: 'No sigas.', start_ms: 800, end_ms: 2_500 }]],
     ['shot-3', []],
   ])
+  const canonicalNameMap = Object.fromEntries(Object.entries(JSON.parse(localizedVersion.name_map_json))
+    .map(([key, value]) => [key.trim(), value.trim()])
+    .sort(([left], [right]) => left.localeCompare(right)))
+  const characterNameMapSha256 = sha256Value(stableJson(canonicalNameMap))
+  const expectedDialogueEvidenceByShot = new Map(preparedRows.map((shot) => {
+    const sourceDialogue = JSON.parse(shot.source_dialogue_json).map((turn) => ({
+      id: String(turn.id || '').trim(),
+      speaker_id: String(turn.speaker_id || '').trim(),
+      source_text: String(turn.source_text ?? turn.text ?? '').trim(),
+      start_ms: Number(turn.start_ms) - Number(shot.start_ms),
+      end_ms: Number(turn.end_ms) - Number(shot.start_ms),
+    })).sort((left, right) => left.start_ms - right.start_ms
+      || left.end_ms - right.end_ms
+      || left.speaker_id.localeCompare(right.speaker_id)
+      || left.id.localeCompare(right.id))
+    const turns = JSON.parse(shot.localized_dialogue_json).map((turn) => ({
+      speaker_id: String(turn.speaker_id || '').trim(),
+      localized_text: String(turn.localized_text || '').trim(),
+      start_ms: Number(turn.start_ms) - Number(shot.start_ms),
+      end_ms: Number(turn.end_ms) - Number(shot.start_ms),
+    })).sort((left, right) => left.start_ms - right.start_ms
+      || left.end_ms - right.end_ms
+      || left.speaker_id.localeCompare(right.speaker_id))
+    expect(turns).toEqual(expectedDialogueByShot.get(shot.shot_id))
+    const sourceDialogueSha256 = sha256Value(stableJson(sourceDialogue))
+    const scriptSha256 = sha256Value(stableJson(turns))
+    const binding = {
+      contract: 'redraw-localization-binding-v1',
+      version_id: Number(localizedVersion.id),
+      facts_hash: localizedVersion.facts_hash,
+      target: { locale: localizedVersion.locale, market: localizedVersion.market },
+      shot: {
+        id: Number(shot.id),
+        shot_id: shot.shot_id,
+        start_ms: Number(shot.start_ms),
+        end_ms: Number(shot.end_ms),
+        duration_ms: Number(shot.duration_ms),
+      },
+      source_dialogue_sha256: sourceDialogueSha256,
+      script_sha256: scriptSha256,
+      character_name_map_sha256: characterNameMapSha256,
+    }
+    return [shot.shot_id, {
+      source_dialogue_sha256: sourceDialogueSha256,
+      script_sha256: scriptSha256,
+      character_name_map_sha256: characterNameMapSha256,
+      localization_binding_sha256: sha256Value(stableJson(binding)),
+    }]
+  }))
   const initialBundleByShot = new Map()
+  const dialogueStates = []
   for (const shot of preparedRows) {
     expect(shot.reference_bundle_hash).toMatch(/^[a-f0-9]{64}$/)
     const bundle = JSON.parse(shot.reference_bundle_json)
@@ -1864,7 +1919,27 @@ test('通用三镜项目高置信度分析后完成 es-ES 本地化并物化三�
       market: genericRedrawProject.target.market,
       name_map: genericLocalization.name_map,
     })
-    expect(bundle.dialogue.turns).toEqual(expectedDialogueByShot.get(shot.shot_id))
+    const expectedTurns = expectedDialogueByShot.get(shot.shot_id)
+    const expectedEvidence = expectedDialogueEvidenceByShot.get(shot.shot_id)
+    expect(bundle.dialogue).toMatchObject({
+      target_locale: 'es-ES',
+      target_market: 'ES',
+      kind: expectedTurns.length ? 'spoken' : 'silent',
+      speech_required: expectedTurns.length > 0,
+      ...expectedEvidence,
+      turns: expectedTurns,
+    })
+    for (const field of [
+      'source_dialogue_sha256',
+      'script_sha256',
+      'character_name_map_sha256',
+      'localization_binding_sha256',
+    ]) expect(bundle.dialogue[field]).toMatch(/^[a-f0-9]{64}$/)
+    dialogueStates.push([
+      bundle.dialogue.kind,
+      bundle.dialogue.speech_required,
+      bundle.dialogue.turns.length,
+    ])
     expect(JSON.stringify(bundle)).not.toMatch(/[\u3400-\u9fff]/)
     assertNoPreparationLeaks(bundle)
     const apiBundle = await browserApi(page, `/api/v1/redraw/shots/${shot.id}/reference-bundle`)
@@ -1881,6 +1956,11 @@ test('通用三镜项目高置信度分析后完成 es-ES 本地化并物化三�
     })
     assertNoPreparationLeaks(apiBundle.body)
   }
+  expect(dialogueStates).toEqual([
+    ['spoken', true, 1],
+    ['spoken', true, 1],
+    ['silent', false, 0],
+  ])
 
   const c1 = genericPreparationFiles.characters.get('c1')
   const c1State = characterSetup.characterByKey.get('c1')
@@ -1968,7 +2048,12 @@ test('通用三镜项目高置信度分析后完成 es-ES 本地化并物化三�
       expect(bundle).toEqual(initial.bundle)
     }
     expect(c2Faces.every((face) => face.identity_asset_id === c2State.identityAssetId)).toBe(true)
-    expect(bundle.dialogue.turns).toEqual(expectedDialogueByShot.get(shot.shot_id))
+    expect(bundle.dialogue).toMatchObject({
+      target_locale: 'es-ES',
+      target_market: 'ES',
+      ...expectedDialogueEvidenceByShot.get(shot.shot_id),
+      turns: expectedDialogueByShot.get(shot.shot_id),
+    })
     expect(JSON.stringify(bundle)).not.toMatch(/[\u3400-\u9fff]/)
     assertNoPreparationLeaks(bundle)
 
