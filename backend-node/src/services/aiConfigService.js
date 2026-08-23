@@ -208,12 +208,30 @@ function verificationSettingsFingerprint(settings) {
     const connectionSettings = {};
     for (const key of Object.keys(parsed).sort()) {
       const normalizedKey = key.toLowerCase();
-      if (CONNECTION_SETTING_KEYS.has(normalizedKey)
-          || ['canvas_capabilities', 'canvas_capabilities_by_model', 'capabilities'].includes(normalizedKey)) {
+      if (CONNECTION_SETTING_KEYS.has(normalizedKey)) {
         connectionSettings[key] = stableJsonValue(parsed[key], key);
       }
     }
     return JSON.stringify(connectionSettings);
+  } catch (_) {
+    return String(settings || '');
+  }
+}
+
+function routeEvidenceSettingsFingerprint(settings) {
+  try {
+    if (settings == null || settings === '') return '{}';
+    const parsed = typeof settings === 'string' ? JSON.parse(settings) : settings;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return String(settings || '');
+    const routeSettings = {};
+    for (const key of Object.keys(parsed).sort()) {
+      const normalizedKey = key.toLowerCase();
+      if (CONNECTION_SETTING_KEYS.has(normalizedKey)
+          || ['canvas_capabilities', 'canvas_capabilities_by_model', 'capabilities'].includes(normalizedKey)) {
+        routeSettings[key] = stableJsonValue(parsed[key], key);
+      }
+    }
+    return JSON.stringify(routeSettings);
   } catch (_) {
     return String(settings || '');
   }
@@ -490,10 +508,12 @@ function updateConfig(db, log, id, req) {
       })
       : req.settings;
     params.push(nextSettings);
-    const settingsChanged = verificationSettingsFingerprint(nextSettings)
+    const connectionSettingsChanged = verificationSettingsFingerprint(nextSettings)
       !== verificationSettingsFingerprint(existing.settings);
-    connectivityChanged ||= settingsChanged;
-    routeEvidenceChanged ||= settingsChanged;
+    const routeSettingsChanged = routeEvidenceSettingsFingerprint(nextSettings)
+      !== routeEvidenceSettingsFingerprint(existing.settings);
+    connectivityChanged ||= connectionSettingsChanged;
+    routeEvidenceChanged ||= routeSettingsChanged;
   }
   if (typeof req.is_default === 'boolean') {
     updates.push('is_default = ?');
@@ -1096,8 +1116,25 @@ async function testConnection(opts) {
 
   // --- MiniMax TTS 语音合成 ---
   if (serviceType === 'tts' && provider === 'minimax') {
-    const probeUrl = base + '/get_voice';
-    const probeBody = JSON.stringify({ voice_type: 'all' });
+    const probeUrl = base + '/t2a_v2';
+    const probeBody = JSON.stringify({
+      model: model || 'speech-2.8-hd',
+      text: '测试',
+      stream: false,
+      output_format: 'hex',
+      voice_setting: {
+        voice_id: 'male-qn-qingse',
+        speed: 1,
+        vol: 1,
+        pitch: 0,
+      },
+      audio_setting: {
+        sample_rate: 32000,
+        bitrate: 128000,
+        format: 'mp3',
+        channel: 1,
+      },
+    });
     const res = await fetch(probeUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (opts.api_key || '') },

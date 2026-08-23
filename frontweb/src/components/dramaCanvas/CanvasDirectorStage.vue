@@ -373,7 +373,7 @@
               <button v-for="keyframe in track.keyframes" :key="keyframe.id" type="button" class="motion-keyframe" :style="keyframeStyle(keyframe)" :aria-label="`${objectName(track.objectId)} ${formatSeconds(keyframe.time)} 关键帧`" @click="setCurrentTime(keyframe.time)">◆</button>
             </div>
           </div>
-          <div v-if="!timeline.tracks.length" class="timeline-empty">暂无角色轨道</div>
+          <div v-if="!timeline.tracks.length && !timeline.motionTracks.length" class="timeline-empty">暂无角色轨道</div>
           </div>
         </section>
         <nav class="director-stage__quick-toolbar" aria-label="导演台工具栏">
@@ -428,7 +428,7 @@
           <template v-if="selectedCamera">
             <div ref="cameraEditorRef" class="inspector-group"><strong>相机</strong>
               <label>构图预设
-                <select aria-label="构图预设" @change="applyCameraPreset($event.target.value)">
+                <select aria-label="构图预设" :value="selectedCameraPresetName" @change="applyCameraPreset($event.target.value)">
                   <option value="">选择机位视角</option>
                   <option v-for="preset in CAMERA_PRESETS" :key="preset.name" :value="preset.name">{{ preset.name }}</option>
                 </select>
@@ -968,6 +968,7 @@ const selectedInspectorTransform = computed(() => selectedDirectorObject.value
   ? (interpolateMotionTransform(timeline.value, selectedDirectorObject.value.id, currentTime.value) || selectedDirectorObject.value.transform)
   : { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] })
 const selectedCamera = computed(() => timeline.value.cameras.find((camera) => camera.objectId === selectedObjectId.value) || null)
+const selectedCameraPresetName = ref('')
 const cameraLookAtSelection = computed(() => selectedCamera.value?.lookAtMode === 'object' && selectedCamera.value.lookAtTargetId
   ? `object:${selectedCamera.value.lookAtTargetId}`
   : (selectedCamera.value?.lookAtMode || 'none'))
@@ -1617,6 +1618,7 @@ function undoDirector() {
   redoStack.value = [...redoStack.value, cloneTimeline(timeline.value)].slice(-80)
   undoStack.value = undoStack.value.slice(0, -1)
   persistHistoryState(previous)
+  resetSelectedCameraPreset()
 }
 
 function redoDirector() {
@@ -1625,6 +1627,11 @@ function redoDirector() {
   undoStack.value = [...undoStack.value, cloneTimeline(timeline.value)].slice(-80)
   redoStack.value = redoStack.value.slice(0, -1)
   persistHistoryState(next)
+  resetSelectedCameraPreset()
+}
+
+function resetSelectedCameraPreset() {
+  selectedCameraPresetName.value = ''
 }
 
 function onDirectorKeydown(event) {
@@ -2035,6 +2042,7 @@ async function toggleFullscreen() {
 function applyCameraPreset(name) {
   const preset = CAMERA_PRESETS.find((item) => item.name === name)
   if (!preset || !selectedCamera.value) return
+  selectedCameraPresetName.value = preset.name
   if (preset.current) {
     captureCurrentViewToCamera()
     return

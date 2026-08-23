@@ -1,6 +1,18 @@
 export function normalizeCreditAccount(account = {}) {
   const value = (field) => Number.isSafeInteger(account[field]) && account[field] >= 0 ? account[field] : 0
-  return { available: value('available'), held: value('held'), spent: value('spent') }
+  const date = (field) => {
+    const raw = typeof account[field] === 'string' ? account[field].trim() : ''
+    return raw && Number.isFinite(new Date(raw).getTime()) ? raw : null
+  }
+  return {
+    available: value('available'),
+    held: value('held'),
+    spent: value('spent'),
+    permanentAvailable: value('permanent_available'),
+    dailyBonusAvailable: value('daily_bonus_available'),
+    dailyBonusExpiresAt: date('daily_bonus_expires_at'),
+    membershipEndsOn: date('membership_ends_on'),
+  }
 }
 
 export function formatModelPrice(item = {}) {

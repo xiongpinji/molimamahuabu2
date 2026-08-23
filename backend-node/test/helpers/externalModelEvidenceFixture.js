@@ -8,12 +8,14 @@ const CONTRACT_BY_MODEL = Object.freeze({
   'seedance-2-mini': 'toapis-video-real-verification-v1',
   'gpt-image-2-2-4k': 'usmercari-image-real-verification-v1',
   'nano-banana-2': 'usmercari-image-real-verification-v1',
+  'lingjing-video-v1': 'lingjing-video-real-verification-v1',
 });
 
 const allowedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'external-model-test-evidence-'));
 const evidenceRoot = path.join(allowedRoot, 'external-models-v1');
 fs.mkdirSync(path.join(evidenceRoot, 'public', 'toapis'), { recursive: true, mode: 0o755 });
 fs.mkdirSync(path.join(evidenceRoot, 'public', 'usmercari'), { recursive: true, mode: 0o755 });
+fs.mkdirSync(path.join(evidenceRoot, 'public', 'lingjing'), { recursive: true, mode: 0o755 });
 
 const evidence = {};
 for (const [contract, file, provider, outputFile, result] of [
@@ -30,6 +32,13 @@ for (const [contract, file, provider, outputFile, result] of [
     'usmercari',
     'image.jpg',
     { output_file: 'image.jpg' },
+  ],
+  [
+    'lingjing-video-real-verification-v1',
+    'lingjing-video-verification.json',
+    'lingjing',
+    'video.mp4',
+    { artifact: { output_file: 'video.mp4' } },
   ],
 ]) {
   const bytes = Buffer.from(JSON.stringify({ contract_version: contract, results: [result] }));
@@ -51,6 +60,7 @@ if (process.platform !== 'win32') {
     path.join(evidenceRoot, 'public'),
     path.join(evidenceRoot, 'public', 'toapis'),
     path.join(evidenceRoot, 'public', 'usmercari'),
+    path.join(evidenceRoot, 'public', 'lingjing'),
   ]) fs.chmodSync(directory, 0o755);
 }
 

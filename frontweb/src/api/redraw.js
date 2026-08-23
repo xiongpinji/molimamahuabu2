@@ -101,6 +101,30 @@ export function buildReferenceBundlePayload(body) {
   }
 }
 
+function referencePreparationShotIds(value) {
+  if (value == null) return undefined
+  if (!Array.isArray(value) || value.length === 0) throw new Error('参考准备镜头集合格式错误')
+  const ids = value.map(Number)
+  if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0) || new Set(ids).size !== ids.length) {
+    throw new Error('参考准备镜头集合格式错误')
+  }
+  return ids
+}
+
+export function buildReferencePreparationPayload(body = {}) {
+  const payload = {}
+  if (body?.quote_hash != null) payload.quote_hash = String(body.quote_hash).trim()
+  if (body?.idempotency_key != null) payload.idempotency_key = String(body.idempotency_key).trim()
+  const shotIds = referencePreparationShotIds(body?.shot_ids)
+  if (shotIds) payload.shot_ids = shotIds
+  return payload
+}
+
+export function buildReferencePreparationQuotePayload(body = {}) {
+  const shotIds = referencePreparationShotIds(body?.shot_ids)
+  return shotIds ? { shot_ids: shotIds } : {}
+}
+
 export const redrawAPI = {
   listProjects() {
     return request.get('/redraw/projects')
@@ -147,6 +171,24 @@ export const redrawAPI = {
   },
   createVersion(workId, body) {
     return request.post(`/redraw/works/${workId}/versions`, body)
+  },
+  getCharacterPlan(versionId) {
+    return request.get(`/redraw/versions/${versionId}/character-plan`)
+  },
+  getPreparationGate(versionId) {
+    return request.get(`/redraw/versions/${versionId}/preparation-gate`)
+  },
+  quoteReferencePreparation(versionId, body = {}) {
+    return request.post(
+      `/redraw/versions/${versionId}/reference-preparation-quote`,
+      buildReferencePreparationQuotePayload(body),
+    )
+  },
+  startReferencePreparation(versionId, body) {
+    return request.post(
+      `/redraw/versions/${versionId}/reference-preparations`,
+      buildReferencePreparationPayload(body),
+    )
   },
   listAssets(versionId, kind) {
     const suffix = kind ? `?kind=${encodeURIComponent(kind)}` : ''

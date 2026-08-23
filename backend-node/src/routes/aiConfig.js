@@ -16,10 +16,13 @@ function listPublicVideoModels(db, runtime) {
       .filter((item) => item.category === 'video')
       .map((item) => item.model);
     const allConfigs = aiConfigService.listConfigs(db, 'video');
-    const strictModels = new Set(allConfigs.filter(isStrictToapisVideoConfig)
+    const strictModels = new Set([
+      'lingjing-video-v1',
+      ...allConfigs.filter(isStrictVideoConfig)
       .flatMap((config) => [config.default_model, ...(Array.isArray(config.model) ? config.model : [config.model])])
       .map((model) => String(model || '').trim().toLowerCase())
-      .filter(Boolean));
+      .filter(Boolean),
+    ]);
     const strictCatalog = canvasModelCatalogService.list(db, runtime)
       .filter((item) => item.kind === 'video'
         && strictModels.has(String(item.model || '').trim().toLowerCase()));
@@ -34,9 +37,10 @@ function listPublicVideoModels(db, runtime) {
   };
 }
 
-function isStrictToapisVideoConfig(config) {
-  return ['toapis', 'toapis_video'].includes(String(config.provider || '').toLowerCase())
-    || String(config.api_protocol || '').toLowerCase() === 'toapis_video';
+function isStrictVideoConfig(config) {
+  const values = [config?.provider, config?.api_protocol]
+    .map((value) => String(value || '').trim().toLowerCase());
+  return values.some((value) => ['toapis', 'toapis_video', 'lingjing', 'lingjing_open'].includes(value));
 }
 
 function listPublicImageModels(db, runtime) {
@@ -231,7 +235,7 @@ function testConnection(db, log) {
         service_type: body.service_type,
         settings: body.settings,
       });
-      const connectivityOnly = body.service_type === 'video' && isStrictToapisVideoConfig(body);
+      const connectivityOnly = body.service_type === 'video' && isStrictVideoConfig(body);
       const verified = savedConfigId == null || connectivityOnly
         ? null
         : aiConfigService.setVerificationResult(db, savedConfigId, 'verified');

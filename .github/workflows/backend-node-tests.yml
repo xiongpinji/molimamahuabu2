@@ -30,7 +30,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: "24"
           cache: npm
           cache-dependency-path: backend-node/package-lock.json
 
@@ -49,7 +49,7 @@ jobs:
 
       - name: Run root-owned release evidence guard tests
         working-directory: backend-node
-        run: sudo "$(command -v node)" --test --test-concurrency=1 test/sharedExternalModelReleaseGuard.test.js
+        run: sudo "$(command -v node)" --test --test-concurrency=1 test/sharedExternalModelReleaseGuard.test.js test/lingjingSharedExternalModelReleaseGuard.test.js
 
       - name: Audit feature locks
         working-directory: backend-node

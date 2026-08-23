@@ -10,10 +10,13 @@ umask 077
 
 readonly EXPECTED_OLD_ACTIVATOR_SHA256='ddd106c9f3e5d66537687e45d98d89b8c9112dd0038ab5d2e1daad61e5de0cf4'
 readonly EXPECTED_INSTALLED_ACTIVATOR_SHA256='363ae14ae924b666f0cb9841de3d819a1ac6993e0a9b990b04382152e11cc752'
-readonly EXPECTED_UI_VERIFIER_SHA256='6ba3d9c34bebd27e96f7c431cc1eeb606bb9c624982e687632d16eccf6609b8b'
+readonly EXPECTED_OLD_UI_VERIFIER_SHA256='6ba3d9c34bebd27e96f7c431cc1eeb606bb9c624982e687632d16eccf6609b8b'
+readonly EXPECTED_INSTALLED_UI_VERIFIER_SHA256='71058262a6098d636777cbbcd41a68c87d3a28d909c2bd98abac6e86e98a577b'
 readonly EXPECTED_SEQUENCE_VERIFIER_SHA256='b0fce00c3155cb14c59962239abea8bdf6eb876b7f3b490458fc018be3c6adfe'
-readonly EXPECTED_NEW_ACTIVATOR_SHA256='363ae14ae924b666f0cb9841de3d819a1ac6993e0a9b990b04382152e11cc752'
-readonly EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256='869844a26bd2927de716e65f43b765447bf925bb20e53a0c3dffb98148f1af33'
+readonly EXPECTED_NEW_ACTIVATOR_SHA256='c1d987123f6655a07351f7c4891fd3d0229c3cb64776e635c3f339c986d15eb0'
+readonly EXPECTED_INSTALLED_EXTERNAL_VERIFIER_SHA256='fc58e3e7c94e3215b43406793fb974a4804cebc69617855e5a550bb86806ee35'
+readonly EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256='0c3db1eb2d66b974c83608ee7759dc85acf9cd2dddb902a1499d4b981d4d4711'
+readonly EXPECTED_NEW_UI_VERIFIER_SHA256='71058262a6098d636777cbbcd41a68c87d3a28d909c2bd98abac6e86e98a577b'
 
 fail() {
   echo "$*" >&2
@@ -106,6 +109,17 @@ require_reviewed_existing_activator() {
   OLD_ACTIVATOR_ORIGINAL_SHA256="$actual"
 }
 
+require_reviewed_existing_ui_verifier() {
+  local file="$1"
+  local actual
+  assert_root_owned_regular_file "$file" 'verify-protected-release.js'
+  actual="$(sha256_file "$file")"
+  if [[ "$actual" != "$EXPECTED_OLD_UI_VERIFIER_SHA256" && "$actual" != "$EXPECTED_INSTALLED_UI_VERIFIER_SHA256" ]]; then
+    fail "verify-protected-release.js hash mismatch: expected one reviewed version actual=$actual"
+  fi
+  OLD_UI_ORIGINAL_SHA256="$actual"
+}
+
 tree_content_hash() {
   local tree="$1"
   (
@@ -191,12 +205,14 @@ EVIDENCE_PARENT="$SHARED_ROOT/release-evidence"
 EVIDENCE_TARGET="$EVIDENCE_PARENT/external-models-v1"
 NEW_ACTIVATOR_SOURCE="$SOURCE_RELEASE/deploy/release-guard/activate-protected-release.sh"
 NEW_EXTERNAL_VERIFIER_SOURCE="$SOURCE_RELEASE/deploy/release-guard/verify-external-model-release.js"
+NEW_UI_VERIFIER_SOURCE="$SOURCE_RELEASE/backend-node/src/services/canvasCreditReleaseContract.js"
 
 assert_root_owned_tree "$EVIDENCE_STAGING_ROOT" 'evidence staging root'
 assert_root_owned_tree "$EVIDENCE_STAGING" 'reviewed evidence staging'
 assert_root_owned_regular_file "$EVIDENCE_STAGING/manifest.json" 'reviewed evidence manifest'
 require_exact_sha256 "$NEW_ACTIVATOR_SOURCE" "$EXPECTED_NEW_ACTIVATOR_SHA256" 'reviewed new activator'
 require_exact_sha256 "$NEW_EXTERNAL_VERIFIER_SOURCE" "$EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256" 'reviewed new external model verifier'
+require_exact_sha256 "$NEW_UI_VERIFIER_SOURCE" "$EXPECTED_NEW_UI_VERIFIER_SHA256" 'reviewed new UI verifier'
 REVIEWED_EVIDENCE_HASH="$(tree_content_hash "$EVIDENCE_STAGING")"
 
 if [[ ! -d "$SHARED_GUARD_ROOT" || -L "$SHARED_GUARD_ROOT" ]]; then
@@ -215,11 +231,13 @@ fi
 
 assert_current_matches
 OLD_ACTIVATOR_ORIGINAL_SHA256=''
+OLD_UI_ORIGINAL_SHA256=''
 require_reviewed_existing_activator "$OLD_ACTIVATOR"
-require_exact_sha256 "$UI_VERIFIER" "$EXPECTED_UI_VERIFIER_SHA256" 'verify-protected-release.js'
+require_reviewed_existing_ui_verifier "$UI_VERIFIER"
 require_exact_sha256 "$SEQUENCE_VERIFIER" "$EXPECTED_SEQUENCE_VERIFIER_SHA256" 'verify-canvas-reference-sequence-contract.js'
 require_exact_sha256 "$NEW_ACTIVATOR_SOURCE" "$EXPECTED_NEW_ACTIVATOR_SHA256" 'reviewed new activator'
 require_exact_sha256 "$NEW_EXTERNAL_VERIFIER_SOURCE" "$EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256" 'reviewed new external model verifier'
+require_exact_sha256 "$NEW_UI_VERIFIER_SOURCE" "$EXPECTED_NEW_UI_VERIFIER_SHA256" 'reviewed new UI verifier'
 if [[ "$(tree_content_hash "$EVIDENCE_STAGING")" != "$REVIEWED_EVIDENCE_HASH" ]]; then
   fail 'reviewed evidence staging changed before rotation'
 fi
@@ -230,6 +248,9 @@ if [[ -e "$EXTERNAL_MODEL_VERIFIER" || -L "$EXTERNAL_MODEL_VERIFIER" ]]; then
   assert_root_owned_regular_file "$EXTERNAL_MODEL_VERIFIER" 'installed external model verifier'
   EXTERNAL_EXISTED=1
   OLD_EXTERNAL_HASH="$(sha256_file "$EXTERNAL_MODEL_VERIFIER")"
+  if [[ "$OLD_EXTERNAL_HASH" != "$EXPECTED_INSTALLED_EXTERNAL_VERIFIER_SHA256" && "$OLD_EXTERNAL_HASH" != "$EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256" ]]; then
+    fail "installed external model verifier hash mismatch: expected one reviewed version actual=$OLD_EXTERNAL_HASH"
+  fi
 fi
 EVIDENCE_EXISTED=0
 OLD_EVIDENCE_HASH=''
@@ -246,14 +267,14 @@ ROTATION_AUDIT="$BACKUP_ROOT/rotation.audit"
 : > "$ROTATION_AUDIT"
 chown root:root "$ROTATION_AUDIT"
 chmod 0600 "$ROTATION_AUDIT"
-printf 'source_release=%s\ncandidate=%s\nexpected_current=%s\nreviewed_evidence_sha256=%s\nold_external_sha256=%s\nold_evidence_sha256=%s\n' \
-  "$SOURCE_RELEASE" "$CANDIDATE" "$EXPECTED_CURRENT" "$REVIEWED_EVIDENCE_HASH" "$OLD_EXTERNAL_HASH" "$OLD_EVIDENCE_HASH" > "$ROTATION_AUDIT"
+printf 'source_release=%s\ncandidate=%s\nexpected_current=%s\nreviewed_evidence_sha256=%s\nold_ui_verifier_sha256=%s\nold_external_sha256=%s\nold_evidence_sha256=%s\n' \
+  "$SOURCE_RELEASE" "$CANDIDATE" "$EXPECTED_CURRENT" "$REVIEWED_EVIDENCE_HASH" "$OLD_UI_ORIGINAL_SHA256" "$OLD_EXTERNAL_HASH" "$OLD_EVIDENCE_HASH" > "$ROTATION_AUDIT"
 
 install -o root -g root -m 0555 "$OLD_ACTIVATOR" "$BACKUP_ROOT/activate-protected-release.sh"
 install -o root -g root -m 0555 "$UI_VERIFIER" "$BACKUP_ROOT/verify-protected-release.js"
 install -o root -g root -m 0555 "$SEQUENCE_VERIFIER" "$BACKUP_ROOT/verify-canvas-reference-sequence-contract.js"
 require_exact_sha256 "$BACKUP_ROOT/activate-protected-release.sh" "$OLD_ACTIVATOR_ORIGINAL_SHA256" 'backed-up old activator'
-require_exact_sha256 "$BACKUP_ROOT/verify-protected-release.js" "$EXPECTED_UI_VERIFIER_SHA256" 'backed-up UI verifier'
+require_exact_sha256 "$BACKUP_ROOT/verify-protected-release.js" "$OLD_UI_ORIGINAL_SHA256" 'backed-up UI verifier'
 require_exact_sha256 "$BACKUP_ROOT/verify-canvas-reference-sequence-contract.js" "$EXPECTED_SEQUENCE_VERIFIER_SHA256" 'backed-up sequence verifier'
 if [[ "$EXTERNAL_EXISTED" -eq 1 ]]; then
   install -o root -g root -m 0555 "$EXTERNAL_MODEL_VERIFIER" "$BACKUP_ROOT/verify-external-model-release.js"
@@ -266,11 +287,13 @@ STAGED_GUARD_ROOT="$STAGED_SHARED_ROOT/release-guard"
 STAGED_EVIDENCE_ROOT="$STAGED_SHARED_ROOT/release-evidence/external-models-v1"
 ACTIVATOR_HARNESS="$STAGING_ROOT/activate-protected-release.verify-only-harness.sh"
 EXTERNAL_NEXT="$SHARED_GUARD_ROOT/.verify-external-model-release.js.next.$$"
+UI_NEXT="$SHARED_GUARD_ROOT/.verify-protected-release.js.next.$$"
 ACTIVATOR_NEXT="$SHARED_GUARD_ROOT/.activate-protected-release.sh.next.$$"
 EVIDENCE_BACKUP="$BACKUP_ROOT/external-models-v1"
 COMMITTED=0
 ACTIVATOR_REPLACED=0
 EXTERNAL_REPLACED=0
+UI_REPLACED=0
 EVIDENCE_OLD_MOVED=0
 EVIDENCE_NEW_INSTALLED=0
 
@@ -296,6 +319,12 @@ cleanup_rotation() {
         mv -Tf "$EXTERNAL_MODEL_VERIFIER" "$STAGING_ROOT/failed-new-external-verifier" || rollback_failed=1
       fi
     fi
+    if [[ "$UI_REPLACED" -eq 1 ]]; then
+      if ! install -o root -g root -m 0555 "$BACKUP_ROOT/verify-protected-release.js" "$UI_NEXT.rollback" ||
+        ! mv -Tf "$UI_NEXT.rollback" "$UI_VERIFIER"; then
+        rollback_failed=1
+      fi
+    fi
     if [[ "$EVIDENCE_NEW_INSTALLED" -eq 1 && -d "$EVIDENCE_TARGET" ]]; then
       mv -T "$EVIDENCE_TARGET" "$STAGING_ROOT/failed-new-evidence" || rollback_failed=1
     fi
@@ -306,7 +335,7 @@ cleanup_rotation() {
     if [[ ! -f "$OLD_ACTIVATOR" || -L "$OLD_ACTIVATOR" || "$(stat -c '%u:%g' -- "$OLD_ACTIVATOR" 2>/dev/null)" != '0:0' || "$(sha256_file "$OLD_ACTIVATOR" 2>/dev/null)" != "$OLD_ACTIVATOR_ORIGINAL_SHA256" ]]; then
       rollback_failed=1
     fi
-    if [[ ! -f "$UI_VERIFIER" || -L "$UI_VERIFIER" || "$(stat -c '%u:%g' -- "$UI_VERIFIER" 2>/dev/null)" != '0:0' || "$(sha256_file "$UI_VERIFIER" 2>/dev/null)" != "$EXPECTED_UI_VERIFIER_SHA256" ]]; then
+    if [[ ! -f "$UI_VERIFIER" || -L "$UI_VERIFIER" || "$(stat -c '%u:%g' -- "$UI_VERIFIER" 2>/dev/null)" != '0:0' || "$(sha256_file "$UI_VERIFIER" 2>/dev/null)" != "$OLD_UI_ORIGINAL_SHA256" ]]; then
       rollback_failed=1
     fi
     if [[ ! -f "$SEQUENCE_VERIFIER" || -L "$SEQUENCE_VERIFIER" || "$(stat -c '%u:%g' -- "$SEQUENCE_VERIFIER" 2>/dev/null)" != '0:0' || "$(sha256_file "$SEQUENCE_VERIFIER" 2>/dev/null)" != "$EXPECTED_SEQUENCE_VERIFIER_SHA256" ]]; then
@@ -330,7 +359,7 @@ cleanup_rotation() {
     fi
     printf 'rollback_status=%s\n' "$rollback_failed" >> "$ROTATION_AUDIT"
   fi
-  rm -f -- "$EXTERNAL_NEXT" "$ACTIVATOR_NEXT" "$ACTIVATOR_NEXT.rollback" "$EXTERNAL_NEXT.rollback"
+  rm -f -- "$EXTERNAL_NEXT" "$UI_NEXT" "$ACTIVATOR_NEXT" "$ACTIVATOR_NEXT.rollback" "$EXTERNAL_NEXT.rollback" "$UI_NEXT.rollback"
   if [[ -n "${STAGING_ROOT:-}" && -d "$STAGING_ROOT" ]]; then
     case "$(realpath -e -- "$STAGING_ROOT")" in
       "$SHARED_ROOT"/.external-model-release-guard-rotation.*) rm -rf -- "$STAGING_ROOT" ;;
@@ -348,7 +377,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 install -d -o root -g root -m 0755 "$STAGED_GUARD_ROOT" "$STAGED_EVIDENCE_ROOT"
-install -o root -g root -m 0555 "$UI_VERIFIER" "$STAGED_GUARD_ROOT/verify-protected-release.js"
+install -o root -g root -m 0555 "$NEW_UI_VERIFIER_SOURCE" "$STAGED_GUARD_ROOT/verify-protected-release.js"
 install -o root -g root -m 0555 "$SEQUENCE_VERIFIER" "$STAGED_GUARD_ROOT/verify-canvas-reference-sequence-contract.js"
 install -o root -g root -m 0555 "$NEW_EXTERNAL_VERIFIER_SOURCE" "$STAGED_GUARD_ROOT/verify-external-model-release.js"
 install -o root -g root -m 0555 "$NEW_ACTIVATOR_SOURCE" "$STAGED_GUARD_ROOT/activate-protected-release.sh"
@@ -360,9 +389,11 @@ assert_root_owned_tree "$STAGED_EVIDENCE_ROOT" 'staged reviewed evidence'
 [[ "$(tree_content_hash "$STAGED_EVIDENCE_ROOT")" == "$REVIEWED_EVIDENCE_HASH" ]] || fail 'staged evidence hash differs from reviewed evidence'
 require_exact_sha256 "$STAGED_GUARD_ROOT/activate-protected-release.sh" "$EXPECTED_NEW_ACTIVATOR_SHA256" 'staged new activator'
 require_exact_sha256 "$STAGED_GUARD_ROOT/verify-external-model-release.js" "$EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256" 'staged new external verifier'
+require_exact_sha256 "$STAGED_GUARD_ROOT/verify-protected-release.js" "$EXPECTED_NEW_UI_VERIFIER_SHA256" 'staged new UI verifier'
 
 /bin/bash -n "$STAGED_GUARD_ROOT/activate-protected-release.sh"
 env -i PATH="$SAFE_PATH" LC_ALL=C "$NODE_BINARY" --check "$STAGED_GUARD_ROOT/verify-external-model-release.js"
+env -i PATH="$SAFE_PATH" LC_ALL=C "$NODE_BINARY" --check "$STAGED_GUARD_ROOT/verify-protected-release.js"
 env -i PATH="$SAFE_PATH" LC_ALL=C "$NODE_BINARY" - \
   "$STAGED_GUARD_ROOT/activate-protected-release.sh" "$ACTIVATOR_HARNESS" \
   "$RELEASES_ROOT" "$CURRENT_LINK" "$STAGED_SHARED_ROOT" <<'NODE'
@@ -394,16 +425,19 @@ env -i \
 
 assert_current_matches
 require_exact_sha256 "$OLD_ACTIVATOR" "$OLD_ACTIVATOR_ORIGINAL_SHA256" 'activate-protected-release.sh'
-require_exact_sha256 "$UI_VERIFIER" "$EXPECTED_UI_VERIFIER_SHA256" 'verify-protected-release.js'
+require_exact_sha256 "$UI_VERIFIER" "$OLD_UI_ORIGINAL_SHA256" 'verify-protected-release.js'
 require_exact_sha256 "$SEQUENCE_VERIFIER" "$EXPECTED_SEQUENCE_VERIFIER_SHA256" 'verify-canvas-reference-sequence-contract.js'
 require_exact_sha256 "$NEW_ACTIVATOR_SOURCE" "$EXPECTED_NEW_ACTIVATOR_SHA256" 'reviewed new activator'
 require_exact_sha256 "$NEW_EXTERNAL_VERIFIER_SOURCE" "$EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256" 'reviewed new external verifier'
+require_exact_sha256 "$NEW_UI_VERIFIER_SOURCE" "$EXPECTED_NEW_UI_VERIFIER_SHA256" 'reviewed new UI verifier'
 [[ "$(tree_content_hash "$EVIDENCE_STAGING")" == "$REVIEWED_EVIDENCE_HASH" ]] || fail 'reviewed evidence changed after staged verification'
 
 install -d -o root -g root -m 0755 "$EVIDENCE_PARENT"
 install -o root -g root -m 0555 "$STAGED_GUARD_ROOT/verify-external-model-release.js" "$EXTERNAL_NEXT"
+install -o root -g root -m 0555 "$STAGED_GUARD_ROOT/verify-protected-release.js" "$UI_NEXT"
 install -o root -g root -m 0555 "$STAGED_GUARD_ROOT/activate-protected-release.sh" "$ACTIVATOR_NEXT"
 require_exact_sha256 "$EXTERNAL_NEXT" "$EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256" 'prepared external verifier'
+require_exact_sha256 "$UI_NEXT" "$EXPECTED_NEW_UI_VERIFIER_SHA256" 'prepared UI verifier'
 require_exact_sha256 "$ACTIVATOR_NEXT" "$EXPECTED_NEW_ACTIVATOR_SHA256" 'prepared activator'
 
 if [[ "$EVIDENCE_EXISTED" -eq 1 ]]; then
@@ -420,14 +454,18 @@ assert_root_owned_tree "$EVIDENCE_TARGET" 'installed reviewed evidence'
 EXTERNAL_REPLACED=1
 mv -Tf "$EXTERNAL_NEXT" "$EXTERNAL_MODEL_VERIFIER"
 require_exact_sha256 "$EXTERNAL_MODEL_VERIFIER" "$EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256" 'installed external model verifier'
-env -i PATH="$SAFE_PATH" LC_ALL=C "$NODE_BINARY" "$EXTERNAL_MODEL_VERIFIER" "$CANDIDATE" "$EVIDENCE_TARGET"
+env -i PATH="$SAFE_PATH" LC_ALL=C "$NODE_BINARY" "$EXTERNAL_MODEL_VERIFIER" "$CANDIDATE" "$EVIDENCE_TARGET" "$EXPECTED_CURRENT"
 assert_root_owned_tree "$EVIDENCE_TARGET" 'post-verifier installed evidence'
 [[ "$(tree_content_hash "$EVIDENCE_TARGET")" == "$REVIEWED_EVIDENCE_HASH" ]] || fail 'installed evidence changed during final verifier execution'
 
 assert_current_matches
 require_exact_sha256 "$OLD_ACTIVATOR" "$OLD_ACTIVATOR_ORIGINAL_SHA256" 'activate-protected-release.sh'
-require_exact_sha256 "$UI_VERIFIER" "$EXPECTED_UI_VERIFIER_SHA256" 'verify-protected-release.js'
+require_exact_sha256 "$UI_VERIFIER" "$OLD_UI_ORIGINAL_SHA256" 'verify-protected-release.js'
 require_exact_sha256 "$SEQUENCE_VERIFIER" "$EXPECTED_SEQUENCE_VERIFIER_SHA256" 'verify-canvas-reference-sequence-contract.js'
+UI_REPLACED=1
+mv -Tf "$UI_NEXT" "$UI_VERIFIER"
+require_exact_sha256 "$UI_VERIFIER" "$EXPECTED_NEW_UI_VERIFIER_SHA256" 'installed new UI verifier'
+env -i PATH="$SAFE_PATH" LC_ALL=C "$NODE_BINARY" "$UI_VERIFIER" "$CANDIDATE" --require-build
 ACTIVATOR_REPLACED=1
 mv -Tf "$ACTIVATOR_NEXT" "$OLD_ACTIVATOR"
 
@@ -435,12 +473,12 @@ require_exact_sha256 "$OLD_ACTIVATOR" "$EXPECTED_NEW_ACTIVATOR_SHA256" 'installe
 require_exact_sha256 "$EXTERNAL_MODEL_VERIFIER" "$EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256" 'installed new external model verifier'
 assert_root_owned_tree "$EVIDENCE_TARGET" 'installed reviewed evidence'
 [[ "$(tree_content_hash "$EVIDENCE_TARGET")" == "$REVIEWED_EVIDENCE_HASH" ]] || fail 'installed reviewed evidence changed before commit'
-require_exact_sha256 "$UI_VERIFIER" "$EXPECTED_UI_VERIFIER_SHA256" 'unchanged UI verifier'
+require_exact_sha256 "$UI_VERIFIER" "$EXPECTED_NEW_UI_VERIFIER_SHA256" 'installed new UI verifier'
 require_exact_sha256 "$SEQUENCE_VERIFIER" "$EXPECTED_SEQUENCE_VERIFIER_SHA256" 'unchanged sequence verifier'
 assert_current_matches
 
-printf 'new_activator_sha256=%s\nnew_external_verifier_sha256=%s\ninstalled_evidence_sha256=%s\nrotation_status=committed\n' \
-  "$EXPECTED_NEW_ACTIVATOR_SHA256" "$EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256" "$REVIEWED_EVIDENCE_HASH" >> "$ROTATION_AUDIT"
+printf 'new_activator_sha256=%s\nnew_ui_verifier_sha256=%s\nnew_external_verifier_sha256=%s\ninstalled_evidence_sha256=%s\nrotation_status=committed\n' \
+  "$EXPECTED_NEW_ACTIVATOR_SHA256" "$EXPECTED_NEW_UI_VERIFIER_SHA256" "$EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256" "$REVIEWED_EVIDENCE_HASH" >> "$ROTATION_AUDIT"
 COMMITTED=1
 
 echo "external_model_release_guard_rotated=$SHARED_GUARD_ROOT"

@@ -10,6 +10,7 @@ const sharp = require('sharp');
 
 const {
   buildGeneratedCoverageManifest,
+  canonicalCoverageSha256,
   validateGeneratedCoverageManifest,
 } = require('../src/services/redrawFullFrameCoverageService');
 const {
@@ -94,32 +95,31 @@ function validModelLock() {
 async function fixture(t, { shotCount = 9 } = {}) {
   const evidenceRoot = tempDir(t, 'redraw-review-analysis-');
   const frameShas = [];
-  for (let i = 0; i < 9; i += 1) frameShas[i] = await writePng(path.join(evidenceRoot, 'frames', `frame-${i}.png`), { value: 20 + i });
+  for (let i = 0; i < shotCount; i += 1) frameShas[i] = await writePng(path.join(evidenceRoot, 'frames', `frame-${i}.png`), { value: 20 + (i % 100) });
   const maskPaths = ['masks/person-a-0.png', 'masks/person-a-1.png', 'masks/person-b-1.png', 'masks/text-sub-0.png', 'masks/text-ui-4.png'];
   const maskShas = {};
   for (const rel of maskPaths) maskShas[rel] = await writePng(path.join(evidenceRoot, rel), { channels: 1, rect: { x: 8, y: 8, width: 14, height: 14 } });
   const mask = (rel) => ({ path: rel, sha256: maskShas[rel], width: WIDTH, height: HEIGHT, mime_type: 'image/png' });
-  const source = { sha256: 'd'.repeat(64), duration_ms: 9000, width: WIDTH, height: HEIGHT, frame_count: 9, time_base: { numerator: 1, denominator: 1 } };
-  const frames = Array.from({ length: 9 }, (_, i) => ({
+  const source = { sha256: 'd'.repeat(64), duration_ms: shotCount * 1000, width: WIDTH, height: HEIGHT, frame_count: shotCount, time_base: { numerator: 1, denominator: 1 } };
+  const includeUiTrack = shotCount > 4;
+  const frames = Array.from({ length: shotCount }, (_, i) => ({
     frame_index: i,
     timestamp_ticks: i,
     timestamp_ms: i * 1000,
-    shot_id: shotCount === 9 ? `shot-${i + 1}` : (i < 3 ? 'shot-1' : 'shot-2'),
+    shot_id: `shot-${i + 1}`,
     path: `frames/frame-${i}.png`,
     sha256: frameShas[i],
     width: WIDTH,
     height: HEIGHT,
     person_region_ids: i === 0 ? ['p-a-0'] : i === 1 ? ['p-a-1', 'p-b-1'] : [],
-    text_region_ids: i === 0 ? ['t-sub-0'] : i === 4 ? ['t-ui-4'] : [],
+    text_region_ids: i === 0 ? ['t-sub-0'] : includeUiTrack && i === 4 ? ['t-ui-4'] : [],
     review_point_reasons: [],
     review_status: 'not_required',
   }));
   const manifest = await buildGeneratedCoverageManifest({
     evidenceRoot,
     source,
-    shots: shotCount === 9
-      ? Array.from({ length: 9 }, (_, i) => ({ shot_id: `shot-${i + 1}`, start_ms: i * 1000, end_ms: (i + 1) * 1000 }))
-      : [{ shot_id: 'shot-1', start_ms: 0, end_ms: 3000 }, { shot_id: 'shot-2', start_ms: 3000, end_ms: 9000 }],
+    shots: Array.from({ length: shotCount }, (_, i) => ({ shot_id: `shot-${i + 1}`, start_ms: i * 1000, end_ms: (i + 1) * 1000 })),
     frames,
     personTracks: [
       {
@@ -159,7 +159,7 @@ async function fixture(t, { shotCount = 9 } = {}) {
         review_status: 'pending',
         reviewer: null,
       },
-      {
+      includeUiTrack ? {
         region_key: 'ui-a',
         kind: 'ui',
         treatment: 'remove',
@@ -168,8 +168,8 @@ async function fixture(t, { shotCount = 9 } = {}) {
         regions: [{ region_id: 't-ui-4', frame_index: 4, polygon: [{ x: 5, y: 5 }, { x: 20, y: 5 }, { x: 20, y: 20 }], mask: mask('masks/text-ui-4.png') }],
         review_status: 'pending',
         reviewer: null,
-      },
-    ],
+      } : null,
+    ].filter(Boolean),
     modelLock: validModelLock(),
   });
   fs.writeFileSync(path.join(evidenceRoot, 'redraw-full-frame-coverage-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -302,7 +302,7 @@ test('finalize writes immutable reviewed evidence, summary, decisions, sheets, h
   assert.equal(reviewed.ready_for_reference, false);
   assert.equal(fs.existsSync(path.join(outputRoot, 'review-correction-summary.json')), true);
   assert.equal(fs.existsSync(path.join(outputRoot, 'review-decisions.json')), true);
-  assert.equal(fs.readdirSync(path.join(outputRoot, 'reviewed-contact-sheets')).length, 9);
+  assert.equal(fs.readdirSync(path.join(outputRoot, 'reviewed-contact-sheets')).length, 1);
   assert.match(fs.readFileSync(path.join(outputRoot, 'reviewed-review', 'index.html'), 'utf8'), /reviewed-contact-sheets/);
   assert.doesNotMatch(JSON.stringify(result), /[A-Za-z]:\\|https?:\/\//);
   await review.validateReviewedCoverageManifest({ evidenceRoot: outputRoot, manifest: reviewed });
@@ -310,6 +310,20 @@ test('finalize writes immutable reviewed evidence, summary, decisions, sheets, h
     evidenceRoot: outputRoot,
     manifest: { ...reviewed, frames: reviewed.frames.map((frame, index) => index === 0 ? { ...frame, review_status: 'pending' } : frame) },
   }), /REDRAW_FULL_FRAME_APPROVAL_FORBIDDEN|REDRAW_FULL_FRAME_OUTPUT_INVALID/);
+  const duplicatedShot = JSON.parse(JSON.stringify(reviewed));
+  duplicatedShot.shots = [...duplicatedShot.shots, duplicatedShot.shots[0]];
+  duplicatedShot.analysis_sha256 = canonicalCoverageSha256(duplicatedShot);
+  await assert.rejects(review.validateReviewedCoverageManifest({ evidenceRoot: outputRoot, manifest: duplicatedShot }), /REDRAW_FULL_FRAME_/);
+
+  const extraShot = JSON.parse(JSON.stringify(reviewed));
+  extraShot.shots = [...extraShot.shots, { shot_id: 'shot-10', start_ms: 9000, end_ms: 10000 }];
+  extraShot.analysis_sha256 = canonicalCoverageSha256(extraShot);
+  await assert.rejects(review.validateReviewedCoverageManifest({ evidenceRoot: outputRoot, manifest: extraShot }), /REDRAW_FULL_FRAME_/);
+
+  const missingShot = JSON.parse(JSON.stringify(reviewed));
+  missingShot.shots = missingShot.shots.slice(1);
+  missingShot.analysis_sha256 = canonicalCoverageSha256(missingShot);
+  await assert.rejects(review.validateReviewedCoverageManifest({ evidenceRoot: outputRoot, manifest: missingShot }), /REDRAW_FULL_FRAME_/);
 
   await assert.rejects(review.finalizeReviewedCoverage({ analysisRoot: evidenceRoot, decisions: decisionsFor(manifest), outputRoot: evidenceRoot }), /REDRAW_FULL_FRAME_OUTPUT_INVALID/);
   fs.mkdirSync(path.join(root, 'occupied'));
@@ -344,11 +358,20 @@ test('finalize rejects path-escaping review region ids and leaves no output or e
   }
 });
 
-test('finalize requires exactly 9 reviewed contact sheets and rejects non-9 shot analysis', async (t) => {
-  const { evidenceRoot, manifest } = await fixture(t, { shotCount: 2 });
-  const outputRoot = path.join(tempDir(t, 'redraw-review-two-shot-'), 'reviewed');
-  await assert.rejects(review.finalizeReviewedCoverage({ analysisRoot: evidenceRoot, decisions: decisionsFor(manifest), outputRoot }), /REDRAW_FULL_FRAME_OUTPUT_INVALID/);
-  assert.equal(fs.existsSync(outputRoot), false);
+test('finalize supports 3 and 12 shot analyses with internally derived contact sheet counts', async (t) => {
+  for (const [shotCount, expectedSheetCount] of [[3, 1], [12, 2]]) {
+    const { evidenceRoot, manifest } = await fixture(t, { shotCount });
+    const outputRoot = path.join(tempDir(t, `redraw-review-${shotCount}-shot-`), 'reviewed');
+    const result = await review.finalizeReviewedCoverage({ analysisRoot: evidenceRoot, decisions: decisionsFor(manifest), outputRoot });
+    const reviewed = JSON.parse(fs.readFileSync(path.join(outputRoot, 'redraw-full-frame-reviewed-manifest.json'), 'utf8'));
+
+    assert.equal(result.reviewed_manifest.shots.length, shotCount);
+    assert.equal(reviewed.shots.length, shotCount);
+    assert.equal(reviewed.review.status, 'reviewed');
+    assert.equal(fs.readdirSync(path.join(outputRoot, 'reviewed-contact-sheets')).length, expectedSheetCount);
+    assert.equal(result.contact_sheets.length, expectedSheetCount);
+    await review.validateReviewedCoverageManifest({ evidenceRoot: outputRoot, manifest: reviewed });
+  }
 });
 
 test('analysis snapshot detects empty directory drift before publish and preserves output absence', async (t) => {

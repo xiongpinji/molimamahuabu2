@@ -918,10 +918,12 @@ function createLocalizationVersion(db, owner, workId, input) {
       );
       insertShot.run(...shotParams);
     }
+    const canStoreReferenceBundleRequired = hasColumn(db, 'redraw_versions', 'reference_bundle_required');
     const finalized = db.prepare(`
       UPDATE redraw_versions
       SET source_facts_json = ?, glossary_json = ?, name_map_json = ?, culture_map_json = ?,
-        text_map_json = ?, style_snapshot_json = ?, facts_hash = ?, status = 'asset_review', updated_at = ?
+        text_map_json = ?, style_snapshot_json = ?, facts_hash = ?, status = 'asset_review',
+        updated_at = ?${canStoreReferenceBundleRequired ? ', reference_bundle_required = ?' : ''}
       WHERE id = ? AND status = 'draft'
     `).run(
       sourceVersion.source_facts_json,
@@ -932,6 +934,7 @@ function createLocalizationVersion(db, owner, workId, input) {
       JSON.stringify(input.styleSnapshot || input.style_snapshot || {}),
       persistedFactsHash,
       now,
+      ...(canStoreReferenceBundleRequired ? [isV2 ? 1 : 0] : []),
       versionId,
     );
     if (finalized.changes !== 1) {

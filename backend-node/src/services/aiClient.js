@@ -1174,19 +1174,6 @@ function resolveEntityImageSource(entity, cfg) {
  * imageSource: { localAbsPath: string } 或 { imageUrl: string }
  * 使用 OpenAI vision 消息格式（兼容 GPT-4o / Gemini openai-compat / Qwen-VL 等）。
  */
-async function generateTextWithVisionSingleConfig(db, log, serviceType, userPrompt, systemPrompt, imageSource, options = {}) {
-  const detailed = await generateTextWithVisionDetailed(
-    db,
-    log,
-    serviceType,
-    userPrompt,
-    systemPrompt,
-    imageSource,
-    { ...options, require_provider_response_id: false },
-  );
-  return detailed.text.trim();
-}
-
 function resolveVisionImageSources(imageSource) {
   const fs = require('fs');
   const path = require('path');
@@ -1346,6 +1333,19 @@ async function generateTextWithVisionDetailed(db, log, serviceType, userPrompt, 
       image_count: resolvedImages.length,
     },
   };
+}
+
+async function generateTextWithVisionSingleConfig(db, log, serviceType, userPrompt, systemPrompt, imageSource, options = {}) {
+  const detailed = await generateTextWithVisionDetailed(
+    db,
+    log,
+    serviceType,
+    userPrompt,
+    systemPrompt,
+    imageSource,
+    { ...options, require_provider_response_id: false },
+  );
+  return detailed.text.trim();
 }
 
 async function generateTextWithVision(db, log, serviceType, userPrompt, systemPrompt, imageSource, options = {}) {

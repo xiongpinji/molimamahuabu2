@@ -859,7 +859,7 @@ test('脚本节点卡片显示保存和提取失败原因并可按步骤重试',
 })
 
 test('项目素材节点卡片可预览并复制素材引用', () => {
-  assert.match(projectAssetNodeSource, /class="asset-actions"/)
+  assert.match(projectAssetNodeSource, /class="asset-actions/)
   assert.match(projectAssetNodeSource, /class="asset-badges"/)
   assert.match(projectAssetNodeSource, /v-for="badge in assetBadges"/)
   assert.match(projectAssetNodeSource, /@click\.stop="openAsset"/)

@@ -209,6 +209,99 @@ const PROVIDER_TASK_LIVE_COMPAT_FEATURE_IDS = new Set([
   UNKNOWN_STATE_RECONCILIATION_FEATURE_ID,
   PROACTIVE_CANARY_FEATURE_ID,
 ]);
+const PR177_ROOT_ONLY_REASON = '2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批';
+const PR177_ROOT_ONLY_APPROVED_BY = 'product-owner 2026-08-22 pr-177-root-only-isolation-closure';
+const PR177_PROVIDER_ROUTE_UNLOCK = {
+  reason: PR177_ROOT_ONLY_REASON,
+  approvedBy: PR177_ROOT_ONLY_APPROVED_BY,
+  impactTests: [
+    'backend-node/test/providerCanaryInvalidation.test.js',
+    'backend-node/test/providerCanaryPublicGate.test.js',
+    'backend-node/test/providerCanaryAdminRoutes.test.js',
+    'backend-node/test/providerRouteStability.test.js',
+    'backend-node/test/providerRouteCost.test.js',
+    'backend-node/test/generationRouteCostLedger.test.js',
+  ],
+};
+const PR177_VIDEO_REFERENCE_UNLOCK = {
+  reason: '2026-08-22 PR #177 主线同步视频参考证据修复获批',
+  approvedBy: 'product-owner 2026-08-22 pr-177-main-sync-closure',
+  impactTests: [
+    'backend-node/test/providerRouteVideoIntegration.test.js',
+    'backend-node/test/toapisVideoClient.test.js',
+    'backend-node/test/videoBilling.test.js',
+    'frontweb/e2e/home-canvas.spec.js',
+  ],
+};
+const PR177_UNKNOWN_STATE_UNLOCK = {
+  reason: PR177_ROOT_ONLY_REASON,
+  approvedBy: PR177_ROOT_ONLY_APPROVED_BY,
+  impactTests: [
+    'backend-node/test/providerReconciliation.test.js',
+    'backend-node/test/billingReconciliation.test.js',
+    'backend-node/test/taskService.test.js',
+    'backend-node/test/providerRouteImageIntegration.test.js',
+    'backend-node/test/providerRouteVideoIntegration.test.js',
+    'backend-node/test/prop-image-billing.test.js',
+    'backend-node/test/propImageErrorState.test.js',
+    'backend-node/test/creditLedger.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const PR177_SHARED_FOUNDATION_UNLOCK = {
+  reason: PR177_ROOT_ONLY_REASON,
+  approvedBy: PR177_ROOT_ONLY_APPROVED_BY,
+  impactTests: [
+    'backend-node/test/platformSharedAssetAcceptance.test.js',
+    'backend-node/test/platformSharedAuthAcceptance.test.js',
+    'backend-node/test/platformSharedBillingAcceptance.test.js',
+    'backend-node/test/platformSharedCatalogAcceptance.test.js',
+    'backend-node/test/platformSharedFoundationInventory.test.js',
+    'backend-node/test/subscriptionBillingRoutes.test.js',
+    'frontweb/e2e/platform-shared-foundation-backend-integration.spec.js',
+  ],
+};
+const PR177_PLATFORM_ACCEPTANCE_UNLOCK = {
+  reason: PR177_ROOT_ONLY_REASON,
+  approvedBy: PR177_ROOT_ONLY_APPROVED_BY,
+  impactTests: [
+    'backend-node/test/platformFeatureAcceptance.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+  ],
+};
+const PR177_UNLOCK_BY_FEATURE = {
+  [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: PR177_PROVIDER_ROUTE_UNLOCK,
+  [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: PR177_VIDEO_REFERENCE_UNLOCK,
+  [UNKNOWN_STATE_RECONCILIATION_FEATURE_ID]: PR177_UNKNOWN_STATE_UNLOCK,
+  [ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID]: PR177_SHARED_FOUNDATION_UNLOCK,
+  [PROACTIVE_CANARY_FEATURE_ID]: PR177_SHARED_FOUNDATION_UNLOCK,
+};
+const PR184_MAIN_MERGE_UNLOCK = {
+  reason: '2026-08-23 PR #184 合入最新 main 并收口 17 项冲突获批',
+  approvedBy: 'product-owner 2026-08-23 pr-184-main-merge-conflict-resolution',
+  impactTests: [
+    'backend-node/test/providerCanaryAudioArtifact.test.js',
+    'backend-node/test/providerCanaryExecutor.test.js',
+    'backend-node/test/providerCanaryInventory.test.js',
+    'backend-node/test/providerCanaryScheduler.test.js',
+    'backend-node/test/providerRouteCost.test.js',
+    'backend-node/test/providerRouteSchema.test.js',
+    'backend-node/test/providerRuntimeFingerprint.test.js',
+    'backend-node/test/providerTaskLiveCompatibility.test.js',
+    'frontweb/test/platformZeroCostSmokeContract.test.js',
+    'frontweb/test/providerRouteCostAdmin.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const PRE_PR184_CURRENT_UNLOCK_BY_FEATURE = {
+  [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: PROVIDER_ROUTE_TTS_CHARACTER_COST_UNLOCK,
+  [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: PROVIDER_TASK_LIVE_COMPAT_UNLOCK,
+  [UNKNOWN_STATE_RECONCILIATION_FEATURE_ID]: PROVIDER_TASK_LIVE_COMPAT_UNLOCK,
+  [ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID]: ADMIN_PROVIDER_TTS_CHARACTER_COST_UNLOCK,
+  [PROACTIVE_CANARY_FEATURE_ID]: PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK,
+};
 const COMPLETE_ACCEPTANCE_ACCEPTANCE = [
   '来源功能清单与验收决策账本通过 SHA 和 feature_id 一致性绑定',
   '未登记功能保持 unverified，阻断功能不能伪装为通过',
@@ -551,7 +644,8 @@ test('平台完整验收框架锁定为 shared locked_pass 且不提前锁定业
   assert.deepEqual(feature.requiredTests, COMPLETE_ACCEPTANCE_REQUIRED_TESTS);
   assert.deepEqual(feature.evidence, COMPLETE_ACCEPTANCE_EVIDENCE);
   assert.equal(feature.fixCommit, null);
-  assert.deepEqual(feature.unlock, COMPLETE_ACCEPTANCE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory, [COMPLETE_ACCEPTANCE_UNLOCK]);
+  assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
   assert.equal(manifest.features.some((featureLock) => /canvas|factory|script-analysis/.test(featureLock.featureId)), false);
 });
 
@@ -569,14 +663,15 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   assert.deepEqual(feature.evidence.slice(0, PROACTIVE_CANARY_EVIDENCE.length), PROACTIVE_CANARY_EVIDENCE);
 });
 
-test('零成本巡检 fixture 误报修复刷新功能锁并保留上一批准历史与证据', () => {
+test('PR #184 主线合并刷新功能锁并保留零成本巡检批准历史与证据', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
-  assert.deepEqual(feature.unlock, PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-1), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-2), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-3), PROVIDER_READINESS_TTS_UNLOCK);
+  assert.deepEqual(feature.unlock, PR184_MAIN_MERGE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-2), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-3), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-4), PROVIDER_READINESS_TTS_UNLOCK);
   assert.deepEqual(feature.evidence.slice(-PROVIDER_READINESS_TTS_EVIDENCE.length), PROVIDER_READINESS_TTS_EVIDENCE);
   for (const testPath of PROVIDER_READINESS_TTS_REQUIRED_TESTS) {
     assert.ok(feature.requiredTests.includes(testPath), `TTS 功能锁缺少影响测试: ${testPath}`);
@@ -593,20 +688,16 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     const previousUnlock = qualityFixTouched
       ? PROVIDER_TASK_STATUS_DECISION_UNLOCK
       : PROVIDER_TASK_RECEIPT_UNLOCK;
-    assert.deepEqual(feature.unlock, featureId === PROACTIVE_CANARY_FEATURE_ID
-      ? PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK
-      : (featureId === PROVIDER_ROUTE_CONTRACT_FEATURE_ID
-        ? PROVIDER_ROUTE_TTS_CHARACTER_COST_UNLOCK
-        : (featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
-          ? ADMIN_PROVIDER_TTS_CHARACTER_COST_UNLOCK
-          : (liveCompatTouched ? PROVIDER_TASK_LIVE_COMPAT_UNLOCK : previousUnlock))));
+    assert.deepEqual(feature.unlock, PR184_MAIN_MERGE_UNLOCK);
     assert.deepEqual(feature.unlockHistory, [
       HISTORICAL_UNLOCK_BY_FEATURE[featureId],
       ...(qualityFixTouched ? [PROVIDER_TASK_RECEIPT_UNLOCK] : []),
+      ...(qualityFixTouched ? [PR177_UNLOCK_BY_FEATURE[featureId]] : []),
       ...(qualityFixTouched ? [PROVIDER_TASK_ARTIFACT_QUALITY_UNLOCK] : []),
       ...(qualityFixTouched ? [LEGACY_DJPSD_STRICT_ARTIFACT_UNLOCK] : []),
       ...(qualityFixTouched ? [ASYNC_VIDEO_PROTOCOL_ARTIFACT_UNLOCK] : []),
       ...(liveCompatTouched ? [previousUnlock] : []),
+      ...(featureId === PROVIDER_ROUTE_CONTRACT_FEATURE_ID ? [PR177_PROVIDER_ROUTE_UNLOCK] : []),
       ...([PROVIDER_ROUTE_CONTRACT_FEATURE_ID, PROACTIVE_CANARY_FEATURE_ID].includes(featureId)
         ? [PROVIDER_TASK_LIVE_COMPAT_UNLOCK]
         : []),
@@ -617,7 +708,10 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
           PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK,
         ]
         : []),
-      ...(featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID ? [PROVIDER_TASK_RECEIPT_UNLOCK] : []),
+      ...(featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
+        ? [PROVIDER_TASK_RECEIPT_UNLOCK, PR177_SHARED_FOUNDATION_UNLOCK]
+        : []),
+      PRE_PR184_CURRENT_UNLOCK_BY_FEATURE[featureId],
     ]);
     assert.deepEqual(
       feature.evidence.slice(0, HISTORICAL_EVIDENCE_BY_FEATURE[featureId].length),
@@ -653,12 +747,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
   assert.deepEqual(appLocks, [PROACTIVE_CANARY_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].sort());
   for (const featureId of appLocks) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
-    assert.deepEqual(
-      feature.unlock,
-      featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK
-        : PROVIDER_TASK_LIVE_COMPAT_UNLOCK,
-    );
+    assert.deepEqual(feature.unlock, PR184_MAIN_MERGE_UNLOCK);
   }
 });
 
@@ -667,7 +756,7 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
   assert.equal(manifest.features.length >= 5, true);
   for (const feature of manifest.features) {
     if (!Object.hasOwn(PROVIDER_TASK_LOCK_REQUIREMENTS, feature.featureId)) {
-      assert.deepEqual(feature.unlock, COMPLETE_ACCEPTANCE_UNLOCK);
+      assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
     }
     assert.equal(feature.evidence.length > 0, true);
   }
@@ -692,14 +781,8 @@ test('实时候选兼容修复刷新四个运行时功能锁并登记补丁测�
   ]) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
     assert.ok(feature, `缺少功能锁 ${featureId}`);
-    assert.deepEqual(
-      feature.unlock,
-      featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK
-        : (featureId === PROVIDER_ROUTE_CONTRACT_FEATURE_ID
-          ? PROVIDER_ROUTE_TTS_CHARACTER_COST_UNLOCK
-          : PROVIDER_TASK_LIVE_COMPAT_UNLOCK),
-    );
+    assert.deepEqual(feature.unlock, PR184_MAIN_MERGE_UNLOCK);
+    assert.deepEqual(feature.unlockHistory.at(-1), PRE_PR184_CURRENT_UNLOCK_BY_FEATURE[featureId]);
     assert.ok(feature.unlockHistory.some((entry) => (
       entry.reason === PROVIDER_TASK_STATUS_DECISION_UNLOCK.reason
         || entry.reason === PROVIDER_TASK_RECEIPT_UNLOCK.reason

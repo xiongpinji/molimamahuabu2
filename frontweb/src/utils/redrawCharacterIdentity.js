@@ -106,3 +106,39 @@ export function projectRedrawCharacterIdentityPack(asset = {}) {
 export function isRedrawCharacterIdentityPackReady(asset = {}) {
   return projectRedrawCharacterIdentityPack(asset).ready
 }
+
+export function projectRedrawCharacterPlan(plan = {}) {
+  const characters = (Array.isArray(plan?.characters) ? plan.characters : []).map((character) => {
+    const voice = character?.voice && typeof character.voice === 'object' ? character.voice : {}
+    const wardrobe = character?.wardrobe && typeof character.wardrobe === 'object' ? character.wardrobe : {}
+    const adult = normalizeText(character?.adult_status) === 'verified_18_plus'
+    return {
+      sourceCharacterKey: normalizeText(character?.source_character_key),
+      name: normalizeText(character?.target_name),
+      identity: {
+        label: adult ? '成年虚构角色' : '身份待确认',
+        ready: adult && Boolean(normalizeHash(character?.identity_pack_sha256)),
+        shortHash: shortHash(character?.identity_pack_sha256),
+      },
+      voice: {
+        assetId: Number.isSafeInteger(Number(voice.asset_id)) ? Number(voice.asset_id) : null,
+        label: normalizeText(voice.language) || '声音待绑定',
+        ready: voice.ready === true,
+        shortHash: shortHash(voice.sha256),
+      },
+      wardrobe: {
+        assetId: Number.isSafeInteger(Number(wardrobe.asset_id)) ? Number(wardrobe.asset_id) : null,
+        label: normalizeText(wardrobe.label) || '服装待绑定',
+        ready: wardrobe.ready === true,
+        shortHash: shortHash(wardrobe.sha256),
+      },
+    }
+  })
+  return {
+    versionId: Number(plan?.version_id) || null,
+    ready: plan?.ready === true,
+    planHash: normalizeHash(plan?.plan_hash),
+    missing: Array.isArray(plan?.missing) ? plan.missing.map(normalizeText).filter(Boolean) : [],
+    characters,
+  }
+}

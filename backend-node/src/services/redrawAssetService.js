@@ -1,9 +1,12 @@
+const crypto = require('node:crypto');
+
 const creditLedger = require('./creditLedgerService');
 const aiConfigService = require('./aiConfigService');
 const {
   readIdentityPack,
   identityPackStatus,
 } = require('./redrawCharacterIdentityService');
+const { invalidateDialogueDependents } = require('./redrawDependencyInvalidationService');
 
 let defaultEvidenceRegistry = null;
 
@@ -35,6 +38,10 @@ function stableJson(value) {
   return JSON.stringify(value);
 }
 
+function sha256(value) {
+  return crypto.createHash('sha256').update(String(value)).digest('hex');
+}
+
 function parseJson(value, fallback) {
   if (value && typeof value === 'object') return value;
   try {
@@ -43,6 +50,78 @@ function parseJson(value, fallback) {
   } catch (_) {
     return fallback;
   }
+}
+
+function storedAssetEvidence(db, assetId) {
+  const asset = db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(Number(assetId));
+  const metadata = parseJson(asset?.metadata, {});
+  const digest = String(metadata?.sha256 || asset?.sha256 || '').trim();
+  if (!asset || asset.type !== 'image' || !/^\w+\/[-+.\w]+$/.test(String(asset.mime_type || ''))
+    || !/^[a-f0-9]{64}$/.test(digest)) return null;
+  return { asset_id: Number(asset.id), sha256: digest };
+}
+
+function buildCleanPlatePack(db, attempt, cleanPlateAssetId) {
+  const payload = parseJson(attempt.source_ref_json, {});
+  const ref = payload.source_ref && typeof payload.source_ref === 'object' ? payload.source_ref : {};
+  const snapshot = payload.snapshot && typeof payload.snapshot === 'object' ? payload.snapshot : {};
+  const source = storedAssetEvidence(db, ref.source_asset_id);
+  const mask = storedAssetEvidence(db, attempt.mask_asset_id);
+  const artifact = storedAssetEvidence(db, cleanPlateAssetId);
+  const stableId = String(ref.stable_id || '').trim();
+  const analysisSha256 = String(ref.analysis_sha256 || '').trim();
+  const frameIndex = Number(ref.frame_index);
+  if (!source || !mask || !artifact || !stableId
+    || !/^[a-f0-9]{64}$/.test(analysisSha256) || !Number.isSafeInteger(frameIndex) || frameIndex < 0
+    || ref.source_fingerprint !== source.sha256) return null;
+  if (snapshot.mode === 'clean_plate' && ref.kind === 'person_clean') {
+    const pack = {
+      schema_version: 'person-clean-plate-reference-v1',
+      requirement_key: stableId,
+      analysis_sha256: analysisSha256,
+      frame_index: frameIndex,
+      input_frame_fingerprint: String(snapshot.input_frame_fingerprint || ''),
+      source,
+      mask,
+      artifact,
+      ready: true,
+    };
+    if (pack.input_frame_fingerprint !== source.sha256) return null;
+    return { key: 'person_clean_plate_pack', value: { ...pack, pack_sha256: sha256(stableJson(pack)) } };
+  }
+  if (snapshot.mode === 'text_clean_plate' && ['text_subtitle', 'text_screen'].includes(ref.kind)) {
+    const work = db.prepare(`SELECT w.source_fingerprint FROM redraw_versions v
+      JOIN redraw_works w ON w.id = v.work_id AND w.deleted_at IS NULL
+      WHERE v.id = ? AND v.deleted_at IS NULL`).get(Number(attempt.version_id));
+    const sourceFingerprint = String(work?.source_fingerprint || '').trim();
+    if (!/^[a-f0-9]{64}$/.test(sourceFingerprint)) return null;
+    const pack = {
+      schema_version: 'text-clean-plate-reference-v1',
+      region_key: stableId,
+      kind: ref.kind,
+      artifact,
+      source_fingerprint: sourceFingerprint,
+      analysis_sha256: analysisSha256,
+      frame_index: frameIndex,
+      input_frame_fingerprint: String(ref.source_fingerprint || ''),
+      source,
+      mask,
+      ready: true,
+    };
+    return { key: 'text_clean_plate_pack', value: { ...pack, pack_sha256: sha256(stableJson(pack)) } };
+  }
+  return null;
+}
+
+function voiceDependencyKey(sourceRef = {}) {
+  return String(
+    sourceRef.source_character_key
+      ?? sourceRef.sourceCharacterKey
+      ?? sourceRef.speaker_id
+      ?? sourceRef.speakerId
+      ?? sourceRef.id
+      ?? '',
+  ).trim();
 }
 
 function getVersion(ctx) {
@@ -607,6 +686,43 @@ function markCompletedAssetNeedsAttention(ctx, attempt, asset, providerResult, e
   return rowToAsset(ctx.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attempt.id)));
 }
 
+function markCleanPlateNeedsAttention(ctx, attempt, value = {}) {
+  const now = new Date().toISOString();
+  const sourcePayload = parseJson(attempt.source_ref_json, {});
+  const rawProviderTaskId = String(
+    value.provider_task_id || value.providerTaskId || value.task_id || value.taskId || '',
+  ).trim();
+  const providerTaskId = /^[A-Za-z0-9._:-]{1,160}$/.test(rawProviderTaskId) ? rawProviderTaskId : '';
+  const snapshot = sourcePayload.snapshot && typeof sourcePayload.snapshot === 'object'
+    ? sourcePayload.snapshot
+    : {};
+  const nextSourcePayload = {
+    ...sourcePayload,
+    snapshot: {
+      ...snapshot,
+      ...(providerTaskId ? { provider_task_id: providerTaskId } : {}),
+    },
+  };
+  ctx.db.prepare(`
+    UPDATE redraw_assets
+    SET source_ref_json = ?, generation_task_id = COALESCE(?, generation_task_id),
+        status = 'needs_attention', approval_status = 'pending',
+        error_code = 'REDRAW_CLEAN_PLATE_PROVIDER_UNKNOWN',
+        error_message = ?, updated_at = ?
+    WHERE id = ? AND tenant_id = ? AND user_id = ? AND kind = 'scene'
+      AND status = 'processing' AND deleted_at IS NULL
+  `).run(
+    JSON.stringify(nextSourcePayload),
+    providerTaskId || null,
+    '净景供应商任务状态未知，请人工确认',
+    now,
+    Number(attempt.id),
+    String(attempt.tenant_id),
+    String(attempt.user_id),
+  );
+  return rowToAsset(ctx.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attempt.id)));
+}
+
 function readableAsset(ctx, asset) {
   if (!asset) return false;
   return typeof ctx.assetReader?.canRead === 'function'
@@ -823,6 +939,9 @@ function finalizeAssetAttempt(ctx, attemptId, providerResult = {}) {
   const now = new Date().toISOString();
   if (attempt.kind === 'voice') {
     const sourcePayload = parseJson(attempt.source_ref_json, {});
+    const sourceRef = sourcePayload.source_ref && typeof sourcePayload.source_ref === 'object'
+      ? sourcePayload.source_ref
+      : {};
     const snapshot = sourcePayload.snapshot && typeof sourcePayload.snapshot === 'object'
       ? sourcePayload.snapshot
       : {};
@@ -860,6 +979,19 @@ function finalizeAssetAttempt(ctx, attemptId, providerResult = {}) {
           WHERE id = ?
         `).run(Number(asset.id), JSON.stringify(nextSourcePayload), now, Number(attempt.id));
         if (reservationId) creditLedger.settleGeneration(db, reservationId, 'completed');
+        const dependencyKey = voiceDependencyKey(sourceRef);
+        if (dependencyKey) {
+          invalidateDialogueDependents({
+            ...ctx,
+            tenantId: String(attempt.tenant_id),
+            userId: String(attempt.user_id),
+            versionId: Number(attempt.version_id),
+            now,
+          }, {
+            source_character_key: dependencyKey,
+            reason_code: 'voice_changed',
+          });
+        }
       })();
     } catch (error) {
       return markAssetNeedsAttention(
@@ -971,9 +1103,21 @@ async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
   const sourceRef = {
     source_asset_id: sourceAssetId,
     source_fingerprint: String(inputFrameFingerprint),
+    ...(() => {
+      const binding = sceneAsset.source_ref || sceneAsset.sourceRef || {};
+      return {
+        ...(binding.stable_id ? { stable_id: String(binding.stable_id) } : {}),
+        ...(binding.kind ? { kind: String(binding.kind) } : {}),
+        ...(binding.analysis_sha256 ? { analysis_sha256: String(binding.analysis_sha256) } : {}),
+        ...(Number.isSafeInteger(Number(binding.frame_index)) ? { frame_index: Number(binding.frame_index) } : {}),
+      };
+    })(),
     ...(mode === 'clean_plate'
       ? { source_ref: sceneAsset.source_ref || sceneAsset.sourceRef || {} }
-      : {}),
+      : {
+          text_kind: textClean.textKind,
+          text_regions: textClean.textRegions,
+        }),
   };
   const snapshot = mode === 'text_clean_plate'
     ? {
@@ -1031,26 +1175,86 @@ async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
     }
     const providerStatus = String(providerResult?.status || '').toLowerCase();
     if (!['completed', 'complete', 'succeeded', 'success', 'done'].includes(providerStatus)) {
+      if (indeterminateProviderOutcome(providerResult)) {
+        return markCleanPlateNeedsAttention(ctx, {
+          ...attempt,
+          tenant_id: ctx.tenantId ?? ctx.tenant_id,
+          user_id: ctx.userId ?? ctx.user_id,
+          source_ref_json: db.prepare('SELECT source_ref_json FROM redraw_assets WHERE id = ?').get(attempt.id)?.source_ref_json,
+        }, providerResult || {});
+      }
       throw codedError('REDRAW_ASSET_GENERATION_FAILED', providerResult?.error || '净景生成失败');
     }
     validateCleanPlateQuality(sceneAsset, options, providerResult || {});
     const finalized = finalizeAssetAttempt(ctx, attempt.id, mode === 'text_clean_plate'
       ? { ...providerResult, clean_plate: true }
       : providerResult);
+    const storedAttempt = db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attempt.id));
+    const pack = buildCleanPlatePack(db, storedAttempt, Number(finalized.clean_plate_asset_id || finalized.asset_id));
+    const sourcePayload = parseJson(storedAttempt.source_ref_json, {});
+    if (pack) sourcePayload[pack.key] = pack.value;
     db.prepare(`
       UPDATE redraw_assets
       SET clean_plate_asset_id = ?, mask_asset_id = ?, status = 'needs_attention',
-          approval_status = 'pending', updated_at = ?
+          approval_status = 'pending', source_ref_json = ?, updated_at = ?
       WHERE id = ?
-    `).run(Number(finalized.clean_plate_asset_id || finalized.asset_id), Number(maskAssetId), new Date().toISOString(), Number(attempt.id));
+    `).run(
+      Number(finalized.clean_plate_asset_id || finalized.asset_id), Number(maskAssetId),
+      JSON.stringify(sourcePayload), new Date().toISOString(), Number(attempt.id),
+    );
     return rowToAsset(db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attempt.id)));
   } catch (error) {
     const row = db.prepare('SELECT status FROM redraw_assets WHERE id = ?').get(Number(attempt.id));
+    if (row?.status === 'processing' && ambiguousVoiceError(error)) {
+      return markCleanPlateNeedsAttention(ctx, {
+        ...attempt,
+        tenant_id: ctx.tenantId ?? ctx.tenant_id,
+        user_id: ctx.userId ?? ctx.user_id,
+        source_ref_json: db.prepare('SELECT source_ref_json FROM redraw_assets WHERE id = ?').get(attempt.id)?.source_ref_json,
+      }, error);
+    }
     if (row?.status !== 'failed') {
       failAssetAttempt(ctx, attempt.id, error);
     }
     throw error;
   }
+}
+
+async function prepareReferenceCleanRequirement(ctx, payload = {}) {
+  const requirement = payload.requirement;
+  if (!requirement || typeof requirement !== 'object' || Array.isArray(requirement)) {
+    throw codedError('REDRAW_REFERENCE_CLEAN_REQUIREMENT_INVALID', '净景准备要求不合法');
+  }
+  const kind = String(requirement.kind || '').trim();
+  if (!['person_clean', 'text_clean'].includes(kind)) {
+    throw codedError('REDRAW_REFERENCE_CLEAN_REQUIREMENT_INVALID', '净景准备类型不合法');
+  }
+  const sceneAsset = requirement.scene_asset || requirement.sceneAsset;
+  const rawOptions = requirement.options;
+  if (!sceneAsset || typeof sceneAsset !== 'object' || Array.isArray(sceneAsset)
+    || !rawOptions || typeof rawOptions !== 'object' || Array.isArray(rawOptions)) {
+    throw codedError('REDRAW_REFERENCE_CLEAN_REQUIREMENT_INVALID', '净景准备缺少服务端资产参数');
+  }
+  const result = await generateCleanPlate({
+    ...ctx,
+    provider: payload.provider || ctx.provider,
+    operationKey: payload.operation_key || ctx.operationKey,
+  }, sceneAsset, {
+    ...rawOptions,
+    mode: kind === 'text_clean' ? 'text_clean_plate' : 'clean_plate',
+  });
+  if (result.status === 'generated' && result.approval_status === 'approved') {
+    return { status: 'completed', redraw_asset_id: Number(result.id) };
+  }
+  if (result.status === 'failed') {
+    return { status: 'failed', error_code: result.error_code || 'REDRAW_REFERENCE_CLEAN_FAILED' };
+  }
+  return {
+    status: 'unknown',
+    redraw_asset_id: Number(result.id),
+    ...(result.generation_task_id ? { provider_task_id: String(result.generation_task_id) } : {}),
+    ...(result.credit_reservation_id ? { reservation_id: String(result.credit_reservation_id) } : {}),
+  };
 }
 
 module.exports = {
@@ -1063,6 +1267,7 @@ module.exports = {
   listAssetVersions,
   generateAsset,
   generateCleanPlate,
+  prepareReferenceCleanRequirement,
   readOwnedAuthorizationAsset,
   validateVoiceAuthorizationInput,
   validateVoiceTtsConfigPin,

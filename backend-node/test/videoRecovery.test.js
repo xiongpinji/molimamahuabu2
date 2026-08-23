@@ -72,8 +72,8 @@ test('服务重启后按 provider_task_id 恢复轮询且不重复提交供应�
       '本地恢复轮询供应商',
       'https://seed.alimyun.xyz/api/open/v1',
       'artifact-secret',
-      JSON.stringify(['lingjing-video-v1']),
-      'lingjing-video-v1',
+      JSON.stringify(['legacy-video-v1']),
+      'legacy-video-v1',
       now,
       now
     );
@@ -83,7 +83,7 @@ test('服务重启后按 provider_task_id 恢复轮询且不重复提交供应�
       db.prepare(
         `INSERT INTO video_generations
           (provider, prompt, model, status, task_id, provider_task_id, created_at, updated_at)
-         VALUES ('aihubcc_video', ?, 'lingjing-video-v1', 'processing', ?, ?, ?, ?)`
+         VALUES ('aihubcc_video', ?, 'legacy-video-v1', 'processing', ?, ?, ?, ?)`
       ).run('恢复轮询测试', task.id, 'provider-task-83047', now, now).lastInsertRowid
     );
 

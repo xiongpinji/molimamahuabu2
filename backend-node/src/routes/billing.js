@@ -34,8 +34,7 @@ function routes(db, log, runtime = {}) {
         const userId = String(req.user.id);
         const tenantId = req.tenant?.id;
         const account = tenantId
-          ? creditLedger.getTenantAccount(db, tenantId)
-            || { tenant_id: tenantId, available: 0, held: 0, spent: 0 }
+          ? creditLedger.getTenantAccountBreakdown(db, tenantId, runtime.nowValue ?? Date.now())
           : creditLedger.getAccount(db, userId)
             || { user_id: userId, available: 0, held: 0, spent: 0 };
         response.success(res, account);

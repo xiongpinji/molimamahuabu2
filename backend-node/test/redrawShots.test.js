@@ -35,9 +35,17 @@ function canonicalIdentityPack() {
     live_action_human_confirmed: true,
     adult_status: 'verified_18_plus',
     identity_consistency_confirmed: true,
+    wardrobe: {
+      label: '整集主服装',
+      reference_asset_id: 102,
+      reference_sha256: crypto.createHash('sha256').update('maya canonical wardrobe').digest('hex'),
+      consistency_confirmed: true,
+    },
     ready: true,
     reviewed_by: 'user-a',
     reviewed_at: '2026-08-06T00:00:00.000Z',
+    persona_origin: 'fictional_ai_generated',
+    target_country: 'US',
   };
   return {
     ...pack,

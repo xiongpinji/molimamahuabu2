@@ -4,6 +4,13 @@ const {
   identityPackStatus,
   identityBindingForAsset,
 } = require('./redrawCharacterIdentityService');
+const { evaluatePreparationGate } = require('./redrawPreparationGateService');
+const {
+  REFERENCE_BUNDLE_SCHEMA_VERSION,
+  canonicalBundleHash,
+} = require('./redrawReferenceBundleService');
+
+const HEX_64 = /^[0-9a-f]{64}$/;
 
 function codedError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -17,6 +24,18 @@ function parseJson(value, fallback) {
   } catch (_) {
     return fallback;
   }
+}
+
+function hasColumn(db, table, column) {
+  return db.prepare(`PRAGMA table_info(${table})`).all().some((row) => row.name === column);
+}
+
+function trustedPreparationContext(value = {}) {
+  const output = {};
+  for (const key of ['storageRoot', 'fs', 'assetReader', 'canReadArtifact', 'probeRunner']) {
+    if (value[key] !== undefined) output[key] = value[key];
+  }
+  return output;
 }
 
 function normalizeOwner(input = {}) {
@@ -115,11 +134,104 @@ function isApprovedAsset(row) {
     && String(row.approval_status) === 'approved');
 }
 
-function evaluateGenerationGate(db, versionId, owner = {}) {
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function inspectCurrentV2Bundle(shot, version) {
+  const bundle = parseJson(shot.reference_bundle_json, null);
+  const hash = String(shot.reference_bundle_hash || '');
+  if (!isPlainObject(bundle)
+    || bundle.schema_version !== REFERENCE_BUNDLE_SCHEMA_VERSION
+    || Number(bundle.version_id) !== Number(version.id)
+    || Number(bundle.shot_id) !== Number(shot.id)
+    || !Array.isArray(bundle.face_tracks)) {
+    return { bundle: null, reason: 'reference_bundle_malformed' };
+  }
+  if (!HEX_64.test(hash) || canonicalBundleHash(bundle) !== hash) {
+    return { bundle: null, reason: 'reference_hash_drift' };
+  }
+  return { bundle, reason: null };
+}
+
+function currentV2Bundle(shot, version) {
+  return inspectCurrentV2Bundle(shot, version).bundle;
+}
+
+function sameIdentityArtifact(left, right) {
+  return isPlainObject(left)
+    && isPlainObject(right)
+    && Number(left.asset_id) === Number(right.asset_id)
+    && String(left.sha256 || '') === String(right.sha256 || '')
+    && Number(left.width) === Number(right.width)
+    && Number(left.height) === Number(right.height)
+    && String(left.mime_type || '') === String(right.mime_type || '');
+}
+
+function v2IdentityBindingMatches(bundle, face, row, currentBinding, targetCharacterName, targetMarket) {
+  if (!bundle || !isPlainObject(face) || !row || !currentBinding) return false;
+  const assetId = Number(row.id);
+  const faces = bundle.face_tracks.filter((face) => (
+    isPlainObject(face) && Number(face.identity_redraw_asset_id) === assetId
+  ));
+  if (faces.length !== 1) return false;
+  const identity = face.identity;
+  const artifact = currentBinding.artifact;
+  return isPlainObject(identity)
+    && isPlainObject(artifact)
+    && Number(row.asset_id) === Number(artifact.asset_id)
+    && String(row.localized_name || '') === currentBinding.target_actor_label
+    && Number(face.identity_redraw_asset_id) === assetId
+    && String(face.source_character_key || '') === currentBinding.source_character_key
+    && String(face.target_character_name || '') === targetCharacterName
+    && String(face.identity_pack_sha256 || '') === currentBinding.pack_sha256
+    && Number(face.identity_asset_id) === Number(artifact.asset_id)
+    && String(face.persona_origin || '') === 'fictional_ai_generated'
+    && String(face.target_country || '') === targetMarket
+    && String(face.adult_status || '') === 'verified_18_plus'
+    && Number(identity.redraw_asset_id) === assetId
+    && String(identity.source_character_key || '') === currentBinding.source_character_key
+    && String(identity.target_character_name || '') === targetCharacterName
+    && String(identity.target_actor_label || '') === currentBinding.target_actor_label
+    && String(identity.identity_pack_sha256 || '') === currentBinding.pack_sha256
+    && String(identity.pack_sha256 || '') === currentBinding.pack_sha256
+    && Number(identity.identity_asset_id) === Number(artifact.asset_id)
+    && String(identity.persona_origin || '') === 'fictional_ai_generated'
+    && String(identity.target_country || '') === targetMarket
+    && String(identity.adult_status || '') === 'verified_18_plus'
+    && currentBinding.persona_origin === 'fictional_ai_generated'
+    && currentBinding.target_country === targetMarket
+    && sameIdentityArtifact(identity.artifact, artifact);
+}
+
+function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
   if (!db) throw codedError('REDRAW_REVIEW_DB_REQUIRED', '缺少数据库');
   const version = getVersion(db, versionId, owner);
+  if (Number(version.reference_bundle_required || 0) === 1) {
+    const preparationGate = options.preparationGate || evaluatePreparationGate;
+    const preparation = preparationGate({
+      ...trustedPreparationContext(options.preparationContext),
+      db,
+      ...normalizeOwner(owner),
+    }, version.id);
+    if (!preparation.ok) {
+      return {
+        ok: false,
+        version_id: Number(version.id),
+        current_step: 2,
+        missing: preparation.missing,
+        blocking: [{
+          code: 'preparation_not_ready',
+          reason: '整集参考准备未完成或已过期',
+          shot_count: preparation.ready_shot_ids.length,
+        }],
+      };
+    }
+  }
+  const referenceBundleRequired = Number(version.reference_bundle_required || 0) === 1;
+  const canReadDraftJson = hasColumn(db, 'redraw_shots', 'draft_json');
   const shots = db.prepare(`
-    SELECT id, shot_id, shot_index, references_json, draft_json
+    SELECT id, shot_id, shot_index, references_json${referenceBundleRequired ? ', reference_bundle_json, reference_bundle_hash' : ''}${canReadDraftJson ? ', draft_json' : ''}
     FROM redraw_shots
     WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
     ORDER BY batch_index ASC, shot_index ASC, id ASC
@@ -133,8 +245,27 @@ function evaluateGenerationGate(db, versionId, owner = {}) {
   const unapprovedReferenceKeys = new Set();
   const characterIdentityPackRequired = new Set();
   const characterIdentityBindingStale = new Set();
+  const referenceBundleNotCurrentShots = new Set();
+  const nameMap = referenceBundleRequired && isPlainObject(parseJson(version.name_map_json, null))
+    ? parseJson(version.name_map_json, null)
+    : {};
   for (const shot of shots) {
     const shotId = shot.shot_id || Number(shot.id) || Number(shot.shot_index);
+    const bundle = referenceBundleRequired ? currentV2Bundle(shot, version) : null;
+    if (referenceBundleRequired && !bundle) {
+      const reasonCode = inspectCurrentV2Bundle(shot, version).reason;
+      const key = `reference_bundle:${Number(shot.id)}`;
+      referenceBundleNotCurrentShots.add(Number(shot.id));
+      missing.set(key, {
+        resource_type: 'reference_bundle',
+        resource_id: String(Number(shot.id)),
+        reason_code: reasonCode,
+        anchor: `shot-${Number(shot.id)}`,
+        kind: 'reference_bundle',
+        asset_id: null,
+        shot_ids: [shotId],
+      });
+    }
     for (const reference of readShotReferences(shot)) {
       const row = findAsset(db, version, reference);
       if (!isApprovedAsset(row)) {
@@ -152,7 +283,7 @@ function evaluateGenerationGate(db, versionId, owner = {}) {
         missing.set(key, item);
         continue;
       }
-      if (reference.kind !== 'character') continue;
+      if (reference.kind !== 'character' || referenceBundleRequired) continue;
 
       const currentBinding = identityBindingForAsset(row);
       const assetId = Number(row.id);
@@ -167,7 +298,7 @@ function evaluateGenerationGate(db, versionId, owner = {}) {
         const bindingComplete = Boolean(
           reference.source_character_key
           && reference.target_actor_label
-          && /^[0-9a-f]{64}$/.test(reference.identity_pack_sha256),
+          && HEX_64.test(reference.identity_pack_sha256),
         );
         const bindingMatches = bindingComplete
           && reference.source_character_key === currentBinding.source_character_key
@@ -198,10 +329,57 @@ function evaluateGenerationGate(db, versionId, owner = {}) {
         missing.set(key, item);
       }
     }
+    if (!referenceBundleRequired) continue;
+    const faces = bundle?.face_tracks;
+    if (!Array.isArray(faces)) continue;
+    for (const face of faces) {
+      const assetId = Number(face?.identity_redraw_asset_id);
+      const row = Number.isSafeInteger(assetId) && assetId > 0
+        ? findAsset(db, version, { kind: 'character', asset_id: assetId })
+        : null;
+      const currentBinding = isApprovedAsset(row) ? identityBindingForAsset(row) : null;
+      const sourceCharacterKey = String(face?.source_character_key || '').trim();
+      const targetCharacterName = String(nameMap[sourceCharacterKey] || '').trim();
+      if (v2IdentityBindingMatches(
+        bundle,
+        face,
+        row,
+        currentBinding,
+        targetCharacterName,
+        String(version.market || '').trim(),
+      )) continue;
+      const key = Number.isSafeInteger(assetId) && assetId > 0
+        ? referenceKey('character', assetId)
+        : `reference_bundle:${Number(shot.id)}:${String(face?.track_key || '')}`;
+      characterIdentityBindingStale.add(key);
+      const item = missing.get(key) || {
+        kind: 'character',
+        asset_id: Number.isSafeInteger(assetId) && assetId > 0 ? assetId : null,
+        shot_ids: [],
+        anchor: Number.isSafeInteger(assetId) && assetId > 0
+          ? `asset-${assetId}-character`
+          : `shot-${Number(shot.id)}`,
+        code: 'character_identity_binding_stale',
+        reason: '当前 V2 参考包角色身份绑定缺失或已过期',
+      };
+      if (!item.shot_ids.includes(shotId)) item.shot_ids.push(shotId);
+      item.source_character_key = sourceCharacterKey || null;
+      item.target_actor_label = face?.identity?.target_actor_label || null;
+      item.identity_pack_sha256 = face?.identity_pack_sha256 || null;
+      item.expected_identity_pack_sha256 = currentBinding?.pack_sha256 || null;
+      missing.set(key, item);
+    }
   }
   const items = [...missing.values()].sort((left, right) => (
     left.shot_ids[0] - right.shot_ids[0] || left.kind.localeCompare(right.kind) || left.asset_id - right.asset_id
   ));
+  if (referenceBundleNotCurrentShots.size > 0) {
+    blocking.push({
+      code: 'preparation_not_ready',
+      reason: '整集参考准备未完成或已过期',
+      shot_count: Math.max(0, shots.length - referenceBundleNotCurrentShots.size),
+    });
+  }
   if (invalidReferenceKeys.size > 0) {
     blocking.push({
       code: 'asset_reference_invalid',
@@ -280,25 +458,54 @@ function reviewAsset(db, assetId, input = {}) {
   }
   const now = new Date().toISOString();
   const version = db.prepare('SELECT work_id FROM redraw_versions WHERE id = ?').get(current.version_id);
-  const transaction = db.transaction(() => {
-    db.prepare(`
+  if (action === 'rejected') {
+    db.transaction(() => {
+      const result = db.prepare(`
+        UPDATE redraw_assets
+        SET approval_status = ?, approved_by = ?, approved_at = ?, version_number = ?,
+            status = ?, updated_at = ?
+        WHERE id = ? AND updated_at = ?
+      `).run(action, String(reviewerId), now, Number(current.version_number),
+        'needs_attention',
+        now, Number(current.id), String(expectedUpdatedAt));
+      if (result.changes !== 1) {
+        throw codedError('REDRAW_REVIEW_CONFLICT', '资产已被其他操作更新，请刷新后重试');
+      }
+      db.prepare(`UPDATE redraw_versions SET status = 'asset_review', updated_at = ? WHERE id = ?`).run(now, current.version_id);
+      db.prepare(`UPDATE redraw_works SET status = 'asset_review', current_step = 2, updated_at = ? WHERE id = ?`).run(now, version?.work_id);
+    })();
+    return db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(current.id));
+  }
+  db.transaction(() => {
+    const result = db.prepare(`
       UPDATE redraw_assets
       SET approval_status = ?, approved_by = ?, approved_at = ?, version_number = ?,
           status = ?, updated_at = ?
       WHERE id = ? AND updated_at = ?
     `).run(action, String(reviewerId), now, Number(current.version_number),
-      action === 'rejected' ? 'needs_attention' : current.status,
+      current.status,
       now, Number(current.id), String(expectedUpdatedAt));
-    if (action === 'rejected') {
-      db.prepare(`UPDATE redraw_versions SET status = 'asset_review', updated_at = ? WHERE id = ?`).run(now, current.version_id);
-      db.prepare(`UPDATE redraw_works SET status = 'asset_review', current_step = 2, updated_at = ? WHERE id = ?`).run(now, version?.work_id);
-    } else {
-      const gate = evaluateGenerationGate(db, current.version_id, { tenantId: current.tenant_id, userId: current.user_id });
-      db.prepare(`UPDATE redraw_versions SET status = ?, updated_at = ? WHERE id = ?`)
-        .run(gate.ok ? 'ready_to_generate' : 'asset_review', now, current.version_id);
-      db.prepare(`UPDATE redraw_works SET status = ?, current_step = ?, updated_at = ? WHERE id = ?`)
-        .run(gate.ok ? 'ready_to_generate' : 'asset_review', gate.current_step, now, version?.work_id);
+    if (result.changes !== 1) {
+      throw codedError('REDRAW_REVIEW_CONFLICT', '资产已被其他操作更新，请刷新后重试');
     }
+  })();
+  const gate = evaluateGenerationGate(db, current.version_id, { tenantId: current.tenant_id, userId: current.user_id }, {
+    preparationContext: input.preparationContext,
+    preparationGate: input.preparationGate,
+  });
+  db.transaction(() => {
+    const stillCurrent = db.prepare(`
+      SELECT id
+      FROM redraw_assets
+      WHERE id = ? AND version_id = ? AND tenant_id = ? AND user_id = ?
+        AND approval_status = 'approved' AND updated_at = ? AND deleted_at IS NULL
+      LIMIT 1
+    `).get(Number(current.id), Number(current.version_id), String(current.tenant_id), String(current.user_id), now);
+    if (!stillCurrent) return;
+    db.prepare(`UPDATE redraw_versions SET status = ?, updated_at = ? WHERE id = ?`)
+      .run(gate.ok ? 'ready_to_generate' : 'asset_review', now, current.version_id);
+    db.prepare(`UPDATE redraw_works SET status = ?, current_step = ?, updated_at = ? WHERE id = ?`)
+      .run(gate.ok ? 'ready_to_generate' : 'asset_review', gate.current_step, now, version?.work_id);
   })();
   return db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(current.id));
 }
@@ -306,4 +513,5 @@ function reviewAsset(db, assetId, input = {}) {
 module.exports = {
   evaluateGenerationGate,
   reviewAsset,
+  trustedPreparationContext,
 };

@@ -8,6 +8,7 @@ const {
   evaluateGenerationGate,
   reviewAsset,
 } = require('../src/services/redrawReviewService');
+const { canonicalBundleHash } = require('../src/services/redrawReferenceBundleService');
 const { updateAsset } = require('../src/services/redrawAssetService');
 
 function stableJson(value) {
@@ -30,10 +31,18 @@ function canonicalIdentityPack(overrides = {}) {
       height: 960,
       mime_type: 'image/png',
     },
+    wardrobe: {
+      label: '整集主服装',
+      reference_asset_id: 1002,
+      reference_sha256: crypto.createHash('sha256').update('canonical actor wardrobe').digest('hex'),
+      consistency_confirmed: true,
+    },
     confirmed_views: ['front', 'profile', 'full_body'],
     live_action_human_confirmed: true,
     adult_status: 'verified_18_plus',
     identity_consistency_confirmed: true,
+    persona_origin: 'fictional_ai_generated',
+    target_country: 'US',
     ready: true,
     reviewed_by: 'user-a',
     reviewed_at: '2026-08-06T00:00:00.000Z',
@@ -44,10 +53,13 @@ function canonicalIdentityPack(overrides = {}) {
     source_character_key: pack.source_character_key,
     target_actor_label: pack.target_actor_label,
     artifact: pack.artifact,
+    wardrobe: pack.wardrobe,
     confirmed_views: pack.confirmed_views,
     live_action_human_confirmed: pack.live_action_human_confirmed,
     adult_status: pack.adult_status,
     identity_consistency_confirmed: pack.identity_consistency_confirmed,
+    persona_origin: pack.persona_origin,
+    target_country: pack.target_country,
     ready: pack.ready,
     reviewed_by: pack.reviewed_by,
     reviewed_at: pack.reviewed_at,
@@ -108,8 +120,8 @@ function addAsset(db, {
     1,
     kind,
     JSON.stringify(identityPack ? { identity_pack: identityPack } : {}),
-    `${kind}-${id}`,
-    id + 1000,
+    identityPack?.target_actor_label ?? `${kind}-${id}`,
+    identityPack?.artifact?.asset_id ?? id + 1000,
     versionNumber,
     approvalStatus,
     status,
@@ -121,7 +133,7 @@ function addAsset(db, {
 
 function addShot(db, versionId, shotIndex, references) {
   const now = new Date().toISOString();
-  db.prepare(`INSERT INTO redraw_shots
+  return Number(db.prepare(`INSERT INTO redraw_shots
     (version_id, tenant_id, user_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
      references_json, status, created_at, updated_at)
     VALUES (?, 'tenant-a', 'user-a', 1, ?, 0, 1000, 1000, ?, 'draft', ?, ?)`).run(
@@ -130,7 +142,53 @@ function addShot(db, versionId, shotIndex, references) {
     JSON.stringify(references),
     now,
     now,
-  );
+  ).lastInsertRowid);
+}
+
+function setCurrentV2Bundle(db, versionId, shotId, overrides = {}) {
+  const bundle = {
+    schema_version: 'redraw-reference-bundle-v2',
+    version_id: Number(versionId),
+    shot_id: Number(shotId),
+    face_tracks: [],
+    ...overrides,
+  };
+  db.prepare('UPDATE redraw_shots SET reference_bundle_json = ?, reference_bundle_hash = ? WHERE id = ?')
+    .run(JSON.stringify(bundle), canonicalBundleHash(bundle), shotId);
+  return bundle;
+}
+
+function setCurrentV2IdentityBundle(db, versionId, shotId, assetId, pack, mutate = (face) => face) {
+  const targetCharacterName = 'Maya';
+  const face = mutate({
+    track_key: 'face-001',
+    source_character_key: pack.source_character_key,
+    identity_redraw_asset_id: Number(assetId),
+    target_character_name: targetCharacterName,
+    identity_asset_id: Number(pack.artifact.asset_id),
+    identity_pack_sha256: pack.pack_sha256,
+    persona_origin: pack.persona_origin,
+    target_country: pack.target_country,
+    adult_status: pack.adult_status,
+    time_ranges: [[0, 1000]],
+    identity: {
+      redraw_asset_id: Number(assetId),
+      source_character_key: pack.source_character_key,
+      target_character_name: targetCharacterName,
+      target_actor_label: pack.target_actor_label,
+      identity_asset_id: Number(pack.artifact.asset_id),
+      identity_pack_sha256: pack.pack_sha256,
+      persona_origin: pack.persona_origin,
+      target_country: pack.target_country,
+      adult_status: pack.adult_status,
+      pack_sha256: pack.pack_sha256,
+      artifact: pack.artifact,
+    },
+  });
+  const faces = Array.isArray(face) ? face : [face];
+  db.prepare('UPDATE redraw_versions SET name_map_json = ? WHERE id = ?')
+    .run(JSON.stringify({ [pack.source_character_key]: targetCharacterName }), versionId);
+  setCurrentV2Bundle(db, versionId, shotId, { face_tracks: faces });
 }
 
 test('零分镜版本 fail closed 并返回 shots_missing', () => {
@@ -140,6 +198,170 @@ test('零分镜版本 fail closed 并返回 shots_missing', () => {
     assert.equal(gate.ok, false);
     assert.deepEqual(gate.blocking, [{ code: 'shots_missing', reason: '当前版本没有可生成分镜' }]);
     assert.deepEqual(gate.missing, []);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('视频生成门禁先执行准备门禁，旧候选不能绕过未完成准备', () => {
+  const state = setup();
+  try {
+    addAsset(state.db, { id: 80, kind: 'scene' });
+    addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: 80 }]);
+    state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
+    state.db.prepare(`UPDATE redraw_shots
+      SET video_generation_id = 9001, preparation_state = 'parsed'
+      WHERE version_id = ?`).run(state.versionId);
+
+    const gate = evaluateGenerationGate(state.db, state.versionId, { tenantId: 'tenant-a', userId: 'user-a' });
+
+    assert.equal(gate.ok, false);
+    assert.equal(gate.blocking[0].code, 'preparation_not_ready');
+    assert.equal(gate.missing[0].reason_code, 'character_plan_not_ready');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('视频生成门禁只把内部受信 preparationContext 合并进准备门禁', () => {
+  const state = setup();
+  try {
+    addAsset(state.db, { id: 81, kind: 'scene', approvalStatus: 'approved' });
+    const shotId = addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: 81 }]);
+    setCurrentV2Bundle(state.db, state.versionId, shotId);
+    state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
+    const trustedAssetReader = { owns: () => true };
+    let captured = null;
+    const gate = evaluateGenerationGate(state.db, state.versionId, { tenantId: 'tenant-a', userId: 'user-a' }, {
+      preparationContext: {
+        tenantId: 'tenant-b',
+        userId: 'user-b',
+        db: 'forged',
+        storageRoot: 'C:\\trusted\\storage',
+        assetReader: trustedAssetReader,
+        canReadArtifact: () => true,
+        probeRunner: () => null,
+        rawSecret: 'must-not-pass',
+      },
+      preparationGate(ctx) {
+        captured = ctx;
+        return { ok: true, ready_shot_ids: [1], missing: [] };
+      },
+    });
+
+    assert.equal(gate.ok, true);
+    assert.equal(captured.db, state.db);
+    assert.equal(captured.tenantId, 'tenant-a');
+    assert.equal(captured.userId, 'user-a');
+    assert.equal(captured.storageRoot, 'C:\\trusted\\storage');
+    assert.equal(captured.assetReader, trustedAssetReader);
+    assert.equal(typeof captured.canReadArtifact, 'function');
+    assert.equal(typeof captured.probeRunner, 'function');
+    assert.equal(Object.prototype.hasOwnProperty.call(captured, 'rawSecret'), false);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('审核资产批准后在写事务外用受信 preparationContext 重算生成门禁', () => {
+  const state = setup();
+  try {
+    const scene = addAsset(state.db, { id: 82, kind: 'scene', approvalStatus: 'pending' });
+    const shotId = addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: scene.id }]);
+    setCurrentV2Bundle(state.db, state.versionId, shotId);
+    state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
+    let captured = null;
+    const reviewed = reviewAsset(state.db, scene.id, {
+      action: 'approved',
+      reviewerId: 'user-a',
+      tenantId: 'tenant-a',
+      userId: 'user-a',
+      expectedUpdatedAt: scene.updated_at,
+      preparationContext: { storageRoot: 'C:\\trusted\\storage', assetReader: { owns: () => true } },
+      preparationGate(ctx) {
+        assert.equal(state.db.inTransaction, false);
+        captured = ctx;
+        return { ok: true, ready_shot_ids: [1], missing: [] };
+      },
+    });
+
+    assert.equal(reviewed.approval_status, 'approved');
+    assert.equal(captured.storageRoot, 'C:\\trusted\\storage');
+    assert.equal(captured.tenantId, 'tenant-a');
+    assert.equal(state.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(state.versionId).status, 'ready_to_generate');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('审核资产批准先持久化审批，再按事务外生成门禁更新 advisory 状态', () => {
+  const cases = [
+    { gateOk: true, expectedVersionStatus: 'ready_to_generate', expectedWorkStatus: 'ready_to_generate', expectedStep: 3 },
+    { gateOk: false, expectedVersionStatus: 'asset_review', expectedWorkStatus: 'asset_review', expectedStep: 2 },
+  ];
+  for (const entry of cases) {
+    const state = setup();
+    try {
+      const scene = addAsset(state.db, { id: entry.gateOk ? 83 : 84, kind: 'scene', approvalStatus: 'pending' });
+      const shotId = addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: scene.id }]);
+      setCurrentV2Bundle(state.db, state.versionId, shotId);
+      state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
+      let gateCalls = 0;
+      const reviewed = reviewAsset(state.db, scene.id, {
+        action: 'approved',
+        reviewerId: 'user-a',
+        tenantId: 'tenant-a',
+        userId: 'user-a',
+        expectedUpdatedAt: scene.updated_at,
+        preparationGate() {
+          gateCalls += 1;
+          assert.equal(state.db.inTransaction, false);
+          return entry.gateOk
+            ? { ok: true, ready_shot_ids: [1], missing: [] }
+            : { ok: false, ready_shot_ids: [], missing: [{ reason_code: 'preparation_required' }] };
+        },
+      });
+
+      assert.equal(gateCalls, 1);
+      assert.equal(reviewed.approval_status, 'approved');
+      assert.equal(state.db.prepare('SELECT approval_status FROM redraw_assets WHERE id = ?').get(scene.id).approval_status, 'approved');
+      assert.equal(state.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(state.versionId).status, entry.expectedVersionStatus);
+      const work = state.db.prepare('SELECT status, current_step FROM redraw_works WHERE id = ?').get(state.workId);
+      assert.equal(work.status, entry.expectedWorkStatus);
+      assert.equal(work.current_step, entry.expectedStep);
+    } finally {
+      state.db.close();
+    }
+  }
+});
+
+test('审核资产批准后的并发漂移不会把版本误标 ready 且不回滚审批', () => {
+  const state = setup();
+  try {
+    const scene = addAsset(state.db, { id: 85, kind: 'scene', approvalStatus: 'pending' });
+    addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: scene.id }]);
+    state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
+    const reviewed = reviewAsset(state.db, scene.id, {
+      action: 'approved',
+      reviewerId: 'user-a',
+      tenantId: 'tenant-a',
+      userId: 'user-a',
+      expectedUpdatedAt: scene.updated_at,
+      preparationGate() {
+        assert.equal(state.db.inTransaction, false);
+        state.db.prepare("UPDATE redraw_assets SET updated_at = '2026-08-22T10:00:00.000Z' WHERE id = ?").run(scene.id);
+        return { ok: true, ready_shot_ids: [1], missing: [] };
+      },
+    });
+
+    assert.equal(reviewed.approval_status, 'approved');
+    const asset = state.db.prepare('SELECT approval_status, updated_at FROM redraw_assets WHERE id = ?').get(scene.id);
+    assert.equal(asset.approval_status, 'approved');
+    assert.equal(asset.updated_at, '2026-08-22T10:00:00.000Z');
+    assert.equal(state.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(state.versionId).status, 'asset_review');
+    const work = state.db.prepare('SELECT status, current_step FROM redraw_works WHERE id = ?').get(state.workId);
+    assert.equal(work.status, 'asset_review');
+    assert.equal(work.current_step, 2);
   } finally {
     state.db.close();
   }
@@ -258,14 +480,21 @@ test('审核使用 expected_updated_at 乐观锁且只允许 approved/rejected',
   const state = setup();
   try {
     const asset = addAsset(state.db, { id: 31, kind: 'character' });
+    let gateCalls = 0;
     assert.throws(
       () => reviewAsset(state.db, asset.id, {
         action: 'approved',
         reviewerId: 'user-a',
         expectedUpdatedAt: 'stale',
+        preparationGate() {
+          gateCalls += 1;
+          return { ok: true, ready_shot_ids: [], missing: [] };
+        },
       }),
       (error) => error.code === 'REDRAW_REVIEW_CONFLICT',
     );
+    assert.equal(gateCalls, 0);
+    assert.equal(state.db.prepare('SELECT approval_status FROM redraw_assets WHERE id = ?').get(asset.id).approval_status, 'pending');
     assert.throws(
       () => reviewAsset(state.db, asset.id, {
         action: 'pending',
@@ -399,6 +628,225 @@ test('当前 canonical 身份 binding 与身份包一致时角色门禁开放', 
     assert.equal(gate.ok, true);
     assert.deepEqual(gate.blocking, []);
     assert.deepEqual(gate.missing, []);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('V2 参考包已通过准备门禁时以当前 bundle 身份为权威而不依赖 refs 派生字段', () => {
+  const state = setup();
+  try {
+    const pack = canonicalIdentityPack();
+    const asset = addAsset(state.db, {
+      id: 72,
+      kind: 'character',
+      approvalStatus: 'approved',
+      identityPack: pack,
+    });
+    const unusedPack = canonicalIdentityPack({
+      source_character_key: 'source-character-unused',
+      target_actor_label: 'Actor Nora',
+      artifact: {
+        ...pack.artifact,
+        asset_id: 1002,
+        sha256: crypto.createHash('sha256').update('unused actor portrait').digest('hex'),
+      },
+    });
+    const unusedAsset = addAsset(state.db, {
+      id: 75,
+      kind: 'character',
+      approvalStatus: 'approved',
+      identityPack: unusedPack,
+    });
+    const shotId = addShot(state.db, state.versionId, 1, [
+      characterReference(asset.id, pack, {
+        source_character_key: null,
+        target_actor_label: 'Old Actor',
+        identity_pack_sha256: null,
+      }),
+      characterReference(unusedAsset.id, unusedPack, {
+        source_character_key: null,
+        target_actor_label: 'Old Unused Actor',
+        identity_pack_sha256: null,
+      }),
+    ]);
+    setCurrentV2IdentityBundle(state.db, state.versionId, shotId, asset.id, pack);
+    state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
+
+    const gate = evaluateGenerationGate(state.db, state.versionId, {
+      tenantId: 'tenant-a',
+      userId: 'user-a',
+    }, {
+      preparationGate: () => ({ ok: true, ready_shot_ids: [shotId], missing: [] }),
+    });
+
+    assert.equal(gate.ok, true);
+    assert.deepEqual(gate.blocking, []);
+    assert.deepEqual(gate.missing, []);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('V2 准备门禁误报 ready 时缺失或哈希漂移的 bundle 仍 fail closed', async (t) => {
+  const cases = [
+    {
+      name: 'bundle missing',
+      reason: 'reference_bundle_malformed',
+      mutate() {},
+    },
+    {
+      name: 'bundle bad json',
+      reason: 'reference_bundle_malformed',
+      mutate(state, shotId) {
+        state.db.prepare('UPDATE redraw_shots SET reference_bundle_json = ? WHERE id = ?')
+          .run('{', shotId);
+      },
+    },
+    {
+      name: 'bundle wrong schema',
+      reason: 'reference_bundle_malformed',
+      mutate(state, shotId) {
+        setCurrentV2Bundle(state.db, state.versionId, shotId, { schema_version: 'redraw-reference-bundle-v1' });
+      },
+    },
+    {
+      name: 'bundle wrong version',
+      reason: 'reference_bundle_malformed',
+      mutate(state, shotId) {
+        setCurrentV2Bundle(state.db, state.versionId, shotId, { version_id: state.versionId + 1 });
+      },
+    },
+    {
+      name: 'bundle wrong shot',
+      reason: 'reference_bundle_malformed',
+      mutate(state, shotId) {
+        setCurrentV2Bundle(state.db, state.versionId, shotId, { shot_id: shotId + 1 });
+      },
+    },
+    {
+      name: 'bundle missing face tracks',
+      reason: 'reference_bundle_malformed',
+      mutate(state, shotId) {
+        setCurrentV2Bundle(state.db, state.versionId, shotId, { face_tracks: null });
+      },
+    },
+    {
+      name: 'bundle missing hash',
+      reason: 'reference_hash_drift',
+      mutate(state, shotId) {
+        setCurrentV2Bundle(state.db, state.versionId, shotId);
+        state.db.prepare('UPDATE redraw_shots SET reference_bundle_hash = NULL WHERE id = ?').run(shotId);
+      },
+    },
+    {
+      name: 'bundle hash drift',
+      reason: 'reference_hash_drift',
+      mutate(state, shotId) {
+        setCurrentV2Bundle(state.db, state.versionId, shotId);
+        state.db.prepare('UPDATE redraw_shots SET reference_bundle_hash = ? WHERE id = ?')
+          .run('0'.repeat(64), shotId);
+      },
+    },
+  ];
+  for (const entry of cases) {
+    await t.test(entry.name, () => {
+      const state = setup();
+      try {
+        const scene = addAsset(state.db, { id: 76, kind: 'scene', approvalStatus: 'approved' });
+        const shotId = addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: scene.id }]);
+        entry.mutate(state, shotId);
+        state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
+
+        const gate = evaluateGenerationGate(state.db, state.versionId, {
+          tenantId: 'tenant-a',
+          userId: 'user-a',
+        }, {
+          preparationGate: () => ({ ok: true, ready_shot_ids: [shotId], missing: [] }),
+        });
+
+        assert.equal(gate.ok, false, entry.name);
+        assert.equal(gate.blocking.some((item) => item.code === 'preparation_not_ready'), true, entry.name);
+        assert.equal(gate.missing.some((item) => item.reason_code === entry.reason), true, entry.name);
+        assert.equal(JSON.stringify(gate).includes('0'.repeat(64)), false, entry.name);
+      } finally {
+        state.db.close();
+      }
+    });
+  }
+});
+
+test('V2 参考包角色身份任一字段漂移或匹配不唯一时 fail closed', async (t) => {
+  const cases = [
+    ['asset', (face) => ({ ...face, identity_redraw_asset_id: 999 })],
+    ['source', (face) => ({ ...face, source_character_key: 'forged-source' })],
+    ['target', (face) => ({ ...face, identity: { ...face.identity, target_actor_label: 'Forged Actor' } })],
+    ['pack', (face) => ({ ...face, identity_pack_sha256: '0'.repeat(64) })],
+    ['identity asset', (face) => ({ ...face, identity_asset_id: 999 })],
+    ['target character', (face) => ({ ...face, target_character_name: 'Forged Character' })],
+    ['persona origin', (face) => ({ ...face, persona_origin: 'real_person' })],
+    ['target country', (face) => ({ ...face, target_country: 'CA' })],
+    ['adult status', (face) => ({ ...face, adult_status: 'unknown' })],
+    ['nested source', (face) => ({ ...face, identity: { ...face.identity, source_character_key: 'forged-source' } })],
+    ['nested target character', (face) => ({ ...face, identity: { ...face.identity, target_character_name: 'Forged Character' } })],
+    ['nested identity asset', (face) => ({ ...face, identity: { ...face.identity, identity_asset_id: 999 } })],
+    ['nested identity pack', (face) => ({ ...face, identity: { ...face.identity, identity_pack_sha256: '0'.repeat(64) } })],
+    ['nested pack', (face) => ({ ...face, identity: { ...face.identity, pack_sha256: '0'.repeat(64) } })],
+    ['nested persona origin', (face) => ({ ...face, identity: { ...face.identity, persona_origin: 'real_person' } })],
+    ['nested target country', (face) => ({ ...face, identity: { ...face.identity, target_country: 'CA' } })],
+    ['nested adult status', (face) => ({ ...face, identity: { ...face.identity, adult_status: 'unknown' } })],
+    ['nested artifact asset', (face) => ({ ...face, identity: { ...face.identity, artifact: { ...face.identity.artifact, asset_id: 999 } } })],
+    ['nested artifact sha', (face) => ({ ...face, identity: { ...face.identity, artifact: { ...face.identity.artifact, sha256: '0'.repeat(64) } } })],
+    ['missing nested identity', (face) => ({ ...face, identity: null })],
+    ['duplicate asset match', (face) => [face, { ...face, track_key: 'face-duplicate' }]],
+  ];
+  for (const [name, mutate] of cases) {
+    await t.test(name, () => {
+      const state = setup();
+      try {
+        const pack = canonicalIdentityPack();
+        const asset = addAsset(state.db, {
+          id: 73,
+          kind: 'character',
+          approvalStatus: 'approved',
+          identityPack: pack,
+        });
+        const shotId = addShot(state.db, state.versionId, 1, []);
+        setCurrentV2IdentityBundle(state.db, state.versionId, shotId, asset.id, pack, mutate);
+        state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
+
+        const gate = evaluateGenerationGate(state.db, state.versionId, {
+          tenantId: 'tenant-a',
+          userId: 'user-a',
+        }, {
+          preparationGate: () => ({ ok: true, ready_shot_ids: [shotId], missing: [] }),
+        });
+
+        assert.equal(gate.ok, false, name);
+        assert.equal(gate.blocking.some((item) => item.code === 'character_identity_binding_stale'), true, name);
+      } finally {
+        state.db.close();
+      }
+    });
+  }
+});
+
+test('legacy 版本仍拒绝 refs 缺失逐镜身份派生字段', () => {
+  const state = setup();
+  try {
+    const pack = canonicalIdentityPack();
+    const asset = addAsset(state.db, {
+      id: 74,
+      kind: 'character',
+      approvalStatus: 'approved',
+      identityPack: pack,
+    });
+    addShot(state.db, state.versionId, 1, [{ kind: 'character', asset_id: asset.id }]);
+
+    const gate = evaluateGenerationGate(state.db, state.versionId, { tenantId: 'tenant-a', userId: 'user-a' });
+
+    assert.equal(gate.ok, false);
+    assert.equal(gate.blocking.some((item) => item.code === 'character_identity_binding_stale'), true);
   } finally {
     state.db.close();
   }

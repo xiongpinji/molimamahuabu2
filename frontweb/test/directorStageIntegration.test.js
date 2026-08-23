@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 const stageSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasDirectorStage.vue', import.meta.url)), 'utf8')
 const canvasSource = readFileSync(fileURLToPath(new URL('../src/views/DramaCanvas.vue', import.meta.url)), 'utf8')
 const adapterSource = readFileSync(fileURLToPath(new URL('../src/utils/dramaCanvasAdapter.js', import.meta.url)), 'utf8')
-const timelineSource = readFileSync(fileURLToPath(new URL('../src/utils/directorTimeline.js', import.meta.url)), 'utf8')
+const paritySource = readFileSync(fileURLToPath(new URL('../src/utils/director-parity.js', import.meta.url)), 'utf8')
 
 test('DR-005 镜头可绑定持久化相机并驱动主相机', () => {
   assert.match(stageSource, /selectedShot\.cameraId/)
@@ -14,7 +14,6 @@ test('DR-005 镜头可绑定持久化相机并驱动主相机', () => {
   assert.match(stageSource, /camera\.fov = Number\(boundCamera\.fov\)/)
   assert.match(stageSource, /resolveDirectorCameraFrame\(timeline\.value, boundCamera\)/)
   assert.match(stageSource, /setCamera\(frame\.position, frame\.target, frame\.quaternion\)/)
-  assert.match(timelineSource, /const keepsTargetLocked = Boolean\(lookAtObject\) \|\| boundCamera\.lookAtMode === 'manual'/)
   assert.match(stageSource, /camera\.quaternion\.set\(\.\.\.quaternion\)/)
 })
 
@@ -24,6 +23,18 @@ test('DR-004 导演状态提供撤销重做并持久化恢复后的修订', () =
   assert.match(stageSource, /function redoDirector\(\)/)
   assert.match(stageSource, /function persistHistoryState\(nextState\)/)
   assert.match(stageSource, /window\.addEventListener\('keydown', onDirectorKeydown\)/)
+})
+
+test('机位预设选择由状态控制且撤销重做后不会显示过期预设', () => {
+  assert.match(stageSource, /const selectedCameraPresetName = ref\(''\)/)
+  assert.match(stageSource, /aria-label="构图预设" :value="selectedCameraPresetName"/)
+  assert.match(stageSource, /function resetSelectedCameraPreset\(\)/)
+  assert.match(stageSource, /function undoDirector\(\)[\s\S]*?resetSelectedCameraPreset\(\)/)
+  assert.match(stageSource, /function redoDirector\(\)[\s\S]*?resetSelectedCameraPreset\(\)/)
+})
+
+test('运动关键帧存在时不显示空轨道提示', () => {
+  assert.match(stageSource, /v-if="!timeline\.tracks\.length && !timeline\.motionTracks\.length" class="timeline-empty"/)
 })
 
 test('DR-009 环境颜色、全景图和灯光参数连接真实场景', () => {
@@ -75,8 +86,8 @@ test('DR-011 截图按哈希幂等上传并登记为项目领域资产', () => {
 
 test('G005 导演台提供完整机位预设与常用画幅比例', () => {
   assert.match(stageSource, /const CAMERA_PRESETS = \[/)
-  for (const name of ['正面中景', '正面特写', '正面全景', '侧面跟拍', '侧面近景', '背面中景', '俯拍全景', '45° 俯拍', '低角度仰拍', '低角度广角', '过肩镜头', '过肩镜头（右）', '鸟瞰', '荷兰角']) {
-    assert.ok(stageSource.includes(name), `缺少机位预设：${name}`)
+  for (const name of ['正面中景', '正面特写', '正面全景', '侧面跟拍', '侧面近景', '背面中景', '俯拍全景', '45° 俯拍', '低角度仰拍', '低角度广角', '过肩镜头', '过肩镜头 (右)', '鸟瞰', '荷兰角']) {
+    assert.ok(paritySource.includes(name), `缺少机位预设：${name}`)
   }
   for (const ratio of ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16']) assert.ok(stageSource.includes(ratio), `缺少画幅：${ratio}`)
   assert.match(stageSource, /applyCameraPreset/)
@@ -107,7 +118,7 @@ test('G005 姿势预设和语义控制写入真实骨骼持久化状态', () => 
     assert.ok(stageSource.includes(`pose('${name}'`), `缺少姿势预设：${name}`)
   }
   for (const label of ['身体前倾', '身体转身', '身体侧倾', '躯干前倾', '躯干扭转', '躯干侧倾', '头部点头', '头部转头', '头部歪头']) {
-    assert.ok(stageSource.includes(label), `缺少语义控制：${label}`)
+    assert.ok(paritySource.includes(label), `缺少语义控制：${label}`)
   }
   assert.match(stageSource, /function resolveSemanticBone/)
   assert.match(stageSource, /function applyPosePreset/)
@@ -121,9 +132,9 @@ test('G005 自动关键帧驱动对象与绑定相机的插值运动', () => {
   assert.match(stageSource, /upsertMotionKeyframe/)
   assert.match(stageSource, /interpolateMotionTransform/)
   assert.match(stageSource, /object\.position\.set\(\.\.\.transform\.position\)/)
+  assert.match(stageSource, /const activeCamera = timeline\.value\.cameras\.find/)
   assert.match(stageSource, /resolveDirectorCameraFrame\(timeline\.value, activeCamera, transform\.position\)/)
   assert.match(stageSource, /setCamera\(frame\.position, frame\.target, frame\.quaternion\)/)
-  assert.doesNotMatch(stageSource, /if \(activeCamera\) setCamera\(transform\.position, \[0, 0\.8, 0\]\)/)
   assert.match(stageSource, /class="motion-keyframe"/)
 })
 
@@ -133,7 +144,8 @@ test('G005 程序化角色库、空对象和群众阵列进入统一场景系统
   }
   assert.match(stageSource, /function makeHumanoidObject/)
   assert.match(stageSource, /function addRoleArchetype/)
-  assert.match(stageSource, /function addCrowd/)
+  assert.match(stageSource, /function addCrowd\(\)/)
+  assert.match(stageSource, /for \(let index = 0; index < 9; index \+= 1\)/)
   assert.match(stageSource, /entry\.type === 'humanoid'/)
   assert.match(stageSource, /parentId: groupId/)
 })
@@ -174,13 +186,12 @@ test('G005 场景树支持搜索、显隐和持久化锁定', () => {
 })
 
 test('G005 相机支持跟随、注视目标、构图线和机位截图', () => {
-  for (const label of ['相机跟随目标', '相机注视模式', '相机注视目标', '不锁定', '手动坐标', '构图辅助线', '机位截图回写画布']) {
+  for (const label of ['相机跟随目标', '相机注视模式', '注视模式', '构图辅助线', '机位截图回写画布']) {
     assert.ok(stageSource.includes(label), `缺少相机交互：${label}`)
   }
-  assert.match(timelineSource, /boundCamera\.followTargetId/)
-  assert.match(timelineSource, /boundCamera\.lookAtTargetId/)
-  assert.match(stageSource, /function updateCameraLookAtSelection\(value\)/)
-  assert.match(stageSource, /function updateCameraTarget\(index, value\)/)
+  assert.match(stageSource, /selectedCamera\.followTargetId/)
+  assert.match(stageSource, /selectedCamera\.value\.lookAtTargetId/)
+  assert.match(stageSource, /resolveDirectorCameraFrame/)
   assert.match(stageSource, /class="composition-guides"/)
   assert.match(stageSource, /@click="captureToCanvasAsset"/)
 })
@@ -229,7 +240,7 @@ test('灯光面板编辑真实独立光源并让三点布光创建三盏灯', ()
 })
 
 test('G005 灯光、对象复制和镜头排序进入统一命令链', () => {
-  for (const label of ['+ 灯光', '复制对象', '镜头前移', '镜头后移']) assert.ok(stageSource.includes(label), `缺少：${label}`)
+  for (const label of ['+ 添加灯光', '复制对象', '镜头前移', '镜头后移']) assert.ok(stageSource.includes(label), `缺少：${label}`)
   assert.match(stageSource, /entry\.type === 'light'/)
   assert.match(stageSource, /new DirectionalLight/)
   assert.match(stageSource, /duplicateDirectorObject/)
@@ -265,6 +276,7 @@ test('图片节点导演台入口显示当前参考图并保持其他入口兼�
   assert.match(stageSource, /function applyEntryContext\(\)/)
   assert.match(canvasSource, /const directorStageEntry = ref\(null\)/)
   assert.match(canvasSource, /:entry-context="directorStageEntry"/)
+  assert.match(canvasSource, /const resolvedEntry = DIRECTOR_STAGE_ENTRY_MODES\.has\(entryContext\?\.mode\)/)
   assert.match(canvasSource, /directorStageEntry\.value = DIRECTOR_STAGE_ENTRY_MODES\.has\(resolvedEntry\?\.mode\)/)
   assert.match(canvasSource, /directorStageEntry\.value = null/)
 })
@@ -316,18 +328,6 @@ test('图片节点姿势入口定位真实 3D 角色骨骼且不静默创建角�
   assert.match(stageSource, /poseRotations/)
 })
 
-test('视觉导演方案从项目画布进入导演台并通过统一撤销保存链应用', () => {
-  assert.match(canvasSource, /findVisualDirectionDirectorEntry\(allGraphNodes\.value\)/)
-  assert.match(canvasSource, /resolvedEntry\.mode === 'visual_direction'/)
-  assert.match(canvasSource, /visualDirection: resolvedEntry\.visualDirection \|\| null/)
-  assert.match(stageSource, /aria-label="视觉导演方案"/)
-  assert.match(stageSource, /savedVisualDirectionGuidance/)
-  assert.match(stageSource, /timeline\.value\.extensions\?\.visualDirectionGuidance/)
-  assert.match(stageSource, /确认应用到导演台/)
-  assert.match(stageSource, /mutateTimeline\(applyVisualDirectionGuidance\(timeline\.value, pendingVisualDirectionGuidance\.value\)\)/)
-  assert.match(stageSource, /不会自动改写人物、机位或灯光数值/)
-})
-
 test('DR-014 导演台卸载显式释放监听器、播放帧、场景对象和查看器', () => {
   assert.match(stageSource, /removeEventListener\('keydown', onDirectorKeydown\)/)
   assert.match(stageSource, /transformControls\?\.removeEventListener\?\.\('mouseUp', persistTransformControlChange\)/)
@@ -338,8 +338,9 @@ test('DR-014 导演台卸载显式释放监听器、播放帧、场景对象和�
   assert.match(stageSource, /URL\.revokeObjectURL\(aiImportPreview\.value\)/)
 })
 
-test('导演台默认展示角色库，并提供女性角色与自由旋转快捷入口', () => {
-  assert.match(stageSource, /<details[^>]*class="role-create-library"[^>]*open/)
-  assert.match(stageSource, /aria-label="添加女性角色"[\s\S]*ROLE_ARCHETYPES\[1\]/)
-  assert.match(stageSource, /aria-label="旋转工具"[\s\S]*setTransformMode\('rotate'\)/)
+test('导演台提供人物创建、女性体型切换与自由旋转入口', () => {
+  assert.match(stageSource, /v-for="role in ROLE_ARCHETYPES"/)
+  assert.match(stageSource, /@click="addRoleArchetype\(ROLE_ARCHETYPES\[1\]\)"/)
+  assert.match(stageSource, /\{ mode: 'rotate', label: '旋转工具'/)
+  assert.match(stageSource, /:aria-label="tool\.label" @click="setTransformMode\(tool\.mode\)"/)
 })

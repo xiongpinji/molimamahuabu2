@@ -1,3 +1,5 @@
+const NATIVE_AUDIO_DOWNLOAD_FAILURE_CODE = 'REDRAW_NATIVE_AUDIO_DOWNLOAD_FAILED';
+
 /** 轮询/同步返回的 video_url 须为 http(s)，避免中转 FAILURE 时 result_url 为错误文案 */
 function resolveRemoteVideoUrl(videoUrl, fallbackError) {
   if (videoUrl && videoClient.isPlausibleHttpVideoUrl(videoUrl)) {
@@ -79,22 +81,6 @@ function parseReferenceImageUrls(value) {
   }
 }
 
-function parseReferenceUrls(value, fallback = null) {
-  if (value) {
-    try {
-      const parsed = JSON.parse(value);
-      if (Array.isArray(parsed)) return parsed.map((item) => String(item || '').trim()).filter(Boolean);
-    } catch (_) {}
-  }
-  const single = String(fallback || '').trim();
-  return single ? [single] : [];
-}
-
-function normalizeReferenceUrls(values) {
-  return [...new Set((Array.isArray(values) ? values : [])
-    .map((value) => String(value || '').trim())
-    .filter(Boolean))];
-}
 function rowToItem(r) {
   return {
     id: r.id,
@@ -112,8 +98,8 @@ function rowToItem(r) {
     reference_image_urls: parseReferenceImageUrls(r.reference_image_urls),
     reference_video_url: r.reference_video_url,
     reference_audio_url: r.reference_audio_url,
-    reference_video_urls: parseReferenceUrls(r.reference_video_urls, r.reference_video_url),
-    reference_audio_urls: parseReferenceUrls(r.reference_audio_urls, r.reference_audio_url),
+    reference_video_urls: parseReferenceUrls(r.reference_video_urls),
+    reference_audio_urls: parseReferenceUrls(r.reference_audio_urls),
     reference_mode: r.reference_mode,
     generate_audio: r.generate_audio === 1 || r.generate_audio === true,
     request_snapshot: parseJsonValue(r.request_snapshot, null),
@@ -173,9 +159,10 @@ const usmercariVideoClient = require('./usmercariVideoClient');
 const aiConfigService = require('./aiConfigService');
 const toapisVideoClient = require('./toapisVideoClient');
 const { TOAPIS_VIDEO_MODELS } = toapisVideoClient;
+const lingjingVideoClient = require('./lingjingVideoClient');
+const { LINGJING_VIDEO_SPEC } = lingjingVideoClient;
 const feituoVideoClient = require('./feituoVideoClient');
 const { FEITUO_MODELS } = feituoVideoClient;
-const fuminVideoClient = require('./fuminVideoClient');
 const taskService = require('./taskService');
 const storageLayout = require('./storageLayout');
 const creditLedger = require('./creditLedgerService');
@@ -184,12 +171,21 @@ const modelPrice = require('./modelPriceService');
 const auditEvent = require('./auditEventService');
 const voicePrompt = require('./storyboardVoicePromptService');
 const videoReferenceCapability = require('./videoReferenceCapabilityService');
-const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 const providerRouteStability = require('./providerRouteStabilityService');
 const { classifyProviderFailure } = require('./providerErrorClassifier');
+const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 const { getFfmpegPath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
 
-const NATIVE_AUDIO_DOWNLOAD_FAILURE_CODE = 'REDRAW_NATIVE_AUDIO_DOWNLOAD_FAILED';
+function parseReferenceUrls(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
 
 function parseJsonValue(value, fallback = null) {
   if (!value) return fallback;
@@ -261,10 +257,6 @@ function settleVideoCredit(db, log, row, outcome, message = '') {
   }
 }
 
-function minimumVideoDuration(model) {
-  return /^bytedance\/seedance-2-0-(?:mini|fast)$/.test(String(model || '').trim().toLowerCase()) ? 4 : 5;
-}
-
 function markVideoCostUnknown(db, log, row) {
   if (!row?.credit_reservation_id) return;
   try {
@@ -328,6 +320,10 @@ function markVideoArtifactVerified(db, videoGenId) {
   return true;
 }
 
+function minimumVideoDuration(model) {
+  return /^bytedance\/seedance-2-0-(?:mini|fast)$/.test(String(model || '').trim().toLowerCase()) ? 4 : 5;
+}
+
 function normalizeVideoDuration(value, fallback = 5, allowedDurationsOrMinimum = null) {
   const duration = value == null || value === '' ? Number(fallback) : Number(value);
   const allowed = Array.isArray(allowedDurationsOrMinimum) && allowedDurationsOrMinimum.length
@@ -386,11 +382,26 @@ function isFeituoVideoConfig(config) {
     .some((value) => value === 'feituo' || value === 'feituo_open');
 }
 
+function isLingjingVideoConfig(config) {
+  return [config?.provider, config?.api_protocol]
+    .map((value) => String(value || '').trim().toLowerCase())
+    .some((value) => value === 'lingjing' || value === 'lingjing_open');
+}
+
 function matchingToapisConfigs(db, model) {
   const target = String(model || '').trim().toLowerCase();
   if (!TOAPIS_VIDEO_MODELS[target]) return [];
   return aiConfigService.listConfigs(db, 'video').filter((config) => (
     isToapisVideoConfig(config)
+    && configModels(config).some((value) => value.toLowerCase() === target)
+  ));
+}
+
+function matchingLingjingConfigs(db, model) {
+  const target = String(model || '').trim().toLowerCase();
+  if (target !== lingjingVideoClient.PUBLIC_MODEL) return [];
+  return aiConfigService.listConfigs(db, 'video').filter((config) => (
+    isLingjingVideoConfig(config)
     && configModels(config).some((value) => value.toLowerCase() === target)
   ));
 }
@@ -480,11 +491,63 @@ function toapisReadyState(db, model, evidenceRoots) {
   throw videoRequestError('MODEL_NOT_VERIFIED', `${target} 尚未完成真实生成验证或凭据不可用`);
 }
 
-function processingVideoConfig(db, model, preferredConfigId) {
+function lingjingReadyState(db, model, evidenceRoots) {
+  const target = String(model || '').trim().toLowerCase();
+  if (target !== lingjingVideoClient.PUBLIC_MODEL) return null;
+  const candidates = matchingLingjingConfigs(db, target);
+  for (const config of candidates) {
+    const capabilities = verifiedCapabilitiesForModel(config, target);
+    const verifiedDurations = new Set(Array.isArray(capabilities?.durations)
+      ? capabilities.durations.map(Number).filter(Number.isSafeInteger)
+      : []);
+    const verifiedRatios = new Set(Array.isArray(capabilities?.aspectRatios)
+      ? capabilities.aspectRatios.map((value) => String(value || '').trim())
+      : []);
+    const durations = LINGJING_VIDEO_SPEC.durations.filter((duration) => verifiedDurations.has(duration));
+    const aspectRatios = LINGJING_VIDEO_SPEC.aspectRatios.filter((ratio) => verifiedRatios.has(ratio));
+    const resolutions = Array.isArray(capabilities?.resolutions)
+      ? capabilities.resolutions.map((value) => String(value || '').trim()).filter(Boolean)
+      : null;
+    const maxReferences = Number(capabilities?.maxReferences);
+    if (config.is_active
+        && config.verification_status === 'verified'
+        && String(config.updated_at || '').trim()
+        && aiConfigService.hasConnectionCredential(config)
+        && hasTrustedEvidenceBinding(target, capabilities, evidenceRoots)
+        && durations.length === LINGJING_VIDEO_SPEC.durations.length
+        && aspectRatios.length === LINGJING_VIDEO_SPEC.aspectRatios.length
+        && Array.isArray(resolutions) && resolutions.length === 0
+        && capabilities.supportsImageReference === true
+        && capabilities.supportsFirstFrame === false
+        && capabilities.supportsLastFrame === false
+        && capabilities.supportsVideoReference === false
+        && capabilities.supportsAudioReference === false
+        && capabilities.supportsAudio === false
+        && Number.isSafeInteger(maxReferences) && maxReferences >= 0
+        && maxReferences <= lingjingVideoClient.MAX_IMAGE_REFERENCES) {
+      return {
+        config,
+        capabilities,
+        official: LINGJING_VIDEO_SPEC,
+        durations,
+        resolutions: [],
+        aspectRatios,
+        model: target,
+      };
+    }
+  }
+  throw videoRequestError('MODEL_NOT_VERIFIED', `${target} 尚未完成真实生成验证或凭据不可用`);
+}
+
+function processingVideoConfig(db, model, preferredConfigId, evidenceRoots) {
   if (preferredConfigId != null && String(preferredConfigId).trim() !== '') {
-    return videoClient.getDefaultVideoConfig(db, model, undefined, preferredConfigId);
+    return videoClient.getDefaultVideoConfig(db, model, evidenceRoots, preferredConfigId);
   }
   const target = String(model || '').trim().toLowerCase();
+  if (target === lingjingVideoClient.PUBLIC_MODEL) {
+    return matchingLingjingConfigs(db, target)
+      .find((config) => config.is_active && aiConfigService.hasConnectionCredential(config)) || null;
+  }
   if (FEITUO_MODELS[target] && target.startsWith('xuan-')) {
     return matchingFeituoConfigs(db, target)
       .find((config) => config.is_active && aiConfigService.hasConnectionCredential(config)) || null;
@@ -721,29 +784,6 @@ function parseRequestSnapshotForProcessing(value) {
   return { valid: false, present: true, snapshot: {} };
 }
 
-function isPinnedNativeAudioGeneration(row) {
-  if (Number(row?.generate_audio) !== 1) return false;
-  const parsed = parseRequestSnapshotForProcessing(row.request_snapshot);
-  if (!parsed.valid || parsed.snapshot?.generate_audio !== true) return false;
-  const snapshot = parsed.snapshot;
-  return !!(
-    snapshot.locale_pack
-    && /^[0-9a-f]{64}$/.test(String(snapshot.prompt_hash || ''))
-    && /^[0-9a-f]{64}$/.test(String(snapshot.dialogue_snapshot_hash || ''))
-    && snapshot.config_updated_at
-    && Number(snapshot.ai_service_config_id) === Number(row.ai_service_config_id)
-    && String(snapshot.model || '') === String(row.model || '')
-  );
-}
-
-function compactDownloadFailureMessage(error) {
-  const raw = String(error?.message || error || '视频成片下载或保存失败，请人工确认后处理');
-  return raw
-    .replace(/https?:\/\/[^\s"'<>]+/g, '[url]')
-    .replace(/[A-Za-z]:\\[^\s"'<>]+/g, '[path]')
-    .slice(0, 500);
-}
-
 function keepVideoProcessing(db, row, videoGenId, message, now = new Date().toISOString()) {
   db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
     .run('processing', String(message || '').slice(0, 500), now, videoGenId);
@@ -810,15 +850,60 @@ function normalizeToapisReferenceUrl(ref, context) {
 }
 
 function findVideoPlatformReference(db, kind, relativePath, publicUrl) {
-  const asset = db.prepare(`SELECT id, drama_id, metadata FROM assets
+  const assets = db.prepare(`SELECT id, drama_id, image_gen_id, metadata FROM assets
     WHERE deleted_at IS NULL AND type = ? AND (local_path = ? OR url = ? OR url = ?)
-    ORDER BY id DESC LIMIT 1`).get(kind, relativePath, `/static/${relativePath}`, publicUrl);
-  if (asset) return { source: 'asset', drama_id: asset.drama_id, metadata: parseJsonObject(asset.metadata) };
+    ORDER BY id DESC`).all(kind, relativePath, `/static/${relativePath}`, publicUrl);
+  if (assets.length) {
+    if (kind === 'image') {
+      for (const asset of assets) {
+        if (!(Number(asset.image_gen_id) > 0)) continue;
+        const imageGeneration = db.prepare(`SELECT id, drama_id FROM image_generations
+          WHERE id = ? AND deleted_at IS NULL AND status = 'completed'
+            AND (local_path = ? OR image_url = ? OR image_url = ?)`)
+          .get(asset.image_gen_id, relativePath, `/static/${relativePath}`, publicUrl);
+        if (imageGeneration && Number(imageGeneration.drama_id) === Number(asset.drama_id)) {
+          return {
+            id: asset.id,
+            source: 'asset',
+            drama_id: asset.drama_id,
+            ai_generated_image: true,
+            metadata: parseJsonObject(asset.metadata),
+          };
+        }
+      }
+    }
+    if (kind !== 'image') {
+      const asset = assets[0];
+      return {
+        id: asset.id,
+        source: 'asset',
+        drama_id: asset.drama_id,
+        ai_generated_image: false,
+        metadata: parseJsonObject(asset.metadata),
+      };
+    }
+  }
   if (kind === 'image') {
     const generated = db.prepare(`SELECT id, drama_id FROM image_generations
       WHERE deleted_at IS NULL AND status = 'completed' AND (local_path = ? OR image_url = ? OR image_url = ?)
       ORDER BY id DESC LIMIT 1`).get(relativePath, `/static/${relativePath}`, publicUrl);
-    if (generated) return { source: 'image_generation', drama_id: generated.drama_id, metadata: {} };
+    if (generated) return {
+      id: generated.id,
+      source: 'image_generation',
+      drama_id: generated.drama_id,
+      ai_generated_image: true,
+      metadata: {},
+    };
+  }
+  if (assets.length) {
+    const asset = assets[0];
+    return {
+      id: asset.id,
+      source: 'asset',
+      drama_id: asset.drama_id,
+      ai_generated_image: false,
+      metadata: parseJsonObject(asset.metadata),
+    };
   }
   if (kind === 'video') {
     const generated = db.prepare(`SELECT id, drama_id FROM video_generations
@@ -851,6 +936,7 @@ function assertToapisReferencesAllowed(db, references, dramaId, options = {}) {
       firstFrameUrl: null,
       lastFrameUrl: null,
       imageUrl: null,
+      privateAvatarImages: [],
     };
   }
   const targetDramaId = Number(dramaId);
@@ -876,6 +962,7 @@ function assertToapisReferencesAllowed(db, references, dramaId, options = {}) {
     firstFrameUrl: null,
     lastFrameUrl: null,
     imageUrl: null,
+    privateAvatarImages: [],
   };
   for (const item of allRefs) {
     const ref = normalizeToapisReferenceUrl(item.url, context);
@@ -884,6 +971,13 @@ function assertToapisReferencesAllowed(db, references, dramaId, options = {}) {
     const metadata = row.metadata || {};
     if (!(row.drama_id == null && metadata.system_shared === true) && Number(row.drama_id) !== targetDramaId) {
       throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', '参考素材不属于当前项目');
+    }
+    if (item.kind === 'image' && row.ai_generated_image === true) {
+      normalized.privateAvatarImages.push({
+        url: ref.url,
+        source_kind: row.source,
+        source_id: Number(row.id),
+      });
     }
     if (item.kind === 'image' && item.url === inputFirstFrameUrl) normalized.firstFrameUrl = ref.url;
     if (item.kind === 'image' && item.url === inputLastFrameUrl) normalized.lastFrameUrl = ref.url;
@@ -895,6 +989,9 @@ function assertToapisReferencesAllowed(db, references, dramaId, options = {}) {
   normalized.imageUrls = [...new Set(normalized.imageUrls)];
   normalized.videoUrls = [...new Set(normalized.videoUrls)];
   normalized.audioUrls = [...new Set(normalized.audioUrls)];
+  normalized.privateAvatarImages = [...new Map(
+    normalized.privateAvatarImages.map((item) => [`${item.source_kind}:${item.source_id}:${item.url}`, item])
+  ).values()];
   return normalized;
 }
 
@@ -916,6 +1013,7 @@ function buildVideoRequestSnapshot(input) {
     reference_image_urls: input.referenceImageUrls || [],
     reference_video_urls: input.referenceVideoUrls || [],
     reference_audio_urls: input.referenceAudioUrls || [],
+    _toapis_private_avatar_images: input.toapisPrivateAvatarImages || [],
   };
 }
 
@@ -932,12 +1030,19 @@ function create(db, log, req, options = {}) {
   const storyboardDefaults = loadStoryboardVideoDefaults(db, storyboardId);
   if (!dramaId && storyboardDefaults?.drama_id) dramaId = Number(storyboardDefaults.drama_id) || 0;
   const selectedModel = body.model || storyboardDefaults?.video_model || null;
-  let videoConfig = videoClient.getDefaultVideoConfig(db, selectedModel);
+  let videoConfig = videoClient.getDefaultVideoConfig(db, selectedModel, options.evidenceRoots);
   let model = String(videoConfig?.canvas_selected_model
     || selectedModel
     || videoConfig?.default_model
     || configModels(videoConfig)[0]
     || '').trim() || null;
+  const lingjingState = String(model || '').toLowerCase() === lingjingVideoClient.PUBLIC_MODEL
+    ? lingjingReadyState(db, model, options.evidenceRoots)
+    : null;
+  if (lingjingState) {
+    videoConfig = lingjingState.config;
+    model = lingjingState.model;
+  }
   const toapisState = TOAPIS_VIDEO_MODELS[String(model || '').toLowerCase()]
     ? toapisReadyState(db, model, options.evidenceRoots)
     : null;
@@ -953,11 +1058,14 @@ function create(db, log, req, options = {}) {
     videoConfig = feituoState.config;
     model = feituoState.model;
   }
-  const strictVideoState = toapisState || feituoState;
+  const strictVideoState = lingjingState || toapisState || feituoState;
   const videoProtocol = String(videoConfig?.api_protocol || videoConfig?.provider || '').trim().toLowerCase();
   const isToapisVideo = Boolean(toapisState)
     || videoProtocol === 'toapis_video'
     || videoProtocol === 'toapis';
+  const isLingjingVideo = Boolean(lingjingState)
+    || videoProtocol === 'lingjing_open'
+    || videoProtocol === 'lingjing';
   const toapisSpec = toapisState
     ? {
         ...toapisState.official,
@@ -974,7 +1082,10 @@ function create(db, log, req, options = {}) {
         maxAudioReferences: verifiedReferenceLimit(feituoState.capabilities?.maxAudioReferences),
       }
     : null;
-  const inputReferenceImageUrls = cleanUrlList(body.reference_image_urls);
+  const inputReferenceImageUrls = cleanUrlList(
+    body.reference_image_urls,
+    isLingjingVideo ? body.image_url : null,
+  );
   if (toapisSpec && inputReferenceImageUrls.length > toapisSpec.maxReferences) {
     throw videoRequestError(
       'VIDEO_REFERENCE_LIMIT_EXCEEDED',
@@ -982,7 +1093,8 @@ function create(db, log, req, options = {}) {
     );
   }
   const requestedResolution = String(body.resolution || '').trim().toLowerCase();
-  if (strictVideoState && (!requestedResolution || !strictVideoState.resolutions.includes(requestedResolution))) {
+  if (strictVideoState && strictVideoState.resolutions.length > 0
+      && (!requestedResolution || !strictVideoState.resolutions.includes(requestedResolution))) {
     throw videoRequestError(
       'MODEL_RESOLUTION_PRICE_REQUIRED',
       `${strictVideoState.model} 当前只开放已验证且已定价的 ${strictVideoState.resolutions.join('、')}`
@@ -1007,7 +1119,14 @@ function create(db, log, req, options = {}) {
   );
   const resolvedCapabilities = videoReferenceCapability.resolve(videoConfig || {}, model);
   const strictReferenceSpec = toapisSpec || feituoSpec;
-  const effectiveCapabilities = strictReferenceSpec
+  const lingjingSpec = lingjingState
+    ? {
+        maxReferences: verifiedReferenceLimit(lingjingState.capabilities?.maxReferences),
+        maxVideoReferences: 0,
+        maxAudioReferences: 0,
+      }
+    : null;
+  const effectiveCapabilities = (strictReferenceSpec || lingjingSpec)
     ? {
         ...resolvedCapabilities,
         referenceTypes: [
@@ -1015,9 +1134,9 @@ function create(db, log, req, options = {}) {
           strictVideoState?.capabilities?.supportsVideoReference === true ? 'video' : null,
           strictVideoState?.capabilities?.supportsAudioReference === true ? 'audio' : null,
         ].filter(Boolean),
-        maxImageReferences: strictReferenceSpec.maxReferences,
-        maxVideoReferences: strictReferenceSpec.maxVideoReferences,
-        maxAudioReferences: strictReferenceSpec.maxAudioReferences,
+        maxImageReferences: (strictReferenceSpec || lingjingSpec).maxReferences,
+        maxVideoReferences: (strictReferenceSpec || lingjingSpec).maxVideoReferences,
+        maxAudioReferences: (strictReferenceSpec || lingjingSpec).maxAudioReferences,
       }
     : resolvedCapabilities;
   const normalizedReferences = videoReferenceCapability.validateAndNormalize({
@@ -1034,36 +1153,21 @@ function create(db, log, req, options = {}) {
     billingModel = modelPrice.canonicalModel(billingModel);
     if (toapisState) requireToapisResolutionPrice(db, billingModel, requestedResolution);
     if (feituoState) requireFeituoPrice(db, feituoState, requestedResolution);
+    if (lingjingState) {
+      const configured = modelPrice.list(db)
+        .find((row) => String(row.model || '').trim().toLowerCase() === billingModel);
+      if (!configured || configured.category !== 'video' || configured.status !== 'enabled'
+          || configured.billing_unit !== 'second' || configured.cost_unit !== 'second'
+          || !Number.isSafeInteger(configured.credits) || configured.credits <= 0
+          || !Number.isSafeInteger(configured.cost_micros_per_unit) || configured.cost_micros_per_unit <= 0
+          || Object.keys(configured.resolution_prices || {}).length > 0) {
+        throw videoRequestError('MODEL_PRICE_NOT_CONFIGURED', '灵境视频积分待管理员配置');
+      }
+    }
     price = modelPrice.calculateCharge(db, billingModel, {
       duration,
-      resolution: requestedResolution,
+      resolution: lingjingState ? undefined : requestedResolution,
       allowedDurations,
-    });
-  }
-
-  // fumin 的媒体数量和参数必须在创建任务、预扣积分前校验，避免异步提交阶段才失败。
-  if (videoProtocol === 'fumin_video' || videoProtocol === 'fumin') {
-    fuminVideoClient.buildFuminVideoBody({
-      model: selectedModel || videoConfig?.default_model || videoConfig?.model,
-      prompt: body.prompt,
-      duration,
-      aspect_ratio: body.aspect_ratio || '16:9',
-      resolution: body.resolution || '480p',
-      image_url: body.image_url,
-      first_frame_url: body.first_frame_url ?? body.first_frame_local_path,
-      last_frame_url: body.last_frame_url ?? body.last_frame_local_path,
-      reference_urls: Array.isArray(body.reference_image_urls) ? body.reference_image_urls : [],
-      reference_video_urls: [
-        body.reference_video_url,
-        ...(Array.isArray(body.reference_video_urls) ? body.reference_video_urls : []),
-      ],
-      reference_audio_urls: [
-        body.reference_audio_url,
-        ...(Array.isArray(body.reference_audio_urls) ? body.reference_audio_urls : []),
-      ],
-      watermark: body.watermark,
-      seed: body.seed,
-      guidance_scale: body.guidance_scale,
     });
   }
 
@@ -1136,9 +1240,12 @@ function create(db, log, req, options = {}) {
   let referenceImageUrls = cleanUrlList(normalizedReferences.referenceImageUrls);
   let referenceVideoUrls = cleanUrlList(normalizedReferences.referenceVideoUrls);
   let referenceAudioUrls = cleanUrlList(normalizedReferences.referenceAudioUrls);
-  let imageUrl = cleanUrlList(body.image_url)[0] || null;
-  let firstFrameUrl = cleanUrlList(body.first_frame_url, body.first_frame_local_path, body.image_url)[0] || null;
+  let imageUrl = isLingjingVideo ? null : cleanUrlList(body.image_url)[0] || null;
+  let firstFrameUrl = isLingjingVideo
+    ? cleanUrlList(body.first_frame_url, body.first_frame_local_path)[0] || null
+    : cleanUrlList(body.first_frame_url, body.first_frame_local_path, body.image_url)[0] || null;
   let lastFrameUrl = cleanUrlList(body.last_frame_url, body.last_frame_local_path)[0] || null;
+  let toapisPrivateAvatarImages = [];
   const hasFrameRefs = !!(firstFrameUrl || lastFrameUrl);
   const hasOmniRefs = referenceImageUrls.length > 0 || referenceVideoUrls.length > 0 || referenceAudioUrls.length > 0;
   if (isToapisVideo) {
@@ -1162,6 +1269,29 @@ function create(db, log, req, options = {}) {
     imageUrl = normalizedRefs.imageUrl || imageUrl;
     firstFrameUrl = normalizedRefs.firstFrameUrl || (hasFrameRefs ? null : firstFrameUrl);
     lastFrameUrl = normalizedRefs.lastFrameUrl || (hasFrameRefs ? null : lastFrameUrl);
+    toapisPrivateAvatarImages = normalizedRefs.privateAvatarImages;
+  }
+  if (isLingjingVideo) {
+    if (firstFrameUrl || lastFrameUrl) {
+      throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', '灵境 relay 当前不支持首尾帧参考');
+    }
+    if (referenceVideoUrls.length || referenceAudioUrls.length || body.generate_audio === true) {
+      throw videoRequestError('VIDEO_REFERENCE_UNSUPPORTED', '灵境 relay 当前只支持图片参考');
+    }
+    const normalizedRefs = assertToapisReferencesAllowed(db, {
+      imageUrls: referenceImageUrls,
+      videoUrls: [],
+      audioUrls: [],
+      imageUrl: null,
+      firstFrameUrl: null,
+      lastFrameUrl: null,
+    }, dramaId, options);
+    referenceImageUrls = normalizedRefs.imageUrls;
+    referenceVideoUrls = [];
+    referenceAudioUrls = [];
+    imageUrl = null;
+    firstFrameUrl = null;
+    lastFrameUrl = null;
   }
   const referenceMode = hasOmniRefs ? 'omni' : hasFrameRefs ? 'frame' : 'text';
   const generateAudio = body.generate_audio === true;
@@ -1202,6 +1332,28 @@ function create(db, log, req, options = {}) {
       return reuseActiveGeneration(db, active, duration, billingEnabled, options, {
         model,
         resolution: requestedResolution,
+      });
+    }
+  }
+  if (lingjingState) {
+    try {
+      lingjingVideoClient.buildLingjingVideoBody({
+        model,
+        prompt,
+        duration,
+        aspect_ratio: aspectRatio || '16:9',
+        request_id: 'create-validation',
+        reference_image_paths: referenceImageUrls.map((_, index) => `uploads/reference-${index + 1}.png`),
+      });
+    } catch (error) {
+      const message = String(error?.message || '灵境视频请求参数无效');
+      if (/不支持.*秒|时长/.test(message)) throw videoRequestError('INVALID_VIDEO_DURATION', message);
+      if (/画幅/.test(message)) throw videoRequestError('INVALID_VIDEO_REQUEST', message);
+      throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', message);
+    }
+    if (active) {
+      return reuseActiveGeneration(db, active, duration, billingEnabled, options, {
+        model,
       });
     }
   }
@@ -1246,7 +1398,7 @@ function create(db, log, req, options = {}) {
     prompt,
     duration,
     aspectRatio,
-    resolution: body.resolution,
+    resolution: lingjingState ? null : body.resolution,
     seed: body.seed != null ? Number(body.seed) : null,
     cameraFixed: body.camera_fixed != null ? (body.camera_fixed ? 1 : 0) : null,
     watermark: body.watermark ? true : false,
@@ -1258,7 +1410,19 @@ function create(db, log, req, options = {}) {
     referenceImageUrls,
     referenceVideoUrls,
     referenceAudioUrls,
+    toapisPrivateAvatarImages,
   });
+  const sourceConditioningJson = lingjingState
+    ? JSON.stringify({
+        video_capability: {
+          config_id: videoConfig.id,
+          config_updated_at: videoConfig.updated_at || '',
+          provider: videoConfig.provider,
+          protocol: videoClient.resolveVideoProtocol(videoConfig, model),
+          model,
+        },
+      })
+    : null;
 
   const now = new Date().toISOString();
   const result = db.transaction(() => {
@@ -1279,16 +1443,17 @@ function create(db, log, req, options = {}) {
       (drama_id, storyboard_id, provider, prompt, model, duration, aspect_ratio, resolution, seed, camera_fixed, watermark,
        image_url, first_frame_url, last_frame_url, reference_image_urls, reference_video_url, reference_audio_url,
        reference_mode, generate_audio, reference_video_urls, reference_audio_urls, request_snapshot,
+       ai_service_config_id, source_conditioning_json,
        status, task_id, tenant_id, user_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?)`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?)`)
       .run(
         dramaId, storyboardId, body.provider || videoConfig?.provider || 'chatfire', prompt, model, duration,
-        aspectRatio, body.resolution ?? null, body.seed != null ? Number(body.seed) : null,
+        aspectRatio, lingjingState ? null : body.resolution ?? null, body.seed != null ? Number(body.seed) : null,
         body.camera_fixed != null ? (body.camera_fixed ? 1 : 0) : null, body.watermark ? 1 : 0,
         imageUrl ?? null, persistedFirstFrameUrl,
         lastFrameUrl ?? null, refs, referenceVideoUrl, referenceAudioUrl,
         referenceMode, generateAudio ? 1 : 0, JSON.stringify(referenceVideoUrls), JSON.stringify(referenceAudioUrls),
-        JSON.stringify(requestSnapshot), task.id,
+        JSON.stringify(requestSnapshot), lingjingState ? videoConfig.id : null, sourceConditioningJson, task.id,
         billingEnabled ? options.tenantId || null : null,
         billingEnabled ? String(options.userId) : null, now, now
       );
@@ -1308,7 +1473,7 @@ function create(db, log, req, options = {}) {
         reservationId: reservation.id,
         model: billingModel,
         quantity: duration,
-        resolution: body.resolution,
+        resolution: lingjingState ? undefined : body.resolution,
         usageSource: 'configured',
       });
       db.prepare('UPDATE video_generations SET credit_reservation_id = ? WHERE id = ?').run(reservation.id, id);
@@ -1937,6 +2102,29 @@ function resolveStoragePath(cfg) {
     : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
 }
 
+function isPinnedNativeAudioGeneration(row) {
+  if (Number(row?.generate_audio) !== 1) return false;
+  const parsed = parseRequestSnapshotForProcessing(row.request_snapshot);
+  if (!parsed.valid || parsed.snapshot?.generate_audio !== true) return false;
+  const snapshot = parsed.snapshot;
+  return !!(
+    snapshot.locale_pack
+    && /^[0-9a-f]{64}$/.test(String(snapshot.prompt_hash || ''))
+    && /^[0-9a-f]{64}$/.test(String(snapshot.dialogue_snapshot_hash || ''))
+    && snapshot.config_updated_at
+    && Number(snapshot.ai_service_config_id) === Number(row.ai_service_config_id)
+    && String(snapshot.model || '') === String(row.model || '')
+  );
+}
+
+function compactDownloadFailureMessage(error) {
+  const raw = String(error?.message || error || '视频成片下载或保存失败，请人工确认后处理');
+  return raw
+    .replace(/https?:\/\/[^\s"'<>]+/g, '[url]')
+    .replace(/[A-Za-z]:\\[^\s"'<>]+/g, '[path]')
+    .slice(0, 500);
+}
+
 async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, videoUrl, logLabel, providerConfig) {
   const now = new Date().toISOString();
   let localPath = null;
@@ -1962,9 +2150,7 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     localPath = downloaded.localPath;
     downloadError = downloaded.error || null;
     downloadIndeterminate = downloaded.indeterminate === true;
-    if (!localPath && !downloadError) {
-      downloadError = '视频成片下载或保存失败，请人工确认后处理';
-    }
+    if (!localPath && !downloadError) downloadError = '视频成片下载或保存失败，请人工确认后处理';
     if (localPath) {
       maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
       boundaryFrames = extractVideoBoundaryFrames(storagePath, localPath, videoGenId, log);
@@ -2107,7 +2293,7 @@ async function resumePollForVideoGeneration(db, log, videoGenId) {
   const providerTaskId = row.provider_task_id && String(row.provider_task_id).trim();
   if (!providerTaskId) return;
 
-  const config = processingVideoConfig(db, row.model, row.ai_service_config_id || row.config_id);
+  const config = processingVideoConfig(db, row.model, row.config_id || row.ai_service_config_id);
   if (!config) {
     setVideoGenNeedsAttention(
       db,
@@ -2141,7 +2327,6 @@ async function resumePollForVideoGeneration(db, log, videoGenId) {
   } catch (err) {
     const now = new Date().toISOString();
     setVideoGenNeedsAttention(db, videoGenId, row.task_id, `供应商任务恢复轮询异常，最终状态未知，请勿重新提交：${err.message}`, now);
-    markVideoCostUnknown(db, log, row);
     log.error('Video generation resume poll indeterminate', { id: videoGenId, error: err.message });
   } finally {
     activeVideoPolls.delete(videoGenId);
@@ -2228,8 +2413,7 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
       ? cfg.storage.local_path
       : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
     const existingProviderTaskId = knownProviderTaskId;
-    const config = processingVideoConfig(db, row.model, row.ai_service_config_id || row.config_id);
-    const initialConfig = config;
+    const config = processingVideoConfig(db, row.model, row.ai_service_config_id || row.config_id, runtime.evidenceRoots);
     if (!config) {
       if (existingProviderTaskId) {
         keepVideoProcessing(db, row, videoGenId, '视频模型配置暂不可用，已保留供应商任务 ID，恢复配置后继续查询', now);
@@ -2303,9 +2487,16 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
     const referenceAudioUrls = snapshotHas('reference_audio_urls')
       ? cleanUrlList(Array.isArray(snapshot.reference_audio_urls) ? snapshot.reference_audio_urls : [])
       : cleanUrlList(parseReferenceUrls(row.reference_audio_urls), row.reference_audio_url);
+    const toapisPrivateAvatarImages = snapshotHas('_toapis_private_avatar_images')
+      && Array.isArray(snapshot._toapis_private_avatar_images)
+      ? snapshot._toapis_private_avatar_images
+      : [];
     const processingModel = String(snapshot.model ?? row.model ?? '').trim();
     const normalizedProcessingModel = processingModel.toLowerCase();
     const processingAllowedDurations = TOAPIS_VIDEO_MODELS[normalizedProcessingModel]?.durations
+      || (normalizedProcessingModel === lingjingVideoClient.PUBLIC_MODEL
+        ? LINGJING_VIDEO_SPEC.durations
+        : null)
       || FEITUO_MODELS[normalizedProcessingModel]?.durations
       || null;
     const processingMinimumDuration = minimumVideoDuration(config.canvas_selected_model || processingModel);
@@ -2332,10 +2523,7 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
         }
       } catch (_) {}
     }
-    const rowForAspect = {
-      ...row,
-      aspect_ratio: snapshotHasAspectRatio ? aspectForVideo : (aspectForVideo || row.aspect_ratio),
-    };
+    const rowForAspect = { ...row, aspect_ratio: aspectForVideo };
     if (existingProviderTaskId) {
       await pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspect, existingProviderTaskId, config);
       return;
@@ -2360,6 +2548,9 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
     }
     if (TOAPIS_VIDEO_MODELS[normalizedProcessingModel]) {
       toapisReadyState(db, normalizedProcessingModel, runtime.evidenceRoots);
+    }
+    if (normalizedProcessingModel === lingjingVideoClient.PUBLIC_MODEL) {
+      lingjingReadyState(db, normalizedProcessingModel, runtime.evidenceRoots);
     }
     if (FEITUO_MODELS[normalizedProcessingModel] && normalizedProcessingModel.startsWith('xuan-')) {
       feituoReadyState(db, normalizedProcessingModel);
@@ -2389,9 +2580,11 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
       reference_urls,
       reference_video_urls: referenceVideoUrls,
       reference_audio_urls: referenceAudioUrls,
+      reference_mode: snapshot.reference_mode ?? row.reference_mode,
       voice_reference_url: referenceAudioUrls[0] || undefined,
       video_url: referenceVideoUrls[0] || undefined,
       generate_audio: snapshot.generate_audio ?? (row.generate_audio === 1),
+      _toapis_private_avatar_images: toapisPrivateAvatarImages,
       files_base_url: filesBaseUrl,
       storage_local_path: storageLocalPath,
       video_gen_id: videoGenId,
@@ -2401,31 +2594,22 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
       }),
       ai_service_config_updated_at: config.updated_at || config.verified_at || null,
       video_capability: pinnedCapability || undefined,
-      provider_asset_expires_at: (() => {
-        try { return JSON.parse(row.source_conditioning_json || '{}').provider_asset_expires_at || null; } catch (_) { return null; }
-      })(),
       userId: row.user_id || undefined,
       tenantId: row.tenant_id || undefined,
       creditReservationId: row.credit_reservation_id || undefined,
+      provider_asset_expires_at: (() => {
+        try { return JSON.parse(row.source_conditioning_json || '{}').provider_asset_expires_at || null; } catch (_) { return null; }
+      })(),
     }, runtime);
     const now2 = new Date().toISOString();
     if (result.indeterminate) {
       const message = `VIDEO_SUBMISSION_INDETERMINATE: ${String(result.error || '供应商提交结果未知，请人工对账').slice(0, 450)}`;
       setVideoGenNeedsAttention(db, videoGenId, row.task_id, message, now2);
+      markVideoCostUnknown(db, log, row);
       log.warn('Video submission indeterminate; reservation remains held', { id: videoGenId });
       return;
     }
     if (result.error) {
-      if (result.indeterminate) {
-        db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
-          .run('processing', String(result.error).slice(0, 500), now2, videoGenId);
-        markVideoCostUnknown(db, log, row);
-        if (row.task_id) taskService.updateTaskStatus(db, row.task_id, 'processing', 90, result.error);
-        log.warn('Video generation submission result unknown; duplicate guard remains active', {
-          id: videoGenId,
-        });
-        return;
-      }
       setVideoGenFailed(db, videoGenId, result.error, now2);
       if (row.task_id) taskService.updateTaskError(db, row.task_id, result.error);
       log.error('Video generation failed', { id: videoGenId, error: result.error });
@@ -2433,7 +2617,7 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
     }
     const selectedConfig = result.config_id
       ? videoClient.getVideoConfigById(db, result.config_id)
-      : initialConfig;
+      : config;
     if (!selectedConfig) {
       setVideoGenFailed(db, videoGenId, '已受理视频任务的供应商配置不存在', now2);
       if (row.task_id) taskService.updateTaskError(db, row.task_id, '已受理视频任务的供应商配置不存在');
@@ -2558,8 +2742,8 @@ module.exports = {
   resumeProcessingVideoGenerations,
   localVideoDeliveryWarning,
   settleVideoCredit,
-  shouldNormalizeVideoAfterDownload,
   targetVideoPixelsForAspect,
+  shouldNormalizeVideoAfterDownload,
   extractVideoBoundaryFrames,
   prepareReconciledVideoArtifact,
   discardReconciledVideoArtifact,

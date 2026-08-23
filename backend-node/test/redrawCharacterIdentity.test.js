@@ -14,12 +14,16 @@ const {
   readIdentityPack,
   saveIdentityPack,
 } = require('../src/services/redrawCharacterIdentityService');
+const {
+  REFERENCE_BUNDLE_SCHEMA_VERSION,
+  canonicalBundleHash,
+} = require('../src/services/redrawReferenceBundleService');
 
 const INITIAL_UPDATED_AT = '2026-08-12T00:00:00.000Z';
 const REVIEWED_AT = '2026-08-13T00:00:00.000Z';
 const IMAGE_BYTES = Buffer.from('identity-evidence-image');
 
-function setup() {
+function setup(overrides = {}) {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-character-identity-'));
@@ -31,13 +35,23 @@ function setup() {
      duration_ms, created_at, updated_at)
     VALUES (1, 'tenant-a', 'user-a', '身份测试作品', 1, 'source-a', 15000, ?, ?)`)
     .run(INITIAL_UPDATED_AT, INITIAL_UPDATED_AT);
+  db.prepare(`INSERT INTO dramas
+    (id, title, tenant_id, user_id, created_at, updated_at)
+    VALUES (11, '同租户项目', 'tenant-a', 'user-a', ?, ?)`)
+    .run(INITIAL_UPDATED_AT, INITIAL_UPDATED_AT);
   const workId = db.prepare('SELECT id FROM redraw_works LIMIT 1').get().id;
   db.prepare(`INSERT INTO redraw_versions
     (work_id, tenant_id, user_id, version, locale, market, source_facts_json,
      facts_hash, status, created_at, updated_at)
-    VALUES (?, 'tenant-a', 'user-a', 1, 'en-US', 'US', '{}', 'facts-a',
+    VALUES (?, 'tenant-a', 'user-a', 1, ?, ?, '{}', 'facts-a',
       'asset_review', ?, ?)`)
-    .run(workId, INITIAL_UPDATED_AT, INITIAL_UPDATED_AT);
+    .run(
+      workId,
+      Object.prototype.hasOwnProperty.call(overrides, 'locale') ? overrides.locale : 'en-US',
+      Object.prototype.hasOwnProperty.call(overrides, 'market') ? overrides.market : 'US',
+      INITIAL_UPDATED_AT,
+      INITIAL_UPDATED_AT,
+    );
   const versionId = Number(db.prepare('SELECT id FROM redraw_versions LIMIT 1').get().id);
   return { db, root, versionId };
 }
@@ -69,7 +83,7 @@ function addProviderAsset(state, input = {}) {
     VALUES (?, ?, '身份图片', ?, 'redraw', '', ?, ?, ?, ?, ?, ?)`)
     .run(
       id,
-      input.dramaId ?? null,
+      Object.hasOwn(input, 'dramaId') ? input.dramaId : 11,
       input.type || 'image',
       localPath,
       input.mimeType || 'image/png',
@@ -111,6 +125,8 @@ function completeInput(expectedUpdatedAt = INITIAL_UPDATED_AT, overrides = {}) {
     live_action_human_confirmed: true,
     adult_status: 'verified_18_plus',
     identity_consistency_confirmed: true,
+    wardrobe_reference_asset_id: 102,
+    wardrobe_consistency_confirmed: true,
     ...overrides,
   };
 }
@@ -118,6 +134,43 @@ function completeInput(expectedUpdatedAt = INITIAL_UPDATED_AT, overrides = {}) {
 function rowSnapshot(db, id) {
   return db.prepare(`SELECT source_ref_json, approval_status, approved_by, approved_at, updated_at
     FROM redraw_assets WHERE id = ?`).get(id);
+}
+
+function addReadyShot(state, sourceCharacterKey = 'character-1') {
+  const referenceBundle = {
+    schema_version: REFERENCE_BUNDLE_SCHEMA_VERSION,
+    face_tracks: [{
+      track_key: 'face-1',
+      source_character_key: sourceCharacterKey,
+      identity: { source_character_key: sourceCharacterKey },
+    }],
+    dialogue: { kind: 'silent', turns: [] },
+    text_regions: [],
+  };
+  state.db.prepare(`INSERT INTO video_generations
+    (id, provider, model, status, tenant_id, user_id, created_at, updated_at)
+    VALUES (801, 'fake', 'redraw-local', 'completed', 'tenant-a', 'user-a', ?, ?)`)
+    .run(INITIAL_UPDATED_AT, INITIAL_UPDATED_AT);
+  state.db.prepare(`INSERT INTO redraw_shots
+    (id, work_id, version_id, tenant_id, user_id, shot_id, batch_index, shot_index,
+     start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
+     references_json, reference_bundle_json, reference_bundle_hash, reference_bundle_updated_at,
+     video_generation_id, preparation_state, preparation_version, status, created_at, updated_at)
+    VALUES (701, 1, ?, 'tenant-a', 'user-a', 'shot-identity', 1, 1,
+      0, 5000, 5000, '[]', '[]', '[]', ?, ?, ?, 801, 'reference_ready', 2, 'completed', ?, ?)`)
+    .run(
+      state.versionId,
+      JSON.stringify(referenceBundle),
+      canonicalBundleHash(referenceBundle),
+      INITIAL_UPDATED_AT,
+      INITIAL_UPDATED_AT,
+      INITIAL_UPDATED_AT,
+    );
+}
+
+function shotState(db) {
+  return db.prepare(`SELECT preparation_state, preparation_version, reference_bundle_hash,
+    video_generation_id, stale_reason_code FROM redraw_shots WHERE id = 701`).get();
 }
 
 function stableJson(value) {
@@ -144,6 +197,7 @@ function canonicalPackFields(pack) {
     live_action_human_confirmed: pack.live_action_human_confirmed,
     adult_status: pack.adult_status,
     identity_consistency_confirmed: pack.identity_consistency_confirmed,
+    wardrobe: pack.wardrobe || null,
     ready: pack.ready,
     reviewed_by: pack.reviewed_by,
     reviewed_at: pack.reviewed_at,
@@ -157,6 +211,14 @@ function canonicalPackHash(pack) {
 }
 
 function validPack(overrides = {}) {
+  const wardrobe = Object.hasOwn(overrides, 'wardrobe')
+    ? overrides.wardrobe
+    : {
+        label: '整集主服装',
+        reference_asset_id: 102,
+        reference_sha256: crypto.createHash('sha256').update(Buffer.from('wardrobe-reference-image')).digest('hex'),
+        consistency_confirmed: true,
+      };
   const pack = {
     schema_version: 'target-actor-identity-v1',
     source_character_key: 'character-1',
@@ -172,6 +234,7 @@ function validPack(overrides = {}) {
     live_action_human_confirmed: true,
     adult_status: 'verified_18_plus',
     identity_consistency_confirmed: true,
+    wardrobe,
     ready: true,
     reviewed_by: 'user-a',
     reviewed_at: REVIEWED_AT,
@@ -189,7 +252,9 @@ test('完整身份包使用服务端证据并生成稳定的 64 位小写哈希'
   const state = setup();
   try {
     fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    fs.writeFileSync(path.join(state.root, 'wardrobe-102.png'), Buffer.from('wardrobe-reference-image'));
     addProviderAsset(state);
+    addProviderAsset(state, { id: 102, localPath: 'wardrobe-102.png' });
     const firstId = addCharacter(state, {
       sourceRef: { id: 'fallback-id', stable_id: 'character-1' },
     });
@@ -211,6 +276,12 @@ test('完整身份包使用服务端证据并生成稳定的 64 位小写哈希'
       sha256: 'e'.repeat(64),
       ready: false,
       pack_sha256: 'd'.repeat(64),
+      wardrobe: {
+        label: '伪造服装',
+        reference_asset_id: 999,
+        reference_sha256: 'e'.repeat(64),
+        consistency_confirmed: false,
+      },
       reviewed_by: 'forged-reviewer',
       reviewed_at: '1999-01-01T00:00:00.000Z',
     };
@@ -222,6 +293,8 @@ test('完整身份包使用服务端证据并生成稳定的 64 位小写哈希'
       live_action_human_confirmed: true,
       confirmed_views: ['profile', 'full_body', 'front'],
       target_actor_label: 'Actor Maya',
+      wardrobe_reference_asset_id: 102,
+      wardrobe_consistency_confirmed: true,
       expected_updated_at: INITIAL_UPDATED_AT,
     });
 
@@ -240,6 +313,12 @@ test('完整身份包使用服务端证据并生成稳定的 64 位小写哈希'
     assert.equal(first.identity_pack.live_action_human_confirmed, true);
     assert.equal(first.identity_pack.adult_status, 'verified_18_plus');
     assert.equal(first.identity_pack.identity_consistency_confirmed, true);
+    assert.deepEqual(first.identity_pack.wardrobe, {
+      label: '整集主服装',
+      reference_asset_id: 102,
+      reference_sha256: crypto.createHash('sha256').update(Buffer.from('wardrobe-reference-image')).digest('hex'),
+      consistency_confirmed: true,
+    });
     assert.equal(first.identity_pack.ready, true);
     assert.match(first.identity_pack.pack_sha256, /^[0-9a-f]{64}$/);
     assert.equal(first.identity_pack.pack_sha256, second.identity_pack.pack_sha256);
@@ -255,31 +334,75 @@ test('完整身份包使用服务端证据并生成稳定的 64 位小写哈希'
       artifact: first.identity_pack.artifact,
       pack_sha256: first.identity_pack.pack_sha256,
       ready: true,
+      persona_origin: 'fictional_ai_generated',
+      target_country: 'US',
     });
   } finally {
     close(state);
   }
 });
 
-test('完整虚构美国角色身份包保存、读取和绑定一致投影政策字段', () => {
+test('身份包成功保存后精准失效当前角色依赖镜头，CAS 失败不触发失效', () => {
   const state = setup();
   try {
     fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    fs.writeFileSync(path.join(state.root, 'wardrobe-102.png'), Buffer.from('wardrobe-reference-image'));
     addProviderAsset(state);
+    addProviderAsset(state, { id: 102, localPath: 'wardrobe-102.png' });
+    addReadyShot(state);
+    const characterId = addCharacter(state);
+
+    assert.throws(
+      () => saveIdentityPack(context(state), characterId, completeInput('stale-updated-at')),
+      (error) => error.code === 'REDRAW_IDENTITY_CONFLICT',
+    );
+    const oldBundleHash = shotState(state.db).reference_bundle_hash;
+    assert.deepEqual(shotState(state.db), {
+      preparation_state: 'reference_ready',
+      preparation_version: 2,
+      reference_bundle_hash: oldBundleHash,
+      video_generation_id: 801,
+      stale_reason_code: null,
+    });
+    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM redraw_workflow_events').get().count, 0);
+
+    saveIdentityPack(context(state), characterId, completeInput());
+    assert.deepEqual(shotState(state.db), {
+      preparation_state: 'stale',
+      preparation_version: 3,
+      reference_bundle_hash: null,
+      video_generation_id: null,
+      stale_reason_code: 'character_identity_changed',
+    });
+    const event = state.db.prepare('SELECT reason_code, metadata_json FROM redraw_workflow_events').get();
+    assert.equal(event.reason_code, 'character_identity_changed');
+    assert.equal(JSON.parse(event.metadata_json).old_bundle_hash, oldBundleHash);
+  } finally {
+    close(state);
+  }
+});
+
+test('完整虚构角色身份包由服务端版本市场派生政策字段', () => {
+  const state = setup({ locale: 'es-ES', market: 'ES' });
+  try {
+    fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    fs.writeFileSync(path.join(state.root, 'wardrobe-102.png'), Buffer.from('wardrobe-reference-image'));
+    addProviderAsset(state);
+    addProviderAsset(state, { id: 102, localPath: 'wardrobe-102.png' });
     const characterId = addCharacter(state);
 
     const saved = saveIdentityPack(context(state), characterId, completeInput(INITIAL_UPDATED_AT, {
-      persona_origin: 'fictional_ai_generated',
-      target_country: 'US',
+      persona_origin: 'real_person',
+      target_country: 'CN',
     }));
     const read = readIdentityPack(saved);
 
     assert.equal(saved.identity_pack.persona_origin, 'fictional_ai_generated');
-    assert.equal(saved.identity_pack.target_country, 'US');
+    assert.equal(saved.identity_pack.target_country, 'ES');
     assert.match(saved.identity_pack.pack_sha256, /^[0-9a-f]{64}$/);
     assert.equal(saved.identity_pack.pack_sha256, canonicalPackHash(saved.identity_pack));
     assert.equal(read.persona_origin, 'fictional_ai_generated');
-    assert.equal(read.target_country, 'US');
+    assert.equal(read.target_country, 'ES');
     assert.equal(read.ready, true);
     assert.equal(identityPackStatus(read).ready, true);
     assert.equal(identityPackStatus(read).hash_valid, true);
@@ -290,7 +413,7 @@ test('完整虚构美国角色身份包保存、读取和绑定一致投影政�
       pack_sha256: saved.identity_pack.pack_sha256,
       ready: true,
       persona_origin: 'fictional_ai_generated',
-      target_country: 'US',
+      target_country: 'ES',
     });
   } finally {
     close(state);
@@ -311,11 +434,13 @@ test('历史身份包缺少政策字段时保留原哈希且仍为 ready', () =>
   assert.equal(identityPackStatus(read).hash_valid, true);
 });
 
-test('service 直接调用不会把非法角色政策值写入身份包', () => {
+test('service 直接调用忽略客户端伪造政策值并写入服务端国家', () => {
   const state = setup();
   try {
     fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    fs.writeFileSync(path.join(state.root, 'wardrobe-102.png'), Buffer.from('wardrobe-reference-image'));
     addProviderAsset(state);
+    addProviderAsset(state, { id: 102, localPath: 'wardrobe-102.png' });
     const cases = [
       { persona_origin: 'real_person', target_country: 'CN' },
       { persona_origin: new String('fictional_ai_generated'), target_country: ['US'] },
@@ -327,8 +452,8 @@ test('service 直接调用不会把非法角色政策值写入身份包', () => 
         policyFields,
       ));
 
-      assert.equal(Object.hasOwn(saved.identity_pack, 'persona_origin'), false);
-      assert.equal(Object.hasOwn(saved.identity_pack, 'target_country'), false);
+      assert.equal(saved.identity_pack.persona_origin, 'fictional_ai_generated');
+      assert.equal(saved.identity_pack.target_country, 'US');
       assert.equal(saved.identity_pack.ready, true);
       assert.equal(saved.identity_pack_status.hash_valid, true);
     }
@@ -337,11 +462,37 @@ test('service 直接调用不会把非法角色政策值写入身份包', () => 
   }
 });
 
+test('service 在版本 market 缺失或无效时 fail closed 且不写库', () => {
+  const cases = ['', 'us', 'USA', '1S'];
+  for (const market of cases) {
+    const state = setup({ market });
+    try {
+      fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+      fs.writeFileSync(path.join(state.root, 'wardrobe-102.png'), Buffer.from('wardrobe-reference-image'));
+      addProviderAsset(state);
+      addProviderAsset(state, { id: 102, localPath: 'wardrobe-102.png' });
+      const characterId = addCharacter(state);
+      const before = rowSnapshot(state.db, characterId);
+
+      assert.throws(
+        () => saveIdentityPack(context(state), characterId, completeInput()),
+        (error) => error.code === 'REDRAW_IDENTITY_VERSION_POLICY_INVALID',
+        market,
+      );
+      assert.deepEqual(rowSnapshot(state.db, characterId), before, market);
+    } finally {
+      close(state);
+    }
+  }
+});
+
 test('角色键按 stable_id、id、source_character_id 的首个非空值回退', () => {
   const state = setup();
   try {
     fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    fs.writeFileSync(path.join(state.root, 'wardrobe-102.png'), Buffer.from('wardrobe-reference-image'));
     addProviderAsset(state);
+    addProviderAsset(state, { id: 102, localPath: 'wardrobe-102.png' });
     const cases = [
       [{ id: 'id-only' }, 'id-only'],
       [{ source_character_id: 'source-character-only' }, 'source-character-only'],
@@ -362,7 +513,9 @@ test('v2 本地化物化角色使用 source_ref.source_character_key 保存身�
   const state = setup();
   try {
     fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    fs.writeFileSync(path.join(state.root, 'wardrobe-102.png'), Buffer.from('wardrobe-reference-image'));
     addProviderAsset(state);
+    addProviderAsset(state, { id: 102, localPath: 'wardrobe-102.png' });
     const characterId = addCharacter(state, {
       sourceRef: { kind: 'character', source_character_key: 'character-v2-maya' },
     });
@@ -380,7 +533,9 @@ test('空白或非法 v2 source_character_key 不可绕过且不改库', () => {
   const state = setup();
   try {
     fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    fs.writeFileSync(path.join(state.root, 'wardrobe-102.png'), Buffer.from('wardrobe-reference-image'));
     addProviderAsset(state);
+    addProviderAsset(state, { id: 102, localPath: 'wardrobe-102.png' });
     const cases = [
       { kind: 'character', source_character_key: ' ', name: 'Maya' },
       { kind: 'character', source_character_key: { id: 'nested-forged' } },
@@ -408,6 +563,8 @@ test('任一必需视图或确认项缺失时身份包均不 ready', () => {
     ['live_action_human_confirmed', { live_action_human_confirmed: false }],
     ['adult_status', { adult_status: 'unverified' }],
     ['identity_consistency_confirmed', { identity_consistency_confirmed: false }],
+    ['wardrobe', { wardrobe: null }],
+    ['wardrobe_consistency_confirmed', { wardrobe: { ...validPack().wardrobe, consistency_confirmed: false } }],
   ];
   for (const [missing, patch] of cases) {
     const status = identityPackStatus(validPack(patch));
@@ -441,7 +598,9 @@ test('允许保存不完整身份包并明确投影缺项', () => {
   const state = setup();
   try {
     fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    fs.writeFileSync(path.join(state.root, 'wardrobe-102.png'), Buffer.from('wardrobe-reference-image'));
     addProviderAsset(state);
+    addProviderAsset(state, { id: 102, localPath: 'wardrobe-102.png' });
     const characterId = addCharacter(state);
     const saved = saveIdentityPack(context(state), characterId, completeInput(INITIAL_UPDATED_AT, {
       confirmed_views: ['front', 'profile', 'side', 'profile'],
@@ -458,11 +617,34 @@ test('允许保存不完整身份包并明确投影缺项', () => {
   }
 });
 
-test('owner、version、角色类型与 CAS 任一不匹配时数据库保持不变', () => {
+test('缺少服装参考可保存草稿但身份包不 ready', () => {
   const state = setup();
   try {
     fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
     addProviderAsset(state);
+    const characterId = addCharacter(state);
+
+    const saved = saveIdentityPack(context(state), characterId, completeInput(INITIAL_UPDATED_AT, {
+      wardrobe_reference_asset_id: null,
+      wardrobe_consistency_confirmed: false,
+    }));
+
+    assert.equal(saved.identity_pack.wardrobe, null);
+    assert.equal(saved.identity_pack.ready, false);
+    assert.equal(saved.identity_pack_status.ready, false);
+    assert.deepEqual(saved.identity_pack_status.missing_confirmations, ['wardrobe']);
+  } finally {
+    close(state);
+  }
+});
+
+test('owner、version、角色类型与 CAS 任一不匹配时数据库保持不变', () => {
+  const state = setup();
+  try {
+    fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    fs.writeFileSync(path.join(state.root, 'wardrobe-102.png'), Buffer.from('wardrobe-reference-image'));
+    addProviderAsset(state);
+    addProviderAsset(state, { id: 102, localPath: 'wardrobe-102.png' });
     const characterId = addCharacter(state);
     const propId = addCharacter(state, { kind: 'prop' });
     const checks = [
@@ -489,11 +671,13 @@ test('当前角色误链到其他租户 drama 图片时拒绝且不写入身份�
   const state = setup();
   try {
     fs.writeFileSync(path.join(state.root, 'character-151.png'), IMAGE_BYTES);
+    fs.writeFileSync(path.join(state.root, 'wardrobe-102.png'), Buffer.from('wardrobe-reference-image'));
     state.db.prepare(`INSERT INTO dramas
       (id, title, tenant_id, user_id, created_at, updated_at)
       VALUES (51, '其他租户项目', 'tenant-b', 'user-b', ?, ?)`)
       .run(INITIAL_UPDATED_AT, INITIAL_UPDATED_AT);
     addProviderAsset(state, { id: 151, dramaId: 51 });
+    addProviderAsset(state, { id: 102, localPath: 'wardrobe-102.png' });
     const characterId = addCharacter(state, { assetId: 151 });
     const before = rowSnapshot(state.db, characterId);
 
@@ -504,6 +688,27 @@ test('当前角色误链到其他租户 drama 图片时拒绝且不写入身份�
     assert.deepEqual(rowSnapshot(state.db, characterId), before);
     assert.equal(before.source_ref_json.includes('pack_sha256'), false);
     assert.equal(before.source_ref_json.includes(crypto.createHash('sha256').update(IMAGE_BYTES).digest('hex')), false);
+  } finally {
+    close(state);
+  }
+});
+
+test('服装参考图缺少可靠 owner 绑定时拒绝且不改库', () => {
+  const state = setup();
+  try {
+    fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    fs.writeFileSync(path.join(state.root, 'wardrobe-102.png'), Buffer.from('wardrobe-reference-image'));
+    addProviderAsset(state);
+    addProviderAsset(state, { id: 102, localPath: 'wardrobe-102.png', dramaId: null });
+    const characterId = addCharacter(state);
+    const before = rowSnapshot(state.db, characterId);
+
+    assert.throws(
+      () => saveIdentityPack(context(state), characterId, completeInput()),
+      (error) => error.code === 'REDRAW_IDENTITY_WARDROBE_NOT_OWNED',
+    );
+    assert.deepEqual(rowSnapshot(state.db, characterId), before);
+    assert.equal(before.source_ref_json.includes('pack_sha256'), false);
   } finally {
     close(state);
   }
@@ -586,6 +791,56 @@ test('文件打开后 realpath 漂移时关闭同一 fd 并拒绝写库', () => 
     );
     assert.equal(opened, 1);
     assert.equal(closed, 1);
+    assert.deepEqual(rowSnapshot(state.db, characterId), before);
+  } finally {
+    close(state, [outside]);
+  }
+});
+
+test('服装参考图 realpath 漂移时拒绝写入身份哈希', () => {
+  const state = setup();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-wardrobe-toctou-'));
+  try {
+    const wardrobe = path.join(state.root, 'wardrobe-102.png');
+    const outsideFile = path.join(outside, 'replaced.png');
+    fs.writeFileSync(path.join(state.root, 'character-101.png'), IMAGE_BYTES);
+    fs.writeFileSync(wardrobe, Buffer.from('wardrobe-reference-image'));
+    fs.writeFileSync(outsideFile, Buffer.from('replaced-wardrobe-image'));
+    addProviderAsset(state);
+    addProviderAsset(state, { id: 102, localPath: 'wardrobe-102.png' });
+    const characterId = addCharacter(state);
+    const before = rowSnapshot(state.db, characterId);
+    let wardrobeRealpathCalls = 0;
+    let opened = 0;
+    let closed = 0;
+    const injectedFs = {
+      constants: fs.constants,
+      realpathSync(value) {
+        if (path.resolve(value) === path.resolve(wardrobe)) {
+          wardrobeRealpathCalls += 1;
+          if (wardrobeRealpathCalls > 1) return fs.realpathSync(outsideFile);
+        }
+        return fs.realpathSync(value);
+      },
+      openSync(...args) {
+        opened += 1;
+        return fs.openSync(...args);
+      },
+      fstatSync: (...args) => fs.fstatSync(...args),
+      statSync: (...args) => fs.statSync(...args),
+      readFileSync: (...args) => fs.readFileSync(...args),
+      closeSync(...args) {
+        closed += 1;
+        return fs.closeSync(...args);
+      },
+    };
+
+    assert.throws(
+      () => saveIdentityPack(context(state, { fs: injectedFs }), characterId, completeInput()),
+      (error) => error.code === 'REDRAW_IDENTITY_WARDROBE_CHANGED',
+    );
+    assert.equal(opened, 2);
+    assert.equal(closed, 2);
     assert.deepEqual(rowSnapshot(state.db, characterId), before);
   } finally {
     close(state, [outside]);

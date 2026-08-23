@@ -43,6 +43,17 @@ const LIVE_ACTION_STYLE_NAMES = [
   '希腊神话电影风格',
   '紫色色调电影风格',
 ];
+const REDRAW_SHOT_PREPARATION_STATES = [
+  'parsed',
+  'localized',
+  'identity_bound',
+  'clean_ready',
+  'reference_ready',
+  'needs_review',
+  'needs_attention',
+  'failed',
+  'stale',
+];
 
 function tableNames(db) {
   return db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name);
@@ -993,6 +1004,146 @@ test('参考包列迁移幂等且旧生成默认关闭', () => {
     SELECT reference_bundle_json FROM redraw_shots WHERE id = ?
   `).get(shotId).reference_bundle_json;
   assert.deepEqual(JSON.parse(referenceBundleJson), {});
+  db.close();
+});
+
+test('新库 redraw_shots 包含逐镜准备状态列默认值和 CHECK 约束', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+
+  const shotColumns = new Map(
+    db.prepare('PRAGMA table_info(redraw_shots)').all().map((column) => [column.name, column]),
+  );
+  assert.deepEqual(
+    {
+      type: shotColumns.get('preparation_state').type,
+      notnull: shotColumns.get('preparation_state').notnull,
+      default: shotColumns.get('preparation_state').dflt_value,
+    },
+    { type: 'TEXT', notnull: 1, default: "'parsed'" },
+  );
+  assert.deepEqual(
+    {
+      type: shotColumns.get('preparation_version').type,
+      notnull: shotColumns.get('preparation_version').notnull,
+      default: shotColumns.get('preparation_version').dflt_value,
+    },
+    { type: 'INTEGER', notnull: 1, default: '1' },
+  );
+  for (const name of ['preparation_evidence_hash', 'stale_reason_code']) {
+    const column = shotColumns.get(name);
+    assert.ok(column, name);
+    assert.deepEqual({ type: column.type, notnull: column.notnull }, { type: 'TEXT', notnull: 0 });
+  }
+  assert.deepEqual(
+    {
+      type: shotColumns.get('preparation_snapshot_json').type,
+      notnull: shotColumns.get('preparation_snapshot_json').notnull,
+      default: shotColumns.get('preparation_snapshot_json').dflt_value,
+    },
+    { type: 'TEXT', notnull: 1, default: "'{}'" },
+  );
+  for (const state of REDRAW_SHOT_PREPARATION_STATES) assert.match(tableSql(db, 'redraw_shots'), new RegExp(`'${state}'`));
+  assert.match(tableSql(db, 'redraw_shots'), /preparation_version INTEGER NOT NULL DEFAULT 1 CHECK \(preparation_version > 0\)/);
+
+  const projectId = insertProject(db);
+  const workId = insertWork(db, projectId);
+  const versionId = insertVersion(db, workId);
+  const shotId = db.prepare(`
+    INSERT INTO redraw_shots
+      (version_id, batch_index, shot_index, start_ms, end_ms, duration_ms, status, created_at, updated_at)
+    VALUES (?, 1, 1, 0, 10000, 10000, 'draft', ?, ?)
+  `).run(versionId, NOW, NOW).lastInsertRowid;
+  assert.deepEqual(
+    db.prepare(`
+      SELECT preparation_state, preparation_version, preparation_evidence_hash,
+             preparation_snapshot_json, stale_reason_code
+      FROM redraw_shots WHERE id = ?
+    `).get(shotId),
+    {
+      preparation_state: 'parsed',
+      preparation_version: 1,
+      preparation_evidence_hash: null,
+      preparation_snapshot_json: '{}',
+      stale_reason_code: null,
+    },
+  );
+  assert.throws(() => db.prepare(`
+    INSERT INTO redraw_shots
+      (version_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
+       preparation_state, status, created_at, updated_at)
+    VALUES (?, 1, 2, 10000, 20000, 10000, 'manual_review', 'draft', ?, ?)
+  `).run(versionId, NOW, NOW), /CHECK/);
+  assert.throws(() => db.prepare(`
+    INSERT INTO redraw_shots
+      (version_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
+       preparation_version, status, created_at, updated_at)
+    VALUES (?, 1, 3, 20000, 30000, 10000, 0, 'draft', ?, ?)
+  `).run(versionId, NOW, NOW), /CHECK/);
+  db.close();
+});
+
+test('旧的不完整 redraw_shots 可幂等补齐逐镜准备状态列且保留旧行数据', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_shots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version_id INTEGER,
+      batch_index INTEGER NOT NULL DEFAULT 1,
+      shot_index INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'draft',
+      updated_at TEXT
+    );
+    INSERT INTO redraw_shots
+      (version_id, batch_index, shot_index, status, updated_at)
+    VALUES (7, 2, 3, 'processing', '${NOW}');
+  `);
+  const before = db.prepare('SELECT version_id, batch_index, shot_index, status, updated_at FROM redraw_shots WHERE id = 1').get();
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+
+  const columns = new Map(db.prepare('PRAGMA table_info(redraw_shots)').all().map((column) => [column.name, column]));
+  assert.deepEqual(
+    {
+      stateDefault: columns.get('preparation_state').dflt_value,
+      stateNotNull: columns.get('preparation_state').notnull,
+      versionDefault: columns.get('preparation_version').dflt_value,
+      versionNotNull: columns.get('preparation_version').notnull,
+      snapshotDefault: columns.get('preparation_snapshot_json').dflt_value,
+      snapshotNotNull: columns.get('preparation_snapshot_json').notnull,
+    },
+    {
+      stateDefault: "'parsed'",
+      stateNotNull: 1,
+      versionDefault: '1',
+      versionNotNull: 1,
+      snapshotDefault: "'{}'",
+      snapshotNotNull: 1,
+    },
+  );
+  assert.ok(columns.has('preparation_evidence_hash'));
+  assert.ok(columns.has('stale_reason_code'));
+  assert.deepEqual(
+    db.prepare('SELECT version_id, batch_index, shot_index, status, updated_at FROM redraw_shots WHERE id = 1').get(),
+    before,
+  );
+  assert.deepEqual(
+    db.prepare(`
+      SELECT preparation_state, preparation_version, preparation_evidence_hash,
+             preparation_snapshot_json, stale_reason_code
+      FROM redraw_shots WHERE id = 1
+    `).get(),
+    {
+      preparation_state: 'parsed',
+      preparation_version: 1,
+      preparation_evidence_hash: null,
+      preparation_snapshot_json: '{}',
+      stale_reason_code: null,
+    },
+  );
+  assert.throws(() => db.prepare("UPDATE redraw_shots SET preparation_state = 'manual_review' WHERE id = 1").run(), /CHECK/);
+  assert.throws(() => db.prepare('UPDATE redraw_shots SET preparation_version = 0 WHERE id = 1').run(), /CHECK/);
   db.close();
 });
 

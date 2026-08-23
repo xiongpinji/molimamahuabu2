@@ -16,6 +16,7 @@ import {
 } from './fixtures/redraw-latin-american-case.js'
 import {
   genericLocalization,
+  genericReferencePreparationCase,
   genericRedrawProject,
   genericSourceFacts,
 } from './fixtures/redraw-generic-project.js'
@@ -24,6 +25,7 @@ const require = createRequire(import.meta.url)
 const backendRoot = fileURLToPath(new URL('../../backend-node/', import.meta.url))
 const express = require(path.join(backendRoot, 'node_modules', 'express'))
 const Database = require(path.join(backendRoot, 'node_modules', 'better-sqlite3'))
+const sharp = require(path.join(backendRoot, 'node_modules', 'sharp'))
 const { runMigrationsAndEnsure } = require(path.join(backendRoot, 'src', 'db', 'migrate'))
 const { setupRouter } = require(path.join(backendRoot, 'src', 'routes'))
 const redrawUploadService = require(path.join(backendRoot, 'src', 'services', 'redrawUploadService'))
@@ -31,6 +33,21 @@ const creditLedger = require(path.join(backendRoot, 'src', 'services', 'creditLe
 const modelPrices = require(path.join(backendRoot, 'src', 'services', 'modelPriceService'))
 const { buildLocalizationInput } = require(path.join(backendRoot, 'src', 'services', 'localizationService'))
 const { serverAutomationPolicySnapshot } = require(path.join(backendRoot, 'src', 'services', 'redrawProjectPolicyService'))
+const {
+  buildGeneratedCoverageManifest,
+  canonicalCoverageSha256,
+} = require(path.join(backendRoot, 'src', 'services', 'redrawFullFrameCoverageService'))
+const {
+  canonicalizeModelLock,
+  canonicalSha256: canonicalModelLockSha256,
+} = require(path.join(backendRoot, 'src', 'services', 'redrawFullFrameModelLockService'))
+const {
+  loadReviewedReferenceCoverage,
+  projectReferenceBundleForGeneration,
+} = require(path.join(backendRoot, 'src', 'services', 'redrawReferenceBundleService'))
+const {
+  validateReviewedCoverageManifest,
+} = require(path.join(backendRoot, 'src', 'services', 'redrawFullFrameReviewService'))
 const { getFfmpegPath, getFfprobePath } = require(path.join(backendRoot, 'src', 'utils', 'ffmpegPath'))
 
 let backendServer
@@ -46,6 +63,8 @@ let videoConfigId
 let videoConfigUpdatedAt
 let nativeVideoConfigId
 const providerArtifacts = {}
+let genericPreparationFiles
+let referencePreparationProviderCalls = 0
 const runtimeErrors = []
 
 const log = {
@@ -197,12 +216,14 @@ function runFfmpeg(args, label) {
 
 function insertProviderArtifact({ name, type, relativePath, mimeType, duration = null, width = null, height = null }) {
   const absolutePath = path.join(storageRoot, relativePath)
+  const digest = sha256File(absolutePath)
   const now = new Date().toISOString()
   const publicPath = relativePath.replace(/\\/g, '/')
   return Number(database.prepare(`
     INSERT INTO assets
-      (name, type, category, url, local_path, file_size, mime_type, duration, width, height, created_at, updated_at)
-    VALUES (?, ?, 'redraw', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (name, type, category, url, local_path, file_size, mime_type, duration, width, height,
+       metadata, created_at, updated_at)
+    VALUES (?, ?, 'redraw', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     name,
     type,
@@ -213,15 +234,204 @@ function insertProviderArtifact({ name, type, relativePath, mimeType, duration =
     duration,
     width,
     height,
+    JSON.stringify({ sha256: digest }),
     now,
     now,
   ).lastInsertRowid)
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function sha256Value(value) {
+  return crypto.createHash('sha256').update(Buffer.isBuffer(value) ? value : String(value)).digest('hex')
+}
+
+function sha256File(filePath) {
+  return sha256Value(fs.readFileSync(filePath))
+}
+
+function assertNoPreparationLeaks(value) {
+  const serialized = JSON.stringify(value)
+  expect(serialized).not.toContain(tempRoot)
+  expect(serialized).not.toContain(storageRoot)
+  expect(serialized).not.toMatch(/[A-Za-z]:[\\/]/)
+  expect(serialized).not.toMatch(/https?:\/\//i)
+  expect(serialized).not.toMatch(/\bAuthorization\b/i)
+  expect(serialized).not.toMatch(/\bapi[_-]?key\b/i)
+  expect(serialized).not.toContain('sk-')
+}
+
+function insertStoredArtifact({
+  name,
+  type,
+  relativePath,
+  mimeType,
+  width = null,
+  height = null,
+  duration = null,
+  metadata = {},
+}) {
+  const absolutePath = path.join(storageRoot, relativePath)
+  const digest = sha256File(absolutePath)
+  const now = new Date().toISOString()
+  return Number(database.prepare(`
+    INSERT INTO assets
+      (name, type, category, local_path, file_size, mime_type, duration, width, height,
+       metadata, created_at, updated_at)
+    VALUES (?, ?, 'redraw', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    name,
+    type,
+    relativePath.replace(/\\/g, '/'),
+    fs.statSync(absolutePath).size,
+    mimeType,
+    duration,
+    width,
+    height,
+    JSON.stringify({ sha256: digest, ...metadata }),
+    now,
+    now,
+  ).lastInsertRowid)
+}
+
+async function writeSolidPng(relativePath, color, width = 320, height = 180) {
+  const absolutePath = path.join(storageRoot, relativePath)
+  fs.mkdirSync(path.dirname(absolutePath), { recursive: true })
+  await sharp({ create: { width, height, channels: 3, background: color } }).png().toFile(absolutePath)
+  return { absolutePath, relativePath, sha256: sha256File(absolutePath), width, height }
+}
+
+async function writeMaskPng(relativePath, { x, y, width, height }, frameWidth = 320, frameHeight = 180) {
+  const pixels = Buffer.alloc(frameWidth * frameHeight)
+  for (let row = y; row < y + height; row += 1) {
+    for (let column = x; column < x + width; column += 1) pixels[(row * frameWidth) + column] = 255
+  }
+  const absolutePath = path.join(storageRoot, relativePath)
+  fs.mkdirSync(path.dirname(absolutePath), { recursive: true })
+  await sharp(pixels, { raw: { width: frameWidth, height: frameHeight, channels: 1 } })
+    .toColourspace('b-w')
+    .png()
+    .toFile(absolutePath)
+  return { absolutePath, relativePath, sha256: sha256File(absolutePath), width: frameWidth, height: frameHeight }
+}
+
+async function createGenericPreparationFiles() {
+  const characters = new Map()
+  for (const character of genericReferencePreparationCase.characters) {
+    const identity = await writeSolidPng(character.identity.relative_path, character.identity.color, 320, 480)
+    const wardrobe = await writeSolidPng(character.wardrobe.relative_path, character.wardrobe.color, 320, 480)
+    const replacementIdentity = character.replacement_identity
+      ? await writeSolidPng(character.replacement_identity.relative_path, character.replacement_identity.color, 320, 480)
+      : null
+    const voicePath = path.join(storageRoot, character.voice.relative_path)
+    fs.mkdirSync(path.dirname(voicePath), { recursive: true })
+    runFfmpeg([
+      '-hide_banner', '-loglevel', 'error', '-f', 'lavfi',
+      '-i', `sine=frequency=${character.voice.frequency}:sample_rate=44100`,
+      '-t', '1.2', '-c:a', 'libmp3lame', '-y', voicePath,
+    ], `通用角色 ${character.source_character_key} 音色生成`)
+    characters.set(character.source_character_key, {
+      definition: character,
+      identity,
+      wardrobe,
+      replacementIdentity,
+      voice: {
+        absolutePath: voicePath,
+        relativePath: character.voice.relative_path,
+        sha256: sha256File(voicePath),
+        duration: 1.2,
+      },
+    })
+  }
+
+  const shots = new Map()
+  for (const [index, shot] of genericReferencePreparationCase.shots.entries()) {
+    const frame = await writeSolidPng(shot.representative_frame.relative_path, shot.color)
+    const personMask = await writeMaskPng(
+      shot.person_mask.relative_path,
+      { x: 36 + (index * 12), y: 24, width: 84, height: 118 },
+    )
+    const textMask = await writeMaskPng(
+      shot.text_mask.relative_path,
+      { x: 56, y: 142, width: 208, height: 24 },
+    )
+    const cleanPlate = await writeSolidPng(shot.clean_plate.relative_path, '#20252b')
+    const sourceMotionPath = path.join(storageRoot, shot.motion_reference.relative_path)
+    fs.mkdirSync(path.dirname(sourceMotionPath), { recursive: true })
+    runFfmpeg([
+      '-hide_banner', '-loglevel', 'error', '-f', 'lavfi',
+      '-i', `color=c=${shot.color}:size=320x180:rate=12`,
+      '-t', '4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-an', '-y', sourceMotionPath,
+    ], `通用镜头 ${shot.source_shot_id} 运动参考生成`)
+    const motionSha256 = sha256File(sourceMotionPath)
+    const motionRelativePath = `redraw-conditioning/${motionSha256}.mp4`
+    const motionPath = path.join(storageRoot, motionRelativePath)
+    fs.mkdirSync(path.dirname(motionPath), { recursive: true })
+    fs.copyFileSync(sourceMotionPath, motionPath)
+    shots.set(shot.source_shot_id, {
+      definition: shot,
+      frame,
+      personMask,
+      textMask,
+      cleanPlate,
+      motion: {
+        absolutePath: motionPath,
+        relativePath: motionRelativePath,
+        sha256: motionSha256,
+        duration: 4,
+      },
+    })
+  }
+  return { characters, shots }
+}
+
+function genericModelLock() {
+  const projects = {
+    face_detector: ['MediaPipe face detection', 'google-ai-edge/mediapipe'],
+    person_detector: ['YOLOX', 'Megvii-BaseDetection/YOLOX'],
+    text_detector: ['PaddleOCR', 'PaddlePaddle/PaddleOCR'],
+    tracker: ['ByteTrack', 'FoundationVision/ByteTrack'],
+  }
+  const components = ['tracker', 'text_detector', 'person_detector', 'face_detector'].map((component) => ({
+    component,
+    project: projects[component][0],
+    repository: projects[component][1],
+    revision: `fixture-${component}-20260823`,
+    artifact_name: `${component}.bin`,
+    artifact_path: `${component}/model.bin`,
+    artifact_sha256: 'a'.repeat(64),
+    license_name: `${component}-LICENSE`,
+    license_evidence_path: `${component}/LICENSE.txt`,
+    license_evidence_sha256: 'b'.repeat(64),
+  }))
+  const lock = {
+    schema_version: 'redraw-full-frame-model-lock-v2',
+    runtimes: {
+      main: {
+        python_version: 'Python 3.11.9', interpreter_path: 'runtime/main/.venv/Scripts/python.exe',
+        pip_freeze_path: 'runtime/main/pip-freeze.txt', pip_freeze_sha256: '1'.repeat(64),
+      },
+      text: {
+        python_version: 'Python 3.11.9', interpreter_path: 'runtime/text/.venv/Scripts/python.exe',
+        pip_freeze_path: 'runtime/text/pip-freeze.txt', pip_freeze_sha256: '2'.repeat(64),
+      },
+    },
+    components,
+  }
+  return { ...lock, canonical_sha256: canonicalModelLockSha256(canonicalizeModelLock(lock)) }
 }
 
 test.beforeAll(async () => {
   tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-redraw-browser-backend-'))
   storageRoot = path.join(tempRoot, 'storage')
   fs.mkdirSync(storageRoot, { recursive: true })
+  genericPreparationFiles = await createGenericPreparationFiles()
   if (activeCase) {
     sourceVideoPath = path.resolve(process.env.REDRAW_E2E_SOURCE_VIDEO)
   } else {
@@ -393,9 +603,9 @@ test.beforeAll(async () => {
   videoConfigId = Number(database.prepare(`
     INSERT INTO ai_service_configs
       (service_type, provider, api_protocol, name, model, default_model, is_active, is_default, priority, settings, created_at, updated_at)
-    VALUES ('video', 'local-fake-video', 'feituo_open', '本地视频模拟器', ?, 'fake-video',
+    VALUES ('video', 'local-fake-video', 'icreat_task', '本地视频模拟器', ?, 'bytedance/seedance-2-0-mini',
       1, 1, 7, '{}', ?, ?)
-  `).run(JSON.stringify(['fake-video']), now, now).lastInsertRowid)
+  `).run(JSON.stringify(['bytedance/seedance-2-0-mini']), now, now).lastInsertRowid)
   database.prepare('UPDATE ai_service_configs SET settings = ? WHERE id = ?').run(JSON.stringify({
     redraw_locale_capabilities: ['en-US|US', 'es-ES|ES'].map((target) => {
       const [locale, market] = target.split('|')
@@ -403,7 +613,7 @@ test.beforeAll(async () => {
         locale, market, status: 'verified',
         evidence: {
           video: {
-            provider: 'local-fake-video', model: 'fake-video',
+            provider: 'local-fake-video', model: 'bytedance/seedance-2-0-mini',
             task_id: `local-fixture-video-${locale}`,
             terminal_status: 'completed',
             artifact_id: analysisEvidenceAssetId,
@@ -446,7 +656,7 @@ test.beforeAll(async () => {
   modelPrices.set(database, 'fake-character', 7, { category: 'image' })
   modelPrices.set(database, 'fake-clean-plate', 5, { category: 'image' })
   modelPrices.set(database, 'fake-tts', 3, { category: 'audio' })
-  modelPrices.set(database, 'fake-video', 2, {
+  modelPrices.set(database, 'bytedance/seedance-2-0-mini', 2, {
     category: 'video',
     billing_unit: 'second',
     resolution_prices: { '720p': { credits: 3 } },
@@ -623,9 +833,36 @@ test.beforeAll(async () => {
     },
     localeVerifier,
     redrawOptions: {
+      localeVerifier,
       uploadLimits: {
         minDurationMs: 1_000,
         maxDurationMs: 60_000,
+      },
+      referencePreparationProvider: async ({ attempt, input }) => {
+        referencePreparationProviderCalls += 1
+        const shot = genericPreparationFiles.shots.get(String(input.shot_id || ''))
+        if (!shot) throw new Error('通用逐镜净景缺少本地输出')
+        const artifactId = insertStoredArtifact({
+          name: `本地逐镜净景 ${input.shot_id}`,
+          type: 'image',
+          relativePath: shot.cleanPlate.relativePath,
+          mimeType: 'image/png',
+          width: shot.cleanPlate.width,
+          height: shot.cleanPlate.height,
+          metadata: { fixture_attempt_id: Number(attempt.id) },
+        })
+        return {
+          status: 'completed',
+          provider_task_id: `local-clean-${attempt.id}`,
+          asset_id: artifactId,
+          clean_plate: true,
+          quality: {
+            width: shot.cleanPlate.width,
+            height: shot.cleanPlate.height,
+            mask_area_changed: true,
+            non_mask_similarity: 0.99,
+          },
+        }
       },
       uploadService: {
         async expandSourceUpload(file, ...args) {
@@ -662,6 +899,22 @@ test.beforeAll(async () => {
         },
       },
       generationOptions: {
+        assetReader: {
+          canRead: (asset) => Boolean(asset?.local_path && fs.existsSync(path.join(storageRoot, asset.local_path))),
+          owns: (asset) => Boolean(asset?.local_path && fs.existsSync(path.join(storageRoot, asset.local_path))),
+        },
+        createReferenceUrl: ({ asset_id: assetId, kind }) => `https://media.example.test/redraw/${kind}/${assetId}`,
+        preparationContext: {
+          storageRoot,
+          canReadArtifact: (assetId) => {
+            const asset = database.prepare('SELECT local_path FROM assets WHERE id = ? AND deleted_at IS NULL').get(Number(assetId))
+            return Boolean(asset?.local_path && fs.existsSync(path.join(storageRoot, asset.local_path)))
+          },
+          assetReader: {
+            canRead: (asset) => Boolean(asset?.local_path && fs.existsSync(path.join(storageRoot, asset.local_path))),
+            owns: (asset) => Boolean(asset?.local_path && fs.existsSync(path.join(storageRoot, asset.local_path))),
+          },
+        },
         resolveVideoConditioningCapability: (_db, model, capability) => (
           String(model).toLowerCase() === 'seedance-2-fast'
             ? {
@@ -679,8 +932,9 @@ test.beforeAll(async () => {
                 config_id: videoConfigId,
                 config_updated_at: videoConfigUpdatedAt,
                 provider: 'local-fake-video',
-                protocol: 'feituo_open',
+                protocol: 'icreat_task',
                 model,
+                supportsAudio: true,
                 max_videos: 3,
               }
         ),
@@ -771,6 +1025,7 @@ function resetProviderFixture(facts = sourceFacts, localization = localizationOv
   activeAnalysisFacts = facts
   activeLocalizationOverrides = localization
   providerCallCounts = { asset: 0, video: 0, dialogue: 0 }
+  referencePreparationProviderCalls = 0
   uploadedHeaderHex = ''
   runtimeErrors.length = 0
 }
@@ -841,6 +1096,493 @@ function genericHighConfidenceSourceFacts() {
       },
     })),
   }
+}
+
+function currentGenericPreparationFactsHash(versionId) {
+  const version = database.prepare('SELECT * FROM redraw_versions WHERE id = ?').get(Number(versionId))
+  return String(version.facts_hash || '')
+}
+
+async function materializeGenericCharacterPlan(page, versionId) {
+  const factsHash = currentGenericPreparationFactsHash(versionId)
+  const characterRows = database.prepare(`
+    SELECT * FROM redraw_assets
+    WHERE version_id = ? AND kind = 'character' AND deleted_at IS NULL ORDER BY id
+  `).all(Number(versionId))
+  const voiceRows = database.prepare(`
+    SELECT * FROM redraw_assets
+    WHERE version_id = ? AND kind = 'voice' AND deleted_at IS NULL ORDER BY id
+  `).all(Number(versionId))
+  expect(characterRows).toHaveLength(2)
+  expect(voiceRows).toHaveLength(2)
+  const characterByKey = new Map()
+
+  for (const character of genericReferencePreparationCase.characters) {
+    const files = genericPreparationFiles.characters.get(character.source_character_key)
+    const characterRow = characterRows.find((row) => (
+      JSON.parse(row.source_ref_json).source_ref?.source_character_key === character.source_character_key
+    ))
+    const voiceRow = voiceRows.find((row) => (
+      JSON.parse(row.source_ref_json).source_ref?.source_character_key === character.source_character_key
+    ))
+    expect(characterRow).toBeTruthy()
+    expect(voiceRow).toBeTruthy()
+    const identityAssetId = insertStoredArtifact({
+      name: `${character.target_actor_label} identity`, type: 'image',
+      relativePath: files.identity.relativePath, mimeType: 'image/png', width: 320, height: 480,
+    })
+    const wardrobeAssetId = insertStoredArtifact({
+      name: `${character.target_actor_label} wardrobe`, type: 'image',
+      relativePath: files.wardrobe.relativePath, mimeType: 'image/png', width: 320, height: 480,
+    })
+    const voiceAssetId = insertStoredArtifact({
+      name: `${character.target_actor_label} voice`, type: 'audio',
+      relativePath: files.voice.relativePath, mimeType: 'audio/mpeg', duration: files.voice.duration,
+    })
+    const characterPayload = JSON.parse(characterRow.source_ref_json)
+    characterPayload.snapshot = {
+      ...(characterPayload.snapshot || {}),
+      voice_snapshot: {
+        locale: genericRedrawProject.target.locale,
+        market: genericRedrawProject.target.market,
+        audio_sha256: files.voice.sha256,
+        audio_asset_id: voiceAssetId,
+        language_verified: true,
+        detected_locale: genericRedrawProject.target.locale,
+      },
+    }
+    database.prepare(`
+      UPDATE redraw_assets SET asset_id = ?, source_ref_json = ?, status = 'generated'
+      WHERE id = ?
+    `).run(identityAssetId, JSON.stringify(characterPayload), Number(characterRow.id))
+    database.prepare(`
+      UPDATE redraw_assets SET voice_asset_id = ?, status = 'generated', approval_status = 'pending'
+      WHERE id = ?
+    `).run(voiceAssetId, Number(voiceRow.id))
+
+    const currentCharacter = database.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(characterRow.id))
+    const identityResponse = await browserApi(page, `/api/v1/redraw/assets/${characterRow.id}/identity-pack`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        target_actor_label: character.target_actor_label,
+        confirmed_views: ['front', 'profile', 'full_body'],
+        live_action_human_confirmed: true,
+        adult_status: 'verified_18_plus',
+        identity_consistency_confirmed: true,
+        wardrobe_reference_asset_id: wardrobeAssetId,
+        wardrobe_consistency_confirmed: true,
+        expected_updated_at: currentCharacter.updated_at,
+      }),
+    })
+    expect(identityResponse.status, JSON.stringify(identityResponse.body)).toBe(200)
+    expect(identityResponse.body.data.identity_pack_status).toMatchObject({ ready: true })
+    expect(identityResponse.body.data.identity_pack).toMatchObject({
+      persona_origin: 'fictional_ai_generated',
+      target_country: genericRedrawProject.target.market,
+    })
+    assertNoPreparationLeaks(identityResponse.body)
+
+    for (const row of [
+      database.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(characterRow.id)),
+      database.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(voiceRow.id)),
+    ]) {
+      const review = await browserApi(page, `/api/v1/redraw/assets/${row.id}/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approved', expected_updated_at: row.updated_at }),
+      })
+      expect(review.status, JSON.stringify(review.body)).toBe(200)
+      assertNoPreparationLeaks(review.body)
+    }
+    characterByKey.set(character.source_character_key, {
+      redrawAssetId: Number(characterRow.id),
+      voiceRedrawAssetId: Number(voiceRow.id),
+      identityAssetId,
+      wardrobeAssetId,
+      voiceAssetId,
+    })
+  }
+
+  const plan = await browserApi(page, `/api/v1/redraw/versions/${versionId}/character-plan`)
+  expect(plan.status, JSON.stringify(plan.body)).toBe(200)
+  expect(plan.body.data).toMatchObject({ ready: true, version_id: Number(versionId) })
+  expect(plan.body.data.characters).toHaveLength(2)
+  expect(plan.body.data.characters.every((character) => (
+    character.voice.ready === true && character.wardrobe.ready === true
+  ))).toBe(true)
+  assertNoPreparationLeaks(plan.body)
+  return { characterByKey, factsHash, plan: plan.body.data }
+}
+
+async function installGenericReviewedCoverage(versionId, options = {}) {
+  const version = database.prepare(`
+    SELECT v.*, w.source_asset_id, w.source_fingerprint, w.duration_ms
+    FROM redraw_versions v JOIN redraw_works w ON w.id = v.work_id
+    WHERE v.id = ?
+  `).get(Number(versionId))
+  const shots = database.prepare(`
+    SELECT * FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
+  `).all(Number(versionId))
+  const characterKeysByShot = Array.isArray(options.characterKeysByShot)
+    ? options.characterKeysByShot.map((keys) => [...new Set((keys || []).map(String))])
+    : genericReferencePreparationCase.shots.map((shot) => shot.character_keys)
+  const characterKeys = [...new Set(characterKeysByShot.flat())]
+  const baseRelative = `generic-preparation/version-${Number(versionId)}`
+  const scopedEvidenceFile = (file) => {
+    const sourceRelativePath = String(file.relativePath).replace(/\\/g, '/')
+    const relativePath = path.posix.join(
+      baseRelative,
+      path.posix.relative('generic-preparation', sourceRelativePath),
+    )
+    const absolutePath = path.join(storageRoot, relativePath)
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true })
+    fs.copyFileSync(path.join(storageRoot, sourceRelativePath), absolutePath)
+    return { ...file, absolutePath, relativePath }
+  }
+  const frameById = new Map()
+  const mask = (file) => ({
+    path: path.posix.relative(baseRelative, file.relativePath.replace(/\\/g, '/')),
+    sha256: file.sha256,
+    width: file.width,
+    height: file.height,
+    mime_type: 'image/png',
+  })
+  for (const shot of shots) {
+    const sourceFiles = genericPreparationFiles.shots.get(String(shot.shot_id))
+    const files = {
+      frame: scopedEvidenceFile(sourceFiles.frame),
+      personMask: scopedEvidenceFile(sourceFiles.personMask),
+      textMask: scopedEvidenceFile(sourceFiles.textMask),
+    }
+    for (const [label, file] of [
+      ['frame', files.frame], ['person mask', files.personMask], ['text mask', files.textMask],
+    ]) {
+      insertStoredArtifact({
+        name: `${shot.shot_id} ${label}`, type: 'image', relativePath: file.relativePath,
+        mimeType: 'image/png', width: file.width, height: file.height,
+      })
+    }
+    frameById.set(String(shot.shot_id), files)
+  }
+
+  const frames = shots.map((shot, index) => {
+    const files = frameById.get(String(shot.shot_id))
+    const characters = characterKeysByShot[index] || []
+    return {
+      frame_index: index,
+      timestamp_ticks: Number(shot.start_ms),
+      timestamp_ms: Number(shot.start_ms),
+      shot_id: String(shot.shot_id),
+      path: path.posix.relative(baseRelative, files.frame.relativePath),
+      sha256: files.frame.sha256,
+      width: 320,
+      height: 180,
+      person_region_ids: characters.map((key) => `person-${key}-${index}`),
+      text_region_ids: [`text-${index}`],
+      review_point_reasons: [],
+      review_status: 'not_required',
+    }
+  })
+  const personTracks = characterKeys.map((sourceCharacterKey) => {
+    const indexes = characterKeysByShot
+      .map((keys, index) => keys.includes(sourceCharacterKey) ? index : null)
+      .filter((index) => index !== null)
+    return {
+      track_key: `track-${sourceCharacterKey}`,
+      kind: 'story_role',
+      source_character_key: sourceCharacterKey,
+      target_strategy: 'fixed_actor',
+      frame_ranges: indexes.map((index) => ({ start_frame: index, end_frame: index })),
+      visibility: indexes.map((index) => ({ start_frame: index, end_frame: index, state: 'visible' })),
+      regions: indexes.map((index) => {
+        const files = frameById.get(String(shots[index].shot_id))
+        return {
+          region_id: `person-${sourceCharacterKey}-${index}`,
+          frame_index: index,
+          bbox: { x: sourceCharacterKey === 'c1' ? 36 : 164, y: 24, width: 84, height: 118 },
+          mask: mask(files.personMask),
+          association_confidence: 0.99,
+          detector_disagreement: false,
+        }
+      }),
+      review_status: 'pending',
+      reviewer: null,
+    }
+  })
+  const textTracks = shots.map((shot, index) => {
+    const files = frameById.get(String(shot.shot_id))
+    return {
+      region_key: `region-${shot.shot_id}`,
+      kind: index === 0 ? 'subtitle' : 'screen',
+      treatment: index === 0 ? 'translate_subtitle' : 'localize_screen',
+      target_text_key: `region-${shot.shot_id}`,
+      frame_ranges: [{ start_frame: index, end_frame: index }],
+      regions: [{
+        region_id: `text-${index}`,
+        frame_index: index,
+        polygon: [{ x: 56, y: 142 }, { x: 264, y: 142 }, { x: 264, y: 166 }, { x: 56, y: 166 }],
+        mask: mask(files.textMask),
+      }],
+      review_status: 'pending',
+      reviewer: null,
+    }
+  })
+  const generated = await buildGeneratedCoverageManifest({
+    evidenceRoot: path.join(storageRoot, baseRelative),
+    source: {
+      sha256: version.source_fingerprint,
+      duration_ms: Number(version.duration_ms),
+      width: 320,
+      height: 180,
+      frame_count: shots.length,
+      time_base: { numerator: 1, denominator: 1000 },
+    },
+    shots: shots.map((shot) => ({
+      shot_id: String(shot.shot_id), start_ms: Number(shot.start_ms), end_ms: Number(shot.end_ms),
+    })),
+    frames,
+    personTracks,
+    textTracks,
+    modelLock: genericModelLock(),
+  })
+  const reviewed = JSON.parse(JSON.stringify(generated))
+  reviewed.status = 'reviewed'
+  reviewed.frames.forEach((frame) => {
+    frame.review_status = frame.review_point_reasons.length > 0 ? 'reviewed' : 'not_required'
+  })
+  ;[...reviewed.person_tracks, ...reviewed.text_tracks].forEach((track) => {
+    track.review_status = 'reviewed'
+    track.reviewer = 'codex-local-review'
+  })
+  const requiredReviewPointCount = reviewed.frames
+    .filter((frame) => frame.review_point_reasons.length > 0).length
+  reviewed.review = {
+    status: 'reviewed', reviewed: true, required_review_point_count: requiredReviewPointCount,
+    reviewed_point_count: requiredReviewPointCount, reviewer: 'codex-local-review',
+  }
+  reviewed.approval_status = 'pending'
+  reviewed.ready_for_reference = false
+  reviewed.analysis_sha256 = canonicalCoverageSha256(reviewed)
+  try {
+    await validateReviewedCoverageManifest({ evidenceRoot: path.join(storageRoot, baseRelative), manifest: reviewed })
+  } catch (error) {
+    throw new Error(`generic reviewed coverage invalid: ${error.code || error.message}`)
+  }
+  const manifestRelativePath = `${baseRelative}/redraw-full-frame-reviewed-manifest.json`
+  const manifestPath = path.join(storageRoot, manifestRelativePath)
+  fs.writeFileSync(manifestPath, `${JSON.stringify(reviewed, null, 2)}\n`)
+  const manifestAssetId = insertStoredArtifact({
+    name: 'generic reviewed full frame coverage', type: 'document',
+    relativePath: manifestRelativePath, mimeType: 'application/json',
+  })
+  const now = new Date().toISOString()
+  database.prepare(`
+    INSERT INTO redraw_assets
+      (version_id, tenant_id, user_id, kind, source_ref_json, localized_name, asset_id,
+       version_number, approval_status, approved_by, approved_at, status, created_at, updated_at)
+    VALUES (?, ?, ?, 'scene', ?, 'reviewed full frame coverage', ?, 1,
+      'approved', ?, ?, 'generated', ?, ?)
+  `).run(
+    Number(versionId), owner.tenant.id, owner.user.id,
+    JSON.stringify({
+      source_ref: { stable_id: 'full-frame-reviewed-coverage' },
+      snapshot: {
+        mode: 'full_frame_reviewed_coverage', version_id: Number(versionId),
+        facts_hash: version.facts_hash, source_fingerprint: version.source_fingerprint,
+        analysis_sha256: reviewed.analysis_sha256,
+      },
+    }),
+    manifestAssetId, owner.user.id, now, now, now,
+  )
+  assertNoPreparationLeaks(reviewed)
+  return reviewed
+}
+
+function approvedCleanRows(versionId) {
+  return database.prepare(`
+    SELECT * FROM redraw_assets
+    WHERE version_id = ? AND kind = 'scene' AND approval_status = 'approved'
+      AND clean_plate_asset_id IS NOT NULL AND deleted_at IS NULL
+    ORDER BY id ASC
+  `).all(Number(versionId))
+}
+
+async function ensureGenericMotionAssets(versionId) {
+  const ctx = {
+    db: database,
+    tenantId: owner.tenant.id,
+    userId: owner.user.id,
+    versionId: Number(versionId),
+    storageRoot,
+    assetReader: { canRead: () => true, owns: () => true },
+  }
+  const coverage = await loadReviewedReferenceCoverage(ctx)
+  const rows = database.prepare('SELECT * FROM redraw_shots WHERE version_id = ? ORDER BY shot_index')
+    .all(Number(versionId))
+  const cleanRows = approvedCleanRows(versionId)
+  const cleanByKey = new Map()
+  for (const row of cleanRows) {
+    const payload = JSON.parse(row.source_ref_json || '{}')
+    const stableId = String(payload.source_ref?.stable_id || '')
+    const kind = String(payload.source_ref?.kind || '')
+    if (stableId && ['person_clean', 'text_subtitle', 'text_screen'].includes(kind)) {
+      cleanByKey.set(`${kind === 'person_clean' ? 'person_clean' : 'text_clean'}:${stableId}`, Number(row.id))
+    }
+  }
+  const identityByKey = new Map(database.prepare(`
+    SELECT * FROM redraw_assets
+    WHERE version_id = ? AND kind = 'character' AND approval_status = 'approved' AND deleted_at IS NULL
+  `).all(Number(versionId)).map((row) => {
+    const payload = JSON.parse(row.source_ref_json)
+    return [String(payload.source_ref?.source_character_key || ''), Number(row.id)]
+  }))
+  for (const descriptor of coverage.shots) {
+    if (descriptor.requirements.some((item) => !cleanByKey.has(`${item.kind}:${item.key}`))) continue
+    const row = rows.find((item) => Number(item.id) === Number(descriptor.shot_id))
+    const faces = descriptor.bundle_evidence.face_tracks.map((track) => ({
+      ...track,
+      identity_redraw_asset_id: identityByKey.get(track.source_character_key),
+    })).sort((left, right) => left.track_key.localeCompare(right.track_key))
+    const texts = descriptor.bundle_evidence.text_regions.map((region) => ({
+      ...region,
+      text_clean_redraw_asset_id: cleanByKey.get(`text_clean:${region.region_key}`),
+    })).sort((left, right) => left.region_key.localeCompare(right.region_key))
+    const metadata = {
+      redraw_motion_reference: {
+        schema_version: 'redraw-motion-reference-v1',
+        tenant_id: owner.tenant.id,
+        user_id: owner.user.id,
+        version_id: Number(versionId),
+        shot_id: Number(row.id),
+        source_asset_id: Number(database.prepare('SELECT source_asset_id FROM redraw_works WHERE id = ?').get(Number(row.work_id)).source_asset_id),
+        source_fingerprint: database.prepare('SELECT source_fingerprint FROM redraw_works WHERE id = ?').get(Number(row.work_id)).source_fingerprint,
+        clip_start_ms: Number(row.start_ms),
+        clip_end_ms: Number(row.end_ms),
+        face_coverage_sha256: sha256Value(stableJson(faces)),
+        text_coverage_sha256: sha256Value(stableJson(texts)),
+      },
+    }
+    const existing = database.prepare("SELECT id, metadata FROM assets WHERE type = 'video' AND category = 'redraw'")
+      .all().some((asset) => stableJson(JSON.parse(asset.metadata || '{}').redraw_motion_reference) === stableJson(metadata.redraw_motion_reference))
+    if (existing) continue
+    const shotFiles = genericPreparationFiles.shots.get(String(row.shot_id))
+    const expectedDuration = (Number(row.end_ms) - Number(row.start_ms)) / 1000
+    let file = shotFiles.motion
+    if (Math.abs(file.duration - expectedDuration) > 0.1) {
+      const safeShotId = String(row.shot_id).replace(/[^a-zA-Z0-9_-]/g, '-')
+      const sourceRelativePath = `generic-preparation/runtime-motion/${safeShotId}-${Number(row.end_ms) - Number(row.start_ms)}.mp4`
+      const sourcePath = path.join(storageRoot, sourceRelativePath)
+      fs.mkdirSync(path.dirname(sourcePath), { recursive: true })
+      runFfmpeg([
+        '-hide_banner', '-loglevel', 'error', '-f', 'lavfi',
+        '-i', `color=c=${shotFiles.definition.color}:size=320x180:rate=12`,
+        '-t', String(expectedDuration), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-an', '-y', sourcePath,
+      ], `${row.shot_id} 运动参考生成`)
+      const sha256 = sha256File(sourcePath)
+      const relativePath = `redraw-conditioning/${sha256}.mp4`
+      const absolutePath = path.join(storageRoot, relativePath)
+      fs.mkdirSync(path.dirname(absolutePath), { recursive: true })
+      fs.copyFileSync(sourcePath, absolutePath)
+      file = { absolutePath, relativePath, sha256, duration: expectedDuration }
+    }
+    insertStoredArtifact({
+      name: `${row.shot_id} motion reference`, type: 'video',
+      relativePath: file.relativePath, mimeType: 'video/mp4', duration: file.duration,
+      width: 320, height: 180, metadata,
+    })
+  }
+}
+
+async function prepareGenericReferences(page, versionId, idempotencyPrefix) {
+  const publicResponses = []
+  const maxRounds = genericReferencePreparationCase.shots
+    .reduce((total, shot) => total + shot.character_keys.length + 3, 0)
+  for (let round = 1; round <= maxRounds; round += 1) {
+    await ensureGenericMotionAssets(versionId)
+    const gate = await browserApi(page, `/api/v1/redraw/versions/${versionId}/preparation-gate`)
+    expect(gate.status, JSON.stringify(gate.body)).toBe(200)
+    publicResponses.push(gate.body)
+    if (gate.body.data.ok === true) return publicResponses
+    const discovered = await browserApi(page, `/api/v1/redraw/versions/${versionId}/reference-preparation-quote`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    })
+    expect(discovered.status, JSON.stringify(discovered.body)).toBe(200)
+    const selectedShotIds = [...new Set([
+      ...discovered.body.data.missing_shot_ids,
+      ...discovered.body.data.needs_attention_shot_ids,
+    ])].slice(0, 1)
+    expect(selectedShotIds.length, JSON.stringify({
+      gate: gate.body,
+      discovered: discovered.body,
+    })).toBeGreaterThan(0)
+    publicResponses.push(discovered.body)
+    const quote = await browserApi(page, `/api/v1/redraw/versions/${versionId}/reference-preparation-quote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shot_ids: selectedShotIds }),
+    })
+    expect(quote.status, JSON.stringify(quote.body)).toBe(200)
+    expect(quote.body.data).toMatchObject({
+      priced: true,
+      quote_hash: expect.any(String),
+      selected_shot_ids: selectedShotIds,
+    })
+    publicResponses.push(quote.body)
+    const started = await browserApi(page, `/api/v1/redraw/versions/${versionId}/reference-preparations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        quote_hash: quote.body.data.quote_hash,
+        idempotency_key: `${idempotencyPrefix}-${round}`,
+        shot_ids: selectedShotIds,
+      }),
+    })
+    expect(started.status, JSON.stringify(started.body)).toBe(202)
+    publicResponses.push(started.body)
+    const taskId = String(started.body.data?.task_id ?? started.body.data?.taskId ?? started.body.task_id ?? '').trim()
+    expect(taskId.length > 0, JSON.stringify(started.body)).toBe(true)
+    await expect.poll(() => database.prepare('SELECT status FROM async_tasks WHERE id = ?').get(taskId)?.status, {
+      timeout: 15_000,
+    }).toMatch(/^(completed|needs_attention|failed)$/)
+    const task = database.prepare('SELECT status, error, message, result FROM async_tasks WHERE id = ?').get(taskId)
+    expect(task.status, JSON.stringify({
+      task,
+      runtimeErrors,
+      shots: database.prepare(`
+        SELECT id, shot_id, preparation_state, stale_reason_code, draft_json
+        FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
+      `).all(Number(versionId)),
+    })).not.toBe('failed')
+    const pending = database.prepare(`
+      SELECT * FROM redraw_assets
+      WHERE version_id = ? AND kind = 'scene' AND clean_plate_asset_id IS NOT NULL
+        AND approval_status = 'pending' AND deleted_at IS NULL ORDER BY id
+    `).all(Number(versionId))
+    for (const asset of pending) {
+      const review = await browserApi(page, `/api/v1/redraw/assets/${asset.id}/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approved', expected_updated_at: asset.updated_at }),
+      })
+      expect(review.status, JSON.stringify(review.body)).toBe(200)
+      publicResponses.push(review.body)
+    }
+  }
+  const finalGate = await browserApi(page, `/api/v1/redraw/versions/${versionId}/preparation-gate`)
+  const finalQuote = await browserApi(page, `/api/v1/redraw/versions/${versionId}/reference-preparation-quote`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  })
+  throw new Error(JSON.stringify({
+    finalGate: finalGate.body,
+    finalQuote: finalQuote.body,
+    providerCalls: referencePreparationProviderCalls,
+    shots: database.prepare(`
+      SELECT id, shot_id, preparation_state, stale_reason_code FROM redraw_shots
+      WHERE version_id = ? ORDER BY shot_index
+    `).all(Number(versionId)),
+    held: database.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'held'").get().count,
+  }))
 }
 
 test('通用三镜项目完成前链分析并在低说话人置信度下降级 safe', async ({ page }) => {
@@ -918,9 +1660,9 @@ test('通用三镜项目完成前链分析并在低说话人置信度下降级 s
     duration_ms: 12_000,
   })
   expect(persistedFacts.shots.map((shot) => [shot.id, shot.start_ms, shot.end_ms])).toEqual([
-    ['generic-1', 0, 4_000],
-    ['generic-2', 4_000, 8_000],
-    ['generic-3', 8_000, 12_000],
+    ['shot-1', 0, 4_000],
+    ['shot-2', 4_000, 8_000],
+    ['shot-3', 8_000, 12_000],
   ])
   expect(persistedFacts.characters.map((character) => character.id).sort()).toEqual(['c1', 'c2'])
   expect(persistedFacts.characters.map((character) => character.source_name).sort()).toEqual(['周启', '林薇'])
@@ -1063,22 +1805,346 @@ test('通用三镜项目高置信度分析后完成 es-ES 本地化并物化三�
     version_id: expect.any(Number),
   })
   const localizedVersion = database.prepare(`
-    SELECT id, locale, market, status FROM redraw_versions WHERE id = ?
+    SELECT id, locale, market, status, facts_hash, source_facts_json, name_map_json
+    FROM redraw_versions WHERE id = ?
   `).get(Number(localized.version_id))
   expect(localizedVersion).toMatchObject({
     locale: genericRedrawProject.target.locale,
     market: genericRedrawProject.target.market,
     status: 'asset_review',
   })
+  const localizedSourceFacts = JSON.parse(localizedVersion.source_facts_json)
+  expect(localizedSourceFacts).not.toHaveProperty('script_sha256')
+  expect(localizedSourceFacts).not.toHaveProperty('name_map_source_sha256')
   const localizedShots = database.prepare(`
     SELECT shot_id, start_ms, end_ms FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
   `).all(Number(localized.version_id))
   expect(localizedShots.map((shot) => [shot.shot_id, shot.start_ms, shot.end_ms])).toEqual([
-    ['generic-1', 0, 4_000],
-    ['generic-2', 4_000, 8_000],
-    ['generic-3', 8_000, 12_000],
+    ['shot-1', 0, 4_000],
+    ['shot-2', 4_000, 8_000],
+    ['shot-3', 8_000, 12_000],
   ])
   expect(localized.shots).toHaveLength(3)
+
+  const characterSetup = await materializeGenericCharacterPlan(page, Number(localized.version_id))
+  expect(characterSetup.plan.characters.map((character) => character.source_character_key)).toEqual(['c1', 'c2'])
+  expect(characterSetup.plan).toMatchObject({ ready: true, missing: [] })
+  expect(characterSetup.plan.characters.every((character) => (
+    character.voice.ready === true && character.wardrobe.ready === true
+  ))).toBe(true)
+  const reviewedCoverage = await installGenericReviewedCoverage(Number(localized.version_id))
+  expect(reviewedCoverage.shots).toHaveLength(3)
+  expect(reviewedCoverage.frames).toHaveLength(3)
+  assertNoPreparationLeaks(reviewedCoverage)
+  const preparationResponses = await prepareGenericReferences(
+    page,
+    Number(localized.version_id),
+    'generic-reference-initial',
+  )
+  preparationResponses.forEach(assertNoPreparationLeaks)
+
+  let preparedRows = database.prepare(`
+    SELECT id, shot_id, start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
+           preparation_state, reference_bundle_json, reference_bundle_hash
+    FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
+  `).all(Number(localized.version_id))
+  expect(preparedRows.map((shot) => [shot.shot_id, shot.preparation_state])).toEqual([
+    ['shot-1', 'reference_ready'],
+    ['shot-2', 'reference_ready'],
+    ['shot-3', 'reference_ready'],
+  ])
+  const expectedDialogueByShot = new Map([
+    ['shot-1', [{ speaker_id: 'c1', localized_text: 'Fue aqui.', start_ms: 900, end_ms: 2_300 }]],
+    ['shot-2', [{ speaker_id: 'c2', localized_text: 'No sigas.', start_ms: 800, end_ms: 2_500 }]],
+    ['shot-3', []],
+  ])
+  const canonicalNameMap = Object.fromEntries(Object.entries(JSON.parse(localizedVersion.name_map_json))
+    .map(([key, value]) => [key.trim(), value.trim()])
+    .sort(([left], [right]) => left.localeCompare(right)))
+  const characterNameMapSha256 = sha256Value(stableJson(canonicalNameMap))
+  const expectedDialogueEvidenceByShot = new Map(preparedRows.map((shot) => {
+    const sourceDialogue = JSON.parse(shot.source_dialogue_json).map((turn) => ({
+      id: String(turn.id || '').trim(),
+      speaker_id: String(turn.speaker_id || '').trim(),
+      source_text: String(turn.source_text ?? turn.text ?? '').trim(),
+      start_ms: Number(turn.start_ms) - Number(shot.start_ms),
+      end_ms: Number(turn.end_ms) - Number(shot.start_ms),
+    })).sort((left, right) => left.start_ms - right.start_ms
+      || left.end_ms - right.end_ms
+      || left.speaker_id.localeCompare(right.speaker_id)
+      || left.id.localeCompare(right.id))
+    const turns = JSON.parse(shot.localized_dialogue_json).map((turn) => ({
+      speaker_id: String(turn.speaker_id || '').trim(),
+      localized_text: String(turn.localized_text || '').trim(),
+      start_ms: Number(turn.start_ms) - Number(shot.start_ms),
+      end_ms: Number(turn.end_ms) - Number(shot.start_ms),
+    })).sort((left, right) => left.start_ms - right.start_ms
+      || left.end_ms - right.end_ms
+      || left.speaker_id.localeCompare(right.speaker_id))
+    expect(turns).toEqual(expectedDialogueByShot.get(shot.shot_id))
+    const sourceDialogueSha256 = sha256Value(stableJson(sourceDialogue))
+    const scriptSha256 = sha256Value(stableJson(turns))
+    const binding = {
+      contract: 'redraw-localization-binding-v1',
+      version_id: Number(localizedVersion.id),
+      facts_hash: localizedVersion.facts_hash,
+      target: { locale: localizedVersion.locale, market: localizedVersion.market },
+      shot: {
+        id: Number(shot.id),
+        shot_id: shot.shot_id,
+        start_ms: Number(shot.start_ms),
+        end_ms: Number(shot.end_ms),
+        duration_ms: Number(shot.duration_ms),
+      },
+      source_dialogue_sha256: sourceDialogueSha256,
+      script_sha256: scriptSha256,
+      character_name_map_sha256: characterNameMapSha256,
+    }
+    return [shot.shot_id, {
+      source_dialogue_sha256: sourceDialogueSha256,
+      script_sha256: scriptSha256,
+      character_name_map_sha256: characterNameMapSha256,
+      localization_binding_sha256: sha256Value(stableJson(binding)),
+    }]
+  }))
+  const initialBundleByShot = new Map()
+  const dialogueStates = []
+  for (const shot of preparedRows) {
+    expect(shot.reference_bundle_hash).toMatch(/^[a-f0-9]{64}$/)
+    const bundle = JSON.parse(shot.reference_bundle_json)
+    initialBundleByShot.set(shot.shot_id, { hash: shot.reference_bundle_hash, bundle })
+    expect(bundle).toMatchObject({
+      schema_version: 'redraw-reference-bundle-v2',
+      locale: genericRedrawProject.target.locale,
+      market: genericRedrawProject.target.market,
+      name_map: genericLocalization.name_map,
+    })
+    const expectedTurns = expectedDialogueByShot.get(shot.shot_id)
+    const expectedEvidence = expectedDialogueEvidenceByShot.get(shot.shot_id)
+    expect(bundle.dialogue).toMatchObject({
+      target_locale: 'es-ES',
+      target_market: 'ES',
+      kind: expectedTurns.length ? 'spoken' : 'silent',
+      speech_required: expectedTurns.length > 0,
+      ...expectedEvidence,
+      turns: expectedTurns,
+    })
+    for (const field of [
+      'source_dialogue_sha256',
+      'script_sha256',
+      'character_name_map_sha256',
+      'localization_binding_sha256',
+    ]) expect(bundle.dialogue[field]).toMatch(/^[a-f0-9]{64}$/)
+    dialogueStates.push([
+      bundle.dialogue.kind,
+      bundle.dialogue.speech_required,
+      bundle.dialogue.turns.length,
+    ])
+    expect(JSON.stringify(bundle)).not.toMatch(/[\u3400-\u9fff]/)
+    assertNoPreparationLeaks(bundle)
+    const apiBundle = await browserApi(page, `/api/v1/redraw/shots/${shot.id}/reference-bundle`)
+    expect(apiBundle.status, JSON.stringify(apiBundle.body)).toBe(200)
+    expect(apiBundle.body.data.reference_bundle_hash).toBe(shot.reference_bundle_hash)
+    expect(apiBundle.body.data.bundle).toMatchObject({
+      schema_version: bundle.schema_version,
+      shot_id: bundle.shot_id,
+      version_id: bundle.version_id,
+      locale: bundle.locale,
+      market: bundle.market,
+      name_map: bundle.name_map,
+      dialogue: bundle.dialogue,
+    })
+    assertNoPreparationLeaks(apiBundle.body)
+  }
+  expect(dialogueStates).toEqual([
+    ['spoken', true, 1],
+    ['spoken', true, 1],
+    ['silent', false, 0],
+  ])
+
+  const c1 = genericPreparationFiles.characters.get('c1')
+  const c1State = characterSetup.characterByKey.get('c1')
+  const replacementIdentityAssetId = insertStoredArtifact({
+    name: 'Clara Vega replacement identity', type: 'image',
+    relativePath: c1.replacementIdentity.relativePath, mimeType: 'image/png', width: 320, height: 480,
+  })
+  database.prepare('UPDATE redraw_assets SET asset_id = ? WHERE id = ?')
+    .run(replacementIdentityAssetId, c1State.redrawAssetId)
+  const c1BeforeChange = database.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(c1State.redrawAssetId)
+  const changedIdentity = await browserApi(page, `/api/v1/redraw/assets/${c1State.redrawAssetId}/identity-pack`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      target_actor_label: c1.definition.target_actor_label,
+      confirmed_views: ['front', 'profile', 'full_body'],
+      live_action_human_confirmed: true,
+      adult_status: 'verified_18_plus',
+      identity_consistency_confirmed: true,
+      wardrobe_reference_asset_id: c1State.wardrobeAssetId,
+      wardrobe_consistency_confirmed: true,
+      expected_updated_at: c1BeforeChange.updated_at,
+    }),
+  })
+  expect(changedIdentity.status, JSON.stringify(changedIdentity.body)).toBe(200)
+  expect(changedIdentity.body.data.identity_pack).toMatchObject({
+    persona_origin: 'fictional_ai_generated',
+    target_country: genericRedrawProject.target.market,
+  })
+  assertNoPreparationLeaks(changedIdentity.body)
+  preparedRows = database.prepare(`
+    SELECT id, shot_id, preparation_state, reference_bundle_json, reference_bundle_hash
+    FROM redraw_shots
+    WHERE version_id = ? ORDER BY shot_index
+  `).all(Number(localized.version_id))
+  expect(preparedRows.map((shot) => [shot.shot_id, shot.preparation_state])).toEqual([
+    ['shot-1', 'stale'],
+    ['shot-2', 'stale'],
+    ['shot-3', 'reference_ready'],
+  ])
+  const c1AfterChange = database.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(c1State.redrawAssetId)
+  const c1Review = await browserApi(page, `/api/v1/redraw/assets/${c1State.redrawAssetId}/review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'approved', expected_updated_at: c1AfterChange.updated_at }),
+  })
+  expect(c1Review.status, JSON.stringify(c1Review.body)).toBe(200)
+  assertNoPreparationLeaks(c1Review.body)
+  const providerCallsBeforeRecovery = referencePreparationProviderCalls
+  const recoveryResponses = await prepareGenericReferences(
+    page,
+    Number(localized.version_id),
+    'generic-reference-recovery',
+  )
+  recoveryResponses.forEach(assertNoPreparationLeaks)
+  expect(referencePreparationProviderCalls).toBe(providerCallsBeforeRecovery)
+  preparedRows = database.prepare(`
+    SELECT id, shot_id, preparation_state, reference_bundle_json, reference_bundle_hash
+    FROM redraw_shots
+    WHERE version_id = ? ORDER BY shot_index
+  `).all(Number(localized.version_id))
+  expect(preparedRows.map((shot) => [shot.shot_id, shot.preparation_state])).toEqual([
+    ['shot-1', 'reference_ready'],
+    ['shot-2', 'reference_ready'],
+    ['shot-3', 'reference_ready'],
+  ])
+  const restoredPlan = await browserApi(page, `/api/v1/redraw/versions/${localized.version_id}/character-plan`)
+  expect(restoredPlan.status, JSON.stringify(restoredPlan.body)).toBe(200)
+  expect(restoredPlan.body.data.ready).toBe(true)
+  assertNoPreparationLeaks(restoredPlan.body)
+  const c2State = characterSetup.characterByKey.get('c2')
+  for (const shot of preparedRows) {
+    const initial = initialBundleByShot.get(shot.shot_id)
+    const bundle = JSON.parse(shot.reference_bundle_json)
+    const c1Faces = bundle.face_tracks.filter((face) => face.source_character_key === 'c1')
+    const c2Faces = bundle.face_tracks.filter((face) => face.source_character_key === 'c2')
+    if (genericReferencePreparationCase.shots
+      .find((fixtureShot) => fixtureShot.source_shot_id === shot.shot_id)
+      .character_keys.includes('c1')) {
+      expect(shot.reference_bundle_hash).not.toBe(initial.hash)
+      expect(c1Faces.length).toBeGreaterThan(0)
+      expect(c1Faces.every((face) => face.identity_asset_id === replacementIdentityAssetId)).toBe(true)
+    } else {
+      expect(shot.reference_bundle_hash).toBe(initial.hash)
+      expect(bundle).toEqual(initial.bundle)
+    }
+    expect(c2Faces.every((face) => face.identity_asset_id === c2State.identityAssetId)).toBe(true)
+    expect(bundle.dialogue).toMatchObject({
+      target_locale: 'es-ES',
+      target_market: 'ES',
+      ...expectedDialogueEvidenceByShot.get(shot.shot_id),
+      turns: expectedDialogueByShot.get(shot.shot_id),
+    })
+    expect(JSON.stringify(bundle)).not.toMatch(/[\u3400-\u9fff]/)
+    assertNoPreparationLeaks(bundle)
+
+    const projection = await projectReferenceBundleForGeneration({
+      db: database,
+      tenantId: owner.tenant.id,
+      userId: owner.user.id,
+      versionId: Number(localized.version_id),
+      storageRoot,
+      canReadArtifact: (assetId) => {
+        const asset = database.prepare('SELECT local_path FROM assets WHERE id = ? AND deleted_at IS NULL')
+          .get(Number(assetId))
+        return Boolean(asset?.local_path && fs.existsSync(path.join(storageRoot, asset.local_path)))
+      },
+      assetReader: { canRead: () => true, owns: () => true },
+      createReferenceUrl: ({ asset_id: assetId, kind }) => `/static/redraw/${kind}/${assetId}`,
+    }, Number(shot.id))
+    expect(projection.targetLocale).toBe(genericRedrawProject.target.locale)
+    expect(projection.prompt).toContain(`market ${genericRedrawProject.target.market}`)
+    for (const face of bundle.face_tracks) {
+      expect(projection.prompt).toContain(face.target_character_name)
+    }
+    for (const turn of bundle.dialogue.turns) expect(projection.prompt).toContain(turn.localized_text)
+    expect(projection.prompt).not.toMatch(/[\u3400-\u9fff]/)
+    const { prompt: projectedPrompt, ...projectionMetadata } = projection
+    assertNoPreparationLeaks(projectionMetadata)
+    expect(projectedPrompt).not.toContain(tempRoot)
+    expect(projectedPrompt).not.toContain(storageRoot)
+    expect(projectedPrompt).not.toMatch(/(?:^|\s)[A-Za-z]:[\\/]/)
+    expect(projectedPrompt).not.toMatch(/https?:\/\//i)
+    expect(projectedPrompt).not.toMatch(/\bBearer\s+[A-Za-z0-9._~-]+/i)
+    expect(projectedPrompt).not.toMatch(/\bapi[_-]?key\s*[:=]/i)
+    expect(projectedPrompt).not.toContain('sk-')
+  }
+
+  const preparationGate = await browserApi(
+    page,
+    `/api/v1/redraw/versions/${localized.version_id}/preparation-gate`,
+  )
+  expect(preparationGate.status, JSON.stringify(preparationGate.body)).toBe(200)
+  expect(preparationGate.body.data).toMatchObject({
+    ok: true,
+    ready_shot_ids: preparedRows.map((shot) => Number(shot.id)),
+    missing: [],
+  })
+  assertNoPreparationLeaks(preparationGate.body)
+  const generationGate = await browserApi(
+    page,
+    `/api/v1/redraw/versions/${localized.version_id}/generation-gate`,
+  )
+  expect(generationGate.status, JSON.stringify(generationGate.body)).toBe(200)
+  expect(generationGate.body.data).toMatchObject({ ok: true, current_step: 3, missing: [], blocking: [] })
+  assertNoPreparationLeaks(generationGate.body)
+
+  const cleanAttempts = database.prepare(`
+    SELECT status, approval_status, generation_task_id, credit_reservation_id
+    FROM redraw_assets
+    WHERE version_id = ? AND kind = 'scene' AND clean_plate_asset_id IS NOT NULL
+      AND deleted_at IS NULL ORDER BY id
+  `).all(Number(localized.version_id))
+  expect(cleanAttempts).toHaveLength(7)
+  expect(cleanAttempts.every((attempt) => (
+    ['generated', 'needs_attention'].includes(attempt.status)
+      && attempt.approval_status === 'approved'
+      && /^local-clean-\d+$/.test(attempt.generation_task_id)
+      && typeof attempt.credit_reservation_id === 'string'
+  )), JSON.stringify(cleanAttempts)).toBe(true)
+  expect(new Set(cleanAttempts.map((attempt) => attempt.generation_task_id)).size).toBe(7)
+  expect(new Set(cleanAttempts.map((attempt) => attempt.credit_reservation_id)).size).toBe(7)
+  const reservations = database.prepare(`
+    SELECT id, model, resource_type, amount, status
+    FROM tenant_usage_reservations
+    WHERE tenant_id = ? AND model = 'fake-clean-plate' AND resource_type = 'redraw_asset'
+    ORDER BY created_at, id
+  `).all(owner.tenant.id)
+  expect(reservations).toHaveLength(7)
+  expect(reservations.every((reservation) => (
+    reservation.model === 'fake-clean-plate'
+      && reservation.resource_type === 'redraw_asset'
+      && reservation.amount === 5
+      && reservation.status === 'confirmed'
+  )), JSON.stringify(reservations)).toBe(true)
+  expect(new Set(reservations.map((reservation) => reservation.id))).toEqual(
+    new Set(cleanAttempts.map((attempt) => attempt.credit_reservation_id)),
+  )
+  expect(referencePreparationProviderCalls).toBe(7)
+  expect(providerCallCounts).toEqual({ asset: 0, video: 0, dialogue: 0 })
+  expect(database.prepare('SELECT COUNT(*) AS count FROM video_generations').get().count).toBe(0)
+  expect(database.prepare('SELECT COUNT(*) AS count FROM redraw_asset_batches').get().count).toBe(0)
+  expect(database.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'held'").get().count).toBe(0)
+  expect(database.prepare('SELECT held FROM tenant_credit_accounts WHERE tenant_id = ?').get(owner.tenant.id).held).toBe(0)
 
   await page.reload()
   const refreshed = await browserApi(page, `/api/v1/redraw/works/${workId}`)
@@ -1230,12 +2296,49 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...buildLocalIdentityPackInput(actor),
+        wardrobe_reference_asset_id: Number(asset.asset_id),
+        wardrobe_consistency_confirmed: true,
         expected_updated_at: asset.updated_at,
       }),
     })
     expect(identityResponse.status, JSON.stringify(identityResponse.body)).toBe(200)
     expect(identityResponse.body.data.identity_pack_status).toMatchObject({ ready: true })
   }
+  const bindableAssets = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
+  expect(bindableAssets.status, JSON.stringify(bindableAssets.body)).toBe(200)
+  const characterAssets = bindableAssets.body.data.filter((asset) => asset.kind === 'character')
+  const voiceAssets = bindableAssets.body.data.filter((asset) => asset.kind === 'voice')
+  expect(characterAssets).toHaveLength(sourceFacts.characters.length)
+  expect(voiceAssets).toHaveLength(sourceFacts.characters.length)
+  const voiceAssignments = []
+  for (const characterAsset of characterAssets) {
+    const stableId = String(characterAsset.source_ref?.stable_id
+      || characterAsset.source_ref?.id
+      || characterAsset.source_ref?.source_character_key
+      || '')
+    const voiceAsset = voiceAssets.find((candidate) => (
+      String(candidate.source_ref?.stable_id
+        || candidate.source_ref?.id
+        || candidate.source_ref?.source_character_key
+        || '') === stableId
+    ))
+    expect(voiceAsset, `角色 ${stableId} 缺少匹配音色`).toBeTruthy()
+    const voiceAssignment = await browserApi(page, `/api/v1/redraw/assets/${characterAsset.id}/voice`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        voice_asset_id: voiceAsset.id,
+        expected_updated_at: characterAsset.updated_at,
+      }),
+    })
+    expect(voiceAssignment.status, JSON.stringify(voiceAssignment.body)).toBe(200)
+    expect(voiceAssignment.body.data.voice_snapshot).toMatchObject({
+      provider: 'local-fake-tts', model: 'fake-tts', voice_id: 'fixture-voice', locale: 'en-US',
+    })
+    voiceAssignments.push({ stableId, characterAssetId: characterAsset.id, voiceAssetId: voiceAsset.id })
+  }
+  expect(voiceAssignments).toHaveLength(sourceFacts.characters.length)
+
   const reviewAssetsResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
   expect(reviewAssetsResponse.status, JSON.stringify(reviewAssetsResponse.body)).toBe(200)
   const reviewAssets = reviewAssetsResponse.body.data.filter((asset) => (
@@ -1250,6 +2353,7 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     })
     expect(reviewResponse.status, JSON.stringify(reviewResponse.body)).toBe(200)
   }
+
   const readyWork = await browserApi(page, `/api/v1/redraw/works/${workId}`)
   const preparedShots = []
   for (const shot of readyWork.body.data.shots) {
@@ -1269,7 +2373,7 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
       body: JSON.stringify({
         expected_updated_at: shot.updated_at,
         prompt,
-        model: Number(shot.shot_index) === 1 ? 'seedance-2-fast' : 'fake-video',
+        model: 'bytedance/seedance-2-0-mini',
         duration: generationDurations[Number(shot.shot_index) - 1],
         resolution: '720p',
         count: 1,
@@ -1280,6 +2384,20 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     expect(updateResponse.body.data.compiled_prompt.text).toBe(prompt)
     preparedShots.push(updateResponse.body.data)
   }
+  const reviewedCoverage = await installGenericReviewedCoverage(versionId, {
+    characterKeysByShot: sourceFacts.shots.map((shot) => shot.visible_character_ids || []),
+  })
+  expect(reviewedCoverage.shots).toHaveLength(expectedShotCount)
+  await prepareGenericReferences(page, versionId, 'local-fixture-reference')
+  const preparedReferenceRows = database.prepare(`
+    SELECT preparation_state, reference_bundle_hash
+    FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
+  `).all(versionId)
+  expect(preparedReferenceRows).toHaveLength(expectedShotCount)
+  expect(preparedReferenceRows.every((shot) => (
+    shot.preparation_state === 'reference_ready'
+      && /^[a-f0-9]{64}$/.test(String(shot.reference_bundle_hash || ''))
+  ))).toBe(true)
   const gateResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/generation-gate`)
   expect(gateResponse.status, JSON.stringify(gateResponse.body)).toBe(200)
   expect(gateResponse.body.data.ok, JSON.stringify(gateResponse.body)).toBe(true)
@@ -1317,41 +2435,6 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
   const composedWork = await browserApi(page, `/api/v1/redraw/works/${workId}`)
   expect(composedWork.body.data).toMatchObject({ current_step: 4, workflow_phase: 'video_generation' })
   expect(composedWork.body.data.shots.every((shot) => shot.new_video_ref?.asset_id)).toBe(true)
-
-  const bindableAssets = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
-  expect(bindableAssets.status, JSON.stringify(bindableAssets.body)).toBe(200)
-  const characterAssets = bindableAssets.body.data.filter((asset) => asset.kind === 'character')
-  const voiceAssets = bindableAssets.body.data.filter((asset) => asset.kind === 'voice')
-  expect(characterAssets).toHaveLength(sourceFacts.characters.length)
-  expect(voiceAssets).toHaveLength(sourceFacts.characters.length)
-  const voiceAssignments = []
-  for (const characterAsset of characterAssets) {
-    const stableId = String(characterAsset.source_ref?.stable_id
-      || characterAsset.source_ref?.id
-      || characterAsset.source_ref?.source_character_key
-      || '')
-    const voiceAsset = voiceAssets.find((candidate) => (
-      String(candidate.source_ref?.stable_id
-        || candidate.source_ref?.id
-        || candidate.source_ref?.source_character_key
-        || '') === stableId
-    ))
-    expect(voiceAsset, `角色 ${stableId} 缺少匹配音色`).toBeTruthy()
-    const voiceAssignment = await browserApi(page, `/api/v1/redraw/assets/${characterAsset.id}/voice`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        voice_asset_id: voiceAsset.id,
-        expected_updated_at: characterAsset.updated_at,
-      }),
-    })
-    expect(voiceAssignment.status, JSON.stringify(voiceAssignment.body)).toBe(200)
-    expect(voiceAssignment.body.data.voice_snapshot).toMatchObject({
-      provider: 'local-fake-tts', model: 'fake-tts', voice_id: 'fixture-voice', locale: 'en-US',
-    })
-    voiceAssignments.push({ stableId, characterAssetId: characterAsset.id, voiceAssetId: voiceAsset.id })
-  }
-  expect(voiceAssignments).toHaveLength(sourceFacts.characters.length)
 
   const dialogueQuote = await browserApi(page, `/api/v1/redraw/versions/${versionId}/dialogue/quote`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',

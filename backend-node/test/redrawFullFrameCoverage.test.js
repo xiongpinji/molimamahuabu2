@@ -323,6 +323,57 @@ async function buildValid(t) {
   };
 }
 
+async function makeCoverageFixture(t, shotCount) {
+  const evidenceRoot = fs.mkdtempSync(path.join(os.tmpdir(), `redraw-full-frame-${shotCount}-shot-`));
+  t.after(() => fs.rmSync(evidenceRoot, { recursive: true, force: true }));
+
+  const frameShas = [];
+  for (let index = 0; index < shotCount; index += 1) {
+    frameShas[index] = await writePng(path.join(evidenceRoot, 'frames', `frame-${index}.png`), { value: 20 + (index % 100) });
+  }
+
+  const source = {
+    sha256: 'd'.repeat(64),
+    duration_ms: shotCount * 1000,
+    width: WIDTH,
+    height: HEIGHT,
+    frame_count: shotCount,
+    time_base: { numerator: 1, denominator: 1 },
+  };
+  const shots = Array.from({ length: shotCount }, (_, index) => ({
+    shot_id: `shot-${index + 1}`,
+    start_ms: index * 1000,
+    end_ms: (index + 1) * 1000,
+  }));
+  const frames = Array.from({ length: shotCount }, (_, index) => ({
+    frame_index: index,
+    timestamp_ticks: index,
+    timestamp_ms: index * 1000,
+    shot_id: `shot-${index + 1}`,
+    path: `frames/frame-${index}.png`,
+    sha256: frameShas[index],
+    width: WIDTH,
+    height: HEIGHT,
+    person_region_ids: [],
+    text_region_ids: [],
+    review_point_reasons: [],
+    review_status: 'not_required',
+  }));
+
+  return {
+    evidenceRoot,
+    input: {
+      evidenceRoot,
+      source,
+      shots: shots.reverse(),
+      frames: frames.reverse(),
+      personTracks: [],
+      textTracks: [],
+      modelLock: validModelLock(),
+    },
+  };
+}
+
 async function replacePersonRegionMask({ evidenceRoot, input, regionId, maskPath, rect }) {
   const maskSha = await writeMask(path.join(evidenceRoot, maskPath), { rect });
   return {
@@ -473,6 +524,20 @@ test('builds generated coverage manifest with sorted evidence, stable hash, pend
   assert.equal(JSON.stringify(input), before);
 });
 
+test('builds and validates generated coverage manifests for arbitrary 3 and 12 shot counts', async (t) => {
+  for (const shotCount of [3, 12]) {
+    const { evidenceRoot, input } = await makeCoverageFixture(t, shotCount);
+    const manifest = await buildGeneratedCoverageManifest(input);
+
+    assert.equal(manifest.shots.length, shotCount);
+    assert.deepEqual(manifest.shots.map((shot) => shot.shot_id), Array.from({ length: shotCount }, (_, index) => `shot-${index + 1}`));
+    assert.deepEqual(manifest.frames.map((frame) => frame.shot_id), Array.from({ length: shotCount }, (_, index) => `shot-${index + 1}`));
+    assert.equal(manifest.review.status, 'pending');
+    assert.equal(manifest.review.required_review_point_count, shotCount);
+    assert.deepEqual(await validateGeneratedCoverageManifest({ evidenceRoot, manifest }), manifest);
+  }
+});
+
 test('mask area review point is generated only for large same-track consecutive changes', async (t) => {
   const personFixture = await createFixture(t);
   const personChangedInput = await replacePersonRegionMask({
@@ -535,6 +600,11 @@ test('frame coverage, timestamp drift, shot continuity, and empty shot gaps fail
   await assertInvalid(buildGeneratedCoverageManifest({
     ...input,
     frames: input.frames.map((frame) => frame.frame_index === 2 ? { ...frame, timestamp_ms: 2001 } : frame),
+  }), 'REDRAW_FULL_FRAME_FRAME_GAP', evidenceRoot);
+
+  await assertInvalid(buildGeneratedCoverageManifest({
+    ...input,
+    shots: [],
   }), 'REDRAW_FULL_FRAME_FRAME_GAP', evidenceRoot);
 
   await assertInvalid(buildGeneratedCoverageManifest({

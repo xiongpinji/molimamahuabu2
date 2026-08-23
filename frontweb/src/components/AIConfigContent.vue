@@ -382,6 +382,7 @@
             <el-option label="USMercari 视频（异步提交 / 批量轮询）" value="usmercari_media" />
             <el-option label="ToAPIs 视频（Seedance 2 异步生成）" value="toapis_video" />
             <el-option label="飞拓视频（H3-2K / Seedance 2.5）" value="feituo_open" />
+            <el-option label="灵境视频（Seedance 2.0 Fast / 最多 9 图）" value="lingjing_open" />
             <el-option label="USMercari 图片（文生图 / 公网参考图）" value="usmercari_image" />
             <el-option label="fumin Seedance 2.0（异步任务）" value="fumin_video" />
             <el-option label="DJPSD Seedance 2.0（异步任务）" value="djpsd" />
@@ -1363,13 +1364,18 @@ const FEITUO_ADMIN_VIDEO_CAPABILITIES = Object.freeze({
   'xuan-video-v1-6e7b4763634e6206': Object.freeze({ durations: Object.freeze([15]) }),
   'xuan-seedance-2.5': Object.freeze({ durations: Object.freeze(Array.from({ length: 27 }, (_, index) => index + 4)) }),
 })
+const LINGJING_ADMIN_VIDEO_CAPABILITIES = Object.freeze({
+  'lingjing-video-v1': Object.freeze({ durations: Object.freeze([4, 5, 6, 8, 10, 11, 15]) }),
+})
 function adminVideoCapabilityFor(config = {}) {
   if (config.service_type !== 'video') return null
   const isToapis = config.api_protocol === 'toapis_video' || config.provider === 'toapis'
   const isFeituo = config.api_protocol === 'feituo_open' || config.provider === 'feituo'
+  const isLingjing = config.api_protocol === 'lingjing_open' || config.provider === 'lingjing'
   const model = normalizeModelOption(config.default_model)
     || (Array.isArray(config.model) ? normalizeModelOption(config.model[0]) : '')
   if (isToapis) return TOAPIS_ADMIN_VIDEO_CAPABILITIES[model] || null
+  if (isLingjing) return LINGJING_ADMIN_VIDEO_CAPABILITIES[model] || null
   return isFeituo ? FEITUO_ADMIN_VIDEO_CAPABILITIES[model] || null : null
 }
 const adminVideoCapability = computed(() => adminVideoCapabilityFor(form.value))
@@ -1538,6 +1544,7 @@ const providerConfigs = {
     { id: 'token6688', name: 'Token6688 Seedance 特价按次', models: ['seedance-2-0-special-mini-720p', 'seedance-2-0-special-fast-720p', 'seedance-2-0-special-full-720p'] },
     { id: 'toapis', name: 'ToAPIs Seedance 2', models: ['seedance-2-fast', 'seedance-2-mini'] },
     { id: 'feituo', name: '飞拓 H3-2K / Seedance 2.5', models: ['xuan-video-v1-6e7b4763634e6206', 'xuan-seedance-2.5'] },
+    { id: 'lingjing', name: '灵境 Seedance 2.0 Fast（9 图参考）', models: ['lingjing-video-v1'] },
     { id: 'fumin', name: 'fumin Seedance 2.0', models: ['fumin-seedance-2.0-fast', 'fumin-seedance-2.0-mini'] },
     { id: 'usmercari', name: 'USMercari MiniMax H3 / Seedance', models: ['MiniMax H3', 'seedance-2.0-fast', 'seedance-2.0-mini'] },
     { id: 'icreat', name: 'iCreat Seedance', models: ['bytedance/seedance-2-0-fast', 'bytedance/seedance-2-0-mini'] },
@@ -1608,6 +1615,7 @@ const providerProtocolMap = {
   usmercari_media: 'usmercari_media',
   toapis: 'toapis_video',
   feituo: 'feituo_open',
+  lingjing: 'lingjing_open',
   fumin: 'fumin_video',
   fumin_video: 'fumin_video',
   djpsd: 'djpsd',
@@ -1649,6 +1657,7 @@ function getBaseUrlForProvider(provider) {
   if (p === 'usmercari' || p === 'usmercari_media') return 'https://ai.usmercari.com'
   if (p === 'toapis') return 'https://toapis.com'
   if (p === 'feituo') return 'https://feituokuajing.com'
+  if (p === 'lingjing') return 'https://seed.alimyun.xyz/api/open/v1'
   if (p === 'fumin' || p === 'fumin_video') return 'https://fumin.ai'
   if (p === 'fumin_image') return 'https://fumin.ai/v1'
   if (p === 'agnes') return 'https://apihub.agnes-ai.com/v1'
@@ -1799,6 +1808,9 @@ const endpointPreviewInfo = computed(() => {
   } else if (service_type === 'video') {
     if (proto === 'toapis_video' || p === 'toapis') {
       submitPath = endpoint || '/v1/videos/generations'
+    } else if (proto === 'lingjing_open' || p === 'lingjing') {
+      submitPath = endpoint || '/videos'
+      queryPath = query_endpoint || '/videos/{taskId}'
     } else if (proto === 'feituo_open' || p === 'feituo') {
       submitPath = endpoint || '/api/open/v1/video/generate'
       queryPath = query_endpoint || '/api/open/v1/video/status?jobId={taskId}'
@@ -1871,6 +1883,8 @@ const endpointPreviewInfo = computed(() => {
       queryPath = query_endpoint
     } else if (proto === 'toapis_video' || p === 'toapis') {
       queryPath = '/v1/videos/generations/{taskId}'
+    } else if (proto === 'lingjing_open' || p === 'lingjing') {
+      queryPath = '/videos/{taskId}'
     } else if (proto === 'aihubcc' || p === 'aihubcc') {
       queryPath = '/videos/{taskId}'
     } else if (proto === 'icreat_task' || p === 'icreat') {
@@ -2029,6 +2043,12 @@ function onProviderChange(providerId) {
     form.value.api_protocol = 'feituo_open'
     form.value.endpoint = '/api/open/v1/video/generate'
     form.value.query_endpoint = '/api/open/v1/video/status?jobId={taskId}'
+  }
+  if (st === 'video' && providerId === 'lingjing') {
+    form.value.api_protocol = 'lingjing_open'
+    form.value.endpoint = '/videos'
+    form.value.query_endpoint = '/videos/{taskId}'
+    form.value.video_duration = 4
   }
   if (st === 'video' && (providerId === 'fumin' || providerId === 'fumin_video')) {
     form.value.api_protocol = 'fumin_video'

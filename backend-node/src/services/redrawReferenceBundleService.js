@@ -2,9 +2,12 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const { canonicalCoverageSha256 } = require('./redrawFullFrameCoverageService');
+const { validateReviewedCoverageManifest } = require('./redrawFullFrameReviewService');
 const { verifyMotionReference } = require('./redrawMotionReferenceService');
 
-const SCHEMA_VERSION = 'redraw-reference-bundle-v1';
+const REFERENCE_BUNDLE_SCHEMA_VERSION = 'redraw-reference-bundle-v2';
+const LOCALIZATION_BINDING_CONTRACT = 'redraw-localization-binding-v1';
 const INPUT_CODE = 'REDRAW_REFERENCE_BUNDLE_INPUT_INVALID';
 const NOT_FOUND_CODE = 'REDRAW_REFERENCE_BUNDLE_NOT_FOUND';
 const CONFLICT_CODE = 'REDRAW_REFERENCE_BUNDLE_CONFLICT';
@@ -15,6 +18,7 @@ const DIALOGUE_CODE = 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED';
 const MOTION_CODE = 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE';
 const LIMIT_CODE = 'REDRAW_REFERENCE_BUNDLE_REFERENCE_LIMIT_EXCEEDED';
 const PROJECTION_CODE = 'REDRAW_REFERENCE_BUNDLE_PROJECTION_FAILED';
+const COVERAGE_EVIDENCE_CODE = 'REDRAW_REFERENCE_BUNDLE_COVERAGE_EVIDENCE_REQUIRED';
 const HEX_64 = /^[0-9a-f]{64}$/;
 const INPUT_FIELDS = new Set([
   'shot_id',
@@ -77,6 +81,18 @@ function parseDialogueArray(value) {
     if (error?.code === DIALOGUE_CODE) throw error;
     fail(DIALOGUE_CODE);
   }
+}
+
+function normalizeLocale(value) {
+  const locale = String(value || '').trim();
+  if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$/.test(locale)) fail(DIALOGUE_CODE);
+  return locale;
+}
+
+function normalizeMarket(value, code = DIALOGUE_CODE) {
+  const market = String(value || '').trim();
+  if (!/^[A-Z]{2}$/.test(market)) fail(code);
+  return market;
 }
 
 function assertPlainObject(value, code = INPUT_CODE) {
@@ -174,6 +190,365 @@ function sha256File(storageRoot, asset, code) {
       }
     }
   }
+}
+
+function coverageScope(ctx) {
+  const row = ctx.db.prepare(`
+    SELECT v.id, v.facts_hash, w.source_fingerprint, w.duration_ms
+    FROM redraw_versions v
+    JOIN redraw_works w
+      ON w.id = v.work_id AND w.tenant_id = v.tenant_id AND w.user_id = v.user_id
+      AND w.deleted_at IS NULL
+    WHERE v.id = ? AND v.tenant_id = ? AND v.user_id = ? AND v.deleted_at IS NULL
+  `).get(ctx.versionId, ctx.tenantId, ctx.userId);
+  if (!row || !HEX_64.test(String(row.facts_hash || '')) || !HEX_64.test(String(row.source_fingerprint || ''))) {
+    fail(COVERAGE_EVIDENCE_CODE);
+  }
+  return row;
+}
+
+function coverageEvidenceRow(ctx, scope) {
+  const rows = ctx.db.prepare(`
+    SELECT ra.*, a.local_path AS artifact_local_path, a.type AS artifact_type,
+           a.mime_type AS artifact_mime_type, a.metadata AS artifact_metadata
+    FROM redraw_assets ra
+    JOIN assets a ON a.id = ra.asset_id AND a.deleted_at IS NULL
+    WHERE ra.version_id = ? AND ra.tenant_id = ? AND ra.user_id = ?
+      AND ra.kind = 'scene' AND ra.status = 'generated' AND ra.approval_status = 'approved'
+      AND ra.asset_id IS NOT NULL AND ra.deleted_at IS NULL
+    ORDER BY ra.version_number DESC, ra.id DESC
+  `).all(ctx.versionId, ctx.tenantId, ctx.userId);
+  for (const row of rows) {
+    const payload = parseJson(row.source_ref_json, {});
+    const snapshot = payload.snapshot;
+    if (payload.source_ref?.stable_id !== 'full-frame-reviewed-coverage'
+      || !snapshot || snapshot.mode !== 'full_frame_reviewed_coverage') continue;
+    if (Number(snapshot.version_id) !== ctx.versionId
+      || snapshot.facts_hash !== scope.facts_hash
+      || snapshot.source_fingerprint !== scope.source_fingerprint
+      || !HEX_64.test(String(snapshot.analysis_sha256 || ''))
+      || !row.approved_by || !row.approved_at) fail(COVERAGE_EVIDENCE_CODE);
+    return { row, snapshot };
+  }
+  fail(COVERAGE_EVIDENCE_CODE);
+}
+
+function readCoverageManifest(ctx, evidence) {
+  const asset = {
+    local_path: evidence.row.artifact_local_path,
+  };
+  const portable = String(asset.local_path || '').replace(/\\/g, '/');
+  if (evidence.row.artifact_type !== 'document'
+    || evidence.row.artifact_mime_type !== 'application/json'
+    || path.posix.basename(portable) !== 'redraw-full-frame-reviewed-manifest.json') {
+    fail(COVERAGE_EVIDENCE_CODE);
+  }
+  const metadata = parseJson(evidence.row.artifact_metadata, {});
+  const digest = sha256File(ctx.storageRoot, asset, COVERAGE_EVIDENCE_CODE);
+  if (!HEX_64.test(String(metadata.sha256 || '')) || digest !== metadata.sha256) fail(COVERAGE_EVIDENCE_CODE);
+  const filePath = resolveLocal(ctx.storageRoot, asset.local_path, COVERAGE_EVIDENCE_CODE);
+  let bytes;
+  let manifest;
+  try {
+    bytes = fs.readFileSync(filePath);
+    manifest = JSON.parse(bytes.toString('utf8'));
+  } catch (_) {
+    fail(COVERAGE_EVIDENCE_CODE);
+  }
+  if (sha256(bytes) !== digest || sha256File(ctx.storageRoot, asset, COVERAGE_EVIDENCE_CODE) !== digest) {
+    fail(COVERAGE_EVIDENCE_CODE);
+  }
+  return { manifest, evidenceRoot: path.dirname(filePath), baseRelative: path.posix.dirname(portable) };
+}
+
+function shotRows(ctx) {
+  return ctx.db.prepare(`
+    SELECT * FROM redraw_shots
+    WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+    ORDER BY batch_index ASC, shot_index ASC, id ASC
+  `).all(ctx.versionId, ctx.tenantId, ctx.userId);
+}
+
+function assertCoverageMatchesVersion(scope, rows, manifest, evidence) {
+  if (manifest.analysis_sha256 !== evidence.snapshot.analysis_sha256
+    || manifest.source?.sha256 !== scope.source_fingerprint
+    || Number(manifest.source?.duration_ms) !== Number(scope.duration_ms)) fail(COVERAGE_EVIDENCE_CODE);
+  const expected = rows.map((row) => ({
+    shot_id: String(row.shot_id || ''), start_ms: Number(row.start_ms), end_ms: Number(row.end_ms),
+  }));
+  const actual = Array.isArray(manifest.shots)
+    ? manifest.shots.map((shot) => ({
+        shot_id: String(shot.shot_id || ''), start_ms: Number(shot.start_ms), end_ms: Number(shot.end_ms),
+      }))
+    : [];
+  if (stableJson(actual) !== stableJson(expected)) fail(COVERAGE_EVIDENCE_CODE);
+}
+
+function trackFrames(manifest, shot, track) {
+  const ranges = Array.isArray(track.frame_ranges) ? track.frame_ranges : [];
+  return manifest.frames.filter((frame) => frame.shot_id === shot.shot_id
+    && ranges.some((range) => frame.frame_index >= range.start_frame && frame.frame_index <= range.end_frame));
+}
+
+function trackTimeRanges(manifest, shot, track) {
+  const frames = trackFrames(manifest, shot, track).sort((left, right) => left.frame_index - right.frame_index);
+  if (frames.length === 0) return [];
+  const indexes = new Map(manifest.frames.map((frame) => [frame.frame_index, frame]));
+  const ranges = [];
+  for (const raw of track.frame_ranges) {
+    const matched = frames.filter((frame) => frame.frame_index >= raw.start_frame && frame.frame_index <= raw.end_frame);
+    if (matched.length === 0) continue;
+    const start = Math.max(Number(shot.start_ms), Number(matched[0].timestamp_ms));
+    const last = matched[matched.length - 1];
+    const next = indexes.get(Number(last.frame_index) + 1);
+    const end = Math.min(Number(shot.end_ms), next?.shot_id === shot.shot_id ? Number(next.timestamp_ms) : Number(shot.end_ms));
+    if (start < end) ranges.push([start - Number(shot.start_ms), end - Number(shot.start_ms)]);
+  }
+  ranges.sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+  const merged = [];
+  for (const range of ranges) {
+    const previous = merged[merged.length - 1];
+    if (previous && range[0] <= previous[1]) previous[1] = Math.max(previous[1], range[1]);
+    else merged.push([...range]);
+  }
+  return merged;
+}
+
+function evidenceAsset(ctx, baseRelative, relativePath, expectedSha) {
+  const target = path.posix.join(baseRelative, String(relativePath || '').replace(/\\/g, '/'));
+  const matches = ctx.db.prepare(`
+    SELECT * FROM assets WHERE category = 'redraw' AND type = 'image' AND deleted_at IS NULL
+  `).all().filter((asset) => String(asset.local_path || '').replace(/\\/g, '/') === target);
+  if (matches.length !== 1) fail(COVERAGE_EVIDENCE_CODE);
+  const asset = matches[0];
+  const metadata = parseJson(asset.metadata, {});
+  if (metadata.sha256 !== expectedSha
+    || sha256File(ctx.storageRoot, asset, COVERAGE_EVIDENCE_CODE) !== expectedSha) fail(COVERAGE_EVIDENCE_CODE);
+  return Number(asset.id);
+}
+
+function textKind(value) {
+  if (value === 'subtitle') return 'text_subtitle';
+  if (['screen', 'ui', 'watermark'].includes(value)) return 'text_screen';
+  fail(COVERAGE_EVIDENCE_CODE);
+}
+
+function cleanRequirement(ctx, evidence, manifest, shot, track, kind) {
+  const frames = trackFrames(manifest, shot, track);
+  const frameIndexes = new Set(frames.map((frame) => Number(frame.frame_index)));
+  const region = track.regions.find((item) => frameIndexes.has(Number(item.frame_index)));
+  const frame = region && manifest.frames.find((item) => Number(item.frame_index) === Number(region.frame_index));
+  if (!region || !frame) fail(COVERAGE_EVIDENCE_CODE);
+  const sceneAssetId = evidenceAsset(ctx, evidence.baseRelative, frame.path, frame.sha256);
+  const maskAssetId = evidenceAsset(ctx, evidence.baseRelative, region.mask?.path, region.mask?.sha256);
+  const sceneAsset = {
+    source_asset_id: sceneAssetId,
+    source_fingerprint: frame.sha256,
+    width: frame.width,
+    height: frame.height,
+    shot_id: shot.shot_id,
+    source_ref: {
+      stable_id: String(kind === 'person_clean' ? track.track_key : track.region_key),
+      kind: kind === 'person_clean' ? 'person_clean' : textKind(track.kind),
+      analysis_sha256: manifest.analysis_sha256,
+      frame_index: Number(frame.frame_index),
+    },
+  };
+  if (kind === 'person_clean') {
+    return {
+      kind,
+      key: String(track.track_key),
+      scene_asset: sceneAsset,
+      options: { mask_asset_id: maskAssetId, input_frame_fingerprint: frame.sha256 },
+    };
+  }
+  const normalizedKind = textKind(track.kind);
+  return {
+    kind,
+    key: String(track.region_key),
+    scene_asset: sceneAsset,
+    options: {
+      mask_asset_id: maskAssetId,
+      input_frame_fingerprint: frame.sha256,
+      text_kind: normalizedKind,
+      text_regions: [{ kind: normalizedKind, shape: 'polygon', points: region.polygon, source: 'ocr_region' }],
+    },
+  };
+}
+
+function coverageRequirementKeys(manifest, shot) {
+  if (!Array.isArray(manifest.person_tracks) || !Array.isArray(manifest.text_tracks)) fail(COVERAGE_EVIDENCE_CODE);
+  return [
+    ...manifest.person_tracks
+      .filter((track) => trackTimeRanges(manifest, shot, track).length > 0)
+      .map((track) => `person_clean:${String(track.track_key || '')}`),
+    ...manifest.text_tracks
+      .filter((track) => trackTimeRanges(manifest, shot, track).length > 0)
+      .map((track) => `text_clean:${String(track.region_key || '')}`),
+  ].sort();
+}
+
+function buildCoverageBinding(scope, rows, indexed, manifest) {
+  if (manifest.schema_version !== 'redraw-full-frame-coverage-v1'
+    || manifest.status !== 'reviewed'
+    || manifest.review?.status !== 'reviewed'
+    || manifest.review?.reviewed !== true
+    || manifest.review?.required_review_point_count !== manifest.review?.reviewed_point_count
+    || manifest.approval_status !== 'pending'
+    || manifest.ready_for_reference !== false
+    || canonicalCoverageSha256(manifest) !== manifest.analysis_sha256) fail(COVERAGE_EVIDENCE_CODE);
+  assertCoverageMatchesVersion(scope, rows, manifest, indexed);
+  const shots = rows.map((shot) => {
+    const keys = coverageRequirementKeys(manifest, shot);
+    if (keys.some((key) => !/^(person_clean|text_clean):[A-Za-z0-9._:-]{1,160}$/.test(key))
+      || new Set(keys).size !== keys.length) fail(COVERAGE_EVIDENCE_CODE);
+    return {
+      shot_id: Number(shot.id),
+      requirement_keys: keys,
+      requirement_hash: sha256(stableJson(keys)),
+    };
+  });
+  return {
+    schema_version: 'redraw-coverage-preparation-binding-v1',
+    version_id: Number(scope.id),
+    analysis_sha256: manifest.analysis_sha256,
+    approved_by: String(indexed.row.approved_by || ''),
+    approved_at: String(indexed.row.approved_at || ''),
+    facts_hash: scope.facts_hash,
+    source_fingerprint: scope.source_fingerprint,
+    shots,
+  };
+}
+
+function loadReviewedReferenceCoverageBinding(rawCtx) {
+  const ctx = normalizeContext(rawCtx);
+  const scope = coverageScope(ctx);
+  const rows = shotRows(ctx);
+  const indexed = coverageEvidenceRow(ctx, scope);
+  const evidence = { ...indexed, ...readCoverageManifest(ctx, indexed) };
+  return buildCoverageBinding(scope, rows, evidence, evidence.manifest);
+}
+
+async function loadReviewedReferenceCoverage(rawCtx) {
+  const ctx = normalizeContext(rawCtx);
+  const scope = coverageScope(ctx);
+  const rows = shotRows(ctx);
+  const indexed = coverageEvidenceRow(ctx, scope);
+  const evidence = { ...indexed, ...readCoverageManifest(ctx, indexed) };
+  let manifest;
+  try {
+    manifest = await validateReviewedCoverageManifest({ evidenceRoot: evidence.evidenceRoot, manifest: evidence.manifest });
+  } catch (_) {
+    fail(COVERAGE_EVIDENCE_CODE);
+  }
+  assertCoverageMatchesVersion(scope, rows, manifest, evidence);
+  const coverageBinding = buildCoverageBinding(scope, rows, evidence, manifest);
+  const descriptors = rows.map((shot) => {
+    const persons = manifest.person_tracks.filter((track) => trackTimeRanges(manifest, shot, track).length > 0);
+    const texts = manifest.text_tracks.filter((track) => trackTimeRanges(manifest, shot, track).length > 0);
+    return {
+      shot_id: Number(shot.id),
+      source_shot_id: String(shot.shot_id),
+      requirements: [
+        ...persons.map((track) => cleanRequirement(ctx, evidence, manifest, shot, track, 'person_clean')),
+        ...texts.map((track) => cleanRequirement(ctx, evidence, manifest, shot, track, 'text_clean')),
+      ],
+      bundle_evidence: {
+        face_tracks: persons.filter((track) => track.kind === 'story_role').map((track) => ({
+          track_key: track.track_key,
+          source_character_key: track.source_character_key,
+          time_ranges: trackTimeRanges(manifest, shot, track),
+        })),
+        text_regions: texts.map((track) => ({
+          region_key: track.region_key,
+          kind: textKind(track.kind),
+          time_ranges: trackTimeRanges(manifest, shot, track),
+        })),
+        approved_by: indexed.row.approved_by,
+        approved_at: indexed.row.approved_at,
+        analysis_sha256: manifest.analysis_sha256,
+      },
+    };
+  });
+  return { status: 'approved', shots: descriptors, coverage_binding: coverageBinding };
+}
+
+function sourceKey(row) {
+  const payload = parseJson(row?.source_ref_json, {});
+  return String(payload.source_ref?.source_character_key || payload.source_ref?.stable_id || '').trim();
+}
+
+function currentIdentityAsset(ctx, key) {
+  const matches = ctx.db.prepare(`
+    SELECT * FROM redraw_assets
+    WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND kind = 'character'
+      AND status = 'generated' AND approval_status = 'approved' AND deleted_at IS NULL
+    ORDER BY version_number DESC, id DESC
+  `).all(ctx.versionId, ctx.tenantId, ctx.userId).filter((row) => sourceKey(row) === key);
+  if (matches.length === 0) fail(IDENTITY_CODE);
+  return Number(matches[0].id);
+}
+
+function currentMotionAsset(ctx, shot, faces, texts) {
+  const expected = {
+    tenant_id: ctx.tenantId,
+    user_id: ctx.userId,
+    version_id: ctx.versionId,
+    shot_id: Number(shot.id),
+    source_asset_id: Number(shot.source_asset_id),
+    source_fingerprint: shot.source_fingerprint,
+    clip_start_ms: Number(shot.start_ms),
+    clip_end_ms: Number(shot.end_ms),
+    face_coverage_sha256: sha256(stableJson(faces)),
+    text_coverage_sha256: sha256(stableJson(texts)),
+  };
+  const matches = ctx.db.prepare(`
+    SELECT * FROM assets WHERE type = 'video' AND category = 'redraw' AND deleted_at IS NULL ORDER BY id DESC
+  `).all().filter((asset) => {
+    const motion = parseJson(asset.metadata, {}).redraw_motion_reference;
+    return motion && Object.entries(expected).every(([key, value]) => motion[key] === value);
+  });
+  if (matches.length !== 1) fail(MOTION_CODE);
+  return Number(matches[0].id);
+}
+
+async function buildTrustedReferenceBundleInput(rawCtx, input = {}) {
+  assertPlainObject(input);
+  if (Object.keys(input).some((key) => !['shot_id', 'clean_results'].includes(key))) fail(INPUT_CODE);
+  const ctx = normalizeContext(rawCtx);
+  const shotId = Number(input.shot_id ?? input.shotId);
+  if (!Number.isSafeInteger(shotId) || shotId <= 0 || !Array.isArray(input.clean_results)) fail(INPUT_CODE);
+  const shot = getRows(ctx, shotId).shot;
+  const coverage = await loadReviewedReferenceCoverage(ctx);
+  const descriptor = coverage.shots.find((item) => Number(item.shot_id) === shotId);
+  if (!descriptor) fail(COVERAGE_EVIDENCE_CODE);
+  const cleanByKey = new Map(input.clean_results
+    .filter((item) => item?.status === 'completed')
+    .map((item) => [`${item.kind}:${item.key}`, Number(item.redraw_asset_id)]));
+  const faces = descriptor.bundle_evidence.face_tracks.map((track) => ({
+    ...track,
+    identity_redraw_asset_id: currentIdentityAsset(ctx, track.source_character_key),
+  })).sort((left, right) => left.track_key.localeCompare(right.track_key));
+  const texts = descriptor.bundle_evidence.text_regions.map((region) => {
+    const assetId = cleanByKey.get(`text_clean:${region.region_key}`);
+    if (!Number.isSafeInteger(assetId) || assetId <= 0) fail(TEXT_CODE);
+    return { ...region, text_clean_redraw_asset_id: assetId };
+  }).sort((left, right) => left.region_key.localeCompare(right.region_key));
+  return {
+    shot_id: shotId,
+    motion_reference_asset_id: currentMotionAsset(ctx, shot, faces, texts),
+    face_tracks: faces,
+    text_regions: texts,
+    coverage_review: {
+      status: 'approved',
+      recognizable_face_count: faces.length,
+      mapped_face_count: faces.length,
+      unresolved_face_count: 0,
+      recognizable_text_region_count: texts.length,
+      mapped_text_region_count: texts.length,
+      unresolved_text_region_count: 0,
+    },
+  };
 }
 
 function getRows(ctx, shotId) {
@@ -283,6 +658,7 @@ function identityHash(pack) {
     source_character_key: pack.source_character_key,
     target_actor_label: pack.target_actor_label,
     target_country: pack.target_country,
+    wardrobe: pack.wardrobe,
   }));
 }
 
@@ -293,7 +669,8 @@ function assertAssetDigest(ctx, assetId, expectedSha, kind, code) {
   return asset;
 }
 
-function verifyIdentities(ctx, faces, nameMap) {
+function verifyIdentities(ctx, shot, faces, nameMap) {
+  const targetCountry = normalizeMarket(shot.market, IDENTITY_CODE);
   return faces.map((face) => {
     const row = ctx.db.prepare(`
       SELECT * FROM redraw_assets
@@ -303,7 +680,7 @@ function verifyIdentities(ctx, faces, nameMap) {
     if (!row || row.approval_status !== 'approved') fail(IDENTITY_CODE);
     const payload = parseJson(row.source_ref_json, {});
     const pack = payload.identity_pack;
-    if (!pack || payload.source_ref?.stable_id !== face.source_character_key
+    if (!pack || sourceKey(row) !== face.source_character_key
       || pack.source_character_key !== face.source_character_key
       || row.localized_name !== pack.target_actor_label
       || !nameMap[face.source_character_key]) fail(IDENTITY_CODE);
@@ -314,12 +691,19 @@ function verifyIdentities(ctx, faces, nameMap) {
       || pack.identity_consistency_confirmed !== true
       || pack.adult_status !== 'verified_18_plus'
       || pack.persona_origin !== 'fictional_ai_generated'
-      || pack.target_country !== 'US'
+      || pack.target_country !== targetCountry
       || ![...REQUIRED_VIEWS].every((view) => views.has(view))
       || pack.pack_sha256 !== identityHash(pack)
       || !pack.artifact || Number(pack.artifact.asset_id) !== Number(row.asset_id)
-      || !HEX_64.test(String(pack.artifact.sha256 || ''))) fail(IDENTITY_CODE);
+      || !HEX_64.test(String(pack.artifact.sha256 || ''))
+      || !pack.wardrobe
+      || pack.wardrobe.label !== '整集主服装'
+      || pack.wardrobe.consistency_confirmed !== true
+      || !Number.isSafeInteger(Number(pack.wardrobe.reference_asset_id))
+      || Number(pack.wardrobe.reference_asset_id) <= 0
+      || !HEX_64.test(String(pack.wardrobe.reference_sha256 || ''))) fail(IDENTITY_CODE);
     assertAssetDigest(ctx, pack.artifact.asset_id, pack.artifact.sha256, 'image', IDENTITY_CODE);
+    assertAssetDigest(ctx, pack.wardrobe.reference_asset_id, pack.wardrobe.reference_sha256, 'image', IDENTITY_CODE);
     return {
       redraw_asset_id: row.id,
       source_character_key: face.source_character_key,
@@ -331,6 +715,11 @@ function verifyIdentities(ctx, faces, nameMap) {
       target_country: pack.target_country,
       adult_status: pack.adult_status,
       artifact: pack.artifact,
+      wardrobe: {
+        reference_asset_id: Number(pack.wardrobe.reference_asset_id),
+        reference_sha256: pack.wardrobe.reference_sha256,
+        consistency_confirmed: true,
+      },
       pack_sha256: pack.pack_sha256,
     };
   });
@@ -395,24 +784,126 @@ function isSilenceToken(value) {
   return SILENCE_TOKENS.has(String(value || '').trim().toLowerCase().replace(/\s+/g, ' '));
 }
 
-function verifyDialogue(shot, nameMap, boundCharacters) {
-  if (shot.locale !== 'en-US' || shot.market !== 'US') fail(DIALOGUE_CODE);
-  const facts = parseJson(shot.source_facts_json, {});
-  if (!HEX_64.test(String(facts.script_sha256 || ''))
-    || facts.name_map_source_sha256 !== sha256(stableJson(nameMap))
-    || containsChinese(nameMap)) {
-    fail(DIALOGUE_CODE);
+function normalizeNameMap(value) {
+  assertPlainObject(value, DIALOGUE_CODE);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) fail(DIALOGUE_CODE);
+  const entries = Object.keys(value).map((rawKey) => ({
+    key: String(rawKey).trim(),
+    name: String(value[rawKey] || '').trim(),
+  })).sort((left, right) => left.key.localeCompare(right.key));
+  const keys = new Set();
+  for (const entry of entries) {
+    if (!entry.key || !entry.name || keys.has(entry.key)
+      || ['__proto__', 'prototype', 'constructor'].includes(entry.key)
+      || containsChinese(entry.name)) fail(DIALOGUE_CODE);
+    keys.add(entry.key);
   }
-  const sourceDialogue = parseDialogueArray(shot.source_dialogue_json);
-  const dialogue = parseDialogueArray(shot.localized_dialogue_json);
+  return Object.fromEntries(entries.map((entry) => [entry.key, entry.name]));
+}
+
+function normalizeShotTimeline(shot) {
+  const timeline = {
+    start_ms: shot.start_ms,
+    end_ms: shot.end_ms,
+    duration_ms: shot.duration_ms,
+  };
+  if (!Number.isSafeInteger(timeline.start_ms)
+    || !Number.isSafeInteger(timeline.end_ms)
+    || !Number.isSafeInteger(timeline.duration_ms)
+    || timeline.start_ms < 0
+    || timeline.end_ms <= timeline.start_ms
+    || timeline.duration_ms !== timeline.end_ms - timeline.start_ms) fail(DIALOGUE_CODE);
+  return timeline;
+}
+
+function relativeDialogueRange(entry, timeline) {
+  const start = entry.start_ms;
+  const end = entry.end_ms;
+  if (!Number.isInteger(start) || !Number.isInteger(end)
+    || start < timeline.start_ms || start >= end || end > timeline.end_ms) fail(DIALOGUE_CODE);
+  return { start_ms: start - timeline.start_ms, end_ms: end - timeline.start_ms };
+}
+
+function canonicalSourceDialogue(value, timeline) {
+  return parseDialogueArray(value).map((entry) => {
+    assertPlainObject(entry, DIALOGUE_CODE);
+    const normalized = {
+      id: String(entry.id || '').trim(),
+      speaker_id: String(entry.speaker_id || '').trim(),
+      source_text: String(entry.source_text ?? entry.text ?? '').trim(),
+      ...relativeDialogueRange(entry, timeline),
+    };
+    if (!normalized.speaker_id || !normalized.source_text) fail(DIALOGUE_CODE);
+    return normalized;
+  }).sort((left, right) => left.start_ms - right.start_ms
+    || left.end_ms - right.end_ms
+    || left.speaker_id.localeCompare(right.speaker_id)
+    || left.id.localeCompare(right.id));
+}
+
+function canonicalLocalizedDialogue(value, timeline, nameMap, boundCharacters) {
+  return parseDialogueArray(value).map((entry) => {
+    assertPlainObject(entry, DIALOGUE_CODE);
+    const speaker = String(entry.speaker_id || '').trim();
+    if (typeof entry.localized_text !== 'string') fail(DIALOGUE_CODE);
+    const text = entry.localized_text.trim();
+    const range = relativeDialogueRange(entry, timeline);
+    if (!boundCharacters.has(speaker) || !nameMap[speaker] || !text || containsChinese(text) || isSilenceToken(text)) {
+      fail(DIALOGUE_CODE);
+    }
+    return { speaker_id: speaker, localized_text: text, ...range };
+  }).sort((left, right) => left.start_ms - right.start_ms
+    || left.end_ms - right.end_ms
+    || left.speaker_id.localeCompare(right.speaker_id));
+}
+
+function localizationBinding(shot, timeline, nameMap, sourceDialogue, localizedDialogue) {
+  const sourceDialogueSha256 = sha256(stableJson(sourceDialogue));
+  const scriptSha256 = sha256(stableJson(localizedDialogue));
+  const characterNameMapSha256 = sha256(stableJson(nameMap));
+  const binding = {
+    contract: LOCALIZATION_BINDING_CONTRACT,
+    version_id: Number(shot.version_id),
+    facts_hash: String(shot.facts_hash || ''),
+    target: {
+      locale: normalizeLocale(shot.locale),
+      market: normalizeMarket(shot.market),
+    },
+    shot: {
+      id: Number(shot.id),
+      shot_id: String(shot.shot_id || '').trim(),
+      ...timeline,
+    },
+    source_dialogue_sha256: sourceDialogueSha256,
+    script_sha256: scriptSha256,
+    character_name_map_sha256: characterNameMapSha256,
+  };
+  if (!HEX_64.test(binding.facts_hash) || !binding.shot.shot_id) fail(DIALOGUE_CODE);
+  return {
+    ...binding,
+    localization_binding_sha256: sha256(stableJson(binding)),
+  };
+}
+
+function verifyDialogue(shot, timeline, nameMap, boundCharacters) {
+  const sourceDialogue = canonicalSourceDialogue(shot.source_dialogue_json, timeline);
+  const rawDialogue = parseDialogueArray(shot.localized_dialogue_json);
   const sourceSilent = sourceDialogue.length === 0;
-  const localizedSilent = dialogue.length === 0;
+  const localizedSilent = rawDialogue.length === 0;
   if (sourceSilent !== localizedSilent) fail(DIALOGUE_CODE);
+  const dialogue = sourceSilent
+    ? []
+    : canonicalLocalizedDialogue(rawDialogue, timeline, nameMap, boundCharacters);
+  const binding = localizationBinding(shot, timeline, nameMap, sourceDialogue, dialogue);
   const common = {
     localized_script_version_id: Number(shot.version_id),
-    target_locale: shot.locale,
-    script_sha256: facts.script_sha256,
-    character_name_map_sha256: sha256(stableJson(nameMap)),
+    target_locale: binding.target.locale,
+    target_market: binding.target.market,
+    source_dialogue_sha256: binding.source_dialogue_sha256,
+    script_sha256: binding.script_sha256,
+    character_name_map_sha256: binding.character_name_map_sha256,
+    localization_binding_sha256: binding.localization_binding_sha256,
   };
   if (sourceSilent) {
     return {
@@ -422,24 +913,11 @@ function verifyDialogue(shot, nameMap, boundCharacters) {
       turns: [],
     };
   }
-  if (containsChinese(dialogue)) fail(DIALOGUE_CODE);
-  const normalized = dialogue.map((entry) => {
-    assertPlainObject(entry, DIALOGUE_CODE);
-    const speaker = String(entry.speaker_id || '').trim();
-    const text = String(entry.localized_text || '').trim();
-    const start = Number(entry.start_ms);
-    const end = Number(entry.end_ms);
-    if (!boundCharacters.has(speaker) || !nameMap[speaker] || !text || isSilenceToken(text)
-      || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start >= end || end > Number(shot.duration_ms)) {
-      fail(DIALOGUE_CODE);
-    }
-    return { speaker_id: speaker, localized_text: text, start_ms: start, end_ms: end };
-  }).sort((a, b) => a.start_ms - b.start_ms || a.end_ms - b.end_ms || a.speaker_id.localeCompare(b.speaker_id));
   return {
     ...common,
     kind: 'spoken',
     speech_required: true,
-    turns: normalized,
+    turns: dialogue,
   };
 }
 
@@ -461,7 +939,8 @@ async function buildBundle(ctx, input, options = {}) {
   const ids = validateInput(input);
   const { shot } = getRows(ctx, ids.shotId);
   if (String(shot.updated_at || '') !== ids.expectedUpdatedAt) fail(CONFLICT_CODE);
-  const durationMs = Number(shot.duration_ms);
+  const timeline = normalizeShotTimeline(shot);
+  const durationMs = timeline.duration_ms;
   const coverageReview = normalizeCoverage(input);
   const faces = normalizeFaces(input, durationMs);
   const texts = normalizeTexts(input, durationMs);
@@ -469,9 +948,9 @@ async function buildBundle(ctx, input, options = {}) {
   if (texts.length !== coverageReview.mapped_text_region_count) fail(TEXT_CODE);
   assertFaceOneToOne(faces);
 
-  const nameMap = parseJson(shot.name_map_json, {});
-  const dialogue = verifyDialogue(shot, nameMap, new Set(faces.map((face) => face.source_character_key)));
-  const identityEvidence = verifyIdentities(ctx, faces, nameMap);
+  const nameMap = normalizeNameMap(parseJson(shot.name_map_json, {}));
+  const dialogue = verifyDialogue(shot, timeline, nameMap, new Set(faces.map((face) => face.source_character_key)));
+  const identityEvidence = verifyIdentities(ctx, shot, faces, nameMap);
   const textEvidence = verifyTexts({ ...ctx, sourceFingerprint: shot.source_fingerprint }, texts);
   const faceCoverageSha256 = sha256(stableJson(faces));
   const textCoverageSha256 = sha256(stableJson(texts));
@@ -482,8 +961,8 @@ async function buildBundle(ctx, input, options = {}) {
     expected: {
       source_asset_id: Number(shot.source_asset_id),
       source_fingerprint: shot.source_fingerprint,
-      clip_start_ms: Number(shot.start_ms),
-      clip_end_ms: Number(shot.end_ms),
+      clip_start_ms: timeline.start_ms,
+      clip_end_ms: timeline.end_ms,
       face_coverage_sha256: faceCoverageSha256,
       text_coverage_sha256: textCoverageSha256,
     },
@@ -500,17 +979,17 @@ async function buildBundle(ctx, input, options = {}) {
     text_coverage_sha256: textCoverageSha256,
   };
   const bundle = {
-    schema_version: SCHEMA_VERSION,
+    schema_version: REFERENCE_BUNDLE_SCHEMA_VERSION,
     shot_id: ids.shotId,
     version_id: ctx.versionId,
     duration_ms: durationMs,
-    locale: shot.locale,
-    market: shot.market,
+    locale: dialogue.target_locale,
+    market: dialogue.target_market,
     source: {
       asset_id: Number(shot.source_asset_id),
       sha256: shot.source_fingerprint,
-      clip_start_ms: Number(shot.start_ms),
-      clip_end_ms: Number(shot.end_ms),
+      clip_start_ms: timeline.start_ms,
+      clip_end_ms: timeline.end_ms,
     },
     name_map: nameMap,
     dialogue,
@@ -596,8 +1075,20 @@ async function loadCurrentReferenceBundle(rawCtx, shotId) {
   const id = Number(shotId);
   const { shot } = getRows(ctx, id);
   const bundle = parseJson(shot.reference_bundle_json, null);
-  if (!bundle || bundle.schema_version !== SCHEMA_VERSION || !shot.reference_bundle_hash) fail(NOT_FOUND_CODE);
+  if (!bundle || bundle.schema_version !== REFERENCE_BUNDLE_SCHEMA_VERSION || !shot.reference_bundle_hash) fail(NOT_FOUND_CODE);
   if (canonicalBundleHash(bundle) !== shot.reference_bundle_hash) fail(CONFLICT_CODE);
+  const timeline = normalizeShotTimeline(shot);
+  const currentNameMap = normalizeNameMap(parseJson(shot.name_map_json, {}));
+  const currentDialogue = verifyDialogue(
+    shot,
+    timeline,
+    currentNameMap,
+    new Set(Array.isArray(bundle.face_tracks)
+      ? bundle.face_tracks.map((entry) => String(entry?.source_character_key || '').trim()).filter(Boolean)
+      : []),
+  );
+  if (stableJson(bundle.name_map) !== stableJson(currentNameMap)
+    || stableJson(bundle.dialogue) !== stableJson(currentDialogue)) fail(DIALOGUE_CODE);
   const input = {
     shot_id: id,
     expected_updated_at: shot.updated_at,
@@ -652,6 +1143,8 @@ function promptTimeRange(entry) {
 }
 
 function buildGenerationPrompt(bundle, identityBindings) {
+  const targetLocale = normalizeLocale(bundle.locale);
+  const targetMarket = normalizeMarket(bundle.market, PROJECTION_CODE);
   const nameByCharacter = new Map(identityBindings.map((entry) => [
     entry.source_character_key,
     entry.target_character_name,
@@ -668,9 +1161,9 @@ function buildGenerationPrompt(bundle, identityBindings) {
     });
     dialogueSection = [
       'Dialogue mode: spoken.',
-      'English dialogue timing:',
+      'Dialogue timing:',
       ...dialogueLines,
-      'Generate synchronized US English speech audio for the approved dialogue timing only.',
+      `Generate synchronized ${targetLocale} speech audio for the approved dialogue timing only.`,
     ];
   } else if (bundle.dialogue.kind === 'silent' && bundle.dialogue.speech_required === false) {
     dialogueSection = [
@@ -682,10 +1175,10 @@ function buildGenerationPrompt(bundle, identityBindings) {
     fail(PROJECTION_CODE);
   }
   return [
-    'Create a 1:1 live-action redraw of this short-drama shot for a US English audience.',
+    `Create a 1:1 live-action redraw of this short-drama shot for target locale ${targetLocale} and market ${targetMarket}.`,
     'Use the approved fictional AI-generated adult character references and the silent motion reference only.',
     'Keep the same plot beats, blocking, camera framing, pacing, and visible text coverage.',
-    'Target locale: en-US.',
+    `Target locale: ${targetLocale}.`,
     'Character mapping:',
     ...characterLines,
     ...dialogueSection,
@@ -724,23 +1217,28 @@ async function projectReferenceBundleForGeneration(rawCtx, shotId) {
       target_character_name: face.identity.target_character_name,
       target_actor_label: face.identity.target_actor_label,
       reference_image_asset_id: face.identity.artifact.asset_id,
+      redraw_asset_id: face.identity_redraw_asset_id,
+      identity_pack_sha256: face.identity_pack_sha256,
     }));
     return {
       prompt: buildGenerationPrompt(bundle, identityBindings),
-      targetLocale: 'en-US',
+      targetLocale: normalizeLocale(bundle.locale),
       generateAudio: true,
       referenceImageUrls: [...imageByIdentity.values()],
       referenceVideoUrl,
       identityBindings,
       referenceBundleSnapshot: {
-        schema_version: SCHEMA_VERSION,
+        schema_version: REFERENCE_BUNDLE_SCHEMA_VERSION,
+        reference_bundle_hash: loaded.reference_bundle_hash,
         coverage_sha256: bundle.coverage_sha256,
         source_sha256: bundle.source.sha256,
         motion_sha256: bundle.motion_reference.sha256,
         dialogue_kind: bundle.dialogue.kind,
         speech_required: bundle.dialogue.speech_required,
+        source_dialogue_sha256: bundle.dialogue.source_dialogue_sha256,
         dialogue_script_sha256: bundle.dialogue.script_sha256,
         character_name_map_sha256: bundle.dialogue.character_name_map_sha256,
+        localization_binding_sha256: bundle.dialogue.localization_binding_sha256,
       },
     };
   } catch (_) {
@@ -749,6 +1247,10 @@ async function projectReferenceBundleForGeneration(rawCtx, shotId) {
 }
 
 module.exports = {
+  REFERENCE_BUNDLE_SCHEMA_VERSION,
+  loadReviewedReferenceCoverage,
+  loadReviewedReferenceCoverageBinding,
+  buildTrustedReferenceBundleInput,
   saveReferenceBundle,
   loadCurrentReferenceBundle,
   projectReferenceBundleForGeneration,

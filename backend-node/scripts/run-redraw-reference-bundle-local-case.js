@@ -29,8 +29,12 @@ const HEX_64 = /^[a-f0-9]{64}$/;
 const REVIEWED_AT = '2026-08-14T00:05:00.000Z';
 const UPDATED_AT = '2026-08-14T00:00:00.000Z';
 const SOURCE_FACTS = Object.freeze({
-  script_sha256: '5'.repeat(64),
-  dialogue_sha256: '7'.repeat(64),
+  schema_version: '2.0',
+  duration_ms: 5000,
+  characters: [
+    { id: 'character-001', source_name: '角色一', display_name: '角色一', relationship: '主角' },
+    { id: 'character-002', source_name: '角色二', display_name: '角色二', relationship: '证人' },
+  ],
 });
 
 function codedError(code, message) {
@@ -272,6 +276,12 @@ function identityPack(input) {
     identity_consistency_confirmed: true,
     persona_origin: 'fictional_ai_generated',
     target_country: 'US',
+    wardrobe: {
+      label: '整集主服装',
+      reference_asset_id: input.wardrobe.asset_id,
+      reference_sha256: input.wardrobe.sha256,
+      consistency_confirmed: true,
+    },
     ready: true,
     reviewed_by: 'user-a',
     reviewed_at: REVIEWED_AT,
@@ -339,14 +349,13 @@ async function createFixture(deps = {}) {
 
     const ethan = await writeActorSheet(path.join(root, 'redraw', 'identity-301.png'), 'Ethan AI adult', ['#dbeafe', '#bfdbfe', '#93c5fd', '#1f2937']);
     const maya = await writeActorSheet(path.join(root, 'redraw', 'identity-302.png'), 'Maya AI adult', ['#fce7f3', '#fbcfe8', '#f9a8d4', '#111827']);
+    const ethanWardrobe = await writeImage(path.join(root, 'redraw', 'wardrobe-306.png'), 864, 1296, 'Ethan main wardrobe', ['#e2e8f0', '#94a3b8', '#334155']);
+    const mayaWardrobe = await writeImage(path.join(root, 'redraw', 'wardrobe-307.png'), 864, 1296, 'Maya main wardrobe', ['#fef3c7', '#f59e0b', '#78350f']);
     const subtitle = await writeImage(path.join(root, 'redraw', 'text-clean-303.png'), 864, 496, 'subtitle clean plate', ['#f8fafc', '#dbeafe', '#2563eb']);
     const screen = await writeImage(path.join(root, 'redraw', 'text-clean-304.png'), 864, 496, 'screen clean plate', ['#f9fafb', '#dcfce7', '#16a34a']);
 
     const nameMap = { 'character-001': 'Ethan', 'character-002': 'Maya' };
-    const sourceFacts = {
-      ...SOURCE_FACTS,
-      name_map_source_sha256: sha256(stableJson(nameMap)),
-    };
+    const sourceFacts = SOURCE_FACTS;
     const faceTracks = [
       { track_key: 'face-001', source_character_key: 'character-001', time_ranges: [[0, 5000]], identity_redraw_asset_id: 201 },
       { track_key: 'face-002', source_character_key: 'character-002', time_ranges: [[2500, 5000]], identity_redraw_asset_id: 202 },
@@ -388,13 +397,15 @@ async function createFixture(deps = {}) {
         UPDATED_AT,
       ).lastInsertRowid);
 
-    const identityA = identityPack({ sourceCharacterKey: 'character-001', targetActorLabel: 'Actor Ethan', artifact: { asset_id: 301, sha256: ethan.sha256, width: 864, height: 1296, mime_type: 'image/png', view_count: ethan.view_count, view_layout: ethan.view_layout } });
-    const identityB = identityPack({ sourceCharacterKey: 'character-002', targetActorLabel: 'Actor Maya', artifact: { asset_id: 302, sha256: maya.sha256, width: 864, height: 1296, mime_type: 'image/png', view_count: maya.view_count, view_layout: maya.view_layout } });
+    const identityA = identityPack({ sourceCharacterKey: 'character-001', targetActorLabel: 'Actor Ethan', artifact: { asset_id: 301, sha256: ethan.sha256, width: 864, height: 1296, mime_type: 'image/png', view_count: ethan.view_count, view_layout: ethan.view_layout }, wardrobe: { asset_id: 306, sha256: ethanWardrobe.sha256 } });
+    const identityB = identityPack({ sourceCharacterKey: 'character-002', targetActorLabel: 'Actor Maya', artifact: { asset_id: 302, sha256: maya.sha256, width: 864, height: 1296, mime_type: 'image/png', view_count: maya.view_count, view_layout: maya.view_layout }, wardrobe: { asset_id: 307, sha256: mayaWardrobe.sha256 } });
     for (const asset of [
       { id: 301, name: 'identity-ethan', localPath: 'redraw/identity-301.png', sha256: ethan.sha256, width: 864, height: 1296 },
       { id: 302, name: 'identity-maya', localPath: 'redraw/identity-302.png', sha256: maya.sha256, width: 864, height: 1296 },
       { id: 303, name: 'text-clean-subtitle', localPath: 'redraw/text-clean-303.png', sha256: subtitle.sha256, width: 864, height: 496 },
       { id: 304, name: 'text-clean-screen', localPath: 'redraw/text-clean-304.png', sha256: screen.sha256, width: 864, height: 496 },
+      { id: 306, name: 'wardrobe-ethan', localPath: 'redraw/wardrobe-306.png', sha256: ethanWardrobe.sha256, width: 864, height: 1296 },
+      { id: 307, name: 'wardrobe-maya', localPath: 'redraw/wardrobe-307.png', sha256: mayaWardrobe.sha256, width: 864, height: 1296 },
     ]) {
       insertAsset(db, { ...asset, type: 'image', mimeType: 'image/png' });
     }

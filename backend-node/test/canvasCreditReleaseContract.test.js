@@ -13,6 +13,23 @@ function loadAuditor() {
 
 function createReleaseFixture({ source, script, style }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'canvas-credit-contract-'));
+  for (const relativePath of [
+    'frontweb/src/api/ai.js',
+    'frontweb/src/views/FilmList.vue',
+    'frontweb/src/views/FreeCreate.vue',
+    'frontweb/src/views/DramaCanvas.vue',
+    'frontweb/src/views/HomeCanvas.vue',
+    'frontweb/src/views/FilmCreate.vue',
+    'frontweb/src/components/dramaCanvas/CanvasGenerationOptions.vue',
+    'frontweb/src/components/dramaCanvas/CanvasStoryboardPanel.vue',
+    'frontweb/src/utils/canvasModelCapabilities.js',
+    'frontweb/src/utils/freeCanvasGeneration.js',
+    'frontweb/src/utils/videoGenerationRequest.js',
+  ]) {
+    const target = path.join(root, relativePath);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(path.join(repositoryRoot, relativePath), target);
+  }
   const componentPath = path.join(root, 'frontweb', 'src', 'components', 'dramaCanvas');
   const assetPath = path.join(root, 'frontweb', 'dist', 'assets');
   fs.mkdirSync(componentPath, { recursive: true });
@@ -24,7 +41,7 @@ function createReleaseFixture({ source, script, style }) {
 }
 
 const protectedSource = `
-  <span v-if="canGenerate" class="billing-cost" aria-live="polite">
+  <span v-if="canGenerate" class="billing-cost canvas-credit-callout-v1" aria-live="polite">
     <template v-if="estimatedCredits">本次预计扣除 <strong>{{ estimatedCredits }}</strong> 积分</template>
     <template v-else>积分待管理员配置</template>
   </span>
@@ -32,9 +49,15 @@ const protectedSource = `
   .billing-cost { border: 1px solid #ffb15c; background: #7c4014; font-weight: 800; }
   .billing-cost strong { font-weight: 900; }
   </style>
+  <!-- supportsImageReference supportsVideoReference supportsAudioReference supportsFirstFrame referenceMediaAccept -->
 `;
 
-const protectedScript = 'const label="本次预计扣除";const empty="积分待管理员配置";const className="billing-cost";';
+const protectedScript = [
+  'const label="本次预计扣除";const empty="积分待管理员配置";const className="billing-cost canvas-credit-callout-v1";',
+  'const catalog="/canvas/model-catalog";const capability="capability";const mode="reference_mode";',
+  'const gates="supportsImageReference supportsVideoReference supportsAudioReference supportsFirstFrame";',
+  'const models="gpt-image-2-2-4k nano-banana-2 minimax h3 seedance-2.0-fast seedance-2.0-mini seedance-2-fast seedance-2-mini xuan-video-v1-6e7b4763634e6206 xuan-seedance-2.5 sdas-my-seedance-2.0-fast-upscaled-1080p lingjing-video-v1";',
+].join('');
 const protectedStyle = '.billing-cost{background:#7c4014;border:1px solid #ffb15c;font-weight:800}.billing-cost strong{font-weight:900}';
 
 test('当前仓库源码满足画布积分卡片受保护合同', () => {
@@ -56,6 +79,36 @@ test('审计器拒绝退回旧 billing-note 灰字的源码', (t) => {
   assert.throws(
     () => auditCanvasCreditReleaseContract({ releaseRoot: root }),
     /缺少醒目积分卡片|billing-cost/,
+  );
+});
+
+test('审计器拒绝积分卡缺少受保护合同 class', (t) => {
+  const { auditCanvasCreditReleaseContract } = loadAuditor();
+  const root = createReleaseFixture({
+    source: protectedSource.replace(' canvas-credit-callout-v1', ''),
+    script: protectedScript,
+    style: protectedStyle,
+  });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  assert.throws(
+    () => auditCanvasCreditReleaseContract({ releaseRoot: root }),
+    /canvas-credit-callout-v1/,
+  );
+});
+
+test('生产构建缺少受保护合同 class 时拒绝发布', (t) => {
+  const { auditCanvasCreditReleaseContract } = loadAuditor();
+  const root = createReleaseFixture({
+    source: protectedSource,
+    script: protectedScript.replace(' canvas-credit-callout-v1', ''),
+    style: protectedStyle,
+  });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  assert.throws(
+    () => auditCanvasCreditReleaseContract({ releaseRoot: root, requireBuild: true }),
+    /canvas-credit-callout-v1/,
   );
 });
 
@@ -87,7 +140,9 @@ test('源码和生产构建同时保留合同才通过发布审计', (t) => {
   assert.deepEqual(report, {
     contract: 'canvas-credit-callout-v1',
     sourceValidated: true,
+    modelCatalogSourceValidated: true,
     buildValidated: true,
+    modelCatalogBuildValidated: true,
   });
 });
 

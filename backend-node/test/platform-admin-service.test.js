@@ -6,6 +6,7 @@ const admin = require('../src/services/platform-admin-service');
 const credits = require('../src/services/creditLedgerService');
 const tenants = require('../src/services/tenantService');
 const users = require('../src/services/userAuthService');
+const dailyBonus = require('../src/services/dailyRechargeBonusService');
 
 function setup() {
   const db = new Database(':memory:');
@@ -59,4 +60,19 @@ test('管理员租户列表包含余额和成员数量', () => {
   const row = admin.listTenants(db).find((item) => item.id === tenant.id);
   assert.equal(row.available, 50);
   assert.equal(row.member_count, 1);
+});
+
+test('管理员租户列表的可用余额包含今日赠送', () => {
+  const { db, tenant } = setup();
+  const now = '2026-08-11T03:00:00.000Z';
+  dailyBonus.createMembership(db, {
+    tenantId: tenant.id, orderId: 'order-1', packageId: 'vip-1',
+    packageName: '会员档', dailyBonusCredits: 30, now,
+  });
+
+  const row = admin.listTenants(db, now).find((item) => item.id === tenant.id);
+
+  assert.equal(row.available, 80);
+  assert.equal(row.permanent_available, 50);
+  assert.equal(row.daily_bonus_available, 30);
 });

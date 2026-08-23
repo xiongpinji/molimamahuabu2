@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { execFileSync } = require('node:child_process');
 const sharp = require('sharp');
 
@@ -392,4 +393,37 @@ test('manifest 与 ffmpeg 失败后释放 outputDir lock 且后续正常运行�
   assert.equal(await main(['--fixture', '--output-dir', outputDir], ok.streams), 0);
   assert.equal(ok.chunks.stdout, 'REDRAW_REFERENCE_BUNDLE_LOCAL_OK\n');
   assert.deepEqual(listTransientOutputs(outputDir), []);
+});
+
+test('通用三镜参考准备夹具声明两角色独立本地资产和逐镜真实媒体', async () => {
+  const fixtureUrl = pathToFileURL(path.resolve(
+    __dirname,
+    '../../frontweb/e2e/fixtures/redraw-generic-project.js',
+  )).href;
+  const { genericReferencePreparationCase } = await import(fixtureUrl);
+
+  assert.deepEqual(
+    genericReferencePreparationCase.characters.map((character) => character.source_character_key),
+    ['c1', 'c2'],
+  );
+  assert.equal(new Set(genericReferencePreparationCase.characters.flatMap((character) => [
+    character.identity.relative_path,
+    character.voice.relative_path,
+    character.wardrobe.relative_path,
+  ])).size, 6);
+  assert.deepEqual(
+    genericReferencePreparationCase.shots.map((shot) => [
+      shot.source_shot_id,
+      shot.character_keys,
+      shot.representative_frame.relative_path,
+      shot.person_mask.relative_path,
+      shot.text_mask.relative_path,
+      shot.clean_plate.relative_path,
+    ]),
+    [
+      ['shot-1', ['c1'], 'generic-preparation/shots/shot-1/frame.png', 'generic-preparation/shots/shot-1/person-mask.png', 'generic-preparation/shots/shot-1/text-mask.png', 'generic-preparation/shots/shot-1/clean.png'],
+      ['shot-2', ['c1', 'c2'], 'generic-preparation/shots/shot-2/frame.png', 'generic-preparation/shots/shot-2/person-mask.png', 'generic-preparation/shots/shot-2/text-mask.png', 'generic-preparation/shots/shot-2/clean.png'],
+      ['shot-3', ['c2'], 'generic-preparation/shots/shot-3/frame.png', 'generic-preparation/shots/shot-3/person-mask.png', 'generic-preparation/shots/shot-3/text-mask.png', 'generic-preparation/shots/shot-3/clean.png'],
+    ],
+  );
 });

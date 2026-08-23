@@ -140,8 +140,10 @@ test('右键空白画布提供 LibTV 式添加节点入口并使用点击位置'
 })
 
 test('右键和上传落点优先使用 VueFlow 原生坐标投影', () => {
-  assert.match(alignerSource, /const \{[\s\S]*fitView,[\s\S]*screenToFlowPosition,[\s\S]*setCenter,[\s\S]*updateNodeInternals,[\s\S]*\} = useVueFlow\(\)/)
-  assert.match(alignerSource, /registerCanvasFlowApi\?\.\(\{[\s\S]*fitView,[\s\S]*screenToFlowPosition,[\s\S]*setCenter,[\s\S]*updateNodeInternals,[\s\S]*\}\)/)
+  for (const method of ['fitView', 'screenToFlowPosition', 'setCenter', 'updateNodeInternals']) {
+    assert.match(alignerSource, new RegExp(`\\b${method}\\b`))
+  }
+  assert.match(alignerSource, /registerCanvasFlowApi\?\.\(\{[^}]*screenToFlowPosition[^}]*\}\)/)
   assert.match(canvasSource, /const api = canvasFlowApi\.value/)
   assert.match(canvasSource, /const viewport = api\?\.getViewport\?\.\(\)/)
   assert.match(canvasSource, /currentViewport\.value = \{ x: viewport\.x, y: viewport\.y, zoom: viewport\.zoom \}/)

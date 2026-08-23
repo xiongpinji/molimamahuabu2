@@ -21,24 +21,14 @@ const canvasProviderConfigService = require('./canvasProviderConfigService');
 const { aspectRatioLabelFromPixelSize } = require('./mediaAspectRatioSpec');
 const { downloadPublicImage } = require('./publicImageDownload');
 const usmercariImageClient = require('./usmercariImageClient');
+const fuminImageClient = require('./fuminImageClient');
 const modelPriceService = require('./modelPriceService');
 const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
-const fuminImageClient = require('./fuminImageClient');
 const providerRouteStability = require('./providerRouteStabilityService');
 const { classifyProviderFailure } = require('./providerErrorClassifier');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
 const IMAGE_HTTP_TIMEOUT_MS = 600000;
-
-// 多参考图时注入到所有支持 negative_prompt 的模型，防止生成分割/拼贴布局；同时加入安全词以减少敏感拦截
-const ANTI_SPLIT_NEGATIVE_PROMPT = 'nsfw, nudity, naked, violence, blood, gore, sensitive content, split panels, side-by-side layout, collage, diptych, triptych, grid layout, multiple panels, comparison view, composite image, two images in one frame';
-
-function mergeNegativePromptFragments(auto, user) {
-  const a = (auto || '').trim();
-  const u = (user || '').trim();
-  if (a && u) return `${a}, ${u}`;
-  return a || u || '';
-}
 
 /** 角色/场景/道具资产生图：仅当请求显式传入模型时使用资产上已保存的负面词。 */
 function resolveAssetUserNegativeForApi(explicitModelName, storedNegative) {
@@ -87,6 +77,73 @@ async function compressImageBuffer(buffer, mimeType, targetKB = 2048, log = null
   return { buffer, mimeType };
 }
 
+/**
+ * 压缩 JSON 请求中的 inline 参考图，避免多图同时触发供应商请求体限制。
+ * 公网 HTTPS URL 不下载、不改写，交给供应商按 URL 拉取；仅处理 data:image/*;base64 引用。
+ * @param {string[]} resolvedRefs - resolveImageRef 后的引用列表
+ * @param {{ totalBytes?: number, log?: object }} options
+ * @returns {Promise<string[]>}
+ */
+async function compressResolvedImageRefsForJson(resolvedRefs, options = {}) {
+  const refs = Array.isArray(resolvedRefs) ? resolvedRefs : [];
+  const totalBytes = Number(options.totalBytes || 5 * 1024 * 1024);
+  const log = options.log || null;
+  const inlineRefs = refs.filter((value) => /^data:image\/[^;]+;base64,/i.test(String(value || '')));
+  let remainingBytes = totalBytes;
+  let remainingInline = inlineRefs.length;
+  const output = [];
+
+  for (const ref of refs) {
+    const match = /^data:(image\/[^;]+);base64,(.*)$/i.exec(String(ref || ''));
+    if (!match) {
+      output.push(ref);
+      continue;
+    }
+
+    const buffer = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
+    const fairShare = remainingInline > 0 ? Math.floor(remainingBytes / remainingInline) : totalBytes;
+    const targetBytes = Math.max(256 * 1024, Math.min(2 * 1024 * 1024, fairShare));
+    let prepared = buffer;
+    let mimeType = match[1].toLowerCase();
+
+    if (buffer.length > targetBytes) {
+      const compressed = await compressImageBuffer(buffer, mimeType, Math.floor(targetBytes / 1024), log);
+      prepared = compressed.buffer;
+      mimeType = compressed.mimeType;
+
+      // Highly detailed images can remain above the target at quality 30; reduce dimensions once more.
+      if (prepared.length > targetBytes && getSharp()) {
+        try {
+          const metadata = await getSharp()(prepared).metadata();
+          const scale = Math.sqrt(targetBytes / prepared.length) * 0.9;
+          const width = Math.max(320, Math.floor((metadata.width || 1024) * scale));
+          const height = Math.max(320, Math.floor((metadata.height || 1024) * scale));
+          prepared = await getSharp()(prepared)
+            .resize({ width, height, fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: 45 })
+            .toBuffer();
+          mimeType = 'image/jpeg';
+        } catch (error) {
+          if (log) log.warn('[参考图压缩] 尺寸压缩失败，保留质量压缩结果', { error: error.message });
+        }
+      }
+    }
+
+    if (log && prepared.length !== buffer.length) {
+      log.info('[参考图压缩] JSON 提交前处理', {
+        original_kb: Math.round(buffer.length / 1024),
+        compressed_kb: Math.round(prepared.length / 1024),
+        remaining_budget_kb: Math.round(Math.max(0, remainingBytes - prepared.length) / 1024),
+      });
+    }
+    output.push(`data:${mimeType};base64,${prepared.toString('base64')}`);
+    remainingBytes = Math.max(0, remainingBytes - prepared.length);
+    remainingInline -= 1;
+  }
+
+  return output;
+}
+
 // 惰性加载配置，避免循环依赖与启动顺序问题
 let _appConfig = null;
 function getAppConfig() {
@@ -121,6 +178,15 @@ function inferProtocol(provider, model) {
   if (p === 'agnes' || /agnes-image|apihub\.agnes-ai\.com/i.test(String(model || ''))) return 'agnes';
   if (p === 'fumin_image') return 'openai';
   return 'openai';
+}
+
+function isAihubccBaseUrl(baseUrl) {
+  try {
+    const hostname = new URL(String(baseUrl || '')).hostname.toLowerCase();
+    return hostname === 'aihubcc.cc' || hostname.endsWith('.aihubcc.cc');
+  } catch (_) {
+    return false;
+  }
 }
 
 function providerErrorMeta(data, httpStatus, overrides = {}) {
@@ -168,11 +234,7 @@ async function callAihubccImageApi(config, log, opts = {}) {
   if (gptImage2 && rawRefs.length > 20) {
     return {
       error: 'AIHubCC gpt-image-2 最多支持 20 张参考图，请移除超出的参考图后再生成',
-      route_meta: {
-        phase: 'prepare',
-        requestBodySent: false,
-        explicitlyRejected: true,
-      },
+      route_meta: { phase: 'prepare', requestBodySent: false, explicitlyRejected: true },
     };
   }
   const refs = rawRefs
@@ -183,13 +245,10 @@ async function callAihubccImageApi(config, log, opts = {}) {
   if (gptImage2 && rawRefs.length > 0 && refs.length !== rawRefs.length) {
     return {
       error: 'AIHubCC gpt-image-2 参考图无法读取，请重新上传后再生成',
-      route_meta: {
-        phase: 'prepare',
-        requestBodySent: false,
-        explicitlyRejected: true,
-      },
+      route_meta: { phase: 'prepare', requestBodySent: false, explicitlyRejected: true },
     };
   }
+  const preparedRefs = gptImage2Edit ? refs : await compressResolvedImageRefsForJson(refs, { log });
   const flowModel = aihubccClient.isFlowImageModel(model);
   const asyncModel = aihubccClient.isAsyncImageModel(model);
   const requestSize = /^gpt-image-2(?:-1k)?$/i.test(model)
@@ -219,14 +278,14 @@ async function callAihubccImageApi(config, log, opts = {}) {
       ? aihubccClient.buildFlowImageBody({
           model,
           prompt: opts.prompt,
-          referenceUrls: refs,
+          referenceUrls: preparedRefs,
         })
       : aihubccClient.buildImageBody({
           model,
           prompt: opts.prompt,
           size: requestSize,
           quality: opts.quality,
-          referenceUrls: refs,
+          referenceUrls: preparedRefs,
         });
   }
   const url = aihubccClient.getSubmitUrl(config, endpoint);
@@ -570,9 +629,7 @@ function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServi
   if (candidates.length > 0) return candidates[0];
   const logicalRoute = findLogicalImageRoute(db, preferredModel, imageServiceType);
   if (logicalRoute) return aiConfigService.getConfig(db, logicalRoute.id);
-  const hasVerificationStatus = db.prepare('PRAGMA table_info(ai_service_configs)').all()
-    .some((column) => column.name === 'verification_status');
-  return preferredModel && !hasVerificationStatus
+  return preferredModel && !hasColumn(db, 'ai_service_configs', 'verification_status')
     ? canvasProviderConfigService.getConfig('image', preferredModel)
     : null;
 }
@@ -595,12 +652,6 @@ function hasVerifiedImageModel(config, preferredModel) {
 
 function imageGateError(code, message) {
   const error = new Error(message);
-  error.code = code;
-  return error;
-}
-
-function imageConfigError(code, message) {
-  const error = new Error(message || code);
   error.code = code;
   return error;
 }
@@ -677,6 +728,12 @@ function isUsmercariImageConfig(config, model) {
   return protocol === 'usmercari_image';
 }
 
+function imageConfigError(code, message) {
+  const error = new Error(message || code);
+  error.code = code;
+  return error;
+}
+
 function hasColumn(db, table, columnName) {
   return db.prepare(`PRAGMA table_info(${table})`).all()
     .some((column) => column.name === columnName);
@@ -716,7 +773,9 @@ function getImageConfigById(db, configId, preferredModel) {
   const numericId = normalizeImageConfigId(configId);
 
   const config = aiConfigService.getConfig(db, numericId);
-  if (!config || !['image', 'storyboard_image'].includes(config.service_type)) {
+  if (!config || ![
+    'image', 'storyboard_image', 'redraw_character', 'redraw_scene', 'redraw_prop',
+  ].includes(config.service_type)) {
     throw imageConfigError('IMAGE_CONFIG_NOT_FOUND', '图片模型配置不存在');
   }
   if (!config.is_active) {
@@ -733,8 +792,11 @@ function getImageConfigById(db, configId, preferredModel) {
   }
 
   if (preferredModel) {
-    const wantedModel = String(preferredModel).trim().toLowerCase();
-    const models = Array.isArray(config.model) ? config.model : (config.model != null ? [config.model] : []);
+    const selection = mediaModelSelection.parseQualifiedSelection(preferredModel);
+    const wantedModel = String(selection?.upstreamModel || preferredModel).trim().toLowerCase();
+    const models = [config.default_model, ...(Array.isArray(config.model)
+      ? config.model
+      : (config.model != null ? [config.model] : []))];
     const hasModel = models.some((model) => String(model).trim().toLowerCase() === wantedModel);
     if (!hasModel) {
       throw imageConfigError('IMAGE_CONFIG_MODEL_MISMATCH', '图片模型配置不包含请求模型');
@@ -759,6 +821,12 @@ function getImageConfigCandidates(db, preferredModel, preferredProvider, imageSe
     configs = [...configs, ...fallbackConfigs.filter((config) => !ids.has(String(config.id)))];
   }
   let active = configs.filter((c) => c.is_active);
+  if (hasColumn(db, 'ai_service_configs', 'verification_status')) {
+    const verifiedIds = new Set(db.prepare(
+      "SELECT id FROM ai_service_configs WHERE deleted_at IS NULL AND verification_status = 'verified'",
+    ).all().map((row) => String(row.id)));
+    active = active.filter((config) => verifiedIds.has(String(config.id)));
+  }
   active = active.filter((config) => hasVerifiedImageModel(config, preferredModel));
   if (preferredConfigId != null && String(preferredConfigId).trim()) {
     const selected = active.filter((config) => String(config.id) === String(preferredConfigId));
@@ -1087,7 +1155,7 @@ function extractOpenAIImageResult(data, outputFormat) {
   if (itemImageUrl) return { image_url: itemImageUrl };
   const itemBase64 = normalizeProviderImageOutput(item?.b64_json, {
     allowRawBase64: true,
-    mimeType: imageMimeFromOutputFormat(outputFormat),
+    mimeType: imageMimeFromBase64(item?.b64_json, outputFormat),
   });
   if (itemBase64) {
     return { image_url: itemBase64 };
@@ -1097,7 +1165,10 @@ function extractOpenAIImageResult(data, outputFormat) {
   const resultUrl = normalizeProviderImageOutput(data.result?.url);
   if (resultUrl) return { image_url: resultUrl };
   const firstImage = Array.isArray(data.images)
-    ? normalizeProviderImageOutput(data.images[0], { allowRawBase64: true, mimeType: 'image/png' })
+    ? normalizeProviderImageOutput(data.images[0], {
+        allowRawBase64: true,
+        mimeType: imageMimeFromBase64(data.images[0], 'png'),
+      })
     : null;
   if (!firstImage) return null;
   return { image_url: firstImage };
@@ -1441,7 +1512,10 @@ async function callKlingImageApi(config, log, opts) {
   const m = model || 'kling-image';
 
   const rawRefs = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
-  const resolvedRefs = rawRefs.map((r) => resolveImageRef(r, files_base_url, storage_local_path)).filter(Boolean);
+  const resolvedRefs = await compressResolvedImageRefsForJson(
+    rawRefs.map((r) => resolveImageRef(r, files_base_url, storage_local_path)).filter(Boolean),
+    { log },
+  );
 
   const body = {
     model: m,
@@ -2484,18 +2558,13 @@ async function callGeminiImageApi(db, config, log, opts) {
  * @param {object} opts - { prompt, model?, size?, quality?, drama_id, preferred_provider?, character_id?, image_type?, image_gen_id, user_negative_prompt? }
  * @returns {Promise<{ image_url?: string, error?: string }>}
  */
-async function submitImageWithConfig(db, log, config, opts) {
+async function submitImageWithConfig(db, log, config, opts, runtime = {}) {
   const {
     prompt,
     model: preferredModel,
     size,
     quality,
     resolution,
-    drama_id,
-    preferred_provider,
-    preferred_config_id,
-    character_id,
-    image_type,
     image_gen_id,
     imageServiceType,
     reference_image_urls,
@@ -2517,8 +2586,14 @@ async function submitImageWithConfig(db, log, config, opts) {
   const referenceCount = Array.isArray(reference_image_urls)
     ? reference_image_urls.filter(Boolean).length
     : 0;
+  if (provider === 'fumin_image' && referenceCount > 0) {
+    return {
+      error: 'fumin GPT Image 当前不支持参考图（供应商文档未声明该能力），请改用已验证支持参考图的图片模型',
+      route_meta: { phase: 'prepare', requestBodySent: false, explicitlyRejected: true },
+    };
+  }
   const referenceLimit = configuredImageReferenceLimit(config, model);
-  if (provider !== 'fumin_image' && referenceCount > referenceLimit) {
+  if (referenceCount > referenceLimit) {
     return {
       error: referenceLimit === 0
         ? `${model} 当前不支持参考图`
@@ -2540,7 +2615,7 @@ async function submitImageWithConfig(db, log, config, opts) {
     ref_label_injected: false,
   });
 
-  if (protocol === 'aihubcc') {
+  if (protocol === 'aihubcc' || isAihubccBaseUrl(config.base_url)) {
     const result = await callAihubccImageApi(config, log, {
       prompt: effectivePrompt,
       model,
@@ -2580,43 +2655,9 @@ async function submitImageWithConfig(db, log, config, opts) {
     });
   }
 
-  if (protocol === 'usmercari_image') {
-    const rawReferences = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
-    const submit = assertUsmercariImageSubmitReady(db, config, model, {
-      n: opts.n ?? 1,
-      reference_image_urls: rawReferences,
-      resolution: resolution || '1k',
-    }, opts.evidenceRoots);
-    const resolvedReferences = rawReferences
-      .map((reference) => resolveUsmercariPublicImageRef(reference, files_base_url, storage_local_path))
-      .filter(Boolean);
-    if (resolvedReferences.length !== rawReferences.length) {
-      return { error: 'USMercari 参考图无法组成公网 URL，请检查 STORAGE_BASE_URL 与素材路径' };
-    }
-    return usmercariImageClient.callUsmercariImageApi(config, log, {
-      prompt: effectivePrompt,
-      model,
-      n: submit.quantity,
-      aspect_ratio: opts.aspect_ratio || '1:1',
-      resolution: submit.resolution,
-      image_gen_id,
-      reference_image_urls: resolvedReferences,
-      files_base_url,
-      storage_local_path,
-      allowed_reference_base_url: files_base_url,
-    });
-  }
-
-  // 多参考图时统一生成 negative_prompt（供各子函数使用）
-  const refCountForNeg = Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.filter(Boolean).length : 0;
-  // Seedream/Volcengine 模型强制启用安全词负面提示，其他模型仅在多参考图时启用
-  const isVolcOrSeedream = (protocol === 'volcengine' || /seedream|doubao/i.test(model));
   const explicitNegativePrompt = user_negative_prompt ?? opts.negative_prompt;
   const userNegFragment = (explicitNegativePrompt && String(explicitNegativePrompt).trim()) || '';
-  const autoNegativePrompt = !userNegFragment && (refCountForNeg > 1 || isVolcOrSeedream)
-    ? ANTI_SPLIT_NEGATIVE_PROMPT
-    : '';
-  const mergedNegativePrompt = mergeNegativePromptFragments(autoNegativePrompt, userNegFragment);
+  const mergedNegativePrompt = userNegFragment;
 
   if (protocol === 'dashscope') {
     return callDashScopeImageApi(config, log, {
@@ -2663,7 +2704,10 @@ async function submitImageWithConfig(db, log, config, opts) {
   const isSeedream = isVolc || /seedream|doubao/i.test(model);
   // 解析参考图：本地路径/localhost URL → base64，公网 URL → 直接传
   const rawRefs = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
-  const resolvedRefs = rawRefs.map((r) => resolveImageRef(r, files_base_url, storage_local_path)).filter(Boolean);
+  const resolvedRefs = await compressResolvedImageRefsForJson(
+    rawRefs.map((r) => resolveImageRef(r, files_base_url, storage_local_path)).filter(Boolean),
+    { log },
+  );
   if (provider === 'fumin_image' && resolvedRefs.length > 0) {
     return {
       error: 'fumin GPT Image 当前不支持参考图（供应商文档未声明该能力），请改用已验证支持参考图的图片模型',
@@ -2832,15 +2876,72 @@ function updateImageRouteRequestState(db, requestId, state, now = new Date().toI
 }
 
 async function callImageApi(db, log, opts, runtime = {}) {
-  opts = runtime?.evidenceRoots && !opts.evidenceRoots ? { ...opts, evidenceRoots: runtime.evidenceRoots } : opts;
   const preferredModel = String(opts.model || '').trim() || null;
   const preferredProvider = opts.preferred_provider ?? opts.preferredProvider;
+  const preferredConfigId = opts.preferred_config_id ?? opts.preferredConfigId;
   const requestedCapabilities = {
     resolution: opts.resolution || opts.quality,
     aspectRatio: opts.aspect_ratio || opts.aspectRatio,
     referenceImageCount: Array.isArray(opts.reference_image_urls)
       ? opts.reference_image_urls.filter(Boolean).length
       : 0,
+  };
+  const submitSelectedImageConfig = async (config, selectedOpts) => {
+    const model = getModelFromConfig(config, selectedOpts.model);
+    const provider = String(config.provider || '').toLowerCase();
+    const protocol = String(config.api_protocol || '').toLowerCase() || inferProtocol(provider, model);
+    if (protocol === 'usmercari_image') {
+      const rawReferences = Array.isArray(selectedOpts.reference_image_urls)
+        ? selectedOpts.reference_image_urls.filter(Boolean)
+        : [];
+      const referenceLimit = configuredImageReferenceLimit(config, model);
+      if (rawReferences.length > referenceLimit) {
+        return {
+          error: referenceLimit === 0
+            ? `${model} 当前不支持参考图`
+            : `${model} 最多支持 ${referenceLimit} 个图片参考`,
+        };
+      }
+      log.info('[图生] callImageApi 路由', {
+        image_gen_id: selectedOpts.image_gen_id,
+        protocol,
+        api_protocol_raw: config.api_protocol || '(empty→auto)',
+        provider,
+        model,
+        size: selectedOpts.size,
+        imageServiceType: selectedOpts.imageServiceType,
+        ref_count: rawReferences.length,
+        ref_label_injected: false,
+      });
+      const submit = assertUsmercariImageSubmitReady(db, config, model, {
+        n: selectedOpts.n ?? 1,
+        reference_image_urls: rawReferences,
+        resolution: selectedOpts.resolution || '1k',
+      }, runtime.evidenceRoots);
+      const resolvedReferences = rawReferences
+        .map((reference) => resolveUsmercariPublicImageRef(
+          reference,
+          selectedOpts.files_base_url,
+          selectedOpts.storage_local_path,
+        ))
+        .filter(Boolean);
+      if (resolvedReferences.length !== rawReferences.length) {
+        return { error: 'USMercari 参考图无法组成公网 URL，请检查 STORAGE_BASE_URL 与素材路径' };
+      }
+      return usmercariImageClient.callUsmercariImageApi(config, log, {
+        prompt: selectedOpts.prompt || '',
+        model,
+        n: submit.quantity,
+        aspect_ratio: selectedOpts.aspect_ratio || '1:1',
+        resolution: submit.resolution,
+        image_gen_id: selectedOpts.image_gen_id,
+        reference_image_urls: resolvedReferences,
+        files_base_url: selectedOpts.files_base_url,
+        storage_local_path: selectedOpts.storage_local_path,
+        allowed_reference_base_url: selectedOpts.files_base_url,
+      });
+    }
+    return submitImageWithConfig(db, log, config, selectedOpts, runtime);
   };
   const explicitConfigId = resolveExplicitImageConfigId(opts);
   let logicalModelId = preferredModel;
@@ -2849,7 +2950,7 @@ async function callImageApi(db, log, opts, runtime = {}) {
   if (explicitConfigId != null) {
     const config = getImageConfigById(db, explicitConfigId, preferredModel);
     if (providerRouteStability.resolveCanaryMode(undefined, log) !== 'enforce') {
-      return stripImageRouteMeta(await submitImageWithConfig(db, log, config, opts));
+      return stripImageRouteMeta(await submitSelectedImageConfig(config, opts));
     }
     logicalModelId = String(config.logical_model_id || '').trim();
     if (!logicalModelId) throw new Error('未配置与当前图片生成参数匹配的已验证模型');
@@ -2879,9 +2980,16 @@ async function callImageApi(db, log, opts, runtime = {}) {
       preferredModel,
       preferredProvider,
       opts.imageServiceType,
+      preferredConfigId,
     );
     if (candidates.length === 0) {
-      const fallback = getDefaultImageConfig(db, preferredModel, preferredProvider, opts.imageServiceType);
+      const fallback = getDefaultImageConfig(
+        db,
+        preferredModel,
+        preferredProvider,
+        opts.imageServiceType,
+        preferredConfigId,
+      );
       if (fallback) candidates.push(fallback);
     }
     if (candidates.length === 0) {
@@ -2890,7 +2998,7 @@ async function callImageApi(db, log, opts, runtime = {}) {
     let lastResult = null;
     for (let index = 0; index < candidates.length; index += 1) {
       const config = candidates[index];
-      lastResult = await submitImageWithConfig(db, log, config, opts);
+      lastResult = await submitSelectedImageConfig(config, opts);
       if (lastResult?.image_url) return stripImageRouteMeta(lastResult);
       const classification = classifyProviderFailure(lastResult?.route_meta || {});
       if (!classification.mayFailover || index + 1 >= candidates.length) break;
@@ -2960,7 +3068,7 @@ async function callImageApi(db, log, opts, runtime = {}) {
     }
     let result;
     try {
-      result = await submitImageWithConfig(db, log, config, { ...opts, model: undefined });
+      result = await submitSelectedImageConfig(config, { ...opts, model: undefined });
     } catch (error) {
       result = {
         indeterminate: true,
@@ -3618,6 +3726,7 @@ module.exports = {
   resolveImageModel,
   getReferenceImageCapability,
   callAihubccImageApi,
+  compressResolvedImageRefsForJson,
   buildDjpsdOpenApiImageBody,
   parseDjpsdOpenApiImagePollResponse,
   callDjpsdOpenApiImageApi,

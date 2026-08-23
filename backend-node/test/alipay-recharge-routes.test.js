@@ -85,7 +85,7 @@ async function setupAdminHttpServer() {
   const seededPackage = recharge.createPackage(db, {
     name: '权限矩阵套餐',
     amount_yuan: '10.00',
-    credits: 1000,
+    daily_bonus_credits: 0,
     image_url: 'https://cdn.example.com/permission.webp',
     ad_title: '权限矩阵广告',
     status: 'active',
@@ -144,7 +144,7 @@ function adminPackagePayload(overrides = {}) {
   return {
     name: 'HTTP 权限新增套餐',
     amount_yuan: '20.00',
-    credits: 2200,
+    daily_bonus_credits: 200,
     image_url: 'https://cdn.example.com/http-permission.webp',
     ad_title: 'HTTP 权限广告',
     status: 'active',
@@ -161,7 +161,7 @@ test('用户通过同一支付宝入口创建自定义或套餐订单并只能�
       name: '限时加赠包',
       ad_title: '限时套餐广告',
       amount_yuan: '10',
-      credits: 1500,
+      daily_bonus_credits: 500,
       image_url: 'https://cdn.example.com/promo.jpg',
       status: 'active',
     },
@@ -175,7 +175,8 @@ test('用户通过同一支付宝入口创建自定义或套餐订单并只能�
     body: { package_id: savedPackage.result.body.data.id, client_order_key: 'package-checkout-1' },
   }, created.res);
   assert.equal(created.result.status, 201);
-  assert.equal(created.result.body.data.order.credits, 1500);
+  assert.equal(created.result.body.data.order.credits, 1000);
+  assert.equal(created.result.body.data.order.daily_bonus_credits, 500);
   assert.match(created.result.body.data.payment_url, /^https:\/\/openapi\.alipay\.com\/gateway\.do\?/);
 
   const listed = capture();
@@ -244,7 +245,7 @@ test('管理员套餐排序接口返回最终顺序并将非法请求映射为 4
   const first = recharge.createPackage(db, {
     name: '套餐一',
     amount_yuan: '10.00',
-    credits: 1000,
+    daily_bonus_credits: 0,
     image_url: 'https://cdn.example.com/package-one.webp',
     badge_text: '推荐',
     ad_title: '套餐一广告',
@@ -258,7 +259,7 @@ test('管理员套餐排序接口返回最终顺序并将非法请求映射为 4
   const second = recharge.createPackage(db, {
     name: '套餐二',
     amount_yuan: '20.00',
-    credits: 2200,
+    daily_bonus_credits: 200,
     image_url: 'https://cdn.example.com/package-two.webp',
     badge_text: '加赠',
     ad_title: '套餐二广告',
@@ -340,7 +341,8 @@ test('管理员套餐 list/create/update/reorder 真实 HTTP 路由要求计费�
         assertSuccess(body) {
           assert.equal(body.success, true);
           assert.equal(body.data.name, 'HTTP 权限新增套餐');
-          assert.equal(body.data.credits, 2200);
+          assert.equal(body.data.credits, 2000);
+          assert.equal(body.data.daily_bonus_credits, 200);
         },
       },
       {

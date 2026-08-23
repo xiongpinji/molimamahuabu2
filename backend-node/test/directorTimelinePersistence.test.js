@@ -36,6 +36,7 @@ test('3D 导演台时间线通过画布布局保存后可从剧本 metadata 恢�
     };
 
     const saved = dramaService.saveCanvasLayout(db, log, dramaId, {
+      base_updated_at: now,
       canvas_layout: {
         nodes: { 'node-1': { x: 12, y: 24 } },
         viewport: { x: 0, y: 0, zoom: 0.8 },

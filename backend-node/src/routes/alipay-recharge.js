@@ -15,7 +15,16 @@ function respondRechargeError(res, error) {
     response.error(res, 404, error.code, error.message);
     return true;
   }
-  if (['RECHARGE_PACKAGE_NOT_AVAILABLE', 'RECHARGE_ORDER_IDEMPOTENCY_CONFLICT'].includes(error.code)) {
+  if (['RECHARGE_PACKAGE_NOT_AVAILABLE', 'RECHARGE_ORDER_IDEMPOTENCY_CONFLICT',
+    'RECHARGE_MEMBERSHIP_ACTIVE', 'RECHARGE_PACKAGE_ORDER_PENDING'].includes(error.code)) {
+    response.error(res, 409, error.code, error.message);
+    return true;
+  }
+  if (error.code === 'ALIPAY_QUERY_FAILED') {
+    response.error(res, 502, error.code, error.message);
+    return true;
+  }
+  if (['ALIPAY_AMOUNT_MISMATCH', 'ALIPAY_ORDER_CONFLICT', 'ALIPAY_IDENTITY_MISMATCH'].includes(error.code)) {
     response.error(res, 409, error.code, error.message);
     return true;
   }
@@ -31,9 +40,12 @@ function routes(db, log, gateway) {
       min_amount_yuan: (recharge.MIN_AMOUNT_CENTS / 100).toFixed(2),
       max_amount_yuan: (recharge.MAX_AMOUNT_CENTS / 100).toFixed(2),
     }),
-    listPackages: (_req, res) => {
+    listPackages: (req, res) => {
       try {
-        response.success(res, recharge.listAvailablePackages(db));
+        response.success(res, {
+          packages: recharge.listAvailablePackages(db),
+          membership: recharge.getMembershipStatus(db, req.tenant.id),
+        });
       } catch (error) {
         log.error('alipay recharge list packages', { error: error.message });
         response.internalError(res, error.message);
@@ -106,6 +118,22 @@ function routes(db, log, gateway) {
       } catch (error) {
         if (respondRechargeError(res, error)) return;
         log.error('alipay recharge list orders', { error: error.message });
+        response.internalError(res, error.message);
+      }
+    },
+    reconcileOrder: async (req, res) => {
+      try {
+        response.success(res, await recharge.reconcileOrder(db, {
+          tenantId: req.tenant.id,
+          userId: req.user.id,
+          orderId: req.params.orderId,
+        }, gateway));
+      } catch (error) {
+        if (respondRechargeError(res, error)) return;
+        log.error('alipay recharge reconcile order', {
+          code: error.code,
+          orderId: String(req.params?.orderId || ''),
+        });
         response.internalError(res, error.message);
       }
     },

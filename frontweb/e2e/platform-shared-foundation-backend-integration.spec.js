@@ -153,6 +153,7 @@ function seedDatabase() {
       name: '本地验收积分包',
       amount_yuan: '9.90',
       credits: 1200,
+      daily_bonus_credits: 1200,
       image_url: '/static/uploads/recharge-packages/shared-foundation.png',
       ad_title: '本地展示，不发起支付',
       status: 'active',

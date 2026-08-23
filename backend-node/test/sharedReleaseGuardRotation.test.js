@@ -12,10 +12,13 @@ const repoRoot = path.resolve(__dirname, '..', '..');
 const activatorPath = path.join(repoRoot, 'deploy', 'release-guard', 'activate-protected-release.sh');
 const rotationPath = path.join(repoRoot, 'deploy', 'rotate-external-model-release-guard.sh');
 const externalVerifierPath = path.join(repoRoot, 'deploy', 'release-guard', 'verify-external-model-release.js');
+const uiVerifierPath = path.join(repoRoot, 'backend-node', 'src', 'services', 'canvasCreditReleaseContract.js');
 
 const OLD_ACTIVATOR_SHA256 = 'ddd106c9f3e5d66537687e45d98d89b8c9112dd0038ab5d2e1daad61e5de0cf4';
 const OLD_UI_VERIFIER_SHA256 = '6ba3d9c34bebd27e96f7c431cc1eeb606bb9c624982e687632d16eccf6609b8b';
 const OLD_SEQUENCE_VERIFIER_SHA256 = 'b0fce00c3155cb14c59962239abea8bdf6eb876b7f3b490458fc018be3c6adfe';
+const INSTALLED_UI_VERIFIER_SHA256 = '71058262a6098d636777cbbcd41a68c87d3a28d909c2bd98abac6e86e98a577b';
+const INSTALLED_EXTERNAL_VERIFIER_SHA256 = 'fc58e3e7c94e3215b43406793fb974a4804cebc69617855e5a550bb86806ee35';
 
 // Exact production guard inputs are compressed so the rotation transaction can
 // exercise the hard-coded old-file CAS without adding a production bypass.
@@ -177,7 +180,7 @@ function makeRotationFixture(t) {
     root: true,
     input: [
       'set -euo pipefail',
-      `install -d -o root -g root -m 0755 ${shellQuote(candidate + '/deploy/release-guard')} ${shellQuote(expected)} ${shellQuote(guardRoot)} ${shellQuote(evidenceStaging + '/assets')}`,
+      `install -d -o root -g root -m 0755 ${shellQuote(candidate + '/deploy/release-guard')} ${shellQuote(candidate + '/backend-node/src/services')} ${shellQuote(expected)} ${shellQuote(guardRoot)} ${shellQuote(evidenceStaging + '/assets')}`,
       `printf '%s\\n' candidate > ${shellQuote(candidate + '/payload.txt')}`,
       `printf '%s\\n' expected > ${shellQuote(expected + '/payload.txt')}`,
       `ln -s ${shellQuote(expected)} ${shellQuote(currentLink)}`,
@@ -241,16 +244,19 @@ function makeRotationFixture(t) {
   writeLinuxFile(`${source}/deploy/release-guard/activate-protected-release.sh`, testActivatorSource, '0555');
   const externalVerifierSource = `
     const fs = require('node:fs');
-    if (process.argv.length !== 4) process.exit(64);
+    if (process.argv.length !== 5) process.exit(64);
     if (process.env.NODE_OPTIONS || process.env.NODE_PATH || process.env.PATH !== '/usr/sbin:/usr/bin:/sbin:/bin') process.exit(90);
     fs.accessSync(process.argv[2]);
     fs.accessSync(process.argv[3]);
+    fs.accessSync(process.argv[4]);
   `;
   writeLinuxFile(`${source}/deploy/release-guard/verify-external-model-release.js`, externalVerifierSource, '0555');
+  writeLinuxFile(`${source}/backend-node/src/services/canvasCreditReleaseContract.js`, 'process.exit(0); // reviewed new UI verifier\n', '0555');
 
   const materializeRotation = ({ failAfterActivatorInstall = false } = {}) => {
     const candidateActivator = readLinuxFile(`${source}/deploy/release-guard/activate-protected-release.sh`);
     const candidateExternalVerifier = readLinuxFile(`${source}/deploy/release-guard/verify-external-model-release.js`);
+    const candidateUiVerifier = readLinuxFile(`${source}/backend-node/src/services/canvasCreditReleaseContract.js`);
     let rotationSource = fs.readFileSync(rotationPath, 'utf8')
       .replaceAll('/usr/bin/node', trustedNode)
       .replace(/^RELEASES_ROOT='\/opt\/moli-drama\/releases'$/m, `RELEASES_ROOT='${releasesRoot}'`)
@@ -267,6 +273,23 @@ function makeRotationFixture(t) {
     rotationSource = rotationSource.replace(
       /EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256='[a-f0-9]{64}'/,
       `EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256='${sha256(candidateExternalVerifier)}'`,
+    );
+    const installedExternalPath = `${guardRoot}/verify-external-model-release.js`;
+    const installedExternalExists = runLinux('test', ['-f', installedExternalPath], { root: true }).status === 0;
+    const installedExternalHash = installedExternalExists
+      ? sha256(readLinuxFile(installedExternalPath))
+      : sha256(candidateExternalVerifier);
+    rotationSource = rotationSource.replace(
+      /EXPECTED_INSTALLED_EXTERNAL_VERIFIER_SHA256='[a-f0-9]{64}'/,
+      `EXPECTED_INSTALLED_EXTERNAL_VERIFIER_SHA256='${installedExternalHash}'`,
+    );
+    rotationSource = rotationSource.replace(
+      /EXPECTED_INSTALLED_UI_VERIFIER_SHA256='[a-f0-9]{64}'/,
+      `EXPECTED_INSTALLED_UI_VERIFIER_SHA256='${sha256(candidateUiVerifier)}'`,
+    );
+    rotationSource = rotationSource.replace(
+      /EXPECTED_NEW_UI_VERIFIER_SHA256='[a-f0-9]{64}'/,
+      `EXPECTED_NEW_UI_VERIFIER_SHA256='${sha256(candidateUiVerifier)}'`,
     );
     if (failAfterActivatorInstall) {
       rotationSource = rotationSource.replace(
@@ -500,7 +523,7 @@ test('activator preserves the live baseline and adds fixed external evidence plu
   assert.match(source, /verify-canvas-reference-sequence-contract\.js/);
   assert.match(source, /verify-external-model-release\.js/);
   assert.match(source, /release-evidence\/external-models-v1/);
-  assert.match(source, /env -i[\s\\]+PATH="\$SAFE_PATH"[\s\\]+LC_ALL=C[\s\\]+"\$NODE_BINARY" "\$EXTERNAL_MODEL_VERIFIER" "\$CANDIDATE" "\$EXTERNAL_MODEL_EVIDENCE_ROOT"/);
+  assert.match(source, /env -i[\s\\]+PATH="\$SAFE_PATH"[\s\\]+LC_ALL=C[\s\\]+"\$NODE_BINARY" "\$EXTERNAL_MODEL_VERIFIER" "\$CANDIDATE" "\$EXTERNAL_MODEL_EVIDENCE_ROOT" "\$EXPECTED_CURRENT"/);
   assert.doesNotMatch(source, /\bnode "\$[^\n]*VERIFIER/);
   assert.doesNotMatch(source, /EXTERNAL_MODEL_(?:RELEASE_)?EVIDENCE(?:_ROOT)?[:-]/);
   assert.match(source, /find -P .* -type l/);
@@ -595,6 +618,7 @@ test('activator ignores evidence-path env overrides and passes only the fixed sh
   assert.deepEqual(invocation.args, [
     fixture.linux.candidate,
     fixture.linux.evidenceRoot,
+    fixture.linux.expected,
   ]);
   assert.deepEqual(invocation.env, {
     LC_ALL: 'C',
@@ -885,7 +909,10 @@ test('manual rotation hard-codes old guard hashes and root-owned staged evidence
   assert.doesNotMatch(source, /(?:RELEASES_ROOT|CURRENT_LINK|SHARED_ROOT)="\$\{MOLI_DRAMA_/);
   assert.doesNotMatch(source, /MOLI_DRAMA_(?:RELEASES_ROOT|CURRENT_LINK|SHARED_ROOT)/);
   assert.match(source, new RegExp(`EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256='${externalVerifierHash}'`));
+  assert.match(source, new RegExp(`EXPECTED_INSTALLED_EXTERNAL_VERIFIER_SHA256='${INSTALLED_EXTERNAL_VERIFIER_SHA256}'`));
   assert.match(source, new RegExp(`EXPECTED_NEW_ACTIVATOR_SHA256='${activatorHash}'`));
+  assert.match(source, new RegExp(`EXPECTED_NEW_UI_VERIFIER_SHA256='${INSTALLED_UI_VERIFIER_SHA256}'`));
+  assert.match(source, /NEW_UI_VERIFIER_SOURCE=.*canvasCreditReleaseContract\.js/);
   assert.match(source, /SOURCE_RELEASE.*CANDIDATE|CANDIDATE.*SOURCE_RELEASE/s);
   assert.match(source, /source release must equal candidate/i);
   assert.match(source, /deploy\.lock/);
@@ -922,6 +949,22 @@ test('manual rotation refuses an unknown old guard hash before replacement', { s
   assert.notEqual(external.status, 0);
 });
 
+test('manual rotation passes expected current to the external verifier', () => {
+  const source = fs.readFileSync(rotationPath, 'utf8');
+  assert.match(source, /"\$EXTERNAL_MODEL_VERIFIER" "\$CANDIDATE" "\$EVIDENCE_TARGET" "\$EXPECTED_CURRENT"/);
+});
+
+test('manual rotation refuses an unknown installed external verifier before replacement', { skip: !rootBashAvailable }, (t) => {
+  const fixture = makeRotationFixture(t);
+  const unexpected = 'process.exit(0); // unreviewed installed external verifier\n';
+  writeLinuxFile(`${fixture.guardRoot}/verify-external-model-release.js`, unexpected, '0555');
+
+  const result = runRotation(fixture);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /installed external model verifier hash mismatch/i);
+  assert.equal(readLinuxFile(`${fixture.guardRoot}/verify-external-model-release.js`).toString(), unexpected);
+});
+
 test('manual rotation refuses a distinct source release and candidate', { skip: !rootBashAvailable }, (t) => {
   const fixture = makeRotationFixture(t);
   const otherSource = `${fixture.releasesRoot}/other-source`;
@@ -942,6 +985,15 @@ test('manual rotation refuses a new activator that does not match its reviewed h
   assert.match(result.stderr, /reviewed new activator hash mismatch/i);
 });
 
+test('manual rotation refuses a new UI verifier that does not match its reviewed hard-coded SHA', { skip: !rootBashAvailable }, (t) => {
+  const fixture = makeRotationFixture(t);
+  const tamper = runLinux('/bin/bash', ['-lc', `printf '%s\n' tamper >> ${shellQuote(fixture.source + '/backend-node/src/services/canvasCreditReleaseContract.js')}`], { root: true });
+  assert.equal(tamper.status, 0, tamper.stderr);
+  const result = runRotation(fixture);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /reviewed new UI verifier hash mismatch/i);
+});
+
 test('manual rotation atomically replaces existing evidence and retains its exact backup', { skip: !rootBashAvailable }, (t) => {
   const fixture = makeRotationFixture(t);
   const installedEvidence = `${fixture.sharedRoot}/release-evidence/external-models-v1`;
@@ -960,7 +1012,10 @@ test('manual rotation atomically replaces existing evidence and retains its exac
   assert.equal(oldMarker.stdout, 'old-reviewed-evidence\n');
   const installedActivator = readLinuxFile(`${fixture.guardRoot}/activate-protected-release.sh`);
   const reviewedActivator = readLinuxFile(`${fixture.source}/deploy/release-guard/activate-protected-release.sh`);
+  const installedUiVerifier = readLinuxFile(`${fixture.guardRoot}/verify-protected-release.js`);
+  const reviewedUiVerifier = readLinuxFile(`${fixture.source}/backend-node/src/services/canvasCreditReleaseContract.js`);
   assert.equal(sha256(installedActivator), sha256(reviewedActivator));
+  assert.equal(sha256(installedUiVerifier), sha256(reviewedUiVerifier));
   assert.doesNotMatch(installedActivator.toString('utf8'), /verify-only-harness|\.external-model-release-guard-rotation\./);
   const leakedStaging = runLinux('find', [fixture.sharedRoot, '-maxdepth', '1', '-name', '.external-model-release-guard-rotation.*', '-print'], { root: true });
   assert.equal(leakedStaging.stdout.trim(), '');
@@ -971,8 +1026,10 @@ test('manual rotation refreshes evidence when the reviewed activator is already 
   const installedEvidence = `${fixture.sharedRoot}/release-evidence/external-models-v1`;
   const reviewedActivator = readLinuxFile(`${fixture.source}/deploy/release-guard/activate-protected-release.sh`);
   const reviewedExternal = readLinuxFile(`${fixture.source}/deploy/release-guard/verify-external-model-release.js`);
+  const reviewedUi = readLinuxFile(`${fixture.source}/backend-node/src/services/canvasCreditReleaseContract.js`);
   writeLinuxFile(`${fixture.guardRoot}/activate-protected-release.sh`, reviewedActivator, '0555');
   writeLinuxFile(`${fixture.guardRoot}/verify-external-model-release.js`, reviewedExternal, '0555');
+  writeLinuxFile(`${fixture.guardRoot}/verify-protected-release.js`, reviewedUi, '0555');
   writeLinuxFile(`${installedEvidence}/old-marker.txt`, 'previous-reviewed-evidence\n', '0444');
 
   const result = runRotation(fixture);
@@ -995,9 +1052,10 @@ test('manual rotation rolls back a partial install and leaves the old activator 
   writeLinuxFile(`${installedEvidence}/old-marker.txt`, 'old-evidence-must-return\n', '0444');
   writeLinuxFile(`${fixture.source}/deploy/release-guard/verify-external-model-release.js`, `
     const fs = require('node:fs');
-    if (process.argv.length !== 4) process.exit(64);
+    if (process.argv.length !== 5) process.exit(64);
     fs.accessSync(process.argv[2]);
     fs.accessSync(process.argv[3]);
+    fs.accessSync(process.argv[4]);
     if (process.argv[3] === ${JSON.stringify(installedEvidence)}) process.exit(42);
   `, '0555');
   fixture.materializeRotation();
@@ -1009,6 +1067,8 @@ test('manual rotation rolls back a partial install and leaves the old activator 
   assert.equal(actualHash.stdout.trim().split(/\s+/)[0], OLD_ACTIVATOR_SHA256);
   const restoredExternal = runLinux('sha256sum', [`${fixture.guardRoot}/verify-external-model-release.js`], { root: true });
   assert.equal(restoredExternal.stdout.trim().split(/\s+/)[0], sha256(oldExternal));
+  const restoredUi = runLinux('sha256sum', [`${fixture.guardRoot}/verify-protected-release.js`], { root: true });
+  assert.equal(restoredUi.stdout.trim().split(/\s+/)[0], OLD_UI_VERIFIER_SHA256);
   const restoredEvidence = runLinux('cat', [`${installedEvidence}/old-marker.txt`], { root: true });
   assert.equal(restoredEvidence.stdout, 'old-evidence-must-return\n');
   assert.equal(runLinux('test', ['-e', `${installedEvidence}/manifest.json`], { root: true }).status, 1);
@@ -1031,6 +1091,8 @@ test('manual rotation rolls back verifier, activator, and evidence after the act
   assert.equal(restoredActivator.stdout.trim().split(/\s+/)[0], OLD_ACTIVATOR_SHA256);
   const restoredExternal = runLinux('sha256sum', [`${fixture.guardRoot}/verify-external-model-release.js`], { root: true });
   assert.equal(restoredExternal.stdout.trim().split(/\s+/)[0], sha256(oldExternal));
+  const restoredUi = runLinux('sha256sum', [`${fixture.guardRoot}/verify-protected-release.js`], { root: true });
+  assert.equal(restoredUi.stdout.trim().split(/\s+/)[0], OLD_UI_VERIFIER_SHA256);
   const restoredEvidence = runLinux('cat', [`${installedEvidence}/old-marker.txt`], { root: true });
   assert.equal(restoredEvidence.stdout, 'old-evidence-after-move\n');
   assert.equal(runLinux('test', ['-e', `${installedEvidence}/manifest.json`], { root: true }).status, 1);

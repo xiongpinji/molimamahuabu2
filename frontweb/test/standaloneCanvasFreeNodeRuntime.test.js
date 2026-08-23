@@ -48,8 +48,7 @@ test('首页与项目画布向节点提供带 value 和 label 的模型选项', 
 })
 
 test('每种自由生成节点在底部醒目显示随参数变化的本次积分', () => {
-  assert.match(nodeSource, /<!-- canvas-credit-callout-v1 -->/)
-  assert.match(nodeSource, /v-if="canGenerate" class="billing-cost" aria-live="polite"/)
+  assert.match(nodeSource, /v-if="canGenerate" class="billing-cost canvas-credit-callout-v1" aria-live="polite"/)
   assert.match(nodeSource, /本次预计扣除/)
   assert.match(nodeSource, /<strong>\{\{ estimatedCredits \}\}<\/strong>/)
   assert.match(nodeSource, /积分待管理员配置/)
@@ -83,7 +82,8 @@ test('选中自由节点展开专属编辑器，视频节点可见展示自动�
   assert.match(nodeSource, /ctx\?\.getFreeNodeInputReferences\?\.\(props\.id\)/)
   assert.match(nodeSource, /reference\.ready \? 'ready' : 'pending'/)
   assert.match(nodeSource, /把图片、视频或音频节点连接到视频节点；首尾帧、多图参考和全能参考会按当前模式真实提交/)
-  assert.match(nodeSource, /<img v-if="reference\.url && reference\.kind === 'image'"/)
+  assert.match(nodeSource, /<img v-if="referencePreviewUrl\(reference\) && reference\.kind === 'image'"/)
+  assert.match(nodeSource, /loadProtectedMediaPreview\(url\)/)
   assert.match(nodeSource, /<span v-else class="reference-placeholder">/)
   assert.match(canvasSource, /getFreeNodeInputReferences: freeCanvasNodeInputReferences/)
   assert.match(canvasSource, /视频节点已采用该\$\{mediaLabel\}作为参考素材/)

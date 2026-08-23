@@ -1288,7 +1288,7 @@ function generateStoryboard(db, log, episodeId, model, style, storyboardCount, v
   const scriptLabel = promptI18n.formatUserPrompt(cfg, 'script_content_label');
   const taskLabel = promptI18n.formatUserPrompt(cfg, 'task_label');
   const taskInstruction = promptI18n.formatUserPrompt(cfg, 'task_instruction');
-  
+
   // 处理分镜数量和时长约束
   let extraConstraint = '';
   // 宽松判断：只要有值（包括字符串形式的数字），就尝试转换并添加约束

@@ -1,6 +1,20 @@
 const ACTIVE_TASK_STATES = new Set(['pending', 'queued', 'processing', 'running'])
 const FAILED_SHOT_STATES = new Set(['failed', 'needs_attention'])
 const REFERENCE_KINDS = new Set(['character', 'scene', 'prop'])
+const PREPARATION_REASON_LABELS = {
+  identity_changed: '角色身份发生变化',
+  character_identity_changed: '角色身份发生变化',
+  voice_changed: '角色声音发生变化',
+  wardrobe_changed: '角色服装发生变化',
+  character_wardrobe_changed: '角色服装发生变化',
+  dialogue_changed: '目标对白发生变化',
+  text_region_changed: '文字覆盖发生变化',
+  shot_timing_changed: '镜头时间范围发生变化',
+  coverage_changed: '人物或文字覆盖发生变化',
+  upstream_version_drift: '上游版本发生变化',
+  clean_plate_status_unknown: '净景结果状态未知',
+  preparation_interrupted: '准备任务中断',
+}
 
 function finiteCredits(value) {
   if (value === null || value === undefined || value === '') return null
@@ -126,4 +140,155 @@ export function formatTimecode(milliseconds) {
   const seconds = Math.floor((total % 60000) / 1000)
   const millis = Math.floor(total % 1000)
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`
+}
+
+function preparationEvidence(label, required, completed) {
+  return {
+    label,
+    required,
+    completed,
+    ready: required === completed,
+  }
+}
+
+export function projectShotPreparation(shot = {}, gate = {}, quote = {}) {
+  const preparation = shot?.preparation && typeof shot.preparation === 'object' ? shot.preparation : {}
+  const snapshotRequirements = Array.isArray(preparation.requirements) ? preparation.requirements : []
+  const quoteRequirements = (Array.isArray(quote?.items) ? quote.items : [])
+    .filter((item) => Number(item?.shot_id) === Number(shot?.id))
+    .map((item) => ({ kind: item.kind, key: item.key }))
+  const requirements = snapshotRequirements.length ? snapshotRequirements : quoteRequirements
+  const results = Array.isArray(preparation.clean_results) ? preparation.clean_results : []
+  const requiredCount = (kind) => requirements.filter((item) => item?.kind === kind).length
+  const completedCount = (kind) => results.filter((item) => (
+    item?.kind === kind && item?.status === 'completed'
+  )).length
+  const personRequired = requiredCount('person_clean')
+  const personCompleted = completedCount('person_clean')
+  const textRequired = requiredCount('text_clean')
+  const textCompleted = completedCount('text_clean')
+  const missing = (Array.isArray(gate?.missing) ? gate.missing : []).filter((item) => (
+    String(item?.resource_type ?? item?.scope) === 'shot'
+      && String(item?.resource_id ?? item?.id) === String(shot?.id)
+  ))
+  const state = String(shot?.preparation_state || preparation.status || 'localized')
+  const staleReasonCode = String(shot?.stale_reason_code || '')
+  return {
+    id: shot?.id,
+    state,
+    personCoverage: preparationEvidence('人物覆盖', personRequired, personCompleted),
+    textCoverage: preparationEvidence('文字覆盖', textRequired, textCompleted),
+    cleanPlate: preparationEvidence('净景', personRequired + textRequired, personCompleted + textCompleted),
+    referenceBundle: {
+      label: '参考包',
+      ready: state === 'reference_ready' && Boolean(shot?.reference_bundle_hash),
+    },
+    missingReasonCodes: missing.map((item) => String(item?.reason_code ?? item?.code ?? '')).filter(Boolean),
+    staleReason: PREPARATION_REASON_LABELS[staleReasonCode]
+      || (state === 'stale' ? '上游证据发生变化' : ''),
+    reworkScope: state === 'stale' ? '只返工此镜头' : '',
+  }
+}
+
+export function preparationActionState(shot = {}) {
+  if (String(shot?.preparation_state) === 'needs_attention') {
+    return { canRetry: false, manualReviewOnly: true, label: '人工核对' }
+  }
+  return { canRetry: false, manualReviewOnly: false, label: '准备参考' }
+}
+
+export function referencePreparationFailurePolicy(error = {}, { requestStarted = true } = {}) {
+  const status = Number(error?.response?.status || error?.response?.data?.status || 0)
+  const responseData = error?.response?.data || {}
+  const errorData = responseData?.error || {}
+  const outcomeText = [
+    error?.code,
+    error?.message,
+    responseData?.status,
+    errorData?.code,
+    errorData?.message,
+    errorData?.details?.status,
+    errorData?.details?.action,
+  ].map((value) => String(value || '').toLowerCase()).join(' ')
+  const unknownOutcome = outcomeText.includes('submission_unknown')
+    || outcomeText.includes('result_unknown')
+    || outcomeText.includes('needs_attention')
+    || outcomeText.includes('schedule_failed')
+  const deterministicRejection = status >= 400 && status < 500 && status !== 408 && !unknownOutcome
+  if (requestStarted && deterministicRejection) {
+    return {
+      outcome: 'rejected',
+      keepLocked: false,
+      resetIdempotency: true,
+      refreshWorkspace: true,
+    }
+  }
+  return {
+    outcome: requestStarted ? 'unknown' : 'local_error',
+    keepLocked: requestStarted,
+    resetIdempotency: !requestStarted,
+    refreshWorkspace: false,
+  }
+}
+
+export function referencePreparationResultPolicy(result = {}) {
+  const status = String(result?.status || '')
+  let outcome = 'accepted'
+  if (status === 'needs_attention') outcome = 'needs_attention'
+  else if (['submission_unknown', 'result_unknown'].includes(status)) outcome = 'unknown'
+  return {
+    outcome,
+    keepLocked: true,
+    resetIdempotency: false,
+  }
+}
+
+export function createReferencePreparationIdempotencyKey(cryptoApi = globalThis.crypto) {
+  if (typeof cryptoApi?.randomUUID === 'function') {
+    try {
+      const uuid = String(cryptoApi.randomUUID()).toLowerCase()
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(uuid)) {
+        return uuid
+      }
+    } catch (_) {}
+  }
+  if (typeof cryptoApi?.getRandomValues === 'function') {
+    try {
+      const bytes = new Uint8Array(16)
+      cryptoApi.getRandomValues(bytes)
+      bytes[6] = (bytes[6] & 0x0f) | 0x40
+      bytes[8] = (bytes[8] & 0x3f) | 0x80
+      const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+    } catch (_) {}
+  }
+  throw Object.assign(new Error('浏览器安全随机数不可用，无法创建参考准备幂等键'), {
+    code: 'REDRAW_REFERENCE_PREPARATION_RANDOM_UNAVAILABLE',
+  })
+}
+
+export function settleReferencePreparationSubmission({
+  idempotencyKey = '',
+  requestStarted = false,
+  error,
+  result,
+} = {}) {
+  const policy = error
+    ? referencePreparationFailurePolicy(error, { requestStarted })
+    : referencePreparationResultPolicy(result)
+  return {
+    outcome: policy.outcome,
+    submitting: false,
+    locked: policy.keepLocked,
+    idempotencyKey: policy.resetIdempotency ? '' : idempotencyKey,
+    refreshWorkspace: policy.refreshWorkspace === true,
+  }
+}
+
+export function referencePreparationManualReviewState(idempotencyKey = '') {
+  return {
+    submitting: false,
+    locked: false,
+    idempotencyKey,
+  }
 }

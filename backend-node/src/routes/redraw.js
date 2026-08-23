@@ -25,6 +25,10 @@ const redrawExportService = require('../services/redrawExportService');
 const redrawNativeSourceAnalysisService = require('../services/redrawNativeSourceAnalysisService');
 const redrawProjectPolicyService = require('../services/redrawProjectPolicyService');
 const redrawWorkflowEventService = require('../services/redrawWorkflowEventService');
+const redrawCharacterPlanService = require('../services/redrawCharacterPlanService');
+const redrawPreparationGateService = require('../services/redrawPreparationGateService');
+const redrawReferencePreparationOrchestrator = require('../services/redrawReferencePreparationOrchestrator');
+const modelPriceService = require('../services/modelPriceService');
 const assetService = require('../services/assetService');
 const uploadServiceModule = require('../services/uploadService');
 
@@ -395,6 +399,88 @@ function codedRouteError(code, message, details) {
   return error;
 }
 
+function referencePreparationInput(body, allowedFields) {
+  const input = body == null ? {} : body;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw codedRouteError('REDRAW_REFERENCE_PREPARATION_INPUT_INVALID', '参考准备参数必须是对象');
+  }
+  for (const key of Object.keys(input)) {
+    if (!allowedFields.has(key)) {
+      throw codedRouteError(
+        'REDRAW_REFERENCE_PREPARATION_CLIENT_CONTROL_FORBIDDEN',
+        '参考准备的模型、供应商、积分、预留、参考包和文件位置只能由服务端决定',
+      );
+    }
+  }
+  return Object.fromEntries([...allowedFields]
+    .filter((key) => Object.prototype.hasOwnProperty.call(input, key))
+    .map((key) => [key, input[key]]));
+}
+
+function publicPreparationQuote(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const output = {};
+  for (const key of [
+    'schema_version', 'version_id', 'version_snapshot_hash', 'character_plan_hash',
+    'execution_mode', 'effective_mode', 'action', 'priced', 'credits',
+    'confirmation_required', 'quote_hash',
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) output[key] = value[key];
+  }
+  for (const key of [
+    'reason_codes', 'selected_shot_ids', 'missing_shot_ids', 'reused_shot_ids',
+    'needs_attention_shot_ids',
+  ]) {
+    if (Array.isArray(value[key])) output[key] = [...value[key]];
+  }
+  if (Array.isArray(value.items)) {
+    output.items = value.items.map((item) => ({
+      shot_id: Number(item?.shot_id),
+      kind: String(item?.kind || ''),
+      key: String(item?.key || ''),
+      priced: item?.priced === true,
+      credits: item?.credits != null && Number.isSafeInteger(Number(item.credits))
+        ? Number(item.credits)
+        : null,
+    }));
+  }
+  return output;
+}
+
+function publicPreparationStart(value) {
+  return {
+    task_id: value?.task_id || null,
+    status: value?.status || 'pending',
+    quote: publicPreparationQuote(value?.quote),
+  };
+}
+
+function publicShotPreparation(raw) {
+  const snapshot = parseJSON(raw?.preparation_snapshot_json, {});
+  const requirements = Array.isArray(snapshot?.requirements) ? snapshot.requirements : [];
+  const cleanResults = Array.isArray(snapshot?.clean_results) ? snapshot.clean_results : [];
+  return {
+    preparation_state: raw?.preparation_state || 'localized',
+    preparation_version: Number(raw?.preparation_version || 1),
+    stale_reason_code: raw?.stale_reason_code || null,
+    reference_bundle_hash: raw?.reference_bundle_hash || null,
+    reference_bundle_updated_at: raw?.reference_bundle_updated_at || null,
+    preparation: {
+      status: String(snapshot?.status || raw?.preparation_state || 'localized'),
+      requirements: requirements.map((item) => ({
+        kind: String(item?.kind || ''),
+        key: String(item?.key || ''),
+      })),
+      clean_results: cleanResults.map((item) => ({
+        kind: String(item?.kind || ''),
+        key: String(item?.key || ''),
+        status: String(item?.status || ''),
+        ...(item?.error_code ? { error_code: String(item.error_code) } : {}),
+      })),
+    },
+  };
+}
+
 const SAFE_GENERATION_FIELDS = new Set([
   'duration', 'resolution', 'aspect_ratio', 'aspectRatio', 'idempotency_key', 'idempotencyKey',
   'negative_prompt', 'negativePrompt',
@@ -402,6 +488,27 @@ const SAFE_GENERATION_FIELDS = new Set([
 const SAFE_BATCH_GENERATION_FIELDS = new Set([
   ...SAFE_GENERATION_FIELDS,
   'shot_ids', 'shotIds', 'version_id', 'versionId', 'count',
+]);
+const REFERENCE_PREPARATION_QUOTE_FIELDS = new Set(['shot_ids']);
+const REFERENCE_PREPARATION_START_FIELDS = new Set(['quote_hash', 'idempotency_key', 'shot_ids']);
+const REFERENCE_PREPARATION_CONFLICT_CODES = new Set([
+  'REDRAW_REFERENCE_PREPARATION_BLOCKED',
+  'REDRAW_REFERENCE_PREPARATION_CONFIRMATION_REQUIRED',
+  'REDRAW_REFERENCE_PREPARATION_QUOTE_MISMATCH',
+  'REDRAW_REFERENCE_PREPARATION_IDEMPOTENCY_CONFLICT',
+  'REDRAW_REFERENCE_PREPARATION_CONFLICT',
+  'REDRAW_REFERENCE_PREPARATION_SCHEDULE_FAILED',
+]);
+const REFERENCE_PREPARATION_INPUT_CODES = new Set([
+  'REDRAW_REFERENCE_PREPARATION_INPUT_INVALID',
+  'REDRAW_REFERENCE_PREPARATION_CLIENT_CONTROL_FORBIDDEN',
+  'REDRAW_REFERENCE_PREPARATION_SHOTS_INVALID',
+  'REDRAW_REFERENCE_PREPARATION_SHOTS_REQUIRED',
+  'REDRAW_REFERENCE_PREPARATION_IDEMPOTENCY_REQUIRED',
+  'REDRAW_REFERENCE_PREPARATION_CHARACTER_PLAN_NOT_READY',
+  'REDRAW_REFERENCE_PREPARATION_COVERAGE_INVALID',
+  'REDRAW_REFERENCE_PREPARATION_COVERAGE_NOT_APPROVED',
+  'REDRAW_REFERENCE_PREPARATION_UNPRICED',
 ]);
 const NATIVE_AUDIO_REVIEW_APPROVE_FIELDS = new Set([
   'validation_hash',
@@ -473,8 +580,8 @@ const IDENTITY_PACK_FIELDS = new Set([
   'live_action_human_confirmed', 'liveActionHumanConfirmed',
   'adult_status', 'adultStatus',
   'identity_consistency_confirmed', 'identityConsistencyConfirmed',
-  'persona_origin', 'personaOrigin',
-  'target_country', 'targetCountry',
+  'wardrobe_reference_asset_id', 'wardrobeReferenceAssetId',
+  'wardrobe_consistency_confirmed', 'wardrobeConsistencyConfirmed',
   'expected_updated_at', 'expectedUpdatedAt',
 ]);
 const IDENTITY_PACK_FIELD_ALIASES = [
@@ -483,8 +590,8 @@ const IDENTITY_PACK_FIELD_ALIASES = [
   ['live_action_human_confirmed', 'liveActionHumanConfirmed'],
   ['adult_status', 'adultStatus'],
   ['identity_consistency_confirmed', 'identityConsistencyConfirmed'],
-  ['persona_origin', 'personaOrigin'],
-  ['target_country', 'targetCountry'],
+  ['wardrobe_reference_asset_id', 'wardrobeReferenceAssetId'],
+  ['wardrobe_consistency_confirmed', 'wardrobeConsistencyConfirmed'],
   ['expected_updated_at', 'expectedUpdatedAt'],
 ];
 const IDENTITY_PACK_VIEWS = new Set(['front', 'profile', 'full_body']);
@@ -639,19 +746,19 @@ function identityPackInput(body) {
   if (typeof identityConsistencyConfirmed !== 'boolean') {
     throw identityPackInputError('identity_consistency_confirmed 必须是布尔值');
   }
-  const hasPersonaOrigin = Object.prototype.hasOwnProperty.call(body, 'persona_origin')
-    || Object.prototype.hasOwnProperty.call(body, 'personaOrigin');
-  const personaOriginValue = read('persona_origin', 'personaOrigin');
-  if (hasPersonaOrigin && (typeof personaOriginValue !== 'string'
-    || personaOriginValue.trim() !== 'fictional_ai_generated')) {
-    throw identityPackInputError('persona_origin 必须是 fictional_ai_generated');
+  const hasWardrobeReferenceAssetId = Object.prototype.hasOwnProperty.call(body, 'wardrobe_reference_asset_id')
+    || Object.prototype.hasOwnProperty.call(body, 'wardrobeReferenceAssetId');
+  const rawWardrobeReferenceAssetId = read('wardrobe_reference_asset_id', 'wardrobeReferenceAssetId');
+  const wardrobeReferenceAssetId = Number(rawWardrobeReferenceAssetId);
+  if (hasWardrobeReferenceAssetId && (typeof rawWardrobeReferenceAssetId !== 'number'
+    || !Number.isSafeInteger(wardrobeReferenceAssetId) || wardrobeReferenceAssetId <= 0)) {
+    throw identityPackInputError('wardrobe_reference_asset_id 必须是正整数');
   }
-  const hasTargetCountry = Object.prototype.hasOwnProperty.call(body, 'target_country')
-    || Object.prototype.hasOwnProperty.call(body, 'targetCountry');
-  const targetCountryValue = read('target_country', 'targetCountry');
-  if (hasTargetCountry && (typeof targetCountryValue !== 'string'
-    || targetCountryValue.trim() !== 'US')) {
-    throw identityPackInputError('target_country 必须是 US');
+  const hasWardrobeConsistencyConfirmed = Object.prototype.hasOwnProperty.call(body, 'wardrobe_consistency_confirmed')
+    || Object.prototype.hasOwnProperty.call(body, 'wardrobeConsistencyConfirmed');
+  const wardrobeConsistencyConfirmed = read('wardrobe_consistency_confirmed', 'wardrobeConsistencyConfirmed');
+  if (hasWardrobeConsistencyConfirmed && typeof wardrobeConsistencyConfirmed !== 'boolean') {
+    throw identityPackInputError('wardrobe_consistency_confirmed 必须是布尔值');
   }
   const expectedUpdatedAtValue = read('expected_updated_at', 'expectedUpdatedAt');
   if (typeof expectedUpdatedAtValue !== 'string' || !expectedUpdatedAtValue.trim()) {
@@ -663,8 +770,8 @@ function identityPackInput(body) {
     live_action_human_confirmed: liveActionHumanConfirmed,
     adult_status: adultStatusValue.trim(),
     identity_consistency_confirmed: identityConsistencyConfirmed,
-    ...(hasPersonaOrigin ? { persona_origin: personaOriginValue.trim() } : {}),
-    ...(hasTargetCountry ? { target_country: targetCountryValue.trim() } : {}),
+    ...(hasWardrobeReferenceAssetId ? { wardrobe_reference_asset_id: wardrobeReferenceAssetId } : {}),
+    ...(hasWardrobeConsistencyConfirmed ? { wardrobe_consistency_confirmed: wardrobeConsistencyConfirmed } : {}),
     expected_updated_at: expectedUpdatedAtValue.trim(),
   };
 }
@@ -1225,6 +1332,23 @@ function sendRedrawError(res, error, fallbackMessage, log, context = {}) {
   return response.error(res, 500, 'INTERNAL_ERROR', fallbackMessage);
 }
 
+function sendReferencePreparationError(res, error, fallbackMessage, log, context = {}) {
+  const code = String(error?.code || '');
+  const quote = error?.details?.quote || error?.quote;
+  const details = quote ? { quote: publicPreparationQuote(quote) } : undefined;
+  if (['REDRAW_VERSION_NOT_FOUND', 'REDRAW_REFERENCE_PREPARATION_VERSION_NOT_FOUND'].includes(code)) {
+    return response.error(res, 404, 'REDRAW_VERSION_NOT_FOUND', '本地化版本不存在');
+  }
+  if (REFERENCE_PREPARATION_CONFLICT_CODES.has(code)) {
+    return response.error(res, 409, code, error.message || fallbackMessage, details);
+  }
+  if (REFERENCE_PREPARATION_INPUT_CODES.has(code)) {
+    return response.error(res, 400, code, error.message || fallbackMessage, details);
+  }
+  log?.error?.({ err: error, ...context }, fallbackMessage);
+  return response.error(res, 500, 'INTERNAL_ERROR', fallbackMessage);
+}
+
 function isMissingSchemaError(error) {
   return /no such (table|column)/i.test(String(error?.message || ''));
 }
@@ -1282,6 +1406,10 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   const shotService = options.shotService || redrawShotService;
   const generationService = options.generationService || redrawGenerationService;
   const referenceBundleService = options.referenceBundleService || redrawReferenceBundleService;
+  const characterPlanService = options.characterPlanService || redrawCharacterPlanService;
+  const preparationGateService = options.preparationGateService || redrawPreparationGateService;
+  const referencePreparationService = options.referencePreparationService
+    || redrawReferencePreparationOrchestrator;
   const localizationOrchestrator = options.localizationOrchestrator || redrawLocalizationOrchestrator;
   const assetBatchService = options.assetBatchService || {
     quoteAssetBatch: (ctx, input) => redrawAssetBatchService.quoteAssetBatch(db, { ...ctx, ...input }),
@@ -1328,6 +1456,77 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     };
   }
 
+  function resolveCleanRequirement(scope, requirement) {
+    if (typeof (options.referencePreparationProvider
+      || options.assetGenerationProvider
+      || options.assetProvider) !== 'function'
+      || !['person_clean', 'text_clean'].includes(String(requirement?.kind || ''))) return null;
+    const resolved = redrawCapabilityService.resolveVerifiedLocaleCapability(db, {
+      locale: scope?.locale,
+      market: scope?.market,
+      capability: 'clean_plate_image',
+      canReadArtifact,
+    });
+    if (!resolved) return null;
+    try {
+      const credits = modelPriceService.requirePrice(db, resolved.model);
+      return Number.isSafeInteger(credits) && credits >= 0 ? { resolved, credits } : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function quoteCleanRequirement({ scope, requirement } = {}) {
+    const selected = resolveCleanRequirement(scope, requirement);
+    return selected ? { priced: true, credits: selected.credits } : { priced: false, credits: 0 };
+  }
+
+  async function prepareCleanRequirement(payload = {}) {
+    const selected = resolveCleanRequirement(payload.scope, payload.requirement);
+    if (!selected) {
+      throw codedRouteError(
+        'REDRAW_REFERENCE_PREPARATION_UNPRICED',
+        '净景能力未验证或积分待管理员配置',
+      );
+    }
+    const prepare = options.prepareReferenceCleanRequirement
+      || redrawAssetService.prepareReferenceCleanRequirement;
+    return prepare({
+      ...payload.ctx,
+      provider: options.referencePreparationProvider
+        || options.assetGenerationProvider
+        || options.assetProvider,
+      model: selected.resolved.model,
+      creditAmount: selected.credits,
+      operationKey: payload.operation_key,
+    }, payload);
+  }
+
+  const referencePreparationDeps = {
+    provider: options.referencePreparationProvider
+      || options.assetGenerationProvider
+      || options.assetProvider,
+    quoteCleanRequirement: options.quoteCleanRequirement || quoteCleanRequirement,
+    prepareCleanRequirement: options.prepareCleanRequirement || prepareCleanRequirement,
+  };
+
+  function referencePreparationContext(version, currentOwner) {
+    return {
+      db,
+      log,
+      versionId: Number(version.id),
+      tenantId: currentOwner.tenantId,
+      userId: currentOwner.userId,
+      storageRoot: storageRootFromConfig(cfg),
+      assetReader: {
+        canRead: (row) => Boolean(row && canReadArtifact(row.id)),
+        owns: (row) => Boolean(row && canReadArtifact(row.id)),
+      },
+      canReadArtifact,
+      probeRunner: options.referencePreparationProbeRunner || options.probeRunner,
+    };
+  }
+
   function findOwnedProject(id, currentOwner) {
     return db.prepare(`
       SELECT *
@@ -1359,6 +1558,98 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         AND user_id = ?
         AND deleted_at IS NULL
     `).get(Number(id), currentOwner.tenantId, currentOwner.userId);
+  }
+
+  function assertOwnedPreparationShots(version, currentOwner, input) {
+    if (!Object.prototype.hasOwnProperty.call(input, 'shot_ids')) return input;
+    const rawIds = input.shot_ids;
+    if (!Array.isArray(rawIds) || rawIds.length === 0) {
+      throw codedRouteError('REDRAW_REFERENCE_PREPARATION_SHOTS_INVALID', '镜头集合不合法');
+    }
+    const shotIds = rawIds.map(Number);
+    if (shotIds.some((id) => !Number.isSafeInteger(id) || id <= 0)
+      || new Set(shotIds).size !== shotIds.length) {
+      throw codedRouteError('REDRAW_REFERENCE_PREPARATION_SHOTS_INVALID', '镜头集合不合法');
+    }
+    const ownedIds = new Set(db.prepare(`SELECT id FROM redraw_shots
+      WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL`).all(
+      Number(version.id), currentOwner.tenantId, currentOwner.userId,
+    ).map((row) => Number(row.id)));
+    if (shotIds.some((id) => !ownedIds.has(id))) {
+      throw codedRouteError('REDRAW_REFERENCE_PREPARATION_SHOTS_INVALID', '镜头不属于当前版本');
+    }
+    return { ...input, shot_ids: shotIds };
+  }
+
+  function getCharacterPlan(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.error(res, 404, 'REDRAW_VERSION_NOT_FOUND', '本地化版本不存在');
+    try {
+      const plan = characterPlanService.buildCharacterPlan(
+        referencePreparationContext(version, currentOwner),
+        Number(version.id),
+      );
+      return response.success(res, plan);
+    } catch (error) {
+      return sendReferencePreparationError(res, error, '读取整集角色计划失败', log, { versionId: version.id });
+    }
+  }
+
+  function preparationGate(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.error(res, 404, 'REDRAW_VERSION_NOT_FOUND', '本地化版本不存在');
+    try {
+      return response.success(res, preparationGateService.evaluatePreparationGate(
+        referencePreparationContext(version, currentOwner),
+        Number(version.id),
+      ));
+    } catch (error) {
+      return sendReferencePreparationError(res, error, '读取逐镜准备门禁失败', log, { versionId: version.id });
+    }
+  }
+
+  async function referencePreparationQuote(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.error(res, 404, 'REDRAW_VERSION_NOT_FOUND', '本地化版本不存在');
+    try {
+      const input = assertOwnedPreparationShots(
+        version,
+        currentOwner,
+        referencePreparationInput(req.body, REFERENCE_PREPARATION_QUOTE_FIELDS),
+      );
+      const quote = await referencePreparationService.quoteVersionPreparation(
+        referencePreparationContext(version, currentOwner),
+        input,
+        referencePreparationDeps,
+      );
+      return response.success(res, publicPreparationQuote(quote));
+    } catch (error) {
+      return sendReferencePreparationError(res, error, '读取逐镜参考准备报价失败', log, { versionId: version.id });
+    }
+  }
+
+  async function startReferencePreparation(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.error(res, 404, 'REDRAW_VERSION_NOT_FOUND', '本地化版本不存在');
+    try {
+      const input = assertOwnedPreparationShots(
+        version,
+        currentOwner,
+        referencePreparationInput(req.body, REFERENCE_PREPARATION_START_FIELDS),
+      );
+      const started = await referencePreparationService.startVersionPreparation(
+        referencePreparationContext(version, currentOwner),
+        input,
+        referencePreparationDeps,
+      );
+      return response.accepted(res, publicPreparationStart(started));
+    } catch (error) {
+      return sendReferencePreparationError(res, error, '提交逐镜参考准备失败', log, { versionId: version.id });
+    }
   }
 
   function assertCurrentPromotedAssetBatchVersion(version, currentOwner) {
@@ -1884,6 +2175,7 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     return {
       ...snapshot,
       ...draftRuntime,
+      ...publicShotPreparation(raw),
       source_video_ref: sourceVideoRef(context.work, snapshot),
       status: raw.status,
       updated_at: raw.updated_at,
@@ -3041,10 +3333,20 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
   function generationGate(req, res) {
     const currentOwner = owner(req);
     try {
-      return response.success(res, redrawReviewService.evaluateGenerationGate(db, req.params.id, currentOwner));
+      return response.success(res, redrawReviewService.evaluateGenerationGate(db, req.params.id, currentOwner, {
+        preparationContext: {
+          storageRoot: storageRootFromConfig(cfg),
+          canReadArtifact,
+          assetReader: {
+            canRead: (row) => Boolean(row && canReadArtifact(row.id)),
+            owns: (row) => Boolean(row && canReadArtifact(row.id)),
+          },
+        },
+      }));
     } catch (error) {
       if (error.code === 'REDRAW_VERSION_NOT_FOUND') return response.notFound(res, '本地化版本不存在');
-      return response.internalError(res, error.message || '读取生成审核门禁失败');
+      if (log && typeof log.error === 'function') log.error(error, '读取生成审核门禁失败');
+      return response.internalError(res, '读取生成审核门禁失败');
     }
   }
 
@@ -3134,6 +3436,7 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
         canReadArtifact,
         assetReader: {
           canRead: (row) => Boolean(row && canReadArtifact(row.id)),
+          owns: (row) => Boolean(row && canReadArtifact(row.id)),
         },
       }, asset.id, identityPackInput(req.body));
       const projected = redrawAssetService.listAssets(db, {
@@ -3307,8 +3610,25 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
         reviewerId: currentOwner.userId,
         tenantId: currentOwner.tenantId,
         userId: currentOwner.userId,
+        preparationContext: {
+          storageRoot: storageRootFromConfig(cfg),
+          canReadArtifact,
+          assetReader: {
+            canRead: (row) => Boolean(row && canReadArtifact(row.id)),
+            owns: (row) => Boolean(row && canReadArtifact(row.id)),
+          },
+        },
       });
-      const gate = redrawReviewService.evaluateGenerationGate(db, asset.version_id, currentOwner);
+      const gate = redrawReviewService.evaluateGenerationGate(db, asset.version_id, currentOwner, {
+        preparationContext: {
+          storageRoot: storageRootFromConfig(cfg),
+          canReadArtifact,
+          assetReader: {
+            canRead: (row) => Boolean(row && canReadArtifact(row.id)),
+            owns: (row) => Boolean(row && canReadArtifact(row.id)),
+          },
+        },
+      });
       return response.success(res, {
         asset: reviewed,
         gate,
@@ -3405,6 +3725,10 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     generateBatch,
     localizationQuote,
     createVersion,
+    getCharacterPlan,
+    preparationGate,
+    referencePreparationQuote,
+    startReferencePreparation,
     listVersionAssets,
     previewRedrawAsset,
     listProductionVoices,

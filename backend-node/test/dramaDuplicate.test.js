@@ -18,6 +18,10 @@ test('完整复制画布项目并将副本隔离到当前租户', (t) => {
   runMigrationsAndEnsure(db);
 
   const now = new Date().toISOString();
+  const folderId = db.prepare(
+    `INSERT INTO project_folders (tenant_id, name, created_at, updated_at)
+     VALUES ('tenant-a', '已验证', ?, ?)`,
+  ).run(now, now).lastInsertRowid;
   const canvasLayout = {
     nodes: { 'text-1': { x: 120, y: 80 } },
     edges: [],
@@ -25,11 +29,12 @@ test('完整复制画布项目并将副本隔离到当前租户', (t) => {
     director_timeline: { shots: [{ id: 'shot-1', duration: 3 }] },
   };
   const sourceId = db.prepare(
-    `INSERT INTO dramas (tenant_id, user_id, title, status, metadata, created_at, updated_at)
-     VALUES (?, ?, ?, 'draft', ?, ?, ?)`,
+    `INSERT INTO dramas (tenant_id, user_id, folder_id, title, status, metadata, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'draft', ?, ?, ?)`,
   ).run(
     'tenant-a',
     'owner-a',
+    folderId,
     '森林追踪画布',
     JSON.stringify({
       project_type: 'canvas',
@@ -112,6 +117,7 @@ test('完整复制画布项目并将副本隔离到当前租户', (t) => {
   const copied = db.prepare('SELECT * FROM dramas WHERE id = ?').get(result.drama_id);
   assert.equal(copied.tenant_id, 'tenant-a');
   assert.equal(copied.user_id, 'member-a');
+  assert.equal(copied.folder_id, folderId);
   const copiedMetadata = JSON.parse(copied.metadata);
   assert.equal(copiedMetadata.project_type, 'canvas');
   assert.deepEqual(copiedMetadata.canvas_layout.viewport, canvasLayout.viewport);

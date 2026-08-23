@@ -179,10 +179,10 @@ test('只有连接字段实际变化才撤销既有验证', async (t) => {
   aiConfigService.updateConfig(db, log, config.id, { priority: 50 });
   assert.equal(aiConfigService.getConfig(db, config.id).verification_status, 'verified');
 
-  aiConfigService.updateConfig(db, log, config.id, {
-    settings: JSON.stringify({ video_duration: 10, canvas_capabilities: { ratios: ['9:16'] } }),
-  });
-  assert.equal(aiConfigService.getConfig(db, config.id).verification_status, 'unverified');
+    aiConfigService.updateConfig(db, log, config.id, {
+      settings: JSON.stringify({ video_duration: 10, canvas_capabilities: { ratios: ['9:16'] } }),
+    });
+    assert.equal(aiConfigService.getConfig(db, config.id).verification_status, 'verified');
 
   aiConfigService.updateConfig(db, log, config.id, { base_url: 'https://new-video.example/v1' });
   const changed = aiConfigService.getConfig(db, config.id);

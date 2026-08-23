@@ -15,7 +15,7 @@
     </div>
 
     <div v-if="loading" v-loading="true" class="loading-wrap" />
-    
+
     <template v-else>
       <el-table
         :data="list"
@@ -288,7 +288,7 @@ async function load() {
     ])
     configs.value = configsData || []
     console.log('Loaded configs:', configs.value.map(c => ({ id: c.id, name: c.name, service_type: c.service_type, is_active: c.is_active })))
-    
+
     // 合并配置名称
     list.value = (mapsData || []).map(item => {
       const config = configs.value.find(c => c.id === item.config_id)
@@ -340,7 +340,7 @@ async function save() {
       config_id: form.value.config_id || null,
       model_override: form.value.model_override || null
     }
-    
+
     if (editingKey.value) {
       await sceneModelMapAPI.update(editingKey.value, body)
       ElMessage.success('更新成功')

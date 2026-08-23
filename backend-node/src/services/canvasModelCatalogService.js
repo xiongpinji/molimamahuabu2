@@ -384,24 +384,23 @@ function list(db, options = {}) {
     .map((row) => [String(row.model).toLowerCase(), row]));
   const verifiedIds = verifiedConfigIds(db);
   const configs = aiConfigService.listConfigs(db);
-  const eligibleConfigs = configs.filter((config) => config.is_active !== false
-    && KIND_BY_SERVICE[config.service_type]
-    && (!verifiedIds || verifiedIds.has(config.id)));
+  const activeConfigs = configs.filter((config) => config.is_active !== false
+    && KIND_BY_SERVICE[config.service_type]);
+  const eligibleConfigs = activeConfigs.filter((config) =>
+    !verifiedIds || verifiedIds.has(config.id));
   const configuredModelEntries = eligibleConfigs
     .flatMap((config) => orderedModels(config).map((model) => ({
       config,
       model,
       key: `${KIND_BY_SERVICE[config.service_type]}:${model.toLowerCase()}`,
     })));
-  const strictBlockEntries = configs
-    .filter((config) => config.is_active !== false && KIND_BY_SERVICE[config.service_type])
+  const strictKeys = new Set([
+    `video:${lingjingVideoClient.PUBLIC_MODEL}`,
+    ...activeConfigs
     .flatMap((config) => orderedModels(config).map((model) => ({
       config,
       key: `${KIND_BY_SERVICE[config.service_type]}:${model.toLowerCase()}`,
-    })));
-  const strictKeys = new Set([
-    `video:${lingjingVideoClient.PUBLIC_MODEL}`,
-    ...strictBlockEntries
+    })))
     .filter(({ config }) => strictVerifiedProtocol(config))
     .map(({ key }) => key),
   ]);
@@ -414,9 +413,18 @@ function list(db, options = {}) {
       const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
       return !strictKeys.has(upstreamKey) || !!strictVerifiedProtocol(entry.config);
     });
+  const mediaCandidateCounts = new Map();
+  for (const entry of mediaCandidates) {
+    const key = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
+    mediaCandidateCounts.set(key, (mediaCandidateCounts.get(key) || 0) + 1);
+  }
   const mediaEntries = mediaCandidates.map((entry) => {
     const logicalModel = String(entry.config.logical_model_id || '').trim();
-    const model = logicalModel || entry.upstreamModel;
+    const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
+    const model = logicalModel || (mediaCandidateCounts.get(upstreamKey) > 1
+        && prices.has(entry.model.toLowerCase())
+      ? entry.model
+      : entry.upstreamModel);
     return { ...entry, model };
   });
   const nonMediaEntries = eligibleConfigs
@@ -436,15 +444,14 @@ function list(db, options = {}) {
       configsByKey.get(key).push(entry.config);
     }
   }
-  const seen = new Set();
-  let configured = allEntries
+  const configuredCandidates = allEntries
     .filter((entry) => entry.kind
       && (!verifiedIds || aiConfigService.isVerifiedConfig(entry.config))
       && isRealGenerationVerified(entry.config, entry.upstreamModel))
     .map((entry) => {
       const { config, kind, model, upstreamModel } = entry;
+      const logicalModel = String(config.logical_model_id || '').trim();
       const key = `${kind}:${model.toLowerCase()}`;
-      if (seen.has(key)) return null;
       const price = prices.get(model.toLowerCase());
       if (!Number.isSafeInteger(price?.credits) || price.credits <= 0) return null;
       const verifiedCapabilities = verifiedModelCapabilities(config, upstreamModel, price, options.evidenceRoots);
@@ -454,8 +461,7 @@ function list(db, options = {}) {
           .map((resolution) => [resolution, price.resolution_prices[resolution]])
           .filter(([, tier]) => tier))
         : price?.resolution_prices || {};
-      seen.add(key);
-      return {
+      const item = {
         kind,
         model,
         label: price?.display_name || model,
@@ -473,8 +479,20 @@ function list(db, options = {}) {
           }
           : safeCapabilities(config.settings, config, upstreamModel))),
       };
+      return {
+        key,
+        logical: Boolean(logicalModel),
+        item,
+      };
     })
     .filter(Boolean);
+  const selected = new Map();
+  for (const candidate of configuredCandidates) {
+    const current = selected.get(candidate.key);
+    if (!current || (!current.logical && candidate.logical)) selected.set(candidate.key, candidate);
+  }
+  let configured = [...selected.values()].map((candidate) => candidate.item);
+  const seen = new Set(selected.keys());
   if (verifiedIds === null) {
     for (const item of canvasProviderConfigService.listSafe()) {
       const key = `${item.kind}:${item.model.toLowerCase()}`;

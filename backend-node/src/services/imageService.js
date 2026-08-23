@@ -265,20 +265,20 @@ function resolveImageBillingRequest(db, req, imageServiceType, options = {}) {
   const requestedIsStrict = USMERCARI_IMAGE_MODELS.has(requestedCanonical);
   const hasExplicitConfig = req.config_id != null;
   let config = hasExplicitConfig
-    ? imageClient.getImageConfigById(db, req.config_id, requestedModel || undefined)
+    ? imageClient.getImageConfigById(db, req.config_id, req.model)
     : findConfiguredImageModel(db, imageServiceType, requestedModel);
-  if (!config && !requestedIsStrict) {
+  if (!config && !requestedIsStrict && !hasExplicitConfig) {
     config = imageClient.getDefaultImageConfig(db, req.model, req.provider, imageServiceType);
   }
   const rawSelectedModel = requestedModel
     || config?.default_model
     || configuredImageModels(config)[0];
   if (!rawSelectedModel && options.allowMissingModel) return null;
-  const selectedModel = String(rawSelectedModel).trim();
-  const billingModel = modelPriceService.canonicalModel(
-    rawSelectedModel,
+  const generationModel = rawSelectedModel;
+  const selectedModel = modelPriceService.canonicalModel(
+    generationModel,
   );
-  const strictUsmercari = USMERCARI_IMAGE_MODELS.has(billingModel)
+  const strictUsmercari = USMERCARI_IMAGE_MODELS.has(selectedModel)
     || String(config?.provider || '').toLowerCase() === 'usmercari_image'
     || String(config?.api_protocol || '').toLowerCase() === 'usmercari_image';
   const referenceImages = Array.isArray(req.reference_images)
@@ -294,14 +294,14 @@ function resolveImageBillingRequest(db, req, imageServiceType, options = {}) {
     if (!config || config.verification_status !== 'verified') {
       throw imageRequestError('MODEL_NOT_VERIFIED', `${selectedModel} 尚未通过真实生成验证`);
     }
-    if (USMERCARI_IMAGE_MODELS.has(billingModel) && !isUsmercariImageConfig(config)) {
+    if (USMERCARI_IMAGE_MODELS.has(selectedModel) && !isUsmercariImageConfig(config)) {
       throw imageRequestError('MODEL_PROTOCOL_MISMATCH', `${selectedModel} 必须使用已验证的 USMercari 图片协议配置`);
     }
     if (!resolveUsmercariApiKey(config)) {
       throw imageRequestError('MODEL_CREDENTIAL_MISSING', `${selectedModel} 未配置有效的 USMercari API Key`);
     }
-    capabilities = normalizeUsmercariCapabilities(config, billingModel);
-    if (!hasTrustedEvidenceBinding(billingModel, capabilities, options.evidenceRoots)) {
+    capabilities = normalizeUsmercariCapabilities(config, selectedModel);
+    if (!hasTrustedEvidenceBinding(selectedModel, capabilities, options.evidenceRoots)) {
       throw imageRequestError('MODEL_NOT_VERIFIED', `${selectedModel} 的真实生成证据与当前发布不一致`);
     }
     if (!capabilities || !capabilities.supportsTextToImage) {
@@ -329,16 +329,18 @@ function resolveImageBillingRequest(db, req, imageServiceType, options = {}) {
   if (!strictUsmercari && !resolution) resolution = null;
   if (requirePricing) modelPriceService.ensureSchema(db);
   const credits = requirePricing
-    ? modelPriceService.calculateCharge(db, billingModel, { resolution, quantity })
+    ? modelPriceService.calculateCharge(db, selectedModel, { resolution, quantity })
     : null;
   const cost = requirePricing
-    ? modelPriceService.quoteCost(db, billingModel, { resolution, quantity })
+    ? modelPriceService.quoteCost(db, selectedModel, { resolution, quantity })
     : null;
   const protocol = String(config?.api_protocol || config?.provider || '').trim().toLowerCase();
+  const selectedConfigId = hasExplicitConfig ? (config?.id ?? null) : null;
   return {
     model: selectedModel,
+    generationModel,
     provider: config?.provider || req.provider || 'openai',
-    configId: hasExplicitConfig ? (config?.id ?? null) : null,
+    configId: selectedConfigId,
     protocol,
     resolution,
     quantity,
@@ -349,7 +351,7 @@ function resolveImageBillingRequest(db, req, imageServiceType, options = {}) {
       model: selectedModel,
       provider: config?.provider || req.provider || 'openai',
       protocol,
-      config_id: hasExplicitConfig ? (config?.id ?? null) : null,
+      config_id: config?.id ?? null,
       resolution,
       quantity,
       reference_images: referenceImages,
@@ -1200,10 +1202,6 @@ function create(db, log, req, options = {}) {
   const now = new Date().toISOString();
   const frameType = req.frame_type ?? null;
   const imageServiceType = req.storyboard_id ? 'storyboard_image' : 'image';
-  const selectedConfig = req.config_id != null
-    ? imageClient.getImageConfigById(db, req.config_id, req.model)
-    : imageClient.getDefaultImageConfig(db, req.model, req.provider, imageServiceType);
-  const selectedConfigId = req.config_id != null ? (selectedConfig?.id ?? null) : null;
   const active = findActiveForTarget(db, req.storyboard_id, frameType, options);
   if (active) {
     log.info('Duplicate image generation prevented', {
@@ -1224,10 +1222,6 @@ function create(db, log, req, options = {}) {
     }
     return { ...getById(db, active.id), reused: true };
   }
-  let generationModel = req.model
-    || selectedConfig?.default_model
-    || (Array.isArray(selectedConfig?.model) ? selectedConfig.model[0] : selectedConfig?.model)
-    || null;
   let billedModel = null;
   let billedCredits = null;
   if (options.billingEnabled) {
@@ -1242,6 +1236,7 @@ function create(db, log, req, options = {}) {
     allowMissingModel: !options.billingEnabled,
     evidenceRoots: options.evidenceRoots,
   });
+  const generationModel = billingRequest?.generationModel || req.model || null;
   if (options.billingEnabled) {
     billedModel = billingRequest.model;
     billedCredits = billingRequest.credits;
@@ -1290,9 +1285,11 @@ function create(db, log, req, options = {}) {
     const billingValues = options.billingEnabled ? ', ?, ?, NULL' : '';
     const params = [
       req.storyboard_id ?? null, Number(req.drama_id) || 0, sceneId,
-      billingRequest?.provider || selectedConfig?.provider || req.provider || 'openai',
-      selectedConfigId,
-      mergedPrompt, req.negative_prompt ?? null, generationModel, frameType,
+      billingRequest?.provider || req.provider || 'openai',
+      billingRequest?.configId ?? null,
+      mergedPrompt, req.negative_prompt ?? null,
+      billingRequest?.generationModel || billedModel || generationModel,
+      frameType,
       refImagesJson, useFirstFrameLayoutLock, reqSize, resolution, quantity, requestSnapshot,
       taskId, now, now,
     ];
@@ -1317,7 +1314,7 @@ function create(db, log, req, options = {}) {
       generationCost.record(db, {
         reservationId: reservation.id,
         model: billedModel,
-        configId: selectedConfigId,
+        configId: billingRequest?.configId,
         resolution,
         quantity,
         usageSource: 'configured',
@@ -1491,7 +1488,7 @@ async function processImageGeneration(db, log, imageGenId, runtime = {}) {
 
     // ── Step 1: 获取 AI 配置 ──────────────────────────────────────────
     const config = row.config_id != null
-      ? imageClient.getImageConfigById(db, row.config_id, row.model)
+      ? imageClient.getImageConfigById(db, row.config_id, requestSnapshot.model || row.model)
       : imageClient.getDefaultImageConfig(
         db,
         requestSnapshot.model || row.model,
@@ -2227,11 +2224,14 @@ async function processImageGeneration(db, log, imageGenId, runtime = {}) {
     }
 
     const result = await taskService.withTaskHeartbeat(db, row.task_id, '正在等待图片生成服务...', () => imageClient.callImageApi(db, log, {
-      ...(row.config_id != null ? { config_id: row.config_id } : {}),
+      ...(row.config_id != null
+        ? { config_id: row.config_id }
+        : {
+          preferred_provider: requestSnapshot.provider || undefined,
+          preferred_config_id: requestSnapshot.config_id || undefined,
+        }),
       prompt: finalPrompt,
       model: requestSnapshot.model || row.model,
-      preferred_provider: requestSnapshot.provider || undefined,
-      preferred_config_id: requestSnapshot.config_id || undefined,
       size: imageSize,
       resolution: requestSnapshot.resolution || row.resolution || undefined,
       n: requestSnapshot.quantity || row.quantity || 1,

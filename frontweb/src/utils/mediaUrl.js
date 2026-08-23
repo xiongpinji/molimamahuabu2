@@ -12,6 +12,13 @@ function referenceMediaUrl(value) {
   return staticMediaUrl(p)
 }
 
+export function canvasResultPlaybackUrl({ kind, url, savedAssetLocalPath } = {}) {
+  if (String(kind || '').toLowerCase() === 'video' && savedAssetLocalPath) {
+    return staticMediaUrl(savedAssetLocalPath)
+  }
+  return referenceMediaUrl(url)
+}
+
 /** 统一媒体 URL：优先本地路径，其次素材/参考图常见远程字段 */
 export function assetImageUrl(item) {
   if (!item) return ''

@@ -107,6 +107,7 @@ function addHttpImageConfig(db, server, suffix) {
     default_model: model,
     endpoint: '/images/generations',
     logical_model_id: 'logical-local-image',
+    settings: JSON.stringify({ canvas_capabilities: { maxReferences: 2 } }),
   });
   db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
     .run(config.id);

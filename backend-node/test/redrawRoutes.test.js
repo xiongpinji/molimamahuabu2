@@ -13,6 +13,7 @@ const prices = require('../src/services/modelPriceService');
 const realRedrawOrchestrator = require('../src/services/redrawOrchestrator');
 const redrawCapabilityService = require('../src/services/redrawCapabilityService');
 const redrawAssetService = require('../src/services/redrawAssetService');
+const redrawReviewService = require('../src/services/redrawReviewService');
 
 const NOW = '2026-08-06T00:00:00.000Z';
 const EXPECTED_SERVER_AUTOMATION_POLICY = {
@@ -41,6 +42,7 @@ function stableJson(value) {
 }
 
 function canonicalIdentityPack(input = {}) {
+  const wardrobeSeed = input.wardrobeSeed || 'canonical actor wardrobe';
   const pack = {
     schema_version: 'target-actor-identity-v1',
     source_character_key: input.sourceCharacterKey || 'source-character-maya',
@@ -52,10 +54,18 @@ function canonicalIdentityPack(input = {}) {
       height: 960,
       mime_type: 'image/png',
     },
+    wardrobe: {
+      label: '整集主服装',
+      reference_asset_id: Number(input.wardrobeAssetId || 702),
+      reference_sha256: crypto.createHash('sha256').update(wardrobeSeed).digest('hex'),
+      consistency_confirmed: input.wardrobeConsistencyConfirmed ?? true,
+    },
     confirmed_views: ['front', 'profile', 'full_body'],
     live_action_human_confirmed: true,
     adult_status: 'verified_18_plus',
     identity_consistency_confirmed: true,
+    persona_origin: 'fictional_ai_generated',
+    target_country: 'US',
     ready: true,
     reviewed_by: 'user-a',
     reviewed_at: NOW,
@@ -258,16 +268,23 @@ function setupIdentityPackRouteFixture(values = {}) {
   const db = createDb();
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-identity-route-'));
   const artifactBytes = Buffer.from(values.artifactBody || 'canonical actor portrait');
+  const wardrobeBytes = Buffer.from(values.wardrobeBody || 'canonical actor wardrobe');
   const localPath = values.localPath || 'redraw-assets/actor.png';
+  const wardrobeLocalPath = values.wardrobeLocalPath || 'redraw-assets/wardrobe.png';
   fs.mkdirSync(path.dirname(path.join(storageRoot, localPath)), { recursive: true });
   fs.writeFileSync(path.join(storageRoot, localPath), artifactBytes);
+  fs.writeFileSync(path.join(storageRoot, wardrobeLocalPath), wardrobeBytes);
   db.prepare(`INSERT INTO assets
     (id, name, type, category, url, local_path, mime_type, width, height, created_at, updated_at)
     VALUES (701, 'Actor Maya', 'image', 'redraw', '/static/redraw-assets/actor.png', ?,
       'image/png', 640, 960, ?, ?)`).run(localPath, NOW, NOW);
+  db.prepare(`INSERT INTO assets
+    (id, name, type, category, url, local_path, mime_type, width, height, created_at, updated_at)
+    VALUES (702, 'Actor Maya wardrobe', 'image', 'redraw', '/static/redraw-assets/wardrobe.png', ?,
+      'image/png', 640, 960, ?, ?)`).run(wardrobeLocalPath, NOW, NOW);
   const projectId = insertProject(db);
   const workId = insertWork(db, projectId, { current_version: 1, current_step: 2 });
-  const versionId = insertVersion(db, workId, { status: 'asset_review' });
+  const versionId = insertVersion(db, workId, { status: 'asset_review', ...(values.version || {}) });
   const assetId = insertRedrawAsset(db, versionId, {
     kind: values.kind || 'character',
     source_ref_json: JSON.stringify({
@@ -290,6 +307,7 @@ function setupIdentityPackRouteFixture(values = {}) {
     db,
     storageRoot,
     artifactBytes,
+    wardrobeBytes,
     versionId: Number(versionId),
     assetId: Number(assetId),
     handlers,
@@ -301,7 +319,7 @@ function setupIdentityPackRouteFixture(values = {}) {
 }
 
 function completeIdentityPackRequest(overrides = {}) {
-  return {
+  const body = {
     target_actor_label: '  Actor Maya  ',
     confirmed_views: ['full_body', 'front', 'profile', 'front'],
     live_action_human_confirmed: true,
@@ -310,6 +328,17 @@ function completeIdentityPackRequest(overrides = {}) {
     expected_updated_at: NOW,
     ...overrides,
   };
+  if (!Object.prototype.hasOwnProperty.call(overrides, 'wardrobe_reference_asset_id')
+    && !Object.prototype.hasOwnProperty.call(overrides, 'wardrobeReferenceAssetId')
+    && !Object.prototype.hasOwnProperty.call(overrides, 'wardrobe')) {
+    body.wardrobe_reference_asset_id = 702;
+  }
+  if (!Object.prototype.hasOwnProperty.call(overrides, 'wardrobe_consistency_confirmed')
+    && !Object.prototype.hasOwnProperty.call(overrides, 'wardrobeConsistencyConfirmed')
+    && !Object.prototype.hasOwnProperty.call(overrides, 'wardrobe')) {
+    body.wardrobe_consistency_confirmed = true;
+  }
+  return body;
 }
 
 function insertAssetBatch(db, versionId, values = {}) {
@@ -1714,6 +1743,40 @@ test('阶段 2 资产审核路由返回门禁并禁止普通更新接口改审�
     assert.equal(review.body.data.asset.approval_status, 'approved');
     assert.equal(review.body.data.gate.ok, true);
   } finally {
+    db.close();
+  }
+});
+
+test('生成审核门禁未知异常响应脱敏但保留 not found 语义', () => {
+  const db = createDb();
+  const original = redrawReviewService.evaluateGenerationGate;
+  const logs = [];
+  try {
+    const handlers = redrawRoutes(db, { error(error, message) { logs.push({ error, message }); } }, routeDeps());
+    redrawReviewService.evaluateGenerationGate = () => {
+      throw Object.assign(new Error('C:\\private\\gate.json Authorization Bearer sk-secret Key=raw'), {
+        cause: new Error('https://provider.example/private'),
+      });
+    };
+    const result = captureResponse();
+    handlers.generationGate(request({ id: 1 }), result);
+
+    assert.equal(result.statusCode, 500);
+    assert.equal(result.body.error.message, '读取生成审核门禁失败');
+    const serialized = JSON.stringify(result.body);
+    for (const secret of ['C:\\private', 'Authorization', 'sk-secret', 'provider.example', 'Key=raw']) {
+      assert.equal(serialized.includes(secret), false, secret);
+    }
+    assert.equal(logs.length, 1);
+
+    redrawReviewService.evaluateGenerationGate = () => {
+      throw Object.assign(new Error('missing'), { code: 'REDRAW_VERSION_NOT_FOUND' });
+    };
+    const notFound = captureResponse();
+    handlers.generationGate(request({ id: 404 }), notFound);
+    assert.equal(notFound.statusCode, 404);
+  } finally {
+    redrawReviewService.evaluateGenerationGate = original;
     db.close();
   }
 });
@@ -5096,16 +5159,13 @@ test('批量生成显式历史版本返回冲突且零调用零冻结', async ()
 });
 
 test('角色身份包 API 保存服务端证据、重置审核且响应不泄露存储路径', () => {
-  const fixture = setupIdentityPackRouteFixture();
+  const fixture = setupIdentityPackRouteFixture({ version: { locale: 'es-ES', market: 'ES' } });
   try {
     const result = captureResponse();
     fixture.handlers.saveRedrawCharacterIdentityPack(
       request({
         id: fixture.assetId,
-        body: completeIdentityPackRequest({
-          persona_origin: ' fictional_ai_generated ',
-          target_country: ' US ',
-        }),
+        body: completeIdentityPackRequest(),
       }),
       result,
     );
@@ -5118,7 +5178,7 @@ test('角色身份包 API 保存服务端证据、重置审核且响应不泄露
     assert.equal(result.body.data.identity_pack.source_character_key, 'source-character-maya');
     assert.equal(result.body.data.identity_pack.target_actor_label, 'Actor Maya');
     assert.equal(result.body.data.identity_pack.persona_origin, 'fictional_ai_generated');
-    assert.equal(result.body.data.identity_pack.target_country, 'US');
+    assert.equal(result.body.data.identity_pack.target_country, 'ES');
     assert.deepEqual(result.body.data.identity_pack.confirmed_views, ['front', 'profile', 'full_body']);
     assert.deepEqual(result.body.data.identity_pack.artifact, {
       asset_id: 701,
@@ -5126,6 +5186,12 @@ test('角色身份包 API 保存服务端证据、重置审核且响应不泄露
       width: 640,
       height: 960,
       mime_type: 'image/png',
+    });
+    assert.deepEqual(result.body.data.identity_pack.wardrobe, {
+      label: '整集主服装',
+      reference_asset_id: 702,
+      reference_sha256: crypto.createHash('sha256').update(fixture.wardrobeBytes).digest('hex'),
+      consistency_confirmed: true,
     });
     assert.equal(result.body.data.identity_pack.reviewed_by, 'user-a');
     assert.equal(result.body.data.identity_pack.ready, true);
@@ -5152,7 +5218,7 @@ test('角色身份包 API 保存服务端证据、重置审核且响应不泄露
   }
 });
 
-test('角色身份包 API 接受 camelCase 虚构美国政策字段并保持安全响应', () => {
+test('角色身份包 API 接受 camelCase 非政策字段并保持安全响应', () => {
   const fixture = setupIdentityPackRouteFixture();
   try {
     const result = captureResponse();
@@ -5160,8 +5226,8 @@ test('角色身份包 API 接受 camelCase 虚构美国政策字段并保持安�
       request({
         id: fixture.assetId,
         body: completeIdentityPackRequest({
-          personaOrigin: ' fictional_ai_generated ',
-          targetCountry: ' US ',
+          wardrobeReferenceAssetId: 702,
+          wardrobeConsistencyConfirmed: true,
         }),
       }),
       result,
@@ -5187,11 +5253,17 @@ test('角色身份包 API 严格拒绝非法、重复和未知政策字段且数
     const invalidPatches = [
       { persona_origin: 'real_person' },
       { target_country: 'CN' },
+      { persona_origin: 'fictional_ai_generated' },
+      { target_country: 'US' },
+      { personaOrigin: 'fictional_ai_generated' },
+      { targetCountry: 'US' },
       { persona_origin: 1 },
       { target_country: true },
       { target_country: 'us' },
       { persona_origin: 'fictional_ai_generated', personaOrigin: 'fictional_ai_generated' },
       { target_country: 'US', targetCountry: 'US' },
+      { wardrobe_reference_asset_id: 702, wardrobeReferenceAssetId: 702 },
+      { wardrobe_consistency_confirmed: true, wardrobeConsistencyConfirmed: true },
       { unknown_policy: 'fictional_ai_generated' },
     ];
     const before = fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
@@ -5254,7 +5326,8 @@ test('角色身份包 API 拒绝客户端控制和未知字段且不修改数据
     const forbiddenFields = [
       'source_character_key', 'artifact', 'sha256', 'pack_sha256', 'ready',
       'reviewed_by', 'reviewed_at', 'asset_id', 'version_id', 'tenant_id', 'user_id',
-      'path', 'url', 'approval_status', 'status', 'unexpected_field',
+      'path', 'url', 'approval_status', 'status', 'wardrobe_reference_sha256',
+      'wardrobeReferenceSha256', 'wardrobe', 'unexpected_field',
     ];
     const before = fixture.db.prepare(`SELECT source_ref_json, approval_status, approved_by,
       approved_at, updated_at FROM redraw_assets WHERE id = ?`).get(fixture.assetId);
@@ -5361,6 +5434,8 @@ test('角色身份包 API 允许保存明确未完成的包并保持 ready=false
           liveActionHumanConfirmed: false,
           adultStatus: 'unverified',
           identityConsistencyConfirmed: false,
+          wardrobeReferenceAssetId: 702,
+          wardrobeConsistencyConfirmed: false,
           expectedUpdatedAt: NOW,
         },
       }),
@@ -5374,6 +5449,7 @@ test('角色身份包 API 允许保存明确未完成的包并保持 ready=false
       'live_action_human_confirmed',
       'adult_status',
       'identity_consistency_confirmed',
+      'wardrobe',
     ]);
   } finally {
     fixture.close();
@@ -5391,6 +5467,9 @@ test('角色身份包 API 严格校验允许字段类型和值', () => {
       { live_action_human_confirmed: 1 },
       { adult_status: 'unknown' },
       { identity_consistency_confirmed: 'true' },
+      { wardrobe_reference_asset_id: 0 },
+      { wardrobe_reference_asset_id: '702' },
+      { wardrobe_consistency_confirmed: 'true' },
       { expected_updated_at: ' ' },
     ];
     for (const patch of invalidPatches) {
@@ -5407,7 +5486,7 @@ test('角色身份包 API 严格校验允许字段类型和值', () => {
   }
 });
 
-test('第三步、角色身份包和本地化确认 API 已真实注册在总路由', () => {
+test('第三步、角色身份包、本地化确认和参考准备 API 已真实注册在总路由', () => {
   const db = createDb();
   try {
     const router = setupRouter({}, db, { error() {}, warn() {}, info() {} });
@@ -5431,11 +5510,290 @@ test('第三步、角色身份包和本地化确认 API 已真实注册在总路
     assert.equal(routes.has('GET /redraw/versions/:id/voices'), true);
     assert.equal(routes.has('GET /redraw/versions/:versionId/voices/:voiceAssetId/preview'), true);
     assert.equal(routes.has('POST /redraw/assets/:id/voice'), true);
+    assert.equal(routes.has('GET /redraw/versions/:id/character-plan'), true);
+    assert.equal(routes.has('GET /redraw/versions/:id/preparation-gate'), true);
+    assert.equal(routes.has('POST /redraw/versions/:id/reference-preparation-quote'), true);
+    assert.equal(routes.has('POST /redraw/versions/:id/reference-preparations'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/dialogue/quote'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/dialogue/start'), true);
     assert.equal(routes.has('GET /redraw/versions/:id/dialogue/tasks/:taskId'), true);
     assert.equal(routes.has('PUT /redraw/projects/:id/policy'), true);
     assert.equal(routes.has('GET /redraw/projects/:id/events'), true);
+  } finally {
+    db.close();
+  }
+});
+
+test('参考准备 API 按 owner 接线、严格白名单且只传服务端受信上下文', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 2 });
+    const versionId = Number(insertVersion(db, workId, { status: 'asset_review' }));
+    const shotId = Number(insertShot(db, workId, versionId, { preparation_state: 'localized' }));
+    const calls = [];
+    const handlers = redrawRoutes(db, { error() {}, warn() {} }, routeDeps({
+      cfg: { storage: { local_path: 'trusted-storage-root' } },
+      characterPlanService: {
+        buildCharacterPlan(ctx, id) {
+          calls.push({ name: 'character-plan', ctx, id });
+          return { version_id: id, ready: true, plan_hash: 'a'.repeat(64), characters: [] };
+        },
+      },
+      preparationGateService: {
+        evaluatePreparationGate(ctx, id) {
+          calls.push({ name: 'preparation-gate', ctx, id });
+          return { ok: false, version_id: id, ready_shot_ids: [], missing: [] };
+        },
+      },
+      referencePreparationService: {
+        async quoteVersionPreparation(ctx, input, deps) {
+          calls.push({ name: 'quote', ctx, input, deps });
+          return {
+            version_id: ctx.versionId,
+            selected_shot_ids: input.shot_ids || [shotId],
+            action: 'needs_review',
+            effective_mode: 'safe',
+            reason_codes: [],
+            priced: true,
+            credits: 3,
+            confirmation_required: true,
+            quote_hash: 'quote-reference-ready',
+          };
+        },
+        async startVersionPreparation(ctx, input, deps) {
+          calls.push({ name: 'start', ctx, input, deps });
+          return {
+            task_id: 'task-reference-preparation',
+            status: 'pending',
+            quote: { quote_hash: input.quote_hash, credits: 3, priced: true },
+            completion: new Promise(() => {}),
+          };
+        },
+      },
+    }));
+
+    const plan = captureResponse();
+    handlers.getCharacterPlan(request({ id: versionId }), plan);
+    assert.equal(plan.statusCode, 200);
+    assert.equal(plan.body.data.version_id, versionId);
+
+    const gate = captureResponse();
+    handlers.preparationGate(request({ id: versionId }), gate);
+    assert.equal(gate.statusCode, 200);
+
+    db.prepare(`UPDATE redraw_shots SET preparation_state = 'stale', stale_reason_code = 'voice_changed',
+      preparation_snapshot_json = ? WHERE id = ?`).run(JSON.stringify({
+      status: 'stale',
+      requirements: [{ kind: 'person_clean', key: 'person-a', local_path: 'C:/private/mask.png' }],
+      clean_results: [{
+        kind: 'person_clean', key: 'person-a', status: 'completed',
+        provider_task_id: 'private-provider-task', reservation_id: 'private-reservation',
+      }],
+      absolute_path: 'C:/private/reference.png',
+    }), shotId);
+    const work = captureResponse();
+    handlers.getWork(request({ id: workId }), work);
+    assert.equal(work.statusCode, 200);
+    assert.equal(work.body.data.shots[0].preparation_state, 'stale');
+    assert.equal(work.body.data.shots[0].stale_reason_code, 'voice_changed');
+    assert.deepEqual(work.body.data.shots[0].preparation.requirements, [{ kind: 'person_clean', key: 'person-a' }]);
+    assert.equal(JSON.stringify(work.body.data.shots[0]).includes('private'), false);
+
+    const quote = captureResponse();
+    await handlers.referencePreparationQuote(request({
+      id: versionId,
+      body: { shot_ids: [shotId] },
+    }), quote);
+    assert.equal(quote.statusCode, 200);
+    assert.equal(quote.body.data.credits, 3);
+
+    const started = captureResponse();
+    await handlers.startReferencePreparation(request({
+      id: versionId,
+      body: {
+        quote_hash: 'quote-reference-ready',
+        idempotency_key: 'prep-route-once',
+        shot_ids: [shotId],
+      },
+    }), started);
+    assert.equal(started.statusCode, 202);
+    assert.equal(started.body.data.task_id, 'task-reference-preparation');
+    const startCall = calls.find((call) => call.name === 'start');
+    assert.deepEqual(startCall.input, {
+      quote_hash: 'quote-reference-ready',
+      idempotency_key: 'prep-route-once',
+      shot_ids: [shotId],
+    });
+    assert.equal(startCall.ctx.tenantId, 'tenant-a');
+    assert.equal(startCall.ctx.userId, 'user-a');
+    assert.equal(startCall.ctx.versionId, versionId);
+    assert.equal(startCall.ctx.storageRoot.endsWith('trusted-storage-root'), true);
+    assert.equal(typeof startCall.ctx.assetReader.canRead, 'function');
+    assert.equal(typeof startCall.deps.quoteCleanRequirement, 'function');
+    assert.equal(typeof startCall.deps.provider, 'function');
+
+    for (const field of [
+      'model', 'provider', 'price', 'credits', 'credit_amount', 'reservation',
+      'reservation_id', 'reference_bundle_hash', 'referenceBundleHash',
+      'path', 'local_path', 'absolute_path', 'url', 'asset_url',
+    ]) {
+      const forbidden = captureResponse();
+      await handlers.startReferencePreparation(request({
+        id: versionId,
+        body: {
+          quote_hash: 'quote-reference-ready',
+          idempotency_key: `forbidden-${field}`,
+          shot_ids: [shotId],
+          [field]: 'attacker-controlled',
+        },
+      }), forbidden);
+      assert.equal(forbidden.statusCode, 400, field);
+      assert.equal(forbidden.body.error.code, 'REDRAW_REFERENCE_PREPARATION_CLIENT_CONTROL_FORBIDDEN', field);
+    }
+    assert.equal(calls.filter((call) => call.name === 'start').length, 1);
+
+    for (const body of [
+      { shot_ids: [999999] },
+      { shot_ids: [shotId, shotId] },
+      { shot_ids: [] },
+    ]) {
+      const invalidShots = captureResponse();
+      await handlers.referencePreparationQuote(request({ id: versionId, body }), invalidShots);
+      assert.equal(invalidShots.statusCode, 400, JSON.stringify(body));
+      assert.equal(invalidShots.body.error.code, 'REDRAW_REFERENCE_PREPARATION_SHOTS_INVALID');
+    }
+    assert.equal(calls.filter((call) => call.name === 'quote').length, 1);
+
+    for (const req of [
+      request({ id: versionId, tenantId: 'tenant-b' }),
+      request({ id: versionId, userId: 'user-b' }),
+      request({ id: 999999 }),
+    ]) {
+      const foreign = captureResponse();
+      handlers.getCharacterPlan(req, foreign);
+      assert.equal(foreign.statusCode, 404);
+      assert.equal(foreign.body.error.code, 'REDRAW_VERSION_NOT_FOUND');
+    }
+    assert.equal(calls.filter((call) => call.name === 'character-plan').length, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('参考准备默认报价与执行复用已验证净景能力和模型价格且报价不创建 attempt', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 2 });
+    const versionId = Number(insertVersion(db, workId, { status: 'asset_review' }));
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO ai_service_configs
+      (service_type, provider, name, model, default_model, is_active, is_default,
+       priority, settings, created_at, updated_at)
+      VALUES ('image', 'trusted-image-provider', 'trusted image', ?, ?, 1, 1, 10, ?, ?, ?)`)
+      .run(
+        JSON.stringify(['gpt-image-2']),
+        'gpt-image-2',
+        JSON.stringify({ redraw_locale_capabilities: [{
+          locale: 'en-US', market: 'US', status: 'verified',
+          evidence: { clean_plate_image: {
+            provider: 'trusted-image-provider', model: 'gpt-image-2',
+            task_id: 'verified-clean-task', terminal_status: 'completed', artifact_id: 901,
+          } },
+        }] }),
+        now,
+        now,
+      );
+    prices.set(db, 'gpt-image-2', 6, { category: 'image' });
+    let quoted;
+    let prepared;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      prepareReferenceCleanRequirement: async (ctx, payload) => {
+        prepared = { ctx, payload };
+        return { status: 'completed', redraw_asset_id: 701 };
+      },
+      referencePreparationService: {
+        async quoteVersionPreparation(ctx, _input, deps) {
+          quoted = await deps.quoteCleanRequirement({
+            ctx,
+            scope: { locale: 'en-US', market: 'US' },
+            requirement: { kind: 'person_clean', key: 'person-a' },
+          });
+          return quoted;
+        },
+        async startVersionPreparation(ctx, input, deps) {
+          await deps.prepareCleanRequirement({
+            ctx,
+            scope: { locale: 'en-US', market: 'US' },
+            requirement: { kind: 'text_clean', key: 'subtitle-a' },
+            operation_key: 'server-operation-key',
+          });
+          return {
+            task_id: 'task-reference-priced', status: 'pending',
+            quote: { priced: true, credits: 6, quote_hash: input.quote_hash },
+          };
+        },
+      },
+    }));
+    const before = db.prepare('SELECT COUNT(*) AS count FROM redraw_assets').get().count;
+    const responseValue = captureResponse();
+    await handlers.referencePreparationQuote(request({ id: versionId, body: {} }), responseValue);
+    assert.equal(responseValue.statusCode, 200);
+    assert.deepEqual(responseValue.body.data, { priced: true, credits: 6 });
+    assert.deepEqual(quoted, { priced: true, credits: 6 });
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_assets').get().count, before);
+
+    const started = captureResponse();
+    await handlers.startReferencePreparation(request({ id: versionId, body: {
+      quote_hash: 'trusted-quote', idempotency_key: 'trusted-idempotency',
+    } }), started);
+    assert.equal(started.statusCode, 202);
+    assert.equal(prepared.ctx.model, 'gpt-image-2');
+    assert.equal(prepared.ctx.creditAmount, 6);
+    assert.equal(prepared.ctx.operationKey, 'server-operation-key');
+    assert.equal(typeof prepared.ctx.provider, 'function');
+    assert.equal(prepared.payload.requirement.kind, 'text_clean');
+  } finally {
+    db.close();
+  }
+});
+
+test('参考准备 API 对未知异常只返回脱敏错误', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = Number(insertVersion(db, workId));
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      referencePreparationService: {
+        quoteVersionPreparation() {
+          throw new Error('C:\\private\\reference.png https://secret.example/?key=abc');
+        },
+      },
+    }));
+    const result = captureResponse();
+    await handlers.referencePreparationQuote(request({ id: versionId, body: {} }), result);
+    assert.equal(result.statusCode, 500);
+    assert.equal(result.body.error.code, 'INTERNAL_ERROR');
+    assert.equal(JSON.stringify(result.body).includes('private'), false);
+    assert.equal(JSON.stringify(result.body).includes('secret.example'), false);
+
+    const codedHandlers = redrawRoutes(db, { error() {} }, routeDeps({
+      referencePreparationService: {
+        quoteVersionPreparation() {
+          throw Object.assign(new Error('C:\\private\\coded.png https://coded-secret.example/?key=abc'), {
+            code: 'REDRAW_REFERENCE_PREPARATION_PROVIDER_FAILED',
+          });
+        },
+      },
+    }));
+    const codedResult = captureResponse();
+    await codedHandlers.referencePreparationQuote(request({ id: versionId, body: {} }), codedResult);
+    assert.equal(codedResult.statusCode, 500);
+    assert.equal(codedResult.body.error.code, 'INTERNAL_ERROR');
+    assert.equal(JSON.stringify(codedResult.body).includes('private'), false);
+    assert.equal(JSON.stringify(codedResult.body).includes('coded-secret.example'), false);
   } finally {
     db.close();
   }

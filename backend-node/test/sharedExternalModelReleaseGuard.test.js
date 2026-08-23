@@ -8,8 +8,10 @@ const { spawnSync } = require('node:child_process');
 
 const GUARD = path.resolve(__dirname, '../../deploy/release-guard/verify-external-model-release.js');
 const TOAPIS_CONTRACT = 'toapis-video-real-verification-v1';
+const TOAPIS_PRIVATE_AVATAR_CONTRACT = 'toapis-private-avatar-video-verification-v1';
 const USMERCARI_CONTRACT = 'usmercari-image-real-verification-v1';
 const TOAPIS_FILE = 'toapis-video-verification.json';
+const TOAPIS_PRIVATE_AVATAR_FILE = 'toapis-private-avatar-verification.json';
 const USMERCARI_FILE = 'usmercari-image-verification.json';
 
 function describeRootEvidence(name, fn) {
@@ -105,8 +107,8 @@ function cleanEnvironment(overrides = {}) {
 }
 
 function runGuard(candidate, evidenceRoot, options = {}) {
-  const args = options.args || [candidate, evidenceRoot];
-  return spawnSync(process.execPath, [GUARD, ...args], {
+  const args = options.args || [candidate, evidenceRoot, options.expectedCurrent || candidate];
+  return spawnSync(process.execPath, [options.guard || GUARD, ...args], {
     encoding: 'utf8',
     env: cleanEnvironment(options.env),
     windowsHide: true,
@@ -121,6 +123,17 @@ function assertPass(result) {
 function assertFail(result, expected) {
   assert.notEqual(result.status, 0, `unexpected pass:\n${result.stdout}`);
   assert.match(`${result.stdout}\n${result.stderr}`, expected);
+}
+
+function trustedToapisStandardSurfaceGuard(fixture) {
+  const guard = path.join(fixture.root, 'trusted-toapis-standard-surface-guard.js');
+  const clientHash = sha256(fs.readFileSync(path.join(fixture.candidate, 'backend-node/src/services/toapisVideoClient.js')));
+  const producerHash = sha256(fs.readFileSync(path.join(fixture.candidate, 'backend-node/scripts/verify-toapis-video-models.js')));
+  const source = fs.readFileSync(GUARD, 'utf8')
+    .replace('9c42f9d68d36ce1b61e74c9e70a43868f611f13b3becc2f87c16878fbf458b8c', clientHash)
+    .replace('b79cf06188c59cfa8ee5f3b24a72c4b45e48d75388e6e60477f0075a7c8169fb', producerHash);
+  fs.writeFileSync(guard, source);
+  return guard;
 }
 
 function protectedRuntimeSources(candidate) {
@@ -211,6 +224,78 @@ function protectedRuntimeSources(candidate) {
       requireVerifiedToapisReferenceCapabilities(state, body);
       requireToapisResolutionPrice(db, body.model, body.resolution);
       return reserveCredits(db, body);
+    }
+  `);
+  write(candidate, 'backend-node/scripts/verify-toapis-video-models.js', `
+    function requireVerificationConfigId() { return 16; }
+    function evidenceBindingForFile(bytes) {
+      return {
+        evidence_contract: 'toapis-video-real-verification-v1',
+        evidence_sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+      };
+    }
+    function buildVerifiedCapabilities(results, evidenceBinding) {
+      const binding = normalizeEvidenceBinding(evidenceBinding);
+      return {
+        'seedance-2-fast': { durations: [4], resolutions: ['480p', '720p'], ...binding },
+        'seedance-2-mini': { durations: [4], resolutions: ['480p', '720p'], ...binding },
+      };
+    }
+    function recordVerificationResult(results, error, options) {
+      const binding = evidenceBindingForFile(options.evidencePath);
+      return db.transaction(() => {
+        const updated = aiConfigService.recordVerification(db, options.configId, {
+          capabilities: buildVerifiedCapabilities(results, binding),
+        });
+        if (updated.verified_capabilities['seedance-2-fast'].evidence_sha256 !== binding.evidence_sha256
+            || updated.verified_capabilities['seedance-2-mini'].evidence_sha256 !== binding.evidence_sha256) throw new Error('binding failed');
+        return updated;
+      })();
+    }
+    function preserveExistingVerification(error) {
+      error.preserveExistingVerification = true;
+      return error;
+    }
+    function restoreEvidenceFile() {}
+    function hasCompleteRequiredMatrix() { return true; }
+    function hasCompletePricing() { return true; }
+    function publishVerifiedEvidence(results, pricing, evidence, options) {
+      if (!hasCompleteRequiredMatrix(results)) throw preserveExistingVerification(new Error('matrix incomplete'));
+      if (!hasCompletePricing(pricing, results)) throw preserveExistingVerification(new Error('pricing incomplete'));
+      writeJsonAtomic(options.evidencePath, evidence);
+      try {
+        return recordVerificationResult(results, null, options);
+      } catch (error) {
+        restoreEvidenceFile(options.evidencePath, previousBytes);
+        throw preserveExistingVerification(error);
+      }
+    }
+    async function runVerification() {
+      const configId = requireVerificationConfigId();
+      const apiKey = requireApiKey();
+      const result = await processCase(apiKey);
+      try {
+        publishVerifiedEvidence(result, pricing, evidence, { configId, evidencePath });
+      } catch (error) {
+        if (!error.preserveExistingVerification) recordVerificationResult(result, error, { configId });
+        throw error;
+      }
+    }
+  `);
+  write(candidate, 'backend-node/src/services/productionPreflightService.js', `
+    function externalModelEvidenceBindingsReady(db, roots) {
+      const failures = [];
+      for (const config of db.prepare('SELECT * FROM ai_service_configs').all()) {
+        const capabilitiesByModel = parseCapabilities(config.verified_capabilities);
+        for (const model of mediaModelSelection.orderedModels(config)) {
+          if (!hasTrustedEvidenceBinding(model, capabilitiesByModel[model], roots)) failures.push(model);
+        }
+      }
+      return failures;
+    }
+    function runProductionPreflight({ db, evidenceRoots }) {
+      const mismatched = externalModelEvidenceBindingsReady(db, evidenceRoots);
+      addCheck(checks, 'external_model_evidence_binding', mismatched.length === 0);
     }
   `);
   write(candidate, 'backend-node/src/services/usmercariImageClient.js', `
@@ -452,6 +537,81 @@ function toapisEvidence(evidenceRoot, times) {
   };
 }
 
+function toapisPrivateAvatarEvidence(evidenceRoot, times) {
+  const cases = [
+    ['fast-avatar-480-4s', 'seedance-2-fast'],
+    ['mini-avatar-480-4s', 'seedance-2-mini'],
+  ].map(([id, model], index) => {
+    const outputFile = `${id}.mp4`;
+    const bytes = Buffer.alloc(2048, 40 + index);
+    write(evidenceRoot, path.join('public', 'toapis', outputFile), bytes);
+    return {
+      id,
+      model,
+      resolution: '480p',
+      duration: 4,
+      status: 'completed',
+      provider_task_id: `avatar-task-${id}`,
+      submitted_at: new Date(times.billingStart + index * 120_000).toISOString(),
+      completed_at: new Date(times.billingStart + index * 120_000 + 45_000).toISOString(),
+      speed: {
+        submit_latency_ms: 200 + index,
+        generation_elapsed_seconds: 45,
+      },
+      billing: {
+        before: {
+          used_balance: 10 + index,
+          used_credits: 2000 + index * 20,
+          captured_at: new Date(times.billingStart + index * 120_000).toISOString(),
+        },
+        after: {
+          used_balance: 10.1 + index,
+          used_credits: 2020 + index * 20,
+          captured_at: new Date(times.billingStart + index * 120_000 + 60_000).toISOString(),
+        },
+        debited_balance: 0.1,
+        debited_credits: 20,
+      },
+      artifact: {
+        output_file: outputFile,
+        content_type: 'video/mp4',
+        bytes: bytes.length,
+        sha256: sha256(bytes),
+        ffprobe: {
+          width: 864,
+          height: 480,
+          duration_seconds: 4,
+          video_codec: 'h264',
+          has_audio: false,
+        },
+      },
+    };
+  });
+  return {
+    contract_version: TOAPIS_PRIVATE_AVATAR_CONTRACT,
+    generated_at: times.generatedAt,
+    audit_run_id: 'avatar-audit-run-1',
+    source: {
+      identity: 'image_generation:344',
+      file_name: 'human-source.jpg',
+      bytes: 2048,
+      sha256: sha256('human-source'),
+    },
+    avatar: {
+      group_id: 'pg_group1',
+      asset_id: 'pa_asset1',
+      asset_url: 'asset://pa_asset1',
+      status: 'active',
+    },
+    cases,
+    summary: {
+      case_count: 2,
+      total_debited_balance: 0.2,
+      total_debited_credits: 40,
+    },
+  };
+}
+
 function usmercariEvidence(evidenceRoot, times) {
   return {
     contract_version: USMERCARI_CONTRACT,
@@ -514,6 +674,8 @@ function refreshManifest(evidenceRoot, providers) {
   if (providers.toapis) {
     const bytes = fs.readFileSync(path.join(evidenceRoot, TOAPIS_FILE));
     evidence[TOAPIS_CONTRACT] = { file: TOAPIS_FILE, sha256: sha256(bytes) };
+    const avatarBytes = fs.readFileSync(path.join(evidenceRoot, TOAPIS_PRIVATE_AVATAR_FILE));
+    evidence[TOAPIS_PRIVATE_AVATAR_CONTRACT] = { file: TOAPIS_PRIVATE_AVATAR_FILE, sha256: sha256(avatarBytes) };
   }
   if (providers.usmercari) {
     const bytes = fs.readFileSync(path.join(evidenceRoot, USMERCARI_FILE));
@@ -527,6 +689,7 @@ function refreshManifest(evidenceRoot, providers) {
 
 function makeFixture(providers = { toapis: true, usmercari: true }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shared-external-guard-'));
+  if (process.platform !== 'win32') fs.chmodSync(root, 0o755);
   const candidate = path.join(root, 'candidate');
   const evidenceRoot = path.join(root, 'evidence');
   fs.mkdirSync(candidate);
@@ -556,7 +719,10 @@ function makeFixture(providers = { toapis: true, usmercari: true }) {
     fs.writeFileSync(target, source);
   }
   const times = timeWindow();
-  if (providers.toapis) write(evidenceRoot, TOAPIS_FILE, `${JSON.stringify(toapisEvidence(evidenceRoot, times), null, 2)}\n`);
+  if (providers.toapis) {
+    write(evidenceRoot, TOAPIS_FILE, `${JSON.stringify(toapisEvidence(evidenceRoot, times), null, 2)}\n`);
+    write(evidenceRoot, TOAPIS_PRIVATE_AVATAR_FILE, `${JSON.stringify(toapisPrivateAvatarEvidence(evidenceRoot, times), null, 2)}\n`);
+  }
   if (providers.usmercari) write(evidenceRoot, USMERCARI_FILE, `${JSON.stringify(usmercariEvidence(evidenceRoot, times), null, 2)}\n`);
   if (providers.toapis || providers.usmercari) refreshManifest(evidenceRoot, providers);
   return { root, candidate, evidenceRoot, providers };
@@ -568,6 +734,27 @@ function editEvidence(fixture, file, mutate) {
   mutate(evidence);
   fs.writeFileSync(target, `${JSON.stringify(evidence, null, 2)}\n`);
   refreshManifest(fixture.evidenceRoot, fixture.providers);
+}
+
+function makeEvidenceStaleButUnexpired(fixture, file) {
+  editEvidence(fixture, file, (evidence) => {
+    const delta = 25 * 60 * 60 * 1_000;
+    const shift = (value) => {
+      if (Array.isArray(value)) return value.forEach(shift);
+      if (!value || typeof value !== 'object') return;
+      for (const [key, entry] of Object.entries(value)) {
+        if (typeof entry === 'string' && /(?:_at|captured_at)$/.test(key) && Number.isFinite(Date.parse(entry))) {
+          value[key] = new Date(Date.parse(entry) - delta).toISOString();
+        } else {
+          shift(entry);
+        }
+      }
+    };
+    shift(evidence);
+    if (Object.prototype.hasOwnProperty.call(evidence, 'valid_until')) {
+      evidence.valid_until = new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString();
+    }
+  });
 }
 
 function removeSharedRuntime(candidate) {
@@ -591,6 +778,44 @@ describeRootEvidence('shared external model release guard CLI', () => {
     const fixture = makeFixture();
     try {
       assertPass(runGuard(fixture.candidate, fixture.evidenceRoot));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a missing ToAPIs private-avatar artifact file', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    try {
+      const evidence = JSON.parse(fs.readFileSync(
+        path.join(fixture.evidenceRoot, TOAPIS_PRIVATE_AVATAR_FILE),
+        'utf8',
+      ));
+      fs.rmSync(path.join(
+        fixture.evidenceRoot,
+        'public',
+        'toapis',
+        evidence.cases[0].artifact.output_file,
+      ));
+      assertFail(runGuard(fixture.candidate, fixture.evidenceRoot), /private-avatar|artifact|output.file|asset/i);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects tampered ToAPIs private-avatar artifact bytes', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    try {
+      const evidence = JSON.parse(fs.readFileSync(
+        path.join(fixture.evidenceRoot, TOAPIS_PRIVATE_AVATAR_FILE),
+        'utf8',
+      ));
+      fs.writeFileSync(path.join(
+        fixture.evidenceRoot,
+        'public',
+        'toapis',
+        evidence.cases[0].artifact.output_file,
+      ), Buffer.alloc(evidence.cases[0].artifact.bytes, 0x7f));
+      assertFail(runGuard(fixture.candidate, fixture.evidenceRoot), /private-avatar|SHA-256|artifact|asset/i);
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -635,11 +860,12 @@ describeRootEvidence('shared external model release guard CLI', () => {
     }
   });
 
-  it('requires exactly CANDIDATE EVIDENCE_ROOT and rejects evidence path environment variables', () => {
+  it('requires exactly CANDIDATE EVIDENCE_ROOT EXPECTED_CURRENT and rejects evidence path environment variables', () => {
     const fixture = makeFixture();
     try {
       assertFail(runGuard(fixture.candidate, fixture.evidenceRoot, { args: [fixture.candidate] }), /usage|CANDIDATE/i);
-      assertFail(runGuard(fixture.candidate, fixture.evidenceRoot, { args: [fixture.candidate, fixture.evidenceRoot, '--extra'] }), /usage|CANDIDATE/i);
+      assertFail(runGuard(fixture.candidate, fixture.evidenceRoot, { args: [fixture.candidate, fixture.evidenceRoot] }), /usage|CANDIDATE/i);
+      assertFail(runGuard(fixture.candidate, fixture.evidenceRoot, { args: [fixture.candidate, fixture.evidenceRoot, fixture.candidate, '--extra'] }), /usage|CANDIDATE/i);
       assertFail(runGuard(fixture.candidate, fixture.evidenceRoot, {
         env: { TOAPIS_VIDEO_EVIDENCE_PATH: path.join(fixture.evidenceRoot, TOAPIS_FILE) },
       }), /environment|环境|env/i);
@@ -650,32 +876,102 @@ describeRootEvidence('shared external model release guard CLI', () => {
 });
 
 describeRootEvidence('shared evidence path and freshness safety', () => {
-  it('audits root ownership and group/other write protection for every evidence layer', () => {
+  it('accepts stale but unexpired evidence when protected provider surfaces are unchanged', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    try {
+      makeEvidenceStaleButUnexpired(fixture, TOAPIS_FILE);
+      makeEvidenceStaleButUnexpired(fixture, TOAPIS_PRIVATE_AVATAR_FILE);
+      assertPass(runGuard(fixture.candidate, fixture.evidenceRoot, {
+        expectedCurrent: fixture.candidate,
+        guard: trustedToapisStandardSurfaceGuard(fixture),
+      }));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('requires fresh standard ToAPIs evidence when its provider client changes', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    const expectedCurrent = path.join(fixture.root, 'expected-current');
+    try {
+      fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
+      makeEvidenceStaleButUnexpired(fixture, TOAPIS_FILE);
+      const client = path.join(fixture.candidate, 'backend-node/src/services/toapisVideoClient.js');
+      const changed = fs.readFileSync(client, 'utf8').replace("return 'https://toapis.com';", "return 'https://toapis.example';");
+      fs.writeFileSync(client, changed);
+      assertFail(runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }), /ToAPIs.*stale|24 hours/i);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an unchanged forged standard ToAPIs evidence producer instead of blindly trusting current', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    const expectedCurrent = path.join(fixture.root, 'expected-current');
+    try {
+      const legacyVerifier = 'function runVerification() { return true; }\n';
+      fs.writeFileSync(path.join(fixture.candidate, 'backend-node/scripts/verify-toapis-video-models.js'), legacyVerifier);
+      fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
+      makeEvidenceStaleButUnexpired(fixture, TOAPIS_FILE);
+      assertFail(runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }), /ToAPIs paid verification evidence-binding workflow is incomplete/i);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts stale standard ToAPIs evidence only when the unchanged producer matches a pinned trusted hash', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    const expectedCurrent = path.join(fixture.root, 'expected-current');
+    const trustedGuard = path.join(fixture.root, 'trusted-guard.js');
+    try {
+      const legacyVerifier = 'function runVerification() { return true; }\n';
+      fs.writeFileSync(path.join(fixture.candidate, 'backend-node/scripts/verify-toapis-video-models.js'), legacyVerifier);
+      fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
+      makeEvidenceStaleButUnexpired(fixture, TOAPIS_FILE);
+      fs.renameSync(trustedToapisStandardSurfaceGuard(fixture), trustedGuard);
+      assertPass(runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent, guard: trustedGuard }));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('requires fresh private-avatar evidence when its binding surface changes', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    const expectedCurrent = path.join(fixture.root, 'expected-current');
+    try {
+      fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
+      makeEvidenceStaleButUnexpired(fixture, TOAPIS_PRIVATE_AVATAR_FILE);
+      fs.appendFileSync(path.join(fixture.candidate, 'backend-node/src/services/videoService.js'), '\n// private-avatar binding change\n');
+      assertFail(runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }), /private-avatar.*stale|24 hours/i);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('audits root ownership, immutability and runtime readability for every evidence layer', () => {
     const source = fs.readFileSync(GUARD, 'utf8');
     assert.match(source, /stat\.uid\s*!==\s*0/);
     assert.match(source, /stat\.gid\s*!==\s*0/);
     assert.match(source, /stat\.mode\s*&\s*0o022/);
+    assert.match(source, /stat\.mode\s*&\s*0o555/);
+    assert.match(source, /stat\.mode\s*&\s*0o444/);
     for (const token of ['EVIDENCE_ALLOWED_ROOT', 'EVIDENCE_ROOT', 'evidence manifest', 'evidence JSON', 'public output_file']) {
       assert.match(source, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     }
   });
 
   it('rejects group/other-writable manifest, evidence JSON and public asset on POSIX', { skip: process.platform === 'win32' }, () => {
-    for (const relativePath of [
+    for (const relative of [
       '.',
       'evidence',
       path.join('evidence', 'public'),
       path.join('evidence', 'public', 'usmercari'),
       'manifest.json',
       USMERCARI_FILE,
-      (fixture) => {
-        const evidence = JSON.parse(fs.readFileSync(path.join(fixture.evidenceRoot, USMERCARI_FILE), 'utf8'));
-        return path.join('public', 'usmercari', evidence.results[0].output_file);
-      },
+      path.join('public', 'usmercari', `${USMERCARI_CASES[0].join('-')}.jpg`),
     ]) {
       const fixture = makeFixture({ toapis: false, usmercari: true });
       try {
-        const relative = typeof relativePath === 'function' ? relativePath(fixture) : relativePath;
         const target = relative === '.'
           ? fixture.root
           : relative.startsWith(`evidence${path.sep}`) || relative === 'evidence'
@@ -684,6 +980,29 @@ describeRootEvidence('shared evidence path and freshness safety', () => {
         fs.chmodSync(target, fs.statSync(target).isDirectory() ? 0o777 : 0o666);
         assertFail(runGuard(fixture.candidate, fixture.evidenceRoot), /writable|permission|mode|权限/i);
       } finally {
+        fs.rmSync(fixture.root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('rejects evidence directories and files that the runtime user cannot read on POSIX', { skip: process.platform === 'win32' }, () => {
+    for (const [relative, mode] of [
+      ['evidence', 0o700],
+      [path.join('evidence', 'public'), 0o700],
+      [path.join('evidence', 'public', 'usmercari'), 0o700],
+      ['manifest.json', 0o600],
+      [USMERCARI_FILE, 0o600],
+      [path.join('public', 'usmercari', `${USMERCARI_CASES[0].join('-')}.jpg`), 0o600],
+    ]) {
+      const fixture = makeFixture({ toapis: false, usmercari: true });
+      try {
+        const target = relative.startsWith(`evidence${path.sep}`) || relative === 'evidence'
+          ? path.join(fixture.root, relative)
+          : path.join(fixture.evidenceRoot, relative);
+        fs.chmodSync(target, mode);
+        assertFail(runGuard(fixture.candidate, fixture.evidenceRoot), /readable|traversable|permission|mode|权限/i);
+      } finally {
+        fs.chmodSync(fixture.root, 0o755);
         fs.rmSync(fixture.root, { recursive: true, force: true });
       }
     }
@@ -768,9 +1087,12 @@ describeRootEvidence('shared evidence path and freshness safety', () => {
     }],
   ]) it(`rejects ${name}`, () => {
     const fixture = makeFixture({ toapis: false, usmercari: true });
+    const expectedCurrent = path.join(fixture.root, 'expected-current');
     try {
+      fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
       editEvidence(fixture, USMERCARI_FILE, mutate);
-      assertFail(runGuard(fixture.candidate, fixture.evidenceRoot), /fresh|stale|24|window|7 days|age|有效期|陈旧/i);
+      fs.appendFileSync(path.join(fixture.candidate, 'backend-node/src/services/usmercariImageClient.js'), '\n// provider wire change\n');
+      assertFail(runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }), /fresh|stale|24|window|7 days|age|有效期|陈旧/i);
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -1102,6 +1424,49 @@ describeRootEvidence('candidate runtime and callout audit', () => {
         .replace(' || !hasTrustedEvidenceBinding(preferredModel, capabilities)', '');
       fs.writeFileSync(target, source);
       assertFail(runGuard(fixture.candidate, fixture.evidenceRoot), /ToAPIs|video config|evidence|binding/i);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  for (const [name, relative, mutate] of [
+    ['verification without a mandatory config id', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace('const configId = requireVerificationConfigId();', 'const configId = 0;')],
+    ['verification capabilities without the final evidence binding', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replaceAll(', ...binding', '')],
+    ['verification publishing before completeness and pricing checks', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace('if (!hasCompleteRequiredMatrix(results)) throw preserveExistingVerification(new Error(\'matrix incomplete\'));', '')],
+    ['verification without restoring old evidence after DB writeback failure', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace('restoreEvidenceFile(options.evidencePath, previousBytes);', '')],
+    ['verification flow that invalidates existing evidence on publication failure', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace('if (!error.preserveExistingVerification) recordVerificationResult(result, error, { configId });', 'recordVerificationResult(result, error, { configId });')],
+    ['production preflight without the DB/evidence binding check', 'backend-node/src/services/productionPreflightService.js',
+      (source) => source.replace("addCheck(checks, 'external_model_evidence_binding', mismatched.length === 0);", '')],
+  ]) it(`rejects ToAPIs ${name}`, () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    const expectedCurrent = path.join(fixture.root, 'expected-current');
+    try {
+      fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
+      const target = path.join(fixture.candidate, relative);
+      fs.writeFileSync(target, mutate(fs.readFileSync(target, 'utf8')));
+      assertFail(runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }), /ToAPIs|evidence|binding|config|preflight/i);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts guarded verification code when earlier regular expressions contain quotes and brace quantifiers', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    try {
+      const target = path.join(fixture.candidate, 'backend-node/scripts/verify-toapis-video-models.js');
+      const source = fs.readFileSync(target, 'utf8').replace(
+        'function evidenceBindingForFile(bytes) {',
+        `function redact(value) { return String(value).replace(/[^\\s\"'<>]+/g, '[redacted]'); }
+         function isSha256(value) { return /^[a-f0-9]{64}$/i.test(String(value || '')); }
+         function evidenceBindingForFile(bytes) {`,
+      );
+      fs.writeFileSync(target, source);
+      assertPass(runGuard(fixture.candidate, fixture.evidenceRoot));
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
