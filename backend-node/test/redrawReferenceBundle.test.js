@@ -837,6 +837,46 @@ test('es-ES/ES 参考包对白、身份国家和投影 locale 使用当前版本
   }
 });
 
+test('本地化对白可保留中文源文审计字段且目标证据仅绑定规范字段', async () => {
+  const state = setup({
+    locale: 'es-ES',
+    market: 'ES',
+    dialogue: [{
+      speaker_id: 'character-001',
+      source_text: '他最后出现的地方就是这里',
+      localized_text: 'Fue aqui.',
+      start_ms: 900,
+      end_ms: 2300,
+      emotion: null,
+      overlap_group: null,
+      estimated_duration_ms: 600,
+    }],
+  });
+  try {
+    const canonicalTurns = [{
+      speaker_id: 'character-001',
+      localized_text: 'Fue aqui.',
+      start_ms: 900,
+      end_ms: 2300,
+    }];
+    const expectedScriptSha256 = sha256(stableJson(canonicalTurns));
+
+    const saved = await saveReferenceBundle(ctx(state), validInput(state));
+    assert.deepEqual(saved.bundle.dialogue.turns, canonicalTurns);
+    assert.equal(saved.bundle.dialogue.script_sha256, expectedScriptSha256);
+    assert.equal(JSON.stringify(saved.bundle).includes('他最后出现的地方就是这里'), false);
+    for (const field of ['source_text', 'emotion', 'overlap_group', 'estimated_duration_ms']) {
+      assert.equal(Object.hasOwn(saved.bundle.dialogue.turns[0], field), false);
+    }
+
+    const loaded = await loadCurrentReferenceBundle(ctx(state), state.shotId);
+    assert.deepEqual(loaded.bundle.dialogue.turns, canonicalTurns);
+    assert.equal(loaded.bundle.dialogue.script_sha256, expectedScriptSha256);
+  } finally {
+    state.cleanup();
+  }
+});
+
 test('V2 身份素材允许 source_ref.source_character_key 且无 stable_id', async () => {
   const state = setup();
   try {
@@ -925,7 +965,10 @@ test('源与本地化对白空值不一致、非法 JSON 或非数组时拒绝�
     { name: 'source time non-integer', overrides: { sourceDialogue: [{ speaker_id: 'character-001', text: '跟我走。', start_ms: 0.5, end_ms: 2400 }] } },
     { name: 'source time out of duration', overrides: { sourceDialogue: [{ speaker_id: 'character-001', text: '跟我走。', start_ms: 0, end_ms: 5001 }] } },
     { name: 'localized text empty', overrides: { dialogue: [{ speaker_id: 'character-001', localized_text: ' ', start_ms: 0, end_ms: 2400 }] } },
-    { name: 'localized Chinese residue', overrides: { dialogue: [{ speaker_id: 'character-001', localized_text: '等一下。', start_ms: 0, end_ms: 2400 }] } },
+    { name: 'localized Chinese residue', overrides: { dialogue: [{
+      speaker_id: 'character-001', source_text: 'source audit', localized_text: '等一下。',
+      start_ms: 0, end_ms: 2400, emotion: null, estimated_duration_ms: 600,
+    }] } },
     { name: 'localized time out of duration', overrides: { dialogue: [{ speaker_id: 'character-001', localized_text: 'Wait.', start_ms: 0, end_ms: 5001 }] } },
   ];
   for (const entry of cases) {
