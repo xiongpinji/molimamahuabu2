@@ -304,24 +304,34 @@ async function reusableCleanResults(ctx, row, descriptor, expectedBaseline, char
     const assetId = Number(result?.redraw_asset_id);
     if (!requirement || !['completed', 'unknown'].includes(result?.status)
       || !Number.isSafeInteger(assetId) || assetId <= 0) continue;
+    let attemptCurrent = result.status === 'completed';
+    if (result.status === 'unknown') {
+      const hasProviderTaskId = Object.prototype.hasOwnProperty.call(result, 'provider_task_id');
+      const hasReservationId = Object.prototype.hasOwnProperty.call(result, 'reservation_id');
+      const providerTaskId = typeof result.provider_task_id === 'string' && SAFE_SEGMENT.test(result.provider_task_id)
+        ? result.provider_task_id : '';
+      const reservationId = typeof result.reservation_id === 'string' && SAFE_SEGMENT.test(result.reservation_id)
+        ? result.reservation_id : '';
+      const identitySafe = (!hasProviderTaskId || Boolean(providerTaskId))
+        && (!hasReservationId || Boolean(reservationId));
+      const attempt = identitySafe && (providerTaskId || reservationId) && ctx.db.prepare(`
+        SELECT generation_task_id, credit_reservation_id FROM redraw_assets
+        WHERE id = ? AND version_id = ? AND tenant_id = ? AND user_id = ?
+          AND kind = 'scene' AND deleted_at IS NULL
+      `).get(assetId, ctx.versionId, ctx.tenantId, ctx.userId);
+      attemptCurrent = Boolean(attempt
+        && (!providerTaskId || String(attempt.generation_task_id || '') === providerTaskId)
+        && (!reservationId || String(attempt.credit_reservation_id || '') === reservationId));
+    }
     let current;
     if (typeof deps.isCleanResultCurrent === 'function') {
       current = result.status === 'completed'
         ? await deps.isCleanResultCurrent({ ctx, shot: row, requirement, result })
         : false;
-    } else if (requirement.kind === 'person_clean') {
-      current = readCurrentCleanResultEvidence(ctx, row, requirement, assetId);
-    } else if (result.status === 'unknown') {
-      current = readCurrentCleanResultEvidence(ctx, row, requirement, assetId);
     } else {
-      current = Boolean(ctx.db.prepare(`
-        SELECT id FROM redraw_assets
-        WHERE id = ? AND version_id = ? AND tenant_id = ? AND user_id = ?
-          AND kind = 'scene' AND status = 'generated' AND approval_status = 'approved'
-          AND clean_plate_asset_id IS NOT NULL AND deleted_at IS NULL
-      `).get(assetId, ctx.versionId, ctx.tenantId, ctx.userId));
+      current = readCurrentCleanResultEvidence(ctx, row, requirement, assetId);
     }
-    if (current === true || (current && typeof current === 'object')) {
+    if (attemptCurrent && (current === true || (current && typeof current === 'object'))) {
       const reusableResult = safeResult({ ...result, status: 'completed', ...(current === true ? {} : { evidence: current }) }, requirement);
       reusable.push(reusableResult);
       if (result.status === 'unknown') {

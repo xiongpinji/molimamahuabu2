@@ -522,6 +522,32 @@ async function setupDefaultServerPath(options = {}) {
   };
 }
 
+async function createApprovedTextCleanResult(state, providerTaskId) {
+  const coverage = await loadReviewedReferenceCoverage(state.ctx);
+  const requirement = coverage.shots[0].requirements.find((item) => item.kind === 'text_clean');
+  const result = await prepareReferenceCleanRequirement({
+    ...state.ctx,
+    provider: async () => ({
+      status: 'completed', asset_id: 302, provider_task_id: providerTaskId,
+      quality: { width: 64, height: 64, mask_area_changed: true, non_mask_similarity: 0.99 },
+    }),
+  }, { requirement, operation_key: providerTaskId });
+  assert.equal(result.status, 'unknown');
+  const pending = state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(result.redraw_asset_id);
+  reviewAsset(state.db, pending.id, {
+    action: 'approved', reviewer_id: 'user-a', tenant_id: 'tenant-a', user_id: 'user-a',
+    expected_updated_at: pending.updated_at, preparationContext: state.ctx,
+  });
+  const motionAsset = state.db.prepare('SELECT metadata FROM assets WHERE id = 601').get();
+  const motionMetadata = JSON.parse(motionAsset.metadata);
+  motionMetadata.redraw_motion_reference.text_coverage_sha256 = sha256(stableJson([{
+    kind: 'text_subtitle', region_key: requirement.key,
+    text_clean_redraw_asset_id: result.redraw_asset_id, time_ranges: [[0, 12000]],
+  }]));
+  state.db.prepare('UPDATE assets SET metadata = ? WHERE id = 601').run(JSON.stringify(motionMetadata));
+  return { coverage, redrawAssetId: result.redraw_asset_id };
+}
+
 function fakeDeps(state, options = {}) {
   const cleanCalls = [];
   const bundleCalls = [];
@@ -992,7 +1018,9 @@ test('默认服务端路径从已批准全帧证据读取覆盖并用当前净�
     assert.equal(initial.action, 'blocked');
     assert.deepEqual(initial.items.map((item) => [item.kind, item.key]), [['text_clean', 'subtitle-a']]);
     assert.equal(JSON.stringify(initial).includes(state.ctx.storageRoot), false);
-    const coverage = await loadReviewedReferenceCoverage(state.ctx);
+    const preparedText = await createApprovedTextCleanResult(state, 'default-server-text-task');
+    const currentBaseline = await quoteVersionPreparation(state.ctx, { version_id: 1 });
+    const coverage = preparedText.coverage;
     const coverageShot = coverage.coverage_binding.shots[0];
 
     const snapshot = {
@@ -1000,8 +1028,8 @@ test('默认服务端路径从已批准全帧证据读取覆盖并用当前净�
       version_id: 1,
       shot_id: 1,
       preparation_version: 1,
-      character_plan_hash: initial.character_plan_hash,
-      version_snapshot_hash: initial.version_snapshot_hash,
+      character_plan_hash: currentBaseline.character_plan_hash,
+      version_snapshot_hash: currentBaseline.version_snapshot_hash,
       request_hash: sha256('previous-attempt'),
       idempotency_key_hash: sha256('previous-attempt'),
       coverage_analysis_sha256: coverage.coverage_binding.analysis_sha256,
@@ -1013,7 +1041,9 @@ test('默认服务端路径从已批准全帧证据读取覆盖并用当前净�
       coverage_requirement_hash: coverageShot.requirement_hash,
       status: 'failed',
       requirements: [{ kind: 'text_clean', key: 'subtitle-a' }],
-      clean_results: [{ kind: 'text_clean', key: 'subtitle-a', status: 'completed', redraw_asset_id: 202 }],
+      clean_results: [{
+        kind: 'text_clean', key: 'subtitle-a', status: 'completed', redraw_asset_id: preparedText.redrawAssetId,
+      }],
       error_code: 'REDRAW_REFERENCE_PREPARATION_CLEAN_FAILED',
     };
     state.db.prepare(`UPDATE redraw_shots
@@ -1040,8 +1070,51 @@ test('默认服务端路径从已批准全帧证据读取覆盖并用当前净�
     assert.equal(bundle.coverage_review.reviewed_by, 'user-a');
     assert.equal(bundle.coverage_review.mapped_text_region_count, 1);
     assert.equal(bundle.text_regions[0].region_key, 'subtitle-a');
-    assert.equal(bundle.text_regions[0].text_clean_redraw_asset_id, 202);
+    assert.equal(bundle.text_regions[0].text_clean_redraw_asset_id, preparedText.redrawAssetId);
     assert.equal(preparationEvidenceHash({ ...shot, id: 1, version_id: 1, preparation_version: 1 }), shot.preparation_evidence_hash);
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('默认路径 completed text_clean 物理文件漂移后必须重新报价且不复用', async () => {
+  const state = await setupDefaultServerPath();
+  try {
+    const preparedText = await createApprovedTextCleanResult(state, 'drifted-completed-text-task');
+    const initial = await quoteVersionPreparation(state.ctx, { version_id: 1 });
+    const coverage = preparedText.coverage;
+    const coverageShot = coverage.coverage_binding.shots[0];
+    const snapshot = {
+      schema_version: 'redraw-reference-preparation-v2',
+      version_id: 1,
+      shot_id: 1,
+      preparation_version: 1,
+      character_plan_hash: initial.character_plan_hash,
+      version_snapshot_hash: initial.version_snapshot_hash,
+      coverage_analysis_sha256: coverage.coverage_binding.analysis_sha256,
+      coverage_approved_by: coverage.coverage_binding.approved_by,
+      coverage_approved_at: coverage.coverage_binding.approved_at,
+      coverage_facts_hash: coverage.coverage_binding.facts_hash,
+      coverage_source_fingerprint: coverage.coverage_binding.source_fingerprint,
+      coverage_requirement_keys: coverageShot.requirement_keys,
+      coverage_requirement_hash: coverageShot.requirement_hash,
+      status: 'failed',
+      requirements: [{ kind: 'text_clean', key: 'subtitle-a' }],
+      clean_results: [{
+        kind: 'text_clean', key: 'subtitle-a', status: 'completed', redraw_asset_id: preparedText.redrawAssetId,
+      }],
+    };
+    state.db.prepare(`UPDATE redraw_shots
+      SET preparation_state = 'failed', preparation_snapshot_json = ?, preparation_evidence_hash = ?
+      WHERE id = 1`).run(stableJson(snapshot), sha256(stableJson(snapshot)));
+    assert.deepEqual((await quoteVersionPreparation(state.ctx, { version_id: 1 })).items, []);
+    fs.writeFileSync(path.join(state.ctx.storageRoot, 'redraw/text-clean.png'), 'tampered-text-clean');
+
+    const quote = await quoteVersionPreparation(state.ctx, { version_id: 1 });
+    assert.deepEqual(
+      quote.items.map((item) => [item.kind, item.key]),
+      [['text_clean', 'subtitle-a']],
+    );
   } finally {
     state.cleanup();
   }
@@ -1211,6 +1284,7 @@ test('同镜头人物与文字净景可逐项批准恢复且只生成剩余项',
         return {
           status: 'completed',
           asset_id: input.mode === 'clean_plate' ? 303 : 302,
+          provider_task_id: `${input.mode}-sequential-task`,
           quality: { width: 64, height: 64, mask_area_changed: true, non_mask_similarity: 0.99 },
         };
       },
@@ -1240,7 +1314,7 @@ test('同镜头人物与文字净景可逐项批准恢复且只生成剩余项',
   }
 });
 
-test('版本漂移只由原 unknown 的最新批准解释且更早 completed 仍按当前证据复用', async () => {
+test('版本漂移只由原 unknown 的最新批准解释且更早 completed 仍按当前证据复用', async (t) => {
   const state = await setupDefaultServerPath({ includePerson: true, includeText: true });
   try {
     let providerCalls = 0;
@@ -1306,6 +1380,53 @@ test('版本漂移只由原 unknown 的最新批准解释且更早 completed 仍
     const persistInterrupted = (value) => state.db.prepare(`UPDATE redraw_shots
       SET preparation_state = 'needs_attention', preparation_snapshot_json = ?, preparation_evidence_hash = ?
       WHERE id = 1`).run(stableJson(value), sha256(stableJson(value)));
+    const unknownAttempt = state.db.prepare(`SELECT generation_task_id, credit_reservation_id
+      FROM redraw_assets WHERE id = ? AND version_id = 1 AND tenant_id = 'tenant-a' AND user_id = 'user-a'`)
+      .get(pendingTextResult.redraw_asset_id);
+    assert.equal(unknownAttempt.generation_task_id, pendingTextResult.provider_task_id);
+    assert.equal(unknownAttempt.credit_reservation_id, null);
+    const withUnknownIdentity = (identity) => ({
+      ...interrupted,
+      clean_results: interrupted.clean_results.map((item) => {
+        if (item.status !== 'unknown') return item;
+        const { provider_task_id: _providerTaskId, reservation_id: _reservationId, ...safe } = item;
+        return { ...safe, ...identity };
+      }),
+    });
+    for (const [name, identity] of [
+      ['provider task 不匹配时即使更新时间碰撞也 fail closed', { provider_task_id: 'different-provider-task' }],
+      ['reservation 不匹配时即使 provider task 匹配也 fail closed', {
+        provider_task_id: pendingTextResult.provider_task_id,
+        reservation_id: 'different-reservation',
+      }],
+      ['provider task 与 reservation 都缺失时 fail closed', {}],
+    ]) {
+      await t.test(name, async () => {
+        persistInterrupted(withUnknownIdentity(identity));
+        assert.deepEqual(
+          (await quoteVersionPreparation(state.ctx, { version_id: 1 })).needs_attention_shot_ids,
+          [1],
+        );
+      });
+    }
+    await t.test('出现不安全 attempt identity 时即使另一项匹配也 fail closed', async () => {
+      state.db.prepare('UPDATE redraw_assets SET credit_reservation_id = ? WHERE id = ?')
+        .run('safe-reservation', pendingTextResult.redraw_asset_id);
+      try {
+        persistInterrupted(withUnknownIdentity({
+          provider_task_id: '../unsafe-provider-task',
+          reservation_id: 'safe-reservation',
+        }));
+        assert.deepEqual(
+          (await quoteVersionPreparation(state.ctx, { version_id: 1 })).needs_attention_shot_ids,
+          [1],
+        );
+      } finally {
+        state.db.prepare('UPDATE redraw_assets SET credit_reservation_id = NULL WHERE id = ?')
+          .run(pendingTextResult.redraw_asset_id);
+      }
+    });
+    persistInterrupted(interrupted);
     const withoutNewApproval = {
       ...interrupted,
       clean_results: interrupted.clean_results.map((item) => ({ ...item, status: 'completed' })),
