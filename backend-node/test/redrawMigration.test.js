@@ -1432,6 +1432,24 @@ test('空的缺列旧候选审核表可重建为完整精确合同且迁移幂�
 test('列齐但约束弱的旧候选审核表可安全重建并保留有效旧行', () => {
   const db = new Database(':memory:');
   db.exec(`
+    CREATE TABLE redraw_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      work_id INTEGER,
+      tenant_id TEXT,
+      user_id TEXT,
+      version INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'draft',
+      updated_at TEXT,
+      deleted_at TEXT
+    );
+    CREATE TABLE redraw_shots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version_id INTEGER,
+      batch_index INTEGER NOT NULL DEFAULT 1,
+      shot_index INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'draft',
+      updated_at TEXT
+    );
     CREATE TABLE redraw_candidate_reviews (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       tenant_id TEXT,
@@ -1457,12 +1475,19 @@ test('列齐但约束弱的旧候选审核表可安全重建并保留有效旧�
       (41, 'tenant-legacy', 'user-legacy', 7, 8, 9, 'candidate-legacy',
        'dependency-legacy', 3, 'approved', 'human', '["legacy"]',
        '{"score":1}', 'reviewer-legacy', '${NOW}');
+    INSERT INTO redraw_versions
+      (id, work_id, tenant_id, user_id, version, status, updated_at, deleted_at)
+    VALUES (7, 70, 'tenant-legacy', 'user-legacy', 1, 'draft', '${NOW}', NULL);
+    INSERT INTO redraw_shots
+      (id, version_id, batch_index, shot_index, status, updated_at)
+    VALUES (8, 7, 1, 1, 'draft', '${NOW}');
   `);
   db.pragma('foreign_keys = ON');
 
   assert.doesNotThrow(() => runMigrationsAndEnsure(db));
   assert.doesNotThrow(() => runMigrationsAndEnsure(db));
   assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check(redraw_candidate_reviews)').all(), []);
 
   assert.deepEqual(
     db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 41').get(),
@@ -1513,6 +1538,69 @@ test('列齐但约束弱的旧候选审核表可安全重建并保留有效旧�
     () => db.prepare("UPDATE redraw_candidate_reviews SET decision = 'rejected' WHERE id = 41").run(),
     /immutable/,
   );
+  db.close();
+});
+
+test('含孤儿引用的弱候选审核旧行会 fail closed 且完整保留原数据库', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      work_id INTEGER,
+      tenant_id TEXT,
+      user_id TEXT,
+      version INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'draft',
+      updated_at TEXT,
+      deleted_at TEXT
+    );
+    CREATE TABLE redraw_shots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version_id INTEGER,
+      batch_index INTEGER NOT NULL DEFAULT 1,
+      shot_index INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'draft',
+      updated_at TEXT
+    );
+    CREATE TABLE redraw_candidate_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT,
+      version_id INTEGER,
+      shot_id INTEGER,
+      video_generation_id INTEGER,
+      candidate_sha256 TEXT,
+      dependency_hash TEXT,
+      review_version INTEGER,
+      decision TEXT,
+      decision_source TEXT,
+      reason_codes_json TEXT,
+      metrics_json TEXT,
+      reviewer_id TEXT,
+      created_at TEXT
+    );
+    INSERT INTO redraw_candidate_reviews
+      (id, tenant_id, user_id, version_id, shot_id, video_generation_id, candidate_sha256,
+       dependency_hash, review_version, decision, decision_source, reason_codes_json,
+       metrics_json, reviewer_id, created_at)
+    VALUES
+      (42, 'tenant-orphan', 'user-orphan', 700, 800, 900, 'candidate-orphan',
+       'dependency-orphan', 1, 'approved', 'human', '[]', '{}', NULL, '${NOW}');
+  `);
+  db.pragma('foreign_keys = ON');
+  const beforeSchema = schemaSnapshot(db);
+  const beforeRow = db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 42').get();
+
+  assert.throws(
+    () => runMigrationsAndEnsure(db),
+    /cannot safely rebuild redraw_candidate_reviews: foreign key check failed/,
+  );
+  assert.deepEqual(schemaSnapshot(db), beforeSchema);
+  assert.deepEqual(db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 42').get(), beforeRow);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_shots').get().count, 0);
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+  assert.equal(tableNames(db).includes('__redraw_candidate_reviews_contract_rebuild'), false);
   db.close();
 });
 

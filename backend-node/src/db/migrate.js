@@ -1339,6 +1339,12 @@ function rebuildCandidateReviewContract(database) {
         INSERT INTO ${quoteIdent(tempTable)} (${targetColumns.map(quoteIdent).join(', ')})
         SELECT ${selectExpressions.join(', ')} FROM ${quoteIdent(tableName)}
       `);
+      const foreignKeyViolations = database
+        .prepare(`PRAGMA foreign_key_check(${quoteIdent(tempTable)})`)
+        .all();
+      if (foreignKeyViolations.length > 0) {
+        throw new Error(`foreign key check failed (${foreignKeyViolations.length} violations)`);
+      }
     }
     database.exec(`DROP TABLE ${quoteIdent(tableName)}`);
     database.exec(`ALTER TABLE ${quoteIdent(tempTable)} RENAME TO ${quoteIdent(tableName)}`);
@@ -1448,8 +1454,8 @@ function runMigrationsAndEnsure(database) {
   if (database.inTransaction) {
     throw new Error('runMigrationsAndEnsure requires no active transaction');
   }
-  ensureRedrawMigrationColumns(database);
   ensureRedrawCandidateReleaseContract(database);
+  ensureRedrawMigrationColumns(database);
   runMigrations(database);
   ensureProviderRouteCostUnitConstraint(database);
   ensureAllColumns(database);
