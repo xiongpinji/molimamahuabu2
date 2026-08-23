@@ -14,7 +14,10 @@ const {
   readIdentityPack,
   saveIdentityPack,
 } = require('../src/services/redrawCharacterIdentityService');
-const { canonicalBundleHash } = require('../src/services/redrawReferenceBundleService');
+const {
+  REFERENCE_BUNDLE_SCHEMA_VERSION,
+  canonicalBundleHash,
+} = require('../src/services/redrawReferenceBundleService');
 
 const INITIAL_UPDATED_AT = '2026-08-12T00:00:00.000Z';
 const REVIEWED_AT = '2026-08-13T00:00:00.000Z';
@@ -135,8 +138,12 @@ function rowSnapshot(db, id) {
 
 function addReadyShot(state, sourceCharacterKey = 'character-1') {
   const referenceBundle = {
-    schema_version: 'redraw-reference-bundle-v1',
-    face_tracks: [{ source_character_key: sourceCharacterKey }],
+    schema_version: REFERENCE_BUNDLE_SCHEMA_VERSION,
+    face_tracks: [{
+      track_key: 'face-1',
+      source_character_key: sourceCharacterKey,
+      identity: { source_character_key: sourceCharacterKey },
+    }],
     dialogue: { kind: 'silent', turns: [] },
     text_regions: [],
   };
