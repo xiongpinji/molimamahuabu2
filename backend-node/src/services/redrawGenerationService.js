@@ -20,12 +20,12 @@ const redrawSourceConditioningService = require('./redrawSourceConditioningServi
 const redrawReferenceBundleService = require('./redrawReferenceBundleService');
 const { compileNativeDialoguePrompt } = require('./redrawNativeDialoguePromptService');
 const redrawNativeAudioService = require('./redrawNativeAudioService');
+const { normalizeVideoProviderResult } = require('./redrawProviderAdapters');
 const { FEITUO_MODELS, buildFeituoVideoBody } = require('./feituoVideoClient');
 const { TOAPIS_VIDEO_MODELS, validateToapisVideoOptions } = require('./toapisVideoClient');
 const { runWithGenerationLimit } = require('./generationConcurrency');
 
 const execFileAsync = promisify(execFile);
-const UNCERTAIN_MARKERS = ['结果未知', '状态未知', '仍可能处理中', '请勿重新提交'];
 const INTERRUPTED_MESSAGE = '供应商状态未知/服务重启，请勿重新提交';
 const DEFAULT_GENERATION_CONCURRENCY = 3;
 const DEFAULT_RECOVERY_WAIT_MS = 60 * 60 * 1000;
@@ -1470,19 +1470,20 @@ function getShotForTask(db, task, ctx = null) {
 }
 
 function classifyVideoOutcome(row, verification) {
-  const status = String(row?.status || '').toLowerCase();
-  const error = String(row?.error_msg || row?.error || '');
-  if (status === 'completed') {
+  const normalized = normalizeVideoProviderResult(row);
+  if (normalized.status === 'completed_candidate') {
     if (row.local_path && verification?.duration > 0 && verification?.width > 0 && verification?.height > 0) {
       return { status: 'completed' };
     }
-    return { status: 'needs_attention', error: '视频完成记录缺少可验证的本地成片或素材入库结果，请人工确认后处理' };
+    return { status: 'needs_attention', error: '供应商候选视频成片尚未通过本地文件验证，请人工确认后处理' };
   }
-  if (status === 'failed') return { status: 'failed', error: error || '供应商视频生成失败' };
-  if (status === 'processing' || UNCERTAIN_MARKERS.some((marker) => error.includes(marker))) {
-    return { status: 'needs_attention', error: error || '视频结果未知或仍可能处理中，请勿重新提交' };
+  if (normalized.status === 'failed_terminal') {
+    return { status: 'failed', error: '供应商明确返回生成失败' };
   }
-  return { status: 'needs_attention', error: error || '视频状态未知，请人工确认后处理' };
+  if (normalized.status === 'result_unavailable') {
+    return { status: 'needs_attention', error: '供应商候选结果不可读取，请人工确认后处理' };
+  }
+  return { status: 'needs_attention', error: '供应商状态未知或仍可能处理中，请勿重新提交' };
 }
 
 function updateNeedsAttention(db, taskId, shotId, message, timestamp, videoGenerationId = null) {
@@ -2111,6 +2112,11 @@ async function runShotGeneration(ctx, taskId) {
           probe: verification,
         };
         db.prepare(`
+          UPDATE video_generations
+          SET error_msg = NULL, updated_at = ?
+          WHERE id = ? AND task_id = ?
+        `).run(timestamp, row.id, task.id);
+        db.prepare(`
           UPDATE redraw_shots
           SET status = 'completed', video_generation_id = ?, error_code = NULL, error_message = NULL,
               draft_json = ?, updated_at = ?
@@ -2149,6 +2155,11 @@ async function runShotGeneration(ctx, taskId) {
   if (outcome.status === 'failed') {
     try {
       db.transaction(() => {
+        db.prepare(`
+          UPDATE video_generations
+          SET status = 'failed', error_msg = ?, updated_at = ?
+          WHERE id = ? AND task_id = ?
+        `).run(outcome.error, timestamp, row.id, task.id);
         db.prepare(`
           UPDATE redraw_shots
           SET status = 'failed', error_code = 'REDRAW_VIDEO_FAILED',

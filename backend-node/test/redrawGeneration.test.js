@@ -4081,7 +4081,12 @@ test('明确失败会标记 shot failed 并退款', async () => {
     }), { shotId });
 
     assert.equal(result.status, 'failed');
-    assert.equal(state.db.prepare('SELECT status, error_message FROM redraw_shots WHERE id = ?').get(shotId).status, 'failed');
+    const shot = state.db.prepare('SELECT status, error_message FROM redraw_shots WHERE id = ?').get(shotId);
+    const task = state.db.prepare('SELECT status, error FROM async_tasks WHERE id = ?').get(result.task_id);
+    const video = state.db.prepare('SELECT status, error_msg FROM video_generations WHERE id = ?').get(result.video_generation_id);
+    assert.equal(shot.status, 'failed');
+    assert.deepEqual(new Set([shot.error_message, task.error, video.error_msg]), new Set(['供应商明确返回生成失败']));
+    assert.equal(JSON.stringify({ shot, task, video }).includes('provider rejected prompt'), false);
     assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations').get().status, 'refunded');
   } finally {
     state.db.close();
@@ -4489,6 +4494,32 @@ test('classifyVideoOutcome 不把不完整 completed 当 completed', () => {
   assert.equal(classifyVideoOutcome({ status: 'completed', local_path: '' }, null).status, 'needs_attention');
   assert.equal(classifyVideoOutcome({ status: 'failed', error_msg: 'bad prompt' }, null).status, 'failed');
   assert.equal(classifyVideoOutcome({ status: 'processing', error_msg: '结果未知，请勿重新提交' }, null).status, 'needs_attention');
+});
+
+test('供应商终态分类只返回稳定安全文案且 completed 必须先通过本地候选验证', () => {
+  const completedCandidate = {
+    status: 'completed',
+    provider_task_id: 'provider-completed',
+    video_url: 'https://cdn.test/candidate.mp4',
+    local_path: 'videos/candidate.mp4',
+  };
+  assert.deepEqual(classifyVideoOutcome(completedCandidate, { duration: 5, width: 480, height: 854 }), {
+    status: 'completed',
+  });
+  assert.deepEqual(classifyVideoOutcome(completedCandidate, null), {
+    status: 'needs_attention',
+    error: '供应商候选视频成片尚未通过本地文件验证，请人工确认后处理',
+  });
+  const failed = classifyVideoOutcome({
+    status: 'failed',
+    provider_task_id: 'provider-failed',
+    error_msg: 'Authorization Bearer secret provider rejection body',
+  }, null);
+  assert.deepEqual(failed, {
+    status: 'failed',
+    error: '供应商明确返回生成失败',
+  });
+  assert.equal(JSON.stringify(failed).includes('secret'), false);
 });
 
 test('批量只提交同版本中通过门禁且未完成未处理的镜头，并逐镜独立计费', async () => {
@@ -5144,11 +5175,22 @@ test('恢复未知供应商状态转 needs_attention 且 held；无 provider ID 
     const withProvider = await generateShot(ctx(state.db, { schedule: () => {} }), { shotId: withProviderShot });
     state.db.prepare("UPDATE video_generations SET provider_task_id = 'provider-unknown' WHERE id = ?").run(withProvider.video_generation_id);
     const results = await recoverInterruptedShotGenerations(ctx(state.db, {
-      videoRecoveryProcessor: async () => { recoverCalls += 1; },
+      videoRecoveryProcessor: async (db, _log, videoId) => {
+        recoverCalls += 1;
+        db.prepare("UPDATE video_generations SET error_msg = 'Authorization Bearer recovery-secret https://private.provider/task' WHERE id = ?")
+          .run(videoId);
+      },
     }));
     assert.equal(results[0].status, 'needs_attention');
     assert.equal(recoverCalls, 1);
     assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(withProvider.reservation_id).status, 'held');
+    const recoveryRows = {
+      shot: state.db.prepare('SELECT error_message FROM redraw_shots WHERE id = ?').get(withProviderShot),
+      task: state.db.prepare('SELECT error FROM async_tasks WHERE id = ?').get(withProvider.task_id),
+      video: state.db.prepare('SELECT error_msg FROM video_generations WHERE id = ?').get(withProvider.video_generation_id),
+    };
+    assert.equal(JSON.stringify(recoveryRows).includes('recovery-secret'), false);
+    assert.equal(JSON.stringify(recoveryRows).includes('private.provider'), false);
 
     const noProviderShot = addShot(state.db, state.versionId, { shotIndex: 2 });
     const noProvider = await generateShot(ctx(state.db, { schedule: () => {} }), { shotId: noProviderShot });
