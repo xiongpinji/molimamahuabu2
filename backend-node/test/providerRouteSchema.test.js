@@ -12,6 +12,10 @@ function indexNames(db, table) {
   return new Set(db.prepare(`PRAGMA index_list(${table})`).all().map((row) => row.name));
 }
 
+function indexColumns(db, index) {
+  return db.prepare(`PRAGMA index_info(${index})`).all().map((row) => row.name);
+}
+
 function hasTable(db, table) {
   return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.[1] === 1;
 }
@@ -112,6 +116,44 @@ function insertZeroCostCheck(db, overrides = {}) {
     VALUES (@config_id, @state, @category, @safe_summary, @checked_at, @updated_at)`).run(check);
 }
 
+function insertMinimalProviderReceipt(db, providerTaskId = null) {
+  const request = {
+    id: 'provider-receipt-request-1',
+    idempotency_key: 'provider-receipt-idempotency-1',
+    service_type: 'image',
+    business_type: 'image_generation',
+    logical_model_id: 'logical-image-1',
+    capability_fingerprint: 'capability-1',
+    candidate_config_ids: '[1]',
+    state: 'created',
+    created_at: '2026-08-22T00:00:00.000Z',
+    updated_at: '2026-08-22T00:00:00.000Z',
+  };
+  db.prepare(`INSERT INTO generation_route_requests
+    (id, idempotency_key, service_type, business_type, logical_model_id,
+     capability_fingerprint, candidate_config_ids, state, created_at, updated_at)
+    VALUES (@id, @idempotency_key, @service_type, @business_type, @logical_model_id,
+     @capability_fingerprint, @candidate_config_ids, @state, @created_at, @updated_at)`).run(request);
+
+  const attempt = {
+    request_id: request.id,
+    attempt_no: 1,
+    config_id: 1,
+    provider: 'relay-a',
+    upstream_model: 'image-model-v1',
+    config_fingerprint: 'config-fingerprint-1',
+    query_protocol: 'polling-v1',
+    provider_task_id: providerTaskId,
+    state: 'submitting',
+    started_at: request.created_at,
+  };
+  return db.prepare(`INSERT INTO generation_route_attempts
+    (request_id, attempt_no, config_id, provider, upstream_model,
+     config_fingerprint, query_protocol, provider_task_id, state, started_at)
+    VALUES (@request_id, @attempt_no, @config_id, @provider, @upstream_model,
+     @config_fingerprint, @query_protocol, @provider_task_id, @state, @started_at)`).run(attempt).lastInsertRowid;
+}
+
 test('provider stability migration creates the routing schema and remains idempotent', () => {
   const db = new Database(':memory:');
   try {
@@ -194,6 +236,150 @@ test('provider stability migration creates the routing schema and remains idempo
     assert.equal(
       indexNames(db, 'provider_route_resolution_costs').has('idx_provider_route_resolution_costs_config'),
       true,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('provider receipt migration creates reconciliation scan schema and remains idempotent', () => {
+  const db = new Database(':memory:');
+  try {
+    runMigrationsAndEnsure(db);
+    runMigrationsAndEnsure(db);
+
+    const attemptColumns = new Map(db.prepare('PRAGMA table_info(generation_route_attempts)').all()
+      .map((column) => [column.name, column.type]));
+    for (const name of [
+      'config_fingerprint',
+      'query_protocol',
+      'reconcile_claim_token',
+      'reconcile_lease_until',
+      'reconcile_checked_at',
+    ]) {
+      assert.equal(attemptColumns.get(name), 'TEXT', `generation_route_attempts.${name} must be TEXT`);
+    }
+    assert.equal(
+      indexNames(db, 'generation_route_attempts').has('idx_generation_route_attempts_reconcile'),
+      true,
+    );
+    assert.deepEqual(
+      indexColumns(db, 'idx_generation_route_attempts_reconcile'),
+      ['request_id', 'state', 'reconcile_lease_until'],
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('provider receipt identity fields cannot be changed or backfilled', () => {
+  const db = new Database(':memory:');
+  try {
+    runMigrationsAndEnsure(db);
+    const attemptId = insertMinimalProviderReceipt(db);
+
+    for (const [field, value] of [
+      ['config_id', 2],
+      ['provider', 'relay-b'],
+      ['upstream_model', 'image-model-v2'],
+      ['config_fingerprint', 'config-fingerprint-2'],
+      ['query_protocol', 'polling-v2'],
+    ]) {
+      assert.throws(
+        () => db.prepare(`UPDATE generation_route_attempts SET ${field} = ? WHERE id = ?`)
+          .run(value, attemptId),
+        /provider receipt identity is immutable/,
+      );
+    }
+
+    const legacyAttemptId = db.prepare(`INSERT INTO generation_route_attempts
+      (request_id, attempt_no, config_id, provider, upstream_model, state, started_at)
+      VALUES ('provider-receipt-request-1', 2, 1, 'relay-a', 'image-model-v1',
+        'submitting', '2026-08-22T00:00:00.000Z')`).run().lastInsertRowid;
+    for (const [field, value] of [
+      ['config_fingerprint', 'late-config-fingerprint'],
+      ['query_protocol', 'late-query-protocol'],
+    ]) {
+      assert.throws(
+        () => db.prepare(`UPDATE generation_route_attempts SET ${field} = ? WHERE id = ?`)
+          .run(value, legacyAttemptId),
+        /provider receipt identity is immutable/,
+      );
+    }
+  } finally {
+    db.close();
+  }
+});
+
+for (const [label, insertedTaskId] of [
+  ['non-empty', 'provider-task-on-insert'],
+  ['empty', ''],
+  ['space', ' '],
+  ['tab', '\t'],
+  ['newline', '\n'],
+]) {
+  test(`provider task id rejects ${label} value on insert`, () => {
+    const db = new Database(':memory:');
+    try {
+      runMigrationsAndEnsure(db);
+
+      assert.throws(
+        () => insertMinimalProviderReceipt(db, insertedTaskId),
+        /provider task id is immutable/,
+      );
+    } finally {
+      db.close();
+    }
+  });
+}
+
+for (const [label, invalidTaskId] of [
+  ['empty', ''],
+  ['spaces', '   '],
+  ['tab', '\t'],
+  ['newline', '\n'],
+  ['CRLF', '\r\n'],
+]) {
+  test(`provider task id rejects ${label} initial binding`, () => {
+    const db = new Database(':memory:');
+    try {
+      runMigrationsAndEnsure(db);
+      const attemptId = insertMinimalProviderReceipt(db);
+
+      assert.throws(
+        () => db.prepare('UPDATE generation_route_attempts SET provider_task_id = ? WHERE id = ?')
+          .run(invalidTaskId, attemptId),
+        /provider task id is immutable/,
+      );
+    } finally {
+      db.close();
+    }
+  });
+}
+
+test('provider task id binds once and permits idempotent writes', () => {
+  const db = new Database(':memory:');
+  try {
+    runMigrationsAndEnsure(db);
+    const attemptId = insertMinimalProviderReceipt(db);
+    const bindTask = db.prepare(
+      'UPDATE generation_route_attempts SET provider_task_id = ? WHERE id = ?',
+    );
+
+    assert.doesNotThrow(() => bindTask.run('provider-task-1', attemptId));
+    assert.doesNotThrow(() => bindTask.run('provider-task-1', attemptId));
+    assert.throws(
+      () => bindTask.run('provider-task-2', attemptId),
+      /provider task id is immutable/,
+    );
+    assert.throws(
+      () => bindTask.run(null, attemptId),
+      /provider task id is immutable/,
+    );
+    assert.equal(
+      db.prepare('SELECT provider_task_id FROM generation_route_attempts WHERE id = ?')
+        .get(attemptId).provider_task_id,
+      'provider-task-1',
     );
   } finally {
     db.close();

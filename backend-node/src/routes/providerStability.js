@@ -1,6 +1,7 @@
 const response = require('../response');
 const aiConfigService = require('../services/aiConfigService');
 const stability = require('../services/providerRouteStabilityService');
+const providerTaskReconciliation = require('../services/providerTaskReconciliationService');
 const audit = require('../services/auditEventService');
 
 const PATCH_FIELDS = new Set([
@@ -200,6 +201,43 @@ module.exports = function providerStabilityRoutes(db, log, options = {}) {
           code: error?.code || 'UNKNOWN',
         });
         return response.internalError(res, '巡检对账失败');
+      }
+    },
+
+    async reconcileProviderTask(req, res) {
+      const body = req.body;
+      if (body !== undefined
+          && (body === null || Array.isArray(body)
+            || typeof body !== 'object' || Object.keys(body).length > 0)) {
+        return response.badRequest(res, '普通任务对账不接受客户端状态、任务号或配置字段');
+      }
+      try {
+        const result = await providerTaskReconciliation.reconcileRequest(
+          db,
+          log,
+          req.params.requestId,
+          {
+            actorId: req.user?.id,
+            storagePath: options.storageRoot,
+            ...options.providerTaskReconciliation,
+          },
+        );
+        return response.success(res, result);
+      } catch (error) {
+        if (error?.code === 'PROVIDER_TASK_REQUEST_INVALID') {
+          return response.badRequest(res, '普通生成请求 ID 无效');
+        }
+        if (error?.code === 'PROVIDER_TASK_REQUEST_NOT_FOUND') {
+          return response.notFound(res, '普通生成请求不存在');
+        }
+        if (error?.code === 'PROVIDER_TASK_NOT_RECONCILABLE') {
+          return response.error(res, 409, error.code, '该普通生成请求当前不可对账');
+        }
+        log.error('provider task reconciliation failed', {
+          request_id: req.params.requestId,
+          code: error?.code || 'UNKNOWN',
+        });
+        return response.internalError(res, '普通生成任务对账失败');
       }
     },
 

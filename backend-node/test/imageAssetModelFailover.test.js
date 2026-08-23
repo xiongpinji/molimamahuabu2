@@ -37,6 +37,12 @@ function addImageConfig(db, values) {
     endpoint: '/images/generations',
     priority: values.priority,
     is_default: values.isDefault,
+    settings: JSON.stringify({
+      canvas_capabilities: {
+        supportsTextToImage: true,
+        resolutions: ['1792x1024'],
+      },
+    }),
   });
   db.prepare('UPDATE ai_service_configs SET verification_status = ? WHERE id = ?')
     .run(values.verified ? 'verified' : 'failed', config.id);

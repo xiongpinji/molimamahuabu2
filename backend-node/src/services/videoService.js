@@ -1505,6 +1505,39 @@ function resolveVideosDir(storagePath, projectSubdir) {
   return { dir: path.join(storagePath, 'videos'), relPrefix: 'videos' };
 }
 
+function ensureContainedVideoOutputDir(safetyRoot, outputDir) {
+  const rootPath = path.resolve(String(safetyRoot || ''));
+  if (!fs.existsSync(rootPath)) fs.mkdirSync(rootPath, { recursive: true });
+  if (!fs.statSync(rootPath).isDirectory()) throw new Error('Unsafe video output root');
+  const canonicalRoot = fs.realpathSync(rootPath);
+  const relativeDir = path.relative(rootPath, path.resolve(outputDir));
+  if (!relativeDir || path.isAbsolute(relativeDir) || relativeDir === '..'
+      || relativeDir.startsWith(`..${path.sep}`)) {
+    throw new Error('Unsafe video output directory');
+  }
+
+  let current = rootPath;
+  for (const segment of relativeDir.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    if (!fs.existsSync(current)) fs.mkdirSync(current);
+    const stat = fs.lstatSync(current);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('Unsafe video output directory');
+    const canonicalCurrent = fs.realpathSync(current);
+    if (!isCanonicalChild(canonicalRoot, canonicalCurrent)) {
+      throw new Error('Unsafe video output directory');
+    }
+  }
+  return canonicalRoot;
+}
+
+function removeContainedPartialFile(canonicalRoot, filePath) {
+  if (!canonicalRoot || !filePath || !fs.existsSync(filePath)) return;
+  const canonicalFile = fs.realpathSync(filePath);
+  if (!isCanonicalChild(canonicalRoot, canonicalFile)) return;
+  const stat = fs.lstatSync(filePath);
+  if (stat.isFile() || stat.isSymbolicLink()) fs.rmSync(filePath, { force: true });
+}
+
 function hasIsoBmffFileStructure(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length < 16) return false;
   let offset = 0;
@@ -1553,12 +1586,26 @@ function validateDownloadedVideoBuffer(buffer, ext) {
 async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir = null, fetchOptions = {}) {
   if (!videoUrl || typeof videoUrl !== 'string') return { localPath: null };
   const { dir, relPrefix } = resolveVideosDir(storagePath, projectSubdir);
+  const downloadOptions = fetchOptions || {};
+  const {
+    fetchImpl: injectedFetch,
+    safetyRoot,
+    requireContainedOutput,
+    ...requestOptions
+  } = downloadOptions;
+  const fetchImpl = injectedFetch || fetch;
+  let filePath = null;
+  let canonicalSafetyRoot = null;
   try {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (requireContainedOutput) {
+      canonicalSafetyRoot = ensureContainedVideoOutputDir(safetyRoot, dir);
+    } else if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
     const ext = (videoUrl.split('?')[0].match(/\.(mp4|webm|mov)$/i) || [])[1] || 'mp4';
     const name = `vg_${videoGenId}_${randomUUID().slice(0, 8)}.${ext}`;
-    const filePath = path.join(dir, name);
-    const res = await fetch(videoUrl, { method: 'GET', ...fetchOptions });
+    filePath = path.join(dir, name);
+    const res = await fetchImpl(videoUrl, { method: 'GET', ...requestOptions });
     if (!res.ok) {
       log.warn('Download video failed', { status: res.status, videoGenId });
       return {
@@ -1574,12 +1621,21 @@ async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, proj
       log.warn('Downloaded video rejected', { videoGenId, reason: message });
       return { localPath: null, error: message };
     }
+    if (requireContainedOutput) {
+      canonicalSafetyRoot = ensureContainedVideoOutputDir(safetyRoot, dir);
+    }
     fs.writeFileSync(filePath, buf);
     const relativePath = `${relPrefix}/${name}`.replace(/\\/g, '/');
     log.info('Video saved to local', { videoGenId, local_path: relativePath, projectSubdir: projectSubdir || '(root)' });
     return { localPath: relativePath };
   } catch (e) {
-    log.warn('Download video error', { videoGenId, error: e.message });
+    if (filePath) {
+      try {
+        if (requireContainedOutput) removeContainedPartialFile(canonicalSafetyRoot, filePath);
+        else fs.rmSync(filePath, { force: true });
+      } catch (_) {}
+    }
+    log.warn('Download video error', { videoGenId });
     return {
       localPath: null,
       indeterminate: true,
@@ -1756,6 +1812,216 @@ function extractVideoBoundaryFrames(storagePath, localPath, videoGenId, log, opt
   }
   log?.info?.('[视频] 成片首尾帧提取完成', { videoGenId, ...result });
   return result;
+}
+
+function reconciliationProjectStorageSubdir(db, row) {
+  const dramaId = Number(row?.drama_id);
+  if (!Number.isSafeInteger(dramaId) || dramaId <= 0) return storageLayout.LIBRARY;
+  const drama = db.prepare(
+    'SELECT id, title, created_at, metadata FROM dramas WHERE id = ? AND deleted_at IS NULL'
+  ).get(dramaId);
+  return drama ? storageLayout.buildProjectRelativeDir(drama) : storageLayout.LIBRARY;
+}
+
+function reconciledArtifactError() {
+  const error = new Error('视频产物不可读取');
+  error.code = 'PROVIDER_TASK_ARTIFACT_UNREADABLE';
+  return error;
+}
+
+function expectedReconciledBoundaryFrames(localPath, videoGenId) {
+  const normalized = String(localPath || '').replace(/\\/g, '/');
+  const directory = path.posix.dirname(normalized);
+  const prefix = directory === '.' ? '' : `${directory}/`;
+  return {
+    output_first_frame_url: `/static/${prefix}vg_${videoGenId}_first.jpg`,
+    output_last_frame_url: `/static/${prefix}vg_${videoGenId}_last.jpg`,
+  };
+}
+
+function isCanonicalChild(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return Boolean(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative);
+}
+
+function discardReconciledVideoArtifact(prepared) {
+  const storageValue = typeof prepared?.storagePath === 'string' ? prepared.storagePath.trim() : '';
+  if (!storageValue) return;
+
+  let root;
+  try {
+    root = fs.realpathSync(path.resolve(storageValue));
+  } catch (_) {
+    return;
+  }
+
+  const targets = [
+    { value: prepared?.localPath, staticUrl: false },
+    { value: prepared?.boundaryFrames?.output_first_frame_url, staticUrl: true },
+    { value: prepared?.boundaryFrames?.output_last_frame_url, staticUrl: true },
+  ];
+  for (const target of targets) {
+    try {
+      const raw = typeof target.value === 'string' ? target.value.trim() : '';
+      if (!raw) continue;
+      if (target.staticUrl && !raw.startsWith('/static/')) continue;
+      const relative = target.staticUrl ? raw.slice('/static/'.length) : raw;
+      if (!relative || path.win32.isAbsolute(relative) || path.posix.isAbsolute(relative)) continue;
+      const candidate = path.resolve(root, relative);
+      if (!isCanonicalChild(root, candidate) || !fs.existsSync(candidate)) continue;
+      const canonicalCandidate = fs.realpathSync(candidate);
+      if (!isCanonicalChild(root, canonicalCandidate)) continue;
+      const stat = fs.lstatSync(candidate);
+      if (!stat.isFile() && !stat.isSymbolicLink()) continue;
+      fs.rmSync(candidate, { force: true });
+    } catch (_) {}
+  }
+}
+
+async function prepareReconciledVideoArtifact(db, log, row, artifactUrl, providerConfig, options = {}) {
+  const storagePath = options.storagePath || resolveStoragePath(require('../config').loadConfig());
+  const cleanup = {
+    storagePath,
+    localPath: null,
+    boundaryFrames: null,
+  };
+  try {
+    const projectSubdir = reconciliationProjectStorageSubdir(db, row);
+    const fetchOptions = {
+      ...videoClient.getVideoArtifactFetchOptions(providerConfig, artifactUrl),
+      ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+      safetyRoot: storagePath,
+      requireContainedOutput: true,
+    };
+    const downloaded = await downloadVideoToLocal(
+      storagePath,
+      artifactUrl,
+      row.id,
+      log,
+      projectSubdir,
+      fetchOptions,
+    );
+    if (!downloaded.localPath) throw reconciledArtifactError();
+
+    cleanup.localPath = downloaded.localPath;
+    const stagingFrameId = `${row.id}_${randomUUID()}`;
+    cleanup.boundaryFrames = expectedReconciledBoundaryFrames(downloaded.localPath, stagingFrameId);
+    const normalizeImpl = options.normalizeImpl || maybeNormalizeVideoAfterDownload;
+    normalizeImpl(storagePath, downloaded.localPath, row, row.id, log);
+    const extractBoundaryFramesImpl = options.extractBoundaryFramesImpl || extractVideoBoundaryFrames;
+    const boundaryFrames = extractBoundaryFramesImpl(
+      storagePath,
+      downloaded.localPath,
+      stagingFrameId,
+      log,
+      options.extractionOptions || {},
+    );
+    return {
+      storagePath,
+      localPath: downloaded.localPath,
+      videoUrl: artifactUrl,
+      boundaryFrames,
+    };
+  } catch (_) {
+    discardReconciledVideoArtifact(cleanup);
+    throw reconciledArtifactError();
+  }
+}
+
+function applyReconciledVideoSuccess(db, log, row, prepared, options = {}) {
+  const now = options.now || new Date().toISOString();
+  const localPath = String(prepared?.localPath || '').replace(/\\/g, '/');
+  if (!localPath) throw reconciledArtifactError();
+  const publicVideoUrl = `/static/${localPath.replace(/^\/static\//, '')}`;
+  const boundaryFrames = prepared.boundaryFrames || {};
+  const updated = db.prepare(`UPDATE video_generations
+    SET status = 'completed', video_url = ?, local_path = ?, output_first_frame_url = ?,
+      output_last_frame_url = ?, error_msg = NULL, completed_at = ?, updated_at = ?
+    WHERE id = ? AND status = 'needs_attention' AND deleted_at IS NULL`)
+    .run(
+      publicVideoUrl,
+      localPath,
+      boundaryFrames.output_first_frame_url || null,
+      boundaryFrames.output_last_frame_url || null,
+      now,
+      now,
+      row.id,
+    );
+  if (updated.changes !== 1) throw new Error('视频对账成功状态已变化');
+
+  if (row.task_id) {
+    taskService.updateTaskResult(db, row.task_id, {
+      video_generation_id: row.id,
+      video_url: publicVideoUrl,
+      local_path: localPath,
+      output_first_frame_url: boundaryFrames.output_first_frame_url || null,
+      output_last_frame_url: boundaryFrames.output_last_frame_url || null,
+      status: 'completed',
+    });
+  }
+  const settled = creditLedger.confirmForScope(
+    db,
+    row.credit_reservation_id,
+    options.reservationScope,
+  );
+  if (settled?.status !== 'confirmed') throw new Error('视频对账积分确认失败');
+  generationCost.record(db, {
+    reservationId: row.credit_reservation_id,
+    model: row.model || settled.model,
+    configId: options.configId ?? row.config_id,
+    count: 1,
+    duration: row.duration,
+    resolution: row.resolution,
+    usageSource: 'provider',
+  });
+  auditEvent.record(db, {
+    userId: settled.user_id,
+    tenantId: settled.tenant_id,
+    eventType: 'generation.video.reconciled',
+    resourceType: 'video',
+    resourceId: row.id,
+    outcome: 'success',
+    code: 'PROVIDER_TASK_SUCCEEDED',
+  });
+  log?.info?.('Video provider task reconciled', { request_id: options.requestId, state: 'completed' });
+  return { videoUrl: publicVideoUrl, localPath, reservation: settled };
+}
+
+function applyReconciledVideoFailure(db, log, row, options = {}) {
+  const now = options.now || new Date().toISOString();
+  const message = '供应商任务已明确失败';
+  const updated = db.prepare(`UPDATE video_generations
+    SET status = 'failed', error_msg = ?, completed_at = ?, updated_at = ?
+    WHERE id = ? AND status = 'needs_attention' AND deleted_at IS NULL`)
+    .run(message, now, now, row.id);
+  if (updated.changes !== 1) throw new Error('视频对账失败状态已变化');
+
+  if (row.task_id) taskService.updateTaskError(db, row.task_id, message);
+  const settled = creditLedger.refundForScope(
+    db,
+    row.credit_reservation_id,
+    options.reservationScope,
+    'provider_task_failed',
+  );
+  if (settled?.status !== 'refunded') throw new Error('视频对账积分退款失败');
+  generationCost.record(db, {
+    reservationId: row.credit_reservation_id,
+    model: row.model || settled.model,
+    configId: options.configId ?? row.config_id,
+    usageSource: 'unknown',
+  });
+  auditEvent.record(db, {
+    userId: settled.user_id,
+    tenantId: settled.tenant_id,
+    eventType: 'generation.video.reconciled',
+    resourceType: 'video',
+    resourceId: row.id,
+    outcome: 'failed',
+    code: 'PROVIDER_TASK_FAILED',
+  });
+  log?.info?.('Video provider task reconciled', { request_id: options.requestId, state: 'failed' });
+  return { reservation: settled };
 }
 
 function ensureBoundaryFrames(db, log, selector = {}, options = {}) {
@@ -2479,5 +2745,9 @@ module.exports = {
   targetVideoPixelsForAspect,
   shouldNormalizeVideoAfterDownload,
   extractVideoBoundaryFrames,
+  prepareReconciledVideoArtifact,
+  discardReconciledVideoArtifact,
+  applyReconciledVideoSuccess,
+  applyReconciledVideoFailure,
   ensureBoundaryFrames,
 };

@@ -40,8 +40,8 @@ function setup() {
   db.prepare(
     `INSERT INTO ai_service_configs
       (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
-       endpoint, is_active, is_default, priority, verification_status, created_at, updated_at)
-     VALUES ('storyboard_image', 'openai', 'openai', ?, ?, ?, ?, ?, ?, 1, 1, 0, 'verified', ?, ?)`
+       endpoint, settings, is_active, is_default, priority, verification_status, created_at, updated_at)
+     VALUES ('storyboard_image', 'openai', 'openai', ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, 'verified', ?, ?)`
   ).run(
     '失败回归图片供应商',
     'http://127.0.0.1:9/v1',
@@ -49,6 +49,7 @@ function setup() {
     JSON.stringify(['dall-e-3']),
     'dall-e-3',
     '/images/generations',
+    JSON.stringify({ canvas_capabilities: {} }),
     now,
     now
   );
