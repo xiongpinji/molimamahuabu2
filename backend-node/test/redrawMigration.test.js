@@ -1699,3 +1699,30 @@ test('候选审核旧行违反新 CHECK 时合同重建完整回滚', () => {
   assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
   db.close();
 });
+
+test('精确候选审核合同中的历史孤儿引用会 fail closed', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  db.pragma('foreign_keys = OFF');
+  db.prepare(`
+    INSERT INTO redraw_candidate_reviews
+      (id, tenant_id, user_id, version_id, shot_id, video_generation_id, candidate_sha256,
+       dependency_hash, review_version, decision, decision_source, created_at)
+    VALUES
+      (51, 'tenant-exact-orphan', 'user-exact-orphan', 700, 800, 900, 'candidate-exact-orphan',
+       'dependency-exact-orphan', 1, 'approved', 'human', ?)
+  `).run(NOW);
+  db.pragma('foreign_keys = ON');
+  const beforeSchema = schemaSnapshot(db);
+  const beforeRow = db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 51').get();
+
+  assert.throws(
+    () => runMigrationsAndEnsure(db),
+    /redraw_candidate_reviews foreign key check failed/,
+  );
+  assert.deepEqual(schemaSnapshot(db), beforeSchema);
+  assert.deepEqual(db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 51').get(), beforeRow);
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+  assert.equal(tableNames(db).includes('__redraw_candidate_reviews_contract_rebuild'), false);
+  db.close();
+});

@@ -1362,6 +1362,24 @@ function rebuildCandidateReviewContract(database) {
   }
 }
 
+function assertRedrawCandidateReviewForeignKeys(database) {
+  if (!tableExists(database, 'redraw_candidate_reviews')) return;
+  const rowCount = database.prepare('SELECT COUNT(*) AS count FROM redraw_candidate_reviews').get().count;
+  if (rowCount === 0) return;
+
+  const missingParents = ['redraw_versions', 'redraw_shots']
+    .filter((table) => !tableExists(database, table));
+  if (missingParents.length > 0) {
+    throw new Error(
+      `redraw_candidate_reviews foreign key check failed: missing parent tables ${missingParents.join(', ')}`,
+    );
+  }
+  const violations = database.prepare('PRAGMA foreign_key_check(redraw_candidate_reviews)').all();
+  if (violations.length > 0) {
+    throw new Error(`redraw_candidate_reviews foreign key check failed (${violations.length} violations)`);
+  }
+}
+
 function ensureRedrawCandidateReleaseContract(database) {
   if (!tableExists(database, 'redraw_candidate_reviews')) {
     database.exec(candidateReviewTableSql('redraw_candidate_reviews', true));
@@ -1369,6 +1387,7 @@ function ensureRedrawCandidateReleaseContract(database) {
   } else if (!hasExactCandidateReviewContract(database)) {
     rebuildCandidateReviewContract(database);
   }
+  assertRedrawCandidateReviewForeignKeys(database);
 
   if (tableExists(database, 'redraw_shots')) {
     ensureColumns(database, 'redraw_shots', [
