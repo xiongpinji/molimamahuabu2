@@ -804,20 +804,24 @@ function normalizeNameMap(value) {
   return Object.fromEntries(entries.map((entry) => [entry.key, entry.name]));
 }
 
-function canonicalSourceDialogue(value, durationMs) {
+function relativeDialogueRange(entry, shotStartMs, shotEndMs) {
+  const start = entry.start_ms;
+  const end = entry.end_ms;
+  if (!Number.isInteger(start) || !Number.isInteger(end)
+    || start < shotStartMs || start >= end || end > shotEndMs) fail(DIALOGUE_CODE);
+  return { start_ms: start - shotStartMs, end_ms: end - shotStartMs };
+}
+
+function canonicalSourceDialogue(value, shotStartMs, shotEndMs) {
   return parseDialogueArray(value).map((entry) => {
     assertPlainObject(entry, DIALOGUE_CODE);
     const normalized = {
       id: String(entry.id || '').trim(),
       speaker_id: String(entry.speaker_id || '').trim(),
       source_text: String(entry.source_text ?? entry.text ?? '').trim(),
-      start_ms: Number(entry.start_ms),
-      end_ms: Number(entry.end_ms),
+      ...relativeDialogueRange(entry, shotStartMs, shotEndMs),
     };
-    if (!normalized.speaker_id || !normalized.source_text
-      || !Number.isInteger(normalized.start_ms) || !Number.isInteger(normalized.end_ms)
-      || normalized.start_ms < 0 || normalized.start_ms >= normalized.end_ms
-      || normalized.end_ms > durationMs) fail(DIALOGUE_CODE);
+    if (!normalized.speaker_id || !normalized.source_text) fail(DIALOGUE_CODE);
     return normalized;
   }).sort((left, right) => left.start_ms - right.start_ms
     || left.end_ms - right.end_ms
@@ -825,19 +829,17 @@ function canonicalSourceDialogue(value, durationMs) {
     || left.id.localeCompare(right.id));
 }
 
-function canonicalLocalizedDialogue(value, durationMs, nameMap, boundCharacters) {
+function canonicalLocalizedDialogue(value, shotStartMs, shotEndMs, nameMap, boundCharacters) {
   return parseDialogueArray(value).map((entry) => {
     assertPlainObject(entry, DIALOGUE_CODE);
     const speaker = String(entry.speaker_id || '').trim();
     if (typeof entry.localized_text !== 'string') fail(DIALOGUE_CODE);
     const text = entry.localized_text.trim();
-    const start = Number(entry.start_ms);
-    const end = Number(entry.end_ms);
-    if (!boundCharacters.has(speaker) || !nameMap[speaker] || !text || containsChinese(text) || isSilenceToken(text)
-      || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start >= end || end > durationMs) {
+    const range = relativeDialogueRange(entry, shotStartMs, shotEndMs);
+    if (!boundCharacters.has(speaker) || !nameMap[speaker] || !text || containsChinese(text) || isSilenceToken(text)) {
       fail(DIALOGUE_CODE);
     }
-    return { speaker_id: speaker, localized_text: text, start_ms: start, end_ms: end };
+    return { speaker_id: speaker, localized_text: text, ...range };
   }).sort((left, right) => left.start_ms - right.start_ms
     || left.end_ms - right.end_ms
     || left.speaker_id.localeCompare(right.speaker_id));
@@ -874,15 +876,16 @@ function localizationBinding(shot, nameMap, sourceDialogue, localizedDialogue) {
 }
 
 function verifyDialogue(shot, nameMap, boundCharacters) {
-  const durationMs = Number(shot.duration_ms);
-  const sourceDialogue = canonicalSourceDialogue(shot.source_dialogue_json, durationMs);
+  const shotStartMs = Number(shot.start_ms);
+  const shotEndMs = Number(shot.end_ms);
+  const sourceDialogue = canonicalSourceDialogue(shot.source_dialogue_json, shotStartMs, shotEndMs);
   const rawDialogue = parseDialogueArray(shot.localized_dialogue_json);
   const sourceSilent = sourceDialogue.length === 0;
   const localizedSilent = rawDialogue.length === 0;
   if (sourceSilent !== localizedSilent) fail(DIALOGUE_CODE);
   const dialogue = sourceSilent
     ? []
-    : canonicalLocalizedDialogue(rawDialogue, durationMs, nameMap, boundCharacters);
+    : canonicalLocalizedDialogue(rawDialogue, shotStartMs, shotEndMs, nameMap, boundCharacters);
   const binding = localizationBinding(shot, nameMap, sourceDialogue, dialogue);
   const common = {
     localized_script_version_id: Number(shot.version_id),

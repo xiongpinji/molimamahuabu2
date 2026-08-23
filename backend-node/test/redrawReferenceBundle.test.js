@@ -224,25 +224,25 @@ function stableJson(value) {
   return JSON.stringify(value);
 }
 
-function canonicalSourceDialogue(value) {
+function canonicalSourceDialogue(value, shotStartMs = 0) {
   return value.map((entry) => ({
     id: String(entry.id || '').trim(),
     speaker_id: String(entry.speaker_id || '').trim(),
     source_text: String(entry.source_text ?? entry.text ?? '').trim(),
-    start_ms: Number(entry.start_ms),
-    end_ms: Number(entry.end_ms),
+    start_ms: Number(entry.start_ms) - shotStartMs,
+    end_ms: Number(entry.end_ms) - shotStartMs,
   })).sort((left, right) => left.start_ms - right.start_ms
     || left.end_ms - right.end_ms
     || left.speaker_id.localeCompare(right.speaker_id)
     || left.id.localeCompare(right.id));
 }
 
-function canonicalLocalizedDialogue(value) {
+function canonicalLocalizedDialogue(value, shotStartMs = 0) {
   return value.map((entry) => ({
     speaker_id: String(entry.speaker_id || '').trim(),
     localized_text: String(entry.localized_text || '').trim(),
-    start_ms: Number(entry.start_ms),
-    end_ms: Number(entry.end_ms),
+    start_ms: Number(entry.start_ms) - shotStartMs,
+    end_ms: Number(entry.end_ms) - shotStartMs,
   })).sort((left, right) => left.start_ms - right.start_ms
     || left.end_ms - right.end_ms
     || left.speaker_id.localeCompare(right.speaker_id));
@@ -264,8 +264,12 @@ function expectedDialogueEvidence(state) {
     JOIN redraw_versions v ON v.id = s.version_id
     WHERE s.id = ?
   `).get(state.shotId);
-  const sourceDialogueSha256 = sha256(stableJson(canonicalSourceDialogue(JSON.parse(row.source_dialogue_json))));
-  const scriptSha256 = sha256(stableJson(canonicalLocalizedDialogue(JSON.parse(row.localized_dialogue_json))));
+  const sourceDialogueSha256 = sha256(stableJson(
+    canonicalSourceDialogue(JSON.parse(row.source_dialogue_json), Number(row.start_ms)),
+  ));
+  const scriptSha256 = sha256(stableJson(
+    canonicalLocalizedDialogue(JSON.parse(row.localized_dialogue_json), Number(row.start_ms)),
+  ));
   const characterNameMapSha256 = sha256(stableJson(canonicalNameMap(JSON.parse(row.name_map_json))));
   const binding = {
     contract: LOCALIZATION_BINDING_CONTRACT,
@@ -506,7 +510,7 @@ function ctx(state, overrides = {}) {
     storageRoot: state.storageRoot,
     now: REVIEWED_AT,
     probeRunner: async () => ({
-      duration_ms: 5000,
+      duration_ms: state.shotDurationMs || 5000,
       width: 864,
       height: 496,
       mime_type: 'video/mp4',
@@ -561,6 +565,101 @@ function validInput(state, overrides = {}) {
     },
     ...overrides,
   };
+}
+
+function faceCoverageHash(input) {
+  return sha256(stableJson(input.face_tracks.map((entry) => ({
+    identity_redraw_asset_id: entry.identity_redraw_asset_id,
+    source_character_key: entry.source_character_key,
+    time_ranges: [...entry.time_ranges].sort((a, b) => a[0] - b[0] || a[1] - b[1]),
+    track_key: entry.track_key,
+  })).sort((a, b) => a.track_key.localeCompare(b.track_key))));
+}
+
+function setupSecondShot(overrides = {}) {
+  const sourceDialogue = overrides.sourceDialogue || [{
+    id: 'turn-002',
+    speaker_id: 'character-001',
+    text: '跟我走。',
+    start_ms: 4800,
+    end_ms: 6500,
+  }];
+  const dialogue = overrides.dialogue || [{
+    speaker_id: 'character-001',
+    localized_text: 'Come with me.',
+    start_ms: 4800,
+    end_ms: 6500,
+  }];
+  const state = setup({
+    sourceDialogue,
+    dialogue,
+    sourceFacts: {
+      duration_ms: 8000,
+      shots: [
+        {
+          id: 'shot-001', index: 1, start_ms: 0, end_ms: 4000, dialogue: [],
+        },
+        {
+          id: 'shot-002',
+          index: 2,
+          start_ms: 4000,
+          end_ms: 8000,
+          dialogue: sourceDialogue.map((turn) => ({
+            id: turn.id || 'turn-002',
+            speaker_id: turn.speaker_id,
+            source_text: turn.source_text ?? turn.text,
+            start_ms: turn.start_ms,
+            end_ms: turn.end_ms,
+          })),
+        },
+      ],
+    },
+  });
+  state.shotDurationMs = 4000;
+  state.db.prepare(`UPDATE redraw_shots
+    SET shot_id = 'shot-002', shot_index = 2, start_ms = 4000, end_ms = 8000, duration_ms = 4000
+    WHERE id = ?`).run(state.shotId);
+  const input = validInput(state, {
+    face_tracks: [
+      {
+        track_key: 'face-002',
+        source_character_key: 'character-002',
+        time_ranges: [[2000, 4000]],
+        identity_redraw_asset_id: state.actorBId,
+      },
+      {
+        track_key: 'face-001',
+        source_character_key: 'character-001',
+        time_ranges: [[0, 4000]],
+        identity_redraw_asset_id: state.actorAId,
+      },
+    ],
+    text_regions: [
+      {
+        region_key: 'text-002',
+        kind: 'text_screen',
+        time_ranges: [[2000, 4000]],
+        text_clean_redraw_asset_id: state.screenCleanId,
+      },
+      {
+        region_key: 'text-001',
+        kind: 'text_subtitle',
+        time_ranges: [[0, 2000]],
+        text_clean_redraw_asset_id: state.subtitleCleanId,
+      },
+    ],
+  });
+  const row = state.db.prepare('SELECT metadata FROM assets WHERE id = ?').get(state.motionAssetId);
+  const metadata = JSON.parse(row.metadata);
+  Object.assign(metadata.redraw_motion_reference, {
+    clip_start_ms: 4000,
+    clip_end_ms: 8000,
+    face_coverage_sha256: faceCoverageHash(input),
+    text_coverage_sha256: textCoverageHash(input),
+  });
+  state.db.prepare('UPDATE assets SET metadata = ? WHERE id = ?')
+    .run(JSON.stringify(metadata), state.motionAssetId);
+  return { state, input };
 }
 
 function currentShot(db, shotId) {
@@ -624,6 +723,158 @@ function updateRedrawAsset(db, id, fields) {
   db.prepare(`UPDATE redraw_assets SET ${entries.map(([key]) => `${key} = ?`).join(', ')} WHERE id = ?`)
     .run(...entries.map(([, value]) => value), id);
 }
+
+test('第二镜绝对对白保存和重读时规范为镜头相对时间并绑定稳定哈希', async () => {
+  const { state, input } = setupSecondShot();
+  try {
+    const saved = await saveReferenceBundle(ctx(state), input);
+    const expectedTurns = [{
+      speaker_id: 'character-001',
+      localized_text: 'Come with me.',
+      start_ms: 800,
+      end_ms: 2500,
+    }];
+    const expected = expectedDialogueEvidence(state);
+
+    assert.deepEqual(saved.bundle.dialogue.turns, expectedTurns);
+    assertDialogueEvidence(saved.bundle.dialogue, expected, 'en-US', 'US');
+    assert.deepEqual(saved.bundle.source, {
+      asset_id: state.sourceAssetId,
+      sha256: SOURCE_FINGERPRINT,
+      clip_start_ms: 4000,
+      clip_end_ms: 8000,
+    });
+    assert.equal(saved.bundle.duration_ms, 4000);
+    assert.equal(saved.bundle.dialogue.source_dialogue_sha256, sha256(stableJson([{
+      id: 'turn-002',
+      speaker_id: 'character-001',
+      source_text: '跟我走。',
+      start_ms: 800,
+      end_ms: 2500,
+    }])));
+    assert.equal(saved.bundle.dialogue.script_sha256, sha256(stableJson(expectedTurns)));
+
+    const loaded = await loadCurrentReferenceBundle(ctx(state), state.shotId);
+    assert.deepEqual(loaded.bundle.dialogue.turns, expectedTurns);
+    assertDialogueEvidence(loaded.bundle.dialogue, expected, 'en-US', 'US');
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('第二镜源和目标对白仅接受镜头绝对整数时间且拒绝时零写入', async () => {
+  const cases = [
+    {
+      name: 'source starts before shot',
+      sourceDialogue: [{ speaker_id: 'character-001', text: '跟我走。', start_ms: 3999, end_ms: 6500 }],
+    },
+    {
+      name: 'source ends after shot',
+      sourceDialogue: [{ speaker_id: 'character-001', text: '跟我走。', start_ms: 4800, end_ms: 8001 }],
+    },
+    {
+      name: 'source mistakenly uses relative time',
+      sourceDialogue: [{ speaker_id: 'character-001', text: '跟我走。', start_ms: 800, end_ms: 2500 }],
+    },
+    {
+      name: 'localized starts before shot',
+      dialogue: [{ speaker_id: 'character-001', localized_text: 'Come with me.', start_ms: 3999, end_ms: 6500 }],
+    },
+    {
+      name: 'localized ends after shot',
+      dialogue: [{ speaker_id: 'character-001', localized_text: 'Come with me.', start_ms: 4800, end_ms: 8001 }],
+    },
+    {
+      name: 'localized mistakenly uses relative time',
+      dialogue: [{ speaker_id: 'character-001', localized_text: 'Come with me.', start_ms: 800, end_ms: 2500 }],
+    },
+    {
+      name: 'source start is not an integer',
+      sourceDialogue: [{ speaker_id: 'character-001', text: '跟我走。', start_ms: 4800.5, end_ms: 6500 }],
+    },
+    {
+      name: 'source start is a numeric string',
+      sourceDialogue: [{ speaker_id: 'character-001', text: '跟我走。', start_ms: '4800', end_ms: 6500 }],
+    },
+    {
+      name: 'source range is empty',
+      sourceDialogue: [{ speaker_id: 'character-001', text: '跟我走。', start_ms: 6500, end_ms: 6500 }],
+    },
+    {
+      name: 'localized end is not an integer',
+      dialogue: [{ speaker_id: 'character-001', localized_text: 'Come with me.', start_ms: 4800, end_ms: 6500.5 }],
+    },
+    {
+      name: 'localized end is a numeric string',
+      dialogue: [{ speaker_id: 'character-001', localized_text: 'Come with me.', start_ms: 4800, end_ms: '6500' }],
+    },
+    {
+      name: 'localized range is reversed',
+      dialogue: [{ speaker_id: 'character-001', localized_text: 'Come with me.', start_ms: 6500, end_ms: 4800 }],
+    },
+  ];
+
+  for (const entry of cases) {
+    const { state, input } = setupSecondShot(entry);
+    try {
+      await assertRejectsUnchanged(
+        state,
+        input,
+        'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED',
+      );
+    } finally {
+      state.cleanup();
+    }
+  }
+});
+
+test('第二镜重读时拒绝绝对原始对白或相对参考包对白漂移', async () => {
+  const cases = [
+    {
+      name: 'source raw absolute drift',
+      mutate(state) {
+        state.db.prepare('UPDATE redraw_shots SET source_dialogue_json = ? WHERE id = ?').run(JSON.stringify([{
+          id: 'turn-002', speaker_id: 'character-001', text: '跟我走。', start_ms: 4900, end_ms: 6500,
+        }]), state.shotId);
+      },
+    },
+    {
+      name: 'localized raw absolute drift',
+      mutate(state) {
+        state.db.prepare('UPDATE redraw_shots SET localized_dialogue_json = ? WHERE id = ?').run(JSON.stringify([{
+          speaker_id: 'character-001', localized_text: 'Come with me.', start_ms: 4900, end_ms: 6500,
+        }]), state.shotId);
+      },
+    },
+    {
+      name: 'bundle relative drift',
+      mutate(state) {
+        const row = currentShot(state.db, state.shotId);
+        const bundle = JSON.parse(row.reference_bundle_json);
+        bundle.dialogue.turns[0].start_ms = 900;
+        state.db.prepare('UPDATE redraw_shots SET reference_bundle_json = ?, reference_bundle_hash = ? WHERE id = ?')
+          .run(JSON.stringify(bundle), canonicalBundleHash(bundle), state.shotId);
+      },
+    },
+  ];
+
+  for (const entry of cases) {
+    const { state, input } = setupSecondShot();
+    try {
+      await saveReferenceBundle(ctx(state), input);
+      const before = currentShot(state.db, state.shotId);
+      entry.mutate(state);
+      await assert.rejects(
+        () => loadCurrentReferenceBundle(ctx(state), state.shotId),
+        (error) => error.code === 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED',
+        entry.name,
+      );
+      assert.equal(currentShot(state.db, state.shotId).updated_at, before.updated_at);
+    } finally {
+      state.cleanup();
+    }
+  }
+});
 
 test('保存参考包时规范排序、脱敏并写入稳定哈希', async () => {
   const state = setup();
