@@ -51,9 +51,12 @@ function normalizeMissingItem(input, index) {
   const assetId = safeToken(item.asset_id, /^\d+$/)
   const resourceType = safeToken(item.resource_type, /^(?:character_plan|reference_bundle|shot|version)$/)
   const resourceId = safeToken(item.resource_id, /^\d+$/)
-  const shotIds = Array.isArray(item.shot_ids)
-    ? item.shot_ids.map((value) => safeToken(value, /^[A-Za-z0-9_-]+$/)).filter(Boolean)
-    : []
+  const shotIds = [...new Set([
+    safeToken(item.shot_id, /^[A-Za-z0-9_-]+$/),
+    ...(Array.isArray(item.shot_ids)
+      ? item.shot_ids.map((value) => safeToken(value, /^[A-Za-z0-9_-]+$/))
+      : []),
+  ].filter(Boolean))]
   const anchor = safeToken(item.anchor, /^[A-Za-z0-9_-]+$/, 128)
   const label = kind && assetId
     ? `${kind} #${assetId}`

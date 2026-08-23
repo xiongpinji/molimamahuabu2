@@ -1046,6 +1046,14 @@ test.describe('一键转绘输入与分析流程', () => {
         current_step: 2,
         missing: [
           { kind: 'character', asset_id: 1201, shot_ids: ['shot-01'], anchor: 'asset-1201-character' },
+          { kind: 'scene', asset_id: 1202, shot_id: 'shot-02', anchor: 'asset-1202-scene' },
+          {
+            kind: 'prop',
+            asset_id: 1203,
+            shot_id: 1302,
+            shot_ids: [1302, 'shot-03', 1302, { secret: 'RAW_SECRET_VALUE' }],
+            anchor: 'asset-1203-prop',
+          },
           {
             resource_type: 'character_plan',
             resource_id: '812',
@@ -1066,14 +1074,18 @@ test.describe('一键转绘输入与分析流程', () => {
 
     await page.goto('/redraw/projects/41/works/710?step=2')
 
-    await expect(page.getByText('3 项待处理')).toBeVisible()
+    await expect(page.getByText('5 项待处理')).toBeVisible()
     await expect(page.getByText('character #1201')).toBeVisible()
     await expect(page.getByText('镜头 shot-01')).toBeVisible()
+    await expect(page.getByText('镜头 shot-02', { exact: true })).toBeVisible()
+    await expect(page.getByText('镜头 1302、shot-03', { exact: true })).toBeVisible()
+    await expect(page.getByText('镜头 1302、shot-03、1302')).toHaveCount(0)
     await expect(page.getByText('角色方案 #812')).toBeVisible()
     await expect(page.getByText('角色方案尚未就绪')).toBeVisible()
     await expect(page.getByText('门禁检查项', { exact: true })).toBeVisible()
     await expect(page.getByText('需要重新确认', { exact: true })).toBeVisible()
     await expect(page.getByText('RAW_SECRET_VALUE')).toHaveCount(0)
+    await expect(page.locator('body')).not.toContainText('[object Object]')
     expect(pageErrors).toEqual([])
   })
 
