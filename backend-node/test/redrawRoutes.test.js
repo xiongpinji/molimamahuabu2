@@ -5519,6 +5519,11 @@ test('第三步、角色身份包、本地化确认和参考准备 API 已真实
     assert.equal(routes.has('GET /redraw/versions/:id/dialogue/tasks/:taskId'), true);
     assert.equal(routes.has('PUT /redraw/projects/:id/policy'), true);
     assert.equal(routes.has('GET /redraw/projects/:id/events'), true);
+    assert.equal(routes.has('GET /redraw/versions/:id/generation-summary'), true);
+    assert.equal(routes.has('GET /redraw/shots/:id/candidate-reviews'), true);
+    assert.equal(routes.has('POST /redraw/shots/:id/candidate-reviews'), true);
+    assert.equal(routes.has('GET /redraw/versions/:id/release-readiness'), true);
+    assert.equal(routes.has('POST /redraw/versions/:id/releases'), true);
   } finally {
     db.close();
   }
@@ -6133,6 +6138,285 @@ test('配音 quote/start/status 路由按版本 owner 接线且拒绝客户端�
       user: { id: 'user-a' },
     }, otherTenant);
     assert.equal(otherTenant.statusCode, 404);
+  } finally {
+    db.close();
+  }
+});
+
+test('交付工作台生成摘要按 owner 返回预算、attempt 和规范 provider 状态', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db, {
+      execution_mode: 'auto',
+      budget_limit_credits: 30,
+      max_auto_attempts_per_shot: 3,
+    });
+    db.prepare(`UPDATE redraw_projects
+      SET execution_mode = 'auto', budget_limit_credits = 30, max_auto_attempts_per_shot = 3
+      WHERE id = ?`).run(projectId);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 3 });
+    const versionId = insertVersion(db, workId, { status: 'generating' });
+    const shotId = Number(insertShot(db, versionId, { status: 'failed' }));
+    const heldShotId = Number(insertShot(db, versionId, { shot_index: 2, status: 'processing' }));
+    const candidateShotId = Number(insertShot(db, versionId, { shot_index: 3, status: 'candidate_ready' }));
+    const unknownShotId = Number(insertShot(db, versionId, { shot_index: 4, status: 'needs_attention' }));
+    db.prepare(`INSERT INTO async_tasks
+      (id, type, status, progress, resource_id, tenant_id, user_id, metadata, created_at, updated_at)
+      VALUES ('delivery-task-1', 'redraw_shot', 'failed', 100, ?, 'tenant-a', 'user-a', ?, ?, ?)`)
+      .run(String(shotId), JSON.stringify({ redraw_shot: { attempt: 2, reservation_id: 'delivery-reservation-1' } }), NOW, NOW);
+    const videoId = Number(db.prepare(`INSERT INTO video_generations
+      (status, task_id, tenant_id, user_id, provider_task_id, created_at, updated_at)
+      VALUES ('failed', 'delivery-task-1', 'tenant-a', 'user-a', 'provider-safe-1', ?, ?)`)
+      .run(NOW, NOW).lastInsertRowid);
+    db.prepare('UPDATE redraw_shots SET video_generation_id = ? WHERE id = ?').run(videoId, shotId);
+    const candidateVideoId = Number(db.prepare(`INSERT INTO video_generations
+      (status, local_path, tenant_id, user_id, created_at, updated_at)
+      VALUES ('completed', 'redraw/candidate.mp4', 'tenant-a', 'user-a', ?, ?)`)
+      .run(NOW, NOW).lastInsertRowid);
+    db.prepare('UPDATE redraw_shots SET video_generation_id = ? WHERE id = ?')
+      .run(candidateVideoId, candidateShotId);
+    for (const reservation of [
+      ['delivery-reservation-1', 'confirmed', 10, shotId],
+      ['delivery-reservation-2', 'held', 5, heldShotId],
+    ]) {
+      db.prepare(`INSERT INTO tenant_usage_reservations
+        (id, tenant_id, operation_key, actor_user_id, model, resource_type, resource_id,
+         amount, status, created_at, updated_at)
+        VALUES (?, 'tenant-a', ?, 'user-a', 'server-model', 'redraw_shot', ?, ?, ?, ?, ?)`)
+        .run(reservation[0], `operation-${reservation[0]}`, String(reservation[3]), reservation[2], reservation[1], NOW, NOW);
+    }
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+    const output = captureResponse();
+    handlers.generationSummary(request({ id: versionId }), output);
+    assert.equal(output.statusCode, 200);
+    assert.deepEqual(output.body.data.budget, { limit: 30, spent: 10, held: 5, remaining: 15 });
+    assert.deepEqual(output.body.data.shots[0], {
+      shot_id: shotId,
+      shot_index: 1,
+      status: 'failed',
+      attempt: 2,
+      provider_status: 'failed_terminal',
+      provider_task_id: 'provider-safe-1',
+      can_start_next_attempt: true,
+      next_attempt: 3,
+      policy_reason: null,
+      updated_at: NOW,
+    });
+    assert.equal(JSON.stringify(output.body).includes('server-model'), false);
+    assert.equal(output.body.data.shots.find((shot) => shot.shot_id === heldShotId).provider_status, 'running');
+    assert.equal(output.body.data.shots.find((shot) => shot.shot_id === candidateShotId).provider_status, 'completed_candidate');
+    assert.deepEqual(
+      output.body.data.shots.find((shot) => shot.shot_id === unknownShotId),
+      {
+        shot_id: unknownShotId,
+        shot_index: 4,
+        status: 'needs_attention',
+        attempt: 0,
+        provider_status: 'submission_unknown',
+        provider_task_id: null,
+        can_start_next_attempt: false,
+        next_attempt: null,
+        policy_reason: 'submission_state_uncertain',
+        updated_at: NOW,
+      },
+    );
+
+    const foreign = captureResponse();
+    handlers.generationSummary(request({ id: versionId, tenantId: 'tenant-b' }), foreign);
+    assert.equal(foreign.statusCode, 404);
+  } finally {
+    db.close();
+  }
+});
+
+test('候选审核路由只允许人工白名单字段并保持 owner、CAS 与零副作用边界', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 3 });
+    const versionId = insertVersion(db, workId);
+    const shotId = Number(insertShot(db, versionId, { status: 'candidate_ready' }));
+    const videoId = Number(db.prepare(`INSERT INTO video_generations
+      (status, tenant_id, user_id, created_at, updated_at)
+      VALUES ('completed', 'tenant-a', 'user-a', ?, ?)`)
+      .run(NOW, NOW).lastInsertRowid);
+    db.prepare('UPDATE redraw_shots SET video_generation_id = ? WHERE id = ?').run(videoId, shotId);
+    const calls = [];
+    const candidateReviewService = {
+      getCurrentCandidateReview: () => ({
+        id: 9,
+        shot_id: shotId,
+        decision: 'needs_review',
+        decision_source: 'automatic',
+        candidate_sha256: 'a'.repeat(64),
+        reason_codes: ['safe_mode_human_review_required'],
+        metrics: { visual: 'passed' },
+      }),
+      reviewCandidate: async (_ctx, input) => {
+        calls.push(input);
+        return { id: 10, ...input, reason_codes: input.reason_codes, metrics: {} };
+      },
+    };
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({ candidateReviewService }));
+
+    for (const field of ['model', 'provider', 'price', 'credits', 'path', 'url', 'metrics', 'reviewer_id']) {
+      const rejected = captureResponse();
+      await handlers.reviewCandidate(request({
+        id: shotId,
+        body: {
+          decision: 'approved',
+          candidate_sha256: 'a'.repeat(64),
+          expected_updated_at: NOW,
+          [field]: 'attacker',
+        },
+      }), rejected);
+      assert.equal(rejected.statusCode, 400, field);
+    }
+    assert.equal(calls.length, 0);
+
+    const inherited = captureResponse();
+    await handlers.reviewCandidate(request({
+      id: shotId,
+      body: Object.create({
+        decision: 'approved',
+        candidate_sha256: 'a'.repeat(64),
+        expected_updated_at: NOW,
+      }),
+    }), inherited);
+    assert.equal(inherited.statusCode, 400);
+    assert.equal(calls.length, 0);
+
+    const invalidDecision = captureResponse();
+    await handlers.reviewCandidate(request({ id: shotId, body: {
+      decision: 'needs_review', candidate_sha256: 'a'.repeat(64), expected_updated_at: NOW,
+    } }), invalidDecision);
+    assert.equal(invalidDecision.statusCode, 400);
+    assert.equal(calls.length, 0);
+
+    const approved = captureResponse();
+    await handlers.reviewCandidate(request({ id: shotId, body: {
+      decision: 'approved', reason_code: 'manual_visual_passed',
+      candidate_sha256: 'a'.repeat(64), expected_updated_at: NOW,
+    } }), approved);
+    assert.equal(approved.statusCode, 200);
+    assert.deepEqual(calls[0], {
+      shot_id: shotId,
+      video_generation_id: videoId,
+      decision_source: 'human',
+      decision: 'approved',
+      reason_codes: ['manual_visual_passed'],
+      candidate_sha256: 'a'.repeat(64),
+      expected_updated_at: NOW,
+    });
+
+    const listed = captureResponse();
+    handlers.listCandidateReviews(request({ id: shotId }), listed);
+    assert.equal(listed.statusCode, 200);
+    assert.equal(listed.body.data.current.decision_source, 'automatic');
+    assert.equal(listed.body.data.shot_updated_at, NOW);
+
+    const foreign = captureResponse();
+    handlers.listCandidateReviews(request({ id: shotId, tenantId: 'tenant-b' }), foreign);
+    assert.equal(foreign.statusCode, 404);
+  } finally {
+    db.close();
+  }
+});
+
+test('release readiness 与创建只使用服务端 hash、Task6 服务和受控相对下载 URL', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 4 });
+    const versionId = Number(insertVersion(db, workId, { status: 'composing' }));
+    const release = {
+      schema_version: 'redraw-episode-release-v1',
+      version_id: versionId,
+      shots: [{ shot_id: 1 }],
+      quality_summary: { decision: 'approved' },
+      release_hash: 'b'.repeat(64),
+    };
+    const builds = [];
+    const compositions = [];
+    let forceBlocked = false;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      episodeReleaseService: {
+        buildEpisodeRelease: async (ctx, input) => {
+          builds.push({ tenantId: ctx.tenantId, userId: ctx.userId, input });
+          if (forceBlocked) throw Object.assign(new Error('version has no shots'), {
+            code: 'REDRAW_EPISODE_RELEASE_SHOTS_EMPTY',
+          });
+          return release;
+        },
+      },
+      compositionService: {
+        createComposition: async (_ctx, input) => {
+          compositions.push(input);
+          return { id: 88, status: 'pending', version_number: 1, created: false };
+        },
+      },
+    }));
+
+    const readiness = captureResponse();
+    await handlers.releaseReadiness(request({ id: versionId }), readiness);
+    assert.equal(readiness.statusCode, 200);
+    assert.equal(readiness.body.data.ready, true);
+    assert.equal(readiness.body.data.readiness_hash, 'b'.repeat(64));
+
+    for (const field of ['model', 'provider', 'price', 'path', 'url', 'metrics', 'release_hash']) {
+      const rejected = captureResponse();
+      await handlers.createRelease(request({ id: versionId, body: {
+        idempotency_key: 'release-idem', readiness_hash: 'b'.repeat(64), [field]: 'attacker',
+      } }), rejected);
+      assert.equal(rejected.statusCode, 400, field);
+    }
+    assert.equal(compositions.length, 0);
+
+    const inherited = captureResponse();
+    await handlers.createRelease(request({
+      id: versionId,
+      body: Object.create({ idempotency_key: 'release-idem', readiness_hash: 'b'.repeat(64) }),
+    }), inherited);
+    assert.equal(inherited.statusCode, 400);
+    assert.equal(compositions.length, 0);
+
+    const stale = captureResponse();
+    await handlers.createRelease(request({ id: versionId, body: {
+      idempotency_key: 'release-idem', readiness_hash: 'c'.repeat(64),
+    } }), stale);
+    assert.equal(stale.statusCode, 409);
+    assert.equal(stale.body.error.code, 'REDRAW_RELEASE_READINESS_CONFLICT');
+    assert.equal(compositions.length, 0);
+
+    const created = captureResponse();
+    await handlers.createRelease(request({ id: versionId, body: {
+      idempotency_key: 'release-idem', readiness_hash: 'b'.repeat(64),
+    } }), created);
+    assert.equal(created.statusCode, 202);
+    assert.deepEqual(compositions, [{ versionId, idempotencyKey: 'release-idem', audioMode: 'replace' }]);
+    assert.deepEqual(created.body.data.downloads, {
+      mp4: '/api/v1/redraw/exports/88/download/mp4',
+      srt: '/api/v1/redraw/exports/88/download/srt',
+      vtt: '/api/v1/redraw/exports/88/download/vtt',
+      report: '/api/v1/redraw/exports/88',
+    });
+    assert.equal(JSON.stringify(created.body).includes('C:'), false);
+    assert.equal(builds.every((item) => item.tenantId === 'tenant-a' && item.input.version_id === versionId), true);
+
+    forceBlocked = true;
+    const blocked = captureResponse();
+    await handlers.releaseReadiness(request({ id: versionId }), blocked);
+    assert.equal(blocked.statusCode, 200);
+    assert.deepEqual(blocked.body.data, {
+      ready: false,
+      version_id: versionId,
+      readiness_hash: null,
+      blockers: [{ shot_id: null, reason_code: 'shots_empty' }],
+    });
+
+    const foreign = captureResponse();
+    await handlers.releaseReadiness(request({ id: versionId, tenantId: 'tenant-b' }), foreign);
+    assert.equal(foreign.statusCode, 404);
   } finally {
     db.close();
   }

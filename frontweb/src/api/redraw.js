@@ -125,6 +125,30 @@ export function buildReferencePreparationQuotePayload(body = {}) {
   return shotIds ? { shot_ids: shotIds } : {}
 }
 
+export function buildCandidateReviewPayload(body = {}) {
+  return {
+    decision: String(body?.decision || '').trim(),
+    reason_code: String(body?.reason_code || '').trim(),
+    candidate_sha256: String(body?.candidate_sha256 || '').trim(),
+    expected_updated_at: String(body?.expected_updated_at || '').trim(),
+  }
+}
+
+export function buildReleasePayload(body = {}) {
+  return {
+    idempotency_key: String(body?.idempotency_key || '').trim(),
+    readiness_hash: String(body?.readiness_hash || '').trim(),
+  }
+}
+
+function assertControlledReleaseUrl(value) {
+  const url = String(value || '')
+  if (!/^\/api\/v1\/redraw\/exports\/\d+(?:\/download\/(?:mp4|srt|vtt))?$/.test(url)) {
+    throw new Error('服务端返回的下载地址无效')
+  }
+  return url
+}
+
 export const redrawAPI = {
   listProjects() {
     return request.get('/redraw/projects')
@@ -277,5 +301,23 @@ export const redrawAPI = {
   },
   downloadExport(exportId, kind) {
     return request.get(`/redraw/exports/${exportId}/download/${encodeURIComponent(kind)}`, { responseType: 'blob' })
+  },
+  getGenerationSummary(versionId) {
+    return request.get(`/redraw/versions/${versionId}/generation-summary`)
+  },
+  listCandidateReviews(shotId) {
+    return request.get(`/redraw/shots/${shotId}/candidate-reviews`)
+  },
+  reviewCandidate(shotId, body) {
+    return request.post(`/redraw/shots/${shotId}/candidate-reviews`, buildCandidateReviewPayload(body))
+  },
+  getReleaseReadiness(versionId) {
+    return request.get(`/redraw/versions/${versionId}/release-readiness`)
+  },
+  createRelease(versionId, body) {
+    return request.post(`/redraw/versions/${versionId}/releases`, buildReleasePayload(body))
+  },
+  downloadReleaseArtifact(relativeUrl, report = false) {
+    return request.get(assertControlledReleaseUrl(relativeUrl), report ? {} : { responseType: 'blob' })
   },
 }

@@ -33,7 +33,7 @@ export function canStartComposition(shots = [], dialogueTask, compositionTask) {
   if (dialogueTask?.status !== 'completed') return false
   if (compositionTask && ['pending', 'processing'].includes(compositionTask.status)) return false
   const normalized = normalizeTimelineShots(shots)
-  return normalized.length > 0 && normalized.every((shot) => shot.status === 'completed')
+  return normalized.length > 0 && normalized.every((shot) => ['completed', 'approved', 'included'].includes(shot.status))
 }
 
 export function shouldPollTask(task) {
@@ -87,4 +87,27 @@ export function worstShotStatus(shots = []) {
   return normalizeTimelineShots(shots).reduce((status, shot) => (
     statusRank(shot.status) > statusRank(status) ? shot.status : status
   ), 'completed')
+}
+
+export function normalizeReleaseReadiness(value = {}) {
+  const blockers = Array.isArray(value?.blockers)
+    ? value.blockers
+      .filter((item) => item && typeof item === 'object')
+      .map((item) => ({
+        shot_id: item.shot_id == null ? null : Number(item.shot_id),
+        reason_code: String(item.reason_code || 'release_input_not_ready'),
+      }))
+    : []
+  return {
+    ready: value?.ready === true,
+    readiness_hash: typeof value?.readiness_hash === 'string' ? value.readiness_hash : null,
+    blockers,
+    shot_count: Number(value?.shot_count || 0),
+    quality_summary: value?.quality_summary || null,
+  }
+}
+
+export function controlledReleaseDownloadUrl(value) {
+  const url = String(value || '')
+  return /^\/api\/v1\/redraw\/exports\/\d+(?:\/download\/(?:mp4|srt|vtt))?$/.test(url) ? url : ''
 }

@@ -197,6 +197,31 @@ export function preparationActionState(shot = {}) {
   return { canRetry: false, manualReviewOnly: false, label: '准备参考' }
 }
 
+export function providerDeliveryState(shot = {}) {
+  const status = String(shot?.provider_status || '')
+  if (status === 'submission_unknown') {
+    return {
+      label: '需要核对',
+      canRetry: false,
+      warning: '提交结果未知，需要核对；不会自动重试',
+    }
+  }
+  if (status === 'failed_terminal') {
+    return {
+      label: '明确失败',
+      canRetry: shot?.can_start_next_attempt === true,
+      warning: shot?.can_start_next_attempt === true ? '策略允许下一次尝试' : '当前策略不允许下一次尝试',
+    }
+  }
+  const labels = {
+    accepted: '已受理',
+    running: '生成中',
+    completed_candidate: '候选已返回',
+    result_unavailable: '结果不可读取',
+  }
+  return { label: labels[status] || status || '未提交', canRetry: false, warning: '' }
+}
+
 export function referencePreparationFailurePolicy(error = {}, { requestStarted = true } = {}) {
   const status = Number(error?.response?.status || error?.response?.data?.status || 0)
   const responseData = error?.response?.data || {}

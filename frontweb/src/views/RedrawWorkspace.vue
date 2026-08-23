@@ -46,6 +46,9 @@
         <nav class="redraw-workspace-tabs" aria-label="通用转绘工作区">
           <span v-for="tab in workspaceTabs" :key="tab">{{ tab }}</span>
         </nav>
+        <p v-if="allowedStep >= 3" class="redraw-delivery-scope">
+          生成队列 · 候选 QA · 整集 readiness 均以服务端证据为准
+        </p>
 
         <RedrawSourceStep
           v-if="allowedStep === 1"
@@ -274,6 +277,12 @@ watch(() => [route.params.projectId, route.params.workId], loadWorkspace)
   border: 1px solid #333;
   border-radius: 999px;
   color: #d8d8d8;
+  font-size: 13px;
+}
+
+.redraw-delivery-scope {
+  margin: -4px 0 14px;
+  color: #999;
   font-size: 13px;
 }
 

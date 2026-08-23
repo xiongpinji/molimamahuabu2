@@ -10,6 +10,8 @@
 
     <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" show-icon />
 
+    <RedrawEpisodeReleasePanel v-if="resolvedVersionId" :version-id="resolvedVersionId" />
+
     <div class="edit-layout">
       <aside class="edit-sidebar">
         <RedrawTimeline :shots="shots" :selected-shot-id="selectedShotId" @select="selectedShotId = $event" />
@@ -61,6 +63,7 @@ import {
 import RedrawTimeline from './RedrawTimeline.vue'
 import RedrawPlayerCompare from './RedrawPlayerCompare.vue'
 import RedrawExportPanel from './RedrawExportPanel.vue'
+import RedrawEpisodeReleasePanel from './RedrawEpisodeReleasePanel.vue'
 
 const props = defineProps({
   work: { type: Object, default: null },
