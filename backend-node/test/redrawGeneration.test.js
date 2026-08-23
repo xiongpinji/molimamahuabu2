@@ -2198,10 +2198,15 @@ test('原生对白人工批准用 validation hash 和 updated_at 做 CAS，一�
     );
     state.db.prepare('DROP TRIGGER block_native_audio_manual_settlement_once').run();
     const afterFailedApproval = state.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(shotId);
+    const afterFailedDraft = JSON.parse(afterFailedApproval.draft_json);
     assert.equal(afterFailedApproval.status, 'needs_attention');
+    assert.equal(afterFailedApproval.approved_candidate_review_id, null);
+    assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(held.task_id).status, 'needs_attention');
     assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(held.reservation_id).status, 'held');
     assert.notEqual(afterFailedApproval.updated_at, beforeReview);
-    assert.equal(JSON.parse(afterFailedApproval.draft_json).new_video_ref.asset_id, 1100);
+    assert.equal(afterFailedDraft.new_video_ref.asset_id, 1100);
+    assert.ok(afterFailedDraft.generation.candidate_at);
+    assert.equal(afterFailedDraft.generation.completed_at, undefined);
     assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM redraw_candidate_reviews').get().count, 0);
     assert.equal(importerCalls, 1);
 
@@ -2231,6 +2236,8 @@ test('原生对白人工批准用 validation hash 和 updated_at 做 CAS，一�
     assert.equal(approvedShot.status, 'approved');
     assert.ok(Number(approvedShot.approved_candidate_review_id) > 0);
     assert.equal(draft.new_video_ref.asset_id, 1100);
+    assert.ok(draft.generation.candidate_at);
+    assert.ok(draft.generation.completed_at);
     assert.deepEqual(draft.native_audio_validation.human_review, {
       status: 'approved',
       reviewer_id: 'user-a',

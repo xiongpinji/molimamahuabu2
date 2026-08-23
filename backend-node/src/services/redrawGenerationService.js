@@ -1965,7 +1965,7 @@ async function reviewNativeAudio(ctx, input = {}) {
       WHERE id = ? AND tenant_id = ? AND user_id = ?
     `).run(
       mergeDraft(draft, {
-        generation: { completed_at: timestamp },
+        generation: { candidate_at: timestamp },
         native_audio_validation: approvedAudit,
         new_video_ref: newVideoRef,
       }),
