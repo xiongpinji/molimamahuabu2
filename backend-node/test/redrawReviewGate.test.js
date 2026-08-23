@@ -145,6 +145,19 @@ function addShot(db, versionId, shotIndex, references) {
   ).lastInsertRowid);
 }
 
+function setCurrentV2Bundle(db, versionId, shotId, overrides = {}) {
+  const bundle = {
+    schema_version: 'redraw-reference-bundle-v2',
+    version_id: Number(versionId),
+    shot_id: Number(shotId),
+    face_tracks: [],
+    ...overrides,
+  };
+  db.prepare('UPDATE redraw_shots SET reference_bundle_json = ?, reference_bundle_hash = ? WHERE id = ?')
+    .run(JSON.stringify(bundle), canonicalBundleHash(bundle), shotId);
+  return bundle;
+}
+
 function setCurrentV2IdentityBundle(db, versionId, shotId, assetId, pack, mutate = (face) => face) {
   const targetCharacterName = 'Maya';
   const face = mutate({
@@ -173,16 +186,9 @@ function setCurrentV2IdentityBundle(db, versionId, shotId, assetId, pack, mutate
     },
   });
   const faces = Array.isArray(face) ? face : [face];
-  const bundle = {
-    schema_version: 'redraw-reference-bundle-v2',
-    version_id: Number(versionId),
-    shot_id: Number(shotId),
-    face_tracks: faces,
-  };
   db.prepare('UPDATE redraw_versions SET name_map_json = ? WHERE id = ?')
     .run(JSON.stringify({ [pack.source_character_key]: targetCharacterName }), versionId);
-  db.prepare('UPDATE redraw_shots SET reference_bundle_json = ?, reference_bundle_hash = ? WHERE id = ?')
-    .run(JSON.stringify(bundle), canonicalBundleHash(bundle), shotId);
+  setCurrentV2Bundle(db, versionId, shotId, { face_tracks: faces });
 }
 
 test('零分镜版本 fail closed 并返回 shots_missing', () => {
@@ -221,7 +227,8 @@ test('视频生成门禁只把内部受信 preparationContext 合并进准备门
   const state = setup();
   try {
     addAsset(state.db, { id: 81, kind: 'scene', approvalStatus: 'approved' });
-    addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: 81 }]);
+    const shotId = addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: 81 }]);
+    setCurrentV2Bundle(state.db, state.versionId, shotId);
     state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
     const trustedAssetReader = { owns: () => true };
     let captured = null;
@@ -260,7 +267,8 @@ test('审核资产批准后在写事务外用受信 preparationContext 重算生
   const state = setup();
   try {
     const scene = addAsset(state.db, { id: 82, kind: 'scene', approvalStatus: 'pending' });
-    addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: scene.id }]);
+    const shotId = addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: scene.id }]);
+    setCurrentV2Bundle(state.db, state.versionId, shotId);
     state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
     let captured = null;
     const reviewed = reviewAsset(state.db, scene.id, {
@@ -295,7 +303,8 @@ test('审核资产批准先持久化审批，再按事务外生成门禁更新 a
     const state = setup();
     try {
       const scene = addAsset(state.db, { id: entry.gateOk ? 83 : 84, kind: 'scene', approvalStatus: 'pending' });
-      addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: scene.id }]);
+      const shotId = addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: scene.id }]);
+      setCurrentV2Bundle(state.db, state.versionId, shotId);
       state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
       let gateCalls = 0;
       const reviewed = reviewAsset(state.db, scene.id, {
@@ -676,6 +685,94 @@ test('V2 参考包已通过准备门禁时以当前 bundle 身份为权威而不
     assert.deepEqual(gate.missing, []);
   } finally {
     state.db.close();
+  }
+});
+
+test('V2 准备门禁误报 ready 时缺失或哈希漂移的 bundle 仍 fail closed', async (t) => {
+  const cases = [
+    {
+      name: 'bundle missing',
+      reason: 'reference_bundle_malformed',
+      mutate() {},
+    },
+    {
+      name: 'bundle bad json',
+      reason: 'reference_bundle_malformed',
+      mutate(state, shotId) {
+        state.db.prepare('UPDATE redraw_shots SET reference_bundle_json = ? WHERE id = ?')
+          .run('{', shotId);
+      },
+    },
+    {
+      name: 'bundle wrong schema',
+      reason: 'reference_bundle_malformed',
+      mutate(state, shotId) {
+        setCurrentV2Bundle(state.db, state.versionId, shotId, { schema_version: 'redraw-reference-bundle-v1' });
+      },
+    },
+    {
+      name: 'bundle wrong version',
+      reason: 'reference_bundle_malformed',
+      mutate(state, shotId) {
+        setCurrentV2Bundle(state.db, state.versionId, shotId, { version_id: state.versionId + 1 });
+      },
+    },
+    {
+      name: 'bundle wrong shot',
+      reason: 'reference_bundle_malformed',
+      mutate(state, shotId) {
+        setCurrentV2Bundle(state.db, state.versionId, shotId, { shot_id: shotId + 1 });
+      },
+    },
+    {
+      name: 'bundle missing face tracks',
+      reason: 'reference_bundle_malformed',
+      mutate(state, shotId) {
+        setCurrentV2Bundle(state.db, state.versionId, shotId, { face_tracks: null });
+      },
+    },
+    {
+      name: 'bundle missing hash',
+      reason: 'reference_hash_drift',
+      mutate(state, shotId) {
+        setCurrentV2Bundle(state.db, state.versionId, shotId);
+        state.db.prepare('UPDATE redraw_shots SET reference_bundle_hash = NULL WHERE id = ?').run(shotId);
+      },
+    },
+    {
+      name: 'bundle hash drift',
+      reason: 'reference_hash_drift',
+      mutate(state, shotId) {
+        setCurrentV2Bundle(state.db, state.versionId, shotId);
+        state.db.prepare('UPDATE redraw_shots SET reference_bundle_hash = ? WHERE id = ?')
+          .run('0'.repeat(64), shotId);
+      },
+    },
+  ];
+  for (const entry of cases) {
+    await t.test(entry.name, () => {
+      const state = setup();
+      try {
+        const scene = addAsset(state.db, { id: 76, kind: 'scene', approvalStatus: 'approved' });
+        const shotId = addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: scene.id }]);
+        entry.mutate(state, shotId);
+        state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
+
+        const gate = evaluateGenerationGate(state.db, state.versionId, {
+          tenantId: 'tenant-a',
+          userId: 'user-a',
+        }, {
+          preparationGate: () => ({ ok: true, ready_shot_ids: [shotId], missing: [] }),
+        });
+
+        assert.equal(gate.ok, false, entry.name);
+        assert.equal(gate.blocking.some((item) => item.code === 'preparation_not_ready'), true, entry.name);
+        assert.equal(gate.missing.some((item) => item.reason_code === entry.reason), true, entry.name);
+        assert.equal(JSON.stringify(gate).includes('0'.repeat(64)), false, entry.name);
+      } finally {
+        state.db.close();
+      }
+    });
   }
 });
 

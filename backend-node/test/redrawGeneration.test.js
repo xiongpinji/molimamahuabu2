@@ -5396,6 +5396,38 @@ test('reference bundle required 的嵌套身份漂移在 reserve/provider/video/
   assertReferenceBundlePreflightClean(state, providerCalls);
 });
 
+test('reference bundle required 的 bundle 缺失或哈希漂移在 reserve/provider/video/task 前 fail closed', async (t) => {
+  for (const [name, mutate] of [
+    ['bundle missing', (state) => {
+      state.db.prepare(`UPDATE redraw_shots
+        SET reference_bundle_json = '', reference_bundle_hash = ''
+        WHERE id = ?`).run(state.shotId);
+    }],
+    ['bundle hash drift', (state) => {
+      state.db.prepare('UPDATE redraw_shots SET reference_bundle_hash = ? WHERE id = ?')
+        .run('0'.repeat(64), state.shotId);
+    }],
+  ]) {
+    await t.test(name, async () => {
+      const state = await setupReferenceBundleGenerationFixture(t);
+      let providerCalls = 0;
+      let scheduleCalls = 0;
+      mutate(state);
+
+      await assert.rejects(
+        () => generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
+          videoProcessor: async () => { providerCalls += 1; },
+          schedule() { scheduleCalls += 1; },
+        })), { shotId: state.shotId }),
+        (error) => error.code === 'REDRAW_ASSET_REVIEW_REQUIRED',
+      );
+
+      assert.equal(scheduleCalls, 0);
+      assertReferenceBundlePreflightClean(state, providerCalls);
+    });
+  }
+});
+
 test('reference bundle required 的单镜生成不复用缺失 V2 对白绑定字段的旧 generation', async (t) => {
   for (const [name, mutateSnapshot] of [
     ['missing localization binding', (snapshot) => { delete snapshot.reference_bundle.localization_binding_sha256; }],

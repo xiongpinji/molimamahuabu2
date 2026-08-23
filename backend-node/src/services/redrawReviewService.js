@@ -138,17 +138,24 @@ function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function currentV2Bundle(shot, version) {
+function inspectCurrentV2Bundle(shot, version) {
   const bundle = parseJson(shot.reference_bundle_json, null);
   const hash = String(shot.reference_bundle_hash || '');
   if (!isPlainObject(bundle)
     || bundle.schema_version !== REFERENCE_BUNDLE_SCHEMA_VERSION
     || Number(bundle.version_id) !== Number(version.id)
     || Number(bundle.shot_id) !== Number(shot.id)
-    || !HEX_64.test(hash)
-    || canonicalBundleHash(bundle) !== hash
-    || !Array.isArray(bundle.face_tracks)) return null;
-  return bundle;
+    || !Array.isArray(bundle.face_tracks)) {
+    return { bundle: null, reason: 'reference_bundle_malformed' };
+  }
+  if (!HEX_64.test(hash) || canonicalBundleHash(bundle) !== hash) {
+    return { bundle: null, reason: 'reference_hash_drift' };
+  }
+  return { bundle, reason: null };
+}
+
+function currentV2Bundle(shot, version) {
+  return inspectCurrentV2Bundle(shot, version).bundle;
 }
 
 function sameIdentityArtifact(left, right) {
@@ -237,6 +244,7 @@ function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
   const unapprovedReferenceKeys = new Set();
   const characterIdentityPackRequired = new Set();
   const characterIdentityBindingStale = new Set();
+  const referenceBundleNotCurrentShots = new Set();
   const referenceBundleRequired = Number(version.reference_bundle_required || 0) === 1;
   const nameMap = referenceBundleRequired && isPlainObject(parseJson(version.name_map_json, null))
     ? parseJson(version.name_map_json, null)
@@ -244,6 +252,20 @@ function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
   for (const shot of shots) {
     const shotId = shot.shot_id || Number(shot.id) || Number(shot.shot_index);
     const bundle = referenceBundleRequired ? currentV2Bundle(shot, version) : null;
+    if (referenceBundleRequired && !bundle) {
+      const reasonCode = inspectCurrentV2Bundle(shot, version).reason;
+      const key = `reference_bundle:${Number(shot.id)}`;
+      referenceBundleNotCurrentShots.add(Number(shot.id));
+      missing.set(key, {
+        resource_type: 'reference_bundle',
+        resource_id: String(Number(shot.id)),
+        reason_code: reasonCode,
+        anchor: `shot-${Number(shot.id)}`,
+        kind: 'reference_bundle',
+        asset_id: null,
+        shot_ids: [shotId],
+      });
+    }
     for (const reference of readShotReferences(shot)) {
       const row = findAsset(db, version, reference);
       if (!isApprovedAsset(row)) {
@@ -351,6 +373,13 @@ function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
   const items = [...missing.values()].sort((left, right) => (
     left.shot_ids[0] - right.shot_ids[0] || left.kind.localeCompare(right.kind) || left.asset_id - right.asset_id
   ));
+  if (referenceBundleNotCurrentShots.size > 0) {
+    blocking.push({
+      code: 'preparation_not_ready',
+      reason: '整集参考准备未完成或已过期',
+      shot_count: Math.max(0, shots.length - referenceBundleNotCurrentShots.size),
+    });
+  }
   if (invalidReferenceKeys.size > 0) {
     blocking.push({
       code: 'asset_reference_invalid',
