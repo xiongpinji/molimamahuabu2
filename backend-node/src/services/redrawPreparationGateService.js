@@ -12,6 +12,8 @@ const {
 } = require('./redrawReferenceBundleService');
 
 const HEX_64 = /^[0-9a-f]{64}$/;
+const CHARACTER_REF_KINDS = new Set(['character', 'identity', 'wardrobe']);
+const VOICE_REF_KINDS = new Set(['voice', 'dialogue', 'speaker']);
 
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -47,6 +49,71 @@ function parseJsonAny(value, fallback = null) {
   } catch (_) {
     return fallback;
   }
+}
+
+function parseArray(value) {
+  if (value == null || value === '') return [];
+  const parsed = parseJsonAny(value, null);
+  return Array.isArray(parsed) ? parsed : null;
+}
+
+function dependencyKey(keys, ...values) {
+  for (const value of values) {
+    const key = String(value ?? '').trim();
+    if (!key) continue;
+    keys.add(key);
+    return;
+  }
+}
+
+function shotCharacterPlanHash(shot, evidence, plan) {
+  const characters = Array.isArray(plan?.characters) ? plan.characters : null;
+  if (!characters || Number(plan?.version_id) !== Number(shot?.version_id)) return '';
+  const keys = new Set();
+  for (const field of ['source_dialogue_json', 'localized_dialogue_json']) {
+    const dialogue = parseArray(shot?.[field]);
+    if (!dialogue) return '';
+    for (const turn of dialogue) dependencyKey(keys, turn?.speaker_id);
+  }
+  const references = parseArray(shot?.references_json);
+  if (!references) return '';
+  for (const reference of references) {
+    if (!isPlainObject(reference)) return '';
+    const kind = String(reference.kind ?? reference.type ?? reference.role ?? '').trim().toLowerCase();
+    if (CHARACTER_REF_KINDS.has(kind)) {
+      dependencyKey(keys, reference.source_character_key, reference.sourceCharacterKey,
+        reference.character_key, reference.characterKey);
+    } else if (VOICE_REF_KINDS.has(kind)) {
+      dependencyKey(keys, reference.source_character_key, reference.sourceCharacterKey,
+        reference.speaker_id, reference.speakerId);
+    }
+  }
+  const faceTracks = evidence?.bundle_evidence?.face_tracks ?? evidence?.face_tracks ?? [];
+  if (!Array.isArray(faceTracks)) return '';
+  for (const face of faceTracks) dependencyKey(keys, face?.source_character_key);
+
+  const byKey = new Map();
+  for (const character of characters) {
+    if (!isPlainObject(character)) return '';
+    const key = String(character.source_character_key || '').trim();
+    if (!key) return '';
+    const matches = byKey.get(key) || [];
+    matches.push(character);
+    byKey.set(key, matches);
+  }
+  const characterKeys = [...keys].sort();
+  const scopedCharacters = [];
+  for (const key of characterKeys) {
+    const matches = byKey.get(key);
+    if (!matches || matches.length !== 1) return '';
+    scopedCharacters.push(matches[0]);
+  }
+  return sha256(stableJson({
+    schema_version: 'redraw-shot-character-plan-v1',
+    version_id: Number(plan.version_id),
+    character_keys: characterKeys,
+    characters: scopedCharacters,
+  }));
 }
 
 function isPlainObject(value) {
@@ -173,10 +240,11 @@ function readPlan(ctx, versionId, missing) {
     return {
       hash: HEX_64.test(String(plan.plan_hash || '')) ? plan.plan_hash : '',
       characters,
+      plan,
     };
   } catch (_) {
     addMissing(missing, 'character_plan', versionId, 'character_plan_not_ready', `version-${Number(versionId)}-character-plan`);
-    return { hash: '', characters: new Map() };
+    return { hash: '', characters: new Map(), plan: null };
   }
 }
 
@@ -625,10 +693,13 @@ function validateShot(ctx, shot, version, characterPlan, coverageBinding, missin
   }
   validateBundleShape(ctx, shot, bundle, characterPlan, missing);
   const snapshot = parseJson(shot.preparation_snapshot_json);
+  const currentShotCharacterPlanHash = shotCharacterPlanHash(shot, bundle, characterPlan.plan);
   if (!snapshot
     || Number(snapshot.version_id) !== Number(version.id)
     || Number(snapshot.shot_id) !== Number(shot.id)
-    || snapshot.character_plan_hash !== characterPlan.hash
+    || !HEX_64.test(String(snapshot.character_plan_hash || ''))
+    || !currentShotCharacterPlanHash
+    || snapshot.shot_character_plan_hash !== currentShotCharacterPlanHash
     || snapshot.reference_bundle_hash !== shot.reference_bundle_hash) {
     addMissing(missing, 'shot', shot.id, 'preparation_evidence_mismatch', shotAnchor);
   }
@@ -742,4 +813,5 @@ module.exports = {
   evaluatePreparationGate,
   preparationEvidenceHash: expectedPreparationHash,
   readCurrentCleanResultEvidence,
+  shotCharacterPlanHash,
 };

@@ -8,6 +8,7 @@ const { buildCharacterPlan } = require('./redrawCharacterPlanService');
 const {
   preparationEvidenceHash,
   readCurrentCleanResultEvidence,
+  shotCharacterPlanHash,
 } = require('./redrawPreparationGateService');
 const {
   buildTrustedReferenceBundleInput,
@@ -270,14 +271,15 @@ function currentCoverageBinding(snapshot, descriptor) {
     && snapshot.coverage_requirement_hash === binding?.requirement_hash;
 }
 
-function isCurrentReady(row, characterPlanHash, descriptor) {
+function isCurrentReady(row, shotPlanHash, descriptor) {
   if (row.preparation_state !== 'reference_ready' || !parseBundle(row)) return false;
   const snapshot = parseObject(row.preparation_snapshot_json, null);
   if (!snapshot
     || Number(snapshot.version_id) !== Number(row.version_id)
     || Number(snapshot.shot_id) !== Number(row.id)
     || Number(snapshot.preparation_version) !== Number(row.preparation_version)
-    || snapshot.character_plan_hash !== characterPlanHash
+    || !HEX_64.test(String(snapshot.character_plan_hash || ''))
+    || snapshot.shot_character_plan_hash !== shotPlanHash
     || snapshot.reference_bundle_hash !== row.reference_bundle_hash
     || snapshot.status !== 'completed'
     || !currentCoverageBinding(snapshot, descriptor)) return false;
@@ -288,21 +290,43 @@ function snapshotStatus(row) {
   return parseObject(row.preparation_snapshot_json, {})?.status || '';
 }
 
-async function reusableCleanResults(ctx, row, descriptor, expectedBaseline, characterPlanHash, deps) {
+async function reusableCleanResults(
+  ctx,
+  row,
+  descriptor,
+  expectedBaseline,
+  shotPlanHash,
+  expectedCleanReuseHash,
+  deps,
+) {
   const snapshot = parseObject(row.preparation_snapshot_json, {});
-  if (Number(snapshot.version_id) !== ctx.versionId
-    || Number(snapshot.shot_id) !== Number(row.id)
-    || Number(snapshot.preparation_version) !== Number(row.preparation_version)
-    || snapshot.character_plan_hash !== characterPlanHash
-    || !currentCoverageBinding(snapshot, descriptor)
-    || stableJson(snapshot.requirements) !== stableJson(descriptor.requirements.map((item) => ({ kind: item.kind, key: item.key })))
-    || !Array.isArray(snapshot.clean_results)) return [];
+  const requirementsCurrent = stableJson(snapshot.requirements)
+    === stableJson(descriptor.requirements.map((item) => ({ kind: item.kind, key: item.key })));
+  const commonCurrent = Number(snapshot.version_id) === ctx.versionId
+    && Number(snapshot.shot_id) === Number(row.id)
+    && HEX_64.test(String(snapshot.character_plan_hash || ''))
+    && HEX_64.test(String(snapshot.shot_character_plan_hash || ''))
+    && currentCoverageBinding(snapshot, descriptor)
+    && requirementsCurrent
+    && Array.isArray(snapshot.clean_results);
+  const normalReuse = commonCurrent
+    && Number(snapshot.preparation_version) === Number(row.preparation_version)
+    && snapshot.shot_character_plan_hash === shotPlanHash;
+  const staleReuse = commonCurrent
+    && row.preparation_state === 'stale'
+    && ['character_identity_changed', 'character_wardrobe_changed', 'voice_changed'].includes(row.stale_reason_code)
+    && snapshot.status === 'completed'
+    && Number(snapshot.preparation_version) + 1 === Number(row.preparation_version)
+    && snapshot.clean_reuse_hash === expectedCleanReuseHash
+    && snapshot.clean_results.length === descriptor.requirements.length
+    && snapshot.clean_results.every((result) => result?.status === 'completed');
+  if (!normalReuse && !staleReuse) return [];
   const reusable = [];
   const newlyApprovedTimes = [];
   for (const result of snapshot.clean_results) {
     const requirement = descriptor.requirements.find((item) => item.kind === result?.kind && item.key === result?.key);
     const assetId = Number(result?.redraw_asset_id);
-    if (!requirement || !['completed', 'unknown'].includes(result?.status)
+    if (!requirement || !(staleReuse ? result?.status === 'completed' : ['completed', 'unknown'].includes(result?.status))
       || !Number.isSafeInteger(assetId) || assetId <= 0) continue;
     let attemptCurrent = result.status === 'completed';
     if (result.status === 'unknown') {
@@ -339,7 +363,8 @@ async function reusableCleanResults(ctx, row, descriptor, expectedBaseline, char
       }
     }
   }
-  if (snapshot.version_snapshot_hash !== expectedBaseline.snapshot_hash) {
+  if (staleReuse && reusable.length !== descriptor.requirements.length) return [];
+  if (!staleReuse && snapshot.version_snapshot_hash !== expectedBaseline.snapshot_hash) {
     const priorVersionTime = Date.parse(String(snapshot.version_updated_at || ''));
     const approvalRefresh = snapshot.version_recovery_hash === expectedBaseline.recovery_hash
       && newlyApprovedTimes.length > 0
@@ -350,6 +375,29 @@ async function reusableCleanResults(ctx, row, descriptor, expectedBaseline, char
     if (!approvalRefresh) return [];
   }
   return reusable.sort((left, right) => left.kind.localeCompare(right.kind) || left.key.localeCompare(right.key));
+}
+
+function cleanReuseHash(scope, descriptor) {
+  return sha256({
+    schema_version: 'redraw-clean-reuse-v1',
+    version: {
+      id: Number(scope.id),
+      facts_hash: scope.facts_hash,
+      source_fingerprint: scope.source_fingerprint,
+      locale: scope.locale,
+      market: scope.market,
+      reference_bundle_required: Number(scope.reference_bundle_required || 0),
+    },
+    project_policy: {
+      execution_mode: scope.execution_mode,
+      budget_limit_credits: scope.budget_limit_credits == null ? null : Number(scope.budget_limit_credits),
+      max_auto_attempts_per_shot: Number(scope.max_auto_attempts_per_shot),
+      policy_version: Number(scope.policy_version),
+      automation_policy: parseObject(scope.automation_policy_json, {}),
+      updated_at: scope.project_updated_at,
+    },
+    coverage: descriptor,
+  });
 }
 
 function baseline(scope, characterPlanHash, coverage) {
@@ -401,15 +449,26 @@ async function buildQuote(rawCtx, input = {}, deps = {}) {
   const missing = [];
   const items = [];
   const reusableByShot = new Map();
+  const shotPlanHashByShot = new Map();
+  const cleanReuseHashByShot = new Map();
   let credits = 0;
   let priced = true;
   for (const shot of selected) {
     const descriptor = coverage.byId.get(Number(shot.id));
-    if (isCurrentReady(shot, plan.plan_hash, descriptor)) {
+    const shotPlanHash = shotCharacterPlanHash(shot, descriptor, plan);
+    if (!HEX_64.test(shotPlanHash)) {
+      throw codedError('REDRAW_REFERENCE_PREPARATION_CHARACTER_PLAN_NOT_READY', '逐镜角色依赖未在整集计划唯一命中');
+    }
+    const reusableHash = cleanReuseHash(scope, descriptor);
+    shotPlanHashByShot.set(Number(shot.id), shotPlanHash);
+    cleanReuseHashByShot.set(Number(shot.id), reusableHash);
+    if (isCurrentReady(shot, shotPlanHash, descriptor)) {
       reused.push(Number(shot.id));
       continue;
     }
-    const reusable = await reusableCleanResults(ctx, shot, descriptor, snapshot, plan.plan_hash, deps);
+    const reusable = await reusableCleanResults(
+      ctx, shot, descriptor, snapshot, shotPlanHash, reusableHash, deps,
+    );
     reusableByShot.set(Number(shot.id), reusable);
     const reusableKeys = new Set(reusable.map((item) => `${item.kind}:${item.key}`));
     const previous = parseObject(shot.preparation_snapshot_json, {});
@@ -473,6 +532,8 @@ async function buildQuote(rawCtx, input = {}, deps = {}) {
     coverage,
     baseline: snapshot,
     reusableByShot,
+    shotPlanHashByShot,
+    cleanReuseHashByShot,
     quote: {
       ...quoteBody,
       confirmation_required: decision.action === 'needs_review',
@@ -516,7 +577,18 @@ function requestHash(ctx, idempotencyKey, quote) {
   });
 }
 
-function claimShot(ctx, shot, descriptor, baselineSnapshot, characterPlanHash, request, idempotencyKey, reusable = []) {
+function claimShot(
+  ctx,
+  shot,
+  descriptor,
+  baselineSnapshot,
+  characterPlanHash,
+  shotPlanHash,
+  reusableHash,
+  request,
+  idempotencyKey,
+  reusable = [],
+) {
   const previous = parseObject(shot.preparation_snapshot_json, {});
   const idemHash = sha256(idempotencyKey);
   const unresolvedKeys = Array.isArray(previous.clean_results)
@@ -540,6 +612,8 @@ function claimShot(ctx, shot, descriptor, baselineSnapshot, characterPlanHash, r
     shot_id: Number(shot.id),
     preparation_version: Number(shot.preparation_version),
     character_plan_hash: characterPlanHash,
+    shot_character_plan_hash: shotPlanHash,
+    clean_reuse_hash: reusableHash,
     version_snapshot_hash: baselineSnapshot.snapshot_hash,
     version_recovery_hash: baselineSnapshot.recovery_hash,
     version_updated_at: baselineSnapshot.version_updated_at,
@@ -643,6 +717,8 @@ async function executeShot(ctx, built, shot, descriptor, idempotencyKey, deps) {
     descriptor,
     built.baseline,
     built.plan.plan_hash,
+    built.shotPlanHashByShot.get(Number(shot.id)),
+    built.cleanReuseHashByShot.get(Number(shot.id)),
     request,
     idempotencyKey,
     built.reusableByShot.get(Number(shot.id)) || [],
@@ -813,7 +889,7 @@ async function prepareVersionReferences(rawCtx, input = {}, deps = {}) {
   for (const original of built.selected) {
     const shot = built.ctx.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(Number(original.id));
     const descriptor = built.coverage.byId.get(Number(shot.id));
-    if (isCurrentReady(shot, built.plan.plan_hash, descriptor)) {
+    if (isCurrentReady(shot, built.shotPlanHashByShot.get(Number(shot.id)), descriptor)) {
       result.reused_shot_ids.push(Number(shot.id));
       continue;
     }

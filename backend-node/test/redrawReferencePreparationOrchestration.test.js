@@ -19,9 +19,12 @@ const {
 const {
   evaluatePreparationGate,
   preparationEvidenceHash,
+  shotCharacterPlanHash,
 } = require('../src/services/redrawPreparationGateService');
+const { buildCharacterPlan } = require('../src/services/redrawCharacterPlanService');
 const { prepareReferenceCleanRequirement } = require('../src/services/redrawAssetService');
 const { reviewAsset } = require('../src/services/redrawReviewService');
+const { invalidateCharacterDependents } = require('../src/services/redrawDependencyInvalidationService');
 const {
   buildTrustedReferenceBundleInput,
   canonicalBundleHash,
@@ -115,6 +118,9 @@ function markReady(db, shotId, schemaVersion = 'redraw-reference-bundle-v2') {
     shot_id: shotId,
     preparation_version: Number(shot.preparation_version),
     character_plan_hash: PLAN_HASH,
+    shot_character_plan_hash: sha256(stableJson({
+      schema_version: 'redraw-shot-character-plan-v1', version_id: 1, character_keys: [], characters: [],
+    })),
     reference_bundle_hash: referenceHash,
     request_hash: sha256(`ready:${shotId}`),
     status: 'completed',
@@ -606,6 +612,135 @@ function fakeDeps(state, options = {}) {
   };
 }
 
+function dependencyPlan(identity = 'c1-identity-v1') {
+  const body = {
+    version_id: 1,
+    ready: true,
+    missing: [],
+    characters: [{
+      source_character_key: 'c1', target_name: 'Character One', identity_pack_sha256: sha256(identity),
+      adult_status: 'verified_18_plus',
+      voice: { asset_id: 501, sha256: sha256('c1-voice'), locale: 'en-US', ready: true },
+      wardrobe: { asset_id: 401, sha256: sha256('c1-wardrobe'), label: '整集主服装', ready: true },
+    }, {
+      source_character_key: 'c2', target_name: 'Character Two', identity_pack_sha256: sha256('c2-identity-v1'),
+      adult_status: 'verified_18_plus',
+      voice: { asset_id: 502, sha256: sha256('c2-voice'), locale: 'en-US', ready: true },
+      wardrobe: { asset_id: 402, sha256: sha256('c2-wardrobe'), label: '整集主服装', ready: true },
+    }],
+  };
+  return { ...body, plan_hash: sha256(stableJson(body)) };
+}
+
+async function setupDependencyScopedReuse() {
+  const state = setup({ readyFirst: false });
+  const requirements = {
+    1: [
+      { kind: 'person_clean', key: 'c1-shot1-a' },
+      { kind: 'person_clean', key: 'c1-shot1-b' },
+      { kind: 'text_clean', key: 'text-shot1' },
+    ],
+    2: [
+      { kind: 'person_clean', key: 'c1-shot2' },
+      { kind: 'person_clean', key: 'c2-shot2' },
+      { kind: 'text_clean', key: 'text-shot2' },
+    ],
+    3: [{ kind: 'person_clean', key: 'c2-shot3' }],
+  };
+  const faceTracks = {
+    1: [{ track_key: 'c1-shot1', source_character_key: 'c1', time_ranges: [[0, 5000]] }],
+    2: [
+      { track_key: 'c1-shot2', source_character_key: 'c1', time_ranges: [[0, 5000]] },
+      { track_key: 'c2-shot2', source_character_key: 'c2', time_ranges: [[0, 5000]] },
+    ],
+    3: [{ track_key: 'c2-shot3', source_character_key: 'c2', time_ranges: [[0, 5000]] }],
+  };
+  for (const [shotId, key] of [[1, 'c1'], [2, 'c1'], [3, 'c2']]) {
+    state.db.prepare(`UPDATE redraw_shots SET source_dialogue_json = ?, localized_dialogue_json = ?,
+      references_json = ? WHERE id = ?`).run(
+      JSON.stringify([{ speaker_id: key, text: `source-${shotId}` }]),
+      JSON.stringify([{ speaker_id: key, localized_text: `localized-${shotId}` }]),
+      JSON.stringify([{ kind: 'character', source_character_key: key }, { kind: 'voice', speaker_id: key }]),
+      shotId,
+    );
+  }
+  const fixture = {
+    identity: 'c1-identity-v1',
+    coverageDrift: false,
+    evidenceCurrent: true,
+    plan() { return dependencyPlan(this.identity); },
+    coverage() {
+      const value = coverageFor(state.db, requirements);
+      for (const descriptor of value.shots) {
+        descriptor.bundle_evidence = {
+          face_tracks: faceTracks[descriptor.shot_id].map((track) => ({
+            ...track,
+            ...(this.coverageDrift && descriptor.shot_id === 1
+              ? { time_ranges: [[0, 4000]] }
+              : {}),
+          })),
+          text_regions: [],
+        };
+      }
+      return value;
+    },
+  };
+  let nextAssetId = 2000;
+  const deps = fakeDeps(state, {
+    requirements,
+    overrides: {
+      getCharacterPlan: () => fixture.plan(),
+      getReviewedCoverage: () => fixture.coverage(),
+      isCleanResultCurrent: () => fixture.evidenceCurrent,
+      async prepareCleanRequirement(payload) {
+        deps.cleanCalls.push({ shot_id: payload.shot.id, key: payload.requirement.key });
+        nextAssetId += 1;
+        return { status: 'completed', redraw_asset_id: nextAssetId };
+      },
+      buildReferenceBundleInput({ shot, coverage_shot: descriptor, clean_results: cleanResults }) {
+        const byKey = new Map(fixture.plan().characters.map((character) => [character.source_character_key, character]));
+        return {
+          shot_id: shot.id,
+          face_tracks: descriptor.bundle_evidence.face_tracks.map((track) => ({
+            ...track,
+            identity_pack_sha256: byKey.get(track.source_character_key).identity_pack_sha256,
+          })),
+          dialogue: { turns: JSON.parse(shot.localized_dialogue_json) },
+          clean_results: cleanResults.map((item) => ({ key: item.key, redraw_asset_id: item.redraw_asset_id })),
+        };
+      },
+      async saveReferenceBundle(_ctx, input) {
+        deps.bundleCalls.push(input.shot_id);
+        const bundle = {
+          schema_version: 'redraw-reference-bundle-v2', version_id: 1, shot_id: input.shot_id,
+          face_tracks: input.face_tracks, dialogue: input.dialogue, clean_results: input.clean_results,
+        };
+        const hash = canonicalBundleHash(bundle);
+        state.db.prepare(`UPDATE redraw_shots SET reference_bundle_json = ?, reference_bundle_hash = ?,
+          reference_bundle_updated_at = ?, updated_at = ? WHERE id = ?`)
+          .run(stableJson(bundle), hash, NEXT, NEXT, input.shot_id);
+        return { shot_id: input.shot_id, reference_bundle_hash: hash, reference_bundle_updated_at: NEXT, bundle };
+      },
+    },
+  });
+  const initial = await prepareVersionReferences(state.ctx, {
+    version_id: 1, idempotency_key: 'dependency-scope-initial',
+  }, deps);
+  assert.deepEqual(initial.prepared_shot_ids, [1, 2, 3]);
+  assert.equal(deps.cleanCalls.length, 7);
+  return {
+    state,
+    deps,
+    fixture,
+    invalidate() {
+      fixture.identity = 'c1-identity-v2';
+      const affected = invalidateCharacterDependents(state.ctx, { source_character_key: 'c1' });
+      assert.deepEqual(affected, [1, 2]);
+      return affected;
+    },
+  };
+}
+
 async function rejectsCode(fn, code) {
   await assert.rejects(fn, (error) => error?.code === code);
 }
@@ -1029,6 +1164,11 @@ test('默认服务端路径从已批准全帧证据读取覆盖并用当前净�
       shot_id: 1,
       preparation_version: 1,
       character_plan_hash: currentBaseline.character_plan_hash,
+      shot_character_plan_hash: shotCharacterPlanHash(
+        state.db.prepare('SELECT * FROM redraw_shots WHERE id = 1').get(),
+        coverage.shots[0],
+        buildCharacterPlan(state.ctx, 1),
+      ),
       version_snapshot_hash: currentBaseline.version_snapshot_hash,
       request_hash: sha256('previous-attempt'),
       idempotency_key_hash: sha256('previous-attempt'),
@@ -1090,6 +1230,11 @@ test('默认路径 completed text_clean 物理文件漂移后必须重新报价�
       shot_id: 1,
       preparation_version: 1,
       character_plan_hash: initial.character_plan_hash,
+      shot_character_plan_hash: shotCharacterPlanHash(
+        state.db.prepare('SELECT * FROM redraw_shots WHERE id = 1').get(),
+        coverage.shots[0],
+        buildCharacterPlan(state.ctx, 1),
+      ),
       version_snapshot_hash: initial.version_snapshot_hash,
       coverage_analysis_sha256: coverage.coverage_binding.analysis_sha256,
       coverage_approved_by: coverage.coverage_binding.approved_by,
@@ -1576,5 +1721,88 @@ test('当前覆盖索引缺少 approved_by 或 approved_at 时准备门禁 fail 
     } finally {
       state.cleanup();
     }
+  }
+});
+
+test('逐镜角色依赖变化只重建受影响参考包并跨一次受控失效复用 7 项 completed 净景', async () => {
+  const scenario = await setupDependencyScopedReuse();
+  try {
+    scenario.invalidate();
+    const quote = await quoteVersionPreparation(scenario.state.ctx, { version_id: 1 }, scenario.deps);
+    assert.deepEqual(quote.reused_shot_ids, [3]);
+    assert.deepEqual(quote.missing_shot_ids, [1, 2]);
+    assert.deepEqual(quote.items, []);
+
+    const result = await prepareVersionReferences(scenario.state.ctx, {
+      version_id: 1, idempotency_key: 'dependency-scope-rebuild', quote_hash: quote.quote_hash,
+    }, scenario.deps);
+    assert.deepEqual(result.prepared_shot_ids, [1, 2]);
+    assert.deepEqual(result.reused_shot_ids, [3]);
+    assert.equal(scenario.deps.cleanCalls.length, 7);
+    assert.deepEqual(
+      scenario.state.db.prepare('SELECT preparation_state FROM redraw_shots ORDER BY id').all()
+        .map((row) => row.preparation_state),
+      ['reference_ready', 'reference_ready', 'reference_ready'],
+    );
+    for (const shotId of [1, 2]) {
+      const bundle = JSON.parse(scenario.state.db.prepare('SELECT reference_bundle_json FROM redraw_shots WHERE id = ?').get(shotId).reference_bundle_json);
+      const c1 = bundle.face_tracks.find((track) => track.source_character_key === 'c1');
+      assert.equal(c1.identity_pack_sha256, sha256('c1-identity-v2'));
+    }
+    const untouched = JSON.parse(scenario.state.db.prepare('SELECT reference_bundle_json FROM redraw_shots WHERE id = 3').get().reference_bundle_json);
+    assert.equal(untouched.face_tracks[0].identity_pack_sha256, sha256('c2-identity-v1'));
+  } finally {
+    scenario.state.close();
+  }
+});
+
+test('跨身份失效净景复用对原因、版本、策略、覆盖、物理证据和 unknown 逐项 fail closed', async (t) => {
+  const cases = [{
+    name: '非角色依赖 stale reason 不复用',
+    mutate(scenario) {
+      scenario.state.db.prepare("UPDATE redraw_shots SET stale_reason_code = 'shot_timing_changed' WHERE id = 1").run();
+    },
+  }, {
+    name: 'preparation_version 跳两级不复用',
+    mutate(scenario) {
+      scenario.state.db.prepare('UPDATE redraw_shots SET preparation_version = preparation_version + 1 WHERE id = 1').run();
+    },
+  }, {
+    name: '项目策略漂移不复用',
+    mutate(scenario) {
+      scenario.state.db.prepare('UPDATE redraw_projects SET policy_version = policy_version + 1 WHERE id = 1').run();
+    },
+  }, {
+    name: '当前逐镜 coverage 证据漂移不复用',
+    mutate(scenario) {
+      scenario.fixture.coverageDrift = true;
+    },
+  }, {
+    name: 'completed 当前物理证据回查失败不复用',
+    mutate(scenario) {
+      scenario.fixture.evidenceCurrent = false;
+    },
+  }, {
+    name: '旧 snapshot 含 unknown 结果不得借 clean-only 路径复用',
+    mutate(scenario) {
+      const row = scenario.state.db.prepare('SELECT preparation_snapshot_json FROM redraw_shots WHERE id = 1').get();
+      const snapshot = JSON.parse(row.preparation_snapshot_json);
+      snapshot.clean_results[0].status = 'unknown';
+      scenario.state.db.prepare('UPDATE redraw_shots SET preparation_snapshot_json = ? WHERE id = 1')
+        .run(stableJson(snapshot));
+    },
+  }];
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      const scenario = await setupDependencyScopedReuse();
+      try {
+        scenario.invalidate();
+        item.mutate(scenario);
+        const quote = await quoteVersionPreparation(scenario.state.ctx, { version_id: 1 }, scenario.deps);
+        assert.equal(quote.items.filter((quoted) => quoted.shot_id === 1).length, 3, JSON.stringify(quote));
+      } finally {
+        scenario.state.close();
+      }
+    });
   }
 });

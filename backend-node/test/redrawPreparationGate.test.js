@@ -7,9 +7,11 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const { buildCharacterPlan } = require('../src/services/redrawCharacterPlanService');
 const {
   evaluatePreparationGate,
   preparationEvidenceHash,
+  shotCharacterPlanHash,
 } = require('../src/services/redrawPreparationGateService');
 const { canonicalCoverageSha256 } = require('../src/services/redrawFullFrameCoverageService');
 const { canonicalBundleHash } = require('../src/services/redrawReferenceBundleService');
@@ -482,11 +484,13 @@ function makeBundle(state, overrides = {}) {
     .run(stableJson(bundle), referenceHash, NOW, state.shotId);
   const shot = state.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(state.shotId);
   const plan = evaluatePreparationGate(context(state), state.versionId);
+  const currentPlan = buildCharacterPlan(context(state), state.versionId);
   const snapshot = {
     schema_version: 'redraw-reference-preparation-v2',
     version_id: state.versionId,
     shot_id: state.shotId,
     character_plan_hash: plan.character_plan_hash,
+    shot_character_plan_hash: shotCharacterPlanHash(shot, bundle, currentPlan),
     reference_bundle_hash: referenceHash,
     status: 'completed',
     requirements: [],
@@ -507,6 +511,23 @@ function makeBundle(state, overrides = {}) {
       preparationEvidenceHash({ ...shot, preparation_snapshot_json: stableJson(snapshot) }),
       state.shotId,
     );
+}
+
+function replaceCharacterIdentity(state, suffix) {
+  const row = state.db.prepare('SELECT * FROM redraw_assets WHERE id = 201').get();
+  const payload = JSON.parse(row.source_ref_json);
+  const pack = identityPack({
+    sourceKey: 'char-a',
+    targetName: `Alice Carter ${suffix}`,
+    assetId: 301,
+    assetSha: payload.identity_pack.artifact.sha256,
+    wardrobeAssetId: 401,
+    wardrobeSha: payload.identity_pack.wardrobe.reference_sha256,
+  });
+  payload.identity_pack = pack;
+  state.db.prepare('UPDATE redraw_assets SET localized_name = ?, source_ref_json = ?, updated_at = ? WHERE id = 201')
+    .run(pack.target_actor_label, JSON.stringify(payload), `2026-08-22T00:00:0${suffix}.000Z`);
+  return pack;
 }
 
 function makeTextBundle(state) {
@@ -556,6 +577,84 @@ test('准备门禁返回严格白名单、稳定排序和当前角色计划哈�
   } finally {
     state.cleanup();
   }
+});
+
+test('准备门禁按逐镜角色依赖复核计划，未引用角色变化不失效且引用或依赖键漂移 fail closed', async (t) => {
+  await t.test('无角色依赖镜头不被未引用角色的全局计划变化误伤', () => {
+    const state = setup();
+    try {
+      makeBundle(state, {
+        face_tracks: [],
+        coverage_review: {
+          status: 'approved', reviewed_by: 'user-a', reviewed_at: NOW,
+          recognizable_face_count: 0, mapped_face_count: 0, unresolved_face_count: 0,
+          recognizable_text_region_count: 0, mapped_text_region_count: 0, unresolved_text_region_count: 0,
+        },
+      });
+      const before = evaluatePreparationGate(context(state), state.versionId);
+      assert.equal(before.ok, true, JSON.stringify(before));
+      replaceCharacterIdentity(state, 2);
+
+      const after = evaluatePreparationGate(context(state), state.versionId);
+      assert.notEqual(after.character_plan_hash, before.character_plan_hash);
+      assert.equal(after.ok, true, JSON.stringify(after));
+      assert.deepEqual(after.ready_shot_ids, [state.shotId]);
+    } finally {
+      state.cleanup();
+    }
+  });
+
+  await t.test('引用角色变化但 snapshot 与 bundle 未重建时拒绝', () => {
+    const state = setup();
+    try {
+      makeBundle(state);
+      replaceCharacterIdentity(state, 3);
+      const gate = evaluatePreparationGate(context(state), state.versionId);
+      assert.equal(gate.ok, false);
+      assert.deepEqual(gate.ready_shot_ids, []);
+      assert.ok(gate.missing.some((item) => item.reason_code === 'preparation_evidence_mismatch'));
+    } finally {
+      state.cleanup();
+    }
+  });
+
+  await t.test('服务端 dialogue 依赖键漂移到计划外角色时拒绝', () => {
+    const state = setup();
+    try {
+      makeBundle(state);
+      state.db.prepare('UPDATE redraw_shots SET source_dialogue_json = ? WHERE id = ?')
+        .run(JSON.stringify([{ speaker_id: 'char-missing', text: 'hi' }]), state.shotId);
+      const gate = evaluatePreparationGate(context(state), state.versionId);
+      assert.equal(gate.ok, false);
+      assert.deepEqual(gate.ready_shot_ids, []);
+      assert.ok(gate.missing.some((item) => item.reason_code === 'preparation_evidence_mismatch'));
+    } finally {
+      state.cleanup();
+    }
+  });
+
+  await t.test('references_json 的 voice 依赖绑定完整角色规范', () => {
+    const state = setup();
+    try {
+      state.db.prepare('UPDATE redraw_shots SET references_json = ? WHERE id = ?')
+        .run(JSON.stringify([{ kind: 'voice', speaker_id: 'char-a' }]), state.shotId);
+      makeBundle(state, {
+        face_tracks: [],
+        coverage_review: {
+          status: 'approved', reviewed_by: 'user-a', reviewed_at: NOW,
+          recognizable_face_count: 0, mapped_face_count: 0, unresolved_face_count: 0,
+          recognizable_text_region_count: 0, mapped_text_region_count: 0, unresolved_text_region_count: 0,
+        },
+      });
+      replaceCharacterIdentity(state, 4);
+      const gate = evaluatePreparationGate(context(state), state.versionId);
+      assert.equal(gate.ok, false);
+      assert.deepEqual(gate.ready_shot_ids, []);
+      assert.ok(gate.missing.some((item) => item.reason_code === 'preparation_evidence_mismatch'));
+    } finally {
+      state.cleanup();
+    }
+  });
 });
 
 test('准备门禁接受已批准且证据完整的 needs_attention 文字净景', () => {

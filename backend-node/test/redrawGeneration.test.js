@@ -17,8 +17,14 @@ const videoClient = require('../src/services/videoClient');
 const videoService = require('../src/services/videoService');
 const redrawOrchestrator = require('../src/services/redrawOrchestrator');
 const { identityBindingForAsset } = require('../src/services/redrawCharacterIdentityService');
+const { buildCharacterPlan } = require('../src/services/redrawCharacterPlanService');
 const { saveReferenceBundle, loadReviewedReferenceCoverage } = require('../src/services/redrawReferenceBundleService');
-const { evaluatePreparationGate, preparationEvidenceHash, readCurrentCleanResultEvidence } = require('../src/services/redrawPreparationGateService');
+const {
+  evaluatePreparationGate,
+  preparationEvidenceHash,
+  readCurrentCleanResultEvidence,
+  shotCharacterPlanHash,
+} = require('../src/services/redrawPreparationGateService');
 const { buildGeneratedCoverageManifest, canonicalCoverageSha256 } = require('../src/services/redrawFullFrameCoverageService');
 const {
   canonicalizeModelLock,
@@ -1199,6 +1205,8 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
     const coverage = await loadReviewedReferenceCoverage({ ...gateCtx, versionId: state.versionId });
     const gate = evaluatePreparationGate(gateCtx, state.versionId);
     const shot = state.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(shotId);
+    const currentPlan = buildCharacterPlan({ ...gateCtx, versionId: state.versionId }, state.versionId);
+    const referenceBundle = JSON.parse(shot.reference_bundle_json);
     const coverageShot = coverage.coverage_binding.shots.find((item) => Number(item.shot_id) === Number(shotId));
     const shotRequirements = coverage.shots.find((item) => Number(item.shot_id) === Number(shotId))?.requirements || [];
     const cleanAssetByKey = new Map([
@@ -1223,6 +1231,7 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
       shot_id: shotId,
       preparation_version: Number(shot.preparation_version),
       character_plan_hash: gate.character_plan_hash,
+      shot_character_plan_hash: shotCharacterPlanHash(shot, referenceBundle, currentPlan),
       reference_bundle_hash: state.savedReferenceBundle.reference_bundle_hash,
       status: 'completed',
       requirements: shotRequirements.map((requirement) => ({
