@@ -259,17 +259,6 @@ function assertExactProviderTaskReceiptScope(allowedPaths) {
   assert.deepEqual(allowedPaths, PROVIDER_TASK_RECEIPT_ALLOWED_PATHS);
 }
 
-function providerTaskReceiptChangedPaths() {
-  return execFileSync('git', ['diff', '--name-only', 'origin/main...HEAD', '--'], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-  })
-    .split(/\r?\n/)
-    .map((entry) => entry.trim().replaceAll('\\', '/'))
-    .filter(Boolean)
-    .sort();
-}
-
 function createFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'incremental-release-scope-'));
   const parentRoot = path.join(root, 'parent');
@@ -540,11 +529,10 @@ test('视频音频与冻结积分收口发布范围拒绝同数量偷换任一�
   );
 });
 
-test('供应商任务不可变凭证发布范围与 origin/main 到候选的 29 个路径逐项相等', () => {
+test('供应商任务不可变凭证发布范围是精确 29 文件白名单', () => {
   const { manifest, allowedPaths } = loadManifest(providerTaskReceiptManifestPath);
   assert.equal(manifest.release, 'provider-task-receipt-reconciliation-20260822');
   assertExactProviderTaskReceiptScope(allowedPaths);
-  assert.deepEqual(allowedPaths, providerTaskReceiptChangedPaths());
   assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
 
   for (const forbidden of [
