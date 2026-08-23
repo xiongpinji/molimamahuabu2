@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
@@ -3745,8 +3746,20 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
       } else if (!Array.isArray(generated)
         || generated.length !== dialogue.length
         || generated.some((segment, index) => (
-          String(segment?.segment_id ?? segment?.turn_id ?? segment?.id ?? index)
-            !== String(dialogue[index]?.segment_id ?? dialogue[index]?.turn_id ?? dialogue[index]?.id ?? index)
+          segment?.turn_index !== index
+          || !Number.isSafeInteger(segment?.start_ms)
+          || !Number.isSafeInteger(segment?.end_ms)
+          || !Number.isSafeInteger(dialogue[index]?.start_ms)
+          || !Number.isSafeInteger(dialogue[index]?.end_ms)
+          || segment.start_ms !== dialogue[index].start_ms
+          || segment.end_ms !== dialogue[index].end_ms
+          || segment.start_ms < Number(row.start_ms)
+          || segment.end_ms > Number(row.end_ms)
+          || segment.end_ms <= segment.start_ms
+          || String(segment?.speaker_id ?? '') !== String(dialogue[index]?.speaker_id ?? '')
+          || String(segment?.text_hash ?? '') !== crypto.createHash('sha256').update(String(
+            dialogue[index]?.target_text ?? dialogue[index]?.localized_text ?? dialogue[index]?.text ?? '',
+          )).digest('hex')
           || segment?.status !== 'completed'
           || segment?.reservation_status !== 'confirmed'
           || !Number.isSafeInteger(Number(segment?.audio_asset_id))

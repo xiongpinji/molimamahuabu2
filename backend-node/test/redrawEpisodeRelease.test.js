@@ -68,19 +68,20 @@ function setup(t) {
   return { db, root, projectId, workId, versionId, ctx, shotIds: [], videoIds: [] };
 }
 
-function addAudio(state, segment) {
-  const relative = write(state, `audio/${segment.segment_id}.mp3`, `audio-${segment.segment_id}`);
-  const reservationId = `res-${segment.segment_id}`;
+function addAudio(state, localized, { shotId, turnIndex }) {
+  const segmentId = `${shotId}:${turnIndex}`;
+  const relative = write(state, `audio/${shotId}-${turnIndex}.mp3`, `audio-${segmentId}`);
+  const reservationId = `res-${shotId}-${turnIndex}`;
   const assetId = Number(state.db.prepare(`INSERT INTO assets
     (name, type, category, local_path, mime_type, duration, metadata, created_at, updated_at)
     VALUES (?, 'audio', 'redraw_dialogue', ?, 'audio/mpeg', ?, ?, ?, ?)`).run(
-    segment.segment_id,
+    segmentId,
     relative,
-    (segment.end_ms - segment.start_ms - 100) / 1000,
+    (localized.end_ms - localized.start_ms - 100) / 1000,
     JSON.stringify({ redraw_dialogue: {
       tenant_id: 'tenant-a', user_id: 'user-a', version_id: state.versionId,
-      segment_id: segment.segment_id, reservation_id: reservationId,
-      idempotency_key: `idem-${segment.segment_id}`,
+      segment_id: segmentId, reservation_id: reservationId,
+      idempotency_key: `idem-${shotId}-${turnIndex}`,
     } }),
     NOW,
     NOW,
@@ -89,21 +90,26 @@ function addAudio(state, segment) {
     (id, tenant_id, operation_key, actor_user_id, model, resource_type, resource_id,
      amount, status, created_at, updated_at)
     VALUES (?, 'tenant-a', ?, 'user-a', 'tts', 'redraw_dialogue', ?, 1, 'confirmed', ?, ?)`).run(
-    reservationId, `op-${segment.segment_id}`, `${state.versionId}:${segment.segment_id}`, NOW, NOW,
+    reservationId, `op-${shotId}-${turnIndex}`, `${state.versionId}:${segmentId}`, NOW, NOW,
   );
   return {
-    segment_id: segment.segment_id,
-    start_ms: segment.start_ms,
-    end_ms: segment.end_ms,
+    segment_id: segmentId,
+    turn_index: turnIndex,
+    speaker_id: localized.speaker_id,
+    start_ms: localized.start_ms,
+    end_ms: localized.end_ms,
+    text_hash: sha256(localized.target_text ?? localized.localized_text ?? localized.text ?? ''),
     status: 'completed',
     reservation_status: 'confirmed',
     reservation_id: reservationId,
-    idempotency_key: `idem-${segment.segment_id}`,
+    idempotency_key: `idem-${shotId}-${turnIndex}`,
     audio_asset_id: assetId,
   };
 }
 
-async function addApprovedShot(state, { index, startMs, endMs, text = null }) {
+async function addApprovedShot(state, {
+  index, startMs, endMs, text = null, textField = 'localized_text',
+}) {
   const videoRelative = write(state, `video/shot-${index}.mp4`, `video-${index}`);
   const videoId = Number(state.db.prepare(`INSERT INTO video_generations
     (tenant_id, user_id, local_path, status, duration, aspect_ratio, created_at, updated_at)
@@ -112,7 +118,7 @@ async function addApprovedShot(state, { index, startMs, endMs, text = null }) {
   ).lastInsertRowid);
   const localized = text == null ? [] : [{
     segment_id: `line-${index}`, speaker_id: `speaker-${index}`,
-    start_ms: startMs + 100, end_ms: endMs - 100, localized_text: text,
+    start_ms: startMs + 100, end_ms: endMs - 100, [textField]: text,
   }];
   const shotId = Number(state.db.prepare(`INSERT INTO redraw_shots
     (version_id, tenant_id, user_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
@@ -125,7 +131,7 @@ async function addApprovedShot(state, { index, startMs, endMs, text = null }) {
     `prompt-${index}`, sha256(`prep-${index}`), videoId, NOW, NOW,
   ).lastInsertRowid);
   if (localized.length) {
-    const generated = localized.map((segment) => addAudio(state, segment));
+    const generated = localized.map((segment, turnIndex) => addAudio(state, segment, { shotId, turnIndex }));
     state.db.prepare('UPDATE redraw_shots SET draft_json = ? WHERE id = ?').run(
       JSON.stringify({ dialogue_generation: { status: 'completed', segments: generated } }), shotId,
     );
@@ -142,7 +148,9 @@ async function addApprovedShot(state, { index, startMs, endMs, text = null }) {
 
 async function readyEpisode(t) {
   const state = setup(t);
-  await addApprovedShot(state, { index: 1, startMs: 0, endMs: 1000, text: 'Come with me.' });
+  await addApprovedShot(state, {
+    index: 1, startMs: 0, endMs: 1000, text: ' Come with me. ', textField: 'target_text',
+  });
   await addApprovedShot(state, { index: 2, startMs: 1000, endMs: 2000 });
   await addApprovedShot(state, { index: 3, startMs: 2000, endMs: 3000, text: 'We are safe.' });
   return state;
@@ -175,6 +183,41 @@ test('release 只锁定当前版本全部批准候选的服务端重算哈希', 
   assert.match(release.release_hash, /^[a-f0-9]{64}$/);
   assert.equal(JSON.stringify(release).includes(state.root), false);
   assert.equal(/https?:|local_path|absolute_path|provider/i.test(JSON.stringify(release)), false);
+});
+
+test('release 按轮次绑定业务对白与生成音频且对白业务 ID 可以不同', async (t) => {
+  const valid = await readyEpisode(t);
+  const localized = JSON.parse(valid.db.prepare(
+    'SELECT localized_dialogue_json FROM redraw_shots WHERE shot_index = 1',
+  ).get().localized_dialogue_json);
+  const generated = JSON.parse(valid.db.prepare(
+    'SELECT draft_json FROM redraw_shots WHERE shot_index = 1',
+  ).get().draft_json).dialogue_generation.segments;
+  assert.equal(localized[0].segment_id, 'line-1');
+  assert.equal(generated[0].segment_id, `${valid.shotIds[0]}:0`);
+  await assert.doesNotReject(buildEpisodeRelease(valid.ctx, { version_id: valid.versionId }));
+
+  for (const mutation of ['turn_index', 'start_ms', 'start_ms_type', 'end_ms', 'speaker_id', 'text_hash']) {
+    await t.test(`${mutation} 漂移时 fail closed`, async (subtest) => {
+      const state = await readyEpisode(subtest);
+      const row = state.db.prepare('SELECT id, draft_json FROM redraw_shots WHERE shot_index = 1').get();
+      const draft = JSON.parse(row.draft_json);
+      const segment = draft.dialogue_generation.segments[0];
+      if (mutation === 'turn_index') segment.turn_index = 1;
+      if (mutation === 'start_ms') segment.start_ms += 1;
+      if (mutation === 'start_ms_type') segment.start_ms = String(segment.start_ms);
+      if (mutation === 'end_ms') segment.end_ms -= 1;
+      if (mutation === 'speaker_id') segment.speaker_id = 'speaker-drift';
+      if (mutation === 'text_hash') segment.text_hash = sha256('stale localized text');
+      state.db.prepare('UPDATE redraw_shots SET draft_json = ? WHERE id = ?')
+        .run(JSON.stringify(draft), row.id);
+
+      await assert.rejects(
+        buildEpisodeRelease(state.ctx, { version_id: state.versionId }),
+        { code: 'REDRAW_EPISODE_RELEASE_AUDIO_CONTRACT_INVALID' },
+      );
+    });
+  }
 });
 
 test('release 拒绝缺镜头、顺序或时间线 gap 与跨 owner', async (t) => {

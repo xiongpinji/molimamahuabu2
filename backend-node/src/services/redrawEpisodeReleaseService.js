@@ -103,8 +103,31 @@ function textOf(segment) {
   return String(segment?.target_text ?? segment?.localized_text ?? segment?.text ?? '').trim();
 }
 
+function rawTextOf(segment) {
+  return String(segment?.target_text ?? segment?.localized_text ?? segment?.text ?? '');
+}
+
 function segmentIdOf(segment, index) {
   return String(segment?.segment_id ?? segment?.turn_id ?? segment?.id ?? index);
+}
+
+function matchesLocalizedTurn(shot, generated, localized, index) {
+  const generatedStart = generated?.start_ms;
+  const generatedEnd = generated?.end_ms;
+  const localizedStart = localized?.start_ms;
+  const localizedEnd = localized?.end_ms;
+  return generated?.turn_index === index
+    && Number.isSafeInteger(generatedStart)
+    && Number.isSafeInteger(generatedEnd)
+    && Number.isSafeInteger(localizedStart)
+    && Number.isSafeInteger(localizedEnd)
+    && generatedStart === localizedStart
+    && generatedEnd === localizedEnd
+    && generatedStart >= Number(shot.start_ms)
+    && generatedEnd <= Number(shot.end_ms)
+    && generatedEnd > generatedStart
+    && String(generated?.speaker_id ?? '') === String(localized?.speaker_id ?? '')
+    && String(generated?.text_hash ?? '') === sha256(rawTextOf(localized));
 }
 
 function validateTimeline(shots) {
@@ -194,9 +217,8 @@ function audioHash(ctx, shot, localized) {
     if (generated.length) throw releaseError('REDRAW_EPISODE_RELEASE_AUDIO_CONTRACT_INVALID', 'silent shot contains dialogue audio');
     return sha256(stableJson({ dialogue_mode: 'silent', segments: [] }));
   }
-  const expected = localized.map(segmentIdOf);
-  const actual = generated.map(segmentIdOf);
-  if (expected.length !== actual.length || expected.some((id, index) => id !== actual[index])) {
+  if (localized.length !== generated.length
+    || generated.some((segment, index) => !matchesLocalizedTurn(shot, segment, localized[index], index))) {
     throw releaseError('REDRAW_EPISODE_RELEASE_AUDIO_CONTRACT_INVALID', 'dialogue audio does not match current localized dialogue');
   }
   const records = generated.map((segment, index) => ownedAudio(ctx, shot, segment, index));

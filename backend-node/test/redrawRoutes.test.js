@@ -6524,3 +6524,82 @@ test('release readiness 与创建只使用服务端 hash、Task6 服务和受控
     db.close();
   }
 });
+
+test('release readiness 按对白轮次检查生成音频而不比较跨域 segment_id', async (t) => {
+  for (const mutation of ['valid', 'turn_index', 'start_ms', 'start_ms_type', 'end_ms', 'speaker_id', 'text_hash']) {
+    await t.test(mutation, async () => {
+      const db = createDb();
+      try {
+        const projectId = insertProject(db);
+        const workId = insertWork(db, projectId, { current_version: 1, current_step: 4 });
+        const versionId = Number(insertVersion(db, workId, { status: 'composing' }));
+        const localized = {
+          segment_id: 'g1-t1',
+          speaker_id: 'Maya',
+          target_text: 'Come with me.',
+          start_ms: 500,
+          end_ms: 1500,
+        };
+        const shotId = Number(insertShot(db, versionId, {
+          start_ms: 0,
+          end_ms: 2000,
+          duration_ms: 2000,
+          status: 'approved',
+          video_generation_id: 41,
+          localized_dialogue_json: JSON.stringify([localized]),
+        }));
+        const generated = {
+          segment_id: `${shotId}:0`,
+          turn_index: 0,
+          speaker_id: localized.speaker_id,
+          start_ms: localized.start_ms,
+          end_ms: localized.end_ms,
+          text_hash: crypto.createHash('sha256').update(localized.target_text).digest('hex'),
+          status: 'completed',
+          reservation_status: 'confirmed',
+          audio_asset_id: 51,
+        };
+        if (mutation === 'turn_index') generated.turn_index = 1;
+        if (mutation === 'start_ms') generated.start_ms += 1;
+        if (mutation === 'start_ms_type') generated.start_ms = String(generated.start_ms);
+        if (mutation === 'end_ms') generated.end_ms -= 1;
+        if (mutation === 'speaker_id') generated.speaker_id = 'speaker-drift';
+        if (mutation === 'text_hash') generated.text_hash = '0'.repeat(64);
+        db.prepare('UPDATE redraw_shots SET approved_candidate_review_id = 31, draft_json = ? WHERE id = ?')
+          .run(JSON.stringify({ dialogue_generation: { status: 'completed', segments: [generated] } }), shotId);
+
+        const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+          candidateReviewService: {
+            assertCurrentApprovedCandidate: () => ({ id: 31 }),
+          },
+          episodeReleaseService: {
+            buildEpisodeRelease: async () => {
+              if (mutation !== 'valid') {
+                throw Object.assign(new Error('dialogue audio mismatch'), {
+                  code: 'REDRAW_EPISODE_RELEASE_AUDIO_CONTRACT_INVALID',
+                });
+              }
+              return {
+                release_hash: 'a'.repeat(64),
+                shots: [{ shot_id: shotId }],
+                quality_summary: { decision: 'approved' },
+              };
+            },
+          },
+        }));
+        const response = captureResponse();
+        await handlers.releaseReadiness(request({ id: versionId }), response);
+        assert.equal(response.statusCode, 200);
+        if (mutation === 'valid') {
+          assert.equal(response.body.data.ready, true);
+        } else {
+          assert.deepEqual(response.body.data.blockers, [
+            { shot_id: shotId, reason_code: 'dialogue_audio_contract_invalid' },
+          ]);
+        }
+      } finally {
+        db.close();
+      }
+    });
+  }
+});
