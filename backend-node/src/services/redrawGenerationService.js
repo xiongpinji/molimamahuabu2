@@ -556,8 +556,9 @@ function sameRequestSnapshot(storedSnapshot, expectedSnapshot) {
   if (Object.prototype.hasOwnProperty.call(expectedSnapshot, 'reference_bundle')) {
     const expectedBundle = expectedSnapshot.reference_bundle || {};
     const storedBundle = stored.reference_bundle || {};
-    for (const key of [
+    const keys = [
       'schema_version',
+      'reference_bundle_hash',
       'coverage_sha256',
       'source_sha256',
       'motion_sha256',
@@ -567,7 +568,12 @@ function sameRequestSnapshot(storedSnapshot, expectedSnapshot) {
       'dialogue_script_sha256',
       'character_name_map_sha256',
       'localization_binding_sha256',
-    ]) {
+    ];
+    if (JSON.stringify(Object.keys(storedBundle).sort()) !== JSON.stringify([...keys].sort())
+      || JSON.stringify(Object.keys(expectedBundle).sort()) !== JSON.stringify([...keys].sort())) {
+      return false;
+    }
+    for (const key of keys) {
       if (!Object.prototype.hasOwnProperty.call(storedBundle, key)
         || !Object.prototype.hasOwnProperty.call(expectedBundle, key)
         || storedBundle[key] !== expectedBundle[key]) return false;

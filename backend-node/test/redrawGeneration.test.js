@@ -5305,6 +5305,17 @@ test('reference bundle required 的单镜生成使用安全参考包投影且不
     'character-001',
     'character-002',
   ]);
+  assert.deepEqual(
+    snapshot.identity_bindings.map((binding) => binding.identity_pack_sha256),
+    JSON.parse(state.db.prepare('SELECT reference_bundle_json FROM redraw_shots WHERE id = ?')
+      .get(state.shotId).reference_bundle_json).face_tracks.map((entry) => entry.identity_pack_sha256),
+  );
+  assert.deepEqual(
+    snapshot.identity_bindings.map((binding) => binding.redraw_asset_id),
+    JSON.parse(state.db.prepare('SELECT reference_bundle_json FROM redraw_shots WHERE id = ?')
+      .get(state.shotId).reference_bundle_json).face_tracks.map((entry) => entry.identity_redraw_asset_id),
+  );
+  assert.equal(snapshot.reference_bundle.reference_bundle_hash, state.savedReferenceBundle.reference_bundle_hash);
   assert.equal(sourceConditioning.mode, 'redraw_reference_bundle');
   assert.equal(sourceConditioning.audio_mode, 'strip');
   assert.equal(sourceConditioning.segment_sha256, REFERENCE_BUNDLE_MOTION_SHA256);
@@ -5314,6 +5325,32 @@ test('reference bundle required 的单镜生成使用安全参考包投影且不
   assert.equal(/[\u3400-\u9fff]/.test(serialized), false);
   assert.equal(serialized.includes('sk-'), false);
   assert.equal(serialized.includes('Authorization'), false);
+});
+
+test('reference bundle generation 快照缺失身份包或当前包证据时不复用旧 generation', async (t) => {
+  for (const [name, mutateSnapshot] of [
+    ['identity pack sha256', (snapshot) => { delete snapshot.identity_bindings[0].identity_pack_sha256; }],
+    ['reference bundle hash', (snapshot) => { delete snapshot.reference_bundle.reference_bundle_hash; }],
+  ]) {
+    await t.test(name, async (innerT) => {
+      const state = await setupReferenceBundleGenerationFixture(innerT);
+      const deps = referenceBundleGenerationDeps(state);
+      const first = await generateShot(ctx(state.db, deps), { shotId: state.shotId });
+      const row = state.db.prepare('SELECT request_snapshot FROM video_generations WHERE id = ?')
+        .get(first.video_generation_id);
+      const storedSnapshot = JSON.parse(row.request_snapshot);
+      mutateSnapshot(storedSnapshot);
+      state.db.prepare('UPDATE video_generations SET request_snapshot = ? WHERE id = ?')
+        .run(JSON.stringify(storedSnapshot), first.video_generation_id);
+
+      await assert.rejects(
+        () => generateShot(ctx(state.db, deps), { shotId: state.shotId }),
+        (error) => error.code === 'REDRAW_SHOT_CONFLICT',
+      );
+      assert.equal(count(state.db, 'video_generations'), 1);
+      assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+    });
+  }
 });
 
 test('reference bundle required 的当前 V2 身份包允许 refs 派生身份字段为空', async (t) => {

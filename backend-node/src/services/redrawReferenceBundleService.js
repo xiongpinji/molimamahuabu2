@@ -1217,6 +1217,8 @@ async function projectReferenceBundleForGeneration(rawCtx, shotId) {
       target_character_name: face.identity.target_character_name,
       target_actor_label: face.identity.target_actor_label,
       reference_image_asset_id: face.identity.artifact.asset_id,
+      redraw_asset_id: face.identity_redraw_asset_id,
+      identity_pack_sha256: face.identity_pack_sha256,
     }));
     return {
       prompt: buildGenerationPrompt(bundle, identityBindings),
@@ -1227,6 +1229,7 @@ async function projectReferenceBundleForGeneration(rawCtx, shotId) {
       identityBindings,
       referenceBundleSnapshot: {
         schema_version: REFERENCE_BUNDLE_SCHEMA_VERSION,
+        reference_bundle_hash: loaded.reference_bundle_hash,
         coverage_sha256: bundle.coverage_sha256,
         source_sha256: bundle.source.sha256,
         motion_sha256: bundle.motion_reference.sha256,

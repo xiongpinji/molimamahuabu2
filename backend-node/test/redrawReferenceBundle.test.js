@@ -1088,8 +1088,17 @@ test('重读参考包时重新校验并投影生成用白名单 URL', async () =
     assert.deepEqual(referenceKinds.sort(), ['identity', 'identity', 'motion']);
     assert.equal(projected.identityBindings.length, 2);
     assert.deepEqual(projected.identityBindings.map((entry) => entry.target_character_name), ['Ethan', 'Maya']);
+    assert.deepEqual(
+      projected.identityBindings.map((entry) => entry.identity_pack_sha256),
+      loaded.bundle.face_tracks.map((entry) => entry.identity_pack_sha256),
+    );
+    assert.deepEqual(
+      projected.identityBindings.map((entry) => entry.redraw_asset_id),
+      loaded.bundle.face_tracks.map((entry) => entry.identity_redraw_asset_id),
+    );
     assert.deepEqual(projected.referenceBundleSnapshot, {
       schema_version: 'redraw-reference-bundle-v2',
+      reference_bundle_hash: loaded.reference_bundle_hash,
       coverage_sha256: loaded.bundle.coverage_sha256,
       source_sha256: SOURCE_FINGERPRINT,
       motion_sha256: MOTION_SHA256,
@@ -1292,6 +1301,7 @@ test('静默对白保存、重读并投影为非人声环境音合同', async ()
     assert.equal(projected.prompt.includes('Authorization'), false);
     assert.deepEqual(projected.referenceBundleSnapshot, {
       schema_version: 'redraw-reference-bundle-v2',
+      reference_bundle_hash: loaded.reference_bundle_hash,
       coverage_sha256: loaded.bundle.coverage_sha256,
       source_sha256: SOURCE_FINGERPRINT,
       motion_sha256: MOTION_SHA256,
