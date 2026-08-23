@@ -30,6 +30,7 @@ const DEFAULT_GENERATION_CONCURRENCY = 3;
 const DEFAULT_RECOVERY_WAIT_MS = 60 * 60 * 1000;
 const DEFAULT_RECOVERY_POLL_MS = 1000;
 const ICREAT_MINI_MODEL = 'bytedance/seedance-2-0-mini';
+const HEX_64 = /^[0-9a-f]{64}$/;
 const CLIENT_GENERATION_CONTROL_FIELDS = [
   'model',
   'locale',
@@ -582,6 +583,93 @@ function sameRequestSnapshot(storedSnapshot, expectedSnapshot) {
   return true;
 }
 
+function staleReferenceBundle() {
+  throw codedError('REDRAW_REFERENCE_BUNDLE_STALE', '当前参考包已变化，请刷新后重试');
+}
+
+function referenceBundleCreateState(db, ctx, shot, requestSnapshot, expectedState = null) {
+  const row = db.prepare(`
+    SELECT id, tenant_id, user_id, version_id, status, video_generation_id, updated_at,
+           preparation_state, preparation_version, preparation_snapshot_json,
+           preparation_evidence_hash, reference_bundle_json, reference_bundle_hash,
+           reference_bundle_updated_at
+    FROM redraw_shots
+    WHERE id = ? AND tenant_id = ? AND user_id = ? AND version_id = ? AND deleted_at IS NULL
+  `).get(Number(shot.id), String(ctx.tenantId), String(ctx.userId), Number(shot.version_id));
+  if (!row) staleReferenceBundle();
+
+  let bundle;
+  let preparationSnapshot;
+  try {
+    bundle = strictJson(row.reference_bundle_json, 'reference_bundle_json');
+    preparationSnapshot = strictJson(row.preparation_snapshot_json, 'preparation_snapshot_json');
+  } catch (_) {
+    staleReferenceBundle();
+  }
+  const currentBundleHash = redrawReferenceBundleService.canonicalBundleHash(bundle);
+  const referenceBundleSnapshot = {
+    schema_version: bundle.schema_version,
+    reference_bundle_hash: row.reference_bundle_hash,
+    coverage_sha256: bundle.coverage_sha256,
+    source_sha256: bundle.source?.sha256,
+    motion_sha256: bundle.motion_reference?.sha256,
+    dialogue_kind: bundle.dialogue?.kind,
+    speech_required: bundle.dialogue?.speech_required,
+    source_dialogue_sha256: bundle.dialogue?.source_dialogue_sha256,
+    dialogue_script_sha256: bundle.dialogue?.script_sha256,
+    character_name_map_sha256: bundle.dialogue?.character_name_map_sha256,
+    localization_binding_sha256: bundle.dialogue?.localization_binding_sha256,
+  };
+  const identityBindings = Array.isArray(bundle.face_tracks) ? bundle.face_tracks.map((face) => ({
+    track_key: face.track_key,
+    source_character_key: face.source_character_key,
+    target_character_name: face.identity?.target_character_name,
+    target_actor_label: face.identity?.target_actor_label,
+    reference_image_asset_id: face.identity?.artifact?.asset_id,
+    redraw_asset_id: face.identity_redraw_asset_id,
+    identity_pack_sha256: face.identity_pack_sha256,
+  })) : [];
+  const currentRequestSnapshot = {
+    identity_bindings: identityBindings,
+    reference_bundle: referenceBundleSnapshot,
+  };
+  const expectedRequestSnapshot = {
+    identity_bindings: requestSnapshot?.identity_bindings,
+    reference_bundle: requestSnapshot?.reference_bundle,
+  };
+  if (currentBundleHash !== String(row.reference_bundle_hash || '')
+    || !sameRequestSnapshot(currentRequestSnapshot, expectedRequestSnapshot)
+    || String(row.updated_at || '') !== String(shot.updated_at || '')
+    || String(row.reference_bundle_updated_at || '') !== String(shot.reference_bundle_updated_at || '')
+    || Number(row.preparation_version) !== Number(shot.preparation_version)
+    || String(row.preparation_state || '') !== 'reference_ready'
+    || String(row.status || '') !== String(shot.status || '')
+    || Number(row.video_generation_id || 0) !== Number(shot.video_generation_id || 0)
+    || preparationSnapshot.schema_version !== 'redraw-reference-preparation-v2'
+    || preparationSnapshot.status !== 'completed'
+    || Number(preparationSnapshot.version_id) !== Number(row.version_id)
+    || Number(preparationSnapshot.shot_id) !== Number(row.id)
+    || Number(preparationSnapshot.preparation_version) !== Number(row.preparation_version)
+    || preparationSnapshot.reference_bundle_hash !== row.reference_bundle_hash
+    || !HEX_64.test(String(preparationSnapshot.shot_character_plan_hash || ''))
+    || !HEX_64.test(String(row.preparation_evidence_hash || ''))) {
+    staleReferenceBundle();
+  }
+  const state = {
+    status: String(row.status || ''),
+    video_generation_id: row.video_generation_id == null ? null : Number(row.video_generation_id),
+    updated_at: String(row.updated_at || ''),
+    preparation_state: String(row.preparation_state || ''),
+    preparation_version: Number(row.preparation_version),
+    preparation_snapshot_json: String(row.preparation_snapshot_json || ''),
+    preparation_evidence_hash: String(row.preparation_evidence_hash || ''),
+    reference_bundle_hash: String(row.reference_bundle_hash || ''),
+    reference_bundle_updated_at: String(row.reference_bundle_updated_at || ''),
+  };
+  if (expectedState && JSON.stringify(state) !== JSON.stringify(expectedState)) staleReferenceBundle();
+  return state;
+}
+
 function normalizeReferencePointer(value, fallbackKind = null) {
   const kind = String(value.kind || value.type || value.asset_kind || fallbackKind || '').trim();
   let rawId = value.redraw_asset_id ?? value.redrawAssetId ?? value.asset_id ?? value.assetId;
@@ -1000,9 +1088,21 @@ async function generateShot(ctx, input = {}) {
       throw codedError('REDRAW_SHOT_CONFLICT', '当前参考包绑定已变更，请刷新后重试');
     }
   }
+  const referenceBundleCreateExpected = requiresReferenceBundle
+    ? referenceBundleCreateState(db, ctx, shot, requestSnapshot)
+    : null;
+  if (requiresReferenceBundle && typeof ctx.beforeReferenceBundleCreateTransaction === 'function') {
+    const hookResult = ctx.beforeReferenceBundleCreateTransaction({ shot, generation });
+    if (hookResult && typeof hookResult.then === 'function') {
+      throw codedError('REDRAW_CONTEXT_INVALID', '参考包创建事务钩子必须同步执行');
+    }
+  }
   let created;
   try {
-    created = db.transaction(() => {
+    const createTransaction = db.transaction(() => {
+      if (requiresReferenceBundle) {
+        referenceBundleCreateState(db, ctx, shot, requestSnapshot, referenceBundleCreateExpected);
+      }
       ensureGateOpen(db, ctx, shot.version_id);
       const reservation = redrawBillingService.reserveShotGeneration(db, {
         tenantId: ctx.tenantId,
@@ -1112,7 +1212,8 @@ async function generateShot(ctx, input = {}) {
         video_generation_id: videoId,
         reservation_id: reservation.reservation_id,
       };
-    })();
+    });
+    created = requiresReferenceBundle ? createTransaction.immediate() : createTransaction();
   } catch (error) {
     if (error.code !== 'REDRAW_SHOT_CREATE_CONFLICT') throw error;
     const fresh = selectShot(db, ctx, input);

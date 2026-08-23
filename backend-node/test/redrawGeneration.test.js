@@ -5522,6 +5522,51 @@ test('reference bundle required 在事务内复核运动文件漂移且不冻结
   assert.equal(shot.video_generation_id, null);
 });
 
+test('reference bundle required 在第二次投影后事务前身份包与 bundle 漂移专用拒绝且零副作用', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  let providerCalls = 0;
+  let scheduleCalls = 0;
+  let hookCalls = 0;
+
+  await assert.rejects(
+    () => generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
+      beforeReferenceBundleCreateTransaction: () => {
+        hookCalls += 1;
+        const row = state.db.prepare('SELECT reference_bundle_json FROM redraw_shots WHERE id = ?')
+          .get(state.shotId);
+        const bundle = JSON.parse(row.reference_bundle_json);
+        const staleIdentityHash = '0'.repeat(64);
+        bundle.face_tracks[0].identity_pack_sha256 = staleIdentityHash;
+        bundle.face_tracks[0].identity.identity_pack_sha256 = staleIdentityHash;
+        bundle.face_tracks[0].identity.pack_sha256 = staleIdentityHash;
+        const staleBundleHash = canonicalBundleHash(bundle);
+        state.db.prepare(`UPDATE redraw_shots
+          SET reference_bundle_json = ?, reference_bundle_hash = ?,
+              reference_bundle_updated_at = ?, updated_at = ?,
+              preparation_version = preparation_version + 1
+          WHERE id = ?`).run(
+          JSON.stringify(bundle),
+          staleBundleHash,
+          '2026-08-14T00:06:00.000Z',
+          '2026-08-14T00:06:00.000Z',
+          state.shotId,
+        );
+      },
+      videoProcessor: async () => { providerCalls += 1; },
+      schedule() { scheduleCalls += 1; },
+    })), { shotId: state.shotId }),
+    (error) => error.code === 'REDRAW_REFERENCE_BUNDLE_STALE',
+  );
+
+  assert.equal(hookCalls, 1);
+  assert.equal(providerCalls, 0);
+  assert.equal(scheduleCalls, 0);
+  assert.equal(count(state.db, 'video_generations'), 0);
+  assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+  assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+  assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+});
+
 test('reference bundle required 在首次预检后重读当前对白绑定且不冻结积分', async (t) => {
   const state = await setupReferenceBundleGenerationFixture(t);
   let providerCalls = 0;
