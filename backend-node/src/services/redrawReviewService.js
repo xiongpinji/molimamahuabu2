@@ -228,9 +228,10 @@ function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
       };
     }
   }
+  const referenceBundleRequired = Number(version.reference_bundle_required || 0) === 1;
   const canReadDraftJson = hasColumn(db, 'redraw_shots', 'draft_json');
   const shots = db.prepare(`
-    SELECT id, shot_id, shot_index, references_json, reference_bundle_json, reference_bundle_hash${canReadDraftJson ? ', draft_json' : ''}
+    SELECT id, shot_id, shot_index, references_json${referenceBundleRequired ? ', reference_bundle_json, reference_bundle_hash' : ''}${canReadDraftJson ? ', draft_json' : ''}
     FROM redraw_shots
     WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
     ORDER BY batch_index ASC, shot_index ASC, id ASC
@@ -245,7 +246,6 @@ function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
   const characterIdentityPackRequired = new Set();
   const characterIdentityBindingStale = new Set();
   const referenceBundleNotCurrentShots = new Set();
-  const referenceBundleRequired = Number(version.reference_bundle_required || 0) === 1;
   const nameMap = referenceBundleRequired && isPlainObject(parseJson(version.name_map_json, null))
     ? parseJson(version.name_map_json, null)
     : {};
