@@ -94,7 +94,7 @@ function addDraftPlaceholder(db, state, input = {}) {
 
 function addReadyDialogueShot(state, sourceCharacterKey = 'voice-character-1') {
   const referenceBundle = {
-    schema_version: 'redraw-reference-bundle-v1',
+    schema_version: 'redraw-reference-bundle-v2',
     face_tracks: [],
     dialogue: {
       kind: 'spoken',
