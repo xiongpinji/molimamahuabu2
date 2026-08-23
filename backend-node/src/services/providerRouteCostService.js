@@ -2,7 +2,7 @@
 
 const crypto = require('node:crypto');
 
-const COST_UNITS = new Set(['request', 'image', 'second', 'token']);
+const COST_UNITS = new Set(['request', 'image', 'second', 'character', 'token']);
 const RESOLUTION_PATTERN = /^[a-z0-9][a-z0-9._-]{0,31}$/;
 
 function costError(code, message) {
@@ -252,6 +252,14 @@ function quoteRouteCost(db, usage) {
     const duration = safeUsageInteger(usage.duration, 'duration');
     if (duration <= 0) throw costError('INVALID_PROVIDER_ROUTE_USAGE', 'duration must be positive');
     quantity = duration * count;
+    if (!Number.isSafeInteger(quantity)) {
+      throw costError('INVALID_PROVIDER_ROUTE_USAGE', 'quantity exceeds safe integer range');
+    }
+    costMicros = Math.ceil(quantity * selectedRate(row, resolution));
+  } else if (row.cost_unit === 'character') {
+    const characters = safeUsageInteger(usage.characters ?? usage.character_count, 'characters');
+    if (characters <= 0) throw costError('INVALID_PROVIDER_ROUTE_USAGE', 'characters must be positive');
+    quantity = characters * count;
     if (!Number.isSafeInteger(quantity)) {
       throw costError('INVALID_PROVIDER_ROUTE_USAGE', 'quantity exceeds safe integer range');
     }

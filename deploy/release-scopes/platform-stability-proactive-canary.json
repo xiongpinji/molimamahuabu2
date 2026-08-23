@@ -14,6 +14,7 @@
     "backend-node/scripts/verify-feature-lock-manifest.js",
     "backend-node/scripts/verify-platform-feature-inventory.js",
     "backend-node/src/app.js",
+    "backend-node/src/db/migrate.js",
     "backend-node/src/middleware/resourceOwnership.js",
     "backend-node/src/routes/index.js",
     "backend-node/src/routes/providerStability.js",

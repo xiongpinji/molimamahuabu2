@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS provider_route_costs (
   config_id INTEGER PRIMARY KEY,
   currency TEXT NOT NULL DEFAULT 'CNY' CHECK (currency = 'CNY'),
-  cost_unit TEXT NOT NULL CHECK (cost_unit IN ('request', 'image', 'second', 'token')),
+  cost_unit TEXT NOT NULL CHECK (cost_unit IN ('request', 'image', 'second', 'character', 'token')),
   micros_per_unit INTEGER NOT NULL DEFAULT 0 CHECK (micros_per_unit >= 0),
   input_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0 CHECK (input_cost_micros_per_1k >= 0),
   output_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0 CHECK (output_cost_micros_per_1k >= 0),

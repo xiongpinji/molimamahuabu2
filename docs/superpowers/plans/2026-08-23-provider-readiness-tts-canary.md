@@ -49,13 +49,16 @@
 
 - 修改：`backend-node/src/services/providerCanaryExecutor.js`
 - 修改：`backend-node/test/providerCanaryExecutor.test.js`
+- 修改：`frontweb/src/components/ProviderStabilityPanel.vue`
+- 修改：`frontweb/test/providerRouteCostAdmin.test.js`
 
 **TDD**
 
-1. 先写失败测试：TTS 请求使用固定无人物短句、精确 `config_id`、`count=1`；使用 `cost_unit=request` 的正成本；只提交一次且无 failover。
+1. 先写失败测试：TTS 请求使用固定无人物短句、精确 `config_id`、`count=1`；线路成本按实际提交文本的 Unicode 字符数和 `cost_unit=character` 精确报价；只提交一次且无 failover。
 2. 成功测试：注入 TTS 客户端，在隔离 run 目录生成合法 MP3；摘要可读后才结算成功并写 `fresh`。
 3. 失败测试：明确提交前失败退款；网络/响应/本地写入状态未知保持 held；无产物、非法 MP3 或路径逃逸写 `artifact_unreadable`，不写 fresh，不自动重试。
 4. 最小实现：调用现有 `ttsService.synthesize`，不复制 MiniMax/OpenAI 协议；产物用 Task 2 的入口校验。
+5. 管理员线路成本表单增加“每字符”，TTS 新建成本默认按字符；按字符成本不得携带无关分辨率档位。该信息只在管理员端显示。
 
 ## Task 4：调度与清单闭环
 

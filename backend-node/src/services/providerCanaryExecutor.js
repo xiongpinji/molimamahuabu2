@@ -141,6 +141,7 @@ function estimateCanaryCost(db, config, capability = {}) {
       count: 1,
       duration: serviceType === 'video' ? capability.duration : undefined,
       resolution: capability.resolution,
+      characters: serviceType === 'tts' ? Array.from(SAFE_TTS_TEXT).length : 0,
       inputTokens: serviceType === 'text' ? 32 : 0,
       outputTokens: serviceType === 'text' ? 16 : 0,
     });

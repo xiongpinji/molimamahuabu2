@@ -101,13 +101,14 @@ test('same logical model keeps independent supplier cost per config id', () => {
   }
 });
 
-test('request image second and token units quote exact usage without duration inflation', () => {
+test('request image second character and token units quote exact usage without duration inflation', () => {
   const db = makeDb();
   try {
     insertConfig(db, 1, { service_type: 'video' });
     insertConfig(db, 2);
     insertConfig(db, 3, { service_type: 'video' });
     insertConfig(db, 4, { service_type: 'text' });
+    insertConfig(db, 5, { service_type: 'tts' });
 
     routeCost.setRouteCost(db, 1, { cost_unit: 'request', micros_per_unit: 2_800_000 }, { now: NOW });
     routeCost.setRouteCost(db, 2, { cost_unit: 'image', micros_per_unit: 46_000 }, { now: NOW });
@@ -116,6 +117,10 @@ test('request image second and token units quote exact usage without duration in
       cost_unit: 'token',
       input_cost_micros_per_1k: 2_000,
       output_cost_micros_per_1k: 4_000,
+    }, { now: NOW });
+    routeCost.setRouteCost(db, 5, {
+      cost_unit: 'character',
+      micros_per_unit: 200,
     }, { now: NOW });
 
     const requestQuote = routeCost.quoteRouteCost(db, { configId: 1, duration: 15, count: 1 });
@@ -130,6 +135,20 @@ test('request image second and token units quote exact usage without duration in
     );
     assert.equal(routeCost.quoteRouteCost(db, { configId: 2, count: 3 }).cost_micros, 138_000);
     assert.equal(routeCost.quoteRouteCost(db, { configId: 3, duration: 15, count: 2 }).cost_micros, 2_400_000);
+    const characterQuote = routeCost.quoteRouteCost(db, { configId: 5, characters: 15 });
+    assert.deepEqual(
+      {
+        config_id: characterQuote.config_id,
+        cost_unit: characterQuote.cost_unit,
+        quantity: characterQuote.quantity,
+        cost_micros: characterQuote.cost_micros,
+      },
+      { config_id: 5, cost_unit: 'character', quantity: 15, cost_micros: 3_000 },
+    );
+    assert.throws(
+      () => routeCost.quoteRouteCost(db, { configId: 5 }),
+      (error) => error.code === 'INVALID_PROVIDER_ROUTE_USAGE',
+    );
     const tokenQuote = routeCost.quoteRouteCost(db, {
         configId: 4,
         inputTokens: 1_500,

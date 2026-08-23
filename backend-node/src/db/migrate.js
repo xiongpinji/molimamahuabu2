@@ -245,6 +245,32 @@ function rebuildTableFromSql(database, tableName, tempTable, createTempSql) {
   }
 }
 
+function ensureProviderRouteCostUnitConstraint(database) {
+  const tableName = 'provider_route_costs';
+  if (!tableExists(database, tableName)) return;
+  const table = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(tableName);
+  const sql = table?.sql || '';
+  if (/\bcost_unit\b[\s\S]*?\bcharacter\b/i.test(sql)) return;
+
+  const costUnitCheck = /cost_unit\s+TEXT\s+NOT\s+NULL\s+CHECK\s*\(\s*cost_unit\s+IN\s*\(\s*'request'\s*,\s*'image'\s*,\s*'second'\s*,\s*'token'\s*\)\s*\)/i;
+  if (!costUnitCheck.test(sql)) {
+    throw new Error('Unsupported provider_route_costs DDL for cost unit constraint migration');
+  }
+  const tempTable = '__provider_route_costs_unit_rebuild';
+  const createTempSql = sql
+    .replace(
+      /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"provider_route_costs"|`provider_route_costs`|\[provider_route_costs\]|provider_route_costs)\s*\(/i,
+      `CREATE TABLE ${quoteIdent(tempTable)} (`,
+    )
+    .replace(
+      costUnitCheck,
+      "cost_unit TEXT NOT NULL CHECK (cost_unit IN ('request', 'image', 'second', 'character', 'token'))",
+    );
+  rebuildTableFromSql(database, tableName, tempTable, createTempSql);
+}
+
 function ensureRedrawStatusConstraint(database, tableName) {
   if (!tableExists(database, tableName)) return;
   const table = database
@@ -1192,6 +1218,7 @@ function runMigrationsAndEnsure(database) {
   }
   ensureRedrawMigrationColumns(database);
   runMigrations(database);
+  ensureProviderRouteCostUnitConstraint(database);
   ensureAllColumns(database);
   ensureRedrawCompatibility(database);
   ensureRedrawWorkDurationConstraint(database);
