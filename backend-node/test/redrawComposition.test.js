@@ -660,6 +660,58 @@ test('runComposition completes atomically with three assets, version number, rel
   }
 });
 
+test('runComposition rejects candidate drift after runner before inserting assets or replacing an old completed export', async () => {
+  const state = setup();
+  try {
+    await addReadyVersion(state);
+    const oldPath = touch(state.root, 'redraw/version-1/exports/old-before-final-check.mp4', 'old');
+    const oldAssetId = Number(state.db.prepare(`INSERT INTO assets
+      (name, type, category, local_path, metadata, created_at, updated_at)
+      VALUES ('old', 'video', 'redraw_composition', ?, '{}', ?, ?)`)
+      .run(oldPath, state.now, state.now).lastInsertRowid);
+    const oldManifest = JSON.stringify({ preserved: true });
+    const oldReleaseHash = 'b'.repeat(64);
+    const oldExportId = Number(state.db.prepare(`INSERT INTO redraw_exports
+      (version_id, tenant_id, user_id, export_type, asset_id, version_number, manifest_json,
+       release_hash, status, created_at, updated_at)
+      VALUES (?, 'tenant-a', 'user-a', 'video', ?, 1, ?, ?, 'completed', ?, ?)`)
+      .run(state.versionId, oldAssetId, oldManifest, oldReleaseHash, state.now, state.now).lastInsertRowid);
+    const created = await createComposition(ctx(state), {
+      versionId: state.versionId,
+      idempotencyKey: 'compose-drift-during-runner',
+      audioMode: 'replace',
+    });
+    const workspace = path.join(state.root, 'redraw', `version-${state.versionId}`, 'exports', String(created.id));
+
+    await assert.rejects(
+      () => runComposition(ctx(state, {
+        compositionRunner: async (job) => {
+          fs.mkdirSync(path.dirname(job.outputPath), { recursive: true });
+          fs.writeFileSync(job.outputPath, 'mp4');
+          fs.writeFileSync(job.plan.video_inputs[0].absolute_path, 'candidate-drift-during-runner');
+        },
+      }), created.id),
+      (error) => error.code === 'REDRAW_COMPOSITION_INPUT_DRIFT',
+    );
+
+    assert.deepEqual(
+      state.db.prepare('SELECT status, error_code FROM redraw_exports WHERE id = ?').get(created.id),
+      { status: 'failed', error_code: 'REDRAW_COMPOSITION_INPUT_DRIFT' },
+    );
+    assert.equal(state.db.prepare(`SELECT COUNT(*) AS count FROM assets
+      WHERE json_extract(metadata, '$.export_id') = ?`).get(created.id).count, 0);
+    assert.equal(fs.existsSync(workspace), false);
+    assert.deepEqual(
+      state.db.prepare('SELECT status, manifest_json, release_hash FROM redraw_exports WHERE id = ?').get(oldExportId),
+      { status: 'completed', manifest_json: oldManifest, release_hash: oldReleaseHash },
+    );
+    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM assets WHERE id = ?').get(oldAssetId).count, 1);
+    assert.equal(fs.existsSync(path.join(state.root, oldPath)), true);
+  } finally {
+    cleanup(state);
+  }
+});
+
 test('runComposition marks failed without deleting prior completed export assets', async () => {
   const state = setup();
   try {

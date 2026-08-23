@@ -698,6 +698,36 @@ async function runComposition(ctx, exportId) {
       srt: await sha256File(outputs.srt.absolute),
       vtt: await sha256File(outputs.vtt.absolute),
     };
+    const currentPlan = await buildCompositionPlan(ctx, {
+      versionId: row.version_id,
+      audioMode: 'replace',
+    });
+    const currentRow = db.prepare(`
+      SELECT status, release_hash, manifest_json FROM redraw_exports
+      WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+    `).get(id, String(ctx.tenantId), String(ctx.userId));
+    const currentManifest = parseJson(currentRow?.manifest_json, {}, 'manifest_json');
+    try {
+      assertReleaseHash(currentManifest.episode_release, currentRow?.release_hash);
+    } catch (error) {
+      throw codedError('REDRAW_COMPOSITION_INPUT_DRIFT', 'stored episode release changed during composition', error);
+    }
+    const currentRequestHash = requestHash({
+      versionId: row.version_id,
+      audioMode: currentManifest.audio_mode || 'replace',
+      inputHash: currentPlan.input_hash,
+    });
+    if (currentRow?.status !== 'processing'
+      || String(currentRow.release_hash || '') !== String(row.release_hash || '')
+      || currentManifest.episode_release?.release_hash !== existingManifest.episode_release?.release_hash
+      || currentManifest?.plan?.input_hash !== existingManifest?.plan?.input_hash
+      || currentManifest.request_hash !== existingManifest.request_hash
+      || currentPlan.release_hash !== plan.release_hash
+      || currentPlan.input_hash !== plan.input_hash
+      || currentPlan.release_hash !== String(currentRow.release_hash || '')
+      || currentRequestHash !== existingManifest.request_hash) {
+      throw codedError('REDRAW_COMPOSITION_INPUT_DRIFT', 'composition inputs changed during composition');
+    }
     return runImmediate(db, () => {
       const baseMetadata = {
         tenant_id: String(ctx.tenantId),
