@@ -111,11 +111,6 @@ const PROVIDER_TASK_STATUS_DECISION_UNLOCK = {
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
-const PROVIDER_TASK_ARTIFACT_QUALITY_FEATURE_IDS = new Set([
-  SAFE_PROVIDER_FAILOVER_FEATURE_ID,
-  UNKNOWN_STATE_RECONCILIATION_FEATURE_ID,
-  PROACTIVE_CANARY_FEATURE_ID,
-]);
 const COMPLETE_ACCEPTANCE_ACCEPTANCE = [
   '来源功能清单与验收决策账本通过 SHA 和 feature_id 一致性绑定',
   '未登记功能保持 unverified，阻断功能不能伪装为通过',
@@ -215,12 +210,107 @@ const SAFE_PROVIDER_FAILOVER_UNLOCK = {
     'backend-node/test/videoBilling.test.js',
   ],
 };
-const HISTORICAL_UNLOCK_BY_FEATURE = {
-  [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: PROVIDER_ROUTE_CLOSURE_UNLOCK,
-  [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: SAFE_PROVIDER_FAILOVER_UNLOCK,
-  [UNKNOWN_STATE_RECONCILIATION_FEATURE_ID]: UNKNOWN_STATE_RECONCILIATION_UNLOCK,
-  [ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID]: SHARED_FOUNDATION_UNLOCK,
-  [PROACTIVE_CANARY_FEATURE_ID]: SHARED_FOUNDATION_UNLOCK,
+const PR177_ROOT_ONLY_REASON = '2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批';
+const PR177_ROOT_ONLY_APPROVED_BY = 'product-owner 2026-08-22 pr-177-root-only-isolation-closure';
+const PR177_PROVIDER_ROUTE_UNLOCK = {
+  reason: PR177_ROOT_ONLY_REASON,
+  approvedBy: PR177_ROOT_ONLY_APPROVED_BY,
+  impactTests: [
+    'backend-node/test/providerCanaryInvalidation.test.js',
+    'backend-node/test/providerCanaryPublicGate.test.js',
+    'backend-node/test/providerCanaryAdminRoutes.test.js',
+    'backend-node/test/providerRouteStability.test.js',
+    'backend-node/test/providerRouteCost.test.js',
+    'backend-node/test/generationRouteCostLedger.test.js',
+  ],
+};
+const PR177_VIDEO_REFERENCE_UNLOCK = {
+  reason: '2026-08-22 PR #177 主线同步视频参考证据修复获批',
+  approvedBy: 'product-owner 2026-08-22 pr-177-main-sync-closure',
+  impactTests: [
+    'backend-node/test/providerRouteVideoIntegration.test.js',
+    'backend-node/test/toapisVideoClient.test.js',
+    'backend-node/test/videoBilling.test.js',
+    'frontweb/e2e/home-canvas.spec.js',
+  ],
+};
+const PR177_UNKNOWN_STATE_UNLOCK = {
+  reason: PR177_ROOT_ONLY_REASON,
+  approvedBy: PR177_ROOT_ONLY_APPROVED_BY,
+  impactTests: [
+    'backend-node/test/providerReconciliation.test.js',
+    'backend-node/test/billingReconciliation.test.js',
+    'backend-node/test/taskService.test.js',
+    'backend-node/test/providerRouteImageIntegration.test.js',
+    'backend-node/test/providerRouteVideoIntegration.test.js',
+    'backend-node/test/prop-image-billing.test.js',
+    'backend-node/test/propImageErrorState.test.js',
+    'backend-node/test/creditLedger.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const PR177_SHARED_FOUNDATION_UNLOCK = {
+  reason: PR177_ROOT_ONLY_REASON,
+  approvedBy: PR177_ROOT_ONLY_APPROVED_BY,
+  impactTests: [
+    'backend-node/test/platformSharedAssetAcceptance.test.js',
+    'backend-node/test/platformSharedAuthAcceptance.test.js',
+    'backend-node/test/platformSharedBillingAcceptance.test.js',
+    'backend-node/test/platformSharedCatalogAcceptance.test.js',
+    'backend-node/test/platformSharedFoundationInventory.test.js',
+    'backend-node/test/subscriptionBillingRoutes.test.js',
+    'frontweb/e2e/platform-shared-foundation-backend-integration.spec.js',
+  ],
+};
+const PR177_PLATFORM_ACCEPTANCE_UNLOCK = {
+  reason: PR177_ROOT_ONLY_REASON,
+  approvedBy: PR177_ROOT_ONLY_APPROVED_BY,
+  impactTests: [
+    'backend-node/test/platformFeatureAcceptance.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+  ],
+};
+const EXPECTED_UNLOCK_HISTORY_BY_FEATURE = {
+  [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: [
+    PROVIDER_ROUTE_CLOSURE_UNLOCK,
+    PROVIDER_TASK_RECEIPT_UNLOCK,
+  ],
+  [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: [
+    SAFE_PROVIDER_FAILOVER_UNLOCK,
+    PROVIDER_TASK_RECEIPT_UNLOCK,
+    PROVIDER_TASK_ARTIFACT_QUALITY_UNLOCK,
+    LEGACY_DJPSD_STRICT_ARTIFACT_UNLOCK,
+    ASYNC_VIDEO_PROTOCOL_ARTIFACT_UNLOCK,
+    PROVIDER_TASK_STATUS_DECISION_UNLOCK,
+  ],
+  [UNKNOWN_STATE_RECONCILIATION_FEATURE_ID]: [
+    UNKNOWN_STATE_RECONCILIATION_UNLOCK,
+    PROVIDER_TASK_STATUS_DECISION_UNLOCK,
+    PROVIDER_TASK_RECEIPT_UNLOCK,
+    PROVIDER_TASK_ARTIFACT_QUALITY_UNLOCK,
+    LEGACY_DJPSD_STRICT_ARTIFACT_UNLOCK,
+    ASYNC_VIDEO_PROTOCOL_ARTIFACT_UNLOCK,
+  ],
+  [ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID]: [
+    SHARED_FOUNDATION_UNLOCK,
+    PROVIDER_TASK_RECEIPT_UNLOCK,
+  ],
+  [PROACTIVE_CANARY_FEATURE_ID]: [
+    SHARED_FOUNDATION_UNLOCK,
+    PROVIDER_TASK_RECEIPT_UNLOCK,
+    PROVIDER_TASK_ARTIFACT_QUALITY_UNLOCK,
+    LEGACY_DJPSD_STRICT_ARTIFACT_UNLOCK,
+    ASYNC_VIDEO_PROTOCOL_ARTIFACT_UNLOCK,
+    PROVIDER_TASK_STATUS_DECISION_UNLOCK,
+  ],
+};
+const EXPECTED_CURRENT_UNLOCK_BY_FEATURE = {
+  [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: PR177_PROVIDER_ROUTE_UNLOCK,
+  [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: PR177_VIDEO_REFERENCE_UNLOCK,
+  [UNKNOWN_STATE_RECONCILIATION_FEATURE_ID]: PR177_UNKNOWN_STATE_UNLOCK,
+  [ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID]: PR177_SHARED_FOUNDATION_UNLOCK,
+  [PROACTIVE_CANARY_FEATURE_ID]: PR177_SHARED_FOUNDATION_UNLOCK,
 };
 const HISTORICAL_EVIDENCE_BY_FEATURE = {
   [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: [
@@ -455,7 +545,8 @@ test('平台完整验收框架锁定为 shared locked_pass 且不提前锁定业
   assert.deepEqual(feature.requiredTests, COMPLETE_ACCEPTANCE_REQUIRED_TESTS);
   assert.deepEqual(feature.evidence, COMPLETE_ACCEPTANCE_EVIDENCE);
   assert.equal(feature.fixCommit, null);
-  assert.deepEqual(feature.unlock, COMPLETE_ACCEPTANCE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory, [COMPLETE_ACCEPTANCE_UNLOCK]);
+  assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
   assert.equal(manifest.features.some((featureLock) => /canvas|factory|script-analysis/.test(featureLock.featureId)), false);
 });
 
@@ -478,18 +569,8 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
   for (const [featureId, requirements] of Object.entries(PROVIDER_TASK_LOCK_REQUIREMENTS)) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
     assert.ok(feature, `缺少功能锁 ${featureId}`);
-    const qualityFixTouched = PROVIDER_TASK_ARTIFACT_QUALITY_FEATURE_IDS.has(featureId);
-    assert.deepEqual(
-      feature.unlock,
-      qualityFixTouched ? PROVIDER_TASK_STATUS_DECISION_UNLOCK : PROVIDER_TASK_RECEIPT_UNLOCK,
-    );
-    assert.deepEqual(feature.unlockHistory, [
-      HISTORICAL_UNLOCK_BY_FEATURE[featureId],
-      ...(qualityFixTouched ? [PROVIDER_TASK_RECEIPT_UNLOCK] : []),
-      ...(qualityFixTouched ? [PROVIDER_TASK_ARTIFACT_QUALITY_UNLOCK] : []),
-      ...(qualityFixTouched ? [LEGACY_DJPSD_STRICT_ARTIFACT_UNLOCK] : []),
-      ...(qualityFixTouched ? [ASYNC_VIDEO_PROTOCOL_ARTIFACT_UNLOCK] : []),
-    ]);
+    assert.deepEqual(feature.unlock, EXPECTED_CURRENT_UNLOCK_BY_FEATURE[featureId]);
+    assert.deepEqual(feature.unlockHistory, EXPECTED_UNLOCK_HISTORY_BY_FEATURE[featureId]);
     assert.deepEqual(
       feature.evidence.slice(0, HISTORICAL_EVIDENCE_BY_FEATURE[featureId].length),
       HISTORICAL_EVIDENCE_BY_FEATURE[featureId],
@@ -515,7 +596,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
   assert.deepEqual(appLocks, [PROACTIVE_CANARY_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].sort());
   for (const featureId of appLocks) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
-    assert.deepEqual(feature.unlock, PROVIDER_TASK_STATUS_DECISION_UNLOCK);
+    assert.deepEqual(feature.unlock, EXPECTED_CURRENT_UNLOCK_BY_FEATURE[featureId]);
   }
 });
 
@@ -524,7 +605,7 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
   assert.equal(manifest.features.length >= 5, true);
   for (const feature of manifest.features) {
     if (!Object.hasOwn(PROVIDER_TASK_LOCK_REQUIREMENTS, feature.featureId)) {
-      assert.deepEqual(feature.unlock, COMPLETE_ACCEPTANCE_UNLOCK);
+      assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
     }
     assert.equal(feature.evidence.length > 0, true);
   }

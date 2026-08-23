@@ -53,27 +53,39 @@
             "backend-node/test/providerRouteCost.test.js",
             "backend-node/test/generationRouteCostLedger.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-22 供应商任务不可变凭证与安全对账规格获批",
+          "approvedBy": "product-owner 2026-08-22 provider-task-receipt-reconciliation",
+          "impactTests": [
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerRouteStability.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerTaskAdminRoutes.test.js",
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/generationRouteCostLedger.test.js",
+            "backend-node/test/creditLedger.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/imageAssetModelFailover.test.js",
+            "backend-node/test/providerRouteImageIntegration.test.js",
+            "backend-node/test/providerRouteTextIntegration.test.js",
+            "backend-node/test/storyboardImageFailure.test.js",
+            "backend-node/test/taskService.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-22 供应商任务不可变凭证与安全对账规格获批",
-        "approvedBy": "product-owner 2026-08-22 provider-task-receipt-reconciliation",
+        "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
+        "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
         "impactTests": [
-          "backend-node/test/providerRouteSchema.test.js",
+          "backend-node/test/providerCanaryInvalidation.test.js",
+          "backend-node/test/providerCanaryPublicGate.test.js",
+          "backend-node/test/providerCanaryAdminRoutes.test.js",
           "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/providerTaskReconciliation.test.js",
-          "backend-node/test/providerTaskAdminRoutes.test.js",
-          "backend-node/test/videoQueryTaskStatusOnce.test.js",
-          "backend-node/test/videoBilling.test.js",
-          "backend-node/test/generationRouteCostLedger.test.js",
-          "backend-node/test/creditLedger.test.js",
-          "backend-node/test/providerReconciliation.test.js",
-          "backend-node/test/imageAssetModelFailover.test.js",
-          "backend-node/test/providerRouteImageIntegration.test.js",
-          "backend-node/test/providerRouteTextIntegration.test.js",
-          "backend-node/test/storyboardImageFailure.test.js",
-          "backend-node/test/taskService.test.js"
+          "backend-node/test/providerRouteCost.test.js",
+          "backend-node/test/generationRouteCostLedger.test.js"
         ]
       }
     },
@@ -199,22 +211,32 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 供应商任务按状态判定结构安全收口获批",
+          "approvedBy": "product-owner 2026-08-23 provider-task-status-decision-structure",
+          "impactTests": [
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/feituoVideoModels.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/creditLedger.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 供应商任务按状态判定结构安全收口获批",
-        "approvedBy": "product-owner 2026-08-23 provider-task-status-decision-structure",
+        "reason": "2026-08-22 PR #177 主线同步视频参考证据修复获批",
+        "approvedBy": "product-owner 2026-08-22 pr-177-main-sync-closure",
         "impactTests": [
-          "backend-node/test/videoQueryTaskStatusOnce.test.js",
-          "backend-node/test/providerTaskReconciliation.test.js",
           "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/feituoVideoModels.test.js",
+          "backend-node/test/toapisVideoClient.test.js",
           "backend-node/test/videoBilling.test.js",
-          "backend-node/test/creditLedger.test.js",
-          "backend-node/test/providerReconciliation.test.js",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "frontweb/e2e/home-canvas.spec.js"
         ]
       }
     },
@@ -272,6 +294,22 @@
             "backend-node/test/prop-image-billing.test.js",
             "backend-node/test/propImageErrorState.test.js",
             "backend-node/test/creditLedger.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-23 供应商任务按状态判定结构安全收口获批",
+          "approvedBy": "product-owner 2026-08-23 provider-task-status-decision-structure",
+          "impactTests": [
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/feituoVideoModels.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/creditLedger.test.js",
+            "backend-node/test/providerReconciliation.test.js",
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
@@ -343,17 +381,17 @@
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 供应商任务按状态判定结构安全收口获批",
-        "approvedBy": "product-owner 2026-08-23 provider-task-status-decision-structure",
+        "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
+        "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
         "impactTests": [
-          "backend-node/test/videoQueryTaskStatusOnce.test.js",
-          "backend-node/test/providerTaskReconciliation.test.js",
-          "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/feituoVideoModels.test.js",
-          "backend-node/test/videoBilling.test.js",
-          "backend-node/test/creditLedger.test.js",
           "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/billingReconciliation.test.js",
+          "backend-node/test/taskService.test.js",
+          "backend-node/test/providerRouteImageIntegration.test.js",
+          "backend-node/test/providerRouteVideoIntegration.test.js",
+          "backend-node/test/prop-image-billing.test.js",
+          "backend-node/test/propImageErrorState.test.js",
+          "backend-node/test/creditLedger.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -408,27 +446,40 @@
             "backend-node/test/subscriptionBillingRoutes.test.js",
             "frontweb/e2e/platform-shared-foundation-backend-integration.spec.js"
           ]
+        },
+        {
+          "reason": "2026-08-22 供应商任务不可变凭证与安全对账规格获批",
+          "approvedBy": "product-owner 2026-08-22 provider-task-receipt-reconciliation",
+          "impactTests": [
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerRouteStability.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerTaskAdminRoutes.test.js",
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/generationRouteCostLedger.test.js",
+            "backend-node/test/creditLedger.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/imageAssetModelFailover.test.js",
+            "backend-node/test/providerRouteImageIntegration.test.js",
+            "backend-node/test/providerRouteTextIntegration.test.js",
+            "backend-node/test/storyboardImageFailure.test.js",
+            "backend-node/test/taskService.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-22 供应商任务不可变凭证与安全对账规格获批",
-        "approvedBy": "product-owner 2026-08-22 provider-task-receipt-reconciliation",
+        "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
+        "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
         "impactTests": [
-          "backend-node/test/providerRouteSchema.test.js",
-          "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/providerTaskReconciliation.test.js",
-          "backend-node/test/providerTaskAdminRoutes.test.js",
-          "backend-node/test/videoQueryTaskStatusOnce.test.js",
-          "backend-node/test/videoBilling.test.js",
-          "backend-node/test/generationRouteCostLedger.test.js",
-          "backend-node/test/creditLedger.test.js",
-          "backend-node/test/providerReconciliation.test.js",
-          "backend-node/test/imageAssetModelFailover.test.js",
-          "backend-node/test/providerRouteImageIntegration.test.js",
-          "backend-node/test/providerRouteTextIntegration.test.js",
-          "backend-node/test/storyboardImageFailure.test.js",
-          "backend-node/test/taskService.test.js"
+          "backend-node/test/platformSharedAssetAcceptance.test.js",
+          "backend-node/test/platformSharedAuthAcceptance.test.js",
+          "backend-node/test/platformSharedBillingAcceptance.test.js",
+          "backend-node/test/platformSharedCatalogAcceptance.test.js",
+          "backend-node/test/platformSharedFoundationInventory.test.js",
+          "backend-node/test/subscriptionBillingRoutes.test.js",
+          "frontweb/e2e/platform-shared-foundation-backend-integration.spec.js"
         ]
       }
     },
@@ -622,22 +673,35 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 供应商任务按状态判定结构安全收口获批",
+          "approvedBy": "product-owner 2026-08-23 provider-task-status-decision-structure",
+          "impactTests": [
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/feituoVideoModels.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/creditLedger.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 供应商任务按状态判定结构安全收口获批",
-        "approvedBy": "product-owner 2026-08-23 provider-task-status-decision-structure",
+        "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
+        "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
         "impactTests": [
-          "backend-node/test/videoQueryTaskStatusOnce.test.js",
-          "backend-node/test/providerTaskReconciliation.test.js",
-          "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/feituoVideoModels.test.js",
-          "backend-node/test/videoBilling.test.js",
-          "backend-node/test/creditLedger.test.js",
-          "backend-node/test/providerReconciliation.test.js",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/platformSharedAssetAcceptance.test.js",
+          "backend-node/test/platformSharedAuthAcceptance.test.js",
+          "backend-node/test/platformSharedBillingAcceptance.test.js",
+          "backend-node/test/platformSharedCatalogAcceptance.test.js",
+          "backend-node/test/platformSharedFoundationInventory.test.js",
+          "backend-node/test/subscriptionBillingRoutes.test.js",
+          "frontweb/e2e/platform-shared-foundation-backend-integration.spec.js"
         ]
       }
     },
@@ -668,9 +732,19 @@
         "docs/verification/platform-stability/platform-complete-acceptance-framework-verification.md"
       ],
       "fixCommit": null,
+      "unlockHistory": [
+        {
+          "reason": "2026-08-22 修复 Hosted CI 跨平台验收清单哈希",
+          "approvedBy": "product-owner 开始处理下一步确认",
+          "impactTests": [
+            "backend-node/test/platformFeatureAcceptance.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        }
+      ],
       "unlock": {
-        "reason": "2026-08-22 修复 Hosted CI 跨平台验收清单哈希",
-        "approvedBy": "product-owner 开始处理下一步确认",
+        "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
+        "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
         "impactTests": [
           "backend-node/test/platformFeatureAcceptance.test.js",
           "backend-node/test/featureLockManifest.test.js"
