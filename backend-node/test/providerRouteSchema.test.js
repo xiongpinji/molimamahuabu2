@@ -242,6 +242,44 @@ test('provider stability migration creates the routing schema and remains idempo
   }
 });
 
+test('provider route cost migration upgrades the legacy unit constraint and preserves rows', () => {
+  const db = new Database(':memory:');
+  try {
+    db.exec(`CREATE TABLE provider_route_costs (
+      config_id INTEGER PRIMARY KEY,
+      currency TEXT NOT NULL DEFAULT 'CNY' CHECK (currency = 'CNY'),
+      cost_unit TEXT NOT NULL CHECK (cost_unit IN ('request', 'image', 'second', 'token')),
+      micros_per_unit INTEGER NOT NULL DEFAULT 0 CHECK (micros_per_unit >= 0),
+      input_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0 CHECK (input_cost_micros_per_1k >= 0),
+      output_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0 CHECK (output_cost_micros_per_1k >= 0),
+      updated_at TEXT NOT NULL
+    );
+    INSERT INTO provider_route_costs
+      (config_id, currency, cost_unit, micros_per_unit, input_cost_micros_per_1k,
+       output_cost_micros_per_1k, updated_at)
+    VALUES (8, 'CNY', 'request', 3000, 0, 0, '2026-08-23T00:00:00.000Z');`);
+
+    runMigrationsAndEnsure(db);
+
+    const ddl = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'provider_route_costs'")
+      .get().sql;
+    assert.match(ddl, /'character'/);
+    assert.deepEqual(
+      db.prepare(`SELECT config_id, currency, cost_unit, micros_per_unit, updated_at
+        FROM provider_route_costs WHERE config_id = 8`).get(),
+      {
+        config_id: 8,
+        currency: 'CNY',
+        cost_unit: 'request',
+        micros_per_unit: 3000,
+        updated_at: '2026-08-23T00:00:00.000Z',
+      },
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test('provider receipt migration creates reconciliation scan schema and remains idempotent', () => {
   const db = new Database(':memory:');
   try {

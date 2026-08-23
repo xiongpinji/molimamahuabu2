@@ -76,16 +76,26 @@
             "backend-node/test/storyboardImageFailure.test.js",
             "backend-node/test/taskService.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 供应商任务实时候选三处兼容修复获批",
+          "approvedBy": "product-owner 2026-08-23 provider-task-live-candidate-compatibility",
+          "impactTests": [
+            "backend-node/test/providerTaskLiveCompatibility.test.js",
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 供应商任务实时候选三处兼容修复获批",
-        "approvedBy": "product-owner 2026-08-23 provider-task-live-candidate-compatibility",
+        "reason": "2026-08-23 TTS 线路按字符成本与旧库约束升级获批",
+        "approvedBy": "product-owner 2026-08-23 provider-tts-character-cost",
         "impactTests": [
-          "backend-node/test/providerTaskLiveCompatibility.test.js",
+          "backend-node/test/providerRouteCost.test.js",
           "backend-node/test/providerRouteSchema.test.js",
-          "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/providerTaskReconciliation.test.js",
           "backend-node/test/incrementalReleaseScope.test.js",
           "backend-node/test/featureLockManifest.test.js"
         ]
@@ -425,7 +435,8 @@
         "backend-node/test/providerTaskAdminRoutes.test.js",
         "backend-node/test/providerTaskReconciliation.test.js",
         "frontweb/test/providerStabilityAdmin.test.js",
-        "frontweb/test/aiConfigRelayAssociation.test.js"
+        "frontweb/test/aiConfigRelayAssociation.test.js",
+        "frontweb/test/providerRouteCostAdmin.test.js"
       ],
       "evidence": [
         "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
@@ -434,7 +445,9 @@
         "docs/superpowers/plans/2026-08-20-provider-route-cost-and-multi-model-split.md",
         "docs/superpowers/specs/2026-08-22-provider-task-receipt-reconciliation-design.md",
         "docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md",
-        "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md"
+        "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md",
+        "docs/superpowers/plans/2026-08-23-provider-readiness-tts-canary.md",
+        "docs/verification/platform-stability/provider-readiness-repair-manifest-20260823.md"
       ],
       "fixCommit": "f960703ce43e67900b6a294e61d36cf40f2a1d1e",
       "unlockHistory": [
@@ -450,27 +463,38 @@
             "backend-node/test/subscriptionBillingRoutes.test.js",
             "frontweb/e2e/platform-shared-foundation-backend-integration.spec.js"
           ]
+        },
+        {
+          "reason": "2026-08-22 供应商任务不可变凭证与安全对账规格获批",
+          "approvedBy": "product-owner 2026-08-22 provider-task-receipt-reconciliation",
+          "impactTests": [
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerRouteStability.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerTaskAdminRoutes.test.js",
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/generationRouteCostLedger.test.js",
+            "backend-node/test/creditLedger.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/imageAssetModelFailover.test.js",
+            "backend-node/test/providerRouteImageIntegration.test.js",
+            "backend-node/test/providerRouteTextIntegration.test.js",
+            "backend-node/test/storyboardImageFailure.test.js",
+            "backend-node/test/taskService.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-22 供应商任务不可变凭证与安全对账规格获批",
-        "approvedBy": "product-owner 2026-08-22 provider-task-receipt-reconciliation",
+        "reason": "2026-08-23 管理员 TTS 按字符线路成本配置获批",
+        "approvedBy": "product-owner 2026-08-23 provider-tts-character-cost",
         "impactTests": [
+          "frontweb/test/providerRouteCostAdmin.test.js",
+          "backend-node/test/providerRouteCost.test.js",
           "backend-node/test/providerRouteSchema.test.js",
-          "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/providerTaskReconciliation.test.js",
-          "backend-node/test/providerTaskAdminRoutes.test.js",
-          "backend-node/test/videoQueryTaskStatusOnce.test.js",
-          "backend-node/test/videoBilling.test.js",
-          "backend-node/test/generationRouteCostLedger.test.js",
-          "backend-node/test/creditLedger.test.js",
-          "backend-node/test/providerReconciliation.test.js",
-          "backend-node/test/imageAssetModelFailover.test.js",
-          "backend-node/test/providerRouteImageIntegration.test.js",
-          "backend-node/test/providerRouteTextIntegration.test.js",
-          "backend-node/test/storyboardImageFailure.test.js",
-          "backend-node/test/taskService.test.js"
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },
@@ -698,17 +722,29 @@
             "backend-node/test/incrementalReleaseScope.test.js",
             "backend-node/test/featureLockManifest.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 TTS 主动巡检闭环与功能锁修复获批",
+          "approvedBy": "product-owner 2026-08-23 provider-readiness-tts-canary-ci-lock",
+          "impactTests": [
+            "backend-node/test/providerCanaryAudioArtifact.test.js",
+            "backend-node/test/providerCanaryExecutor.test.js",
+            "backend-node/test/providerCanaryInventory.test.js",
+            "backend-node/test/providerCanaryScheduler.test.js",
+            "backend-node/test/providerRuntimeFingerprint.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 TTS 主动巡检闭环与功能锁修复获批",
-        "approvedBy": "product-owner 2026-08-23 provider-readiness-tts-canary-ci-lock",
+        "reason": "2026-08-23 TTS 主动巡检按字符成本获批",
+        "approvedBy": "product-owner 2026-08-23 provider-tts-character-cost",
         "impactTests": [
-          "backend-node/test/providerCanaryAudioArtifact.test.js",
           "backend-node/test/providerCanaryExecutor.test.js",
-          "backend-node/test/providerCanaryInventory.test.js",
-          "backend-node/test/providerCanaryScheduler.test.js",
-          "backend-node/test/providerRuntimeFingerprint.test.js",
+          "backend-node/test/providerRouteCost.test.js",
+          "backend-node/test/providerRouteSchema.test.js",
+          "frontweb/test/providerRouteCostAdmin.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]

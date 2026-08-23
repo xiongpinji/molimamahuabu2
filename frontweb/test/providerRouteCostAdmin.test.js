@@ -23,3 +23,12 @@ test('管理面板分区展示供应商线路成本并支持分辨率档位', ()
   assert.match(panel, /microsToYuan/)
   assert.match(panel, /providerStabilityAPI\.updateRouteCost/)
 })
+
+test('TTS 线路成本按字符配置且不提交无关分辨率档位', () => {
+  const panel = read('src/components/ProviderStabilityPanel.vue')
+  assert.match(panel, /label="每字符"\s+value="character"/)
+  assert.match(panel, /tts:\s*'character'/)
+  assert.match(panel, /character:\s*'字符'/)
+  assert.match(panel, /!\['token',\s*'character'\]\.includes\(costForm\.cost_unit\)/)
+  assert.match(panel, /resolutionTiered[\s\S]*resolution_prices:\s*resolutionTiered\s*\?\s*tiers\s*:\s*\{\}/)
+})

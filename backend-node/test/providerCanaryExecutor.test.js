@@ -361,6 +361,27 @@ test('estimateCanaryCost uses exact config route cost for configs sharing one lo
   }
 });
 
+test('estimateCanaryCost quotes TTS by the exact fixed canary text character count', () => {
+  const executor = loadExecutor();
+  const db = createDb();
+  try {
+    const tts = addConfig(db, 'tts', 'character-cost');
+    const capability = capabilityFor('tts');
+    const request = executor.buildCanaryRequest(db, tts, capability, fixturesFor(capability));
+    routeCost.setRouteCost(db, tts.id, {
+      cost_unit: 'character',
+      micros_per_unit: 200,
+    }, { now: NOW });
+
+    assert.equal(
+      executor.estimateCanaryCost(db, tts, capability),
+      Array.from(request.text).length * 200,
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test('video task is submitted once, accepted, polled only, verified, and writes fresh evidence', async (t) => {
   const executor = loadExecutor();
   const db = createDb();

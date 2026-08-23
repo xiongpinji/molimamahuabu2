@@ -59,6 +59,39 @@ const PROVIDER_READINESS_TTS_UNLOCK = {
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
+const PROVIDER_TTS_CHARACTER_COST_UNLOCK = {
+  reason: '2026-08-23 TTS 主动巡检按字符成本获批',
+  approvedBy: 'product-owner 2026-08-23 provider-tts-character-cost',
+  impactTests: [
+    'backend-node/test/providerCanaryExecutor.test.js',
+    'backend-node/test/providerRouteCost.test.js',
+    'backend-node/test/providerRouteSchema.test.js',
+    'frontweb/test/providerRouteCostAdmin.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const PROVIDER_ROUTE_TTS_CHARACTER_COST_UNLOCK = {
+  reason: '2026-08-23 TTS 线路按字符成本与旧库约束升级获批',
+  approvedBy: 'product-owner 2026-08-23 provider-tts-character-cost',
+  impactTests: [
+    'backend-node/test/providerRouteCost.test.js',
+    'backend-node/test/providerRouteSchema.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+  ],
+};
+const ADMIN_PROVIDER_TTS_CHARACTER_COST_UNLOCK = {
+  reason: '2026-08-23 管理员 TTS 按字符线路成本配置获批',
+  approvedBy: 'product-owner 2026-08-23 provider-tts-character-cost',
+  impactTests: [
+    'frontweb/test/providerRouteCostAdmin.test.js',
+    'backend-node/test/providerRouteCost.test.js',
+    'backend-node/test/providerRouteSchema.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
 const PROVIDER_TASK_RECEIPT_EVIDENCE = [
   'docs/superpowers/specs/2026-08-22-provider-task-receipt-reconciliation-design.md',
   'docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md',
@@ -438,6 +471,7 @@ const PROVIDER_TASK_LOCK_REQUIREMENTS = {
     requiredTests: [
       'backend-node/test/providerTaskAdminRoutes.test.js',
       'backend-node/test/providerTaskReconciliation.test.js',
+      'frontweb/test/providerRouteCostAdmin.test.js',
     ],
   },
   [PROACTIVE_CANARY_FEATURE_ID]: {
@@ -515,12 +549,12 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   assert.deepEqual(feature.evidence.slice(0, PROACTIVE_CANARY_EVIDENCE.length), PROACTIVE_CANARY_EVIDENCE);
 });
 
-test('TTS 主动巡检刷新功能锁批准并保留上一阶段历史与证据', () => {
+test('TTS 按字符成本刷新功能锁批准并保留上一阶段历史与证据', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
-  assert.deepEqual(feature.unlock, PROVIDER_READINESS_TTS_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-1), PROVIDER_TASK_LIVE_COMPAT_UNLOCK);
+  assert.deepEqual(feature.unlock, PROVIDER_TTS_CHARACTER_COST_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), PROVIDER_READINESS_TTS_UNLOCK);
   assert.deepEqual(feature.evidence.slice(-PROVIDER_READINESS_TTS_EVIDENCE.length), PROVIDER_READINESS_TTS_EVIDENCE);
   for (const testPath of PROVIDER_READINESS_TTS_REQUIRED_TESTS) {
     assert.ok(feature.requiredTests.includes(testPath), `TTS 功能锁缺少影响测试: ${testPath}`);
@@ -538,8 +572,12 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       ? PROVIDER_TASK_STATUS_DECISION_UNLOCK
       : PROVIDER_TASK_RECEIPT_UNLOCK;
     assert.deepEqual(feature.unlock, featureId === PROACTIVE_CANARY_FEATURE_ID
-      ? PROVIDER_READINESS_TTS_UNLOCK
-      : (liveCompatTouched ? PROVIDER_TASK_LIVE_COMPAT_UNLOCK : previousUnlock));
+      ? PROVIDER_TTS_CHARACTER_COST_UNLOCK
+      : (featureId === PROVIDER_ROUTE_CONTRACT_FEATURE_ID
+        ? PROVIDER_ROUTE_TTS_CHARACTER_COST_UNLOCK
+        : (featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
+          ? ADMIN_PROVIDER_TTS_CHARACTER_COST_UNLOCK
+          : (liveCompatTouched ? PROVIDER_TASK_LIVE_COMPAT_UNLOCK : previousUnlock))));
     assert.deepEqual(feature.unlockHistory, [
       HISTORICAL_UNLOCK_BY_FEATURE[featureId],
       ...(qualityFixTouched ? [PROVIDER_TASK_RECEIPT_UNLOCK] : []),
@@ -547,7 +585,11 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       ...(qualityFixTouched ? [LEGACY_DJPSD_STRICT_ARTIFACT_UNLOCK] : []),
       ...(qualityFixTouched ? [ASYNC_VIDEO_PROTOCOL_ARTIFACT_UNLOCK] : []),
       ...(liveCompatTouched ? [previousUnlock] : []),
-      ...(featureId === PROACTIVE_CANARY_FEATURE_ID ? [PROVIDER_TASK_LIVE_COMPAT_UNLOCK] : []),
+      ...([PROVIDER_ROUTE_CONTRACT_FEATURE_ID, PROACTIVE_CANARY_FEATURE_ID].includes(featureId)
+        ? [PROVIDER_TASK_LIVE_COMPAT_UNLOCK]
+        : []),
+      ...(featureId === PROACTIVE_CANARY_FEATURE_ID ? [PROVIDER_READINESS_TTS_UNLOCK] : []),
+      ...(featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID ? [PROVIDER_TASK_RECEIPT_UNLOCK] : []),
     ]);
     assert.deepEqual(
       feature.evidence.slice(0, HISTORICAL_EVIDENCE_BY_FEATURE[featureId].length),
@@ -562,7 +604,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     for (const evidencePath of PROVIDER_TASK_RECEIPT_EVIDENCE) {
       assert.ok(feature.evidence.includes(evidencePath), `${featureId} 缺少证据: ${evidencePath}`);
     }
-    if (featureId === PROACTIVE_CANARY_FEATURE_ID) {
+    if ([PROACTIVE_CANARY_FEATURE_ID, ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID].includes(featureId)) {
       assert.deepEqual(
         feature.evidence.slice(-PROVIDER_READINESS_TTS_EVIDENCE.length),
         PROVIDER_READINESS_TTS_EVIDENCE,
@@ -586,7 +628,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     assert.deepEqual(
       feature.unlock,
       featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? PROVIDER_READINESS_TTS_UNLOCK
+        ? PROVIDER_TTS_CHARACTER_COST_UNLOCK
         : PROVIDER_TASK_LIVE_COMPAT_UNLOCK,
     );
   }
@@ -625,8 +667,10 @@ test('实时候选兼容修复刷新四个运行时功能锁并登记补丁测�
     assert.deepEqual(
       feature.unlock,
       featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? PROVIDER_READINESS_TTS_UNLOCK
-        : PROVIDER_TASK_LIVE_COMPAT_UNLOCK,
+        ? PROVIDER_TTS_CHARACTER_COST_UNLOCK
+        : (featureId === PROVIDER_ROUTE_CONTRACT_FEATURE_ID
+          ? PROVIDER_ROUTE_TTS_CHARACTER_COST_UNLOCK
+          : PROVIDER_TASK_LIVE_COMPAT_UNLOCK),
     );
     assert.ok(feature.unlockHistory.some((entry) => (
       entry.reason === PROVIDER_TASK_STATUS_DECISION_UNLOCK.reason
