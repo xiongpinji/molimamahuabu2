@@ -1163,9 +1163,48 @@ function ensureRedrawCompatibility(database) {
   ensureRedrawCandidateReleaseContract(database);
 }
 
-function ensureRedrawCandidateReleaseContract(database) {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS redraw_candidate_reviews (
+const REDRAW_CANDIDATE_REVIEW_COLUMNS = [
+  ['id', 'INTEGER', 0, null, 1],
+  ['tenant_id', 'TEXT', 1, null, 0],
+  ['user_id', 'TEXT', 1, null, 0],
+  ['version_id', 'INTEGER', 1, null, 0],
+  ['shot_id', 'INTEGER', 1, null, 0],
+  ['video_generation_id', 'INTEGER', 1, null, 0],
+  ['candidate_sha256', 'TEXT', 1, null, 0],
+  ['dependency_hash', 'TEXT', 1, null, 0],
+  ['review_version', 'INTEGER', 1, null, 0],
+  ['decision', 'TEXT', 1, null, 0],
+  ['decision_source', 'TEXT', 1, null, 0],
+  ['reason_codes_json', 'TEXT', 1, "'[]'", 0],
+  ['metrics_json', 'TEXT', 1, "'{}'", 0],
+  ['reviewer_id', 'TEXT', 0, null, 0],
+  ['created_at', 'TEXT', 1, null, 0],
+];
+const REDRAW_CANDIDATE_REVIEW_REQUIRED_SOURCE_COLUMNS = [
+  'id',
+  'tenant_id',
+  'user_id',
+  'version_id',
+  'shot_id',
+  'video_generation_id',
+  'candidate_sha256',
+  'dependency_hash',
+  'review_version',
+  'decision',
+  'decision_source',
+  'created_at',
+];
+const REDRAW_CANDIDATE_REVIEW_INDEX_COLUMNS = [
+  'tenant_id',
+  'user_id',
+  'shot_id',
+  'video_generation_id',
+  'review_version',
+];
+
+function candidateReviewTableSql(tableName, ifNotExists = false) {
+  return `
+    CREATE TABLE ${ifNotExists ? 'IF NOT EXISTS ' : ''}${quoteIdent(tableName)} (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       tenant_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
@@ -1183,8 +1222,12 @@ function ensureRedrawCandidateReleaseContract(database) {
       created_at TEXT NOT NULL,
       FOREIGN KEY(version_id) REFERENCES redraw_versions(id),
       FOREIGN KEY(shot_id) REFERENCES redraw_shots(id)
-    );
+    )
+  `;
+}
 
+function createCandidateReviewIndexAndTriggers(database) {
+  database.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS uq_redraw_candidate_review_version
       ON redraw_candidate_reviews(tenant_id, user_id, shot_id, video_generation_id, review_version);
 
@@ -1200,6 +1243,126 @@ function ensureRedrawCandidateReleaseContract(database) {
       SELECT RAISE(ABORT, 'redraw candidate reviews are immutable');
     END;
   `);
+}
+
+function hasExactCandidateReviewContract(database) {
+  const table = database.prepare(`
+    SELECT sql
+    FROM sqlite_master
+    WHERE type = 'table' AND name = 'redraw_candidate_reviews'
+  `).get();
+  if (!table?.sql) return false;
+
+  const columns = database.prepare('PRAGMA table_info(redraw_candidate_reviews)').all();
+  if (columns.length !== REDRAW_CANDIDATE_REVIEW_COLUMNS.length) return false;
+  for (let index = 0; index < REDRAW_CANDIDATE_REVIEW_COLUMNS.length; index += 1) {
+    const [name, type, notnull, defaultValue, primaryKey] = REDRAW_CANDIDATE_REVIEW_COLUMNS[index];
+    const column = columns[index];
+    if (
+      column.name !== name
+      || column.type.toUpperCase() !== type
+      || column.notnull !== notnull
+      || column.dflt_value !== defaultValue
+      || column.pk !== primaryKey
+    ) return false;
+  }
+
+  const sql = table.sql;
+  if (!/review_version\s+INTEGER\s+NOT\s+NULL\s+CHECK\s*\(\s*review_version\s*>\s*0\s*\)/i.test(sql)) return false;
+  if (!/decision\s+TEXT\s+NOT\s+NULL\s+CHECK\s*\(\s*decision\s+IN\s*\(\s*'approved'\s*,\s*'rejected'\s*,\s*'needs_review'\s*\)\s*\)/i.test(sql)) return false;
+  if (!/decision_source\s+TEXT\s+NOT\s+NULL\s+CHECK\s*\(\s*decision_source\s+IN\s*\(\s*'automatic'\s*,\s*'human'\s*\)\s*\)/i.test(sql)) return false;
+
+  const foreignKeys = database.prepare('PRAGMA foreign_key_list(redraw_candidate_reviews)').all()
+    .map((row) => [row.from, row.table, row.to, row.on_update, row.on_delete, row.match])
+    .sort((left, right) => left[0].localeCompare(right[0]));
+  if (JSON.stringify(foreignKeys) !== JSON.stringify([
+    ['shot_id', 'redraw_shots', 'id', 'NO ACTION', 'NO ACTION', 'NONE'],
+    ['version_id', 'redraw_versions', 'id', 'NO ACTION', 'NO ACTION', 'NONE'],
+  ])) return false;
+
+  const index = database.prepare('PRAGMA index_list(redraw_candidate_reviews)').all()
+    .find((row) => row.name === 'uq_redraw_candidate_review_version');
+  if (!index || index.unique !== 1 || index.partial !== 0) return false;
+  const indexColumns = database.prepare('PRAGMA index_info(uq_redraw_candidate_review_version)').all()
+    .map((row) => row.name);
+  if (JSON.stringify(indexColumns) !== JSON.stringify(REDRAW_CANDIDATE_REVIEW_INDEX_COLUMNS)) return false;
+
+  const triggers = new Map(database.prepare(`
+    SELECT name, sql
+    FROM sqlite_master
+    WHERE type = 'trigger' AND tbl_name = 'redraw_candidate_reviews'
+  `).all().map((trigger) => [trigger.name, trigger.sql || '']));
+  const updateTrigger = triggers.get('redraw_candidate_reviews_immutable_update') || '';
+  const deleteTrigger = triggers.get('redraw_candidate_reviews_immutable_delete') || '';
+  return /BEFORE\s+UPDATE\s+ON\s+redraw_candidate_reviews[\s\S]*RAISE\s*\(\s*ABORT\s*,\s*'redraw candidate reviews are immutable'\s*\)/i.test(updateTrigger)
+    && /BEFORE\s+DELETE\s+ON\s+redraw_candidate_reviews[\s\S]*RAISE\s*\(\s*ABORT\s*,\s*'redraw candidate reviews are immutable'\s*\)/i.test(deleteTrigger);
+}
+
+function rebuildCandidateReviewContract(database) {
+  const tableName = 'redraw_candidate_reviews';
+  const tempTable = '__redraw_candidate_reviews_contract_rebuild';
+  if (database.inTransaction) {
+    throw new Error('redraw_candidate_reviews contract rebuild requires no active transaction');
+  }
+  if (tableExists(database, tempTable)) {
+    throw new Error('redraw_candidate_reviews contract rebuild temp table already exists');
+  }
+
+  const sourceColumns = new Set(
+    database.prepare('PRAGMA table_info(redraw_candidate_reviews)').all().map((column) => column.name),
+  );
+  const rowCount = database.prepare('SELECT COUNT(*) AS count FROM redraw_candidate_reviews').get().count;
+  const missingRequired = REDRAW_CANDIDATE_REVIEW_REQUIRED_SOURCE_COLUMNS
+    .filter((column) => !sourceColumns.has(column));
+  if (rowCount > 0 && missingRequired.length > 0) {
+    throw new Error(
+      `cannot safely rebuild redraw_candidate_reviews: missing required columns ${missingRequired.join(', ')}`,
+    );
+  }
+
+  const targetColumns = REDRAW_CANDIDATE_REVIEW_COLUMNS.map(([name]) => name);
+  const selectExpressions = targetColumns.map((column) => {
+    if (sourceColumns.has(column)) return quoteIdent(column);
+    if (column === 'reason_codes_json') return "'[]'";
+    if (column === 'metrics_json') return "'{}'";
+    if (column === 'reviewer_id') return 'NULL';
+    return 'NULL';
+  });
+  const foreignKeysEnabled = database.pragma('foreign_keys', { simple: true }) ? 1 : 0;
+
+  try {
+    database.pragma('foreign_keys = OFF');
+    database.exec('BEGIN');
+    database.exec(candidateReviewTableSql(tempTable));
+    if (rowCount > 0) {
+      database.exec(`
+        INSERT INTO ${quoteIdent(tempTable)} (${targetColumns.map(quoteIdent).join(', ')})
+        SELECT ${selectExpressions.join(', ')} FROM ${quoteIdent(tableName)}
+      `);
+    }
+    database.exec(`DROP TABLE ${quoteIdent(tableName)}`);
+    database.exec(`ALTER TABLE ${quoteIdent(tempTable)} RENAME TO ${quoteIdent(tableName)}`);
+    createCandidateReviewIndexAndTriggers(database);
+    database.exec('COMMIT');
+  } catch (error) {
+    try {
+      database.exec('ROLLBACK');
+    } catch (_) {}
+    const wrapped = new Error(`cannot safely rebuild redraw_candidate_reviews: ${error.message}`);
+    wrapped.cause = error;
+    throw wrapped;
+  } finally {
+    database.pragma(`foreign_keys = ${foreignKeysEnabled ? 'ON' : 'OFF'}`);
+  }
+}
+
+function ensureRedrawCandidateReleaseContract(database) {
+  if (!tableExists(database, 'redraw_candidate_reviews')) {
+    database.exec(candidateReviewTableSql('redraw_candidate_reviews', true));
+    createCandidateReviewIndexAndTriggers(database);
+  } else if (!hasExactCandidateReviewContract(database)) {
+    rebuildCandidateReviewContract(database);
+  }
 
   if (tableExists(database, 'redraw_shots')) {
     ensureColumns(database, 'redraw_shots', [
