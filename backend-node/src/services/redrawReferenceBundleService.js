@@ -829,7 +829,8 @@ function canonicalLocalizedDialogue(value, durationMs, nameMap, boundCharacters)
   return parseDialogueArray(value).map((entry) => {
     assertPlainObject(entry, DIALOGUE_CODE);
     const speaker = String(entry.speaker_id || '').trim();
-    const text = String(entry.localized_text || '').trim();
+    if (typeof entry.localized_text !== 'string') fail(DIALOGUE_CODE);
+    const text = entry.localized_text.trim();
     const start = Number(entry.start_ms);
     const end = Number(entry.end_ms);
     if (!boundCharacters.has(speaker) || !nameMap[speaker] || !text || containsChinese(text) || isSilenceToken(text)

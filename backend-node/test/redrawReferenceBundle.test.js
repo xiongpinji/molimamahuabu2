@@ -969,6 +969,21 @@ test('源与本地化对白空值不一致、非法 JSON 或非数组时拒绝�
       speaker_id: 'character-001', source_text: 'source audit', localized_text: '等一下。',
       start_ms: 0, end_ms: 2400, emotion: null, estimated_duration_ms: 600,
     }] } },
+    { name: 'localized text object', overrides: { dialogue: [{
+      speaker_id: 'character-001', localized_text: { text: '等一下。' }, start_ms: 0, end_ms: 2400,
+    }] } },
+    { name: 'localized text array', overrides: { dialogue: [{
+      speaker_id: 'character-001', localized_text: ['Wait.'], start_ms: 0, end_ms: 2400,
+    }] } },
+    { name: 'localized text number', overrides: { dialogue: [{
+      speaker_id: 'character-001', localized_text: 123, start_ms: 0, end_ms: 2400,
+    }] } },
+    { name: 'target text alias', overrides: { dialogue: [{
+      speaker_id: 'character-001', target_text: 'Wait.', start_ms: 0, end_ms: 2400,
+    }] } },
+    { name: 'text alias', overrides: { dialogue: [{
+      speaker_id: 'character-001', text: 'Wait.', start_ms: 0, end_ms: 2400,
+    }] } },
     { name: 'localized time out of duration', overrides: { dialogue: [{ speaker_id: 'character-001', localized_text: 'Wait.', start_ms: 0, end_ms: 5001 }] } },
   ];
   for (const entry of cases) {
