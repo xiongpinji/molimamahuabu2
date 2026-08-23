@@ -330,6 +330,29 @@ test('口型证据缺失固定 needs_review，明确不通过则拒绝', async (
     assert.equal(result.decision, 'rejected');
     assert.deepEqual(result.reason_codes, ['lip_sync_failed']);
   });
+
+  for (const [name, lipSync, decision, reason] of [
+    ['静默镜头口型证据缺失', { evidence_available: false, passed: false }, 'needs_review', 'lip_sync_evidence_missing'],
+    ['静默镜头口型明确不通过', { evidence_available: true, passed: false }, 'rejected', 'lip_sync_failed'],
+  ]) {
+    await t.test(name, async () => {
+      const deps = qualityDeps();
+      const baselineAudio = await deps.verifyNativeAudio();
+      const result = await verifyWith({
+        async verifyNativeAudio() {
+          return {
+            ...baselineAudio,
+            dialogue_mode: 'silent',
+            language: null,
+            exact_target_text: null,
+          };
+        },
+        async verifyLipSync() { return lipSync; },
+      });
+      assert.equal(result.decision, decision);
+      assert.deepEqual(result.reason_codes, [reason]);
+    });
+  }
 });
 
 test('质量结果只投影白名单指标，不泄露验证器原始正文或路径', async () => {

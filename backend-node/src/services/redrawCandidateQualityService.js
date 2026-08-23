@@ -159,12 +159,12 @@ function qualityReasonCodes(metrics) {
     if (!metrics.dialogue.speaker_voice_matches) reasons.push('speaker_voice_mismatch');
     if (!metrics.subtitles.present) reasons.push('subtitle_missing');
     if (!metrics.subtitles.within_shot) reasons.push('subtitle_out_of_bounds');
-    if (!metrics.lip_sync.evidence_available) reasons.push('lip_sync_evidence_missing');
-    else if (!metrics.lip_sync.passed) reasons.push('lip_sync_failed');
   } else {
     if (metrics.dialogue.exact_target_text !== null) reasons.push('silent_shot_dialogue_detected');
     if (metrics.subtitles.present && !metrics.subtitles.within_shot) reasons.push('subtitle_out_of_bounds');
   }
+  if (!metrics.lip_sync.evidence_available) reasons.push('lip_sync_evidence_missing');
+  else if (!metrics.lip_sync.passed) reasons.push('lip_sync_failed');
   return reasons;
 }
 
