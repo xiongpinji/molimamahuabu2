@@ -80,7 +80,7 @@ test('浏览器只导航允许页面并读取公开模型目录', async () => {
   )
 })
 
-test('请求门禁仅允许登录 POST，拦截生成、充值、积分和资产写入', async () => {
+test('请求门禁允许同源只读 API，但仅允许登录 POST 并拦截所有其他写入', async () => {
   const { assertRequestAllowed } = await import(sourcePaths.runner.href)
 
   const origin = 'https://app.example'
@@ -97,10 +97,8 @@ test('请求门禁仅允许登录 POST，拦截生成、充值、积分和资产
     '/api/v1/dramas',
     '/api/v1/script-analysis/projects',
   ]) {
-    assert.throws(
-      () => assertRequestAllowed('GET', `${origin}${path}`, origin),
-      /ZERO_COST_SMOKE_FORBIDDEN_API_READ/,
-    )
+    assert.doesNotThrow(() => assertRequestAllowed('GET', `${origin}${path}`, origin))
+    assert.doesNotThrow(() => assertRequestAllowed('HEAD', `${origin}${path}`, origin))
   }
 
   for (const path of [
@@ -138,6 +136,27 @@ test('请求门禁仅允许登录 POST，拦截生成、充值、积分和资产
   }
 })
 
+test('模型目录验收复用页面认证请求，不额外发起裸 fetch', async () => {
+  const { runner } = await readSources()
+
+  assert.doesNotMatch(
+    runner,
+    /const catalog\s*=\s*await page\.evaluate\([\s\S]*?fetch\(pathname/,
+  )
+  assert.match(runner, /responseURL\.pathname\s*===\s*PUBLIC_MODEL_CATALOG_PATH/)
+})
+
+test('只把真实的非登录写请求计入写入统计', async () => {
+  const { isNonLoginWriteRequest } = await import(sourcePaths.runner.href)
+
+  assert.equal(isNonLoginWriteRequest('GET', '/api/v1/assets'), false)
+  assert.equal(isNonLoginWriteRequest('HEAD', '/api/v1/dramas'), false)
+  assert.equal(isNonLoginWriteRequest('OPTIONS', '/api/v1/images'), false)
+  assert.equal(isNonLoginWriteRequest('POST', '/api/v1/auth/login'), false)
+  assert.equal(isNonLoginWriteRequest('POST', '/api/v1/images'), true)
+  assert.equal(isNonLoginWriteRequest('PUT', '/api/v1/dramas/1/canvas-layout'), true)
+})
+
 test('安全产物不使用原生 Playwright trace 或记录请求秘密', async () => {
   const sources = await readSources()
   const combined = `${sources.runner}\n${sources.spec}\n${sources.workflow}`
@@ -158,6 +177,13 @@ test('本地 fixture 只允许回环地址并由脚本启停', async () => {
   assert.match(runner, /server\.listen/)
   assert.match(runner, /server\.close/)
   assert.match(runner, /local-test-only/)
+})
+
+test('生产巡检未启动本地 fixture 时不误报 fixture 写入', async () => {
+  const { runner } = await readSources()
+
+  assert.match(runner, /if \(fixture && fixture\.received\.nonLoginWrites !== 0\)/)
+  assert.doesNotMatch(runner, /fixture\?\.received\.nonLoginWrites !== 0/)
 })
 
 test('两个浏览器上下文都禁用 Service Worker 绕过请求门禁', async () => {

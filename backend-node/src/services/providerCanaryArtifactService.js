@@ -7,9 +7,11 @@ const http = require('node:http');
 const https = require('node:https');
 const net = require('node:net');
 const path = require('node:path');
+const { isProbableMp3 } = require('./ttsService');
 
 const DEFAULT_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
 const DEFAULT_VIDEO_MAX_BYTES = 512 * 1024 * 1024;
+const DEFAULT_AUDIO_MAX_BYTES = 32 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 60 * 1000;
 const MAX_REDIRECTS = 3;
 const NON_PUBLIC_IPV4 = new net.BlockList();
@@ -258,6 +260,7 @@ function videoFormat(buffer) {
 function mediaTypeForExtension(extension) {
   return {
     png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp', mp4: 'video/mp4', webm: 'video/webm',
+    mp3: 'audio/mpeg',
   }[extension] || 'application/octet-stream';
 }
 
@@ -353,6 +356,38 @@ async function materializeVideo(url, options = {}) {
   return materialize(url.trim(), options, 'video');
 }
 
+function verifyAudio(relativePathValue, options = {}) {
+  const root = storageRoot(options.storageRoot);
+  const runId = safeRunId(options.runId);
+  const relativePath = String(relativePathValue || '').trim().replace(/\\/g, '/');
+  const expectedPrefix = `_system/provider-canary/runs/${runId}/`;
+  if (!relativePath.startsWith(expectedPrefix)
+      || relativePath.slice(expectedPrefix.length).includes('/')
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]*\.mp3$/i.test(relativePath.slice(expectedPrefix.length))) {
+    throw new Error('audio artifact path must stay in the exact provider-canary run');
+  }
+  const absolutePath = path.resolve(root, ...relativePath.split('/'));
+  const lexical = path.relative(root, absolutePath);
+  if (lexical === '..' || lexical.startsWith(`..${path.sep}`) || path.isAbsolute(lexical)) {
+    throw new Error('audio artifact path escapes storage root');
+  }
+  const stat = fs.lstatSync(absolutePath);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > DEFAULT_AUDIO_MAX_BYTES) {
+    throw new Error('audio artifact must be a readable non-empty regular MP3 file');
+  }
+  const canonicalRoot = fs.realpathSync(root);
+  const canonicalFile = fs.realpathSync(absolutePath);
+  const canonicalRelative = path.relative(canonicalRoot, canonicalFile);
+  if (canonicalRelative === '..'
+      || canonicalRelative.startsWith(`..${path.sep}`)
+      || path.isAbsolute(canonicalRelative)) {
+    throw new Error('audio artifact path escapes storage root');
+  }
+  const bytes = fs.readFileSync(absolutePath);
+  if (!isProbableMp3(bytes)) throw new Error('audio artifact is not a supported MP3 file');
+  return artifactSummary(absolutePath, { storageRoot: root });
+}
+
 function verifyText(text) {
   if (typeof text !== 'string' || !text.trim()) throw new Error('text artifact must be non-empty');
   const normalized = text.trim();
@@ -367,6 +402,7 @@ function verifyText(text) {
 module.exports = {
   materializeImage,
   materializeVideo,
+  verifyAudio,
   verifyText,
   artifactSummary,
 };

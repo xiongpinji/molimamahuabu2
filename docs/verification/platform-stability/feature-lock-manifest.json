@@ -27,7 +27,8 @@
         "backend-node/test/providerRouteImageIntegration.test.js",
         "backend-node/test/providerRouteTextIntegration.test.js",
         "backend-node/test/providerRouteVideoIntegration.test.js",
-        "backend-node/test/providerTaskReconciliation.test.js"
+        "backend-node/test/providerTaskReconciliation.test.js",
+        "backend-node/test/providerTaskLiveCompatibility.test.js"
       ],
       "evidence": [
         "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
@@ -38,7 +39,8 @@
         "docs/superpowers/plans/2026-08-20-provider-route-cost-and-multi-model-split.md",
         "docs/superpowers/specs/2026-08-22-provider-task-receipt-reconciliation-design.md",
         "docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md",
-        "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md"
+        "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md",
+        "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md"
       ],
       "fixCommit": "54eb8e940982cd9c4b65e91b934d8593a6b1975b",
       "unlockHistory": [
@@ -74,18 +76,58 @@
             "backend-node/test/storyboardImageFailure.test.js",
             "backend-node/test/taskService.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
+          "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
+          "impactTests": [
+            "backend-node/test/providerCanaryInvalidation.test.js",
+            "backend-node/test/providerCanaryPublicGate.test.js",
+            "backend-node/test/providerCanaryAdminRoutes.test.js",
+            "backend-node/test/providerRouteStability.test.js",
+            "backend-node/test/providerRouteCost.test.js",
+            "backend-node/test/generationRouteCostLedger.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-23 供应商任务实时候选三处兼容修复获批",
+          "approvedBy": "product-owner 2026-08-23 provider-task-live-candidate-compatibility",
+          "impactTests": [
+            "backend-node/test/providerTaskLiveCompatibility.test.js",
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-23 TTS 线路按字符成本与旧库约束升级获批",
+          "approvedBy": "product-owner 2026-08-23 provider-tts-character-cost",
+          "impactTests": [
+            "backend-node/test/providerRouteCost.test.js",
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
-        "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
+        "reason": "2026-08-23 PR #184 合入最新 main 并收口 17 项冲突获批",
+        "approvedBy": "product-owner 2026-08-23 pr-184-main-merge-conflict-resolution",
         "impactTests": [
-          "backend-node/test/providerCanaryInvalidation.test.js",
-          "backend-node/test/providerCanaryPublicGate.test.js",
-          "backend-node/test/providerCanaryAdminRoutes.test.js",
-          "backend-node/test/providerRouteStability.test.js",
+          "backend-node/test/providerCanaryAudioArtifact.test.js",
+          "backend-node/test/providerCanaryExecutor.test.js",
+          "backend-node/test/providerCanaryInventory.test.js",
+          "backend-node/test/providerCanaryScheduler.test.js",
           "backend-node/test/providerRouteCost.test.js",
-          "backend-node/test/generationRouteCostLedger.test.js"
+          "backend-node/test/providerRouteSchema.test.js",
+          "backend-node/test/providerRuntimeFingerprint.test.js",
+          "backend-node/test/providerTaskLiveCompatibility.test.js",
+          "frontweb/test/platformZeroCostSmokeContract.test.js",
+          "frontweb/test/providerRouteCostAdmin.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },
@@ -117,7 +159,8 @@
         "backend-node/test/providerTaskReconciliation.test.js",
         "backend-node/test/storyboardImageFailure.test.js",
         "backend-node/test/toapisVideoIntegration.test.js",
-        "backend-node/test/videoQueryTaskStatusOnce.test.js"
+        "backend-node/test/videoQueryTaskStatusOnce.test.js",
+        "backend-node/test/providerTaskLiveCompatibility.test.js"
       ],
       "evidence": [
         "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
@@ -130,7 +173,8 @@
         "docs/superpowers/plans/2026-08-20-provider-route-cost-and-multi-model-split.md",
         "docs/superpowers/specs/2026-08-22-provider-task-receipt-reconciliation-design.md",
         "docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md",
-        "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md"
+        "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md",
+        "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md"
       ],
       "fixCommit": "54eb8e940982cd9c4b65e91b934d8593a6b1975b",
       "unlockHistory": [
@@ -169,6 +213,16 @@
           ]
         },
         {
+          "reason": "2026-08-22 PR #177 主线同步视频参考证据修复获批",
+          "approvedBy": "product-owner 2026-08-22 pr-177-main-sync-closure",
+          "impactTests": [
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/toapisVideoClient.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "frontweb/e2e/home-canvas.spec.js"
+          ]
+        },
+        {
           "reason": "2026-08-23 无产物视频任务冻结积分质量修复获批",
           "approvedBy": "product-owner 2026-08-23 provider-task-artifact-unreadable",
           "impactTests": [
@@ -227,16 +281,36 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 供应商任务实时候选三处兼容修复获批",
+          "approvedBy": "product-owner 2026-08-23 provider-task-live-candidate-compatibility",
+          "impactTests": [
+            "backend-node/test/providerTaskLiveCompatibility.test.js",
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-22 PR #177 主线同步视频参考证据修复获批",
-        "approvedBy": "product-owner 2026-08-22 pr-177-main-sync-closure",
+        "reason": "2026-08-23 PR #184 合入最新 main 并收口 17 项冲突获批",
+        "approvedBy": "product-owner 2026-08-23 pr-184-main-merge-conflict-resolution",
         "impactTests": [
-          "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/toapisVideoClient.test.js",
-          "backend-node/test/videoBilling.test.js",
-          "frontweb/e2e/home-canvas.spec.js"
+          "backend-node/test/providerCanaryAudioArtifact.test.js",
+          "backend-node/test/providerCanaryExecutor.test.js",
+          "backend-node/test/providerCanaryInventory.test.js",
+          "backend-node/test/providerCanaryScheduler.test.js",
+          "backend-node/test/providerRouteCost.test.js",
+          "backend-node/test/providerRouteSchema.test.js",
+          "backend-node/test/providerRuntimeFingerprint.test.js",
+          "backend-node/test/providerTaskLiveCompatibility.test.js",
+          "frontweb/test/platformZeroCostSmokeContract.test.js",
+          "frontweb/test/providerRouteCostAdmin.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },
@@ -269,7 +343,8 @@
         "backend-node/test/creditLedger.test.js",
         "backend-node/test/providerTaskReconciliation.test.js",
         "backend-node/test/videoBilling.test.js",
-        "backend-node/test/videoQueryTaskStatusOnce.test.js"
+        "backend-node/test/videoQueryTaskStatusOnce.test.js",
+        "backend-node/test/providerTaskLiveCompatibility.test.js"
       ],
       "evidence": [
         "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
@@ -281,7 +356,8 @@
         "docs/superpowers/plans/2026-08-20-provider-route-cost-and-multi-model-split.md",
         "docs/superpowers/specs/2026-08-22-provider-task-receipt-reconciliation-design.md",
         "docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md",
-        "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md"
+        "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md",
+        "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md"
       ],
       "fixCommit": "51a91f1e3eb5dc3636adb1c8a47e45f22a60e000",
       "unlockHistory": [
@@ -294,22 +370,6 @@
             "backend-node/test/prop-image-billing.test.js",
             "backend-node/test/propImageErrorState.test.js",
             "backend-node/test/creditLedger.test.js",
-            "backend-node/test/featureLockManifest.test.js",
-            "backend-node/test/incrementalReleaseScope.test.js"
-          ]
-        },
-        {
-          "reason": "2026-08-23 供应商任务按状态判定结构安全收口获批",
-          "approvedBy": "product-owner 2026-08-23 provider-task-status-decision-structure",
-          "impactTests": [
-            "backend-node/test/videoQueryTaskStatusOnce.test.js",
-            "backend-node/test/providerTaskReconciliation.test.js",
-            "backend-node/test/providerRouteVideoIntegration.test.js",
-            "backend-node/test/toapisVideoIntegration.test.js",
-            "backend-node/test/feituoVideoModels.test.js",
-            "backend-node/test/videoBilling.test.js",
-            "backend-node/test/creditLedger.test.js",
-            "backend-node/test/providerReconciliation.test.js",
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
@@ -333,6 +393,22 @@
             "backend-node/test/providerRouteTextIntegration.test.js",
             "backend-node/test/storyboardImageFailure.test.js",
             "backend-node/test/taskService.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
+          "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
+          "impactTests": [
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/billingReconciliation.test.js",
+            "backend-node/test/taskService.test.js",
+            "backend-node/test/providerRouteImageIntegration.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/prop-image-billing.test.js",
+            "backend-node/test/propImageErrorState.test.js",
+            "backend-node/test/creditLedger.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
           ]
         },
         {
@@ -378,20 +454,50 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 供应商任务按状态判定结构安全收口获批",
+          "approvedBy": "product-owner 2026-08-23 provider-task-status-decision-structure",
+          "impactTests": [
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/feituoVideoModels.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/creditLedger.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-23 供应商任务实时候选三处兼容修复获批",
+          "approvedBy": "product-owner 2026-08-23 provider-task-live-candidate-compatibility",
+          "impactTests": [
+            "backend-node/test/providerTaskLiveCompatibility.test.js",
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
-        "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
+        "reason": "2026-08-23 PR #184 合入最新 main 并收口 17 项冲突获批",
+        "approvedBy": "product-owner 2026-08-23 pr-184-main-merge-conflict-resolution",
         "impactTests": [
-          "backend-node/test/providerReconciliation.test.js",
-          "backend-node/test/billingReconciliation.test.js",
-          "backend-node/test/taskService.test.js",
-          "backend-node/test/providerRouteImageIntegration.test.js",
-          "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/prop-image-billing.test.js",
-          "backend-node/test/propImageErrorState.test.js",
-          "backend-node/test/creditLedger.test.js",
+          "backend-node/test/providerCanaryAudioArtifact.test.js",
+          "backend-node/test/providerCanaryExecutor.test.js",
+          "backend-node/test/providerCanaryInventory.test.js",
+          "backend-node/test/providerCanaryScheduler.test.js",
+          "backend-node/test/providerRouteCost.test.js",
+          "backend-node/test/providerRouteSchema.test.js",
+          "backend-node/test/providerRuntimeFingerprint.test.js",
+          "backend-node/test/providerTaskLiveCompatibility.test.js",
+          "frontweb/test/platformZeroCostSmokeContract.test.js",
+          "frontweb/test/providerRouteCostAdmin.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -421,7 +527,8 @@
         "backend-node/test/providerTaskAdminRoutes.test.js",
         "backend-node/test/providerTaskReconciliation.test.js",
         "frontweb/test/providerStabilityAdmin.test.js",
-        "frontweb/test/aiConfigRelayAssociation.test.js"
+        "frontweb/test/aiConfigRelayAssociation.test.js",
+        "frontweb/test/providerRouteCostAdmin.test.js"
       ],
       "evidence": [
         "docs/superpowers/specs/2026-08-15-platform-stability-one-pass-lock-design.md",
@@ -430,7 +537,9 @@
         "docs/superpowers/plans/2026-08-20-provider-route-cost-and-multi-model-split.md",
         "docs/superpowers/specs/2026-08-22-provider-task-receipt-reconciliation-design.md",
         "docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md",
-        "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md"
+        "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md",
+        "docs/superpowers/plans/2026-08-23-provider-readiness-tts-canary.md",
+        "docs/verification/platform-stability/provider-readiness-repair-manifest-20260823.md"
       ],
       "fixCommit": "f960703ce43e67900b6a294e61d36cf40f2a1d1e",
       "unlockHistory": [
@@ -467,19 +576,48 @@
             "backend-node/test/storyboardImageFailure.test.js",
             "backend-node/test/taskService.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
+          "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
+          "impactTests": [
+            "backend-node/test/platformSharedAssetAcceptance.test.js",
+            "backend-node/test/platformSharedAuthAcceptance.test.js",
+            "backend-node/test/platformSharedBillingAcceptance.test.js",
+            "backend-node/test/platformSharedCatalogAcceptance.test.js",
+            "backend-node/test/platformSharedFoundationInventory.test.js",
+            "backend-node/test/subscriptionBillingRoutes.test.js",
+            "frontweb/e2e/platform-shared-foundation-backend-integration.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-08-23 管理员 TTS 按字符线路成本配置获批",
+          "approvedBy": "product-owner 2026-08-23 provider-tts-character-cost",
+          "impactTests": [
+            "frontweb/test/providerRouteCostAdmin.test.js",
+            "backend-node/test/providerRouteCost.test.js",
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
-        "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
+        "reason": "2026-08-23 PR #184 合入最新 main 并收口 17 项冲突获批",
+        "approvedBy": "product-owner 2026-08-23 pr-184-main-merge-conflict-resolution",
         "impactTests": [
-          "backend-node/test/platformSharedAssetAcceptance.test.js",
-          "backend-node/test/platformSharedAuthAcceptance.test.js",
-          "backend-node/test/platformSharedBillingAcceptance.test.js",
-          "backend-node/test/platformSharedCatalogAcceptance.test.js",
-          "backend-node/test/platformSharedFoundationInventory.test.js",
-          "backend-node/test/subscriptionBillingRoutes.test.js",
-          "frontweb/e2e/platform-shared-foundation-backend-integration.spec.js"
+          "backend-node/test/providerCanaryAudioArtifact.test.js",
+          "backend-node/test/providerCanaryExecutor.test.js",
+          "backend-node/test/providerCanaryInventory.test.js",
+          "backend-node/test/providerCanaryScheduler.test.js",
+          "backend-node/test/providerRouteCost.test.js",
+          "backend-node/test/providerRouteSchema.test.js",
+          "backend-node/test/providerRuntimeFingerprint.test.js",
+          "backend-node/test/providerTaskLiveCompatibility.test.js",
+          "frontweb/test/platformZeroCostSmokeContract.test.js",
+          "frontweb/test/providerRouteCostAdmin.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },
@@ -547,11 +685,13 @@
         "backend-node/test/providerAssetSignedAccess.test.js",
         "backend-node/test/providerCanaryAdminRoutes.test.js",
         "backend-node/test/providerCanaryArtifacts.test.js",
+        "backend-node/test/providerCanaryAudioArtifact.test.js",
         "backend-node/test/providerCanaryBudget.test.js",
         "backend-node/test/providerCanaryEvidence.test.js",
         "backend-node/test/providerCanaryExecutor.test.js",
         "backend-node/test/providerCanaryFixtures.test.js",
         "backend-node/test/providerCanaryInvalidation.test.js",
+        "backend-node/test/providerCanaryInventory.test.js",
         "backend-node/test/providerCanaryPublicGate.test.js",
         "backend-node/test/providerCanaryScheduler.test.js",
         "backend-node/test/providerCanaryTextConfig.test.js",
@@ -573,6 +713,7 @@
         "backend-node/test/toapisVideoIntegration.test.js",
         "backend-node/test/videoBilling.test.js",
         "backend-node/test/videoQueryTaskStatusOnce.test.js",
+        "backend-node/test/providerTaskLiveCompatibility.test.js",
         "frontweb/e2e/platform-zero-cost-smoke.spec.js",
         "frontweb/e2e/provider-stability-admin.spec.js",
         "frontweb/test/platformZeroCostSmokeContract.test.js",
@@ -592,7 +733,10 @@
         "docs/superpowers/plans/2026-08-20-evidence-bound-multi-model-split.md",
         "docs/superpowers/specs/2026-08-22-provider-task-receipt-reconciliation-design.md",
         "docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md",
-        "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md"
+        "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md",
+        "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md",
+        "docs/superpowers/plans/2026-08-23-provider-readiness-tts-canary.md",
+        "docs/verification/platform-stability/provider-readiness-repair-manifest-20260823.md"
       ],
       "fixCommit": null,
       "unlockHistory": [
@@ -628,6 +772,19 @@
             "backend-node/test/providerRouteTextIntegration.test.js",
             "backend-node/test/storyboardImageFailure.test.js",
             "backend-node/test/taskService.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
+          "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
+          "impactTests": [
+            "backend-node/test/platformSharedAssetAcceptance.test.js",
+            "backend-node/test/platformSharedAuthAcceptance.test.js",
+            "backend-node/test/platformSharedBillingAcceptance.test.js",
+            "backend-node/test/platformSharedCatalogAcceptance.test.js",
+            "backend-node/test/platformSharedFoundationInventory.test.js",
+            "backend-node/test/subscriptionBillingRoutes.test.js",
+            "frontweb/e2e/platform-shared-foundation-backend-integration.spec.js"
           ]
         },
         {
@@ -689,19 +846,81 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 供应商任务实时候选三处兼容修复获批",
+          "approvedBy": "product-owner 2026-08-23 provider-task-live-candidate-compatibility",
+          "impactTests": [
+            "backend-node/test/providerTaskLiveCompatibility.test.js",
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-23 TTS 主动巡检闭环与功能锁修复获批",
+          "approvedBy": "product-owner 2026-08-23 provider-readiness-tts-canary-ci-lock",
+          "impactTests": [
+            "backend-node/test/providerCanaryAudioArtifact.test.js",
+            "backend-node/test/providerCanaryExecutor.test.js",
+            "backend-node/test/providerCanaryInventory.test.js",
+            "backend-node/test/providerCanaryScheduler.test.js",
+            "backend-node/test/providerRuntimeFingerprint.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-23 TTS 主动巡检按字符成本获批",
+          "approvedBy": "product-owner 2026-08-23 provider-tts-character-cost",
+          "impactTests": [
+            "backend-node/test/providerCanaryExecutor.test.js",
+            "backend-node/test/providerRouteCost.test.js",
+            "backend-node/test/providerRouteSchema.test.js",
+            "frontweb/test/providerRouteCostAdmin.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-23 平台零成本巡检复用已认证目录响应并修正只读分类获批",
+          "approvedBy": "product-owner 2026-08-23 platform-zero-cost-smoke-read-auth",
+          "impactTests": [
+            "frontweb/test/platformZeroCostSmokeContract.test.js",
+            "frontweb/e2e/platform-zero-cost-smoke.spec.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-23 平台零成本巡检生产模式 fixture 写入误报修复获批",
+          "approvedBy": "product-owner 2026-08-23 platform-zero-cost-smoke-fixture-guard",
+          "impactTests": [
+            "frontweb/test/platformZeroCostSmokeContract.test.js",
+            "frontweb/e2e/platform-zero-cost-smoke.spec.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
-        "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
+        "reason": "2026-08-23 PR #184 合入最新 main 并收口 17 项冲突获批",
+        "approvedBy": "product-owner 2026-08-23 pr-184-main-merge-conflict-resolution",
         "impactTests": [
-          "backend-node/test/platformSharedAssetAcceptance.test.js",
-          "backend-node/test/platformSharedAuthAcceptance.test.js",
-          "backend-node/test/platformSharedBillingAcceptance.test.js",
-          "backend-node/test/platformSharedCatalogAcceptance.test.js",
-          "backend-node/test/platformSharedFoundationInventory.test.js",
-          "backend-node/test/subscriptionBillingRoutes.test.js",
-          "frontweb/e2e/platform-shared-foundation-backend-integration.spec.js"
+          "backend-node/test/providerCanaryAudioArtifact.test.js",
+          "backend-node/test/providerCanaryExecutor.test.js",
+          "backend-node/test/providerCanaryInventory.test.js",
+          "backend-node/test/providerCanaryScheduler.test.js",
+          "backend-node/test/providerRouteCost.test.js",
+          "backend-node/test/providerRouteSchema.test.js",
+          "backend-node/test/providerRuntimeFingerprint.test.js",
+          "backend-node/test/providerTaskLiveCompatibility.test.js",
+          "frontweb/test/platformZeroCostSmokeContract.test.js",
+          "frontweb/test/providerRouteCostAdmin.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },

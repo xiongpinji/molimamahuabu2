@@ -263,6 +263,7 @@
             <el-option label="每次请求" value="request" />
             <el-option label="每张图片" value="image" />
             <el-option label="每秒视频" value="second" />
+            <el-option label="每字符" value="character" />
             <el-option label="Token" value="token" />
           </el-select>
         </el-form-item>
@@ -274,10 +275,10 @@
             <el-input-number v-model="costForm.output_yuan" :min="0" :precision="6" :step="0.001" />
           </el-form-item>
         </template>
-        <el-form-item v-else label="基础单价（元）">
+        <el-form-item v-else :label="costForm.cost_unit === 'character' ? '每字符（元）' : '基础单价（元）'">
           <el-input-number v-model="costForm.unit_yuan" :min="0.000001" :precision="6" :step="0.01" />
         </el-form-item>
-        <el-form-item v-if="costForm.cost_unit !== 'token'" label="分辨率档位">
+        <el-form-item v-if="!['token', 'character'].includes(costForm.cost_unit)" label="分辨率档位">
           <div class="resolution-costs">
             <div v-for="(tier, index) in costForm.resolution_prices" :key="index" class="resolution-cost-row">
               <el-input v-model="tier.resolution" placeholder="例如 720p / 2k" maxlength="32" />
@@ -373,7 +374,7 @@ function routeCostLabel(cost) {
   if (cost.cost_unit === 'token') {
     return `输入 ${formatMoney(cost.input_cost_micros_per_1k)} / 输出 ${formatMoney(cost.output_cost_micros_per_1k)}`
   }
-  const unit = ({ request: '次', image: '张', second: '秒' })[cost.cost_unit] || cost.cost_unit
+  const unit = ({ request: '次', image: '张', second: '秒', character: '字符' })[cost.cost_unit] || cost.cost_unit
   return `${formatMoney(cost.micros_per_unit)} / ${unit}`
 }
 
@@ -528,7 +529,7 @@ async function openCost(row) {
   costEditingId.value = row.id
   try {
     const cost = await providerStabilityAPI.getRouteCost(row.id)
-    const unit = cost?.cost_unit || ({ video: 'second', image: 'image' })[row.service_type] || 'request'
+    const unit = cost?.cost_unit || ({ video: 'second', image: 'image', tts: 'character' })[row.service_type] || 'request'
     costForm.value = {
       cost_unit: unit,
       unit_yuan: Math.max(0.000001, microsToYuan(cost?.micros_per_unit)),
@@ -556,22 +557,25 @@ function removeResolutionCost(index) {
 async function saveRouteCost() {
   costSaving.value = true
   try {
-    const tiers = {}
-    for (const tier of costForm.value.resolution_prices) {
-      const resolution = String(tier.resolution || '').trim().toLowerCase()
-      if (!resolution || Object.prototype.hasOwnProperty.call(tiers, resolution)) {
-        throw new Error('分辨率档位不能为空或重复')
-      }
-      tiers[resolution] = { micros_per_unit: yuanToMicros(tier.yuan) }
-    }
     const token = costForm.value.cost_unit === 'token'
+    const resolutionTiered = !['token', 'character'].includes(costForm.value.cost_unit)
+    const tiers = {}
+    if (resolutionTiered) {
+      for (const tier of costForm.value.resolution_prices) {
+        const resolution = String(tier.resolution || '').trim().toLowerCase()
+        if (!resolution || Object.prototype.hasOwnProperty.call(tiers, resolution)) {
+          throw new Error('分辨率档位不能为空或重复')
+        }
+        tiers[resolution] = { micros_per_unit: yuanToMicros(tier.yuan) }
+      }
+    }
     await providerStabilityAPI.updateRouteCost(costEditingId.value, {
       currency: 'CNY',
       cost_unit: costForm.value.cost_unit,
       micros_per_unit: token ? 0 : yuanToMicros(costForm.value.unit_yuan),
       input_cost_micros_per_1k: token ? yuanToMicros(costForm.value.input_yuan) : 0,
       output_cost_micros_per_1k: token ? yuanToMicros(costForm.value.output_yuan) : 0,
-      resolution_prices: token ? {} : tiers,
+      resolution_prices: resolutionTiered ? tiers : {},
     })
     costVisible.value = false
     ElMessage.success('供应商线路成本已保存')

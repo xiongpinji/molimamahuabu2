@@ -25,6 +25,93 @@ const COMPLETE_ACCEPTANCE_FRAMEWORK_ID = 'stability.platform-complete-acceptance
 const UNKNOWN_STATE_RECONCILIATION_FEATURE_ID = 'stability.unknown-state-billing-reconciliation';
 const PROVIDER_ROUTE_CONTRACT_FEATURE_ID = 'stability.provider-route-contract';
 const SAFE_PROVIDER_FAILOVER_FEATURE_ID = 'stability.safe-provider-failover';
+const PROVIDER_TASK_LIVE_COMPAT_EVIDENCE =
+  'docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md';
+const PROVIDER_TASK_LIVE_COMPAT_UNLOCK = {
+  reason: '2026-08-23 供应商任务实时候选三处兼容修复获批',
+  approvedBy: 'product-owner 2026-08-23 provider-task-live-candidate-compatibility',
+  impactTests: [
+    'backend-node/test/providerTaskLiveCompatibility.test.js',
+    'backend-node/test/providerRouteSchema.test.js',
+    'backend-node/test/providerRouteVideoIntegration.test.js',
+    'backend-node/test/providerTaskReconciliation.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+  ],
+};
+const PROVIDER_READINESS_TTS_EVIDENCE = [
+  'docs/superpowers/plans/2026-08-23-provider-readiness-tts-canary.md',
+  'docs/verification/platform-stability/provider-readiness-repair-manifest-20260823.md',
+];
+const PROVIDER_READINESS_TTS_REQUIRED_TESTS = [
+  'backend-node/test/providerCanaryAudioArtifact.test.js',
+  'backend-node/test/providerCanaryExecutor.test.js',
+  'backend-node/test/providerCanaryInventory.test.js',
+  'backend-node/test/providerCanaryScheduler.test.js',
+  'backend-node/test/providerRuntimeFingerprint.test.js',
+];
+const PROVIDER_READINESS_TTS_UNLOCK = {
+  reason: '2026-08-23 TTS 主动巡检闭环与功能锁修复获批',
+  approvedBy: 'product-owner 2026-08-23 provider-readiness-tts-canary-ci-lock',
+  impactTests: [
+    ...PROVIDER_READINESS_TTS_REQUIRED_TESTS,
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const PROVIDER_TTS_CHARACTER_COST_UNLOCK = {
+  reason: '2026-08-23 TTS 主动巡检按字符成本获批',
+  approvedBy: 'product-owner 2026-08-23 provider-tts-character-cost',
+  impactTests: [
+    'backend-node/test/providerCanaryExecutor.test.js',
+    'backend-node/test/providerRouteCost.test.js',
+    'backend-node/test/providerRouteSchema.test.js',
+    'frontweb/test/providerRouteCostAdmin.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK = {
+  reason: '2026-08-23 平台零成本巡检复用已认证目录响应并修正只读分类获批',
+  approvedBy: 'product-owner 2026-08-23 platform-zero-cost-smoke-read-auth',
+  impactTests: [
+    'frontweb/test/platformZeroCostSmokeContract.test.js',
+    'frontweb/e2e/platform-zero-cost-smoke.spec.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK = {
+  reason: '2026-08-23 平台零成本巡检生产模式 fixture 写入误报修复获批',
+  approvedBy: 'product-owner 2026-08-23 platform-zero-cost-smoke-fixture-guard',
+  impactTests: [
+    'frontweb/test/platformZeroCostSmokeContract.test.js',
+    'frontweb/e2e/platform-zero-cost-smoke.spec.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const PROVIDER_ROUTE_TTS_CHARACTER_COST_UNLOCK = {
+  reason: '2026-08-23 TTS 线路按字符成本与旧库约束升级获批',
+  approvedBy: 'product-owner 2026-08-23 provider-tts-character-cost',
+  impactTests: [
+    'backend-node/test/providerRouteCost.test.js',
+    'backend-node/test/providerRouteSchema.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+  ],
+};
+const ADMIN_PROVIDER_TTS_CHARACTER_COST_UNLOCK = {
+  reason: '2026-08-23 管理员 TTS 按字符线路成本配置获批',
+  approvedBy: 'product-owner 2026-08-23 provider-tts-character-cost',
+  impactTests: [
+    'frontweb/test/providerRouteCostAdmin.test.js',
+    'backend-node/test/providerRouteCost.test.js',
+    'backend-node/test/providerRouteSchema.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
 const PROVIDER_TASK_RECEIPT_EVIDENCE = [
   'docs/superpowers/specs/2026-08-22-provider-task-receipt-reconciliation-design.md',
   'docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md',
@@ -110,6 +197,110 @@ const PROVIDER_TASK_STATUS_DECISION_UNLOCK = {
     'backend-node/test/featureLockManifest.test.js',
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
+};
+const PROVIDER_TASK_ARTIFACT_QUALITY_FEATURE_IDS = new Set([
+  SAFE_PROVIDER_FAILOVER_FEATURE_ID,
+  UNKNOWN_STATE_RECONCILIATION_FEATURE_ID,
+  PROACTIVE_CANARY_FEATURE_ID,
+]);
+const PROVIDER_TASK_LIVE_COMPAT_FEATURE_IDS = new Set([
+  PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
+  SAFE_PROVIDER_FAILOVER_FEATURE_ID,
+  UNKNOWN_STATE_RECONCILIATION_FEATURE_ID,
+  PROACTIVE_CANARY_FEATURE_ID,
+]);
+const PR177_ROOT_ONLY_REASON = '2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批';
+const PR177_ROOT_ONLY_APPROVED_BY = 'product-owner 2026-08-22 pr-177-root-only-isolation-closure';
+const PR177_PROVIDER_ROUTE_UNLOCK = {
+  reason: PR177_ROOT_ONLY_REASON,
+  approvedBy: PR177_ROOT_ONLY_APPROVED_BY,
+  impactTests: [
+    'backend-node/test/providerCanaryInvalidation.test.js',
+    'backend-node/test/providerCanaryPublicGate.test.js',
+    'backend-node/test/providerCanaryAdminRoutes.test.js',
+    'backend-node/test/providerRouteStability.test.js',
+    'backend-node/test/providerRouteCost.test.js',
+    'backend-node/test/generationRouteCostLedger.test.js',
+  ],
+};
+const PR177_VIDEO_REFERENCE_UNLOCK = {
+  reason: '2026-08-22 PR #177 主线同步视频参考证据修复获批',
+  approvedBy: 'product-owner 2026-08-22 pr-177-main-sync-closure',
+  impactTests: [
+    'backend-node/test/providerRouteVideoIntegration.test.js',
+    'backend-node/test/toapisVideoClient.test.js',
+    'backend-node/test/videoBilling.test.js',
+    'frontweb/e2e/home-canvas.spec.js',
+  ],
+};
+const PR177_UNKNOWN_STATE_UNLOCK = {
+  reason: PR177_ROOT_ONLY_REASON,
+  approvedBy: PR177_ROOT_ONLY_APPROVED_BY,
+  impactTests: [
+    'backend-node/test/providerReconciliation.test.js',
+    'backend-node/test/billingReconciliation.test.js',
+    'backend-node/test/taskService.test.js',
+    'backend-node/test/providerRouteImageIntegration.test.js',
+    'backend-node/test/providerRouteVideoIntegration.test.js',
+    'backend-node/test/prop-image-billing.test.js',
+    'backend-node/test/propImageErrorState.test.js',
+    'backend-node/test/creditLedger.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const PR177_SHARED_FOUNDATION_UNLOCK = {
+  reason: PR177_ROOT_ONLY_REASON,
+  approvedBy: PR177_ROOT_ONLY_APPROVED_BY,
+  impactTests: [
+    'backend-node/test/platformSharedAssetAcceptance.test.js',
+    'backend-node/test/platformSharedAuthAcceptance.test.js',
+    'backend-node/test/platformSharedBillingAcceptance.test.js',
+    'backend-node/test/platformSharedCatalogAcceptance.test.js',
+    'backend-node/test/platformSharedFoundationInventory.test.js',
+    'backend-node/test/subscriptionBillingRoutes.test.js',
+    'frontweb/e2e/platform-shared-foundation-backend-integration.spec.js',
+  ],
+};
+const PR177_PLATFORM_ACCEPTANCE_UNLOCK = {
+  reason: PR177_ROOT_ONLY_REASON,
+  approvedBy: PR177_ROOT_ONLY_APPROVED_BY,
+  impactTests: [
+    'backend-node/test/platformFeatureAcceptance.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+  ],
+};
+const PR177_UNLOCK_BY_FEATURE = {
+  [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: PR177_PROVIDER_ROUTE_UNLOCK,
+  [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: PR177_VIDEO_REFERENCE_UNLOCK,
+  [UNKNOWN_STATE_RECONCILIATION_FEATURE_ID]: PR177_UNKNOWN_STATE_UNLOCK,
+  [ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID]: PR177_SHARED_FOUNDATION_UNLOCK,
+  [PROACTIVE_CANARY_FEATURE_ID]: PR177_SHARED_FOUNDATION_UNLOCK,
+};
+const PR184_MAIN_MERGE_UNLOCK = {
+  reason: '2026-08-23 PR #184 合入最新 main 并收口 17 项冲突获批',
+  approvedBy: 'product-owner 2026-08-23 pr-184-main-merge-conflict-resolution',
+  impactTests: [
+    'backend-node/test/providerCanaryAudioArtifact.test.js',
+    'backend-node/test/providerCanaryExecutor.test.js',
+    'backend-node/test/providerCanaryInventory.test.js',
+    'backend-node/test/providerCanaryScheduler.test.js',
+    'backend-node/test/providerRouteCost.test.js',
+    'backend-node/test/providerRouteSchema.test.js',
+    'backend-node/test/providerRuntimeFingerprint.test.js',
+    'backend-node/test/providerTaskLiveCompatibility.test.js',
+    'frontweb/test/platformZeroCostSmokeContract.test.js',
+    'frontweb/test/providerRouteCostAdmin.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const PRE_PR184_CURRENT_UNLOCK_BY_FEATURE = {
+  [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: PROVIDER_ROUTE_TTS_CHARACTER_COST_UNLOCK,
+  [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: PROVIDER_TASK_LIVE_COMPAT_UNLOCK,
+  [UNKNOWN_STATE_RECONCILIATION_FEATURE_ID]: PROVIDER_TASK_LIVE_COMPAT_UNLOCK,
+  [ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID]: ADMIN_PROVIDER_TTS_CHARACTER_COST_UNLOCK,
+  [PROACTIVE_CANARY_FEATURE_ID]: PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK,
 };
 const COMPLETE_ACCEPTANCE_ACCEPTANCE = [
   '来源功能清单与验收决策账本通过 SHA 和 feature_id 一致性绑定',
@@ -210,107 +401,12 @@ const SAFE_PROVIDER_FAILOVER_UNLOCK = {
     'backend-node/test/videoBilling.test.js',
   ],
 };
-const PR177_ROOT_ONLY_REASON = '2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批';
-const PR177_ROOT_ONLY_APPROVED_BY = 'product-owner 2026-08-22 pr-177-root-only-isolation-closure';
-const PR177_PROVIDER_ROUTE_UNLOCK = {
-  reason: PR177_ROOT_ONLY_REASON,
-  approvedBy: PR177_ROOT_ONLY_APPROVED_BY,
-  impactTests: [
-    'backend-node/test/providerCanaryInvalidation.test.js',
-    'backend-node/test/providerCanaryPublicGate.test.js',
-    'backend-node/test/providerCanaryAdminRoutes.test.js',
-    'backend-node/test/providerRouteStability.test.js',
-    'backend-node/test/providerRouteCost.test.js',
-    'backend-node/test/generationRouteCostLedger.test.js',
-  ],
-};
-const PR177_VIDEO_REFERENCE_UNLOCK = {
-  reason: '2026-08-22 PR #177 主线同步视频参考证据修复获批',
-  approvedBy: 'product-owner 2026-08-22 pr-177-main-sync-closure',
-  impactTests: [
-    'backend-node/test/providerRouteVideoIntegration.test.js',
-    'backend-node/test/toapisVideoClient.test.js',
-    'backend-node/test/videoBilling.test.js',
-    'frontweb/e2e/home-canvas.spec.js',
-  ],
-};
-const PR177_UNKNOWN_STATE_UNLOCK = {
-  reason: PR177_ROOT_ONLY_REASON,
-  approvedBy: PR177_ROOT_ONLY_APPROVED_BY,
-  impactTests: [
-    'backend-node/test/providerReconciliation.test.js',
-    'backend-node/test/billingReconciliation.test.js',
-    'backend-node/test/taskService.test.js',
-    'backend-node/test/providerRouteImageIntegration.test.js',
-    'backend-node/test/providerRouteVideoIntegration.test.js',
-    'backend-node/test/prop-image-billing.test.js',
-    'backend-node/test/propImageErrorState.test.js',
-    'backend-node/test/creditLedger.test.js',
-    'backend-node/test/featureLockManifest.test.js',
-    'backend-node/test/incrementalReleaseScope.test.js',
-  ],
-};
-const PR177_SHARED_FOUNDATION_UNLOCK = {
-  reason: PR177_ROOT_ONLY_REASON,
-  approvedBy: PR177_ROOT_ONLY_APPROVED_BY,
-  impactTests: [
-    'backend-node/test/platformSharedAssetAcceptance.test.js',
-    'backend-node/test/platformSharedAuthAcceptance.test.js',
-    'backend-node/test/platformSharedBillingAcceptance.test.js',
-    'backend-node/test/platformSharedCatalogAcceptance.test.js',
-    'backend-node/test/platformSharedFoundationInventory.test.js',
-    'backend-node/test/subscriptionBillingRoutes.test.js',
-    'frontweb/e2e/platform-shared-foundation-backend-integration.spec.js',
-  ],
-};
-const PR177_PLATFORM_ACCEPTANCE_UNLOCK = {
-  reason: PR177_ROOT_ONLY_REASON,
-  approvedBy: PR177_ROOT_ONLY_APPROVED_BY,
-  impactTests: [
-    'backend-node/test/platformFeatureAcceptance.test.js',
-    'backend-node/test/featureLockManifest.test.js',
-  ],
-};
-const EXPECTED_UNLOCK_HISTORY_BY_FEATURE = {
-  [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: [
-    PROVIDER_ROUTE_CLOSURE_UNLOCK,
-    PROVIDER_TASK_RECEIPT_UNLOCK,
-  ],
-  [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: [
-    SAFE_PROVIDER_FAILOVER_UNLOCK,
-    PROVIDER_TASK_RECEIPT_UNLOCK,
-    PROVIDER_TASK_ARTIFACT_QUALITY_UNLOCK,
-    LEGACY_DJPSD_STRICT_ARTIFACT_UNLOCK,
-    ASYNC_VIDEO_PROTOCOL_ARTIFACT_UNLOCK,
-    PROVIDER_TASK_STATUS_DECISION_UNLOCK,
-  ],
-  [UNKNOWN_STATE_RECONCILIATION_FEATURE_ID]: [
-    UNKNOWN_STATE_RECONCILIATION_UNLOCK,
-    PROVIDER_TASK_STATUS_DECISION_UNLOCK,
-    PROVIDER_TASK_RECEIPT_UNLOCK,
-    PROVIDER_TASK_ARTIFACT_QUALITY_UNLOCK,
-    LEGACY_DJPSD_STRICT_ARTIFACT_UNLOCK,
-    ASYNC_VIDEO_PROTOCOL_ARTIFACT_UNLOCK,
-  ],
-  [ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID]: [
-    SHARED_FOUNDATION_UNLOCK,
-    PROVIDER_TASK_RECEIPT_UNLOCK,
-  ],
-  [PROACTIVE_CANARY_FEATURE_ID]: [
-    SHARED_FOUNDATION_UNLOCK,
-    PROVIDER_TASK_RECEIPT_UNLOCK,
-    PROVIDER_TASK_ARTIFACT_QUALITY_UNLOCK,
-    LEGACY_DJPSD_STRICT_ARTIFACT_UNLOCK,
-    ASYNC_VIDEO_PROTOCOL_ARTIFACT_UNLOCK,
-    PROVIDER_TASK_STATUS_DECISION_UNLOCK,
-  ],
-};
-const EXPECTED_CURRENT_UNLOCK_BY_FEATURE = {
-  [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: PR177_PROVIDER_ROUTE_UNLOCK,
-  [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: PR177_VIDEO_REFERENCE_UNLOCK,
-  [UNKNOWN_STATE_RECONCILIATION_FEATURE_ID]: PR177_UNKNOWN_STATE_UNLOCK,
-  [ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID]: PR177_SHARED_FOUNDATION_UNLOCK,
-  [PROACTIVE_CANARY_FEATURE_ID]: PR177_SHARED_FOUNDATION_UNLOCK,
+const HISTORICAL_UNLOCK_BY_FEATURE = {
+  [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: PROVIDER_ROUTE_CLOSURE_UNLOCK,
+  [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: SAFE_PROVIDER_FAILOVER_UNLOCK,
+  [UNKNOWN_STATE_RECONCILIATION_FEATURE_ID]: UNKNOWN_STATE_RECONCILIATION_UNLOCK,
+  [ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID]: SHARED_FOUNDATION_UNLOCK,
+  [PROACTIVE_CANARY_FEATURE_ID]: SHARED_FOUNDATION_UNLOCK,
 };
 const HISTORICAL_EVIDENCE_BY_FEATURE = {
   [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: [
@@ -396,11 +492,13 @@ const PROACTIVE_CANARY_REQUIRED_TESTS = [
   'backend-node/test/providerAssetSignedAccess.test.js',
   'backend-node/test/providerCanaryAdminRoutes.test.js',
   'backend-node/test/providerCanaryArtifacts.test.js',
+  'backend-node/test/providerCanaryAudioArtifact.test.js',
   'backend-node/test/providerCanaryBudget.test.js',
   'backend-node/test/providerCanaryEvidence.test.js',
   'backend-node/test/providerCanaryExecutor.test.js',
   'backend-node/test/providerCanaryFixtures.test.js',
   'backend-node/test/providerCanaryInvalidation.test.js',
+  'backend-node/test/providerCanaryInventory.test.js',
   'backend-node/test/providerCanaryPublicGate.test.js',
   'backend-node/test/providerCanaryScheduler.test.js',
   'backend-node/test/providerCanaryTextConfig.test.js',
@@ -486,6 +584,7 @@ const PROVIDER_TASK_LOCK_REQUIREMENTS = {
     requiredTests: [
       'backend-node/test/providerTaskAdminRoutes.test.js',
       'backend-node/test/providerTaskReconciliation.test.js',
+      'frontweb/test/providerRouteCostAdmin.test.js',
     ],
   },
   [PROACTIVE_CANARY_FEATURE_ID]: {
@@ -564,13 +663,56 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   assert.deepEqual(feature.evidence.slice(0, PROACTIVE_CANARY_EVIDENCE.length), PROACTIVE_CANARY_EVIDENCE);
 });
 
+test('PR #184 主线合并刷新功能锁并保留零成本巡检批准历史与证据', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
+  assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
+  assert.deepEqual(feature.unlock, PR184_MAIN_MERGE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-2), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-3), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-4), PROVIDER_READINESS_TTS_UNLOCK);
+  assert.deepEqual(feature.evidence.slice(-PROVIDER_READINESS_TTS_EVIDENCE.length), PROVIDER_READINESS_TTS_EVIDENCE);
+  for (const testPath of PROVIDER_READINESS_TTS_REQUIRED_TESTS) {
+    assert.ok(feature.requiredTests.includes(testPath), `TTS 功能锁缺少影响测试: ${testPath}`);
+  }
+});
+
 test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜批准并保留完整历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   for (const [featureId, requirements] of Object.entries(PROVIDER_TASK_LOCK_REQUIREMENTS)) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
     assert.ok(feature, `缺少功能锁 ${featureId}`);
-    assert.deepEqual(feature.unlock, EXPECTED_CURRENT_UNLOCK_BY_FEATURE[featureId]);
-    assert.deepEqual(feature.unlockHistory, EXPECTED_UNLOCK_HISTORY_BY_FEATURE[featureId]);
+    const qualityFixTouched = PROVIDER_TASK_ARTIFACT_QUALITY_FEATURE_IDS.has(featureId);
+    const liveCompatTouched = PROVIDER_TASK_LIVE_COMPAT_FEATURE_IDS.has(featureId);
+    const previousUnlock = qualityFixTouched
+      ? PROVIDER_TASK_STATUS_DECISION_UNLOCK
+      : PROVIDER_TASK_RECEIPT_UNLOCK;
+    assert.deepEqual(feature.unlock, PR184_MAIN_MERGE_UNLOCK);
+    assert.deepEqual(feature.unlockHistory, [
+      HISTORICAL_UNLOCK_BY_FEATURE[featureId],
+      ...(qualityFixTouched ? [PROVIDER_TASK_RECEIPT_UNLOCK] : []),
+      ...(qualityFixTouched ? [PR177_UNLOCK_BY_FEATURE[featureId]] : []),
+      ...(qualityFixTouched ? [PROVIDER_TASK_ARTIFACT_QUALITY_UNLOCK] : []),
+      ...(qualityFixTouched ? [LEGACY_DJPSD_STRICT_ARTIFACT_UNLOCK] : []),
+      ...(qualityFixTouched ? [ASYNC_VIDEO_PROTOCOL_ARTIFACT_UNLOCK] : []),
+      ...(liveCompatTouched ? [previousUnlock] : []),
+      ...(featureId === PROVIDER_ROUTE_CONTRACT_FEATURE_ID ? [PR177_PROVIDER_ROUTE_UNLOCK] : []),
+      ...([PROVIDER_ROUTE_CONTRACT_FEATURE_ID, PROACTIVE_CANARY_FEATURE_ID].includes(featureId)
+        ? [PROVIDER_TASK_LIVE_COMPAT_UNLOCK]
+        : []),
+      ...(featureId === PROACTIVE_CANARY_FEATURE_ID
+        ? [
+          PROVIDER_READINESS_TTS_UNLOCK,
+          PROVIDER_TTS_CHARACTER_COST_UNLOCK,
+          PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK,
+        ]
+        : []),
+      ...(featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
+        ? [PROVIDER_TASK_RECEIPT_UNLOCK, PR177_SHARED_FOUNDATION_UNLOCK]
+        : []),
+      PRE_PR184_CURRENT_UNLOCK_BY_FEATURE[featureId],
+    ]);
     assert.deepEqual(
       feature.evidence.slice(0, HISTORICAL_EVIDENCE_BY_FEATURE[featureId].length),
       HISTORICAL_EVIDENCE_BY_FEATURE[featureId],
@@ -584,10 +726,19 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     for (const evidencePath of PROVIDER_TASK_RECEIPT_EVIDENCE) {
       assert.ok(feature.evidence.includes(evidencePath), `${featureId} 缺少证据: ${evidencePath}`);
     }
-    assert.deepEqual(
-      feature.evidence.slice(-PROVIDER_TASK_RECEIPT_EVIDENCE.length),
-      PROVIDER_TASK_RECEIPT_EVIDENCE,
-    );
+    if ([PROACTIVE_CANARY_FEATURE_ID, ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID].includes(featureId)) {
+      assert.deepEqual(
+        feature.evidence.slice(-PROVIDER_READINESS_TTS_EVIDENCE.length),
+        PROVIDER_READINESS_TTS_EVIDENCE,
+      );
+    } else if (liveCompatTouched) {
+      assert.equal(feature.evidence.at(-1), PROVIDER_TASK_LIVE_COMPAT_EVIDENCE);
+    } else {
+      assert.deepEqual(
+        feature.evidence.slice(-PROVIDER_TASK_RECEIPT_EVIDENCE.length),
+        PROVIDER_TASK_RECEIPT_EVIDENCE,
+      );
+    }
   }
   const appLocks = manifest.features
     .filter((feature) => feature.protectedPaths.includes('backend-node/src/app.js'))
@@ -596,7 +747,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
   assert.deepEqual(appLocks, [PROACTIVE_CANARY_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].sort());
   for (const featureId of appLocks) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
-    assert.deepEqual(feature.unlock, EXPECTED_CURRENT_UNLOCK_BY_FEATURE[featureId]);
+    assert.deepEqual(feature.unlock, PR184_MAIN_MERGE_UNLOCK);
   }
 });
 
@@ -618,6 +769,32 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
   assert.ok(unknownState.evidence.includes(
     'docs/verification/platform-stability/video-audio-credit-reconciliation-20260822.md',
   ));
+});
+
+test('实时候选兼容修复刷新四个运行时功能锁并登记补丁测试与证据', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  for (const featureId of [
+    PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
+    SAFE_PROVIDER_FAILOVER_FEATURE_ID,
+    UNKNOWN_STATE_RECONCILIATION_FEATURE_ID,
+    PROACTIVE_CANARY_FEATURE_ID,
+  ]) {
+    const feature = manifest.features.find((entry) => entry.featureId === featureId);
+    assert.ok(feature, `缺少功能锁 ${featureId}`);
+    assert.deepEqual(feature.unlock, PR184_MAIN_MERGE_UNLOCK);
+    assert.deepEqual(feature.unlockHistory.at(-1), PRE_PR184_CURRENT_UNLOCK_BY_FEATURE[featureId]);
+    assert.ok(feature.unlockHistory.some((entry) => (
+      entry.reason === PROVIDER_TASK_STATUS_DECISION_UNLOCK.reason
+        || entry.reason === PROVIDER_TASK_RECEIPT_UNLOCK.reason
+    )), `${featureId} 缺少上一阶段批准历史`);
+    assert.ok(feature.requiredTests.includes('backend-node/test/providerTaskLiveCompatibility.test.js'));
+    assert.equal(
+      feature.evidence.at(-1),
+      featureId === PROACTIVE_CANARY_FEATURE_ID
+        ? PROVIDER_READINESS_TTS_EVIDENCE.at(-1)
+        : PROVIDER_TASK_LIVE_COMPAT_EVIDENCE,
+    );
+  }
 });
 
 test('显式 --base 拒绝不存在的 Git 引用且不能静默按零变更放行', () => {

@@ -436,6 +436,67 @@ test('runtime resolver receives protocol/provider/settings and missing mappings 
   }
 });
 
+test('TTS readiness requires logical identity, user price, route cost, capabilities, and runtime mapping', () => {
+  const inventory = require('../src/services/providerCanaryInventoryService');
+  const db = createFixtureDb();
+  try {
+    db.prepare(`INSERT INTO ai_service_configs
+      (id, service_type, provider, base_url, api_key, api_protocol, model, default_model,
+       priority, is_active, settings, logical_model_id, verification_status, updated_at, deleted_at)
+      VALUES (31, 'tts', 'fixture-tts-provider', 'https://tts-fixture.invalid/v1',
+        'tts-test-key', 'openai', '["tts-upstream"]', 'tts-upstream', 60, 1, ?,
+        'tts-ready', 'verified', ?, NULL)`)
+      .run(JSON.stringify({ canvas_capabilities: { supportsTts: true } }), NOW);
+    db.prepare(`INSERT INTO model_credit_prices
+      (model, credits, category, status, billing_unit, cost_unit, cost_micros_per_unit,
+       input_cost_micros_per_1k, output_cost_micros_per_1k, updated_at)
+      VALUES ('tts-ready', 10, 'audio', 'enabled', 'request', 'request', 1000, 0, 0, ?)`)
+      .run(NOW);
+    db.prepare(`INSERT INTO provider_route_costs
+      (config_id, currency, cost_unit, micros_per_unit, input_cost_micros_per_1k,
+       output_cost_micros_per_1k, updated_at)
+      VALUES (31, 'CNY', 'request', 1000, 0, 0, ?)`)
+      .run(NOW);
+
+    const report = () => inventory.buildCanaryReadiness(db, {
+      now: NOW,
+      runtimeFingerprints: { image: 'image-runtime', video: 'video-runtime', tts: 'tts-runtime' },
+    }).routes.find((route) => route.service_type === 'tts');
+    assert.deepEqual(report().blockers, []);
+
+    db.prepare('DELETE FROM provider_route_costs WHERE config_id = 31').run();
+    assert.equal(report().blockers.includes('missing_cost'), true);
+    db.prepare(`INSERT INTO provider_route_costs
+      (config_id, currency, cost_unit, micros_per_unit, input_cost_micros_per_1k,
+       output_cost_micros_per_1k, updated_at)
+      VALUES (31, 'CNY', 'request', 1000, 0, 0, ?)`)
+      .run(NOW);
+
+    db.prepare("UPDATE model_credit_prices SET status = 'disabled' WHERE model = 'tts-ready'").run();
+    assert.equal(report().blockers.includes('missing_user_price'), true);
+    db.prepare("UPDATE model_credit_prices SET status = 'enabled' WHERE model = 'tts-ready'").run();
+
+    db.prepare("UPDATE ai_service_configs SET settings = '{}' WHERE id = 31").run();
+    assert.equal(report().blockers.includes('missing_capabilities'), true);
+    db.prepare('UPDATE ai_service_configs SET settings = ? WHERE id = 31')
+      .run(JSON.stringify({ canvas_capabilities: { supportsTts: true } }));
+
+    db.prepare('UPDATE ai_service_configs SET logical_model_id = NULL WHERE id = 31').run();
+    assert.equal(report().blockers.includes('missing_logical_model_id'), true);
+    db.prepare("UPDATE ai_service_configs SET logical_model_id = 'tts-ready' WHERE id = 31").run();
+
+    const noRuntime = inventory.buildCanaryReadiness(db, {
+      now: NOW,
+      runtimeFingerprints: { image: 'image-runtime', video: 'video-runtime' },
+    }).routes.find((route) => route.service_type === 'tts');
+    assert.equal(noRuntime.blockers.includes('missing_runtime_mapping'), true);
+    assert.equal(JSON.stringify(noRuntime).includes('tts-test-key'), false);
+    assert.equal(JSON.stringify(noRuntime).includes('tts-fixture.invalid'), false);
+  } finally {
+    db.close();
+  }
+});
+
 test('checked-in schema covers the report structure and fixed blocker enum', () => {
   const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
   assert.equal(schema.type, 'object');
