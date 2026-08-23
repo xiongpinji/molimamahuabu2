@@ -201,8 +201,53 @@ function buildSubtitles(segments, options = {}) {
   };
 }
 
+function localizedText(segment) {
+  return String(segment?.target_text ?? segment?.localized_text ?? segment?.text ?? '');
+}
+
+function localizedSegmentId(segment, index) {
+  return String(segment?.segment_id ?? segment?.turn_id ?? segment?.id ?? index);
+}
+
+function buildSubtitlesForLocalizedShots(shots, options = {}) {
+  if (!Array.isArray(shots)) throw new TypeError('shots must be an array');
+  const segments = [];
+  for (const shot of shots) {
+    let localized = shot?.localized_dialogue_json ?? shot?.localized_dialogue ?? [];
+    if (typeof localized === 'string') {
+      try {
+        localized = JSON.parse(localized);
+      } catch (_) {
+        throw new TypeError('localized_dialogue_json must be valid JSON');
+      }
+    }
+    if (!Array.isArray(localized)) throw new TypeError('localized_dialogue_json must be an array');
+    const shotStart = Number(shot?.start_ms);
+    const shotEnd = Number(shot?.end_ms);
+    for (const [index, segment] of localized.entries()) {
+      const startMs = normalizeTimelineMs(segment?.start_ms);
+      const endMs = normalizeTimelineMs(segment?.end_ms);
+      if (!Number.isInteger(shotStart) || !Number.isInteger(shotEnd)
+        || !Number.isInteger(startMs) || !Number.isInteger(endMs)
+        || startMs < shotStart || endMs > shotEnd) {
+        const error = new Error('localized subtitle is outside shot bounds');
+        error.code = 'REDRAW_SUBTITLE_OUT_OF_SHOT_BOUNDS';
+        throw error;
+      }
+      segments.push({
+        segment_id: localizedSegmentId(segment, index),
+        start_ms: startMs,
+        end_ms: endMs,
+        text: localizedText(segment),
+      });
+    }
+  }
+  return buildSubtitles(segments, options);
+}
+
 module.exports = {
   buildSubtitles,
+  buildSubtitlesForLocalizedShots,
   validateSubtitles,
   serializeSrt,
   serializeVtt,

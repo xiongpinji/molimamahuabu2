@@ -7,6 +7,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const { calculateReleaseHash } = require('../src/services/redrawEpisodeReleaseService');
 const {
   buildJianyingManifest,
   getDownloadDescriptor,
@@ -103,7 +104,35 @@ function seedCompletedExport(state) {
     kind: 'subtitle_vtt',
     body: Buffer.from('WEBVTT\n\n00:00.000 --> 00:01.000\nHello\n'),
   });
+  const episodeReleaseUnsigned = {
+    schema_version: 'redraw-episode-release-v1',
+    project_id: 1,
+    work_id: 1,
+    version_id: state.versionId,
+    locale: 'en-US',
+    market: 'US',
+    shots: [
+      {
+        shot_id: 11, shot_index: 1, start_ms: 0, end_ms: 1000, candidate_review_id: 41,
+        candidate_sha256: '1'.repeat(64), audio_sha256: '2'.repeat(64),
+        subtitle_sha256: '3'.repeat(64), dependency_hash: '4'.repeat(64),
+      },
+      {
+        shot_id: 12, shot_index: 2, start_ms: 1000, end_ms: 3000, candidate_review_id: 42,
+        candidate_sha256: '5'.repeat(64), audio_sha256: '6'.repeat(64),
+        subtitle_sha256: '7'.repeat(64), dependency_hash: '8'.repeat(64),
+      },
+    ],
+    quality_summary: {
+      decision: 'approved', approved_shot_count: 2, automatic_review_count: 2, human_review_count: 0,
+    },
+  };
+  const episodeRelease = {
+    ...episodeReleaseUnsigned,
+    release_hash: calculateReleaseHash(episodeReleaseUnsigned),
+  };
   const manifest = {
+    episode_release: episodeRelease,
     inputs: {
       input_hash: 'input-hash',
       shot_ids: [11, 12],
@@ -125,10 +154,17 @@ function seedCompletedExport(state) {
   state.db.prepare(`
     INSERT INTO redraw_exports
       (id, version_id, tenant_id, user_id, export_type, asset_id, subtitle_asset_id,
-       version_number, manifest_json, status, created_at, updated_at)
+       version_number, manifest_json, release_hash, quality_summary_json, status, created_at, updated_at)
     VALUES (501, ?, 'tenant-a', 'user-a', 'video', 601, 602,
-      3, ?, 'completed', ?, ?)
-  `).run(state.versionId, JSON.stringify(manifest), NOW, NOW);
+      3, ?, ?, ?, 'completed', ?, ?)
+  `).run(
+    state.versionId,
+    JSON.stringify(manifest),
+    episodeRelease.release_hash,
+    JSON.stringify(episodeRelease.quality_summary),
+    NOW,
+    NOW,
+  );
   return { mp4, srt, vtt, manifest };
 }
 
@@ -138,6 +174,9 @@ function context(state, overrides = {}) {
     tenantId: overrides.tenantId || 'tenant-a',
     userId: overrides.userId || 'user-a',
     storageRoot: state.root,
+    episodeReleaseBuilder: overrides.episodeReleaseBuilder || (async () => (
+      JSON.parse(state.db.prepare('SELECT manifest_json FROM redraw_exports WHERE id = 501').get().manifest_json).episode_release
+    )),
   };
 }
 
@@ -226,6 +265,45 @@ test('MP4 不得用旧 outputs.hash 掩盖缺失的统一 hashes 合同', async 
     resolveDownloadArtifact(context(state), { exportId: 501, kind: 'mp4' }),
     (error) => error.code === 'REDRAW_EXPORT_CHECKSUM_MISMATCH',
   );
+});
+
+test('下载前重算当前 release 并拒绝嵌入、数据库或依赖哈希漂移', async (t) => {
+  const state = setup();
+  t.after(() => cleanup(state));
+  const { manifest } = seedCompletedExport(state);
+
+  state.db.prepare("UPDATE redraw_exports SET release_hash = ? WHERE id = 501").run('a'.repeat(64));
+  await assert.rejects(resolveDownloadArtifact(context(state), { exportId: 501, kind: 'mp4' }), {
+    code: 'REDRAW_EXPORT_RELEASE_HASH_MISMATCH',
+  });
+  state.db.prepare('UPDATE redraw_exports SET release_hash = ? WHERE id = 501').run(manifest.episode_release.release_hash);
+
+  const tampered = structuredClone(manifest);
+  tampered.episode_release.shots[0].dependency_hash = 'f'.repeat(64);
+  state.db.prepare('UPDATE redraw_exports SET manifest_json = ? WHERE id = 501').run(JSON.stringify(tampered));
+  await assert.rejects(resolveDownloadArtifact(context(state), { exportId: 501, kind: 'mp4' }), {
+    code: 'REDRAW_EXPORT_RELEASE_HASH_MISMATCH',
+  });
+  state.db.prepare('UPDATE redraw_exports SET manifest_json = ? WHERE id = 501').run(JSON.stringify(manifest));
+
+  const current = structuredClone(manifest.episode_release);
+  current.shots[0].candidate_sha256 = 'e'.repeat(64);
+  current.release_hash = calculateReleaseHash(current);
+  await assert.rejects(resolveDownloadArtifact(context(state, {
+    episodeReleaseBuilder: async () => current,
+  }), { exportId: 501, kind: 'mp4' }), {
+    code: 'REDRAW_EXPORT_RELEASE_HASH_MISMATCH',
+  });
+});
+
+test('旧 completed export 无 release_hash 时不能下载', async (t) => {
+  const state = setup();
+  t.after(() => cleanup(state));
+  seedCompletedExport(state);
+  state.db.prepare("UPDATE redraw_exports SET release_hash = NULL, manifest_json = '{}' WHERE id = 501").run();
+  await assert.rejects(resolveDownloadArtifact(context(state), { exportId: 501, kind: 'mp4' }), {
+    code: 'REDRAW_EXPORT_MANIFEST_INVALID',
+  });
 });
 
 test('下载拒绝 Windows junction 或符号链接转向存储根外文件', async (t) => {

@@ -2,6 +2,7 @@ const { createHash } = require('node:crypto');
 
 const dialogueService = require('./redrawDialogueService');
 const taskService = require('./taskService');
+const { assertCurrentApprovedCandidate } = require('./redrawCandidateReviewService');
 
 const TASK_TYPE = 'redraw_dialogue';
 
@@ -61,6 +62,7 @@ function taskMetadata(ctx, input) {
 
 function quoteDialogue(db, ctx = {}) {
   const normalized = normalizeContext(ctx);
+  assertApprovedDialogueScopeWhenRequired(db, normalized, ctx);
   return dialogueService.quoteDialoguePlan(db, {
     ...normalized,
     canReadAudioAsset: ctx.canReadAudioAsset,
@@ -70,6 +72,47 @@ function quoteDialogue(db, ctx = {}) {
     localeRegistry: ctx.localeRegistry,
     localeVerifier: ctx.localeVerifier,
   });
+}
+
+function versionStatus(db, ctx) {
+  return db.prepare(`
+    SELECT status FROM redraw_versions
+    WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+  `).get(ctx.versionId, ctx.tenantId, ctx.userId)?.status || null;
+}
+
+function assertCurrentApprovedDialogueScope(db, ctx = {}) {
+  const normalized = normalizeContext(ctx);
+  const rows = db.prepare(`
+    SELECT id, video_generation_id FROM redraw_shots
+    WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+    ORDER BY batch_index, shot_index, id
+  `).all(normalized.versionId, normalized.tenantId, normalized.userId);
+  if (!rows.length) throw codedError('REDRAW_DIALOGUE_APPROVED_SCOPE_EMPTY', '当前版本没有可处理镜头');
+  const reviewIds = [];
+  for (const row of rows) {
+    try {
+      const review = assertCurrentApprovedCandidate({
+        ...ctx,
+        db,
+        tenantId: normalized.tenantId,
+        userId: normalized.userId,
+      }, {
+        shot_id: Number(row.id),
+        video_generation_id: Number(row.video_generation_id),
+      });
+      reviewIds.push(Number(review.id));
+    } catch (error) {
+      throw codedError('REDRAW_DIALOGUE_CANDIDATE_NOT_APPROVED', '配音范围包含未批准或已漂移的候选', { cause: error?.code });
+    }
+  }
+  return { shot_ids: rows.map((row) => Number(row.id)), candidate_review_ids: reviewIds };
+}
+
+function assertApprovedDialogueScopeWhenRequired(db, normalized, ctx) {
+  const required = ctx.requireApprovedCandidates === true
+    || ['composing', 'completed'].includes(String(versionStatus(db, normalized)));
+  return required ? assertCurrentApprovedDialogueScope(db, { ...ctx, ...normalized }) : null;
 }
 
 function existingTask(db, ctx, resourceId) {
@@ -300,5 +343,6 @@ function reconcileOrphanedDialogueTasks(db, log = { warn() {} }) {
 module.exports = {
   quoteDialogue,
   startDialogue,
+  assertCurrentApprovedDialogueScope,
   reconcileOrphanedDialogueTasks,
 };

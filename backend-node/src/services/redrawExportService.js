@@ -5,6 +5,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { loadConfig } = require('../config');
+const {
+  buildEpisodeRelease,
+  assertReleaseHash,
+} = require('./redrawEpisodeReleaseService');
 
 const DOWNLOAD_KINDS = Object.freeze({
   mp4: {
@@ -163,6 +167,15 @@ async function resolveDownloadArtifact(ctx, input) {
   const row = ownedExport(ctx, input.exportId);
   const kind = String(input.kind || '').toLowerCase();
   const { asset, contract, manifest } = artifactBinding(ctx, row, kind);
+  let release;
+  try {
+    assertReleaseHash(manifest.episode_release, row.release_hash);
+    const builder = ctx.episodeReleaseBuilder || buildEpisodeRelease;
+    release = await builder(ctx, { version_id: Number(row.version_id) });
+    assertReleaseHash(release, row.release_hash);
+  } catch (error) {
+    throw exportError('REDRAW_EXPORT_RELEASE_HASH_MISMATCH', 'export release hash mismatch');
+  }
   const file = resolveReadableFile(resolveStorageRoot(ctx), asset.local_path);
   const digest = await hashFile(file.absolute);
   const expected = String(manifest.outputs?.hashes?.[kind] || '').toLowerCase();

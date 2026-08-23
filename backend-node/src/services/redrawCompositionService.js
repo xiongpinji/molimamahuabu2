@@ -9,6 +9,10 @@ const { loadConfig } = require('../config');
 const { getFfmpegPath, getFfprobePath } = require('../utils/ffmpegPath');
 const redrawGenerationService = require('./redrawGenerationService');
 const redrawSubtitleService = require('./redrawSubtitleService');
+const {
+  buildEpisodeRelease,
+  assertReleaseHash,
+} = require('./redrawEpisodeReleaseService');
 
 const VIDEO_TOLERANCE_MS = 250;
 const VIDEO_TOLERANCE_RATIO = 0.03;
@@ -186,11 +190,12 @@ async function verifyVideo(ctx, root, shot, videoRow, expectedSize) {
 }
 
 function validateTimeline(shots) {
-  if (!shots.length) throw codedError('REDRAW_COMPOSITION_SHOTS_EMPTY', 'no completed shots');
+  if (!shots.length) throw codedError('REDRAW_COMPOSITION_SHOTS_EMPTY', 'no approved shots');
   let expectedStart = 0;
   return shots.map((shot) => {
-    if (shot.status !== 'completed' || !shot.video_generation_id) {
-      throw codedError('REDRAW_COMPOSITION_SHOT_INCOMPLETE', 'version has incomplete shot');
+    if (!['approved', 'included'].includes(shot.status)
+      || !shot.video_generation_id || !shot.approved_candidate_review_id) {
+      throw codedError('REDRAW_COMPOSITION_SHOT_INCOMPLETE', 'version has unapproved shot');
     }
     if (Number(shot.start_ms) !== expectedStart) {
       throw codedError('REDRAW_COMPOSITION_TIMELINE_INVALID', 'timeline has gap or overlap');
@@ -208,16 +213,6 @@ function validateTimeline(shots) {
       duration_ms: Number(shot.duration_ms),
       video_generation_id: shot.video_generation_id,
     };
-  });
-}
-
-function collectSubtitleSegments(shots) {
-  return shots.flatMap((shot) => {
-    const segments = parseJson(shot.localized_dialogue_json, [], 'localized_dialogue_json');
-    if (!Array.isArray(segments)) {
-      throw codedError('REDRAW_COMPOSITION_INVALID_JSON', 'localized_dialogue_json must be array');
-    }
-    return segments;
   });
 }
 
@@ -288,7 +283,6 @@ async function collectAudio(ctx, root, shots) {
       audio.push(await validateAudioSegment(ctx, root, shot, segment));
     }
   }
-  if (!audio.length) throw codedError('REDRAW_COMPOSITION_AUDIO_INVALID', 'dialogue audio missing');
   return audio.sort((a, b) => a.start_ms - b.start_ms || a.asset_id - b.asset_id);
 }
 
@@ -302,6 +296,20 @@ async function buildCompositionPlan(ctx, input) {
     LIMIT 1
   `).get(versionId, String(ctx.tenantId), String(ctx.userId));
   if (!version) throw codedError('REDRAW_COMPOSITION_VERSION_NOT_FOUND', 'version not found');
+
+  let episodeRelease;
+  try {
+    episodeRelease = await buildEpisodeRelease(ctx, { version_id: versionId });
+    assertReleaseHash(episodeRelease, episodeRelease.release_hash);
+  } catch (error) {
+    if (error?.code === 'REDRAW_EPISODE_RELEASE_CANDIDATE_NOT_APPROVED') {
+      throw codedError('REDRAW_COMPOSITION_SHOT_INCOMPLETE', 'version has unapproved shot', error);
+    }
+    if (['REDRAW_EPISODE_RELEASE_ORDER_INVALID', 'REDRAW_EPISODE_RELEASE_TIMELINE_INVALID'].includes(error?.code)) {
+      throw codedError('REDRAW_COMPOSITION_TIMELINE_INVALID', 'shot timeline invalid', error);
+    }
+    throw codedError('REDRAW_COMPOSITION_INPUT_DRIFT', 'episode release inputs are not current', error);
+  }
 
   const shots = db.prepare(`
     SELECT * FROM redraw_shots
@@ -320,8 +328,7 @@ async function buildCompositionPlan(ctx, input) {
     videoInputs.push(verified);
   }
   const audioInputs = await collectAudio(ctx, root, shots);
-  const subtitleSegments = collectSubtitleSegments(shots);
-  const subtitles = redrawSubtitleService.buildSubtitles(subtitleSegments, { locale: version.locale || 'en-US' });
+  const subtitles = redrawSubtitleService.buildSubtitlesForLocalizedShots(shots, { locale: version.locale || 'en-US' });
   if (subtitles.status !== 'ready') {
     throw codedError('REDRAW_COMPOSITION_SUBTITLE_NEEDS_REWRITE', 'subtitle needs rewrite', subtitles.errors);
   }
@@ -339,7 +346,10 @@ async function buildCompositionPlan(ctx, input) {
     video_inputs: videoInputs,
     audio_inputs: audioInputs,
     subtitles,
+    episode_release: episodeRelease,
+    release_hash: episodeRelease.release_hash,
     input_hash: sha256(stableStringify({
+      release_hash: episodeRelease.release_hash,
       timeline,
       videos: videoInputs.map(({ id, relative_path, duration_ms, width, height, hash }) => ({ id, relative_path, duration_ms, width, height, hash })),
       audio: audioInputs.map(({ asset_id, relative_path, start_ms, end_ms, duration_ms, hash }) => ({ asset_id, relative_path, start_ms, end_ms, duration_ms, hash })),
@@ -371,6 +381,7 @@ async function createComposition(ctx, input) {
     idempotency_key: key,
     request_hash: hash,
     audio_mode: 'replace',
+    episode_release: plan.episode_release,
     plan: stripAbsolutePaths(plan),
   };
   return runImmediate(ctx.db, () => {
@@ -401,9 +412,20 @@ async function createComposition(ctx, input) {
     `).get(versionId).next);
     const info = ctx.db.prepare(`
       INSERT INTO redraw_exports
-        (version_id, tenant_id, user_id, export_type, version_number, manifest_json, status, created_at, updated_at)
-      VALUES (?, ?, ?, 'video', ?, ?, 'pending', ?, ?)
-    `).run(versionId, String(ctx.tenantId), String(ctx.userId), versionNumber, JSON.stringify(manifest), createdAt, createdAt);
+        (version_id, tenant_id, user_id, export_type, version_number, manifest_json,
+         release_hash, quality_summary_json, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'video', ?, ?, ?, ?, 'pending', ?, ?)
+    `).run(
+      versionId,
+      String(ctx.tenantId),
+      String(ctx.userId),
+      versionNumber,
+      JSON.stringify(manifest),
+      plan.release_hash,
+      JSON.stringify(plan.episode_release.quality_summary),
+      createdAt,
+      createdAt,
+    );
     return { ...ctx.db.prepare('SELECT * FROM redraw_exports WHERE id = ?').get(info.lastInsertRowid), created: true };
   });
 }
@@ -460,6 +482,9 @@ function ffmpegArgs(plan, outputs) {
   const args = ['-hide_banner', '-loglevel', 'error', '-y'];
   for (const input of plan.video_inputs) args.push('-i', input.absolute_path);
   for (const input of plan.audio_inputs) args.push('-i', input.absolute_path);
+  if (!plan.audio_inputs.length) {
+    args.push('-f', 'lavfi', '-t', String(plan.total_duration_ms / 1000), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000');
+  }
   const videoLabels = plan.video_inputs.map((input, index) => {
     const label = `v${index}`;
     return `[${index}:v]setpts=PTS-STARTPTS,scale=${plan.dimensions.width}:${plan.dimensions.height}:flags=lanczos,setsar=1,format=yuv420p[${label}]`;
@@ -470,7 +495,9 @@ function ffmpegArgs(plan, outputs) {
     const label = `a${index}`;
     return `[${audioOffset + index}:a]adelay=${input.start_ms}|${input.start_ms}[${label}]`;
   });
-  const mixed = `${plan.audio_inputs.map((_input, index) => `[a${index}]`).join('')}amix=inputs=${plan.audio_inputs.length}:normalize=0,apad,atrim=0:${plan.total_duration_ms / 1000}[aout]`;
+  const mixed = plan.audio_inputs.length
+    ? `${plan.audio_inputs.map((_input, index) => `[a${index}]`).join('')}amix=inputs=${plan.audio_inputs.length}:normalize=0,apad,atrim=0:${plan.total_duration_ms / 1000}[aout]`
+    : `[${audioOffset}:a]atrim=0:${plan.total_duration_ms / 1000}[aout]`;
   args.push(
     '-filter_complex',
     [...videoLabels, `${concatInputs}concat=n=${plan.video_inputs.length}:v=1:a=0[vcat]`, ...audioLabels, mixed].join(';'),
@@ -610,6 +637,11 @@ async function runComposition(ctx, exportId) {
     throw codedError('REDRAW_COMPOSITION_EXPORT_STATE_INVALID', 'export is not runnable');
   }
   const existingManifest = parseJson(row.manifest_json, {}, 'manifest_json');
+  try {
+    assertReleaseHash(existingManifest.episode_release, row.release_hash);
+  } catch (error) {
+    throw codedError('REDRAW_COMPOSITION_INPUT_DRIFT', 'stored episode release hash invalid', error);
+  }
   const plan = await buildCompositionPlan(ctx, {
     versionId: row.version_id,
     audioMode: 'replace',
@@ -619,7 +651,10 @@ async function runComposition(ctx, exportId) {
     audioMode: existingManifest.audio_mode || 'replace',
     inputHash: plan.input_hash,
   });
-  if (existingManifest?.plan?.input_hash !== plan.input_hash || existingManifest.request_hash !== expectedHash) {
+  if (existingManifest?.plan?.input_hash !== plan.input_hash
+    || existingManifest.request_hash !== expectedHash
+    || existingManifest.episode_release?.release_hash !== plan.release_hash
+    || String(row.release_hash || '') !== plan.release_hash) {
     throw codedError('REDRAW_COMPOSITION_INPUT_DRIFT', 'composition inputs changed after create');
   }
   runImmediate(db, () => {
@@ -687,6 +722,7 @@ async function runComposition(ctx, exportId) {
         idempotency_key: existingManifest.idempotency_key,
         request_hash: existingManifest.request_hash,
         audio_mode: 'replace',
+        episode_release: plan.episode_release,
         inputs: {
           shot_ids: plan.timeline.map((item) => item.shot_id),
           video_generation_ids: plan.video_inputs.map((item) => item.id),
@@ -709,12 +745,48 @@ async function runComposition(ctx, exportId) {
       const update = db.prepare(`
         UPDATE redraw_exports
         SET status = 'completed', asset_id = ?, subtitle_asset_id = ?,
-            manifest_json = ?, updated_at = ?, error_code = NULL, error_message = NULL
+            manifest_json = ?, release_hash = ?, quality_summary_json = ?,
+            updated_at = ?, error_code = NULL, error_message = NULL
         WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'processing'
-      `).run(mp4AssetId, srtAssetId, JSON.stringify(manifest), completedAt, id, String(ctx.tenantId), String(ctx.userId));
+      `).run(
+        mp4AssetId,
+        srtAssetId,
+        JSON.stringify(manifest),
+        plan.release_hash,
+        JSON.stringify(plan.episode_release.quality_summary),
+        completedAt,
+        id,
+        String(ctx.tenantId),
+        String(ctx.userId),
+      );
       if (update.changes !== 1) {
         throw codedError('REDRAW_COMPOSITION_EXPORT_STATE_INVALID', 'export completion CAS failed');
       }
+      for (const shot of plan.episode_release.shots) {
+        const included = db.prepare(`
+          UPDATE redraw_shots
+          SET status = 'included', updated_at = ?
+          WHERE id = ? AND version_id = ? AND tenant_id = ? AND user_id = ?
+            AND approved_candidate_review_id = ? AND status IN ('approved', 'included') AND deleted_at IS NULL
+        `).run(
+          completedAt,
+          shot.shot_id,
+          row.version_id,
+          String(ctx.tenantId),
+          String(ctx.userId),
+          shot.candidate_review_id,
+        );
+        if (included.changes !== 1) {
+          throw codedError('REDRAW_COMPOSITION_INPUT_DRIFT', 'approved candidate changed during composition');
+        }
+      }
+      db.prepare(`UPDATE redraw_versions SET status = 'completed', updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL`)
+        .run(completedAt, row.version_id, String(ctx.tenantId), String(ctx.userId));
+      db.prepare(`UPDATE redraw_works SET status = 'completed', current_step = 4, updated_at = ?
+        WHERE id = (SELECT work_id FROM redraw_versions WHERE id = ?)
+          AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL`)
+        .run(completedAt, row.version_id, String(ctx.tenantId), String(ctx.userId));
       return db.prepare(`
         SELECT * FROM redraw_exports
         WHERE id = ? AND tenant_id = ? AND user_id = ?
