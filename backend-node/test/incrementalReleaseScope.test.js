@@ -1,7 +1,6 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -49,6 +48,27 @@ const providerTaskReceiptManifestPath = path.join(
   'release-scopes',
   'provider-task-receipt-reconciliation-20260822.json',
 );
+const providerTaskLiveCompatManifestPath = path.join(
+  repoRoot,
+  'deploy',
+  'release-scopes',
+  'provider-task-receipt-live-compat-20260823.json',
+);
+const PROVIDER_TASK_LIVE_COMPAT_RUNTIME_REPAIR_PATHS = [
+  'backend-node/src/db/migrate.js',
+  'backend-node/src/services/videoClient.js',
+  'backend-node/src/services/videoService.js',
+];
+const PROVIDER_TASK_LIVE_COMPAT_ALLOWED_PATHS = [
+  'backend-node/scripts/apply-provider-task-live-compat.js',
+  ...PROVIDER_TASK_LIVE_COMPAT_RUNTIME_REPAIR_PATHS,
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/providerTaskLiveCompatibility.test.js',
+  'deploy/release-scopes/provider-task-receipt-live-compat-20260823.json',
+  'docs/verification/platform-stability/feature-lock-manifest.json',
+  'docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md',
+];
 const PROVIDER_TASK_RECEIPT_ALLOWED_PATHS = [
   'backend-node/migrations/64_provider_task_receipt_reconciliation.sql',
   'backend-node/src/app.js',
@@ -257,17 +277,6 @@ function assertExactVideoAudioCreditScope(allowedPaths) {
 
 function assertExactProviderTaskReceiptScope(allowedPaths) {
   assert.deepEqual(allowedPaths, PROVIDER_TASK_RECEIPT_ALLOWED_PATHS);
-}
-
-function providerTaskReceiptChangedPaths() {
-  return execFileSync('git', ['diff', '--name-only', 'origin/main...HEAD', '--'], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-  })
-    .split(/\r?\n/)
-    .map((entry) => entry.trim().replaceAll('\\', '/'))
-    .filter(Boolean)
-    .sort();
 }
 
 function createFixture() {
@@ -540,11 +549,10 @@ test('视频音频与冻结积分收口发布范围拒绝同数量偷换任一�
   );
 });
 
-test('供应商任务不可变凭证发布范围与 origin/main 到候选的 29 个路径逐项相等', () => {
+test('供应商任务不可变凭证历史发布范围固定为精确 29 个路径', () => {
   const { manifest, allowedPaths } = loadManifest(providerTaskReceiptManifestPath);
   assert.equal(manifest.release, 'provider-task-receipt-reconciliation-20260822');
   assertExactProviderTaskReceiptScope(allowedPaths);
-  assert.deepEqual(allowedPaths, providerTaskReceiptChangedPaths());
   assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
 
   for (const forbidden of [
@@ -574,4 +582,36 @@ test('供应商任务不可变凭证发布范围拒绝同数量偷换任一文�
     () => assertExactProviderTaskReceiptScope(swapped),
     { name: 'AssertionError' },
   );
+});
+
+test('供应商任务线上兼容补丁使用独立十文件范围并显式声明三处运行时修复', () => {
+  const { manifest, allowedPaths } = loadManifest(providerTaskLiveCompatManifestPath);
+  assert.equal(manifest.release, 'provider-task-receipt-live-compat-20260823');
+  assert.deepEqual(allowedPaths, PROVIDER_TASK_LIVE_COMPAT_ALLOWED_PATHS);
+  assert.deepEqual(manifest.runtimeRepairPaths, PROVIDER_TASK_LIVE_COMPAT_RUNTIME_REPAIR_PATHS);
+  assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
+  assert.equal(manifest.runtimeRepairPaths.every((entry) => allowedPaths.includes(entry)), true);
+  for (const forbidden of [
+    'backend-node/data',
+    'backend-node/uploads',
+    'storage',
+    'assets',
+    'ai-music',
+    'moli-music',
+    'deploy/install-protected-release-guard.sh',
+    'shared/release-guard',
+  ]) {
+    assert.equal(
+      allowedPaths.some((entry) => entry === forbidden || entry.startsWith(`${forbidden}/`)),
+      false,
+      `发布范围不得包含: ${forbidden}`,
+    );
+  }
+});
+
+test('供应商任务线上兼容补丁范围拒绝同数量偷换运行时文件', () => {
+  const swapped = [...PROVIDER_TASK_LIVE_COMPAT_ALLOWED_PATHS];
+  swapped[swapped.indexOf('backend-node/src/db/migrate.js')] = 'backend-node/data/drama_generator.db';
+  assert.equal(swapped.length, PROVIDER_TASK_LIVE_COMPAT_ALLOWED_PATHS.length);
+  assert.notDeepEqual(swapped, PROVIDER_TASK_LIVE_COMPAT_ALLOWED_PATHS);
 });
