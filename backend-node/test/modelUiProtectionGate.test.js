@@ -434,13 +434,21 @@ test('model UI gate rejects selectedVideoModel and catalog normalization moved i
 ))`;
   assertMutationRejected(
     'frontweb/src/components/dramaCanvas/CanvasGenerationOptions.vue',
-    (source) => source
-      .replace(selectedModel, 'const selectedVideoModel = computed(() => null)')
-      .replace('</script>', `function deadSelectedVideoModelContract() {
+    (source) => {
+      const sourceSelectedModel = source.includes(selectedModel)
+        ? selectedModel
+        : selectedModel.replaceAll('\n', '\r\n');
+      const withoutLiveMapping = source.replace(
+        sourceSelectedModel,
+        'const selectedVideoModel = computed(() => null)',
+      );
+      assert.notEqual(withoutLiveMapping, source, 'mutation must replace the live selectedVideoModel mapping');
+      return withoutLiveMapping.replace('</script>', `function deadSelectedVideoModelContract() {
   ${selectedModel}
   return selectedVideoModel
 }
-</script>`),
+</script>`);
+    },
     /CanvasGenerationOptions\.vue.*selectedVideoModel scoped mapping/,
   );
 
