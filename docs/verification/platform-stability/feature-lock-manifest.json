@@ -538,11 +538,13 @@
         "backend-node/test/providerAssetSignedAccess.test.js",
         "backend-node/test/providerCanaryAdminRoutes.test.js",
         "backend-node/test/providerCanaryArtifacts.test.js",
+        "backend-node/test/providerCanaryAudioArtifact.test.js",
         "backend-node/test/providerCanaryBudget.test.js",
         "backend-node/test/providerCanaryEvidence.test.js",
         "backend-node/test/providerCanaryExecutor.test.js",
         "backend-node/test/providerCanaryFixtures.test.js",
         "backend-node/test/providerCanaryInvalidation.test.js",
+        "backend-node/test/providerCanaryInventory.test.js",
         "backend-node/test/providerCanaryPublicGate.test.js",
         "backend-node/test/providerCanaryScheduler.test.js",
         "backend-node/test/providerCanaryTextConfig.test.js",
@@ -585,7 +587,9 @@
         "docs/superpowers/specs/2026-08-22-provider-task-receipt-reconciliation-design.md",
         "docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md",
         "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md",
-        "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md"
+        "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md",
+        "docs/superpowers/plans/2026-08-23-provider-readiness-tts-canary.md",
+        "docs/verification/platform-stability/provider-readiness-repair-manifest-20260823.md"
       ],
       "fixCommit": null,
       "unlockHistory": [
@@ -682,18 +686,31 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 供应商任务实时候选三处兼容修复获批",
+          "approvedBy": "product-owner 2026-08-23 provider-task-live-candidate-compatibility",
+          "impactTests": [
+            "backend-node/test/providerTaskLiveCompatibility.test.js",
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 供应商任务实时候选三处兼容修复获批",
-        "approvedBy": "product-owner 2026-08-23 provider-task-live-candidate-compatibility",
+        "reason": "2026-08-23 TTS 主动巡检闭环与功能锁修复获批",
+        "approvedBy": "product-owner 2026-08-23 provider-readiness-tts-canary-ci-lock",
         "impactTests": [
-          "backend-node/test/providerTaskLiveCompatibility.test.js",
-          "backend-node/test/providerRouteSchema.test.js",
-          "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/providerTaskReconciliation.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js",
-          "backend-node/test/featureLockManifest.test.js"
+          "backend-node/test/providerCanaryAudioArtifact.test.js",
+          "backend-node/test/providerCanaryExecutor.test.js",
+          "backend-node/test/providerCanaryInventory.test.js",
+          "backend-node/test/providerCanaryScheduler.test.js",
+          "backend-node/test/providerRuntimeFingerprint.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },

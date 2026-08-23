@@ -39,6 +39,26 @@ const PROVIDER_TASK_LIVE_COMPAT_UNLOCK = {
     'backend-node/test/featureLockManifest.test.js',
   ],
 };
+const PROVIDER_READINESS_TTS_EVIDENCE = [
+  'docs/superpowers/plans/2026-08-23-provider-readiness-tts-canary.md',
+  'docs/verification/platform-stability/provider-readiness-repair-manifest-20260823.md',
+];
+const PROVIDER_READINESS_TTS_REQUIRED_TESTS = [
+  'backend-node/test/providerCanaryAudioArtifact.test.js',
+  'backend-node/test/providerCanaryExecutor.test.js',
+  'backend-node/test/providerCanaryInventory.test.js',
+  'backend-node/test/providerCanaryScheduler.test.js',
+  'backend-node/test/providerRuntimeFingerprint.test.js',
+];
+const PROVIDER_READINESS_TTS_UNLOCK = {
+  reason: '2026-08-23 TTS 主动巡检闭环与功能锁修复获批',
+  approvedBy: 'product-owner 2026-08-23 provider-readiness-tts-canary-ci-lock',
+  impactTests: [
+    ...PROVIDER_READINESS_TTS_REQUIRED_TESTS,
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
 const PROVIDER_TASK_RECEIPT_EVIDENCE = [
   'docs/superpowers/specs/2026-08-22-provider-task-receipt-reconciliation-design.md',
   'docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md',
@@ -326,11 +346,13 @@ const PROACTIVE_CANARY_REQUIRED_TESTS = [
   'backend-node/test/providerAssetSignedAccess.test.js',
   'backend-node/test/providerCanaryAdminRoutes.test.js',
   'backend-node/test/providerCanaryArtifacts.test.js',
+  'backend-node/test/providerCanaryAudioArtifact.test.js',
   'backend-node/test/providerCanaryBudget.test.js',
   'backend-node/test/providerCanaryEvidence.test.js',
   'backend-node/test/providerCanaryExecutor.test.js',
   'backend-node/test/providerCanaryFixtures.test.js',
   'backend-node/test/providerCanaryInvalidation.test.js',
+  'backend-node/test/providerCanaryInventory.test.js',
   'backend-node/test/providerCanaryPublicGate.test.js',
   'backend-node/test/providerCanaryScheduler.test.js',
   'backend-node/test/providerCanaryTextConfig.test.js',
@@ -493,6 +515,18 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   assert.deepEqual(feature.evidence.slice(0, PROACTIVE_CANARY_EVIDENCE.length), PROACTIVE_CANARY_EVIDENCE);
 });
 
+test('TTS 主动巡检刷新功能锁批准并保留上一阶段历史与证据', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
+  assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
+  assert.deepEqual(feature.unlock, PROVIDER_READINESS_TTS_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), PROVIDER_TASK_LIVE_COMPAT_UNLOCK);
+  assert.deepEqual(feature.evidence.slice(-PROVIDER_READINESS_TTS_EVIDENCE.length), PROVIDER_READINESS_TTS_EVIDENCE);
+  for (const testPath of PROVIDER_READINESS_TTS_REQUIRED_TESTS) {
+    assert.ok(feature.requiredTests.includes(testPath), `TTS 功能锁缺少影响测试: ${testPath}`);
+  }
+});
+
 test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜批准并保留完整历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   for (const [featureId, requirements] of Object.entries(PROVIDER_TASK_LOCK_REQUIREMENTS)) {
@@ -503,10 +537,9 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     const previousUnlock = qualityFixTouched
       ? PROVIDER_TASK_STATUS_DECISION_UNLOCK
       : PROVIDER_TASK_RECEIPT_UNLOCK;
-    assert.deepEqual(
-      feature.unlock,
-      liveCompatTouched ? PROVIDER_TASK_LIVE_COMPAT_UNLOCK : previousUnlock,
-    );
+    assert.deepEqual(feature.unlock, featureId === PROACTIVE_CANARY_FEATURE_ID
+      ? PROVIDER_READINESS_TTS_UNLOCK
+      : (liveCompatTouched ? PROVIDER_TASK_LIVE_COMPAT_UNLOCK : previousUnlock));
     assert.deepEqual(feature.unlockHistory, [
       HISTORICAL_UNLOCK_BY_FEATURE[featureId],
       ...(qualityFixTouched ? [PROVIDER_TASK_RECEIPT_UNLOCK] : []),
@@ -514,6 +547,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       ...(qualityFixTouched ? [LEGACY_DJPSD_STRICT_ARTIFACT_UNLOCK] : []),
       ...(qualityFixTouched ? [ASYNC_VIDEO_PROTOCOL_ARTIFACT_UNLOCK] : []),
       ...(liveCompatTouched ? [previousUnlock] : []),
+      ...(featureId === PROACTIVE_CANARY_FEATURE_ID ? [PROVIDER_TASK_LIVE_COMPAT_UNLOCK] : []),
     ]);
     assert.deepEqual(
       feature.evidence.slice(0, HISTORICAL_EVIDENCE_BY_FEATURE[featureId].length),
@@ -528,7 +562,12 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     for (const evidencePath of PROVIDER_TASK_RECEIPT_EVIDENCE) {
       assert.ok(feature.evidence.includes(evidencePath), `${featureId} 缺少证据: ${evidencePath}`);
     }
-    if (liveCompatTouched) {
+    if (featureId === PROACTIVE_CANARY_FEATURE_ID) {
+      assert.deepEqual(
+        feature.evidence.slice(-PROVIDER_READINESS_TTS_EVIDENCE.length),
+        PROVIDER_READINESS_TTS_EVIDENCE,
+      );
+    } else if (liveCompatTouched) {
       assert.equal(feature.evidence.at(-1), PROVIDER_TASK_LIVE_COMPAT_EVIDENCE);
     } else {
       assert.deepEqual(
@@ -544,7 +583,12 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
   assert.deepEqual(appLocks, [PROACTIVE_CANARY_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].sort());
   for (const featureId of appLocks) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
-    assert.deepEqual(feature.unlock, PROVIDER_TASK_LIVE_COMPAT_UNLOCK);
+    assert.deepEqual(
+      feature.unlock,
+      featureId === PROACTIVE_CANARY_FEATURE_ID
+        ? PROVIDER_READINESS_TTS_UNLOCK
+        : PROVIDER_TASK_LIVE_COMPAT_UNLOCK,
+    );
   }
 });
 
@@ -578,13 +622,23 @@ test('实时候选兼容修复刷新四个运行时功能锁并登记补丁测�
   ]) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
     assert.ok(feature, `缺少功能锁 ${featureId}`);
-    assert.deepEqual(feature.unlock, PROVIDER_TASK_LIVE_COMPAT_UNLOCK);
+    assert.deepEqual(
+      feature.unlock,
+      featureId === PROACTIVE_CANARY_FEATURE_ID
+        ? PROVIDER_READINESS_TTS_UNLOCK
+        : PROVIDER_TASK_LIVE_COMPAT_UNLOCK,
+    );
     assert.ok(feature.unlockHistory.some((entry) => (
       entry.reason === PROVIDER_TASK_STATUS_DECISION_UNLOCK.reason
         || entry.reason === PROVIDER_TASK_RECEIPT_UNLOCK.reason
     )), `${featureId} 缺少上一阶段批准历史`);
     assert.ok(feature.requiredTests.includes('backend-node/test/providerTaskLiveCompatibility.test.js'));
-    assert.equal(feature.evidence.at(-1), PROVIDER_TASK_LIVE_COMPAT_EVIDENCE);
+    assert.equal(
+      feature.evidence.at(-1),
+      featureId === PROACTIVE_CANARY_FEATURE_ID
+        ? PROVIDER_READINESS_TTS_EVIDENCE.at(-1)
+        : PROVIDER_TASK_LIVE_COMPAT_EVIDENCE,
+    );
   }
 });
 
