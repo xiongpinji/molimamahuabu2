@@ -17,6 +17,12 @@ const COMMON_FILES = Object.freeze({
   text: ['src/services/aiClient.js', ...CANARY_RUNTIME_FILES, 'src/services/providerErrorClassifier.js'],
   image: ['src/services/imageClient.js', ...CANARY_RUNTIME_FILES, 'src/services/providerErrorClassifier.js'],
   video: ['src/services/videoClient.js', ...CANARY_RUNTIME_FILES, 'src/services/providerErrorClassifier.js'],
+  tts: [
+    'src/services/ttsConfigSelectionService.js',
+    'src/services/ttsService.js',
+    ...CANARY_RUNTIME_FILES,
+    'src/services/providerErrorClassifier.js',
+  ],
 });
 
 const PROTOCOL_ADAPTERS = Object.freeze({
@@ -61,6 +67,10 @@ const PROTOCOL_ADAPTERS = Object.freeze({
     volcengine: [],
     volcengine_omni: [],
     xai: [],
+  }),
+  tts: Object.freeze({
+    minimax: [],
+    openai: [],
   }),
 });
 
@@ -115,6 +125,10 @@ const PROVIDER_PROTOCOLS = Object.freeze({
     volcengine: 'volcengine',
     xai: 'xai',
   }),
+  tts: Object.freeze({
+    minimax: 'minimax',
+    openai: 'openai',
+  }),
 });
 
 const PROVIDER_EXTRA_FILES = Object.freeze({
@@ -123,6 +137,7 @@ const PROVIDER_EXTRA_FILES = Object.freeze({
   }),
   video: Object.freeze({}),
   text: Object.freeze({}),
+  tts: Object.freeze({}),
 });
 
 const VIDEO_FORCED_PROVIDER_PROTOCOLS = new Set([
