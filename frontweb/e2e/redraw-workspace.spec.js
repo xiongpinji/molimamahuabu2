@@ -695,6 +695,14 @@ async function createProjectFromGlobalEntry(page) {
   await expect(page).toHaveURL(/\/redraw$/)
   await expect(page.getByRole('heading', { name: '一键转绘项目' })).toBeVisible()
   await page.getByRole('button', { name: '新建转绘项目' }).click()
+  const dialog = page.getByRole('dialog', { name: '新建转绘项目' })
+  await expect(dialog).toBeVisible()
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+      && new URL(response.url()).pathname === '/api/v1/redraw/projects'
+  ))
+  await dialog.getByRole('button', { name: '创建', exact: true }).click()
+  await responsePromise
   await expect(page).toHaveURL(/\/redraw\/projects\/41\/works\/new\?step=1/)
   await expect(page.getByText('一键转绘工作台')).toBeVisible()
 }
