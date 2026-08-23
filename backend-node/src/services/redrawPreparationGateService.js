@@ -464,7 +464,7 @@ function validateText(ctx, shot, text) {
   const expectedHash = String(text.clean_plate?.pack_sha256 || text.pack_sha256 || pack?.pack_sha256 || '').trim();
   const work = ctx.db.prepare('SELECT source_fingerprint FROM redraw_works WHERE id = ? LIMIT 1').get(Number(shot.work_id));
   const sourceFingerprint = String(work?.source_fingerprint || '').trim();
-  return sourceKeyFromPayload(payload) === regionKey
+  const valid = sourceKeyFromPayload(payload) === regionKey
     && payload.source_ref?.kind === kind
     && payload.snapshot?.mode === 'text_clean_plate'
     && isPlainObject(pack)
@@ -482,6 +482,21 @@ function validateText(ctx, shot, text) {
       tenantId: shot.tenant_id,
       userId: shot.user_id,
     }));
+  if (!valid || !completedNeedsReview) return valid;
+  const current = readCurrentCleanResultEvidence(ctx, shot, {
+    kind: 'text_clean',
+    key: regionKey,
+    options: { text_kind: kind },
+  }, rowId);
+  const ref = isPlainObject(payload.source_ref) ? payload.source_ref : {};
+  const bundlePackHash = String(text.clean_plate?.pack_sha256 || text.pack_sha256 || '').trim();
+  return Boolean(current)
+    && HEX_64.test(bundlePackHash)
+    && current.pack_sha256 === bundlePackHash
+    && current.clean_plate_asset_id === Number(row.clean_plate_asset_id)
+    && current.source_sha256 === String(ref.source_fingerprint || '')
+    && current.analysis_sha256 === String(ref.analysis_sha256 || '')
+    && current.frame_index === Number(ref.frame_index);
 }
 
 function assetSha(asset) {

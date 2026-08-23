@@ -55,6 +55,17 @@ function textCleanPack(input) {
     schema_version: 'text-clean-plate-reference-v1',
     region_key: input.regionKey,
     kind: input.kind,
+    analysis_sha256: input.analysisSha256,
+    frame_index: input.frameIndex,
+    input_frame_fingerprint: input.sourceSha256,
+    source: {
+      asset_id: input.sourceAssetId,
+      sha256: input.sourceSha256,
+    },
+    mask: {
+      asset_id: input.maskAssetId,
+      sha256: input.maskSha256,
+    },
     artifact: {
       asset_id: input.assetId,
       sha256: input.sha256,
@@ -127,6 +138,8 @@ function setup() {
   const voiceBytes = Buffer.from('voice-audio');
   const motionBytes = Buffer.from('motion-reference-video');
   const textCleanBytes = Buffer.from('text-clean-image');
+  const textCleanSourceBytes = Buffer.from('text-clean-source-image');
+  const textCleanMaskBytes = Buffer.from('text-clean-mask-image');
   const sourceFingerprint = sha256('source');
   const sourceAssetId = 101;
   writeFile(storageRoot, 'redraw/identity.png', imageBytes);
@@ -134,6 +147,8 @@ function setup() {
   writeFile(storageRoot, 'redraw/voice.mp3', voiceBytes);
   writeFile(storageRoot, `redraw-conditioning/${sha256(motionBytes)}.mp4`, motionBytes);
   writeFile(storageRoot, 'redraw/text-clean.png', textCleanBytes);
+  writeFile(storageRoot, 'redraw/text-clean-source.png', textCleanSourceBytes);
+  writeFile(storageRoot, 'redraw/text-clean-mask.png', textCleanMaskBytes);
   insertAsset(db, {
     id: sourceAssetId,
     type: 'video',
@@ -198,6 +213,20 @@ function setup() {
     localPath: 'redraw/text-clean.png',
     sha256: sha256(textCleanBytes),
   });
+  insertAsset(db, {
+    id: 303,
+    type: 'image',
+    mimeType: 'image/png',
+    localPath: 'redraw/text-clean-source.png',
+    sha256: sha256(textCleanSourceBytes),
+  });
+  insertAsset(db, {
+    id: 304,
+    type: 'image',
+    mimeType: 'image/png',
+    localPath: 'redraw/text-clean-mask.png',
+    sha256: sha256(textCleanMaskBytes),
+  });
   db.prepare(`INSERT INTO redraw_projects
     (tenant_id, user_id, title, created_at, updated_at)
     VALUES ('tenant-a', 'user-a', '准备门禁项目', ?, ?)`).run(NOW, NOW);
@@ -257,23 +286,6 @@ function setup() {
     .run(versionId, JSON.stringify({
       source_ref: { source_character_key: 'char-a' },
     }), NOW, NOW, NOW);
-  db.prepare(`INSERT INTO redraw_assets
-    (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
-     clean_plate_asset_id, version_number, approval_status, approved_by,
-     approved_at, status, created_at, updated_at)
-    VALUES (202, ?, 'tenant-a', 'user-a', 'scene', ?, 'clean plate',
-      302, 1, 'approved', 'user-a', ?, 'generated', ?, ?)`)
-    .run(versionId, JSON.stringify({
-      source_ref: { stable_id: 'text-001', kind: 'text_subtitle' },
-      snapshot: { mode: 'text_clean_plate' },
-      text_clean_plate_pack: textCleanPack({
-        regionKey: 'text-001',
-        kind: 'text_subtitle',
-        assetId: 302,
-        sha256: sha256(textCleanBytes),
-        sourceFingerprint,
-      }),
-    }), NOW, NOW, NOW);
   const shotId = Number(db.prepare(`INSERT INTO redraw_shots
     (work_id, version_id, tenant_id, user_id, shot_id, batch_index, shot_index,
      start_ms, end_ms, duration_ms, references_json, status, preparation_state,
@@ -324,6 +336,37 @@ function setup() {
         source_fingerprint: sourceFingerprint, analysis_sha256: coverageManifest.analysis_sha256,
       },
     }), NOW, NOW, NOW);
+  const completeTextCleanPack = textCleanPack({
+    regionKey: 'text-001',
+    kind: 'text_subtitle',
+    assetId: 302,
+    sha256: sha256(textCleanBytes),
+    sourceFingerprint,
+    sourceAssetId: 303,
+    sourceSha256: sha256(textCleanSourceBytes),
+    maskAssetId: 304,
+    maskSha256: sha256(textCleanMaskBytes),
+    analysisSha256: coverageManifest.analysis_sha256,
+    frameIndex: 0,
+  });
+  db.prepare(`INSERT INTO redraw_assets
+    (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+     clean_plate_asset_id, mask_asset_id, version_number, approval_status, approved_by,
+     approved_at, status, created_at, updated_at)
+    VALUES (202, ?, 'tenant-a', 'user-a', 'scene', ?, 'clean plate',
+      302, 304, 1, 'approved', 'user-a', ?, 'generated', ?, ?)`)
+    .run(versionId, JSON.stringify({
+      source_ref: {
+        stable_id: 'text-001',
+        kind: 'text_subtitle',
+        source_asset_id: 303,
+        source_fingerprint: sha256(textCleanSourceBytes),
+        analysis_sha256: coverageManifest.analysis_sha256,
+        frame_index: 0,
+      },
+      snapshot: { mode: 'text_clean_plate' },
+      text_clean_plate_pack: completeTextCleanPack,
+    }), NOW, NOW, NOW);
   return {
     db,
     storageRoot,
@@ -333,13 +376,7 @@ function setup() {
     sourceFingerprint,
     identityPackHash: pack.pack_sha256,
     motionHash: sha256(motionBytes),
-    textCleanPackHash: textCleanPack({
-      regionKey: 'text-001',
-      kind: 'text_subtitle',
-      assetId: 302,
-      sha256: sha256(textCleanBytes),
-      sourceFingerprint,
-    }).pack_sha256,
+    textCleanPackHash: completeTextCleanPack.pack_sha256,
     coverageBinding: {
       analysis_sha256: coverageManifest.analysis_sha256,
       approved_by: 'user-a',
@@ -539,7 +576,7 @@ test('准备门禁接受已批准且证据完整的 needs_attention 文字净景
   }
 });
 
-test('准备门禁拒绝未完成或证据漂移的 needs_attention 文字净景', () => {
+test('准备门禁拒绝未完成或证据漂移的 needs_attention 文字净景', async (t) => {
   const cases = [
     {
       label: '错误码未清空',
@@ -611,25 +648,104 @@ test('准备门禁拒绝未完成或证据漂移的 needs_attention 文字净景
         fs.writeFileSync(path.join(state.storageRoot, 'redraw/text-clean.png'), 'tampered text clean');
       },
     },
+    {
+      label: '源帧文件缺失',
+      mutate(state) {
+        state.db.prepare(`UPDATE redraw_assets
+          SET status = 'needs_attention', error_code = NULL, error_message = NULL
+          WHERE id = 202`).run();
+        fs.rmSync(path.join(state.storageRoot, 'redraw/text-clean-source.png'));
+      },
+    },
+    {
+      label: '源帧文件哈希漂移',
+      mutate(state) {
+        state.db.prepare(`UPDATE redraw_assets
+          SET status = 'needs_attention', error_code = NULL, error_message = NULL
+          WHERE id = 202`).run();
+        fs.writeFileSync(path.join(state.storageRoot, 'redraw/text-clean-source.png'), 'tampered source');
+      },
+    },
+    {
+      label: '遮罩文件缺失',
+      mutate(state) {
+        state.db.prepare(`UPDATE redraw_assets
+          SET status = 'needs_attention', error_code = NULL, error_message = NULL
+          WHERE id = 202`).run();
+        fs.rmSync(path.join(state.storageRoot, 'redraw/text-clean-mask.png'));
+      },
+    },
+    {
+      label: '遮罩文件哈希漂移',
+      mutate(state) {
+        state.db.prepare(`UPDATE redraw_assets
+          SET status = 'needs_attention', error_code = NULL, error_message = NULL
+          WHERE id = 202`).run();
+        fs.writeFileSync(path.join(state.storageRoot, 'redraw/text-clean-mask.png'), 'tampered mask');
+      },
+    },
+    {
+      label: '遮罩资产缺失',
+      mutate(state) {
+        state.db.prepare(`UPDATE redraw_assets
+          SET status = 'needs_attention', error_code = NULL, error_message = NULL,
+              mask_asset_id = NULL
+          WHERE id = 202`).run();
+      },
+    },
+    {
+      label: '遮罩资产与净景包不一致',
+      mutate(state) {
+        state.db.prepare(`UPDATE redraw_assets
+          SET status = 'needs_attention', error_code = NULL, error_message = NULL,
+              mask_asset_id = 303
+          WHERE id = 202`).run();
+      },
+    },
+    {
+      label: '分析绑定漂移',
+      mutate(state) {
+        const row = state.db.prepare('SELECT source_ref_json FROM redraw_assets WHERE id = 202').get();
+        const payload = JSON.parse(row.source_ref_json);
+        payload.source_ref.analysis_sha256 = 'f'.repeat(64);
+        state.db.prepare(`UPDATE redraw_assets
+          SET status = 'needs_attention', error_code = NULL, error_message = NULL,
+              source_ref_json = ?
+          WHERE id = 202`).run(JSON.stringify(payload));
+      },
+    },
+    {
+      label: '帧绑定漂移',
+      mutate(state) {
+        const row = state.db.prepare('SELECT source_ref_json FROM redraw_assets WHERE id = 202').get();
+        const payload = JSON.parse(row.source_ref_json);
+        payload.source_ref.frame_index = 1;
+        state.db.prepare(`UPDATE redraw_assets
+          SET status = 'needs_attention', error_code = NULL, error_message = NULL,
+              source_ref_json = ?
+          WHERE id = 202`).run(JSON.stringify(payload));
+      },
+    },
   ];
 
   for (const entry of cases) {
-    const state = setup();
-    try {
-      makeTextBundle(state);
-      entry.mutate(state);
+    await t.test(entry.label, () => {
+      const state = setup();
+      try {
+        makeTextBundle(state);
+        entry.mutate(state);
 
-      const gate = evaluatePreparationGate(context(state), state.versionId);
+        const gate = evaluatePreparationGate(context(state), state.versionId);
 
-      assert.equal(gate.ok, false, entry.label);
-      assert.equal(
-        gate.missing.some((item) => item.reason_code === 'text_cleanup_missing'),
-        true,
-        entry.label,
-      );
-    } finally {
-      state.cleanup();
-    }
+        assert.equal(gate.ok, false);
+        assert.equal(
+          gate.missing.some((item) => item.reason_code === 'text_cleanup_missing'),
+          true,
+        );
+      } finally {
+        state.cleanup();
+      }
+    });
   }
 });
 
