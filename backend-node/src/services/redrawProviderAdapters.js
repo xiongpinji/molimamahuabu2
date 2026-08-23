@@ -55,13 +55,14 @@ function normalizeVideoProviderResult(raw = {}) {
   const resultUrl = videoResultUrl(raw);
   const hasLocalArtifact = Boolean(trim(raw?.local_path));
   const status = normalizedVideoStatus(raw?.status);
-  const hasConflictingBody = Boolean(trim(raw?.error || raw?.message));
+  const hasConflictingBody = Boolean(trim(
+    raw?.error || raw?.message || raw?.error_msg || raw?.error_message,
+  ));
 
   if (VIDEO_PROVIDER_STATUS.completed_candidate.has(status)) {
     if (hasConflictingBody) {
       return safeVideoResult('submission_unknown', providerTaskId, resultUrl, {
         safe_stage: 'provider_status',
-        reason: 'provider_status_conflict',
       });
     }
     if (resultUrl || hasLocalArtifact) {
@@ -69,7 +70,6 @@ function normalizeVideoProviderResult(raw = {}) {
     }
     return safeVideoResult('result_unavailable', providerTaskId, '', {
       safe_stage: 'provider_result',
-      reason: 'provider_result_unavailable',
     });
   }
 
@@ -77,12 +77,10 @@ function normalizeVideoProviderResult(raw = {}) {
     if (resultUrl || hasLocalArtifact) {
       return safeVideoResult('submission_unknown', providerTaskId, resultUrl, {
         safe_stage: 'provider_status',
-        reason: 'provider_status_conflict',
       });
     }
     return safeVideoResult('failed_terminal', providerTaskId, '', {
       safe_stage: 'provider_terminal',
-      reason: 'provider_reported_terminal_failure',
     });
   }
 
@@ -90,7 +88,6 @@ function normalizeVideoProviderResult(raw = {}) {
     if (resultUrl || hasLocalArtifact) {
       return safeVideoResult('submission_unknown', providerTaskId, resultUrl, {
         safe_stage: 'provider_status',
-        reason: 'provider_status_conflict',
       });
     }
     return safeVideoResult(
@@ -102,20 +99,17 @@ function normalizeVideoProviderResult(raw = {}) {
   if (VIDEO_PROVIDER_STATUS.result_unavailable.has(status)) {
     return safeVideoResult('result_unavailable', providerTaskId, '', {
       safe_stage: 'provider_result',
-      reason: 'provider_result_unavailable',
     });
   }
 
   if (VIDEO_PROVIDER_STATUS.submission_unknown.has(status)) {
     return safeVideoResult('submission_unknown', providerTaskId, '', {
       safe_stage: 'provider_status',
-      reason: 'provider_status_uncertain',
     });
   }
 
   return safeVideoResult('submission_unknown', providerTaskId, '', {
     safe_stage: 'provider_status',
-    reason: 'provider_status_uncertain',
   });
 }
 

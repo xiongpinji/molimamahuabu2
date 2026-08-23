@@ -4522,6 +4522,43 @@ test('供应商终态分类只返回稳定安全文案且 completed 必须先通
   assert.equal(JSON.stringify(failed).includes('secret'), false);
 });
 
+test('completed 候选携带供应商 error_msg 时保持 needs_attention 和 held 且不入库确认', async () => {
+  const state = setup();
+  let importCalls = 0;
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const result = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      videoProcessor: async (db, _log, videoId) => {
+        db.prepare(`UPDATE video_generations
+          SET status = 'completed', provider_task_id = 'provider-conflict',
+              video_url = 'https://cdn.test/conflict.mp4', local_path = 'videos/conflict.mp4',
+              error_msg = 'Authorization Bearer integration-secret provider body'
+          WHERE id = ?`).run(videoId);
+      },
+      artifactVerifier: async () => ({ duration: 5, width: 480, height: 854 }),
+      assetImporter: () => { importCalls += 1; return { id: 999 }; },
+    }), { shotId });
+
+    assert.equal(result.status, 'needs_attention');
+    assert.equal(importCalls, 0);
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(result.task_id).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(result.video_generation_id).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations').get().status, 'held');
+    assert.equal(count(state.db, 'assets', `video_gen_id = ${result.video_generation_id}`), 0);
+    const safeRows = {
+      shot: state.db.prepare('SELECT error_message FROM redraw_shots WHERE id = ?').get(shotId),
+      task: state.db.prepare('SELECT error FROM async_tasks WHERE id = ?').get(result.task_id),
+      video: state.db.prepare('SELECT error_msg FROM video_generations WHERE id = ?').get(result.video_generation_id),
+    };
+    assert.equal(JSON.stringify(safeRows).includes('integration-secret'), false);
+    assert.equal(JSON.stringify(safeRows).includes('provider body'), false);
+  } finally {
+    state.db.close();
+  }
+});
+
 test('批量只提交同版本中通过门禁且未完成未处理的镜头，并逐镜独立计费', async () => {
   const state = setup();
   const submitted = [];

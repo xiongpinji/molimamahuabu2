@@ -44,20 +44,37 @@ test('视频供应商常见状态只映射到规范候选终态', () => {
     status: 'failed_terminal',
     provider_task_id: 'p4',
     safe_stage: 'provider_terminal',
-    reason: 'provider_reported_terminal_failure',
   });
   assert.deepEqual(normalizeVideoProviderResult({ status: 'indeterminate', task_id: 'p5' }), {
     status: 'submission_unknown',
     provider_task_id: 'p5',
     safe_stage: 'provider_status',
-    reason: 'provider_status_uncertain',
   });
   assert.deepEqual(normalizeVideoProviderResult({ status: 'result_unavailable', task_id: 'p6' }), {
     status: 'result_unavailable',
     provider_task_id: 'p6',
     safe_stage: 'provider_result',
-    reason: 'provider_result_unavailable',
   });
+});
+
+test('completed 携带 error_msg 或 error_message 时必须降级 submission_unknown', () => {
+  for (const errorField of ['error_msg', 'error_message']) {
+    const normalized = normalizeVideoProviderResult({
+      status: 'completed',
+      task_id: `conflict-${errorField}`,
+      url: 'https://result',
+      local_path: 'videos/candidate.mp4',
+      [errorField]: 'Authorization Bearer secret provider body',
+    });
+    assert.deepEqual(normalized, {
+      status: 'submission_unknown',
+      provider_task_id: `conflict-${errorField}`,
+      result_url: 'https://result',
+      safe_stage: 'provider_status',
+    });
+    assert.equal(JSON.stringify(normalized).includes('secret'), false);
+    assert.equal(JSON.stringify(normalized).includes('provider body'), false);
+  }
 });
 
 test('未知空白或矛盾视频状态 fail-safe 且不泄露供应商正文', () => {
@@ -73,7 +90,7 @@ test('未知空白或矛盾视频状态 fail-safe 且不泄露供应商正文', 
     assert.deepEqual(
       Object.keys(normalized).sort(),
       Object.keys(normalized).filter((key) => [
-        'provider_task_id', 'status', 'result_url', 'safe_stage', 'reason',
+        'provider_task_id', 'status', 'result_url', 'safe_stage',
       ].includes(key)).sort(),
     );
     assert.equal(JSON.stringify(normalized).includes('secret'), false);
