@@ -804,22 +804,37 @@ function normalizeNameMap(value) {
   return Object.fromEntries(entries.map((entry) => [entry.key, entry.name]));
 }
 
-function relativeDialogueRange(entry, shotStartMs, shotEndMs) {
+function normalizeShotTimeline(shot) {
+  const timeline = {
+    start_ms: shot.start_ms,
+    end_ms: shot.end_ms,
+    duration_ms: shot.duration_ms,
+  };
+  if (!Number.isSafeInteger(timeline.start_ms)
+    || !Number.isSafeInteger(timeline.end_ms)
+    || !Number.isSafeInteger(timeline.duration_ms)
+    || timeline.start_ms < 0
+    || timeline.end_ms <= timeline.start_ms
+    || timeline.duration_ms !== timeline.end_ms - timeline.start_ms) fail(DIALOGUE_CODE);
+  return timeline;
+}
+
+function relativeDialogueRange(entry, timeline) {
   const start = entry.start_ms;
   const end = entry.end_ms;
   if (!Number.isInteger(start) || !Number.isInteger(end)
-    || start < shotStartMs || start >= end || end > shotEndMs) fail(DIALOGUE_CODE);
-  return { start_ms: start - shotStartMs, end_ms: end - shotStartMs };
+    || start < timeline.start_ms || start >= end || end > timeline.end_ms) fail(DIALOGUE_CODE);
+  return { start_ms: start - timeline.start_ms, end_ms: end - timeline.start_ms };
 }
 
-function canonicalSourceDialogue(value, shotStartMs, shotEndMs) {
+function canonicalSourceDialogue(value, timeline) {
   return parseDialogueArray(value).map((entry) => {
     assertPlainObject(entry, DIALOGUE_CODE);
     const normalized = {
       id: String(entry.id || '').trim(),
       speaker_id: String(entry.speaker_id || '').trim(),
       source_text: String(entry.source_text ?? entry.text ?? '').trim(),
-      ...relativeDialogueRange(entry, shotStartMs, shotEndMs),
+      ...relativeDialogueRange(entry, timeline),
     };
     if (!normalized.speaker_id || !normalized.source_text) fail(DIALOGUE_CODE);
     return normalized;
@@ -829,13 +844,13 @@ function canonicalSourceDialogue(value, shotStartMs, shotEndMs) {
     || left.id.localeCompare(right.id));
 }
 
-function canonicalLocalizedDialogue(value, shotStartMs, shotEndMs, nameMap, boundCharacters) {
+function canonicalLocalizedDialogue(value, timeline, nameMap, boundCharacters) {
   return parseDialogueArray(value).map((entry) => {
     assertPlainObject(entry, DIALOGUE_CODE);
     const speaker = String(entry.speaker_id || '').trim();
     if (typeof entry.localized_text !== 'string') fail(DIALOGUE_CODE);
     const text = entry.localized_text.trim();
-    const range = relativeDialogueRange(entry, shotStartMs, shotEndMs);
+    const range = relativeDialogueRange(entry, timeline);
     if (!boundCharacters.has(speaker) || !nameMap[speaker] || !text || containsChinese(text) || isSilenceToken(text)) {
       fail(DIALOGUE_CODE);
     }
@@ -845,7 +860,7 @@ function canonicalLocalizedDialogue(value, shotStartMs, shotEndMs, nameMap, boun
     || left.speaker_id.localeCompare(right.speaker_id));
 }
 
-function localizationBinding(shot, nameMap, sourceDialogue, localizedDialogue) {
+function localizationBinding(shot, timeline, nameMap, sourceDialogue, localizedDialogue) {
   const sourceDialogueSha256 = sha256(stableJson(sourceDialogue));
   const scriptSha256 = sha256(stableJson(localizedDialogue));
   const characterNameMapSha256 = sha256(stableJson(nameMap));
@@ -860,9 +875,7 @@ function localizationBinding(shot, nameMap, sourceDialogue, localizedDialogue) {
     shot: {
       id: Number(shot.id),
       shot_id: String(shot.shot_id || '').trim(),
-      start_ms: Number(shot.start_ms),
-      end_ms: Number(shot.end_ms),
-      duration_ms: Number(shot.duration_ms),
+      ...timeline,
     },
     source_dialogue_sha256: sourceDialogueSha256,
     script_sha256: scriptSha256,
@@ -875,18 +888,16 @@ function localizationBinding(shot, nameMap, sourceDialogue, localizedDialogue) {
   };
 }
 
-function verifyDialogue(shot, nameMap, boundCharacters) {
-  const shotStartMs = Number(shot.start_ms);
-  const shotEndMs = Number(shot.end_ms);
-  const sourceDialogue = canonicalSourceDialogue(shot.source_dialogue_json, shotStartMs, shotEndMs);
+function verifyDialogue(shot, timeline, nameMap, boundCharacters) {
+  const sourceDialogue = canonicalSourceDialogue(shot.source_dialogue_json, timeline);
   const rawDialogue = parseDialogueArray(shot.localized_dialogue_json);
   const sourceSilent = sourceDialogue.length === 0;
   const localizedSilent = rawDialogue.length === 0;
   if (sourceSilent !== localizedSilent) fail(DIALOGUE_CODE);
   const dialogue = sourceSilent
     ? []
-    : canonicalLocalizedDialogue(rawDialogue, shotStartMs, shotEndMs, nameMap, boundCharacters);
-  const binding = localizationBinding(shot, nameMap, sourceDialogue, dialogue);
+    : canonicalLocalizedDialogue(rawDialogue, timeline, nameMap, boundCharacters);
+  const binding = localizationBinding(shot, timeline, nameMap, sourceDialogue, dialogue);
   const common = {
     localized_script_version_id: Number(shot.version_id),
     target_locale: binding.target.locale,
@@ -930,7 +941,8 @@ async function buildBundle(ctx, input, options = {}) {
   const ids = validateInput(input);
   const { shot } = getRows(ctx, ids.shotId);
   if (String(shot.updated_at || '') !== ids.expectedUpdatedAt) fail(CONFLICT_CODE);
-  const durationMs = Number(shot.duration_ms);
+  const timeline = normalizeShotTimeline(shot);
+  const durationMs = timeline.duration_ms;
   const coverageReview = normalizeCoverage(input);
   const faces = normalizeFaces(input, durationMs);
   const texts = normalizeTexts(input, durationMs);
@@ -939,7 +951,7 @@ async function buildBundle(ctx, input, options = {}) {
   assertFaceOneToOne(faces);
 
   const nameMap = normalizeNameMap(parseJson(shot.name_map_json, {}));
-  const dialogue = verifyDialogue(shot, nameMap, new Set(faces.map((face) => face.source_character_key)));
+  const dialogue = verifyDialogue(shot, timeline, nameMap, new Set(faces.map((face) => face.source_character_key)));
   const identityEvidence = verifyIdentities(ctx, shot, faces, nameMap);
   const textEvidence = verifyTexts({ ...ctx, sourceFingerprint: shot.source_fingerprint }, texts);
   const faceCoverageSha256 = sha256(stableJson(faces));
@@ -951,8 +963,8 @@ async function buildBundle(ctx, input, options = {}) {
     expected: {
       source_asset_id: Number(shot.source_asset_id),
       source_fingerprint: shot.source_fingerprint,
-      clip_start_ms: Number(shot.start_ms),
-      clip_end_ms: Number(shot.end_ms),
+      clip_start_ms: timeline.start_ms,
+      clip_end_ms: timeline.end_ms,
       face_coverage_sha256: faceCoverageSha256,
       text_coverage_sha256: textCoverageSha256,
     },
@@ -978,8 +990,8 @@ async function buildBundle(ctx, input, options = {}) {
     source: {
       asset_id: Number(shot.source_asset_id),
       sha256: shot.source_fingerprint,
-      clip_start_ms: Number(shot.start_ms),
-      clip_end_ms: Number(shot.end_ms),
+      clip_start_ms: timeline.start_ms,
+      clip_end_ms: timeline.end_ms,
     },
     name_map: nameMap,
     dialogue,
@@ -1067,9 +1079,11 @@ async function loadCurrentReferenceBundle(rawCtx, shotId) {
   const bundle = parseJson(shot.reference_bundle_json, null);
   if (!bundle || bundle.schema_version !== REFERENCE_BUNDLE_SCHEMA_VERSION || !shot.reference_bundle_hash) fail(NOT_FOUND_CODE);
   if (canonicalBundleHash(bundle) !== shot.reference_bundle_hash) fail(CONFLICT_CODE);
+  const timeline = normalizeShotTimeline(shot);
   const currentNameMap = normalizeNameMap(parseJson(shot.name_map_json, {}));
   const currentDialogue = verifyDialogue(
     shot,
+    timeline,
     currentNameMap,
     new Set(Array.isArray(bundle.face_tracks)
       ? bundle.face_tracks.map((entry) => String(entry?.source_character_key || '').trim()).filter(Boolean)

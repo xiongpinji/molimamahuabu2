@@ -662,6 +662,23 @@ function setupSecondShot(overrides = {}) {
   return { state, input };
 }
 
+function updateSecondShotTimeline(state, overrides = {}) {
+  const timeline = {
+    start_ms: 4000,
+    end_ms: 8000,
+    duration_ms: 4000,
+    ...overrides,
+  };
+  state.db.pragma('ignore_check_constraints = ON');
+  try {
+    state.db.prepare(`UPDATE redraw_shots
+      SET start_ms = ?, end_ms = ?, duration_ms = ?
+      WHERE id = ?`).run(timeline.start_ms, timeline.end_ms, timeline.duration_ms, state.shotId);
+  } finally {
+    state.db.pragma('ignore_check_constraints = OFF');
+  }
+}
+
 function currentShot(db, shotId) {
   return db.prepare(`SELECT reference_bundle_json, reference_bundle_hash,
     reference_bundle_updated_at, updated_at FROM redraw_shots WHERE id = ?`).get(shotId);
@@ -870,6 +887,60 @@ test('第二镜重读时拒绝绝对原始对白或相对参考包对白漂移',
         entry.name,
       );
       assert.equal(currentShot(state.db, state.shotId).updated_at, before.updated_at);
+    } finally {
+      state.cleanup();
+    }
+  }
+});
+
+test('第二镜保存时拒绝不安全或不自洽的镜头时间线且零写入', async () => {
+  const cases = [
+    { name: 'duration mismatch', timeline: { duration_ms: 3999 } },
+    { name: 'fractional start', timeline: { start_ms: 4000.5 } },
+    { name: 'fractional end', timeline: { end_ms: 8000.5 } },
+    { name: 'fractional duration', timeline: { duration_ms: 4000.5 } },
+    { name: 'unsafe start', timeline: { start_ms: Number.MAX_SAFE_INTEGER + 1 } },
+    { name: 'unsafe end', timeline: { end_ms: Number.MAX_SAFE_INTEGER + 1 } },
+    { name: 'unsafe duration', timeline: { duration_ms: Number.MAX_SAFE_INTEGER + 1 } },
+    { name: 'negative start', timeline: { start_ms: -1, end_ms: 3999 } },
+    { name: 'empty range', timeline: { end_ms: 4000, duration_ms: 0 } },
+  ];
+
+  for (const entry of cases) {
+    const { state, input } = setupSecondShot();
+    try {
+      updateSecondShotTimeline(state, entry.timeline);
+      await assertRejectsUnchanged(
+        state,
+        input,
+        'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED',
+      );
+    } finally {
+      state.cleanup();
+    }
+  }
+});
+
+test('第二镜重读时拒绝当前镜头时间线漂移为非法值', async () => {
+  const cases = [
+    { name: 'duration mismatch', timeline: { duration_ms: 3999 } },
+    { name: 'fractional end', timeline: { end_ms: 8000.5 } },
+    { name: 'unsafe duration', timeline: { duration_ms: Number.MAX_SAFE_INTEGER + 1 } },
+    { name: 'negative start', timeline: { start_ms: -1, end_ms: 3999 } },
+  ];
+
+  for (const entry of cases) {
+    const { state, input } = setupSecondShot();
+    try {
+      await saveReferenceBundle(ctx(state), input);
+      updateSecondShotTimeline(state, entry.timeline);
+      const before = currentShot(state.db, state.shotId);
+      await assert.rejects(
+        () => loadCurrentReferenceBundle(ctx(state), state.shotId),
+        (error) => error.code === 'REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED',
+        entry.name,
+      );
+      assertShotUnchanged(state.db, state.shotId, before);
     } finally {
       state.cleanup();
     }
