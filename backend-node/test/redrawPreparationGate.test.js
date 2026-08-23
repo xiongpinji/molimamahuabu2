@@ -401,7 +401,7 @@ function makeBundle(state, overrides = {}) {
   metadata.redraw_motion_reference.text_coverage_sha256 = textCoverageSha256;
   state.db.prepare('UPDATE assets SET metadata = ? WHERE id = 601').run(JSON.stringify(metadata));
   const bundle = {
-    schema_version: 'redraw-reference-bundle-v1',
+    schema_version: 'redraw-reference-bundle-v2',
     version_id: state.versionId,
     shot_id: state.shotId,
     face_tracks: faceTracks,
@@ -687,7 +687,7 @@ test('准备门禁 fail closed：角色计划未锁、stale、缺人脸、缺文
       reason: 'reference_hash_drift',
       mutate(state) {
         makeBundle(state);
-        state.db.prepare("UPDATE redraw_shots SET reference_bundle_json = '{\"schema_version\":\"redraw-reference-bundle-v1\"}' WHERE id = ?")
+        state.db.prepare("UPDATE redraw_shots SET reference_bundle_json = '{\"schema_version\":\"redraw-reference-bundle-v2\"}' WHERE id = ?")
           .run(state.shotId);
       },
     },
@@ -738,6 +738,12 @@ test('准备门禁稳定报告 bundle 版本镜头错配、owner 错配、空镜
         state.db.prepare(`UPDATE redraw_shots
           SET reference_bundle_json = '{bad-json', reference_bundle_hash = ?, preparation_state = 'reference_ready'
           WHERE id = ?`).run('c'.repeat(64), state.shotId);
+      },
+    },
+    {
+      reason: 'reference_bundle_malformed',
+      mutate(state) {
+        makeBundle(state, { schema_version: 'redraw-reference-bundle-v1' });
       },
     },
   ];

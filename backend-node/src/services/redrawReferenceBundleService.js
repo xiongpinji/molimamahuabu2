@@ -6,7 +6,7 @@ const { canonicalCoverageSha256 } = require('./redrawFullFrameCoverageService');
 const { validateReviewedCoverageManifest } = require('./redrawFullFrameReviewService');
 const { verifyMotionReference } = require('./redrawMotionReferenceService');
 
-const SCHEMA_VERSION = 'redraw-reference-bundle-v2';
+const REFERENCE_BUNDLE_SCHEMA_VERSION = 'redraw-reference-bundle-v2';
 const LOCALIZATION_BINDING_CONTRACT = 'redraw-localization-binding-v1';
 const INPUT_CODE = 'REDRAW_REFERENCE_BUNDLE_INPUT_INVALID';
 const NOT_FOUND_CODE = 'REDRAW_REFERENCE_BUNDLE_NOT_FOUND';
@@ -966,7 +966,7 @@ async function buildBundle(ctx, input, options = {}) {
     text_coverage_sha256: textCoverageSha256,
   };
   const bundle = {
-    schema_version: SCHEMA_VERSION,
+    schema_version: REFERENCE_BUNDLE_SCHEMA_VERSION,
     shot_id: ids.shotId,
     version_id: ctx.versionId,
     duration_ms: durationMs,
@@ -1062,7 +1062,7 @@ async function loadCurrentReferenceBundle(rawCtx, shotId) {
   const id = Number(shotId);
   const { shot } = getRows(ctx, id);
   const bundle = parseJson(shot.reference_bundle_json, null);
-  if (!bundle || bundle.schema_version !== SCHEMA_VERSION || !shot.reference_bundle_hash) fail(NOT_FOUND_CODE);
+  if (!bundle || bundle.schema_version !== REFERENCE_BUNDLE_SCHEMA_VERSION || !shot.reference_bundle_hash) fail(NOT_FOUND_CODE);
   if (canonicalBundleHash(bundle) !== shot.reference_bundle_hash) fail(CONFLICT_CODE);
   const currentNameMap = normalizeNameMap(parseJson(shot.name_map_json, {}));
   const currentDialogue = verifyDialogue(
@@ -1211,7 +1211,7 @@ async function projectReferenceBundleForGeneration(rawCtx, shotId) {
       referenceVideoUrl,
       identityBindings,
       referenceBundleSnapshot: {
-        schema_version: SCHEMA_VERSION,
+        schema_version: REFERENCE_BUNDLE_SCHEMA_VERSION,
         coverage_sha256: bundle.coverage_sha256,
         source_sha256: bundle.source.sha256,
         motion_sha256: bundle.motion_reference.sha256,
@@ -1229,6 +1229,7 @@ async function projectReferenceBundleForGeneration(rawCtx, shotId) {
 }
 
 module.exports = {
+  REFERENCE_BUNDLE_SCHEMA_VERSION,
   loadReviewedReferenceCoverage,
   loadReviewedReferenceCoverageBinding,
   buildTrustedReferenceBundleInput,

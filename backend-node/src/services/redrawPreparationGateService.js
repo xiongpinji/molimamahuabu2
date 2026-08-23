@@ -6,6 +6,7 @@ const path = require('node:path');
 
 const { buildCharacterPlan } = require('./redrawCharacterPlanService');
 const {
+  REFERENCE_BUNDLE_SCHEMA_VERSION,
   canonicalBundleHash,
   loadReviewedReferenceCoverageBinding,
 } = require('./redrawReferenceBundleService');
@@ -594,7 +595,7 @@ function validateShot(ctx, shot, version, characterPlan, coverageBinding, missin
     addMissing(missing, 'shot', shot.id, 'preparation_required', shotAnchor);
   }
   const bundle = parseJson(shot.reference_bundle_json);
-  if (!bundle || bundle.schema_version !== 'redraw-reference-bundle-v1') {
+  if (!bundle || bundle.schema_version !== REFERENCE_BUNDLE_SCHEMA_VERSION) {
     addMissing(missing, 'reference_bundle', shot.id, 'reference_bundle_malformed', shotAnchor);
     return false;
   }

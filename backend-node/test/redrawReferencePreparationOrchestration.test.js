@@ -97,7 +97,7 @@ function setup(options = {}) {
         'localized', 1, '{}', '{}', ?, ?)`)
       .run(index, `shot-${index}`, index, (index - 1) * 5000, index * 5000, NOW, NOW);
   }
-  if (options.readyFirst !== false) markReady(db, 1);
+  if (options.readyFirst !== false) markReady(db, 1, options.referenceBundleSchemaVersion);
   return {
     db,
     ctx: { db, tenantId: 'tenant-a', userId: 'user-a', versionId: 1, now: () => NEXT },
@@ -105,8 +105,8 @@ function setup(options = {}) {
   };
 }
 
-function markReady(db, shotId) {
-  const bundle = { schema_version: 'redraw-reference-bundle-v1', version_id: 1, shot_id: shotId };
+function markReady(db, shotId, schemaVersion = 'redraw-reference-bundle-v2') {
+  const bundle = { schema_version: schemaVersion, version_id: 1, shot_id: shotId };
   const referenceHash = canonicalBundleHash(bundle);
   const shot = db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(shotId);
   const snapshot = {
@@ -556,7 +556,7 @@ function fakeDeps(state, options = {}) {
     async saveReferenceBundle(_ctx, input) {
       bundleCalls.push(input.shot_id);
       const bundle = {
-        schema_version: 'redraw-reference-bundle-v1',
+        schema_version: 'redraw-reference-bundle-v2',
         version_id: 1,
         shot_id: input.shot_id,
         clean_results: input.clean_results,
@@ -599,6 +599,24 @@ test('auto 只准备缺失镜头并在证据完整后保存参考包', async () 
     assert.deepEqual(state.db.prepare('SELECT preparation_state FROM redraw_shots ORDER BY id').all().map((row) => row.preparation_state), [
       'reference_ready', 'reference_ready', 'reference_ready',
     ]);
+  } finally {
+    state.close();
+  }
+});
+
+test('旧 V1 参考包不可复用且必须重新准备为 V2', async () => {
+  const state = setup({ referenceBundleSchemaVersion: 'redraw-reference-bundle-v1' });
+  try {
+    const deps = fakeDeps(state);
+    const result = await prepareVersionReferences(state.ctx, {
+      version_id: 1,
+      idempotency_key: 'replace-legacy-v1',
+    }, deps);
+    assert.deepEqual(result.prepared_shot_ids, [1, 2, 3]);
+    assert.deepEqual(result.reused_shot_ids, []);
+    assert.deepEqual(deps.bundleCalls, [1, 2, 3]);
+    const bundle = JSON.parse(state.db.prepare('SELECT reference_bundle_json FROM redraw_shots WHERE id = 1').get().reference_bundle_json);
+    assert.equal(bundle.schema_version, 'redraw-reference-bundle-v2');
   } finally {
     state.close();
   }

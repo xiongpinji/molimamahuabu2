@@ -5223,7 +5223,7 @@ test('reference bundle required 的单镜生成使用安全参考包投影且不
   const video = state.db.prepare('SELECT * FROM video_generations').get();
   const snapshot = JSON.parse(video.request_snapshot);
   const sourceConditioning = JSON.parse(video.source_conditioning_json);
-  assert.equal(snapshot.reference_bundle.schema_version, 'redraw-reference-bundle-v1');
+  assert.equal(snapshot.reference_bundle.schema_version, 'redraw-reference-bundle-v2');
   assert.equal(snapshot.reference_bundle.motion_sha256, REFERENCE_BUNDLE_MOTION_SHA256);
   assert.equal(snapshot.locale, 'en-US');
   assert.equal(video.generate_audio, 1);

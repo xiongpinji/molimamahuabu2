@@ -194,6 +194,8 @@ test('逐镜参考包面板显示五段服务端证据且不提供客户端 read
 
 test('强制参考包版本仅以 GET 完整证据放行保存后单镜与批量生成', () => {
   assert.match(stepSource, /reference_bundle_required\s*===\s*true/)
+  assert.match(stepSource, /bundle\?\.schema_version\s*===\s*'redraw-reference-bundle-v2'/)
+  assert.doesNotMatch(stepSource, /redraw-reference-bundle-v1/)
   assert.match(stepSource, /getReferenceBundle/)
   assert.match(stepSource, /loadAllReferenceBundles/)
   assert.match(stepSource, /referenceBundleEvidence/)

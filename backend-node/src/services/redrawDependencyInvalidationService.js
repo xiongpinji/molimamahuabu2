@@ -3,7 +3,10 @@
 const crypto = require('node:crypto');
 
 const { appendWorkflowEvent } = require('./redrawWorkflowEventService');
-const { canonicalBundleHash } = require('./redrawReferenceBundleService');
+const {
+  REFERENCE_BUNDLE_SCHEMA_VERSION,
+  canonicalBundleHash,
+} = require('./redrawReferenceBundleService');
 
 const INPUT_CODE = 'REDRAW_DEPENDENCY_INVALIDATION_INPUT_INVALID';
 const NOT_FOUND_CODE = 'REDRAW_DEPENDENCY_INVALIDATION_VERSION_NOT_FOUND';
@@ -200,7 +203,7 @@ function matchText(shot, regionKey) {
 function currentReferenceBundle(shot) {
   if (!HEX_64.test(String(shot.reference_bundle_hash || ''))) return null;
   const bundle = parseJsonStrict(shot.reference_bundle_json, null);
-  if (!bundle || bundle.schema_version !== 'redraw-reference-bundle-v1') fail(CONFLICT_CODE, '当前参考包证据不合法');
+  if (!bundle || bundle.schema_version !== REFERENCE_BUNDLE_SCHEMA_VERSION) fail(CONFLICT_CODE, '当前参考包证据不合法');
   if (canonicalBundleHash(bundle) !== String(shot.reference_bundle_hash || '')) {
     fail(CONFLICT_CODE, '当前参考包证据漂移');
   }

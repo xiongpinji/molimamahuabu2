@@ -124,7 +124,7 @@ function setup() {
 
 function bundle({ characters, speakers, texts }) {
   return {
-    schema_version: 'redraw-reference-bundle-v1',
+    schema_version: 'redraw-reference-bundle-v2',
     face_tracks: characters.map((source_character_key, index) => ({
       track_key: `face-${index + 1}`,
       source_character_key,
@@ -493,6 +493,34 @@ test('current reference bundle malformed 或 hash drift 时冲突且零写入', 
     assert.deepEqual(eventRows(drift.db), []);
   } finally {
     drift.close();
+  }
+
+  const legacy = setup();
+  try {
+    const rows = legacy.db.prepare(`
+      SELECT id, reference_bundle_json
+      FROM redraw_shots
+      WHERE reference_bundle_hash IS NOT NULL
+    `).all();
+    for (const row of rows) {
+      const referenceBundle = JSON.parse(row.reference_bundle_json);
+      referenceBundle.schema_version = 'redraw-reference-bundle-v1';
+      legacy.db.prepare(`
+        UPDATE redraw_shots
+        SET reference_bundle_json = ?, reference_bundle_hash = ?
+        WHERE id = ?
+      `).run(stableJson(referenceBundle), canonicalBundleHash(referenceBundle), row.id);
+    }
+    const before = shotRows(legacy.db);
+    assert.equal(captureCode(() => invalidateCharacterDependents(ctx(legacy), {
+      source_character_key: 'char-a',
+      reason_code: 'character_identity_changed',
+      expected_updated_at_by_shot_id: { 1: NOW },
+    })), 'REDRAW_DEPENDENCY_INVALIDATION_CONFLICT');
+    assert.deepEqual(shotRows(legacy.db), before);
+    assert.deepEqual(eventRows(legacy.db), []);
+  } finally {
+    legacy.close();
   }
 });
 

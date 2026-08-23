@@ -13,6 +13,7 @@ const {
   buildTrustedReferenceBundleInput,
   canonicalBundleHash,
   loadReviewedReferenceCoverage,
+  REFERENCE_BUNDLE_SCHEMA_VERSION,
   saveReferenceBundle: defaultSaveReferenceBundle,
 } = require('./redrawReferenceBundleService');
 const { appendWorkflowEvent } = require('./redrawWorkflowEventService');
@@ -252,7 +253,7 @@ async function reviewedCoverage(ctx, shots, deps, scope) {
 
 function parseBundle(row) {
   const bundle = parseObject(row.reference_bundle_json, null);
-  if (!bundle || bundle.schema_version !== 'redraw-reference-bundle-v1') return null;
+  if (!bundle || bundle.schema_version !== REFERENCE_BUNDLE_SCHEMA_VERSION) return null;
   if (!HEX_64.test(trim(row.reference_bundle_hash)) || canonicalBundleHash(bundle) !== row.reference_bundle_hash) return null;
   return bundle;
 }

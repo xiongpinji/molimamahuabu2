@@ -189,7 +189,7 @@ function referenceBundleEvidence(response, shotId) {
     ),
   }
   const envelope = Number(response?.shot_id) === Number(shotId)
-    && bundle?.schema_version === 'redraw-reference-bundle-v1'
+    && bundle?.schema_version === 'redraw-reference-bundle-v2'
     && HEX_SHA256.test(String(response?.reference_bundle_hash || ''))
     && Boolean(response?.reference_bundle_updated_at)
   return { ...evidence, ready: Boolean(envelope && Object.values(evidence).every(Boolean)) }
