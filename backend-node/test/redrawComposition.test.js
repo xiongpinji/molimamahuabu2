@@ -49,6 +49,10 @@ function touch(root, relative, body = 'media') {
   return relative.replace(/\\/g, '/');
 }
 
+function sha256(value) {
+  return crypto.createHash('sha256').update(String(value)).digest('hex');
+}
+
 function fileSha256(filePath) {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
@@ -127,60 +131,80 @@ async function addReadyVersion(state, options = {}) {
   const v2 = touch(state.root, 'videos/shot-2.mp4', options.video2Bytes || 'media');
   addVideo(state, 101, v1, { durationMs: 1000 });
   addVideo(state, 102, v2, { durationMs: 2000 });
-  const a1 = 'audio/a1.mp3';
-  const a2 = 'audio/a2.mp3';
-  addDialogueAsset(state, 201, a1, {
-    tenant_id: 'tenant-a',
-    user_id: 'user-a',
-    version_id: state.versionId,
-    segment_id: 'a',
-    reservation_id: 'res-a',
-    idempotency_key: 'dialogue-key-a',
-    duration_ms: 900,
-  }, options.audio1Bytes || 'media');
-  addDialogueAsset(state, 202, a2, {
-    tenant_id: 'tenant-a',
-    user_id: 'user-a',
-    version_id: state.versionId,
-    segment_id: 'b',
-    reservation_id: 'res-b',
-    idempotency_key: 'dialogue-key-b',
-    duration_ms: 700,
-  }, options.audio2Bytes || 'media');
-  addShot(state, {
+  const localizedOne = options.silent ? [] : [{
+    segment_id: 'business-dialogue-a',
+    speaker_id: 'speaker-a',
+    start_ms: 0,
+    end_ms: 1000,
+    target_text: 'Hello',
+  }];
+  const localizedTwo = options.silent ? [] : [{
+    segment_id: 'business-dialogue-b',
+    speaker_id: 'speaker-b',
+    start_ms: 1400,
+    end_ms: 2300,
+    target_text: 'World',
+  }];
+  const shotOneId = Number(addShot(state, {
     shotIndex: 1,
     startMs: 0,
     endMs: 1000,
     videoGenerationId: 101,
-    dialogue: options.silent ? [] : [{ segment_id: 'a', start_ms: 0, end_ms: 1000, text: 'Hello' }],
-    draft: options.silent ? {} : { dialogue_generation: { segments: [{
-      segment_id: 'a',
-      start_ms: 0,
-      end_ms: 1000,
-      status: 'completed',
-      reservation_status: 'confirmed',
-      reservation_id: 'res-a',
-      audio_asset_id: 201,
-      idempotency_key: 'dialogue-key-a',
-    }] } },
-  });
-  addShot(state, {
+    dialogue: localizedOne,
+    draft: {},
+  }));
+  const shotTwoId = Number(addShot(state, {
     shotIndex: 2,
     startMs: 1000,
     endMs: 3000,
     videoGenerationId: 102,
-    dialogue: options.silent ? [] : [{ segment_id: 'b', start_ms: 1400, end_ms: 2300, text: 'World' }],
-    draft: options.silent ? {} : { dialogue_generation: { segments: [{
-      segment_id: 'b',
-      start_ms: 1400,
-      end_ms: 2300,
-      status: 'completed',
-      reservation_status: 'confirmed',
-      reservation_id: 'res-b',
-      audio_asset_id: 202,
-      idempotency_key: 'dialogue-key-b',
-    }] } },
-  });
+    dialogue: localizedTwo,
+    draft: {},
+  }));
+  if (!options.silent) {
+    for (const item of [
+      {
+        shotRowId: shotOneId, localized: localizedOne[0], assetId: 201, relative: 'audio/a1.mp3',
+        reservationId: 'res-a', idempotencyKey: 'dialogue-key-a', durationMs: 900,
+        bytes: options.audio1Bytes || 'media',
+      },
+      {
+        shotRowId: shotTwoId, localized: localizedTwo[0], assetId: 202, relative: 'audio/a2.mp3',
+        reservationId: 'res-b', idempotencyKey: 'dialogue-key-b', durationMs: 700,
+        bytes: options.audio2Bytes || 'media',
+      },
+    ]) {
+      const segmentId = `${item.shotRowId}:0`;
+      addDialogueAsset(state, item.assetId, item.relative, {
+        tenant_id: 'tenant-a',
+        user_id: 'user-a',
+        version_id: state.versionId,
+        segment_id: segmentId,
+        reservation_id: item.reservationId,
+        idempotency_key: item.idempotencyKey,
+        duration_ms: item.durationMs,
+      }, item.bytes);
+      state.db.prepare('UPDATE redraw_shots SET draft_json = ? WHERE id = ?').run(JSON.stringify({
+        dialogue_generation: {
+          status: 'completed',
+          segments: [{
+            segment_id: segmentId,
+            shot_id: String(item.shotRowId),
+            turn_index: 0,
+            speaker_id: item.localized.speaker_id,
+            start_ms: item.localized.start_ms,
+            end_ms: item.localized.end_ms,
+            text_hash: sha256(item.localized.target_text),
+            status: 'completed',
+            reservation_status: 'confirmed',
+            reservation_id: item.reservationId,
+            audio_asset_id: item.assetId,
+            idempotency_key: item.idempotencyKey,
+          }],
+        },
+      }), item.shotRowId);
+    }
+  }
   for (const row of state.db.prepare('SELECT id, video_generation_id FROM redraw_shots ORDER BY shot_index').all()) {
     await reviewCandidate({
       ...ctx(state),
