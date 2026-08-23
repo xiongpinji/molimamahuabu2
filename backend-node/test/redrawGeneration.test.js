@@ -18,7 +18,11 @@ const videoService = require('../src/services/videoService');
 const redrawOrchestrator = require('../src/services/redrawOrchestrator');
 const { identityBindingForAsset } = require('../src/services/redrawCharacterIdentityService');
 const { buildCharacterPlan } = require('../src/services/redrawCharacterPlanService');
-const { saveReferenceBundle, loadReviewedReferenceCoverage } = require('../src/services/redrawReferenceBundleService');
+const {
+  saveReferenceBundle,
+  loadReviewedReferenceCoverage,
+  canonicalBundleHash,
+} = require('../src/services/redrawReferenceBundleService');
 const {
   evaluatePreparationGate,
   preparationEvidenceHash,
@@ -5310,6 +5314,86 @@ test('reference bundle required 的单镜生成使用安全参考包投影且不
   assert.equal(/[\u3400-\u9fff]/.test(serialized), false);
   assert.equal(serialized.includes('sk-'), false);
   assert.equal(serialized.includes('Authorization'), false);
+});
+
+test('reference bundle required 的当前 V2 身份包允许 refs 派生身份字段为空', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  const characters = state.db.prepare(`
+    SELECT id FROM redraw_assets
+    WHERE version_id = ? AND tenant_id = 'tenant-a' AND user_id = 'user-a'
+      AND kind = 'character' AND deleted_at IS NULL
+    ORDER BY id ASC
+  `).all(state.versionId);
+  const legacyReferences = JSON.stringify(
+    characters.map((row, index) => ({
+      kind: 'character',
+      asset_id: Number(row.id),
+      source_character_key: null,
+      target_actor_label: `Old Actor ${index + 1}`,
+      identity_pack_sha256: null,
+    })),
+  );
+  state.db.prepare('UPDATE redraw_shots SET references_json = ? WHERE id = ?')
+    .run(legacyReferences, state.shotId);
+
+  const created = await generateShot(ctx(state.db, referenceBundleGenerationDeps(state)), { shotId: state.shotId });
+
+  assert.equal(created.status, 'processing');
+  assert.equal(count(state.db, 'video_generations'), 1);
+  assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+  assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 1);
+  assert.equal(
+    state.db.prepare('SELECT references_json FROM redraw_shots WHERE id = ?').get(state.shotId).references_json,
+    legacyReferences,
+  );
+});
+
+test('reference bundle required 的嵌套身份漂移在 reserve/provider/video/task 前 fail closed', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  let providerCalls = 0;
+  let scheduleCalls = 0;
+  const characters = state.db.prepare(`
+    SELECT * FROM redraw_assets
+    WHERE version_id = ? AND tenant_id = 'tenant-a' AND user_id = 'user-a'
+      AND kind = 'character' AND deleted_at IS NULL
+    ORDER BY id ASC
+  `).all(state.versionId);
+  state.db.prepare('UPDATE redraw_shots SET references_json = ? WHERE id = ?').run(JSON.stringify(
+    characters.map((row) => {
+      const binding = identityBindingForAsset(row);
+      return {
+        kind: 'character',
+        asset_id: Number(row.id),
+        source_character_key: binding.source_character_key,
+        target_actor_label: binding.target_actor_label,
+        identity_pack_sha256: binding.pack_sha256,
+      };
+    }),
+  ), state.shotId);
+  const shot = state.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(state.shotId);
+  const bundle = JSON.parse(shot.reference_bundle_json);
+  bundle.face_tracks[0].identity.target_actor_label = 'Forged Actor';
+  const nextBundleHash = canonicalBundleHash(bundle);
+  const snapshot = JSON.parse(shot.preparation_snapshot_json);
+  snapshot.reference_bundle_hash = nextBundleHash;
+  state.db.prepare(`UPDATE redraw_shots
+    SET reference_bundle_json = ?, reference_bundle_hash = ?, preparation_snapshot_json = ?
+    WHERE id = ?`).run(JSON.stringify(bundle), nextBundleHash, stableJson(snapshot), state.shotId);
+  const updatedShot = state.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(state.shotId);
+  state.db.prepare('UPDATE redraw_shots SET preparation_evidence_hash = ? WHERE id = ?')
+    .run(preparationEvidenceHash(updatedShot), state.shotId);
+
+  await assert.rejects(
+    () => generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
+      videoProcessor: async () => { providerCalls += 1; },
+      schedule() { scheduleCalls += 1; },
+    })), { shotId: state.shotId }),
+    (error) => error.code === 'REDRAW_ASSET_REVIEW_REQUIRED',
+  );
+
+  assert.equal(providerCalls, 0);
+  assert.equal(scheduleCalls, 0);
+  assertReferenceBundlePreflightClean(state, providerCalls);
 });
 
 test('reference bundle required 的单镜生成不复用缺失 V2 对白绑定字段的旧 generation', async (t) => {

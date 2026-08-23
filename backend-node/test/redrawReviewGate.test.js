@@ -8,6 +8,7 @@ const {
   evaluateGenerationGate,
   reviewAsset,
 } = require('../src/services/redrawReviewService');
+const { canonicalBundleHash } = require('../src/services/redrawReferenceBundleService');
 const { updateAsset } = require('../src/services/redrawAssetService');
 
 function stableJson(value) {
@@ -119,8 +120,8 @@ function addAsset(db, {
     1,
     kind,
     JSON.stringify(identityPack ? { identity_pack: identityPack } : {}),
-    `${kind}-${id}`,
-    id + 1000,
+    identityPack?.target_actor_label ?? `${kind}-${id}`,
+    identityPack?.artifact?.asset_id ?? id + 1000,
     versionNumber,
     approvalStatus,
     status,
@@ -132,7 +133,7 @@ function addAsset(db, {
 
 function addShot(db, versionId, shotIndex, references) {
   const now = new Date().toISOString();
-  db.prepare(`INSERT INTO redraw_shots
+  return Number(db.prepare(`INSERT INTO redraw_shots
     (version_id, tenant_id, user_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
      references_json, status, created_at, updated_at)
     VALUES (?, 'tenant-a', 'user-a', 1, ?, 0, 1000, 1000, ?, 'draft', ?, ?)`).run(
@@ -141,7 +142,47 @@ function addShot(db, versionId, shotIndex, references) {
     JSON.stringify(references),
     now,
     now,
-  );
+  ).lastInsertRowid);
+}
+
+function setCurrentV2IdentityBundle(db, versionId, shotId, assetId, pack, mutate = (face) => face) {
+  const targetCharacterName = 'Maya';
+  const face = mutate({
+    track_key: 'face-001',
+    source_character_key: pack.source_character_key,
+    identity_redraw_asset_id: Number(assetId),
+    target_character_name: targetCharacterName,
+    identity_asset_id: Number(pack.artifact.asset_id),
+    identity_pack_sha256: pack.pack_sha256,
+    persona_origin: pack.persona_origin,
+    target_country: pack.target_country,
+    adult_status: pack.adult_status,
+    time_ranges: [[0, 1000]],
+    identity: {
+      redraw_asset_id: Number(assetId),
+      source_character_key: pack.source_character_key,
+      target_character_name: targetCharacterName,
+      target_actor_label: pack.target_actor_label,
+      identity_asset_id: Number(pack.artifact.asset_id),
+      identity_pack_sha256: pack.pack_sha256,
+      persona_origin: pack.persona_origin,
+      target_country: pack.target_country,
+      adult_status: pack.adult_status,
+      pack_sha256: pack.pack_sha256,
+      artifact: pack.artifact,
+    },
+  });
+  const faces = Array.isArray(face) ? face : [face];
+  const bundle = {
+    schema_version: 'redraw-reference-bundle-v2',
+    version_id: Number(versionId),
+    shot_id: Number(shotId),
+    face_tracks: faces,
+  };
+  db.prepare('UPDATE redraw_versions SET name_map_json = ? WHERE id = ?')
+    .run(JSON.stringify({ [pack.source_character_key]: targetCharacterName }), versionId);
+  db.prepare('UPDATE redraw_shots SET reference_bundle_json = ?, reference_bundle_hash = ? WHERE id = ?')
+    .run(JSON.stringify(bundle), canonicalBundleHash(bundle), shotId);
 }
 
 test('零分镜版本 fail closed 并返回 shots_missing', () => {
@@ -578,6 +619,137 @@ test('当前 canonical 身份 binding 与身份包一致时角色门禁开放', 
     assert.equal(gate.ok, true);
     assert.deepEqual(gate.blocking, []);
     assert.deepEqual(gate.missing, []);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('V2 参考包已通过准备门禁时以当前 bundle 身份为权威而不依赖 refs 派生字段', () => {
+  const state = setup();
+  try {
+    const pack = canonicalIdentityPack();
+    const asset = addAsset(state.db, {
+      id: 72,
+      kind: 'character',
+      approvalStatus: 'approved',
+      identityPack: pack,
+    });
+    const unusedPack = canonicalIdentityPack({
+      source_character_key: 'source-character-unused',
+      target_actor_label: 'Actor Nora',
+      artifact: {
+        ...pack.artifact,
+        asset_id: 1002,
+        sha256: crypto.createHash('sha256').update('unused actor portrait').digest('hex'),
+      },
+    });
+    const unusedAsset = addAsset(state.db, {
+      id: 75,
+      kind: 'character',
+      approvalStatus: 'approved',
+      identityPack: unusedPack,
+    });
+    const shotId = addShot(state.db, state.versionId, 1, [
+      characterReference(asset.id, pack, {
+        source_character_key: null,
+        target_actor_label: 'Old Actor',
+        identity_pack_sha256: null,
+      }),
+      characterReference(unusedAsset.id, unusedPack, {
+        source_character_key: null,
+        target_actor_label: 'Old Unused Actor',
+        identity_pack_sha256: null,
+      }),
+    ]);
+    setCurrentV2IdentityBundle(state.db, state.versionId, shotId, asset.id, pack);
+    state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
+
+    const gate = evaluateGenerationGate(state.db, state.versionId, {
+      tenantId: 'tenant-a',
+      userId: 'user-a',
+    }, {
+      preparationGate: () => ({ ok: true, ready_shot_ids: [shotId], missing: [] }),
+    });
+
+    assert.equal(gate.ok, true);
+    assert.deepEqual(gate.blocking, []);
+    assert.deepEqual(gate.missing, []);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('V2 参考包角色身份任一字段漂移或匹配不唯一时 fail closed', async (t) => {
+  const cases = [
+    ['asset', (face) => ({ ...face, identity_redraw_asset_id: 999 })],
+    ['source', (face) => ({ ...face, source_character_key: 'forged-source' })],
+    ['target', (face) => ({ ...face, identity: { ...face.identity, target_actor_label: 'Forged Actor' } })],
+    ['pack', (face) => ({ ...face, identity_pack_sha256: '0'.repeat(64) })],
+    ['identity asset', (face) => ({ ...face, identity_asset_id: 999 })],
+    ['target character', (face) => ({ ...face, target_character_name: 'Forged Character' })],
+    ['persona origin', (face) => ({ ...face, persona_origin: 'real_person' })],
+    ['target country', (face) => ({ ...face, target_country: 'CA' })],
+    ['adult status', (face) => ({ ...face, adult_status: 'unknown' })],
+    ['nested source', (face) => ({ ...face, identity: { ...face.identity, source_character_key: 'forged-source' } })],
+    ['nested target character', (face) => ({ ...face, identity: { ...face.identity, target_character_name: 'Forged Character' } })],
+    ['nested identity asset', (face) => ({ ...face, identity: { ...face.identity, identity_asset_id: 999 } })],
+    ['nested identity pack', (face) => ({ ...face, identity: { ...face.identity, identity_pack_sha256: '0'.repeat(64) } })],
+    ['nested pack', (face) => ({ ...face, identity: { ...face.identity, pack_sha256: '0'.repeat(64) } })],
+    ['nested persona origin', (face) => ({ ...face, identity: { ...face.identity, persona_origin: 'real_person' } })],
+    ['nested target country', (face) => ({ ...face, identity: { ...face.identity, target_country: 'CA' } })],
+    ['nested adult status', (face) => ({ ...face, identity: { ...face.identity, adult_status: 'unknown' } })],
+    ['nested artifact asset', (face) => ({ ...face, identity: { ...face.identity, artifact: { ...face.identity.artifact, asset_id: 999 } } })],
+    ['nested artifact sha', (face) => ({ ...face, identity: { ...face.identity, artifact: { ...face.identity.artifact, sha256: '0'.repeat(64) } } })],
+    ['missing nested identity', (face) => ({ ...face, identity: null })],
+    ['duplicate asset match', (face) => [face, { ...face, track_key: 'face-duplicate' }]],
+  ];
+  for (const [name, mutate] of cases) {
+    await t.test(name, () => {
+      const state = setup();
+      try {
+        const pack = canonicalIdentityPack();
+        const asset = addAsset(state.db, {
+          id: 73,
+          kind: 'character',
+          approvalStatus: 'approved',
+          identityPack: pack,
+        });
+        const shotId = addShot(state.db, state.versionId, 1, []);
+        setCurrentV2IdentityBundle(state.db, state.versionId, shotId, asset.id, pack, mutate);
+        state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
+
+        const gate = evaluateGenerationGate(state.db, state.versionId, {
+          tenantId: 'tenant-a',
+          userId: 'user-a',
+        }, {
+          preparationGate: () => ({ ok: true, ready_shot_ids: [shotId], missing: [] }),
+        });
+
+        assert.equal(gate.ok, false, name);
+        assert.equal(gate.blocking.some((item) => item.code === 'character_identity_binding_stale'), true, name);
+      } finally {
+        state.db.close();
+      }
+    });
+  }
+});
+
+test('legacy 版本仍拒绝 refs 缺失逐镜身份派生字段', () => {
+  const state = setup();
+  try {
+    const pack = canonicalIdentityPack();
+    const asset = addAsset(state.db, {
+      id: 74,
+      kind: 'character',
+      approvalStatus: 'approved',
+      identityPack: pack,
+    });
+    addShot(state.db, state.versionId, 1, [{ kind: 'character', asset_id: asset.id }]);
+
+    const gate = evaluateGenerationGate(state.db, state.versionId, { tenantId: 'tenant-a', userId: 'user-a' });
+
+    assert.equal(gate.ok, false);
+    assert.equal(gate.blocking.some((item) => item.code === 'character_identity_binding_stale'), true);
   } finally {
     state.db.close();
   }
