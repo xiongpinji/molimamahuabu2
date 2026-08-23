@@ -8,10 +8,10 @@
       <el-tag :type="gate?.ok ? 'success' : 'warning'">{{ gate?.ok ? '已开放' : `${missing.length} 项待处理` }}</el-tag>
     </div>
     <ul v-if="missing.length" class="missing-list">
-      <li v-for="item in missing" :key="`${item.kind}-${item.asset_id}`">
+      <li v-for="item in missing" :key="item.key">
         <button type="button" class="missing-item" @click="focusAsset(item)">
-          <span>{{ item.kind }} #{{ item.asset_id }}</span>
-          <small>镜头 {{ item.shot_ids.join('、') }}</small>
+          <span>{{ item.label }}</span>
+          <small>{{ item.detail }}</small>
         </button>
       </li>
     </ul>
@@ -25,7 +25,46 @@ const props = defineProps({
   gate: { type: Object, default: () => ({ ok: false, missing: [] }) },
 })
 
-const missing = computed(() => (Array.isArray(props.gate?.missing) ? props.gate.missing : []))
+const RESOURCE_LABELS = Object.freeze({
+  character_plan: '角色方案',
+  reference_bundle: '镜头参考包',
+  shot: '镜头准备',
+  version: '整集准备',
+})
+
+const RESOURCE_REASONS = Object.freeze({
+  character_plan: '角色方案尚未就绪',
+  reference_bundle: '镜头参考包尚未就绪',
+  shot: '镜头准备尚未就绪',
+  version: '整集准备尚未就绪',
+})
+
+function safeToken(value, pattern, maxLength = 64) {
+  if (typeof value !== 'string' && !Number.isSafeInteger(value)) return ''
+  const token = String(value).trim()
+  return token.length <= maxLength && pattern.test(token) ? token : ''
+}
+
+function normalizeMissingItem(input, index) {
+  const item = input && typeof input === 'object' && !Array.isArray(input) ? input : {}
+  const kind = safeToken(item.kind, /^(?:character|scene|prop|voice)$/)
+  const assetId = safeToken(item.asset_id, /^\d+$/)
+  const resourceType = safeToken(item.resource_type, /^(?:character_plan|reference_bundle|shot|version)$/)
+  const resourceId = safeToken(item.resource_id, /^\d+$/)
+  const shotIds = Array.isArray(item.shot_ids)
+    ? item.shot_ids.map((value) => safeToken(value, /^[A-Za-z0-9_-]+$/)).filter(Boolean)
+    : []
+  const anchor = safeToken(item.anchor, /^[A-Za-z0-9_-]+$/, 128)
+  const label = kind && assetId
+    ? `${kind} #${assetId}`
+    : resourceType && resourceId ? `${RESOURCE_LABELS[resourceType]} #${resourceId}` : '门禁检查项'
+  const detail = shotIds.length ? `镜头 ${shotIds.join('、')}` : (RESOURCE_REASONS[resourceType] || '需要重新确认')
+  return { key: `${resourceType || kind || 'gate'}-${resourceId || assetId || index}-${index}`, label, detail, anchor }
+}
+
+const missing = computed(() => (Array.isArray(props.gate?.missing)
+  ? props.gate.missing.map(normalizeMissingItem)
+  : []))
 
 function focusAsset(item) {
   const target = document.getElementById(item.anchor)

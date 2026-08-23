@@ -1032,6 +1032,51 @@ test.describe('一键转绘输入与分析流程', () => {
     expect(state.requests.filter((entry) => entry.pathname.endsWith('/review'))).toHaveLength(4)
   })
 
+  test('第二步门禁安全渲染资产镜头与 V2 全局缺项', async ({ page }) => {
+    const pageErrors = []
+    page.on('pageerror', (error) => pageErrors.push(error))
+    const state = {
+      projects: [project],
+      quoteReady: true,
+      assetQuoteReady: true,
+      work: { ...workBase, current_step: 2, status: 'asset_review', version_id: 812 },
+      assets: redrawAssets.map((asset) => ({ ...asset })),
+      gate: {
+        ok: false,
+        current_step: 2,
+        missing: [
+          { kind: 'character', asset_id: 1201, shot_ids: ['shot-01'], anchor: 'asset-1201-character' },
+          {
+            resource_type: 'character_plan',
+            resource_id: '812',
+            reason_code: 'character_plan_not_ready',
+            anchor: 'version-812-character-plan',
+          },
+          {
+            resource_type: { secret: 'RAW_SECRET_VALUE' },
+            resource_id: { secret: 'RAW_SECRET_VALUE' },
+            reason_code: { secret: 'RAW_SECRET_VALUE' },
+            shot_ids: { secret: 'RAW_SECRET_VALUE' },
+          },
+        ],
+      },
+      requests: [],
+    }
+    await installFixtures(page, state)
+
+    await page.goto('/redraw/projects/41/works/710?step=2')
+
+    await expect(page.getByText('3 项待处理')).toBeVisible()
+    await expect(page.getByText('character #1201')).toBeVisible()
+    await expect(page.getByText('镜头 shot-01')).toBeVisible()
+    await expect(page.getByText('角色方案 #812')).toBeVisible()
+    await expect(page.getByText('角色方案尚未就绪')).toBeVisible()
+    await expect(page.getByText('门禁检查项', { exact: true })).toBeVisible()
+    await expect(page.getByText('需要重新确认', { exact: true })).toBeVisible()
+    await expect(page.getByText('RAW_SECRET_VALUE')).toHaveCount(0)
+    expect(pageErrors).toEqual([])
+  })
+
   test('角色身份包未确认时禁止批准，补齐人工确认后保存并显示逐镜映射', async ({ page }) => {
     const state = {
       projects: [project],
