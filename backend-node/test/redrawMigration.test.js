@@ -1726,3 +1726,125 @@ test('精确候选审核合同中的历史孤儿引用会 fail closed', () => {
   assert.equal(tableNames(db).includes('__redraw_candidate_reviews_contract_rebuild'), false);
   db.close();
 });
+
+test('精确候选审核合同允许扩展列并保留扩展值', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const projectId = insertProject(db, 'tenant-extra', 'user-extra');
+  const workId = insertWork(db, projectId, {
+    tenant_id: 'tenant-extra',
+    user_id: 'user-extra',
+    source_fingerprint: 'candidate-review-extra-source',
+  });
+  const versionId = insertVersion(db, workId);
+  const shotId = db.prepare(`
+    INSERT INTO redraw_shots
+      (version_id, tenant_id, user_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
+       status, created_at, updated_at)
+    VALUES (?, 'tenant-extra', 'user-extra', 1, 1, 0, 5000, 5000, 'draft', ?, ?)
+  `).run(versionId, NOW, NOW).lastInsertRowid;
+  db.exec('ALTER TABLE redraw_candidate_reviews ADD COLUMN legacy_note TEXT');
+  db.prepare(`
+    INSERT INTO redraw_candidate_reviews
+      (tenant_id, user_id, version_id, shot_id, video_generation_id, candidate_sha256,
+       dependency_hash, review_version, decision, decision_source, created_at, legacy_note)
+    VALUES
+      ('tenant-extra', 'user-extra', ?, ?, 601, 'candidate-extra',
+       'dependency-extra', 1, 'approved', 'human', ?, 'preserve-me')
+  `).run(versionId, shotId, NOW);
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.ok(columnNames(db, 'redraw_candidate_reviews').includes('legacy_note'));
+  assert.equal(
+    db.prepare('SELECT legacy_note FROM redraw_candidate_reviews WHERE tenant_id = ?').get('tenant-extra').legacy_note,
+    'preserve-me',
+  );
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check(redraw_candidate_reviews)').all(), []);
+  assert.throws(
+    () => db.prepare("UPDATE redraw_candidate_reviews SET decision = 'rejected' WHERE tenant_id = 'tenant-extra'").run(),
+    /immutable/,
+  );
+  db.close();
+});
+
+test('含扩展列和有效行的弱候选审核表会 fail closed 而不丢扩展数据', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const projectId = insertProject(db, 'tenant-weak-extra', 'user-weak-extra');
+  const workId = insertWork(db, projectId, {
+    tenant_id: 'tenant-weak-extra',
+    user_id: 'user-weak-extra',
+    source_fingerprint: 'candidate-review-weak-extra-source',
+  });
+  const versionId = insertVersion(db, workId);
+  const shotId = db.prepare(`
+    INSERT INTO redraw_shots
+      (version_id, tenant_id, user_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
+       status, created_at, updated_at)
+    VALUES (?, 'tenant-weak-extra', 'user-weak-extra', 1, 1, 0, 5000, 5000, 'draft', ?, ?)
+  `).run(versionId, NOW, NOW).lastInsertRowid;
+  db.exec(`
+    DROP TRIGGER redraw_candidate_reviews_immutable_update;
+    DROP TRIGGER redraw_candidate_reviews_immutable_delete;
+    DROP TABLE redraw_candidate_reviews;
+    CREATE TABLE redraw_candidate_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT,
+      version_id INTEGER,
+      shot_id INTEGER,
+      video_generation_id INTEGER,
+      candidate_sha256 TEXT,
+      dependency_hash TEXT,
+      review_version INTEGER,
+      decision TEXT,
+      decision_source TEXT,
+      reason_codes_json TEXT,
+      metrics_json TEXT,
+      reviewer_id TEXT,
+      created_at TEXT,
+      legacy_note TEXT
+    );
+  `);
+  db.prepare(`
+    INSERT INTO redraw_candidate_reviews
+      (id, tenant_id, user_id, version_id, shot_id, video_generation_id, candidate_sha256,
+       dependency_hash, review_version, decision, decision_source, reason_codes_json,
+       metrics_json, reviewer_id, created_at, legacy_note)
+    VALUES
+      (61, 'tenant-weak-extra', 'user-weak-extra', ?, ?, 602, 'candidate-weak-extra',
+       'dependency-weak-extra', 1, 'approved', 'human', '[]', '{}', NULL, ?, 'must-survive')
+  `).run(versionId, shotId, NOW);
+  const beforeSchema = schemaSnapshot(db);
+  const beforeRow = db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 61').get();
+
+  assert.throws(
+    () => runMigrationsAndEnsure(db),
+    /cannot safely rebuild redraw_candidate_reviews: unknown columns legacy_note/,
+  );
+  assert.deepEqual(schemaSnapshot(db), beforeSchema);
+  assert.deepEqual(db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 61').get(), beforeRow);
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+  assert.equal(tableNames(db).includes('__redraw_candidate_reviews_contract_rebuild'), false);
+  db.close();
+});
+
+test('含扩展列但无数据的弱候选审核表可安全重建并丢弃空扩展列', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_candidate_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT,
+      legacy_note TEXT
+    );
+  `);
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.equal(columnNames(db, 'redraw_candidate_reviews').includes('legacy_note'), false);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_candidate_reviews').get().count, 0);
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check(redraw_candidate_reviews)').all(), []);
+  db.close();
+});

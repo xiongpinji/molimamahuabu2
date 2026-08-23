@@ -1254,12 +1254,11 @@ function hasExactCandidateReviewContract(database) {
   if (!table?.sql) return false;
 
   const columns = database.prepare('PRAGMA table_info(redraw_candidate_reviews)').all();
-  if (columns.length !== REDRAW_CANDIDATE_REVIEW_COLUMNS.length) return false;
-  for (let index = 0; index < REDRAW_CANDIDATE_REVIEW_COLUMNS.length; index += 1) {
-    const [name, type, notnull, defaultValue, primaryKey] = REDRAW_CANDIDATE_REVIEW_COLUMNS[index];
-    const column = columns[index];
+  const columnsByName = new Map(columns.map((column) => [column.name, column]));
+  for (const [name, type, notnull, defaultValue, primaryKey] of REDRAW_CANDIDATE_REVIEW_COLUMNS) {
+    const column = columnsByName.get(name);
     if (
-      column.name !== name
+      !column
       || column.type.toUpperCase() !== type
       || column.notnull !== notnull
       || column.dflt_value !== defaultValue
@@ -1312,6 +1311,13 @@ function rebuildCandidateReviewContract(database) {
     database.prepare('PRAGMA table_info(redraw_candidate_reviews)').all().map((column) => column.name),
   );
   const rowCount = database.prepare('SELECT COUNT(*) AS count FROM redraw_candidate_reviews').get().count;
+  const knownColumns = new Set(REDRAW_CANDIDATE_REVIEW_COLUMNS.map(([name]) => name));
+  const unknownColumns = [...sourceColumns].filter((column) => !knownColumns.has(column));
+  if (rowCount > 0 && unknownColumns.length > 0) {
+    throw new Error(
+      `cannot safely rebuild redraw_candidate_reviews: unknown columns ${unknownColumns.join(', ')}`,
+    );
+  }
   const missingRequired = REDRAW_CANDIDATE_REVIEW_REQUIRED_SOURCE_COLUMNS
     .filter((column) => !sourceColumns.has(column));
   if (rowCount > 0 && missingRequired.length > 0) {
