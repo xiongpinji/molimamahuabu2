@@ -206,7 +206,9 @@ function v2IdentityBindingMatches(bundle, face, row, currentBinding, targetChara
 
 function assetReviewAllowsPreparation(db, version, preparation) {
   if (Array.isArray(preparation?.missing) && preparation.missing.some((item) => (
-    item?.resource_type === 'character_plan' || item?.reason_code === 'character_plan_not_ready'
+    item?.resource_type === 'character_plan'
+      || item?.reason_code === 'character_plan_not_ready'
+      || item?.reason_code === 'coverage_binding_not_current'
   ))) return false;
   const canReadDraftJson = hasColumn(db, 'redraw_shots', 'draft_json');
   const shots = db.prepare(`

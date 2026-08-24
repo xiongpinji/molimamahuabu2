@@ -18,6 +18,7 @@ import {
   genericLocalization,
   genericReferencePreparationCase,
   genericRedrawProject,
+  genericSpanishSpeechFixtures,
   genericSourceFacts,
 } from './fixtures/redraw-generic-project.js'
 
@@ -29,15 +30,15 @@ const sharp = require(path.join(backendRoot, 'node_modules', 'sharp'))
 const { runMigrationsAndEnsure } = require(path.join(backendRoot, 'src', 'db', 'migrate'))
 const { setupRouter } = require(path.join(backendRoot, 'src', 'routes'))
 const redrawUploadService = require(path.join(backendRoot, 'src', 'services', 'redrawUploadService'))
+const assetService = require(path.join(backendRoot, 'src', 'services', 'assetService'))
+const redrawAssetService = require(path.join(backendRoot, 'src', 'services', 'redrawAssetService'))
 const creditLedger = require(path.join(backendRoot, 'src', 'services', 'creditLedgerService'))
 const modelPrices = require(path.join(backendRoot, 'src', 'services', 'modelPriceService'))
 const videoService = require(path.join(backendRoot, 'src', 'services', 'videoService'))
-const taskService = require(path.join(backendRoot, 'src', 'services', 'taskService'))
 const { buildLocalizationInput } = require(path.join(backendRoot, 'src', 'services', 'localizationService'))
 const { serverAutomationPolicySnapshot } = require(path.join(backendRoot, 'src', 'services', 'redrawProjectPolicyService'))
 const {
   buildGeneratedCoverageManifest,
-  canonicalCoverageSha256,
 } = require(path.join(backendRoot, 'src', 'services', 'redrawFullFrameCoverageService'))
 const {
   canonicalizeModelLock,
@@ -48,6 +49,7 @@ const {
   projectReferenceBundleForGeneration,
 } = require(path.join(backendRoot, 'src', 'services', 'redrawReferenceBundleService'))
 const {
+  finalizeReviewedCoverage,
   validateReviewedCoverageManifest,
 } = require(path.join(backendRoot, 'src', 'services', 'redrawFullFrameReviewService'))
 const { getFfmpegPath, getFfprobePath } = require(path.join(backendRoot, 'src', 'utils', 'ffmpegPath'))
@@ -67,6 +69,8 @@ let nativeVideoConfigId
 const providerArtifacts = {}
 const providerTasks = new Map()
 const providerAudit = []
+const candidateAudioEvidence = new Map()
+const coverageInstallationByVersion = new Map()
 let genericPreparationFiles
 let referencePreparationProviderCalls = 0
 const runtimeErrors = []
@@ -299,6 +303,33 @@ function sha256File(filePath) {
   return sha256Value(fs.readFileSync(filePath))
 }
 
+function normalizedTranscript(value) {
+  return String(value || '').normalize('NFC').trim()
+}
+
+function synthesizeOfflineSpeech(transcript, outputPath) {
+  const text = normalizedTranscript(transcript)
+  if (!text) throw new Error('离线语音缺少目标语台词')
+  const fixture = genericSpanishSpeechFixtures[text]
+  if (!fixture) throw new Error(`缺少固定西语语音夹具：${text}`)
+  const bytes = Buffer.from(fixture.base64, 'base64')
+  if (sha256Value(bytes) !== fixture.sha256) throw new Error(`西语语音夹具哈希漂移：${text}`)
+  fs.writeFileSync(outputPath, bytes)
+  const probe = probeFixtureMedia(outputPath)
+  if (!probe.audio || !Number.isFinite(probe.duration) || probe.duration <= 0) {
+    throw new Error('离线语音产物不可解码')
+  }
+  return {
+    schema_version: 'redraw-local-speech-evidence-v1',
+    locale: 'es-ES',
+    transcript: text,
+    transcript_sha256: sha256Value(text),
+    source_audio_sha256: sha256File(outputPath),
+    source_audio_duration_ms: Math.round(probe.duration * 1000),
+    synthesis: fixture.synthesis,
+  }
+}
+
 function probeFixtureMedia(filePath) {
   const result = spawnSync(getFfprobePath(), [
     '-v', 'error', '-show_streams', '-show_format', '-of', 'json', filePath,
@@ -316,7 +347,7 @@ function probeFixtureMedia(filePath) {
 
 function qualityCandidate(input) {
   const row = database.prepare(`
-    SELECT s.*, v.locale, v.market, vg.local_path
+    SELECT s.*, v.locale, v.market, vg.local_path, vg.provider_task_id
     FROM redraw_shots s
     JOIN redraw_versions v ON v.id = s.version_id
     JOIN video_generations vg ON vg.id = s.video_generation_id
@@ -326,6 +357,27 @@ function qualityCandidate(input) {
   const filePath = path.join(storageRoot, row.local_path)
   const localizedDialogue = JSON.parse(row.localized_dialogue_json || '[]')
   return { row, filePath, localizedDialogue, probe: probeFixtureMedia(filePath) }
+}
+
+function candidateSpeechEvidence(candidate) {
+  const candidateSha256 = sha256File(candidate.filePath)
+  const direct = candidateAudioEvidence.get(candidateSha256)
+  if (direct) return direct
+  const match = String(candidate.row.provider_task_id || '').match(/^local-fixture-video-task-([1-9]\d*)$/)
+  const artifact = match ? providerArtifacts[`shot-${match[1]}`] : null
+  const sourceSha256 = artifact?.absolutePath && fs.existsSync(artifact.absolutePath)
+    ? sha256File(artifact.absolutePath)
+    : null
+  if (!artifact?.audioEvidence || sourceSha256 !== artifact.audioEvidence.candidate_sha256) return null
+  const rebound = {
+    ...artifact.audioEvidence,
+    provider_task_id: candidate.row.provider_task_id,
+    normalized_from_candidate_sha256: sourceSha256,
+    candidate_sha256: candidateSha256,
+  }
+  candidateAudioEvidence.delete(sourceSha256)
+  candidateAudioEvidence.set(candidateSha256, rebound)
+  return rebound
 }
 
 const candidateQualityDependencies = {
@@ -356,24 +408,60 @@ const candidateQualityDependencies = {
   },
   async verifyLocale(_ctx, input) {
     const candidate = qualityCandidate(input)
-    return { language: candidate.row.locale, target_language_matches: candidate.row.locale === 'es-ES' || !fullProductMode }
+    const digest = sha256File(candidate.filePath)
+    const audioEvidence = candidateSpeechEvidence(candidate)
+    return {
+      language: audioEvidence?.locale || candidate.row.locale,
+      target_language_matches: fullProductMode
+        ? audioEvidence?.locale === 'es-ES' && audioEvidence.candidate_sha256 === digest
+        : true,
+    }
   },
   async verifyNativeAudio(_ctx, input) {
     const candidate = qualityCandidate(input)
     const hasDialogue = candidate.localizedDialogue.length > 0
+    const candidateSha256 = sha256File(candidate.filePath)
+    const audioEvidence = candidateSpeechEvidence(candidate)
+    const expectedTranscript = normalizedTranscript(candidate.localizedDialogue
+      .map((turn) => turn.localized_text)
+      .join(' '))
+    const sourceAudioCurrent = Boolean(audioEvidence?.source_audio_path
+      && fs.existsSync(audioEvidence.source_audio_path)
+      && sha256File(audioEvidence.source_audio_path) === audioEvidence.source_audio_sha256)
+    const exactTargetText = hasDialogue
+      ? Boolean(audioEvidence
+        && audioEvidence.speech_required === true
+        && audioEvidence.locale === candidate.row.locale
+        && audioEvidence.transcript === expectedTranscript
+        && audioEvidence.transcript_sha256 === sha256Value(expectedTranscript)
+        && audioEvidence.synthesis?.engine === 'eSpeak NG'
+        && audioEvidence.synthesis?.culture === 'es-ES'
+        && audioEvidence.synthesis?.voice_code === 'es'
+        && sourceAudioCurrent)
+      : null
+    const ambientAudioSafe = hasDialogue
+      ? Boolean(candidate.probe.audio && exactTargetText)
+      : Boolean(audioEvidence
+        && audioEvidence.speech_required === false
+        && audioEvidence.ambience_kind === 'rain-like-pink-noise'
+        && audioEvidence.candidate_sha256 === candidateSha256)
     const evidence = {
       shot_id: Number(candidate.row.id),
-      candidate_sha256: sha256File(candidate.filePath),
+      candidate_sha256: candidateSha256,
       dialogue_mode: hasDialogue ? 'dialogue' : 'silent',
       has_audio: Boolean(candidate.probe.audio),
+      locale: audioEvidence?.locale || null,
+      transcript_sha256: audioEvidence?.transcript_sha256 || null,
+      source_audio_sha256: audioEvidence?.source_audio_sha256 || null,
+      speech_required: audioEvidence?.speech_required,
     }
     return {
       has_audio: evidence.has_audio,
       dialogue_mode: evidence.dialogue_mode,
-      language: hasDialogue ? candidate.row.locale : null,
-      exact_target_text: hasDialogue ? true : null,
-      speaker_voice_matches: true,
-      ambient_audio_safe: evidence.has_audio || !fullProductMode,
+      language: hasDialogue ? audioEvidence?.locale || null : null,
+      exact_target_text: exactTargetText,
+      speaker_voice_matches: hasDialogue ? exactTargetText : true,
+      ambient_audio_safe: fullProductMode ? ambientAudioSafe : evidence.has_audio,
       evidence_hash: sha256Value(stableJson(evidence)),
     }
   },
@@ -384,6 +472,40 @@ const candidateQualityDependencies = {
   async verifyLipSync() {
     return { evidence_available: true, passed: true }
   },
+}
+
+function assertDialogueSpeechEvidence(segments, versionId) {
+  const expectedTranscripts = new Map(database.prepare(`
+    SELECT id, localized_dialogue_json
+    FROM redraw_shots
+    WHERE version_id = ?
+    ORDER BY shot_index
+  `).all(Number(versionId)).flatMap((shot) => (
+    JSON.parse(shot.localized_dialogue_json || '[]').map((turn, turnIndex) => ([
+      `${shot.id}:${turnIndex}`,
+      normalizedTranscript(turn.localized_text),
+    ]))
+  )))
+  for (const segment of segments) {
+    const asset = database.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL')
+      .get(Number(segment.audio_asset_id))
+    expect(asset, `缺少对白音频资产 ${segment.segment_id}`).toBeTruthy()
+    const absolutePath = path.join(storageRoot, asset.local_path)
+    expect(fs.existsSync(absolutePath)).toBe(true)
+    const evidence = JSON.parse(asset.metadata || '{}').redraw_dialogue?.speech_evidence
+    const expectedTranscript = expectedTranscripts.get(String(segment.segment_id))
+    expect(expectedTranscript, `对白片段 ${segment.segment_id} 未绑定当前版本本地化台词`).toBeTruthy()
+    expect(evidence).toMatchObject({
+      schema_version: 'redraw-local-speech-evidence-v1',
+      locale: 'es-ES',
+      transcript: expectedTranscript,
+      transcript_sha256: sha256Value(expectedTranscript),
+      audio_sha256: sha256File(absolutePath),
+      synthesis: { engine: 'eSpeak NG', culture: 'es-ES', voice_code: 'es' },
+    })
+    expect(evidence.source_audio_sha256).toMatch(/^[a-f0-9]{64}$/)
+    expect(probeFixtureMedia(absolutePath).audio).toBeTruthy()
+  }
 }
 
 function assertNoPreparationLeaks(value) {
@@ -620,33 +742,83 @@ test.beforeAll(async () => {
       }
     }
   }
+  const voiceWavePath = path.join(artifactRoot, 'voice-source.mp3')
+  const voiceSpeechEvidence = fullProductMode
+    ? synthesizeOfflineSpeech('Fue aquí.', voiceWavePath)
+    : null
   const voicePath = path.join(artifactRoot, 'voice.mp3')
   runFfmpeg([
-    '-hide_banner', '-loglevel', 'error', '-f', 'lavfi',
-    '-i', 'sine=frequency=660:sample_rate=44100', '-t', '1.2', '-c:a', 'libmp3lame', '-y', voicePath,
+    '-hide_banner', '-loglevel', 'error',
+    ...(fullProductMode
+      ? ['-i', voiceWavePath]
+      : ['-f', 'lavfi', '-i', 'sine=frequency=660:sample_rate=44100']),
+    '-t', '1.2', '-c:a', 'libmp3lame', '-y', voicePath,
   ], '本地音色样音生成')
-  providerArtifacts.voice = { absolutePath: voicePath, relativePath: 'redraw-local-provider/voice.mp3' }
+  providerArtifacts.voice = {
+    absolutePath: voicePath,
+    relativePath: 'redraw-local-provider/voice.mp3',
+    speechEvidence: voiceSpeechEvidence,
+  }
   const shotColors = ['blue', 'purple', 'teal', 'orange', 'brown', 'pink', 'gray', 'cyan', 'magenta']
   for (const [offset, duration] of generationDurations.entries()) {
     const index = String(offset + 1)
     const color = shotColors[offset % shotColors.length]
     const artifactDuration = artifactDurations[offset]
     const target = path.join(artifactRoot, `shot-${index}.mp4`)
+    const dialogue = genericLocalization.dialogue[offset]?.turns || []
+    const transcript = normalizedTranscript(dialogue.map((turn) => turn.localized_text).join(' '))
+    let speechEvidence = null
+    let speechPath = null
+    if (fullProductMode && transcript) {
+      speechPath = path.join(artifactRoot, `shot-${index}-speech.mp3`)
+      speechEvidence = synthesizeOfflineSpeech(transcript, speechPath)
+    }
     const inputs = [
       '-hide_banner', '-loglevel', 'error',
       '-f', 'lavfi', '-i', `color=c=${color}:size=320x180:rate=12`,
     ]
-    if (fullProductMode || index === '1') {
+    if (speechPath) {
+      inputs.push('-i', speechPath)
+    } else if (fullProductMode) {
+      inputs.push('-f', 'lavfi', '-i', 'anoisesrc=color=pink:amplitude=0.025:sample_rate=44100')
+    } else if (index === '1') {
       const frequency = index === '1' ? 520 : index === '2' ? 610 : 180
       inputs.push('-f', 'lavfi', '-i', `sine=frequency=${frequency}:sample_rate=44100`)
     }
     inputs.push(
       '-t', String(artifactDuration), '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-      ...(fullProductMode || index === '1' ? ['-c:a', 'aac', '-shortest'] : ['-an']),
+      ...(fullProductMode
+        ? ['-af', 'apad', '-c:a', 'aac']
+        : index === '1' ? ['-c:a', 'aac', '-shortest'] : ['-an']),
       '-y', target,
     )
     runFfmpeg(inputs, `本地第 ${index} 镜视频生成`)
-    providerArtifacts[`shot-${index}`] = { absolutePath: target, relativePath: `redraw-local-provider/shot-${index}.mp4` }
+    const candidateSha256 = sha256File(target)
+    const audioEvidence = fullProductMode
+      ? speechEvidence
+        ? {
+            ...speechEvidence,
+            shot_index: Number(index),
+            speech_required: true,
+            candidate_sha256: candidateSha256,
+            source_audio_path: speechPath,
+          }
+        : {
+            schema_version: 'redraw-local-speech-evidence-v1',
+            locale: 'es-ES',
+            shot_index: Number(index),
+            transcript: null,
+            transcript_sha256: null,
+            speech_required: false,
+            ambience_kind: 'rain-like-pink-noise',
+            candidate_sha256: candidateSha256,
+          }
+      : null
+    providerArtifacts[`shot-${index}`] = {
+      absolutePath: target,
+      relativePath: `redraw-local-provider/shot-${index}.mp4`,
+      audioEvidence,
+    }
   }
   database = new Database(path.join(tempRoot, 'redraw.sqlite'))
   runMigrationsAndEnsure(database)
@@ -868,7 +1040,7 @@ test.beforeAll(async () => {
     const authorization = String(request.headers.authorization || '')
     const group = String(request.headers['x-icreat-ai-group'] || '')
     const prompt = String(request.body?.content?.find?.((part) => part?.type === 'text')?.text || '')
-    const shotIndex = prompt.includes('Fue aqui.')
+    const shotIndex = prompt.includes('Fue aquí.')
       ? 1
       : prompt.includes('No sigas.')
         ? 2
@@ -934,6 +1106,13 @@ test.beforeAll(async () => {
           },
     }),
     assetGenerationProvider: async ({ taskId, asset }) => {
+      if (fullProductMode) {
+        const versionId = Number(asset.version_id)
+        if (!coverageInstallationByVersion.has(versionId)) {
+          coverageInstallationByVersion.set(versionId, installGenericReviewedCoverage(versionId))
+        }
+        await coverageInstallationByVersion.get(versionId)
+      }
       providerCallCounts.asset += 1
       const kind = String(asset.kind)
       const providerArtifact = providerArtifacts[kind]
@@ -971,7 +1150,7 @@ test.beforeAll(async () => {
           source: 'offline-worker', locale: fixtureLocale, market: fixtureMarket,
           locale_pack: `${fixtureLocale}@fixture`,
           audio_sha256: crypto.createHash('sha256').update(fs.readFileSync(providerArtifact.absolutePath)).digest('hex'),
-          transcript_sha256: 'd'.repeat(64),
+          transcript_sha256: providerArtifact.speechEvidence?.transcript_sha256 || 'd'.repeat(64),
           model_manifest_sha256: 'a'.repeat(64),
           calibration_manifest_sha256: 'b'.repeat(64),
           asr_model_revision: 'local-asr-en-1', accent_model_revision: 'local-accent-en-1',
@@ -990,17 +1169,25 @@ test.beforeAll(async () => {
     dialogueProvider: async ({ segment }) => {
       providerCallCounts.dialogue += 1
       const safeSegmentId = String(segment.segment_id).replace(/[^a-zA-Z0-9_-]/g, '-')
+      const transcript = normalizedTranscript(segment.localized_text || segment.text || segment.target_text)
+      if (fullProductMode && !transcript) throw new Error(`本地对白 ${segment.segment_id} 缺少目标语文本`)
+      const wavePath = path.join(storageRoot, `redraw-local-provider/dialogue-${safeSegmentId}-source.mp3`)
+      const speechEvidence = fullProductMode ? synthesizeOfflineSpeech(transcript, wavePath) : null
       const relativePath = `redraw-local-provider/dialogue-${safeSegmentId}.mp3`
       const absolutePath = path.join(storageRoot, relativePath)
       const windowSeconds = (Number(segment.end_ms) - Number(segment.start_ms)) / 1000
       const audioDuration = Math.max(0.25, Math.min(1.2, windowSeconds - 0.05))
       runFfmpeg([
-        '-hide_banner', '-loglevel', 'error', '-f', 'lavfi',
-        '-i', 'sine=frequency=660:sample_rate=44100', '-t', String(audioDuration),
+        '-hide_banner', '-loglevel', 'error',
+        ...(fullProductMode
+          ? ['-i', wavePath, '-af', 'apad']
+          : ['-f', 'lavfi', '-i', 'sine=frequency=660:sample_rate=44100']),
+        '-t', String(audioDuration),
         '-c:a', 'libmp3lame', '-y', absolutePath,
       ], `本地对白 ${segment.segment_id} 生成`)
       const now = new Date().toISOString()
       const providerTaskId = `local-fixture-dialogue-${safeSegmentId}`
+      const audioSha256 = sha256File(absolutePath)
       const metadata = {
         redraw_dialogue: {
           tenant_id: segment.tenant_id,
@@ -1015,6 +1202,13 @@ test.beforeAll(async () => {
           ai_service_config_id: segment.voice_snapshot.ai_service_config_id,
           config_updated_at: segment.voice_snapshot.config_updated_at,
           voice_snapshot: segment.voice_snapshot,
+          ...(speechEvidence ? {
+            speech_evidence: {
+              ...speechEvidence,
+              audio_sha256: audioSha256,
+              source_audio_path: undefined,
+            },
+          } : {}),
         },
       }
       const assetId = Number(database.prepare(`
@@ -1034,6 +1228,12 @@ test.beforeAll(async () => {
       return {
         status: 'completed', asset_id: assetId, provider_task_id: providerTaskId,
         duration: audioDuration,
+        ...(speechEvidence ? {
+          speech_evidence: {
+            ...speechEvidence,
+            audio_sha256: audioSha256,
+          },
+        } : {}),
       }
     },
     localeVerifier,
@@ -1248,6 +1448,12 @@ function resetProviderFixture(facts = sourceFacts, localization = localizationOv
   referencePreparationProviderCalls = 0
   providerTasks.clear()
   providerAudit.length = 0
+  candidateAudioEvidence.clear()
+  for (const [key, artifact] of Object.entries(providerArtifacts)) {
+    if (key.startsWith('shot-') && artifact.audioEvidence) {
+      candidateAudioEvidence.set(artifact.audioEvidence.candidate_sha256, artifact.audioEvidence)
+    }
+  }
   uploadedHeaderHex = ''
   runtimeErrors.length = 0
 }
@@ -1450,7 +1656,7 @@ async function installGenericReviewedCoverage(versionId, options = {}) {
     ? options.characterKeysByShot.map((keys) => [...new Set((keys || []).map(String))])
     : genericReferencePreparationCase.shots.map((shot) => shot.character_keys)
   const characterKeys = [...new Set(characterKeysByShot.flat())]
-  const baseRelative = `generic-preparation/version-${Number(versionId)}`
+  const baseRelative = `generic-preparation/version-${Number(versionId)}/analysis`
   const scopedEvidenceFile = (file) => {
     const sourceRelativePath = String(file.relativePath).replace(/\\/g, '/')
     const relativePath = path.posix.join(
@@ -1480,9 +1686,17 @@ async function installGenericReviewedCoverage(versionId, options = {}) {
     for (const [label, file] of [
       ['frame', files.frame], ['person mask', files.personMask], ['text mask', files.textMask],
     ]) {
-      insertStoredArtifact({
-        name: `${shot.shot_id} ${label}`, type: 'image', relativePath: file.relativePath,
-        mimeType: 'image/png', width: file.width, height: file.height,
+      assetService.create(database, log, {
+        name: `${shot.shot_id} ${label}`,
+        type: 'image',
+        category: 'redraw',
+        url: `/static/${file.relativePath}`,
+        local_path: file.relativePath,
+        file_size: fs.statSync(file.absolutePath).size,
+        mime_type: 'image/png',
+        width: file.width,
+        height: file.height,
+        metadata: { sha256: file.sha256 },
       })
     }
     frameById.set(String(shot.shot_id), files)
@@ -1568,57 +1782,110 @@ async function installGenericReviewedCoverage(versionId, options = {}) {
     textTracks,
     modelLock: genericModelLock(),
   })
-  const reviewed = JSON.parse(JSON.stringify(generated))
-  reviewed.status = 'reviewed'
-  reviewed.frames.forEach((frame) => {
-    frame.review_status = frame.review_point_reasons.length > 0 ? 'reviewed' : 'not_required'
+  const analysisRoot = path.join(storageRoot, baseRelative)
+  fs.writeFileSync(
+    path.join(analysisRoot, 'redraw-full-frame-coverage-manifest.json'),
+    `${JSON.stringify(generated, null, 2)}\n`,
+  )
+  const reviewedRelative = `generic-preparation/version-${Number(versionId)}/reviewed`
+  const reviewedRoot = path.join(storageRoot, reviewedRelative)
+  const finalized = await finalizeReviewedCoverage({
+    analysisRoot,
+    decisions: {
+      schema_version: 'redraw-full-frame-review-decisions-v1',
+      analysis_sha256: generated.analysis_sha256,
+      reviewer: 'codex-local-review',
+      review_points: generated.frames
+        .filter((frame) => frame.review_point_reasons.length > 0)
+        .map((frame) => ({
+          frame_index: frame.frame_index,
+          reasons: frame.review_point_reasons,
+          decision: 'accepted',
+          corrections: [],
+        })),
+    },
+    outputRoot: reviewedRoot,
   })
-  ;[...reviewed.person_tracks, ...reviewed.text_tracks].forEach((track) => {
-    track.review_status = 'reviewed'
-    track.reviewer = 'codex-local-review'
-  })
-  const requiredReviewPointCount = reviewed.frames
-    .filter((frame) => frame.review_point_reasons.length > 0).length
-  reviewed.review = {
-    status: 'reviewed', reviewed: true, required_review_point_count: requiredReviewPointCount,
-    reviewed_point_count: requiredReviewPointCount, reviewer: 'codex-local-review',
-  }
-  reviewed.approval_status = 'pending'
-  reviewed.ready_for_reference = false
-  reviewed.analysis_sha256 = canonicalCoverageSha256(reviewed)
+  const reviewed = finalized.reviewed_manifest
   try {
-    await validateReviewedCoverageManifest({ evidenceRoot: path.join(storageRoot, baseRelative), manifest: reviewed })
+    await validateReviewedCoverageManifest({ evidenceRoot: reviewedRoot, manifest: reviewed })
   } catch (error) {
     throw new Error(`generic reviewed coverage invalid: ${error.code || error.message}`)
   }
-  const manifestRelativePath = `${baseRelative}/redraw-full-frame-reviewed-manifest.json`
+  const reviewedEvidence = [
+    ...reviewed.frames.map((frame) => ({ label: `frame ${frame.frame_index}`, file: frame })),
+    ...reviewed.person_tracks.flatMap((track) => track.regions.map((region) => ({
+      label: `person mask ${region.region_id}`,
+      file: region.mask,
+    }))),
+    ...reviewed.text_tracks.flatMap((track) => track.regions.map((region) => ({
+      label: `text mask ${region.region_id}`,
+      file: region.mask,
+    }))),
+  ]
+  const registeredEvidencePaths = new Set()
+  for (const evidence of reviewedEvidence) {
+    const relativePath = path.posix.join(reviewedRelative, evidence.file.path)
+    if (registeredEvidencePaths.has(relativePath)) continue
+    registeredEvidencePaths.add(relativePath)
+    const absolutePath = path.join(storageRoot, relativePath)
+    assetService.create(database, log, {
+      name: `reviewed coverage ${evidence.label}`,
+      type: 'image',
+      category: 'redraw',
+      url: `/static/${relativePath}`,
+      local_path: relativePath,
+      file_size: fs.statSync(absolutePath).size,
+      mime_type: evidence.file.mime_type || 'image/png',
+      width: evidence.file.width,
+      height: evidence.file.height,
+      metadata: { sha256: evidence.file.sha256 },
+    })
+  }
+  const manifestRelativePath = `${reviewedRelative}/redraw-full-frame-reviewed-manifest.json`
   const manifestPath = path.join(storageRoot, manifestRelativePath)
-  fs.writeFileSync(manifestPath, `${JSON.stringify(reviewed, null, 2)}\n`)
-  const manifestAssetId = insertStoredArtifact({
-    name: 'generic reviewed full frame coverage', type: 'document',
-    relativePath: manifestRelativePath, mimeType: 'application/json',
+  const manifestAsset = assetService.create(database, log, {
+    name: 'generic reviewed full frame coverage',
+    type: 'document',
+    category: 'redraw',
+    url: `/static/${manifestRelativePath}`,
+    local_path: manifestRelativePath,
+    file_size: fs.statSync(manifestPath).size,
+    mime_type: 'application/json',
+    metadata: { sha256: sha256File(manifestPath) },
   })
-  const now = new Date().toISOString()
-  database.prepare(`
-    INSERT INTO redraw_assets
-      (version_id, tenant_id, user_id, kind, source_ref_json, localized_name, asset_id,
-       version_number, approval_status, approved_by, approved_at, status, created_at, updated_at)
-    VALUES (?, ?, ?, 'scene', ?, 'reviewed full frame coverage', ?, 1,
-      'approved', ?, ?, 'generated', ?, ?)
-  `).run(
-    Number(versionId), owner.tenant.id, owner.user.id,
-    JSON.stringify({
-      source_ref: { stable_id: 'full-frame-reviewed-coverage' },
-      snapshot: {
-        mode: 'full_frame_reviewed_coverage', version_id: Number(versionId),
-        facts_hash: version.facts_hash, source_fingerprint: version.source_fingerprint,
-        analysis_sha256: reviewed.analysis_sha256,
-      },
-    }),
-    manifestAssetId, owner.user.id, now, now, now,
-  )
+  const assetContext = {
+    db: database,
+    tenantId: owner.tenant.id,
+    userId: owner.user.id,
+    versionId: Number(versionId),
+    allowUnmaterializedDraft: true,
+    assetReader: {
+      canRead: (asset) => Boolean(asset?.local_path && fs.existsSync(path.join(storageRoot, asset.local_path))),
+    },
+  }
+  const attempt = redrawAssetService.createAssetAttempt(assetContext, {
+    kind: 'scene',
+    sourceRef: { stable_id: 'full-frame-reviewed-coverage' },
+    snapshot: {
+      mode: 'full_frame_reviewed_coverage',
+      version_id: Number(versionId),
+      facts_hash: version.facts_hash,
+      source_fingerprint: version.source_fingerprint,
+      analysis_sha256: reviewed.analysis_sha256,
+    },
+    localizedName: 'reviewed full frame coverage',
+    model: 'local-full-frame-review',
+    operationKey: `local-full-frame-review:${Number(versionId)}:${reviewed.analysis_sha256}`,
+  })
+  const coverageAsset = redrawAssetService.finalizeAssetAttempt(assetContext, attempt.id, {
+    status: 'completed',
+    provider_task_id: `local-full-frame-review-${Number(versionId)}`,
+    asset_id: manifestAsset.id,
+  })
+  expect(coverageAsset).toMatchObject({ status: 'generated', approval_status: 'pending' })
   assertNoPreparationLeaks(reviewed)
-  return reviewed
+  return { reviewed, coverageAsset }
 }
 
 function approvedCleanRows(versionId) {
@@ -1630,7 +1897,7 @@ function approvedCleanRows(versionId) {
   `).all(Number(versionId))
 }
 
-async function ensureGenericMotionAssets(versionId) {
+async function registerGenericMotionAssetForShot(versionId, shotId) {
   const ctx = {
     db: database,
     tenantId: owner.tenant.id,
@@ -1659,61 +1926,70 @@ async function ensureGenericMotionAssets(versionId) {
     const payload = JSON.parse(row.source_ref_json)
     return [String(payload.source_ref?.source_character_key || ''), Number(row.id)]
   }))
-  for (const descriptor of coverage.shots) {
-    if (descriptor.requirements.some((item) => !cleanByKey.has(`${item.kind}:${item.key}`))) continue
-    const row = rows.find((item) => Number(item.id) === Number(descriptor.shot_id))
-    const faces = descriptor.bundle_evidence.face_tracks.map((track) => ({
-      ...track,
-      identity_redraw_asset_id: identityByKey.get(track.source_character_key),
-    })).sort((left, right) => left.track_key.localeCompare(right.track_key))
-    const texts = descriptor.bundle_evidence.text_regions.map((region) => ({
-      ...region,
-      text_clean_redraw_asset_id: cleanByKey.get(`text_clean:${region.region_key}`),
-    })).sort((left, right) => left.region_key.localeCompare(right.region_key))
-    const metadata = {
-      redraw_motion_reference: {
-        schema_version: 'redraw-motion-reference-v1',
-        tenant_id: owner.tenant.id,
-        user_id: owner.user.id,
-        version_id: Number(versionId),
-        shot_id: Number(row.id),
-        source_asset_id: Number(database.prepare('SELECT source_asset_id FROM redraw_works WHERE id = ?').get(Number(row.work_id)).source_asset_id),
-        source_fingerprint: database.prepare('SELECT source_fingerprint FROM redraw_works WHERE id = ?').get(Number(row.work_id)).source_fingerprint,
-        clip_start_ms: Number(row.start_ms),
-        clip_end_ms: Number(row.end_ms),
-        face_coverage_sha256: sha256Value(stableJson(faces)),
-        text_coverage_sha256: sha256Value(stableJson(texts)),
-      },
-    }
-    const existing = database.prepare("SELECT id, metadata FROM assets WHERE type = 'video' AND category = 'redraw'")
-      .all().some((asset) => stableJson(JSON.parse(asset.metadata || '{}').redraw_motion_reference) === stableJson(metadata.redraw_motion_reference))
-    if (existing) continue
-    const shotFiles = genericPreparationFiles.shots.get(String(row.shot_id))
-    const expectedDuration = (Number(row.end_ms) - Number(row.start_ms)) / 1000
-    let file = shotFiles.motion
-    if (Math.abs(file.duration - expectedDuration) > 0.1) {
-      const safeShotId = String(row.shot_id).replace(/[^a-zA-Z0-9_-]/g, '-')
-      const sourceRelativePath = `generic-preparation/runtime-motion/${safeShotId}-${Number(row.end_ms) - Number(row.start_ms)}.mp4`
-      const sourcePath = path.join(storageRoot, sourceRelativePath)
-      fs.mkdirSync(path.dirname(sourcePath), { recursive: true })
-      runFfmpeg([
-        '-hide_banner', '-loglevel', 'error', '-f', 'lavfi',
-        '-i', `color=c=${shotFiles.definition.color}:size=320x180:rate=12`,
-        '-t', String(expectedDuration), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-an', '-y', sourcePath,
-      ], `${row.shot_id} 运动参考生成`)
-      const sha256 = sha256File(sourcePath)
-      const relativePath = `redraw-conditioning/${sha256}.mp4`
-      const absolutePath = path.join(storageRoot, relativePath)
-      fs.mkdirSync(path.dirname(absolutePath), { recursive: true })
-      fs.copyFileSync(sourcePath, absolutePath)
-      file = { absolutePath, relativePath, sha256, duration: expectedDuration }
-    }
-    insertStoredArtifact({
-      name: `${row.shot_id} motion reference`, type: 'video',
-      relativePath: file.relativePath, mimeType: 'video/mp4', duration: file.duration,
-      width: 320, height: 180, metadata,
-    })
+  const descriptor = coverage.shots.find((item) => Number(item.shot_id) === Number(shotId))
+  if (!descriptor || descriptor.requirements.some((item) => !cleanByKey.has(`${item.kind}:${item.key}`))) return null
+  const row = rows.find((item) => Number(item.id) === Number(descriptor.shot_id))
+  if (!row) return null
+  const faces = descriptor.bundle_evidence.face_tracks.map((track) => ({
+    ...track,
+    identity_redraw_asset_id: identityByKey.get(track.source_character_key),
+  })).sort((left, right) => left.track_key.localeCompare(right.track_key))
+  const texts = descriptor.bundle_evidence.text_regions.map((region) => ({
+    ...region,
+    text_clean_redraw_asset_id: cleanByKey.get(`text_clean:${region.region_key}`),
+  })).sort((left, right) => left.region_key.localeCompare(right.region_key))
+  const metadata = {
+    redraw_motion_reference: {
+      schema_version: 'redraw-motion-reference-v1',
+      tenant_id: owner.tenant.id,
+      user_id: owner.user.id,
+      version_id: Number(versionId),
+      shot_id: Number(row.id),
+      source_asset_id: Number(database.prepare('SELECT source_asset_id FROM redraw_works WHERE id = ?').get(Number(row.work_id)).source_asset_id),
+      source_fingerprint: database.prepare('SELECT source_fingerprint FROM redraw_works WHERE id = ?').get(Number(row.work_id)).source_fingerprint,
+      clip_start_ms: Number(row.start_ms),
+      clip_end_ms: Number(row.end_ms),
+      face_coverage_sha256: sha256Value(stableJson(faces)),
+      text_coverage_sha256: sha256Value(stableJson(texts)),
+    },
   }
+  const existing = database.prepare("SELECT id, metadata FROM assets WHERE type = 'video' AND category = 'redraw'")
+    .all().some((asset) => stableJson(JSON.parse(asset.metadata || '{}').redraw_motion_reference) === stableJson(metadata.redraw_motion_reference))
+  if (existing) return existing
+  const shotFiles = genericPreparationFiles.shots.get(String(row.shot_id))
+  const expectedDuration = (Number(row.end_ms) - Number(row.start_ms)) / 1000
+  let file = shotFiles.motion
+  if (Math.abs(file.duration - expectedDuration) > 0.1) {
+    const safeShotId = String(row.shot_id).replace(/[^a-zA-Z0-9_-]/g, '-')
+    const sourceRelativePath = `generic-preparation/runtime-motion/${safeShotId}-${Number(row.end_ms) - Number(row.start_ms)}.mp4`
+    const sourcePath = path.join(storageRoot, sourceRelativePath)
+    fs.mkdirSync(path.dirname(sourcePath), { recursive: true })
+    runFfmpeg([
+      '-hide_banner', '-loglevel', 'error', '-f', 'lavfi',
+      '-i', `color=c=${shotFiles.definition.color}:size=320x180:rate=12`,
+      '-t', String(expectedDuration), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-an', '-y', sourcePath,
+    ], `${row.shot_id} 运动参考生成`)
+    const sha256 = sha256File(sourcePath)
+    const relativePath = `redraw-conditioning/${sha256}.mp4`
+    const absolutePath = path.join(storageRoot, relativePath)
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true })
+    fs.copyFileSync(sourcePath, absolutePath)
+    file = { absolutePath, relativePath, sha256, duration: expectedDuration }
+  }
+  const artifact = assetService.create(database, log, {
+    name: `${row.shot_id} motion reference`,
+    type: 'video',
+    category: 'redraw',
+    url: `/static/${file.relativePath}`,
+    local_path: file.relativePath,
+    file_size: fs.statSync(path.join(storageRoot, file.relativePath)).size,
+    mime_type: 'video/mp4',
+    duration: file.duration,
+    width: 320,
+    height: 180,
+    metadata: { ...metadata, sha256: sha256File(path.join(storageRoot, file.relativePath)) },
+  })
+  return artifact
 }
 
 async function prepareGenericReferences(page, versionId, idempotencyPrefix) {
@@ -1721,7 +1997,9 @@ async function prepareGenericReferences(page, versionId, idempotencyPrefix) {
   const maxRounds = genericReferencePreparationCase.shots
     .reduce((total, shot) => total + shot.character_keys.length + 3, 0)
   for (let round = 1; round <= maxRounds; round += 1) {
-    await ensureGenericMotionAssets(versionId)
+    const shotIds = database.prepare('SELECT id FROM redraw_shots WHERE version_id = ? ORDER BY shot_index')
+      .all(Number(versionId))
+    for (const shot of shotIds) await registerGenericMotionAssetForShot(versionId, shot.id)
     const gate = await browserApi(page, `/api/v1/redraw/versions/${versionId}/preparation-gate`)
     expect(gate.status, JSON.stringify(gate.body)).toBe(200)
     publicResponses.push(gate.body)
@@ -1811,7 +2089,9 @@ async function prepareGenericReferencesThroughUi(page, versionId, interaction, w
   const maxRounds = genericReferencePreparationCase.shots
     .reduce((total, shot) => total + shot.character_keys.length + 3, 0)
   for (let round = 0; round < maxRounds; round += 1) {
-    await ensureGenericMotionAssets(versionId)
+    const shotIds = database.prepare('SELECT id FROM redraw_shots WHERE version_id = ? ORDER BY shot_index')
+      .all(Number(versionId))
+    for (const shot of shotIds) await registerGenericMotionAssetForShot(versionId, shot.id)
     const gate = await browserApi(page, `/api/v1/redraw/versions/${versionId}/preparation-gate`)
     expect(gate.status, JSON.stringify(gate.body)).toBe(200)
     if (gate.body.data.ok === true) return gate.body.data
@@ -2123,9 +2403,22 @@ integrationTest('通用三镜项目高置信度分析后完成 es-ES 本地化�
     character.voice.ready === true && character.wardrobe.ready === true
   ))).toBe(true)
   const reviewedCoverage = await installGenericReviewedCoverage(Number(localized.version_id))
-  expect(reviewedCoverage.shots).toHaveLength(3)
-  expect(reviewedCoverage.frames).toHaveLength(3)
-  assertNoPreparationLeaks(reviewedCoverage)
+  expect(reviewedCoverage.reviewed.shots).toHaveLength(3)
+  expect(reviewedCoverage.reviewed.frames).toHaveLength(3)
+  const coverageReview = await browserApi(
+    page,
+    `/api/v1/redraw/assets/${reviewedCoverage.coverageAsset.id}/review`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'approved',
+        expected_updated_at: reviewedCoverage.coverageAsset.updated_at,
+      }),
+    },
+  )
+  expect(coverageReview.status, JSON.stringify(coverageReview.body)).toBe(200)
+  assertNoPreparationLeaks(reviewedCoverage.reviewed)
   const preparationResponses = await prepareGenericReferences(
     page,
     Number(localized.version_id),
@@ -2144,7 +2437,7 @@ integrationTest('通用三镜项目高置信度分析后完成 es-ES 本地化�
     ['shot-3', 'reference_ready'],
   ])
   const expectedDialogueByShot = new Map([
-    ['shot-1', [{ speaker_id: 'c1', localized_text: 'Fue aqui.', start_ms: 900, end_ms: 2_300 }]],
+    ['shot-1', [{ speaker_id: 'c1', localized_text: 'Fue aquí.', start_ms: 900, end_ms: 2_300 }]],
     ['shot-2', [{ speaker_id: 'c2', localized_text: 'No sigas.', start_ms: 800, end_ms: 2_500 }]],
     ['shot-3', []],
   ])
@@ -2464,6 +2757,7 @@ export async function runRedrawFullProductFlow({ page }) {
     identity_packs: 0,
     voice_bindings: 0,
     asset_approvals: 0,
+    coverage_approvals: 0,
     reference_preparations: 0,
     reference_asset_approvals: 0,
     shot_saves: 0,
@@ -2606,13 +2900,31 @@ export async function runRedrawFullProductFlow({ page }) {
     await expect.poll(() => {
       batchRow = database.prepare('SELECT * FROM redraw_asset_batches WHERE id = ?').get(batchId)
       return batchRow?.status
-    }, { timeout: 15_000, message: JSON.stringify(batchRow) }).toBe('completed')
+    }, { timeout: 15_000 }).not.toMatch(/^(pending|processing)$/)
+    const attemptIds = JSON.parse(batchRow.asset_ids_json || '[]').map(Number)
+    const childTaskIds = attemptIds.length
+      ? database.prepare(`
+          SELECT generation_task_id FROM redraw_assets
+          WHERE id IN (${attemptIds.map(() => '?').join(',')})
+        `).all(...attemptIds).map((row) => row.generation_task_id).filter(Boolean)
+      : []
+    const taskIds = [batchRow.task_id, ...childTaskIds]
+    const batchTasks = database.prepare(`
+      SELECT id, status, error, message FROM async_tasks
+      WHERE id IN (${taskIds.map(() => '?').join(',')}) ORDER BY created_at, id
+    `).all(...taskIds)
+    expect(batchRow, JSON.stringify({ batch: batchRow, tasks: batchTasks })).toMatchObject({ status: 'completed' })
     await expect(page.getByText(`${expectedAssetCount} 成功 / 0 失败 / ${expectedAssetCount} 总数`)).toBeVisible({ timeout: 10_000 })
+    await waitForRedrawRequestsToSettle()
+    await page.reload()
+    await waitForRedrawRequestsToSettle()
+    await expect(page.getByRole('heading', { name: '确认本地化资产后再进入批量转绘' })).toBeVisible()
 
     const assetsResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
     expect(assetsResponse.status, JSON.stringify(assetsResponse.body)).toBe(200)
     generatedAssets = assetsResponse.body.data.filter((asset) => (
-      asset.asset_id || asset.voice_asset_id || asset.clean_plate_asset_id
+      asset.source_ref?.stable_id !== 'full-frame-reviewed-coverage'
+        && (asset.asset_id || asset.voice_asset_id || asset.clean_plate_asset_id)
     ))
     expect(generatedAssets).toHaveLength(expectedAssetCount)
     identityCharacterAssets = generatedAssets.filter((asset) => asset.kind === 'character')
@@ -2662,8 +2974,12 @@ export async function runRedrawFullProductFlow({ page }) {
     expect(bindableAssets.status, JSON.stringify(bindableAssets.body)).toBe(200)
     const characterAssets = bindableAssets.body.data.filter((asset) => asset.kind === 'character')
     const voiceAssets = bindableAssets.body.data.filter((asset) => asset.kind === 'voice')
+    const coverageAssets = bindableAssets.body.data.filter((asset) => (
+      asset.kind === 'scene' && asset.source_ref?.stable_id === 'full-frame-reviewed-coverage'
+    ))
     expect(characterAssets).toHaveLength(sourceFacts.characters.length)
     expect(voiceAssets).toHaveLength(sourceFacts.characters.length)
+    expect(coverageAssets).toHaveLength(1)
     for (const characterAsset of characterAssets) {
       const stableId = String(characterAsset.source_ref?.stable_id
         || characterAsset.source_ref?.id
@@ -2725,6 +3041,17 @@ export async function runRedrawFullProductFlow({ page }) {
       expect(reviewAction.response.status(), JSON.stringify(reviewAction.payload)).toBe(200)
       interaction.asset_approvals += 1
     }
+    await page.locator('.asset-tabs').getByRole('button', { name: '场景', exact: true }).click()
+    for (const asset of coverageAssets) {
+      const reviewAction = await clickForJsonResponse(
+        page,
+        page.locator(`#asset-${asset.id}-scene`).getByRole('button', { name: '批准', exact: true }),
+        apiResponse('POST', new RegExp(`/api/v1/redraw/assets/${asset.id}/review$`)),
+      )
+      expect(reviewAction.response.status(), JSON.stringify(reviewAction.payload)).toBe(200)
+      interaction.asset_approvals += 1
+      interaction.coverage_approvals += 1
+    }
     await page.locator('.redraw-step').filter({ hasText: '批量转绘' }).click()
     await expect(page.getByRole('heading', { name: '按分镜生成并从后端恢复真实进度' })).toBeVisible()
   } else {
@@ -2745,7 +3072,10 @@ export async function runRedrawFullProductFlow({ page }) {
       return batchRow?.status
     }).toBe('completed')
     const assetsResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
-    generatedAssets = assetsResponse.body.data.filter((asset) => asset.asset_id || asset.voice_asset_id || asset.clean_plate_asset_id)
+    generatedAssets = assetsResponse.body.data.filter((asset) => (
+      asset.source_ref?.stable_id !== 'full-frame-reviewed-coverage'
+        && (asset.asset_id || asset.voice_asset_id || asset.clean_plate_asset_id)
+    ))
     identityCharacterAssets = generatedAssets.filter((asset) => asset.kind === 'character')
     const castById = new Map(activeCase ? activeCase.cast.map((actor) => [String(actor.id), actor]) : [])
     for (const asset of identityCharacterAssets) {
@@ -2842,7 +3172,7 @@ export async function runRedrawFullProductFlow({ page }) {
     const sourceShot = sourceFacts.shots[Number(shot.shot_index) - 1]
     const prompt = fullProductMode
       ? `LOCAL_FIXTURE_SHOT_${Number(shot.shot_index)} · ${Number(shot.shot_index) === 1
-          ? 'Clara Vega says exactly: Fue aqui.'
+          ? 'Clara Vega says exactly: Fue aquí.'
           : Number(shot.shot_index) === 2
             ? 'Diego Santos says exactly: No sigas.'
             : 'No dialogue or intelligible voice; preserve rain ambience only.'}`
@@ -2892,10 +3222,6 @@ export async function runRedrawFullProductFlow({ page }) {
     expect(updateResponse.body.data.compiled_prompt.text).toBe(prompt)
     preparedShots.push(updateResponse.body.data)
   }
-  const reviewedCoverage = await installGenericReviewedCoverage(versionId, {
-    characterKeysByShot: sourceFacts.shots.map((shot) => shot.visible_character_ids || []),
-  })
-  expect(reviewedCoverage.shots).toHaveLength(expectedShotCount)
   if (fullProductMode) {
     await prepareGenericReferencesThroughUi(page, versionId, interaction, waitForRedrawRequestsToSettle)
     await page.locator('.redraw-step').filter({ hasText: '批量转绘' }).click()
@@ -2904,6 +3230,19 @@ export async function runRedrawFullProductFlow({ page }) {
     await waitForRedrawRequestsToSettle()
     await expect(page.getByRole('heading', { name: '按分镜生成并从后端恢复真实进度' })).toBeVisible()
   } else {
+    const reviewedCoverage = await installGenericReviewedCoverage(versionId, {
+      characterKeysByShot: sourceFacts.shots.map((shot) => shot.visible_character_ids || []),
+    })
+    expect(reviewedCoverage.reviewed.shots).toHaveLength(expectedShotCount)
+    const coverageReview = await browserApi(page, `/api/v1/redraw/assets/${reviewedCoverage.coverageAsset.id}/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'approved',
+        expected_updated_at: reviewedCoverage.coverageAsset.updated_at,
+      }),
+    })
+    expect(coverageReview.status, JSON.stringify(coverageReview.body)).toBe(200)
     await prepareGenericReferences(page, versionId, 'local-fixture-reference')
   }
   const preparedReferenceRows = database.prepare(`
@@ -3042,6 +3381,7 @@ export async function runRedrawFullProductFlow({ page }) {
         && segment.provider === 'local-fake-tts'
         && segment.model === 'fake-tts'
     ))).toBe(true)
+    assertDialogueSpeechEvidence(dialogueSegments, versionId)
     await expect(page.getByText('可发布', { exact: true })).toBeVisible({ timeout: 15_000 })
   }
 
@@ -3131,7 +3471,7 @@ export async function runRedrawFullProductFlow({ page }) {
         responseHash: exportDetail.hashes[kind],
       })
       expect(artifacts[kind].size).toBeGreaterThan(20)
-      expect(artifacts[kind].text).toContain('Fue aqui.')
+      expect(artifacts[kind].text).toContain('Fue aquí.')
       expect(artifacts[kind].text).toContain('No sigas.')
     }
     expect(() => JSON.parse(artifacts.report.text)).not.toThrow()
@@ -3209,7 +3549,7 @@ export async function runRedrawFullProductFlow({ page }) {
       entry.adapter === 'icreat_task' && entry.duration === 5 && entry.has_content === true
     ))).toBe(true)
     expect(submitted.map((entry) => entry.prompt)).toEqual(expect.arrayContaining([
-      expect.stringContaining('Clara Vega: Fue aqui.'),
+      expect.stringContaining('Clara Vega: Fue aquí.'),
       expect.stringContaining('Diego Santos: No sigas.'),
       expect.stringContaining('Dialogue mode: silent.'),
     ]))
@@ -3326,6 +3666,19 @@ export async function runRedrawFullProductFlow({ page }) {
         wardrobes: identityCharacterAssets.length,
       },
       shots: { total: 3, dialogue: 2, silent_with_ambience: 1 },
+      audio_evidence: {
+        spoken_transcripts: [...candidateAudioEvidence.values()]
+          .filter((item) => item.speech_required === true)
+          .sort((left, right) => left.shot_index - right.shot_index)
+          .map((item) => item.transcript),
+        offline_synthesis: [...candidateAudioEvidence.values()]
+          .filter((item) => item.speech_required === true)
+          .every((item) => item.synthesis?.engine === 'eSpeak NG'
+            && item.synthesis?.culture === 'es-ES'
+            && item.synthesis?.voice_code === 'es'),
+        silent_ambience: [...candidateAudioEvidence.values()]
+          .filter((item) => item.speech_required === false && item.ambience_kind === 'rain-like-pink-noise').length,
+      },
       provider: {
         adapter: 'icreat_task',
         submitted: providerAudit.filter((entry) => entry.stage === 'submit').length,

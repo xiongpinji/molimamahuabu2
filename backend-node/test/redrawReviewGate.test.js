@@ -226,8 +226,13 @@ test('视频生成门禁先执行准备门禁，旧候选不能绕过未完成�
 
 test('参考准备未完成时仅在全部引用资产已批准后开放第三步导航', () => {
   for (const entry of [
-    { approvalStatus: 'pending', expectedStep: 2 },
-    { approvalStatus: 'approved', expectedStep: 3 },
+    { approvalStatus: 'pending', expectedStep: 2, missing: [{ reason_code: 'preparation_required' }] },
+    { approvalStatus: 'approved', expectedStep: 3, missing: [{ reason_code: 'preparation_required' }] },
+    {
+      approvalStatus: 'approved',
+      expectedStep: 2,
+      missing: [{ resource_type: 'version', reason_code: 'coverage_binding_not_current' }],
+    },
   ]) {
     const state = setup();
     try {
@@ -246,7 +251,7 @@ test('参考准备未完成时仅在全部引用资产已批准后开放第三�
         preparationGate: () => ({
           ok: false,
           ready_shot_ids: [],
-          missing: [{ reason_code: 'preparation_required' }],
+          missing: entry.missing,
         }),
       });
 
