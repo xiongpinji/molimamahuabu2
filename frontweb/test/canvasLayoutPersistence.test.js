@@ -156,6 +156,70 @@ test('布局瞬时失败按 2/4/8/15/15 秒退避并在成功后复位', async (
   persistence.dispose()
 })
 
+test('flushNow 在 retry_wait 取消退避并立即保存同一 revision', async () => {
+  const scheduler = createScheduler()
+  const calls = []
+  const persistence = createCanvasLayoutPersistence(async (payload) => {
+    calls.push(structuredClone(payload))
+    if (calls.length === 1) throw httpError(503)
+    return { metadata: { canvas_layout: payload.canvasLayout } }
+  }, {
+    savedStateDuration: 17,
+    setTimer: scheduler.setTimer.bind(scheduler),
+    clearTimer: scheduler.clearTimer.bind(scheduler),
+  })
+
+  const queued = await persistence.update({ canvasLayout: { x: 7 } }, { allowRetry: true })
+  const revisionBeforeFlush = persistence.revision
+  assert.equal(queued.status, 'queued')
+  assert.equal(scheduler.activeCount, 1)
+
+  const forced = await persistence.flushNow()
+
+  assert.equal(forced.status, 'saved')
+  assert.equal(calls.length, 2)
+  assert.deepEqual(calls.map(({ canvasLayout }) => canvasLayout), [{ x: 7 }, { x: 7 }])
+  assert.deepEqual(calls.map(({ revision }) => revision), [revisionBeforeFlush, revisionBeforeFlush])
+  assert.equal(persistence.revision, revisionBeforeFlush)
+  assert.equal(persistence.savedRevision, revisionBeforeFlush)
+  assert.deepEqual(scheduler.delays, [2000, 17])
+  assert.equal(scheduler.activeCount, 1)
+  await scheduler.runNext()
+  assert.equal(calls.length, 2)
+  assert.equal(persistence.state, 'saved')
+  await scheduler.runNext()
+  assert.equal(persistence.state, 'idle')
+})
+
+test('flushNow 强制失败进入 error 且不再安排退避', async () => {
+  const scheduler = createScheduler()
+  let calls = 0
+  const persistence = createCanvasLayoutPersistence(async () => {
+    calls += 1
+    throw httpError(503)
+  }, {
+    setTimer: scheduler.setTimer.bind(scheduler),
+    clearTimer: scheduler.clearTimer.bind(scheduler),
+  })
+
+  await persistence.update({ canvasLayout: { x: 8 } }, { allowRetry: true })
+  const revisionBeforeFlush = persistence.revision
+  assert.equal(scheduler.activeCount, 1)
+
+  await assert.rejects(persistence.flushNow(), /503/)
+
+  assert.equal(calls, 2)
+  assert.equal(persistence.state, 'error')
+  assert.equal(persistence.dirty, true)
+  assert.equal(persistence.revision, revisionBeforeFlush)
+  assert.equal(scheduler.activeCount, 0)
+  await scheduler.runNext()
+  assert.equal(calls, 2)
+
+  persistence.dispose()
+  await assert.rejects(persistence.flushNow(), /disposed/)
+})
+
 test('自定义重试判定和 7/11 毫秒退避覆盖默认策略', async () => {
   const scheduler = createScheduler()
   let attempts = 0

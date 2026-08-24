@@ -45,6 +45,7 @@ let createdAssetPayload = null
 let updatedAssetPayloads = []
 let savedCanvasLayout = null
 let canvasSaveFailuresRemaining = 0
+let canvasSaveSuccessDelayMs = 0
 let canvasSaveRequests = []
 let canvasSaveRequestTimes = []
 let savedWorkflowGroups = []
@@ -83,6 +84,7 @@ test.beforeEach(async ({ page }) => {
   updatedAssetPayloads = []
   savedCanvasLayout = null
   canvasSaveFailuresRemaining = 0
+  canvasSaveSuccessDelayMs = 0
   canvasSaveRequests = []
   canvasSaveRequestTimes = []
   savedWorkflowGroups = []
@@ -217,6 +219,9 @@ test.beforeEach(async ({ page }) => {
           body: JSON.stringify({ success: false, message: 'temporary canvas outage' }),
         })
         return
+      }
+      if (canvasSaveSuccessDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, canvasSaveSuccessDelayMs))
       }
       if (payload.canvas_layout) savedCanvasLayout = payload.canvas_layout
       if (Array.isArray(payload.workflow_groups)) savedWorkflowGroups = payload.workflow_groups
@@ -374,6 +379,40 @@ test('项目画布持久化节点拖拽、手工连线和工作流分组并在�
     )
   }).toBeLessThanOrEqual(5)
   await expect(page.locator('.vue-flow__edge[data-id^="manual:sbimg:1001:"]')).toBeAttached()
+})
+
+test('项目画布在防抖结束前切换路由仍保存最后布局且不重复', async ({ page }) => {
+  await page.goto('/film/3')
+  await page.getByRole('button', { name: '画布页' }).click()
+  await expect(page).toHaveURL(/\/film\/3\/canvas(?:\?.*)?$/)
+
+  const viewport = page.locator('.vue-flow__transformationpane')
+  await expect(viewport).toBeVisible()
+  const transformBefore = await viewport.evaluate((element) => element.style.transform)
+  await page.keyboard.down('d')
+  await page.waitForTimeout(50)
+  await page.keyboard.up('d')
+  await expect.poll(() => viewport.evaluate((element) => element.style.transform)).not.toBe(transformBefore)
+  const transformAfter = await viewport.evaluate((element) => element.style.transform)
+  const transformValues = transformAfter.match(/-?\d+(?:\.\d+)?/g)?.map(Number)
+  expect(transformValues).toHaveLength(3)
+  expect(canvasSaveRequests).toHaveLength(0)
+
+  canvasSaveFailuresRemaining = 1
+  canvasSaveSuccessDelayMs = 300
+  await page.getByRole('button', { name: '制作页' }).click()
+  await expect.poll(() => canvasSaveRequests.length).toBe(2)
+  await expect(page).toHaveURL(/\/film\/3\/canvas(?:\?.*)?$/)
+  expect(savedCanvasLayout).toBeNull()
+  await expect(page).toHaveURL(/\/film\/3(?:\?.*)?$/)
+  expect(canvasSaveRequestTimes[1] - canvasSaveRequestTimes[0]).toBeLessThan(1000)
+  const savedViewport = canvasSaveRequests[1].canvas_layout.viewport
+  expect(savedViewport.x).toBeCloseTo(transformValues[0], 5)
+  expect(savedViewport.y).toBeCloseTo(transformValues[1], 5)
+  expect(savedViewport.zoom).toBeCloseTo(transformValues[2], 5)
+
+  await page.waitForTimeout(1000)
+  expect(canvasSaveRequests).toHaveLength(2)
 })
 
 test('项目画布在一次 503 后只提示一次并自动保存最新拖拽位置', async ({ page }) => {

@@ -217,10 +217,16 @@ test('自由节点运行结果可轮询、失败写回、成功自动入库并�
 })
 
 test('画布保存只使用容灾协调器并由状态机统一提示', () => {
+  const unmountSource = canvasSource.slice(canvasSource.indexOf('onBeforeUnmount('))
+
   assert.doesNotMatch(canvasSource, /canvasPersistQueue/)
   assert.match(canvasSource, /dramaAPI\.saveCanvasLayout\([\s\S]{0,500}\{ silentError: true \}[\s\S]{0,80}\)/)
   assert.match(canvasSource, /layoutPersistence\.update\([\s\S]{0,500}\{ allowRetry: layoutOnly && groupsPayload === undefined \}\s*\)/)
-  assert.match(canvasSource, /layoutPersistence\.dispose\(\)/)
+  assert.match(canvasSource, /import\s*\{[^}]*onBeforeRouteLeave[^}]*\}\s*from\s*['"]vue-router['"]/s)
+  assert.match(canvasSource, /async function flushPendingLayoutSave\(\) \{[\s\S]{0,500}clearTimeout\(saveTimer\)[\s\S]{0,200}saveTimer = null[\s\S]{0,300}await persistCanvasState\(\{ layoutOnly: true \}\)[\s\S]{0,300}layoutPersistence\.dirty[\s\S]{0,150}await layoutPersistence\.flushNow\(\)[\s\S]{0,200}return !layoutPersistence\.dirty/)
+  assert.match(canvasSource, /onBeforeRouteLeave\(async \(\) => \{\s*if \(!await flushPendingLayoutSave\(\)\) return false\s*\}\)/)
+  assert.match(unmountSource, /^onBeforeUnmount\(\(\) => \{[\s\S]*clearTimeout\(saveTimer\)[\s\S]*layoutPersistence\.dispose\(\)/)
+  assert.doesNotMatch(unmountSource, /persistCanvasState|layoutPersistence\.flush/)
   assert.match(canvasSource, /layoutSaveState\.value = event\.state/)
   assert.match(canvasSource, /event\.state === 'retry_wait'[\s\S]{0,500}网络暂时不可用，画布将在后台自动重试保存/)
   assert.match(canvasSource, /画布已恢复并保存/)

@@ -111,7 +111,7 @@ export function createCanvasLayoutPersistence(save, {
     return flush()
   }
 
-  function flush() {
+  function runFlush(force = false) {
     if (state === 'disposed') return Promise.reject(new Error(DISPOSED_ERROR))
     if (running) return running
     if (state === 'retry_wait' && timerKind === 'retry') {
@@ -139,7 +139,8 @@ export function createCanvasLayoutPersistence(save, {
           if (state === 'disposed') throw error
           const latestAllowsRetry = latest.allowRetry && !latest.hasWorkflowGroups
           if (
-            sending.allowRetry
+            !force
+            && sending.allowRetry
             && !sending.hasWorkflowGroups
             && latestAllowsRetry
             && isRetryable(error)
@@ -164,6 +165,17 @@ export function createCanvasLayoutPersistence(save, {
     return run
   }
 
+  function flush() {
+    return runFlush(false)
+  }
+
+  function flushNow() {
+    if (state === 'disposed') return Promise.reject(new Error(DISPOSED_ERROR))
+    cancelTimer('retry')
+    if (running) return running.then(() => flushNow())
+    return runFlush(true)
+  }
+
   function dispose() {
     if (state === 'disposed') return
     cancelTimer()
@@ -173,6 +185,7 @@ export function createCanvasLayoutPersistence(save, {
   return {
     update,
     flush,
+    flushNow,
     dispose,
     get state() { return state },
     get dirty() { return savedRevision < revision },

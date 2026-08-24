@@ -620,7 +620,7 @@
 
 <script setup>
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
@@ -8288,6 +8288,27 @@ watch(drama, () => {
   void loadFreeCanvasVoiceOptions()
 })
 
+async function flushPendingLayoutSave() {
+  if (saveTimer) {
+    clearTimeout(saveTimer)
+    saveTimer = null
+    const persisted = await persistCanvasState({ layoutOnly: true })
+    if (!persisted) return false
+  }
+  if (layoutPersistence.dirty) {
+    try {
+      await layoutPersistence.flushNow()
+    } catch (_) {
+      return false
+    }
+  }
+  return !layoutPersistence.dirty
+}
+
+onBeforeRouteLeave(async () => {
+  if (!await flushPendingLayoutSave()) return false
+})
+
 onMounted(() => {
   canvasAlive = true
   scheduleVirtualization()
@@ -8306,7 +8327,10 @@ onBeforeUnmount(() => {
   invalidateVideoToolPolling()
   canvasAlive = false
   stopAllKeyboardPan()
-  if (saveTimer) clearTimeout(saveTimer)
+  if (saveTimer) {
+    clearTimeout(saveTimer)
+    saveTimer = null
+  }
   if (paneClickSuppressTimer) clearTimeout(paneClickSuppressTimer)
   if (generationSaveTimer) clearTimeout(generationSaveTimer)
   if (runQueueTimer) clearInterval(runQueueTimer)
