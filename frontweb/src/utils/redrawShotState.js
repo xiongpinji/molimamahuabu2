@@ -52,6 +52,46 @@ export function restoreSelectedShotId(shots, selectedShotId) {
   return items[0]?.id ?? null
 }
 
+function normalizedDialogueInputText(value) {
+  return String(value ?? '').replace(/\r\n?/g, '\n')
+}
+
+export function localizedDialogueText(dialogue) {
+  return (Array.isArray(dialogue) ? dialogue : []).map((turn) => {
+    if (typeof turn === 'string') return turn
+    return String(turn?.localized_text ?? turn?.target_text ?? turn?.text ?? turn?.content ?? turn?.dialogue ?? '')
+  }).join('\n')
+}
+
+export function mergeLocalizedDialogueText(dialogue, value) {
+  const turns = Array.isArray(dialogue) ? dialogue : []
+  const text = normalizedDialogueInputText(value)
+  if (!turns.length) {
+    return text === ''
+      ? { ok: true, dialogue: [], reason: '' }
+      : { ok: false, dialogue: [], reason: '目标语台词只能逐行修改，不能新增、删除或重排对白行' }
+  }
+  if (turns.some((turn) => !turn || typeof turn !== 'object' || Array.isArray(turn))) {
+    return { ok: false, dialogue: [], reason: '当前目标对白不是可安全编辑的结构化数据' }
+  }
+  if (text === localizedDialogueText(turns)) {
+    return { ok: true, dialogue: turns.map((turn) => ({ ...turn })), reason: '' }
+  }
+  const lines = text.split('\n')
+  if (lines.length !== turns.length || lines.some((line) => !line.trim())) {
+    return {
+      ok: false,
+      dialogue: [],
+      reason: '目标语台词只能逐行修改，不能新增、删除或重排对白行',
+    }
+  }
+  return {
+    ok: true,
+    dialogue: turns.map((turn, index) => ({ ...turn, localized_text: lines[index] })),
+    reason: '',
+  }
+}
+
 export function filterShots(shots, filter = 'incomplete') {
   const items = Array.isArray(shots) ? shots : []
   if (filter === 'failed') return items.filter((shot) => FAILED_SHOT_STATES.has(String(shot.status)))

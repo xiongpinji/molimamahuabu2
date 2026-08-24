@@ -77,6 +77,83 @@ test('分镜状态归一化保留后端批次并在刷新后恢复选中镜头',
   assert.equal(restoreSelectedShotId(normalized.shots, 99), 11)
 })
 
+test('结构化目标对白读取 localized_text 且换镜头时不沿用旧文本', async () => {
+  const { localizedDialogueText } = await shotState()
+  assert.equal(localizedDialogueText([{
+    speaker_id: 'c1',
+    source_text: '就是这里。',
+    localized_text: 'Fue aquí.',
+    start_ms: 900,
+    end_ms: 2300,
+  }]), 'Fue aquí.')
+  assert.equal(localizedDialogueText([{
+    speaker_id: 'c2',
+    localized_text: 'No fue aquí.',
+    start_ms: 3100,
+    end_ms: 4200,
+  }]), 'No fue aquí.')
+})
+
+test('只改非对白字段时完整保留服务端结构化目标对白', async () => {
+  const { localizedDialogueText, mergeLocalizedDialogueText } = await shotState()
+  const dialogue = [{
+    speaker_id: 'c1',
+    source_text: '就是这里。',
+    localized_text: 'Fue aquí.',
+    start_ms: 900,
+    end_ms: 2300,
+    emotion: null,
+    overlap_group: null,
+    estimated_duration_ms: 600,
+    binding: { character_id: 17 },
+  }]
+  const baseline = structuredClone(dialogue)
+  const result = mergeLocalizedDialogueText(dialogue, localizedDialogueText(dialogue))
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.dialogue, baseline)
+  assert.deepEqual(dialogue, baseline)
+})
+
+test('编辑目标对白时仅按索引更新 localized_text 并保留稳定身份时序字段', async () => {
+  const { mergeLocalizedDialogueText } = await shotState()
+  const dialogue = [
+    {
+      speaker_id: 'c1', source_text: '就是这里。', localized_text: 'Fue aquí.',
+      start_ms: 900, end_ms: 2300, emotion: null, overlap_group: null,
+      estimated_duration_ms: 600,
+    },
+    {
+      speaker_id: 'c2', source_text: '不是这里。', localized_text: 'No aquí.',
+      start_ms: 2400, end_ms: 3600, emotion: 'angry', overlap_group: 'g1',
+      estimated_duration_ms: 700,
+    },
+  ]
+  const baseline = structuredClone(dialogue)
+  const result = mergeLocalizedDialogueText(dialogue, 'Fue aquí.\nNo fue aquí.')
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.dialogue, [
+    baseline[0],
+    { ...baseline[1], localized_text: 'No fue aquí.' },
+  ])
+  assert.deepEqual(dialogue, baseline)
+})
+
+test('无法安全映射目标对白行时关闭保存且静默镜头保持空数组', async () => {
+  const { mergeLocalizedDialogueText } = await shotState()
+  const dialogue = [
+    { speaker_id: 'c1', localized_text: 'Uno.', start_ms: 0, end_ms: 1000 },
+    { speaker_id: 'c2', localized_text: 'Dos.', start_ms: 1000, end_ms: 2000 },
+  ]
+  assert.equal(mergeLocalizedDialogueText(dialogue, 'Uno.').ok, false)
+  assert.equal(mergeLocalizedDialogueText(dialogue, 'Uno.\nDos.\nTres.').ok, false)
+  assert.equal(mergeLocalizedDialogueText(['旧字符串结构'], '旧字符串结构').ok, false)
+  assert.deepEqual(mergeLocalizedDialogueText([], ''), { ok: true, dialogue: [], reason: '' })
+  assert.equal(mergeLocalizedDialogueText([], '不得新增').ok, false)
+  assert.match(editorSource, /localizedDialogueEdit/)
+  assert.match(editorSource, /dialogueEditError/)
+  assert.match(editorSource, /if \(!localizedDialogueEdit\.value\.ok\) return/)
+})
+
 test('筛选、报价汇总和轮询严格使用后端状态且区分零价与未定价', async () => {
   const { filterShots, quoteCredits, sumShotQuotes, shouldPollWork } = await shotState()
   const shots = [

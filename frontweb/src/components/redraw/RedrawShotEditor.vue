@@ -40,6 +40,13 @@
         <el-input v-model="form.localized_dialogue_text" type="textarea" :rows="3" />
       </el-form-item>
     </div>
+    <el-alert
+      v-if="dialogueEditError"
+      :title="dialogueEditError"
+      type="warning"
+      :closable="false"
+      show-icon
+    />
 
     <el-form-item label="提示词">
       <el-input v-model="form.prompt" type="textarea" :rows="4" placeholder="描述镜头画面、角色和动作连续性" />
@@ -110,7 +117,7 @@
         <small v-if="!availability.ok">{{ availability.reason }}</small>
       </div>
       <div class="button-row">
-        <el-button :icon="DocumentChecked" :loading="saving" :disabled="!editable" @click="save">保存镜头</el-button>
+        <el-button :icon="DocumentChecked" :loading="saving" :disabled="saveDisabled" @click="save">保存镜头</el-button>
         <el-button
           v-if="shot.status === 'failed'"
           type="danger"
@@ -147,6 +154,8 @@ import {
   approvedReferenceOptions,
   formatTimecode,
   generationAvailability,
+  localizedDialogueText,
+  mergeLocalizedDialogueText,
   quoteCredits,
   structuredReferences,
 } from '@/utils/redrawShotState'
@@ -194,8 +203,15 @@ const availability = computed(() => generationAvailability(props.shot, props.gat
 const editable = computed(() => ['draft', 'failed'].includes(String(props.shot?.status || '')))
 const durationSeconds = computed(() => Math.max(0, Number(form.end_ms) - Number(form.start_ms)) / 1000)
 const durationInRange = computed(() => durationSeconds.value >= 5 && durationSeconds.value <= 15)
+const localizedDialogueEdit = computed(() => mergeLocalizedDialogueText(
+  props.shot?.localized_dialogue,
+  form.localized_dialogue_text,
+))
+const dialogueEditError = computed(() => localizedDialogueEdit.value.reason)
+const saveDisabled = computed(() => !editable.value || !localizedDialogueEdit.value.ok)
 const generationDisabled = computed(() => !availability.value.ok
   || !durationInRange.value
+  || !localizedDialogueEdit.value.ok
   || (props.referenceBundleRequired
     && (props.referenceBundleSaving || !props.referenceBundleState.ready)))
 const sourceDialogueText = computed(() => dialogueText(props.shot?.source_dialogue))
@@ -228,7 +244,7 @@ function hydrate(shot) {
   form.opening_state = shot.opening_state || ''
   form.continuous_action = shot.continuous_action || ''
   form.ending_state = shot.ending_state || ''
-  form.localized_dialogue_text = dialogueText(shot.localized_dialogue)
+  form.localized_dialogue_text = localizedDialogueText(shot.localized_dialogue)
   form.prompt = shot.prompt || ''
   form.negative_prompt = shot.negative_prompt || ''
   form.model = shot.model || ''
@@ -250,7 +266,7 @@ function payload() {
     continuous_action: form.continuous_action,
     ending_state: form.ending_state,
     source_dialogue: Array.isArray(props.shot.source_dialogue) ? props.shot.source_dialogue : [],
-    localized_dialogue: form.localized_dialogue_text.split('\n').map((line) => line.trim()).filter(Boolean),
+    localized_dialogue: localizedDialogueEdit.value.dialogue,
     prompt: form.prompt,
     negative_prompt: form.negative_prompt,
     references: structuredReferences(selectedReferenceAssets.value),
@@ -262,10 +278,12 @@ function payload() {
 }
 
 function save() {
+  if (!localizedDialogueEdit.value.ok) return
   emit('save', payload())
 }
 
 function generate(retry) {
+  if (!localizedDialogueEdit.value.ok) return
   emit('generate', { update: payload(), retry })
 }
 
