@@ -116,7 +116,19 @@ export function normalizeReleaseReadiness(value = {}) {
   }
 }
 
-export function controlledReleaseDownloadUrl(value) {
-  const url = String(value || '')
-  return /^\/api\/v1\/redraw\/exports\/\d+(?:\/download\/(?:mp4|srt|vtt))?$/.test(url) ? url : ''
+const RELEASE_ARTIFACT_URL = /^\/(?:api\/v1\/)?redraw\/exports\/([1-9]\d*)\/download\/(mp4|srt|vtt)$/
+const RELEASE_REPORT_URL = /^\/(?:api\/v1\/)?redraw\/exports\/([1-9]\d*)$/
+
+export function controlledReleaseRequestPath(value, report = false) {
+  if (typeof value !== 'string') return ''
+  const match = (report === true ? RELEASE_REPORT_URL : RELEASE_ARTIFACT_URL).exec(value)
+  if (!match) return ''
+  return report === true
+    ? `/redraw/exports/${match[1]}`
+    : `/redraw/exports/${match[1]}/download/${match[2]}`
+}
+
+export function controlledReleaseDownloadUrl(value, report = false) {
+  const requestPath = controlledReleaseRequestPath(value, report)
+  return requestPath ? `/api/v1${requestPath}` : ''
 }

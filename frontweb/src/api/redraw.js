@@ -1,4 +1,5 @@
 import request from '@/utils/request'
+import { controlledReleaseRequestPath } from '@/utils/redrawTimelineState'
 
 function referenceImageFile(body) {
   const file = body?.free_style?.reference?.file
@@ -141,12 +142,12 @@ export function buildReleasePayload(body = {}) {
   }
 }
 
-function assertControlledReleaseUrl(value) {
-  const url = String(value || '')
-  if (!/^\/api\/v1\/redraw\/exports\/\d+(?:\/download\/(?:mp4|srt|vtt))?$/.test(url)) {
+function assertControlledReleaseUrl(value, report) {
+  const requestPath = controlledReleaseRequestPath(value, report)
+  if (!requestPath) {
     throw new Error('服务端返回的下载地址无效')
   }
-  return url
+  return requestPath
 }
 
 export const redrawAPI = {
@@ -318,6 +319,8 @@ export const redrawAPI = {
     return request.post(`/redraw/versions/${versionId}/releases`, buildReleasePayload(body))
   },
   downloadReleaseArtifact(relativeUrl, report = false) {
-    return request.get(assertControlledReleaseUrl(relativeUrl), report ? {} : { responseType: 'blob' })
+    const isReport = report === true
+    const requestPath = assertControlledReleaseUrl(relativeUrl, isReport)
+    return request.get(requestPath, isReport ? {} : { responseType: 'blob' })
   },
 }

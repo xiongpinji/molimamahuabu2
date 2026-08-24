@@ -58,7 +58,7 @@ function newIdempotencyKey() {
 }
 
 function safeUrl(kind) {
-  return controlledReleaseDownloadUrl(downloads.value?.[kind])
+  return controlledReleaseDownloadUrl(downloads.value?.[kind], kind === 'report')
 }
 
 async function load() {
