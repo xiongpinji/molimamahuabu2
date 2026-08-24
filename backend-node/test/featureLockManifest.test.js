@@ -295,6 +295,17 @@ const PR184_MAIN_MERGE_UNLOCK = {
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
+const PR189_CONNECTION_ONLY_VERIFICATION_UNLOCK = {
+  reason: '2026-08-24 连接测试仅验证连通性安全修复获批',
+  approvedBy: 'product-owner 2026-08-24 pr-189-ci-fix',
+  impactTests: [
+    'backend-node/test/migrateAiConfigVerification.test.js',
+    'backend-node/test/videoProviderVerification.test.js',
+    'backend-node/test/aiConfigPublicView.test.js',
+    'backend-node/test/providerRouteAdminRoutes.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+  ],
+};
 const PRE_PR184_CURRENT_UNLOCK_BY_FEATURE = {
   [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: PROVIDER_ROUTE_TTS_CHARACTER_COST_UNLOCK,
   [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: PROVIDER_TASK_LIVE_COMPAT_UNLOCK,
@@ -688,7 +699,12 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     const previousUnlock = qualityFixTouched
       ? PROVIDER_TASK_STATUS_DECISION_UNLOCK
       : PROVIDER_TASK_RECEIPT_UNLOCK;
-    assert.deepEqual(feature.unlock, PR184_MAIN_MERGE_UNLOCK);
+    assert.deepEqual(
+      feature.unlock,
+      featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
+        ? PR189_CONNECTION_ONLY_VERIFICATION_UNLOCK
+        : PR184_MAIN_MERGE_UNLOCK,
+    );
     assert.deepEqual(feature.unlockHistory, [
       HISTORICAL_UNLOCK_BY_FEATURE[featureId],
       ...(qualityFixTouched ? [PROVIDER_TASK_RECEIPT_UNLOCK] : []),
@@ -712,6 +728,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
         ? [PROVIDER_TASK_RECEIPT_UNLOCK, PR177_SHARED_FOUNDATION_UNLOCK]
         : []),
       PRE_PR184_CURRENT_UNLOCK_BY_FEATURE[featureId],
+      ...(featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID ? [PR184_MAIN_MERGE_UNLOCK] : []),
     ]);
     assert.deepEqual(
       feature.evidence.slice(0, HISTORICAL_EVIDENCE_BY_FEATURE[featureId].length),
