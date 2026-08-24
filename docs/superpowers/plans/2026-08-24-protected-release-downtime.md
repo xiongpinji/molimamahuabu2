@@ -506,7 +506,7 @@ git commit -m "security(门禁): 冻结低停机激活器轮换哈希"
 - 审核：`deploy/rotate-external-model-release-guard.sh`
 - 审核：`backend-node/test/sharedReleaseGuardRotation.test.js`
 
-- [ ] **步骤 1：运行完整共享门禁测试**
+- [x] **步骤 1：运行完整共享门禁测试**
 
 ```powershell
 cd backend-node
@@ -515,7 +515,7 @@ node --test --test-concurrency=1 test/sharedReleaseGuardRotation.test.js
 
 预期：原有 37 项与新增测试全部 PASS；root fixture 不得 SKIP。若 Windows 当前没有可用 root WSL，复制分支到受控 Linux CI 重跑，取得完整 PASS 才能提交安全 PR 审查。
 
-- [ ] **步骤 2：核对四次哈希与停机区间**
+- [x] **步骤 2：核对四次哈希与停机区间**
 
 ```powershell
 $source = Get-Content -Raw deploy/release-guard/activate-protected-release.sh
@@ -527,7 +527,7 @@ $source.Substring($start, $end - $start) | Select-String -Pattern 'candidate_tre
 
 预期：函数定义加四次调用满足测试固定计数；停机片段搜索无命中。
 
-- [ ] **步骤 3：审计精准范围和敏感信息**
+- [x] **步骤 3：审计精准范围和敏感信息**
 
 ```powershell
 git diff origin/main --name-only
@@ -538,7 +538,7 @@ git diff origin/main -- frontweb backend-node/src
 
 预期：实现 diff 仅含 3 个安全文件及本计划/规格文档；`git diff --check` 无输出；审计语句没有输出敏感值；业务源码 diff 为空。
 
-- [ ] **步骤 4：确认 AI 音乐和生产动作不存在**
+- [x] **步骤 4：确认 AI 音乐和生产动作不存在**
 
 ```powershell
 rg -n "systemctl.*moli-mama|restart.*moli-mama|stop.*moli-mama" deploy/release-guard/activate-protected-release.sh deploy/rotate-external-model-release-guard.sh
@@ -547,7 +547,7 @@ git status --short --branch
 
 预期：第一条无命中；分支只含计划内提交，没有生产候选、数据库备份文件或密钥。
 
-- [ ] **步骤 5：提交验收记录**
+- [x] **步骤 5：提交验收记录**
 
 在计划末尾追加实际测试总数、三次性能 fixture 数据、最终激活器哈希、`bash -n` 结果与“未轮换/未部署”声明，然后提交：
 
@@ -576,3 +576,16 @@ git commit -m "docs(门禁): 记录低停机安全验收"
 ## 执行边界
 
 完成任务 1-6 只表示独立安全分支可申请 PR 审查。即使 PR 合入，也不得自动轮换 `/opt/moli-drama/shared/release-guard`；轮换前必须重新读取实时安装哈希、协调部署锁、备份共享门禁和生产 SQLite，并取得单独明确授权。轮换完成后的 verify-only 与业务候选激活仍是两个独立授权步骤。
+
+## 2026-08-24 本地安全验收记录
+
+- 完整回归：`node --test --test-concurrency=1 test/sharedReleaseGuardRotation.test.js`，40/40 PASS，0 FAIL，0 SKIP。
+- 三次近生产规模 Linux/root 性能 fixture：stop-to-restart 分别为 260 ms、260 ms、290 ms，全部低于 900 ms 门槛；延迟只注入 fixture 的临时 `candidate_tree_hash`，未修改生产脚本。
+- 哈希与停机区间：`candidate_tree_hash` 为函数定义加 4 次调用；stop-to-restart 片段未命中 `candidate_tree_hash` 或候选目录全树 `sha256sum`。
+- 最终源文件 SHA-256：
+  - 激活器：`ab13967725bec2de7f4c71abacda3a11bf5272d9a350a4d1430c9d7b623d45ce`
+  - UI 合同验证器：`8f0252ad40fc142f46b2349933aa1f21eb949fe89dfe7ee610112af541364b62`
+  - 外部模型验证器：`0c3db1eb2d66b974c83608ee7759dc85acf9cd2dddb902a1499d4b981d4d4711`
+- 语法与范围：激活器、轮换脚本的 WSL/root `bash -n` 均为 exit 0；`git diff --check origin/main...HEAD` 为 exit 0；任务 1-5 的实现范围仅包含激活器、轮换脚本及其门禁测试。
+- 安全隔离：激活器与轮换脚本没有停止、重启或修改 `moli-mama`/AI 音乐服务；九项耗时审计只写固定字段与十进制毫秒值，不写环境值或密钥。
+- 执行边界：本次仅完成本地 TDD、Linux/root fixture 和静态审计；**未轮换共享门禁、未部署、未停服、未激活候选、未修改生产数据库、未付费调用、未触碰 AI 音乐。**
