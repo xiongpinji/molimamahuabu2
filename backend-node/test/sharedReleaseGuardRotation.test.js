@@ -108,7 +108,7 @@ function makeActivatorFixture(t) {
   writeLinuxFile(`${guardRoot}/verify-canvas-reference-sequence-contract.js`, 'process.exit(0);\n', '0555');
   writeLinuxFile(`${guardRoot}/verify-external-model-release.js`, 'process.exit(0);\n', '0555');
   writeLinuxFile(trustedNode, `#!/bin/sh\nexec /usr/bin/env -u PWD ${shellQuote(linuxNodeBinary)} "$@"\n`, '0555');
-  const materializeActivator = (commandOverrides = {}) => {
+  const materializeActivator = (commandOverrides = {}, { candidateTreeHashPrologue = '' } = {}) => {
     const replacements = {
       '/usr/bin/node': trustedNode,
       '/opt/moli-drama/releases': releasesRoot,
@@ -119,6 +119,12 @@ function makeActivatorFixture(t) {
     let activatorSource = fs.readFileSync(activatorPath, 'utf8');
     for (const [productionPath, testPath] of Object.entries(replacements)) {
       activatorSource = activatorSource.replaceAll(productionPath, testPath);
+    }
+    if (candidateTreeHashPrologue) {
+      activatorSource = activatorSource.replace(
+        'candidate_tree_hash() {',
+        `candidate_tree_hash() {\n  ${candidateTreeHashPrologue}`,
+      );
     }
     writeLinuxFile(testActivator, activatorSource, '0555');
   };
@@ -413,7 +419,8 @@ function configureActualActivation(fixture, options = {}) {
 
   writeLinuxFile(systemctl, `#!/bin/sh
 set -eu
-printf '%s\\n' "$*" >> ${shellQuote(serviceLog)}
+timestamp="$(/usr/bin/awk '{ printf "%.0f", $1 * 1000 }' /proc/uptime)"
+printf '%s %s\\n' "$timestamp" "$*" >> ${shellQuote(serviceLog)}
 if [ "$1" = stop ] && [ -f ${shellQuote(postStopPendingFlag)} ]; then
   /usr/bin/python3 - ${shellQuote(databasePath)} <<'PYTHON'
 import sqlite3
@@ -477,6 +484,10 @@ exec /bin/cat ${shellQuote(processState)}
     '/usr/bin/journalctl': journalctl,
     '/usr/bin/ps': ps,
     '/usr/bin/sleep': sleep,
+  }, {
+    candidateTreeHashPrologue: options.hashDelayMs
+      ? `/usr/bin/python3 -c 'import time; time.sleep(${Number(options.hashDelayMs) / 1000})'`
+      : '',
   });
 
   return {
@@ -566,6 +577,47 @@ test('actual activation has backup, quiescence, music isolation, audit, and thre
   assert.ok((source.match(/candidate_tree_hash/g) || []).length >= 4);
   assert.match(source, /post-health candidate tree changed/i);
   assert.match(source, /rollback.*health|health.*rollback/is);
+});
+
+test('full candidate hashes remain four while the downtime window contains only fast checks', () => {
+  const source = fs.readFileSync(activatorPath, 'utf8');
+  const requiredIndex = (needle, fromIndex = 0) => {
+    const index = source.indexOf(needle, fromIndex);
+    assert.notEqual(index, -1, `missing required activator marker: ${needle}`);
+    return index;
+  };
+  const initialHash = requiredIndex('INITIAL_CANDIDATE_TREE_HASH="$(candidate_tree_hash)"');
+  const postVerificationHash = requiredIndex('POST_VERIFICATION_CANDIDATE_TREE_HASH="$(candidate_tree_hash)"');
+  const preSwitchHash = requiredIndex('PRE_SWITCH_CANDIDATE_TREE_HASH="$(candidate_tree_hash)"');
+  const stop = requiredIndex('"$SYSTEMCTL_BINARY" stop moli-drama.service');
+  const restart = requiredIndex('"$SYSTEMCTL_BINARY" restart moli-drama.service', stop + 1);
+  const postHealthHash = requiredIndex('POST_HEALTH_CANDIDATE_TREE_HASH="$(candidate_tree_hash)"');
+
+  assert.ok(initialHash < postVerificationHash);
+  assert.ok(postVerificationHash < preSwitchHash);
+  assert.ok(preSwitchHash < stop);
+  assert.ok(stop < restart);
+  assert.ok(restart < postHealthHash);
+
+  const downtimeSource = source.slice(stop, restart);
+  assert.doesNotMatch(downtimeSource, /candidate_tree_hash|find\s+[^\n]*-type\s+f|sha256sum\s+[^\n]*candidate/i);
+  assert.match(downtimeSource, /assert_no_active_generation_tasks/);
+  assert.match(downtimeSource, /assert_current_matches/);
+  assert.match(downtimeSource, /assert_root_owned_evidence_tree/);
+  assert.match(downtimeSource, /assert_candidate_lock_state/);
+  assert.match(downtimeSource, /assert_production_env_unchanged/);
+});
+
+test('activation audit records monotonic phase timings without environment values', () => {
+  const source = fs.readFileSync(activatorPath, 'utf8');
+  assert.match(source, /monotonic_ms\(\)/);
+  assert.match(source, /\/proc\/uptime/);
+  for (const field of [
+    'preflight_verification_ms', 'database_backup_ms', 'pre_switch_hash_ms',
+    'service_stop_ms', 'post_stop_checks_ms', 'service_restart_ms',
+    'health_wait_ms', 'post_health_hash_ms', 'downtime_window_ms',
+  ]) assert.match(source, new RegExp(`audit_phase_timing ${field} `));
+  assert.doesNotMatch(source, /audit_event[^\n]*(?:PROVIDER_SECRET|DATABASE_URL|API_KEY|TOKEN)=/);
 });
 
 test('activator rejects a candidate symlink that resolves outside releases root', { skip: !rootBashAvailable }, (t) => {
@@ -704,7 +756,7 @@ test('actual activation backs up, checks twice, preserves music processes, and w
   const current = runLinux('readlink', ['-f', fixture.currentLink], { root: true });
   assert.equal(current.stdout.trim(), fixture.candidate);
   const serviceCalls = runLinux('cat', [operations.serviceLog], { root: true });
-  assert.equal(serviceCalls.stdout, 'stop moli-drama.service\nrestart moli-drama.service\n');
+  assert.match(serviceCalls.stdout, /^\d+ stop moli-drama\.service\n\d+ restart moli-drama\.service\n$/);
   const backups = runLinux('find', [operations.backupDir, '-maxdepth', '1', '-type', 'f', '-name', 'database-release-guard-*.sqlite', '-print'], { root: true });
   assert.equal(backups.status, 0, backups.stderr);
   assert.equal(backups.stdout.trim().split('\n').filter(Boolean).length, 1);
@@ -724,6 +776,30 @@ test('actual activation backs up, checks twice, preserves music processes, and w
   for (const line of auditModes.stdout.trim().split('\n')) assert.match(line, /^0:0 600 /);
 });
 
+test('three activations exclude full-hash delay from stop-to-restart downtime', { skip: !rootBashAvailable }, (t) => {
+  for (let run = 0; run < 3; run += 1) {
+    const fixture = makeActivatorFixture(t);
+    const operations = configureActualActivation(fixture, { hashDelayMs: 1000 });
+    const result = runActivator(fixture);
+    assert.equal(result.status, 0, result.stderr);
+
+    const operationsLog = readLinuxFile(operations.serviceLog).toString('utf8').trim().split('\n');
+    const stop = operationsLog.find((line) => line.endsWith(' stop moli-drama.service'));
+    const restart = operationsLog.find((line) => line.endsWith(' restart moli-drama.service'));
+    assert.ok(stop && restart);
+    const downtimeMs = Number(restart.split(' ')[0]) - Number(stop.split(' ')[0]);
+    assert.ok(downtimeMs < 900, `run ${run + 1} stop-to-restart downtime was ${downtimeMs}ms`);
+    t.diagnostic(`run ${run + 1} stop_to_restart_ms=${downtimeMs}`);
+
+    const audit = readLinuxFile(result.stdout.match(/protected_release_audit=(.+)/)[1]).toString('utf8');
+    for (const field of [
+      'preflight_verification_ms', 'database_backup_ms', 'pre_switch_hash_ms',
+      'service_stop_ms', 'post_stop_checks_ms', 'service_restart_ms',
+      'health_wait_ms', 'post_health_hash_ms', 'downtime_window_ms',
+    ]) assert.match(audit, new RegExp(`phase_timing ${field}=\\d+`));
+  }
+});
+
 test('post-stop pending work restarts and health-confirms the old release without switching', { skip: !rootBashAvailable }, (t) => {
   const fixture = makeActivatorFixture(t);
   const operations = configureActualActivation(fixture, { postStopPending: true });
@@ -731,9 +807,11 @@ test('post-stop pending work restarts and health-confirms the old release withou
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /pending or processing generation tasks.*after-stop/i);
   const current = runLinux('readlink', ['-f', fixture.currentLink], { root: true });
+  assert.equal(current.status, 0, current.stderr);
   assert.equal(current.stdout.trim(), fixture.expected);
   const serviceCalls = runLinux('cat', [operations.serviceLog], { root: true });
-  assert.equal(serviceCalls.stdout, 'stop moli-drama.service\nrestart moli-drama.service\n');
+  assert.match(serviceCalls.stdout, /^\d+ stop moli-drama\.service\n\d+ restart moli-drama\.service\n$/);
+  assert.doesNotMatch(serviceCalls.stdout, /moli-mama/);
   const audit = runLinux('/bin/bash', ['-lc', `cat ${shellQuote(fixture.sharedRoot + '/release-audit')}/*.audit`], { root: true });
   assert.match(audit.stdout, /rollback result=healthy/);
 });
@@ -783,21 +861,26 @@ test('service stop failure restarts and health-confirms the unchanged old releas
   const current = runLinux('readlink', ['-f', fixture.currentLink], { root: true });
   assert.equal(current.stdout.trim(), fixture.expected);
   const serviceCalls = runLinux('cat', [operations.serviceLog], { root: true });
-  assert.equal(serviceCalls.stdout, 'stop moli-drama.service\nrestart moli-drama.service\n');
+  assert.match(serviceCalls.stdout, /^\d+ stop moli-drama\.service\n\d+ restart moli-drama\.service\n$/);
   const audit = runLinux('/bin/bash', ['-lc', `cat ${shellQuote(fixture.sharedRoot + '/release-audit')}/*.audit`], { root: true });
   assert.match(audit.stdout, /rollback result=healthy/);
 });
 
-test('current CAS drift after service stop restores and health-confirms the expected release', { skip: !rootBashAvailable }, (t) => {
+test('current drift after service stop restores and health-confirms the expected release', { skip: !rootBashAvailable }, (t) => {
   const fixture = makeActivatorFixture(t);
   const operations = configureActualActivation(fixture, { currentDrifts: true });
   const result = runActivator(fixture);
+  assert.notEqual(result.status, 0);
   assert.equal(result.status, 73, result.stderr);
   assert.match(result.stderr, /current release changed:/i);
   const current = runLinux('readlink', ['-f', fixture.currentLink], { root: true });
+  assert.equal(current.status, 0, current.stderr);
   assert.equal(current.stdout.trim(), fixture.expected);
   const serviceCalls = runLinux('cat', [operations.serviceLog], { root: true });
-  assert.equal(serviceCalls.stdout, 'stop moli-drama.service\nrestart moli-drama.service\n');
+  assert.match(serviceCalls.stdout, /^\d+ stop moli-drama\.service\n\d+ restart moli-drama\.service\n$/);
+  assert.doesNotMatch(serviceCalls.stdout, /moli-mama/);
+  const audit = runLinux('/bin/bash', ['-lc', `cat ${shellQuote(fixture.sharedRoot + '/release-audit')}/*.audit`], { root: true });
+  assert.match(audit.stdout, /rollback result=healthy/);
 });
 
 test('new-release health failure restores old current and confirms old-release health', { skip: !rootBashAvailable }, (t) => {
@@ -807,9 +890,11 @@ test('new-release health failure restores old current and confirms old-release h
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /health check failed; rollback required/i);
   const current = runLinux('readlink', ['-f', fixture.currentLink], { root: true });
+  assert.equal(current.status, 0, current.stderr);
   assert.equal(current.stdout.trim(), fixture.expected);
   const serviceCalls = runLinux('cat', [operations.serviceLog], { root: true });
-  assert.equal(serviceCalls.stdout, 'stop moli-drama.service\nrestart moli-drama.service\nrestart moli-drama.service\n');
+  assert.match(serviceCalls.stdout, /^\d+ stop moli-drama\.service\n\d+ restart moli-drama\.service\n\d+ restart moli-drama\.service\n$/);
+  assert.doesNotMatch(serviceCalls.stdout, /moli-mama/);
   const audit = runLinux('/bin/bash', ['-lc', `cat ${shellQuote(fixture.sharedRoot + '/release-audit')}/*.audit`], { root: true });
   assert.match(audit.stdout, /rollback result=healthy/);
 });
@@ -863,9 +948,13 @@ test('post-health candidate mutation triggers old-current restart and healthy ro
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /post-health candidate tree changed/i);
   const current = runLinux('readlink', ['-f', fixture.currentLink], { root: true });
+  assert.equal(current.status, 0, current.stderr);
   assert.equal(current.stdout.trim(), fixture.expected);
   const serviceCalls = runLinux('cat', [operations.serviceLog], { root: true });
-  assert.equal(serviceCalls.stdout, 'stop moli-drama.service\nrestart moli-drama.service\nrestart moli-drama.service\n');
+  assert.match(serviceCalls.stdout, /^\d+ stop moli-drama\.service\n\d+ restart moli-drama\.service\n\d+ restart moli-drama\.service\n$/);
+  assert.doesNotMatch(serviceCalls.stdout, /moli-mama/);
+  const audit = runLinux('/bin/bash', ['-lc', `cat ${shellQuote(fixture.sharedRoot + '/release-audit')}/*.audit`], { root: true });
+  assert.match(audit.stdout, /rollback result=healthy/);
 });
 
 test('AI music process drift is detected without operating on the music service and rolls back', { skip: !rootBashAvailable }, (t) => {
@@ -875,9 +964,13 @@ test('AI music process drift is detected without operating on the music service 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /AI music process snapshot changed/i);
   const current = runLinux('readlink', ['-f', fixture.currentLink], { root: true });
+  assert.equal(current.status, 0, current.stderr);
   assert.equal(current.stdout.trim(), fixture.expected);
   const serviceCalls = runLinux('cat', [operations.serviceLog], { root: true });
+  assert.match(serviceCalls.stdout, /restart moli-drama\.service/);
   assert.doesNotMatch(serviceCalls.stdout, /moli-mama|music|server\.js|worker\.js/i);
+  const audit = runLinux('/bin/bash', ['-lc', `cat ${shellQuote(fixture.sharedRoot + '/release-audit')}/*.audit`], { root: true });
+  assert.match(audit.stdout, /rollback result=healthy/);
 });
 
 test('fatal startup journal entry rolls the switched release back', { skip: !rootBashAvailable }, (t) => {
@@ -893,6 +986,7 @@ test('fatal startup journal entry rolls the switched release back', { skip: !roo
 test('manual rotation hard-codes old guard hashes and root-owned staged evidence transaction', () => {
   const source = fs.readFileSync(rotationPath, 'utf8');
   const activatorHash = sha256(fs.readFileSync(activatorPath));
+  const uiVerifierHash = sha256(fs.readFileSync(uiVerifierPath));
   const externalVerifierHash = sha256(fs.readFileSync(externalVerifierPath));
   for (const expected of [OLD_ACTIVATOR_SHA256, OLD_UI_VERIFIER_SHA256, OLD_SEQUENCE_VERIFIER_SHA256]) {
     assert.match(source, new RegExp(expected));
@@ -910,8 +1004,9 @@ test('manual rotation hard-codes old guard hashes and root-owned staged evidence
   assert.doesNotMatch(source, /MOLI_DRAMA_(?:RELEASES_ROOT|CURRENT_LINK|SHARED_ROOT)/);
   assert.match(source, new RegExp(`EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256='${externalVerifierHash}'`));
   assert.match(source, new RegExp(`EXPECTED_INSTALLED_EXTERNAL_VERIFIER_SHA256='${INSTALLED_EXTERNAL_VERIFIER_SHA256}'`));
+  assert.match(source, /EXPECTED_INSTALLED_ACTIVATOR_SHA256='c1d987123f6655a07351f7c4891fd3d0229c3cb64776e635c3f339c986d15eb0'/);
   assert.match(source, new RegExp(`EXPECTED_NEW_ACTIVATOR_SHA256='${activatorHash}'`));
-  assert.match(source, new RegExp(`EXPECTED_NEW_UI_VERIFIER_SHA256='${INSTALLED_UI_VERIFIER_SHA256}'`));
+  assert.match(source, new RegExp(`EXPECTED_NEW_UI_VERIFIER_SHA256='${uiVerifierHash}'`));
   assert.match(source, /NEW_UI_VERIFIER_SOURCE=.*canvasCreditReleaseContract\.js/);
   assert.match(source, /SOURCE_RELEASE.*CANDIDATE|CANDIDATE.*SOURCE_RELEASE/s);
   assert.match(source, /source release must equal candidate/i);

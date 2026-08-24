@@ -1,7 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import { getCanvasNodeSize, preserveCanvasNodeRuntimeMeasurements, virtualizeCanvasGraph } from '../src/utils/canvasVirtualization.js'
+import * as canvasVirtualization from '../src/utils/canvasVirtualization.js'
+
+const dramaCanvasSource = readFileSync(new URL('../src/views/DramaCanvas.vue', import.meta.url), 'utf8')
 
 function makeNodes(count = 80) {
   return Array.from({ length: count }, (_, index) => ({
@@ -94,4 +98,28 @@ test('没有有效运行时尺寸时保持待渲染节点不变', () => {
   )
 
   assert.equal(result, node)
+})
+
+test('动态节点进入 Vue Flow 前补零尺寸且不覆盖已测尺寸', () => {
+  assert.equal(typeof canvasVirtualization.prepareCanvasNodesForRender, 'function')
+  const dynamic = { id: 'free:image:new', type: 'homeCanvasNode', position: { x: 0, y: 0 } }
+  const measured = {
+    id: 'free:image:measured',
+    type: 'homeCanvasNode',
+    dimensions: { width: 480, height: 314.5 },
+  }
+  const storyboard = { id: 'sb:1', type: 'canvasStoryboard' }
+
+  const result = canvasVirtualization.prepareCanvasNodesForRender([dynamic, measured, storyboard])
+
+  assert.deepEqual(result[0].dimensions, { width: 0, height: 0 })
+  assert.deepEqual(result[1].dimensions, { width: 480, height: 314.5 })
+  assert.deepEqual(result[2].dimensions, { width: 0, height: 0 })
+})
+
+test('画布统一动态渲染边界在交给 Vue Flow 前补齐节点尺寸合同', () => {
+  assert.match(
+    dramaCanvasSource,
+    /function applyVirtualizedGraph\(\)[\s\S]*nodes\.value = prepareCanvasNodesForRender\(preserveCanvasNodeRuntimeMeasurements\(result\.nodes, nodes\.value\)\)/,
+  )
 })

@@ -217,6 +217,24 @@ assert_candidate_tree_secure() {
   fi
 }
 
+assert_candidate_lock_state() {
+  local candidate_real owner mode resolved target
+  candidate_real="$(readlink -f -- "$CANDIDATE")"
+  [[ "$candidate_real" == "$RELEASES_ROOT"/* ]] || fail 70 'candidate resolved outside releases root'
+  assert_root_owned_directory "$CANDIDATE" 'candidate root'
+
+  while IFS= read -r -d '' target; do
+    owner="$(stat -c '%u:%g' -- "$target")"
+    [[ "$owner" == '0:0' ]] || fail 70 "candidate symlink must be root:root: $target"
+    resolved="$(readlink -f -- "$target")"
+    [[ "$resolved" == "$RELEASES_ROOT"/* ]] || fail 70 "candidate symlink resolved outside releases root: $target"
+    owner="$(stat -Lc '%u:%g' -- "$target")"
+    mode="$(stat -Lc '%a' -- "$target")"
+    [[ "$owner" == '0:0' ]] || fail 70 "candidate symlink target must be root:root: $target"
+    (( (8#$mode & 8#022) == 0 )) || fail 70 "candidate symlink target must not be group/other writable: $target"
+  done < <(find -P "$CANDIDATE" -xdev -type l -print0)
+}
+
 candidate_tree_hash() {
   (
     cd -- "$CANDIDATE"
@@ -347,6 +365,24 @@ initialize_audit() {
 audit_event() {
   [[ "$AUDIT_INITIALIZED" -eq 1 ]] || return 0
   printf '%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >> "$AUDIT_FILE"
+}
+
+monotonic_ms() {
+  awk '{ printf "%.0f\n", $1 * 1000 }' /proc/uptime
+}
+
+elapsed_ms() {
+  local started_ms="$1"
+  local finished_ms
+  finished_ms="$(monotonic_ms)"
+  printf '%s\n' "$((finished_ms - started_ms))"
+}
+
+audit_phase_timing() {
+  local key="$1"
+  local value="$2"
+  [[ "$key" =~ ^[a-z_]+_ms$ && "$value" =~ ^[0-9]+$ ]] || fail 70 'invalid phase timing audit value'
+  audit_event "phase_timing $key=$value"
 }
 
 snapshot_ai_music_processes() {
@@ -724,6 +760,7 @@ assert_root_owned_evidence_tree
 assert_candidate_tree_secure
 INITIAL_CANDIDATE_TREE_HASH="$(candidate_tree_hash)"
 
+preflight_started_ms="$(monotonic_ms)"
 env -i PATH="$SAFE_PATH" LC_ALL=C "$NODE_BINARY" "$SHARED_VERIFIER" "$CANDIDATE" --require-build
 env -i PATH="$SAFE_PATH" LC_ALL=C "$NODE_BINARY" "$SEQUENCE_VERIFIER" "$CANDIDATE"
 env -i PATH="$SAFE_PATH" LC_ALL=C "$NODE_BINARY" "$EXTERNAL_MODEL_VERIFIER" "$CANDIDATE" "$EXTERNAL_MODEL_EVIDENCE_ROOT" "$EXPECTED_CURRENT"
@@ -734,6 +771,7 @@ POST_VERIFICATION_CANDIDATE_TREE_HASH="$(candidate_tree_hash)"
 if [[ "$POST_VERIFICATION_CANDIDATE_TREE_HASH" != "$INITIAL_CANDIDATE_TREE_HASH" ]]; then
   fail 74 'candidate tree changed during protected release verification'
 fi
+PREFLIGHT_VERIFICATION_MS="$(elapsed_ms "$preflight_started_ms")"
 assert_current_matches
 
 if [[ "$VERIFY_ONLY_REQUESTED" == '1' ]]; then
@@ -749,34 +787,52 @@ assert_root_owned_regular_file "$PRODUCTION_ENV" 'fixed production.env'
 PRODUCTION_ENV_SHA256="$(sha256sum -- "$PRODUCTION_ENV" | awk '{print $1}')"
 load_safe_production_settings
 initialize_audit
+audit_phase_timing preflight_verification_ms "$PREFLIGHT_VERIFICATION_MS"
 audit_event "activation_start candidate=$CANDIDATE expected=$EXPECTED_CURRENT candidate_sha256=$INITIAL_CANDIDATE_TREE_HASH production_env_sha256=$PRODUCTION_ENV_SHA256"
 AI_MUSIC_BEFORE="$(snapshot_ai_music_processes)"
 audit_event "ai_music_before_sha256=$(printf '%s' "$AI_MUSIC_BEFORE" | sha256sum | awk '{print $1}')"
 
 assert_production_env_unchanged
+phase_started_ms="$(monotonic_ms)"
 create_and_verify_database_backup
+audit_phase_timing database_backup_ms "$(elapsed_ms "$phase_started_ms")"
 assert_no_active_generation_tasks before-stop
-assert_current_matches
-assert_production_env_unchanged
-
-SERVICE_TOUCHED=1
-env -i PATH="$SAFE_PATH" LC_ALL=C "$SYSTEMCTL_BINARY" stop moli-drama.service
-assert_no_active_generation_tasks after-stop
-
 assert_current_matches
 assert_root_owned_evidence_tree
 assert_candidate_tree_secure
-PRE_SWITCH_CANDIDATE_TREE_HASH="$(candidate_tree_hash)"
-if [[ "$PRE_SWITCH_CANDIDATE_TREE_HASH" != "$INITIAL_CANDIDATE_TREE_HASH" ]]; then
-  fail 74 'candidate tree changed before protected release switch'
-fi
 assert_production_env_unchanged
+phase_started_ms="$(monotonic_ms)"
+PRE_SWITCH_CANDIDATE_TREE_HASH="$(candidate_tree_hash)"
+audit_phase_timing pre_switch_hash_ms "$(elapsed_ms "$phase_started_ms")"
+if [[ "$PRE_SWITCH_CANDIDATE_TREE_HASH" != "$INITIAL_CANDIDATE_TREE_HASH" ]]; then
+  fail 70 'candidate tree changed before protected release switch'
+fi
+
+downtime_started_ms="$(monotonic_ms)"
+phase_started_ms="$downtime_started_ms"
+SERVICE_TOUCHED=1
+env -i PATH="$SAFE_PATH" LC_ALL=C "$SYSTEMCTL_BINARY" stop moli-drama.service
+audit_phase_timing service_stop_ms "$(elapsed_ms "$phase_started_ms")"
+
+phase_started_ms="$(monotonic_ms)"
+assert_no_active_generation_tasks after-stop
+assert_current_matches
+assert_root_owned_evidence_tree
+assert_candidate_lock_state
+assert_production_env_unchanged
+audit_phase_timing post_stop_checks_ms "$(elapsed_ms "$phase_started_ms")"
 
 atomic_set_current "$CANDIDATE"
+phase_started_ms="$(monotonic_ms)"
 env -i PATH="$SAFE_PATH" LC_ALL=C "$SYSTEMCTL_BINARY" restart moli-drama.service
+audit_phase_timing service_restart_ms "$(elapsed_ms "$phase_started_ms")"
+audit_phase_timing downtime_window_ms "$(elapsed_ms "$downtime_started_ms")"
+
+phase_started_ms="$(monotonic_ms)"
 if ! wait_for_health; then
   fail 70 'release health check failed; rollback required'
 fi
+audit_phase_timing health_wait_ms "$(elapsed_ms "$phase_started_ms")"
 if ! collect_release_journal; then
   fail 70 'unable to save release journal; rollback required'
 fi
@@ -787,7 +843,9 @@ fi
 assert_current_is_candidate
 assert_root_owned_evidence_tree
 assert_candidate_tree_secure
+phase_started_ms="$(monotonic_ms)"
 POST_HEALTH_CANDIDATE_TREE_HASH="$(candidate_tree_hash)"
+audit_phase_timing post_health_hash_ms "$(elapsed_ms "$phase_started_ms")"
 if [[ "$POST_HEALTH_CANDIDATE_TREE_HASH" != "$INITIAL_CANDIDATE_TREE_HASH" ]]; then
   fail 74 'post-health candidate tree changed; rollback required'
 fi

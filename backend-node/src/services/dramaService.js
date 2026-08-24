@@ -903,8 +903,15 @@ function saveProgress(db, log, dramaId, req) {
 function saveCanvasLayout(db, log, dramaId, req) {
   const drama = getDramaById(db, Number(dramaId));
   if (!drama) return null;
+  const hasCanvasRevision = Object.prototype.hasOwnProperty.call(req || {}, 'base_canvas_revision');
+  const baseCanvasRevision = req?.base_canvas_revision;
+  if (hasCanvasRevision && (!Number.isSafeInteger(baseCanvasRevision) || baseCanvasRevision < 0)) {
+    const err = new Error('base_canvas_revision 必须为非负整数');
+    err.code = 'BAD_REQUEST';
+    throw err;
+  }
   const baseUpdatedAt = String(req?.base_updated_at || '').trim();
-  if (baseUpdatedAt && baseUpdatedAt !== String(drama.updated_at || '')) {
+  if (!hasCanvasRevision && baseUpdatedAt && baseUpdatedAt !== String(drama.updated_at || '')) {
     const err = new Error('画布布局已被其他操作更新，请刷新后重试');
     err.code = 'CANVAS_LAYOUT_CONFLICT';
     throw err;
@@ -930,15 +937,46 @@ function saveCanvasLayout(db, log, dramaId, req) {
     throw err;
   }
   const meta = storageLayout.parseMetadata(drama.metadata);
+  const storedCanvasRevision = Number(meta.canvas_state_revision);
+  const currentCanvasRevision = Number.isSafeInteger(storedCanvasRevision) && storedCanvasRevision >= 0
+    ? storedCanvasRevision
+    : 0;
+  meta.canvas_state_revision = currentCanvasRevision + 1;
   if (layout) meta.canvas_layout = layout;
   if (workflowGroups !== undefined) meta.workflow_groups = workflowGroups;
   const now = new Date().toISOString();
-  const updated = baseUpdatedAt
-    ? db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ? AND updated_at = ?')
-      .run(JSON.stringify(meta), now, dramaId, baseUpdatedAt)
-    : db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ?')
-      .run(JSON.stringify(meta), now, dramaId);
-  if (baseUpdatedAt && updated.changes !== 1) {
+  let updated;
+  if (hasCanvasRevision) {
+    const metadataUpdates = ["'$.canvas_state_revision', json(?)"];
+    const metadataValues = [JSON.stringify(currentCanvasRevision + 1)];
+    if (layout) {
+      metadataUpdates.push("'$.canvas_layout', json(?)");
+      metadataValues.push(JSON.stringify(layout));
+    }
+    if (workflowGroups !== undefined) {
+      metadataUpdates.push("'$.workflow_groups', json(?)");
+      metadataValues.push(JSON.stringify(workflowGroups));
+    }
+    updated = db.prepare(
+      `UPDATE dramas
+       SET metadata = json_set(
+         CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+         ${metadataUpdates.join(', ')}
+       ), updated_at = ?
+       WHERE id = ?
+         AND COALESCE(CAST(json_extract(
+           CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+           '$.canvas_state_revision'
+         ) AS INTEGER), 0) = ?`
+    ).run(...metadataValues, now, dramaId, baseCanvasRevision);
+  } else {
+    updated = baseUpdatedAt
+      ? db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ? AND updated_at = ?')
+        .run(JSON.stringify(meta), now, dramaId, baseUpdatedAt)
+      : db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ?')
+        .run(JSON.stringify(meta), now, dramaId);
+  }
+  if ((hasCanvasRevision || baseUpdatedAt) && updated.changes !== 1) {
     const err = new Error('画布布局已被其他操作更新，请刷新后重试');
     err.code = 'CANVAS_LAYOUT_CONFLICT';
     throw err;
@@ -947,6 +985,7 @@ function saveCanvasLayout(db, log, dramaId, req) {
     drama_id: dramaId,
     node_count: layout ? Object.keys(layout.nodes || {}).length : undefined,
     workflow_group_count: workflowGroups ? workflowGroups.length : undefined,
+    canvas_state_revision: currentCanvasRevision + 1,
   });
   return getDrama(db, dramaId);
 }

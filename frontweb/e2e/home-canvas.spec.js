@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test'
 
 const homeCanvasStorageKey = 'moli-mama.home-canvas.v1'
 const pendingHomeCanvasStateKey = 'moli-mama.e2e.pending-home-canvas-state'
+const projectBindingRevisionTestTitle = '首页画布接入项目显式发送初始 canvas revision'
 const referenceImageDataUrls = [
   'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22120%22%3E%3Crect width=%22200%22 height=%22120%22 fill=%22%23f27645%22/%3E%3C/svg%3E',
   'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22120%22%3E%3Crect width=%22200%22 height=%22120%22 fill=%22%234563f2%22/%3E%3C/svg%3E',
@@ -148,7 +149,7 @@ async function loadHomeCanvasState(page, state) {
   await expect(page.locator('.home-starter-panel')).toHaveCount(0)
 }
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page }, testInfo) => {
   await page.addInitScript(({ storageKey, pendingKey }) => {
     window.localStorage.setItem('moli_mama_session', JSON.stringify({
       token: 'canvas-e2e-session',
@@ -163,8 +164,98 @@ test.beforeEach(async ({ page }) => {
     storageKey: homeCanvasStorageKey,
     pendingKey: pendingHomeCanvasStateKey,
   })
+  if (testInfo.title === projectBindingRevisionTestTitle) return
   await page.goto('/canvas/local')
   await loadHomeCanvasState(page, seededHomeCanvasState)
+})
+
+test(projectBindingRevisionTestTitle, async ({ page }) => {
+  const projectId = 7701
+  const project = {
+    id: projectId,
+    title: 'Revision 合并项目',
+    style: 'realistic',
+    status: 'draft',
+    metadata: {
+      project_type: 'canvas',
+      canvas_state_revision: 0,
+      canvas_layout: {
+        version: 1,
+        viewport: { x: 0, y: 0, zoom: 0.75 },
+        nodes: {},
+        manual_edges: [],
+        free_nodes: [],
+      },
+    },
+    workflow_groups: [],
+    episodes: [],
+    characters: [],
+    scenes: [],
+    props: [],
+  }
+  let savedBody = null
+  const unexpectedPosts = []
+
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const method = request.method()
+    if (method === 'GET' && url.pathname === '/api/v1/dramas') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: { items: [project], pagination: { page: 1, page_size: 100, total: 1, total_pages: 1 } },
+        }),
+      })
+      return
+    }
+    if (method === 'GET' && url.pathname === `/api/v1/dramas/${projectId}`) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, data: project }),
+      })
+      return
+    }
+    if (method === 'PUT' && url.pathname === `/api/v1/dramas/${projectId}/canvas-layout`) {
+      savedBody = request.postDataJSON()
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: {
+            ...project,
+            metadata: {
+              ...project.metadata,
+              canvas_state_revision: 1,
+              canvas_layout: savedBody.canvas_layout,
+            },
+          },
+        }),
+      })
+      return
+    }
+    if (method === 'POST') unexpectedPosts.push(`${method} ${url.pathname}`)
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: true, data: [] }),
+    })
+  })
+
+  await page.goto('/canvas/local')
+  await loadHomeCanvasState(page, seededHomeCanvasState)
+  await page.locator('.project-bind-select').click()
+  await page.getByRole('option', { name: project.title }).click()
+  await page.getByRole('button', { name: '接入项目' }).click()
+
+  await expect.poll(() => savedBody).not.toBeNull()
+  expect(savedBody.base_canvas_revision).toBe(0)
+  expect(unexpectedPosts).toEqual([])
+  await expect(page).toHaveURL(new RegExp(`/canvas/${projectId}$`))
 })
 
 test('文本节点单击后在专属编辑器直接编辑，不再依赖配置弹窗', async ({ page }) => {

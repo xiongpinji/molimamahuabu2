@@ -108,6 +108,14 @@ export function preserveCanvasNodeRuntimeMeasurements(nextNodes = [], renderedNo
   })
 }
 
+export function prepareCanvasNodesForRender(nodes = []) {
+  return nodes.map((node) => (
+    node && typeof node === 'object' && !node.dimensions
+      ? { ...node, dimensions: { width: 0, height: 0 } }
+      : node
+  ))
+}
+
 export function getCanvasNodeSize(node) {
   return nodeSize(node)
 }

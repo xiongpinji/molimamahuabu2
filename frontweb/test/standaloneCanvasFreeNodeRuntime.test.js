@@ -216,12 +216,24 @@ test('自由节点运行结果可轮询、失败写回、成功自动入库并�
   assert.match(canvasSource, /await loadForDrama\(drama\.value, filterEpisodeId\.value\)[\s\S]*rebuildGraph\(\)[\s\S]*resumePendingFreeCanvasTasks\(\)/)
 })
 
-test('画布保存使用串行队列并在执行时构造最新布局', () => {
-  assert.match(canvasSource, /let canvasPersistQueue = Promise\.resolve\(\)/)
-  assert.match(canvasSource, /function persistCanvasState\(options = \{\}\) \{[\s\S]*const runPersist = \(\) => persistCanvasStateNow\(options\)[\s\S]*canvasPersistQueue = canvasPersistQueue\.then\(runPersist, runPersist\)[\s\S]*return canvasPersistQueue[\s\S]*\}/)
-  assert.match(canvasSource, /async function persistCanvasStateNow\(\{ layoutOnly = false, groupsOnly = false \} = \{\}\)/)
-  assert.match(canvasSource, /async function persistCanvasStateNow[\s\S]*syncRenderedNodesToGraph\(\)[\s\S]*const persistedGraphNodes = stripLocalImagePreviewsForPersistence\(allGraphNodes\.value\)[\s\S]*withCanvasPersistedState\(buildCanvasLayoutPayload\(\s*persistedGraphNodes,[\s\S]*currentViewport\.value,[\s\S]*layoutCache\.value/)
-  assert.match(canvasSource, /async function persistCanvasStateNow[\s\S]*const updated = await layoutPersistence\.update/)
+test('画布保存只使用容灾协调器并由状态机统一提示', () => {
+  const unmountSource = canvasSource.slice(canvasSource.indexOf('onBeforeUnmount('))
+
+  assert.doesNotMatch(canvasSource, /canvasPersistQueue/)
+  assert.match(canvasSource, /dramaAPI\.saveCanvasLayout\([\s\S]{0,500}\{ silentError: true \}[\s\S]{0,80}\)/)
+  assert.match(canvasSource, /layoutPersistence\.update\([\s\S]{0,500}\{ allowRetry: layoutOnly && groupsPayload === undefined \}\s*\)/)
+  assert.match(canvasSource, /import\s*\{[^}]*onBeforeRouteLeave[^}]*\}\s*from\s*['"]vue-router['"]/s)
+  assert.match(canvasSource, /async function flushPendingLayoutSave\(\) \{[\s\S]{0,500}clearTimeout\(saveTimer\)[\s\S]{0,200}saveTimer = null[\s\S]{0,300}await persistCanvasState\(\{ layoutOnly: true \}\)[\s\S]{0,300}layoutPersistence\.dirty[\s\S]{0,150}await layoutPersistence\.flushNow\(\)[\s\S]{0,200}return !layoutPersistence\.dirty/)
+  assert.match(canvasSource, /onBeforeRouteLeave\(async \(\) => \{\s*if \(!await flushPendingLayoutSave\(\)\) return false\s*\}\)/)
+  assert.match(unmountSource, /^onBeforeUnmount\(\(\) => \{[\s\S]*clearTimeout\(saveTimer\)[\s\S]*layoutPersistence\.dispose\(\)/)
+  assert.doesNotMatch(unmountSource, /persistCanvasState|layoutPersistence\.flush/)
+  assert.match(canvasSource, /layoutSaveState\.value = event\.state/)
+  assert.match(canvasSource, /event\.state === 'retry_wait'[\s\S]{0,500}网络暂时不可用，画布将在后台自动重试保存/)
+  assert.match(canvasSource, /画布已恢复并保存/)
+  assert.match(canvasSource, /\['saving', 'retry_wait'\]\.includes\(layoutSaveState\.value\)/)
+  assert.match(canvasSource, /async function removeNodeFromWorkflowGroup\(node\) \{\s*if \(workflowRunning\.value \|\| layoutSaveBusy\.value\) \{\s*ElMessage\.warning\('请等待当前画布保存或任务完成后再移出工作流'\)\s*return\s*\}[\s\S]{0,900}workflowGroups\.value = nextGroups/)
+  assert.match(canvasSource, /async function onCreateWorkflowGroup\(\) \{[\s\S]{0,800}await ElMessageBox\.prompt\([\s\S]{0,400}\)\s*if \(workflowRunning\.value \|\| layoutSaveBusy\.value\) \{\s*ElMessage\.warning\('请等待当前画布任务完成后再创建工作流'\)\s*return\s*\}[\s\S]{0,250}workflowGroups\.value = createWorkflowGroup/)
+  assert.match(canvasSource, /async function onDeleteActiveGroup\(\) \{\s*if \(workflowRunning\.value \|\| layoutSaveBusy\.value\) \{\s*ElMessage\.warning\('请等待当前画布任务完成后再删除工作流'\)\s*return\s*\}[\s\S]{0,500}await ElMessageBox\.confirm\([\s\S]{0,250}\)\s*if \(workflowRunning\.value \|\| layoutSaveBusy\.value\) \{\s*ElMessage\.warning\('请等待当前画布任务完成后再删除工作流'\)\s*return\s*\}[\s\S]{0,250}workflowGroups\.value = deleteWorkflowGroup/)
 })
 
 test('更新自由节点参考素材后使用现有持久化队列保存，不调用不存在的 scheduleSave', () => {
