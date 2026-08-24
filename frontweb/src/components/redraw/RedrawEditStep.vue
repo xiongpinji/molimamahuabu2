@@ -21,13 +21,13 @@
         <RedrawTimeline :shots="shots" :selected-shot-id="selectedShotId" @select="selectedShotId = $event" />
         <section class="dialogue-card">
           <h3>{{ dialogueLanguageLabel }}配音</h3>
-          <p v-if="dialogueQuote?.priced" class="credit-callout">本次预计扣除 {{ dialogueQuote.credits || dialogueQuote.total_credits }} 积分</p>
+          <p v-if="dialogueCredits !== null" class="credit-callout">本次预计扣除 {{ dialogueCredits }} 积分</p>
           <p v-else class="muted">积分待管理员配置</p>
           <p v-if="dialogueTask">任务 {{ dialogueTask.id || dialogueTask.task_id }} · {{ statusLabel(dialogueTask.status) }}</p>
           <p v-if="dialogueTask?.status === 'failed' || dialogueTask?.status === 'needs_attention'" class="error-text">
             {{ dialogueTask.message || dialogueTask.error_message || 'failed / needs_attention' }}
           </p>
-          <el-button :disabled="!canStartDialogue(dialogueQuote, dialogueTask)" :loading="dialogueStarting" :title="`使用服务端报价启动${dialogueLanguageLabel}配音`" @click="startDialogue">
+          <el-button :disabled="dialogueStarting || !canStartDialogue(dialogueQuote, dialogueTask)" :loading="dialogueStarting" :title="`使用服务端报价启动${dialogueLanguageLabel}配音`" @click="startDialogue">
             生成{{ dialogueLanguageLabel }}配音
           </el-button>
         </section>
@@ -57,6 +57,7 @@ import { redrawAPI } from '@/api/redraw'
 import {
   canStartComposition,
   canStartDialogue,
+  dialogueQuoteCredits,
   expandExportArtifacts,
   normalizeTimelineShots,
   shouldPollTask,
@@ -94,6 +95,7 @@ const shots = computed(() => normalizeTimelineShots(localWork.value?.shots || []
 const worstStatus = computed(() => worstShotStatus(shots.value))
 const sourceUrl = computed(() => sourcePreviewUrl(shots.value, selectedShotId.value))
 const exportArtifacts = computed(() => expandExportArtifacts(exportRow.value))
+const dialogueCredits = computed(() => dialogueQuoteCredits(dialogueQuote.value))
 const dialogueLanguageLabel = computed(() => {
   const locale = String(
     props.targetLocale
@@ -212,7 +214,7 @@ async function loadInitialState() {
 
 async function startDialogue() {
   const versionId = resolvedVersionId.value
-  if (!versionId || !canStartDialogue(dialogueQuote.value, dialogueTask.value)) return
+  if (dialogueStarting.value || !versionId || !canStartDialogue(dialogueQuote.value, dialogueTask.value)) return
   dialogueStarting.value = true
   try {
     const result = await redrawAPI.startDialogue(versionId, { quote_hash: dialogueQuote.value.quote_hash, idempotency_key: idempotencyKey('dialogue') })

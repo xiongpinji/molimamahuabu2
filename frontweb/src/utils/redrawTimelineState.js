@@ -9,6 +9,14 @@ function statusRank(status) {
   return 0
 }
 
+const DIALOGUE_QUOTE_HASH = /^[a-f0-9]{64}$/
+
+export function dialogueQuoteCredits(quote) {
+  const credits = quote?.total_credits
+  if (quote?.status !== 'ready' || quote?.priced !== true) return null
+  return Number.isSafeInteger(credits) && credits > 0 ? credits : null
+}
+
 export function normalizeTimelineShots(shots = []) {
   return [...(Array.isArray(shots) ? shots : [])]
     .map((shot) => ({
@@ -26,7 +34,8 @@ export function normalizeTimelineShots(shots = []) {
 
 export function canStartDialogue(quote, task) {
   if (task && ['pending', 'processing', 'completed'].includes(task.status)) return false
-  return Boolean(quote?.priced && typeof quote.quote_hash === 'string' && quote.quote_hash.length >= 32)
+  return dialogueQuoteCredits(quote) !== null
+    && DIALOGUE_QUOTE_HASH.test(String(quote?.quote_hash || ''))
 }
 
 export function canStartComposition(shots = [], dialogueTask, compositionTask) {

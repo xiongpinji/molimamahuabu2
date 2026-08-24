@@ -27,6 +27,7 @@ test('第四步状态纯函数固定源片顺序并只在配音完成后允许�
   const {
     normalizeTimelineShots,
     canStartDialogue,
+    dialogueQuoteCredits,
     canStartComposition,
     exportByKind,
     expandExportArtifacts,
@@ -38,8 +39,23 @@ test('第四步状态纯函数固定源片顺序并只在配音完成后允许�
     { id: 2, shot_index: 2, start_ms: 1000, end_ms: 2000, status: 'failed' },
   ]
   assert.deepEqual(normalizeTimelineShots(shots).map((shot) => shot.id), [1, 2, 3])
-  assert.equal(canStartDialogue({ priced: true, quote_hash: 'a'.repeat(64) }, null), true)
-  assert.equal(canStartDialogue({ priced: true, quote_hash: 'a'.repeat(64) }, { status: 'processing' }), false)
+  const readyQuote = { status: 'ready', priced: true, total_credits: 6, quote_hash: 'a'.repeat(64) }
+  assert.equal(dialogueQuoteCredits(readyQuote), 6)
+  assert.equal(canStartDialogue(readyQuote, null), true)
+  for (const field of ['status', 'priced', 'total_credits', 'quote_hash']) {
+    const incomplete = { ...readyQuote }
+    delete incomplete[field]
+    assert.equal(canStartDialogue(incomplete, null), false, `缺少 ${field} 必须禁用提交`)
+  }
+  assert.equal(canStartDialogue({ ...readyQuote, status: 'blocked' }, null), false)
+  assert.equal(canStartDialogue({ ...readyQuote, priced: false }, null), false)
+  assert.equal(canStartDialogue({ ...readyQuote, total_credits: '6' }, null), false)
+  assert.equal(canStartDialogue({ ...readyQuote, total_credits: 1.5 }, null), false)
+  assert.equal(canStartDialogue({ ...readyQuote, total_credits: Number.MAX_SAFE_INTEGER + 1 }, null), false)
+  assert.equal(canStartDialogue({ ...readyQuote, quote_hash: 'a'.repeat(63) }, null), false)
+  assert.equal(canStartDialogue({ ...readyQuote, quote_hash: 'A'.repeat(64) }, null), false)
+  assert.equal(canStartDialogue(readyQuote, { status: 'processing' }), false)
+  assert.equal(dialogueQuoteCredits({ ...readyQuote, priced: false }), null)
   assert.equal(canStartComposition(shots, { status: 'completed' }, null), false)
   assert.equal(canStartComposition(shots.filter((shot) => shot.status === 'completed'), { status: 'completed' }, null), true)
   assert.equal(canStartComposition(shots.filter((shot) => shot.status === 'completed'), { status: 'failed' }, null), false)
@@ -98,6 +114,9 @@ test('第四步工作台由后端 current_step 门禁开放且不伪装完整 NL
 test('第四步提交 payload 不接受客户端模型、价格、路径或产物字段', () => {
   assert.match(stepSource, /quoteDialogue\(versionId,\s*\{\s*\}\s*\)/)
   assert.match(stepSource, /startDialogue\(versionId,\s*\{\s*quote_hash:\s*dialogueQuote\.value\.quote_hash,\s*idempotency_key/)
+  assert.match(stepSource, /dialogueStarting\.value\s*\|\|\s*!versionId/)
+  assert.match(stepSource, /dialogueCredits\s*!==\s*null/)
+  assert.match(stepSource, /本次预计扣除\s*\{\{\s*dialogueCredits\s*\}\}\s*积分/)
   assert.match(stepSource, /composeVersion\(versionId,\s*\{\s*idempotency_key:\s*compositionIdempotencyKey\.value,\s*audio_mode:\s*['"]replace['"]/)
   for (const sourceText of [stepSource, exportSource]) {
     assert.doesNotMatch(sourceText, /model\s*:/)

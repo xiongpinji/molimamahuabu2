@@ -6091,7 +6091,7 @@ test('配音 quote/start/status 路由按版本 owner 接线且拒绝客户端�
       dialogueOrchestrator: {
         quoteDialogue: (_db, input) => {
           calls.push({ name: 'quote', input });
-          return { status: 'ready', total_credits: 4, quote_hash: 'dialogue-quote-ok' };
+          return { status: 'ready', priced: true, total_credits: 4, quote_hash: 'a'.repeat(64) };
         },
         startDialogue: (_db, _log, ctx, input) => {
           calls.push({ name: 'start', ctx, input });
@@ -6102,7 +6102,7 @@ test('配音 quote/start/status 路由按版本 owner 接线且拒绝客户端�
           return {
             task_id: 'task-dialogue-route',
             status: 'completed',
-            quote: { status: 'ready', total_credits: 4, quote_hash: 'dialogue-quote-ok' },
+            quote: { status: 'ready', priced: true, total_credits: 4, quote_hash: 'a'.repeat(64) },
             completion: Promise.resolve(),
           };
         },
@@ -6118,14 +6118,15 @@ test('配音 quote/start/status 路由按版本 owner 接线且拒绝客户端�
     const okQuote = captureResponse();
     handlers.dialogueQuote(request({ id: versionId, body: {} }), okQuote);
     assert.equal(okQuote.statusCode, 200);
-    assert.equal(okQuote.body.data.quote_hash, 'dialogue-quote-ok');
+    assert.equal(okQuote.body.data.priced, true);
+    assert.equal(okQuote.body.data.quote_hash, 'a'.repeat(64));
     assert.equal(calls[0].input.versionId, versionId);
     assert.equal(calls[0].input.tenantId, 'tenant-a');
 
     const badStart = captureResponse();
     await handlers.startDialogue(request({
       id: versionId,
-      body: { quote_hash: 'dialogue-quote-ok', idempotency_key: 'idem-route', credits: 1 },
+      body: { quote_hash: 'a'.repeat(64), idempotency_key: 'idem-route', credits: 1 },
     }), badStart);
     assert.equal(badStart.statusCode, 400);
     assert.equal(badStart.body.error.code, 'REDRAW_DIALOGUE_CLIENT_CONTROL_FORBIDDEN');
@@ -6133,12 +6134,12 @@ test('配音 quote/start/status 路由按版本 owner 接线且拒绝客户端�
     const start = captureResponse();
     await handlers.startDialogue(request({
       id: versionId,
-      body: { quote_hash: 'dialogue-quote-ok', idempotency_key: 'idem-route' },
+      body: { quote_hash: 'a'.repeat(64), idempotency_key: 'idem-route' },
     }), start);
     assert.equal(start.statusCode, 202);
     assert.equal(start.body.data.task_id, 'task-dialogue-route');
-    assert.equal(start.body.data.quote.quote_hash, 'dialogue-quote-ok');
-    assert.deepEqual(calls[1].input, { quoteHash: 'dialogue-quote-ok', idempotencyKey: 'idem-route' });
+    assert.equal(start.body.data.quote.quote_hash, 'a'.repeat(64));
+    assert.deepEqual(calls[1].input, { quoteHash: 'a'.repeat(64), idempotencyKey: 'idem-route' });
 
     const status = captureResponse();
     handlers.getDialogueTask({
