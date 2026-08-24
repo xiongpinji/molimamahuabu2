@@ -44,6 +44,9 @@ let mockAssets = []
 let createdAssetPayload = null
 let updatedAssetPayloads = []
 let savedCanvasLayout = null
+let canvasSaveFailuresRemaining = 0
+let canvasSaveRequests = []
+let canvasSaveRequestTimes = []
 let savedWorkflowGroups = []
 let mockDrama = null
 let nextStoryboardId = 2001
@@ -79,6 +82,9 @@ test.beforeEach(async ({ page }) => {
   createdAssetPayload = null
   updatedAssetPayloads = []
   savedCanvasLayout = null
+  canvasSaveFailuresRemaining = 0
+  canvasSaveRequests = []
+  canvasSaveRequestTimes = []
   savedWorkflowGroups = []
   mockDrama = JSON.parse(JSON.stringify(drama))
   nextStoryboardId = 2001
@@ -201,6 +207,17 @@ test.beforeEach(async ({ page }) => {
     }
     if (request.method() === 'PUT' && pathname === '/api/v1/dramas/3/canvas-layout') {
       const payload = request.postDataJSON() || {}
+      canvasSaveRequests.push(structuredClone(payload))
+      canvasSaveRequestTimes.push(Date.now())
+      if (canvasSaveFailuresRemaining > 0) {
+        canvasSaveFailuresRemaining -= 1
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: false, message: 'temporary canvas outage' }),
+        })
+        return
+      }
       if (payload.canvas_layout) savedCanvasLayout = payload.canvas_layout
       if (Array.isArray(payload.workflow_groups)) savedWorkflowGroups = payload.workflow_groups
       await route.fulfill(apiData({
@@ -357,6 +374,93 @@ test('项目画布持久化节点拖拽、手工连线和工作流分组并在�
     )
   }).toBeLessThanOrEqual(5)
   await expect(page.locator('.vue-flow__edge[data-id^="manual:sbimg:1001:"]')).toBeAttached()
+})
+
+test('项目画布在一次 503 后只提示一次并自动保存最新拖拽位置', async ({ page }) => {
+  const layoutSaveDebounceMs = 700
+  const postRequests = []
+  page.on('request', (request) => {
+    if (request.method() === 'POST') postRequests.push(request.url())
+  })
+  await page.route('**/*', async (route) => {
+    if (route.request().method() === 'POST') {
+      await route.abort('blockedbyclient')
+      return
+    }
+    await route.fallback()
+  })
+
+  try {
+    await page.goto('/film/3/canvas')
+
+    const node = page.locator('.vue-flow__node[data-id="sb:1001"]')
+    const pane = page.locator('.vue-flow__pane')
+    await expect(node).toBeVisible({ timeout: 10000 })
+    await expect(pane).toBeVisible()
+    await expect(page.locator('.canvas-shell > .el-loading-mask')).toBeHidden()
+    const dragNodeBy = async ({ x, y }) => {
+      const transformBefore = await node.evaluate((element) => element.style.transform)
+      const box = await node.locator('.canvas-sb-node > .title').boundingBox()
+      expect(box).not.toBeNull()
+      const start = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+      await page.mouse.move(start.x, start.y)
+      await page.mouse.down()
+      try {
+        await page.mouse.move(start.x + x, start.y + y, { steps: 16 })
+        await expect(node).toHaveClass(/dragging/, { timeout: 1500 })
+      } finally {
+        await page.mouse.up()
+      }
+      await expect.poll(() => node.evaluate((element) => element.style.transform)).not.toBe(transformBefore)
+    }
+
+    canvasSaveRequests = []
+    canvasSaveFailuresRemaining = 1
+    await dragNodeBy({ x: 120, y: 80 })
+
+    await expect(page.getByText('连接中断，等待重试…', { exact: true })).toBeVisible()
+    await expect(page.locator('.el-message__content').filter({
+      hasText: '网络暂时不可用，画布将在后台自动重试保存',
+    })).toHaveCount(1)
+    const firstAttemptPosition = structuredClone(
+      canvasSaveRequests[0].canvas_layout.nodes['sb:1001'],
+    )
+
+    await dragNodeBy({ x: 140, y: 100 })
+
+    expect(canvasSaveRequests).toHaveLength(1)
+    await expect.poll(() => canvasSaveRequests.length, { timeout: 6000 }).toBe(2)
+    expect(canvasSaveRequestTimes).toHaveLength(2)
+    expect(canvasSaveRequestTimes[1] - canvasSaveRequestTimes[0]).toBeGreaterThanOrEqual(1800)
+    await expect.poll(() => savedCanvasLayout?.nodes?.['sb:1001']).toEqual(expect.objectContaining({
+      x: expect.any(Number),
+      y: expect.any(Number),
+    }))
+    const latestSavedPosition = savedCanvasLayout.nodes['sb:1001']
+    expect(latestSavedPosition).not.toEqual(firstAttemptPosition)
+    expect(canvasSaveRequests[1].canvas_layout.nodes['sb:1001']).toEqual(latestSavedPosition)
+    await expect(page.locator('.el-message__content').filter({
+      hasText: '画布已恢复并保存',
+    })).toHaveCount(1)
+
+    await page.reload()
+    const restoredNode = page.locator('.vue-flow__node[data-id="sb:1001"]')
+    await expect(restoredNode).toBeVisible()
+    await expect.poll(async () => {
+      const transform = await restoredNode.evaluate((element) => element.style.transform)
+      const match = transform.match(/translate\(([-\d.]+)px,\s*([-\d.]+)px\)/)
+      if (!match) return Number.POSITIVE_INFINITY
+      return Math.max(
+        Math.abs(Number(match[1]) - latestSavedPosition.x),
+        Math.abs(Number(match[2]) - latestSavedPosition.y),
+      )
+    }).toBeLessThanOrEqual(5)
+    // 等过完整防抖窗口，确认 reload 本身不会触发画布保存。
+    await page.waitForTimeout(layoutSaveDebounceMs + 300)
+    expect(canvasSaveRequests).toHaveLength(2)
+  } finally {
+    expect(postRequests, '零付费回归不得发出任何生成 POST').toEqual([])
+  }
 })
 
 test('项目画布通过节点右键菜单复制、追加和插入分镜并持久化重连', async ({ page }) => {
