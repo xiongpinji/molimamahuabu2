@@ -32,6 +32,7 @@ const redrawUploadService = require(path.join(backendRoot, 'src', 'services', 'r
 const creditLedger = require(path.join(backendRoot, 'src', 'services', 'creditLedgerService'))
 const modelPrices = require(path.join(backendRoot, 'src', 'services', 'modelPriceService'))
 const videoService = require(path.join(backendRoot, 'src', 'services', 'videoService'))
+const taskService = require(path.join(backendRoot, 'src', 'services', 'taskService'))
 const { buildLocalizationInput } = require(path.join(backendRoot, 'src', 'services', 'localizationService'))
 const { serverAutomationPolicySnapshot } = require(path.join(backendRoot, 'src', 'services', 'redrawProjectPolicyService'))
 const {
@@ -200,9 +201,11 @@ const expectedDialogueCredits = expectedDialogueSegmentCount * 3
 const fixtureLocale = fullProductMode ? genericRedrawProject.target.locale : 'en-US'
 const fixtureMarket = fullProductMode ? genericRedrawProject.target.market : 'US'
 
-test.setTimeout(120_000)
+test.setTimeout(fullProductMode ? 240_000 : 120_000)
 test.describe.configure({ mode: 'serial' })
-const integrationTest = fullProductMode ? test.skip : test
+const integrationTest = (title, callback) => {
+  if (!fullProductMode) test(title, callback)
+}
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -231,6 +234,20 @@ async function browserApi(page, pathname, init = {}) {
     const response = await fetch(target, options)
     return { status: response.status, body: await response.json() }
   }, { target: pathname, options: init })
+}
+
+async function clickForJsonResponse(page, locator, predicate) {
+  const responsePromise = page.waitForResponse(predicate)
+  await locator.click()
+  const response = await responsePromise
+  let payload = null
+  try { payload = JSON.parse(await response.text()) } catch (_) {}
+  return { response, payload }
+}
+
+function apiResponse(method, pathnamePattern) {
+  return (response) => response.request().method() === method
+    && pathnamePattern.test(new URL(response.url()).pathname)
 }
 
 function runFfmpeg(args, label) {
@@ -1790,6 +1807,74 @@ async function prepareGenericReferences(page, versionId, idempotencyPrefix) {
   }))
 }
 
+async function prepareGenericReferencesThroughUi(page, versionId, interaction, waitForRequestsToSettle) {
+  const maxRounds = genericReferencePreparationCase.shots
+    .reduce((total, shot) => total + shot.character_keys.length + 3, 0)
+  for (let round = 0; round < maxRounds; round += 1) {
+    await ensureGenericMotionAssets(versionId)
+    const gate = await browserApi(page, `/api/v1/redraw/versions/${versionId}/preparation-gate`)
+    expect(gate.status, JSON.stringify(gate.body)).toBe(200)
+    if (gate.body.data.ok === true) return gate.body.data
+
+    await waitForRequestsToSettle()
+    await page.locator('.redraw-step').filter({ hasText: '批量转绘' }).click()
+    await waitForRequestsToSettle()
+    await page.reload()
+    await waitForRequestsToSettle()
+    await expect(page.getByRole('heading', { name: '人物、文字、净景与参考包' })).toBeVisible()
+    const prepareButton = page.getByRole('button', { name: '按服务端策略自动准备', exact: true })
+    await expect(prepareButton).toBeEnabled()
+    const started = await clickForJsonResponse(
+      page,
+      prepareButton,
+      apiResponse('POST', new RegExp(`/api/v1/redraw/versions/${versionId}/reference-preparations$`)),
+    )
+    expect(started.response.status(), JSON.stringify(started.payload)).toBe(202)
+    interaction.reference_preparations += 1
+    const taskId = String(started.payload?.data?.task_id || '')
+    expect(taskId).not.toBe('')
+    await expect.poll(() => database.prepare('SELECT status FROM async_tasks WHERE id = ?').get(taskId)?.status, {
+      timeout: 15_000,
+    }).toMatch(/^(completed|needs_attention|failed)$/)
+    const preparationTask = database.prepare(`
+      SELECT status, error, message, result FROM async_tasks WHERE id = ?
+    `).get(taskId)
+    expect(preparationTask.status, JSON.stringify({
+      task: preparationTask,
+      runtimeErrors,
+      shots: database.prepare(`
+        SELECT id, shot_id, start_ms, end_ms, duration_ms,
+               source_dialogue_json, localized_dialogue_json,
+               preparation_state, stale_reason_code, preparation_snapshot_json
+        FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
+      `).all(Number(versionId)),
+    })).not.toBe('failed')
+
+    const pending = database.prepare(`
+      SELECT id FROM redraw_assets
+      WHERE version_id = ? AND kind = 'scene' AND clean_plate_asset_id IS NOT NULL
+        AND approval_status = 'pending' AND deleted_at IS NULL ORDER BY id
+    `).all(Number(versionId))
+    if (pending.length) {
+      await waitForRequestsToSettle()
+      await page.locator('.redraw-step').filter({ hasText: '资产审核' }).click()
+      await expect(page.getByRole('heading', { name: '确认本地化资产后再进入批量转绘' })).toBeVisible()
+      await page.locator('.asset-tabs').getByRole('button', { name: '场景', exact: true }).click()
+      for (const asset of pending) {
+        const review = await clickForJsonResponse(
+          page,
+          page.locator(`#asset-${asset.id}-scene`).getByRole('button', { name: '批准', exact: true }),
+          apiResponse('POST', new RegExp(`/api/v1/redraw/assets/${asset.id}/review$`)),
+        )
+        expect(review.response.status(), JSON.stringify(review.payload)).toBe(200)
+        interaction.reference_asset_approvals += 1
+      }
+    }
+  }
+  const finalGate = await browserApi(page, `/api/v1/redraw/versions/${versionId}/preparation-gate`)
+  throw new Error(`UI 逐镜参考准备未收口：${JSON.stringify(finalGate.body)}`)
+}
+
 integrationTest('通用三镜项目完成前链分析并在低说话人置信度下降级 safe', async ({ page }) => {
   resetProviderFixture(genericSourceFacts, genericLocalization)
   const browserErrors = []
@@ -2373,6 +2458,21 @@ integrationTest('通用三镜项目高置信度分析后完成 es-ES 本地化�
 
 export async function runRedrawFullProductFlow({ page }) {
   resetProviderFixture()
+  const interaction = {
+    ui_driven: fullProductMode,
+    asset_batches: 0,
+    identity_packs: 0,
+    voice_bindings: 0,
+    asset_approvals: 0,
+    reference_preparations: 0,
+    reference_asset_approvals: 0,
+    shot_saves: 0,
+    generation_batches: 0,
+    candidate_qa_presented: 0,
+    dialogue_starts: 0,
+    release_creates: 0,
+    downloads: 0,
+  }
   if (process.env.REDRAW_E2E_CASE === 'latam-real-source') {
     expect(sourceVideoPath).toBe(path.resolve(process.env.REDRAW_E2E_SOURCE_VIDEO))
     expect(sourceFacts.duration_ms).toBe(redrawLatinAmericanCase.sourceFacts.duration_ms)
@@ -2380,11 +2480,40 @@ export async function runRedrawFullProductFlow({ page }) {
   }
   const browserErrors = []
   const browserRequests = []
+  const pendingRedrawRequests = new Set()
+  let redrawRequestActivity = 0
+  const tracksRedrawRequest = (request) => {
+    const url = new URL(request.url())
+    return ['127.0.0.1', 'localhost'].includes(url.hostname)
+      && url.pathname.startsWith('/api/v1/redraw/')
+  }
   page.on('pageerror', (error) => browserErrors.push(`pageerror:${error.message}`))
-  page.on('request', (request) => browserRequests.push(request.url()))
+  page.on('request', (request) => {
+    browserRequests.push(request.url())
+    if (!tracksRedrawRequest(request)) return
+    pendingRedrawRequests.add(request)
+    redrawRequestActivity += 1
+  })
+  page.on('requestfinished', (request) => {
+    if (!tracksRedrawRequest(request)) return
+    pendingRedrawRequests.delete(request)
+    redrawRequestActivity += 1
+  })
   page.on('requestfailed', (request) => {
+    if (tracksRedrawRequest(request)) {
+      pendingRedrawRequests.delete(request)
+      redrawRequestActivity += 1
+    }
     browserErrors.push(`requestfailed:${request.method()} ${request.url()} ${request.failure()?.errorText || ''}`)
   })
+  const waitForRedrawRequestsToSettle = async () => {
+    await expect.poll(async () => {
+      const activity = redrawRequestActivity
+      if (pendingRedrawRequests.size) return false
+      await page.waitForTimeout(600)
+      return pendingRedrawRequests.size === 0 && redrawRequestActivity === activity
+    }, { timeout: 10_000 }).toBe(true)
+  }
   const projectInput = fullProductMode ? genericRedrawProject.project : {
     title: '本地模拟供应商验收项目',
     execution_mode: 'auto',
@@ -2453,127 +2582,208 @@ export async function runRedrawFullProductFlow({ page }) {
     ORDER BY id DESC
   `).all(versionId)
   expect(voiceRows).toHaveLength(sourceFacts.characters.length)
+  await waitForRedrawRequestsToSettle()
   await page.reload()
+  await waitForRedrawRequestsToSettle()
   await expect(page.getByRole('heading', { name: '确认本地化资产后再进入批量转绘' })).toBeVisible()
   await expect(page.getByText(`${expectedAssetCount} 项资产`)).toBeVisible()
 
-  const quoteResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets/batch-quote`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-  })
-  expect(quoteResponse.status, JSON.stringify(quoteResponse.body)).toBe(200)
-  expect(quoteResponse.body.data).toMatchObject({ priced: true, total_credits: expectedAssetCredits })
-  const batchResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets/batches`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      quote_hash: quoteResponse.body.data.quote_hash,
-      idempotency_key: 'local-fixture-asset-batch-1',
-    }),
-  })
-  expect(batchResponse.status, JSON.stringify(batchResponse.body)).toBe(202)
-  let batchRow
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    batchRow = database.prepare('SELECT * FROM redraw_asset_batches WHERE id = ?')
-      .get(Number(batchResponse.body.data.batch_id))
-    if (['completed', 'partial_failed', 'failed', 'needs_attention'].includes(String(batchRow?.status))) break
-    await page.waitForTimeout(250)
-  }
-  const batchAttempts = JSON.parse(batchRow?.asset_ids_json || '[]').map((assetId) => (
-    database.prepare(`
-      SELECT id, kind, status, error_code, error_message
-      FROM redraw_assets WHERE id = ?
-    `).get(Number(assetId))
-  ))
-  expect(batchRow?.status, JSON.stringify({ batch: batchRow, attempts: batchAttempts })).toBe('completed')
+  let generatedAssets = []
+  let identityCharacterAssets = []
+  let voiceAssignments = []
+  if (fullProductMode) {
+    const batchButton = page.getByRole('button', { name: '一键批量生成全部资产', exact: true })
+    await expect(batchButton).toBeEnabled()
+    const batchAction = await clickForJsonResponse(
+      page,
+      batchButton,
+      apiResponse('POST', new RegExp(`/api/v1/redraw/versions/${versionId}/assets/batches$`)),
+    )
+    expect(batchAction.response.status(), JSON.stringify(batchAction.payload)).toBe(202)
+    interaction.asset_batches += 1
+    const batchId = Number(batchAction.payload?.data?.batch_id)
+    let batchRow
+    await expect.poll(() => {
+      batchRow = database.prepare('SELECT * FROM redraw_asset_batches WHERE id = ?').get(batchId)
+      return batchRow?.status
+    }, { timeout: 15_000, message: JSON.stringify(batchRow) }).toBe('completed')
+    await expect(page.getByText(`${expectedAssetCount} 成功 / 0 失败 / ${expectedAssetCount} 总数`)).toBeVisible({ timeout: 10_000 })
 
-  const assetsResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
-  expect(assetsResponse.status, JSON.stringify(assetsResponse.body)).toBe(200)
-  const generatedAssets = assetsResponse.body.data.filter((asset) => (
-    asset.asset_id || asset.voice_asset_id || asset.clean_plate_asset_id
-  ))
-  expect(generatedAssets).toHaveLength(expectedAssetCount)
-  const castById = new Map(activeCase ? activeCase.cast.map((actor) => [String(actor.id), actor]) : [])
-  const identityCharacterAssets = generatedAssets.filter((asset) => asset.kind === 'character')
-  expect(identityCharacterAssets).toHaveLength(sourceFacts.characters.length)
-  for (const asset of identityCharacterAssets) {
-    if (asset.identity_pack_status?.ready === true) continue
-    const sourceRef = asset.source_ref && typeof asset.source_ref === 'object'
-      ? asset.source_ref
-      : {}
-    const sourceCharacterKey = [
-      sourceRef.stable_id,
-      sourceRef.id,
-      sourceRef.source_character_id,
-      sourceRef.source_character_key,
-    ]
-      .map((value) => String(value || '').trim())
-      .find(Boolean)
-    const actor = castById.get(sourceCharacterKey) || {
-      target_name: String(asset.localized_name || sourceCharacterKey || `Actor ${asset.id}`).trim(),
-    }
-    const identityResponse = await browserApi(page, `/api/v1/redraw/assets/${asset.id}/identity-pack`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...buildLocalIdentityPackInput(actor),
-        wardrobe_reference_asset_id: Number(asset.asset_id),
-        wardrobe_consistency_confirmed: true,
-        expected_updated_at: asset.updated_at,
-      }),
-    })
-    expect(identityResponse.status, JSON.stringify(identityResponse.body)).toBe(200)
-    expect(identityResponse.body.data.identity_pack_status).toMatchObject({ ready: true })
-  }
-  const bindableAssets = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
-  expect(bindableAssets.status, JSON.stringify(bindableAssets.body)).toBe(200)
-  const characterAssets = bindableAssets.body.data.filter((asset) => asset.kind === 'character')
-  const voiceAssets = bindableAssets.body.data.filter((asset) => asset.kind === 'voice')
-  expect(characterAssets).toHaveLength(sourceFacts.characters.length)
-  expect(voiceAssets).toHaveLength(sourceFacts.characters.length)
-  const voiceAssignments = []
-  for (const characterAsset of characterAssets) {
-    const stableId = String(characterAsset.source_ref?.stable_id
-      || characterAsset.source_ref?.id
-      || characterAsset.source_ref?.source_character_key
-      || '')
-    const voiceAsset = voiceAssets.find((candidate) => (
-      String(candidate.source_ref?.stable_id
-        || candidate.source_ref?.id
-        || candidate.source_ref?.source_character_key
-        || '') === stableId
+    const assetsResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
+    expect(assetsResponse.status, JSON.stringify(assetsResponse.body)).toBe(200)
+    generatedAssets = assetsResponse.body.data.filter((asset) => (
+      asset.asset_id || asset.voice_asset_id || asset.clean_plate_asset_id
     ))
-    expect(voiceAsset, `角色 ${stableId} 缺少匹配音色`).toBeTruthy()
-    const voiceAssignment = await browserApi(page, `/api/v1/redraw/assets/${characterAsset.id}/voice`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        voice_asset_id: voiceAsset.id,
-        expected_updated_at: characterAsset.updated_at,
-      }),
-    })
-    expect(voiceAssignment.status, JSON.stringify(voiceAssignment.body)).toBe(200)
-    expect(voiceAssignment.body.data.voice_snapshot).toMatchObject({
-      provider: 'local-fake-tts', model: 'fake-tts', voice_id: 'fixture-voice', locale: fixtureLocale,
-    })
-    voiceAssignments.push({ stableId, characterAssetId: characterAsset.id, voiceAssetId: voiceAsset.id })
-  }
-  expect(voiceAssignments).toHaveLength(sourceFacts.characters.length)
+    expect(generatedAssets).toHaveLength(expectedAssetCount)
+    identityCharacterAssets = generatedAssets.filter((asset) => asset.kind === 'character')
+    expect(identityCharacterAssets).toHaveLength(sourceFacts.characters.length)
 
-  const reviewAssetsResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
-  expect(reviewAssetsResponse.status, JSON.stringify(reviewAssetsResponse.body)).toBe(200)
-  const reviewAssets = reviewAssetsResponse.body.data.filter((asset) => (
-    asset.asset_id || asset.voice_asset_id || asset.clean_plate_asset_id
-  ))
-  expect(reviewAssets).toHaveLength(expectedAssetCount)
-  for (const asset of reviewAssets) {
-    const reviewResponse = await browserApi(page, `/api/v1/redraw/assets/${asset.id}/review`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'approved', expected_updated_at: asset.updated_at }),
+    for (const asset of identityCharacterAssets) {
+      const sourceCharacterKey = String(asset.source_ref?.stable_id
+        || asset.source_ref?.id
+        || asset.source_ref?.source_character_key
+        || '')
+      const actor = genericReferencePreparationCase.characters.find(
+        (candidate) => candidate.source_character_key === sourceCharacterKey,
+      )
+      expect(actor, `角色 ${sourceCharacterKey} 缺少身份夹具`).toBeTruthy()
+      let card = page.locator(`#asset-${asset.id}-character`)
+      await card.locator('input[placeholder="填写目标演员"]').fill(actor.target_actor_label)
+      for (const label of ['front', 'profile', 'full_body', '真人确认', '18+确认', '一致性确认']) {
+        await card.locator('.identity-form .el-checkbox__label').getByText(label, { exact: true }).click()
+      }
+      await card.locator('.identity-form__field').filter({ hasText: '服装参考图' }).locator('.el-select').click()
+      await page.getByRole('option', {
+        name: `${asset.localized_name} · ${Number(asset.asset_id)}`,
+        exact: true,
+      }).click()
+      await card.locator('.identity-form .el-checkbox__label').getByText('服装一致性确认', { exact: true }).click()
+      const identityAction = await clickForJsonResponse(
+        page,
+        card.getByRole('button', { name: '保存身份包', exact: true }),
+        apiResponse('PUT', new RegExp(`/api/v1/redraw/assets/${asset.id}/identity-pack$`)),
+      )
+      expect(identityAction.response.status(), JSON.stringify(identityAction.payload)).toBe(200)
+      interaction.identity_packs += 1
+      card = page.locator(`#asset-${asset.id}-character`)
+      await expect(card.getByText('服务端已确认', { exact: true })).toBeVisible()
+      await expect(card.getByText(/资产 \d+ · 已确认/)).toBeVisible()
+    }
+
+    const voiceTab = page.locator('.asset-tabs').getByRole('button', { name: '音色', exact: true })
+    const voiceListPromise = page.waitForResponse(apiResponse(
+      'GET',
+      new RegExp(`/api/v1/redraw/versions/${versionId}/voices$`),
+    ))
+    await voiceTab.click()
+    expect((await voiceListPromise).status()).toBe(200)
+    await expect(page.locator('#redraw-character-select')).toBeVisible()
+    const bindableAssets = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
+    expect(bindableAssets.status, JSON.stringify(bindableAssets.body)).toBe(200)
+    const characterAssets = bindableAssets.body.data.filter((asset) => asset.kind === 'character')
+    const voiceAssets = bindableAssets.body.data.filter((asset) => asset.kind === 'voice')
+    expect(characterAssets).toHaveLength(sourceFacts.characters.length)
+    expect(voiceAssets).toHaveLength(sourceFacts.characters.length)
+    for (const characterAsset of characterAssets) {
+      const stableId = String(characterAsset.source_ref?.stable_id
+        || characterAsset.source_ref?.id
+        || characterAsset.source_ref?.source_character_key
+        || '')
+      const voiceAsset = voiceAssets.find((candidate) => (
+        String(candidate.source_ref?.stable_id
+          || candidate.source_ref?.id
+          || candidate.source_ref?.source_character_key
+          || '') === stableId
+      ))
+      expect(voiceAsset, `角色 ${stableId} 缺少匹配音色`).toBeTruthy()
+      const characterInput = page.locator('#redraw-character-select')
+      const characterListboxId = await characterInput.getAttribute('aria-controls')
+      await page.locator('.voice-field').filter({ hasText: '目标角色' }).locator('.el-select').click()
+      await page.locator(`[id="${characterListboxId}"]`).getByRole('option', {
+        name: characterAsset.localized_name,
+        exact: true,
+      }).click()
+      const voiceInput = page.locator('#redraw-voice-select')
+      const voiceListboxId = await voiceInput.getAttribute('aria-controls')
+      await page.locator('.voice-field').filter({ hasText: '已验证音色' }).locator('.el-select').click()
+      await page.locator(`[id="${voiceListboxId}"]`).getByRole('option', {
+        name: voiceAsset.localized_name,
+        exact: true,
+      }).click()
+      const voiceAction = await clickForJsonResponse(
+        page,
+        page.getByRole('button', { name: '绑定音色', exact: true }),
+        apiResponse('POST', new RegExp(`/api/v1/redraw/assets/${characterAsset.id}/voice$`)),
+      )
+      expect(voiceAction.response.status(), JSON.stringify(voiceAction.payload)).toBe(200)
+      expect(voiceAction.payload?.data?.voice_snapshot).toMatchObject({
+        provider: 'local-fake-tts', model: 'fake-tts', voice_id: 'fixture-voice', locale: fixtureLocale,
+      })
+      interaction.voice_bindings += 1
+      voiceAssignments.push({ stableId, characterAssetId: characterAsset.id, voiceAssetId: voiceAsset.id })
+      await expect(page.getByText(`已绑定 ${voiceAsset.localized_name}`, { exact: true })).toBeVisible()
+    }
+    expect(voiceAssignments).toHaveLength(sourceFacts.characters.length)
+
+    await page.locator('.asset-tabs').getByRole('button', { name: '角色', exact: true }).click()
+    for (const asset of identityCharacterAssets) {
+      const reviewAction = await clickForJsonResponse(
+        page,
+        page.locator(`#asset-${asset.id}-character`).getByRole('button', { name: '批准', exact: true }),
+        apiResponse('POST', new RegExp(`/api/v1/redraw/assets/${asset.id}/review$`)),
+      )
+      expect(reviewAction.response.status(), JSON.stringify(reviewAction.payload)).toBe(200)
+      interaction.asset_approvals += 1
+    }
+    await page.locator('.asset-tabs').getByRole('button', { name: '音色', exact: true }).click()
+    for (const asset of voiceAssets) {
+      const reviewAction = await clickForJsonResponse(
+        page,
+        page.locator(`#asset-${asset.id}-voice`).getByRole('button', { name: '批准', exact: true }),
+        apiResponse('POST', new RegExp(`/api/v1/redraw/assets/${asset.id}/review$`)),
+      )
+      expect(reviewAction.response.status(), JSON.stringify(reviewAction.payload)).toBe(200)
+      interaction.asset_approvals += 1
+    }
+    await page.locator('.redraw-step').filter({ hasText: '批量转绘' }).click()
+    await expect(page.getByRole('heading', { name: '按分镜生成并从后端恢复真实进度' })).toBeVisible()
+  } else {
+    const quoteResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets/batch-quote`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
     })
-    expect(reviewResponse.status, JSON.stringify(reviewResponse.body)).toBe(200)
+    expect(quoteResponse.status, JSON.stringify(quoteResponse.body)).toBe(200)
+    expect(quoteResponse.body.data).toMatchObject({ priced: true, total_credits: expectedAssetCredits })
+    const batchResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets/batches`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quote_hash: quoteResponse.body.data.quote_hash, idempotency_key: 'local-fixture-asset-batch-1' }),
+    })
+    expect(batchResponse.status, JSON.stringify(batchResponse.body)).toBe(202)
+    let batchRow
+    await expect.poll(() => {
+      batchRow = database.prepare('SELECT * FROM redraw_asset_batches WHERE id = ?')
+        .get(Number(batchResponse.body.data.batch_id))
+      return batchRow?.status
+    }).toBe('completed')
+    const assetsResponse = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
+    generatedAssets = assetsResponse.body.data.filter((asset) => asset.asset_id || asset.voice_asset_id || asset.clean_plate_asset_id)
+    identityCharacterAssets = generatedAssets.filter((asset) => asset.kind === 'character')
+    const castById = new Map(activeCase ? activeCase.cast.map((actor) => [String(actor.id), actor]) : [])
+    for (const asset of identityCharacterAssets) {
+      const sourceCharacterKey = String(asset.source_ref?.stable_id || asset.source_ref?.id || asset.source_ref?.source_character_key || '')
+      const actor = castById.get(sourceCharacterKey) || { target_name: asset.localized_name }
+      const result = await browserApi(page, `/api/v1/redraw/assets/${asset.id}/identity-pack`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...buildLocalIdentityPackInput(actor), wardrobe_reference_asset_id: Number(asset.asset_id), wardrobe_consistency_confirmed: true, expected_updated_at: asset.updated_at }),
+      })
+      expect(result.status, JSON.stringify(result.body)).toBe(200)
+    }
+    const bindableAssets = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
+    const characterAssets = bindableAssets.body.data.filter((asset) => asset.kind === 'character')
+    const voiceAssets = bindableAssets.body.data.filter((asset) => asset.kind === 'voice')
+    for (const characterAsset of characterAssets) {
+      const stableId = String(characterAsset.source_ref?.stable_id || characterAsset.source_ref?.id || characterAsset.source_ref?.source_character_key || '')
+      const voiceAsset = voiceAssets.find((candidate) => String(candidate.source_ref?.stable_id || candidate.source_ref?.id || candidate.source_ref?.source_character_key || '') === stableId)
+      const result = await browserApi(page, `/api/v1/redraw/assets/${characterAsset.id}/voice`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice_asset_id: voiceAsset.id, expected_updated_at: characterAsset.updated_at }),
+      })
+      expect(result.status, JSON.stringify(result.body)).toBe(200)
+      voiceAssignments.push({ stableId, characterAssetId: characterAsset.id, voiceAssetId: voiceAsset.id })
+    }
+    const reviewAssets = (await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)).body.data
+      .filter((asset) => asset.asset_id || asset.voice_asset_id || asset.clean_plate_asset_id)
+    for (const asset of reviewAssets) {
+      const result = await browserApi(page, `/api/v1/redraw/assets/${asset.id}/review`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approved', expected_updated_at: asset.updated_at }),
+      })
+      expect(result.status, JSON.stringify(result.body)).toBe(200)
+    }
   }
 
+  let dialogueTaskId = null
+  let dialogueSegments = []
+  if (!fullProductMode) {
   const dialogueQuote = await browserApi(page, `/api/v1/redraw/versions/${versionId}/dialogue/quote`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
   })
@@ -2592,7 +2802,7 @@ export async function runRedrawFullProductFlow({ page }) {
     }),
   })
   expect(dialogueStart.status, JSON.stringify(dialogueStart.body)).toBe(202)
-  const dialogueTaskId = dialogueStart.body.data.task_id
+  dialogueTaskId = dialogueStart.body.data.task_id
   let dialogueTask
   await expect.poll(async () => {
     const result = await browserApi(
@@ -2608,7 +2818,7 @@ export async function runRedrawFullProductFlow({ page }) {
     shot_index: row.shot_index,
     audit: JSON.parse(row.draft_json || '{}').dialogue_generation || null,
   }))
-  const dialogueSegments = dialogueAudits.flatMap(({ audit }) => audit?.segments || [])
+  dialogueSegments = dialogueAudits.flatMap(({ audit }) => audit?.segments || [])
   expect(dialogueSegments).toHaveLength(expectedDialogueSegmentCount)
   expect(dialogueAudits.filter(({ audit }) => audit).every(({ audit }) => audit.status === 'completed')).toBe(true)
   expect(dialogueSegments.every((segment) => (
@@ -2622,6 +2832,7 @@ export async function runRedrawFullProductFlow({ page }) {
       .get(Number(segment.audio_asset_id))
     expect(dialogueArtifact, `缺少对白音频资产 ${segment.segment_id}`).toBeTruthy()
     expect(fs.existsSync(path.join(storageRoot, dialogueArtifact.local_path))).toBe(true)
+  }
   }
 
   const readyWork = await browserApi(page, `/api/v1/redraw/works/${workId}`)
@@ -2643,6 +2854,27 @@ export async function runRedrawFullProductFlow({ page }) {
     const references = Array.isArray(sourceShot?.dialogue) && sourceShot.dialogue.length > 0
       ? shot.references.filter((reference) => reference.kind === 'character').slice(0, 1)
       : shot.references
+    if (fullProductMode) {
+      await page.locator('.batch-panel .shot-row').filter({ hasText: `镜头 ${shot.shot_index}` }).click()
+      const promptField = page.locator('.shot-editor .el-form-item')
+        .filter({ has: page.getByText('提示词', { exact: true }) })
+        .locator('textarea')
+      await promptField.fill(prompt)
+      const saveAction = await clickForJsonResponse(
+        page,
+        page.getByRole('button', { name: '保存镜头', exact: true }),
+        apiResponse('PUT', new RegExp(`/api/v1/redraw/shots/${shot.id}$`)),
+      )
+      expect(saveAction.response.status(), JSON.stringify(saveAction.payload)).toBe(200)
+      expect(saveAction.payload?.data?.compiled_prompt?.text).toBe(prompt)
+      expect(
+        saveAction.payload?.data?.localized_dialogue,
+        JSON.stringify({ shot_id: shot.shot_id, before: shot.localized_dialogue, after: saveAction.payload?.data?.localized_dialogue }),
+      ).toEqual(shot.localized_dialogue)
+      interaction.shot_saves += 1
+      preparedShots.push(saveAction.payload.data)
+      continue
+    }
     const updateResponse = await browserApi(page, `/api/v1/redraw/shots/${shot.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -2664,7 +2896,16 @@ export async function runRedrawFullProductFlow({ page }) {
     characterKeysByShot: sourceFacts.shots.map((shot) => shot.visible_character_ids || []),
   })
   expect(reviewedCoverage.shots).toHaveLength(expectedShotCount)
-  await prepareGenericReferences(page, versionId, 'local-fixture-reference')
+  if (fullProductMode) {
+    await prepareGenericReferencesThroughUi(page, versionId, interaction, waitForRedrawRequestsToSettle)
+    await page.locator('.redraw-step').filter({ hasText: '批量转绘' }).click()
+    await waitForRedrawRequestsToSettle()
+    await page.reload()
+    await waitForRedrawRequestsToSettle()
+    await expect(page.getByRole('heading', { name: '按分镜生成并从后端恢复真实进度' })).toBeVisible()
+  } else {
+    await prepareGenericReferences(page, versionId, 'local-fixture-reference')
+  }
   const preparedReferenceRows = database.prepare(`
     SELECT preparation_state, reference_bundle_hash
     FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
@@ -2680,13 +2921,25 @@ export async function runRedrawFullProductFlow({ page }) {
 
   const shotIds = preparedShots.map((shot) => Number(shot.id))
   expect(shotIds).toHaveLength(expectedShotCount)
-  const videoBatchResponse = await browserApi(page, `/api/v1/redraw/works/${workId}/generate-batch`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ version_id: versionId, shot_ids: shotIds }),
-  })
-  expect(videoBatchResponse.status, JSON.stringify(videoBatchResponse.body)).toBe(202)
-  expect(videoBatchResponse.body.data.results).toHaveLength(expectedShotCount)
+  let videoBatchResponse
+  if (fullProductMode) {
+    const batchAction = await clickForJsonResponse(
+      page,
+      page.getByRole('button', { name: `批量生成 ${expectedShotCount} 镜`, exact: true }),
+      apiResponse('POST', new RegExp(`/api/v1/redraw/works/${workId}/generate-batch$`)),
+    )
+    expect(batchAction.response.status(), JSON.stringify(batchAction.payload)).toBe(202)
+    expect(batchAction.payload?.data?.results).toHaveLength(expectedShotCount)
+    interaction.generation_batches += 1
+    videoBatchResponse = { status: batchAction.response.status(), body: batchAction.payload }
+  } else {
+    videoBatchResponse = await browserApi(page, `/api/v1/redraw/works/${workId}/generate-batch`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version_id: versionId, shot_ids: shotIds }),
+    })
+    expect(videoBatchResponse.status, JSON.stringify(videoBatchResponse.body)).toBe(202)
+    expect(videoBatchResponse.body.data.results).toHaveLength(expectedShotCount)
+  }
   let videoShotRows = []
   for (let attempt = 0; attempt < 120; attempt += 1) {
     videoShotRows = database.prepare(`
@@ -2728,6 +2981,15 @@ export async function runRedrawFullProductFlow({ page }) {
   expect(candidateReviews.every((review) => (
     review.decision === 'approved' && review.decision_source === 'automatic'
   ))).toBe(true)
+  if (fullProductMode) {
+    await page.locator('.redraw-step').filter({ hasText: '批量转绘' }).click()
+    await waitForRedrawRequestsToSettle()
+    await page.reload()
+    await waitForRedrawRequestsToSettle()
+    await expect(page.getByRole('heading', { name: '质量审核' })).toBeVisible()
+    await expect(page.getByText('B 自动批准证据：质量门禁全部通过', { exact: true })).toHaveCount(expectedShotCount)
+    interaction.candidate_qa_presented = expectedShotCount
+  }
   const candidateModes = candidateReviews.map((review) => JSON.parse(review.metrics_json).dialogue)
   if (fullProductMode) {
     expect(candidateModes.map((dialogue) => dialogue.dialogue_mode)).toEqual(['dialogue', 'dialogue', 'silent'])
@@ -2747,6 +3009,42 @@ export async function runRedrawFullProductFlow({ page }) {
     }
   }
 
+  if (fullProductMode) {
+    await page.locator('.redraw-step').filter({ hasText: '导出交付' }).click()
+    await expect(page.getByRole('heading', { name: `${fixtureLocale} 配音、合成预览与下载` })).toBeVisible()
+    const dialogueButton = page.getByRole('button', { name: `生成${fixtureLocale} 配音`, exact: true })
+    const dialogueQuoteProbe = await browserApi(page, `/api/v1/redraw/versions/${versionId}/dialogue/quote`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    })
+    await expect(dialogueButton, JSON.stringify(dialogueQuoteProbe)).toBeEnabled()
+    const dialogueAction = await clickForJsonResponse(
+      page,
+      dialogueButton,
+      apiResponse('POST', new RegExp(`/api/v1/redraw/versions/${versionId}/dialogue/start$`)),
+    )
+    expect(dialogueAction.response.status(), JSON.stringify(dialogueAction.payload)).toBe(202)
+    interaction.dialogue_starts += 1
+    dialogueTaskId = String(dialogueAction.payload?.data?.task_id || '')
+    expect(dialogueTaskId).not.toBe('')
+    await expect(page.getByText(new RegExp(`任务 ${dialogueTaskId} · 完成`))).toBeVisible({ timeout: 15_000 })
+    const dialogueAudits = database.prepare(`
+      SELECT shot_index, draft_json FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
+    `).all(versionId).map((row) => ({
+      shot_index: row.shot_index,
+      audit: JSON.parse(row.draft_json || '{}').dialogue_generation || null,
+    }))
+    dialogueSegments = dialogueAudits.flatMap(({ audit }) => audit?.segments || [])
+    expect(dialogueSegments).toHaveLength(expectedDialogueSegmentCount)
+    expect(dialogueAudits.filter(({ audit }) => audit).every(({ audit }) => audit.status === 'completed')).toBe(true)
+    expect(dialogueSegments.every((segment) => (
+      segment.status === 'completed'
+        && segment.reservation_status === 'confirmed'
+        && segment.provider === 'local-fake-tts'
+        && segment.model === 'fake-tts'
+    ))).toBe(true)
+    await expect(page.getByText('可发布', { exact: true })).toBeVisible({ timeout: 15_000 })
+  }
+
   let composeStart
   if (fullProductMode) {
     const readiness = await browserApi(page, `/api/v1/redraw/versions/${versionId}/release-readiness`)
@@ -2759,14 +3057,13 @@ export async function runRedrawFullProductFlow({ page }) {
         decision: 'approved', approved_shot_count: 3, automatic_review_count: 3, human_review_count: 0,
       },
     })
-    composeStart = await browserApi(page, `/api/v1/redraw/versions/${versionId}/releases`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        idempotency_key: 'local-fixture-episode-release-1',
-        readiness_hash: readiness.body.data.readiness_hash,
-      }),
-    })
+    const releaseAction = await clickForJsonResponse(
+      page,
+      page.getByRole('button', { name: '创建整集 release', exact: true }),
+      apiResponse('POST', new RegExp(`/api/v1/redraw/versions/${versionId}/releases$`)),
+    )
+    interaction.release_creates += 1
+    composeStart = { status: releaseAction.response.status(), body: releaseAction.payload }
   } else {
     composeStart = await browserApi(page, `/api/v1/redraw/versions/${versionId}/compose`, {
       method: 'POST',
@@ -2787,19 +3084,73 @@ export async function runRedrawFullProductFlow({ page }) {
   })
   expect(exportDetail.hashes.mp4).toMatch(/^[0-9a-f]{64}$/)
 
-  const downloaded = await page.evaluate(async (url) => {
-    const response = await fetch(url)
-    const bytes = new Uint8Array(await response.arrayBuffer())
-    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
-    return {
-      status: response.status,
-      size: bytes.byteLength,
-      magic: String.fromCharCode(...bytes.slice(4, 8)),
-      digest: [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join(''),
-      responseHash: response.headers.get('x-content-sha256'),
-      contentType: response.headers.get('content-type'),
+  let downloaded
+  const releaseDownloads = []
+  if (fullProductMode) {
+    const labels = { mp4: 'MP4 下载', srt: 'SRT 下载', vtt: 'VTT 下载', report: '报告下载' }
+    const artifacts = {}
+    for (const kind of ['mp4', 'srt', 'vtt', 'report']) {
+      const button = page.getByRole('button', { name: labels[kind], exact: true })
+      await expect(button).toBeEnabled({ timeout: 15_000 })
+      const artifactPath = kind === 'report'
+        ? `/api/v1/redraw/exports/${exportId}`
+        : `/api/v1/redraw/exports/${exportId}/download/${kind}`
+      const responsePromise = page.waitForResponse(apiResponse(
+        'GET',
+        new RegExp(`${artifactPath}$`),
+      ))
+      const downloadPromise = page.waitForEvent('download')
+      await button.click()
+      const [response, browserDownload] = await Promise.all([responsePromise, downloadPromise])
+      expect(response.status()).toBe(200)
+      const browserPath = await browserDownload.path()
+      expect(browserPath).toBeTruthy()
+      const bytes = fs.readFileSync(browserPath)
+      artifacts[kind] = {
+        kind,
+        status: response.status(),
+        size: bytes.length,
+        bytes,
+        text: ['srt', 'vtt', 'report'].includes(kind) ? bytes.toString('utf8') : '',
+        digest: sha256Value(bytes),
+        responseHash: response.headers()['x-content-sha256'] || null,
+        contentType: response.headers()['content-type'] || '',
+      }
+      interaction.downloads += 1
+      releaseDownloads.push(kind)
     }
-  }, `/api/v1/redraw/exports/${exportId}/download/mp4`)
+    downloaded = {
+      ...artifacts.mp4,
+      magic: artifacts.mp4.bytes.subarray(4, 8).toString('ascii'),
+    }
+    for (const kind of ['srt', 'vtt']) {
+      expect(artifacts[kind]).toMatchObject({
+        kind,
+        status: 200,
+        digest: exportDetail.hashes[kind],
+        responseHash: exportDetail.hashes[kind],
+      })
+      expect(artifacts[kind].size).toBeGreaterThan(20)
+      expect(artifacts[kind].text).toContain('Fue aqui.')
+      expect(artifacts[kind].text).toContain('No sigas.')
+    }
+    expect(() => JSON.parse(artifacts.report.text)).not.toThrow()
+  } else {
+    downloaded = await page.evaluate(async (url) => {
+      const response = await fetch(url)
+      const bytes = new Uint8Array(await response.arrayBuffer())
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
+      return {
+        status: response.status,
+        size: bytes.byteLength,
+        magic: String.fromCharCode(...bytes.slice(4, 8)),
+        digest: [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join(''),
+        responseHash: response.headers.get('x-content-sha256'),
+        contentType: response.headers.get('content-type'),
+      }
+    }, `/api/v1/redraw/exports/${exportId}/download/mp4`)
+    releaseDownloads.push('mp4')
+  }
   expect(downloaded).toMatchObject({
     status: 200,
     magic: 'ftyp',
@@ -2808,33 +3159,7 @@ export async function runRedrawFullProductFlow({ page }) {
     contentType: 'video/mp4',
   })
   expect(downloaded.size).toBeGreaterThan(1_000)
-  const releaseDownloads = ['mp4']
   if (fullProductMode) {
-    for (const kind of ['srt', 'vtt']) {
-      const artifact = await page.evaluate(async ({ url, outputKind }) => {
-        const response = await fetch(url)
-        const bytes = new Uint8Array(await response.arrayBuffer())
-        const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
-        return {
-          kind: outputKind,
-          status: response.status,
-          size: bytes.byteLength,
-          text: new TextDecoder().decode(bytes),
-          digest: [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join(''),
-          responseHash: response.headers.get('x-content-sha256'),
-        }
-      }, { url: `/api/v1/redraw/exports/${exportId}/download/${kind}`, outputKind: kind })
-      expect(artifact).toMatchObject({
-        kind,
-        status: 200,
-        digest: exportDetail.hashes[kind],
-        responseHash: exportDetail.hashes[kind],
-      })
-      expect(artifact.size).toBeGreaterThan(20)
-      expect(artifact.text).toContain('Fue aqui.')
-      expect(artifact.text).toContain('No sigas.')
-      releaseDownloads.push(kind)
-    }
     expect(exportDetail).toMatchObject({
       status: 'completed',
       release_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
@@ -2845,7 +3170,6 @@ export async function runRedrawFullProductFlow({ page }) {
     })
     expect(exportDetail.episode_release.shots).toHaveLength(3)
     expect(JSON.stringify(exportDetail)).not.toContain(tempRoot)
-    releaseDownloads.push('report')
   }
 
   const exportRow = database.prepare('SELECT manifest_json FROM redraw_exports WHERE id = ?').get(exportId)
@@ -2905,8 +3229,11 @@ export async function runRedrawFullProductFlow({ page }) {
     const recoveryUrl = new URL(page.url())
     recoveryUrl.searchParams.set('step', '4')
     await page.evaluate((url) => window.history.replaceState(null, '', url), recoveryUrl.toString())
+    await waitForRedrawRequestsToSettle()
     await page.reload()
+    await waitForRedrawRequestsToSettle()
     await expect(page.getByRole('heading', { name: '整集 readiness' })).toBeVisible()
+    await expect(page.getByText(new RegExp(`任务 ${dialogueTaskId} · 完成`))).toBeVisible()
     const recoveredWork = await browserApi(page, `/api/v1/redraw/works/${workId}`)
     const recoveredExports = await browserApi(page, `/api/v1/redraw/versions/${versionId}/exports`)
     expect(recoveredWork.status, JSON.stringify(recoveredWork.body)).toBe(200)
@@ -3018,6 +3345,7 @@ export async function runRedrawFullProductFlow({ page }) {
         release_hash: exportDetail.release_hash,
       },
       recovery: recoveryEvidence,
+      interaction,
       network: { public_requests: 0, real_provider_requests: 0 },
     }
   }
