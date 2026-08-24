@@ -1710,6 +1710,7 @@ test('阶段 2 资产审核路由返回门禁并禁止普通更新接口改审�
       (work_id, tenant_id, user_id, version, locale, market, status, created_at, updated_at)
       VALUES (?, 'tenant-a', 'user-a', 1, 'en-US', 'US', 'asset_review', ?, ?)`).run(workId, NOW, NOW);
     const versionId = db.prepare('SELECT id FROM redraw_versions WHERE work_id = ?').get(workId).id;
+    db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(versionId);
     const assetNow = new Date().toISOString();
     db.prepare(`INSERT INTO redraw_assets
       (version_id, tenant_id, user_id, kind, source_ref_json, localized_name, asset_id,
@@ -1728,7 +1729,8 @@ test('阶段 2 资产审核路由返回门禁并禁止普通更新接口改审�
     handlers.generationGate(request({ id: versionId }), gate);
     assert.equal(gate.statusCode, 200);
     assert.equal(gate.body.data.ok, false);
-    assert.equal(gate.body.data.missing[0].asset_id, asset.id);
+    assert.equal(gate.body.data.current_step, 2);
+    assert.equal(gate.body.data.blocking[0].code, 'preparation_not_ready');
 
     const update = captureResponse();
     handlers.updateRedrawAsset(request({ id: asset.id, body: { approval_status: 'approved' } }), update);
@@ -1741,7 +1743,10 @@ test('阶段 2 资产审核路由返回门禁并禁止普通更新接口改审�
     } }), review);
     assert.equal(review.statusCode, 200);
     assert.equal(review.body.data.asset.approval_status, 'approved');
-    assert.equal(review.body.data.gate.ok, true);
+    assert.equal(review.body.data.gate.ok, false);
+    assert.equal(review.body.data.gate.blocking[0].code, 'preparation_not_ready');
+    assert.equal(review.body.data.current_step, 3);
+    assert.equal(db.prepare('SELECT current_step FROM redraw_works WHERE id = ?').get(workId).current_step, 3);
   } finally {
     db.close();
   }

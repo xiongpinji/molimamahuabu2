@@ -5913,6 +5913,32 @@ test('reference bundle required 缺失或漂移时在冻结积分和建视频前
   );
 });
 
+test('资产审核通过只开放逐镜准备导航，准备未完成时生成仍在副作用前拒绝', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  state.db.prepare(`UPDATE redraw_shots
+    SET preparation_state = 'parsed', preparation_evidence_hash = NULL
+    WHERE id = ?`).run(state.shotId);
+
+  const gate = redrawReviewService.evaluateGenerationGate(state.db, state.versionId, {
+    tenantId: 'tenant-a',
+    userId: 'user-a',
+  }, {
+    preparationContext: { storageRoot: state.storageRoot },
+  });
+  assert.equal(gate.ok, false);
+  assert.equal(gate.current_step, 3);
+  assert.equal(gate.blocking[0].code, 'preparation_not_ready');
+
+  let providerCalls = 0;
+  await assert.rejects(
+    () => generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
+      videoProcessor: async () => { providerCalls += 1; },
+    })), { shotId: state.shotId }),
+    (error) => error.code === 'REDRAW_ASSET_REVIEW_REQUIRED',
+  );
+  assertReferenceBundlePreflightClean(state, providerCalls);
+});
+
 test('reference bundle required 要求同步音频能力且在副作用前失败', async (t) => {
   const state = await setupReferenceBundleGenerationFixture(t);
   let providerCalls = 0;

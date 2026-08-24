@@ -204,6 +204,21 @@ function v2IdentityBindingMatches(bundle, face, row, currentBinding, targetChara
     && sameIdentityArtifact(identity.artifact, artifact);
 }
 
+function assetReviewAllowsPreparation(db, version) {
+  const canReadDraftJson = hasColumn(db, 'redraw_shots', 'draft_json');
+  const shots = db.prepare(`
+    SELECT references_json${canReadDraftJson ? ', draft_json' : ''}
+    FROM redraw_shots
+    WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+  `).all(version.id, version.tenant_id, version.user_id);
+  if (shots.length === 0) return false;
+  return shots.every((shot) => readShotReferences(shot).every((reference) => {
+    const asset = findAsset(db, version, reference);
+    return isApprovedAsset(asset)
+      && (reference.kind !== 'character' || identityPackStatus(asset).ready);
+  }));
+}
+
 function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
   if (!db) throw codedError('REDRAW_REVIEW_DB_REQUIRED', '缺少数据库');
   const version = getVersion(db, versionId, owner);
@@ -218,7 +233,7 @@ function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
       return {
         ok: false,
         version_id: Number(version.id),
-        current_step: 2,
+        current_step: assetReviewAllowsPreparation(db, version) ? 3 : 2,
         missing: preparation.missing,
         blocking: [{
           code: 'preparation_not_ready',
