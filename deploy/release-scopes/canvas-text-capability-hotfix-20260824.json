@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "release": "canvas-text-capability-hotfix-20260824",
+  "allowedPaths": [
+    "backend-node/src/services/providerCanaryEvidenceService.js",
+    "backend-node/test/featureLockManifest.test.js",
+    "backend-node/test/incrementalReleaseScope.test.js",
+    "backend-node/test/providerCanaryPublicGate.test.js",
+    "backend-node/test/providerRouteStability.test.js",
+    "backend-node/test/providerRouteTextIntegration.test.js",
+    "deploy/release-scopes/canvas-text-capability-hotfix-20260824.json",
+    "docs/verification/platform-stability/canvas-text-capability-hotfix-20260824.md",
+    "docs/verification/platform-stability/feature-lock-manifest.json"
+  ]
+}

@@ -54,6 +54,23 @@ const providerTaskLiveCompatManifestPath = path.join(
   'release-scopes',
   'provider-task-receipt-live-compat-20260823.json',
 );
+const canvasTextCapabilityHotfixManifestPath = path.join(
+  repoRoot,
+  'deploy',
+  'release-scopes',
+  'canvas-text-capability-hotfix-20260824.json',
+);
+const CANVAS_TEXT_CAPABILITY_HOTFIX_ALLOWED_PATHS = [
+  'backend-node/src/services/providerCanaryEvidenceService.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/providerCanaryPublicGate.test.js',
+  'backend-node/test/providerRouteStability.test.js',
+  'backend-node/test/providerRouteTextIntegration.test.js',
+  'deploy/release-scopes/canvas-text-capability-hotfix-20260824.json',
+  'docs/verification/platform-stability/canvas-text-capability-hotfix-20260824.md',
+  'docs/verification/platform-stability/feature-lock-manifest.json',
+];
 const PROVIDER_TASK_LIVE_COMPAT_RUNTIME_REPAIR_PATHS = [
   'backend-node/src/db/migrate.js',
   'backend-node/src/services/videoClient.js',
@@ -283,6 +300,10 @@ function assertExactProviderTaskReceiptScope(allowedPaths) {
   assert.deepEqual(allowedPaths, PROVIDER_TASK_RECEIPT_ALLOWED_PATHS);
 }
 
+function assertExactCanvasTextCapabilityHotfixScope(allowedPaths) {
+  assert.deepEqual(allowedPaths, CANVAS_TEXT_CAPABILITY_HOTFIX_ALLOWED_PATHS);
+}
+
 function createFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'incremental-release-scope-'));
   const parentRoot = path.join(root, 'parent');
@@ -410,6 +431,41 @@ test('主动巡检发布范围拒绝同数量偷换任一文件', () => {
   assert.equal(swapped.length, PROACTIVE_CANARY_ALLOWED_PATHS.length);
   assert.throws(
     () => assertExactProactiveCanaryScope(swapped),
+    { name: 'AssertionError' },
+  );
+});
+
+test('画布文本能力兼容修复发布范围是精确 9 文件白名单', () => {
+  const { manifest, allowedPaths } = loadManifest(canvasTextCapabilityHotfixManifestPath);
+  assert.equal(manifest.release, 'canvas-text-capability-hotfix-20260824');
+  assertExactCanvasTextCapabilityHotfixScope(allowedPaths);
+  assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
+
+  for (const forbidden of [
+    'backend-node/data',
+    'backend-node/uploads',
+    'storage',
+    'assets',
+    'ai-music',
+    'moli-music',
+    'deploy/install-protected-release-guard.sh',
+    'shared/release-guard',
+  ]) {
+    assert.equal(
+      allowedPaths.some((entry) => entry === forbidden || entry.startsWith(`${forbidden}/`)),
+      false,
+      `发布范围不得包含: ${forbidden}`,
+    );
+  }
+});
+
+test('画布文本能力兼容修复发布范围拒绝同数量偷换任一文件', () => {
+  const swapped = [...CANVAS_TEXT_CAPABILITY_HOTFIX_ALLOWED_PATHS];
+  const index = swapped.indexOf('backend-node/src/services/providerCanaryEvidenceService.js');
+  swapped[index] = 'backend-node/data/drama_generator.db';
+  assert.equal(swapped.length, CANVAS_TEXT_CAPABILITY_HOTFIX_ALLOWED_PATHS.length);
+  assert.throws(
+    () => assertExactCanvasTextCapabilityHotfixScope(swapped),
     { name: 'AssertionError' },
   );
 });

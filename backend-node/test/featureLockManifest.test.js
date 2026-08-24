@@ -306,6 +306,19 @@ const PR189_CONNECTION_ONLY_VERIFICATION_UNLOCK = {
     'backend-node/test/featureLockManifest.test.js',
   ],
 };
+const CANVAS_TEXT_CAPABILITY_HOTFIX_EVIDENCE =
+  'docs/verification/platform-stability/canvas-text-capability-hotfix-20260824.md';
+const CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK = {
+  reason: '2026-08-24 画布文本线路空能力指纹兼容修复获批',
+  approvedBy: 'product-owner 2026-08-24 canvas-text-capability-hotfix',
+  impactTests: [
+    'backend-node/test/providerCanaryPublicGate.test.js',
+    'backend-node/test/providerRouteStability.test.js',
+    'backend-node/test/providerRouteTextIntegration.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
 const PRE_PR184_CURRENT_UNLOCK_BY_FEATURE = {
   [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: PROVIDER_ROUTE_TTS_CHARACTER_COST_UNLOCK,
   [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: PROVIDER_TASK_LIVE_COMPAT_UNLOCK,
@@ -674,16 +687,24 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   assert.deepEqual(feature.evidence.slice(0, PROACTIVE_CANARY_EVIDENCE.length), PROACTIVE_CANARY_EVIDENCE);
 });
 
-test('PR #184 主线合并刷新功能锁并保留零成本巡检批准历史与证据', () => {
+test('画布文本能力兼容修复使用新鲜批准并保留 PR #184 与零成本巡检历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
-  assert.deepEqual(feature.unlock, PR184_MAIN_MERGE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-1), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-2), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-3), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-4), PROVIDER_READINESS_TTS_UNLOCK);
-  assert.deepEqual(feature.evidence.slice(-PROVIDER_READINESS_TTS_EVIDENCE.length), PROVIDER_READINESS_TTS_EVIDENCE);
+  assert.deepEqual(feature.unlock, CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), PR184_MAIN_MERGE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-2), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-3), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-4), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-5), PROVIDER_READINESS_TTS_UNLOCK);
+  assert.equal(feature.evidence.at(-1), CANVAS_TEXT_CAPABILITY_HOTFIX_EVIDENCE);
+  assert.deepEqual(
+    feature.evidence.slice(
+      -(PROVIDER_READINESS_TTS_EVIDENCE.length + 1),
+      -1,
+    ),
+    PROVIDER_READINESS_TTS_EVIDENCE,
+  );
   for (const testPath of PROVIDER_READINESS_TTS_REQUIRED_TESTS) {
     assert.ok(feature.requiredTests.includes(testPath), `TTS 功能锁缺少影响测试: ${testPath}`);
   }
@@ -703,7 +724,9 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       feature.unlock,
       featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
         ? PR189_CONNECTION_ONLY_VERIFICATION_UNLOCK
-        : PR184_MAIN_MERGE_UNLOCK,
+        : featureId === PROACTIVE_CANARY_FEATURE_ID
+          ? CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK
+          : PR184_MAIN_MERGE_UNLOCK,
     );
     assert.deepEqual(feature.unlockHistory, [
       HISTORICAL_UNLOCK_BY_FEATURE[featureId],
@@ -729,6 +752,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
         : []),
       PRE_PR184_CURRENT_UNLOCK_BY_FEATURE[featureId],
       ...(featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID ? [PR184_MAIN_MERGE_UNLOCK] : []),
+      ...(featureId === PROACTIVE_CANARY_FEATURE_ID ? [PR184_MAIN_MERGE_UNLOCK] : []),
     ]);
     assert.deepEqual(
       feature.evidence.slice(0, HISTORICAL_EVIDENCE_BY_FEATURE[featureId].length),
@@ -745,9 +769,17 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     }
     if ([PROACTIVE_CANARY_FEATURE_ID, ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID].includes(featureId)) {
       assert.deepEqual(
-        feature.evidence.slice(-PROVIDER_READINESS_TTS_EVIDENCE.length),
+        feature.evidence.slice(
+          featureId === PROACTIVE_CANARY_FEATURE_ID
+            ? -(PROVIDER_READINESS_TTS_EVIDENCE.length + 1)
+            : -PROVIDER_READINESS_TTS_EVIDENCE.length,
+          featureId === PROACTIVE_CANARY_FEATURE_ID ? -1 : undefined,
+        ),
         PROVIDER_READINESS_TTS_EVIDENCE,
       );
+      if (featureId === PROACTIVE_CANARY_FEATURE_ID) {
+        assert.equal(feature.evidence.at(-1), CANVAS_TEXT_CAPABILITY_HOTFIX_EVIDENCE);
+      }
     } else if (liveCompatTouched) {
       assert.equal(feature.evidence.at(-1), PROVIDER_TASK_LIVE_COMPAT_EVIDENCE);
     } else {
@@ -764,7 +796,12 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
   assert.deepEqual(appLocks, [PROACTIVE_CANARY_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].sort());
   for (const featureId of appLocks) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
-    assert.deepEqual(feature.unlock, PR184_MAIN_MERGE_UNLOCK);
+    assert.deepEqual(
+      feature.unlock,
+      featureId === PROACTIVE_CANARY_FEATURE_ID
+        ? CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK
+        : PR184_MAIN_MERGE_UNLOCK,
+    );
   }
 });
 
@@ -798,8 +835,18 @@ test('实时候选兼容修复刷新四个运行时功能锁并登记补丁测�
   ]) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
     assert.ok(feature, `缺少功能锁 ${featureId}`);
-    assert.deepEqual(feature.unlock, PR184_MAIN_MERGE_UNLOCK);
-    assert.deepEqual(feature.unlockHistory.at(-1), PRE_PR184_CURRENT_UNLOCK_BY_FEATURE[featureId]);
+    assert.deepEqual(
+      feature.unlock,
+      featureId === PROACTIVE_CANARY_FEATURE_ID
+        ? CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK
+        : PR184_MAIN_MERGE_UNLOCK,
+    );
+    assert.deepEqual(
+      feature.unlockHistory.at(-1),
+      featureId === PROACTIVE_CANARY_FEATURE_ID
+        ? PR184_MAIN_MERGE_UNLOCK
+        : PRE_PR184_CURRENT_UNLOCK_BY_FEATURE[featureId],
+    );
     assert.ok(feature.unlockHistory.some((entry) => (
       entry.reason === PROVIDER_TASK_STATUS_DECISION_UNLOCK.reason
         || entry.reason === PROVIDER_TASK_RECEIPT_UNLOCK.reason
@@ -808,7 +855,7 @@ test('实时候选兼容修复刷新四个运行时功能锁并登记补丁测�
     assert.equal(
       feature.evidence.at(-1),
       featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? PROVIDER_READINESS_TTS_EVIDENCE.at(-1)
+        ? CANVAS_TEXT_CAPABILITY_HOTFIX_EVIDENCE
         : PROVIDER_TASK_LIVE_COMPAT_EVIDENCE,
     );
   }
