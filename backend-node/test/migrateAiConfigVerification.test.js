@@ -67,7 +67,7 @@ test('runMigrationsAndEnsure adds public model notes to legacy price tables', ()
   }
 });
 
-test('saved connection checks are the only path that verifies configs and redact failures', async () => {
+test('saved connection checks never upgrade real-generation verification and redact failures', async () => {
   const db = new Database(':memory:');
   const originalFetch = global.fetch;
   try {
@@ -94,10 +94,11 @@ test('saved connection checks are the only path that verifies configs and redact
     });
     assert.equal(result.status, 200);
     assert.doesNotMatch(JSON.stringify(result.body), /supplier-secret/);
-    assert.equal(aiConfigService.getConfig(db, config.id).verification_status, 'verified');
+    assert.match(result.body.data.message, /仅验证连通性/);
+    assert.equal(aiConfigService.getConfig(db, config.id).verification_status, 'unverified');
 
     aiConfigService.updateConfig(db, log, config.id, { priority: 10 });
-    assert.equal(aiConfigService.getConfig(db, config.id).verification_status, 'verified');
+    assert.equal(aiConfigService.getConfig(db, config.id).verification_status, 'unverified');
     aiConfigService.updateConfig(db, log, config.id, { base_url: 'https://changed.example/v1' });
     const changed = aiConfigService.getConfig(db, config.id);
     assert.equal(changed.verification_status, 'unverified');

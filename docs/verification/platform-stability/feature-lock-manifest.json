@@ -526,6 +526,8 @@
         "backend-node/test/aiConfigPublicView.test.js",
         "backend-node/test/providerTaskAdminRoutes.test.js",
         "backend-node/test/providerTaskReconciliation.test.js",
+        "backend-node/test/migrateAiConfigVerification.test.js",
+        "backend-node/test/videoProviderVerification.test.js",
         "frontweb/test/providerStabilityAdmin.test.js",
         "frontweb/test/aiConfigRelayAssociation.test.js",
         "frontweb/test/providerRouteCostAdmin.test.js"
@@ -600,24 +602,35 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 PR #184 合入最新 main 并收口 17 项冲突获批",
+          "approvedBy": "product-owner 2026-08-23 pr-184-main-merge-conflict-resolution",
+          "impactTests": [
+            "backend-node/test/providerCanaryAudioArtifact.test.js",
+            "backend-node/test/providerCanaryExecutor.test.js",
+            "backend-node/test/providerCanaryInventory.test.js",
+            "backend-node/test/providerCanaryScheduler.test.js",
+            "backend-node/test/providerRouteCost.test.js",
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerRuntimeFingerprint.test.js",
+            "backend-node/test/providerTaskLiveCompatibility.test.js",
+            "frontweb/test/platformZeroCostSmokeContract.test.js",
+            "frontweb/test/providerRouteCostAdmin.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 PR #184 合入最新 main 并收口 17 项冲突获批",
-        "approvedBy": "product-owner 2026-08-23 pr-184-main-merge-conflict-resolution",
+        "reason": "2026-08-24 连接测试仅验证连通性安全修复获批",
+        "approvedBy": "product-owner 2026-08-24 pr-189-ci-fix",
         "impactTests": [
-          "backend-node/test/providerCanaryAudioArtifact.test.js",
-          "backend-node/test/providerCanaryExecutor.test.js",
-          "backend-node/test/providerCanaryInventory.test.js",
-          "backend-node/test/providerCanaryScheduler.test.js",
-          "backend-node/test/providerRouteCost.test.js",
-          "backend-node/test/providerRouteSchema.test.js",
-          "backend-node/test/providerRuntimeFingerprint.test.js",
-          "backend-node/test/providerTaskLiveCompatibility.test.js",
-          "frontweb/test/platformZeroCostSmokeContract.test.js",
-          "frontweb/test/providerRouteCostAdmin.test.js",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/migrateAiConfigVerification.test.js",
+          "backend-node/test/videoProviderVerification.test.js",
+          "backend-node/test/aiConfigPublicView.test.js",
+          "backend-node/test/providerRouteAdminRoutes.test.js",
+          "backend-node/test/featureLockManifest.test.js"
         ]
       }
     },
