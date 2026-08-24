@@ -217,6 +217,24 @@ assert_candidate_tree_secure() {
   fi
 }
 
+assert_candidate_lock_state() {
+  local candidate_real owner mode resolved target
+  candidate_real="$(readlink -f -- "$CANDIDATE")"
+  [[ "$candidate_real" == "$RELEASES_ROOT"/* ]] || fail 70 'candidate resolved outside releases root'
+  assert_root_owned_directory "$CANDIDATE" 'candidate root'
+
+  while IFS= read -r -d '' target; do
+    owner="$(stat -c '%u:%g' -- "$target")"
+    [[ "$owner" == '0:0' ]] || fail 70 "candidate symlink must be root:root: $target"
+    resolved="$(readlink -f -- "$target")"
+    [[ "$resolved" == "$RELEASES_ROOT"/* ]] || fail 70 "candidate symlink resolved outside releases root: $target"
+    owner="$(stat -Lc '%u:%g' -- "$target")"
+    mode="$(stat -Lc '%a' -- "$target")"
+    [[ "$owner" == '0:0' ]] || fail 70 "candidate symlink target must be root:root: $target"
+    (( (8#$mode & 8#022) == 0 )) || fail 70 "candidate symlink target must not be group/other writable: $target"
+  done < <(find -P "$CANDIDATE" -xdev -type l -print0)
+}
+
 candidate_tree_hash() {
   (
     cd -- "$CANDIDATE"
@@ -757,7 +775,13 @@ assert_production_env_unchanged
 create_and_verify_database_backup
 assert_no_active_generation_tasks before-stop
 assert_current_matches
+assert_root_owned_evidence_tree
+assert_candidate_tree_secure
 assert_production_env_unchanged
+PRE_SWITCH_CANDIDATE_TREE_HASH="$(candidate_tree_hash)"
+if [[ "$PRE_SWITCH_CANDIDATE_TREE_HASH" != "$INITIAL_CANDIDATE_TREE_HASH" ]]; then
+  fail 70 'candidate tree changed before protected release switch'
+fi
 
 SERVICE_TOUCHED=1
 env -i PATH="$SAFE_PATH" LC_ALL=C "$SYSTEMCTL_BINARY" stop moli-drama.service
@@ -765,11 +789,7 @@ assert_no_active_generation_tasks after-stop
 
 assert_current_matches
 assert_root_owned_evidence_tree
-assert_candidate_tree_secure
-PRE_SWITCH_CANDIDATE_TREE_HASH="$(candidate_tree_hash)"
-if [[ "$PRE_SWITCH_CANDIDATE_TREE_HASH" != "$INITIAL_CANDIDATE_TREE_HASH" ]]; then
-  fail 74 'candidate tree changed before protected release switch'
-fi
+assert_candidate_lock_state
 assert_production_env_unchanged
 
 atomic_set_current "$CANDIDATE"
