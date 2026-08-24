@@ -268,6 +268,11 @@ test('单镜生成时长与后端合同统一为 5 到 15 秒且五秒源镜头�
   assert.doesNotMatch(editorSource, /建议保持 10–15 秒/)
 })
 
+test('单镜编辑器使用通用目标语台词文案且不硬编码英文', () => {
+  assert.match(editorSource, /label="目标语台词"/)
+  assert.doesNotMatch(editorSource, /label="英文台词"/)
+})
+
 test('第三步工作台覆盖批次、编辑、计费、重试、对照预览和后端轮询', () => {
   assert.match(workspaceSource, /RedrawShotStep/)
   assert.match(stepSource, /RedrawShotEditor/)

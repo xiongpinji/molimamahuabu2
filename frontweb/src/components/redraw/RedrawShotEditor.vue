@@ -36,7 +36,7 @@
       <el-form-item label="源片台词">
         <el-input :model-value="sourceDialogueText" type="textarea" :rows="3" readonly />
       </el-form-item>
-      <el-form-item label="英文台词">
+      <el-form-item label="目标语台词">
         <el-input v-model="form.localized_dialogue_text" type="textarea" :rows="3" />
       </el-form-item>
     </div>
