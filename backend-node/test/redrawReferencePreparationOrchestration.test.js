@@ -1080,6 +1080,83 @@ test('start 幂等复用异步任务，reconcile 将中断任务和镜头收口�
   }
 });
 
+test('start 拒绝混入 needs_attention 的全量范围且仅允许重新报价后的 missing 子集', async () => {
+  const state = setup();
+  try {
+    state.db.prepare(`UPDATE redraw_shots
+      SET preparation_state = 'needs_attention', preparation_snapshot_json = ?
+      WHERE id = 3`).run(JSON.stringify({ status: 'needs_attention', clean_results: [] }));
+    const deps = fakeDeps(state, {
+      overrides: {
+        schedule() {
+          return new Promise(() => {});
+        },
+      },
+    });
+    const fullQuote = await quoteVersionPreparation(state.ctx, { version_id: 1 }, deps);
+    assert.deepEqual(fullQuote.missing_shot_ids, [2]);
+    assert.deepEqual(fullQuote.needs_attention_shot_ids, [3]);
+
+    await rejectsCode(() => startVersionPreparation(state.ctx, {
+      version_id: 1,
+      idempotency_key: 'mixed-scope-must-stop',
+      quote_hash: fullQuote.quote_hash,
+    }, deps), 'REDRAW_REFERENCE_PREPARATION_NEEDS_ATTENTION');
+    assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_reference_preparation'").get().count, 0);
+    assert.equal(deps.cleanCalls.length, 0);
+    assert.equal(deps.bundleCalls.length, 0);
+
+    const missingQuote = await quoteVersionPreparation(state.ctx, {
+      version_id: 1,
+      shot_ids: fullQuote.missing_shot_ids,
+    }, deps);
+    assert.deepEqual(missingQuote.selected_shot_ids, [2]);
+    assert.deepEqual(missingQuote.missing_shot_ids, [2]);
+    assert.deepEqual(missingQuote.needs_attention_shot_ids, []);
+    assert.notEqual(missingQuote.quote_hash, fullQuote.quote_hash);
+    const started = await startVersionPreparation(state.ctx, {
+      version_id: 1,
+      shot_ids: [2],
+      idempotency_key: 'missing-scope-only',
+      quote_hash: missingQuote.quote_hash,
+    }, deps);
+    assert.equal(started.status, 'pending');
+    assert.deepEqual(started.quote.selected_shot_ids, [2]);
+    assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_reference_preparation'").get().count, 1);
+    assert.equal(deps.cleanCalls.length, 0);
+    assert.equal(deps.bundleCalls.length, 0);
+  } finally {
+    state.close();
+  }
+});
+
+test('start 对报价后的预算漂移返回 quote mismatch 且零任务零生成副作用', async () => {
+  const state = setup();
+  try {
+    const deps = fakeDeps(state, {
+      overrides: {
+        schedule() {
+          return new Promise(() => {});
+        },
+      },
+    });
+    const quote = await quoteVersionPreparation(state.ctx, { version_id: 1, shot_ids: [2] }, deps);
+    state.db.prepare('UPDATE redraw_projects SET budget_limit_credits = 99 WHERE id = 1').run();
+
+    await rejectsCode(() => startVersionPreparation(state.ctx, {
+      version_id: 1,
+      shot_ids: [2],
+      idempotency_key: 'stale-budget-quote',
+      quote_hash: quote.quote_hash,
+    }, deps), 'REDRAW_REFERENCE_PREPARATION_QUOTE_MISMATCH');
+    assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_reference_preparation'").get().count, 0);
+    assert.equal(deps.cleanCalls.length, 0);
+    assert.equal(deps.bundleCalls.length, 0);
+  } finally {
+    state.close();
+  }
+});
+
 test('start 调度同步抛错会脱敏收口且任务不悬挂', async () => {
   const state = setup();
   try {

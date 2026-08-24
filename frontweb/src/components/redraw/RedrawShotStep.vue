@@ -94,6 +94,7 @@ import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { redrawAPI } from '@/api/redraw'
 import {
+  buildReferencePreparationScopedStart,
   createReferencePreparationIdempotencyKey,
   normalizeShotWorkspace,
   referencePreparationManualReviewState,
@@ -317,13 +318,21 @@ async function startReferencePreparation(input = {}) {
   preparationSubmissionLocked.value = true
   let requestStarted = false
   try {
+    const versionId = resolvedVersionId.value
+    const requestedShotIds = Array.isArray(input.shot_ids) ? [...input.shot_ids] : []
+    const scopedQuote = await redrawAPI.quoteReferencePreparation(versionId, { shot_ids: requestedShotIds })
+    const scopedStart = buildReferencePreparationScopedStart(
+      scopedQuote,
+      requestedShotIds,
+      resolvedVersionId.value,
+      preparationQuote.value,
+    )
     if (!preparationIdempotencyKey.value) {
       preparationIdempotencyKey.value = createReferencePreparationIdempotencyKey()
     }
-    const submission = redrawAPI.startReferencePreparation(resolvedVersionId.value, {
-      quote_hash: input.quote_hash,
+    const submission = redrawAPI.startReferencePreparation(versionId, {
+      ...scopedStart,
       idempotency_key: preparationIdempotencyKey.value,
-      shot_ids: input.shot_ids,
     })
     requestStarted = true
     const result = await submission

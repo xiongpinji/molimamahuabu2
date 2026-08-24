@@ -1745,8 +1745,9 @@ test('阶段 2 资产审核路由返回门禁并禁止普通更新接口改审�
     assert.equal(review.body.data.asset.approval_status, 'approved');
     assert.equal(review.body.data.gate.ok, false);
     assert.equal(review.body.data.gate.blocking[0].code, 'preparation_not_ready');
-    assert.equal(review.body.data.current_step, 3);
-    assert.equal(db.prepare('SELECT current_step FROM redraw_works WHERE id = ?').get(workId).current_step, 3);
+    assert.ok(review.body.data.gate.missing.some((item) => item.reason_code === 'character_plan_not_ready'));
+    assert.equal(review.body.data.current_step, 2);
+    assert.equal(db.prepare('SELECT current_step FROM redraw_works WHERE id = ?').get(workId).current_step, 2);
   } finally {
     db.close();
   }
@@ -5672,8 +5673,21 @@ test('参考准备 API 按 owner 接线、严格白名单且只传服务端受�
       await handlers.referencePreparationQuote(request({ id: versionId, body }), invalidShots);
       assert.equal(invalidShots.statusCode, 400, JSON.stringify(body));
       assert.equal(invalidShots.body.error.code, 'REDRAW_REFERENCE_PREPARATION_SHOTS_INVALID');
+
+      const invalidStart = captureResponse();
+      await handlers.startReferencePreparation(request({
+        id: versionId,
+        body: {
+          quote_hash: 'quote-reference-ready',
+          idempotency_key: 'invalid-start-scope',
+          ...body,
+        },
+      }), invalidStart);
+      assert.equal(invalidStart.statusCode, 400, JSON.stringify(body));
+      assert.equal(invalidStart.body.error.code, 'REDRAW_REFERENCE_PREPARATION_SHOTS_INVALID');
     }
     assert.equal(calls.filter((call) => call.name === 'quote').length, 1);
+    assert.equal(calls.filter((call) => call.name === 'start').length, 1);
 
     for (const req of [
       request({ id: versionId, tenantId: 'tenant-b' }),
@@ -6143,6 +6157,51 @@ test('配音 quote/start/status 路由按版本 owner 接线且拒绝客户端�
       user: { id: 'user-a' },
     }, otherTenant);
     assert.equal(otherTenant.statusCode, 404);
+  } finally {
+    db.close();
+  }
+});
+
+test('参考准备 start 将 needs_attention 范围冲突映射为 409 且不创建服务端任务', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 3 });
+    const versionId = Number(insertVersion(db, workId, { status: 'asset_review' }));
+    const shotId = Number(insertShot(db, workId, versionId, { preparation_state: 'needs_attention' }));
+    let startCalls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      referencePreparationService: {
+        async startVersionPreparation() {
+          startCalls += 1;
+          throw Object.assign(new Error('结果未知镜头只能人工核对'), {
+            code: 'REDRAW_REFERENCE_PREPARATION_NEEDS_ATTENTION',
+            details: {
+              quote: {
+                selected_shot_ids: [shotId],
+                missing_shot_ids: [],
+                needs_attention_shot_ids: [shotId],
+                quote_hash: 'a'.repeat(64),
+              },
+            },
+          });
+        },
+      },
+    }));
+    const result = captureResponse();
+    await handlers.startReferencePreparation(request({
+      id: versionId,
+      body: {
+        quote_hash: 'a'.repeat(64),
+        idempotency_key: 'needs-attention-scope',
+        shot_ids: [shotId],
+      },
+    }), result);
+    assert.equal(result.statusCode, 409);
+    assert.equal(result.body.error.code, 'REDRAW_REFERENCE_PREPARATION_NEEDS_ATTENTION');
+    assert.deepEqual(result.body.error.details.quote.needs_attention_shot_ids, [shotId]);
+    assert.equal(startCalls, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_reference_preparation'").get().count, 0);
   } finally {
     db.close();
   }

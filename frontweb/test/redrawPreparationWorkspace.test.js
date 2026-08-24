@@ -207,6 +207,94 @@ test('参考准备 UUID 本地失败会退出 submitting 且不锁死当前版�
   })
 })
 
+test('混合全量报价只允许使用重新报价后的 missing 精确范围启动', async () => {
+  const { buildReferencePreparationScopedStart } = await shotState()
+  const missingShotIds = [2]
+  const scoped = buildReferencePreparationScopedStart({
+    selected_shot_ids: [2],
+    missing_shot_ids: [2],
+    reused_shot_ids: [],
+    needs_attention_shot_ids: [],
+    action: 'needs_review',
+    priced: true,
+    credits: 2,
+    quote_hash: 'a'.repeat(64),
+  }, missingShotIds)
+  assert.deepEqual(scoped, {
+    quote_hash: 'a'.repeat(64),
+    shot_ids: [2],
+  })
+  assert.throws(
+    () => buildReferencePreparationScopedStart({
+      selected_shot_ids: [2],
+      missing_shot_ids: [2],
+      reused_shot_ids: [],
+      needs_attention_shot_ids: [],
+      version_id: 7,
+      action: 'needs_review',
+      priced: true,
+      credits: 2,
+      quote_hash: 'a'.repeat(64),
+    }, missingShotIds, 8),
+    (error) => error?.code === 'REDRAW_REFERENCE_PREPARATION_SCOPE_CHANGED',
+  )
+  const displayTerms = {
+    version_id: 7,
+    version_snapshot_hash: 'e'.repeat(64),
+    character_plan_hash: 'f'.repeat(64),
+    effective_mode: 'safe',
+    action: 'needs_review',
+    priced: true,
+    credits: 2,
+  }
+  assert.throws(
+    () => buildReferencePreparationScopedStart({
+      ...displayTerms,
+      selected_shot_ids: [2],
+      missing_shot_ids: [2],
+      reused_shot_ids: [],
+      needs_attention_shot_ids: [],
+      credits: 3,
+      quote_hash: 'a'.repeat(64),
+    }, missingShotIds, 7, displayTerms),
+    (error) => error?.code === 'REDRAW_REFERENCE_PREPARATION_SCOPE_CHANGED',
+  )
+
+  for (const quote of [{
+    selected_shot_ids: [1, 2, 3],
+    missing_shot_ids: [2],
+    reused_shot_ids: [1],
+    needs_attention_shot_ids: [3],
+    action: 'needs_review',
+    priced: true,
+    credits: 2,
+    quote_hash: 'b'.repeat(64),
+  }, {
+    selected_shot_ids: [2],
+    missing_shot_ids: [2, 3],
+    reused_shot_ids: [],
+    needs_attention_shot_ids: [],
+    action: 'needs_review',
+    priced: true,
+    credits: 2,
+    quote_hash: 'c'.repeat(64),
+  }, {
+    selected_shot_ids: [2, 3],
+    missing_shot_ids: [2],
+    reused_shot_ids: [],
+    needs_attention_shot_ids: [3],
+    action: 'needs_review',
+    priced: true,
+    credits: 2,
+    quote_hash: 'd'.repeat(64),
+  }]) {
+    assert.throws(
+      () => buildReferencePreparationScopedStart(quote, missingShotIds),
+      (error) => error?.code === 'REDRAW_REFERENCE_PREPARATION_SCOPE_CHANGED',
+    )
+  }
+})
+
 test('人工核对后只解锁提交并保留原幂等键', async () => {
   const { referencePreparationManualReviewState } = await shotState()
   assert.deepEqual(referencePreparationManualReviewState('same-idempotency-key'), {
@@ -275,10 +363,16 @@ test('工作台真实接入角色计划与逐镜准备组件', () => {
   assert.match(shotStepSource, /getPreparationGate/)
   assert.match(shotStepSource, /quoteReferencePreparation/)
   assert.match(shotStepSource, /startReferencePreparation/)
+  assert.match(shotStepSource, /buildReferencePreparationScopedStart/)
+  assert.match(shotStepSource, /const versionId = resolvedVersionId\.value/)
+  assert.match(shotStepSource, /quoteReferencePreparation\(versionId, \{ shot_ids: requestedShotIds \}\)/)
+  assert.match(shotStepSource, /buildReferencePreparationScopedStart\([\s\S]*scopedQuote,[\s\S]*preparationQuote\.value/)
+  assert.match(shotStepSource, /startReferencePreparation\(versionId,/)
   assert.match(shotStepSource, /createReferencePreparationIdempotencyKey/)
   assert.match(shotStepSource, /settleReferencePreparationSubmission/)
   assert.match(shotStepSource, /referencePreparationManualReviewState/)
   assert.match(shotStepSource, /settled\.outcome === 'unknown'/)
   assert.match(shotStepSource, /准备任务状态未知/)
   assert.doesNotMatch(shotStepSource, /crypto\.randomUUID/)
+  assert.doesNotMatch(shotPanelSource, /quote_hash/)
 })

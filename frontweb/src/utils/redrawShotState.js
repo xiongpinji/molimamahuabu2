@@ -142,6 +142,62 @@ export function formatTimecode(milliseconds) {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`
 }
 
+function preparationScopeError() {
+  return Object.assign(new Error('逐镜参考准备范围或报价已变化，请重新确认'), {
+    code: 'REDRAW_REFERENCE_PREPARATION_SCOPE_CHANGED',
+  })
+}
+
+function exactPreparationShotIds(value, allowEmpty = false) {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) throw preparationScopeError()
+  const ids = value.map(Number)
+  if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0) || new Set(ids).size !== ids.length) {
+    throw preparationScopeError()
+  }
+  return ids.sort((left, right) => left - right)
+}
+
+export function buildReferencePreparationScopedStart(
+  quote = {},
+  requestedShotIds = [],
+  expectedVersionId = null,
+  displayedQuote = null,
+) {
+  const requested = exactPreparationShotIds(requestedShotIds)
+  const selected = exactPreparationShotIds(quote?.selected_shot_ids)
+  const missing = exactPreparationShotIds(quote?.missing_shot_ids)
+  const reused = exactPreparationShotIds(quote?.reused_shot_ids, true)
+  const needsAttention = exactPreparationShotIds(quote?.needs_attention_shot_ids, true)
+  const sameScope = requested.length === selected.length
+    && requested.length === missing.length
+    && requested.every((id, index) => id === selected[index] && id === missing[index])
+    && reused.length === 0
+    && needsAttention.length === 0
+  const sameVersion = expectedVersionId == null
+    || (Number.isSafeInteger(Number(expectedVersionId))
+      && Number(expectedVersionId) > 0
+      && Number(quote?.version_id) === Number(expectedVersionId))
+  const quoteHash = String(quote?.quote_hash || '')
+  const credits = Number(quote?.credits)
+  const sameDisplayedTerms = displayedQuote == null || (
+    Number(displayedQuote?.version_id) === Number(quote?.version_id)
+    && String(displayedQuote?.version_snapshot_hash || '') === String(quote?.version_snapshot_hash || '')
+    && String(displayedQuote?.character_plan_hash || '') === String(quote?.character_plan_hash || '')
+    && String(displayedQuote?.effective_mode || '') === String(quote?.effective_mode || '')
+    && String(displayedQuote?.action || '') === String(quote?.action || '')
+    && displayedQuote?.priced === quote?.priced
+    && Number(displayedQuote?.credits) === credits
+  )
+  if (!sameScope || !sameVersion || !sameDisplayedTerms
+    || !['advance', 'needs_review'].includes(String(quote?.action || ''))
+    || quote?.priced !== true
+    || !Number.isSafeInteger(credits) || credits < 0
+    || !/^[a-f0-9]{64}$/i.test(quoteHash)) {
+    throw preparationScopeError()
+  }
+  return { quote_hash: quoteHash, shot_ids: requested }
+}
+
 function preparationEvidence(label, required, completed) {
   return {
     label,

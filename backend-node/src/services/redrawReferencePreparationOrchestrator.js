@@ -408,6 +408,7 @@ function baseline(scope, characterPlanHash, coverage) {
     project_id: Number(scope.project_id),
     project_policy_version: Number(scope.policy_version),
     project_updated_at: scope.project_updated_at,
+    budget_limit_credits: scope.budget_limit_credits == null ? null : Number(scope.budget_limit_credits),
     character_plan_hash: characterPlanHash,
     coverage_hash: sha256({ status: coverage.status, shots: coverage.shots }),
   };
@@ -417,6 +418,7 @@ function baseline(scope, characterPlanHash, coverage) {
     project_id: value.project_id,
     project_policy_version: value.project_policy_version,
     project_updated_at: value.project_updated_at,
+    budget_limit_credits: value.budget_limit_credits,
     character_plan_hash: value.character_plan_hash,
     coverage_hash: value.coverage_hash,
   };
@@ -557,6 +559,7 @@ async function assertBaselineCurrent(ctx, expected, deps) {
     project_id: Number(scope.project_id),
     project_policy_version: Number(scope.policy_version),
     project_updated_at: scope.project_updated_at,
+    budget_limit_credits: scope.budget_limit_credits == null ? null : Number(scope.budget_limit_credits),
     character_plan_hash: plan.plan_hash,
     coverage_hash: sha256({ status: coverage.status, shots: coverage.shots }),
   };
@@ -985,6 +988,13 @@ async function startVersionPreparation(rawCtx, input = {}, deps = {}) {
     throw codedError('REDRAW_REFERENCE_PREPARATION_QUOTE_MISMATCH', '准备报价缺失或已变化', { quote });
   }
   if (quote.action === 'blocked') throw codedError('REDRAW_REFERENCE_PREPARATION_BLOCKED', '当前准备门禁已阻断', { quote });
+  if (quote.needs_attention_shot_ids.length > 0) {
+    throw codedError(
+      'REDRAW_REFERENCE_PREPARATION_NEEDS_ATTENTION',
+      '结果未知镜头只能人工核对，请仅为缺失镜头重新报价',
+      { quote },
+    );
+  }
   const { task, created } = createOrReuseTask(ctx, idempotencyKey, quote);
   if (!created) return { task_id: task.id, status: task.status, quote, completion: null };
   const schedule = typeof deps.schedule === 'function' ? deps.schedule : defaultSchedule;
