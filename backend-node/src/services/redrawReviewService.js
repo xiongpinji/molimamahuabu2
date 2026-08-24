@@ -204,7 +204,10 @@ function v2IdentityBindingMatches(bundle, face, row, currentBinding, targetChara
     && sameIdentityArtifact(identity.artifact, artifact);
 }
 
-function assetReviewAllowsPreparation(db, version) {
+function assetReviewAllowsPreparation(db, version, preparation) {
+  if (Array.isArray(preparation?.missing) && preparation.missing.some((item) => (
+    item?.resource_type === 'character_plan' || item?.reason_code === 'character_plan_not_ready'
+  ))) return false;
   const canReadDraftJson = hasColumn(db, 'redraw_shots', 'draft_json');
   const shots = db.prepare(`
     SELECT references_json${canReadDraftJson ? ', draft_json' : ''}
@@ -233,7 +236,7 @@ function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
       return {
         ok: false,
         version_id: Number(version.id),
-        current_step: assetReviewAllowsPreparation(db, version) ? 3 : 2,
+        current_step: assetReviewAllowsPreparation(db, version, preparation) ? 3 : 2,
         missing: preparation.missing,
         blocking: [{
           code: 'preparation_not_ready',

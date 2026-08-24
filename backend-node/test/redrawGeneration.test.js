@@ -5923,11 +5923,48 @@ test('资产审核通过只开放逐镜准备导航，准备未完成时生成�
     tenantId: 'tenant-a',
     userId: 'user-a',
   }, {
-    preparationContext: { storageRoot: state.storageRoot },
+    preparationContext: {
+      storageRoot: state.storageRoot,
+      canReadArtifact: () => true,
+      assetReader: { canRead: () => true, owns: () => true },
+    },
   });
   assert.equal(gate.ok, false);
   assert.equal(gate.current_step, 3);
   assert.equal(gate.blocking[0].code, 'preparation_not_ready');
+
+  let providerCalls = 0;
+  await assert.rejects(
+    () => generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
+      videoProcessor: async () => { providerCalls += 1; },
+    })), { shotId: state.shotId }),
+    (error) => error.code === 'REDRAW_ASSET_REVIEW_REQUIRED',
+  );
+  assertReferenceBundlePreflightClean(state, providerCalls);
+});
+
+test('角色资产已批准但声音文件哈希漂移时仍停第二步且生成零副作用', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  const voice = state.db.prepare('SELECT local_path FROM assets WHERE id = ?').get(state.actorAVoiceAssetId);
+  fs.writeFileSync(path.join(state.storageRoot, voice.local_path), Buffer.from('drifted-voice-bytes'));
+  assert.equal(
+    state.db.prepare("SELECT COUNT(*) AS count FROM redraw_assets WHERE kind IN ('character', 'voice') AND approval_status != 'approved'").get().count,
+    0,
+  );
+
+  const gate = redrawReviewService.evaluateGenerationGate(state.db, state.versionId, {
+    tenantId: 'tenant-a',
+    userId: 'user-a',
+  }, {
+    preparationContext: {
+      storageRoot: state.storageRoot,
+      canReadArtifact: () => true,
+      assetReader: { canRead: () => true, owns: () => true },
+    },
+  });
+  assert.equal(gate.ok, false);
+  assert.equal(gate.current_step, 2);
+  assert.equal(gate.missing.some((item) => item.reason_code === 'character_plan_not_ready'), true);
 
   let providerCalls = 0;
   await assert.rejects(
