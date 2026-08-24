@@ -13,6 +13,7 @@ const stepSource = source('../src/components/redraw/RedrawEditStep.vue')
 const timelineSource = source('../src/components/redraw/RedrawTimeline.vue')
 const compareSource = source('../src/components/redraw/RedrawPlayerCompare.vue')
 const exportSource = source('../src/components/redraw/RedrawExportPanel.vue')
+const releaseSource = source('../src/components/redraw/RedrawEpisodeReleasePanel.vue')
 
 async function editState() {
   try {
@@ -132,4 +133,27 @@ test('第四步显示可读失败状态、禁用未验证剪映工厂入口并�
   assert.match(stepSource, /@media \(max-width:\s*480px\)/)
   assert.match(timelineSource, /overflow-wrap:\s*anywhere/)
   assert.match(compareSource, /object-fit:\s*contain/)
+})
+
+test('第四步配音文案使用当前项目 locale 而非硬编码英文', () => {
+  assert.match(workspaceSource, /:target-locale="project\?\.default_locale"/)
+  assert.match(stepSource, /targetLocale/)
+  assert.match(stepSource, /dialogueLanguageLabel/)
+  assert.match(stepSource, /\{\{ dialogueLanguageLabel \}\}/)
+  assert.doesNotMatch(stepSource, /英文配音|生成英文配音|启动英文配音/)
+})
+
+test('第四步刷新后仅持久化任务 id 并从 owner scoped 后端接口恢复配音任务', () => {
+  assert.match(stepSource, /dialogueTaskStorageKey/)
+  assert.match(stepSource, /localStorage\?\.getItem/)
+  assert.match(stepSource, /getDialogueTask\(versionId, taskId\)/)
+  assert.match(stepSource, /localStorage\?\.setItem\([^,]+,\s*String\(taskId\)\)/)
+  assert.doesNotMatch(stepSource, /localStorage\?\.setItem\([^,]+,\s*JSON\.stringify/)
+})
+
+test('配音完成后触发整集 readiness 回读，无需整页刷新', () => {
+  assert.match(stepSource, /:refresh-token="releaseRefreshToken"/)
+  assert.match(stepSource, /dialogueTask\.value\?\.status === 'completed'[\s\S]*releaseRefreshToken\.value \+= 1/)
+  assert.match(releaseSource, /refreshToken/)
+  assert.match(releaseSource, /watch\(\(\) => \[props\.versionId, props\.refreshToken\]/)
 })

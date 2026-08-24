@@ -16,7 +16,7 @@
         <el-input-number v-model="form.end_ms" :min="form.start_ms + 1000" :step="1000" controls-position="right" />
       </el-form-item>
       <div class="duration-note" :class="{ warning: !durationInRange }">
-        {{ durationSeconds }} 秒分镜 · 建议保持 10–15 秒
+        {{ durationSeconds }} 秒分镜 · 建议保持 5–15 秒
       </div>
     </div>
 
@@ -90,7 +90,7 @@
         <el-input v-model="form.model" readonly />
       </el-form-item>
       <el-form-item label="生成时长">
-        <el-input-number v-model="form.duration" :min="10" :max="15" :step="1" controls-position="right" />
+        <el-input-number v-model="form.duration" :min="5" :max="15" :step="1" controls-position="right" />
       </el-form-item>
       <el-form-item label="清晰度">
         <el-select v-model="form.resolution">
@@ -193,7 +193,7 @@ const credits = computed(() => quoteCredits(props.shot))
 const availability = computed(() => generationAvailability(props.shot, props.gate))
 const editable = computed(() => ['draft', 'failed'].includes(String(props.shot?.status || '')))
 const durationSeconds = computed(() => Math.max(0, Number(form.end_ms) - Number(form.start_ms)) / 1000)
-const durationInRange = computed(() => durationSeconds.value >= 10 && durationSeconds.value <= 15)
+const durationInRange = computed(() => durationSeconds.value >= 5 && durationSeconds.value <= 15)
 const generationDisabled = computed(() => !availability.value.ok
   || !durationInRange.value
   || (props.referenceBundleRequired
@@ -232,7 +232,7 @@ function hydrate(shot) {
   form.prompt = shot.prompt || ''
   form.negative_prompt = shot.negative_prompt || ''
   form.model = shot.model || ''
-  form.duration = Math.max(10, Math.min(15, Number(shot.duration) || Math.ceil((form.end_ms - form.start_ms) / 1000)))
+  form.duration = Math.max(5, Math.min(15, Number(shot.duration) || Math.ceil((form.end_ms - form.start_ms) / 1000)))
   form.resolution = shot.resolution || '720p'
   form.count = 1
   referenceIds.value = (Array.isArray(shot.references) ? shot.references : [])

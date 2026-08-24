@@ -44,6 +44,7 @@
         :key="asset.id"
         :asset="asset"
         :quote="asset.quote_credits || quote"
+        :wardrobe-reference-assets="wardrobeReferenceAssets"
         @generate="generate"
         @review="review"
         @identity-saved="handleIdentitySaved"
@@ -220,6 +221,10 @@ let pollTimer = null
 const resolvedVersionId = computed(() => props.versionId || props.work?.version_id || props.work?.current_version_id)
 const visibleAssets = computed(() => groupAssets(assets.value, activeKind.value))
 const characterAssets = computed(() => groupAssets(assets.value, 'character'))
+const wardrobeReferenceAssets = computed(() => assets.value.filter((asset) => {
+  const assetId = Number(asset?.asset_id)
+  return asset.kind !== 'voice' && Number.isSafeInteger(assetId) && assetId > 0
+}))
 const activeBatch = computed(() => batchWork.value || props.work?.asset_batch || null)
 const batchCredits = computed(() => assetBatchCredits(batchQuote.value))
 const batchProgress = computed(() => assetBatchProgress(activeBatch.value))

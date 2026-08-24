@@ -9,6 +9,7 @@ const IDENTITY_PACK_CONFIRMATION_LABELS = {
   live_action_human_confirmed: '真人确认',
   adult_status: '18+确认',
   identity_consistency_confirmed: '一致性确认',
+  wardrobe: '服装参考与一致性确认',
 }
 
 function normalizeText(value) {
@@ -72,6 +73,13 @@ export function projectRedrawCharacterIdentityPack(asset = {}) {
     })
   const targetActorLabel = normalizeText(pack.target_actor_label)
   const sourceLabel = normalizeText(asset.localized_name || asset.display_name || asset.name || asset.source_character_key || asset.id)
+  const wardrobe = pack?.wardrobe && typeof pack.wardrobe === 'object' ? pack.wardrobe : {}
+  const wardrobeReferenceAssetId = Number(wardrobe.reference_asset_id)
+  const wardrobeConsistencyConfirmed = wardrobe.consistency_confirmed === true
+  const wardrobeReady = Number.isSafeInteger(wardrobeReferenceAssetId)
+    && wardrobeReferenceAssetId > 0
+    && Boolean(normalizeHash(wardrobe.reference_sha256))
+    && wardrobeConsistencyConfirmed
   const ready = status.ready === true
     || Boolean(
       normalizeText(pack.schema_version) === IDENTITY_PACK_SCHEMA_VERSION
@@ -81,6 +89,7 @@ export function projectRedrawCharacterIdentityPack(asset = {}) {
       && pack.live_action_human_confirmed === true
       && pack.adult_status === 'verified_18_plus'
       && pack.identity_consistency_confirmed === true
+      && wardrobeReady
       && hash
     )
   return {
@@ -97,6 +106,11 @@ export function projectRedrawCharacterIdentityPack(asset = {}) {
     liveActionHumanConfirmed: pack.live_action_human_confirmed === true,
     adultStatus: normalizeText(pack.adult_status) === 'verified_18_plus' ? 'verified_18_plus' : 'unverified',
     identityConsistencyConfirmed: pack.identity_consistency_confirmed === true,
+    wardrobeReferenceAssetId: Number.isSafeInteger(wardrobeReferenceAssetId) && wardrobeReferenceAssetId > 0
+      ? wardrobeReferenceAssetId
+      : null,
+    wardrobeConsistencyConfirmed,
+    wardrobeReady,
     hashValid: Boolean(status.hash_valid === true || hash),
     shortHash: shortHash(hash),
     ready,

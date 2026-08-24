@@ -34,7 +34,10 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { redrawAPI } from '@/api/redraw'
 import { controlledReleaseDownloadUrl, normalizeReleaseReadiness } from '@/utils/redrawTimelineState'
 
-const props = defineProps({ versionId: { type: [String, Number], default: null } })
+const props = defineProps({
+  versionId: { type: [String, Number], default: null },
+  refreshToken: { type: Number, default: 0 },
+})
 const readiness = ref(normalizeReleaseReadiness())
 const exports = ref([])
 const createdRelease = ref(null)
@@ -123,10 +126,12 @@ async function download(kind) {
   URL.revokeObjectURL(objectUrl)
 }
 
-watch(() => props.versionId, () => {
-  stopPolling()
-  idempotencyKey.value = ''
-  createdRelease.value = null
+watch(() => [props.versionId, props.refreshToken], ([versionId], [previousVersionId] = []) => {
+  if (String(versionId || '') !== String(previousVersionId || '')) {
+    stopPolling()
+    idempotencyKey.value = ''
+    createdRelease.value = null
+  }
   load()
 })
 onMounted(load)

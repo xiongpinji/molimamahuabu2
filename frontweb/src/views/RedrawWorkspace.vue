@@ -75,6 +75,7 @@
           v-else-if="allowedStep === 4"
           :work="work"
           :version-id="work?.version_id"
+          :target-locale="project?.default_locale"
           @work-updated="onWorkUpdated"
         />
         <div v-else class="redraw-placeholder">

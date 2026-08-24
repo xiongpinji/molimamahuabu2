@@ -260,6 +260,14 @@ test('参考包对白就绪绑定当前 locale 和 market 且不硬编码美国�
   assert.equal(evaluateReferenceBundleEvidence(readyReferenceBundle('es-ES', 'ES', { target_market: '' }), 7).ready, false)
 })
 
+test('单镜生成时长与后端合同统一为 5 到 15 秒且五秒源镜头可生成', () => {
+  assert.match(editorSource, /建议保持 5–15 秒/)
+  assert.match(editorSource, /v-model="form\.duration" :min="5" :max="15"/)
+  assert.match(editorSource, /durationSeconds\.value >= 5 && durationSeconds\.value <= 15/)
+  assert.match(editorSource, /Math\.max\(5, Math\.min\(15,/)
+  assert.doesNotMatch(editorSource, /建议保持 10–15 秒/)
+})
+
 test('第三步工作台覆盖批次、编辑、计费、重试、对照预览和后端轮询', () => {
   assert.match(workspaceSource, /RedrawShotStep/)
   assert.match(stepSource, /RedrawShotEditor/)

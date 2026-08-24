@@ -3,28 +3,32 @@
     <header class="section-heading">
       <div>
         <p class="eyebrow">04 · 预览导出</p>
-        <h2>英文配音、合成预览与下载</h2>
+        <h2>{{ dialogueLanguageLabel }}配音、合成预览与下载</h2>
       </div>
       <el-tag>{{ statusLabel(worstStatus) }}</el-tag>
     </header>
 
     <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" show-icon />
 
-    <RedrawEpisodeReleasePanel v-if="resolvedVersionId" :version-id="resolvedVersionId" />
+    <RedrawEpisodeReleasePanel
+      v-if="resolvedVersionId"
+      :version-id="resolvedVersionId"
+      :refresh-token="releaseRefreshToken"
+    />
 
     <div class="edit-layout">
       <aside class="edit-sidebar">
         <RedrawTimeline :shots="shots" :selected-shot-id="selectedShotId" @select="selectedShotId = $event" />
         <section class="dialogue-card">
-          <h3>英文配音</h3>
+          <h3>{{ dialogueLanguageLabel }}配音</h3>
           <p v-if="dialogueQuote?.priced" class="credit-callout">本次预计扣除 {{ dialogueQuote.credits || dialogueQuote.total_credits }} 积分</p>
           <p v-else class="muted">积分待管理员配置</p>
           <p v-if="dialogueTask">任务 {{ dialogueTask.id || dialogueTask.task_id }} · {{ statusLabel(dialogueTask.status) }}</p>
           <p v-if="dialogueTask?.status === 'failed' || dialogueTask?.status === 'needs_attention'" class="error-text">
             {{ dialogueTask.message || dialogueTask.error_message || 'failed / needs_attention' }}
           </p>
-          <el-button :disabled="!canStartDialogue(dialogueQuote, dialogueTask)" :loading="dialogueStarting" title="使用服务端报价启动英文配音" @click="startDialogue">
-            生成英文配音
+          <el-button :disabled="!canStartDialogue(dialogueQuote, dialogueTask)" :loading="dialogueStarting" :title="`使用服务端报价启动${dialogueLanguageLabel}配音`" @click="startDialogue">
+            生成{{ dialogueLanguageLabel }}配音
           </el-button>
         </section>
         <section class="compose-card">
@@ -68,6 +72,7 @@ import RedrawEpisodeReleasePanel from './RedrawEpisodeReleasePanel.vue'
 const props = defineProps({
   work: { type: Object, default: null },
   versionId: { type: [String, Number], default: null },
+  targetLocale: { type: String, default: '' },
 })
 const emit = defineEmits(['work-updated'])
 
@@ -81,6 +86,7 @@ const exportRow = ref(null)
 const loadError = ref('')
 const dialogueStarting = ref(false)
 const composing = ref(false)
+const releaseRefreshToken = ref(0)
 let pollTimer = null
 
 const resolvedVersionId = computed(() => props.versionId || localWork.value?.version_id || localWork.value?.current_version_id)
@@ -88,6 +94,16 @@ const shots = computed(() => normalizeTimelineShots(localWork.value?.shots || []
 const worstStatus = computed(() => worstShotStatus(shots.value))
 const sourceUrl = computed(() => sourcePreviewUrl(shots.value, selectedShotId.value))
 const exportArtifacts = computed(() => expandExportArtifacts(exportRow.value))
+const dialogueLanguageLabel = computed(() => {
+  const locale = String(
+    props.targetLocale
+      || localWork.value?.target_locale
+      || localWork.value?.locale
+      || localWork.value?.localization_decision?.locale
+      || '',
+  ).trim()
+  return locale ? `${locale} ` : '目标语言'
+})
 
 function idempotencyKey(prefix) {
   const value = globalThis.crypto?.randomUUID?.()
@@ -97,6 +113,58 @@ function idempotencyKey(prefix) {
 
 function errorReason(error, fallback) {
   return error?.response?.data?.error?.message || error?.message || fallback
+}
+
+function dialogueTaskStorageKey(versionId) {
+  const normalized = String(versionId || '').trim()
+  return normalized ? `redraw:dialogue-task:${normalized}` : ''
+}
+
+function readStoredDialogueTaskId(versionId) {
+  const key = dialogueTaskStorageKey(versionId)
+  if (!key) return ''
+  try {
+    return String(globalThis.localStorage?.getItem(key) || '').trim()
+  } catch (_) {
+    return ''
+  }
+}
+
+function persistDialogueTaskId(versionId, task) {
+  const key = dialogueTaskStorageKey(versionId)
+  const taskId = task?.id || task?.task_id
+  if (!key || taskId == null || String(taskId).trim() === '') return
+  try {
+    globalThis.localStorage?.setItem(key, String(taskId))
+  } catch (_) {}
+}
+
+function clearStoredDialogueTaskId(versionId) {
+  const key = dialogueTaskStorageKey(versionId)
+  if (!key) return
+  try {
+    globalThis.localStorage?.removeItem(key)
+  } catch (_) {}
+}
+
+function refreshReleaseReadinessForCompletedDialogue() {
+  if (dialogueTask.value?.status === 'completed') releaseRefreshToken.value += 1
+}
+
+async function restoreDialogueTask() {
+  const versionId = resolvedVersionId.value
+  const taskId = readStoredDialogueTaskId(versionId)
+  if (!versionId || !taskId) return
+  try {
+    dialogueTask.value = await redrawAPI.getDialogueTask(versionId, taskId)
+    refreshReleaseReadinessForCompletedDialogue()
+  } catch (error) {
+    if (Number(error?.response?.status) === 404) {
+      clearStoredDialogueTaskId(versionId)
+      return
+    }
+    throw error
+  }
 }
 
 async function refreshWork() {
@@ -133,8 +201,9 @@ async function loadExports() {
 async function loadInitialState() {
   if (!resolvedVersionId.value) return
   try {
-    await Promise.all([loadDialogueQuote(), loadExports()])
+    await Promise.all([loadDialogueQuote(), loadExports(), restoreDialogueTask()])
     selectedShotId.value = selectedShotId.value || shots.value[0]?.id || null
+    syncPolling()
     loadError.value = ''
   } catch (error) {
     loadError.value = errorReason(error, '读取第四步状态失败')
@@ -148,9 +217,10 @@ async function startDialogue() {
   try {
     const result = await redrawAPI.startDialogue(versionId, { quote_hash: dialogueQuote.value.quote_hash, idempotency_key: idempotencyKey('dialogue') })
     dialogueTask.value = result?.task || result
+    persistDialogueTaskId(versionId, dialogueTask.value)
     syncPolling()
   } catch (error) {
-    loadError.value = errorReason(error, '启动英文配音失败')
+    loadError.value = errorReason(error, `启动${dialogueLanguageLabel.value}配音失败`)
   } finally {
     dialogueStarting.value = false
   }
@@ -195,6 +265,7 @@ function syncPolling() {
       if (shouldPollTask(dialogueTask.value)) {
         const taskId = dialogueTask.value.id || dialogueTask.value.task_id
         dialogueTask.value = await redrawAPI.getDialogueTask(versionId, taskId)
+        refreshReleaseReadinessForCompletedDialogue()
       }
       if (shouldPollTask(compositionTask.value)) {
         await refreshWork()
@@ -212,7 +283,12 @@ watch(() => props.work, (nextWork) => {
   localWork.value = nextWork
   selectedShotId.value = selectedShotId.value || shots.value[0]?.id || null
 }, { immediate: true })
-watch(resolvedVersionId, loadInitialState)
+watch(resolvedVersionId, () => {
+  stopPolling()
+  dialogueTask.value = null
+  compositionTask.value = null
+  loadInitialState()
+})
 
 onMounted(loadInitialState)
 onBeforeUnmount(stopPolling)

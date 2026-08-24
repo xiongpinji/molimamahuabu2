@@ -49,6 +49,10 @@
         </strong>
       </div>
       <div class="identity-pack__row">
+        <span>服装参考 / 一致性</span>
+        <strong>{{ identityPack.wardrobeReady ? `资产 ${identityPack.wardrobeReferenceAssetId} · 已确认` : '服装缺项' }}</strong>
+      </div>
+      <div class="identity-pack__row">
         <span>确认状态</span>
         <strong :class="{ ready: identityPack.ready }">{{ identityPack.ready ? '服务端已确认' : '服务端未确认' }}</strong>
       </div>
@@ -77,6 +81,20 @@
       <div class="identity-form__field">
         <el-checkbox v-model="identityForm.identity_consistency_confirmed">一致性确认</el-checkbox>
       </div>
+      <div class="identity-form__field">
+        <span>服装参考图</span>
+        <el-select v-model="identityForm.wardrobe_reference_asset_id" clearable placeholder="选择当前版本已有图片资产">
+          <el-option
+            v-for="option in wardrobeOptions"
+            :key="option.assetId"
+            :label="option.label"
+            :value="option.assetId"
+          />
+        </el-select>
+      </div>
+      <div class="identity-form__field">
+        <el-checkbox v-model="identityForm.wardrobe_consistency_confirmed">服装一致性确认</el-checkbox>
+      </div>
     </div>
     <div class="asset-actions">
       <strong class="canvas-credit-callout-v1">{{ quote > 0 ? `本次预计扣除 ${quote} 积分` : '积分待管理员配置' }}</strong>
@@ -101,6 +119,7 @@ import { ASSET_KINDS, assetAnchor, isApprovedAsset, reviewLabel } from '@/utils/
 const props = defineProps({
   asset: { type: Object, required: true },
   quote: { type: Number, default: 0 },
+  wardrobeReferenceAssets: { type: Array, default: () => [] },
 })
 const emit = defineEmits(['generate', 'review', 'identity-saved'])
 const sceneMode = ref(props.asset.kind === 'scene' && props.asset.asset_id ? 'localized' : 'source')
@@ -114,6 +133,8 @@ const identityForm = ref({
   live_action_human_confirmed: false,
   adult_status: false,
   identity_consistency_confirmed: false,
+  wardrobe_reference_asset_id: null,
+  wardrobe_consistency_confirmed: false,
 })
 let previewRequestId = 0
 const sceneModes = [
@@ -123,6 +144,18 @@ const sceneModes = [
 ]
 const kindLabel = computed(() => ASSET_KINDS.find((item) => item.key === props.asset.kind)?.label || '资产')
 const identityPack = computed(() => (props.asset.kind === 'character' ? projectRedrawCharacterIdentityPack(props.asset) : null))
+const wardrobeOptions = computed(() => {
+  const seen = new Set()
+  return props.wardrobeReferenceAssets.flatMap((item) => {
+    const assetId = Number(item?.asset_id)
+    if (!Number.isSafeInteger(assetId) || assetId <= 0 || seen.has(assetId)) return []
+    seen.add(assetId)
+    return [{
+      assetId,
+      label: `${item.localized_name || item.display_name || item.name || `图片资产 ${assetId}`} · ${assetId}`,
+    }]
+  })
+})
 const approveDisabled = computed(() => (
   (!props.asset.asset_id && !props.asset.voice_asset_id && !props.asset.clean_plate_asset_id)
   || (props.asset.kind === 'character' && !isRedrawCharacterIdentityPackReady(props.asset))
@@ -158,6 +191,11 @@ function hydrateIdentityForm() {
     live_action_human_confirmed: pack.live_action_human_confirmed === true,
     adult_status: pack.adult_status === 'verified_18_plus',
     identity_consistency_confirmed: pack.identity_consistency_confirmed === true,
+    wardrobe_reference_asset_id: Number.isSafeInteger(Number(pack?.wardrobe?.reference_asset_id))
+      && Number(pack.wardrobe.reference_asset_id) > 0
+      ? Number(pack.wardrobe.reference_asset_id)
+      : null,
+    wardrobe_consistency_confirmed: pack?.wardrobe?.consistency_confirmed === true,
   }
 }
 
@@ -170,12 +208,20 @@ async function saveIdentityPack() {
   if (props.asset.kind !== 'character' || identitySaving.value) return
   identitySaving.value = true
   try {
+    const wardrobeReferenceAssetId = Number(identityForm.value.wardrobe_reference_asset_id)
+    const wardrobeInput = Number.isSafeInteger(wardrobeReferenceAssetId) && wardrobeReferenceAssetId > 0
+      ? {
+          wardrobe_reference_asset_id: identityForm.value.wardrobe_reference_asset_id,
+          wardrobe_consistency_confirmed: identityForm.value.wardrobe_consistency_confirmed,
+        }
+      : {}
     await redrawAPI.saveRedrawCharacterIdentityPack(props.asset.id, {
       target_actor_label: identityForm.value.target_actor_label,
       confirmed_views: identityForm.value.confirmed_views,
       live_action_human_confirmed: identityForm.value.live_action_human_confirmed,
       adult_status: identityForm.value.adult_status ? 'verified_18_plus' : 'unverified',
       identity_consistency_confirmed: identityForm.value.identity_consistency_confirmed,
+      ...wardrobeInput,
       expected_updated_at: props.asset.updated_at,
     })
     ElMessage.success('身份包已保存，请重新批准')
