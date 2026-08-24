@@ -986,6 +986,7 @@ test('fatal startup journal entry rolls the switched release back', { skip: !roo
 test('manual rotation hard-codes old guard hashes and root-owned staged evidence transaction', () => {
   const source = fs.readFileSync(rotationPath, 'utf8');
   const activatorHash = sha256(fs.readFileSync(activatorPath));
+  const uiVerifierHash = sha256(fs.readFileSync(uiVerifierPath));
   const externalVerifierHash = sha256(fs.readFileSync(externalVerifierPath));
   for (const expected of [OLD_ACTIVATOR_SHA256, OLD_UI_VERIFIER_SHA256, OLD_SEQUENCE_VERIFIER_SHA256]) {
     assert.match(source, new RegExp(expected));
@@ -1003,8 +1004,9 @@ test('manual rotation hard-codes old guard hashes and root-owned staged evidence
   assert.doesNotMatch(source, /MOLI_DRAMA_(?:RELEASES_ROOT|CURRENT_LINK|SHARED_ROOT)/);
   assert.match(source, new RegExp(`EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256='${externalVerifierHash}'`));
   assert.match(source, new RegExp(`EXPECTED_INSTALLED_EXTERNAL_VERIFIER_SHA256='${INSTALLED_EXTERNAL_VERIFIER_SHA256}'`));
+  assert.match(source, /EXPECTED_INSTALLED_ACTIVATOR_SHA256='c1d987123f6655a07351f7c4891fd3d0229c3cb64776e635c3f339c986d15eb0'/);
   assert.match(source, new RegExp(`EXPECTED_NEW_ACTIVATOR_SHA256='${activatorHash}'`));
-  assert.match(source, new RegExp(`EXPECTED_NEW_UI_VERIFIER_SHA256='${INSTALLED_UI_VERIFIER_SHA256}'`));
+  assert.match(source, new RegExp(`EXPECTED_NEW_UI_VERIFIER_SHA256='${uiVerifierHash}'`));
   assert.match(source, /NEW_UI_VERIFIER_SOURCE=.*canvasCreditReleaseContract\.js/);
   assert.match(source, /SOURCE_RELEASE.*CANDIDATE|CANDIDATE.*SOURCE_RELEASE/s);
   assert.match(source, /source release must equal candidate/i);
