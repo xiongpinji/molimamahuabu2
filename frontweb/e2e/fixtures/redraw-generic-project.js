@@ -166,3 +166,24 @@ export const genericReferencePreparationCase = {
     motion_reference: { relative_path: `generic-preparation/shots/${shot.source_shot_id}/motion.mp4` },
   })),
 }
+
+export const genericFullProductAcceptance = {
+  project: {
+    locale: 'es-ES',
+    market: 'ES',
+    execution_mode: 'auto',
+    budget_limit_credits: 100,
+  },
+  source: { duration_ms: 12_000 },
+  characters: { identities: 2, voices: 2, wardrobes: 2 },
+  shots: { total: 3, dialogue: 2, silent_with_ambience: 1 },
+  provider: { adapter: 'icreat_task', submitted: 3, polled: 3, downloaded: 3 },
+  candidate_qa: { approved: 3, automatic: 3, held_reservations: 0 },
+  release: {
+    status: 'completed',
+    duration_seconds: 12,
+    has_audio: true,
+    downloads: ['mp4', 'srt', 'vtt', 'report'],
+  },
+  recovery: { refreshed_from_backend: true, approved_shots: 3, completed_exports: 1 },
+}

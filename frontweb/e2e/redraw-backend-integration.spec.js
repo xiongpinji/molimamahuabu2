@@ -31,6 +31,7 @@ const { setupRouter } = require(path.join(backendRoot, 'src', 'routes'))
 const redrawUploadService = require(path.join(backendRoot, 'src', 'services', 'redrawUploadService'))
 const creditLedger = require(path.join(backendRoot, 'src', 'services', 'creditLedgerService'))
 const modelPrices = require(path.join(backendRoot, 'src', 'services', 'modelPriceService'))
+const videoService = require(path.join(backendRoot, 'src', 'services', 'videoService'))
 const { buildLocalizationInput } = require(path.join(backendRoot, 'src', 'services', 'localizationService'))
 const { serverAutomationPolicySnapshot } = require(path.join(backendRoot, 'src', 'services', 'redrawProjectPolicyService'))
 const {
@@ -63,14 +64,25 @@ let videoConfigId
 let videoConfigUpdatedAt
 let nativeVideoConfigId
 const providerArtifacts = {}
+const providerTasks = new Map()
+const providerAudit = []
 let genericPreparationFiles
 let referencePreparationProviderCalls = 0
 const runtimeErrors = []
+let originalNodeFetch
+let originalStorageLocalPath
+let originalStorageBaseUrl
+let fakeProviderOrigin
+
+function logValue(value) {
+  if (!value || typeof value !== 'object') return String(value)
+  try { return JSON.stringify(value) } catch (_) { return String(value) }
+}
 
 const log = {
   info() {},
-  warn(...args) { runtimeErrors.push(['warn', ...args.map(String)]) },
-  error(...args) { runtimeErrors.push(['error', ...args.map(String)]) },
+  warn(...args) { runtimeErrors.push(['warn', ...args.map(logValue)]) },
+  error(...args) { runtimeErrors.push(['error', ...args.map(logValue)]) },
 }
 const owner = {
   tenant: { id: 'tenant-redraw-local' },
@@ -135,12 +147,23 @@ const defaultSourceFacts = {
   episode_hook: '阿岚发现消息来自未来',
 }
 
-const activeCase = process.env.REDRAW_E2E_CASE === 'latam-real-source'
+const fullProductMode = process.env.REDRAW_E2E_FAKE_PROVIDER === '1'
+const activeCase = !fullProductMode && process.env.REDRAW_E2E_CASE === 'latam-real-source'
   ? redrawLatinAmericanCase
   : null
-const sourceFacts = activeCase?.sourceFacts || defaultSourceFacts
-const generationDurations = activeCase?.generationDurations || [8, 8]
-const artifactDurations = activeCase
+const sourceFacts = fullProductMode
+  ? {
+      ...genericSourceFacts,
+      shots: genericSourceFacts.shots.map((shot) => ({
+        ...shot,
+        confidence: { ...shot.confidence, speaker_mapping: 0.96 },
+      })),
+    }
+  : activeCase?.sourceFacts || defaultSourceFacts
+const generationDurations = fullProductMode ? [5, 5, 5] : activeCase?.generationDurations || [8, 8]
+const artifactDurations = fullProductMode
+  ? sourceFacts.shots.map((shot) => (Number(shot.end_ms) - Number(shot.start_ms)) / 1000)
+  : activeCase
   ? sourceFacts.shots.map((shot) => (Number(shot.end_ms) - Number(shot.start_ms)) / 1000)
   : generationDurations
 const expectedShotCount = sourceFacts.shots.length
@@ -149,7 +172,7 @@ const expectedAssetCount = sourceFacts.schema_version === '2.0'
   ? sourceFacts.characters.length * 2
   : sourceFacts.characters.length * 2 + sourceFacts.scenes.length + sourceFacts.props.length
 const expectedAssetCredits = expectedAssetCount * 5
-const localizationOverrides = activeCase?.localization || {
+const localizationOverrides = fullProductMode ? genericLocalization : activeCase?.localization || {
   name_map: { c1: 'Aran' },
   culture_map: { 天台: 'rooftop' },
   glossary: { 旧手机: 'old phone' },
@@ -174,9 +197,12 @@ const expectedDialogueSegmentCount = sourceFacts.shots.reduce(
   0,
 )
 const expectedDialogueCredits = expectedDialogueSegmentCount * 3
+const fixtureLocale = fullProductMode ? genericRedrawProject.target.locale : 'en-US'
+const fixtureMarket = fullProductMode ? genericRedrawProject.target.market : 'US'
 
 test.setTimeout(120_000)
 test.describe.configure({ mode: 'serial' })
+const integrationTest = fullProductMode ? test.skip : test
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -254,6 +280,93 @@ function sha256Value(value) {
 
 function sha256File(filePath) {
   return sha256Value(fs.readFileSync(filePath))
+}
+
+function probeFixtureMedia(filePath) {
+  const result = spawnSync(getFfprobePath(), [
+    '-v', 'error', '-show_streams', '-show_format', '-of', 'json', filePath,
+  ], { encoding: 'utf8', timeout: 30_000 })
+  if (result.status !== 0) {
+    throw new Error(`本地候选 ffprobe 失败：${result.stderr || result.error?.message || result.status}`)
+  }
+  const parsed = JSON.parse(result.stdout)
+  return {
+    duration: Number(parsed.format?.duration),
+    video: parsed.streams.find((stream) => stream.codec_type === 'video') || null,
+    audio: parsed.streams.find((stream) => stream.codec_type === 'audio') || null,
+  }
+}
+
+function qualityCandidate(input) {
+  const row = database.prepare(`
+    SELECT s.*, v.locale, v.market, vg.local_path
+    FROM redraw_shots s
+    JOIN redraw_versions v ON v.id = s.version_id
+    JOIN video_generations vg ON vg.id = s.video_generation_id
+    WHERE s.id = ? AND s.version_id = ? AND vg.id = ?
+  `).get(Number(input.shot_id), Number(input.version_id), Number(input.video_generation_id))
+  if (!row?.local_path) throw new Error('本地候选媒体未就绪')
+  const filePath = path.join(storageRoot, row.local_path)
+  const localizedDialogue = JSON.parse(row.localized_dialogue_json || '[]')
+  return { row, filePath, localizedDialogue, probe: probeFixtureMedia(filePath) }
+}
+
+const candidateQualityDependencies = {
+  async probeMedia(_ctx, input) {
+    const candidate = qualityCandidate(input)
+    const width = Number(candidate.probe.video?.width)
+    const height = Number(candidate.probe.video?.height)
+    return {
+      readable: true,
+      duration_matches: Math.abs(candidate.probe.duration * 1000 - Number(candidate.row.duration_ms)) <= 100,
+      dimensions_match: width > 0 && height > 0 && Math.abs((width / height) - (16 / 9)) < 0.01,
+      candidate_sha256: sha256File(candidate.filePath),
+    }
+  },
+  async verifyFullFrameCoverage(_ctx, input) {
+    return {
+      dependency_hash: input.dependency_hash,
+      dependencies_current: true,
+      original_person_residual: false,
+      original_text_residual: false,
+      identity: {
+        all_bound: true,
+        stable: true,
+        person_count_matches: true,
+        relationships_match: true,
+      },
+    }
+  },
+  async verifyLocale(_ctx, input) {
+    const candidate = qualityCandidate(input)
+    return { language: candidate.row.locale, target_language_matches: candidate.row.locale === 'es-ES' || !fullProductMode }
+  },
+  async verifyNativeAudio(_ctx, input) {
+    const candidate = qualityCandidate(input)
+    const hasDialogue = candidate.localizedDialogue.length > 0
+    const evidence = {
+      shot_id: Number(candidate.row.id),
+      candidate_sha256: sha256File(candidate.filePath),
+      dialogue_mode: hasDialogue ? 'dialogue' : 'silent',
+      has_audio: Boolean(candidate.probe.audio),
+    }
+    return {
+      has_audio: evidence.has_audio,
+      dialogue_mode: evidence.dialogue_mode,
+      language: hasDialogue ? candidate.row.locale : null,
+      exact_target_text: hasDialogue ? true : null,
+      speaker_voice_matches: true,
+      ambient_audio_safe: evidence.has_audio || !fullProductMode,
+      evidence_hash: sha256Value(stableJson(evidence)),
+    }
+  },
+  async verifySubtitles(_ctx, input) {
+    const candidate = qualityCandidate(input)
+    return { present: candidate.localizedDialogue.length > 0, within_shot: true }
+  },
+  async verifyLipSync() {
+    return { evidence_available: true, passed: true }
+  },
 }
 
 function assertNoPreparationLeaks(value) {
@@ -431,16 +544,34 @@ test.beforeAll(async () => {
   tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-redraw-browser-backend-'))
   storageRoot = path.join(tempRoot, 'storage')
   fs.mkdirSync(storageRoot, { recursive: true })
+  const backendPort = Number(process.env.REDRAW_E2E_BACKEND_PORT || new URL(
+    process.env.VITE_BACKEND_TARGET || 'http://127.0.0.1:5679',
+  ).port || 5679)
+  fakeProviderOrigin = `http://127.0.0.1:${backendPort}`
+  originalStorageLocalPath = process.env.STORAGE_LOCAL_PATH
+  originalStorageBaseUrl = process.env.STORAGE_BASE_URL
+  process.env.STORAGE_LOCAL_PATH = storageRoot
+  process.env.STORAGE_BASE_URL = 'https://media.example.test'
+  if (fullProductMode) {
+    originalNodeFetch = globalThis.fetch
+    globalThis.fetch = (input, init) => {
+      const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url)
+      if (!['127.0.0.1', 'localhost'].includes(url.hostname)) {
+        throw new Error(`完整本地验收禁止公网请求：${url.origin}`)
+      }
+      return originalNodeFetch(input, init)
+    }
+  }
   genericPreparationFiles = await createGenericPreparationFiles()
   if (activeCase) {
     sourceVideoPath = path.resolve(process.env.REDRAW_E2E_SOURCE_VIDEO)
   } else {
-    sourceVideoPath = path.join(tempRoot, 'source-16s.mp4')
+    sourceVideoPath = path.join(tempRoot, `source-${sourceFacts.duration_ms / 1000}s.mp4`)
     runFfmpeg([
       '-hide_banner', '-loglevel', 'error',
       '-f', 'lavfi', '-i', 'color=c=navy:size=320x180:rate=12',
       '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100',
-      '-t', '16', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
+      '-t', String(sourceFacts.duration_ms / 1000), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
       '-shortest', '-y', sourceVideoPath,
     ], '本地转绘源片生成')
   }
@@ -488,10 +619,13 @@ test.beforeAll(async () => {
       '-hide_banner', '-loglevel', 'error',
       '-f', 'lavfi', '-i', `color=c=${color}:size=320x180:rate=12`,
     ]
-    if (index === '1') inputs.push('-f', 'lavfi', '-i', 'sine=frequency=520:sample_rate=44100')
+    if (fullProductMode || index === '1') {
+      const frequency = index === '1' ? 520 : index === '2' ? 610 : 180
+      inputs.push('-f', 'lavfi', '-i', `sine=frequency=${frequency}:sample_rate=44100`)
+    }
     inputs.push(
       '-t', String(artifactDuration), '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-      ...(index === '1' ? ['-c:a', 'aac', '-shortest'] : ['-an']),
+      ...(fullProductMode || index === '1' ? ['-c:a', 'aac', '-shortest'] : ['-an']),
       '-y', target,
     )
     runFfmpeg(inputs, `本地第 ${index} 镜视频生成`)
@@ -602,10 +736,16 @@ test.beforeAll(async () => {
   videoConfigUpdatedAt = now
   videoConfigId = Number(database.prepare(`
     INSERT INTO ai_service_configs
-      (service_type, provider, api_protocol, name, model, default_model, is_active, is_default, priority, settings, created_at, updated_at)
+      (service_type, provider, api_protocol, name, model, default_model, base_url, api_key,
+       is_active, is_default, priority, settings, created_at, updated_at)
     VALUES ('video', 'local-fake-video', 'icreat_task', '本地视频模拟器', ?, 'bytedance/seedance-2-0-mini',
-      1, 1, 7, '{}', ?, ?)
-  `).run(JSON.stringify(['bytedance/seedance-2-0-mini']), now, now).lastInsertRowid)
+      ?, 'local-test-only', 1, 1, 7, '{}', ?, ?)
+  `).run(
+    JSON.stringify(['bytedance/seedance-2-0-mini']),
+    `${fakeProviderOrigin}/fake-provider`,
+    now,
+    now,
+  ).lastInsertRowid)
   database.prepare('UPDATE ai_service_configs SET settings = ? WHERE id = ?').run(JSON.stringify({
     redraw_locale_capabilities: ['en-US|US', 'es-ES|ES'].map((target) => {
       const [locale, market] = target.split('|')
@@ -700,7 +840,55 @@ test.beforeAll(async () => {
     request.user = owner.user
     next()
   })
+  app.use('/static/redraw-local-provider', (request, _response, next) => {
+    if (fullProductMode && /^\/shot-\d+\.mp4$/.test(request.path)) {
+      providerAudit.push({ stage: 'download', path: request.path })
+    }
+    next()
+  })
   app.use('/static', express.static(storageRoot))
+  app.post(/^\/fake-provider\/v1\/task\/submit\/.+$/, (request, response) => {
+    const authorization = String(request.headers.authorization || '')
+    const group = String(request.headers['x-icreat-ai-group'] || '')
+    const prompt = String(request.body?.content?.find?.((part) => part?.type === 'text')?.text || '')
+    const shotIndex = prompt.includes('Fue aqui.')
+      ? 1
+      : prompt.includes('No sigas.')
+        ? 2
+        : prompt.includes('Dialogue mode: silent.')
+          ? 3
+          : Number.NaN
+    if (!fullProductMode || authorization !== 'Bearer local-test-only' || !group
+      || !Number.isSafeInteger(shotIndex) || !providerArtifacts[`shot-${shotIndex}`]) {
+      return response.status(422).json({ error: 'local fake provider request rejected' })
+    }
+    const taskId = `local-fixture-video-task-${shotIndex}`
+    providerTasks.set(taskId, shotIndex)
+    providerCallCounts.video += 1
+    providerAudit.push({
+      stage: 'submit',
+      task_id: taskId,
+      adapter: 'icreat_task',
+      duration: Number(request.body.duration),
+      has_content: Array.isArray(request.body.content),
+      prompt,
+    })
+    return response.status(202).json({ task_id: taskId, status: 'accepted' })
+  })
+  app.post('/fake-provider/v1/task/query-status', (request, response) => {
+    const taskId = String(request.body?.task_id || '')
+    const shotIndex = providerTasks.get(taskId)
+    if (!fullProductMode || !shotIndex) {
+      return response.status(404).json({ status: 'NOT_FOUND' })
+    }
+    providerAudit.push({ stage: 'poll', task_id: taskId })
+    return response.json({
+      status: 'COMPLETED',
+      data: {
+        video_url: `${fakeProviderOrigin}/static/${providerArtifacts[`shot-${shotIndex}`].relativePath}`,
+      },
+    })
+  })
   app.use('/api/v1', setupRouter({
     app: { name: 'redraw local browser integration', version: 'test' },
     server: { cors_origins: [] },
@@ -763,8 +951,8 @@ test.beforeAll(async () => {
       if (kind === 'voice') {
         result.duration = 1.2
         result.voice_evidence = {
-          source: 'offline-worker', locale: 'en-US', market: 'US',
-          locale_pack: 'en-US@fixture',
+          source: 'offline-worker', locale: fixtureLocale, market: fixtureMarket,
+          locale_pack: `${fixtureLocale}@fixture`,
           audio_sha256: crypto.createHash('sha256').update(fs.readFileSync(providerArtifact.absolutePath)).digest('hex'),
           transcript_sha256: 'd'.repeat(64),
           model_manifest_sha256: 'a'.repeat(64),
@@ -776,7 +964,7 @@ test.beforeAll(async () => {
           ai_service_config_id: ttsConfigId, config_updated_at: ttsConfigUpdatedAt,
           voice_id: 'fixture-voice', task_id: providerTaskId, terminal_status: 'completed',
           audio_asset_id: artifactId, duration_ms: 1_200,
-          real_generation_verified: true, language_verified: true, detected_locale: 'en-US',
+          real_generation_verified: true, language_verified: true, detected_locale: fixtureLocale,
           is_cloned: false, authorization_asset_id: null,
         }
       }
@@ -890,7 +1078,7 @@ test.beforeAll(async () => {
       localeRegistry: {
         assertEvidenceTrusted(evidence) {
           if (evidence?.source !== 'offline-worker'
-            || evidence?.locale_pack !== 'en-US@fixture'
+            || evidence?.locale_pack !== `${fixtureLocale}@fixture`
             || evidence?.model_manifest_sha256 !== 'a'.repeat(64)
             || evidence?.calibration_manifest_sha256 !== 'b'.repeat(64)) {
             throw new Error('本地语言证据不可信')
@@ -899,6 +1087,7 @@ test.beforeAll(async () => {
         },
       },
       generationOptions: {
+        candidateQualityDependencies,
         assetReader: {
           canRead: (asset) => Boolean(asset?.local_path && fs.existsSync(path.join(storageRoot, asset.local_path))),
           owns: (asset) => Boolean(asset?.local_path && fs.existsSync(path.join(storageRoot, asset.local_path))),
@@ -957,7 +1146,16 @@ test.beforeAll(async () => {
             },
           }
         },
-        videoProcessor: async (db, _logger, videoGenerationId) => {
+        videoProcessor: async (db, fixtureLogger, videoGenerationId) => {
+          if (fullProductMode) {
+            await videoService.processVideoGeneration(db, fixtureLogger, videoGenerationId, {
+              providerAssetStorageBaseUrl: 'https://media.example.test',
+              providerAssetSigningSecret: 'local-fixture-provider-asset-secret-32-bytes',
+              providerAssetNowMs: Date.UTC(2030, 0, 1),
+              providerAssetTtlSeconds: 1_800,
+            })
+            return
+          }
           providerCallCounts.video += 1
           const row = db.prepare(`
             SELECT shot.shot_index
@@ -1019,6 +1217,11 @@ test.afterAll(async () => {
   if (backendServer) await close(backendServer)
   database?.close()
   if (tempRoot) fs.rmSync(tempRoot, { recursive: true, force: true })
+  if (originalNodeFetch) globalThis.fetch = originalNodeFetch
+  if (originalStorageLocalPath === undefined) delete process.env.STORAGE_LOCAL_PATH
+  else process.env.STORAGE_LOCAL_PATH = originalStorageLocalPath
+  if (originalStorageBaseUrl === undefined) delete process.env.STORAGE_BASE_URL
+  else process.env.STORAGE_BASE_URL = originalStorageBaseUrl
 })
 
 function resetProviderFixture(facts = sourceFacts, localization = localizationOverrides) {
@@ -1026,6 +1229,8 @@ function resetProviderFixture(facts = sourceFacts, localization = localizationOv
   activeLocalizationOverrides = localization
   providerCallCounts = { asset: 0, video: 0, dialogue: 0 }
   referencePreparationProviderCalls = 0
+  providerTasks.clear()
+  providerAudit.length = 0
   uploadedHeaderHex = ''
   runtimeErrors.length = 0
 }
@@ -1585,7 +1790,7 @@ async function prepareGenericReferences(page, versionId, idempotencyPrefix) {
   }))
 }
 
-test('通用三镜项目完成前链分析并在低说话人置信度下降级 safe', async ({ page }) => {
+integrationTest('通用三镜项目完成前链分析并在低说话人置信度下降级 safe', async ({ page }) => {
   resetProviderFixture(genericSourceFacts, genericLocalization)
   const browserErrors = []
   page.on('pageerror', (error) => browserErrors.push(`pageerror:${error.message}`))
@@ -1702,7 +1907,7 @@ test('通用三镜项目完成前链分析并在低说话人置信度下降级 s
   expect(runtimeErrors, JSON.stringify(runtimeErrors)).toEqual([])
 })
 
-test('通用三镜项目高置信度分析后完成 es-ES 本地化并物化三镜', async ({ page }) => {
+integrationTest('通用三镜项目高置信度分析后完成 es-ES 本地化并物化三镜', async ({ page }) => {
   resetProviderFixture(genericHighConfidenceSourceFacts(), genericLocalization)
   const browserErrors = []
   page.on('pageerror', (error) => browserErrors.push(`pageerror:${error.message}`))
@@ -2166,7 +2371,7 @@ test('通用三镜项目高置信度分析后完成 es-ES 本地化并物化三�
   expect(runtimeErrors, JSON.stringify(runtimeErrors)).toEqual([])
 })
 
-test('真实前后端与本地模拟供应商完成转绘同链', async ({ page }) => {
+export async function runRedrawFullProductFlow({ page }) {
   resetProviderFixture()
   if (process.env.REDRAW_E2E_CASE === 'latam-real-source') {
     expect(sourceVideoPath).toBe(path.resolve(process.env.REDRAW_E2E_SOURCE_VIDEO))
@@ -2174,18 +2379,21 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     expect(sourceFacts.shots).toHaveLength(redrawLatinAmericanCase.sourceFacts.shots.length)
   }
   const browserErrors = []
+  const browserRequests = []
   page.on('pageerror', (error) => browserErrors.push(`pageerror:${error.message}`))
+  page.on('request', (request) => browserRequests.push(request.url()))
   page.on('requestfailed', (request) => {
     browserErrors.push(`requestfailed:${request.method()} ${request.url()} ${request.failure()?.errorText || ''}`)
   })
-  await createProjectFromRedraw(page, {
+  const projectInput = fullProductMode ? genericRedrawProject.project : {
     title: '本地模拟供应商验收项目',
     execution_mode: 'auto',
     default_locale: 'en-US',
     default_market: 'US',
     budget_limit_credits: 100,
     max_auto_attempts_per_shot: 1,
-  })
+  }
+  const projectId = await createProjectFromRedraw(page, projectInput)
   await expect(page).toHaveURL(/\/redraw\/projects\/\d+\/works\/new\?step=1/)
 
   await page.locator('input[type="file"][accept*="video/mp4"]').setInputFiles(sourceVideoPath)
@@ -2202,6 +2410,13 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     fs.readFileSync(sourceVideoPath).subarray(0, 12).toString('hex'),
   )
   await expect(page).toHaveURL(/\/redraw\/projects\/\d+\/works\/\d+\?step=1/)
+  if (fullProductMode) {
+    const selectors = page.locator('.source-grid .inline-fields .el-select')
+    await selectors.nth(0).click()
+    await page.getByRole('option', { name: genericRedrawProject.target.locale, exact: true }).click()
+    await selectors.nth(1).click()
+    await page.getByRole('option', { name: genericRedrawProject.target.market, exact: true }).click()
+  }
   await expect(page.getByText('本次预计扣除 6 积分')).toBeVisible()
   await page.getByText('真人写实风格', { exact: true }).click()
   await page.getByRole('button', { name: '本地写实复刻' }).click()
@@ -2227,6 +2442,11 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     status: 200, phase: 'asset_review', versionId: expect.any(Number),
   })
   const versionId = Number(localizationDebug.versionId)
+  if (fullProductMode) {
+    expect(database.prepare(`
+      SELECT locale, market FROM redraw_versions WHERE id = ?
+    `).get(versionId)).toEqual({ locale: 'es-ES', market: 'ES' })
+  }
   const voiceRows = database.prepare(`
     SELECT id, source_ref_json FROM redraw_assets
     WHERE version_id = ? AND kind = 'voice' AND deleted_at IS NULL
@@ -2333,7 +2553,7 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     })
     expect(voiceAssignment.status, JSON.stringify(voiceAssignment.body)).toBe(200)
     expect(voiceAssignment.body.data.voice_snapshot).toMatchObject({
-      provider: 'local-fake-tts', model: 'fake-tts', voice_id: 'fixture-voice', locale: 'en-US',
+      provider: 'local-fake-tts', model: 'fake-tts', voice_id: 'fixture-voice', locale: fixtureLocale,
     })
     voiceAssignments.push({ stableId, characterAssetId: characterAsset.id, voiceAssetId: voiceAsset.id })
   }
@@ -2354,16 +2574,72 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     expect(reviewResponse.status, JSON.stringify(reviewResponse.body)).toBe(200)
   }
 
+  const dialogueQuote = await browserApi(page, `/api/v1/redraw/versions/${versionId}/dialogue/quote`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  })
+  expect(dialogueQuote.status, JSON.stringify(dialogueQuote.body)).toBe(200)
+  expect(dialogueQuote.body.data).toMatchObject({
+    status: 'ready',
+    segment_count: expectedDialogueSegmentCount,
+    total_credits: expectedDialogueCredits,
+  })
+  const dialogueStart = await browserApi(page, `/api/v1/redraw/versions/${versionId}/dialogue/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      quote_hash: dialogueQuote.body.data.quote_hash,
+      idempotency_key: 'local-fixture-dialogue-1',
+    }),
+  })
+  expect(dialogueStart.status, JSON.stringify(dialogueStart.body)).toBe(202)
+  const dialogueTaskId = dialogueStart.body.data.task_id
+  let dialogueTask
+  await expect.poll(async () => {
+    const result = await browserApi(
+      page,
+      `/api/v1/redraw/versions/${versionId}/dialogue/tasks/${dialogueTaskId}`,
+    )
+    dialogueTask = result.body?.data
+    return dialogueTask?.status
+  }, { timeout: 15_000, message: JSON.stringify(dialogueTask) }).toBe('completed')
+  const dialogueAudits = database.prepare(`
+    SELECT shot_index, draft_json FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
+  `).all(versionId).map((row) => ({
+    shot_index: row.shot_index,
+    audit: JSON.parse(row.draft_json || '{}').dialogue_generation || null,
+  }))
+  const dialogueSegments = dialogueAudits.flatMap(({ audit }) => audit?.segments || [])
+  expect(dialogueSegments).toHaveLength(expectedDialogueSegmentCount)
+  expect(dialogueAudits.filter(({ audit }) => audit).every(({ audit }) => audit.status === 'completed')).toBe(true)
+  expect(dialogueSegments.every((segment) => (
+    segment.status === 'completed'
+      && segment.reservation_status === 'confirmed'
+      && segment.provider === 'local-fake-tts'
+      && segment.model === 'fake-tts'
+  ))).toBe(true)
+  for (const segment of dialogueSegments) {
+    const dialogueArtifact = database.prepare('SELECT * FROM assets WHERE id = ?')
+      .get(Number(segment.audio_asset_id))
+    expect(dialogueArtifact, `缺少对白音频资产 ${segment.segment_id}`).toBeTruthy()
+    expect(fs.existsSync(path.join(storageRoot, dialogueArtifact.local_path))).toBe(true)
+  }
+
   const readyWork = await browserApi(page, `/api/v1/redraw/works/${workId}`)
   const preparedShots = []
   for (const shot of readyWork.body.data.shots) {
     const sourceShotId = sourceFacts.shots[Number(shot.shot_index) - 1]?.id
     const sourceShot = sourceFacts.shots[Number(shot.shot_index) - 1]
-    const prompt = activeCase
-      ? activeCase.shotPrompts[sourceShotId]
-      : (Number(shot.shot_index) === 1
-          ? 'Cinematic rooftop at night. Aran checks an old phone as a strange message appears.'
-          : 'Cinematic rooftop at night. Aran looks around, turns, and leaves.')
+    const prompt = fullProductMode
+      ? `LOCAL_FIXTURE_SHOT_${Number(shot.shot_index)} · ${Number(shot.shot_index) === 1
+          ? 'Clara Vega says exactly: Fue aqui.'
+          : Number(shot.shot_index) === 2
+            ? 'Diego Santos says exactly: No sigas.'
+            : 'No dialogue or intelligible voice; preserve rain ambience only.'}`
+      : activeCase
+        ? activeCase.shotPrompts[sourceShotId]
+        : (Number(shot.shot_index) === 1
+            ? 'Cinematic rooftop at night. Aran checks an old phone as a strange message appears.'
+            : 'Cinematic rooftop at night. Aran looks around, turns, and leaves.')
     const references = Array.isArray(sourceShot?.dialogue) && sourceShot.dialogue.length > 0
       ? shot.references.filter((reference) => reference.kind === 'character').slice(0, 1)
       : shot.references
@@ -2417,18 +2693,23 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
       SELECT id, shot_index, status, video_generation_id, error_code, error_message
       FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
     `).all(versionId)
-    if (videoShotRows.filter((shot) => shot.status === 'completed').length === expectedShotCount) break
-    if (videoShotRows.some((shot) => shot.status === 'completed')
+    if (videoShotRows.filter((shot) => shot.status === 'approved').length === expectedShotCount) break
+    if (videoShotRows.some((shot) => shot.status === 'approved')
       && videoShotRows.every((shot) => !['pending', 'processing'].includes(shot.status))) break
     await page.waitForTimeout(250)
   }
   expect(
-    videoShotRows.filter((shot) => shot.status === 'completed'),
+    videoShotRows.filter((shot) => shot.status === 'approved'),
     JSON.stringify({
       shots: videoShotRows,
       videos: database.prepare('SELECT id, status, error_msg, local_path FROM video_generations ORDER BY id').all(),
       tasks: database.prepare("SELECT id, status, error FROM async_tasks WHERE type = 'redraw_shot' ORDER BY created_at").all(),
+      reviews: database.prepare(`
+        SELECT shot_id, decision, reason_codes_json, metrics_json
+        FROM redraw_candidate_reviews ORDER BY shot_id
+      `).all(),
       batchResponse: videoBatchResponse.body,
+      providerAudit,
       runtimeErrors,
     }),
   ).toHaveLength(expectedShotCount)
@@ -2436,61 +2717,63 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
   expect(composedWork.body.data).toMatchObject({ current_step: 4, workflow_phase: 'video_generation' })
   expect(composedWork.body.data.shots.every((shot) => shot.new_video_ref?.asset_id)).toBe(true)
 
-  const dialogueQuote = await browserApi(page, `/api/v1/redraw/versions/${versionId}/dialogue/quote`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-  })
-  expect(dialogueQuote.status, JSON.stringify(dialogueQuote.body)).toBe(200)
-  expect(dialogueQuote.body.data).toMatchObject({
-    status: 'ready',
-    segment_count: expectedDialogueSegmentCount,
-    total_credits: expectedDialogueCredits,
-  })
-  const dialogueStart = await browserApi(page, `/api/v1/redraw/versions/${versionId}/dialogue/start`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      quote_hash: dialogueQuote.body.data.quote_hash,
-      idempotency_key: 'local-fixture-dialogue-1',
-    }),
-  })
-  expect(dialogueStart.status, JSON.stringify(dialogueStart.body)).toBe(202)
-  const dialogueTaskId = dialogueStart.body.data.task_id
-  let dialogueTask
-  await expect.poll(async () => {
-    const result = await browserApi(
-      page,
-      `/api/v1/redraw/versions/${versionId}/dialogue/tasks/${dialogueTaskId}`,
-    )
-    dialogueTask = result.body?.data
-    return dialogueTask?.status
-  }, { timeout: 15_000, message: JSON.stringify(dialogueTask) }).toBe('completed')
-  const dialogueAudits = database.prepare(`
-    SELECT shot_index, draft_json FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
-  `).all(versionId).map((row) => ({
-    shot_index: row.shot_index,
-    audit: JSON.parse(row.draft_json || '{}').dialogue_generation || null,
-  }))
-  const dialogueSegments = dialogueAudits.flatMap(({ audit }) => audit?.segments || [])
-  expect(dialogueSegments).toHaveLength(expectedDialogueSegmentCount)
-  expect(dialogueAudits.filter(({ audit }) => audit).every(({ audit }) => audit.status === 'completed')).toBe(true)
-  expect(dialogueSegments.every((segment) => (
-    segment.status === 'completed'
-      && segment.reservation_status === 'confirmed'
-      && segment.provider === 'local-fake-tts'
-      && segment.model === 'fake-tts'
+  const candidateReviews = database.prepare(`
+    SELECT r.*, s.shot_index
+    FROM redraw_candidate_reviews r
+    JOIN redraw_shots s ON s.id = r.shot_id
+    WHERE r.version_id = ?
+    ORDER BY s.shot_index, r.review_version
+  `).all(versionId)
+  expect(candidateReviews).toHaveLength(expectedShotCount)
+  expect(candidateReviews.every((review) => (
+    review.decision === 'approved' && review.decision_source === 'automatic'
   ))).toBe(true)
-  for (const segment of dialogueSegments) {
-    const dialogueArtifact = database.prepare('SELECT * FROM assets WHERE id = ?')
-      .get(Number(segment.audio_asset_id))
-    expect(dialogueArtifact, `缺少对白音频资产 ${segment.segment_id}`).toBeTruthy()
-    expect(fs.existsSync(path.join(storageRoot, dialogueArtifact.local_path))).toBe(true)
+  const candidateModes = candidateReviews.map((review) => JSON.parse(review.metrics_json).dialogue)
+  if (fullProductMode) {
+    expect(candidateModes.map((dialogue) => dialogue.dialogue_mode)).toEqual(['dialogue', 'dialogue', 'silent'])
+    expect(candidateModes.every((dialogue) => dialogue.has_audio && dialogue.ambient_audio_safe)).toBe(true)
+    const generatedMedia = database.prepare(`
+      SELECT provider_task_id, local_path FROM video_generations
+      WHERE tenant_id = ? AND user_id = ? ORDER BY id
+    `).all(owner.tenant.id, owner.user.id)
+    expect(generatedMedia).toHaveLength(3)
+    for (const media of generatedMedia) {
+      expect(media.provider_task_id).toMatch(/^local-fixture-video-task-[123]$/)
+      expect(media.local_path).not.toContain('redraw-local-provider')
+      const mediaProbe = probeFixtureMedia(path.join(storageRoot, media.local_path))
+      expect(mediaProbe.audio).toBeTruthy()
+      expect(mediaProbe.duration).toBeGreaterThanOrEqual(3.9)
+      expect(mediaProbe.duration).toBeLessThanOrEqual(4.1)
+    }
   }
 
-  const composeStart = await browserApi(page, `/api/v1/redraw/versions/${versionId}/compose`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ idempotency_key: 'local-fixture-compose-1', audio_mode: 'replace' }),
-  })
+  let composeStart
+  if (fullProductMode) {
+    const readiness = await browserApi(page, `/api/v1/redraw/versions/${versionId}/release-readiness`)
+    expect(readiness.status, JSON.stringify(readiness.body)).toBe(200)
+    expect(readiness.body.data, JSON.stringify(readiness.body)).toMatchObject({
+      ready: true,
+      shot_count: 3,
+      readiness_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      quality_summary: {
+        decision: 'approved', approved_shot_count: 3, automatic_review_count: 3, human_review_count: 0,
+      },
+    })
+    composeStart = await browserApi(page, `/api/v1/redraw/versions/${versionId}/releases`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        idempotency_key: 'local-fixture-episode-release-1',
+        readiness_hash: readiness.body.data.readiness_hash,
+      }),
+    })
+  } else {
+    composeStart = await browserApi(page, `/api/v1/redraw/versions/${versionId}/compose`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idempotency_key: 'local-fixture-compose-1', audio_mode: 'replace' }),
+    })
+  }
   expect(composeStart.status, JSON.stringify(composeStart.body)).toBe(202)
   const exportId = Number(composeStart.body.data.export_id)
   let exportDetail
@@ -2525,6 +2808,45 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
     contentType: 'video/mp4',
   })
   expect(downloaded.size).toBeGreaterThan(1_000)
+  const releaseDownloads = ['mp4']
+  if (fullProductMode) {
+    for (const kind of ['srt', 'vtt']) {
+      const artifact = await page.evaluate(async ({ url, outputKind }) => {
+        const response = await fetch(url)
+        const bytes = new Uint8Array(await response.arrayBuffer())
+        const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
+        return {
+          kind: outputKind,
+          status: response.status,
+          size: bytes.byteLength,
+          text: new TextDecoder().decode(bytes),
+          digest: [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join(''),
+          responseHash: response.headers.get('x-content-sha256'),
+        }
+      }, { url: `/api/v1/redraw/exports/${exportId}/download/${kind}`, outputKind: kind })
+      expect(artifact).toMatchObject({
+        kind,
+        status: 200,
+        digest: exportDetail.hashes[kind],
+        responseHash: exportDetail.hashes[kind],
+      })
+      expect(artifact.size).toBeGreaterThan(20)
+      expect(artifact.text).toContain('Fue aqui.')
+      expect(artifact.text).toContain('No sigas.')
+      releaseDownloads.push(kind)
+    }
+    expect(exportDetail).toMatchObject({
+      status: 'completed',
+      release_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      quality_summary: {
+        decision: 'approved', approved_shot_count: 3, automatic_review_count: 3, human_review_count: 0,
+      },
+      episode_release: { schema_version: 'redraw-episode-release-v1', shots: expect.any(Array) },
+    })
+    expect(exportDetail.episode_release.shots).toHaveLength(3)
+    expect(JSON.stringify(exportDetail)).not.toContain(tempRoot)
+    releaseDownloads.push('report')
+  }
 
   const exportRow = database.prepare('SELECT manifest_json FROM redraw_exports WHERE id = ?').get(exportId)
   const manifest = JSON.parse(exportRow.manifest_json)
@@ -2536,7 +2858,7 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
   const probe = JSON.parse(probeResult.stdout)
   const videoStream = probe.streams.find((stream) => stream.codec_type === 'video')
   const audioStream = probe.streams.find((stream) => stream.codec_type === 'audio')
-  expect(videoStream).toMatchObject({ width: 320, height: 180 })
+  expect(videoStream).toMatchObject({ width: 1280, height: 720 })
   expect(audioStream).toBeTruthy()
   expect(Number(probe.format.duration)).toBeGreaterThanOrEqual(expectedOutputDuration - 0.1)
   expect(Number(probe.format.duration)).toBeLessThanOrEqual(expectedOutputDuration + 0.1)
@@ -2551,6 +2873,55 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
   `).get(owner.tenant.id).count
   expect(heldReservations).toBe(0)
   expect(activeTasks).toBe(0)
+  let recoveryEvidence = null
+  if (fullProductMode) {
+    const submitted = providerAudit.filter((entry) => entry.stage === 'submit')
+    const polled = providerAudit.filter((entry) => entry.stage === 'poll')
+    const providerDownloads = providerAudit.filter((entry) => entry.stage === 'download')
+    expect(submitted).toHaveLength(3)
+    expect(polled).toHaveLength(3)
+    expect(providerDownloads).toHaveLength(3)
+    expect(submitted.every((entry) => (
+      entry.adapter === 'icreat_task' && entry.duration === 5 && entry.has_content === true
+    ))).toBe(true)
+    expect(submitted.map((entry) => entry.prompt)).toEqual(expect.arrayContaining([
+      expect.stringContaining('Clara Vega: Fue aqui.'),
+      expect.stringContaining('Diego Santos: No sigas.'),
+      expect.stringContaining('Dialogue mode: silent.'),
+    ]))
+    const confirmedShotReservations = database.prepare(`
+      SELECT COUNT(*) AS count FROM tenant_usage_reservations
+      WHERE tenant_id = ? AND resource_type = 'redraw_shot' AND status = 'confirmed'
+    `).get(owner.tenant.id).count
+    expect(confirmedShotReservations).toBe(3)
+
+    const publicRequests = browserRequests.filter((raw) => {
+      if (!/^https?:/i.test(raw)) return false
+      const hostname = new URL(raw).hostname
+      return !['127.0.0.1', 'localhost'].includes(hostname)
+    })
+    expect(publicRequests).toEqual([])
+
+    const recoveryUrl = new URL(page.url())
+    recoveryUrl.searchParams.set('step', '4')
+    await page.evaluate((url) => window.history.replaceState(null, '', url), recoveryUrl.toString())
+    await page.reload()
+    await expect(page.getByRole('heading', { name: '整集 readiness' })).toBeVisible()
+    const recoveredWork = await browserApi(page, `/api/v1/redraw/works/${workId}`)
+    const recoveredExports = await browserApi(page, `/api/v1/redraw/versions/${versionId}/exports`)
+    expect(recoveredWork.status, JSON.stringify(recoveredWork.body)).toBe(200)
+    expect(recoveredWork.body.data.shots).toHaveLength(3)
+    expect(recoveredWork.body.data.shots.every((shot) => shot.status === 'included')).toBe(true)
+    expect(recoveredExports.status, JSON.stringify(recoveredExports.body)).toBe(200)
+    expect(recoveredExports.body.data.filter((item) => item.status === 'completed')).toHaveLength(1)
+    recoveryEvidence = {
+      refreshed_from_backend: true,
+      approved_shots: recoveredWork.body.data.shots.filter((shot) => (
+        ['approved', 'included'].includes(shot.status)
+      )).length,
+      completed_exports: recoveredExports.body.data.filter((item) => item.status === 'completed').length,
+    }
+  }
   expect(runtimeErrors, JSON.stringify(runtimeErrors)).toEqual([])
   expect(browserErrors, JSON.stringify(browserErrors)).toEqual([])
 
@@ -2611,4 +2982,47 @@ test('真实前后端与本地模拟供应商完成转绘同链', async ({ page 
       `${JSON.stringify(caseManifest, null, 2)}\n`,
     )
   }
-})
+
+  if (fullProductMode) {
+    return {
+      project: {
+        locale: fixtureLocale,
+        market: fixtureMarket,
+        execution_mode: projectInput.execution_mode,
+        budget_limit_credits: projectInput.budget_limit_credits,
+        id: projectId,
+      },
+      source: { duration_ms: sourceFacts.duration_ms, sha256: sourceHash },
+      characters: {
+        identities: identityCharacterAssets.length,
+        voices: voiceAssignments.length,
+        wardrobes: identityCharacterAssets.length,
+      },
+      shots: { total: 3, dialogue: 2, silent_with_ambience: 1 },
+      provider: {
+        adapter: 'icreat_task',
+        submitted: providerAudit.filter((entry) => entry.stage === 'submit').length,
+        polled: providerAudit.filter((entry) => entry.stage === 'poll').length,
+        downloaded: providerAudit.filter((entry) => entry.stage === 'download').length,
+      },
+      candidate_qa: {
+        approved: candidateReviews.filter((review) => review.decision === 'approved').length,
+        automatic: candidateReviews.filter((review) => review.decision_source === 'automatic').length,
+        held_reservations: heldReservations,
+      },
+      release: {
+        status: exportDetail.status,
+        duration_seconds: Math.round(Number(probe.format.duration)),
+        has_audio: Boolean(audioStream),
+        downloads: releaseDownloads,
+        release_hash: exportDetail.release_hash,
+      },
+      recovery: recoveryEvidence,
+      network: { public_requests: 0, real_provider_requests: 0 },
+    }
+  }
+}
+
+if (!fullProductMode) {
+  test('真实前后端与本地模拟供应商完成转绘同链', runRedrawFullProductFlow)
+}
