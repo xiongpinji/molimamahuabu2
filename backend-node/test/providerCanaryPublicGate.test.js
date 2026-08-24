@@ -113,7 +113,9 @@ function addPublicConfig(db, values) {
     priority: 100,
     logical_model_id: values.logicalModelId,
     failover_enabled: false,
-    settings: JSON.stringify({ canvas_capabilities: capabilities }),
+    ...(values.omitCapabilities ? {} : {
+      settings: JSON.stringify({ canvas_capabilities: capabilities }),
+    }),
   });
   db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?")
     .run(config.id);
@@ -284,6 +286,34 @@ test('shadow 保留现有候选并仅在内部标注 would_be_hidden，off 不�
     ]);
     const off = stability.selectVerifiedCandidates(db, { ...input, canaryMode: 'off' });
     assert.equal(off.candidates.every((row) => row.would_be_hidden === undefined), true);
+  } finally {
+    db.close();
+  }
+});
+
+test('缺少媒体能力元数据的文本线路在 fresh 证据下通过 shadow 和 enforce', () => {
+  const db = createDb();
+  try {
+    modelPriceService.set(db, 'logical-text', 5, { category: 'text' });
+    const config = addPublicConfig(db, {
+      serviceType: 'text',
+      suffix: 'without-media-capabilities',
+      baseUrl: 'https://text.example/v1',
+      upstreamModel: 'gpt-5.6-sol',
+      logicalModelId: 'logical-text',
+      omitCapabilities: true,
+    });
+    addEvidence(db, config.id, {}, 'text-without-media-capabilities');
+
+    const shadow = stability.selectVerifiedCandidates(db, {
+      serviceType: 'text', logicalModelId: 'logical-text', capabilities: {}, canaryMode: 'shadow', now: NOW,
+    });
+    const enforce = stability.selectVerifiedCandidates(db, {
+      serviceType: 'text', logicalModelId: 'logical-text', capabilities: {}, canaryMode: 'enforce', now: NOW,
+    });
+
+    assert.deepEqual(shadow.candidates.map((row) => [row.id, row.would_be_hidden]), [[config.id, false]]);
+    assert.deepEqual(enforce.candidates.map((row) => row.id), [config.id]);
   } finally {
     db.close();
   }
