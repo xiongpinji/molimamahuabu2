@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const requestSource = readFileSync(fileURLToPath(new URL('../src/utils/request.js', import.meta.url)), 'utf8')
+const dramaApiSource = readFileSync(fileURLToPath(new URL('../src/api/drama.js', import.meta.url)), 'utf8')
 const assetsApiSource = readFileSync(fileURLToPath(new URL('../src/api/assets.js', import.meta.url)), 'utf8')
 const charactersApiSource = readFileSync(fileURLToPath(new URL('../src/api/characters.js', import.meta.url)), 'utf8')
 const useCharactersSource = readFileSync(fileURLToPath(new URL('../src/composables/filmCreate/useCharacters.js', import.meta.url)), 'utf8')
@@ -13,6 +14,13 @@ test('请求层支持静默错误，供素材库多来源探测避免全局错�
 })
 
 test('未登录响应不作为普通错误重复弹窗', () => {
+  assert.match(requestSource, /const unauthorized = Number\(error\.response\?\.status\) === 401/)
+  assert.match(requestSource, /if \(!unauthorized && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
+})
+
+test('画布保存 API 可透传静默错误配置且不静默未登录处理', () => {
+  assert.match(dramaApiSource, /saveCanvasLayout\(id, canvasLayout, workflowGroups, baseUpdatedAt, config = \{\}\)/)
+  assert.match(dramaApiSource, /request\.put\(`\/dramas\/\$\{id\}\/canvas-layout`, body, config\)/)
   assert.match(requestSource, /const unauthorized = Number\(error\.response\?\.status\) === 401/)
   assert.match(requestSource, /if \(!unauthorized && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
 })

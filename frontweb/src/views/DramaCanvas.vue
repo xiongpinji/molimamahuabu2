@@ -35,6 +35,7 @@
         </el-select>
 
         <span v-if="layoutSaveState === 'saving'" class="layout-status saving">保存中…</span>
+        <span v-else-if="layoutSaveState === 'retry_wait'" class="layout-status retry-wait">连接中断，等待重试…</span>
         <span v-else-if="layoutSaveState === 'saved'" class="layout-status saved">已保存</span>
         <span v-else-if="layoutSaveState === 'error'" class="layout-status error">保存失败</span>
 
@@ -98,7 +99,7 @@
         </el-checkbox-group>
         <el-button
           size="small"
-          :disabled="selectedStoryboardIds.length === 0 || workflowRunning || layoutSaveState === 'saving'"
+          :disabled="selectedStoryboardIds.length === 0 || workflowRunning || layoutSaveBusy"
           @click="onCreateWorkflowGroup"
         >
           创建工作流
@@ -108,7 +109,7 @@
           type="primary"
           plain
           :loading="workflowRunning"
-          :disabled="selectedStoryboardIds.length === 0 || workflowRunning || layoutSaveState === 'saving'"
+          :disabled="selectedStoryboardIds.length === 0 || workflowRunning || layoutSaveBusy"
           @click="onRunSelectedStoryboards"
         >
           运行所选
@@ -132,7 +133,7 @@
           size="small"
           type="primary"
           :loading="workflowRunning"
-          :disabled="!activeGroupId || layoutSaveState === 'saving'"
+          :disabled="!activeGroupId || layoutSaveBusy"
           @click="onRunActiveGroup"
         >
           整组重跑
@@ -141,7 +142,7 @@
           size="small"
           type="danger"
           plain
-          :disabled="!activeGroupId || workflowRunning || layoutSaveState === 'saving'"
+          :disabled="!activeGroupId || workflowRunning || layoutSaveBusy"
           @click="onDeleteActiveGroup"
         >
           删除工作流
@@ -154,7 +155,7 @@
         v-if="showWorkflowPanel && activeWorkflowGroup"
         :group="activeWorkflowGroup"
         :storyboards="allStoryboards"
-        :disabled="workflowRunning || layoutSaveState === 'saving'"
+        :disabled="workflowRunning || layoutSaveBusy"
         @change="onWorkflowOrderChange"
         @focus="focusWorkflowStoryboard"
       />
@@ -842,10 +843,42 @@ const workflowProgress = ref('')
 const generationOverrides = ref({})
 const layoutSaveState = ref('idle')
 const layoutDirty = ref(false)
+const layoutSaveBusy = computed(() => ['saving', 'retry_wait'].includes(layoutSaveState.value))
+const layoutOutageOpen = ref(false)
+const layoutErrorRevision = ref(-1)
+
+function onLayoutPersistenceState(event) {
+  layoutSaveState.value = event.state
+  layoutDirty.value = event.revision > event.savedRevision
+  if (event.state === 'retry_wait') {
+    if (!layoutOutageOpen.value) {
+      layoutOutageOpen.value = true
+      ElMessage.warning('网络暂时不可用，画布将在后台自动重试保存')
+    }
+    return
+  }
+  if (event.state === 'saved') {
+    if (layoutOutageOpen.value) {
+      layoutOutageOpen.value = false
+      ElMessage.success('画布已恢复并保存')
+    }
+    return
+  }
+  if (event.state === 'error' && layoutErrorRevision.value !== event.revision) {
+    layoutErrorRevision.value = event.revision
+    ElMessage.error(event.error?.message || '保存失败')
+  }
+}
+
 const layoutPersistence = createCanvasLayoutPersistence(({ canvasLayout, workflowGroups }) => (
-  dramaAPI.saveCanvasLayout(dramaId.value, canvasLayout, workflowGroups, drama.value?.updated_at)
-))
-let canvasPersistQueue = Promise.resolve()
+  dramaAPI.saveCanvasLayout(
+    dramaId.value,
+    canvasLayout,
+    workflowGroups,
+    drama.value?.updated_at,
+    { silentError: true },
+  )
+), { onStateChange: onLayoutPersistenceState })
 const freeCanvasAssetSaveFlights = new Map()
 const freeCanvasTaskResumeFlights = new Map()
 const localPreviewUrls = new Set()
@@ -1147,7 +1180,6 @@ const canvasAssetPickerTitle = computed(() => (
 ))
 
 let saveTimer = null
-let savedHintTimer = null
 let pollTimer = null
 let paneClickSuppressTimer = null
 let virtualizationFrame = null
@@ -6019,6 +6051,10 @@ function selectWorkflowGroupFromNode(node) {
 }
 
 async function removeNodeFromWorkflowGroup(node) {
+  if (workflowRunning.value || layoutSaveBusy.value) {
+    ElMessage.warning('请等待当前画布保存或任务完成后再移出工作流')
+    return
+  }
   const group = workflowGroupForNode(node)
   const storyboard = storyboardForNode(node)
   const storyboardId = Number(storyboard?.id)
@@ -7553,13 +7589,7 @@ function onCanvasBlur() {
   setSpacePanning(false)
 }
 
-function persistCanvasState(options = {}) {
-  const runPersist = () => persistCanvasStateNow(options)
-  canvasPersistQueue = canvasPersistQueue.then(runPersist, runPersist)
-  return canvasPersistQueue
-}
-
-async function persistCanvasStateNow({ layoutOnly = false, groupsOnly = false } = {}) {
+async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {}) {
   if (!dramaId.value) return
 
   let layoutPayload = null
@@ -7580,12 +7610,13 @@ async function persistCanvasStateNow({ layoutOnly = false, groupsOnly = false } 
   }
   const groupsPayload = groupsOnly || !layoutOnly ? workflowGroups.value : undefined
 
-  layoutSaveState.value = 'saving'
   try {
-    const updated = await layoutPersistence.update({
+    const outcome = await layoutPersistence.update({
       ...(layoutPayload !== null ? { canvasLayout: layoutPayload } : {}),
       ...(groupsPayload !== undefined ? { workflowGroups: groupsPayload } : {}),
-    })
+    }, { allowRetry: layoutOnly && groupsPayload === undefined })
+    if (outcome.status === 'queued') return true
+    const updated = outcome.result
     const meta = parseDramaMetadata(updated.metadata)
     if (meta.canvas_layout) layoutCache.value = meta.canvas_layout
     if (meta.workflow_groups) workflowGroups.value = meta.workflow_groups
@@ -7615,16 +7646,8 @@ async function persistCanvasStateNow({ layoutOnly = false, groupsOnly = false } 
     } else if (updated) {
       drama.value = updated
     }
-    layoutSaveState.value = 'saved'
-    layoutDirty.value = false
-    if (savedHintTimer) clearTimeout(savedHintTimer)
-    savedHintTimer = setTimeout(() => {
-      if (layoutSaveState.value === 'saved') layoutSaveState.value = 'idle'
-    }, 2000)
     return true
-  } catch (e) {
-    layoutSaveState.value = 'error'
-    ElMessage.error(e?.message || '保存失败')
+  } catch (_) {
     return false
   }
 }
@@ -7859,7 +7882,7 @@ async function loadDrama(silent = false) {
 }
 
 async function onCreateWorkflowGroup() {
-  if (workflowRunning.value || layoutSaveState.value === 'saving') {
+  if (workflowRunning.value || layoutSaveBusy.value) {
     ElMessage.warning('请等待当前画布任务完成后再创建工作流')
     return
   }
@@ -7875,6 +7898,10 @@ async function onCreateWorkflowGroup() {
       cancelButtonText: '取消',
       inputValue: `工作流 ${workflowGroups.value.length + 1}`,
     })
+    if (workflowRunning.value || layoutSaveBusy.value) {
+      ElMessage.warning('请等待当前画布任务完成后再创建工作流')
+      return
+    }
     workflowGroups.value = createWorkflowGroup(workflowGroups.value, {
       title: value?.trim() || undefined,
       storyboardIds: selectedStoryboardIds.value,
@@ -7894,11 +7921,19 @@ async function onCreateWorkflowGroup() {
 }
 
 async function onDeleteActiveGroup() {
+  if (workflowRunning.value || layoutSaveBusy.value) {
+    ElMessage.warning('请等待当前画布任务完成后再删除工作流')
+    return
+  }
   if (!activeGroupId.value) return
   const previousGroups = workflowGroups.value
   const previousActiveGroupId = activeGroupId.value
   try {
     await ElMessageBox.confirm('确定删除该工作流？', '删除工作流', { type: 'warning' })
+    if (workflowRunning.value || layoutSaveBusy.value) {
+      ElMessage.warning('请等待当前画布任务完成后再删除工作流')
+      return
+    }
     workflowGroups.value = deleteWorkflowGroup(workflowGroups.value, activeGroupId.value)
     activeGroupId.value = workflowGroups.value[0]?.id || null
     const saved = await persistCanvasState({ groupsOnly: true })
@@ -7915,7 +7950,7 @@ async function onDeleteActiveGroup() {
 }
 
 async function onWorkflowOrderChange(storyboardIds) {
-  if (!activeGroupId.value || workflowRunning.value || layoutSaveState.value === 'saving') return
+  if (!activeGroupId.value || workflowRunning.value || layoutSaveBusy.value) return
   const previousGroups = workflowGroups.value
   const nextGroups = reorderWorkflowGroup(workflowGroups.value, activeGroupId.value, storyboardIds)
   const previousIds = previousGroups.find((group) => group.id === activeGroupId.value)?.storyboard_ids || []
@@ -8259,7 +8294,6 @@ onBeforeUnmount(() => {
   canvasAlive = false
   stopAllKeyboardPan()
   if (saveTimer) clearTimeout(saveTimer)
-  if (savedHintTimer) clearTimeout(savedHintTimer)
   if (paneClickSuppressTimer) clearTimeout(paneClickSuppressTimer)
   if (generationSaveTimer) clearTimeout(generationSaveTimer)
   if (runQueueTimer) clearInterval(runQueueTimer)
@@ -8277,7 +8311,7 @@ onBeforeUnmount(() => {
   for (const previewUrl of localPreviewUrls) URL.revokeObjectURL(previewUrl)
   localPreviewUrls.clear()
   stopStatusPoll()
-  if (layoutDirty.value) persistCanvasState({ layoutOnly: true })
+  layoutPersistence.dispose()
 })
 </script>
 
@@ -8393,6 +8427,7 @@ onBeforeUnmount(() => {
 
 .layout-status { font-size: 12px; }
 .layout-status.saving { color: #60a5fa; }
+.layout-status.retry-wait { color: #fbbf24; }
 .layout-status.saved { color: #34d399; }
 .layout-status.error { color: #f87171; }
 .canvas-virtualization-status {

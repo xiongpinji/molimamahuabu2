@@ -88,9 +88,9 @@ test('保存失败保持 dirty 并允许 flush 重试', async () => {
 })
 
 test('画布保存携带当前项目更新时间作为并发基线', () => {
-  assert.match(dramaApiSource, /saveCanvasLayout\(id, canvasLayout, workflowGroups, baseUpdatedAt\)/)
+  assert.match(dramaApiSource, /saveCanvasLayout\(id, canvasLayout, workflowGroups, baseUpdatedAt, config = \{\}\)/)
   assert.match(dramaApiSource, /if \(baseUpdatedAt\) body\.base_updated_at = baseUpdatedAt/)
-  assert.match(dramaCanvasSource, /dramaAPI\.saveCanvasLayout\(dramaId\.value, canvasLayout, workflowGroups, drama\.value\?\.updated_at\)/)
+  assert.match(dramaCanvasSource, /dramaAPI\.saveCanvasLayout\(\s*dramaId\.value,\s*canvasLayout,\s*workflowGroups,\s*drama\.value\?\.updated_at,\s*\{ silentError: true \},?\s*\)/)
 })
 
 test('布局瞬时失败按 2/4/8/15/15 秒退避并在成功后复位', async () => {
