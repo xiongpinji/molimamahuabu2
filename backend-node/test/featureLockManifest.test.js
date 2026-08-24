@@ -319,6 +319,23 @@ const CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK = {
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
+const REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK = {
+  reason: '2026-08-24 通用短剧生成与整集交付计划任务 1-8 获批',
+  approvedBy: 'product-owner 2026-08-24 redraw-general-generation-delivery-tasks-1-8',
+  impactTests: [
+    'backend-node/test/redrawMigration.test.js',
+    'backend-node/test/redrawRoutes.test.js',
+    'backend-node/test/redrawCandidateReview.test.js',
+    'backend-node/test/redrawEpisodeRelease.test.js',
+    'frontweb/e2e/redraw-full-product.spec.js',
+    'backend-node/test/featureLockManifest.test.js',
+  ],
+};
+const REDRAW_GENERAL_GENERATION_FEATURE_IDS = new Set([
+  PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
+  ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
+  PROACTIVE_CANARY_FEATURE_ID,
+]);
 const PRE_PR184_CURRENT_UNLOCK_BY_FEATURE = {
   [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: PROVIDER_ROUTE_TTS_CHARACTER_COST_UNLOCK,
   [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: PROVIDER_TASK_LIVE_COMPAT_UNLOCK,
@@ -687,16 +704,17 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   assert.deepEqual(feature.evidence.slice(0, PROACTIVE_CANARY_EVIDENCE.length), PROACTIVE_CANARY_EVIDENCE);
 });
 
-test('画布文本能力兼容修复使用新鲜批准并保留 PR #184 与零成本巡检历史', () => {
+test('通用短剧生成交付使用新鲜批准并保留画布文本能力与 PR #184 历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
-  assert.deepEqual(feature.unlock, CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-1), PR184_MAIN_MERGE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-2), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-3), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-4), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-5), PROVIDER_READINESS_TTS_UNLOCK);
+  assert.deepEqual(feature.unlock, REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-2), PR184_MAIN_MERGE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-3), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-4), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-5), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-6), PROVIDER_READINESS_TTS_UNLOCK);
   assert.equal(feature.evidence.at(-1), CANVAS_TEXT_CAPABILITY_HOTFIX_EVIDENCE);
   assert.deepEqual(
     feature.evidence.slice(
@@ -722,11 +740,9 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       : PROVIDER_TASK_RECEIPT_UNLOCK;
     assert.deepEqual(
       feature.unlock,
-      featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
-        ? PR189_CONNECTION_ONLY_VERIFICATION_UNLOCK
-        : featureId === PROACTIVE_CANARY_FEATURE_ID
-          ? CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK
-          : PR184_MAIN_MERGE_UNLOCK,
+      REDRAW_GENERAL_GENERATION_FEATURE_IDS.has(featureId)
+        ? REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK
+        : PR184_MAIN_MERGE_UNLOCK,
     );
     assert.deepEqual(feature.unlockHistory, [
       HISTORICAL_UNLOCK_BY_FEATURE[featureId],
@@ -751,8 +767,13 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
         ? [PROVIDER_TASK_RECEIPT_UNLOCK, PR177_SHARED_FOUNDATION_UNLOCK]
         : []),
       PRE_PR184_CURRENT_UNLOCK_BY_FEATURE[featureId],
-      ...(featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID ? [PR184_MAIN_MERGE_UNLOCK] : []),
-      ...(featureId === PROACTIVE_CANARY_FEATURE_ID ? [PR184_MAIN_MERGE_UNLOCK] : []),
+      ...(featureId === PROVIDER_ROUTE_CONTRACT_FEATURE_ID ? [PR184_MAIN_MERGE_UNLOCK] : []),
+      ...(featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
+        ? [PR184_MAIN_MERGE_UNLOCK, PR189_CONNECTION_ONLY_VERIFICATION_UNLOCK]
+        : []),
+      ...(featureId === PROACTIVE_CANARY_FEATURE_ID
+        ? [PR184_MAIN_MERGE_UNLOCK, CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK]
+        : []),
     ]);
     assert.deepEqual(
       feature.evidence.slice(0, HISTORICAL_EVIDENCE_BY_FEATURE[featureId].length),
@@ -799,7 +820,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     assert.deepEqual(
       feature.unlock,
       featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK
+        ? REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK
         : PR184_MAIN_MERGE_UNLOCK,
     );
   }
@@ -837,14 +858,16 @@ test('实时候选兼容修复刷新四个运行时功能锁并登记补丁测�
     assert.ok(feature, `缺少功能锁 ${featureId}`);
     assert.deepEqual(
       feature.unlock,
-      featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK
+      REDRAW_GENERAL_GENERATION_FEATURE_IDS.has(featureId)
+        ? REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK
         : PR184_MAIN_MERGE_UNLOCK,
     );
     assert.deepEqual(
       feature.unlockHistory.at(-1),
       featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? PR184_MAIN_MERGE_UNLOCK
+        ? CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK
+        : featureId === PROVIDER_ROUTE_CONTRACT_FEATURE_ID
+          ? PR184_MAIN_MERGE_UNLOCK
         : PRE_PR184_CURRENT_UNLOCK_BY_FEATURE[featureId],
     );
     assert.ok(feature.unlockHistory.some((entry) => (

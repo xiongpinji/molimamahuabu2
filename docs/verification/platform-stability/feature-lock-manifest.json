@@ -110,24 +110,36 @@
             "backend-node/test/incrementalReleaseScope.test.js",
             "backend-node/test/featureLockManifest.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 PR #184 合入最新 main 并收口 17 项冲突获批",
+          "approvedBy": "product-owner 2026-08-23 pr-184-main-merge-conflict-resolution",
+          "impactTests": [
+            "backend-node/test/providerCanaryAudioArtifact.test.js",
+            "backend-node/test/providerCanaryExecutor.test.js",
+            "backend-node/test/providerCanaryInventory.test.js",
+            "backend-node/test/providerCanaryScheduler.test.js",
+            "backend-node/test/providerRouteCost.test.js",
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerRuntimeFingerprint.test.js",
+            "backend-node/test/providerTaskLiveCompatibility.test.js",
+            "frontweb/test/platformZeroCostSmokeContract.test.js",
+            "frontweb/test/providerRouteCostAdmin.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 PR #184 合入最新 main 并收口 17 项冲突获批",
-        "approvedBy": "product-owner 2026-08-23 pr-184-main-merge-conflict-resolution",
+        "reason": "2026-08-24 通用短剧生成与整集交付计划任务 1-8 获批",
+        "approvedBy": "product-owner 2026-08-24 redraw-general-generation-delivery-tasks-1-8",
         "impactTests": [
-          "backend-node/test/providerCanaryAudioArtifact.test.js",
-          "backend-node/test/providerCanaryExecutor.test.js",
-          "backend-node/test/providerCanaryInventory.test.js",
-          "backend-node/test/providerCanaryScheduler.test.js",
-          "backend-node/test/providerRouteCost.test.js",
-          "backend-node/test/providerRouteSchema.test.js",
-          "backend-node/test/providerRuntimeFingerprint.test.js",
-          "backend-node/test/providerTaskLiveCompatibility.test.js",
-          "frontweb/test/platformZeroCostSmokeContract.test.js",
-          "frontweb/test/providerRouteCostAdmin.test.js",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/redrawMigration.test.js",
+          "backend-node/test/redrawRoutes.test.js",
+          "backend-node/test/redrawCandidateReview.test.js",
+          "backend-node/test/redrawEpisodeRelease.test.js",
+          "frontweb/e2e/redraw-full-product.spec.js",
+          "backend-node/test/featureLockManifest.test.js"
         ]
       }
     },
@@ -620,16 +632,28 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-24 连接测试仅验证连通性安全修复获批",
+          "approvedBy": "product-owner 2026-08-24 pr-189-ci-fix",
+          "impactTests": [
+            "backend-node/test/migrateAiConfigVerification.test.js",
+            "backend-node/test/videoProviderVerification.test.js",
+            "backend-node/test/aiConfigPublicView.test.js",
+            "backend-node/test/providerRouteAdminRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-24 连接测试仅验证连通性安全修复获批",
-        "approvedBy": "product-owner 2026-08-24 pr-189-ci-fix",
+        "reason": "2026-08-24 通用短剧生成与整集交付计划任务 1-8 获批",
+        "approvedBy": "product-owner 2026-08-24 redraw-general-generation-delivery-tasks-1-8",
         "impactTests": [
-          "backend-node/test/migrateAiConfigVerification.test.js",
-          "backend-node/test/videoProviderVerification.test.js",
-          "backend-node/test/aiConfigPublicView.test.js",
-          "backend-node/test/providerRouteAdminRoutes.test.js",
+          "backend-node/test/redrawMigration.test.js",
+          "backend-node/test/redrawRoutes.test.js",
+          "backend-node/test/redrawCandidateReview.test.js",
+          "backend-node/test/redrawEpisodeRelease.test.js",
+          "frontweb/e2e/redraw-full-product.spec.js",
           "backend-node/test/featureLockManifest.test.js"
         ]
       }
@@ -935,17 +959,29 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-24 画布文本线路空能力指纹兼容修复获批",
+          "approvedBy": "product-owner 2026-08-24 canvas-text-capability-hotfix",
+          "impactTests": [
+            "backend-node/test/providerCanaryPublicGate.test.js",
+            "backend-node/test/providerRouteStability.test.js",
+            "backend-node/test/providerRouteTextIntegration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-24 画布文本线路空能力指纹兼容修复获批",
-        "approvedBy": "product-owner 2026-08-24 canvas-text-capability-hotfix",
+        "reason": "2026-08-24 通用短剧生成与整集交付计划任务 1-8 获批",
+        "approvedBy": "product-owner 2026-08-24 redraw-general-generation-delivery-tasks-1-8",
         "impactTests": [
-          "backend-node/test/providerCanaryPublicGate.test.js",
-          "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/providerRouteTextIntegration.test.js",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/redrawMigration.test.js",
+          "backend-node/test/redrawRoutes.test.js",
+          "backend-node/test/redrawCandidateReview.test.js",
+          "backend-node/test/redrawEpisodeRelease.test.js",
+          "frontweb/e2e/redraw-full-product.spec.js",
+          "backend-node/test/featureLockManifest.test.js"
         ]
       }
     },
