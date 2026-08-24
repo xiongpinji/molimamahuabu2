@@ -27,7 +27,10 @@
   - `text-generation-billing.test.js`
   - `providerCanaryEvidence.test.js`
 - 结果：83 个测试通过，0 失败。
+- CI 门禁修复：主动巡检锁保留原 `PR #184` 批准为历史记录，并使用本次范围专属批准；独立发布范围固定为 9 个精确文件，禁止通配、运行数据、上传目录、AI 音乐与共享发布门禁。
+- `featureLockManifest.test.js` 与 `incrementalReleaseScope.test.js`：33 个测试通过，0 失败。
+- `verify-feature-lock-manifest.js --base origin/main`：`ready=true`，6 个锁，8 个变更路径，6 个基线保护锁。
 
 ## 发布状态
 
-本文件记录的是本地候选证据。尚未推送、合并或部署；线上在受保护发布完成前仍可能复现该错误。
+本文件记录的是 PR 候选证据。修复尚未合并或部署；线上在受保护发布完成前仍可能复现该错误。
