@@ -1024,15 +1024,14 @@ test('并发 CAS 只允许一个调用认领镜头并派发净景', async () => 
   }
 });
 
-test('上游版本或角色哈希漂移时中止且绝不保存参考包', async () => {
+test('上游本地化语义漂移时中止且绝不保存参考包', async () => {
   const state = setup();
   try {
     const deps = fakeDeps(state, {
       overrides: {
         async prepareCleanRequirement(payload) {
           deps.cleanCalls.push({ shot_id: payload.shot.id, key: payload.requirement.key });
-          state.db.prepare('UPDATE redraw_versions SET updated_at = ? WHERE id = 1')
-            .run('2026-08-22T08:00:02.000Z');
+          state.db.prepare("UPDATE redraw_versions SET locale = 'fr-FR' WHERE id = 1").run();
           return { status: 'completed', redraw_asset_id: 2002 };
         },
       },
@@ -1044,6 +1043,64 @@ test('上游版本或角色哈希漂移时中止且绝不保存参考包', async
     assert.equal(state.db.prepare('SELECT preparation_state FROM redraw_shots WHERE id = 2').get().preparation_state, 'needs_attention');
   } finally {
     state.close();
+  }
+});
+
+test('任务外参考预算来源和角色计划漂移仍在保存前 fail closed 且不得重试', async (t) => {
+  const cases = [{
+    name: '逐镜参考漂移',
+    mutate(state) {
+      state.db.prepare("UPDATE redraw_shots SET references_json = '[{\"kind\":\"image\",\"asset_id\":999}]' WHERE id = 2").run();
+    },
+  }, {
+    name: '预算漂移',
+    mutate(state) {
+      state.db.prepare('UPDATE redraw_projects SET budget_limit_credits = 99 WHERE id = 1').run();
+    },
+  }, {
+    name: '来源漂移',
+    mutate(state) {
+      state.db.prepare('UPDATE redraw_works SET source_fingerprint = ? WHERE id = 1').run('e'.repeat(64));
+    },
+  }, {
+    name: '角色资产计划漂移',
+    mutate(_state, fixture) {
+      fixture.planHash = 'c'.repeat(64);
+    },
+  }];
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      const state = setup();
+      const fixture = { planHash: PLAN_HASH };
+      try {
+        const deps = fakeDeps(state, {
+          overrides: {
+            getCharacterPlan() {
+              return { ready: true, version_id: 1, plan_hash: fixture.planHash, characters: [] };
+            },
+            async prepareCleanRequirement(payload) {
+              deps.cleanCalls.push({ shot_id: payload.shot.id, key: payload.requirement.key });
+              item.mutate(state, fixture);
+              return { status: 'completed', redraw_asset_id: 2002 };
+            },
+          },
+        });
+        await rejectsCode(() => prepareVersionReferences(state.ctx, {
+          version_id: 1, idempotency_key: `semantic-drift-${item.name}`, shot_ids: [2],
+        }, deps), 'REDRAW_REFERENCE_PREPARATION_DRIFT');
+        assert.equal(deps.cleanCalls.length, 1);
+        assert.equal(deps.bundleCalls.length, 0);
+        assert.equal(state.db.prepare('SELECT preparation_state FROM redraw_shots WHERE id = 2').get().preparation_state, 'needs_attention');
+        const retry = await prepareVersionReferences(state.ctx, {
+          version_id: 1, idempotency_key: `semantic-drift-retry-${item.name}`, shot_ids: [2],
+        }, deps);
+        assert.deepEqual(retry.needs_attention_shot_ids, [2]);
+        assert.equal(deps.cleanCalls.length, 1);
+        assert.equal(deps.bundleCalls.length, 0);
+      } finally {
+        state.close();
+      }
+    });
   }
 });
 
@@ -1075,6 +1132,94 @@ test('start 幂等复用异步任务，reconcile 将中断任务和镜头收口�
     const reconciled = reconcileInterruptedPreparations(state.ctx);
     assert.equal(reconciled.needs_attention, 1);
     assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(first.task_id).status, 'needs_attention');
+  } finally {
+    state.close();
+  }
+});
+
+test('同批三镜顺序批准不会把前序受控产物误判为版本漂移', async () => {
+  const state = setup({ readyFirst: false });
+  try {
+    const requirements = {
+      1: [{ kind: 'person_clean', key: 'shared-person' }],
+      2: [{ kind: 'person_clean', key: 'shared-person' }],
+      3: [{ kind: 'text_clean', key: 'independent-text' }],
+    };
+    for (const shotId of [1, 2, 3]) {
+      state.db.prepare(`INSERT INTO redraw_assets
+        (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+         version_number, approval_status, status, generation_task_id, created_at, updated_at)
+        VALUES (?, 1, 'tenant-a', 'user-a', 'scene', '{}', ?, 1, 'pending',
+          'needs_attention', ?, ?, ?)`)
+        .run(2000 + shotId, `batch clean ${shotId}`, `batch-provider-${shotId}`, NOW, NOW);
+    }
+    const outcomes = new Map([1, 2, 3].map((shotId) => [shotId, {
+      status: 'unknown',
+      redraw_asset_id: 2000 + shotId,
+      provider_task_id: `batch-provider-${shotId}`,
+    }]));
+    const deps = fakeDeps(state, {
+      requirements,
+      outcomes,
+      overrides: {
+        isCleanResultCurrent({ result }) {
+          const row = state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(result.redraw_asset_id);
+          return row?.approval_status === 'approved' ? {
+            redraw_asset_id: Number(row.id),
+            approved_by: row.approved_by,
+            approved_at: row.approved_at,
+          } : false;
+        },
+      },
+    });
+    const initialQuote = await quoteVersionPreparation(state.ctx, { version_id: 1 }, deps);
+    assert.equal(initialQuote.credits, 6);
+    const first = await startVersionPreparation(state.ctx, {
+      version_id: 1,
+      idempotency_key: 'batch-internal-products',
+      quote_hash: initialQuote.quote_hash,
+    }, deps);
+    const firstResult = await first.completion;
+    assert.deepEqual(firstResult.needs_attention_shot_ids, [1, 2, 3]);
+    assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(first.task_id).status, 'needs_attention');
+
+    for (const [shotId, approvedAt] of [
+      [1, '2026-08-22T08:00:02.000Z'],
+      [2, '2026-08-22T08:00:03.000Z'],
+      [3, '2026-08-22T08:00:04.000Z'],
+    ]) {
+      state.db.prepare(`UPDATE redraw_assets
+        SET approval_status = 'approved', approved_by = 'user-a', approved_at = ?,
+            status = 'generated', updated_at = ? WHERE id = ?`)
+        .run(approvedAt, approvedAt, 2000 + shotId);
+      state.db.prepare('UPDATE redraw_versions SET updated_at = ? WHERE id = 1').run(approvedAt);
+    }
+
+    const recoveredQuote = await quoteVersionPreparation(state.ctx, { version_id: 1 }, deps);
+    assert.deepEqual(recoveredQuote.needs_attention_shot_ids, []);
+    assert.deepEqual(recoveredQuote.missing_shot_ids, [1, 2, 3]);
+    assert.deepEqual(recoveredQuote.items, []);
+    assert.equal(recoveredQuote.credits, 0);
+    const recovered = await startVersionPreparation(state.ctx, {
+      version_id: 1,
+      idempotency_key: 'batch-approved-recovery',
+      quote_hash: recoveredQuote.quote_hash,
+    }, deps);
+    const recoveredResult = await recovered.completion;
+    assert.deepEqual(recoveredResult.prepared_shot_ids, [1, 2, 3]);
+    assert.deepEqual(recoveredResult.needs_attention_shot_ids, []);
+    assert.equal(deps.cleanCalls.length, 3);
+    assert.deepEqual(deps.bundleCalls, [1, 2, 3]);
+    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM async_tasks').get().count, 2);
+
+    const replay = await prepareVersionReferences(state.ctx, {
+      version_id: 1,
+      idempotency_key: 'batch-approved-recovery',
+    }, deps);
+    assert.deepEqual(replay.reused_shot_ids, [1, 2, 3]);
+    assert.deepEqual(replay.prepared_shot_ids, []);
+    assert.equal(deps.cleanCalls.length, 3);
+    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM async_tasks').get().count, 2);
   } finally {
     state.close();
   }
@@ -1663,7 +1808,7 @@ test('版本漂移只由原 unknown 的最新批准解释且更早 completed 仍
     for (const invalidApprovalTime of [
       'not-a-time',
       new Date(priorVersionTimestamp - 500).toISOString(),
-      new Date(priorVersionTimestamp + 500).toISOString(),
+      priorVersionTime,
     ]) {
       state.db.prepare('UPDATE redraw_assets SET approved_at = ? WHERE id = ?')
         .run(invalidApprovalTime, pendingTextResult.redraw_asset_id);
