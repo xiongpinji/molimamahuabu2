@@ -227,7 +227,7 @@ import {
   serializeHomeCanvasState,
   undoHomeCanvasHistory,
 } from '@/utils/homeCanvasState'
-import { parseCanvasLayout } from '@/utils/canvasLayout'
+import { parseCanvasLayout, parseDramaMetadata } from '@/utils/canvasLayout'
 import { mergeLocalCanvasIntoProjectLayout } from '@/utils/localCanvasBinding'
 import {
   collectDroppedImageFiles,
@@ -719,6 +719,11 @@ async function loadBindingProjects() {
   }
 }
 
+function readCanvasStateRevision(metadata) {
+  const revision = Number(parseDramaMetadata(metadata)?.canvas_state_revision)
+  return Number.isSafeInteger(revision) && revision >= 0 ? revision : 0
+}
+
 async function bindToProject() {
   if (!bindingProjectId.value || bindingProject.value) return
   bindingProject.value = true
@@ -730,7 +735,7 @@ async function bindToProject() {
       currentCanvasState(),
       `local:${Date.now()}`,
     )
-    await dramaAPI.saveCanvasLayout(bindingProjectId.value, merged, project?.workflow_groups)
+    await dramaAPI.saveCanvasLayout(bindingProjectId.value, merged, project?.workflow_groups, readCanvasStateRevision(project?.metadata))
     ElMessage.success('本地节点已合并到项目画布，生成与素材闭环已启用')
     await router.push(`/canvas/${bindingProjectId.value}`)
   } catch (error) {

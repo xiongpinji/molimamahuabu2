@@ -39,6 +39,7 @@ function createScheduler() {
 
 const dramaApiSource = readFileSync(fileURLToPath(new URL('../src/api/drama.js', import.meta.url)), 'utf8')
 const dramaCanvasSource = readFileSync(fileURLToPath(new URL('../src/views/DramaCanvas.vue', import.meta.url)), 'utf8')
+const homeCanvasSource = readFileSync(fileURLToPath(new URL('../src/views/HomeCanvas.vue', import.meta.url)), 'utf8')
 
 test('唯一保存协调器将交错布局和导演状态合并到后续快照', async () => {
   const scheduler = createScheduler()
@@ -87,10 +88,32 @@ test('保存失败保持 dirty 并允许 flush 重试', async () => {
   assert.equal(persistence.dirty, false)
 })
 
-test('画布保存携带当前项目更新时间作为并发基线', () => {
-  assert.match(dramaApiSource, /saveCanvasLayout\(id, canvasLayout, workflowGroups, baseUpdatedAt, config = \{\}\)/)
-  assert.match(dramaApiSource, /if \(baseUpdatedAt\) body\.base_updated_at = baseUpdatedAt/)
-  assert.match(dramaCanvasSource, /dramaAPI\.saveCanvasLayout\(\s*dramaId\.value,\s*canvasLayout,\s*workflowGroups,\s*drama\.value\?\.updated_at,\s*\{ silentError: true \},?\s*\)/)
+test('画布保存使用独立 revision 并在每次实际请求后更新下一次 CAS token', () => {
+  assert.match(dramaApiSource, /saveCanvasLayout\(id, canvasLayout, workflowGroups, baseCanvasRevision, config = \{\}\)/)
+  assert.match(dramaApiSource, /if \(baseCanvasRevision !== undefined\) body\.base_canvas_revision = baseCanvasRevision/)
+  assert.match(dramaCanvasSource, /const canvasStateRevision = ref\(0\)/)
+  assert.match(
+    dramaCanvasSource,
+    /createCanvasLayoutPersistence\(async \(\{ canvasLayout, workflowGroups \}\) => \{[\s\S]{0,700}canvasStateRevision\.value[\s\S]{0,700}canvasStateRevision\.value = readCanvasStateRevision\(updated\?\.metadata\)[\s\S]{0,120}return updated/,
+  )
+  assert.match(
+    dramaCanvasSource,
+    /async function loadDrama\(silent = false\)[\s\S]{0,300}drama\.value = await dramaAPI\.get\(dramaId\.value\)[\s\S]{0,180}canvasStateRevision\.value = readCanvasStateRevision\(drama\.value\?\.metadata\)/,
+  )
+})
+
+test('当前所有前端画布保存调用点都显式传入 revision token', () => {
+  const saveCallCount = [dramaCanvasSource, homeCanvasSource]
+    .reduce((count, source) => count + [...source.matchAll(/dramaAPI\.saveCanvasLayout\(/g)].length, 0)
+  assert.equal(saveCallCount, 2)
+  assert.match(
+    dramaCanvasSource,
+    /dramaAPI\.saveCanvasLayout\([\s\S]{0,220}workflowGroups,[\s\S]{0,100}canvasStateRevision\.value/,
+  )
+  assert.match(
+    homeCanvasSource,
+    /dramaAPI\.saveCanvasLayout\(bindingProjectId\.value, merged, project\?\.workflow_groups, readCanvasStateRevision\(project\?\.metadata\)\)/,
+  )
 })
 
 test('布局瞬时失败按 2/4/8/15/15 秒退避并在成功后复位', async () => {

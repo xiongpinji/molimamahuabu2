@@ -664,7 +664,11 @@ import {
   getStoryboardRefFromNode,
   stampEdgeBaseStyles,
 } from '@/utils/dramaCanvasAdapter'
-import { preserveCanvasNodeRuntimeMeasurements, virtualizeCanvasGraph } from '@/utils/canvasVirtualization'
+import {
+  prepareCanvasNodesForRender,
+  preserveCanvasNodeRuntimeMeasurements,
+  virtualizeCanvasGraph,
+} from '@/utils/canvasVirtualization'
 import {
   CANVAS_KEYBOARD_PAN_INITIAL_STEP,
   CANVAS_KEYBOARD_PAN_SPEED,
@@ -820,6 +824,7 @@ const { imagesBySbId, videosBySbId, loadForDrama } = useCanvasStoryboardMedia()
 
 const loading = ref(false)
 const drama = ref(null)
+const canvasStateRevision = ref(0)
 const nodes = ref([])
 const edges = ref([])
 const allGraphNodes = ref([])
@@ -870,15 +875,22 @@ function onLayoutPersistenceState(event) {
   }
 }
 
-const layoutPersistence = createCanvasLayoutPersistence(({ canvasLayout, workflowGroups }) => (
-  dramaAPI.saveCanvasLayout(
+function readCanvasStateRevision(metadata) {
+  const revision = Number(parseDramaMetadata(metadata)?.canvas_state_revision)
+  return Number.isSafeInteger(revision) && revision >= 0 ? revision : 0
+}
+
+const layoutPersistence = createCanvasLayoutPersistence(async ({ canvasLayout, workflowGroups }) => {
+  const updated = await dramaAPI.saveCanvasLayout(
     dramaId.value,
     canvasLayout,
     workflowGroups,
-    drama.value?.updated_at,
+    canvasStateRevision.value,
     { silentError: true },
   )
-), { onStateChange: onLayoutPersistenceState })
+  canvasStateRevision.value = readCanvasStateRevision(updated?.metadata)
+  return updated
+}, { onStateChange: onLayoutPersistenceState })
 const freeCanvasAssetSaveFlights = new Map()
 const freeCanvasTaskResumeFlights = new Map()
 const localPreviewUrls = new Set()
@@ -2293,7 +2305,7 @@ function applyVirtualizedGraph() {
       pinnedIds: focusedNodeId.value ? [focusedNodeId.value] : [],
     },
   )
-  nodes.value = preserveCanvasNodeRuntimeMeasurements(result.nodes, nodes.value)
+  nodes.value = prepareCanvasNodesForRender(preserveCanvasNodeRuntimeMeasurements(result.nodes, nodes.value))
   edges.value = result.edges
   canvasVirtualized.value = result.virtualized
 }
@@ -7861,6 +7873,7 @@ async function loadDrama(silent = false) {
   if (!silent) loading.value = true
   try {
     drama.value = await dramaAPI.get(dramaId.value)
+    canvasStateRevision.value = readCanvasStateRevision(drama.value?.metadata)
     await loadProjectImageAssets()
     layoutCache.value = parseCanvasLayout(drama.value.metadata)
     const preferences = normalizeCanvasPreferences(layoutCache.value?.preferences)

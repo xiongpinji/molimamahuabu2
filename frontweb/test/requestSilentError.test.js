@@ -19,7 +19,7 @@ test('未登录响应不作为普通错误重复弹窗', () => {
 })
 
 test('画布保存 API 可透传静默错误配置且不静默未登录处理', () => {
-  assert.match(dramaApiSource, /saveCanvasLayout\(id, canvasLayout, workflowGroups, baseUpdatedAt, config = \{\}\)/)
+  assert.match(dramaApiSource, /saveCanvasLayout\(id, canvasLayout, workflowGroups, baseCanvasRevision, config = \{\}\)/)
   assert.match(dramaApiSource, /request\.put\(`\/dramas\/\$\{id\}\/canvas-layout`, body, config\)/)
   assert.match(requestSource, /const unauthorized = Number\(error\.response\?\.status\) === 401/)
   assert.match(requestSource, /if \(!unauthorized && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
