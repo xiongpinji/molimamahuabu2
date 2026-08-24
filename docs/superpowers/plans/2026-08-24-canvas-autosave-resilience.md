@@ -731,10 +731,11 @@ git commit -m "docs(画布): 记录自动保存容灾验收"
 
 ## 2026-08-24 本地验收记录
 
-- 前端相关 Node 回归：`node --test test/canvasLayoutPersistence.test.js test/httpError.test.js test/requestSilentError.test.js test/standaloneCanvasFreeNodeRuntime.test.js test/canvasVirtualization.test.js`，45/45 通过，无跳过、无取消。
+- 前端相关 Node 回归：`node --test test/canvasLayoutPersistence.test.js test/httpError.test.js test/requestSilentError.test.js test/standaloneCanvasFreeNodeRuntime.test.js test/canvasVirtualization.test.js`，47/47 通过，无跳过、无取消；新增覆盖 `retry_wait` 强制同 revision 保存以及强制失败不再退避。
 - 后端画布 CAS 回归：`node --test --test-concurrency=1 test/canvasLayoutConcurrency.test.js`，7/7 通过；覆盖无关 metadata 写入隔离、布局根字段精确替换、陈旧 revision 冲突、工作流组与 legacy 保存推进 revision。
 - 生产模式前端构建：`npm run build`，Vite 处理 1907 个模块并成功输出；仅保留既有大 chunk 警告，无构建错误。
-- 完整零付费画布浏览器门禁：在独立 `3423` 端口、`--workers=1` 下运行 `navigation-zoom-guard`、`home-canvas`、`project-canvas-ci`、`project-canvas-backend-integration`、`image-node-toolbar-backend-integration`，46/46 可执行用例通过；另 1 项真实 AIHubCC 付费同链按显式环境门禁跳过。
+- 完整零付费画布浏览器门禁：在独立 `3427` 端口、`--workers=1` 下运行 `navigation-zoom-guard`、`home-canvas`、`project-canvas-ci`、`project-canvas-backend-integration`、`image-node-toolbar-backend-integration`，47/47 可执行用例通过；另 1 项真实 AIHubCC 付费同链按显式环境门禁跳过。
+- SPA 切页保护回归：防抖尚未结束且首次 PUT 返回 503 时，协调器取消退避并以同一 revision 立即执行第二次真实保存；第二次响应前 URL 保持在画布，成功后才离开，保存 viewport 与实际 transform 一致且没有第三次 PUT。`onBeforeUnmount` 仍只清理并销毁协调器；本任务未新增或宣称浏览器硬刷新/关闭期间的异步保存保证。
 - HomeCanvas 接入项目回归已包含在完整门禁中：从刚读取的项目 metadata 取得初始 revision `0`，PUT 明确携带 `base_canvas_revision: 0`，没有意外 POST，随后跳转项目画布。
 - 精准范围与保护合同：`git diff --check origin/main` 无输出；`canvas-credit-callout-v1`、`本次预计扣除`、`积分待管理员配置` 均保留。
 - 安全边界：所有供应商 Key 环境变量在浏览器回归中显式清空；未执行真实供应商生成、付费调用、生产数据库写入、生产候选制作、激活或 AI 音乐操作。
