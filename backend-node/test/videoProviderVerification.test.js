@@ -107,6 +107,10 @@ test('三套公开目录只返回全部已验证、启用且已计费的视频�
   assert.equal((await testSavedConnection(db, lingjing.id, okResponse)).status, 200);
   assert.equal((await testSavedConnection(db, djpsd.id, okResponse)).status, 200);
   assert.equal((await testSavedConnection(db, unpriced.id, okResponse)).status, 200);
+  for (const configId of [lingjing.id, djpsd.id, unpriced.id]) {
+    assert.equal(aiConfigService.getConfig(db, configId).verification_status, 'unverified');
+    aiConfigService.recordVerification(db, configId, { status: 'verified', capabilities: {} });
+  }
 
   const publicCapture = capture();
   aiConfigRoutes(db, log, {}).listPublicVideoModels({}, publicCapture.res);
@@ -170,11 +174,18 @@ test('保存配置连接验证失败会记录失败并从公开目录移除', as
   assert.deepEqual(modelPriceService.listPublic(db), []);
 });
 
-test('只有连接字段实际变化才撤销既有验证', async (t) => {
+test('只有连接字段实际变化才撤销真实生成验证', async (t) => {
   const db = setup();
   t.after(() => db.close());
   const config = createVideoConfig(db);
-  await testSavedConnection(db, config.id, async () => ({ ok: false, status: 404, text: async () => '' }));
+  const connection = await testSavedConnection(
+    db,
+    config.id,
+    async () => ({ ok: false, status: 404, text: async () => '' }),
+  );
+  assert.equal(connection.status, 200);
+  assert.equal(aiConfigService.getConfig(db, config.id).verification_status, 'unverified');
+  aiConfigService.recordVerification(db, config.id, { status: 'verified', capabilities: {} });
 
   aiConfigService.updateConfig(db, log, config.id, { priority: 50 });
   assert.equal(aiConfigService.getConfig(db, config.id).verification_status, 'verified');

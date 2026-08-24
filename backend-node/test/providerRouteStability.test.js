@@ -175,6 +175,71 @@ test('route requests and attempts are idempotent and preserve accepted provider 
   }
 });
 
+test('text routes without canvas capability metadata still start with an empty capability fingerprint', () => {
+  const db = createDb();
+  try {
+    const configId = addConfig(db, {
+      service_type: 'text',
+      provider: 'openai',
+      api_protocol: 'openai',
+      model: JSON.stringify(['gpt-5.6-sol']),
+      default_model: 'gpt-5.6-sol',
+      endpoint: '/chat/completions',
+      settings: JSON.stringify({ models: ['gpt-5.6-sol'] }),
+      logical_model_id: 'gpt-5.6-sol',
+    });
+    stability.createOrGetRouteRequest(db, {
+      id: 'text-route-without-capability-metadata',
+      idempotencyKey: 'text-route-without-capability-metadata',
+      serviceType: 'text',
+      businessType: 'text_generation',
+      logicalModelId: 'gpt-5.6-sol',
+      candidateConfigIds: [configId],
+    });
+
+    const attempt = stability.startAttempt(db, {
+      requestId: 'text-route-without-capability-metadata',
+      configId,
+      upstreamModel: 'gpt-5.6-sol',
+    });
+    const config = aiConfigService.getConfig(db, configId);
+
+    assert.equal(attempt.state, 'submitting');
+    assert.equal(
+      attempt.config_fingerprint,
+      evidenceService.configFingerprint({ ...config, capabilities: {} }),
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('non-text routes still reject missing capability metadata', () => {
+  const db = createDb();
+  try {
+    const configId = addConfig(db, { settings: '{}' });
+    stability.createOrGetRouteRequest(db, {
+      id: 'image-route-without-capability-metadata',
+      idempotencyKey: 'image-route-without-capability-metadata',
+      serviceType: 'image',
+      businessType: 'image_generation',
+      logicalModelId: 'logical-image',
+      candidateConfigIds: [configId],
+    });
+
+    assert.throws(
+      () => stability.startAttempt(db, {
+        requestId: 'image-route-without-capability-metadata',
+        configId,
+        upstreamModel: 'upstream-image',
+      }),
+      /config must include capabilities/,
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test('attempt receipt construction fails closed before inserting when config identity is unavailable', () => {
   const db = createDb();
   try {

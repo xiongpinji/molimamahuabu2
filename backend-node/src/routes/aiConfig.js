@@ -235,17 +235,8 @@ function testConnection(db, log) {
         service_type: body.service_type,
         settings: body.settings,
       });
-      const connectivityOnly = body.service_type === 'video' && isStrictVideoConfig(body);
-      const verified = savedConfigId == null || connectivityOnly
-        ? null
-        : aiConfigService.setVerificationResult(db, savedConfigId, 'verified');
       response.success(res, {
-        message: connectivityOnly ? '连接测试成功（仅验证连通性，真实生成验证状态未变更）' : '连接测试成功',
-        ...(verified ? {
-          verification_status: verified.verification_status,
-          verification_checked_at: verified.verification_checked_at,
-          verified_at: verified.verified_at,
-        } : {}),
+        message: '连接测试成功（仅验证连通性，真实生成验证状态未变更）',
       });
     } catch (err) {
       const failed = savedConfigId == null

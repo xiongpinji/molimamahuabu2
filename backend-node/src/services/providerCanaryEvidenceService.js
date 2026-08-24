@@ -282,6 +282,11 @@ function parsedMaybeJson(value) {
 
 function configFingerprint(config) {
   if (!isPlainObject(config)) throw new TypeError('config must be an object');
+  const serviceType = normalizedOptionalString(
+    config.serviceType ?? config.service_type,
+    'serviceType',
+    { lowercase: true },
+  );
   const apiKey = ownValue(config, ['apiKey', 'api_key'], 'apiKey');
   const baseUrl = ownValue(config, ['baseUrl', 'base_url'], 'baseUrl');
   const protocol = ownValue(config, ['protocol', 'apiProtocol', 'api_protocol'], 'protocol');
@@ -313,15 +318,14 @@ function configFingerprint(config) {
       capabilities = settings.canvas_capabilities_by_model ?? settings.canvas_capabilities ?? settings.capabilities;
     }
   }
-  if (capabilities === undefined) throw new TypeError('config must include capabilities');
+  if (capabilities === undefined) {
+    if (serviceType !== 'text') throw new TypeError('config must include capabilities');
+    capabilities = {};
+  }
   if (typeof apiKey !== 'string') throw new TypeError('apiKey must be a string');
   if (typeof protocol !== 'string') throw new TypeError('protocol must be a string');
   return sha256(stableJson({
-    serviceType: normalizedOptionalString(
-      config.serviceType ?? config.service_type,
-      'serviceType',
-      { lowercase: true },
-    ),
+    serviceType,
     apiKey,
     baseUrl: normalizedRequiredString(baseUrl, 'baseUrl'),
     protocol: protocol.trim().toLowerCase() || 'auto',
