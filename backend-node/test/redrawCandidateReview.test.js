@@ -143,6 +143,77 @@ test('auto 质量全过时追加审核并以 updated_at CAS 绑定当前候选',
   assert.equal(assertCurrentApprovedCandidate(state.ctx, { shot_id: state.shotId }).id, review.id);
 });
 
+test('已批准候选不因下游音频与字幕产物 ID 绑定或替换而失效', async (t) => {
+  const state = setup(t);
+  const review = await reviewCandidate(state.ctx, {
+    shot_id: state.shotId,
+    video_generation_id: state.videoId,
+    decision_source: 'automatic',
+  });
+
+  for (const [audioAssetId, subtitleAssetId] of [[901, 902], [903, 904]]) {
+    state.db.prepare(`
+      UPDATE redraw_shots
+      SET audio_asset_id = ?, subtitle_asset_id = ?
+      WHERE id = ?
+    `).run(audioAssetId, subtitleAssetId, state.shotId);
+
+    assert.equal(getCurrentCandidateReview(state.ctx, { shot_id: state.shotId }).id, review.id);
+    assert.equal(assertCurrentApprovedCandidate(state.ctx, { shot_id: state.shotId }).id, review.id);
+  }
+});
+
+test('已批准候选继续拒绝本地化对白、引用声音资产和参考包漂移', async (t) => {
+  const cases = [
+    ['localized-dialogue', (state) => {
+      state.db.prepare('UPDATE redraw_shots SET localized_dialogue_json = ? WHERE id = ?')
+        .run('[{"speaker_id":"character-1","localized_text":"Changed"}]', state.shotId);
+    }],
+    ['referenced-voice-asset', (state, assetId) => {
+      state.db.prepare('UPDATE redraw_assets SET voice_asset_id = ? WHERE id = ?')
+        .run(502, assetId);
+    }],
+    ['reference-bundle', (state) => {
+      state.db.prepare('UPDATE redraw_shots SET reference_bundle_hash = ? WHERE id = ?')
+        .run(sha256('bundle-v2'), state.shotId);
+    }],
+  ];
+
+  for (const [name, mutate] of cases) {
+    await t.test(name, async (st) => {
+      const state = setup(st);
+      const assetId = Number(state.db.prepare(`
+        INSERT INTO redraw_assets
+          (version_id, tenant_id, user_id, kind, voice_asset_id, approval_status, status, created_at, updated_at)
+        VALUES (?, 'tenant-a', 'user-a', 'voice', 501, 'approved', 'generated', ?, ?)
+      `).run(state.versionId, FIRST, FIRST).lastInsertRowid);
+      state.db.prepare(`
+        UPDATE redraw_shots
+        SET localized_dialogue_json = ?, references_json = ?, reference_bundle_hash = ?
+        WHERE id = ?
+      `).run(
+        '[{"speaker_id":"character-1","localized_text":"Hello"}]',
+        JSON.stringify([{ redraw_asset_id: assetId }]),
+        sha256('bundle-v1'),
+        state.shotId,
+      );
+      await reviewCandidate(state.ctx, {
+        shot_id: state.shotId,
+        video_generation_id: state.videoId,
+        decision_source: 'automatic',
+      });
+
+      mutate(state, assetId);
+
+      assert.equal(getCurrentCandidateReview(state.ctx, { shot_id: state.shotId }), null);
+      assert.throws(
+        () => assertCurrentApprovedCandidate(state.ctx, { shot_id: state.shotId }),
+        { code: 'REDRAW_CANDIDATE_NOT_APPROVED' },
+      );
+    });
+  }
+});
+
 test('A 自动结果始终 needs_review，B 边界结果也降级等待人工', async (t) => {
   const safe = setup(t, { mode: 'safe' });
   const safeReview = await reviewCandidate(safe.ctx, {

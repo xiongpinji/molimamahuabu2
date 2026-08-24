@@ -162,8 +162,6 @@ function dependencyHash(ctx, shot) {
       preparation_state: shot.preparation_state,
       preparation_version: Number(shot.preparation_version),
       preparation_evidence_hash: shot.preparation_evidence_hash,
-      audio_asset_id: shot.audio_asset_id == null ? null : Number(shot.audio_asset_id),
-      subtitle_asset_id: shot.subtitle_asset_id == null ? null : Number(shot.subtitle_asset_id),
     },
     assets,
   }));
