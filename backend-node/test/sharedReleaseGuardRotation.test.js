@@ -568,6 +568,47 @@ test('actual activation has backup, quiescence, music isolation, audit, and thre
   assert.match(source, /rollback.*health|health.*rollback/is);
 });
 
+test('full candidate hashes remain four while the downtime window contains only fast checks', () => {
+  const source = fs.readFileSync(activatorPath, 'utf8');
+  const requiredIndex = (needle, fromIndex = 0) => {
+    const index = source.indexOf(needle, fromIndex);
+    assert.notEqual(index, -1, `missing required activator marker: ${needle}`);
+    return index;
+  };
+  const initialHash = requiredIndex('INITIAL_CANDIDATE_TREE_HASH="$(candidate_tree_hash)"');
+  const postVerificationHash = requiredIndex('POST_VERIFICATION_CANDIDATE_TREE_HASH="$(candidate_tree_hash)"');
+  const preSwitchHash = requiredIndex('PRE_SWITCH_CANDIDATE_TREE_HASH="$(candidate_tree_hash)"');
+  const stop = requiredIndex('"$SYSTEMCTL_BINARY" stop moli-drama.service');
+  const restart = requiredIndex('"$SYSTEMCTL_BINARY" restart moli-drama.service', stop + 1);
+  const postHealthHash = requiredIndex('POST_HEALTH_CANDIDATE_TREE_HASH="$(candidate_tree_hash)"');
+
+  assert.ok(initialHash < postVerificationHash);
+  assert.ok(postVerificationHash < preSwitchHash);
+  assert.ok(preSwitchHash < stop);
+  assert.ok(stop < restart);
+  assert.ok(restart < postHealthHash);
+
+  const downtimeSource = source.slice(stop, restart);
+  assert.doesNotMatch(downtimeSource, /candidate_tree_hash|find\s+[^\n]*-type\s+f|sha256sum\s+[^\n]*candidate/i);
+  assert.match(downtimeSource, /assert_no_active_generation_tasks/);
+  assert.match(downtimeSource, /assert_current_matches/);
+  assert.match(downtimeSource, /assert_root_owned_evidence_tree/);
+  assert.match(downtimeSource, /assert_candidate_lock_state/);
+  assert.match(downtimeSource, /assert_production_env_unchanged/);
+});
+
+test('activation audit records monotonic phase timings without environment values', () => {
+  const source = fs.readFileSync(activatorPath, 'utf8');
+  assert.match(source, /monotonic_ms\(\)/);
+  assert.match(source, /\/proc\/uptime/);
+  for (const field of [
+    'preflight_verification_ms', 'database_backup_ms', 'pre_switch_hash_ms',
+    'service_stop_ms', 'post_stop_checks_ms', 'service_restart_ms',
+    'health_wait_ms', 'post_health_hash_ms', 'downtime_window_ms',
+  ]) assert.match(source, new RegExp(`audit_phase_timing ${field} `));
+  assert.doesNotMatch(source, /audit_event[^\n]*(?:PROVIDER_SECRET|DATABASE_URL|API_KEY|TOKEN)=/);
+});
+
 test('activator rejects a candidate symlink that resolves outside releases root', { skip: !rootBashAvailable }, (t) => {
   const fixture = makeActivatorFixture(t);
   const outside = `${fixture.root}/outside.txt`;
