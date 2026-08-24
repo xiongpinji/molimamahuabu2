@@ -233,7 +233,13 @@ test('参考包 API 使用精确 GET PUT 且保存参数由客户端白名单重
   ]) assert.match(apiSource, new RegExp(field), field)
   assert.doesNotMatch(apiSource, /saveReferenceBundle[\s\S]{0,260}\.\.\.body/)
 
-  const executableSource = apiSource.replace("import request from '@/utils/request'", 'const request = {}')
+  const timelineStateUrl = new URL('../src/utils/redrawTimelineState.js', import.meta.url).href
+  const executableSource = apiSource
+    .replace("import request from '@/utils/request'", 'const request = {}')
+    .replace(
+      "import { controlledReleaseRequestPath } from '@/utils/redrawTimelineState'",
+      `import { controlledReleaseRequestPath } from ${JSON.stringify(timelineStateUrl)}`,
+    )
   const apiModule = await import(`data:text/javascript;base64,${Buffer.from(executableSource).toString('base64')}`)
   const payload = apiModule.buildReferenceBundlePayload({
     expected_updated_at: 'server-shot-version',

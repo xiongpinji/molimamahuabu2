@@ -316,7 +316,13 @@ test('参考准备 API 固定路径且执行 payload 只保留三项白名单', 
     /reference-preparations/,
   ]) assert.match(apiSource, pattern)
 
-  const executableSource = apiSource.replace("import request from '@/utils/request'", 'const request = {}')
+  const timelineStateUrl = new URL('../src/utils/redrawTimelineState.js', import.meta.url).href
+  const executableSource = apiSource
+    .replace("import request from '@/utils/request'", 'const request = {}')
+    .replace(
+      "import { controlledReleaseRequestPath } from '@/utils/redrawTimelineState'",
+      `import { controlledReleaseRequestPath } from ${JSON.stringify(timelineStateUrl)}`,
+    )
   const apiModule = await import(`data:text/javascript;base64,${Buffer.from(executableSource).toString('base64')}`)
   assert.deepEqual(apiModule.buildReferencePreparationPayload({
     quote_hash: 'server-quote',
