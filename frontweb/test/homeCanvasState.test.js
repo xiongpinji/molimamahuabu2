@@ -164,3 +164,14 @@ test('首页右键复制单节点会复制直接入边出边且不改变多选�
   assert.match(homeCanvasSource, /edges\.value = \[\s*\.\.\.edges\.value\.map\(\(edge\) => \(\{ \.\.\.edge, selected: false \}\)\),\s*\.\.\.decorateEdges\(clonedEdges, nextNodes\),\s*\]/)
   assert.match(homeCanvasSource, /function pasteCanvasElements\(\)[\s\S]*const pastedEdges = clipboard\.edges[\s\S]*idMap\.has\(edge\.source\) && idMap\.has\(edge\.target\)/)
 })
+
+test('首页右键复制单节点使用 canvasNodeSequence 生成唯一副本 ID', () => {
+  const duplicateFunctionSource = homeCanvasSource.slice(
+    homeCanvasSource.indexOf('function duplicateContextNode()'),
+    homeCanvasSource.indexOf('async function deleteContextNode()')
+  )
+  assert.match(homeCanvasSource, /function nextDuplicateNodeId\(sourceId\)[\s\S]*canvasNodeSequence\+\+/)
+  assert.match(homeCanvasSource, /function nextDuplicateNodeId\(sourceId\)[\s\S]*nodes\.value\.some\(\(node\) => String\(node\.id\) === String\(candidate\)\)/)
+  assert.match(duplicateFunctionSource, /const nextId = nextDuplicateNodeId\(source\.id\)/)
+  assert.doesNotMatch(duplicateFunctionSource, /Date\.now\(\)/)
+})

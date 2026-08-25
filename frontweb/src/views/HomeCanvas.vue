@@ -781,7 +781,7 @@ function duplicateContextNode() {
   const source = contextMenuNode.value
   if (!source) return
   const previousState = currentCanvasState()
-  const nextId = `${source.id}:copy:${Date.now()}`
+  const nextId = nextDuplicateNodeId(source.id)
   const { node: clone, edges: clonedEdges } = cloneSingleCanvasNodeWithIncidentEdges({
     sourceNode: source,
     edges: edges.value,
@@ -815,6 +815,14 @@ function duplicateContextNode() {
   commitHistory(previousState)
   scheduleSave()
   ElMessage.success('已复制节点')
+}
+
+function nextDuplicateNodeId(sourceId) {
+  let candidate = ''
+  do {
+    candidate = `${sourceId}:copy:${canvasNodeSequence++}`
+  } while (nodes.value.some((node) => String(node.id) === String(candidate)))
+  return candidate
 }
 
 async function deleteContextNode() {
