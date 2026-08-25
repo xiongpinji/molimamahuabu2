@@ -37,13 +37,13 @@ function addRoute(db, values) {
   const config = aiConfigService.createConfig(db, log, {
     service_type: 'image',
     provider: values.provider,
-    api_protocol: 'openai',
+    api_protocol: values.apiProtocol || 'openai',
     name: values.provider,
     base_url: values.baseUrl,
     api_key: 'local-test-key',
     model: [values.upstreamModel],
     default_model: values.upstreamModel,
-    endpoint: '/images/generations',
+    endpoint: values.endpoint || '/images/generations',
     priority: values.priority,
     logical_model_id: 'logical-image',
     failover_enabled: Boolean(values.failover),
@@ -390,6 +390,68 @@ test('2xx 无可读产物为结果未知且不切换', async (t) => {
   assert.deepEqual(requests, ['primary']);
   assert.equal(db.prepare('SELECT error_category FROM generation_route_attempts').get().error_category,
     'artifact_unreadable');
+});
+
+test('Token6688 200 无图片地址进入 needs_attention 且不切换备用供应商', async (t) => {
+  const requests = [];
+  const primary = await listen((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      requests.push('token6688-primary');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{}] }));
+    });
+  });
+  const backup = await listen((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      requests.push('backup');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ url: 'https://cdn.example/should-not-run.png' }] }));
+    });
+  });
+  t.after(async () => Promise.all([close(primary), close(backup)]));
+
+  const db = createDb();
+  t.after(() => db.close());
+  const primaryId = addRoute(db, {
+    provider: 'token6688-primary',
+    apiProtocol: 'token6688',
+    endpoint: '/v1/images/generations',
+    baseUrl: `http://127.0.0.1:${primary.address().port}`,
+    upstreamModel: 'token6688-gpt-image-2',
+    priority: 100,
+  });
+  addRoute(db, {
+    provider: 'private-backup',
+    baseUrl: `http://127.0.0.1:${backup.address().port}`,
+    upstreamModel: 'upstream-backup',
+    priority: 90,
+    failover: true,
+  });
+
+  const result = await imageClient.callImageApi(db, log, {
+    prompt: 'user prompt',
+    model: 'logical-image',
+    image_gen_id: 3202,
+  });
+
+  assert.equal(result.indeterminate, true);
+  assert.match(result.error, /结果未知/);
+  assert.deepEqual(requests, ['token6688-primary']);
+  assert.deepEqual(
+    db.prepare('SELECT state, final_config_id FROM generation_route_requests').get(),
+    { state: 'needs_attention', final_config_id: null },
+  );
+  assert.deepEqual(
+    db.prepare('SELECT config_id, state, error_category FROM generation_route_attempts').get(),
+    { config_id: primaryId, state: 'artifact_unreadable', error_category: 'artifact_unreadable' },
+  );
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS count FROM provider_stability_events WHERE event_type = 'route_switched'")
+      .get().count,
+    0,
+  );
 });
 
 test('用户提示词和负面词原样提交且不注入参考图布局说明', async (t) => {

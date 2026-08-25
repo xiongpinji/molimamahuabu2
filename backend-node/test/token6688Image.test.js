@@ -105,6 +105,57 @@ test('Token6688 图片适配器调用 /v1/images/generations 并读取同步结�
   assert.deepEqual(result, { image_url: 'https://cdn.example/result.jpg' });
 });
 
+test('Token6688 图片提交后网络中断返回结构化结果未知元数据', async () => {
+  global.fetch = async () => {
+    const error = new Error('fetch failed');
+    error.code = 'UND_ERR_SOCKET';
+    throw error;
+  };
+
+  const result = await callToken6688ImageApi({
+    base_url: 'https://qd.token6688.com',
+    api_key: 'secret',
+  }, log, {
+    model: 'token6688-gpt-image-2',
+    prompt: '测试网络中断',
+    size: '1024x1024',
+  });
+
+  assert.equal(result.indeterminate, true);
+  assert.match(result.error, /结果未知/);
+  assert.deepEqual(result.route_meta, {
+    phase: 'submit',
+    requestBodySent: true,
+    transportCode: 'UND_ERR_SOCKET',
+  });
+});
+
+test('Token6688 图片 200 但未返回图片地址时标记产物不可读且结果未知', async () => {
+  global.fetch = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({ data: [{}] }),
+  });
+
+  const result = await callToken6688ImageApi({
+    base_url: 'https://qd.token6688.com',
+    api_key: 'secret',
+  }, log, {
+    model: 'token6688-gpt-image-2',
+    prompt: '测试无结果地址',
+    size: '1024x1024',
+  });
+
+  assert.equal(result.indeterminate, true);
+  assert.match(result.error, /结果未知/);
+  assert.deepEqual(result.route_meta, {
+    phase: 'result',
+    requestBodySent: true,
+    httpStatus: 200,
+    artifactReadable: false,
+  });
+});
+
 test('生产 callImageApi 路由 Token6688，并按已实测上限允许九张参考图', async () => {
   let request;
   global.fetch = async (url, options) => {

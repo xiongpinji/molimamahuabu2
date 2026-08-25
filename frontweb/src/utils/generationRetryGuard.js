@@ -23,10 +23,5 @@ export async function confirmProviderBalanceRetry(errorMessage, confirm) {
 
 export async function confirmUnknownResultRetry(errorMessage, confirm) {
   if (!isIndeterminateGenerationError(errorMessage)) return true
-  try {
-    await confirm()
-    return true
-  } catch (_) {
-    return false
-  }
+  return false
 }

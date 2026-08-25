@@ -148,6 +148,14 @@ function errorMessage(data, raw, fallback) {
   return String(message || raw || fallback).slice(0, 500);
 }
 
+function providerCode(data) {
+  return data?.error?.code || data?.code || data?.error_code || undefined;
+}
+
+function transportCode(error) {
+  return error?.code || error?.cause?.code || error?.errno || undefined;
+}
+
 async function callImageApi(config, log, opts = {}) {
   let body;
   try {
@@ -159,7 +167,10 @@ async function callImageApi(config, log, opts = {}) {
       images: providerMediaUrls(opts.reference_image_urls, opts.files_base_url),
     });
   } catch (error) {
-    return { error: error.message };
+    return {
+      error: error.message,
+      route_meta: { phase: 'prepare', requestBodySent: false, explicitlyRejected: true },
+    };
   }
   const url = `${normalizeBaseUrl(config.base_url)}/v1/images/generations`;
   log?.info?.('[Token6688 image] 提交', {
@@ -170,13 +181,41 @@ async function callImageApi(config, log, opts = {}) {
   });
   try {
     const { response, raw, data } = await requestJson(url, config.api_key, body);
-    if (!response.ok) return { error: `Token6688 图片生成失败 (${response.status}): ${errorMessage(data, raw, '请求失败')}` };
+    if (!response.ok) {
+      return {
+        error: `Token6688 图片生成失败 (${response.status}): ${errorMessage(data, raw, '请求失败')}`,
+        route_meta: {
+          phase: 'response',
+          requestBodySent: true,
+          httpStatus: response.status,
+          providerCode: providerCode(data),
+          explicitlyRejected: response.status >= 400 && response.status < 500,
+        },
+      };
+    }
     const item = Array.isArray(data?.data) ? data.data[0] : null;
     const imageUrl = item?.url || item?.image_url || data?.image_url || data?.result?.url;
     if (imageUrl) return { image_url: imageUrl };
-    return { error: 'Token6688 图片创建成功但未返回图片地址（结果未知）。请先核对供应商记录，不要连续重试。' };
+    return {
+      indeterminate: true,
+      error: 'Token6688 图片创建成功但未返回图片地址（结果未知）。请先核对供应商记录，不要连续重试。',
+      route_meta: {
+        phase: 'result',
+        requestBodySent: true,
+        httpStatus: response.status,
+        artifactReadable: false,
+      },
+    };
   } catch (error) {
-    return { error: `Token6688 图片连接中断，供应商可能已受理或扣费（结果未知），请勿连续重试: ${error.message}` };
+    return {
+      indeterminate: true,
+      error: `Token6688 图片连接中断，供应商可能已受理或扣费（结果未知），请勿连续重试: ${error.message}`,
+      route_meta: {
+        phase: 'submit',
+        requestBodySent: true,
+        transportCode: transportCode(error),
+      },
+    };
   }
 }
 
