@@ -245,3 +245,68 @@ test('合法源状态原子派生为第六镜待人工验收的新状态', () =>
     fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true })
   }
 })
+
+test('第 6 镜只调用本地媒体适配器并保留原失败审计', async () => {
+  const runner = await import('./run-redraw-fumin-full-episode-live.mjs')
+  assert.equal(typeof runner.revalidateDerivedShot6, 'function')
+  const fixture = makeSourceState()
+  const calls = []
+  try {
+    fixture.adapters.revalidateShot6 = (context) => runner.revalidateDerivedShot6(
+      context,
+      'C:/offline/verifier/python.exe',
+      {
+        probeMedia: () => {
+          calls.push('probe')
+          return { width: 496, height: 864, duration_seconds: 8.096, has_audio: true }
+        },
+        validateGeneratedMedia: () => calls.push('validate-media'),
+        transcribeEnglish: () => {
+          calls.push('transcribe')
+          return {
+            language: 'en',
+            probability: 1,
+            text: 'College kids home wash your hands and eat in this life',
+          }
+        },
+        verifyTranscript: () => {
+          calls.push('verify-transcript')
+          return {
+            detected_language: 'en',
+            detected_language_probability: 1,
+            exact_dialogue_present: true,
+          }
+        },
+        sha256File: () => derivedState.R4_SHOT6_ARTIFACT_SHA256,
+        createContactSheet: (_videoPath, outputPath) => {
+          calls.push('contact-sheet')
+          writeFixture(outputPath, 'contact-sheet')
+        },
+        now: () => new Date('2026-08-25T08:00:00.000Z'),
+      },
+    )
+
+    derivedState.deriveFuminFullEpisodeState(fixture.options, fixture.adapters)
+    const manifest = JSON.parse(fs.readFileSync(
+      path.join(fixture.targetRoot, 'private-manifest.json'),
+      'utf8',
+    ))
+
+    assert.deepEqual(calls, [
+      'probe',
+      'validate-media',
+      'transcribe',
+      'verify-transcript',
+      'contact-sheet',
+    ])
+    assert.equal(manifest.tasks[5].status, 'awaiting_human_review')
+    assert.equal(manifest.tasks[5].revalidation.source_status, 'failed')
+    assert.equal(
+      manifest.tasks[5].revalidation.source_error_code,
+      'FUMIN_FULL_EPISODE_EXACT_DIALOGUE_FAILED',
+    )
+    assert.doesNotMatch(JSON.stringify(manifest), /https:\/\//)
+  } finally {
+    fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true })
+  }
+})
