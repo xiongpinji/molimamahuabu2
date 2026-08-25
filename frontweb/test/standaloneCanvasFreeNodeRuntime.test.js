@@ -138,12 +138,20 @@ test('自由节点可从节点内和右键挂载兼容素材，并拒绝修改�
 test('自由节点右键支持复制和删除，复制节点清除运行任务并偏移落点', () => {
   assert.match(contextMenuSource, /type: 'duplicate-free-node'[\s\S]*label: '创建副本'/)
   assert.match(contextMenuSource, /type: 'delete-free-node'[\s\S]*label: '删除节点'/)
+  assert.match(canvasSource, /cloneSingleCanvasNodeWithIncidentEdges/)
   assert.match(canvasSource, /async function duplicateFreeCanvasNode\(nodeOrId\)/)
   assert.match(canvasSource, /x: Number\(source\.position\?\.x \|\| 0\) \+ 40/)
   assert.match(canvasSource, /y: Number\(source\.position\?\.y \|\| 0\) \+ 40/)
   assert.match(canvasSource, /taskId: ''/)
+  assert.match(canvasSource, /allGraphEdges\.value = decorateCanvasEdges\(\[\s*\.\.\.allGraphEdges\.value\.map\(\(edge\) => \(\{ \.\.\.edge, selected: false \}\)\),\s*\.\.\.clonedEdges,\s*\]\)/)
   assert.match(canvasSource, /type === 'duplicate-free-node'[\s\S]*await duplicateFreeCanvasNode\(node\)/)
   assert.match(canvasSource, /type === 'delete-free-node'[\s\S]*await deleteFreeCanvasNode\(node\.id\)/)
+})
+
+test('项目独立画布撤销重做恢复自由节点和副本连线同一快照', () => {
+  assert.match(canvasSource, /restoreCanvasInteractionFreeNodes/)
+  assert.match(canvasSource, /allGraphNodes\.value = restoreCanvasInteractionFreeNodes\(/)
+  assert.match(canvasSource, /allGraphEdges\.value = decorateCanvasEdges\(state\?\.edges \|\| allGraphEdges\.value\)/)
 })
 
 test('独立画布支持 WASD 平移和宽容连线', () => {

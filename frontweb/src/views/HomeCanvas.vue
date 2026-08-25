@@ -249,6 +249,7 @@ import {
   estimateCanvasCredits,
   normalizeCanvasModelCatalog,
 } from '@/utils/canvasModelCapabilities'
+import { cloneSingleCanvasNodeWithIncidentEdges } from '@/utils/canvasDuplicate'
 
 const router = useRouter()
 
@@ -780,21 +781,35 @@ function duplicateContextNode() {
   const source = contextMenuNode.value
   if (!source) return
   const previousState = currentCanvasState()
-  const clone = cloneCanvasValue(source)
-  clone.id = `${source.id}:copy:${Date.now()}`
-  clone.position = {
-    x: Number(source.position?.x || 0) + 40,
-    y: Number(source.position?.y || 0) + 40,
-  }
-  clone.selected = true
-  clone.dragging = false
-  clone.data = {
-    ...clone.data,
-    title: `${clone.data?.title || '未命名节点'} 副本`,
-  }
+  const nextId = `${source.id}:copy:${Date.now()}`
+  const { node: clone, edges: clonedEdges } = cloneSingleCanvasNodeWithIncidentEdges({
+    sourceNode: source,
+    edges: edges.value,
+    nextNodeId: nextId,
+    nextEdgeId: (edge, index) => `${edge.id || 'edge'}:copy:${nextId}:${index}`,
+    createNode: (node) => ({
+      ...node,
+      id: nextId,
+      position: {
+        x: Number(source.position?.x || 0) + 40,
+        y: Number(source.position?.y || 0) + 40,
+      },
+      selected: true,
+      dragging: false,
+      data: {
+        ...node.data,
+        title: `${node.data?.title || '未命名节点'} 副本`,
+      },
+    }),
+  })
   nodes.value = [
     ...nodes.value.map((node) => ({ ...node, selected: false })),
     clone,
+  ]
+  const nextNodes = nodes.value
+  edges.value = [
+    ...edges.value.map((edge) => ({ ...edge, selected: false })),
+    ...decorateEdges(clonedEdges, nextNodes),
   ]
   closeContextMenu()
   commitHistory(previousState)
