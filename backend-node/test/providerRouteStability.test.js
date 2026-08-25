@@ -175,6 +175,46 @@ test('route requests and attempts are idempotent and preserve accepted provider 
   }
 });
 
+test('attempt fingerprint binds to the selected model declared capability snapshot', () => {
+  const db = createDb();
+  try {
+    const model2k = { resolutions: ['2k'], maxReferences: 9 };
+    const model4k = { resolutions: ['4k'], maxReferences: 0 };
+    const configId = addConfig(db, {
+      model: JSON.stringify(['upstream-image', 'upstream-image-4k']),
+      settings: JSON.stringify({
+        canvas_capabilities_by_model: {
+          'upstream-image': model2k,
+          'upstream-image-4k': model4k,
+        },
+      }),
+    });
+    const config = aiConfigService.getConfig(db, configId);
+    const receipt2k = stability.buildAttemptReceipt(db, {
+      configId,
+      upstreamModel: 'upstream-image',
+    });
+    const receipt4k = stability.buildAttemptReceipt(db, {
+      configId,
+      upstreamModel: 'upstream-image-4k',
+    });
+
+    assert.deepEqual(receipt2k.capabilities, model2k);
+    assert.deepEqual(receipt4k.capabilities, model4k);
+    assert.equal(
+      receipt2k.configFingerprint,
+      evidenceService.configFingerprint({ ...config, capabilities: model2k }),
+    );
+    assert.equal(
+      receipt4k.configFingerprint,
+      evidenceService.configFingerprint({ ...config, capabilities: model4k }),
+    );
+    assert.notEqual(receipt2k.configFingerprint, receipt4k.configFingerprint);
+  } finally {
+    db.close();
+  }
+});
+
 test('text routes without canvas capability metadata still start with an empty capability fingerprint', () => {
   const db = createDb();
   try {

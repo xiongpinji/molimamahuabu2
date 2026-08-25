@@ -2589,7 +2589,12 @@ async function submitImageWithConfig(db, log, config, opts, runtime = {}) {
   if (provider === 'fumin_image' && referenceCount > 0) {
     return {
       error: 'fumin GPT Image 当前不支持参考图（供应商文档未声明该能力），请改用已验证支持参考图的图片模型',
-      route_meta: { phase: 'prepare', requestBodySent: false, explicitlyRejected: true },
+      route_meta: {
+        phase: 'prepare',
+        requestBodySent: false,
+        explicitlyRejected: true,
+        providerCode: 'UNSUPPORTED_CAPABILITY',
+      },
     };
   }
   const referenceLimit = configuredImageReferenceLimit(config, model);
@@ -2598,6 +2603,12 @@ async function submitImageWithConfig(db, log, config, opts, runtime = {}) {
       error: referenceLimit === 0
         ? `${model} 当前不支持参考图`
         : `${model} 最多支持 ${referenceLimit} 个图片参考`,
+      route_meta: {
+        phase: 'prepare',
+        requestBodySent: false,
+        explicitlyRejected: true,
+        providerCode: 'UNSUPPORTED_CAPABILITY',
+      },
     };
   }
 
@@ -2855,6 +2866,23 @@ function safeImageRouteFailure(classification, result) {
   return { error: '图片生成失败，请稍后再试。' };
 }
 
+const UNKNOWN_IMAGE_RESULT_CATEGORIES = new Set([
+  'artifact_unreadable',
+  'forbidden_unknown',
+  'result_unknown',
+  'submission_unknown',
+]);
+
+function shouldHoldUnknownImageResult(classification, routeMeta = {}) {
+  return UNKNOWN_IMAGE_RESULT_CATEGORIES.has(classification.category)
+    && (
+      routeMeta.requestBodySent === true
+      || Number.isInteger(routeMeta.httpStatus)
+      || Boolean(String(routeMeta.providerTaskId || '').trim())
+      || routeMeta.artifactReadable === false
+    );
+}
+
 function findLogicalImageRoute(db, logicalModelId, imageServiceType) {
   if (!logicalModelId || !hasColumn(db, 'ai_service_configs', 'logical_model_id')) return null;
   const serviceTypes = imageServiceType === 'storyboard_image'
@@ -3000,9 +3028,9 @@ async function callImageApi(db, log, opts, runtime = {}) {
       const config = candidates[index];
       lastResult = await submitSelectedImageConfig(config, opts);
       if (lastResult?.image_url) return stripImageRouteMeta(lastResult);
-      const classification = classifyProviderFailure(lastResult?.route_meta || {});
-      const uncertainAttempt = ['submission_unknown', 'result_unknown', 'artifact_unreadable', 'forbidden_unknown']
-        .includes(classification.category);
+      const routeMeta = lastResult?.route_meta || {};
+      const classification = classifyProviderFailure(routeMeta);
+      const uncertainAttempt = shouldHoldUnknownImageResult(classification, routeMeta);
       if (uncertainAttempt) {
         const legacyLogicalModelId = String(
           config.logical_model_id || preferredModel || getModelFromConfig(config) || 'legacy-image',
@@ -3031,7 +3059,6 @@ async function callImageApi(db, log, opts, runtime = {}) {
             upstreamModel: getModelFromConfig(config),
           });
           if (attempt) {
-            const routeMeta = lastResult?.route_meta || {};
             providerRouteStability.finishAttempt(db, {
               requestId: route.id,
               attemptNo: attempt.attempt_no,
@@ -3162,8 +3189,7 @@ async function callImageApi(db, log, opts, runtime = {}) {
     }
 
     const classification = classifyProviderFailure(routeMeta);
-    const uncertainAttempt = ['submission_unknown', 'result_unknown', 'artifact_unreadable', 'forbidden_unknown']
-      .includes(classification.category);
+    const uncertainAttempt = shouldHoldUnknownImageResult(classification, routeMeta);
     providerRouteStability.finishAttempt(db, {
       requestId: route.id,
       attemptNo: attempt.attempt_no,
@@ -3189,8 +3215,7 @@ async function callImageApi(db, log, opts, runtime = {}) {
     lastFailure = { classification, result };
     const hasNext = index + 1 < selected.candidates.length;
     if (!classification.mayFailover || !hasNext) {
-      const requestState = ['submission_unknown', 'result_unknown', 'artifact_unreadable', 'forbidden_unknown']
-        .includes(classification.category) ? 'needs_attention' : 'failed';
+      const requestState = uncertainAttempt ? 'needs_attention' : 'failed';
       updateImageRouteRequestState(db, route.id, requestState);
       return safeImageRouteFailure(classification, result);
     }
@@ -3203,8 +3228,10 @@ async function callImageApi(db, log, opts, runtime = {}) {
     });
   }
   const finalCategory = lastFailure?.classification?.category || 'provider_unavailable';
-  const uncertain = ['submission_unknown', 'result_unknown', 'artifact_unreadable', 'forbidden_unknown']
-    .includes(finalCategory);
+  const uncertain = shouldHoldUnknownImageResult(
+    lastFailure?.classification || { category: finalCategory },
+    lastFailure?.result?.route_meta || {},
+  );
   updateImageRouteRequestState(db, route.id, uncertain ? 'needs_attention' : 'failed');
   return safeImageRouteFailure(lastFailure?.classification || { category: finalCategory }, lastFailure?.result);
 }

@@ -79,6 +79,16 @@ function capabilitiesForConfig(config, upstreamModel) {
   return { ...base, ...perModel };
 }
 
+function hasDeclaredCapabilities(config, upstreamModel) {
+  const settings = parseJson(config.settings);
+  const selectedModel = upstreamModel || config.default_model
+    || (Array.isArray(config.model) ? config.model[0] : null);
+  const byModel = parseJson(settings.canvas_capabilities_by_model);
+  const base = parseJson(settings.canvas_capabilities, null);
+  const perModel = selectedModel == null ? null : parseJson(byModel[selectedModel], null);
+  return (base != null && !Array.isArray(base)) || (perModel != null && !Array.isArray(perModel));
+}
+
 function matchesCapabilities(config, requested) {
   const declared = capabilitiesForConfig(config);
   if (!includesNormalized(values(declared, 'resolutions'), requested.resolution, true)) return false;
@@ -316,13 +326,17 @@ function buildAttemptReceipt(db, input) {
   if (!upstreamModel) throw new TypeError('upstream model is required');
   const queryProtocol = normalizedQueryProtocol(input, config);
   const capabilities = capabilitiesForConfig(config, upstreamModel);
+  if (String(config.service_type || input.serviceType || '').trim().toLowerCase() !== 'text'
+      && !hasDeclaredCapabilities(config, upstreamModel)) {
+    throw new TypeError('config must include capabilities');
+  }
   return {
     serviceType: String(config.service_type || input.serviceType || '').trim().toLowerCase(),
     provider: config.provider,
     upstreamModel,
     queryProtocol,
     capabilities,
-    configFingerprint: evidenceService.configFingerprint(config),
+    configFingerprint: evidenceService.configFingerprint({ ...config, capabilities }),
   };
 }
 

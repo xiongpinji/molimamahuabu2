@@ -285,6 +285,9 @@ test('生产 callImageApi 在供应商提交前拒绝未声明的参考图能力
   };
   const db = {
     prepare(sql) {
+      if (/generation_route|provider_stability/i.test(sql)) {
+        throw new Error('本地能力校验失败不得写入供应商结果未知留痕');
+      }
       return {
         all: () => sql.includes('SELECT * FROM ai_service_configs') ? [row] : [],
       };

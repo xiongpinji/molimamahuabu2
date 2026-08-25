@@ -818,6 +818,7 @@ test('真实图片供应商 HTTP 错误日志不记录上游响应正文', async
     model: ['doubao-seedream-4-5'],
     default_model: 'doubao-seedream-4-5',
     is_default: true,
+    settings: JSON.stringify({ canvas_capabilities: {} }),
   });
 
   const result = await imageClient.callImageApi(db, log, {
@@ -878,6 +879,7 @@ test('真实图片供应商成功响应解析失败或无图片时不记录上�
     model: ['doubao-seedream-4-5'],
     default_model: 'doubao-seedream-4-5',
     is_default: true,
+    settings: JSON.stringify({ canvas_capabilities: {} }),
   });
 
   const request = {

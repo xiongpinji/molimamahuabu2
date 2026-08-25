@@ -4,6 +4,7 @@ const http = require('node:http');
 const Database = require('better-sqlite3');
 
 const imageClient = require('../src/services/imageClient');
+const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 function listen(server) {
   return new Promise((resolve, reject) => {
@@ -42,6 +43,12 @@ function createDb() {
       deleted_at TEXT
     );
   `);
+  return db;
+}
+
+function createStabilityDb() {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
   return db;
 }
 
@@ -137,7 +144,7 @@ test('默认模型候选包含已启用的跨模型备用，并保留指定供�
 });
 
 test('默认图片中转返回 503 时不自动重复提交到其他图片模型', async () => {
-  const db = createDb();
+  const db = createStabilityDb();
   const primaryRequests = [];
   const fallbackRequests = [];
   let primaryServer;
@@ -172,8 +179,8 @@ test('默认图片中转返回 503 时不自动重复提交到其他图片模型
     const insert = db.prepare(`
       INSERT INTO ai_service_configs
         (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
-         endpoint, priority, is_default, is_active, created_at, updated_at)
-      VALUES ('image', 'openai', 'openai', ?, ?, ?, ?, ?, '/v1/images/generations', ?, ?, 1, ?, ?)
+         endpoint, priority, is_default, is_active, settings, verification_status, created_at, updated_at)
+      VALUES ('image', 'openai', 'openai', ?, ?, ?, ?, ?, '/v1/images/generations', ?, ?, 1, ?, 'verified', ?, ?)
     `);
     insert.run(
       '默认中转',
@@ -183,6 +190,7 @@ test('默认图片中转返回 503 时不自动重复提交到其他图片模型
       'gpt-image-2-2k',
       100,
       1,
+      JSON.stringify({ canvas_capabilities: {} }),
       now,
       now
     );
@@ -194,6 +202,7 @@ test('默认图片中转返回 503 时不自动重复提交到其他图片模型
       'image-v1-4k',
       90,
       0,
+      JSON.stringify({ canvas_capabilities: {} }),
       now,
       now
     );
@@ -213,6 +222,15 @@ test('默认图片中转返回 503 时不自动重复提交到其他图片模型
     assert.equal(fallbackRequests.length, 0);
     assert.equal(primaryRequests[0].authorization, 'Bearer primary-key');
     assert.equal(primaryRequests[0].body.model, 'gpt-image-2-2k');
+    assert.equal(
+      db.prepare('SELECT state FROM generation_route_requests').get()?.state,
+      'needs_attention',
+    );
+    assert.deepEqual(
+      db.prepare(`SELECT task_state, credit_state FROM provider_stability_events
+        ORDER BY id DESC LIMIT 1`).get(),
+      { task_state: 'needs_attention', credit_state: 'held' },
+    );
   } finally {
     db.close();
     if (primaryServer) await close(primaryServer);
@@ -249,8 +267,8 @@ test('AIHubCC 图片请求 413 时不静默切换模型重新提交', async () =
     const insert = db.prepare(`
       INSERT INTO ai_service_configs
         (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
-         endpoint, priority, is_default, is_active, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'test-key', ?, ?, '/v1/images/generations', ?, ?, 1, ?, ?)
+         endpoint, priority, is_default, is_active, settings, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'test-key', ?, ?, '/v1/images/generations', ?, ?, 1, ?, ?, ?)
     `);
     insert.run(
       'storyboard_image',
@@ -262,6 +280,7 @@ test('AIHubCC 图片请求 413 时不静默切换模型重新提交', async () =
       'gpt-image-2-2k',
       100,
       1,
+      JSON.stringify({ canvas_capabilities: {} }),
       now,
       now
     );
@@ -275,6 +294,7 @@ test('AIHubCC 图片请求 413 时不静默切换模型重新提交', async () =
       'image-v1-4k',
       90,
       0,
+      JSON.stringify({ canvas_capabilities: {} }),
       now,
       now
     );

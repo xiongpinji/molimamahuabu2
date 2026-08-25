@@ -319,6 +319,33 @@ const CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK = {
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
+const PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE =
+  'docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md';
+const PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK = {
+  reason: '2026-08-25 PR #193 图片结果未知安全收口与旧线路兼容 CI 修复获批',
+  approvedBy: 'product-owner 2026-08-25 pr-193-ci-fix-approved',
+  impactTests: [
+    'backend-node/test/djpsdOpenApiImage.test.js',
+    'backend-node/test/imageDuplicateGuard.test.js',
+    'backend-node/test/imageProviderConfigFailover.test.js',
+    'backend-node/test/imageTools.test.js',
+    'backend-node/test/providerRouteImageIntegration.test.js',
+    'backend-node/test/token6688Image.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+  ],
+};
+const PR193_TOUCHED_FEATURE_IDS = new Set([
+  PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
+  SAFE_PROVIDER_FAILOVER_FEATURE_ID,
+  UNKNOWN_STATE_RECONCILIATION_FEATURE_ID,
+  PROACTIVE_CANARY_FEATURE_ID,
+]);
+const PRE_PR193_CURRENT_UNLOCK_BY_FEATURE = {
+  [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: PR184_MAIN_MERGE_UNLOCK,
+  [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: PR184_MAIN_MERGE_UNLOCK,
+  [UNKNOWN_STATE_RECONCILIATION_FEATURE_ID]: PR184_MAIN_MERGE_UNLOCK,
+  [PROACTIVE_CANARY_FEATURE_ID]: CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK,
+};
 const PRE_PR184_CURRENT_UNLOCK_BY_FEATURE = {
   [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: PROVIDER_ROUTE_TTS_CHARACTER_COST_UNLOCK,
   [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: PROVIDER_TASK_LIVE_COMPAT_UNLOCK,
@@ -687,21 +714,22 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   assert.deepEqual(feature.evidence.slice(0, PROACTIVE_CANARY_EVIDENCE.length), PROACTIVE_CANARY_EVIDENCE);
 });
 
-test('画布文本能力兼容修复使用新鲜批准并保留 PR #184 与零成本巡检历史', () => {
+test('PR #193 图片未知结果兼容修复使用新鲜批准并保留画布文本能力批准历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
-  assert.deepEqual(feature.unlock, CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-1), PR184_MAIN_MERGE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-2), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-3), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-4), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-5), PROVIDER_READINESS_TTS_UNLOCK);
-  assert.equal(feature.evidence.at(-1), CANVAS_TEXT_CAPABILITY_HOTFIX_EVIDENCE);
+  assert.deepEqual(feature.unlock, PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-2), PR184_MAIN_MERGE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-3), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-4), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-5), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
+  assert.equal(feature.evidence.at(-1), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
+  assert.equal(feature.evidence.at(-2), CANVAS_TEXT_CAPABILITY_HOTFIX_EVIDENCE);
   assert.deepEqual(
     feature.evidence.slice(
-      -(PROVIDER_READINESS_TTS_EVIDENCE.length + 1),
-      -1,
+      -(PROVIDER_READINESS_TTS_EVIDENCE.length + 2),
+      -2,
     ),
     PROVIDER_READINESS_TTS_EVIDENCE,
   );
@@ -722,11 +750,9 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       : PROVIDER_TASK_RECEIPT_UNLOCK;
     assert.deepEqual(
       feature.unlock,
-      featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
-        ? PR189_CONNECTION_ONLY_VERIFICATION_UNLOCK
-        : featureId === PROACTIVE_CANARY_FEATURE_ID
-          ? CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK
-          : PR184_MAIN_MERGE_UNLOCK,
+      PR193_TOUCHED_FEATURE_IDS.has(featureId)
+        ? PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK
+        : PR189_CONNECTION_ONLY_VERIFICATION_UNLOCK,
     );
     assert.deepEqual(feature.unlockHistory, [
       HISTORICAL_UNLOCK_BY_FEATURE[featureId],
@@ -753,6 +779,9 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       PRE_PR184_CURRENT_UNLOCK_BY_FEATURE[featureId],
       ...(featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID ? [PR184_MAIN_MERGE_UNLOCK] : []),
       ...(featureId === PROACTIVE_CANARY_FEATURE_ID ? [PR184_MAIN_MERGE_UNLOCK] : []),
+      ...(PR193_TOUCHED_FEATURE_IDS.has(featureId)
+        ? [PRE_PR193_CURRENT_UNLOCK_BY_FEATURE[featureId]]
+        : []),
     ]);
     assert.deepEqual(
       feature.evidence.slice(0, HISTORICAL_EVIDENCE_BY_FEATURE[featureId].length),
@@ -771,17 +800,19 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       assert.deepEqual(
         feature.evidence.slice(
           featureId === PROACTIVE_CANARY_FEATURE_ID
-            ? -(PROVIDER_READINESS_TTS_EVIDENCE.length + 1)
+            ? -(PROVIDER_READINESS_TTS_EVIDENCE.length + 2)
             : -PROVIDER_READINESS_TTS_EVIDENCE.length,
-          featureId === PROACTIVE_CANARY_FEATURE_ID ? -1 : undefined,
+          featureId === PROACTIVE_CANARY_FEATURE_ID ? -2 : undefined,
         ),
         PROVIDER_READINESS_TTS_EVIDENCE,
       );
       if (featureId === PROACTIVE_CANARY_FEATURE_ID) {
-        assert.equal(feature.evidence.at(-1), CANVAS_TEXT_CAPABILITY_HOTFIX_EVIDENCE);
+        assert.equal(feature.evidence.at(-1), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
+        assert.equal(feature.evidence.at(-2), CANVAS_TEXT_CAPABILITY_HOTFIX_EVIDENCE);
       }
     } else if (liveCompatTouched) {
-      assert.equal(feature.evidence.at(-1), PROVIDER_TASK_LIVE_COMPAT_EVIDENCE);
+      assert.equal(feature.evidence.at(-1), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
+      assert.equal(feature.evidence.at(-2), PROVIDER_TASK_LIVE_COMPAT_EVIDENCE);
     } else {
       assert.deepEqual(
         feature.evidence.slice(-PROVIDER_TASK_RECEIPT_EVIDENCE.length),
@@ -798,9 +829,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
     assert.deepEqual(
       feature.unlock,
-      featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK
-        : PR184_MAIN_MERGE_UNLOCK,
+      PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK,
     );
   }
 });
@@ -825,7 +854,7 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
   ));
 });
 
-test('实时候选兼容修复刷新四个运行时功能锁并登记补丁测试与证据', () => {
+test('PR #193 图片未知结果兼容修复刷新四个运行时功能锁并登记补丁测试与证据', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   for (const featureId of [
     PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
@@ -835,29 +864,14 @@ test('实时候选兼容修复刷新四个运行时功能锁并登记补丁测�
   ]) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
     assert.ok(feature, `缺少功能锁 ${featureId}`);
-    assert.deepEqual(
-      feature.unlock,
-      featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK
-        : PR184_MAIN_MERGE_UNLOCK,
-    );
-    assert.deepEqual(
-      feature.unlockHistory.at(-1),
-      featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? PR184_MAIN_MERGE_UNLOCK
-        : PRE_PR184_CURRENT_UNLOCK_BY_FEATURE[featureId],
-    );
+    assert.deepEqual(feature.unlock, PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK);
+    assert.deepEqual(feature.unlockHistory.at(-1), PRE_PR193_CURRENT_UNLOCK_BY_FEATURE[featureId]);
     assert.ok(feature.unlockHistory.some((entry) => (
       entry.reason === PROVIDER_TASK_STATUS_DECISION_UNLOCK.reason
         || entry.reason === PROVIDER_TASK_RECEIPT_UNLOCK.reason
     )), `${featureId} 缺少上一阶段批准历史`);
     assert.ok(feature.requiredTests.includes('backend-node/test/providerTaskLiveCompatibility.test.js'));
-    assert.equal(
-      feature.evidence.at(-1),
-      featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? CANVAS_TEXT_CAPABILITY_HOTFIX_EVIDENCE
-        : PROVIDER_TASK_LIVE_COMPAT_EVIDENCE,
-    );
+    assert.equal(feature.evidence.at(-1), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
   }
 });
 
