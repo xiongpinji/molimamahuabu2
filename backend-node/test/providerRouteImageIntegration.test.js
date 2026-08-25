@@ -1,6 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const http = require('node:http');
+const os = require('node:os');
+const path = require('node:path');
 const Database = require('better-sqlite3');
 
 const aiConfigService = require('../src/services/aiConfigService');
@@ -554,6 +557,15 @@ test('用户提示词和负面词原样提交且不注入参考图布局说明',
 });
 
 test('主供应商明确未受理后备用成功只结算一次积分', async (t) => {
+  const previousStorageLocalPath = process.env.STORAGE_LOCAL_PATH;
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-provider-route-image-'));
+  process.env.STORAGE_LOCAL_PATH = storageRoot;
+  t.after(() => {
+    if (previousStorageLocalPath === undefined) delete process.env.STORAGE_LOCAL_PATH;
+    else process.env.STORAGE_LOCAL_PATH = previousStorageLocalPath;
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  });
+
   const primary = await listen((req, res) => {
     req.resume();
     req.on('end', () => {
@@ -619,6 +631,7 @@ test('主供应商明确未受理后备用成功只结算一次积分', async (t
   );
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count, 1);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM generation_route_attempts').get().count, 2);
+  assert.equal(fs.existsSync(path.resolve(process.cwd(), 'data/storage/library/images')), false);
 });
 
 test('同目标已有 needs_attention 时在预扣和调度前 409 阻断且保留 held', () => {

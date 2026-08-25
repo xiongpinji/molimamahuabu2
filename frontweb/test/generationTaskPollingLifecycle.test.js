@@ -134,6 +134,7 @@ test('needs_attention 轮询结果是人工核对终态，不得标记 completed
     code: 'RESULT_UNKNOWN_NEEDS_REVIEW',
     error: 'RESULT_UNKNOWN_NEEDS_REVIEW',
   })
+  store.markDone(meta, { onlyIfRunning: true })
   assert.equal(store.tasks.get(`1:2:${GEN_RESOURCE.SB_IMAGE}:3`).status, 'failed')
 })
 

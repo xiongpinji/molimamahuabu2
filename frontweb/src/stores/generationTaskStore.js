@@ -153,12 +153,15 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
     return key
   }
 
-  function markDone(meta) {
+  function markDone(meta, options = {}) {
     const key = typeof meta === 'string' ? meta : taskKey(meta)
     const existing = tasks.value.get(key)
     const taskId = existing?.taskId || (typeof meta === 'object' ? meta?.taskId : null)
-    const keys = taskId ? _findKeysByTaskId(taskId) : [key]
+    let keys = taskId ? _findKeysByTaskId(taskId) : [key]
     if (keys.length === 0 && key) keys.push(key)
+    if (options.onlyIfRunning) {
+      keys = keys.filter((taskKeyValue) => tasks.value.get(taskKeyValue)?.status === 'running')
+    }
     _finishKeys(keys, 'completed')
   }
 

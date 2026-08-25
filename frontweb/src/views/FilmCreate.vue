@@ -2977,7 +2977,12 @@ import { estimateCanvasCredits, normalizeCanvasModelCatalog } from '@/utils/canv
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
 import { tryAcquireGenerationLock, releaseGenerationLock } from '@/utils/generationSubmitLock'
 import { confirmProviderBalanceRetry, confirmUnknownResultRetry } from '@/utils/generationRetryGuard'
-import { decidePipelineRetry, shouldStopBatchOnGenerationResult } from '@/utils/pipelineRetryPolicy'
+import {
+  decidePipelineRetry,
+  runConcurrentItems,
+  shouldStopBatchOnGenerationResult,
+  submitPreparedGenerationUnlessStopped,
+} from '@/utils/pipelineRetryPolicy'
 import { GRID_LAYOUTS, isGridFrameType } from '@/utils/gridLayout'
 import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
 import { assertVideoDurationAllowed, videoDurationOptionsForCapability } from '@/utils/videoDuration'
@@ -3394,31 +3399,17 @@ async function loadPipelineConcurrency() {
  * @returns {Promise<{paused: boolean}>}
  */
 async function runConcurrently(items, concurrency, fn, options = {}) {
-  let index = 0
-  let anyPaused = false
   const getLabel = options.getLabel || (() => null)
-
-  async function worker() {
-    while (index < items.length) {
-      const i = index++
-      const item = items[i]
+  return runConcurrentItems(items, concurrency, fn, {
+    onStart(item) {
       const label = getLabel(item)
       if (label) pipelineActiveTasks.add(label)
-      try {
-        const result = await fn(item, i)
-        if (result && typeof result === 'object' && result.paused) {
-          anyPaused = true
-          return
-        }
-      } finally {
-        if (label) pipelineActiveTasks.delete(label)
-      }
-    }
-  }
-
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
-  await Promise.allSettled(workers)
-  return { paused: anyPaused }
+    },
+    onFinish(item) {
+      const label = getLabel(item)
+      if (label) pipelineActiveTasks.delete(label)
+    },
+  })
 }
 // ── Composable: Characters ────────────────────────────
 const {
@@ -5038,6 +5029,7 @@ async function onGenerateSbFrameImage(sb, slot) {
     try {
       await storyboardsAPI.update(sb.id, { character_ids: Array.isArray(idsToSave) ? idsToSave : [] })
     } catch (e) {
+      genStore.markFailed(meta, e.message || '保存分镜角色失败')
       ElMessage.warning('保存分镜角色失败')
       return
     }
@@ -5095,10 +5087,11 @@ async function onGenerateSbFrameImage(sb, slot) {
     }
   } catch (e) {
     sb.errorMsg = e.message || '生成失败'
+    genStore.markFailed(meta, sb.errorMsg)
     ElMessage.error(e.message || '生成失败')
   } finally {
     releaseGenerationLock(loadingSet, sb.id)
-    genStore.markDone(meta)
+    genStore.markDone(meta, { onlyIfRunning: true })
   }
 }
 
@@ -5149,6 +5142,7 @@ async function onGenerateSbImage(sb) {
       await storyboardsAPI.update(sb.id, { character_ids: Array.isArray(idsToSave) ? idsToSave : [] })
     } catch (e) {
       console.warn('[分镜图] 保存角色勾选失败', e)
+      genStore.markFailed(meta, e.message || '保存分镜角色失败，请稍后重试')
       ElMessage.warning('保存分镜角色失败，请稍后重试')
       return
     }
@@ -5173,10 +5167,11 @@ async function onGenerateSbImage(sb) {
   } catch (e) {
     console.error(e)
     sb.errorMsg = e.message || '生成失败'
+    genStore.markFailed(meta, sb.errorMsg)
     ElMessage.error(e.message || '生成失败')
   } finally {
     releaseGenerationLock(generatingSbImageIds, sb.id)
-    genStore.markDone(meta)
+    genStore.markDone(meta, { onlyIfRunning: true })
   }
 }
 
@@ -7940,18 +7935,26 @@ async function startBatchImageGeneration() {
           let frameTypeForCreate = gridMode.value !== 'single' ? gridMode.value : undefined
           if (useFirstLast) {
             // 首尾帧模式下，批量生成分镜图也必须走专业首帧提示词（含 layout_description 空间合同、专用 system prompt 等）
-            prompt = await ensureProfessionalFramePrompt(sb, 'first')
             frameTypeForCreate = 'storyboard_first'
           }
-          const res = await imagesAPI.create({
-            storyboard_id: sb.id,
-            drama_id: dramaId.value,
-            prompt,
-            ...imageOptions,
-            style: getSelectedStyle(),
-            frame_type: frameTypeForCreate,
-            aspect_ratio: projectAspectRatio.value || '16:9',
+          const submission = await submitPreparedGenerationUnlessStopped({
+            isStopped: () => batchImageStopping.value,
+            prepare: async () => ({
+              prompt: useFirstLast ? await ensureProfessionalFramePrompt(sb, 'first') : prompt,
+              frameTypeForCreate,
+            }),
+            submit: ({ prompt: preparedPrompt, frameTypeForCreate: preparedFrameType }) => imagesAPI.create({
+              storyboard_id: sb.id,
+              drama_id: dramaId.value,
+              prompt: preparedPrompt,
+              ...imageOptions,
+              style: getSelectedStyle(),
+              frame_type: preparedFrameType,
+              aspect_ratio: projectAspectRatio.value || '16:9',
+            }),
           })
+          if (submission.stopped) return
+          const res = submission.result
           if (res?.task_id) {
             const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id))
             if (pollRes?.status === 'failed') {
@@ -8697,22 +8700,30 @@ async function runOneClickPipeline(textOnly = false) {
             let prompt = sb.polished_prompt || sb.image_prompt || sb.description || ''
             let frameTypeForCreate = undefined
             if (useFirstLast) {
-              prompt = await ensureProfessionalFramePrompt(sb, 'first')
               frameTypeForCreate = 'storyboard_first'
             }
-            const res = await imagesAPI.create({
-              storyboard_id: sb.id,
-              drama_id: dramaIdVal,
-              prompt,
-              ...imageOptions,
-              style,
-              frame_type: frameTypeForCreate,
-              aspect_ratio: projectAspectRatio.value || '16:9',
+            const submission = await submitPreparedGenerationUnlessStopped({
+              isStopped: () => pipelinePaused.value || pipelineAbortRequested.value,
+              prepare: async () => ({
+                prompt: useFirstLast ? await ensureProfessionalFramePrompt(sb, 'first') : prompt,
+                frameTypeForCreate,
+              }),
+              submit: ({ prompt: preparedPrompt, frameTypeForCreate: preparedFrameType }) => imagesAPI.create({
+                storyboard_id: sb.id,
+                drama_id: dramaIdVal,
+                prompt: preparedPrompt,
+                ...imageOptions,
+                style,
+                frame_type: preparedFrameType,
+                aspect_ratio: projectAspectRatio.value || '16:9',
+              }),
             })
+            if (submission.stopped) return { paused: true }
+            const res = submission.result
             if (res?.task_id) {
               const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id))
               if (result?.paused) return { paused: true }
-              if (result?.error) throw new Error(result.error)
+              if (result?.error) throw createImageGenerationTerminalError(result)
             } else await loadSingleStoryboardMedia(sb.id)
           })
           if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
@@ -9050,22 +9061,30 @@ async function runRepairPipeline() {
           let prompt = sb.polished_prompt || sb.image_prompt || sb.description || ''
           let frameTypeForCreate = undefined
           if (useFirstLast) {
-            prompt = await ensureProfessionalFramePrompt(sb, 'first')
             frameTypeForCreate = 'storyboard_first'
           }
-          const res = await imagesAPI.create({
-            storyboard_id: sb.id,
-            drama_id: dramaIdVal,
-            prompt,
-            ...imageOptions,
-            style,
-            frame_type: frameTypeForCreate,
-            aspect_ratio: projectAspectRatio.value || '16:9',
+          const submission = await submitPreparedGenerationUnlessStopped({
+            isStopped: () => pipelinePaused.value || pipelineAbortRequested.value,
+            prepare: async () => ({
+              prompt: useFirstLast ? await ensureProfessionalFramePrompt(sb, 'first') : prompt,
+              frameTypeForCreate,
+            }),
+            submit: ({ prompt: preparedPrompt, frameTypeForCreate: preparedFrameType }) => imagesAPI.create({
+              storyboard_id: sb.id,
+              drama_id: dramaIdVal,
+              prompt: preparedPrompt,
+              ...imageOptions,
+              style,
+              frame_type: preparedFrameType,
+              aspect_ratio: projectAspectRatio.value || '16:9',
+            }),
           })
+          if (submission.stopped) return { paused: true }
+          const res = submission.result
           if (res?.task_id) {
             const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id))
             if (result?.paused) return { paused: true }
-            if (result?.error) throw new Error(result.error)
+            if (result?.error) throw createImageGenerationTerminalError(result)
           } else await loadSingleStoryboardMedia(sb.id)
         })
         if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
