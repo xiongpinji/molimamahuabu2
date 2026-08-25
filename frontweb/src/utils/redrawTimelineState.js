@@ -9,6 +9,14 @@ function statusRank(status) {
   return 0
 }
 
+const DIALOGUE_QUOTE_HASH = /^[a-f0-9]{64}$/
+
+export function dialogueQuoteCredits(quote) {
+  const credits = quote?.total_credits
+  if (quote?.status !== 'ready' || quote?.priced !== true) return null
+  return Number.isSafeInteger(credits) && credits > 0 ? credits : null
+}
+
 export function normalizeTimelineShots(shots = []) {
   return [...(Array.isArray(shots) ? shots : [])]
     .map((shot) => ({
@@ -26,14 +34,15 @@ export function normalizeTimelineShots(shots = []) {
 
 export function canStartDialogue(quote, task) {
   if (task && ['pending', 'processing', 'completed'].includes(task.status)) return false
-  return Boolean(quote?.priced && typeof quote.quote_hash === 'string' && quote.quote_hash.length >= 32)
+  return dialogueQuoteCredits(quote) !== null
+    && DIALOGUE_QUOTE_HASH.test(String(quote?.quote_hash || ''))
 }
 
 export function canStartComposition(shots = [], dialogueTask, compositionTask) {
   if (dialogueTask?.status !== 'completed') return false
   if (compositionTask && ['pending', 'processing'].includes(compositionTask.status)) return false
   const normalized = normalizeTimelineShots(shots)
-  return normalized.length > 0 && normalized.every((shot) => shot.status === 'completed')
+  return normalized.length > 0 && normalized.every((shot) => ['completed', 'approved', 'included'].includes(shot.status))
 }
 
 export function shouldPollTask(task) {
@@ -87,4 +96,39 @@ export function worstShotStatus(shots = []) {
   return normalizeTimelineShots(shots).reduce((status, shot) => (
     statusRank(shot.status) > statusRank(status) ? shot.status : status
   ), 'completed')
+}
+
+export function normalizeReleaseReadiness(value = {}) {
+  const blockers = Array.isArray(value?.blockers)
+    ? value.blockers
+      .filter((item) => item && typeof item === 'object')
+      .map((item) => ({
+        shot_id: item.shot_id == null ? null : Number(item.shot_id),
+        reason_code: String(item.reason_code || 'release_input_not_ready'),
+      }))
+    : []
+  return {
+    ready: value?.ready === true,
+    readiness_hash: typeof value?.readiness_hash === 'string' ? value.readiness_hash : null,
+    blockers,
+    shot_count: Number(value?.shot_count || 0),
+    quality_summary: value?.quality_summary || null,
+  }
+}
+
+const RELEASE_ARTIFACT_URL = /^\/(?:api\/v1\/)?redraw\/exports\/([1-9]\d*)\/download\/(mp4|srt|vtt)$/
+const RELEASE_REPORT_URL = /^\/(?:api\/v1\/)?redraw\/exports\/([1-9]\d*)$/
+
+export function controlledReleaseRequestPath(value, report = false) {
+  if (typeof value !== 'string') return ''
+  const match = (report === true ? RELEASE_REPORT_URL : RELEASE_ARTIFACT_URL).exec(value)
+  if (!match) return ''
+  return report === true
+    ? `/redraw/exports/${match[1]}`
+    : `/redraw/exports/${match[1]}/download/${match[2]}`
+}
+
+export function controlledReleaseDownloadUrl(value, report = false) {
+  const requestPath = controlledReleaseRequestPath(value, report)
+  return requestPath ? `/api/v1${requestPath}` : ''
 }

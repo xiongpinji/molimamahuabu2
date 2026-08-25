@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
@@ -28,6 +29,9 @@ const redrawWorkflowEventService = require('../services/redrawWorkflowEventServi
 const redrawCharacterPlanService = require('../services/redrawCharacterPlanService');
 const redrawPreparationGateService = require('../services/redrawPreparationGateService');
 const redrawReferencePreparationOrchestrator = require('../services/redrawReferencePreparationOrchestrator');
+const redrawCandidateReviewService = require('../services/redrawCandidateReviewService');
+const redrawEpisodeReleaseService = require('../services/redrawEpisodeReleaseService');
+const { normalizeVideoProviderResult } = require('../services/redrawProviderAdapters');
 const modelPriceService = require('../services/modelPriceService');
 const assetService = require('../services/assetService');
 const uploadServiceModule = require('../services/uploadService');
@@ -495,6 +499,7 @@ const REFERENCE_PREPARATION_CONFLICT_CODES = new Set([
   'REDRAW_REFERENCE_PREPARATION_BLOCKED',
   'REDRAW_REFERENCE_PREPARATION_CONFIRMATION_REQUIRED',
   'REDRAW_REFERENCE_PREPARATION_QUOTE_MISMATCH',
+  'REDRAW_REFERENCE_PREPARATION_NEEDS_ATTENTION',
   'REDRAW_REFERENCE_PREPARATION_IDEMPOTENCY_CONFLICT',
   'REDRAW_REFERENCE_PREPARATION_CONFLICT',
   'REDRAW_REFERENCE_PREPARATION_SCHEDULE_FAILED',
@@ -1420,6 +1425,8 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   const dialogueOrchestrator = options.dialogueOrchestrator || redrawDialogueOrchestrator;
   const compositionService = options.compositionService || redrawCompositionService;
   const exportService = options.exportService || redrawExportService;
+  const candidateReviewService = options.candidateReviewService || redrawCandidateReviewService;
+  const episodeReleaseService = options.episodeReleaseService || redrawEpisodeReleaseService;
   const cfg = options.cfg || {};
   const quoteAnalysis = options.quoteAnalysis || analysisQuote();
   const canReadArtifact = options.canReadArtifact || createCanReadArtifact(db, cfg);
@@ -1900,15 +1907,214 @@ function compositionStartInput(body) {
   return { idempotencyKey, audioMode };
 }
 
+const CANDIDATE_REVIEW_ALLOWED_FIELDS = new Set([
+  'decision', 'reason_code', 'candidate_sha256', 'expected_updated_at',
+]);
+const RELEASE_ALLOWED_FIELDS = new Set(['idempotency_key', 'readiness_hash']);
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const SAFE_REASON_CODE = /^[a-z0-9_.:-]{1,96}$/i;
+
+function strictDeliveryObject(body, allowedFields, code, message) {
+  const input = body == null ? {} : body;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw codedRouteError(code, message);
+  }
+  const prototype = Object.getPrototypeOf(input);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw codedRouteError(code, message);
+  }
+  for (const key of Object.keys(input)) {
+    if (!allowedFields.has(key)) throw codedRouteError(code, message);
+  }
+  return Object.fromEntries(Object.keys(input).map((key) => [key, input[key]]));
+}
+
+function candidateReviewInput(body) {
+  const input = strictDeliveryObject(
+    body,
+    CANDIDATE_REVIEW_ALLOWED_FIELDS,
+    'REDRAW_CANDIDATE_REVIEW_INPUT_INVALID',
+    '候选审核只接受 decision、reason_code、candidate_sha256 和 expected_updated_at',
+  );
+  const decision = String(input.decision || '').trim();
+  if (!['approved', 'rejected'].includes(decision)) {
+    throw codedRouteError('REDRAW_CANDIDATE_REVIEW_INPUT_INVALID', 'decision 必须是 approved 或 rejected');
+  }
+  const expectedUpdatedAt = String(input.expected_updated_at || '').trim();
+  if (!expectedUpdatedAt || Number.isNaN(Date.parse(expectedUpdatedAt))) {
+    throw codedRouteError('REDRAW_CANDIDATE_REVIEW_INPUT_INVALID', 'expected_updated_at 必须是服务端返回的时间');
+  }
+  const candidateSha256 = String(input.candidate_sha256 || '').trim().toLowerCase();
+  if (!SHA256_PATTERN.test(candidateSha256)) {
+    throw codedRouteError('REDRAW_CANDIDATE_REVIEW_INPUT_INVALID', 'candidate_sha256 必须是服务端返回的 64 位哈希');
+  }
+  const reasonCode = String(input.reason_code || (decision === 'rejected' ? 'human_rejected' : '')).trim();
+  if (reasonCode && !SAFE_REASON_CODE.test(reasonCode)) {
+    throw codedRouteError('REDRAW_CANDIDATE_REVIEW_INPUT_INVALID', 'reason_code 无效');
+  }
+  return {
+    decision,
+    reason_codes: reasonCode ? [reasonCode] : [],
+    candidate_sha256: candidateSha256,
+    expected_updated_at: expectedUpdatedAt,
+  };
+}
+
+function releaseInput(body) {
+  const input = strictDeliveryObject(
+    body,
+    RELEASE_ALLOWED_FIELDS,
+    'REDRAW_RELEASE_INPUT_INVALID',
+    'release 只接受 idempotency_key 和 readiness_hash',
+  );
+  const idempotencyKey = String(input.idempotency_key || '').trim();
+  const readinessHash = String(input.readiness_hash || '').trim().toLowerCase();
+  if (!idempotencyKey || idempotencyKey.length > 160) {
+    throw codedRouteError('REDRAW_RELEASE_INPUT_INVALID', 'idempotency_key 无效');
+  }
+  if (!SHA256_PATTERN.test(readinessHash)) {
+    throw codedRouteError('REDRAW_RELEASE_INPUT_INVALID', 'readiness_hash 必须是服务端返回的 64 位哈希');
+  }
+  return { idempotencyKey, readinessHash };
+}
+
+function publicCandidateReview(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    version_id: Number(row.version_id),
+    shot_id: Number(row.shot_id),
+    video_generation_id: Number(row.video_generation_id),
+    candidate_sha256: row.candidate_sha256,
+    dependency_hash: row.dependency_hash,
+    review_version: Number(row.review_version),
+    decision: row.decision,
+    decision_source: row.decision_source,
+    reason_codes: Array.isArray(row.reason_codes)
+      ? row.reason_codes
+      : parseJSON(row.reason_codes_json, []),
+    metrics: row.metrics && typeof row.metrics === 'object'
+      ? row.metrics
+      : parseJSON(row.metrics_json, {}),
+    reviewer_id: row.reviewer_id || null,
+    created_at: row.created_at,
+  };
+}
+
+function releaseDownloadUrls(exportId) {
+  const id = Number(exportId);
+  return {
+    mp4: `/api/v1/redraw/exports/${id}/download/mp4`,
+    srt: `/api/v1/redraw/exports/${id}/download/srt`,
+    vtt: `/api/v1/redraw/exports/${id}/download/vtt`,
+    report: `/api/v1/redraw/exports/${id}`,
+  };
+}
+
 function parseManifestSafe(row) {
   return parseJSON(row?.manifest_json, {});
+}
+
+function reportInteger(value, minimum = 0) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= minimum ? number : null;
+}
+
+function reportHash(value) {
+  const digest = String(value || '').trim().toLowerCase();
+  return SHA256_PATTERN.test(digest) ? digest : null;
+}
+
+function reportToken(value, pattern, maxLength) {
+  const token = String(value || '').trim();
+  return token && token.length <= maxLength && pattern.test(token) ? token : null;
+}
+
+function reportQualitySummary(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const approved = reportInteger(value.approved_shot_count);
+  const automatic = reportInteger(value.automatic_review_count);
+  const human = reportInteger(value.human_review_count);
+  if (value.decision !== 'approved' || approved == null || automatic == null || human == null
+    || automatic + human !== approved) return null;
+  return {
+    decision: 'approved',
+    approved_shot_count: approved,
+    automatic_review_count: automatic,
+    human_review_count: human,
+  };
+}
+
+function reportEpisodeRelease(value, expectedHash) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || value.schema_version !== 'redraw-episode-release-v1'
+    || !Array.isArray(value.shots) || value.shots.length === 0) return null;
+  const qualitySummary = reportQualitySummary(value.quality_summary);
+  const releaseHash = reportHash(value.release_hash);
+  const projectId = numericId(value.project_id);
+  const workId = numericId(value.work_id);
+  const versionId = numericId(value.version_id);
+  const locale = reportToken(value.locale, /^[a-z0-9][a-z0-9._-]*$/i, 32);
+  const rawMarket = String(value.market || '').trim();
+  const market = rawMarket === '' ? '' : reportToken(rawMarket, /^[a-z0-9][a-z0-9 ._-]*$/i, 64);
+  if (!qualitySummary || !releaseHash || releaseHash !== expectedHash
+    || !projectId || !workId || !versionId || !locale || market == null
+    || qualitySummary.approved_shot_count !== value.shots.length) return null;
+  const shots = value.shots.map((shot) => {
+    if (!shot || typeof shot !== 'object' || Array.isArray(shot)) return null;
+    const startMs = reportInteger(shot.start_ms);
+    const endMs = reportInteger(shot.end_ms, 1);
+    const item = {
+      shot_id: numericId(shot.shot_id),
+      shot_index: reportInteger(shot.shot_index, 1),
+      start_ms: startMs,
+      end_ms: endMs,
+      candidate_review_id: numericId(shot.candidate_review_id),
+      candidate_sha256: reportHash(shot.candidate_sha256),
+      audio_sha256: reportHash(shot.audio_sha256),
+      subtitle_sha256: reportHash(shot.subtitle_sha256),
+      dependency_hash: reportHash(shot.dependency_hash),
+    };
+    return Object.values(item).some((entry) => entry == null) || endMs <= startMs ? null : item;
+  });
+  if (shots.some((shot) => shot == null)) return null;
+  return {
+    schema_version: 'redraw-episode-release-v1',
+    project_id: projectId,
+    work_id: workId,
+    version_id: versionId,
+    locale,
+    market,
+    shots,
+    quality_summary: qualitySummary,
+    release_hash: releaseHash,
+  };
+}
+
+function completedReleaseReport(row, manifest) {
+  if (row.status !== 'completed') return null;
+  const releaseHash = reportHash(row.release_hash);
+  if (!releaseHash) return null;
+  const episodeRelease = reportEpisodeRelease(
+    manifest.episode_release || manifest.plan?.episode_release,
+    releaseHash,
+  );
+  const qualitySummary = reportQualitySummary(parseJSON(row.quality_summary_json, null));
+  if (!episodeRelease || !qualitySummary
+    || JSON.stringify(qualitySummary) !== JSON.stringify(episodeRelease.quality_summary)) return null;
+  try {
+    redrawEpisodeReleaseService.assertReleaseHash(episodeRelease, releaseHash);
+  } catch (_) {
+    return null;
+  }
+  return { release_hash: releaseHash, quality_summary: qualitySummary, episode_release: episodeRelease };
 }
 
 function exportSummary(row) {
   const manifest = parseManifestSafe(row);
   const inputs = manifest.plan || manifest.inputs || {};
   const outputs = manifest.outputs || {};
-  return {
+  const summary = {
     id: Number(row.id),
     version_id: Number(row.version_id),
     export_type: row.export_type,
@@ -1935,6 +2141,12 @@ function exportSummary(row) {
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
+  if (row.status === 'completed') {
+    summary.downloads = releaseDownloadUrls(row.id);
+    const report = completedReleaseReport(row, manifest);
+    if (report) Object.assign(summary, report);
+  }
+  return summary;
 }
 
 function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
@@ -1960,6 +2172,31 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
   }
   log?.error?.({ err: error, ...meta }, fallbackMessage);
   return response.internalError(res, fallbackMessage);
+}
+
+function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
+  const code = String(error?.code || '');
+  if (['REDRAW_CANDIDATE_NOT_FOUND', 'REDRAW_EPISODE_RELEASE_VERSION_NOT_FOUND', 'REDRAW_VERSION_NOT_FOUND']
+    .includes(code)) {
+    return response.error(res, 404, code, error.message || fallbackMessage);
+  }
+  if (code === 'REDRAW_CANDIDATE_REVIEW_INPUT_INVALID'
+    || code === 'REDRAW_CANDIDATE_REVIEW_SHA_REQUIRED'
+    || code === 'REDRAW_CANDIDATE_REVIEW_EXPECTED_UPDATED_AT_REQUIRED'
+    || code === 'REDRAW_RELEASE_INPUT_INVALID') {
+    return response.error(res, 400, code, error.message || fallbackMessage);
+  }
+  if (code === 'REDRAW_RELEASE_READINESS_CONFLICT'
+    || code === 'REDRAW_CANDIDATE_REVIEW_CONFLICT'
+    || code === 'REDRAW_CANDIDATE_REVIEW_STALE'
+    || code === 'REDRAW_CANDIDATE_NOT_READY'
+    || code === 'REDRAW_CANDIDATE_NOT_APPROVED'
+    || code.startsWith('REDRAW_EPISODE_RELEASE_')
+    || code.startsWith('REDRAW_COMPOSITION_')) {
+    return response.error(res, 409, code, error.message || fallbackMessage);
+  }
+  log?.error?.({ err: error, ...meta }, fallbackMessage);
+  return response.error(res, 500, 'INTERNAL_ERROR', fallbackMessage);
 }
 
   function taskMetadata(row) {
@@ -3252,6 +3489,354 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     }
   }
 
+  function generationSummary(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.error(res, 404, 'REDRAW_VERSION_NOT_FOUND', '本地化版本不存在');
+    try {
+      const project = db.prepare(`
+        SELECT p.id, p.execution_mode, p.budget_limit_credits, p.max_auto_attempts_per_shot
+        FROM redraw_projects p
+        JOIN redraw_works w ON w.project_id = p.id
+        WHERE w.id = ? AND p.tenant_id = ? AND p.user_id = ?
+          AND w.tenant_id = ? AND w.user_id = ?
+          AND p.deleted_at IS NULL AND w.deleted_at IS NULL
+        LIMIT 1
+      `).get(
+        Number(version.work_id), currentOwner.tenantId, currentOwner.userId,
+        currentOwner.tenantId, currentOwner.userId,
+      );
+      if (!project) return response.error(res, 404, 'REDRAW_VERSION_NOT_FOUND', '本地化版本不存在');
+      const totals = db.prepare(`
+        SELECT
+          COALESCE(SUM(CASE WHEN r.status = 'confirmed' THEN r.amount ELSE 0 END), 0) AS spent,
+          COALESCE(SUM(CASE WHEN r.status = 'held' THEN r.amount ELSE 0 END), 0) AS held
+        FROM tenant_usage_reservations r
+        JOIN redraw_shots s ON CAST(s.id AS TEXT) = r.resource_id
+          AND s.tenant_id = ? AND s.user_id = ?
+        JOIN redraw_versions v ON v.id = s.version_id
+        JOIN redraw_works w ON w.id = v.work_id
+        WHERE r.tenant_id = ? AND r.resource_type = 'redraw_shot'
+          AND w.project_id = ?
+      `).get(currentOwner.tenantId, currentOwner.userId, currentOwner.tenantId, Number(project.id));
+      const spent = Number(totals.spent || 0);
+      const held = Number(totals.held || 0);
+      const limit = project.budget_limit_credits == null ? null : Number(project.budget_limit_credits);
+      const remaining = limit == null ? null : Math.max(0, limit - spent - held);
+      const rows = db.prepare(`
+        SELECT s.id, s.shot_index, s.status, s.updated_at,
+               vg.id AS video_generation_id, vg.status AS video_status,
+               vg.provider_task_id, vg.local_path,
+               t.metadata AS task_metadata,
+               (
+                 SELECT amount FROM tenant_usage_reservations prior_reservation
+                 WHERE prior_reservation.tenant_id = s.tenant_id
+                   AND prior_reservation.resource_type = 'redraw_shot'
+                   AND prior_reservation.resource_id = CAST(s.id AS TEXT)
+                 ORDER BY prior_reservation.created_at DESC, prior_reservation.id DESC
+                 LIMIT 1
+               ) AS last_attempt_credits,
+               EXISTS (
+                 SELECT 1 FROM tenant_usage_reservations held_reservation
+                 WHERE held_reservation.tenant_id = s.tenant_id
+                   AND held_reservation.resource_type = 'redraw_shot'
+                   AND held_reservation.resource_id = CAST(s.id AS TEXT)
+                   AND held_reservation.status = 'held'
+               ) AS has_held_reservation
+        FROM redraw_shots s
+        LEFT JOIN video_generations vg ON vg.id = s.video_generation_id
+          AND vg.tenant_id = s.tenant_id AND vg.user_id = s.user_id AND vg.deleted_at IS NULL
+        LEFT JOIN async_tasks t ON t.id = vg.task_id
+          AND t.tenant_id = s.tenant_id AND t.user_id = s.user_id AND t.deleted_at IS NULL
+        WHERE s.version_id = ? AND s.tenant_id = ? AND s.user_id = ? AND s.deleted_at IS NULL
+        ORDER BY s.batch_index, s.shot_index, s.id
+      `).all(Number(version.id), currentOwner.tenantId, currentOwner.userId);
+      const maxAttempts = project.max_auto_attempts_per_shot == null
+        ? null
+        : Number(project.max_auto_attempts_per_shot);
+      const shots = rows.map((row) => {
+        const metadata = parseJSON(row.task_metadata, {})?.redraw_shot || {};
+        const attempt = Number.isSafeInteger(Number(metadata.attempt)) && Number(metadata.attempt) > 0
+          ? Number(metadata.attempt)
+          : 0;
+        const syntheticStatus = row.video_status || ({
+          pending: 'accepted', processing: 'running', failed: 'failed_terminal',
+          needs_attention: 'submission_unknown', candidate_ready: 'completed_candidate',
+          approved: 'completed_candidate', included: 'completed_candidate', completed: 'completed_candidate',
+        }[row.status] || 'submission_unknown');
+        const providerStatus = !row.video_generation_id && syntheticStatus === 'completed_candidate'
+          ? 'result_unavailable'
+          : syntheticStatus;
+        const normalized = normalizeVideoProviderResult({
+          status: providerStatus,
+          provider_task_id: row.provider_task_id,
+          ...(String(providerStatus) === 'completed' && row.local_path
+            ? { local_path: row.local_path }
+            : String(providerStatus) === 'completed_candidate'
+              ? { local_path: row.local_path || 'server-verified' }
+              : {}),
+        });
+        let canStartNextAttempt = normalized.status === 'failed_terminal' && !row.has_held_reservation;
+        let policyReason = null;
+        if (canStartNextAttempt && String(project.execution_mode) === 'auto') {
+          if (maxAttempts == null || attempt >= maxAttempts) {
+            canStartNextAttempt = false;
+            policyReason = 'auto_attempt_limit_reached';
+          } else if (!Number.isSafeInteger(Number(row.last_attempt_credits))
+            || Number(row.last_attempt_credits) <= 0) {
+            canStartNextAttempt = false;
+            policyReason = 'pricing_unavailable';
+          } else if (remaining == null || remaining < Number(row.last_attempt_credits)) {
+            canStartNextAttempt = false;
+            policyReason = 'project_budget_exceeded';
+          }
+        }
+        if (normalized.status === 'submission_unknown') policyReason = 'submission_state_uncertain';
+        return {
+          shot_id: Number(row.id),
+          shot_index: Number(row.shot_index),
+          status: row.status,
+          attempt,
+          provider_status: normalized.status,
+          provider_task_id: normalized.provider_task_id || null,
+          can_start_next_attempt: canStartNextAttempt,
+          next_attempt: canStartNextAttempt ? attempt + 1 : null,
+          policy_reason: policyReason,
+          updated_at: row.updated_at,
+        };
+      });
+      return response.success(res, {
+        version_id: Number(version.id),
+        execution_mode: String(project.execution_mode || 'safe'),
+        budget: { limit, spent, held, remaining },
+        shots,
+      });
+    } catch (error) {
+      log?.error?.({ err: error, versionId: version.id }, '读取交付生成摘要失败');
+      return response.error(res, 500, 'INTERNAL_ERROR', '读取交付生成摘要失败');
+    }
+  }
+
+  function candidateReviewContext(currentOwner) {
+    return {
+      db,
+      log,
+      tenantId: currentOwner.tenantId,
+      userId: currentOwner.userId,
+      storageRoot: storageRootFromConfig(cfg),
+      config: cfg,
+      candidateHasher: options.candidateHasher,
+      candidateDependencyHasher: options.candidateDependencyHasher,
+      candidateQualityVerifier: options.candidateQualityVerifier,
+      candidateQualityDependencies: options.candidateQualityDependencies,
+      clock: options.clock,
+    };
+  }
+
+  function listCandidateReviews(req, res) {
+    const currentOwner = owner(req);
+    const shot = findOwnedShot(req.params.id, currentOwner);
+    if (!shot) return response.error(res, 404, 'REDRAW_CANDIDATE_NOT_FOUND', '逐镜候选不存在');
+    try {
+      const rows = db.prepare(`
+        SELECT * FROM redraw_candidate_reviews
+        WHERE shot_id = ? AND tenant_id = ? AND user_id = ?
+        ORDER BY review_version DESC, id DESC
+      `).all(Number(shot.id), currentOwner.tenantId, currentOwner.userId);
+      let current = null;
+      if (shot.video_generation_id) {
+        current = candidateReviewService.getCurrentCandidateReview(
+          candidateReviewContext(currentOwner),
+          { shot_id: Number(shot.id), video_generation_id: Number(shot.video_generation_id) },
+        );
+      }
+      return response.success(res, {
+        shot_id: Number(shot.id),
+        shot_updated_at: shot.updated_at,
+        current: publicCandidateReview(current),
+        reviews: rows.map(publicCandidateReview),
+      });
+    } catch (error) {
+      return sendDeliveryError(res, error, '读取候选审核失败', log, { shotId: shot.id });
+    }
+  }
+
+  async function reviewCandidate(req, res) {
+    const currentOwner = owner(req);
+    const shot = findOwnedShot(req.params.id, currentOwner);
+    if (!shot) return response.error(res, 404, 'REDRAW_CANDIDATE_NOT_FOUND', '逐镜候选不存在');
+    try {
+      const input = candidateReviewInput(req.body);
+      const review = await candidateReviewService.reviewCandidate(candidateReviewContext(currentOwner), {
+        shot_id: Number(shot.id),
+        video_generation_id: shot.video_generation_id == null ? undefined : Number(shot.video_generation_id),
+        decision_source: 'human',
+        ...input,
+      });
+      return response.success(res, publicCandidateReview(review));
+    } catch (error) {
+      return sendDeliveryError(res, error, '提交候选审核失败', log, { shotId: shot.id });
+    }
+  }
+
+  function releaseContext(version, currentOwner) {
+    return {
+      ...compositionContext(version, currentOwner),
+      candidateHasher: options.candidateHasher,
+      candidateDependencyHasher: options.candidateDependencyHasher,
+    };
+  }
+
+  function releaseBlockers(version, currentOwner, error) {
+    const rows = db.prepare(`
+      SELECT id, shot_index, start_ms, end_ms, duration_ms, status,
+             video_generation_id, approved_candidate_review_id,
+             localized_dialogue_json, draft_json
+      FROM redraw_shots
+      WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+      ORDER BY batch_index, shot_index, id
+    `).all(Number(version.id), currentOwner.tenantId, currentOwner.userId);
+    if (!rows.length) return [{ shot_id: null, reason_code: 'shots_empty' }];
+    const blockers = [];
+    let expectedStart = 0;
+    for (const row of rows) {
+      if (Number(row.start_ms) !== expectedStart || Number(row.end_ms) <= Number(row.start_ms)
+        || Number(row.duration_ms) !== Number(row.end_ms) - Number(row.start_ms)) {
+        blockers.push({ shot_id: Number(row.id), reason_code: 'timeline_invalid' });
+      }
+      expectedStart = Number(row.end_ms);
+      if (!row.video_generation_id || !row.approved_candidate_review_id
+        || !['approved', 'included'].includes(String(row.status))) {
+        blockers.push({ shot_id: Number(row.id), reason_code: 'candidate_not_approved' });
+        continue;
+      }
+      if (typeof candidateReviewService.assertCurrentApprovedCandidate === 'function') {
+        try {
+          candidateReviewService.assertCurrentApprovedCandidate(candidateReviewContext(currentOwner), {
+            shot_id: Number(row.id),
+            video_generation_id: Number(row.video_generation_id),
+          });
+        } catch (candidateError) {
+          blockers.push({
+            shot_id: Number(row.id),
+            reason_code: String(candidateError?.code || 'candidate_evidence_stale'),
+          });
+          continue;
+        }
+      }
+      const dialogue = parseJSON(row.localized_dialogue_json, null);
+      if (!Array.isArray(dialogue) || dialogue.some((segment) => (
+        !String(segment?.target_text ?? segment?.localized_text ?? segment?.text ?? '').trim()
+      ))) {
+        blockers.push({ shot_id: Number(row.id), reason_code: 'localized_dialogue_invalid' });
+        continue;
+      }
+      if (dialogue.some((segment) => {
+        const start = Number(segment?.start_ms);
+        const end = Number(segment?.end_ms);
+        return !Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+          || start < Number(row.start_ms) || end > Number(row.end_ms) || end <= start;
+      })) {
+        blockers.push({ shot_id: Number(row.id), reason_code: 'subtitle_timing_invalid' });
+      }
+      const generated = parseJSON(row.draft_json, {})?.dialogue_generation?.segments;
+      if (dialogue.length === 0) {
+        if (Array.isArray(generated) && generated.length) {
+          blockers.push({ shot_id: Number(row.id), reason_code: 'silent_audio_contract_invalid' });
+        }
+      } else if (!Array.isArray(generated)
+        || generated.length !== dialogue.length
+        || generated.some((segment, index) => (
+          segment?.turn_index !== index
+          || !Number.isSafeInteger(segment?.start_ms)
+          || !Number.isSafeInteger(segment?.end_ms)
+          || !Number.isSafeInteger(dialogue[index]?.start_ms)
+          || !Number.isSafeInteger(dialogue[index]?.end_ms)
+          || segment.start_ms !== dialogue[index].start_ms
+          || segment.end_ms !== dialogue[index].end_ms
+          || segment.start_ms < Number(row.start_ms)
+          || segment.end_ms > Number(row.end_ms)
+          || segment.end_ms <= segment.start_ms
+          || String(segment?.speaker_id ?? '') !== String(dialogue[index]?.speaker_id ?? '')
+          || String(segment?.text_hash ?? '') !== crypto.createHash('sha256').update(String(
+            dialogue[index]?.target_text ?? dialogue[index]?.localized_text ?? dialogue[index]?.text ?? '',
+          )).digest('hex')
+          || segment?.status !== 'completed'
+          || segment?.reservation_status !== 'confirmed'
+          || !Number.isSafeInteger(Number(segment?.audio_asset_id))
+          || Number(segment.audio_asset_id) < 1
+        ))) {
+        blockers.push({ shot_id: Number(row.id), reason_code: 'dialogue_audio_contract_invalid' });
+      }
+    }
+    if (!blockers.length) {
+      blockers.push({ shot_id: null, reason_code: String(error?.code || 'release_input_not_ready') });
+    }
+    return blockers;
+  }
+
+  async function releaseReadiness(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.error(res, 404, 'REDRAW_VERSION_NOT_FOUND', '本地化版本不存在');
+    try {
+      const release = await episodeReleaseService.buildEpisodeRelease(
+        releaseContext(version, currentOwner),
+        { version_id: Number(version.id) },
+      );
+      return response.success(res, {
+        ready: true,
+        version_id: Number(version.id),
+        readiness_hash: release.release_hash,
+        blockers: [],
+        shot_count: Array.isArray(release.shots) ? release.shots.length : 0,
+        quality_summary: release.quality_summary || null,
+      });
+    } catch (error) {
+      if (String(error?.code || '').includes('VERSION_NOT_FOUND')) {
+        return response.error(res, 404, 'REDRAW_VERSION_NOT_FOUND', '本地化版本不存在');
+      }
+      return response.success(res, {
+        ready: false,
+        version_id: Number(version.id),
+        readiness_hash: null,
+        blockers: releaseBlockers(version, currentOwner, error),
+      });
+    }
+  }
+
+  async function createRelease(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.error(res, 404, 'REDRAW_VERSION_NOT_FOUND', '本地化版本不存在');
+    try {
+      const input = releaseInput(req.body);
+      const ctx = releaseContext(version, currentOwner);
+      const currentRelease = await episodeReleaseService.buildEpisodeRelease(ctx, {
+        version_id: Number(version.id),
+      });
+      if (String(currentRelease.release_hash || '').toLowerCase() !== input.readinessHash) {
+        throw codedRouteError('REDRAW_RELEASE_READINESS_CONFLICT', '整集 readiness 已变化，请刷新后重试');
+      }
+      const exportRow = await compositionService.createComposition(ctx, {
+        versionId: Number(version.id),
+        idempotencyKey: input.idempotencyKey,
+        audioMode: 'replace',
+      });
+      if (exportRow?.created === true) scheduleCompositionRun(ctx, Number(exportRow.id));
+      return response.accepted(res, {
+        export_id: Number(exportRow.id),
+        status: exportRow.status,
+        version_number: Number(exportRow.version_number),
+        created: exportRow.created === true,
+        readiness_hash: currentRelease.release_hash,
+        downloads: releaseDownloadUrls(exportRow.id),
+      });
+    } catch (error) {
+      return sendDeliveryError(res, error, '创建整集 release 失败', log, { versionId: version.id });
+    }
+  }
+
   function listVersionExports(req, res) {
     const currentOwner = owner(req);
     const version = findOwnedVersion(req.params.id, currentOwner);
@@ -3743,6 +4328,11 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     listVersionExports,
     getExport,
     downloadExport,
+    generationSummary,
+    listCandidateReviews,
+    reviewCandidate,
+    releaseReadiness,
+    createRelease,
     generationGate,
     assetQuote,
     saveRedrawCharacterIdentityPack,

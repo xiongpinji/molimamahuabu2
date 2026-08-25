@@ -292,6 +292,7 @@ test('buildDialoguePlan accepts v2 materialized target_text dialogue turns', () 
   assert.deepEqual(plan.segments.map((segment) => segment.start_ms), [100, 3100, 3800]);
   assert.deepEqual(plan.segments.map((segment) => segment.end_ms), [1200, 3700, 5200]);
   assert.equal(quote.status, 'ready');
+  assert.equal(quote.priced, true);
   assert.equal(quote.segment_count, 3);
   assert.equal(quote.total_credits, 12);
   state.db.close();
@@ -319,6 +320,7 @@ test('buildDialoguePlan does not fall back when v2 target_text is present but em
     assert.deepEqual(plan.segments, []);
     assert.deepEqual(plan.issues.map((issue) => issue.reason), ['dialogue_text_invalid']);
     assert.equal(quote.status, 'needs_rewrite');
+    assert.equal(quote.priced, false);
     assert.equal(quote.segment_count, 0);
     state.db.close();
   }
@@ -340,10 +342,12 @@ test('dialogue quote requires ready locale verifier and binds worker pack manife
 
   assert.equal(ready.status, 'ready');
   assert.equal(missing.status, 'needs_rewrite');
+  assert.equal(missing.priced, false);
   assert.equal(missing.total_credits, 0);
   assert.notEqual(missing.quote_hash, ready.quote_hash);
   assert.equal(buildDialoguePlan(state.db, ctx(state, { localeVerifier: null })).issues[0].code, 'REDRAW_LOCALE_VERIFIER_NOT_READY');
   assert.equal(blocked.status, 'needs_rewrite');
+  assert.equal(blocked.priced, false);
   assert.equal(blocked.total_credits, 0);
   assert.notEqual(blocked.quote_hash, ready.quote_hash);
   assert.deepEqual(calls, ['en-US', 'en-US']);
@@ -433,6 +437,7 @@ test('quoteDialoguePlan prices only server-side voice snapshot models', () => {
   const quote = quoteDialoguePlan(state.db, ctx(state, { model: 'client-fake-model', credits: 99 }));
 
   assert.equal(quote.total_credits, 12);
+  assert.equal(quote.priced, true);
   assert.equal(quote.segment_count, 3);
   assert.match(quote.quote_hash, /^[a-f0-9]{64}$/);
   assert.deepEqual(quote.models, [{
@@ -443,6 +448,18 @@ test('quoteDialoguePlan prices only server-side voice snapshot models', () => {
     credits: 4,
     segments: 3,
   }]);
+  state.db.close();
+});
+
+test('quoteDialoguePlan rejects an unsafe server-side credit total', () => {
+  const state = setup();
+  state.db.prepare('UPDATE model_credit_prices SET credits = ? WHERE model = ?')
+    .run(3_100_000_000_000_000, 'speech-2.8-turbo');
+
+  assert.throws(
+    () => quoteDialoguePlan(state.db, ctx(state)),
+    (error) => error.code === 'REDRAW_DIALOGUE_PRICE_INVALID',
+  );
   state.db.close();
 });
 

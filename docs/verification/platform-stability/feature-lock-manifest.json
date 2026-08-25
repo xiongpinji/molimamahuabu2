@@ -129,6 +129,18 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-24 通用短剧生成与整集交付计划任务 1-8 获批",
+          "approvedBy": "product-owner 2026-08-24 redraw-general-generation-delivery-tasks-1-8",
+          "impactTests": [
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawCandidateReview.test.js",
+            "backend-node/test/redrawEpisodeRelease.test.js",
+            "frontweb/e2e/redraw-full-product.spec.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
@@ -662,16 +674,28 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-24 连接测试仅验证连通性安全修复获批",
+          "approvedBy": "product-owner 2026-08-24 pr-189-ci-fix",
+          "impactTests": [
+            "backend-node/test/migrateAiConfigVerification.test.js",
+            "backend-node/test/videoProviderVerification.test.js",
+            "backend-node/test/aiConfigPublicView.test.js",
+            "backend-node/test/providerRouteAdminRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-24 连接测试仅验证连通性安全修复获批",
-        "approvedBy": "product-owner 2026-08-24 pr-189-ci-fix",
+        "reason": "2026-08-24 通用短剧生成与整集交付计划任务 1-8 获批",
+        "approvedBy": "product-owner 2026-08-24 redraw-general-generation-delivery-tasks-1-8",
         "impactTests": [
-          "backend-node/test/migrateAiConfigVerification.test.js",
-          "backend-node/test/videoProviderVerification.test.js",
-          "backend-node/test/aiConfigPublicView.test.js",
-          "backend-node/test/providerRouteAdminRoutes.test.js",
+          "backend-node/test/redrawMigration.test.js",
+          "backend-node/test/redrawRoutes.test.js",
+          "backend-node/test/redrawCandidateReview.test.js",
+          "backend-node/test/redrawEpisodeRelease.test.js",
+          "frontweb/e2e/redraw-full-product.spec.js",
           "backend-node/test/featureLockManifest.test.js"
         ]
       }
@@ -988,6 +1012,18 @@
             "backend-node/test/providerRouteTextIntegration.test.js",
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-24 通用短剧生成与整集交付计划任务 1-8 获批",
+          "approvedBy": "product-owner 2026-08-24 redraw-general-generation-delivery-tasks-1-8",
+          "impactTests": [
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawCandidateReview.test.js",
+            "backend-node/test/redrawEpisodeRelease.test.js",
+            "frontweb/e2e/redraw-full-product.spec.js",
+            "backend-node/test/featureLockManifest.test.js"
           ]
         }
       ],

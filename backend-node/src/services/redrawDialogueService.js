@@ -268,6 +268,7 @@ function quoteDialoguePlan(db, input = {}) {
     const empty = {
       version_id: plan.version.id,
       status: plan.status,
+      priced: false,
       segment_count: 0,
       total_credits: 0,
       models: [],
@@ -297,11 +298,15 @@ function quoteDialoguePlan(db, input = {}) {
   }
   const models = [...modelsByName.values()];
   const totalCredits = models.reduce((sum, item) => sum + item.credits * item.segments, 0);
+  if (!Number.isSafeInteger(totalCredits) || totalCredits <= 0) {
+    throw codedError('REDRAW_DIALOGUE_PRICE_INVALID', '配音报价积分无效');
+  }
   const snapshot = {
     version_id: plan.version.id,
     version_locale: plan.version.locale,
     version_market: plan.version.market,
     status: plan.status,
+    priced: true,
     segment_count: plan.segments.length,
     total_credits: totalCredits,
     models,
@@ -321,6 +326,7 @@ function quoteDialoguePlan(db, input = {}) {
   };
   return {
     status: plan.status,
+    priced: true,
     version_id: plan.version.id,
     segment_count: plan.segments.length,
     total_credits: totalCredits,

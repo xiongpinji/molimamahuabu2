@@ -363,6 +363,11 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/redraw/versions/:id/dialogue/tasks/:taskId', redraw.getDialogueTask);
   r.post('/redraw/versions/:id/compose', redraw.composeVersion);
   r.get('/redraw/versions/:id/exports', redraw.listVersionExports);
+  r.get('/redraw/versions/:id/generation-summary', redraw.generationSummary);
+  r.get('/redraw/shots/:id/candidate-reviews', redraw.listCandidateReviews);
+  r.post('/redraw/shots/:id/candidate-reviews', redraw.reviewCandidate);
+  r.get('/redraw/versions/:id/release-readiness', redraw.releaseReadiness);
+  r.post('/redraw/versions/:id/releases', redraw.createRelease);
   r.get('/redraw/exports/:id', redraw.getExport);
   r.get('/redraw/exports/:id/download/:kind', redraw.downloadExport);
   r.get('/redraw/versions/:id/generation-gate', redraw.generationGate);

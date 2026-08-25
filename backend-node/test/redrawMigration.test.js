@@ -1165,3 +1165,809 @@ test('源视频 conditioning 列迁移可重复执行并兼容单列已存在的
   assert.ok(columns.includes('reference_video_urls'));
   assert.ok(columns.includes('source_conditioning_json'));
 });
+
+test('候选审核追加保存并由镜头和导出绑定当前批准哈希', () => {
+  const db = new Database(':memory:');
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+
+  const reviewColumns = new Map(
+    db.prepare('PRAGMA table_info(redraw_candidate_reviews)').all().map((column) => [column.name, column]),
+  );
+  const expectedColumns = {
+    id: ['INTEGER', 0, null],
+    tenant_id: ['TEXT', 1, null],
+    user_id: ['TEXT', 1, null],
+    version_id: ['INTEGER', 1, null],
+    shot_id: ['INTEGER', 1, null],
+    video_generation_id: ['INTEGER', 1, null],
+    candidate_sha256: ['TEXT', 1, null],
+    dependency_hash: ['TEXT', 1, null],
+    review_version: ['INTEGER', 1, null],
+    decision: ['TEXT', 1, null],
+    decision_source: ['TEXT', 1, null],
+    reason_codes_json: ['TEXT', 1, "'[]'"],
+    metrics_json: ['TEXT', 1, "'{}'"],
+    reviewer_id: ['TEXT', 0, null],
+    created_at: ['TEXT', 1, null],
+  };
+  assert.deepEqual(
+    Object.fromEntries(
+      [...reviewColumns].map(([name, column]) => [name, [column.type, column.notnull, column.dflt_value]]),
+    ),
+    expectedColumns,
+  );
+  assert.equal(reviewColumns.get('id').pk, 1);
+
+  const reviewTableSql = tableSql(db, 'redraw_candidate_reviews');
+  assert.match(reviewTableSql, /review_version INTEGER NOT NULL CHECK \(review_version > 0\)/);
+  assert.match(reviewTableSql, /decision TEXT NOT NULL CHECK \(decision IN \('approved', 'rejected', 'needs_review'\)\)/);
+  assert.match(reviewTableSql, /decision_source TEXT NOT NULL CHECK \(decision_source IN \('automatic', 'human'\)\)/);
+  assert.deepEqual(
+    db.prepare('PRAGMA foreign_key_list(redraw_candidate_reviews)').all()
+      .map((row) => [row.from, row.table, row.to])
+      .sort((left, right) => left[0].localeCompare(right[0])),
+    [
+      ['shot_id', 'redraw_shots', 'id'],
+      ['version_id', 'redraw_versions', 'id'],
+    ],
+  );
+  assert.deepEqual(
+    db.prepare('PRAGMA index_info(uq_redraw_candidate_review_version)').all().map((row) => row.name),
+    ['tenant_id', 'user_id', 'shot_id', 'video_generation_id', 'review_version'],
+  );
+
+  const shotColumns = new Map(db.prepare('PRAGMA table_info(redraw_shots)').all().map((column) => [column.name, column]));
+  assert.deepEqual(
+    {
+      type: shotColumns.get('approved_candidate_review_id').type,
+      notnull: shotColumns.get('approved_candidate_review_id').notnull,
+      default: shotColumns.get('approved_candidate_review_id').dflt_value,
+    },
+    { type: 'INTEGER', notnull: 0, default: null },
+  );
+  const exportColumns = new Map(db.prepare('PRAGMA table_info(redraw_exports)').all().map((column) => [column.name, column]));
+  assert.deepEqual(
+    {
+      releaseHash: [exportColumns.get('release_hash').type, exportColumns.get('release_hash').notnull],
+      qualitySummary: [
+        exportColumns.get('quality_summary_json').type,
+        exportColumns.get('quality_summary_json').notnull,
+        exportColumns.get('quality_summary_json').dflt_value,
+      ],
+    },
+    { releaseHash: ['TEXT', 0], qualitySummary: ['TEXT', 1, "'{}'"] },
+  );
+
+  const projectId = insertProject(db);
+  const workId = insertWork(db, projectId);
+  const versionId = insertVersion(db, workId);
+  const shotId = db.prepare(`
+    INSERT INTO redraw_shots
+      (version_id, batch_index, shot_index, start_ms, end_ms, duration_ms, status, created_at, updated_at)
+    VALUES (?, 1, 1, 0, 5000, 5000, 'draft', ?, ?)
+  `).run(versionId, NOW, NOW).lastInsertRowid;
+  const insertReview = db.prepare(`
+    INSERT INTO redraw_candidate_reviews
+      (tenant_id, user_id, version_id, shot_id, video_generation_id, candidate_sha256,
+       dependency_hash, review_version, decision, decision_source, reviewer_id, created_at)
+    VALUES
+      ('tenant-a', 'user-a', ?, ?, ?, 'candidate-hash',
+       'dependency-hash', ?, ?, ?, NULL, ?)
+  `);
+  const reviewId = insertReview.run(versionId, shotId, 501, 1, 'approved', 'automatic', NOW).lastInsertRowid;
+  assert.deepEqual(
+    db.prepare('SELECT reason_codes_json, metrics_json FROM redraw_candidate_reviews WHERE id = ?').get(reviewId),
+    { reason_codes_json: '[]', metrics_json: '{}' },
+  );
+  assert.throws(
+    () => insertReview.run(versionId, shotId, 501, 1, 'rejected', 'human', NOW),
+    /UNIQUE/,
+  );
+  const nextReviewId = insertReview.run(versionId, shotId, 501, 2, 'rejected', 'human', NOW).lastInsertRowid;
+  assert.notEqual(nextReviewId, reviewId);
+  assert.equal(
+    db.prepare('SELECT COUNT(*) AS count FROM redraw_candidate_reviews WHERE shot_id = ?').get(shotId).count,
+    2,
+  );
+  assert.throws(
+    () => insertReview.run(versionId, shotId, 502, 0, 'approved', 'automatic', NOW),
+    /CHECK/,
+  );
+  assert.throws(
+    () => insertReview.run(versionId, shotId, 503, 1, 'invalid', 'automatic', NOW),
+    /CHECK/,
+  );
+  assert.throws(
+    () => insertReview.run(versionId, shotId, 504, 1, 'approved', 'client', NOW),
+    /CHECK/,
+  );
+  assert.throws(
+    () => db.prepare("UPDATE redraw_candidate_reviews SET decision = 'rejected' WHERE id = ?").run(reviewId),
+    /immutable/,
+  );
+  assert.throws(
+    () => db.prepare('DELETE FROM redraw_candidate_reviews WHERE id = ?').run(reviewId),
+    /immutable/,
+  );
+  db.close();
+});
+
+test('fresh redraw_shots 状态合同同时保留旧状态并支持候选审核四阶段', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const projectId = insertProject(db);
+  const workId = insertWork(db, projectId);
+  const versionId = insertVersion(db, workId);
+  const statuses = [
+    'draft', 'pending', 'processing', 'completed', 'failed', 'needs_attention',
+    'candidate_ready', 'needs_review', 'approved', 'included',
+  ];
+
+  assert.match(tableSql(db, 'redraw_shots'), /candidate_ready/);
+  assert.match(tableSql(db, 'redraw_shots'), /needs_review/);
+  assert.match(tableSql(db, 'redraw_shots'), /approved/);
+  assert.match(tableSql(db, 'redraw_shots'), /included/);
+  for (const [index, status] of statuses.entries()) {
+    assert.doesNotThrow(() => db.prepare(`
+      INSERT INTO redraw_shots
+        (version_id, batch_index, shot_index, start_ms, end_ms, duration_ms, status, created_at, updated_at)
+      VALUES (?, 1, ?, 0, 5000, 5000, ?, ?, ?)
+    `).run(versionId, index + 1, status, NOW, NOW), status);
+  }
+  assert.throws(() => db.prepare(`
+    INSERT INTO redraw_shots
+      (version_id, batch_index, shot_index, start_ms, end_ms, duration_ms, status, created_at, updated_at)
+    VALUES (?, 1, 99, 0, 5000, 5000, 'unknown_status', ?, ?)
+  `).run(versionId, NOW, NOW), /CHECK/);
+  db.close();
+});
+
+test('legacy redraw_shots 状态重建保留所有列、行、索引、触发器和外键', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_versions (id INTEGER PRIMARY KEY);
+    INSERT INTO redraw_versions (id) VALUES (7);
+    CREATE TABLE redraw_shots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version_id INTEGER NOT NULL,
+      status TEXT
+        CHECK (status IN ('draft', 'pending', 'processing', 'completed', 'failed', 'needs_attention', 'legacy_review')),
+      updated_at TEXT NOT NULL,
+      legacy_marker TEXT NOT NULL,
+      FOREIGN KEY(version_id) REFERENCES redraw_versions(id)
+    );
+    CREATE INDEX idx_redraw_shots_legacy_marker ON redraw_shots(legacy_marker);
+    CREATE TRIGGER redraw_shots_legacy_guard
+    BEFORE UPDATE OF legacy_marker ON redraw_shots
+    BEGIN SELECT RAISE(ABORT, 'legacy marker immutable'); END;
+    INSERT INTO redraw_shots
+      (id, version_id, status, updated_at, legacy_marker)
+    VALUES (41, 7, 'legacy_review', '${NOW}', 'keep-me');
+    CREATE TABLE redraw_shot_notes (
+      id INTEGER PRIMARY KEY,
+      shot_id INTEGER NOT NULL,
+      note TEXT NOT NULL,
+      FOREIGN KEY(shot_id) REFERENCES redraw_shots(id)
+    );
+    INSERT INTO redraw_shot_notes (id, shot_id, note) VALUES (1, 41, 'keep-child');
+  `);
+  db.pragma('foreign_keys = ON');
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  const sql = tableSql(db, 'redraw_shots');
+  for (const status of ['legacy_review', 'candidate_ready', 'needs_review', 'approved', 'included']) {
+    assert.match(sql, new RegExp(status));
+  }
+  assert.deepEqual(
+    db.prepare('SELECT id, version_id, status, updated_at, legacy_marker FROM redraw_shots WHERE id = 41').get(),
+    { id: 41, version_id: 7, status: 'legacy_review', updated_at: NOW, legacy_marker: 'keep-me' },
+  );
+  assert.equal(db.prepare('PRAGMA table_info(redraw_shots)').all().find((row) => row.name === 'status').notnull, 0);
+  assert.deepEqual(
+    db.prepare('PRAGMA foreign_key_list(redraw_shots)').all().map((row) => [row.from, row.table, row.to]),
+    [['version_id', 'redraw_versions', 'id']],
+  );
+  assert.deepEqual(
+    db.prepare('PRAGMA foreign_key_list(redraw_shot_notes)').all().map((row) => [row.from, row.table, row.to]),
+    [['shot_id', 'redraw_shots', 'id']],
+  );
+  assert.deepEqual(db.prepare('SELECT shot_id, note FROM redraw_shot_notes WHERE id = 1').get(), {
+    shot_id: 41,
+    note: 'keep-child',
+  });
+  assert.deepEqual(
+    db.prepare('PRAGMA index_info(idx_redraw_shots_legacy_marker)').all().map((row) => row.name),
+    ['legacy_marker'],
+  );
+  assert.throws(
+    () => db.prepare("UPDATE redraw_shots SET legacy_marker = 'changed' WHERE id = 41").run(),
+    /legacy marker immutable/,
+  );
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check(redraw_shots)').all(), []);
+  db.close();
+});
+
+test('redraw_shots 状态重建遇到孤儿外键时 fail closed 且不破坏原表', () => {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = OFF');
+  db.exec(`
+    CREATE TABLE redraw_versions (id INTEGER PRIMARY KEY);
+    CREATE TABLE redraw_shots (
+      id INTEGER PRIMARY KEY,
+      version_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'completed')),
+      updated_at TEXT,
+      FOREIGN KEY(version_id) REFERENCES redraw_versions(id)
+    );
+    INSERT INTO redraw_shots (id, version_id, status, updated_at)
+    VALUES (9, 404, 'completed', '${NOW}');
+  `);
+  db.pragma('foreign_keys = ON');
+  const beforeSql = tableSql(db, 'redraw_shots');
+  const beforeRow = db.prepare('SELECT * FROM redraw_shots WHERE id = 9').get();
+
+  assert.throws(() => runMigrationsAndEnsure(db), /redraw_shots.*foreign key check failed/i);
+  assert.equal(tableSql(db, 'redraw_shots'), beforeSql);
+  assert.deepEqual(db.prepare('SELECT * FROM redraw_shots WHERE id = 9').get(), beforeRow);
+  assert.equal(tableNames(db).includes('__redraw_shots_status_rebuild'), false);
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+  db.close();
+});
+
+test('旧的不完整镜头和导出表可幂等补齐候选 release 列且保留旧行', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_shots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version_id INTEGER,
+      batch_index INTEGER NOT NULL DEFAULT 1,
+      shot_index INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'draft',
+      updated_at TEXT,
+      legacy_marker TEXT
+    );
+    CREATE TABLE redraw_exports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version_id INTEGER,
+      export_type TEXT NOT NULL DEFAULT 'video',
+      version_number INTEGER NOT NULL DEFAULT 1,
+      legacy_marker TEXT
+    );
+    INSERT INTO redraw_shots
+      (version_id, batch_index, shot_index, status, updated_at, legacy_marker)
+    VALUES (7, 2, 3, 'processing', '${NOW}', 'keep-shot');
+    INSERT INTO redraw_exports
+      (version_id, export_type, version_number, legacy_marker)
+    VALUES (7, 'video', 4, 'keep-export');
+  `);
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+
+  const shotColumns = new Map(db.prepare('PRAGMA table_info(redraw_shots)').all().map((column) => [column.name, column]));
+  assert.deepEqual(
+    {
+      type: shotColumns.get('approved_candidate_review_id').type,
+      notnull: shotColumns.get('approved_candidate_review_id').notnull,
+      default: shotColumns.get('approved_candidate_review_id').dflt_value,
+    },
+    { type: 'INTEGER', notnull: 0, default: null },
+  );
+  const exportColumns = new Map(db.prepare('PRAGMA table_info(redraw_exports)').all().map((column) => [column.name, column]));
+  assert.deepEqual(
+    {
+      releaseHash: [exportColumns.get('release_hash').type, exportColumns.get('release_hash').notnull],
+      qualitySummary: [
+        exportColumns.get('quality_summary_json').type,
+        exportColumns.get('quality_summary_json').notnull,
+        exportColumns.get('quality_summary_json').dflt_value,
+      ],
+    },
+    { releaseHash: ['TEXT', 0], qualitySummary: ['TEXT', 1, "'{}'"] },
+  );
+  assert.deepEqual(
+    db.prepare('SELECT version_id, batch_index, shot_index, status, updated_at, legacy_marker, approved_candidate_review_id FROM redraw_shots WHERE id = 1').get(),
+    {
+      version_id: 7,
+      batch_index: 2,
+      shot_index: 3,
+      status: 'processing',
+      updated_at: NOW,
+      legacy_marker: 'keep-shot',
+      approved_candidate_review_id: null,
+    },
+  );
+  assert.deepEqual(
+    db.prepare('SELECT version_id, export_type, version_number, legacy_marker, release_hash, quality_summary_json FROM redraw_exports WHERE id = 1').get(),
+    {
+      version_id: 7,
+      export_type: 'video',
+      version_number: 4,
+      legacy_marker: 'keep-export',
+      release_hash: null,
+      quality_summary_json: '{}',
+    },
+  );
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'redraw_candidate_reviews'").get());
+  db.close();
+});
+
+test('空的缺列旧候选审核表可重建为完整精确合同且迁移幂等', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_candidate_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT
+    );
+  `);
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+
+  const columns = new Map(
+    db.prepare('PRAGMA table_info(redraw_candidate_reviews)').all().map((column) => [column.name, column]),
+  );
+  assert.deepEqual(
+    Object.fromEntries([...columns].map(([name, column]) => [
+      name,
+      [column.type, column.notnull, column.dflt_value, column.pk],
+    ])),
+    {
+      id: ['INTEGER', 0, null, 1],
+      tenant_id: ['TEXT', 1, null, 0],
+      user_id: ['TEXT', 1, null, 0],
+      version_id: ['INTEGER', 1, null, 0],
+      shot_id: ['INTEGER', 1, null, 0],
+      video_generation_id: ['INTEGER', 1, null, 0],
+      candidate_sha256: ['TEXT', 1, null, 0],
+      dependency_hash: ['TEXT', 1, null, 0],
+      review_version: ['INTEGER', 1, null, 0],
+      decision: ['TEXT', 1, null, 0],
+      decision_source: ['TEXT', 1, null, 0],
+      reason_codes_json: ['TEXT', 1, "'[]'", 0],
+      metrics_json: ['TEXT', 1, "'{}'", 0],
+      reviewer_id: ['TEXT', 0, null, 0],
+      created_at: ['TEXT', 1, null, 0],
+    },
+  );
+  assert.match(tableSql(db, 'redraw_candidate_reviews'), /review_version INTEGER NOT NULL CHECK \(review_version > 0\)/);
+  assert.match(tableSql(db, 'redraw_candidate_reviews'), /decision TEXT NOT NULL CHECK \(decision IN \('approved', 'rejected', 'needs_review'\)\)/);
+  assert.match(tableSql(db, 'redraw_candidate_reviews'), /decision_source TEXT NOT NULL CHECK \(decision_source IN \('automatic', 'human'\)\)/);
+  assert.deepEqual(
+    db.prepare('PRAGMA foreign_key_list(redraw_candidate_reviews)').all()
+      .map((row) => [row.from, row.table, row.to])
+      .sort((left, right) => left[0].localeCompare(right[0])),
+    [
+      ['shot_id', 'redraw_shots', 'id'],
+      ['version_id', 'redraw_versions', 'id'],
+    ],
+  );
+  assert.deepEqual(
+    db.prepare('PRAGMA index_info(uq_redraw_candidate_review_version)').all().map((row) => row.name),
+    ['tenant_id', 'user_id', 'shot_id', 'video_generation_id', 'review_version'],
+  );
+  db.close();
+});
+
+test('列齐但约束弱的旧候选审核表可安全重建并保留有效旧行', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      work_id INTEGER,
+      tenant_id TEXT,
+      user_id TEXT,
+      version INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'draft',
+      updated_at TEXT,
+      deleted_at TEXT
+    );
+    CREATE TABLE redraw_shots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version_id INTEGER,
+      batch_index INTEGER NOT NULL DEFAULT 1,
+      shot_index INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'draft',
+      updated_at TEXT
+    );
+    CREATE TABLE redraw_candidate_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT,
+      version_id INTEGER,
+      shot_id INTEGER,
+      video_generation_id INTEGER,
+      candidate_sha256 TEXT,
+      dependency_hash TEXT,
+      review_version INTEGER,
+      decision TEXT,
+      decision_source TEXT,
+      reason_codes_json TEXT,
+      metrics_json TEXT,
+      reviewer_id TEXT,
+      created_at TEXT
+    );
+    INSERT INTO redraw_candidate_reviews
+      (id, tenant_id, user_id, version_id, shot_id, video_generation_id, candidate_sha256,
+       dependency_hash, review_version, decision, decision_source, reason_codes_json,
+       metrics_json, reviewer_id, created_at)
+    VALUES
+      (41, 'tenant-legacy', 'user-legacy', 7, 8, 9, 'candidate-legacy',
+       'dependency-legacy', 3, 'approved', 'human', '["legacy"]',
+       '{"score":1}', 'reviewer-legacy', '${NOW}');
+    INSERT INTO redraw_versions
+      (id, work_id, tenant_id, user_id, version, status, updated_at, deleted_at)
+    VALUES (7, 70, 'tenant-legacy', 'user-legacy', 1, 'draft', '${NOW}', NULL);
+    INSERT INTO redraw_shots
+      (id, version_id, batch_index, shot_index, status, updated_at)
+    VALUES (8, 7, 1, 1, 'draft', '${NOW}');
+  `);
+  db.pragma('foreign_keys = ON');
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check(redraw_candidate_reviews)').all(), []);
+
+  assert.deepEqual(
+    db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 41').get(),
+    {
+      id: 41,
+      tenant_id: 'tenant-legacy',
+      user_id: 'user-legacy',
+      version_id: 7,
+      shot_id: 8,
+      video_generation_id: 9,
+      candidate_sha256: 'candidate-legacy',
+      dependency_hash: 'dependency-legacy',
+      review_version: 3,
+      decision: 'approved',
+      decision_source: 'human',
+      reason_codes_json: '["legacy"]',
+      metrics_json: '{"score":1}',
+      reviewer_id: 'reviewer-legacy',
+      created_at: NOW,
+    },
+  );
+  const projectId = insertProject(db, 'tenant-new', 'user-new');
+  const workId = insertWork(db, projectId, {
+    tenant_id: 'tenant-new',
+    user_id: 'user-new',
+    source_fingerprint: 'candidate-review-upgrade-source',
+  });
+  const versionId = insertVersion(db, workId);
+  const shotId = db.prepare(`
+    INSERT INTO redraw_shots
+      (version_id, tenant_id, user_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
+       status, created_at, updated_at)
+    VALUES (?, 'tenant-new', 'user-new', 1, 1, 0, 5000, 5000, 'draft', ?, ?)
+  `).run(versionId, NOW, NOW).lastInsertRowid;
+  db.prepare(`
+    INSERT INTO redraw_candidate_reviews
+      (tenant_id, user_id, version_id, shot_id, video_generation_id, candidate_sha256,
+       dependency_hash, review_version, decision, decision_source, created_at)
+    VALUES
+      ('tenant-new', 'user-new', ?, ?, 12, 'candidate-new',
+       'dependency-new', 1, 'needs_review', 'automatic', ?)
+  `).run(versionId, shotId, NOW);
+  assert.deepEqual(
+    db.prepare('SELECT reason_codes_json, metrics_json FROM redraw_candidate_reviews WHERE tenant_id = ?').get('tenant-new'),
+    { reason_codes_json: '[]', metrics_json: '{}' },
+  );
+  assert.throws(
+    () => db.prepare("UPDATE redraw_candidate_reviews SET decision = 'rejected' WHERE id = 41").run(),
+    /immutable/,
+  );
+  db.close();
+});
+
+test('含孤儿引用的弱候选审核旧行会 fail closed 且完整保留原数据库', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      work_id INTEGER,
+      tenant_id TEXT,
+      user_id TEXT,
+      version INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'draft',
+      updated_at TEXT,
+      deleted_at TEXT
+    );
+    CREATE TABLE redraw_shots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version_id INTEGER,
+      batch_index INTEGER NOT NULL DEFAULT 1,
+      shot_index INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'draft',
+      updated_at TEXT
+    );
+    CREATE TABLE redraw_candidate_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT,
+      version_id INTEGER,
+      shot_id INTEGER,
+      video_generation_id INTEGER,
+      candidate_sha256 TEXT,
+      dependency_hash TEXT,
+      review_version INTEGER,
+      decision TEXT,
+      decision_source TEXT,
+      reason_codes_json TEXT,
+      metrics_json TEXT,
+      reviewer_id TEXT,
+      created_at TEXT
+    );
+    INSERT INTO redraw_candidate_reviews
+      (id, tenant_id, user_id, version_id, shot_id, video_generation_id, candidate_sha256,
+       dependency_hash, review_version, decision, decision_source, reason_codes_json,
+       metrics_json, reviewer_id, created_at)
+    VALUES
+      (42, 'tenant-orphan', 'user-orphan', 700, 800, 900, 'candidate-orphan',
+       'dependency-orphan', 1, 'approved', 'human', '[]', '{}', NULL, '${NOW}');
+  `);
+  db.pragma('foreign_keys = ON');
+  const beforeSchema = schemaSnapshot(db);
+  const beforeRow = db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 42').get();
+
+  assert.throws(
+    () => runMigrationsAndEnsure(db),
+    /cannot safely rebuild redraw_candidate_reviews: foreign key check failed/,
+  );
+  assert.deepEqual(schemaSnapshot(db), beforeSchema);
+  assert.deepEqual(db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 42').get(), beforeRow);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_shots').get().count, 0);
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+  assert.equal(tableNames(db).includes('__redraw_candidate_reviews_contract_rebuild'), false);
+  db.close();
+});
+
+test('含无法推导必需字段的旧候选审核行会 fail closed 且不部分破坏原表', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_candidate_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT
+    );
+    INSERT INTO redraw_candidate_reviews (id, tenant_id, user_id)
+    VALUES (17, 'tenant-broken', 'user-broken');
+  `);
+  const beforeSchema = schemaSnapshot(db);
+  const beforeRow = db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 17').get();
+
+  assert.throws(
+    () => runMigrationsAndEnsure(db),
+    /cannot safely rebuild redraw_candidate_reviews: missing required columns/,
+  );
+  assert.deepEqual(schemaSnapshot(db), beforeSchema);
+  assert.deepEqual(db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 17').get(), beforeRow);
+  assert.equal(tableNames(db).includes('__redraw_candidate_reviews_contract_rebuild'), false);
+  db.close();
+});
+
+test('候选审核合同重建遇到固定临时表碰撞会 fail closed', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_candidate_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT
+    );
+    CREATE TABLE __redraw_candidate_reviews_contract_rebuild (
+      id INTEGER PRIMARY KEY,
+      marker TEXT NOT NULL
+    );
+    INSERT INTO __redraw_candidate_reviews_contract_rebuild (id, marker)
+    VALUES (1, 'do not replace');
+  `);
+  const originalSql = tableSql(db, 'redraw_candidate_reviews');
+
+  assert.throws(
+    () => runMigrationsAndEnsure(db),
+    /redraw_candidate_reviews contract rebuild temp table already exists/,
+  );
+  assert.equal(tableSql(db, 'redraw_candidate_reviews'), originalSql);
+  assert.equal(
+    db.prepare('SELECT marker FROM __redraw_candidate_reviews_contract_rebuild WHERE id = 1').get().marker,
+    'do not replace',
+  );
+  db.close();
+});
+
+test('候选审核旧行违反新 CHECK 时合同重建完整回滚', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_candidate_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT,
+      version_id INTEGER,
+      shot_id INTEGER,
+      video_generation_id INTEGER,
+      candidate_sha256 TEXT,
+      dependency_hash TEXT,
+      review_version INTEGER,
+      decision TEXT,
+      decision_source TEXT,
+      reason_codes_json TEXT,
+      metrics_json TEXT,
+      reviewer_id TEXT,
+      created_at TEXT
+    );
+    INSERT INTO redraw_candidate_reviews
+      (id, tenant_id, user_id, version_id, shot_id, video_generation_id, candidate_sha256,
+       dependency_hash, review_version, decision, decision_source, reason_codes_json,
+       metrics_json, reviewer_id, created_at)
+    VALUES
+      (23, 'tenant-invalid', 'user-invalid', 7, 8, 9, 'candidate-invalid',
+       'dependency-invalid', 0, 'approved', 'human', '[]', '{}', NULL, '${NOW}');
+  `);
+  db.pragma('foreign_keys = ON');
+  const beforeSchema = schemaSnapshot(db);
+  const beforeRow = db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 23').get();
+
+  assert.throws(
+    () => runMigrationsAndEnsure(db),
+    /cannot safely rebuild redraw_candidate_reviews: CHECK constraint failed/,
+  );
+  assert.deepEqual(schemaSnapshot(db), beforeSchema);
+  assert.deepEqual(db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 23').get(), beforeRow);
+  assert.equal(tableNames(db).includes('__redraw_candidate_reviews_contract_rebuild'), false);
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+  db.close();
+});
+
+test('精确候选审核合同中的历史孤儿引用会 fail closed', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  db.pragma('foreign_keys = OFF');
+  db.prepare(`
+    INSERT INTO redraw_candidate_reviews
+      (id, tenant_id, user_id, version_id, shot_id, video_generation_id, candidate_sha256,
+       dependency_hash, review_version, decision, decision_source, created_at)
+    VALUES
+      (51, 'tenant-exact-orphan', 'user-exact-orphan', 700, 800, 900, 'candidate-exact-orphan',
+       'dependency-exact-orphan', 1, 'approved', 'human', ?)
+  `).run(NOW);
+  db.pragma('foreign_keys = ON');
+  const beforeSchema = schemaSnapshot(db);
+  const beforeRow = db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 51').get();
+
+  assert.throws(
+    () => runMigrationsAndEnsure(db),
+    /redraw_candidate_reviews foreign key check failed/,
+  );
+  assert.deepEqual(schemaSnapshot(db), beforeSchema);
+  assert.deepEqual(db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 51').get(), beforeRow);
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+  assert.equal(tableNames(db).includes('__redraw_candidate_reviews_contract_rebuild'), false);
+  db.close();
+});
+
+test('精确候选审核合同允许扩展列并保留扩展值', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const projectId = insertProject(db, 'tenant-extra', 'user-extra');
+  const workId = insertWork(db, projectId, {
+    tenant_id: 'tenant-extra',
+    user_id: 'user-extra',
+    source_fingerprint: 'candidate-review-extra-source',
+  });
+  const versionId = insertVersion(db, workId);
+  const shotId = db.prepare(`
+    INSERT INTO redraw_shots
+      (version_id, tenant_id, user_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
+       status, created_at, updated_at)
+    VALUES (?, 'tenant-extra', 'user-extra', 1, 1, 0, 5000, 5000, 'draft', ?, ?)
+  `).run(versionId, NOW, NOW).lastInsertRowid;
+  db.exec('ALTER TABLE redraw_candidate_reviews ADD COLUMN legacy_note TEXT');
+  db.prepare(`
+    INSERT INTO redraw_candidate_reviews
+      (tenant_id, user_id, version_id, shot_id, video_generation_id, candidate_sha256,
+       dependency_hash, review_version, decision, decision_source, created_at, legacy_note)
+    VALUES
+      ('tenant-extra', 'user-extra', ?, ?, 601, 'candidate-extra',
+       'dependency-extra', 1, 'approved', 'human', ?, 'preserve-me')
+  `).run(versionId, shotId, NOW);
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.ok(columnNames(db, 'redraw_candidate_reviews').includes('legacy_note'));
+  assert.equal(
+    db.prepare('SELECT legacy_note FROM redraw_candidate_reviews WHERE tenant_id = ?').get('tenant-extra').legacy_note,
+    'preserve-me',
+  );
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check(redraw_candidate_reviews)').all(), []);
+  assert.throws(
+    () => db.prepare("UPDATE redraw_candidate_reviews SET decision = 'rejected' WHERE tenant_id = 'tenant-extra'").run(),
+    /immutable/,
+  );
+  db.close();
+});
+
+test('含扩展列和有效行的弱候选审核表会 fail closed 而不丢扩展数据', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const projectId = insertProject(db, 'tenant-weak-extra', 'user-weak-extra');
+  const workId = insertWork(db, projectId, {
+    tenant_id: 'tenant-weak-extra',
+    user_id: 'user-weak-extra',
+    source_fingerprint: 'candidate-review-weak-extra-source',
+  });
+  const versionId = insertVersion(db, workId);
+  const shotId = db.prepare(`
+    INSERT INTO redraw_shots
+      (version_id, tenant_id, user_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
+       status, created_at, updated_at)
+    VALUES (?, 'tenant-weak-extra', 'user-weak-extra', 1, 1, 0, 5000, 5000, 'draft', ?, ?)
+  `).run(versionId, NOW, NOW).lastInsertRowid;
+  db.exec(`
+    DROP TRIGGER redraw_candidate_reviews_immutable_update;
+    DROP TRIGGER redraw_candidate_reviews_immutable_delete;
+    DROP TABLE redraw_candidate_reviews;
+    CREATE TABLE redraw_candidate_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT,
+      version_id INTEGER,
+      shot_id INTEGER,
+      video_generation_id INTEGER,
+      candidate_sha256 TEXT,
+      dependency_hash TEXT,
+      review_version INTEGER,
+      decision TEXT,
+      decision_source TEXT,
+      reason_codes_json TEXT,
+      metrics_json TEXT,
+      reviewer_id TEXT,
+      created_at TEXT,
+      legacy_note TEXT
+    );
+  `);
+  db.prepare(`
+    INSERT INTO redraw_candidate_reviews
+      (id, tenant_id, user_id, version_id, shot_id, video_generation_id, candidate_sha256,
+       dependency_hash, review_version, decision, decision_source, reason_codes_json,
+       metrics_json, reviewer_id, created_at, legacy_note)
+    VALUES
+      (61, 'tenant-weak-extra', 'user-weak-extra', ?, ?, 602, 'candidate-weak-extra',
+       'dependency-weak-extra', 1, 'approved', 'human', '[]', '{}', NULL, ?, 'must-survive')
+  `).run(versionId, shotId, NOW);
+  const beforeSchema = schemaSnapshot(db);
+  const beforeRow = db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 61').get();
+
+  assert.throws(
+    () => runMigrationsAndEnsure(db),
+    /cannot safely rebuild redraw_candidate_reviews: unknown columns legacy_note/,
+  );
+  assert.deepEqual(schemaSnapshot(db), beforeSchema);
+  assert.deepEqual(db.prepare('SELECT * FROM redraw_candidate_reviews WHERE id = 61').get(), beforeRow);
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
+  assert.equal(tableNames(db).includes('__redraw_candidate_reviews_contract_rebuild'), false);
+  db.close();
+});
+
+test('含扩展列但无数据的弱候选审核表可安全重建并丢弃空扩展列', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_candidate_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT,
+      legacy_note TEXT
+    );
+  `);
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.equal(columnNames(db, 'redraw_candidate_reviews').includes('legacy_note'), false);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_candidate_reviews').get().count, 0);
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check(redraw_candidate_reviews)').all(), []);
+  db.close();
+});

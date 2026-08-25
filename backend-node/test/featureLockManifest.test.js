@@ -334,6 +334,23 @@ const PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK = {
     'backend-node/test/featureLockManifest.test.js',
   ],
 };
+const REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK = {
+  reason: '2026-08-24 通用短剧生成与整集交付计划任务 1-8 获批',
+  approvedBy: 'product-owner 2026-08-24 redraw-general-generation-delivery-tasks-1-8',
+  impactTests: [
+    'backend-node/test/redrawMigration.test.js',
+    'backend-node/test/redrawRoutes.test.js',
+    'backend-node/test/redrawCandidateReview.test.js',
+    'backend-node/test/redrawEpisodeRelease.test.js',
+    'frontweb/e2e/redraw-full-product.spec.js',
+    'backend-node/test/featureLockManifest.test.js',
+  ],
+};
+const REDRAW_GENERAL_GENERATION_FEATURE_IDS = new Set([
+  PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
+  ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
+  PROACTIVE_CANARY_FEATURE_ID,
+]);
 const PR193_TOUCHED_FEATURE_IDS = new Set([
   PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
   SAFE_PROVIDER_FAILOVER_FEATURE_ID,
@@ -714,16 +731,17 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   assert.deepEqual(feature.evidence.slice(0, PROACTIVE_CANARY_EVIDENCE.length), PROACTIVE_CANARY_EVIDENCE);
 });
 
-test('PR #193 图片未知结果兼容修复使用新鲜批准并保留画布文本能力批准历史', () => {
+test('PR #193 图片未知结果兼容修复保留通用短剧与画布文本能力批准历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
   assert.deepEqual(feature.unlock, PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-1), CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-2), PR184_MAIN_MERGE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-3), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-4), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-5), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-2), CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-3), PR184_MAIN_MERGE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-4), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-5), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-6), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
   assert.equal(feature.evidence.at(-1), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
   assert.equal(feature.evidence.at(-2), CANVAS_TEXT_CAPABILITY_HOTFIX_EVIDENCE);
   assert.deepEqual(
@@ -752,7 +770,9 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       feature.unlock,
       PR193_TOUCHED_FEATURE_IDS.has(featureId)
         ? PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK
-        : PR189_CONNECTION_ONLY_VERIFICATION_UNLOCK,
+        : REDRAW_GENERAL_GENERATION_FEATURE_IDS.has(featureId)
+          ? REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK
+          : PR189_CONNECTION_ONLY_VERIFICATION_UNLOCK,
     );
     assert.deepEqual(feature.unlockHistory, [
       HISTORICAL_UNLOCK_BY_FEATURE[featureId],
@@ -781,6 +801,13 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       ...(featureId === PROACTIVE_CANARY_FEATURE_ID ? [PR184_MAIN_MERGE_UNLOCK] : []),
       ...(PR193_TOUCHED_FEATURE_IDS.has(featureId)
         ? [PRE_PR193_CURRENT_UNLOCK_BY_FEATURE[featureId]]
+        : []),
+      ...(featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
+        ? [PR189_CONNECTION_ONLY_VERIFICATION_UNLOCK]
+        : []),
+      ...(PR193_TOUCHED_FEATURE_IDS.has(featureId)
+        && REDRAW_GENERAL_GENERATION_FEATURE_IDS.has(featureId)
+        ? [REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK]
         : []),
     ]);
     assert.deepEqual(
@@ -865,7 +892,12 @@ test('PR #193 图片未知结果兼容修复刷新四个运行时功能锁并登
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
     assert.ok(feature, `缺少功能锁 ${featureId}`);
     assert.deepEqual(feature.unlock, PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK);
-    assert.deepEqual(feature.unlockHistory.at(-1), PRE_PR193_CURRENT_UNLOCK_BY_FEATURE[featureId]);
+    assert.deepEqual(
+      feature.unlockHistory.at(-1),
+      REDRAW_GENERAL_GENERATION_FEATURE_IDS.has(featureId)
+        ? REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK
+        : PRE_PR193_CURRENT_UNLOCK_BY_FEATURE[featureId],
+    );
     assert.ok(feature.unlockHistory.some((entry) => (
       entry.reason === PROVIDER_TASK_STATUS_DECISION_UNLOCK.reason
         || entry.reason === PROVIDER_TASK_RECEIPT_UNLOCK.reason

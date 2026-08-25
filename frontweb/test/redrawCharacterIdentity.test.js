@@ -35,13 +35,14 @@ test('身份包投影输出 ready、缺项和短 hash，且不暴露路径字段
       live_action_human_confirmed: true,
       adult_status: 'verified_18_plus',
       identity_consistency_confirmed: false,
+      wardrobe: null,
       pack_sha256: 'abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd',
       source_ref_json: '{"storage_root":"C:/secret","source_ref":{"local_path":"private/path"}}',
     },
     identity_pack_status: {
       ready: false,
       missing_views: ['full_body'],
-      missing_confirmations: ['identity_consistency_confirmed'],
+      missing_confirmations: ['identity_consistency_confirmed', 'wardrobe'],
       hash_valid: true,
       has_identity_pack: true,
     },
@@ -53,8 +54,9 @@ test('身份包投影输出 ready、缺项和短 hash，且不暴露路径字段
   assert.equal(projected.ready, false)
   assert.deepEqual(projected.confirmedViews, ['front', 'profile'])
   assert.deepEqual(projected.missingViews, ['full_body'])
-  assert.deepEqual(projected.missingConfirmations, ['identity_consistency_confirmed'])
-  assert.deepEqual(projected.missing, ['full_body', 'identity_consistency_confirmed'])
+  assert.deepEqual(projected.missingConfirmations, ['identity_consistency_confirmed', 'wardrobe'])
+  assert.deepEqual(projected.missing, ['full_body', 'identity_consistency_confirmed', 'wardrobe'])
+  assert.equal(projected.wardrobeReady, false)
   assert.equal(projected.hashValid, true)
   assert.ok(!Object.prototype.hasOwnProperty.call(projected, 'source_ref_json'))
   assert.ok(!Object.prototype.hasOwnProperty.call(projected, 'storageRoot'))
@@ -70,6 +72,8 @@ test('角色卡、逐镜编辑器和 API 暴露身份包确认与保存入口', 
   assert.match(assetCardSource, /live_action_human_confirmed|真人/)
   assert.match(assetCardSource, /adult_status|18\+/)
   assert.match(assetCardSource, /identity_consistency_confirmed|一致性/)
+  assert.match(assetCardSource, /wardrobe_reference_asset_id|服装参考/)
+  assert.match(assetCardSource, /wardrobe_consistency_confirmed|服装一致性/)
   assert.match(assetCardSource, /saveRedrawCharacterIdentityPack/)
   assert.match(assetCardSource, /emit\('identity-saved'/)
   assert.match(assetCardSource, /target_actor_label: identityForm\.value\.target_actor_label/)
@@ -77,6 +81,8 @@ test('角色卡、逐镜编辑器和 API 暴露身份包确认与保存入口', 
   assert.match(assetCardSource, /live_action_human_confirmed: identityForm\.value\.live_action_human_confirmed/)
   assert.match(assetCardSource, /adult_status: identityForm\.value\.adult_status \? 'verified_18_plus' : 'unverified'/)
   assert.match(assetCardSource, /identity_consistency_confirmed: identityForm\.value\.identity_consistency_confirmed/)
+  assert.match(assetCardSource, /wardrobe_reference_asset_id: identityForm\.value\.wardrobe_reference_asset_id/)
+  assert.match(assetCardSource, /wardrobe_consistency_confirmed: identityForm\.value\.wardrobe_consistency_confirmed/)
   assert.match(assetCardSource, /expected_updated_at: props\.asset\.updated_at/)
   assert.doesNotMatch(assetCardSource, /source_character_key|pack_sha256|source_ref_json|hash_valid|identity_pack_status/)
   assert.doesNotMatch(assetCardSource, /['"]ready['"]/)
@@ -88,6 +94,7 @@ test('角色卡、逐镜编辑器和 API 暴露身份包确认与保存入口', 
   assert.match(assetStepSource, /await redrawAPI\.getWork\(props\.work\.id\)/)
   assert.match(assetStepSource, /emit\('work-updated', nextWork\)/)
   assert.match(assetStepSource, /isRedrawCharacterIdentityPackReady/)
+  assert.match(assetStepSource, /:wardrobe-reference-assets="wardrobeReferenceAssets"/)
   assert.match(assetStepSource, /角色身份包未就绪，不能批准/)
   assert.match(shotEditorSource, /projectRedrawCharacterIdentityPack/)
   assert.match(shotEditorSource, /shortHash/)

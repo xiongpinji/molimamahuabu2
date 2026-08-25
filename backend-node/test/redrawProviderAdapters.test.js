@@ -9,12 +9,95 @@ const sharp = require('sharp');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const realAssetService = require('../src/services/assetService');
 const redrawAssetService = require('../src/services/redrawAssetService');
-const { createRedrawProviderAdapters } = require('../src/services/redrawProviderAdapters');
+const {
+  createRedrawProviderAdapters,
+  normalizeVideoProviderResult,
+} = require('../src/services/redrawProviderAdapters');
 
 const MODEL_MANIFEST_SHA256 = 'a'.repeat(64);
 const CALIBRATION_MANIFEST_SHA256 = 'b'.repeat(64);
 const AUDIO_SHA256 = 'c'.repeat(64);
 const TRANSCRIPT_SHA256 = 'd'.repeat(64);
+
+test('供应商 completed 只映射为 completed_candidate', () => {
+  assert.deepEqual(normalizeVideoProviderResult({
+    status: 'completed',
+    task_id: 'p1',
+    url: 'https://result',
+  }), {
+    status: 'completed_candidate',
+    provider_task_id: 'p1',
+    result_url: 'https://result',
+  });
+});
+
+test('视频供应商常见状态只映射到规范候选终态', () => {
+  assert.deepEqual(normalizeVideoProviderResult({ status: 'queued', task_id: 'p2' }), {
+    status: 'accepted',
+    provider_task_id: 'p2',
+  });
+  assert.deepEqual(normalizeVideoProviderResult({ status: 'in_progress', provider_task_id: 'p3' }), {
+    status: 'running',
+    provider_task_id: 'p3',
+  });
+  assert.deepEqual(normalizeVideoProviderResult({ status: 'rejected', task_id: 'p4' }), {
+    status: 'failed_terminal',
+    provider_task_id: 'p4',
+    safe_stage: 'provider_terminal',
+  });
+  assert.deepEqual(normalizeVideoProviderResult({ status: 'indeterminate', task_id: 'p5' }), {
+    status: 'submission_unknown',
+    provider_task_id: 'p5',
+    safe_stage: 'provider_status',
+  });
+  assert.deepEqual(normalizeVideoProviderResult({ status: 'result_unavailable', task_id: 'p6' }), {
+    status: 'result_unavailable',
+    provider_task_id: 'p6',
+    safe_stage: 'provider_result',
+  });
+});
+
+test('completed 携带 error_msg 或 error_message 时必须降级 submission_unknown', () => {
+  for (const errorField of ['error_msg', 'error_message']) {
+    const normalized = normalizeVideoProviderResult({
+      status: 'completed',
+      task_id: `conflict-${errorField}`,
+      url: 'https://result',
+      local_path: 'videos/candidate.mp4',
+      [errorField]: 'Authorization Bearer secret provider body',
+    });
+    assert.deepEqual(normalized, {
+      status: 'submission_unknown',
+      provider_task_id: `conflict-${errorField}`,
+      result_url: 'https://result',
+      safe_stage: 'provider_status',
+    });
+    assert.equal(JSON.stringify(normalized).includes('secret'), false);
+    assert.equal(JSON.stringify(normalized).includes('provider body'), false);
+  }
+});
+
+test('未知空白或矛盾视频状态 fail-safe 且不泄露供应商正文', () => {
+  const cases = [
+    { status: '', task_id: 'empty', error: 'Authorization Bearer secret' },
+    { status: 'mystery', task_id: 'unknown', message: 'https://private.provider/task' },
+    { status: 'completed', task_id: 'missing-result', error: 'raw provider body' },
+    { status: 'failed', task_id: 'contradictory', url: 'https://result', headers: { authorization: 'secret' } },
+  ];
+  for (const raw of cases) {
+    const normalized = normalizeVideoProviderResult(raw);
+    assert.ok(['submission_unknown', 'result_unavailable'].includes(normalized.status));
+    assert.deepEqual(
+      Object.keys(normalized).sort(),
+      Object.keys(normalized).filter((key) => [
+        'provider_task_id', 'status', 'result_url', 'safe_stage',
+      ].includes(key)).sort(),
+    );
+    assert.equal(JSON.stringify(normalized).includes('secret'), false);
+    assert.equal(JSON.stringify(normalized).includes('private.provider'), false);
+    assert.equal(JSON.stringify(normalized).includes('raw provider body'), false);
+  }
+});
 
 function createLog() {
   return { info() {}, warn() {}, error() {} };

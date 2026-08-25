@@ -52,6 +52,46 @@ export function restoreSelectedShotId(shots, selectedShotId) {
   return items[0]?.id ?? null
 }
 
+function normalizedDialogueInputText(value) {
+  return String(value ?? '').replace(/\r\n?/g, '\n')
+}
+
+export function localizedDialogueText(dialogue) {
+  return (Array.isArray(dialogue) ? dialogue : []).map((turn) => {
+    if (typeof turn === 'string') return turn
+    return String(turn?.localized_text ?? turn?.target_text ?? turn?.text ?? turn?.content ?? turn?.dialogue ?? '')
+  }).join('\n')
+}
+
+export function mergeLocalizedDialogueText(dialogue, value) {
+  const turns = Array.isArray(dialogue) ? dialogue : []
+  const text = normalizedDialogueInputText(value)
+  if (!turns.length) {
+    return text === ''
+      ? { ok: true, dialogue: [], reason: '' }
+      : { ok: false, dialogue: [], reason: '目标语台词只能逐行修改，不能新增、删除或重排对白行' }
+  }
+  if (turns.some((turn) => !turn || typeof turn !== 'object' || Array.isArray(turn))) {
+    return { ok: false, dialogue: [], reason: '当前目标对白不是可安全编辑的结构化数据' }
+  }
+  if (text === localizedDialogueText(turns)) {
+    return { ok: true, dialogue: turns.map((turn) => ({ ...turn })), reason: '' }
+  }
+  const lines = text.split('\n')
+  if (lines.length !== turns.length || lines.some((line) => !line.trim())) {
+    return {
+      ok: false,
+      dialogue: [],
+      reason: '目标语台词只能逐行修改，不能新增、删除或重排对白行',
+    }
+  }
+  return {
+    ok: true,
+    dialogue: turns.map((turn, index) => ({ ...turn, localized_text: lines[index] })),
+    reason: '',
+  }
+}
+
 export function filterShots(shots, filter = 'incomplete') {
   const items = Array.isArray(shots) ? shots : []
   if (filter === 'failed') return items.filter((shot) => FAILED_SHOT_STATES.has(String(shot.status)))
@@ -142,6 +182,62 @@ export function formatTimecode(milliseconds) {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`
 }
 
+function preparationScopeError() {
+  return Object.assign(new Error('逐镜参考准备范围或报价已变化，请重新确认'), {
+    code: 'REDRAW_REFERENCE_PREPARATION_SCOPE_CHANGED',
+  })
+}
+
+function exactPreparationShotIds(value, allowEmpty = false) {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) throw preparationScopeError()
+  const ids = value.map(Number)
+  if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0) || new Set(ids).size !== ids.length) {
+    throw preparationScopeError()
+  }
+  return ids.sort((left, right) => left - right)
+}
+
+export function buildReferencePreparationScopedStart(
+  quote = {},
+  requestedShotIds = [],
+  expectedVersionId = null,
+  displayedQuote = null,
+) {
+  const requested = exactPreparationShotIds(requestedShotIds)
+  const selected = exactPreparationShotIds(quote?.selected_shot_ids)
+  const missing = exactPreparationShotIds(quote?.missing_shot_ids)
+  const reused = exactPreparationShotIds(quote?.reused_shot_ids, true)
+  const needsAttention = exactPreparationShotIds(quote?.needs_attention_shot_ids, true)
+  const sameScope = requested.length === selected.length
+    && requested.length === missing.length
+    && requested.every((id, index) => id === selected[index] && id === missing[index])
+    && reused.length === 0
+    && needsAttention.length === 0
+  const sameVersion = expectedVersionId == null
+    || (Number.isSafeInteger(Number(expectedVersionId))
+      && Number(expectedVersionId) > 0
+      && Number(quote?.version_id) === Number(expectedVersionId))
+  const quoteHash = String(quote?.quote_hash || '')
+  const credits = Number(quote?.credits)
+  const sameDisplayedTerms = displayedQuote == null || (
+    Number(displayedQuote?.version_id) === Number(quote?.version_id)
+    && String(displayedQuote?.version_snapshot_hash || '') === String(quote?.version_snapshot_hash || '')
+    && String(displayedQuote?.character_plan_hash || '') === String(quote?.character_plan_hash || '')
+    && String(displayedQuote?.effective_mode || '') === String(quote?.effective_mode || '')
+    && String(displayedQuote?.action || '') === String(quote?.action || '')
+    && displayedQuote?.priced === quote?.priced
+    && Number(displayedQuote?.credits) === credits
+  )
+  if (!sameScope || !sameVersion || !sameDisplayedTerms
+    || !['advance', 'needs_review'].includes(String(quote?.action || ''))
+    || quote?.priced !== true
+    || !Number.isSafeInteger(credits) || credits < 0
+    || !/^[a-f0-9]{64}$/i.test(quoteHash)) {
+    throw preparationScopeError()
+  }
+  return { quote_hash: quoteHash, shot_ids: requested }
+}
+
 function preparationEvidence(label, required, completed) {
   return {
     label,
@@ -195,6 +291,31 @@ export function preparationActionState(shot = {}) {
     return { canRetry: false, manualReviewOnly: true, label: '人工核对' }
   }
   return { canRetry: false, manualReviewOnly: false, label: '准备参考' }
+}
+
+export function providerDeliveryState(shot = {}) {
+  const status = String(shot?.provider_status || '')
+  if (status === 'submission_unknown') {
+    return {
+      label: '需要核对',
+      canRetry: false,
+      warning: '提交结果未知，需要核对；不会自动重试',
+    }
+  }
+  if (status === 'failed_terminal') {
+    return {
+      label: '明确失败',
+      canRetry: shot?.can_start_next_attempt === true,
+      warning: shot?.can_start_next_attempt === true ? '策略允许下一次尝试' : '当前策略不允许下一次尝试',
+    }
+  }
+  const labels = {
+    accepted: '已受理',
+    running: '生成中',
+    completed_candidate: '候选已返回',
+    result_unavailable: '结果不可读取',
+  }
+  return { label: labels[status] || status || '未提交', canRetry: false, warning: '' }
 }
 
 export function referencePreparationFailurePolicy(error = {}, { requestStarted = true } = {}) {

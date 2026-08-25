@@ -4,6 +4,7 @@
       <div><p class="eyebrow">02 · 资产审核</p><h2>确认本地化资产后再进入批量转绘</h2></div>
       <el-tag>{{ assets.length }} 项资产</el-tag>
     </div>
+    <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" show-icon />
     <RedrawCharacterLibraryPanel :plan="characterPlan" :loading="loading" />
     <nav class="asset-tabs" aria-label="资产类型">
       <button v-for="item in ASSET_KINDS" :key="item.key" type="button" :class="{ active: activeKind === item.key }" @click="activeKind = item.key">{{ item.label }}</button>
@@ -12,9 +13,11 @@
     <div class="asset-batch-panel">
       <div class="canvas-credit-callout-v1 asset-batch-credits">
         <span>资产批量总价</span>
-        <strong v-if="batchCredits">本次预计扣除 {{ batchCredits }} 积分</strong>
+        <strong v-if="batchQuoteApplicable === false">当前无需批量生成</strong>
+        <strong v-else-if="batchCredits">本次预计扣除 {{ batchCredits }} 积分</strong>
         <strong v-else>积分待管理员配置</strong>
       </div>
+      <el-alert v-if="batchQuoteError" :title="batchQuoteError" type="warning" :closable="false" show-icon />
       <div v-if="activeBatch" class="asset-batch-progress">
         <el-progress :percentage="batchProgress.percent" />
         <span>{{ batchProgress.successCount }} 成功 / {{ batchProgress.failedCount }} 失败 / {{ batchProgress.totalCount }} 总数</span>
@@ -44,6 +47,7 @@
         :key="asset.id"
         :asset="asset"
         :quote="asset.quote_credits || quote"
+        :wardrobe-reference-assets="wardrobeReferenceAssets"
         @generate="generate"
         @review="review"
         @identity-saved="handleIdentitySaved"
@@ -62,12 +66,14 @@ import {
   ASSET_KINDS,
   assetBatchCredits,
   assetBatchProgress,
+  assetBatchQuoteApplicable,
   canStartAssetBatch,
   failedAssetIds,
   confirmSingleAssetQuote,
   generationGateOpen,
   groupAssets,
   isAssetVersionContextCurrent,
+  resolveAssetBatchQuoteForRefresh,
   singleAssetGenerationNotice,
 } from '@/utils/redrawAssetState'
 import RedrawAssetCard from './RedrawAssetCard.vue'
@@ -216,10 +222,17 @@ const batchWork = ref(null)
 const batchSubmitting = ref(false)
 const batchIdempotencyKey = ref(null)
 const pendingQuoteContext = ref('')
+const batchQuoteApplicable = ref(null)
+const batchQuoteError = ref('')
+const loadError = ref('')
 let pollTimer = null
 const resolvedVersionId = computed(() => props.versionId || props.work?.version_id || props.work?.current_version_id)
 const visibleAssets = computed(() => groupAssets(assets.value, activeKind.value))
 const characterAssets = computed(() => groupAssets(assets.value, 'character'))
+const wardrobeReferenceAssets = computed(() => assets.value.filter((asset) => {
+  const assetId = Number(asset?.asset_id)
+  return asset.kind !== 'voice' && Number.isSafeInteger(assetId) && assetId > 0
+}))
 const activeBatch = computed(() => batchWork.value || props.work?.asset_batch || null)
 const batchCredits = computed(() => assetBatchCredits(batchQuote.value))
 const batchProgress = computed(() => assetBatchProgress(activeBatch.value))
@@ -310,10 +323,33 @@ async function refresh(options = {}) {
     gate.value = nextGate || { ok: false, missing: [] }
     emit('gate-updated', gate.value)
     if (!isCurrentVersion(versionId)) return
-    if (quoteBatch) await loadAssetBatchQuote()
+    if (quoteBatch) {
+      const quoteState = await resolveAssetBatchQuoteForRefresh(quoted, () => loadAssetBatchQuote())
+      if (!isCurrentVersion(versionId)) return
+      batchQuoteApplicable.value = quoteState.applicable
+      batchQuote.value = quoteState.quote
+      batchQuoteError.value = quoteState.error
+        ? quoteState.error?.response?.data?.error?.message || quoteState.error.message || '批量资产报价失败'
+        : ''
+      if (!quoteState.applicable) pendingQuoteContext.value = ''
+    } else if (!assetBatchQuoteApplicable(quoted)) {
+      batchQuoteApplicable.value = false
+      batchQuote.value = null
+      batchQuoteError.value = ''
+      pendingQuoteContext.value = ''
+    }
     if (activeKind.value === 'voice') await loadProductionVoices(versionId)
+    loadError.value = ''
   } finally {
     loading.value = false
+  }
+}
+
+async function refreshSafely(options = {}) {
+  try {
+    await refresh(options)
+  } catch (error) {
+    loadError.value = error?.response?.data?.error?.message || error?.message || '读取资产状态失败'
   }
 }
 
@@ -475,7 +511,7 @@ function stopVoicePreview() {
 }
 
 onMounted(async () => {
-  await refresh()
+  await refreshSafely()
   if (['pending', 'processing'].includes(String(activeBatch.value?.status || ''))) startBatchPolling()
 })
 onUnmounted(() => {
@@ -489,7 +525,10 @@ watch(resolvedVersionId, async () => {
   batchQuote.value = null
   batchWork.value = null
   batchIdempotencyKey.value = null
-  await refresh()
+  batchQuoteApplicable.value = null
+  batchQuoteError.value = ''
+  loadError.value = ''
+  await refreshSafely()
 })
 watch(activeKind, async (kind) => {
   if (kind !== 'voice') {
@@ -504,7 +543,7 @@ watch(activeKind, async (kind) => {
   }
 })
 
-defineExpose({ refresh, generationGateOpen })
+defineExpose({ refresh: refreshSafely, generationGateOpen })
 </script>
 
 <style scoped>

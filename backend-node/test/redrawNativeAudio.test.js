@@ -9,6 +9,16 @@ const { execFileSync } = require('node:child_process');
 const { getFfmpegPath } = require('../src/utils/ffmpegPath');
 const nativeAudio = require('../src/services/redrawNativeAudioService');
 
+const QUALITY_EVIDENCE_KEYS = [
+  'has_audio',
+  'dialogue_mode',
+  'language',
+  'exact_target_text',
+  'speaker_voice_matches',
+  'ambient_audio_safe',
+  'evidence_hash',
+];
+
 function sha256File(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
@@ -443,4 +453,110 @@ test('验证前复制受控私有视频快照且完成前重 hash 原 artifact �
   );
   assert.ok(copiedSnapshot, 'must copy artifact to a private native-audio snapshot before probing');
   assert.equal(fs.existsSync(path.dirname(copiedSnapshot)), false, 'snapshot temp dir must be cleaned');
+});
+
+test('原生音频质量证据严格投影七个白名单字段且不泄露原始正文', () => {
+  const evidence = nativeAudio.projectNativeAudioQualityEvidence({
+    audio_stream: { codec_type: 'audio' },
+    verification: {
+      detected_language: 'en-US',
+      language_verified: true,
+    },
+    validation_hash: 'a'.repeat(64),
+    raw_response: { authorization: 'Bearer secret' },
+    local_path: 'C:\\private\\candidate.mp4',
+  }, {
+    dialogueMode: 'dialogue',
+    exactTargetText: true,
+    speakerVoiceMatches: true,
+    ambientAudioSafe: true,
+  });
+
+  assert.deepEqual(Object.keys(evidence), QUALITY_EVIDENCE_KEYS);
+  assert.deepEqual(evidence, {
+    has_audio: true,
+    dialogue_mode: 'dialogue',
+    language: 'en-US',
+    exact_target_text: true,
+    speaker_voice_matches: true,
+    ambient_audio_safe: true,
+    evidence_hash: 'a'.repeat(64),
+  });
+  assert.equal(JSON.stringify(evidence).includes('secret'), false);
+  assert.equal(JSON.stringify(evidence).includes('private'), false);
+});
+
+test('静默镜头允许安全环境声，但精确台词必须为空且不得检测到对白', () => {
+  const validation = {
+    audio_stream: { codec_type: 'audio' },
+    verification: { detected_language: null, language_verified: false },
+    validation_hash: 'b'.repeat(64),
+  };
+  const evidence = nativeAudio.projectNativeAudioQualityEvidence(validation, {
+    dialogueMode: 'silent',
+    approvedText: '',
+    dialogueDetected: false,
+    speakerVoiceMatches: true,
+    ambientAudioSafe: true,
+  });
+
+  assert.deepEqual(evidence, {
+    has_audio: true,
+    dialogue_mode: 'silent',
+    language: null,
+    exact_target_text: null,
+    speaker_voice_matches: true,
+    ambient_audio_safe: true,
+    evidence_hash: 'b'.repeat(64),
+  });
+
+  for (const invalid of [
+    { approvedText: 'This must not exist.', dialogueDetected: false },
+    { approvedText: '', dialogueDetected: true },
+    { approvedText: '', dialogueDetected: undefined },
+  ]) {
+    assert.throws(
+      () => nativeAudio.projectNativeAudioQualityEvidence(validation, {
+        dialogueMode: 'silent',
+        speakerVoiceMatches: true,
+        ambientAudioSafe: true,
+        ...invalid,
+      }),
+      { code: 'REDRAW_NATIVE_AUDIO_SILENT_DIALOGUE_INVALID' },
+    );
+  }
+});
+
+test('原生音频质量投影对未知对白模式和无效证据 fail closed', () => {
+  const validation = {
+    audio_stream: { codec_type: 'audio' },
+    verification: { detected_language: 'en-US', language_verified: true },
+    validation_hash: 'c'.repeat(64),
+  };
+
+  assert.throws(
+    () => nativeAudio.projectNativeAudioQualityEvidence(validation, { dialogueMode: 'unknown' }),
+    { code: 'REDRAW_NATIVE_AUDIO_QUALITY_EVIDENCE_INVALID' },
+  );
+  assert.throws(
+    () => nativeAudio.projectNativeAudioQualityEvidence({ ...validation, validation_hash: 'bad' }, {
+      dialogueMode: 'dialogue',
+      exactTargetText: true,
+      speakerVoiceMatches: true,
+      ambientAudioSafe: true,
+    }),
+    { code: 'REDRAW_NATIVE_AUDIO_QUALITY_EVIDENCE_INVALID' },
+  );
+  assert.throws(
+    () => nativeAudio.projectNativeAudioQualityEvidence({
+      ...validation,
+      verification: { ...validation.verification, language_verified: false },
+    }, {
+      dialogueMode: 'dialogue',
+      exactTargetText: true,
+      speakerVoiceMatches: true,
+      ambientAudioSafe: true,
+    }),
+    { code: 'REDRAW_NATIVE_AUDIO_QUALITY_EVIDENCE_INVALID' },
+  );
 });

@@ -75,6 +75,49 @@ test('资产批量按钮要求完整服务端报价且部分失败只重试失�
   ]}), [2, 3])
 })
 
+test('完成资产反复刷新不再报价，待生成资产的 409 被状态化且不产生未处理拒绝', async () => {
+  const state = await import('../src/utils/redrawAssetState.js')
+  const completedAssets = [
+    { id: 1, kind: 'character', status: 'generated', asset_id: 101 },
+    { id: 2, kind: 'scene', status: 'needs_attention', clean_plate_asset_id: 102 },
+    { id: 3, kind: 'prop', status: 'generated', asset_id: 103 },
+    { id: 4, kind: 'voice', status: 'generated', voice_asset_id: 104 },
+  ]
+  let quoteCalls = 0
+  for (let index = 0; index < 3; index += 1) {
+    const result = await state.resolveAssetBatchQuoteForRefresh(completedAssets, async () => {
+      quoteCalls += 1
+      throw new Error('完成资产不得请求报价')
+    })
+    assert.deepEqual(result, { applicable: false, quote: null, error: null })
+  }
+  assert.equal(quoteCalls, 0)
+
+  const unpriced = Object.assign(new Error('批量资产存在未验证能力或未配置价格'), {
+    code: 'REDRAW_ASSET_BATCH_UNPRICED',
+  })
+  const pendingResult = await state.resolveAssetBatchQuoteForRefresh([
+    { id: 5, kind: 'character', status: 'draft', asset_id: null },
+  ], async () => {
+    quoteCalls += 1
+    throw unpriced
+  })
+  assert.equal(quoteCalls, 1)
+  assert.equal(pendingResult.applicable, true)
+  assert.equal(pendingResult.quote, null)
+  assert.equal(pendingResult.error, unpriced)
+  assert.equal(state.canStartAssetBatch(pendingResult.quote, null), false)
+  assert.equal(state.assetBatchQuoteApplicable([{ status: 'draft', asset_id: 101 }]), false)
+  assert.equal(state.assetBatchQuoteApplicable([{ status: 'failed', voice_asset_id: 102 }]), false)
+  assert.equal(state.assetBatchQuoteApplicable([{ status: 'processing' }]), false)
+  assert.equal(state.assetBatchQuoteApplicable([{ status: 'failed' }]), true)
+
+  assert.match(assetStepSource, /resolveAssetBatchQuoteForRefresh/)
+  assert.match(assetStepSource, /batchQuoteError/)
+  assert.match(assetStepSource, /onMounted\(async \(\) => \{[\s\S]{0,120}refreshSafely\(\)/)
+  assert.match(assetStepSource, /watch\(resolvedVersionId,[\s\S]{0,300}refreshSafely\(\)/)
+})
+
 test('资产批量状态纯函数 fail closed 并计算进度', async () => {
   const state = await import('../src/utils/redrawAssetState.js')
 
@@ -131,6 +174,7 @@ test('资产批量跨版本异步响应必须按版本上下文丢弃', async ()
 test('资产批量 API 与 UI 只使用服务端报价、hash 确认和安全创建字段', () => {
   assert.match(apiSource, /quoteAssetBatch\(versionId,\s*body\s*=\s*\{\}\)/)
   assert.match(apiSource, /assets\/batch-quote/)
+  assert.match(apiSource, /assets\/batch-quote[^\n]*body,\s*\{\s*silentError:\s*true\s*\}/)
   assert.match(apiSource, /createAssetBatch\(versionId,\s*body\)/)
   assert.match(apiSource, /assets\/batches/)
 

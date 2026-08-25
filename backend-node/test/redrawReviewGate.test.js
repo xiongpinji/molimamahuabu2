@@ -216,10 +216,55 @@ test('视频生成门禁先执行准备门禁，旧候选不能绕过未完成�
     const gate = evaluateGenerationGate(state.db, state.versionId, { tenantId: 'tenant-a', userId: 'user-a' });
 
     assert.equal(gate.ok, false);
+    assert.equal(gate.current_step, 2);
     assert.equal(gate.blocking[0].code, 'preparation_not_ready');
     assert.equal(gate.missing[0].reason_code, 'character_plan_not_ready');
   } finally {
     state.db.close();
+  }
+});
+
+test('参考准备未完成时仅在全部引用资产已批准后开放第三步导航', () => {
+  for (const entry of [
+    { approvalStatus: 'pending', expectedStep: 2, missing: [{ reason_code: 'preparation_required' }] },
+    { approvalStatus: 'approved', expectedStep: 3, missing: [{ reason_code: 'preparation_required' }] },
+    {
+      approvalStatus: 'approved',
+      expectedStep: 2,
+      missing: [{ resource_type: 'version', reason_code: 'coverage_binding_not_current' }],
+    },
+  ]) {
+    const state = setup();
+    try {
+      const scene = addAsset(state.db, {
+        id: entry.approvalStatus === 'approved' ? 87 : 86,
+        kind: 'scene',
+        approvalStatus: entry.approvalStatus,
+      });
+      addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: scene.id }]);
+      state.db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(state.versionId);
+
+      const gate = evaluateGenerationGate(state.db, state.versionId, {
+        tenantId: 'tenant-a',
+        userId: 'user-a',
+      }, {
+        preparationGate: () => ({
+          ok: false,
+          ready_shot_ids: [],
+          missing: entry.missing,
+        }),
+      });
+
+      assert.equal(gate.ok, false, entry.approvalStatus);
+      assert.equal(gate.current_step, entry.expectedStep, entry.approvalStatus);
+      assert.deepEqual(gate.blocking, [{
+        code: 'preparation_not_ready',
+        reason: '整集参考准备未完成或已过期',
+        shot_count: 0,
+      }]);
+    } finally {
+      state.db.close();
+    }
   }
 });
 
@@ -297,7 +342,7 @@ test('审核资产批准后在写事务外用受信 preparationContext 重算生
 test('审核资产批准先持久化审批，再按事务外生成门禁更新 advisory 状态', () => {
   const cases = [
     { gateOk: true, expectedVersionStatus: 'ready_to_generate', expectedWorkStatus: 'ready_to_generate', expectedStep: 3 },
-    { gateOk: false, expectedVersionStatus: 'asset_review', expectedWorkStatus: 'asset_review', expectedStep: 2 },
+    { gateOk: false, expectedVersionStatus: 'asset_review', expectedWorkStatus: 'asset_review', expectedStep: 3 },
   ];
   for (const entry of cases) {
     const state = setup();

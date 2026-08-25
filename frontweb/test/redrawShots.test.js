@@ -77,6 +77,83 @@ test('分镜状态归一化保留后端批次并在刷新后恢复选中镜头',
   assert.equal(restoreSelectedShotId(normalized.shots, 99), 11)
 })
 
+test('结构化目标对白读取 localized_text 且换镜头时不沿用旧文本', async () => {
+  const { localizedDialogueText } = await shotState()
+  assert.equal(localizedDialogueText([{
+    speaker_id: 'c1',
+    source_text: '就是这里。',
+    localized_text: 'Fue aquí.',
+    start_ms: 900,
+    end_ms: 2300,
+  }]), 'Fue aquí.')
+  assert.equal(localizedDialogueText([{
+    speaker_id: 'c2',
+    localized_text: 'No fue aquí.',
+    start_ms: 3100,
+    end_ms: 4200,
+  }]), 'No fue aquí.')
+})
+
+test('只改非对白字段时完整保留服务端结构化目标对白', async () => {
+  const { localizedDialogueText, mergeLocalizedDialogueText } = await shotState()
+  const dialogue = [{
+    speaker_id: 'c1',
+    source_text: '就是这里。',
+    localized_text: 'Fue aquí.',
+    start_ms: 900,
+    end_ms: 2300,
+    emotion: null,
+    overlap_group: null,
+    estimated_duration_ms: 600,
+    binding: { character_id: 17 },
+  }]
+  const baseline = structuredClone(dialogue)
+  const result = mergeLocalizedDialogueText(dialogue, localizedDialogueText(dialogue))
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.dialogue, baseline)
+  assert.deepEqual(dialogue, baseline)
+})
+
+test('编辑目标对白时仅按索引更新 localized_text 并保留稳定身份时序字段', async () => {
+  const { mergeLocalizedDialogueText } = await shotState()
+  const dialogue = [
+    {
+      speaker_id: 'c1', source_text: '就是这里。', localized_text: 'Fue aquí.',
+      start_ms: 900, end_ms: 2300, emotion: null, overlap_group: null,
+      estimated_duration_ms: 600,
+    },
+    {
+      speaker_id: 'c2', source_text: '不是这里。', localized_text: 'No aquí.',
+      start_ms: 2400, end_ms: 3600, emotion: 'angry', overlap_group: 'g1',
+      estimated_duration_ms: 700,
+    },
+  ]
+  const baseline = structuredClone(dialogue)
+  const result = mergeLocalizedDialogueText(dialogue, 'Fue aquí.\nNo fue aquí.')
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.dialogue, [
+    baseline[0],
+    { ...baseline[1], localized_text: 'No fue aquí.' },
+  ])
+  assert.deepEqual(dialogue, baseline)
+})
+
+test('无法安全映射目标对白行时关闭保存且静默镜头保持空数组', async () => {
+  const { mergeLocalizedDialogueText } = await shotState()
+  const dialogue = [
+    { speaker_id: 'c1', localized_text: 'Uno.', start_ms: 0, end_ms: 1000 },
+    { speaker_id: 'c2', localized_text: 'Dos.', start_ms: 1000, end_ms: 2000 },
+  ]
+  assert.equal(mergeLocalizedDialogueText(dialogue, 'Uno.').ok, false)
+  assert.equal(mergeLocalizedDialogueText(dialogue, 'Uno.\nDos.\nTres.').ok, false)
+  assert.equal(mergeLocalizedDialogueText(['旧字符串结构'], '旧字符串结构').ok, false)
+  assert.deepEqual(mergeLocalizedDialogueText([], ''), { ok: true, dialogue: [], reason: '' })
+  assert.equal(mergeLocalizedDialogueText([], '不得新增').ok, false)
+  assert.match(editorSource, /localizedDialogueEdit/)
+  assert.match(editorSource, /dialogueEditError/)
+  assert.match(editorSource, /if \(!localizedDialogueEdit\.value\.ok\) return/)
+})
+
 test('筛选、报价汇总和轮询严格使用后端状态且区分零价与未定价', async () => {
   const { filterShots, quoteCredits, sumShotQuotes, shouldPollWork } = await shotState()
   const shots = [
@@ -156,7 +233,13 @@ test('参考包 API 使用精确 GET PUT 且保存参数由客户端白名单重
   ]) assert.match(apiSource, new RegExp(field), field)
   assert.doesNotMatch(apiSource, /saveReferenceBundle[\s\S]{0,260}\.\.\.body/)
 
-  const executableSource = apiSource.replace("import request from '@/utils/request'", 'const request = {}')
+  const timelineStateUrl = new URL('../src/utils/redrawTimelineState.js', import.meta.url).href
+  const executableSource = apiSource
+    .replace("import request from '@/utils/request'", 'const request = {}')
+    .replace(
+      "import { controlledReleaseRequestPath } from '@/utils/redrawTimelineState'",
+      `import { controlledReleaseRequestPath } from ${JSON.stringify(timelineStateUrl)}`,
+    )
   const apiModule = await import(`data:text/javascript;base64,${Buffer.from(executableSource).toString('base64')}`)
   const payload = apiModule.buildReferenceBundlePayload({
     expected_updated_at: 'server-shot-version',
@@ -258,6 +341,19 @@ test('参考包对白就绪绑定当前 locale 和 market 且不硬编码美国�
   assert.equal(evaluateReferenceBundleEvidence(readyReferenceBundle('es-ES', 'ES', { target_market: 'US' }), 7).ready, false)
   assert.equal(evaluateReferenceBundleEvidence(readyReferenceBundle('es-ES', 'ES', { target_locale: '' }), 7).ready, false)
   assert.equal(evaluateReferenceBundleEvidence(readyReferenceBundle('es-ES', 'ES', { target_market: '' }), 7).ready, false)
+})
+
+test('单镜生成时长与后端合同统一为 5 到 15 秒且五秒源镜头可生成', () => {
+  assert.match(editorSource, /建议保持 5–15 秒/)
+  assert.match(editorSource, /v-model="form\.duration" :min="5" :max="15"/)
+  assert.match(editorSource, /durationSeconds\.value >= 5 && durationSeconds\.value <= 15/)
+  assert.match(editorSource, /Math\.max\(5, Math\.min\(15,/)
+  assert.doesNotMatch(editorSource, /建议保持 10–15 秒/)
+})
+
+test('单镜编辑器使用通用目标语台词文案且不硬编码英文', () => {
+  assert.match(editorSource, /label="目标语台词"/)
+  assert.doesNotMatch(editorSource, /label="英文台词"/)
 })
 
 test('第三步工作台覆盖批次、编辑、计费、重试、对照预览和后端轮询', () => {
