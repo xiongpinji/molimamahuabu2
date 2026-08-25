@@ -95,3 +95,14 @@ test('单次、批量、一键全流程与修复重试在提交前都执行同�
     assert.match(source.slice(start, start + 1600), /requireImageGenerationOptions\(\)/, `${functionName} must preflight image model`)
   }
 })
+
+test('分镜单图和首尾帧轮询进入 needs_attention 时不得走生成完成成功分支', () => {
+  assert.match(source, /function handleImageGenerationTerminal\(/)
+  assert.match(source, /shouldStopBatchOnGenerationResult\(pollRes\)/)
+  for (const functionName of ['onGenerateSbFrameImage', 'onGenerateSbImage']) {
+    const start = source.indexOf(`async function ${functionName}(`)
+    assert.notEqual(start, -1, `missing ${functionName}`)
+    const body = source.slice(start, start + 5200)
+    assert.match(body, /handleImageGenerationTerminal\(sb,\s*pollRes/)
+  }
+})

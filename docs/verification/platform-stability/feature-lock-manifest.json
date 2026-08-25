@@ -40,7 +40,8 @@
         "docs/superpowers/specs/2026-08-22-provider-task-receipt-reconciliation-design.md",
         "docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md",
         "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md",
-        "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md"
+        "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md",
+        "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md"
       ],
       "fixCommit": "54eb8e940982cd9c4b65e91b934d8593a6b1975b",
       "unlockHistory": [
@@ -110,24 +111,37 @@
             "backend-node/test/incrementalReleaseScope.test.js",
             "backend-node/test/featureLockManifest.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 PR #184 合入最新 main 并收口 17 项冲突获批",
+          "approvedBy": "product-owner 2026-08-23 pr-184-main-merge-conflict-resolution",
+          "impactTests": [
+            "backend-node/test/providerCanaryAudioArtifact.test.js",
+            "backend-node/test/providerCanaryExecutor.test.js",
+            "backend-node/test/providerCanaryInventory.test.js",
+            "backend-node/test/providerCanaryScheduler.test.js",
+            "backend-node/test/providerRouteCost.test.js",
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerRuntimeFingerprint.test.js",
+            "backend-node/test/providerTaskLiveCompatibility.test.js",
+            "frontweb/test/platformZeroCostSmokeContract.test.js",
+            "frontweb/test/providerRouteCostAdmin.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 PR #184 合入最新 main 并收口 17 项冲突获批",
-        "approvedBy": "product-owner 2026-08-23 pr-184-main-merge-conflict-resolution",
+        "reason": "2026-08-25 PR #193 图片结果未知安全收口与旧线路兼容 CI 修复获批",
+        "approvedBy": "product-owner 2026-08-25 pr-193-ci-fix-approved",
         "impactTests": [
-          "backend-node/test/providerCanaryAudioArtifact.test.js",
-          "backend-node/test/providerCanaryExecutor.test.js",
-          "backend-node/test/providerCanaryInventory.test.js",
-          "backend-node/test/providerCanaryScheduler.test.js",
-          "backend-node/test/providerRouteCost.test.js",
-          "backend-node/test/providerRouteSchema.test.js",
-          "backend-node/test/providerRuntimeFingerprint.test.js",
-          "backend-node/test/providerTaskLiveCompatibility.test.js",
-          "frontweb/test/platformZeroCostSmokeContract.test.js",
-          "frontweb/test/providerRouteCostAdmin.test.js",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/djpsdOpenApiImage.test.js",
+          "backend-node/test/imageDuplicateGuard.test.js",
+          "backend-node/test/imageProviderConfigFailover.test.js",
+          "backend-node/test/imageTools.test.js",
+          "backend-node/test/providerRouteImageIntegration.test.js",
+          "backend-node/test/token6688Image.test.js",
+          "backend-node/test/featureLockManifest.test.js"
         ]
       }
     },
@@ -174,7 +188,8 @@
         "docs/superpowers/specs/2026-08-22-provider-task-receipt-reconciliation-design.md",
         "docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md",
         "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md",
-        "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md"
+        "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md",
+        "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md"
       ],
       "fixCommit": "54eb8e940982cd9c4b65e91b934d8593a6b1975b",
       "unlockHistory": [
@@ -293,24 +308,37 @@
             "backend-node/test/incrementalReleaseScope.test.js",
             "backend-node/test/featureLockManifest.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 PR #184 合入最新 main 并收口 17 项冲突获批",
+          "approvedBy": "product-owner 2026-08-23 pr-184-main-merge-conflict-resolution",
+          "impactTests": [
+            "backend-node/test/providerCanaryAudioArtifact.test.js",
+            "backend-node/test/providerCanaryExecutor.test.js",
+            "backend-node/test/providerCanaryInventory.test.js",
+            "backend-node/test/providerCanaryScheduler.test.js",
+            "backend-node/test/providerRouteCost.test.js",
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerRuntimeFingerprint.test.js",
+            "backend-node/test/providerTaskLiveCompatibility.test.js",
+            "frontweb/test/platformZeroCostSmokeContract.test.js",
+            "frontweb/test/providerRouteCostAdmin.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 PR #184 合入最新 main 并收口 17 项冲突获批",
-        "approvedBy": "product-owner 2026-08-23 pr-184-main-merge-conflict-resolution",
+        "reason": "2026-08-25 PR #193 图片结果未知安全收口与旧线路兼容 CI 修复获批",
+        "approvedBy": "product-owner 2026-08-25 pr-193-ci-fix-approved",
         "impactTests": [
-          "backend-node/test/providerCanaryAudioArtifact.test.js",
-          "backend-node/test/providerCanaryExecutor.test.js",
-          "backend-node/test/providerCanaryInventory.test.js",
-          "backend-node/test/providerCanaryScheduler.test.js",
-          "backend-node/test/providerRouteCost.test.js",
-          "backend-node/test/providerRouteSchema.test.js",
-          "backend-node/test/providerRuntimeFingerprint.test.js",
-          "backend-node/test/providerTaskLiveCompatibility.test.js",
-          "frontweb/test/platformZeroCostSmokeContract.test.js",
-          "frontweb/test/providerRouteCostAdmin.test.js",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/djpsdOpenApiImage.test.js",
+          "backend-node/test/imageDuplicateGuard.test.js",
+          "backend-node/test/imageProviderConfigFailover.test.js",
+          "backend-node/test/imageTools.test.js",
+          "backend-node/test/providerRouteImageIntegration.test.js",
+          "backend-node/test/token6688Image.test.js",
+          "backend-node/test/featureLockManifest.test.js"
         ]
       }
     },
@@ -357,7 +385,8 @@
         "docs/superpowers/specs/2026-08-22-provider-task-receipt-reconciliation-design.md",
         "docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md",
         "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md",
-        "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md"
+        "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md",
+        "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md"
       ],
       "fixCommit": "51a91f1e3eb5dc3636adb1c8a47e45f22a60e000",
       "unlockHistory": [
@@ -482,24 +511,37 @@
             "backend-node/test/incrementalReleaseScope.test.js",
             "backend-node/test/featureLockManifest.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-23 PR #184 合入最新 main 并收口 17 项冲突获批",
+          "approvedBy": "product-owner 2026-08-23 pr-184-main-merge-conflict-resolution",
+          "impactTests": [
+            "backend-node/test/providerCanaryAudioArtifact.test.js",
+            "backend-node/test/providerCanaryExecutor.test.js",
+            "backend-node/test/providerCanaryInventory.test.js",
+            "backend-node/test/providerCanaryScheduler.test.js",
+            "backend-node/test/providerRouteCost.test.js",
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerRuntimeFingerprint.test.js",
+            "backend-node/test/providerTaskLiveCompatibility.test.js",
+            "frontweb/test/platformZeroCostSmokeContract.test.js",
+            "frontweb/test/providerRouteCostAdmin.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-23 PR #184 合入最新 main 并收口 17 项冲突获批",
-        "approvedBy": "product-owner 2026-08-23 pr-184-main-merge-conflict-resolution",
+        "reason": "2026-08-25 PR #193 图片结果未知安全收口与旧线路兼容 CI 修复获批",
+        "approvedBy": "product-owner 2026-08-25 pr-193-ci-fix-approved",
         "impactTests": [
-          "backend-node/test/providerCanaryAudioArtifact.test.js",
-          "backend-node/test/providerCanaryExecutor.test.js",
-          "backend-node/test/providerCanaryInventory.test.js",
-          "backend-node/test/providerCanaryScheduler.test.js",
-          "backend-node/test/providerRouteCost.test.js",
-          "backend-node/test/providerRouteSchema.test.js",
-          "backend-node/test/providerRuntimeFingerprint.test.js",
-          "backend-node/test/providerTaskLiveCompatibility.test.js",
-          "frontweb/test/platformZeroCostSmokeContract.test.js",
-          "frontweb/test/providerRouteCostAdmin.test.js",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/djpsdOpenApiImage.test.js",
+          "backend-node/test/imageDuplicateGuard.test.js",
+          "backend-node/test/imageProviderConfigFailover.test.js",
+          "backend-node/test/imageTools.test.js",
+          "backend-node/test/providerRouteImageIntegration.test.js",
+          "backend-node/test/token6688Image.test.js",
+          "backend-node/test/featureLockManifest.test.js"
         ]
       }
     },
@@ -750,7 +792,8 @@
         "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md",
         "docs/superpowers/plans/2026-08-23-provider-readiness-tts-canary.md",
         "docs/verification/platform-stability/provider-readiness-repair-manifest-20260823.md",
-        "docs/verification/platform-stability/canvas-text-capability-hotfix-20260824.md"
+        "docs/verification/platform-stability/canvas-text-capability-hotfix-20260824.md",
+        "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md"
       ],
       "fixCommit": null,
       "unlockHistory": [
@@ -935,17 +978,30 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-24 画布文本线路空能力指纹兼容修复获批",
+          "approvedBy": "product-owner 2026-08-24 canvas-text-capability-hotfix",
+          "impactTests": [
+            "backend-node/test/providerCanaryPublicGate.test.js",
+            "backend-node/test/providerRouteStability.test.js",
+            "backend-node/test/providerRouteTextIntegration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-24 画布文本线路空能力指纹兼容修复获批",
-        "approvedBy": "product-owner 2026-08-24 canvas-text-capability-hotfix",
+        "reason": "2026-08-25 PR #193 图片结果未知安全收口与旧线路兼容 CI 修复获批",
+        "approvedBy": "product-owner 2026-08-25 pr-193-ci-fix-approved",
         "impactTests": [
-          "backend-node/test/providerCanaryPublicGate.test.js",
-          "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/providerRouteTextIntegration.test.js",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/djpsdOpenApiImage.test.js",
+          "backend-node/test/imageDuplicateGuard.test.js",
+          "backend-node/test/imageProviderConfigFailover.test.js",
+          "backend-node/test/imageTools.test.js",
+          "backend-node/test/providerRouteImageIntegration.test.js",
+          "backend-node/test/token6688Image.test.js",
+          "backend-node/test/featureLockManifest.test.js"
         ]
       }
     },

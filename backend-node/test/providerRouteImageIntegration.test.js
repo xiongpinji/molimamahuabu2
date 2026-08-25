@@ -1,12 +1,16 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const http = require('node:http');
+const os = require('node:os');
+const path = require('node:path');
 const Database = require('better-sqlite3');
 
 const aiConfigService = require('../src/services/aiConfigService');
 const creditLedgerService = require('../src/services/creditLedgerService');
 const imageClient = require('../src/services/imageClient');
 const imageService = require('../src/services/imageService');
+const imageRoutes = require('../src/routes/images');
 const modelPriceService = require('../src/services/modelPriceService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
@@ -37,15 +41,15 @@ function addRoute(db, values) {
   const config = aiConfigService.createConfig(db, log, {
     service_type: 'image',
     provider: values.provider,
-    api_protocol: 'openai',
+    api_protocol: values.apiProtocol || 'openai',
     name: values.provider,
     base_url: values.baseUrl,
     api_key: 'local-test-key',
     model: [values.upstreamModel],
     default_model: values.upstreamModel,
-    endpoint: '/images/generations',
+    endpoint: values.endpoint || '/images/generations',
     priority: values.priority,
-    logical_model_id: 'logical-image',
+    logical_model_id: values.logicalModelId === undefined ? 'logical-image' : values.logicalModelId,
     failover_enabled: Boolean(values.failover),
     settings: values.settings || JSON.stringify({ canvas_capabilities: {} }),
   });
@@ -392,6 +396,132 @@ test('2xx 无可读产物为结果未知且不切换', async (t) => {
     'artifact_unreadable');
 });
 
+test('Token6688 200 无图片地址进入 needs_attention 且不切换备用供应商', async (t) => {
+  const requests = [];
+  const primary = await listen((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      requests.push('token6688-primary');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{}] }));
+    });
+  });
+  const backup = await listen((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      requests.push('backup');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ url: 'https://cdn.example/should-not-run.png' }] }));
+    });
+  });
+  t.after(async () => Promise.all([close(primary), close(backup)]));
+
+  const db = createDb();
+  t.after(() => db.close());
+  const primaryId = addRoute(db, {
+    provider: 'token6688-primary',
+    apiProtocol: 'token6688',
+    endpoint: '/v1/images/generations',
+    baseUrl: `http://127.0.0.1:${primary.address().port}`,
+    upstreamModel: 'token6688-gpt-image-2',
+    priority: 100,
+  });
+  addRoute(db, {
+    provider: 'private-backup',
+    baseUrl: `http://127.0.0.1:${backup.address().port}`,
+    upstreamModel: 'upstream-backup',
+    priority: 90,
+    failover: true,
+  });
+
+  const result = await imageClient.callImageApi(db, log, {
+    prompt: 'user prompt',
+    model: 'logical-image',
+    image_gen_id: 3202,
+  });
+
+  assert.equal(result.indeterminate, true);
+  assert.match(result.error, /结果未知/);
+  assert.deepEqual(requests, ['token6688-primary']);
+  assert.deepEqual(
+    db.prepare('SELECT state, final_config_id FROM generation_route_requests').get(),
+    { state: 'needs_attention', final_config_id: null },
+  );
+  assert.deepEqual(
+    db.prepare('SELECT config_id, state, error_category FROM generation_route_attempts').get(),
+    { config_id: primaryId, state: 'artifact_unreadable', error_category: 'artifact_unreadable' },
+  );
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS count FROM provider_stability_events WHERE event_type = 'route_switched'")
+      .get().count,
+    0,
+  );
+  const stabilityEvent = db.prepare(
+    "SELECT event_type, task_state, credit_state, safe_details FROM provider_stability_events WHERE event_type = 'provider_failure'",
+  ).get();
+  assert.equal(stabilityEvent.task_state, 'needs_attention');
+  assert.equal(stabilityEvent.credit_state, 'held');
+  assert.deepEqual(JSON.parse(stabilityEvent.safe_details), {
+    category: 'artifact_unreadable',
+    state: 'degraded',
+    business_type: 'image_generation',
+    business_id: 3202,
+  });
+});
+
+test('shadow 旧 Token6688 配置断连也记录 needs_attention 路由尝试与管理员事件', async (t) => {
+  const provider = await listen((req, res) => {
+    req.resume();
+    req.on('end', () => req.socket.destroy());
+  });
+  t.after(() => close(provider));
+
+  const db = createDb();
+  t.after(() => db.close());
+  const configId = addRoute(db, {
+    provider: 'token6688-legacy',
+    apiProtocol: 'token6688',
+    endpoint: '/v1/images/generations',
+    baseUrl: `http://127.0.0.1:${provider.address().port}`,
+    upstreamModel: 'token6688-gpt-image-2',
+    priority: 100,
+    logicalModelId: null,
+  });
+
+  const result = await imageClient.callImageApi(db, log, {
+    prompt: 'user prompt',
+    model: 'token6688-gpt-image-2',
+    image_gen_id: 3203,
+    creditReservationId: 'held-3203',
+  });
+
+  assert.equal(result.indeterminate, true);
+  assert.deepEqual(
+    db.prepare('SELECT state, business_type, business_id FROM generation_route_requests').get(),
+    { state: 'needs_attention', business_type: 'image_generation', business_id: '3203' },
+  );
+  assert.deepEqual(
+    db.prepare('SELECT config_id, state, error_category FROM generation_route_attempts').get(),
+    { config_id: configId, state: 'submission_unknown', error_category: 'submission_unknown' },
+  );
+  const event = db.prepare(
+    "SELECT config_id, task_state, credit_state, safe_details FROM provider_stability_events WHERE event_type = 'provider_failure'",
+  ).get();
+  assert.equal(event.config_id, configId);
+  assert.equal(event.task_state, 'needs_attention');
+  assert.equal(event.credit_state, 'held');
+  assert.deepEqual(JSON.parse(event.safe_details), {
+    category: 'submission_unknown',
+    state: 'degraded',
+    business_type: 'image_generation',
+    business_id: 3203,
+  });
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS count FROM provider_stability_events WHERE event_type = 'route_switched'").get().count,
+    0,
+  );
+});
+
 test('用户提示词和负面词原样提交且不注入参考图布局说明', async (t) => {
   let body;
   const provider = await listen((req, res) => {
@@ -427,6 +557,15 @@ test('用户提示词和负面词原样提交且不注入参考图布局说明',
 });
 
 test('主供应商明确未受理后备用成功只结算一次积分', async (t) => {
+  const previousStorageLocalPath = process.env.STORAGE_LOCAL_PATH;
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-provider-route-image-'));
+  process.env.STORAGE_LOCAL_PATH = storageRoot;
+  t.after(() => {
+    if (previousStorageLocalPath === undefined) delete process.env.STORAGE_LOCAL_PATH;
+    else process.env.STORAGE_LOCAL_PATH = previousStorageLocalPath;
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  });
+
   const primary = await listen((req, res) => {
     req.resume();
     req.on('end', () => {
@@ -492,4 +631,98 @@ test('主供应商明确未受理后备用成功只结算一次积分', async (t
   );
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count, 1);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM generation_route_attempts').get().count, 2);
+  assert.equal(fs.existsSync(path.resolve(process.cwd(), 'data/storage/library/images')), false);
+});
+
+test('同目标已有 needs_attention 时在预扣和调度前 409 阻断且保留 held', () => {
+  const db = createDb();
+  const scheduled = [];
+  creditLedgerService.setAccountBalance(db, 'user-1', 100);
+  const held = creditLedgerService.reserve(db, {
+    actorUserId: 'user-1',
+    userId: 'user-1',
+    operationKey: 'image:legacy-unknown',
+    amount: 40,
+    model: 'logical-image',
+    resourceType: 'image',
+    resourceId: '9001',
+  });
+  db.prepare(`INSERT INTO image_generations
+    (id, storyboard_id, drama_id, prompt, model, frame_type, status, task_id, tenant_id, user_id, credit_reservation_id, created_at, updated_at)
+    VALUES (9001, 19, 1, 'legacy unknown', 'logical-image', 'storyboard_first', 'needs_attention', 'task-unknown', NULL, 'user-1', ?, ?, ?)`)
+    .run(held.id, '2026-08-25T00:00:00.000Z', '2026-08-25T00:00:00.000Z');
+
+  assert.throws(() => imageService.create(db, log, {
+    storyboard_id: 19,
+    drama_id: 1,
+    prompt: 'retry should be blocked',
+    model: 'logical-image',
+    frame_type: 'storyboard_first',
+  }, {
+    billingEnabled: true,
+    userId: 'user-1',
+    schedule(callback) { scheduled.push(callback); },
+  }), (error) => {
+    assert.equal(error.code, 'RESULT_UNKNOWN_NEEDS_REVIEW');
+    assert.equal(error.status, 'needs_attention');
+    assert.equal(error.activeId, 9001);
+    return true;
+  });
+
+  assert.equal(scheduled.length, 0);
+  assert.deepEqual(creditLedgerService.getAccount(db, 'user-1'), {
+    user_id: 'user-1', available: 60, held: 40, spent: 0,
+  });
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS count FROM image_generations WHERE storyboard_id = 19").get().count,
+    1,
+  );
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM async_tasks').get().count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count, 1);
+  assert.deepEqual(
+    db.prepare("SELECT event_type, outcome, code FROM audit_events WHERE event_type = 'generation.image.blocked_unknown'").get(),
+    { event_type: 'generation.image.blocked_unknown', outcome: 'needs_attention', code: 'RESULT_UNKNOWN_NEEDS_REVIEW' },
+  );
+});
+
+test('图片创建路由将 needs_attention 阻断映射为 409 结构化 JSON', () => {
+  const db = createDb();
+  db.prepare(`INSERT INTO image_generations
+    (id, storyboard_id, drama_id, prompt, model, frame_type, status, task_id, user_id, created_at, updated_at)
+    VALUES (9101, 19, 1, 'legacy unknown', 'logical-image', 'storyboard_first', 'needs_attention', 'task-unknown', 'user-1', ?, ?)`)
+    .run('2026-08-25T00:00:00.000Z', '2026-08-25T00:00:00.000Z');
+
+  let statusCode;
+  let payload;
+  const res = {
+    status(code) {
+      statusCode = code;
+      return this;
+    },
+    json(body) {
+      payload = body;
+      return this;
+    },
+  };
+  imageRoutes(db, {}, log, { billingEnabled: true }).create({
+    body: {
+      storyboard_id: 19,
+      drama_id: 1,
+      prompt: 'retry should be blocked',
+      model: 'logical-image',
+      frame_type: 'storyboard_first',
+    },
+    user: { id: 'user-1' },
+  }, res);
+
+  assert.equal(statusCode, 409);
+  assert.equal(payload.success, false);
+  assert.equal(payload.error.code, 'RESULT_UNKNOWN_NEEDS_REVIEW');
+  assert.deepEqual(payload.error.details, {
+    status: 'needs_attention',
+    storyboard_id: 19,
+    frame_type: 'storyboard_first',
+    active_id: 9101,
+    active_task_id: 'task-unknown',
+  });
 });

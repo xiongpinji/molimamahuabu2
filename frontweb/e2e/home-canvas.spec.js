@@ -44,6 +44,50 @@ const edgeHomeCanvasState = {
   edges: [{ id: 'e2e:edge', source: 'e2e:source', target: 'e2e:target-a', type: 'smoothstep' }],
   viewport: { x: 0, y: 0, zoom: 0.75 },
 }
+const duplicateEdgeHomeCanvasState = {
+  version: 1,
+  nodes: [
+    {
+      id: 'e2e:dup:a',
+      type: 'homeCanvasNode',
+      position: { x: 320, y: 420 },
+      data: { kind: 'text', title: 'E2E 复制起点 A', content: 'A 提示词' },
+    },
+    {
+      id: 'e2e:dup:b',
+      type: 'homeCanvasNode',
+      position: { x: 720, y: 420 },
+      data: { kind: 'image', title: 'E2E 复制中间 B', content: 'B 提示词' },
+    },
+    {
+      id: 'e2e:dup:c',
+      type: 'homeCanvasNode',
+      position: { x: 1120, y: 420 },
+      data: { kind: 'video', title: 'E2E 复制终点 C', content: 'C 提示词' },
+    },
+  ],
+  edges: [
+    {
+      id: 'e2e:dup:ab',
+      source: 'e2e:dup:a',
+      target: 'e2e:dup:b',
+      sourceHandle: 'source-out',
+      targetHandle: 'target-in',
+      type: 'smoothstep',
+      data: { contract: { input: 'prompt', order: 0 }, manual: true },
+    },
+    {
+      id: 'e2e:dup:bc',
+      source: 'e2e:dup:b',
+      target: 'e2e:dup:c',
+      sourceHandle: 'source-out',
+      targetHandle: 'target-in',
+      type: 'smoothstep',
+      data: { contract: { input: 'reference-image', order: 1 }, manual: true },
+    },
+  ],
+  viewport: { x: 0, y: 0, zoom: 0.75 },
+}
 const mentionHomeCanvasState = {
   version: 1,
   nodes: [
@@ -868,6 +912,73 @@ test('本地画布右键节点可复制删除，媒体节点不展示无效运�
   await duplicate.click({ button: 'right' })
   await page.locator('.home-context-menu').getByRole('button', { name: '删除节点' }).click()
   await expect(page.getByRole('textbox', { name: '节点标题' })).toHaveCount(2)
+})
+
+test('本地画布右键复制中间节点会复制直接连线并随撤销重做和刷新持久化', async ({ page }) => {
+  await loadHomeCanvasState(page, duplicateEdgeHomeCanvasState)
+
+  const middleNode = page.locator('.vue-flow__node').filter({ hasText: 'E2E 复制中间 B' })
+  await middleNode.click({ button: 'right' })
+  await expect(page.getByText(/节点操作 · E2E 复制中间 B/)).toBeVisible()
+  await page.getByRole('button', { name: '复制节点' }).click()
+
+  const duplicatedSummary = async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    const duplicate = state.nodes?.find((node) => node.data?.title === 'E2E 复制中间 B 副本')
+    const edges = state.edges || []
+    return {
+      nodeIds: (state.nodes || []).map((node) => node.id).sort(),
+      duplicateId: duplicate?.id || null,
+      duplicateContent: duplicate?.data?.content || null,
+      originalEdges: edges
+        .filter((edge) => edge.id === 'e2e:dup:ab' || edge.id === 'e2e:dup:bc')
+        .map((edge) => [edge.id, edge.source, edge.target, edge.sourceHandle, edge.targetHandle, edge.data?.contract?.input])
+        .sort(),
+      clonedEdges: duplicate ? edges
+        .filter((edge) => edge.source === duplicate.id || edge.target === duplicate.id)
+        .map((edge) => [edge.source, edge.target, edge.sourceHandle, edge.targetHandle, edge.data?.contract?.input, edge.data?.contract?.order])
+        .sort() : [],
+    }
+  }, homeCanvasStorageKey)
+
+  await expect.poll(duplicatedSummary).toMatchObject({
+    duplicateContent: 'B 提示词',
+    originalEdges: [
+      ['e2e:dup:ab', 'e2e:dup:a', 'e2e:dup:b', 'source-out', 'target-in', 'prompt'],
+      ['e2e:dup:bc', 'e2e:dup:b', 'e2e:dup:c', 'source-out', 'target-in', 'reference-image'],
+    ],
+    clonedEdges: [
+      ['e2e:dup:a', expect.any(String), 'source-out', 'target-in', 'prompt', 0],
+      [expect.any(String), 'e2e:dup:c', 'source-out', 'target-in', 'reference-image', 1],
+    ],
+  })
+
+  await page.keyboard.press('Control+z')
+  await expect.poll(async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return {
+      duplicateCount: (state.nodes || []).filter((node) => node.data?.title === 'E2E 复制中间 B 副本').length,
+      edgeCount: (state.edges || []).length,
+    }
+  }, homeCanvasStorageKey)).toEqual({ duplicateCount: 0, edgeCount: 2 })
+
+  await page.keyboard.press('Control+Shift+z')
+  await expect.poll(duplicatedSummary).toMatchObject({
+    duplicateContent: 'B 提示词',
+    clonedEdges: [
+      ['e2e:dup:a', expect.any(String), 'source-out', 'target-in', 'prompt', 0],
+      [expect.any(String), 'e2e:dup:c', 'source-out', 'target-in', 'reference-image', 1],
+    ],
+  })
+
+  await page.reload()
+  await expect.poll(duplicatedSummary).toMatchObject({
+    duplicateContent: 'B 提示词',
+    clonedEdges: [
+      ['e2e:dup:a', expect.any(String), 'source-out', 'target-in', 'prompt', 0],
+      [expect.any(String), 'e2e:dup:c', 'source-out', 'target-in', 'reference-image', 1],
+    ],
+  })
 })
 
 test('拖动边目标端点会更新连接目标并持久化', async ({ page }) => {

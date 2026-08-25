@@ -7,6 +7,7 @@ import {
   buildCanvasLayoutPayload,
   normalizeManualCanvasEdges,
 } from '../src/utils/canvasLayout.js'
+import { cloneSingleCanvasNodeWithIncidentEdges } from '../src/utils/canvasDuplicate.js'
 
 const adapterSource = readFileSync(
   fileURLToPath(new URL('../src/utils/dramaCanvasAdapter.js', import.meta.url)),
@@ -104,4 +105,33 @@ test('buildDramaCanvasGraph 合并 canvas_layout 手动连线且过滤无效节�
   assert.match(adapterSource, /for \(const edge of normalizeManualCanvasEdges\(savedLayout\?\.manual_edges\)\)/)
   assert.match(adapterSource, /data: \{ \.\.\.\(edge\.data \|\| \{\}\), manual: true \}/)
   assert.match(adapterSource, /appendManualEdges\(edges, savedLayout, nodes\)/)
+})
+
+test('副本生成的手动连线可写入 canvas_layout manual_edges', () => {
+  const { edges } = cloneSingleCanvasNodeWithIncidentEdges({
+    sourceNode: { id: 'image-1' },
+    edges: [
+      { id: 'manual:text:image', source: 'text-1', target: 'image-1', data: { manual: true } },
+      { id: 'manual:image:video', source: 'image-1', target: 'video-1', data: { manual: true } },
+    ],
+    nextNodeId: 'image-2',
+    nextEdgeId: (edge) => `copy:${edge.id}`,
+  })
+  const payload = buildCanvasLayoutPayload(
+    [
+      { id: 'text-1', type: 'homeCanvasNode', position: { x: 0, y: 0 } },
+      { id: 'image-1', type: 'homeCanvasNode', position: { x: 100, y: 0 } },
+      { id: 'image-2', type: 'homeCanvasNode', position: { x: 140, y: 40 } },
+      { id: 'video-1', type: 'homeCanvasNode', position: { x: 200, y: 0 } },
+    ],
+    {},
+    null,
+    edges,
+    { persistFreeNodes: true },
+  )
+
+  assert.deepEqual(payload.manual_edges.map((edge) => [edge.id, edge.source, edge.target]), [
+    ['copy:manual:text:image', 'text-1', 'image-2'],
+    ['copy:manual:image:video', 'image-2', 'video-1'],
+  ])
 })

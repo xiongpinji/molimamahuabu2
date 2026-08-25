@@ -730,8 +730,10 @@ import {
   createCanvasInteractionHistory,
   createCanvasInteractionState,
   redoCanvasInteractionHistory,
+  restoreCanvasInteractionFreeNodes,
   undoCanvasInteractionHistory,
 } from '@/utils/canvasInteractionHistory'
+import { cloneSingleCanvasNodeWithIncidentEdges } from '@/utils/canvasDuplicate'
 import {
   canvasConnectionInteractionOptions,
   resolveCanvasConnectionDrop,
@@ -2208,13 +2210,14 @@ function applyInteractionState(state) {
     selectable: true,
     selected: false,
   }))
-  allGraphNodes.value = [
+  const restoredNodes = [
     ...restoredGroups,
     ...allGraphNodes.value.filter((node) => node.type !== 'canvasGroup'),
   ].map((node) => {
     const position = positions[String(node.id)]
     return position ? { ...node, position: { ...position } } : node
   })
+  allGraphNodes.value = restoreCanvasInteractionFreeNodes(restoredNodes, state)
   selectedFreeNodeIds.value = []
   currentViewport.value = { ...(state?.viewport || currentViewport.value) }
   allGraphEdges.value = decorateCanvasEdges(state?.edges || allGraphEdges.value)
@@ -2670,10 +2673,13 @@ async function duplicateFreeCanvasNode(nodeOrId) {
     assetSaveStatus: source.data?.savedAssetId ? 'success' : '',
     assetSaveError: '',
   }
-  allGraphNodes.value = [
-    ...allGraphNodes.value.map((node) => ({ ...node, selected: false })),
-    {
-      ...source,
+  const { node: clone, edges: clonedEdges } = cloneSingleCanvasNodeWithIncidentEdges({
+    sourceNode: source,
+    edges: allGraphEdges.value,
+    nextNodeId: id,
+    nextEdgeId: (edge, index) => `${edge.id || 'edge'}:copy:${id}:${index}`,
+    createNode: (node) => ({
+      ...node,
       id,
       position: {
         x: Number(source.position?.x || 0) + 40,
@@ -2682,8 +2688,16 @@ async function duplicateFreeCanvasNode(nodeOrId) {
       selected: true,
       dragging: false,
       data,
-    },
+    }),
+  })
+  allGraphNodes.value = [
+    ...allGraphNodes.value.map((node) => ({ ...node, selected: false })),
+    clone,
   ]
+  allGraphEdges.value = decorateCanvasEdges([
+    ...allGraphEdges.value.map((edge) => ({ ...edge, selected: false })),
+    ...clonedEdges,
+  ])
   focusedNodeId.value = id
   applyVirtualizedGraph()
   commitInteractionHistory(previousState)

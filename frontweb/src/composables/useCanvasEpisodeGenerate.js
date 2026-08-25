@@ -8,6 +8,10 @@ import { getDramaGenerationOptions } from '@/utils/canvasWorkflow'
 import { runImageStep, runVideoStep } from '@/composables/useCanvasWorkflowRunner'
 import { hasStoryboardImage, hasStoryboardVideo } from '@/utils/storyboardMedia'
 import { CANVAS_NODE_STATUS_LABELS } from '@/composables/useCanvasNodeStatus'
+import { isIndeterminateGenerationError } from '@/utils/generationRetryGuard'
+
+const RESULT_UNKNOWN_NEEDS_REVIEW = 'RESULT_UNKNOWN_NEEDS_REVIEW'
+const RESULT_UNKNOWN_MESSAGE = '供应商状态未知，已提交管理员核对；请勿重复提交，冻结积分暂不释放。'
 
 async function pollTask(taskId, onTick, maxAttempts = 450, interval = 2000) {
   if (!taskId) return { status: 'completed' }
@@ -18,6 +22,13 @@ async function pollTask(taskId, onTick, maxAttempts = 450, interval = 2000) {
       if (t.status === 'completed') return { status: 'completed', result: t.result }
       if (t.status === 'failed') {
         return { status: 'failed', error: t.error?.message || t.error || '任务失败' }
+      }
+      if (t.status === 'needs_attention' || t.status === 'indeterminate') {
+        return {
+          status: 'needs_attention',
+          code: RESULT_UNKNOWN_NEEDS_REVIEW,
+          error: t.error?.message || t.error || t.message || RESULT_UNKNOWN_MESSAGE,
+        }
       }
       onTick?.()
     } catch (e) {
@@ -200,6 +211,10 @@ export function useCanvasEpisodeGenerate(deps) {
           await refreshCanvas(true)
         } catch (e) {
           failed++
+          if (isIndeterminateGenerationError(e)) {
+            ElMessage.warning(`分镜 #${sb.storyboard_number ?? sb.id}：${RESULT_UNKNOWN_MESSAGE}`)
+            break
+          }
           ElMessage.error(`分镜 #${sb.storyboard_number ?? sb.id} 生图失败：${e?.message || e}`)
         } finally {
           clearSbBusy(sb)

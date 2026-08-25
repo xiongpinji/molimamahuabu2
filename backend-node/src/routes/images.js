@@ -44,6 +44,15 @@ function routes(db, cfg, log, options = {}) {
         if (err.code === 'INSUFFICIENT_CREDITS') {
           return response.error(res, 402, err.code, '积分不足，请充值后重试');
         }
+        if (err.code === 'RESULT_UNKNOWN_NEEDS_REVIEW') {
+          return response.error(res, 409, err.code, err.message, {
+            status: err.status || 'needs_attention',
+            storyboard_id: err.storyboardId,
+            frame_type: err.frameType,
+            active_id: err.activeId,
+            active_task_id: err.activeTaskId,
+          });
+        }
         if (['UNSUPPORTED_BILLING_MODEL', 'IMAGE_RESOLUTION_REQUIRED',
           'IMAGE_RESOLUTION_NOT_VERIFIED', 'IMAGE_REFERENCE_NOT_VERIFIED',
           'IMAGE_REFERENCE_LIMIT_EXCEEDED', 'INVALID_IMAGE_QUANTITY'].includes(err.code)) {

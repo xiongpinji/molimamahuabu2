@@ -79,6 +79,16 @@ function capabilitiesForConfig(config, upstreamModel) {
   return { ...base, ...perModel };
 }
 
+function hasDeclaredCapabilities(config, upstreamModel) {
+  const settings = parseJson(config.settings);
+  const selectedModel = upstreamModel || config.default_model
+    || (Array.isArray(config.model) ? config.model[0] : null);
+  const byModel = parseJson(settings.canvas_capabilities_by_model);
+  const base = parseJson(settings.canvas_capabilities, null);
+  const perModel = selectedModel == null ? null : parseJson(byModel[selectedModel], null);
+  return (base != null && !Array.isArray(base)) || (perModel != null && !Array.isArray(perModel));
+}
+
 function matchesCapabilities(config, requested) {
   const declared = capabilitiesForConfig(config);
   if (!includesNormalized(values(declared, 'resolutions'), requested.resolution, true)) return false;
@@ -316,13 +326,17 @@ function buildAttemptReceipt(db, input) {
   if (!upstreamModel) throw new TypeError('upstream model is required');
   const queryProtocol = normalizedQueryProtocol(input, config);
   const capabilities = capabilitiesForConfig(config, upstreamModel);
+  if (String(config.service_type || input.serviceType || '').trim().toLowerCase() !== 'text'
+      && !hasDeclaredCapabilities(config, upstreamModel)) {
+    throw new TypeError('config must include capabilities');
+  }
   return {
     serviceType: String(config.service_type || input.serviceType || '').trim().toLowerCase(),
     provider: config.provider,
     upstreamModel,
     queryProtocol,
     capabilities,
-    configFingerprint: evidenceService.configFingerprint(config),
+    configFingerprint: evidenceService.configFingerprint({ ...config, capabilities }),
   };
 }
 
@@ -524,13 +538,20 @@ function recordFailureAndHealth(db, input) {
         half_open_claimed_at = NULL, last_error_category = excluded.last_error_category,
         updated_at = excluded.updated_at`)
       .run(input.configId, state, failures, openUntil, classification.category || 'unknown', now);
+    const safeDetails = {
+      category: classification.category || 'unknown',
+      state,
+      ...(input.safeDetails && typeof input.safeDetails === 'object' ? input.safeDetails : {}),
+    };
     insertEvent(db, {
       eventType: state === 'open' ? 'route_opened' : 'provider_failure',
       requestId: input.requestId,
       tenantId: input.tenantId,
       logicalModelId: input.logicalModelId,
       configId: input.configId,
-      safeDetails: { category: classification.category || 'unknown', state },
+      taskState: input.taskState || null,
+      creditState: input.creditState || null,
+      safeDetails,
       now,
     });
     return db.prepare('SELECT * FROM provider_route_health WHERE config_id = ?').get(input.configId);

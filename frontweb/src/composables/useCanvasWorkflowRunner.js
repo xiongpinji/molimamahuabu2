@@ -34,6 +34,8 @@ import {
   filterCanvasCatalogFallbackModels,
 } from '@/utils/canvasModelCapabilities'
 
+const RESULT_UNKNOWN_NEEDS_REVIEW = 'RESULT_UNKNOWN_NEEDS_REVIEW'
+
 /** 拉取用户指派给该分镜的素材，并保留图片、视频、音频类型。 */
 async function fetchAssignedAssetReferences(storyboardId) {
   if (!storyboardId) return []
@@ -62,11 +64,26 @@ async function pollTaskSimple(taskId, options = {}) {
       if (t.status === 'failed') {
         return { status: 'failed', error: t.error?.message || t.error || '任务失败' }
       }
+      if (t.status === 'needs_attention' || t.status === 'indeterminate') {
+        return {
+          status: 'needs_attention',
+          code: RESULT_UNKNOWN_NEEDS_REVIEW,
+          error: t.error?.message || t.error || t.message || '供应商状态未知，已提交管理员核对；请勿重复提交，冻结积分暂不释放。',
+        }
+      }
     } catch (e) {
       if (i === maxAttempts - 1) return { status: 'failed', error: e.message || '轮询失败' }
     }
   }
   return { status: 'timeout', error: '任务超时' }
+}
+
+function taskPollError(polled, fallback) {
+  const error = new Error(polled?.error || fallback)
+  error.code = polled.code
+  error.status = polled.status
+  error.indeterminate = polled?.status === 'needs_attention' || polled?.status === 'indeterminate'
+  return error
 }
 
 async function resolveCanvasFramePrompt(sb, frameKind) {
@@ -192,7 +209,7 @@ export async function runImageStep(drama, sb, genOpts, frameKind = '', options =
   if (res?.task_id) {
     options.onTask?.({ taskId: res.task_id, step: 'image', response: res })
     const polled = await pollTaskSimple(res.task_id, options)
-    if (polled.status !== 'completed') throw new Error(polled.error || '分镜图生成失败')
+    if (polled.status !== 'completed') throw taskPollError(polled, '分镜图生成失败')
   }
 }
 
@@ -289,7 +306,7 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
   if (res?.task_id) {
     options.onTask?.({ taskId: res.task_id, step: 'video', response: res })
     const polled = await pollTaskSimple(res.task_id, options)
-    if (polled.status !== 'completed') throw new Error(polled.error || '视频生成失败')
+    if (polled.status !== 'completed') throw taskPollError(polled, '视频生成失败')
     const tailFrameResult = genOpts.autoLinkTailFrame === false
       ? null
       : await autoLinkTailFrameAfterVideo(drama, sb, found)

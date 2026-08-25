@@ -26,6 +26,15 @@ test('同一分镜同一帧类型存在处理中图片时复用', () => {
   db.close();
 });
 
+test('同一分镜同一帧类型存在结果未知图片时阻止重复提交', () => {
+  const db = createDb();
+  db.prepare('INSERT INTO image_generations (id, storyboard_id, frame_type, status, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(23, 19, 'storyboard_first', 'needs_attention', '2026-07-13T00:02:00.000Z');
+
+  assert.equal(imageService.findActiveForTarget(db, 19, 'storyboard_first').id, 23);
+  db.close();
+});
+
 test('同一分镜首帧任务不阻止尾帧生成', () => {
   const db = createDb();
   db.prepare('INSERT INTO image_generations (id, storyboard_id, frame_type, status, created_at) VALUES (?, ?, ?, ?, ?)')

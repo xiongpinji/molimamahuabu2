@@ -1,5 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 import {
   createHomeCanvasState,
@@ -12,6 +14,11 @@ import {
   serializeHomeCanvasState,
   undoHomeCanvasHistory,
 } from '../src/utils/homeCanvasState.js'
+
+const homeCanvasSource = readFileSync(
+  fileURLToPath(new URL('../src/views/HomeCanvas.vue', import.meta.url)),
+  'utf8'
+)
 
 test('首页画布默认状态不包含项目标识', () => {
   const state = createHomeCanvasState()
@@ -149,4 +156,22 @@ test('首页画布历史会复制快照避免后续原地修改污染历史', ()
 
   assert.equal(history.present.nodes[0].data.title, '已提交标题')
   assert.equal(history.past[0].nodes[0].data.title, '首页自由画布')
+})
+
+test('首页右键复制单节点会复制直接入边出边且不改变多选粘贴合同', () => {
+  assert.match(homeCanvasSource, /cloneSingleCanvasNodeWithIncidentEdges/)
+  assert.match(homeCanvasSource, /function duplicateContextNode\(\)[\s\S]*const \{ node: clone, edges: clonedEdges \} = cloneSingleCanvasNodeWithIncidentEdges/)
+  assert.match(homeCanvasSource, /edges\.value = \[\s*\.\.\.edges\.value\.map\(\(edge\) => \(\{ \.\.\.edge, selected: false \}\)\),\s*\.\.\.decorateEdges\(clonedEdges, nextNodes\),\s*\]/)
+  assert.match(homeCanvasSource, /function pasteCanvasElements\(\)[\s\S]*const pastedEdges = clipboard\.edges[\s\S]*idMap\.has\(edge\.source\) && idMap\.has\(edge\.target\)/)
+})
+
+test('首页右键复制单节点使用 canvasNodeSequence 生成唯一副本 ID', () => {
+  const duplicateFunctionSource = homeCanvasSource.slice(
+    homeCanvasSource.indexOf('function duplicateContextNode()'),
+    homeCanvasSource.indexOf('async function deleteContextNode()')
+  )
+  assert.match(homeCanvasSource, /function nextDuplicateNodeId\(sourceId\)[\s\S]*canvasNodeSequence\+\+/)
+  assert.match(homeCanvasSource, /function nextDuplicateNodeId\(sourceId\)[\s\S]*nodes\.value\.some\(\(node\) => String\(node\.id\) === String\(candidate\)\)/)
+  assert.match(duplicateFunctionSource, /const nextId = nextDuplicateNodeId\(source\.id\)/)
+  assert.doesNotMatch(duplicateFunctionSource, /Date\.now\(\)/)
 })
