@@ -3001,6 +3001,61 @@ async function callImageApi(db, log, opts, runtime = {}) {
       lastResult = await submitSelectedImageConfig(config, opts);
       if (lastResult?.image_url) return stripImageRouteMeta(lastResult);
       const classification = classifyProviderFailure(lastResult?.route_meta || {});
+      const uncertainAttempt = ['submission_unknown', 'result_unknown', 'artifact_unreadable', 'forbidden_unknown']
+        .includes(classification.category);
+      if (uncertainAttempt) {
+        const legacyLogicalModelId = String(
+          config.logical_model_id || preferredModel || getModelFromConfig(config) || 'legacy-image',
+        ).trim();
+        const routeId = crypto.randomUUID();
+        const businessId = opts.image_gen_id == null ? routeId : String(opts.image_gen_id);
+        const owner = String(opts.tenantId || opts.userId || 'local');
+        const route = providerRouteStability.createOrGetRouteRequest(db, {
+          id: routeId,
+          idempotencyKey: `${owner}:image:${businessId}`,
+          serviceType: config.service_type || opts.imageServiceType || 'image',
+          businessType: 'image_generation',
+          businessId,
+          tenantId: opts.tenantId,
+          userId: opts.userId,
+          logicalModelId: legacyLogicalModelId,
+          capabilities: requestedCapabilities,
+          candidateConfigIds: [config.id],
+          creditReservationId: opts.creditReservationId,
+        });
+        if (route.state === 'created') {
+          const attempt = providerRouteStability.startAttempt(db, {
+            requestId: route.id,
+            configId: config.id,
+            provider: config.provider || 'configured',
+            upstreamModel: getModelFromConfig(config),
+          });
+          if (attempt) {
+            const routeMeta = lastResult?.route_meta || {};
+            providerRouteStability.finishAttempt(db, {
+              requestId: route.id,
+              attemptNo: attempt.attempt_no,
+              state: classification.category,
+              httpStatus: routeMeta.httpStatus,
+              errorCategory: classification.category,
+            });
+          }
+          providerRouteStability.recordFailureAndHealth(db, {
+            requestId: route.id,
+            tenantId: opts.tenantId,
+            configId: config.id,
+            logicalModelId: legacyLogicalModelId,
+            classification,
+            taskState: 'needs_attention',
+            creditState: 'held',
+            safeDetails: {
+              business_type: 'image_generation',
+              business_id: opts.image_gen_id ?? null,
+            },
+          });
+          updateImageRouteRequestState(db, route.id, 'needs_attention');
+        }
+      }
       if (!classification.mayFailover || index + 1 >= candidates.length) break;
       log.warn('Legacy image route switching after definitive non-acceptance', {
         image_gen_id: opts.image_gen_id,
@@ -3122,6 +3177,14 @@ async function callImageApi(db, log, opts, runtime = {}) {
       configId: config.id,
       logicalModelId,
       classification,
+      ...(uncertainAttempt ? {
+        taskState: 'needs_attention',
+        creditState: 'held',
+        safeDetails: {
+          business_type: 'image_generation',
+          business_id: opts.image_gen_id ?? null,
+        },
+      } : {}),
     });
     lastFailure = { classification, result };
     const hasNext = index + 1 < selected.candidates.length;

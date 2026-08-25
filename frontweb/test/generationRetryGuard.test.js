@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import {
   confirmProviderBalanceRetry,
   confirmUnknownResultRetry,
+  isIndeterminateGenerationError,
   isProviderBalanceError,
 } from '../src/utils/generationRetryGuard.js'
 
@@ -76,5 +77,41 @@ test('供应商最终状态未知时不弹确认并阻止重新生成', async ()
     async () => { calls += 1 }
   )
   assert.equal(allowed, false)
+  assert.equal(calls, 0)
+})
+
+test('结构化 RESULT_UNKNOWN_NEEDS_REVIEW 错误不依赖中文文案也阻止重提', async () => {
+  const error = new Error('service unavailable')
+  error.response = {
+    status: 409,
+    data: {
+      error: {
+        code: 'RESULT_UNKNOWN_NEEDS_REVIEW',
+        message: 'service unavailable',
+        details: { status: 'needs_attention', active_id: 9001 },
+      },
+    },
+  }
+
+  let calls = 0
+  assert.equal(isIndeterminateGenerationError(error), true)
+  const allowed = await confirmUnknownResultRetry(error, async () => { calls += 1 })
+  assert.equal(allowed, false)
+  assert.equal(calls, 0)
+})
+
+test('indeterminate 布尔标记不依赖错误文案也阻止重提', async () => {
+  assert.equal(isIndeterminateGenerationError({
+    indeterminate: true,
+    message: 'upstream connection closed',
+  }), true)
+})
+
+test('普通明确失败的结构化错误仍可按原路径处理', async () => {
+  const error = new Error('bad request')
+  error.response = { status: 400, data: { error: { code: 'BAD_REQUEST', message: '参数错误' } } }
+  let calls = 0
+  const allowed = await confirmUnknownResultRetry(error, async () => { calls += 1 })
+  assert.equal(allowed, true)
   assert.equal(calls, 0)
 })

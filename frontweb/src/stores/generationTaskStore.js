@@ -53,6 +53,10 @@ function isActiveTaskStatus(status) {
   return status === 'pending' || status === 'processing' || status === 'running'
 }
 
+function isNeedsAttentionTaskStatus(status) {
+  return status === 'needs_attention' || status === 'indeterminate'
+}
+
 function isOrphanedProcessingTask(remote, staleMs = ORPHAN_PROCESSING_MS) {
   if (!remote || !isActiveTaskStatus(remote.status)) return false
   const updatedAt = remote.updated_at ? new Date(remote.updated_at).getTime() : 0
@@ -62,10 +66,15 @@ function isOrphanedProcessingTask(remote, staleMs = ORPHAN_PROCESSING_MS) {
 
 const ORPHAN_TASK_MSG = '任务长时间无进展，可能因服务重启而中断，请重新操作'
 const USER_CANCEL_TASK_MSG = '用户已取消'
+const RESULT_UNKNOWN_NEEDS_REVIEW = 'RESULT_UNKNOWN_NEEDS_REVIEW'
 
 function taskFailMessage(t) {
   if (!t) return '任务失败'
   return (t.error || t.message || '任务失败').trim()
+}
+
+function taskNeedsAttentionMessage(t) {
+  return (t?.error || t?.message || '生成结果未知，请等待管理员核对').trim()
 }
 
 function terminalPollErrorMessage(error) {
@@ -236,6 +245,10 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
             markFailed(t, taskFailMessage(remote))
             continue
           }
+          if (isNeedsAttentionTaskStatus(remote.status)) {
+            markFailed(t, taskNeedsAttentionMessage(remote))
+            continue
+          }
           if (!isActiveTaskStatus(remote.status)) {
             markDone(t)
             continue
@@ -327,6 +340,14 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
             }
             return resolve({ status: 'failed', error: errMsg })
           }
+          if (isNeedsAttentionTaskStatus(t.status)) {
+            const errMsg = taskNeedsAttentionMessage(t)
+            markFailed(key, errMsg)
+            if (showErrorToast && options.ElMessage) {
+              options.ElMessage.warning(errMsg)
+            }
+            return resolve({ status: 'needs_attention', code: RESULT_UNKNOWN_NEEDS_REVIEW, error: errMsg })
+          }
         } catch (pollErr) {
           const terminalError = terminalPollErrorMessage(pollErr)
           if (terminalError) {
@@ -391,6 +412,11 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
         markFailed({ ...meta, taskId }, taskFailMessage(t))
         return { status: 'failed', error: taskFailMessage(t) }
       }
+      if (isNeedsAttentionTaskStatus(t.status)) {
+        const errMsg = taskNeedsAttentionMessage(t)
+        markFailed({ ...meta, taskId }, errMsg)
+        return { status: 'needs_attention', code: RESULT_UNKNOWN_NEEDS_REVIEW, error: errMsg }
+      }
       if (!isActiveTaskStatus(t.status)) {
         markDone({ ...meta, taskId })
         return { status: 'completed', result: t.result }
@@ -410,6 +436,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
         const t = await taskAPI.get(taskId)
         if (t.status === 'completed') markDone({ ...meta, taskId })
         else if (t.status === 'failed') markFailed({ ...meta, taskId }, taskFailMessage(t))
+        else if (isNeedsAttentionTaskStatus(t.status)) markFailed({ ...meta, taskId }, taskNeedsAttentionMessage(t))
         else if (!isActiveTaskStatus(t.status)) markDone({ ...meta, taskId })
         else if (cancelledPollTaskIds.value.has(taskId)) markFailed({ ...meta, taskId }, '任务轮询已停止')
       } catch (_) {}

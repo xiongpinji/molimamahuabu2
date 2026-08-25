@@ -524,13 +524,20 @@ function recordFailureAndHealth(db, input) {
         half_open_claimed_at = NULL, last_error_category = excluded.last_error_category,
         updated_at = excluded.updated_at`)
       .run(input.configId, state, failures, openUntil, classification.category || 'unknown', now);
+    const safeDetails = {
+      category: classification.category || 'unknown',
+      state,
+      ...(input.safeDetails && typeof input.safeDetails === 'object' ? input.safeDetails : {}),
+    };
     insertEvent(db, {
       eventType: state === 'open' ? 'route_opened' : 'provider_failure',
       requestId: input.requestId,
       tenantId: input.tenantId,
       logicalModelId: input.logicalModelId,
       configId: input.configId,
-      safeDetails: { category: classification.category || 'unknown', state },
+      taskState: input.taskState || null,
+      creditState: input.creditState || null,
+      safeDetails,
       now,
     });
     return db.prepare('SELECT * FROM provider_route_health WHERE config_id = ?').get(input.configId);

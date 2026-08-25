@@ -2977,7 +2977,7 @@ import { estimateCanvasCredits, normalizeCanvasModelCatalog } from '@/utils/canv
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
 import { tryAcquireGenerationLock, releaseGenerationLock } from '@/utils/generationSubmitLock'
 import { confirmProviderBalanceRetry, confirmUnknownResultRetry } from '@/utils/generationRetryGuard'
-import { decidePipelineRetry } from '@/utils/pipelineRetryPolicy'
+import { decidePipelineRetry, shouldStopBatchOnGenerationResult } from '@/utils/pipelineRetryPolicy'
 import { GRID_LAYOUTS, isGridFrameType } from '@/utils/gridLayout'
 import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
 import { assertVideoDurationAllowed, videoDurationOptionsForCapability } from '@/utils/videoDuration'
@@ -4961,6 +4961,31 @@ async function regenerateEditingFramePrompt() {
 // 兼容旧调用
 const showSbFramePromptPreview = openFramePromptEditor
 
+const RESULT_UNKNOWN_NEEDS_REVIEW = 'RESULT_UNKNOWN_NEEDS_REVIEW'
+
+function handleImageGenerationTerminal(sb, pollRes, fallbackMessage = '生成失败') {
+  if (!pollRes || pollRes.status === 'completed') return false
+  const isReviewRequired = shouldStopBatchOnGenerationResult(pollRes)
+  if (!isReviewRequired && pollRes.status !== 'failed') return false
+  const errMsg = (pollRes.error || pollRes.message || (isReviewRequired
+    ? '生成结果未知，请等待管理员核对，不要重复提交'
+    : fallbackMessage)).trim()
+  sb.errorMsg = errMsg
+  sb.error_msg = errMsg
+  if (isReviewRequired) {
+    ElMessage.warning(errMsg)
+  }
+  return true
+}
+
+function createImageGenerationTerminalError(pollRes, fallbackMessage = '分镜图生成失败') {
+  const error = new Error(pollRes?.error || pollRes?.message || fallbackMessage)
+  error.code = pollRes?.code
+  error.status = pollRes?.status
+  error.indeterminate = shouldStopBatchOnGenerationResult(pollRes)
+  return error
+}
+
 async function onGenerateSbFrameImage(sb, slot) {
   if (!dramaId.value || !sb?.id) return
   const imageOptions = requireImageGenerationOptions()
@@ -5042,9 +5067,7 @@ async function onGenerateSbFrameImage(sb, slot) {
     ElMessage.success(isLast ? '尾帧生成任务已提交' : '首帧生成任务已提交')
     if (res?.task_id) {
       const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)
-      if (pollRes?.status === 'failed') {
-        sb.errorMsg = pollRes.error || '生成失败'
-      } else {
+      if (!handleImageGenerationTerminal(sb, pollRes)) {
         await loadDrama()
         restoreSelectionsFromBackend()
 
@@ -5141,9 +5164,7 @@ async function onGenerateSbImage(sb) {
     ElMessage.success('分镜图生成任务已提交')
     if (res?.task_id) {
       const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)
-      if (pollRes?.status === 'failed') {
-        sb.errorMsg = pollRes.error || '生成失败'
-      } else {
+      if (!handleImageGenerationTerminal(sb, pollRes)) {
         ElMessage.success('分镜图生成完成')
       }
     } else {
@@ -7936,6 +7957,13 @@ async function startBatchImageGeneration() {
             if (pollRes?.status === 'failed') {
               batchImageErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${pollRes.error || '生成失败'}`)
               batchImageProgress.value = { ...batchImageProgress.value, failed: batchImageProgress.value.failed + 1 }
+              if (shouldStopBatchOnGenerationResult(pollRes)) {
+                batchImageStopping.value = true
+              }
+            } else if (shouldStopBatchOnGenerationResult(pollRes)) {
+              batchImageErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${pollRes.error || '生成结果未知，请等待管理员核对'}`)
+              batchImageProgress.value = { ...batchImageProgress.value, failed: batchImageProgress.value.failed + 1 }
+              batchImageStopping.value = true
             }
           } else {
             await loadSingleStoryboardMedia(sb.id)
@@ -7947,6 +7975,9 @@ async function startBatchImageGeneration() {
         } catch (e) {
           batchImageErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${e.message || '提交失败'}`)
           batchImageProgress.value = { ...batchImageProgress.value, failed: batchImageProgress.value.failed + 1 }
+          if (shouldStopBatchOnGenerationResult(e)) {
+            batchImageStopping.value = true
+          }
         }
         doneCount++
         batchImageProgress.value = { ...batchImageProgress.value, current: doneCount }
@@ -8203,6 +8234,12 @@ function pollTaskWithPause(taskId, onDone, meta = {}) {
           resolve({ status: 'failed', error: errMsg })
           return
         }
+        if (t.status === 'needs_attention' || t.status === 'indeterminate') {
+          const errMsg = (t.error || t.message || '生成结果未知，请等待管理员核对').trim()
+          finishStore('failed', errMsg)
+          resolve({ status: 'needs_attention', code: RESULT_UNKNOWN_NEEDS_REVIEW, error: errMsg })
+          return
+        }
       } catch (pollErr) {
         console.warn('[pollTaskWithPause] poll attempt failed:', pollErr?.message)
       }
@@ -8285,7 +8322,7 @@ async function pipelineWithRetry(stepName, fn, maxRetries = 3) {
     } catch (e) {
       lastErr = e
       const message = e?.message || String(e)
-      const decision = decidePipelineRetry(message, r, maxRetries)
+      const decision = decidePipelineRetry(e, r, maxRetries)
       if (decision.pause) {
         addPipelineError(stepName, '生成结果未知，已暂停且不会自动重试。请先核对生成记录或供应商账单：' + message)
         pipelinePaused.value = true
@@ -8535,7 +8572,7 @@ async function runOneClickPipeline(textOnly = false) {
             if (taskId) {
               const result = await pollTaskWithPause(taskId, () => loadDrama())
               if (result?.paused) return { paused: true }
-              if (result?.error) throw new Error(result.error)
+              if (result?.error) throw createImageGenerationTerminalError(result)
             } else {
               await loadDrama()
               await pollUntilResourceHasImage(() => {
@@ -8833,7 +8870,7 @@ async function runRepairPipeline() {
           if (taskId) {
             const result = await pollTaskWithPause(taskId, () => loadDrama())
             if (result?.paused) return { paused: true }
-            if (result?.error) throw new Error(result.error)
+            if (result?.error) throw createImageGenerationTerminalError(result)
           } else {
             await loadDrama()
             await pollUntilResourceHasImage(() => {

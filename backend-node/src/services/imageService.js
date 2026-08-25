@@ -101,6 +101,19 @@ function imageRequestError(code, message) {
   return error;
 }
 
+function resultUnknownNeedsReviewError(active) {
+  const error = imageRequestError(
+    'RESULT_UNKNOWN_NEEDS_REVIEW',
+    '图片生成结果未知，请先核对生成记录，不要重复提交。',
+  );
+  error.status = 'needs_attention';
+  error.activeId = active?.id;
+  error.activeTaskId = active?.task_id;
+  error.storyboardId = active?.storyboard_id;
+  error.frameType = active?.frame_type;
+  return error;
+}
+
 function parseJsonObject(value) {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value;
   try {
@@ -1208,7 +1221,22 @@ function create(db, log, req, options = {}) {
       storyboard_id: req.storyboard_id,
       frame_type: frameType,
       image_gen_id: active.id,
+      status: active.status,
     });
+    if (active.status === 'needs_attention') {
+      if (options.billingEnabled) {
+        auditEvent.record(db, {
+          userId: options.userId,
+          tenantId: options.tenantId,
+          eventType: 'generation.image.blocked_unknown',
+          resourceType: 'image',
+          resourceId: active.id,
+          outcome: 'needs_attention',
+          code: 'RESULT_UNKNOWN_NEEDS_REVIEW',
+        });
+      }
+      throw resultUnknownNeedsReviewError(active);
+    }
     if (options.billingEnabled) {
       auditEvent.record(db, {
         userId: options.userId,
