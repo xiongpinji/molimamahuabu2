@@ -16,7 +16,10 @@ import {
   loadProductionIdentityPacks,
   shotCharacterIds,
 } from './fuminProductionIdentityPacks.mjs'
-import { R4_SHOT6_ARTIFACT_SHA256 } from './fuminFullEpisodeDerivedState.mjs'
+import {
+  deriveFuminFullEpisodeState,
+  R4_SHOT6_ARTIFACT_SHA256,
+} from './fuminFullEpisodeDerivedState.mjs'
 
 const require = createRequire(import.meta.url)
 const repositoryRoot = path.resolve(import.meta.dirname, '..', '..')
@@ -854,7 +857,7 @@ function runFinalize(options) {
   return evidence
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const options = {}
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index]
@@ -865,8 +868,13 @@ function parseArgs(argv) {
     options[key] = value
     index += 1
   }
-  for (const key of ['stateRoot', 'source', 'identity', 'keyFile', 'verifierPython', 'balanceEvidence']) {
+  for (const key of [
+    'stateRoot', 'sourceState', 'source', 'identity', 'keyFile', 'verifierPython', 'balanceEvidence',
+  ]) {
     if (options[key]) options[key] = path.resolve(options[key])
+  }
+  if (options.expectedSourceManifestSha256) {
+    options.expectedSourceManifestSha256 = String(options.expectedSourceManifestSha256).toLowerCase()
   }
   return options
 }
@@ -875,7 +883,25 @@ async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (!options.stage || !options.stateRoot) fail('FUMIN_FULL_EPISODE_STAGE_OR_STATE_MISSING')
   let result
-  if (options.stage === 'preflight') result = await runPreflight(options)
+  if (options.stage === 'derive') {
+    if (!options.sourceState || !options.expectedSourceManifestSha256 || !options.verifierPython) {
+      fail('FUMIN_DERIVE_ARGUMENT_MISSING')
+    }
+    assertStateOutsideRepository(options.sourceState)
+    assertStateOutsideRepository(options.stateRoot)
+    result = deriveFuminFullEpisodeState({
+      sourceStateRoot: options.sourceState,
+      targetStateRoot: options.stateRoot,
+      expectedSourceManifestSha256: options.expectedSourceManifestSha256,
+      verifierPython: options.verifierPython,
+    }, {
+      now: () => new Date(),
+      sha256Buffer,
+      sha256File,
+      publicEvidence,
+      revalidateShot6: (context) => revalidateDerivedShot6(context, options.verifierPython),
+    })
+  } else if (options.stage === 'preflight') result = await runPreflight(options)
   else if (options.stage === 'shot') result = await runShot(options)
   else if (options.stage === 'review') result = runReview(options)
   else if (options.stage === 'finalize') result = runFinalize(options)
