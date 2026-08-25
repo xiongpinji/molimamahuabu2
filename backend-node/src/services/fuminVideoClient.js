@@ -67,7 +67,9 @@ function buildFuminVideoBody(opts = {}) {
     throw new Error(`fumin 视频时长必须是 ${FUMIN_VIDEO_LIMITS.minDuration} 到 ${FUMIN_VIDEO_LIMITS.maxDuration} 秒之间的整数`);
   }
   const ratio = String(opts.aspect_ratio || '16:9').replace('：', ':');
-  if (ratio !== '16:9') throw new Error('fumin 当前仅开放已实测的 16:9 比例');
+  if (!['16:9', '9:16'].includes(ratio)) {
+    throw new Error('fumin 当前仅开放已核验的 16:9 和 9:16 比例');
+  }
   const resolution = opts.resolution ? String(opts.resolution).trim().toLowerCase() : '480p';
   if (resolution !== '480p') throw new Error('fumin 720P 尚未完成额度充足下的真实验证，暂不开放');
   const imageRefs = uniqueUrls([
@@ -95,6 +97,7 @@ function buildFuminVideoBody(opts = {}) {
     watermark: opts.watermark != null ? Boolean(opts.watermark) : false,
   };
   body.resolution = resolution;
+  if (opts.generate_audio != null) body.generate_audio = Boolean(opts.generate_audio);
   if (opts.seed != null) body.seed = Number(opts.seed);
   if (opts.guidance_scale != null) body.guidance_scale = Number(opts.guidance_scale);
   for (const url of imageRefs) body.content.push({ type: 'image_url', image_url: { url }, role: 'reference_image' });
