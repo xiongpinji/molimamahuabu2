@@ -42,6 +42,36 @@ function startBackgroundServices(options) {
   };
 }
 
+function mountFrontend(app, webDist) {
+  if (!fs.existsSync(webDist)) return false;
+
+  app.use('/assets', express.static(path.join(webDist, 'assets')));
+  app.use('/assets', (req, res) => {
+    res.status(404).type('text/plain').send('Asset Not Found');
+  });
+  app.use(express.static(webDist, {
+    index: false,
+    setHeaders(res, filePath) {
+      if (path.extname(filePath).toLowerCase() === '.html') {
+        res.setHeader('Cache-Control', 'no-cache');
+      }
+    },
+  }));
+  app.get('/favicon.ico', (req, res) => {
+    const fav = path.join(webDist, 'favicon.ico');
+    if (fs.existsSync(fav)) res.sendFile(fav);
+    else res.status(404).end();
+  });
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) return next();
+    const indexHtml = path.join(webDist, 'index.html');
+    if (!fs.existsSync(indexHtml)) return next();
+    res.setHeader('Cache-Control', 'no-cache');
+    return res.sendFile(indexHtml);
+  });
+  return true;
+}
+
 function createApp() {
   const config = loadConfig();
   const db = getDb(config.database);
@@ -156,22 +186,7 @@ function createApp() {
   // 前端静态资源（sxy：web/dist）；Electron 打包时可设 WEB_DIST_PATH
   const webDist = process.env.WEB_DIST_PATH || path.join(process.cwd(), '..', 'frontweb', 'dist');
   console.log('webDist', webDist);
-  if (fs.existsSync(webDist)) {
-    app.use('/assets', express.static(path.join(webDist, 'assets')));
-    // 服务 dist 根目录的静态文件（如 favicon.ico 等）
-    app.use(express.static(webDist, { index: false }));
-    app.get('/favicon.ico', (req, res) => {
-      const fav = path.join(webDist, 'favicon.ico');
-      if (fs.existsSync(fav)) res.sendFile(fav);
-      else res.status(404).end();
-    });
-    app.get('*', (req, res, next) => {
-      if (req.path.startsWith('/api')) return next();
-      const indexHtml = path.join(webDist, 'index.html');
-      if (fs.existsSync(indexHtml)) res.sendFile(indexHtml);
-      else next();
-    });
-  } else {
+  if (!mountFrontend(app, webDist)) {
     app.get('/', (req, res) => {
       res.send(
         '<!DOCTYPE html><html><head><meta charset="utf-8"><title>LocalMiniDrama</title></head><body>' +
@@ -219,4 +234,4 @@ function createApp() {
   };
 }
 
-module.exports = { createApp, resolveStorageRoot, startBackgroundServices };
+module.exports = { createApp, mountFrontend, resolveStorageRoot, startBackgroundServices };
