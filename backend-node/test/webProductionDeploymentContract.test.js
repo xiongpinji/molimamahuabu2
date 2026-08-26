@@ -56,7 +56,9 @@ test('网页生产构建显式启用公开平台模式', () => {
   assert.equal(packageJson.scripts['build:public'], 'node scripts/build-public.mjs');
   assert.match(buildScript, /VITE_PUBLIC_PLATFORM_MODE/);
   assert.match(buildScript, /true/);
-  assert.match(buildScript, /build\(\)/);
+  assert.match(buildScript, /readPreviousReleaseAssets/);
+  assert.match(buildScript, /emptyOutDir:\s*false/);
+  assert.match(buildScript, /finalizeReleaseAssets/);
 });
 
 test('生产 Compose 使用 HTTPS 入口、持久卷、健康检查和自动重启', () => {
