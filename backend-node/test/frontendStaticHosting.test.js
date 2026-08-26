@@ -18,10 +18,12 @@ const RELEASE_SCOPE_PATH = path.join(
 
 const EXPECTED_RELEASE_PATHS = [
   'backend-node/src/app.js',
+  'backend-node/test/featureLockManifest.test.js',
   'backend-node/test/frontendStaticHosting.test.js',
   'backend-node/test/webProductionDeploymentContract.test.js',
   'deploy/release-scopes/static-asset-cross-release-compat-20260826.json',
   'docs/tasks/2026-08-26-static-asset-cross-release-compat.md',
+  'docs/verification/platform-stability/feature-lock-manifest.json',
   'frontweb/scripts/build-public.mjs',
   'frontweb/scripts/release-asset-compat.mjs',
   'frontweb/src/main.js',

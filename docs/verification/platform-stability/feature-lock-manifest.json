@@ -386,7 +386,8 @@
         "docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md",
         "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md",
         "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md",
-        "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md"
+        "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md",
+        "docs/tasks/2026-08-26-static-asset-cross-release-compat.md"
       ],
       "fixCommit": "51a91f1e3eb5dc3636adb1c8a47e45f22a60e000",
       "unlockHistory": [
@@ -529,19 +530,29 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-25 PR #193 图片结果未知安全收口与旧线路兼容 CI 修复获批",
+          "approvedBy": "product-owner 2026-08-25 pr-193-ci-fix-approved",
+          "impactTests": [
+            "backend-node/test/djpsdOpenApiImage.test.js",
+            "backend-node/test/imageDuplicateGuard.test.js",
+            "backend-node/test/imageProviderConfigFailover.test.js",
+            "backend-node/test/imageTools.test.js",
+            "backend-node/test/providerRouteImageIntegration.test.js",
+            "backend-node/test/token6688Image.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-25 PR #193 图片结果未知安全收口与旧线路兼容 CI 修复获批",
-        "approvedBy": "product-owner 2026-08-25 pr-193-ci-fix-approved",
+        "reason": "2026-08-26 PR #195 跨版本静态资源兼容修复获批",
+        "approvedBy": "product-owner 2026-08-26 pr-195-static-asset-cross-release-compat",
         "impactTests": [
-          "backend-node/test/djpsdOpenApiImage.test.js",
-          "backend-node/test/imageDuplicateGuard.test.js",
-          "backend-node/test/imageProviderConfigFailover.test.js",
-          "backend-node/test/imageTools.test.js",
-          "backend-node/test/providerRouteImageIntegration.test.js",
-          "backend-node/test/token6688Image.test.js",
-          "backend-node/test/featureLockManifest.test.js"
+          "backend-node/test/frontendStaticHosting.test.js",
+          "backend-node/test/webProductionDeploymentContract.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },
@@ -793,7 +804,8 @@
         "docs/superpowers/plans/2026-08-23-provider-readiness-tts-canary.md",
         "docs/verification/platform-stability/provider-readiness-repair-manifest-20260823.md",
         "docs/verification/platform-stability/canvas-text-capability-hotfix-20260824.md",
-        "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md"
+        "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md",
+        "docs/tasks/2026-08-26-static-asset-cross-release-compat.md"
       ],
       "fixCommit": null,
       "unlockHistory": [
@@ -989,19 +1001,29 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-25 PR #193 图片结果未知安全收口与旧线路兼容 CI 修复获批",
+          "approvedBy": "product-owner 2026-08-25 pr-193-ci-fix-approved",
+          "impactTests": [
+            "backend-node/test/djpsdOpenApiImage.test.js",
+            "backend-node/test/imageDuplicateGuard.test.js",
+            "backend-node/test/imageProviderConfigFailover.test.js",
+            "backend-node/test/imageTools.test.js",
+            "backend-node/test/providerRouteImageIntegration.test.js",
+            "backend-node/test/token6688Image.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-25 PR #193 图片结果未知安全收口与旧线路兼容 CI 修复获批",
-        "approvedBy": "product-owner 2026-08-25 pr-193-ci-fix-approved",
+        "reason": "2026-08-26 PR #195 跨版本静态资源兼容修复获批",
+        "approvedBy": "product-owner 2026-08-26 pr-195-static-asset-cross-release-compat",
         "impactTests": [
-          "backend-node/test/djpsdOpenApiImage.test.js",
-          "backend-node/test/imageDuplicateGuard.test.js",
-          "backend-node/test/imageProviderConfigFailover.test.js",
-          "backend-node/test/imageTools.test.js",
-          "backend-node/test/providerRouteImageIntegration.test.js",
-          "backend-node/test/token6688Image.test.js",
-          "backend-node/test/featureLockManifest.test.js"
+          "backend-node/test/frontendStaticHosting.test.js",
+          "backend-node/test/webProductionDeploymentContract.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },
