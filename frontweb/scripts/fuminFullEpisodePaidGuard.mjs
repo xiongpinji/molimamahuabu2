@@ -133,4 +133,3 @@ export function assertNextShotAllowed(manifest = {}, shotNumber, balanceEvidence
 }
 
 export { EXPECTED_SHOTS }
-

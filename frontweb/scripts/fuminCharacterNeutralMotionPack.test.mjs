@@ -100,7 +100,6 @@ test('九镜净化包只有在逐镜人工批准且文件哈希一致时可投�
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
-
 test('缺少人工批准时净化包保持付费阻断', () => {
   const root = fixture()
   try {
@@ -129,4 +128,3 @@ test('净化视频或接触表发生哈希漂移时拒绝投影', () => {
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
-

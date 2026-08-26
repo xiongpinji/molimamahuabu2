@@ -7,7 +7,6 @@ const HEX_64 = /^[a-f0-9]{64}$/
 function fail(code, message = code) {
   throw Object.assign(new Error(`${code}: ${message}`), { code })
 }
-
 function sha256File(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
 }
@@ -114,4 +113,3 @@ export function loadCharacterNeutralMotionPack(root, testCase) {
     }
   })
 }
-

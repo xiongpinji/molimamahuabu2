@@ -22,7 +22,6 @@ test('Fumin Seedance Mini 保留有声开关和多参考合同', () => {
   assert.equal(body.content.filter((item) => item.type === 'image_url').length, 1);
   assert.equal(body.content.filter((item) => item.type === 'video_url').length, 1);
 });
-
 test('Fumin 有声开关 false 不被丢失', () => {
   const body = buildFuminVideoBody({
     model: 'fumin-seedance-2.0-mini',
@@ -65,4 +64,3 @@ test('Fumin 继续拒绝未核验的视频比例', () => {
     generate_audio: true,
   }), /仅开放已核验的 16:9 和 9:16/);
 });
-

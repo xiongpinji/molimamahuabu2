@@ -9,7 +9,6 @@ const REQUIRED_VIEWS = ['front', 'profile', 'full_body']
 function fail(code, message = code) {
   throw Object.assign(new Error(`${code}: ${message}`), { code })
 }
-
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex')
 }
@@ -114,4 +113,3 @@ export function shotCharacterIds(testCase, shotNumber) {
   }
   return [...ids]
 }
-

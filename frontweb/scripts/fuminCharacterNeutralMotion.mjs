@@ -61,5 +61,3 @@ export function validateCharacterNeutralMotionProbe(probe, expectedDurationMs) {
     review_status: 'pending',
   }
 }
-
-
