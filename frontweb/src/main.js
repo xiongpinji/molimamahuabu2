@@ -11,8 +11,10 @@ import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import App from './App.vue'
 import router from './router'
 import { installBrowserWheelZoomGuard } from './utils/browser-zoom-guard.js'
+import { installPreloadErrorRecovery } from './utils/preloadErrorRecovery.js'
 
 installBrowserWheelZoomGuard(window)
+installPreloadErrorRecovery(window)
 
 const app = createApp({
   name: 'RootProvider',
