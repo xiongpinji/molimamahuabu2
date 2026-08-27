@@ -14,6 +14,7 @@ const realRedrawOrchestrator = require('../src/services/redrawOrchestrator');
 const redrawCapabilityService = require('../src/services/redrawCapabilityService');
 const redrawAssetService = require('../src/services/redrawAssetService');
 const redrawReviewService = require('../src/services/redrawReviewService');
+const providerAssetUrlService = require('../src/services/providerAssetUrlService');
 
 const NOW = '2026-08-06T00:00:00.000Z';
 const EXPECTED_SERVER_AUTOMATION_POLICY = {
@@ -4697,6 +4698,70 @@ test('批量生成严格绑定作品当前版本并拒绝 singular shot_id', asy
     await handlers.generateBatch(request({ id: workId, userId: 'user-b' }), otherOwner);
     assert.equal(otherOwner.statusCode, 404);
     assert.equal(calls.length, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('默认单镜生成 context 为参考包资产创建静态签名公网 URL 且不复用 provider HMAC secret', async (t) => {
+  const db = createDb();
+  const previousPlatformSecret = process.env.PLATFORM_JWT_SECRET;
+  const previousProviderSecret = process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET;
+  process.env.PLATFORM_JWT_SECRET = 'route-static-asset-jwt-secret-value-1234567890';
+  process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET = 'wrong-redraw-provider-hmac-secret-1234567890';
+  t.after(() => {
+    if (previousPlatformSecret === undefined) delete process.env.PLATFORM_JWT_SECRET;
+    else process.env.PLATFORM_JWT_SECRET = previousPlatformSecret;
+    if (previousProviderSecret === undefined) delete process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET;
+    else process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET = previousProviderSecret;
+  });
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    const now = new Date().toISOString();
+    const assetId = db.prepare(`INSERT INTO assets
+      (name, type, category, url, local_path, mime_type, created_at, updated_at)
+      VALUES ('motion.mp4', 'video', 'redraw', '/static/redraw/motion.mp4', 'redraw/motion.mp4', 'video/mp4', ?, ?)`)
+      .run(now, now).lastInsertRowid;
+    let capturedContext = null;
+    const handlers = redrawRoutes(db, { error() {}, info() {} }, routeDeps({
+      cfg: { storage: { local_path: 'data/storage', base_url: 'https://media.example.test/static' } },
+      generationService: {
+        generateShot: async (context) => {
+          capturedContext = context;
+          return { status: 'processing' };
+        },
+      },
+    }));
+
+    const result = captureResponse();
+    await handlers.generateShot(request({ id: shotId }), result);
+
+    assert.equal(result.statusCode, 202);
+    const signed = capturedContext.createReferenceUrl({
+      asset_id: assetId,
+      sha256: 'a'.repeat(64),
+      kind: 'motion',
+    });
+    const url = new URL(signed);
+    assert.equal(`${url.origin}${url.pathname}`, 'https://media.example.test/static/redraw/motion.mp4');
+    assert.ok(url.searchParams.get('provider_asset_expires'));
+    assert.ok(providerAssetUrlService.verifyProviderAssetRequest({
+      pathname: url.pathname,
+      expires: Number(url.searchParams.get('provider_asset_expires')),
+      signature: url.searchParams.get('provider_asset_signature'),
+      secret: process.env.PLATFORM_JWT_SECRET,
+    }));
+    assert.equal(providerAssetUrlService.verifyProviderAssetRequest({
+      pathname: url.pathname,
+      expires: Number(url.searchParams.get('provider_asset_expires')),
+      signature: url.searchParams.get('provider_asset_signature'),
+      secret: process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET,
+    }), false);
+    assert.equal(capturedContext.storageBaseUrl, 'https://media.example.test/static');
+    assert.equal(capturedContext.providerAssetSecret, process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET);
   } finally {
     db.close();
   }

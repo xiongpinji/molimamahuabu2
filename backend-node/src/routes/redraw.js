@@ -35,6 +35,7 @@ const { normalizeVideoProviderResult } = require('../services/redrawProviderAdap
 const modelPriceService = require('../services/modelPriceService');
 const assetService = require('../services/assetService');
 const uploadServiceModule = require('../services/uploadService');
+const providerAssetUrlService = require('../services/providerAssetUrlService');
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -98,6 +99,37 @@ function createCanReadArtifact(db, cfg) {
   return (assetId) => {
     const row = db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(assetId);
     return reader.canRead(row);
+  };
+}
+
+function storageBaseUrlFromConfig(cfg = {}) {
+  return String(cfg?.storage?.base_url || '').trim().replace(/\/+$/, '');
+}
+
+function createProductionReferenceUrlFactory(db, cfg, canReadArtifact, options = {}) {
+  const storageBaseUrl = storageBaseUrlFromConfig(cfg);
+  const staticAssetSigningSecret = options.staticAssetSigningSecret ?? process.env.PLATFORM_JWT_SECRET;
+  return ({ asset_id: assetId }) => {
+    const id = Number(assetId);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      throw Object.assign(new Error('参考资产无效'), { code: 'REDRAW_REFERENCE_ASSET_INVALID' });
+    }
+    const asset = db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(id);
+    if (!asset || canReadArtifact(id) !== true) {
+      throw Object.assign(new Error('参考资产不可读取'), { code: 'REDRAW_REFERENCE_ASSET_UNREADABLE' });
+    }
+    const storedUrl = String(asset.url || '').trim();
+    const localPath = String(asset.local_path || '').trim().replace(/\\/g, '/').replace(/^\/+/, '');
+    const staticUrl = storedUrl.startsWith('/static/')
+      ? storedUrl
+      : (localPath ? `/static/${localPath}` : '');
+    if (!staticUrl.startsWith('/static/') || !storageBaseUrl || !/^https?:\/\//i.test(storageBaseUrl)) {
+      throw Object.assign(new Error('参考资产缺少可公开读取的 static URL'), { code: 'REDRAW_REFERENCE_ASSET_URL_UNAVAILABLE' });
+    }
+    return providerAssetUrlService.signProviderAssetUrl(staticUrl, {
+      filesBaseUrl: storageBaseUrl,
+      secret: staticAssetSigningSecret,
+    });
   };
 }
 
@@ -2902,8 +2934,16 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
   }
 
   function generationContext(currentOwner) {
+    const storageBaseUrl = storageBaseUrlFromConfig(cfg);
+    const staticAssetSigningSecret = options.staticAssetSigningSecret ?? process.env.PLATFORM_JWT_SECRET;
     return {
       storageRoot: storageRootFromConfig(cfg),
+      storageBaseUrl,
+      providerAssetSecret: process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET,
+      staticAssetSigningSecret,
+      createReferenceUrl: createProductionReferenceUrlFactory(db, cfg, canReadArtifact, {
+        staticAssetSigningSecret,
+      }),
       ...(options.generationOptions || {}),
       db,
       log,

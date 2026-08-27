@@ -11,6 +11,7 @@ const videoClient = require('../src/services/videoClient');
 const taskService = require('../src/services/taskService');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
+const providerAssetUrlService = require('../src/services/providerAssetUrlService');
 const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 
 const log = { info() {}, warn() {}, error() {} };
@@ -231,6 +232,120 @@ test('ToAPIs process uses request_snapshot arrays and does not rebuild from muta
   assert.deepEqual(captured.reference_audio_urls, ['https://molimama.vip/static/projects/0001/assets/ref-audio.mp3']);
   assert.equal(captured.first_frame_url, null);
   assert.equal(captured.generate_audio, true);
+});
+
+test('reference bundle motion URL is not rewritten by raw source conditioning signer during processing', async (t) => {
+  const { db, drama1 } = setup(t);
+  let captured = null;
+  const originalCall = videoClient.callVideoApi;
+  videoClient.callVideoApi = async (_db, _log, payload) => {
+    captured = payload;
+    return { error: 'capture-only' };
+  };
+  t.after(() => { videoClient.callVideoApi = originalCall; });
+
+  const bundleMotionUrl = 'https://molimama.vip/static/redraw-conditioning/bundle-motion.mp4?provider_asset_expires=4102444800&provider_asset_signature=bundle';
+  const created = createVideo(db, {
+    drama_id: drama1,
+    storyboard_id: 1,
+    model: 'seedance-2-mini',
+    prompt: 'reference bundle motion',
+    duration: 8,
+    generate_audio: true,
+  }, { billingEnabled: false, schedule() {} });
+  const snapshot = JSON.parse(db.prepare('SELECT request_snapshot FROM video_generations WHERE id = ?').get(created.id).request_snapshot);
+  snapshot.reference_video_urls = [bundleMotionUrl];
+  db.prepare(`UPDATE video_generations
+    SET request_snapshot = ?, reference_video_urls = ?, reference_video_url = ?, source_conditioning_json = ?
+    WHERE id = ?`).run(
+    JSON.stringify(snapshot),
+    JSON.stringify([bundleMotionUrl]),
+    bundleMotionUrl,
+    JSON.stringify({
+      mode: 'redraw_reference_bundle',
+      segment_sha256: 'd'.repeat(64),
+      reference_bundle: { reference_bundle_hash: 'b'.repeat(64) },
+    }),
+    created.id,
+  );
+
+  await videoService.processVideoGeneration(db, log, created.id, {
+    providerAssetStorageBaseUrl: 'https://provider-assets.example.test',
+    providerAssetSigningSecret: 'raw-conditioning-secret-value-1234567890',
+  });
+
+  assert.deepEqual(captured.reference_video_urls, [bundleMotionUrl]);
+  const row = db.prepare('SELECT reference_video_url, reference_video_urls FROM video_generations WHERE id = ?').get(created.id);
+  assert.equal(row.reference_video_url, bundleMotionUrl);
+  assert.deepEqual(JSON.parse(row.reference_video_urls), [bundleMotionUrl]);
+});
+
+test('Fumin submit signs local static video and audio references with public files base URL', async (t) => {
+  const { db } = setup(t);
+  const previousSecret = process.env.PLATFORM_JWT_SECRET;
+  const originalFetch = global.fetch;
+  process.env.PLATFORM_JWT_SECRET = 'video-client-static-signing-secret-1234567890';
+  t.after(() => {
+    if (previousSecret === undefined) delete process.env.PLATFORM_JWT_SECRET;
+    else process.env.PLATFORM_JWT_SECRET = previousSecret;
+    global.fetch = originalFetch;
+  });
+  const now = new Date().toISOString();
+  const configId = db.prepare(`INSERT INTO ai_service_configs
+    (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+     is_active, is_default, priority, verification_status, verified_capabilities, created_at, updated_at)
+    VALUES ('video', 'fumin', 'fumin_video', 'Fumin Mini', 'https://fumin.ai', 'db-fumin-key', ?,
+      'fumin-seedance-2.0-mini', 1, 0, 0, 'verified', ?, ?, ?)`).run(
+    JSON.stringify(['fumin-seedance-2.0-mini']),
+    JSON.stringify({ 'fumin-seedance-2.0-mini': withExternalModelEvidence('fumin-seedance-2.0-mini', {
+      durations: [5],
+      resolutions: ['480p'],
+      supportsImageReference: true,
+      supportsVideoReference: true,
+      supportsAudioReference: true,
+      supportsAudio: true,
+      maxReferences: 9,
+      maxVideoReferences: 3,
+      maxAudioReferences: 3,
+    }) }),
+    now,
+    now,
+  ).lastInsertRowid;
+  let body = null;
+  global.fetch = async (_url, options) => {
+    body = JSON.parse(options.body);
+    return new Response(JSON.stringify({ id: 'fumin-task-static-media', status: 'queued' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  const result = await videoClient.callVideoApi(db, log, {
+    ai_service_config_id: configId,
+    model: 'fumin-seedance-2.0-mini',
+    prompt: 'Maya says exactly in English: We leave tonight.',
+    duration: 5,
+    resolution: '480p',
+    aspect_ratio: '16:9',
+    reference_video_urls: ['/static/projects/0001/assets/motion.mp4'],
+    reference_audio_urls: ['/static/projects/0001/assets/voice.mp3'],
+    files_base_url: 'https://media.example.test/static',
+  }, { evidenceRoots });
+
+  assert.deepEqual(result, { task_id: 'fumin-task-static-media', status: 'queued' });
+  const videoUrl = body.content.find((item) => item.role === 'reference_video').video_url.url;
+  const audioUrl = body.content.find((item) => item.role === 'reference_audio').audio_url.url;
+  for (const signed of [videoUrl, audioUrl]) {
+    const url = new URL(signed);
+    assert.equal(url.origin, 'https://media.example.test');
+    assert.ok(url.pathname.startsWith('/static/projects/0001/assets/'));
+    assert.ok(providerAssetUrlService.verifyProviderAssetRequest({
+      pathname: url.pathname,
+      expires: Number(url.searchParams.get('provider_asset_expires')),
+      signature: url.searchParams.get('provider_asset_signature'),
+      secret: process.env.PLATFORM_JWT_SECRET,
+    }));
+  }
 });
 
 test('ToAPIs snapshot empty arrays and null aspect ratio stay authoritative during direct processing', async (t) => {

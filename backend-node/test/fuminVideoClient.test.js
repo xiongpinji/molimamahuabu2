@@ -114,3 +114,93 @@ test('Fumin 视频提交优先使用 DB Key，DB 为空时才使用进程环境 
   assert.equal(requests.length, 1);
   assert.equal(requests[0].options.headers.Authorization, 'Bearer env-only-fumin-key');
 });
+
+test('Fumin 视频提交分别解析 image video audio 引用并写入精确 body', async () => {
+  const requests = [];
+  const resolved = [];
+  global.fetch = async (url, options) => {
+    requests.push({ url: String(url), options, body: JSON.parse(options.body) });
+    return new Response(JSON.stringify({ id: 'task-456', status: 'queued' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  const result = await callFuminVideoApi(
+    {
+      provider: 'fumin',
+      api_protocol: 'fumin_video',
+      base_url: 'https://fumin.ai',
+      api_key: 'db-fumin-key',
+    },
+    { info() {}, warn() {}, error() {} },
+    {
+      model: 'fumin-seedance-2.0-mini',
+      prompt: 'Maya says exactly in English: We leave tonight.',
+      duration: 5,
+      resolution: '480p',
+      aspect_ratio: '16:9',
+      generate_audio: true,
+      reference_urls: ['/static/redraw/actor.png'],
+      reference_video_urls: ['/static/redraw/motion.mp4'],
+      reference_audio_urls: ['/static/redraw/voice.mp3'],
+      resolve_image: async (value, index) => {
+        resolved.push({ kind: 'image', value, index });
+        return 'https://media.example.test/static/redraw/actor.png?provider_asset_signature=image';
+      },
+      resolve_media: async (value, index, kind) => {
+        resolved.push({ kind, value, index });
+        return `https://media.example.test/static/redraw/${kind === 'video' ? 'motion.mp4' : 'voice.mp3'}?provider_asset_signature=${kind}`;
+      },
+    },
+  );
+
+  assert.deepEqual(result, { task_id: 'task-456', status: 'queued' });
+  assert.deepEqual(resolved, [
+    { kind: 'image', value: '/static/redraw/actor.png', index: 0 },
+    { kind: 'video', value: '/static/redraw/motion.mp4', index: 0 },
+    { kind: 'audio', value: '/static/redraw/voice.mp3', index: 0 },
+  ]);
+  assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0].body.content.filter((item) => item.role === 'reference_image').map((item) => item.image_url.url), [
+    'https://media.example.test/static/redraw/actor.png?provider_asset_signature=image',
+  ]);
+  assert.deepEqual(requests[0].body.content.filter((item) => item.role === 'reference_video').map((item) => item.video_url.url), [
+    'https://media.example.test/static/redraw/motion.mp4?provider_asset_signature=video',
+  ]);
+  assert.deepEqual(requests[0].body.content.filter((item) => item.role === 'reference_audio').map((item) => item.audio_url.url), [
+    'https://media.example.test/static/redraw/voice.mp3?provider_asset_signature=audio',
+  ]);
+});
+
+test('Fumin 本地视频或音频无法公开时在 POST 前 fail closed', async () => {
+  let fetchCalls = 0;
+  global.fetch = async () => {
+    fetchCalls += 1;
+    return new Response('{}', { status: 200 });
+  };
+
+  const result = await callFuminVideoApi(
+    {
+      provider: 'fumin',
+      api_protocol: 'fumin_video',
+      base_url: 'https://fumin.ai',
+      api_key: 'db-fumin-key',
+    },
+    { info() {}, warn() {}, error() {} },
+    {
+      model: 'fumin-seedance-2.0-mini',
+      prompt: 'Maya says exactly in English: We leave tonight.',
+      duration: 5,
+      resolution: '480p',
+      aspect_ratio: '16:9',
+      reference_video_urls: ['/static/private/motion.mp4'],
+      resolve_media: async () => {
+        throw new Error('本地媒体无法公开给供应商读取');
+      },
+    },
+  );
+
+  assert.match(result.error, /参考视频或音频准备失败/);
+  assert.equal(fetchCalls, 0);
+});

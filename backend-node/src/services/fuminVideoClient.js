@@ -175,6 +175,9 @@ async function callFuminVideoApi(config, log, opts = {}) {
     if (kind === 'image' && typeof opts.resolve_image === 'function') {
       return opts.resolve_image(value, index);
     }
+    if ((kind === 'video' || kind === 'audio') && typeof opts.resolve_media === 'function') {
+      return opts.resolve_media(value, index, kind);
+    }
     return value;
   };
   let videoUrls = [];

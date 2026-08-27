@@ -817,6 +817,21 @@ async function resolveFuminReferenceImageAsync(db, rawUrl, files_base_url, stora
   return providerAssetUrl.signProviderAssetUrl(resolved, { filesBaseUrl: files_base_url });
 }
 
+function resolveFuminReferenceMedia(rawUrl, files_base_url, kind, index) {
+  const raw = String(rawUrl || '').trim();
+  if (!raw) return null;
+  if (raw.startsWith('asset://')) return raw;
+  if (/^https:\/\//i.test(raw) && !raw.includes('/static/')) return raw;
+  if (/^(?:[a-zA-Z]:[\\/]|\/(?!static\/)|\\\\|file:)/i.test(raw) || raw.includes('..')) {
+    throw new Error(`fumin 参考${kind === 'audio' ? '音频' : '视频'} ${Number(index) + 1} 不是可公开读取的素材 URL`);
+  }
+  const publicUrl = publicUrlFromLocalRef(raw, files_base_url);
+  if (!publicUrl) {
+    throw new Error(`fumin 参考${kind === 'audio' ? '音频' : '视频'} ${Number(index) + 1} 无法转换为供应商可读取的公网 static URL`);
+  }
+  return providerAssetUrl.signProviderAssetUrl(publicUrl, { filesBaseUrl: files_base_url });
+}
+
 /**
  * 火山 Seedance 系列：按模型版本归一化时长（秒）。
  * - 2.x：4–15
@@ -5239,6 +5254,12 @@ async function submitVideoWithConfig(db, log, config, opts, runtime = {}) {
         opts.storage_local_path,
         log,
         video_gen_id,
+        index,
+      ),
+      resolve_media: (raw, index, kind) => resolveFuminReferenceMedia(
+        raw,
+        opts.files_base_url,
+        kind,
         index,
       ),
     });
