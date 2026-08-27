@@ -3321,7 +3321,9 @@ export async function runRedrawFullProductFlow({ page }) {
     review.decision === 'approved' && review.decision_source === 'automatic'
   ))).toBe(true)
   if (fullProductMode) {
+    await expect(page.locator('.redraw-step.active')).toContainText('导出交付', { timeout: 15_000 })
     await page.locator('.redraw-step').filter({ hasText: '批量转绘' }).click()
+    await expect(page.getByRole('heading', { name: '质量审核' })).toBeVisible()
     await waitForRedrawRequestsToSettle()
     await page.reload()
     await waitForRedrawRequestsToSettle()
