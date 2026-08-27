@@ -631,7 +631,11 @@ test('主供应商明确未受理后备用成功只结算一次积分', async (t
   );
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count, 1);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM generation_route_attempts').get().count, 2);
-  assert.equal(fs.existsSync(path.resolve(process.cwd(), 'data/storage/library/images')), false);
+  const saved = db.prepare('SELECT local_path FROM image_generations WHERE id = ?').get(image.id);
+  assert.ok(saved.local_path);
+  const savedPath = path.resolve(storageRoot, saved.local_path);
+  assert.equal(savedPath.startsWith(`${path.resolve(storageRoot)}${path.sep}`), true);
+  assert.equal(fs.existsSync(savedPath), true);
 });
 
 test('同目标已有 needs_attention 时在预扣和调度前 409 阻断且保留 held', () => {

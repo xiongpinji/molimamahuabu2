@@ -377,7 +377,9 @@
       ],
       "protectedPaths": [
         "backend-node/migrations/64_provider_task_receipt_reconciliation.sql",
+        "backend-node/scripts/audit-held-credit-reconciliation.js",
         "backend-node/src/app.js",
+        "backend-node/src/services/billingReconciliationDryRunService.js",
         "backend-node/src/services/creditLedgerService.js",
         "backend-node/src/services/taskService.js",
         "backend-node/src/services/billingReconciliationService.js",
@@ -391,6 +393,7 @@
       "requiredTests": [
         "backend-node/test/providerReconciliation.test.js",
         "backend-node/test/billingReconciliation.test.js",
+        "backend-node/test/billingReconciliationDryRun.test.js",
         "backend-node/test/taskService.test.js",
         "backend-node/test/text-generation-billing.test.js",
         "backend-node/test/creditLedger.test.js",
@@ -412,7 +415,8 @@
         "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md",
         "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md",
         "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md",
-        "docs/tasks/2026-08-26-static-asset-cross-release-compat.md"
+        "docs/tasks/2026-08-26-static-asset-cross-release-compat.md",
+        "docs/superpowers/plans/2026-08-27-held-credit-reconciliation-dry-run.md"
       ],
       "fixCommit": "51a91f1e3eb5dc3636adb1c8a47e45f22a60e000",
       "unlockHistory": [
@@ -568,14 +572,25 @@
             "backend-node/test/token6688Image.test.js",
             "backend-node/test/featureLockManifest.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-26 PR #195 跨版本静态资源兼容修复获批",
+          "approvedBy": "product-owner 2026-08-26 pr-195-static-asset-cross-release-compat",
+          "impactTests": [
+            "backend-node/test/frontendStaticHosting.test.js",
+            "backend-node/test/webProductionDeploymentContract.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-26 PR #195 跨版本静态资源兼容修复获批",
-        "approvedBy": "product-owner 2026-08-26 pr-195-static-asset-cross-release-compat",
+        "reason": "2026-08-27 PR #197 冻结积分只读审计获批",
+        "approvedBy": "product-owner 2026-08-27 pr-197-provider-metadata-held-reconciliation-readonly-audit",
         "impactTests": [
-          "backend-node/test/frontendStaticHosting.test.js",
-          "backend-node/test/webProductionDeploymentContract.test.js",
+          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/billingReconciliation.test.js",
+          "backend-node/test/billingReconciliationDryRun.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -740,6 +755,7 @@
         "backend-node/migrations/62_provider_canary_admin_pagination.sql",
         "backend-node/migrations/63_provider_route_costs.sql",
         "backend-node/migrations/64_provider_task_receipt_reconciliation.sql",
+        "backend-node/scripts/plan-provider-canary-remediation.js",
         "backend-node/scripts/split-multi-model-provider-configs.js",
         "backend-node/scripts/verify-feature-lock-manifest.js",
         "backend-node/src/app.js",
@@ -760,6 +776,7 @@
         "backend-node/src/services/providerCanaryEvidenceService.js",
         "backend-node/src/services/providerCanaryExecutor.js",
         "backend-node/src/services/providerCanaryFixtureService.js",
+        "backend-node/src/services/providerCanaryRemediationPlanService.js",
         "backend-node/src/services/providerCanarySchedulerService.js",
         "backend-node/src/services/providerRouteCostService.js",
         "backend-node/src/services/providerRouteStabilityService.js",
@@ -795,6 +812,7 @@
         "backend-node/test/providerCanaryFixtures.test.js",
         "backend-node/test/providerCanaryInvalidation.test.js",
         "backend-node/test/providerCanaryInventory.test.js",
+        "backend-node/test/providerCanaryRemediationPlan.test.js",
         "backend-node/test/providerCanaryPublicGate.test.js",
         "backend-node/test/providerCanaryScheduler.test.js",
         "backend-node/test/providerCanaryTextConfig.test.js",
@@ -843,6 +861,7 @@
         "docs/verification/platform-stability/canvas-text-capability-hotfix-20260824.md",
         "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md",
         "docs/tasks/2026-08-26-static-asset-cross-release-compat.md",
+        "docs/superpowers/plans/2026-08-27-provider-canary-metadata-remediation-plan.md",
         "docs/tasks/2026-08-27-pr194-main-sync-ci-fix.md"
       ],
       "fixCommit": null,
@@ -1071,6 +1090,16 @@
           "impactTests": [
             "backend-node/test/frontendStaticHosting.test.js",
             "backend-node/test/webProductionDeploymentContract.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-27 PR #197 供应商 Canary 元数据只读修复规划获批",
+          "approvedBy": "product-owner 2026-08-27 pr-197-provider-metadata-held-reconciliation-readonly-audit",
+          "impactTests": [
+            "backend-node/test/providerCanaryInventory.test.js",
+            "backend-node/test/providerCanaryRemediationPlan.test.js",
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
