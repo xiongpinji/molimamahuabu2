@@ -196,6 +196,7 @@ test('ToAPIs 引用素材拒绝本地主机、私网和链路本地地址', () =
 
 test('ToAPIs POST 使用注入 fetch，规范化 base URL，并把不确定创建结果标为不可重试', async () => {
   assert.equal(normalizeToapisBaseUrl('https://toapis.com/v1/'), 'https://toapis.com');
+  assert.equal(normalizeToapisBaseUrl('https://toapis.xyz/v1/'), 'https://toapis.xyz');
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });
@@ -236,18 +237,26 @@ test('ToAPIs POST 使用注入 fetch，规范化 base URL，并把不确定创�
   assert.match(broken.error, /不得自动重试/);
   assert.doesNotMatch(broken.error, /secret-key|moli\.example/);
 
-  for (const fetchImplCase of [
-    async () => ({ ok: true, status: 200, async text() { return '<html>bad</html>'; } }),
-    async () => ({ ok: true, status: 200, async text() { return JSON.stringify({ status: 'queued' }); } }),
+  for (const [fetchImplCase, expectedRecoveryCode] of [
+    [async () => ({ ok: true, status: 200, async text() { return '<html>bad</html>'; } }), 'TOAPIS_NON_JSON_RESPONSE'],
+    [async () => ({ ok: true, status: 200, async text() { return JSON.stringify({ status: 'queued' }); } }), 'TOAPIS_TASK_ID_MISSING'],
   ]) {
     const unknown = await callToapisVideoApi(
       { api_key: 'secret-key' },
       null,
-      { model: 'seedance-2-fast', prompt: 'x', resolution: '480p', duration: 4 },
+      {
+        model: 'seedance-2-fast',
+        prompt: 'x',
+        resolution: '480p',
+        duration: 4,
+        client_business_id: 'video-335',
+      },
       { fetchImpl: fetchImplCase },
     );
     assert.equal(unknown.indeterminate, true);
     assert.match(unknown.error, /不得自动重试|未取得 task_id/);
+    assert.equal(unknown.route_meta.recoveryTaskId, 'video-335');
+    assert.equal(unknown.route_meta.recoveryCode, expectedRecoveryCode);
   }
 });
 

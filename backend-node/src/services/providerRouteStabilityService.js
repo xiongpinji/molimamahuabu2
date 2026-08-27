@@ -425,6 +425,47 @@ function recordAcceptedTask(db, input) {
   })();
 }
 
+function recordRecoveryTask(db, input) {
+  const providerTaskId = String(input.providerTaskId || '').trim();
+  if (!providerTaskId) {
+    const error = new Error('供应商恢复查询号不能为空');
+    error.code = 'PROVIDER_TASK_RECEIPT_INVALID';
+    throw error;
+  }
+  return db.transaction(() => {
+    const attempt = db.prepare(`SELECT * FROM generation_route_attempts
+      WHERE request_id = ? AND attempt_no = ?`).get(input.requestId, input.attemptNo);
+    if (!attempt) throw new Error('路由尝试不存在');
+    if (attempt.provider_task_id != null) {
+      if (attempt.provider_task_id === providerTaskId) return attempt;
+      const error = new Error('供应商任务号与已固化凭证冲突');
+      error.code = 'PROVIDER_TASK_RECEIPT_CONFLICT';
+      throw error;
+    }
+    const now = input.now || new Date().toISOString();
+    db.prepare(`UPDATE generation_route_attempts
+      SET state = 'needs_attention', provider_task_id = ?, http_status = ?,
+        error_category = 'submission_unknown', safe_error_summary = ?, finished_at = ?
+      WHERE request_id = ? AND attempt_no = ? AND provider_task_id IS NULL`)
+      .run(
+        providerTaskId,
+        input.httpStatus ?? null,
+        toSafeErrorSummary({
+          category: 'submission_unknown',
+          httpStatus: input.httpStatus,
+          providerCode: input.providerCode,
+        }),
+        now,
+        input.requestId,
+        input.attemptNo,
+      );
+    db.prepare("UPDATE generation_route_requests SET state = 'needs_attention', updated_at = ? WHERE id = ?")
+      .run(now, input.requestId);
+    return db.prepare(`SELECT * FROM generation_route_attempts
+      WHERE request_id = ? AND attempt_no = ?`).get(input.requestId, input.attemptNo);
+  })();
+}
+
 function recordArtifactVerified(db, input) {
   const now = input.now || new Date().toISOString();
   db.transaction(() => {
@@ -1364,6 +1405,7 @@ module.exports = {
   startAttempt,
   finishAttempt,
   recordAcceptedTask,
+  recordRecoveryTask,
   recordArtifactVerified,
   recordBusinessArtifactUnreadable,
   recordFailureAndHealth,

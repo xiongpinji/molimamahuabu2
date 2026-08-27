@@ -155,16 +155,32 @@
             "backend-node/test/token6688Image.test.js",
             "backend-node/test/featureLockManifest.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 PR #194 合入最新 main 与 Hosted CI 修复获批",
+          "approvedBy": "product-owner 2026-08-27 pr-194-main-sync-ci-fix-approved",
+          "impactTests": [
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerCanaryPublicGate.test.js",
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 PR #194 合入最新 main 与 Hosted CI 修复获批",
-        "approvedBy": "product-owner 2026-08-27 pr-194-main-sync-ci-fix-approved",
+        "reason": "2026-08-27 ToAPIs Seedance 未知提交恢复句柄获批",
+        "approvedBy": "product-owner 2026-08-27 toapis-submission-recovery",
         "impactTests": [
-          "backend-node/test/providerRouteSchema.test.js",
-          "backend-node/test/providerCanaryPublicGate.test.js",
-          "backend-node/test/redrawMigration.test.js",
-          "backend-node/test/redrawRoutes.test.js",
+          "backend-node/test/toapisVideoClient.test.js",
+          "backend-node/test/toapisVideoIntegration.test.js",
+          "backend-node/test/providerRouteStability.test.js",
+          "backend-node/test/providerRouteVideoIntegration.test.js",
+          "backend-node/test/providerTaskReconciliation.test.js",
+          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/videoBilling.test.js",
+          "backend-node/test/videoGenerationRequestSnapshot.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -351,19 +367,35 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-25 PR #193 图片结果未知安全收口与旧线路兼容 CI 修复获批",
+          "approvedBy": "product-owner 2026-08-25 pr-193-ci-fix-approved",
+          "impactTests": [
+            "backend-node/test/djpsdOpenApiImage.test.js",
+            "backend-node/test/imageDuplicateGuard.test.js",
+            "backend-node/test/imageProviderConfigFailover.test.js",
+            "backend-node/test/imageTools.test.js",
+            "backend-node/test/providerRouteImageIntegration.test.js",
+            "backend-node/test/token6688Image.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-25 PR #193 图片结果未知安全收口与旧线路兼容 CI 修复获批",
-        "approvedBy": "product-owner 2026-08-25 pr-193-ci-fix-approved",
+        "reason": "2026-08-27 ToAPIs Seedance 未知提交恢复句柄获批",
+        "approvedBy": "product-owner 2026-08-27 toapis-submission-recovery",
         "impactTests": [
-          "backend-node/test/djpsdOpenApiImage.test.js",
-          "backend-node/test/imageDuplicateGuard.test.js",
-          "backend-node/test/imageProviderConfigFailover.test.js",
-          "backend-node/test/imageTools.test.js",
-          "backend-node/test/providerRouteImageIntegration.test.js",
-          "backend-node/test/token6688Image.test.js",
-          "backend-node/test/featureLockManifest.test.js"
+          "backend-node/test/toapisVideoClient.test.js",
+          "backend-node/test/toapisVideoIntegration.test.js",
+          "backend-node/test/providerRouteStability.test.js",
+          "backend-node/test/providerRouteVideoIntegration.test.js",
+          "backend-node/test/providerTaskReconciliation.test.js",
+          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/videoBilling.test.js",
+          "backend-node/test/videoGenerationRequestSnapshot.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },
@@ -582,15 +614,31 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 PR #197 冻结积分只读审计获批",
+          "approvedBy": "product-owner 2026-08-27 pr-197-provider-metadata-held-reconciliation-readonly-audit",
+          "impactTests": [
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/billingReconciliation.test.js",
+            "backend-node/test/billingReconciliationDryRun.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 PR #197 冻结积分只读审计获批",
-        "approvedBy": "product-owner 2026-08-27 pr-197-provider-metadata-held-reconciliation-readonly-audit",
+        "reason": "2026-08-27 ToAPIs Seedance 未知提交恢复句柄获批",
+        "approvedBy": "product-owner 2026-08-27 toapis-submission-recovery",
         "impactTests": [
+          "backend-node/test/toapisVideoClient.test.js",
+          "backend-node/test/toapisVideoIntegration.test.js",
+          "backend-node/test/providerRouteStability.test.js",
+          "backend-node/test/providerRouteVideoIntegration.test.js",
+          "backend-node/test/providerTaskReconciliation.test.js",
           "backend-node/test/providerReconciliation.test.js",
-          "backend-node/test/billingReconciliation.test.js",
-          "backend-node/test/billingReconciliationDryRun.test.js",
+          "backend-node/test/videoBilling.test.js",
+          "backend-node/test/videoGenerationRequestSnapshot.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -1103,16 +1151,32 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 PR #194 合入最新 main 与 Hosted CI 修复获批",
+          "approvedBy": "product-owner 2026-08-27 pr-194-main-sync-ci-fix-approved",
+          "impactTests": [
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerCanaryPublicGate.test.js",
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 PR #194 合入最新 main 与 Hosted CI 修复获批",
-        "approvedBy": "product-owner 2026-08-27 pr-194-main-sync-ci-fix-approved",
+        "reason": "2026-08-27 ToAPIs Seedance 未知提交恢复句柄获批",
+        "approvedBy": "product-owner 2026-08-27 toapis-submission-recovery",
         "impactTests": [
-          "backend-node/test/providerRouteSchema.test.js",
-          "backend-node/test/providerCanaryPublicGate.test.js",
-          "backend-node/test/redrawMigration.test.js",
-          "backend-node/test/redrawRoutes.test.js",
+          "backend-node/test/toapisVideoClient.test.js",
+          "backend-node/test/toapisVideoIntegration.test.js",
+          "backend-node/test/providerRouteStability.test.js",
+          "backend-node/test/providerRouteVideoIntegration.test.js",
+          "backend-node/test/providerTaskReconciliation.test.js",
+          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/videoBilling.test.js",
+          "backend-node/test/videoGenerationRequestSnapshot.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
