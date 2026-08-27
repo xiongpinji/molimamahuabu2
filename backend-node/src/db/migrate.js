@@ -1677,4 +1677,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { runMigrationsAndEnsure, ensureColumns };
+module.exports = { runMigrationsAndEnsure, ensureColumns, ensureModelCreditPriceFreeContract };

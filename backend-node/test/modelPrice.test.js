@@ -118,6 +118,34 @@ test('迁移 67 重跑不会删除未来扩展列和值', () => {
   );
 });
 
+test('modelPrice ensureSchema 升级旧表时不会删除未来扩展列和值', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE model_credit_prices (
+      model TEXT PRIMARY KEY,
+      credits INTEGER NOT NULL CHECK (credits > 0),
+      future_extension TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL
+    );
+    INSERT INTO model_credit_prices (model, credits, future_extension, updated_at)
+    VALUES ('service-future-paid', 15, 'keep-service', '2026-08-27T00:00:00.000Z');
+  `);
+
+  prices.ensureSchema(db);
+
+  const columns = db.prepare('PRAGMA table_info(model_credit_prices)').all().map((column) => column.name);
+  assert.equal(columns.includes('future_extension'), true);
+  assert.deepEqual(
+    db.prepare('SELECT model, credits, pricing_mode, future_extension FROM model_credit_prices WHERE model = ?').get('service-future-paid'),
+    { model: 'service-future-paid', credits: 15, pricing_mode: 'paid', future_extension: 'keep-service' },
+  );
+  assert.throws(
+    () => db.prepare(`INSERT INTO model_credit_prices (model, credits, pricing_mode, future_extension, updated_at)
+      VALUES ('service-future-bad-paid-zero', 0, 'paid', 'blocked', datetime('now'))`).run(),
+    /CHECK constraint failed/,
+  );
+});
+
 test('迁移 67 在分语句部分执行后可安全重跑且保留原表数据', () => {
   const db = new Database(':memory:');
   db.exec(`

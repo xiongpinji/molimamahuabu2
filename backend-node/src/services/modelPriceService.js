@@ -12,6 +12,7 @@ const toapisVideoClient = require('./toapisVideoClient');
 const feituoVideoClient = require('./feituoVideoClient');
 const lingjingVideoClient = require('./lingjingVideoClient');
 const { evidenceContractForModel, hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
+const { ensureModelCreditPriceFreeContract } = require('../db/migrate');
 const SERVICE_CATEGORIES = {
   text: 'text',
   image: 'image',
@@ -57,60 +58,6 @@ function recoverOrphanedFreePricingRebuild(db) {
   db.exec('ALTER TABLE __model_credit_prices_free_rebuild RENAME TO model_credit_prices');
 }
 
-function hasFreePricingContract(db) {
-  const columns = db.prepare('PRAGMA table_info(model_credit_prices)').all();
-  if (!columns.some((column) => column.name === 'pricing_mode')) return false;
-  const table = db.prepare(`
-    SELECT sql FROM sqlite_master
-    WHERE type = 'table' AND name = 'model_credit_prices'
-  `).get();
-  const sql = String(table?.sql || '');
-  return /\bpricing_mode\b[\s\S]*\bfree\b/i.test(sql)
-    && /pricing_mode\s*=\s*'free'\s+AND\s+credits\s*=\s*0/i.test(sql)
-    && /pricing_mode\s*=\s*'paid'\s+AND\s+credits\s*>\s*0/i.test(sql);
-}
-
-function rebuildFreePricingContract(db) {
-  if (db.inTransaction) {
-    throw new Error('model_credit_prices pricing_mode migration requires no active transaction');
-  }
-  db.transaction(() => {
-    db.exec(`
-      DROP TABLE IF EXISTS __model_credit_prices_free_rebuild;
-      CREATE TABLE __model_credit_prices_free_rebuild (
-        model TEXT PRIMARY KEY,
-        credits INTEGER NOT NULL CHECK (
-          (pricing_mode = 'paid' AND credits > 0)
-          OR (pricing_mode = 'free' AND credits = 0)
-        ),
-        pricing_mode TEXT NOT NULL DEFAULT 'paid' CHECK (pricing_mode IN ('paid', 'free')),
-        display_name TEXT,
-        public_note TEXT NOT NULL DEFAULT '',
-        category TEXT NOT NULL DEFAULT 'other',
-        status TEXT NOT NULL DEFAULT 'enabled',
-        billing_unit TEXT NOT NULL DEFAULT '',
-        cost_unit TEXT NOT NULL DEFAULT 'request',
-        cost_micros_per_unit INTEGER NOT NULL DEFAULT 0,
-        input_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0,
-        output_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0,
-        updated_at TEXT NOT NULL
-      );
-      INSERT INTO __model_credit_prices_free_rebuild (
-        model, credits, pricing_mode, display_name, public_note, category, status,
-        billing_unit, cost_unit, cost_micros_per_unit, input_cost_micros_per_1k,
-        output_cost_micros_per_1k, updated_at
-      )
-      SELECT
-        model, credits, COALESCE(NULLIF(pricing_mode, ''), 'paid'), display_name, public_note, category, status,
-        billing_unit, cost_unit, cost_micros_per_unit, input_cost_micros_per_1k,
-        output_cost_micros_per_1k, updated_at
-      FROM model_credit_prices;
-      DROP TABLE model_credit_prices;
-      ALTER TABLE __model_credit_prices_free_rebuild RENAME TO model_credit_prices;
-    `);
-  })();
-}
-
 function isToken6688PerRequestVideo(value) {
   const selected = mediaModelSelection.parseQualifiedSelection(value);
   return /^seedance-2-0-special-(?:mini|fast|full)-720p$/i.test(
@@ -149,7 +96,7 @@ function ensureSchema(db) {
   ensureColumn(db, 'input_cost_micros_per_1k', 'ALTER TABLE model_credit_prices ADD COLUMN input_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'output_cost_micros_per_1k', 'ALTER TABLE model_credit_prices ADD COLUMN output_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'pricing_mode', "ALTER TABLE model_credit_prices ADD COLUMN pricing_mode TEXT NOT NULL DEFAULT 'paid'");
-  if (!hasFreePricingContract(db)) rebuildFreePricingContract(db);
+  ensureModelCreditPriceFreeContract(db);
   db.exec(`CREATE TABLE IF NOT EXISTS model_resolution_prices (
     model TEXT NOT NULL COLLATE NOCASE,
     resolution TEXT NOT NULL CHECK (resolution IN ('480p', '720p')),
