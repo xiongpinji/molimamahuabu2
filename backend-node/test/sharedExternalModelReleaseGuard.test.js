@@ -130,8 +130,8 @@ function trustedToapisStandardSurfaceGuard(fixture) {
   const clientHash = sha256(fs.readFileSync(path.join(fixture.candidate, 'backend-node/src/services/toapisVideoClient.js')));
   const producerHash = sha256(fs.readFileSync(path.join(fixture.candidate, 'backend-node/scripts/verify-toapis-video-models.js')));
   const source = fs.readFileSync(GUARD, 'utf8')
-    .replace('9c42f9d68d36ce1b61e74c9e70a43868f611f13b3becc2f87c16878fbf458b8c', clientHash)
-    .replace('b79cf06188c59cfa8ee5f3b24a72c4b45e48d75388e6e60477f0075a7c8169fb', producerHash);
+    .replace('fc63b777996d4b61b38ef0ce133ff971feba70423207594ceb14d555bc837e3f', clientHash)
+    .replace('39a6a1ff1f2f59e27269bbf5f4bb9badba84db63716129933ce0cb4928e73dd1', producerHash);
   fs.writeFileSync(guard, source);
   return guard;
 }
@@ -160,9 +160,9 @@ function protectedRuntimeSources(candidate) {
       'seedance-2-mini': Object.freeze({ durations: Object.freeze([4, 8, 10, 12, 15]), resolutions: Object.freeze(['480p', '720p']) }),
     });
     function normalizeToapisBaseUrl(value) {
-      const parsed = new URL(value || 'https://toapis.com');
-      if (parsed.protocol !== 'https:' || parsed.hostname !== 'toapis.com' || parsed.username || parsed.password) throw new Error('official only');
-      return 'https://toapis.com';
+      const parsed = new URL(value || 'https://toapis.xyz');
+      if (parsed.protocol !== 'https:' || parsed.hostname !== 'toapis.xyz' || parsed.username || parsed.password) throw new Error('official only');
+      return 'https://toapis.xyz';
     }
     function validateToapisVideoOptions(opts) {
       const first = opts.first_frame_url;
@@ -488,7 +488,7 @@ function toapisEvidence(evidenceRoot, times) {
   });
   return {
     contract_version: TOAPIS_CONTRACT,
-    provider_origin: 'https://toapis.com',
+    provider_origin: 'https://toapis.xyz',
     generated_at: times.generatedAt,
     valid_until: times.validUntil,
     results,
@@ -876,6 +876,26 @@ describeRootEvidence('shared external model release guard CLI', () => {
 });
 
 describeRootEvidence('shared evidence path and freshness safety', () => {
+  it('accepts stale standard ToAPIs evidence for the unchanged repository .xyz surface', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    const expectedCurrent = path.join(fixture.root, 'expected-current');
+    try {
+      fs.copyFileSync(
+        path.resolve(__dirname, '../src/services/toapisVideoClient.js'),
+        path.join(fixture.candidate, 'backend-node/src/services/toapisVideoClient.js'),
+      );
+      fs.copyFileSync(
+        path.resolve(__dirname, '../scripts/verify-toapis-video-models.js'),
+        path.join(fixture.candidate, 'backend-node/scripts/verify-toapis-video-models.js'),
+      );
+      fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
+      makeEvidenceStaleButUnexpired(fixture, TOAPIS_FILE);
+      assertPass(runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it('accepts stale but unexpired evidence when protected provider surfaces are unchanged', () => {
     const fixture = makeFixture({ toapis: true, usmercari: false });
     try {
@@ -897,7 +917,7 @@ describeRootEvidence('shared evidence path and freshness safety', () => {
       fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
       makeEvidenceStaleButUnexpired(fixture, TOAPIS_FILE);
       const client = path.join(fixture.candidate, 'backend-node/src/services/toapisVideoClient.js');
-      const changed = fs.readFileSync(client, 'utf8').replace("return 'https://toapis.com';", "return 'https://toapis.example';");
+      const changed = fs.readFileSync(client, 'utf8').replace("return 'https://toapis.xyz';", "return 'https://toapis.example';");
       fs.writeFileSync(client, changed);
       assertFail(runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }), /ToAPIs.*stale|24 hours/i);
     } finally {

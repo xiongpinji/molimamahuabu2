@@ -772,18 +772,31 @@
             "backend-node/test/providerRouteAdminRoutes.test.js",
             "backend-node/test/featureLockManifest.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-24 通用短剧生成与整集交付计划任务 1-8 获批",
+          "approvedBy": "product-owner 2026-08-24 redraw-general-generation-delivery-tasks-1-8",
+          "impactTests": [
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawCandidateReview.test.js",
+            "backend-node/test/redrawEpisodeRelease.test.js",
+            "frontweb/e2e/redraw-full-product.spec.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-24 通用短剧生成与整集交付计划任务 1-8 获批",
-        "approvedBy": "product-owner 2026-08-24 redraw-general-generation-delivery-tasks-1-8",
+        "reason": "2026-08-27 ToAPIs 官方备用域名迁移获批",
+        "approvedBy": "product-owner 2026-08-27 toapis-backup-domain-migration",
         "impactTests": [
-          "backend-node/test/redrawMigration.test.js",
-          "backend-node/test/redrawRoutes.test.js",
-          "backend-node/test/redrawCandidateReview.test.js",
-          "backend-node/test/redrawEpisodeRelease.test.js",
-          "frontweb/e2e/redraw-full-product.spec.js",
-          "backend-node/test/featureLockManifest.test.js"
+          "backend-node/test/toapisVideoClient.test.js",
+          "backend-node/test/toapisPrivateAvatarService.test.js",
+          "backend-node/test/toapisVideoReleaseContract.test.js",
+          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+          "frontweb/test/toapisVideoProviderConfig.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },

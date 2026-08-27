@@ -29,8 +29,8 @@ const FRESHNESS_SURFACES = Object.freeze({
   ]),
 });
 const TRUSTED_UNCHANGED_TOAPIS_STANDARD_SURFACE_SHA256 = Object.freeze({
-  'backend-node/src/services/toapisVideoClient.js': '9c42f9d68d36ce1b61e74c9e70a43868f611f13b3becc2f87c16878fbf458b8c',
-  'backend-node/scripts/verify-toapis-video-models.js': 'b79cf06188c59cfa8ee5f3b24a72c4b45e48d75388e6e60477f0075a7c8169fb',
+  'backend-node/src/services/toapisVideoClient.js': 'fc63b777996d4b61b38ef0ce133ff971feba70423207594ceb14d555bc837e3f',
+  'backend-node/scripts/verify-toapis-video-models.js': '39a6a1ff1f2f59e27269bbf5f4bb9badba84db63716129933ce0cb4928e73dd1',
 });
 const PROVIDERS = Object.freeze({
   toapis: Object.freeze({
@@ -596,7 +596,7 @@ function auditToapisRuntime(candidate, options = {}) {
       || !sameValues(arrayValues(mini, 'durations', 'ToAPIs Mini'), [4, 8, 10, 12, 15])) {
     fail('ToAPIs client duration tables do not match the protected contract');
   }
-  requirePattern(client, /hostname\s*!==\s*['"]toapis\.com['"]/, 'ToAPIs client does not lock the official host');
+  requirePattern(client, /hostname\s*!==\s*['"]toapis\.xyz['"]/, 'ToAPIs client does not lock the official host');
   requirePattern(client, /protocol\s*!==\s*['"]https:['"]/, 'ToAPIs client does not require HTTPS');
   for (const role of ['first_frame', 'last_frame', 'reference_image', 'reference_video', 'reference_audio']) {
     requirePattern(client, new RegExp(`['"]${role}['"]`), `ToAPIs client is missing role ${role}`);
@@ -1027,7 +1027,7 @@ function auditToapisSpeedEvidence(evidence, results, freshness) {
 function auditToapisEvidence(evidenceRoot, envelope, now, requireRecent = true) {
   const evidence = envelope.evidence;
   if (evidence?.contract_version !== PROVIDERS.toapis.contract) fail('ToAPIs evidence contract_version is invalid');
-  if (evidence.provider_origin !== 'https://toapis.com') fail('ToAPIs evidence provider origin is not official');
+  if (evidence.provider_origin !== 'https://toapis.xyz') fail('ToAPIs evidence provider origin is not official');
   const freshness = auditFreshness(evidence, 'ToAPIs', now, requireRecent);
   const results = Array.isArray(evidence.results) ? evidence.results : [];
   if (results.length !== TOAPIS_CASES.length) fail('ToAPIs evidence must contain exactly 8 cases');

@@ -346,6 +346,19 @@ const REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK = {
     'backend-node/test/featureLockManifest.test.js',
   ],
 };
+const TOAPIS_BACKUP_DOMAIN_MIGRATION_UNLOCK = {
+  reason: '2026-08-27 ToAPIs 官方备用域名迁移获批',
+  approvedBy: 'product-owner 2026-08-27 toapis-backup-domain-migration',
+  impactTests: [
+    'backend-node/test/toapisVideoClient.test.js',
+    'backend-node/test/toapisPrivateAvatarService.test.js',
+    'backend-node/test/toapisVideoReleaseContract.test.js',
+    'backend-node/test/sharedExternalModelReleaseGuard.test.js',
+    'frontweb/test/toapisVideoProviderConfig.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
 const REDRAW_GENERAL_GENERATION_FEATURE_IDS = new Set([
   PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
   ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
@@ -908,7 +921,9 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     const previousUnlock = qualityFixTouched
       ? PROVIDER_TASK_STATUS_DECISION_UNLOCK
       : PROVIDER_TASK_RECEIPT_UNLOCK;
-    const expectedUnlock = TOAPIS_SUBMISSION_RECOVERY_FEATURE_IDS.has(featureId)
+    const expectedUnlock = featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
+      ? TOAPIS_BACKUP_DOMAIN_MIGRATION_UNLOCK
+      : TOAPIS_SUBMISSION_RECOVERY_FEATURE_IDS.has(featureId)
       ? TOAPIS_SUBMISSION_RECOVERY_UNLOCK
       : PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
         ? PR194_MAIN_SYNC_UNLOCK
@@ -970,6 +985,9 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
         : []),
       ...(TOAPIS_SUBMISSION_RECOVERY_FEATURE_IDS.has(featureId)
         ? [PRE_TOAPIS_CURRENT_UNLOCK_BY_FEATURE[featureId]]
+        : []),
+      ...(featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
+        ? [REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK]
         : []),
     ]);
     assert.deepEqual(
@@ -1036,6 +1054,16 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
     assert.deepEqual(feature.unlock, TOAPIS_SUBMISSION_RECOVERY_UNLOCK);
   }
+});
+
+test('ToAPIs 官方备用域名迁移只刷新管理员预设锁并保留上一阶段批准', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const feature = manifest.features.find(
+    ({ featureId }) => featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
+  );
+  assert.ok(feature, `缺少功能锁 ${ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID}`);
+  assert.deepEqual(feature.unlock, TOAPIS_BACKUP_DOMAIN_MIGRATION_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
 });
 
 test('未触及锁保留当前批准记录且所有锁保留历史证据', () => {

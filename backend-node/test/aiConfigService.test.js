@@ -126,7 +126,7 @@ test('bulkUpdateApiKey invalidates real generation verification and evidence bin
     provider: 'toapis',
     api_protocol: 'toapis_video',
     name: 'ToAPIs 视频',
-    base_url: 'https://toapis.com',
+    base_url: 'https://toapis.xyz',
     api_key: 'old-key',
     model: ['seedance-2-fast'],
     default_model: 'seedance-2-fast',
@@ -170,7 +170,7 @@ test('ToAPIs 配置接受模型允许的 4 秒，受保护环境 Key 是有效 c
       provider: 'toapis',
       api_protocol: 'toapis_video',
       name: 'ToAPIs 视频',
-      base_url: 'https://toapis.com',
+      base_url: 'https://toapis.xyz',
       api_key: '',
       model: ['seedance-2-fast'],
       default_model: 'seedance-2-fast',
@@ -199,7 +199,7 @@ test('ToAPIs 连接测试只 GET 官方模型目录且不会升级真实验证�
   runMigrationsAndEnsure(db);
   const config = aiConfig.createConfig(db, log, {
     service_type: 'video', provider: 'toapis', api_protocol: 'toapis_video',
-    name: 'ToAPIs 视频', base_url: 'https://toapis.com', api_key: 'stored-key',
+    name: 'ToAPIs 视频', base_url: 'https://toapis.xyz', api_key: 'stored-key',
     model: ['seedance-2-fast', 'seedance-2-mini'], default_model: 'seedance-2-fast',
   });
   const originalFetch = global.fetch;
@@ -216,7 +216,7 @@ test('ToAPIs 连接测试只 GET 官方模型目录且不会升级真实验证�
     global.fetch = originalFetch;
   }
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, 'https://toapis.com/v1/models?type=video');
+  assert.equal(requests[0].url, 'https://toapis.xyz/v1/models?type=video');
   assert.equal(requests[0].options.method, 'GET');
   assert.equal(requests[0].options.body, undefined);
   assert.equal(aiConfig.getConfig(db, config.id).verification_status, 'unverified');

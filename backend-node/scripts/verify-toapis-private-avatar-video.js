@@ -16,7 +16,7 @@ const {
 } = require('../src/services/toapisVideoClient');
 
 const CONTRACT_VERSION = 'toapis-private-avatar-video-verification-v1';
-const BASE_URL = 'https://toapis.com';
+const BASE_URL = 'https://toapis.xyz';
 const LOG = { info() {}, warn() {}, error() {} };
 const CASES = Object.freeze([
   Object.freeze({ id: 'fast-avatar-480-4s', model: 'seedance-2-fast' }),
