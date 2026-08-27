@@ -755,6 +755,7 @@
         "backend-node/migrations/62_provider_canary_admin_pagination.sql",
         "backend-node/migrations/63_provider_route_costs.sql",
         "backend-node/migrations/64_provider_task_receipt_reconciliation.sql",
+        "backend-node/migrations/67_model_credit_price_free.sql",
         "backend-node/scripts/plan-provider-canary-remediation.js",
         "backend-node/scripts/split-multi-model-provider-configs.js",
         "backend-node/scripts/verify-feature-lock-manifest.js",
@@ -782,6 +783,8 @@
         "backend-node/src/services/providerRouteStabilityService.js",
         "backend-node/src/services/providerTaskReconciliationService.js",
         "backend-node/src/services/providerRuntimeFingerprintService.js",
+        "backend-node/src/services/redrawLocalizationOrchestrator.js",
+        "backend-node/src/services/redrawOrchestrator.js",
         "backend-node/src/services/text-generation-billing-service.js",
         "backend-node/src/services/videoClient.js",
         "backend-node/src/services/videoService.js",
@@ -827,6 +830,8 @@
         "backend-node/test/providerTaskAdminRoutes.test.js",
         "backend-node/test/providerTaskReconciliation.test.js",
         "backend-node/test/providerRuntimeFingerprint.test.js",
+        "backend-node/test/redrawAnalysis.test.js",
+        "backend-node/test/redrawLocalizationOrchestration.test.js",
         "backend-node/test/splitMultiModelProviderConfigs.test.js",
         "backend-node/test/storyboardImageFailure.test.js",
         "backend-node/test/taskService.test.js",
@@ -862,7 +867,9 @@
         "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md",
         "docs/tasks/2026-08-26-static-asset-cross-release-compat.md",
         "docs/superpowers/plans/2026-08-27-provider-canary-metadata-remediation-plan.md",
-        "docs/tasks/2026-08-27-pr194-main-sync-ci-fix.md"
+        "docs/tasks/2026-08-27-pr194-main-sync-ci-fix.md",
+        "docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md",
+        "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md"
       ],
       "fixCommit": null,
       "unlockHistory": [
@@ -1103,16 +1110,27 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 PR #194 合入最新 main 与 Hosted CI 修复获批",
+          "approvedBy": "product-owner 2026-08-27 pr-194-main-sync-ci-fix-approved",
+          "impactTests": [
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerCanaryPublicGate.test.js",
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 PR #194 合入最新 main 与 Hosted CI 修复获批",
-        "approvedBy": "product-owner 2026-08-27 pr-194-main-sync-ci-fix-approved",
+        "reason": "2026-08-27 一键转绘产品媒体登记 Task A 免费模型计费语义获批",
+        "approvedBy": "product-owner 2026-08-27 redraw-product-media-registration-task-a",
         "impactTests": [
-          "backend-node/test/providerRouteSchema.test.js",
-          "backend-node/test/providerCanaryPublicGate.test.js",
-          "backend-node/test/redrawMigration.test.js",
-          "backend-node/test/redrawRoutes.test.js",
+          "backend-node/test/modelPrice.test.js",
+          "backend-node/test/redrawAnalysis.test.js",
+          "backend-node/test/redrawLocalizationOrchestration.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]

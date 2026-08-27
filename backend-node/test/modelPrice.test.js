@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 
 const prices = require('../src/services/modelPriceService');
+const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 function makeDb() {
   const db = new Database(':memory:');
@@ -38,6 +39,60 @@ test('拒绝零值和小数价格', () => {
   const db = makeDb();
   assert.throws(() => prices.set(db, 'gpt-image-2', 0), (error) => error.code === 'INVALID_MODEL_PRICE');
   assert.throws(() => prices.set(db, 'gpt-image-2', 1.5), (error) => error.code === 'INVALID_MODEL_PRICE');
+});
+
+test('只有显式 free 模式可以配置 0 积分并在读写和成本快照中保留模式', () => {
+  const db = makeDb();
+
+  assert.throws(() => prices.set(db, 'free-local-model', 0, { category: 'text' }), (error) => error.code === 'INVALID_MODEL_PRICE');
+  assert.throws(() => prices.set(db, 'invalid-free-model', 1, { category: 'text', pricingMode: 'free' }), (error) => error.code === 'INVALID_MODEL_PRICE');
+
+  const paid = prices.set(db, 'paid-local-model', 2, { category: 'text' });
+  assert.equal(paid.pricing_mode, 'paid');
+
+  const free = prices.set(db, 'free-local-model', 0, { category: 'text', pricingMode: 'free' });
+  assert.equal(free.pricing_mode, 'free');
+  assert.equal(free.credits, 0);
+  assert.equal(prices.requirePrice(db, 'free-local-model'), 0);
+  assert.equal(prices.calculateCharge(db, 'free-local-model'), 0);
+  assert.equal(prices.list(db).find((row) => row.model === 'free-local-model').pricing_mode, 'free');
+  assert.equal(prices.quoteCost(db, 'free-local-model').pricing_mode, 'free');
+
+  assert.throws(
+    () => db.prepare(`INSERT INTO model_credit_prices (model, credits, pricing_mode, updated_at)
+      VALUES ('bad-paid-zero', 0, 'paid', datetime('now'))`).run(),
+    /CHECK constraint failed/,
+  );
+  assert.throws(
+    () => db.prepare(`INSERT INTO model_credit_prices (model, credits, pricing_mode, updated_at)
+      VALUES ('bad-free-positive', 1, 'free', datetime('now'))`).run(),
+    /CHECK constraint failed/,
+  );
+});
+
+test('迁移 67 保留既有价格为 paid 并允许正式 free 0 积分', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE model_credit_prices (
+      model TEXT PRIMARY KEY,
+      credits INTEGER NOT NULL CHECK (credits > 0),
+      updated_at TEXT NOT NULL
+    );
+    INSERT INTO model_credit_prices (model, credits, updated_at)
+    VALUES ('legacy-paid', 9, '2026-08-27T00:00:00.000Z');
+  `);
+
+  runMigrationsAndEnsure(db);
+
+  const legacy = db.prepare('SELECT model, credits, pricing_mode FROM model_credit_prices WHERE model = ?').get('legacy-paid');
+  assert.deepEqual(legacy, { model: 'legacy-paid', credits: 9, pricing_mode: 'paid' });
+  db.prepare(`INSERT INTO model_credit_prices (model, credits, pricing_mode, updated_at)
+    VALUES ('migrated-free', 0, 'free', datetime('now'))`).run();
+  assert.throws(
+    () => db.prepare(`INSERT INTO model_credit_prices (model, credits, pricing_mode, updated_at)
+      VALUES ('migrated-paid-zero', 0, 'paid', datetime('now'))`).run(),
+    /CHECK constraint failed/,
+  );
 });
 
 test('价格缺失时默认拒绝而不是猜测价格', () => {
@@ -165,6 +220,7 @@ test('图片、视频和文本推理模型按各自单位计算 API 成本', () 
     }),
     {
       model: 'reasoning-model',
+      pricing_mode: 'paid',
       cost_unit: 'token',
       quantity: 1,
       cost_micros: 5000,
@@ -350,6 +406,7 @@ test('公开价格目录只返回用户价格字段且管理端仍保留完整�
     public_note: '',
     category: 'video',
     credits: 3,
+    pricing_mode: 'paid',
     status: 'enabled',
     billing_unit: 'second',
     resolution_prices: {
