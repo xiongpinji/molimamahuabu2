@@ -22,7 +22,9 @@ const {
   saveReferenceBundle,
   loadReviewedReferenceCoverage,
   canonicalBundleHash,
+  buildCurrentReferenceBindings,
 } = require('../src/services/redrawReferenceBundleService');
+const { bindReadyMotionReference } = require('../src/services/redrawReferenceArtifactImportService');
 const {
   evaluatePreparationGate,
   preparationEvidenceHash,
@@ -628,6 +630,43 @@ function referenceBundleTextEvidencePack(input) {
   return pack;
 }
 
+function referenceBundlePersonEvidencePack(input) {
+  const pack = {
+    schema_version: 'person-clean-plate-reference-v1',
+    requirement_key: input.requirementKey,
+    artifact: {
+      asset_id: Number(input.cleanAssetId),
+      sha256: input.cleanSha,
+      width: input.width,
+      height: input.height,
+      mime_type: 'image/png',
+    },
+    source: {
+      asset_id: Number(input.frameAssetId),
+      sha256: input.frameSha,
+      width: input.width,
+      height: input.height,
+      mime_type: 'image/png',
+    },
+    mask: {
+      asset_id: Number(input.maskAssetId),
+      sha256: input.maskSha,
+      width: input.width,
+      height: input.height,
+      mime_type: 'image/png',
+    },
+    source_fingerprint: REFERENCE_BUNDLE_SOURCE_SHA256,
+    input_frame_fingerprint: input.frameSha,
+    analysis_sha256: input.analysisSha256,
+    frame_index: 0,
+    ready: true,
+    reviewed_by: 'user-a',
+    reviewed_at: '2026-08-14T00:05:00.000Z',
+  };
+  pack.pack_sha256 = crypto.createHash('sha256').update(stableJson(pack)).digest('hex');
+  return pack;
+}
+
 function putStorageFile(storageRoot, relativePath, bytes) {
   const absPath = path.join(storageRoot, relativePath);
   fs.mkdirSync(path.dirname(absPath), { recursive: true });
@@ -971,6 +1010,50 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
     sha256: screenMaskSha,
     metadata: { sha256: screenMaskSha, width: coverageWidth, height: coverageHeight },
   });
+  const personTracks = [
+    {
+      track_key: 'face-001',
+      kind: 'story_role',
+      source_character_key: 'character-001',
+      target_strategy: 'fixed_actor',
+      frame_ranges: [{ start_frame: 0, end_frame: 0 }],
+      visibility: [{ start_frame: 0, end_frame: 0, state: 'visible' }],
+      regions: [{
+        region_id: 'person-face-001-0',
+        frame_index: 0,
+        bbox: { x: 4, y: 4, width: 20, height: 40 },
+        mask: {
+          path: 'masks/subtitle-0.png', sha256: subtitleMaskSha,
+          width: coverageWidth, height: coverageHeight, mime_type: 'image/png',
+        },
+        association_confidence: 0.99,
+        detector_disagreement: false,
+      }],
+      review_status: 'pending',
+      reviewer: null,
+    },
+    {
+      track_key: 'face-002',
+      kind: 'story_role',
+      source_character_key: 'character-002',
+      target_strategy: 'fixed_actor',
+      frame_ranges: [{ start_frame: 0, end_frame: 0 }],
+      visibility: [{ start_frame: 0, end_frame: 0, state: 'visible' }],
+      regions: [{
+        region_id: 'person-face-002-0',
+        frame_index: 0,
+        bbox: { x: 36, y: 4, width: 20, height: 40 },
+        mask: {
+          path: 'masks/screen-0.png', sha256: screenMaskSha,
+          width: coverageWidth, height: coverageHeight, mime_type: 'image/png',
+        },
+        association_confidence: 0.99,
+        detector_disagreement: false,
+      }],
+      review_status: 'pending',
+      reviewer: null,
+    },
+  ];
   const generatedCoverage = await buildGeneratedCoverageManifest({
     evidenceRoot: path.join(storageRoot, coverageBase),
     source: {
@@ -991,12 +1074,12 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
       sha256: coverageFrameSha,
       width: coverageWidth,
       height: coverageHeight,
-      person_region_ids: [],
+      person_region_ids: personTracks.map((track) => track.regions[0].region_id),
       text_region_ids: ['text-region-001', 'text-region-002'],
       review_point_reasons: [],
       review_status: 'not_required',
     }],
-    personTracks: [],
+    personTracks,
     textTracks: [
       {
         region_key: 'text-001',
@@ -1046,7 +1129,7 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
   const reviewedCoverage = JSON.parse(JSON.stringify(generatedCoverage));
   reviewedCoverage.status = 'reviewed';
   reviewedCoverage.frames[0].review_status = reviewedCoverage.frames[0].review_point_reasons.length ? 'reviewed' : 'not_required';
-  for (const track of reviewedCoverage.text_tracks) {
+  for (const track of [...reviewedCoverage.person_tracks, ...reviewedCoverage.text_tracks]) {
     track.review_status = 'reviewed';
     track.reviewer = 'codex-local-review';
   }
@@ -1141,14 +1224,43 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
       snapshot: { mode: 'text_clean_plate' },
       text_clean_plate_pack: screenEvidencePack,
     }), screenCleanId);
-  const faceCoverageSha256 = crypto.createHash('sha256').update(stableJson([
-    { identity_redraw_asset_id: Number(actorAId), source_character_key: 'character-001', time_ranges: [[0, 5000]], track_key: 'face-001' },
-    { identity_redraw_asset_id: Number(actorBId), source_character_key: 'character-002', time_ranges: [[2500, 5000]], track_key: 'face-002' },
-  ])).digest('hex');
-  const textCoverageSha256 = crypto.createHash('sha256').update(stableJson([
-    { kind: 'text_subtitle', region_key: 'text-001', text_clean_redraw_asset_id: Number(subtitleCleanId), time_ranges: [[0, 2500]] },
-    { kind: 'text_screen', region_key: 'text-002', text_clean_redraw_asset_id: Number(screenCleanId), time_ranges: [[2500, 5000]] },
-  ])).digest('hex');
+  const personACleanId = addRedrawAsset(state.db, state.versionId, {
+    kind: 'scene', name: 'face-001 clean', cleanPlateAssetId: state.subtitleCleanImageId,
+  });
+  const personBCleanId = addRedrawAsset(state.db, state.versionId, {
+    kind: 'scene', name: 'face-002 clean', cleanPlateAssetId: state.screenCleanImageId,
+  });
+  for (const person of [
+    {
+      redrawAssetId: personACleanId, requirementKey: 'face-001',
+      cleanAssetId: state.subtitleCleanImageId, cleanSha: imageSha(state.subtitleCleanImageId),
+      maskAssetId: state.subtitleMaskAssetId, maskSha: subtitleMaskSha,
+    },
+    {
+      redrawAssetId: personBCleanId, requirementKey: 'face-002',
+      cleanAssetId: state.screenCleanImageId, cleanSha: imageSha(state.screenCleanImageId),
+      maskAssetId: state.screenMaskAssetId, maskSha: screenMaskSha,
+    },
+  ]) {
+    const pack = referenceBundlePersonEvidencePack({
+      ...person,
+      frameAssetId: state.coverageFrameAssetId,
+      frameSha: coverageFrameSha,
+      analysisSha256: reviewedCoverage.analysis_sha256,
+      width: coverageWidth,
+      height: coverageHeight,
+    });
+    state.db.prepare('UPDATE redraw_assets SET mask_asset_id = ?, source_ref_json = ? WHERE id = ?')
+      .run(person.maskAssetId, JSON.stringify({
+        source_ref: {
+          stable_id: person.requirementKey,
+          kind: 'person_clean',
+          source_asset_id: state.coverageFrameAssetId,
+        },
+        snapshot: { mode: 'clean_plate' },
+        person_clean_plate_pack: pack,
+      }), person.redrawAssetId);
+  }
   insertReferenceBundleAsset(state.db, {
     id: state.motionAssetId,
     type: 'video',
@@ -1163,42 +1275,86 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
       mime_type: 'video/mp4',
       video_codec: 'h264',
       audio_stream_count: 0,
-      redraw_motion_reference: {
-        schema_version: 'redraw-motion-reference-v1',
+      redraw_motion_import: {
+        schema_version: 'redraw-motion-import-v1',
         tenant_id: 'tenant-a',
         user_id: 'user-a',
         version_id: state.versionId,
         shot_id: shotId,
+        source_work_id: state.workId,
         source_asset_id: state.sourceAssetId,
         source_fingerprint: REFERENCE_BUNDLE_SOURCE_SHA256,
         clip_start_ms: 0,
         clip_end_ms: 12000,
-        face_coverage_sha256: faceCoverageSha256,
-        text_coverage_sha256: textCoverageSha256,
+        file_sha256: REFERENCE_BUNDLE_MOTION_SHA256,
+        duration_ms: 12000,
+        width: 864,
+        height: 496,
+        mime_type: 'video/mp4',
+        video_codec: 'h264',
+        audio_stream_count: 0,
+        reviewed_by: 'user-a',
+        reviewed_at: '2026-08-14T00:05:00.000Z',
+        review: {
+          full_frame_reviewed: true,
+          source_identity_obscured: true,
+          source_text_obscured: true,
+          motion_preserved: true,
+        },
       },
     },
+  });
+  state.db.prepare('UPDATE assets SET width = 864, height = 496 WHERE id = ?')
+    .run(state.motionAssetId);
+  state.db.prepare(`INSERT INTO redraw_reference_artifact_imports (
+    tenant_id, user_id, version_id, scope_type, scope_id, purpose,
+    idempotency_hash, request_hash, file_sha256, stored_asset_id,
+    status, error_code, created_at, updated_at
+  ) VALUES (
+    'tenant-a', 'user-a', ?, 'shot', ?, 'motion', ?, ?, ?, ?,
+    'completed', NULL, ?, ?
+  )`).run(
+    state.versionId,
+    shotId,
+    crypto.createHash('sha256').update('generation-reference-motion-import').digest('hex'),
+    crypto.createHash('sha256').update('generation-reference-motion-request').digest('hex'),
+    REFERENCE_BUNDLE_MOTION_SHA256,
+    state.motionAssetId,
+    now,
+    now,
+  );
+  const cleanResults = [
+    { kind: 'text_clean', key: 'text-001', status: 'completed', redraw_asset_id: Number(subtitleCleanId) },
+    { kind: 'text_clean', key: 'text-002', status: 'completed', redraw_asset_id: Number(screenCleanId) },
+  ];
+  await bindReadyMotionReference({
+    db: state.db,
+    tenantId: 'tenant-a',
+    userId: 'user-a',
+    versionId: state.versionId,
+    storageRoot,
+    now: () => '2026-08-14T00:05:00.000Z',
+  }, {
+    shot_id: shotId,
+    clean_results: cleanResults,
+  });
+  const currentBindings = await buildCurrentReferenceBindings({
+    db: state.db,
+    tenantId: 'tenant-a',
+    userId: 'user-a',
+    versionId: state.versionId,
+    storageRoot,
+  }, {
+    shot_id: shotId,
+    clean_results: cleanResults,
   });
   state.referenceBundleInput = {
     shot_id: shotId,
     expected_updated_at: state.db.prepare('SELECT updated_at FROM redraw_shots WHERE id = ?').get(shotId).updated_at,
     motion_reference_asset_id: state.motionAssetId,
-    face_tracks: [
-      { track_key: 'face-002', source_character_key: 'character-002', time_ranges: [[2500, 5000]], identity_redraw_asset_id: Number(actorBId) },
-      { track_key: 'face-001', source_character_key: 'character-001', time_ranges: [[0, 5000]], identity_redraw_asset_id: Number(actorAId) },
-    ],
-    text_regions: [
-      { region_key: 'text-002', kind: 'text_screen', time_ranges: [[2500, 5000]], text_clean_redraw_asset_id: Number(screenCleanId) },
-      { region_key: 'text-001', kind: 'text_subtitle', time_ranges: [[0, 2500]], text_clean_redraw_asset_id: Number(subtitleCleanId) },
-    ],
-    coverage_review: {
-      recognizable_face_count: 2,
-      mapped_face_count: 2,
-      unresolved_face_count: 0,
-      recognizable_text_region_count: 2,
-      mapped_text_region_count: 2,
-      unresolved_text_region_count: 0,
-      status: 'approved',
-    },
+    face_tracks: currentBindings.face_tracks,
+    text_regions: currentBindings.text_regions,
+    coverage_review: currentBindings.coverage_review,
   };
   if (options.saveBundle !== false) {
     state.savedReferenceBundle = await saveReferenceBundle({
@@ -1236,6 +1392,8 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
     const coverageShot = coverage.coverage_binding.shots.find((item) => Number(item.shot_id) === Number(shotId));
     const shotRequirements = coverage.shots.find((item) => Number(item.shot_id) === Number(shotId))?.requirements || [];
     const cleanAssetByKey = new Map([
+      ['face-001', Number(personACleanId)],
+      ['face-002', Number(personBCleanId)],
       ['text-001', Number(subtitleCleanId)],
       ['text-002', Number(screenCleanId)],
     ]);
