@@ -131,7 +131,7 @@ function trustedToapisStandardSurfaceGuard(fixture) {
   const producerHash = sha256(fs.readFileSync(path.join(fixture.candidate, 'backend-node/scripts/verify-toapis-video-models.js'), 'utf8').replace(/\r\n?/g, '\n'));
   const source = fs.readFileSync(GUARD, 'utf8')
     .replace('2d6825dab8cb036bc32069793118ea5656f3dff528dec92df0f467291d555d7b', clientHash)
-    .replace('dddb66a2fcbee266de96168323065c729b1660a689e2c4187c472e6747a3096e', producerHash);
+    .replace('eb8bf4259c4f55b4d7d61a1d18b5de1ad261a5b573414f5a8fdade659b0bdd3d', producerHash);
   fs.writeFileSync(guard, source);
   return guard;
 }
@@ -370,7 +370,7 @@ function protectedRuntimeSources(candidate) {
     }
     async function processCase(item, context, deps = {}) {
       const client = verificationClientForModel(context, item.model);
-      await fetchBalance(client.apiKey);
+      const balanceBefore = await (deps.fetchBalance || fetchBalance)(client.apiKey, deps.fetchImpl);
       await (deps.createTask || callToapisVideoApi)(client.config, null, {}, { fetchImpl: deps.fetchImpl, apiKey: client.apiKey });
       return waitForTask(client.config, item.taskId, () => {}, { apiKey: client.apiKey });
     }
@@ -516,13 +516,27 @@ function timeWindow() {
 }
 
 function toapisEvidence(evidenceRoot, times) {
+  const accountPositions = {
+    'seedance-2-fast': 0,
+    'seedance-2-mini': 0,
+  };
+  const accountStarts = {
+    'seedance-2-fast': { balance: 2.3, credits: 460 },
+    'seedance-2-mini': { balance: 41.7, credits: 8340 },
+  };
+  const configFingerprints = {
+    'seedance-2-fast': sha256('toapis-fast-config'),
+    'seedance-2-mini': sha256('toapis-mini-config'),
+  };
   const results = TOAPIS_CASES.map((item, index) => {
     const outputFile = `${item.id}.mp4`;
     const bytes = Buffer.from(`synthetic-video-${item.id}`);
     write(evidenceRoot, path.join('public', 'toapis', outputFile), bytes);
-    const beforeBalance = Number((2.3 + index * 0.1).toFixed(1));
+    const accountIndex = accountPositions[item.model]++;
+    const accountStart = accountStarts[item.model];
+    const beforeBalance = Number((accountStart.balance + accountIndex * 0.1).toFixed(1));
     const afterBalance = Number((beforeBalance + 0.1).toFixed(1));
-    const beforeCredits = 460 + index * 20;
+    const beforeCredits = accountStart.credits + accountIndex * 20;
     const afterCredits = beforeCredits + 20;
     const startedAt = new Date(times.billingStart + index * 120_000).toISOString();
     const generationElapsedSeconds = 60 + index;
@@ -552,6 +566,7 @@ function toapisEvidence(evidenceRoot, times) {
       requested_duration: item.duration,
       status: 'completed',
       provider_task_id: `tsk-${item.id}`,
+      config_fingerprint: configFingerprints[item.model],
       speed: {
         submit_latency_ms: 120 + index,
         generation_elapsed_seconds: generationElapsedSeconds,
@@ -885,7 +900,7 @@ describeRootEvidence('shared external model release guard CLI', () => {
     }
   });
 
-  it('accepts complete independent ToAPIs and USMercari evidence', () => {
+  it('accepts complete ToAPIs evidence with independently continuous FAST and MINI billing chains', () => {
     const fixture = makeFixture();
     try {
       assertPass(runGuard(fixture.candidate, fixture.evidenceRoot));
@@ -1245,7 +1260,22 @@ describeRootEvidence('independent ToAPIs evidence audit', () => {
     ['role exclusivity', (e) => { e.results.find((item) => item.mode === 'first-last').request.audio_with_roles = [{ role: 'reference_audio', url: 'https://assets.molimama.vip/a.mp3' }]; }, /role|参考|互斥/i],
     ['synchronous audio', (e) => { e.results.find((item) => item.id === 'mini-t2v-480').artifact.ffprobe.has_audio = false; }, /audio|音频/i],
     ['unique task', (e) => { e.results[1].provider_task_id = e.results[0].provider_task_id; }, /task|任务|重复|unique/i],
-    ['continuous billing', (e) => { e.results[1].billing.before.used_balance = 999; }, /billing|账单|余额|连续/i],
+    ['continuous billing inside one config fingerprint', (e) => { e.results[1].billing.before.used_balance = 999; }, /billing|账单|余额|连续/i],
+    ['unique billing window inside one config fingerprint', (e) => {
+      e.results[1].billing.before.captured_at = e.results[0].billing.before.captured_at;
+      e.results[1].billing.after.captured_at = e.results[0].billing.after.captured_at;
+    }, /billing|window|账单|窗口|重复/i],
+    ['non-overlapping billing windows inside one config fingerprint', (e) => {
+      const firstAfter = Date.parse(e.results[0].billing.after.captured_at);
+      e.results[1].billing.before.captured_at = new Date(firstAfter - 1_000).toISOString();
+    }, /billing|window|账单|窗口|连续/i],
+    ['nonempty config fingerprint', (e) => { delete e.results[0].config_fingerprint; }, /fingerprint|config|指纹/i],
+    ['distinct FAST and MINI config fingerprints', (e) => {
+      const fastFingerprint = e.results.find((item) => item.model === 'seedance-2-fast').config_fingerprint;
+      for (const result of e.results.filter((item) => item.model === 'seedance-2-mini')) {
+        result.config_fingerprint = fastFingerprint.toUpperCase();
+      }
+    }, /fingerprint|config|model|指纹/i],
     ['zero POST review', (e) => { e.cost_review.submitted_case_ids = ['fast-t2v-480']; }, /POST|复核/i],
     ['exact price', (e) => { e.pricing[0].cost_yuan_per_second = 0.1; }, /price|价格/i],
     ['exact credits', (e) => { e.pricing[0].credits_per_second = 510; }, /credit|积分|价格/i],
@@ -1590,6 +1620,23 @@ describeRootEvidence('candidate runtime and callout audit', () => {
       );
       fs.writeFileSync(target, source);
       assertFail(runGuard(fixture.candidate, fixture.evidenceRoot), /ToAPIs|split|key|credential/i);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects ToAPIs paid verification that reuses a stale preflight balance as the case billing baseline', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    try {
+      const target = path.join(fixture.candidate, 'backend-node/scripts/verify-toapis-video-models.js');
+      const source = fs.readFileSync(target, 'utf8');
+      const mutated = source.replace(
+        'const balanceBefore = await (deps.fetchBalance || fetchBalance)(client.apiKey, deps.fetchImpl);',
+        'const balanceBefore = context.preflightBalances?.[item.model] || await (deps.fetchBalance || fetchBalance)(client.apiKey, deps.fetchImpl);',
+      );
+      assert.notEqual(mutated, source, 'test mutation must replace the fresh per-case balance capture');
+      fs.writeFileSync(target, mutated);
+      assertFail(runGuard(fixture.candidate, fixture.evidenceRoot), /ToAPIs|balance|billing|preflight|fresh/i);
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }

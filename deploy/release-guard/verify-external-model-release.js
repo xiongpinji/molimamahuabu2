@@ -30,7 +30,7 @@ const FRESHNESS_SURFACES = Object.freeze({
 });
 const TRUSTED_UNCHANGED_TOAPIS_STANDARD_SURFACE_SHA256 = Object.freeze({
   'backend-node/src/services/toapisVideoClient.js': '2d6825dab8cb036bc32069793118ea5656f3dff528dec92df0f467291d555d7b',
-  'backend-node/scripts/verify-toapis-video-models.js': 'dddb66a2fcbee266de96168323065c729b1660a689e2c4187c472e6747a3096e',
+  'backend-node/scripts/verify-toapis-video-models.js': 'eb8bf4259c4f55b4d7d61a1d18b5de1ad261a5b573414f5a8fdade659b0bdd3d',
 });
 const PROVIDERS = Object.freeze({
   toapis: Object.freeze({
@@ -757,6 +757,17 @@ function auditToapisRuntime(candidate, options = {}) {
     'ToAPIs paid case does not submit and poll through its model-bound config');
   requirePattern(caseProcessor.source, /client\.apiKey/,
     'ToAPIs paid case does not measure billing through its model-bound key');
+  if (/\bcontext(?:\?\.|\.)preflightBalances\b|\bpreflightBalances\s*\?\./.test(caseProcessor.source)) {
+    fail('ToAPIs paid case reuses a stale balance preflight instead of a fresh per-case billing baseline');
+  }
+  const freshBalancePattern = /const\s+balanceBefore\s*=\s*await\s*\(\s*deps\.fetchBalance\s*\|\|\s*fetchBalance\s*\)\s*\(\s*client\.apiKey\s*,\s*deps\.fetchImpl\s*\)\s*;/;
+  requirePattern(caseProcessor.source, freshBalancePattern,
+    'ToAPIs paid case does not capture a fresh model-bound balance immediately before submission');
+  const freshBalanceIndex = caseProcessor.source.search(freshBalancePattern);
+  const submissionIndex = caseProcessor.source.search(/\b(?:createTask|callToapisVideoApi)\b/);
+  if (submissionIndex < 0 || freshBalanceIndex > submissionIndex) {
+    fail('ToAPIs paid case captures its billing baseline after the provider submission can start');
+  }
   requirePattern(caseProcessor.source,
     /callToapisVideoApi\s*\)?\s*\([\s\S]{0,350}\{\s*fetchImpl\s*:\s*deps\.fetchImpl\s*,\s*apiKey\s*:\s*client\.apiKey\s*\}/,
     'ToAPIs paid submission does not pass its model-bound request key');
@@ -1167,7 +1178,9 @@ function auditToapisEvidence(evidenceRoot, envelope, now, requireRecent = true) 
   const outputs = new Set();
   const hashes = new Set();
   const publicUrls = new Set();
-  const billingWindows = [];
+  const billingChains = new Map();
+  const fingerprintsByModel = new Map();
+  const modelsByFingerprint = new Map();
   for (const expected of TOAPIS_CASES) {
     const result = byId.get(expected.id);
     if (!result) fail(`ToAPIs case is missing: ${expected.id}`);
@@ -1176,6 +1189,21 @@ function auditToapisEvidence(evidenceRoot, envelope, now, requireRecent = true) 
         || Number(result.requested_duration) !== expected.duration) {
       fail(`ToAPIs case model/resolution/duration binding is invalid: ${expected.id}`);
     }
+    const configFingerprint = String(result.config_fingerprint || '').trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/i.test(configFingerprint)) {
+      fail(`ToAPIs config fingerprint is missing or invalid: ${expected.id}`);
+    }
+    const existingFingerprint = fingerprintsByModel.get(expected.model);
+    if (existingFingerprint && existingFingerprint !== configFingerprint) {
+      fail(`ToAPIs model uses multiple config fingerprints: ${expected.model}`);
+    }
+    const existingModel = modelsByFingerprint.get(configFingerprint);
+    if (existingModel && existingModel !== expected.model) {
+      fail('ToAPIs FAST and MINI config fingerprints must be distinct');
+    }
+    fingerprintsByModel.set(expected.model, configFingerprint);
+    modelsByFingerprint.set(configFingerprint, expected.model);
+    if (!billingChains.has(configFingerprint)) billingChains.set(configFingerprint, []);
     const task = String(result.provider_task_id || '');
     if (!task || tasks.has(task)) fail(`ToAPIs provider task must be unique: ${expected.id}`);
     tasks.add(task);
@@ -1243,18 +1271,23 @@ function auditToapisEvidence(evidenceRoot, envelope, now, requireRecent = true) 
     }
     const reviewedAt = canonicalTimestamp(billing.reviewed_at, `ToAPIs ${expected.id} billing reviewed_at`);
     if (reviewedAt > freshness.generatedAt) fail(`ToAPIs billing review is later than evidence generation: ${expected.id}`);
-    billingWindows.push({ beforeAt, afterAt, before, after, result });
+    billingChains.get(configFingerprint).push({ beforeAt, afterAt, before, after, result });
   }
-  billingWindows.sort((left, right) => left.beforeAt - right.beforeAt);
-  const windows = new Set(billingWindows.map((item) => `${item.beforeAt}|${item.afterAt}`));
-  if (windows.size !== billingWindows.length) fail('ToAPIs billing windows are duplicated');
-  for (let index = 1; index < billingWindows.length; index += 1) {
-    const previous = billingWindows[index - 1];
-    const current = billingWindows[index];
-    if (previous.afterAt > current.beforeAt
-        || !equalNumber(previous.after.used_balance, current.before.used_balance)
-        || !equalNumber(previous.after.used_credits, current.before.used_credits)) {
-      fail('ToAPIs billing chain is not continuous');
+  if (fingerprintsByModel.size !== 2 || modelsByFingerprint.size !== 2) {
+    fail('ToAPIs FAST and MINI config fingerprints must be distinct');
+  }
+  for (const billingWindows of billingChains.values()) {
+    billingWindows.sort((left, right) => left.beforeAt - right.beforeAt);
+    const windows = new Set(billingWindows.map((item) => `${item.beforeAt}|${item.afterAt}`));
+    if (windows.size !== billingWindows.length) fail('ToAPIs billing windows are duplicated inside one config fingerprint');
+    for (let index = 1; index < billingWindows.length; index += 1) {
+      const previous = billingWindows[index - 1];
+      const current = billingWindows[index];
+      if (previous.afterAt > current.beforeAt
+          || !equalNumber(previous.after.used_balance, current.before.used_balance)
+          || !equalNumber(previous.after.used_credits, current.before.used_credits)) {
+        fail('ToAPIs billing chain is not continuous inside one config fingerprint');
+      }
     }
   }
 
