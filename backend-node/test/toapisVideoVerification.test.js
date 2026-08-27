@@ -51,7 +51,7 @@ function createSplitVerificationDatabase(databasePath, overrides = {}) {
     api_protocol: 'toapis_video',
     name: 'ToAPIs Fast',
     base_url: 'https://toapis.xyz',
-    api_key: 'test-fast-key',
+    api_key: overrides.fastApiKey || 'test-fast-key',
     model: ['seedance-2-fast'],
     default_model: 'seedance-2-fast',
   });
@@ -61,7 +61,7 @@ function createSplitVerificationDatabase(databasePath, overrides = {}) {
     api_protocol: 'toapis_video',
     name: 'ToAPIs Mini',
     base_url: 'https://toapis.xyz',
-    api_key: 'test-mini-key',
+    api_key: overrides.miniApiKey || 'test-mini-key',
     model: ['seedance-2-mini'],
     default_model: 'seedance-2-mini',
   });
@@ -391,8 +391,12 @@ describe('ToAPIs real video verification contract', () => {
       '2026-08-07T00:02:03.000Z',
     ];
     const context = {
-      apiKey: 'test-key',
-      config: { base_url: 'https://toapis.com', api_key: 'test-key' },
+      verificationClients: {
+        'seedance-2-fast': {
+          apiKey: 'test-key',
+          config: { base_url: 'https://toapis.xyz', api_key: 'test-key' },
+        },
+      },
       outputDir,
       artifactOutputDir: outputDir,
       publicAssetBaseUrl: 'https://molimama.vip/verification-assets/toapis',
@@ -559,6 +563,140 @@ describe('ToAPIs real video verification contract', () => {
     }
   });
 
+  it('rejects split verification configs that reuse the same provider key', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-shared-key-preflight-'));
+    const databasePath = path.join(directory, 'verification.db');
+    try {
+      const configIds = createSplitVerificationDatabase(databasePath, {
+        fastApiKey: 'shared-provider-key',
+        miniApiKey: 'shared-provider-key',
+      });
+      assert.throws(() => validateVerificationConfigs({
+        databasePath,
+        configIds: {
+          'seedance-2-fast': configIds.fastId,
+          'seedance-2-mini': configIds.miniId,
+        },
+      }), /FAST.*MINI.*Key.*分别|不能共用/);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('preflights both config-bound balances before the first paid POST', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-split-key-balance-'));
+    const databasePath = path.join(directory, 'verification.db');
+    try {
+      const configIds = createSplitVerificationDatabase(databasePath);
+      const balanceKeys = [];
+      let createCalls = 0;
+      await assert.rejects(() => withProcessEnv({
+        TOAPIS_BASE_URL: 'https://toapis.xyz',
+        TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
+        TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
+        TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
+        TOAPIS_VERIFY_DATABASE_PATH: databasePath,
+        TOAPIS_VERIFY_OUTPUT_DIR: path.join(directory, 'private'),
+        TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR: path.join(directory, 'public'),
+        TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL: 'https://molimama.vip/verification-assets/toapis',
+        TOAPIS_VERIFY_CASES: 'fast-t2v-480,mini-t2v-480',
+        TOAPIS_EXPECTED_COST_YUAN_JSON: JSON.stringify({
+          'fast-t2v-480': 1,
+          'mini-t2v-480': 1,
+        }),
+        TOAPIS_VERIFY_AGGREGATE_HARD_CAP_YUAN: '9.20',
+        TOAPIS_API_KEY: 'wrong-global-key',
+      }, () => runVerification({
+        assertFfprobeAvailable() {},
+        async fetchBalance(apiKey) {
+          balanceKeys.push(apiKey);
+          if (apiKey === 'test-fast-key') {
+            return { used_balance: 1, used_credits: 100, credits_per_usd: 200 };
+          }
+          if (apiKey === 'test-mini-key') throw new Error('MINI 余额预检失败');
+          throw new Error('使用了非配置绑定 Key');
+        },
+        async createTask() {
+          createCalls += 1;
+          throw new Error('不应触发 POST');
+        },
+      })), /MINI 余额预检失败/);
+      assert.deepEqual(balanceKeys, ['test-fast-key', 'test-mini-key']);
+      assert.equal(createCalls, 0);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('submits, polls and measures each model with its own config-bound key', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-split-key-routing-'));
+    const databasePath = path.join(directory, 'verification.db');
+    try {
+      const configIds = createSplitVerificationDatabase(databasePath);
+      const balanceKeys = [];
+      const submitKeys = [];
+      const pollKeys = [];
+      await assert.rejects(() => withProcessEnv({
+        TOAPIS_BASE_URL: 'https://toapis.xyz',
+        TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
+        TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
+        TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
+        TOAPIS_VERIFY_DATABASE_PATH: databasePath,
+        TOAPIS_VERIFY_OUTPUT_DIR: path.join(directory, 'private'),
+        TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR: path.join(directory, 'public'),
+        TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL: 'https://molimama.vip/verification-assets/toapis',
+        TOAPIS_VERIFY_CASES: 'fast-t2v-480,mini-t2v-480',
+        TOAPIS_EXPECTED_COST_YUAN_JSON: JSON.stringify({
+          'fast-t2v-480': 1,
+          'mini-t2v-480': 1,
+        }),
+        TOAPIS_VERIFY_AGGREGATE_HARD_CAP_YUAN: '9.20',
+        TOAPIS_USD_CNY_RATE: '7.2',
+        TOAPIS_VERIFY_MAX_POLLS: '1',
+        TOAPIS_VERIFY_POLL_MS: '0',
+        TOAPIS_API_KEY: null,
+      }, () => runVerification({
+        assertFfprobeAvailable() {},
+        async fetchBalance(apiKey) {
+          balanceKeys.push(apiKey);
+          return {
+            used_balance: balanceKeys.filter((value) => value === apiKey).length > 1 ? 1.1 : 1,
+            used_credits: balanceKeys.filter((value) => value === apiKey).length > 1 ? 120 : 100,
+            credits_per_usd: 200,
+          };
+        },
+        async createTask(config, _log, _opts, requestOpts) {
+          submitKeys.push(requestOpts.apiKey);
+          assert.equal(config.api_key, requestOpts.apiKey);
+          return { task_id: `task-${submitKeys.length}` };
+        },
+        async fetchTask(config, _taskId, requestOpts) {
+          pollKeys.push(requestOpts.apiKey);
+          assert.equal(config.api_key, requestOpts.apiKey);
+          if (requestOpts.apiKey === 'test-mini-key') return { state: 'failed', error: 'MINI 任务明确失败' };
+          return { state: 'completed', progress: 100, videoUrl: 'https://assets.example/video.mp4' };
+        },
+        async downloadAndInspect(_url, filePath, item, publicUrl) {
+          const bytes = Buffer.alloc(2048, 1);
+          fs.writeFileSync(filePath, bytes);
+          return {
+            public_url: publicUrl,
+            output_file: path.basename(filePath),
+            bytes: bytes.length,
+            sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+            ffprobe: { width: 864, height: 496, duration_seconds: item.duration, video_codec: 'h264', has_audio: true },
+          };
+        },
+        async sleep() {},
+      })), /MINI 任务明确失败/);
+      assert.deepEqual(submitKeys, ['test-fast-key', 'test-mini-key']);
+      assert.deepEqual(pollKeys, ['test-fast-key', 'test-mini-key']);
+      assert.deepEqual(balanceKeys, ['test-fast-key', 'test-mini-key', 'test-fast-key']);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('stops before POST when the supplier balance snapshot is not numeric', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-invalid-balance-'));
     const databasePath = path.join(directory, 'verification.db');
@@ -677,8 +815,12 @@ describe('ToAPIs real video verification contract', () => {
       await assert.rejects(() => withProcessEnv({
         TOAPIS_EXPECTED_COST_YUAN_JSON: JSON.stringify({ [item.id]: 1 }),
       }, () => processCase(item, {
-        apiKey: 'test-key',
-        config: { base_url: 'https://toapis.xyz', api_key: 'test-key' },
+        verificationClients: {
+          'seedance-2-fast': {
+            apiKey: 'test-key',
+            config: { base_url: 'https://toapis.xyz', api_key: 'test-key' },
+          },
+        },
         outputDir,
         artifactOutputDir: outputDir,
         publicAssetBaseUrl: 'https://molimama.vip/verification-assets/toapis',
@@ -782,7 +924,7 @@ describe('ToAPIs real video verification contract', () => {
         async sleep() {},
       })), /实际人民币总成本.*硬上限/);
       assert.equal(createCalls, 1);
-      assert.equal(balanceCalls, 2);
+      assert.equal(balanceCalls, 3);
       const state = JSON.parse(fs.readFileSync(path.join(outputDir, 'toapis-video-verification-state.json')));
       assert.equal(state.cases['fast-t2v-480'].status, 'cost_cap_exceeded');
       assert.equal(state.cases['fast-t2v-480'].billing.cost_yuan, 2.88);

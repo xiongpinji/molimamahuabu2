@@ -308,7 +308,7 @@ async function readJsonResponse(response) {
 }
 
 async function callToapisVideoApi(config, log, opts = {}, requestOpts = {}) {
-  const apiKey = resolveToapisApiKey(config);
+  const apiKey = String(requestOpts.apiKey || '').trim() || resolveToapisApiKey(config);
   if (!apiKey) return {
     error: 'ToAPIs API Key 未配置',
     route_meta: { phase: 'validation', requestBodySent: false, providerCode: 'AUTH_INVALID', explicitlyRejected: true },
@@ -410,7 +410,7 @@ async function callToapisVideoApi(config, log, opts = {}, requestOpts = {}) {
 }
 
 async function fetchToapisTask(config, taskId, opts = {}) {
-  const apiKey = resolveToapisApiKey(config);
+  const apiKey = String(opts.apiKey || '').trim() || resolveToapisApiKey(config);
   if (!apiKey) return { state: 'failed', error: 'ToAPIs API Key 未配置' };
   const id = String(taskId || '').trim();
   if (!id) return { state: 'failed', error: 'ToAPIs task_id 不能为空' };

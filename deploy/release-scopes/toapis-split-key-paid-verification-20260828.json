@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "release": "toapis-split-key-paid-verification-20260828",
+  "allowedPaths": [
+    "backend-node/scripts/verify-toapis-video-models.js",
+    "backend-node/src/services/toapisVideoClient.js",
+    "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+    "backend-node/test/toapisVideoClient.test.js",
+    "backend-node/test/toapisVideoVerification.test.js",
+    "deploy/release-guard/verify-external-model-release.js",
+    "deploy/release-scopes/toapis-split-key-paid-verification-20260828.json",
+    "deploy/rotate-external-model-release-guard.sh",
+    "docs/verification/platform-stability/toapis-split-key-paid-verification-20260828.md"
+  ]
+}

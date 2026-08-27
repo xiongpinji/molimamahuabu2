@@ -29,8 +29,8 @@ const FRESHNESS_SURFACES = Object.freeze({
   ]),
 });
 const TRUSTED_UNCHANGED_TOAPIS_STANDARD_SURFACE_SHA256 = Object.freeze({
-  'backend-node/src/services/toapisVideoClient.js': '80a84b5f635f24ec15c25902469617107c267863239b799e6fa46ea26737edb8',
-  'backend-node/scripts/verify-toapis-video-models.js': '96be926df751c10f042cc4979cbe829d4d98ec6cb806bff33bbfcded55247b6e',
+  'backend-node/src/services/toapisVideoClient.js': '2d6825dab8cb036bc32069793118ea5656f3dff528dec92df0f467291d555d7b',
+  'backend-node/scripts/verify-toapis-video-models.js': 'dddb66a2fcbee266de96168323065c729b1660a689e2c4187c472e6747a3096e',
 });
 const PROVIDERS = Object.freeze({
   toapis: Object.freeze({
@@ -582,6 +582,16 @@ function auditLingjingRuntime(candidate) {
 
 function auditToapisRuntime(candidate, options = {}) {
   const client = stripComments(candidateSource(candidate, 'backend-node/src/services/toapisVideoClient.js'));
+  const clientScopes = functionScopes(client);
+  const createClient = clientScopes.find((scope) => scope.name === 'callToapisVideoApi');
+  const taskClient = clientScopes.find((scope) => scope.name === 'fetchToapisTask');
+  if (!createClient || !taskClient) fail('ToAPIs request client functions are incomplete');
+  requirePattern(createClient.source,
+    /String\s*\(\s*requestOpts\.apiKey\s*\|\|\s*['"]['"]\s*\)\.trim\s*\(\s*\)\s*\|\|\s*resolveToapisApiKey\s*\(\s*config\s*\)/,
+    'ToAPIs submission client does not prioritize an explicit request key');
+  requirePattern(taskClient.source,
+    /String\s*\(\s*opts\.apiKey\s*\|\|\s*['"]['"]\s*\)\.trim\s*\(\s*\)\s*\|\|\s*resolveToapisApiKey\s*\(\s*config\s*\)/,
+    'ToAPIs polling client does not prioritize an explicit request key');
   const modelTableAt = client.indexOf('TOAPIS_VIDEO_MODELS');
   if (modelTableAt < 0) fail('ToAPIs client model table is missing');
   const table = balancedBlock(client, modelTableAt, 'ToAPIs');
@@ -661,8 +671,13 @@ function auditToapisRuntime(candidate, options = {}) {
   const configIdsReader = verifierScopes.find((scope) => scope.name === 'requireVerificationConfigIds');
   const configValidator = verifierScopes.find((scope) => scope.name === 'validateVerificationConfigs');
   const configFingerprint = verifierScopes.find((scope) => scope.name === 'verificationConfigFingerprint');
+  const clientReader = verifierScopes.find((scope) => scope.name === 'verificationClientForModel');
+  const balancePreflight = verifierScopes.find((scope) => scope.name === 'preflightVerificationBalances');
+  const caseProcessor = verifierScopes.find((scope) => scope.name === 'processCase');
+  const taskPoller = verifierScopes.find((scope) => scope.name === 'waitForTask');
   if (!paidRun || !capabilityBuilder || !recorder || !evidenceBinding || !publisher
-      || !configIdsReader || !configValidator || !configFingerprint) {
+      || !configIdsReader || !configValidator || !configFingerprint
+      || !clientReader || !balancePreflight || !caseProcessor || !taskPoller) {
     fail('ToAPIs paid verification evidence-binding workflow is incomplete');
   }
 
@@ -685,15 +700,28 @@ function auditToapisRuntime(candidate, options = {}) {
 
   const configIdsIndex = paidRun.source.indexOf('requireVerificationConfigIds');
   const configSnapshotsIndex = paidRun.source.indexOf('validateVerificationConfigs');
-  const apiKeyIndex = paidRun.source.indexOf('requireApiKey');
+  const verificationClientsIndex = paidRun.source.indexOf('verificationClients');
+  const balancePreflightIndex = paidRun.source.indexOf('preflightVerificationBalances');
+  const caseLoopIndex = paidRun.source.indexOf('for (const item of selectedCases)');
   requirePattern(paidRun.source, /const\s+configIds\s*=\s*requireVerificationConfigIds\s*\(/,
     'ToAPIs paid verification does not require split target config ids');
   requirePattern(paidRun.source,
     /const\s+configSnapshots\s*=\s*validateVerificationConfigs\s*\(\s*\{\s*configIds\s*\}\s*\)/,
     'ToAPIs paid verification does not validate split target configs before submission');
-  if (configIdsIndex < 0 || configSnapshotsIndex < 0 || apiKeyIndex < 0
-      || configIdsIndex > apiKeyIndex || configSnapshotsIndex > apiKeyIndex) {
-    fail('ToAPIs split target configs must be required and validated before paid verification credentials are used');
+  requirePattern(paidRun.source,
+    /Object\.fromEntries\s*\(\s*configSnapshots\.map\s*\(/,
+    'ToAPIs paid verification does not build model-specific clients from the validated split configs');
+  requirePattern(paidRun.source,
+    /context\.preflightBalances\s*=\s*await\s+preflightVerificationBalances\s*\(/,
+    'ToAPIs paid verification does not preflight every selected model balance before submission');
+  if (configIdsIndex < 0 || configSnapshotsIndex < 0 || verificationClientsIndex < 0
+      || balancePreflightIndex < 0 || caseLoopIndex < 0
+      || configIdsIndex > verificationClientsIndex || configSnapshotsIndex > verificationClientsIndex
+      || verificationClientsIndex > balancePreflightIndex || balancePreflightIndex > caseLoopIndex) {
+    fail('ToAPIs split target configs and balances must be validated before any paid verification case runs');
+  }
+  if (/\brequireApiKey\b|\bTOAPIS_API_KEY\b/.test(verifier)) {
+    fail('ToAPIs paid verification must not fall back to one global provider key');
   }
   requirePattern(paidRun.source,
     /publishVerifiedEvidence\s*\([\s\S]{0,500}\{\s*configIds\s*,\s*configSnapshots\s*,\s*evidencePath\s*\}\s*\)/,
@@ -705,10 +733,39 @@ function auditToapisRuntime(candidate, options = {}) {
     'ToAPIs split target configs are not validated as dedicated model routes');
   requirePattern(configValidator.source, /verificationConfigFingerprint\s*\(/,
     'ToAPIs split target configs are not fingerprinted before paid verification');
+  requirePattern(configValidator.source, /apiKey\s*=\s*String\s*\(\s*config\?*\.api_key/,
+    'ToAPIs split target config credentials are not loaded from their database rows');
+  requirePattern(configValidator.source,
+    /snapshots\s*\[\s*0\s*\]\.apiKey\s*===\s*snapshots\s*\[\s*1\s*\]\.apiKey/,
+    'ToAPIs FAST and MINI paid verification keys are not required to be distinct');
   for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
     requirePattern(configValidator.source, new RegExp(`['"]${model}['"]`),
       `ToAPIs config preflight does not include ${model}`);
   }
+  requirePattern(clientReader.source, /context\?*\.verificationClients\?*\.\[\s*model\s*\]/,
+    'ToAPIs paid verification does not select credentials by logical model');
+  requirePattern(clientReader.source, /client\.config\?*\.api_key\s*!==\s*client\.apiKey/,
+    'ToAPIs paid verification does not bind the selected client config to its model key');
+  for (const [pattern, message] of [
+    [/new\s+Set\s*\(/, 'ToAPIs balance preflight does not cover each selected model exactly once'],
+    [/verificationClientForModel\s*\(/, 'ToAPIs balance preflight does not use model-bound credentials'],
+    [/fetchBalance\s*\)\s*\(\s*client\.apiKey|fetchBalance\s*\(\s*client\.apiKey/, 'ToAPIs balance preflight does not query each model-bound key'],
+  ]) requirePattern(balancePreflight.source, pattern, message);
+  requirePattern(caseProcessor.source, /verificationClientForModel\s*\(\s*context\s*,\s*item\.model\s*\)/,
+    'ToAPIs paid case does not select its model-bound client');
+  requirePattern(caseProcessor.source, /client\.config/,
+    'ToAPIs paid case does not submit and poll through its model-bound config');
+  requirePattern(caseProcessor.source, /client\.apiKey/,
+    'ToAPIs paid case does not measure billing through its model-bound key');
+  requirePattern(caseProcessor.source,
+    /callToapisVideoApi\s*\)?\s*\([\s\S]{0,350}\{\s*fetchImpl\s*:\s*deps\.fetchImpl\s*,\s*apiKey\s*:\s*client\.apiKey\s*\}/,
+    'ToAPIs paid submission does not pass its model-bound request key');
+  requirePattern(caseProcessor.source,
+    /waitForTask\s*\([\s\S]{0,500}\{\s*(?:\.\.\.deps\s*,\s*)?apiKey\s*:\s*client\.apiKey\s*\}/,
+    'ToAPIs paid polling does not select its model-bound request key');
+  requirePattern(taskPoller.source,
+    /fetchToapisTask\s*\)?\s*\([\s\S]{0,300}\{[\s\S]{0,200}apiKey\s*:\s*deps\.apiKey[\s\S]{0,100}\}/,
+    'ToAPIs paid polling does not forward its model-bound request key');
   requirePattern(configFingerprint.source, /createHash\s*\(\s*['"]sha256['"]\s*\)/,
     'ToAPIs config fingerprint is not SHA-256');
   for (const field of [
