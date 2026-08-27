@@ -1163,7 +1163,7 @@ test('supported parser protocols hold credits without an artifact and refund exp
       name: 'ToAPIs',
       provider: 'toapis',
       configProtocol: 'toapis_video',
-      baseUrl: 'https://toapis.com',
+      baseUrl: 'https://toapis.xyz',
       completedCases: ['success', 'succeeded', 'completed', 'done'].map((status) => ({
         name: status,
         payload: { status, result: { data: [] } },

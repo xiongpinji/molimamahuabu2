@@ -15,7 +15,7 @@ const { loadConfig } = require('../src/config');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const aiConfigService = require('../src/services/aiConfigService');
 
-const BASE_URL = 'https://toapis.com';
+const BASE_URL = 'https://toapis.xyz';
 const STATE_VERSION = 'toapis-video-verification-state-v1';
 const EVIDENCE_VERSION = 'toapis-video-real-verification-v1';
 const LOG = { info() {}, warn() {}, error() {} };

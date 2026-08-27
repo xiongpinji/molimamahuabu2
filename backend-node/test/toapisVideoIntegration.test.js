@@ -24,7 +24,7 @@ function configRow(model) {
     service_type: 'video',
     provider: 'toapis',
     api_protocol: 'toapis_video',
-    base_url: 'https://toapis.com',
+    base_url: 'https://toapis.xyz',
     api_key: 'secret-key',
     model: JSON.stringify([model]),
     default_model: model,
@@ -68,7 +68,7 @@ function makeVideoConfig(overrides = {}) {
     service_type: 'video',
     provider: 'toapis',
     api_protocol: '',
-    base_url: 'https://toapis.com/v1',
+    base_url: 'https://toapis.xyz/v1',
     api_key: 'secret-key',
     model: JSON.stringify(['seedance-2-fast', 'seedance-2-mini']),
     default_model: 'seedance-2-mini',
@@ -267,7 +267,7 @@ test('ToAPIs callVideoApi signs protected multimodal references and never degrad
 
   assert.deepEqual(result, { task_id: 'tsk_multi', status: 'queued' });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, 'https://toapis.com/v1/videos/generations');
+  assert.equal(calls[0].url, 'https://toapis.xyz/v1/videos/generations');
   assert.equal(calls[0].init.headers.Authorization, 'Bearer secret-key');
   assert.equal(calls[0].body.generate_audio, false);
   assert.equal(calls[0].body.image_with_roles[0].role, 'reference_image');
@@ -505,7 +505,7 @@ test('ToAPIs pollVideoTask delegates GET polling without raw body or bearer log 
   assert.deepEqual(result, { video_url: 'https://files.example.com/out.mp4' });
   assert.equal(calls.length, 2);
   assert.equal(calls.every((call) => call.init.method === 'GET'), true);
-  assert.equal(calls.every((call) => call.url === 'https://toapis.com/v1/videos/generations/tsk_poll'), true);
+  assert.equal(calls.every((call) => call.url === 'https://toapis.xyz/v1/videos/generations/tsk_poll'), true);
   const logged = JSON.stringify(log.entries);
   assert.doesNotMatch(logged, /Bearer secret-key|secret-key/);
   assert.doesNotMatch(logged, /in_progress|files\.example\.com\/out\.mp4/);
@@ -551,7 +551,7 @@ test('ToAPIs Fast and Mini both preserve two reference images through the shared
 
     assert.deepEqual(submitted, { task_id: `task-${model}`, status: 'queued' });
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, 'https://toapis.com/v1/videos/generations');
+    assert.equal(calls[0].url, 'https://toapis.xyz/v1/videos/generations');
     assert.equal(calls[0].body.image_with_roles.length, 2);
     assert.deepEqual(calls[0].body.image_with_roles.map((item) => item.role), [
       'reference_image',
@@ -632,7 +632,7 @@ test('shared video polling reads the ToAPIs task endpoint', async () => {
     },
   });
 
-  assert.equal(requestedUrl, 'https://toapis.com/v1/videos/generations/task-fast-1');
+  assert.equal(requestedUrl, 'https://toapis.xyz/v1/videos/generations/task-fast-1');
   assert.deepEqual(completed, { video_url: 'https://cdn.example.com/result.mp4' });
 });
 
