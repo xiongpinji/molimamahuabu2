@@ -352,6 +352,60 @@ test('ToAPIs POST 和 GET 供应商错误会统一脱敏，不回显 Key、URL �
   assert.doesNotMatch(queried.error, /secret-key|Bearer|https?:\/\/|signed\.example|request/);
 });
 
+test('ToAPIs 付费验证显式 Key 不受全局环境 Key 覆盖', async () => {
+  const previousKey = process.env.TOAPIS_API_KEY;
+  const authorizations = [];
+  process.env.TOAPIS_API_KEY = 'wrong-global-key';
+  try {
+    const created = await callToapisVideoApi(
+      { base_url: 'https://toapis.xyz', api_key: 'database-fast-key' },
+      null,
+      { model: 'seedance-2-fast', prompt: 'x', resolution: '480p', duration: 4 },
+      {
+        apiKey: 'database-fast-key',
+        fetchImpl: async (_url, options) => {
+          authorizations.push(options.headers.Authorization);
+          return {
+            ok: true,
+            status: 200,
+            async text() { return JSON.stringify({ id: 'task-fast' }); },
+          };
+        },
+      },
+    );
+    assert.equal(created.task_id, 'task-fast');
+
+    const queried = await fetchToapisTask(
+      { base_url: 'https://toapis.xyz', api_key: 'database-mini-key' },
+      'task-mini',
+      {
+        apiKey: 'database-mini-key',
+        fetchImpl: async (_url, options) => {
+          authorizations.push(options.headers.Authorization);
+          return {
+            ok: true,
+            status: 200,
+            async text() {
+              return JSON.stringify({
+                status: 'completed',
+                result: { data: [{ url: 'https://moli.example/out.mp4' }] },
+              });
+            },
+          };
+        },
+      },
+    );
+    assert.equal(queried.state, 'completed');
+    assert.deepEqual(authorizations, [
+      'Bearer database-fast-key',
+      'Bearer database-mini-key',
+    ]);
+  } finally {
+    if (previousKey === undefined) delete process.env.TOAPIS_API_KEY;
+    else process.env.TOAPIS_API_KEY = previousKey;
+  }
+});
+
 test('ToAPIs 供应商错误脱敏覆盖常见 Key 字段格式且保留普通中文消息', async () => {
   const noisyMessage = [
     '供应商拒绝参考图',

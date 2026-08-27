@@ -344,13 +344,6 @@ function buildVerifiedCapabilities(results, evidenceBinding) {
   return output;
 }
 
-function requireApiKey(argv = process.argv, env = process.env) {
-  if (argv.some((value) => /(?:api[-_]?key|token)=/i.test(value))) throw new Error('禁止通过命令行参数传入供应商 Key');
-  const value = String(env.TOAPIS_API_KEY || '').trim();
-  if (!value) throw new Error('缺少 TOAPIS_API_KEY');
-  return value;
-}
-
 function requireDedicatedVerificationToken(env = process.env) {
   if (String(env.TOAPIS_VERIFY_DEDICATED_TOKEN || '').trim() !== '1') {
     throw new Error('真实扣费验证必须使用不被其他业务并发调用的专用验证 Token');
@@ -760,12 +753,18 @@ function validateVerificationConfigs(options = {}) {
   const configIds = options.configIds || requireVerificationConfigIds();
   const db = openVerificationDb(options.databasePath, { readonly: true });
   try {
-    return ['seedance-2-fast', 'seedance-2-mini'].map((model) => {
+    const snapshots = ['seedance-2-fast', 'seedance-2-mini'].map((model) => {
       const configId = configIds[model];
       const config = aiConfigService.getConfig(db, configId);
       assertDedicatedVerificationConfig(config, model);
-      return { model, configId, fingerprint: verificationConfigFingerprint(config) };
+      const apiKey = String(config?.api_key || '').trim();
+      if (!apiKey) throw new Error(`${model} 验证配置缺少供应商 Key`);
+      return { model, configId, fingerprint: verificationConfigFingerprint(config), apiKey };
     });
+    if (snapshots[0].apiKey === snapshots[1].apiKey) {
+      throw new Error('FAST 与 MINI 验证配置的供应商 Key 必须分别配置，不能共用');
+    }
+    return snapshots;
   } finally {
     db.close();
   }
@@ -1012,6 +1011,28 @@ function preflightVerificationRun(selectedCases, context, deps = {}) {
   return { plans, expectedCosts, aggregateHardCapYuan, perCaseHardCaps };
 }
 
+function verificationClientForModel(context, model) {
+  const client = context?.verificationClients?.[model];
+  if (!client || !String(client.apiKey || '').trim()
+      || client.config?.api_key !== client.apiKey
+      || normalizeToapisBaseUrl(client.config?.base_url) !== BASE_URL) {
+    throw new Error(`${model} 缺少数据库配置绑定的独立验证凭据`);
+  }
+  return client;
+}
+
+async function preflightVerificationBalances(context, deps = {}) {
+  const models = [...new Set((context?.costBudget?.plans || [])
+    .filter(({ action }) => ['submit', 'poll', 'finalize'].includes(action))
+    .map(({ item }) => item.model))];
+  const balances = {};
+  for (const model of models) {
+    const client = verificationClientForModel(context, model);
+    balances[model] = await (deps.fetchBalance || fetchBalance)(client.apiKey, deps.fetchImpl);
+  }
+  return balances;
+}
+
 function assertActualCostWithinHardCap(item, context) {
   const budget = context.costBudget;
   if (!budget || !Number.isFinite(budget.aggregateHardCapYuan)) {
@@ -1082,7 +1103,10 @@ async function waitForTask(config, taskId, onProgress, deps = {}) {
   const maxAttempts = Number(process.env.TOAPIS_VERIFY_MAX_POLLS || 180);
   const intervalMs = Number(process.env.TOAPIS_VERIFY_POLL_MS || 10000);
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const status = await (deps.fetchTask || fetchToapisTask)(config, taskId, { fetchImpl: deps.fetchImpl });
+    const status = await (deps.fetchTask || fetchToapisTask)(config, taskId, {
+      fetchImpl: deps.fetchImpl,
+      apiKey: deps.apiKey,
+    });
     await onProgress(status);
     if (status.state === 'completed') return status;
     if (status.state === 'failed') throw new Error(status.error || 'ToAPIs 视频任务失败');
@@ -1106,12 +1130,15 @@ async function processCase(item, context, deps = {}) {
   }
 
   const preparedExpectedCostYuan = requirePreparedCaseBudget(item, context);
+  const client = verificationClientForModel(context, item.model);
   let entry = previous;
   if (action === 'submit') {
     context.submittedCaseIds.push(item.id);
     const clientOptions = buildVerificationOptions(item, context.refs, context.runId);
     const request = buildToapisVideoBody(clientOptions);
-    const balanceBefore = await (deps.fetchBalance || fetchBalance)(context.apiKey, deps.fetchImpl);
+    const balanceBefore = context.preflightBalances?.[item.model]
+      || await (deps.fetchBalance || fetchBalance)(client.apiKey, deps.fetchImpl);
+    if (context.preflightBalances) delete context.preflightBalances[item.model];
     const startedAt = nowDate(deps);
     entry = {
       id: item.id,
@@ -1131,10 +1158,10 @@ async function processCase(item, context, deps = {}) {
     writeJsonAtomic(context.statePath, context.state);
     process.stdout.write(`SUBMIT ${item.id} model=${item.model} resolution=${item.resolution} duration=${item.duration}s expected_cost_yuan=${preparedExpectedCostYuan}\n`);
     const created = await (deps.createTask || callToapisVideoApi)(
-      context.config,
+      client.config,
       LOG,
       clientOptions,
-      { fetchImpl: deps.fetchImpl },
+      { fetchImpl: deps.fetchImpl, apiKey: client.apiKey },
     );
     const acceptedAt = nowDate(deps);
     if (created.indeterminate) {
@@ -1163,12 +1190,12 @@ async function processCase(item, context, deps = {}) {
   if (action === 'finalize') {
     await verifyStoredArtifact(entry, item, context, deps);
   } else {
-    const completed = await waitForTask(context.config, entry.provider_task_id, async (status) => {
+    const completed = await waitForTask(client.config, entry.provider_task_id, async (status) => {
       entry.status = status.state;
       entry.progress = status.progress;
       if (status.error) entry.poll_message = status.error;
       writeJsonAtomic(context.statePath, context.state);
-    }, deps);
+    }, { ...deps, apiKey: client.apiKey });
     const fileName = `${item.id}-${entry.provider_task_id}.mp4`.replace(/[^a-zA-Z0-9._-]+/g, '-');
     const publicUrl = casePublicUrl(context.publicAssetBaseUrl, fileName);
     entry.artifact = await (deps.downloadAndInspect || downloadAndInspect)(
@@ -1179,7 +1206,7 @@ async function processCase(item, context, deps = {}) {
       deps,
     );
   }
-  const balanceAfter = await (deps.fetchBalance || fetchBalance)(context.apiKey, deps.fetchImpl);
+  const balanceAfter = await (deps.fetchBalance || fetchBalance)(client.apiKey, deps.fetchImpl);
   const delta = calculateBalanceDelta(entry.billing.before, balanceAfter);
   const usdCnyRate = Number(process.env.TOAPIS_USD_CNY_RATE || 0);
   if (!Number.isFinite(usdCnyRate) || usdCnyRate <= 0) throw new Error('缺少 TOAPIS_USD_CNY_RATE，无法记录人民币实际成本');
@@ -1226,7 +1253,10 @@ async function runVerification(deps = {}) {
   const releaseLock = acquireVerificationLock(lockPath);
   try {
   const configSnapshots = validateVerificationConfigs({ configIds });
-  const apiKey = requireApiKey();
+  const verificationClients = Object.fromEntries(configSnapshots.map(({ model, apiKey }) => [model, {
+    apiKey,
+    config: { base_url: BASE_URL, api_key: apiKey },
+  }]));
   await fs.promises.mkdir(publicArtifactDir, { recursive: true });
   const state = readJson(statePath, { state_version: STATE_VERSION, cases: {} });
   if (state.state_version !== STATE_VERSION || !state.cases || typeof state.cases !== 'object') {
@@ -1235,8 +1265,7 @@ async function runVerification(deps = {}) {
   const configFingerprints = bindAndValidateVerificationState(state, configSnapshots);
   const selectedCases = selectVerificationCases();
   const context = {
-    apiKey,
-    config: { base_url: BASE_URL, api_key: apiKey },
+    verificationClients,
     outputDir,
     artifactOutputDir: publicArtifactDir,
     publicAssetBaseUrl,
@@ -1254,6 +1283,7 @@ async function runVerification(deps = {}) {
   let activeCase = null;
   try {
     context.costBudget = preflightVerificationRun(selectedCases, context, deps);
+    context.preflightBalances = await preflightVerificationBalances(context, deps);
     writeJsonAtomic(statePath, state);
     for (const item of selectedCases) {
       activeCase = item.id;

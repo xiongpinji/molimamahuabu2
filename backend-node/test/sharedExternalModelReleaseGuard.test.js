@@ -130,8 +130,8 @@ function trustedToapisStandardSurfaceGuard(fixture) {
   const clientHash = sha256(fs.readFileSync(path.join(fixture.candidate, 'backend-node/src/services/toapisVideoClient.js'), 'utf8').replace(/\r\n?/g, '\n'));
   const producerHash = sha256(fs.readFileSync(path.join(fixture.candidate, 'backend-node/scripts/verify-toapis-video-models.js'), 'utf8').replace(/\r\n?/g, '\n'));
   const source = fs.readFileSync(GUARD, 'utf8')
-    .replace('80a84b5f635f24ec15c25902469617107c267863239b799e6fa46ea26737edb8', clientHash)
-    .replace('96be926df751c10f042cc4979cbe829d4d98ec6cb806bff33bbfcded55247b6e', producerHash);
+    .replace('2d6825dab8cb036bc32069793118ea5656f3dff528dec92df0f467291d555d7b', clientHash)
+    .replace('dddb66a2fcbee266de96168323065c729b1660a689e2c4187c472e6747a3096e', producerHash);
   fs.writeFileSync(guard, source);
   return guard;
 }
@@ -183,6 +183,17 @@ function protectedRuntimeSources(candidate) {
       const video_with_roles = (checked.reference_video_urls || []).map((url) => ({ url, role: 'reference_video' }));
       const audio_with_roles = (checked.reference_audio_urls || []).map((url) => ({ url, role: 'reference_audio' }));
       return { image_with_roles, video_with_roles, audio_with_roles };
+    }
+    function resolveToapisApiKey(config = {}, env = process.env) {
+      return String(env.TOAPIS_API_KEY || config.api_key || '').trim();
+    }
+    async function callToapisVideoApi(config, log, opts = {}, requestOpts = {}) {
+      const apiKey = String(requestOpts.apiKey || '').trim() || resolveToapisApiKey(config);
+      return { apiKey };
+    }
+    async function fetchToapisTask(config, taskId, opts = {}) {
+      const apiKey = String(opts.apiKey || '').trim() || resolveToapisApiKey(config);
+      return { apiKey, taskId };
     }
   `);
   write(candidate, 'backend-node/src/services/videoClient.js', `
@@ -260,14 +271,32 @@ function protectedRuntimeSources(candidate) {
       const configIds = options.configIds || requireVerificationConfigIds();
       const db = openVerificationDb(options.databasePath, { readonly: true });
       try {
-        return ['seedance-2-fast', 'seedance-2-mini'].map((model) => {
+        const snapshots = ['seedance-2-fast', 'seedance-2-mini'].map((model) => {
           const configId = configIds[model];
           const config = aiConfigService.getConfig(db, configId);
           assertDedicatedVerificationConfig(config, model);
-          return { model, configId, fingerprint: verificationConfigFingerprint(config) };
+          const apiKey = String(config?.api_key || '').trim();
+          if (!apiKey) throw new Error('missing provider key');
+          return { model, configId, fingerprint: verificationConfigFingerprint(config), apiKey };
         });
+        if (snapshots[0].apiKey === snapshots[1].apiKey) throw new Error('duplicate provider keys');
+        return snapshots;
       } finally {
         db.close();
+      }
+    }
+    function verificationClientForModel(context, model) {
+      const client = context?.verificationClients?.[model];
+      if (!client || client.config?.api_key !== client.apiKey) throw new Error('missing model client');
+      return client;
+    }
+    async function preflightVerificationBalances(context, deps = {}) {
+      const models = [...new Set(context.costBudget.plans
+        .filter(({ action }) => ['submit', 'poll', 'finalize'].includes(action))
+        .map(({ item }) => item.model))];
+      for (const model of models) {
+        const client = verificationClientForModel(context, model);
+        await (deps.fetchBalance || fetchBalance)(client.apiKey);
       }
     }
     function evidenceBindingForFile(bytes) {
@@ -339,11 +368,24 @@ function protectedRuntimeSources(candidate) {
         throw preserveExistingVerification(error);
       }
     }
+    async function processCase(item, context, deps = {}) {
+      const client = verificationClientForModel(context, item.model);
+      await fetchBalance(client.apiKey);
+      await (deps.createTask || callToapisVideoApi)(client.config, null, {}, { fetchImpl: deps.fetchImpl, apiKey: client.apiKey });
+      return waitForTask(client.config, item.taskId, () => {}, { apiKey: client.apiKey });
+    }
+    async function waitForTask(config, taskId, onProgress, deps = {}) {
+      return fetchToapisTask(config, taskId, { apiKey: deps.apiKey });
+    }
     async function runVerification() {
       const configIds = requireVerificationConfigIds();
       const configSnapshots = validateVerificationConfigs({ configIds });
-      const apiKey = requireApiKey();
-      const result = await processCase(apiKey);
+      const verificationClients = Object.fromEntries(configSnapshots.map(({ model, apiKey }) => [model, { apiKey, config: { base_url: BASE_URL, api_key: apiKey } }]));
+      const selectedCases = [{ model: 'seedance-2-fast' }, { model: 'seedance-2-mini' }];
+      const context = { verificationClients, costBudget: { plans: selectedCases.map((item) => ({ item, action: 'submit' })) } };
+      context.preflightBalances = await preflightVerificationBalances(context);
+      const result = [];
+      for (const item of selectedCases) result.push(await processCase(item, context));
       try {
         publishVerifiedEvidence(result, pricing, evidence, { configIds, configSnapshots, evidencePath });
       } catch (error) {
@@ -1538,6 +1580,21 @@ describeRootEvidence('candidate runtime and callout audit', () => {
     }
   });
 
+  it('rejects ToAPIs paid verification that replaces split config keys with one global key', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    try {
+      const target = path.join(fixture.candidate, 'backend-node/scripts/verify-toapis-video-models.js');
+      const source = fs.readFileSync(target, 'utf8').replace(
+        'const verificationClients = Object.fromEntries(configSnapshots.map(({ model, apiKey }) => [model, { apiKey, config: { base_url: BASE_URL, api_key: apiKey } }]));',
+        'const apiKey = requireApiKey(); const verificationClients = { fast: apiKey, mini: apiKey };',
+      );
+      fs.writeFileSync(target, source);
+      assertFail(runGuard(fixture.candidate, fixture.evidenceRoot), /ToAPIs|split|key|credential/i);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   for (const [name, relative, mutate] of [
     ['verification without a mandatory FAST config id', 'backend-node/scripts/verify-toapis-video-models.js',
       (source) => source.replace('Number(env.TOAPIS_VERIFY_FAST_CONFIG_ID)', '16')],
@@ -1545,15 +1602,27 @@ describeRootEvidence('candidate runtime and callout audit', () => {
       (source) => source.replace('Number(env.TOAPIS_VERIFY_MINI_CONFIG_ID)', '27')],
     ['verification with duplicate FAST/MINI config ids', 'backend-node/scripts/verify-toapis-video-models.js',
       (source) => source.replace('Number(env.TOAPIS_VERIFY_MINI_CONFIG_ID)', 'Number(env.TOAPIS_VERIFY_FAST_CONFIG_ID)')],
-    ['verification loading credentials before split configs are validated', 'backend-node/scripts/verify-toapis-video-models.js',
+    ['verification building model clients before split configs are validated', 'backend-node/scripts/verify-toapis-video-models.js',
       (source) => source.replace(
-        'const configSnapshots = validateVerificationConfigs({ configIds });\n      const apiKey = requireApiKey();',
-        'const apiKey = requireApiKey();\n      const configSnapshots = validateVerificationConfigs({ configIds });',
+        'const configSnapshots = validateVerificationConfigs({ configIds });\n      const verificationClients = Object.fromEntries(configSnapshots.map(({ model, apiKey }) => [model, { apiKey, config: { base_url: BASE_URL, api_key: apiKey } }]));',
+        'const verificationClients = {};\n      const configSnapshots = validateVerificationConfigs({ configIds });',
       )],
+    ['verification allowing FAST and MINI to share one provider key', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace("        if (snapshots[0].apiKey === snapshots[1].apiKey) throw new Error('duplicate provider keys');\n", '')],
+    ['verification without all-model balance preflight', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace('      context.preflightBalances = await preflightVerificationBalances(context);\n', '')],
     ['verification without split config snapshots', 'backend-node/scripts/verify-toapis-video-models.js',
       (source) => source.replace('const configSnapshots = validateVerificationConfigs({ configIds });', 'const configSnapshots = [];')],
     ['verification without config fingerprint drift protection', 'backend-node/scripts/verify-toapis-video-models.js',
       (source) => source.replace("\n                || snapshot.fingerprint !== verificationConfigFingerprint(config)", '')],
+    ['verification submission without its model-bound request key', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace('{ fetchImpl: deps.fetchImpl, apiKey: client.apiKey }', '{ fetchImpl: deps.fetchImpl }')],
+    ['verification polling without its model-bound request key', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace('{ apiKey: deps.apiKey }', '{}')],
+    ['client submission that lets the global key override an explicit request key', 'backend-node/src/services/toapisVideoClient.js',
+      (source) => source.replace("String(requestOpts.apiKey || '').trim() || resolveToapisApiKey(config)", 'resolveToapisApiKey(config)')],
+    ['client polling that lets the global key override an explicit request key', 'backend-node/src/services/toapisVideoClient.js',
+      (source) => source.replace("String(opts.apiKey || '').trim() || resolveToapisApiKey(config)", 'resolveToapisApiKey(config)')],
     ['verification fingerprint without the bound api key', 'backend-node/scripts/verify-toapis-video-models.js',
       (source) => source.replace('        api_key: config.api_key,\n', '')],
     ['verification publication without split config ids', 'backend-node/scripts/verify-toapis-video-models.js',
