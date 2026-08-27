@@ -30,7 +30,7 @@ const FRESHNESS_SURFACES = Object.freeze({
 });
 const TRUSTED_UNCHANGED_TOAPIS_STANDARD_SURFACE_SHA256 = Object.freeze({
   'backend-node/src/services/toapisVideoClient.js': '80a84b5f635f24ec15c25902469617107c267863239b799e6fa46ea26737edb8',
-  'backend-node/scripts/verify-toapis-video-models.js': '5576401b5d0fd500603a4612b3a0c73cf524507147488eb04705aa59e23289cc',
+  'backend-node/scripts/verify-toapis-video-models.js': '96be926df751c10f042cc4979cbe829d4d98ec6cb806bff33bbfcded55247b6e',
 });
 const PROVIDERS = Object.freeze({
   toapis: Object.freeze({
