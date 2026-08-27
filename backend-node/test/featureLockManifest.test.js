@@ -22,6 +22,7 @@ const {
 const PROACTIVE_CANARY_FEATURE_ID = 'stability.proactive-canary-and-public-evidence';
 const ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID = 'stability.admin-provider-observability';
 const COMPLETE_ACCEPTANCE_FRAMEWORK_ID = 'stability.platform-complete-acceptance-framework';
+const REDRAW_COVERAGE_REGISTRATION_FEATURE_ID = 'redraw.coverage-registration-service';
 const UNKNOWN_STATE_RECONCILIATION_FEATURE_ID = 'stability.unknown-state-billing-reconciliation';
 const PROVIDER_ROUTE_CONTRACT_FEATURE_ID = 'stability.provider-route-contract';
 const SAFE_PROVIDER_FAILOVER_FEATURE_ID = 'stability.safe-provider-failover';
@@ -381,6 +382,15 @@ const REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC =
   'docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md';
 const REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN =
   'docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md';
+const REDRAW_COVERAGE_REGISTRATION_PROTECTED_PATHS = [
+  'backend-node/migrations/68_redraw_coverage_registrations.sql',
+  'backend-node/src/services/redrawCoverageRegistrationService.js',
+];
+const REDRAW_COVERAGE_REGISTRATION_REQUIRED_TESTS = [
+  'backend-node/test/redrawCoverageRegistration.test.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+];
 const REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK = {
   reason: '2026-08-27 一键转绘产品媒体登记 Task A 免费模型计费语义获批',
   approvedBy: 'product-owner 2026-08-27 redraw-product-media-registration-task-a',
@@ -925,6 +935,19 @@ test('产品媒体登记 Task A 使用新鲜批准并保留 PR #194、PR #197 �
   for (const testPath of PROVIDER_READINESS_TTS_REQUIRED_TESTS) {
     assert.ok(feature.requiredTests.includes(testPath), `TTS 功能锁缺少影响测试: ${testPath}`);
   }
+});
+
+test('Coverage 产品登记服务 Task B 使用独立功能锁覆盖服务和迁移', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const feature = manifest.features.find(({ featureId }) => featureId === REDRAW_COVERAGE_REGISTRATION_FEATURE_ID);
+  assert.ok(feature, `缺少功能锁 ${REDRAW_COVERAGE_REGISTRATION_FEATURE_ID}`);
+  assert.deepEqual(feature.protectedPaths, REDRAW_COVERAGE_REGISTRATION_PROTECTED_PATHS);
+  assert.deepEqual(feature.requiredTests, REDRAW_COVERAGE_REGISTRATION_REQUIRED_TESTS);
+  assert.deepEqual(feature.evidence, [
+    REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC,
+    REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN,
+  ]);
+  assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
 });
 
 test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜批准并保留完整历史', () => {

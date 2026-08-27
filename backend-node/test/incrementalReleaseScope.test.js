@@ -60,6 +60,12 @@ const canvasTextCapabilityHotfixManifestPath = path.join(
   'release-scopes',
   'canvas-text-capability-hotfix-20260824.json',
 );
+const redrawCoverageRegistrationManifestPath = path.join(
+  repoRoot,
+  'deploy',
+  'release-scopes',
+  'redraw-coverage-registration-task-b-20260827.json',
+);
 const CANVAS_TEXT_CAPABILITY_HOTFIX_ALLOWED_PATHS = [
   'backend-node/src/services/providerCanaryEvidenceService.js',
   'backend-node/test/featureLockManifest.test.js',
@@ -280,6 +286,17 @@ const VIDEO_AUDIO_CREDIT_ALLOWED_PATHS = [
   'frontweb/test/standaloneCanvasFreeNodeGeneration.test.js',
   'frontweb/test/toapisVideoCanvasContract.test.js',
 ];
+const REDRAW_COVERAGE_REGISTRATION_ALLOWED_PATHS = [
+  'backend-node/migrations/68_redraw_coverage_registrations.sql',
+  'backend-node/src/services/redrawCoverageRegistrationService.js',
+  'backend-node/test/redrawCoverageRegistration.test.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'deploy/release-scopes/redraw-coverage-registration-task-b-20260827.json',
+  'docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md',
+  'docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md',
+  'docs/verification/platform-stability/feature-lock-manifest.json',
+];
 
 function assertExactProactiveCanaryScope(allowedPaths) {
   assert.deepEqual(allowedPaths, PROACTIVE_CANARY_ALLOWED_PATHS);
@@ -307,6 +324,10 @@ function assertExactProviderTaskReceiptScope(allowedPaths) {
 
 function assertExactCanvasTextCapabilityHotfixScope(allowedPaths) {
   assert.deepEqual(allowedPaths, CANVAS_TEXT_CAPABILITY_HOTFIX_ALLOWED_PATHS);
+}
+
+function assertExactRedrawCoverageRegistrationScope(allowedPaths) {
+  assert.deepEqual(allowedPaths, REDRAW_COVERAGE_REGISTRATION_ALLOWED_PATHS);
 }
 
 function createFixture() {
@@ -471,6 +492,42 @@ test('画布文本能力兼容修复发布范围拒绝同数量偷换任一文�
   assert.equal(swapped.length, CANVAS_TEXT_CAPABILITY_HOTFIX_ALLOWED_PATHS.length);
   assert.throws(
     () => assertExactCanvasTextCapabilityHotfixScope(swapped),
+    { name: 'AssertionError' },
+  );
+});
+
+test('Coverage 产品登记 Task B 发布范围是精确 9 文件白名单', () => {
+  const { manifest, allowedPaths } = loadManifest(redrawCoverageRegistrationManifestPath);
+  assert.equal(manifest.release, 'redraw-coverage-registration-task-b-20260827');
+  assertExactRedrawCoverageRegistrationScope(allowedPaths);
+  assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
+
+  for (const forbidden of [
+    'backend-node/data',
+    'backend-node/uploads',
+    'storage',
+    'assets',
+    'ai-music',
+    'moli-music',
+    'backend-node/src/routes/redraw.js',
+    'deploy/install-protected-release-guard.sh',
+    'shared/release-guard',
+  ]) {
+    assert.equal(
+      allowedPaths.some((entry) => entry === forbidden || entry.startsWith(`${forbidden}/`)),
+      false,
+      `发布范围不得包含: ${forbidden}`,
+    );
+  }
+});
+
+test('Coverage 产品登记 Task B 发布范围拒绝同数量偷换任一文件', () => {
+  const swapped = [...REDRAW_COVERAGE_REGISTRATION_ALLOWED_PATHS];
+  const index = swapped.indexOf('backend-node/src/services/redrawCoverageRegistrationService.js');
+  swapped[index] = 'backend-node/src/routes/redraw.js';
+  assert.equal(swapped.length, REDRAW_COVERAGE_REGISTRATION_ALLOWED_PATHS.length);
+  assert.throws(
+    () => assertExactRedrawCoverageRegistrationScope(swapped),
     { name: 'AssertionError' },
   );
 });

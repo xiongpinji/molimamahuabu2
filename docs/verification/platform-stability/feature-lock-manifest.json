@@ -1212,6 +1212,40 @@
       }
     },
     {
+      "featureId": "redraw.coverage-registration-service",
+      "module": "shared",
+      "status": "locked_pass",
+      "acceptance": [
+        "coverage provider 只能写入服务端单次暂存目录并返回 reviewed manifest 相对路径",
+        "登记服务验证 owner、版本 CAS、facts/source/duration/shot timeline 和证据文件安全后才创建资产",
+        "同 owner/version/idempotency key 先认领 processing，完成重放、不同请求冲突、处理中和未知状态不重提 provider",
+        "登记结果生成 loader 兼容的 pending scene redraw asset，审核后默认 loadReviewedReferenceCoverage 可读取"
+      ],
+      "protectedPaths": [
+        "backend-node/migrations/68_redraw_coverage_registrations.sql",
+        "backend-node/src/services/redrawCoverageRegistrationService.js"
+      ],
+      "requiredTests": [
+        "backend-node/test/redrawCoverageRegistration.test.js",
+        "backend-node/test/featureLockManifest.test.js",
+        "backend-node/test/incrementalReleaseScope.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md",
+        "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md"
+      ],
+      "fixCommit": null,
+      "unlockHistory": [],
+      "unlock": {
+        "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
+        "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
+        "impactTests": [
+          "backend-node/test/platformFeatureAcceptance.test.js",
+          "backend-node/test/featureLockManifest.test.js"
+        ]
+      }
+    },
+    {
       "featureId": "stability.platform-complete-acceptance-framework",
       "module": "shared",
       "status": "locked_pass",
