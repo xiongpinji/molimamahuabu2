@@ -30,7 +30,7 @@ const FRESHNESS_SURFACES = Object.freeze({
 });
 const TRUSTED_UNCHANGED_TOAPIS_STANDARD_SURFACE_SHA256 = Object.freeze({
   'backend-node/src/services/toapisVideoClient.js': '80a84b5f635f24ec15c25902469617107c267863239b799e6fa46ea26737edb8',
-  'backend-node/scripts/verify-toapis-video-models.js': '2984834287d7d098d8bfd7fc1e1d62d1a8db90cd06e75d255d940e6ab368bda1',
+  'backend-node/scripts/verify-toapis-video-models.js': '5576401b5d0fd500603a4612b3a0c73cf524507147488eb04705aa59e23289cc',
 });
 const PROVIDERS = Object.freeze({
   toapis: Object.freeze({
@@ -658,16 +658,67 @@ function auditToapisRuntime(candidate, options = {}) {
   const recorder = verifierScopes.find((scope) => scope.name === 'recordVerificationResult');
   const evidenceBinding = verifierScopes.find((scope) => scope.name === 'evidenceBindingForFile');
   const publisher = verifierScopes.find((scope) => scope.name === 'publishVerifiedEvidence');
-  if (!paidRun || !capabilityBuilder || !recorder || !evidenceBinding || !publisher) {
+  const configIdsReader = verifierScopes.find((scope) => scope.name === 'requireVerificationConfigIds');
+  const configValidator = verifierScopes.find((scope) => scope.name === 'validateVerificationConfigs');
+  const configFingerprint = verifierScopes.find((scope) => scope.name === 'verificationConfigFingerprint');
+  if (!paidRun || !capabilityBuilder || !recorder || !evidenceBinding || !publisher
+      || !configIdsReader || !configValidator || !configFingerprint) {
     fail('ToAPIs paid verification evidence-binding workflow is incomplete');
   }
-  requirePattern(paidRun.source, /const\s+configId\s*=\s*requireVerificationConfigId\s*\(/,
-    'ToAPIs paid verification does not require a target config id');
-  if (paidRun.source.indexOf('requireVerificationConfigId') > paidRun.source.indexOf('requireApiKey')) {
-    fail('ToAPIs target config id must be required before paid verification credentials are used');
+
+  for (const [token, label] of [
+    ['TOAPIS_VERIFY_FAST_CONFIG_ID', 'FAST'],
+    ['TOAPIS_VERIFY_MINI_CONFIG_ID', 'MINI'],
+  ]) {
+    requirePattern(configIdsReader.source, new RegExp(`\\b${token}\\b`),
+      `ToAPIs paid verification does not require the ${label} target config id`);
   }
-  requirePattern(paidRun.source, /publishVerifiedEvidence\s*\([^)]*\{\s*configId\s*,\s*evidencePath\s*\}\s*\)/,
-    'ToAPIs paid verification does not write the final evidence binding to its target config');
+  for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
+    const escapedModel = model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    requirePattern(configIdsReader.source,
+      new RegExp(`Number\\.isInteger\\s*\\(\\s*configIds\\s*\\[\\s*['"]${escapedModel}['"]\\s*\\]\\s*\\)`),
+      `ToAPIs paid verification does not validate the ${model} target config id`);
+  }
+  requirePattern(configIdsReader.source,
+    /configIds\s*\[\s*['"]seedance-2-fast['"]\s*\]\s*===\s*configIds\s*\[\s*['"]seedance-2-mini['"]\s*\]/,
+    'ToAPIs FAST and MINI paid verification config ids are not required to be distinct');
+
+  const configIdsIndex = paidRun.source.indexOf('requireVerificationConfigIds');
+  const configSnapshotsIndex = paidRun.source.indexOf('validateVerificationConfigs');
+  const apiKeyIndex = paidRun.source.indexOf('requireApiKey');
+  requirePattern(paidRun.source, /const\s+configIds\s*=\s*requireVerificationConfigIds\s*\(/,
+    'ToAPIs paid verification does not require split target config ids');
+  requirePattern(paidRun.source,
+    /const\s+configSnapshots\s*=\s*validateVerificationConfigs\s*\(\s*\{\s*configIds\s*\}\s*\)/,
+    'ToAPIs paid verification does not validate split target configs before submission');
+  if (configIdsIndex < 0 || configSnapshotsIndex < 0 || apiKeyIndex < 0
+      || configIdsIndex > apiKeyIndex || configSnapshotsIndex > apiKeyIndex) {
+    fail('ToAPIs split target configs must be required and validated before paid verification credentials are used');
+  }
+  requirePattern(paidRun.source,
+    /publishVerifiedEvidence\s*\([\s\S]{0,500}\{\s*configIds\s*,\s*configSnapshots\s*,\s*evidencePath\s*\}\s*\)/,
+    'ToAPIs paid verification does not bind final evidence to both target config snapshots');
+
+  requirePattern(configValidator.source, /openVerificationDb\s*\([\s\S]{0,160}\{\s*readonly\s*:\s*true\s*\}/,
+    'ToAPIs split target configs are not validated through a read-only preflight');
+  requirePattern(configValidator.source, /assertDedicatedVerificationConfig\s*\(/,
+    'ToAPIs split target configs are not validated as dedicated model routes');
+  requirePattern(configValidator.source, /verificationConfigFingerprint\s*\(/,
+    'ToAPIs split target configs are not fingerprinted before paid verification');
+  for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
+    requirePattern(configValidator.source, new RegExp(`['"]${model}['"]`),
+      `ToAPIs config preflight does not include ${model}`);
+  }
+  requirePattern(configFingerprint.source, /createHash\s*\(\s*['"]sha256['"]\s*\)/,
+    'ToAPIs config fingerprint is not SHA-256');
+  for (const field of [
+    'id', 'service_type', 'provider', 'api_protocol', 'base_url', 'api_key', 'model', 'default_model',
+    'logical_model_id', 'endpoint', 'query_endpoint', 'settings', 'is_active', 'canary_paused', 'failover_enabled',
+  ]) {
+    requirePattern(configFingerprint.source, new RegExp(`\\b${field}\\s*:`),
+      `ToAPIs config fingerprint does not bind ${field}`);
+  }
+
   requirePattern(publisher.source, /hasCompleteRequiredMatrix\s*\(/,
     'ToAPIs final evidence can be published before all real cases are reviewed');
   requirePattern(publisher.source, /hasCompletePricing\s*\(/,
@@ -680,8 +731,17 @@ function auditToapisRuntime(candidate, options = {}) {
   }
   requirePattern(publisher.source, /restoreEvidenceFile\s*\(/,
     'ToAPIs final evidence is not restored when DB binding writeback fails');
-  requirePattern(paidRun.source, /if\s*\(\s*!error\.preserveExistingVerification\s*\)[\s\S]{0,180}recordVerificationResult\s*\(/,
-    'ToAPIs workflow failures can still invalidate an existing trusted verification');
+  const recorderCallIndex = publisher.source.indexOf('return recorder');
+  if (recorderCallIndex < 0) fail('ToAPIs final publisher does not call the split config recorder');
+  const recorderCallSource = publisher.source.slice(recorderCallIndex, recorderCallIndex + 700);
+  for (const [pattern, message] of [
+    [/configIds\s*:\s*options\.configIds/, 'ToAPIs final publisher does not forward both target config ids'],
+    [/configSnapshots\s*:\s*options\.configSnapshots/, 'ToAPIs final publisher does not forward both target config snapshots'],
+    [/evidencePath(?:\s*:\s*evidencePath)?\s*[,}]/, 'ToAPIs final publisher does not forward the final evidence path'],
+  ]) requirePattern(recorderCallSource, pattern, message);
+  if (/\brecordVerificationResult\s*\(/.test(paidRun.source)) {
+    fail('ToAPIs workflow failures can still invalidate an existing trusted verification');
+  }
   requirePattern(evidenceBinding.source, /createHash\s*\(\s*['"]sha256['"]\s*\)/,
     'ToAPIs evidence binding does not hash the final evidence bytes');
   requirePattern(capabilityBuilder.source, /normalizeEvidenceBinding\s*\(/,
@@ -690,6 +750,17 @@ function auditToapisRuntime(candidate, options = {}) {
     'ToAPIs verified capabilities do not persist the final evidence binding');
   requirePattern(recorder.source, /db\.transaction\s*\(/,
     'ToAPIs config evidence binding is not written transactionally');
+  requirePattern(recorder.source, /\.immediate\s*\(\s*\)/,
+    'ToAPIs split config evidence binding is not committed in one immediate transaction');
+  requirePattern(recorder.source, /configSnapshots\s*=\s*new\s+Map\s*\(/,
+    'ToAPIs config evidence binding does not require both preflight snapshots');
+  requirePattern(recorder.source, /configSnapshots\.size\s*!==\s*2/,
+    'ToAPIs config evidence binding does not require exactly two preflight snapshots');
+  requirePattern(recorder.source,
+    /snapshot(?:\?\.|\.)fingerprint\s*!==\s*verificationConfigFingerprint\s*\(\s*config\s*\)/,
+    'ToAPIs config evidence binding does not reject config drift after paid verification');
+  requirePattern(recorder.source, /capabilities\s*:\s*\{\s*\[\s*model\s*\]\s*:\s*capabilities\s*\[\s*model\s*\]\s*\}/,
+    'ToAPIs config evidence binding does not isolate each model capability to its dedicated config');
   for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
     requirePattern(recorder.source, new RegExp(`['"]${model}['"]`),
       `ToAPIs config writeback does not verify ${model}`);

@@ -131,7 +131,7 @@ function trustedToapisStandardSurfaceGuard(fixture) {
   const producerHash = sha256(fs.readFileSync(path.join(fixture.candidate, 'backend-node/scripts/verify-toapis-video-models.js'), 'utf8').replace(/\r\n?/g, '\n'));
   const source = fs.readFileSync(GUARD, 'utf8')
     .replace('80a84b5f635f24ec15c25902469617107c267863239b799e6fa46ea26737edb8', clientHash)
-    .replace('2984834287d7d098d8bfd7fc1e1d62d1a8db90cd06e75d255d940e6ab368bda1', producerHash);
+    .replace('5576401b5d0fd500603a4612b3a0c73cf524507147488eb04705aa59e23289cc', producerHash);
   fs.writeFileSync(guard, source);
   return guard;
 }
@@ -227,7 +227,49 @@ function protectedRuntimeSources(candidate) {
     }
   `);
   write(candidate, 'backend-node/scripts/verify-toapis-video-models.js', `
-    function requireVerificationConfigId() { return 16; }
+    function requireVerificationConfigIds(env = process.env) {
+      const configIds = {
+        'seedance-2-fast': Number(env.TOAPIS_VERIFY_FAST_CONFIG_ID),
+        'seedance-2-mini': Number(env.TOAPIS_VERIFY_MINI_CONFIG_ID),
+      };
+      if (!Number.isInteger(configIds['seedance-2-fast']) || configIds['seedance-2-fast'] <= 0) throw new Error('missing fast config');
+      if (!Number.isInteger(configIds['seedance-2-mini']) || configIds['seedance-2-mini'] <= 0) throw new Error('missing mini config');
+      if (configIds['seedance-2-fast'] === configIds['seedance-2-mini']) throw new Error('duplicate configs');
+      return configIds;
+    }
+    function verificationConfigFingerprint(config) {
+      return crypto.createHash('sha256').update(JSON.stringify({
+        id: Number(config.id),
+        service_type: config.service_type,
+        provider: config.provider,
+        api_protocol: config.api_protocol,
+        base_url: config.base_url,
+        api_key: config.api_key,
+        model: config.model,
+        default_model: config.default_model,
+        logical_model_id: config.logical_model_id,
+        endpoint: config.endpoint,
+        query_endpoint: config.query_endpoint,
+        settings: config.settings,
+        is_active: config.is_active,
+        canary_paused: config.canary_paused,
+        failover_enabled: config.failover_enabled,
+      })).digest('hex');
+    }
+    function validateVerificationConfigs(options = {}) {
+      const configIds = options.configIds || requireVerificationConfigIds();
+      const db = openVerificationDb(options.databasePath, { readonly: true });
+      try {
+        return ['seedance-2-fast', 'seedance-2-mini'].map((model) => {
+          const configId = configIds[model];
+          const config = aiConfigService.getConfig(db, configId);
+          assertDedicatedVerificationConfig(config, model);
+          return { model, configId, fingerprint: verificationConfigFingerprint(config) };
+        });
+      } finally {
+        db.close();
+      }
+    }
     function evidenceBindingForFile(bytes) {
       return {
         evidence_contract: 'toapis-video-real-verification-v1',
@@ -242,15 +284,37 @@ function protectedRuntimeSources(candidate) {
       };
     }
     function recordVerificationResult(results, error, options) {
+      if (error || !hasCompleteRequiredMatrix(results)) return null;
+      const configIds = options.configIds || requireVerificationConfigIds();
+      const configSnapshots = new Map((options.configSnapshots || []).map((item) => [item.model, item]));
+      if (configSnapshots.size !== 2) throw new Error('missing config snapshots');
       const binding = evidenceBindingForFile(options.evidencePath);
-      return db.transaction(() => {
-        const updated = aiConfigService.recordVerification(db, options.configId, {
-          capabilities: buildVerifiedCapabilities(results, binding),
-        });
-        if (updated.verified_capabilities['seedance-2-fast'].evidence_sha256 !== binding.evidence_sha256
-            || updated.verified_capabilities['seedance-2-mini'].evidence_sha256 !== binding.evidence_sha256) throw new Error('binding failed');
-        return updated;
-      })();
+      const db = openVerificationDb(options.databasePath);
+      try {
+        return db.transaction(() => {
+          const configs = ['seedance-2-fast', 'seedance-2-mini'].map((model) => {
+            const configId = configIds[model];
+            const config = aiConfigService.getConfig(db, configId);
+            assertDedicatedVerificationConfig(config, model);
+            const snapshot = configSnapshots.get(model);
+            if (Number(snapshot.configId) !== configId
+                || snapshot.fingerprint !== verificationConfigFingerprint(config)) throw new Error('config drift');
+            return { model, configId };
+          });
+          const capabilities = buildVerifiedCapabilities(results, binding);
+          const updated = configs.map(({ model, configId }) => aiConfigService.recordVerification(db, configId, {
+            status: 'verified',
+            capabilities: { [model]: capabilities[model] },
+          }));
+          for (const { model, configId } of configs) {
+            const saved = aiConfigService.getConfig(db, configId);
+            if (saved.verified_capabilities[model].evidence_sha256 !== binding.evidence_sha256) throw new Error('binding failed');
+          }
+          return updated;
+        }).immediate();
+      } finally {
+        db.close();
+      }
     }
     function preserveExistingVerification(error) {
       error.preserveExistingVerification = true;
@@ -264,21 +328,26 @@ function protectedRuntimeSources(candidate) {
       if (!hasCompletePricing(pricing, results)) throw preserveExistingVerification(new Error('pricing incomplete'));
       writeJsonAtomic(options.evidencePath, evidence);
       try {
-        return recordVerificationResult(results, null, options);
+        const recorder = options.recordResult || recordVerificationResult;
+        return recorder(results, null, {
+          configIds: options.configIds,
+          configSnapshots: options.configSnapshots,
+          evidencePath: options.evidencePath,
+        });
       } catch (error) {
         restoreEvidenceFile(options.evidencePath, previousBytes);
         throw preserveExistingVerification(error);
       }
     }
     async function runVerification() {
-      const configId = requireVerificationConfigId();
+      const configIds = requireVerificationConfigIds();
+      const configSnapshots = validateVerificationConfigs({ configIds });
       const apiKey = requireApiKey();
       const result = await processCase(apiKey);
       try {
-        publishVerifiedEvidence(result, pricing, evidence, { configId, evidencePath });
+        publishVerifiedEvidence(result, pricing, evidence, { configIds, configSnapshots, evidencePath });
       } catch (error) {
-        if (!error.preserveExistingVerification) recordVerificationResult(result, error, { configId });
-        throw error;
+        throw preserveExistingVerification(error);
       }
     }
   `);
@@ -1470,8 +1539,31 @@ describeRootEvidence('candidate runtime and callout audit', () => {
   });
 
   for (const [name, relative, mutate] of [
-    ['verification without a mandatory config id', 'backend-node/scripts/verify-toapis-video-models.js',
-      (source) => source.replace('const configId = requireVerificationConfigId();', 'const configId = 0;')],
+    ['verification without a mandatory FAST config id', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace('Number(env.TOAPIS_VERIFY_FAST_CONFIG_ID)', '16')],
+    ['verification without a mandatory MINI config id', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace('Number(env.TOAPIS_VERIFY_MINI_CONFIG_ID)', '27')],
+    ['verification with duplicate FAST/MINI config ids', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace('Number(env.TOAPIS_VERIFY_MINI_CONFIG_ID)', 'Number(env.TOAPIS_VERIFY_FAST_CONFIG_ID)')],
+    ['verification loading credentials before split configs are validated', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace(
+        'const configSnapshots = validateVerificationConfigs({ configIds });\n      const apiKey = requireApiKey();',
+        'const apiKey = requireApiKey();\n      const configSnapshots = validateVerificationConfigs({ configIds });',
+      )],
+    ['verification without split config snapshots', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace('const configSnapshots = validateVerificationConfigs({ configIds });', 'const configSnapshots = [];')],
+    ['verification without config fingerprint drift protection', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace("\n                || snapshot.fingerprint !== verificationConfigFingerprint(config)", '')],
+    ['verification fingerprint without the bound api key', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace('        api_key: config.api_key,\n', '')],
+    ['verification publication without split config ids', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace('{ configIds, configSnapshots, evidencePath }', '{ configSnapshots, evidencePath }')],
+    ['verification publication without split config snapshots', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace('{ configIds, configSnapshots, evidencePath }', '{ configIds, evidencePath }')],
+    ['verification publication without the final evidence path', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace('{ configIds, configSnapshots, evidencePath }', '{ configIds, configSnapshots }')],
+    ['verification recorder without split config snapshots', 'backend-node/scripts/verify-toapis-video-models.js',
+      (source) => source.replace('          configSnapshots: options.configSnapshots,\n', '')],
     ['verification capabilities without the final evidence binding', 'backend-node/scripts/verify-toapis-video-models.js',
       (source) => source.replaceAll(', ...binding', '')],
     ['verification publishing before completeness and pricing checks', 'backend-node/scripts/verify-toapis-video-models.js',
@@ -1479,7 +1571,10 @@ describeRootEvidence('candidate runtime and callout audit', () => {
     ['verification without restoring old evidence after DB writeback failure', 'backend-node/scripts/verify-toapis-video-models.js',
       (source) => source.replace('restoreEvidenceFile(options.evidencePath, previousBytes);', '')],
     ['verification flow that invalidates existing evidence on publication failure', 'backend-node/scripts/verify-toapis-video-models.js',
-      (source) => source.replace('if (!error.preserveExistingVerification) recordVerificationResult(result, error, { configId });', 'recordVerificationResult(result, error, { configId });')],
+      (source) => source.replace(
+        'publishVerifiedEvidence(result, pricing, evidence, { configIds, configSnapshots, evidencePath });\n      } catch (error) {\n        throw preserveExistingVerification(error);',
+        'publishVerifiedEvidence(result, pricing, evidence, { configIds, configSnapshots, evidencePath });\n      } catch (error) {\n        recordVerificationResult(result, error, { configIds, configSnapshots, evidencePath });\n        throw error;',
+      )],
     ['production preflight without the DB/evidence binding check', 'backend-node/src/services/productionPreflightService.js',
       (source) => source.replace("addCheck(checks, 'external_model_evidence_binding', mismatched.length === 0);", '')],
   ]) it(`rejects ToAPIs ${name}`, () => {
