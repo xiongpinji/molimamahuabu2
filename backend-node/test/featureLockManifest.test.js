@@ -392,6 +392,18 @@ const REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK = {
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
+const FREE_BILLING_REVIEW_FIX_UNLOCK = {
+  reason: '2026-08-27 5eee94d8 免费模型迁移原子性与分辨率阶梯修复获批',
+  approvedBy: 'product-owner 2026-08-27 free-billing-migration-tier-review-fix-5eee94d8',
+  impactTests: [
+    'backend-node/test/modelPrice.test.js',
+    'backend-node/test/redrawMigration.test.js',
+    'backend-node/test/redrawAnalysis.test.js',
+    'backend-node/test/redrawLocalizationOrchestration.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
 const REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK_BY_FEATURE = {
   [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: {
     ...REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK,
@@ -405,6 +417,10 @@ const REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK_BY_FEATURE = {
     ],
   },
   [PROACTIVE_CANARY_FEATURE_ID]: REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK,
+};
+const CURRENT_UNLOCK_BY_FEATURE = {
+  [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK_BY_FEATURE[PROVIDER_ROUTE_CONTRACT_FEATURE_ID],
+  [PROACTIVE_CANARY_FEATURE_ID]: FREE_BILLING_REVIEW_FIX_UNLOCK,
 };
 const PR197_HELD_CREDIT_AUDIT_EVIDENCE =
   'docs/superpowers/plans/2026-08-27-held-credit-reconciliation-dry-run.md';
@@ -854,17 +870,18 @@ test('产品媒体登记 Task A 使用新鲜批准并保留 PR #194、PR #197 �
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
-  assert.deepEqual(feature.unlock, REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-1), PR194_MAIN_SYNC_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-2), PR197_PROVIDER_CANARY_REMEDIATION_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-3), PR195_STATIC_ASSET_COMPAT_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-4), PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-5), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-6), CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-7), PR184_MAIN_MERGE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-8), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-9), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-10), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
+  assert.deepEqual(feature.unlock, FREE_BILLING_REVIEW_FIX_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-2), PR194_MAIN_SYNC_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-3), PR197_PROVIDER_CANARY_REMEDIATION_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-4), PR195_STATIC_ASSET_COMPAT_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-5), PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-6), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-7), CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-8), PR184_MAIN_MERGE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-9), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-10), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-11), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
   assert.equal(feature.evidence.at(-1), REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN);
   assert.equal(feature.evidence.at(-2), REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC);
   assert.equal(feature.evidence.at(-3), PR194_MAIN_SYNC_EVIDENCE);
@@ -896,7 +913,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       : PROVIDER_TASK_RECEIPT_UNLOCK;
     const expectedUnlock = PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
       ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)
-        ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK_BY_FEATURE[featureId]
+        ? CURRENT_UNLOCK_BY_FEATURE[featureId]
         : PR194_MAIN_SYNC_UNLOCK
       : PR197_TOUCHED_FEATURE_IDS.has(featureId)
         ? PR197_UNLOCK_BY_FEATURE[featureId]
@@ -954,7 +971,8 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
           ? PR197_PROVIDER_CANARY_REMEDIATION_UNLOCK
           : PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK]
         : []),
-      ...(REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId) ? [PR194_MAIN_SYNC_UNLOCK] : []),
+      ...(featureId === PROVIDER_ROUTE_CONTRACT_FEATURE_ID ? [PR194_MAIN_SYNC_UNLOCK] : []),
+      ...(featureId === PROACTIVE_CANARY_FEATURE_ID ? [PR194_MAIN_SYNC_UNLOCK, REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK] : []),
     ]);
     assert.deepEqual(
       feature.evidence.slice(0, HISTORICAL_EVIDENCE_BY_FEATURE[featureId].length),
@@ -1029,7 +1047,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     assert.deepEqual(
       feature.unlock,
       featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK
+        ? FREE_BILLING_REVIEW_FIX_UNLOCK
         : PR197_HELD_CREDIT_AUDIT_UNLOCK,
     );
   }
@@ -1067,7 +1085,7 @@ test('PR #194 主线同步保留 PR #197 只读能力锁并仅刷新实际触及
     assert.ok(feature, `缺少功能锁 ${featureId}`);
     const expectedUnlock = PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
       ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)
-        ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK_BY_FEATURE[featureId]
+        ? CURRENT_UNLOCK_BY_FEATURE[featureId]
         : PR194_MAIN_SYNC_UNLOCK
       : PR197_TOUCHED_FEATURE_IDS.has(featureId)
         ? PR197_UNLOCK_BY_FEATURE[featureId]
@@ -1075,7 +1093,9 @@ test('PR #194 主线同步保留 PR #197 只读能力锁并仅刷新实际触及
           ? PR195_STATIC_ASSET_COMPAT_UNLOCK
           : PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK;
     const expectedPreviousUnlock = PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
-      ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)
+      ? featureId === PROACTIVE_CANARY_FEATURE_ID
+        ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK
+        : REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)
         ? PR194_MAIN_SYNC_UNLOCK
         : PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK
       : PR197_TOUCHED_FEATURE_IDS.has(featureId)
