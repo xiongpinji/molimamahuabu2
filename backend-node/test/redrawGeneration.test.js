@@ -54,6 +54,7 @@ const log = { info() {}, warn() {}, error() {} };
 const FEITUO_FAST_MODEL = 'sdas-my-seedance-2.0-fast-upscaled-1080p';
 const TOAPIS_NATIVE_MODEL = 'seedance-2-fast';
 const ICREAT_MINI_MODEL = 'bytedance/seedance-2-0-mini';
+const FUMIN_MINI_MODEL = 'fumin-seedance-2.0-mini';
 const SIGNED_SOURCE_VIDEO_URL = 'https://media.example.test/api/redraw-provider-assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4?expires=1786147800&signature=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const REFERENCE_BUNDLE_SOURCE_BYTES = Buffer.from('generation-reference-bundle-source-video');
 const REFERENCE_BUNDLE_SOURCE_SHA256 = crypto.createHash('sha256').update(REFERENCE_BUNDLE_SOURCE_BYTES).digest('hex');
@@ -1305,6 +1306,24 @@ function referenceBundleAudioCapability(state) {
     supportsAudio: true,
     max_videos: 3,
   };
+}
+
+function addFuminMiniCapability(db, overrides = {}) {
+  db.prepare('DELETE FROM ai_service_configs').run();
+  prices.set(db, overrides.model || FUMIN_MINI_MODEL, 2, {
+    category: 'video',
+    billing_unit: 'second',
+    resolution_prices: { '480p': { credits: 2 }, '720p': { credits: 3 } },
+  });
+  addVerifiedGenerationCapability(db, overrides.model || FUMIN_MINI_MODEL, {
+    locale: 'en-US',
+    market: 'US',
+    provider: overrides.provider || 'fumin',
+    apiProtocol: overrides.apiProtocol || 'fumin_video',
+    configModel: overrides.configModel || overrides.model || FUMIN_MINI_MODEL,
+    evidenceProvider: overrides.evidenceProvider || overrides.provider || 'fumin',
+    evidenceModel: overrides.evidenceModel || overrides.model || FUMIN_MINI_MODEL,
+  });
 }
 
 function referenceBundleGenerationDeps(state, overrides = {}) {
@@ -5888,6 +5907,90 @@ test('reference bundle required 的本地假 provider 收到同一安全英文 p
   assert.equal(/[\u3400-\u9fff]/.test(capturedPrompt), false);
   assert.equal(capturedPrompt.includes('原始中文提示词'), false);
   assert.equal(capturedPrompt.includes('镜头原始中文'), false);
+});
+
+test('reference bundle required 默认生产路径允许精确 Fumin Mini 且预扣前拒绝错误协议模型和 720p', async (t) => {
+  {
+    const state = await setupReferenceBundleGenerationFixture(t);
+    addFuminMiniCapability(state.db);
+    let providerCalls = 0;
+    let scheduleCalls = 0;
+
+    const result = await generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
+      resolveVideoConditioningCapability: undefined,
+      videoProcessor: async () => { providerCalls += 1; },
+      schedule(callback) {
+        scheduleCalls += 1;
+        assert.equal(typeof callback, 'function');
+      },
+    })), { shotId: state.shotId });
+
+    assert.equal(result.status, 'processing');
+    assert.equal(providerCalls, 0);
+    assert.equal(scheduleCalls, 1);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+    assert.equal(count(state.db, 'video_generations'), 1);
+    assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 1);
+    const video = state.db.prepare('SELECT provider, model, resolution, generate_audio, request_snapshot FROM video_generations').get();
+    assert.equal(video.provider, 'fumin');
+    assert.equal(video.model, FUMIN_MINI_MODEL);
+    assert.equal(video.resolution, '480p');
+    assert.equal(video.generate_audio, 1);
+    const snapshot = JSON.parse(video.request_snapshot);
+    assert.equal(snapshot.model, FUMIN_MINI_MODEL);
+    assert.equal(snapshot.resolution, '480p');
+    assert.equal(snapshot.generate_audio, true);
+    assert.equal(snapshot.reference_video_urls.length, 1);
+  }
+
+  for (const scenario of [
+    {
+      name: 'wrong protocol',
+      configure: (state) => addFuminMiniCapability(state.db, {
+        provider: 'toapis',
+        apiProtocol: 'toapis_video',
+        evidenceProvider: 'toapis',
+      }),
+      code: 'REDRAW_VIDEO_CONDITIONING_UNSUPPORTED',
+    },
+    {
+      name: 'wrong model',
+      configure: (state) => addFuminMiniCapability(state.db, { model: 'fumin-seedance-2.0-fast' }),
+      code: 'REDRAW_VIDEO_CONDITIONING_UNSUPPORTED',
+    },
+    {
+      name: '720p preflight',
+      configure: (state) => {
+        addFuminMiniCapability(state.db);
+        const row = state.db.prepare('SELECT compiled_prompt_json FROM redraw_shots WHERE id = ?').get(state.shotId);
+        const compiled = JSON.parse(row.compiled_prompt_json);
+        compiled.resolution = '720p';
+        state.db.prepare('UPDATE redraw_shots SET compiled_prompt_json = ? WHERE id = ?')
+          .run(JSON.stringify(compiled), state.shotId);
+      },
+      code: 'REDRAW_GENERATION_INPUT_INVALID',
+    },
+  ]) {
+    const state = await setupReferenceBundleGenerationFixture(t);
+    scenario.configure(state);
+    let providerCalls = 0;
+    let scheduleCalls = 0;
+    await assert.rejects(
+      () => generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
+        resolveVideoConditioningCapability: undefined,
+        videoProcessor: async () => { providerCalls += 1; },
+        schedule() { scheduleCalls += 1; },
+      })), { shotId: state.shotId }),
+      (error) => error.code === scenario.code,
+      scenario.name,
+    );
+    assert.equal(providerCalls, 0, scenario.name);
+    assert.equal(scheduleCalls, 0, scenario.name);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 0, scenario.name);
+    assert.equal(count(state.db, 'video_generations'), 0, scenario.name);
+    assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0, scenario.name);
+    assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0, scenario.name);
+  }
 });
 
 test('reference bundle required 缺失或漂移时在冻结积分和建视频前失败', async (t) => {
