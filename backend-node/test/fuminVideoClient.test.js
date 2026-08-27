@@ -78,9 +78,10 @@ test('Fumin 继续拒绝未核验的视频比例', () => {
   }), /仅开放已核验的 16:9 和 9:16/);
 });
 
-test('Fumin 视频提交使用进程环境 Key 且不要求 DB 落盘 Key', async () => {
+test('Fumin 视频提交优先使用 DB Key，DB 为空时才使用进程环境 Key', async () => {
   process.env.FUMIN_API_KEY = 'env-only-fumin-key';
-  assert.equal(resolveFuminApiKey({ api_key: 'stored-key' }), 'env-only-fumin-key');
+  assert.equal(resolveFuminApiKey({ api_key: 'stored-key' }), 'stored-key');
+  assert.equal(resolveFuminApiKey({ api_key: '' }), 'env-only-fumin-key');
 
   const requests = [];
   global.fetch = async (url, options) => {

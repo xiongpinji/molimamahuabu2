@@ -20,7 +20,7 @@ function normalizeFuminBaseUrl(value) {
 }
 
 function resolveFuminApiKey(config = {}, env = process.env) {
-  return String(env.FUMIN_API_KEY || config.api_key || '').trim();
+  return String(config.api_key || env.FUMIN_API_KEY || '').trim();
 }
 
 function resolveFuminModel(model) {

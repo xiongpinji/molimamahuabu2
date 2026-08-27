@@ -6288,8 +6288,10 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           'Content-Type': 'application/json',
         };
       } else if (isFumin) {
+        const apiKey = fuminVideoClient.resolveFuminApiKey(config);
+        if (!apiKey) return { error: 'fumin API Key 未配置' };
         url = fuminVideoClient.buildFuminQueryUrl(config, taskId);
-        headers = { Authorization: 'Bearer ' + fuminVideoClient.resolveFuminApiKey(config) };
+        headers = { Authorization: 'Bearer ' + apiKey };
       } else {
         url = queryUrl();
         headers = { Authorization: 'Bearer ' + (config.api_key || '') };
