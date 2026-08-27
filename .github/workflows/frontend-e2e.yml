@@ -65,6 +65,12 @@ jobs:
           PLAYWRIGHT_REUSE_SERVER: '0'
         run: npm run test:e2e:shared-foundation
 
+      - name: Run redraw full product E2E
+        working-directory: frontweb
+        env:
+          REDRAW_E2E_FAKE_PROVIDER: '1'
+        run: npm run test:e2e:redraw-full-product
+
       - name: Upload Playwright artifacts
         if: failure()
         uses: actions/upload-artifact@v4

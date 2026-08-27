@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS redraw_shots (
   video_generation_id INTEGER,
   audio_asset_id INTEGER,
   subtitle_asset_id INTEGER,
-  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'pending', 'processing', 'completed', 'failed', 'needs_attention')),
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'pending', 'processing', 'completed', 'failed', 'needs_attention', 'candidate_ready', 'needs_review', 'approved', 'included')),
   error_code TEXT,
   error_message TEXT,
   created_at TEXT NOT NULL,

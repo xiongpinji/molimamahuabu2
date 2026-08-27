@@ -74,6 +74,27 @@ export function canStartAssetBatch(quote, batch) {
     && !['pending', 'processing', 'partial_failed', 'needs_attention'].includes(status)
 }
 
+function hasGeneratedAsset(asset) {
+  return ['asset_id', 'voice_asset_id', 'clean_plate_asset_id']
+    .some((field) => Number.isSafeInteger(Number(asset?.[field])) && Number(asset[field]) > 0)
+}
+
+export function assetBatchQuoteApplicable(assets) {
+  return (Array.isArray(assets) ? assets : [])
+    .some((asset) => ['draft', 'failed'].includes(String(asset?.status || '')) && !hasGeneratedAsset(asset))
+}
+
+export async function resolveAssetBatchQuoteForRefresh(assets, loadQuote) {
+  if (!assetBatchQuoteApplicable(assets)) {
+    return { applicable: false, quote: null, error: null }
+  }
+  try {
+    return { applicable: true, quote: await loadQuote(), error: null }
+  } catch (error) {
+    return { applicable: true, quote: null, error }
+  }
+}
+
 export function failedAssetIds(source) {
   const seen = new Set()
   const ids = []

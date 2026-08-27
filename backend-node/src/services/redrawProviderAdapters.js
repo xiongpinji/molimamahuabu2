@@ -20,6 +20,99 @@ function parseJson(raw, fallback = {}) {
   }
 }
 
+const VIDEO_PROVIDER_STATUS = Object.freeze({
+  accepted: new Set(['accepted', 'request_accepted', 'submitted', 'queued', 'enqueued', 'pending', 'created']),
+  running: new Set(['running', 'processing', 'in_progress', 'inprogress', 'generating', 'active']),
+  completed_candidate: new Set(['completed', 'complete', 'succeeded', 'successful', 'success', 'finished', 'done', 'completed_candidate']),
+  failed_terminal: new Set(['failed', 'failure', 'error', 'errored', 'rejected', 'cancelled', 'canceled', 'aborted', 'failed_terminal']),
+  submission_unknown: new Set(['unknown', 'indeterminate', 'ambiguous', 'timeout', 'timed_out', 'submission_unknown']),
+  result_unavailable: new Set(['result_unavailable', 'expired']),
+});
+
+function normalizedVideoStatus(value) {
+  return trim(value).toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function videoProviderTaskId(raw) {
+  return trim(raw?.provider_task_id || raw?.task_id);
+}
+
+function videoResultUrl(raw) {
+  return trim(raw?.result_url || raw?.url || raw?.video_url);
+}
+
+function safeVideoResult(status, providerTaskId, resultUrl = '', extra = {}) {
+  return {
+    status,
+    ...(providerTaskId ? { provider_task_id: providerTaskId } : {}),
+    ...(resultUrl ? { result_url: resultUrl } : {}),
+    ...extra,
+  };
+}
+
+function normalizeVideoProviderResult(raw = {}) {
+  const providerTaskId = videoProviderTaskId(raw);
+  const resultUrl = videoResultUrl(raw);
+  const hasLocalArtifact = Boolean(trim(raw?.local_path));
+  const status = normalizedVideoStatus(raw?.status);
+  const hasConflictingBody = Boolean(trim(
+    raw?.error || raw?.message || raw?.error_msg || raw?.error_message,
+  ));
+
+  if (VIDEO_PROVIDER_STATUS.completed_candidate.has(status)) {
+    if (hasConflictingBody) {
+      return safeVideoResult('submission_unknown', providerTaskId, resultUrl, {
+        safe_stage: 'provider_status',
+      });
+    }
+    if (resultUrl || hasLocalArtifact) {
+      return safeVideoResult('completed_candidate', providerTaskId, resultUrl);
+    }
+    return safeVideoResult('result_unavailable', providerTaskId, '', {
+      safe_stage: 'provider_result',
+    });
+  }
+
+  if (VIDEO_PROVIDER_STATUS.failed_terminal.has(status)) {
+    if (resultUrl || hasLocalArtifact) {
+      return safeVideoResult('submission_unknown', providerTaskId, resultUrl, {
+        safe_stage: 'provider_status',
+      });
+    }
+    return safeVideoResult('failed_terminal', providerTaskId, '', {
+      safe_stage: 'provider_terminal',
+    });
+  }
+
+  if (VIDEO_PROVIDER_STATUS.accepted.has(status) || VIDEO_PROVIDER_STATUS.running.has(status)) {
+    if (resultUrl || hasLocalArtifact) {
+      return safeVideoResult('submission_unknown', providerTaskId, resultUrl, {
+        safe_stage: 'provider_status',
+      });
+    }
+    return safeVideoResult(
+      VIDEO_PROVIDER_STATUS.accepted.has(status) ? 'accepted' : 'running',
+      providerTaskId,
+    );
+  }
+
+  if (VIDEO_PROVIDER_STATUS.result_unavailable.has(status)) {
+    return safeVideoResult('result_unavailable', providerTaskId, '', {
+      safe_stage: 'provider_result',
+    });
+  }
+
+  if (VIDEO_PROVIDER_STATUS.submission_unknown.has(status)) {
+    return safeVideoResult('submission_unknown', providerTaskId, '', {
+      safe_stage: 'provider_status',
+    });
+  }
+
+  return safeVideoResult('submission_unknown', providerTaskId, '', {
+    safe_stage: 'provider_status',
+  });
+}
+
 function storageRootFrom(cfg = {}) {
   const configured = cfg.storage?.local_path || cfg.storage?.localPath;
   if (configured) {
@@ -970,4 +1063,4 @@ function createRedrawProviderAdapters(deps = {}) {
   return { localize, generateAsset };
 }
 
-module.exports = { createRedrawProviderAdapters };
+module.exports = { createRedrawProviderAdapters, normalizeVideoProviderResult };

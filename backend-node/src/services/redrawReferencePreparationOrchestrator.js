@@ -105,10 +105,9 @@ function timestamp(ctx, previous) {
 
 function readScope(ctx) {
   const scope = ctx.db.prepare(`
-    SELECT v.*, w.project_id, w.source_fingerprint,
+    SELECT v.*, w.project_id, w.source_asset_id, w.source_fingerprint,
            p.execution_mode, p.budget_limit_credits, p.max_auto_attempts_per_shot,
-           p.policy_version, p.automation_policy_json,
-           p.updated_at AS project_updated_at
+           p.policy_version, p.automation_policy_json
     FROM redraw_versions v
     JOIN redraw_works w
       ON w.id = v.work_id AND w.tenant_id = v.tenant_id AND w.user_id = v.user_id
@@ -349,9 +348,7 @@ async function reusableCleanResults(
     }
     let current;
     if (typeof deps.isCleanResultCurrent === 'function') {
-      current = result.status === 'completed'
-        ? await deps.isCleanResultCurrent({ ctx, shot: row, requirement, result })
-        : false;
+      current = await deps.isCleanResultCurrent({ ctx, shot: row, requirement, result });
     } else {
       current = readCurrentCleanResultEvidence(ctx, row, requirement, assetId);
     }
@@ -364,14 +361,12 @@ async function reusableCleanResults(
     }
   }
   if (staleReuse && reusable.length !== descriptor.requirements.length) return [];
-  if (!staleReuse && snapshot.version_snapshot_hash !== expectedBaseline.snapshot_hash) {
+  if (!staleReuse && snapshot.version_snapshot_hash !== expectedBaseline.snapshot_hash) return [];
+  if (!staleReuse && newlyApprovedTimes.length > 0) {
     const priorVersionTime = Date.parse(String(snapshot.version_updated_at || ''));
-    const approvalRefresh = snapshot.version_recovery_hash === expectedBaseline.recovery_hash
-      && newlyApprovedTimes.length > 0
-      && Number.isFinite(priorVersionTime)
+    const approvalRefresh = Number.isFinite(priorVersionTime)
       && newlyApprovedTimes.every((value) => Number.isFinite(value) && value >= priorVersionTime)
-      && newlyApprovedTimes.some((value) => value > priorVersionTime)
-      && Math.max(...newlyApprovedTimes) === Date.parse(String(expectedBaseline.version_updated_at || ''));
+      && newlyApprovedTimes.some((value) => value > priorVersionTime);
     if (!approvalRefresh) return [];
   }
   return reusable.sort((left, right) => left.kind.localeCompare(right.kind) || left.key.localeCompare(right.key));
@@ -394,33 +389,78 @@ function cleanReuseHash(scope, descriptor) {
       max_auto_attempts_per_shot: Number(scope.max_auto_attempts_per_shot),
       policy_version: Number(scope.policy_version),
       automation_policy: parseObject(scope.automation_policy_json, {}),
-      updated_at: scope.project_updated_at,
     },
     coverage: descriptor,
   });
 }
 
-function baseline(scope, characterPlanHash, coverage) {
+function parsedJson(value, fallback) {
+  if (value && typeof value === 'object') return value;
+  try {
+    return JSON.parse(value || '');
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function shotPreparationInput(shot) {
+  return {
+    id: Number(shot.id),
+    shot_id: shot.shot_id,
+    batch_index: Number(shot.batch_index),
+    shot_index: Number(shot.shot_index),
+    start_ms: Number(shot.start_ms),
+    end_ms: Number(shot.end_ms),
+    duration_ms: Number(shot.duration_ms),
+    source_dialogue: parsedJson(shot.source_dialogue_json, shot.source_dialogue_json),
+    localized_dialogue: parsedJson(shot.localized_dialogue_json, shot.localized_dialogue_json),
+    references: parsedJson(shot.references_json, shot.references_json),
+    opening_state: shot.opening_state,
+    continuous_action: shot.continuous_action,
+    ending_state: shot.ending_state,
+    prompt: shot.prompt,
+    negative_prompt: shot.negative_prompt,
+    compiled_prompt: parsedJson(shot.compiled_prompt_json, shot.compiled_prompt_json),
+    draft: parsedJson(shot.draft_json, shot.draft_json),
+    preparation_version: Number(shot.preparation_version),
+    status: shot.status,
+  };
+}
+
+function baseline(scope, shots, characterPlanHash, coverage) {
   const value = {
-    version_id: Number(scope.id),
-    version_updated_at: scope.updated_at,
-    facts_hash: scope.facts_hash,
-    project_id: Number(scope.project_id),
-    project_policy_version: Number(scope.policy_version),
-    project_updated_at: scope.project_updated_at,
+    schema_version: 'redraw-reference-preparation-baseline-v2',
+    version: {
+      id: Number(scope.id),
+      work_id: Number(scope.work_id),
+      source_asset_id: Number(scope.source_asset_id),
+      source_fingerprint: scope.source_fingerprint,
+      locale: scope.locale,
+      market: scope.market,
+      facts_hash: scope.facts_hash,
+      source_facts: parsedJson(scope.source_facts_json, scope.source_facts_json),
+      name_map: parsedJson(scope.name_map_json, scope.name_map_json),
+      text_map: parsedJson(scope.text_map_json, scope.text_map_json),
+      reference_bundle_required: Number(scope.reference_bundle_required || 0),
+    },
+    project: {
+      id: Number(scope.project_id),
+      execution_mode: scope.execution_mode,
+      budget_limit_credits: scope.budget_limit_credits == null ? null : Number(scope.budget_limit_credits),
+      max_auto_attempts_per_shot: Number(scope.max_auto_attempts_per_shot),
+      policy_version: Number(scope.policy_version),
+      automation_policy: parsedJson(scope.automation_policy_json, scope.automation_policy_json),
+    },
+    shots: shots.map(shotPreparationInput),
     character_plan_hash: characterPlanHash,
     coverage_hash: sha256({ status: coverage.status, shots: coverage.shots }),
   };
-  const recovery = {
-    version_id: value.version_id,
-    facts_hash: value.facts_hash,
-    project_id: value.project_id,
-    project_policy_version: value.project_policy_version,
-    project_updated_at: value.project_updated_at,
-    character_plan_hash: value.character_plan_hash,
-    coverage_hash: value.coverage_hash,
+  const snapshotHash = sha256(value);
+  return {
+    version_updated_at: scope.updated_at,
+    snapshot_hash: snapshotHash,
+    recovery_hash: snapshotHash,
   };
-  return { ...value, snapshot_hash: sha256(value), recovery_hash: sha256(recovery) };
 }
 
 function selectShots(shots, shotIds) {
@@ -443,7 +483,7 @@ async function buildQuote(rawCtx, input = {}, deps = {}) {
   const plan = await currentCharacterPlan(ctx, deps);
   const coverage = await reviewedCoverage(ctx, shots, deps, scope);
   const decision = automationDecision(scope, coverage);
-  const snapshot = baseline(scope, plan.plan_hash, coverage);
+  const snapshot = baseline(scope, shots, plan.plan_hash, coverage);
   const reused = [];
   const needsAttention = [];
   const missing = [];
@@ -550,17 +590,8 @@ async function assertBaselineCurrent(ctx, expected, deps) {
   const scope = readScope(ctx);
   const plan = currentCharacterPlan(ctx, deps);
   const coverage = await reviewedCoverage(ctx, readShots(ctx), deps, scope);
-  const current = {
-    version_id: Number(scope.id),
-    version_updated_at: scope.updated_at,
-    facts_hash: scope.facts_hash,
-    project_id: Number(scope.project_id),
-    project_policy_version: Number(scope.policy_version),
-    project_updated_at: scope.project_updated_at,
-    character_plan_hash: plan.plan_hash,
-    coverage_hash: sha256({ status: coverage.status, shots: coverage.shots }),
-  };
-  if (sha256(current) !== expected.snapshot_hash) {
+  const current = baseline(scope, readShots(ctx), plan.plan_hash, coverage);
+  if (current.snapshot_hash !== expected.snapshot_hash) {
     throw codedError('REDRAW_REFERENCE_PREPARATION_DRIFT', '准备期间上游版本已变化');
   }
   return { scope, plan };
@@ -985,6 +1016,13 @@ async function startVersionPreparation(rawCtx, input = {}, deps = {}) {
     throw codedError('REDRAW_REFERENCE_PREPARATION_QUOTE_MISMATCH', '准备报价缺失或已变化', { quote });
   }
   if (quote.action === 'blocked') throw codedError('REDRAW_REFERENCE_PREPARATION_BLOCKED', '当前准备门禁已阻断', { quote });
+  if (quote.needs_attention_shot_ids.length > 0) {
+    throw codedError(
+      'REDRAW_REFERENCE_PREPARATION_NEEDS_ATTENTION',
+      '结果未知镜头只能人工核对，请仅为缺失镜头重新报价',
+      { quote },
+    );
+  }
   const { task, created } = createOrReuseTask(ctx, idempotencyKey, quote);
   if (!created) return { task_id: task.id, status: task.status, quote, completion: null };
   const schedule = typeof deps.schedule === 'function' ? deps.schedule : defaultSchedule;

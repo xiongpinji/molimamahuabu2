@@ -153,6 +153,7 @@ test('quoteDialogue uses server-side dialogue service pricing', () => {
   try {
     const quote = quoteDialogue(state.db, ctx(state, { model: 'client-model', credits: 999 }));
     assert.equal(quote.status, 'ready');
+    assert.equal(quote.priced, true);
     assert.equal(quote.total_credits, 4);
     assert.equal(quote.models[0].model, 'speech-2.8-turbo');
   } finally {

@@ -109,7 +109,6 @@ function submitPreparation() {
   if (!canPrepare.value) return
   emit('prepare', {
     shot_ids: [...selectableShotIds.value],
-    quote_hash: props.quote?.quote_hash,
   })
 }
 

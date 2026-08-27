@@ -1,4 +1,5 @@
 import request from '@/utils/request'
+import { controlledReleaseRequestPath } from '@/utils/redrawTimelineState'
 
 function referenceImageFile(body) {
   const file = body?.free_style?.reference?.file
@@ -125,6 +126,30 @@ export function buildReferencePreparationQuotePayload(body = {}) {
   return shotIds ? { shot_ids: shotIds } : {}
 }
 
+export function buildCandidateReviewPayload(body = {}) {
+  return {
+    decision: String(body?.decision || '').trim(),
+    reason_code: String(body?.reason_code || '').trim(),
+    candidate_sha256: String(body?.candidate_sha256 || '').trim(),
+    expected_updated_at: String(body?.expected_updated_at || '').trim(),
+  }
+}
+
+export function buildReleasePayload(body = {}) {
+  return {
+    idempotency_key: String(body?.idempotency_key || '').trim(),
+    readiness_hash: String(body?.readiness_hash || '').trim(),
+  }
+}
+
+function assertControlledReleaseUrl(value, report) {
+  const requestPath = controlledReleaseRequestPath(value, report)
+  if (!requestPath) {
+    throw new Error('服务端返回的下载地址无效')
+  }
+  return requestPath
+}
+
 export const redrawAPI = {
   listProjects() {
     return request.get('/redraw/projects')
@@ -201,7 +226,7 @@ export const redrawAPI = {
     return request.get(`/redraw/assets/${assetId}/quote`)
   },
   quoteAssetBatch(versionId, body = {}) {
-    return request.post(`/redraw/versions/${versionId}/assets/batch-quote`, body)
+    return request.post(`/redraw/versions/${versionId}/assets/batch-quote`, body, { silentError: true })
   },
   createAssetBatch(versionId, body) {
     return request.post(`/redraw/versions/${versionId}/assets/batches`, body)
@@ -277,5 +302,25 @@ export const redrawAPI = {
   },
   downloadExport(exportId, kind) {
     return request.get(`/redraw/exports/${exportId}/download/${encodeURIComponent(kind)}`, { responseType: 'blob' })
+  },
+  getGenerationSummary(versionId) {
+    return request.get(`/redraw/versions/${versionId}/generation-summary`)
+  },
+  listCandidateReviews(shotId) {
+    return request.get(`/redraw/shots/${shotId}/candidate-reviews`)
+  },
+  reviewCandidate(shotId, body) {
+    return request.post(`/redraw/shots/${shotId}/candidate-reviews`, buildCandidateReviewPayload(body))
+  },
+  getReleaseReadiness(versionId) {
+    return request.get(`/redraw/versions/${versionId}/release-readiness`)
+  },
+  createRelease(versionId, body) {
+    return request.post(`/redraw/versions/${versionId}/releases`, buildReleasePayload(body))
+  },
+  downloadReleaseArtifact(relativeUrl, report = false) {
+    const isReport = report === true
+    const requestPath = assertControlledReleaseUrl(relativeUrl, isReport)
+    return request.get(requestPath, isReport ? {} : { responseType: 'blob' })
   },
 }

@@ -13,18 +13,20 @@ const videoService = require('./videoService');
 const videoClient = require('./videoClient');
 const assetService = require('./assetService');
 const redrawBillingService = require('./redrawBillingService');
+const redrawGenerationPolicyService = require('./redrawGenerationPolicyService');
+const redrawCandidateReviewService = require('./redrawCandidateReviewService');
 const redrawReviewService = require('./redrawReviewService');
 const redrawCapabilityService = require('./redrawCapabilityService');
 const redrawSourceConditioningService = require('./redrawSourceConditioningService');
 const redrawReferenceBundleService = require('./redrawReferenceBundleService');
 const { compileNativeDialoguePrompt } = require('./redrawNativeDialoguePromptService');
 const redrawNativeAudioService = require('./redrawNativeAudioService');
+const { normalizeVideoProviderResult } = require('./redrawProviderAdapters');
 const { FEITUO_MODELS, buildFeituoVideoBody } = require('./feituoVideoClient');
 const { TOAPIS_VIDEO_MODELS, validateToapisVideoOptions } = require('./toapisVideoClient');
 const { runWithGenerationLimit } = require('./generationConcurrency');
 
 const execFileAsync = promisify(execFile);
-const UNCERTAIN_MARKERS = ['结果未知', '状态未知', '仍可能处理中', '请勿重新提交'];
 const INTERRUPTED_MESSAGE = '供应商状态未知/服务重启，请勿重新提交';
 const DEFAULT_GENERATION_CONCURRENCY = 3;
 const DEFAULT_RECOVERY_WAIT_MS = 60 * 60 * 1000;
@@ -48,6 +50,32 @@ const CLIENT_GENERATION_CONTROL_FIELDS = [
   'price',
   'reservation_id',
   'reservationId',
+  'spent_credits',
+  'spentCredits',
+  'held_credits',
+  'heldCredits',
+  'quote_credits',
+  'quoteCredits',
+  'attempt',
+  'execution_mode',
+  'executionMode',
+  'budget_limit_credits',
+  'budgetLimitCredits',
+  'budget',
+  'max_auto_attempts_per_shot',
+  'maxAutoAttemptsPerShot',
+  'max_attempts',
+  'maxAttempts',
+  'completed_attempts',
+  'completedAttempts',
+  'prior_state',
+  'priorState',
+  'prior_held_reservation',
+  'priorHeldReservation',
+  'reservation',
+  'idempotency_key',
+  'idempotencyKey',
+  'idempotency',
 ];
 const CLIENT_REFERENCE_BUNDLE_CONTROL_FIELDS = [
   'reference_bundle',
@@ -365,7 +393,7 @@ function buildGenerationInput(shot, input, parsed, verifiedModel) {
     aspect_ratio: aspectRatio,
     count: 1,
     locale: input.locale || draft.locale || shot.version_locale || null,
-    attempt: Number(input.attempt ?? draft.generation?.attempt ?? draft.attempt ?? 1),
+    attempt: 1,
   };
 }
 
@@ -473,7 +501,7 @@ function buildNativeGeneration(shot, parsed, nativeCapability, pack) {
     aspect_ratio: aspectRatio,
     count: 1,
     locale: pack.language,
-    attempt: Number(parsed.draft.generation?.attempt ?? parsed.draft.attempt ?? 1),
+    attempt: 1,
     provider: selected.provider,
     protocol: selected.protocol,
     aiServiceConfigId: selected.config_id,
@@ -874,6 +902,63 @@ function findReusable(db, shot, attempt, expectedGeneration = null) {
   };
 }
 
+function generationBillingInput(ctx, shot, generation, styleSnapshot, sourceConditioning, attempt) {
+  return {
+    tenantId: ctx.tenantId,
+    userId: ctx.userId,
+    actorUserId: ctx.userId,
+    versionId: shot.version_id,
+    shotId: String(shot.id),
+    model: generation.model,
+    duration: generation.duration,
+    resolution: generation.resolution,
+    count: 1,
+    locale: generation.locale,
+    styleSnapshot,
+    sourceConditioning: sourceConditioning.billingSnapshot,
+    attempt,
+  };
+}
+
+function throwGenerationPolicyDecision(decision) {
+  if (decision.action === 'needs_review') {
+    throw codedError('REDRAW_GENERATION_NEEDS_REVIEW', '项目生成策略要求转为安全审核模式', decision);
+  }
+  if (decision.action === 'blocked') {
+    throw codedError('REDRAW_GENERATION_POLICY_BLOCKED', '项目生成策略阻止本次提交', decision);
+  }
+}
+
+function evaluateShotGenerationPolicy(db, ctx, shot, generation, styleSnapshot, sourceConditioning) {
+  const snapshot = redrawGenerationPolicyService.projectBudgetSnapshot(db, {
+    tenantId: ctx.tenantId,
+    userId: ctx.userId,
+    versionId: shot.version_id,
+    shotId: shot.id,
+  });
+  const currentAttempt = Math.max(snapshot.completed_attempts, 1);
+  const reusable = findReusable(db, shot, currentAttempt, generation);
+  const proposedAttempt = snapshot.completed_attempts + 1;
+  const quote = redrawBillingService.quoteShotGeneration(db, generationBillingInput(
+    ctx,
+    shot,
+    generation,
+    styleSnapshot,
+    sourceConditioning,
+    proposedAttempt,
+  ));
+  if (!quote.success) {
+    throw codedError('REDRAW_SHOT_PRICING_UNCONFIGURED', quote.message || '单镜视频模型未配置价格');
+  }
+  const decision = redrawGenerationPolicyService.evaluateGenerationPolicy({
+    ...snapshot,
+    quote_credits: quote.amount,
+    exact_reusable: Boolean(reusable),
+  });
+  throwGenerationPolicyDecision(decision);
+  return { decision, reusable, snapshot, quote };
+}
+
 function mergeDraft(draft, patch) {
   return JSON.stringify({
     ...draft,
@@ -1035,9 +1120,6 @@ async function generateShot(ctx, input = {}) {
     generation.aiServiceConfigId = Number(selectedCapability.config_id) || null;
     generation.aiServiceConfigUpdatedAt = String(selectedCapability.config_updated_at || '');
   }
-  if (!Number.isSafeInteger(generation.attempt) || generation.attempt <= 0) {
-    throw codedError('INVALID_REDRAW_GENERATION_INPUT', 'attempt 必须是正整数');
-  }
   if (requiresReferenceBundle) {
     assertNativeAudioCapability(selectedCapability);
   }
@@ -1067,8 +1149,22 @@ async function generateShot(ctx, input = {}) {
     referenceBundleProjection?.referenceBundleSnapshot || null,
   );
   generation.requestSnapshot = requestSnapshot;
-  const reusable = findReusable(db, shot, generation.attempt, generation);
-  if (reusable) return enrichGenerationResult(db, { ...reusable, attempt: generation.attempt });
+  const styleSnapshot = ctx.batchStyleSnapshot ?? parsed.styleSnapshot;
+  const initialPolicy = evaluateShotGenerationPolicy(
+    db,
+    ctx,
+    shot,
+    generation,
+    styleSnapshot,
+    sourceConditioning,
+  );
+  if (initialPolicy.decision.action === 'reuse') {
+    return enrichGenerationResult(db, {
+      ...initialPolicy.reusable,
+      attempt: initialPolicy.decision.attempt,
+    });
+  }
+  generation.attempt = initialPolicy.decision.attempt;
   if (shot.video_generation_id) {
     const existing = db.prepare('SELECT status FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(Number(shot.video_generation_id));
     if (existing?.status === 'failed' && ctx.retryFailedShot !== true) {
@@ -1104,21 +1200,30 @@ async function generateShot(ctx, input = {}) {
         referenceBundleCreateState(db, ctx, shot, requestSnapshot, referenceBundleCreateExpected);
       }
       ensureGateOpen(db, ctx, shot.version_id);
-      const reservation = redrawBillingService.reserveShotGeneration(db, {
-        tenantId: ctx.tenantId,
-        userId: ctx.userId,
-        actorUserId: ctx.userId,
-        versionId: shot.version_id,
-        shotId: String(shot.id),
-        model: generation.model,
-        duration: generation.duration,
-        resolution: generation.resolution,
-        count: 1,
-        locale: generation.locale,
-        styleSnapshot: ctx.batchStyleSnapshot ?? parsed.styleSnapshot,
-        sourceConditioning: sourceConditioning.billingSnapshot,
-        attempt: generation.attempt,
-      });
+      const freshShot = selectShot(db, ctx, { shotId: shot.id });
+      const transactionPolicy = evaluateShotGenerationPolicy(
+        db,
+        ctx,
+        freshShot,
+        generation,
+        styleSnapshot,
+        sourceConditioning,
+      );
+      if (transactionPolicy.decision.action === 'reuse') {
+        return {
+          ...transactionPolicy.reusable,
+          attempt: transactionPolicy.decision.attempt,
+        };
+      }
+      generation.attempt = transactionPolicy.decision.attempt;
+      const reservation = redrawBillingService.reserveShotGeneration(db, generationBillingInput(
+        ctx,
+        shot,
+        generation,
+        styleSnapshot,
+        sourceConditioning,
+        generation.attempt,
+      ));
       if (!reservation.success) {
         throw codedError('REDRAW_SHOT_PRICING_UNCONFIGURED', reservation.message || '单镜视频模型未配置价格');
       }
@@ -1213,7 +1318,7 @@ async function generateShot(ctx, input = {}) {
         reservation_id: reservation.reservation_id,
       };
     });
-    created = requiresReferenceBundle ? createTransaction.immediate() : createTransaction();
+    created = createTransaction.immediate();
   } catch (error) {
     if (error.code !== 'REDRAW_SHOT_CREATE_CONFLICT') throw error;
     const fresh = selectShot(db, ctx, input);
@@ -1223,6 +1328,8 @@ async function generateShot(ctx, input = {}) {
     }
     throw codedError('REDRAW_SHOT_CONFLICT', '转绘镜头生成状态已变化，请刷新后重试');
   }
+
+  if (created.reused) return enrichGenerationResult(db, created);
 
   const enrich = (result) => enrichGenerationResult(db, {
     ...result,
@@ -1298,9 +1405,24 @@ function advanceVersionIfAllShotsCompleted(db, ctx, versionId, timestamp) {
   const gate = db.prepare(`
     SELECT
       COUNT(*) AS total,
-      SUM(CASE WHEN status = 'completed' AND video_generation_id IS NOT NULL THEN 0 ELSE 1 END) AS incomplete
-    FROM redraw_shots
-    WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+      SUM(CASE
+        WHEN s.video_generation_id IS NOT NULL
+          AND s.approved_candidate_review_id IS NOT NULL
+          AND s.status IN ('approved', 'included', 'completed')
+          AND EXISTS (
+            SELECT 1
+            FROM redraw_candidate_reviews r
+            WHERE r.id = s.approved_candidate_review_id
+              AND r.tenant_id = s.tenant_id
+              AND r.user_id = s.user_id
+              AND r.shot_id = s.id
+              AND r.video_generation_id = s.video_generation_id
+              AND r.decision = 'approved'
+          )
+        THEN 0 ELSE 1
+      END) AS incomplete
+    FROM redraw_shots s
+    WHERE s.version_id = ? AND s.tenant_id = ? AND s.user_id = ? AND s.deleted_at IS NULL
   `).get(Number(versionId), String(ctx.tenantId), String(ctx.userId));
   if (!gate || Number(gate.total) < 1 || Number(gate.incomplete || 0) !== 0) return false;
   db.prepare(`
@@ -1364,19 +1486,20 @@ function getShotForTask(db, task, ctx = null) {
 }
 
 function classifyVideoOutcome(row, verification) {
-  const status = String(row?.status || '').toLowerCase();
-  const error = String(row?.error_msg || row?.error || '');
-  if (status === 'completed') {
+  const normalized = normalizeVideoProviderResult(row);
+  if (normalized.status === 'completed_candidate') {
     if (row.local_path && verification?.duration > 0 && verification?.width > 0 && verification?.height > 0) {
       return { status: 'completed' };
     }
-    return { status: 'needs_attention', error: '视频完成记录缺少可验证的本地成片或素材入库结果，请人工确认后处理' };
+    return { status: 'needs_attention', error: '供应商候选视频成片尚未通过本地文件验证，请人工确认后处理' };
   }
-  if (status === 'failed') return { status: 'failed', error: error || '供应商视频生成失败' };
-  if (status === 'processing' || UNCERTAIN_MARKERS.some((marker) => error.includes(marker))) {
-    return { status: 'needs_attention', error: error || '视频结果未知或仍可能处理中，请勿重新提交' };
+  if (normalized.status === 'failed_terminal') {
+    return { status: 'failed', error: '供应商明确返回生成失败' };
   }
-  return { status: 'needs_attention', error: error || '视频状态未知，请人工确认后处理' };
+  if (normalized.status === 'result_unavailable') {
+    return { status: 'needs_attention', error: '供应商候选结果不可读取，请人工确认后处理' };
+  }
+  return { status: 'needs_attention', error: '供应商状态未知或仍可能处理中，请勿重新提交' };
 }
 
 function updateNeedsAttention(db, taskId, shotId, message, timestamp, videoGenerationId = null) {
@@ -1421,37 +1544,51 @@ function updateNeedsAttention(db, taskId, shotId, message, timestamp, videoGener
   })();
 }
 
-function terminalStatus(row) {
-  const status = String(row?.status || '');
-  return ['completed', 'failed', 'needs_attention'].includes(status) ? status : null;
-}
-
 function terminalTaskResult(task, video, shot) {
-  const statuses = [terminalStatus(task), terminalStatus(video), terminalStatus(shot)];
-  if (!statuses.some(Boolean)) return null;
-  const unique = new Set(statuses.filter(Boolean));
-  if (unique.size !== 1 || statuses.some((status) => !status)) {
-    return { status: 'needs_attention', error: '单镜视频本地终态不一致，请人工确认后处理', degrade: true };
-  }
-  const status = statuses[0];
-  if (status === 'completed') {
+  const taskStatus = String(task?.status || '');
+  const videoStatus = String(video?.status || '');
+  const shotStatus = String(shot?.status || '');
+  const approvedShot = ['approved', 'included', 'completed'].includes(shotStatus);
+  if (taskStatus === 'completed' && videoStatus === 'completed' && approvedShot) {
     const result = strictJson(task.result, 'async_tasks.result');
     const draft = strictJson(shot.draft_json, 'draft_json');
     const ref = draft.new_video_ref || {};
     return {
-      status,
+      status: 'completed',
       task_id: task.id,
       video_generation_id: video.id,
       asset_id: result.asset_id || ref.asset_id || null,
       new_video_ref: ref,
     };
   }
-  return {
-    status,
-    error: task.error || task.message || video.error_msg || shot.error_message || null,
-    task_id: task.id,
-    video_generation_id: video.id,
-  };
+  if (taskStatus === 'needs_attention' && videoStatus === 'completed'
+    && ['needs_review', 'needs_attention'].includes(shotStatus)) {
+    return {
+      status: 'needs_attention',
+      error: task.error || task.message || shot.error_message || null,
+      task_id: task.id,
+      video_generation_id: video.id,
+    };
+  }
+  if (taskStatus === 'failed' && videoStatus === 'failed' && shotStatus === 'failed') {
+    return {
+      status: 'failed',
+      error: task.error || task.message || video.error_msg || shot.error_message || null,
+      task_id: task.id,
+      video_generation_id: video.id,
+    };
+  }
+  const terminalStatuses = new Set(['completed', 'failed', 'needs_attention', 'approved', 'included', 'needs_review']);
+  if (![taskStatus, videoStatus, shotStatus].some((status) => terminalStatuses.has(status))) return null;
+  if (shotStatus === 'candidate_ready' && taskStatus === 'processing' && videoStatus === 'completed') return null;
+  return { status: 'needs_attention', error: '单镜视频本地终态不一致，请人工确认后处理', degrade: true };
+}
+
+function terminalStatus(row) {
+  const status = String(row?.status || '');
+  return ['completed', 'failed', 'needs_attention', 'approved', 'included', 'needs_review'].includes(status)
+    ? status
+    : null;
 }
 
 function needsNativeAudioValidation(row, _shot) {
@@ -1586,6 +1723,15 @@ function manualOverrideForAudit(audit) {
   return false;
 }
 
+function candidateReviewSha256(ctx, db, shotId, videoId, fallback) {
+  if (typeof ctx.candidateHasher !== 'function') return fallback;
+  return ctx.candidateHasher({
+    ctx,
+    shot: db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(shotId),
+    video: db.prepare('SELECT * FROM video_generations WHERE id = ?').get(videoId),
+  });
+}
+
 async function reviewNativeAudio(ctx, input = {}) {
   const { db } = ctx;
   if (!db || !ctx.tenantId || !ctx.userId) throw codedError('REDRAW_CONTEXT_INVALID', '缺少转绘生成上下文');
@@ -1610,8 +1756,45 @@ async function reviewNativeAudio(ctx, input = {}) {
   if (['approved', 'rejected'].includes(String(existingReview.status || ''))
     && sameNativeAudioReview(existingReview, { ...input, decision }, ctx.userId)) {
     const ref = draft.new_video_ref || {};
+    if (decision === 'approved' && !['approved', 'included', 'completed'].includes(String(shot.status))) {
+      if (!ref.asset_id || String(video.status) !== 'completed') {
+        reviewUnavailable('当前原生音轨候选不可人工批准');
+      }
+      const retryExpectedUpdatedAt = String(input.expected_updated_at || input.expectedUpdatedAt || '');
+      if (retryExpectedUpdatedAt !== String(shot.updated_at || '')) {
+        reviewConflict('分镜已被其他操作更新，请刷新后重试');
+      }
+      try {
+        const candidateReview = await redrawCandidateReviewService.reviewCandidate(ctx, {
+          shot_id: shot.id,
+          video_generation_id: video.id,
+          decision_source: 'human',
+          decision: 'approved',
+          expected_updated_at: retryExpectedUpdatedAt,
+          candidate_sha256: candidateReviewSha256(
+            ctx,
+            db,
+            shot.id,
+            video.id,
+            String(audit.candidate?.artifact_sha256 || ''),
+          ),
+          reason_codes: ['native_audio_human_approved'],
+        });
+        return enrichGenerationResult(db, {
+          status: 'completed',
+          task_id: task.id,
+          video_generation_id: video.id,
+          asset_id: ref.asset_id,
+          candidate_review_id: candidateReview.id,
+          reservation_id: taskMetadata(task).reservation_id || null,
+        });
+      } catch (error) {
+        updateCandidateNeedsAttention(db, task.id, shot.id, error.message, monotonicTimestamp(shot.updated_at, now(ctx)));
+        throw error;
+      }
+    }
     return enrichGenerationResult(db, {
-      status: shot.status,
+      status: ['approved', 'included', 'completed'].includes(String(shot.status)) ? 'completed' : shot.status,
       task_id: task.id,
       video_generation_id: video.id,
       asset_id: ref.asset_id || null,
@@ -1636,7 +1819,7 @@ async function reviewNativeAudio(ctx, input = {}) {
     db.transaction(() => {
       const changed = db.prepare(`
         UPDATE redraw_shots
-        SET status = 'needs_attention',
+        SET status = 'needs_review',
             error_code = 'REDRAW_NATIVE_AUDIO_REJECTED',
             error_message = ?,
             draft_json = ?,
@@ -1663,9 +1846,9 @@ async function reviewNativeAudio(ctx, input = {}) {
       `).run(review.reason, review.reason, timestamp, task.id, String(ctx.tenantId), String(ctx.userId));
       db.prepare(`
         UPDATE video_generations
-        SET status = 'needs_attention', error_msg = ?, updated_at = ?
+        SET status = 'completed', error_msg = NULL, updated_at = ?
         WHERE id = ? AND tenant_id = ? AND user_id = ?
-      `).run(review.reason, timestamp, video.id, String(ctx.tenantId), String(ctx.userId));
+      `).run(timestamp, video.id, String(ctx.tenantId), String(ctx.userId));
     })();
     return enrichGenerationResult(db, {
       status: 'needs_attention',
@@ -1702,8 +1885,7 @@ async function reviewNativeAudio(ctx, input = {}) {
   const importer = ctx.assetImporter || ((database, logger, videoGenerationId) => (
     assetService.importFromVideo(database, logger, videoGenerationId)
   ));
-  const metadata = taskMetadata(task);
-  return db.transaction(() => {
+  const staged = db.transaction(() => {
     const fresh = db.prepare(`
       SELECT s.*, t.status AS task_status, v.status AS video_status
       FROM redraw_shots s
@@ -1777,12 +1959,13 @@ async function reviewNativeAudio(ctx, input = {}) {
     `).run(timestamp, video.id, String(ctx.tenantId), String(ctx.userId));
     db.prepare(`
       UPDATE redraw_shots
-      SET status = 'completed', error_code = NULL, error_message = NULL,
+      SET status = 'candidate_ready', approved_candidate_review_id = NULL,
+          error_code = NULL, error_message = NULL,
           draft_json = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ? AND user_id = ?
     `).run(
       mergeDraft(draft, {
-        generation: { completed_at: timestamp },
+        generation: { candidate_at: timestamp },
         native_audio_validation: approvedAudit,
         new_video_ref: newVideoRef,
       }),
@@ -1791,26 +1974,31 @@ async function reviewNativeAudio(ctx, input = {}) {
       String(ctx.tenantId),
       String(ctx.userId),
     );
-    advanceVersionIfAllShotsCompleted(db, ctx, shot.version_id, timestamp);
-    taskService.updateTaskResult(db, task.id, {
-      status: 'completed',
+    return { actualSha256, imported, timestamp };
+  }).immediate();
+  try {
+    const candidateReview = await redrawCandidateReviewService.reviewCandidate(ctx, {
       shot_id: shot.id,
       video_generation_id: video.id,
-      asset_id: imported.id,
-      video_url: video.video_url || null,
-      local_path: video.local_path,
-      probe: verification,
-      native_audio_validation: approvedAudit,
+      decision_source: 'human',
+      decision: 'approved',
+      expected_updated_at: staged.timestamp,
+      candidate_sha256: candidateReviewSha256(ctx, db, shot.id, video.id, staged.actualSha256),
+      reason_codes: ['native_audio_human_approved'],
     });
-    redrawBillingService.settleShotGeneration(db, metadata.reservation_id, 'completed');
     return enrichGenerationResult(db, {
       status: 'completed',
       task_id: task.id,
       video_generation_id: video.id,
-      asset_id: imported.id,
-      reservation_id: metadata.reservation_id || null,
+      asset_id: staged.imported.id,
+      candidate_review_id: candidateReview.id,
+      reservation_id: taskMetadata(task).reservation_id || null,
     });
-  })();
+  } catch (error) {
+    const attentionAt = monotonicTimestamp(staged.timestamp, now(ctx));
+    updateCandidateNeedsAttention(db, task.id, shot.id, error.message, attentionAt);
+    throw error;
+  }
 }
 
 function markNativeAudioNeedsAttention(db, task, shot, row, error, timestamp, options = {}) {
@@ -1958,12 +2146,12 @@ async function runShotGeneration(ctx, taskId) {
     const importer = ctx.assetImporter || ((database, logger, videoGenerationId) => (
       assetService.importFromVideo(database, logger, videoGenerationId)
     ));
-    let finalizationStage = 'finalization';
+    let finalizationStage = 'candidate_asset_register';
     try {
-      return db.transaction(() => {
+      db.transaction(() => {
         const claimed = db.prepare(`
           UPDATE redraw_shots
-          SET status = 'pending', error_code = 'REDRAW_VIDEO_FINALIZING', updated_at = ?
+          SET status = 'pending', error_code = 'REDRAW_CANDIDATE_REVIEWING', updated_at = ?
           WHERE id = ? AND status = 'processing' AND video_generation_id = ?
         `).run(timestamp, shot.id, row.id);
         if (claimed.changes !== 1) {
@@ -2005,29 +2193,26 @@ async function runShotGeneration(ctx, taskId) {
           probe: verification,
         };
         db.prepare(`
+          UPDATE video_generations
+          SET error_msg = NULL, updated_at = ?
+          WHERE id = ? AND task_id = ?
+        `).run(timestamp, row.id, task.id);
+        db.prepare(`
           UPDATE redraw_shots
-          SET status = 'completed', video_generation_id = ?, error_code = NULL, error_message = NULL,
+          SET status = 'candidate_ready', video_generation_id = ?, error_code = 'REDRAW_CANDIDATE_REVIEWING',
+              error_message = NULL,
               draft_json = ?, updated_at = ?
           WHERE id = ?
-        `).run(row.id, mergeDraft(updatedDraft, { generation: { completed_at: timestamp }, new_video_ref: newVideoRef }), timestamp, shot.id);
-        advanceVersionIfAllShotsCompleted(db, {
-          tenantId: shot.tenant_id,
-          userId: shot.user_id,
-        }, shot.version_id, timestamp);
-        taskService.updateTaskResult(db, task.id, {
-          status: 'completed',
-          shot_id: shot.id,
-          video_generation_id: row.id,
-          asset_id: imported.id,
-          video_url: row.video_url || null,
-          local_path: row.local_path,
-          probe: verification,
-        });
-        finalizationStage = 'settlement';
-        redrawBillingService.settleShotGeneration(db, metadata.reservation_id, 'completed');
-        return { status: 'completed', task_id: task.id, video_generation_id: row.id, asset_id: imported.id };
+        `).run(row.id, mergeDraft(updatedDraft, {
+          generation: { candidate_at: timestamp },
+          new_video_ref: newVideoRef,
+        }), timestamp, shot.id);
       })();
     } catch (error) {
+      if (error.code === 'REDRAW_VIDEO_FINALIZATION_CONFLICT') {
+        const concurrent = await waitForConcurrentFinalization(db, task, ownerCtx);
+        if (concurrent) return concurrent;
+      }
       if (nativeAudioValidation) {
         markNativeAudioNeedsAttention(db, task, shot, row, error, timestamp, {
           stage: finalizationStage,
@@ -2039,10 +2224,67 @@ async function runShotGeneration(ctx, taskId) {
       }
       return { status: 'needs_attention', error: error.message, task_id: task.id, video_generation_id: row.id };
     }
+
+    let review;
+    finalizationStage = nativeAudioValidation ? 'settlement' : 'candidate_quality_review';
+    try {
+      review = await redrawCandidateReviewService.reviewCandidate({
+        ...ctx,
+        tenantId: ctx.tenantId || shot.tenant_id,
+        userId: ctx.userId || shot.user_id,
+      }, {
+        shot_id: shot.id,
+        video_generation_id: row.id,
+        decision_source: 'automatic',
+      });
+    } catch (error) {
+      const attentionAt = monotonicTimestamp(timestamp, now(ctx));
+      if (nativeAudioValidation) {
+        markNativeAudioNeedsAttention(db, task, shot, row, error, attentionAt, {
+          stage: finalizationStage,
+          humanReviewStatus: 'available',
+          evidence: nativeAudioValidation,
+        });
+      } else {
+        updateCandidateNeedsAttention(db, task.id, shot.id, error.message, attentionAt);
+      }
+      return {
+        status: 'needs_attention',
+        error: error.message,
+        task_id: task.id,
+        video_generation_id: row.id,
+        asset_id: imported.id,
+      };
+    }
+    if (review.decision !== 'approved') {
+      return {
+        status: 'needs_attention',
+        error: review.decision === 'rejected'
+          ? '逐镜候选质量未通过，等待人工处理'
+          : '逐镜候选等待人工审核',
+        task_id: task.id,
+        video_generation_id: row.id,
+        asset_id: imported.id,
+        candidate_review_id: review.id,
+      };
+    }
+
+    return {
+      status: 'completed',
+      task_id: task.id,
+      video_generation_id: row.id,
+      asset_id: imported.id,
+      candidate_review_id: review.id,
+    };
   }
   if (outcome.status === 'failed') {
     try {
       db.transaction(() => {
+        db.prepare(`
+          UPDATE video_generations
+          SET status = 'failed', error_msg = ?, updated_at = ?
+          WHERE id = ? AND task_id = ?
+        `).run(outcome.error, timestamp, row.id, task.id);
         db.prepare(`
           UPDATE redraw_shots
           SET status = 'failed', error_code = 'REDRAW_VIDEO_FAILED',
@@ -2316,10 +2558,48 @@ async function retryShot(ctx, input = {}) {
     markRetryUncertain(db, shot, task, video, message, now(ctx));
     throw codedError('REDRAW_RETRY_UNCERTAIN', message);
   }
-  const draft = strictJson(shot.draft_json, 'draft_json');
-  const previousAttempt = Number(draft.generation?.attempt ?? draft.attempt ?? 1);
-  const attempt = Number.isSafeInteger(previousAttempt) && previousAttempt > 0 ? previousAttempt + 1 : 2;
-  return generateShot({ ...ctx, retryFailedShot: true }, { ...input, shotId: shot.id, attempt });
+  return generateShot({ ...ctx, retryFailedShot: true }, { ...input, shotId: shot.id });
+}
+
+function updateCandidateNeedsAttention(db, taskId, shotId, message, timestamp) {
+  const safeMessage = String(message || '逐镜候选质量验证异常，请人工确认后处理').slice(0, 500);
+  db.transaction(() => {
+    db.prepare(`
+      UPDATE redraw_shots
+      SET status = 'needs_attention', approved_candidate_review_id = NULL,
+          error_code = 'REDRAW_CANDIDATE_REVIEW_FAILED', error_message = ?, updated_at = ?
+      WHERE id = ?
+    `).run(safeMessage, timestamp, shotId);
+    db.prepare(`
+      UPDATE async_tasks
+      SET status = 'needs_attention', progress = 90, message = ?, error = ?,
+          completed_at = NULL, updated_at = ?
+      WHERE id = ?
+    `).run(safeMessage, safeMessage, timestamp, taskId);
+    const shot = db.prepare(`
+      SELECT version_id, tenant_id, user_id
+      FROM redraw_shots
+      WHERE id = ? AND deleted_at IS NULL
+    `).get(shotId);
+    if (shot?.version_id && shot?.tenant_id && shot?.user_id) {
+      setVersionGenerationStep(db, {
+        tenantId: shot.tenant_id,
+        userId: shot.user_id,
+      }, shot.version_id, timestamp);
+    }
+  })();
+}
+
+async function waitForConcurrentFinalization(db, task, ownerCtx) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+    const freshTask = getTask(db, task.id, ownerCtx);
+    const freshVideo = getVideoForTask(db, freshTask, ownerCtx);
+    const freshShot = getShotForTask(db, freshTask, ownerCtx);
+    const terminal = terminalTaskResult(freshTask, freshVideo, freshShot);
+    if (terminal && !terminal.degrade) return terminal;
+  }
+  return null;
 }
 
 async function recoverInterruptedShotGenerations(ctx) {

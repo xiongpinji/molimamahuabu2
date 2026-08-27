@@ -39,6 +39,16 @@
       @prepare="startReferencePreparation"
       @manual-review="openPreparationReview"
     />
+    <RedrawGenerationQueuePanel
+      :summary="generationSummaryState"
+      :retrying-shot-id="retryingDeliveryShotId"
+      @retry="retryDeliveryShot"
+    />
+    <RedrawQualityReviewPanel
+      :shots="shots"
+      :execution-mode="executionMode"
+      @reviewed="refreshDeliveryWorkspace"
+    />
     <div v-if="shots.length" class="shot-layout">
       <RedrawBatchPanel
         :batches="batches"
@@ -84,6 +94,7 @@ import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { redrawAPI } from '@/api/redraw'
 import {
+  buildReferencePreparationScopedStart,
   createReferencePreparationIdempotencyKey,
   normalizeShotWorkspace,
   referencePreparationManualReviewState,
@@ -95,6 +106,8 @@ import RedrawBatchPanel from './RedrawBatchPanel.vue'
 import RedrawShotEditor from './RedrawShotEditor.vue'
 import RedrawShotPreview from './RedrawShotPreview.vue'
 import RedrawShotPreparationPanel from './RedrawShotPreparationPanel.vue'
+import RedrawGenerationQueuePanel from './RedrawGenerationQueuePanel.vue'
+import RedrawQualityReviewPanel from './RedrawQualityReviewPanel.vue'
 
 const props = defineProps({
   work: { type: Object, default: null },
@@ -121,6 +134,8 @@ const preparationSubmitting = ref(false)
 const preparationSubmissionLocked = ref(false)
 const preparationIdempotencyKey = ref('')
 const pollAttempts = ref(0)
+const generationSummaryState = ref(null)
+const retryingDeliveryShotId = ref(null)
 const MAX_POLL_ATTEMPTS = 120
 let pollingTimer = null
 let pollRequestActive = false
@@ -222,6 +237,7 @@ async function refreshWork({ quiet = false } = {}) {
   try {
     const nextWork = await redrawAPI.getWork(localWork.value.id)
     applyWork(nextWork)
+    await loadGenerationSummary()
     loadError.value = ''
   } catch (error) {
     loadError.value = errorReason(error, '读取分镜状态失败')
@@ -229,6 +245,35 @@ async function refreshWork({ quiet = false } = {}) {
     pollRequestActive = false
     if (!quiet) refreshing.value = false
   }
+}
+
+async function loadGenerationSummary() {
+  if (!resolvedVersionId.value) return
+  try {
+    generationSummaryState.value = await redrawAPI.getGenerationSummary(resolvedVersionId.value)
+  } catch (error) {
+    loadError.value = errorReason(error, '读取生成队列摘要失败')
+  }
+}
+
+async function retryDeliveryShot(shot) {
+  if (!shot?.shot_id || shot.can_start_next_attempt !== true) return
+  retryingDeliveryShotId.value = shot.shot_id
+  try {
+    await redrawAPI.generateShot(shot.shot_id, { retry: true })
+    await refreshDeliveryWorkspace()
+    ElMessage.success(`镜头 ${shot.shot_index} 的下一次尝试已提交`)
+  } catch (error) {
+    loadError.value = errorReason(error, '提交下一次尝试失败')
+    await loadGenerationSummary()
+  } finally {
+    retryingDeliveryShotId.value = null
+  }
+}
+
+async function refreshDeliveryWorkspace() {
+  await refreshWork({ quiet: true })
+  await loadGenerationSummary()
 }
 
 async function loadAssetsAndGate() {
@@ -273,13 +318,21 @@ async function startReferencePreparation(input = {}) {
   preparationSubmissionLocked.value = true
   let requestStarted = false
   try {
+    const versionId = resolvedVersionId.value
+    const requestedShotIds = Array.isArray(input.shot_ids) ? [...input.shot_ids] : []
+    const scopedQuote = await redrawAPI.quoteReferencePreparation(versionId, { shot_ids: requestedShotIds })
+    const scopedStart = buildReferencePreparationScopedStart(
+      scopedQuote,
+      requestedShotIds,
+      resolvedVersionId.value,
+      preparationQuote.value,
+    )
     if (!preparationIdempotencyKey.value) {
       preparationIdempotencyKey.value = createReferencePreparationIdempotencyKey()
     }
-    const submission = redrawAPI.startReferencePreparation(resolvedVersionId.value, {
-      quote_hash: input.quote_hash,
+    const submission = redrawAPI.startReferencePreparation(versionId, {
+      ...scopedStart,
       idempotency_key: preparationIdempotencyKey.value,
-      shot_ids: input.shot_ids,
     })
     requestStarted = true
     const result = await submission
@@ -508,6 +561,7 @@ watch(() => props.work, (nextWork) => {
   selectedShotId.value = restoreSelectedShotId(state.value.shots, selectedShotId.value)
 }, { immediate: true })
 watch(resolvedVersionId, loadAssetsAndGate)
+watch(resolvedVersionId, loadGenerationSummary)
 watch(resolvedVersionId, () => {
   preparationSubmissionLocked.value = false
   preparationIdempotencyKey.value = ''
@@ -524,6 +578,7 @@ onMounted(async () => {
   selectedShotId.value = restoreSelectedShotId(shots.value, selectedShotId.value)
   await loadAssetsAndGate()
   await loadPreparationWorkspace()
+  await loadGenerationSummary()
   syncPolling()
 })
 onBeforeUnmount(stopPolling)

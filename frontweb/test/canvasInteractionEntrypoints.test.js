@@ -108,7 +108,8 @@ test('画布支持 LibTV 式键盘完成选择清理和工作流分组', () => {
   assert.match(canvasSource, /function selectVisibleCanvasNodes\(\) \{[\s\S]*if \(!isStandaloneCanvas\.value\)[\s\S]*selectVisibleStoryboards\(\)[\s\S]*applySelectedFreeNodeIds\(ids\)/)
   assert.match(canvasSource, /if \(key === 'a'\) \{\s*\n\s*event\.preventDefault\(\)\s*\n\s*selectVisibleCanvasNodes\(\)/)
   assert.match(canvasSource, /if \(key === 'g'\) \{\s*\n\s*event\.preventDefault\(\)\s*\n\s*if \(isStandaloneCanvas\.value\) createStandaloneGroup\(\)[\s\S]*void onCreateWorkflowGroup\(\)/)
-  assert.match(canvasSource, /if \(workflowRunning\.value \|\| layoutSaveState\.value === 'saving'\)/)
+  assert.match(canvasSource, /const layoutSaveBusy = computed\(\(\) => \['saving', 'retry_wait'\]\.includes\(layoutSaveState\.value\)\)/)
+  assert.match(canvasSource, /if \(workflowRunning\.value \|\| layoutSaveBusy\.value\)/)
 })
 
 test('右键空白画布提供 LibTV 式添加节点入口并使用点击位置', () => {

@@ -4,9 +4,13 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const { getFfmpegPath, getFfprobePath } = require('../src/utils/ffmpegPath');
+const { reviewCandidate } = require('../src/services/redrawCandidateReviewService');
+const { resolveDownloadArtifact } = require('../src/services/redrawExportService');
 const {
   buildCompositionPlan,
   createComposition,
@@ -43,6 +47,10 @@ function touch(root, relative, body = 'media') {
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   fs.writeFileSync(abs, body);
   return relative.replace(/\\/g, '/');
+}
+
+function sha256(value) {
+  return crypto.createHash('sha256').update(String(value)).digest('hex');
 }
 
 function fileSha256(filePath) {
@@ -96,8 +104,9 @@ function addShot(state, input) {
     ).lastInsertRowid;
 }
 
-function addDialogueAsset(state, id, relative, metadata) {
+function addDialogueAsset(state, id, relative, metadata, body = 'media') {
   const dialogue = metadata.redraw_dialogue || metadata;
+  touch(state.root, relative, body);
   state.db.prepare(`INSERT INTO assets
     (id, name, type, category, local_path, mime_type, duration, metadata, created_at, updated_at)
     VALUES (?, '配音', 'audio', 'redraw_dialogue', ?, 'audio/mpeg', ?, ?, ?, ?)`)
@@ -117,65 +126,100 @@ function addDialogueAsset(state, id, relative, metadata) {
     );
 }
 
-function addReadyVersion(state) {
-  const v1 = touch(state.root, 'videos/shot-1.mp4');
-  const v2 = touch(state.root, 'videos/shot-2.mp4');
+async function addReadyVersion(state, options = {}) {
+  const v1 = touch(state.root, 'videos/shot-1.mp4', options.video1Bytes || 'media');
+  const v2 = touch(state.root, 'videos/shot-2.mp4', options.video2Bytes || 'media');
   addVideo(state, 101, v1, { durationMs: 1000 });
   addVideo(state, 102, v2, { durationMs: 2000 });
-  const a1 = touch(state.root, 'audio/a1.mp3');
-  const a2 = touch(state.root, 'audio/a2.mp3');
-  addDialogueAsset(state, 201, a1, {
-    tenant_id: 'tenant-a',
-    user_id: 'user-a',
-    version_id: state.versionId,
-    segment_id: 'a',
-    reservation_id: 'res-a',
-    idempotency_key: 'dialogue-key-a',
-    duration_ms: 900,
-  });
-  addDialogueAsset(state, 202, a2, {
-    tenant_id: 'tenant-a',
-    user_id: 'user-a',
-    version_id: state.versionId,
-    segment_id: 'b',
-    reservation_id: 'res-b',
-    idempotency_key: 'dialogue-key-b',
-    duration_ms: 700,
-  });
-  addShot(state, {
+  const localizedOne = options.silent ? [] : [{
+    segment_id: 'business-dialogue-a',
+    speaker_id: 'speaker-a',
+    start_ms: 0,
+    end_ms: 1000,
+    target_text: 'Hello',
+  }];
+  const localizedTwo = options.silent ? [] : [{
+    segment_id: 'business-dialogue-b',
+    speaker_id: 'speaker-b',
+    start_ms: 1400,
+    end_ms: 2300,
+    target_text: 'World',
+  }];
+  const shotOneId = Number(addShot(state, {
     shotIndex: 1,
     startMs: 0,
     endMs: 1000,
     videoGenerationId: 101,
-    dialogue: [{ segment_id: 'a', start_ms: 0, end_ms: 1000, text: 'Hello' }],
-    draft: { dialogue_generation: { segments: [{
-      segment_id: 'a',
-      start_ms: 0,
-      end_ms: 1000,
-      status: 'completed',
-      reservation_status: 'confirmed',
-      reservation_id: 'res-a',
-      audio_asset_id: 201,
-      idempotency_key: 'dialogue-key-a',
-    }] } },
-  });
-  addShot(state, {
+    dialogue: localizedOne,
+    draft: {},
+  }));
+  const shotTwoId = Number(addShot(state, {
     shotIndex: 2,
     startMs: 1000,
     endMs: 3000,
     videoGenerationId: 102,
-    dialogue: [{ segment_id: 'b', start_ms: 1400, end_ms: 2300, text: 'World' }],
-    draft: { dialogue_generation: { segments: [{
-      segment_id: 'b',
-      start_ms: 1400,
-      end_ms: 2300,
-      status: 'completed',
-      reservation_status: 'confirmed',
-      reservation_id: 'res-b',
-      audio_asset_id: 202,
-      idempotency_key: 'dialogue-key-b',
-    }] } },
-  });
+    dialogue: localizedTwo,
+    draft: {},
+  }));
+  if (!options.silent) {
+    for (const item of [
+      {
+        shotRowId: shotOneId, localized: localizedOne[0], assetId: 201, relative: 'audio/a1.mp3',
+        reservationId: 'res-a', idempotencyKey: 'dialogue-key-a', durationMs: 900,
+        bytes: options.audio1Bytes || 'media',
+      },
+      {
+        shotRowId: shotTwoId, localized: localizedTwo[0], assetId: 202, relative: 'audio/a2.mp3',
+        reservationId: 'res-b', idempotencyKey: 'dialogue-key-b', durationMs: 700,
+        bytes: options.audio2Bytes || 'media',
+      },
+    ]) {
+      const segmentId = `${item.shotRowId}:0`;
+      addDialogueAsset(state, item.assetId, item.relative, {
+        tenant_id: 'tenant-a',
+        user_id: 'user-a',
+        version_id: state.versionId,
+        segment_id: segmentId,
+        reservation_id: item.reservationId,
+        idempotency_key: item.idempotencyKey,
+        duration_ms: item.durationMs,
+      }, item.bytes);
+      state.db.prepare('UPDATE redraw_shots SET draft_json = ? WHERE id = ?').run(JSON.stringify({
+        dialogue_generation: {
+          status: 'completed',
+          segments: [{
+            segment_id: segmentId,
+            shot_id: String(item.shotRowId),
+            turn_index: 0,
+            speaker_id: item.localized.speaker_id,
+            start_ms: item.localized.start_ms,
+            end_ms: item.localized.end_ms,
+            text_hash: sha256(item.localized.target_text),
+            status: 'completed',
+            reservation_status: 'confirmed',
+            reservation_id: item.reservationId,
+            audio_asset_id: item.assetId,
+            idempotency_key: item.idempotencyKey,
+          }],
+        },
+      }), item.shotRowId);
+    }
+  }
+  for (const row of state.db.prepare('SELECT id, video_generation_id FROM redraw_shots ORDER BY shot_index').all()) {
+    await reviewCandidate({
+      ...ctx(state),
+      candidateExecutionMode: 'auto',
+      candidateQualityVerifier: async () => ({
+        decision: 'approved',
+        reason_codes: [],
+        metrics: { media: { readable: true }, dependencies: { current: true } },
+      }),
+    }, {
+      shot_id: row.id,
+      video_generation_id: row.video_generation_id,
+      decision_source: 'automatic',
+    });
+  }
 }
 
 function ctx(state, overrides = {}) {
@@ -210,10 +254,10 @@ function ctx(state, overrides = {}) {
   };
 }
 
-test('buildCompositionPlan enforces owner, completed ordered continuous shots, and ignores deleted shots', async () => {
+test('buildCompositionPlan enforces owner, approved ordered continuous shots, and ignores deleted shots', async () => {
   const state = setup();
   try {
-    addReadyVersion(state);
+    await addReadyVersion(state);
     addShot(state, {
       tenantId: 'tenant-other',
       userId: 'user-a',
@@ -242,7 +286,7 @@ test('buildCompositionPlan fails when any non-deleted version shot is incomplete
   for (const mutate of ['pending-shot', 'missing-video']) {
     const state = setup();
     try {
-      addReadyVersion(state);
+      await addReadyVersion(state);
       if (mutate === 'pending-shot') {
         addShot(state, {
           shotIndex: 3,
@@ -257,7 +301,7 @@ test('buildCompositionPlan fails when any non-deleted version shot is incomplete
 
       await assert.rejects(
         () => buildCompositionPlan(ctx(state), { versionId: state.versionId, audioMode: 'replace' }),
-        (error) => error.code === 'REDRAW_COMPOSITION_SHOT_INCOMPLETE',
+        (error) => ['REDRAW_COMPOSITION_SHOT_INCOMPLETE', 'REDRAW_COMPOSITION_INPUT_DRIFT'].includes(error.code),
       );
     } finally {
       cleanup(state);
@@ -269,7 +313,7 @@ test('buildCompositionPlan rejects owner mismatch, gaps, unfinished videos, bad 
   for (const mutate of ['owner', 'owner-null', 'gap', 'unfinished', 'duration', 'dimension']) {
     const state = setup();
     try {
-      addReadyVersion(state);
+      await addReadyVersion(state);
       if (mutate === 'owner') state.db.prepare('UPDATE video_generations SET tenant_id = ? WHERE id = 101').run('tenant-other');
       if (mutate === 'owner-null') state.db.prepare('UPDATE video_generations SET tenant_id = NULL WHERE id = 101').run();
       if (mutate === 'gap') state.db.prepare('UPDATE redraw_shots SET start_ms = 1200, end_ms = 3200, duration_ms = 2000 WHERE shot_index = 2').run();
@@ -295,7 +339,7 @@ test('buildCompositionPlan rejects unreadable or escaping media paths and invali
   for (const mutate of ['video-missing', 'video-escape', 'audio-owner', 'audio-reservation', 'audio-window', 'audio-unconfirmed']) {
     const state = setup();
     try {
-      addReadyVersion(state);
+      await addReadyVersion(state);
       if (mutate === 'video-missing') state.db.prepare('UPDATE video_generations SET local_path = ? WHERE id = 101').run('missing.mp4');
       if (mutate === 'video-escape') state.db.prepare('UPDATE video_generations SET local_path = ? WHERE id = 101').run('../escape.mp4');
       if (mutate === 'audio-owner') {
@@ -327,10 +371,8 @@ test('buildCompositionPlan hashes exact video and audio bytes, including invalid
   const first = setup();
   const second = setup();
   try {
-    addReadyVersion(first);
-    addReadyVersion(second);
-    fs.writeFileSync(path.join(first.root, 'videos/shot-1.mp4'), Buffer.from([0xff, 0xfe, 0x00, 0x61]));
-    fs.writeFileSync(path.join(second.root, 'videos/shot-1.mp4'), Buffer.from([0xef, 0xbf, 0xbd, 0xef, 0xbf, 0xbd, 0x00, 0x61]));
+    await addReadyVersion(first, { video1Bytes: Buffer.from([0xff, 0xfe, 0x00, 0x61]) });
+    await addReadyVersion(second, { video1Bytes: Buffer.from([0xef, 0xbf, 0xbd, 0xef, 0xbf, 0xbd, 0x00, 0x61]) });
 
     const planA = await buildCompositionPlan(ctx(first), { versionId: first.versionId, audioMode: 'replace' });
     const planB = await buildCompositionPlan(ctx(second), { versionId: second.versionId, audioMode: 'replace' });
@@ -346,7 +388,7 @@ test('buildCompositionPlan hashes exact video and audio bytes, including invalid
 test('buildCompositionPlan rejects non-replace audio mode and subtitle needs_rewrite', async () => {
   const state = setup();
   try {
-    addReadyVersion(state);
+    await addReadyVersion(state);
     await assert.rejects(
       () => buildCompositionPlan(ctx(state), { versionId: state.versionId, audioMode: 'mix' }),
       /audioMode/,
@@ -355,7 +397,7 @@ test('buildCompositionPlan rejects non-replace audio mode and subtitle needs_rew
       .run(JSON.stringify([{ segment_id: 'bad', start_ms: 0, end_ms: 1000, text: '' }]));
     await assert.rejects(
       () => buildCompositionPlan(ctx(state), { versionId: state.versionId, audioMode: 'replace' }),
-      (error) => error.code === 'REDRAW_COMPOSITION_SUBTITLE_NEEDS_REWRITE',
+      (error) => error.code === 'REDRAW_COMPOSITION_INPUT_DRIFT',
     );
   } finally {
     cleanup(state);
@@ -365,7 +407,7 @@ test('buildCompositionPlan rejects non-replace audio mode and subtitle needs_rew
 test('createComposition serializes active exports and enforces idempotency key request hash', async () => {
   const state = setup();
   try {
-    addReadyVersion(state);
+    await addReadyVersion(state);
     const first = await createComposition(ctx(state), {
       versionId: state.versionId,
       idempotencyKey: 'compose-1',
@@ -384,8 +426,9 @@ test('createComposition serializes active exports and enforces idempotency key r
       .run(touch(state.root, 'videos/shot-2-changed.mp4', 'changed-video-bytes'));
     await assert.rejects(
       () => createComposition(ctx(state), { versionId: state.versionId, idempotencyKey: 'compose-1', audioMode: 'replace' }),
-      (error) => error.code === 'REDRAW_COMPOSITION_IDEMPOTENCY_CONFLICT',
+      (error) => error.code === 'REDRAW_COMPOSITION_INPUT_DRIFT',
     );
+    state.db.prepare('UPDATE video_generations SET local_path = ? WHERE id = 102').run('videos/shot-2.mp4');
     await assert.rejects(
       () => createComposition(ctx(state), { versionId: state.versionId, idempotencyKey: 'compose-2', audioMode: 'replace' }),
       (error) => error.code === 'REDRAW_COMPOSITION_ACTIVE_CONFLICT',
@@ -398,7 +441,7 @@ test('createComposition serializes active exports and enforces idempotency key r
 test('runComposition rejects stale manifests before mutation when inputs drift after create', async () => {
   const state = setup();
   try {
-    addReadyVersion(state);
+    await addReadyVersion(state);
     const created = await createComposition(ctx(state), {
       versionId: state.versionId,
       idempotencyKey: 'compose-stale',
@@ -421,7 +464,7 @@ test('runComposition rejects stale manifests before mutation when inputs drift a
 test('runComposition requires owner CAS and never mutates wrong-owner or processing exports', async () => {
   const state = setup();
   try {
-    addReadyVersion(state);
+    await addReadyVersion(state);
     const created = await createComposition(ctx(state), {
       versionId: state.versionId,
       idempotencyKey: 'compose-owner',
@@ -449,7 +492,7 @@ test('runComposition uses ffmpeg args for concat plus delayed replacement audio 
   const state = setup();
   const calls = [];
   try {
-    addReadyVersion(state);
+    await addReadyVersion(state);
     const created = await createComposition(ctx(state), {
       versionId: state.versionId,
       idempotencyKey: 'compose-run',
@@ -484,7 +527,7 @@ test('runComposition applies default process timeouts and marks ffmpeg/probe tim
     const state = setup();
     const optionsSeen = [];
     try {
-      addReadyVersion(state);
+      await addReadyVersion(state);
       const created = await createComposition(ctx(state), {
         versionId: state.versionId,
         idempotencyKey: `compose-timeout-${mode}`,
@@ -528,7 +571,7 @@ test('runComposition applies default process timeouts and marks ffmpeg/probe tim
 test('runComposition rejects output probe dimension drift', async () => {
   const state = setup();
   try {
-    addReadyVersion(state);
+    await addReadyVersion(state);
     const created = await createComposition(ctx(state), {
       versionId: state.versionId,
       idempotencyKey: 'compose-output-dim',
@@ -555,7 +598,7 @@ test('runComposition rejects symlinked export base before writing and keeps outs
   const state = setup();
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-composition-outside-'));
   try {
-    addReadyVersion(state);
+    await addReadyVersion(state);
     const created = await createComposition(ctx(state), {
       versionId: state.versionId,
       idempotencyKey: 'compose-junction',
@@ -588,7 +631,7 @@ test('runComposition rejects symlinked export base before writing and keeps outs
 test('runComposition completes atomically with three assets, version number, relative manifest paths, and subtitles', async () => {
   const state = setup();
   try {
-    addReadyVersion(state);
+    await addReadyVersion(state);
     const created = await createComposition(ctx(state), {
       versionId: state.versionId,
       idempotencyKey: 'compose-success',
@@ -622,12 +665,72 @@ test('runComposition completes atomically with three assets, version number, rel
     const manifest = JSON.parse(row.manifest_json);
     assert.equal(manifest.audio_mode, 'replace');
     assert.equal(manifest.idempotency_key, 'compose-success');
+    assert.equal(manifest.episode_release.release_hash, row.release_hash);
+    assert.match(row.release_hash, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.parse(row.quality_summary_json).decision, 'approved');
     assert.equal(manifest.outputs.srt_asset_id, row.subtitle_asset_id);
     assert.notEqual(manifest.outputs.hashes.mp4, 'final-hash');
     assert.equal(manifest.outputs.hashes.mp4, await fileSha256(path.join(state.root, manifest.outputs.mp4_path)));
     assert.equal(manifest.outputs.hashes.srt, await fileSha256(path.join(state.root, manifest.outputs.srt_path)));
     assert.equal(manifest.outputs.hashes.vtt, await fileSha256(path.join(state.root, manifest.outputs.vtt_path)));
     assert.equal(hasAbsoluteString(manifest), false);
+    assert.deepEqual(
+      state.db.prepare('SELECT status FROM redraw_shots ORDER BY shot_index').all().map((shot) => shot.status),
+      ['included', 'included'],
+    );
+    assert.equal(state.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(state.versionId).status, 'completed');
+  } finally {
+    cleanup(state);
+  }
+});
+
+test('runComposition rejects candidate drift after runner before inserting assets or replacing an old completed export', async () => {
+  const state = setup();
+  try {
+    await addReadyVersion(state);
+    const oldPath = touch(state.root, 'redraw/version-1/exports/old-before-final-check.mp4', 'old');
+    const oldAssetId = Number(state.db.prepare(`INSERT INTO assets
+      (name, type, category, local_path, metadata, created_at, updated_at)
+      VALUES ('old', 'video', 'redraw_composition', ?, '{}', ?, ?)`)
+      .run(oldPath, state.now, state.now).lastInsertRowid);
+    const oldManifest = JSON.stringify({ preserved: true });
+    const oldReleaseHash = 'b'.repeat(64);
+    const oldExportId = Number(state.db.prepare(`INSERT INTO redraw_exports
+      (version_id, tenant_id, user_id, export_type, asset_id, version_number, manifest_json,
+       release_hash, status, created_at, updated_at)
+      VALUES (?, 'tenant-a', 'user-a', 'video', ?, 1, ?, ?, 'completed', ?, ?)`)
+      .run(state.versionId, oldAssetId, oldManifest, oldReleaseHash, state.now, state.now).lastInsertRowid);
+    const created = await createComposition(ctx(state), {
+      versionId: state.versionId,
+      idempotencyKey: 'compose-drift-during-runner',
+      audioMode: 'replace',
+    });
+    const workspace = path.join(state.root, 'redraw', `version-${state.versionId}`, 'exports', String(created.id));
+
+    await assert.rejects(
+      () => runComposition(ctx(state, {
+        compositionRunner: async (job) => {
+          fs.mkdirSync(path.dirname(job.outputPath), { recursive: true });
+          fs.writeFileSync(job.outputPath, 'mp4');
+          fs.writeFileSync(job.plan.video_inputs[0].absolute_path, 'candidate-drift-during-runner');
+        },
+      }), created.id),
+      (error) => error.code === 'REDRAW_COMPOSITION_INPUT_DRIFT',
+    );
+
+    assert.deepEqual(
+      state.db.prepare('SELECT status, error_code FROM redraw_exports WHERE id = ?').get(created.id),
+      { status: 'failed', error_code: 'REDRAW_COMPOSITION_INPUT_DRIFT' },
+    );
+    assert.equal(state.db.prepare(`SELECT COUNT(*) AS count FROM assets
+      WHERE json_extract(metadata, '$.export_id') = ?`).get(created.id).count, 0);
+    assert.equal(fs.existsSync(workspace), false);
+    assert.deepEqual(
+      state.db.prepare('SELECT status, manifest_json, release_hash FROM redraw_exports WHERE id = ?').get(oldExportId),
+      { status: 'completed', manifest_json: oldManifest, release_hash: oldReleaseHash },
+    );
+    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM assets WHERE id = ?').get(oldAssetId).count, 1);
+    assert.equal(fs.existsSync(path.join(state.root, oldPath)), true);
   } finally {
     cleanup(state);
   }
@@ -636,16 +739,19 @@ test('runComposition completes atomically with three assets, version number, rel
 test('runComposition marks failed without deleting prior completed export assets', async () => {
   const state = setup();
   try {
-    addReadyVersion(state);
+    await addReadyVersion(state);
     const oldPath = touch(state.root, 'redraw/version-1/exports/old.mp4', 'old');
     const oldAssetId = state.db.prepare(`INSERT INTO assets
       (name, type, category, local_path, metadata, created_at, updated_at)
       VALUES ('old', 'video', 'redraw_composition', ?, '{}', ?, ?)`)
       .run(oldPath, state.now, state.now).lastInsertRowid;
-    state.db.prepare(`INSERT INTO redraw_exports
-      (version_id, tenant_id, user_id, export_type, asset_id, version_number, manifest_json, status, created_at, updated_at)
-      VALUES (?, 'tenant-a', 'user-a', 'video', ?, 1, '{}', 'completed', ?, ?)`)
-      .run(state.versionId, oldAssetId, state.now, state.now);
+    const oldReleaseHash = 'a'.repeat(64);
+    const oldManifest = JSON.stringify({ preserved: true });
+    const oldExportId = Number(state.db.prepare(`INSERT INTO redraw_exports
+      (version_id, tenant_id, user_id, export_type, asset_id, version_number, manifest_json,
+       release_hash, status, created_at, updated_at)
+      VALUES (?, 'tenant-a', 'user-a', 'video', ?, 1, ?, ?, 'completed', ?, ?)`)
+      .run(state.versionId, oldAssetId, oldManifest, oldReleaseHash, state.now, state.now).lastInsertRowid);
     const created = await createComposition(ctx(state), {
       versionId: state.versionId,
       idempotencyKey: 'compose-fail',
@@ -658,6 +764,10 @@ test('runComposition marks failed without deleting prior completed export assets
     );
 
     assert.equal(state.db.prepare('SELECT status FROM redraw_exports WHERE id = ?').get(created.id).status, 'failed');
+    assert.deepEqual(
+      state.db.prepare('SELECT status, manifest_json, release_hash FROM redraw_exports WHERE id = ?').get(oldExportId),
+      { status: 'completed', manifest_json: oldManifest, release_hash: oldReleaseHash },
+    );
     assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM assets WHERE id = ?').get(oldAssetId).count, 1);
     assert.equal(fs.existsSync(path.join(state.root, oldPath)), true);
   } finally {
@@ -677,6 +787,95 @@ test('recoverInterruptedCompositions moves processing exports to needs_attention
 
     assert.equal(changed, 1);
     assert.equal(state.db.prepare('SELECT status FROM redraw_exports').get().status, 'needs_attention');
+  } finally {
+    cleanup(state);
+  }
+});
+
+test('runComposition gives an all-silent approved release an explicit silent audio track', async () => {
+  const state = setup();
+  try {
+    await addReadyVersion(state, { silent: true });
+    const created = await createComposition(ctx(state), {
+      versionId: state.versionId,
+      idempotencyKey: 'compose-silent',
+      audioMode: 'replace',
+    });
+    const completed = await runComposition(ctx(state, {
+      compositionRunner: async (job) => {
+        assert.equal(job.plan.audio_inputs.length, 0);
+        assert.ok(job.args.includes('anullsrc=channel_layout=stereo:sample_rate=48000'));
+        fs.mkdirSync(path.dirname(job.outputPath), { recursive: true });
+        fs.writeFileSync(job.outputPath, 'mp4');
+      },
+    }), created.id);
+    assert.equal(completed.status, 'completed');
+  } finally {
+    cleanup(state);
+  }
+});
+
+test('REQUIRE_LOCAL_FFMPEG 生成可 probe MP4、SRT、VTT 和脱敏 release manifest', async (t) => {
+  if (process.env.REQUIRE_LOCAL_FFMPEG !== '1') {
+    t.skip('set REQUIRE_LOCAL_FFMPEG=1 to require real media composition');
+    return;
+  }
+  const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-composition-real-fixture-'));
+  t.after(() => fs.rmSync(fixtureDir, { recursive: true, force: true }));
+  const ffmpeg = getFfmpegPath();
+  const ffprobe = getFfprobePath();
+  function generated(name, args) {
+    const output = path.join(fixtureDir, name);
+    execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', ...args, output], { windowsHide: true });
+    return fs.readFileSync(output);
+  }
+  const media = {
+    video1Bytes: generated('shot-1.mp4', [
+      '-f', 'lavfi', '-i', 'color=c=red:s=320x180:d=1', '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', '1',
+    ]),
+    video2Bytes: generated('shot-2.mp4', [
+      '-f', 'lavfi', '-i', 'color=c=blue:s=320x180:d=2', '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', '2',
+    ]),
+    audio1Bytes: generated('a1.mp3', [
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=0.8', '-c:a', 'libmp3lame',
+    ]),
+    audio2Bytes: generated('a2.mp3', [
+      '-f', 'lavfi', '-i', 'sine=frequency=660:duration=0.6', '-c:a', 'libmp3lame',
+    ]),
+  };
+  const state = setup();
+  try {
+    await addReadyVersion(state, media);
+    const realCtx = ctx(state, {
+      width: 320,
+      height: 180,
+      compositionRunner: undefined,
+      probeRunner: undefined,
+    });
+    const created = await createComposition(realCtx, {
+      versionId: state.versionId,
+      idempotencyKey: 'real-ffmpeg-release',
+      audioMode: 'replace',
+    });
+    const completed = await runComposition(realCtx, created.id);
+    const manifest = JSON.parse(completed.manifest_json);
+    const outputPath = path.join(state.root, manifest.outputs.mp4_path);
+    const probe = JSON.parse(execFileSync(ffprobe, [
+      '-v', 'error', '-show_entries', 'format=duration:stream=codec_type,width,height', '-of', 'json', outputPath,
+    ], { encoding: 'utf8', windowsHide: true }));
+    assert.equal(probe.streams.some((stream) => stream.codec_type === 'video'), true);
+    assert.equal(probe.streams.some((stream) => stream.codec_type === 'audio'), true);
+    assert.ok(Math.abs(Number(probe.format.duration) - 3) <= 0.1);
+    assert.ok(fs.readFileSync(path.join(state.root, manifest.outputs.srt_path), 'utf8').includes('Hello'));
+    assert.ok(fs.readFileSync(path.join(state.root, manifest.outputs.vtt_path), 'utf8').startsWith('WEBVTT'));
+    assert.match(completed.release_hash, /^[a-f0-9]{64}$/);
+    assert.equal(hasAbsoluteString(manifest), false);
+    assert.equal(/https?:|provider|api[_-]?key|token|secret/i.test(JSON.stringify(manifest.episode_release)), false);
+    for (const kind of ['mp4', 'srt', 'vtt']) {
+      const download = await resolveDownloadArtifact(realCtx, { exportId: completed.id, kind });
+      assert.match(download.sha256, /^[a-f0-9]{64}$/);
+      assert.equal(fs.existsSync(download.absolute_path), true);
+    }
   } finally {
     cleanup(state);
   }

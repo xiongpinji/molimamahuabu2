@@ -1710,6 +1710,7 @@ test('阶段 2 资产审核路由返回门禁并禁止普通更新接口改审�
       (work_id, tenant_id, user_id, version, locale, market, status, created_at, updated_at)
       VALUES (?, 'tenant-a', 'user-a', 1, 'en-US', 'US', 'asset_review', ?, ?)`).run(workId, NOW, NOW);
     const versionId = db.prepare('SELECT id FROM redraw_versions WHERE work_id = ?').get(workId).id;
+    db.prepare('UPDATE redraw_versions SET reference_bundle_required = 1 WHERE id = ?').run(versionId);
     const assetNow = new Date().toISOString();
     db.prepare(`INSERT INTO redraw_assets
       (version_id, tenant_id, user_id, kind, source_ref_json, localized_name, asset_id,
@@ -1728,7 +1729,8 @@ test('阶段 2 资产审核路由返回门禁并禁止普通更新接口改审�
     handlers.generationGate(request({ id: versionId }), gate);
     assert.equal(gate.statusCode, 200);
     assert.equal(gate.body.data.ok, false);
-    assert.equal(gate.body.data.missing[0].asset_id, asset.id);
+    assert.equal(gate.body.data.current_step, 2);
+    assert.equal(gate.body.data.blocking[0].code, 'preparation_not_ready');
 
     const update = captureResponse();
     handlers.updateRedrawAsset(request({ id: asset.id, body: { approval_status: 'approved' } }), update);
@@ -1741,7 +1743,11 @@ test('阶段 2 资产审核路由返回门禁并禁止普通更新接口改审�
     } }), review);
     assert.equal(review.statusCode, 200);
     assert.equal(review.body.data.asset.approval_status, 'approved');
-    assert.equal(review.body.data.gate.ok, true);
+    assert.equal(review.body.data.gate.ok, false);
+    assert.equal(review.body.data.gate.blocking[0].code, 'preparation_not_ready');
+    assert.ok(review.body.data.gate.missing.some((item) => item.reason_code === 'character_plan_not_ready'));
+    assert.equal(review.body.data.current_step, 2);
+    assert.equal(db.prepare('SELECT current_step FROM redraw_works WHERE id = ?').get(workId).current_step, 2);
   } finally {
     db.close();
   }
@@ -5519,6 +5525,11 @@ test('第三步、角色身份包、本地化确认和参考准备 API 已真实
     assert.equal(routes.has('GET /redraw/versions/:id/dialogue/tasks/:taskId'), true);
     assert.equal(routes.has('PUT /redraw/projects/:id/policy'), true);
     assert.equal(routes.has('GET /redraw/projects/:id/events'), true);
+    assert.equal(routes.has('GET /redraw/versions/:id/generation-summary'), true);
+    assert.equal(routes.has('GET /redraw/shots/:id/candidate-reviews'), true);
+    assert.equal(routes.has('POST /redraw/shots/:id/candidate-reviews'), true);
+    assert.equal(routes.has('GET /redraw/versions/:id/release-readiness'), true);
+    assert.equal(routes.has('POST /redraw/versions/:id/releases'), true);
   } finally {
     db.close();
   }
@@ -5662,8 +5673,21 @@ test('参考准备 API 按 owner 接线、严格白名单且只传服务端受�
       await handlers.referencePreparationQuote(request({ id: versionId, body }), invalidShots);
       assert.equal(invalidShots.statusCode, 400, JSON.stringify(body));
       assert.equal(invalidShots.body.error.code, 'REDRAW_REFERENCE_PREPARATION_SHOTS_INVALID');
+
+      const invalidStart = captureResponse();
+      await handlers.startReferencePreparation(request({
+        id: versionId,
+        body: {
+          quote_hash: 'quote-reference-ready',
+          idempotency_key: 'invalid-start-scope',
+          ...body,
+        },
+      }), invalidStart);
+      assert.equal(invalidStart.statusCode, 400, JSON.stringify(body));
+      assert.equal(invalidStart.body.error.code, 'REDRAW_REFERENCE_PREPARATION_SHOTS_INVALID');
     }
     assert.equal(calls.filter((call) => call.name === 'quote').length, 1);
+    assert.equal(calls.filter((call) => call.name === 'start').length, 1);
 
     for (const req of [
       request({ id: versionId, tenantId: 'tenant-b' }),
@@ -6067,7 +6091,7 @@ test('配音 quote/start/status 路由按版本 owner 接线且拒绝客户端�
       dialogueOrchestrator: {
         quoteDialogue: (_db, input) => {
           calls.push({ name: 'quote', input });
-          return { status: 'ready', total_credits: 4, quote_hash: 'dialogue-quote-ok' };
+          return { status: 'ready', priced: true, total_credits: 4, quote_hash: 'a'.repeat(64) };
         },
         startDialogue: (_db, _log, ctx, input) => {
           calls.push({ name: 'start', ctx, input });
@@ -6078,7 +6102,7 @@ test('配音 quote/start/status 路由按版本 owner 接线且拒绝客户端�
           return {
             task_id: 'task-dialogue-route',
             status: 'completed',
-            quote: { status: 'ready', total_credits: 4, quote_hash: 'dialogue-quote-ok' },
+            quote: { status: 'ready', priced: true, total_credits: 4, quote_hash: 'a'.repeat(64) },
             completion: Promise.resolve(),
           };
         },
@@ -6094,14 +6118,15 @@ test('配音 quote/start/status 路由按版本 owner 接线且拒绝客户端�
     const okQuote = captureResponse();
     handlers.dialogueQuote(request({ id: versionId, body: {} }), okQuote);
     assert.equal(okQuote.statusCode, 200);
-    assert.equal(okQuote.body.data.quote_hash, 'dialogue-quote-ok');
+    assert.equal(okQuote.body.data.priced, true);
+    assert.equal(okQuote.body.data.quote_hash, 'a'.repeat(64));
     assert.equal(calls[0].input.versionId, versionId);
     assert.equal(calls[0].input.tenantId, 'tenant-a');
 
     const badStart = captureResponse();
     await handlers.startDialogue(request({
       id: versionId,
-      body: { quote_hash: 'dialogue-quote-ok', idempotency_key: 'idem-route', credits: 1 },
+      body: { quote_hash: 'a'.repeat(64), idempotency_key: 'idem-route', credits: 1 },
     }), badStart);
     assert.equal(badStart.statusCode, 400);
     assert.equal(badStart.body.error.code, 'REDRAW_DIALOGUE_CLIENT_CONTROL_FORBIDDEN');
@@ -6109,12 +6134,12 @@ test('配音 quote/start/status 路由按版本 owner 接线且拒绝客户端�
     const start = captureResponse();
     await handlers.startDialogue(request({
       id: versionId,
-      body: { quote_hash: 'dialogue-quote-ok', idempotency_key: 'idem-route' },
+      body: { quote_hash: 'a'.repeat(64), idempotency_key: 'idem-route' },
     }), start);
     assert.equal(start.statusCode, 202);
     assert.equal(start.body.data.task_id, 'task-dialogue-route');
-    assert.equal(start.body.data.quote.quote_hash, 'dialogue-quote-ok');
-    assert.deepEqual(calls[1].input, { quoteHash: 'dialogue-quote-ok', idempotencyKey: 'idem-route' });
+    assert.equal(start.body.data.quote.quote_hash, 'a'.repeat(64));
+    assert.deepEqual(calls[1].input, { quoteHash: 'a'.repeat(64), idempotencyKey: 'idem-route' });
 
     const status = captureResponse();
     handlers.getDialogueTask({
@@ -6135,5 +6160,511 @@ test('配音 quote/start/status 路由按版本 owner 接线且拒绝客户端�
     assert.equal(otherTenant.statusCode, 404);
   } finally {
     db.close();
+  }
+});
+
+test('参考准备 start 将 needs_attention 范围冲突映射为 409 且不创建服务端任务', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 3 });
+    const versionId = Number(insertVersion(db, workId, { status: 'asset_review' }));
+    const shotId = Number(insertShot(db, workId, versionId, { preparation_state: 'needs_attention' }));
+    let startCalls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      referencePreparationService: {
+        async startVersionPreparation() {
+          startCalls += 1;
+          throw Object.assign(new Error('结果未知镜头只能人工核对'), {
+            code: 'REDRAW_REFERENCE_PREPARATION_NEEDS_ATTENTION',
+            details: {
+              quote: {
+                selected_shot_ids: [shotId],
+                missing_shot_ids: [],
+                needs_attention_shot_ids: [shotId],
+                quote_hash: 'a'.repeat(64),
+              },
+            },
+          });
+        },
+      },
+    }));
+    const result = captureResponse();
+    await handlers.startReferencePreparation(request({
+      id: versionId,
+      body: {
+        quote_hash: 'a'.repeat(64),
+        idempotency_key: 'needs-attention-scope',
+        shot_ids: [shotId],
+      },
+    }), result);
+    assert.equal(result.statusCode, 409);
+    assert.equal(result.body.error.code, 'REDRAW_REFERENCE_PREPARATION_NEEDS_ATTENTION');
+    assert.deepEqual(result.body.error.details.quote.needs_attention_shot_ids, [shotId]);
+    assert.equal(startCalls, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_reference_preparation'").get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('交付工作台生成摘要按 owner 返回预算、attempt 和规范 provider 状态', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db, {
+      execution_mode: 'auto',
+      budget_limit_credits: 30,
+      max_auto_attempts_per_shot: 3,
+    });
+    db.prepare(`UPDATE redraw_projects
+      SET execution_mode = 'auto', budget_limit_credits = 30, max_auto_attempts_per_shot = 3
+      WHERE id = ?`).run(projectId);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 3 });
+    const versionId = insertVersion(db, workId, { status: 'generating' });
+    const shotId = Number(insertShot(db, versionId, { status: 'failed' }));
+    const heldShotId = Number(insertShot(db, versionId, { shot_index: 2, status: 'processing' }));
+    const candidateShotId = Number(insertShot(db, versionId, { shot_index: 3, status: 'candidate_ready' }));
+    const unknownShotId = Number(insertShot(db, versionId, { shot_index: 4, status: 'needs_attention' }));
+    db.prepare(`INSERT INTO async_tasks
+      (id, type, status, progress, resource_id, tenant_id, user_id, metadata, created_at, updated_at)
+      VALUES ('delivery-task-1', 'redraw_shot', 'failed', 100, ?, 'tenant-a', 'user-a', ?, ?, ?)`)
+      .run(String(shotId), JSON.stringify({ redraw_shot: { attempt: 2, reservation_id: 'delivery-reservation-1' } }), NOW, NOW);
+    const videoId = Number(db.prepare(`INSERT INTO video_generations
+      (status, task_id, tenant_id, user_id, provider_task_id, created_at, updated_at)
+      VALUES ('failed', 'delivery-task-1', 'tenant-a', 'user-a', 'provider-safe-1', ?, ?)`)
+      .run(NOW, NOW).lastInsertRowid);
+    db.prepare('UPDATE redraw_shots SET video_generation_id = ? WHERE id = ?').run(videoId, shotId);
+    const candidateVideoId = Number(db.prepare(`INSERT INTO video_generations
+      (status, local_path, tenant_id, user_id, created_at, updated_at)
+      VALUES ('completed', 'redraw/candidate.mp4', 'tenant-a', 'user-a', ?, ?)`)
+      .run(NOW, NOW).lastInsertRowid);
+    db.prepare('UPDATE redraw_shots SET video_generation_id = ? WHERE id = ?')
+      .run(candidateVideoId, candidateShotId);
+    for (const reservation of [
+      ['delivery-reservation-1', 'confirmed', 10, shotId],
+      ['delivery-reservation-2', 'held', 5, heldShotId],
+    ]) {
+      db.prepare(`INSERT INTO tenant_usage_reservations
+        (id, tenant_id, operation_key, actor_user_id, model, resource_type, resource_id,
+         amount, status, created_at, updated_at)
+        VALUES (?, 'tenant-a', ?, 'user-a', 'server-model', 'redraw_shot', ?, ?, ?, ?, ?)`)
+        .run(reservation[0], `operation-${reservation[0]}`, String(reservation[3]), reservation[2], reservation[1], NOW, NOW);
+    }
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+    const output = captureResponse();
+    handlers.generationSummary(request({ id: versionId }), output);
+    assert.equal(output.statusCode, 200);
+    assert.deepEqual(output.body.data.budget, { limit: 30, spent: 10, held: 5, remaining: 15 });
+    assert.deepEqual(output.body.data.shots[0], {
+      shot_id: shotId,
+      shot_index: 1,
+      status: 'failed',
+      attempt: 2,
+      provider_status: 'failed_terminal',
+      provider_task_id: 'provider-safe-1',
+      can_start_next_attempt: true,
+      next_attempt: 3,
+      policy_reason: null,
+      updated_at: NOW,
+    });
+    assert.equal(JSON.stringify(output.body).includes('server-model'), false);
+    assert.equal(output.body.data.shots.find((shot) => shot.shot_id === heldShotId).provider_status, 'running');
+    assert.equal(output.body.data.shots.find((shot) => shot.shot_id === candidateShotId).provider_status, 'completed_candidate');
+    assert.deepEqual(
+      output.body.data.shots.find((shot) => shot.shot_id === unknownShotId),
+      {
+        shot_id: unknownShotId,
+        shot_index: 4,
+        status: 'needs_attention',
+        attempt: 0,
+        provider_status: 'submission_unknown',
+        provider_task_id: null,
+        can_start_next_attempt: false,
+        next_attempt: null,
+        policy_reason: 'submission_state_uncertain',
+        updated_at: NOW,
+      },
+    );
+
+    db.prepare('UPDATE redraw_shots SET deleted_at = ? WHERE id IN (?, ?)')
+      .run(NOW, shotId, heldShotId);
+    const afterSoftDelete = captureResponse();
+    handlers.generationSummary(request({ id: versionId }), afterSoftDelete);
+    assert.equal(afterSoftDelete.statusCode, 200);
+    assert.deepEqual(afterSoftDelete.body.data.budget, {
+      limit: 30,
+      spent: 10,
+      held: 5,
+      remaining: 15,
+    });
+    assert.equal(afterSoftDelete.body.data.shots.some((shot) => shot.shot_id === shotId), false);
+    assert.equal(afterSoftDelete.body.data.shots.some((shot) => shot.shot_id === heldShotId), false);
+
+    const foreign = captureResponse();
+    handlers.generationSummary(request({ id: versionId, tenantId: 'tenant-b' }), foreign);
+    assert.equal(foreign.statusCode, 404);
+  } finally {
+    db.close();
+  }
+});
+
+test('候选审核路由只允许人工白名单字段并保持 owner、CAS 与零副作用边界', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 3 });
+    const versionId = insertVersion(db, workId);
+    const shotId = Number(insertShot(db, versionId, { status: 'candidate_ready' }));
+    const videoId = Number(db.prepare(`INSERT INTO video_generations
+      (status, tenant_id, user_id, created_at, updated_at)
+      VALUES ('completed', 'tenant-a', 'user-a', ?, ?)`)
+      .run(NOW, NOW).lastInsertRowid);
+    db.prepare('UPDATE redraw_shots SET video_generation_id = ? WHERE id = ?').run(videoId, shotId);
+    const calls = [];
+    const candidateReviewService = {
+      getCurrentCandidateReview: () => ({
+        id: 9,
+        shot_id: shotId,
+        decision: 'needs_review',
+        decision_source: 'automatic',
+        candidate_sha256: 'a'.repeat(64),
+        reason_codes: ['safe_mode_human_review_required'],
+        metrics: { visual: 'passed' },
+      }),
+      reviewCandidate: async (_ctx, input) => {
+        calls.push(input);
+        return { id: 10, ...input, reason_codes: input.reason_codes, metrics: {} };
+      },
+    };
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({ candidateReviewService }));
+
+    for (const field of ['model', 'provider', 'price', 'credits', 'path', 'url', 'metrics', 'reviewer_id']) {
+      const rejected = captureResponse();
+      await handlers.reviewCandidate(request({
+        id: shotId,
+        body: {
+          decision: 'approved',
+          candidate_sha256: 'a'.repeat(64),
+          expected_updated_at: NOW,
+          [field]: 'attacker',
+        },
+      }), rejected);
+      assert.equal(rejected.statusCode, 400, field);
+    }
+    assert.equal(calls.length, 0);
+
+    const inherited = captureResponse();
+    await handlers.reviewCandidate(request({
+      id: shotId,
+      body: Object.create({
+        decision: 'approved',
+        candidate_sha256: 'a'.repeat(64),
+        expected_updated_at: NOW,
+      }),
+    }), inherited);
+    assert.equal(inherited.statusCode, 400);
+    assert.equal(calls.length, 0);
+
+    const invalidDecision = captureResponse();
+    await handlers.reviewCandidate(request({ id: shotId, body: {
+      decision: 'needs_review', candidate_sha256: 'a'.repeat(64), expected_updated_at: NOW,
+    } }), invalidDecision);
+    assert.equal(invalidDecision.statusCode, 400);
+    assert.equal(calls.length, 0);
+
+    const approved = captureResponse();
+    await handlers.reviewCandidate(request({ id: shotId, body: {
+      decision: 'approved', reason_code: 'manual_visual_passed',
+      candidate_sha256: 'a'.repeat(64), expected_updated_at: NOW,
+    } }), approved);
+    assert.equal(approved.statusCode, 200);
+    assert.deepEqual(calls[0], {
+      shot_id: shotId,
+      video_generation_id: videoId,
+      decision_source: 'human',
+      decision: 'approved',
+      reason_codes: ['manual_visual_passed'],
+      candidate_sha256: 'a'.repeat(64),
+      expected_updated_at: NOW,
+    });
+
+    const listed = captureResponse();
+    handlers.listCandidateReviews(request({ id: shotId }), listed);
+    assert.equal(listed.statusCode, 200);
+    assert.equal(listed.body.data.current.decision_source, 'automatic');
+    assert.equal(listed.body.data.shot_updated_at, NOW);
+
+    const foreign = captureResponse();
+    handlers.listCandidateReviews(request({ id: shotId, tenantId: 'tenant-b' }), foreign);
+    assert.equal(foreign.statusCode, 404);
+  } finally {
+    db.close();
+  }
+});
+
+test('release readiness 与创建只使用服务端 hash、Task6 服务和受控相对下载 URL', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 4 });
+    const versionId = Number(insertVersion(db, workId, { status: 'composing' }));
+    const release = {
+      schema_version: 'redraw-episode-release-v1',
+      version_id: versionId,
+      shots: [{ shot_id: 1 }],
+      quality_summary: { decision: 'approved' },
+      release_hash: 'b'.repeat(64),
+    };
+    const builds = [];
+    const compositions = [];
+    let forceBlocked = false;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      episodeReleaseService: {
+        buildEpisodeRelease: async (ctx, input) => {
+          builds.push({ tenantId: ctx.tenantId, userId: ctx.userId, input });
+          if (forceBlocked) throw Object.assign(new Error('version has no shots'), {
+            code: 'REDRAW_EPISODE_RELEASE_SHOTS_EMPTY',
+          });
+          return release;
+        },
+      },
+      compositionService: {
+        createComposition: async (_ctx, input) => {
+          compositions.push(input);
+          return { id: 88, status: 'pending', version_number: 1, created: false };
+        },
+      },
+    }));
+
+    const readiness = captureResponse();
+    await handlers.releaseReadiness(request({ id: versionId }), readiness);
+    assert.equal(readiness.statusCode, 200);
+    assert.equal(readiness.body.data.ready, true);
+    assert.equal(readiness.body.data.readiness_hash, 'b'.repeat(64));
+
+    for (const field of ['model', 'provider', 'price', 'path', 'url', 'metrics', 'release_hash']) {
+      const rejected = captureResponse();
+      await handlers.createRelease(request({ id: versionId, body: {
+        idempotency_key: 'release-idem', readiness_hash: 'b'.repeat(64), [field]: 'attacker',
+      } }), rejected);
+      assert.equal(rejected.statusCode, 400, field);
+    }
+    assert.equal(compositions.length, 0);
+
+    const inherited = captureResponse();
+    await handlers.createRelease(request({
+      id: versionId,
+      body: Object.create({ idempotency_key: 'release-idem', readiness_hash: 'b'.repeat(64) }),
+    }), inherited);
+    assert.equal(inherited.statusCode, 400);
+    assert.equal(compositions.length, 0);
+
+    const stale = captureResponse();
+    await handlers.createRelease(request({ id: versionId, body: {
+      idempotency_key: 'release-idem', readiness_hash: 'c'.repeat(64),
+    } }), stale);
+    assert.equal(stale.statusCode, 409);
+    assert.equal(stale.body.error.code, 'REDRAW_RELEASE_READINESS_CONFLICT');
+    assert.equal(compositions.length, 0);
+
+    const created = captureResponse();
+    await handlers.createRelease(request({ id: versionId, body: {
+      idempotency_key: 'release-idem', readiness_hash: 'b'.repeat(64),
+    } }), created);
+    assert.equal(created.statusCode, 202);
+    assert.deepEqual(compositions, [{ versionId, idempotencyKey: 'release-idem', audioMode: 'replace' }]);
+    assert.deepEqual(created.body.data.downloads, {
+      mp4: '/api/v1/redraw/exports/88/download/mp4',
+      srt: '/api/v1/redraw/exports/88/download/srt',
+      vtt: '/api/v1/redraw/exports/88/download/vtt',
+      report: '/api/v1/redraw/exports/88',
+    });
+    assert.equal(JSON.stringify(created.body).includes('C:'), false);
+    assert.equal(builds.every((item) => item.tenantId === 'tenant-a' && item.input.version_id === versionId), true);
+
+    const auditQuality = {
+      decision: 'approved',
+      approved_shot_count: 1,
+      automatic_review_count: 0,
+      human_review_count: 1,
+    };
+    const auditShot = {
+      shot_id: 7,
+      shot_index: 1,
+      start_ms: 0,
+      end_ms: 5000,
+      candidate_review_id: 19,
+      candidate_sha256: 'c'.repeat(64),
+      audio_sha256: 'd'.repeat(64),
+      subtitle_sha256: 'e'.repeat(64),
+      dependency_hash: 'f'.repeat(64),
+    };
+    const auditUnsignedRelease = {
+      schema_version: 'redraw-episode-release-v1',
+      project_id: projectId,
+      work_id: workId,
+      version_id: versionId,
+      locale: 'en-US',
+      market: 'US',
+      shots: [auditShot],
+      quality_summary: auditQuality,
+    };
+    const auditReleaseHash = crypto.createHash('sha256').update(stableJson(auditUnsignedRelease)).digest('hex');
+    const auditRelease = { ...auditUnsignedRelease, release_hash: auditReleaseHash };
+    const taintedRelease = {
+      ...auditRelease,
+      provider_raw: { api_key: 'secret-provider-key', url: 'https://provider.invalid/raw' },
+      absolute_path: 'C:\\private\\episode.mp4',
+      shots: [{
+        ...auditShot,
+        provider: 'attacker-provider',
+        local_path: 'C:\\private\\candidate.mp4',
+        external_url: 'https://attacker.invalid/candidate.mp4',
+      }],
+      quality_summary: { ...auditQuality, provider_metrics: { raw: true } },
+    };
+    const insertAuditExport = db.prepare(`INSERT INTO redraw_exports
+      (version_id, tenant_id, user_id, export_type, version_number, manifest_json,
+       release_hash, quality_summary_json, status, created_at, updated_at)
+      VALUES (?, 'tenant-a', 'user-a', 'video', ?, ?, ?, ?, ?, ?, ?)`);
+    const completedExportId = Number(insertAuditExport.run(
+      versionId,
+      2,
+      JSON.stringify({
+        episode_release: taintedRelease,
+        provider_raw: { api_key: 'secret-provider-key' },
+        outputs: { absolute_path: 'C:\\private\\episode.mp4', external_url: 'https://provider.invalid/file' },
+      }),
+      auditReleaseHash,
+      JSON.stringify({ ...auditQuality, provider_raw: { score: 1 } }),
+      'completed',
+      NOW,
+      NOW,
+    ).lastInsertRowid);
+    const completedReport = captureResponse();
+    handlers.getExport(request({ id: completedExportId }), completedReport);
+    assert.equal(completedReport.statusCode, 200);
+    assert.equal(completedReport.body.data.release_hash, auditReleaseHash);
+    assert.deepEqual(completedReport.body.data.quality_summary, auditQuality);
+    assert.deepEqual(completedReport.body.data.episode_release, auditRelease);
+    assert.equal(completedReport.body.data.downloads.report, `/api/v1/redraw/exports/${completedExportId}`);
+    assert.equal(/C:\\|https?:\/\/|provider_raw|api_key|external_url|local_path/
+      .test(JSON.stringify(completedReport.body.data)), false);
+
+    for (const [status, versionNumber] of [['pending', 3], ['failed', 4]]) {
+      const exportId = Number(insertAuditExport.run(
+        versionId,
+        versionNumber,
+        JSON.stringify({ episode_release: taintedRelease }),
+        auditReleaseHash,
+        JSON.stringify(auditQuality),
+        status,
+        NOW,
+        NOW,
+      ).lastInsertRowid);
+      const notAReport = captureResponse();
+      handlers.getExport(request({ id: exportId }), notAReport);
+      assert.equal(notAReport.statusCode, 200);
+      assert.equal(Object.hasOwn(notAReport.body.data, 'release_hash'), false, status);
+      assert.equal(Object.hasOwn(notAReport.body.data, 'quality_summary'), false, status);
+      assert.equal(Object.hasOwn(notAReport.body.data, 'episode_release'), false, status);
+      assert.equal(Object.hasOwn(notAReport.body.data, 'downloads'), false, status);
+    }
+
+    forceBlocked = true;
+    const blocked = captureResponse();
+    await handlers.releaseReadiness(request({ id: versionId }), blocked);
+    assert.equal(blocked.statusCode, 200);
+    assert.deepEqual(blocked.body.data, {
+      ready: false,
+      version_id: versionId,
+      readiness_hash: null,
+      blockers: [{ shot_id: null, reason_code: 'shots_empty' }],
+    });
+
+    const foreign = captureResponse();
+    await handlers.releaseReadiness(request({ id: versionId, tenantId: 'tenant-b' }), foreign);
+    assert.equal(foreign.statusCode, 404);
+  } finally {
+    db.close();
+  }
+});
+
+test('release readiness 按对白轮次检查生成音频而不比较跨域 segment_id', async (t) => {
+  for (const mutation of ['valid', 'turn_index', 'start_ms', 'start_ms_type', 'end_ms', 'speaker_id', 'text_hash']) {
+    await t.test(mutation, async () => {
+      const db = createDb();
+      try {
+        const projectId = insertProject(db);
+        const workId = insertWork(db, projectId, { current_version: 1, current_step: 4 });
+        const versionId = Number(insertVersion(db, workId, { status: 'composing' }));
+        const localized = {
+          segment_id: 'g1-t1',
+          speaker_id: 'Maya',
+          target_text: 'Come with me.',
+          start_ms: 500,
+          end_ms: 1500,
+        };
+        const shotId = Number(insertShot(db, versionId, {
+          start_ms: 0,
+          end_ms: 2000,
+          duration_ms: 2000,
+          status: 'approved',
+          video_generation_id: 41,
+          localized_dialogue_json: JSON.stringify([localized]),
+        }));
+        const generated = {
+          segment_id: `${shotId}:0`,
+          turn_index: 0,
+          speaker_id: localized.speaker_id,
+          start_ms: localized.start_ms,
+          end_ms: localized.end_ms,
+          text_hash: crypto.createHash('sha256').update(localized.target_text).digest('hex'),
+          status: 'completed',
+          reservation_status: 'confirmed',
+          audio_asset_id: 51,
+        };
+        if (mutation === 'turn_index') generated.turn_index = 1;
+        if (mutation === 'start_ms') generated.start_ms += 1;
+        if (mutation === 'start_ms_type') generated.start_ms = String(generated.start_ms);
+        if (mutation === 'end_ms') generated.end_ms -= 1;
+        if (mutation === 'speaker_id') generated.speaker_id = 'speaker-drift';
+        if (mutation === 'text_hash') generated.text_hash = '0'.repeat(64);
+        db.prepare('UPDATE redraw_shots SET approved_candidate_review_id = 31, draft_json = ? WHERE id = ?')
+          .run(JSON.stringify({ dialogue_generation: { status: 'completed', segments: [generated] } }), shotId);
+
+        const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+          candidateReviewService: {
+            assertCurrentApprovedCandidate: () => ({ id: 31 }),
+          },
+          episodeReleaseService: {
+            buildEpisodeRelease: async () => {
+              if (mutation !== 'valid') {
+                throw Object.assign(new Error('dialogue audio mismatch'), {
+                  code: 'REDRAW_EPISODE_RELEASE_AUDIO_CONTRACT_INVALID',
+                });
+              }
+              return {
+                release_hash: 'a'.repeat(64),
+                shots: [{ shot_id: shotId }],
+                quality_summary: { decision: 'approved' },
+              };
+            },
+          },
+        }));
+        const response = captureResponse();
+        await handlers.releaseReadiness(request({ id: versionId }), response);
+        assert.equal(response.statusCode, 200);
+        if (mutation === 'valid') {
+          assert.equal(response.body.data.ready, true);
+        } else {
+          assert.deepEqual(response.body.data.blockers, [
+            { shot_id: shotId, reason_code: 'dialogue_audio_contract_invalid' },
+          ]);
+        }
+      } finally {
+        db.close();
+      }
+    });
   }
 });

@@ -8,6 +8,7 @@ on:
       - 'docs/verification/platform-stability/**'
       - 'deploy/release-scopes/platform-stability-foundation.json'
       - '.github/workflows/backend-node-tests.yml'
+      - '.github/workflows/frontend-e2e.yml'
 
 permissions:
   contents: read

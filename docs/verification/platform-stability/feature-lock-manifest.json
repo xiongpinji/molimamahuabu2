@@ -41,7 +41,8 @@
         "docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md",
         "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md",
         "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md",
-        "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md"
+        "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md",
+        "docs/tasks/2026-08-27-pr194-main-sync-ci-fix.md"
       ],
       "fixCommit": "54eb8e940982cd9c4b65e91b934d8593a6b1975b",
       "unlockHistory": [
@@ -129,19 +130,43 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-24 通用短剧生成与整集交付计划任务 1-8 获批",
+          "approvedBy": "product-owner 2026-08-24 redraw-general-generation-delivery-tasks-1-8",
+          "impactTests": [
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawCandidateReview.test.js",
+            "backend-node/test/redrawEpisodeRelease.test.js",
+            "frontweb/e2e/redraw-full-product.spec.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-25 PR #193 图片结果未知安全收口与旧线路兼容 CI 修复获批",
+          "approvedBy": "product-owner 2026-08-25 pr-193-ci-fix-approved",
+          "impactTests": [
+            "backend-node/test/djpsdOpenApiImage.test.js",
+            "backend-node/test/imageDuplicateGuard.test.js",
+            "backend-node/test/imageProviderConfigFailover.test.js",
+            "backend-node/test/imageTools.test.js",
+            "backend-node/test/providerRouteImageIntegration.test.js",
+            "backend-node/test/token6688Image.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-25 PR #193 图片结果未知安全收口与旧线路兼容 CI 修复获批",
-        "approvedBy": "product-owner 2026-08-25 pr-193-ci-fix-approved",
+        "reason": "2026-08-27 PR #194 合入最新 main 与 Hosted CI 修复获批",
+        "approvedBy": "product-owner 2026-08-27 pr-194-main-sync-ci-fix-approved",
         "impactTests": [
-          "backend-node/test/djpsdOpenApiImage.test.js",
-          "backend-node/test/imageDuplicateGuard.test.js",
-          "backend-node/test/imageProviderConfigFailover.test.js",
-          "backend-node/test/imageTools.test.js",
-          "backend-node/test/providerRouteImageIntegration.test.js",
-          "backend-node/test/token6688Image.test.js",
-          "backend-node/test/featureLockManifest.test.js"
+          "backend-node/test/providerRouteSchema.test.js",
+          "backend-node/test/providerCanaryPublicGate.test.js",
+          "backend-node/test/redrawMigration.test.js",
+          "backend-node/test/redrawRoutes.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },
@@ -688,16 +713,28 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-24 连接测试仅验证连通性安全修复获批",
+          "approvedBy": "product-owner 2026-08-24 pr-189-ci-fix",
+          "impactTests": [
+            "backend-node/test/migrateAiConfigVerification.test.js",
+            "backend-node/test/videoProviderVerification.test.js",
+            "backend-node/test/aiConfigPublicView.test.js",
+            "backend-node/test/providerRouteAdminRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-24 连接测试仅验证连通性安全修复获批",
-        "approvedBy": "product-owner 2026-08-24 pr-189-ci-fix",
+        "reason": "2026-08-24 通用短剧生成与整集交付计划任务 1-8 获批",
+        "approvedBy": "product-owner 2026-08-24 redraw-general-generation-delivery-tasks-1-8",
         "impactTests": [
-          "backend-node/test/migrateAiConfigVerification.test.js",
-          "backend-node/test/videoProviderVerification.test.js",
-          "backend-node/test/aiConfigPublicView.test.js",
-          "backend-node/test/providerRouteAdminRoutes.test.js",
+          "backend-node/test/redrawMigration.test.js",
+          "backend-node/test/redrawRoutes.test.js",
+          "backend-node/test/redrawCandidateReview.test.js",
+          "backend-node/test/redrawEpisodeRelease.test.js",
+          "frontweb/e2e/redraw-full-product.spec.js",
           "backend-node/test/featureLockManifest.test.js"
         ]
       }
@@ -824,7 +861,8 @@
         "docs/verification/platform-stability/canvas-text-capability-hotfix-20260824.md",
         "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md",
         "docs/tasks/2026-08-26-static-asset-cross-release-compat.md",
-        "docs/superpowers/plans/2026-08-27-provider-canary-metadata-remediation-plan.md"
+        "docs/superpowers/plans/2026-08-27-provider-canary-metadata-remediation-plan.md",
+        "docs/tasks/2026-08-27-pr194-main-sync-ci-fix.md"
       ],
       "fixCommit": null,
       "unlockHistory": [
@@ -1022,6 +1060,18 @@
           ]
         },
         {
+          "reason": "2026-08-24 通用短剧生成与整集交付计划任务 1-8 获批",
+          "approvedBy": "product-owner 2026-08-24 redraw-general-generation-delivery-tasks-1-8",
+          "impactTests": [
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawCandidateReview.test.js",
+            "backend-node/test/redrawEpisodeRelease.test.js",
+            "frontweb/e2e/redraw-full-product.spec.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
           "reason": "2026-08-25 PR #193 图片结果未知安全收口与旧线路兼容 CI 修复获批",
           "approvedBy": "product-owner 2026-08-25 pr-193-ci-fix-approved",
           "impactTests": [
@@ -1043,14 +1093,26 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 PR #197 供应商 Canary 元数据只读修复规划获批",
+          "approvedBy": "product-owner 2026-08-27 pr-197-provider-metadata-held-reconciliation-readonly-audit",
+          "impactTests": [
+            "backend-node/test/providerCanaryInventory.test.js",
+            "backend-node/test/providerCanaryRemediationPlan.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 PR #197 供应商 Canary 元数据只读修复规划获批",
-        "approvedBy": "product-owner 2026-08-27 pr-197-provider-metadata-held-reconciliation-readonly-audit",
+        "reason": "2026-08-27 PR #194 合入最新 main 与 Hosted CI 修复获批",
+        "approvedBy": "product-owner 2026-08-27 pr-194-main-sync-ci-fix-approved",
         "impactTests": [
-          "backend-node/test/providerCanaryInventory.test.js",
-          "backend-node/test/providerCanaryRemediationPlan.test.js",
+          "backend-node/test/providerRouteSchema.test.js",
+          "backend-node/test/providerCanaryPublicGate.test.js",
+          "backend-node/test/redrawMigration.test.js",
+          "backend-node/test/redrawRoutes.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
