@@ -425,6 +425,7 @@ test('去人净景使用人物遮罩并保留源场景版本', async () => {
   }, sceneAsset, { mask_asset_id: 402, prompt: '去除人物并保留场景结构' });
 
   assert.equal(result.clean_plate_asset_id, 403);
+  assert.equal(result.asset_id, null);
   assert.equal(result.source_asset_id, 401);
   assert.equal(result.mask_asset_id, 402);
   assert.equal(result.generation_task_id, 'clean-task-1');
@@ -437,6 +438,9 @@ test('去人净景使用人物遮罩并保留源场景版本', async () => {
   assert.equal(snapshot.mask_asset_id, 402);
   assert.equal(snapshot.input_frame_fingerprint, 'frame-1');
   assert.equal(snapshot.model, 'redraw-clean-plate');
+  const redrawRow = state.db.prepare('SELECT asset_id, clean_plate_asset_id FROM redraw_assets WHERE id = ?').get(result.id);
+  assert.equal(redrawRow.asset_id, null);
+  assert.equal(redrawRow.clean_plate_asset_id, 403);
   assert.equal(state.db.prepare('SELECT local_path FROM assets WHERE id = 401').get().local_path, 'scene.png');
   fs.rmSync(root, { recursive: true, force: true });
   state.db.close();
@@ -459,6 +463,8 @@ test('clean provider 本地图片由产品服务验真、内容寻址并登记�
     provider: async (args) => {
       providerArgs = args;
       assert.equal(Object.isFrozen(args.input), true);
+      assert.equal(args.input.version_id, state.versionId);
+      assert.equal(args.input.kind, 'scene');
       assert.equal('db' in args, false);
       assert.equal('storageRoot' in args, false);
       assert.equal('attempt' in args, false);

@@ -496,7 +496,8 @@ function normalizeAssetRequest(request = {}) {
   const model = snapshotModel || requestModel;
   const provider = snapshotProvider || requestProvider || null;
   const kind = trim(attempt.kind || input.kind || request.kind);
-  const versionId = request.versionId || request.version_id || attempt.version_id || attempt.versionId;
+  const versionId = request.versionId || request.version_id || attempt.version_id || attempt.versionId
+    || input.version_id || input.versionId;
   return {
     input,
     attempt,

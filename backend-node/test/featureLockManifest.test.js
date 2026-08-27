@@ -435,9 +435,11 @@ const REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK = {
 };
 const REDRAW_CLEAN_PLATE_MEDIA_PROTECTED_PATHS = [
   'backend-node/src/services/redrawAssetService.js',
+  'backend-node/src/services/redrawProviderAdapters.js',
 ];
 const REDRAW_CLEAN_PLATE_MEDIA_REQUIRED_TESTS = [
   'backend-node/test/redrawAssets.test.js',
+  'backend-node/test/redrawProviderAdapters.test.js',
   'backend-node/test/redrawReferencePreparationOrchestration.test.js',
   'backend-node/test/featureLockManifest.test.js',
   'backend-node/test/incrementalReleaseScope.test.js',
@@ -453,11 +455,23 @@ const REDRAW_CLEAN_PLATE_MEDIA_TASK_D_INITIAL_UNLOCK = {
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
-const REDRAW_CLEAN_PLATE_MEDIA_TASK_D_FIX_UNLOCK = {
+const REDRAW_CLEAN_PLATE_MEDIA_TASK_D_P1_UNLOCK = {
   reason: '2026-08-28 clean provider 本地媒体双字段污染 P1 修复获批',
   approvedBy: 'product-owner 2026-08-28 redraw-clean-local-media-dual-field-p1-fix',
   impactTests: [
     'backend-node/test/redrawAssets.test.js',
+    'backend-node/test/redrawReferencePreparationOrchestration.test.js',
+    'backend-node/test/redrawReferenceBundle.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const REDRAW_CLEAN_PLATE_MEDIA_TASK_D_P2_UNLOCK = {
+  reason: '2026-08-28 clean provider 默认 adapter 与 legacy 双字段 P2 修复获批',
+  approvedBy: 'product-owner 2026-08-28 redraw-clean-adapter-legacy-fields-task-d-p2',
+  impactTests: [
+    'backend-node/test/redrawAssets.test.js',
+    'backend-node/test/redrawProviderAdapters.test.js',
     'backend-node/test/redrawReferencePreparationOrchestration.test.js',
     'backend-node/test/redrawReferenceBundle.test.js',
     'backend-node/test/featureLockManifest.test.js',
@@ -1056,8 +1070,11 @@ test('Clean provider 本地媒体登记 Task D 使用独立功能锁和新鲜批
     REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC,
     REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN,
   ]);
-  assert.deepEqual(feature.unlock, REDRAW_CLEAN_PLATE_MEDIA_TASK_D_FIX_UNLOCK);
-  assert.deepEqual(feature.unlockHistory, [REDRAW_CLEAN_PLATE_MEDIA_TASK_D_INITIAL_UNLOCK]);
+  assert.deepEqual(feature.unlock, REDRAW_CLEAN_PLATE_MEDIA_TASK_D_P2_UNLOCK);
+  assert.deepEqual(feature.unlockHistory, [
+    REDRAW_CLEAN_PLATE_MEDIA_TASK_D_INITIAL_UNLOCK,
+    REDRAW_CLEAN_PLATE_MEDIA_TASK_D_P1_UNLOCK,
+  ]);
   assert.notDeepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
   assert.notDeepEqual(feature.unlock, REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
   assert.notDeepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
@@ -1245,7 +1262,7 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
     } else if (feature.featureId === REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID) {
       assert.deepEqual(feature.unlock, REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
     } else if (feature.featureId === REDRAW_CLEAN_PLATE_MEDIA_FEATURE_ID) {
-      assert.deepEqual(feature.unlock, REDRAW_CLEAN_PLATE_MEDIA_TASK_D_FIX_UNLOCK);
+      assert.deepEqual(feature.unlock, REDRAW_CLEAN_PLATE_MEDIA_TASK_D_P2_UNLOCK);
     } else if (!Object.hasOwn(PROVIDER_TASK_LOCK_REQUIREMENTS, feature.featureId)) {
       assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
     }

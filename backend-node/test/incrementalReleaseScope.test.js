@@ -90,6 +90,12 @@ const redrawCleanPlateMediaFixManifestPath = path.join(
   'release-scopes',
   'redraw-clean-plate-local-media-task-d-p1-20260828.json',
 );
+const redrawCleanPlateMediaP2ManifestPath = path.join(
+  repoRoot,
+  'deploy',
+  'release-scopes',
+  'redraw-clean-plate-adapter-legacy-task-d-p2-20260828.json',
+);
 const CANVAS_TEXT_CAPABILITY_HOTFIX_ALLOWED_PATHS = [
   'backend-node/src/services/providerCanaryEvidenceService.js',
   'backend-node/test/featureLockManifest.test.js',
@@ -359,6 +365,16 @@ const REDRAW_CLEAN_PLATE_MEDIA_FIX_ALLOWED_PATHS = [
   'deploy/release-scopes/redraw-clean-plate-local-media-task-d-p1-20260828.json',
   'docs/verification/platform-stability/feature-lock-manifest.json',
 ];
+const REDRAW_CLEAN_PLATE_MEDIA_P2_ALLOWED_PATHS = [
+  'backend-node/src/services/redrawAssetService.js',
+  'backend-node/src/services/redrawProviderAdapters.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/redrawAssets.test.js',
+  'backend-node/test/redrawProviderAdapters.test.js',
+  'deploy/release-scopes/redraw-clean-plate-adapter-legacy-task-d-p2-20260828.json',
+  'docs/verification/platform-stability/feature-lock-manifest.json',
+];
 
 function assertExactProactiveCanaryScope(allowedPaths) {
   assert.deepEqual(allowedPaths, PROACTIVE_CANARY_ALLOWED_PATHS);
@@ -406,6 +422,10 @@ function assertExactRedrawCleanPlateMediaScope(allowedPaths) {
 
 function assertExactRedrawCleanPlateMediaFixScope(allowedPaths) {
   assert.deepEqual(allowedPaths, REDRAW_CLEAN_PLATE_MEDIA_FIX_ALLOWED_PATHS);
+}
+
+function assertExactRedrawCleanPlateMediaP2Scope(allowedPaths) {
+  assert.deepEqual(allowedPaths, REDRAW_CLEAN_PLATE_MEDIA_P2_ALLOWED_PATHS);
 }
 
 function createFixture() {
@@ -736,6 +756,26 @@ test('Clean provider 本地媒体双字段 P1 修复发布范围拒绝同数量�
   swapped[index] = 'backend-node/src/services/redrawCoverageRegistrationService.js';
   assert.throws(
     () => assertExactRedrawCleanPlateMediaFixScope(swapped),
+    { name: 'AssertionError' },
+  );
+});
+
+test('Clean provider 默认 adapter 与 legacy 双字段 P2 修复使用独立 8 文件发布范围', () => {
+  const { manifest, allowedPaths } = loadManifest(redrawCleanPlateMediaP2ManifestPath);
+  assert.equal(manifest.release, 'redraw-clean-plate-adapter-legacy-task-d-p2-20260828');
+  assertExactRedrawCleanPlateMediaP2Scope(allowedPaths);
+  assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
+  assert.equal(allowedPaths.includes('backend-node/src/routes/index.js'), false);
+  assert.equal(allowedPaths.includes('backend-node/src/services/redrawCoverageRegistrationService.js'), false);
+  assert.equal(allowedPaths.includes('backend-node/test/redrawReferencePreparationOrchestration.test.js'), false);
+});
+
+test('Clean provider 默认 adapter 与 legacy 双字段 P2 修复发布范围拒绝同数量偷换', () => {
+  const swapped = [...REDRAW_CLEAN_PLATE_MEDIA_P2_ALLOWED_PATHS];
+  const index = swapped.indexOf('backend-node/src/services/redrawProviderAdapters.js');
+  swapped[index] = 'backend-node/src/routes/index.js';
+  assert.throws(
+    () => assertExactRedrawCleanPlateMediaP2Scope(swapped),
     { name: 'AssertionError' },
   );
 });

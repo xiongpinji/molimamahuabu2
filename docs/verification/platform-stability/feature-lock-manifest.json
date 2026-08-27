@@ -1346,10 +1346,12 @@
         "登记结果保持 needs_attention/pending，未知状态不重试，零积分不产生预留或账本行"
       ],
       "protectedPaths": [
-        "backend-node/src/services/redrawAssetService.js"
+        "backend-node/src/services/redrawAssetService.js",
+        "backend-node/src/services/redrawProviderAdapters.js"
       ],
       "requiredTests": [
         "backend-node/test/redrawAssets.test.js",
+        "backend-node/test/redrawProviderAdapters.test.js",
         "backend-node/test/redrawReferencePreparationOrchestration.test.js",
         "backend-node/test/featureLockManifest.test.js",
         "backend-node/test/incrementalReleaseScope.test.js"
@@ -1370,13 +1372,25 @@
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
-        }
-      ],
-      "unlock": {
+        },
+        {
         "reason": "2026-08-28 clean provider 本地媒体双字段污染 P1 修复获批",
         "approvedBy": "product-owner 2026-08-28 redraw-clean-local-media-dual-field-p1-fix",
         "impactTests": [
           "backend-node/test/redrawAssets.test.js",
+          "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+          "backend-node/test/redrawReferenceBundle.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
+        ]
+        }
+      ],
+      "unlock": {
+        "reason": "2026-08-28 clean provider 默认 adapter 与 legacy 双字段 P2 修复获批",
+        "approvedBy": "product-owner 2026-08-28 redraw-clean-adapter-legacy-fields-task-d-p2",
+        "impactTests": [
+          "backend-node/test/redrawAssets.test.js",
+          "backend-node/test/redrawProviderAdapters.test.js",
           "backend-node/test/redrawReferencePreparationOrchestration.test.js",
           "backend-node/test/redrawReferenceBundle.test.js",
           "backend-node/test/featureLockManifest.test.js",
