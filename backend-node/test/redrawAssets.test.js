@@ -485,11 +485,15 @@ test('clean provider 本地图片由产品服务验真、内容寻址并登记�
 
   assert.equal(result.status, 'needs_attention');
   assert.equal(result.approval_status, 'pending');
+  assert.equal(result.asset_id, null);
   assert.equal(result.generation_task_id, 'clean-local-task-1');
   assert.equal(result.credit_reservation_id, null);
   assert.ok(providerArgs.outputDir);
   assert.equal(fs.existsSync(providerArgs.outputDir), false, '单次 staging 必须清理');
   const stored = state.db.prepare('SELECT * FROM assets WHERE id = ?').get(result.clean_plate_asset_id);
+  const redrawRow = state.db.prepare('SELECT asset_id, clean_plate_asset_id FROM redraw_assets WHERE id = ?').get(result.id);
+  assert.equal(redrawRow.asset_id, null);
+  assert.equal(redrawRow.clean_plate_asset_id, stored.id);
   const metadata = JSON.parse(stored.metadata);
   assert.equal(stored.type, 'image');
   assert.equal(stored.category, 'redraw');

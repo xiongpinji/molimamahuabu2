@@ -1359,10 +1359,22 @@
         "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md"
       ],
       "fixCommit": null,
-      "unlockHistory": [],
-      "unlock": {
+      "unlockHistory": [
+        {
         "reason": "2026-08-28 一键转绘 clean provider 本地媒体登记 Task D 获批",
         "approvedBy": "product-owner 2026-08-28 redraw-product-media-registration-task-d",
+        "impactTests": [
+          "backend-node/test/redrawAssets.test.js",
+          "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+          "backend-node/test/redrawReferenceBundle.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
+        ]
+        }
+      ],
+      "unlock": {
+        "reason": "2026-08-28 clean provider 本地媒体双字段污染 P1 修复获批",
+        "approvedBy": "product-owner 2026-08-28 redraw-clean-local-media-dual-field-p1-fix",
         "impactTests": [
           "backend-node/test/redrawAssets.test.js",
           "backend-node/test/redrawReferencePreparationOrchestration.test.js",

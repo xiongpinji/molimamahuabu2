@@ -84,6 +84,12 @@ const redrawCleanPlateMediaManifestPath = path.join(
   'release-scopes',
   'redraw-clean-plate-local-media-task-d-20260828.json',
 );
+const redrawCleanPlateMediaFixManifestPath = path.join(
+  repoRoot,
+  'deploy',
+  'release-scopes',
+  'redraw-clean-plate-local-media-task-d-p1-20260828.json',
+);
 const CANVAS_TEXT_CAPABILITY_HOTFIX_ALLOWED_PATHS = [
   'backend-node/src/services/providerCanaryEvidenceService.js',
   'backend-node/test/featureLockManifest.test.js',
@@ -345,6 +351,14 @@ const REDRAW_CLEAN_PLATE_MEDIA_ALLOWED_PATHS = [
   'docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md',
   'docs/verification/platform-stability/feature-lock-manifest.json',
 ];
+const REDRAW_CLEAN_PLATE_MEDIA_FIX_ALLOWED_PATHS = [
+  'backend-node/src/services/redrawAssetService.js',
+  'backend-node/test/redrawAssets.test.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'deploy/release-scopes/redraw-clean-plate-local-media-task-d-p1-20260828.json',
+  'docs/verification/platform-stability/feature-lock-manifest.json',
+];
 
 function assertExactProactiveCanaryScope(allowedPaths) {
   assert.deepEqual(allowedPaths, PROACTIVE_CANARY_ALLOWED_PATHS);
@@ -388,6 +402,10 @@ function assertExactRedrawCoverageHttpProviderGateScope(allowedPaths) {
 
 function assertExactRedrawCleanPlateMediaScope(allowedPaths) {
   assert.deepEqual(allowedPaths, REDRAW_CLEAN_PLATE_MEDIA_ALLOWED_PATHS);
+}
+
+function assertExactRedrawCleanPlateMediaFixScope(allowedPaths) {
+  assert.deepEqual(allowedPaths, REDRAW_CLEAN_PLATE_MEDIA_FIX_ALLOWED_PATHS);
 }
 
 function createFixture() {
@@ -698,6 +716,26 @@ test('Clean provider 本地媒体登记 Task D 发布范围拒绝同数量偷换
   assert.equal(swapped.length, REDRAW_CLEAN_PLATE_MEDIA_ALLOWED_PATHS.length);
   assert.throws(
     () => assertExactRedrawCleanPlateMediaScope(swapped),
+    { name: 'AssertionError' },
+  );
+});
+
+test('Clean provider 本地媒体双字段 P1 修复使用独立 6 文件发布范围', () => {
+  const { manifest, allowedPaths } = loadManifest(redrawCleanPlateMediaFixManifestPath);
+  assert.equal(manifest.release, 'redraw-clean-plate-local-media-task-d-p1-20260828');
+  assertExactRedrawCleanPlateMediaFixScope(allowedPaths);
+  assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
+  assert.equal(allowedPaths.includes('backend-node/test/redrawReferencePreparationOrchestration.test.js'), false);
+  assert.equal(allowedPaths.includes('backend-node/src/services/redrawCoverageRegistrationService.js'), false);
+  assert.equal(allowedPaths.includes('backend-node/src/routes/redraw.js'), false);
+});
+
+test('Clean provider 本地媒体双字段 P1 修复发布范围拒绝同数量偷换', () => {
+  const swapped = [...REDRAW_CLEAN_PLATE_MEDIA_FIX_ALLOWED_PATHS];
+  const index = swapped.indexOf('backend-node/src/services/redrawAssetService.js');
+  swapped[index] = 'backend-node/src/services/redrawCoverageRegistrationService.js';
+  assert.throws(
+    () => assertExactRedrawCleanPlateMediaFixScope(swapped),
     { name: 'AssertionError' },
   );
 });

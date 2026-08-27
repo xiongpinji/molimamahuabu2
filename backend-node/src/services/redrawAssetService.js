@@ -1486,10 +1486,12 @@ async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
     }
     validateCleanPlateQuality(sceneAsset, options, providerResult || {});
     let effectiveProviderResult = providerResult;
+    let localMediaRegistered = false;
     if (providerResult?.output !== undefined) {
       try {
         const registered = await registerLocalCleanPlate(ctx, providerResult, stagingRoot);
         effectiveProviderResult = { ...providerResult, asset_id: Number(registered.id) };
+        localMediaRegistered = true;
       } catch (error) {
         if (error.code === 'REDRAW_CLEAN_PLATE_REGISTRATION_UNKNOWN') {
           return markCleanPlateNeedsAttention(ctx, {
@@ -1506,7 +1508,7 @@ async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
         throw error;
       }
     }
-    const finalized = finalizeAssetAttempt(ctx, attempt.id, mode === 'text_clean_plate'
+    const finalized = finalizeAssetAttempt(ctx, attempt.id, mode === 'text_clean_plate' || localMediaRegistered
       ? { ...effectiveProviderResult, clean_plate: true }
       : effectiveProviderResult);
     const storedAttempt = db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attempt.id));
