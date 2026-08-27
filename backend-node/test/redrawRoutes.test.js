@@ -7329,7 +7329,7 @@ test('aborted motion multipart removes started disk temp without calling import 
   }
 });
 
-function coverageRegistrationRouterFixture(registrationService) {
+function coverageRegistrationRouterFixture(registrationService, { providerPlacement = 'redrawOptions' } = {}) {
   const db = createDb();
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-coverage-route-storage-'));
   const secret = 'redraw-coverage-route-secret-value-at-least-32-bytes';
@@ -7356,16 +7356,23 @@ function coverageRegistrationRouterFixture(registrationService) {
     throw new Error('coverage provider must only be called by the registration service');
   };
   const noProvider = async () => ({ status: 'completed' });
+  const redrawOptions = { coverageRegistrationService: registrationService };
+  const providerOptions = {};
+  if (providerPlacement === 'redrawOptions') {
+    redrawOptions.coverageRegistrationProvider = coverageProvider;
+  } else if (providerPlacement === 'topLevel') {
+    providerOptions.coverageRegistrationProvider = coverageProvider;
+  } else if (providerPlacement !== 'none') {
+    throw new Error(`unsupported coverage provider placement: ${providerPlacement}`);
+  }
   const router = setupRouter({ storage: { local_path: storageRoot } }, db, {
     error() {}, warn() {}, info() {},
   }, {
     localizationProvider: noProvider,
     assetGenerationProvider: noProvider,
     dialogueProvider: noProvider,
-    redrawOptions: {
-      coverageRegistrationService: registrationService,
-      coverageRegistrationProvider: coverageProvider,
-    },
+    ...providerOptions,
+    redrawOptions,
   });
   const token = userAuthService.issueToken(user, secret, 0);
   return {
@@ -7387,6 +7394,61 @@ function coverageRegistrationRouterFixture(registrationService) {
     },
   };
 }
+
+test('coverage provider gate leaves the version route unmounted when no server provider is configured', async () => {
+  let calls = 0;
+  const fixture = coverageRegistrationRouterFixture({
+    async registerReviewedCoverage() {
+      calls += 1;
+      return { redraw_asset_id: 811, expected_updated_at: NOW };
+    },
+  }, { providerPlacement: 'none' });
+  try {
+    const registered = new Set(fixture.router.stack
+      .filter((layer) => layer.route)
+      .flatMap((layer) => Object.keys(layer.route.methods)
+        .map((method) => `${method.toUpperCase()} ${layer.route.path}`)));
+    assert.equal(registered.has('POST /redraw/versions/:id/full-frame-coverages'), false);
+
+    await withJsonRouteServer(fixture.router, async (baseUrl) => {
+      const response = await postJson(
+        `${baseUrl}/redraw/versions/${fixture.versionId}/full-frame-coverages`,
+        fixture.token,
+        fixture.tenantId,
+        { expected_version_updated_at: NOW, idempotency_key: 'coverage-provider-missing' },
+      );
+      assert.equal(response.status, 404);
+    });
+    assert.equal(calls, 0);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('coverage provider gate accepts an explicit top-level server provider', async () => {
+  const calls = [];
+  const fixture = coverageRegistrationRouterFixture({
+    async registerReviewedCoverage(input) {
+      calls.push(input);
+      return { redraw_asset_id: 812, expected_updated_at: NOW };
+    },
+  }, { providerPlacement: 'topLevel' });
+  try {
+    await withJsonRouteServer(fixture.router, async (baseUrl) => {
+      const response = await postJson(
+        `${baseUrl}/redraw/versions/${fixture.versionId}/full-frame-coverages`,
+        fixture.token,
+        fixture.tenantId,
+        { expected_version_updated_at: NOW, idempotency_key: 'coverage-provider-top-level' },
+      );
+      assert.equal(response.status, 200, await response.text());
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].provider, fixture.coverageProvider);
+  } finally {
+    fixture.close();
+  }
+});
 
 async function withJsonRouteServer(router, run) {
   const app = express();

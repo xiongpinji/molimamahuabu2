@@ -72,6 +72,12 @@ const redrawCoverageHttpRouteManifestPath = path.join(
   'release-scopes',
   'redraw-coverage-http-route-task-c-20260827.json',
 );
+const redrawCoverageHttpProviderGateManifestPath = path.join(
+  repoRoot,
+  'deploy',
+  'release-scopes',
+  'redraw-coverage-http-provider-gate-task-c-p2-20260828.json',
+);
 const CANVAS_TEXT_CAPABILITY_HOTFIX_ALLOWED_PATHS = [
   'backend-node/src/services/providerCanaryEvidenceService.js',
   'backend-node/test/featureLockManifest.test.js',
@@ -314,6 +320,14 @@ const REDRAW_COVERAGE_HTTP_ROUTE_ALLOWED_PATHS = [
   'docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md',
   'docs/verification/platform-stability/feature-lock-manifest.json',
 ];
+const REDRAW_COVERAGE_HTTP_PROVIDER_GATE_ALLOWED_PATHS = [
+  'backend-node/src/routes/index.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/redrawRoutes.test.js',
+  'deploy/release-scopes/redraw-coverage-http-provider-gate-task-c-p2-20260828.json',
+  'docs/verification/platform-stability/feature-lock-manifest.json',
+];
 
 function assertExactProactiveCanaryScope(allowedPaths) {
   assert.deepEqual(allowedPaths, PROACTIVE_CANARY_ALLOWED_PATHS);
@@ -349,6 +363,10 @@ function assertExactRedrawCoverageRegistrationScope(allowedPaths) {
 
 function assertExactRedrawCoverageHttpRouteScope(allowedPaths) {
   assert.deepEqual(allowedPaths, REDRAW_COVERAGE_HTTP_ROUTE_ALLOWED_PATHS);
+}
+
+function assertExactRedrawCoverageHttpProviderGateScope(allowedPaths) {
+  assert.deepEqual(allowedPaths, REDRAW_COVERAGE_HTTP_PROVIDER_GATE_ALLOWED_PATHS);
 }
 
 function createFixture() {
@@ -585,6 +603,43 @@ test('Coverage HTTP 入口 Task C 发布范围拒绝同数量偷换任一文件'
   assert.equal(swapped.length, REDRAW_COVERAGE_HTTP_ROUTE_ALLOWED_PATHS.length);
   assert.throws(
     () => assertExactRedrawCoverageHttpRouteScope(swapped),
+    { name: 'AssertionError' },
+  );
+});
+
+test('Coverage HTTP provider 门禁 Task C P2 发布范围是精确 6 文件白名单', () => {
+  const { manifest, allowedPaths } = loadManifest(redrawCoverageHttpProviderGateManifestPath);
+  assert.equal(manifest.release, 'redraw-coverage-http-provider-gate-task-c-p2-20260828');
+  assertExactRedrawCoverageHttpProviderGateScope(allowedPaths);
+  assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
+
+  for (const forbidden of [
+    'backend-node/data',
+    'backend-node/uploads',
+    'backend-node/src/routes/redraw.js',
+    'backend-node/src/services/redrawCoverageRegistrationService.js',
+    'storage',
+    'assets',
+    'ai-music',
+    'moli-music',
+    'deploy/install-protected-release-guard.sh',
+    'shared/release-guard',
+  ]) {
+    assert.equal(
+      allowedPaths.some((entry) => entry === forbidden || entry.startsWith(`${forbidden}/`)),
+      false,
+      `发布范围不得包含: ${forbidden}`,
+    );
+  }
+});
+
+test('Coverage HTTP provider 门禁 Task C P2 发布范围拒绝同数量偷换', () => {
+  const swapped = [...REDRAW_COVERAGE_HTTP_PROVIDER_GATE_ALLOWED_PATHS];
+  const index = swapped.indexOf('backend-node/src/routes/index.js');
+  swapped[index] = 'backend-node/src/services/redrawCoverageRegistrationService.js';
+  assert.equal(swapped.length, REDRAW_COVERAGE_HTTP_PROVIDER_GATE_ALLOWED_PATHS.length);
+  assert.throws(
+    () => assertExactRedrawCoverageHttpProviderGateScope(swapped),
     { name: 'AssertionError' },
   );
 });

@@ -412,9 +412,19 @@ const REDRAW_COVERAGE_HTTP_ROUTE_REQUIRED_TESTS = [
   'backend-node/test/featureLockManifest.test.js',
   'backend-node/test/incrementalReleaseScope.test.js',
 ];
-const REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK = {
+const REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK = {
   reason: '2026-08-27 一键转绘 coverage 版本级 HTTP 入口 Task C 获批',
   approvedBy: 'product-owner 2026-08-27 redraw-product-media-registration-task-c',
+  impactTests: [
+    'backend-node/test/redrawRoutes.test.js',
+    'backend-node/test/redrawCoverageRegistration.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK = {
+  reason: '2026-08-28 coverage 版本级入口显式 provider 装配门禁 P2 修复获批',
+  approvedBy: 'product-owner 2026-08-28 redraw-coverage-http-provider-gate-task-c-p2',
   impactTests: [
     'backend-node/test/redrawRoutes.test.js',
     'backend-node/test/redrawCoverageRegistration.test.js',
@@ -935,25 +945,26 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   assert.deepEqual(feature.evidence.slice(0, PROACTIVE_CANARY_EVIDENCE.length), PROACTIVE_CANARY_EVIDENCE);
 });
 
-test('产品媒体登记 Task C 使用新鲜批准并保留 Task A、PR #194、PR #197 与前序历史', () => {
+test('产品媒体登记 Task C P2 使用新鲜批准并保留初始 Task C 与前序历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
   assert.deepEqual(feature.unlock, REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-1), MIGRATION67_SHARED_HELPER_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-2), MIGRATION67_IDEMPOTENT_REPLAY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-3), FREE_BILLING_REVIEW_FIX_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-4), REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-5), PR194_MAIN_SYNC_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-6), PR197_PROVIDER_CANARY_REMEDIATION_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-7), PR195_STATIC_ASSET_COMPAT_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-8), PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-9), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-10), CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-11), PR184_MAIN_MERGE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-12), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-13), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-14), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-2), MIGRATION67_SHARED_HELPER_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-3), MIGRATION67_IDEMPOTENT_REPLAY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-4), FREE_BILLING_REVIEW_FIX_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-5), REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-6), PR194_MAIN_SYNC_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-7), PR197_PROVIDER_CANARY_REMEDIATION_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-8), PR195_STATIC_ASSET_COMPAT_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-9), PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-10), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-11), CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-12), PR184_MAIN_MERGE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-13), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-14), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-15), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
   assert.equal(feature.evidence.at(-1), REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN);
   assert.equal(feature.evidence.at(-2), REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC);
   assert.equal(feature.evidence.at(-3), PR194_MAIN_SYNC_EVIDENCE);
@@ -998,6 +1009,7 @@ test('Coverage 版本级 HTTP 入口 Task C 使用独立功能锁和新鲜批准
     REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN,
   ]);
   assert.deepEqual(feature.unlock, REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
+  assert.deepEqual(feature.unlockHistory, [REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK]);
   assert.notDeepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
   assert.notDeepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
 });
@@ -1092,7 +1104,8 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       ...(REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_FEATURE_IDS.has(featureId)
         ? [featureId === PROACTIVE_CANARY_FEATURE_ID
           ? MIGRATION67_SHARED_HELPER_UNLOCK
-          : REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK]
+          : REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK,
+        REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK]
         : []),
     ]);
     assert.deepEqual(
@@ -1220,7 +1233,7 @@ test('PR #194 主线同步保留 PR #197 只读能力锁并仅刷新实际触及
           ? PR195_STATIC_ASSET_COMPAT_UNLOCK
           : PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK;
     const expectedPreviousUnlock = REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_FEATURE_IDS.has(featureId)
-      ? CURRENT_UNLOCK_BY_FEATURE[featureId]
+      ? REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK
       : PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
       ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)
         ? MIGRATION67_IDEMPOTENT_REPLAY_UNLOCK

@@ -270,6 +270,8 @@ function setupRouter(cfg, db, log, options = {}) {
     || redrawOptions.assetGenerationProvider
     || redrawOptions.assetProvider;
   const explicitDialogueProvider = options.dialogueProvider || redrawOptions.dialogueProvider;
+  const explicitCoverageRegistrationProvider = options.coverageRegistrationProvider
+    || redrawOptions.coverageRegistrationProvider;
   const needsRedrawAdapters = !explicitLocalizationProvider || !explicitAssetGenerationProvider || !explicitDialogueProvider;
   const localeRegistry = options.localeRegistry || redrawOptions.localeRegistry
     || options.evidenceRegistry || redrawOptions.evidenceRegistry
@@ -314,6 +316,7 @@ function setupRouter(cfg, db, log, options = {}) {
     localizationProvider: explicitLocalizationProvider || redrawAdapters.localize,
     assetGenerationProvider: explicitAssetGenerationProvider || defaultAssetGenerationProvider,
     dialogueProvider: explicitDialogueProvider || defaultDialogueProvider,
+    coverageRegistrationProvider: explicitCoverageRegistrationProvider,
   });
   r.get('/voice-catalog', voiceCatalog.list);
 
@@ -355,7 +358,9 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/redraw/works/:id/analyze', redraw.uploadReferenceImage, redraw.analyzeWork);
   r.post('/redraw/works/:id/localization-quote', redraw.localizationQuote);
   r.post('/redraw/works/:id/versions', redraw.createVersion);
-  r.post('/redraw/versions/:id/full-frame-coverages', redraw.registerFullFrameCoverage);
+  if (typeof explicitCoverageRegistrationProvider === 'function') {
+    r.post('/redraw/versions/:id/full-frame-coverages', redraw.registerFullFrameCoverage);
+  }
   r.get('/redraw/versions/:id/character-plan', redraw.getCharacterPlan);
   r.get('/redraw/versions/:id/preparation-gate', redraw.preparationGate);
   r.post('/redraw/versions/:id/reference-preparation-quote', redraw.referencePreparationQuote);
