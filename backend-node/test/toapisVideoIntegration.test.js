@@ -645,6 +645,7 @@ test('ToAPIs interrupted POST keeps structured submission-unknown metadata', asy
     duration: 4,
     resolution: '480p',
     aspect_ratio: '16:9',
+    client_business_id: 'video-335',
   }, { fetchImpl: async () => { throw error; } });
 
   assert.equal(result.indeterminate, true);
@@ -653,5 +654,7 @@ test('ToAPIs interrupted POST keeps structured submission-unknown metadata', asy
     phase: 'submit',
     requestBodySent: true,
     transportCode: 'ECONNRESET',
+    recoveryTaskId: 'video-335',
+    recoveryCode: 'TOAPIS_TRANSPORT_INTERRUPTED',
   });
 });

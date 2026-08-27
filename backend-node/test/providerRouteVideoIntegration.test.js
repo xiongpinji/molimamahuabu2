@@ -14,6 +14,7 @@ const videoClient = require('../src/services/videoClient');
 const videoService = require('../src/services/videoService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const { MINIMAL_MP4, isoBmffTopLevelBoxes } = require('./fixtures/media');
+const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 
 const log = { info() {}, warn() {}, error() {} };
 
@@ -70,6 +71,52 @@ function addGeneration(db, id) {
     (id, prompt, model, duration, status, created_at, updated_at)
     VALUES (?, 'user prompt', 'logical-video', 5, 'processing', ?, ?)`)
     .run(id, now, now);
+}
+
+function addToapisRoute(db) {
+  const capabilities = withExternalModelEvidence('seedance-2-mini', {
+    resolutions: ['480p'],
+    durations: [4],
+    supportsFirstFrame: true,
+    supportsLastFrame: true,
+    supportsImageReference: true,
+    supportsVideoReference: true,
+    supportsAudioReference: true,
+    supportsAudio: true,
+    maxReferences: 9,
+    maxVideoReferences: 3,
+    maxAudioReferences: 3,
+  });
+  const config = aiConfigService.createConfig(db, log, {
+    service_type: 'video',
+    provider: 'toapis',
+    api_protocol: 'toapis_video',
+    name: 'ToAPIs',
+    base_url: 'https://toapis.com',
+    api_key: 'local-test-key',
+    model: ['seedance-2-mini'],
+    default_model: 'seedance-2-mini',
+    endpoint: '/v1/videos/generations',
+    query_endpoint: '/v1/videos/generations/{taskId}',
+    priority: 100,
+    logical_model_id: 'logical-video',
+    failover_enabled: false,
+    settings: {
+      canvas_capabilities: capabilities,
+      canvas_capabilities_by_model: { 'seedance-2-mini': capabilities },
+    },
+  });
+  db.prepare(`UPDATE ai_service_configs
+    SET verification_status = 'verified', verified_capabilities = ? WHERE id = ?`)
+    .run(JSON.stringify({ 'seedance-2-mini': capabilities }), config.id);
+  modelPriceService.set(db, 'seedance-2-mini', 50, {
+    category: 'video',
+    cost_unit: 'second',
+    resolution_prices: {
+      '480p': { credits: 50, cost_micros_per_second: 73000 },
+    },
+  });
+  return config.id;
 }
 
 function waitFor(predicate, timeoutMs = 3000, intervalMs = 20) {
@@ -273,6 +320,52 @@ test('响应携带供应商任务号时固定原供应商且绝不重复提交',
     { config_id: primaryId, provider_task_id: 'possibly-accepted' },
   );
   assert.equal(db.prepare('SELECT state FROM generation_route_requests').get().state, 'accepted');
+});
+
+test('ToAPIs 未知提交固化 client_business_id 供查询恢复且绝不二次 POST', async (t) => {
+  const db = createDb();
+  t.after(() => db.close());
+  const configId = addToapisRoute(db);
+  addGeneration(db, 4003);
+  let submissions = 0;
+
+  const result = await videoClient.callVideoApi(db, log, {
+    prompt: 'user prompt',
+    model: 'logical-video',
+    duration: 4,
+    resolution: '480p',
+    aspect_ratio: '16:9',
+    video_gen_id: 4003,
+    fetchImpl: async () => {
+      submissions += 1;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ status: 'queued' }),
+      };
+    },
+  }, { evidenceRoots });
+
+  assert.equal(result.indeterminate, true);
+  assert.equal(submissions, 1);
+  assert.deepEqual(
+    db.prepare('SELECT config_id, provider_task_id FROM video_generations WHERE id = 4003').get(),
+    { config_id: configId, provider_task_id: 'video-4003' },
+  );
+  assert.deepEqual(
+    db.prepare('SELECT state FROM generation_route_requests').get(),
+    { state: 'needs_attention' },
+  );
+  assert.deepEqual(
+    db.prepare(`SELECT state, provider_task_id, error_category, safe_error_summary
+      FROM generation_route_attempts`).get(),
+    {
+      state: 'needs_attention',
+      provider_task_id: 'video-4003',
+      error_category: 'submission_unknown',
+      safe_error_summary: 'category=submission_unknown status=200 code=TOAPIS_TASK_ID_MISSING',
+    },
+  );
 });
 
 test('无明确未受理证据的 503 不切换视频供应商', async (t) => {
