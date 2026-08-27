@@ -29,8 +29,8 @@ const FRESHNESS_SURFACES = Object.freeze({
   ]),
 });
 const TRUSTED_UNCHANGED_TOAPIS_STANDARD_SURFACE_SHA256 = Object.freeze({
-  'backend-node/src/services/toapisVideoClient.js': 'fc63b777996d4b61b38ef0ce133ff971feba70423207594ceb14d555bc837e3f',
-  'backend-node/scripts/verify-toapis-video-models.js': '39a6a1ff1f2f59e27269bbf5f4bb9badba84db63716129933ce0cb4928e73dd1',
+  'backend-node/src/services/toapisVideoClient.js': '80a84b5f635f24ec15c25902469617107c267863239b799e6fa46ea26737edb8',
+  'backend-node/scripts/verify-toapis-video-models.js': '2984834287d7d098d8bfd7fc1e1d62d1a8db90cd06e75d255d940e6ab368bda1',
 });
 const PROVIDERS = Object.freeze({
   toapis: Object.freeze({
@@ -252,7 +252,8 @@ function protectedSurfaceChanged(candidate, expectedCurrent, files) {
 }
 
 function sourceSha256(root, relative) {
-  return sha256(Buffer.from(candidateSource(root, relative, false), 'utf8'));
+  const canonicalSource = candidateSource(root, relative, false).replace(/\r\n?/g, '\n');
+  return sha256(Buffer.from(canonicalSource, 'utf8'));
 }
 
 function trustedUnchangedToapisStandardSurface(candidate, expectedCurrent) {
