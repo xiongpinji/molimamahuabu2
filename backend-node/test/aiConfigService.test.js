@@ -194,6 +194,36 @@ test('ToAPIs 配置接受模型允许的 4 秒，受保护环境 Key 是有效 c
   }
 });
 
+test('Fumin 视频配置可使用进程环境 Key 作为有效 credential 且不回传', () => {
+  const db = new Database(':memory:');
+  const previousKey = process.env.FUMIN_API_KEY;
+  process.env.FUMIN_API_KEY = 'env-only-fumin-key';
+  runMigrationsAndEnsure(db);
+  try {
+    const config = aiConfig.createConfig(db, log, {
+      service_type: 'video',
+      provider: 'fumin',
+      api_protocol: 'fumin_video',
+      name: 'Fumin Seedance Mini',
+      base_url: 'https://fumin.ai',
+      api_key: '',
+      model: ['fumin-seedance-2.0-mini'],
+      default_model: 'fumin-seedance-2.0-mini',
+      settings: { video_duration: 5 },
+    });
+
+    assert.equal(config.api_key, '');
+    assert.equal(aiConfig.hasConnectionCredential(config), true);
+    const safe = aiConfig.toPublicConfig(config);
+    assert.equal(safe.api_key, undefined);
+    assert.equal(safe.has_api_key, true);
+  } finally {
+    if (previousKey === undefined) delete process.env.FUMIN_API_KEY;
+    else process.env.FUMIN_API_KEY = previousKey;
+    db.close();
+  }
+});
+
 test('ToAPIs 连接测试只 GET 官方模型目录且不会升级真实验证状态', async () => {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);

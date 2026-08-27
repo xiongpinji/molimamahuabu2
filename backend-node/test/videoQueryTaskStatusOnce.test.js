@@ -607,6 +607,30 @@ test('单次任务查询禁止自动跟随重定向且设置请求超时信号',
   assert.equal(requestOptions.signal instanceof AbortSignal, true);
 });
 
+test('Fumin 单次任务查询使用进程环境 Key 且不要求 DB 落盘 Key', async () => {
+  const previousKey = process.env.FUMIN_API_KEY;
+  process.env.FUMIN_API_KEY = 'env-only-fumin-key';
+  let requestOptions;
+  try {
+    const result = await queryVideoTaskStatusOnce(null, log, 'saved-task-id', {
+      provider: 'fumin',
+      api_protocol: 'fumin_video',
+      base_url: 'https://fumin.ai',
+      api_key: '',
+    }, {
+      async fetchImpl(_url, options) {
+        requestOptions = options;
+        return jsonResponse({ status: 'processing' });
+      },
+    });
+    assert.deepEqual(result, { state: 'unknown', category: 'result_unknown' });
+    assert.equal(requestOptions.headers.Authorization, 'Bearer env-only-fumin-key');
+  } finally {
+    if (previousKey === undefined) delete process.env.FUMIN_API_KEY;
+    else process.env.FUMIN_API_KEY = previousKey;
+  }
+});
+
 test('单次任务查询把上游 HTTP 状态归为安全查询故障而不伪造任务失败', async () => {
   const logEntries = [];
   const capturingLog = {

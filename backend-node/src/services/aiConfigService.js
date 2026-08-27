@@ -28,6 +28,10 @@ function hasConnectionCredential(opts = {}) {
       || String(opts.api_protocol || '').toLowerCase() === 'toapis_video') {
     return !!toapisVideoClient.resolveToapisApiKey(opts);
   }
+  if (['fumin', 'fumin_video'].includes(String(opts.provider || '').toLowerCase())
+      || String(opts.api_protocol || '').toLowerCase() === 'fumin_video') {
+    return !!fuminVideoClient.resolveFuminApiKey(opts);
+  }
   if (String(opts.provider || '').toLowerCase() !== 'kling') return false;
   try {
     const settings = typeof opts.settings === 'object' ? opts.settings : JSON.parse(opts.settings || '{}');

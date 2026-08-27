@@ -6289,7 +6289,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         };
       } else if (isFumin) {
         url = fuminVideoClient.buildFuminQueryUrl(config, taskId);
-        headers = { Authorization: 'Bearer ' + (config.api_key || '') };
+        headers = { Authorization: 'Bearer ' + fuminVideoClient.resolveFuminApiKey(config) };
       } else {
         url = queryUrl();
         headers = { Authorization: 'Bearer ' + (config.api_key || '') };

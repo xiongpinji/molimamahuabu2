@@ -3,7 +3,20 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { buildFuminVideoBody } = require('../src/services/fuminVideoClient');
+const {
+  buildFuminVideoBody,
+  callFuminVideoApi,
+  resolveFuminApiKey,
+} = require('../src/services/fuminVideoClient');
+
+const originalFetch = global.fetch;
+const originalApiKey = process.env.FUMIN_API_KEY;
+
+test.afterEach(() => {
+  global.fetch = originalFetch;
+  if (originalApiKey === undefined) delete process.env.FUMIN_API_KEY;
+  else process.env.FUMIN_API_KEY = originalApiKey;
+});
 
 test('Fumin Seedance Mini 保留有声开关和多参考合同', () => {
   const body = buildFuminVideoBody({
@@ -63,4 +76,40 @@ test('Fumin 继续拒绝未核验的视频比例', () => {
     aspect_ratio: '1:1',
     generate_audio: true,
   }), /仅开放已核验的 16:9 和 9:16/);
+});
+
+test('Fumin 视频提交使用进程环境 Key 且不要求 DB 落盘 Key', async () => {
+  process.env.FUMIN_API_KEY = 'env-only-fumin-key';
+  assert.equal(resolveFuminApiKey({ api_key: 'stored-key' }), 'env-only-fumin-key');
+
+  const requests = [];
+  global.fetch = async (url, options) => {
+    requests.push({ url: String(url), options });
+    return new Response(JSON.stringify({ id: 'task-123', status: 'queued' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  const result = await callFuminVideoApi(
+    {
+      provider: 'fumin',
+      api_protocol: 'fumin_video',
+      base_url: 'https://fumin.ai',
+      api_key: '',
+    },
+    { info() {}, warn() {}, error() {} },
+    {
+      model: 'fumin-seedance-2.0-mini',
+      prompt: 'Maya says exactly in English: We leave tonight.',
+      duration: 5,
+      resolution: '480p',
+      aspect_ratio: '16:9',
+      generate_audio: true,
+    },
+  );
+
+  assert.deepEqual(result, { task_id: 'task-123', status: 'queued' });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].options.headers.Authorization, 'Bearer env-only-fumin-key');
 });

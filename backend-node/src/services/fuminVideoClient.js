@@ -19,6 +19,10 @@ function normalizeFuminBaseUrl(value) {
   return String(value || 'https://fumin.ai').trim().replace(/\/+$/, '').replace(/\/api\/v3$/i, '');
 }
 
+function resolveFuminApiKey(config = {}, env = process.env) {
+  return String(env.FUMIN_API_KEY || config.api_key || '').trim();
+}
+
 function resolveFuminModel(model) {
   const value = String(model || '').trim();
   return FUMIN_MODELS[value] || value;
@@ -148,7 +152,8 @@ function parseFuminStatusPayload(payload) {
 }
 
 async function callFuminVideoApi(config, log, opts = {}) {
-  if (!String(config?.api_key || '').trim()) return { error: 'fumin API Key 未配置' };
+  const apiKey = resolveFuminApiKey(config);
+  if (!apiKey) return { error: 'fumin API Key 未配置' };
   let imageUrls = [];
   const rawRefs = uniqueUrls([
     opts.image_url,
@@ -217,7 +222,7 @@ async function callFuminVideoApi(config, log, opts = {}) {
   try {
     response = await fetch(url, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${config.api_key}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
   } catch (error) {
@@ -240,6 +245,7 @@ module.exports = {
   FUMIN_MODELS,
   FUMIN_VIDEO_LIMITS,
   normalizeFuminBaseUrl,
+  resolveFuminApiKey,
   resolveFuminModel,
   buildFuminCreateUrl,
   buildFuminQueryUrl,
