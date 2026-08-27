@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -8,8 +9,10 @@ const Database = require('better-sqlite3');
 const sharp = require('sharp');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const { getFfmpegPath } = require('../src/utils/ffmpegPath');
 const {
   importCharacterReferenceArtifact,
+  importMotionReferenceArtifact,
 } = require('../src/services/redrawReferenceArtifactImportService');
 
 const OWNER = Object.freeze({ tenantId: 'tenant-reference-import', userId: 'user-reference-import' });
@@ -26,6 +29,13 @@ function storagePath(storageRoot, relativePath) {
 function storedArtifactFiles(storageRoot) {
   const directory = path.join(storageRoot, 'redraw-reference-artifacts');
   return fs.existsSync(directory) ? fs.readdirSync(directory).sort() : [];
+}
+
+function storedMotionFiles(storageRoot) {
+  const directory = path.join(storageRoot, 'redraw-conditioning');
+  return fs.existsSync(directory)
+    ? fs.readdirSync(directory).filter((name) => !name.startsWith('.')).sort()
+    : [];
 }
 
 function createFixture(t) {
@@ -92,7 +102,97 @@ function createFixture(t) {
     db.close();
     fs.rmSync(root, { recursive: true, force: true });
   });
-  return { root, storageRoot, db, ctx, versionId, assetId };
+  return { root, storageRoot, db, ctx, projectId, workId, versionId, assetId };
+}
+
+function createMotionFixture(t) {
+  const fixture = createFixture(t);
+  const sourceAssetId = Number(fixture.db.prepare(`
+    INSERT INTO assets (
+      name, type, category, url, local_path, file_size, mime_type,
+      width, height, duration, metadata, created_at, updated_at
+    ) VALUES (
+      'Source video', 'video', 'redraw', '/static/source.mp4',
+      'redraw-sources/source.mp4', 1000, 'video/mp4', 320, 180, 12,
+      '{}', ?, ?
+    )
+  `).run(INITIAL_UPDATED_AT, INITIAL_UPDATED_AT).lastInsertRowid);
+  const sourceFingerprint = 'a'.repeat(64);
+  fixture.db.prepare(`
+    UPDATE redraw_works
+    SET source_asset_id = ?, source_fingerprint = ?
+    WHERE id = ?
+  `).run(sourceAssetId, sourceFingerprint, fixture.workId);
+  const shotId = Number(fixture.db.prepare(`
+    INSERT INTO redraw_shots (
+      version_id, tenant_id, user_id, batch_index, shot_index,
+      start_ms, end_ms, duration_ms, preparation_state,
+      reference_bundle_json, reference_bundle_hash,
+      created_at, updated_at
+    ) VALUES (
+      ?, ?, ?, 1, 1, 1000, 2000, 1000, 'parsed', '{}', NULL, ?, ?
+    )
+  `).run(
+    fixture.versionId,
+    OWNER.tenantId,
+    OWNER.userId,
+    INITIAL_UPDATED_AT,
+    INITIAL_UPDATED_AT,
+  ).lastInsertRowid);
+  return {
+    ...fixture,
+    sourceAssetId,
+    sourceFingerprint,
+    shotId,
+  };
+}
+
+function makeMotionFile(fixture, {
+  durationSeconds = 1,
+  width = 320,
+  height = 180,
+  codec = 'libx264',
+  audio = false,
+  container = 'mp4',
+  mimetype = container === 'mp4' ? 'video/mp4' : 'video/x-matroska',
+  originalname = `motion.${container}`,
+} = {}) {
+  const outputPath = path.join(
+    fixture.root,
+    `generated-${crypto.randomBytes(8).toString('hex')}.${container}`,
+  );
+  const args = [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', `color=c=blue:s=${width}x${height}:r=10:d=${durationSeconds}`,
+  ];
+  if (audio) {
+    args.push(
+      '-f', 'lavfi', '-i', `sine=frequency=440:sample_rate=44100:duration=${durationSeconds}`,
+      '-map', '0:v:0', '-map', '1:a:0',
+    );
+  }
+  args.push('-c:v', codec, '-pix_fmt', 'yuv420p');
+  if (codec === 'libx264') args.push('-preset', 'ultrafast');
+  if (audio) args.push('-c:a', 'aac', '-shortest');
+  else args.push('-an');
+  args.push(outputPath);
+  execFileSync(getFfmpegPath(), args, { windowsHide: true, stdio: 'pipe' });
+  const buffer = fs.readFileSync(outputPath);
+  return { buffer, originalname, mimetype, size: buffer.length };
+}
+
+function motionInput(shotId, file, overrides = {}) {
+  return {
+    shotId,
+    expectedUpdatedAt: INITIAL_UPDATED_AT,
+    idempotencyKey: `motion-import-${shotId}`,
+    fullFrameReviewed: true,
+    sourceIdentityObscured: true,
+    sourceTextObscured: true,
+    motionPreserved: true,
+    file,
+    ...overrides,
+  };
 }
 
 async function makeImageFile({
@@ -604,4 +704,366 @@ test('identity import rejects mismatched pre-existing content-addressed file wit
   );
   assert.deepEqual(fs.readFileSync(absolutePath), mismatched);
   assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 0);
+});
+
+test('motion import stores reviewed silent candidate without making shot reference_ready', async (t) => {
+  const fixture = createMotionFixture(t);
+  const file = makeMotionFile(fixture);
+  const fileSha = sha256(file.buffer);
+  const shotBefore = fixture.db.prepare('SELECT * FROM redraw_shots WHERE id = ?')
+    .get(fixture.shotId);
+
+  const result = await importMotionReferenceArtifact(
+    fixture.ctx,
+    motionInput(fixture.shotId, file, { idempotencyKey: 'motion-happy-path' }),
+  );
+
+  assert.deepEqual(result, {
+    purpose: 'motion',
+    asset: {
+      id: result.asset.id,
+      type: 'video',
+      mime_type: 'video/mp4',
+      sha256: fileSha,
+      duration_ms: 1000,
+      width: 320,
+      height: 180,
+      file_size: file.buffer.length,
+    },
+    billing: { credits: 0, held: 0, charged: 0 },
+  });
+
+  const relativePath = `redraw-conditioning/${fileSha}.mp4`;
+  assert.deepEqual(fs.readFileSync(storagePath(fixture.storageRoot, relativePath)), file.buffer);
+  const storedAsset = fixture.db.prepare('SELECT * FROM assets WHERE id = ?').get(result.asset.id);
+  assert.equal(storedAsset.type, 'video');
+  assert.equal(storedAsset.category, 'redraw');
+  assert.equal(storedAsset.local_path, relativePath);
+  assert.equal(storedAsset.mime_type, 'video/mp4');
+  assert.equal(storedAsset.width, 320);
+  assert.equal(storedAsset.height, 180);
+  assert.equal(storedAsset.file_size, file.buffer.length);
+  const metadata = JSON.parse(storedAsset.metadata);
+  assert.equal(Object.hasOwn(metadata, 'redraw_motion_reference'), false);
+  assert.deepEqual(metadata.redraw_motion_import, {
+    schema_version: 'redraw-motion-import-v1',
+    tenant_id: OWNER.tenantId,
+    user_id: OWNER.userId,
+    version_id: fixture.versionId,
+    shot_id: fixture.shotId,
+    source_work_id: fixture.workId,
+    source_asset_id: fixture.sourceAssetId,
+    source_fingerprint: fixture.sourceFingerprint,
+    clip_start_ms: 1000,
+    clip_end_ms: 2000,
+    file_sha256: fileSha,
+    duration_ms: 1000,
+    width: 320,
+    height: 180,
+    mime_type: 'video/mp4',
+    video_codec: 'h264',
+    audio_stream_count: 0,
+    reviewed_by: OWNER.userId,
+    reviewed_at: INITIAL_UPDATED_AT,
+    review: {
+      full_frame_reviewed: true,
+      source_identity_obscured: true,
+      source_text_obscured: true,
+      motion_preserved: true,
+    },
+  });
+  assert.equal(Object.hasOwn(metadata.redraw_motion_import, 'face_coverage_sha256'), false);
+  assert.equal(Object.hasOwn(metadata.redraw_motion_import, 'text_coverage_sha256'), false);
+  assert.deepEqual(
+    fixture.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(fixture.shotId),
+    shotBefore,
+  );
+  assert.equal(shotBefore.preparation_state, 'parsed');
+  assert.equal(shotBefore.reference_bundle_hash, null);
+  assert.equal(JSON.stringify(result).includes(fixture.storageRoot), false);
+  assert.doesNotMatch(JSON.stringify(result), /local_path|motion-happy-path|Authorization|Bearer/);
+});
+
+test('motion import rejects every missing review assertion without side effects', async (t) => {
+  const fixture = createMotionFixture(t);
+  const file = makeMotionFile(fixture);
+  const reviewFields = [
+    'fullFrameReviewed',
+    'sourceIdentityObscured',
+    'sourceTextObscured',
+    'motionPreserved',
+  ];
+  for (const field of reviewFields) {
+    await assert.rejects(
+      importMotionReferenceArtifact(
+        fixture.ctx,
+        motionInput(fixture.shotId, file, {
+          [field]: false,
+          idempotencyKey: `motion-review-${field}`,
+        }),
+      ),
+      { code: 'REDRAW_MOTION_REFERENCE_REVIEW_REQUIRED' },
+    );
+  }
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 1);
+  assert.equal(
+    fixture.db.prepare('SELECT COUNT(*) AS count FROM redraw_reference_artifact_imports').get().count,
+    0,
+  );
+  assert.deepEqual(storedMotionFiles(fixture.storageRoot), []);
+});
+
+test('motion import rejects audio stream and duration mismatch without side effects', async (t) => {
+  const fixture = createMotionFixture(t);
+  const audioFile = makeMotionFile(fixture, { audio: true });
+  await assert.rejects(
+    importMotionReferenceArtifact(
+      fixture.ctx,
+      motionInput(fixture.shotId, audioFile, { idempotencyKey: 'motion-with-audio' }),
+    ),
+    { code: 'REDRAW_REFERENCE_ARTIFACT_MEDIA_INVALID' },
+  );
+
+  const longFile = makeMotionFile(fixture, { durationSeconds: 1.3 });
+  await assert.rejects(
+    importMotionReferenceArtifact(
+      fixture.ctx,
+      motionInput(fixture.shotId, longFile, { idempotencyKey: 'motion-too-long' }),
+    ),
+    { code: 'REDRAW_REFERENCE_ARTIFACT_MEDIA_INVALID' },
+  );
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 1);
+  assert.equal(
+    fixture.db.prepare('SELECT COUNT(*) AS count FROM redraw_reference_artifact_imports').get().count,
+    0,
+  );
+  assert.deepEqual(storedMotionFiles(fixture.storageRoot), []);
+});
+
+test('motion import rejects dimension codec container and size mismatches', async (t) => {
+  const fixture = createMotionFixture(t);
+  const cases = [
+    ['dimensions', makeMotionFile(fixture, { width: 640, height: 360 }), {}],
+    ['codec', makeMotionFile(fixture, { codec: 'mpeg4' }), {}],
+    ['container', makeMotionFile(fixture, { container: 'mkv' }), {}],
+    ['size', makeMotionFile(fixture), { size: (200 * 1024 * 1024) + 1 }],
+  ];
+  for (const [name, file, changes] of cases) {
+    await assert.rejects(
+      importMotionReferenceArtifact(
+        fixture.ctx,
+        motionInput(fixture.shotId, { ...file, ...changes }, {
+          idempotencyKey: `motion-invalid-${name}`,
+        }),
+      ),
+      { code: name === 'size'
+        ? 'REDRAW_REFERENCE_ARTIFACT_TOO_LARGE'
+        : 'REDRAW_REFERENCE_ARTIFACT_MEDIA_INVALID' },
+    );
+  }
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 1);
+  assert.equal(
+    fixture.db.prepare('SELECT COUNT(*) AS count FROM redraw_reference_artifact_imports').get().count,
+    0,
+  );
+  assert.deepEqual(storedMotionFiles(fixture.storageRoot), []);
+});
+
+test('motion import rejects cross-owner shot stale CAS and client source overrides', async (t) => {
+  const fixture = createMotionFixture(t);
+  const file = makeMotionFile(fixture);
+  const crossOwnerShotId = Number(fixture.db.prepare(`
+    INSERT INTO redraw_shots (
+      version_id, tenant_id, user_id, batch_index, shot_index,
+      start_ms, end_ms, duration_ms, created_at, updated_at
+    ) VALUES (?, 'tenant-other', 'user-other', 1, 2, 2000, 3000, 1000, ?, ?)
+  `).run(fixture.versionId, INITIAL_UPDATED_AT, INITIAL_UPDATED_AT).lastInsertRowid);
+
+  await assert.rejects(
+    importMotionReferenceArtifact(fixture.ctx, motionInput(crossOwnerShotId, file)),
+    { code: 'REDRAW_REFERENCE_ARTIFACT_NOT_FOUND' },
+  );
+  await assert.rejects(
+    importMotionReferenceArtifact(
+      fixture.ctx,
+      motionInput(fixture.shotId, file, { expectedUpdatedAt: '2026-08-26T00:00:00.000Z' }),
+    ),
+    { code: 'REDRAW_REFERENCE_ARTIFACT_CONFLICT' },
+  );
+  await assert.rejects(
+    importMotionReferenceArtifact(
+      fixture.ctx,
+      { ...motionInput(fixture.shotId, file), sourceAssetId: 999 },
+    ),
+    { code: 'REDRAW_REFERENCE_ARTIFACT_FORBIDDEN_FIELD' },
+  );
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 1);
+  assert.equal(
+    fixture.db.prepare('SELECT COUNT(*) AS count FROM redraw_reference_artifact_imports').get().count,
+    0,
+  );
+  assert.deepEqual(storedMotionFiles(fixture.storageRoot), []);
+});
+
+test('motion import rejects unverifiable source fingerprint without side effects', async (t) => {
+  const fixture = createMotionFixture(t);
+  const file = makeMotionFile(fixture);
+  fixture.db.prepare('UPDATE redraw_works SET source_fingerprint = ? WHERE id = ?')
+    .run('not-a-server-source-hash', fixture.workId);
+
+  await assert.rejects(
+    importMotionReferenceArtifact(fixture.ctx, motionInput(fixture.shotId, file)),
+    { code: 'REDRAW_REFERENCE_ARTIFACT_NOT_FOUND' },
+  );
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 1);
+  assert.equal(
+    fixture.db.prepare('SELECT COUNT(*) AS count FROM redraw_reference_artifact_imports').get().count,
+    0,
+  );
+  assert.deepEqual(storedMotionFiles(fixture.storageRoot), []);
+});
+
+test('motion import replays same idempotency key and rejects changed replay', async (t) => {
+  const fixture = createMotionFixture(t);
+  const file = makeMotionFile(fixture);
+  const input = motionInput(fixture.shotId, file, { idempotencyKey: 'motion-replay-key' });
+
+  const first = await importMotionReferenceArtifact(fixture.ctx, input);
+  const replay = await importMotionReferenceArtifact(fixture.ctx, input);
+  assert.deepEqual(replay, first);
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 2);
+  assert.equal(
+    fixture.db.prepare('SELECT COUNT(*) AS count FROM redraw_reference_artifact_imports').get().count,
+    1,
+  );
+
+  const changedFile = makeMotionFile(fixture, { durationSeconds: 1.05 });
+  await assert.rejects(
+    importMotionReferenceArtifact(fixture.ctx, { ...input, file: changedFile }),
+    { code: 'REDRAW_REFERENCE_ARTIFACT_IDEMPOTENCY_CONFLICT' },
+  );
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 2);
+  assert.equal(storedMotionFiles(fixture.storageRoot).length, 1);
+});
+
+test('motion import idempotency replay rejects drifted source dimensions', async (t) => {
+  const fixture = createMotionFixture(t);
+  const file = makeMotionFile(fixture);
+  const input = motionInput(fixture.shotId, file, {
+    idempotencyKey: 'motion-replay-source-dimensions',
+  });
+  await importMotionReferenceArtifact(fixture.ctx, input);
+
+  fixture.db.prepare('UPDATE assets SET width = 640 WHERE id = ?')
+    .run(fixture.sourceAssetId);
+
+  await assert.rejects(
+    importMotionReferenceArtifact(fixture.ctx, input),
+    { code: 'REDRAW_REFERENCE_ARTIFACT_IDEMPOTENCY_CONFLICT' },
+  );
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 2);
+  assert.equal(
+    fixture.db.prepare('SELECT COUNT(*) AS count FROM redraw_reference_artifact_imports').get().count,
+    1,
+  );
+  assert.equal(storedMotionFiles(fixture.storageRoot).length, 1);
+});
+
+test('motion import idempotency replay rejects tampered pending binding metadata', async (t) => {
+  const fixture = createMotionFixture(t);
+  const file = makeMotionFile(fixture);
+  const input = motionInput(fixture.shotId, file, {
+    idempotencyKey: 'motion-replay-tampered-binding',
+  });
+  const first = await importMotionReferenceArtifact(fixture.ctx, input);
+  const asset = fixture.db.prepare('SELECT metadata FROM assets WHERE id = ?')
+    .get(first.asset.id);
+  const metadata = JSON.parse(asset.metadata);
+  metadata.redraw_motion_import.source_asset_id += 1;
+  fixture.db.prepare('UPDATE assets SET metadata = ? WHERE id = ?')
+    .run(JSON.stringify(metadata), first.asset.id);
+
+  await assert.rejects(
+    importMotionReferenceArtifact(fixture.ctx, input),
+    { code: 'REDRAW_REFERENCE_ARTIFACT_STORAGE_FAILED' },
+  );
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 2);
+  assert.equal(
+    fixture.db.prepare('SELECT COUNT(*) AS count FROM redraw_reference_artifact_imports').get().count,
+    1,
+  );
+});
+
+test('motion import concurrent same-key requests create one asset and one import record', async (t) => {
+  const fixture = createMotionFixture(t);
+  const file = makeMotionFile(fixture);
+  const input = motionInput(fixture.shotId, file, { idempotencyKey: 'motion-concurrent-key' });
+
+  const [first, second] = await Promise.all([
+    importMotionReferenceArtifact(fixture.ctx, input),
+    importMotionReferenceArtifact(fixture.ctx, input),
+  ]);
+
+  assert.deepEqual(second, first);
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 2);
+  assert.equal(
+    fixture.db.prepare('SELECT COUNT(*) AS count FROM redraw_reference_artifact_imports').get().count,
+    1,
+  );
+  assert.equal(storedMotionFiles(fixture.storageRoot).length, 1);
+});
+
+test('motion import concurrent changed-file requests return one idempotency conflict', async (t) => {
+  const fixture = createMotionFixture(t);
+  const firstFile = makeMotionFile(fixture);
+  const secondFile = makeMotionFile(fixture, { durationSeconds: 1.05 });
+  const base = motionInput(fixture.shotId, firstFile, {
+    idempotencyKey: 'motion-concurrent-changed-file',
+  });
+
+  const settled = await Promise.allSettled([
+    importMotionReferenceArtifact(fixture.ctx, base),
+    importMotionReferenceArtifact(fixture.ctx, { ...base, file: secondFile }),
+  ]);
+
+  const fulfilled = settled.filter((item) => item.status === 'fulfilled');
+  const rejected = settled.filter((item) => item.status === 'rejected');
+  assert.equal(fulfilled.length, 1);
+  assert.equal(rejected.length, 1);
+  assert.equal(rejected[0].reason.code, 'REDRAW_REFERENCE_ARTIFACT_IDEMPOTENCY_CONFLICT');
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 2);
+  assert.equal(
+    fixture.db.prepare('SELECT COUNT(*) AS count FROM redraw_reference_artifact_imports').get().count,
+    1,
+  );
+  assert.equal(storedMotionFiles(fixture.storageRoot).length, 1);
+});
+
+test('motion import database failure cleans newly-created file and leaves shot unchanged', async (t) => {
+  const fixture = createMotionFixture(t);
+  const file = makeMotionFile(fixture);
+  const shotBefore = fixture.db.prepare('SELECT * FROM redraw_shots WHERE id = ?')
+    .get(fixture.shotId);
+  fixture.db.exec(`
+    CREATE TRIGGER reject_motion_asset_insert
+    BEFORE INSERT ON assets
+    BEGIN
+      SELECT RAISE(ABORT, 'forced motion asset insert failure');
+    END
+  `);
+
+  await assert.rejects(
+    importMotionReferenceArtifact(fixture.ctx, motionInput(fixture.shotId, file)),
+    { code: 'REDRAW_REFERENCE_ARTIFACT_STORAGE_FAILED' },
+  );
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 1);
+  assert.equal(
+    fixture.db.prepare('SELECT COUNT(*) AS count FROM redraw_reference_artifact_imports').get().count,
+    0,
+  );
+  assert.deepEqual(storedMotionFiles(fixture.storageRoot), []);
+  assert.deepEqual(
+    fixture.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(fixture.shotId),
+    shotBefore,
+  );
 });
