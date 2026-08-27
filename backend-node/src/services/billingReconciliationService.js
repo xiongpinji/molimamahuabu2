@@ -25,6 +25,19 @@ const UNCERTAINTY_MARKERS = [
   'etimedout',
 ];
 const CANCELLATION_MARKERS = ['用户已取消', 'user cancelled', 'user canceled'];
+const READONLY_REQUIRED_SCHEMA = Object.freeze({
+  tenant_usage_reservations: ['id', 'tenant_id', 'actor_user_id', 'operation_key', 'model',
+    'resource_type', 'resource_id', 'amount', 'status', 'reason', 'created_at', 'updated_at'],
+  usage_reservations: ['id', 'user_id', 'operation_key', 'model', 'resource_type', 'resource_id',
+    'amount', 'status', 'reason', 'created_at', 'updated_at'],
+  async_tasks: ['id', 'type', 'status', 'message', 'error', 'provider_task_id',
+    'credit_reservation_id', 'updated_at', 'completed_at', 'deleted_at'],
+  image_generations: ['id', 'status', 'error_msg', 'credit_reservation_id', 'updated_at', 'deleted_at'],
+  video_generations: ['id', 'status', 'error_msg', 'provider_task_id',
+    'credit_reservation_id', 'updated_at', 'deleted_at'],
+  generation_route_requests: ['id', 'service_type', 'state', 'credit_reservation_id', 'updated_at'],
+  generation_route_attempts: ['request_id', 'state', 'provider_task_id'],
+});
 
 function reconciliationError(code, message) {
   const error = new Error(message);
@@ -107,7 +120,12 @@ function listHeldReservations(db, cutoff, limit) {
 }
 
 function evidenceForReservation(db, reservationId) {
-  const tasks = db.prepare(`SELECT id, type, status, message, error, updated_at, completed_at
+  const asyncTaskHasProviderTaskId = Boolean(db.prepare(`SELECT 1
+    FROM pragma_table_info('async_tasks') WHERE name = 'provider_task_id'`).get());
+  const tasks = db.prepare(`SELECT id, type, status, message, error, updated_at, completed_at,
+      ${asyncTaskHasProviderTaskId
+    ? "CASE WHEN trim(COALESCE(provider_task_id, '')) <> '' THEN 1 ELSE 0 END"
+    : '0'} AS has_provider_task_id
     FROM async_tasks
     WHERE credit_reservation_id = ? AND deleted_at IS NULL`).all(reservationId);
   const images = db.prepare(`SELECT id, status, error_msg, updated_at
@@ -117,13 +135,40 @@ function evidenceForReservation(db, reservationId) {
     FROM video_generations
     WHERE credit_reservation_id = ? AND deleted_at IS NULL`).all(reservationId);
   let providerRoutes = [];
+  let providerAttempts = [];
   try {
     providerRoutes = db.prepare(`SELECT id, service_type, state, updated_at
       FROM generation_route_requests WHERE credit_reservation_id = ?`).all(reservationId);
   } catch (error) {
     if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
   }
-  return { tasks, images, videos, providerRoutes };
+  try {
+    providerAttempts = db.prepare(`SELECT attempt.state,
+        CASE WHEN trim(COALESCE(attempt.provider_task_id, '')) <> '' THEN 1 ELSE 0 END
+          AS has_provider_task_id
+      FROM generation_route_attempts AS attempt
+      JOIN generation_route_requests AS request ON request.id = attempt.request_id
+      WHERE request.credit_reservation_id = ?`).all(reservationId);
+  } catch (error) {
+    if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
+  }
+  return { tasks, images, videos, providerRoutes, providerAttempts };
+}
+
+function assertReadOnlySchema(db) {
+  for (const [table, requiredColumns] of Object.entries(READONLY_REQUIRED_SCHEMA)) {
+    const exists = db.prepare(`SELECT 1 FROM sqlite_master
+      WHERE type = 'table' AND name = ?`).get(table);
+    const columns = exists
+      ? new Set(db.prepare(`PRAGMA table_info("${table}")`).all().map((column) => column.name))
+      : null;
+    if (!columns || requiredColumns.some((column) => !columns.has(column))) {
+      throw reconciliationError(
+        'RECONCILIATION_READONLY_SCHEMA_MISMATCH',
+        '冻结积分只读对账所需证据结构缺失',
+      );
+    }
+  }
 }
 
 function classifyEvidence(evidence) {
@@ -205,8 +250,7 @@ function inspectReservation(db, reservation) {
   };
 }
 
-function listAnomalies(db, input = {}) {
-  ensureSchema(db);
+function listAnomaliesCore(db, input = {}) {
   const olderThanMinutes = boundedInt(input.olderThanMinutes, 60, 5, 10080);
   const limit = boundedInt(input.limit, 100, 1, 500);
   const now = input.now ? new Date(input.now) : new Date();
@@ -215,6 +259,16 @@ function listAnomalies(db, input = {}) {
   }
   const cutoff = new Date(now.getTime() - olderThanMinutes * 60 * 1000).toISOString();
   return listHeldReservations(db, cutoff, limit).map((row) => inspectReservation(db, row));
+}
+
+function listAnomaliesReadOnly(db, input = {}) {
+  assertReadOnlySchema(db);
+  return listAnomaliesCore(db, input);
+}
+
+function listAnomalies(db, input = {}) {
+  ensureSchema(db);
+  return listAnomaliesCore(db, input);
 }
 
 function reservationForInspection(db, reservationId) {
@@ -335,6 +389,7 @@ function listHistory(db, input = {}) {
 module.exports = {
   ensureSchema,
   listAnomalies,
+  listAnomaliesReadOnly,
   refundReservation,
   listHistory,
 };
