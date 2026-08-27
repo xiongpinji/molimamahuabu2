@@ -2,15 +2,15 @@
 
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
-**目标：** ToAPIs 视频提交结果未知时保存可查询的 `client_business_id`，后续只查询恢复而不重复 POST；同时允许管理员配置官方大陆入口 `https://toapis.xyz`。
+**目标：** ToAPIs 视频提交结果未知时保存可查询的 `client_business_id`，后续只查询恢复而不重复 POST；供应商入口继续严格锁定为共享证据合同中的 `https://toapis.com`。
 
-**架构：** 创建请求继续使用现有官方 JSON 合同。若 POST 已发出但没有可信 `task_id`，客户端把本次稳定的 `client_business_id` 作为恢复查询句柄返回；路由层原子地把句柄固化到既有任务凭证字段，同时保持路由、业务任务和积分为 `needs_attention`/held，交给现有对账器执行单次 GET。域名变更仅增加白名单兼容，不自动改生产配置。
+**架构：** 创建请求继续使用现有官方 JSON 合同。若 POST 已发出但没有可信 `task_id`，客户端把本次稳定的 `client_business_id` 作为恢复查询句柄返回；路由层原子地把句柄固化到既有任务凭证字段，同时保持路由、业务任务和积分为 `needs_attention`/held，交给现有对账器执行单次 GET。URL 规范化只允许 `https://toapis.com`，不得放宽共享外部模型门禁。
 
 **技术栈：** Node.js、`node:test`、better-sqlite3、现有 provider route stability/reconciliation 服务。
 
 ---
 
-### 任务 1：锁定官方大陆入口和未知提交恢复元数据
+### 任务 1：锁定唯一官方入口和未知提交恢复元数据
 
 **文件：**
 - 修改：`backend-node/test/toapisVideoClient.test.js`
@@ -19,7 +19,10 @@
 - [x] **步骤 1：编写失败的测试**
 
 ```js
-assert.equal(normalizeToapisBaseUrl('https://toapis.xyz/v1/'), 'https://toapis.xyz');
+assert.throws(
+  () => normalizeToapisBaseUrl('https://toapis.xyz/v1/'),
+  /ToAPIs 官方入口必须是 https:\/\/toapis\.com/,
+);
 
 const unknown = await callToapisVideoApi(config, log, {
   model: 'seedance-2-mini',
@@ -35,11 +38,11 @@ assert.equal(unknown.route_meta.recoveryTaskId, 'video-335');
 
 运行：`node --test test/toapisVideoClient.test.js`
 
-预期：FAIL；`.xyz` 被拒绝，且未知提交没有 `recoveryTaskId`。
+预期：FAIL；当前实现错误接受 `.xyz`，且未知提交没有 `recoveryTaskId`。
 
 - [x] **步骤 3：编写最少实现代码**
 
-允许 `toapis.com` 与 `toapis.xyz` 两个精确 HTTPS 主机；构建请求后，对连接中断、408/5xx、非 JSON 和缺少任务 ID 的结果，把非空 `body.client_business_id` 写入 `route_meta.recoveryTaskId`。不把它伪装成已确认的供应商 `task_id`。
+只允许 `toapis.com` 这一个精确 HTTPS 主机；构建请求后，对连接中断、408/5xx、非 JSON 和缺少任务 ID 的结果，把非空 `body.client_business_id` 写入 `route_meta.recoveryTaskId`。不把它伪装成已确认的供应商 `task_id`。
 
 - [x] **步骤 4：运行测试验证通过**
 

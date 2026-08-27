@@ -1342,6 +1342,19 @@ describeRootEvidence('independent USMercari image evidence audit', () => {
 });
 
 describeRootEvidence('candidate runtime and callout audit', () => {
+  it('accepts the real ToAPIs client only when it matches the official host contract', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    try {
+      fs.copyFileSync(
+        path.resolve(__dirname, '../src/services/toapisVideoClient.js'),
+        path.join(fixture.candidate, 'backend-node/src/services/toapisVideoClient.js'),
+      );
+      assertPass(runGuard(fixture.candidate, fixture.evidenceRoot));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   for (const [name, relative, replacement, expected] of [
     ['strict catalog verification gate', 'backend-node/src/services/canvasModelCatalogService.js', 'const STRICT_VERIFIED_PROTOCOLS = new Set([]);', /catalog|目录|runtime|gate/i],
     ['ToAPIs pre-side-effect gate', 'backend-node/src/services/videoService.js', 'function createVideo() { return reserveCredits(); }', /ToAPIs|runtime|gate/i],
