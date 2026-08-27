@@ -9,6 +9,8 @@ const require = createRequire(import.meta.url)
 const backendRoot = fileURLToPath(new URL('../../backend-node/', import.meta.url))
 const { getFfprobePath } = require(`${backendRoot.replace(/\\/g, '/')}/src/utils/ffmpegPath`)
 
+test.use({ trace: 'off' })
+
 const liveEnabled = process.env.REDRAW_LIVE_ACCEPTANCE === '1'
 const specPath = fileURLToPath(import.meta.url)
 const source = fs.readFileSync(specPath, 'utf8')
@@ -17,6 +19,7 @@ const reportTemplatePath = new URL('../../docs/superpowers/reports/redraw-full-p
 const terminalStatuses = new Set(['completed', 'failed', 'needs_attention'])
 const generationSubmitPath = /^\/api\/v1\/redraw\/shots\/[^/]+\/generate(?:[?#]|$)/
 const forbiddenClientConfigFields = /\b(model|provider|price|config|key|url)\b/i
+const fakeProductContext = Object.freeze({ authToken: 'test-product-token', tenantId: 'tenant-test' })
 
 function requiredEnv(env, name) {
   const value = String(env[name] || '').trim()
@@ -38,10 +41,35 @@ function requireLiveContext(env) {
     versionId: requiredEnv(env, 'REDRAW_LIVE_VERSION_ID'),
     expectedDialogue: requiredEnv(env, 'REDRAW_LIVE_EXPECTED_DIALOGUE'),
     expectedLanguage: requiredEnv(env, 'REDRAW_LIVE_EXPECTED_LANGUAGE'),
+    authToken: requiredEnv(env, 'REDRAW_LIVE_PRODUCT_AUTH_TOKEN'),
+    tenantId: requiredEnv(env, 'REDRAW_LIVE_TENANT_ID'),
   }
 }
 
-function createLiveProductApi(page, counters) {
+function productHeaders(context = fakeProductContext) {
+  return {
+    Authorization: `Bearer ${context.authToken}`,
+    'X-Tenant-Id': context.tenantId,
+  }
+}
+
+function safeResponseSummary(response) {
+  const body = response?.body || {}
+  const data = body.data || {}
+  const error = body.error || {}
+  return JSON.stringify({
+    http_status: response?.status ?? null,
+    task_status: data.status || body.status || null,
+    error_code: error.code || body.code || null,
+    error_category: error.category || body.category || null,
+  })
+}
+
+async function prepareLiveProductPage(page) {
+  await page.goto('/')
+}
+
+function createLiveProductApi(page, counters, context = fakeProductContext) {
   return {
     async json(method, pathname, body) {
       if (method === 'POST' && generationSubmitPath.test(pathname)) counters.generationSubmits += 1
@@ -56,7 +84,10 @@ function createLiveProductApi(page, counters) {
         target: pathname,
         options: {
           method,
-          headers: body == null ? undefined : { 'Content-Type': 'application/json' },
+          headers: {
+            ...productHeaders(context),
+            ...(body == null ? {} : { 'Content-Type': 'application/json' }),
+          },
           body: body == null ? undefined : JSON.stringify(body),
         },
       })
@@ -66,21 +97,45 @@ function createLiveProductApi(page, counters) {
 
 function localProductPath(value) {
   const raw = String(value || '').trim()
-  if (!raw) throw new Error('candidate download URL is missing')
-  if (raw.startsWith('/')) return raw
+  if (!raw) throw new Error('candidate download reference is unsafe')
+  if (raw.startsWith('/')) {
+    const rawPath = raw.split(/[?#]/, 1)[0]
+    if (rawPath.split('/').some((part) => part === '..' || /^%2e%2e$/i.test(part))) {
+      throw new Error('candidate download reference is unsafe')
+    }
+    const parsed = new URL(raw, 'http://127.0.0.1')
+    return `${parsed.pathname}${parsed.search}`
+  }
   const parsed = new URL(raw)
   if (!['127.0.0.1', 'localhost'].includes(parsed.hostname)) {
-    throw new Error('live acceptance download must use a local product URL')
+    throw new Error('candidate download reference is unsafe')
   }
   return `${parsed.pathname}${parsed.search}`
+}
+
+function safeStaticPath(value) {
+  const raw = String(value || '').trim().replace(/\\/g, '/')
+  if (!raw
+    || raw.startsWith('/')
+    || /^[a-z][a-z0-9+.-]*:/i.test(raw)
+    || raw.split('/').some((part) => !part || part === '.' || part === '..')) {
+    throw new Error('candidate download reference is unsafe')
+  }
+  return `/static/${raw.split('/').map(encodeURIComponent).join('/')}`
+}
+
+function candidateDownloadPath(shot) {
+  const ref = shot?.new_video_ref || shot?.video || shot?.candidate || {}
+  if (ref.local_path) return safeStaticPath(ref.local_path)
+  return localProductPath(ref.video_url || ref.url || ref.download_url || shot?.download_url)
 }
 
 function sha256Buffer(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex')
 }
 
-async function downloadProductMp4(request, downloadUrl, testInfo) {
-  const response = await request.get(localProductPath(downloadUrl))
+async function downloadProductMp4(request, downloadPath, testInfo, context = fakeProductContext) {
+  const response = await request.get(downloadPath, { headers: productHeaders(context) })
   expect(response.status()).toBe(200)
   const bytes = await response.body()
   const outputPath = testInfo.outputPath('candidate.mp4')
@@ -99,7 +154,7 @@ function probeMp4(filePath) {
     '-v', 'error', '-show_streams', '-show_format', '-of', 'json', filePath,
   ], { encoding: 'utf8', timeout: 30_000 })
   if (result.status !== 0) {
-    throw new Error(`ffprobe failed: ${result.stderr || result.error?.message || result.status}`)
+    throw new Error('ffprobe failed')
   }
   const parsed = JSON.parse(result.stdout)
   const video = parsed.streams.find((stream) => stream.codec_type === 'video')
@@ -127,35 +182,35 @@ async function waitForNaturalTerminal(product, taskId) {
     if (terminalStatuses.has(status)) return { status, task: last.body?.data || last.body }
     await new Promise((resolve) => setTimeout(resolve, 5_000))
   }
-  throw new Error(`live acceptance timed out before product terminal state: ${JSON.stringify(last?.body || null)}`)
+  throw new Error(`live acceptance timed out before product terminal state: ${safeResponseSummary(last)}`)
 }
 
 async function findLiveShotEvidence(product, workId, shotId) {
   const work = await product.json('GET', `/api/v1/redraw/works/${encodeURIComponent(workId)}`)
-  expect(work.status, JSON.stringify(work.body)).toBe(200)
+  expect(work.status, safeResponseSummary(work)).toBe(200)
   const shot = (work.body?.data?.shots || []).find((item) => String(item.id) === String(shotId))
-  expect(shot, JSON.stringify(work.body?.data?.shots || [])).toBeTruthy()
+  expect(shot, safeResponseSummary(work)).toBeTruthy()
   return { work: work.body.data, shot }
 }
 
 async function fetchCurrentCandidateReview(product, shotId) {
   const reviews = await product.json('GET', `/api/v1/redraw/shots/${encodeURIComponent(shotId)}/candidate-reviews`)
-  expect(reviews.status, JSON.stringify(reviews.body)).toBe(200)
+  expect(reviews.status, safeResponseSummary(reviews)).toBe(200)
   const current = reviews.body?.data?.current
-  expect(current, JSON.stringify(reviews.body?.data || null)).toBeTruthy()
+  expect(current, safeResponseSummary(reviews)).toBeTruthy()
   return current
 }
 
 function assertNeedsAttentionSummary(summary, shotId) {
   expect(summary?.budget?.held).toBeGreaterThan(0)
   const shot = (summary?.shots || []).find((item) => String(item.shot_id) === String(shotId))
-  expect(shot, JSON.stringify(summary?.shots || [])).toBeTruthy()
+  expect(shot, 'needs_attention summary missing target shot').toBeTruthy()
   expect(shot.provider_status).toBe('submission_unknown')
 }
 
 async function failOnNeedsAttention(product, context) {
   const summary = await product.json('GET', `/api/v1/redraw/versions/${encodeURIComponent(context.versionId)}/generation-summary`)
-  expect(summary.status, JSON.stringify(summary.body)).toBe(200)
+  expect(summary.status, safeResponseSummary(summary)).toBe(200)
   assertNeedsAttentionSummary(summary.body?.data, context.shotId)
   throw new Error('live acceptance reached needs_attention; product shows held submission_unknown, no candidate download attempted')
 }
@@ -257,9 +312,7 @@ async function buildLiveAcceptanceEvidence(product, request, context, counters, 
   const { shot } = await findLiveShotEvidence(product, context.workId, context.shotId)
   const current = await fetchCurrentCandidateReview(product, context.shotId)
   assertCurrentReviewMetrics(current, context)
-  const candidate = shot.new_video_ref || shot.video || shot.candidate
-  const downloadUrl = candidate?.download_url || candidate?.url || shot.download_url
-  const downloaded = await downloadProductMp4(request, downloadUrl, testInfo)
+  const downloaded = await downloadProductMp4(request, candidateDownloadPath(shot), testInfo, context)
   const probe = probeMp4(downloaded.path)
   expect(downloaded).toMatchObject({ magic: 'ftyp' })
   expect(probe).toMatchObject({ width: 854, height: 480, hasAudio: true })
@@ -301,6 +354,8 @@ test('live acceptance contract defines the submit budget gate before product wri
   expect(requireLiveSubmitBudget({ REDRAW_LIVE_MAX_SUBMITS: '1' })).toEqual({ maxSubmits: 1 })
   expect(source.indexOf('const budget = requireLiveSubmitBudget(process.env)'))
     .toBeLessThan(source.indexOf('const product = createLiveProductApi(page, counters)'))
+  expect(source.indexOf('const budget = requireLiveSubmitBudget(process.env)'))
+    .toBeLessThan(source.indexOf('await prepareLiveProductPage(page)'))
 })
 
 test('live acceptance contract has no resubmit, retry loop or client config fields', () => {
@@ -330,10 +385,12 @@ test('live generation submit body only contains server-owned generation paramete
     REDRAW_LIVE_VERSION_ID: '56',
     REDRAW_LIVE_EXPECTED_DIALOGUE: 'Fue aqui.',
     REDRAW_LIVE_EXPECTED_LANGUAGE: 'es-ES',
+    REDRAW_LIVE_PRODUCT_AUTH_TOKEN: 'test-product-token',
+    REDRAW_LIVE_TENANT_ID: 'tenant-test',
   })).toMatchObject({ shotId: '12', workId: '34', versionId: '56' })
   await submitLiveShotGeneration(product, { shotId: '12' })
   expect(submittedBody.body).toEqual({ duration: 5, resolution: '480p' })
-  expect(JSON.stringify(submittedBody.body)).not.toMatch(forbiddenClientConfigFields)
+  expect(Object.keys(submittedBody.body).join(',')).not.toMatch(forbiddenClientConfigFields)
 })
 
 test('live acceptance counts only generation submits', async () => {
@@ -401,6 +458,117 @@ test('live billing evidence is confirmed only from charged product shot billing'
   }
 })
 
+test('live product context requires auth tenant and redacted summaries hide sensitive fields', () => {
+  const context = requireLiveContext({
+    REDRAW_LIVE_SHOT_ID: '12',
+    REDRAW_LIVE_WORK_ID: '34',
+    REDRAW_LIVE_VERSION_ID: '56',
+    REDRAW_LIVE_EXPECTED_DIALOGUE: 'Fue aqui.',
+    REDRAW_LIVE_EXPECTED_LANGUAGE: 'es-ES',
+    REDRAW_LIVE_PRODUCT_AUTH_TOKEN: 'secret-product-token',
+    REDRAW_LIVE_TENANT_ID: 'tenant-live',
+  })
+  expect(productHeaders(context)).toMatchObject({
+    Authorization: 'Bearer secret-product-token',
+    'X-Tenant-Id': 'tenant-live',
+  })
+  const summary = safeResponseSummary({
+    status: 500,
+    body: {
+      error: {
+        code: 'SAFE_CODE',
+        category: 'safe_category',
+        provider_task_id: 'provider-task-secret',
+        metadata: { token: 'secret-product-token' },
+        result: { url: 'https://provider.example/private' },
+        local_path: 'C:\\secret\\candidate.mp4',
+      },
+    },
+  })
+  expect(summary).toContain('SAFE_CODE')
+  expect(summary).toContain('safe_category')
+  expect(summary).not.toMatch(/secret-product-token|provider-task-secret|provider\.example|candidate\.mp4|metadata|result/i)
+})
+
+test('live product API forwards auth tenant headers and counts only generation submits', async () => {
+  const calls = []
+  const page = {
+    evaluate: async (_fn, payload) => {
+      calls.push(payload)
+      return { status: 200, headers: {}, body: { data: { status: 'completed' } } }
+    },
+  }
+  const counters = { generationSubmits: 0 }
+  const product = createLiveProductApi(page, counters, {
+    authToken: 'secret-product-token',
+    tenantId: 'tenant-live',
+  })
+  await product.json('POST', '/api/v1/redraw/projects', { title: 'prep' })
+  await product.json('POST', '/api/v1/redraw/shots/12/generate', { duration: 5, resolution: '480p' })
+  expect(counters.generationSubmits).toBe(1)
+  expect(calls[0].options.headers.Authorization).toBe('Bearer secret-product-token')
+  expect(calls[0].options.headers['X-Tenant-Id']).toBe('tenant-live')
+})
+
+test('live candidate download forwards auth tenant headers', async ({}, testInfo) => {
+  let requestCall = null
+  const mp4Bytes = Buffer.from([0, 0, 0, 24, 102, 116, 121, 112])
+  const request = {
+    async get(pathname, options) {
+      requestCall = { pathname, options }
+      return {
+        status: () => 200,
+        body: async () => mp4Bytes,
+        headers: () => ({ 'content-type': 'video/mp4' }),
+      }
+    },
+  }
+  await downloadProductMp4(request, '/static/redraw/live/candidate.mp4', testInfo, {
+    authToken: 'secret-product-token',
+    tenantId: 'tenant-live',
+  })
+  expect(requestCall).toMatchObject({
+    pathname: '/static/redraw/live/candidate.mp4',
+    options: { headers: { Authorization: 'Bearer secret-product-token', 'X-Tenant-Id': 'tenant-live' } },
+  })
+})
+
+test('live flow establishes page origin before relative product requests', async () => {
+  const events = []
+  const page = {
+    async goto(pathname) { events.push(['goto', pathname]) },
+    async evaluate() { events.push(['fetch']); return { status: 200, headers: {}, body: {} } },
+  }
+  await prepareLiveProductPage(page)
+  const product = createLiveProductApi(page, { generationSubmits: 0 }, {
+    authToken: 'secret-product-token',
+    tenantId: 'tenant-live',
+  })
+  await product.json('GET', '/api/v1/redraw/works/34')
+  expect(events).toEqual([['goto', '/'], ['fetch']])
+})
+
+test('candidate download path prefers safe local_path and rejects unsafe paths', () => {
+  expect(candidateDownloadPath({ new_video_ref: { local_path: 'redraw/live/candidate.mp4' } }))
+    .toBe('/static/redraw/live/candidate.mp4')
+  expect(candidateDownloadPath({ new_video_ref: { video_url: '/api/v1/redraw/exports/1/download/mp4?x=1' } }))
+    .toBe('/api/v1/redraw/exports/1/download/mp4?x=1')
+  for (const shot of [
+    { new_video_ref: { local_path: '../candidate.mp4' } },
+    { new_video_ref: { local_path: 'C:\\secret\\candidate.mp4' } },
+    { new_video_ref: { video_url: '/static/../candidate.mp4' } },
+    { new_video_ref: { video_url: 'https://provider.example/candidate.mp4' } },
+    { new_video_ref: { download_url: 'file:///C:/secret/candidate.mp4' } },
+  ]) {
+    expect(() => candidateDownloadPath(shot)).toThrow(/candidate download reference is unsafe/)
+  }
+})
+
+test('live describe disables trace and extends only live timeout', () => {
+  expect(source).toContain("test.use({ trace: 'off' })")
+  expect(source).toContain('test.setTimeout(660_000)')
+})
+
 test('needs_attention requires product summary evidence and remains a failed acceptance', async () => {
   const product = {
     async json() {
@@ -449,16 +617,18 @@ test.describe('live product acceptance', () => {
   test.skip(!liveEnabled, '真实产品验收必须显式启用 REDRAW_LIVE_ACCEPTANCE=1')
 
   test('真实产品 API 单次提交完成 5 秒转绘验收', async ({ page, request }, testInfo) => {
+    test.setTimeout(660_000)
     const budget = requireLiveSubmitBudget(process.env)
     const context = requireLiveContext(process.env)
     const counters = { generationSubmits: 0 }
-    const product = createLiveProductApi(page, counters)
     expect(budget.maxSubmits).toBe(1)
+    await prepareLiveProductPage(page)
+    const product = createLiveProductApi(page, counters, context)
     const submitted = await submitLiveShotGeneration(product, context)
     expect(counters.generationSubmits).toBe(1)
-    expect(submitted.status, JSON.stringify(submitted.body)).toBe(202)
+    expect(submitted.status, safeResponseSummary(submitted)).toBe(202)
     const taskId = submitted.body?.data?.task_id || submitted.body?.task_id
-    expect(taskId, JSON.stringify(submitted.body)).toBeTruthy()
+    expect(taskId, safeResponseSummary(submitted)).toBeTruthy()
     const terminal = await waitForNaturalTerminal(product, taskId)
     const evidence = await buildLiveAcceptanceEvidence(product, request, context, counters, terminal, testInfo)
     assertLiveAcceptanceEvidence(evidence, context)
