@@ -169,11 +169,23 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 一键转绘产品媒体登记 Task A 免费模型计费语义获批",
+          "approvedBy": "product-owner 2026-08-27 redraw-product-media-registration-task-a",
+          "impactTests": [
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawAnalysis.test.js",
+            "backend-node/test/redrawLocalizationOrchestration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 一键转绘产品媒体登记 Task A 免费模型计费语义获批",
-        "approvedBy": "product-owner 2026-08-27 redraw-product-media-registration-task-a",
+        "reason": "2026-08-27 迁移 67 幂等重放与免费模型合同兜底修复获批",
+        "approvedBy": "product-owner 2026-08-27 migration67-idempotent-replay-free-contract-fix",
         "impactTests": [
           "backend-node/test/modelPrice.test.js",
           "backend-node/test/redrawMigration.test.js",
@@ -1148,11 +1160,23 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 5eee94d8 免费模型迁移原子性与分辨率阶梯修复获批",
+          "approvedBy": "product-owner 2026-08-27 free-billing-migration-tier-review-fix-5eee94d8",
+          "impactTests": [
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawAnalysis.test.js",
+            "backend-node/test/redrawLocalizationOrchestration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 5eee94d8 免费模型迁移原子性与分辨率阶梯修复获批",
-        "approvedBy": "product-owner 2026-08-27 free-billing-migration-tier-review-fix-5eee94d8",
+        "reason": "2026-08-27 迁移 67 幂等重放与免费模型合同兜底修复获批",
+        "approvedBy": "product-owner 2026-08-27 migration67-idempotent-replay-free-contract-fix",
         "impactTests": [
           "backend-node/test/modelPrice.test.js",
           "backend-node/test/redrawMigration.test.js",

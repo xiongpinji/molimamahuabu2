@@ -95,6 +95,29 @@ test('迁移 67 保留既有价格为 paid 并允许正式 free 0 积分', () =>
   );
 });
 
+test('迁移 67 重跑不会删除未来扩展列和值', () => {
+  const db = new Database(':memory:');
+
+  runMigrationsAndEnsure(db);
+  db.exec("ALTER TABLE model_credit_prices ADD COLUMN future_extension TEXT NOT NULL DEFAULT ''");
+  db.prepare(`INSERT INTO model_credit_prices (model, credits, pricing_mode, future_extension, updated_at)
+    VALUES ('future-paid', 12, 'paid', 'keep-me', '2026-08-27T00:00:00.000Z')`).run();
+
+  runMigrationsAndEnsure(db);
+
+  const columns = db.prepare('PRAGMA table_info(model_credit_prices)').all().map((column) => column.name);
+  assert.equal(columns.includes('future_extension'), true);
+  assert.deepEqual(
+    db.prepare('SELECT model, credits, pricing_mode, future_extension FROM model_credit_prices WHERE model = ?').get('future-paid'),
+    { model: 'future-paid', credits: 12, pricing_mode: 'paid', future_extension: 'keep-me' },
+  );
+  assert.throws(
+    () => db.prepare(`INSERT INTO model_credit_prices (model, credits, pricing_mode, future_extension, updated_at)
+      VALUES ('future-bad-paid-zero', 0, 'paid', 'blocked', datetime('now'))`).run(),
+    /CHECK constraint failed/,
+  );
+});
+
 test('迁移 67 在分语句部分执行后可安全重跑且保留原表数据', () => {
   const db = new Database(':memory:');
   db.exec(`
