@@ -310,6 +310,7 @@ function setupRouter(cfg, db, log, options = {}) {
   const redraw = redrawRoutes(db, log, {
     cfg,
     ...redrawOptions,
+    providerAssetSecret,
     localizationProvider: explicitLocalizationProvider || redrawAdapters.localize,
     assetGenerationProvider: explicitAssetGenerationProvider || defaultAssetGenerationProvider,
     dialogueProvider: explicitDialogueProvider || defaultDialogueProvider,

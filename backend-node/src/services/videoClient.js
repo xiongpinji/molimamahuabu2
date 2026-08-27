@@ -802,34 +802,32 @@ async function resolveFuminReferenceImageAsync(db, rawUrl, files_base_url, stora
   const raw = String(rawUrl || '').trim();
   if (!raw) return null;
   if (raw.startsWith('asset://')) return raw;
-  const resolved = await resolveImageInputForAgnesAsync(
-    db,
-    raw,
-    files_base_url,
-    storage_local_path,
-    log,
-    video_gen_id,
-    `fumin_${index}`,
-  );
-  if (!resolved) {
-    throw new Error(`参考图 ${Number(index) + 1} 无法转换为中转站可读取的公网地址`);
-  }
-  return providerAssetUrl.signProviderAssetUrl(resolved, { filesBaseUrl: files_base_url });
+  return resolveFuminReferenceMedia(raw, files_base_url, 'image', index);
 }
 
 function resolveFuminReferenceMedia(rawUrl, files_base_url, kind, index) {
   const raw = String(rawUrl || '').trim();
   if (!raw) return null;
   if (raw.startsWith('asset://')) return raw;
-  if (/^https:\/\//i.test(raw) && !raw.includes('/static/')) return raw;
-  if (/^(?:[a-zA-Z]:[\\/]|\/(?!static\/)|\\\\|file:)/i.test(raw) || raw.includes('..')) {
-    throw new Error(`fumin 参考${kind === 'audio' ? '音频' : '视频'} ${Number(index) + 1} 不是可公开读取的素材 URL`);
+  if (/^https:\/\//i.test(raw)) {
+    try {
+      const inputUrl = new URL(raw);
+      const baseUrl = new URL(String(files_base_url || '').trim());
+      if (inputUrl.origin !== baseUrl.origin) return raw;
+    } catch (_) {
+      return raw;
+    }
   }
   const publicUrl = publicUrlFromLocalRef(raw, files_base_url);
-  if (!publicUrl) {
-    throw new Error(`fumin 参考${kind === 'audio' ? '音频' : '视频'} ${Number(index) + 1} 无法转换为供应商可读取的公网 static URL`);
+  const candidate = /^https:\/\//i.test(raw) ? raw : publicUrl;
+  if (!candidate) {
+    throw new Error(`fumin 参考${kind === 'audio' ? '音频' : kind === 'image' ? '图' : '视频'} ${Number(index) + 1} 无法转换为供应商可读取的公网 static URL`);
   }
-  return providerAssetUrl.signProviderAssetUrl(publicUrl, { filesBaseUrl: files_base_url });
+  try {
+    return providerAssetUrl.signStrictStaticAssetUrl(candidate, { filesBaseUrl: files_base_url });
+  } catch (_) {
+    throw new Error(`fumin 参考${kind === 'audio' ? '音频' : kind === 'image' ? '图' : '视频'} ${Number(index) + 1} 不是可公开读取的素材 URL`);
+  }
 }
 
 /**

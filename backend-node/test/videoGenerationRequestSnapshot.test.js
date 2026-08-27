@@ -327,15 +327,17 @@ test('Fumin submit signs local static video and audio references with public fil
     duration: 5,
     resolution: '480p',
     aspect_ratio: '16:9',
+    reference_urls: ['/static/projects/0001/assets/actor.png'],
     reference_video_urls: ['/static/projects/0001/assets/motion.mp4'],
     reference_audio_urls: ['/static/projects/0001/assets/voice.mp3'],
     files_base_url: 'https://media.example.test/static',
   }, { evidenceRoots });
 
   assert.deepEqual(result, { task_id: 'fumin-task-static-media', status: 'queued' });
+  const imageUrl = body.content.find((item) => item.role === 'reference_image').image_url.url;
   const videoUrl = body.content.find((item) => item.role === 'reference_video').video_url.url;
   const audioUrl = body.content.find((item) => item.role === 'reference_audio').audio_url.url;
-  for (const signed of [videoUrl, audioUrl]) {
+  for (const signed of [imageUrl, videoUrl, audioUrl]) {
     const url = new URL(signed);
     assert.equal(url.origin, 'https://media.example.test');
     assert.ok(url.pathname.startsWith('/static/projects/0001/assets/'));
@@ -345,6 +347,63 @@ test('Fumin submit signs local static video and audio references with public fil
       signature: url.searchParams.get('provider_asset_signature'),
       secret: process.env.PLATFORM_JWT_SECRET,
     }));
+  }
+});
+
+test('Fumin submit rejects traversal static image/video/audio before provider POST', async (t) => {
+  const { db } = setup(t);
+  const previousSecret = process.env.PLATFORM_JWT_SECRET;
+  const originalFetch = global.fetch;
+  process.env.PLATFORM_JWT_SECRET = 'video-client-static-signing-secret-1234567890';
+  t.after(() => {
+    if (previousSecret === undefined) delete process.env.PLATFORM_JWT_SECRET;
+    else process.env.PLATFORM_JWT_SECRET = previousSecret;
+    global.fetch = originalFetch;
+  });
+  const now = new Date().toISOString();
+  const configId = db.prepare(`INSERT INTO ai_service_configs
+    (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+     is_active, is_default, priority, verification_status, verified_capabilities, created_at, updated_at)
+    VALUES ('video', 'fumin', 'fumin_video', 'Fumin Mini', 'https://fumin.ai', 'db-fumin-key', ?,
+      'fumin-seedance-2.0-mini', 1, 0, 0, 'verified', ?, ?, ?)`).run(
+    JSON.stringify(['fumin-seedance-2.0-mini']),
+    JSON.stringify({ 'fumin-seedance-2.0-mini': withExternalModelEvidence('fumin-seedance-2.0-mini', {
+      durations: [5],
+      resolutions: ['480p'],
+      supportsImageReference: true,
+      supportsVideoReference: true,
+      supportsAudioReference: true,
+      supportsAudio: true,
+      maxReferences: 9,
+      maxVideoReferences: 3,
+      maxAudioReferences: 3,
+    }) }),
+    now,
+    now,
+  ).lastInsertRowid;
+
+  for (const item of [
+    { label: 'image', payload: { reference_urls: ['/static/%2e%2e/private/actor.png'] } },
+    { label: 'video', payload: { reference_video_urls: ['/static/../private/motion.mp4'] } },
+    { label: 'audio', payload: { reference_audio_urls: ['/static/%2e%2e/private/voice.mp3'] } },
+  ]) {
+    let fetchCalls = 0;
+    global.fetch = async () => {
+      fetchCalls += 1;
+      return new Response('{}', { status: 200 });
+    };
+    const result = await videoClient.callVideoApi(db, log, {
+      ai_service_config_id: configId,
+      model: 'fumin-seedance-2.0-mini',
+      prompt: `Maya says exactly in English: We leave tonight. ${item.label}`,
+      duration: 5,
+      resolution: '480p',
+      aspect_ratio: '16:9',
+      files_base_url: 'https://media.example.test/static',
+      ...item.payload,
+    }, { evidenceRoots });
+    assert.match(result.error, /fumin|参考|static|公开/);
+    assert.equal(fetchCalls, 0, item.label);
   }
 });
 

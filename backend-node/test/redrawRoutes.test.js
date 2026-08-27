@@ -4725,9 +4725,15 @@ test('默认单镜生成 context 为参考包资产创建静态签名公网 URL 
       (name, type, category, url, local_path, mime_type, created_at, updated_at)
       VALUES ('motion.mp4', 'video', 'redraw', '/static/redraw/motion.mp4', 'redraw/motion.mp4', 'video/mp4', ?, ?)`)
       .run(now, now).lastInsertRowid;
+    const traversalAssetId = db.prepare(`INSERT INTO assets
+      (name, type, category, url, local_path, mime_type, created_at, updated_at)
+      VALUES ('bad-motion.mp4', 'video', 'redraw', '/static/%2e%2e/private/motion.mp4',
+        'redraw/private/motion.mp4', 'video/mp4', ?, ?)`)
+      .run(now, now).lastInsertRowid;
     let capturedContext = null;
     const handlers = redrawRoutes(db, { error() {}, info() {} }, routeDeps({
       cfg: { storage: { local_path: 'data/storage', base_url: 'https://media.example.test/static' } },
+      providerAssetSecret: 'route-option-redraw-provider-secret-1234567890',
       generationService: {
         generateShot: async (context) => {
           capturedContext = context;
@@ -4761,7 +4767,12 @@ test('默认单镜生成 context 为参考包资产创建静态签名公网 URL 
       secret: process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET,
     }), false);
     assert.equal(capturedContext.storageBaseUrl, 'https://media.example.test/static');
-    assert.equal(capturedContext.providerAssetSecret, process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET);
+    assert.equal(capturedContext.providerAssetSecret, 'route-option-redraw-provider-secret-1234567890');
+    assert.throws(() => capturedContext.createReferenceUrl({
+      asset_id: traversalAssetId,
+      sha256: 'b'.repeat(64),
+      kind: 'motion',
+    }), (error) => error.code === 'REDRAW_REFERENCE_ASSET_URL_UNAVAILABLE');
   } finally {
     db.close();
   }

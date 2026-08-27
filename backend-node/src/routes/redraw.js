@@ -118,18 +118,23 @@ function createProductionReferenceUrlFactory(db, cfg, canReadArtifact, options =
     if (!asset || canReadArtifact(id) !== true) {
       throw Object.assign(new Error('参考资产不可读取'), { code: 'REDRAW_REFERENCE_ASSET_UNREADABLE' });
     }
-    const storedUrl = String(asset.url || '').trim();
-    const localPath = String(asset.local_path || '').trim().replace(/\\/g, '/').replace(/^\/+/, '');
-    const staticUrl = storedUrl.startsWith('/static/')
-      ? storedUrl
-      : (localPath ? `/static/${localPath}` : '');
-    if (!staticUrl.startsWith('/static/') || !storageBaseUrl || !/^https?:\/\//i.test(storageBaseUrl)) {
+    let staticUrl;
+    try {
+      staticUrl = providerAssetUrlService.safeStaticAssetUrl(asset);
+    } catch (_) {
       throw Object.assign(new Error('参考资产缺少可公开读取的 static URL'), { code: 'REDRAW_REFERENCE_ASSET_URL_UNAVAILABLE' });
     }
-    return providerAssetUrlService.signProviderAssetUrl(staticUrl, {
-      filesBaseUrl: storageBaseUrl,
-      secret: staticAssetSigningSecret,
-    });
+    if (!storageBaseUrl) {
+      throw Object.assign(new Error('参考资产缺少可公开读取的 static URL'), { code: 'REDRAW_REFERENCE_ASSET_URL_UNAVAILABLE' });
+    }
+    try {
+      return providerAssetUrlService.signStrictStaticAssetUrl(staticUrl, {
+        filesBaseUrl: storageBaseUrl,
+        secret: staticAssetSigningSecret,
+      });
+    } catch (_) {
+      throw Object.assign(new Error('参考资产缺少可公开读取的 static URL'), { code: 'REDRAW_REFERENCE_ASSET_URL_UNAVAILABLE' });
+    }
   };
 }
 
@@ -2939,7 +2944,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     return {
       storageRoot: storageRootFromConfig(cfg),
       storageBaseUrl,
-      providerAssetSecret: process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET,
+      providerAssetSecret: options.providerAssetSecret ?? process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET,
       staticAssetSigningSecret,
       createReferenceUrl: createProductionReferenceUrlFactory(db, cfg, canReadArtifact, {
         staticAssetSigningSecret,
