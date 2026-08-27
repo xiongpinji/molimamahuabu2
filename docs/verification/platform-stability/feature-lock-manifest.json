@@ -181,11 +181,23 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 迁移 67 幂等重放与免费模型合同兜底修复获批",
+          "approvedBy": "product-owner 2026-08-27 migration67-idempotent-replay-free-contract-fix",
+          "impactTests": [
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawAnalysis.test.js",
+            "backend-node/test/redrawLocalizationOrchestration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 迁移 67 幂等重放与免费模型合同兜底修复获批",
-        "approvedBy": "product-owner 2026-08-27 migration67-idempotent-replay-free-contract-fix",
+        "reason": "2026-08-27 67851c95 迁移 67 共享保列重建 helper 修复获批",
+        "approvedBy": "product-owner 2026-08-27 migration67-shared-column-preserving-helper-fix-67851c95",
         "impactTests": [
           "backend-node/test/modelPrice.test.js",
           "backend-node/test/redrawMigration.test.js",
@@ -1172,11 +1184,23 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 迁移 67 幂等重放与免费模型合同兜底修复获批",
+          "approvedBy": "product-owner 2026-08-27 migration67-idempotent-replay-free-contract-fix",
+          "impactTests": [
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawAnalysis.test.js",
+            "backend-node/test/redrawLocalizationOrchestration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 迁移 67 幂等重放与免费模型合同兜底修复获批",
-        "approvedBy": "product-owner 2026-08-27 migration67-idempotent-replay-free-contract-fix",
+        "reason": "2026-08-27 67851c95 迁移 67 共享保列重建 helper 修复获批",
+        "approvedBy": "product-owner 2026-08-27 migration67-shared-column-preserving-helper-fix-67851c95",
         "impactTests": [
           "backend-node/test/modelPrice.test.js",
           "backend-node/test/redrawMigration.test.js",
