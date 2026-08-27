@@ -5931,16 +5931,40 @@ test('reference bundle required 默认生产路径允许精确 Fumin Mini 且预
     assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
     assert.equal(count(state.db, 'video_generations'), 1);
     assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 1);
-    const video = state.db.prepare('SELECT provider, model, resolution, generate_audio, request_snapshot FROM video_generations').get();
+    const video = state.db.prepare(`SELECT provider, model, duration, aspect_ratio, resolution, generate_audio,
+        reference_image_urls, reference_video_urls, source_conditioning_json, request_snapshot, ai_service_config_id
+      FROM video_generations`).get();
     assert.equal(video.provider, 'fumin');
     assert.equal(video.model, FUMIN_MINI_MODEL);
+    assert.equal(video.duration, 5);
+    assert.equal(video.aspect_ratio, '16:9');
     assert.equal(video.resolution, '480p');
     assert.equal(video.generate_audio, 1);
     const snapshot = JSON.parse(video.request_snapshot);
+    assert.equal(/[\u3400-\u9fff]/.test(snapshot.prompt), false);
+    assert.equal(snapshot.prompt.includes('原始中文提示词'), false);
+    assert.equal(snapshot.prompt.includes('镜头原始中文'), false);
     assert.equal(snapshot.model, FUMIN_MINI_MODEL);
+    assert.equal(snapshot.duration, 5);
+    assert.equal(snapshot.aspect_ratio, '16:9');
     assert.equal(snapshot.resolution, '480p');
     assert.equal(snapshot.generate_audio, true);
-    assert.equal(snapshot.reference_video_urls.length, 1);
+    const expectedReferenceVideoUrls = [`https://cdn.example.test/reference/motion/${state.motionAssetId}`];
+    const expectedReferenceImageUrls = [
+      `https://cdn.example.test/reference/identity/${state.actorAImageId}`,
+      `https://cdn.example.test/reference/identity/${state.actorBImageId}`,
+    ];
+    assert.deepEqual(JSON.parse(video.reference_video_urls), expectedReferenceVideoUrls);
+    assert.deepEqual(snapshot.reference_video_urls, expectedReferenceVideoUrls);
+    assert.deepEqual(JSON.parse(video.reference_image_urls), expectedReferenceImageUrls);
+    assert.deepEqual(snapshot.reference_image_urls, expectedReferenceImageUrls);
+    assert.deepEqual(JSON.parse(video.source_conditioning_json).video_capability, {
+      config_id: video.ai_service_config_id,
+      config_updated_at: snapshot.config_updated_at,
+      provider: 'fumin',
+      protocol: 'fumin_video',
+      model: FUMIN_MINI_MODEL,
+    });
   }
 
   for (const scenario of [
