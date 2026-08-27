@@ -25,6 +25,7 @@ const COMPLETE_ACCEPTANCE_FRAMEWORK_ID = 'stability.platform-complete-acceptance
 const REDRAW_COVERAGE_REGISTRATION_FEATURE_ID = 'redraw.coverage-registration-service';
 const REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID = 'redraw.coverage-registration-http-route';
 const REDRAW_CLEAN_PLATE_MEDIA_FEATURE_ID = 'redraw.clean-plate-local-media-registration';
+const REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID = 'redraw.product-media-http-chain';
 const UNKNOWN_STATE_RECONCILIATION_FEATURE_ID = 'stability.unknown-state-billing-reconciliation';
 const PROVIDER_ROUTE_CONTRACT_FEATURE_ID = 'stability.provider-route-contract';
 const SAFE_PROVIDER_FAILOVER_FEATURE_ID = 'stability.safe-provider-failover';
@@ -477,6 +478,29 @@ const REDRAW_CLEAN_PLATE_MEDIA_TASK_D_P2_UNLOCK = {
     'backend-node/test/featureLockManifest.test.js',
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
+};
+const REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_PROTECTED_PATHS = [
+  'backend-node/src/routes/index.js',
+  'backend-node/src/routes/redraw.js',
+  'backend-node/src/services/redrawAssetService.js',
+  'backend-node/src/services/redrawCoverageRegistrationService.js',
+  'backend-node/src/services/redrawReferenceBundleService.js',
+  'backend-node/src/services/redrawReferencePreparationOrchestrator.js',
+];
+const REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_REQUIRED_TESTS = [
+  'backend-node/test/redrawProductMediaChain.test.js',
+  'backend-node/test/redrawRoutes.test.js',
+  'backend-node/test/redrawCoverageRegistration.test.js',
+  'backend-node/test/redrawAssets.test.js',
+  'backend-node/test/redrawReferencePreparationOrchestration.test.js',
+  'backend-node/test/redrawReferenceBundle.test.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+];
+const REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_TASK_E_UNLOCK = {
+  reason: '2026-08-28 一键转绘真实产品 HTTP 媒体同链回归 Task E 获批',
+  approvedBy: 'product-owner 2026-08-28 redraw-product-media-registration-task-e',
+  impactTests: REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_REQUIRED_TESTS,
 };
 const REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK = {
   reason: '2026-08-27 一键转绘产品媒体登记 Task A 免费模型计费语义获批',
@@ -1080,6 +1104,24 @@ test('Clean provider 本地媒体登记 Task D 使用独立功能锁和新鲜批
   assert.notDeepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
 });
 
+test('真实产品 HTTP 媒体同链 Task E 使用独立功能锁和新鲜批准', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const feature = manifest.features.find(({ featureId }) => featureId === REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID);
+  assert.ok(feature, `缺少功能锁 ${REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID}`);
+  assert.deepEqual(feature.protectedPaths, REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_PROTECTED_PATHS);
+  assert.deepEqual(feature.requiredTests, REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_REQUIRED_TESTS);
+  assert.deepEqual(feature.evidence, [
+    REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC,
+    REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN,
+  ]);
+  assert.deepEqual(feature.unlock, REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_TASK_E_UNLOCK);
+  assert.deepEqual(feature.unlockHistory, []);
+  assert.notDeepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
+  assert.notDeepEqual(feature.unlock, REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
+  assert.notDeepEqual(feature.unlock, REDRAW_CLEAN_PLATE_MEDIA_TASK_D_P2_UNLOCK);
+  assert.notDeepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
+});
+
 test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜批准并保留完整历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   for (const [featureId, requirements] of Object.entries(PROVIDER_TASK_LOCK_REQUIREMENTS)) {
@@ -1263,6 +1305,8 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
       assert.deepEqual(feature.unlock, REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
     } else if (feature.featureId === REDRAW_CLEAN_PLATE_MEDIA_FEATURE_ID) {
       assert.deepEqual(feature.unlock, REDRAW_CLEAN_PLATE_MEDIA_TASK_D_P2_UNLOCK);
+    } else if (feature.featureId === REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID) {
+      assert.deepEqual(feature.unlock, REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_TASK_E_UNLOCK);
     } else if (!Object.hasOwn(PROVIDER_TASK_LOCK_REQUIREMENTS, feature.featureId)) {
       assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
     }

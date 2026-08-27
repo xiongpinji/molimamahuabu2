@@ -1399,6 +1399,55 @@
       }
     },
     {
+      "featureId": "redraw.product-media-http-chain",
+      "module": "shared",
+      "status": "locked_pass",
+      "acceptance": [
+        "setupRouter 挂载的真实 /api/v1 HTTP 路由使用真实 JWT 与租户上下文贯通 coverage、审核和两轮 reference preparation",
+        "coverage 与 clean provider 只能向服务端私有单次 staging 写相对媒体文件，产品服务负责登记、状态迁移和清理",
+        "coverage 与 clean 均经过 pending 到 approved，第二轮复用 approved clean 并由默认 reference bundle 服务收口 reference_ready",
+        "免费模型全链保持 credits、held、charged、reservation 与 ledger 为零且不重提 provider"
+      ],
+      "protectedPaths": [
+        "backend-node/src/routes/index.js",
+        "backend-node/src/routes/redraw.js",
+        "backend-node/src/services/redrawAssetService.js",
+        "backend-node/src/services/redrawCoverageRegistrationService.js",
+        "backend-node/src/services/redrawReferenceBundleService.js",
+        "backend-node/src/services/redrawReferencePreparationOrchestrator.js"
+      ],
+      "requiredTests": [
+        "backend-node/test/redrawProductMediaChain.test.js",
+        "backend-node/test/redrawRoutes.test.js",
+        "backend-node/test/redrawCoverageRegistration.test.js",
+        "backend-node/test/redrawAssets.test.js",
+        "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+        "backend-node/test/redrawReferenceBundle.test.js",
+        "backend-node/test/featureLockManifest.test.js",
+        "backend-node/test/incrementalReleaseScope.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md",
+        "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md"
+      ],
+      "fixCommit": null,
+      "unlockHistory": [],
+      "unlock": {
+        "reason": "2026-08-28 一键转绘真实产品 HTTP 媒体同链回归 Task E 获批",
+        "approvedBy": "product-owner 2026-08-28 redraw-product-media-registration-task-e",
+        "impactTests": [
+          "backend-node/test/redrawProductMediaChain.test.js",
+          "backend-node/test/redrawRoutes.test.js",
+          "backend-node/test/redrawCoverageRegistration.test.js",
+          "backend-node/test/redrawAssets.test.js",
+          "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+          "backend-node/test/redrawReferenceBundle.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
+        ]
+      }
+    },
+    {
       "featureId": "stability.platform-complete-acceptance-framework",
       "module": "shared",
       "status": "locked_pass",

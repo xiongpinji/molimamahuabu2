@@ -96,6 +96,12 @@ const redrawCleanPlateMediaP2ManifestPath = path.join(
   'release-scopes',
   'redraw-clean-plate-adapter-legacy-task-d-p2-20260828.json',
 );
+const redrawProductMediaHttpChainManifestPath = path.join(
+  repoRoot,
+  'deploy',
+  'release-scopes',
+  'redraw-product-media-http-chain-task-e-20260828.json',
+);
 const CANVAS_TEXT_CAPABILITY_HOTFIX_ALLOWED_PATHS = [
   'backend-node/src/services/providerCanaryEvidenceService.js',
   'backend-node/test/featureLockManifest.test.js',
@@ -375,6 +381,15 @@ const REDRAW_CLEAN_PLATE_MEDIA_P2_ALLOWED_PATHS = [
   'deploy/release-scopes/redraw-clean-plate-adapter-legacy-task-d-p2-20260828.json',
   'docs/verification/platform-stability/feature-lock-manifest.json',
 ];
+const REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_ALLOWED_PATHS = [
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/redrawProductMediaChain.test.js',
+  'deploy/release-scopes/redraw-product-media-http-chain-task-e-20260828.json',
+  'docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md',
+  'docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md',
+  'docs/verification/platform-stability/feature-lock-manifest.json',
+];
 
 function assertExactProactiveCanaryScope(allowedPaths) {
   assert.deepEqual(allowedPaths, PROACTIVE_CANARY_ALLOWED_PATHS);
@@ -426,6 +441,10 @@ function assertExactRedrawCleanPlateMediaFixScope(allowedPaths) {
 
 function assertExactRedrawCleanPlateMediaP2Scope(allowedPaths) {
   assert.deepEqual(allowedPaths, REDRAW_CLEAN_PLATE_MEDIA_P2_ALLOWED_PATHS);
+}
+
+function assertExactRedrawProductMediaHttpChainScope(allowedPaths) {
+  assert.deepEqual(allowedPaths, REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_ALLOWED_PATHS);
 }
 
 function createFixture() {
@@ -776,6 +795,41 @@ test('Clean provider 默认 adapter 与 legacy 双字段 P2 修复发布范围�
   swapped[index] = 'backend-node/src/routes/index.js';
   assert.throws(
     () => assertExactRedrawCleanPlateMediaP2Scope(swapped),
+    { name: 'AssertionError' },
+  );
+});
+
+test('真实产品 HTTP 媒体同链 Task E 使用独立 7 文件发布范围', () => {
+  const { manifest, allowedPaths } = loadManifest(redrawProductMediaHttpChainManifestPath);
+  assert.equal(manifest.release, 'redraw-product-media-http-chain-task-e-20260828');
+  assertExactRedrawProductMediaHttpChainScope(allowedPaths);
+  assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
+  for (const forbidden of [
+    'backend-node/src',
+    'backend-node/data',
+    'backend-node/uploads',
+    'storage',
+    'assets',
+    'ai-music',
+    'moli-music',
+    'deploy/install-protected-release-guard.sh',
+    'shared/release-guard',
+  ]) {
+    assert.equal(
+      allowedPaths.some((entry) => entry === forbidden || entry.startsWith(`${forbidden}/`)),
+      false,
+      `发布范围不得包含: ${forbidden}`,
+    );
+  }
+});
+
+test('真实产品 HTTP 媒体同链 Task E 发布范围拒绝同数量偷换', () => {
+  const swapped = [...REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_ALLOWED_PATHS];
+  const index = swapped.indexOf('backend-node/test/redrawProductMediaChain.test.js');
+  swapped[index] = 'backend-node/src/routes/redraw.js';
+  assert.equal(swapped.length, REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_ALLOWED_PATHS.length);
+  assert.throws(
+    () => assertExactRedrawProductMediaHttpChainScope(swapped),
     { name: 'AssertionError' },
   );
 });
