@@ -202,6 +202,23 @@ function localizedDialogueText(shot) {
   throw new Error('localized dialogue evidence is missing')
 }
 
+function requiredFiniteNumber(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error('live billing evidence is not confirmed')
+  }
+  return value
+}
+
+function liveBillingEvidence(billing) {
+  const charged = requiredFiniteNumber(billing?.charged)
+  const held = requiredFiniteNumber(billing?.held)
+  const released = requiredFiniteNumber(billing?.released)
+  if (charged <= 0 || held !== 0 || released !== 0) {
+    throw new Error('live billing evidence is not confirmed')
+  }
+  return { status: 'confirmed', charged, held, released, quote: billing.quote }
+}
+
 function assertLiveAcceptanceEvidence(evidence, context) {
   expect(evidence).toMatchObject({
     submit_budget: { authorized: 1, actual: 1 },
@@ -273,7 +290,7 @@ async function buildLiveAcceptanceEvidence(product, request, context, counters, 
     },
     lip_sync: current.metrics.lip_sync,
     candidate: { sha256: current.candidate_sha256, downloaded_sha256: downloaded.sha256 },
-    billing: { status: terminal.task?.billing_status },
+    billing: liveBillingEvidence(shot.billing),
   }
 }
 
@@ -366,6 +383,21 @@ test('live acceptance assertions fail closed when required evidence is missing',
     { ...completeEvidence, billing: { status: undefined } },
   ]) {
     expect(() => assertLiveAcceptanceEvidence(broken, context)).toThrow()
+  }
+})
+
+test('live billing evidence is confirmed only from charged product shot billing', () => {
+  expect(liveBillingEvidence({ charged: 5, held: 0, released: 0, quote: { total: 5 } }))
+    .toEqual({ status: 'confirmed', charged: 5, held: 0, released: 0, quote: { total: 5 } })
+  for (const billing of [
+    undefined,
+    {},
+    { charged: '5', held: 0, released: 0, quote: { total: 5 } },
+    { charged: 0, held: 0, released: 0, quote: { total: 5 } },
+    { charged: 5, held: 1, released: 0, quote: { total: 5 } },
+    { charged: 5, held: 0, released: 5, quote: { total: 5 } },
+  ]) {
+    expect(() => liveBillingEvidence(billing)).toThrow(/live billing evidence is not confirmed/)
   }
 })
 
