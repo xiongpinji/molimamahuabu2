@@ -196,7 +196,10 @@ test('ToAPIs 引用素材拒绝本地主机、私网和链路本地地址', () =
 
 test('ToAPIs POST 使用注入 fetch，规范化 base URL，并把不确定创建结果标为不可重试', async () => {
   assert.equal(normalizeToapisBaseUrl('https://toapis.com/v1/'), 'https://toapis.com');
-  assert.equal(normalizeToapisBaseUrl('https://toapis.xyz/v1/'), 'https://toapis.xyz');
+  assert.throws(
+    () => normalizeToapisBaseUrl('https://toapis.xyz/v1/'),
+    /ToAPIs 官方入口必须是 https:\/\/toapis\.com/,
+  );
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });
@@ -265,6 +268,8 @@ test('ToAPIs 请求前强制官方 base URL，非法入口不会触发 fetch 且
   for (const badBaseUrl of [
     'http://toapis.com',
     'https://user:pass@toapis.com',
+    'https://toapis.xyz',
+    'https://toapis.xyz/v1/',
     'https://localhost',
     'https://127.0.0.1',
     'https://10.0.0.1',
