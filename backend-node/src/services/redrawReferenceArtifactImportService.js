@@ -12,6 +12,10 @@ const { getFfprobePath } = require('../utils/ffmpegPath');
 const {
   invalidateCharacterDependents,
 } = require('./redrawDependencyInvalidationService');
+const {
+  buildCurrentReferenceBindings,
+  buildTrustedReferenceBundleInput,
+} = require('./redrawReferenceBundleService');
 
 const INPUT_INVALID_CODE = 'REDRAW_REFERENCE_ARTIFACT_INPUT_INVALID';
 const NOT_FOUND_CODE = 'REDRAW_REFERENCE_ARTIFACT_NOT_FOUND';
@@ -22,6 +26,8 @@ const MEDIA_INVALID_CODE = 'REDRAW_REFERENCE_ARTIFACT_MEDIA_INVALID';
 const TOO_LARGE_CODE = 'REDRAW_REFERENCE_ARTIFACT_TOO_LARGE';
 const STORAGE_FAILED_CODE = 'REDRAW_REFERENCE_ARTIFACT_STORAGE_FAILED';
 const MOTION_REVIEW_REQUIRED_CODE = 'REDRAW_MOTION_REFERENCE_REVIEW_REQUIRED';
+const MOTION_BINDING_NOT_READY_CODE = 'REDRAW_MOTION_REFERENCE_BINDING_NOT_READY';
+const MOTION_STALE_CODE = 'REDRAW_MOTION_REFERENCE_STALE';
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_IMAGE_DIMENSION = 4096;
 const MAX_IMAGE_PIXELS = MAX_IMAGE_DIMENSION * MAX_IMAGE_DIMENSION;
@@ -1175,8 +1181,263 @@ async function importMotionReferenceArtifact(rawCtx, rawInput) {
   }
 }
 
-async function bindReadyMotionReference() {
-  fail(INPUT_INVALID_CODE, '参考素材导入参数无效');
+function normalizeMotionBindingInput(rawInput) {
+  if (!rawInput || typeof rawInput !== 'object' || Array.isArray(rawInput)
+    || Object.keys(rawInput).some((key) => !['shot_id', 'clean_results'].includes(key))) {
+    fail(INPUT_INVALID_CODE, '动作参考绑定参数无效');
+  }
+  const shotId = Number(rawInput.shot_id);
+  if (!Number.isSafeInteger(shotId) || shotId <= 0 || !Array.isArray(rawInput.clean_results)) {
+    fail(INPUT_INVALID_CODE, '动作参考绑定参数无效');
+  }
+  return { shotId, cleanResults: rawInput.clean_results };
+}
+
+function normalizeMotionBindingContext(rawCtx) {
+  const ctx = rawCtx && typeof rawCtx === 'object' ? rawCtx : {};
+  const tenantId = String(ctx.tenantId ?? '').trim();
+  const userId = String(ctx.userId ?? '').trim();
+  const versionId = Number(ctx.versionId);
+  const storageRoot = String(ctx.storageRoot ?? '').trim();
+  if (!ctx.db || typeof ctx.db.prepare !== 'function'
+    || !tenantId || !userId || !Number.isSafeInteger(versionId) || versionId <= 0
+    || !storageRoot || !path.isAbsolute(storageRoot)) {
+    fail(INPUT_INVALID_CODE, '动作参考绑定上下文无效');
+  }
+  return { ...ctx, tenantId, userId, versionId, storageRoot };
+}
+
+function motionBindingError(code, message) {
+  fail(code, message);
+}
+
+function currentPendingMotionCandidate(ctx, shotId) {
+  return ctx.db.prepare(`
+    SELECT imports.id AS import_id, imports.file_sha256 AS import_file_sha256,
+           imports.stored_asset_id, assets.*
+    FROM redraw_reference_artifact_imports AS imports
+    JOIN assets ON assets.id = imports.stored_asset_id AND assets.deleted_at IS NULL
+    WHERE imports.tenant_id = ? AND imports.user_id = ? AND imports.version_id = ?
+      AND imports.scope_type = 'shot' AND imports.scope_id = ?
+      AND imports.purpose = 'motion' AND imports.status = 'completed'
+    ORDER BY imports.id DESC LIMIT 1
+  `).get(ctx.tenantId, ctx.userId, ctx.versionId, shotId);
+}
+
+function readMotionBindingScope(ctx, shotId) {
+  const row = ctx.db.prepare(`
+    SELECT shot.*, version.work_id AS source_work_id,
+           work.source_asset_id AS source_asset_id,
+           work.source_fingerprint AS source_fingerprint
+    FROM redraw_shots AS shot
+    JOIN redraw_versions AS version
+      ON version.id = shot.version_id
+      AND version.tenant_id = shot.tenant_id
+      AND version.user_id = shot.user_id
+      AND version.deleted_at IS NULL
+    JOIN redraw_works AS work
+      ON work.id = version.work_id
+      AND work.tenant_id = shot.tenant_id
+      AND work.user_id = shot.user_id
+      AND work.deleted_at IS NULL
+    JOIN assets AS source_asset
+      ON source_asset.id = work.source_asset_id
+      AND source_asset.type = 'video'
+      AND source_asset.deleted_at IS NULL
+    WHERE shot.id = ? AND shot.version_id = ?
+      AND shot.tenant_id = ? AND shot.user_id = ?
+      AND shot.deleted_at IS NULL
+  `).get(shotId, ctx.versionId, ctx.tenantId, ctx.userId);
+  if (!row
+    || !Number.isSafeInteger(Number(row.source_work_id))
+    || !Number.isSafeInteger(Number(row.source_asset_id))
+    || !SHA256_PATTERN.test(String(row.source_fingerprint || ''))
+    || !Number.isSafeInteger(Number(row.start_ms)) || Number(row.start_ms) < 0
+    || !Number.isSafeInteger(Number(row.end_ms)) || Number(row.end_ms) <= Number(row.start_ms)) {
+    motionBindingError(MOTION_BINDING_NOT_READY_CODE, '动作参考绑定镜头未就绪');
+  }
+  return row;
+}
+
+function assertPendingMotionScope(ctx, input, scope, asset, metadata) {
+  const motion = metadata.redraw_motion_import;
+  if (!motion
+    || motion.schema_version !== 'redraw-motion-import-v1'
+    || motion.tenant_id !== ctx.tenantId
+    || motion.user_id !== ctx.userId
+    || Number(motion.version_id) !== ctx.versionId
+    || Number(motion.shot_id) !== input.shotId
+    || Number(motion.source_work_id) !== Number(scope.source_work_id)
+    || Number(motion.source_asset_id) !== Number(scope.source_asset_id)
+    || motion.source_fingerprint !== String(scope.source_fingerprint)
+    || Number(motion.clip_start_ms) !== Number(scope.start_ms)
+    || Number(motion.clip_end_ms) !== Number(scope.end_ms)
+    || !SHA256_PATTERN.test(String(motion.file_sha256 || ''))
+    || motion.file_sha256 !== asset.import_file_sha256
+    || metadata.sha256 !== motion.file_sha256
+    || motion.review?.full_frame_reviewed !== true
+    || motion.review?.source_identity_obscured !== true
+    || motion.review?.source_text_obscured !== true
+    || motion.review?.motion_preserved !== true
+    || asset.type !== 'video'
+    || asset.category !== 'redraw'
+    || asset.mime_type !== 'video/mp4'
+    || asset.local_path !== motionRelativePath(motion.file_sha256)
+    || Number(asset.width) !== Number(motion.width)
+    || Number(asset.height) !== Number(motion.height)
+    || Number(motion.duration_ms) <= 0
+    || Math.abs(Number(motion.duration_ms) - (Number(scope.end_ms) - Number(scope.start_ms)))
+      > MOTION_DURATION_TOLERANCE_MS
+    || motion.mime_type !== 'video/mp4'
+    || motion.video_codec !== 'h264'
+    || Number(motion.audio_stream_count) !== 0) {
+    motionBindingError(MOTION_STALE_CODE, '动作参考候选已漂移');
+  }
+  return motion;
+}
+
+function readyMotionMatches(metadata, ctx, input, bindings) {
+  const motion = metadata.redraw_motion_reference;
+  return motion?.schema_version === 'redraw-motion-reference-v1'
+    && motion.tenant_id === ctx.tenantId
+    && motion.user_id === ctx.userId
+    && Number(motion.version_id) === ctx.versionId
+    && Number(motion.shot_id) === input.shotId
+    && Number(motion.source_asset_id) === bindings.source.asset_id
+    && motion.source_fingerprint === bindings.source.fingerprint
+    && Number(motion.clip_start_ms) === bindings.clip.start_ms
+    && Number(motion.clip_end_ms) === bindings.clip.end_ms
+    && motion.face_coverage_sha256 === bindings.face_coverage_sha256
+    && motion.text_coverage_sha256 === bindings.text_coverage_sha256
+    && motion.coverage_binding_sha256 === bindings.coverage_binding_sha256
+    && motion.identity_binding_sha256 === bindings.identity_binding_sha256
+    && motion.clean_binding_sha256 === bindings.clean_binding_sha256;
+}
+
+function assertPendingMatchesCurrentBindings(pending, bindings) {
+  const pendingStartMs = Number(pending.clip_start_ms);
+  const pendingEndMs = Number(pending.clip_end_ms);
+  const pendingDurationMs = Number(pending.duration_ms);
+  const currentStartMs = Number(bindings.clip.start_ms);
+  const currentEndMs = Number(bindings.clip.end_ms);
+  const currentDurationMs = Number(bindings.clip.duration_ms);
+  if (![pendingStartMs, pendingEndMs, pendingDurationMs,
+    currentStartMs, currentEndMs, currentDurationMs].every(Number.isFinite)
+    || Number(pending.source_work_id) !== Number(bindings.source.work_id)
+    || Number(pending.source_asset_id) !== Number(bindings.source.asset_id)
+    || String(pending.source_fingerprint) !== String(bindings.source.fingerprint)
+    || pendingStartMs !== currentStartMs
+    || pendingEndMs !== currentEndMs
+    || pendingEndMs - pendingStartMs !== currentDurationMs
+    || currentEndMs - currentStartMs !== currentDurationMs
+    || Math.abs(pendingDurationMs - currentDurationMs) > MOTION_DURATION_TOLERANCE_MS) {
+    motionBindingError(MOTION_STALE_CODE, '动作参考绑定上游已漂移');
+  }
+}
+
+async function currentBindingsOrNotReady(ctx, input) {
+  try {
+    return await buildCurrentReferenceBindings(ctx, {
+      shot_id: input.shotId,
+      clean_results: input.cleanResults,
+    });
+  } catch (error) {
+    if (['REDRAW_REFERENCE_BUNDLE_INPUT_INVALID', 'REDRAW_REFERENCE_BUNDLE_NOT_FOUND']
+      .includes(error?.code)) {
+      motionBindingError(MOTION_STALE_CODE, '动作参考绑定上游已漂移');
+    }
+    if (['REDRAW_REFERENCE_BUNDLE_FACE_COVERAGE_REQUIRED',
+      'REDRAW_REFERENCE_BUNDLE_IDENTITY_PACK_REQUIRED',
+      'REDRAW_REFERENCE_BUNDLE_TEXT_COVERAGE_REQUIRED',
+      'REDRAW_REFERENCE_BUNDLE_COVERAGE_EVIDENCE_REQUIRED'].includes(error?.code)) {
+      motionBindingError(MOTION_BINDING_NOT_READY_CODE, '动作参考绑定前置条件未就绪');
+    }
+    throw error;
+  }
+}
+
+async function bindReadyMotionReference(rawCtx, rawInput) {
+  const ctx = normalizeMotionBindingContext(rawCtx);
+  const input = normalizeMotionBindingInput(rawInput);
+  let scope;
+  try {
+    scope = readMotionBindingScope(ctx, input.shotId);
+  } catch (_) {
+    motionBindingError(MOTION_BINDING_NOT_READY_CODE, '动作参考绑定前置条件未就绪');
+  }
+  const candidate = currentPendingMotionCandidate(ctx, input.shotId);
+  if (!candidate) {
+    const bindings = await currentBindingsOrNotReady(ctx, input);
+    try {
+      const current = await buildTrustedReferenceBundleInput(ctx, {
+        shot_id: input.shotId,
+        clean_results: input.cleanResults,
+      });
+      return {
+        status: 'ready',
+        shot_id: input.shotId,
+        motion_reference_asset_id: current.motion_reference_asset_id,
+        face_coverage_sha256: bindings.face_coverage_sha256,
+        text_coverage_sha256: bindings.text_coverage_sha256,
+      };
+    } catch (error) {
+      if (error?.code === 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE') {
+        motionBindingError(MOTION_STALE_CODE, '动作参考绑定上游已漂移');
+      }
+      motionBindingError(MOTION_BINDING_NOT_READY_CODE, '动作参考候选未就绪');
+    }
+  }
+  const originalMetadata = String(candidate.metadata || '');
+  const metadata = parseJson(originalMetadata);
+  const pending = assertPendingMotionScope(ctx, input, scope, candidate, metadata);
+  try {
+    await verifyStoredFile(
+      absoluteStoragePath(ctx.storageRoot, candidate.local_path),
+      pending.file_sha256,
+    );
+  } catch (_) {
+    motionBindingError(MOTION_STALE_CODE, '动作参考文件已漂移');
+  }
+  const bindings = await currentBindingsOrNotReady(ctx, input);
+  assertPendingMatchesCurrentBindings(pending, bindings);
+  if (!readyMotionMatches(metadata, ctx, input, bindings)) {
+    const boundAt = currentTimestamp(ctx);
+    metadata.redraw_motion_reference = {
+      schema_version: 'redraw-motion-reference-v1',
+      tenant_id: ctx.tenantId,
+      user_id: ctx.userId,
+      version_id: ctx.versionId,
+      shot_id: input.shotId,
+      source_asset_id: bindings.source.asset_id,
+      source_fingerprint: bindings.source.fingerprint,
+      clip_start_ms: bindings.clip.start_ms,
+      clip_end_ms: bindings.clip.end_ms,
+      face_coverage_sha256: bindings.face_coverage_sha256,
+      text_coverage_sha256: bindings.text_coverage_sha256,
+      file_sha256: pending.file_sha256,
+      coverage_binding_sha256: bindings.coverage_binding_sha256,
+      identity_binding_sha256: bindings.identity_binding_sha256,
+      clean_binding_sha256: bindings.clean_binding_sha256,
+      reviewed_by: pending.reviewed_by,
+      reviewed_at: pending.reviewed_at,
+      bound_by: ctx.userId,
+      bound_at: boundAt,
+    };
+    const updated = ctx.db.prepare(`
+      UPDATE assets SET metadata = ?, updated_at = ?
+      WHERE id = ? AND metadata = ? AND deleted_at IS NULL
+    `).run(JSON.stringify(metadata), boundAt, Number(candidate.id), originalMetadata);
+    if (updated.changes !== 1) {
+      motionBindingError(MOTION_STALE_CODE, '动作参考候选并发漂移');
+    }
+  }
+  return {
+    status: 'ready',
+    shot_id: input.shotId,
+    motion_reference_asset_id: Number(candidate.id),
+    face_coverage_sha256: bindings.face_coverage_sha256,
+    text_coverage_sha256: bindings.text_coverage_sha256,
+  };
 }
 
 module.exports = {

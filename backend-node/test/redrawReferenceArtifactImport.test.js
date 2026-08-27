@@ -11,6 +11,7 @@ const sharp = require('sharp');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const { getFfmpegPath } = require('../src/utils/ffmpegPath');
 const {
+  bindReadyMotionReference,
   importCharacterReferenceArtifact,
   importMotionReferenceArtifact,
 } = require('../src/services/redrawReferenceArtifactImportService');
@@ -782,6 +783,47 @@ test('motion import stores reviewed silent candidate without making shot referen
   assert.equal(shotBefore.reference_bundle_hash, null);
   assert.equal(JSON.stringify(result).includes(fixture.storageRoot), false);
   assert.doesNotMatch(JSON.stringify(result), /local_path|motion-happy-path|Authorization|Bearer/);
+});
+
+test('motion binding is not ready until current identity reviewed coverage and clean result exist', async (t) => {
+  const fixture = createMotionFixture(t);
+  const sourceBytes = Buffer.from('binding-not-ready-source');
+  const sourceFingerprint = sha256(sourceBytes);
+  const sourcePath = storagePath(fixture.storageRoot, 'redraw-sources/source.mp4');
+  fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+  fs.writeFileSync(sourcePath, sourceBytes);
+  fixture.db.prepare('UPDATE assets SET metadata = ? WHERE id = ?')
+    .run(JSON.stringify({ sha256: sourceFingerprint }), fixture.sourceAssetId);
+  fixture.db.prepare('UPDATE redraw_works SET source_fingerprint = ? WHERE id = ?')
+    .run(sourceFingerprint, fixture.workId);
+  fixture.db.prepare('UPDATE redraw_shots SET work_id = ? WHERE id = ?')
+    .run(String(fixture.workId), fixture.shotId);
+  const file = makeMotionFile(fixture);
+  await importMotionReferenceArtifact(
+    fixture.ctx,
+    motionInput(fixture.shotId, file, { idempotencyKey: 'motion-binding-not-ready' }),
+  );
+
+  await assert.rejects(
+    bindReadyMotionReference(fixture.ctx, {
+      shot_id: fixture.shotId,
+      clean_results: [],
+    }),
+    { code: 'REDRAW_MOTION_REFERENCE_BINDING_NOT_READY' },
+  );
+  const metadata = JSON.parse(fixture.db.prepare(`
+    SELECT metadata FROM assets WHERE id = (
+      SELECT stored_asset_id FROM redraw_reference_artifact_imports
+      WHERE scope_type = 'shot' AND scope_id = ? AND purpose = 'motion'
+    )
+  `).get(fixture.shotId).metadata);
+  assert.ok(metadata.redraw_motion_import);
+  assert.equal(Object.hasOwn(metadata, 'redraw_motion_reference'), false);
+  assert.equal(
+    fixture.db.prepare('SELECT preparation_state FROM redraw_shots WHERE id = ?')
+      .get(fixture.shotId).preparation_state,
+    'parsed',
+  );
 });
 
 test('motion import rejects every missing review assertion without side effects', async (t) => {

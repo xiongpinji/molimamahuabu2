@@ -5,9 +5,20 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const Database = require('better-sqlite3');
+const sharp = require('sharp');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const {
+  buildGeneratedCoverageManifest,
+  canonicalCoverageSha256,
+} = require('../src/services/redrawFullFrameCoverageService');
+const {
+  canonicalizeModelLock,
+  canonicalSha256: canonicalModelLockSha256,
+} = require('../src/services/redrawFullFrameModelLockService');
+const { validateReviewedCoverageManifest } = require('../src/services/redrawFullFrameReviewService');
+const {
+  buildCurrentReferenceBindings,
   canonicalBundleHash,
   loadCurrentReferenceBundle,
   projectReferenceBundleForGeneration,
@@ -31,7 +42,11 @@ const TEXT_COVERAGE_SHA256 = sha256(stableJson([
 const PNG_BYTES = Buffer.from('reference-bundle-image');
 const LOCALIZATION_BINDING_CONTRACT = 'redraw-localization-binding-v1';
 
-function setup(overrides = {}) {
+test('current coverage bindings helper is exported for bundle and motion binding', () => {
+  assert.equal(typeof buildCurrentReferenceBindings, 'function');
+});
+
+async function setup(overrides = {}) {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-reference-bundle-'));
@@ -44,6 +59,11 @@ function setup(overrides = {}) {
   const now = INITIAL_UPDATED_AT;
   const nameMap = overrides.nameMap || { ' character-002 ': ' Maya ', 'character-001': ' Ethan ' };
   const facts = sourceFacts(nameMap, overrides.sourceFacts || {});
+  const shotStartMs = Number(overrides.shotStartMs ?? 0);
+  const shotEndMs = Number(overrides.shotEndMs ?? 5000);
+  const shotDurationMs = shotEndMs - shotStartMs;
+  const sourceShotId = String(overrides.sourceShotId || 'shot-1');
+  const shotIndex = Number(overrides.shotIndex ?? 1);
   const sourceDialogueJson = Object.prototype.hasOwnProperty.call(overrides, 'source_dialogue_json')
     ? overrides.source_dialogue_json
     : JSON.stringify(Object.prototype.hasOwnProperty.call(overrides, 'sourceDialogue')
@@ -70,8 +90,9 @@ function setup(overrides = {}) {
   const projectId = db.prepare('SELECT id FROM redraw_projects LIMIT 1').get().id;
   db.prepare(`INSERT INTO redraw_works
     (id, project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint, duration_ms, created_at, updated_at)
-    VALUES (1, ?, 'tenant-a', 'user-a', 'reference bundle work', ?, ?, 15000, ?, ?)`)
-    .run(projectId, sourceAssetId, SOURCE_FINGERPRINT, now, now);
+    VALUES (1, ?, 'tenant-a', 'user-a', 'reference bundle work', ?, ?, ?, ?, ?)`).run(
+    projectId, sourceAssetId, SOURCE_FINGERPRINT, 15000, now, now,
+  );
   const workId = db.prepare('SELECT id FROM redraw_works LIMIT 1').get().id;
   const versionId = Number(db.prepare(`INSERT INTO redraw_versions
     (work_id, tenant_id, user_id, version, locale, market, name_map_json, source_facts_json,
@@ -91,21 +112,49 @@ function setup(overrides = {}) {
     (work_id, version_id, tenant_id, user_id, shot_id, batch_index, shot_index, start_ms,
      end_ms, duration_ms, source_dialogue_json, localized_dialogue_json, references_json,
      reference_bundle_json, created_at, updated_at)
-    VALUES (?, ?, 'tenant-a', 'user-a', 'shot-001', 1, 1, 0, 5000, 5000, ?, ?, '[]',
+    VALUES (?, ?, 'tenant-a', 'user-a', ?, 1, ?, ?, ?, ?, ?, ?, '[]',
       '{}', ?, ?)`)
     .run(
       workId,
       versionId,
+      sourceShotId,
+      shotIndex,
+      shotStartMs,
+      shotEndMs,
+      shotDurationMs,
       sourceDialogueJson,
       localizedDialogueJson,
       now,
       now,
     ).lastInsertRowid);
+  const fillerShots = [];
+  if (shotStartMs > 0) {
+    fillerShots.push({ shotId: 'shot-1', shotIndex: 1, startMs: 0, endMs: shotStartMs });
+  }
+  if (shotEndMs < 15000) {
+    fillerShots.push({
+      shotId: `shot-${shotIndex + 1}`,
+      shotIndex: shotIndex + 1,
+      startMs: shotEndMs,
+      endMs: 15000,
+    });
+  }
+  for (const filler of fillerShots) {
+    db.prepare(`INSERT INTO redraw_shots
+      (work_id, version_id, tenant_id, user_id, shot_id, batch_index, shot_index,
+       start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
+       references_json, reference_bundle_json, created_at, updated_at)
+      VALUES (?, ?, 'tenant-a', 'user-a', ?, 1, ?, ?, ?, ?, '[]', '[]', '[]', '{}', ?, ?)`)
+      .run(
+        workId, versionId, filler.shotId, filler.shotIndex, filler.startMs, filler.endMs,
+        filler.endMs - filler.startMs, now, now,
+      );
+  }
 
   const actorAId = insertCharacterRedrawAsset(db, versionId, {
     id: 201,
     sourceCharacterKey: 'character-001',
-    targetActorLabel: 'Actor Ethan',
+    targetActorLabel: overrides.actorALabel || 'Actor Ethan',
     targetCountry: overrides.market || 'US',
     assetId: 301,
     sha256: assetSha(301),
@@ -113,7 +162,7 @@ function setup(overrides = {}) {
   const actorBId = insertCharacterRedrawAsset(db, versionId, {
     id: 202,
     sourceCharacterKey: 'character-002',
-    targetActorLabel: 'Actor Maya',
+    targetActorLabel: overrides.actorBLabel || 'Actor Maya',
     targetCountry: overrides.market || 'US',
     assetId: 302,
     sha256: assetSha(302),
@@ -139,6 +188,7 @@ function setup(overrides = {}) {
     mimeType: 'video/mp4',
     sha256: MOTION_SHA256,
     metadata: {
+      sha256: MOTION_SHA256,
       redraw_motion_reference: {
         schema_version: 'redraw-motion-reference-v1',
         tenant_id: 'tenant-a',
@@ -147,15 +197,19 @@ function setup(overrides = {}) {
         shot_id: shotId,
         source_asset_id: sourceAssetId,
         source_fingerprint: SOURCE_FINGERPRINT,
-        clip_start_ms: 0,
-        clip_end_ms: 5000,
+        clip_start_ms: shotStartMs,
+        clip_end_ms: shotEndMs,
         face_coverage_sha256: FACE_COVERAGE_SHA256,
         text_coverage_sha256: TEXT_COVERAGE_SHA256,
+        coverage_binding_sha256: '1'.repeat(64),
+        identity_binding_sha256: '2'.repeat(64),
+        clean_binding_sha256: '3'.repeat(64),
+        file_sha256: MOTION_SHA256,
       },
     },
   });
 
-  return {
+  const state = {
     db,
     cleanup() {
       db.close();
@@ -166,13 +220,44 @@ function setup(overrides = {}) {
     workId,
     versionId,
     shotId,
+    shotStartMs,
+    shotDurationMs,
+    sourceShotId,
     sourceAssetId,
     motionAssetId,
     actorAId,
     actorBId,
     subtitleCleanId,
     screenCleanId,
+    coverageTextRegions: Object.prototype.hasOwnProperty.call(overrides, 'coverageTextRegions')
+      ? overrides.coverageTextRegions
+      : [
+          { region_key: 'text-001', kind: 'text_subtitle', time_ranges: [[0, 2500]] },
+          { region_key: 'text-002', kind: 'text_screen', time_ranges: [[2500, 5000]] },
+        ],
   };
+  await installReviewedCoverage(state, facts);
+  const cleanAssetIds = { 'text-001': subtitleCleanId, 'text-002': screenCleanId };
+  const currentBindings = await buildCurrentReferenceBindings(ctx(state), {
+    shot_id: shotId,
+    clean_results: state.coverageTextRegions.map((region) => ({
+      kind: 'text_clean', key: region.region_key, status: 'completed',
+      redraw_asset_id: cleanAssetIds[region.region_key],
+    })),
+  });
+  const motionRow = db.prepare('SELECT metadata FROM assets WHERE id = ?').get(motionAssetId);
+  const motionMetadata = JSON.parse(motionRow.metadata);
+  Object.assign(motionMetadata.redraw_motion_reference, {
+    face_coverage_sha256: currentBindings.face_coverage_sha256,
+    text_coverage_sha256: currentBindings.text_coverage_sha256,
+    coverage_binding_sha256: currentBindings.coverage_binding_sha256,
+    identity_binding_sha256: currentBindings.identity_binding_sha256,
+    clean_binding_sha256: currentBindings.clean_binding_sha256,
+    file_sha256: MOTION_SHA256,
+  });
+  db.prepare('UPDATE assets SET metadata = ? WHERE id = ?')
+    .run(JSON.stringify(motionMetadata), motionAssetId);
+  return state;
 }
 
 function sourceFacts(_nameMap, overrides = {}) {
@@ -184,7 +269,7 @@ function sourceFacts(_nameMap, overrides = {}) {
       { id: 'character-002', source_name: '角色二', display_name: '角色二', relationship: '证人' },
     ],
     shots: [{
-      id: 'shot-001',
+      id: 'shot-1',
       index: 1,
       start_ms: 0,
       end_ms: 5000,
@@ -222,6 +307,257 @@ function stableJson(value) {
     return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
   }
   return JSON.stringify(value);
+}
+
+function validCoverageModelLock() {
+  const projects = {
+    face_detector: ['MediaPipe face detection', 'google-ai-edge/mediapipe'],
+    person_detector: ['YOLOX', 'Megvii-BaseDetection/YOLOX'],
+    text_detector: ['PaddleOCR', 'PaddlePaddle/PaddleOCR'],
+    tracker: ['ByteTrack', 'FoundationVision/ByteTrack'],
+  };
+  const components = ['tracker', 'text_detector', 'person_detector', 'face_detector'].map((component) => ({
+    component,
+    project: projects[component][0],
+    repository: projects[component][1],
+    revision: `rev-${component}-20260816`,
+    artifact_name: `${component}.bin`,
+    artifact_path: `${component}/model.bin`,
+    artifact_sha256: 'a'.repeat(64),
+    license_name: `${component}-LICENSE`,
+    license_evidence_path: `${component}/LICENSE.txt`,
+    license_evidence_sha256: 'b'.repeat(64),
+  }));
+  const lock = {
+    schema_version: 'redraw-full-frame-model-lock-v2',
+    runtimes: {
+      main: {
+        python_version: 'Python 3.11.9', interpreter_path: 'runtime/main/.venv/Scripts/python.exe',
+        pip_freeze_path: 'runtime/main/pip-freeze.txt', pip_freeze_sha256: '1'.repeat(64),
+      },
+      text: {
+        python_version: 'Python 3.11.9', interpreter_path: 'runtime/text/.venv/Scripts/python.exe',
+        pip_freeze_path: 'runtime/text/pip-freeze.txt', pip_freeze_sha256: '2'.repeat(64),
+      },
+    },
+    components,
+  };
+  return { ...lock, canonical_sha256: canonicalModelLockSha256(canonicalizeModelLock(lock)) };
+}
+
+function writeCoverageFile(root, relativePath, bytes) {
+  const target = path.join(root, relativePath);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, bytes);
+  return sha256(bytes);
+}
+
+async function installReviewedCoverage(state, facts) {
+  const { db, storageRoot, shotId, versionId } = state;
+  const evidenceRelative = `coverage/version-${versionId}`;
+  const evidenceRoot = path.join(storageRoot, evidenceRelative);
+  const startMs = state.shotStartMs;
+  const frameBytes = await sharp({
+    create: { width: 64, height: 64, channels: 3, background: { r: 30, g: 40, b: 50 } },
+  }).png().toBuffer();
+  const maskBytes = await sharp(Buffer.alloc(64 * 64, 255), {
+    raw: { width: 64, height: 64, channels: 1 },
+  }).toColourspace('b-w').png().toBuffer();
+  const shotRows = db.prepare(`SELECT shot_id, start_ms, end_ms FROM redraw_shots
+    WHERE version_id = ? ORDER BY start_ms, id`).all(versionId);
+  const personDefinitions = [
+    {
+      trackKey: 'face-001', sourceCharacterKey: 'character-001', timeRanges: [[0, state.shotDurationMs]],
+      bbox: { x: 4, y: 4, width: 20, height: 40 },
+    },
+    {
+      trackKey: 'face-002', sourceCharacterKey: 'character-002',
+      timeRanges: [[state.shotDurationMs / 2, state.shotDurationMs]],
+      bbox: { x: 36, y: 4, width: 20, height: 40 },
+    },
+  ];
+  const boundaryOffsets = new Set([0]);
+  for (const definition of [...personDefinitions, ...state.coverageTextRegions]) {
+    for (const [rangeStart, rangeEnd] of definition.timeRanges || definition.time_ranges) {
+      boundaryOffsets.add(rangeStart);
+      if (rangeEnd < state.shotDurationMs) boundaryOffsets.add(rangeEnd);
+    }
+  }
+  const targetOffsets = [...boundaryOffsets].sort((left, right) => left - right);
+  const frameSpecs = shotRows.flatMap((shot) => (
+    shot.shot_id === state.sourceShotId
+      ? targetOffsets.map((offset) => ({ shotId: shot.shot_id, timestampMs: startMs + offset, offset }))
+      : [{ shotId: shot.shot_id, timestampMs: Number(shot.start_ms) }]
+  ));
+  const targetFrameIndexes = frameSpecs
+    .map((frame, index) => (frame.shotId === state.sourceShotId ? index : null))
+    .filter((index) => index !== null);
+  const frameIndexesForRanges = (ranges) => targetFrameIndexes.filter((index) => {
+    const offset = frameSpecs[index].offset;
+    return ranges.some(([rangeStart, rangeEnd]) => offset >= rangeStart && offset < rangeEnd);
+  });
+  const compactFrameRanges = (indexes) => {
+    const ranges = [];
+    for (const index of indexes) {
+      const previous = ranges[ranges.length - 1];
+      if (previous && index === previous.end_frame + 1) previous.end_frame = index;
+      else ranges.push({ start_frame: index, end_frame: index });
+    }
+    return ranges;
+  };
+  const personTracks = personDefinitions.map((definition) => {
+    const indexes = frameIndexesForRanges(definition.timeRanges);
+    const ranges = compactFrameRanges(indexes);
+    return {
+      track_key: definition.trackKey,
+      kind: 'story_role',
+      source_character_key: definition.sourceCharacterKey,
+      target_strategy: 'fixed_actor',
+      frame_ranges: ranges,
+      visibility: ranges.map((range) => ({ ...range, state: 'visible' })),
+      regions: indexes.map((frameIndex) => ({
+        region_id: `person-${definition.trackKey}-${frameIndex}`,
+        frame_index: frameIndex,
+        bbox: definition.bbox,
+        mask_path: `masks/person-${definition.trackKey}-${frameIndex}.png`,
+      })),
+      review_status: 'pending',
+      reviewer: null,
+    };
+  });
+  const textTracks = state.coverageTextRegions.map((definition) => {
+    const indexes = frameIndexesForRanges(definition.time_ranges);
+    return {
+      region_key: definition.region_key,
+      kind: definition.kind === 'text_subtitle' ? 'subtitle' : 'screen',
+      treatment: definition.kind === 'text_subtitle' ? 'translate_subtitle' : 'generalize',
+      target_text_key: definition.kind === 'text_subtitle' ? definition.region_key : null,
+      frame_ranges: compactFrameRanges(indexes),
+      regions: indexes.map((frameIndex) => ({
+        region_id: `text-${definition.region_key}-${frameIndex}`,
+        frame_index: frameIndex,
+        polygon: definition.region_key === 'text-001'
+          ? [{ x: 4, y: 48 }, { x: 28, y: 48 }, { x: 28, y: 58 }]
+          : [{ x: 36, y: 48 }, { x: 60, y: 48 }, { x: 60, y: 58 }],
+        mask_path: `masks/text-${definition.region_key}-${frameIndex}.png`,
+      })),
+      review_status: 'pending',
+      reviewer: null,
+    };
+  });
+  const frameSha = frameSpecs.map((_, index) => writeCoverageFile(
+    evidenceRoot,
+    `frames/frame-${index}.png`,
+    frameBytes,
+  ));
+  const maskPaths = [...personTracks, ...textTracks]
+    .flatMap((track) => track.regions.map((region) => region.mask_path));
+  const maskShas = Object.fromEntries(maskPaths.map((relativePath) => [
+    relativePath,
+    writeCoverageFile(evidenceRoot, relativePath, maskBytes),
+  ]));
+  frameSha.forEach((digest, index) => insertAsset(db, {
+    id: 800 + index,
+    type: 'image',
+    localPath: `${evidenceRelative}/frames/frame-${index}.png`,
+    mimeType: 'image/png',
+    metadata: { sha256: digest },
+  }));
+  maskPaths.forEach((relativePath, index) => insertAsset(db, {
+    id: 820 + index,
+    type: 'image',
+    localPath: `${evidenceRelative}/${relativePath}`,
+    mimeType: 'image/png',
+    metadata: { sha256: maskShas[relativePath] },
+  }));
+  const mask = (relativePath) => ({
+    path: relativePath, sha256: maskShas[relativePath], width: 64, height: 64, mime_type: 'image/png',
+  });
+  for (const track of [...personTracks, ...textTracks]) {
+    for (const region of track.regions) {
+      region.mask = mask(region.mask_path);
+      delete region.mask_path;
+      if ('bbox' in region) {
+        region.association_confidence = 0.99;
+        region.detector_disagreement = false;
+      }
+    }
+  }
+  const frames = frameSpecs.map((frame, index) => ({
+    frame_index: index,
+    timestamp_ticks: frame.timestampMs / 500,
+    timestamp_ms: frame.timestampMs,
+    shot_id: frame.shotId,
+    path: `frames/frame-${index}.png`,
+    sha256: frameSha[index],
+    width: 64,
+    height: 64,
+    person_region_ids: personTracks.flatMap((track) => track.regions
+      .filter((region) => region.frame_index === index).map((region) => region.region_id)),
+    text_region_ids: textTracks.flatMap((track) => track.regions
+      .filter((region) => region.frame_index === index).map((region) => region.region_id)),
+    review_point_reasons: [],
+    review_status: 'not_required',
+  }));
+  const generated = await buildGeneratedCoverageManifest({
+    evidenceRoot,
+    source: {
+      sha256: SOURCE_FINGERPRINT, duration_ms: 15000, width: 64, height: 64,
+      frame_count: frames.length, time_base: { numerator: 1, denominator: 2 },
+    },
+    shots: shotRows.map((shot) => ({
+      shot_id: shot.shot_id, start_ms: Number(shot.start_ms), end_ms: Number(shot.end_ms),
+    })),
+    frames,
+    personTracks,
+    textTracks,
+    modelLock: validCoverageModelLock(),
+  });
+  const reviewed = structuredClone(generated);
+  reviewed.status = 'reviewed';
+  for (const frame of reviewed.frames) {
+    frame.review_status = frame.review_point_reasons.length > 0 ? 'reviewed' : 'not_required';
+  }
+  for (const track of [...reviewed.person_tracks, ...reviewed.text_tracks]) {
+    track.review_status = 'reviewed';
+    track.reviewer = 'codex-local-review';
+  }
+  const reviewedPointCount = reviewed.frames.filter((frame) => frame.review_point_reasons.length > 0).length;
+  reviewed.review = {
+    status: 'reviewed', reviewed: true, required_review_point_count: reviewedPointCount,
+    reviewed_point_count: reviewedPointCount, reviewer: 'codex-local-review',
+  };
+  reviewed.approval_status = 'pending';
+  reviewed.ready_for_reference = false;
+  reviewed.analysis_sha256 = canonicalCoverageSha256(reviewed);
+  await validateReviewedCoverageManifest({ evidenceRoot, manifest: reviewed });
+  const manifestRelative = `${evidenceRelative}/redraw-full-frame-reviewed-manifest.json`;
+  const manifestBytes = Buffer.from(`${JSON.stringify(reviewed, null, 2)}\n`);
+  const manifestSha = writeCoverageFile(storageRoot, manifestRelative, manifestBytes);
+  const manifestAssetId = insertAsset(db, {
+    id: 705, type: 'document', localPath: manifestRelative, mimeType: 'application/json',
+    metadata: { sha256: manifestSha },
+  });
+  db.prepare(`INSERT INTO redraw_assets
+    (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+     asset_id, version_number, approval_status, approved_by, approved_at,
+     status, created_at, updated_at)
+    VALUES (205, ?, 'tenant-a', 'user-a', 'scene', ?, 'reviewed full frame coverage',
+      ?, 1, 'approved', 'user-a', ?, 'generated', ?, ?)`).run(
+    versionId,
+    JSON.stringify({
+      source_ref: { stable_id: 'full-frame-reviewed-coverage' },
+      snapshot: {
+        mode: 'full_frame_reviewed_coverage', version_id: versionId,
+        facts_hash: factsHash(facts), source_fingerprint: SOURCE_FINGERPRINT,
+        analysis_sha256: reviewed.analysis_sha256,
+      },
+    }),
+    manifestAssetId,
+    REVIEWED_AT,
+    INITIAL_UPDATED_AT,
+    INITIAL_UPDATED_AT,
+  );
 }
 
 function canonicalSourceDialogue(value, shotStartMs = 0) {
@@ -302,22 +638,6 @@ function assertDialogueEvidence(dialogue, expected, locale, market) {
   assert.equal(dialogue.script_sha256, expected.script_sha256);
   assert.equal(dialogue.character_name_map_sha256, expected.character_name_map_sha256);
   assert.equal(dialogue.localization_binding_sha256, expected.localization_binding_sha256);
-}
-
-function textCoverageHash(input) {
-  return sha256(stableJson(input.text_regions.map((entry) => ({
-    kind: entry.kind,
-    region_key: entry.region_key,
-    text_clean_redraw_asset_id: entry.text_clean_redraw_asset_id,
-    time_ranges: [...entry.time_ranges].sort((a, b) => a[0] - b[0] || a[1] - b[1]),
-  })).sort((a, b) => a.region_key.localeCompare(b.region_key))));
-}
-
-function syncMotionTextCoverage(state, input) {
-  const row = state.db.prepare('SELECT metadata FROM assets WHERE id = ?').get(state.motionAssetId);
-  const metadata = JSON.parse(row.metadata);
-  metadata.redraw_motion_reference.text_coverage_sha256 = textCoverageHash(input);
-  state.db.prepare('UPDATE assets SET metadata = ? WHERE id = ?').run(JSON.stringify(metadata), state.motionAssetId);
 }
 
 function insertAsset(db, input) {
@@ -576,7 +896,7 @@ function faceCoverageHash(input) {
   })).sort((a, b) => a.track_key.localeCompare(b.track_key))));
 }
 
-function setupSecondShot(overrides = {}) {
+async function setupSecondShot(overrides = {}) {
   const sourceDialogue = overrides.sourceDialogue || [{
     id: 'turn-002',
     speaker_id: 'character-001',
@@ -590,17 +910,25 @@ function setupSecondShot(overrides = {}) {
     start_ms: 4800,
     end_ms: 6500,
   }];
-  const state = setup({
+  const state = await setup({
     sourceDialogue,
     dialogue,
+    sourceShotId: 'shot-2',
+    shotIndex: 2,
+    shotStartMs: 4000,
+    shotEndMs: 8000,
+    coverageTextRegions: [
+      { region_key: 'text-001', kind: 'text_subtitle', time_ranges: [[0, 2000]] },
+      { region_key: 'text-002', kind: 'text_screen', time_ranges: [[2000, 4000]] },
+    ],
     sourceFacts: {
       duration_ms: 8000,
       shots: [
         {
-          id: 'shot-001', index: 1, start_ms: 0, end_ms: 4000, dialogue: [],
+          id: 'shot-1', index: 1, start_ms: 0, end_ms: 4000, dialogue: [],
         },
         {
-          id: 'shot-002',
+          id: 'shot-2',
           index: 2,
           start_ms: 4000,
           end_ms: 8000,
@@ -615,10 +943,6 @@ function setupSecondShot(overrides = {}) {
       ],
     },
   });
-  state.shotDurationMs = 4000;
-  state.db.prepare(`UPDATE redraw_shots
-    SET shot_id = 'shot-002', shot_index = 2, start_ms = 4000, end_ms = 8000, duration_ms = 4000
-    WHERE id = ?`).run(state.shotId);
   const input = validInput(state, {
     face_tracks: [
       {
@@ -649,16 +973,6 @@ function setupSecondShot(overrides = {}) {
       },
     ],
   });
-  const row = state.db.prepare('SELECT metadata FROM assets WHERE id = ?').get(state.motionAssetId);
-  const metadata = JSON.parse(row.metadata);
-  Object.assign(metadata.redraw_motion_reference, {
-    clip_start_ms: 4000,
-    clip_end_ms: 8000,
-    face_coverage_sha256: faceCoverageHash(input),
-    text_coverage_sha256: textCoverageHash(input),
-  });
-  state.db.prepare('UPDATE assets SET metadata = ? WHERE id = ?')
-    .run(JSON.stringify(metadata), state.motionAssetId);
   return { state, input };
 }
 
@@ -687,6 +1001,42 @@ function currentShot(db, shotId) {
 function assertShotUnchanged(db, shotId, before) {
   assert.deepEqual(currentShot(db, shotId), before);
 }
+
+test('direct save rejects motion references without current canonical binding and file hashes', async () => {
+  for (const [name, mutate] of [
+    ['legacy hashes missing', (motion) => {
+      delete motion.coverage_binding_sha256;
+      delete motion.identity_binding_sha256;
+      delete motion.clean_binding_sha256;
+    }],
+    ['coverage binding missing', (motion) => { delete motion.coverage_binding_sha256; }],
+    ['coverage binding tampered', (motion) => { motion.coverage_binding_sha256 = 'a'.repeat(64); }],
+    ['identity binding missing', (motion) => { delete motion.identity_binding_sha256; }],
+    ['identity binding tampered', (motion) => { motion.identity_binding_sha256 = 'a'.repeat(64); }],
+    ['clean binding missing', (motion) => { delete motion.clean_binding_sha256; }],
+    ['clean binding tampered', (motion) => { motion.clean_binding_sha256 = 'a'.repeat(64); }],
+    ['file sha missing', (motion) => { delete motion.file_sha256; }],
+    ['file sha tampered', (motion) => { motion.file_sha256 = 'a'.repeat(64); }],
+  ]) {
+    const state = await setup();
+    try {
+      const row = state.db.prepare('SELECT metadata FROM assets WHERE id = ?').get(state.motionAssetId);
+      const metadata = JSON.parse(row.metadata);
+      mutate(metadata.redraw_motion_reference);
+      state.db.prepare('UPDATE assets SET metadata = ? WHERE id = ?')
+        .run(JSON.stringify(metadata), state.motionAssetId);
+      const before = currentShot(state.db, state.shotId);
+      await assert.rejects(
+        saveReferenceBundle(ctx(state), validInput(state)),
+        { code: 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE' },
+        name,
+      );
+      assertShotUnchanged(state.db, state.shotId, before);
+    } finally {
+      state.cleanup();
+    }
+  }
+});
 
 async function captureError(fn) {
   try {
@@ -742,7 +1092,7 @@ function updateRedrawAsset(db, id, fields) {
 }
 
 test('第二镜绝对对白保存和重读时规范为镜头相对时间并绑定稳定哈希', async () => {
-  const { state, input } = setupSecondShot();
+  const { state, input } = await setupSecondShot();
   try {
     const saved = await saveReferenceBundle(ctx(state), input);
     const expectedTurns = [{
@@ -832,7 +1182,7 @@ test('第二镜源和目标对白仅接受镜头绝对整数时间且拒绝时�
   ];
 
   for (const entry of cases) {
-    const { state, input } = setupSecondShot(entry);
+    const { state, input } = await setupSecondShot(entry);
     try {
       await assertRejectsUnchanged(
         state,
@@ -876,7 +1226,7 @@ test('第二镜重读时拒绝绝对原始对白或相对参考包对白漂移',
   ];
 
   for (const entry of cases) {
-    const { state, input } = setupSecondShot();
+    const { state, input } = await setupSecondShot();
     try {
       await saveReferenceBundle(ctx(state), input);
       const before = currentShot(state.db, state.shotId);
@@ -907,7 +1257,7 @@ test('第二镜保存时拒绝不安全或不自洽的镜头时间线且零写�
   ];
 
   for (const entry of cases) {
-    const { state, input } = setupSecondShot();
+    const { state, input } = await setupSecondShot();
     try {
       updateSecondShotTimeline(state, entry.timeline);
       await assertRejectsUnchanged(
@@ -930,7 +1280,7 @@ test('第二镜重读时拒绝当前镜头时间线漂移为非法值', async ()
   ];
 
   for (const entry of cases) {
-    const { state, input } = setupSecondShot();
+    const { state, input } = await setupSecondShot();
     try {
       await saveReferenceBundle(ctx(state), input);
       updateSecondShotTimeline(state, entry.timeline);
@@ -948,7 +1298,7 @@ test('第二镜重读时拒绝当前镜头时间线漂移为非法值', async ()
 });
 
 test('保存参考包时规范排序、脱敏并写入稳定哈希', async () => {
-  const state = setup();
+  const state = await setup();
   try {
     const saved = await saveReferenceBundle(ctx(state), validInput(state));
     const row = currentShot(state.db, state.shotId);
@@ -1034,7 +1384,7 @@ test('保存参考包时规范排序、脱敏并写入稳定哈希', async () =>
   }
 });
 test('重读参考包时重新校验并投影生成用白名单 URL', async () => {
-  const state = setup();
+  const state = await setup();
   try {
     const saved = await saveReferenceBundle(ctx(state), validInput(state));
 
@@ -1117,7 +1467,7 @@ test('重读参考包时重新校验并投影生成用白名单 URL', async () =
 });
 
 test('不同源角色允许映射同一非中文目标名且绑定哈希与投影稳定', async () => {
-  const state = setup({
+  const state = await setup({
     nameMap: { 'character-001': 'Alex', 'character-002': 'Alex' },
   });
   try {
@@ -1150,9 +1500,11 @@ test('不同源角色允许映射同一非中文目标名且绑定哈希与投�
 });
 
 test('es-ES/ES 参考包对白、身份国家和投影 locale 使用当前版本合同', async () => {
-  const state = setup({
+  const state = await setup({
     locale: 'es-ES',
     market: 'ES',
+    actorALabel: 'Actor Diego',
+    actorBLabel: 'Actor Lucía',
     nameMap: { 'character-001': 'Diego', 'character-002': 'Lucía' },
     dialogue: [
       { speaker_id: 'character-001', localized_text: 'Ven conmigo.', start_ms: 0, end_ms: 2400 },
@@ -1160,17 +1512,6 @@ test('es-ES/ES 参考包对白、身份国家和投影 locale 使用当前版本
     ],
   });
   try {
-    updateRedrawAsset(state.db, state.actorAId, { localized_name: 'Actor Diego' });
-    updateJsonColumn(state.db, 'redraw_assets', state.actorAId, 'source_ref_json', (payload) => {
-      payload.identity_pack.target_actor_label = 'Actor Diego';
-      recalcIdentityPackHash(payload);
-    });
-    updateRedrawAsset(state.db, state.actorBId, { localized_name: 'Actor Lucía' });
-    updateJsonColumn(state.db, 'redraw_assets', state.actorBId, 'source_ref_json', (payload) => {
-      payload.identity_pack.target_actor_label = 'Actor Lucía';
-      recalcIdentityPackHash(payload);
-    });
-
     const saved = await saveReferenceBundle(ctx(state), validInput(state));
     const expectedDialogue = expectedDialogueEvidence(state);
 
@@ -1202,7 +1543,7 @@ test('es-ES/ES 参考包对白、身份国家和投影 locale 使用当前版本
 });
 
 test('本地化对白可保留中文源文审计字段且目标证据仅绑定规范字段', async () => {
-  const state = setup({
+  const state = await setup({
     locale: 'es-ES',
     market: 'ES',
     dialogue: [{
@@ -1242,7 +1583,7 @@ test('本地化对白可保留中文源文审计字段且目标证据仅绑定�
 });
 
 test('V2 身份素材允许 source_ref.source_character_key 且无 stable_id', async () => {
-  const state = setup();
+  const state = await setup();
   try {
     updateJsonColumn(state.db, 'redraw_assets', state.actorAId, 'source_ref_json', (payload) => {
       payload.source_ref = { source_character_key: 'character-001' };
@@ -1267,7 +1608,7 @@ test('V2 身份素材允许 source_ref.source_character_key 且无 stable_id', a
 });
 
 test('静默对白保存、重读并投影为非人声环境音合同', async () => {
-  const state = setup({ sourceDialogue: [], dialogue: [] });
+  const state = await setup({ sourceDialogue: [], dialogue: [] });
   try {
     const saved = await saveReferenceBundle(ctx(state), validInput(state));
     const expectedDialogue = expectedDialogueEvidence(state);
@@ -1352,7 +1693,7 @@ test('源与本地化对白空值不一致、非法 JSON 或非数组时拒绝�
     { name: 'localized time out of duration', overrides: { dialogue: [{ speaker_id: 'character-001', localized_text: 'Wait.', start_ms: 0, end_ms: 5001 }] } },
   ];
   for (const entry of cases) {
-    const state = setup(entry.overrides);
+    const state = await setup(entry.overrides);
     try {
       await assertRejectsUnchanged(
         state,
@@ -1368,7 +1709,7 @@ test('源与本地化对白空值不一致、非法 JSON 或非数组时拒绝�
 test('spoken 对白拒绝六种精确静默伪装文本且不写入', async () => {
   const tokens = [' SILENCE ', ' [SILENCE] ', '(silence)', ' silent ', 'no   dialogue', ' [no\tdialogue] '];
   for (const localizedText of tokens) {
-    const state = setup({
+    const state = await setup({
       dialogue: [{ speaker_id: 'character-001', localized_text: localizedText, start_ms: 0, end_ms: 1000 }],
     });
     try {
@@ -1384,7 +1725,7 @@ test('spoken 对白拒绝六种精确静默伪装文本且不写入', async () =
 });
 
 test('静默对白不绕过人脸、身份、文字或运动参考门禁', async () => {
-  const state = setup({ sourceDialogue: [], dialogue: [] });
+  const state = await setup({ sourceDialogue: [], dialogue: [] });
   try {
     await assertRejectsUnchanged(
       state,
@@ -1422,7 +1763,7 @@ test('静默对白不绕过人脸、身份、文字或运动参考门禁', async
 });
 
 test('旧包缺少对白模式字段时即使重算哈希也拒绝重读和投影且不升级 DB', async () => {
-  const state = setup();
+  const state = await setup();
   try {
     await saveReferenceBundle(ctx(state), validInput(state));
     const legacyBundle = JSON.parse(currentShot(state.db, state.shotId).reference_bundle_json);
@@ -1447,7 +1788,7 @@ test('旧包缺少对白模式字段时即使重算哈希也拒绝重读和投�
 });
 
 test('重读参考包时拒绝保存后仍有效的身份证据漂移', async () => {
-  const state = setup();
+  const state = await setup();
   try {
     await saveReferenceBundle(ctx(state), validInput(state));
     const before = currentShot(state.db, state.shotId);
@@ -1458,14 +1799,14 @@ test('重读参考包时拒绝保存后仍有效的身份证据漂移', async ()
     updateRedrawAsset(state.db, state.actorAId, { localized_name: 'Actor Ethan II' });
 
     const loadError = await captureAnyError(() => loadCurrentReferenceBundle(ctx(state), state.shotId));
-    assert.equal(loadError.code, 'REDRAW_REFERENCE_BUNDLE_IDENTITY_PACK_REQUIRED');
+    assert.equal(loadError.code, 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE');
 
     const projectionError = await captureAnyError(() => projectReferenceBundleForGeneration(ctx(state, {
       createReferenceUrl() {
         return '/static/redraw-reference/unused';
       },
     }), state.shotId));
-    assert.equal(projectionError.code, 'REDRAW_REFERENCE_BUNDLE_IDENTITY_PACK_REQUIRED');
+    assert.equal(projectionError.code, 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE');
     assertShotUnchanged(state.db, state.shotId, before);
   } finally {
     state.cleanup();
@@ -1473,7 +1814,7 @@ test('重读参考包时拒绝保存后仍有效的身份证据漂移', async ()
 });
 
 test('重读参考包时拒绝保存后仍有效的文字净景证据漂移', async () => {
-  const state = setup();
+  const state = await setup();
   try {
     await saveReferenceBundle(ctx(state), validInput(state));
     const before = currentShot(state.db, state.shotId);
@@ -1483,7 +1824,7 @@ test('重读参考包时拒绝保存后仍有效的文字净景证据漂移', as
     });
 
     const loadError = await captureAnyError(() => loadCurrentReferenceBundle(ctx(state), state.shotId));
-    assert.equal(loadError.code, 'REDRAW_REFERENCE_BUNDLE_TEXT_COVERAGE_REQUIRED');
+    assert.equal(loadError.code, 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE');
     assertShotUnchanged(state.db, state.shotId, before);
   } finally {
     state.cleanup();
@@ -1508,7 +1849,7 @@ test('V2 目标绑定任一当前组成漂移都拒绝旧参考包', async () =>
       .run(state.shotId)],
   ];
   for (const [name, mutate] of cases) {
-    const state = setup();
+    const state = await setup();
     try {
       await saveReferenceBundle(ctx(state), validInput(state));
       mutate(state);
@@ -1524,7 +1865,7 @@ test('V2 目标绑定任一当前组成漂移都拒绝旧参考包', async () =>
 });
 
 test('旧 V1 包即使重算 bundle hash 也要求重建', async () => {
-  const state = setup();
+  const state = await setup();
   try {
     await saveReferenceBundle(ctx(state), validInput(state));
     const legacy = JSON.parse(currentShot(state.db, state.shotId).reference_bundle_json);
@@ -1544,7 +1885,7 @@ test('旧 V1 包即使重算 bundle hash 也要求重建', async () => {
 });
 
 test('重读参考包时将已存包哈希不一致报告为冲突且投影保留根因', async () => {
-  const state = setup();
+  const state = await setup();
   try {
     await saveReferenceBundle(ctx(state), validInput(state));
     const before = currentShot(state.db, state.shotId);
@@ -1570,7 +1911,7 @@ test('重读参考包时将已存包哈希不一致报告为冲突且投影保�
 });
 
 test('投影允许 HTTPS 参考 URL 并拒绝源 URL 相同或非 HTTPS 外链', async () => {
-  const httpsState = setup();
+  const httpsState = await setup();
   try {
     await saveReferenceBundle(ctx(httpsState), validInput(httpsState));
     const projected = await projectReferenceBundleForGeneration(ctx(httpsState, {
@@ -1584,7 +1925,7 @@ test('投影允许 HTTPS 参考 URL 并拒绝源 URL 相同或非 HTTPS 外链',
     httpsState.cleanup();
   }
 
-  const sameSourceState = setup();
+  const sameSourceState = await setup();
   try {
     await saveReferenceBundle(ctx(sameSourceState), validInput(sameSourceState));
     const sourceUrl = 'https://cdn.example.test/source/original.mp4';
@@ -1600,7 +1941,7 @@ test('投影允许 HTTPS 参考 URL 并拒绝源 URL 相同或非 HTTPS 外链',
     sameSourceState.cleanup();
   }
 
-  const httpState = setup();
+  const httpState = await setup();
   try {
     await saveReferenceBundle(ctx(httpState), validInput(httpState));
     const leakedUrl = 'http://cdn.example.test/redraw/identity/201.png';
@@ -1616,10 +1957,11 @@ test('投影允许 HTTPS 参考 URL 并拒绝源 URL 相同或非 HTTPS 外链',
   }
 });
 
-test('文字覆盖允许无文字、片段 gap 和不同区域重叠', async () => {
+test('文字覆盖允许无文字、片段 gap 和不同区域重叠', async (t) => {
   const cases = [
     {
       name: 'zero text',
+      coverageTextRegions: [],
       mutate(input) {
         input.text_regions = [];
         input.coverage_review.recognizable_text_region_count = 0;
@@ -1631,6 +1973,9 @@ test('文字覆盖允许无文字、片段 gap 和不同区域重叠', async () 
     },
     {
       name: 'single text gap',
+      coverageTextRegions: [
+        { region_key: 'text-001', kind: 'text_subtitle', time_ranges: [[1000, 2000]] },
+      ],
       mutate(input) {
         input.text_regions = [{
           region_key: 'text-001',
@@ -1647,6 +1992,10 @@ test('文字覆盖允许无文字、片段 gap 和不同区域重叠', async () 
     },
     {
       name: 'overlap across regions',
+      coverageTextRegions: [
+        { region_key: 'text-001', kind: 'text_subtitle', time_ranges: [[2000, 5000]] },
+        { region_key: 'text-002', kind: 'text_screen', time_ranges: [[0, 3000]] },
+      ],
       mutate(input) {
         input.text_regions[0].time_ranges = [[0, 3000]];
         input.text_regions[1].time_ranges = [[2000, 5000]];
@@ -1657,17 +2006,30 @@ test('文字覆盖允许无文字、片段 gap 和不同区域重叠', async () 
     },
   ];
   for (const entry of cases) {
-    const state = setup();
-    try {
-      const input = validInput(state);
-      entry.mutate(input);
-      syncMotionTextCoverage(state, input);
-      const saved = await saveReferenceBundle(ctx(state), input);
-      assert.match(saved.reference_bundle_hash, /^[0-9a-f]{64}$/);
-      entry.assertBundle(saved.bundle);
-    } finally {
-      state.cleanup();
-    }
+    await t.test(entry.name, async () => {
+      const state = await setup({ coverageTextRegions: entry.coverageTextRegions });
+      try {
+        const input = validInput(state);
+        entry.mutate(input);
+        const currentBindings = await buildCurrentReferenceBindings(ctx(state), {
+          shot_id: state.shotId,
+          clean_results: input.text_regions.map((region) => ({
+            kind: 'text_clean', key: region.region_key, status: 'completed',
+            redraw_asset_id: region.text_clean_redraw_asset_id,
+          })),
+        });
+        assert.deepEqual(
+          currentBindings.text_regions,
+          [...input.text_regions].sort((left, right) => left.region_key.localeCompare(right.region_key)),
+          entry.name,
+        );
+        const saved = await saveReferenceBundle(ctx(state), input);
+        assert.match(saved.reference_bundle_hash, /^[0-9a-f]{64}$/);
+        entry.assertBundle(saved.bundle);
+      } finally {
+        state.cleanup();
+      }
+    });
   }
 });
 
@@ -1699,7 +2061,7 @@ test('人脸覆盖缺失、重复、非法时间、未批准或 unresolved 时�
     },
   ];
   for (const entry of cases) {
-    const state = setup();
+    const state = await setup();
     try {
       await assertRejectsUnchanged(
         state,
@@ -1744,7 +2106,7 @@ test('角色身份一对一映射与 9 个引用上限 fail closed', async () =>
     },
   ];
   for (const entry of cases) {
-    const state = setup();
+    const state = await setup();
     try {
       if (entry.mutateDb) entry.mutateDb(state);
       await assertRejectsUnchanged(state, mutateInput(state, entry.mutate), entry.code);
@@ -1812,7 +2174,7 @@ test('身份包缺视图、未批准、非成年、非虚构 AI、非 US 或哈�
     },
   ];
   for (const entry of cases) {
-    const state = setup();
+    const state = await setup();
     try {
       entry.mutateDb(state);
       await assertRejectsUnchanged(
@@ -1866,7 +2228,7 @@ test('文字净景缺失、重复、数量、unresolved、类型、时间、审�
     },
   ];
   for (const entry of cases) {
-    const state = setup();
+    const state = await setup();
     try {
       if (entry.mutateDb) entry.mutateDb(state);
       await assertRejectsUnchanged(
@@ -1884,15 +2246,24 @@ test('无效语言市场、姓名映射、对白绑定或 facts hash 时拒绝',
   const cases = [
     {
       name: 'locale missing',
-      setup: () => setup({ locale: '' }),
+      setup,
+      mutateDb(state) {
+        state.db.prepare("UPDATE redraw_versions SET locale = '' WHERE id = ?").run(state.versionId);
+      },
     },
     {
       name: 'market missing',
-      setup: () => setup({ market: '' }),
+      setup,
+      mutateDb(state) {
+        state.db.prepare("UPDATE redraw_versions SET market = '' WHERE id = ?").run(state.versionId);
+      },
     },
     {
       name: 'market invalid',
-      setup: () => setup({ market: 'usa' }),
+      setup,
+      mutateDb(state) {
+        state.db.prepare("UPDATE redraw_versions SET market = 'usa' WHERE id = ?").run(state.versionId);
+      },
     },
     {
       name: 'identity country mismatch',
@@ -1907,29 +2278,49 @@ test('无效语言市场、姓名映射、对白绑定或 facts hash 时拒绝',
     },
     {
       name: 'name missing',
-      setup: () => setup({ nameMap: { 'character-001': 'Ethan' } }),
+      setup,
+      mutateDb(state) {
+        state.db.prepare('UPDATE redraw_versions SET name_map_json = ? WHERE id = ?')
+          .run(JSON.stringify({ 'character-001': 'Ethan' }), state.versionId);
+      },
     },
     {
       name: 'dialogue speaker unbound',
-      setup: () => setup({ dialogue: [{ speaker_id: 'character-999', localized_text: 'Wait.', start_ms: 0, end_ms: 1000 }] }),
+      setup,
+      mutateDb(state) {
+        state.db.prepare('UPDATE redraw_shots SET localized_dialogue_json = ? WHERE id = ?')
+          .run(JSON.stringify([{ speaker_id: 'character-999', localized_text: 'Wait.', start_ms: 0, end_ms: 1000 }]), state.shotId);
+      },
     },
     {
       name: 'facts hash invalid',
-      setup: () => setup({ factsHash: 'not-a-sha256' }),
+      setup,
+      mutateDb(state) {
+        state.db.exec('DROP TRIGGER redraw_versions_facts_immutable_update');
+        state.db.prepare('UPDATE redraw_versions SET facts_hash = ? WHERE id = ?')
+          .run('not-a-sha256', state.versionId);
+      },
     },
     {
       name: 'name map duplicate trimmed key',
-      setup: () => setup({
-        nameMap: { 'character-001': 'Ethan', ' character-001 ': 'Ethan II', 'character-002': 'Maya' },
-      }),
+      setup,
+      mutateDb(state) {
+        state.db.prepare('UPDATE redraw_versions SET name_map_json = ? WHERE id = ?').run(JSON.stringify({
+          'character-001': 'Ethan', ' character-001 ': 'Ethan II', 'character-002': 'Maya',
+        }), state.versionId);
+      },
     },
     {
       name: 'name map Chinese target',
-      setup: () => setup({ nameMap: { 'character-001': '伊森', 'character-002': 'Maya' } }),
+      setup,
+      mutateDb(state) {
+        state.db.prepare('UPDATE redraw_versions SET name_map_json = ? WHERE id = ?')
+          .run(JSON.stringify({ 'character-001': '伊森', 'character-002': 'Maya' }), state.versionId);
+      },
     },
   ];
   for (const entry of cases) {
-    const state = entry.setup();
+    const state = await entry.setup();
     try {
       if (entry.mutateDb) entry.mutateDb(state);
       await assertRejectsUnchanged(
@@ -1944,7 +2335,7 @@ test('无效语言市场、姓名映射、对白绑定或 facts hash 时拒绝',
 });
 
 test('跨租户用户不可见且不会写入镜头', async () => {
-  const state = setup();
+  const state = await setup();
   try {
     await assertRejectsUnchanged(
       state,
@@ -1975,7 +2366,7 @@ test('缺少 expected_updated_at 或 CAS 冲突时拒绝', async () => {
     },
   ];
   for (const entry of cases) {
-    const state = setup();
+    const state = await setup();
     try {
       await assertRejectsUnchanged(
         state,
@@ -2018,7 +2409,7 @@ test('未知字段、客户端 hash、路径、URL、reviewer 或 status 注入�
     },
   ];
   for (const entry of cases) {
-    const state = setup();
+    const state = await setup();
     try {
       await assertRejectsUnchanged(
         state,

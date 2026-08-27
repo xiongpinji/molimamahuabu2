@@ -26,11 +26,15 @@ const { prepareReferenceCleanRequirement } = require('../src/services/redrawAsse
 const { reviewAsset } = require('../src/services/redrawReviewService');
 const { invalidateCharacterDependents } = require('../src/services/redrawDependencyInvalidationService');
 const {
+  buildCurrentReferenceBindings,
   buildTrustedReferenceBundleInput,
   canonicalBundleHash,
   loadReviewedReferenceCoverage,
   saveReferenceBundle,
 } = require('../src/services/redrawReferenceBundleService');
+const {
+  bindReadyMotionReference,
+} = require('../src/services/redrawReferenceArtifactImportService');
 const {
   prepareVersionReferences,
   quoteVersionPreparation,
@@ -264,7 +268,12 @@ function identityPack(input) {
     reviewed_by: 'user-a',
     reviewed_at: NOW,
   };
-  pack.pack_sha256 = sha256(stableJson({
+  pack.pack_sha256 = identityPackHash(pack);
+  return pack;
+}
+
+function identityPackHash(pack) {
+  return sha256(stableJson({
     artifact: pack.artifact,
     adult_status: pack.adult_status,
     confirmed_views: pack.confirmed_views,
@@ -280,7 +289,6 @@ function identityPack(input) {
     target_country: pack.target_country,
     wardrobe: pack.wardrobe,
   }));
-  return pack;
 }
 
 function textCleanPack(input) {
@@ -485,14 +493,24 @@ async function setupDefaultServerPath(options = {}) {
       },
     }), NOW, NOW, NOW);
 
-  const faceHash = sha256(stableJson(includePerson ? [{
-    track_key: 'person-a', source_character_key: 'char-a', time_ranges: [[0, 12000]],
-    identity_redraw_asset_id: 201,
-  }] : []));
-  const textHash = sha256(stableJson(includeText ? [{
-    kind: 'text_subtitle', region_key: 'subtitle-a', text_clean_redraw_asset_id: 202,
-    time_ranges: [[0, 12000]],
-  }] : []));
+  const ctx = {
+    db, tenantId: 'tenant-a', userId: 'user-a', versionId: 1, storageRoot,
+    now: () => NEXT,
+    assetReader: {
+      canRead: (asset) => Boolean(asset?.local_path && fs.existsSync(path.join(storageRoot, asset.local_path))),
+      owns: () => true,
+    },
+    probeRunner: async () => ({
+      duration_ms: 12000, width: 64, height: 64, mime_type: 'video/mp4',
+      video_codec: 'h264', audio_stream_count: 0,
+    }),
+  };
+  const bindings = await buildCurrentReferenceBindings(ctx, {
+    shot_id: 1,
+    clean_results: includeText ? [{
+      kind: 'text_clean', key: 'subtitle-a', status: 'completed', redraw_asset_id: 202,
+    }] : [],
+  });
   insertStoredAsset(db, {
     id: 601,
     type: 'video',
@@ -503,23 +521,19 @@ async function setupDefaultServerPath(options = {}) {
       schema_version: 'redraw-motion-reference-v1', tenant_id: 'tenant-a', user_id: 'user-a',
       version_id: 1, shot_id: 1, source_asset_id: 101, source_fingerprint: sourceSha,
       clip_start_ms: 0, clip_end_ms: 12000,
-      face_coverage_sha256: faceHash, text_coverage_sha256: textHash,
+      face_coverage_sha256: bindings.face_coverage_sha256,
+      text_coverage_sha256: bindings.text_coverage_sha256,
+      coverage_binding_sha256: bindings.coverage_binding_sha256,
+      identity_binding_sha256: bindings.identity_binding_sha256,
+      clean_binding_sha256: bindings.clean_binding_sha256,
+      file_sha256: motionSha,
+      bound_by: 'user-a',
+      bound_at: NOW,
     } },
   });
   return {
     db,
-    ctx: {
-      db, tenantId: 'tenant-a', userId: 'user-a', versionId: 1, storageRoot,
-      now: () => NEXT,
-      assetReader: {
-        canRead: (asset) => Boolean(asset?.local_path && fs.existsSync(path.join(storageRoot, asset.local_path))),
-        owns: () => true,
-      },
-      probeRunner: async () => ({
-        duration_ms: 12000, width: 64, height: 64, mime_type: 'video/mp4',
-        video_codec: 'h264', audio_stream_count: 0,
-      }),
-    },
+    ctx,
     personCleanSha,
     cleanup() {
       db.close();
@@ -546,13 +560,409 @@ async function createApprovedTextCleanResult(state, providerTaskId) {
   });
   const motionAsset = state.db.prepare('SELECT metadata FROM assets WHERE id = 601').get();
   const motionMetadata = JSON.parse(motionAsset.metadata);
-  motionMetadata.redraw_motion_reference.text_coverage_sha256 = sha256(stableJson([{
-    kind: 'text_subtitle', region_key: requirement.key,
-    text_clean_redraw_asset_id: result.redraw_asset_id, time_ranges: [[0, 12000]],
-  }]));
+  const bindings = await buildCurrentReferenceBindings(state.ctx, {
+    shot_id: 1,
+    clean_results: [{
+      kind: 'text_clean', key: requirement.key, status: 'completed',
+      redraw_asset_id: result.redraw_asset_id,
+    }],
+  });
+  Object.assign(motionMetadata.redraw_motion_reference, {
+    face_coverage_sha256: bindings.face_coverage_sha256,
+    text_coverage_sha256: bindings.text_coverage_sha256,
+    coverage_binding_sha256: bindings.coverage_binding_sha256,
+    identity_binding_sha256: bindings.identity_binding_sha256,
+    clean_binding_sha256: bindings.clean_binding_sha256,
+  });
   state.db.prepare('UPDATE assets SET metadata = ? WHERE id = 601').run(JSON.stringify(motionMetadata));
   return { coverage, redrawAssetId: result.redraw_asset_id };
 }
+
+function installPendingMotionImport(state) {
+  const asset = state.db.prepare('SELECT * FROM assets WHERE id = 601').get();
+  const metadata = JSON.parse(asset.metadata);
+  const fileSha256 = metadata.sha256;
+  delete metadata.redraw_motion_reference;
+  metadata.redraw_motion_import = {
+    schema_version: 'redraw-motion-import-v1',
+    tenant_id: 'tenant-a',
+    user_id: 'user-a',
+    version_id: 1,
+    shot_id: 1,
+    source_work_id: 1,
+    source_asset_id: 101,
+    source_fingerprint: state.db.prepare('SELECT source_fingerprint FROM redraw_works WHERE id = 1').get().source_fingerprint,
+    clip_start_ms: 0,
+    clip_end_ms: 12000,
+    file_sha256: fileSha256,
+    duration_ms: 12000,
+    width: 64,
+    height: 64,
+    mime_type: 'video/mp4',
+    video_codec: 'h264',
+    audio_stream_count: 0,
+    reviewed_by: 'user-a',
+    reviewed_at: NOW,
+    review: {
+      full_frame_reviewed: true,
+      source_identity_obscured: true,
+      source_text_obscured: true,
+      motion_preserved: true,
+    },
+  };
+  state.db.prepare('UPDATE assets SET metadata = ?, width = 64, height = 64 WHERE id = 601')
+    .run(JSON.stringify(metadata));
+  state.db.prepare(`INSERT INTO redraw_reference_artifact_imports (
+    tenant_id, user_id, version_id, scope_type, scope_id, purpose,
+    idempotency_hash, request_hash, file_sha256, stored_asset_id,
+    status, error_code, created_at, updated_at
+  ) VALUES (
+    'tenant-a', 'user-a', 1, 'shot', 1, 'motion', ?, ?, ?, 601,
+    'completed', NULL, ?, ?
+  )`).run(sha256('task4-pending-motion'), sha256('task4-pending-request'), fileSha256, NOW, NOW);
+  return { assetId: 601, fileSha256 };
+}
+
+function dbWithHookAfterMotionScopeRead(db, hook) {
+  let fired = false;
+  return new Proxy(db, {
+    get(target, property) {
+      if (property === 'prepare') {
+        return (sql) => {
+          const statement = target.prepare(sql);
+          if (!String(sql).includes('SELECT shot.*, version.work_id AS source_work_id')) return statement;
+          return new Proxy(statement, {
+            get(statementTarget, statementProperty) {
+              const value = statementTarget[statementProperty];
+              if (statementProperty === 'get') {
+                return (...args) => {
+                  const row = value.apply(statementTarget, args);
+                  if (!fired) {
+                    fired = true;
+                    hook();
+                  }
+                  return row;
+                };
+              }
+              return typeof value === 'function' ? value.bind(statementTarget) : value;
+            },
+          });
+        };
+      }
+      const value = target[property];
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+function replaceReviewedCoverageShotEnd(state, endMs) {
+  state.db.prepare('UPDATE redraw_shots SET end_ms = ?, duration_ms = ? WHERE id = 1')
+    .run(endMs, endMs);
+  state.db.prepare('UPDATE redraw_works SET duration_ms = ? WHERE id = 1').run(endMs);
+  const manifestAsset = state.db.prepare('SELECT * FROM assets WHERE id = 701').get();
+  const manifestPath = path.join(state.ctx.storageRoot, manifestAsset.local_path);
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  manifest.source.duration_ms = endMs;
+  manifest.shots[0].end_ms = endMs;
+  manifest.analysis_sha256 = canonicalCoverageSha256(manifest);
+  const bytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
+  fs.writeFileSync(manifestPath, bytes);
+  const manifestMetadata = JSON.parse(manifestAsset.metadata);
+  manifestMetadata.sha256 = sha256(bytes);
+  state.db.prepare('UPDATE assets SET metadata = ?, file_size = ? WHERE id = 701')
+    .run(JSON.stringify(manifestMetadata), bytes.length);
+  const coverageAsset = state.db.prepare('SELECT source_ref_json FROM redraw_assets WHERE id = 204').get();
+  const coverageSourceRef = JSON.parse(coverageAsset.source_ref_json);
+  coverageSourceRef.snapshot.analysis_sha256 = manifest.analysis_sha256;
+  state.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = 204')
+    .run(JSON.stringify(coverageSourceRef));
+}
+
+test('current coverage bindings are shared by bundle and motion reference binding', async () => {
+  const state = await setupDefaultServerPath({ includePerson: true });
+  try {
+    const preparedText = await createApprovedTextCleanResult(state, 'task4-shared-binding-clean');
+    const pending = installPendingMotionImport(state);
+    const cleanResults = [{
+      kind: 'text_clean',
+      key: 'subtitle-a',
+      status: 'completed',
+      redraw_asset_id: preparedText.redrawAssetId,
+    }];
+
+    const bindings = await buildCurrentReferenceBindings(state.ctx, {
+      shot_id: 1,
+      clean_results: cleanResults,
+    });
+    assert.deepEqual(bindings.source, {
+      work_id: 1,
+      asset_id: 101,
+      fingerprint: state.db.prepare('SELECT source_fingerprint FROM redraw_works WHERE id = 1').get().source_fingerprint,
+    });
+    assert.deepEqual(bindings.clip, { start_ms: 0, end_ms: 12000, duration_ms: 12000 });
+    assert.match(bindings.face_coverage_sha256, /^[a-f0-9]{64}$/);
+    assert.match(bindings.text_coverage_sha256, /^[a-f0-9]{64}$/);
+
+    const bound = await bindReadyMotionReference(state.ctx, {
+      shot_id: 1,
+      clean_results: cleanResults,
+    });
+    assert.deepEqual(bound, {
+      status: 'ready',
+      shot_id: 1,
+      motion_reference_asset_id: pending.assetId,
+      face_coverage_sha256: bindings.face_coverage_sha256,
+      text_coverage_sha256: bindings.text_coverage_sha256,
+    });
+    const metadata = JSON.parse(state.db.prepare('SELECT metadata FROM assets WHERE id = 601').get().metadata);
+    assert.equal(metadata.redraw_motion_reference.face_coverage_sha256, bindings.face_coverage_sha256);
+    assert.equal(metadata.redraw_motion_reference.text_coverage_sha256, bindings.text_coverage_sha256);
+    assert.equal(metadata.redraw_motion_reference.file_sha256, pending.fileSha256);
+    assert.ok(metadata.redraw_motion_import);
+
+    const bundleInput = await buildTrustedReferenceBundleInput(state.ctx, {
+      shot_id: 1,
+      clean_results: cleanResults,
+    });
+    assert.equal(bundleInput.motion_reference_asset_id, pending.assetId);
+    assert.deepEqual(bundleInput.face_tracks, bindings.face_tracks);
+    assert.deepEqual(bundleInput.text_regions, bindings.text_regions);
+    assert.deepEqual(bundleInput.coverage_review, bindings.coverage_review);
+
+    const currentShot = state.db.prepare('SELECT * FROM redraw_shots WHERE id = 1').get();
+    const boundMetadata = JSON.parse(state.db.prepare('SELECT metadata FROM assets WHERE id = 601').get().metadata);
+    for (const [name, mutate] of [
+      ['legacy binding hashes missing', (motion) => {
+        delete motion.coverage_binding_sha256;
+        delete motion.identity_binding_sha256;
+        delete motion.clean_binding_sha256;
+        delete motion.bound_at;
+        delete motion.bound_by;
+      }],
+      ['coverage binding missing', (motion) => { delete motion.coverage_binding_sha256; }],
+      ['coverage binding tampered', (motion) => { motion.coverage_binding_sha256 = '0'.repeat(64); }],
+      ['identity binding missing', (motion) => { delete motion.identity_binding_sha256; }],
+      ['identity binding tampered', (motion) => { motion.identity_binding_sha256 = '0'.repeat(64); }],
+      ['clean binding missing', (motion) => { delete motion.clean_binding_sha256; }],
+      ['clean binding tampered', (motion) => { motion.clean_binding_sha256 = '0'.repeat(64); }],
+      ['file sha missing', (motion) => { delete motion.file_sha256; }],
+      ['file sha tampered', (motion) => { motion.file_sha256 = '0'.repeat(64); }],
+    ]) {
+      const staleMetadata = structuredClone(boundMetadata);
+      mutate(staleMetadata.redraw_motion_reference);
+      state.db.prepare('UPDATE assets SET metadata = ? WHERE id = 601')
+        .run(JSON.stringify(staleMetadata));
+      await assert.rejects(
+        buildTrustedReferenceBundleInput(state.ctx, { shot_id: 1, clean_results: cleanResults }),
+        { code: 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE' },
+        name,
+      );
+      assert.deepEqual(state.db.prepare('SELECT * FROM redraw_shots WHERE id = 1').get(), currentShot);
+    }
+    state.db.prepare('UPDATE assets SET metadata = ? WHERE id = 601')
+      .run(JSON.stringify(boundMetadata));
+
+    const replacementWardrobe = Buffer.from('replacement-wardrobe');
+    const replacementWardrobeSha = sha256(replacementWardrobe);
+    fs.writeFileSync(path.join(state.ctx.storageRoot, 'redraw', 'wardrobe.png'), replacementWardrobe);
+    const wardrobeMetadata = JSON.parse(state.db.prepare('SELECT metadata FROM assets WHERE id = 401').get().metadata);
+    wardrobeMetadata.sha256 = replacementWardrobeSha;
+    state.db.prepare('UPDATE assets SET metadata = ? WHERE id = 401')
+      .run(JSON.stringify(wardrobeMetadata));
+    const identityPayload = JSON.parse(state.db.prepare('SELECT source_ref_json FROM redraw_assets WHERE id = 201').get().source_ref_json);
+    identityPayload.identity_pack.wardrobe.reference_sha256 = replacementWardrobeSha;
+    identityPayload.identity_pack.pack_sha256 = identityPackHash(identityPayload.identity_pack);
+    state.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = 201')
+      .run(JSON.stringify(identityPayload));
+    await assert.rejects(
+      buildTrustedReferenceBundleInput(state.ctx, { shot_id: 1, clean_results: cleanResults }),
+      { code: 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE' },
+    );
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('motion binding fails closed for unapproved identity file drift and upstream drift', async (t) => {
+  await t.test('current identity is not approved', async () => {
+    const state = await setupDefaultServerPath({ includePerson: true });
+    try {
+      const preparedText = await createApprovedTextCleanResult(state, 'task4-identity-not-ready-clean');
+      installPendingMotionImport(state);
+      state.db.prepare("UPDATE redraw_assets SET approval_status = 'pending' WHERE id = 201").run();
+      await assert.rejects(
+        bindReadyMotionReference(state.ctx, {
+          shot_id: 1,
+          clean_results: [{
+            kind: 'text_clean', key: 'subtitle-a', status: 'completed',
+            redraw_asset_id: preparedText.redrawAssetId,
+          }],
+        }),
+        { code: 'REDRAW_MOTION_REFERENCE_BINDING_NOT_READY' },
+      );
+      const metadata = JSON.parse(state.db.prepare('SELECT metadata FROM assets WHERE id = 601').get().metadata);
+      assert.equal(Object.hasOwn(metadata, 'redraw_motion_reference'), false);
+    } finally {
+      state.cleanup();
+    }
+  });
+
+  await t.test('pending file hash drifts', async () => {
+    const state = await setupDefaultServerPath();
+    try {
+      const preparedText = await createApprovedTextCleanResult(state, 'task4-file-drift-clean');
+      installPendingMotionImport(state);
+      fs.writeFileSync(path.join(state.ctx.storageRoot, 'redraw-conditioning', `${JSON.parse(state.db.prepare('SELECT metadata FROM assets WHERE id = 601').get().metadata).sha256}.mp4`), 'tampered-motion');
+      await assert.rejects(
+        bindReadyMotionReference(state.ctx, {
+          shot_id: 1,
+          clean_results: [{
+            kind: 'text_clean', key: 'subtitle-a', status: 'completed',
+            redraw_asset_id: preparedText.redrawAssetId,
+          }],
+        }),
+        { code: 'REDRAW_MOTION_REFERENCE_STALE' },
+      );
+    } finally {
+      state.cleanup();
+    }
+  });
+
+  await t.test('source fingerprint drifts after import', async () => {
+    const state = await setupDefaultServerPath();
+    try {
+      const preparedText = await createApprovedTextCleanResult(state, 'task4-source-drift-clean');
+      installPendingMotionImport(state);
+      state.db.prepare('UPDATE redraw_works SET source_fingerprint = ? WHERE id = 1').run('f'.repeat(64));
+      await assert.rejects(
+        bindReadyMotionReference(state.ctx, {
+          shot_id: 1,
+          clean_results: [{
+            kind: 'text_clean', key: 'subtitle-a', status: 'completed',
+            redraw_asset_id: preparedText.redrawAssetId,
+          }],
+        }),
+        { code: 'REDRAW_MOTION_REFERENCE_STALE' },
+      );
+    } finally {
+      state.cleanup();
+    }
+  });
+});
+
+test('motion binding rejects shot boundary drift between pending scope and current bindings', async () => {
+  const state = await setupDefaultServerPath();
+  try {
+    const preparedText = await createApprovedTextCleanResult(state, 'task4-scope-race-clean');
+    installPendingMotionImport(state);
+    const cleanResults = [{
+      kind: 'text_clean', key: 'subtitle-a', status: 'completed',
+      redraw_asset_id: preparedText.redrawAssetId,
+    }];
+    const metadataBefore = state.db.prepare('SELECT metadata FROM assets WHERE id = 601').get().metadata;
+    const shotBefore = state.db.prepare('SELECT * FROM redraw_shots WHERE id = 1').get();
+    let raceMutationError;
+    const raceCtx = {
+      ...state.ctx,
+      db: dbWithHookAfterMotionScopeRead(state.db, () => {
+        try {
+          replaceReviewedCoverageShotEnd(state, 13000);
+        } catch (error) {
+          raceMutationError = error;
+        }
+      }),
+    };
+
+    let bindingError;
+    try {
+      await bindReadyMotionReference(raceCtx, { shot_id: 1, clean_results: cleanResults });
+    } catch (error) {
+      bindingError = error;
+    }
+    assert.ifError(raceMutationError);
+    assert.equal(bindingError?.code, 'REDRAW_MOTION_REFERENCE_STALE');
+
+    assert.equal(state.db.prepare('SELECT metadata FROM assets WHERE id = 601').get().metadata, metadataBefore);
+    assert.deepEqual(state.db.prepare('SELECT * FROM redraw_shots WHERE id = 1').get(), {
+      ...shotBefore,
+      end_ms: 13000,
+      duration_ms: 13000,
+    });
+    const metadata = JSON.parse(metadataBefore);
+    assert.equal(Object.hasOwn(metadata, 'redraw_motion_reference'), false);
+  } finally {
+    state.cleanup();
+  }
+});
+
+test('reference preparation binds pending motion then writes reference_ready through bundle service', async () => {
+  const state = await setupDefaultServerPath();
+  try {
+    installPendingMotionImport(state);
+    let providerCalls = 0;
+    const deps = {
+      quoteCleanRequirement: () => ({ priced: true, credits: 0 }),
+      provider: async () => {
+        providerCalls += 1;
+        return {
+          status: 'completed',
+          asset_id: 302,
+          provider_task_id: 'task4-two-round-text-clean',
+          quality: { width: 64, height: 64, mask_area_changed: true, non_mask_similarity: 0.99 },
+        };
+      },
+    };
+    const firstQuote = await quoteVersionPreparation(state.ctx, { version_id: 1 }, deps);
+    const first = await prepareVersionReferences(state.ctx, {
+      version_id: 1,
+      idempotency_key: 'task4-two-round-first',
+      quote_hash: firstQuote.quote_hash,
+    }, deps);
+    assert.deepEqual(first.needs_attention_shot_ids, [1]);
+    assert.equal(providerCalls, 1);
+    const firstShot = state.db.prepare('SELECT * FROM redraw_shots WHERE id = 1').get();
+    assert.equal(firstShot.preparation_state, 'needs_attention');
+    assert.equal(firstShot.reference_bundle_hash, null);
+    let motionMetadata = JSON.parse(state.db.prepare('SELECT metadata FROM assets WHERE id = 601').get().metadata);
+    assert.ok(motionMetadata.redraw_motion_import);
+    assert.equal(Object.hasOwn(motionMetadata, 'redraw_motion_reference'), false);
+
+    const interrupted = JSON.parse(firstShot.preparation_snapshot_json);
+    const pendingClean = interrupted.clean_results.find((item) => item.kind === 'text_clean');
+    const pendingAsset = state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(pendingClean.redraw_asset_id);
+    reviewAsset(state.db, pendingAsset.id, {
+      action: 'approved',
+      reviewer_id: 'user-a',
+      tenant_id: 'tenant-a',
+      user_id: 'user-a',
+      expected_updated_at: pendingAsset.updated_at,
+      preparationContext: state.ctx,
+    });
+
+    const secondQuote = await quoteVersionPreparation(state.ctx, { version_id: 1 }, deps);
+    assert.deepEqual(secondQuote.needs_attention_shot_ids, []);
+    assert.deepEqual(secondQuote.items, []);
+    const second = await prepareVersionReferences(state.ctx, {
+      version_id: 1,
+      idempotency_key: 'task4-two-round-second',
+      quote_hash: secondQuote.quote_hash,
+    }, deps);
+    assert.deepEqual(second.prepared_shot_ids, [1]);
+    assert.equal(providerCalls, 1);
+    const finalShot = state.db.prepare('SELECT * FROM redraw_shots WHERE id = 1').get();
+    const bundle = JSON.parse(finalShot.reference_bundle_json);
+    const snapshot = JSON.parse(finalShot.preparation_snapshot_json);
+    assert.equal(finalShot.preparation_state, 'reference_ready');
+    assert.equal(canonicalBundleHash(bundle), finalShot.reference_bundle_hash);
+    assert.equal(snapshot.status, 'completed');
+    assert.equal(snapshot.reference_bundle_hash, finalShot.reference_bundle_hash);
+    assert.equal(preparationEvidenceHash(finalShot), finalShot.preparation_evidence_hash);
+    motionMetadata = JSON.parse(state.db.prepare('SELECT metadata FROM assets WHERE id = 601').get().metadata);
+    assert.ok(motionMetadata.redraw_motion_reference);
+  } finally {
+    state.cleanup();
+  }
+});
 
 function fakeDeps(state, options = {}) {
   const cleanCalls = [];
@@ -1726,15 +2136,6 @@ test('版本漂移只由原 unknown 的最新批准解释且更早 completed 仍
     state.db.prepare('UPDATE redraw_assets SET approved_at = ? WHERE id = ?')
       .run(earlierApproval, completedPerson.redraw_asset_id);
 
-    const motionAsset = state.db.prepare('SELECT metadata FROM assets WHERE id = 601').get();
-    const motionMetadata = JSON.parse(motionAsset.metadata);
-    motionMetadata.redraw_motion_reference.text_coverage_sha256 = sha256(stableJson([{
-      kind: 'text_subtitle',
-      region_key: pendingTextResult.key,
-      text_clean_redraw_asset_id: pendingTextResult.redraw_asset_id,
-      time_ranges: [[0, 12000]],
-    }]));
-    state.db.prepare('UPDATE assets SET metadata = ? WHERE id = 601').run(JSON.stringify(motionMetadata));
     const pendingText = state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(pendingTextResult.redraw_asset_id);
     reviewAsset(state.db, pendingText.id, {
       action: 'approved', reviewer_id: 'user-a', tenant_id: 'tenant-a', user_id: 'user-a',
@@ -1743,6 +2144,23 @@ test('版本漂移只由原 unknown 的最新批准解释且更早 completed 仍
     state.db.prepare('UPDATE redraw_assets SET approved_at = ? WHERE id = ?')
       .run(latestApproval, pendingTextResult.redraw_asset_id);
     state.db.prepare('UPDATE redraw_versions SET updated_at = ? WHERE id = 1').run(latestApproval);
+    const currentBindings = await buildCurrentReferenceBindings(state.ctx, {
+      shot_id: 1,
+      clean_results: [
+        completedPerson,
+        { ...pendingTextResult, status: 'completed' },
+      ],
+    });
+    const motionAsset = state.db.prepare('SELECT metadata FROM assets WHERE id = 601').get();
+    const motionMetadata = JSON.parse(motionAsset.metadata);
+    Object.assign(motionMetadata.redraw_motion_reference, {
+      face_coverage_sha256: currentBindings.face_coverage_sha256,
+      text_coverage_sha256: currentBindings.text_coverage_sha256,
+      coverage_binding_sha256: currentBindings.coverage_binding_sha256,
+      identity_binding_sha256: currentBindings.identity_binding_sha256,
+      clean_binding_sha256: currentBindings.clean_binding_sha256,
+    });
+    state.db.prepare('UPDATE assets SET metadata = ? WHERE id = 601').run(JSON.stringify(motionMetadata));
 
     const persistInterrupted = (value) => state.db.prepare(`UPDATE redraw_shots
       SET preparation_state = 'needs_attention', preparation_snapshot_json = ?, preparation_evidence_hash = ?
