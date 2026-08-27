@@ -97,13 +97,23 @@ async function withProcessEnv(values, task) {
 }
 
 function completedEvidence() {
+  const accountState = {
+    'seedance-2-fast': { balance: 1, credits: 200, fingerprint: 'a'.repeat(64) },
+    'seedance-2-mini': { balance: 10, credits: 2000, fingerprint: 'b'.repeat(64) },
+  };
   return buildRequiredMatrix().map((item, index) => {
     const startedAt = new Date(Date.UTC(2026, 7, 7, 0, index * 2, 0));
     const generationElapsedSeconds = 60 + index;
     const completedAt = new Date(startedAt.getTime() + generationElapsedSeconds * 1000);
+    const account = accountState[item.model];
+    const usedBalanceBefore = account.balance;
+    const usedCreditsBefore = account.credits;
+    account.balance = Number((account.balance + 0.1).toFixed(1));
+    account.credits += 20;
     return {
       id: item.id,
       model: item.model,
+      config_fingerprint: account.fingerprint,
       mode: item.mode,
       requested_resolution: item.resolution,
       requested_duration: item.duration,
@@ -137,14 +147,14 @@ function completedEvidence() {
       },
       billing: {
         before: {
-          used_balance: Number((2.3 + index * 0.1).toFixed(1)),
-          used_credits: 460 + index * 20,
+          used_balance: usedBalanceBefore,
+          used_credits: usedCreditsBefore,
           credits_per_usd: 200,
           captured_at: new Date(Date.UTC(2026, 7, 7, 0, index * 2)).toISOString(),
         },
         after: {
-          used_balance: Number((2.4 + index * 0.1).toFixed(1)),
-          used_credits: 480 + index * 20,
+          used_balance: account.balance,
+          used_credits: account.credits,
           credits_per_usd: 200,
           captured_at: new Date(Date.UTC(2026, 7, 7, 0, index * 2 + 1)).toISOString(),
         },
@@ -659,9 +669,10 @@ describe('ToAPIs real video verification contract', () => {
         assertFfprobeAvailable() {},
         async fetchBalance(apiKey) {
           balanceKeys.push(apiKey);
+          const modelCallCount = balanceKeys.filter((value) => value === apiKey).length;
           return {
-            used_balance: balanceKeys.filter((value) => value === apiKey).length > 1 ? 1.1 : 1,
-            used_credits: balanceKeys.filter((value) => value === apiKey).length > 1 ? 120 : 100,
+            used_balance: modelCallCount > 2 ? 1.1 : 1,
+            used_credits: modelCallCount > 2 ? 120 : 100,
             credits_per_usd: 200,
           };
         },
@@ -691,9 +702,146 @@ describe('ToAPIs real video verification contract', () => {
       })), /MINI 任务明确失败/);
       assert.deepEqual(submitKeys, ['test-fast-key', 'test-mini-key']);
       assert.deepEqual(pollKeys, ['test-fast-key', 'test-mini-key']);
-      assert.deepEqual(balanceKeys, ['test-fast-key', 'test-mini-key', 'test-fast-key']);
+      assert.deepEqual(balanceKeys, [
+        'test-fast-key', 'test-mini-key',
+        'test-fast-key', 'test-fast-key',
+        'test-mini-key',
+      ]);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('captures a fresh config-bound before and after balance for all eight paid cases', async () => {
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-eight-case-billing-'));
+    const matrix = buildRequiredMatrix();
+    const fingerprints = {
+      'seedance-2-fast': 'a'.repeat(64),
+      'seedance-2-mini': 'b'.repeat(64),
+    };
+    const accountState = {
+      'test-fast-key': { balance: 1, credits: 200 },
+      'test-mini-key': { balance: 10, credits: 2000 },
+    };
+    const context = {
+      verificationClients: {
+        'seedance-2-fast': {
+          apiKey: 'test-fast-key',
+          config: { base_url: 'https://toapis.xyz', api_key: 'test-fast-key' },
+        },
+        'seedance-2-mini': {
+          apiKey: 'test-mini-key',
+          config: { base_url: 'https://toapis.xyz', api_key: 'test-mini-key' },
+        },
+      },
+      outputDir,
+      artifactOutputDir: outputDir,
+      publicAssetBaseUrl: 'https://molimama.vip/verification-assets/toapis',
+      statePath: path.join(outputDir, 'state.json'),
+      state: {
+        state_version: 'toapis-video-verification-state-v1',
+        provider_origin: 'https://toapis.xyz',
+        config_fingerprints: fingerprints,
+        cases: {},
+      },
+      configFingerprints: fingerprints,
+      costBudget: {
+        expectedCosts: Object.fromEntries(matrix.map((item) => [item.id, 0.72])),
+        aggregateHardCapYuan: 9.2,
+        perCaseHardCaps: {},
+      },
+      refs: {
+        firstFrameUrl: 'https://assets.example/first.png',
+        lastFrameUrl: 'https://assets.example/last.png',
+        referenceImageUrl: 'https://assets.example/ref.png',
+        referenceVideoUrl: 'https://assets.example/ref.mp4',
+        referenceAudioUrl: 'https://assets.example/ref.mp3',
+      },
+      runId: 'eight-case-billing-run',
+      submittedCaseIds: [],
+      preflightBalances: {
+        'seedance-2-fast': {
+          used_balance: 1,
+          used_credits: 200,
+          credits_per_usd: 200,
+          captured_at: '2026-08-28T00:00:00.000Z',
+        },
+        'seedance-2-mini': {
+          used_balance: 10,
+          used_credits: 2000,
+          credits_per_usd: 200,
+          captured_at: '2026-08-28T00:00:01.000Z',
+        },
+      },
+    };
+    const balanceKeys = [];
+    let clock = Date.parse('2026-08-28T01:00:00.000Z');
+    const nextIso = () => {
+      const value = new Date(clock).toISOString();
+      clock += 1000;
+      return value;
+    };
+    const deps = {
+      now: () => {
+        const value = new Date(clock);
+        clock += 1000;
+        return value;
+      },
+      async fetchBalance(apiKey) {
+        balanceKeys.push(apiKey);
+        const account = accountState[apiKey];
+        const caseId = context.submittedCaseIds.at(-1);
+        const isAfter = Boolean(context.state.cases[caseId]?.billing?.before);
+        if (isAfter) {
+          account.balance = Number((account.balance + 0.1).toFixed(1));
+          account.credits += 20;
+        }
+        return {
+          used_balance: account.balance,
+          used_credits: account.credits,
+          credits_per_usd: 200,
+          captured_at: nextIso(),
+        };
+      },
+      async createTask(_config, _log, _options, requestOptions) {
+        return { task_id: `task-${requestOptions.apiKey}-${context.submittedCaseIds.at(-1)}` };
+      },
+      async fetchTask() {
+        return { state: 'completed', progress: 100, videoUrl: 'https://assets.example/video.mp4' };
+      },
+      async downloadAndInspect(_url, filePath, item, publicUrl) {
+        const bytes = Buffer.alloc(2048, 1);
+        return {
+          public_url: publicUrl,
+          output_file: path.basename(filePath),
+          bytes: bytes.length,
+          sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+          ffprobe: {
+            width: item.resolution === '720p' ? 1280 : 864,
+            height: item.resolution === '720p' ? 720 : 496,
+            duration_seconds: item.duration,
+            video_codec: 'h264',
+            has_audio: item.generateAudio === true,
+          },
+        };
+      },
+      async sleep() {},
+    };
+    const previousRate = process.env.TOAPIS_USD_CNY_RATE;
+    process.env.TOAPIS_USD_CNY_RATE = '7.2';
+    try {
+      for (const item of matrix) await processCase(item, context, deps);
+      assert.equal(context.submittedCaseIds.length, 8);
+      assert.equal(balanceKeys.filter((key) => key === 'test-fast-key').length, 8);
+      assert.equal(balanceKeys.filter((key) => key === 'test-mini-key').length, 8);
+      for (const item of matrix) {
+        assert.ok(Date.parse(context.state.cases[item.id].billing.before.captured_at)
+          >= Date.parse('2026-08-28T01:00:00.000Z'));
+      }
+    } finally {
+      if (previousRate == null) delete process.env.TOAPIS_USD_CNY_RATE;
+      else process.env.TOAPIS_USD_CNY_RATE = previousRate;
+      fs.rmSync(outputDir, { recursive: true, force: true });
     }
   });
 
@@ -885,6 +1033,7 @@ describe('ToAPIs real video verification contract', () => {
     try {
       const configIds = createSplitVerificationDatabase(databasePath);
       let balanceCalls = 0;
+      const balanceCallsByKey = new Map();
       let createCalls = 0;
       await assert.rejects(() => withProcessEnv({
         TOAPIS_BASE_URL: 'https://toapis.xyz',
@@ -902,11 +1051,13 @@ describe('ToAPIs real video verification contract', () => {
         TOAPIS_API_KEY: 'test-provider-key',
       }, () => runVerification({
         assertFfprobeAvailable() {},
-        async fetchBalance() {
+        async fetchBalance(apiKey) {
           balanceCalls += 1;
-          return balanceCalls === 1
-            ? { used_balance: 1, used_credits: 100, captured_at: '2026-08-28T00:00:00.000Z' }
-            : { used_balance: 1.4, used_credits: 140, captured_at: '2026-08-28T00:01:00.000Z' };
+          const modelCallCount = (balanceCallsByKey.get(apiKey) || 0) + 1;
+          balanceCallsByKey.set(apiKey, modelCallCount);
+          return apiKey === 'test-fast-key' && modelCallCount > 2
+            ? { used_balance: 1.4, used_credits: 140, captured_at: '2026-08-28T00:01:00.000Z' }
+            : { used_balance: 1, used_credits: 100, captured_at: '2026-08-28T00:00:00.000Z' };
         },
         async createTask() { createCalls += 1; return { task_id: 'task-over-cap' }; },
         async fetchTask() { return { state: 'completed', progress: 100, videoUrl: 'https://assets.example/video.mp4' }; },
@@ -924,7 +1075,7 @@ describe('ToAPIs real video verification contract', () => {
         async sleep() {},
       })), /实际人民币总成本.*硬上限/);
       assert.equal(createCalls, 1);
-      assert.equal(balanceCalls, 3);
+      assert.equal(balanceCalls, 4);
       const state = JSON.parse(fs.readFileSync(path.join(outputDir, 'toapis-video-verification-state.json')));
       assert.equal(state.cases['fast-t2v-480'].status, 'cost_cap_exceeded');
       assert.equal(state.cases['fast-t2v-480'].billing.cost_yuan, 2.88);
@@ -1276,7 +1427,7 @@ describe('ToAPIs real video verification contract', () => {
           TOAPIS_VERIFY_POLL_MS: '0',
           TOAPIS_API_KEY: 'test-provider-key',
         }, () => runVerification(deps)), scenario.error);
-        assert.equal(balanceCalls, 1);
+        assert.equal(balanceCalls, 2);
         assert.deepEqual(verificationRows(databasePath, ids), before);
       } finally {
         fs.rmSync(directory, { recursive: true, force: true });
@@ -1593,6 +1744,19 @@ describe('ToAPIs real video verification contract', () => {
     assert.equal(hasCompleteRequiredMatrix(results.map((item, index) => (
       index === 0 ? { ...item, billing: { ...item.billing, reviewed: false } } : item
     ))), false);
+  });
+
+  it('validates billing continuity independently for each model and config fingerprint', () => {
+    assert.equal(hasCompleteRequiredMatrix(completedEvidence()), true);
+  });
+
+  it('rejects FAST and MINI evidence that shares one config fingerprint', () => {
+    const sharedFingerprint = completedEvidence();
+    const fastFingerprint = sharedFingerprint.find((item) => item.model === 'seedance-2-fast').config_fingerprint;
+    for (const item of sharedFingerprint) {
+      if (item.model === 'seedance-2-mini') item.config_fingerprint = fastFingerprint;
+    }
+    assert.equal(hasCompleteRequiredMatrix(sharedFingerprint), false);
   });
 
   it('rejects forged, mismatched, duplicated or role-less evidence before DB verification', () => {

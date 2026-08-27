@@ -271,20 +271,35 @@ function validateCompletedResult(item) {
 }
 
 function hasContinuousBillingChain(results) {
-  const intervals = results.map((item) => ({
-    before: item?.billing?.before,
-    after: item?.billing?.after,
-    beforeAt: Date.parse(String(item?.billing?.before?.captured_at || '')),
-    afterAt: Date.parse(String(item?.billing?.after?.captured_at || '')),
-  })).sort((left, right) => left.beforeAt - right.beforeAt);
-  const windows = new Set(intervals.map((item) => `${item.beforeAt}|${item.afterAt}`));
-  if (windows.size !== intervals.length) return false;
-  for (let index = 1; index < intervals.length; index += 1) {
-    const previous = intervals[index - 1];
-    const current = intervals[index];
-    if (previous.afterAt > current.beforeAt
-        || Number(previous.after?.used_balance) !== Number(current.before?.used_balance)
-        || Number(previous.after?.used_credits) !== Number(current.before?.used_credits)) return false;
+  const chains = new Map();
+  const fingerprintsByModel = new Map();
+  for (const item of results) {
+    const model = String(item?.model || '');
+    const fingerprint = String(item?.config_fingerprint || '');
+    if (!model || !/^[a-f0-9]{64}$/i.test(fingerprint)) return false;
+    if (fingerprintsByModel.has(model) && fingerprintsByModel.get(model) !== fingerprint) return false;
+    fingerprintsByModel.set(model, fingerprint);
+    const key = `${model}|${fingerprint}`;
+    if (!chains.has(key)) chains.set(key, []);
+    chains.get(key).push({
+      before: item?.billing?.before,
+      after: item?.billing?.after,
+      beforeAt: Date.parse(String(item?.billing?.before?.captured_at || '')),
+      afterAt: Date.parse(String(item?.billing?.after?.captured_at || '')),
+    });
+  }
+  if (new Set(fingerprintsByModel.values()).size !== fingerprintsByModel.size) return false;
+  for (const intervals of chains.values()) {
+    intervals.sort((left, right) => left.beforeAt - right.beforeAt);
+    const windows = new Set(intervals.map((item) => `${item.beforeAt}|${item.afterAt}`));
+    if (windows.size !== intervals.length) return false;
+    for (let index = 1; index < intervals.length; index += 1) {
+      const previous = intervals[index - 1];
+      const current = intervals[index];
+      if (previous.afterAt > current.beforeAt
+          || Number(previous.after?.used_balance) !== Number(current.before?.used_balance)
+          || Number(previous.after?.used_credits) !== Number(current.before?.used_credits)) return false;
+    }
   }
   return true;
 }
@@ -1136,9 +1151,7 @@ async function processCase(item, context, deps = {}) {
     context.submittedCaseIds.push(item.id);
     const clientOptions = buildVerificationOptions(item, context.refs, context.runId);
     const request = buildToapisVideoBody(clientOptions);
-    const balanceBefore = context.preflightBalances?.[item.model]
-      || await (deps.fetchBalance || fetchBalance)(client.apiKey, deps.fetchImpl);
-    if (context.preflightBalances) delete context.preflightBalances[item.model];
+    const balanceBefore = await (deps.fetchBalance || fetchBalance)(client.apiKey, deps.fetchImpl);
     const startedAt = nowDate(deps);
     entry = {
       id: item.id,
