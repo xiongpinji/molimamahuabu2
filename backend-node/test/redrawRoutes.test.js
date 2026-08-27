@@ -7328,3 +7328,250 @@ test('aborted motion multipart removes started disk temp without calling import 
     fixture.close();
   }
 });
+
+function coverageRegistrationRouterFixture(registrationService) {
+  const db = createDb();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-coverage-route-storage-'));
+  const secret = 'redraw-coverage-route-secret-value-at-least-32-bytes';
+  const previous = {
+    publicMode: process.env.PUBLIC_PLATFORM_MODE,
+    jwtSecret: process.env.PLATFORM_JWT_SECRET,
+  };
+  process.env.PUBLIC_PLATFORM_MODE = 'true';
+  process.env.PLATFORM_JWT_SECRET = secret;
+  const user = userAuthService.register(db, {
+    email: `redraw-coverage-${crypto.randomUUID()}@example.test`,
+    password: 'route-fixture-password-123',
+  });
+  const tenantId = `personal:${user.id}`;
+  const projectId = insertProject(db, { tenant_id: tenantId, user_id: user.id });
+  const workId = insertWork(db, projectId, { tenant_id: tenantId, user_id: user.id });
+  const versionId = Number(insertVersion(db, workId, {
+    tenant_id: tenantId,
+    user_id: user.id,
+    facts_hash: 'a'.repeat(64),
+    updated_at: NOW,
+  }));
+  const coverageProvider = async () => {
+    throw new Error('coverage provider must only be called by the registration service');
+  };
+  const noProvider = async () => ({ status: 'completed' });
+  const router = setupRouter({ storage: { local_path: storageRoot } }, db, {
+    error() {}, warn() {}, info() {},
+  }, {
+    localizationProvider: noProvider,
+    assetGenerationProvider: noProvider,
+    dialogueProvider: noProvider,
+    redrawOptions: {
+      coverageRegistrationService: registrationService,
+      coverageRegistrationProvider: coverageProvider,
+    },
+  });
+  const token = userAuthService.issueToken(user, secret, 0);
+  return {
+    db,
+    router,
+    storageRoot,
+    coverageProvider,
+    user,
+    tenantId,
+    token,
+    versionId,
+    close() {
+      db.close();
+      fs.rmSync(storageRoot, { recursive: true, force: true });
+      if (previous.publicMode === undefined) delete process.env.PUBLIC_PLATFORM_MODE;
+      else process.env.PUBLIC_PLATFORM_MODE = previous.publicMode;
+      if (previous.jwtSecret === undefined) delete process.env.PLATFORM_JWT_SECRET;
+      else process.env.PLATFORM_JWT_SECRET = previous.jwtSecret;
+    },
+  };
+}
+
+async function withJsonRouteServer(router, run) {
+  const app = express();
+  app.use(express.json());
+  app.use('/api/v1', router);
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+  try {
+    const address = server.address();
+    await run(`http://127.0.0.1:${address.port}/api/v1`);
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+function postJson(url, token, tenantId, body) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (tenantId) headers['X-Tenant-Id'] = tenantId;
+  return fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+}
+
+test('coverage version route authenticates tenant and owner before registration service', async () => {
+  const calls = [];
+  const result = {
+    redraw_asset_id: 811,
+    expected_updated_at: '2026-08-27T12:00:00.000Z',
+    billing: { credits: 99, held: 88, charged: 77 },
+    provider_task_id: 'provider-secret-task',
+    analysis_sha256: 'b'.repeat(64),
+    absolute_path: 'C:\\private\\coverage.json',
+    secret: 'Authorization: Bearer provider-key',
+    replayed: true,
+  };
+  const fixture = coverageRegistrationRouterFixture({
+    async registerReviewedCoverage(input) {
+      calls.push(input);
+      return result;
+    },
+  });
+  try {
+    const registered = new Set(fixture.router.stack
+      .filter((layer) => layer.route)
+      .flatMap((layer) => Object.keys(layer.route.methods)
+        .map((method) => `${method.toUpperCase()} ${layer.route.path}`)));
+    assert.equal(registered.has('POST /redraw/versions/:id/full-frame-coverages'), true);
+
+    await withJsonRouteServer(fixture.router, async (baseUrl) => {
+      const endpoint = `${baseUrl}/redraw/versions/${fixture.versionId}/full-frame-coverages`;
+      const input = { expected_version_updated_at: NOW, idempotency_key: 'coverage-route-key' };
+
+      const unauthorized = await postJson(endpoint, null, null, input);
+      assert.equal(unauthorized.status, 401);
+
+      const invalidTenant = await postJson(endpoint, fixture.token, 'tenant-not-owned', input);
+      assert.equal(invalidTenant.status, 404);
+
+      const otherUser = userAuthService.register(fixture.db, {
+        email: `redraw-coverage-other-${crypto.randomUUID()}@example.test`,
+        password: 'route-fixture-password-456',
+      });
+      const otherTenantId = `personal:${otherUser.id}`;
+      const otherProjectId = insertProject(fixture.db, {
+        tenant_id: otherTenantId,
+        user_id: otherUser.id,
+      });
+      const otherWorkId = insertWork(fixture.db, otherProjectId, {
+        tenant_id: otherTenantId,
+        user_id: otherUser.id,
+      });
+      const otherVersionId = Number(insertVersion(fixture.db, otherWorkId, {
+        tenant_id: otherTenantId,
+        user_id: otherUser.id,
+        facts_hash: 'c'.repeat(64),
+      }));
+      const crossOwner = await postJson(
+        `${baseUrl}/redraw/versions/${otherVersionId}/full-frame-coverages`,
+        fixture.token,
+        fixture.tenantId,
+        input,
+      );
+      assert.equal(crossOwner.status, 404);
+      assert.equal((await crossOwner.json()).error.code, 'REDRAW_VERSION_NOT_FOUND');
+      assert.equal(calls.length, 0);
+
+      const accepted = await postJson(endpoint, fixture.token, fixture.tenantId, input);
+      const responseBody = await accepted.text();
+      assert.equal(accepted.status, 200, responseBody);
+      assert.deepEqual(JSON.parse(responseBody).data, {
+        version_id: fixture.versionId,
+        redraw_asset_id: 811,
+        expected_updated_at: '2026-08-27T12:00:00.000Z',
+        billing: { credits: 0, held: 0, charged: 0 },
+      });
+      assert.equal(/private|provider-secret|Authorization|Bearer|provider-key/i.test(responseBody), false);
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].db, fixture.db);
+    assert.equal(calls[0].tenantId, fixture.tenantId);
+    assert.equal(calls[0].userId, fixture.user.id);
+    assert.equal(calls[0].versionId, fixture.versionId);
+    assert.equal(calls[0].expected_version_updated_at, NOW);
+    assert.equal(calls[0].idempotency_key, 'coverage-route-key');
+    assert.equal(calls[0].provider, fixture.coverageProvider);
+    assert.equal(calls[0].storageRoot, path.resolve(fixture.storageRoot));
+    assert.deepEqual(
+      Object.keys(calls[0]).sort(),
+      ['db', 'expected_version_updated_at', 'idempotency_key', 'log', 'provider', 'storageRoot',
+        'tenantId', 'userId', 'versionId'].sort(),
+    );
+  } finally {
+    fixture.close();
+  }
+});
+
+test('coverage version route rejects client control and maps registration failures without leaks', async () => {
+  const calls = [];
+  const fixture = coverageRegistrationRouterFixture({
+    async registerReviewedCoverage(input) {
+      calls.push(input);
+      const code = String(input.idempotency_key || '');
+      throw Object.assign(new Error('C:\\private\\staging Authorization: Bearer provider-secret SQL SELECT'), {
+        code,
+      });
+    },
+  });
+  try {
+    await withJsonRouteServer(fixture.router, async (baseUrl) => {
+      const endpoint = `${baseUrl}/redraw/versions/${fixture.versionId}/full-frame-coverages`;
+      for (const forbiddenField of [
+        'provider', 'output_path', 'local_path', 'storage_root', 'asset_id', 'credits', 'price', 'reference_bundle',
+      ]) {
+        const rejected = await postJson(endpoint, fixture.token, fixture.tenantId, {
+          expected_version_updated_at: NOW,
+          idempotency_key: `forbidden-${forbiddenField}`,
+          [forbiddenField]: forbiddenField === 'credits' ? 0 : 'client-controlled',
+        });
+        const rejectedBody = await rejected.text();
+        assert.equal(rejected.status, 400, rejectedBody);
+        assert.equal(JSON.parse(rejectedBody).error.code, 'REDRAW_COVERAGE_CLIENT_CONTROL_FORBIDDEN');
+        assert.equal(/client-controlled|private|Authorization|Bearer|provider-secret/i.test(rejectedBody), false);
+      }
+      assert.equal(calls.length, 0);
+
+      const invalid = await postJson(endpoint, fixture.token, fixture.tenantId, {
+        expected_version_updated_at: NOW,
+        idempotency_key: '',
+      });
+      assert.equal(invalid.status, 400);
+      assert.equal((await invalid.json()).error.code, 'REDRAW_COVERAGE_REQUEST_INVALID');
+      assert.equal(calls.length, 0);
+
+      const mappings = [
+        ['REDRAW_COVERAGE_VERSION_CONFLICT', 409],
+        ['REDRAW_COVERAGE_REGISTRATION_IDEMPOTENCY_CONFLICT', 409],
+        ['REDRAW_COVERAGE_REGISTRATION_IN_PROGRESS', 409],
+        ['REDRAW_COVERAGE_REGISTRATION_NEEDS_ATTENTION', 409],
+        ['REDRAW_COVERAGE_PROVIDER_UNKNOWN', 502],
+        ['REDRAW_COVERAGE_VERSION_MISMATCH', 502],
+        ['REDRAW_COVERAGE_EVIDENCE_INVALID', 502],
+        ['UNEXPECTED_INTERNAL_FAILURE', 500],
+      ];
+      for (const [code, status] of mappings) {
+        const failed = await postJson(endpoint, fixture.token, fixture.tenantId, {
+          expected_version_updated_at: NOW,
+          idempotency_key: code,
+        });
+        const failedBody = await failed.text();
+        assert.equal(failed.status, status, `${code}: ${failedBody}`);
+        const publicCode = JSON.parse(failedBody).error.code;
+        assert.equal(publicCode, status === 500 ? 'INTERNAL_ERROR' : code);
+        assert.equal(/private|Authorization|Bearer|provider-secret|SELECT/i.test(failedBody), false);
+      }
+    });
+    assert.equal(calls.length, 8);
+  } finally {
+    fixture.close();
+  }
+});

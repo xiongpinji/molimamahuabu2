@@ -23,6 +23,7 @@ const PROACTIVE_CANARY_FEATURE_ID = 'stability.proactive-canary-and-public-evide
 const ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID = 'stability.admin-provider-observability';
 const COMPLETE_ACCEPTANCE_FRAMEWORK_ID = 'stability.platform-complete-acceptance-framework';
 const REDRAW_COVERAGE_REGISTRATION_FEATURE_ID = 'redraw.coverage-registration-service';
+const REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID = 'redraw.coverage-registration-http-route';
 const UNKNOWN_STATE_RECONCILIATION_FEATURE_ID = 'stability.unknown-state-billing-reconciliation';
 const PROVIDER_ROUTE_CONTRACT_FEATURE_ID = 'stability.provider-route-contract';
 const SAFE_PROVIDER_FAILOVER_FEATURE_ID = 'stability.safe-provider-failover';
@@ -402,6 +403,25 @@ const REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK = {
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
+const REDRAW_COVERAGE_HTTP_ROUTE_PROTECTED_PATHS = [
+  'backend-node/src/routes/index.js',
+  'backend-node/src/routes/redraw.js',
+];
+const REDRAW_COVERAGE_HTTP_ROUTE_REQUIRED_TESTS = [
+  'backend-node/test/redrawRoutes.test.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+];
+const REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK = {
+  reason: '2026-08-27 一键转绘 coverage 版本级 HTTP 入口 Task C 获批',
+  approvedBy: 'product-owner 2026-08-27 redraw-product-media-registration-task-c',
+  impactTests: [
+    'backend-node/test/redrawRoutes.test.js',
+    'backend-node/test/redrawCoverageRegistration.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
 const REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK = {
   reason: '2026-08-27 一键转绘产品媒体登记 Task A 免费模型计费语义获批',
   approvedBy: 'product-owner 2026-08-27 redraw-product-media-registration-task-a',
@@ -467,6 +487,10 @@ const CURRENT_UNLOCK_BY_FEATURE = {
   [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: MIGRATION67_SHARED_HELPER_UNLOCK,
   [PROACTIVE_CANARY_FEATURE_ID]: MIGRATION67_SHARED_HELPER_UNLOCK,
 };
+const REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_FEATURE_IDS = new Set([
+  ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
+  PROACTIVE_CANARY_FEATURE_ID,
+]);
 const PR197_HELD_CREDIT_AUDIT_EVIDENCE =
   'docs/superpowers/plans/2026-08-27-held-credit-reconciliation-dry-run.md';
 const PR197_PROVIDER_CANARY_REMEDIATION_EVIDENCE =
@@ -911,24 +935,25 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   assert.deepEqual(feature.evidence.slice(0, PROACTIVE_CANARY_EVIDENCE.length), PROACTIVE_CANARY_EVIDENCE);
 });
 
-test('产品媒体登记 Task A 使用新鲜批准并保留 PR #194、PR #197 与前序历史', () => {
+test('产品媒体登记 Task C 使用新鲜批准并保留 Task A、PR #194、PR #197 与前序历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
-  assert.deepEqual(feature.unlock, MIGRATION67_SHARED_HELPER_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-1), MIGRATION67_IDEMPOTENT_REPLAY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-2), FREE_BILLING_REVIEW_FIX_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-3), REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-4), PR194_MAIN_SYNC_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-5), PR197_PROVIDER_CANARY_REMEDIATION_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-6), PR195_STATIC_ASSET_COMPAT_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-7), PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-8), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-9), CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-10), PR184_MAIN_MERGE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-11), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-12), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-13), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
+  assert.deepEqual(feature.unlock, REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), MIGRATION67_SHARED_HELPER_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-2), MIGRATION67_IDEMPOTENT_REPLAY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-3), FREE_BILLING_REVIEW_FIX_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-4), REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-5), PR194_MAIN_SYNC_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-6), PR197_PROVIDER_CANARY_REMEDIATION_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-7), PR195_STATIC_ASSET_COMPAT_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-8), PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-9), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-10), CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-11), PR184_MAIN_MERGE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-12), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-13), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-14), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
   assert.equal(feature.evidence.at(-1), REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN);
   assert.equal(feature.evidence.at(-2), REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC);
   assert.equal(feature.evidence.at(-3), PR194_MAIN_SYNC_EVIDENCE);
@@ -962,6 +987,21 @@ test('Coverage 产品登记服务 Task B 使用独立功能锁覆盖服务和迁
   assert.notDeepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
 });
 
+test('Coverage 版本级 HTTP 入口 Task C 使用独立功能锁和新鲜批准', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const feature = manifest.features.find(({ featureId }) => featureId === REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID);
+  assert.ok(feature, `缺少功能锁 ${REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID}`);
+  assert.deepEqual(feature.protectedPaths, REDRAW_COVERAGE_HTTP_ROUTE_PROTECTED_PATHS);
+  assert.deepEqual(feature.requiredTests, REDRAW_COVERAGE_HTTP_ROUTE_REQUIRED_TESTS);
+  assert.deepEqual(feature.evidence, [
+    REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC,
+    REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN,
+  ]);
+  assert.deepEqual(feature.unlock, REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
+  assert.notDeepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
+  assert.notDeepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
+});
+
 test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜批准并保留完整历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   for (const [featureId, requirements] of Object.entries(PROVIDER_TASK_LOCK_REQUIREMENTS)) {
@@ -972,7 +1012,9 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     const previousUnlock = qualityFixTouched
       ? PROVIDER_TASK_STATUS_DECISION_UNLOCK
       : PROVIDER_TASK_RECEIPT_UNLOCK;
-    const expectedUnlock = PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
+    const expectedUnlock = REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_FEATURE_IDS.has(featureId)
+      ? REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK
+      : PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
       ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)
         ? CURRENT_UNLOCK_BY_FEATURE[featureId]
         : PR194_MAIN_SYNC_UNLOCK
@@ -1046,6 +1088,11 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
           FREE_BILLING_REVIEW_FIX_UNLOCK,
           MIGRATION67_IDEMPOTENT_REPLAY_UNLOCK,
         ]
+        : []),
+      ...(REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_FEATURE_IDS.has(featureId)
+        ? [featureId === PROACTIVE_CANARY_FEATURE_ID
+          ? MIGRATION67_SHARED_HELPER_UNLOCK
+          : REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK]
         : []),
     ]);
     assert.deepEqual(
@@ -1121,7 +1168,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     assert.deepEqual(
       feature.unlock,
       featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? MIGRATION67_SHARED_HELPER_UNLOCK
+        ? REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK
         : PR197_HELD_CREDIT_AUDIT_UNLOCK,
     );
   }
@@ -1133,6 +1180,8 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
   for (const feature of manifest.features) {
     if (feature.featureId === REDRAW_COVERAGE_REGISTRATION_FEATURE_ID) {
       assert.deepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
+    } else if (feature.featureId === REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID) {
+      assert.deepEqual(feature.unlock, REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
     } else if (!Object.hasOwn(PROVIDER_TASK_LOCK_REQUIREMENTS, feature.featureId)) {
       assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
     }
@@ -1159,7 +1208,9 @@ test('PR #194 主线同步保留 PR #197 只读能力锁并仅刷新实际触及
   ]) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
     assert.ok(feature, `缺少功能锁 ${featureId}`);
-    const expectedUnlock = PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
+    const expectedUnlock = REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_FEATURE_IDS.has(featureId)
+      ? REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK
+      : PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
       ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)
         ? CURRENT_UNLOCK_BY_FEATURE[featureId]
         : PR194_MAIN_SYNC_UNLOCK
@@ -1168,7 +1219,9 @@ test('PR #194 主线同步保留 PR #197 只读能力锁并仅刷新实际触及
         : PR195_TOUCHED_FEATURE_IDS.has(featureId)
           ? PR195_STATIC_ASSET_COMPAT_UNLOCK
           : PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK;
-    const expectedPreviousUnlock = PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
+    const expectedPreviousUnlock = REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_FEATURE_IDS.has(featureId)
+      ? CURRENT_UNLOCK_BY_FEATURE[featureId]
+      : PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
       ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)
         ? MIGRATION67_IDEMPOTENT_REPLAY_UNLOCK
         : PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK

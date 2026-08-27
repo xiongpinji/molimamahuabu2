@@ -355,6 +355,7 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/redraw/works/:id/analyze', redraw.uploadReferenceImage, redraw.analyzeWork);
   r.post('/redraw/works/:id/localization-quote', redraw.localizationQuote);
   r.post('/redraw/works/:id/versions', redraw.createVersion);
+  r.post('/redraw/versions/:id/full-frame-coverages', redraw.registerFullFrameCoverage);
   r.get('/redraw/versions/:id/character-plan', redraw.getCharacterPlan);
   r.get('/redraw/versions/:id/preparation-gate', redraw.preparationGate);
   r.post('/redraw/versions/:id/reference-preparation-quote', redraw.referencePreparationQuote);

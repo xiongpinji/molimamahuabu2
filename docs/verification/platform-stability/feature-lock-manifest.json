@@ -762,18 +762,28 @@
             "backend-node/test/providerRouteAdminRoutes.test.js",
             "backend-node/test/featureLockManifest.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-24 通用短剧生成与整集交付计划任务 1-8 获批",
+          "approvedBy": "product-owner 2026-08-24 redraw-general-generation-delivery-tasks-1-8",
+          "impactTests": [
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawCandidateReview.test.js",
+            "backend-node/test/redrawEpisodeRelease.test.js",
+            "frontweb/e2e/redraw-full-product.spec.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-24 通用短剧生成与整集交付计划任务 1-8 获批",
-        "approvedBy": "product-owner 2026-08-24 redraw-general-generation-delivery-tasks-1-8",
+        "reason": "2026-08-27 一键转绘 coverage 版本级 HTTP 入口 Task C 获批",
+        "approvedBy": "product-owner 2026-08-27 redraw-product-media-registration-task-c",
         "impactTests": [
-          "backend-node/test/redrawMigration.test.js",
           "backend-node/test/redrawRoutes.test.js",
-          "backend-node/test/redrawCandidateReview.test.js",
-          "backend-node/test/redrawEpisodeRelease.test.js",
-          "frontweb/e2e/redraw-full-product.spec.js",
-          "backend-node/test/featureLockManifest.test.js"
+          "backend-node/test/redrawCoverageRegistration.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },
@@ -1196,16 +1206,26 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 67851c95 迁移 67 共享保列重建 helper 修复获批",
+          "approvedBy": "product-owner 2026-08-27 migration67-shared-column-preserving-helper-fix-67851c95",
+          "impactTests": [
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawAnalysis.test.js",
+            "backend-node/test/redrawLocalizationOrchestration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 67851c95 迁移 67 共享保列重建 helper 修复获批",
-        "approvedBy": "product-owner 2026-08-27 migration67-shared-column-preserving-helper-fix-67851c95",
+        "reason": "2026-08-27 一键转绘 coverage 版本级 HTTP 入口 Task C 获批",
+        "approvedBy": "product-owner 2026-08-27 redraw-product-media-registration-task-c",
         "impactTests": [
-          "backend-node/test/modelPrice.test.js",
-          "backend-node/test/redrawMigration.test.js",
-          "backend-node/test/redrawAnalysis.test.js",
-          "backend-node/test/redrawLocalizationOrchestration.test.js",
+          "backend-node/test/redrawRoutes.test.js",
+          "backend-node/test/redrawCoverageRegistration.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -1243,6 +1263,42 @@
           "backend-node/test/redrawCoverageRegistration.test.js",
           "backend-node/test/redrawFullFrameReview.test.js",
           "backend-node/test/redrawReferenceBundle.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
+        ]
+      }
+    },
+    {
+      "featureId": "redraw.coverage-registration-http-route",
+      "module": "shared",
+      "status": "locked_pass",
+      "acceptance": [
+        "版本级 coverage 入口仅接受 expected_version_updated_at 与 idempotency_key",
+        "认证、租户和版本 owner 校验必须早于登记服务与 provider 调用",
+        "客户端不能控制 provider、路径、asset、积分或 reference bundle",
+        "公开响应与错误不得泄露暂存路径、供应商任务或密钥"
+      ],
+      "protectedPaths": [
+        "backend-node/src/routes/index.js",
+        "backend-node/src/routes/redraw.js"
+      ],
+      "requiredTests": [
+        "backend-node/test/redrawRoutes.test.js",
+        "backend-node/test/featureLockManifest.test.js",
+        "backend-node/test/incrementalReleaseScope.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md",
+        "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md"
+      ],
+      "fixCommit": null,
+      "unlockHistory": [],
+      "unlock": {
+        "reason": "2026-08-27 一键转绘 coverage 版本级 HTTP 入口 Task C 获批",
+        "approvedBy": "product-owner 2026-08-27 redraw-product-media-registration-task-c",
+        "impactTests": [
+          "backend-node/test/redrawRoutes.test.js",
+          "backend-node/test/redrawCoverageRegistration.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]

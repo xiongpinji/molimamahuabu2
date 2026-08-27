@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "release": "redraw-coverage-http-route-task-c-20260827",
+  "allowedPaths": [
+    "backend-node/src/routes/index.js",
+    "backend-node/src/routes/redraw.js",
+    "backend-node/test/featureLockManifest.test.js",
+    "backend-node/test/incrementalReleaseScope.test.js",
+    "backend-node/test/redrawRoutes.test.js",
+    "deploy/release-scopes/redraw-coverage-http-route-task-c-20260827.json",
+    "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md",
+    "docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md",
+    "docs/verification/platform-stability/feature-lock-manifest.json"
+  ]
+}

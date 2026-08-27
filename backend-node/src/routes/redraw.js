@@ -32,6 +32,7 @@ const redrawReferencePreparationOrchestrator = require('../services/redrawRefere
 const redrawCandidateReviewService = require('../services/redrawCandidateReviewService');
 const redrawEpisodeReleaseService = require('../services/redrawEpisodeReleaseService');
 const redrawReferenceArtifactImportService = require('../services/redrawReferenceArtifactImportService');
+const redrawCoverageRegistrationService = require('../services/redrawCoverageRegistrationService');
 const { normalizeVideoProviderResult } = require('../services/redrawProviderAdapters');
 const modelPriceService = require('../services/modelPriceService');
 const assetService = require('../services/assetService');
@@ -82,6 +83,25 @@ const REFERENCE_ARTIFACT_ERROR_MESSAGES = Object.freeze({
   REDRAW_MOTION_REFERENCE_REVIEW_REQUIRED: '动作参考需要完成全部人工复核',
   REDRAW_MOTION_REFERENCE_BINDING_NOT_READY: '动作参考绑定前置条件未就绪',
   REDRAW_MOTION_REFERENCE_STALE: '动作参考绑定已过期',
+});
+const COVERAGE_REGISTRATION_FIELDS = new Set([
+  'expected_version_updated_at',
+  'idempotency_key',
+]);
+const COVERAGE_REGISTRATION_ERROR_MESSAGES = Object.freeze({
+  REDRAW_COVERAGE_CLIENT_CONTROL_FORBIDDEN: '全帧 coverage 登记包含禁止字段',
+  REDRAW_COVERAGE_REQUEST_INVALID: '全帧 coverage 登记参数无效',
+  REDRAW_VERSION_NOT_FOUND: '本地化版本不存在',
+  REDRAW_COVERAGE_VERSION_CONFLICT: '本地化版本已变化，请刷新后重试',
+  REDRAW_COVERAGE_REGISTRATION_IDEMPOTENCY_CONFLICT: '全帧 coverage 幂等请求冲突',
+  REDRAW_COVERAGE_REGISTRATION_IN_PROGRESS: '全帧 coverage 登记正在处理',
+  REDRAW_COVERAGE_REGISTRATION_NEEDS_ATTENTION: '全帧 coverage 登记需要人工处理',
+  REDRAW_COVERAGE_REGISTRATION_FAILED: '全帧 coverage 登记已失败，不得自动重试',
+  REDRAW_COVERAGE_PROVIDER_UNKNOWN: '全帧 coverage 供应商结果未知',
+  REDRAW_COVERAGE_VERSION_MISMATCH: '全帧 coverage 与当前版本不匹配',
+  REDRAW_COVERAGE_EVIDENCE_INVALID: '全帧 coverage 证据无效',
+  REDRAW_COVERAGE_PROVIDER_OUTPUT_INVALID: '全帧 coverage 供应商结果无效',
+  REDRAW_COVERAGE_PROVIDER_REQUIRED: '全帧 coverage 能力尚未配置',
 });
 
 const ALLOWED_ASPECT_RATIOS = new Set(['1:1', '9:16', '16:9', '3:4', '4:3', '21:9']);
@@ -528,6 +548,83 @@ function sendReferenceArtifactError(res, error, log, context = {}) {
     return response.error(res, 500, code, message);
   }
   return response.error(res, 400, code, message);
+}
+
+function coverageRegistrationInput(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw codedRouteError(
+      'REDRAW_COVERAGE_REQUEST_INVALID',
+      COVERAGE_REGISTRATION_ERROR_MESSAGES.REDRAW_COVERAGE_REQUEST_INVALID,
+    );
+  }
+  if (Object.keys(body).some((key) => !COVERAGE_REGISTRATION_FIELDS.has(key))) {
+    throw codedRouteError(
+      'REDRAW_COVERAGE_CLIENT_CONTROL_FORBIDDEN',
+      COVERAGE_REGISTRATION_ERROR_MESSAGES.REDRAW_COVERAGE_CLIENT_CONTROL_FORBIDDEN,
+    );
+  }
+  if (typeof body.expected_version_updated_at !== 'string'
+    || !body.expected_version_updated_at.trim()
+    || typeof body.idempotency_key !== 'string'
+    || !body.idempotency_key.trim()) {
+    throw codedRouteError(
+      'REDRAW_COVERAGE_REQUEST_INVALID',
+      COVERAGE_REGISTRATION_ERROR_MESSAGES.REDRAW_COVERAGE_REQUEST_INVALID,
+    );
+  }
+  return {
+    expected_version_updated_at: body.expected_version_updated_at.trim(),
+    idempotency_key: body.idempotency_key.trim(),
+  };
+}
+
+function publicCoverageRegistrationResult(value, versionId) {
+  const redrawAssetId = numericId(value?.redraw_asset_id);
+  const expectedUpdatedAt = typeof value?.expected_updated_at === 'string'
+    ? value.expected_updated_at.trim()
+    : '';
+  if (!redrawAssetId || !expectedUpdatedAt) {
+    throw codedRouteError('REDRAW_COVERAGE_RESPONSE_INVALID');
+  }
+  return {
+    version_id: Number(versionId),
+    redraw_asset_id: redrawAssetId,
+    expected_updated_at: expectedUpdatedAt,
+    billing: { credits: 0, held: 0, charged: 0 },
+  };
+}
+
+function sendCoverageRegistrationError(res, error, log, context = {}) {
+  const code = String(error?.code || '');
+  const message = COVERAGE_REGISTRATION_ERROR_MESSAGES[code];
+  if (code === 'REDRAW_VERSION_NOT_FOUND') {
+    return response.error(res, 404, code, message);
+  }
+  if ([
+    'REDRAW_COVERAGE_VERSION_CONFLICT',
+    'REDRAW_COVERAGE_REGISTRATION_IDEMPOTENCY_CONFLICT',
+    'REDRAW_COVERAGE_REGISTRATION_IN_PROGRESS',
+    'REDRAW_COVERAGE_REGISTRATION_NEEDS_ATTENTION',
+    'REDRAW_COVERAGE_REGISTRATION_FAILED',
+  ].includes(code)) {
+    return response.error(res, 409, code, message);
+  }
+  if ([
+    'REDRAW_COVERAGE_PROVIDER_UNKNOWN',
+    'REDRAW_COVERAGE_VERSION_MISMATCH',
+    'REDRAW_COVERAGE_EVIDENCE_INVALID',
+    'REDRAW_COVERAGE_PROVIDER_OUTPUT_INVALID',
+  ].includes(code)) {
+    return response.error(res, 502, code, message);
+  }
+  if (code === 'REDRAW_COVERAGE_PROVIDER_REQUIRED') {
+    return response.error(res, 503, code, message);
+  }
+  if (['REDRAW_COVERAGE_REQUEST_INVALID', 'REDRAW_COVERAGE_CLIENT_CONTROL_FORBIDDEN'].includes(code)) {
+    return response.error(res, 400, code, message);
+  }
+  log?.error?.({ code: code || 'INTERNAL_ERROR', ...context }, '全帧 coverage 登记失败');
+  return response.error(res, 500, 'INTERNAL_ERROR', '全帧 coverage 登记失败');
 }
 
 function referencePreparationInput(body, allowedFields) {
@@ -1556,6 +1653,9 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   const episodeReleaseService = options.episodeReleaseService || redrawEpisodeReleaseService;
   const referenceArtifactImportService = options.referenceArtifactImportService
     || redrawReferenceArtifactImportService;
+  const coverageRegistrationService = options.coverageRegistrationService
+    || redrawCoverageRegistrationService;
+  const coverageRegistrationProvider = options.coverageRegistrationProvider;
   const cfg = options.cfg || {};
   const quoteAnalysis = options.quoteAnalysis || analysisQuote();
   const canReadArtifact = options.canReadArtifact || createCanReadArtifact(db, cfg);
@@ -1878,6 +1978,36 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         AND user_id = ?
         AND deleted_at IS NULL
     `).get(Number(id), currentOwner.tenantId, currentOwner.userId);
+  }
+
+  async function registerFullFrameCoverage(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) {
+      return response.error(
+        res,
+        404,
+        'REDRAW_VERSION_NOT_FOUND',
+        COVERAGE_REGISTRATION_ERROR_MESSAGES.REDRAW_VERSION_NOT_FOUND,
+      );
+    }
+    try {
+      const input = coverageRegistrationInput(req.body);
+      const registered = await coverageRegistrationService.registerReviewedCoverage({
+        db,
+        log,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        versionId: Number(version.id),
+        storageRoot: storageRootFromConfig(cfg),
+        provider: coverageRegistrationProvider,
+        expected_version_updated_at: input.expected_version_updated_at,
+        idempotency_key: input.idempotency_key,
+      });
+      return response.success(res, publicCoverageRegistrationResult(registered, version.id));
+    } catch (error) {
+      return sendCoverageRegistrationError(res, error, log, { versionId: version.id });
+    }
   }
 
   function assertOwnedPreparationShots(version, currentOwner, input) {
@@ -4637,6 +4767,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     generateBatch,
     localizationQuote,
     createVersion,
+    registerFullFrameCoverage,
     getCharacterPlan,
     preparationGate,
     referencePreparationQuote,
