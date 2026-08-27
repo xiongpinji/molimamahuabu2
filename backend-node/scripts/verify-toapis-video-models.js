@@ -470,9 +470,17 @@ async function fetchBalance(apiKey, fetchImpl = globalThis.fetch) {
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok || payload?.success !== true) throw new Error(`ToAPIs 余额查询失败 (${response.status})`);
+  const usedBalance = Number(payload.used_balance);
+  const usedCredits = Number(payload.used_credits);
+  if (!Number.isFinite(usedBalance) || usedBalance < 0) {
+    throw new Error('ToAPIs 余额字段 used_balance 必须是非负有效数字');
+  }
+  if (!Number.isFinite(usedCredits) || usedCredits < 0) {
+    throw new Error('ToAPIs 余额字段 used_credits 必须是非负有效数字');
+  }
   return {
-    used_balance: Number(payload.used_balance),
-    used_credits: Number(payload.used_credits),
+    used_balance: usedBalance,
+    used_credits: usedCredits,
     remain_balance: Number(payload.remain_balance),
     remain_credits: Number(payload.remain_credits),
     credits_per_usd: Number(payload.credits_per_usd),
@@ -851,11 +859,181 @@ function parseJsonEnv(name, fallback) {
   try { return JSON.parse(raw); } catch (_) { throw new Error(`${name} 必须是有效 JSON`); }
 }
 
-function expectedCostForCase(item) {
-  const values = parseJsonEnv('TOAPIS_EXPECTED_COST_YUAN_JSON', {});
+function expectedCostForCase(item, values = parseJsonEnv('TOAPIS_EXPECTED_COST_YUAN_JSON', {})) {
   const value = Number(values[item.id]);
   if (!Number.isFinite(value) || value <= 0) throw new Error(`缺少 ${item.id} 的预计人民币成本，禁止提交付费请求`);
   return value;
+}
+
+function positiveYuanEnv(name) {
+  const value = Number(process.env[name]);
+  if (!Number.isFinite(value) || value <= 0) throw new Error(`缺少 ${name}，禁止执行供应商余额查询或付费请求`);
+  return value;
+}
+
+function assertHttpsReference(value, label, caseId) {
+  const raw = String(value || '').trim();
+  let parsed;
+  try { parsed = new URL(raw); } catch (_) {
+    throw new Error(`${caseId} 缺少有效的 ${label} HTTPS URL`);
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.href !== raw) {
+    throw new Error(`${caseId} 缺少有效的 ${label} HTTPS URL`);
+  }
+  return parsed.href;
+}
+
+function assertFfprobeAvailable(executable = process.env.FFPROBE_PATH || 'ffprobe') {
+  const result = spawnSync(executable, ['-version'], {
+    encoding: 'utf8', windowsHide: true, env: safeChildProcessEnv(process.env),
+  });
+  if (result.error) throw new Error(`ffprobe 预检失败: ${result.error.message}`);
+  if (result.status !== 0) throw new Error(`ffprobe 预检失败: ${String(result.stderr || '').trim().slice(0, 300)}`);
+}
+
+function configFingerprintMap(configSnapshots = []) {
+  const output = Object.fromEntries(configSnapshots.map((item) => [item?.model, String(item?.fingerprint || '')]));
+  for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
+    if (!/^[a-f0-9]{64}$/i.test(output[model] || '')) throw new Error(`缺少 ${model} 付费验证配置指纹`);
+  }
+  return output;
+}
+
+function bindAndValidateVerificationState(state, configSnapshots = []) {
+  const fingerprints = configFingerprintMap(configSnapshots);
+  const cases = state?.cases && typeof state.cases === 'object' ? state.cases : null;
+  if (!cases) throw new Error('验证状态文件版本不兼容');
+  const hasCases = Object.keys(cases).length > 0;
+  const hasBinding = Boolean(state.provider_origin || state.config_fingerprints);
+  if (!hasCases && !hasBinding) {
+    state.provider_origin = BASE_URL;
+    state.config_fingerprints = { ...fingerprints };
+  }
+  if (state.provider_origin !== BASE_URL) throw new Error('验证状态未绑定 ToAPIs 官方入口 https://toapis.xyz');
+  for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
+    if (state.config_fingerprints?.[model] !== fingerprints[model]) {
+      throw new Error(`${model} 验证状态配置指纹不匹配，禁止零 POST 重放`);
+    }
+  }
+  for (const [caseId, entry] of Object.entries(cases)) {
+    const expected = REQUIRED_MATRIX.find((item) => item.id === caseId);
+    if (!expected || entry?.model !== expected.model
+        || entry?.provider_origin !== BASE_URL
+        || entry?.config_fingerprint !== fingerprints[expected.model]) {
+      throw new Error(`${caseId} 验证状态未绑定官方入口和当前 ${expected?.model || '未知'} 配置指纹`);
+    }
+  }
+  return fingerprints;
+}
+
+function actualCostTotal(state) {
+  return round(Object.values(state?.cases || {}).reduce((sum, entry) => {
+    const value = Number(entry?.billing?.cost_yuan);
+    return sum + (Number.isFinite(value) && value > 0 ? value : 0);
+  }, 0));
+}
+
+function assertNoGlobalUnknownSubmission(state) {
+  const blocked = Object.entries(state?.cases || {}).find(([, entry]) => (
+    ['submitting', 'indeterminate'].includes(entry?.submission_state)
+  ));
+  if (blocked) {
+    throw preserveExistingVerification(new Error(`${blocked[0]} 上次提交结果未知，禁止选择其他 case 继续提交`));
+  }
+  const costCapExceeded = Object.entries(state?.cases || {}).find(([, entry]) => entry?.status === 'cost_cap_exceeded');
+  if (costCapExceeded) {
+    throw preserveExistingVerification(new Error(`${costCapExceeded[0]} 已触发人民币成本硬上限，禁止继续供应商调用`));
+  }
+}
+
+function requirePreparedCaseBudget(item, context) {
+  const budget = context?.costBudget;
+  const expected = Number(budget?.expectedCosts?.[item.id]);
+  const aggregateHardCapYuan = Number(budget?.aggregateHardCapYuan);
+  if (!Number.isFinite(expected) || expected <= 0
+      || !Number.isFinite(aggregateHardCapYuan) || aggregateHardCapYuan <= 0) {
+    throw new Error(`${item.id} 未完成整轮成本预检，禁止执行供应商余额查询或付费请求`);
+  }
+  const fingerprint = String(context?.configFingerprints?.[item.model] || '');
+  if (!/^[a-f0-9]{64}$/i.test(fingerprint)
+      || context?.state?.provider_origin !== BASE_URL
+      || context?.state?.config_fingerprints?.[item.model] !== fingerprint) {
+    throw new Error(`${item.id} 未绑定官方入口和当前配置指纹，禁止执行供应商调用`);
+  }
+  return expected;
+}
+
+function preflightVerificationRun(selectedCases, context, deps = {}) {
+  assertNoGlobalUnknownSubmission(context.state);
+  const plans = selectedCases.map((item) => ({ item, action: decideResumeAction(context.state.cases[item.id] || null) }));
+  const supplierBalanceCases = plans.filter(({ action }) => ['submit', 'poll', 'finalize'].includes(action));
+  if (!supplierBalanceCases.length) return { plans, expectedCosts: {}, aggregateHardCapYuan: null, perCaseHardCaps: {} };
+
+  const expectedValues = parseJsonEnv('TOAPIS_EXPECTED_COST_YUAN_JSON', {});
+  const perCaseHardCaps = parseJsonEnv('TOAPIS_VERIFY_CASE_HARD_CAP_YUAN_JSON', {});
+  if (perCaseHardCaps == null || Array.isArray(perCaseHardCaps) || typeof perCaseHardCaps !== 'object') {
+    throw new Error('TOAPIS_VERIFY_CASE_HARD_CAP_YUAN_JSON 必须是 JSON 对象');
+  }
+  const aggregateHardCapYuan = positiveYuanEnv('TOAPIS_VERIFY_AGGREGATE_HARD_CAP_YUAN');
+  const expectedCosts = {};
+  for (const { item, action } of supplierBalanceCases) {
+    const expected = action === 'submit'
+      ? expectedCostForCase(item, expectedValues)
+      : Number(context.state.cases[item.id]?.billing?.expected_cost_yuan);
+    if (!Number.isFinite(expected) || expected <= 0) {
+      throw new Error(`缺少 ${item.id} 的预计人民币成本，禁止执行供应商余额查询`);
+    }
+    expectedCosts[item.id] = expected;
+    if (Object.keys(perCaseHardCaps).length) {
+      const caseHardCap = Number(perCaseHardCaps[item.id]);
+      if (!Number.isFinite(caseHardCap) || caseHardCap <= 0) throw new Error(`缺少 ${item.id} 的人民币单 case 硬上限`);
+      if (expected > caseHardCap) throw new Error(`${item.id} 预计人民币成本 ${expected} 超过单 case 硬上限 ${caseHardCap}`);
+    }
+    if (action === 'submit') {
+      if (item.mode === 'first-last') {
+        assertHttpsReference(context.refs.firstFrameUrl, '首帧', item.id);
+        assertHttpsReference(context.refs.lastFrameUrl, '尾帧', item.id);
+      } else if (item.mode === 'omni') {
+        assertHttpsReference(context.refs.referenceImageUrl, '参考图片', item.id);
+        assertHttpsReference(context.refs.referenceVideoUrl, '参考视频', item.id);
+        assertHttpsReference(context.refs.referenceAudioUrl, '参考音频', item.id);
+      }
+      buildVerificationRequest(item, context.refs, context.runId);
+    }
+  }
+  const projectedCostYuan = round(actualCostTotal(context.state)
+    + Object.values(expectedCosts).reduce((sum, value) => sum + value, 0));
+  if (projectedCostYuan > aggregateHardCapYuan) {
+    throw new Error(`预计人民币总成本 ${projectedCostYuan} 超过硬上限 ${aggregateHardCapYuan}`);
+  }
+  fs.accessSync(context.outputDir, fs.constants.W_OK);
+  fs.accessSync(context.artifactOutputDir, fs.constants.W_OK);
+  (deps.assertFfprobeAvailable || assertFfprobeAvailable)();
+  return { plans, expectedCosts, aggregateHardCapYuan, perCaseHardCaps };
+}
+
+function assertActualCostWithinHardCap(item, context) {
+  const budget = context.costBudget;
+  if (!budget || !Number.isFinite(budget.aggregateHardCapYuan)) {
+    throw preserveExistingVerification(new Error(`${item.id} 缺少整轮人民币成本硬上限`));
+  }
+  const actual = Number(context.state.cases[item.id]?.billing?.cost_yuan);
+  const caseHardCap = Number(budget.perCaseHardCaps?.[item.id]);
+  if (Number.isFinite(caseHardCap) && caseHardCap > 0 && actual > caseHardCap) {
+    throw preserveExistingVerification(new Error(`${item.id} 实际人民币成本 ${actual} 超过单 case 硬上限 ${caseHardCap}`));
+  }
+  const total = actualCostTotal(context.state);
+  if (total > budget.aggregateHardCapYuan) {
+    throw preserveExistingVerification(new Error(`实际人民币总成本 ${total} 超过硬上限 ${budget.aggregateHardCapYuan}`));
+  }
+  const remainingExpected = Object.entries(budget.expectedCosts || {}).reduce((sum, [caseId, expected]) => {
+    const recorded = Number(context.state.cases[caseId]?.billing?.cost_yuan);
+    return sum + (Number.isFinite(recorded) && recorded > 0 ? 0 : Number(expected) || 0);
+  }, 0);
+  const projected = round(total + remainingExpected);
+  if (projected > budget.aggregateHardCapYuan) {
+    throw preserveExistingVerification(new Error(`按实际扣费重算的人民币总成本 ${projected} 超过硬上限 ${budget.aggregateHardCapYuan}`));
+  }
 }
 
 function loadPricingEvidence() {
@@ -914,6 +1092,7 @@ async function waitForTask(config, taskId, onProgress, deps = {}) {
 }
 
 async function processCase(item, context, deps = {}) {
+  assertNoGlobalUnknownSubmission(context.state);
   const previous = context.state.cases[item.id] || null;
   const action = decideResumeAction(previous);
   if (action === 'stop-indeterminate') {
@@ -926,10 +1105,10 @@ async function processCase(item, context, deps = {}) {
     return previous;
   }
 
+  const preparedExpectedCostYuan = requirePreparedCaseBudget(item, context);
   let entry = previous;
   if (action === 'submit') {
     context.submittedCaseIds.push(item.id);
-    const expectedCostYuan = expectedCostForCase(item);
     const clientOptions = buildVerificationOptions(item, context.refs, context.runId);
     const request = buildToapisVideoBody(clientOptions);
     const balanceBefore = await (deps.fetchBalance || fetchBalance)(context.apiKey, deps.fetchImpl);
@@ -942,13 +1121,15 @@ async function processCase(item, context, deps = {}) {
       requested_duration: item.duration,
       status: 'submitting',
       submission_state: 'submitting',
+      provider_origin: BASE_URL,
+      config_fingerprint: context.configFingerprints?.[item.model],
       request,
-      billing: { expected_cost_yuan: expectedCostYuan, before: balanceBefore, reviewed: false },
+      billing: { expected_cost_yuan: preparedExpectedCostYuan, before: balanceBefore, reviewed: false },
       started_at: startedAt.toISOString(),
     };
     context.state.cases[item.id] = entry;
     writeJsonAtomic(context.statePath, context.state);
-    process.stdout.write(`SUBMIT ${item.id} model=${item.model} resolution=${item.resolution} duration=${item.duration}s expected_cost_yuan=${expectedCostYuan}\n`);
+    process.stdout.write(`SUBMIT ${item.id} model=${item.model} resolution=${item.resolution} duration=${item.duration}s expected_cost_yuan=${preparedExpectedCostYuan}\n`);
     const created = await (deps.createTask || callToapisVideoApi)(
       context.config,
       LOG,
@@ -1011,6 +1192,13 @@ async function processCase(item, context, deps = {}) {
     cost_yuan: round(delta.debited_balance * usdCnyRate),
     reviewed: false,
   };
+  try {
+    assertActualCostWithinHardCap(item, context);
+  } catch (error) {
+    entry.status = 'cost_cap_exceeded';
+    writeJsonAtomic(context.statePath, context.state);
+    throw error;
+  }
   entry.status = 'completed';
   if (!entry.completed_at) entry.completed_at = nowDate(deps).toISOString();
   entry.speed = {
@@ -1044,6 +1232,8 @@ async function runVerification(deps = {}) {
   if (state.state_version !== STATE_VERSION || !state.cases || typeof state.cases !== 'object') {
     throw new Error('验证状态文件版本不兼容');
   }
+  const configFingerprints = bindAndValidateVerificationState(state, configSnapshots);
+  const selectedCases = selectVerificationCases();
   const context = {
     apiKey,
     config: { base_url: BASE_URL, api_key: apiKey },
@@ -1052,6 +1242,7 @@ async function runVerification(deps = {}) {
     publicAssetBaseUrl,
     statePath,
     state,
+    configFingerprints,
     refs: publicReferences(),
     confirmCostReview: process.env.TOAPIS_VERIFY_CONFIRM_COST === '1',
     runId: crypto.randomUUID(),
@@ -1062,7 +1253,9 @@ async function runVerification(deps = {}) {
   };
   let activeCase = null;
   try {
-    for (const item of selectVerificationCases()) {
+    context.costBudget = preflightVerificationRun(selectedCases, context, deps);
+    writeJsonAtomic(statePath, state);
+    for (const item of selectedCases) {
       activeCase = item.id;
       const result = await processCase(item, context, deps);
       process.stdout.write(`VERIFIED ${result.id} task=${result.provider_task_id} sha256=${result.artifact.sha256}\n`);

@@ -131,7 +131,7 @@ function trustedToapisStandardSurfaceGuard(fixture) {
   const producerHash = sha256(fs.readFileSync(path.join(fixture.candidate, 'backend-node/scripts/verify-toapis-video-models.js'), 'utf8').replace(/\r\n?/g, '\n'));
   const source = fs.readFileSync(GUARD, 'utf8')
     .replace('80a84b5f635f24ec15c25902469617107c267863239b799e6fa46ea26737edb8', clientHash)
-    .replace('5576401b5d0fd500603a4612b3a0c73cf524507147488eb04705aa59e23289cc', producerHash);
+    .replace('96be926df751c10f042cc4979cbe829d4d98ec6cb806bff33bbfcded55247b6e', producerHash);
   fs.writeFileSync(guard, source);
   return guard;
 }
