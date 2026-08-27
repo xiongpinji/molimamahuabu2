@@ -1,6 +1,10 @@
 ALTER TABLE model_credit_prices ADD COLUMN pricing_mode TEXT NOT NULL DEFAULT 'paid';
 
-CREATE TABLE IF NOT EXISTS __model_credit_prices_free_rebuild (
+BEGIN IMMEDIATE;
+
+DROP TABLE IF EXISTS __model_credit_prices_free_rebuild;
+
+CREATE TABLE __model_credit_prices_free_rebuild (
   model TEXT PRIMARY KEY,
   credits INTEGER NOT NULL CHECK (
     (pricing_mode = 'paid' AND credits > 0)
@@ -33,3 +37,5 @@ FROM model_credit_prices;
 DROP TABLE model_credit_prices;
 
 ALTER TABLE __model_credit_prices_free_rebuild RENAME TO model_credit_prices;
+
+COMMIT;

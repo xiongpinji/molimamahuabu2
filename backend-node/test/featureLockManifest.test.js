@@ -392,6 +392,20 @@ const REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK = {
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
+const REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK_BY_FEATURE = {
+  [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: {
+    ...REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK,
+    impactTests: [
+      'backend-node/test/modelPrice.test.js',
+      'backend-node/test/redrawMigration.test.js',
+      'backend-node/test/redrawAnalysis.test.js',
+      'backend-node/test/redrawLocalizationOrchestration.test.js',
+      'backend-node/test/featureLockManifest.test.js',
+      'backend-node/test/incrementalReleaseScope.test.js',
+    ],
+  },
+  [PROACTIVE_CANARY_FEATURE_ID]: REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK,
+};
 const PR197_HELD_CREDIT_AUDIT_EVIDENCE =
   'docs/superpowers/plans/2026-08-27-held-credit-reconciliation-dry-run.md';
 const PR197_PROVIDER_CANARY_REMEDIATION_EVIDENCE =
@@ -418,6 +432,10 @@ const PR197_PROVIDER_CANARY_REMEDIATION_UNLOCK = {
   ],
 };
 const PR194_MAIN_SYNC_FEATURE_IDS = new Set([
+  PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
+  PROACTIVE_CANARY_FEATURE_ID,
+]);
+const REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS = new Set([
   PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
   PROACTIVE_CANARY_FEATURE_ID,
 ]);
@@ -608,6 +626,7 @@ const PROACTIVE_CANARY_CORE_PATHS = [
   'backend-node/scripts/split-multi-model-provider-configs.js',
   'backend-node/scripts/verify-feature-lock-manifest.js',
   'backend-node/src/app.js',
+  'backend-node/src/db/migrate.js',
   'backend-node/src/middleware/resourceOwnership.js',
   'backend-node/src/routes/index.js',
   'backend-node/src/routes/providerStability.js',
@@ -876,8 +895,8 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       ? PROVIDER_TASK_STATUS_DECISION_UNLOCK
       : PROVIDER_TASK_RECEIPT_UNLOCK;
     const expectedUnlock = PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
-      ? featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK
+      ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)
+        ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK_BY_FEATURE[featureId]
         : PR194_MAIN_SYNC_UNLOCK
       : PR197_TOUCHED_FEATURE_IDS.has(featureId)
         ? PR197_UNLOCK_BY_FEATURE[featureId]
@@ -935,7 +954,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
           ? PR197_PROVIDER_CANARY_REMEDIATION_UNLOCK
           : PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK]
         : []),
-      ...(featureId === PROACTIVE_CANARY_FEATURE_ID ? [PR194_MAIN_SYNC_UNLOCK] : []),
+      ...(REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId) ? [PR194_MAIN_SYNC_UNLOCK] : []),
     ]);
     assert.deepEqual(
       feature.evidence.slice(0, HISTORICAL_EVIDENCE_BY_FEATURE[featureId].length),
@@ -970,7 +989,13 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
         assert.equal(feature.evidence.at(-7), CANVAS_TEXT_CAPABILITY_HOTFIX_EVIDENCE);
       }
     } else if (liveCompatTouched) {
-      if (PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)) {
+      if (REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)) {
+        assert.equal(feature.evidence.at(-1), REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN);
+        assert.equal(feature.evidence.at(-2), REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC);
+        assert.equal(feature.evidence.at(-3), PR194_MAIN_SYNC_EVIDENCE);
+        assert.equal(feature.evidence.at(-4), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
+        assert.equal(feature.evidence.at(-5), PROVIDER_TASK_LIVE_COMPAT_EVIDENCE);
+      } else if (PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)) {
         assert.equal(feature.evidence.at(-1), PR194_MAIN_SYNC_EVIDENCE);
         assert.equal(feature.evidence.at(-2), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
         assert.equal(feature.evidence.at(-3), PROVIDER_TASK_LIVE_COMPAT_EVIDENCE);
@@ -1041,8 +1066,8 @@ test('PR #194 主线同步保留 PR #197 只读能力锁并仅刷新实际触及
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
     assert.ok(feature, `缺少功能锁 ${featureId}`);
     const expectedUnlock = PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
-      ? featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK
+      ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)
+        ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK_BY_FEATURE[featureId]
         : PR194_MAIN_SYNC_UNLOCK
       : PR197_TOUCHED_FEATURE_IDS.has(featureId)
         ? PR197_UNLOCK_BY_FEATURE[featureId]
@@ -1050,7 +1075,7 @@ test('PR #194 主线同步保留 PR #197 只读能力锁并仅刷新实际触及
           ? PR195_STATIC_ASSET_COMPAT_UNLOCK
           : PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK;
     const expectedPreviousUnlock = PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
-      ? featureId === PROACTIVE_CANARY_FEATURE_ID
+      ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)
         ? PR194_MAIN_SYNC_UNLOCK
         : PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK
       : PR197_TOUCHED_FEATURE_IDS.has(featureId)
@@ -1066,7 +1091,7 @@ test('PR #194 主线同步保留 PR #197 只读能力锁并仅刷新实际触及
     )), `${featureId} 缺少上一阶段批准历史`);
     assert.ok(feature.requiredTests.includes('backend-node/test/providerTaskLiveCompatibility.test.js'));
     const expectedEvidence = PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
-      ? featureId === PROACTIVE_CANARY_FEATURE_ID
+      ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)
         ? REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN
         : PR194_MAIN_SYNC_EVIDENCE
       : PR197_TOUCHED_FEATURE_IDS.has(featureId)
@@ -1076,12 +1101,16 @@ test('PR #194 主线同步保留 PR #197 只读能力锁并仅刷新实际触及
           : PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE;
     assert.equal(feature.evidence.at(-1), expectedEvidence);
     if (PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)) {
-      if (featureId === PROACTIVE_CANARY_FEATURE_ID) {
+      if (REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)) {
         assert.equal(feature.evidence.at(-2), REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC);
         assert.equal(feature.evidence.at(-3), PR194_MAIN_SYNC_EVIDENCE);
-        assert.equal(feature.evidence.at(-4), PR197_PROVIDER_CANARY_REMEDIATION_EVIDENCE);
-        assert.equal(feature.evidence.at(-5), PR195_STATIC_ASSET_COMPAT_EVIDENCE);
-        assert.equal(feature.evidence.at(-6), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
+        if (featureId === PROACTIVE_CANARY_FEATURE_ID) {
+          assert.equal(feature.evidence.at(-4), PR197_PROVIDER_CANARY_REMEDIATION_EVIDENCE);
+          assert.equal(feature.evidence.at(-5), PR195_STATIC_ASSET_COMPAT_EVIDENCE);
+          assert.equal(feature.evidence.at(-6), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
+        } else {
+          assert.equal(feature.evidence.at(-4), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
+        }
       } else {
         assert.equal(feature.evidence.at(-2), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
       }

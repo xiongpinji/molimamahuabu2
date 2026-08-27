@@ -21,6 +21,11 @@ function runOne(database, sql, file, index) {
     database.exec(s);
     console.log('Ran migration:', file + (index >= 0 ? ' #' + (index + 1) : ''));
   } catch (err) {
+    if (/^BEGIN(?:\s+IMMEDIATE|\s+EXCLUSIVE|\s+DEFERRED)?\b/i.test(s) && database.inTransaction) {
+      try {
+        database.exec('ROLLBACK');
+      } catch (_) {}
+    }
     const msg = (err.message || '').toLowerCase();
     if (err.code === 'SQLITE_ERROR' && (msg.includes('duplicate column') || msg.includes('already exists'))) {
       console.log('Skip (already exists):', file + (index >= 0 ? ' #' + (index + 1) : ''));
@@ -56,16 +61,28 @@ function splitSqlStatements(sql) {
   const statements = [];
   let buffer = '';
   let inTrigger = false;
+  let inTransactionBlock = false;
   for (const line of sql.split(/\r?\n/)) {
     const trimmed = line.trim();
     const upper = trimmed.toUpperCase();
     if (!inTrigger && upper.startsWith('CREATE TRIGGER')) inTrigger = true;
+    if (!inTrigger && !inTransactionBlock && /^BEGIN(?:\s+IMMEDIATE|\s+EXCLUSIVE|\s+DEFERRED)?\s*;?$/i.test(trimmed)) {
+      inTransactionBlock = true;
+    }
     buffer += `${line}\n`;
     if (inTrigger) {
       if (upper.endsWith('END;')) {
         statements.push(buffer.trim().replace(/;$/, ''));
         buffer = '';
         inTrigger = false;
+      }
+      continue;
+    }
+    if (inTransactionBlock) {
+      if (/^COMMIT\s*;?$/i.test(trimmed) || /^END\s*;?$/i.test(trimmed)) {
+        statements.push(buffer.trim().replace(/;$/, ''));
+        buffer = '';
+        inTransactionBlock = false;
       }
       continue;
     }
@@ -116,6 +133,12 @@ function tableExists(database, table) {
   return !!database
     .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get(table);
+}
+
+function recoverOrphanedModelPriceRebuild(database) {
+  if (tableExists(database, 'model_credit_prices')) return;
+  if (!tableExists(database, '__model_credit_prices_free_rebuild')) return;
+  database.exec('ALTER TABLE __model_credit_prices_free_rebuild RENAME TO model_credit_prices');
 }
 
 function quoteIdent(name) {
@@ -1563,6 +1586,7 @@ function runMigrationsAndEnsure(database) {
   if (database.inTransaction) {
     throw new Error('runMigrationsAndEnsure requires no active transaction');
   }
+  recoverOrphanedModelPriceRebuild(database);
   preflightRedrawShotStatusConstraint(database);
   ensureRedrawCandidateReleaseContract(database);
   ensureRedrawMigrationColumns(database);

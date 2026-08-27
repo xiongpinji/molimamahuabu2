@@ -45,6 +45,18 @@ function ensureColumn(db, name, sql) {
   if (!columns.some((column) => column.name === name)) db.exec(sql);
 }
 
+function tableExists(db, table) {
+  return !!db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table);
+}
+
+function recoverOrphanedFreePricingRebuild(db) {
+  if (tableExists(db, 'model_credit_prices')) return;
+  if (!tableExists(db, '__model_credit_prices_free_rebuild')) return;
+  db.exec('ALTER TABLE __model_credit_prices_free_rebuild RENAME TO model_credit_prices');
+}
+
 function hasFreePricingContract(db) {
   const columns = db.prepare('PRAGMA table_info(model_credit_prices)').all();
   if (!columns.some((column) => column.name === 'pricing_mode')) return false;
@@ -62,39 +74,41 @@ function rebuildFreePricingContract(db) {
   if (db.inTransaction) {
     throw new Error('model_credit_prices pricing_mode migration requires no active transaction');
   }
-  db.exec(`
-    DROP TABLE IF EXISTS __model_credit_prices_free_rebuild;
-    CREATE TABLE __model_credit_prices_free_rebuild (
-      model TEXT PRIMARY KEY,
-      credits INTEGER NOT NULL CHECK (
-        (pricing_mode = 'paid' AND credits > 0)
-        OR (pricing_mode = 'free' AND credits = 0)
-      ),
-      pricing_mode TEXT NOT NULL DEFAULT 'paid' CHECK (pricing_mode IN ('paid', 'free')),
-      display_name TEXT,
-      public_note TEXT NOT NULL DEFAULT '',
-      category TEXT NOT NULL DEFAULT 'other',
-      status TEXT NOT NULL DEFAULT 'enabled',
-      billing_unit TEXT NOT NULL DEFAULT '',
-      cost_unit TEXT NOT NULL DEFAULT 'request',
-      cost_micros_per_unit INTEGER NOT NULL DEFAULT 0,
-      input_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0,
-      output_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL
-    );
-    INSERT INTO __model_credit_prices_free_rebuild (
-      model, credits, pricing_mode, display_name, public_note, category, status,
-      billing_unit, cost_unit, cost_micros_per_unit, input_cost_micros_per_1k,
-      output_cost_micros_per_1k, updated_at
-    )
-    SELECT
-      model, credits, COALESCE(NULLIF(pricing_mode, ''), 'paid'), display_name, public_note, category, status,
-      billing_unit, cost_unit, cost_micros_per_unit, input_cost_micros_per_1k,
-      output_cost_micros_per_1k, updated_at
-    FROM model_credit_prices;
-    DROP TABLE model_credit_prices;
-    ALTER TABLE __model_credit_prices_free_rebuild RENAME TO model_credit_prices;
-  `);
+  db.transaction(() => {
+    db.exec(`
+      DROP TABLE IF EXISTS __model_credit_prices_free_rebuild;
+      CREATE TABLE __model_credit_prices_free_rebuild (
+        model TEXT PRIMARY KEY,
+        credits INTEGER NOT NULL CHECK (
+          (pricing_mode = 'paid' AND credits > 0)
+          OR (pricing_mode = 'free' AND credits = 0)
+        ),
+        pricing_mode TEXT NOT NULL DEFAULT 'paid' CHECK (pricing_mode IN ('paid', 'free')),
+        display_name TEXT,
+        public_note TEXT NOT NULL DEFAULT '',
+        category TEXT NOT NULL DEFAULT 'other',
+        status TEXT NOT NULL DEFAULT 'enabled',
+        billing_unit TEXT NOT NULL DEFAULT '',
+        cost_unit TEXT NOT NULL DEFAULT 'request',
+        cost_micros_per_unit INTEGER NOT NULL DEFAULT 0,
+        input_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0,
+        output_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO __model_credit_prices_free_rebuild (
+        model, credits, pricing_mode, display_name, public_note, category, status,
+        billing_unit, cost_unit, cost_micros_per_unit, input_cost_micros_per_1k,
+        output_cost_micros_per_1k, updated_at
+      )
+      SELECT
+        model, credits, COALESCE(NULLIF(pricing_mode, ''), 'paid'), display_name, public_note, category, status,
+        billing_unit, cost_unit, cost_micros_per_unit, input_cost_micros_per_1k,
+        output_cost_micros_per_1k, updated_at
+      FROM model_credit_prices;
+      DROP TABLE model_credit_prices;
+      ALTER TABLE __model_credit_prices_free_rebuild RENAME TO model_credit_prices;
+    `);
+  })();
 }
 
 function isToken6688PerRequestVideo(value) {
@@ -114,6 +128,7 @@ function billingUnit(value, category = '', configuredUnit = '') {
 }
 
 function ensureSchema(db) {
+  recoverOrphanedFreePricingRebuild(db);
   db.exec(`CREATE TABLE IF NOT EXISTS model_credit_prices (
     model TEXT PRIMARY KEY,
     credits INTEGER NOT NULL CHECK (credits > 0),
@@ -656,6 +671,9 @@ function set(db, value, creditsValue, options = {}) {
         ? { resolution, credits: tierCredits, cost_micros_per_unit: parseCost(tier?.cost_micros_per_unit ?? 0) }
         : { resolution, credits: tierCredits, cost_micros_per_second: parseCost(tier?.cost_micros_per_second ?? 0) };
     });
+  if (pricingMode === 'free' && resolutionPrices?.length) {
+    throw priceError('INVALID_MODEL_PRICE', '免费模型不能配置分辨率价格');
+  }
   if (resolutionPrices?.length && !['image', 'video'].includes(category)) {
     throw priceError('INVALID_MODEL_PRICE', '只有图片或视频模型可以配置分辨率价格');
   }
@@ -681,19 +699,23 @@ function set(db, value, creditsValue, options = {}) {
         updated_at = excluded.updated_at`)
       .run(model, displayName, publicNote, category, credits, pricingMode, status, configuredBillingUnit, costUnit, costMicrosPerUnit,
         inputCostMicrosPer1k, outputCostMicrosPer1k, updatedAt);
-    if (resolutionPrices != null) {
+    if (pricingMode === 'free') {
+      db.prepare('DELETE FROM model_image_resolution_prices WHERE model = ? COLLATE NOCASE').run(model);
+      db.prepare('DELETE FROM model_resolution_prices WHERE model = ? COLLATE NOCASE').run(model);
+    } else if (resolutionPrices != null) {
+      const nextResolutionPrices = resolutionPrices || [];
       if (category === 'image') {
         db.prepare('DELETE FROM model_image_resolution_prices WHERE model = ? COLLATE NOCASE').run(model);
         const insert = db.prepare(`INSERT INTO model_image_resolution_prices
           (model, resolution, credits, cost_micros_per_unit, updated_at) VALUES (?, ?, ?, ?, ?)`);
-        for (const tier of resolutionPrices) {
+        for (const tier of nextResolutionPrices) {
           insert.run(model, tier.resolution, tier.credits, tier.cost_micros_per_unit, updatedAt);
         }
       } else {
         db.prepare('DELETE FROM model_resolution_prices WHERE model = ? COLLATE NOCASE').run(model);
         const insert = db.prepare(`INSERT INTO model_resolution_prices
           (model, resolution, credits, cost_micros_per_second, updated_at) VALUES (?, ?, ?, ?, ?)`);
-        for (const tier of resolutionPrices) {
+        for (const tier of nextResolutionPrices) {
           insert.run(model, tier.resolution, tier.credits, tier.cost_micros_per_second, updatedAt);
         }
       }

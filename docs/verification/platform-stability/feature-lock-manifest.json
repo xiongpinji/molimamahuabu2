@@ -42,7 +42,9 @@
         "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md",
         "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md",
         "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md",
-        "docs/tasks/2026-08-27-pr194-main-sync-ci-fix.md"
+        "docs/tasks/2026-08-27-pr194-main-sync-ci-fix.md",
+        "docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md",
+        "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md"
       ],
       "fixCommit": "54eb8e940982cd9c4b65e91b934d8593a6b1975b",
       "unlockHistory": [
@@ -155,16 +157,28 @@
             "backend-node/test/token6688Image.test.js",
             "backend-node/test/featureLockManifest.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 PR #194 合入最新 main 与 Hosted CI 修复获批",
+          "approvedBy": "product-owner 2026-08-27 pr-194-main-sync-ci-fix-approved",
+          "impactTests": [
+            "backend-node/test/providerRouteSchema.test.js",
+            "backend-node/test/providerCanaryPublicGate.test.js",
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 PR #194 合入最新 main 与 Hosted CI 修复获批",
-        "approvedBy": "product-owner 2026-08-27 pr-194-main-sync-ci-fix-approved",
+        "reason": "2026-08-27 一键转绘产品媒体登记 Task A 免费模型计费语义获批",
+        "approvedBy": "product-owner 2026-08-27 redraw-product-media-registration-task-a",
         "impactTests": [
-          "backend-node/test/providerRouteSchema.test.js",
-          "backend-node/test/providerCanaryPublicGate.test.js",
+          "backend-node/test/modelPrice.test.js",
           "backend-node/test/redrawMigration.test.js",
-          "backend-node/test/redrawRoutes.test.js",
+          "backend-node/test/redrawAnalysis.test.js",
+          "backend-node/test/redrawLocalizationOrchestration.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -760,6 +774,7 @@
         "backend-node/scripts/split-multi-model-provider-configs.js",
         "backend-node/scripts/verify-feature-lock-manifest.js",
         "backend-node/src/app.js",
+        "backend-node/src/db/migrate.js",
         "backend-node/src/middleware/resourceOwnership.js",
         "backend-node/src/routes/index.js",
         "backend-node/src/routes/providerStability.js",
