@@ -231,7 +231,7 @@ async function setup(t) {
 }
 
 function registerInput(state, overrides = {}) {
-  return {
+  const input = {
     db: state.db,
     storageRoot: state.storageRoot,
     tenantId: overrides.tenantId || OWNER.tenantId,
@@ -242,6 +242,10 @@ function registerInput(state, overrides = {}) {
     now: () => NOW,
     provider: overrides.provider,
   };
+  if (Object.prototype.hasOwnProperty.call(overrides, 'expected_version_updated_at')) {
+    input.expected_version_updated_at = overrides.expected_version_updated_at;
+  }
+  return input;
 }
 
 function providerFromManifest(options = {}) {
@@ -354,6 +358,36 @@ test('registerReviewedCoverage replays completed same request and rejects same k
     })),
     /REDRAW_COVERAGE_REGISTRATION_IDEMPOTENCY_CONFLICT/,
   );
+});
+
+test('registerReviewedCoverage hashes normalized snake timestamp so changed same key conflicts without replay', async (t) => {
+  const state = await setup(t);
+  let providerCalls = 0;
+  const firstInput = registerInput(state, {
+    idempotencyKey: 'snake-key',
+    provider: async (args) => {
+      providerCalls += 1;
+      return providerFromManifest({ taskId: 'task-snake' })(args);
+    },
+  });
+  delete firstInput.expectedVersionUpdatedAt;
+  firstInput.expected_version_updated_at = NOW;
+  await registerReviewedCoverage(firstInput);
+
+  const changedInput = registerInput(state, {
+    idempotencyKey: 'snake-key',
+    provider: async () => {
+      providerCalls += 1;
+      throw new Error('provider must not be called for changed idempotency request');
+    },
+  });
+  delete changedInput.expectedVersionUpdatedAt;
+  changedInput.expected_version_updated_at = '2026-08-27T08:01:00.000Z';
+  await assert.rejects(
+    registerReviewedCoverage(changedInput),
+    /REDRAW_COVERAGE_REGISTRATION_IDEMPOTENCY_CONFLICT/,
+  );
+  assert.equal(providerCalls, 1);
 });
 
 test('registerReviewedCoverage keeps processing claim from replaying provider', async (t) => {
@@ -471,6 +505,47 @@ test('registerReviewedCoverage rejects owner, CAS, version facts, path escape, s
     /REDRAW_COVERAGE_EVIDENCE_INVALID/,
   );
 
+  assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM redraw_assets WHERE kind = 'scene'").get().count, 0);
+});
+
+function listStorageFiles(root) {
+  const files = [];
+  const visit = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const absolute = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(absolute);
+      } else if (entry.isFile()) {
+        files.push(path.relative(root, absolute).replace(/\\/g, '/'));
+      }
+    }
+  };
+  visit(root);
+  return files.sort();
+}
+
+test('registerReviewedCoverage does not leave final evidence files or consumable assets when DB insertion fails', async (t) => {
+  const state = await setup(t);
+  const beforeFiles = listStorageFiles(state.storageRoot);
+  state.db.exec(`
+    CREATE TRIGGER fail_coverage_image_asset_insert
+    BEFORE INSERT ON assets
+    WHEN NEW.category = 'redraw' AND NEW.type = 'image'
+    BEGIN
+      SELECT RAISE(ABORT, 'forced coverage image asset insert failure');
+    END;
+  `);
+
+  await assert.rejects(
+    registerReviewedCoverage(registerInput(state, {
+      idempotencyKey: 'db-failure-cleanup',
+      provider: providerFromManifest({ taskId: 'task-db-failure' }),
+    })),
+    /REDRAW_COVERAGE_REGISTRATION_FAILED/,
+  );
+
+  assert.deepEqual(listStorageFiles(state.storageRoot), beforeFiles);
+  assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category = 'redraw'").get().count, 0);
   assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM redraw_assets WHERE kind = 'scene'").get().count, 0);
 });
 

@@ -35,9 +35,20 @@ function hashString(value) {
   return sha256(Buffer.from(String(value), 'utf8'));
 }
 
-function requestHash(input) {
+function normalizeExpectedVersionUpdatedAt(input) {
+  const hasCamel = Object.prototype.hasOwnProperty.call(input, 'expectedVersionUpdatedAt')
+    && input.expectedVersionUpdatedAt != null;
+  const hasSnake = Object.prototype.hasOwnProperty.call(input, 'expected_version_updated_at')
+    && input.expected_version_updated_at != null;
+  if (hasCamel && hasSnake && String(input.expectedVersionUpdatedAt) !== String(input.expected_version_updated_at)) {
+    throw codedError('REDRAW_COVERAGE_REQUEST_INVALID');
+  }
+  return String(hasCamel ? input.expectedVersionUpdatedAt : hasSnake ? input.expected_version_updated_at : '');
+}
+
+function requestHash(expectedVersionUpdatedAt) {
   return sha256(Buffer.from(stableJson({
-    expected_version_updated_at: String(input.expectedVersionUpdatedAt || ''),
+    expected_version_updated_at: expectedVersionUpdatedAt,
   }), 'utf8'));
 }
 
@@ -220,15 +231,35 @@ function collectEvidenceFiles(manifest, manifestRelativePath) {
   return [...files.values()];
 }
 
-async function copyEvidenceFile({ storageRoot, stagingRoot, destBaseRelative, file }) {
+async function prepareEvidenceFile({ stagingRoot, destBaseRelative, file }) {
   const read = await secureReadFile(stagingRoot, file.path, 'REDRAW_COVERAGE_EVIDENCE_INVALID');
   const digest = sha256(read.bytes);
   if (file.expectedSha && digest !== file.expectedSha) throw codedError('REDRAW_COVERAGE_EVIDENCE_INVALID');
   const destRelative = path.posix.join(destBaseRelative, file.kind === 'manifest' ? MANIFEST_NAME : read.relativePath);
-  const destAbs = path.join(storageRoot, destRelative);
-  await fsp.mkdir(path.dirname(destAbs), { recursive: true });
-  await fsp.writeFile(destAbs, read.bytes, { flag: 'w' });
   return { destRelative, bytes: read.bytes, digest };
+}
+
+async function writeEvidenceFile({ storageRoot, file }) {
+  const destAbs = path.join(storageRoot, file.destRelative);
+  let existing = null;
+  try {
+    existing = await fsp.readFile(destAbs);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  if (existing) {
+    if (sha256(existing) !== file.digest) throw codedError('REDRAW_COVERAGE_EVIDENCE_INVALID');
+    return null;
+  }
+  await fsp.mkdir(path.dirname(destAbs), { recursive: true });
+  await fsp.writeFile(destAbs, file.bytes, { flag: 'wx' });
+  return destAbs;
+}
+
+async function cleanupCreatedFiles(createdFiles) {
+  for (const file of [...createdFiles].reverse()) {
+    await fsp.rm(file, { force: true }).catch(() => {});
+  }
 }
 
 async function imageMetadata(bytes) {
@@ -291,44 +322,54 @@ async function storeEvidence({ db, storageRoot, stagingRoot, version, tenantId, 
   const evidenceFiles = collectEvidenceFiles(manifest, manifestRelativePath);
   const stored = [];
   for (const file of evidenceFiles) {
-    stored.push({ ...file, ...(await copyEvidenceFile({ storageRoot, stagingRoot, destBaseRelative, file })) });
+    stored.push({ ...file, ...(await prepareEvidenceFile({ stagingRoot, destBaseRelative, file })) });
   }
   const imageFiles = [];
   for (const file of stored.filter((item) => item.kind === 'image')) {
     imageFiles.push({ file, image: await imageMetadata(file.bytes) });
   }
 
-  return db.transaction(() => {
-    let manifestAssetId = null;
-    for (const file of stored.filter((item) => item.kind === 'manifest')) {
-      const asset = createAsset(db, {
-        name: 'reviewed full frame coverage manifest',
-        type: 'document',
-        category: 'redraw',
-        local_path: file.destRelative,
-        file_size: file.bytes.length,
-        mime_type: 'application/json',
-        metadata: { sha256: file.digest },
-      });
-      manifestAssetId = Number(asset.id);
+  const createdFiles = [];
+  try {
+    for (const file of stored) {
+      const created = await writeEvidenceFile({ storageRoot, file });
+      if (created) createdFiles.push(created);
     }
-    for (const { file, image } of imageFiles) {
-      const asset = createAsset(db, {
-        name: path.posix.basename(file.destRelative),
-        type: 'image',
-        category: 'redraw',
-        local_path: file.destRelative,
-        file_size: file.bytes.length,
-        mime_type: image.mimeType,
-        width: image.width,
-        height: image.height,
-        metadata: { sha256: file.digest },
-      });
-      if (!asset?.id) throw codedError('REDRAW_COVERAGE_ASSET_CREATE_FAILED');
-    }
-    if (!manifestAssetId) throw codedError('REDRAW_COVERAGE_ASSET_CREATE_FAILED');
-    return createRedrawAsset(db, { version, tenantId, userId, manifestAssetId, providerTaskId, manifest });
-  })();
+    return db.transaction(() => {
+      let manifestAssetId = null;
+      for (const file of stored.filter((item) => item.kind === 'manifest')) {
+        const asset = createAsset(db, {
+          name: 'reviewed full frame coverage manifest',
+          type: 'document',
+          category: 'redraw',
+          local_path: file.destRelative,
+          file_size: file.bytes.length,
+          mime_type: 'application/json',
+          metadata: { sha256: file.digest },
+        });
+        manifestAssetId = Number(asset.id);
+      }
+      for (const { file, image } of imageFiles) {
+        const asset = createAsset(db, {
+          name: path.posix.basename(file.destRelative),
+          type: 'image',
+          category: 'redraw',
+          local_path: file.destRelative,
+          file_size: file.bytes.length,
+          mime_type: image.mimeType,
+          width: image.width,
+          height: image.height,
+          metadata: { sha256: file.digest },
+        });
+        if (!asset?.id) throw codedError('REDRAW_COVERAGE_ASSET_CREATE_FAILED');
+      }
+      if (!manifestAssetId) throw codedError('REDRAW_COVERAGE_ASSET_CREATE_FAILED');
+      return createRedrawAsset(db, { version, tenantId, userId, manifestAssetId, providerTaskId, manifest });
+    })();
+  } catch (error) {
+    await cleanupCreatedFiles(createdFiles);
+    throw error;
+  }
 }
 
 function registrationByKey(db, { tenantId, userId, versionId, idempotencyHash }) {
@@ -429,9 +470,10 @@ async function registerReviewedCoverage(rawInput = {}) {
   const storageRoot = path.resolve(String(rawStorageRoot));
   const idempotencyKey = String(rawInput.idempotencyKey ?? rawInput.idempotency_key ?? '').trim();
   if (!idempotencyKey) throw codedError('REDRAW_COVERAGE_IDEMPOTENCY_REQUIRED');
+  const expectedVersionUpdatedAt = normalizeExpectedVersionUpdatedAt(rawInput);
   const now = typeof rawInput.now === 'function' ? rawInput.now : () => new Date().toISOString();
   const version = readVersion(db, { tenantId, userId, versionId });
-  const reqHash = requestHash(rawInput);
+  const reqHash = requestHash(expectedVersionUpdatedAt);
   const idempotencyHash = hashString(idempotencyKey);
   const claim = claimRegistration(db, {
     tenantId,
@@ -442,7 +484,6 @@ async function registerReviewedCoverage(rawInput = {}) {
     now,
   });
   if (claim.existing) return replayOrThrow(claim.existing, reqHash);
-  const expectedVersionUpdatedAt = rawInput.expectedVersionUpdatedAt ?? rawInput.expected_version_updated_at ?? '';
   if (String(version.updated_at) !== String(expectedVersionUpdatedAt)) {
     updateRegistration(db, claim.id, {
       status: 'failed',
@@ -463,7 +504,7 @@ async function registerReviewedCoverage(rawInput = {}) {
       input: Object.freeze({
         version_id: Number(version.id),
         owner: Object.freeze({ tenant_id: tenantId, user_id: userId }),
-        expected_version_updated_at: String(rawInput.expectedVersionUpdatedAt ?? rawInput.expected_version_updated_at),
+        expected_version_updated_at: expectedVersionUpdatedAt,
         facts_hash: version.facts_hash,
         source_fingerprint: version.source_fingerprint,
         duration_ms: Number(version.duration_ms),

@@ -1237,11 +1237,14 @@
       "fixCommit": null,
       "unlockHistory": [],
       "unlock": {
-        "reason": "2026-08-22 PR #177 root-only Hosted CI 隔离补充修复获批",
-        "approvedBy": "product-owner 2026-08-22 pr-177-root-only-isolation-closure",
+        "reason": "2026-08-27 一键转绘 coverage 产品登记服务 Task B 获批",
+        "approvedBy": "product-owner 2026-08-27 redraw-product-media-registration-task-b",
         "impactTests": [
-          "backend-node/test/platformFeatureAcceptance.test.js",
-          "backend-node/test/featureLockManifest.test.js"
+          "backend-node/test/redrawCoverageRegistration.test.js",
+          "backend-node/test/redrawFullFrameReview.test.js",
+          "backend-node/test/redrawReferenceBundle.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },

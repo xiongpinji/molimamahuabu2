@@ -391,6 +391,17 @@ const REDRAW_COVERAGE_REGISTRATION_REQUIRED_TESTS = [
   'backend-node/test/featureLockManifest.test.js',
   'backend-node/test/incrementalReleaseScope.test.js',
 ];
+const REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK = {
+  reason: '2026-08-27 一键转绘 coverage 产品登记服务 Task B 获批',
+  approvedBy: 'product-owner 2026-08-27 redraw-product-media-registration-task-b',
+  impactTests: [
+    'backend-node/test/redrawCoverageRegistration.test.js',
+    'backend-node/test/redrawFullFrameReview.test.js',
+    'backend-node/test/redrawReferenceBundle.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
 const REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK = {
   reason: '2026-08-27 一键转绘产品媒体登记 Task A 免费模型计费语义获批',
   approvedBy: 'product-owner 2026-08-27 redraw-product-media-registration-task-a',
@@ -947,7 +958,8 @@ test('Coverage 产品登记服务 Task B 使用独立功能锁覆盖服务和迁
     REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC,
     REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN,
   ]);
-  assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
+  assert.deepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
+  assert.notDeepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
 });
 
 test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜批准并保留完整历史', () => {
@@ -1119,7 +1131,9 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   assert.equal(manifest.features.length >= 5, true);
   for (const feature of manifest.features) {
-    if (!Object.hasOwn(PROVIDER_TASK_LOCK_REQUIREMENTS, feature.featureId)) {
+    if (feature.featureId === REDRAW_COVERAGE_REGISTRATION_FEATURE_ID) {
+      assert.deepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
+    } else if (!Object.hasOwn(PROVIDER_TASK_LOCK_REQUIREMENTS, feature.featureId)) {
       assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
     }
     assert.equal(feature.evidence.length > 0, true);
