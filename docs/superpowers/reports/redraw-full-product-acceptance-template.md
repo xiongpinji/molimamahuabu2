@@ -9,6 +9,7 @@ Project/work reference:
 - Entry: local product API only.
 - Live gate: `REDRAW_LIVE_ACCEPTANCE=1`.
 - Submit budget: one product submission only.
+- Generation body: `duration=5`, `resolution=480p`; capability selection resolved by server verified registry.
 - No automatic retry, no direct supplier call, no secret capture.
 
 ## Submit Control
@@ -20,6 +21,8 @@ Project/work reference:
 | Natural terminal only | yes/no |
 | 自然终态 | completed / failed / needs_attention |
 | Unknown result handling | product state shows needs_attention with held reservation: yes/no |
+| Expected dialogue |  |
+| Expected language |  |
 
 ## Candidate Evidence
 
@@ -31,6 +34,9 @@ Project/work reference:
 | Media duration | about 5 seconds: yes/no |
 | Resolution | 480p: yes/no |
 | Audio track | present / absent |
+| ffprobe duration |  |
+| ffprobe dimensions |  |
+| Download SHA matches current candidate SHA | yes/no |
 
 ## Acceptance Checks
 
@@ -41,6 +47,16 @@ Project/work reference:
 | 身份检查 | character identity consistent; no original person; no original text |
 | 口型检查 | evidence available and passed |
 | 计费检查 | confirmed / held / refunded / needs_attention |
+
+## Server QA Metrics
+
+| Group | Required evidence |
+| --- | --- |
+| media | readable, duration_matches, dimensions_match, hash_matches |
+| dialogue | has_audio, language, language_matches, exact_target_text, speaker_voice_matches |
+| identity | all_bound, stable, person_count_matches, relationships_match |
+| residuals | original_person_absent, original_text_absent |
+| lip_sync | evidence_available, passed |
 
 ## Skipped gates
 
