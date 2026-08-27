@@ -14,6 +14,22 @@ const prices = require('../src/services/modelPriceService');
 const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 
 const log = { info() {}, warn() {}, error() {} };
+
+function waitFor(predicate, timeoutMs = 3000, intervalMs = 20) {
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      const value = predicate();
+      if (value) return resolve(value);
+      if (Date.now() - started >= timeoutMs) {
+        return reject(new Error('等待视频恢复轮询完成超时'));
+      }
+      setTimeout(check, intervalMs);
+    };
+    check();
+  });
+}
+
 const videoService = {
   ...rawVideoService,
   create(db, logger, request, options = {}) {
@@ -589,7 +605,7 @@ test('resumable provider task polls existing task_id and does not POST again', a
     .run(drama1, task.id, JSON.stringify({ model: 'seedance-2-mini', prompt: '恢复现有任务', duration: 8, reference_mode: 'text', generate_audio: false }), now, now);
 
   videoService.resumeProcessingVideoGenerations(db, log);
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await waitFor(() => pollCalls === 1);
   assert.equal(postCalls, 0);
   assert.equal(pollCalls, 1);
 });
@@ -645,7 +661,9 @@ test('resume existing provider_task_id keeps held reservation when config is dis
   db.prepare('UPDATE ai_service_configs SET is_active = 0 WHERE service_type = ?').run('video');
 
   videoService.resumeProcessingVideoGenerations(db, log);
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await waitFor(() => db
+    .prepare('SELECT status FROM video_generations WHERE id = ?')
+    .get(created.id)?.status === 'needs_attention');
 
   const after = db.prepare('SELECT status, error_msg FROM video_generations WHERE id = ?').get(created.id);
   assert.equal(after.status, 'needs_attention');
