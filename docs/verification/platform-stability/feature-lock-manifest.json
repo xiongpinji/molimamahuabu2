@@ -1336,6 +1336,43 @@
       }
     },
     {
+      "featureId": "redraw.clean-plate-local-media-registration",
+      "module": "shared",
+      "status": "locked_pass",
+      "acceptance": [
+        "clean provider 只能获得服务端私有单次 staging outputDir 和只读可信输入",
+        "产品服务拒绝路径逃逸、链接、reparse 与媒体伪装，并完成 TOCTOU、尺寸和像素门禁",
+        "验证后的图片按 SHA-256 内容寻址写入并建立完整 redraw image asset",
+        "登记结果保持 needs_attention/pending，未知状态不重试，零积分不产生预留或账本行"
+      ],
+      "protectedPaths": [
+        "backend-node/src/services/redrawAssetService.js"
+      ],
+      "requiredTests": [
+        "backend-node/test/redrawAssets.test.js",
+        "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+        "backend-node/test/featureLockManifest.test.js",
+        "backend-node/test/incrementalReleaseScope.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md",
+        "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md"
+      ],
+      "fixCommit": null,
+      "unlockHistory": [],
+      "unlock": {
+        "reason": "2026-08-28 一键转绘 clean provider 本地媒体登记 Task D 获批",
+        "approvedBy": "product-owner 2026-08-28 redraw-product-media-registration-task-d",
+        "impactTests": [
+          "backend-node/test/redrawAssets.test.js",
+          "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+          "backend-node/test/redrawReferenceBundle.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
+        ]
+      }
+    },
+    {
       "featureId": "stability.platform-complete-acceptance-framework",
       "module": "shared",
       "status": "locked_pass",
