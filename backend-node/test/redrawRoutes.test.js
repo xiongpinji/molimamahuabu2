@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const net = require('node:net');
+const express = require('express');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const redrawRoutes = require('../src/routes/redraw');
@@ -15,6 +17,7 @@ const redrawCapabilityService = require('../src/services/redrawCapabilityService
 const redrawAssetService = require('../src/services/redrawAssetService');
 const redrawReviewService = require('../src/services/redrawReviewService');
 const providerAssetUrlService = require('../src/services/providerAssetUrlService');
+const userAuthService = require('../src/services/userAuthService');
 
 const NOW = '2026-08-06T00:00:00.000Z';
 const EXPECTED_SERVER_AUTOMATION_POLICY = {
@@ -6742,5 +6745,586 @@ test('release readiness 按对白轮次检查生成音频而不比较跨域 segm
         db.close();
       }
     });
+  }
+});
+
+async function withRouteServer(router, run) {
+  const app = express();
+  app.use('/api/v1', router);
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+  try {
+    const address = server.address();
+    await run(`http://127.0.0.1:${address.port}/api/v1`);
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+function waitForDirectoryState(directory, predicate, label) {
+  return new Promise((resolve, reject) => {
+    let watcher;
+    const fileWatchers = new Map();
+    const closeWatchers = () => {
+      watcher?.close();
+      for (const fileWatcher of fileWatchers.values()) fileWatcher.close();
+      fileWatchers.clear();
+    };
+    const timeout = setTimeout(() => {
+      closeWatchers();
+      reject(new Error(`timed out waiting for ${label}`));
+    }, 5000);
+    const inspect = () => {
+      try {
+        const entries = fs.existsSync(directory) ? fs.readdirSync(directory) : [];
+        for (const entry of entries) {
+          if (fileWatchers.has(entry)) continue;
+          const target = path.join(directory, entry);
+          try {
+            fs.watchFile(target, { interval: 20 }, inspect);
+            fileWatchers.set(entry, { close: () => fs.unwatchFile(target, inspect) });
+          } catch (_) {}
+        }
+        if (!predicate(entries)) return;
+        clearTimeout(timeout);
+        closeWatchers();
+        resolve(entries);
+      } catch (error) {
+        clearTimeout(timeout);
+        closeWatchers();
+        reject(error);
+      }
+    };
+    watcher = fs.watch(directory, inspect);
+    inspect();
+  });
+}
+
+function referenceImportRouterFixture(importService) {
+  const db = createDb();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-reference-route-storage-'));
+  const tempRoot = path.join(storageRoot, 'http-motion-temp');
+  const secret = 'redraw-reference-route-secret-value-at-least-32-bytes';
+  const previous = {
+    publicMode: process.env.PUBLIC_PLATFORM_MODE,
+    jwtSecret: process.env.PLATFORM_JWT_SECRET,
+  };
+  process.env.PUBLIC_PLATFORM_MODE = 'true';
+  process.env.PLATFORM_JWT_SECRET = secret;
+  const user = userAuthService.register(db, {
+    email: `redraw-reference-${crypto.randomUUID()}@example.test`,
+    password: 'route-fixture-password-123',
+  });
+  const tenantId = `personal:${user.id}`;
+  const projectId = insertProject(db, { tenant_id: tenantId, user_id: user.id });
+  const workId = insertWork(db, projectId, { tenant_id: tenantId, user_id: user.id });
+  const versionId = Number(insertVersion(db, workId, { tenant_id: tenantId, user_id: user.id }));
+  const assetId = Number(insertRedrawAsset(db, versionId, {
+    tenant_id: tenantId, user_id: user.id, kind: 'character', updated_at: NOW,
+  }));
+  const shotId = Number(insertShot(db, versionId, {
+    work_id: workId, tenant_id: tenantId, user_id: user.id, updated_at: NOW,
+  }));
+  const noProvider = async () => ({ status: 'completed' });
+  const router = setupRouter({ storage: { local_path: storageRoot } }, db, {
+    error() {}, warn() {}, info() {},
+  }, {
+    localizationProvider: noProvider,
+    assetGenerationProvider: noProvider,
+    dialogueProvider: noProvider,
+    redrawOptions: {
+      referenceArtifactImportService: importService,
+      referenceArtifactTempRoot: tempRoot,
+    },
+  });
+  const token = userAuthService.issueToken(user, secret, 0);
+  return {
+    db, router, storageRoot, tempRoot, user, tenantId, token, assetId, shotId, versionId,
+    close() {
+      db.close();
+      fs.rmSync(storageRoot, { recursive: true, force: true });
+      if (previous.publicMode === undefined) delete process.env.PUBLIC_PLATFORM_MODE;
+      else process.env.PUBLIC_PLATFORM_MODE = previous.publicMode;
+      if (previous.jwtSecret === undefined) delete process.env.PLATFORM_JWT_SECRET;
+      else process.env.PLATFORM_JWT_SECRET = previous.jwtSecret;
+    },
+  };
+}
+
+test('reference artifact route requires auth and tenant before multipart parsing side effects', async () => {
+  const calls = [];
+  const fixture = referenceImportRouterFixture({
+    async importCharacterReferenceArtifact(...args) { calls.push(args); return {}; },
+    async importMotionReferenceArtifact(...args) { calls.push(args); return {}; },
+  });
+  try {
+    const registered = new Set(fixture.router.stack
+      .filter((layer) => layer.route)
+      .flatMap((layer) => Object.keys(layer.route.methods)
+        .map((method) => `${method.toUpperCase()} ${layer.route.path}`)));
+    assert.equal(registered.has('POST /redraw/assets/:id/reference-artifact'), true);
+    assert.equal(registered.has('POST /redraw/shots/:id/motion-reference'), true);
+    await withRouteServer(fixture.router, async (baseUrl) => {
+      const motion = new FormData();
+      motion.set('expected_updated_at', NOW);
+      motion.set('full_frame_reviewed', 'true');
+      motion.set('source_identity_obscured', 'true');
+      motion.set('source_text_obscured', 'true');
+      motion.set('motion_preserved', 'true');
+      motion.set('file', new Blob([Buffer.from('0000ftypisom')], { type: 'video/mp4' }), 'motion.mp4');
+      const unauthorized = await fetch(`${baseUrl}/redraw/shots/${fixture.shotId}/motion-reference`, {
+        method: 'POST', body: motion,
+      });
+      assert.equal(unauthorized.status, 401);
+
+      const invalidTenant = new FormData();
+      invalidTenant.set('expected_updated_at', NOW);
+      invalidTenant.set('purpose', 'identity');
+      invalidTenant.set('file', new Blob([Buffer.from('image')], { type: 'image/png' }), 'identity.png');
+      const tenantFailure = await fetch(`${baseUrl}/redraw/assets/${fixture.assetId}/reference-artifact`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${fixture.token}`,
+          'X-Tenant-Id': 'tenant-not-owned',
+          'Idempotency-Key': 'tenant-failure-key',
+        },
+        body: invalidTenant,
+      });
+      assert.equal(tenantFailure.status, 404);
+    });
+    assert.equal(calls.length, 0);
+    assert.equal(fs.existsSync(fixture.tempRoot), false);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('reference artifact multipart limits keep character in memory and motion on bounded disk storage', () => {
+  const multerPath = require.resolve('multer');
+  const redrawPath = require.resolve('../src/routes/redraw');
+  const originalMulter = require.cache[multerPath];
+  const originalRedraw = require.cache[redrawPath];
+  const captured = [];
+  const captureMulter = (config) => {
+    captured.push(config);
+    return { single: () => (_req, _res, next) => next() };
+  };
+  captureMulter.memoryStorage = () => ({ storage_kind: 'memory' });
+  captureMulter.diskStorage = (config) => ({ storage_kind: 'disk', config });
+  require.cache[multerPath] = {
+    id: multerPath,
+    filename: multerPath,
+    loaded: true,
+    exports: captureMulter,
+  };
+  delete require.cache[redrawPath];
+
+  const db = createDb();
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-reference-limit-test-'));
+  try {
+    const capturedRedrawRoutes = require('../src/routes/redraw');
+    capturedRedrawRoutes(db, { error() {}, warn() {}, info() {} }, routeDeps({
+      cfg: { storage: { local_path: tempRoot } },
+      referenceArtifactTempRoot: path.join(tempRoot, 'motion-temp'),
+    }));
+    const character = captured.find((config) => config?.limits?.fields === 2
+      && config?.limits?.files === 1);
+    const motion = captured.find((config) => config?.limits?.fields === 5
+      && config?.limits?.files === 1);
+    assert.equal(character.limits.fileSize, 20 * 1024 * 1024);
+    assert.equal(character.storage.storage_kind, 'memory');
+    assert.equal(motion.limits.fileSize, 200 * 1024 * 1024);
+    assert.equal(motion.storage.storage_kind, 'disk');
+    assert.equal(motion.limits.parts, 7);
+    let generatedName;
+    motion.storage.config.filename({}, { originalname: '../../client-name.mp4' }, (_error, value) => {
+      generatedName = value;
+    });
+    assert.match(generatedName, /^motion-\d+-\d+-[a-f0-9]{24}\.upload$/);
+    assert.equal(generatedName.includes('client-name'), false);
+  } finally {
+    db.close();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    delete require.cache[redrawPath];
+    if (originalRedraw) require.cache[redrawPath] = originalRedraw;
+    if (originalMulter) require.cache[multerPath] = originalMulter;
+    else delete require.cache[multerPath];
+  }
+});
+
+test('character reference artifact route maps multipart owner version and idempotency to service', async () => {
+  const calls = [];
+  const serviceResult = {
+    purpose: 'identity',
+    asset: { id: 801, type: 'image', mime_type: 'image/png', sha256: 'a'.repeat(64), width: 640, height: 960, file_size: 12 },
+    redraw_asset: { id: 11, asset_id: 801, status: 'generated', approval_status: 'pending', approved_by: null, approved_at: null, error_code: null, updated_at: NOW },
+    billing: { credits: 0, held: 0, charged: 0 },
+  };
+  const fixture = referenceImportRouterFixture({
+    async importCharacterReferenceArtifact(ctx, input) { calls.push({ ctx, input }); return serviceResult; },
+    async importMotionReferenceArtifact() { throw new Error('unexpected motion import'); },
+  });
+  try {
+    await withRouteServer(fixture.router, async (baseUrl) => {
+      const form = new FormData();
+      form.set('purpose', 'identity');
+      form.set('expected_updated_at', NOW);
+      form.set('file', new Blob([Buffer.from('reference-image')], { type: 'image/png' }), 'identity.png');
+      const result = await fetch(`${baseUrl}/redraw/assets/${fixture.assetId}/reference-artifact`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${fixture.token}`,
+          'X-Tenant-Id': fixture.tenantId,
+          'Idempotency-Key': 'character-route-idempotency',
+        },
+        body: form,
+      });
+      const responseBody = await result.text();
+      assert.equal(result.status, 200, responseBody);
+      assert.deepEqual(JSON.parse(responseBody).data, serviceResult);
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].ctx.tenantId, fixture.tenantId);
+    assert.equal(calls[0].ctx.userId, fixture.user.id);
+    assert.equal(calls[0].ctx.versionId, fixture.versionId);
+    assert.equal(calls[0].ctx.storageRoot, path.resolve(fixture.storageRoot));
+    assert.deepEqual({
+      assetId: calls[0].input.assetId,
+      purpose: calls[0].input.purpose,
+      expectedUpdatedAt: calls[0].input.expectedUpdatedAt,
+      idempotencyKey: calls[0].input.idempotencyKey,
+      originalname: calls[0].input.file.originalname,
+      mimetype: calls[0].input.file.mimetype,
+      buffer: calls[0].input.file.buffer.toString(),
+    }, {
+      assetId: fixture.assetId,
+      purpose: 'identity',
+      expectedUpdatedAt: NOW,
+      idempotencyKey: 'character-route-idempotency',
+      originalname: 'identity.png',
+      mimetype: 'image/png',
+      buffer: 'reference-image',
+    });
+  } finally {
+    fixture.close();
+  }
+});
+
+test('motion reference route maps strict review booleans and cleans disk multipart temp', async () => {
+  const calls = [];
+  const serviceResult = {
+    purpose: 'motion',
+    asset: { id: 901, type: 'video', mime_type: 'video/mp4', sha256: 'b'.repeat(64), duration_ms: 5000, width: 640, height: 360, file_size: 12 },
+    billing: { credits: 0, held: 0, charged: 0 },
+  };
+  const fixture = referenceImportRouterFixture({
+    async importCharacterReferenceArtifact() { throw new Error('unexpected character import'); },
+    async importMotionReferenceArtifact(ctx, input) { calls.push({ ctx, input }); return serviceResult; },
+  });
+  try {
+    await withRouteServer(fixture.router, async (baseUrl) => {
+      const form = new FormData();
+      form.set('expected_updated_at', NOW);
+      form.set('full_frame_reviewed', 'true');
+      form.set('source_identity_obscured', 'true');
+      form.set('source_text_obscured', 'true');
+      form.set('motion_preserved', 'true');
+      form.set('file', new Blob([Buffer.from('0000ftypisom')], { type: 'video/mp4' }), 'motion.mp4');
+      const result = await fetch(`${baseUrl}/redraw/shots/${fixture.shotId}/motion-reference`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${fixture.token}`,
+          'X-Tenant-Id': fixture.tenantId,
+          'Idempotency-Key': 'motion-route-idempotency',
+        },
+        body: form,
+      });
+      const responseBody = await result.text();
+      assert.equal(result.status, 200, responseBody);
+      assert.deepEqual(JSON.parse(responseBody).data, serviceResult);
+    });
+    assert.equal(calls.length, 1);
+    assert.deepEqual({
+      shotId: calls[0].input.shotId,
+      expectedUpdatedAt: calls[0].input.expectedUpdatedAt,
+      idempotencyKey: calls[0].input.idempotencyKey,
+      fullFrameReviewed: calls[0].input.fullFrameReviewed,
+      sourceIdentityObscured: calls[0].input.sourceIdentityObscured,
+      sourceTextObscured: calls[0].input.sourceTextObscured,
+      motionPreserved: calls[0].input.motionPreserved,
+      file: calls[0].input.file.buffer.toString(),
+    }, {
+      shotId: fixture.shotId,
+      expectedUpdatedAt: NOW,
+      idempotencyKey: 'motion-route-idempotency',
+      fullFrameReviewed: true,
+      sourceIdentityObscured: true,
+      sourceTextObscured: true,
+      motionPreserved: true,
+      file: '0000ftypisom',
+    });
+    assert.deepEqual(fs.existsSync(fixture.tempRoot) ? fs.readdirSync(fixture.tempRoot) : [], []);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('reference artifact routes reject forbidden fields and redact internal service errors', async () => {
+  let calls = 0;
+  const fixture = referenceImportRouterFixture({
+    async importCharacterReferenceArtifact() {
+      calls += 1;
+      throw Object.assign(new Error('C:\\private\\probe.mp4 SQL SELECT Authorization: Bearer secret provider_key=abc'), {
+        code: 'REDRAW_REFERENCE_ARTIFACT_STORAGE_FAILED',
+      });
+    },
+    async importMotionReferenceArtifact() { calls += 1; return {}; },
+  });
+  try {
+    await withRouteServer(fixture.router, async (baseUrl) => {
+      const forbidden = new FormData();
+      forbidden.set('purpose', 'identity');
+      forbidden.set('expected_updated_at', NOW);
+      forbidden.set('provider', 'forbidden-provider');
+      forbidden.set('file', new Blob([Buffer.from('image')], { type: 'image/png' }), 'identity.png');
+      const rejected = await fetch(`${baseUrl}/redraw/assets/${fixture.assetId}/reference-artifact`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${fixture.token}`,
+          'X-Tenant-Id': fixture.tenantId,
+          'Idempotency-Key': 'forbidden-field-key',
+        },
+        body: forbidden,
+      });
+      assert.equal(rejected.status, 400);
+      assert.equal((await rejected.json()).error.code, 'REDRAW_REFERENCE_ARTIFACT_FORBIDDEN_FIELD');
+      assert.equal(calls, 0);
+
+      const unsafe = new FormData();
+      unsafe.set('purpose', 'identity');
+      unsafe.set('expected_updated_at', NOW);
+      unsafe.set('file', new Blob([Buffer.from('image')], { type: 'image/png' }), 'identity.png');
+      const failed = await fetch(`${baseUrl}/redraw/assets/${fixture.assetId}/reference-artifact`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${fixture.token}`,
+          'X-Tenant-Id': fixture.tenantId,
+          'Idempotency-Key': 'storage-error-key',
+        },
+        body: unsafe,
+      });
+      const body = await failed.text();
+      assert.equal(failed.status, 500, body);
+      assert.equal(body.includes('C:\\private'), false);
+      assert.equal(/Authorization|Bearer|SELECT|provider_key|secret/i.test(body), false);
+      assert.equal(JSON.parse(body).error.code, 'REDRAW_REFERENCE_ARTIFACT_STORAGE_FAILED');
+    });
+    assert.equal(calls, 1);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('motion reference route rejects cross-owner ambiguous booleans and idempotency conflicts safely', async () => {
+  const calls = [];
+  const fixture = referenceImportRouterFixture({
+    async importCharacterReferenceArtifact() { throw new Error('unexpected character import'); },
+    async importMotionReferenceArtifact(ctx, input) {
+      calls.push({ ctx, input });
+      throw Object.assign(new Error('idempotency conflict with Authorization: Bearer private'), {
+        code: 'REDRAW_REFERENCE_ARTIFACT_IDEMPOTENCY_CONFLICT',
+      });
+    },
+  });
+  try {
+    const otherUser = userAuthService.register(fixture.db, {
+      email: `redraw-reference-other-${crypto.randomUUID()}@example.test`,
+      password: 'route-fixture-password-456',
+    });
+    const otherTenantId = `personal:${otherUser.id}`;
+    const otherProjectId = insertProject(fixture.db, {
+      tenant_id: otherTenantId,
+      user_id: otherUser.id,
+    });
+    const otherWorkId = insertWork(fixture.db, otherProjectId, {
+      tenant_id: otherTenantId,
+      user_id: otherUser.id,
+    });
+    const otherVersionId = Number(insertVersion(fixture.db, otherWorkId, {
+      tenant_id: otherTenantId,
+      user_id: otherUser.id,
+    }));
+    const otherShotId = Number(insertShot(fixture.db, otherVersionId, {
+      work_id: otherWorkId,
+      tenant_id: otherTenantId,
+      user_id: otherUser.id,
+      updated_at: NOW,
+    }));
+
+    await withRouteServer(fixture.router, async (baseUrl) => {
+      function motionForm(booleanValue = 'true') {
+        const form = new FormData();
+        form.set('expected_updated_at', NOW);
+        form.set('full_frame_reviewed', booleanValue);
+        form.set('source_identity_obscured', 'true');
+        form.set('source_text_obscured', 'true');
+        form.set('motion_preserved', 'true');
+        form.set('file', new Blob([Buffer.from('0000ftypisom')], { type: 'video/mp4' }), 'motion.mp4');
+        return form;
+      }
+
+      const crossOwner = await fetch(`${baseUrl}/redraw/shots/${otherShotId}/motion-reference`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${fixture.token}`,
+          'X-Tenant-Id': fixture.tenantId,
+          'Idempotency-Key': 'cross-owner-key',
+        },
+        body: motionForm(),
+      });
+      assert.equal(crossOwner.status, 404);
+      assert.equal((await crossOwner.json()).error.code, 'REDRAW_REFERENCE_ARTIFACT_NOT_FOUND');
+      assert.equal(fs.existsSync(fixture.tempRoot), false);
+      assert.equal(calls.length, 0);
+
+      const ambiguous = await fetch(`${baseUrl}/redraw/shots/${fixture.shotId}/motion-reference`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${fixture.token}`,
+          'X-Tenant-Id': fixture.tenantId,
+          'Idempotency-Key': 'ambiguous-boolean-key',
+        },
+        body: motionForm('1'),
+      });
+      assert.equal(ambiguous.status, 400);
+      assert.equal((await ambiguous.json()).error.code, 'REDRAW_REFERENCE_ARTIFACT_INPUT_INVALID');
+      assert.equal(calls.length, 0);
+      assert.deepEqual(fs.existsSync(fixture.tempRoot) ? fs.readdirSync(fixture.tempRoot) : [], []);
+
+      const conflict = await fetch(`${baseUrl}/redraw/shots/${fixture.shotId}/motion-reference`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${fixture.token}`,
+          'X-Tenant-Id': fixture.tenantId,
+          'Idempotency-Key': 'conflict-key',
+        },
+        body: motionForm(),
+      });
+      const conflictBody = await conflict.text();
+      assert.equal(conflict.status, 409, conflictBody);
+      assert.equal(JSON.parse(conflictBody).error.code, 'REDRAW_REFERENCE_ARTIFACT_IDEMPOTENCY_CONFLICT');
+      assert.equal(/Authorization|Bearer|private/i.test(conflictBody), false);
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].input.idempotencyKey, 'conflict-key');
+    assert.deepEqual(fs.existsSync(fixture.tempRoot) ? fs.readdirSync(fixture.tempRoot) : [], []);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('aborted motion multipart removes started disk temp without calling import service', async () => {
+  let calls = 0;
+  const fixture = referenceImportRouterFixture({
+    async importCharacterReferenceArtifact() { throw new Error('unexpected character import'); },
+    async importMotionReferenceArtifact() { calls += 1; return {}; },
+  });
+  try {
+    fs.mkdirSync(fixture.tempRoot, { recursive: true });
+    await withRouteServer(fixture.router, async (baseUrl) => {
+      const url = new URL(`${baseUrl}/redraw/shots/${fixture.shotId}/motion-reference`);
+      const fileBytes = Buffer.alloc(512 * 1024, 0x61);
+      const form = new FormData();
+      form.set('expected_updated_at', NOW);
+      form.set('full_frame_reviewed', 'true');
+      form.set('source_identity_obscured', 'true');
+      form.set('source_text_obscured', 'true');
+      form.set('motion_preserved', 'true');
+      form.set('file', new Blob([fileBytes], { type: 'video/mp4' }), 'motion.mp4');
+      const serialized = new Request('http://multipart.test', { method: 'POST', body: form });
+      const fullBody = Buffer.from(await serialized.arrayBuffer());
+      const fileOffset = fullBody.indexOf(fileBytes.subarray(0, 64));
+      assert.ok(fileOffset > 0);
+      const multipartHeaders = fullBody.subarray(0, fileOffset + 1);
+      const fileChunk = fullBody.subarray(fileOffset + 1, fileOffset + (256 * 1024));
+      const clientSocket = net.createConnection({ host: url.hostname, port: Number(url.port) });
+      clientSocket.on('error', () => {});
+      const responseChunks = [];
+      clientSocket.on('data', (chunk) => responseChunks.push(chunk));
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('timed out waiting for multipart connect')), 5000);
+        clientSocket.once('connect', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+      });
+      const requestHeaders = Buffer.from([
+        `POST ${url.pathname} HTTP/1.1`,
+        `Host: ${url.hostname}:${url.port}`,
+        `Authorization: Bearer ${fixture.token}`,
+        `X-Tenant-Id: ${fixture.tenantId}`,
+        'Idempotency-Key: aborted-motion-key',
+        `Content-Type: ${serialized.headers.get('content-type')}`,
+        `Content-Length: ${fullBody.length}`,
+        'Connection: close',
+        '',
+        '',
+      ].join('\r\n'));
+      let flushed = clientSocket.write(Buffer.concat([requestHeaders, multipartHeaders]));
+      if (!flushed) {
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('timed out waiting for multipart drain')), 5000);
+          clientSocket.once('drain', () => {
+            clearTimeout(timeout);
+            resolve();
+          });
+        });
+      }
+      await waitForDirectoryState(fixture.tempRoot, (entries) => entries.length > 0, 'motion temp creation');
+      const writeObserved = waitForDirectoryState(fixture.tempRoot, (entries) => entries.some((entry) => {
+        try {
+          return fs.statSync(path.join(fixture.tempRoot, entry)).size > 0;
+        } catch (_) {
+          return false;
+        }
+      }), 'motion temp write');
+      flushed = clientSocket.write(fileChunk);
+      if (!flushed) {
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('timed out waiting for multipart file drain')), 5000);
+          clientSocket.once('drain', () => {
+            clearTimeout(timeout);
+            resolve();
+          });
+        });
+      }
+      try {
+        await writeObserved;
+      } catch (error) {
+        const entries = fs.readdirSync(fixture.tempRoot).map((entry) => ({
+          entry,
+          size: fs.statSync(path.join(fixture.tempRoot, entry)).size,
+        }));
+        throw new Error(`${error.message}; entries=${JSON.stringify(entries)}; response=${Buffer.concat(responseChunks).toString()}`);
+      }
+      const closed = new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('timed out waiting for aborted socket close')), 5000);
+        clientSocket.once('close', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+      });
+      const cleaned = waitForDirectoryState(fixture.tempRoot, (entries) => entries.length === 0, 'motion temp cleanup');
+      clientSocket.destroy(new Error('intentional multipart abort'));
+      await Promise.all([closed, cleaned]);
+    });
+    assert.equal(calls, 0);
+    assert.deepEqual(fs.readdirSync(fixture.tempRoot), []);
+  } finally {
+    fixture.close();
   }
 });

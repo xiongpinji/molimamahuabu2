@@ -339,6 +339,12 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/redraw/projects/:id/works', redraw.uploadSource, redraw.createWorks);
   r.get('/redraw/works/:id', redraw.getWork);
   r.put('/redraw/shots/:id', redraw.updateShot);
+  r.post(
+    '/redraw/shots/:id/motion-reference',
+    redraw.motionReferenceArtifactContext,
+    redraw.parseMotionReferenceArtifact,
+    redraw.importMotionReferenceArtifact,
+  );
   r.get('/redraw/shots/:id/reference-bundle', redraw.getReferenceBundle);
   r.put('/redraw/shots/:id/reference-bundle', redraw.saveReferenceBundle);
   r.post('/redraw/shots/:id/generate', redraw.generateShot);
@@ -373,6 +379,12 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/redraw/exports/:id/download/:kind', redraw.downloadExport);
   r.get('/redraw/versions/:id/generation-gate', redraw.generationGate);
   r.get('/redraw/assets/:id/quote', redraw.assetQuote);
+  r.post(
+    '/redraw/assets/:id/reference-artifact',
+    redraw.characterReferenceArtifactContext,
+    redraw.parseCharacterReferenceArtifact,
+    redraw.importCharacterReferenceArtifact,
+  );
   r.put('/redraw/assets/:id/identity-pack', redraw.saveRedrawCharacterIdentityPack);
   r.put('/redraw/assets/:id', redraw.updateRedrawAsset);
   r.post('/redraw/assets/:id/voice', redraw.assignVoice);

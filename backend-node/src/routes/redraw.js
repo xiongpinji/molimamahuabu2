@@ -31,6 +31,7 @@ const redrawPreparationGateService = require('../services/redrawPreparationGateS
 const redrawReferencePreparationOrchestrator = require('../services/redrawReferencePreparationOrchestrator');
 const redrawCandidateReviewService = require('../services/redrawCandidateReviewService');
 const redrawEpisodeReleaseService = require('../services/redrawEpisodeReleaseService');
+const redrawReferenceArtifactImportService = require('../services/redrawReferenceArtifactImportService');
 const { normalizeVideoProviderResult } = require('../services/redrawProviderAdapters');
 const modelPriceService = require('../services/modelPriceService');
 const assetService = require('../services/assetService');
@@ -54,6 +55,33 @@ const referenceUpload = multer({
   fileFilter: (_req, file, cb) => {
     cb(null, /^image\/(png|jpe?g|webp)$/i.test(String(file.mimetype || '')));
   },
+});
+
+const referenceArtifactUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024, files: 1, fields: 2, parts: 4 },
+});
+
+const CHARACTER_REFERENCE_ARTIFACT_FIELDS = new Set(['purpose', 'expected_updated_at']);
+const MOTION_REFERENCE_ARTIFACT_FIELDS = new Set([
+  'expected_updated_at',
+  'full_frame_reviewed',
+  'source_identity_obscured',
+  'source_text_obscured',
+  'motion_preserved',
+]);
+const REFERENCE_ARTIFACT_ERROR_MESSAGES = Object.freeze({
+  REDRAW_REFERENCE_ARTIFACT_INPUT_INVALID: '参考素材导入参数无效',
+  REDRAW_REFERENCE_ARTIFACT_NOT_FOUND: '参考素材导入资源不存在',
+  REDRAW_REFERENCE_ARTIFACT_CONFLICT: '参考素材已变化，请刷新后重试',
+  REDRAW_REFERENCE_ARTIFACT_IDEMPOTENCY_CONFLICT: '参考素材幂等请求冲突',
+  REDRAW_REFERENCE_ARTIFACT_FORBIDDEN_FIELD: '参考素材导入包含禁止字段',
+  REDRAW_REFERENCE_ARTIFACT_MEDIA_INVALID: '参考素材媒体无效',
+  REDRAW_REFERENCE_ARTIFACT_TOO_LARGE: '参考素材超过大小限制',
+  REDRAW_REFERENCE_ARTIFACT_STORAGE_FAILED: '参考素材存储失败',
+  REDRAW_MOTION_REFERENCE_REVIEW_REQUIRED: '动作参考需要完成全部人工复核',
+  REDRAW_MOTION_REFERENCE_BINDING_NOT_READY: '动作参考绑定前置条件未就绪',
+  REDRAW_MOTION_REFERENCE_STALE: '动作参考绑定已过期',
 });
 
 const ALLOWED_ASPECT_RATIOS = new Set(['1:1', '9:16', '16:9', '3:4', '4:3', '21:9']);
@@ -438,6 +466,68 @@ function codedRouteError(code, message, details) {
   error.code = code;
   if (details !== undefined) error.details = details;
   return error;
+}
+
+function assertReferenceArtifactFields(body, allowed) {
+  const input = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+  if (Object.keys(input).some((key) => !allowed.has(key))) {
+    throw codedRouteError(
+      'REDRAW_REFERENCE_ARTIFACT_FORBIDDEN_FIELD',
+      REFERENCE_ARTIFACT_ERROR_MESSAGES.REDRAW_REFERENCE_ARTIFACT_FORBIDDEN_FIELD,
+    );
+  }
+  return input;
+}
+
+function strictMultipartBoolean(value) {
+  if (value === true || value === false) return value;
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  throw codedRouteError(
+    'REDRAW_REFERENCE_ARTIFACT_INPUT_INVALID',
+    REFERENCE_ARTIFACT_ERROR_MESSAGES.REDRAW_REFERENCE_ARTIFACT_INPUT_INVALID,
+  );
+}
+
+function publicReferenceArtifactResult(value) {
+  const result = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const asset = result.asset && typeof result.asset === 'object' ? result.asset : {};
+  const output = {
+    purpose: result.purpose,
+    asset: Object.fromEntries([
+      'id', 'type', 'mime_type', 'sha256', 'width', 'height', 'file_size', 'duration_ms',
+    ].filter((key) => Object.prototype.hasOwnProperty.call(asset, key)).map((key) => [key, asset[key]])),
+    billing: { credits: 0, held: 0, charged: 0 },
+  };
+  if (result.redraw_asset && typeof result.redraw_asset === 'object') {
+    output.redraw_asset = Object.fromEntries([
+      'id', 'asset_id', 'status', 'approval_status', 'approved_by', 'approved_at',
+      'error_code', 'updated_at',
+    ].filter((key) => Object.prototype.hasOwnProperty.call(result.redraw_asset, key))
+      .map((key) => [key, result.redraw_asset[key]]));
+  }
+  return output;
+}
+
+function sendReferenceArtifactError(res, error, log, context = {}) {
+  const code = String(error?.code || '');
+  const message = REFERENCE_ARTIFACT_ERROR_MESSAGES[code];
+  if (!message) {
+    log?.error?.({ code: 'INTERNAL_ERROR', ...context }, '参考素材导入失败');
+    return response.error(res, 500, 'INTERNAL_ERROR', '参考素材导入失败');
+  }
+  if (code === 'REDRAW_REFERENCE_ARTIFACT_NOT_FOUND') return response.error(res, 404, code, message);
+  if (['REDRAW_REFERENCE_ARTIFACT_CONFLICT', 'REDRAW_REFERENCE_ARTIFACT_IDEMPOTENCY_CONFLICT',
+    'REDRAW_MOTION_REFERENCE_BINDING_NOT_READY', 'REDRAW_MOTION_REFERENCE_STALE'].includes(code)) {
+    return response.error(res, 409, code, message);
+  }
+  if (code === 'REDRAW_REFERENCE_ARTIFACT_TOO_LARGE') return response.error(res, 413, code, message);
+  if (code === 'REDRAW_REFERENCE_ARTIFACT_STORAGE_FAILED') {
+    log?.error?.({ code, ...context }, '参考素材存储失败');
+    return response.error(res, 500, code, message);
+  }
+  return response.error(res, 400, code, message);
 }
 
 function referencePreparationInput(body, allowedFields) {
@@ -1464,6 +1554,8 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   const exportService = options.exportService || redrawExportService;
   const candidateReviewService = options.candidateReviewService || redrawCandidateReviewService;
   const episodeReleaseService = options.episodeReleaseService || redrawEpisodeReleaseService;
+  const referenceArtifactImportService = options.referenceArtifactImportService
+    || redrawReferenceArtifactImportService;
   const cfg = options.cfg || {};
   const quoteAnalysis = options.quoteAnalysis || analysisQuote();
   const canReadArtifact = options.canReadArtifact || createCanReadArtifact(db, cfg);
@@ -1472,6 +1564,24 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     assetUrlPrefix: '/static/redraw-sources',
     ...(options.uploadLimits || {}),
   };
+  const referenceArtifactTempRoot = path.resolve(
+    options.referenceArtifactTempRoot || path.join(os.tmpdir(), 'moli-redraw-reference-imports'),
+  );
+  const motionReferenceArtifactUpload = multer({
+    storage: multer.diskStorage({
+      destination: (_req, _file, callback) => {
+        fs.mkdir(referenceArtifactTempRoot, { recursive: true }, (error) => {
+          callback(error || null, referenceArtifactTempRoot);
+        });
+      },
+      filename: (req, _file, callback) => {
+        const filename = `motion-${process.pid}-${Date.now()}-${crypto.randomBytes(12).toString('hex')}.upload`;
+        req.redrawReferenceArtifactTempPath = path.join(referenceArtifactTempRoot, filename);
+        callback(null, filename);
+      },
+    }),
+    limits: { fileSize: 200 * 1024 * 1024, files: 1, fields: 5, parts: 7 },
+  });
   const analysisOptions = { ...(options.analysisOptions || {}) };
   if (!analysisOptions.assetReader) {
     analysisOptions.assetReader = redrawOrchestrator.createAssetReader({ storageRoot: uploadLimits.storageRoot });
@@ -1568,7 +1678,173 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       },
       canReadArtifact,
       probeRunner: options.referencePreparationProbeRunner || options.probeRunner,
+      motionProbeRunner: options.referenceArtifactMotionProbeRunner || options.motionProbeRunner,
     };
+  }
+
+  async function cleanupReferenceArtifactUpload(req) {
+    const filePath = String(req.file?.path || req.redrawReferenceArtifactTempPath || '');
+    req.file = null;
+    req.redrawReferenceArtifactTempPath = null;
+    if (!filePath) return;
+    try {
+      await fs.promises.unlink(filePath);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        throw codedRouteError(
+          'REDRAW_REFERENCE_ARTIFACT_STORAGE_FAILED',
+          REFERENCE_ARTIFACT_ERROR_MESSAGES.REDRAW_REFERENCE_ARTIFACT_STORAGE_FAILED,
+        );
+      }
+    }
+  }
+
+  function parseReferenceArtifactWith(parser) {
+    return (req, res, next) => {
+      let aborted = false;
+      let abortCleanup = Promise.resolve();
+      const onAborted = () => {
+        aborted = true;
+        abortCleanup = cleanupReferenceArtifactUpload(req).catch((error) => {
+          log?.error?.({ code: error?.code || 'REDRAW_REFERENCE_ARTIFACT_STORAGE_FAILED', route: req.path },
+            '中断的参考素材临时文件清理失败');
+        });
+      };
+      req.once('aborted', onAborted);
+      parser(req, res, async (error) => {
+        req.off('aborted', onAborted);
+        if (aborted) {
+          await abortCleanup;
+          return;
+        }
+        if (!error) return next();
+        try {
+          await cleanupReferenceArtifactUpload(req);
+        } catch (cleanupError) {
+          return sendReferenceArtifactError(res, cleanupError, log, { route: req.path });
+        }
+        const code = error?.code === 'LIMIT_FILE_SIZE'
+          ? 'REDRAW_REFERENCE_ARTIFACT_TOO_LARGE'
+          : ['LIMIT_UNEXPECTED_FILE', 'LIMIT_FIELD_COUNT', 'LIMIT_PART_COUNT'].includes(error?.code)
+            ? 'REDRAW_REFERENCE_ARTIFACT_FORBIDDEN_FIELD'
+            : 'REDRAW_REFERENCE_ARTIFACT_INPUT_INVALID';
+        return sendReferenceArtifactError(res, codedRouteError(code, REFERENCE_ARTIFACT_ERROR_MESSAGES[code]), log, {
+          route: req.path,
+        });
+      });
+    };
+  }
+
+  const parseCharacterReferenceArtifact = parseReferenceArtifactWith(
+    referenceArtifactUpload.single('file'),
+  );
+  const parseMotionReferenceArtifact = parseReferenceArtifactWith(
+    motionReferenceArtifactUpload.single('file'),
+  );
+
+  function characterReferenceArtifactContext(req, res, next) {
+    const currentOwner = owner(req);
+    const asset = findOwnedAsset(req.params.id, currentOwner);
+    if (!asset || asset.kind !== 'character') {
+      return sendReferenceArtifactError(res, codedRouteError(
+        'REDRAW_REFERENCE_ARTIFACT_NOT_FOUND',
+        REFERENCE_ARTIFACT_ERROR_MESSAGES.REDRAW_REFERENCE_ARTIFACT_NOT_FOUND,
+      ), log, { scope: 'character' });
+    }
+    const version = findOwnedVersion(asset.version_id, currentOwner);
+    if (!version) {
+      return sendReferenceArtifactError(res, codedRouteError(
+        'REDRAW_REFERENCE_ARTIFACT_NOT_FOUND',
+        REFERENCE_ARTIFACT_ERROR_MESSAGES.REDRAW_REFERENCE_ARTIFACT_NOT_FOUND,
+      ), log, { scope: 'character' });
+    }
+    req.redrawReferenceArtifactScope = {
+      context: referencePreparationContext(version, currentOwner),
+      scopeId: Number(asset.id),
+    };
+    return next();
+  }
+
+  function motionReferenceArtifactContext(req, res, next) {
+    const currentOwner = owner(req);
+    const shot = findOwnedShot(req.params.id, currentOwner);
+    const version = shot ? findOwnedVersion(shot.version_id, currentOwner) : null;
+    if (!shot || !version) {
+      return sendReferenceArtifactError(res, codedRouteError(
+        'REDRAW_REFERENCE_ARTIFACT_NOT_FOUND',
+        REFERENCE_ARTIFACT_ERROR_MESSAGES.REDRAW_REFERENCE_ARTIFACT_NOT_FOUND,
+      ), log, { scope: 'shot' });
+    }
+    req.redrawReferenceArtifactScope = {
+      context: referencePreparationContext(version, currentOwner),
+      scopeId: Number(shot.id),
+    };
+    return next();
+  }
+
+  async function importCharacterReferenceArtifact(req, res) {
+    try {
+      const body = assertReferenceArtifactFields(req.body, CHARACTER_REFERENCE_ARTIFACT_FIELDS);
+      const scope = req.redrawReferenceArtifactScope;
+      if (!scope) throw codedRouteError('REDRAW_REFERENCE_ARTIFACT_NOT_FOUND');
+      const result = await referenceArtifactImportService.importCharacterReferenceArtifact(scope.context, {
+        assetId: scope.scopeId,
+        purpose: body.purpose,
+        expectedUpdatedAt: body.expected_updated_at,
+        idempotencyKey: String(req.get('idempotency-key') || '').trim(),
+        file: req.file,
+      });
+      return response.success(res, publicReferenceArtifactResult(result));
+    } catch (error) {
+      return sendReferenceArtifactError(res, error, log, { scope: 'character' });
+    } finally {
+      try {
+        await cleanupReferenceArtifactUpload(req);
+      } catch (_) {
+        // Memory uploads have no persistent temp file; disk cleanup errors are handled on motion routes.
+      }
+    }
+  }
+
+  async function importMotionReferenceArtifact(req, res) {
+    let result;
+    try {
+      const body = assertReferenceArtifactFields(req.body, MOTION_REFERENCE_ARTIFACT_FIELDS);
+      const scope = req.redrawReferenceArtifactScope;
+      if (!scope) throw codedRouteError('REDRAW_REFERENCE_ARTIFACT_NOT_FOUND');
+      let file = req.file;
+      if (file?.path) {
+        file = {
+          originalname: file.originalname,
+          mimetype: file.mimetype,
+          size: Number(file.size),
+          buffer: await fs.promises.readFile(file.path),
+        };
+      }
+      result = await referenceArtifactImportService.importMotionReferenceArtifact(scope.context, {
+        shotId: scope.scopeId,
+        expectedUpdatedAt: body.expected_updated_at,
+        idempotencyKey: String(req.get('idempotency-key') || '').trim(),
+        fullFrameReviewed: strictMultipartBoolean(body.full_frame_reviewed),
+        sourceIdentityObscured: strictMultipartBoolean(body.source_identity_obscured),
+        sourceTextObscured: strictMultipartBoolean(body.source_text_obscured),
+        motionPreserved: strictMultipartBoolean(body.motion_preserved),
+        file,
+      });
+    } catch (error) {
+      try {
+        await cleanupReferenceArtifactUpload(req);
+      } catch (cleanupError) {
+        return sendReferenceArtifactError(res, cleanupError, log, { scope: 'shot' });
+      }
+      return sendReferenceArtifactError(res, error, log, { scope: 'shot' });
+    }
+    try {
+      await cleanupReferenceArtifactUpload(req);
+    } catch (error) {
+      return sendReferenceArtifactError(res, error, log, { scope: 'shot' });
+    }
+    return response.success(res, publicReferenceArtifactResult(result));
   }
 
   function findOwnedProject(id, currentOwner) {
@@ -4340,6 +4616,12 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
   return {
     uploadSource: upload.single('file'),
     uploadReferenceImage: referenceUpload.single('reference_image'),
+    characterReferenceArtifactContext,
+    parseCharacterReferenceArtifact,
+    importCharacterReferenceArtifact,
+    motionReferenceArtifactContext,
+    parseMotionReferenceArtifact,
+    importMotionReferenceArtifact,
     listProjects,
     createProject,
     getProject,
