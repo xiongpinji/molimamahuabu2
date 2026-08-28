@@ -7637,3 +7637,19 @@ test('coverage version route rejects client control and maps registration failur
     fixture.close();
   }
 });
+
+test('local production voice route remains present in the real setupRouter surface', () => {
+  const db = createDb();
+  try {
+    const router = setupRouter({}, db, { error() {}, warn() {}, info() {} });
+    const registered = new Set(router.stack
+      .filter((layer) => layer.route)
+      .flatMap((layer) => Object.keys(layer.route.methods)
+        .map((method) => `${method.toUpperCase()} ${layer.route.path}`)));
+    assert.equal(registered.has(
+      'POST /redraw/versions/:versionId/voices/:voiceAssetId/local-production-registrations',
+    ), true);
+  } finally {
+    db.close();
+  }
+});

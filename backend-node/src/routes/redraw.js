@@ -33,6 +33,7 @@ const redrawCandidateReviewService = require('../services/redrawCandidateReviewS
 const redrawEpisodeReleaseService = require('../services/redrawEpisodeReleaseService');
 const redrawReferenceArtifactImportService = require('../services/redrawReferenceArtifactImportService');
 const redrawCoverageRegistrationService = require('../services/redrawCoverageRegistrationService');
+const redrawLocalVoiceRegistrationService = require('../services/redrawLocalVoiceRegistrationService');
 const { normalizeVideoProviderResult } = require('../services/redrawProviderAdapters');
 const modelPriceService = require('../services/modelPriceService');
 const assetService = require('../services/assetService');
@@ -102,6 +103,19 @@ const COVERAGE_REGISTRATION_ERROR_MESSAGES = Object.freeze({
   REDRAW_COVERAGE_EVIDENCE_INVALID: '全帧 coverage 证据无效',
   REDRAW_COVERAGE_PROVIDER_OUTPUT_INVALID: '全帧 coverage 供应商结果无效',
   REDRAW_COVERAGE_PROVIDER_REQUIRED: '全帧 coverage 能力尚未配置',
+});
+const LOCAL_VOICE_REGISTRATION_FIELDS = new Set(['idempotency_key', 'expected_updated_at']);
+const LOCAL_VOICE_REGISTRATION_ERROR_MESSAGES = Object.freeze({
+  REDRAW_LOCAL_TTS_NOT_READY: '本地语音登记能力未就绪',
+  REDRAW_LOCAL_TTS_OWNER_MISMATCH: '本地语音登记资源不存在',
+  REDRAW_LOCAL_TTS_APPROVED_TEXT_INSUFFICIENT: '已批准目标语言对白不足',
+  REDRAW_LOCAL_TTS_IDEMPOTENCY_CONFLICT: '本地语音登记幂等请求冲突',
+  REDRAW_LOCAL_TTS_OUTPUT_INVALID: '本地语音产物无效',
+  REDRAW_LOCAL_TTS_VERIFICATION_FAILED: '本地语音语言核验失败',
+  REDRAW_LOCAL_TTS_RESULT_UNKNOWN: '本地语音登记结果未知，需要人工处理',
+  REDRAW_LOCAL_TTS_CAS_CONFLICT: '语音槽位已变更，请刷新后重试',
+  REDRAW_LOCAL_TTS_REQUEST_INVALID: '本地语音登记参数无效',
+  REDRAW_LOCAL_TTS_CLIENT_CONTROL_FORBIDDEN: '本地语音登记包含禁止字段',
 });
 
 const ALLOWED_ASPECT_RATIOS = new Set(['1:1', '9:16', '16:9', '3:4', '4:3', '21:9']);
@@ -625,6 +639,131 @@ function sendCoverageRegistrationError(res, error, log, context = {}) {
   }
   log?.error?.({ code: code || 'INTERNAL_ERROR', ...context }, '全帧 coverage 登记失败');
   return response.error(res, 500, 'INTERNAL_ERROR', '全帧 coverage 登记失败');
+}
+
+function localVoiceRegistrationInput(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)
+    || (Object.getPrototypeOf(body) !== Object.prototype && Object.getPrototypeOf(body) !== null)) {
+    throw codedRouteError(
+      'REDRAW_LOCAL_TTS_REQUEST_INVALID',
+      LOCAL_VOICE_REGISTRATION_ERROR_MESSAGES.REDRAW_LOCAL_TTS_REQUEST_INVALID,
+    );
+  }
+  const keys = Object.keys(body);
+  if (keys.some((key) => !LOCAL_VOICE_REGISTRATION_FIELDS.has(key))) {
+    throw codedRouteError(
+      'REDRAW_LOCAL_TTS_CLIENT_CONTROL_FORBIDDEN',
+      LOCAL_VOICE_REGISTRATION_ERROR_MESSAGES.REDRAW_LOCAL_TTS_CLIENT_CONTROL_FORBIDDEN,
+    );
+  }
+  const idempotencyKey = typeof body.idempotency_key === 'string'
+    ? body.idempotency_key.trim() : '';
+  const expectedUpdatedAt = typeof body.expected_updated_at === 'string'
+    ? body.expected_updated_at.trim() : '';
+  if (keys.length !== LOCAL_VOICE_REGISTRATION_FIELDS.size
+    || !idempotencyKey || idempotencyKey.length > 160 || idempotencyKey.includes('\0')
+    || !expectedUpdatedAt || !Number.isFinite(Date.parse(expectedUpdatedAt))) {
+    throw codedRouteError(
+      'REDRAW_LOCAL_TTS_REQUEST_INVALID',
+      LOCAL_VOICE_REGISTRATION_ERROR_MESSAGES.REDRAW_LOCAL_TTS_REQUEST_INVALID,
+    );
+  }
+  return { idempotencyKey, expectedUpdatedAt };
+}
+
+function localVoiceRegistrationReady(options, service) {
+  return Boolean(service && typeof service.registerLocalProductionVoice === 'function'
+    && options.localTtsManifest && typeof options.localTtsManifest === 'object'
+    && options.localTtsWorker && typeof options.localTtsWorker.synthesize === 'function'
+    && typeof options.localTtsWorker.assertReady === 'function'
+    && typeof options.localTtsWorker.assertEvidenceTrusted === 'function'
+    && options.localeVerifier && typeof options.localeVerifier.verifyLocalVoice === 'function'
+    && options.localeRegistry && typeof options.localeRegistry.assertReady === 'function'
+    && options.localVoiceMediaProbe && typeof options.localVoiceMediaProbe.probeAudio === 'function'
+    && typeof options.localVoiceVerifierAllowedRoot === 'string'
+    && options.localVoiceVerifierAllowedRoot.trim()
+    && typeof options.localVoiceAudioStorageRoot === 'string'
+    && options.localVoiceAudioStorageRoot.trim()
+    && Number.isSafeInteger(options.localVoiceMinimumApprovedTextCharacters)
+    && options.localVoiceMinimumApprovedTextCharacters > 0);
+}
+
+function publicLocalVoiceRegistrationResult(db, result, version, voice, expectedUpdatedAt) {
+  const registrationId = numericId(result?.registration?.id);
+  if (!registrationId) throw codedRouteError('REDRAW_LOCAL_TTS_RESULT_UNKNOWN');
+  const registration = db.prepare(`
+    SELECT * FROM redraw_local_voice_registrations
+    WHERE id = ? AND tenant_id = ? AND user_id = ? AND version_id = ?
+      AND voice_redraw_asset_id = ? AND deleted_at IS NULL
+  `).get(registrationId, version.tenant_id, version.user_id, version.id, voice.id);
+  const currentVoice = db.prepare(`
+    SELECT id, voice_asset_id, status, approval_status, updated_at
+    FROM redraw_assets
+    WHERE id = ? AND version_id = ? AND tenant_id = ? AND user_id = ?
+      AND kind = 'voice' AND deleted_at IS NULL
+  `).get(voice.id, version.id, version.tenant_id, version.user_id);
+  const audio = registration?.audio_asset_id == null ? null : db.prepare(`
+    SELECT id, type, mime_type, duration
+    FROM assets WHERE id = ? AND deleted_at IS NULL
+  `).get(Number(registration.audio_asset_id));
+  if (!registration || registration.status !== 'completed'
+    || !currentVoice || currentVoice.status !== 'generated'
+    || Number(currentVoice.voice_asset_id) !== Number(registration.audio_asset_id)
+    || !audio || audio.type !== 'audio'
+    || !String(audio.mime_type || '').toLowerCase().startsWith('audio/')
+    || !/^[a-f0-9]{64}$/.test(String(registration.audio_sha256 || ''))) {
+    throw codedRouteError('REDRAW_LOCAL_TTS_RESULT_UNKNOWN');
+  }
+  return {
+    registration: {
+      id: Number(registration.id),
+      source_character_key: registration.source_character_key,
+      profile_key: registration.profile_key,
+      status: registration.status,
+      completed_at: registration.completed_at,
+    },
+    version: { id: Number(version.id), locale: version.locale, market: version.market },
+    voice: {
+      id: Number(currentVoice.id),
+      audio_asset_id: Number(currentVoice.voice_asset_id),
+      status: currentVoice.status,
+      approval_status: currentVoice.approval_status,
+      updated_at: currentVoice.updated_at,
+    },
+    audio: {
+      id: Number(audio.id),
+      sha256: registration.audio_sha256,
+      duration_ms: Number(audio.duration) * 1000,
+      mime_type: audio.mime_type,
+    },
+    status: registration.status,
+    cas: { expected_updated_at: expectedUpdatedAt, updated_at: currentVoice.updated_at },
+    billing: { credits: 0, held: 0, charged: 0 },
+  };
+}
+
+function sendLocalVoiceRegistrationError(res, error, log, context = {}) {
+  const code = String(error?.code || '');
+  const message = LOCAL_VOICE_REGISTRATION_ERROR_MESSAGES[code];
+  if (code === 'REDRAW_LOCAL_TTS_OWNER_MISMATCH') {
+    return response.error(res, 404, code, message);
+  }
+  if (code === 'REDRAW_LOCAL_TTS_NOT_READY') {
+    return response.error(res, 503, code, message);
+  }
+  if (['REDRAW_LOCAL_TTS_IDEMPOTENCY_CONFLICT', 'REDRAW_LOCAL_TTS_RESULT_UNKNOWN',
+    'REDRAW_LOCAL_TTS_CAS_CONFLICT'].includes(code)) {
+    return response.error(res, 409, code, message);
+  }
+  if (['REDRAW_LOCAL_TTS_OUTPUT_INVALID', 'REDRAW_LOCAL_TTS_VERIFICATION_FAILED',
+    'REDRAW_LOCAL_TTS_APPROVED_TEXT_INSUFFICIENT'].includes(code)) {
+    return response.error(res, 422, code, message);
+  }
+  if (['REDRAW_LOCAL_TTS_REQUEST_INVALID', 'REDRAW_LOCAL_TTS_CLIENT_CONTROL_FORBIDDEN'].includes(code)) {
+    return response.error(res, 400, code, message);
+  }
+  log?.error?.({ code: 'INTERNAL_ERROR', ...context }, '本地语音登记失败');
+  return response.error(res, 500, 'INTERNAL_ERROR', '本地语音登记失败');
 }
 
 function referencePreparationInput(body, allowedFields) {
@@ -1656,6 +1795,8 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   const coverageRegistrationService = options.coverageRegistrationService
     || redrawCoverageRegistrationService;
   const coverageRegistrationProvider = options.coverageRegistrationProvider;
+  const localVoiceRegistrationService = options.localVoiceRegistrationService
+    || redrawLocalVoiceRegistrationService;
   const cfg = options.cfg || {};
   const quoteAnalysis = options.quoteAnalysis || analysisQuote();
   const canReadArtifact = options.canReadArtifact || createCanReadArtifact(db, cfg);
@@ -2143,6 +2284,8 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       versionId: Number(version.id),
       locale: version.locale,
       market: version.market,
+      localeRegistry: options.localeRegistry,
+      allowTestOnlyLocalEvidence: options.allowTestOnlyLocalEvidence === true,
     }, (asset) => Boolean(asset && canReadArtifact(asset.id)))
       .filter((voice) => rowsById.has(Number(voice.id))
         && String(voice.locale) === String(version.locale)
@@ -2161,7 +2304,9 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         audio_asset_id: Number(voice.audio_asset_id),
         duration_ms: Number(voice.duration_ms),
         preview_url: `/api/v1/redraw/versions/${Number(version.id)}/voices/${Number(voice.id)}/preview`,
-        provider_verified: true,
+        verification_source: voice.verification_source,
+        provider_verified: voice.provider_verified === true,
+        local_offline_verified: voice.local_offline_verified === true,
         audio_readable: true,
       }));
   }
@@ -3600,6 +3745,79 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     return stream.pipe(res);
   }
 
+  async function registerLocalProductionVoice(req, res) {
+    const currentOwner = owner(req);
+    if (!String(req.get?.('x-tenant-id') || '').trim()
+      || !currentOwner.tenantId || !currentOwner.userId) {
+      return sendLocalVoiceRegistrationError(
+        res,
+        codedRouteError('REDRAW_LOCAL_TTS_OWNER_MISMATCH'),
+        log,
+      );
+    }
+    const versionId = numericId(req.params.versionId);
+    const voiceAssetId = numericId(req.params.voiceAssetId);
+    const version = versionId ? findOwnedVersion(versionId, currentOwner) : null;
+    const voice = voiceAssetId ? findOwnedAsset(voiceAssetId, currentOwner) : null;
+    if (!version || !voice || voice.kind !== 'voice'
+      || Number(voice.version_id) !== Number(version.id)) {
+      return sendLocalVoiceRegistrationError(
+        res,
+        codedRouteError('REDRAW_LOCAL_TTS_OWNER_MISMATCH'),
+        log,
+        { versionId, voiceAssetId },
+      );
+    }
+    let input;
+    try {
+      input = localVoiceRegistrationInput(req.body);
+    } catch (error) {
+      return sendLocalVoiceRegistrationError(res, error, log, { versionId, voiceAssetId });
+    }
+    if (!localVoiceRegistrationReady(options, localVoiceRegistrationService)) {
+      return sendLocalVoiceRegistrationError(
+        res,
+        codedRouteError('REDRAW_LOCAL_TTS_NOT_READY'),
+        log,
+        { versionId, voiceAssetId },
+      );
+    }
+    const serviceInput = {
+      db,
+      log,
+      tenantId: currentOwner.tenantId,
+      userId: currentOwner.userId,
+      versionId: Number(version.id),
+      voiceAssetId: Number(voice.id),
+      idempotencyKey: input.idempotencyKey,
+      expectedUpdatedAt: input.expectedUpdatedAt,
+      localTtsManifest: options.localTtsManifest,
+      localTtsWorker: options.localTtsWorker,
+      mediaProbe: options.localVoiceMediaProbe,
+      localeRegistry: options.localeRegistry,
+      localeVerifier: options.localeVerifier,
+      localeVerifierAllowedRoot: options.localVoiceVerifierAllowedRoot,
+      audioStorageRoot: options.localVoiceAudioStorageRoot,
+      minimumApprovedTextCharacters: options.localVoiceMinimumApprovedTextCharacters,
+      ...(options.localVoiceRegistrationContext !== undefined
+        ? { context: options.localVoiceRegistrationContext } : {}),
+      ...(typeof options.localVoiceNow === 'function' ? { now: options.localVoiceNow } : {}),
+      ...(options.localVoiceAssetService ? { assetService: options.localVoiceAssetService } : {}),
+    };
+    try {
+      const result = await localVoiceRegistrationService.registerLocalProductionVoice(serviceInput);
+      return response.success(res, publicLocalVoiceRegistrationResult(
+        db,
+        result,
+        version,
+        voice,
+        input.expectedUpdatedAt,
+      ));
+    } catch (error) {
+      return sendLocalVoiceRegistrationError(res, error, log, { versionId, voiceAssetId });
+    }
+  }
+
   function listProductionVoices(req, res) {
     const currentOwner = owner(req);
     const version = findOwnedVersion(req.params.id, currentOwner);
@@ -3701,6 +3919,8 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
         versionId: Number(version.id),
         voiceAssetId: Number(voiceRow.id),
         canReadAsset: (asset) => Boolean(asset && canReadArtifact(asset.id)),
+        localeRegistry: options.localeRegistry,
+        allowTestOnlyLocalEvidence: options.allowTestOnlyLocalEvidence === true,
       });
       if (assigned.conflict) {
         return response.error(res, 409, 'REDRAW_VOICE_BIND_CONFLICT', '角色已绑定其他音色');
@@ -4774,6 +4994,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     startReferencePreparation,
     listVersionAssets,
     previewRedrawAsset,
+    registerLocalProductionVoice,
     listProductionVoices,
     previewProductionVoice,
     assignVoice,

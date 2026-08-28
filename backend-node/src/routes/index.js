@@ -46,6 +46,7 @@ const { REDRAW_LOCALE_DEFAULTS, createRedrawLocaleRegistryFromEnv } = require('.
 const { createRedrawLocaleVerifierClient } = require('../services/redrawLocaleVerifierClient');
 const redrawAssetService = require('../services/redrawAssetService');
 const redrawVoiceService = require('../services/redrawVoiceService');
+const redrawLocalVoiceRegistrationService = require('../services/redrawLocalVoiceRegistrationService');
 const { createRedrawProviderAssetsRouter } = require('./redrawProviderAssets');
 
 function createDefaultRedrawLocaleVerifier(options = {}) {
@@ -280,6 +281,21 @@ function setupRouter(cfg, db, log, options = {}) {
   redrawVoiceService.setDefaultEvidenceRegistry(localeRegistry);
   const localeVerifier = options.localeVerifier || redrawOptions.localeVerifier
     || createDefaultRedrawLocaleVerifier({ ...options, localeRegistry });
+  const localVoiceRegistrationService = options.localVoiceRegistrationService
+    || redrawOptions.localVoiceRegistrationService
+    || redrawLocalVoiceRegistrationService;
+  const localTtsWorker = options.localTtsWorker || redrawOptions.localTtsWorker || null;
+  const localTtsManifest = options.localTtsManifest || redrawOptions.localTtsManifest || null;
+  const localVoiceMediaProbe = options.localVoiceMediaProbe || redrawOptions.localVoiceMediaProbe || null;
+  const localVoiceVerifierAllowedRoot = options.localVoiceVerifierAllowedRoot
+    || redrawOptions.localVoiceVerifierAllowedRoot || null;
+  const localVoiceAudioStorageRoot = options.localVoiceAudioStorageRoot
+    || redrawOptions.localVoiceAudioStorageRoot || null;
+  const localVoiceMinimumApprovedTextCharacters = Number(
+    options.localVoiceMinimumApprovedTextCharacters
+      ?? redrawOptions.localVoiceMinimumApprovedTextCharacters
+      ?? 10,
+  );
   const redrawAdapters = needsRedrawAdapters
     ? (options.providerAdapters || (options.createRedrawProviderAdapters || createRedrawProviderAdapters)({
         db,
@@ -317,6 +333,26 @@ function setupRouter(cfg, db, log, options = {}) {
     assetGenerationProvider: explicitAssetGenerationProvider || defaultAssetGenerationProvider,
     dialogueProvider: explicitDialogueProvider || defaultDialogueProvider,
     coverageRegistrationProvider: explicitCoverageRegistrationProvider,
+    localeRegistry,
+    localeVerifier,
+    localVoiceRegistrationService,
+    localTtsWorker,
+    localTtsManifest,
+    localVoiceMediaProbe,
+    localVoiceVerifierAllowedRoot,
+    localVoiceAudioStorageRoot,
+    localVoiceMinimumApprovedTextCharacters,
+    allowTestOnlyLocalEvidence: options.allowTestOnlyLocalEvidence === true
+      || redrawOptions.allowTestOnlyLocalEvidence === true,
+    ...(options.localVoiceRegistrationContext !== undefined
+      ? { localVoiceRegistrationContext: options.localVoiceRegistrationContext }
+      : redrawOptions.localVoiceRegistrationContext !== undefined
+        ? { localVoiceRegistrationContext: redrawOptions.localVoiceRegistrationContext }
+        : {}),
+    ...(typeof (options.localVoiceNow || redrawOptions.localVoiceNow) === 'function'
+      ? { localVoiceNow: options.localVoiceNow || redrawOptions.localVoiceNow } : {}),
+    ...(options.localVoiceAssetService || redrawOptions.localVoiceAssetService
+      ? { localVoiceAssetService: options.localVoiceAssetService || redrawOptions.localVoiceAssetService } : {}),
   });
   r.get('/voice-catalog', voiceCatalog.list);
 
@@ -367,6 +403,10 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/redraw/versions/:id/reference-preparations', redraw.startReferencePreparation);
   r.get('/redraw/versions/:id/assets', redraw.listVersionAssets);
   r.get('/redraw/assets/:id/preview/:variant', redraw.previewRedrawAsset);
+  r.post(
+    '/redraw/versions/:versionId/voices/:voiceAssetId/local-production-registrations',
+    redraw.registerLocalProductionVoice,
+  );
   r.get('/redraw/versions/:id/voices', redraw.listProductionVoices);
   r.get('/redraw/versions/:versionId/voices/:voiceAssetId/preview', redraw.previewProductionVoice);
   r.post('/redraw/versions/:id/assets/batch-quote', redraw.assetBatchQuote);
