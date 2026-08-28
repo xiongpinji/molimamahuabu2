@@ -1637,6 +1637,18 @@ describeRootEvidence('candidate runtime and callout audit', () => {
     }
   });
 
+  const privateAvatarBalancePreflightPattern = /    for \(const item of CASES\) \{\r?\n      const client = verificationClientForModel\(context, item\.model\);\r?\n      await deps\.fetchBalance\(client\.apiKey, deps\.fetchImpl\);\r?\n    \}\r?\n    await ensureAvatar\(state, input, context, deps\);/;
+
+  it('matches the private-avatar balance preflight across line endings', () => {
+    const source = `    for (const item of CASES) {
+      const client = verificationClientForModel(context, item.model);
+      await deps.fetchBalance(client.apiKey, deps.fetchImpl);
+    }
+    await ensureAvatar(state, input, context, deps);`;
+    assert.match(source, privateAvatarBalancePreflightPattern);
+    assert.match(source.replaceAll('\n', '\r\n'), privateAvatarBalancePreflightPattern);
+  });
+
   for (const [name, mutate] of [
     ['allows one global API key fallback', (source) => source.replace(
       "const BASE_URL = 'https://toapis.xyz';",
@@ -1659,19 +1671,11 @@ describeRootEvidence('candidate runtime and callout audit', () => {
       "const client = context.verificationClients?.['seedance-2-fast'];",
     )],
     ['does not preflight both model balances before provider submission', (source) => source.replace(
-      `    for (const item of CASES) {
-      const client = verificationClientForModel(context, item.model);
-      await deps.fetchBalance(client.apiKey, deps.fetchImpl);
-    }
-    await ensureAvatar(state, input, context, deps);`,
+      privateAvatarBalancePreflightPattern,
       '    await ensureAvatar(state, input, context, deps);',
     )],
     ['moves balance preflight after avatar provider submission', (source) => source.replace(
-      `    for (const item of CASES) {
-      const client = verificationClientForModel(context, item.model);
-      await deps.fetchBalance(client.apiKey, deps.fetchImpl);
-    }
-    await ensureAvatar(state, input, context, deps);`,
+      privateAvatarBalancePreflightPattern,
       `    await ensureAvatar(state, input, context, deps);
     for (const item of CASES) {
       const client = verificationClientForModel(context, item.model);
