@@ -1,10 +1,14 @@
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const test = require('node:test');
 
 const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const realAssetService = require('../src/services/assetService');
 const { canonicalManifestSha256 } = require('../src/services/redrawLocalTtsWorkerProcess');
 
 const NOW = '2026-08-28T00:00:00.000Z';
@@ -168,6 +172,8 @@ function registrationInput(db, fixture, overrides = {}) {
     expectedUpdatedAt: NOW,
     localTtsManifest: manifest(),
     minimumApprovedTextCharacters: 10,
+    context: 'test',
+    claimOnly: true,
     now: () => NOW,
     ...overrides,
   };
@@ -181,6 +187,153 @@ function createRegistrationDb(overrides = {}) {
 
 function expectCode(code) {
   return (error) => error?.code === code && error.message === code;
+}
+
+function pcmWave({ samples = 16000, sampleRate = 16000 } = {}) {
+  const dataSize = samples * 2;
+  const bytes = Buffer.alloc(44 + dataSize);
+  bytes.write('RIFF', 0, 'ascii');
+  bytes.writeUInt32LE(bytes.length - 8, 4);
+  bytes.write('WAVE', 8, 'ascii');
+  bytes.write('fmt ', 12, 'ascii');
+  bytes.writeUInt32LE(16, 16);
+  bytes.writeUInt16LE(1, 20);
+  bytes.writeUInt16LE(1, 22);
+  bytes.writeUInt32LE(sampleRate, 24);
+  bytes.writeUInt32LE(sampleRate * 2, 28);
+  bytes.writeUInt16LE(2, 32);
+  bytes.writeUInt16LE(16, 34);
+  bytes.write('data', 36, 'ascii');
+  bytes.writeUInt32LE(dataSize, 40);
+  for (let index = 0; index < samples; index += 1) {
+    bytes.writeInt16LE(index % 2 === 0 ? 1000 : -1000, 44 + (index * 2));
+  }
+  return bytes;
+}
+
+function executionHarness(t, db, fixture, overrides = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-local-voice-complete-'));
+  const verifierAllowedRoot = path.join(root, 'locale-verifier');
+  const audioStorageRoot = path.join(root, 'storage');
+  fs.mkdirSync(verifierAllowedRoot);
+  fs.mkdirSync(audioStorageRoot);
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const wave = overrides.wave || pcmWave();
+  const calls = { worker: [], probe: [], verifier: [], asset: [] };
+  const baseManifest = manifest({ test_only: true });
+  const outputSha256 = crypto.createHash('sha256').update(wave).digest('hex');
+  const localTtsWorker = overrides.localTtsWorker || {
+    assertReady(locale) {
+      assert.equal(locale, 'en-US');
+    },
+    assertEvidenceTrusted(evidence) {
+      assert.deepEqual(Object.keys(evidence).sort(), [
+        'binary_sha256', 'engine', 'engine_version', 'manifest_sha256', 'profile',
+        'source', 'target_locale', 'test_only',
+      ]);
+      assert.equal(evidence.profile, 'voice-anna');
+      return { profile: { ...baseManifest.profiles[0] } };
+    },
+    async synthesize(input) {
+      calls.worker.push(input);
+      const outputPath = path.join(input.outputRoot, 'voice.wav');
+      fs.writeFileSync(outputPath, wave, { flag: 'wx' });
+      return {
+        source: 'local_offline_tts',
+        engine: 'eSpeak NG',
+        engine_version: baseManifest.engine_version,
+        binary_sha256: baseManifest.executable_sha256,
+        manifest_sha256: baseManifest.manifest_sha256,
+        target_locale: input.locale,
+        output_path: outputPath,
+        output_sha256: outputSha256,
+        profile: { ...baseManifest.profiles[0] },
+        completed_at: '2026-08-28T00:00:01.000Z',
+        test_only: true,
+      };
+    },
+  };
+  const mediaProbe = overrides.mediaProbe || {
+    async probeAudio(input) {
+      calls.probe.push(input);
+      return {
+        format: 'wav',
+        audio_streams: 1,
+        decodable: true,
+        non_silent: true,
+        duration_ms: 1000,
+        size_bytes: fs.statSync(input.audioPath).size,
+      };
+    },
+  };
+  const localePack = {
+    id: 'en-US@1',
+    locale: 'en-US',
+    model_manifest_sha256: '1'.repeat(64),
+    calibration_manifest_sha256: '2'.repeat(64),
+  };
+  const localeRegistry = overrides.localeRegistry || {
+    assertReady(locale) {
+      assert.equal(locale, 'en-US');
+      return { ...localePack };
+    },
+  };
+  const localeEvidence = {
+    requestId: '',
+    source: 'offline-worker',
+    audioSha256: outputSha256,
+    approvedTextSha256: crypto.createHash('sha256')
+      .update('First approved line.\nSecond approved line.', 'utf8').digest('hex'),
+    localePack: localePack.id,
+    languageVerified: true,
+    detectedLocale: 'en-US',
+    transcriptSha256: '3'.repeat(64),
+    modelManifestSha256: localePack.model_manifest_sha256,
+    calibrationManifestSha256: localePack.calibration_manifest_sha256,
+    metrics: { character_error_rate: 0, critical_tokens_match: true, word_error_rate: 0 },
+    localTtsInvocation: {
+      engine: 'eSpeak NG',
+      engineVersion: baseManifest.engine_version,
+      binarySha256: baseManifest.executable_sha256,
+      manifestSha256: baseManifest.manifest_sha256,
+      profile: 'voice-anna',
+    },
+    completedAt: '2026-08-28T00:00:02.000Z',
+  };
+  const localeVerifier = overrides.localeVerifier || {
+    async verifyLocalVoice(input) {
+      calls.verifier.push(input);
+      return { ...localeEvidence, requestId: input.requestId };
+    },
+  };
+  const assetService = overrides.assetService || {
+    create(targetDb, log, payload) {
+      calls.asset.push(payload);
+      return realAssetService.create(targetDb, log, payload);
+    },
+  };
+
+  return {
+    calls,
+    outputSha256,
+    verifierAllowedRoot,
+    audioStorageRoot,
+    input: registrationInput(db, fixture, {
+      context: 'test',
+      claimOnly: false,
+      localTtsManifest: baseManifest,
+      localTtsWorker,
+      mediaProbe,
+      localeRegistry,
+      localeVerifier,
+      localeVerifierAllowedRoot: verifierAllowedRoot,
+      audioStorageRoot,
+      assetService,
+      log: { info() {}, warn() {}, error() {} },
+      signal: overrides.signal,
+    }),
+  };
 }
 
 function columnNames(db, tableName) {
@@ -449,6 +602,8 @@ test('stable profile claim rejects a test-only manifest in production context', 
   const { registerLocalProductionVoice } = require('../src/services/redrawLocalVoiceRegistrationService');
   assert.throws(
     () => registerLocalProductionVoice(registrationInput(db, fixture, {
+      context: 'production',
+      claimOnly: false,
       localTtsManifest: manifest({ test_only: true }),
     })),
     expectCode('REDRAW_LOCAL_TTS_NOT_READY'),
@@ -519,4 +674,432 @@ test('claim redacts unexpected database diagnostics', () => {
       tenantId: 'tenant-a', userId: 'user-a', versionId: 1, voiceAssetId: 1,
     }),
   }), expectCode('REDRAW_LOCAL_TTS_NOT_READY'));
+});
+
+test('missing execution dependencies fail closed without leaving a retryable processing claim', (t) => {
+  const { db, fixture } = createRegistrationDb();
+  t.after(() => db.close());
+  const { registerLocalProductionVoice } = require('../src/services/redrawLocalVoiceRegistrationService');
+  const input = registrationInput(db, fixture, { claimOnly: false });
+
+  assert.throws(
+    () => registerLocalProductionVoice(input),
+    expectCode('REDRAW_LOCAL_TTS_NOT_READY'),
+  );
+  let registration = db.prepare('SELECT * FROM redraw_local_voice_registrations').get();
+  assert.equal(registration.status, 'failed');
+  assert.equal(registration.error_code, 'REDRAW_LOCAL_TTS_NOT_READY');
+  assert.equal(registration.error_message, 'REDRAW_LOCAL_TTS_NOT_READY');
+
+  const replay = registerLocalProductionVoice(input);
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.registration.status, 'failed');
+  registration = db.prepare('SELECT * FROM redraw_local_voice_registrations').get();
+  assert.equal(registration.status, 'failed');
+});
+
+test('synthesizes, verifies media and completes one local voice with zero billing', async (t) => {
+  const { db, fixture } = createRegistrationDb();
+  t.after(() => db.close());
+  const harness = executionHarness(t, db, fixture);
+  const beforeBilling = {
+    usage: db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count,
+    tenantUsage: db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count,
+    ledger: db.prepare('SELECT COUNT(*) AS count FROM tenant_credit_ledger').get().count,
+  };
+  const { registerLocalProductionVoice } = require('../src/services/redrawLocalVoiceRegistrationService');
+
+  const result = await registerLocalProductionVoice(harness.input);
+
+  assert.deepEqual(result.billing, { credits: 0, held: 0, charged: 0 });
+  assert.equal(result.registration.status, 'completed');
+  assert.equal(harness.calls.worker.length, 1);
+  assert.deepEqual(Object.keys(harness.calls.worker[0]).sort(), [
+    'approvedText', 'locale', 'outputRoot', 'profileKey', 'requestId',
+  ]);
+  assert.equal(harness.calls.worker[0].approvedText, 'First approved line.\nSecond approved line.');
+  assert.equal(harness.calls.worker[0].locale, 'en-US');
+  assert.equal(harness.calls.worker[0].profileKey, 'voice-anna');
+  const stagingRelative = path.relative(
+    fs.realpathSync(harness.verifierAllowedRoot),
+    path.resolve(harness.calls.worker[0].outputRoot),
+  );
+  assert.ok(stagingRelative && !stagingRelative.startsWith('..') && !path.isAbsolute(stagingRelative));
+
+  assert.equal(harness.calls.probe.length, 1);
+  assert.deepEqual(Object.keys(harness.calls.probe[0]).sort(), [
+    'audioPath', 'maxOutputBytes', 'requestId', 'timeoutMs',
+  ]);
+  assert.equal(harness.calls.verifier.length, 1);
+  assert.deepEqual(Object.keys(harness.calls.verifier[0]).sort(), [
+    'approvedText', 'audioPath', 'audioSha256', 'localTtsInvocation', 'locale', 'requestId',
+  ]);
+  assert.equal(harness.calls.verifier[0].audioSha256, harness.outputSha256);
+  assert.deepEqual(harness.calls.verifier[0].localTtsInvocation, {
+    engine: 'eSpeak NG',
+    engineVersion: '1.52.0',
+    binarySha256: 'f'.repeat(64),
+    manifestSha256: harness.input.localTtsManifest.manifest_sha256,
+    profile: 'voice-anna',
+  });
+
+  assert.equal(harness.calls.asset.length, 1);
+  const assetPayload = harness.calls.asset[0];
+  assert.equal(assetPayload.drama_id, 1);
+  assert.equal(assetPayload.type, 'audio');
+  assert.equal(assetPayload.category, 'redraw-local-voice');
+  assert.equal(assetPayload.local_path, `redraw-local-voices/${harness.outputSha256}.wav`);
+  assert.equal(assetPayload.metadata.tenant_id, fixture.tenantId);
+  assert.equal(assetPayload.metadata.user_id, fixture.userId);
+  assert.equal(assetPayload.metadata.version_id, fixture.versionId);
+  assert.equal(assetPayload.metadata.voice_redraw_asset_id, fixture.voiceAssetId);
+  assert.equal(assetPayload.metadata.source, 'local_offline_tts');
+
+  const registration = db.prepare('SELECT * FROM redraw_local_voice_registrations').get();
+  const slot = db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(fixture.voiceAssetId);
+  const storedAsset = db.prepare('SELECT * FROM assets WHERE id = ?').get(registration.audio_asset_id);
+  const evidence = JSON.parse(slot.source_ref_json).snapshot.voice_evidence;
+  assert.equal(registration.status, 'completed');
+  assert.equal(registration.audio_sha256, harness.outputSha256);
+  assert.match(registration.locale_evidence_sha256, /^[a-f0-9]{64}$/);
+  assert.ok(registration.completed_at);
+  assert.equal(slot.voice_asset_id, registration.audio_asset_id);
+  assert.equal(slot.status, 'generated');
+  assert.equal(slot.approval_status, 'pending');
+  assert.equal(evidence.source, 'local_offline_tts');
+  assert.equal(evidence.registration_id, registration.id);
+  assert.equal(evidence.registration_status, 'completed');
+  assert.equal(evidence.audio_asset_id, registration.audio_asset_id);
+  assert.equal(evidence.audio_sha256, harness.outputSha256);
+  assert.equal(evidence.approved_text_sha256, registration.approved_text_sha256);
+  assert.equal(evidence.locale_pack, 'en-US@1');
+  assert.equal(evidence.language_verified, true);
+  assert.equal(evidence.detected_locale, 'en-US');
+  assert.equal(evidence.real_generation_verified, undefined);
+  assert.equal(storedAsset.local_path, `redraw-local-voices/${harness.outputSha256}.wav`);
+  assert.equal(
+    crypto.createHash('sha256').update(fs.readFileSync(path.join(harness.audioStorageRoot, storedAsset.local_path))).digest('hex'),
+    harness.outputSha256,
+  );
+  assert.equal(fs.existsSync(harness.calls.worker[0].outputRoot), false);
+  assert.deepEqual({
+    usage: db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count,
+    tenantUsage: db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count,
+    ledger: db.prepare('SELECT COUNT(*) AS count FROM tenant_credit_ledger').get().count,
+  }, beforeBilling);
+});
+
+test('media and worker evidence failures mark registration failed and clean only temporary output', async (t) => {
+  const cases = [
+    ['untrusted invocation', async (harness) => {
+      harness.input.localTtsWorker.assertEvidenceTrusted = () => {
+        const error = new Error('C:\\secret\\engine.exe approved words API_KEY=secret');
+        error.code = 'REDRAW_LOCAL_TTS_NOT_READY';
+        throw error;
+      };
+    }],
+    ['path escape', async (harness) => {
+      harness.input.localTtsWorker.synthesize = async (input) => {
+        const outputPath = path.join(harness.verifierAllowedRoot, 'outside.wav');
+        fs.writeFileSync(outputPath, pcmWave(), { flag: 'wx' });
+        return {
+          source: 'local_offline_tts', engine: 'eSpeak NG', engine_version: '1.52.0',
+          binary_sha256: 'f'.repeat(64), manifest_sha256: harness.input.localTtsManifest.manifest_sha256,
+          target_locale: 'en-US', output_path: outputPath,
+          output_sha256: crypto.createHash('sha256').update(fs.readFileSync(outputPath)).digest('hex'),
+          profile: { ...harness.input.localTtsManifest.profiles[0] },
+          completed_at: '2026-08-28T00:00:01.000Z', test_only: true,
+        };
+      };
+    }],
+    ['bad wav magic', async (harness) => {
+      harness.input.localTtsWorker.synthesize = async (input) => {
+        const outputPath = path.join(input.outputRoot, 'bad.wav');
+        const bytes = Buffer.from('not-wave');
+        fs.writeFileSync(outputPath, bytes, { flag: 'wx' });
+        return {
+          source: 'local_offline_tts', engine: 'eSpeak NG', engine_version: '1.52.0',
+          binary_sha256: 'f'.repeat(64), manifest_sha256: harness.input.localTtsManifest.manifest_sha256,
+          target_locale: 'en-US', output_path: outputPath,
+          output_sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+          profile: { ...harness.input.localTtsManifest.profiles[0] },
+          completed_at: '2026-08-28T00:00:01.000Z', test_only: true,
+        };
+      };
+    }],
+    ['sha drift', async (harness) => {
+      const synthesize = harness.input.localTtsWorker.synthesize;
+      harness.input.localTtsWorker.synthesize = async (input) => ({
+        ...(await synthesize(input)), output_sha256: '0'.repeat(64),
+      });
+    }],
+    ['missing audio stream', async (harness) => {
+      harness.input.mediaProbe.probeAudio = async (input) => ({
+        format: 'wav', audio_streams: 0, decodable: true, non_silent: true,
+        duration_ms: 1000, size_bytes: fs.statSync(input.audioPath).size,
+      });
+    }],
+    ['silent audio', async (harness) => {
+      harness.input.mediaProbe.probeAudio = async (input) => ({
+        format: 'wav', audio_streams: 1, decodable: true, non_silent: false,
+        duration_ms: 1000, size_bytes: fs.statSync(input.audioPath).size,
+      });
+    }],
+    ['duration out of range', async (harness) => {
+      harness.input.mediaProbe.probeAudio = async (input) => ({
+        format: 'wav', audio_streams: 1, decodable: true, non_silent: true,
+        duration_ms: 0, size_bytes: fs.statSync(input.audioPath).size,
+      });
+    }],
+    ['size drift', async (harness) => {
+      harness.input.mediaProbe.probeAudio = async (input) => ({
+        format: 'wav', audio_streams: 1, decodable: true, non_silent: true,
+        duration_ms: 1000, size_bytes: fs.statSync(input.audioPath).size + 1,
+      });
+    }],
+  ];
+
+  const databases = [];
+  t.after(() => databases.forEach((db) => db.close()));
+  const { registerLocalProductionVoice } = require('../src/services/redrawLocalVoiceRegistrationService');
+  for (const [name, mutate] of cases) {
+    await t.test(name, async (subtest) => {
+      const { db, fixture } = createRegistrationDb();
+      databases.push(db);
+      const harness = executionHarness(subtest, db, fixture);
+      await mutate(harness);
+      await assert.rejects(registerLocalProductionVoice(harness.input), (error) => (
+        ['REDRAW_LOCAL_TTS_NOT_READY', 'REDRAW_LOCAL_TTS_OUTPUT_INVALID'].includes(error?.code)
+        && error.message === error.code
+      ));
+      const registration = db.prepare('SELECT * FROM redraw_local_voice_registrations').get();
+      assert.equal(registration.status, 'failed', name);
+      assert.equal(registration.audio_asset_id, null, name);
+      assert.ok(['REDRAW_LOCAL_TTS_NOT_READY', 'REDRAW_LOCAL_TTS_OUTPUT_INVALID'].includes(registration.error_code));
+      assert.equal(registration.error_message, registration.error_code);
+      assert.doesNotMatch(registration.error_message, /approved|secret|API_KEY|[A-Za-z]:\\/i);
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 0, name);
+      for (const call of harness.calls.worker) {
+        assert.equal(fs.existsSync(call.outputRoot), false, name);
+      }
+    });
+  }
+});
+
+test('reparse replacement of the private staging root is rejected without deleting its target', async (t) => {
+  const { db, fixture } = createRegistrationDb();
+  t.after(() => db.close());
+  const harness = executionHarness(t, db, fixture);
+  const outside = path.join(harness.verifierAllowedRoot, 'junction-target');
+  fs.mkdirSync(outside);
+  const outsideFile = path.join(outside, 'linked.wav');
+  fs.writeFileSync(outsideFile, pcmWave(), { flag: 'wx' });
+  harness.input.localTtsWorker.synthesize = async (input) => {
+    fs.rmdirSync(input.outputRoot);
+    fs.symlinkSync(outside, input.outputRoot, 'junction');
+    const outputPath = path.join(input.outputRoot, 'linked.wav');
+    return {
+      source: 'local_offline_tts', engine: 'eSpeak NG', engine_version: '1.52.0',
+      binary_sha256: 'f'.repeat(64), manifest_sha256: harness.input.localTtsManifest.manifest_sha256,
+      target_locale: 'en-US', output_path: outputPath,
+      output_sha256: crypto.createHash('sha256').update(fs.readFileSync(outsideFile)).digest('hex'),
+      profile: { ...harness.input.localTtsManifest.profiles[0] },
+      completed_at: '2026-08-28T00:00:01.000Z', test_only: true,
+    };
+  };
+  const { registerLocalProductionVoice } = require('../src/services/redrawLocalVoiceRegistrationService');
+  await assert.rejects(
+    registerLocalProductionVoice(harness.input),
+    expectCode('REDRAW_LOCAL_TTS_OUTPUT_INVALID'),
+  );
+  assert.equal(fs.existsSync(outsideFile), true);
+  assert.equal(db.prepare('SELECT status FROM redraw_local_voice_registrations').get().status, 'failed');
+});
+
+test('worker result unknown becomes needs_attention and the same idempotency key never retries', async (t) => {
+  const { db, fixture } = createRegistrationDb();
+  t.after(() => db.close());
+  let attempts = 0;
+  const harness = executionHarness(t, db, fixture);
+  harness.input.localTtsWorker.synthesize = async () => {
+    attempts += 1;
+    const error = new Error('C:\\private\\voice.wav command --key secret approved words');
+    error.code = 'REDRAW_LOCAL_TTS_RESULT_UNKNOWN';
+    throw error;
+  };
+  const { registerLocalProductionVoice } = require('../src/services/redrawLocalVoiceRegistrationService');
+  await assert.rejects(
+    registerLocalProductionVoice(harness.input),
+    expectCode('REDRAW_LOCAL_TTS_RESULT_UNKNOWN'),
+  );
+  assert.equal(attempts, 1);
+  let registration = db.prepare('SELECT * FROM redraw_local_voice_registrations').get();
+  assert.equal(registration.status, 'needs_attention');
+  assert.equal(registration.error_message, 'REDRAW_LOCAL_TTS_RESULT_UNKNOWN');
+  const replay = await registerLocalProductionVoice(harness.input);
+  assert.equal(replay.replayed, true);
+  assert.equal(attempts, 1);
+  registration = db.prepare('SELECT * FROM redraw_local_voice_registrations').get();
+  assert.equal(registration.status, 'needs_attention');
+});
+
+test('locale verification fails before media registration', async (t) => {
+  const { db, fixture } = createRegistrationDb();
+  t.after(() => db.close());
+  const harness = executionHarness(t, db, fixture);
+  harness.input.localeVerifier.verifyLocalVoice = async () => {
+    const error = new Error('C:\\private\\locale.sock approved words');
+    error.code = 'REDRAW_LOCAL_TTS_VERIFICATION_FAILED';
+    throw error;
+  };
+  const { registerLocalProductionVoice } = require('../src/services/redrawLocalVoiceRegistrationService');
+  await assert.rejects(
+    registerLocalProductionVoice(harness.input),
+    expectCode('REDRAW_LOCAL_TTS_VERIFICATION_FAILED'),
+  );
+  const registration = db.prepare('SELECT * FROM redraw_local_voice_registrations').get();
+  assert.equal(registration.status, 'failed');
+  assert.equal(registration.audio_asset_id, null);
+  assert.equal(harness.calls.asset.length, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 0);
+});
+
+test('completed media is retained and registration needs_attention when final voice slot CAS conflicts', async (t) => {
+  const { db, fixture } = createRegistrationDb();
+  t.after(() => db.close());
+  const harness = executionHarness(t, db, fixture);
+  const create = harness.input.assetService.create;
+  harness.input.assetService.create = (targetDb, log, payload) => {
+    const asset = create(targetDb, log, payload);
+    targetDb.prepare('UPDATE redraw_assets SET updated_at = ? WHERE id = ?')
+      .run('2026-08-28T00:00:09.000Z', fixture.voiceAssetId);
+    return asset;
+  };
+  const { registerLocalProductionVoice } = require('../src/services/redrawLocalVoiceRegistrationService');
+  await assert.rejects(
+    registerLocalProductionVoice(harness.input),
+    expectCode('REDRAW_LOCAL_TTS_CAS_CONFLICT'),
+  );
+  const registration = db.prepare('SELECT * FROM redraw_local_voice_registrations').get();
+  const slot = db.prepare('SELECT voice_asset_id FROM redraw_assets WHERE id = ?').get(fixture.voiceAssetId);
+  const asset = db.prepare('SELECT * FROM assets WHERE id = ?').get(registration.audio_asset_id);
+  assert.equal(registration.status, 'needs_attention');
+  assert.ok(registration.audio_asset_id > 0);
+  assert.equal(registration.audio_sha256, harness.outputSha256);
+  assert.equal(slot.voice_asset_id, null);
+  assert.ok(asset);
+  assert.equal(fs.existsSync(path.join(harness.audioStorageRoot, asset.local_path)), true);
+});
+
+test('asset registration uncertainty reconciles only trusted assets and preserves published content', async (t) => {
+  const databases = [];
+  t.after(() => databases.forEach((db) => db.close()));
+  const { registerLocalProductionVoice } = require('../src/services/redrawLocalVoiceRegistrationService');
+
+  await t.test('persisted asset is retained and referenced', async (subtest) => {
+    const { db, fixture } = createRegistrationDb();
+    databases.push(db);
+    const harness = executionHarness(subtest, db, fixture);
+    harness.input.assetService.create = (targetDb, log, payload) => {
+      realAssetService.create(targetDb, log, payload);
+      throw new Error('C:\\private\\assets.sqlite API_KEY=secret approved words');
+    };
+    await assert.rejects(
+      registerLocalProductionVoice(harness.input),
+      expectCode('REDRAW_LOCAL_TTS_RESULT_UNKNOWN'),
+    );
+    const registration = db.prepare('SELECT * FROM redraw_local_voice_registrations').get();
+    const asset = db.prepare('SELECT * FROM assets').get();
+    assert.equal(registration.status, 'needs_attention');
+    assert.equal(registration.audio_asset_id, asset.id);
+    assert.equal(registration.audio_sha256, harness.outputSha256);
+    assert.equal(fs.existsSync(path.join(harness.audioStorageRoot, asset.local_path)), true);
+    assert.equal(registration.error_message, 'REDRAW_LOCAL_TTS_RESULT_UNKNOWN');
+  });
+
+  await t.test('pre-insert failure leaves the immutable published content for safe reuse', async (subtest) => {
+    const { db, fixture } = createRegistrationDb();
+    databases.push(db);
+    const harness = executionHarness(subtest, db, fixture);
+    harness.input.assetService.create = () => {
+      throw new Error('C:\\private\\assets.sqlite approved words');
+    };
+    await assert.rejects(
+      registerLocalProductionVoice(harness.input),
+      expectCode('REDRAW_LOCAL_TTS_RESULT_UNKNOWN'),
+    );
+    const registration = db.prepare('SELECT * FROM redraw_local_voice_registrations').get();
+    assert.equal(registration.status, 'needs_attention');
+    assert.equal(registration.audio_asset_id, null);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 0);
+    assert.equal(fs.existsSync(path.join(
+      harness.audioStorageRoot,
+      'redraw-local-voices',
+      `${harness.outputSha256}.wav`,
+    )), true);
+  });
+
+  await t.test('an unverified adapter return is never written into the registration', async (subtest) => {
+    const { db, fixture } = createRegistrationDb();
+    databases.push(db);
+    const harness = executionHarness(subtest, db, fixture);
+    harness.input.assetService.create = () => ({
+      id: 999,
+      drama_id: 999,
+      type: 'audio',
+      category: 'redraw-local-voice',
+      local_path: 'redraw-local-voices/wrong.wav',
+      mime_type: 'audio/wav',
+      metadata: {},
+    });
+    await assert.rejects(
+      registerLocalProductionVoice(harness.input),
+      expectCode('REDRAW_LOCAL_TTS_RESULT_UNKNOWN'),
+    );
+    const registration = db.prepare('SELECT * FROM redraw_local_voice_registrations').get();
+    assert.equal(registration.status, 'needs_attention');
+    assert.equal(registration.audio_asset_id, null);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 0);
+  });
+
+  await t.test('a shared content file is retained when another asset has already referenced it', async (subtest) => {
+    const { db, fixture } = createRegistrationDb();
+    databases.push(db);
+    const harness = executionHarness(subtest, db, fixture);
+    harness.input.assetService.create = (targetDb, log, payload) => {
+      realAssetService.create(targetDb, log, {
+        ...payload,
+        metadata: { ...payload.metadata, registration_id: 999 },
+      });
+      throw new Error('asset result unknown');
+    };
+    await assert.rejects(
+      registerLocalProductionVoice(harness.input),
+      expectCode('REDRAW_LOCAL_TTS_RESULT_UNKNOWN'),
+    );
+    const registration = db.prepare('SELECT * FROM redraw_local_voice_registrations').get();
+    const sharedAsset = db.prepare('SELECT * FROM assets').get();
+    assert.equal(registration.status, 'needs_attention');
+    assert.equal(registration.audio_asset_id, null);
+    assert.ok(sharedAsset);
+    assert.equal(fs.existsSync(path.join(harness.audioStorageRoot, sharedAsset.local_path)), true);
+  });
+});
+
+test('existing content-addressed media is revalidated and never deleted on mismatch', async (t) => {
+  const { db, fixture } = createRegistrationDb();
+  t.after(() => db.close());
+  const harness = executionHarness(t, db, fixture);
+  const contentDir = path.join(harness.audioStorageRoot, 'redraw-local-voices');
+  fs.mkdirSync(contentDir);
+  const targetPath = path.join(contentDir, `${harness.outputSha256}.wav`);
+  fs.writeFileSync(targetPath, Buffer.from('corrupt-existing'), { flag: 'wx' });
+  const { registerLocalProductionVoice } = require('../src/services/redrawLocalVoiceRegistrationService');
+  await assert.rejects(
+    registerLocalProductionVoice(harness.input),
+    expectCode('REDRAW_LOCAL_TTS_OUTPUT_INVALID'),
+  );
+  assert.deepEqual(fs.readFileSync(targetPath), Buffer.from('corrupt-existing'));
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 0);
+  assert.equal(db.prepare('SELECT status FROM redraw_local_voice_registrations').get().status, 'failed');
 });

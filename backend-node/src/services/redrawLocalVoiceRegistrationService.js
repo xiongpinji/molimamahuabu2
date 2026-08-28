@@ -1,4 +1,8 @@
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const defaultAssetService = require('./assetService');
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const MANIFEST_KEYS = [
@@ -11,6 +15,33 @@ const MANIFEST_KEYS = [
   'manifest_sha256',
 ];
 const PROFILE_KEYS = ['profile_key', 'locale', 'voice', 'pitch', 'rate', 'amplitude'];
+const BILLING_ZERO = Object.freeze({ credits: 0, held: 0, charged: 0 });
+const LOCAL_VOICE_CONTRACT_VERSION = 'local-offline-tts-v1';
+const MAX_AUDIO_BYTES = 64 * 1024 * 1024;
+const MIN_AUDIO_DURATION_MS = 1000;
+const MAX_AUDIO_DURATION_MS = 120000;
+const MEDIA_PROBE_TIMEOUT_MS = 30000;
+const MEDIA_PROBE_OUTPUT_BYTES = 64 * 1024;
+const WORKER_RESULT_KEYS = [
+  'source',
+  'engine',
+  'engine_version',
+  'binary_sha256',
+  'manifest_sha256',
+  'target_locale',
+  'output_path',
+  'output_sha256',
+  'profile',
+  'completed_at',
+];
+const PROBE_RESULT_KEYS = [
+  'format',
+  'audio_streams',
+  'decodable',
+  'non_silent',
+  'duration_ms',
+  'size_bytes',
+];
 
 function codedError(code) {
   return Object.assign(new Error(code), { code });
@@ -388,6 +419,7 @@ function claimRegistration(db, input, derived, expectedStateFingerprint) {
         approvedTextSha256: derived.dialogue.approvedTextSha256,
         locale: registration.target_locale,
         market: registration.target_market,
+        projectId: Number(derived.scope.version.project_id),
         profile: derived.profile.profile,
         engineManifestSha256: registration.engine_manifest_sha256,
         expectedUpdatedAt: input.expectedUpdatedAt,
@@ -438,9 +470,635 @@ function performRegistrationClaim(rawInput) {
   return claimRegistration(input.db, input, { scope, dialogue, profile }, initialStateFingerprint);
 }
 
+function comparablePath(value) {
+  const normalized = path.normalize(path.resolve(value));
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function samePath(left, right) {
+  return comparablePath(left) === comparablePath(right);
+}
+
+function realpath(value) {
+  return fs.realpathSync.native ? fs.realpathSync.native(value) : fs.realpathSync(value);
+}
+
+function inspectRealPath(targetPath, kind, code = 'REDRAW_LOCAL_TTS_OUTPUT_INVALID') {
+  try {
+    if (typeof targetPath !== 'string' || !path.isAbsolute(targetPath)) throw new Error();
+    const lstat = fs.lstatSync(targetPath);
+    if (lstat.isSymbolicLink()) throw new Error();
+    if (kind === 'file' ? !lstat.isFile() : !lstat.isDirectory()) throw new Error();
+    const resolved = realpath(targetPath);
+    if (!samePath(resolved, targetPath)) throw new Error();
+    return {
+      path: resolved,
+      dev: lstat.dev,
+      ino: lstat.ino,
+      size: lstat.size,
+    };
+  } catch (_) {
+    throw codedError(code);
+  }
+}
+
+function sameIdentity(left, right) {
+  return samePath(left.path, right.path) && left.dev === right.dev && left.ino === right.ino;
+}
+
+function strictDescendant(rootPath, childPath) {
+  const relative = path.relative(rootPath, childPath);
+  return Boolean(relative)
+    && relative !== '..'
+    && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative);
+}
+
+function assertWaveMagic(bytes) {
+  if (!Buffer.isBuffer(bytes)
+    || bytes.length < 44
+    || bytes.length > MAX_AUDIO_BYTES
+    || bytes.subarray(0, 4).toString('ascii') !== 'RIFF'
+    || bytes.subarray(8, 12).toString('ascii') !== 'WAVE'
+    || bytes.readUInt32LE(4) !== bytes.length - 8) {
+    throw codedError('REDRAW_LOCAL_TTS_OUTPUT_INVALID');
+  }
+}
+
+function sha256File(filePath) {
+  return sha256(fs.readFileSync(filePath));
+}
+
+function readVerifiedSourceFile(stagingIdentity, outputPath, reportedSha256) {
+  const fileIdentity = inspectRealPath(outputPath, 'file');
+  if (!strictDescendant(stagingIdentity.path, fileIdentity.path)
+    || fileIdentity.size < 44
+    || fileIdentity.size > MAX_AUDIO_BYTES
+    || !SHA256.test(String(reportedSha256 || ''))) {
+    throw codedError('REDRAW_LOCAL_TTS_OUTPUT_INVALID');
+  }
+  const bytes = fs.readFileSync(fileIdentity.path);
+  assertWaveMagic(bytes);
+  const audioSha256 = sha256(bytes);
+  if (audioSha256 !== reportedSha256) throw codedError('REDRAW_LOCAL_TTS_OUTPUT_INVALID');
+  return { bytes, identity: fileIdentity, audioSha256 };
+}
+
+function revalidateSourceFile(stagingIdentity, before, outputPath) {
+  const stagingAfter = inspectRealPath(stagingIdentity.path, 'directory');
+  if (!sameIdentity(stagingAfter, stagingIdentity)) throw codedError('REDRAW_LOCAL_TTS_OUTPUT_INVALID');
+  const after = inspectRealPath(outputPath, 'file');
+  if (!sameIdentity(after, before.identity)
+    || after.size !== before.identity.size
+    || sha256File(after.path) !== before.audioSha256) {
+    throw codedError('REDRAW_LOCAL_TTS_OUTPUT_INVALID');
+  }
+}
+
+function validateWorkerResult(result, claim, manifest, worker) {
+  const keys = manifest.test_only === true ? [...WORKER_RESULT_KEYS, 'test_only'] : WORKER_RESULT_KEYS;
+  if (!exactObject(result, keys)
+    || result.source !== 'local_offline_tts'
+    || result.engine !== manifest.engine
+    || result.engine_version !== manifest.engine_version
+    || result.binary_sha256 !== manifest.executable_sha256
+    || result.manifest_sha256 !== claim.engineManifestSha256
+    || result.target_locale !== claim.locale
+    || !exactObject(result.profile, PROFILE_KEYS)
+    || stableJson(result.profile) !== stableJson(claim.profile)
+    || !Number.isFinite(Date.parse(String(result.completed_at || '')))
+    || (manifest.test_only === true && result.test_only !== true)) {
+    throw codedError('REDRAW_LOCAL_TTS_OUTPUT_INVALID');
+  }
+  const invocation = {
+    source: result.source,
+    engine: result.engine,
+    engine_version: result.engine_version,
+    binary_sha256: result.binary_sha256,
+    manifest_sha256: result.manifest_sha256,
+    profile: result.profile.profile_key,
+    target_locale: result.target_locale,
+    ...(manifest.test_only === true ? { test_only: true } : {}),
+  };
+  let trusted;
+  try {
+    trusted = worker.assertEvidenceTrusted(invocation);
+  } catch (error) {
+    if (error?.code === 'REDRAW_LOCAL_TTS_NOT_READY') throw error;
+    throw codedError('REDRAW_LOCAL_TTS_NOT_READY');
+  }
+  if (!trusted || stableJson(trusted.profile) !== stableJson(claim.profile)) {
+    throw codedError('REDRAW_LOCAL_TTS_NOT_READY');
+  }
+  return {
+    engine: result.engine,
+    engineVersion: result.engine_version,
+    binarySha256: result.binary_sha256,
+    manifestSha256: result.manifest_sha256,
+    profile: result.profile.profile_key,
+    testOnly: result.test_only === true,
+  };
+}
+
+function validateProbeResult(probe, expectedSize) {
+  if (!exactObject(probe, PROBE_RESULT_KEYS)
+    || probe.format !== 'wav'
+    || !Number.isInteger(probe.audio_streams)
+    || probe.audio_streams < 1
+    || probe.decodable !== true
+    || probe.non_silent !== true
+    || !Number.isFinite(probe.duration_ms)
+    || probe.duration_ms < MIN_AUDIO_DURATION_MS
+    || probe.duration_ms > MAX_AUDIO_DURATION_MS
+    || !Number.isSafeInteger(probe.size_bytes)
+    || probe.size_bytes !== expectedSize
+    || probe.size_bytes < 44
+    || probe.size_bytes > MAX_AUDIO_BYTES) {
+    throw codedError('REDRAW_LOCAL_TTS_OUTPUT_INVALID');
+  }
+  return { durationMs: probe.duration_ms, sizeBytes: probe.size_bytes };
+}
+
+function validateLocaleEvidence(evidence, expected) {
+  if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)
+    || evidence.requestId !== expected.requestId
+    || evidence.source !== 'offline-worker'
+    || evidence.audioSha256 !== expected.audioSha256
+    || evidence.approvedTextSha256 !== expected.approvedTextSha256
+    || evidence.localePack !== expected.pack.id
+    || evidence.modelManifestSha256 !== expected.pack.model_manifest_sha256
+    || evidence.calibrationManifestSha256 !== expected.pack.calibration_manifest_sha256
+    || evidence.languageVerified !== true
+    || evidence.detectedLocale !== expected.locale
+    || stableJson(evidence.localTtsInvocation) !== stableJson(expected.invocation)
+    || !SHA256.test(String(evidence.transcriptSha256 || ''))
+    || !Number.isFinite(Date.parse(String(evidence.completedAt || '')))) {
+    throw codedError('REDRAW_LOCAL_TTS_VERIFICATION_FAILED');
+  }
+  return evidence;
+}
+
+function createStagingRoot(allowedRoot, registrationId) {
+  const allowedIdentity = inspectRealPath(allowedRoot, 'directory', 'REDRAW_LOCAL_TTS_NOT_READY');
+  let stagingPath;
+  try {
+    stagingPath = fs.mkdtempSync(path.join(allowedIdentity.path, `redraw-local-voice-${registrationId}-`));
+  } catch (_) {
+    throw codedError('REDRAW_LOCAL_TTS_NOT_READY');
+  }
+  const stagingIdentity = inspectRealPath(stagingPath, 'directory');
+  if (!strictDescendant(allowedIdentity.path, stagingIdentity.path)) {
+    throw codedError('REDRAW_LOCAL_TTS_OUTPUT_INVALID');
+  }
+  return { allowedIdentity, stagingIdentity };
+}
+
+function ensureContentDirectory(storageRoot) {
+  const storageIdentity = inspectRealPath(storageRoot, 'directory', 'REDRAW_LOCAL_TTS_NOT_READY');
+  const contentPath = path.join(storageIdentity.path, 'redraw-local-voices');
+  let created = false;
+  if (!fs.existsSync(contentPath)) {
+    try {
+      fs.mkdirSync(contentPath, { mode: 0o700 });
+      created = true;
+    } catch (_) {
+      throw codedError('REDRAW_LOCAL_TTS_OUTPUT_INVALID');
+    }
+  }
+  const contentIdentity = inspectRealPath(contentPath, 'directory');
+  if (!strictDescendant(storageIdentity.path, contentIdentity.path)) {
+    throw codedError('REDRAW_LOCAL_TTS_OUTPUT_INVALID');
+  }
+  return { contentIdentity, created };
+}
+
+function validateContentFile(targetPath, contentIdentity, audioSha256) {
+  const target = inspectRealPath(targetPath, 'file');
+  if (!strictDescendant(contentIdentity.path, target.path)
+    || target.size < 44
+    || target.size > MAX_AUDIO_BYTES
+    || sha256File(target.path) !== audioSha256) {
+    throw codedError('REDRAW_LOCAL_TTS_OUTPUT_INVALID');
+  }
+  return target;
+}
+
+function writeContentAddressedFile(storageRoot, bytes, audioSha256) {
+  const { contentIdentity, created: directoryCreated } = ensureContentDirectory(storageRoot);
+  const targetPath = path.join(contentIdentity.path, `${audioSha256}.wav`);
+  const temporaryPath = path.join(contentIdentity.path, `.${audioSha256}.${crypto.randomUUID()}.tmp`);
+  let descriptor;
+  let published = false;
+  if (fs.existsSync(targetPath)) {
+    validateContentFile(targetPath, contentIdentity, audioSha256);
+  } else {
+    try {
+      descriptor = fs.openSync(temporaryPath, 'wx', 0o600);
+      fs.writeFileSync(descriptor, bytes);
+      fs.fsyncSync(descriptor);
+      fs.closeSync(descriptor);
+      descriptor = undefined;
+      validateContentFile(temporaryPath, contentIdentity, audioSha256);
+      try {
+        fs.linkSync(temporaryPath, targetPath);
+        published = true;
+      } catch (error) {
+        if (error?.code !== 'EEXIST') throw error;
+        validateContentFile(targetPath, contentIdentity, audioSha256);
+      }
+      validateContentFile(targetPath, contentIdentity, audioSha256);
+    } catch (_) {
+      throw codedError('REDRAW_LOCAL_TTS_OUTPUT_INVALID');
+    } finally {
+      if (descriptor !== undefined) try { fs.closeSync(descriptor); } catch (_) {}
+      try { fs.unlinkSync(temporaryPath); } catch (_) {}
+    }
+  }
+  return {
+    created: published,
+    directoryCreated,
+    targetPath,
+    relativePath: `redraw-local-voices/${audioSha256}.wav`,
+  };
+}
+
+function safeCleanupStaging(staging, allowed) {
+  if (!staging || !allowed) return;
+  try {
+    const lstat = fs.lstatSync(staging.path);
+    if (lstat.isSymbolicLink()) return;
+    const current = inspectRealPath(staging.path, 'directory');
+    if (!sameIdentity(current, staging) || !strictDescendant(allowed.path, current.path)) return;
+    fs.rmSync(current.path, { recursive: true, force: true });
+  } catch (_) {}
+}
+
+function reconcileRegisteredAsset(rawInput, registration, content, audioSha256, projectId) {
+  if (!content || !audioSha256) return null;
+  try {
+    const rows = rawInput.db.prepare(`
+      SELECT *
+      FROM assets
+      WHERE local_path = ? AND type = 'audio' AND deleted_at IS NULL
+      ORDER BY id DESC
+    `).all(content.relativePath);
+    for (const row of rows) {
+      const metadata = parseObject(row.metadata, 'REDRAW_LOCAL_TTS_RESULT_UNKNOWN');
+      if (metadata.source === 'local_offline_tts'
+        && String(metadata.tenant_id || '') === String(rawInput.tenantId)
+        && String(metadata.user_id || '') === String(rawInput.userId)
+        && Number(metadata.version_id) === Number(rawInput.versionId)
+        && Number(metadata.voice_redraw_asset_id) === Number(rawInput.voiceAssetId)
+        && Number(metadata.registration_id) === Number(registration.id)
+        && metadata.audio_sha256 === audioSha256
+        && row.type === 'audio'
+        && row.category === 'redraw-local-voice'
+        && row.mime_type === 'audio/wav'
+        && Number(row.drama_id) === Number(projectId)) {
+        return row;
+      }
+    }
+    return null;
+  } catch (_) {
+    throw codedError('REDRAW_LOCAL_TTS_RESULT_UNKNOWN');
+  }
+}
+
+function nextUpdatedAt(expectedUpdatedAt, now) {
+  const candidate = String(now());
+  const expectedMillis = Date.parse(expectedUpdatedAt);
+  const candidateMillis = Date.parse(candidate);
+  if (!Number.isFinite(candidateMillis)) throw codedError('REDRAW_LOCAL_TTS_RESULT_UNKNOWN');
+  if (candidateMillis > expectedMillis) return candidate;
+  return new Date(expectedMillis + 1).toISOString();
+}
+
+function finalEvidence(rawInput, claim, registration, asset, media, invocation, localeEvidence, completedAt) {
+  return {
+    source: 'local_offline_tts',
+    contract_version: LOCAL_VOICE_CONTRACT_VERSION,
+    tenant_id: rawInput.tenantId,
+    user_id: rawInput.userId,
+    version_id: Number(rawInput.versionId),
+    voice_redraw_asset_id: Number(rawInput.voiceAssetId),
+    source_character_key: registration.source_character_key,
+    locale: registration.target_locale,
+    market: registration.target_market,
+    profile: registration.profile_key,
+    engine: invocation.engine,
+    engine_version: invocation.engineVersion,
+    binary_sha256: invocation.binarySha256,
+    manifest_sha256: invocation.manifestSha256,
+    audio_asset_id: Number(asset.id),
+    audio_sha256: localeEvidence.audioSha256,
+    duration_ms: media.durationMs,
+    approved_text_sha256: registration.approved_text_sha256,
+    locale_pack: localeEvidence.localePack,
+    transcript_sha256: localeEvidence.transcriptSha256,
+    model_manifest_sha256: localeEvidence.modelManifestSha256,
+    calibration_manifest_sha256: localeEvidence.calibrationManifestSha256,
+    metrics: structuredClone(localeEvidence.metrics),
+    language_verified: true,
+    detected_locale: localeEvidence.detectedLocale,
+    registration_id: Number(registration.id),
+    registration_status: 'completed',
+    completed_at: completedAt,
+    ...(invocation.testOnly ? { test_only: true } : {}),
+  };
+}
+
+function completeRegistrationTransaction(rawInput, claim, registration, asset, evidence, evidenceSha256, audioSha256) {
+  const db = rawInput.db;
+  const updatedAt = nextUpdatedAt(claim.expectedUpdatedAt, rawInput.now || (() => new Date().toISOString()));
+  return db.transaction(() => {
+    const slot = db.prepare(`
+      SELECT source_ref_json, updated_at, voice_asset_id
+      FROM redraw_assets
+      WHERE id = ? AND version_id = ? AND tenant_id = ? AND user_id = ?
+        AND kind = 'voice' AND deleted_at IS NULL
+    `).get(rawInput.voiceAssetId, rawInput.versionId, rawInput.tenantId, rawInput.userId);
+    if (!slot || String(slot.updated_at || '') !== claim.expectedUpdatedAt || slot.voice_asset_id != null) {
+      throw codedError('REDRAW_LOCAL_TTS_CAS_CONFLICT');
+    }
+    const payload = parseObject(slot.source_ref_json, 'REDRAW_LOCAL_TTS_RESULT_UNKNOWN');
+    const snapshot = payload.snapshot && typeof payload.snapshot === 'object' && !Array.isArray(payload.snapshot)
+      ? payload.snapshot : {};
+    const completedAt = evidence.completed_at;
+    const updated = db.prepare(`
+      UPDATE redraw_assets
+      SET voice_asset_id = ?, source_ref_json = ?, status = 'generated', approval_status = 'pending',
+          approved_by = NULL, approved_at = NULL, error_code = NULL, error_message = NULL, updated_at = ?
+      WHERE id = ? AND version_id = ? AND tenant_id = ? AND user_id = ?
+        AND kind = 'voice' AND voice_asset_id IS NULL AND updated_at = ? AND deleted_at IS NULL
+    `).run(
+      Number(asset.id),
+      JSON.stringify({ ...payload, snapshot: { ...snapshot, voice_evidence: evidence } }),
+      updatedAt,
+      rawInput.voiceAssetId,
+      rawInput.versionId,
+      rawInput.tenantId,
+      rawInput.userId,
+      claim.expectedUpdatedAt,
+    );
+    if (updated.changes !== 1) throw codedError('REDRAW_LOCAL_TTS_CAS_CONFLICT');
+    const registrationUpdate = db.prepare(`
+      UPDATE redraw_local_voice_registrations
+      SET status = 'completed', audio_asset_id = ?, audio_sha256 = ?, locale_evidence_sha256 = ?,
+          error_code = NULL, error_message = NULL, updated_at = ?, completed_at = ?
+      WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'processing' AND deleted_at IS NULL
+    `).run(
+      Number(asset.id),
+      audioSha256,
+      evidenceSha256,
+      updatedAt,
+      completedAt,
+      Number(registration.id),
+      rawInput.tenantId,
+      rawInput.userId,
+    );
+    if (registrationUpdate.changes !== 1) throw codedError('REDRAW_LOCAL_TTS_RESULT_UNKNOWN');
+    return db.prepare('SELECT * FROM redraw_local_voice_registrations WHERE id = ?').get(Number(registration.id));
+  }).immediate();
+}
+
+function markRegistration(rawInput, registration, status, code, asset, audioSha256) {
+  const now = String((rawInput.now || (() => new Date().toISOString()))());
+  try {
+    const updated = rawInput.db.prepare(`
+      UPDATE redraw_local_voice_registrations
+      SET status = ?, audio_asset_id = ?, audio_sha256 = ?, error_code = ?, error_message = ?, updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'processing' AND deleted_at IS NULL
+    `).run(
+      status,
+      asset?.id ? Number(asset.id) : null,
+      audioSha256 || null,
+      code,
+      code,
+      now,
+      Number(registration.id),
+      rawInput.tenantId,
+      rawInput.userId,
+    );
+    if (updated.changes !== 1) throw codedError('REDRAW_LOCAL_TTS_RESULT_UNKNOWN');
+  } catch (_) {
+    throw codedError('REDRAW_LOCAL_TTS_RESULT_UNKNOWN');
+  }
+}
+
+function executionDependencies(rawInput) {
+  const worker = rawInput.localTtsWorker;
+  const verifier = rawInput.localeVerifier;
+  const registry = rawInput.localeRegistry;
+  const probe = rawInput.mediaProbe;
+  const assetService = rawInput.assetService || defaultAssetService;
+  if (!worker || typeof worker.synthesize !== 'function' || typeof worker.assertReady !== 'function'
+    || typeof worker.assertEvidenceTrusted !== 'function'
+    || !verifier || typeof verifier.verifyLocalVoice !== 'function'
+    || !registry || typeof registry.assertReady !== 'function'
+    || !probe || typeof probe.probeAudio !== 'function'
+    || !assetService || typeof assetService.create !== 'function'
+    || typeof rawInput.localeVerifierAllowedRoot !== 'string'
+    || typeof rawInput.audioStorageRoot !== 'string') {
+    return null;
+  }
+  return { worker, verifier, registry, probe, assetService };
+}
+
+function errorCodeForStage(error, stage) {
+  const code = String(error?.code || '');
+  if (['REDRAW_LOCAL_TTS_NOT_READY', 'REDRAW_LOCAL_TTS_OUTPUT_INVALID',
+    'REDRAW_LOCAL_TTS_VERIFICATION_FAILED', 'REDRAW_LOCAL_TTS_RESULT_UNKNOWN',
+    'REDRAW_LOCAL_TTS_CAS_CONFLICT'].includes(code)) return code;
+  if (code === 'REDRAW_LOCALE_VERIFIER_TIMEOUT' || code === 'REDRAW_LOCALE_VERIFIER_ABORTED'
+    || code === 'REDRAW_LOCALE_VERIFIER_CONNECTION_FAILED') {
+    return 'REDRAW_LOCAL_TTS_RESULT_UNKNOWN';
+  }
+  if (stage === 'worker' || stage === 'asset' || stage === 'finalize') {
+    return 'REDRAW_LOCAL_TTS_RESULT_UNKNOWN';
+  }
+  if (stage === 'verifier') return 'REDRAW_LOCAL_TTS_VERIFICATION_FAILED';
+  return 'REDRAW_LOCAL_TTS_OUTPUT_INVALID';
+}
+
+async function executeRegistration(rawInput, claimed, deps) {
+  const registration = claimed.registration;
+  const claim = claimed.claim;
+  let staging = null;
+  let allowed = null;
+  let content = null;
+  let asset = null;
+  let audioSha256 = null;
+  let stage = 'worker';
+  try {
+    deps.worker.assertReady(claim.locale);
+    const pack = deps.registry.assertReady(claim.locale);
+    if (!pack || pack.locale !== claim.locale || !String(pack.id || '').trim()
+      || !SHA256.test(String(pack.model_manifest_sha256 || ''))
+      || !SHA256.test(String(pack.calibration_manifest_sha256 || ''))) {
+      throw codedError('REDRAW_LOCAL_TTS_NOT_READY');
+    }
+    ({ allowedIdentity: allowed, stagingIdentity: staging } = createStagingRoot(
+      rawInput.localeVerifierAllowedRoot,
+      registration.id,
+    ));
+    const workerInput = {
+      requestId: claim.requestId,
+      approvedText: claim.approvedText,
+      locale: claim.locale,
+      profileKey: claim.profile.profile_key,
+      outputRoot: staging.path,
+      ...(rawInput.signal !== undefined ? { signal: rawInput.signal } : {}),
+    };
+    const workerResult = await deps.worker.synthesize(workerInput);
+    const invocation = validateWorkerResult(workerResult, claim, rawInput.localTtsManifest, deps.worker);
+    const source = readVerifiedSourceFile(staging, workerResult.output_path, workerResult.output_sha256);
+    audioSha256 = source.audioSha256;
+
+    stage = 'media';
+    const probe = await deps.probe.probeAudio({
+      requestId: claim.requestId,
+      audioPath: source.identity.path,
+      timeoutMs: MEDIA_PROBE_TIMEOUT_MS,
+      maxOutputBytes: MEDIA_PROBE_OUTPUT_BYTES,
+      ...(rawInput.signal !== undefined ? { signal: rawInput.signal } : {}),
+    });
+    const media = validateProbeResult(probe, source.identity.size);
+    revalidateSourceFile(staging, source, workerResult.output_path);
+
+    stage = 'verifier';
+    const verifierInput = {
+      requestId: claim.requestId,
+      audioPath: source.identity.path,
+      audioSha256,
+      approvedText: claim.approvedText,
+      locale: claim.locale,
+      localTtsInvocation: {
+        engine: invocation.engine,
+        engineVersion: invocation.engineVersion,
+        binarySha256: invocation.binarySha256,
+        manifestSha256: invocation.manifestSha256,
+        profile: invocation.profile,
+      },
+      ...(rawInput.signal !== undefined ? { signal: rawInput.signal } : {}),
+    };
+    const localeEvidence = validateLocaleEvidence(
+      await deps.verifier.verifyLocalVoice(verifierInput),
+      {
+        requestId: claim.requestId,
+        audioSha256,
+        approvedTextSha256: claim.approvedTextSha256,
+        locale: claim.locale,
+        invocation: verifierInput.localTtsInvocation,
+        pack,
+      },
+    );
+    revalidateSourceFile(staging, source, workerResult.output_path);
+
+    stage = 'media';
+    content = writeContentAddressedFile(rawInput.audioStorageRoot, source.bytes, audioSha256);
+    stage = 'asset';
+    const assetPayload = {
+      drama_id: claim.projectId,
+      name: `local-voice-${registration.id}`,
+      type: 'audio',
+      category: 'redraw-local-voice',
+      url: content.relativePath,
+      local_path: content.relativePath,
+      file_size: media.sizeBytes,
+      mime_type: 'audio/wav',
+      duration: media.durationMs / 1000,
+      metadata: {
+        source: 'local_offline_tts',
+        tenant_id: rawInput.tenantId,
+        user_id: rawInput.userId,
+        version_id: Number(rawInput.versionId),
+        voice_redraw_asset_id: Number(rawInput.voiceAssetId),
+        registration_id: Number(registration.id),
+        audio_sha256: audioSha256,
+      },
+    };
+    const createdAsset = deps.assetService.create(rawInput.db, rawInput.log, assetPayload);
+    const reconciledAsset = reconcileRegisteredAsset(
+      rawInput,
+      registration,
+      content,
+      audioSha256,
+      claim.projectId,
+    );
+    if (!createdAsset || !positiveId(createdAsset.id)
+      || !reconciledAsset
+      || Number(createdAsset.id) !== Number(reconciledAsset.id)
+      || createdAsset.type !== assetPayload.type
+      || createdAsset.category !== assetPayload.category
+      || createdAsset.local_path !== assetPayload.local_path
+      || createdAsset.mime_type !== assetPayload.mime_type
+      || Number(createdAsset.drama_id) !== Number(assetPayload.drama_id)) {
+      throw codedError('REDRAW_LOCAL_TTS_RESULT_UNKNOWN');
+    }
+    asset = reconciledAsset;
+
+    stage = 'finalize';
+    const completedAt = String(localeEvidence.completedAt);
+    const evidence = finalEvidence(
+      rawInput,
+      claim,
+      registration,
+      asset,
+      media,
+      invocation,
+      localeEvidence,
+      completedAt,
+    );
+    const evidenceSha256 = sha256(Buffer.from(stableJson(localeEvidence), 'utf8'));
+    const completed = completeRegistrationTransaction(
+      rawInput,
+      claim,
+      registration,
+      asset,
+      evidence,
+      evidenceSha256,
+      audioSha256,
+    );
+    return { registration: completed, replayed: false, claim: null, billing: { ...BILLING_ZERO } };
+  } catch (error) {
+    const code = errorCodeForStage(error, stage);
+    const needsAttention = code === 'REDRAW_LOCAL_TTS_RESULT_UNKNOWN'
+      || code === 'REDRAW_LOCAL_TTS_CAS_CONFLICT';
+    if (!asset && stage === 'asset') {
+      asset = reconcileRegisteredAsset(rawInput, registration, content, audioSha256, claim.projectId);
+    }
+    markRegistration(rawInput, registration, needsAttention ? 'needs_attention' : 'failed', code, asset, audioSha256);
+    throw codedError(code);
+  } finally {
+    safeCleanupStaging(staging, allowed);
+  }
+}
+
 function registerLocalProductionVoice(rawInput = {}) {
   try {
-    return performRegistrationClaim(rawInput);
+    const claimed = performRegistrationClaim(rawInput);
+    const deps = executionDependencies(rawInput);
+    if (!claimed.claim) return { ...claimed, billing: { ...BILLING_ZERO } };
+    if (rawInput.context === 'test' && rawInput.claimOnly === true) {
+      return { ...claimed, billing: { ...BILLING_ZERO } };
+    }
+    if (!deps) {
+      markRegistration(
+        rawInput,
+        claimed.registration,
+        'failed',
+        'REDRAW_LOCAL_TTS_NOT_READY',
+        null,
+        null,
+      );
+      throw codedError('REDRAW_LOCAL_TTS_NOT_READY');
+    }
+    return executeRegistration(rawInput, claimed, deps).catch((error) => {
+      if (String(error?.code || '').startsWith('REDRAW_LOCAL_TTS_') && error.message === error.code) {
+        throw error;
+      }
+      throw codedError('REDRAW_LOCAL_TTS_RESULT_UNKNOWN');
+    });
   } catch (error) {
     if (String(error?.code || '').startsWith('REDRAW_LOCAL_TTS_')
       && error.message === error.code) {
