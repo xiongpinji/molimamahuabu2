@@ -3,6 +3,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const defaultAssetService = require('./assetService');
+const {
+  CONTRACT_VERSION: SUPPLEMENTAL_DIALOGUE_APPROVAL_CONTRACT_VERSION,
+  publicSupplementalDialogueApproval,
+} = require('./redrawSupplementalDialogueApprovalService');
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const MANIFEST_KEYS = [
@@ -17,6 +21,7 @@ const MANIFEST_KEYS = [
 const PROFILE_KEYS = ['profile_key', 'locale', 'voice', 'pitch', 'rate', 'amplitude'];
 const BILLING_ZERO = Object.freeze({ credits: 0, held: 0, charged: 0 });
 const LOCAL_VOICE_CONTRACT_VERSION = 'local-offline-tts-v1';
+const APPROVED_DIALOGUE_CONTRACT_VERSION = 'redraw-approved-dialogue-evidence-v1';
 const MAX_AUDIO_BYTES = 64 * 1024 * 1024;
 const MIN_AUDIO_DURATION_MS = 1000;
 const MAX_AUDIO_DURATION_MS = 120000;
@@ -59,6 +64,10 @@ function stableJson(value) {
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function stableHash(value) {
+  return sha256(Buffer.from(stableJson(value), 'utf8'));
 }
 
 function parseObject(value, code = 'REDRAW_LOCAL_TTS_NOT_READY') {
@@ -189,7 +198,8 @@ function readApprovedDialogueEvidence(db, input, scope) {
     throw codedError('REDRAW_LOCAL_TTS_NOT_READY');
   }
   const rows = db.prepare(`
-    SELECT id, batch_index, shot_index, localized_dialogue_json, updated_at
+    SELECT id, shot_id, batch_index, shot_index, source_dialogue_json,
+           localized_dialogue_json, updated_at
     FROM redraw_shots
     WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
     ORDER BY batch_index ASC, shot_index ASC, id ASC
@@ -203,7 +213,8 @@ function readApprovedDialogueEvidence(db, input, scope) {
   }
   const approved = [];
   for (const row of rows) {
-    for (const turn of parseArray(row.localized_dialogue_json)) {
+    const turns = parseArray(row.localized_dialogue_json);
+    for (const [turnIndex, turn] of turns.entries()) {
       if (!turn || typeof turn !== 'object' || Array.isArray(turn)) {
         throw codedError('REDRAW_LOCAL_TTS_APPROVED_TEXT_INSUFFICIENT');
       }
@@ -212,18 +223,140 @@ function readApprovedDialogueEvidence(db, input, scope) {
       if (typeof rawText !== 'string' || !rawText.trim()) {
         throw codedError('REDRAW_LOCAL_TTS_APPROVED_TEXT_INSUFFICIENT');
       }
-      approved.push(rawText.trim());
+      const text = rawText.trim();
+      approved.push({
+        batchIndex: Number(row.batch_index),
+        shotIndex: Number(row.shot_index),
+        redrawShotId: Number(row.id),
+        approvalId: 0,
+        turnIndex,
+        text,
+        evidence: {
+          source: 'localized_dialogue',
+          redraw_shot_id: Number(row.id),
+          shot_id: String(row.shot_id),
+          batch_index: Number(row.batch_index),
+          shot_index: Number(row.shot_index),
+          turn_index: turnIndex,
+          source_character_key: scope.characterKey,
+          target_text_sha256: sha256(Buffer.from(text, 'utf8')),
+        },
+      });
     }
   }
-  const approvedText = approved.join('\n');
+  const shotsById = new Map(rows.map((row) => [Number(row.id), row]));
+  const supplementalHistory = db.prepare(`
+    SELECT *
+    FROM redraw_supplemental_dialogue_approvals
+    WHERE tenant_id = ? AND user_id = ? AND version_id = ?
+      AND voice_redraw_asset_id = ? AND source_character_key = ?
+    ORDER BY id ASC
+  `).all(
+    input.tenantId,
+    input.userId,
+    Number(scope.version.id),
+    Number(scope.version.voice_redraw_asset_id),
+    scope.characterKey,
+  );
+  const supplementalRows = supplementalHistory.filter((row) => (
+    row.status === 'active' && row.deleted_at == null
+  ));
+  const supplementalApprovals = [];
+  for (const row of supplementalRows) {
+    let projection;
+    try {
+      projection = publicSupplementalDialogueApproval(db, {
+        approval: row,
+        idempotentReplay: false,
+      });
+    } catch (_) {
+      throw codedError('REDRAW_LOCAL_TTS_NOT_READY');
+    }
+    const shot = shotsById.get(Number(row.redraw_shot_id));
+    if (!shot
+      || projection.status !== 'active'
+      || projection.contract_version !== SUPPLEMENTAL_DIALOGUE_APPROVAL_CONTRACT_VERSION
+      || projection.source_translation !== false
+      || Number(projection.voice_redraw_asset_id) !== Number(scope.version.voice_redraw_asset_id)) {
+      throw codedError('REDRAW_LOCAL_TTS_NOT_READY');
+    }
+    const supplemental = {
+      approvalId: Number(row.id),
+      status: 'active',
+      approvalEvidenceSha256: String(row.approval_evidence_sha256),
+      targetTextSha256: String(row.target_text_sha256),
+      approvedAt: String(row.approved_at),
+      updatedAt: String(row.updated_at),
+    };
+    supplementalApprovals.push(supplemental);
+    approved.push({
+      batchIndex: Number(shot.batch_index),
+      shotIndex: Number(shot.shot_index),
+      redrawShotId: Number(shot.id),
+      approvalId: Number(row.id),
+      turnIndex: 0,
+      text: String(row.target_text),
+      evidence: {
+        source: 'supplemental_owner_approval',
+        redraw_shot_id: Number(shot.id),
+        shot_id: String(shot.shot_id),
+        batch_index: Number(shot.batch_index),
+        shot_index: Number(shot.shot_index),
+        source_character_key: scope.characterKey,
+        approval_id: Number(row.id),
+        approval_evidence_sha256: String(row.approval_evidence_sha256),
+        target_text_sha256: String(row.target_text_sha256),
+      },
+    });
+  }
+  approved.sort((left, right) => (
+    left.batchIndex - right.batchIndex
+    || left.shotIndex - right.shotIndex
+    || left.redrawShotId - right.redrawShotId
+    || left.approvalId - right.approvalId
+    || left.turnIndex - right.turnIndex
+  ));
+  supplementalApprovals.sort((left, right) => {
+    const leftEntry = approved.find((entry) => entry.approvalId === left.approvalId);
+    const rightEntry = approved.find((entry) => entry.approvalId === right.approvalId);
+    return approved.indexOf(leftEntry) - approved.indexOf(rightEntry);
+  });
+  const approvedText = approved.map((entry) => entry.text).join('\n');
   const minimum = input.minimumApprovedTextCharacters;
   const nonWhitespaceCharacters = Array.from(approvedText.replace(/\s/gu, '')).length;
   if (!Number.isSafeInteger(minimum) || minimum <= 0 || nonWhitespaceCharacters < minimum) {
     throw codedError('REDRAW_LOCAL_TTS_APPROVED_TEXT_INSUFFICIENT');
   }
+  const approvedTextSha256 = sha256(Buffer.from(approvedText, 'utf8'));
+  const approvedDialogueEvidenceSha256 = stableHash({
+    contract_version: APPROVED_DIALOGUE_CONTRACT_VERSION,
+    localization_task_id: taskId,
+    localization_decision_sha256: stableHash(decision),
+    facts_hash: factsHash,
+    policy_version: Number(scope.version.policy_version),
+    target_locale: String(scope.version.locale),
+    target_market: String(scope.version.market || ''),
+    source_character_key: scope.characterKey,
+    approved_text_sha256: approvedTextSha256,
+    ordered_dialogue_evidence: approved.map((entry) => entry.evidence),
+    supplemental_approvals: supplementalApprovals.map((approval) => ({
+      approval_id: approval.approvalId,
+      status: approval.status,
+      approval_evidence_sha256: approval.approvalEvidenceSha256,
+      target_text_sha256: approval.targetTextSha256,
+      approved_at: approval.approvedAt,
+      updated_at: approval.updatedAt,
+      source_translation: false,
+    })),
+  });
   return {
     approvedText,
-    approvedTextSha256: sha256(Buffer.from(approvedText, 'utf8')),
+    approvedTextSha256,
+    approvedDialogueContractVersion: APPROVED_DIALOGUE_CONTRACT_VERSION,
+    approvedDialogueEvidenceSha256,
+    supplementalApprovalIds: supplementalApprovals.map((approval) => approval.approvalId),
+    supplementalApprovals,
+    supplementalApprovalHistoryCount: supplementalHistory.length,
     factsHash,
     policyVersion: Number(scope.version.policy_version),
   };
@@ -327,15 +460,53 @@ function claimStateFingerprint(db, input) {
   `).get(input.voiceAssetId, input.versionId, input.tenantId, input.userId);
   if (!state) throw codedError('REDRAW_LOCAL_TTS_OWNER_MISMATCH');
   const shots = db.prepare(`
-    SELECT id, batch_index, shot_index, localized_dialogue_json, updated_at
+    SELECT id, shot_id, batch_index, shot_index, source_dialogue_json,
+           localized_dialogue_json, updated_at
     FROM redraw_shots
     WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
     ORDER BY batch_index ASC, shot_index ASC, id ASC
   `).all(input.versionId, input.tenantId, input.userId);
-  return sha256(Buffer.from(stableJson({ state, shots }), 'utf8'));
+  const approvals = db.prepare(`
+    SELECT *
+    FROM redraw_supplemental_dialogue_approvals
+    WHERE version_id = ? AND voice_redraw_asset_id = ?
+      AND tenant_id = ? AND user_id = ?
+    ORDER BY id ASC
+  `).all(input.versionId, input.voiceAssetId, input.tenantId, input.userId);
+  return sha256(Buffer.from(stableJson({ state, shots, approvals }), 'utf8'));
 }
 
 function requestHash(input, derived) {
+  return sha256(Buffer.from(stableJson({
+    tenant_id: input.tenantId,
+    user_id: input.userId,
+    version_id: input.versionId,
+    voice_redraw_asset_id: input.voiceAssetId,
+    source_character_key: derived.scope.characterKey,
+    target_locale: String(derived.scope.version.locale),
+    target_market: String(derived.scope.version.market || ''),
+    facts_hash: derived.dialogue.factsHash,
+    policy_version: derived.dialogue.policyVersion,
+    approved_text_sha256: derived.dialogue.approvedTextSha256,
+    approved_dialogue_contract_version: derived.dialogue.approvedDialogueContractVersion,
+    approved_dialogue_evidence_sha256: derived.dialogue.approvedDialogueEvidenceSha256,
+    supplemental_approvals: derived.dialogue.supplementalApprovals.map((approval) => ({
+      approval_id: approval.approvalId,
+      status: approval.status,
+      approval_evidence_sha256: approval.approvalEvidenceSha256,
+      target_text_sha256: approval.targetTextSha256,
+      approved_at: approval.approvedAt,
+      updated_at: approval.updatedAt,
+      source_translation: false,
+    })),
+    profile: derived.profile.profile,
+    engine_manifest_sha256: derived.profile.manifestSha256,
+    expected_updated_at: input.expectedUpdatedAt,
+    runtime_context: input.context,
+  }), 'utf8'));
+}
+
+function legacyRequestHash(input, derived) {
   return sha256(Buffer.from(stableJson({
     tenant_id: input.tenantId,
     user_id: input.userId,
@@ -354,11 +525,23 @@ function requestHash(input, derived) {
   }), 'utf8'));
 }
 
-function replayRegistration(existing, requestHash) {
-  if (existing.request_hash !== requestHash) {
-    throw codedError('REDRAW_LOCAL_TTS_IDEMPOTENCY_CONFLICT');
+function replayRegistration(existing, currentRequestHash, input, derived) {
+  if (existing.request_hash === currentRequestHash) {
+    return { registration: existing, replayed: true, claim: null };
   }
-  return { registration: existing, replayed: true, claim: null };
+  let storedApprovalIds;
+  try {
+    storedApprovalIds = JSON.parse(existing.supplemental_approval_ids_json);
+  } catch (_) {
+    storedApprovalIds = null;
+  }
+  const legacyReplay = existing.approved_dialogue_evidence_sha256 == null
+    && Array.isArray(storedApprovalIds) && storedApprovalIds.length === 0
+    && derived.dialogue.supplementalApprovalIds.length === 0
+    && derived.dialogue.supplementalApprovalHistoryCount === 0
+    && existing.request_hash === legacyRequestHash(input, derived);
+  if (legacyReplay) return { registration: existing, replayed: true, claim: null };
+  throw codedError('REDRAW_LOCAL_TTS_IDEMPOTENCY_CONFLICT');
 }
 
 function claimRegistration(db, input, derived, expectedStateFingerprint) {
@@ -371,7 +554,7 @@ function claimRegistration(db, input, derived, expectedStateFingerprint) {
         AND voice_redraw_asset_id = ? AND idempotency_hash = ? AND deleted_at IS NULL
       LIMIT 1
     `).get(input.tenantId, input.userId, input.versionId, input.voiceAssetId, input.idempotencyHash);
-    if (existing) return replayRegistration(existing, currentRequestHash);
+    if (existing) return replayRegistration(existing, currentRequestHash, input, derived);
     const currentSlot = db.prepare(`
       SELECT updated_at
       FROM redraw_assets
@@ -390,8 +573,9 @@ function claimRegistration(db, input, derived, expectedStateFingerprint) {
       INSERT INTO redraw_local_voice_registrations
         (tenant_id, user_id, version_id, voice_redraw_asset_id, source_character_key,
          idempotency_hash, request_hash, target_locale, target_market, approved_text_sha256,
-         profile_key, engine_manifest_sha256, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?)
+         profile_key, engine_manifest_sha256, approved_dialogue_evidence_sha256,
+         supplemental_approval_ids_json, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?)
     `).run(
       input.tenantId,
       input.userId,
@@ -405,6 +589,8 @@ function claimRegistration(db, input, derived, expectedStateFingerprint) {
       derived.dialogue.approvedTextSha256,
       derived.profile.profileKey,
       derived.profile.manifestSha256,
+      derived.dialogue.approvedDialogueEvidenceSha256,
+      JSON.stringify(derived.dialogue.supplementalApprovalIds),
       now,
       now,
     );
@@ -417,12 +603,18 @@ function claimRegistration(db, input, derived, expectedStateFingerprint) {
         requestId: `redraw-local-voice-${registration.id}`,
         approvedText: derived.dialogue.approvedText,
         approvedTextSha256: derived.dialogue.approvedTextSha256,
+        approvedDialogueContractVersion: derived.dialogue.approvedDialogueContractVersion,
+        approvedDialogueEvidenceSha256: derived.dialogue.approvedDialogueEvidenceSha256,
+        supplementalApprovalIds: [...derived.dialogue.supplementalApprovalIds],
+        supplementalApprovals: structuredClone(derived.dialogue.supplementalApprovals),
+        supplementalApprovalHistoryCount: derived.dialogue.supplementalApprovalHistoryCount,
         locale: registration.target_locale,
         market: registration.target_market,
         projectId: Number(derived.scope.version.project_id),
         profile: derived.profile.profile,
         engineManifestSha256: registration.engine_manifest_sha256,
         expectedUpdatedAt: input.expectedUpdatedAt,
+        minimumApprovedTextCharacters: input.minimumApprovedTextCharacters,
       },
     };
   }).immediate();
@@ -468,6 +660,32 @@ function performRegistrationClaim(rawInput) {
     throw codedError('REDRAW_LOCAL_TTS_NOT_READY');
   }
   return claimRegistration(input.db, input, { scope, dialogue, profile }, initialStateFingerprint);
+}
+
+function assertCurrentDialogueEvidence(rawInput, claim) {
+  const owned = owner(rawInput);
+  const input = {
+    ...owned,
+    versionId: positiveId(rawInput.versionId ?? rawInput.version_id),
+    voiceAssetId: positiveId(rawInput.voiceAssetId ?? rawInput.voice_asset_id),
+    minimumApprovedTextCharacters: claim.minimumApprovedTextCharacters,
+  };
+  try {
+    const scope = readOwnedScope(rawInput.db, input);
+    const current = readApprovedDialogueEvidence(rawInput.db, input, scope);
+    if (current.approvedText !== claim.approvedText
+      || current.approvedTextSha256 !== claim.approvedTextSha256
+      || current.approvedDialogueContractVersion !== claim.approvedDialogueContractVersion
+      || current.approvedDialogueEvidenceSha256 !== claim.approvedDialogueEvidenceSha256
+      || stableJson(current.supplementalApprovalIds) !== stableJson(claim.supplementalApprovalIds)
+      || stableJson(current.supplementalApprovals) !== stableJson(claim.supplementalApprovals)
+      || current.supplementalApprovalHistoryCount !== claim.supplementalApprovalHistoryCount) {
+      throw codedError('REDRAW_LOCAL_TTS_NOT_READY');
+    }
+    return current;
+  } catch (_) {
+    throw codedError('REDRAW_LOCAL_TTS_NOT_READY');
+  }
 }
 
 function comparablePath(value) {
@@ -774,6 +992,17 @@ function nextUpdatedAt(expectedUpdatedAt, now) {
 }
 
 function finalEvidence(rawInput, claim, registration, asset, media, invocation, localeEvidence, completedAt) {
+  const supplemental = claim.supplementalApprovals.length > 0 ? {
+    approved_dialogue_contract_version: claim.approvedDialogueContractVersion,
+    approved_dialogue_evidence_sha256: registration.approved_dialogue_evidence_sha256,
+    supplemental_dialogue_approval_ids: [...claim.supplementalApprovalIds],
+    supplemental_dialogue_approvals: claim.supplementalApprovals.map((approval) => ({
+      approval_id: approval.approvalId,
+      approval_evidence_sha256: approval.approvalEvidenceSha256,
+      target_text_sha256: approval.targetTextSha256,
+    })),
+    source_translation: false,
+  } : {};
   return {
     source: 'local_offline_tts',
     contract_version: LOCAL_VOICE_CONTRACT_VERSION,
@@ -803,6 +1032,7 @@ function finalEvidence(rawInput, claim, registration, asset, media, invocation, 
     registration_id: Number(registration.id),
     registration_status: 'completed',
     completed_at: completedAt,
+    ...supplemental,
     ...(invocation.testOnly ? { test_only: true } : {}),
   };
 }
@@ -811,6 +1041,7 @@ function completeRegistrationTransaction(rawInput, claim, registration, asset, e
   const db = rawInput.db;
   const updatedAt = nextUpdatedAt(claim.expectedUpdatedAt, rawInput.now || (() => new Date().toISOString()));
   return db.transaction(() => {
+    assertCurrentDialogueEvidence(rawInput, claim);
     const slot = db.prepare(`
       SELECT source_ref_json, updated_at, voice_asset_id
       FROM redraw_assets
@@ -930,6 +1161,7 @@ async function executeRegistration(rawInput, claimed, deps) {
   let audioSha256 = null;
   let stage = 'worker';
   try {
+    assertCurrentDialogueEvidence(rawInput, claim);
     deps.worker.assertReady(claim.locale);
     const pack = deps.registry.assertReady(claim.locale);
     if (!pack || pack.locale !== claim.locale || !String(pack.id || '').trim()
@@ -950,6 +1182,7 @@ async function executeRegistration(rawInput, claimed, deps) {
       ...(rawInput.signal !== undefined ? { signal: rawInput.signal } : {}),
     };
     const workerResult = await deps.worker.synthesize(workerInput);
+    assertCurrentDialogueEvidence(rawInput, claim);
     const invocation = validateWorkerResult(workerResult, claim, rawInput.localTtsManifest, deps.worker);
     const source = readVerifiedSourceFile(staging, workerResult.output_path, workerResult.output_sha256);
     audioSha256 = source.audioSha256;
@@ -992,6 +1225,7 @@ async function executeRegistration(rawInput, claimed, deps) {
         pack,
       },
     );
+    assertCurrentDialogueEvidence(rawInput, claim);
     revalidateSourceFile(staging, source, workerResult.output_path);
 
     stage = 'media';
