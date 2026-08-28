@@ -15,6 +15,7 @@ const FRESHNESS_SURFACES = Object.freeze({
     'backend-node/scripts/verify-toapis-video-models.js',
   ]),
   toapisPrivateAvatar: Object.freeze([
+    'backend-node/src/services/toapisVideoClient.js',
     'backend-node/src/services/toapisPrivateAvatarService.js',
     'backend-node/src/services/videoService.js',
     'backend-node/scripts/verify-toapis-private-avatar-video.js',
@@ -851,6 +852,167 @@ function auditToapisRuntime(candidate, options = {}) {
     'ToAPIs production preflight does not execute the evidence binding audit');
   requirePattern(productionPreflight.source, /['"]external_model_evidence_binding['"]/,
     'ToAPIs production preflight does not expose a blocking evidence check');
+}
+
+function auditToapisPrivateAvatarProducer(candidate) {
+  const verifier = stripComments(candidateSource(candidate, 'backend-node/scripts/verify-toapis-private-avatar-video.js'));
+  const scopes = functionScopes(verifier);
+  const requiredScopes = Object.fromEntries([
+    'runPrivateAvatarVerification',
+    'cliInput',
+    'verificationClientForModel',
+    'bindAndValidateState',
+    'assertNoUnknownSubmission',
+    'normalizeCostBudget',
+    'assertActualCostWithinBudget',
+    'ensureAvatar',
+    'processCase',
+  ].map((name) => [name, scopes.find((scope) => scope.name === name)]));
+  if (Object.values(requiredScopes).some((scope) => !scope)) {
+    fail('ToAPIs private-avatar split-key verification workflow is incomplete');
+  }
+  const run = requiredScopes.runPrivateAvatarVerification;
+  const cli = requiredScopes.cliInput;
+  const clientReader = requiredScopes.verificationClientForModel;
+  const stateBinding = requiredScopes.bindAndValidateState;
+  const unknownGate = requiredScopes.assertNoUnknownSubmission;
+  const budgetBuilder = requiredScopes.normalizeCostBudget;
+  const actualBudgetGate = requiredScopes.assertActualCostWithinBudget;
+  const avatar = requiredScopes.ensureAvatar;
+  const caseProcessor = requiredScopes.processCase;
+
+  const globalKeyReferences = [...verifier.matchAll(/\bTOAPIS_API_KEY\b/g)].length;
+  requirePattern(run.source,
+    /const\s+executionEnv\s*=\s*input\.env\s*\|\|\s*process\.env[\s\S]{0,180}if\s*\(\s*String\s*\(\s*executionEnv\.TOAPIS_API_KEY\s*\|\|\s*['"]['"]\s*\)\.trim\s*\(\s*\)\s*\)\s*\{[\s\S]{0,180}throw\s+new\s+Error/,
+    'ToAPIs private-avatar verification does not reject the global provider key before any provider work');
+  if (globalKeyReferences !== 2 || /process\.env\.TOAPIS_API_KEY/.test(verifier)) {
+    fail('ToAPIs private-avatar verification must not fall back to one global provider key');
+  }
+
+  requirePattern(verifier,
+    /requireVerificationConfigIds\s*,\s*validateVerificationConfigs[\s\S]{0,120}require\s*\(\s*['"]\.\/verify-toapis-video-models['"]\s*\)/,
+    'ToAPIs private-avatar verification does not reuse the reviewed read-only split config validator');
+  for (const [token, label] of [
+    ['TOAPIS_VERIFY_FAST_CONFIG_ID', 'FAST'],
+    ['TOAPIS_VERIFY_MINI_CONFIG_ID', 'MINI'],
+  ]) {
+    requirePattern(cli.source, new RegExp(`\\b${token}\\b`),
+      `ToAPIs private-avatar verification does not require the ${label} target config id`);
+    requirePattern(run.source, new RegExp(`\\b${token}\\b`),
+      `ToAPIs private-avatar verification does not forward the ${label} target config id`);
+  }
+  requirePattern(run.source,
+    /const\s+configSnapshots\s*=\s*\(\s*injected\.validateConfigs\s*\|\|\s*validateVerificationConfigs\s*\)\s*\(\s*\{[\s\S]{0,180}\bconfigIds\b[\s\S]{0,180}\bdatabasePath\b/,
+    'ToAPIs private-avatar verification bypasses the read-only database model binding');
+  requirePattern(run.source,
+    /Object\.fromEntries\s*\(\s*configSnapshots\.map\s*\(\s*\(\s*\{\s*model\s*,\s*apiKey\s*\}\s*\)\s*=>\s*\[\s*model\s*,\s*\{[\s\S]{0,180}apiKey[\s\S]{0,180}api_key\s*:\s*apiKey/,
+    'ToAPIs private-avatar verification does not build one model-bound client per validated config');
+  requirePattern(clientReader.source, /context\.verificationClients\?*\.\[\s*model\s*\]/,
+    'ToAPIs private-avatar verification does not select credentials by case model');
+  requirePattern(clientReader.source, /client\.config\?*\.api_key\s*!==\s*client\.apiKey/,
+    'ToAPIs private-avatar verification does not bind each client config to its database key');
+
+  requirePattern(stateBinding.source, /configFingerprints\s*\(\s*configSnapshots\s*\)/,
+    'ToAPIs private-avatar verification does not derive split config fingerprints');
+  for (const token of ['provider_origin', 'config_fingerprints', 'config_fingerprint']) {
+    requirePattern(stateBinding.source, new RegExp(`\\b${token}\\b`),
+      `ToAPIs private-avatar state is not bound to ${token}`);
+  }
+  requirePattern(run.source, /const\s+fingerprints\s*=\s*bindAndValidateState\s*\(\s*state\s*,\s*configSnapshots\s*\)/,
+    'ToAPIs private-avatar verification does not bind resumable state to both config fingerprints');
+  requirePattern(caseProcessor.source, /config_fingerprint\s*:\s*context\.configFingerprints\s*\[\s*item\.model\s*\]/,
+    'ToAPIs private-avatar evidence cases are not bound to their model config fingerprints');
+
+  for (const token of ['submitting', 'indeterminate']) {
+    requirePattern(unknownGate.source, new RegExp(`['"]${token}['"]`),
+      `ToAPIs private-avatar unknown-state gate does not block ${token} submissions`);
+  }
+  requirePattern(run.source, /assertNoUnknownSubmission\s*\(\s*state\s*\)/,
+    'ToAPIs private-avatar verification does not stop before resuming an unknown submission');
+  requirePattern(caseProcessor.source,
+    /entry\.submission_state\s*=\s*['"]submitting['"][\s\S]{0,160}context\.save\s*\(\s*\)[\s\S]{0,260}(?:deps\.callVideo|callToapisVideoApi)/,
+    'ToAPIs private-avatar submission intent is not durably recorded before POST');
+  requirePattern(caseProcessor.source,
+    /result\.indeterminate[\s\S]{0,180}entry\.submission_state\s*=\s*['"]indeterminate['"][\s\S]{0,180}context\.save\s*\(\s*\)[\s\S]{0,120}throw/,
+    'ToAPIs private-avatar unknown submission result is not persisted and stopped');
+  const count = (source, pattern) => [...source.matchAll(pattern)].length;
+  if (count(caseProcessor.source, /\bdeps\.callVideo\s*\(/g) !== 1
+      || count(avatar.source, /\bdeps\.createGroup\s*\(/g) !== 1
+      || count(avatar.source, /\bdeps\.createAsset\s*\(/g) !== 1) {
+    fail('ToAPIs private-avatar paid submissions must be single-attempt with no automatic retry');
+  }
+  requirePattern(avatar.source,
+    /const\s+client\s*=\s*verificationClientForModel\s*\(\s*context\s*,\s*['"]seedance-2-fast['"]\s*\)/,
+    'ToAPIs private-avatar asset preparation does not select the FAST model client');
+  for (const [operation, limit] of [
+    ['createGroup', 360],
+    ['createAsset', 360],
+    ['fetchAsset', 260],
+  ]) {
+    requirePattern(avatar.source,
+      new RegExp(`deps\\.${operation}\\s*\\(\\s*client\\.config[\\s\\S]{0,${limit}}apiKey\\s*:\\s*client\\.apiKey`),
+      `ToAPIs private-avatar ${operation} does not use the FAST model key`);
+  }
+
+  for (const token of ['expectedCosts', 'caseHardCaps', 'aggregateHardCapYuan', 'usdCnyRate']) {
+    requirePattern(budgetBuilder.source, new RegExp(`\\b${token}\\b`),
+      `ToAPIs private-avatar RMB budget is missing ${token}`);
+  }
+  requirePattern(budgetBuilder.source, /projected\s*>\s*aggregateHardCapYuan/,
+    'ToAPIs private-avatar expected total cost does not enforce the RMB hard cap');
+  requirePattern(actualBudgetGate.source, /actual\s*>\s*caseCap/,
+    'ToAPIs private-avatar actual cost does not enforce the per-case RMB hard cap');
+  requirePattern(actualBudgetGate.source, /projected\s*>\s*context\.costBudget\.aggregateHardCapYuan/,
+    'ToAPIs private-avatar actual cost does not enforce the aggregate RMB hard cap');
+  const actualBudgetCalls = [...caseProcessor.source.matchAll(/assertActualCostWithinBudget\s*\(\s*item\s*,\s*context\s*\)/g)];
+  if (actualBudgetCalls.length !== 2) {
+    fail('ToAPIs private-avatar paid case must enforce actual RMB cost gates on resume and after provider billing');
+  }
+  const resumeIndex = caseProcessor.source.search(/if\s*\(\s*entry\?\.status\s*===\s*['"]completed['"]\s*\)/);
+  const resumeReturnIndex = caseProcessor.source.indexOf('return entry', resumeIndex);
+  const resumeGateIndex = actualBudgetCalls[0].index;
+  if (resumeIndex < 0 || resumeReturnIndex < 0 || !(resumeIndex < resumeGateIndex && resumeGateIndex < resumeReturnIndex)) {
+    fail('ToAPIs private-avatar completed resume path must validate actual RMB cost before returning');
+  }
+  const actualCostIndex = caseProcessor.source.indexOf('entry.billing.cost_yuan');
+  const completedStatusIndex = caseProcessor.source.search(/entry\.status\s*=\s*['"]completed['"]/);
+  const postBillingGateIndex = actualBudgetCalls[1].index;
+  if (actualCostIndex < 0 || completedStatusIndex < 0
+      || !(actualCostIndex < postBillingGateIndex && postBillingGateIndex < completedStatusIndex)) {
+    fail('ToAPIs private-avatar paid case must validate actual RMB cost after billing and before completed status');
+  }
+
+  const configIdsIndex = run.source.indexOf('requireVerificationConfigIds');
+  const configsIndex = run.source.indexOf('validateVerificationConfigs');
+  const clientsIndex = run.source.indexOf('verificationClients');
+  const stateBindingIndex = run.source.indexOf('bindAndValidateState');
+  const unknownIndex = run.source.indexOf('assertNoUnknownSubmission');
+  const budgetIndex = run.source.indexOf('normalizeCostBudget');
+  const preflightPattern = /for\s*\(\s*const\s+item\s+of\s+CASES\s*\)\s*\{[\s\S]{0,260}verificationClientForModel\s*\(\s*context\s*,\s*item\.model\s*\)[\s\S]{0,220}await\s+deps\.fetchBalance\s*\(\s*client\.apiKey\s*,\s*deps\.fetchImpl\s*\)/;
+  const preflightIndex = run.source.search(preflightPattern);
+  const avatarIndex = run.source.indexOf('await ensureAvatar');
+  if ([configIdsIndex, configsIndex, clientsIndex, stateBindingIndex, unknownIndex, budgetIndex, preflightIndex, avatarIndex]
+    .some((index) => index < 0)
+      || !(configIdsIndex < configsIndex && configsIndex < clientsIndex
+        && clientsIndex < stateBindingIndex && stateBindingIndex < unknownIndex
+        && unknownIndex < budgetIndex && budgetIndex < preflightIndex && preflightIndex < avatarIndex)) {
+    fail('ToAPIs private-avatar split configs, state, budget and both balance GETs must pass before any provider POST');
+  }
+  requirePattern(caseProcessor.source,
+    /const\s+client\s*=\s*verificationClientForModel\s*\(\s*context\s*,\s*item\.model\s*\)/,
+    'ToAPIs private-avatar case does not select its model-bound client');
+  const caseBalancePattern = /before\s*:\s*await\s+deps\.fetchBalance\s*\(\s*client\.apiKey\s*,\s*deps\.fetchImpl\s*\)/;
+  const caseBalanceIndex = caseProcessor.source.search(caseBalancePattern);
+  const caseSubmitIndex = caseProcessor.source.search(/\bdeps\.callVideo\s*\(/);
+  if (caseBalanceIndex < 0 || caseSubmitIndex < 0 || caseBalanceIndex > caseSubmitIndex) {
+    fail('ToAPIs private-avatar case must take a fresh model-bound balance immediately before submission');
+  }
+  requirePattern(caseProcessor.source,
+    /deps\.callVideo\s*\([\s\S]{0,380}client\.config[\s\S]{0,380}apiKey\s*:\s*client\.apiKey/,
+    'ToAPIs private-avatar submission does not use its case model key');
+  requirePattern(caseProcessor.source,
+    /deps\.fetchTask\s*\([\s\S]{0,220}client\.config[\s\S]{0,220}apiKey\s*:\s*client\.apiKey/,
+    'ToAPIs private-avatar polling does not use its case model key');
 }
 
 function auditUsmercariRuntime(candidate) {
@@ -1904,6 +2066,7 @@ function auditToapisPrivateAvatarEvidence(evidenceRoot, envelope, now, requireRe
     fail('ToAPIs private-avatar evidence must contain exactly two unique cases');
   }
   const tasks = new Set();
+  let totalCostYuan = 0;
   for (const expected of TOAPIS_PRIVATE_AVATAR_CASES) {
     const item = byId.get(expected.id);
     if (!item) fail(`ToAPIs private-avatar case is missing: ${expected.id}`);
@@ -1922,9 +2085,17 @@ function auditToapisPrivateAvatarEvidence(evidenceRoot, envelope, now, requireRe
         || !Number.isSafeInteger(Number(item.speed?.submit_latency_ms)) || Number(item.speed.submit_latency_ms) < 0) {
       fail(`ToAPIs private-avatar speed evidence is invalid: ${expected.id}`);
     }
-    if (Number(item.billing?.debited_balance) <= 0 || Number(item.billing?.debited_credits) <= 0) {
+    const costYuan = Number(item.billing?.cost_yuan);
+    const expectedCostYuan = Number(item.billing?.expected_cost_yuan);
+    const caseHardCapYuan = Number(item.billing?.case_hard_cap_yuan);
+    if (Number(item.billing?.debited_balance) <= 0 || Number(item.billing?.debited_credits) <= 0
+        || !Number.isFinite(costYuan) || costYuan <= 0
+        || !Number.isFinite(expectedCostYuan) || expectedCostYuan <= 0
+        || !Number.isFinite(caseHardCapYuan) || caseHardCapYuan <= 0
+        || expectedCostYuan > caseHardCapYuan || costYuan > caseHardCapYuan) {
       fail(`ToAPIs private-avatar billing evidence is invalid: ${expected.id}`);
     }
+    totalCostYuan = round(totalCostYuan + costYuan);
     const artifact = item.artifact || {};
     const outputFile = String(artifact.output_file || '');
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.mp4$/.test(outputFile)
@@ -1946,9 +2117,15 @@ function auditToapisPrivateAvatarEvidence(evidenceRoot, envelope, now, requireRe
     }
   }
   const summary = evidence.summary || {};
+  const summaryTotalCostYuan = Number(summary.total_cost_yuan);
+  const aggregateHardCapYuan = Number(summary.aggregate_hard_cap_yuan);
   if (Number(summary.case_count) !== TOAPIS_PRIVATE_AVATAR_CASES.length
       || Number(summary.total_debited_balance) <= 0
-      || Number(summary.total_debited_credits) <= 0) {
+      || Number(summary.total_debited_credits) <= 0
+      || !Number.isFinite(summaryTotalCostYuan) || summaryTotalCostYuan <= 0
+      || !equalNumber(summaryTotalCostYuan, totalCostYuan)
+      || !Number.isFinite(aggregateHardCapYuan) || aggregateHardCapYuan <= 0
+      || summaryTotalCostYuan > aggregateHardCapYuan) {
     fail('ToAPIs private-avatar summary must bind two positive-billing cases');
   }
 }
@@ -1981,7 +2158,10 @@ function verifyExternalModelRelease(candidateArg, evidenceRootArg, expectedCurre
     lingjing: protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.lingjing),
   };
   auditEvidenceBindingRuntime(candidate, surfaces);
-  if (surfaces.toapis) auditToapisRuntime(candidate, { auditEvidenceProducer: freshnessRequired.toapis });
+  if (surfaces.toapis) auditToapisRuntime(candidate, {
+    auditEvidenceProducer: freshnessRequired.toapis || freshnessRequired.toapisPrivateAvatar,
+  });
+  if (freshnessRequired.toapisPrivateAvatar) auditToapisPrivateAvatarProducer(candidate);
   if (surfaces.usmercari) auditUsmercariRuntime(candidate);
   if (surfaces.lingjing) auditLingjingRuntime(candidate);
   auditCallouts(candidate);

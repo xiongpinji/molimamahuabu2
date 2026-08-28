@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "release": "toapis-private-avatar-split-key-verification-20260828",
+  "allowedPaths": [
+    "backend-node/scripts/verify-toapis-private-avatar-video.js",
+    "backend-node/test/incrementalReleaseScope.test.js",
+    "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+    "backend-node/test/toapisPrivateAvatarVerification.test.js",
+    "deploy/release-guard/verify-external-model-release.js",
+    "deploy/release-scopes/toapis-private-avatar-split-key-verification-20260828.json",
+    "deploy/rotate-external-model-release-guard.sh"
+  ]
+}
