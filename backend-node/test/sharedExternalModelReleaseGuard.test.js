@@ -1080,6 +1080,52 @@ describeRootEvidence('shared evidence path and freshness safety', () => {
     }
   });
 
+  it('accepts expired evidence when protected provider surfaces are unchanged', () => {
+    const fixture = makeFixture({ toapis: false, usmercari: true });
+    try {
+      editEvidence(fixture, USMERCARI_FILE, (evidence) => {
+        evidence.valid_until = new Date(Date.now() - 1_000).toISOString();
+      });
+      assertPass(runGuard(fixture.candidate, fixture.evidenceRoot));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts expired standard ToAPIs evidence for an unchanged trusted surface', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    try {
+      editEvidence(fixture, TOAPIS_FILE, (evidence) => {
+        evidence.valid_until = new Date(Date.now() - 1_000).toISOString();
+      });
+      assertPass(runGuard(fixture.candidate, fixture.evidenceRoot, {
+        expectedCurrent: fixture.candidate,
+        guard: trustedToapisStandardSurfaceGuard(fixture),
+      }));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects expired standard ToAPIs evidence when its provider client changes', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    const expectedCurrent = path.join(fixture.root, 'expected-current');
+    try {
+      fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
+      editEvidence(fixture, TOAPIS_FILE, (evidence) => {
+        evidence.valid_until = new Date(Date.now() - 1_000).toISOString();
+      });
+      const client = path.join(fixture.candidate, 'backend-node/src/services/toapisVideoClient.js');
+      fs.appendFileSync(client, '\n// provider wire change\n');
+      assertFail(
+        runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }),
+        /ToAPIs evidence is expired/i,
+      );
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it('requires fresh standard ToAPIs evidence when its provider client changes', () => {
     const fixture = makeFixture({ toapis: true, usmercari: false });
     const expectedCurrent = path.join(fixture.root, 'expected-current');
@@ -1253,18 +1299,36 @@ describeRootEvidence('shared evidence path and freshness safety', () => {
     }
   });
 
-  it('rejects expired and future-generated evidence', () => {
-    for (const field of ['expired', 'future']) {
-      const fixture = makeFixture({ toapis: true, usmercari: false });
-      try {
-        editEvidence(fixture, TOAPIS_FILE, (evidence) => {
-          if (field === 'expired') evidence.valid_until = new Date(Date.now() - 1_000).toISOString();
-          else evidence.generated_at = new Date(Date.now() + 60_000).toISOString();
-        });
-        assertFail(runGuard(fixture.candidate, fixture.evidenceRoot), /expired|future|过期|未来|时间/i);
-      } finally {
-        fs.rmSync(fixture.root, { recursive: true, force: true });
-      }
+  it('rejects future-generated evidence even when protected provider surfaces are unchanged', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    try {
+      editEvidence(fixture, TOAPIS_FILE, (evidence) => {
+        evidence.generated_at = new Date(Date.now() + 60_000).toISOString();
+      });
+      assertFail(runGuard(fixture.candidate, fixture.evidenceRoot), /future|未来|时间/i);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects expired evidence when the provider freshness surface changes', () => {
+    const fixture = makeFixture({ toapis: false, usmercari: true });
+    const expectedCurrent = path.join(fixture.root, 'expected-current');
+    try {
+      fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
+      editEvidence(fixture, USMERCARI_FILE, (evidence) => {
+        evidence.valid_until = new Date(Date.now() - 1_000).toISOString();
+      });
+      fs.appendFileSync(
+        path.join(fixture.candidate, 'backend-node/src/services/usmercariImageClient.js'),
+        '\n// provider wire change\n',
+      );
+      assertFail(
+        runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }),
+        /USMercari image evidence is expired/i,
+      );
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
     }
   });
 

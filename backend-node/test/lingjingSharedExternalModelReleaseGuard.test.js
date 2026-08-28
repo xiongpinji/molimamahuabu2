@@ -211,6 +211,13 @@ function run(item, expectedCurrent = item.candidate) {
   return spawnSync(process.execPath, [GUARD, item.candidate, item.evidenceRoot, expectedCurrent], { encoding: 'utf8', env, windowsHide: true });
 }
 
+function expireEvidence(evidence) {
+  const generatedAt = evidence.results[0].completed_at;
+  evidence.generated_at = generatedAt;
+  evidence.pricing.captured_at = generatedAt;
+  evidence.valid_until = new Date(Date.parse(generatedAt) + 500).toISOString();
+}
+
 test('shared external-model guard registers the isolated Lingjing evidence contract', () => {
   assert.deepEqual(PROVIDERS.lingjing, {
     label: 'Lingjing video',
@@ -240,6 +247,33 @@ testRootEvidence('shared guard accepts the complete isolated Lingjing runtime an
     const result = run(item);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /providers=lingjing/);
+  } finally {
+    fs.rmSync(item.root, { recursive: true, force: true });
+  }
+});
+
+testRootEvidence('shared guard accepts expired Lingjing evidence when its provider surface is unchanged', () => {
+  const item = fixture(expireEvidence);
+  try {
+    const result = run(item);
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    fs.rmSync(item.root, { recursive: true, force: true });
+  }
+});
+
+testRootEvidence('shared guard rejects expired Lingjing evidence when its provider surface changes', () => {
+  const item = fixture(expireEvidence);
+  const expectedCurrent = path.join(item.root, 'expected-current');
+  try {
+    fs.cpSync(item.candidate, expectedCurrent, { recursive: true });
+    fs.appendFileSync(
+      path.join(item.candidate, 'backend-node/src/services/lingjingVideoClient.js'),
+      '\n// provider wire change\n',
+    );
+    const result = run(item, expectedCurrent);
+    assert.notEqual(result.status, 0, result.stdout);
+    assert.match(result.stderr, /Lingjing video evidence is expired/i);
   } finally {
     fs.rmSync(item.root, { recursive: true, force: true });
   }
