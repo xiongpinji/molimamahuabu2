@@ -102,12 +102,20 @@ WHERE deleted_at IS NULL
 
 服务端按镜头顺序收集 `source_character_key` 对应的已批准目标语言对白：
 
+- 当前版本必须已经物化且不是 `draft`；
+- 对应本地化任务必须成功完成；
+- 持久化的 `localization_decision.action` 必须为 `advance`；
+- decision 的 version ID、facts hash 和 policy version 必须与当前版本完全一致；
 - 忽略空白台词；
 - 保持原镜头和对白顺序；
 - 使用 locale pack 的正规化规则构造核验文本；
 - 达不到语言 Worker 的最小语音/文本要求时返回 `REDRAW_LOCAL_VOICE_APPROVED_TEXT_INSUFFICIENT`；
 - 不新增、翻译、重复或补写台词；
 - 客户端不能覆盖台词。
+
+当前数据模型没有逐句人工审批字段。本地离线 TTS 路径把上述完成、advance 且精确绑定的
+本地化决策作为已批准对白证据；语音产物仍必须经过后续人工语音审核、角色绑定和角色复审。
+任一决策字段缺失或漂移都必须 fail closed。
 
 ### 6.2 声线配置
 
@@ -170,6 +178,11 @@ Worker 适配器必须：
 - 返回引擎版本、profile、manifest SHA、输出路径、输出 SHA 和完成时间。
 
 测试 Worker 可以生成受控的真实语音 fixture，但它必须使用独立测试 manifest，不能被生产运行时信任。
+
+现有语言 Worker 的 `verify` 动作强制绑定正式供应商 TTS 调用，因此本地路径必须新增互斥的
+`verify_local_voice` 动作。该动作使用严格的 `local_tts_invocation`，只包含 engine、version、
+binary SHA、manifest SHA 和 profile；不得要求、接收或返回 `ai_service_config_id`、provider task ID
+或 `real_generation_verified`。原 `verify` 和 `verify_native_audio` 合同保持不变。
 
 ## 9. 执行与状态转换
 
