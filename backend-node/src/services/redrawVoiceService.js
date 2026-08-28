@@ -1,11 +1,18 @@
+const crypto = require('node:crypto');
+
 const { readOwnedAuthorizationAsset } = require('./redrawAssetService');
 const aiConfigService = require('./aiConfigService');
+const {
+  CONTRACT_VERSION: SUPPLEMENTAL_DIALOGUE_CONTRACT,
+  publicSupplementalDialogueApproval,
+} = require('./redrawSupplementalDialogueApprovalService');
 
 let defaultEvidenceRegistry = null;
 
 const PROVIDER_EVIDENCE_SOURCE = 'offline-worker';
 const LOCAL_EVIDENCE_SOURCE = 'local_offline_tts';
 const LOCAL_EVIDENCE_CONTRACT = 'local-offline-tts-v1';
+const APPROVED_DIALOGUE_CONTRACT = 'redraw-approved-dialogue-evidence-v1';
 const LOCAL_REQUIRED_KEYS = [
   'approved_text_sha256',
   'audio_asset_id',
@@ -41,7 +48,20 @@ const LOCAL_DERIVED_KEYS = [
   'provider_verified',
   'verification_source',
 ];
+const LOCAL_SUPPLEMENTAL_KEYS = [
+  'approved_dialogue_contract_version',
+  'approved_dialogue_evidence_sha256',
+  'source_translation',
+  'supplemental_dialogue_approval_ids',
+  'supplemental_dialogue_approvals',
+];
+const LOCAL_SUPPLEMENTAL_APPROVAL_KEYS = [
+  'approval_evidence_sha256',
+  'approval_id',
+  'target_text_sha256',
+];
 const PROVIDER_FORBIDDEN_LOCAL_KEYS = [
+  ...LOCAL_SUPPLEMENTAL_KEYS,
   'approved_text_sha256',
   'binary_sha256',
   'contract_version',
@@ -147,6 +167,23 @@ function normalizeEvidence(input = {}) {
     approved_text_sha256: String(source.approved_text_sha256 || ''),
     registration_id: Number(source.registration_id),
     registration_status: String(source.registration_status || ''),
+    approved_dialogue_contract_version: source.approved_dialogue_contract_version == null
+      ? null
+      : String(source.approved_dialogue_contract_version),
+    approved_dialogue_evidence_sha256: source.approved_dialogue_evidence_sha256 == null
+      ? null
+      : String(source.approved_dialogue_evidence_sha256),
+    supplemental_dialogue_approval_ids: Array.isArray(source.supplemental_dialogue_approval_ids)
+      ? source.supplemental_dialogue_approval_ids.map(Number)
+      : null,
+    supplemental_dialogue_approvals: Array.isArray(source.supplemental_dialogue_approvals)
+      ? source.supplemental_dialogue_approvals.map((approval) => ({
+        approval_id: Number(approval?.approval_id),
+        approval_evidence_sha256: String(approval?.approval_evidence_sha256 || ''),
+        target_text_sha256: String(approval?.target_text_sha256 || ''),
+      }))
+      : null,
+    source_translation: source.source_translation,
     test_only: source.test_only === true,
   };
 }
@@ -202,6 +239,10 @@ function isVerifiedProviderEvidence(evidence) {
   );
 }
 
+function stableHash(value) {
+  return crypto.createHash('sha256').update(Buffer.from(stableJson(value), 'utf8')).digest('hex');
+}
+
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -209,6 +250,8 @@ function isPlainObject(value) {
 function hasExactLocalKeys(rawEvidence) {
   if (!isPlainObject(rawEvidence)) return false;
   const allowed = [...LOCAL_REQUIRED_KEYS];
+  const hasSupplemental = LOCAL_SUPPLEMENTAL_KEYS.some((key) => Object.hasOwn(rawEvidence, key));
+  if (hasSupplemental) allowed.push(...LOCAL_SUPPLEMENTAL_KEYS);
   const hasDerived = LOCAL_DERIVED_KEYS.some((key) => Object.hasOwn(rawEvidence, key));
   if (hasDerived) allowed.push(...LOCAL_DERIVED_KEYS);
   if (Object.hasOwn(rawEvidence, 'test_only')) allowed.push('test_only');
@@ -218,10 +261,49 @@ function hasExactLocalKeys(rawEvidence) {
     && actual.every((key, index) => key === expected[index]);
 }
 
+function isCompleteSupplementalEvidence(rawEvidence, evidence) {
+  const hasSupplemental = LOCAL_SUPPLEMENTAL_KEYS.some((key) => Object.hasOwn(rawEvidence, key));
+  if (!hasSupplemental) return true;
+  if (!LOCAL_SUPPLEMENTAL_KEYS.every((key) => Object.hasOwn(rawEvidence, key))
+    || evidence.approved_dialogue_contract_version !== APPROVED_DIALOGUE_CONTRACT
+    || !isHexSha256(evidence.approved_dialogue_evidence_sha256)
+    || rawEvidence.source_translation !== false
+    || !Array.isArray(rawEvidence.supplemental_dialogue_approval_ids)
+    || !Array.isArray(rawEvidence.supplemental_dialogue_approvals)
+    || !Array.isArray(evidence.supplemental_dialogue_approval_ids)
+    || !Array.isArray(evidence.supplemental_dialogue_approvals)
+    || evidence.supplemental_dialogue_approval_ids.length === 0
+    || evidence.supplemental_dialogue_approval_ids.length
+      !== evidence.supplemental_dialogue_approvals.length) {
+    return false;
+  }
+  const ids = evidence.supplemental_dialogue_approval_ids;
+  if (rawEvidence.supplemental_dialogue_approval_ids
+    .some((id) => !Number.isSafeInteger(id) || id <= 0)
+    || ids.some((id) => !Number.isSafeInteger(id) || id <= 0)
+    || new Set(ids).size !== ids.length) {
+    return false;
+  }
+  return rawEvidence.supplemental_dialogue_approvals.every((approval, index) => {
+    if (!isPlainObject(approval)) return false;
+    const actual = Object.keys(approval).sort();
+    const expected = [...LOCAL_SUPPLEMENTAL_APPROVAL_KEYS].sort();
+    const normalized = evidence.supplemental_dialogue_approvals[index];
+    return actual.length === expected.length
+      && actual.every((key, keyIndex) => key === expected[keyIndex])
+      && Number.isSafeInteger(approval.approval_id)
+      && approval.approval_id > 0
+      && normalized.approval_id === ids[index]
+      && isHexSha256(normalized.approval_evidence_sha256)
+      && isHexSha256(normalized.target_text_sha256);
+  });
+}
+
 function isCompleteLocalEvidence(rawEvidence, evidence, options = {}) {
   const hasDerived = LOCAL_DERIVED_KEYS.some((key) => Object.hasOwn(rawEvidence, key));
   return Boolean(
     hasExactLocalKeys(rawEvidence)
+    && isCompleteSupplementalEvidence(rawEvidence, evidence)
     && evidence.source === LOCAL_EVIDENCE_SOURCE
     && evidence.contract_version === LOCAL_EVIDENCE_CONTRACT
     && evidence.tenant_id
@@ -315,6 +397,207 @@ function assertLocalLocaleEvidenceTrusted(options, evidence) {
   }
 }
 
+function parseSupplementalApprovalIds(value) {
+  try {
+    const ids = JSON.parse(value);
+    if (!Array.isArray(ids)
+      || ids.some((id) => !Number.isSafeInteger(id) || id <= 0)
+      || new Set(ids).size !== ids.length) {
+      return null;
+    }
+    return ids;
+  } catch (_) {
+    return null;
+  }
+}
+
+function readCurrentSupplementalApprovals(db, evidence) {
+  const rows = db.prepare(`
+    SELECT a.*
+    FROM redraw_supplemental_dialogue_approvals a
+    JOIN redraw_shots s
+      ON s.id = a.redraw_shot_id AND s.version_id = a.version_id
+     AND s.tenant_id = a.tenant_id AND s.user_id = a.user_id
+     AND s.deleted_at IS NULL
+    WHERE a.tenant_id = ? AND a.user_id = ? AND a.version_id = ?
+      AND a.voice_redraw_asset_id = ? AND a.source_character_key = ?
+      AND a.status = 'active' AND a.deleted_at IS NULL
+    ORDER BY s.batch_index ASC, s.shot_index ASC, s.id ASC, a.id ASC
+  `).all(
+    evidence.tenant_id,
+    evidence.user_id,
+    evidence.version_id,
+    evidence.voice_redraw_asset_id,
+    evidence.source_character_key,
+  );
+  for (const row of rows) {
+    try {
+      const projection = publicSupplementalDialogueApproval(db, {
+        approval: row,
+        idempotentReplay: false,
+      });
+      if (projection.contract_version !== SUPPLEMENTAL_DIALOGUE_CONTRACT
+        || projection.status !== 'active'
+        || projection.source_translation !== false) {
+        throw new Error('invalid supplemental approval projection');
+      }
+    } catch (_) {
+      throw codedError('REDRAW_VOICE_NOT_VERIFIED', '音色缺少完整本地离线验证证据');
+    }
+  }
+  return rows;
+}
+
+function recomputeApprovedDialogueEvidenceSha256(db, evidence, approvalRows) {
+  const scope = db.prepare(`
+    SELECT v.id, v.work_id, v.localization_task_id, v.facts_hash, v.locale, v.market,
+           p.policy_version
+    FROM redraw_versions v
+    JOIN redraw_works w
+      ON w.id = v.work_id AND w.tenant_id = v.tenant_id AND w.user_id = v.user_id
+     AND w.deleted_at IS NULL
+    JOIN redraw_projects p
+      ON p.id = w.project_id AND p.tenant_id = v.tenant_id AND p.user_id = v.user_id
+     AND p.deleted_at IS NULL
+    WHERE v.id = ? AND v.tenant_id = ? AND v.user_id = ? AND v.deleted_at IS NULL
+    LIMIT 1
+  `).get(evidence.version_id, evidence.tenant_id, evidence.user_id);
+  if (!scope
+    || String(scope.locale || '') !== evidence.locale
+    || String(scope.market || '') !== evidence.market) {
+    throw codedError('REDRAW_VOICE_NOT_VERIFIED', '音色缺少完整本地离线验证证据');
+  }
+  const taskId = String(scope.localization_task_id || '');
+  const task = db.prepare(`
+    SELECT id, result, resource_id, completed_at
+    FROM async_tasks
+    WHERE id = ? AND type = 'redraw_localization' AND status = 'completed'
+      AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+    LIMIT 1
+  `).get(taskId, evidence.tenant_id, evidence.user_id);
+  const result = parseJson(task?.result, {});
+  const decision = parseJson(result.localization_decision, {});
+  if (!task
+    || String(task.resource_id || '') !== String(scope.work_id)
+    || result.status !== 'completed'
+    || Number(result.work_id) !== Number(scope.work_id)
+    || Number(result.version_id) !== Number(scope.id)
+    || String(result.facts_hash || '') !== String(scope.facts_hash || '')
+    || decision.action !== 'advance'
+    || Number(decision.policy_version) !== Number(scope.policy_version)
+    || String(decision.evidence_hash || '') !== String(scope.facts_hash || '')
+    || (decision.version_id != null && Number(decision.version_id) !== Number(scope.id))) {
+    throw codedError('REDRAW_VOICE_NOT_VERIFIED', '音色缺少完整本地离线验证证据');
+  }
+  const shots = db.prepare(`
+    SELECT id, shot_id, batch_index, shot_index, localized_dialogue_json, updated_at
+    FROM redraw_shots
+    WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+    ORDER BY batch_index ASC, shot_index ASC, id ASC
+  `).all(evidence.version_id, evidence.tenant_id, evidence.user_id);
+  const completedAt = Date.parse(String(task.completed_at || ''));
+  if (!shots.length
+    || !Number.isFinite(completedAt)
+    || shots.some((shot) => !Number.isFinite(Date.parse(String(shot.updated_at || '')))
+      || Date.parse(String(shot.updated_at)) > completedAt)) {
+    throw codedError('REDRAW_VOICE_NOT_VERIFIED', '音色缺少完整本地离线验证证据');
+  }
+  const approved = [];
+  for (const shot of shots) {
+    const turns = parseJson(shot.localized_dialogue_json, null);
+    if (!Array.isArray(turns)) {
+      throw codedError('REDRAW_VOICE_NOT_VERIFIED', '音色缺少完整本地离线验证证据');
+    }
+    for (const [turnIndex, turn] of turns.entries()) {
+      if (!isPlainObject(turn)) {
+        throw codedError('REDRAW_VOICE_NOT_VERIFIED', '音色缺少完整本地离线验证证据');
+      }
+      if (String(turn.speaker_id ?? '') !== evidence.source_character_key) continue;
+      const rawText = turn.target_text ?? turn.localized_text;
+      if (typeof rawText !== 'string' || !rawText.trim()) {
+        throw codedError('REDRAW_VOICE_NOT_VERIFIED', '音色缺少完整本地离线验证证据');
+      }
+      const text = rawText.trim();
+      approved.push({
+        batchIndex: Number(shot.batch_index),
+        shotIndex: Number(shot.shot_index),
+        redrawShotId: Number(shot.id),
+        approvalId: 0,
+        turnIndex,
+        text,
+        evidence: {
+          source: 'localized_dialogue',
+          redraw_shot_id: Number(shot.id),
+          shot_id: String(shot.shot_id),
+          batch_index: Number(shot.batch_index),
+          shot_index: Number(shot.shot_index),
+          turn_index: turnIndex,
+          source_character_key: evidence.source_character_key,
+          target_text_sha256: crypto.createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex'),
+        },
+      });
+    }
+  }
+  const shotsById = new Map(shots.map((shot) => [Number(shot.id), shot]));
+  for (const row of approvalRows) {
+    const shot = shotsById.get(Number(row.redraw_shot_id));
+    if (!shot) throw codedError('REDRAW_VOICE_NOT_VERIFIED', '音色缺少完整本地离线验证证据');
+    approved.push({
+      batchIndex: Number(shot.batch_index),
+      shotIndex: Number(shot.shot_index),
+      redrawShotId: Number(shot.id),
+      approvalId: Number(row.id),
+      turnIndex: 0,
+      text: String(row.target_text),
+      evidence: {
+        source: 'supplemental_owner_approval',
+        redraw_shot_id: Number(shot.id),
+        shot_id: String(shot.shot_id),
+        batch_index: Number(shot.batch_index),
+        shot_index: Number(shot.shot_index),
+        source_character_key: evidence.source_character_key,
+        approval_id: Number(row.id),
+        approval_evidence_sha256: String(row.approval_evidence_sha256),
+        target_text_sha256: String(row.target_text_sha256),
+      },
+    });
+  }
+  approved.sort((left, right) => (
+    left.batchIndex - right.batchIndex
+    || left.shotIndex - right.shotIndex
+    || left.redrawShotId - right.redrawShotId
+    || left.approvalId - right.approvalId
+    || left.turnIndex - right.turnIndex
+  ));
+  const approvedTextSha256 = crypto.createHash('sha256')
+    .update(Buffer.from(approved.map((entry) => entry.text).join('\n'), 'utf8'))
+    .digest('hex');
+  if (approvedTextSha256 !== evidence.approved_text_sha256) {
+    throw codedError('REDRAW_VOICE_NOT_VERIFIED', '音色缺少完整本地离线验证证据');
+  }
+  return stableHash({
+    contract_version: APPROVED_DIALOGUE_CONTRACT,
+    localization_task_id: taskId,
+    localization_decision_sha256: stableHash(decision),
+    facts_hash: String(scope.facts_hash),
+    policy_version: Number(scope.policy_version),
+    target_locale: evidence.locale,
+    target_market: evidence.market,
+    source_character_key: evidence.source_character_key,
+    approved_text_sha256: approvedTextSha256,
+    ordered_dialogue_evidence: approved.map((entry) => entry.evidence),
+    supplemental_approvals: approvalRows.map((row) => ({
+      approval_id: Number(row.id),
+      status: 'active',
+      approval_evidence_sha256: String(row.approval_evidence_sha256),
+      target_text_sha256: String(row.target_text_sha256),
+      approved_at: String(row.approved_at),
+      updated_at: String(row.updated_at),
+      source_translation: false,
+    })),
+  });
+}
+
 function assertCompletedLocalRegistration(db, evidence, owner, voiceAssetId) {
   if (!owner
     || evidence.tenant_id !== String(owner.tenantId)
@@ -346,6 +629,38 @@ function assertCompletedLocalRegistration(db, evidence, owner, voiceAssetId) {
     || !isHexSha256(registration.locale_evidence_sha256)
     || String(registration.completed_at || '') !== evidence.completed_at) {
     throw codedError('REDRAW_VOICE_NOT_VERIFIED', '音色缺少完整本地离线验证证据');
+  }
+  const storedApprovalIds = parseSupplementalApprovalIds(registration.supplemental_approval_ids_json);
+  const evidenceApprovalIds = evidence.supplemental_dialogue_approval_ids;
+  if (evidenceApprovalIds === null) {
+    const approvalRows = readCurrentSupplementalApprovals(db, evidence);
+    const storedDialogueEvidenceSha256 = registration.approved_dialogue_evidence_sha256;
+    if (stableJson(storedApprovalIds) !== stableJson([])
+      || approvalRows.length > 0
+      || (storedDialogueEvidenceSha256 != null
+        && (!isHexSha256(storedDialogueEvidenceSha256)
+          || recomputeApprovedDialogueEvidenceSha256(db, evidence, [])
+            !== storedDialogueEvidenceSha256))) {
+      throw codedError('REDRAW_VOICE_NOT_VERIFIED', '音色缺少完整本地离线验证证据');
+    }
+  } else {
+    if (registration.approved_dialogue_evidence_sha256
+        !== evidence.approved_dialogue_evidence_sha256
+      || stableJson(storedApprovalIds) !== stableJson(evidenceApprovalIds)) {
+      throw codedError('REDRAW_VOICE_NOT_VERIFIED', '音色缺少完整本地离线验证证据');
+    }
+    const approvalRows = readCurrentSupplementalApprovals(db, evidence);
+    if (stableJson(approvalRows.map((row) => Number(row.id))) !== stableJson(evidenceApprovalIds)
+      || approvalRows.some((row, index) => (
+        String(row.approval_evidence_sha256)
+          !== evidence.supplemental_dialogue_approvals[index].approval_evidence_sha256
+        || String(row.target_text_sha256)
+          !== evidence.supplemental_dialogue_approvals[index].target_text_sha256
+      ))
+      || recomputeApprovedDialogueEvidenceSha256(db, evidence, approvalRows)
+        !== evidence.approved_dialogue_evidence_sha256) {
+      throw codedError('REDRAW_VOICE_NOT_VERIFIED', '音色缺少完整本地离线验证证据');
+    }
   }
   const voice = db.prepare(`
     SELECT voice_asset_id FROM redraw_assets
@@ -489,6 +804,14 @@ function publicEvidence(branch) {
     approved_text_sha256: evidence.approved_text_sha256,
     registration_id: evidence.registration_id,
     registration_status: evidence.registration_status,
+    ...(Array.isArray(evidence.supplemental_dialogue_approval_ids) ? {
+      approved_dialogue_contract_version: evidence.approved_dialogue_contract_version,
+      approved_dialogue_evidence_sha256: evidence.approved_dialogue_evidence_sha256,
+      supplemental_dialogue_approval_ids: [...evidence.supplemental_dialogue_approval_ids],
+      supplemental_dialogue_approvals: evidence.supplemental_dialogue_approvals
+        .map((approval) => ({ ...approval })),
+      source_translation: false,
+    } : {}),
     ...(evidence.test_only ? { test_only: true } : {}),
   };
 }
@@ -576,6 +899,9 @@ function sameVoice(left, right) {
       && left.engine_version === right.engine_version
       && left.binary_sha256 === right.binary_sha256
       && left.manifest_sha256 === right.manifest_sha256
+      && left.approved_dialogue_evidence_sha256 === right.approved_dialogue_evidence_sha256
+      && stableJson(left.supplemental_dialogue_approval_ids)
+        === stableJson(right.supplemental_dialogue_approval_ids)
       && left.locale === right.locale
       && left.market === right.market
       && left.audio_asset_id === right.audio_asset_id;
@@ -610,6 +936,10 @@ function sameEvidence(left, right) {
       && left.user_id === right.user_id
       && left.version_id === right.version_id
       && left.approved_text_sha256 === right.approved_text_sha256
+      && left.approved_dialogue_contract_version === right.approved_dialogue_contract_version
+      && stableJson(left.supplemental_dialogue_approvals)
+        === stableJson(right.supplemental_dialogue_approvals)
+      && left.source_translation === right.source_translation
       && left.registration_status === right.registration_status
       && left.test_only === right.test_only;
   }
