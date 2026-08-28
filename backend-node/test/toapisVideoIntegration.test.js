@@ -128,6 +128,21 @@ function makeVideoPrice(model, resolutionPrices = {
   };
 }
 
+const MODEL_PRICE_COLUMNS = [
+  'model', 'credits', 'display_name', 'public_note', 'category', 'status',
+  'billing_unit', 'cost_unit', 'cost_micros_per_unit',
+  'input_cost_micros_per_1k', 'output_cost_micros_per_1k', 'updated_at',
+  'pricing_mode',
+].map((name) => ({ name }));
+const MODEL_PRICE_SCHEMA_SQL = `CREATE TABLE model_credit_prices (
+  model TEXT PRIMARY KEY,
+  pricing_mode TEXT NOT NULL DEFAULT 'paid',
+  credits INTEGER NOT NULL CHECK (
+    (pricing_mode = 'paid' AND credits > 0)
+    OR (pricing_mode = 'free' AND credits = 0)
+  )
+)`;
+
 function makeDb(config, prices = [
   makeVideoPrice('seedance-2-fast'),
   makeVideoPrice('seedance-2-mini'),
@@ -138,6 +153,7 @@ function makeDb(config, prices = [
     prepare(sql) {
       return {
         all(...args) {
+          if (/PRAGMA table_info\(model_credit_prices\)/i.test(sql)) return MODEL_PRICE_COLUMNS;
           if (/PRAGMA table_info/i.test(sql)) return [];
           if (/FROM ai_service_configs/i.test(sql)) {
             return /is_default\s*=\s*1/i.test(sql)
@@ -159,7 +175,12 @@ function makeDb(config, prices = [
           return [];
         },
         get(...args) {
-          if (/FROM sqlite_master/i.test(sql)) return { exists: 1 };
+          if (/SELECT sql FROM sqlite_master/i.test(sql) && /name = 'model_credit_prices'/i.test(sql)) {
+            return { sql: MODEL_PRICE_SCHEMA_SQL };
+          }
+          if (/FROM sqlite_master/i.test(sql)) {
+            return String(args[0] || '') === 'model_credit_prices' ? { exists: 1 } : undefined;
+          }
           if (/FROM ai_service_configs/i.test(sql)) return configs[0];
           if (/FROM model_credit_prices/i.test(sql)) {
             const model = String(args[0] || '').toLowerCase();
