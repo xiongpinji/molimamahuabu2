@@ -16,7 +16,85 @@ MAX_RESPONSE_BYTES = 256 * 1024
 READY_TTL_SECONDS = 10
 READY_REFRESH_SECONDS = 5
 _UnixStreamServerBase = getattr(socketserver, "UnixStreamServer", socketserver.TCPServer)
-FORBIDDEN_RESPONSE_FIELDS = frozenset({"transcript", "transcript_text", "approved_text", "provider_task_id", "task_id"})
+FORBIDDEN_RESPONSE_FIELDS = frozenset({
+    "transcript",
+    "transcript_text",
+    "approved_text",
+    "provider_task_id",
+    "task_id",
+    "audio_path",
+    "path",
+    "command",
+    "environment",
+    "env",
+    "key",
+    "api_key",
+    "authorization",
+})
+SAFE_ERROR_CODES = frozenset({
+    "LOCALE_REQUEST_TOO_LARGE",
+    "LOCALE_REQUEST_INVALID_JSON",
+    "LOCALE_RESPONSE_TOO_LARGE",
+    "LOCALE_VERIFY_FAILED",
+    "LOCALE_VERIFY_REQUEST_INVALID",
+    "LOCALE_HEALTH_REQUEST_INVALID",
+    "LOCALE_PACK_UNSUPPORTED",
+    "LOCALE_AUDIO_HASH_INVALID",
+    "LOCALE_TTS_INVOCATION_INVALID",
+    "LOCALE_VIDEO_INVOCATION_INVALID",
+    "LOCALE_LOCAL_TTS_INVOCATION_INVALID",
+    "LOCALE_AUDIO_DEADLINE_EXCEEDED",
+    "LOCALE_AUDIO_DURATION_INVALID",
+    "LOCALE_AUDIO_NORMALIZE_FAILED",
+    "LOCALE_AUDIO_PATH_INVALID",
+    "LOCALE_AUDIO_PROBE_FAILED",
+    "LOCALE_AUDIO_STREAM_INVALID",
+})
+LOCAL_VOICE_RESULT_FIELDS = frozenset({
+    "source",
+    "request_id",
+    "audio_sha256",
+    "approved_text_sha256",
+    "locale_pack",
+    "language_verified",
+    "detected_locale",
+    "transcript_sha256",
+    "model_manifest_sha256",
+    "calibration_manifest_sha256",
+    "models",
+    "asr",
+    "accent",
+    "metrics",
+    "checks",
+    "local_tts_invocation",
+    "completed_at",
+})
+LOCAL_TTS_INVOCATION_FIELDS = frozenset({
+    "engine",
+    "engine_version",
+    "binary_sha256",
+    "manifest_sha256",
+    "profile",
+})
+LOCAL_VOICE_CHECK_FIELDS = frozenset({
+    "locale_pack",
+    "audio_path",
+    "audio_sha256_matches_request",
+    "asr_inference",
+    "accent_inference",
+    "calibration_thresholds",
+    "language",
+    "language_probability",
+    "word_error_rate",
+    "character_error_rate",
+    "critical_tokens_match",
+    "us_accent_label",
+    "us_accent_probability",
+    "model_manifest",
+    "calibration_manifest",
+    "models",
+    "transcript_present",
+})
 
 
 @dataclass(frozen=True)
@@ -28,6 +106,7 @@ class LocaleServerConfig:
     accent: object = None
     verifier: object = None
     native_verifier: object = None
+    local_voice_verifier: object = None
     ready_path: Path | None = None
     socket_path: Path | None = None
 
@@ -100,6 +179,9 @@ class LocaleRequestHandler(socketserver.StreamRequestHandler):
                 asr=config.asr,
                 accent=config.accent,
             )
+            if request["action"] == "verify_local_voice" and not _valid_local_voice_result(result, request, pack):
+                self._write_error("LOCALE_VERIFY_FAILED")
+                return
         except LocaleWorkerError as exc:
             self._write_error(exc.code)
             return
@@ -109,7 +191,8 @@ class LocaleRequestHandler(socketserver.StreamRequestHandler):
         self._write_json({"ok": True, "result": result})
 
     def _write_error(self, code):
-        self._write_json({"ok": False, "error_code": code})
+        safe_code = code if isinstance(code, str) and code in SAFE_ERROR_CODES else "LOCALE_VERIFY_FAILED"
+        self._write_json({"ok": False, "error_code": safe_code})
 
     def _write_json(self, payload):
         encoded = _encode_response(payload)
@@ -119,7 +202,17 @@ class LocaleRequestHandler(socketserver.StreamRequestHandler):
         self.wfile.flush()
 
 
-def make_test_server(verifier, *, pack=None, pack_by_id=None, allowed_root, asr=None, accent=None, native_verifier=None):
+def make_test_server(
+    verifier,
+    *,
+    pack=None,
+    pack_by_id=None,
+    allowed_root,
+    asr=None,
+    accent=None,
+    native_verifier=None,
+    local_voice_verifier=None,
+):
     config = LocaleServerConfig(
         pack=pack,
         pack_by_id=pack_by_id,
@@ -128,6 +221,7 @@ def make_test_server(verifier, *, pack=None, pack_by_id=None, allowed_root, asr=
         accent=accent,
         verifier=verifier,
         native_verifier=native_verifier,
+        local_voice_verifier=local_voice_verifier,
     )
     return LocaleTcpTestServer(("127.0.0.1", 0), LocaleRequestHandler, config=config)
 
@@ -264,6 +358,7 @@ def create_unix_server(socket_path, *, pack, pack_by_id=None, allowed_root, asr,
         accent=accent,
         verifier=_default_verifier("verify"),
         native_verifier=_default_verifier("verify_native_audio"),
+        local_voice_verifier=_default_verifier("verify_local_voice"),
         ready_path=Path(ready_path) if ready_path is not None else None,
         socket_path=Path(socket_path),
     )
@@ -306,6 +401,98 @@ def _encode_response(payload):
     if len(encoded) > MAX_RESPONSE_BYTES:
         return None
     return encoded
+
+
+def _valid_local_voice_result(result, request, pack):
+    if not isinstance(result, dict) or set(result) != LOCAL_VOICE_RESULT_FIELDS:
+        return False
+    approved_text_sha256 = hashlib.sha256(request["approved_text"].encode("utf-8")).hexdigest()
+    if (
+        result.get("source") != "offline-worker"
+        or result.get("request_id") != request.get("request_id")
+        or result.get("audio_sha256") != request.get("audio_sha256")
+        or result.get("approved_text_sha256") != approved_text_sha256
+        or result.get("locale_pack") != request.get("locale_pack")
+        or result.get("model_manifest_sha256") != pack.get("model_manifest_sha256")
+        or result.get("calibration_manifest_sha256") != pack.get("calibration_manifest_sha256")
+        or result.get("language_verified") is not True
+        or result.get("detected_locale") != "en-US"
+        or not _is_sha256(result.get("transcript_sha256"))
+        or not _valid_aware_datetime(result.get("completed_at"))
+    ):
+        return False
+
+    invocation = result.get("local_tts_invocation")
+    expected_invocation = request.get("local_tts_invocation")
+    if (
+        not isinstance(invocation, dict)
+        or set(invocation) != LOCAL_TTS_INVOCATION_FIELDS
+        or invocation != expected_invocation
+    ):
+        return False
+
+    models = result.get("models")
+    if (
+        not isinstance(models, dict)
+        or set(models) != {
+            "asr_revision",
+            "accent_revision",
+            "asr_tree_sha256",
+            "accent_tree_sha256",
+        }
+        or not _non_empty_string(models.get("asr_revision"))
+        or not _non_empty_string(models.get("accent_revision"))
+        or not _is_sha256(models.get("asr_tree_sha256"))
+        or not _is_sha256(models.get("accent_tree_sha256"))
+    ):
+        return False
+
+    asr = result.get("asr")
+    accent = result.get("accent")
+    metrics = result.get("metrics")
+    checks = result.get("checks")
+    return (
+        isinstance(asr, dict)
+        and set(asr) == {"ok", "language", "probability"}
+        and asr.get("ok") is True
+        and asr.get("language") == "en"
+        and _is_probability(asr.get("probability"))
+        and isinstance(accent, dict)
+        and set(accent) == {"ok", "label", "probability"}
+        and accent.get("ok") is True
+        and accent.get("label") == "us"
+        and _is_probability(accent.get("probability"))
+        and isinstance(metrics, dict)
+        and set(metrics) == {"word_error_rate", "character_error_rate", "critical_tokens_match"}
+        and _is_probability(metrics.get("word_error_rate"))
+        and _is_probability(metrics.get("character_error_rate"))
+        and metrics.get("critical_tokens_match") is True
+        and isinstance(checks, dict)
+        and set(checks) == LOCAL_VOICE_CHECK_FIELDS
+        and all(value is True for value in checks.values())
+    )
+
+
+def _is_sha256(value):
+    return isinstance(value, str) and HEX_SHA256_RE.fullmatch(value) is not None
+
+
+def _non_empty_string(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _is_probability(value):
+    return type(value) in (int, float) and 0.0 <= float(value) <= 1.0
+
+
+def _valid_aware_datetime(value):
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
 
 
 def _sanitize_response(value):
@@ -424,13 +611,19 @@ def _pack_identifier(pack):
 def _select_verifier(config, action):
     if action == "verify_native_audio":
         return config.native_verifier or _default_verifier(action)
+    if action == "verify_local_voice":
+        return config.local_voice_verifier or _default_verifier(action)
     return config.verifier or _default_verifier(action)
 
 
 def _default_verifier(action="verify"):
-    from .verifier import verify_audio, verify_native_audio
+    from .verifier import verify_audio, verify_local_voice, verify_native_audio
 
-    return verify_native_audio if action == "verify_native_audio" else verify_audio
+    if action == "verify_native_audio":
+        return verify_native_audio
+    if action == "verify_local_voice":
+        return verify_local_voice
+    return verify_audio
 
 
 def main():

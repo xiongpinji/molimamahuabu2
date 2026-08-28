@@ -1,16 +1,78 @@
 import hashlib
+import importlib.util
 import json
 import sys
 import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-import redraw_locale_worker.verifier as verifier_module
+
+def _load_verifier_under_test():
+    try:
+        import redraw_locale_worker.verifier as module
+
+        return module, False
+    except ModuleNotFoundError as exc:
+        if exc.name != "jiwer":
+            raise
+
+    package_dir = Path(__file__).resolve().parents[1] / "src" / "redraw_locale_worker"
+
+    def edit_distance(reference, hypothesis):
+        previous = list(range(len(hypothesis) + 1))
+        for row, expected in enumerate(reference, start=1):
+            current = [row]
+            for column, observed in enumerate(hypothesis, start=1):
+                current.append(min(
+                    current[-1] + 1,
+                    previous[column] + 1,
+                    previous[column - 1] + (expected != observed),
+                ))
+            previous = current
+        return previous[-1]
+
+    jiwer_fixture = types.ModuleType("jiwer")
+    jiwer_fixture.wer = lambda reference, hypothesis: (
+        edit_distance(reference.split(), hypothesis.split()) / max(1, len(reference.split()))
+    )
+    jiwer_fixture.cer = lambda reference, hypothesis: (
+        edit_distance(reference, hypothesis) / max(1, len(reference))
+    )
+
+    normalization_name = "redraw_locale_worker._task3_test_normalization"
+    normalization_spec = importlib.util.spec_from_file_location(
+        normalization_name,
+        package_dir / "normalization.py",
+    )
+    normalization_module = importlib.util.module_from_spec(normalization_spec)
+    with patch.dict(sys.modules, {"jiwer": jiwer_fixture, normalization_name: normalization_module}):
+        normalization_spec.loader.exec_module(normalization_module)
+
+    verifier_name = "redraw_locale_worker._task3_test_verifier"
+    verifier_spec = importlib.util.spec_from_file_location(
+        verifier_name,
+        package_dir / "verifier.py",
+    )
+    verifier_module = importlib.util.module_from_spec(verifier_spec)
+    with patch.dict(
+        sys.modules,
+        {
+            "redraw_locale_worker.normalization": normalization_module,
+            verifier_name: verifier_module,
+        },
+    ):
+        verifier_spec.loader.exec_module(verifier_module)
+    return verifier_module, True
+
+
+verifier_module, USING_ISOLATED_JIWER_FIXTURE = _load_verifier_under_test()
 from redraw_locale_worker.engines import FasterWhisperEngine, _score_to_probability
 
 verify_audio = verifier_module.verify_audio
 verify_native_audio = getattr(verifier_module, "verify_native_audio", None)
+verify_local_voice = getattr(verifier_module, "verify_local_voice", None)
 
 
 class FakeAsr:
@@ -163,6 +225,21 @@ class VerifierTests(unittest.TestCase):
                 "speech_chars_per_second_max": 20,
             },
         }
+        self.local_request = {
+            "action": "verify_local_voice",
+            "request_id": "req-local-1",
+            "audio_path": str(self.audio_path),
+            "audio_sha256": self.audio_sha256,
+            "approved_text": self.text,
+            "locale_pack": "en-US@1",
+            "local_tts_invocation": {
+                "engine": "eSpeak NG",
+                "engine_version": "1.52.0",
+                "binary_sha256": "6" * 64,
+                "manifest_sha256": "7" * 64,
+                "profile": "role-1",
+            },
+        }
 
     def _native_asr(self, *, language="es", probability=0.96, text=None, segments=None):
         transcript = self.native_text if text is None else text
@@ -171,6 +248,13 @@ class VerifierTests(unittest.TestCase):
         engine = FakeAsr(language, probability, transcript)
         engine.result["segments"] = segments
         return engine
+
+    def test_missing_jiwer_fixture_is_scoped_to_isolated_modules(self):
+        if not USING_ISOLATED_JIWER_FIXTURE:
+            self.skipTest("real jiwer dependency is installed")
+        self.assertNotIn("jiwer", sys.modules)
+        self.assertNotIn("redraw_locale_worker._task3_test_normalization", sys.modules)
+        self.assertNotIn("redraw_locale_worker._task3_test_verifier", sys.modules)
 
     def test_locale_is_verified_only_when_all_gates_pass(self):
         result = verify_audio(
@@ -425,6 +509,80 @@ class VerifierTests(unittest.TestCase):
                 sys.modules.pop("faster_whisper", None)
             else:
                 sys.modules["faster_whisper"] = previous
+
+    def test_local_voice_verifier_entrypoint_exists(self):
+        self.assertTrue(callable(verify_local_voice))
+
+    @unittest.skipUnless(callable(verify_local_voice), "local voice verifier is not implemented yet")
+    def test_local_voice_reuses_locale_gates_and_binds_only_local_invocation(self):
+        result = verify_local_voice(
+            self.local_request,
+            self.pack,
+            allowed_root=self.allowed_root,
+            asr=FakeAsr("en", 0.98, self.text),
+            accent=FakeAccent("us", 0.94),
+        )
+
+        self.assertTrue(result["language_verified"])
+        self.assertEqual(result["detected_locale"], "en-US")
+        self.assertEqual(result["request_id"], "req-local-1")
+        self.assertEqual(result["audio_sha256"], self.audio_sha256)
+        self.assertEqual(result["locale_pack"], "en-US@1")
+        self.assertEqual(result["approved_text_sha256"], hashlib.sha256(self.text.encode("utf-8")).hexdigest())
+        self.assertEqual(result["local_tts_invocation"], self.local_request["local_tts_invocation"])
+        self.assertEqual(
+            set(result),
+            {
+                "source",
+                "locale_pack",
+                "language_verified",
+                "detected_locale",
+                "audio_sha256",
+                "transcript_sha256",
+                "model_manifest_sha256",
+                "calibration_manifest_sha256",
+                "models",
+                "asr",
+                "accent",
+                "metrics",
+                "checks",
+                "completed_at",
+                "request_id",
+                "approved_text_sha256",
+                "local_tts_invocation",
+            },
+        )
+        self.assertNotIn("tts_invocation", result)
+        self.assertNotIn("video_invocation", result)
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertNotIn(self.text, serialized)
+        for forbidden in ("provider", "model", "ai_service_config_id", "provider_task_id"):
+            self.assertNotIn(forbidden, result["local_tts_invocation"])
+
+    @unittest.skipUnless(callable(verify_local_voice), "local voice verifier is not implemented yet")
+    def test_local_voice_does_not_trust_request_locale_claims_or_relax_thresholds(self):
+        request = {
+            **self.local_request,
+            "detected_locale": "en-US",
+            "thresholds": {
+                "language_probability_min": 0,
+                "word_error_rate_max": 1,
+                "character_error_rate_max": 1,
+                "us_accent_probability_min": 0,
+            },
+        }
+        result = verify_local_voice(
+            request,
+            self.pack,
+            allowed_root=self.allowed_root,
+            asr=FakeAsr("en", 0.94, self.text),
+            accent=FakeAccent("us", 0.99),
+        )
+
+        self.assertFalse(result["language_verified"])
+        self.assertIsNone(result["detected_locale"])
+        self.assertFalse(result["checks"]["language_probability"])
+        self.assertEqual(result["local_tts_invocation"], self.local_request["local_tts_invocation"])
 
     def test_native_audio_verifier_entrypoint_exists(self):
         self.assertTrue(callable(verify_native_audio))

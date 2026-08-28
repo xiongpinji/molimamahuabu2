@@ -94,6 +94,21 @@ def verify_audio(request, pack, *, allowed_root, asr, accent):
     }
 
 
+def verify_local_voice(request, pack, *, allowed_root, asr, accent):
+    result = verify_audio(
+        request,
+        pack,
+        allowed_root=allowed_root,
+        asr=asr,
+        accent=accent,
+    )
+    result.pop("tts_invocation", None)
+    result["request_id"] = request.get("request_id")
+    result["approved_text_sha256"] = _sha256_text(request.get("approved_text"))
+    result["local_tts_invocation"] = _local_tts_invocation_evidence(request.get("local_tts_invocation"))
+    return result
+
+
 def verify_native_audio(request, pack, *, allowed_root, asr, accent=None):
     audio_path = _resolve_audio_path(request.get("audio_path"), allowed_root)
     audio_sha256 = _sha256_file(audio_path) if audio_path is not None else None
@@ -402,3 +417,22 @@ def _video_invocation_evidence(value):
         "artifact_sha256": value.get("artifact_sha256"),
         "provider_task_id_sha256": _sha256_text(value.get("provider_task_id")),
     }
+
+
+def _local_tts_invocation_evidence(value):
+    fields = {
+        "engine",
+        "engine_version",
+        "binary_sha256",
+        "manifest_sha256",
+        "profile",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        return {}
+    if value.get("engine") != "eSpeak NG":
+        return {}
+    if not all(isinstance(value.get(key), str) and value[key].strip() for key in ("engine_version", "profile")):
+        return {}
+    if not all(_valid_hash(value.get(key)) for key in ("binary_sha256", "manifest_sha256")):
+        return {}
+    return {key: value[key] for key in sorted(fields)}

@@ -36,6 +36,22 @@ VALID_NATIVE_AUDIO_REQUEST = {
     },
 }
 
+VALID_LOCAL_VOICE_REQUEST = {
+    "action": "verify_local_voice",
+    "request_id": "req-local-1",
+    "audio_path": "C:/tmp/local-voice.wav",
+    "audio_sha256": "c" * 64,
+    "approved_text": "Anna did not pay 50 dollars",
+    "locale_pack": "en-US@1",
+    "local_tts_invocation": {
+        "engine": "eSpeak NG",
+        "engine_version": "1.52.0",
+        "binary_sha256": "d" * 64,
+        "manifest_sha256": "e" * 64,
+        "profile": "role-1",
+    },
+}
+
 
 class ProtocolTests(unittest.TestCase):
     def test_health_accepts_only_action_and_request_id(self):
@@ -133,6 +149,60 @@ class ProtocolTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ProtocolError, "LOCALE_PACK_UNSUPPORTED"):
             parse_request({**VALID_NATIVE_AUDIO_REQUEST, "locale_pack": "es-MX@1"})
+
+    def test_local_voice_request_accepts_only_exact_local_invocation(self):
+        parsed = parse_request(dict(VALID_LOCAL_VOICE_REQUEST))
+
+        self.assertEqual(parsed["action"], "verify_local_voice")
+        self.assertEqual(parsed["local_tts_invocation"], VALID_LOCAL_VOICE_REQUEST["local_tts_invocation"])
+
+        forbidden_fields = {
+            "tts_invocation": VALID_VERIFY_REQUEST["tts_invocation"],
+            "video_invocation": VALID_NATIVE_AUDIO_REQUEST["video_invocation"],
+            "provider": "minimax",
+            "model": "speech-02-hd",
+            "ai_service_config_id": 7,
+            "provider_task_id": "secret-task",
+            "extra": True,
+        }
+        for key, value in forbidden_fields.items():
+            with (
+                self.subTest(field=key),
+                self.assertRaisesRegex(ProtocolError, "LOCALE_VERIFY_REQUEST_INVALID"),
+            ):
+                parse_request({**VALID_LOCAL_VOICE_REQUEST, key: value})
+
+    def test_local_voice_invocation_is_exact_typed_and_hash_bound(self):
+        invalid_cases = [
+            {"engine": ""},
+            {"engine": "other"},
+            {"engine_version": ""},
+            {"binary_sha256": "D" * 64},
+            {"binary_sha256": "d" * 63},
+            {"manifest_sha256": "E" * 64},
+            {"manifest_sha256": "e" * 63},
+            {"profile": ""},
+            {"provider": "minimax"},
+            {"model": "speech-02-hd"},
+            {"ai_service_config_id": 7},
+            {"provider_task_id": "secret-task"},
+        ]
+        for override in invalid_cases:
+            invocation = dict(VALID_LOCAL_VOICE_REQUEST["local_tts_invocation"])
+            invocation.update(override)
+            with (
+                self.subTest(override=override),
+                self.assertRaisesRegex(ProtocolError, "LOCALE_LOCAL_TTS_INVOCATION_INVALID"),
+            ):
+                parse_request({**VALID_LOCAL_VOICE_REQUEST, "local_tts_invocation": invocation})
+
+        for override, code in (
+            ({"approved_text": ""}, "LOCALE_VERIFY_REQUEST_INVALID"),
+            ({"audio_sha256": "C" * 64}, "LOCALE_AUDIO_HASH_INVALID"),
+            ({"locale_pack": "en-GB@1"}, "LOCALE_PACK_UNSUPPORTED"),
+        ):
+            with self.subTest(override=override), self.assertRaisesRegex(ProtocolError, code):
+                parse_request({**VALID_LOCAL_VOICE_REQUEST, **override})
 
 
 if __name__ == "__main__":

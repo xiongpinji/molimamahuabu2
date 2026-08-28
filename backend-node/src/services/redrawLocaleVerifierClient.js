@@ -5,6 +5,44 @@ const net = require('node:net');
 const REQUEST_LIMIT_BYTES = 64 * 1024;
 const RESPONSE_LIMIT_BYTES = 256 * 1024;
 const DEFAULT_TIMEOUT_MS = 180_000;
+const LOCAL_VOICE_RESULT_KEYS = [
+  'accent',
+  'approved_text_sha256',
+  'asr',
+  'audio_sha256',
+  'calibration_manifest_sha256',
+  'checks',
+  'completed_at',
+  'detected_locale',
+  'language_verified',
+  'local_tts_invocation',
+  'locale_pack',
+  'metrics',
+  'model_manifest_sha256',
+  'models',
+  'request_id',
+  'source',
+  'transcript_sha256',
+];
+const LOCAL_VOICE_CHECK_KEYS = [
+  'accent_inference',
+  'asr_inference',
+  'audio_path',
+  'audio_sha256_matches_request',
+  'calibration_manifest',
+  'calibration_thresholds',
+  'character_error_rate',
+  'critical_tokens_match',
+  'language',
+  'language_probability',
+  'locale_pack',
+  'model_manifest',
+  'models',
+  'transcript_present',
+  'us_accent_label',
+  'us_accent_probability',
+  'word_error_rate',
+];
 
 function createRedrawLocaleVerifierClient(options = {}) {
   const socketPath = options.socketPath;
@@ -46,7 +84,27 @@ function createRedrawLocaleVerifierClient(options = {}) {
     return validateNativeWrapper(response, request, pack);
   }
 
-  return { verify, verifyNativeAudio };
+  async function verifyLocalVoice(input = {}) {
+    const pack = registry.assertReady(input.locale);
+    let audioSha256;
+    try {
+      audioSha256 = await sha256File(input.audioPath);
+    } catch {
+      throw codedError('REDRAW_LOCALE_AUDIO_HASH_FAILED');
+    }
+    if (!isSha256(input.audioSha256) || input.audioSha256 !== audioSha256) {
+      throw codedError('REDRAW_LOCALE_EVIDENCE_INVALID');
+    }
+    const request = toLocalVoiceWorkerRequest(input, pack, audioSha256);
+    const line = `${JSON.stringify(request)}\n`;
+    if (Buffer.byteLength(line, 'utf8') > REQUEST_LIMIT_BYTES) {
+      throw codedError('REDRAW_LOCALE_REQUEST_TOO_LARGE');
+    }
+    const response = await roundTrip(socketPath, line, timeoutMs, input.signal);
+    return validateLocalVoiceWrapper(response, request, pack);
+  }
+
+  return { verify, verifyNativeAudio, verifyLocalVoice };
 }
 
 function toWorkerRequest(input, pack, audioSha256) {
@@ -82,6 +140,46 @@ function toNativeAudioWorkerRequest(input, pack, audioSha256) {
       config_updated_at: String(input.videoInvocation?.configUpdatedAt || ''),
       provider_task_id: String(input.videoInvocation?.providerTaskId || ''),
       artifact_sha256: String(input.videoInvocation?.artifactSha256 || ''),
+    },
+  };
+}
+
+function toLocalVoiceWorkerRequest(input, pack, audioSha256) {
+  const invocation = input.localTtsInvocation;
+  if (!isNonEmptyString(input.requestId)
+    || !isNonEmptyString(input.approvedText)
+    || !pack
+    || typeof pack !== 'object'
+    || !isNonEmptyString(pack.id)
+    || !invocation
+    || typeof invocation !== 'object'
+    || !sameKeys(invocation, [
+      'binarySha256',
+      'engine',
+      'engineVersion',
+      'manifestSha256',
+      'profile',
+    ])
+    || invocation.engine !== 'eSpeak NG'
+    || !isNonEmptyString(invocation.engineVersion)
+    || !isSha256(invocation.binarySha256)
+    || !isSha256(invocation.manifestSha256)
+    || !isNonEmptyString(invocation.profile)) {
+    throw codedError('REDRAW_LOCALE_EVIDENCE_INVALID');
+  }
+  return {
+    action: 'verify_local_voice',
+    request_id: input.requestId,
+    audio_path: String(input.audioPath || ''),
+    audio_sha256: audioSha256,
+    approved_text: input.approvedText,
+    locale_pack: pack.id,
+    local_tts_invocation: {
+      engine: invocation.engine,
+      engine_version: invocation.engineVersion,
+      binary_sha256: invocation.binarySha256,
+      manifest_sha256: invocation.manifestSha256,
+      profile: invocation.profile,
     },
   };
 }
@@ -184,6 +282,22 @@ function validateNativeWrapper(response, request, pack) {
   return validateNativeEvidence(response.result, request, pack);
 }
 
+function validateLocalVoiceWrapper(response, request, pack) {
+  if (!response || typeof response !== 'object') {
+    throw codedError('REDRAW_LOCALE_EVIDENCE_INVALID');
+  }
+  if (response.ok === false) {
+    throw codedError('REDRAW_LOCAL_TTS_VERIFICATION_FAILED');
+  }
+  if (!sameKeys(response, ['ok', 'result'])
+    || response.ok !== true
+    || !response.result
+    || typeof response.result !== 'object') {
+    throw codedError('REDRAW_LOCALE_EVIDENCE_INVALID');
+  }
+  return validateLocalVoiceEvidence(response.result, request, pack);
+}
+
 function validateEvidence(evidence, request, pack) {
   if (!evidence || typeof evidence !== 'object'
     || evidence.source !== 'offline-worker'
@@ -280,8 +394,129 @@ function validateNativeEvidence(evidence, request, pack) {
   };
 }
 
+function validateLocalVoiceEvidence(evidence, request, pack) {
+  const invocation = evidence?.local_tts_invocation;
+  const expectedInvocation = request.local_tts_invocation;
+  const expectedApprovedTextSha256 = sha256Text(request.approved_text);
+  if (!evidence || typeof evidence !== 'object'
+    || !sameKeys(evidence, LOCAL_VOICE_RESULT_KEYS)
+    || evidence.source !== 'offline-worker'
+    || evidence.request_id !== request.request_id
+    || evidence.audio_sha256 !== request.audio_sha256
+    || evidence.approved_text_sha256 !== expectedApprovedTextSha256
+    || evidence.locale_pack !== pack.id
+    || evidence.model_manifest_sha256 !== pack.model_manifest_sha256
+    || evidence.calibration_manifest_sha256 !== pack.calibration_manifest_sha256
+    || evidence.language_verified !== true
+    || !isNonEmptyString(pack.locale)
+    || evidence.detected_locale !== pack.locale
+    || !isSha256(evidence.transcript_sha256)
+    || !validCompletedAt(evidence.completed_at)
+    || !validLocalModels(evidence.models)
+    || !validLocalAsr(evidence.asr)
+    || !validLocalAccent(evidence.accent)
+    || !validLocalMetrics(evidence.metrics)
+    || !validLocalChecks(evidence.checks)
+    || !invocation
+    || typeof invocation !== 'object'
+    || !sameKeys(invocation, [
+      'binary_sha256',
+      'engine',
+      'engine_version',
+      'manifest_sha256',
+      'profile',
+    ])
+    || invocation.engine !== expectedInvocation.engine
+    || invocation.engine_version !== expectedInvocation.engine_version
+    || invocation.binary_sha256 !== expectedInvocation.binary_sha256
+    || invocation.manifest_sha256 !== expectedInvocation.manifest_sha256
+    || invocation.profile !== expectedInvocation.profile) {
+    throw codedError('REDRAW_LOCALE_EVIDENCE_INVALID');
+  }
+  return {
+    requestId: request.request_id,
+    source: evidence.source,
+    audioSha256: request.audio_sha256,
+    approvedTextSha256: expectedApprovedTextSha256,
+    localePack: evidence.locale_pack,
+    languageVerified: true,
+    detectedLocale: evidence.detected_locale,
+    transcriptSha256: evidence.transcript_sha256,
+    modelManifestSha256: evidence.model_manifest_sha256,
+    calibrationManifestSha256: evidence.calibration_manifest_sha256,
+    metrics: { ...evidence.metrics },
+    localTtsInvocation: {
+      engine: invocation.engine,
+      engineVersion: invocation.engine_version,
+      binarySha256: invocation.binary_sha256,
+      manifestSha256: invocation.manifest_sha256,
+      profile: invocation.profile,
+    },
+    completedAt: evidence.completed_at,
+  };
+}
+
+function validLocalModels(value) {
+  return Boolean(value)
+    && typeof value === 'object'
+    && sameKeys(value, [
+      'accent_revision',
+      'accent_tree_sha256',
+      'asr_revision',
+      'asr_tree_sha256',
+    ])
+    && isNonEmptyString(value.asr_revision)
+    && isNonEmptyString(value.accent_revision)
+    && isSha256(value.asr_tree_sha256)
+    && isSha256(value.accent_tree_sha256);
+}
+
+function validLocalAsr(value) {
+  return Boolean(value)
+    && typeof value === 'object'
+    && sameKeys(value, ['language', 'ok', 'probability'])
+    && value.ok === true
+    && value.language === 'en'
+    && isProbability(value.probability);
+}
+
+function validLocalAccent(value) {
+  return Boolean(value)
+    && typeof value === 'object'
+    && sameKeys(value, ['label', 'ok', 'probability'])
+    && value.ok === true
+    && value.label === 'us'
+    && isProbability(value.probability);
+}
+
+function validLocalMetrics(value) {
+  return Boolean(value)
+    && typeof value === 'object'
+    && sameKeys(value, ['character_error_rate', 'critical_tokens_match', 'word_error_rate'])
+    && isProbability(value.character_error_rate)
+    && isProbability(value.word_error_rate)
+    && value.critical_tokens_match === true;
+}
+
+function validLocalChecks(value) {
+  return Boolean(value)
+    && typeof value === 'object'
+    && sameKeys(value, LOCAL_VOICE_CHECK_KEYS)
+    && Object.values(value).every((item) => item === true);
+}
+
+function validCompletedAt(value) {
+  return typeof value === 'string'
+    && /(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+    && Number.isFinite(Date.parse(value));
+}
+
 function isOptionalSha(value) {
   return value == null || /^[0-9a-f]{64}$/.test(String(value));
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && Boolean(value.trim());
 }
 
 function isSha256(value) {
