@@ -7,6 +7,7 @@ const { describe, it } = require('node:test');
 const { spawnSync } = require('node:child_process');
 
 const GUARD = path.resolve(__dirname, '../../deploy/release-guard/verify-external-model-release.js');
+const PRIVATE_AVATAR_PRODUCER = path.resolve(__dirname, '../scripts/verify-toapis-private-avatar-video.js');
 const TOAPIS_CONTRACT = 'toapis-video-real-verification-v1';
 const TOAPIS_PRIVATE_AVATAR_CONTRACT = 'toapis-private-avatar-video-verification-v1';
 const USMERCARI_CONTRACT = 'usmercari-image-real-verification-v1';
@@ -393,6 +394,10 @@ function protectedRuntimeSources(candidate) {
       }
     }
   `);
+  fs.copyFileSync(
+    PRIVATE_AVATAR_PRODUCER,
+    path.join(candidate, 'backend-node', 'scripts', 'verify-toapis-private-avatar-video.js'),
+  );
   write(candidate, 'backend-node/src/services/productionPreflightService.js', `
     function externalModelEvidenceBindingsReady(db, roots) {
       const failures = [];
@@ -685,6 +690,8 @@ function toapisPrivateAvatarEvidence(evidenceRoot, times) {
         generation_elapsed_seconds: 45,
       },
       billing: {
+        expected_cost_yuan: index === 0 ? 0.4 : 0.25,
+        case_hard_cap_yuan: index === 0 ? 0.5 : 0.3,
         before: {
           used_balance: 10 + index,
           used_credits: 2000 + index * 20,
@@ -697,6 +704,7 @@ function toapisPrivateAvatarEvidence(evidenceRoot, times) {
         },
         debited_balance: 0.1,
         debited_credits: 20,
+        cost_yuan: index === 0 ? 0.32 : 0.186,
       },
       artifact: {
         output_file: outputFile,
@@ -734,6 +742,8 @@ function toapisPrivateAvatarEvidence(evidenceRoot, times) {
       case_count: 2,
       total_debited_balance: 0.2,
       total_debited_credits: 40,
+      total_cost_yuan: 0.506,
+      aggregate_hard_cap_yuan: 0.7,
     },
   };
 }
@@ -825,6 +835,7 @@ function makeFixture(providers = { toapis: true, usmercari: true }) {
     fs.rmSync(path.join(candidate, 'backend-node/src/services/toapisVideoClient.js'));
     fs.rmSync(path.join(candidate, 'backend-node/src/services/videoClient.js'));
     fs.rmSync(path.join(candidate, 'backend-node/src/services/videoService.js'));
+    fs.rmSync(path.join(candidate, 'backend-node/scripts/verify-toapis-private-avatar-video.js'));
   }
   if (!providers.usmercari) {
     fs.rmSync(path.join(candidate, 'backend-node/src/services/usmercariImageClient.js'));
@@ -1024,6 +1035,32 @@ describeRootEvidence('shared evidence path and freshness safety', () => {
       fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
       makeEvidenceStaleButUnexpired(fixture, TOAPIS_FILE);
       assertPass(runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  for (const [name, mutate] of [
+    ['missing case cost_yuan', (evidence) => { delete evidence.cases[0].billing.cost_yuan; }],
+    ['non-positive case cost_yuan', (evidence) => { evidence.cases[0].billing.cost_yuan = 0; }],
+    ['missing case expected_cost_yuan', (evidence) => { delete evidence.cases[0].billing.expected_cost_yuan; }],
+    ['non-positive case expected_cost_yuan', (evidence) => { evidence.cases[0].billing.expected_cost_yuan = 0; }],
+    ['missing case_hard_cap_yuan', (evidence) => { delete evidence.cases[0].billing.case_hard_cap_yuan; }],
+    ['non-positive case_hard_cap_yuan', (evidence) => { evidence.cases[0].billing.case_hard_cap_yuan = 0; }],
+    ['expected cost above case_hard_cap_yuan', (evidence) => { evidence.cases[0].billing.case_hard_cap_yuan = 0.39; }],
+    ['actual cost above case_hard_cap_yuan', (evidence) => { evidence.cases[0].billing.case_hard_cap_yuan = 0.31; }],
+    ['missing summary total_cost_yuan', (evidence) => { delete evidence.summary.total_cost_yuan; }],
+    ['tampered summary total_cost_yuan', (evidence) => { evidence.summary.total_cost_yuan = 0.5; }],
+    ['non-positive aggregate_hard_cap_yuan', (evidence) => { evidence.summary.aggregate_hard_cap_yuan = 0; }],
+    ['total cost above aggregate hard cap', (evidence) => { evidence.summary.aggregate_hard_cap_yuan = 0.5; }],
+  ]) it(`rejects ToAPIs private-avatar evidence with ${name}`, () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    try {
+      editEvidence(fixture, TOAPIS_PRIVATE_AVATAR_FILE, mutate);
+      assertFail(
+        runGuard(fixture.candidate, fixture.evidenceRoot),
+        /private-avatar.*(?:billing|cost|hard cap|summary)|billing.*private-avatar/i,
+      );
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -1518,6 +1555,117 @@ describeRootEvidence('candidate runtime and callout audit', () => {
         path.join(fixture.candidate, 'backend-node/src/services/toapisVideoClient.js'),
       );
       assertPass(runGuard(fixture.candidate, fixture.evidenceRoot));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('requires fresh private-avatar evidence when the shared ToAPIs client changes', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    const expectedCurrent = path.join(fixture.root, 'expected-current');
+    try {
+      fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
+      makeEvidenceStaleButUnexpired(fixture, TOAPIS_PRIVATE_AVATAR_FILE);
+      fs.appendFileSync(path.join(fixture.candidate, 'backend-node/src/services/toapisVideoClient.js'), '\n// private-avatar shared client change\n');
+      assertFail(runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }), /private-avatar.*stale|24 hours/i);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  for (const [name, mutate] of [
+    ['allows one global API key fallback', (source) => source.replace(
+      "const BASE_URL = 'https://toapis.xyz';",
+      "const BASE_URL = 'https://toapis.xyz';\nconst legacyKey = process.env.TOAPIS_API_KEY;",
+    )],
+    ['does not require the FAST target config id', (source) => source.replaceAll(
+      'TOAPIS_VERIFY_FAST_CONFIG_ID',
+      'TOAPIS_FAST_CONFIG_ID',
+    )],
+    ['does not require the MINI target config id', (source) => source.replaceAll(
+      'TOAPIS_VERIFY_MINI_CONFIG_ID',
+      'TOAPIS_MINI_CONFIG_ID',
+    )],
+    ['bypasses read-only database config validation', (source) => source.replace(
+      'const configSnapshots = (injected.validateConfigs || validateVerificationConfigs)({',
+      'const configSnapshots = input.configSnapshots || unsafeConfigSnapshots({',
+    )],
+    ['does not build model-specific clients', (source) => source.replace(
+      'const client = context.verificationClients?.[model];',
+      "const client = context.verificationClients?.['seedance-2-fast'];",
+    )],
+    ['does not preflight both model balances before provider submission', (source) => source.replace(
+      `    for (const item of CASES) {
+      const client = verificationClientForModel(context, item.model);
+      await deps.fetchBalance(client.apiKey, deps.fetchImpl);
+    }
+    await ensureAvatar(state, input, context, deps);`,
+      '    await ensureAvatar(state, input, context, deps);',
+    )],
+    ['moves balance preflight after avatar provider submission', (source) => source.replace(
+      `    for (const item of CASES) {
+      const client = verificationClientForModel(context, item.model);
+      await deps.fetchBalance(client.apiKey, deps.fetchImpl);
+    }
+    await ensureAvatar(state, input, context, deps);`,
+      `    await ensureAvatar(state, input, context, deps);
+    for (const item of CASES) {
+      const client = verificationClientForModel(context, item.model);
+      await deps.fetchBalance(client.apiKey, deps.fetchImpl);
+    }`,
+    )],
+    ['drops configuration fingerprint state binding', (source) => source.replace(
+      '    const fingerprints = bindAndValidateState(state, configSnapshots);',
+      '    const fingerprints = configFingerprints(configSnapshots);',
+    )],
+    ['allows an unknown previous submission to continue', (source) => source.replace(
+      '    assertNoUnknownSubmission(state);',
+      '',
+    )],
+    ['does not take a fresh model-bound balance immediately before a case POST', (source) => source.replace(
+      '      before: await deps.fetchBalance(client.apiKey, deps.fetchImpl),',
+      '      before: context.preflightBalances?.[item.model],',
+    )],
+    ['does not use the FAST model key for avatar asset creation', (source) => {
+      const marker = source.indexOf('async function ensureAvatar');
+      return source.slice(0, marker) + source.slice(marker).replace(
+        '{ fetchImpl: deps.fetchImpl, apiKey: client.apiKey });',
+        '{ fetchImpl: deps.fetchImpl });',
+      );
+    }],
+    ['does not use the case model key for submission', (source) => {
+      const marker = source.indexOf('async function processCase');
+      return source.slice(0, marker) + source.slice(marker).replace(
+        '{ fetchImpl: deps.fetchImpl, apiKey: client.apiKey },',
+        '{ fetchImpl: deps.fetchImpl },',
+      );
+    }],
+    ['does not stop after an indeterminate submission result', (source) => source.replace(
+      "      entry.submission_state = 'indeterminate';",
+      "      entry.submission_state = 'rejected';",
+    )],
+    ['does not enforce the per-case RMB hard cap', (source) => source.replace(
+      /    assertActualCostWithinBudget\(item, context\);\r?\n/g,
+      '',
+    )],
+    ['does not enforce the aggregate RMB hard cap', (source) => source.replace(
+      '  if (projected > aggregateHardCapYuan) {',
+      '  if (false) {',
+    )],
+  ]) it(`rejects a changed ToAPIs private-avatar producer that ${name}`, () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    const expectedCurrent = path.join(fixture.root, 'expected-current');
+    try {
+      fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
+      const target = path.join(fixture.candidate, 'backend-node/scripts/verify-toapis-private-avatar-video.js');
+      const source = fs.readFileSync(target, 'utf8');
+      const mutated = mutate(source);
+      assert.notEqual(mutated, source, `test mutation must change private-avatar producer: ${name}`);
+      fs.writeFileSync(target, mutated);
+      assertFail(
+        runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }),
+        /ToAPIs|private-avatar|config|balance|billing|submission|hard cap|RMB|key|credential/i,
+      );
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
