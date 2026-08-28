@@ -23,8 +23,11 @@ const DANGEROUS_ROUTES = [
   /^\/api\/v1\/redraw\/versions\/[^/]+\/(?:assets\/batches|dialogue\/start)\/?$/,
   /^\/api\/v1\/ai-configs\/[^/]+\/connection\/?$/,
 ]
+const REDRAW_LIVE_AUTHORITATIVE_VISIBLE_CHARACTER_IDS = Object.freeze({
+  'shot-6': Object.freeze(['mateo', 'elena', 'rafael']),
+})
 
-export function buildRedrawLiveProductFixture(testCase, requiredInputs) {
+export function buildRedrawLiveProductFixture(testCase, requiredInputs, options = {}) {
   if (!testCase?.source || !Array.isArray(testCase.cast) || !Array.isArray(testCase.sourceFacts?.shots)) {
     throw new Error('approved redraw case is required')
   }
@@ -67,9 +70,8 @@ export function buildRedrawLiveProductFixture(testCase, requiredInputs) {
       const characterId = localized.turns?.[0]?.speaker_id
         || shot.speaking_character_ids?.[0]
         || testCase.cast[index % testCase.cast.length].id
-      const supplementalCharacterIds = shot.id === redrawLocalEnglishVoiceSupplementalDialogue.shot_id
-        ? [redrawLocalEnglishVoiceSupplementalDialogue.source_character_key]
-        : []
+      const authoritativeVisibleCharacterIds = (options.authoritativeVisibleCharacterIdsByShot
+        || REDRAW_LIVE_AUTHORITATIVE_VISIBLE_CHARACTER_IDS)[shot.id] || []
       return {
         shot_index: index + 1,
         shot_id: shot.id,
@@ -84,7 +86,7 @@ export function buildRedrawLiveProductFixture(testCase, requiredInputs) {
         character_ids: [...new Set([
           characterId,
           ...(shot.speaking_character_ids || []),
-          ...supplementalCharacterIds,
+          ...authoritativeVisibleCharacterIds,
         ])],
         source_dialogue: shot.dialogue || [],
         localized_dialogue: localized.turns || [],
@@ -271,6 +273,114 @@ export async function createRedrawLiveProductHarness({ fixture, env = process.en
   return createProductServerHarness({ fixture, inputs })
 }
 
+export async function verifySupplementalDialogueAuthorityViaHttp({ fixture }) {
+  const shot = fixture?.shots?.find(
+    (entry) => entry.shot_id === redrawLocalEnglishVoiceSupplementalDialogue.shot_id,
+  )
+  if (!shot) throw new Error('supplemental dialogue authority shot missing')
+
+  const counts = {
+    externalFetches: 0,
+    providerPaidSubmits: 0,
+    generationSubmits: 0,
+    voiceProviderCalls: 0,
+  }
+  const guard = installRedrawLiveNetworkGuard({ counts })
+  const previousEnv = setHarnessEnvironment()
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-supplemental-authority-'))
+  let db
+  let server
+  try {
+    const express = require(path.join(backendRoot, 'node_modules', 'express'))
+    const Database = require(path.join(backendRoot, 'node_modules', 'better-sqlite3'))
+    const { runMigrationsAndEnsure } = require(path.join(backendRoot, 'src', 'db', 'migrate'))
+    const { setupRouter } = require(path.join(backendRoot, 'src', 'routes'))
+    db = new Database(path.join(tempRoot, 'authority.sqlite'))
+    const originalLog = console.log
+    const originalWarn = console.warn
+    try {
+      console.log = () => {}
+      console.warn = () => {}
+      runMigrationsAndEnsure(db)
+    } finally {
+      console.log = originalLog
+      console.warn = originalWarn
+    }
+
+    const app = express()
+    app.use(express.json())
+    app.use('/api/v1', setupRouter({ storage: { local_path: path.join(tempRoot, 'storage') } }, db,
+      harnessLog([]), {
+        localizationProvider: async () => ({ status: 'failed' }),
+        assetGenerationProvider: async () => ({ status: 'failed' }),
+        dialogueProvider: async () => ({ status: 'failed' }),
+      }))
+    server = http.createServer(app)
+    await listen(server)
+    const baseUrl = `http://127.0.0.1:${server.address().port}/api/v1`
+    const email = `redraw-authority-${crypto.randomUUID()}@example.test`
+    const password = 'redraw-authority-password-123'
+    await expectHttpStatus(fetch(`${baseUrl}/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    }), 201)
+    const login = await expectHttpStatus(fetch(`${baseUrl}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    }), 200)
+    const token = String(login.access_token || login.token || '')
+    const userId = String(login.user?.id || login.user_id || '')
+    const tenantId = String(login.tenant_id || `personal:${userId}`)
+    if (!token || !userId) throw new Error('supplemental authority login failed')
+
+    const scope = seedSupplementalDialogueAuthorityScope({ db, fixture, shot, tenantId, userId })
+    const response = await fetch(
+      `${baseUrl}/redraw/versions/${scope.versionId}/shots/${scope.shotRowId}`
+        + `/voices/${scope.voiceAssetId}/supplemental-dialogue-approvals`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'X-Tenant-Id': tenantId,
+        },
+        body: JSON.stringify({
+          idempotency_key: `authority-${scope.versionId}`,
+          target_text: redrawLocalEnglishVoiceSupplementalDialogue.target_text,
+          source_translation: redrawLocalEnglishVoiceSupplementalDialogue.source_translation,
+          expected_shot_updated_at: scope.now,
+          expected_voice_updated_at: scope.now,
+        }),
+      },
+    )
+    const payload = await response.json()
+    const registrationAttempts = response.ok ? 1 : 0
+    return {
+      approval_status: response.status,
+      approval_error_code: payload?.error?.code,
+      supplemental_dialogue_approvals: Number(db.prepare(
+        'SELECT COUNT(*) AS count FROM redraw_supplemental_dialogue_approvals',
+      ).get().count),
+      local_voice_registrations: Number(db.prepare(
+        'SELECT COUNT(*) AS count FROM redraw_local_voice_registrations',
+      ).get().count),
+      registration_attempts: registrationAttempts,
+      voice_provider_calls: counts.voiceProviderCalls,
+      provider_paid_submits: counts.providerPaidSubmits,
+      generation_submits: counts.generationSubmits,
+      external_fetches: counts.externalFetches,
+    }
+  } finally {
+    if (server) await closeServer(server)
+    db?.close()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+    restoreHarnessEnvironment(previousEnv)
+    guard.restore()
+  }
+}
+
 export function redactLiveProductSummary(result) {
   const summary = result?.summary || {}
   return JSON.parse(JSON.stringify({
@@ -297,6 +407,94 @@ export function redactLiveProductSummary(result) {
     charged_credits: summary.charged_credits,
     media: summary.media,
   }))
+}
+
+async function expectHttpStatus(responsePromise, expectedStatus) {
+  const response = await responsePromise
+  const payload = await response.json()
+  if (response.status !== expectedStatus) {
+    throw new Error(`local HTTP ${response.status}: ${payload?.error?.code || 'unexpected response'}`)
+  }
+  return payload.data ?? payload
+}
+
+function seedSupplementalDialogueAuthorityScope({ db, fixture, shot, tenantId, userId }) {
+  const now = '2026-08-28T00:00:00.000Z'
+  const factsHash = sha256(Buffer.from(JSON.stringify({
+    shot_id: shot.shot_id,
+    visible_character_ids: shot.character_ids,
+  })))
+  const sourceFacts = {
+    schema_version: '2.0',
+    facts_hash: factsHash,
+    characters: fixture.characters.map((character) => ({
+      id: character.id,
+      source_name: character.source_name,
+    })),
+    shots: [{
+      id: shot.shot_id,
+      visible_character_ids: shot.character_ids,
+      dialogue: shot.source_dialogue,
+    }],
+  }
+  const projectId = Number(db.prepare(`INSERT INTO redraw_projects
+    (tenant_id, user_id, title, default_locale, default_market, localization_level,
+     status, policy_version, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'faithful', 'active', 7, ?, ?)`).run(
+    tenantId, userId, 'Supplemental authority probe', fixture.locale, fixture.market, now, now,
+  ).lastInsertRowid)
+  const workId = Number(db.prepare(`INSERT INTO redraw_works
+    (project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint,
+     duration_ms, current_version, current_step, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 1, ?, ?, 1, 2, 'asset_review', ?, ?)`).run(
+    projectId, tenantId, userId, 'Supplemental authority probe', factsHash,
+    fixture.source.duration_ms, now, now,
+  ).lastInsertRowid)
+  const taskId = `supplemental-authority-${crypto.randomUUID()}`
+  const versionId = Number(db.prepare(`INSERT INTO redraw_versions
+    (work_id, tenant_id, user_id, version, locale, market, localization_level,
+     source_facts_json, facts_hash, localization_task_id, status, created_at, updated_at)
+    VALUES (?, ?, ?, 1, ?, ?, 'faithful', ?, ?, ?, 'asset_review', ?, ?)`).run(
+    workId, tenantId, userId, fixture.locale, fixture.market, JSON.stringify(sourceFacts),
+    factsHash, taskId, now, now,
+  ).lastInsertRowid)
+  const shotRowId = Number(db.prepare(`INSERT INTO redraw_shots
+    (work_id, shot_id, version_id, tenant_id, user_id, batch_index, shot_index,
+     start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
+     references_json, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, '[]', 'draft', ?, ?)`).run(
+    workId, shot.shot_id, versionId, tenantId, userId, shot.shot_index,
+    shot.start_ms, shot.end_ms, shot.duration_ms, JSON.stringify(shot.source_dialogue),
+    JSON.stringify(shot.localized_dialogue), now, now,
+  ).lastInsertRowid)
+  const voiceAssetId = Number(db.prepare(`INSERT INTO redraw_assets
+    (version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+     version_number, approval_status, status, created_at, updated_at)
+    VALUES (?, ?, ?, 'voice', ?, 'Rafael voice', 1, 'pending', 'draft', ?, ?)`).run(
+    versionId, tenantId, userId, JSON.stringify({
+      source_ref: {
+        kind: 'voice',
+        source_character_key: redrawLocalEnglishVoiceSupplementalDialogue.source_character_key,
+      },
+    }), now, now,
+  ).lastInsertRowid)
+  db.prepare(`INSERT INTO async_tasks
+    (id, type, status, progress, result, resource_id, tenant_id, user_id,
+     created_at, updated_at, completed_at)
+    VALUES (?, 'redraw_localization', 'completed', 100, ?, ?, ?, ?, ?, ?, ?)`).run(
+    taskId,
+    JSON.stringify({
+      status: 'completed',
+      work_id: workId,
+      version_id: versionId,
+      facts_hash: factsHash,
+      localization_decision: {
+        action: 'advance', policy_version: 7, evidence_hash: factsHash, version_id: versionId,
+      },
+    }),
+    String(workId), tenantId, userId, now, now, now,
+  )
+  return { now, versionId, shotRowId, voiceAssetId }
 }
 
 function requiredPath(env, name) {

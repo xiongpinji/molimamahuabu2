@@ -93,6 +93,30 @@ test('Rafael fixture is only the shot-6 owner approval request input and never p
   expect(harnessSource).not.toMatch(/(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+redraw_supplemental_dialogue_approvals/i)
 })
 
+test('supplemental dialogue cannot make Rafael authoritative or enter registration when source facts hide him', async () => {
+  const fixture = liveHarness.buildRedrawLiveProductFixture(
+    redrawLatinAmericanCase,
+    redrawLiveNineShotProject.required_inputs,
+    { authoritativeVisibleCharacterIdsByShot: { 'shot-6': ['mateo', 'elena'] } },
+  )
+  expect(fixture.shots.find((entry) => entry.shot_id === 'shot-6').character_ids)
+    .not.toContain('rafael')
+
+  expect(typeof liveHarness.verifySupplementalDialogueAuthorityViaHttp).toBe('function')
+  const result = await liveHarness.verifySupplementalDialogueAuthorityViaHttp({ fixture })
+  expect(result).toEqual({
+    approval_status: 422,
+    approval_error_code: 'REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_READY',
+    supplemental_dialogue_approvals: 0,
+    local_voice_registrations: 0,
+    registration_attempts: 0,
+    voice_provider_calls: 0,
+    provider_paid_submits: 0,
+    generation_submits: 0,
+    external_fetches: 0,
+  })
+})
+
 test('launcher input preflight fails closed for missing and forged local media', async () => {
   expect(typeof liveHarness.loadRedrawLiveProductInputs).toBe('function')
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-live-launcher-inputs-'))
