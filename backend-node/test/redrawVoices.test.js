@@ -24,6 +24,10 @@ const MODEL_MANIFEST_SHA256 = 'a'.repeat(64);
 const CALIBRATION_MANIFEST_SHA256 = 'b'.repeat(64);
 const AUDIO_SHA256 = 'c'.repeat(64);
 const TRANSCRIPT_SHA256 = 'd'.repeat(64);
+const LOCAL_BINARY_SHA256 = 'e'.repeat(64);
+const LOCAL_MANIFEST_SHA256 = 'f'.repeat(64);
+const LOCAL_APPROVED_TEXT_SHA256 = '1'.repeat(64);
+const LOCAL_EVIDENCE_SHA256 = '2'.repeat(64);
 
 function setup() {
   const db = new Database(':memory:');
@@ -57,14 +61,15 @@ function addAudioAsset(db, id, localPath, now) {
 function addVoiceEvidence(db, versionId, id, evidence, now, options = {}) {
   const status = options.status || 'generated';
   const voiceAssetId = options.voiceAssetId ?? evidence.audio_asset_id;
+  const voiceId = evidence.voice_id || evidence.profile || `voice-${id}`;
   db.prepare(`INSERT INTO redraw_assets
     (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
      voice_asset_id, version_number, approval_status, status, created_at, updated_at)
     VALUES (?, ?, 'tenant-a', 'user-a', 'voice', ?, ?, ?, 1, 'pending', ?, ?, ?)`).run(
     id,
     versionId,
-    JSON.stringify({ source_ref: { voice_id: evidence.voice_id }, snapshot: { evidence } }),
-    evidence.voice_id,
+    JSON.stringify({ source_ref: { voice_id: voiceId }, snapshot: { evidence } }),
+    voiceId,
     voiceAssetId,
     status,
     now,
@@ -115,6 +120,71 @@ function verifiedVoice(audioAssetId, voiceId = 'fr-female-1') {
   };
 }
 
+function localOfflineVoice(state, audioAssetId, voiceAssetId, registrationId, overrides = {}) {
+  return {
+    source: 'local_offline_tts',
+    contract_version: 'local-offline-tts-v1',
+    tenant_id: 'tenant-a',
+    user_id: 'user-a',
+    version_id: state.versionId,
+    voice_redraw_asset_id: voiceAssetId,
+    source_character_key: 'c-1',
+    locale: 'fr-FR',
+    market: 'FR',
+    profile: 'fr-role-1',
+    engine: 'eSpeak NG',
+    engine_version: '1.52.0',
+    binary_sha256: LOCAL_BINARY_SHA256,
+    manifest_sha256: LOCAL_MANIFEST_SHA256,
+    audio_asset_id: audioAssetId,
+    audio_sha256: AUDIO_SHA256,
+    duration_ms: 1200,
+    approved_text_sha256: LOCAL_APPROVED_TEXT_SHA256,
+    locale_pack: 'fr-FR@fixture',
+    transcript_sha256: TRANSCRIPT_SHA256,
+    model_manifest_sha256: MODEL_MANIFEST_SHA256,
+    calibration_manifest_sha256: CALIBRATION_MANIFEST_SHA256,
+    metrics: { word_error_rate: 0, character_error_rate: 0, critical_tokens_match: true },
+    language_verified: true,
+    detected_locale: 'fr-FR',
+    registration_id: registrationId,
+    registration_status: 'completed',
+    completed_at: '2026-08-08T00:00:01.000Z',
+    ...overrides,
+  };
+}
+
+function addLocalRegistration(db, evidence, overrides = {}) {
+  db.prepare(`INSERT INTO redraw_local_voice_registrations
+    (id, tenant_id, user_id, version_id, voice_redraw_asset_id, source_character_key,
+     idempotency_hash, request_hash, target_locale, target_market, approved_text_sha256,
+     profile_key, engine_manifest_sha256, status, audio_asset_id, audio_sha256,
+     locale_evidence_sha256, created_at, updated_at, completed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(
+      evidence.registration_id,
+      overrides.tenantId || evidence.tenant_id,
+      overrides.userId || evidence.user_id,
+      overrides.versionId || evidence.version_id,
+      overrides.voiceAssetId || evidence.voice_redraw_asset_id,
+      overrides.sourceCharacterKey || evidence.source_character_key,
+      `idem-${evidence.registration_id}`,
+      `request-${evidence.registration_id}`,
+      overrides.locale || evidence.locale,
+      overrides.market || evidence.market,
+      overrides.approvedTextSha256 || evidence.approved_text_sha256,
+      overrides.profile || evidence.profile,
+      overrides.manifestSha256 || evidence.manifest_sha256,
+      overrides.status || 'completed',
+      overrides.audioAssetId || evidence.audio_asset_id,
+      overrides.audioSha256 || evidence.audio_sha256,
+      overrides.localeEvidenceSha256 || LOCAL_EVIDENCE_SHA256,
+      evidence.completed_at,
+      evidence.completed_at,
+      overrides.completedAt || evidence.completed_at,
+    );
+}
+
 function assignmentOptions(state, voiceAssetId, extra = {}) {
   return {
     tenantId: 'tenant-a',
@@ -139,6 +209,16 @@ function validationOptions() {
 
 function trustedRegistry() {
   return {
+    assertReady(expected) {
+      const locale = typeof expected === 'string' ? expected : expected?.locale;
+      if (locale !== 'fr-FR') throw new Error('locale pack not ready');
+      return {
+        id: 'fr-FR@fixture',
+        locale: 'fr-FR',
+        model_manifest_sha256: MODEL_MANIFEST_SHA256,
+        calibration_manifest_sha256: CALIBRATION_MANIFEST_SHA256,
+      };
+    },
     assertEvidenceTrusted(evidence) {
       if (evidence.source !== 'offline-worker'
         || evidence.locale_pack !== 'fr-FR@fixture'
@@ -152,6 +232,135 @@ function trustedRegistry() {
     },
   };
 }
+
+test('complete local_offline_tts evidence enters production without provider config and exposes its source', () => {
+  const state = setup();
+  const now = new Date().toISOString();
+  addAudioAsset(state.db, 520, 'local-voice.wav', now);
+  const evidence = localOfflineVoice(state, 520, 620, 720);
+  addVoiceEvidence(state.db, state.versionId, 620, evidence, now);
+  addLocalRegistration(state.db, evidence);
+  state.db.prepare('UPDATE ai_service_configs SET is_active = 0').run();
+
+  const voices = listProductionVoices(state.db, {
+    tenantId: 'tenant-a', userId: 'user-a', versionId: state.versionId,
+    locale: 'fr-FR', market: 'FR', localeRegistry: trustedRegistry(),
+  }, () => true);
+
+  assert.equal(voices.length, 1);
+  assert.equal(voices[0].verification_source, 'local_offline_tts');
+  assert.equal(voices[0].provider_verified, false);
+  assert.equal(voices[0].local_offline_verified, true);
+  assert.equal(Object.hasOwn(voices[0], 'real_generation_verified'), false);
+  state.db.close();
+});
+
+test('local_offline_tts requires one complete branch and rejects missing or mixed evidence', () => {
+  const requiredCases = [
+    ['registration', 'registration_id'],
+    ['binary', 'binary_sha256'],
+    ['manifest', 'manifest_sha256'],
+    ['profile', 'profile'],
+    ['audio', 'audio_sha256'],
+    ['locale evidence', 'locale_pack'],
+  ];
+  for (const [label, field] of requiredCases) {
+    const state = setup();
+    const now = new Date().toISOString();
+    const voiceAssetId = 621;
+    const evidence = localOfflineVoice(state, 521, voiceAssetId, 721);
+    const registrationEvidence = { ...evidence };
+    addAudioAsset(state.db, 521, `${label}.wav`, now);
+    delete evidence[field];
+    addVoiceEvidence(state.db, state.versionId, voiceAssetId, evidence, now);
+    addLocalRegistration(state.db, registrationEvidence);
+    assert.deepEqual(listProductionVoices(state.db, {
+      tenantId: 'tenant-a', userId: 'user-a', versionId: state.versionId,
+      locale: 'fr-FR', market: 'FR', localeRegistry: trustedRegistry(),
+    }, () => true), [], label);
+    state.db.close();
+  }
+
+  const state = setup();
+  const now = new Date().toISOString();
+  const mixed = localOfflineVoice(state, 522, 622, 722, {
+    provider: 'verified-tts',
+    ai_service_config_id: TTS_CONFIG_ID,
+    task_id: 'provider-task',
+    real_generation_verified: true,
+  });
+  addAudioAsset(state.db, 522, 'mixed.wav', now);
+  addVoiceEvidence(state.db, state.versionId, 622, mixed, now);
+  addLocalRegistration(state.db, mixed);
+  const providerMixed = {
+    ...verifiedVoice(526, 'provider-with-local-half'),
+    profile: 'fr-role-1',
+    binary_sha256: LOCAL_BINARY_SHA256,
+    registration_id: 999,
+  };
+  addAudioAsset(state.db, 526, 'provider-mixed.mp3', now);
+  addVoiceEvidence(state.db, state.versionId, 626, providerMixed, now);
+  assert.deepEqual(listProductionVoices(state.db, {
+    tenantId: 'tenant-a', userId: 'user-a', versionId: state.versionId,
+    locale: 'fr-FR', market: 'FR', localeRegistry: trustedRegistry(),
+  }, () => true), []);
+  state.db.close();
+});
+
+test('local offline assign revalidates registration, is branch-aware, and never writes provider verification', () => {
+  const state = setup();
+  const now = new Date().toISOString();
+  addAudioAsset(state.db, 523, 'local-bind.wav', now);
+  addAudioAsset(state.db, 524, 'local-other.wav', now);
+  const firstEvidence = localOfflineVoice(state, 523, 623, 723);
+  const otherEvidence = localOfflineVoice(state, 524, 624, 724, { profile: 'fr-role-2' });
+  addVoiceEvidence(state.db, state.versionId, 623, firstEvidence, now);
+  addVoiceEvidence(state.db, state.versionId, 624, otherEvidence, now);
+  addLocalRegistration(state.db, firstEvidence);
+  addLocalRegistration(state.db, otherEvidence);
+  addCharacterAsset(state.db, state.versionId, 723, now);
+  const options = assignmentOptions(state, 623);
+
+  const first = assignVoice(state.db, 723, firstEvidence, options);
+  assert.equal(first.conflict, false);
+  assert.equal(first.snapshot.verification_source, 'local_offline_tts');
+  assert.equal(first.snapshot.provider_verified, false);
+  assert.equal(first.snapshot.local_offline_verified, true);
+  assert.equal(Object.hasOwn(first.snapshot, 'real_generation_verified'), false);
+  assert.equal(assignVoice(state.db, 723, firstEvidence, options).conflict, false);
+  assert.equal(assignVoice(state.db, 723, otherEvidence, {
+    ...assignmentOptions(state, 624),
+  }).conflict, true);
+
+  state.db.prepare("UPDATE redraw_local_voice_registrations SET status = 'needs_attention' WHERE id = 723").run();
+  assert.throws(
+    () => assignVoice(state.db, 723, firstEvidence, options),
+    (error) => error.code === 'REDRAW_VOICE_NOT_VERIFIED',
+  );
+  state.db.close();
+});
+
+test('dialogue batch accepts the same complete local evidence branch without provider config', () => {
+  const state = setup();
+  const now = new Date().toISOString();
+  addAudioAsset(state.db, 525, 'local-dialogue.wav', now);
+  const evidence = localOfflineVoice(state, 525, 625, 725);
+  addVoiceEvidence(state.db, state.versionId, 625, evidence, now);
+  addLocalRegistration(state.db, evidence);
+  addCharacterAsset(state.db, state.versionId, 725, now);
+  assignVoice(state.db, 725, evidence, assignmentOptions(state, 625));
+  state.db.prepare('UPDATE ai_service_configs SET is_active = 0').run();
+
+  const result = validateTtsBatch(state.db, state.versionId, [{
+    speaker_id: 'c-1', localized_text: 'Bonjour', start_ms: 0, end_ms: 2000,
+    estimated_duration_ms: 1200,
+  }], validationOptions());
+
+  assert.equal(result.ok, true);
+  assert.equal(result.requests[0].verification_source, 'local_offline_tts');
+  assert.equal(result.requests[0].profile, 'fr-role-1');
+  state.db.close();
+});
 
 function readyLocaleVerifier() {
   return {

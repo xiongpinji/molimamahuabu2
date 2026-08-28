@@ -15,6 +15,10 @@ const MODEL_MANIFEST_SHA256 = 'a'.repeat(64);
 const CALIBRATION_MANIFEST_SHA256 = 'b'.repeat(64);
 const AUDIO_SHA256 = 'c'.repeat(64);
 const TRANSCRIPT_SHA256 = 'd'.repeat(64);
+const LOCAL_BINARY_SHA256 = 'e'.repeat(64);
+const LOCAL_MANIFEST_SHA256 = 'f'.repeat(64);
+const LOCAL_APPROVED_TEXT_SHA256 = '1'.repeat(64);
+const LOCAL_EVIDENCE_SHA256 = '2'.repeat(64);
 
 function captureResponse() {
   return {
@@ -125,6 +129,70 @@ function verifiedVoice(audioAssetId, voiceId = `fr-voice-${audioAssetId}`, overr
   };
 }
 
+function localOfflineVoice(state, audioAssetId, voiceAssetId, registrationId, overrides = {}) {
+  return {
+    source: 'local_offline_tts',
+    contract_version: 'local-offline-tts-v1',
+    tenant_id: 'tenant-a',
+    user_id: 'user-a',
+    version_id: state.versionId,
+    voice_redraw_asset_id: voiceAssetId,
+    source_character_key: 'alice',
+    locale: 'fr-FR',
+    market: 'FR',
+    profile: 'fr-role-1',
+    engine: 'eSpeak NG',
+    engine_version: '1.52.0',
+    binary_sha256: LOCAL_BINARY_SHA256,
+    manifest_sha256: LOCAL_MANIFEST_SHA256,
+    audio_asset_id: audioAssetId,
+    audio_sha256: AUDIO_SHA256,
+    duration_ms: 1200,
+    approved_text_sha256: LOCAL_APPROVED_TEXT_SHA256,
+    locale_pack: 'fr-FR@fixture',
+    transcript_sha256: TRANSCRIPT_SHA256,
+    model_manifest_sha256: MODEL_MANIFEST_SHA256,
+    calibration_manifest_sha256: CALIBRATION_MANIFEST_SHA256,
+    metrics: { word_error_rate: 0, character_error_rate: 0, critical_tokens_match: true },
+    language_verified: true,
+    detected_locale: 'fr-FR',
+    registration_id: registrationId,
+    registration_status: 'completed',
+    completed_at: '2026-08-08T00:00:01.000Z',
+    ...overrides,
+  };
+}
+
+function addLocalRegistration(db, evidence) {
+  db.prepare(`INSERT INTO redraw_local_voice_registrations
+    (id, tenant_id, user_id, version_id, voice_redraw_asset_id, source_character_key,
+     idempotency_hash, request_hash, target_locale, target_market, approved_text_sha256,
+     profile_key, engine_manifest_sha256, status, audio_asset_id, audio_sha256,
+     locale_evidence_sha256, created_at, updated_at, completed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?)`)
+    .run(
+      evidence.registration_id,
+      evidence.tenant_id,
+      evidence.user_id,
+      evidence.version_id,
+      evidence.voice_redraw_asset_id,
+      evidence.source_character_key,
+      `idem-${evidence.registration_id}`,
+      `request-${evidence.registration_id}`,
+      evidence.locale,
+      evidence.market,
+      evidence.approved_text_sha256,
+      evidence.profile,
+      evidence.manifest_sha256,
+      evidence.audio_asset_id,
+      evidence.audio_sha256,
+      LOCAL_EVIDENCE_SHA256,
+      evidence.completed_at,
+      evidence.completed_at,
+      evidence.completed_at,
+    );
+}
+
 function addVoiceAsset(db, versionId, id, evidence, {
   tenantId = 'tenant-a',
   userId = 'user-a',
@@ -185,6 +253,15 @@ function handlersFor(state, options = {}) {
 
 function trustedRegistry() {
   return {
+    assertReady(expected) {
+      const locale = typeof expected === 'string' ? expected : expected?.locale;
+      if (locale !== 'fr-FR') throw new Error('locale pack not ready');
+      return {
+        id: 'fr-FR@fixture', locale: 'fr-FR',
+        model_manifest_sha256: MODEL_MANIFEST_SHA256,
+        calibration_manifest_sha256: CALIBRATION_MANIFEST_SHA256,
+      };
+    },
     assertEvidenceTrusted(evidence) {
       if (evidence.source !== 'offline-worker'
         || evidence.locale_pack !== 'fr-FR@fixture'
@@ -198,6 +275,34 @@ function trustedRegistry() {
     },
   };
 }
+
+test('local offline voice route binding returns an explicit non-provider verification snapshot', () => {
+  const state = setup();
+  try {
+    addAudioAsset(state.db, 541);
+    state.readableAudioIds.add(541);
+    const evidence = localOfflineVoice(state, 541, 641, 741);
+    addVoiceAsset(state.db, state.versionId, 641, evidence);
+    addLocalRegistration(state.db, evidence);
+    addCharacterAsset(state.db, state.versionId, 741);
+    state.db.prepare('UPDATE ai_service_configs SET is_active = 0').run();
+    const handlers = handlersFor(state);
+
+    const bound = captureResponse();
+    handlers.assignVoice(request({
+      id: 741,
+      body: { voice_asset_id: 641, expected_updated_at: NOW },
+    }), bound);
+
+    assert.equal(bound.statusCode, 200);
+    assert.equal(bound.body.data.voice_snapshot.verification_source, 'local_offline_tts');
+    assert.equal(bound.body.data.voice_snapshot.provider_verified, false);
+    assert.equal(bound.body.data.voice_snapshot.local_offline_verified, true);
+    assert.equal(Object.hasOwn(bound.body.data.voice_snapshot, 'real_generation_verified'), false);
+  } finally {
+    state.db.close();
+  }
+});
 
 test('生产音色列表只返回当前 owner、当前版本、同 locale/market 且证据和音频均有效的 redraw 音色', () => {
   const state = setup();
@@ -366,6 +471,9 @@ test('绑定只接受安全字段，并从同 owner 同版本的 redraw voice �
     assert.equal(bound.body.data.asset.voice_asset_id, 511);
     assert.equal(bound.body.data.voice_snapshot.voice_id, 'fr-alice');
     assert.equal(bound.body.data.voice_snapshot.provider, 'verified-tts');
+    assert.equal(bound.body.data.voice_snapshot.verification_source, 'provider');
+    assert.equal(bound.body.data.voice_snapshot.provider_verified, true);
+    assert.equal(bound.body.data.voice_snapshot.local_offline_verified, false);
     const stored = state.db.prepare('SELECT * FROM redraw_assets WHERE id = 711').get();
     assert.equal(stored.voice_asset_id, 511);
     assert.equal(JSON.parse(stored.source_ref_json).snapshot.voice_snapshot.task_id, 'tts-fr-alice');

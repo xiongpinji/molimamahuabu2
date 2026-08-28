@@ -8,6 +8,8 @@ const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const { saveIdentityPack } = require('../src/services/redrawCharacterIdentityService');
+const { reviewAsset } = require('../src/services/redrawReviewService');
+const { assignVoice } = require('../src/services/redrawVoiceService');
 const {
   assertCharacterPlanReady,
   buildCharacterPlan,
@@ -19,6 +21,10 @@ const TTS_CONFIG_UPDATED_AT = '2026-08-20T00:00:00.000Z';
 const MODEL_SHA = 'a'.repeat(64);
 const CALIBRATION_SHA = 'b'.repeat(64);
 const TRANSCRIPT_SHA = 'd'.repeat(64);
+const LOCAL_BINARY_SHA = 'e'.repeat(64);
+const LOCAL_MANIFEST_SHA = 'f'.repeat(64);
+const LOCAL_APPROVED_TEXT_SHA = '1'.repeat(64);
+const LOCAL_EVIDENCE_SHA = '2'.repeat(64);
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -222,6 +228,126 @@ function makeReadyState(factPatch = null) {
   addVoice(state, 'char-b');
   return state;
 }
+
+function addLocalVoiceForReview(state, sourceKey, characterName) {
+  const audioAssetId = 901;
+  const voiceAssetId = 902;
+  const registrationId = 903;
+  const bytes = Buffer.from(`local-voice-${sourceKey}`);
+  addProviderAsset(state, audioAssetId, `${sourceKey}-local.wav`, {
+    type: 'audio', mimeType: 'audio/wav', duration: 1.2,
+    width: null, height: null, bytes,
+  });
+  const evidence = {
+    source: 'local_offline_tts',
+    contract_version: 'local-offline-tts-v1',
+    tenant_id: 'tenant-a',
+    user_id: 'user-a',
+    version_id: state.versionId,
+    voice_redraw_asset_id: voiceAssetId,
+    source_character_key: sourceKey,
+    locale: 'en-US',
+    market: 'US',
+    profile: 'en-role-1',
+    engine: 'eSpeak NG',
+    engine_version: '1.52.0',
+    binary_sha256: LOCAL_BINARY_SHA,
+    manifest_sha256: LOCAL_MANIFEST_SHA,
+    audio_asset_id: audioAssetId,
+    audio_sha256: sha256(bytes),
+    duration_ms: 1200,
+    approved_text_sha256: LOCAL_APPROVED_TEXT_SHA,
+    locale_pack: 'en-US@fixture',
+    transcript_sha256: TRANSCRIPT_SHA,
+    model_manifest_sha256: MODEL_SHA,
+    calibration_manifest_sha256: CALIBRATION_SHA,
+    metrics: { word_error_rate: 0, character_error_rate: 0, critical_tokens_match: true },
+    language_verified: true,
+    detected_locale: 'en-US',
+    registration_id: registrationId,
+    registration_status: 'completed',
+    completed_at: NOW,
+  };
+  state.db.prepare(`INSERT INTO redraw_assets
+    (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+     voice_asset_id, version_number, approval_status, status, created_at, updated_at)
+    VALUES (?, ?, 'tenant-a', 'user-a', 'voice', ?, ?, ?, 1, 'pending', 'generated', ?, ?)`)
+    .run(
+      voiceAssetId,
+      state.versionId,
+      JSON.stringify({ source_ref: { source_character_key: sourceKey }, snapshot: { voice_evidence: evidence } }),
+      `voice ${sourceKey}`,
+      audioAssetId,
+      NOW,
+      NOW,
+    );
+  state.db.prepare(`INSERT INTO redraw_local_voice_registrations
+    (id, tenant_id, user_id, version_id, voice_redraw_asset_id, source_character_key,
+     idempotency_hash, request_hash, target_locale, target_market, approved_text_sha256,
+     profile_key, engine_manifest_sha256, status, audio_asset_id, audio_sha256,
+     locale_evidence_sha256, created_at, updated_at, completed_at)
+    VALUES (?, 'tenant-a', 'user-a', ?, ?, ?, ?, ?, 'en-US', 'US', ?, ?, ?,
+      'completed', ?, ?, ?, ?, ?, ?)`)
+    .run(
+      registrationId,
+      state.versionId,
+      voiceAssetId,
+      sourceKey,
+      `idem-${registrationId}`,
+      `request-${registrationId}`,
+      LOCAL_APPROVED_TEXT_SHA,
+      evidence.profile,
+      LOCAL_MANIFEST_SHA,
+      audioAssetId,
+      evidence.audio_sha256,
+      LOCAL_EVIDENCE_SHA,
+      NOW,
+      NOW,
+      NOW,
+    );
+  const character = state.db.prepare(`SELECT id, updated_at FROM redraw_assets
+    WHERE kind = 'character' AND version_id = ? AND localized_name = ?`).get(state.versionId, characterName);
+  return { audioAssetId, voiceAssetId, registrationId, evidence, character };
+}
+
+test('local offline voice review, binding, and character rereview naturally satisfy character-plan', () => {
+  const state = setup({ characters: [{ source_character_key: 'char-a', source_name: 'A' }] });
+  try {
+    addCharacter(state, 'char-a', 'Alice Carter');
+    const local = addLocalVoiceForReview(state, 'char-a', 'Alice Carter');
+    reviewAsset(state.db, local.voiceAssetId, {
+      action: 'approved', reviewerId: 'user-a', expectedUpdatedAt: NOW,
+      tenantId: 'tenant-a', userId: 'user-a',
+    });
+    const assigned = assignVoice(state.db, local.character.id, local.evidence, {
+      tenantId: 'tenant-a', userId: 'user-a', versionId: state.versionId,
+      voiceAssetId: local.voiceAssetId, expectedUpdatedAt: local.character.updated_at,
+      canReadAsset: () => true,
+      localeRegistry: {
+        assertReady() {
+          return {
+            id: 'en-US@fixture', locale: 'en-US',
+            model_manifest_sha256: MODEL_SHA,
+            calibration_manifest_sha256: CALIBRATION_SHA,
+          };
+        },
+      },
+    });
+    assert.equal(assigned.snapshot.local_offline_verified, true);
+    const character = state.db.prepare('SELECT updated_at FROM redraw_assets WHERE id = ?').get(local.character.id);
+    reviewAsset(state.db, local.character.id, {
+      action: 'approved', reviewerId: 'user-a', expectedUpdatedAt: character.updated_at,
+      tenantId: 'tenant-a', userId: 'user-a',
+    });
+
+    const plan = buildCharacterPlan(context(state), state.versionId);
+    assert.equal(plan.ready, true);
+    assert.deepEqual(plan.missing, []);
+    assert.equal(plan.characters[0].voice.ready, true);
+  } finally {
+    close(state);
+  }
+});
 
 test('buildCharacterPlan 返回严格白名单、稳定排序和 plan_hash', () => {
   const state = makeReadyState();
