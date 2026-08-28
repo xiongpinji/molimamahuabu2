@@ -8,7 +8,71 @@
 
 补充对白审批合同的本地实现已完成。Rafael 第 6 镜的 `Welcome home, son.` 只作为 `source_translation=false` 的 owner HTTP 审批输入存在；source 与 localized dialogue 中 Rafael turn 均保持为 0。五个角色的 production voice 登记、审核、绑定、角色复审与 character-plan 通过真实本地 router、认证和 tenant header 链路完成。
 
-本结论不等于九镜完整媒体链已验收。15 项批准本地媒体尚未齐全，因此对应 Playwright 用例保持显式 skipped，launcher 返回 `required_local_media_missing` 和退出码 2。
+上述结论描述的是本报告第一轮执行时的状态；当时 15 项批准本地媒体尚未齐全，九镜用例保持显式 skipped。随后补齐 source、5 张身份图与 9 段动作参考，并完成下述九镜本地产品链补充验收。该补充验收仍不等于真实供应商整集生成、Hosted CI、生产部署或客户验收。
+
+## 九镜本地产品链补充验收
+
+日期：2026-08-28
+
+输入边界：同一真实 source 文件、5 张身份图、9 段动作参考；输入内容以 SHA-256 固定。运行使用本地产品 router、认证、tenant header、SQLite、HTTP API 和浏览器链路；clean provider 与 TTS 均为本地测试实现。
+
+### Launcher 结果
+
+| 项目 | 结果 |
+| --- | --- |
+| dry run | `true` |
+| 镜头数 / reference ready | `9 / 9` |
+| 本地 production voice 登记 | `5` |
+| character plan ready | `5` |
+| 本地 TTS 合成 / locale verification | `5 / 5` |
+| active supplemental approval | `1` |
+| generation submits | `0` |
+| external fetches | `0` |
+| provider paid submits / voice provider calls | `0 / 0` |
+| reservation rows / reserved / held / charged | `0 / 0 / 0 / 0` |
+| source SHA-256 | `24eb1d8ba3ff11e6aa3e547b7ac400f6b177dcf541d1af36354d3e46cc05e9ae` |
+
+Launcher 同时逐项校验并输出 5 张身份图与 9 段动作参考的 SHA-256；未在本报告写入本地绝对路径、凭据或供应商请求体。
+
+### Fresh Playwright
+
+命令：
+
+```text
+npx playwright test e2e/redraw-live-launcher.spec.js --workers=1 --reporter=line
+```
+
+结果：14 tests，14 pass，0 fail，0 skipped，耗时约 3.6 分钟。
+
+完整九镜用例覆盖：批准媒体预检、owner-scoped 补充对白、5 角色 production voice 登记、character plan、本地 TTS、locale verification、多轮人物/文字净景审核、逐镜 reference ready、危险本地路由阻断、重复 provider 提交阻断，以及生成、计费和外网副作用全为 0。
+
+### Fresh 定向后端
+
+命令：
+
+```text
+node --test --test-concurrency=1 test/redrawMigration.test.js test/redrawVoices.test.js test/redrawCharacterPlan.test.js
+```
+
+结果：80 tests，80 pass，0 fail。
+
+补充对白、owner-scoped 本地登记、voice route、voice asset integration 与 review gate 组合命令：
+
+```text
+node --test --test-concurrency=1 test/redrawSupplementalDialogueApproval.test.js test/redrawSupplementalDialogueRoutes.test.js test/redrawLocalVoiceRegistration.test.js test/redrawLocalVoiceRoutes.test.js test/redrawVoiceAssetIntegration.test.js test/redrawReviewGate.test.js
+```
+
+结果：150 tests，150 pass，0 fail。
+
+### 仓库全量回归说明
+
+2026-08-28 首次 `npm test` 自然终态暴露 6 条供应商测试桩失败：`lingjingVideoGate.test.js` 1 条、`toapisVideoIntegration.test.js` 5 条。2026-08-29 隔离复现确认，两份假数据库错误地把所有 `sqlite_master` 查询都回答为“表存在”，同时把 `model_credit_prices` 列表回答为空，导致价格只读路径误入 legacy schema 迁移并触发缺失的 `database.transaction`。
+
+最小修复只更新两份测试桩，使其准确声明已迁移的 `model_credit_prices` 列和 free/paid CHECK 合同；未修改 `videoClient.js`、`modelPriceService.js`、`migrate.js` 或其他生产代码。RED 为原 6 条稳定失败；GREEN 定向结果为 18 tests、18 pass、0 fail。
+
+随后 fresh `npm test` 完整运行到自然终态：3590 tests，3581 pass，0 fail，9 skipped，退出码 0，耗时约 26.5 分钟。9 条 skipped 均为仓库既有平台/环境条件跳过，不是本次失败。
+
+提交前于 2026-08-29 再次完整运行同一命令：3590 tests，3581 pass，0 fail，9 skipped，退出码 0，耗时约 27.3 分钟。
 
 ## 变更与提交
 
@@ -57,7 +121,7 @@ npx playwright test e2e/redraw-live-launcher.spec.js --workers=1
 
 结果：11 tests，10 pass，0 fail，1 skipped。
 
-通过项包含 fixture 边界、权威 source facts 反向门禁、媒体预检、网络副作用门禁、五角色 HTTP 链、clean-provider shot fail-closed 与脱敏汇总。唯一 skipped 项是 15 项批准本地媒体齐备后的完整九镜运行链。
+通过项包含 fixture 边界、权威 source facts 反向门禁、媒体预检、网络副作用门禁、五角色 HTTP 链、clean-provider shot fail-closed 与脱敏汇总。该段结果是第一轮执行记录；其唯一 skipped 项已在本报告“九镜本地产品链补充验收”中以 fresh 14/14 Playwright 结果补齐。
 
 ## RED -> GREEN 与独立审查
 
@@ -98,7 +162,8 @@ npx playwright test e2e/redraw-live-launcher.spec.js --workers=1
 
 ## 明确未通过的交付门禁
 
-- 15 项批准本地媒体缺失，九镜完整本地媒体运行链未执行。
+- 九镜完整本地产品运行链已执行并通过；真实供应商整集生成与结果媒体质量验收未执行，不得由本地 dry-run 推断。
 - 测试音频来自 Microsoft Zira en-US，仅用于本地测试 Worker 合同；未安装或验收真实 eSpeak NG，不得宣称真实离线 TTS 引擎已通过。
+- 仓库全量后端为 3581 pass、0 fail、9 skipped；本次相关定向后端为 80/80、150/150 与供应商桩 18/18，九镜 Playwright 为 14/14。
 - 未运行 Hosted CI。
 - 未做生产部署、生产浏览器回归或客户验收。

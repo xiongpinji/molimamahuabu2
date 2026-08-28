@@ -63,7 +63,30 @@ test('launcher builds the approved nine-shot contract and requires one source fi
   expect(fixture.characters).toHaveLength(5)
   expect(fixture.shots).toHaveLength(9)
   expect(fixture.required_inputs.identity_images).toHaveLength(5)
+  expect(fixture.required_inputs.identity_images.map((entry) => entry.character_id))
+    .toEqual(fixture.characters.map((character) => character.id))
   expect(fixture.required_inputs.motion_references).toHaveLength(9)
+})
+
+test('identity pack leaves persona origin and target country to the server policy', () => {
+  expect(harnessSource).not.toMatch(/\bpersona_origin\s*:/)
+  expect(harnessSource).not.toMatch(/\btarget_country\s*:/)
+})
+
+test('local coverage text descriptors follow the approved source facts', () => {
+  expect(typeof liveHarness.redrawLiveCoverageTextDescriptors).toBe('function')
+  const fixture = liveFixture()
+  expect(liveHarness.redrawLiveCoverageTextDescriptors(fixture, 'shot-3')).toEqual([])
+  expect(liveHarness.redrawLiveCoverageTextDescriptors(fixture, 'shot-4'))
+    .toHaveLength(2)
+  expect(liveHarness.redrawLiveCoverageTextDescriptors(fixture, 'shot-4')
+    .every((entry) => entry.kind === 'subtitle')).toBe(true)
+  expect(liveHarness.redrawLiveCoverageTextDescriptors(fixture, 'shot-8')).toEqual([{
+    region_key: 'shot-8-screen-1',
+    kind: 'screen',
+    treatment: 'localize_screen',
+    target_text_key: 'shot-8-screen-1',
+  }])
 })
 
 test('Rafael fixture is only the shot-6 owner approval request input and never persisted evidence', async () => {
@@ -247,6 +270,25 @@ test('clean provider shot lookup fails closed instead of reusing the first fixtu
     .toThrow(/clean provider shot contract drift/i)
 })
 
+test('local clean provider accepts bound asset ids but rejects database and storage context', () => {
+  expect(typeof liveHarness.assertRedrawLiveProviderEnvelope).toBe('function')
+  expect(() => liveHarness.assertRedrawLiveProviderEnvelope({
+    outputDir: 'local-staging',
+    input: {
+      version_id: 1,
+      source_asset_id: 2,
+      mask_asset_id: 3,
+      shot_id: 'shot-1',
+    },
+  }, 'clean')).not.toThrow()
+  for (const forbiddenKey of ['db', 'database', 'storage', 'storageRoot', 'assetReader']) {
+    expect(() => liveHarness.assertRedrawLiveProviderEnvelope({
+      outputDir: 'local-staging',
+      input: { [forbiddenKey]: {} },
+    }, 'clean')).toThrow(/forbidden context/i)
+  }
+})
+
 test('redacted launcher summary contains hashes and zero-cost counters but no secrets or absolute paths', () => {
   expect(typeof liveHarness.redactLiveProductSummary).toBe('function')
   const token = 'launcher-secret-token'
@@ -310,6 +352,7 @@ test('redacted launcher summary contains hashes and zero-cost counters but no se
 
 test('approved local media run reaches nine reference-ready shots through the product chain with zero side effects', async () => {
   test.skip(process.env.REDRAW_LIVE_PRODUCT_E2E !== '1', 'requires the approved local media environment')
+  test.setTimeout(300_000)
   const fixture = liveFixture()
   const harness = await liveHarness.createRedrawLiveProductHarness({ fixture, env: process.env })
   try {

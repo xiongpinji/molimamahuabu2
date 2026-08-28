@@ -271,6 +271,9 @@ function deriveContext(db, input, options = {}) {
   const sourceDialogue = parseArray(scope.source_dialogue_json);
   const localizedDialogue = parseArray(scope.localized_dialogue_json);
   const ownerSha256 = stableHash({ tenant_id: input.tenantId, user_id: input.userId });
+  const contextVoiceUpdatedAt = options.contextVoiceUpdatedAt == null
+    ? String(scope.voice_updated_at)
+    : String(options.contextVoiceUpdatedAt);
   const context = {
     contract_version: CONTRACT_VERSION,
     owner_sha256: ownerSha256,
@@ -292,7 +295,7 @@ function deriveContext(db, input, options = {}) {
     target_locale: String(scope.target_locale),
     target_market: String(scope.target_market || ''),
     shot_updated_at: String(scope.shot_updated_at),
-    voice_updated_at: String(scope.voice_updated_at),
+    voice_updated_at: contextVoiceUpdatedAt,
   };
   return {
     scope,
@@ -322,7 +325,59 @@ function evidenceSha256(row) {
   });
 }
 
-function validateStoredApproval(db, row) {
+function hasCompletedVoiceProgressBinding(db, approval) {
+  const rows = db.prepare(`
+    SELECT r.*, a.source_ref_json, a.voice_asset_id, a.status AS voice_status
+    FROM redraw_local_voice_registrations r
+    JOIN redraw_assets a
+      ON a.id = r.voice_redraw_asset_id AND a.version_id = r.version_id
+     AND a.tenant_id = r.tenant_id AND a.user_id = r.user_id
+     AND a.kind = 'voice' AND a.deleted_at IS NULL
+    WHERE r.tenant_id = ? AND r.user_id = ? AND r.version_id = ?
+      AND r.voice_redraw_asset_id = ? AND r.source_character_key = ?
+      AND r.status = 'completed' AND r.deleted_at IS NULL
+  `).all(
+    approval.tenant_id,
+    approval.user_id,
+    approval.version_id,
+    approval.voice_redraw_asset_id,
+    approval.source_character_key,
+  );
+  return rows.some((registration) => {
+    try {
+      const approvalIds = parseArray(registration.supplemental_approval_ids_json);
+      const payload = parseObject(registration.source_ref_json);
+      const snapshot = parseObject(payload.snapshot);
+      const evidence = parseObject(snapshot.voice_evidence || snapshot.evidence);
+      const evidenceApprovals = evidence.supplemental_dialogue_approvals;
+      return registration.voice_status === 'generated'
+        && Number(registration.voice_asset_id) === Number(registration.audio_asset_id)
+        && Number(evidence.registration_id) === Number(registration.id)
+        && evidence.tenant_id === String(approval.tenant_id)
+        && evidence.user_id === String(approval.user_id)
+        && Number(evidence.version_id) === Number(approval.version_id)
+        && Number(evidence.voice_redraw_asset_id) === Number(approval.voice_redraw_asset_id)
+        && evidence.source_character_key === String(approval.source_character_key)
+        && Number(evidence.audio_asset_id) === Number(registration.audio_asset_id)
+        && evidence.audio_sha256 === registration.audio_sha256
+        && evidence.approved_dialogue_evidence_sha256
+          === registration.approved_dialogue_evidence_sha256
+        && approvalIds.includes(Number(approval.id))
+        && Array.isArray(evidence.supplemental_dialogue_approval_ids)
+        && evidence.supplemental_dialogue_approval_ids.includes(Number(approval.id))
+        && Array.isArray(evidenceApprovals)
+        && evidenceApprovals.some((entry) => (
+          Number(entry?.approval_id) === Number(approval.id)
+          && entry.approval_evidence_sha256 === approval.approval_evidence_sha256
+          && entry.target_text_sha256 === approval.target_text_sha256
+        ));
+    } catch (_) {
+      return false;
+    }
+  });
+}
+
+function validateStoredApproval(db, row, options = {}) {
   if (!db || typeof db.prepare !== 'function'
     || !row || typeof row !== 'object' || Array.isArray(row)
     || row.contract_version !== CONTRACT_VERSION
@@ -339,6 +394,7 @@ function validateStoredApproval(db, row) {
     || !SHA256.test(String(row.idempotency_hash || ''))
     || !SHA256.test(String(row.request_hash || ''))
     || !Number.isFinite(Date.parse(String(row.approved_at || '')))
+    || !Number.isFinite(Date.parse(String(row.approved_voice_updated_at || '')))
     || !Number.isFinite(Date.parse(String(row.updated_at || '')))
     || row.deleted_at != null) {
     throw codedError('REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_READY');
@@ -353,13 +409,26 @@ function validateStoredApproval(db, row) {
     || sha256(Buffer.from(canonicalText, 'utf8')) !== row.target_text_sha256) {
     throw codedError('REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_READY');
   }
+  const allowVoiceTimestampProgress = options.allowVoiceTimestampProgress === true;
   const derived = deriveContext(db, {
     tenantId: String(row.tenant_id),
     userId: String(row.user_id),
     versionId: Number(row.version_id),
     shotRowId: Number(row.redraw_shot_id),
     voiceAssetId: Number(row.voice_redraw_asset_id),
-  }, { assertCas: false });
+  }, {
+    assertCas: false,
+    ...(allowVoiceTimestampProgress
+      ? { contextVoiceUpdatedAt: row.approved_voice_updated_at }
+      : {}),
+  });
+  if ((!allowVoiceTimestampProgress
+      && String(derived.scope.voice_updated_at) !== String(row.approved_voice_updated_at))
+    || (allowVoiceTimestampProgress
+      && Date.parse(String(derived.scope.voice_updated_at))
+        < Date.parse(String(row.approved_voice_updated_at)))) {
+    throw codedError('REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_READY');
+  }
   if (Number(row.work_id) !== Number(derived.scope.work_id)
     || String(row.shot_id) !== String(derived.scope.shot_id)
     || String(row.source_character_key) !== derived.characterKey
@@ -469,9 +538,10 @@ function createSupplementalDialogueApproval(rawInput) {
          shot_id, voice_redraw_asset_id, source_character_key, target_locale, target_market,
          target_text, target_text_sha256, source_translation, localization_task_id,
          localization_decision_sha256, facts_hash, policy_version, dialogue_context_sha256,
+         approved_voice_updated_at,
          approval_evidence_sha256, idempotency_hash, request_hash, approval_source,
          approval_decision, status, approved_by, approved_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?,
               'owner_http', 'approved', 'active', ?, ?, ?, ?)
     `).run(
       CONTRACT_VERSION,
@@ -492,6 +562,7 @@ function createSupplementalDialogueApproval(rawInput) {
       String(derived.scope.facts_hash),
       Number(derived.scope.policy_version),
       derived.contextSha256,
+      input.expectedVoiceUpdatedAt,
       '0'.repeat(64),
       input.idempotencyHash,
       requestHash,
@@ -547,13 +618,14 @@ function revokeSupplementalDialogueApproval(rawInput) {
       LIMIT 1
     `).get(approvalId, versionId, owned.tenantId, owned.userId);
     if (!row) throw codedError('REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_FOUND');
-    validateStoredApproval(rawInput.db, row);
+    const allowVoiceTimestampProgress = hasCompletedVoiceProgressBinding(rawInput.db, row);
+    validateStoredApproval(rawInput.db, row, { allowVoiceTimestampProgress });
     if (row.status === 'revoked') {
       if (row.revocation_idempotency_hash !== revocationIdempotencyHash
         || row.revocation_request_hash !== revocationRequestHash) {
         throw codedError('REDRAW_SUPPLEMENTAL_DIALOGUE_IDEMPOTENCY_CONFLICT');
       }
-      return { approval: row, idempotentReplay: true };
+      return { approval: row, idempotentReplay: true, allowVoiceTimestampProgress };
     }
     if (row.status !== 'active') throw codedError('REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_READY');
     if (row.updated_at !== expectedUpdatedAt) {
@@ -592,17 +664,21 @@ function revokeSupplementalDialogueApproval(rawInput) {
     if (update.changes !== 1) throw codedError('REDRAW_SUPPLEMENTAL_DIALOGUE_CAS_CONFLICT');
     const approval = rawInput.db.prepare('SELECT * FROM redraw_supplemental_dialogue_approvals WHERE id = ?')
       .get(approvalId);
-    validateStoredApproval(rawInput.db, approval);
+    validateStoredApproval(rawInput.db, approval, { allowVoiceTimestampProgress });
     return {
       approval,
       idempotentReplay: false,
+      allowVoiceTimestampProgress,
     };
   }).immediate();
 }
 
-function publicSupplementalDialogueApproval(db, result) {
+function publicSupplementalDialogueApproval(db, result, options = {}) {
   const row = result?.approval;
-  validateStoredApproval(db, row);
+  validateStoredApproval(db, row, {
+    allowVoiceTimestampProgress: options.allowVoiceTimestampProgress === true
+      || result?.allowVoiceTimestampProgress === true,
+  });
   if (row.status === 'active') {
     return {
       approval_id: Number(row.id),

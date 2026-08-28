@@ -598,6 +598,34 @@ test('supplemental local evidence uses exact hashed provenance and public projec
   state.db.close();
 });
 
+test('completed supplemental registration may advance its bound voice slot timestamp', () => {
+  const state = supplementalLocalVoiceState();
+  const completedAt = '2026-08-28T00:00:00.001Z';
+  const evidence = { ...state.evidence, completed_at: completedAt };
+  state.db.prepare(`
+    UPDATE redraw_local_voice_registrations
+    SET updated_at = ?, completed_at = ?
+    WHERE id = ? AND status = 'completed'
+  `).run(completedAt, completedAt, state.registrationId);
+  state.db.prepare(`
+    UPDATE redraw_assets
+    SET source_ref_json = ?, updated_at = ?
+    WHERE id = ? AND kind = 'voice'
+  `).run(JSON.stringify({
+    source_ref: { kind: 'voice', source_character_key: 'c-1' },
+    snapshot: { evidence },
+  }), completedAt, state.voiceAssetId);
+
+  const voices = listProductionVoices(state.db, {
+    tenantId: 'tenant-a', userId: 'user-a', versionId: state.versionId,
+    locale: 'fr-FR', market: 'FR', localeRegistry: trustedRegistry(),
+  }, () => true);
+
+  assert.equal(voices.length, 1);
+  assert.equal(voices[0].registration_id, state.registrationId);
+  state.db.close();
+});
+
 test('supplemental local evidence rejects missing, extra, dialogue-bearing and tampered provenance fields', (t) => {
   const cases = [
     ['missing contract', (evidence) => { delete evidence.approved_dialogue_contract_version; }],

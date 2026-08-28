@@ -435,7 +435,7 @@ function readCurrentSupplementalApprovals(db, evidence) {
       const projection = publicSupplementalDialogueApproval(db, {
         approval: row,
         idempotentReplay: false,
-      });
+      }, { allowVoiceTimestampProgress: true });
       if (projection.contract_version !== SUPPLEMENTAL_DIALOGUE_CONTRACT
         || projection.status !== 'active'
         || projection.source_translation !== false) {

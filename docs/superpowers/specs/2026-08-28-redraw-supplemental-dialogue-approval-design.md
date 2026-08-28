@@ -318,6 +318,22 @@ POST /api/v1/redraw/versions/:versionId/supplemental-dialogue-approvals/:approva
 - completed 历史登记和音频资产保留审计；
 - production voice 本地可信分支必须重新读取审批并拒绝把该登记用于新的目录/绑定判定。
 
+### 9.1 登记完成后的受控 voice CAS 推进
+
+审批创建先于本地音色登记；登记完成和后续 owner 审核会合法推进同一 voice slot 的
+`updated_at`。因此审批必须额外持久化创建时已经命中的 `approved_voice_updated_at`，并继续
+用该不可变值重算原 `dialogue_context_sha256`。该字段只保存 CAS 时间，不进入公开响应。
+
+普通审批读取仍把当前 voice CAS 变化视为漂移。只有 production voice 复核在已经逐项证明
+completed registration 与当前 voice evidence 的 owner、version、voice slot、角色、音频、
+approved-dialogue SHA 和 supplemental approval IDs/hash 完全一致后，才允许以
+`approved_voice_updated_at` 重算原审批上下文。此例外不允许忽略 shot CAS、facts、policy、
+localization、对白、角色可见性、审批状态或任何证据哈希变化；任一不一致仍 fail closed。
+
+旧审批没有 `approved_voice_updated_at` 时不得猜测或回填，继续 fail closed。撤销属于收紧权限的
+安全动作，可以使用持久化的原 voice CAS 验证审批后执行，但仍须通过 owner、审批 CAS、幂等、
+当前 shot/facts/policy/localization 和证据哈希校验。
+
 ## 10. Production voice 本地证据
 
 使用补句的新 `local_offline_tts` evidence 至少增加：

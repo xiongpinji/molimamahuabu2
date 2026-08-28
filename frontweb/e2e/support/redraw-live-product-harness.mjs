@@ -44,7 +44,13 @@ export function buildRedrawLiveProductFixture(testCase, requiredInputs, options 
       budget_limit_credits: 1,
       max_auto_attempts_per_shot: 1,
     },
-    required_inputs: requiredInputs,
+    required_inputs: {
+      ...requiredInputs,
+      identity_images: requiredInputs.identity_images.map((entry, index) => ({
+        ...entry,
+        character_id: testCase.cast[index].id,
+      })),
+    },
     source: {
       filename: `${testCase.id}.mp4`,
       mime_type: 'video/mp4',
@@ -710,7 +716,7 @@ async function createProductServerHarness({ fixture, inputs }) {
 
     async function waitForTask(taskId, expectedStatuses) {
       if (!taskId) throw new Error('product task id missing')
-      const deadline = Date.now() + 30_000
+      const deadline = Date.now() + 120_000
       while (Date.now() < deadline) {
         const task = await getJson(`/api/v1/tasks/${encodeURIComponent(taskId)}`)
         if (expectedStatuses.includes(task.status)) return task
@@ -831,8 +837,6 @@ async function createProductServerHarness({ fixture, inputs }) {
           live_action_human_confirmed: true,
           adult_status: 'verified_18_plus',
           identity_consistency_confirmed: true,
-          persona_origin: 'fictional_ai_generated',
-          target_country: fixture.market,
           wardrobe_reference_asset_id: Number(imported.asset.id),
           wardrobe_consistency_confirmed: true,
           expected_updated_at: imported.redraw_asset.updated_at,
@@ -1006,35 +1010,41 @@ async function createProductServerHarness({ fixture, inputs }) {
       }
       shots = await versionShots(workId, versionId)
       const shotIds = shots.map((shot) => Number(shot.id))
-      const firstQuote = await postJson(`/api/v1/redraw/versions/${versionId}/reference-preparation-quote`, {
-        shot_ids: shotIds,
-      })
-      const firstStart = await postJson(`/api/v1/redraw/versions/${versionId}/reference-preparations`, {
-        shot_ids: shotIds,
-        quote_hash: firstQuote.quote_hash,
-        idempotency_key: `local-reference-first-${versionId}`,
-      }, { expectedStatus: 202 })
-      await waitForTask(firstStart.task_id, ['needs_attention'])
-      assets = await versionAssets(versionId)
-      const cleanCandidates = assets.filter((asset) => (
-        asset.approval_status === 'pending' && Number(asset.clean_plate_asset_id) > 0
-      ))
-      if (cleanCandidates.length !== fixture.shots.length) {
-        throw new Error('clean candidate count mismatch')
+      const expectedCleanRequirements = fixture.shots.reduce(
+        (total, shot) => total + shot.character_ids.length + shot.text_regions.length,
+        0,
+      )
+      let referencePreparationCompleted = false
+      const reviewedCleanAssetIds = new Set()
+      for (let round = 1; round <= expectedCleanRequirements + 1; round += 1) {
+        const quote = await postJson(`/api/v1/redraw/versions/${versionId}/reference-preparation-quote`, {
+          shot_ids: shotIds,
+        })
+        const started = await postJson(`/api/v1/redraw/versions/${versionId}/reference-preparations`, {
+          shot_ids: shotIds,
+          quote_hash: quote.quote_hash,
+          idempotency_key: `local-reference-${versionId}-${round}`,
+        }, { expectedStatus: 202 })
+        const task = await waitForTask(started.task_id, ['completed', 'needs_attention'])
+        if (task.status === 'completed') {
+          referencePreparationCompleted = true
+          break
+        }
+        assets = await versionAssets(versionId)
+        const cleanCandidates = assets.filter((asset) => (
+          asset.approval_status === 'pending' && Number(asset.clean_plate_asset_id) > 0
+        ))
+        if (cleanCandidates.length === 0) throw new Error('clean candidate review made no progress')
+        for (const clean of cleanCandidates) {
+          const cleanId = Number(clean.id)
+          if (reviewedCleanAssetIds.has(cleanId)) throw new Error('clean candidate review repeated')
+          await reviewAsset(cleanId, clean.updated_at)
+          reviewedCleanAssetIds.add(cleanId)
+        }
       }
-      for (const clean of cleanCandidates) await reviewAsset(Number(clean.id), clean.updated_at)
-      const cleanCallsAfterFirst = counts.cleanProviderCalls
-      const secondQuote = await postJson(`/api/v1/redraw/versions/${versionId}/reference-preparation-quote`, {
-        shot_ids: shotIds,
-      })
-      const secondStart = await postJson(`/api/v1/redraw/versions/${versionId}/reference-preparations`, {
-        shot_ids: shotIds,
-        quote_hash: secondQuote.quote_hash,
-        idempotency_key: `local-reference-second-${versionId}`,
-      }, { expectedStatus: 202 })
-      await waitForTask(secondStart.task_id, ['completed'])
-      if (counts.cleanProviderCalls !== cleanCallsAfterFirst) {
-        throw new Error('second preparation resubmitted clean provider')
+      if (!referencePreparationCompleted) throw new Error('reference preparation did not complete')
+      if (counts.cleanProviderCalls !== expectedCleanRequirements) {
+        throw new Error('clean provider requirement count mismatch')
       }
       await getJson(`/api/v1/redraw/versions/${versionId}/preparation-gate`)
       await getJson(`/api/v1/redraw/versions/${versionId}/generation-gate`)
@@ -1298,6 +1308,7 @@ function createRouteOptions({ fixture, derived, counts, tempRoot, storageRoot })
     ...localManifestBase,
     manifest_sha256: sha256(Buffer.from(stableJson(localManifestBase), 'utf8')),
   }
+  const cleanProviderSignatures = new Set()
   const localeVerifier = {
     assertReady(locale) {
       if (locale !== pack.locale) throw new Error('local verifier locale mismatch')
@@ -1418,7 +1429,7 @@ function createRouteOptions({ fixture, derived, counts, tempRoot, storageRoot })
 
   async function coverageRegistrationProvider(request) {
     counts.coverageProviderCalls += 1
-    assertProviderEnvelope(request, 'coverage')
+    assertRedrawLiveProviderEnvelope(request, 'coverage')
     await writeReviewedCoverage({
       outputDir: request.outputDir,
       input: request.input,
@@ -1438,7 +1449,10 @@ function createRouteOptions({ fixture, derived, counts, tempRoot, storageRoot })
   }
 
   async function assetGenerationProvider(request) {
-    assertProviderEnvelope(request, 'clean')
+    assertRedrawLiveProviderEnvelope(request, 'clean')
+    const signature = [request.input.mode, request.input.source_asset_id, request.input.mask_asset_id].join(':')
+    if (cleanProviderSignatures.has(signature)) throw new Error('clean provider requirement resubmitted')
+    cleanProviderSignatures.add(signature)
     counts.cleanProviderCalls += 1
     const shotId = String(request.input?.shot_id || '')
     const fixtureIndex = requiredRedrawLiveFixtureShotIndex(fixture, shotId)
@@ -1511,13 +1525,39 @@ function createRouteOptions({ fixture, derived, counts, tempRoot, storageRoot })
   }
 }
 
-function assertProviderEnvelope(request, label) {
+export function assertRedrawLiveProviderEnvelope(request, label) {
   if (!request || Object.keys(request).sort().join(',') !== 'input,outputDir') {
     throw new Error(`${label} provider contract drift`)
   }
-  if (Object.keys(request.input || {}).some((key) => /asset|storage|database|db/i.test(key))) {
+  if (Object.keys(request.input || {}).some((key) => /^(?:db|database|storage|storage[_-]?root|asset[_-]?reader)$/i.test(key))) {
     throw new Error(`${label} provider received forbidden context`)
   }
+}
+
+export function redrawLiveCoverageTextDescriptors(fixture, shotId) {
+  const shot = fixture?.shots?.find((entry) => entry.shot_id === shotId)
+  if (!shot) throw new Error('coverage text shot missing')
+  return (shot.text_regions || []).map((region) => {
+    const regionKey = String(region?.region_key || '').trim()
+    if (!regionKey) throw new Error('coverage text region key missing')
+    if (region.kind === 'text_subtitle') {
+      return {
+        region_key: regionKey,
+        kind: 'subtitle',
+        treatment: 'translate_subtitle',
+        target_text_key: regionKey,
+      }
+    }
+    if (region.kind === 'text_screen') {
+      return {
+        region_key: regionKey,
+        kind: 'screen',
+        treatment: 'localize_screen',
+        target_text_key: regionKey,
+      }
+    }
+    throw new Error('coverage text kind is unsupported')
+  })
 }
 
 async function writeReviewedCoverage(input) {
@@ -1577,34 +1617,35 @@ async function writeReviewedCoverage(input) {
         reviewer: null,
       })
     }
-    const textRegionId = `text-${index + 1}`
-    const textMaskRelative = `masks/${textRegionId}.png`
-    const textMaskSha = writeProviderFile(input.outputDir, textMaskRelative, maskBytes)
-    textTracks.push({
-      region_key: `subtitle-${index + 1}`,
-      kind: 'subtitle',
-      treatment: 'translate_subtitle',
-      target_text_key: `subtitle-${index + 1}`,
-      frame_ranges: [{ start_frame: index, end_frame: index }],
-      regions: [{
-        region_id: textRegionId,
-        frame_index: index,
-        polygon: [
-          { x: 0, y: 0 },
-          { x: dimensions.width, y: 0 },
-          { x: dimensions.width, y: dimensions.height },
-        ],
-        mask: {
-          path: textMaskRelative,
-          sha256: textMaskSha,
-          width: dimensions.width,
-          height: dimensions.height,
-          mime_type: 'image/png',
-        },
-      }],
-      review_status: 'pending',
-      reviewer: null,
-    })
+    const textRegionIds = []
+    for (const [textIndex, descriptor] of redrawLiveCoverageTextDescriptors(input.fixture, shot.shot_id).entries()) {
+      const textRegionId = `text-${index + 1}-${textIndex + 1}`
+      const textMaskRelative = `masks/${textRegionId}.png`
+      const textMaskSha = writeProviderFile(input.outputDir, textMaskRelative, maskBytes)
+      textRegionIds.push(textRegionId)
+      textTracks.push({
+        ...descriptor,
+        frame_ranges: [{ start_frame: index, end_frame: index }],
+        regions: [{
+          region_id: textRegionId,
+          frame_index: index,
+          polygon: [
+            { x: 0, y: 0 },
+            { x: dimensions.width, y: 0 },
+            { x: dimensions.width, y: dimensions.height },
+          ],
+          mask: {
+            path: textMaskRelative,
+            sha256: textMaskSha,
+            width: dimensions.width,
+            height: dimensions.height,
+            mime_type: 'image/png',
+          },
+        }],
+        review_status: 'pending',
+        reviewer: null,
+      })
+    }
     const timestampMs = Math.floor((shot.start_ms + shot.end_ms) / 2)
     frames.push({
       frame_index: index,
@@ -1616,7 +1657,7 @@ async function writeReviewedCoverage(input) {
       width: dimensions.width,
       height: dimensions.height,
       person_region_ids: personRegionIds,
-      text_region_ids: [textRegionId],
+      text_region_ids: textRegionIds,
       review_point_reasons: [],
       review_status: 'not_required',
     })

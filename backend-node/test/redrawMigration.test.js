@@ -2018,6 +2018,7 @@ test('补充对白审批迁移建立 owner 范围、状态约束和登记证据�
     'created_at',
     'updated_at',
     'deleted_at',
+    'approved_voice_updated_at',
   ]);
   assert.match(table.sql, /source_translation\s+INTEGER\s+NOT NULL\s+CHECK\s*\(source_translation\s*=\s*0\)/i);
   assert.match(table.sql, /status\s+TEXT\s+NOT NULL\s+CHECK\s*\(status\s+IN\s*\('active',\s*'revoked'\)\)/i);

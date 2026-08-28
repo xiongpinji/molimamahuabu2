@@ -349,6 +349,58 @@ test('local offline voice review, binding, and character rereview naturally sati
   }
 });
 
+test('redraw project-owned local voice audio satisfies character-plan without a legacy drama row', () => {
+  const state = setup({ characters: [{ source_character_key: 'char-a', source_name: 'A' }] });
+  try {
+    addCharacter(state, 'char-a', 'Alice Carter');
+    const local = addLocalVoiceForReview(state, 'char-a', 'Alice Carter');
+    state.db.prepare(`
+      UPDATE assets
+      SET drama_id = 1, category = 'redraw-local-voice', metadata = ?
+      WHERE id = ?
+    `).run(JSON.stringify({
+      source: 'local_offline_tts',
+      tenant_id: 'tenant-a',
+      user_id: 'user-a',
+      version_id: state.versionId,
+      voice_redraw_asset_id: local.voiceAssetId,
+      registration_id: local.registrationId,
+      audio_sha256: local.evidence.audio_sha256,
+    }), local.audioAssetId);
+    reviewAsset(state.db, local.voiceAssetId, {
+      action: 'approved', reviewerId: 'user-a', expectedUpdatedAt: NOW,
+      tenantId: 'tenant-a', userId: 'user-a',
+    });
+    const assigned = assignVoice(state.db, local.character.id, local.evidence, {
+      tenantId: 'tenant-a', userId: 'user-a', versionId: state.versionId,
+      voiceAssetId: local.voiceAssetId, expectedUpdatedAt: local.character.updated_at,
+      canReadAsset: () => true,
+      localeRegistry: {
+        assertReady() {
+          return {
+            id: 'en-US@fixture', locale: 'en-US',
+            model_manifest_sha256: MODEL_SHA,
+            calibration_manifest_sha256: CALIBRATION_SHA,
+          };
+        },
+      },
+    });
+    const character = state.db.prepare('SELECT updated_at FROM redraw_assets WHERE id = ?')
+      .get(local.character.id);
+    reviewAsset(state.db, local.character.id, {
+      action: 'approved', reviewerId: 'user-a', expectedUpdatedAt: character.updated_at,
+      tenantId: 'tenant-a', userId: 'user-a',
+    });
+
+    const plan = buildCharacterPlan(context(state), state.versionId);
+    assert.equal(assigned.snapshot.local_offline_verified, true);
+    assert.equal(plan.ready, true);
+    assert.deepEqual(plan.missing, []);
+  } finally {
+    close(state);
+  }
+});
+
 test('buildCharacterPlan 返回严格白名单、稳定排序和 plan_hash', () => {
   const state = makeReadyState();
   try {
