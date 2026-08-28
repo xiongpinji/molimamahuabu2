@@ -34,6 +34,7 @@ const redrawEpisodeReleaseService = require('../services/redrawEpisodeReleaseSer
 const redrawReferenceArtifactImportService = require('../services/redrawReferenceArtifactImportService');
 const redrawCoverageRegistrationService = require('../services/redrawCoverageRegistrationService');
 const redrawLocalVoiceRegistrationService = require('../services/redrawLocalVoiceRegistrationService');
+const redrawSupplementalDialogueApprovalService = require('../services/redrawSupplementalDialogueApprovalService');
 const { normalizeVideoProviderResult } = require('../services/redrawProviderAdapters');
 const modelPriceService = require('../services/modelPriceService');
 const assetService = require('../services/assetService');
@@ -116,6 +117,25 @@ const LOCAL_VOICE_REGISTRATION_ERROR_MESSAGES = Object.freeze({
   REDRAW_LOCAL_TTS_CAS_CONFLICT: '语音槽位已变更，请刷新后重试',
   REDRAW_LOCAL_TTS_REQUEST_INVALID: '本地语音登记参数无效',
   REDRAW_LOCAL_TTS_CLIENT_CONTROL_FORBIDDEN: '本地语音登记包含禁止字段',
+});
+const SUPPLEMENTAL_DIALOGUE_CREATE_FIELDS = new Set([
+  'idempotency_key',
+  'target_text',
+  'source_translation',
+  'expected_shot_updated_at',
+  'expected_voice_updated_at',
+]);
+const SUPPLEMENTAL_DIALOGUE_REVOKE_FIELDS = new Set([
+  'idempotency_key',
+  'expected_updated_at',
+]);
+const SUPPLEMENTAL_DIALOGUE_ERROR_MESSAGES = Object.freeze({
+  REDRAW_SUPPLEMENTAL_DIALOGUE_INPUT_INVALID: '补充对白审批参数无效',
+  REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_FOUND: '补充对白审批不存在',
+  REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_READY: '补充对白审批前置条件未就绪',
+  REDRAW_SUPPLEMENTAL_DIALOGUE_CAS_CONFLICT: '补充对白审批资源已变更，请刷新后重试',
+  REDRAW_SUPPLEMENTAL_DIALOGUE_IDEMPOTENCY_CONFLICT: '补充对白审批幂等请求冲突',
+  REDRAW_SUPPLEMENTAL_DIALOGUE_ACTIVE_CONFLICT: '当前镜头和角色已有活动补充对白审批',
 });
 
 const ALLOWED_ASPECT_RATIOS = new Set(['1:1', '9:16', '16:9', '3:4', '4:3', '21:9']);
@@ -669,6 +689,84 @@ function localVoiceRegistrationInput(body) {
     );
   }
   return { idempotencyKey, expectedUpdatedAt };
+}
+
+function exactRequestBody(body, fields) {
+  return Boolean(body && typeof body === 'object' && !Array.isArray(body)
+    && (Object.getPrototypeOf(body) === Object.prototype || Object.getPrototypeOf(body) === null)
+    && Object.keys(body).length === fields.size
+    && Object.keys(body).every((key) => fields.has(key)));
+}
+
+function supplementalDialogueIdempotencyKey(value) {
+  const key = typeof value === 'string' ? value.trim() : '';
+  if (!key || key.length > 160 || key.includes('\0')) {
+    throw codedRouteError('REDRAW_SUPPLEMENTAL_DIALOGUE_INPUT_INVALID');
+  }
+  return key;
+}
+
+function supplementalDialogueTimestamp(value) {
+  const timestamp = typeof value === 'string' ? value.trim() : '';
+  if (!timestamp || !Number.isFinite(Date.parse(timestamp))) {
+    throw codedRouteError('REDRAW_SUPPLEMENTAL_DIALOGUE_INPUT_INVALID');
+  }
+  return timestamp;
+}
+
+function supplementalDialogueCreateInput(body) {
+  if (!exactRequestBody(body, SUPPLEMENTAL_DIALOGUE_CREATE_FIELDS)
+    || body.source_translation !== false
+    || typeof body.target_text !== 'string') {
+    throw codedRouteError('REDRAW_SUPPLEMENTAL_DIALOGUE_INPUT_INVALID');
+  }
+  const targetText = body.target_text.trim();
+  if (!targetText
+    || Array.from(targetText).length
+      > redrawSupplementalDialogueApprovalService.MAX_TARGET_TEXT_CHARACTERS
+    || Buffer.byteLength(targetText, 'utf8')
+      > redrawSupplementalDialogueApprovalService.MAX_TARGET_TEXT_BYTES
+    || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(targetText)) {
+    throw codedRouteError('REDRAW_SUPPLEMENTAL_DIALOGUE_INPUT_INVALID');
+  }
+  return {
+    idempotencyKey: supplementalDialogueIdempotencyKey(body.idempotency_key),
+    targetText: body.target_text,
+    sourceTranslation: false,
+    expectedShotUpdatedAt: supplementalDialogueTimestamp(body.expected_shot_updated_at),
+    expectedVoiceUpdatedAt: supplementalDialogueTimestamp(body.expected_voice_updated_at),
+  };
+}
+
+function supplementalDialogueRevokeInput(body) {
+  if (!exactRequestBody(body, SUPPLEMENTAL_DIALOGUE_REVOKE_FIELDS)) {
+    throw codedRouteError('REDRAW_SUPPLEMENTAL_DIALOGUE_INPUT_INVALID');
+  }
+  return {
+    idempotencyKey: supplementalDialogueIdempotencyKey(body.idempotency_key),
+    expectedUpdatedAt: supplementalDialogueTimestamp(body.expected_updated_at),
+  };
+}
+
+function sendSupplementalDialogueError(res, error, log, context = {}) {
+  const code = String(error?.code || '');
+  const message = SUPPLEMENTAL_DIALOGUE_ERROR_MESSAGES[code];
+  if (code === 'REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_FOUND') {
+    return response.error(res, 404, code, message);
+  }
+  if (code === 'REDRAW_SUPPLEMENTAL_DIALOGUE_INPUT_INVALID') {
+    return response.error(res, 400, code, message);
+  }
+  if (code === 'REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_READY') {
+    return response.error(res, 422, code, message);
+  }
+  if (['REDRAW_SUPPLEMENTAL_DIALOGUE_CAS_CONFLICT',
+    'REDRAW_SUPPLEMENTAL_DIALOGUE_IDEMPOTENCY_CONFLICT',
+    'REDRAW_SUPPLEMENTAL_DIALOGUE_ACTIVE_CONFLICT'].includes(code)) {
+    return response.error(res, 409, code, message);
+  }
+  log?.error?.({ code: 'INTERNAL_ERROR', ...context }, '补充对白审批失败');
+  return response.error(res, 500, 'INTERNAL_ERROR', '补充对白审批失败');
 }
 
 function localVoiceRegistrationReady(options, service) {
@@ -1797,6 +1895,8 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   const coverageRegistrationProvider = options.coverageRegistrationProvider;
   const localVoiceRegistrationService = options.localVoiceRegistrationService
     || redrawLocalVoiceRegistrationService;
+  const supplementalDialogueApprovalService = options.supplementalDialogueApprovalService
+    || redrawSupplementalDialogueApprovalService;
   const cfg = options.cfg || {};
   const quoteAnalysis = options.quoteAnalysis || analysisQuote();
   const canReadArtifact = options.canReadArtifact || createCanReadArtifact(db, cfg);
@@ -3818,6 +3918,92 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     }
   }
 
+  async function createSupplementalDialogueApproval(req, res) {
+    const currentOwner = owner(req);
+    const versionId = numericId(req.params.versionId);
+    const shotRowId = numericId(req.params.shotRowId);
+    const voiceAssetId = numericId(req.params.voiceAssetId);
+    if (!String(req.get?.('x-tenant-id') || '').trim()
+      || !currentOwner.tenantId || !currentOwner.userId
+      || !versionId || !shotRowId || !voiceAssetId) {
+      return sendSupplementalDialogueError(
+        res,
+        codedRouteError('REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_FOUND'),
+        log,
+        { versionId, shotRowId, voiceAssetId },
+      );
+    }
+    let input;
+    try {
+      input = supplementalDialogueCreateInput(req.body);
+    } catch (error) {
+      return sendSupplementalDialogueError(res, error, log, { versionId, shotRowId, voiceAssetId });
+    }
+    try {
+      const result = await supplementalDialogueApprovalService.createSupplementalDialogueApproval({
+        db,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        versionId,
+        shotRowId,
+        voiceAssetId,
+        idempotencyKey: input.idempotencyKey,
+        targetText: input.targetText,
+        sourceTranslation: input.sourceTranslation,
+        expectedShotUpdatedAt: input.expectedShotUpdatedAt,
+        expectedVoiceUpdatedAt: input.expectedVoiceUpdatedAt,
+        ...(typeof options.supplementalDialogueNow === 'function'
+          ? { now: options.supplementalDialogueNow } : {}),
+      });
+      return response.success(
+        res,
+        supplementalDialogueApprovalService.publicSupplementalDialogueApproval(db, result),
+      );
+    } catch (error) {
+      return sendSupplementalDialogueError(res, error, log, { versionId, shotRowId, voiceAssetId });
+    }
+  }
+
+  async function revokeSupplementalDialogueApproval(req, res) {
+    const currentOwner = owner(req);
+    const versionId = numericId(req.params.versionId);
+    const approvalId = numericId(req.params.approvalId);
+    if (!String(req.get?.('x-tenant-id') || '').trim()
+      || !currentOwner.tenantId || !currentOwner.userId || !versionId || !approvalId) {
+      return sendSupplementalDialogueError(
+        res,
+        codedRouteError('REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_FOUND'),
+        log,
+        { versionId, approvalId },
+      );
+    }
+    let input;
+    try {
+      input = supplementalDialogueRevokeInput(req.body);
+    } catch (error) {
+      return sendSupplementalDialogueError(res, error, log, { versionId, approvalId });
+    }
+    try {
+      const result = await supplementalDialogueApprovalService.revokeSupplementalDialogueApproval({
+        db,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        versionId,
+        approvalId,
+        idempotencyKey: input.idempotencyKey,
+        expectedUpdatedAt: input.expectedUpdatedAt,
+        ...(typeof options.supplementalDialogueNow === 'function'
+          ? { now: options.supplementalDialogueNow } : {}),
+      });
+      return response.success(
+        res,
+        supplementalDialogueApprovalService.publicSupplementalDialogueApproval(db, result),
+      );
+    } catch (error) {
+      return sendSupplementalDialogueError(res, error, log, { versionId, approvalId });
+    }
+  }
+
   function listProductionVoices(req, res) {
     const currentOwner = owner(req);
     const version = findOwnedVersion(req.params.id, currentOwner);
@@ -4994,6 +5180,8 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     startReferencePreparation,
     listVersionAssets,
     previewRedrawAsset,
+    createSupplementalDialogueApproval,
+    revokeSupplementalDialogueApproval,
     registerLocalProductionVoice,
     listProductionVoices,
     previewProductionVoice,

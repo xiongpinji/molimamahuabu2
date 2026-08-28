@@ -404,6 +404,14 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/redraw/versions/:id/assets', redraw.listVersionAssets);
   r.get('/redraw/assets/:id/preview/:variant', redraw.previewRedrawAsset);
   r.post(
+    '/redraw/versions/:versionId/shots/:shotRowId/voices/:voiceAssetId/supplemental-dialogue-approvals',
+    redraw.createSupplementalDialogueApproval,
+  );
+  r.post(
+    '/redraw/versions/:versionId/supplemental-dialogue-approvals/:approvalId/revoke',
+    redraw.revokeSupplementalDialogueApproval,
+  );
+  r.post(
     '/redraw/versions/:versionId/voices/:voiceAssetId/local-production-registrations',
     redraw.registerLocalProductionVoice,
   );
