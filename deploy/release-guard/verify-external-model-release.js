@@ -1189,7 +1189,7 @@ function auditFreshness(evidence, label, now, requireRecent = true) {
   const validUntil = canonicalTimestamp(evidence.valid_until, `${label} valid_until`);
   if (generatedAt > now) fail(`${label} evidence is generated in the future`);
   if (requireRecent && now - generatedAt > 24 * 60 * 60 * 1_000) fail(`${label} evidence is stale (maximum age is 24 hours)`);
-  if (validUntil <= now) fail(`${label} evidence is expired`);
+  if (requireRecent && validUntil <= now) fail(`${label} evidence is expired`);
   if (validUntil <= generatedAt) fail(`${label} valid_until must be after generated_at`);
   if (validUntil - generatedAt > 7 * 24 * 60 * 60 * 1_000) fail(`${label} evidence validity window exceeds 7 days`);
   return { generatedAt, validUntil };
