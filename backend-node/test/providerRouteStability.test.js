@@ -395,6 +395,74 @@ test('accepted provider task receipt is write-once, same-value idempotent, and c
   }
 });
 
+test('indeterminate submission stores an immutable recovery handle without marking the route accepted', () => {
+  const db = createDb();
+  try {
+    const configId = addConfig(db);
+    stability.createOrGetRouteRequest(db, {
+      id: 'recovery-task-write-once',
+      idempotencyKey: 'recovery-task-write-once',
+      serviceType: 'image',
+      businessType: 'image_generation',
+      logicalModelId: 'logical-image',
+      userPriceSnapshot: { model: 'logical-image', credits: 40 },
+      candidateConfigIds: [configId],
+    });
+    const attempt = stability.startAttempt(db, {
+      requestId: 'recovery-task-write-once',
+      configId,
+      upstreamModel: 'upstream-image',
+    });
+
+    stability.recordRecoveryTask(db, {
+      requestId: 'recovery-task-write-once',
+      attemptNo: attempt.attempt_no,
+      providerTaskId: 'video-335',
+      httpStatus: 200,
+      providerCode: 'TOAPIS_TASK_ID_MISSING',
+      now: '2026-08-27T02:40:31.795Z',
+    });
+    const stored = db.prepare(`SELECT state, provider_task_id, http_status, error_category,
+      safe_error_summary, finished_at FROM generation_route_attempts
+      WHERE request_id = ? AND attempt_no = ?`)
+      .get('recovery-task-write-once', attempt.attempt_no);
+    assert.deepEqual(stored, {
+      state: 'needs_attention',
+      provider_task_id: 'video-335',
+      http_status: 200,
+      error_category: 'submission_unknown',
+      safe_error_summary: 'category=submission_unknown status=200 code=TOAPIS_TASK_ID_MISSING',
+      finished_at: '2026-08-27T02:40:31.795Z',
+    });
+    assert.equal(
+      db.prepare('SELECT state FROM generation_route_requests WHERE id = ?')
+        .get('recovery-task-write-once').state,
+      'needs_attention',
+    );
+
+    const replay = stability.recordRecoveryTask(db, {
+      requestId: 'recovery-task-write-once',
+      attemptNo: attempt.attempt_no,
+      providerTaskId: 'video-335',
+      httpStatus: 503,
+      now: '2026-08-27T02:41:00.000Z',
+    });
+    assert.equal(replay.provider_task_id, 'video-335');
+    assert.deepEqual(
+      db.prepare(`SELECT http_status, finished_at FROM generation_route_attempts
+        WHERE request_id = ? AND attempt_no = ?`).get('recovery-task-write-once', attempt.attempt_no),
+      { http_status: 200, finished_at: '2026-08-27T02:40:31.795Z' },
+    );
+    assert.throws(() => stability.recordRecoveryTask(db, {
+      requestId: 'recovery-task-write-once',
+      attemptNo: attempt.attempt_no,
+      providerTaskId: 'video-conflict',
+    }), (error) => error.code === 'PROVIDER_TASK_RECEIPT_CONFLICT');
+  } finally {
+    db.close();
+  }
+});
+
 test('infrastructure failures open the route while policy failures do not', () => {
   const db = createDb();
   try {

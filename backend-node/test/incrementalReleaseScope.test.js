@@ -102,6 +102,21 @@ const redrawProductMediaHttpChainManifestPath = path.join(
   'release-scopes',
   'redraw-product-media-http-chain-task-e-20260828.json',
 );
+const toapisPrivateAvatarSplitKeyManifestPath = path.join(
+  repoRoot,
+  'deploy',
+  'release-scopes',
+  'toapis-private-avatar-split-key-verification-20260828.json',
+);
+const TOAPIS_PRIVATE_AVATAR_SPLIT_KEY_ALLOWED_PATHS = [
+  'backend-node/scripts/verify-toapis-private-avatar-video.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/sharedExternalModelReleaseGuard.test.js',
+  'backend-node/test/toapisPrivateAvatarVerification.test.js',
+  'deploy/release-guard/verify-external-model-release.js',
+  'deploy/release-scopes/toapis-private-avatar-split-key-verification-20260828.json',
+  'deploy/rotate-external-model-release-guard.sh',
+];
 const CANVAS_TEXT_CAPABILITY_HOTFIX_ALLOWED_PATHS = [
   'backend-node/src/services/providerCanaryEvidenceService.js',
   'backend-node/test/featureLockManifest.test.js',
@@ -447,6 +462,10 @@ function assertExactRedrawProductMediaHttpChainScope(allowedPaths) {
   assert.deepEqual(allowedPaths, REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_ALLOWED_PATHS);
 }
 
+function assertExactToapisPrivateAvatarSplitKeyScope(allowedPaths) {
+  assert.deepEqual(allowedPaths, TOAPIS_PRIVATE_AVATAR_SPLIT_KEY_ALLOWED_PATHS);
+}
+
 function createFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'incremental-release-scope-'));
   const parentRoot = path.join(root, 'parent');
@@ -516,6 +535,40 @@ test('增量门禁拒绝路径穿越和清单哈希不匹配', (t) => {
   assert.throws(
     () => loadManifest(fixture.manifestPath, '0'.repeat(64)),
     { code: 'MANIFEST_SHA256_MISMATCH' },
+  );
+});
+
+test('ToAPIs 私人形象双 Key 验证使用精确七文件发布范围', () => {
+  const { manifest, allowedPaths } = loadManifest(toapisPrivateAvatarSplitKeyManifestPath);
+  assert.equal(manifest.release, 'toapis-private-avatar-split-key-verification-20260828');
+  assertExactToapisPrivateAvatarSplitKeyScope(allowedPaths);
+  assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
+  for (const forbidden of [
+    'backend-node/data',
+    'backend-node/uploads',
+    'storage',
+    'assets',
+    'ai-music',
+    'moli-music',
+    'deploy/install-protected-release-guard.sh',
+    'docs/verification/platform-stability/feature-lock-manifest.json',
+    'shared/release-guard',
+  ]) {
+    assert.equal(
+      allowedPaths.some((entry) => entry === forbidden || entry.startsWith(`${forbidden}/`)),
+      false,
+      `发布范围不得包含: ${forbidden}`,
+    );
+  }
+});
+
+test('ToAPIs 私人形象双 Key 发布范围拒绝同数量偷换任一文件', () => {
+  const swapped = [...TOAPIS_PRIVATE_AVATAR_SPLIT_KEY_ALLOWED_PATHS];
+  swapped[swapped.indexOf('backend-node/scripts/verify-toapis-private-avatar-video.js')] = 'backend-node/data/drama_generator.db';
+  assert.equal(swapped.length, TOAPIS_PRIVATE_AVATAR_SPLIT_KEY_ALLOWED_PATHS.length);
+  assert.throws(
+    () => assertExactToapisPrivateAvatarSplitKeyScope(swapped),
+    { name: 'AssertionError' },
   );
 });
 

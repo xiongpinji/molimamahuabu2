@@ -195,7 +195,11 @@ test('ToAPIs 引用素材拒绝本地主机、私网和链路本地地址', () =
 });
 
 test('ToAPIs POST 使用注入 fetch，规范化 base URL，并把不确定创建结果标为不可重试', async () => {
-  assert.equal(normalizeToapisBaseUrl('https://toapis.com/v1/'), 'https://toapis.com');
+  assert.equal(normalizeToapisBaseUrl('https://toapis.xyz/v1/'), 'https://toapis.xyz');
+  assert.throws(
+    () => normalizeToapisBaseUrl('https://toapis.com/v1/'),
+    /ToAPIs 官方入口必须是 https:\/\/toapis\.xyz/,
+  );
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });
@@ -207,7 +211,7 @@ test('ToAPIs POST 使用注入 fetch，规范化 base URL，并把不确定创�
   };
 
   const result = await callToapisVideoApi(
-    { base_url: 'https://toapis.com/v1/', api_key: 'secret-key' },
+    { base_url: 'https://toapis.xyz/v1/', api_key: 'secret-key' },
     { info() {} },
     {
       model: 'seedance-2-fast',
@@ -223,7 +227,7 @@ test('ToAPIs POST 使用注入 fetch，规范化 base URL，并把不确定创�
     status: 'queued',
     route_meta: { httpStatus: 200, providerTaskId: 'tsk_1' },
   });
-  assert.equal(calls[0].url, 'https://toapis.com/v1/videos/generations');
+  assert.equal(calls[0].url, 'https://toapis.xyz/v1/videos/generations');
   assert.equal(calls[0].init.headers.Authorization, 'Bearer secret-key');
 
   const broken = await callToapisVideoApi(
@@ -236,30 +240,45 @@ test('ToAPIs POST 使用注入 fetch，规范化 base URL，并把不确定创�
   assert.match(broken.error, /不得自动重试/);
   assert.doesNotMatch(broken.error, /secret-key|moli\.example/);
 
-  for (const fetchImplCase of [
-    async () => ({ ok: true, status: 200, async text() { return '<html>bad</html>'; } }),
-    async () => ({ ok: true, status: 200, async text() { return JSON.stringify({ status: 'queued' }); } }),
+  for (const [fetchImplCase, expectedRecoveryCode] of [
+    [async () => ({ ok: true, status: 200, async text() { return '<html>bad</html>'; } }), 'TOAPIS_NON_JSON_RESPONSE'],
+    [async () => ({ ok: true, status: 200, async text() { return JSON.stringify({ status: 'queued' }); } }), 'TOAPIS_TASK_ID_MISSING'],
   ]) {
     const unknown = await callToapisVideoApi(
       { api_key: 'secret-key' },
       null,
-      { model: 'seedance-2-fast', prompt: 'x', resolution: '480p', duration: 4 },
+      {
+        model: 'seedance-2-fast',
+        prompt: 'x',
+        resolution: '480p',
+        duration: 4,
+        client_business_id: 'video-335',
+      },
       { fetchImpl: fetchImplCase },
     );
     assert.equal(unknown.indeterminate, true);
     assert.match(unknown.error, /不得自动重试|未取得 task_id/);
+    assert.equal(unknown.route_meta.recoveryTaskId, 'video-335');
+    assert.equal(unknown.route_meta.recoveryCode, expectedRecoveryCode);
   }
 });
 
 test('ToAPIs 请求前强制官方 base URL，非法入口不会触发 fetch 且不泄露 Key', async () => {
-  assert.equal(normalizeToapisBaseUrl(), 'https://toapis.com');
+  assert.equal(normalizeToapisBaseUrl(), 'https://toapis.xyz');
   for (const badBaseUrl of [
-    'http://toapis.com',
-    'https://user:pass@toapis.com',
+    'http://toapis.xyz',
+    'https://user:pass@toapis.xyz',
+    'https://toapis.com',
+    'https://toapis.com/v1/',
+    'https://toapis.xyz:443',
+    'https://toapis.xyz:444',
+    'https://toapis.xyz/v1/extra',
+    'https://toapis.xyz/v1?group=default',
+    'https://toapis.xyz/v1#fragment',
     'https://localhost',
     'https://127.0.0.1',
     'https://10.0.0.1',
-    'https://api.toapis.com',
+    'https://api.toapis.xyz',
     'https://evil.example',
   ]) {
     let calls = 0;
@@ -333,6 +352,60 @@ test('ToAPIs POST 和 GET 供应商错误会统一脱敏，不回显 Key、URL �
   assert.doesNotMatch(queried.error, /secret-key|Bearer|https?:\/\/|signed\.example|request/);
 });
 
+test('ToAPIs 付费验证显式 Key 不受全局环境 Key 覆盖', async () => {
+  const previousKey = process.env.TOAPIS_API_KEY;
+  const authorizations = [];
+  process.env.TOAPIS_API_KEY = 'wrong-global-key';
+  try {
+    const created = await callToapisVideoApi(
+      { base_url: 'https://toapis.xyz', api_key: 'database-fast-key' },
+      null,
+      { model: 'seedance-2-fast', prompt: 'x', resolution: '480p', duration: 4 },
+      {
+        apiKey: 'database-fast-key',
+        fetchImpl: async (_url, options) => {
+          authorizations.push(options.headers.Authorization);
+          return {
+            ok: true,
+            status: 200,
+            async text() { return JSON.stringify({ id: 'task-fast' }); },
+          };
+        },
+      },
+    );
+    assert.equal(created.task_id, 'task-fast');
+
+    const queried = await fetchToapisTask(
+      { base_url: 'https://toapis.xyz', api_key: 'database-mini-key' },
+      'task-mini',
+      {
+        apiKey: 'database-mini-key',
+        fetchImpl: async (_url, options) => {
+          authorizations.push(options.headers.Authorization);
+          return {
+            ok: true,
+            status: 200,
+            async text() {
+              return JSON.stringify({
+                status: 'completed',
+                result: { data: [{ url: 'https://moli.example/out.mp4' }] },
+              });
+            },
+          };
+        },
+      },
+    );
+    assert.equal(queried.state, 'completed');
+    assert.deepEqual(authorizations, [
+      'Bearer database-fast-key',
+      'Bearer database-mini-key',
+    ]);
+  } finally {
+    if (previousKey === undefined) delete process.env.TOAPIS_API_KEY;
+    else process.env.TOAPIS_API_KEY = previousKey;
+  }
+});
+
 test('ToAPIs 供应商错误脱敏覆盖常见 Key 字段格式且保留普通中文消息', async () => {
   const noisyMessage = [
     '供应商拒绝参考图',
@@ -398,7 +471,7 @@ test('ToAPIs GET 查询解析 processing/completed/failed，完成无 URL 视为
 
   const calls = [];
   const done = await fetchToapisTask(
-    { base_url: 'https://toapis.com/v1', api_key: 'secret-key' },
+    { base_url: 'https://toapis.xyz/v1', api_key: 'secret-key' },
     'tsk_2',
     {
       fetchImpl: async (url, init) => {
@@ -414,7 +487,7 @@ test('ToAPIs GET 查询解析 processing/completed/failed，完成无 URL 视为
     },
   );
 
-  assert.equal(calls[0].url, 'https://toapis.com/v1/videos/generations/tsk_2');
+  assert.equal(calls[0].url, 'https://toapis.xyz/v1/videos/generations/tsk_2');
   assert.equal(calls[0].init.headers.Authorization, 'Bearer secret-key');
   assert.equal(done.state, 'completed');
 

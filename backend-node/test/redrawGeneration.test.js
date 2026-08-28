@@ -329,7 +329,7 @@ function addNativeDialogueCapability(db, overrides = {}) {
       (service_type, provider, api_protocol, name, model, default_model, base_url, api_key,
        is_active, is_default, priority, settings, created_at, updated_at)
     VALUES ('video', ?, ?, '原生对白验证', ?, ?, ?, 'secret', 1, 1, 0, '{}', ?, ?)
-  `).run(provider, protocol, model, model, overrides.baseUrl || 'https://toapis.com', now, now);
+  `).run(provider, protocol, model, model, overrides.baseUrl || 'https://toapis.xyz', now, now);
   const configId = Number(inserted.lastInsertRowid);
   const evidence = {
     contract: 'redraw-native-dialogue-audio-v1',

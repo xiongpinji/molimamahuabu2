@@ -15,6 +15,7 @@ const FRESHNESS_SURFACES = Object.freeze({
     'backend-node/scripts/verify-toapis-video-models.js',
   ]),
   toapisPrivateAvatar: Object.freeze([
+    'backend-node/src/services/toapisVideoClient.js',
     'backend-node/src/services/toapisPrivateAvatarService.js',
     'backend-node/src/services/videoService.js',
     'backend-node/scripts/verify-toapis-private-avatar-video.js',
@@ -29,8 +30,8 @@ const FRESHNESS_SURFACES = Object.freeze({
   ]),
 });
 const TRUSTED_UNCHANGED_TOAPIS_STANDARD_SURFACE_SHA256 = Object.freeze({
-  'backend-node/src/services/toapisVideoClient.js': '9c42f9d68d36ce1b61e74c9e70a43868f611f13b3becc2f87c16878fbf458b8c',
-  'backend-node/scripts/verify-toapis-video-models.js': 'b79cf06188c59cfa8ee5f3b24a72c4b45e48d75388e6e60477f0075a7c8169fb',
+  'backend-node/src/services/toapisVideoClient.js': '2d6825dab8cb036bc32069793118ea5656f3dff528dec92df0f467291d555d7b',
+  'backend-node/scripts/verify-toapis-video-models.js': 'eb8bf4259c4f55b4d7d61a1d18b5de1ad261a5b573414f5a8fdade659b0bdd3d',
 });
 const PROVIDERS = Object.freeze({
   toapis: Object.freeze({
@@ -252,7 +253,8 @@ function protectedSurfaceChanged(candidate, expectedCurrent, files) {
 }
 
 function sourceSha256(root, relative) {
-  return sha256(Buffer.from(candidateSource(root, relative, false), 'utf8'));
+  const canonicalSource = candidateSource(root, relative, false).replace(/\r\n?/g, '\n');
+  return sha256(Buffer.from(canonicalSource, 'utf8'));
 }
 
 function trustedUnchangedToapisStandardSurface(candidate, expectedCurrent) {
@@ -581,6 +583,16 @@ function auditLingjingRuntime(candidate) {
 
 function auditToapisRuntime(candidate, options = {}) {
   const client = stripComments(candidateSource(candidate, 'backend-node/src/services/toapisVideoClient.js'));
+  const clientScopes = functionScopes(client);
+  const createClient = clientScopes.find((scope) => scope.name === 'callToapisVideoApi');
+  const taskClient = clientScopes.find((scope) => scope.name === 'fetchToapisTask');
+  if (!createClient || !taskClient) fail('ToAPIs request client functions are incomplete');
+  requirePattern(createClient.source,
+    /String\s*\(\s*requestOpts\.apiKey\s*\|\|\s*['"]['"]\s*\)\.trim\s*\(\s*\)\s*\|\|\s*resolveToapisApiKey\s*\(\s*config\s*\)/,
+    'ToAPIs submission client does not prioritize an explicit request key');
+  requirePattern(taskClient.source,
+    /String\s*\(\s*opts\.apiKey\s*\|\|\s*['"]['"]\s*\)\.trim\s*\(\s*\)\s*\|\|\s*resolveToapisApiKey\s*\(\s*config\s*\)/,
+    'ToAPIs polling client does not prioritize an explicit request key');
   const modelTableAt = client.indexOf('TOAPIS_VIDEO_MODELS');
   if (modelTableAt < 0) fail('ToAPIs client model table is missing');
   const table = balancedBlock(client, modelTableAt, 'ToAPIs');
@@ -596,7 +608,7 @@ function auditToapisRuntime(candidate, options = {}) {
       || !sameValues(arrayValues(mini, 'durations', 'ToAPIs Mini'), [4, 8, 10, 12, 15])) {
     fail('ToAPIs client duration tables do not match the protected contract');
   }
-  requirePattern(client, /hostname\s*!==\s*['"]toapis\.com['"]/, 'ToAPIs client does not lock the official host');
+  requirePattern(client, /hostname\s*!==\s*['"]toapis\.xyz['"]/, 'ToAPIs client does not lock the official host');
   requirePattern(client, /protocol\s*!==\s*['"]https:['"]/, 'ToAPIs client does not require HTTPS');
   for (const role of ['first_frame', 'last_frame', 'reference_image', 'reference_video', 'reference_audio']) {
     requirePattern(client, new RegExp(`['"]${role}['"]`), `ToAPIs client is missing role ${role}`);
@@ -657,16 +669,125 @@ function auditToapisRuntime(candidate, options = {}) {
   const recorder = verifierScopes.find((scope) => scope.name === 'recordVerificationResult');
   const evidenceBinding = verifierScopes.find((scope) => scope.name === 'evidenceBindingForFile');
   const publisher = verifierScopes.find((scope) => scope.name === 'publishVerifiedEvidence');
-  if (!paidRun || !capabilityBuilder || !recorder || !evidenceBinding || !publisher) {
+  const configIdsReader = verifierScopes.find((scope) => scope.name === 'requireVerificationConfigIds');
+  const configValidator = verifierScopes.find((scope) => scope.name === 'validateVerificationConfigs');
+  const configFingerprint = verifierScopes.find((scope) => scope.name === 'verificationConfigFingerprint');
+  const clientReader = verifierScopes.find((scope) => scope.name === 'verificationClientForModel');
+  const balancePreflight = verifierScopes.find((scope) => scope.name === 'preflightVerificationBalances');
+  const caseProcessor = verifierScopes.find((scope) => scope.name === 'processCase');
+  const taskPoller = verifierScopes.find((scope) => scope.name === 'waitForTask');
+  if (!paidRun || !capabilityBuilder || !recorder || !evidenceBinding || !publisher
+      || !configIdsReader || !configValidator || !configFingerprint
+      || !clientReader || !balancePreflight || !caseProcessor || !taskPoller) {
     fail('ToAPIs paid verification evidence-binding workflow is incomplete');
   }
-  requirePattern(paidRun.source, /const\s+configId\s*=\s*requireVerificationConfigId\s*\(/,
-    'ToAPIs paid verification does not require a target config id');
-  if (paidRun.source.indexOf('requireVerificationConfigId') > paidRun.source.indexOf('requireApiKey')) {
-    fail('ToAPIs target config id must be required before paid verification credentials are used');
+
+  for (const [token, label] of [
+    ['TOAPIS_VERIFY_FAST_CONFIG_ID', 'FAST'],
+    ['TOAPIS_VERIFY_MINI_CONFIG_ID', 'MINI'],
+  ]) {
+    requirePattern(configIdsReader.source, new RegExp(`\\b${token}\\b`),
+      `ToAPIs paid verification does not require the ${label} target config id`);
   }
-  requirePattern(paidRun.source, /publishVerifiedEvidence\s*\([^)]*\{\s*configId\s*,\s*evidencePath\s*\}\s*\)/,
-    'ToAPIs paid verification does not write the final evidence binding to its target config');
+  for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
+    const escapedModel = model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    requirePattern(configIdsReader.source,
+      new RegExp(`Number\\.isInteger\\s*\\(\\s*configIds\\s*\\[\\s*['"]${escapedModel}['"]\\s*\\]\\s*\\)`),
+      `ToAPIs paid verification does not validate the ${model} target config id`);
+  }
+  requirePattern(configIdsReader.source,
+    /configIds\s*\[\s*['"]seedance-2-fast['"]\s*\]\s*===\s*configIds\s*\[\s*['"]seedance-2-mini['"]\s*\]/,
+    'ToAPIs FAST and MINI paid verification config ids are not required to be distinct');
+
+  const configIdsIndex = paidRun.source.indexOf('requireVerificationConfigIds');
+  const configSnapshotsIndex = paidRun.source.indexOf('validateVerificationConfigs');
+  const verificationClientsIndex = paidRun.source.indexOf('verificationClients');
+  const balancePreflightIndex = paidRun.source.indexOf('preflightVerificationBalances');
+  const caseLoopIndex = paidRun.source.indexOf('for (const item of selectedCases)');
+  requirePattern(paidRun.source, /const\s+configIds\s*=\s*requireVerificationConfigIds\s*\(/,
+    'ToAPIs paid verification does not require split target config ids');
+  requirePattern(paidRun.source,
+    /const\s+configSnapshots\s*=\s*validateVerificationConfigs\s*\(\s*\{\s*configIds\s*\}\s*\)/,
+    'ToAPIs paid verification does not validate split target configs before submission');
+  requirePattern(paidRun.source,
+    /Object\.fromEntries\s*\(\s*configSnapshots\.map\s*\(/,
+    'ToAPIs paid verification does not build model-specific clients from the validated split configs');
+  requirePattern(paidRun.source,
+    /context\.preflightBalances\s*=\s*await\s+preflightVerificationBalances\s*\(/,
+    'ToAPIs paid verification does not preflight every selected model balance before submission');
+  if (configIdsIndex < 0 || configSnapshotsIndex < 0 || verificationClientsIndex < 0
+      || balancePreflightIndex < 0 || caseLoopIndex < 0
+      || configIdsIndex > verificationClientsIndex || configSnapshotsIndex > verificationClientsIndex
+      || verificationClientsIndex > balancePreflightIndex || balancePreflightIndex > caseLoopIndex) {
+    fail('ToAPIs split target configs and balances must be validated before any paid verification case runs');
+  }
+  if (/\brequireApiKey\b|\bTOAPIS_API_KEY\b/.test(verifier)) {
+    fail('ToAPIs paid verification must not fall back to one global provider key');
+  }
+  requirePattern(paidRun.source,
+    /publishVerifiedEvidence\s*\([\s\S]{0,500}\{\s*configIds\s*,\s*configSnapshots\s*,\s*evidencePath\s*\}\s*\)/,
+    'ToAPIs paid verification does not bind final evidence to both target config snapshots');
+
+  requirePattern(configValidator.source, /openVerificationDb\s*\([\s\S]{0,160}\{\s*readonly\s*:\s*true\s*\}/,
+    'ToAPIs split target configs are not validated through a read-only preflight');
+  requirePattern(configValidator.source, /assertDedicatedVerificationConfig\s*\(/,
+    'ToAPIs split target configs are not validated as dedicated model routes');
+  requirePattern(configValidator.source, /verificationConfigFingerprint\s*\(/,
+    'ToAPIs split target configs are not fingerprinted before paid verification');
+  requirePattern(configValidator.source, /apiKey\s*=\s*String\s*\(\s*config\?*\.api_key/,
+    'ToAPIs split target config credentials are not loaded from their database rows');
+  requirePattern(configValidator.source,
+    /snapshots\s*\[\s*0\s*\]\.apiKey\s*===\s*snapshots\s*\[\s*1\s*\]\.apiKey/,
+    'ToAPIs FAST and MINI paid verification keys are not required to be distinct');
+  for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
+    requirePattern(configValidator.source, new RegExp(`['"]${model}['"]`),
+      `ToAPIs config preflight does not include ${model}`);
+  }
+  requirePattern(clientReader.source, /context\?*\.verificationClients\?*\.\[\s*model\s*\]/,
+    'ToAPIs paid verification does not select credentials by logical model');
+  requirePattern(clientReader.source, /client\.config\?*\.api_key\s*!==\s*client\.apiKey/,
+    'ToAPIs paid verification does not bind the selected client config to its model key');
+  for (const [pattern, message] of [
+    [/new\s+Set\s*\(/, 'ToAPIs balance preflight does not cover each selected model exactly once'],
+    [/verificationClientForModel\s*\(/, 'ToAPIs balance preflight does not use model-bound credentials'],
+    [/fetchBalance\s*\)\s*\(\s*client\.apiKey|fetchBalance\s*\(\s*client\.apiKey/, 'ToAPIs balance preflight does not query each model-bound key'],
+  ]) requirePattern(balancePreflight.source, pattern, message);
+  requirePattern(caseProcessor.source, /verificationClientForModel\s*\(\s*context\s*,\s*item\.model\s*\)/,
+    'ToAPIs paid case does not select its model-bound client');
+  requirePattern(caseProcessor.source, /client\.config/,
+    'ToAPIs paid case does not submit and poll through its model-bound config');
+  requirePattern(caseProcessor.source, /client\.apiKey/,
+    'ToAPIs paid case does not measure billing through its model-bound key');
+  if (/\bcontext(?:\?\.|\.)preflightBalances\b|\bpreflightBalances\s*\?\./.test(caseProcessor.source)) {
+    fail('ToAPIs paid case reuses a stale balance preflight instead of a fresh per-case billing baseline');
+  }
+  const freshBalancePattern = /const\s+balanceBefore\s*=\s*await\s*\(\s*deps\.fetchBalance\s*\|\|\s*fetchBalance\s*\)\s*\(\s*client\.apiKey\s*,\s*deps\.fetchImpl\s*\)\s*;/;
+  requirePattern(caseProcessor.source, freshBalancePattern,
+    'ToAPIs paid case does not capture a fresh model-bound balance immediately before submission');
+  const freshBalanceIndex = caseProcessor.source.search(freshBalancePattern);
+  const submissionIndex = caseProcessor.source.search(/\b(?:createTask|callToapisVideoApi)\b/);
+  if (submissionIndex < 0 || freshBalanceIndex > submissionIndex) {
+    fail('ToAPIs paid case captures its billing baseline after the provider submission can start');
+  }
+  requirePattern(caseProcessor.source,
+    /callToapisVideoApi\s*\)?\s*\([\s\S]{0,350}\{\s*fetchImpl\s*:\s*deps\.fetchImpl\s*,\s*apiKey\s*:\s*client\.apiKey\s*\}/,
+    'ToAPIs paid submission does not pass its model-bound request key');
+  requirePattern(caseProcessor.source,
+    /waitForTask\s*\([\s\S]{0,500}\{\s*(?:\.\.\.deps\s*,\s*)?apiKey\s*:\s*client\.apiKey\s*\}/,
+    'ToAPIs paid polling does not select its model-bound request key');
+  requirePattern(taskPoller.source,
+    /fetchToapisTask\s*\)?\s*\([\s\S]{0,300}\{[\s\S]{0,200}apiKey\s*:\s*deps\.apiKey[\s\S]{0,100}\}/,
+    'ToAPIs paid polling does not forward its model-bound request key');
+  requirePattern(configFingerprint.source, /createHash\s*\(\s*['"]sha256['"]\s*\)/,
+    'ToAPIs config fingerprint is not SHA-256');
+  for (const field of [
+    'id', 'service_type', 'provider', 'api_protocol', 'base_url', 'api_key', 'model', 'default_model',
+    'logical_model_id', 'endpoint', 'query_endpoint', 'settings', 'is_active', 'canary_paused', 'failover_enabled',
+  ]) {
+    requirePattern(configFingerprint.source, new RegExp(`\\b${field}\\s*:`),
+      `ToAPIs config fingerprint does not bind ${field}`);
+  }
+
   requirePattern(publisher.source, /hasCompleteRequiredMatrix\s*\(/,
     'ToAPIs final evidence can be published before all real cases are reviewed');
   requirePattern(publisher.source, /hasCompletePricing\s*\(/,
@@ -679,8 +800,17 @@ function auditToapisRuntime(candidate, options = {}) {
   }
   requirePattern(publisher.source, /restoreEvidenceFile\s*\(/,
     'ToAPIs final evidence is not restored when DB binding writeback fails');
-  requirePattern(paidRun.source, /if\s*\(\s*!error\.preserveExistingVerification\s*\)[\s\S]{0,180}recordVerificationResult\s*\(/,
-    'ToAPIs workflow failures can still invalidate an existing trusted verification');
+  const recorderCallIndex = publisher.source.indexOf('return recorder');
+  if (recorderCallIndex < 0) fail('ToAPIs final publisher does not call the split config recorder');
+  const recorderCallSource = publisher.source.slice(recorderCallIndex, recorderCallIndex + 700);
+  for (const [pattern, message] of [
+    [/configIds\s*:\s*options\.configIds/, 'ToAPIs final publisher does not forward both target config ids'],
+    [/configSnapshots\s*:\s*options\.configSnapshots/, 'ToAPIs final publisher does not forward both target config snapshots'],
+    [/evidencePath(?:\s*:\s*evidencePath)?\s*[,}]/, 'ToAPIs final publisher does not forward the final evidence path'],
+  ]) requirePattern(recorderCallSource, pattern, message);
+  if (/\brecordVerificationResult\s*\(/.test(paidRun.source)) {
+    fail('ToAPIs workflow failures can still invalidate an existing trusted verification');
+  }
   requirePattern(evidenceBinding.source, /createHash\s*\(\s*['"]sha256['"]\s*\)/,
     'ToAPIs evidence binding does not hash the final evidence bytes');
   requirePattern(capabilityBuilder.source, /normalizeEvidenceBinding\s*\(/,
@@ -689,6 +819,17 @@ function auditToapisRuntime(candidate, options = {}) {
     'ToAPIs verified capabilities do not persist the final evidence binding');
   requirePattern(recorder.source, /db\.transaction\s*\(/,
     'ToAPIs config evidence binding is not written transactionally');
+  requirePattern(recorder.source, /\.immediate\s*\(\s*\)/,
+    'ToAPIs split config evidence binding is not committed in one immediate transaction');
+  requirePattern(recorder.source, /configSnapshots\s*=\s*new\s+Map\s*\(/,
+    'ToAPIs config evidence binding does not require both preflight snapshots');
+  requirePattern(recorder.source, /configSnapshots\.size\s*!==\s*2/,
+    'ToAPIs config evidence binding does not require exactly two preflight snapshots');
+  requirePattern(recorder.source,
+    /snapshot(?:\?\.|\.)fingerprint\s*!==\s*verificationConfigFingerprint\s*\(\s*config\s*\)/,
+    'ToAPIs config evidence binding does not reject config drift after paid verification');
+  requirePattern(recorder.source, /capabilities\s*:\s*\{\s*\[\s*model\s*\]\s*:\s*capabilities\s*\[\s*model\s*\]\s*\}/,
+    'ToAPIs config evidence binding does not isolate each model capability to its dedicated config');
   for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
     requirePattern(recorder.source, new RegExp(`['"]${model}['"]`),
       `ToAPIs config writeback does not verify ${model}`);
@@ -711,6 +852,167 @@ function auditToapisRuntime(candidate, options = {}) {
     'ToAPIs production preflight does not execute the evidence binding audit');
   requirePattern(productionPreflight.source, /['"]external_model_evidence_binding['"]/,
     'ToAPIs production preflight does not expose a blocking evidence check');
+}
+
+function auditToapisPrivateAvatarProducer(candidate) {
+  const verifier = stripComments(candidateSource(candidate, 'backend-node/scripts/verify-toapis-private-avatar-video.js'));
+  const scopes = functionScopes(verifier);
+  const requiredScopes = Object.fromEntries([
+    'runPrivateAvatarVerification',
+    'cliInput',
+    'verificationClientForModel',
+    'bindAndValidateState',
+    'assertNoUnknownSubmission',
+    'normalizeCostBudget',
+    'assertActualCostWithinBudget',
+    'ensureAvatar',
+    'processCase',
+  ].map((name) => [name, scopes.find((scope) => scope.name === name)]));
+  if (Object.values(requiredScopes).some((scope) => !scope)) {
+    fail('ToAPIs private-avatar split-key verification workflow is incomplete');
+  }
+  const run = requiredScopes.runPrivateAvatarVerification;
+  const cli = requiredScopes.cliInput;
+  const clientReader = requiredScopes.verificationClientForModel;
+  const stateBinding = requiredScopes.bindAndValidateState;
+  const unknownGate = requiredScopes.assertNoUnknownSubmission;
+  const budgetBuilder = requiredScopes.normalizeCostBudget;
+  const actualBudgetGate = requiredScopes.assertActualCostWithinBudget;
+  const avatar = requiredScopes.ensureAvatar;
+  const caseProcessor = requiredScopes.processCase;
+
+  const globalKeyReferences = [...verifier.matchAll(/\bTOAPIS_API_KEY\b/g)].length;
+  requirePattern(run.source,
+    /const\s+executionEnv\s*=\s*input\.env\s*\|\|\s*process\.env[\s\S]{0,180}if\s*\(\s*String\s*\(\s*executionEnv\.TOAPIS_API_KEY\s*\|\|\s*['"]['"]\s*\)\.trim\s*\(\s*\)\s*\)\s*\{[\s\S]{0,180}throw\s+new\s+Error/,
+    'ToAPIs private-avatar verification does not reject the global provider key before any provider work');
+  if (globalKeyReferences !== 2 || /process\.env\.TOAPIS_API_KEY/.test(verifier)) {
+    fail('ToAPIs private-avatar verification must not fall back to one global provider key');
+  }
+
+  requirePattern(verifier,
+    /requireVerificationConfigIds\s*,\s*validateVerificationConfigs[\s\S]{0,120}require\s*\(\s*['"]\.\/verify-toapis-video-models['"]\s*\)/,
+    'ToAPIs private-avatar verification does not reuse the reviewed read-only split config validator');
+  for (const [token, label] of [
+    ['TOAPIS_VERIFY_FAST_CONFIG_ID', 'FAST'],
+    ['TOAPIS_VERIFY_MINI_CONFIG_ID', 'MINI'],
+  ]) {
+    requirePattern(cli.source, new RegExp(`\\b${token}\\b`),
+      `ToAPIs private-avatar verification does not require the ${label} target config id`);
+    requirePattern(run.source, new RegExp(`\\b${token}\\b`),
+      `ToAPIs private-avatar verification does not forward the ${label} target config id`);
+  }
+  requirePattern(run.source,
+    /const\s+configSnapshots\s*=\s*\(\s*injected\.validateConfigs\s*\|\|\s*validateVerificationConfigs\s*\)\s*\(\s*\{[\s\S]{0,180}\bconfigIds\b[\s\S]{0,180}\bdatabasePath\b/,
+    'ToAPIs private-avatar verification bypasses the read-only database model binding');
+  requirePattern(run.source,
+    /Object\.fromEntries\s*\(\s*configSnapshots\.map\s*\(\s*\(\s*\{\s*model\s*,\s*apiKey\s*\}\s*\)\s*=>\s*\[\s*model\s*,\s*\{[\s\S]{0,180}apiKey[\s\S]{0,180}api_key\s*:\s*apiKey/,
+    'ToAPIs private-avatar verification does not build one model-bound client per validated config');
+  requirePattern(clientReader.source, /context\.verificationClients\?*\.\[\s*model\s*\]/,
+    'ToAPIs private-avatar verification does not select credentials by case model');
+  requirePattern(clientReader.source, /client\.config\?*\.api_key\s*!==\s*client\.apiKey/,
+    'ToAPIs private-avatar verification does not bind each client config to its database key');
+
+  requirePattern(stateBinding.source, /configFingerprints\s*\(\s*configSnapshots\s*\)/,
+    'ToAPIs private-avatar verification does not derive split config fingerprints');
+  for (const token of ['provider_origin', 'config_fingerprints', 'config_fingerprint']) {
+    requirePattern(stateBinding.source, new RegExp(`\\b${token}\\b`),
+      `ToAPIs private-avatar state is not bound to ${token}`);
+  }
+  requirePattern(run.source, /const\s+fingerprints\s*=\s*bindAndValidateState\s*\(\s*state\s*,\s*configSnapshots\s*\)/,
+    'ToAPIs private-avatar verification does not bind resumable state to both config fingerprints');
+  requirePattern(caseProcessor.source, /config_fingerprint\s*:\s*context\.configFingerprints\s*\[\s*item\.model\s*\]/,
+    'ToAPIs private-avatar evidence cases are not bound to their model config fingerprints');
+
+  for (const token of ['submitting', 'indeterminate']) {
+    requirePattern(unknownGate.source, new RegExp(`['"]${token}['"]`),
+      `ToAPIs private-avatar unknown-state gate does not block ${token} submissions`);
+  }
+  requirePattern(run.source, /assertNoUnknownSubmission\s*\(\s*state\s*\)/,
+    'ToAPIs private-avatar verification does not stop before resuming an unknown submission');
+  requirePattern(caseProcessor.source,
+    /entry\.submission_state\s*=\s*['"]submitting['"][\s\S]{0,160}context\.save\s*\(\s*\)[\s\S]{0,260}(?:deps\.callVideo|callToapisVideoApi)/,
+    'ToAPIs private-avatar submission intent is not durably recorded before POST');
+  requirePattern(caseProcessor.source,
+    /result\.indeterminate[\s\S]{0,180}entry\.submission_state\s*=\s*['"]indeterminate['"][\s\S]{0,180}context\.save\s*\(\s*\)[\s\S]{0,120}throw/,
+    'ToAPIs private-avatar unknown submission result is not persisted and stopped');
+  const count = (source, pattern) => [...source.matchAll(pattern)].length;
+  if (count(caseProcessor.source, /\bdeps\.callVideo\s*\(/g) !== 1
+      || count(avatar.source, /\bdeps\.createGroup\s*\(/g) !== 1
+      || count(avatar.source, /\bdeps\.createAsset\s*\(/g) !== 1) {
+    fail('ToAPIs private-avatar paid submissions must be single-attempt with no automatic retry');
+  }
+  requirePattern(avatar.source,
+    /const\s+client\s*=\s*verificationClientForModel\s*\(\s*context\s*,\s*['"]seedance-2-fast['"]\s*\)/,
+    'ToAPIs private-avatar asset preparation does not select the FAST model client');
+  for (const [operation, limit] of [
+    ['createGroup', 360],
+    ['createAsset', 360],
+    ['fetchAsset', 260],
+  ]) {
+    requirePattern(avatar.source,
+      new RegExp(`deps\\.${operation}\\s*\\(\\s*client\\.config[\\s\\S]{0,${limit}}apiKey\\s*:\\s*client\\.apiKey`),
+      `ToAPIs private-avatar ${operation} does not use the FAST model key`);
+  }
+
+  for (const token of ['expectedCosts', 'caseHardCaps', 'aggregateHardCapYuan', 'usdCnyRate']) {
+    requirePattern(budgetBuilder.source, new RegExp(`\\b${token}\\b`),
+      `ToAPIs private-avatar RMB budget is missing ${token}`);
+  }
+  requirePattern(budgetBuilder.source, /projected\s*>\s*aggregateHardCapYuan/,
+    'ToAPIs private-avatar expected total cost does not enforce the RMB hard cap');
+  requirePattern(actualBudgetGate.source, /actual\s*>\s*caseCap/,
+    'ToAPIs private-avatar actual cost does not enforce the per-case RMB hard cap');
+  requirePattern(actualBudgetGate.source, /projected\s*>\s*context\.costBudget\.aggregateHardCapYuan/,
+    'ToAPIs private-avatar actual cost does not enforce the aggregate RMB hard cap');
+  const actualBudgetCalls = [...caseProcessor.source.matchAll(/assertActualCostWithinBudget\s*\(\s*item\s*,\s*context\s*\)/g)];
+  if (actualBudgetCalls.length !== 2) {
+    fail('ToAPIs private-avatar paid case must enforce actual RMB cost gates on resume and after provider billing');
+  }
+  const resumeIndex = caseProcessor.source.search(/if\s*\(\s*entry\?\.status\s*===\s*['"]completed['"]\s*\)/);
+  const resumeReturnIndex = caseProcessor.source.indexOf('return entry', resumeIndex);
+  const resumeGateIndex = actualBudgetCalls[0].index;
+  if (resumeIndex < 0 || resumeReturnIndex < 0 || !(resumeIndex < resumeGateIndex && resumeGateIndex < resumeReturnIndex)) {
+    fail('ToAPIs private-avatar completed resume path must validate actual RMB cost before returning');
+  }
+  const actualCostIndex = caseProcessor.source.indexOf('entry.billing.cost_yuan');
+  const completedStatusIndex = caseProcessor.source.search(/entry\.status\s*=\s*['"]completed['"]/);
+  const postBillingGateIndex = actualBudgetCalls[1].index;
+  if (actualCostIndex < 0 || completedStatusIndex < 0
+      || !(actualCostIndex < postBillingGateIndex && postBillingGateIndex < completedStatusIndex)) {
+    fail('ToAPIs private-avatar paid case must validate actual RMB cost after billing and before completed status');
+  }
+
+  const configIdsIndex = run.source.indexOf('requireVerificationConfigIds');
+  const configsIndex = run.source.indexOf('validateVerificationConfigs');
+  const clientsIndex = run.source.indexOf('verificationClients');
+  const stateBindingIndex = run.source.indexOf('bindAndValidateState');
+  const unknownIndex = run.source.indexOf('assertNoUnknownSubmission');
+  const budgetIndex = run.source.indexOf('normalizeCostBudget');
+  const preflightPattern = /for\s*\(\s*const\s+item\s+of\s+CASES\s*\)\s*\{[\s\S]{0,260}verificationClientForModel\s*\(\s*context\s*,\s*item\.model\s*\)[\s\S]{0,220}await\s+deps\.fetchBalance\s*\(\s*client\.apiKey\s*,\s*deps\.fetchImpl\s*\)/;
+  const preflightIndex = run.source.search(preflightPattern);
+  const avatarIndex = run.source.indexOf('await ensureAvatar');
+  if ([configIdsIndex, configsIndex, clientsIndex, stateBindingIndex, unknownIndex, budgetIndex, preflightIndex, avatarIndex]
+    .some((index) => index < 0)
+      || !(configIdsIndex < configsIndex && configsIndex < clientsIndex
+        && clientsIndex < stateBindingIndex && stateBindingIndex < unknownIndex
+        && unknownIndex < budgetIndex && budgetIndex < preflightIndex && preflightIndex < avatarIndex)) {
+    fail('ToAPIs private-avatar split configs, state, budget and both balance GETs must pass before any provider POST');
+  }
+  requirePattern(caseProcessor.source,
+    /const\s+client\s*=\s*verificationClientForModel\s*\(\s*context\s*,\s*item\.model\s*\)/,
+    'ToAPIs private-avatar case does not select its model-bound client');
+  const caseBalancePattern = /before\s*:\s*await\s+deps\.fetchBalance\s*\(\s*client\.apiKey\s*,\s*deps\.fetchImpl\s*\)/;
+  const caseBalanceIndex = caseProcessor.source.search(caseBalancePattern);
+  const caseSubmitIndex = caseProcessor.source.search(/\bdeps\.callVideo\s*\(/);
+  if (caseBalanceIndex < 0 || caseSubmitIndex < 0 || caseBalanceIndex > caseSubmitIndex) {
+    fail('ToAPIs private-avatar case must take a fresh model-bound balance immediately before submission');
+  }
+  requirePattern(caseProcessor.source,
+    /deps\.callVideo\s*\([\s\S]{0,380}client\.config[\s\S]{0,380}apiKey\s*:\s*client\.apiKey/,
+    'ToAPIs private-avatar submission does not use its case model key');
+  requirePattern(caseProcessor.source,
+    /deps\.fetchTask\s*\([\s\S]{0,220}client\.config[\s\S]{0,220}apiKey\s*:\s*client\.apiKey/,
+    'ToAPIs private-avatar polling does not use its case model key');
 }
 
 function auditUsmercariRuntime(candidate) {
@@ -887,7 +1189,7 @@ function auditFreshness(evidence, label, now, requireRecent = true) {
   const validUntil = canonicalTimestamp(evidence.valid_until, `${label} valid_until`);
   if (generatedAt > now) fail(`${label} evidence is generated in the future`);
   if (requireRecent && now - generatedAt > 24 * 60 * 60 * 1_000) fail(`${label} evidence is stale (maximum age is 24 hours)`);
-  if (validUntil <= now) fail(`${label} evidence is expired`);
+  if (requireRecent && validUntil <= now) fail(`${label} evidence is expired`);
   if (validUntil <= generatedAt) fail(`${label} valid_until must be after generated_at`);
   if (validUntil - generatedAt > 7 * 24 * 60 * 60 * 1_000) fail(`${label} evidence validity window exceeds 7 days`);
   return { generatedAt, validUntil };
@@ -1027,7 +1329,7 @@ function auditToapisSpeedEvidence(evidence, results, freshness) {
 function auditToapisEvidence(evidenceRoot, envelope, now, requireRecent = true) {
   const evidence = envelope.evidence;
   if (evidence?.contract_version !== PROVIDERS.toapis.contract) fail('ToAPIs evidence contract_version is invalid');
-  if (evidence.provider_origin !== 'https://toapis.com') fail('ToAPIs evidence provider origin is not official');
+  if (evidence.provider_origin !== 'https://toapis.xyz') fail('ToAPIs evidence provider origin is not official');
   const freshness = auditFreshness(evidence, 'ToAPIs', now, requireRecent);
   const results = Array.isArray(evidence.results) ? evidence.results : [];
   if (results.length !== TOAPIS_CASES.length) fail('ToAPIs evidence must contain exactly 8 cases');
@@ -1038,7 +1340,9 @@ function auditToapisEvidence(evidenceRoot, envelope, now, requireRecent = true) 
   const outputs = new Set();
   const hashes = new Set();
   const publicUrls = new Set();
-  const billingWindows = [];
+  const billingChains = new Map();
+  const fingerprintsByModel = new Map();
+  const modelsByFingerprint = new Map();
   for (const expected of TOAPIS_CASES) {
     const result = byId.get(expected.id);
     if (!result) fail(`ToAPIs case is missing: ${expected.id}`);
@@ -1047,6 +1351,21 @@ function auditToapisEvidence(evidenceRoot, envelope, now, requireRecent = true) 
         || Number(result.requested_duration) !== expected.duration) {
       fail(`ToAPIs case model/resolution/duration binding is invalid: ${expected.id}`);
     }
+    const configFingerprint = String(result.config_fingerprint || '').trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/i.test(configFingerprint)) {
+      fail(`ToAPIs config fingerprint is missing or invalid: ${expected.id}`);
+    }
+    const existingFingerprint = fingerprintsByModel.get(expected.model);
+    if (existingFingerprint && existingFingerprint !== configFingerprint) {
+      fail(`ToAPIs model uses multiple config fingerprints: ${expected.model}`);
+    }
+    const existingModel = modelsByFingerprint.get(configFingerprint);
+    if (existingModel && existingModel !== expected.model) {
+      fail('ToAPIs FAST and MINI config fingerprints must be distinct');
+    }
+    fingerprintsByModel.set(expected.model, configFingerprint);
+    modelsByFingerprint.set(configFingerprint, expected.model);
+    if (!billingChains.has(configFingerprint)) billingChains.set(configFingerprint, []);
     const task = String(result.provider_task_id || '');
     if (!task || tasks.has(task)) fail(`ToAPIs provider task must be unique: ${expected.id}`);
     tasks.add(task);
@@ -1114,18 +1433,23 @@ function auditToapisEvidence(evidenceRoot, envelope, now, requireRecent = true) 
     }
     const reviewedAt = canonicalTimestamp(billing.reviewed_at, `ToAPIs ${expected.id} billing reviewed_at`);
     if (reviewedAt > freshness.generatedAt) fail(`ToAPIs billing review is later than evidence generation: ${expected.id}`);
-    billingWindows.push({ beforeAt, afterAt, before, after, result });
+    billingChains.get(configFingerprint).push({ beforeAt, afterAt, before, after, result });
   }
-  billingWindows.sort((left, right) => left.beforeAt - right.beforeAt);
-  const windows = new Set(billingWindows.map((item) => `${item.beforeAt}|${item.afterAt}`));
-  if (windows.size !== billingWindows.length) fail('ToAPIs billing windows are duplicated');
-  for (let index = 1; index < billingWindows.length; index += 1) {
-    const previous = billingWindows[index - 1];
-    const current = billingWindows[index];
-    if (previous.afterAt > current.beforeAt
-        || !equalNumber(previous.after.used_balance, current.before.used_balance)
-        || !equalNumber(previous.after.used_credits, current.before.used_credits)) {
-      fail('ToAPIs billing chain is not continuous');
+  if (fingerprintsByModel.size !== 2 || modelsByFingerprint.size !== 2) {
+    fail('ToAPIs FAST and MINI config fingerprints must be distinct');
+  }
+  for (const billingWindows of billingChains.values()) {
+    billingWindows.sort((left, right) => left.beforeAt - right.beforeAt);
+    const windows = new Set(billingWindows.map((item) => `${item.beforeAt}|${item.afterAt}`));
+    if (windows.size !== billingWindows.length) fail('ToAPIs billing windows are duplicated inside one config fingerprint');
+    for (let index = 1; index < billingWindows.length; index += 1) {
+      const previous = billingWindows[index - 1];
+      const current = billingWindows[index];
+      if (previous.afterAt > current.beforeAt
+          || !equalNumber(previous.after.used_balance, current.before.used_balance)
+          || !equalNumber(previous.after.used_credits, current.before.used_credits)) {
+        fail('ToAPIs billing chain is not continuous inside one config fingerprint');
+      }
     }
   }
 
@@ -1742,6 +2066,7 @@ function auditToapisPrivateAvatarEvidence(evidenceRoot, envelope, now, requireRe
     fail('ToAPIs private-avatar evidence must contain exactly two unique cases');
   }
   const tasks = new Set();
+  let totalCostYuan = 0;
   for (const expected of TOAPIS_PRIVATE_AVATAR_CASES) {
     const item = byId.get(expected.id);
     if (!item) fail(`ToAPIs private-avatar case is missing: ${expected.id}`);
@@ -1760,9 +2085,17 @@ function auditToapisPrivateAvatarEvidence(evidenceRoot, envelope, now, requireRe
         || !Number.isSafeInteger(Number(item.speed?.submit_latency_ms)) || Number(item.speed.submit_latency_ms) < 0) {
       fail(`ToAPIs private-avatar speed evidence is invalid: ${expected.id}`);
     }
-    if (Number(item.billing?.debited_balance) <= 0 || Number(item.billing?.debited_credits) <= 0) {
+    const costYuan = Number(item.billing?.cost_yuan);
+    const expectedCostYuan = Number(item.billing?.expected_cost_yuan);
+    const caseHardCapYuan = Number(item.billing?.case_hard_cap_yuan);
+    if (Number(item.billing?.debited_balance) <= 0 || Number(item.billing?.debited_credits) <= 0
+        || !Number.isFinite(costYuan) || costYuan <= 0
+        || !Number.isFinite(expectedCostYuan) || expectedCostYuan <= 0
+        || !Number.isFinite(caseHardCapYuan) || caseHardCapYuan <= 0
+        || expectedCostYuan > caseHardCapYuan || costYuan > caseHardCapYuan) {
       fail(`ToAPIs private-avatar billing evidence is invalid: ${expected.id}`);
     }
+    totalCostYuan = round(totalCostYuan + costYuan);
     const artifact = item.artifact || {};
     const outputFile = String(artifact.output_file || '');
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.mp4$/.test(outputFile)
@@ -1784,9 +2117,15 @@ function auditToapisPrivateAvatarEvidence(evidenceRoot, envelope, now, requireRe
     }
   }
   const summary = evidence.summary || {};
+  const summaryTotalCostYuan = Number(summary.total_cost_yuan);
+  const aggregateHardCapYuan = Number(summary.aggregate_hard_cap_yuan);
   if (Number(summary.case_count) !== TOAPIS_PRIVATE_AVATAR_CASES.length
       || Number(summary.total_debited_balance) <= 0
-      || Number(summary.total_debited_credits) <= 0) {
+      || Number(summary.total_debited_credits) <= 0
+      || !Number.isFinite(summaryTotalCostYuan) || summaryTotalCostYuan <= 0
+      || !equalNumber(summaryTotalCostYuan, totalCostYuan)
+      || !Number.isFinite(aggregateHardCapYuan) || aggregateHardCapYuan <= 0
+      || summaryTotalCostYuan > aggregateHardCapYuan) {
     fail('ToAPIs private-avatar summary must bind two positive-billing cases');
   }
 }
@@ -1819,7 +2158,10 @@ function verifyExternalModelRelease(candidateArg, evidenceRootArg, expectedCurre
     lingjing: protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.lingjing),
   };
   auditEvidenceBindingRuntime(candidate, surfaces);
-  if (surfaces.toapis) auditToapisRuntime(candidate, { auditEvidenceProducer: freshnessRequired.toapis });
+  if (surfaces.toapis) auditToapisRuntime(candidate, {
+    auditEvidenceProducer: freshnessRequired.toapis || freshnessRequired.toapisPrivateAvatar,
+  });
+  if (freshnessRequired.toapisPrivateAvatar) auditToapisPrivateAvatarProducer(candidate);
   if (surfaces.usmercari) auditUsmercariRuntime(candidate);
   if (surfaces.lingjing) auditLingjingRuntime(candidate);
   auditCallouts(candidate);

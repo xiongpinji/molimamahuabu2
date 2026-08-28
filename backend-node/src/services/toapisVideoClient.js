@@ -30,24 +30,30 @@ const TOAPIS_VIDEO_MODELS = Object.freeze({
 const TOAPIS_VIDEO_CAPABILITIES = TOAPIS_VIDEO_MODELS['seedance-2-mini'];
 
 function normalizeToapisBaseUrl(value) {
-  const raw = String(value || 'https://toapis.com').trim();
+  const raw = String(value || 'https://toapis.xyz').trim();
+  if (!/^https:\/\/toapis\.xyz(?:\/v1)?\/?$/.test(raw)) {
+    throw new Error('ToAPIs 官方入口必须是 https://toapis.xyz');
+  }
   let parsed;
   try {
     parsed = new URL(raw);
   } catch (_) {
-    throw new Error('ToAPIs 官方入口必须是 https://toapis.com');
+    throw new Error('ToAPIs 官方入口必须是 https://toapis.xyz');
   }
   const pathname = parsed.pathname.replace(/\/+$/, '') || '';
   if (
     parsed.protocol !== 'https:'
     || parsed.username
     || parsed.password
-    || parsed.hostname !== 'toapis.com'
+    || parsed.hostname !== 'toapis.xyz'
+    || parsed.port
+    || parsed.search
+    || parsed.hash
     || !['', '/v1'].includes(pathname)
   ) {
-    throw new Error('ToAPIs 官方入口必须是 https://toapis.com');
+    throw new Error('ToAPIs 官方入口必须是 https://toapis.xyz');
   }
-  return 'https://toapis.com';
+  return 'https://toapis.xyz';
 }
 
 function resolveToapisApiKey(config = {}, env = process.env) {
@@ -302,7 +308,7 @@ async function readJsonResponse(response) {
 }
 
 async function callToapisVideoApi(config, log, opts = {}, requestOpts = {}) {
-  const apiKey = resolveToapisApiKey(config);
+  const apiKey = String(requestOpts.apiKey || '').trim() || resolveToapisApiKey(config);
   if (!apiKey) return {
     error: 'ToAPIs API Key 未配置',
     route_meta: { phase: 'validation', requestBodySent: false, providerCode: 'AUTH_INVALID', explicitlyRejected: true },
@@ -325,6 +331,8 @@ async function callToapisVideoApi(config, log, opts = {}, requestOpts = {}) {
       route_meta: { phase: 'validation', requestBodySent: false, providerCode: 'INVALID_ARGUMENT', explicitlyRejected: true },
     };
   }
+  const recoveryTaskId = String(body.client_business_id || '').trim();
+  const recoveryRouteMeta = recoveryTaskId ? { recoveryTaskId } : {};
   const url = `${baseUrl}/v1/videos/generations`;
   const fetchImpl = requestOpts.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== 'function') return {
@@ -349,15 +357,25 @@ async function callToapisVideoApi(config, log, opts = {}, requestOpts = {}) {
       body: JSON.stringify(body),
     });
   } catch (error) {
-    return indeterminateCreateError('连接中断。', { transportCode: error?.cause?.code || error?.code });
+    return indeterminateCreateError('连接中断。', {
+      transportCode: error?.cause?.code || error?.code,
+      ...recoveryRouteMeta,
+      recoveryCode: 'TOAPIS_TRANSPORT_INTERRUPTED',
+    });
   }
   const { raw, payload } = await readJsonResponse(response);
   if (!response.ok) {
     if (response.status === 408 || response.status >= 500) {
-      return indeterminateCreateError(`HTTP ${response.status}。`, { httpStatus: response.status });
+      return indeterminateCreateError(`HTTP ${response.status}。`, {
+        httpStatus: response.status,
+        ...recoveryRouteMeta,
+        recoveryCode: 'TOAPIS_HTTP_STATUS_UNKNOWN',
+      });
     }
     if (!payload) return indeterminateCreateError(`HTTP ${response.status} 返回非 JSON 响应。`, {
       httpStatus: response.status,
+      ...recoveryRouteMeta,
+      recoveryCode: 'TOAPIS_NON_JSON_RESPONSE',
     });
     const message = formatProviderError(payload);
     return {
@@ -371,10 +389,18 @@ async function callToapisVideoApi(config, log, opts = {}, requestOpts = {}) {
       },
     };
   }
-  if (!payload) return indeterminateCreateError('返回非 JSON 响应。', { httpStatus: response.status });
+  if (!payload) return indeterminateCreateError('返回非 JSON 响应。', {
+    httpStatus: response.status,
+    ...recoveryRouteMeta,
+    recoveryCode: 'TOAPIS_NON_JSON_RESPONSE',
+  });
   const taskId = payload.id ?? payload.task_id ?? payload?.data?.id ?? payload?.data?.task_id;
   if (taskId == null || String(taskId).trim() === '') {
-    return indeterminateCreateError('未取得 task_id。', { httpStatus: response.status });
+    return indeterminateCreateError('未取得 task_id。', {
+      httpStatus: response.status,
+      ...recoveryRouteMeta,
+      recoveryCode: 'TOAPIS_TASK_ID_MISSING',
+    });
   }
   return {
     task_id: String(taskId),
@@ -384,7 +410,7 @@ async function callToapisVideoApi(config, log, opts = {}, requestOpts = {}) {
 }
 
 async function fetchToapisTask(config, taskId, opts = {}) {
-  const apiKey = resolveToapisApiKey(config);
+  const apiKey = String(opts.apiKey || '').trim() || resolveToapisApiKey(config);
   if (!apiKey) return { state: 'failed', error: 'ToAPIs API Key 未配置' };
   const id = String(taskId || '').trim();
   if (!id) return { state: 'failed', error: 'ToAPIs task_id 不能为空' };

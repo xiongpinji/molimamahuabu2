@@ -6110,6 +6110,27 @@ async function callVideoApi(db, log, opts, runtime = {}) {
     const classification = classifyProviderFailure(routeMeta);
     const uncertainAttempt = ['submission_unknown', 'result_unknown', 'artifact_unreadable', 'forbidden_unknown']
       .includes(classification.category);
+    const recoveryTaskId = result?.indeterminate
+      ? String(routeMeta.recoveryTaskId || '').trim()
+      : '';
+    if (recoveryTaskId) {
+      providerRouteStability.recordRecoveryTask(db, {
+        requestId: route.id,
+        attemptNo: attempt.attempt_no,
+        providerTaskId: recoveryTaskId,
+        httpStatus: routeMeta.httpStatus,
+        providerCode: routeMeta.recoveryCode,
+      });
+      persistAcceptedVideoRoute(db, opts, config.id, recoveryTaskId);
+      providerRouteStability.recordFailureAndHealth(db, {
+        requestId: route.id,
+        tenantId: opts.tenantId,
+        configId: config.id,
+        logicalModelId,
+        classification,
+      });
+      return safeVideoRouteFailure(classification, result);
+    }
     providerRouteStability.finishAttempt(db, {
       requestId: route.id,
       attemptNo: attempt.attempt_no,

@@ -15,7 +15,7 @@ const { loadConfig } = require('../src/config');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const aiConfigService = require('../src/services/aiConfigService');
 
-const BASE_URL = 'https://toapis.com';
+const BASE_URL = 'https://toapis.xyz';
 const STATE_VERSION = 'toapis-video-verification-state-v1';
 const EVIDENCE_VERSION = 'toapis-video-real-verification-v1';
 const LOG = { info() {}, warn() {}, error() {} };
@@ -62,8 +62,12 @@ function publicReferences(env = process.env) {
   };
 }
 
-function buildVerificationOptions(item, refs = {}) {
+function buildVerificationOptions(item, refs = {}, runId = '') {
   if (!item || !REQUIRED_MATRIX.some((entry) => entry.id === item.id)) throw new Error('未知验证用例');
+  const normalizedRunId = String(runId || '').trim();
+  const runSuffix = normalizedRunId
+    ? `-${crypto.createHash('sha256').update(normalizedRunId).digest('hex').slice(0, 16)}`
+    : '';
   const options = {
     model: item.model,
     prompt: item.mode === 'omni'
@@ -75,7 +79,7 @@ function buildVerificationOptions(item, refs = {}) {
     duration: item.duration,
     aspect_ratio: '16:9',
     generate_audio: item.generateAudio === true,
-    client_business_id: `moli-verify-${item.id}`,
+    client_business_id: `moli-verify-${item.id}${runSuffix}`,
   };
   if (item.mode === 'first-last') {
     options.first_frame_url = refs.firstFrameUrl;
@@ -88,8 +92,8 @@ function buildVerificationOptions(item, refs = {}) {
   return options;
 }
 
-function buildVerificationRequest(item, refs = {}) {
-  return buildToapisVideoBody(buildVerificationOptions(item, refs));
+function buildVerificationRequest(item, refs = {}, runId = '') {
+  return buildToapisVideoBody(buildVerificationOptions(item, refs, runId));
 }
 
 function decideResumeAction(entry) {
@@ -267,20 +271,35 @@ function validateCompletedResult(item) {
 }
 
 function hasContinuousBillingChain(results) {
-  const intervals = results.map((item) => ({
-    before: item?.billing?.before,
-    after: item?.billing?.after,
-    beforeAt: Date.parse(String(item?.billing?.before?.captured_at || '')),
-    afterAt: Date.parse(String(item?.billing?.after?.captured_at || '')),
-  })).sort((left, right) => left.beforeAt - right.beforeAt);
-  const windows = new Set(intervals.map((item) => `${item.beforeAt}|${item.afterAt}`));
-  if (windows.size !== intervals.length) return false;
-  for (let index = 1; index < intervals.length; index += 1) {
-    const previous = intervals[index - 1];
-    const current = intervals[index];
-    if (previous.afterAt > current.beforeAt
-        || Number(previous.after?.used_balance) !== Number(current.before?.used_balance)
-        || Number(previous.after?.used_credits) !== Number(current.before?.used_credits)) return false;
+  const chains = new Map();
+  const fingerprintsByModel = new Map();
+  for (const item of results) {
+    const model = String(item?.model || '');
+    const fingerprint = String(item?.config_fingerprint || '');
+    if (!model || !/^[a-f0-9]{64}$/i.test(fingerprint)) return false;
+    if (fingerprintsByModel.has(model) && fingerprintsByModel.get(model) !== fingerprint) return false;
+    fingerprintsByModel.set(model, fingerprint);
+    const key = `${model}|${fingerprint}`;
+    if (!chains.has(key)) chains.set(key, []);
+    chains.get(key).push({
+      before: item?.billing?.before,
+      after: item?.billing?.after,
+      beforeAt: Date.parse(String(item?.billing?.before?.captured_at || '')),
+      afterAt: Date.parse(String(item?.billing?.after?.captured_at || '')),
+    });
+  }
+  if (new Set(fingerprintsByModel.values()).size !== fingerprintsByModel.size) return false;
+  for (const intervals of chains.values()) {
+    intervals.sort((left, right) => left.beforeAt - right.beforeAt);
+    const windows = new Set(intervals.map((item) => `${item.beforeAt}|${item.afterAt}`));
+    if (windows.size !== intervals.length) return false;
+    for (let index = 1; index < intervals.length; index += 1) {
+      const previous = intervals[index - 1];
+      const current = intervals[index];
+      if (previous.afterAt > current.beforeAt
+          || Number(previous.after?.used_balance) !== Number(current.before?.used_balance)
+          || Number(previous.after?.used_credits) !== Number(current.before?.used_credits)) return false;
+    }
   }
   return true;
 }
@@ -307,8 +326,9 @@ function hasCompleteRequiredMatrix(results) {
     && hasContinuousBillingChain(results);
 }
 
-function buildVerifiedCapabilities(results) {
+function buildVerifiedCapabilities(results, evidenceBinding) {
   if (!hasCompleteRequiredMatrix(results)) return {};
+  const binding = normalizeEvidenceBinding(evidenceBinding);
   const output = {};
   for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
     const spec = TOAPIS_VIDEO_MODELS[model];
@@ -330,25 +350,55 @@ function buildVerifiedCapabilities(results) {
       supportsAudioReference: audioRoles.has('reference_audio'),
       supportsAudio: modelResults.some((item) => item.request?.generate_audio === true
         && item.artifact?.ffprobe?.has_audio === true),
-      maxReferences: omni?.request?.image_with_roles?.length || 0,
-      maxVideoReferences: omni?.request?.video_with_roles?.length || 0,
-      maxAudioReferences: omni?.request?.audio_with_roles?.length || 0,
+      maxReferences: spec.maxReferences,
+      maxVideoReferences: spec.maxVideoReferences,
+      maxAudioReferences: spec.maxAudioReferences,
+      ...binding,
     };
   }
   return output;
-}
-
-function requireApiKey(argv = process.argv, env = process.env) {
-  if (argv.some((value) => /(?:api[-_]?key|token)=/i.test(value))) throw new Error('禁止通过命令行参数传入供应商 Key');
-  const value = String(env.TOAPIS_API_KEY || '').trim();
-  if (!value) throw new Error('缺少 TOAPIS_API_KEY');
-  return value;
 }
 
 function requireDedicatedVerificationToken(env = process.env) {
   if (String(env.TOAPIS_VERIFY_DEDICATED_TOKEN || '').trim() !== '1') {
     throw new Error('真实扣费验证必须使用不被其他业务并发调用的专用验证 Token');
   }
+}
+
+function requireVerificationConfigIds(env = process.env) {
+  const configIds = {
+    'seedance-2-fast': Number(env.TOAPIS_VERIFY_FAST_CONFIG_ID),
+    'seedance-2-mini': Number(env.TOAPIS_VERIFY_MINI_CONFIG_ID),
+  };
+  if (!Number.isInteger(configIds['seedance-2-fast']) || configIds['seedance-2-fast'] <= 0) {
+    throw new Error('缺少有效的 TOAPIS_VERIFY_FAST_CONFIG_ID，禁止启动付费验证');
+  }
+  if (!Number.isInteger(configIds['seedance-2-mini']) || configIds['seedance-2-mini'] <= 0) {
+    throw new Error('缺少有效的 TOAPIS_VERIFY_MINI_CONFIG_ID，禁止启动付费验证');
+  }
+  if (configIds['seedance-2-fast'] === configIds['seedance-2-mini']) {
+    throw new Error('FAST_CONFIG_ID 与 MINI_CONFIG_ID 必须分别指向两个配置');
+  }
+  return configIds;
+}
+
+function normalizeEvidenceBinding(binding) {
+  const evidenceContract = String(binding?.evidence_contract || '').trim();
+  const evidenceSha256 = String(binding?.evidence_sha256 || '').trim().toLowerCase();
+  if (evidenceContract !== EVIDENCE_VERSION || !/^[a-f0-9]{64}$/.test(evidenceSha256)) {
+    throw new Error('ToAPIs 最终证据绑定缺失或无效');
+  }
+  return { evidence_contract: evidenceContract, evidence_sha256: evidenceSha256 };
+}
+
+function evidenceBindingForFile(evidencePath) {
+  const resolved = path.resolve(String(evidencePath || ''));
+  const bytes = fs.readFileSync(resolved);
+  const evidence = JSON.parse(bytes.toString('utf8'));
+  return normalizeEvidenceBinding({
+    evidence_contract: evidence?.contract_version,
+    evidence_sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+  });
 }
 
 function readJson(filePath, fallback) {
@@ -363,6 +413,25 @@ function writeJsonAtomic(filePath, payload) {
   const temporary = `${filePath}.${process.pid}.tmp`;
   fs.writeFileSync(temporary, `${JSON.stringify(redactEvidence(payload), null, 2)}\n`);
   fs.renameSync(temporary, filePath);
+}
+
+function restoreEvidenceFile(filePath, previousBytes) {
+  if (previousBytes == null) {
+    try { fs.unlinkSync(filePath); } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    return;
+  }
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporary = `${filePath}.${process.pid}.restore.tmp`;
+  fs.writeFileSync(temporary, previousBytes);
+  fs.renameSync(temporary, filePath);
+}
+
+function preserveExistingVerification(error) {
+  const normalized = error instanceof Error ? error : new Error(String(error));
+  normalized.preserveExistingVerification = true;
+  return normalized;
 }
 
 function acquireVerificationLock(lockPath) {
@@ -409,9 +478,17 @@ async function fetchBalance(apiKey, fetchImpl = globalThis.fetch) {
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok || payload?.success !== true) throw new Error(`ToAPIs 余额查询失败 (${response.status})`);
+  const usedBalance = Number(payload.used_balance);
+  const usedCredits = Number(payload.used_credits);
+  if (!Number.isFinite(usedBalance) || usedBalance < 0) {
+    throw new Error('ToAPIs 余额字段 used_balance 必须是非负有效数字');
+  }
+  if (!Number.isFinite(usedCredits) || usedCredits < 0) {
+    throw new Error('ToAPIs 余额字段 used_credits 必须是非负有效数字');
+  }
   return {
-    used_balance: Number(payload.used_balance),
-    used_credits: Number(payload.used_credits),
+    used_balance: usedBalance,
+    used_credits: usedCredits,
     remain_balance: Number(payload.remain_balance),
     remain_credits: Number(payload.remain_credits),
     credits_per_usd: Number(payload.credits_per_usd),
@@ -570,6 +647,7 @@ async function downloadAndInspect(url, filePath, item, publicUrl, deps = {}) {
   const buffer = Buffer.from(await response.arrayBuffer());
   if (buffer.length < 1024) throw new Error('视频结果为空或过小');
   await fs.promises.writeFile(filePath, buffer);
+  await fs.promises.chmod(filePath, 0o444);
   const ffprobe = (deps.runFfprobe || runFfprobe)(filePath);
   assertResolutionBand(item.resolution, ffprobe);
   if (Math.abs(ffprobe.duration_seconds - item.duration) > 1.5) {
@@ -636,29 +714,156 @@ async function verifyAllStoredResults(context, deps = {}) {
   return results;
 }
 
-function openVerificationDb() {
-  const configured = String(process.env.TOAPIS_VERIFY_DATABASE_PATH || process.env.DATABASE_PATH || '').trim()
+function openVerificationDb(databasePath = '', options = {}) {
+  const configured = String(databasePath || process.env.TOAPIS_VERIFY_DATABASE_PATH || process.env.DATABASE_PATH || '').trim()
     || loadConfig().database?.path;
-  if (!configured || configured === ':memory:') throw new Error('缺少可写入验证状态的数据库路径');
-  const db = new Database(path.resolve(process.cwd(), configured));
+  if (!configured || configured === ':memory:') throw new Error('缺少验证状态数据库路径');
+  const resolved = path.resolve(process.cwd(), configured);
+  if (options.readonly === true) {
+    return new Database(resolved, { readonly: true, fileMustExist: true });
+  }
+  const db = new Database(resolved);
   runMigrationsAndEnsure(db);
   return db;
 }
 
-function recordVerificationResult(results, error = null) {
-  const configId = Number(process.env.TOAPIS_VERIFY_CONFIG_ID || 0);
-  if (!configId) return null;
-  const db = openVerificationDb();
+function assertDedicatedVerificationConfig(config, model) {
+  const models = new Set([
+    config?.default_model,
+    ...(Array.isArray(config?.model) ? config.model : []),
+  ].filter(Boolean));
+  const otherModel = model === 'seedance-2-fast' ? 'seedance-2-mini' : 'seedance-2-fast';
+  if (String(config?.service_type || '').toLowerCase() !== 'video'
+      || String(config?.provider || '').toLowerCase() !== 'toapis'
+      || String(config?.api_protocol || '').toLowerCase() !== 'toapis_video'
+      || normalizeToapisBaseUrl(config?.base_url) !== BASE_URL
+      || !models.has(model)
+      || models.has(otherModel)
+      || (config?.default_model && config.default_model !== model)) {
+    throw new Error(`${model} 对应配置不是专用 ToAPIs 视频配置`);
+  }
+}
+
+function verificationConfigFingerprint(config) {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    id: Number(config?.id),
+    service_type: String(config?.service_type || '').toLowerCase(),
+    provider: String(config?.provider || '').toLowerCase(),
+    api_protocol: String(config?.api_protocol || '').toLowerCase(),
+    base_url: normalizeToapisBaseUrl(config?.base_url),
+    api_key: String(config?.api_key || ''),
+    model: [...(Array.isArray(config?.model) ? config.model : [])].sort(),
+    default_model: String(config?.default_model || ''),
+    logical_model_id: String(config?.logical_model_id || ''),
+    endpoint: String(config?.endpoint || ''),
+    query_endpoint: String(config?.query_endpoint || ''),
+    settings: config?.settings || null,
+    is_active: config?.is_active === true,
+    canary_paused: config?.canary_paused === true,
+    failover_enabled: config?.failover_enabled === true,
+  })).digest('hex');
+}
+
+function validateVerificationConfigs(options = {}) {
+  const configIds = options.configIds || requireVerificationConfigIds();
+  const db = openVerificationDb(options.databasePath, { readonly: true });
   try {
-    if (error) return aiConfigService.recordVerification(db, configId, { status: 'failed', error: error.message || error });
-    if (!hasCompleteRequiredMatrix(results)) return null;
-    return aiConfigService.recordVerification(db, configId, {
-      status: 'verified',
-      verifiedAt: new Date().toISOString(),
-      capabilities: buildVerifiedCapabilities(results),
+    const snapshots = ['seedance-2-fast', 'seedance-2-mini'].map((model) => {
+      const configId = configIds[model];
+      const config = aiConfigService.getConfig(db, configId);
+      assertDedicatedVerificationConfig(config, model);
+      const apiKey = String(config?.api_key || '').trim();
+      if (!apiKey) throw new Error(`${model} 验证配置缺少供应商 Key`);
+      return { model, configId, fingerprint: verificationConfigFingerprint(config), apiKey };
     });
+    if (snapshots[0].apiKey === snapshots[1].apiKey) {
+      throw new Error('FAST 与 MINI 验证配置的供应商 Key 必须分别配置，不能共用');
+    }
+    return snapshots;
   } finally {
     db.close();
+  }
+}
+
+function recordVerificationResult(results, error = null, options = {}) {
+  if (error || !hasCompleteRequiredMatrix(results)) return null;
+  const configIds = options.configIds || requireVerificationConfigIds();
+  const configSnapshots = new Map((options.configSnapshots || []).map((item) => [item?.model, item]));
+  if (configSnapshots.size !== 2) throw new Error('缺少 FAST/MINI 付费验证前配置快照');
+  const binding = evidenceBindingForFile(options.evidencePath);
+  const db = openVerificationDb(options.databasePath);
+  try {
+    const recordVerification = options.recordVerification || aiConfigService.recordVerification;
+    return db.transaction(() => {
+      const configs = ['seedance-2-fast', 'seedance-2-mini'].map((model) => {
+        const configId = configIds[model];
+        const config = aiConfigService.getConfig(db, configId);
+        assertDedicatedVerificationConfig(config, model);
+        const snapshot = configSnapshots.get(model);
+        if (Number(snapshot?.configId) !== configId
+            || snapshot?.fingerprint !== verificationConfigFingerprint(config)) {
+          throw new Error(`${model} 配置已在验证期间发生变化，禁止绑定旧证据`);
+        }
+        return { model, configId };
+      });
+      const capabilities = buildVerifiedCapabilities(results, binding);
+      const verifiedAt = new Date().toISOString();
+      const updated = configs.map(({ model, configId }) => recordVerification(db, configId, {
+        status: 'verified',
+        verifiedAt,
+        capabilities: { [model]: capabilities[model] },
+      }));
+      for (const { model, configId } of configs) {
+        const saved = aiConfigService.getConfig(db, configId);
+        const keys = Object.keys(saved?.verified_capabilities || {});
+        const modelCapabilities = saved?.verified_capabilities?.[model];
+        if (saved?.verification_status !== 'verified'
+            || keys.length !== 1 || keys[0] !== model
+            || saved?.verified_at !== verifiedAt
+            || modelCapabilities?.evidence_contract !== binding.evidence_contract
+            || modelCapabilities?.evidence_sha256 !== binding.evidence_sha256) {
+          throw new Error(`${model} ToAPIs 最终证据绑定写回校验失败`);
+        }
+      }
+      return updated;
+    }).immediate();
+  } finally {
+    db.close();
+  }
+}
+
+function publishVerifiedEvidence(results, pricing, evidence, options = {}) {
+  if (!hasCompleteRequiredMatrix(results)) {
+    throw preserveExistingVerification(new Error('8 个必需真实验证组合尚未全部完成并复核费用'));
+  }
+  if (!hasCompletePricing(pricing, results)) {
+    throw preserveExistingVerification(new Error('两模型 480P/720P 的人民币成本与积分价格尚未全部复核'));
+  }
+  if (!options.evidencePath) {
+    throw preserveExistingVerification(new Error('缺少最终 ToAPIs 证据路径'));
+  }
+  const evidencePath = path.resolve(String(options.evidencePath));
+  let previousBytes = null;
+  try { previousBytes = fs.readFileSync(evidencePath); } catch (error) {
+    if (error.code !== 'ENOENT') throw preserveExistingVerification(error);
+  }
+  try { writeJsonAtomic(evidencePath, evidence); } catch (error) {
+    throw preserveExistingVerification(error);
+  }
+  try {
+    const recorder = options.recordResult || recordVerificationResult;
+    return recorder(results, null, {
+      configIds: options.configIds,
+      configSnapshots: options.configSnapshots,
+      databasePath: options.databasePath,
+      evidencePath,
+      recordVerification: options.recordVerification,
+    });
+  } catch (error) {
+    try { restoreEvidenceFile(evidencePath, previousBytes); } catch (restoreError) {
+      throw preserveExistingVerification(new Error(`ToAPIs 证据绑定写回失败，且旧证据恢复失败: ${restoreError.message}`));
+    }
+    throw preserveExistingVerification(error);
   }
 }
 
@@ -668,11 +873,203 @@ function parseJsonEnv(name, fallback) {
   try { return JSON.parse(raw); } catch (_) { throw new Error(`${name} 必须是有效 JSON`); }
 }
 
-function expectedCostForCase(item) {
-  const values = parseJsonEnv('TOAPIS_EXPECTED_COST_YUAN_JSON', {});
+function expectedCostForCase(item, values = parseJsonEnv('TOAPIS_EXPECTED_COST_YUAN_JSON', {})) {
   const value = Number(values[item.id]);
   if (!Number.isFinite(value) || value <= 0) throw new Error(`缺少 ${item.id} 的预计人民币成本，禁止提交付费请求`);
   return value;
+}
+
+function positiveYuanEnv(name) {
+  const value = Number(process.env[name]);
+  if (!Number.isFinite(value) || value <= 0) throw new Error(`缺少 ${name}，禁止执行供应商余额查询或付费请求`);
+  return value;
+}
+
+function assertHttpsReference(value, label, caseId) {
+  const raw = String(value || '').trim();
+  let parsed;
+  try { parsed = new URL(raw); } catch (_) {
+    throw new Error(`${caseId} 缺少有效的 ${label} HTTPS URL`);
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.href !== raw) {
+    throw new Error(`${caseId} 缺少有效的 ${label} HTTPS URL`);
+  }
+  return parsed.href;
+}
+
+function assertFfprobeAvailable(executable = process.env.FFPROBE_PATH || 'ffprobe') {
+  const result = spawnSync(executable, ['-version'], {
+    encoding: 'utf8', windowsHide: true, env: safeChildProcessEnv(process.env),
+  });
+  if (result.error) throw new Error(`ffprobe 预检失败: ${result.error.message}`);
+  if (result.status !== 0) throw new Error(`ffprobe 预检失败: ${String(result.stderr || '').trim().slice(0, 300)}`);
+}
+
+function configFingerprintMap(configSnapshots = []) {
+  const output = Object.fromEntries(configSnapshots.map((item) => [item?.model, String(item?.fingerprint || '')]));
+  for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
+    if (!/^[a-f0-9]{64}$/i.test(output[model] || '')) throw new Error(`缺少 ${model} 付费验证配置指纹`);
+  }
+  return output;
+}
+
+function bindAndValidateVerificationState(state, configSnapshots = []) {
+  const fingerprints = configFingerprintMap(configSnapshots);
+  const cases = state?.cases && typeof state.cases === 'object' ? state.cases : null;
+  if (!cases) throw new Error('验证状态文件版本不兼容');
+  const hasCases = Object.keys(cases).length > 0;
+  const hasBinding = Boolean(state.provider_origin || state.config_fingerprints);
+  if (!hasCases && !hasBinding) {
+    state.provider_origin = BASE_URL;
+    state.config_fingerprints = { ...fingerprints };
+  }
+  if (state.provider_origin !== BASE_URL) throw new Error('验证状态未绑定 ToAPIs 官方入口 https://toapis.xyz');
+  for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
+    if (state.config_fingerprints?.[model] !== fingerprints[model]) {
+      throw new Error(`${model} 验证状态配置指纹不匹配，禁止零 POST 重放`);
+    }
+  }
+  for (const [caseId, entry] of Object.entries(cases)) {
+    const expected = REQUIRED_MATRIX.find((item) => item.id === caseId);
+    if (!expected || entry?.model !== expected.model
+        || entry?.provider_origin !== BASE_URL
+        || entry?.config_fingerprint !== fingerprints[expected.model]) {
+      throw new Error(`${caseId} 验证状态未绑定官方入口和当前 ${expected?.model || '未知'} 配置指纹`);
+    }
+  }
+  return fingerprints;
+}
+
+function actualCostTotal(state) {
+  return round(Object.values(state?.cases || {}).reduce((sum, entry) => {
+    const value = Number(entry?.billing?.cost_yuan);
+    return sum + (Number.isFinite(value) && value > 0 ? value : 0);
+  }, 0));
+}
+
+function assertNoGlobalUnknownSubmission(state) {
+  const blocked = Object.entries(state?.cases || {}).find(([, entry]) => (
+    ['submitting', 'indeterminate'].includes(entry?.submission_state)
+  ));
+  if (blocked) {
+    throw preserveExistingVerification(new Error(`${blocked[0]} 上次提交结果未知，禁止选择其他 case 继续提交`));
+  }
+  const costCapExceeded = Object.entries(state?.cases || {}).find(([, entry]) => entry?.status === 'cost_cap_exceeded');
+  if (costCapExceeded) {
+    throw preserveExistingVerification(new Error(`${costCapExceeded[0]} 已触发人民币成本硬上限，禁止继续供应商调用`));
+  }
+}
+
+function requirePreparedCaseBudget(item, context) {
+  const budget = context?.costBudget;
+  const expected = Number(budget?.expectedCosts?.[item.id]);
+  const aggregateHardCapYuan = Number(budget?.aggregateHardCapYuan);
+  if (!Number.isFinite(expected) || expected <= 0
+      || !Number.isFinite(aggregateHardCapYuan) || aggregateHardCapYuan <= 0) {
+    throw new Error(`${item.id} 未完成整轮成本预检，禁止执行供应商余额查询或付费请求`);
+  }
+  const fingerprint = String(context?.configFingerprints?.[item.model] || '');
+  if (!/^[a-f0-9]{64}$/i.test(fingerprint)
+      || context?.state?.provider_origin !== BASE_URL
+      || context?.state?.config_fingerprints?.[item.model] !== fingerprint) {
+    throw new Error(`${item.id} 未绑定官方入口和当前配置指纹，禁止执行供应商调用`);
+  }
+  return expected;
+}
+
+function preflightVerificationRun(selectedCases, context, deps = {}) {
+  assertNoGlobalUnknownSubmission(context.state);
+  const plans = selectedCases.map((item) => ({ item, action: decideResumeAction(context.state.cases[item.id] || null) }));
+  const supplierBalanceCases = plans.filter(({ action }) => ['submit', 'poll', 'finalize'].includes(action));
+  if (!supplierBalanceCases.length) return { plans, expectedCosts: {}, aggregateHardCapYuan: null, perCaseHardCaps: {} };
+
+  const expectedValues = parseJsonEnv('TOAPIS_EXPECTED_COST_YUAN_JSON', {});
+  const perCaseHardCaps = parseJsonEnv('TOAPIS_VERIFY_CASE_HARD_CAP_YUAN_JSON', {});
+  if (perCaseHardCaps == null || Array.isArray(perCaseHardCaps) || typeof perCaseHardCaps !== 'object') {
+    throw new Error('TOAPIS_VERIFY_CASE_HARD_CAP_YUAN_JSON 必须是 JSON 对象');
+  }
+  const aggregateHardCapYuan = positiveYuanEnv('TOAPIS_VERIFY_AGGREGATE_HARD_CAP_YUAN');
+  const expectedCosts = {};
+  for (const { item, action } of supplierBalanceCases) {
+    const expected = action === 'submit'
+      ? expectedCostForCase(item, expectedValues)
+      : Number(context.state.cases[item.id]?.billing?.expected_cost_yuan);
+    if (!Number.isFinite(expected) || expected <= 0) {
+      throw new Error(`缺少 ${item.id} 的预计人民币成本，禁止执行供应商余额查询`);
+    }
+    expectedCosts[item.id] = expected;
+    if (Object.keys(perCaseHardCaps).length) {
+      const caseHardCap = Number(perCaseHardCaps[item.id]);
+      if (!Number.isFinite(caseHardCap) || caseHardCap <= 0) throw new Error(`缺少 ${item.id} 的人民币单 case 硬上限`);
+      if (expected > caseHardCap) throw new Error(`${item.id} 预计人民币成本 ${expected} 超过单 case 硬上限 ${caseHardCap}`);
+    }
+    if (action === 'submit') {
+      if (item.mode === 'first-last') {
+        assertHttpsReference(context.refs.firstFrameUrl, '首帧', item.id);
+        assertHttpsReference(context.refs.lastFrameUrl, '尾帧', item.id);
+      } else if (item.mode === 'omni') {
+        assertHttpsReference(context.refs.referenceImageUrl, '参考图片', item.id);
+        assertHttpsReference(context.refs.referenceVideoUrl, '参考视频', item.id);
+        assertHttpsReference(context.refs.referenceAudioUrl, '参考音频', item.id);
+      }
+      buildVerificationRequest(item, context.refs, context.runId);
+    }
+  }
+  const projectedCostYuan = round(actualCostTotal(context.state)
+    + Object.values(expectedCosts).reduce((sum, value) => sum + value, 0));
+  if (projectedCostYuan > aggregateHardCapYuan) {
+    throw new Error(`预计人民币总成本 ${projectedCostYuan} 超过硬上限 ${aggregateHardCapYuan}`);
+  }
+  fs.accessSync(context.outputDir, fs.constants.W_OK);
+  fs.accessSync(context.artifactOutputDir, fs.constants.W_OK);
+  (deps.assertFfprobeAvailable || assertFfprobeAvailable)();
+  return { plans, expectedCosts, aggregateHardCapYuan, perCaseHardCaps };
+}
+
+function verificationClientForModel(context, model) {
+  const client = context?.verificationClients?.[model];
+  if (!client || !String(client.apiKey || '').trim()
+      || client.config?.api_key !== client.apiKey
+      || normalizeToapisBaseUrl(client.config?.base_url) !== BASE_URL) {
+    throw new Error(`${model} 缺少数据库配置绑定的独立验证凭据`);
+  }
+  return client;
+}
+
+async function preflightVerificationBalances(context, deps = {}) {
+  const models = [...new Set((context?.costBudget?.plans || [])
+    .filter(({ action }) => ['submit', 'poll', 'finalize'].includes(action))
+    .map(({ item }) => item.model))];
+  const balances = {};
+  for (const model of models) {
+    const client = verificationClientForModel(context, model);
+    balances[model] = await (deps.fetchBalance || fetchBalance)(client.apiKey, deps.fetchImpl);
+  }
+  return balances;
+}
+
+function assertActualCostWithinHardCap(item, context) {
+  const budget = context.costBudget;
+  if (!budget || !Number.isFinite(budget.aggregateHardCapYuan)) {
+    throw preserveExistingVerification(new Error(`${item.id} 缺少整轮人民币成本硬上限`));
+  }
+  const actual = Number(context.state.cases[item.id]?.billing?.cost_yuan);
+  const caseHardCap = Number(budget.perCaseHardCaps?.[item.id]);
+  if (Number.isFinite(caseHardCap) && caseHardCap > 0 && actual > caseHardCap) {
+    throw preserveExistingVerification(new Error(`${item.id} 实际人民币成本 ${actual} 超过单 case 硬上限 ${caseHardCap}`));
+  }
+  const total = actualCostTotal(context.state);
+  if (total > budget.aggregateHardCapYuan) {
+    throw preserveExistingVerification(new Error(`实际人民币总成本 ${total} 超过硬上限 ${budget.aggregateHardCapYuan}`));
+  }
+  const remainingExpected = Object.entries(budget.expectedCosts || {}).reduce((sum, [caseId, expected]) => {
+    const recorded = Number(context.state.cases[caseId]?.billing?.cost_yuan);
+    return sum + (Number.isFinite(recorded) && recorded > 0 ? 0 : Number(expected) || 0);
+  }, 0);
+  const projected = round(total + remainingExpected);
+  if (projected > budget.aggregateHardCapYuan) {
+    throw preserveExistingVerification(new Error(`按实际扣费重算的人民币总成本 ${projected} 超过硬上限 ${budget.aggregateHardCapYuan}`));
+  }
 }
 
 function loadPricingEvidence() {
@@ -721,7 +1118,10 @@ async function waitForTask(config, taskId, onProgress, deps = {}) {
   const maxAttempts = Number(process.env.TOAPIS_VERIFY_MAX_POLLS || 180);
   const intervalMs = Number(process.env.TOAPIS_VERIFY_POLL_MS || 10000);
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const status = await (deps.fetchTask || fetchToapisTask)(config, taskId, { fetchImpl: deps.fetchImpl });
+    const status = await (deps.fetchTask || fetchToapisTask)(config, taskId, {
+      fetchImpl: deps.fetchImpl,
+      apiKey: deps.apiKey,
+    });
     await onProgress(status);
     if (status.state === 'completed') return status;
     if (status.state === 'failed') throw new Error(status.error || 'ToAPIs 视频任务失败');
@@ -731,10 +1131,11 @@ async function waitForTask(config, taskId, onProgress, deps = {}) {
 }
 
 async function processCase(item, context, deps = {}) {
+  assertNoGlobalUnknownSubmission(context.state);
   const previous = context.state.cases[item.id] || null;
   const action = decideResumeAction(previous);
   if (action === 'stop-indeterminate') {
-    throw new Error(`${item.id} 上次提交结果未知，为避免重复扣费已停止；必须人工核对供应商任务后写入 task_id`);
+    throw preserveExistingVerification(new Error(`${item.id} 上次提交结果未知，为避免重复扣费已停止；必须人工核对供应商任务后写入 task_id`));
   }
   if (action === 'complete') {
     await verifyStoredArtifact(previous, item, context, deps);
@@ -743,13 +1144,14 @@ async function processCase(item, context, deps = {}) {
     return previous;
   }
 
+  const preparedExpectedCostYuan = requirePreparedCaseBudget(item, context);
+  const client = verificationClientForModel(context, item.model);
   let entry = previous;
   if (action === 'submit') {
     context.submittedCaseIds.push(item.id);
-    const expectedCostYuan = expectedCostForCase(item);
-    const clientOptions = buildVerificationOptions(item, context.refs);
+    const clientOptions = buildVerificationOptions(item, context.refs, context.runId);
     const request = buildToapisVideoBody(clientOptions);
-    const balanceBefore = await (deps.fetchBalance || fetchBalance)(context.apiKey, deps.fetchImpl);
+    const balanceBefore = await (deps.fetchBalance || fetchBalance)(client.apiKey, deps.fetchImpl);
     const startedAt = nowDate(deps);
     entry = {
       id: item.id,
@@ -759,18 +1161,20 @@ async function processCase(item, context, deps = {}) {
       requested_duration: item.duration,
       status: 'submitting',
       submission_state: 'submitting',
+      provider_origin: BASE_URL,
+      config_fingerprint: context.configFingerprints?.[item.model],
       request,
-      billing: { expected_cost_yuan: expectedCostYuan, before: balanceBefore, reviewed: false },
+      billing: { expected_cost_yuan: preparedExpectedCostYuan, before: balanceBefore, reviewed: false },
       started_at: startedAt.toISOString(),
     };
     context.state.cases[item.id] = entry;
     writeJsonAtomic(context.statePath, context.state);
-    process.stdout.write(`SUBMIT ${item.id} model=${item.model} resolution=${item.resolution} duration=${item.duration}s expected_cost_yuan=${expectedCostYuan}\n`);
+    process.stdout.write(`SUBMIT ${item.id} model=${item.model} resolution=${item.resolution} duration=${item.duration}s expected_cost_yuan=${preparedExpectedCostYuan}\n`);
     const created = await (deps.createTask || callToapisVideoApi)(
-      context.config,
+      client.config,
       LOG,
       clientOptions,
-      { fetchImpl: deps.fetchImpl },
+      { fetchImpl: deps.fetchImpl, apiKey: client.apiKey },
     );
     const acceptedAt = nowDate(deps);
     if (created.indeterminate) {
@@ -778,7 +1182,7 @@ async function processCase(item, context, deps = {}) {
       entry.submission_state = 'indeterminate';
       entry.error = created.error;
       writeJsonAtomic(context.statePath, context.state);
-      throw new Error(created.error);
+      throw preserveExistingVerification(new Error(created.error));
     }
     if (created.error || !created.task_id) {
       entry.status = 'rejected';
@@ -799,12 +1203,12 @@ async function processCase(item, context, deps = {}) {
   if (action === 'finalize') {
     await verifyStoredArtifact(entry, item, context, deps);
   } else {
-    const completed = await waitForTask(context.config, entry.provider_task_id, async (status) => {
+    const completed = await waitForTask(client.config, entry.provider_task_id, async (status) => {
       entry.status = status.state;
       entry.progress = status.progress;
       if (status.error) entry.poll_message = status.error;
       writeJsonAtomic(context.statePath, context.state);
-    }, deps);
+    }, { ...deps, apiKey: client.apiKey });
     const fileName = `${item.id}-${entry.provider_task_id}.mp4`.replace(/[^a-zA-Z0-9._-]+/g, '-');
     const publicUrl = casePublicUrl(context.publicAssetBaseUrl, fileName);
     entry.artifact = await (deps.downloadAndInspect || downloadAndInspect)(
@@ -815,7 +1219,7 @@ async function processCase(item, context, deps = {}) {
       deps,
     );
   }
-  const balanceAfter = await (deps.fetchBalance || fetchBalance)(context.apiKey, deps.fetchImpl);
+  const balanceAfter = await (deps.fetchBalance || fetchBalance)(client.apiKey, deps.fetchImpl);
   const delta = calculateBalanceDelta(entry.billing.before, balanceAfter);
   const usdCnyRate = Number(process.env.TOAPIS_USD_CNY_RATE || 0);
   if (!Number.isFinite(usdCnyRate) || usdCnyRate <= 0) throw new Error('缺少 TOAPIS_USD_CNY_RATE，无法记录人民币实际成本');
@@ -828,6 +1232,13 @@ async function processCase(item, context, deps = {}) {
     cost_yuan: round(delta.debited_balance * usdCnyRate),
     reviewed: false,
   };
+  try {
+    assertActualCostWithinHardCap(item, context);
+  } catch (error) {
+    entry.status = 'cost_cap_exceeded';
+    writeJsonAtomic(context.statePath, context.state);
+    throw error;
+  }
   entry.status = 'completed';
   if (!entry.completed_at) entry.completed_at = nowDate(deps).toISOString();
   entry.speed = {
@@ -842,7 +1253,7 @@ async function processCase(item, context, deps = {}) {
 async function runVerification(deps = {}) {
   normalizeToapisBaseUrl(process.env.TOAPIS_BASE_URL || BASE_URL);
   requireDedicatedVerificationToken();
-  const apiKey = requireApiKey();
+  const configIds = requireVerificationConfigIds();
   const {
     outputDir,
     publicArtifactDir,
@@ -852,21 +1263,28 @@ async function runVerification(deps = {}) {
     lockPath,
   } = resolveVerificationPaths(process.env);
   await fs.promises.mkdir(outputDir, { recursive: true });
-  await fs.promises.mkdir(publicArtifactDir, { recursive: true });
   const releaseLock = acquireVerificationLock(lockPath);
   try {
+  const configSnapshots = validateVerificationConfigs({ configIds });
+  const verificationClients = Object.fromEntries(configSnapshots.map(({ model, apiKey }) => [model, {
+    apiKey,
+    config: { base_url: BASE_URL, api_key: apiKey },
+  }]));
+  await fs.promises.mkdir(publicArtifactDir, { recursive: true });
   const state = readJson(statePath, { state_version: STATE_VERSION, cases: {} });
   if (state.state_version !== STATE_VERSION || !state.cases || typeof state.cases !== 'object') {
     throw new Error('验证状态文件版本不兼容');
   }
+  const configFingerprints = bindAndValidateVerificationState(state, configSnapshots);
+  const selectedCases = selectVerificationCases();
   const context = {
-    apiKey,
-    config: { base_url: BASE_URL, api_key: apiKey },
+    verificationClients,
     outputDir,
     artifactOutputDir: publicArtifactDir,
     publicAssetBaseUrl,
     statePath,
     state,
+    configFingerprints,
     refs: publicReferences(),
     confirmCostReview: process.env.TOAPIS_VERIFY_CONFIRM_COST === '1',
     runId: crypto.randomUUID(),
@@ -877,22 +1295,25 @@ async function runVerification(deps = {}) {
   };
   let activeCase = null;
   try {
-    for (const item of selectVerificationCases()) {
+    context.costBudget = preflightVerificationRun(selectedCases, context, deps);
+    context.preflightBalances = await preflightVerificationBalances(context, deps);
+    writeJsonAtomic(statePath, state);
+    for (const item of selectedCases) {
       activeCase = item.id;
       const result = await processCase(item, context, deps);
       process.stdout.write(`VERIFIED ${result.id} task=${result.provider_task_id} sha256=${result.artifact.sha256}\n`);
     }
     const results = await verifyAllStoredResults(context, deps);
-    const pricing = loadPricingEvidence();
+    let pricing;
+    try { pricing = loadPricingEvidence(); } catch (error) {
+      throw preserveExistingVerification(error);
+    }
     const evidence = buildReleaseEvidence(results, pricing, state.last_cost_review || null);
-    writeJsonAtomic(evidencePath, evidence);
     process.stdout.write(`${formatSpeedEvidenceSummary(evidence.speed_evidence)}\n`);
     if (context.confirmCostReview && !canConfirmCostReview(context)) {
-      throw new Error('本轮发生了付费提交或运行开始前尚未完成 8 个组合，费用确认必须在下一次零 POST 运行中执行');
+      throw preserveExistingVerification(new Error('本轮发生了付费提交或运行开始前尚未完成 8 个组合，费用确认必须在下一次零 POST 运行中执行'));
     }
-    if (!hasCompleteRequiredMatrix(results)) throw new Error('8 个必需真实验证组合尚未全部完成并复核费用');
-    if (!hasCompletePricing(pricing, results)) throw new Error('两模型 480P/720P 的人民币成本与积分价格尚未全部复核');
-    recordVerificationResult(results);
+    publishVerifiedEvidence(results, pricing, evidence, { configIds, configSnapshots, evidencePath });
     process.stdout.write(`TOAPIS_VIDEO_VERIFIED 8/8 evidence=${evidencePath}\n`);
     return { evidencePath, results, pricing };
   } catch (error) {
@@ -904,7 +1325,6 @@ async function runVerification(deps = {}) {
       error: safeError,
       completed_case_ids: Object.values(state.cases).filter((item) => item.status === 'completed').map((item) => item.id),
     });
-    recordVerificationResult(Object.values(state.cases), new Error(safeError));
     throw new Error(`${safeError}；脱敏失败证据已写入长期验证目录`);
   }
   } finally {
@@ -932,18 +1352,23 @@ module.exports = {
   calculateBalanceDelta,
   canConfirmCostReview,
   decideResumeAction,
+  downloadAndInspect,
+  evidenceBindingForFile,
   hasCompletePricing,
   hasCompleteRequiredMatrix,
   parseFfprobeJson,
   processCase,
+  publishVerifiedEvidence,
   recordVerificationResult,
   redactEvidence,
   requireDedicatedVerificationToken,
+  requireVerificationConfigIds,
   requiredPriceFloors,
   resolveVerificationPaths,
   runVerification,
   safeChildProcessEnv,
   selectVerificationCases,
   validateCompletedResult,
+  validateVerificationConfigs,
   verifyAllStoredResults,
 };

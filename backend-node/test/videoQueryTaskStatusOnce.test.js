@@ -80,7 +80,7 @@ test('所有单响应异步视频协议完成但无可信产物时都归为产�
   const cases = [
     ...['success', 'succeeded', 'completed', 'done'].map((status) => ({
       name: `ToAPIs ${status}`,
-      config: config('toapis', 'toapis_video', 'https://toapis.com'),
+      config: config('toapis', 'toapis_video', 'https://toapis.xyz'),
       payload: { status, result: { data: [] } },
     })),
     {
@@ -257,7 +257,7 @@ test('四种结构化协议的显式失败状态不受完成无产物文案影�
       config: {
         provider: 'toapis',
         api_protocol: 'toapis_video',
-        base_url: 'https://toapis.com',
+        base_url: 'https://toapis.xyz',
       },
       payload: {
         status,
@@ -314,7 +314,7 @@ test('普通轮询保留新增 strict 分类协议的旧完成无产物行为', 
     {
       name: 'ToAPIs',
       config: { provider: 'toapis', api_protocol: 'toapis_video' },
-      baseUrl: 'https://toapis.com',
+      baseUrl: 'https://toapis.xyz',
       payload: { status: 'completed', result: { data: [] } },
       error: 'ToAPIs 任务完成但未返回视频地址',
     },

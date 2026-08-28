@@ -43,7 +43,17 @@ function completeEvidence() {
       }];
     })),
   });
+  const accountState = {
+    'seedance-2-fast': { balance: 2.3, credits: 460, fingerprint: 'a'.repeat(64) },
+    'seedance-2-mini': { balance: 41.7, credits: 8340, fingerprint: 'b'.repeat(64) },
+  };
   const results = REQUIRED_CASE_IDS.map((id, index) => {
+    const model = modelFor(id);
+    const account = accountState[model];
+    const usedBalanceBefore = account.balance;
+    const usedCreditsBefore = account.credits;
+    account.balance = Number((account.balance + 0.1).toFixed(1));
+    account.credits += 20;
     const startedAt = new Date(Date.UTC(2026, 7, 7, 0, index * 2, 0));
     const generationElapsedSeconds = 60 + index;
     const completedAt = new Date(startedAt.getTime() + generationElapsedSeconds * 1000);
@@ -52,7 +62,8 @@ function completeEvidence() {
     const duration = id.startsWith('fast-t2v-') ? 5 : 4;
     return ({
     id,
-    model: modelFor(id),
+    model,
+    config_fingerprint: account.fingerprint,
     mode: modeFor(id),
     requested_resolution: resolution,
     requested_duration: duration,
@@ -65,7 +76,7 @@ function completeEvidence() {
     started_at: startedAt.toISOString(),
     completed_at: completedAt.toISOString(),
     request: {
-      model: modelFor(id),
+      model,
       resolution,
       duration,
       aspect_ratio: '16:9',
@@ -97,14 +108,14 @@ function completeEvidence() {
     },
     billing: {
       before: {
-        used_balance: Number((2.3 + index * 0.1).toFixed(1)),
-        used_credits: 460 + index * 20,
+        used_balance: usedBalanceBefore,
+        used_credits: usedCreditsBefore,
         credits_per_usd: 200,
         captured_at: new Date(Date.UTC(2026, 7, 7, 0, index * 2)).toISOString(),
       },
       after: {
-        used_balance: Number((2.4 + index * 0.1).toFixed(1)),
-        used_credits: 480 + index * 20,
+        used_balance: account.balance,
+        used_credits: account.credits,
         credits_per_usd: 200,
         captured_at: new Date(Date.UTC(2026, 7, 7, 0, index * 2 + 1)).toISOString(),
       },
@@ -120,7 +131,7 @@ function completeEvidence() {
   });
   return {
     contract_version: 'toapis-video-real-verification-v1',
-    provider_origin: 'https://toapis.com',
+    provider_origin: 'https://toapis.xyz',
     results,
     speed_evidence: speedSummary(results),
     cost_review: {

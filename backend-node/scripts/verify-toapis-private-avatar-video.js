@@ -14,9 +14,13 @@ const {
   callToapisVideoApi,
   fetchToapisTask,
 } = require('../src/services/toapisVideoClient');
+const {
+  requireVerificationConfigIds,
+  validateVerificationConfigs,
+} = require('./verify-toapis-video-models');
 
 const CONTRACT_VERSION = 'toapis-private-avatar-video-verification-v1';
-const BASE_URL = 'https://toapis.com';
+const BASE_URL = 'https://toapis.xyz';
 const LOG = { info() {}, warn() {}, error() {} };
 const CASES = Object.freeze([
   Object.freeze({ id: 'fast-avatar-480-4s', model: 'seedance-2-fast' }),
@@ -133,6 +137,148 @@ function billingDelta(before, after) {
   return { before, after, debited_balance: debitedBalance, debited_credits: debitedCredits };
 }
 
+function normalizeCostBudget(input, state) {
+  const expectedCosts = input.expectedCostsYuan;
+  const caseHardCaps = input.caseHardCapsYuan;
+  const aggregateHardCapYuan = Number(input.aggregateHardCapYuan);
+  const usdCnyRate = Number(input.usdCnyRate);
+  if (!expectedCosts || Array.isArray(expectedCosts) || typeof expectedCosts !== 'object') {
+    throw new Error('缺少私人形象验证预计人民币成本');
+  }
+  if (!caseHardCaps || Array.isArray(caseHardCaps) || typeof caseHardCaps !== 'object') {
+    throw new Error('缺少私人形象验证人民币单例硬上限');
+  }
+  if (!Number.isFinite(aggregateHardCapYuan) || aggregateHardCapYuan <= 0) {
+    throw new Error('缺少私人形象验证人民币总成本硬上限');
+  }
+  if (!Number.isFinite(usdCnyRate) || usdCnyRate <= 0) {
+    throw new Error('缺少 USD/CNY 汇率，无法执行人民币成本硬上限');
+  }
+  const normalizedExpected = {};
+  const normalizedCaseCaps = {};
+  for (const item of CASES) {
+    const expected = Number(expectedCosts[item.id]);
+    const hardCap = Number(caseHardCaps[item.id]);
+    if (!Number.isFinite(expected) || expected <= 0) throw new Error(`缺少 ${item.id} 的预计人民币成本`);
+    if (!Number.isFinite(hardCap) || hardCap <= 0) throw new Error(`缺少 ${item.id} 的人民币单例硬上限`);
+    if (expected > hardCap) throw new Error(`${item.id} 预计人民币成本 ${expected} 超过单例硬上限 ${hardCap}`);
+    const entry = state?.cases?.[item.id];
+    if (entry?.status === 'completed') {
+      const resumedExpected = Number(entry.billing?.expected_cost_yuan);
+      const resumedActual = Number(entry.billing?.cost_yuan);
+      if (!Number.isFinite(resumedExpected) || resumedExpected <= 0) throw new Error(`${item.id} 缺少人民币预计成本`);
+      if (!Number.isFinite(resumedActual) || resumedActual <= 0) throw new Error(`${item.id} 缺少人民币实际成本`);
+      if (resumedExpected > hardCap) throw new Error(`${item.id} 预计人民币成本 ${resumedExpected} 超过单例硬上限 ${hardCap}`);
+      if (resumedActual > hardCap) throw new Error(`${item.id} 实际人民币成本 ${resumedActual} 超过单例硬上限 ${hardCap}`);
+    }
+    normalizedExpected[item.id] = expected;
+    normalizedCaseCaps[item.id] = hardCap;
+  }
+  const completedActual = CASES.reduce((sum, item) => {
+    const value = Number(state?.cases?.[item.id]?.billing?.cost_yuan);
+    return sum + (Number.isFinite(value) && value > 0 ? value : 0);
+  }, 0);
+  const remainingExpected = CASES.reduce((sum, item) => (
+    state?.cases?.[item.id]?.status === 'completed' ? sum : sum + normalizedExpected[item.id]
+  ), 0);
+  const projected = round(completedActual + remainingExpected);
+  if (projected > aggregateHardCapYuan) {
+    throw new Error(`预计人民币总成本 ${projected} 超过硬上限 ${aggregateHardCapYuan}`);
+  }
+  return {
+    expectedCosts: normalizedExpected,
+    caseHardCaps: normalizedCaseCaps,
+    aggregateHardCapYuan,
+    usdCnyRate,
+  };
+}
+
+function configFingerprints(configSnapshots) {
+  const result = Object.fromEntries(configSnapshots.map((item) => [item.model, String(item.fingerprint || '')]));
+  for (const item of CASES) {
+    if (!/^[a-f0-9]{64}$/i.test(result[item.model] || '')) throw new Error(`缺少 ${item.model} 验证配置指纹`);
+  }
+  return result;
+}
+
+function bindAndValidateState(state, configSnapshots) {
+  const fingerprints = configFingerprints(configSnapshots);
+  const cases = state?.cases && typeof state.cases === 'object' ? state.cases : null;
+  if (!cases) throw new Error('私人形象验证状态文件不兼容');
+  const hasMaterialState = Object.keys(cases).length > 0
+    || Boolean(state.avatar?.group_id || state.avatar?.asset_id
+      || state.avatar?.group_submission_state || state.avatar?.asset_submission_state);
+  const hasBinding = Boolean(state.provider_origin || state.config_fingerprints);
+  if (!hasMaterialState && !hasBinding) {
+    state.provider_origin = BASE_URL;
+    state.config_fingerprints = { ...fingerprints };
+  }
+  if (state.provider_origin !== BASE_URL) throw new Error('私人形象验证状态未绑定 ToAPIs 官方入口');
+  for (const item of CASES) {
+    if (state.config_fingerprints?.[item.model] !== fingerprints[item.model]) {
+      throw new Error(`${item.model} 私人形象验证状态配置指纹不匹配，禁止复用旧状态`);
+    }
+  }
+  for (const [caseId, entry] of Object.entries(cases)) {
+    const expected = CASES.find((item) => item.id === caseId);
+    if (!expected || entry?.model !== expected.model
+        || entry?.provider_origin !== BASE_URL
+        || entry?.config_fingerprint !== fingerprints[expected.model]) {
+      throw new Error(`${caseId} 私人形象验证状态配置指纹不匹配`);
+    }
+  }
+  return fingerprints;
+}
+
+function verificationClientForModel(context, model) {
+  const client = context.verificationClients?.[model];
+  if (!client || !String(client.apiKey || '').trim()
+      || client.config?.api_key !== client.apiKey
+      || client.config?.base_url !== BASE_URL) {
+    throw new Error(`${model} 缺少数据库配置绑定的独立验证凭据`);
+  }
+  return client;
+}
+
+function assertNoUnknownSubmission(state) {
+  if (['submitting', 'indeterminate'].includes(state.avatar?.group_submission_state)) {
+    throw new Error('虚拟人像素材组提交结果未知，禁止自动重复提交');
+  }
+  if (['submitting', 'indeterminate'].includes(state.avatar?.asset_submission_state)) {
+    throw new Error('虚拟人像素材提交结果未知，禁止自动重复提交');
+  }
+  const blocked = Object.entries(state.cases || {}).find(([, entry]) => (
+    ['submitting', 'indeterminate'].includes(entry?.submission_state)
+  ));
+  if (blocked) throw new Error(`${blocked[0]} 提交结果未知，禁止自动重复提交`);
+  const capped = Object.entries(state.cases || {}).find(([, entry]) => entry?.status === 'cost_cap_exceeded');
+  if (capped) throw new Error(`${capped[0]} 已触发人民币成本硬上限，禁止继续供应商调用`);
+}
+
+function assertActualCostWithinBudget(item, context) {
+  const entry = context.state.cases[item.id];
+  const expected = Number(entry?.billing?.expected_cost_yuan);
+  const actual = Number(entry?.billing?.cost_yuan);
+  const caseCap = context.costBudget.caseHardCaps[item.id];
+  if (!Number.isFinite(expected) || expected <= 0) throw new Error(`${item.id} 缺少人民币预计成本`);
+  if (!Number.isFinite(actual) || actual <= 0) throw new Error(`${item.id} 缺少人民币实际成本`);
+  if (expected > caseCap) throw new Error(`${item.id} 预计人民币成本 ${expected} 超过单例硬上限 ${caseCap}`);
+  if (actual > caseCap) throw new Error(`${item.id} 实际人民币成本 ${actual} 超过单例硬上限 ${caseCap}`);
+  const actualTotal = CASES.reduce((sum, candidate) => {
+    const value = Number(context.state.cases[candidate.id]?.billing?.cost_yuan);
+    return sum + (Number.isFinite(value) && value > 0 ? value : 0);
+  }, 0);
+  const remainingExpected = CASES.reduce((sum, candidate) => (
+    context.state.cases[candidate.id]?.status === 'completed' || candidate.id === item.id
+      ? sum
+      : sum + context.costBudget.expectedCosts[candidate.id]
+  ), 0);
+  const projected = round(actualTotal + remainingExpected);
+  if (projected > context.costBudget.aggregateHardCapYuan) {
+    throw new Error(`按实际扣费重算的人民币总成本 ${projected} 超过硬上限 ${context.costBudget.aggregateHardCapYuan}`);
+  }
+}
+
 function safeChildEnv(env = process.env) {
   const allowed = ['PATH', 'Path', 'SystemRoot', 'WINDIR', 'PATHEXT', 'TEMP', 'TMP', 'HOME', 'USERPROFILE'];
   return Object.fromEntries(allowed.filter((key) => env[key] != null).map((key) => [key, env[key]]));
@@ -182,6 +328,7 @@ async function downloadArtifact(url, filePath, item, deps = {}) {
 async function ensureAvatar(state, input, context, deps) {
   if (state.avatar?.status === 'active') return state.avatar;
   state.avatar ||= {};
+  const client = verificationClientForModel(context, 'seedance-2-fast');
   const groupName = providerName('moli-avatar-group', input.sourceIdentity, state.source?.sha256);
   const assetName = providerName('moli-avatar-asset', input.sourceIdentity, state.source?.sha256);
   if (!state.avatar.group_id) {
@@ -192,10 +339,10 @@ async function ensureAvatar(state, input, context, deps) {
     delete state.avatar.group_error;
     context.save();
     try {
-      const group = await deps.createGroup(context.config, {
+      const group = await deps.createGroup(client.config, {
         name: groupName,
         description: '茉莉妈妈 AI 生成人物真实验证',
-      }, { fetchImpl: deps.fetchImpl });
+      }, { fetchImpl: deps.fetchImpl, apiKey: client.apiKey });
       state.avatar.group_id = group.group_id;
       state.avatar.group_submission_state = 'accepted';
       context.save();
@@ -219,10 +366,10 @@ async function ensureAvatar(state, input, context, deps) {
     delete state.avatar.asset_error;
     context.save();
     try {
-      const asset = await deps.createAsset(context.config, {
+      const asset = await deps.createAsset(client.config, {
         group_id: state.avatar.group_id, asset_type: 'image', source_url: input.sourceUrl,
         name: assetName,
-      }, { fetchImpl: deps.fetchImpl });
+      }, { fetchImpl: deps.fetchImpl, apiKey: client.apiKey });
       Object.assign(state.avatar, asset, { asset_submission_state: 'accepted' });
       context.save();
     } catch (error) {
@@ -240,7 +387,10 @@ async function ensureAvatar(state, input, context, deps) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     if (state.avatar.status === 'active') return state.avatar;
     if (attempt > 0) await deps.sleep(5000);
-    const asset = await deps.fetchAsset(context.config, state.avatar.asset_id, { fetchImpl: deps.fetchImpl });
+    const asset = await deps.fetchAsset(client.config, state.avatar.asset_id, {
+      fetchImpl: deps.fetchImpl,
+      apiKey: client.apiKey,
+    });
     Object.assign(state.avatar, asset);
     context.save();
     if (asset.status === 'failed') throw new Error('ToAPIs 虚拟人像素材处理失败');
@@ -250,23 +400,40 @@ async function ensureAvatar(state, input, context, deps) {
 
 async function processCase(item, state, context, deps) {
   let entry = state.cases[item.id];
-  if (entry?.status === 'completed') return entry;
+  if (entry?.status === 'completed') {
+    assertActualCostWithinBudget(item, context);
+    entry.billing.case_hard_cap_yuan = context.costBudget.caseHardCaps[item.id];
+    context.save();
+    return entry;
+  }
+  const client = verificationClientForModel(context, item.model);
   if (!entry) {
-    entry = { id: item.id, model: item.model, resolution: '480p', duration: 4 };
+    entry = {
+      id: item.id,
+      model: item.model,
+      resolution: '480p',
+      duration: 4,
+      provider_origin: BASE_URL,
+      config_fingerprint: context.configFingerprints[item.model],
+    };
     state.cases[item.id] = entry;
   }
   if (!entry.provider_task_id) {
     if (['submitting', 'indeterminate'].includes(entry.submission_state)) {
       throw new Error(`${item.id} 提交结果未知，禁止自动重复提交`);
     }
-    entry.billing = { before: await deps.fetchBalance(inputApiKey(context), deps.fetchImpl) };
+    entry.billing = {
+      expected_cost_yuan: context.costBudget.expectedCosts[item.id],
+      case_hard_cap_yuan: context.costBudget.caseHardCaps[item.id],
+      before: await deps.fetchBalance(client.apiKey, deps.fetchImpl),
+    };
     entry.started_at = nowDate(deps).toISOString();
     entry.submission_state = 'submitting';
     context.save();
     const submittedAt = nowDate(deps);
     const result = await deps.callVideo(
-      context.config, LOG, buildCaseOptions(item, state.avatar.asset_url, state.audit_run_id),
-      { fetchImpl: deps.fetchImpl },
+      client.config, LOG, buildCaseOptions(item, state.avatar.asset_url, state.audit_run_id),
+      { fetchImpl: deps.fetchImpl, apiKey: client.apiKey },
     );
     if (result.indeterminate) {
       entry.submission_state = 'indeterminate';
@@ -291,7 +458,10 @@ async function processCase(item, state, context, deps) {
   let completed;
   for (let attempt = 0; attempt < 120; attempt += 1) {
     if (attempt > 0) await deps.sleep(5000);
-    const status = await deps.fetchTask(context.config, entry.provider_task_id, { fetchImpl: deps.fetchImpl });
+    const status = await deps.fetchTask(client.config, entry.provider_task_id, {
+      fetchImpl: deps.fetchImpl,
+      apiKey: client.apiKey,
+    });
     if (status.state === 'failed') throw new Error(status.error || `${item.id} 生成失败`);
     if (status.state === 'completed' && status.videoUrl) { completed = status; break; }
   }
@@ -301,20 +471,33 @@ async function processCase(item, state, context, deps) {
   entry.artifact = await deps.downloadArtifact(completed.videoUrl, artifactPath, item, deps);
   entry.completed_at = completedAt.toISOString();
   entry.speed.generation_elapsed_seconds = round((completedAt.getTime() - Date.parse(entry.submitted_at)) / 1000, 3);
-  entry.billing = billingDelta(entry.billing.before, await deps.fetchBalance(inputApiKey(context), deps.fetchImpl));
+  entry.billing = {
+    ...entry.billing,
+    ...billingDelta(entry.billing.before, await deps.fetchBalance(client.apiKey, deps.fetchImpl)),
+  };
+  entry.billing.provider_currency = 'USD';
+  entry.billing.usd_cny_rate = context.costBudget.usdCnyRate;
+  entry.billing.cost_yuan = round(entry.billing.debited_balance * context.costBudget.usdCnyRate);
+  try {
+    assertActualCostWithinBudget(item, context);
+  } catch (error) {
+    entry.status = 'cost_cap_exceeded';
+    context.save();
+    throw error;
+  }
   entry.status = 'completed';
   delete entry.error;
   context.save();
   return entry;
 }
 
-function inputApiKey(context) {
-  return context.config.api_key;
-}
-
 async function runPrivateAvatarVerification(input = {}, injected = {}) {
   if (input.confirmPaidCall !== true) throw new Error('必须显式确认真实付费调用');
-  if (!String(input.apiKey || '').trim()) throw new Error('缺少 ToAPIs API Key');
+  if (String(input.apiKey || '').trim()) throw new Error('私人形象验证禁止使用全局 API Key，必须绑定 FAST/MINI 独立数据库配置');
+  const executionEnv = input.env || process.env;
+  if (String(executionEnv.TOAPIS_API_KEY || '').trim()) {
+    throw new Error('私人形象验证禁止使用全局 TOAPIS_API_KEY，必须绑定 FAST/MINI 独立数据库配置');
+  }
   if (!String(input.sourceUrl || '').startsWith('https://')) throw new Error('缺少已签名的公网 AI 图片 URL');
   if (!path.isAbsolute(String(input.sourcePath || '')) || !fs.existsSync(input.sourcePath)) throw new Error('缺少本地 AI 图片原件');
   if (!String(input.sourceIdentity || '').trim()) throw new Error('缺少平台 AI 图片来源标识');
@@ -335,6 +518,21 @@ async function runPrivateAvatarVerification(input = {}, injected = {}) {
     ...injected,
   };
   try {
+    const requestedConfigIds = input.configIds;
+    const configIds = requestedConfigIds
+      ? requireVerificationConfigIds({
+        TOAPIS_VERIFY_FAST_CONFIG_ID: requestedConfigIds['seedance-2-fast'],
+        TOAPIS_VERIFY_MINI_CONFIG_ID: requestedConfigIds['seedance-2-mini'],
+      })
+      : requireVerificationConfigIds(executionEnv);
+    const configSnapshots = (injected.validateConfigs || validateVerificationConfigs)({
+      configIds,
+      databasePath: input.databasePath,
+    });
+    const verificationClients = Object.fromEntries(configSnapshots.map(({ model, apiKey }) => [model, {
+      apiKey,
+      config: { base_url: BASE_URL, api_key: apiKey },
+    }]));
     const sourceBuffer = fs.readFileSync(input.sourcePath);
     const source = {
       identity: input.sourceIdentity,
@@ -350,11 +548,22 @@ async function runPrivateAvatarVerification(input = {}, injected = {}) {
       cases: {},
     });
     if (JSON.stringify(state.source) !== JSON.stringify(source)) throw new Error('验证来源已变化，禁止复用旧状态');
+    const fingerprints = bindAndValidateState(state, configSnapshots);
+    assertNoUnknownSubmission(state);
+    const costBudget = normalizeCostBudget(input, state);
     const context = {
-      config: { base_url: BASE_URL, api_key: String(input.apiKey).trim() },
+      verificationClients,
+      configFingerprints: fingerprints,
+      costBudget,
+      state,
       outputDir: path.resolve(input.outputDir),
       save: () => writeJsonAtomic(statePath, state),
     };
+    context.save();
+    for (const item of CASES) {
+      const client = verificationClientForModel(context, item.model);
+      await deps.fetchBalance(client.apiKey, deps.fetchImpl);
+    }
     await ensureAvatar(state, input, context, deps);
     const results = [];
     for (const item of CASES) results.push(await processCase(item, state, context, deps));
@@ -374,6 +583,8 @@ async function runPrivateAvatarVerification(input = {}, injected = {}) {
         case_count: results.length,
         total_debited_balance: round(results.reduce((sum, item) => sum + item.billing.debited_balance, 0)),
         total_debited_credits: round(results.reduce((sum, item) => sum + item.billing.debited_credits, 0)),
+        total_cost_yuan: round(results.reduce((sum, item) => sum + item.billing.cost_yuan, 0)),
+        aggregate_hard_cap_yuan: costBudget.aggregateHardCapYuan,
       },
     };
     writeJsonAtomic(evidencePath, evidence);
@@ -385,12 +596,31 @@ async function runPrivateAvatarVerification(input = {}, injected = {}) {
 
 function cliInput(argv = process.argv, env = process.env) {
   if (argv.some((value) => /(?:api[-_]?key|token)=/i.test(value))) throw new Error('禁止通过命令行参数传入供应商 Key');
+  const parseObject = (name) => {
+    const raw = String(env[name] || '').trim();
+    if (!raw) return null;
+    try {
+      const value = JSON.parse(raw);
+      if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error();
+      return value;
+    } catch (_) {
+      throw new Error(`${name} 必须是 JSON 对象`);
+    }
+  };
   return {
-    apiKey: String(env.TOAPIS_API_KEY || '').trim(),
+    configIds: {
+      'seedance-2-fast': Number(env.TOAPIS_VERIFY_FAST_CONFIG_ID),
+      'seedance-2-mini': Number(env.TOAPIS_VERIFY_MINI_CONFIG_ID),
+    },
+    databasePath: String(env.TOAPIS_VERIFY_DATABASE_PATH || env.DATABASE_PATH || '').trim(),
     sourceUrl: String(env.TOAPIS_AVATAR_VERIFY_SOURCE_URL || '').trim(),
     sourcePath: String(env.TOAPIS_AVATAR_VERIFY_SOURCE_PATH || '').trim(),
     sourceIdentity: String(env.TOAPIS_AVATAR_VERIFY_SOURCE_IDENTITY || '').trim(),
     outputDir: String(env.TOAPIS_AVATAR_VERIFY_OUTPUT_DIR || '').trim(),
+    expectedCostsYuan: parseObject('TOAPIS_EXPECTED_COST_YUAN_JSON'),
+    caseHardCapsYuan: parseObject('TOAPIS_VERIFY_CASE_HARD_CAP_YUAN_JSON'),
+    aggregateHardCapYuan: Number(env.TOAPIS_VERIFY_AGGREGATE_HARD_CAP_YUAN),
+    usdCnyRate: Number(env.TOAPIS_USD_CNY_RATE),
     confirmPaidCall: argv.includes('--confirm-paid-call'),
   };
 }

@@ -4,8 +4,13 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { describe, it } = require('node:test');
+const Database = require('better-sqlite3');
+
+const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const aiConfigService = require('../src/services/aiConfigService');
 
 const {
+  EVIDENCE_VERSION,
   buildRequiredMatrix,
   buildReleaseEvidence,
   buildSpeedEvidenceSummary,
@@ -27,17 +32,88 @@ const {
   safeChildProcessEnv,
   selectVerificationCases,
   processCase,
+  publishVerifiedEvidence,
+  recordVerificationResult,
+  requireVerificationConfigIds,
+  runVerification,
+  validateVerificationConfigs,
   verifyAllStoredResults,
 } = require('../scripts/verify-toapis-video-models');
 
+const log = { info() {}, warn() {}, error() {} };
+
+function createSplitVerificationDatabase(databasePath, overrides = {}) {
+  const db = new Database(databasePath);
+  runMigrationsAndEnsure(db);
+  const fast = aiConfigService.createConfig(db, log, {
+    service_type: 'video',
+    provider: 'toapis',
+    api_protocol: 'toapis_video',
+    name: 'ToAPIs Fast',
+    base_url: 'https://toapis.xyz',
+    api_key: overrides.fastApiKey || 'test-fast-key',
+    model: ['seedance-2-fast'],
+    default_model: 'seedance-2-fast',
+  });
+  const mini = aiConfigService.createConfig(db, log, {
+    service_type: 'video',
+    provider: overrides.miniProvider || 'toapis',
+    api_protocol: 'toapis_video',
+    name: 'ToAPIs Mini',
+    base_url: 'https://toapis.xyz',
+    api_key: overrides.miniApiKey || 'test-mini-key',
+    model: ['seedance-2-mini'],
+    default_model: 'seedance-2-mini',
+  });
+  db.close();
+  return { fastId: fast.id, miniId: mini.id };
+}
+
+function verificationRows(databasePath, configIds) {
+  const db = new Database(databasePath, { readonly: true, fileMustExist: true });
+  try {
+    return configIds.map((configId) => db.prepare(`SELECT id, verification_status, verified_capabilities,
+        verified_at, verification_error, updated_at
+      FROM ai_service_configs WHERE id = ?`).get(configId));
+  } finally {
+    db.close();
+  }
+}
+
+async function withProcessEnv(values, task) {
+  const previous = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]));
+  try {
+    for (const [key, value] of Object.entries(values)) {
+      if (value == null) delete process.env[key];
+      else process.env[key] = String(value);
+    }
+    return await task();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value == null) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
 function completedEvidence() {
+  const accountState = {
+    'seedance-2-fast': { balance: 1, credits: 200, fingerprint: 'a'.repeat(64) },
+    'seedance-2-mini': { balance: 10, credits: 2000, fingerprint: 'b'.repeat(64) },
+  };
   return buildRequiredMatrix().map((item, index) => {
     const startedAt = new Date(Date.UTC(2026, 7, 7, 0, index * 2, 0));
     const generationElapsedSeconds = 60 + index;
     const completedAt = new Date(startedAt.getTime() + generationElapsedSeconds * 1000);
+    const account = accountState[item.model];
+    const usedBalanceBefore = account.balance;
+    const usedCreditsBefore = account.credits;
+    account.balance = Number((account.balance + 0.1).toFixed(1));
+    account.credits += 20;
     return {
       id: item.id,
       model: item.model,
+      config_fingerprint: account.fingerprint,
       mode: item.mode,
       requested_resolution: item.resolution,
       requested_duration: item.duration,
@@ -71,14 +147,14 @@ function completedEvidence() {
       },
       billing: {
         before: {
-          used_balance: Number((2.3 + index * 0.1).toFixed(1)),
-          used_credits: 460 + index * 20,
+          used_balance: usedBalanceBefore,
+          used_credits: usedCreditsBefore,
           credits_per_usd: 200,
           captured_at: new Date(Date.UTC(2026, 7, 7, 0, index * 2)).toISOString(),
         },
         after: {
-          used_balance: Number((2.4 + index * 0.1).toFixed(1)),
-          used_credits: 480 + index * 20,
+          used_balance: account.balance,
+          used_credits: account.credits,
           credits_per_usd: 200,
           captured_at: new Date(Date.UTC(2026, 7, 7, 0, index * 2 + 1)).toISOString(),
         },
@@ -325,13 +401,34 @@ describe('ToAPIs real video verification contract', () => {
       '2026-08-07T00:02:03.000Z',
     ];
     const context = {
-      apiKey: 'test-key',
-      config: { base_url: 'https://toapis.com', api_key: 'test-key' },
+      verificationClients: {
+        'seedance-2-fast': {
+          apiKey: 'test-key',
+          config: { base_url: 'https://toapis.xyz', api_key: 'test-key' },
+        },
+      },
       outputDir,
       artifactOutputDir: outputDir,
       publicAssetBaseUrl: 'https://molimama.vip/verification-assets/toapis',
       statePath,
-      state: { state_version: 'toapis-video-verification-state-v1', cases: {} },
+      state: {
+        state_version: 'toapis-video-verification-state-v1',
+        provider_origin: 'https://toapis.xyz',
+        config_fingerprints: {
+          'seedance-2-fast': 'a'.repeat(64),
+          'seedance-2-mini': 'b'.repeat(64),
+        },
+        cases: {},
+      },
+      configFingerprints: {
+        'seedance-2-fast': 'a'.repeat(64),
+        'seedance-2-mini': 'b'.repeat(64),
+      },
+      costBudget: {
+        expectedCosts: { [item.id]: 3.6 },
+        aggregateHardCapYuan: 9.2,
+        perCaseHardCaps: {},
+      },
       refs: {},
       submittedCaseIds: [],
     };
@@ -412,6 +509,1078 @@ describe('ToAPIs real video verification contract', () => {
   it('requires an isolated verification token before any paid call', () => {
     assert.throws(() => requireDedicatedVerificationToken({}), /专用验证 Token/);
     assert.doesNotThrow(() => requireDedicatedVerificationToken({ TOAPIS_VERIFY_DEDICATED_TOKEN: '1' }));
+  });
+
+  it('requires two distinct verification config ids for the split Fast and Mini routes', () => {
+    assert.deepEqual(requireVerificationConfigIds({
+      TOAPIS_VERIFY_FAST_CONFIG_ID: '16',
+      TOAPIS_VERIFY_MINI_CONFIG_ID: '27',
+    }), {
+      'seedance-2-fast': 16,
+      'seedance-2-mini': 27,
+    });
+    assert.throws(() => requireVerificationConfigIds({
+      TOAPIS_VERIFY_FAST_CONFIG_ID: '16',
+      TOAPIS_VERIFY_MINI_CONFIG_ID: '16',
+    }), /必须分别指向两个配置/);
+    assert.throws(() => requireVerificationConfigIds({
+      TOAPIS_VERIFY_FAST_CONFIG_ID: '16',
+    }), /MINI_CONFIG_ID/);
+  });
+
+  it('rejects swapped split routes before a paid verification can start', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-split-preflight-'));
+    const databasePath = path.join(directory, 'verification.db');
+    try {
+      const configIds = createSplitVerificationDatabase(databasePath);
+      assert.throws(() => validateVerificationConfigs({
+        databasePath,
+        configIds: {
+          'seedance-2-fast': configIds.miniId,
+          'seedance-2-mini': configIds.fastId,
+        },
+      }), /seedance-2-fast/);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('runs the split-config preflight before any balance or paid provider call', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-run-preflight-'));
+    const databasePath = path.join(directory, 'verification.db');
+    try {
+      const configIds = createSplitVerificationDatabase(databasePath);
+      let balanceCalls = 0;
+      let createCalls = 0;
+      await assert.rejects(() => withProcessEnv({
+        TOAPIS_BASE_URL: 'https://toapis.xyz',
+        TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
+        TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.miniId,
+        TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.fastId,
+        TOAPIS_VERIFY_DATABASE_PATH: databasePath,
+        TOAPIS_VERIFY_OUTPUT_DIR: path.join(directory, 'private'),
+        TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR: path.join(directory, 'public'),
+        TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL: 'https://molimama.vip/verification-assets/toapis',
+        TOAPIS_API_KEY: 'test-provider-key',
+      }, () => runVerification({
+        async fetchBalance() { balanceCalls += 1; },
+        async createTask() { createCalls += 1; },
+      })), /seedance-2-fast/);
+      assert.equal(balanceCalls, 0);
+      assert.equal(createCalls, 0);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects split verification configs that reuse the same provider key', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-shared-key-preflight-'));
+    const databasePath = path.join(directory, 'verification.db');
+    try {
+      const configIds = createSplitVerificationDatabase(databasePath, {
+        fastApiKey: 'shared-provider-key',
+        miniApiKey: 'shared-provider-key',
+      });
+      assert.throws(() => validateVerificationConfigs({
+        databasePath,
+        configIds: {
+          'seedance-2-fast': configIds.fastId,
+          'seedance-2-mini': configIds.miniId,
+        },
+      }), /FAST.*MINI.*Key.*分别|不能共用/);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('preflights both config-bound balances before the first paid POST', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-split-key-balance-'));
+    const databasePath = path.join(directory, 'verification.db');
+    try {
+      const configIds = createSplitVerificationDatabase(databasePath);
+      const balanceKeys = [];
+      let createCalls = 0;
+      await assert.rejects(() => withProcessEnv({
+        TOAPIS_BASE_URL: 'https://toapis.xyz',
+        TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
+        TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
+        TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
+        TOAPIS_VERIFY_DATABASE_PATH: databasePath,
+        TOAPIS_VERIFY_OUTPUT_DIR: path.join(directory, 'private'),
+        TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR: path.join(directory, 'public'),
+        TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL: 'https://molimama.vip/verification-assets/toapis',
+        TOAPIS_VERIFY_CASES: 'fast-t2v-480,mini-t2v-480',
+        TOAPIS_EXPECTED_COST_YUAN_JSON: JSON.stringify({
+          'fast-t2v-480': 1,
+          'mini-t2v-480': 1,
+        }),
+        TOAPIS_VERIFY_AGGREGATE_HARD_CAP_YUAN: '9.20',
+        TOAPIS_API_KEY: 'wrong-global-key',
+      }, () => runVerification({
+        assertFfprobeAvailable() {},
+        async fetchBalance(apiKey) {
+          balanceKeys.push(apiKey);
+          if (apiKey === 'test-fast-key') {
+            return { used_balance: 1, used_credits: 100, credits_per_usd: 200 };
+          }
+          if (apiKey === 'test-mini-key') throw new Error('MINI 余额预检失败');
+          throw new Error('使用了非配置绑定 Key');
+        },
+        async createTask() {
+          createCalls += 1;
+          throw new Error('不应触发 POST');
+        },
+      })), /MINI 余额预检失败/);
+      assert.deepEqual(balanceKeys, ['test-fast-key', 'test-mini-key']);
+      assert.equal(createCalls, 0);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('submits, polls and measures each model with its own config-bound key', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-split-key-routing-'));
+    const databasePath = path.join(directory, 'verification.db');
+    try {
+      const configIds = createSplitVerificationDatabase(databasePath);
+      const balanceKeys = [];
+      const submitKeys = [];
+      const pollKeys = [];
+      await assert.rejects(() => withProcessEnv({
+        TOAPIS_BASE_URL: 'https://toapis.xyz',
+        TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
+        TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
+        TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
+        TOAPIS_VERIFY_DATABASE_PATH: databasePath,
+        TOAPIS_VERIFY_OUTPUT_DIR: path.join(directory, 'private'),
+        TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR: path.join(directory, 'public'),
+        TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL: 'https://molimama.vip/verification-assets/toapis',
+        TOAPIS_VERIFY_CASES: 'fast-t2v-480,mini-t2v-480',
+        TOAPIS_EXPECTED_COST_YUAN_JSON: JSON.stringify({
+          'fast-t2v-480': 1,
+          'mini-t2v-480': 1,
+        }),
+        TOAPIS_VERIFY_AGGREGATE_HARD_CAP_YUAN: '9.20',
+        TOAPIS_USD_CNY_RATE: '7.2',
+        TOAPIS_VERIFY_MAX_POLLS: '1',
+        TOAPIS_VERIFY_POLL_MS: '0',
+        TOAPIS_API_KEY: null,
+      }, () => runVerification({
+        assertFfprobeAvailable() {},
+        async fetchBalance(apiKey) {
+          balanceKeys.push(apiKey);
+          const modelCallCount = balanceKeys.filter((value) => value === apiKey).length;
+          return {
+            used_balance: modelCallCount > 2 ? 1.1 : 1,
+            used_credits: modelCallCount > 2 ? 120 : 100,
+            credits_per_usd: 200,
+          };
+        },
+        async createTask(config, _log, _opts, requestOpts) {
+          submitKeys.push(requestOpts.apiKey);
+          assert.equal(config.api_key, requestOpts.apiKey);
+          return { task_id: `task-${submitKeys.length}` };
+        },
+        async fetchTask(config, _taskId, requestOpts) {
+          pollKeys.push(requestOpts.apiKey);
+          assert.equal(config.api_key, requestOpts.apiKey);
+          if (requestOpts.apiKey === 'test-mini-key') return { state: 'failed', error: 'MINI 任务明确失败' };
+          return { state: 'completed', progress: 100, videoUrl: 'https://assets.example/video.mp4' };
+        },
+        async downloadAndInspect(_url, filePath, item, publicUrl) {
+          const bytes = Buffer.alloc(2048, 1);
+          fs.writeFileSync(filePath, bytes);
+          return {
+            public_url: publicUrl,
+            output_file: path.basename(filePath),
+            bytes: bytes.length,
+            sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+            ffprobe: { width: 864, height: 496, duration_seconds: item.duration, video_codec: 'h264', has_audio: true },
+          };
+        },
+        async sleep() {},
+      })), /MINI 任务明确失败/);
+      assert.deepEqual(submitKeys, ['test-fast-key', 'test-mini-key']);
+      assert.deepEqual(pollKeys, ['test-fast-key', 'test-mini-key']);
+      assert.deepEqual(balanceKeys, [
+        'test-fast-key', 'test-mini-key',
+        'test-fast-key', 'test-fast-key',
+        'test-mini-key',
+      ]);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('captures a fresh config-bound before and after balance for all eight paid cases', async () => {
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-eight-case-billing-'));
+    const matrix = buildRequiredMatrix();
+    const fingerprints = {
+      'seedance-2-fast': 'a'.repeat(64),
+      'seedance-2-mini': 'b'.repeat(64),
+    };
+    const accountState = {
+      'test-fast-key': { balance: 1, credits: 200 },
+      'test-mini-key': { balance: 10, credits: 2000 },
+    };
+    const context = {
+      verificationClients: {
+        'seedance-2-fast': {
+          apiKey: 'test-fast-key',
+          config: { base_url: 'https://toapis.xyz', api_key: 'test-fast-key' },
+        },
+        'seedance-2-mini': {
+          apiKey: 'test-mini-key',
+          config: { base_url: 'https://toapis.xyz', api_key: 'test-mini-key' },
+        },
+      },
+      outputDir,
+      artifactOutputDir: outputDir,
+      publicAssetBaseUrl: 'https://molimama.vip/verification-assets/toapis',
+      statePath: path.join(outputDir, 'state.json'),
+      state: {
+        state_version: 'toapis-video-verification-state-v1',
+        provider_origin: 'https://toapis.xyz',
+        config_fingerprints: fingerprints,
+        cases: {},
+      },
+      configFingerprints: fingerprints,
+      costBudget: {
+        expectedCosts: Object.fromEntries(matrix.map((item) => [item.id, 0.72])),
+        aggregateHardCapYuan: 9.2,
+        perCaseHardCaps: {},
+      },
+      refs: {
+        firstFrameUrl: 'https://assets.example/first.png',
+        lastFrameUrl: 'https://assets.example/last.png',
+        referenceImageUrl: 'https://assets.example/ref.png',
+        referenceVideoUrl: 'https://assets.example/ref.mp4',
+        referenceAudioUrl: 'https://assets.example/ref.mp3',
+      },
+      runId: 'eight-case-billing-run',
+      submittedCaseIds: [],
+      preflightBalances: {
+        'seedance-2-fast': {
+          used_balance: 1,
+          used_credits: 200,
+          credits_per_usd: 200,
+          captured_at: '2026-08-28T00:00:00.000Z',
+        },
+        'seedance-2-mini': {
+          used_balance: 10,
+          used_credits: 2000,
+          credits_per_usd: 200,
+          captured_at: '2026-08-28T00:00:01.000Z',
+        },
+      },
+    };
+    const balanceKeys = [];
+    let clock = Date.parse('2026-08-28T01:00:00.000Z');
+    const nextIso = () => {
+      const value = new Date(clock).toISOString();
+      clock += 1000;
+      return value;
+    };
+    const deps = {
+      now: () => {
+        const value = new Date(clock);
+        clock += 1000;
+        return value;
+      },
+      async fetchBalance(apiKey) {
+        balanceKeys.push(apiKey);
+        const account = accountState[apiKey];
+        const caseId = context.submittedCaseIds.at(-1);
+        const isAfter = Boolean(context.state.cases[caseId]?.billing?.before);
+        if (isAfter) {
+          account.balance = Number((account.balance + 0.1).toFixed(1));
+          account.credits += 20;
+        }
+        return {
+          used_balance: account.balance,
+          used_credits: account.credits,
+          credits_per_usd: 200,
+          captured_at: nextIso(),
+        };
+      },
+      async createTask(_config, _log, _options, requestOptions) {
+        return { task_id: `task-${requestOptions.apiKey}-${context.submittedCaseIds.at(-1)}` };
+      },
+      async fetchTask() {
+        return { state: 'completed', progress: 100, videoUrl: 'https://assets.example/video.mp4' };
+      },
+      async downloadAndInspect(_url, filePath, item, publicUrl) {
+        const bytes = Buffer.alloc(2048, 1);
+        return {
+          public_url: publicUrl,
+          output_file: path.basename(filePath),
+          bytes: bytes.length,
+          sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+          ffprobe: {
+            width: item.resolution === '720p' ? 1280 : 864,
+            height: item.resolution === '720p' ? 720 : 496,
+            duration_seconds: item.duration,
+            video_codec: 'h264',
+            has_audio: item.generateAudio === true,
+          },
+        };
+      },
+      async sleep() {},
+    };
+    const previousRate = process.env.TOAPIS_USD_CNY_RATE;
+    process.env.TOAPIS_USD_CNY_RATE = '7.2';
+    try {
+      for (const item of matrix) await processCase(item, context, deps);
+      assert.equal(context.submittedCaseIds.length, 8);
+      assert.equal(balanceKeys.filter((key) => key === 'test-fast-key').length, 8);
+      assert.equal(balanceKeys.filter((key) => key === 'test-mini-key').length, 8);
+      for (const item of matrix) {
+        assert.ok(Date.parse(context.state.cases[item.id].billing.before.captured_at)
+          >= Date.parse('2026-08-28T01:00:00.000Z'));
+      }
+    } finally {
+      if (previousRate == null) delete process.env.TOAPIS_USD_CNY_RATE;
+      else process.env.TOAPIS_USD_CNY_RATE = previousRate;
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it('stops before POST when the supplier balance snapshot is not numeric', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-invalid-balance-'));
+    const databasePath = path.join(directory, 'verification.db');
+    try {
+      const configIds = createSplitVerificationDatabase(databasePath);
+      let getCalls = 0;
+      let postCalls = 0;
+      await assert.rejects(() => withProcessEnv({
+        TOAPIS_BASE_URL: 'https://toapis.xyz',
+        TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
+        TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
+        TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
+        TOAPIS_VERIFY_DATABASE_PATH: databasePath,
+        TOAPIS_VERIFY_OUTPUT_DIR: path.join(directory, 'private'),
+        TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR: path.join(directory, 'public'),
+        TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL: 'https://molimama.vip/verification-assets/toapis',
+        TOAPIS_VERIFY_CASES: 'fast-t2v-480',
+        TOAPIS_EXPECTED_COST_YUAN_JSON: JSON.stringify({ 'fast-t2v-480': 1 }),
+        TOAPIS_VERIFY_AGGREGATE_HARD_CAP_YUAN: '9.20',
+        TOAPIS_API_KEY: 'test-provider-key',
+      }, () => runVerification({
+        assertFfprobeAvailable() {},
+        async fetchImpl(_url, options = {}) {
+          if (options.method === 'GET') {
+            getCalls += 1;
+            return {
+              ok: true,
+              async json() {
+                return { success: true, used_balance: 'invalid', used_credits: 100, remain_balance: -1 };
+              },
+            };
+          }
+          postCalls += 1;
+          throw new Error('unexpected provider POST');
+        },
+      })), /used_balance.*有效数字/);
+      assert.equal(getCalls, 1);
+      assert.equal(postCalls, 0);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('preflights every selected case cost, reference and ffprobe dependency before any supplier call', async () => {
+    const scenarios = [
+      {
+        name: 'later-cost',
+        selector: 'fast-t2v-480,mini-t2v-480',
+        expectedCosts: { 'fast-t2v-480': 1 },
+        refs: {},
+        deps: { assertFfprobeAvailable() {} },
+        error: /mini-t2v-480.*预计人民币成本/,
+      },
+      {
+        name: 'later-reference',
+        selector: 'fast-t2v-480,mini-omni-480',
+        expectedCosts: { 'fast-t2v-480': 1, 'mini-omni-480': 1 },
+        refs: {},
+        deps: { assertFfprobeAvailable() {} },
+        error: /mini-omni-480.*参考图片/,
+      },
+      {
+        name: 'ffprobe',
+        selector: 'fast-t2v-480',
+        expectedCosts: { 'fast-t2v-480': 1 },
+        refs: {},
+        deps: { assertFfprobeAvailable() { throw new Error('ffprobe unavailable'); } },
+        error: /ffprobe unavailable/,
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), `toapis-full-preflight-${scenario.name}-`));
+      const databasePath = path.join(directory, 'verification.db');
+      try {
+        const configIds = createSplitVerificationDatabase(databasePath);
+        let balanceCalls = 0;
+        let createCalls = 0;
+        await assert.rejects(() => withProcessEnv({
+          TOAPIS_BASE_URL: 'https://toapis.xyz',
+          TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
+          TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
+          TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
+          TOAPIS_VERIFY_DATABASE_PATH: databasePath,
+          TOAPIS_VERIFY_OUTPUT_DIR: path.join(directory, 'private'),
+          TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR: path.join(directory, 'public'),
+          TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL: 'https://molimama.vip/verification-assets/toapis',
+          TOAPIS_VERIFY_CASES: scenario.selector,
+          TOAPIS_EXPECTED_COST_YUAN_JSON: JSON.stringify(scenario.expectedCosts),
+          TOAPIS_VERIFY_AGGREGATE_HARD_CAP_YUAN: '9.20',
+          TOAPIS_VERIFY_FIRST_FRAME_URL: scenario.refs.firstFrameUrl,
+          TOAPIS_VERIFY_LAST_FRAME_URL: scenario.refs.lastFrameUrl,
+          TOAPIS_VERIFY_REFERENCE_IMAGE_URL: scenario.refs.referenceImageUrl,
+          TOAPIS_VERIFY_REFERENCE_VIDEO_URL: scenario.refs.referenceVideoUrl,
+          TOAPIS_VERIFY_REFERENCE_AUDIO_URL: scenario.refs.referenceAudioUrl,
+          TOAPIS_API_KEY: 'test-provider-key',
+        }, () => runVerification({
+          async fetchBalance() { balanceCalls += 1; return { used_balance: 1, used_credits: 100 }; },
+          async createTask() { createCalls += 1; return { indeterminate: true, error: 'must not submit' }; },
+          ...scenario.deps,
+        })), scenario.error);
+        assert.equal(balanceCalls, 0);
+        assert.equal(createCalls, 0);
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('refuses direct paid case processing without the bound run budget before any supplier call', async () => {
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-direct-budget-'));
+    const item = buildRequiredMatrix()[0];
+    let balanceCalls = 0;
+    let createCalls = 0;
+    try {
+      await assert.rejects(() => withProcessEnv({
+        TOAPIS_EXPECTED_COST_YUAN_JSON: JSON.stringify({ [item.id]: 1 }),
+      }, () => processCase(item, {
+        verificationClients: {
+          'seedance-2-fast': {
+            apiKey: 'test-key',
+            config: { base_url: 'https://toapis.xyz', api_key: 'test-key' },
+          },
+        },
+        outputDir,
+        artifactOutputDir: outputDir,
+        publicAssetBaseUrl: 'https://molimama.vip/verification-assets/toapis',
+        statePath: path.join(outputDir, 'state.json'),
+        state: { state_version: 'toapis-video-verification-state-v1', cases: {} },
+        refs: {},
+        submittedCaseIds: [],
+      }, {
+        async fetchBalance() { balanceCalls += 1; return { used_balance: 1, used_credits: 100 }; },
+        async createTask() { createCalls += 1; return { indeterminate: true, error: 'must not submit' }; },
+      })), /整轮成本预检/);
+      assert.equal(balanceCalls, 0);
+      assert.equal(createCalls, 0);
+    } finally {
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it('requires an aggregate RMB hard cap and rejects an over-budget matrix before any supplier call', async () => {
+    const scenarios = [
+      { name: 'missing', hardCap: null, error: /AGGREGATE_HARD_CAP_YUAN/ },
+      { name: 'exceeded', hardCap: '1.99', error: /预计人民币总成本.*硬上限/ },
+    ];
+    for (const scenario of scenarios) {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), `toapis-hard-cap-${scenario.name}-`));
+      const databasePath = path.join(directory, 'verification.db');
+      try {
+        const configIds = createSplitVerificationDatabase(databasePath);
+        let balanceCalls = 0;
+        let createCalls = 0;
+        await assert.rejects(() => withProcessEnv({
+          TOAPIS_BASE_URL: 'https://toapis.xyz',
+          TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
+          TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
+          TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
+          TOAPIS_VERIFY_DATABASE_PATH: databasePath,
+          TOAPIS_VERIFY_OUTPUT_DIR: path.join(directory, 'private'),
+          TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR: path.join(directory, 'public'),
+          TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL: 'https://molimama.vip/verification-assets/toapis',
+          TOAPIS_VERIFY_CASES: 'fast-t2v-480,mini-t2v-480',
+          TOAPIS_EXPECTED_COST_YUAN_JSON: JSON.stringify({ 'fast-t2v-480': 1, 'mini-t2v-480': 1 }),
+          TOAPIS_VERIFY_AGGREGATE_HARD_CAP_YUAN: scenario.hardCap,
+          TOAPIS_API_KEY: 'test-provider-key',
+        }, () => runVerification({
+          assertFfprobeAvailable() {},
+          async fetchBalance() { balanceCalls += 1; return { used_balance: 1, used_credits: 100 }; },
+          async createTask() { createCalls += 1; return { indeterminate: true, error: 'must not submit' }; },
+        })), scenario.error);
+        assert.equal(balanceCalls, 0);
+        assert.equal(createCalls, 0);
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('stops the matrix after a real debit exceeds the aggregate hard cap', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-actual-hard-cap-'));
+    const databasePath = path.join(directory, 'verification.db');
+    const outputDir = path.join(directory, 'private');
+    const publicArtifactDir = path.join(directory, 'public');
+    try {
+      const configIds = createSplitVerificationDatabase(databasePath);
+      let balanceCalls = 0;
+      const balanceCallsByKey = new Map();
+      let createCalls = 0;
+      await assert.rejects(() => withProcessEnv({
+        TOAPIS_BASE_URL: 'https://toapis.xyz',
+        TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
+        TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
+        TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
+        TOAPIS_VERIFY_DATABASE_PATH: databasePath,
+        TOAPIS_VERIFY_OUTPUT_DIR: outputDir,
+        TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR: publicArtifactDir,
+        TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL: 'https://molimama.vip/verification-assets/toapis',
+        TOAPIS_VERIFY_CASES: 'fast-t2v-480,mini-t2v-480',
+        TOAPIS_EXPECTED_COST_YUAN_JSON: JSON.stringify({ 'fast-t2v-480': 1, 'mini-t2v-480': 1 }),
+        TOAPIS_VERIFY_AGGREGATE_HARD_CAP_YUAN: '2.50',
+        TOAPIS_USD_CNY_RATE: '7.2',
+        TOAPIS_API_KEY: 'test-provider-key',
+      }, () => runVerification({
+        assertFfprobeAvailable() {},
+        async fetchBalance(apiKey) {
+          balanceCalls += 1;
+          const modelCallCount = (balanceCallsByKey.get(apiKey) || 0) + 1;
+          balanceCallsByKey.set(apiKey, modelCallCount);
+          return apiKey === 'test-fast-key' && modelCallCount > 2
+            ? { used_balance: 1.4, used_credits: 140, captured_at: '2026-08-28T00:01:00.000Z' }
+            : { used_balance: 1, used_credits: 100, captured_at: '2026-08-28T00:00:00.000Z' };
+        },
+        async createTask() { createCalls += 1; return { task_id: 'task-over-cap' }; },
+        async fetchTask() { return { state: 'completed', progress: 100, videoUrl: 'https://assets.example/video.mp4' }; },
+        async downloadAndInspect(_url, filePath, item, publicUrl) {
+          const bytes = Buffer.alloc(2048, 1);
+          fs.writeFileSync(filePath, bytes);
+          return {
+            public_url: publicUrl,
+            output_file: path.basename(filePath),
+            bytes: bytes.length,
+            sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+            ffprobe: { width: 864, height: 496, duration_seconds: item.duration, video_codec: 'h264', has_audio: true },
+          };
+        },
+        async sleep() {},
+      })), /实际人民币总成本.*硬上限/);
+      assert.equal(createCalls, 1);
+      assert.equal(balanceCalls, 4);
+      const state = JSON.parse(fs.readFileSync(path.join(outputDir, 'toapis-video-verification-state.json')));
+      assert.equal(state.cases['fast-t2v-480'].status, 'cost_cap_exceeded');
+      assert.equal(state.cases['fast-t2v-480'].billing.cost_yuan, 2.88);
+      assert.equal(state.cases['mini-t2v-480'], undefined);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects legacy or fingerprint-mismatched state before replaying any selected case', async () => {
+    const stateVariants = [
+      {
+        name: 'legacy-origin',
+        state: {
+          state_version: 'toapis-video-verification-state-v1',
+          provider_origin: 'https://toapis.com',
+          cases: { 'mini-t2v-480': { id: 'mini-t2v-480', submission_state: 'indeterminate' } },
+        },
+        error: /状态.*官方入口|版本不兼容/,
+      },
+      {
+        name: 'legacy-v1-origin',
+        state: {
+          state_version: 'toapis-video-verification-state-v1',
+          provider_origin: 'https://toapis.xyz/v1',
+          cases: {},
+        },
+        error: /状态.*官方入口|版本不兼容/,
+      },
+      {
+        name: 'fingerprint',
+        state: {
+          state_version: 'toapis-video-verification-state-v1',
+          provider_origin: 'https://toapis.xyz',
+          config_fingerprints: { 'seedance-2-fast': 'old-fast', 'seedance-2-mini': 'old-mini' },
+          cases: {},
+        },
+        error: /配置指纹/,
+      },
+      {
+        name: 'case-fingerprint',
+        buildState(fingerprints) {
+          return {
+            state_version: 'toapis-video-verification-state-v1',
+            provider_origin: 'https://toapis.xyz',
+            config_fingerprints: fingerprints,
+            cases: {
+              'fast-t2v-480': {
+                id: 'fast-t2v-480',
+                model: 'seedance-2-fast',
+                provider_origin: 'https://toapis.xyz',
+                config_fingerprint: '0'.repeat(64),
+                submission_state: 'accepted',
+                provider_task_id: 'task-old-config',
+              },
+            },
+          };
+        },
+        error: /fast-t2v-480.*配置指纹/,
+      },
+    ];
+    for (const variant of stateVariants) {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), `toapis-state-binding-${variant.name}-`));
+      const databasePath = path.join(directory, 'verification.db');
+      const outputDir = path.join(directory, 'private');
+      try {
+        const configIds = createSplitVerificationDatabase(databasePath);
+        const snapshots = validateVerificationConfigs({
+          databasePath,
+          configIds: { 'seedance-2-fast': configIds.fastId, 'seedance-2-mini': configIds.miniId },
+        });
+        const fingerprints = Object.fromEntries(snapshots.map((item) => [item.model, item.fingerprint]));
+        fs.mkdirSync(outputDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(outputDir, 'toapis-video-verification-state.json'),
+          JSON.stringify(variant.buildState ? variant.buildState(fingerprints) : variant.state),
+        );
+        let balanceCalls = 0;
+        let createCalls = 0;
+        await assert.rejects(() => withProcessEnv({
+          TOAPIS_BASE_URL: 'https://toapis.xyz',
+          TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
+          TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
+          TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
+          TOAPIS_VERIFY_DATABASE_PATH: databasePath,
+          TOAPIS_VERIFY_OUTPUT_DIR: outputDir,
+          TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR: path.join(directory, 'public'),
+          TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL: 'https://molimama.vip/verification-assets/toapis',
+          TOAPIS_VERIFY_CASES: 'fast-t2v-480',
+          TOAPIS_EXPECTED_COST_YUAN_JSON: JSON.stringify({ 'fast-t2v-480': 1 }),
+          TOAPIS_VERIFY_AGGREGATE_HARD_CAP_YUAN: '9.20',
+          TOAPIS_API_KEY: 'test-provider-key',
+        }, () => runVerification({
+          assertFfprobeAvailable() {},
+          async fetchBalance() { balanceCalls += 1; },
+          async createTask() { createCalls += 1; },
+        })), variant.error);
+        assert.equal(balanceCalls, 0);
+        assert.equal(createCalls, 0);
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('blocks every selector when any state case is submitting or indeterminate', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-global-indeterminate-'));
+    const databasePath = path.join(directory, 'verification.db');
+    const outputDir = path.join(directory, 'private');
+    try {
+      const configIds = createSplitVerificationDatabase(databasePath);
+      const snapshots = validateVerificationConfigs({
+        databasePath,
+        configIds: { 'seedance-2-fast': configIds.fastId, 'seedance-2-mini': configIds.miniId },
+      });
+      const fingerprints = Object.fromEntries(snapshots.map((item) => [item.model, item.fingerprint]));
+      fs.mkdirSync(outputDir, { recursive: true });
+      fs.writeFileSync(path.join(outputDir, 'toapis-video-verification-state.json'), JSON.stringify({
+        state_version: 'toapis-video-verification-state-v1',
+        provider_origin: 'https://toapis.xyz',
+        config_fingerprints: fingerprints,
+        cases: {
+          'mini-omni-480': {
+            id: 'mini-omni-480',
+            model: 'seedance-2-mini',
+            provider_origin: 'https://toapis.xyz',
+            config_fingerprint: fingerprints['seedance-2-mini'],
+            submission_state: 'indeterminate',
+          },
+        },
+      }));
+      let balanceCalls = 0;
+      let createCalls = 0;
+      await assert.rejects(() => withProcessEnv({
+        TOAPIS_BASE_URL: 'https://toapis.xyz',
+        TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
+        TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
+        TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
+        TOAPIS_VERIFY_DATABASE_PATH: databasePath,
+        TOAPIS_VERIFY_OUTPUT_DIR: outputDir,
+        TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR: path.join(directory, 'public'),
+        TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL: 'https://molimama.vip/verification-assets/toapis',
+        TOAPIS_VERIFY_CASES: 'fast-t2v-480',
+        TOAPIS_EXPECTED_COST_YUAN_JSON: JSON.stringify({ 'fast-t2v-480': 1 }),
+        TOAPIS_VERIFY_AGGREGATE_HARD_CAP_YUAN: '9.20',
+        TOAPIS_API_KEY: 'test-provider-key',
+      }, () => runVerification({
+        assertFfprobeAvailable() {},
+        async fetchBalance() { balanceCalls += 1; },
+        async createTask() { createCalls += 1; },
+      })), /mini-omni-480.*结果未知/);
+      assert.equal(balanceCalls, 0);
+      assert.equal(createCalls, 0);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('writes the verified matrix atomically to the dedicated Fast and Mini configs', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-split-config-'));
+    const databasePath = path.join(directory, 'verification.db');
+    const evidencePath = path.join(directory, 'toapis-video-verification.json');
+    try {
+      const configIds = createSplitVerificationDatabase(databasePath);
+      const idsByModel = {
+        'seedance-2-fast': configIds.fastId,
+        'seedance-2-mini': configIds.miniId,
+      };
+      const configSnapshots = validateVerificationConfigs({ databasePath, configIds: idsByModel });
+      fs.writeFileSync(evidencePath, JSON.stringify({ contract_version: EVIDENCE_VERSION, marker: 'split-config' }));
+      const evidenceSha256 = crypto.createHash('sha256').update(fs.readFileSync(evidencePath)).digest('hex');
+      const updated = recordVerificationResult(completedEvidence(), null, {
+        databasePath,
+        evidencePath,
+        configIds: idsByModel,
+        configSnapshots,
+      });
+      assert.deepEqual(updated.map((item) => item.id), [configIds.fastId, configIds.miniId]);
+
+      const db = new Database(databasePath, { readonly: true, fileMustExist: true });
+      const fast = aiConfigService.getConfig(db, configIds.fastId);
+      const mini = aiConfigService.getConfig(db, configIds.miniId);
+      db.close();
+      assert.equal(fast.verification_status, 'verified');
+      assert.deepEqual(Object.keys(fast.verified_capabilities), ['seedance-2-fast']);
+      assert.equal(fast.verified_capabilities['seedance-2-fast'].evidence_contract, EVIDENCE_VERSION);
+      assert.equal(fast.verified_capabilities['seedance-2-fast'].evidence_sha256, evidenceSha256);
+      assert.equal(mini.verification_status, 'verified');
+      assert.deepEqual(Object.keys(mini.verified_capabilities), ['seedance-2-mini']);
+      assert.equal(mini.verified_capabilities['seedance-2-mini'].evidence_contract, EVIDENCE_VERSION);
+      assert.equal(mini.verified_capabilities['seedance-2-mini'].evidence_sha256, evidenceSha256);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rolls back both rows if the second config write fails after Fast was updated', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-split-rollback-'));
+    const databasePath = path.join(directory, 'verification.db');
+    const evidencePath = path.join(directory, 'toapis-video-verification.json');
+    try {
+      const configIds = createSplitVerificationDatabase(databasePath);
+      const idsByModel = {
+        'seedance-2-fast': configIds.fastId,
+        'seedance-2-mini': configIds.miniId,
+      };
+      const configSnapshots = validateVerificationConfigs({ databasePath, configIds: idsByModel });
+      fs.writeFileSync(evidencePath, JSON.stringify({ contract_version: EVIDENCE_VERSION, marker: 'rollback' }));
+      const ids = [configIds.fastId, configIds.miniId];
+      const before = verificationRows(databasePath, ids);
+      let writes = 0;
+      assert.throws(() => recordVerificationResult(completedEvidence(), null, {
+        databasePath,
+        evidencePath,
+        configIds: idsByModel,
+        configSnapshots,
+        recordVerification(db, configId, result) {
+          writes += 1;
+          if (writes === 2) throw new Error('injected Mini write failure');
+          return aiConfigService.recordVerification(db, configId, result);
+        },
+      }), /injected Mini write failure/);
+      assert.equal(writes, 2);
+      assert.deepEqual(verificationRows(databasePath, ids), before);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves both trusted config rows when a submission is unknown or the matrix is incomplete', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-split-preserve-'));
+    const databasePath = path.join(directory, 'verification.db');
+    try {
+      const configIds = createSplitVerificationDatabase(databasePath);
+      const ids = [configIds.fastId, configIds.miniId];
+      const db = new Database(databasePath);
+      aiConfigService.recordVerification(db, configIds.fastId, {
+        status: 'verified',
+        verifiedAt: '2026-08-27T00:00:00.000Z',
+        capabilities: { 'seedance-2-fast': { marker: 'trusted-fast' } },
+      });
+      aiConfigService.recordVerification(db, configIds.miniId, {
+        status: 'verified',
+        verifiedAt: '2026-08-27T00:00:00.000Z',
+        capabilities: { 'seedance-2-mini': { marker: 'trusted-mini' } },
+      });
+      db.close();
+      const before = verificationRows(databasePath, ids);
+      const options = {
+        databasePath,
+        configIds: {
+          'seedance-2-fast': configIds.fastId,
+          'seedance-2-mini': configIds.miniId,
+        },
+      };
+
+      assert.equal(recordVerificationResult(completedEvidence(), new Error('submission unknown'), options), null);
+      assert.equal(recordVerificationResult(completedEvidence().slice(1), null, options), null);
+      assert.deepEqual(verificationRows(databasePath, ids), before);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps trusted split configs unchanged across submission, polling and artifact failures', async () => {
+    const scenarios = [
+      {
+        name: 'indeterminate',
+        deps: { async createTask() { return { indeterminate: true, error: 'submission unknown' }; } },
+        error: /submission unknown/,
+      },
+      {
+        name: 'rejected',
+        deps: { async createTask() { return { error: 'provider rejected' }; } },
+        error: /provider rejected/,
+      },
+      {
+        name: 'failed',
+        deps: {
+          async createTask() { return { task_id: 'task-failed' }; },
+          async fetchTask() { return { state: 'failed', error: 'provider task failed' }; },
+        },
+        error: /provider task failed/,
+      },
+      {
+        name: 'timeout',
+        deps: {
+          async createTask() { return { task_id: 'task-timeout' }; },
+          async fetchTask() { return { state: 'processing', progress: 5 }; },
+          async sleep() {},
+        },
+        error: /任务轮询超时/,
+      },
+      {
+        name: 'artifact',
+        deps: {
+          async createTask() { return { task_id: 'task-artifact' }; },
+          async fetchTask() {
+            return { state: 'completed', progress: 100, videoUrl: 'https://assets.example/result.mp4' };
+          },
+          async downloadAndInspect() { throw new Error('public artifact sha mismatch'); },
+        },
+        error: /public artifact sha mismatch/,
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), `toapis-run-${scenario.name}-`));
+      const databasePath = path.join(directory, 'verification.db');
+      try {
+        const configIds = createSplitVerificationDatabase(databasePath);
+        const ids = [configIds.fastId, configIds.miniId];
+        const db = new Database(databasePath);
+        aiConfigService.recordVerification(db, configIds.fastId, {
+          status: 'verified',
+          verifiedAt: '2026-08-27T00:00:00.000Z',
+          capabilities: { 'seedance-2-fast': { marker: 'trusted-fast' } },
+        });
+        aiConfigService.recordVerification(db, configIds.miniId, {
+          status: 'verified',
+          verifiedAt: '2026-08-27T00:00:00.000Z',
+          capabilities: { 'seedance-2-mini': { marker: 'trusted-mini' } },
+        });
+        db.close();
+        const before = verificationRows(databasePath, ids);
+        let balanceCalls = 0;
+        const deps = {
+          assertFfprobeAvailable() {},
+          async fetchBalance() {
+            balanceCalls += 1;
+            return { used_balance: 1, used_credits: 100 };
+          },
+          ...scenario.deps,
+        };
+
+        await assert.rejects(() => withProcessEnv({
+          TOAPIS_BASE_URL: 'https://toapis.xyz',
+          TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
+          TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
+          TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
+          TOAPIS_VERIFY_DATABASE_PATH: databasePath,
+          TOAPIS_VERIFY_OUTPUT_DIR: path.join(directory, 'private'),
+          TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR: path.join(directory, 'public'),
+          TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL: 'https://molimama.vip/verification-assets/toapis',
+          TOAPIS_VERIFY_CASES: 'fast-t2v-480',
+          TOAPIS_EXPECTED_COST_YUAN_JSON: JSON.stringify({ 'fast-t2v-480': 1 }),
+          TOAPIS_VERIFY_AGGREGATE_HARD_CAP_YUAN: '9.20',
+          TOAPIS_VERIFY_MAX_POLLS: '1',
+          TOAPIS_VERIFY_POLL_MS: '0',
+          TOAPIS_API_KEY: 'test-provider-key',
+        }, () => runVerification(deps)), scenario.error);
+        assert.equal(balanceCalls, 2);
+        assert.deepEqual(verificationRows(databasePath, ids), before);
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('publishes a zero-POST completed run to both split configs through the full orchestrator', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-run-success-'));
+    const databasePath = path.join(directory, 'verification.db');
+    const outputDir = path.join(directory, 'private');
+    const publicArtifactDir = path.join(directory, 'public');
+    const statePath = path.join(outputDir, 'toapis-video-verification-state.json');
+    try {
+      const configIds = createSplitVerificationDatabase(databasePath);
+      const results = completedEvidence();
+      const snapshots = validateVerificationConfigs({
+        databasePath,
+        configIds: { 'seedance-2-fast': configIds.fastId, 'seedance-2-mini': configIds.miniId },
+      });
+      const fingerprints = Object.fromEntries(snapshots.map((item) => [item.model, item.fingerprint]));
+      for (const item of results) {
+        item.provider_origin = 'https://toapis.xyz';
+        item.config_fingerprint = fingerprints[item.model];
+      }
+      fs.mkdirSync(outputDir, { recursive: true });
+      fs.mkdirSync(publicArtifactDir, { recursive: true });
+      for (const [index, item] of results.entries()) {
+        const bytes = Buffer.alloc(2048, index + 1);
+        item.artifact.bytes = bytes.length;
+        item.artifact.sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+        fs.writeFileSync(path.join(publicArtifactDir, item.artifact.output_file), bytes);
+      }
+      fs.writeFileSync(statePath, JSON.stringify({
+        state_version: 'toapis-video-verification-state-v1',
+        provider_origin: 'https://toapis.xyz',
+        config_fingerprints: fingerprints,
+        cases: Object.fromEntries(results.map((item) => [item.id, item])),
+      }));
+      const byFile = new Map(results.map((item) => [item.artifact.output_file, item]));
+      let balanceCalls = 0;
+      let createCalls = 0;
+
+      const run = await withProcessEnv({
+        TOAPIS_BASE_URL: 'https://toapis.xyz',
+        TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
+        TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
+        TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
+        TOAPIS_VERIFY_DATABASE_PATH: databasePath,
+        TOAPIS_VERIFY_OUTPUT_DIR: outputDir,
+        TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR: publicArtifactDir,
+        TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL: 'https://molimama.vip/verification-assets/toapis',
+        TOAPIS_VERIFY_CASES: null,
+        TOAPIS_VERIFY_CONFIRM_COST: '1',
+        TOAPIS_VERIFIED_PRICING_JSON: JSON.stringify(baselinePricing()),
+        TOAPIS_EXPECTED_COST_YUAN_JSON: null,
+        TOAPIS_API_KEY: 'test-provider-key',
+      }, () => runVerification({
+        async fetchBalance() { balanceCalls += 1; },
+        async createTask() { createCalls += 1; },
+        runFfprobe(filePath) { return byFile.get(path.basename(filePath)).artifact.ffprobe; },
+        async assertPublicArtifact() {},
+      }));
+
+      assert.equal(balanceCalls, 0);
+      assert.equal(createCalls, 0);
+      assert.equal(run.results.length, 8);
+      const evidenceBytes = fs.readFileSync(run.evidencePath);
+      const evidenceSha256 = crypto.createHash('sha256').update(evidenceBytes).digest('hex');
+      const db = new Database(databasePath, { readonly: true, fileMustExist: true });
+      const fast = aiConfigService.getConfig(db, configIds.fastId);
+      const mini = aiConfigService.getConfig(db, configIds.miniId);
+      db.close();
+      assert.equal(fast.verification_status, 'verified');
+      assert.deepEqual(Object.keys(fast.verified_capabilities), ['seedance-2-fast']);
+      assert.equal(fast.verified_capabilities['seedance-2-fast'].evidence_sha256, evidenceSha256);
+      assert.equal(mini.verification_status, 'verified');
+      assert.deepEqual(Object.keys(mini.verified_capabilities), ['seedance-2-mini']);
+      assert.equal(mini.verified_capabilities['seedance-2-mini'].evidence_sha256, evidenceSha256);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects evidence writeback when a verified route changes after the paid-run preflight', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-split-drift-'));
+    const databasePath = path.join(directory, 'verification.db');
+    const evidencePath = path.join(directory, 'toapis-video-verification.json');
+    try {
+      const configIds = createSplitVerificationDatabase(databasePath);
+      const idsByModel = {
+        'seedance-2-fast': configIds.fastId,
+        'seedance-2-mini': configIds.miniId,
+      };
+      const configSnapshots = validateVerificationConfigs({ databasePath, configIds: idsByModel });
+      const db = new Database(databasePath);
+      db.prepare('UPDATE ai_service_configs SET api_key = ?, updated_at = ? WHERE id = ?')
+        .run('rotated-fast-key', '2026-08-27T01:00:00.000Z', configIds.fastId);
+      db.close();
+      fs.writeFileSync(evidencePath, JSON.stringify({ contract_version: EVIDENCE_VERSION, marker: 'drift' }));
+      const before = verificationRows(databasePath, [configIds.fastId, configIds.miniId]);
+
+      assert.throws(() => recordVerificationResult(completedEvidence(), null, {
+        databasePath,
+        evidencePath,
+        configIds: idsByModel,
+        configSnapshots,
+      }), /配置已在验证期间发生变化/);
+      assert.deepEqual(verificationRows(databasePath, [configIds.fastId, configIds.miniId]), before);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('restores the previous evidence bytes when split config publication fails', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-evidence-rollback-'));
+    const databasePath = path.join(directory, 'verification.db');
+    const evidencePath = path.join(directory, 'toapis-video-verification.json');
+    const previousBytes = Buffer.from('{"contract_version":"previous-contract","marker":"keep"}\n');
+    fs.writeFileSync(evidencePath, previousBytes);
+    try {
+      const configIds = createSplitVerificationDatabase(databasePath);
+      const idsByModel = {
+        'seedance-2-fast': configIds.fastId,
+        'seedance-2-mini': configIds.miniId,
+      };
+      const configSnapshots = validateVerificationConfigs({ databasePath, configIds: idsByModel });
+      const before = verificationRows(databasePath, [configIds.fastId, configIds.miniId]);
+      const results = completedEvidence();
+      const evidence = buildReleaseEvidence(results, baselinePricing(), {
+        run_id: 'review-run-1',
+        reviewed_at: '2026-08-07T01:00:00.000Z',
+        completed_before_run: buildRequiredMatrix().map((item) => item.id),
+        submitted_case_ids: [],
+      });
+      let writes = 0;
+      assert.throws(() => publishVerifiedEvidence(results, baselinePricing(), evidence, {
+        databasePath,
+        evidencePath,
+        configIds: idsByModel,
+        configSnapshots,
+        recordVerification(db, configId, result) {
+          writes += 1;
+          if (writes === 2) throw new Error('injected split DB publication failure');
+          return aiConfigService.recordVerification(db, configId, result);
+        },
+      }), /injected split DB publication failure/);
+      assert.equal(writes, 2);
+      assert.deepEqual(fs.readFileSync(evidencePath), previousBytes);
+      assert.deepEqual(verificationRows(databasePath, [configIds.fastId, configIds.miniId]), before);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('allows cost confirmation only in a later run that starts with all cases complete and submits nothing', () => {
@@ -536,8 +1705,12 @@ describe('ToAPIs real video verification contract', () => {
 
   it('upgrades only a complete inspected and cost-reviewed matrix', () => {
     const results = completedEvidence();
+    const binding = {
+      evidence_contract: EVIDENCE_VERSION,
+      evidence_sha256: 'a'.repeat(64),
+    };
     assert.equal(hasCompleteRequiredMatrix(results), true);
-    assert.deepEqual(buildVerifiedCapabilities(results), {
+    assert.deepEqual(buildVerifiedCapabilities(results, binding), {
       'seedance-2-fast': {
         durations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
         resolutions: ['480p', '720p'],
@@ -547,9 +1720,10 @@ describe('ToAPIs real video verification contract', () => {
         supportsVideoReference: true,
         supportsAudioReference: true,
         supportsAudio: true,
-        maxReferences: 1,
-        maxVideoReferences: 1,
-        maxAudioReferences: 1,
+        maxReferences: 9,
+        maxVideoReferences: 3,
+        maxAudioReferences: 3,
+        ...binding,
       },
       'seedance-2-mini': {
         durations: [4, 8, 10, 12, 15],
@@ -560,15 +1734,29 @@ describe('ToAPIs real video verification contract', () => {
         supportsVideoReference: true,
         supportsAudioReference: true,
         supportsAudio: true,
-        maxReferences: 1,
-        maxVideoReferences: 1,
-        maxAudioReferences: 1,
+        maxReferences: 9,
+        maxVideoReferences: 3,
+        maxAudioReferences: 3,
+        ...binding,
       },
     });
     assert.equal(hasCompleteRequiredMatrix(results.slice(1)), false);
     assert.equal(hasCompleteRequiredMatrix(results.map((item, index) => (
       index === 0 ? { ...item, billing: { ...item.billing, reviewed: false } } : item
     ))), false);
+  });
+
+  it('validates billing continuity independently for each model and config fingerprint', () => {
+    assert.equal(hasCompleteRequiredMatrix(completedEvidence()), true);
+  });
+
+  it('rejects FAST and MINI evidence that shares one config fingerprint', () => {
+    const sharedFingerprint = completedEvidence();
+    const fastFingerprint = sharedFingerprint.find((item) => item.model === 'seedance-2-fast').config_fingerprint;
+    for (const item of sharedFingerprint) {
+      if (item.model === 'seedance-2-mini') item.config_fingerprint = fastFingerprint;
+    }
+    assert.equal(hasCompleteRequiredMatrix(sharedFingerprint), false);
   });
 
   it('rejects forged, mismatched, duplicated or role-less evidence before DB verification', () => {
