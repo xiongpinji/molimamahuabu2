@@ -283,7 +283,13 @@ function assertPcmWave(bytes) {
   if (!format || dataSize === null || dataSize % format.blockAlign !== 0) throw codedError(OUTPUT_INVALID);
 }
 
-function assertWaveOutput(outputIdentity, outputName, outputPath) {
+function assertWaveOutput(outputIdentity, outputName, outputPath, outputRootFd) {
+  if (outputRootFd !== null) {
+    const held = fs.fstatSync(outputRootFd);
+    if (!held.isDirectory() || held.dev !== outputIdentity.dev || held.ino !== outputIdentity.ino) {
+      throw codedError(OUTPUT_INVALID);
+    }
+  }
   const currentIdentity = inspectRealPath(outputIdentity.path, 'directory', OUTPUT_INVALID);
   if (!sameIdentity(currentIdentity, outputIdentity)) throw codedError(OUTPUT_INVALID);
   const entries = fs.readdirSync(outputIdentity.path);
@@ -351,6 +357,7 @@ function createRedrawLocalTtsWorkerProcess(options = {}) {
       let timer = null;
       let abortHandler = null;
       let processListeners = [];
+      let outputRootFd = null;
 
       const cleanup = () => {
         if (timer) clearTimeout(timer);
@@ -363,6 +370,10 @@ function createRedrawLocalTtsWorkerProcess(options = {}) {
           try { emitter.removeListener(event, handler); } catch (_) {}
         }
         processListeners = [];
+        if (outputRootFd !== null) {
+          try { fs.closeSync(outputRootFd); } catch (_) {}
+          outputRootFd = null;
+        }
       };
       const listen = (emitter, event, handler) => {
         emitter.on(event, handler);
@@ -418,6 +429,16 @@ function createRedrawLocalTtsWorkerProcess(options = {}) {
         assertAllowedRoot(allowedIdentity.path, allowedIdentity);
         outputIdentity = prepareOutputRoot(input.outputRoot, allowedIdentity);
         ({ outputName, outputPath } = resolveOutputPath(outputIdentity, outputNameFactory));
+        if (process.platform !== 'win32') {
+          outputRootFd = fs.openSync(
+            outputIdentity.path,
+            fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY || 0) | (fs.constants.O_NOFOLLOW || 0),
+          );
+          const held = fs.fstatSync(outputRootFd);
+          if (!held.isDirectory() || held.dev !== outputIdentity.dev || held.ino !== outputIdentity.ino) {
+            throw codedError(OUTPUT_INVALID);
+          }
+        }
       } catch (error) {
         rejectOnce(error?.code || OUTPUT_INVALID, false);
         return;
@@ -476,7 +497,7 @@ function createRedrawLocalTtsWorkerProcess(options = {}) {
         }
         try {
           assertAllowedRoot(allowedIdentity.path, allowedIdentity);
-          const outputSha256 = assertWaveOutput(outputIdentity, outputName, outputPath);
+          const outputSha256 = assertWaveOutput(outputIdentity, outputName, outputPath, outputRootFd);
           resolveOnce({
             source: 'local_offline_tts',
             engine: manifest.engine,

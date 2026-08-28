@@ -412,6 +412,8 @@ const PR208_MAIN_SYNC_UNLOCK = {
 };
 const PR208_MAIN_SYNC_FEATURE_IDS = new Set([
   PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
+  SAFE_PROVIDER_FAILOVER_FEATURE_ID,
+  UNKNOWN_STATE_RECONCILIATION_FEATURE_ID,
   ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
   PROACTIVE_CANARY_FEATURE_ID,
 ]);
@@ -1313,7 +1315,9 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       ...(PR208_MAIN_SYNC_FEATURE_IDS.has(featureId)
         ? [featureId === PROVIDER_ROUTE_CONTRACT_FEATURE_ID
           ? CURRENT_UNLOCK_BY_FEATURE[featureId]
-          : REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK]
+          : [SAFE_PROVIDER_FAILOVER_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].includes(featureId)
+            ? TOAPIS_SUBMISSION_RECOVERY_UNLOCK
+            : REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK]
         : []),
     ]);
     assert.deepEqual(
@@ -1386,12 +1390,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
   assert.deepEqual(appLocks, [PROACTIVE_CANARY_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].sort());
   for (const featureId of appLocks) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
-    assert.deepEqual(
-      feature.unlock,
-      featureId === PROACTIVE_CANARY_FEATURE_ID
-        ? PR208_MAIN_SYNC_UNLOCK
-        : TOAPIS_SUBMISSION_RECOVERY_UNLOCK,
-    );
+    assert.deepEqual(feature.unlock, PR208_MAIN_SYNC_UNLOCK);
   }
 });
 
@@ -1453,7 +1452,7 @@ test('ToAPIs 未知提交恢复保留既有能力锁并仅刷新实际触及的�
       ? CURRENT_UNLOCK_BY_FEATURE[featureId]
       : featureId === PROACTIVE_CANARY_FEATURE_ID
         ? REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK
-        : PRE_TOAPIS_CURRENT_UNLOCK_BY_FEATURE[featureId];
+        : TOAPIS_SUBMISSION_RECOVERY_UNLOCK;
     assert.deepEqual(feature.unlock, expectedUnlock);
     assert.deepEqual(feature.unlockHistory.at(-1), expectedPreviousUnlock);
     assert.ok(

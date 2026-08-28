@@ -434,22 +434,38 @@
             "backend-node/test/token6688Image.test.js",
             "backend-node/test/featureLockManifest.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 ToAPIs Seedance 未知提交恢复句柄获批",
+          "approvedBy": "product-owner 2026-08-27 toapis-submission-recovery",
+          "impactTests": [
+            "backend-node/test/toapisVideoClient.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/providerRouteStability.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 ToAPIs Seedance 未知提交恢复句柄获批",
-        "approvedBy": "product-owner 2026-08-27 toapis-submission-recovery",
+        "reason": "2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批",
+        "approvedBy": "product-owner 2026-08-29 pr-208-main-sync-conflict-resolution",
         "impactTests": [
+          "backend-node/test/providerRouteStability.test.js",
+          "backend-node/test/toapisPrivateAvatarService.test.js",
+          "backend-node/test/toapisPrivateAvatarVerification.test.js",
           "backend-node/test/toapisVideoClient.test.js",
           "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/providerTaskReconciliation.test.js",
-          "backend-node/test/providerReconciliation.test.js",
-          "backend-node/test/videoBilling.test.js",
-          "backend-node/test/videoGenerationRequestSnapshot.test.js",
+          "backend-node/test/toapisVideoReleaseContract.test.js",
+          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
           "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/incrementalReleaseScope.test.js",
+          "frontweb/test/toapisVideoProviderConfig.test.js"
         ]
       }
     },
@@ -679,22 +695,38 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 ToAPIs Seedance 未知提交恢复句柄获批",
+          "approvedBy": "product-owner 2026-08-27 toapis-submission-recovery",
+          "impactTests": [
+            "backend-node/test/toapisVideoClient.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/providerRouteStability.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 ToAPIs Seedance 未知提交恢复句柄获批",
-        "approvedBy": "product-owner 2026-08-27 toapis-submission-recovery",
+        "reason": "2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批",
+        "approvedBy": "product-owner 2026-08-29 pr-208-main-sync-conflict-resolution",
         "impactTests": [
+          "backend-node/test/providerRouteStability.test.js",
+          "backend-node/test/toapisPrivateAvatarService.test.js",
+          "backend-node/test/toapisPrivateAvatarVerification.test.js",
           "backend-node/test/toapisVideoClient.test.js",
           "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/providerTaskReconciliation.test.js",
-          "backend-node/test/providerReconciliation.test.js",
-          "backend-node/test/videoBilling.test.js",
-          "backend-node/test/videoGenerationRequestSnapshot.test.js",
+          "backend-node/test/toapisVideoReleaseContract.test.js",
+          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
           "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/incrementalReleaseScope.test.js",
+          "frontweb/test/toapisVideoProviderConfig.test.js"
         ]
       }
     },

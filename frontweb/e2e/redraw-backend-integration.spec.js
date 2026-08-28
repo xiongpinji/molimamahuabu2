@@ -45,6 +45,7 @@ const {
   canonicalSha256: canonicalModelLockSha256,
 } = require(path.join(backendRoot, 'src', 'services', 'redrawFullFrameModelLockService'))
 const {
+  buildCurrentReferenceBindings,
   loadReviewedReferenceCoverage,
   projectReferenceBundleForGeneration,
 } = require(path.join(backendRoot, 'src', 'services', 'redrawReferenceBundleService'))
@@ -1243,7 +1244,7 @@ test.beforeAll(async () => {
         minDurationMs: 1_000,
         maxDurationMs: 60_000,
       },
-      referencePreparationProvider: async ({ attempt, input }) => {
+      referencePreparationProvider: async ({ input }) => {
         referencePreparationProviderCalls += 1
         const shot = genericPreparationFiles.shots.get(String(input.shot_id || ''))
         if (!shot) throw new Error('通用逐镜净景缺少本地输出')
@@ -1254,11 +1255,14 @@ test.beforeAll(async () => {
           mimeType: 'image/png',
           width: shot.cleanPlate.width,
           height: shot.cleanPlate.height,
-          metadata: { fixture_attempt_id: Number(attempt.id) },
+          metadata: {
+            fixture_version_id: Number(input.version_id),
+            fixture_shot_id: String(input.shot_id || ''),
+          },
         })
         return {
           status: 'completed',
-          provider_task_id: `local-clean-${attempt.id}`,
+          provider_task_id: `local-clean-${input.version_id}-${input.shot_id}-${input.mode}`,
           asset_id: artifactId,
           clean_plate: true,
           quality: {
@@ -1919,43 +1923,19 @@ async function registerGenericMotionAssetForShot(versionId, shotId) {
       cleanByKey.set(`${kind === 'person_clean' ? 'person_clean' : 'text_clean'}:${stableId}`, Number(row.id))
     }
   }
-  const identityByKey = new Map(database.prepare(`
-    SELECT * FROM redraw_assets
-    WHERE version_id = ? AND kind = 'character' AND approval_status = 'approved' AND deleted_at IS NULL
-  `).all(Number(versionId)).map((row) => {
-    const payload = JSON.parse(row.source_ref_json)
-    return [String(payload.source_ref?.source_character_key || ''), Number(row.id)]
-  }))
   const descriptor = coverage.shots.find((item) => Number(item.shot_id) === Number(shotId))
   if (!descriptor || descriptor.requirements.some((item) => !cleanByKey.has(`${item.kind}:${item.key}`))) return null
   const row = rows.find((item) => Number(item.id) === Number(descriptor.shot_id))
   if (!row) return null
-  const faces = descriptor.bundle_evidence.face_tracks.map((track) => ({
-    ...track,
-    identity_redraw_asset_id: identityByKey.get(track.source_character_key),
-  })).sort((left, right) => left.track_key.localeCompare(right.track_key))
-  const texts = descriptor.bundle_evidence.text_regions.map((region) => ({
-    ...region,
-    text_clean_redraw_asset_id: cleanByKey.get(`text_clean:${region.region_key}`),
-  })).sort((left, right) => left.region_key.localeCompare(right.region_key))
-  const metadata = {
-    redraw_motion_reference: {
-      schema_version: 'redraw-motion-reference-v1',
-      tenant_id: owner.tenant.id,
-      user_id: owner.user.id,
-      version_id: Number(versionId),
-      shot_id: Number(row.id),
-      source_asset_id: Number(database.prepare('SELECT source_asset_id FROM redraw_works WHERE id = ?').get(Number(row.work_id)).source_asset_id),
-      source_fingerprint: database.prepare('SELECT source_fingerprint FROM redraw_works WHERE id = ?').get(Number(row.work_id)).source_fingerprint,
-      clip_start_ms: Number(row.start_ms),
-      clip_end_ms: Number(row.end_ms),
-      face_coverage_sha256: sha256Value(stableJson(faces)),
-      text_coverage_sha256: sha256Value(stableJson(texts)),
-    },
-  }
-  const existing = database.prepare("SELECT id, metadata FROM assets WHERE type = 'video' AND category = 'redraw'")
-    .all().some((asset) => stableJson(JSON.parse(asset.metadata || '{}').redraw_motion_reference) === stableJson(metadata.redraw_motion_reference))
-  if (existing) return existing
+  const bindings = await buildCurrentReferenceBindings(ctx, {
+    shot_id: Number(row.id),
+    clean_results: descriptor.requirements.map((requirement) => ({
+      kind: requirement.kind,
+      key: requirement.key,
+      status: 'completed',
+      redraw_asset_id: cleanByKey.get(`${requirement.kind}:${requirement.key}`),
+    })),
+  })
   const shotFiles = genericPreparationFiles.shots.get(String(row.shot_id))
   const expectedDuration = (Number(row.end_ms) - Number(row.start_ms)) / 1000
   let file = shotFiles.motion
@@ -1976,6 +1956,29 @@ async function registerGenericMotionAssetForShot(versionId, shotId) {
     fs.copyFileSync(sourcePath, absolutePath)
     file = { absolutePath, relativePath, sha256, duration: expectedDuration }
   }
+  const metadata = {
+    sha256: file.sha256,
+    redraw_motion_reference: {
+      schema_version: 'redraw-motion-reference-v1',
+      tenant_id: owner.tenant.id,
+      user_id: owner.user.id,
+      version_id: Number(versionId),
+      shot_id: Number(row.id),
+      source_asset_id: bindings.source.asset_id,
+      source_fingerprint: bindings.source.fingerprint,
+      clip_start_ms: bindings.clip.start_ms,
+      clip_end_ms: bindings.clip.end_ms,
+      face_coverage_sha256: bindings.face_coverage_sha256,
+      text_coverage_sha256: bindings.text_coverage_sha256,
+      coverage_binding_sha256: bindings.coverage_binding_sha256,
+      identity_binding_sha256: bindings.identity_binding_sha256,
+      clean_binding_sha256: bindings.clean_binding_sha256,
+      file_sha256: file.sha256,
+    },
+  }
+  const existing = database.prepare("SELECT id, metadata FROM assets WHERE type = 'video' AND category = 'redraw'")
+    .all().find((asset) => stableJson(JSON.parse(asset.metadata || '{}').redraw_motion_reference) === stableJson(metadata.redraw_motion_reference))
+  if (existing) return existing
   const artifact = assetService.create(database, log, {
     name: `${row.shot_id} motion reference`,
     type: 'video',
@@ -1987,7 +1990,7 @@ async function registerGenericMotionAssetForShot(versionId, shotId) {
     duration: file.duration,
     width: 320,
     height: 180,
-    metadata: { ...metadata, sha256: sha256File(path.join(storageRoot, file.relativePath)) },
+    metadata,
   })
   return artifact
 }
