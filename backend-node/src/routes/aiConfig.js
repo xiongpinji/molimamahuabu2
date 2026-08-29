@@ -40,7 +40,7 @@ function listPublicVideoModels(db, runtime) {
 function isStrictVideoConfig(config) {
   const values = [config?.provider, config?.api_protocol]
     .map((value) => String(value || '').trim().toLowerCase());
-  return values.some((value) => ['toapis', 'toapis_video', 'lingjing', 'lingjing_open'].includes(value));
+  return values.some((value) => ['toapis', 'toapis_video', 'toapis_wan3_video', 'lingjing', 'lingjing_open'].includes(value));
 }
 
 function listPublicImageModels(db, runtime) {

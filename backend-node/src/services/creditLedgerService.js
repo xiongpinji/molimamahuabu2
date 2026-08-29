@@ -559,10 +559,19 @@ function refundForScope(db, reservationId, scope, reason) {
   return settleForScope(db, reservationId, scope, 'refunded', reason || 'generation_failed');
 }
 
-function settleGeneration(db, reservationId, outcome, message = '') {
+function settleGeneration(db, reservationId, outcome, message = '', failure = {}) {
   if (!reservationId) return null;
   if (outcome === 'completed') return confirm(db, reservationId);
   if (outcome !== 'failed') throw new Error('不支持的生成结算状态');
+
+  const failureDisposition = failure && typeof failure === 'object'
+    ? String(failure.failureDisposition || '').trim()
+    : '';
+  if (failureDisposition === 'hold') return getReservation(db, reservationId);
+  if (failureDisposition === 'refund') {
+    return refund(db, reservationId, message || 'generation_failed');
+  }
+  if (failureDisposition) throw new Error('不支持的生成失败结算方式');
 
   const uncertaintyMarkers = ['结果未知', '状态未知', '最终状态未知', '供应商任务仍可能处理中'];
   if (uncertaintyMarkers.some((marker) => String(message).includes(marker))) {

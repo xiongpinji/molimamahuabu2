@@ -1359,6 +1359,7 @@ const formModelList = computed(() => parseModelList(form.value.modelText))
 const TOAPIS_ADMIN_VIDEO_CAPABILITIES = Object.freeze({
   'seedance-2-fast': Object.freeze({ durations: Object.freeze(Array.from({ length: 12 }, (_, index) => index + 4)) }),
   'seedance-2-mini': Object.freeze({ durations: Object.freeze([4, 8, 10, 12, 15]) }),
+  'wan3.0-video': Object.freeze({ durations: Object.freeze([2]) }),
 })
 const FEITUO_ADMIN_VIDEO_CAPABILITIES = Object.freeze({
   'xuan-video-v1-6e7b4763634e6206': Object.freeze({ durations: Object.freeze([15]) }),
@@ -1370,10 +1371,12 @@ const LINGJING_ADMIN_VIDEO_CAPABILITIES = Object.freeze({
 function adminVideoCapabilityFor(config = {}) {
   if (config.service_type !== 'video') return null
   const isToapis = config.api_protocol === 'toapis_video' || config.provider === 'toapis'
+  const isToapisWan3 = config.api_protocol === 'toapis_wan3_video' || config.provider === 'toapis_wan3'
   const isFeituo = config.api_protocol === 'feituo_open' || config.provider === 'feituo'
   const isLingjing = config.api_protocol === 'lingjing_open' || config.provider === 'lingjing'
   const model = normalizeModelOption(config.default_model)
     || (Array.isArray(config.model) ? normalizeModelOption(config.model[0]) : '')
+  if (isToapisWan3) return TOAPIS_ADMIN_VIDEO_CAPABILITIES[model] || null
   if (isToapis) return TOAPIS_ADMIN_VIDEO_CAPABILITIES[model] || null
   if (isLingjing) return LINGJING_ADMIN_VIDEO_CAPABILITIES[model] || null
   return isFeituo ? FEITUO_ADMIN_VIDEO_CAPABILITIES[model] || null : null
@@ -1543,6 +1546,7 @@ const providerConfigs = {
     { id: 'aihubcc', name: 'AIHubCC 视频', models: AIHUBCC_VIDEO_MODELS },
     { id: 'token6688', name: 'Token6688 Seedance 特价按次', models: ['seedance-2-0-special-mini-720p', 'seedance-2-0-special-fast-720p', 'seedance-2-0-special-full-720p'] },
     { id: 'toapis', name: 'ToAPIs Seedance 2', models: ['seedance-2-fast', 'seedance-2-mini'] },
+    { id: 'toapis_wan3', name: 'ToAPIs Wan 3.0', models: ['wan3.0-video'] },
     { id: 'feituo', name: '飞拓 H3-2K / Seedance 2.5', models: ['xuan-video-v1-6e7b4763634e6206', 'xuan-seedance-2.5'] },
     { id: 'lingjing', name: '灵境 Seedance 2.0 Fast（9 图参考）', models: ['lingjing-video-v1'] },
     { id: 'fumin', name: 'fumin Seedance 2.0', models: ['fumin-seedance-2.0-fast', 'fumin-seedance-2.0-mini'] },
@@ -1614,6 +1618,7 @@ const providerProtocolMap = {
   usmercari: 'usmercari_media',
   usmercari_media: 'usmercari_media',
   toapis: 'toapis_video',
+  toapis_wan3: 'toapis_wan3_video',
   feituo: 'feituo_open',
   lingjing: 'lingjing_open',
   fumin: 'fumin_video',
@@ -1655,7 +1660,7 @@ function getBaseUrlForProvider(provider) {
   if (p === 'deepwl' || p === 'deepwl_grok') return 'https://zx1.deepwl.net'
   if (p === 'icreat' || p === 'icreat_task') return 'https://api.icreat.ai'
   if (p === 'usmercari' || p === 'usmercari_media') return 'https://ai.usmercari.com'
-  if (p === 'toapis') return 'https://toapis.xyz'
+  if (p === 'toapis' || p === 'toapis_wan3') return 'https://toapis.xyz'
   if (p === 'feituo') return 'https://feituokuajing.com'
   if (p === 'lingjing') return 'https://seed.alimyun.xyz/api/open/v1'
   if (p === 'fumin' || p === 'fumin_video') return 'https://fumin.ai'
@@ -1806,7 +1811,9 @@ const endpointPreviewInfo = computed(() => {
       submitPath = '/images/generations'  // openai 兼容：base_url 已含 /v1
     }
   } else if (service_type === 'video') {
-    if (proto === 'toapis_video' || p === 'toapis') {
+    if (proto === 'toapis_wan3_video' || p === 'toapis_wan3') {
+      submitPath = endpoint || '/v1/videos/generations'
+    } else if (proto === 'toapis_video' || p === 'toapis') {
       submitPath = endpoint || '/v1/videos/generations'
     } else if (proto === 'lingjing_open' || p === 'lingjing') {
       submitPath = endpoint || '/videos'
@@ -1881,6 +1888,8 @@ const endpointPreviewInfo = computed(() => {
 
     if (query_endpoint) {
       queryPath = query_endpoint
+    } else if (proto === 'toapis_wan3_video' || p === 'toapis_wan3') {
+      queryPath = '/v1/videos/generations/{taskId}'
     } else if (proto === 'toapis_video' || p === 'toapis') {
       queryPath = '/v1/videos/generations/{taskId}'
     } else if (proto === 'lingjing_open' || p === 'lingjing') {
@@ -2038,6 +2047,12 @@ function onProviderChange(providerId) {
     form.value.api_protocol = 'toapis_video'
     form.value.endpoint = '/v1/videos/generations'
     form.value.query_endpoint = '/v1/videos/generations/{taskId}'
+  }
+  if (st === 'video' && providerId === 'toapis_wan3') {
+    form.value.api_protocol = 'toapis_wan3_video'
+    form.value.endpoint = '/v1/videos/generations'
+    form.value.query_endpoint = '/v1/videos/generations/{taskId}'
+    form.value.video_duration = 2
   }
   if (st === 'video' && providerId === 'feituo') {
     form.value.api_protocol = 'feituo_open'

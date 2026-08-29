@@ -8,17 +8,20 @@ const MANIFEST_CONTRACT = 'external-model-release-evidence-manifest-v1';
 const CONTRACT_BY_MODEL = Object.freeze({
   'seedance-2-fast': 'toapis-video-real-verification-v1',
   'seedance-2-mini': 'toapis-video-real-verification-v1',
+  'wan3.0-video': 'toapis-wan3-video-real-verification-v1',
   'gpt-image-2-2-4k': 'usmercari-image-real-verification-v1',
   'nano-banana-2': 'usmercari-image-real-verification-v1',
   'lingjing-video-v1': 'lingjing-video-real-verification-v1',
 });
 const EVIDENCE_FILE_BY_CONTRACT = Object.freeze({
   'toapis-video-real-verification-v1': 'toapis-video-verification.json',
+  'toapis-wan3-video-real-verification-v1': 'toapis-wan3-video-verification.json',
   'usmercari-image-real-verification-v1': 'usmercari-image-verification.json',
   'lingjing-video-real-verification-v1': 'lingjing-video-verification.json',
 });
 const PUBLIC_PROVIDER_BY_CONTRACT = Object.freeze({
   'toapis-video-real-verification-v1': 'toapis',
+  'toapis-wan3-video-real-verification-v1': 'toapis',
   'usmercari-image-real-verification-v1': 'usmercari',
   'lingjing-video-real-verification-v1': 'lingjing',
 });

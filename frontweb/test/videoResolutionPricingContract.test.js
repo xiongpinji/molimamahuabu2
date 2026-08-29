@@ -9,11 +9,22 @@ const freeCreateSource = fs.readFileSync(new URL('../src/views/FreeCreate.vue', 
 const filmListSource = fs.readFileSync(new URL('../src/views/FilmList.vue', import.meta.url), 'utf8')
 
 test('管理端提供 480P 和 720P 的积分及每秒成本配置', () => {
-  assert.match(adminSource, /480P 用户收费/)
-  assert.match(adminSource, /480P API 成本/)
-  assert.match(adminSource, /720P 用户收费/)
-  assert.match(adminSource, /720P API 成本/)
+  assert.match(adminSource, /const videoResolutionLabels\s*=\s*\{[\s\S]*'480p': '480P'[\s\S]*'720p': '720P'/)
+  assert.match(adminSource, /v-for="resolution in resolutionKeys\(item\)"/)
+  assert.match(adminSource, /videoResolutionLabels\[resolution\][\s\S]*用户收费/)
+  assert.match(adminSource, /videoResolutionLabels\[resolution\][\s\S]*API 成本/)
   assert.match(adminSource, /resolution_prices/)
+})
+
+test('管理端 Wan3 价格编辑器只展示和提交当前证据允许的 480P', () => {
+  assert.match(adminSource, /function isWan3VideoPricing\(item\)/)
+  assert.match(adminSource, /const videoResolutionLabels/)
+  assert.match(adminSource, /return usesVideoResolutionPricing\(itemOrCategory\)\s*\?\s*\(isWan3VideoPricing\(itemOrCategory\)\s*\?\s*\['480p'\]\s*:\s*\['480p', '720p'\]\)/s)
+  assert.match(adminSource, /v-for="resolution in resolutionKeys\(item\)"[\s\S]*?item\.resolution_prices\[resolution\]\.cost_yuan_per_second/)
+  assert.match(adminSource, /v-for="resolution in resolutionKeys\(newModel\)"[\s\S]*?newModel\.resolution_prices\[resolution\]\.cost_yuan_per_second/)
+  assert.doesNotMatch(adminSource, /resolution_prices\['720p'\]/)
+  assert.match(adminSource, /resolutionPricePayload\(item\)/)
+  assert.match(adminSource, /Object\.fromEntries\(resolutionKeys\(item\)\.map/)
 })
 
 test('画布积分提示保留受保护合同并传递节点分辨率', () => {

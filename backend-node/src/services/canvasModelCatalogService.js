@@ -8,6 +8,7 @@ const videoReferenceCapabilityService = require('./videoReferenceCapabilityServi
 const { USMERCARI_MODELS } = require('./usmercariVideoClient');
 const { FUMIN_MODELS } = require('./fuminVideoClient');
 const toapisVideoClient = require('./toapisVideoClient');
+const toapisWan3VideoClient = require('./toapisWan3VideoClient');
 const feituoVideoClient = require('./feituoVideoClient');
 const lingjingVideoClient = require('./lingjingVideoClient');
 const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
@@ -26,7 +27,7 @@ const PRIVATE_CATALOG_FRAGMENTS = Object.freeze([
   'baseurl', 'hostname', 'domain', 'endpoint',
 ]);
 
-const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'feituo_open', 'lingjing_open']);
+const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'toapis_wan3_video', 'feituo_open', 'lingjing_open']);
 
 const USMERCARI_VIDEO_CAPABILITIES = Object.freeze({
   aspectRatios: Object.freeze(['16:9']),
@@ -196,6 +197,7 @@ function legacySafeCapabilities(settings, model) {
 function strictVerifiedProtocol(config) {
   const values = [config.api_protocol, config.provider]
     .map((value) => String(value || '').trim().toLowerCase());
+  if (values.includes('toapis_wan3_video')) return 'toapis_wan3_video';
   if (values.includes('usmercari_image')) return 'usmercari_image';
   if (values.some((value) => value === 'toapis' || value === 'toapis_video')) return 'toapis_video';
   if (values.some((value) => value === 'feituo' || value === 'feituo_open')) return 'feituo_open';
@@ -220,11 +222,16 @@ function verifiedModelCapabilities(config, model, price, evidenceRoots) {
   const lingjingOfficial = protocol === 'lingjing_open' && target === lingjingVideoClient.PUBLIC_MODEL
     ? lingjingVideoClient.LINGJING_VIDEO_SPEC
     : null;
+  const wan3Official = protocol === 'toapis_wan3_video' && target === toapisWan3VideoClient.TOAPIS_WAN3_MODEL
+    ? toapisWan3VideoClient.TOAPIS_WAN3_SPEC
+    : null;
   if (protocol === 'feituo_open' && (!target.startsWith('xuan-') || !feituoOfficial)) return false;
   const allowedResolutions = protocol === 'usmercari_image'
     ? modelPriceService.IMAGE_RESOLUTIONS
     : protocol === 'feituo_open'
       ? feituoOfficial.resolutions
+      : protocol === 'toapis_wan3_video'
+        ? (wan3Official?.resolutions || [])
       : protocol === 'lingjing_open'
         ? []
       : modelPriceService.VIDEO_RESOLUTIONS;
@@ -234,9 +241,11 @@ function verifiedModelCapabilities(config, model, price, evidenceRoots) {
       .filter((resolution) => allowedResolutions.includes(resolution)))]
     : [];
   let publicCapabilities = { ...publicCapabilitySource, resolutions };
-  if (protocol === 'toapis_video' || protocol === 'feituo_open' || protocol === 'lingjing_open') {
+  if (protocol === 'toapis_video' || protocol === 'toapis_wan3_video'
+      || protocol === 'feituo_open' || protocol === 'lingjing_open') {
     const official = protocol === 'toapis_video'
       ? toapisVideoClient.TOAPIS_VIDEO_MODELS[target]
+      : protocol === 'toapis_wan3_video' ? wan3Official
       : protocol === 'feituo_open' ? feituoOfficial : lingjingOfficial;
     const verifiedDurations = new Set(Array.isArray(capabilities.durations)
       ? capabilities.durations.map(Number).filter(Number.isSafeInteger)
@@ -246,6 +255,23 @@ function verifiedModelCapabilities(config, model, price, evidenceRoots) {
       : [];
     if (!durations.length) return false;
     publicCapabilities = { ...publicCapabilities, durations };
+  }
+  if (protocol === 'toapis_wan3_video') {
+    const aspectRatios = Array.isArray(capabilities.aspectRatios) && wan3Official
+      ? wan3Official.aspectRatios.filter((ratio) => capabilities.aspectRatios.includes(ratio))
+      : [];
+    const audioValues = Array.isArray(capabilities.audio_values)
+      ? capabilities.audio_values.filter((value) => value === false || value === true)
+      : [];
+    publicCapabilities = {
+      ...publicCapabilities,
+      aspectRatios,
+      audio_values: audioValues,
+      supportsAudio: wan3Official?.supportsAudio === true
+        && capabilities.supportsAudio === true
+        && audioValues.includes(true),
+    };
+    if (!wan3Official || !aspectRatios.length || !audioValues.length) return false;
   }
   if (protocol === 'lingjing_open') {
     const ratios = Array.isArray(capabilities.aspectRatios)
@@ -285,10 +311,15 @@ function verifiedModelCapabilities(config, model, price, evidenceRoots) {
       : false;
   }
   const allPriced = resolutions.every((resolution) => {
-    const credits = price.resolution_prices?.[resolution]?.credits;
-    return Number.isSafeInteger(credits) && credits > 0;
+    const tier = price.resolution_prices?.[resolution];
+    return Number.isSafeInteger(tier?.credits) && tier.credits > 0
+      && (protocol !== 'toapis_wan3_video'
+        || (Number.isSafeInteger(tier.cost_micros_per_second) && tier.cost_micros_per_second > 0));
   });
-  return allPriced ? publicCapabilities : false;
+  return allPriced && (protocol !== 'toapis_wan3_video'
+    || (price.category === 'video' && price.billing_unit === 'second' && price.cost_unit === 'second'))
+    ? publicCapabilities
+    : false;
 }
 
 function verifiedConfigIds(db) {

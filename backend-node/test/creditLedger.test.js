@@ -301,3 +301,41 @@ test('生成结果未知时保持冻结并返回 held', () => {
   assert.equal(result.status, 'held');
   assert.equal(creditLedger.getAccount(db, 'user-1').held, 20);
 });
+
+test('结构化明确失败优先于错误文案并立即退款', () => {
+  const db = setup(100);
+  const held = creditLedger.reserve(db, {
+    userId: 'user-1', operationKey: 'video:structured-refund', amount: 20,
+    model: 'wan3.0-video', resourceType: 'video', resourceId: 'structured-refund',
+  });
+  const result = creditLedger.settleGeneration(
+    db,
+    held.id,
+    'failed',
+    '错误文案包含状态未知，但供应商已明确拒绝',
+    { failureDisposition: 'refund', category: 'validation_error' },
+  );
+  assert.equal(result.status, 'refunded');
+  assert.deepEqual(creditLedger.getAccount(db, 'user-1'), {
+    user_id: 'user-1', available: 100, held: 0, spent: 0,
+  });
+});
+
+test('结构化未知结果优先于错误文案并保持冻结', () => {
+  const db = setup(100);
+  const held = creditLedger.reserve(db, {
+    userId: 'user-1', operationKey: 'video:structured-hold', amount: 20,
+    model: 'wan3.0-video', resourceType: 'video', resourceId: 'structured-hold',
+  });
+  const result = creditLedger.settleGeneration(
+    db,
+    held.id,
+    'failed',
+    '错误文案声称供应商明确失败',
+    { failureDisposition: 'hold', category: 'submission_unknown' },
+  );
+  assert.equal(result.status, 'held');
+  assert.deepEqual(creditLedger.getAccount(db, 'user-1'), {
+    user_id: 'user-1', available: 80, held: 20, spent: 0,
+  });
+});

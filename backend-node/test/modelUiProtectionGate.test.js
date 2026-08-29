@@ -104,16 +104,25 @@ test('model UI gate rejects removal of the enabled-price boundary', () => {
 });
 
 test('model UI gate rejects using the canonical billing name as the provider routing model', () => {
-  const target = copyContractTree();
-  try {
-    const file = path.join(target, 'backend-node/src/services/videoService.js');
-    const source = fs.readFileSync(file, 'utf8')
-      .replace("body.provider || videoConfig?.provider || 'chatfire', prompt, model, duration", "body.provider || videoConfig?.provider || 'chatfire', prompt, billingModel || model, duration");
-    fs.writeFileSync(file, source);
-    assert.throws(() => auditModelUiContract(target), /prompt, model, duration/);
-  } finally {
-    fs.rmSync(target, { recursive: true, force: true });
-  }
+  assertMutationRejected(
+    'backend-node/src/services/videoService.js',
+    (source) => source.replace(
+      "wan3State ? videoConfig?.provider : (body.provider || videoConfig?.provider || 'chatfire'), prompt, model, duration",
+      "wan3State ? videoConfig?.provider : (body.provider || videoConfig?.provider || 'chatfire'), prompt, billingModel || model, duration",
+    ),
+    /prompt, model, duration/,
+  );
+});
+
+test('model UI gate rejects allowing a request provider to override the verified Wan3 provider', () => {
+  assertMutationRejected(
+    'backend-node/src/services/videoService.js',
+    (source) => source.replace(
+      "wan3State ? videoConfig?.provider : (body.provider || videoConfig?.provider || 'chatfire')",
+      "body.provider || videoConfig?.provider || 'chatfire'",
+    ),
+    /verified Wan3 provider pin/,
+  );
 });
 
 test('model UI gate rejects removal of USMercari oversized reference image preparation', () => {

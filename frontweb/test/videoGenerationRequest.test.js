@@ -7,6 +7,7 @@ import {
   limitFeituoShortDramaReferenceImages,
   supportsFeituoShortDramaOmni,
 } from '../src/utils/videoGenerationRequest.js'
+import { supportsMultiImageVideoReferences } from '../src/utils/videoModelReferenceCapabilities.js'
 
 test('请求审计保留分镜模型、参考图和首尾帧字段', () => {
   const payload = buildVideoGenerationRequest({
@@ -138,6 +139,56 @@ test('飞拓新模型不按旧模型名静默裁剪引用并由统一能力显�
       },
     }),
     /最多支持 2 张参考图/,
+  )
+})
+
+test('Wan3 前端只按声明能力提交已验证 480P/2秒/无音频路径', () => {
+  const payload = buildVideoGenerationRequest({
+    model: 'wan3.0-video',
+    prompt: '城市街道镜头',
+    resolution: '480p',
+    duration: 2,
+    aspectRatio: '16:9',
+    generateAudio: false,
+    capability: {
+      declared: true,
+      resolutions: ['480p'],
+      durations: [2],
+      supportsAudio: false,
+      supportsImageReference: false,
+    },
+  })
+
+  assert.equal(payload.model, 'wan3.0-video')
+  assert.equal(payload.resolution, '480p')
+  assert.equal(payload.duration, 2)
+  assert.equal(Object.hasOwn(payload, 'generate_audio'), false)
+  assert.equal(supportsMultiImageVideoReferences('wan3.0-video'), true)
+  assert.throws(
+    () => buildVideoGenerationRequest({
+      model: 'wan3.0-video',
+      prompt: '城市街道镜头',
+      resolution: '480p',
+      duration: 2,
+      generateAudio: true,
+      capability: {
+        declared: true,
+        resolutions: ['480p'],
+        durations: [2],
+        supportsAudio: false,
+      },
+    }),
+    /不支持同步音频/,
+  )
+  assert.throws(
+    () => buildVideoGenerationRequest({
+      model: 'wan3.0-video',
+      prompt: '城市街道镜头',
+      resolution: '720p',
+      duration: 2,
+      capability: { declared: true, resolutions: ['480p'], durations: [2] },
+    }),
+    /不支持 720p 清晰度/,
   )
 })
 

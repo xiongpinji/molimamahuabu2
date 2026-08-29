@@ -19,6 +19,7 @@ const fuminVideoClient = require('./fuminVideoClient');
 const token6688Client = require('./token6688Client');
 const mediaModelSelection = require('./mediaModelSelectionService');
 const toapisVideoClient = require('./toapisVideoClient');
+const toapisWan3VideoClient = require('./toapisWan3VideoClient');
 const toapisPrivateAvatarService = require('./toapisPrivateAvatarService');
 const providerAssetUrl = require('./providerAssetUrlService');
 const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
@@ -62,6 +63,7 @@ function inferVideoProtocol(provider) {
   if (p === 'feituo' || p === 'feituo_open') return 'feituo_open';
   if (p === 'usmercari' || p === 'usmercari_media') return 'usmercari_media';
   if (p === 'fumin' || p === 'fumin_video') return 'fumin_video';
+  if (p === 'toapis_wan3_video') return 'toapis_wan3_video';
   if (p === 'toapis' || p === 'toapis_video') return 'toapis_video';
   if (p === 'lingjing' || p === 'lingjing_open') return 'lingjing_open';
   if (p === 'xai' || p === 'grok') return 'xai';
@@ -351,7 +353,9 @@ function resolveVideoProtocol(config, modelHint) {
   if (provider === 'feituo' || provider === 'feituo_open') protocol = 'feituo_open';
   if (provider === 'usmercari' || provider === 'usmercari_media') protocol = 'usmercari_media';
   if (provider === 'fumin' || provider === 'fumin_video') protocol = 'fumin_video';
-  if (provider === 'toapis' || provider === 'toapis_video') protocol = 'toapis_video';
+  if (provider === 'toapis_wan3_video') protocol = 'toapis_wan3_video';
+  else if ((provider === 'toapis' || provider === 'toapis_video')
+      && protocol !== 'toapis_wan3_video') protocol = 'toapis_video';
   if (provider === 'lingjing' || provider === 'lingjing_open') protocol = 'lingjing_open';
   if (provider === 'token6688' || provider === 'tokengo') protocol = 'token6688';
   if (provider === 'djpsd_openapi' || protocol === 'djpsd_media') protocol = 'djpsd_openapi';
@@ -1326,6 +1330,17 @@ function getDefaultVideoConfig(db, preferredModel, evidenceRoots, preferredConfi
   if (mediaModelSelection.parseQualifiedSelection(preferredModel)) {
     return mediaModelSelection.resolveQualifiedConfig(active, preferredModel);
   }
+  if (preferred === toapisWan3VideoClient.TOAPIS_WAN3_MODEL) {
+    return active.find((config) => {
+      const protocol = resolveVideoProtocol(config, preferred);
+      const capabilities = getVerifiedToapisCapabilities(config, preferred);
+      return protocol === 'toapis_wan3_video'
+        && config.verification_status === 'verified'
+        && aiConfigService.hasConnectionCredential(config)
+        && hasTrustedEvidenceBinding(preferred, capabilities, evidenceRoots)
+        && configSupportsVideoModel(config, preferred);
+    }) || null;
+  }
   if (preferred && toapisVideoClient.TOAPIS_VIDEO_MODELS[preferred]) {
     return active.find((config) => {
       const protocols = [config.provider, config.api_protocol]
@@ -1479,6 +1494,97 @@ function assertToapisVideoSubmitReady(db, config, model, request, evidenceRoots)
     throw toapisGateError('VIDEO_AUDIO_NOT_VERIFIED', `${target} 的同步音频尚未通过真实验证`);
   }
 
+  const price = modelPriceService.list(db)
+    .find((item) => String(item.model || '').trim().toLowerCase() === target);
+  const tier = price?.resolution_prices?.[checked.resolution];
+  if (!price || price.category !== 'video' || price.status !== 'enabled'
+      || !Number.isSafeInteger(tier?.credits) || tier.credits <= 0
+      || !Number.isSafeInteger(tier?.cost_micros_per_second) || tier.cost_micros_per_second <= 0) {
+    throw toapisGateError(
+      'MODEL_RESOLUTION_PRICE_REQUIRED',
+      `${target} 的 ${checked.resolution} 积分待管理员配置`,
+    );
+  }
+  const credits = modelPriceService.calculateCharge(db, target, {
+    resolution: checked.resolution,
+    duration: checked.duration,
+    allowedDurations: durations,
+  });
+  if (!Number.isSafeInteger(credits) || credits !== tier.credits * checked.duration) {
+    throw toapisGateError(
+      'MODEL_RESOLUTION_PRICE_REQUIRED',
+      `${target} 的 ${checked.resolution} 积分待管理员配置`,
+    );
+  }
+  return checked;
+}
+
+function assertToapisWan3VideoSubmitReady(db, config, model, request, evidenceRoots) {
+  const target = String(model || '').trim().toLowerCase();
+  const checked = toapisWan3VideoClient.validateToapisWan3VideoOptions({ ...request, model: target });
+  if (target !== toapisWan3VideoClient.TOAPIS_WAN3_MODEL
+      || config?.service_type !== 'video'
+      || config?.is_active !== true
+      || resolveVideoProtocol(config, target) !== 'toapis_wan3_video'
+      || !configSupportsVideoModel(config, target)) {
+    throw toapisGateError('TOAPIS_WAN3_CONFIG_MISMATCH', `${target} 未绑定当前启用的 ToAPIs Wan 3.0 视频配置`);
+  }
+  if (config.verification_status !== 'verified') {
+    throw toapisGateError('MODEL_NOT_VERIFIED', `${target} 尚未通过真实生成验证`);
+  }
+  if (!aiConfigService.hasConnectionCredential(config)) {
+    throw toapisGateError('MODEL_CREDENTIAL_MISSING', `${target} 未配置有效的 ToAPIs API Key`);
+  }
+  const capabilities = getVerifiedToapisCapabilities(config, target);
+  if (!capabilities || !hasTrustedEvidenceBinding(target, capabilities, evidenceRoots)) {
+    throw toapisGateError('MODEL_NOT_VERIFIED', `${target} 的真实生成证据与当前发布不一致`);
+  }
+  const resolutions = Array.isArray(capabilities.resolutions)
+    ? capabilities.resolutions.map((value) => String(value || '').trim().toLowerCase())
+    : [];
+  const durations = Array.isArray(capabilities.durations)
+    ? capabilities.durations.map(Number).filter(Number.isSafeInteger)
+    : [];
+  const aspectRatios = Array.isArray(capabilities.aspectRatios)
+    ? capabilities.aspectRatios.map((value) => String(value || '').trim().replace('：', ':'))
+    : [];
+  if (!resolutions.includes(checked.resolution)) {
+    throw toapisGateError('VIDEO_RESOLUTION_NOT_VERIFIED', `${target} 的 ${checked.resolution} 尚未通过真实生成验证`);
+  }
+  if (!durations.includes(checked.duration)) {
+    throw toapisGateError('VIDEO_DURATION_NOT_VERIFIED', `${target} 的 ${checked.duration} 秒尚未通过真实生成验证`);
+  }
+  if (!aspectRatios.includes(checked.aspectRatio)) {
+    throw toapisGateError('VIDEO_ASPECT_RATIO_NOT_VERIFIED', `${target} 的 ${checked.aspectRatio} 画幅尚未通过真实生成验证`);
+  }
+  if (checked.firstFrame && capabilities.supportsFirstFrame !== true) {
+    throw toapisGateError('VIDEO_FIRST_FRAME_NOT_VERIFIED', `${target} 的首帧模式尚未通过真实验证`);
+  }
+  if (checked.lastFrame && capabilities.supportsLastFrame !== true) {
+    throw toapisGateError('VIDEO_LAST_FRAME_NOT_VERIFIED', `${target} 的尾帧模式尚未通过真实验证`);
+  }
+  for (const [values, supportKey, limitKey, label] of [
+    [checked.images, 'supportsImageReference', 'maxReferences', '参考图'],
+    [checked.videos, 'supportsVideoReference', 'maxVideoReferences', '参考视频'],
+    [checked.audio, 'supportsAudioReference', 'maxAudioReferences', '参考音频'],
+  ]) {
+    if (!values.length) continue;
+    if (capabilities[supportKey] !== true) {
+      throw toapisGateError('VIDEO_REFERENCE_NOT_VERIFIED', `${target} 的${label}尚未通过真实验证`);
+    }
+    const limit = Number(capabilities[limitKey]);
+    if (!Number.isSafeInteger(limit) || limit < 0 || values.length > limit) {
+      throw toapisGateError('VIDEO_REFERENCE_LIMIT_EXCEEDED', `${target} 的${label}数量超过已验证上限`);
+    }
+  }
+  const generateAudio = typeof request.audio === 'boolean'
+    ? request.audio
+    : typeof request.generate_audio === 'boolean'
+      ? request.generate_audio
+      : true;
+  if (generateAudio && capabilities.supportsAudio !== true) {
+    throw toapisGateError('VIDEO_AUDIO_NOT_VERIFIED', `${target} 的同步音频尚未通过真实验证`);
+  }
   const price = modelPriceService.list(db)
     .find((item) => String(item.model || '').trim().toLowerCase() === target);
   const tier = price?.resolution_prices?.[checked.resolution];
@@ -1664,6 +1770,7 @@ function buildQueryUrl(config, taskId) {
   else if (proto === 'agnes') defaultEp = '/videos/{taskId}';
   else if (proto === 'icreat_task') defaultEp = '/v1/task/query-status';
   else if (proto === 'usmercari_media') defaultEp = '/cpa-file/fetch';
+  else if (proto === 'toapis_wan3_video') defaultEp = '/v1/videos/generations/{taskId}';
   else if (proto === 'toapis_video') defaultEp = '/v1/videos/generations/{taskId}';
   else if (proto === 'usmercari_media') defaultEp = '/cpa-file/fetch';
   else defaultEp = '/video/task/{taskId}';
@@ -5154,7 +5261,7 @@ async function submitVideoWithConfig(db, log, config, opts, runtime = {}) {
   const shouldPromoteFirstReference = !hasExplicitMultiReferences
     || ['openai_compat', 'aihubcc'].includes(protocol);
   if (shouldPromoteFirstReference
-      && !['usmercari_media', 'icreat_task', 'toapis_video', 'lingjing_open'].includes(protocol)
+      && !['usmercari_media', 'icreat_task', 'toapis_video', 'toapis_wan3_video', 'lingjing_open'].includes(protocol)
       && !image_url && !first_frame_url) {
     const firstReferenceUrl = Array.isArray(opts.reference_urls)
       ? opts.reference_urls.find((value) => String(value || '').trim())
@@ -5375,6 +5482,45 @@ async function submitVideoWithConfig(db, log, config, opts, runtime = {}) {
       reference_audio_urls: opts.reference_audio_urls,
       voice_reference_url: opts.voice_reference_url,
       video_gen_id,
+    });
+  }
+
+  if (protocol === 'toapis_wan3_video') {
+    const signAsset = (value) => providerAssetUrl.signProviderAssetUrl(value, {
+      filesBaseUrl: opts.files_base_url,
+    });
+    const signAssets = (values) => Array.isArray(values) ? values.map(signAsset) : values;
+    const hasMultimodalReferences = [
+      opts.reference_urls,
+      opts.reference_video_urls,
+      opts.reference_audio_urls,
+    ].some((values) => Array.isArray(values) && values.some((value) => String(value || '').trim()))
+      || String(opts.voice_reference_url || '').trim();
+    const wan3Request = {
+      ...opts,
+      model,
+      prompt,
+      duration: opts.duration,
+      aspect_ratio,
+      resolution,
+      image_url: hasMultimodalReferences ? '' : signAsset(opts.image_url),
+      first_frame_url: signAsset(opts.first_frame_url),
+      last_frame_url: signAsset(opts.last_frame_url),
+      reference_urls: signAssets(opts.reference_urls),
+      reference_video_urls: signAssets(opts.reference_video_urls),
+      reference_audio_urls: signAssets(opts.reference_audio_urls),
+      voice_reference_url: signAsset(opts.voice_reference_url),
+      audio: typeof opts.audio === 'boolean' ? opts.audio : opts.generate_audio,
+      client_business_id: opts.client_business_id || (video_gen_id ? `video-${video_gen_id}` : ''),
+      video_gen_id,
+    };
+    try {
+      assertToapisWan3VideoSubmitReady(db, config, model, wan3Request, runtime.evidenceRoots);
+    } catch (error) {
+      return { error: error.message };
+    }
+    return toapisWan3VideoClient.callToapisWan3VideoApi(config, log, wan3Request, {
+      fetchImpl: opts.fetchImpl,
     });
   }
 
@@ -6193,6 +6339,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isUsmercari = protocol === 'usmercari_media';
   const isFumin = protocol === 'fumin_video';
   const isToken6688 = protocol === 'token6688';
+  const isToapisWan3 = protocol === 'toapis_wan3_video';
   const isToapis = protocol === 'toapis_video';
   const isLingjing = protocol === 'lingjing_open';
   const strictSingleRequest = requestOpts[STRICT_SINGLE_PROVIDER_REQUEST] === true;
@@ -6219,6 +6366,21 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await new Promise((r) => setTimeout(r, intervalMs));
     try {
+      if (isToapisWan3) {
+        const pollRound = attempt + 1;
+        const result = await toapisWan3VideoClient.fetchToapisWan3Task(config, taskId, {
+          fetchImpl,
+        });
+        log.info('[ToAPIs Wan 3.0] 轮询状态', {
+          video_gen_id: videoGenId,
+          round: pollRound,
+          state: result.state,
+          progress: result.progress,
+        });
+        if (result.state === 'completed') return { video_url: result.videoUrl };
+        if (result.state === 'failed') return { error: result.error };
+        continue;
+      }
       if (isToapis) {
         const pollRound = attempt + 1;
         const result = await toapisVideoClient.fetchToapisTask(config, taskId, {
@@ -6976,7 +7138,7 @@ async function queryVideoTaskStatusOnce(db, log, taskId, config, requestOpts = {
       || (Object.prototype.hasOwnProperty.call(result || {}, 'video_url') && !result.video_url)) {
     return { state: 'artifact_unreadable' };
   }
-  if (resolveVideoProtocol(config) === 'toapis_video'
+  if (['toapis_video', 'toapis_wan3_video'].includes(resolveVideoProtocol(config))
       && isPollTaskSucceeded(extractPollTaskStatus(observedPayload))) {
     return { state: 'artifact_unreadable' };
   }

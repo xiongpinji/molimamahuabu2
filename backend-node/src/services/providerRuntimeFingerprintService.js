@@ -61,6 +61,7 @@ const PROTOCOL_ADAPTERS = Object.freeze({
       'src/services/providerAssetUrlService.js',
       'src/services/toapisVideoClient.js',
     ],
+    toapis_wan3_video: ['src/services/toapisWan3VideoClient.js'],
     usmercari_media: ['src/services/usmercariVideoClient.js'],
     veo3: [],
     vidu: [],
@@ -117,6 +118,7 @@ const PROVIDER_PROTOCOLS = Object.freeze({
     klingai: 'kling',
     toapis: 'toapis_video',
     toapis_video: 'toapis_video',
+    toapis_wan3_video: 'toapis_wan3_video',
     usmercari: 'usmercari_media',
     usmercari_media: 'usmercari_media',
     vidu: 'vidu',
@@ -146,7 +148,7 @@ const VIDEO_FORCED_PROVIDER_PROTOCOLS = new Set([
   'feituo', 'feituo_open',
   'fumin', 'fumin_video',
   'icreat', 'icreat-seedance', 'icreat_ai',
-  'toapis', 'toapis_video',
+  'toapis', 'toapis_video', 'toapis_wan3_video',
   'usmercari', 'usmercari_media',
 ]);
 
@@ -157,6 +159,7 @@ function normalizeName(value) {
 function resolveProtocol(config, serviceType) {
   const provider = normalizeName(config.provider);
   const explicit = normalizeName(config.api_protocol ?? config.apiProtocol ?? config.protocol);
+  if (serviceType === 'video' && explicit === 'toapis_wan3_video') return explicit;
   if (serviceType === 'video' && VIDEO_FORCED_PROVIDER_PROTOCOLS.has(provider)) {
     return PROVIDER_PROTOCOLS.video[provider];
   }

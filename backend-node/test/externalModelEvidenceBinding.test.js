@@ -64,14 +64,70 @@ function createEvidenceRoot() {
   };
 }
 
-test('only the four new external models require a root-owned evidence contract', () => {
+function installWanEvidence(current) {
+  const contract = 'toapis-wan3-video-real-verification-v1';
+  const file = 'toapis-wan3-video-verification.json';
+  const outputFile = 'wan3-video.mp4';
+  const bytes = Buffer.from(JSON.stringify({
+    contract_version: contract,
+    results: [{ artifact: { output_file: outputFile } }],
+  }));
+  fs.writeFileSync(path.join(current.root, file), bytes, { mode: 0o644 });
+  fs.writeFileSync(path.join(current.root, 'public', 'toapis', outputFile), 'wan3\n', { mode: 0o644 });
+  current.evidence[contract] = {
+    file,
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+  };
+  fs.writeFileSync(path.join(current.root, 'manifest.json'), JSON.stringify({
+    contract_version: 'external-model-release-evidence-manifest-v1',
+    evidence: current.evidence,
+  }), { mode: 0o644 });
+  return current.evidence[contract];
+}
+
+test('protected external models require an exact root-owned evidence contract', () => {
   assert.equal(EVIDENCE_ROOT, '/opt/moli-drama/shared/release-evidence/external-models-v1');
   assert.equal(EVIDENCE_ALLOWED_ROOT, '/opt/moli-drama/shared/release-evidence');
   assert.equal(evidenceContractForModel('seedance-2-fast'), 'toapis-video-real-verification-v1');
   assert.equal(evidenceContractForModel('seedance-2-mini'), 'toapis-video-real-verification-v1');
+  assert.equal(evidenceContractForModel('wan3.0-video'), 'toapis-wan3-video-real-verification-v1');
   assert.equal(evidenceContractForModel('gpt-image-2-2-4k'), 'usmercari-image-real-verification-v1');
   assert.equal(evidenceContractForModel('nano-banana-2'), 'usmercari-image-real-verification-v1');
   assert.equal(evidenceContractForModel('legacy-model'), null);
+});
+
+test('Wan 3.0 fails closed until its independent evidence is installed', () => {
+  const current = createEvidenceRoot();
+  try {
+    assert.equal(readTrustedEvidence('wan3.0-video', current.roots), null);
+    assert.equal(hasTrustedEvidenceBinding('wan3.0-video', {
+      evidence_contract: 'toapis-wan3-video-real-verification-v1',
+      evidence_sha256: '0'.repeat(64),
+    }, current.roots), false);
+  } finally {
+    fs.rmSync(current.allowedRoot, { recursive: true, force: true });
+  }
+});
+
+test('Wan 3.0 binds only to its installed independent evidence bytes', () => {
+  const current = createEvidenceRoot();
+  try {
+    const installed = installWanEvidence(current);
+    assert.deepEqual(readTrustedEvidence('wan3.0-video', current.roots), {
+      contract: 'toapis-wan3-video-real-verification-v1',
+      sha256: installed.sha256,
+    });
+    assert.equal(hasTrustedEvidenceBinding('wan3.0-video', {
+      evidence_contract: 'toapis-wan3-video-real-verification-v1',
+      evidence_sha256: installed.sha256,
+    }, current.roots), true);
+    assert.equal(hasTrustedEvidenceBinding('wan3.0-video', {
+      evidence_contract: 'toapis-wan3-video-real-verification-v1',
+      evidence_sha256: '0'.repeat(64),
+    }, current.roots), false);
+  } finally {
+    fs.rmSync(current.allowedRoot, { recursive: true, force: true });
+  }
 });
 
 test('runtime capability must bind to the exact shared evidence bytes', () => {

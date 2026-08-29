@@ -36,7 +36,8 @@ test('公开备注会显示并跟随价格配置保存', () => {
 })
 
 test('视频模型仍保留 480P 720P 每秒分档', () => {
-  assert.match(source, /480P 用户收费（积分\/秒）/)
-  assert.match(source, /720P API 成本（元\/秒）/)
-  assert.match(source, /if \(category === 'video'\) return usesVideoResolutionPricing\(itemOrCategory\) \? \['480p', '720p'\] : \[\]/)
+  assert.match(source, /const videoResolutionLabels\s*=\s*\{[\s\S]*'480p': '480P'[\s\S]*'720p': '720P'/)
+  assert.match(source, /videoResolutionLabels\[resolution\][\s\S]*用户收费（积分\/秒）/)
+  assert.match(source, /videoResolutionLabels\[resolution\][\s\S]*API 成本（元\/秒）/)
+  assert.match(source, /isWan3VideoPricing\(itemOrCategory\) \? \['480p'\] : \['480p', '720p'\]/)
 })
