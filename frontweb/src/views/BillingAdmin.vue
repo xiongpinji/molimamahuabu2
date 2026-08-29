@@ -128,18 +128,14 @@
                       <el-option label="按秒计费" value="second" />
                     </el-select>
                   </label>
-                  <label class="model-field">
-                    <span v-if="item.billing_unit === 'request'">480P 用户收费（积分/次）</span>
-                    <span v-else>480P 用户收费（积分/秒）</span>
-                    <el-input-number v-model="item.resolution_prices['480p'].credits" :min="1" :step="1" step-strictly />
-                  </label>
-                  <label class="model-field"><span>480P API 成本（元/秒）</span><el-input-number v-model="item.resolution_prices['480p'].cost_yuan_per_second" :min="0" :precision="6" :step="0.01" /></label>
-                  <label class="model-field">
-                    <span v-if="item.billing_unit === 'request'">720P 用户收费（积分/次）</span>
-                    <span v-else>720P 用户收费（积分/秒）</span>
-                    <el-input-number v-model="item.resolution_prices['720p'].credits" :min="1" :step="1" step-strictly />
-                  </label>
-                  <label class="model-field"><span>720P API 成本（元/秒）</span><el-input-number v-model="item.resolution_prices['720p'].cost_yuan_per_second" :min="0" :precision="6" :step="0.01" /></label>
+                  <template v-for="resolution in resolutionKeys(item)" :key="resolution">
+                    <label class="model-field">
+                      <span v-if="item.billing_unit === 'request'">{{ videoResolutionLabels[resolution] }} 用户收费（积分/次）</span>
+                      <span v-else>{{ videoResolutionLabels[resolution] }} 用户收费（积分/秒）</span>
+                      <el-input-number v-model="item.resolution_prices[resolution].credits" :min="1" :step="1" step-strictly />
+                    </label>
+                    <label class="model-field"><span>{{ videoResolutionLabels[resolution] }} API 成本（元/秒）</span><el-input-number v-model="item.resolution_prices[resolution].cost_yuan_per_second" :min="0" :precision="6" :step="0.01" /></label>
+                  </template>
                 </div>
                 <label class="model-field">
                   <span>计费状态</span>
@@ -224,18 +220,14 @@
                     <el-option label="按秒计费" value="second" />
                   </el-select>
                 </label>
-                <label class="model-field">
-                  <span v-if="newModel.billing_unit === 'request'">480P 用户收费（积分/次）</span>
-                  <span v-else>480P 用户收费（积分/秒）</span>
-                  <el-input-number v-model="newModel.resolution_prices['480p'].credits" :min="1" :step="1" step-strictly />
-                </label>
-                <label class="model-field"><span>480P API 成本（元/秒）</span><el-input-number v-model="newModel.resolution_prices['480p'].cost_yuan_per_second" :min="0" :precision="6" :step="0.01" /></label>
-                <label class="model-field">
-                  <span v-if="newModel.billing_unit === 'request'">720P 用户收费（积分/次）</span>
-                  <span v-else>720P 用户收费（积分/秒）</span>
-                  <el-input-number v-model="newModel.resolution_prices['720p'].credits" :min="1" :step="1" step-strictly />
-                </label>
-                <label class="model-field"><span>720P API 成本（元/秒）</span><el-input-number v-model="newModel.resolution_prices['720p'].cost_yuan_per_second" :min="0" :precision="6" :step="0.01" /></label>
+                <template v-for="resolution in resolutionKeys(newModel)" :key="resolution">
+                  <label class="model-field">
+                    <span v-if="newModel.billing_unit === 'request'">{{ videoResolutionLabels[resolution] }} 用户收费（积分/次）</span>
+                    <span v-else>{{ videoResolutionLabels[resolution] }} 用户收费（积分/秒）</span>
+                    <el-input-number v-model="newModel.resolution_prices[resolution].credits" :min="1" :step="1" step-strictly />
+                  </label>
+                  <label class="model-field"><span>{{ videoResolutionLabels[resolution] }} API 成本（元/秒）</span><el-input-number v-model="newModel.resolution_prices[resolution].cost_yuan_per_second" :min="0" :precision="6" :step="0.01" /></label>
+                </template>
               </div>
               <label v-if="!usesFixedRequestVideoPricing(newModel) && !usesVideoResolutionPricing(newModel) && !usesImageResolutionPricing(newModel)" class="model-field">
                 <span>平台成本单位</span>
@@ -476,6 +468,10 @@ const imageResolutionLabels = {
   '2k': { credits: '2K 用户收费（积分/张）', cost: '2K API 成本（人民币元/张）' },
   '4k': { credits: '4K 用户收费（积分/张）', cost: '4K API 成本（人民币元/张）' },
 }
+const videoResolutionLabels = {
+  '480p': '480P',
+  '720p': '720P',
+}
 const newModel = reactive({
   model: '',
   display_name: '',
@@ -554,16 +550,26 @@ function usesFixedRequestVideoPricing(item) {
     && FIXED_REQUEST_VIDEO_MODELS.has(String(item?.model || '').toLowerCase())
 }
 
+function isWan3VideoPricing(item) {
+  return String(item?.model || '').trim().toLowerCase() === 'wan3.0-video'
+    || String(item?.api_protocol || item?.protocol || '').trim().toLowerCase() === 'toapis_wan3_video'
+}
+
 function usesVideoResolutionPricing(item) {
   return item?.category === 'video' && !usesFixedRequestVideoPricing(item)
 }
 
 function resolutionKeys(itemOrCategory) {
   const category = typeof itemOrCategory === 'string' ? itemOrCategory : itemOrCategory?.category
-  if (category === 'video') return usesVideoResolutionPricing(itemOrCategory) ? ['480p', '720p'] : []
+  if (category === 'video') return usesVideoResolutionPricing(itemOrCategory) ? (isWan3VideoPricing(itemOrCategory) ? ['480p'] : ['480p', '720p']) : []
   if (!usesImageResolutionPricing(itemOrCategory)) return []
   const model = String(itemOrCategory?.model || '').toLowerCase()
   return model === GPT_IMAGE_MODEL_ID ? ['1k', '2k'] : ['1k', '2k', '4k']
+}
+
+function videoResolutionWarning(item) {
+  const labels = resolutionKeys(item).map((resolution) => videoResolutionLabels[resolution] || resolution.toUpperCase())
+  return `请填写 ${labels.join(' 和 ')} 的正整数积分`
 }
 
 function normalizePrice(item) {
@@ -727,7 +733,7 @@ async function saveModel(item) {
   if (usesTierPrices && !hasValidResolutionPrices(item)) {
     return ElMessage.warning(item.category === 'image'
       ? '请填写当前图片模型已开放档位的正整数积分'
-      : '请填写 480P 和 720P 的正整数积分')
+      : videoResolutionWarning(item))
   }
   if (!usesTierPrices && (!Number.isSafeInteger(Number(item.credits)) || Number(item.credits) <= 0)) {
     return ElMessage.warning('请填写正整数积分')
@@ -767,7 +773,7 @@ async function addModel() {
   if (usesTierPrices && !hasValidResolutionPrices(newModel)) {
     return ElMessage.warning(newModel.category === 'image'
       ? '请填写当前图片模型已开放档位的正整数积分'
-      : '请填写 480P 和 720P 的正整数积分')
+      : videoResolutionWarning(newModel))
   }
   if (!usesTierPrices && (!Number.isSafeInteger(Number(newModel.credits)) || Number(newModel.credits) <= 0)) {
     return ElMessage.warning('请填写正整数积分')

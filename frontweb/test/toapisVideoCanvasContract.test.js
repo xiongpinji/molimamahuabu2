@@ -41,6 +41,17 @@ const miniCapability = Object.freeze({
   durations: [4, 8, 10, 12, 15],
 })
 
+const wan3Capability = Object.freeze({
+  resolutions: ['480p', '720p'],
+  durations: [2, 4],
+  quantities: [1],
+  maxReferences: 10,
+  supportsImageReference: true,
+  supportsVideoReference: true,
+  supportsAudioReference: true,
+  supportsAudio: true,
+})
+
 function videoCatalogItem(model, capability, overrides = {}) {
   return {
     kind: 'video',
@@ -71,6 +82,35 @@ test('ToAPIs 目录保留真实模型 ID 与管理员展示信息并排除未验
   assert.equal(catalog[0].publicNote, '管理员公开备注')
   assert.deepEqual(catalog[0].capabilities.resolutions, ['480p', '720p'])
   assert.deepEqual(catalog[1].capabilities.durations, [4, 8, 10, 12, 15])
+})
+
+test('首页快速生成把 Wan3 绑定到独立协议并只开放已验证 480P/2秒', () => {
+  const catalog = normalizeQuickGenerationCatalog([
+    videoCatalogItem('wan3.0-video', wan3Capability, {
+      label: 'ToAPIs Wan 3.0',
+      provider: 'toapis_wan3',
+      protocol: '',
+      resolution_prices: {
+        '480p': { credits: 400 },
+        '720p': { credits: 999 },
+      },
+    }),
+    videoCatalogItem('wan3.0-video', wan3Capability, {
+      label: 'ToAPIs Wan 3.0 未验证',
+      provider: 'toapis_wan3',
+      protocol: '',
+      verification_status: 'pending',
+      resolution_prices: {
+        '480p': { credits: 400 },
+      },
+    }),
+  ])
+
+  assert.equal(catalog.length, 1)
+  assert.equal(catalog[0].protocol, 'toapis_wan3_video')
+  assert.deepEqual(catalog[0].capabilities.resolutions, ['480p'])
+  assert.deepEqual(catalog[0].capabilities.durations, [2])
+  assert.deepEqual(Object.keys(catalog[0].resolution_prices), ['480p'])
 })
 
 test('模型能力决定视频时长选项并在模型切换时规范化草稿', () => {

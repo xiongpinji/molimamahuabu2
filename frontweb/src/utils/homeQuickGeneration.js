@@ -5,7 +5,7 @@ import {
 
 const QUICK_GENERATION_MODES = new Set(['text', 'image', 'video'])
 const IMAGE_RESOLUTIONS = ['1k', '2k', '4k']
-const STRICT_CATALOG_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'lingjing_open'])
+const STRICT_CATALOG_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'toapis_wan3_video', 'lingjing_open'])
 const VERIFIED_IMAGE_MODELS = Object.freeze({
   'gpt-image-2-2-4k': Object.freeze({ resolutions: Object.freeze(['1k', '2k']), quantities: Object.freeze([1]), maxReferences: 6 }),
   'nano-banana-2': Object.freeze({ resolutions: Object.freeze(['1k', '2k', '4k']), quantities: Object.freeze([1]), maxReferences: 6 }),
@@ -23,15 +23,27 @@ const VERIFIED_VIDEO_MODELS = Object.freeze({
     resolutions: Object.freeze([]),
     durations: Object.freeze([4, 5, 6, 8, 10, 11, 15]),
   }),
+  'wan3.0-video': Object.freeze({
+    resolutions: Object.freeze(['480p']),
+    durations: Object.freeze([2]),
+  }),
 })
 const STRICT_CATALOG_PROVIDER_PROTOCOLS = Object.freeze({
   lingjing: 'lingjing_open',
   lingjing_open: 'lingjing_open',
   toapis: 'toapis_video',
   toapis_video: 'toapis_video',
+  toapis_wan3: 'toapis_wan3_video',
+  toapis_wan3_video: 'toapis_wan3_video',
   usmercari: 'usmercari_image',
   usmercari_image: 'usmercari_image',
 })
+
+function protocolForVerifiedVideoModel(model) {
+  return String(model || '').trim().toLowerCase() === 'wan3.0-video'
+    ? 'toapis_wan3_video'
+    : 'toapis_video'
+}
 
 function catalogProtocol(item = {}) {
   const protocol = String(item.protocol || item.api_protocol || '').trim().toLowerCase()
@@ -40,10 +52,10 @@ function catalogProtocol(item = {}) {
   const category = String(item.kind || item.category || '').trim().toLowerCase()
   const providerProtocol = STRICT_CATALOG_PROVIDER_PROTOCOLS[provider]
   if ((providerProtocol === 'usmercari_image' && category === 'image')
-      || (['toapis_video', 'lingjing_open'].includes(providerProtocol) && category === 'video')) return providerProtocol
+      || (['toapis_video', 'toapis_wan3_video', 'lingjing_open'].includes(providerProtocol) && category === 'video')) return providerProtocol
   const model = String(item.model || '').trim().toLowerCase()
   if (verifiedImageModel(model)) return 'usmercari_image'
-  if (verifiedVideoModel(model)) return 'toapis_video'
+  if (verifiedVideoModel(model)) return protocolForVerifiedVideoModel(model)
   return protocol
 }
 
@@ -196,7 +208,7 @@ export function normalizeQuickGenerationCatalog(items = []) {
         return item.capabilities.resolutions?.length === 0 && Boolean(item.capabilities.durations?.length)
       }
       if (!item.capabilities.resolutions?.length) return false
-      return item.protocol !== 'toapis_video' || item.capabilities.durations?.length
+      return !['toapis_video', 'toapis_wan3_video'].includes(item.protocol) || item.capabilities.durations?.length
     })
 }
 
@@ -271,7 +283,8 @@ export function estimateGenerationCredits(model = {}, options = {}) {
   const hasResolutionPrices = Object.keys(prices).length > 0
   const tierCredits = Number(prices?.[resolution]?.credits)
   const protocol = String(model?.protocol || model?.api_protocol || '').trim().toLowerCase()
-  if (protocol === 'toapis_video' && (!Number.isSafeInteger(tierCredits) || tierCredits <= 0)) return null
+  if (['toapis_video', 'toapis_wan3_video'].includes(protocol)
+      && (!Number.isSafeInteger(tierCredits) || tierCredits <= 0)) return null
   const category = String(model?.category || model?.kind || (model?.billing_unit === 'second' ? 'video' : '')).trim().toLowerCase()
   if (hasResolutionPrices && ['image', 'video'].includes(category)
       && (!Number.isSafeInteger(tierCredits) || tierCredits <= 0)) return null
