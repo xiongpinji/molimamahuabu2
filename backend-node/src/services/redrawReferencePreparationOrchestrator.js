@@ -17,6 +17,9 @@ const {
   REFERENCE_BUNDLE_SCHEMA_VERSION,
   saveReferenceBundle: defaultSaveReferenceBundle,
 } = require('./redrawReferenceBundleService');
+const {
+  bindReadyMotionReference: defaultBindReadyMotionReference,
+} = require('./redrawReferenceArtifactImportService');
 const { appendWorkflowEvent } = require('./redrawWorkflowEventService');
 const taskService = require('./taskService');
 
@@ -810,6 +813,34 @@ async function executeShot(ctx, built, shot, descriptor, idempotencyKey, deps) {
     snapshot.error_code = 'REDRAW_REFERENCE_PREPARATION_DRIFT';
     persistShotSnapshot(ctx, shot.id, currentUpdatedAt, 'needs_attention', snapshot, 'upstream_version_drift');
     throw error;
+  }
+  if (typeof deps.bindReadyMotionReference === 'function'
+    || typeof deps.buildReferenceBundleInput !== 'function') {
+    const bindMotion = typeof deps.bindReadyMotionReference === 'function'
+      ? deps.bindReadyMotionReference
+      : defaultBindReadyMotionReference;
+    try {
+      await bindMotion(ctx, {
+        shot_id: Number(shot.id),
+        clean_results: snapshot.clean_results,
+      });
+    } catch (error) {
+      if (!['REDRAW_MOTION_REFERENCE_BINDING_NOT_READY', 'REDRAW_MOTION_REFERENCE_STALE']
+        .includes(trim(error?.code))) throw error;
+      snapshot.status = 'needs_attention';
+      snapshot.error_code = trim(error.code);
+      persistShotSnapshot(
+        ctx,
+        shot.id,
+        currentUpdatedAt,
+        'needs_attention',
+        snapshot,
+        error.code === 'REDRAW_MOTION_REFERENCE_STALE'
+          ? 'motion_reference_binding_stale'
+          : 'motion_reference_binding_not_ready',
+      );
+      return 'needs_attention';
+    }
   }
   const bundleInput = typeof deps.buildReferenceBundleInput === 'function'
     ? await deps.buildReferenceBundleInput({

@@ -436,6 +436,70 @@ test('quotes only when verified text capability and model price are available', 
   db.close();
 });
 
+test('free localization creates and completes without reservation or ledger rows', async () => {
+  const db = createDb();
+  modelPrice.set(db, 'gpt-localize', 0, { category: 'text', pricingMode: 'free' });
+  const quote = quoteLocalization(db, quoteInput());
+  assert.equal(quote.priced, true);
+  assert.equal(quote.credits, 0);
+
+  const started = startLocalization(db, { info() {}, warn() {}, error() {} }, {
+    ...quoteInput(),
+    idempotencyKey: 'idem-free',
+    quoteHash: quote.quote_hash,
+  }, {
+    provider: providerReturning(localizedResult()),
+    schedule: (job) => job(),
+  });
+  assert.equal(started.reservation_id, null);
+  await started.completion;
+
+  const task = taskService.getTask(db, started.task_id);
+  const draft = db.prepare('SELECT * FROM redraw_versions WHERE id = ?').get(started.draft_version_id);
+  assert.equal(task.status, 'completed');
+  assert.equal(task.credit_reservation_id, null);
+  assert.equal(draft.localization_credit_reservation_id, null);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_credit_ledger').get().count, 0);
+  assert.deepEqual(credits.getTenantAccount(db, 'tenant-a'), {
+    tenant_id: 'tenant-a',
+    available: 100,
+    held: 0,
+    spent: 0,
+  });
+  db.close();
+});
+
+test('free localization deterministic failure does not require reservation or ledger rows', async () => {
+  const db = createDb();
+  modelPrice.set(db, 'gpt-localize', 0, { category: 'text', pricingMode: 'free' });
+  const quote = quoteLocalization(db, quoteInput());
+  const provider = async () => {
+    const error = new Error('provider rejected');
+    error.code = 'PROVIDER_FAILED';
+    throw error;
+  };
+
+  const started = startLocalization(db, { info() {}, warn() {}, error() {} }, {
+    ...quoteInput(),
+    idempotencyKey: 'idem-free-fail',
+    quoteHash: quote.quote_hash,
+  }, {
+    provider,
+    schedule: (job) => job(),
+  });
+
+  assert.equal(started.reservation_id, null);
+  await assert.rejects(started.completion, (error) => error.code === 'PROVIDER_FAILED');
+  const task = taskService.getTask(db, started.task_id);
+  assert.equal(task.status, 'failed');
+  assert.equal(task.credit_reservation_id, null);
+  assert.equal(db.prepare('SELECT localization_credit_reservation_id FROM redraw_versions WHERE id = ?').get(started.draft_version_id).localization_credit_reservation_id, null);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_credit_ledger').get().count, 0);
+  db.close();
+});
+
 test('quote fails closed before capability and pricing when analysis decision did not advance', () => {
   for (const decision of [
     {
@@ -1149,5 +1213,29 @@ test('reconcile orphaned localization tasks keeps dispatched provider work held 
   assert.equal(credits.getReservation(db, withProvider.reservation_id).status, 'held');
   assert.equal(taskService.getTask(db, noProvider.task_id).status, 'failed');
   assert.equal(credits.getReservation(db, noProvider.reservation_id).status, 'refunded');
+  db.close();
+});
+
+test('reconcile orphaned free localization task fails without reservation or ledger rows', () => {
+  const db = createDb();
+  modelPrice.set(db, 'gpt-localize', 0, { category: 'text', pricingMode: 'free' });
+  const quote = quoteLocalization(db, quoteInput());
+  const started = startLocalization(db, { info() {}, warn() {}, error() {} }, {
+    ...quoteInput(),
+    idempotencyKey: 'idem-free-orphan',
+    quoteHash: quote.quote_hash,
+  }, {
+    provider: providerReturning(localizedResult()),
+    schedule: () => null,
+  });
+
+  const result = reconcileOrphanedTasks(db, { info() {}, warn() {} });
+
+  assert.deepEqual(result, { needs_attention: 0, failed: 1 });
+  const task = taskService.getTask(db, started.task_id);
+  assert.equal(task.status, 'failed');
+  assert.equal(task.credit_reservation_id, null);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_credit_ledger').get().count, 0);
   db.close();
 });

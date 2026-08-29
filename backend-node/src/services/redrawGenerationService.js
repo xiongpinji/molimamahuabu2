@@ -24,6 +24,7 @@ const redrawNativeAudioService = require('./redrawNativeAudioService');
 const { normalizeVideoProviderResult } = require('./redrawProviderAdapters');
 const { FEITUO_MODELS, buildFeituoVideoBody } = require('./feituoVideoClient');
 const { TOAPIS_VIDEO_MODELS, validateToapisVideoOptions } = require('./toapisVideoClient');
+const { buildFuminVideoBody } = require('./fuminVideoClient');
 const { runWithGenerationLimit } = require('./generationConcurrency');
 
 const execFileAsync = promisify(execFile);
@@ -32,6 +33,7 @@ const DEFAULT_GENERATION_CONCURRENCY = 3;
 const DEFAULT_RECOVERY_WAIT_MS = 60 * 60 * 1000;
 const DEFAULT_RECOVERY_POLL_MS = 1000;
 const ICREAT_MINI_MODEL = 'bytedance/seedance-2-0-mini';
+const FUMIN_MINI_MODEL = 'fumin-seedance-2.0-mini';
 const HEX_64 = /^[0-9a-f]{64}$/;
 const CLIENT_GENERATION_CONTROL_FIELDS = [
   'model',
@@ -256,9 +258,17 @@ function isIcreatMiniCapability(capability) {
     && String(capability?.model || '').trim().toLowerCase() === ICREAT_MINI_MODEL;
 }
 
-function supportsVideoConditioning(capability) {
+function isFuminMiniCapability(capability) {
+  const provider = String(capability?.provider || '').trim().toLowerCase();
+  return ['fumin', 'fumin_video'].includes(provider)
+    && String(capability?.protocol || '').trim().toLowerCase() === 'fumin_video'
+    && String(capability?.model || '').trim().toLowerCase() === FUMIN_MINI_MODEL;
+}
+
+function supportsVideoConditioning(capability, options = {}) {
   const model = String(capability?.model || '').trim();
   return isIcreatMiniCapability(capability)
+    || (options.allowFuminMini === true && isFuminMiniCapability(capability))
     || (String(capability?.protocol || '').trim().toLowerCase() === 'feituo_open'
       && Number(FEITUO_MODELS[model]?.maxVideos || 0) > 0);
 }
@@ -266,7 +276,7 @@ function supportsVideoConditioning(capability) {
 function resolveVerifiedGenerationCapability(db, version, canReadArtifact = () => false, options = {}) {
   const capabilities = listVerifiedGenerationCapabilities(db, version, canReadArtifact);
   if (options.requireSourceConditioning === true) {
-    return capabilities.find(supportsVideoConditioning) || capabilities[0] || null;
+    return capabilities.find((capability) => supportsVideoConditioning(capability, options)) || capabilities[0] || null;
   }
   return capabilities[0] || null;
 }
@@ -280,13 +290,16 @@ function assertVideoConditioningCapability(capability, options = {}) {
   const protocol = String(capability?.protocol || '').trim().toLowerCase();
   const spec = FEITUO_MODELS[model];
   const icreatMini = isIcreatMiniCapability(capability);
+  const fuminMini = options.allowFuminMini === true && isFuminMiniCapability(capability);
   const declaredMaxVideos = Number(capability?.max_videos ?? capability?.maxVideos ?? spec?.maxVideos ?? 0);
   const maxVideos = icreatMini
     ? 3
-    : options.allowDeclaredLimit
-      ? declaredMaxVideos
-      : Number(spec?.maxVideos || 0);
-  if (!icreatMini && (protocol !== 'feituo_open' || maxVideos <= 0 || (!options.allowDeclaredLimit && !spec))) {
+    : fuminMini
+      ? 3
+      : options.allowDeclaredLimit
+        ? declaredMaxVideos
+        : Number(spec?.maxVideos || 0);
+  if (!icreatMini && !fuminMini && (protocol !== 'feituo_open' || maxVideos <= 0 || (!options.allowDeclaredLimit && !spec))) {
     throw codedError('REDRAW_VIDEO_CONDITIONING_UNSUPPORTED', '当前已验证视频模型不支持源片视频 conditioning', {
       config_id: capability?.config_id ?? null,
       model: model || null,
@@ -434,7 +447,7 @@ function assertReadyNativePack(ctx, language) {
   return registry.assertReady({ language, scope: 'language' });
 }
 
-function assertNativeAudioCapability(capability) {
+function assertNativeAudioCapability(capability, options = {}) {
   if (!capability) {
     throw codedError('REDRAW_NO_VERIFIED_NATIVE_AUDIO', '当前语言没有已验证的原生对白声画能力');
   }
@@ -442,7 +455,9 @@ function assertNativeAudioCapability(capability) {
   const protocol = String(capability.protocol || '').trim().toLowerCase();
   const spec = protocol === 'toapis_video' ? TOAPIS_VIDEO_MODELS[model] : null;
   if (capability.supportsAudio === false
-    || (!isIcreatMiniCapability({ protocol, model }) && spec?.supportsAudio !== true)) {
+    || (!isIcreatMiniCapability({ protocol, model })
+      && !(options.allowFuminMini === true && isFuminMiniCapability(capability))
+      && spec?.supportsAudio !== true)) {
     throw codedError('REDRAW_NATIVE_AUDIO_UNSUPPORTED', '当前已验证视频模型不支持同步音频');
   }
   return {
@@ -835,6 +850,23 @@ function preflightVideoGeneration(generation, sourceConditioning, referenceImage
     }
     return;
   }
+  if (generation.protocol === 'fumin_video') {
+    try {
+      buildFuminVideoBody({
+        model: generation.model,
+        prompt: generation.prompt,
+        duration: generation.duration,
+        aspect_ratio: generation.aspect_ratio,
+        resolution: generation.resolution,
+        reference_urls: referenceImageUrls,
+        reference_video_urls: [sourceConditioning.referenceVideoUrl],
+        generate_audio: generation.generateAudio === true,
+      });
+    } catch (error) {
+      throw codedError('REDRAW_GENERATION_INPUT_INVALID', error.message);
+    }
+    return;
+  }
   if (!FEITUO_MODELS[generation.model]) return;
   try {
     buildFeituoVideoBody({
@@ -1107,13 +1139,17 @@ async function generateShot(ctx, input = {}) {
     };
   } else {
     const hasCapabilityOverride = typeof ctx.resolveVideoConditioningCapability === 'function';
-    const verifiedCapability = resolveVerifiedGenerationCapability(db, versionIdentity, ctx.canReadArtifact, { requireSourceConditioning: !hasCapabilityOverride });
+    const verifiedCapability = resolveVerifiedGenerationCapability(db, versionIdentity, ctx.canReadArtifact, {
+      requireSourceConditioning: !hasCapabilityOverride,
+      allowFuminMini: requiresReferenceBundle,
+    });
     generation = buildGenerationInput(shot, input, parsed, verifiedCapability?.model);
     const conditioningCapability = hasCapabilityOverride
       ? ctx.resolveVideoConditioningCapability(db, generation.model, verifiedCapability)
       : verifiedCapability;
     selectedCapability = assertVideoConditioningCapability(conditioningCapability, {
       allowDeclaredLimit: hasCapabilityOverride,
+      allowFuminMini: requiresReferenceBundle,
     });
     generation.provider = selectedCapability.provider || null;
     generation.protocol = selectedCapability.protocol || null;
@@ -1121,7 +1157,7 @@ async function generateShot(ctx, input = {}) {
     generation.aiServiceConfigUpdatedAt = String(selectedCapability.config_updated_at || '');
   }
   if (requiresReferenceBundle) {
-    assertNativeAudioCapability(selectedCapability);
+    assertNativeAudioCapability(selectedCapability, { allowFuminMini: true });
   }
   let referenceBundleProjection = null;
   const sourceConditioning = requiresReferenceBundle

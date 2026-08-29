@@ -167,6 +167,9 @@ test('does not reuse PLATFORM_JWT_SECRET for redraw provider asset signatures', 
     source,
     /providerAssetSecret[\s\S]{0,240}process\.env\.PLATFORM_JWT_SECRET/,
   );
+  const redrawCall = source.slice(source.indexOf('const redraw = redrawRoutes('), source.indexOf('const redraw = redrawRoutes(') + 420);
+  assert.match(redrawCall, /providerAssetSecret/);
+  assert.doesNotMatch(redrawCall, /providerAssetSecret:\s*process\.env\.REDRAW_PROVIDER_ASSET_HMAC_SECRET/);
 });
 
 test('keeps tenant recovery routes before tenant context middleware', () => {

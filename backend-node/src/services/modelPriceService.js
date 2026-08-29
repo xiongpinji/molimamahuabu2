@@ -12,6 +12,7 @@ const toapisVideoClient = require('./toapisVideoClient');
 const feituoVideoClient = require('./feituoVideoClient');
 const lingjingVideoClient = require('./lingjingVideoClient');
 const { evidenceContractForModel, hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
+const { ensureModelCreditPriceFreeContract } = require('../db/migrate');
 const SERVICE_CATEGORIES = {
   text: 'text',
   image: 'image',
@@ -45,6 +46,18 @@ function ensureColumn(db, name, sql) {
   if (!columns.some((column) => column.name === name)) db.exec(sql);
 }
 
+function tableExists(db, table) {
+  return !!db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table);
+}
+
+function recoverOrphanedFreePricingRebuild(db) {
+  if (tableExists(db, 'model_credit_prices')) return;
+  if (!tableExists(db, '__model_credit_prices_free_rebuild')) return;
+  db.exec('ALTER TABLE __model_credit_prices_free_rebuild RENAME TO model_credit_prices');
+}
+
 function isToken6688PerRequestVideo(value) {
   const selected = mediaModelSelection.parseQualifiedSelection(value);
   return /^seedance-2-0-special-(?:mini|fast|full)-720p$/i.test(
@@ -62,6 +75,7 @@ function billingUnit(value, category = '', configuredUnit = '') {
 }
 
 function ensureSchema(db) {
+  recoverOrphanedFreePricingRebuild(db);
   db.exec(`CREATE TABLE IF NOT EXISTS model_credit_prices (
     model TEXT PRIMARY KEY,
     credits INTEGER NOT NULL CHECK (credits > 0),
@@ -81,6 +95,8 @@ function ensureSchema(db) {
   ensureColumn(db, 'cost_micros_per_unit', 'ALTER TABLE model_credit_prices ADD COLUMN cost_micros_per_unit INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'input_cost_micros_per_1k', 'ALTER TABLE model_credit_prices ADD COLUMN input_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'output_cost_micros_per_1k', 'ALTER TABLE model_credit_prices ADD COLUMN output_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'pricing_mode', "ALTER TABLE model_credit_prices ADD COLUMN pricing_mode TEXT NOT NULL DEFAULT 'paid'");
+  ensureModelCreditPriceFreeContract(db);
   db.exec(`CREATE TABLE IF NOT EXISTS model_resolution_prices (
     model TEXT NOT NULL COLLATE NOCASE,
     resolution TEXT NOT NULL CHECK (resolution IN ('480p', '720p')),
@@ -127,7 +143,7 @@ function withResolutionPrices(db, row) {
 }
 
 function readRow(db, model) {
-  const row = db.prepare(`SELECT model, display_name, public_note, category, credits, status, billing_unit,
+  const row = db.prepare(`SELECT model, display_name, public_note, category, credits, pricing_mode, status, billing_unit,
       cost_unit, cost_micros_per_unit, input_cost_micros_per_1k,
       output_cost_micros_per_1k, updated_at
     FROM model_credit_prices WHERE model = ? COLLATE NOCASE`).get(model) || null;
@@ -140,6 +156,7 @@ function stableCostSnapshot(row) {
     model: String(row.model || '').toLowerCase(),
     category: row.category,
     credits: row.credits,
+    pricing_mode: row.pricing_mode || 'paid',
     status: row.status,
     billing_unit: billingUnit(row.model, row.category, row.billing_unit),
     cost_unit: row.cost_unit,
@@ -297,7 +314,7 @@ function defaultCategory(model) {
 
 function list(db) {
   ensureSchema(db);
-  const rows = db.prepare(`SELECT model, display_name, public_note, category, credits, status, billing_unit,
+  const rows = db.prepare(`SELECT model, display_name, public_note, category, credits, pricing_mode, status, billing_unit,
       cost_unit, cost_micros_per_unit, input_cost_micros_per_1k,
       output_cost_micros_per_1k, updated_at
     FROM model_credit_prices ORDER BY category, model COLLATE NOCASE`).all()
@@ -325,6 +342,7 @@ function list(db) {
       ...item,
       public_note: '',
       credits: null,
+      pricing_mode: null,
       status: 'unconfigured',
       billing_unit: item.category === 'video' ? 'second' : 'request',
       cost_unit: item.category === 'text' ? 'token' : item.category === 'image' ? 'image' : 'request',
@@ -392,7 +410,7 @@ function listPublic(db, options = {}) {
     }
   }
   const publicRows = list(db).flatMap((row) => {
-    if (row.status !== 'enabled' || !Number.isSafeInteger(row.credits) || row.credits <= 0) return [];
+    if (row.status !== 'enabled' || !Number.isSafeInteger(row.credits) || row.credits < 0) return [];
     const entries = configsByModel.get(row.model.toLowerCase()) || [];
     const selected = mediaModelSelection.parseQualifiedSelection(row.model);
     const upstreamModel = selected?.upstreamModel || entries[0]?.upstreamModel || row.model;
@@ -423,6 +441,7 @@ function listPublic(db, options = {}) {
     public_note: row.public_note,
     category: row.category,
     credits: row.credits,
+    pricing_mode: row.pricing_mode || 'paid',
     status: row.status,
     billing_unit: row.billing_unit,
     resolution_prices: Object.fromEntries(Object.entries(row.resolution_prices || {})
@@ -547,7 +566,13 @@ function set(db, value, creditsValue, options = {}) {
   ensureSchema(db);
   const model = canonicalModel(value);
   const credits = Number(creditsValue);
-  if (!Number.isSafeInteger(credits) || credits <= 0) {
+  const pricingMode = String(options.pricingMode ?? options.pricing_mode ?? 'paid').trim().toLowerCase();
+  if (!['paid', 'free'].includes(pricingMode)) {
+    throw priceError('INVALID_MODEL_PRICE', '模型计费模式必须是 paid 或 free');
+  }
+  if (!Number.isSafeInteger(credits)
+      || (pricingMode === 'paid' && credits <= 0)
+      || (pricingMode === 'free' && credits !== 0)) {
     throw priceError('INVALID_MODEL_PRICE', '模型价格必须是正整数积分');
   }
   const existing = readRow(db, model);
@@ -593,6 +618,9 @@ function set(db, value, creditsValue, options = {}) {
         ? { resolution, credits: tierCredits, cost_micros_per_unit: parseCost(tier?.cost_micros_per_unit ?? 0) }
         : { resolution, credits: tierCredits, cost_micros_per_second: parseCost(tier?.cost_micros_per_second ?? 0) };
     });
+  if (pricingMode === 'free' && resolutionPrices?.length) {
+    throw priceError('INVALID_MODEL_PRICE', '免费模型不能配置分辨率价格');
+  }
   if (resolutionPrices?.length && !['image', 'video'].includes(category)) {
     throw priceError('INVALID_MODEL_PRICE', '只有图片或视频模型可以配置分辨率价格');
   }
@@ -600,14 +628,15 @@ function set(db, value, creditsValue, options = {}) {
   let saved;
   const applySet = () => {
     db.prepare(`INSERT INTO model_credit_prices
-        (model, display_name, public_note, category, credits, status, billing_unit, cost_unit, cost_micros_per_unit,
+        (model, display_name, public_note, category, credits, pricing_mode, status, billing_unit, cost_unit, cost_micros_per_unit,
          input_cost_micros_per_1k, output_cost_micros_per_1k, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(model) DO UPDATE SET
         display_name = excluded.display_name,
         public_note = excluded.public_note,
         category = excluded.category,
         credits = excluded.credits,
+        pricing_mode = excluded.pricing_mode,
         status = excluded.status,
         billing_unit = excluded.billing_unit,
         cost_unit = excluded.cost_unit,
@@ -615,21 +644,25 @@ function set(db, value, creditsValue, options = {}) {
         input_cost_micros_per_1k = excluded.input_cost_micros_per_1k,
         output_cost_micros_per_1k = excluded.output_cost_micros_per_1k,
         updated_at = excluded.updated_at`)
-      .run(model, displayName, publicNote, category, credits, status, configuredBillingUnit, costUnit, costMicrosPerUnit,
+      .run(model, displayName, publicNote, category, credits, pricingMode, status, configuredBillingUnit, costUnit, costMicrosPerUnit,
         inputCostMicrosPer1k, outputCostMicrosPer1k, updatedAt);
-    if (resolutionPrices != null) {
+    if (pricingMode === 'free') {
+      db.prepare('DELETE FROM model_image_resolution_prices WHERE model = ? COLLATE NOCASE').run(model);
+      db.prepare('DELETE FROM model_resolution_prices WHERE model = ? COLLATE NOCASE').run(model);
+    } else if (resolutionPrices != null) {
+      const nextResolutionPrices = resolutionPrices || [];
       if (category === 'image') {
         db.prepare('DELETE FROM model_image_resolution_prices WHERE model = ? COLLATE NOCASE').run(model);
         const insert = db.prepare(`INSERT INTO model_image_resolution_prices
           (model, resolution, credits, cost_micros_per_unit, updated_at) VALUES (?, ?, ?, ?, ?)`);
-        for (const tier of resolutionPrices) {
+        for (const tier of nextResolutionPrices) {
           insert.run(model, tier.resolution, tier.credits, tier.cost_micros_per_unit, updatedAt);
         }
       } else {
         db.prepare('DELETE FROM model_resolution_prices WHERE model = ? COLLATE NOCASE').run(model);
         const insert = db.prepare(`INSERT INTO model_resolution_prices
           (model, resolution, credits, cost_micros_per_second, updated_at) VALUES (?, ?, ?, ?, ?)`);
-        for (const tier of resolutionPrices) {
+        for (const tier of nextResolutionPrices) {
           insert.run(model, tier.resolution, tier.credits, tier.cost_micros_per_second, updatedAt);
         }
       }
@@ -684,6 +717,7 @@ function quoteCost(db, value, usage = {}) {
     : Math.ceil(quantity * (tier?.cost_micros_per_second ?? tier?.cost_micros_per_unit ?? row.cost_micros_per_unit));
   return {
     model: row.model,
+    pricing_mode: row.pricing_mode || 'paid',
     cost_unit: costUnit,
     quantity,
     cost_micros: costMicros,
@@ -716,6 +750,7 @@ function calculateCharge(db, value, usage = {}) {
   if (['image', 'video'].includes(row.category) && hasResolutionPrices && !tier) {
     throw priceError('MODEL_RESOLUTION_PRICE_REQUIRED', '当前分辨率积分待管理员配置');
   }
+  if (row.pricing_mode === 'free') return 0;
   if (row.category === 'image' && hasResolutionPrices) {
     const quantity = Number(usage.quantity ?? 1);
     if (!Number.isSafeInteger(quantity) || quantity <= 0) {

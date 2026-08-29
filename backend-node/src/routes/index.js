@@ -46,6 +46,7 @@ const { REDRAW_LOCALE_DEFAULTS, createRedrawLocaleRegistryFromEnv } = require('.
 const { createRedrawLocaleVerifierClient } = require('../services/redrawLocaleVerifierClient');
 const redrawAssetService = require('../services/redrawAssetService');
 const redrawVoiceService = require('../services/redrawVoiceService');
+const redrawLocalVoiceRegistrationService = require('../services/redrawLocalVoiceRegistrationService');
 const { createRedrawProviderAssetsRouter } = require('./redrawProviderAssets');
 
 function createDefaultRedrawLocaleVerifier(options = {}) {
@@ -270,6 +271,8 @@ function setupRouter(cfg, db, log, options = {}) {
     || redrawOptions.assetGenerationProvider
     || redrawOptions.assetProvider;
   const explicitDialogueProvider = options.dialogueProvider || redrawOptions.dialogueProvider;
+  const explicitCoverageRegistrationProvider = options.coverageRegistrationProvider
+    || redrawOptions.coverageRegistrationProvider;
   const needsRedrawAdapters = !explicitLocalizationProvider || !explicitAssetGenerationProvider || !explicitDialogueProvider;
   const localeRegistry = options.localeRegistry || redrawOptions.localeRegistry
     || options.evidenceRegistry || redrawOptions.evidenceRegistry
@@ -278,6 +281,21 @@ function setupRouter(cfg, db, log, options = {}) {
   redrawVoiceService.setDefaultEvidenceRegistry(localeRegistry);
   const localeVerifier = options.localeVerifier || redrawOptions.localeVerifier
     || createDefaultRedrawLocaleVerifier({ ...options, localeRegistry });
+  const localVoiceRegistrationService = options.localVoiceRegistrationService
+    || redrawOptions.localVoiceRegistrationService
+    || redrawLocalVoiceRegistrationService;
+  const localTtsWorker = options.localTtsWorker || redrawOptions.localTtsWorker || null;
+  const localTtsManifest = options.localTtsManifest || redrawOptions.localTtsManifest || null;
+  const localVoiceMediaProbe = options.localVoiceMediaProbe || redrawOptions.localVoiceMediaProbe || null;
+  const localVoiceVerifierAllowedRoot = options.localVoiceVerifierAllowedRoot
+    || redrawOptions.localVoiceVerifierAllowedRoot || null;
+  const localVoiceAudioStorageRoot = options.localVoiceAudioStorageRoot
+    || redrawOptions.localVoiceAudioStorageRoot || null;
+  const localVoiceMinimumApprovedTextCharacters = Number(
+    options.localVoiceMinimumApprovedTextCharacters
+      ?? redrawOptions.localVoiceMinimumApprovedTextCharacters
+      ?? 10,
+  );
   const redrawAdapters = needsRedrawAdapters
     ? (options.providerAdapters || (options.createRedrawProviderAdapters || createRedrawProviderAdapters)({
         db,
@@ -310,9 +328,31 @@ function setupRouter(cfg, db, log, options = {}) {
   const redraw = redrawRoutes(db, log, {
     cfg,
     ...redrawOptions,
+    providerAssetSecret,
     localizationProvider: explicitLocalizationProvider || redrawAdapters.localize,
     assetGenerationProvider: explicitAssetGenerationProvider || defaultAssetGenerationProvider,
     dialogueProvider: explicitDialogueProvider || defaultDialogueProvider,
+    coverageRegistrationProvider: explicitCoverageRegistrationProvider,
+    localeRegistry,
+    localeVerifier,
+    localVoiceRegistrationService,
+    localTtsWorker,
+    localTtsManifest,
+    localVoiceMediaProbe,
+    localVoiceVerifierAllowedRoot,
+    localVoiceAudioStorageRoot,
+    localVoiceMinimumApprovedTextCharacters,
+    allowTestOnlyLocalEvidence: options.allowTestOnlyLocalEvidence === true
+      || redrawOptions.allowTestOnlyLocalEvidence === true,
+    ...(options.localVoiceRegistrationContext !== undefined
+      ? { localVoiceRegistrationContext: options.localVoiceRegistrationContext }
+      : redrawOptions.localVoiceRegistrationContext !== undefined
+        ? { localVoiceRegistrationContext: redrawOptions.localVoiceRegistrationContext }
+        : {}),
+    ...(typeof (options.localVoiceNow || redrawOptions.localVoiceNow) === 'function'
+      ? { localVoiceNow: options.localVoiceNow || redrawOptions.localVoiceNow } : {}),
+    ...(options.localVoiceAssetService || redrawOptions.localVoiceAssetService
+      ? { localVoiceAssetService: options.localVoiceAssetService || redrawOptions.localVoiceAssetService } : {}),
   });
   r.get('/voice-catalog', voiceCatalog.list);
 
@@ -338,6 +378,12 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/redraw/projects/:id/works', redraw.uploadSource, redraw.createWorks);
   r.get('/redraw/works/:id', redraw.getWork);
   r.put('/redraw/shots/:id', redraw.updateShot);
+  r.post(
+    '/redraw/shots/:id/motion-reference',
+    redraw.motionReferenceArtifactContext,
+    redraw.parseMotionReferenceArtifact,
+    redraw.importMotionReferenceArtifact,
+  );
   r.get('/redraw/shots/:id/reference-bundle', redraw.getReferenceBundle);
   r.put('/redraw/shots/:id/reference-bundle', redraw.saveReferenceBundle);
   r.post('/redraw/shots/:id/generate', redraw.generateShot);
@@ -348,12 +394,27 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/redraw/works/:id/analyze', redraw.uploadReferenceImage, redraw.analyzeWork);
   r.post('/redraw/works/:id/localization-quote', redraw.localizationQuote);
   r.post('/redraw/works/:id/versions', redraw.createVersion);
+  if (typeof explicitCoverageRegistrationProvider === 'function') {
+    r.post('/redraw/versions/:id/full-frame-coverages', redraw.registerFullFrameCoverage);
+  }
   r.get('/redraw/versions/:id/character-plan', redraw.getCharacterPlan);
   r.get('/redraw/versions/:id/preparation-gate', redraw.preparationGate);
   r.post('/redraw/versions/:id/reference-preparation-quote', redraw.referencePreparationQuote);
   r.post('/redraw/versions/:id/reference-preparations', redraw.startReferencePreparation);
   r.get('/redraw/versions/:id/assets', redraw.listVersionAssets);
   r.get('/redraw/assets/:id/preview/:variant', redraw.previewRedrawAsset);
+  r.post(
+    '/redraw/versions/:versionId/shots/:shotRowId/voices/:voiceAssetId/supplemental-dialogue-approvals',
+    redraw.createSupplementalDialogueApproval,
+  );
+  r.post(
+    '/redraw/versions/:versionId/supplemental-dialogue-approvals/:approvalId/revoke',
+    redraw.revokeSupplementalDialogueApproval,
+  );
+  r.post(
+    '/redraw/versions/:versionId/voices/:voiceAssetId/local-production-registrations',
+    redraw.registerLocalProductionVoice,
+  );
   r.get('/redraw/versions/:id/voices', redraw.listProductionVoices);
   r.get('/redraw/versions/:versionId/voices/:voiceAssetId/preview', redraw.previewProductionVoice);
   r.post('/redraw/versions/:id/assets/batch-quote', redraw.assetBatchQuote);
@@ -372,6 +433,12 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/redraw/exports/:id/download/:kind', redraw.downloadExport);
   r.get('/redraw/versions/:id/generation-gate', redraw.generationGate);
   r.get('/redraw/assets/:id/quote', redraw.assetQuote);
+  r.post(
+    '/redraw/assets/:id/reference-artifact',
+    redraw.characterReferenceArtifactContext,
+    redraw.parseCharacterReferenceArtifact,
+    redraw.importCharacterReferenceArtifact,
+  );
   r.put('/redraw/assets/:id/identity-pack', redraw.saveRedrawCharacterIdentityPack);
   r.put('/redraw/assets/:id', redraw.updateRedrawAsset);
   r.post('/redraw/assets/:id/voice', redraw.assignVoice);

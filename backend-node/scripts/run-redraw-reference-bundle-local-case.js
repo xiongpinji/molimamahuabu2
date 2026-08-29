@@ -14,10 +14,20 @@ const sharp = require('sharp');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const { getFfmpegPath, getFfprobePath } = require('../src/utils/ffmpegPath');
 const {
+  buildCurrentReferenceBindings,
   canonicalBundleHash,
   loadCurrentReferenceBundle,
   saveReferenceBundle,
 } = require('../src/services/redrawReferenceBundleService');
+const { bindReadyMotionReference } = require('../src/services/redrawReferenceArtifactImportService');
+const {
+  buildGeneratedCoverageManifest,
+  canonicalCoverageSha256,
+} = require('../src/services/redrawFullFrameCoverageService');
+const {
+  canonicalizeModelLock,
+  canonicalSha256: canonicalModelLockSha256,
+} = require('../src/services/redrawFullFrameModelLockService');
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_OUTPUT_DIR = path.join(os.tmpdir(), 'redraw-reference-bundle-local');
@@ -305,6 +315,81 @@ function textPack(input) {
   return pack;
 }
 
+function personCleanPack(input) {
+  const pack = {
+    schema_version: 'person-clean-plate-reference-v1',
+    requirement_key: input.requirementKey,
+    artifact: input.artifact,
+    source: input.source,
+    mask: input.mask,
+    source_fingerprint: input.sourceFingerprint,
+    input_frame_fingerprint: input.source.sha256,
+    analysis_sha256: input.analysisSha256,
+    frame_index: 0,
+    ready: true,
+    reviewed_by: 'user-a',
+    reviewed_at: REVIEWED_AT,
+  };
+  pack.pack_sha256 = sha256(stableJson(pack));
+  return pack;
+}
+
+async function writeMask(filePath, width, height, rectangle) {
+  await fsp.mkdir(path.dirname(filePath), { recursive: true });
+  const pixels = Buffer.alloc(width * height);
+  for (let y = rectangle.y; y < rectangle.y + rectangle.height; y += 1) {
+    pixels.fill(255, (y * width) + rectangle.x, (y * width) + rectangle.x + rectangle.width);
+  }
+  await sharp(pixels, { raw: { width, height, channels: 1 } }).toColourspace('b-w').png().toFile(filePath);
+  return {
+    path: path.relative(path.dirname(path.dirname(filePath)), filePath).replace(/\\/g, '/'),
+    sha256: sha256File(filePath),
+    width,
+    height,
+    mime_type: 'image/png',
+  };
+}
+
+function coverageModelLock() {
+  const projects = {
+    face_detector: ['MediaPipe face detection', 'google-ai-edge/mediapipe'],
+    person_detector: ['YOLOX', 'Megvii-BaseDetection/YOLOX'],
+    text_detector: ['PaddleOCR', 'PaddlePaddle/PaddleOCR'],
+    tracker: ['ByteTrack', 'FoundationVision/ByteTrack'],
+  };
+  const components = ['tracker', 'text_detector', 'person_detector', 'face_detector'].map((component) => ({
+    component,
+    project: projects[component][0],
+    repository: projects[component][1],
+    revision: `rev-${component}-20260822`,
+    artifact_name: `${component}.bin`,
+    artifact_path: `${component}/model.bin`,
+    artifact_sha256: 'a'.repeat(64),
+    license_name: `${component}-LICENSE`,
+    license_evidence_path: `${component}/LICENSE.txt`,
+    license_evidence_sha256: 'b'.repeat(64),
+  }));
+  const lock = {
+    schema_version: 'redraw-full-frame-model-lock-v2',
+    runtimes: {
+      main: {
+        python_version: 'Python 3.11.9',
+        interpreter_path: 'runtime/main/.venv/Scripts/python.exe',
+        pip_freeze_path: 'runtime/main/pip-freeze.txt',
+        pip_freeze_sha256: '1'.repeat(64),
+      },
+      text: {
+        python_version: 'Python 3.11.9',
+        interpreter_path: 'runtime/text/.venv/Scripts/python.exe',
+        pip_freeze_path: 'runtime/text/pip-freeze.txt',
+        pip_freeze_sha256: '2'.repeat(64),
+      },
+    },
+    components,
+  };
+  return { ...lock, canonical_sha256: canonicalModelLockSha256(canonicalizeModelLock(lock)) };
+}
+
 function insertAsset(db, input) {
   db.prepare(`INSERT INTO assets
     (id, name, type, category, url, local_path, mime_type, metadata, created_at, updated_at)
@@ -339,7 +424,7 @@ async function createFixture(deps = {}) {
 
     const sourcePath = path.join(root, 'source', 'source.mp4');
     const motionDraftPath = path.join(root, 'redraw-conditioning', 'motion-draft.mp4');
-    await generateVideo(execRunner, sourcePath, 15, 'testsrc2');
+    await generateVideo(execRunner, sourcePath, 12, 'testsrc2');
     await generateVideo(execRunner, motionDraftPath, 5, 'smptebars');
     const sourceFingerprint = sha256File(sourcePath);
     const motionSha = sha256File(motionDraftPath);
@@ -356,17 +441,6 @@ async function createFixture(deps = {}) {
 
     const nameMap = { 'character-001': 'Ethan', 'character-002': 'Maya' };
     const sourceFacts = SOURCE_FACTS;
-    const faceTracks = [
-      { track_key: 'face-001', source_character_key: 'character-001', time_ranges: [[0, 5000]], identity_redraw_asset_id: 201 },
-      { track_key: 'face-002', source_character_key: 'character-002', time_ranges: [[2500, 5000]], identity_redraw_asset_id: 202 },
-    ];
-    const textRegions = [
-      { region_key: 'text-001', kind: 'text_subtitle', time_ranges: [[0, 2500]], text_clean_redraw_asset_id: 203 },
-      { region_key: 'text-002', kind: 'text_screen', time_ranges: [[2500, 5000]], text_clean_redraw_asset_id: 204 },
-    ];
-    const faceCoverageSha256 = sha256(stableJson(faceTracks));
-    const textCoverageSha256 = sha256(stableJson(textRegions));
-
     insertAsset(db, { id: 101, name: 'source', type: 'video', localPath: 'source/source.mp4', mimeType: 'video/mp4', sha256: sourceFingerprint, width: 864, height: 496 });
     db.prepare(`INSERT INTO redraw_projects
       (tenant_id, user_id, title, default_locale, default_market, created_at, updated_at)
@@ -374,7 +448,7 @@ async function createFixture(deps = {}) {
     const projectId = Number(db.prepare('SELECT id FROM redraw_projects LIMIT 1').get().id);
     db.prepare(`INSERT INTO redraw_works
       (id, project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint, duration_ms, created_at, updated_at)
-      VALUES (1, ?, 'tenant-a', 'user-a', 'reference bundle local work', 101, ?, 15000, ?, ?)`)
+      VALUES (1, ?, 'tenant-a', 'user-a', 'reference bundle local work', 101, ?, 12000, ?, ?)`)
       .run(projectId, sourceFingerprint, UPDATED_AT, UPDATED_AT);
     const versionId = Number(db.prepare(`INSERT INTO redraw_versions
       (work_id, tenant_id, user_id, version, locale, market, name_map_json, source_facts_json,
@@ -385,7 +459,7 @@ async function createFixture(deps = {}) {
       (work_id, version_id, tenant_id, user_id, shot_id, batch_index, shot_index, start_ms, end_ms,
        duration_ms, source_dialogue_json, localized_dialogue_json, references_json, reference_bundle_json,
        created_at, updated_at)
-      VALUES (1, ?, 'tenant-a', 'user-a', 'shot-001', 1, 1, 0, 5000, 5000, ?, ?, '[]', '{}', ?, ?)`)
+      VALUES (1, ?, 'tenant-a', 'user-a', 'shot-1', 1, 1, 0, 5000, 5000, ?, ?, '[]', '{}', ?, ?)`)
       .run(
         versionId,
         JSON.stringify([{ speaker_id: 'character-001', text: 'source dialogue redacted', start_ms: 0, end_ms: 2400 }]),
@@ -396,6 +470,12 @@ async function createFixture(deps = {}) {
         UPDATED_AT,
         UPDATED_AT,
       ).lastInsertRowid);
+    db.prepare(`INSERT INTO redraw_shots
+      (work_id, version_id, tenant_id, user_id, shot_id, batch_index, shot_index, start_ms, end_ms,
+       duration_ms, source_dialogue_json, localized_dialogue_json, references_json, reference_bundle_json,
+       created_at, updated_at)
+      VALUES (1, ?, 'tenant-a', 'user-a', 'shot-2', 1, 2, 5000, 12000, 7000, '[]', '[]', '[]', '{}', ?, ?)`)
+      .run(versionId, UPDATED_AT, UPDATED_AT);
 
     const identityA = identityPack({ sourceCharacterKey: 'character-001', targetActorLabel: 'Actor Ethan', artifact: { asset_id: 301, sha256: ethan.sha256, width: 864, height: 1296, mime_type: 'image/png', view_count: ethan.view_count, view_layout: ethan.view_layout }, wardrobe: { asset_id: 306, sha256: ethanWardrobe.sha256 } });
     const identityB = identityPack({ sourceCharacterKey: 'character-002', targetActorLabel: 'Actor Maya', artifact: { asset_id: 302, sha256: maya.sha256, width: 864, height: 1296, mime_type: 'image/png', view_count: maya.view_count, view_layout: maya.view_layout }, wardrobe: { asset_id: 307, sha256: mayaWardrobe.sha256 } });
@@ -420,21 +500,36 @@ async function createFixture(deps = {}) {
       height: 496,
       metadata: {
         sha256: motionSha,
-        redraw_motion_reference: {
-          schema_version: 'redraw-motion-reference-v1',
+        redraw_motion_import: {
+          schema_version: 'redraw-motion-import-v1',
           tenant_id: 'tenant-a',
           user_id: 'user-a',
           version_id: versionId,
           shot_id: shotId,
+          source_work_id: 1,
           source_asset_id: 101,
           source_fingerprint: sourceFingerprint,
           clip_start_ms: 0,
           clip_end_ms: 5000,
-          face_coverage_sha256: faceCoverageSha256,
-          text_coverage_sha256: textCoverageSha256,
+          file_sha256: motionSha,
+          duration_ms: 5000,
+          width: 864,
+          height: 496,
+          mime_type: 'video/mp4',
+          video_codec: 'h264',
+          audio_stream_count: 0,
+          reviewed_by: 'user-a',
+          reviewed_at: REVIEWED_AT,
+          review: {
+            full_frame_reviewed: true,
+            source_identity_obscured: true,
+            source_text_obscured: true,
+            motion_preserved: true,
+          },
         },
       },
     });
+    db.prepare('UPDATE assets SET width = 864, height = 496 WHERE id = 305').run();
 
     db.prepare(`INSERT INTO redraw_assets
       (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name, localized_description,
@@ -467,6 +562,217 @@ async function createFixture(deps = {}) {
         }), entry.region, entry.assetId, REVIEWED_AT, UPDATED_AT, UPDATED_AT);
     }
 
+    const coverageBase = `coverage/version-${versionId}`;
+    const coverageRoot = path.join(root, coverageBase);
+    const frame = await writeImage(
+      path.join(coverageRoot, 'frames', 'frame-0.png'),
+      864,
+      496,
+      'reviewed source frame',
+      ['#e2e8f0', '#64748b', '#0f172a'],
+    );
+    const coverageTailFrame = await writeImage(
+      path.join(coverageRoot, 'frames', 'frame-1.png'),
+      864,
+      496,
+      'reviewed source tail frame',
+      ['#e2e8f0', '#475569', '#0f172a'],
+    );
+    const masks = {
+      face001: await writeMask(path.join(coverageRoot, 'masks', 'face-001.png'), 864, 496, { x: 60, y: 40, width: 180, height: 380 }),
+      face002: await writeMask(path.join(coverageRoot, 'masks', 'face-002.png'), 864, 496, { x: 620, y: 40, width: 180, height: 380 }),
+      text001: await writeMask(path.join(coverageRoot, 'masks', 'text-001.png'), 864, 496, { x: 60, y: 410, width: 350, height: 60 }),
+      text002: await writeMask(path.join(coverageRoot, 'masks', 'text-002.png'), 864, 496, { x: 450, y: 30, width: 350, height: 60 }),
+    };
+    insertAsset(db, { id: 401, name: 'coverage-frame', type: 'image', localPath: `${coverageBase}/${frame.path}`, mimeType: 'image/png', ...frame });
+    insertAsset(db, { id: 408, name: 'coverage-tail-frame', type: 'image', localPath: `${coverageBase}/${coverageTailFrame.path}`, mimeType: 'image/png', ...coverageTailFrame });
+    Object.entries(masks).forEach(([key, mask], index) => insertAsset(db, {
+      id: 402 + index,
+      name: `coverage-${key}`,
+      type: 'image',
+      localPath: `${coverageBase}/${mask.path}`,
+      mimeType: 'image/png',
+      ...mask,
+    }));
+    const maskEvidence = (mask) => ({
+      path: mask.path,
+      sha256: mask.sha256,
+      width: mask.width,
+      height: mask.height,
+      mime_type: mask.mime_type,
+    });
+    const personTracks = [
+      {
+        track_key: 'face-001', kind: 'story_role', source_character_key: 'character-001',
+        target_strategy: 'fixed_actor', frame_ranges: [{ start_frame: 0, end_frame: 0 }],
+        visibility: [{ start_frame: 0, end_frame: 0, state: 'visible' }],
+        regions: [{
+          region_id: 'person-face-001-0', frame_index: 0,
+          bbox: { x: 60, y: 40, width: 180, height: 380 },
+          mask: maskEvidence(masks.face001), association_confidence: 0.99,
+          detector_disagreement: false,
+        }],
+        review_status: 'pending', reviewer: null,
+      },
+      {
+        track_key: 'face-002', kind: 'story_role', source_character_key: 'character-002',
+        target_strategy: 'fixed_actor', frame_ranges: [{ start_frame: 0, end_frame: 0 }],
+        visibility: [{ start_frame: 0, end_frame: 0, state: 'visible' }],
+        regions: [{
+          region_id: 'person-face-002-0', frame_index: 0,
+          bbox: { x: 620, y: 40, width: 180, height: 380 },
+          mask: maskEvidence(masks.face002), association_confidence: 0.99,
+          detector_disagreement: false,
+        }],
+        review_status: 'pending', reviewer: null,
+      },
+    ];
+    const coverageTextTracks = [
+      {
+        region_key: 'text-001', kind: 'subtitle', treatment: 'translate_subtitle',
+        target_text_key: 'text-001', frame_ranges: [{ start_frame: 0, end_frame: 0 }],
+        regions: [{
+          region_id: 'text-text-001-0', frame_index: 0,
+          polygon: [{ x: 60, y: 410 }, { x: 410, y: 410 }, { x: 410, y: 470 }],
+          mask: maskEvidence(masks.text001),
+        }],
+        review_status: 'pending', reviewer: null,
+      },
+      {
+        region_key: 'text-002', kind: 'screen', treatment: 'generalize', target_text_key: null,
+        frame_ranges: [{ start_frame: 0, end_frame: 0 }],
+        regions: [{
+          region_id: 'text-text-002-0', frame_index: 0,
+          polygon: [{ x: 450, y: 30 }, { x: 800, y: 30 }, { x: 800, y: 90 }],
+          mask: maskEvidence(masks.text002),
+        }],
+        review_status: 'pending', reviewer: null,
+      },
+    ];
+    const generatedCoverage = await buildGeneratedCoverageManifest({
+      evidenceRoot: coverageRoot,
+      source: {
+        sha256: sourceFingerprint, duration_ms: 12000, width: 864, height: 496,
+        frame_count: 2, time_base: { numerator: 1, denominator: 25 },
+      },
+      shots: [
+        { shot_id: 'shot-1', start_ms: 0, end_ms: 5000 },
+        { shot_id: 'shot-2', start_ms: 5000, end_ms: 12000 },
+      ],
+      frames: [{
+        frame_index: 0, timestamp_ticks: 0, timestamp_ms: 0, shot_id: 'shot-1',
+        path: frame.path, sha256: frame.sha256, width: 864, height: 496,
+        person_region_ids: personTracks.map((track) => track.regions[0].region_id),
+        text_region_ids: coverageTextTracks.map((track) => track.regions[0].region_id),
+        review_point_reasons: [], review_status: 'not_required',
+      }, {
+        frame_index: 1, timestamp_ticks: 125, timestamp_ms: 5000, shot_id: 'shot-2',
+        path: coverageTailFrame.path, sha256: coverageTailFrame.sha256, width: 864, height: 496,
+        person_region_ids: [], text_region_ids: [],
+        review_point_reasons: [], review_status: 'not_required',
+      }],
+      personTracks,
+      textTracks: coverageTextTracks,
+      modelLock: coverageModelLock(),
+    });
+    const reviewedCoverage = structuredClone(generatedCoverage);
+    reviewedCoverage.status = 'reviewed';
+    for (const frameEntry of reviewedCoverage.frames) {
+      frameEntry.review_status = frameEntry.review_point_reasons.length > 0 ? 'reviewed' : 'not_required';
+    }
+    for (const track of [...reviewedCoverage.person_tracks, ...reviewedCoverage.text_tracks]) {
+      track.review_status = 'reviewed';
+      track.reviewer = 'codex-local-review';
+    }
+    reviewedCoverage.review = {
+      status: 'reviewed', reviewed: true,
+      required_review_point_count: generatedCoverage.review.required_review_point_count,
+      reviewed_point_count: generatedCoverage.review.required_review_point_count,
+      reviewer: 'codex-local-review',
+    };
+    reviewedCoverage.approval_status = 'pending';
+    reviewedCoverage.ready_for_reference = false;
+    reviewedCoverage.analysis_sha256 = canonicalCoverageSha256(reviewedCoverage);
+    const coverageManifestRelative = `${coverageBase}/redraw-full-frame-reviewed-manifest.json`;
+    const coverageManifestBytes = Buffer.from(`${JSON.stringify(reviewedCoverage, null, 2)}\n`);
+    await fsp.writeFile(path.join(root, coverageManifestRelative), coverageManifestBytes);
+    insertAsset(db, {
+      id: 406,
+      name: 'reviewed-full-frame-coverage',
+      type: 'document',
+      localPath: coverageManifestRelative,
+      mimeType: 'application/json',
+      metadata: { sha256: sha256(coverageManifestBytes) },
+    });
+    db.prepare(`INSERT INTO redraw_assets
+      (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+       asset_id, version_number, approval_status, approved_by, approved_at,
+       status, created_at, updated_at)
+      VALUES (205, ?, 'tenant-a', 'user-a', 'scene', ?, 'reviewed full frame coverage',
+        406, 1, 'approved', 'user-a', ?, 'generated', ?, ?)`)
+      .run(versionId, JSON.stringify({
+        source_ref: { stable_id: 'full-frame-reviewed-coverage' },
+        snapshot: {
+          mode: 'full_frame_reviewed_coverage', version_id: versionId,
+          facts_hash: sha256(stableJson(sourceFacts)), source_fingerprint: sourceFingerprint,
+          analysis_sha256: reviewedCoverage.analysis_sha256,
+        },
+      }), REVIEWED_AT, UPDATED_AT, UPDATED_AT);
+    for (const person of [
+      { id: 206, key: 'face-001', cleanAssetId: 303, clean: subtitle, maskAssetId: 402, mask: masks.face001 },
+      { id: 207, key: 'face-002', cleanAssetId: 304, clean: screen, maskAssetId: 403, mask: masks.face002 },
+    ]) {
+      const pack = personCleanPack({
+        requirementKey: person.key,
+        artifact: { asset_id: person.cleanAssetId, sha256: person.clean.sha256, width: 864, height: 496, mime_type: 'image/png' },
+        source: { asset_id: 401, sha256: frame.sha256, width: 864, height: 496, mime_type: 'image/png' },
+        mask: { asset_id: person.maskAssetId, sha256: person.mask.sha256, width: 864, height: 496, mime_type: 'image/png' },
+        sourceFingerprint,
+        analysisSha256: reviewedCoverage.analysis_sha256,
+      });
+      db.prepare(`INSERT INTO redraw_assets
+        (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+         clean_plate_asset_id, mask_asset_id, version_number, approval_status, approved_by, approved_at,
+         status, created_at, updated_at)
+        VALUES (?, ?, 'tenant-a', 'user-a', 'scene', ?, ?, ?, ?, 1, 'approved', 'user-a', ?, 'generated', ?, ?)`)
+        .run(person.id, versionId, JSON.stringify({
+          source_ref: { stable_id: person.key, kind: 'person_clean', source_asset_id: 401 },
+          snapshot: { mode: 'clean_plate' },
+          person_clean_plate_pack: pack,
+        }), `${person.key} clean`, person.cleanAssetId, person.maskAssetId, REVIEWED_AT, UPDATED_AT, UPDATED_AT);
+    }
+    db.prepare(`INSERT INTO redraw_reference_artifact_imports (
+      tenant_id, user_id, version_id, scope_type, scope_id, purpose,
+      idempotency_hash, request_hash, file_sha256, stored_asset_id,
+      status, error_code, created_at, updated_at
+    ) VALUES (
+      'tenant-a', 'user-a', ?, 'shot', ?, 'motion', ?, ?, ?, 305,
+      'completed', NULL, ?, ?
+    )`).run(
+      versionId,
+      shotId,
+      sha256('local-reference-motion-import'),
+      sha256('local-reference-motion-request'),
+      motionSha,
+      REVIEWED_AT,
+      REVIEWED_AT,
+    );
+    const cleanResults = [
+      { kind: 'person_clean', key: 'face-001', status: 'completed', redraw_asset_id: 206 },
+      { kind: 'person_clean', key: 'face-002', status: 'completed', redraw_asset_id: 207 },
+      { kind: 'text_clean', key: 'text-001', status: 'completed', redraw_asset_id: 203 },
+      { kind: 'text_clean', key: 'text-002', status: 'completed', redraw_asset_id: 204 },
+    ];
+    const bindingCtx = {
+      db, tenantId: 'tenant-a', userId: 'user-a', versionId, storageRoot: root,
+      now: () => REVIEWED_AT,
+    };
+    const currentBindings = await buildCurrentReferenceBindings(bindingCtx, {
+      shot_id: shotId,
+      clean_results: cleanResults,
+    });
+    await bindReadyMotionReference(bindingCtx, { shot_id: shotId, clean_results: cleanResults });
+
     const saved = await saveReferenceBundle({
       db,
       tenantId: 'tenant-a',
@@ -478,17 +784,9 @@ async function createFixture(deps = {}) {
       shot_id: shotId,
       expected_updated_at: UPDATED_AT,
       motion_reference_asset_id: 305,
-      face_tracks: faceTracks,
-      text_regions: textRegions,
-      coverage_review: {
-        recognizable_face_count: 2,
-        mapped_face_count: 2,
-        unresolved_face_count: 0,
-        recognizable_text_region_count: 2,
-        mapped_text_region_count: 2,
-        unresolved_text_region_count: 0,
-        status: 'approved',
-      },
+      face_tracks: currentBindings.face_tracks,
+      text_regions: currentBindings.text_regions,
+      coverage_review: currentBindings.coverage_review,
     });
     const loaded = await loadCurrentReferenceBundle({ db, tenantId: 'tenant-a', userId: 'user-a', versionId, storageRoot: root }, shotId);
     const motionProbe = await probeVideo(motionPath);

@@ -21,6 +21,11 @@ function runOne(database, sql, file, index) {
     database.exec(s);
     console.log('Ran migration:', file + (index >= 0 ? ' #' + (index + 1) : ''));
   } catch (err) {
+    if (/^BEGIN(?:\s+IMMEDIATE|\s+EXCLUSIVE|\s+DEFERRED)?\b/i.test(s) && database.inTransaction) {
+      try {
+        database.exec('ROLLBACK');
+      } catch (_) {}
+    }
     const msg = (err.message || '').toLowerCase();
     if (err.code === 'SQLITE_ERROR' && (msg.includes('duplicate column') || msg.includes('already exists'))) {
       console.log('Skip (already exists):', file + (index >= 0 ? ' #' + (index + 1) : ''));
@@ -56,16 +61,28 @@ function splitSqlStatements(sql) {
   const statements = [];
   let buffer = '';
   let inTrigger = false;
+  let inTransactionBlock = false;
   for (const line of sql.split(/\r?\n/)) {
     const trimmed = line.trim();
     const upper = trimmed.toUpperCase();
     if (!inTrigger && upper.startsWith('CREATE TRIGGER')) inTrigger = true;
+    if (!inTrigger && !inTransactionBlock && /^BEGIN(?:\s+IMMEDIATE|\s+EXCLUSIVE|\s+DEFERRED)?\s*;?$/i.test(trimmed)) {
+      inTransactionBlock = true;
+    }
     buffer += `${line}\n`;
     if (inTrigger) {
       if (upper.endsWith('END;')) {
         statements.push(buffer.trim().replace(/;$/, ''));
         buffer = '';
         inTrigger = false;
+      }
+      continue;
+    }
+    if (inTransactionBlock) {
+      if (/^COMMIT\s*;?$/i.test(trimmed) || /^END\s*;?$/i.test(trimmed)) {
+        statements.push(buffer.trim().replace(/;$/, ''));
+        buffer = '';
+        inTransactionBlock = false;
       }
       continue;
     }
@@ -116,6 +133,77 @@ function tableExists(database, table) {
   return !!database
     .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get(table);
+}
+
+function recoverOrphanedModelPriceRebuild(database) {
+  if (tableExists(database, 'model_credit_prices')) return;
+  if (!tableExists(database, '__model_credit_prices_free_rebuild')) return;
+  database.exec('ALTER TABLE __model_credit_prices_free_rebuild RENAME TO model_credit_prices');
+}
+
+function hasModelCreditPriceFreeContract(database) {
+  if (!tableExists(database, 'model_credit_prices')) return false;
+  const columns = database.prepare('PRAGMA table_info(model_credit_prices)').all();
+  if (!columns.some((column) => column.name === 'pricing_mode')) return false;
+  const table = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'model_credit_prices'")
+    .get();
+  const sql = String(table?.sql || '');
+  return /\bpricing_mode\b[\s\S]*\bfree\b/i.test(sql)
+    && /pricing_mode\s*=\s*'free'\s+AND\s+credits\s*=\s*0/i.test(sql)
+    && /pricing_mode\s*=\s*'paid'\s+AND\s+credits\s*>\s*0/i.test(sql);
+}
+
+function modelCreditPriceColumnDefinition(column) {
+  if (column.name === 'model') return `${quoteIdent(column.name)} TEXT PRIMARY KEY`;
+  if (column.name === 'credits') {
+    return `${quoteIdent(column.name)} INTEGER NOT NULL CHECK (
+        (pricing_mode = 'paid' AND credits > 0)
+        OR (pricing_mode = 'free' AND credits = 0)
+      )`;
+  }
+  if (column.name === 'pricing_mode') {
+    return `${quoteIdent(column.name)} TEXT NOT NULL DEFAULT 'paid' CHECK (pricing_mode IN ('paid', 'free'))`;
+  }
+  const parts = [quoteIdent(column.name), column.type || 'TEXT'];
+  if (column.notnull) parts.push('NOT NULL');
+  if (column.dflt_value != null) parts.push(`DEFAULT ${column.dflt_value}`);
+  return parts.join(' ');
+}
+
+function ensureModelCreditPriceFreeContract(database) {
+  if (!tableExists(database, 'model_credit_prices')) return;
+  if (hasModelCreditPriceFreeContract(database)) {
+    if (tableExists(database, '__model_credit_prices_free_rebuild')) {
+      database.exec('DROP TABLE __model_credit_prices_free_rebuild');
+    }
+    return;
+  }
+  if (database.inTransaction) {
+    throw new Error('model_credit_prices pricing_mode migration requires no active transaction');
+  }
+  const columns = database.prepare('PRAGMA table_info(model_credit_prices)').all();
+  if (!columns.some((column) => column.name === 'pricing_mode')) {
+    database.exec("ALTER TABLE model_credit_prices ADD COLUMN pricing_mode TEXT NOT NULL DEFAULT 'paid'");
+    columns.push({ name: 'pricing_mode', type: 'TEXT', notnull: 1, dflt_value: "'paid'", pk: 0 });
+  }
+  const tempTable = '__model_credit_prices_free_rebuild';
+  const columnSql = columns.map((column) => quoteIdent(column.name)).join(', ');
+  const selectSql = columns
+    .map((column) => (column.name === 'pricing_mode'
+      ? `COALESCE(NULLIF(${quoteIdent(column.name)}, ''), 'paid')`
+      : quoteIdent(column.name)))
+    .join(', ');
+  database.transaction(() => {
+    database.exec(`DROP TABLE IF EXISTS ${quoteIdent(tempTable)}`);
+    database.exec(`CREATE TABLE ${quoteIdent(tempTable)} (
+      ${columns.map(modelCreditPriceColumnDefinition).join(',\n      ')}
+    )`);
+    database.exec(`INSERT INTO ${quoteIdent(tempTable)} (${columnSql})
+      SELECT ${selectSql} FROM model_credit_prices`);
+    database.exec('DROP TABLE model_credit_prices');
+    database.exec(`ALTER TABLE ${quoteIdent(tempTable)} RENAME TO model_credit_prices`);
+  })();
 }
 
 function quoteIdent(name) {
@@ -1563,10 +1651,12 @@ function runMigrationsAndEnsure(database) {
   if (database.inTransaction) {
     throw new Error('runMigrationsAndEnsure requires no active transaction');
   }
+  recoverOrphanedModelPriceRebuild(database);
   preflightRedrawShotStatusConstraint(database);
   ensureRedrawCandidateReleaseContract(database);
   ensureRedrawMigrationColumns(database);
   runMigrations(database);
+  ensureModelCreditPriceFreeContract(database);
   ensureProviderRouteCostUnitConstraint(database);
   ensureAllColumns(database);
   ensureRedrawCompatibility(database);
@@ -1587,4 +1677,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { runMigrationsAndEnsure, ensureColumns };
+module.exports = { runMigrationsAndEnsure, ensureColumns, ensureModelCreditPriceFreeContract };

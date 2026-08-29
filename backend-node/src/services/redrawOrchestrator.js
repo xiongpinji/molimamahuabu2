@@ -282,23 +282,25 @@ async function startAnalysis(db, log, input, options = {}) {
 
   const now = new Date().toISOString();
   const created = db.transaction(() => {
-    const reservation = creditLedger.reserve(db, {
-      userId,
-      tenantId: tenantId == null ? null : String(tenantId),
-      actorUserId: userId,
-      operationKey: `redraw_analysis:${work.id}:${sourceAssetId}`,
-      amount: price,
-      model,
-      resourceType: 'redraw_analysis',
-      resourceId: work.id,
-    });
+    const reservation = price > 0
+      ? creditLedger.reserve(db, {
+        userId,
+        tenantId: tenantId == null ? null : String(tenantId),
+        actorUserId: userId,
+        operationKey: `redraw_analysis:${work.id}:${sourceAssetId}`,
+        amount: price,
+        model,
+        resourceType: 'redraw_analysis',
+        resourceId: work.id,
+      })
+      : null;
     const task = taskService.createTask(db, log, 'redraw_analysis', work.id);
     updateDynamic(db, 'async_tasks', {
       tenant_id: tenantId == null ? null : String(tenantId),
       user_id: userId,
       resource_id: String(work.id),
       model,
-      credit_reservation_id: reservation.id,
+      credit_reservation_id: reservation?.id || null,
       status: 'processing',
       progress: 10,
       message: '源片分析已开始',
@@ -311,12 +313,12 @@ async function startAnalysis(db, log, input, options = {}) {
        SET source_asset_id = ?, status = 'analyzing', current_step = 1, task_id = ?,
            credit_reservation_id = ?, updated_at = ?
        WHERE id = ?`
-    ).run(sourceAssetId, task.id, reservation.id, now, work.id);
+    ).run(sourceAssetId, task.id, reservation?.id || null, now, work.id);
     return {
       task_id: task.id,
-      reservation_id: reservation.id,
+      reservation_id: reservation?.id || null,
       model,
-      billing: { charged: 0, held: reservation.amount, released: 0 },
+      billing: { charged: 0, held: reservation?.amount || 0, released: 0 },
     };
   })();
 

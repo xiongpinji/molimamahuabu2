@@ -42,7 +42,9 @@
         "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md",
         "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md",
         "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md",
-        "docs/tasks/2026-08-27-pr194-main-sync-ci-fix.md"
+        "docs/tasks/2026-08-27-pr194-main-sync-ci-fix.md",
+        "docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md",
+        "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md"
       ],
       "fixCommit": "54eb8e940982cd9c4b65e91b934d8593a6b1975b",
       "unlockHistory": [
@@ -167,22 +169,74 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 ToAPIs Seedance 未知提交恢复句柄获批",
+          "approvedBy": "product-owner 2026-08-27 toapis-submission-recovery",
+          "impactTests": [
+            "backend-node/test/toapisVideoClient.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/providerRouteStability.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-27 一键转绘产品媒体登记 Task A 免费模型计费语义获批",
+          "approvedBy": "product-owner 2026-08-27 redraw-product-media-registration-task-a",
+          "impactTests": [
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawAnalysis.test.js",
+            "backend-node/test/redrawLocalizationOrchestration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-27 迁移 67 幂等重放与免费模型合同兜底修复获批",
+          "approvedBy": "product-owner 2026-08-27 migration67-idempotent-replay-free-contract-fix",
+          "impactTests": [
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawAnalysis.test.js",
+            "backend-node/test/redrawLocalizationOrchestration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-27 67851c95 迁移 67 共享保列重建 helper 修复获批",
+          "approvedBy": "product-owner 2026-08-27 migration67-shared-column-preserving-helper-fix-67851c95",
+          "impactTests": [
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawAnalysis.test.js",
+            "backend-node/test/redrawLocalizationOrchestration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 ToAPIs Seedance 未知提交恢复句柄获批",
-        "approvedBy": "product-owner 2026-08-27 toapis-submission-recovery",
+        "reason": "2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批",
+        "approvedBy": "product-owner 2026-08-29 pr-208-main-sync-conflict-resolution",
         "impactTests": [
+          "backend-node/test/providerRouteStability.test.js",
+          "backend-node/test/toapisPrivateAvatarService.test.js",
+          "backend-node/test/toapisPrivateAvatarVerification.test.js",
           "backend-node/test/toapisVideoClient.test.js",
           "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/providerTaskReconciliation.test.js",
-          "backend-node/test/providerReconciliation.test.js",
-          "backend-node/test/videoBilling.test.js",
-          "backend-node/test/videoGenerationRequestSnapshot.test.js",
+          "backend-node/test/toapisVideoReleaseContract.test.js",
+          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
           "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/incrementalReleaseScope.test.js",
+          "frontweb/test/toapisVideoProviderConfig.test.js"
         ]
       }
     },
@@ -380,22 +434,38 @@
             "backend-node/test/token6688Image.test.js",
             "backend-node/test/featureLockManifest.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 ToAPIs Seedance 未知提交恢复句柄获批",
+          "approvedBy": "product-owner 2026-08-27 toapis-submission-recovery",
+          "impactTests": [
+            "backend-node/test/toapisVideoClient.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/providerRouteStability.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 ToAPIs Seedance 未知提交恢复句柄获批",
-        "approvedBy": "product-owner 2026-08-27 toapis-submission-recovery",
+        "reason": "2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批",
+        "approvedBy": "product-owner 2026-08-29 pr-208-main-sync-conflict-resolution",
         "impactTests": [
+          "backend-node/test/providerRouteStability.test.js",
+          "backend-node/test/toapisPrivateAvatarService.test.js",
+          "backend-node/test/toapisPrivateAvatarVerification.test.js",
           "backend-node/test/toapisVideoClient.test.js",
           "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/providerTaskReconciliation.test.js",
-          "backend-node/test/providerReconciliation.test.js",
-          "backend-node/test/videoBilling.test.js",
-          "backend-node/test/videoGenerationRequestSnapshot.test.js",
+          "backend-node/test/toapisVideoReleaseContract.test.js",
+          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
           "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/incrementalReleaseScope.test.js",
+          "frontweb/test/toapisVideoProviderConfig.test.js"
         ]
       }
     },
@@ -625,22 +695,38 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 ToAPIs Seedance 未知提交恢复句柄获批",
+          "approvedBy": "product-owner 2026-08-27 toapis-submission-recovery",
+          "impactTests": [
+            "backend-node/test/toapisVideoClient.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/providerRouteStability.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 ToAPIs Seedance 未知提交恢复句柄获批",
-        "approvedBy": "product-owner 2026-08-27 toapis-submission-recovery",
+        "reason": "2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批",
+        "approvedBy": "product-owner 2026-08-29 pr-208-main-sync-conflict-resolution",
         "impactTests": [
+          "backend-node/test/providerRouteStability.test.js",
+          "backend-node/test/toapisPrivateAvatarService.test.js",
+          "backend-node/test/toapisPrivateAvatarVerification.test.js",
           "backend-node/test/toapisVideoClient.test.js",
           "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/providerTaskReconciliation.test.js",
-          "backend-node/test/providerReconciliation.test.js",
-          "backend-node/test/videoBilling.test.js",
-          "backend-node/test/videoGenerationRequestSnapshot.test.js",
+          "backend-node/test/toapisVideoReleaseContract.test.js",
+          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
           "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/incrementalReleaseScope.test.js",
+          "frontweb/test/toapisVideoProviderConfig.test.js"
         ]
       }
     },
@@ -784,19 +870,55 @@
             "frontweb/e2e/redraw-full-product.spec.js",
             "backend-node/test/featureLockManifest.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 ToAPIs 官方备用域名迁移获批",
+          "approvedBy": "product-owner 2026-08-27 toapis-backup-domain-migration",
+          "impactTests": [
+            "backend-node/test/toapisVideoClient.test.js",
+            "backend-node/test/toapisPrivateAvatarService.test.js",
+            "backend-node/test/toapisVideoReleaseContract.test.js",
+            "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+            "frontweb/test/toapisVideoProviderConfig.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-27 一键转绘 coverage 版本级 HTTP 入口 Task C 获批",
+          "approvedBy": "product-owner 2026-08-27 redraw-product-media-registration-task-c",
+          "impactTests": [
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawCoverageRegistration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-28 coverage 版本级入口显式 provider 装配门禁 P2 修复获批",
+          "approvedBy": "product-owner 2026-08-28 redraw-coverage-http-provider-gate-task-c-p2",
+          "impactTests": [
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawCoverageRegistration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 ToAPIs 官方备用域名迁移获批",
-        "approvedBy": "product-owner 2026-08-27 toapis-backup-domain-migration",
+        "reason": "2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批",
+        "approvedBy": "product-owner 2026-08-29 pr-208-main-sync-conflict-resolution",
         "impactTests": [
-          "backend-node/test/toapisVideoClient.test.js",
+          "backend-node/test/providerRouteStability.test.js",
           "backend-node/test/toapisPrivateAvatarService.test.js",
+          "backend-node/test/toapisPrivateAvatarVerification.test.js",
+          "backend-node/test/toapisVideoClient.test.js",
+          "backend-node/test/toapisVideoIntegration.test.js",
           "backend-node/test/toapisVideoReleaseContract.test.js",
           "backend-node/test/sharedExternalModelReleaseGuard.test.js",
-          "frontweb/test/toapisVideoProviderConfig.test.js",
           "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/incrementalReleaseScope.test.js",
+          "frontweb/test/toapisVideoProviderConfig.test.js"
         ]
       }
     },
@@ -816,10 +938,12 @@
         "backend-node/migrations/62_provider_canary_admin_pagination.sql",
         "backend-node/migrations/63_provider_route_costs.sql",
         "backend-node/migrations/64_provider_task_receipt_reconciliation.sql",
+        "backend-node/migrations/67_model_credit_price_free.sql",
         "backend-node/scripts/plan-provider-canary-remediation.js",
         "backend-node/scripts/split-multi-model-provider-configs.js",
         "backend-node/scripts/verify-feature-lock-manifest.js",
         "backend-node/src/app.js",
+        "backend-node/src/db/migrate.js",
         "backend-node/src/middleware/resourceOwnership.js",
         "backend-node/src/routes/index.js",
         "backend-node/src/routes/providerStability.js",
@@ -843,6 +967,8 @@
         "backend-node/src/services/providerRouteStabilityService.js",
         "backend-node/src/services/providerTaskReconciliationService.js",
         "backend-node/src/services/providerRuntimeFingerprintService.js",
+        "backend-node/src/services/redrawLocalizationOrchestrator.js",
+        "backend-node/src/services/redrawOrchestrator.js",
         "backend-node/src/services/text-generation-billing-service.js",
         "backend-node/src/services/videoClient.js",
         "backend-node/src/services/videoService.js",
@@ -888,6 +1014,8 @@
         "backend-node/test/providerTaskAdminRoutes.test.js",
         "backend-node/test/providerTaskReconciliation.test.js",
         "backend-node/test/providerRuntimeFingerprint.test.js",
+        "backend-node/test/redrawAnalysis.test.js",
+        "backend-node/test/redrawLocalizationOrchestration.test.js",
         "backend-node/test/splitMultiModelProviderConfigs.test.js",
         "backend-node/test/storyboardImageFailure.test.js",
         "backend-node/test/taskService.test.js",
@@ -923,7 +1051,9 @@
         "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md",
         "docs/tasks/2026-08-26-static-asset-cross-release-compat.md",
         "docs/superpowers/plans/2026-08-27-provider-canary-metadata-remediation-plan.md",
-        "docs/tasks/2026-08-27-pr194-main-sync-ci-fix.md"
+        "docs/tasks/2026-08-27-pr194-main-sync-ci-fix.md",
+        "docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md",
+        "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md"
       ],
       "fixCommit": null,
       "unlockHistory": [
@@ -1176,20 +1306,299 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-27 ToAPIs Seedance 未知提交恢复句柄获批",
+          "approvedBy": "product-owner 2026-08-27 toapis-submission-recovery",
+          "impactTests": [
+            "backend-node/test/toapisVideoClient.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/providerRouteStability.test.js",
+            "backend-node/test/providerRouteVideoIntegration.test.js",
+            "backend-node/test/providerTaskReconciliation.test.js",
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-27 一键转绘产品媒体登记 Task A 免费模型计费语义获批",
+          "approvedBy": "product-owner 2026-08-27 redraw-product-media-registration-task-a",
+          "impactTests": [
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/redrawAnalysis.test.js",
+            "backend-node/test/redrawLocalizationOrchestration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-27 5eee94d8 免费模型迁移原子性与分辨率阶梯修复获批",
+          "approvedBy": "product-owner 2026-08-27 free-billing-migration-tier-review-fix-5eee94d8",
+          "impactTests": [
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawAnalysis.test.js",
+            "backend-node/test/redrawLocalizationOrchestration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-27 迁移 67 幂等重放与免费模型合同兜底修复获批",
+          "approvedBy": "product-owner 2026-08-27 migration67-idempotent-replay-free-contract-fix",
+          "impactTests": [
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawAnalysis.test.js",
+            "backend-node/test/redrawLocalizationOrchestration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-27 67851c95 迁移 67 共享保列重建 helper 修复获批",
+          "approvedBy": "product-owner 2026-08-27 migration67-shared-column-preserving-helper-fix-67851c95",
+          "impactTests": [
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/redrawMigration.test.js",
+            "backend-node/test/redrawAnalysis.test.js",
+            "backend-node/test/redrawLocalizationOrchestration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-27 一键转绘 coverage 版本级 HTTP 入口 Task C 获批",
+          "approvedBy": "product-owner 2026-08-27 redraw-product-media-registration-task-c",
+          "impactTests": [
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawCoverageRegistration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-28 coverage 版本级入口显式 provider 装配门禁 P2 修复获批",
+          "approvedBy": "product-owner 2026-08-28 redraw-coverage-http-provider-gate-task-c-p2",
+          "impactTests": [
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawCoverageRegistration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-27 ToAPIs Seedance 未知提交恢复句柄获批",
-        "approvedBy": "product-owner 2026-08-27 toapis-submission-recovery",
+        "reason": "2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批",
+        "approvedBy": "product-owner 2026-08-29 pr-208-main-sync-conflict-resolution",
         "impactTests": [
+          "backend-node/test/providerRouteStability.test.js",
+          "backend-node/test/toapisPrivateAvatarService.test.js",
+          "backend-node/test/toapisPrivateAvatarVerification.test.js",
           "backend-node/test/toapisVideoClient.test.js",
           "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/providerRouteVideoIntegration.test.js",
-          "backend-node/test/providerTaskReconciliation.test.js",
-          "backend-node/test/providerReconciliation.test.js",
-          "backend-node/test/videoBilling.test.js",
-          "backend-node/test/videoGenerationRequestSnapshot.test.js",
+          "backend-node/test/toapisVideoReleaseContract.test.js",
+          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js",
+          "frontweb/test/toapisVideoProviderConfig.test.js"
+        ]
+      }
+    },
+    {
+      "featureId": "redraw.coverage-registration-service",
+      "module": "shared",
+      "status": "locked_pass",
+      "acceptance": [
+        "coverage provider 只能写入服务端单次暂存目录并返回 reviewed manifest 相对路径",
+        "登记服务验证 owner、版本 CAS、facts/source/duration/shot timeline 和证据文件安全后才创建资产",
+        "同 owner/version/idempotency key 先认领 processing，完成重放、不同请求冲突、处理中和未知状态不重提 provider",
+        "登记结果生成 loader 兼容的 pending scene redraw asset，审核后默认 loadReviewedReferenceCoverage 可读取"
+      ],
+      "protectedPaths": [
+        "backend-node/migrations/68_redraw_coverage_registrations.sql",
+        "backend-node/src/services/redrawCoverageRegistrationService.js"
+      ],
+      "requiredTests": [
+        "backend-node/test/redrawCoverageRegistration.test.js",
+        "backend-node/test/featureLockManifest.test.js",
+        "backend-node/test/incrementalReleaseScope.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md",
+        "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md"
+      ],
+      "fixCommit": null,
+      "unlockHistory": [],
+      "unlock": {
+        "reason": "2026-08-27 一键转绘 coverage 产品登记服务 Task B 获批",
+        "approvedBy": "product-owner 2026-08-27 redraw-product-media-registration-task-b",
+        "impactTests": [
+          "backend-node/test/redrawCoverageRegistration.test.js",
+          "backend-node/test/redrawFullFrameReview.test.js",
+          "backend-node/test/redrawReferenceBundle.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
+        ]
+      }
+    },
+    {
+      "featureId": "redraw.coverage-registration-http-route",
+      "module": "shared",
+      "status": "locked_pass",
+      "acceptance": [
+        "版本级 coverage 入口仅接受 expected_version_updated_at 与 idempotency_key",
+        "认证、租户和版本 owner 校验必须早于登记服务与 provider 调用",
+        "客户端不能控制 provider、路径、asset、积分或 reference bundle",
+        "公开响应与错误不得泄露暂存路径、供应商任务或密钥"
+      ],
+      "protectedPaths": [
+        "backend-node/src/routes/index.js",
+        "backend-node/src/routes/redraw.js"
+      ],
+      "requiredTests": [
+        "backend-node/test/redrawRoutes.test.js",
+        "backend-node/test/featureLockManifest.test.js",
+        "backend-node/test/incrementalReleaseScope.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md",
+        "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md"
+      ],
+      "fixCommit": null,
+      "unlockHistory": [
+        {
+          "reason": "2026-08-27 一键转绘 coverage 版本级 HTTP 入口 Task C 获批",
+          "approvedBy": "product-owner 2026-08-27 redraw-product-media-registration-task-c",
+          "impactTests": [
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawCoverageRegistration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        }
+      ],
+      "unlock": {
+        "reason": "2026-08-28 coverage 版本级入口显式 provider 装配门禁 P2 修复获批",
+        "approvedBy": "product-owner 2026-08-28 redraw-coverage-http-provider-gate-task-c-p2",
+        "impactTests": [
+          "backend-node/test/redrawRoutes.test.js",
+          "backend-node/test/redrawCoverageRegistration.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
+        ]
+      }
+    },
+    {
+      "featureId": "redraw.clean-plate-local-media-registration",
+      "module": "shared",
+      "status": "locked_pass",
+      "acceptance": [
+        "clean provider 只能获得服务端私有单次 staging outputDir 和只读可信输入",
+        "产品服务拒绝路径逃逸、链接、reparse 与媒体伪装，并完成 TOCTOU、尺寸和像素门禁",
+        "验证后的图片按 SHA-256 内容寻址写入并建立完整 redraw image asset",
+        "登记结果保持 needs_attention/pending，未知状态不重试，零积分不产生预留或账本行"
+      ],
+      "protectedPaths": [
+        "backend-node/src/services/redrawAssetService.js",
+        "backend-node/src/services/redrawProviderAdapters.js"
+      ],
+      "requiredTests": [
+        "backend-node/test/redrawAssets.test.js",
+        "backend-node/test/redrawProviderAdapters.test.js",
+        "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+        "backend-node/test/featureLockManifest.test.js",
+        "backend-node/test/incrementalReleaseScope.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md",
+        "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md"
+      ],
+      "fixCommit": null,
+      "unlockHistory": [
+        {
+        "reason": "2026-08-28 一键转绘 clean provider 本地媒体登记 Task D 获批",
+        "approvedBy": "product-owner 2026-08-28 redraw-product-media-registration-task-d",
+        "impactTests": [
+          "backend-node/test/redrawAssets.test.js",
+          "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+          "backend-node/test/redrawReferenceBundle.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
+        ]
+        },
+        {
+        "reason": "2026-08-28 clean provider 本地媒体双字段污染 P1 修复获批",
+        "approvedBy": "product-owner 2026-08-28 redraw-clean-local-media-dual-field-p1-fix",
+        "impactTests": [
+          "backend-node/test/redrawAssets.test.js",
+          "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+          "backend-node/test/redrawReferenceBundle.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
+        ]
+        }
+      ],
+      "unlock": {
+        "reason": "2026-08-28 clean provider 默认 adapter 与 legacy 双字段 P2 修复获批",
+        "approvedBy": "product-owner 2026-08-28 redraw-clean-adapter-legacy-fields-task-d-p2",
+        "impactTests": [
+          "backend-node/test/redrawAssets.test.js",
+          "backend-node/test/redrawProviderAdapters.test.js",
+          "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+          "backend-node/test/redrawReferenceBundle.test.js",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
+        ]
+      }
+    },
+    {
+      "featureId": "redraw.product-media-http-chain",
+      "module": "shared",
+      "status": "locked_pass",
+      "acceptance": [
+        "setupRouter 挂载的真实 /api/v1 HTTP 路由使用真实 JWT 与租户上下文贯通 coverage、审核和两轮 reference preparation",
+        "coverage 与 clean provider 只能向服务端私有单次 staging 写相对媒体文件，产品服务负责登记、状态迁移和清理",
+        "coverage 与 clean 均经过 pending 到 approved，第二轮复用 approved clean 并由默认 reference bundle 服务收口 reference_ready",
+        "免费模型全链保持 credits、held、charged、reservation 与 ledger 为零且不重提 provider"
+      ],
+      "protectedPaths": [
+        "backend-node/src/routes/index.js",
+        "backend-node/src/routes/redraw.js",
+        "backend-node/src/services/redrawAssetService.js",
+        "backend-node/src/services/redrawCoverageRegistrationService.js",
+        "backend-node/src/services/redrawReferenceBundleService.js",
+        "backend-node/src/services/redrawReferencePreparationOrchestrator.js"
+      ],
+      "requiredTests": [
+        "backend-node/test/redrawProductMediaChain.test.js",
+        "backend-node/test/redrawRoutes.test.js",
+        "backend-node/test/redrawCoverageRegistration.test.js",
+        "backend-node/test/redrawAssets.test.js",
+        "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+        "backend-node/test/redrawReferenceBundle.test.js",
+        "backend-node/test/featureLockManifest.test.js",
+        "backend-node/test/incrementalReleaseScope.test.js"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md",
+        "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md"
+      ],
+      "fixCommit": null,
+      "unlockHistory": [],
+      "unlock": {
+        "reason": "2026-08-28 一键转绘真实产品 HTTP 媒体同链回归 Task E 获批",
+        "approvedBy": "product-owner 2026-08-28 redraw-product-media-registration-task-e",
+        "impactTests": [
+          "backend-node/test/redrawProductMediaChain.test.js",
+          "backend-node/test/redrawRoutes.test.js",
+          "backend-node/test/redrawCoverageRegistration.test.js",
+          "backend-node/test/redrawAssets.test.js",
+          "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+          "backend-node/test/redrawReferenceBundle.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]

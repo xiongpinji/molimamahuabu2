@@ -22,7 +22,9 @@ const {
   saveReferenceBundle,
   loadReviewedReferenceCoverage,
   canonicalBundleHash,
+  buildCurrentReferenceBindings,
 } = require('../src/services/redrawReferenceBundleService');
+const { bindReadyMotionReference } = require('../src/services/redrawReferenceArtifactImportService');
 const {
   evaluatePreparationGate,
   preparationEvidenceHash,
@@ -54,6 +56,7 @@ const log = { info() {}, warn() {}, error() {} };
 const FEITUO_FAST_MODEL = 'sdas-my-seedance-2.0-fast-upscaled-1080p';
 const TOAPIS_NATIVE_MODEL = 'seedance-2-fast';
 const ICREAT_MINI_MODEL = 'bytedance/seedance-2-0-mini';
+const FUMIN_MINI_MODEL = 'fumin-seedance-2.0-mini';
 const SIGNED_SOURCE_VIDEO_URL = 'https://media.example.test/api/redraw-provider-assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4?expires=1786147800&signature=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const REFERENCE_BUNDLE_SOURCE_BYTES = Buffer.from('generation-reference-bundle-source-video');
 const REFERENCE_BUNDLE_SOURCE_SHA256 = crypto.createHash('sha256').update(REFERENCE_BUNDLE_SOURCE_BYTES).digest('hex');
@@ -627,6 +630,43 @@ function referenceBundleTextEvidencePack(input) {
   return pack;
 }
 
+function referenceBundlePersonEvidencePack(input) {
+  const pack = {
+    schema_version: 'person-clean-plate-reference-v1',
+    requirement_key: input.requirementKey,
+    artifact: {
+      asset_id: Number(input.cleanAssetId),
+      sha256: input.cleanSha,
+      width: input.width,
+      height: input.height,
+      mime_type: 'image/png',
+    },
+    source: {
+      asset_id: Number(input.frameAssetId),
+      sha256: input.frameSha,
+      width: input.width,
+      height: input.height,
+      mime_type: 'image/png',
+    },
+    mask: {
+      asset_id: Number(input.maskAssetId),
+      sha256: input.maskSha,
+      width: input.width,
+      height: input.height,
+      mime_type: 'image/png',
+    },
+    source_fingerprint: REFERENCE_BUNDLE_SOURCE_SHA256,
+    input_frame_fingerprint: input.frameSha,
+    analysis_sha256: input.analysisSha256,
+    frame_index: 0,
+    ready: true,
+    reviewed_by: 'user-a',
+    reviewed_at: '2026-08-14T00:05:00.000Z',
+  };
+  pack.pack_sha256 = crypto.createHash('sha256').update(stableJson(pack)).digest('hex');
+  return pack;
+}
+
 function putStorageFile(storageRoot, relativePath, bytes) {
   const absPath = path.join(storageRoot, relativePath);
   fs.mkdirSync(path.dirname(absPath), { recursive: true });
@@ -970,6 +1010,50 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
     sha256: screenMaskSha,
     metadata: { sha256: screenMaskSha, width: coverageWidth, height: coverageHeight },
   });
+  const personTracks = [
+    {
+      track_key: 'face-001',
+      kind: 'story_role',
+      source_character_key: 'character-001',
+      target_strategy: 'fixed_actor',
+      frame_ranges: [{ start_frame: 0, end_frame: 0 }],
+      visibility: [{ start_frame: 0, end_frame: 0, state: 'visible' }],
+      regions: [{
+        region_id: 'person-face-001-0',
+        frame_index: 0,
+        bbox: { x: 4, y: 4, width: 20, height: 40 },
+        mask: {
+          path: 'masks/subtitle-0.png', sha256: subtitleMaskSha,
+          width: coverageWidth, height: coverageHeight, mime_type: 'image/png',
+        },
+        association_confidence: 0.99,
+        detector_disagreement: false,
+      }],
+      review_status: 'pending',
+      reviewer: null,
+    },
+    {
+      track_key: 'face-002',
+      kind: 'story_role',
+      source_character_key: 'character-002',
+      target_strategy: 'fixed_actor',
+      frame_ranges: [{ start_frame: 0, end_frame: 0 }],
+      visibility: [{ start_frame: 0, end_frame: 0, state: 'visible' }],
+      regions: [{
+        region_id: 'person-face-002-0',
+        frame_index: 0,
+        bbox: { x: 36, y: 4, width: 20, height: 40 },
+        mask: {
+          path: 'masks/screen-0.png', sha256: screenMaskSha,
+          width: coverageWidth, height: coverageHeight, mime_type: 'image/png',
+        },
+        association_confidence: 0.99,
+        detector_disagreement: false,
+      }],
+      review_status: 'pending',
+      reviewer: null,
+    },
+  ];
   const generatedCoverage = await buildGeneratedCoverageManifest({
     evidenceRoot: path.join(storageRoot, coverageBase),
     source: {
@@ -990,12 +1074,12 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
       sha256: coverageFrameSha,
       width: coverageWidth,
       height: coverageHeight,
-      person_region_ids: [],
+      person_region_ids: personTracks.map((track) => track.regions[0].region_id),
       text_region_ids: ['text-region-001', 'text-region-002'],
       review_point_reasons: [],
       review_status: 'not_required',
     }],
-    personTracks: [],
+    personTracks,
     textTracks: [
       {
         region_key: 'text-001',
@@ -1045,7 +1129,7 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
   const reviewedCoverage = JSON.parse(JSON.stringify(generatedCoverage));
   reviewedCoverage.status = 'reviewed';
   reviewedCoverage.frames[0].review_status = reviewedCoverage.frames[0].review_point_reasons.length ? 'reviewed' : 'not_required';
-  for (const track of reviewedCoverage.text_tracks) {
+  for (const track of [...reviewedCoverage.person_tracks, ...reviewedCoverage.text_tracks]) {
     track.review_status = 'reviewed';
     track.reviewer = 'codex-local-review';
   }
@@ -1140,14 +1224,43 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
       snapshot: { mode: 'text_clean_plate' },
       text_clean_plate_pack: screenEvidencePack,
     }), screenCleanId);
-  const faceCoverageSha256 = crypto.createHash('sha256').update(stableJson([
-    { identity_redraw_asset_id: Number(actorAId), source_character_key: 'character-001', time_ranges: [[0, 5000]], track_key: 'face-001' },
-    { identity_redraw_asset_id: Number(actorBId), source_character_key: 'character-002', time_ranges: [[2500, 5000]], track_key: 'face-002' },
-  ])).digest('hex');
-  const textCoverageSha256 = crypto.createHash('sha256').update(stableJson([
-    { kind: 'text_subtitle', region_key: 'text-001', text_clean_redraw_asset_id: Number(subtitleCleanId), time_ranges: [[0, 2500]] },
-    { kind: 'text_screen', region_key: 'text-002', text_clean_redraw_asset_id: Number(screenCleanId), time_ranges: [[2500, 5000]] },
-  ])).digest('hex');
+  const personACleanId = addRedrawAsset(state.db, state.versionId, {
+    kind: 'scene', name: 'face-001 clean', cleanPlateAssetId: state.subtitleCleanImageId,
+  });
+  const personBCleanId = addRedrawAsset(state.db, state.versionId, {
+    kind: 'scene', name: 'face-002 clean', cleanPlateAssetId: state.screenCleanImageId,
+  });
+  for (const person of [
+    {
+      redrawAssetId: personACleanId, requirementKey: 'face-001',
+      cleanAssetId: state.subtitleCleanImageId, cleanSha: imageSha(state.subtitleCleanImageId),
+      maskAssetId: state.subtitleMaskAssetId, maskSha: subtitleMaskSha,
+    },
+    {
+      redrawAssetId: personBCleanId, requirementKey: 'face-002',
+      cleanAssetId: state.screenCleanImageId, cleanSha: imageSha(state.screenCleanImageId),
+      maskAssetId: state.screenMaskAssetId, maskSha: screenMaskSha,
+    },
+  ]) {
+    const pack = referenceBundlePersonEvidencePack({
+      ...person,
+      frameAssetId: state.coverageFrameAssetId,
+      frameSha: coverageFrameSha,
+      analysisSha256: reviewedCoverage.analysis_sha256,
+      width: coverageWidth,
+      height: coverageHeight,
+    });
+    state.db.prepare('UPDATE redraw_assets SET mask_asset_id = ?, source_ref_json = ? WHERE id = ?')
+      .run(person.maskAssetId, JSON.stringify({
+        source_ref: {
+          stable_id: person.requirementKey,
+          kind: 'person_clean',
+          source_asset_id: state.coverageFrameAssetId,
+        },
+        snapshot: { mode: 'clean_plate' },
+        person_clean_plate_pack: pack,
+      }), person.redrawAssetId);
+  }
   insertReferenceBundleAsset(state.db, {
     id: state.motionAssetId,
     type: 'video',
@@ -1162,42 +1275,86 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
       mime_type: 'video/mp4',
       video_codec: 'h264',
       audio_stream_count: 0,
-      redraw_motion_reference: {
-        schema_version: 'redraw-motion-reference-v1',
+      redraw_motion_import: {
+        schema_version: 'redraw-motion-import-v1',
         tenant_id: 'tenant-a',
         user_id: 'user-a',
         version_id: state.versionId,
         shot_id: shotId,
+        source_work_id: state.workId,
         source_asset_id: state.sourceAssetId,
         source_fingerprint: REFERENCE_BUNDLE_SOURCE_SHA256,
         clip_start_ms: 0,
         clip_end_ms: 12000,
-        face_coverage_sha256: faceCoverageSha256,
-        text_coverage_sha256: textCoverageSha256,
+        file_sha256: REFERENCE_BUNDLE_MOTION_SHA256,
+        duration_ms: 12000,
+        width: 864,
+        height: 496,
+        mime_type: 'video/mp4',
+        video_codec: 'h264',
+        audio_stream_count: 0,
+        reviewed_by: 'user-a',
+        reviewed_at: '2026-08-14T00:05:00.000Z',
+        review: {
+          full_frame_reviewed: true,
+          source_identity_obscured: true,
+          source_text_obscured: true,
+          motion_preserved: true,
+        },
       },
     },
+  });
+  state.db.prepare('UPDATE assets SET width = 864, height = 496 WHERE id = ?')
+    .run(state.motionAssetId);
+  state.db.prepare(`INSERT INTO redraw_reference_artifact_imports (
+    tenant_id, user_id, version_id, scope_type, scope_id, purpose,
+    idempotency_hash, request_hash, file_sha256, stored_asset_id,
+    status, error_code, created_at, updated_at
+  ) VALUES (
+    'tenant-a', 'user-a', ?, 'shot', ?, 'motion', ?, ?, ?, ?,
+    'completed', NULL, ?, ?
+  )`).run(
+    state.versionId,
+    shotId,
+    crypto.createHash('sha256').update('generation-reference-motion-import').digest('hex'),
+    crypto.createHash('sha256').update('generation-reference-motion-request').digest('hex'),
+    REFERENCE_BUNDLE_MOTION_SHA256,
+    state.motionAssetId,
+    now,
+    now,
+  );
+  const cleanResults = [
+    { kind: 'text_clean', key: 'text-001', status: 'completed', redraw_asset_id: Number(subtitleCleanId) },
+    { kind: 'text_clean', key: 'text-002', status: 'completed', redraw_asset_id: Number(screenCleanId) },
+  ];
+  await bindReadyMotionReference({
+    db: state.db,
+    tenantId: 'tenant-a',
+    userId: 'user-a',
+    versionId: state.versionId,
+    storageRoot,
+    now: () => '2026-08-14T00:05:00.000Z',
+  }, {
+    shot_id: shotId,
+    clean_results: cleanResults,
+  });
+  const currentBindings = await buildCurrentReferenceBindings({
+    db: state.db,
+    tenantId: 'tenant-a',
+    userId: 'user-a',
+    versionId: state.versionId,
+    storageRoot,
+  }, {
+    shot_id: shotId,
+    clean_results: cleanResults,
   });
   state.referenceBundleInput = {
     shot_id: shotId,
     expected_updated_at: state.db.prepare('SELECT updated_at FROM redraw_shots WHERE id = ?').get(shotId).updated_at,
     motion_reference_asset_id: state.motionAssetId,
-    face_tracks: [
-      { track_key: 'face-002', source_character_key: 'character-002', time_ranges: [[2500, 5000]], identity_redraw_asset_id: Number(actorBId) },
-      { track_key: 'face-001', source_character_key: 'character-001', time_ranges: [[0, 5000]], identity_redraw_asset_id: Number(actorAId) },
-    ],
-    text_regions: [
-      { region_key: 'text-002', kind: 'text_screen', time_ranges: [[2500, 5000]], text_clean_redraw_asset_id: Number(screenCleanId) },
-      { region_key: 'text-001', kind: 'text_subtitle', time_ranges: [[0, 2500]], text_clean_redraw_asset_id: Number(subtitleCleanId) },
-    ],
-    coverage_review: {
-      recognizable_face_count: 2,
-      mapped_face_count: 2,
-      unresolved_face_count: 0,
-      recognizable_text_region_count: 2,
-      mapped_text_region_count: 2,
-      unresolved_text_region_count: 0,
-      status: 'approved',
-    },
+    face_tracks: currentBindings.face_tracks,
+    text_regions: currentBindings.text_regions,
+    coverage_review: currentBindings.coverage_review,
   };
   if (options.saveBundle !== false) {
     state.savedReferenceBundle = await saveReferenceBundle({
@@ -1235,6 +1392,8 @@ async function setupReferenceBundleGenerationFixture(t, options = {}) {
     const coverageShot = coverage.coverage_binding.shots.find((item) => Number(item.shot_id) === Number(shotId));
     const shotRequirements = coverage.shots.find((item) => Number(item.shot_id) === Number(shotId))?.requirements || [];
     const cleanAssetByKey = new Map([
+      ['face-001', Number(personACleanId)],
+      ['face-002', Number(personBCleanId)],
       ['text-001', Number(subtitleCleanId)],
       ['text-002', Number(screenCleanId)],
     ]);
@@ -1305,6 +1464,24 @@ function referenceBundleAudioCapability(state) {
     supportsAudio: true,
     max_videos: 3,
   };
+}
+
+function addFuminMiniCapability(db, overrides = {}) {
+  db.prepare('DELETE FROM ai_service_configs').run();
+  prices.set(db, overrides.model || FUMIN_MINI_MODEL, 2, {
+    category: 'video',
+    billing_unit: 'second',
+    resolution_prices: { '480p': { credits: 2 }, '720p': { credits: 3 } },
+  });
+  addVerifiedGenerationCapability(db, overrides.model || FUMIN_MINI_MODEL, {
+    locale: 'en-US',
+    market: 'US',
+    provider: overrides.provider || 'fumin',
+    apiProtocol: overrides.apiProtocol || 'fumin_video',
+    configModel: overrides.configModel || overrides.model || FUMIN_MINI_MODEL,
+    evidenceProvider: overrides.evidenceProvider || overrides.provider || 'fumin',
+    evidenceModel: overrides.evidenceModel || overrides.model || FUMIN_MINI_MODEL,
+  });
 }
 
 function referenceBundleGenerationDeps(state, overrides = {}) {
@@ -5888,6 +6065,114 @@ test('reference bundle required 的本地假 provider 收到同一安全英文 p
   assert.equal(/[\u3400-\u9fff]/.test(capturedPrompt), false);
   assert.equal(capturedPrompt.includes('原始中文提示词'), false);
   assert.equal(capturedPrompt.includes('镜头原始中文'), false);
+});
+
+test('reference bundle required 默认生产路径允许精确 Fumin Mini 且预扣前拒绝错误协议模型和 720p', async (t) => {
+  {
+    const state = await setupReferenceBundleGenerationFixture(t);
+    addFuminMiniCapability(state.db);
+    let providerCalls = 0;
+    let scheduleCalls = 0;
+
+    const result = await generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
+      resolveVideoConditioningCapability: undefined,
+      videoProcessor: async () => { providerCalls += 1; },
+      schedule(callback) {
+        scheduleCalls += 1;
+        assert.equal(typeof callback, 'function');
+      },
+    })), { shotId: state.shotId });
+
+    assert.equal(result.status, 'processing');
+    assert.equal(providerCalls, 0);
+    assert.equal(scheduleCalls, 1);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+    assert.equal(count(state.db, 'video_generations'), 1);
+    assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 1);
+    const video = state.db.prepare(`SELECT provider, model, duration, aspect_ratio, resolution, generate_audio,
+        reference_image_urls, reference_video_urls, source_conditioning_json, request_snapshot, ai_service_config_id
+      FROM video_generations`).get();
+    assert.equal(video.provider, 'fumin');
+    assert.equal(video.model, FUMIN_MINI_MODEL);
+    assert.equal(video.duration, 5);
+    assert.equal(video.aspect_ratio, '16:9');
+    assert.equal(video.resolution, '480p');
+    assert.equal(video.generate_audio, 1);
+    const snapshot = JSON.parse(video.request_snapshot);
+    assert.equal(/[\u3400-\u9fff]/.test(snapshot.prompt), false);
+    assert.equal(snapshot.prompt.includes('原始中文提示词'), false);
+    assert.equal(snapshot.prompt.includes('镜头原始中文'), false);
+    assert.equal(snapshot.model, FUMIN_MINI_MODEL);
+    assert.equal(snapshot.duration, 5);
+    assert.equal(snapshot.aspect_ratio, '16:9');
+    assert.equal(snapshot.resolution, '480p');
+    assert.equal(snapshot.generate_audio, true);
+    const expectedReferenceVideoUrls = [`https://cdn.example.test/reference/motion/${state.motionAssetId}`];
+    const expectedReferenceImageUrls = [
+      `https://cdn.example.test/reference/identity/${state.actorAImageId}`,
+      `https://cdn.example.test/reference/identity/${state.actorBImageId}`,
+    ];
+    assert.deepEqual(JSON.parse(video.reference_video_urls), expectedReferenceVideoUrls);
+    assert.deepEqual(snapshot.reference_video_urls, expectedReferenceVideoUrls);
+    assert.deepEqual(JSON.parse(video.reference_image_urls), expectedReferenceImageUrls);
+    assert.deepEqual(snapshot.reference_image_urls, expectedReferenceImageUrls);
+    assert.deepEqual(JSON.parse(video.source_conditioning_json).video_capability, {
+      config_id: video.ai_service_config_id,
+      config_updated_at: snapshot.config_updated_at,
+      provider: 'fumin',
+      protocol: 'fumin_video',
+      model: FUMIN_MINI_MODEL,
+    });
+  }
+
+  for (const scenario of [
+    {
+      name: 'wrong protocol',
+      configure: (state) => addFuminMiniCapability(state.db, {
+        provider: 'toapis',
+        apiProtocol: 'toapis_video',
+        evidenceProvider: 'toapis',
+      }),
+      code: 'REDRAW_VIDEO_CONDITIONING_UNSUPPORTED',
+    },
+    {
+      name: 'wrong model',
+      configure: (state) => addFuminMiniCapability(state.db, { model: 'fumin-seedance-2.0-fast' }),
+      code: 'REDRAW_VIDEO_CONDITIONING_UNSUPPORTED',
+    },
+    {
+      name: '720p preflight',
+      configure: (state) => {
+        addFuminMiniCapability(state.db);
+        const row = state.db.prepare('SELECT compiled_prompt_json FROM redraw_shots WHERE id = ?').get(state.shotId);
+        const compiled = JSON.parse(row.compiled_prompt_json);
+        compiled.resolution = '720p';
+        state.db.prepare('UPDATE redraw_shots SET compiled_prompt_json = ? WHERE id = ?')
+          .run(JSON.stringify(compiled), state.shotId);
+      },
+      code: 'REDRAW_GENERATION_INPUT_INVALID',
+    },
+  ]) {
+    const state = await setupReferenceBundleGenerationFixture(t);
+    scenario.configure(state);
+    let providerCalls = 0;
+    let scheduleCalls = 0;
+    await assert.rejects(
+      () => generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
+        resolveVideoConditioningCapability: undefined,
+        videoProcessor: async () => { providerCalls += 1; },
+        schedule() { scheduleCalls += 1; },
+      })), { shotId: state.shotId }),
+      (error) => error.code === scenario.code,
+      scenario.name,
+    );
+    assert.equal(providerCalls, 0, scenario.name);
+    assert.equal(scheduleCalls, 0, scenario.name);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 0, scenario.name);
+    assert.equal(count(state.db, 'video_generations'), 0, scenario.name);
+    assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0, scenario.name);
+    assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0, scenario.name);
+  }
 });
 
 test('reference bundle required 缺失或漂移时在冻结积分和建视频前失败', async (t) => {

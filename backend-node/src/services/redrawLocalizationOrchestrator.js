@@ -512,27 +512,29 @@ function createStartRecords(db, log, input, quote) {
       idempotencyKey: input.idempotencyKey,
       modelSnapshot: quote.snapshot,
     });
-    const reservation = creditLedger.reserve(db, {
-      tenantId: input.tenantId,
-      userId: input.userId,
-      actorUserId: input.userId,
-      operationKey: [
-        'redraw-localization',
-        input.tenantId,
-        input.userId,
-        input.workId,
-        quote.input_hash,
-        input.idempotencyKey,
-      ].join(':'),
-      amount: quote.credits,
-      model: quote.model,
-      resourceType: 'redraw_localization',
-      resourceId: String(input.workId),
-    });
-    const task = insertTask(db, log, input, quote, Number(draft.id), reservation.id);
+    const reservation = quote.credits > 0
+      ? creditLedger.reserve(db, {
+        tenantId: input.tenantId,
+        userId: input.userId,
+        actorUserId: input.userId,
+        operationKey: [
+          'redraw-localization',
+          input.tenantId,
+          input.userId,
+          input.workId,
+          quote.input_hash,
+          input.idempotencyKey,
+        ].join(':'),
+        amount: quote.credits,
+        model: quote.model,
+        resourceType: 'redraw_localization',
+        resourceId: String(input.workId),
+      })
+      : null;
+    const task = insertTask(db, log, input, quote, Number(draft.id), reservation?.id || null);
     return {
       task_id: task.id,
-      reservation_id: reservation.id,
+      reservation_id: reservation?.id || null,
       draft_version_id: Number(draft.id),
       quote,
     };

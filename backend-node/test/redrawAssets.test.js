@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const Database = require('better-sqlite3');
+const sharp = require('sharp');
 
 const credits = require('../src/services/creditLedgerService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
@@ -71,6 +72,19 @@ function addTypedAsset(db, id, localPath, type, mimeType, duration = null) {
   db.prepare(`INSERT INTO assets (id, name, type, category, url, local_path, mime_type, duration, created_at, updated_at)
     VALUES (?, '生成资产', ?, 'redraw', '', ?, ?, ?, ?, ?)`)
     .run(id, type, localPath, mimeType, duration, now, now);
+}
+
+async function writePng(filePath, width = 64, height = 48) {
+  const bytes = await sharp({
+    create: {
+      width,
+      height,
+      channels: 4,
+      background: { r: 12, g: 34, b: 56, alpha: 1 },
+    },
+  }).png().toBuffer();
+  fs.writeFileSync(filePath, bytes);
+  return bytes;
 }
 
 function addDraftPlaceholder(db, state, input = {}) {
@@ -411,6 +425,7 @@ test('去人净景使用人物遮罩并保留源场景版本', async () => {
   }, sceneAsset, { mask_asset_id: 402, prompt: '去除人物并保留场景结构' });
 
   assert.equal(result.clean_plate_asset_id, 403);
+  assert.equal(result.asset_id, null);
   assert.equal(result.source_asset_id, 401);
   assert.equal(result.mask_asset_id, 402);
   assert.equal(result.generation_task_id, 'clean-task-1');
@@ -423,7 +438,326 @@ test('去人净景使用人物遮罩并保留源场景版本', async () => {
   assert.equal(snapshot.mask_asset_id, 402);
   assert.equal(snapshot.input_frame_fingerprint, 'frame-1');
   assert.equal(snapshot.model, 'redraw-clean-plate');
+  const redrawRow = state.db.prepare('SELECT asset_id, clean_plate_asset_id FROM redraw_assets WHERE id = ?').get(result.id);
+  assert.equal(redrawRow.asset_id, null);
+  assert.equal(redrawRow.clean_plate_asset_id, 403);
   assert.equal(state.db.prepare('SELECT local_path FROM assets WHERE id = 401').get().local_path, 'scene.png');
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('clean provider 本地图片由产品服务验真、内容寻址并登记为待审核资产', async () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-clean-local-media-'));
+  fs.mkdirSync(path.join(root, 'inputs'), { recursive: true });
+  await writePng(path.join(root, 'inputs', 'scene.png'));
+  await writePng(path.join(root, 'inputs', 'mask.png'));
+  addAsset(state.db, 901, 'inputs/scene.png');
+  addAsset(state.db, 902, 'inputs/mask.png');
+  let providerArgs;
+
+  const result = await generateCleanPlate({
+    ...context(state, root),
+    storageRoot: root,
+    creditAmount: 0,
+    provider: async (args) => {
+      providerArgs = args;
+      assert.equal(Object.isFrozen(args.input), true);
+      assert.equal(args.input.version_id, state.versionId);
+      assert.equal(args.input.kind, 'scene');
+      assert.equal('db' in args, false);
+      assert.equal('storageRoot' in args, false);
+      assert.equal('attempt' in args, false);
+      await writePng(path.join(args.outputDir, 'clean.png'));
+      return {
+        status: 'completed',
+        provider_task_id: 'clean-local-task-1',
+        output: { relative_path: 'clean.png' },
+        quality: {
+          width: 64,
+          height: 48,
+          mime_type: 'image/png',
+          mask_area_changed: true,
+          non_mask_similarity: 0.98,
+        },
+      };
+    },
+  }, {
+    source_asset_id: 901,
+    source_fingerprint: 'frame-local-1',
+    width: 64,
+    height: 48,
+  }, { mask_asset_id: 902 });
+
+  assert.equal(result.status, 'needs_attention');
+  assert.equal(result.approval_status, 'pending');
+  assert.equal(result.asset_id, null);
+  assert.equal(result.generation_task_id, 'clean-local-task-1');
+  assert.equal(result.credit_reservation_id, null);
+  assert.ok(providerArgs.outputDir);
+  assert.equal(fs.existsSync(providerArgs.outputDir), false, '单次 staging 必须清理');
+  const stored = state.db.prepare('SELECT * FROM assets WHERE id = ?').get(result.clean_plate_asset_id);
+  const redrawRow = state.db.prepare('SELECT asset_id, clean_plate_asset_id FROM redraw_assets WHERE id = ?').get(result.id);
+  assert.equal(redrawRow.asset_id, null);
+  assert.equal(redrawRow.clean_plate_asset_id, stored.id);
+  const metadata = JSON.parse(stored.metadata);
+  assert.equal(stored.type, 'image');
+  assert.equal(stored.category, 'redraw');
+  assert.equal(stored.mime_type, 'image/png');
+  assert.equal(stored.width, 64);
+  assert.equal(stored.height, 48);
+  assert.equal(stored.file_size, fs.statSync(path.join(root, stored.local_path)).size);
+  assert.match(metadata.sha256, /^[a-f0-9]{64}$/);
+  assert.equal(stored.local_path, `redraw-clean-plates/${metadata.sha256}.png`);
+  assert.equal(fs.existsSync(path.join(root, stored.local_path)), true);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count, 0);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_credit_ledger').get().count, 0);
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('clean provider 本地媒体拒绝绝对路径、逃逸、symlink 与内容类型伪装，且不留可消费资产', async () => {
+  const cases = [
+    {
+      name: 'absolute',
+      prepare: async (outputDir) => {
+        const outside = path.join(path.dirname(outputDir), 'outside-clean.png');
+        await writePng(outside);
+        return outside;
+      },
+    },
+    {
+      name: 'traversal',
+      prepare: async (outputDir) => {
+        await writePng(path.join(path.dirname(outputDir), 'escape-clean.png'));
+        return '../escape-clean.png';
+      },
+    },
+    {
+      name: 'symlink',
+      prepare: async (outputDir) => {
+        const target = path.join(path.dirname(outputDir), 'linked-clean.png');
+        await writePng(target);
+        try {
+          fs.symlinkSync(target, path.join(outputDir, 'clean.png'), 'file');
+        } catch (error) {
+          if (['EPERM', 'EACCES'].includes(error.code)) return null;
+          throw error;
+        }
+        return 'clean.png';
+      },
+    },
+    {
+      name: 'junction-reparse',
+      prepare: async (outputDir) => {
+        const targetDir = path.join(path.dirname(outputDir), 'linked-clean-dir');
+        fs.mkdirSync(targetDir, { recursive: true });
+        await writePng(path.join(targetDir, 'clean.png'));
+        try {
+          fs.symlinkSync(targetDir, path.join(outputDir, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+        } catch (error) {
+          if (['EPERM', 'EACCES'].includes(error.code)) return null;
+          throw error;
+        }
+        return 'linked/clean.png';
+      },
+    },
+    {
+      name: 'magic-mime',
+      prepare: async (outputDir) => {
+        const jpeg = await sharp({
+          create: { width: 64, height: 48, channels: 3, background: '#123456' },
+        }).jpeg().toBuffer();
+        fs.writeFileSync(path.join(outputDir, 'clean.png'), jpeg);
+        return 'clean.png';
+      },
+    },
+  ];
+
+  for (const invalidCase of cases) {
+    const state = setup();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `redraw-clean-local-${invalidCase.name}-`));
+    await writePng(path.join(root, 'scene.png'));
+    await writePng(path.join(root, 'mask.png'));
+    addAsset(state.db, 911, 'scene.png');
+    addAsset(state.db, 912, 'mask.png');
+    let skipped = false;
+    await assert.rejects(
+      () => generateCleanPlate({
+        ...context(state, root),
+        storageRoot: root,
+        provider: async ({ outputDir }) => {
+          const relativePath = await invalidCase.prepare(outputDir);
+          if (relativePath == null) {
+            skipped = true;
+            throw Object.assign(new Error('symlink unavailable'), { code: 'TEST_SYMLINK_UNAVAILABLE' });
+          }
+          return {
+            status: 'completed',
+            output: { relative_path: relativePath },
+            quality: {
+              width: 64, height: 48, mime_type: 'image/png',
+              mask_area_changed: true, non_mask_similarity: 0.98,
+            },
+          };
+        },
+      }, { source_asset_id: 911, width: 64, height: 48 }, { mask_asset_id: 912 }),
+      (error) => skipped || String(error.code || '').startsWith('REDRAW_CLEAN_PLATE_MEDIA_'),
+      invalidCase.name,
+    );
+    assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE local_path LIKE 'redraw-clean-plates/%'").get().count, 0);
+    assert.equal(fs.existsSync(path.join(root, 'redraw-clean-plates')), false);
+    fs.rmSync(root, { recursive: true, force: true });
+    state.db.close();
+  }
+});
+
+test('clean provider 本地媒体拒绝字节、尺寸和像素超限及尺寸合同不匹配', async () => {
+  const cases = [
+    { name: 'bytes', limits: { maxBytes: 100 }, width: 64, height: 48 },
+    { name: 'dimension', limits: { maxDimension: 32 }, width: 64, height: 48 },
+    { name: 'pixels', limits: { maxPixels: 1000 }, width: 64, height: 48 },
+    { name: 'quality-dimensions', limits: {}, width: 32, height: 48 },
+  ];
+  for (const invalidCase of cases) {
+    const state = setup();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `redraw-clean-local-limit-${invalidCase.name}-`));
+    await writePng(path.join(root, 'scene.png'));
+    await writePng(path.join(root, 'mask.png'));
+    addAsset(state.db, 921, 'scene.png');
+    addAsset(state.db, 922, 'mask.png');
+    await assert.rejects(
+      () => generateCleanPlate({
+        ...context(state, root),
+        storageRoot: root,
+        cleanPlateMediaLimits: invalidCase.limits,
+        provider: async ({ outputDir }) => {
+          await writePng(path.join(outputDir, 'clean.png'), invalidCase.width, invalidCase.height);
+          return {
+            status: 'completed', output: { relative_path: 'clean.png' },
+            quality: {
+              width: 64, height: 48, mime_type: 'image/png',
+              mask_area_changed: true, non_mask_similarity: 0.98,
+            },
+          };
+        },
+      }, { source_asset_id: 921, width: 64, height: 48 }, { mask_asset_id: 922 }),
+      (error) => String(error.code || '').startsWith('REDRAW_CLEAN_PLATE_MEDIA_'),
+      invalidCase.name,
+    );
+    assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE local_path LIKE 'redraw-clean-plates/%'").get().count, 0);
+    fs.rmSync(root, { recursive: true, force: true });
+    state.db.close();
+  }
+});
+
+test('clean provider 本地媒体登记 DB 失败只清理本次新文件，已有同 hash 文件必须保留', async () => {
+  for (const preexisting of [false, true]) {
+    const state = setup();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `redraw-clean-local-db-${preexisting}-`));
+    await writePng(path.join(root, 'scene.png'));
+    await writePng(path.join(root, 'mask.png'));
+    const cleanBytes = await sharp({
+      create: { width: 64, height: 48, channels: 4, background: '#123456' },
+    }).png().toBuffer();
+    const digest = require('node:crypto').createHash('sha256').update(cleanBytes).digest('hex');
+    const storedPath = path.join(root, 'redraw-clean-plates', `${digest}.png`);
+    if (preexisting) {
+      fs.mkdirSync(path.dirname(storedPath), { recursive: true });
+      fs.writeFileSync(storedPath, cleanBytes);
+    }
+    addAsset(state.db, 931, 'scene.png');
+    addAsset(state.db, 932, 'mask.png');
+    state.db.exec(`CREATE TRIGGER reject_clean_media_asset BEFORE INSERT ON assets
+      WHEN NEW.local_path LIKE 'redraw-clean-plates/%'
+      BEGIN SELECT RAISE(ABORT, 'reject clean asset'); END`);
+
+    const result = await generateCleanPlate({
+      ...context(state, root),
+      storageRoot: root,
+      provider: async ({ outputDir }) => {
+        fs.writeFileSync(path.join(outputDir, 'clean.png'), cleanBytes);
+        return {
+          status: 'completed', provider_task_id: `db-failure-${preexisting}`,
+          output: { relative_path: 'clean.png' },
+          quality: {
+            width: 64, height: 48, mime_type: 'image/png',
+            mask_area_changed: true, non_mask_similarity: 0.98,
+          },
+        };
+      },
+    }, { source_asset_id: 931, width: 64, height: 48 }, { mask_asset_id: 932 });
+
+    assert.equal(result.status, 'needs_attention');
+    assert.equal(result.error_code, 'REDRAW_CLEAN_PLATE_REGISTRATION_UNKNOWN');
+    assert.equal(result.clean_plate_asset_id, null);
+    assert.equal(fs.existsSync(storedPath), preexisting);
+    assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE local_path LIKE 'redraw-clean-plates/%'").get().count, 0);
+    fs.rmSync(root, { recursive: true, force: true });
+    state.db.close();
+  }
+});
+
+test('clean provider 本地任务结果未知时清理 staging 并禁止重复调用 provider', async () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-clean-local-unknown-'));
+  await writePng(path.join(root, 'scene.png'));
+  await writePng(path.join(root, 'mask.png'));
+  addAsset(state.db, 941, 'scene.png');
+  addAsset(state.db, 942, 'mask.png');
+  let calls = 0;
+  let outputDir;
+  const ctx = {
+    ...context(state, root),
+    storageRoot: root,
+    provider: async (args) => {
+      calls += 1;
+      outputDir = args.outputDir;
+      return { status: 'unknown', provider_task_id: 'clean-local-unknown-1' };
+    },
+  };
+  const first = await generateCleanPlate(ctx, { source_asset_id: 941, width: 64, height: 48 }, { mask_asset_id: 942 });
+  assert.equal(first.status, 'needs_attention');
+  assert.equal(first.error_code, 'REDRAW_CLEAN_PLATE_PROVIDER_UNKNOWN');
+  assert.equal(fs.existsSync(outputDir), false);
+  await assert.rejects(
+    () => generateCleanPlate(ctx, { source_asset_id: 941, width: 64, height: 48 }, { mask_asset_id: 942 }),
+    { code: 'REDRAW_ASSET_ATTEMPT_NEEDS_ATTENTION' },
+  );
+  assert.equal(calls, 1);
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('clean provider 本地图片质量失败时清理 staging 且不登记资产', async () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-clean-local-quality-'));
+  await writePng(path.join(root, 'scene.png'));
+  await writePng(path.join(root, 'mask.png'));
+  addAsset(state.db, 951, 'scene.png');
+  addAsset(state.db, 952, 'mask.png');
+  let outputDir;
+  await assert.rejects(
+    () => generateCleanPlate({
+      ...context(state, root),
+      storageRoot: root,
+      provider: async (args) => {
+        outputDir = args.outputDir;
+        await writePng(path.join(outputDir, 'clean.png'));
+        return {
+          status: 'completed', output: { relative_path: 'clean.png' },
+          quality: {
+            width: 64, height: 48, mime_type: 'image/png',
+            mask_area_changed: false, non_mask_similarity: 0.98,
+          },
+        };
+      },
+    }, { source_asset_id: 951, width: 64, height: 48 }, { mask_asset_id: 952 }),
+    { code: 'CLEAN_PLATE_QUALITY_FAILED' },
+  );
+  assert.equal(fs.existsSync(outputDir), false);
+  assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE local_path LIKE 'redraw-clean-plates/%'").get().count, 0);
   fs.rmSync(root, { recursive: true, force: true });
   state.db.close();
 });

@@ -607,6 +607,54 @@ test('单次任务查询禁止自动跟随重定向且设置请求超时信号',
   assert.equal(requestOptions.signal instanceof AbortSignal, true);
 });
 
+test('Fumin 单次任务查询使用进程环境 Key 且不要求 DB 落盘 Key', async () => {
+  const previousKey = process.env.FUMIN_API_KEY;
+  process.env.FUMIN_API_KEY = 'env-only-fumin-key';
+  let requestOptions;
+  try {
+    const result = await queryVideoTaskStatusOnce(null, log, 'saved-task-id', {
+      provider: 'fumin',
+      api_protocol: 'fumin_video',
+      base_url: 'https://fumin.ai',
+      api_key: '',
+    }, {
+      async fetchImpl(_url, options) {
+        requestOptions = options;
+        return jsonResponse({ status: 'processing' });
+      },
+    });
+    assert.deepEqual(result, { state: 'unknown', category: 'result_unknown' });
+    assert.equal(requestOptions.headers.Authorization, 'Bearer env-only-fumin-key');
+  } finally {
+    if (previousKey === undefined) delete process.env.FUMIN_API_KEY;
+    else process.env.FUMIN_API_KEY = previousKey;
+  }
+});
+
+test('Fumin 单次任务查询无 DB Key 且无环境 Key 时零请求失败关闭', async () => {
+  const previousKey = process.env.FUMIN_API_KEY;
+  delete process.env.FUMIN_API_KEY;
+  let requests = 0;
+  try {
+    const result = await queryVideoTaskStatusOnce(null, log, 'saved-task-id', {
+      provider: 'fumin',
+      api_protocol: 'fumin_video',
+      base_url: 'https://fumin.ai',
+      api_key: '',
+    }, {
+      async fetchImpl() {
+        requests += 1;
+        throw new Error('must not fetch without fumin key');
+      },
+    });
+    assert.deepEqual(result, { state: 'query_failed', category: 'validation_error' });
+    assert.equal(requests, 0);
+  } finally {
+    if (previousKey === undefined) delete process.env.FUMIN_API_KEY;
+    else process.env.FUMIN_API_KEY = previousKey;
+  }
+});
+
 test('单次任务查询把上游 HTTP 状态归为安全查询故障而不伪造任务失败', async () => {
   const logEntries = [];
   const capturingLog = {

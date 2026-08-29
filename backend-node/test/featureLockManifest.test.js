@@ -22,6 +22,10 @@ const {
 const PROACTIVE_CANARY_FEATURE_ID = 'stability.proactive-canary-and-public-evidence';
 const ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID = 'stability.admin-provider-observability';
 const COMPLETE_ACCEPTANCE_FRAMEWORK_ID = 'stability.platform-complete-acceptance-framework';
+const REDRAW_COVERAGE_REGISTRATION_FEATURE_ID = 'redraw.coverage-registration-service';
+const REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID = 'redraw.coverage-registration-http-route';
+const REDRAW_CLEAN_PLATE_MEDIA_FEATURE_ID = 'redraw.clean-plate-local-media-registration';
+const REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID = 'redraw.product-media-http-chain';
 const UNKNOWN_STATE_RECONCILIATION_FEATURE_ID = 'stability.unknown-state-billing-reconciliation';
 const PROVIDER_ROUTE_CONTRACT_FEATURE_ID = 'stability.provider-route-contract';
 const SAFE_PROVIDER_FAILOVER_FEATURE_ID = 'stability.safe-provider-failover';
@@ -390,6 +394,219 @@ const PR194_MAIN_SYNC_UNLOCK = {
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
+const PR208_MAIN_SYNC_UNLOCK = {
+  reason: '2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批',
+  approvedBy: 'product-owner 2026-08-29 pr-208-main-sync-conflict-resolution',
+  impactTests: [
+    'backend-node/test/providerRouteStability.test.js',
+    'backend-node/test/toapisPrivateAvatarService.test.js',
+    'backend-node/test/toapisPrivateAvatarVerification.test.js',
+    'backend-node/test/toapisVideoClient.test.js',
+    'backend-node/test/toapisVideoIntegration.test.js',
+    'backend-node/test/toapisVideoReleaseContract.test.js',
+    'backend-node/test/sharedExternalModelReleaseGuard.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+    'frontweb/test/toapisVideoProviderConfig.test.js',
+  ],
+};
+const PR208_MAIN_SYNC_FEATURE_IDS = new Set([
+  PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
+  SAFE_PROVIDER_FAILOVER_FEATURE_ID,
+  UNKNOWN_STATE_RECONCILIATION_FEATURE_ID,
+  ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
+  PROACTIVE_CANARY_FEATURE_ID,
+]);
+const REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC =
+  'docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md';
+const REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN =
+  'docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md';
+const REDRAW_COVERAGE_REGISTRATION_PROTECTED_PATHS = [
+  'backend-node/migrations/68_redraw_coverage_registrations.sql',
+  'backend-node/src/services/redrawCoverageRegistrationService.js',
+];
+const REDRAW_COVERAGE_REGISTRATION_REQUIRED_TESTS = [
+  'backend-node/test/redrawCoverageRegistration.test.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+];
+const REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK = {
+  reason: '2026-08-27 一键转绘 coverage 产品登记服务 Task B 获批',
+  approvedBy: 'product-owner 2026-08-27 redraw-product-media-registration-task-b',
+  impactTests: [
+    'backend-node/test/redrawCoverageRegistration.test.js',
+    'backend-node/test/redrawFullFrameReview.test.js',
+    'backend-node/test/redrawReferenceBundle.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const REDRAW_COVERAGE_HTTP_ROUTE_PROTECTED_PATHS = [
+  'backend-node/src/routes/index.js',
+  'backend-node/src/routes/redraw.js',
+];
+const REDRAW_COVERAGE_HTTP_ROUTE_REQUIRED_TESTS = [
+  'backend-node/test/redrawRoutes.test.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+];
+const REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK = {
+  reason: '2026-08-27 一键转绘 coverage 版本级 HTTP 入口 Task C 获批',
+  approvedBy: 'product-owner 2026-08-27 redraw-product-media-registration-task-c',
+  impactTests: [
+    'backend-node/test/redrawRoutes.test.js',
+    'backend-node/test/redrawCoverageRegistration.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK = {
+  reason: '2026-08-28 coverage 版本级入口显式 provider 装配门禁 P2 修复获批',
+  approvedBy: 'product-owner 2026-08-28 redraw-coverage-http-provider-gate-task-c-p2',
+  impactTests: [
+    'backend-node/test/redrawRoutes.test.js',
+    'backend-node/test/redrawCoverageRegistration.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const REDRAW_CLEAN_PLATE_MEDIA_PROTECTED_PATHS = [
+  'backend-node/src/services/redrawAssetService.js',
+  'backend-node/src/services/redrawProviderAdapters.js',
+];
+const REDRAW_CLEAN_PLATE_MEDIA_REQUIRED_TESTS = [
+  'backend-node/test/redrawAssets.test.js',
+  'backend-node/test/redrawProviderAdapters.test.js',
+  'backend-node/test/redrawReferencePreparationOrchestration.test.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+];
+const REDRAW_CLEAN_PLATE_MEDIA_TASK_D_INITIAL_UNLOCK = {
+  reason: '2026-08-28 一键转绘 clean provider 本地媒体登记 Task D 获批',
+  approvedBy: 'product-owner 2026-08-28 redraw-product-media-registration-task-d',
+  impactTests: [
+    'backend-node/test/redrawAssets.test.js',
+    'backend-node/test/redrawReferencePreparationOrchestration.test.js',
+    'backend-node/test/redrawReferenceBundle.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const REDRAW_CLEAN_PLATE_MEDIA_TASK_D_P1_UNLOCK = {
+  reason: '2026-08-28 clean provider 本地媒体双字段污染 P1 修复获批',
+  approvedBy: 'product-owner 2026-08-28 redraw-clean-local-media-dual-field-p1-fix',
+  impactTests: [
+    'backend-node/test/redrawAssets.test.js',
+    'backend-node/test/redrawReferencePreparationOrchestration.test.js',
+    'backend-node/test/redrawReferenceBundle.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const REDRAW_CLEAN_PLATE_MEDIA_TASK_D_P2_UNLOCK = {
+  reason: '2026-08-28 clean provider 默认 adapter 与 legacy 双字段 P2 修复获批',
+  approvedBy: 'product-owner 2026-08-28 redraw-clean-adapter-legacy-fields-task-d-p2',
+  impactTests: [
+    'backend-node/test/redrawAssets.test.js',
+    'backend-node/test/redrawProviderAdapters.test.js',
+    'backend-node/test/redrawReferencePreparationOrchestration.test.js',
+    'backend-node/test/redrawReferenceBundle.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_PROTECTED_PATHS = [
+  'backend-node/src/routes/index.js',
+  'backend-node/src/routes/redraw.js',
+  'backend-node/src/services/redrawAssetService.js',
+  'backend-node/src/services/redrawCoverageRegistrationService.js',
+  'backend-node/src/services/redrawReferenceBundleService.js',
+  'backend-node/src/services/redrawReferencePreparationOrchestrator.js',
+];
+const REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_REQUIRED_TESTS = [
+  'backend-node/test/redrawProductMediaChain.test.js',
+  'backend-node/test/redrawRoutes.test.js',
+  'backend-node/test/redrawCoverageRegistration.test.js',
+  'backend-node/test/redrawAssets.test.js',
+  'backend-node/test/redrawReferencePreparationOrchestration.test.js',
+  'backend-node/test/redrawReferenceBundle.test.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+];
+const REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_TASK_E_UNLOCK = {
+  reason: '2026-08-28 一键转绘真实产品 HTTP 媒体同链回归 Task E 获批',
+  approvedBy: 'product-owner 2026-08-28 redraw-product-media-registration-task-e',
+  impactTests: REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_REQUIRED_TESTS,
+};
+const REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK = {
+  reason: '2026-08-27 一键转绘产品媒体登记 Task A 免费模型计费语义获批',
+  approvedBy: 'product-owner 2026-08-27 redraw-product-media-registration-task-a',
+  impactTests: [
+    'backend-node/test/modelPrice.test.js',
+    'backend-node/test/redrawAnalysis.test.js',
+    'backend-node/test/redrawLocalizationOrchestration.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const FREE_BILLING_REVIEW_FIX_UNLOCK = {
+  reason: '2026-08-27 5eee94d8 免费模型迁移原子性与分辨率阶梯修复获批',
+  approvedBy: 'product-owner 2026-08-27 free-billing-migration-tier-review-fix-5eee94d8',
+  impactTests: [
+    'backend-node/test/modelPrice.test.js',
+    'backend-node/test/redrawMigration.test.js',
+    'backend-node/test/redrawAnalysis.test.js',
+    'backend-node/test/redrawLocalizationOrchestration.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const MIGRATION67_IDEMPOTENT_REPLAY_UNLOCK = {
+  reason: '2026-08-27 迁移 67 幂等重放与免费模型合同兜底修复获批',
+  approvedBy: 'product-owner 2026-08-27 migration67-idempotent-replay-free-contract-fix',
+  impactTests: [
+    'backend-node/test/modelPrice.test.js',
+    'backend-node/test/redrawMigration.test.js',
+    'backend-node/test/redrawAnalysis.test.js',
+    'backend-node/test/redrawLocalizationOrchestration.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const MIGRATION67_SHARED_HELPER_UNLOCK = {
+  reason: '2026-08-27 67851c95 迁移 67 共享保列重建 helper 修复获批',
+  approvedBy: 'product-owner 2026-08-27 migration67-shared-column-preserving-helper-fix-67851c95',
+  impactTests: [
+    'backend-node/test/modelPrice.test.js',
+    'backend-node/test/redrawMigration.test.js',
+    'backend-node/test/redrawAnalysis.test.js',
+    'backend-node/test/redrawLocalizationOrchestration.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK_BY_FEATURE = {
+  [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: {
+    ...REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK,
+    impactTests: [
+      'backend-node/test/modelPrice.test.js',
+      'backend-node/test/redrawMigration.test.js',
+      'backend-node/test/redrawAnalysis.test.js',
+      'backend-node/test/redrawLocalizationOrchestration.test.js',
+      'backend-node/test/featureLockManifest.test.js',
+      'backend-node/test/incrementalReleaseScope.test.js',
+    ],
+  },
+  [PROACTIVE_CANARY_FEATURE_ID]: REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK,
+};
+const CURRENT_UNLOCK_BY_FEATURE = {
+  [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: MIGRATION67_SHARED_HELPER_UNLOCK,
+  [PROACTIVE_CANARY_FEATURE_ID]: MIGRATION67_SHARED_HELPER_UNLOCK,
+};
+const REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_FEATURE_IDS = new Set([
+  ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
+  PROACTIVE_CANARY_FEATURE_ID,
+]);
 const PR197_HELD_CREDIT_AUDIT_EVIDENCE =
   'docs/superpowers/plans/2026-08-27-held-credit-reconciliation-dry-run.md';
 const PR197_PROVIDER_CANARY_REMEDIATION_EVIDENCE =
@@ -444,6 +661,10 @@ const PRE_TOAPIS_CURRENT_UNLOCK_BY_FEATURE = {
   [PROACTIVE_CANARY_FEATURE_ID]: PR194_MAIN_SYNC_UNLOCK,
 };
 const PR194_MAIN_SYNC_FEATURE_IDS = new Set([
+  PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
+  PROACTIVE_CANARY_FEATURE_ID,
+]);
+const REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS = new Set([
   PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
   PROACTIVE_CANARY_FEATURE_ID,
 ]);
@@ -629,10 +850,12 @@ const PROACTIVE_CANARY_CORE_PATHS = [
   'backend-node/migrations/61_provider_canary_reconcile_claim.sql',
   'backend-node/migrations/62_provider_canary_admin_pagination.sql',
   'backend-node/migrations/63_provider_route_costs.sql',
+  'backend-node/migrations/67_model_credit_price_free.sql',
   'backend-node/scripts/plan-provider-canary-remediation.js',
   'backend-node/scripts/split-multi-model-provider-configs.js',
   'backend-node/scripts/verify-feature-lock-manifest.js',
   'backend-node/src/app.js',
+  'backend-node/src/db/migrate.js',
   'backend-node/src/middleware/resourceOwnership.js',
   'backend-node/src/routes/index.js',
   'backend-node/src/routes/providerStability.js',
@@ -654,6 +877,8 @@ const PROACTIVE_CANARY_CORE_PATHS = [
   'backend-node/src/services/providerRouteCostService.js',
   'backend-node/src/services/providerRouteStabilityService.js',
   'backend-node/src/services/providerRuntimeFingerprintService.js',
+  'backend-node/src/services/redrawLocalizationOrchestrator.js',
+  'backend-node/src/services/redrawOrchestrator.js',
   'backend-node/src/services/text-generation-billing-service.js',
   'backend-node/src/services/videoClient.js',
   'backend-node/src/services/videoService.js',
@@ -694,6 +919,8 @@ const PROACTIVE_CANARY_REQUIRED_TESTS = [
   'backend-node/test/providerRouteTextIntegration.test.js',
   'backend-node/test/providerRouteVideoIntegration.test.js',
   'backend-node/test/providerRuntimeFingerprint.test.js',
+  'backend-node/test/redrawAnalysis.test.js',
+  'backend-node/test/redrawLocalizationOrchestration.test.js',
   'backend-node/test/splitMultiModelProviderConfigs.test.js',
   'backend-node/test/text-generation-billing.test.js',
   'backend-node/test/videoBilling.test.js',
@@ -852,30 +1079,39 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   assert.deepEqual(feature.evidence.slice(0, PROACTIVE_CANARY_EVIDENCE.length), PROACTIVE_CANARY_EVIDENCE);
 });
 
-test('ToAPIs 未知提交恢复在主动巡检锁保留 PR #194 与更早批准历史', () => {
+test('产品媒体登记 Task C P2 使用新鲜批准并保留 ToAPIs 与前序历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
-  assert.deepEqual(feature.unlock, TOAPIS_SUBMISSION_RECOVERY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-1), PR194_MAIN_SYNC_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-2), PR197_PROVIDER_CANARY_REMEDIATION_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-3), PR195_STATIC_ASSET_COMPAT_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-4), PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-5), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-6), CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-7), PR184_MAIN_MERGE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-8), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-9), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-10), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
-  assert.equal(feature.evidence.at(-1), PR194_MAIN_SYNC_EVIDENCE);
-  assert.equal(feature.evidence.at(-2), PR197_PROVIDER_CANARY_REMEDIATION_EVIDENCE);
-  assert.equal(feature.evidence.at(-3), PR195_STATIC_ASSET_COMPAT_EVIDENCE);
-  assert.equal(feature.evidence.at(-4), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
-  assert.equal(feature.evidence.at(-5), CANVAS_TEXT_CAPABILITY_HOTFIX_EVIDENCE);
+  assert.deepEqual(feature.unlock, PR208_MAIN_SYNC_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-2), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-3), MIGRATION67_SHARED_HELPER_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-4), MIGRATION67_IDEMPOTENT_REPLAY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-5), FREE_BILLING_REVIEW_FIX_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-6), REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-7), TOAPIS_SUBMISSION_RECOVERY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-8), PR194_MAIN_SYNC_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-9), PR197_PROVIDER_CANARY_REMEDIATION_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-10), PR195_STATIC_ASSET_COMPAT_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-11), PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-12), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-13), CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-14), PR184_MAIN_MERGE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-15), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-16), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-17), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
+  assert.equal(feature.evidence.at(-1), REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN);
+  assert.equal(feature.evidence.at(-2), REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC);
+  assert.equal(feature.evidence.at(-3), PR194_MAIN_SYNC_EVIDENCE);
+  assert.equal(feature.evidence.at(-4), PR197_PROVIDER_CANARY_REMEDIATION_EVIDENCE);
+  assert.equal(feature.evidence.at(-5), PR195_STATIC_ASSET_COMPAT_EVIDENCE);
+  assert.equal(feature.evidence.at(-6), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
+  assert.equal(feature.evidence.at(-7), CANVAS_TEXT_CAPABILITY_HOTFIX_EVIDENCE);
   assert.deepEqual(
     feature.evidence.slice(
-      -(PROVIDER_READINESS_TTS_EVIDENCE.length + 5),
-      -5,
+      -(PROVIDER_READINESS_TTS_EVIDENCE.length + 7),
+      -7,
     ),
     PROVIDER_READINESS_TTS_EVIDENCE,
   );
@@ -884,26 +1120,86 @@ test('ToAPIs 未知提交恢复在主动巡检锁保留 PR #194 与更早批准�
   }
 });
 
-test('ToAPIs 未知提交恢复只更新四个锁的新鲜批准并保留上一批准和证据边界', () => {
+test('Coverage 产品登记服务 Task B 使用独立功能锁覆盖服务和迁移', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  const expectedPreviousUnlock = {
-    [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: PR194_MAIN_SYNC_UNLOCK,
-    [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK,
-    [UNKNOWN_STATE_RECONCILIATION_FEATURE_ID]: PR197_HELD_CREDIT_AUDIT_UNLOCK,
-    [PROACTIVE_CANARY_FEATURE_ID]: PR194_MAIN_SYNC_UNLOCK,
-  };
-  const expectedLastEvidence = {
-    [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: PR194_MAIN_SYNC_EVIDENCE,
-    [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE,
-    [UNKNOWN_STATE_RECONCILIATION_FEATURE_ID]: PR197_HELD_CREDIT_AUDIT_EVIDENCE,
-    [PROACTIVE_CANARY_FEATURE_ID]: PR194_MAIN_SYNC_EVIDENCE,
-  };
+  const feature = manifest.features.find(({ featureId }) => featureId === REDRAW_COVERAGE_REGISTRATION_FEATURE_ID);
+  assert.ok(feature, `缺少功能锁 ${REDRAW_COVERAGE_REGISTRATION_FEATURE_ID}`);
+  assert.deepEqual(feature.protectedPaths, REDRAW_COVERAGE_REGISTRATION_PROTECTED_PATHS);
+  assert.deepEqual(feature.requiredTests, REDRAW_COVERAGE_REGISTRATION_REQUIRED_TESTS);
+  assert.deepEqual(feature.evidence, [
+    REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC,
+    REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN,
+  ]);
+  assert.deepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
+  assert.notDeepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
+});
+
+test('Coverage 版本级 HTTP 入口 Task C 使用独立功能锁和新鲜批准', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const feature = manifest.features.find(({ featureId }) => featureId === REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID);
+  assert.ok(feature, `缺少功能锁 ${REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID}`);
+  assert.deepEqual(feature.protectedPaths, REDRAW_COVERAGE_HTTP_ROUTE_PROTECTED_PATHS);
+  assert.deepEqual(feature.requiredTests, REDRAW_COVERAGE_HTTP_ROUTE_REQUIRED_TESTS);
+  assert.deepEqual(feature.evidence, [
+    REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC,
+    REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN,
+  ]);
+  assert.deepEqual(feature.unlock, REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
+  assert.deepEqual(feature.unlockHistory, [REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK]);
+  assert.notDeepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
+  assert.notDeepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
+});
+
+test('Clean provider 本地媒体登记 Task D 使用独立功能锁和新鲜批准', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const feature = manifest.features.find(({ featureId }) => featureId === REDRAW_CLEAN_PLATE_MEDIA_FEATURE_ID);
+  assert.ok(feature, `缺少功能锁 ${REDRAW_CLEAN_PLATE_MEDIA_FEATURE_ID}`);
+  assert.deepEqual(feature.protectedPaths, REDRAW_CLEAN_PLATE_MEDIA_PROTECTED_PATHS);
+  assert.deepEqual(feature.requiredTests, REDRAW_CLEAN_PLATE_MEDIA_REQUIRED_TESTS);
+  assert.deepEqual(feature.evidence, [
+    REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC,
+    REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN,
+  ]);
+  assert.deepEqual(feature.unlock, REDRAW_CLEAN_PLATE_MEDIA_TASK_D_P2_UNLOCK);
+  assert.deepEqual(feature.unlockHistory, [
+    REDRAW_CLEAN_PLATE_MEDIA_TASK_D_INITIAL_UNLOCK,
+    REDRAW_CLEAN_PLATE_MEDIA_TASK_D_P1_UNLOCK,
+  ]);
+  assert.notDeepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
+  assert.notDeepEqual(feature.unlock, REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
+  assert.notDeepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
+});
+
+test('真实产品 HTTP 媒体同链 Task E 使用独立功能锁和新鲜批准', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const feature = manifest.features.find(({ featureId }) => featureId === REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID);
+  assert.ok(feature, `缺少功能锁 ${REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID}`);
+  assert.deepEqual(feature.protectedPaths, REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_PROTECTED_PATHS);
+  assert.deepEqual(feature.requiredTests, REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_REQUIRED_TESTS);
+  assert.deepEqual(feature.evidence, [
+    REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC,
+    REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN,
+  ]);
+  assert.deepEqual(feature.unlock, REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_TASK_E_UNLOCK);
+  assert.deepEqual(feature.unlockHistory, []);
+  assert.notDeepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
+  assert.notDeepEqual(feature.unlock, REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
+  assert.notDeepEqual(feature.unlock, REDRAW_CLEAN_PLATE_MEDIA_TASK_D_P2_UNLOCK);
+  assert.notDeepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
+});
+
+test('ToAPIs 未知提交恢复批准在后续转绘更新后仍保留于四个锁', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   for (const featureId of TOAPIS_SUBMISSION_RECOVERY_FEATURE_IDS) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
     assert.ok(feature, `缺少功能锁 ${featureId}`);
-    assert.deepEqual(feature.unlock, TOAPIS_SUBMISSION_RECOVERY_UNLOCK);
-    assert.deepEqual(feature.unlockHistory.at(-1), expectedPreviousUnlock[featureId]);
-    assert.equal(feature.evidence.at(-1), expectedLastEvidence[featureId]);
+    assert.ok(
+      [...feature.unlockHistory, feature.unlock].some((entry) => (
+        entry.reason === TOAPIS_SUBMISSION_RECOVERY_UNLOCK.reason
+          && entry.approvedBy === TOAPIS_SUBMISSION_RECOVERY_UNLOCK.approvedBy
+      )),
+      `${featureId} 缺少 ToAPIs 未知提交恢复批准`,
+    );
     assert.equal(
       feature.evidence.includes('docs/superpowers/plans/2026-08-27-toapis-submission-recovery.md'),
       false,
@@ -921,21 +1217,23 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     const previousUnlock = qualityFixTouched
       ? PROVIDER_TASK_STATUS_DECISION_UNLOCK
       : PROVIDER_TASK_RECEIPT_UNLOCK;
-    const expectedUnlock = featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
-      ? TOAPIS_BACKUP_DOMAIN_MIGRATION_UNLOCK
-      : TOAPIS_SUBMISSION_RECOVERY_FEATURE_IDS.has(featureId)
-      ? TOAPIS_SUBMISSION_RECOVERY_UNLOCK
-      : PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
-        ? PR194_MAIN_SYNC_UNLOCK
-        : PR197_TOUCHED_FEATURE_IDS.has(featureId)
-          ? PR197_UNLOCK_BY_FEATURE[featureId]
-          : PR195_TOUCHED_FEATURE_IDS.has(featureId)
-            ? PR195_STATIC_ASSET_COMPAT_UNLOCK
-            : PR193_TOUCHED_FEATURE_IDS.has(featureId)
-              ? PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK
-              : REDRAW_GENERAL_GENERATION_FEATURE_IDS.has(featureId)
-                ? REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK
-                : PR189_CONNECTION_ONLY_VERIFICATION_UNLOCK;
+    const expectedUnlock = PR208_MAIN_SYNC_FEATURE_IDS.has(featureId)
+      ? PR208_MAIN_SYNC_UNLOCK
+      : [SAFE_PROVIDER_FAILOVER_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].includes(featureId)
+        ? TOAPIS_SUBMISSION_RECOVERY_UNLOCK
+        : PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
+          ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)
+            ? CURRENT_UNLOCK_BY_FEATURE[featureId]
+            : PR194_MAIN_SYNC_UNLOCK
+          : PR197_TOUCHED_FEATURE_IDS.has(featureId)
+            ? PR197_UNLOCK_BY_FEATURE[featureId]
+            : PR195_TOUCHED_FEATURE_IDS.has(featureId)
+              ? PR195_STATIC_ASSET_COMPAT_UNLOCK
+              : PR193_TOUCHED_FEATURE_IDS.has(featureId)
+                ? PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK
+                : REDRAW_GENERAL_GENERATION_FEATURE_IDS.has(featureId)
+                  ? REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK
+                  : PR189_CONNECTION_ONLY_VERIFICATION_UNLOCK;
     assert.deepEqual(feature.unlock, expectedUnlock);
     assert.deepEqual(feature.unlockHistory, [
       HISTORICAL_UNLOCK_BY_FEATURE[featureId],
@@ -983,11 +1281,43 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
           ? PR197_PROVIDER_CANARY_REMEDIATION_UNLOCK
           : PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK]
         : []),
-      ...(TOAPIS_SUBMISSION_RECOVERY_FEATURE_IDS.has(featureId)
+      ...(featureId === PROVIDER_ROUTE_CONTRACT_FEATURE_ID
+        ? [
+          PR194_MAIN_SYNC_UNLOCK,
+          TOAPIS_SUBMISSION_RECOVERY_UNLOCK,
+          REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK_BY_FEATURE[PROVIDER_ROUTE_CONTRACT_FEATURE_ID],
+          MIGRATION67_IDEMPOTENT_REPLAY_UNLOCK,
+        ]
+        : []),
+      ...(featureId === PROACTIVE_CANARY_FEATURE_ID
+        ? [
+          PR194_MAIN_SYNC_UNLOCK,
+          TOAPIS_SUBMISSION_RECOVERY_UNLOCK,
+          REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK,
+          FREE_BILLING_REVIEW_FIX_UNLOCK,
+          MIGRATION67_IDEMPOTENT_REPLAY_UNLOCK,
+        ]
+        : []),
+      ...(REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_FEATURE_IDS.has(featureId)
+        ? [
+          featureId === PROACTIVE_CANARY_FEATURE_ID
+            ? MIGRATION67_SHARED_HELPER_UNLOCK
+            : REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK,
+          ...(featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
+            ? [TOAPIS_BACKUP_DOMAIN_MIGRATION_UNLOCK]
+            : []),
+          REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK,
+        ]
+        : []),
+      ...([SAFE_PROVIDER_FAILOVER_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].includes(featureId)
         ? [PRE_TOAPIS_CURRENT_UNLOCK_BY_FEATURE[featureId]]
         : []),
-      ...(featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
-        ? [REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK]
+      ...(PR208_MAIN_SYNC_FEATURE_IDS.has(featureId)
+        ? [featureId === PROVIDER_ROUTE_CONTRACT_FEATURE_ID
+          ? CURRENT_UNLOCK_BY_FEATURE[featureId]
+          : [SAFE_PROVIDER_FAILOVER_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].includes(featureId)
+            ? TOAPIS_SUBMISSION_RECOVERY_UNLOCK
+            : REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK]
         : []),
     ]);
     assert.deepEqual(
@@ -1007,21 +1337,29 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       assert.deepEqual(
         feature.evidence.slice(
           featureId === PROACTIVE_CANARY_FEATURE_ID
-            ? -(PROVIDER_READINESS_TTS_EVIDENCE.length + 5)
+            ? -(PROVIDER_READINESS_TTS_EVIDENCE.length + 7)
             : -PROVIDER_READINESS_TTS_EVIDENCE.length,
-          featureId === PROACTIVE_CANARY_FEATURE_ID ? -5 : undefined,
+          featureId === PROACTIVE_CANARY_FEATURE_ID ? -7 : undefined,
         ),
         PROVIDER_READINESS_TTS_EVIDENCE,
       );
       if (featureId === PROACTIVE_CANARY_FEATURE_ID) {
-        assert.equal(feature.evidence.at(-1), PR194_MAIN_SYNC_EVIDENCE);
-        assert.equal(feature.evidence.at(-2), PR197_PROVIDER_CANARY_REMEDIATION_EVIDENCE);
-        assert.equal(feature.evidence.at(-3), PR195_STATIC_ASSET_COMPAT_EVIDENCE);
-        assert.equal(feature.evidence.at(-4), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
-        assert.equal(feature.evidence.at(-5), CANVAS_TEXT_CAPABILITY_HOTFIX_EVIDENCE);
+        assert.equal(feature.evidence.at(-1), REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN);
+        assert.equal(feature.evidence.at(-2), REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC);
+        assert.equal(feature.evidence.at(-3), PR194_MAIN_SYNC_EVIDENCE);
+        assert.equal(feature.evidence.at(-4), PR197_PROVIDER_CANARY_REMEDIATION_EVIDENCE);
+        assert.equal(feature.evidence.at(-5), PR195_STATIC_ASSET_COMPAT_EVIDENCE);
+        assert.equal(feature.evidence.at(-6), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
+        assert.equal(feature.evidence.at(-7), CANVAS_TEXT_CAPABILITY_HOTFIX_EVIDENCE);
       }
     } else if (liveCompatTouched) {
-      if (PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)) {
+      if (REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)) {
+        assert.equal(feature.evidence.at(-1), REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN);
+        assert.equal(feature.evidence.at(-2), REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC);
+        assert.equal(feature.evidence.at(-3), PR194_MAIN_SYNC_EVIDENCE);
+        assert.equal(feature.evidence.at(-4), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
+        assert.equal(feature.evidence.at(-5), PROVIDER_TASK_LIVE_COMPAT_EVIDENCE);
+      } else if (PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)) {
         assert.equal(feature.evidence.at(-1), PR194_MAIN_SYNC_EVIDENCE);
         assert.equal(feature.evidence.at(-2), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
         assert.equal(feature.evidence.at(-3), PROVIDER_TASK_LIVE_COMPAT_EVIDENCE);
@@ -1052,25 +1390,36 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
   assert.deepEqual(appLocks, [PROACTIVE_CANARY_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].sort());
   for (const featureId of appLocks) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
-    assert.deepEqual(feature.unlock, TOAPIS_SUBMISSION_RECOVERY_UNLOCK);
+    assert.deepEqual(feature.unlock, PR208_MAIN_SYNC_UNLOCK);
   }
 });
 
-test('ToAPIs 官方备用域名迁移只刷新管理员预设锁并保留上一阶段批准', () => {
+test('ToAPIs 官方备用域名迁移批准在后续 coverage 更新后仍保留于管理员预设锁', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(
     ({ featureId }) => featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
   );
   assert.ok(feature, `缺少功能锁 ${ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID}`);
-  assert.deepEqual(feature.unlock, TOAPIS_BACKUP_DOMAIN_MIGRATION_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-1), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
+  assert.deepEqual(feature.unlock, PR208_MAIN_SYNC_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-2), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-3), TOAPIS_BACKUP_DOMAIN_MIGRATION_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-4), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
 });
 
 test('未触及锁保留当前批准记录且所有锁保留历史证据', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   assert.equal(manifest.features.length >= 5, true);
   for (const feature of manifest.features) {
-    if (!Object.hasOwn(PROVIDER_TASK_LOCK_REQUIREMENTS, feature.featureId)) {
+    if (feature.featureId === REDRAW_COVERAGE_REGISTRATION_FEATURE_ID) {
+      assert.deepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
+    } else if (feature.featureId === REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID) {
+      assert.deepEqual(feature.unlock, REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
+    } else if (feature.featureId === REDRAW_CLEAN_PLATE_MEDIA_FEATURE_ID) {
+      assert.deepEqual(feature.unlock, REDRAW_CLEAN_PLATE_MEDIA_TASK_D_P2_UNLOCK);
+    } else if (feature.featureId === REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID) {
+      assert.deepEqual(feature.unlock, REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_TASK_E_UNLOCK);
+    } else if (!Object.hasOwn(PROVIDER_TASK_LOCK_REQUIREMENTS, feature.featureId)) {
       assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
     }
     assert.equal(feature.evidence.length > 0, true);
@@ -1096,35 +1445,32 @@ test('ToAPIs 未知提交恢复保留既有能力锁并仅刷新实际触及的�
   ]) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
     assert.ok(feature, `缺少功能锁 ${featureId}`);
-    const expectedUnlock = TOAPIS_SUBMISSION_RECOVERY_FEATURE_IDS.has(featureId)
-      ? TOAPIS_SUBMISSION_RECOVERY_UNLOCK
-      : PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
-        ? PR194_MAIN_SYNC_UNLOCK
-        : PR197_TOUCHED_FEATURE_IDS.has(featureId)
-          ? PR197_UNLOCK_BY_FEATURE[featureId]
-          : PR195_TOUCHED_FEATURE_IDS.has(featureId)
-            ? PR195_STATIC_ASSET_COMPAT_UNLOCK
-            : PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK;
-    const expectedPreviousUnlock = TOAPIS_SUBMISSION_RECOVERY_FEATURE_IDS.has(featureId)
-      ? PRE_TOAPIS_CURRENT_UNLOCK_BY_FEATURE[featureId]
-      : PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
-        ? featureId === PROACTIVE_CANARY_FEATURE_ID
-          ? PR197_PROVIDER_CANARY_REMEDIATION_UNLOCK
-          : PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK
-        : PR197_TOUCHED_FEATURE_IDS.has(featureId)
-          ? PR195_STATIC_ASSET_COMPAT_UNLOCK
-          : PR195_TOUCHED_FEATURE_IDS.has(featureId)
-            ? PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK
-            : PRE_PR193_CURRENT_UNLOCK_BY_FEATURE[featureId];
+    const expectedUnlock = PR208_MAIN_SYNC_FEATURE_IDS.has(featureId)
+      ? PR208_MAIN_SYNC_UNLOCK
+        : TOAPIS_SUBMISSION_RECOVERY_UNLOCK;
+    const expectedPreviousUnlock = featureId === PROVIDER_ROUTE_CONTRACT_FEATURE_ID
+      ? CURRENT_UNLOCK_BY_FEATURE[featureId]
+      : featureId === PROACTIVE_CANARY_FEATURE_ID
+        ? REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK
+        : TOAPIS_SUBMISSION_RECOVERY_UNLOCK;
     assert.deepEqual(feature.unlock, expectedUnlock);
     assert.deepEqual(feature.unlockHistory.at(-1), expectedPreviousUnlock);
+    assert.ok(
+      [...feature.unlockHistory, feature.unlock].some((entry) => (
+        entry.reason === TOAPIS_SUBMISSION_RECOVERY_UNLOCK.reason
+          && entry.approvedBy === TOAPIS_SUBMISSION_RECOVERY_UNLOCK.approvedBy
+      )),
+      `${featureId} 缺少 ToAPIs 未知提交恢复批准`,
+    );
     assert.ok(feature.unlockHistory.some((entry) => (
       entry.reason === PROVIDER_TASK_STATUS_DECISION_UNLOCK.reason
         || entry.reason === PROVIDER_TASK_RECEIPT_UNLOCK.reason
     )), `${featureId} 缺少上一阶段批准历史`);
     assert.ok(feature.requiredTests.includes('backend-node/test/providerTaskLiveCompatibility.test.js'));
     const expectedEvidence = PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)
-      ? PR194_MAIN_SYNC_EVIDENCE
+      ? REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)
+        ? REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN
+        : PR194_MAIN_SYNC_EVIDENCE
       : PR197_TOUCHED_FEATURE_IDS.has(featureId)
         ? PR197_EVIDENCE_BY_FEATURE[featureId]
         : PR195_TOUCHED_FEATURE_IDS.has(featureId)
@@ -1132,10 +1478,16 @@ test('ToAPIs 未知提交恢复保留既有能力锁并仅刷新实际触及的�
           : PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE;
     assert.equal(feature.evidence.at(-1), expectedEvidence);
     if (PR194_MAIN_SYNC_FEATURE_IDS.has(featureId)) {
-      if (featureId === PROACTIVE_CANARY_FEATURE_ID) {
-        assert.equal(feature.evidence.at(-2), PR197_PROVIDER_CANARY_REMEDIATION_EVIDENCE);
-        assert.equal(feature.evidence.at(-3), PR195_STATIC_ASSET_COMPAT_EVIDENCE);
-        assert.equal(feature.evidence.at(-4), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
+      if (REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)) {
+        assert.equal(feature.evidence.at(-2), REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC);
+        assert.equal(feature.evidence.at(-3), PR194_MAIN_SYNC_EVIDENCE);
+        if (featureId === PROACTIVE_CANARY_FEATURE_ID) {
+          assert.equal(feature.evidence.at(-4), PR197_PROVIDER_CANARY_REMEDIATION_EVIDENCE);
+          assert.equal(feature.evidence.at(-5), PR195_STATIC_ASSET_COMPAT_EVIDENCE);
+          assert.equal(feature.evidence.at(-6), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
+        } else {
+          assert.equal(feature.evidence.at(-4), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
+        }
       } else {
         assert.equal(feature.evidence.at(-2), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
       }

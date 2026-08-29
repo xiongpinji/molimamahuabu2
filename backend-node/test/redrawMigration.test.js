@@ -1971,3 +1971,156 @@ test('含扩展列但无数据的弱候选审核表可安全重建并丢弃空�
   assert.deepEqual(db.prepare('PRAGMA foreign_key_check(redraw_candidate_reviews)').all(), []);
   db.close();
 });
+
+test('补充对白审批迁移建立 owner 范围、状态约束和登记证据列且可重复执行', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  runMigrationsAndEnsure(db);
+
+  const table = db.prepare(`
+    SELECT sql FROM sqlite_master
+    WHERE type = 'table' AND name = 'redraw_supplemental_dialogue_approvals'
+  `).get();
+  assert.ok(table?.sql);
+  assert.deepEqual(columnNames(db, 'redraw_supplemental_dialogue_approvals'), [
+    'id',
+    'contract_version',
+    'tenant_id',
+    'user_id',
+    'work_id',
+    'version_id',
+    'redraw_shot_id',
+    'shot_id',
+    'voice_redraw_asset_id',
+    'source_character_key',
+    'target_locale',
+    'target_market',
+    'target_text',
+    'target_text_sha256',
+    'source_translation',
+    'localization_task_id',
+    'localization_decision_sha256',
+    'facts_hash',
+    'policy_version',
+    'dialogue_context_sha256',
+    'approval_evidence_sha256',
+    'idempotency_hash',
+    'request_hash',
+    'approval_source',
+    'approval_decision',
+    'status',
+    'approved_by',
+    'approved_at',
+    'revocation_idempotency_hash',
+    'revocation_request_hash',
+    'revoked_by',
+    'revoked_at',
+    'created_at',
+    'updated_at',
+    'deleted_at',
+    'approved_voice_updated_at',
+  ]);
+  assert.match(table.sql, /source_translation\s+INTEGER\s+NOT NULL\s+CHECK\s*\(source_translation\s*=\s*0\)/i);
+  assert.match(table.sql, /status\s+TEXT\s+NOT NULL\s+CHECK\s*\(status\s+IN\s*\('active',\s*'revoked'\)\)/i);
+  assert.deepEqual(
+    db.prepare('PRAGMA foreign_key_list(redraw_supplemental_dialogue_approvals)').all()
+      .map((row) => [row.from, row.table, row.to])
+      .sort((left, right) => left[0].localeCompare(right[0])),
+    [
+      ['redraw_shot_id', 'redraw_shots', 'id'],
+      ['version_id', 'redraw_versions', 'id'],
+      ['voice_redraw_asset_id', 'redraw_assets', 'id'],
+      ['work_id', 'redraw_works', 'id'],
+    ],
+  );
+  for (const indexName of [
+    'uq_redraw_supplemental_dialogue_idempotency',
+    'uq_redraw_supplemental_dialogue_active_scope',
+  ]) {
+    assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(indexName));
+  }
+  const registrationColumns = new Map(
+    db.prepare('PRAGMA table_info(redraw_local_voice_registrations)').all()
+      .map((column) => [column.name, column]),
+  );
+  assert.equal(registrationColumns.get('approved_dialogue_evidence_sha256')?.notnull, 0);
+  assert.equal(registrationColumns.get('supplemental_approval_ids_json')?.notnull, 1);
+  assert.equal(registrationColumns.get('supplemental_approval_ids_json')?.dflt_value, "'[]'");
+
+  const projectId = insertProject(db, 'tenant-supplement', 'user-supplement');
+  const workId = insertWork(db, projectId, {
+    tenant_id: 'tenant-supplement',
+    user_id: 'user-supplement',
+    source_fingerprint: 'supplement-migration-source',
+    current_version: 1,
+  });
+  const versionId = insertVersion(db, workId, 1, {
+    tenant_id: 'tenant-supplement',
+    user_id: 'user-supplement',
+    status: 'asset_review',
+  });
+  const shotRowId = Number(db.prepare(`
+    INSERT INTO redraw_shots
+      (work_id, shot_id, version_id, tenant_id, user_id, batch_index, shot_index,
+       start_ms, end_ms, duration_ms, status, created_at, updated_at)
+    VALUES (?, 'shot-6', ?, 'tenant-supplement', 'user-supplement', 1, 6,
+            0, 4000, 4000, 'draft', ?, ?)
+  `).run(workId, versionId, NOW, NOW).lastInsertRowid);
+  const voiceAssetId = Number(db.prepare(`
+    INSERT INTO redraw_assets
+      (version_id, tenant_id, user_id, kind, source_ref_json, version_number,
+       approval_status, status, created_at, updated_at)
+    VALUES (?, 'tenant-supplement', 'user-supplement', 'voice', '{}', 1,
+            'pending', 'draft', ?, ?)
+  `).run(versionId, NOW, NOW).lastInsertRowid);
+  const insertApproval = db.prepare(`
+    INSERT INTO redraw_supplemental_dialogue_approvals
+      (contract_version, tenant_id, user_id, work_id, version_id, redraw_shot_id,
+       shot_id, voice_redraw_asset_id, source_character_key, target_locale, target_market,
+       target_text, target_text_sha256, source_translation, localization_task_id,
+       localization_decision_sha256, facts_hash, policy_version, dialogue_context_sha256,
+       approval_evidence_sha256, idempotency_hash, request_hash, approval_source,
+       approval_decision, status, approved_by, approved_at, created_at, updated_at)
+    VALUES
+      ('redraw-supplemental-dialogue-approval-v1', 'tenant-supplement', 'user-supplement',
+       ?, ?, ?, 'shot-6', ?, 'rafael', 'en-US', 'US', 'Welcome home, son.',
+       ?, ?, 'localization-task', ?, ?, 1, ?, ?, ?, ?, 'owner_http', 'approved',
+       ?, 'user-supplement', ?, ?, ?)
+  `);
+  const base = [
+    workId, versionId, shotRowId, voiceAssetId,
+    'a'.repeat(64), 0, 'b'.repeat(64), 'c'.repeat(64),
+    'd'.repeat(64), 'e'.repeat(64), 'f'.repeat(64), '1'.repeat(64),
+  ];
+  assert.throws(() => insertApproval.run(...base.slice(0, 5), 1, ...base.slice(6), 'active', NOW, NOW, NOW), /CHECK constraint/i);
+  assert.throws(() => insertApproval.run(...base, 'pending', NOW, NOW, NOW), /CHECK constraint/i);
+
+  const valid = [...base];
+  valid[10] = '2'.repeat(64);
+  insertApproval.run(...valid, 'active', NOW, NOW, NOW);
+  const duplicate = [...base];
+  duplicate[10] = '3'.repeat(64);
+  duplicate[11] = '4'.repeat(64);
+  assert.throws(() => insertApproval.run(...duplicate, 'active', NOW, NOW, NOW), /UNIQUE constraint/i);
+
+  db.prepare(`
+    INSERT INTO redraw_local_voice_registrations
+      (tenant_id, user_id, version_id, voice_redraw_asset_id, source_character_key,
+       idempotency_hash, request_hash, target_locale, target_market, approved_text_sha256,
+       profile_key, engine_manifest_sha256, status, created_at, updated_at)
+    VALUES ('tenant-supplement', 'user-supplement', ?, ?, 'rafael', ?, ?, 'en-US', 'US',
+            ?, 'voice-rafael', ?, 'completed', ?, ?)
+  `).run(versionId, voiceAssetId, '5'.repeat(64), '6'.repeat(64), '7'.repeat(64), '8'.repeat(64), NOW, NOW);
+  const before = db.prepare(`
+    SELECT approved_dialogue_evidence_sha256, supplemental_approval_ids_json, updated_at
+    FROM redraw_local_voice_registrations
+    WHERE tenant_id = 'tenant-supplement'
+  `).get();
+  runMigrationsAndEnsure(db);
+  assert.deepEqual(db.prepare(`
+    SELECT approved_dialogue_evidence_sha256, supplemental_approval_ids_json, updated_at
+    FROM redraw_local_voice_registrations
+    WHERE tenant_id = 'tenant-supplement'
+  `).get(), before);
+  db.close();
+});

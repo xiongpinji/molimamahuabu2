@@ -31,10 +31,15 @@ const redrawPreparationGateService = require('../services/redrawPreparationGateS
 const redrawReferencePreparationOrchestrator = require('../services/redrawReferencePreparationOrchestrator');
 const redrawCandidateReviewService = require('../services/redrawCandidateReviewService');
 const redrawEpisodeReleaseService = require('../services/redrawEpisodeReleaseService');
+const redrawReferenceArtifactImportService = require('../services/redrawReferenceArtifactImportService');
+const redrawCoverageRegistrationService = require('../services/redrawCoverageRegistrationService');
+const redrawLocalVoiceRegistrationService = require('../services/redrawLocalVoiceRegistrationService');
+const redrawSupplementalDialogueApprovalService = require('../services/redrawSupplementalDialogueApprovalService');
 const { normalizeVideoProviderResult } = require('../services/redrawProviderAdapters');
 const modelPriceService = require('../services/modelPriceService');
 const assetService = require('../services/assetService');
 const uploadServiceModule = require('../services/uploadService');
+const providerAssetUrlService = require('../services/providerAssetUrlService');
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -53,6 +58,84 @@ const referenceUpload = multer({
   fileFilter: (_req, file, cb) => {
     cb(null, /^image\/(png|jpe?g|webp)$/i.test(String(file.mimetype || '')));
   },
+});
+
+const referenceArtifactUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024, files: 1, fields: 2, parts: 4 },
+});
+
+const CHARACTER_REFERENCE_ARTIFACT_FIELDS = new Set(['purpose', 'expected_updated_at']);
+const MOTION_REFERENCE_ARTIFACT_FIELDS = new Set([
+  'expected_updated_at',
+  'full_frame_reviewed',
+  'source_identity_obscured',
+  'source_text_obscured',
+  'motion_preserved',
+]);
+const REFERENCE_ARTIFACT_ERROR_MESSAGES = Object.freeze({
+  REDRAW_REFERENCE_ARTIFACT_INPUT_INVALID: '参考素材导入参数无效',
+  REDRAW_REFERENCE_ARTIFACT_NOT_FOUND: '参考素材导入资源不存在',
+  REDRAW_REFERENCE_ARTIFACT_CONFLICT: '参考素材已变化，请刷新后重试',
+  REDRAW_REFERENCE_ARTIFACT_IDEMPOTENCY_CONFLICT: '参考素材幂等请求冲突',
+  REDRAW_REFERENCE_ARTIFACT_FORBIDDEN_FIELD: '参考素材导入包含禁止字段',
+  REDRAW_REFERENCE_ARTIFACT_MEDIA_INVALID: '参考素材媒体无效',
+  REDRAW_REFERENCE_ARTIFACT_TOO_LARGE: '参考素材超过大小限制',
+  REDRAW_REFERENCE_ARTIFACT_STORAGE_FAILED: '参考素材存储失败',
+  REDRAW_MOTION_REFERENCE_REVIEW_REQUIRED: '动作参考需要完成全部人工复核',
+  REDRAW_MOTION_REFERENCE_BINDING_NOT_READY: '动作参考绑定前置条件未就绪',
+  REDRAW_MOTION_REFERENCE_STALE: '动作参考绑定已过期',
+});
+const COVERAGE_REGISTRATION_FIELDS = new Set([
+  'expected_version_updated_at',
+  'idempotency_key',
+]);
+const COVERAGE_REGISTRATION_ERROR_MESSAGES = Object.freeze({
+  REDRAW_COVERAGE_CLIENT_CONTROL_FORBIDDEN: '全帧 coverage 登记包含禁止字段',
+  REDRAW_COVERAGE_REQUEST_INVALID: '全帧 coverage 登记参数无效',
+  REDRAW_VERSION_NOT_FOUND: '本地化版本不存在',
+  REDRAW_COVERAGE_VERSION_CONFLICT: '本地化版本已变化，请刷新后重试',
+  REDRAW_COVERAGE_REGISTRATION_IDEMPOTENCY_CONFLICT: '全帧 coverage 幂等请求冲突',
+  REDRAW_COVERAGE_REGISTRATION_IN_PROGRESS: '全帧 coverage 登记正在处理',
+  REDRAW_COVERAGE_REGISTRATION_NEEDS_ATTENTION: '全帧 coverage 登记需要人工处理',
+  REDRAW_COVERAGE_REGISTRATION_FAILED: '全帧 coverage 登记已失败，不得自动重试',
+  REDRAW_COVERAGE_PROVIDER_UNKNOWN: '全帧 coverage 供应商结果未知',
+  REDRAW_COVERAGE_VERSION_MISMATCH: '全帧 coverage 与当前版本不匹配',
+  REDRAW_COVERAGE_EVIDENCE_INVALID: '全帧 coverage 证据无效',
+  REDRAW_COVERAGE_PROVIDER_OUTPUT_INVALID: '全帧 coverage 供应商结果无效',
+  REDRAW_COVERAGE_PROVIDER_REQUIRED: '全帧 coverage 能力尚未配置',
+});
+const LOCAL_VOICE_REGISTRATION_FIELDS = new Set(['idempotency_key', 'expected_updated_at']);
+const LOCAL_VOICE_REGISTRATION_ERROR_MESSAGES = Object.freeze({
+  REDRAW_LOCAL_TTS_NOT_READY: '本地语音登记能力未就绪',
+  REDRAW_LOCAL_TTS_OWNER_MISMATCH: '本地语音登记资源不存在',
+  REDRAW_LOCAL_TTS_APPROVED_TEXT_INSUFFICIENT: '已批准目标语言对白不足',
+  REDRAW_LOCAL_TTS_IDEMPOTENCY_CONFLICT: '本地语音登记幂等请求冲突',
+  REDRAW_LOCAL_TTS_OUTPUT_INVALID: '本地语音产物无效',
+  REDRAW_LOCAL_TTS_VERIFICATION_FAILED: '本地语音语言核验失败',
+  REDRAW_LOCAL_TTS_RESULT_UNKNOWN: '本地语音登记结果未知，需要人工处理',
+  REDRAW_LOCAL_TTS_CAS_CONFLICT: '语音槽位已变更，请刷新后重试',
+  REDRAW_LOCAL_TTS_REQUEST_INVALID: '本地语音登记参数无效',
+  REDRAW_LOCAL_TTS_CLIENT_CONTROL_FORBIDDEN: '本地语音登记包含禁止字段',
+});
+const SUPPLEMENTAL_DIALOGUE_CREATE_FIELDS = new Set([
+  'idempotency_key',
+  'target_text',
+  'source_translation',
+  'expected_shot_updated_at',
+  'expected_voice_updated_at',
+]);
+const SUPPLEMENTAL_DIALOGUE_REVOKE_FIELDS = new Set([
+  'idempotency_key',
+  'expected_updated_at',
+]);
+const SUPPLEMENTAL_DIALOGUE_ERROR_MESSAGES = Object.freeze({
+  REDRAW_SUPPLEMENTAL_DIALOGUE_INPUT_INVALID: '补充对白审批参数无效',
+  REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_FOUND: '补充对白审批不存在',
+  REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_READY: '补充对白审批前置条件未就绪',
+  REDRAW_SUPPLEMENTAL_DIALOGUE_CAS_CONFLICT: '补充对白审批资源已变更，请刷新后重试',
+  REDRAW_SUPPLEMENTAL_DIALOGUE_IDEMPOTENCY_CONFLICT: '补充对白审批幂等请求冲突',
+  REDRAW_SUPPLEMENTAL_DIALOGUE_ACTIVE_CONFLICT: '当前镜头和角色已有活动补充对白审批',
 });
 
 const ALLOWED_ASPECT_RATIOS = new Set(['1:1', '9:16', '16:9', '3:4', '4:3', '21:9']);
@@ -98,6 +181,42 @@ function createCanReadArtifact(db, cfg) {
   return (assetId) => {
     const row = db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(assetId);
     return reader.canRead(row);
+  };
+}
+
+function storageBaseUrlFromConfig(cfg = {}) {
+  return String(cfg?.storage?.base_url || '').trim().replace(/\/+$/, '');
+}
+
+function createProductionReferenceUrlFactory(db, cfg, canReadArtifact, options = {}) {
+  const storageBaseUrl = storageBaseUrlFromConfig(cfg);
+  const staticAssetSigningSecret = options.staticAssetSigningSecret ?? process.env.PLATFORM_JWT_SECRET;
+  return ({ asset_id: assetId }) => {
+    const id = Number(assetId);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      throw Object.assign(new Error('参考资产无效'), { code: 'REDRAW_REFERENCE_ASSET_INVALID' });
+    }
+    const asset = db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(id);
+    if (!asset || canReadArtifact(id) !== true) {
+      throw Object.assign(new Error('参考资产不可读取'), { code: 'REDRAW_REFERENCE_ASSET_UNREADABLE' });
+    }
+    let staticUrl;
+    try {
+      staticUrl = providerAssetUrlService.safeStaticAssetUrl(asset);
+    } catch (_) {
+      throw Object.assign(new Error('参考资产缺少可公开读取的 static URL'), { code: 'REDRAW_REFERENCE_ASSET_URL_UNAVAILABLE' });
+    }
+    if (!storageBaseUrl) {
+      throw Object.assign(new Error('参考资产缺少可公开读取的 static URL'), { code: 'REDRAW_REFERENCE_ASSET_URL_UNAVAILABLE' });
+    }
+    try {
+      return providerAssetUrlService.signStrictStaticAssetUrl(staticUrl, {
+        filesBaseUrl: storageBaseUrl,
+        secret: staticAssetSigningSecret,
+      });
+    } catch (_) {
+      throw Object.assign(new Error('参考资产缺少可公开读取的 static URL'), { code: 'REDRAW_REFERENCE_ASSET_URL_UNAVAILABLE' });
+    }
   };
 }
 
@@ -401,6 +520,348 @@ function codedRouteError(code, message, details) {
   error.code = code;
   if (details !== undefined) error.details = details;
   return error;
+}
+
+function assertReferenceArtifactFields(body, allowed) {
+  const input = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+  if (Object.keys(input).some((key) => !allowed.has(key))) {
+    throw codedRouteError(
+      'REDRAW_REFERENCE_ARTIFACT_FORBIDDEN_FIELD',
+      REFERENCE_ARTIFACT_ERROR_MESSAGES.REDRAW_REFERENCE_ARTIFACT_FORBIDDEN_FIELD,
+    );
+  }
+  return input;
+}
+
+function strictMultipartBoolean(value) {
+  if (value === true || value === false) return value;
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  throw codedRouteError(
+    'REDRAW_REFERENCE_ARTIFACT_INPUT_INVALID',
+    REFERENCE_ARTIFACT_ERROR_MESSAGES.REDRAW_REFERENCE_ARTIFACT_INPUT_INVALID,
+  );
+}
+
+function publicReferenceArtifactResult(value) {
+  const result = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const asset = result.asset && typeof result.asset === 'object' ? result.asset : {};
+  const output = {
+    purpose: result.purpose,
+    asset: Object.fromEntries([
+      'id', 'type', 'mime_type', 'sha256', 'width', 'height', 'file_size', 'duration_ms',
+    ].filter((key) => Object.prototype.hasOwnProperty.call(asset, key)).map((key) => [key, asset[key]])),
+    billing: { credits: 0, held: 0, charged: 0 },
+  };
+  if (result.redraw_asset && typeof result.redraw_asset === 'object') {
+    output.redraw_asset = Object.fromEntries([
+      'id', 'asset_id', 'status', 'approval_status', 'approved_by', 'approved_at',
+      'error_code', 'updated_at',
+    ].filter((key) => Object.prototype.hasOwnProperty.call(result.redraw_asset, key))
+      .map((key) => [key, result.redraw_asset[key]]));
+  }
+  return output;
+}
+
+function sendReferenceArtifactError(res, error, log, context = {}) {
+  const code = String(error?.code || '');
+  const message = REFERENCE_ARTIFACT_ERROR_MESSAGES[code];
+  if (!message) {
+    log?.error?.({ code: 'INTERNAL_ERROR', ...context }, '参考素材导入失败');
+    return response.error(res, 500, 'INTERNAL_ERROR', '参考素材导入失败');
+  }
+  if (code === 'REDRAW_REFERENCE_ARTIFACT_NOT_FOUND') return response.error(res, 404, code, message);
+  if (['REDRAW_REFERENCE_ARTIFACT_CONFLICT', 'REDRAW_REFERENCE_ARTIFACT_IDEMPOTENCY_CONFLICT',
+    'REDRAW_MOTION_REFERENCE_BINDING_NOT_READY', 'REDRAW_MOTION_REFERENCE_STALE'].includes(code)) {
+    return response.error(res, 409, code, message);
+  }
+  if (code === 'REDRAW_REFERENCE_ARTIFACT_TOO_LARGE') return response.error(res, 413, code, message);
+  if (code === 'REDRAW_REFERENCE_ARTIFACT_STORAGE_FAILED') {
+    log?.error?.({ code, ...context }, '参考素材存储失败');
+    return response.error(res, 500, code, message);
+  }
+  return response.error(res, 400, code, message);
+}
+
+function coverageRegistrationInput(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw codedRouteError(
+      'REDRAW_COVERAGE_REQUEST_INVALID',
+      COVERAGE_REGISTRATION_ERROR_MESSAGES.REDRAW_COVERAGE_REQUEST_INVALID,
+    );
+  }
+  if (Object.keys(body).some((key) => !COVERAGE_REGISTRATION_FIELDS.has(key))) {
+    throw codedRouteError(
+      'REDRAW_COVERAGE_CLIENT_CONTROL_FORBIDDEN',
+      COVERAGE_REGISTRATION_ERROR_MESSAGES.REDRAW_COVERAGE_CLIENT_CONTROL_FORBIDDEN,
+    );
+  }
+  if (typeof body.expected_version_updated_at !== 'string'
+    || !body.expected_version_updated_at.trim()
+    || typeof body.idempotency_key !== 'string'
+    || !body.idempotency_key.trim()) {
+    throw codedRouteError(
+      'REDRAW_COVERAGE_REQUEST_INVALID',
+      COVERAGE_REGISTRATION_ERROR_MESSAGES.REDRAW_COVERAGE_REQUEST_INVALID,
+    );
+  }
+  return {
+    expected_version_updated_at: body.expected_version_updated_at.trim(),
+    idempotency_key: body.idempotency_key.trim(),
+  };
+}
+
+function publicCoverageRegistrationResult(value, versionId) {
+  const redrawAssetId = numericId(value?.redraw_asset_id);
+  const expectedUpdatedAt = typeof value?.expected_updated_at === 'string'
+    ? value.expected_updated_at.trim()
+    : '';
+  if (!redrawAssetId || !expectedUpdatedAt) {
+    throw codedRouteError('REDRAW_COVERAGE_RESPONSE_INVALID');
+  }
+  return {
+    version_id: Number(versionId),
+    redraw_asset_id: redrawAssetId,
+    expected_updated_at: expectedUpdatedAt,
+    billing: { credits: 0, held: 0, charged: 0 },
+  };
+}
+
+function sendCoverageRegistrationError(res, error, log, context = {}) {
+  const code = String(error?.code || '');
+  const message = COVERAGE_REGISTRATION_ERROR_MESSAGES[code];
+  if (code === 'REDRAW_VERSION_NOT_FOUND') {
+    return response.error(res, 404, code, message);
+  }
+  if ([
+    'REDRAW_COVERAGE_VERSION_CONFLICT',
+    'REDRAW_COVERAGE_REGISTRATION_IDEMPOTENCY_CONFLICT',
+    'REDRAW_COVERAGE_REGISTRATION_IN_PROGRESS',
+    'REDRAW_COVERAGE_REGISTRATION_NEEDS_ATTENTION',
+    'REDRAW_COVERAGE_REGISTRATION_FAILED',
+  ].includes(code)) {
+    return response.error(res, 409, code, message);
+  }
+  if ([
+    'REDRAW_COVERAGE_PROVIDER_UNKNOWN',
+    'REDRAW_COVERAGE_VERSION_MISMATCH',
+    'REDRAW_COVERAGE_EVIDENCE_INVALID',
+    'REDRAW_COVERAGE_PROVIDER_OUTPUT_INVALID',
+  ].includes(code)) {
+    return response.error(res, 502, code, message);
+  }
+  if (code === 'REDRAW_COVERAGE_PROVIDER_REQUIRED') {
+    return response.error(res, 503, code, message);
+  }
+  if (['REDRAW_COVERAGE_REQUEST_INVALID', 'REDRAW_COVERAGE_CLIENT_CONTROL_FORBIDDEN'].includes(code)) {
+    return response.error(res, 400, code, message);
+  }
+  log?.error?.({ code: code || 'INTERNAL_ERROR', ...context }, '全帧 coverage 登记失败');
+  return response.error(res, 500, 'INTERNAL_ERROR', '全帧 coverage 登记失败');
+}
+
+function localVoiceRegistrationInput(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)
+    || (Object.getPrototypeOf(body) !== Object.prototype && Object.getPrototypeOf(body) !== null)) {
+    throw codedRouteError(
+      'REDRAW_LOCAL_TTS_REQUEST_INVALID',
+      LOCAL_VOICE_REGISTRATION_ERROR_MESSAGES.REDRAW_LOCAL_TTS_REQUEST_INVALID,
+    );
+  }
+  const keys = Object.keys(body);
+  if (keys.some((key) => !LOCAL_VOICE_REGISTRATION_FIELDS.has(key))) {
+    throw codedRouteError(
+      'REDRAW_LOCAL_TTS_CLIENT_CONTROL_FORBIDDEN',
+      LOCAL_VOICE_REGISTRATION_ERROR_MESSAGES.REDRAW_LOCAL_TTS_CLIENT_CONTROL_FORBIDDEN,
+    );
+  }
+  const idempotencyKey = typeof body.idempotency_key === 'string'
+    ? body.idempotency_key.trim() : '';
+  const expectedUpdatedAt = typeof body.expected_updated_at === 'string'
+    ? body.expected_updated_at.trim() : '';
+  if (keys.length !== LOCAL_VOICE_REGISTRATION_FIELDS.size
+    || !idempotencyKey || idempotencyKey.length > 160 || idempotencyKey.includes('\0')
+    || !expectedUpdatedAt || !Number.isFinite(Date.parse(expectedUpdatedAt))) {
+    throw codedRouteError(
+      'REDRAW_LOCAL_TTS_REQUEST_INVALID',
+      LOCAL_VOICE_REGISTRATION_ERROR_MESSAGES.REDRAW_LOCAL_TTS_REQUEST_INVALID,
+    );
+  }
+  return { idempotencyKey, expectedUpdatedAt };
+}
+
+function exactRequestBody(body, fields) {
+  return Boolean(body && typeof body === 'object' && !Array.isArray(body)
+    && (Object.getPrototypeOf(body) === Object.prototype || Object.getPrototypeOf(body) === null)
+    && Object.keys(body).length === fields.size
+    && Object.keys(body).every((key) => fields.has(key)));
+}
+
+function supplementalDialogueIdempotencyKey(value) {
+  const key = typeof value === 'string' ? value.trim() : '';
+  if (!key || key.length > 160 || key.includes('\0')) {
+    throw codedRouteError('REDRAW_SUPPLEMENTAL_DIALOGUE_INPUT_INVALID');
+  }
+  return key;
+}
+
+function supplementalDialogueTimestamp(value) {
+  const timestamp = typeof value === 'string' ? value.trim() : '';
+  if (!timestamp || !Number.isFinite(Date.parse(timestamp))) {
+    throw codedRouteError('REDRAW_SUPPLEMENTAL_DIALOGUE_INPUT_INVALID');
+  }
+  return timestamp;
+}
+
+function supplementalDialogueCreateInput(body) {
+  if (!exactRequestBody(body, SUPPLEMENTAL_DIALOGUE_CREATE_FIELDS)
+    || body.source_translation !== false
+    || typeof body.target_text !== 'string') {
+    throw codedRouteError('REDRAW_SUPPLEMENTAL_DIALOGUE_INPUT_INVALID');
+  }
+  const targetText = body.target_text.trim();
+  if (!targetText
+    || Array.from(targetText).length
+      > redrawSupplementalDialogueApprovalService.MAX_TARGET_TEXT_CHARACTERS
+    || Buffer.byteLength(targetText, 'utf8')
+      > redrawSupplementalDialogueApprovalService.MAX_TARGET_TEXT_BYTES
+    || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(targetText)) {
+    throw codedRouteError('REDRAW_SUPPLEMENTAL_DIALOGUE_INPUT_INVALID');
+  }
+  return {
+    idempotencyKey: supplementalDialogueIdempotencyKey(body.idempotency_key),
+    targetText: body.target_text,
+    sourceTranslation: false,
+    expectedShotUpdatedAt: supplementalDialogueTimestamp(body.expected_shot_updated_at),
+    expectedVoiceUpdatedAt: supplementalDialogueTimestamp(body.expected_voice_updated_at),
+  };
+}
+
+function supplementalDialogueRevokeInput(body) {
+  if (!exactRequestBody(body, SUPPLEMENTAL_DIALOGUE_REVOKE_FIELDS)) {
+    throw codedRouteError('REDRAW_SUPPLEMENTAL_DIALOGUE_INPUT_INVALID');
+  }
+  return {
+    idempotencyKey: supplementalDialogueIdempotencyKey(body.idempotency_key),
+    expectedUpdatedAt: supplementalDialogueTimestamp(body.expected_updated_at),
+  };
+}
+
+function sendSupplementalDialogueError(res, error, log, context = {}) {
+  const code = String(error?.code || '');
+  const message = SUPPLEMENTAL_DIALOGUE_ERROR_MESSAGES[code];
+  if (code === 'REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_FOUND') {
+    return response.error(res, 404, code, message);
+  }
+  if (code === 'REDRAW_SUPPLEMENTAL_DIALOGUE_INPUT_INVALID') {
+    return response.error(res, 400, code, message);
+  }
+  if (code === 'REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_READY') {
+    return response.error(res, 422, code, message);
+  }
+  if (['REDRAW_SUPPLEMENTAL_DIALOGUE_CAS_CONFLICT',
+    'REDRAW_SUPPLEMENTAL_DIALOGUE_IDEMPOTENCY_CONFLICT',
+    'REDRAW_SUPPLEMENTAL_DIALOGUE_ACTIVE_CONFLICT'].includes(code)) {
+    return response.error(res, 409, code, message);
+  }
+  log?.error?.({ code: 'INTERNAL_ERROR', ...context }, '补充对白审批失败');
+  return response.error(res, 500, 'INTERNAL_ERROR', '补充对白审批失败');
+}
+
+function localVoiceRegistrationReady(options, service) {
+  return Boolean(service && typeof service.registerLocalProductionVoice === 'function'
+    && options.localTtsManifest && typeof options.localTtsManifest === 'object'
+    && options.localTtsWorker && typeof options.localTtsWorker.synthesize === 'function'
+    && typeof options.localTtsWorker.assertReady === 'function'
+    && typeof options.localTtsWorker.assertEvidenceTrusted === 'function'
+    && options.localeVerifier && typeof options.localeVerifier.verifyLocalVoice === 'function'
+    && options.localeRegistry && typeof options.localeRegistry.assertReady === 'function'
+    && options.localVoiceMediaProbe && typeof options.localVoiceMediaProbe.probeAudio === 'function'
+    && typeof options.localVoiceVerifierAllowedRoot === 'string'
+    && options.localVoiceVerifierAllowedRoot.trim()
+    && typeof options.localVoiceAudioStorageRoot === 'string'
+    && options.localVoiceAudioStorageRoot.trim()
+    && Number.isSafeInteger(options.localVoiceMinimumApprovedTextCharacters)
+    && options.localVoiceMinimumApprovedTextCharacters > 0);
+}
+
+function publicLocalVoiceRegistrationResult(db, result, version, voice, expectedUpdatedAt) {
+  const registrationId = numericId(result?.registration?.id);
+  if (!registrationId) throw codedRouteError('REDRAW_LOCAL_TTS_RESULT_UNKNOWN');
+  const registration = db.prepare(`
+    SELECT * FROM redraw_local_voice_registrations
+    WHERE id = ? AND tenant_id = ? AND user_id = ? AND version_id = ?
+      AND voice_redraw_asset_id = ? AND deleted_at IS NULL
+  `).get(registrationId, version.tenant_id, version.user_id, version.id, voice.id);
+  const currentVoice = db.prepare(`
+    SELECT id, voice_asset_id, status, approval_status, updated_at
+    FROM redraw_assets
+    WHERE id = ? AND version_id = ? AND tenant_id = ? AND user_id = ?
+      AND kind = 'voice' AND deleted_at IS NULL
+  `).get(voice.id, version.id, version.tenant_id, version.user_id);
+  const audio = registration?.audio_asset_id == null ? null : db.prepare(`
+    SELECT id, type, mime_type, duration
+    FROM assets WHERE id = ? AND deleted_at IS NULL
+  `).get(Number(registration.audio_asset_id));
+  if (!registration || registration.status !== 'completed'
+    || !currentVoice || currentVoice.status !== 'generated'
+    || Number(currentVoice.voice_asset_id) !== Number(registration.audio_asset_id)
+    || !audio || audio.type !== 'audio'
+    || !String(audio.mime_type || '').toLowerCase().startsWith('audio/')
+    || !/^[a-f0-9]{64}$/.test(String(registration.audio_sha256 || ''))) {
+    throw codedRouteError('REDRAW_LOCAL_TTS_RESULT_UNKNOWN');
+  }
+  return {
+    registration: {
+      id: Number(registration.id),
+      source_character_key: registration.source_character_key,
+      profile_key: registration.profile_key,
+      status: registration.status,
+      completed_at: registration.completed_at,
+    },
+    version: { id: Number(version.id), locale: version.locale, market: version.market },
+    voice: {
+      id: Number(currentVoice.id),
+      audio_asset_id: Number(currentVoice.voice_asset_id),
+      status: currentVoice.status,
+      approval_status: currentVoice.approval_status,
+      updated_at: currentVoice.updated_at,
+    },
+    audio: {
+      id: Number(audio.id),
+      sha256: registration.audio_sha256,
+      duration_ms: Number(audio.duration) * 1000,
+      mime_type: audio.mime_type,
+    },
+    status: registration.status,
+    cas: { expected_updated_at: expectedUpdatedAt, updated_at: currentVoice.updated_at },
+    billing: { credits: 0, held: 0, charged: 0 },
+  };
+}
+
+function sendLocalVoiceRegistrationError(res, error, log, context = {}) {
+  const code = String(error?.code || '');
+  const message = LOCAL_VOICE_REGISTRATION_ERROR_MESSAGES[code];
+  if (code === 'REDRAW_LOCAL_TTS_OWNER_MISMATCH') {
+    return response.error(res, 404, code, message);
+  }
+  if (code === 'REDRAW_LOCAL_TTS_NOT_READY') {
+    return response.error(res, 503, code, message);
+  }
+  if (['REDRAW_LOCAL_TTS_IDEMPOTENCY_CONFLICT', 'REDRAW_LOCAL_TTS_RESULT_UNKNOWN',
+    'REDRAW_LOCAL_TTS_CAS_CONFLICT'].includes(code)) {
+    return response.error(res, 409, code, message);
+  }
+  if (['REDRAW_LOCAL_TTS_OUTPUT_INVALID', 'REDRAW_LOCAL_TTS_VERIFICATION_FAILED',
+    'REDRAW_LOCAL_TTS_APPROVED_TEXT_INSUFFICIENT'].includes(code)) {
+    return response.error(res, 422, code, message);
+  }
+  if (['REDRAW_LOCAL_TTS_REQUEST_INVALID', 'REDRAW_LOCAL_TTS_CLIENT_CONTROL_FORBIDDEN'].includes(code)) {
+    return response.error(res, 400, code, message);
+  }
+  log?.error?.({ code: 'INTERNAL_ERROR', ...context }, '本地语音登记失败');
+  return response.error(res, 500, 'INTERNAL_ERROR', '本地语音登记失败');
 }
 
 function referencePreparationInput(body, allowedFields) {
@@ -1427,6 +1888,15 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   const exportService = options.exportService || redrawExportService;
   const candidateReviewService = options.candidateReviewService || redrawCandidateReviewService;
   const episodeReleaseService = options.episodeReleaseService || redrawEpisodeReleaseService;
+  const referenceArtifactImportService = options.referenceArtifactImportService
+    || redrawReferenceArtifactImportService;
+  const coverageRegistrationService = options.coverageRegistrationService
+    || redrawCoverageRegistrationService;
+  const coverageRegistrationProvider = options.coverageRegistrationProvider;
+  const localVoiceRegistrationService = options.localVoiceRegistrationService
+    || redrawLocalVoiceRegistrationService;
+  const supplementalDialogueApprovalService = options.supplementalDialogueApprovalService
+    || redrawSupplementalDialogueApprovalService;
   const cfg = options.cfg || {};
   const quoteAnalysis = options.quoteAnalysis || analysisQuote();
   const canReadArtifact = options.canReadArtifact || createCanReadArtifact(db, cfg);
@@ -1435,6 +1905,24 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     assetUrlPrefix: '/static/redraw-sources',
     ...(options.uploadLimits || {}),
   };
+  const referenceArtifactTempRoot = path.resolve(
+    options.referenceArtifactTempRoot || path.join(os.tmpdir(), 'moli-redraw-reference-imports'),
+  );
+  const motionReferenceArtifactUpload = multer({
+    storage: multer.diskStorage({
+      destination: (_req, _file, callback) => {
+        fs.mkdir(referenceArtifactTempRoot, { recursive: true }, (error) => {
+          callback(error || null, referenceArtifactTempRoot);
+        });
+      },
+      filename: (req, _file, callback) => {
+        const filename = `motion-${process.pid}-${Date.now()}-${crypto.randomBytes(12).toString('hex')}.upload`;
+        req.redrawReferenceArtifactTempPath = path.join(referenceArtifactTempRoot, filename);
+        callback(null, filename);
+      },
+    }),
+    limits: { fileSize: 200 * 1024 * 1024, files: 1, fields: 5, parts: 7 },
+  });
   const analysisOptions = { ...(options.analysisOptions || {}) };
   if (!analysisOptions.assetReader) {
     analysisOptions.assetReader = redrawOrchestrator.createAssetReader({ storageRoot: uploadLimits.storageRoot });
@@ -1531,7 +2019,173 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       },
       canReadArtifact,
       probeRunner: options.referencePreparationProbeRunner || options.probeRunner,
+      motionProbeRunner: options.referenceArtifactMotionProbeRunner || options.motionProbeRunner,
     };
+  }
+
+  async function cleanupReferenceArtifactUpload(req) {
+    const filePath = String(req.file?.path || req.redrawReferenceArtifactTempPath || '');
+    req.file = null;
+    req.redrawReferenceArtifactTempPath = null;
+    if (!filePath) return;
+    try {
+      await fs.promises.unlink(filePath);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        throw codedRouteError(
+          'REDRAW_REFERENCE_ARTIFACT_STORAGE_FAILED',
+          REFERENCE_ARTIFACT_ERROR_MESSAGES.REDRAW_REFERENCE_ARTIFACT_STORAGE_FAILED,
+        );
+      }
+    }
+  }
+
+  function parseReferenceArtifactWith(parser) {
+    return (req, res, next) => {
+      let aborted = false;
+      let abortCleanup = Promise.resolve();
+      const onAborted = () => {
+        aborted = true;
+        abortCleanup = cleanupReferenceArtifactUpload(req).catch((error) => {
+          log?.error?.({ code: error?.code || 'REDRAW_REFERENCE_ARTIFACT_STORAGE_FAILED', route: req.path },
+            '中断的参考素材临时文件清理失败');
+        });
+      };
+      req.once('aborted', onAborted);
+      parser(req, res, async (error) => {
+        req.off('aborted', onAborted);
+        if (aborted) {
+          await abortCleanup;
+          return;
+        }
+        if (!error) return next();
+        try {
+          await cleanupReferenceArtifactUpload(req);
+        } catch (cleanupError) {
+          return sendReferenceArtifactError(res, cleanupError, log, { route: req.path });
+        }
+        const code = error?.code === 'LIMIT_FILE_SIZE'
+          ? 'REDRAW_REFERENCE_ARTIFACT_TOO_LARGE'
+          : ['LIMIT_UNEXPECTED_FILE', 'LIMIT_FIELD_COUNT', 'LIMIT_PART_COUNT'].includes(error?.code)
+            ? 'REDRAW_REFERENCE_ARTIFACT_FORBIDDEN_FIELD'
+            : 'REDRAW_REFERENCE_ARTIFACT_INPUT_INVALID';
+        return sendReferenceArtifactError(res, codedRouteError(code, REFERENCE_ARTIFACT_ERROR_MESSAGES[code]), log, {
+          route: req.path,
+        });
+      });
+    };
+  }
+
+  const parseCharacterReferenceArtifact = parseReferenceArtifactWith(
+    referenceArtifactUpload.single('file'),
+  );
+  const parseMotionReferenceArtifact = parseReferenceArtifactWith(
+    motionReferenceArtifactUpload.single('file'),
+  );
+
+  function characterReferenceArtifactContext(req, res, next) {
+    const currentOwner = owner(req);
+    const asset = findOwnedAsset(req.params.id, currentOwner);
+    if (!asset || asset.kind !== 'character') {
+      return sendReferenceArtifactError(res, codedRouteError(
+        'REDRAW_REFERENCE_ARTIFACT_NOT_FOUND',
+        REFERENCE_ARTIFACT_ERROR_MESSAGES.REDRAW_REFERENCE_ARTIFACT_NOT_FOUND,
+      ), log, { scope: 'character' });
+    }
+    const version = findOwnedVersion(asset.version_id, currentOwner);
+    if (!version) {
+      return sendReferenceArtifactError(res, codedRouteError(
+        'REDRAW_REFERENCE_ARTIFACT_NOT_FOUND',
+        REFERENCE_ARTIFACT_ERROR_MESSAGES.REDRAW_REFERENCE_ARTIFACT_NOT_FOUND,
+      ), log, { scope: 'character' });
+    }
+    req.redrawReferenceArtifactScope = {
+      context: referencePreparationContext(version, currentOwner),
+      scopeId: Number(asset.id),
+    };
+    return next();
+  }
+
+  function motionReferenceArtifactContext(req, res, next) {
+    const currentOwner = owner(req);
+    const shot = findOwnedShot(req.params.id, currentOwner);
+    const version = shot ? findOwnedVersion(shot.version_id, currentOwner) : null;
+    if (!shot || !version) {
+      return sendReferenceArtifactError(res, codedRouteError(
+        'REDRAW_REFERENCE_ARTIFACT_NOT_FOUND',
+        REFERENCE_ARTIFACT_ERROR_MESSAGES.REDRAW_REFERENCE_ARTIFACT_NOT_FOUND,
+      ), log, { scope: 'shot' });
+    }
+    req.redrawReferenceArtifactScope = {
+      context: referencePreparationContext(version, currentOwner),
+      scopeId: Number(shot.id),
+    };
+    return next();
+  }
+
+  async function importCharacterReferenceArtifact(req, res) {
+    try {
+      const body = assertReferenceArtifactFields(req.body, CHARACTER_REFERENCE_ARTIFACT_FIELDS);
+      const scope = req.redrawReferenceArtifactScope;
+      if (!scope) throw codedRouteError('REDRAW_REFERENCE_ARTIFACT_NOT_FOUND');
+      const result = await referenceArtifactImportService.importCharacterReferenceArtifact(scope.context, {
+        assetId: scope.scopeId,
+        purpose: body.purpose,
+        expectedUpdatedAt: body.expected_updated_at,
+        idempotencyKey: String(req.get('idempotency-key') || '').trim(),
+        file: req.file,
+      });
+      return response.success(res, publicReferenceArtifactResult(result));
+    } catch (error) {
+      return sendReferenceArtifactError(res, error, log, { scope: 'character' });
+    } finally {
+      try {
+        await cleanupReferenceArtifactUpload(req);
+      } catch (_) {
+        // Memory uploads have no persistent temp file; disk cleanup errors are handled on motion routes.
+      }
+    }
+  }
+
+  async function importMotionReferenceArtifact(req, res) {
+    let result;
+    try {
+      const body = assertReferenceArtifactFields(req.body, MOTION_REFERENCE_ARTIFACT_FIELDS);
+      const scope = req.redrawReferenceArtifactScope;
+      if (!scope) throw codedRouteError('REDRAW_REFERENCE_ARTIFACT_NOT_FOUND');
+      let file = req.file;
+      if (file?.path) {
+        file = {
+          originalname: file.originalname,
+          mimetype: file.mimetype,
+          size: Number(file.size),
+          buffer: await fs.promises.readFile(file.path),
+        };
+      }
+      result = await referenceArtifactImportService.importMotionReferenceArtifact(scope.context, {
+        shotId: scope.scopeId,
+        expectedUpdatedAt: body.expected_updated_at,
+        idempotencyKey: String(req.get('idempotency-key') || '').trim(),
+        fullFrameReviewed: strictMultipartBoolean(body.full_frame_reviewed),
+        sourceIdentityObscured: strictMultipartBoolean(body.source_identity_obscured),
+        sourceTextObscured: strictMultipartBoolean(body.source_text_obscured),
+        motionPreserved: strictMultipartBoolean(body.motion_preserved),
+        file,
+      });
+    } catch (error) {
+      try {
+        await cleanupReferenceArtifactUpload(req);
+      } catch (cleanupError) {
+        return sendReferenceArtifactError(res, cleanupError, log, { scope: 'shot' });
+      }
+      return sendReferenceArtifactError(res, error, log, { scope: 'shot' });
+    }
+    try {
+      await cleanupReferenceArtifactUpload(req);
+    } catch (error) {
+      return sendReferenceArtifactError(res, error, log, { scope: 'shot' });
+    }
+    return response.success(res, publicReferenceArtifactResult(result));
   }
 
   function findOwnedProject(id, currentOwner) {
@@ -1565,6 +2219,36 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         AND user_id = ?
         AND deleted_at IS NULL
     `).get(Number(id), currentOwner.tenantId, currentOwner.userId);
+  }
+
+  async function registerFullFrameCoverage(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) {
+      return response.error(
+        res,
+        404,
+        'REDRAW_VERSION_NOT_FOUND',
+        COVERAGE_REGISTRATION_ERROR_MESSAGES.REDRAW_VERSION_NOT_FOUND,
+      );
+    }
+    try {
+      const input = coverageRegistrationInput(req.body);
+      const registered = await coverageRegistrationService.registerReviewedCoverage({
+        db,
+        log,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        versionId: Number(version.id),
+        storageRoot: storageRootFromConfig(cfg),
+        provider: coverageRegistrationProvider,
+        expected_version_updated_at: input.expected_version_updated_at,
+        idempotency_key: input.idempotency_key,
+      });
+      return response.success(res, publicCoverageRegistrationResult(registered, version.id));
+    } catch (error) {
+      return sendCoverageRegistrationError(res, error, log, { versionId: version.id });
+    }
   }
 
   function assertOwnedPreparationShots(version, currentOwner, input) {
@@ -1700,6 +2384,8 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       versionId: Number(version.id),
       locale: version.locale,
       market: version.market,
+      localeRegistry: options.localeRegistry,
+      allowTestOnlyLocalEvidence: options.allowTestOnlyLocalEvidence === true,
     }, (asset) => Boolean(asset && canReadArtifact(asset.id)))
       .filter((voice) => rowsById.has(Number(voice.id))
         && String(voice.locale) === String(version.locale)
@@ -1718,7 +2404,9 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         audio_asset_id: Number(voice.audio_asset_id),
         duration_ms: Number(voice.duration_ms),
         preview_url: `/api/v1/redraw/versions/${Number(version.id)}/voices/${Number(voice.id)}/preview`,
-        provider_verified: true,
+        verification_source: voice.verification_source,
+        provider_verified: voice.provider_verified === true,
+        local_offline_verified: voice.local_offline_verified === true,
         audio_readable: true,
       }));
   }
@@ -2902,8 +3590,16 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
   }
 
   function generationContext(currentOwner) {
+    const storageBaseUrl = storageBaseUrlFromConfig(cfg);
+    const staticAssetSigningSecret = options.staticAssetSigningSecret ?? process.env.PLATFORM_JWT_SECRET;
     return {
       storageRoot: storageRootFromConfig(cfg),
+      storageBaseUrl,
+      providerAssetSecret: options.providerAssetSecret ?? process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET,
+      staticAssetSigningSecret,
+      createReferenceUrl: createProductionReferenceUrlFactory(db, cfg, canReadArtifact, {
+        staticAssetSigningSecret,
+      }),
       ...(options.generationOptions || {}),
       db,
       log,
@@ -3149,6 +3845,165 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     return stream.pipe(res);
   }
 
+  async function registerLocalProductionVoice(req, res) {
+    const currentOwner = owner(req);
+    if (!String(req.get?.('x-tenant-id') || '').trim()
+      || !currentOwner.tenantId || !currentOwner.userId) {
+      return sendLocalVoiceRegistrationError(
+        res,
+        codedRouteError('REDRAW_LOCAL_TTS_OWNER_MISMATCH'),
+        log,
+      );
+    }
+    const versionId = numericId(req.params.versionId);
+    const voiceAssetId = numericId(req.params.voiceAssetId);
+    const version = versionId ? findOwnedVersion(versionId, currentOwner) : null;
+    const voice = voiceAssetId ? findOwnedAsset(voiceAssetId, currentOwner) : null;
+    if (!version || !voice || voice.kind !== 'voice'
+      || Number(voice.version_id) !== Number(version.id)) {
+      return sendLocalVoiceRegistrationError(
+        res,
+        codedRouteError('REDRAW_LOCAL_TTS_OWNER_MISMATCH'),
+        log,
+        { versionId, voiceAssetId },
+      );
+    }
+    let input;
+    try {
+      input = localVoiceRegistrationInput(req.body);
+    } catch (error) {
+      return sendLocalVoiceRegistrationError(res, error, log, { versionId, voiceAssetId });
+    }
+    if (!localVoiceRegistrationReady(options, localVoiceRegistrationService)) {
+      return sendLocalVoiceRegistrationError(
+        res,
+        codedRouteError('REDRAW_LOCAL_TTS_NOT_READY'),
+        log,
+        { versionId, voiceAssetId },
+      );
+    }
+    const serviceInput = {
+      db,
+      log,
+      tenantId: currentOwner.tenantId,
+      userId: currentOwner.userId,
+      versionId: Number(version.id),
+      voiceAssetId: Number(voice.id),
+      idempotencyKey: input.idempotencyKey,
+      expectedUpdatedAt: input.expectedUpdatedAt,
+      localTtsManifest: options.localTtsManifest,
+      localTtsWorker: options.localTtsWorker,
+      mediaProbe: options.localVoiceMediaProbe,
+      localeRegistry: options.localeRegistry,
+      localeVerifier: options.localeVerifier,
+      localeVerifierAllowedRoot: options.localVoiceVerifierAllowedRoot,
+      audioStorageRoot: options.localVoiceAudioStorageRoot,
+      minimumApprovedTextCharacters: options.localVoiceMinimumApprovedTextCharacters,
+      ...(options.localVoiceRegistrationContext !== undefined
+        ? { context: options.localVoiceRegistrationContext } : {}),
+      ...(typeof options.localVoiceNow === 'function' ? { now: options.localVoiceNow } : {}),
+      ...(options.localVoiceAssetService ? { assetService: options.localVoiceAssetService } : {}),
+    };
+    try {
+      const result = await localVoiceRegistrationService.registerLocalProductionVoice(serviceInput);
+      return response.success(res, publicLocalVoiceRegistrationResult(
+        db,
+        result,
+        version,
+        voice,
+        input.expectedUpdatedAt,
+      ));
+    } catch (error) {
+      return sendLocalVoiceRegistrationError(res, error, log, { versionId, voiceAssetId });
+    }
+  }
+
+  async function createSupplementalDialogueApproval(req, res) {
+    const currentOwner = owner(req);
+    const versionId = numericId(req.params.versionId);
+    const shotRowId = numericId(req.params.shotRowId);
+    const voiceAssetId = numericId(req.params.voiceAssetId);
+    if (!String(req.get?.('x-tenant-id') || '').trim()
+      || !currentOwner.tenantId || !currentOwner.userId
+      || !versionId || !shotRowId || !voiceAssetId) {
+      return sendSupplementalDialogueError(
+        res,
+        codedRouteError('REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_FOUND'),
+        log,
+        { versionId, shotRowId, voiceAssetId },
+      );
+    }
+    let input;
+    try {
+      input = supplementalDialogueCreateInput(req.body);
+    } catch (error) {
+      return sendSupplementalDialogueError(res, error, log, { versionId, shotRowId, voiceAssetId });
+    }
+    try {
+      const result = await supplementalDialogueApprovalService.createSupplementalDialogueApproval({
+        db,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        versionId,
+        shotRowId,
+        voiceAssetId,
+        idempotencyKey: input.idempotencyKey,
+        targetText: input.targetText,
+        sourceTranslation: input.sourceTranslation,
+        expectedShotUpdatedAt: input.expectedShotUpdatedAt,
+        expectedVoiceUpdatedAt: input.expectedVoiceUpdatedAt,
+        ...(typeof options.supplementalDialogueNow === 'function'
+          ? { now: options.supplementalDialogueNow } : {}),
+      });
+      return response.success(
+        res,
+        supplementalDialogueApprovalService.publicSupplementalDialogueApproval(db, result),
+      );
+    } catch (error) {
+      return sendSupplementalDialogueError(res, error, log, { versionId, shotRowId, voiceAssetId });
+    }
+  }
+
+  async function revokeSupplementalDialogueApproval(req, res) {
+    const currentOwner = owner(req);
+    const versionId = numericId(req.params.versionId);
+    const approvalId = numericId(req.params.approvalId);
+    if (!String(req.get?.('x-tenant-id') || '').trim()
+      || !currentOwner.tenantId || !currentOwner.userId || !versionId || !approvalId) {
+      return sendSupplementalDialogueError(
+        res,
+        codedRouteError('REDRAW_SUPPLEMENTAL_DIALOGUE_NOT_FOUND'),
+        log,
+        { versionId, approvalId },
+      );
+    }
+    let input;
+    try {
+      input = supplementalDialogueRevokeInput(req.body);
+    } catch (error) {
+      return sendSupplementalDialogueError(res, error, log, { versionId, approvalId });
+    }
+    try {
+      const result = await supplementalDialogueApprovalService.revokeSupplementalDialogueApproval({
+        db,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        versionId,
+        approvalId,
+        idempotencyKey: input.idempotencyKey,
+        expectedUpdatedAt: input.expectedUpdatedAt,
+        ...(typeof options.supplementalDialogueNow === 'function'
+          ? { now: options.supplementalDialogueNow } : {}),
+      });
+      return response.success(
+        res,
+        supplementalDialogueApprovalService.publicSupplementalDialogueApproval(db, result),
+      );
+    } catch (error) {
+      return sendSupplementalDialogueError(res, error, log, { versionId, approvalId });
+    }
+  }
+
   function listProductionVoices(req, res) {
     const currentOwner = owner(req);
     const version = findOwnedVersion(req.params.id, currentOwner);
@@ -3250,6 +4105,8 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
         versionId: Number(version.id),
         voiceAssetId: Number(voiceRow.id),
         canReadAsset: (asset) => Boolean(asset && canReadArtifact(asset.id)),
+        localeRegistry: options.localeRegistry,
+        allowTestOnlyLocalEvidence: options.allowTestOnlyLocalEvidence === true,
       });
       if (assigned.conflict) {
         return response.error(res, 409, 'REDRAW_VOICE_BIND_CONFLICT', '角色已绑定其他音色');
@@ -4295,6 +5152,12 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
   return {
     uploadSource: upload.single('file'),
     uploadReferenceImage: referenceUpload.single('reference_image'),
+    characterReferenceArtifactContext,
+    parseCharacterReferenceArtifact,
+    importCharacterReferenceArtifact,
+    motionReferenceArtifactContext,
+    parseMotionReferenceArtifact,
+    importMotionReferenceArtifact,
     listProjects,
     createProject,
     getProject,
@@ -4310,12 +5173,16 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     generateBatch,
     localizationQuote,
     createVersion,
+    registerFullFrameCoverage,
     getCharacterPlan,
     preparationGate,
     referencePreparationQuote,
     startReferencePreparation,
     listVersionAssets,
     previewRedrawAsset,
+    createSupplementalDialogueApproval,
+    revokeSupplementalDialogueApproval,
+    registerLocalProductionVoice,
     listProductionVoices,
     previewProductionVoice,
     assignVoice,

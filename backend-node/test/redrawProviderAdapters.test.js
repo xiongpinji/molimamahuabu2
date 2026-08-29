@@ -403,6 +403,66 @@ test('generateAsset registers readable clean plate image without fabricating mis
   assert.equal(downloadCalls[0][5], 'redraw-assets');
 });
 
+test('generateAsset accepts trusted nested clean scene version and kind from the default wrapper contract', async () => {
+  const storageRoot = tempStorage();
+  const stagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-clean-adapter-stage-'));
+  const calls = [];
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    imageClient: {
+      async callImageApi(...args) {
+        calls.push(args);
+        return {
+          image_url: 'https://provider.example/nested-clean.png',
+          provider_task_id: 'nested-clean-task',
+          width: 64,
+          height: 48,
+          quality: { width: 64, height: 48 },
+        };
+      },
+    },
+    uploadService: {
+      async downloadImageToLocal() {
+        return makePngFile(storageRoot, 'redraw-assets/v17/nested-clean.png', 64, 48);
+      },
+    },
+    assetService: {
+      create(_db, _log, payload) {
+        return { id: 177, ...payload };
+      },
+    },
+  });
+
+  try {
+    const input = Object.freeze({
+      version_id: 17,
+      kind: 'scene',
+      mode: 'clean_plate',
+      model: 'verified-clean-model',
+      prompt: 'remove the person and preserve the empty scene',
+      source_asset_id: 401,
+      mask_asset_id: 402,
+    });
+    const result = await adapters.generateAsset({
+      outputDir: stagingRoot,
+      input,
+      model: input.model,
+    });
+
+    assert.equal(result.status, 'completed');
+    assert.equal(result.clean_plate, true);
+    assert.equal(result.clean_plate_asset_id, 177);
+    assert.equal(result.asset_id, 177);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][2].imageServiceType, 'redraw_scene');
+  } finally {
+    fs.rmSync(stagingRoot, { recursive: true, force: true });
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
 test('redrawAssetService.generateAsset contract reaches image adapter with snapshot provider and model', async () => {
   const state = setupAssetContractState();
   const imageCalls = [];

@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import redraw_locale_worker.server as server_module
+from redraw_locale_worker.errors import LocaleWorkerError
 from redraw_locale_worker.server import (
     LocaleUnixServer,
     build_ready_payload,
@@ -49,6 +50,65 @@ class CountingVerifier:
                 self.active -= 1
 
 
+class LocalVoiceVerifier:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, request, pack, *, allowed_root, asr, accent):
+        self.calls.append((request, pack, allowed_root, asr, accent))
+        return _valid_local_voice_result(request, pack)
+
+
+def _valid_local_voice_result(request, pack):
+    approved_text_sha256 = hashlib.sha256(request["approved_text"].encode("utf-8")).hexdigest()
+    return {
+        "source": "offline-worker",
+        "request_id": request["request_id"],
+        "audio_sha256": request["audio_sha256"],
+        "approved_text_sha256": approved_text_sha256,
+        "locale_pack": request["locale_pack"],
+        "language_verified": True,
+        "detected_locale": "en-US",
+        "transcript_sha256": approved_text_sha256,
+        "model_manifest_sha256": pack["model_manifest_sha256"],
+        "calibration_manifest_sha256": pack["calibration_manifest_sha256"],
+        "models": {
+            "asr_revision": "asr-pinned",
+            "accent_revision": "accent-pinned",
+            "asr_tree_sha256": "c" * 64,
+            "accent_tree_sha256": "d" * 64,
+        },
+        "asr": {"ok": True, "language": "en", "probability": 0.99},
+        "accent": {"ok": True, "label": "us", "probability": 0.99},
+        "metrics": {
+            "word_error_rate": 0.0,
+            "character_error_rate": 0.0,
+            "critical_tokens_match": True,
+        },
+        "checks": {
+            "locale_pack": True,
+            "audio_path": True,
+            "audio_sha256_matches_request": True,
+            "asr_inference": True,
+            "accent_inference": True,
+            "calibration_thresholds": True,
+            "language": True,
+            "language_probability": True,
+            "word_error_rate": True,
+            "character_error_rate": True,
+            "critical_tokens_match": True,
+            "us_accent_label": True,
+            "us_accent_probability": True,
+            "model_manifest": True,
+            "calibration_manifest": True,
+            "models": True,
+            "transcript_present": True,
+        },
+        "local_tts_invocation": dict(request["local_tts_invocation"]),
+        "completed_at": "2026-08-28T00:00:01Z",
+    }
+
+
 class ServerTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -74,6 +134,7 @@ class ServerTests(unittest.TestCase):
         self.pack = {
             "id": "en-US@1",
             "locale_pack": "en-US@1",
+            "locale": "en-US",
             "model_manifest_sha256": "a" * 64,
             "calibration_manifest_sha256": "b" * 64,
         }
@@ -99,6 +160,21 @@ class ServerTests(unittest.TestCase):
             "scope": "language",
             "model_manifest_sha256": "c" * 64,
             "calibration_manifest_sha256": "d" * 64,
+        }
+        self.local_request = {
+            "action": "verify_local_voice",
+            "request_id": "req-local-1",
+            "audio_path": str(self.audio_path),
+            "audio_sha256": "a" * 64,
+            "approved_text": "Anna did not pay 50 dollars",
+            "locale_pack": "en-US@1",
+            "local_tts_invocation": {
+                "engine": "eSpeak NG",
+                "engine_version": "1.52.0",
+                "binary_sha256": "e" * 64,
+                "manifest_sha256": "f" * 64,
+                "profile": "role-1",
+            },
         }
 
     def tearDown(self):
@@ -132,9 +208,11 @@ class ServerTests(unittest.TestCase):
     def test_server_dispatches_action_to_matching_verifier_and_pack_id(self):
         legacy = CountingVerifier()
         native = CountingVerifier()
+        local = LocalVoiceVerifier()
         self.server = make_test_server(
             legacy,
             native_verifier=native,
+            local_voice_verifier=local,
             pack=self.pack,
             pack_by_id={"en-US@1": self.pack, "es@1": self.native_pack},
             allowed_root=self.root,
@@ -144,13 +222,167 @@ class ServerTests(unittest.TestCase):
 
         legacy_response = self._send_json(self.request)
         native_response = self._send_json(self.native_request)
+        local_response = self._send_json(self.local_request)
 
         self.assertTrue(legacy_response["ok"])
         self.assertTrue(native_response["ok"])
+        self.assertTrue(local_response["ok"])
         self.assertEqual(len(legacy.calls), 1)
         self.assertEqual(len(native.calls), 1)
+        self.assertEqual(len(local.calls), 1)
         self.assertIs(legacy.calls[0][1], self.pack)
         self.assertIs(native.calls[0][1], self.native_pack)
+        self.assertIs(local.calls[0][1], self.pack)
+
+    def test_local_voice_server_rejects_mixed_request_before_verifier(self):
+        local = CountingVerifier()
+        self.server = make_test_server(
+            CountingVerifier(),
+            local_voice_verifier=local,
+            pack=self.pack,
+            allowed_root=self.root,
+        )
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+
+        response = self._send_json({
+            **self.local_request,
+            "tts_invocation": self.request["tts_invocation"],
+        })
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error_code"], "LOCALE_VERIFY_REQUEST_INVALID")
+        self.assertEqual(local.calls, [])
+
+    def test_local_voice_response_redacts_text_paths_commands_environment_and_keys(self):
+        def local_verifier(request, pack, **kwargs):
+            del kwargs
+            return {
+                **_valid_local_voice_result(request, pack),
+                "approved_text": request["approved_text"],
+                "audio_path": request["audio_path"],
+                "command": ["espeak-ng", "--secret"],
+                "environment": {"API_KEY": "key-secret"},
+                "api_key": "key-secret",
+            }
+
+        self.server = make_test_server(
+            CountingVerifier(),
+            local_voice_verifier=local_verifier,
+            pack=self.pack,
+            allowed_root=self.root,
+        )
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+
+        response = self._send_json(self.local_request)
+
+        self.assertEqual(response, {"ok": False, "error_code": "LOCALE_VERIFY_FAILED"})
+        serialized = json.dumps(response, sort_keys=True)
+        for secret in (
+            self.local_request["approved_text"],
+            self.local_request["audio_path"],
+            "espeak-ng",
+            "key-secret",
+        ):
+            self.assertNotIn(secret, serialized)
+
+    def test_local_voice_unsafe_or_unknown_worker_error_code_is_replaced_without_leakage(self):
+        for code in ("C:/private/voice.wav API_KEY=secret", "UNKNOWN_SAFE_LOOKING_CODE"):
+            with self.subTest(code=code):
+                def local_verifier(request, pack, **kwargs):
+                    del request, pack, kwargs
+                    raise LocaleWorkerError(code)
+
+                self.server = make_test_server(
+                    CountingVerifier(),
+                    local_voice_verifier=local_verifier,
+                    pack=self.pack,
+                    allowed_root=self.root,
+                )
+                thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+                thread.start()
+
+                response = self._send_json(self.local_request)
+
+                self.assertEqual(response, {"ok": False, "error_code": "LOCALE_VERIFY_FAILED"})
+                self.assertEqual(set(response), {"ok", "error_code"})
+                serialized = json.dumps(response, sort_keys=True)
+                self.assertNotIn("private", serialized)
+                self.assertNotIn("secret", serialized)
+                self.assertNotIn("UNKNOWN", serialized)
+                self.server.shutdown()
+                self.server.server_close()
+                self.server = None
+
+    def test_known_legacy_worker_error_code_remains_exact_and_stable(self):
+        def verifier(request, pack, **kwargs):
+            del request, pack, kwargs
+            raise LocaleWorkerError("LOCALE_AUDIO_PATH_INVALID")
+
+        self.server = make_test_server(verifier, pack=self.pack, allowed_root=self.root)
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+
+        self.assertEqual(
+            self._send_json(self.request),
+            {"ok": False, "error_code": "LOCALE_AUDIO_PATH_INVALID"},
+        )
+
+    def test_local_voice_success_response_requires_exact_complete_bound_evidence(self):
+        invalid_overrides = [
+            {"extra": True},
+            {"provider": "minimax"},
+            {"model": "speech-02-hd"},
+            {"provider_task_id": "provider-secret-task"},
+            {"audio_path": str(self.audio_path)},
+            {"api_key": "key-secret"},
+            {"approved_text": self.local_request["approved_text"]},
+            {"audio_sha256": "0" * 64},
+            {"approved_text_sha256": "0" * 64},
+            {"locale_pack": "en-GB@1"},
+            {"detected_locale": "en-GB"},
+        ]
+        for override in invalid_overrides:
+            with self.subTest(override=override):
+                def local_verifier(request, pack, **kwargs):
+                    del kwargs
+                    return {**_valid_local_voice_result(request, pack), **override}
+
+                self.server = make_test_server(
+                    CountingVerifier(),
+                    local_voice_verifier=local_verifier,
+                    pack=self.pack,
+                    allowed_root=self.root,
+                )
+                thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+                thread.start()
+
+                response = self._send_json(self.local_request)
+
+                self.assertEqual(response, {"ok": False, "error_code": "LOCALE_VERIFY_FAILED"})
+                self.server.shutdown()
+                self.server.server_close()
+                self.server = None
+
+        def mixed_invocation(request, pack, **kwargs):
+            del kwargs
+            result = _valid_local_voice_result(request, pack)
+            result["local_tts_invocation"]["provider"] = "minimax"
+            return result
+
+        self.server = make_test_server(
+            CountingVerifier(),
+            local_voice_verifier=mixed_invocation,
+            pack=self.pack,
+            allowed_root=self.root,
+        )
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+        self.assertEqual(
+            self._send_json(self.local_request),
+            {"ok": False, "error_code": "LOCALE_VERIFY_FAILED"},
+        )
 
     def test_server_unknown_duplicate_and_missing_pack_fail_closed(self):
         cases = [
@@ -482,7 +714,14 @@ class ServerTests(unittest.TestCase):
             def __init__(self, server_address, handler, config=None):
                 captured.update(address=server_address, handler=handler, config=config)
 
-        with patch.object(server_module, "LocaleUnixServer", FakeUnixServer):
+        def isolated_verifier(request, pack, **kwargs):
+            del request, kwargs
+            return {"locale_pack": pack["id"]}
+
+        with (
+            patch.object(server_module, "LocaleUnixServer", FakeUnixServer),
+            patch.object(server_module, "_default_verifier", return_value=isolated_verifier),
+        ):
             try:
                 create_unix_server(
                     socket_path,

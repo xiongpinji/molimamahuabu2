@@ -489,36 +489,59 @@ function currentIdentityAsset(ctx, key) {
   return Number(matches[0].id);
 }
 
-function currentMotionAsset(ctx, shot, faces, texts) {
+function motionAssetMatchesCurrentBindings(ctx, asset, bindings) {
+  if (!asset || asset.type !== 'video' || asset.category !== 'redraw' || asset.deleted_at !== null) {
+    return false;
+  }
   const expected = {
     tenant_id: ctx.tenantId,
     user_id: ctx.userId,
     version_id: ctx.versionId,
-    shot_id: Number(shot.id),
-    source_asset_id: Number(shot.source_asset_id),
-    source_fingerprint: shot.source_fingerprint,
-    clip_start_ms: Number(shot.start_ms),
-    clip_end_ms: Number(shot.end_ms),
-    face_coverage_sha256: sha256(stableJson(faces)),
-    text_coverage_sha256: sha256(stableJson(texts)),
+    shot_id: bindings.shot_id,
+    source_asset_id: bindings.source.asset_id,
+    source_fingerprint: bindings.source.fingerprint,
+    clip_start_ms: bindings.clip.start_ms,
+    clip_end_ms: bindings.clip.end_ms,
+    face_coverage_sha256: bindings.face_coverage_sha256,
+    text_coverage_sha256: bindings.text_coverage_sha256,
+    coverage_binding_sha256: bindings.coverage_binding_sha256,
+    identity_binding_sha256: bindings.identity_binding_sha256,
+    clean_binding_sha256: bindings.clean_binding_sha256,
   };
+  const metadata = parseJson(asset.metadata, {});
+  const motion = metadata.redraw_motion_reference;
+  if (!motion
+    || !Object.entries(expected).every(([key, value]) => motion[key] === value)
+    || !HEX_64.test(String(motion.file_sha256 || ''))
+    || metadata.sha256 !== motion.file_sha256) return false;
+  try {
+    return sha256File(ctx.storageRoot, asset, MOTION_CODE) === motion.file_sha256;
+  } catch (_) {
+    return false;
+  }
+}
+
+function currentMotionAsset(ctx, bindings) {
   const matches = ctx.db.prepare(`
     SELECT * FROM assets WHERE type = 'video' AND category = 'redraw' AND deleted_at IS NULL ORDER BY id DESC
-  `).all().filter((asset) => {
-    const motion = parseJson(asset.metadata, {}).redraw_motion_reference;
-    return motion && Object.entries(expected).every(([key, value]) => motion[key] === value);
-  });
+  `).all().filter((asset) => motionAssetMatchesCurrentBindings(ctx, asset, bindings));
   if (matches.length !== 1) fail(MOTION_CODE);
   return Number(matches[0].id);
 }
 
-async function buildTrustedReferenceBundleInput(rawCtx, input = {}) {
+function assertMotionAssetCurrent(ctx, assetId, bindings) {
+  const asset = ctx.db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(assetId);
+  if (!motionAssetMatchesCurrentBindings(ctx, asset, bindings)) fail(MOTION_CODE);
+}
+
+async function buildCurrentReferenceBindings(rawCtx, input = {}) {
   assertPlainObject(input);
   if (Object.keys(input).some((key) => !['shot_id', 'clean_results'].includes(key))) fail(INPUT_CODE);
   const ctx = normalizeContext(rawCtx);
-  const shotId = Number(input.shot_id ?? input.shotId);
+  const shotId = Number(input.shot_id);
   if (!Number.isSafeInteger(shotId) || shotId <= 0 || !Array.isArray(input.clean_results)) fail(INPUT_CODE);
   const shot = getRows(ctx, shotId).shot;
+  const timeline = normalizeShotTimeline(shot);
   const coverage = await loadReviewedReferenceCoverage(ctx);
   const descriptor = coverage.shots.find((item) => Number(item.shot_id) === shotId);
   if (!descriptor) fail(COVERAGE_EVIDENCE_CODE);
@@ -534,20 +557,63 @@ async function buildTrustedReferenceBundleInput(rawCtx, input = {}) {
     if (!Number.isSafeInteger(assetId) || assetId <= 0) fail(TEXT_CODE);
     return { ...region, text_clean_redraw_asset_id: assetId };
   }).sort((left, right) => left.region_key.localeCompare(right.region_key));
+  assertFaceOneToOne(faces);
+  const nameMap = normalizeNameMap(parseJson(shot.name_map_json, {}));
+  const identities = verifyIdentities(ctx, shot, faces, nameMap);
+  const cleanPlates = verifyTexts({ ...ctx, sourceFingerprint: shot.source_fingerprint }, texts);
+  const coverageBinding = coverage.coverage_binding.shots.find((entry) => Number(entry.shot_id) === shotId);
+  if (!coverageBinding) fail(COVERAGE_EVIDENCE_CODE);
+  const coverageReview = {
+    status: 'approved',
+    recognizable_face_count: faces.length,
+    mapped_face_count: faces.length,
+    unresolved_face_count: 0,
+    recognizable_text_region_count: texts.length,
+    mapped_text_region_count: texts.length,
+    unresolved_text_region_count: 0,
+  };
+  const currentCoverageBinding = {
+    analysis_sha256: coverage.coverage_binding.analysis_sha256,
+    approved_by: coverage.coverage_binding.approved_by,
+    approved_at: coverage.coverage_binding.approved_at,
+    facts_hash: coverage.coverage_binding.facts_hash,
+    source_fingerprint: coverage.coverage_binding.source_fingerprint,
+    requirement_keys: coverageBinding.requirement_keys,
+    requirement_hash: coverageBinding.requirement_hash,
+  };
   return {
     shot_id: shotId,
-    motion_reference_asset_id: currentMotionAsset(ctx, shot, faces, texts),
+    source: {
+      work_id: Number(shot.work_id),
+      asset_id: Number(shot.source_asset_id),
+      fingerprint: shot.source_fingerprint,
+    },
+    clip: {
+      start_ms: timeline.start_ms,
+      end_ms: timeline.end_ms,
+      duration_ms: timeline.duration_ms,
+    },
     face_tracks: faces,
     text_regions: texts,
-    coverage_review: {
-      status: 'approved',
-      recognizable_face_count: faces.length,
-      mapped_face_count: faces.length,
-      unresolved_face_count: 0,
-      recognizable_text_region_count: texts.length,
-      mapped_text_region_count: texts.length,
-      unresolved_text_region_count: 0,
-    },
+    coverage_review: coverageReview,
+    coverage_binding: currentCoverageBinding,
+    coverage_binding_sha256: sha256(stableJson(currentCoverageBinding)),
+    face_coverage_sha256: sha256(stableJson(faces)),
+    text_coverage_sha256: sha256(stableJson(texts)),
+    identity_binding_sha256: sha256(stableJson(identities)),
+    clean_binding_sha256: sha256(stableJson(cleanPlates)),
+  };
+}
+
+async function buildTrustedReferenceBundleInput(rawCtx, input = {}) {
+  const ctx = normalizeContext(rawCtx);
+  const bindings = await buildCurrentReferenceBindings(ctx, input);
+  return {
+    shot_id: bindings.shot_id,
+    motion_reference_asset_id: currentMotionAsset(ctx, bindings),
+    face_tracks: bindings.face_tracks,
+    text_regions: bindings.text_regions,
+    coverage_review: bindings.coverage_review,
   };
 }
 
@@ -954,6 +1020,18 @@ async function buildBundle(ctx, input, options = {}) {
   const textEvidence = verifyTexts({ ...ctx, sourceFingerprint: shot.source_fingerprint }, texts);
   const faceCoverageSha256 = sha256(stableJson(faces));
   const textCoverageSha256 = sha256(stableJson(texts));
+  const currentBindings = await buildCurrentReferenceBindings(ctx, {
+    shot_id: ids.shotId,
+    clean_results: texts.map((text) => ({
+      kind: 'text_clean',
+      key: text.region_key,
+      status: 'completed',
+      redraw_asset_id: text.text_clean_redraw_asset_id,
+    })),
+  });
+  if (currentBindings.face_coverage_sha256 !== faceCoverageSha256
+    || currentBindings.text_coverage_sha256 !== textCoverageSha256) fail(MOTION_CODE);
+  assertMotionAssetCurrent(ctx, ids.motionId, currentBindings);
   const motion = await verifyMotionReference({
     ...ctx,
     shotId: ids.shotId,
@@ -1250,6 +1328,7 @@ module.exports = {
   REFERENCE_BUNDLE_SCHEMA_VERSION,
   loadReviewedReferenceCoverage,
   loadReviewedReferenceCoverageBinding,
+  buildCurrentReferenceBindings,
   buildTrustedReferenceBundleInput,
   saveReferenceBundle,
   loadCurrentReferenceBundle,

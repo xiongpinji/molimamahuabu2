@@ -409,6 +409,51 @@ function context(state) {
   };
 }
 
+function currentMotionBindingHashes(state, faceTracks, textRegions) {
+  try {
+    const identities = faceTracks.map((face) => {
+      const row = state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(face.identity_redraw_asset_id));
+      const pack = JSON.parse(row.source_ref_json).identity_pack;
+      return {
+        redraw_asset_id: Number(row.id),
+        source_character_key: face.source_character_key,
+        target_character_name: row.localized_name,
+        target_actor_label: pack.target_actor_label,
+        identity_asset_id: Number(pack.artifact.asset_id),
+        identity_pack_sha256: pack.pack_sha256,
+        persona_origin: pack.persona_origin,
+        target_country: pack.target_country,
+        adult_status: pack.adult_status,
+        artifact: pack.artifact,
+        wardrobe: {
+          reference_asset_id: Number(pack.wardrobe.reference_asset_id),
+          reference_sha256: pack.wardrobe.reference_sha256,
+          consistency_confirmed: true,
+        },
+        pack_sha256: pack.pack_sha256,
+      };
+    });
+    const cleanPlates = textRegions.map((text) => {
+      const row = state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(text.text_clean_redraw_asset_id));
+      const pack = JSON.parse(row.source_ref_json).text_clean_plate_pack;
+      return {
+        redraw_asset_id: Number(row.id),
+        region_key: text.region_key,
+        kind: text.kind,
+        artifact: pack.artifact,
+        pack_sha256: pack.pack_sha256,
+      };
+    });
+    return {
+      coverage: sha256(stableJson(state.coverageBinding)),
+      identity: sha256(stableJson(identities)),
+      clean: sha256(stableJson(cleanPlates)),
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
 function makeBundle(state, overrides = {}) {
   const defaultFaces = [{
     track_key: 'face-001',
@@ -438,6 +483,13 @@ function makeBundle(state, overrides = {}) {
   metadata.redraw_motion_reference.shot_id = state.shotId;
   metadata.redraw_motion_reference.face_coverage_sha256 = faceCoverageSha256;
   metadata.redraw_motion_reference.text_coverage_sha256 = textCoverageSha256;
+  metadata.redraw_motion_reference.file_sha256 = state.motionHash;
+  const bindingHashes = currentMotionBindingHashes(state, faceTracks, textRegions);
+  if (bindingHashes) {
+    metadata.redraw_motion_reference.coverage_binding_sha256 = bindingHashes.coverage;
+    metadata.redraw_motion_reference.identity_binding_sha256 = bindingHashes.identity;
+    metadata.redraw_motion_reference.clean_binding_sha256 = bindingHashes.clean;
+  }
   state.db.prepare('UPDATE assets SET metadata = ? WHERE id = 601').run(JSON.stringify(metadata));
   const bundle = {
     schema_version: 'redraw-reference-bundle-v2',
@@ -1323,4 +1375,165 @@ test('准备门禁拒绝伪造的人物、文字和运动证据', () => {
       state.cleanup();
     }
   }
+});
+
+test('generation gate rejects motion binding after identity coverage source or shot boundary changes', async (t) => {
+  function motionMetadata(state) {
+    return JSON.parse(state.db.prepare('SELECT metadata FROM assets WHERE id = 601').get().metadata);
+  }
+
+  function saveMotionMetadata(state, metadata) {
+    state.db.prepare('UPDATE assets SET metadata = ? WHERE id = 601').run(JSON.stringify(metadata));
+  }
+
+  async function assertMotionStale(label, prepare) {
+    await t.test(label, () => {
+      const state = setup();
+      try {
+        makeBundle(state);
+        prepare(state);
+        const gate = evaluatePreparationGate(context(state), state.versionId);
+        assert.equal(gate.ok, false, JSON.stringify(gate));
+        assert.deepEqual(gate.ready_shot_ids, []);
+        assert.equal(
+          gate.missing.some((item) => item.reason_code === 'motion_reference_not_current'
+            || item.reason_code === 'coverage_binding_not_current'
+            || item.reason_code === 'preparation_evidence_mismatch'),
+          true,
+          JSON.stringify(gate),
+        );
+      } finally {
+        state.cleanup();
+      }
+    });
+  }
+
+  await assertMotionStale('缺少服务端 binding 哈希时不接受遗留动作绑定', (state) => {
+    const metadata = motionMetadata(state);
+    delete metadata.redraw_motion_reference.coverage_binding_sha256;
+    delete metadata.redraw_motion_reference.identity_binding_sha256;
+    delete metadata.redraw_motion_reference.clean_binding_sha256;
+    saveMotionMetadata(state, metadata);
+  });
+
+  await assertMotionStale('当前 identity 变化后拒绝旧 identity binding', (state) => {
+    const old = motionMetadata(state).redraw_motion_reference.identity_binding_sha256;
+    const pack = replaceCharacterIdentity(state, 7);
+    state.identityPackHash = pack.pack_sha256;
+    makeBundle(state);
+    const metadata = motionMetadata(state);
+    assert.notEqual(metadata.redraw_motion_reference.identity_binding_sha256, old);
+    metadata.redraw_motion_reference.identity_binding_sha256 = old;
+    saveMotionMetadata(state, metadata);
+  });
+
+  await assertMotionStale('当前 wardrobe 变化后拒绝旧 identity binding', (state) => {
+    const old = motionMetadata(state).redraw_motion_reference.identity_binding_sha256;
+    const row = state.db.prepare('SELECT * FROM redraw_assets WHERE id = 201').get();
+    const payload = JSON.parse(row.source_ref_json);
+    const pack = identityPack({
+      sourceKey: 'char-a',
+      targetName: row.localized_name,
+      assetId: 301,
+      assetSha: payload.identity_pack.artifact.sha256,
+      wardrobeAssetId: 301,
+      wardrobeSha: payload.identity_pack.artifact.sha256,
+    });
+    payload.identity_pack = pack;
+    state.db.prepare('UPDATE redraw_assets SET source_ref_json = ?, updated_at = ? WHERE id = 201')
+      .run(JSON.stringify(payload), '2026-08-22T00:00:08.000Z');
+    state.identityPackHash = pack.pack_sha256;
+    makeBundle(state);
+    const metadata = motionMetadata(state);
+    assert.notEqual(metadata.redraw_motion_reference.identity_binding_sha256, old);
+    metadata.redraw_motion_reference.identity_binding_sha256 = old;
+    saveMotionMetadata(state, metadata);
+  });
+
+  await assertMotionStale('当前 reviewed coverage 变化后拒绝旧 coverage binding', (state) => {
+    const old = motionMetadata(state).redraw_motion_reference.coverage_binding_sha256;
+    const reviewedAt = '2026-08-22T00:00:09.000Z';
+    state.db.prepare('UPDATE redraw_assets SET approved_at = ?, updated_at = ? WHERE id = 204')
+      .run(reviewedAt, reviewedAt);
+    state.coverageBinding.approved_at = reviewedAt;
+    makeBundle(state);
+    const metadata = motionMetadata(state);
+    assert.notEqual(metadata.redraw_motion_reference.coverage_binding_sha256, old);
+    metadata.redraw_motion_reference.coverage_binding_sha256 = old;
+    saveMotionMetadata(state, metadata);
+  });
+
+  await t.test('当前 clean result 变化后拒绝旧 clean binding', () => {
+    const state = setup();
+    try {
+      makeTextBundle(state);
+      const old = motionMetadata(state).redraw_motion_reference.clean_binding_sha256;
+      const row = state.db.prepare('SELECT source_ref_json FROM redraw_assets WHERE id = 202').get();
+      const payload = JSON.parse(row.source_ref_json);
+      payload.text_clean_plate_pack.review_revision = 2;
+      const { pack_sha256: _ignored, ...body } = payload.text_clean_plate_pack;
+      payload.text_clean_plate_pack.pack_sha256 = sha256(stableJson(body));
+      state.textCleanPackHash = payload.text_clean_plate_pack.pack_sha256;
+      state.db.prepare('UPDATE redraw_assets SET source_ref_json = ?, updated_at = ? WHERE id = 202')
+        .run(JSON.stringify(payload), '2026-08-22T00:00:10.000Z');
+      makeTextBundle(state);
+      const metadata = motionMetadata(state);
+      assert.notEqual(metadata.redraw_motion_reference.clean_binding_sha256, old);
+      metadata.redraw_motion_reference.clean_binding_sha256 = old;
+      saveMotionMetadata(state, metadata);
+      const gate = evaluatePreparationGate(context(state), state.versionId);
+      assert.equal(gate.ok, false, JSON.stringify(gate));
+      assert.equal(gate.missing.some((item) => item.reason_code === 'motion_reference_not_current'), true);
+    } finally {
+      state.cleanup();
+    }
+  });
+
+  await assertMotionStale('源 fingerprint 变化后旧动作绑定不再 current', (state) => {
+    state.db.prepare('UPDATE redraw_works SET source_fingerprint = ?, updated_at = ? WHERE id = 1')
+      .run('a'.repeat(64), '2026-08-22T00:00:11.000Z');
+  });
+
+  await assertMotionStale('分镜边界变化后旧动作绑定不再 current', (state) => {
+    state.db.prepare('UPDATE redraw_shots SET start_ms = 100, end_ms = 5100 WHERE id = ?').run(state.shotId);
+  });
+
+  await assertMotionStale('动作文件 SHA 漂移后旧绑定不再 current', (state) => {
+    fs.writeFileSync(
+      path.join(state.storageRoot, `redraw-conditioning/${state.motionHash}.mp4`),
+      'changed-motion-file',
+    );
+  });
+
+  await assertMotionStale('新 pending motion import 出现后不再选中旧绑定', (state) => {
+    const bytes = Buffer.from('new-motion-reference');
+    const fileSha = sha256(bytes);
+    const localPath = `redraw-conditioning/${fileSha}.mp4`;
+    writeFile(state.storageRoot, localPath, bytes);
+    insertAsset(state.db, {
+      id: 602,
+      type: 'video',
+      mimeType: 'video/mp4',
+      localPath,
+      sha256: fileSha,
+      metadata: {
+        sha256: fileSha,
+        redraw_motion_import: { schema_version: 'redraw-motion-import-v1', file_sha256: fileSha },
+      },
+    });
+    state.db.prepare(`INSERT INTO redraw_reference_artifact_imports
+      (tenant_id, user_id, version_id, scope_type, scope_id, purpose,
+       idempotency_hash, request_hash, file_sha256, stored_asset_id,
+       status, created_at, updated_at)
+      VALUES ('tenant-a', 'user-a', ?, 'shot', ?, 'motion', ?, ?, ?, 602,
+       'completed', ?, ?)`).run(
+      state.versionId,
+      state.shotId,
+      sha256('new-motion-key'),
+      sha256('new-motion-request'),
+      fileSha,
+      '2026-08-22T00:00:12.000Z',
+      '2026-08-22T00:00:12.000Z',
+    );
+  });
 });

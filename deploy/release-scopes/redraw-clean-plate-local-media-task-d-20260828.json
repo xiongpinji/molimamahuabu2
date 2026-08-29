@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "release": "redraw-clean-plate-local-media-task-d-20260828",
+  "allowedPaths": [
+    "backend-node/src/services/redrawAssetService.js",
+    "backend-node/test/redrawAssets.test.js",
+    "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+    "backend-node/test/featureLockManifest.test.js",
+    "backend-node/test/incrementalReleaseScope.test.js",
+    "deploy/release-scopes/redraw-clean-plate-local-media-task-d-20260828.json",
+    "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md",
+    "docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md",
+    "docs/verification/platform-stability/feature-lock-manifest.json"
+  ]
+}

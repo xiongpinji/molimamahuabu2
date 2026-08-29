@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "release": "redraw-clean-plate-adapter-legacy-task-d-p2-20260828",
+  "allowedPaths": [
+    "backend-node/src/services/redrawAssetService.js",
+    "backend-node/src/services/redrawProviderAdapters.js",
+    "backend-node/test/featureLockManifest.test.js",
+    "backend-node/test/incrementalReleaseScope.test.js",
+    "backend-node/test/redrawAssets.test.js",
+    "backend-node/test/redrawProviderAdapters.test.js",
+    "deploy/release-scopes/redraw-clean-plate-adapter-legacy-task-d-p2-20260828.json",
+    "docs/verification/platform-stability/feature-lock-manifest.json"
+  ]
+}

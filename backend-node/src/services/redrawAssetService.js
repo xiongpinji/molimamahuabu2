@@ -1,7 +1,14 @@
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const fsp = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+
+const sharp = require('sharp');
 
 const creditLedger = require('./creditLedgerService');
 const aiConfigService = require('./aiConfigService');
+const assetService = require('./assetService');
 const {
   readIdentityPack,
   identityPackStatus,
@@ -455,6 +462,284 @@ function validateCleanPlateQuality(sceneAsset, options, providerResult) {
   }
 }
 
+const CLEAN_PLATE_MEDIA_DEFAULTS = Object.freeze({
+  maxBytes: 20 * 1024 * 1024,
+  maxPixels: 40 * 1000 * 1000,
+  maxDimension: 8192,
+});
+const CLEAN_PLATE_IMAGE_FORMATS = Object.freeze({
+  png: { mimeType: 'image/png', extension: 'png' },
+  jpeg: { mimeType: 'image/jpeg', extension: 'jpg' },
+  webp: { mimeType: 'image/webp', extension: 'webp' },
+});
+
+function deepFreeze(value) {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) deepFreeze(child);
+  return Object.freeze(value);
+}
+
+function cleanPlateMediaLimits(ctx = {}) {
+  const supplied = ctx.cleanPlateMediaLimits || ctx.clean_plate_media_limits || {};
+  const limits = {};
+  for (const key of Object.keys(CLEAN_PLATE_MEDIA_DEFAULTS)) {
+    const value = Number(supplied[key] ?? CLEAN_PLATE_MEDIA_DEFAULTS[key]);
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw codedError('REDRAW_CLEAN_PLATE_MEDIA_LIMIT_INVALID', '净景媒体限制配置无效');
+    }
+    limits[key] = value;
+  }
+  return limits;
+}
+
+function assertCleanPlateRelativePath(value) {
+  if (typeof value !== 'string' || !value || value.trim() !== value || value.includes('\0')) {
+    throw codedError('REDRAW_CLEAN_PLATE_MEDIA_PATH_INVALID', '净景输出必须是单次目录内的相对路径');
+  }
+  if (path.isAbsolute(value) || path.win32.isAbsolute(value) || path.posix.isAbsolute(value) || /^[A-Za-z]:/.test(value)) {
+    throw codedError('REDRAW_CLEAN_PLATE_MEDIA_PATH_INVALID', '净景输出不得使用绝对路径');
+  }
+  const normalized = value.replace(/\\/g, '/');
+  if (normalized === '.' || normalized === '..'
+    || normalized.split('/').some((part) => !part || part === '.' || part === '..')) {
+    throw codedError('REDRAW_CLEAN_PLATE_MEDIA_PATH_INVALID', '净景输出路径超出单次目录');
+  }
+  return normalized;
+}
+
+function pathInside(root, target) {
+  const relative = path.relative(root, target);
+  return relative === '' || (!!relative && relative !== '..'
+    && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+async function assertNoLinkedPath(rootReal, relativePath) {
+  let current = rootReal;
+  for (const segment of relativePath.split('/')) {
+    current = path.join(current, segment);
+    let stat;
+    try {
+      stat = await fsp.lstat(current);
+    } catch (_) {
+      throw codedError('REDRAW_CLEAN_PLATE_MEDIA_PATH_INVALID', '净景输出文件不存在');
+    }
+    if (stat.isSymbolicLink()) {
+      throw codedError('REDRAW_CLEAN_PLATE_MEDIA_PATH_INVALID', '净景输出不得使用链接或 reparse');
+    }
+  }
+}
+
+async function secureReadCleanPlate(stagingRoot, relativePath, limits) {
+  const normalized = assertCleanPlateRelativePath(relativePath);
+  let rootReal;
+  try {
+    rootReal = await fsp.realpath(stagingRoot);
+  } catch (_) {
+    throw codedError('REDRAW_CLEAN_PLATE_MEDIA_PATH_INVALID', '净景单次目录不可读');
+  }
+  const target = path.resolve(rootReal, normalized);
+  if (!pathInside(rootReal, target)) {
+    throw codedError('REDRAW_CLEAN_PLATE_MEDIA_PATH_INVALID', '净景输出路径超出单次目录');
+  }
+  await assertNoLinkedPath(rootReal, normalized);
+  let real;
+  try {
+    real = await fsp.realpath(target);
+  } catch (_) {
+    throw codedError('REDRAW_CLEAN_PLATE_MEDIA_PATH_INVALID', '净景输出文件不存在');
+  }
+  if (!pathInside(rootReal, real)) {
+    throw codedError('REDRAW_CLEAN_PLATE_MEDIA_PATH_INVALID', '净景输出路径超出单次目录');
+  }
+  let handle;
+  try {
+    const expected = await fsp.stat(real, { bigint: true });
+    if (!expected.isFile() || expected.size <= 0n || expected.size > BigInt(limits.maxBytes)) {
+      throw codedError('REDRAW_CLEAN_PLATE_MEDIA_SIZE_INVALID', '净景输出文件大小不合法');
+    }
+    handle = await fsp.open(real, 'r');
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.dev !== expected.dev || before.ino !== expected.ino
+      || before.size !== expected.size || before.mtimeNs !== expected.mtimeNs || before.ctimeNs !== expected.ctimeNs) {
+      throw codedError('REDRAW_CLEAN_PLATE_MEDIA_CHANGED', '净景输出在读取前发生变化');
+    }
+    const bytes = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size
+      || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
+      throw codedError('REDRAW_CLEAN_PLATE_MEDIA_CHANGED', '净景输出在读取中发生变化');
+    }
+    return { bytes, relativePath: normalized };
+  } catch (error) {
+    if (String(error?.code || '').startsWith('REDRAW_CLEAN_PLATE_MEDIA_')) throw error;
+    throw codedError('REDRAW_CLEAN_PLATE_MEDIA_READ_FAILED', '净景输出文件不可读');
+  } finally {
+    await handle?.close?.().catch(() => {});
+  }
+}
+
+function magicImageFormat(bytes) {
+  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return 'png';
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'jpeg';
+  if (bytes.length >= 12 && bytes.subarray(0, 4).toString('ascii') === 'RIFF'
+    && bytes.subarray(8, 12).toString('ascii') === 'WEBP') return 'webp';
+  return '';
+}
+
+async function inspectCleanPlateImage(file, providerResult, limits) {
+  const magicFormat = magicImageFormat(file.bytes);
+  const extension = path.posix.extname(file.relativePath).slice(1).toLowerCase();
+  const extensionFormat = extension === 'jpg' || extension === 'jpeg' ? 'jpeg' : extension;
+  if (!CLEAN_PLATE_IMAGE_FORMATS[magicFormat] || extensionFormat !== magicFormat) {
+    throw codedError('REDRAW_CLEAN_PLATE_MEDIA_TYPE_INVALID', '净景输出图片 magic 与扩展名不一致');
+  }
+  let metadata;
+  let decoded;
+  try {
+    const decoder = sharp(file.bytes, { limitInputPixels: limits.maxPixels, failOn: 'error' });
+    metadata = await decoder.metadata();
+    decoded = await decoder.clone().raw().toBuffer({ resolveWithObject: true });
+  } catch (_) {
+    throw codedError('REDRAW_CLEAN_PLATE_MEDIA_DECODE_INVALID', '净景输出图片解码失败');
+  }
+  const width = Number(metadata.width);
+  const height = Number(metadata.height);
+  if (metadata.format !== magicFormat || decoded.info.width !== width || decoded.info.height !== height
+    || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0
+    || width > limits.maxDimension || height > limits.maxDimension || width * height > limits.maxPixels) {
+    throw codedError('REDRAW_CLEAN_PLATE_MEDIA_DIMENSIONS_INVALID', '净景输出图片尺寸或像素数不合法');
+  }
+  const format = CLEAN_PLATE_IMAGE_FORMATS[magicFormat];
+  const declaredMime = String(providerResult?.quality?.mime_type ?? providerResult?.quality?.mimeType ?? '').trim().toLowerCase();
+  if (declaredMime && declaredMime !== format.mimeType) {
+    throw codedError('REDRAW_CLEAN_PLATE_MEDIA_TYPE_INVALID', '净景输出 MIME 与解码格式不一致');
+  }
+  const qualityWidth = Number(providerResult?.quality?.width);
+  const qualityHeight = Number(providerResult?.quality?.height);
+  if (qualityWidth !== width || qualityHeight !== height) {
+    throw codedError('REDRAW_CLEAN_PLATE_MEDIA_DIMENSIONS_INVALID', '净景输出尺寸与供应商质量证据不一致');
+  }
+  return {
+    ...file,
+    width,
+    height,
+    mimeType: format.mimeType,
+    extension: format.extension,
+    sha256: crypto.createHash('sha256').update(file.bytes).digest('hex'),
+  };
+}
+
+async function writeCleanPlateContentAddressed(storageRoot, image) {
+  if (!storageRoot) {
+    throw codedError('REDRAW_CLEAN_PLATE_REGISTRATION_UNKNOWN', '净景本地登记缺少存储根目录');
+  }
+  const root = path.resolve(String(storageRoot));
+  await fsp.mkdir(root, { recursive: true });
+  const rootReal = await fsp.realpath(root);
+  const relativePath = path.posix.join('redraw-clean-plates', `${image.sha256}.${image.extension}`);
+  const directory = path.join(rootReal, 'redraw-clean-plates');
+  let directoryStat = null;
+  try {
+    directoryStat = await fsp.lstat(directory);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  if (directoryStat?.isSymbolicLink()) {
+    throw codedError('REDRAW_CLEAN_PLATE_MEDIA_PATH_INVALID', '净景存储目录不得使用链接或 reparse');
+  }
+  await fsp.mkdir(directory, { recursive: true, mode: 0o700 });
+  const directoryReal = await fsp.realpath(directory);
+  if (!pathInside(rootReal, directoryReal)) {
+    throw codedError('REDRAW_CLEAN_PLATE_MEDIA_PATH_INVALID', '净景存储目录越界');
+  }
+  const destination = path.join(directoryReal, `${image.sha256}.${image.extension}`);
+  let existing = null;
+  try {
+    const stat = await fsp.lstat(destination);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw codedError('REDRAW_CLEAN_PLATE_MEDIA_PATH_INVALID', '净景内容寻址目标不是普通文件');
+    }
+    existing = await fsp.readFile(destination);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  if (existing) {
+    const digest = crypto.createHash('sha256').update(existing).digest('hex');
+    if (digest !== image.sha256) {
+      throw codedError('REDRAW_CLEAN_PLATE_MEDIA_CHANGED', '净景内容寻址文件与 hash 不一致');
+    }
+    return { relativePath, absolutePath: destination, created: false };
+  }
+  const temporary = path.join(directoryReal, `.${image.sha256}.${crypto.randomUUID()}.tmp`);
+  let handle;
+  let created = false;
+  try {
+    handle = await fsp.open(temporary, 'wx', 0o600);
+    await handle.writeFile(image.bytes);
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    try {
+      await fsp.link(temporary, destination);
+      created = true;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const raced = await fsp.readFile(destination);
+      if (crypto.createHash('sha256').update(raced).digest('hex') !== image.sha256) {
+        throw codedError('REDRAW_CLEAN_PLATE_MEDIA_CHANGED', '净景内容寻址并发写入冲突');
+      }
+    }
+    return { relativePath, absolutePath: destination, created };
+  } finally {
+    await handle?.close?.().catch(() => {});
+    await fsp.rm(temporary, { force: true }).catch(() => {});
+  }
+}
+
+async function registerLocalCleanPlate(ctx, providerResult, stagingRoot) {
+  const output = providerResult?.output;
+  if (!output || typeof output !== 'object' || Array.isArray(output)
+    || Object.keys(output).some((key) => key !== 'relative_path')) {
+    throw codedError('REDRAW_CLEAN_PLATE_MEDIA_OUTPUT_INVALID', '净景输出合同不合法');
+  }
+  const limits = cleanPlateMediaLimits(ctx);
+  const file = await secureReadCleanPlate(stagingRoot, output.relative_path, limits);
+  const image = await inspectCleanPlateImage(file, providerResult, limits);
+  let stored;
+  try {
+    stored = await writeCleanPlateContentAddressed(ctx.storageRoot || ctx.storage_root, image);
+    const asset = ctx.db.transaction(() => assetService.create(ctx.db, null, {
+      name: `clean plate ${image.sha256.slice(0, 12)}`,
+      type: 'image',
+      category: 'redraw',
+      local_path: stored.relativePath,
+      file_size: image.bytes.length,
+      mime_type: image.mimeType,
+      width: image.width,
+      height: image.height,
+      metadata: { sha256: image.sha256 },
+    }))();
+    return asset;
+  } catch (error) {
+    if (stored?.created) await fsp.rm(stored.absolutePath, { force: true }).catch(() => {});
+    if (String(error?.code || '').startsWith('REDRAW_CLEAN_PLATE_MEDIA_')) throw error;
+    throw codedError('REDRAW_CLEAN_PLATE_REGISTRATION_UNKNOWN', '净景文件登记结果未知');
+  }
+}
+
+async function createCleanPlateStaging(ctx = {}) {
+  const base = path.resolve(String(ctx.cleanPlateStagingRoot || ctx.clean_plate_staging_root
+    || path.join(os.tmpdir(), 'moli-redraw-clean-staging')));
+  await fsp.mkdir(base, { recursive: true, mode: 0o700 });
+  const stat = await fsp.lstat(base);
+  if (stat.isSymbolicLink()) {
+    throw codedError('REDRAW_CLEAN_PLATE_MEDIA_PATH_INVALID', '净景 staging 根目录不得使用链接或 reparse');
+  }
+  const staging = await fsp.mkdtemp(path.join(base, 'attempt-'));
+  await fsp.chmod(staging, 0o700).catch(() => {});
+  return staging;
+}
+
 const TEXT_CLEAN_KINDS = new Set(['text_subtitle', 'text_screen']);
 const TEXT_CLEAN_REGION_SOURCES = new Set(['manual_fixture', 'ocr_region']);
 
@@ -686,7 +971,7 @@ function markCompletedAssetNeedsAttention(ctx, attempt, asset, providerResult, e
   return rowToAsset(ctx.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attempt.id)));
 }
 
-function markCleanPlateNeedsAttention(ctx, attempt, value = {}) {
+function markCleanPlateNeedsAttention(ctx, attempt, value = {}, options = {}) {
   const now = new Date().toISOString();
   const sourcePayload = parseJson(attempt.source_ref_json, {});
   const rawProviderTaskId = String(
@@ -701,20 +986,24 @@ function markCleanPlateNeedsAttention(ctx, attempt, value = {}) {
     snapshot: {
       ...snapshot,
       ...(providerTaskId ? { provider_task_id: providerTaskId } : {}),
+      ...(options.providerCompleted ? { provider_completed: true } : {}),
     },
   };
+  const errorCode = String(options.code || 'REDRAW_CLEAN_PLATE_PROVIDER_UNKNOWN');
+  const errorMessage = String(options.message || '净景供应商任务状态未知，请人工确认');
   ctx.db.prepare(`
     UPDATE redraw_assets
     SET source_ref_json = ?, generation_task_id = COALESCE(?, generation_task_id),
         status = 'needs_attention', approval_status = 'pending',
-        error_code = 'REDRAW_CLEAN_PLATE_PROVIDER_UNKNOWN',
+        error_code = ?,
         error_message = ?, updated_at = ?
     WHERE id = ? AND tenant_id = ? AND user_id = ? AND kind = 'scene'
-      AND status = 'processing' AND deleted_at IS NULL
+      AND status IN ('processing', 'needs_attention') AND deleted_at IS NULL
   `).run(
     JSON.stringify(nextSourcePayload),
     providerTaskId || null,
-    '净景供应商任务状态未知，请人工确认',
+    errorCode,
+    errorMessage,
     now,
     Number(attempt.id),
     String(attempt.tenant_id),
@@ -1149,24 +1438,36 @@ async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
   db.prepare('UPDATE redraw_assets SET mask_asset_id = ?, updated_at = ? WHERE id = ?')
     .run(Number(maskAssetId), now, Number(attempt.id));
 
+  let stagingRoot = null;
   try {
     if (typeof ctx.provider !== 'function') throw codedError('REDRAW_ASSET_PROVIDER_REQUIRED', '缺少净景生成 provider');
+    stagingRoot = await createCleanPlateStaging(ctx);
+    const trustedInput = deepFreeze({
+      version_id: Number(ctx.versionId ?? ctx.version_id),
+      kind: 'scene',
+      mode,
+      source_asset_id: Number(sourceAssetId),
+      mask_asset_id: Number(maskAssetId),
+      input_frame_fingerprint: String(inputFrameFingerprint),
+      model,
+      prompt,
+      ...(sceneAsset.shot_id || sceneAsset.shotId
+        ? { shot_id: String(sceneAsset.shot_id || sceneAsset.shotId) }
+        : {}),
+      ...(Number.isFinite(Number(sceneAsset.width ?? sceneAsset.source_width))
+        ? { width: Number(sceneAsset.width ?? sceneAsset.source_width) }
+        : {}),
+      ...(Number.isFinite(Number(sceneAsset.height ?? sceneAsset.source_height))
+        ? { height: Number(sceneAsset.height ?? sceneAsset.source_height) }
+        : {}),
+      ...(textClean ? {
+        text_kind: textClean.textKind,
+        text_regions: textClean.textRegions,
+      } : {}),
+    });
     const providerResult = await ctx.provider({
-      attempt,
-      versionId: attempt.version_id,
-      input: {
-        ...sceneAsset,
-        mode,
-        source_asset_id: sourceAssetId,
-        mask_asset_id: Number(maskAssetId),
-        input_frame_fingerprint: inputFrameFingerprint,
-        model,
-        prompt,
-        ...(textClean ? {
-          text_kind: textClean.textKind,
-          text_regions: textClean.textRegions,
-        } : {}),
-      },
+      outputDir: stagingRoot,
+      input: trustedInput,
     });
     const providerTaskId = providerResult?.provider_task_id || providerResult?.task_id;
     if (providerTaskId) {
@@ -1186,22 +1487,53 @@ async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
       throw codedError('REDRAW_ASSET_GENERATION_FAILED', providerResult?.error || '净景生成失败');
     }
     validateCleanPlateQuality(sceneAsset, options, providerResult || {});
-    const finalized = finalizeAssetAttempt(ctx, attempt.id, mode === 'text_clean_plate'
-      ? { ...providerResult, clean_plate: true }
-      : providerResult);
+    let effectiveProviderResult = providerResult;
+    if (providerResult?.output !== undefined) {
+      try {
+        const registered = await registerLocalCleanPlate(ctx, providerResult, stagingRoot);
+        effectiveProviderResult = { ...providerResult, asset_id: Number(registered.id) };
+      } catch (error) {
+        if (error.code === 'REDRAW_CLEAN_PLATE_REGISTRATION_UNKNOWN') {
+          return markCleanPlateNeedsAttention(ctx, {
+            ...attempt,
+            tenant_id: ctx.tenantId ?? ctx.tenant_id,
+            user_id: ctx.userId ?? ctx.user_id,
+            source_ref_json: db.prepare('SELECT source_ref_json FROM redraw_assets WHERE id = ?').get(attempt.id)?.source_ref_json,
+          }, providerResult || {}, {
+            code: error.code,
+            message: '净景供应商已完成，但本地媒体登记结果未知，请人工确认',
+            providerCompleted: true,
+          });
+        }
+        throw error;
+      }
+    }
+    const finalized = finalizeAssetAttempt(ctx, attempt.id, { ...effectiveProviderResult, clean_plate: true });
     const storedAttempt = db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attempt.id));
     const pack = buildCleanPlatePack(db, storedAttempt, Number(finalized.clean_plate_asset_id || finalized.asset_id));
     const sourcePayload = parseJson(storedAttempt.source_ref_json, {});
     if (pack) sourcePayload[pack.key] = pack.value;
-    db.prepare(`
-      UPDATE redraw_assets
-      SET clean_plate_asset_id = ?, mask_asset_id = ?, status = 'needs_attention',
-          approval_status = 'pending', source_ref_json = ?, updated_at = ?
-      WHERE id = ?
-    `).run(
-      Number(finalized.clean_plate_asset_id || finalized.asset_id), Number(maskAssetId),
-      JSON.stringify(sourcePayload), new Date().toISOString(), Number(attempt.id),
-    );
+    try {
+      db.prepare(`
+        UPDATE redraw_assets
+        SET clean_plate_asset_id = ?, mask_asset_id = ?, status = 'needs_attention',
+            approval_status = 'pending', source_ref_json = ?, updated_at = ?
+        WHERE id = ?
+      `).run(
+        Number(finalized.clean_plate_asset_id || finalized.asset_id), Number(maskAssetId),
+        JSON.stringify(sourcePayload), new Date().toISOString(), Number(attempt.id),
+      );
+    } catch (_) {
+      return markCleanPlateNeedsAttention(ctx, {
+        ...storedAttempt,
+        tenant_id: ctx.tenantId ?? ctx.tenant_id,
+        user_id: ctx.userId ?? ctx.user_id,
+      }, effectiveProviderResult || {}, {
+        code: 'REDRAW_CLEAN_PLATE_REGISTRATION_UNKNOWN',
+        message: '净景供应商已完成，但本地状态登记结果未知，请人工确认',
+        providerCompleted: true,
+      });
+    }
     return rowToAsset(db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attempt.id)));
   } catch (error) {
     const row = db.prepare('SELECT status FROM redraw_assets WHERE id = ?').get(Number(attempt.id));
@@ -1217,6 +1549,8 @@ async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
       failAssetAttempt(ctx, attempt.id, error);
     }
     throw error;
+  } finally {
+    if (stagingRoot) await fsp.rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
   }
 }
 

@@ -2460,29 +2460,34 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
       } catch (_) {
         throw videoRequestError('REDRAW_SOURCE_CONDITIONING_INVALID', '源片 conditioning 审计记录无效');
       }
-      const segmentSha256 = String(conditioning?.segment_sha256 || '').trim().toLowerCase();
-      if (!/^[a-f0-9]{64}$/.test(segmentSha256)) {
-        throw videoRequestError('REDRAW_SOURCE_CONDITIONING_INVALID', '源片 conditioning 缺少有效 segment hash');
+      if (String(conditioning?.mode || '') === 'redraw_reference_bundle') {
+        conditioning = null;
       }
-      const signed = redrawSourceConditioningService.createProviderAssetUrl({
-        storageBaseUrl: runtime.providerAssetStorageBaseUrl || filesBaseUrl,
-        segmentSha256,
-        signingSecret: runtime.providerAssetSigningSecret ?? process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET,
-        nowMs: runtime.providerAssetNowMs,
-        ttlSeconds: runtime.providerAssetTtlSeconds,
-      });
-      referenceVideoUrls = [signed.url];
-      const refreshedConditioning = {
-        ...conditioning,
-        provider_asset_path: signed.pathname,
-        provider_asset_expires_at: new Date(signed.expiresAt * 1000).toISOString(),
-      };
-      db.prepare(`UPDATE video_generations
-        SET reference_video_urls = ?, reference_video_url = ?, source_conditioning_json = ?, updated_at = ?
-        WHERE id = ?`).run(
-        JSON.stringify(referenceVideoUrls), referenceVideoUrls[0], JSON.stringify(refreshedConditioning),
-        new Date().toISOString(), videoGenId
-      );
+      if (conditioning) {
+        const segmentSha256 = String(conditioning?.segment_sha256 || '').trim().toLowerCase();
+        if (!/^[a-f0-9]{64}$/.test(segmentSha256)) {
+          throw videoRequestError('REDRAW_SOURCE_CONDITIONING_INVALID', '源片 conditioning 缺少有效 segment hash');
+        }
+        const signed = redrawSourceConditioningService.createProviderAssetUrl({
+          storageBaseUrl: runtime.providerAssetStorageBaseUrl || filesBaseUrl,
+          segmentSha256,
+          signingSecret: runtime.providerAssetSigningSecret ?? process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET,
+          nowMs: runtime.providerAssetNowMs,
+          ttlSeconds: runtime.providerAssetTtlSeconds,
+        });
+        referenceVideoUrls = [signed.url];
+        const refreshedConditioning = {
+          ...conditioning,
+          provider_asset_path: signed.pathname,
+          provider_asset_expires_at: new Date(signed.expiresAt * 1000).toISOString(),
+        };
+        db.prepare(`UPDATE video_generations
+          SET reference_video_urls = ?, reference_video_url = ?, source_conditioning_json = ?, updated_at = ?
+          WHERE id = ?`).run(
+          JSON.stringify(referenceVideoUrls), referenceVideoUrls[0], JSON.stringify(refreshedConditioning),
+          new Date().toISOString(), videoGenId
+        );
+      }
     }
     const referenceAudioUrls = snapshotHas('reference_audio_urls')
       ? cleanUrlList(Array.isArray(snapshot.reference_audio_urls) ? snapshot.reference_audio_urls : [])

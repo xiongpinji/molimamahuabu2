@@ -142,7 +142,46 @@ function ownerContext(ctx) {
   };
 }
 
-function assertOwnedAsset(ctx, assetId, kind) {
+function isOwnedRedrawLocalVoice(ctx, asset, expected = {}) {
+  const owner = ownerContext(ctx);
+  const metadata = parseJson(asset.metadata, {});
+  const versionId = Number(expected.versionId ?? ctx.versionId ?? ctx.version_id);
+  const voiceRedrawAssetId = Number(expected.voiceRedrawAssetId);
+  if (asset.category !== 'redraw-local-voice'
+    || metadata.source !== 'local_offline_tts'
+    || String(metadata.tenant_id || '') !== owner.tenantId
+    || String(metadata.user_id || '') !== owner.userId
+    || Number(metadata.version_id) !== versionId
+    || Number(metadata.voice_redraw_asset_id) !== voiceRedrawAssetId
+    || String(metadata.audio_sha256 || '') !== String(expected.audioSha256 || '')) return false;
+  const scope = ctx.db.prepare(`
+    SELECT w.project_id
+    FROM redraw_versions v
+    JOIN redraw_works w
+      ON w.id = v.work_id AND w.tenant_id = v.tenant_id AND w.user_id = v.user_id
+     AND w.deleted_at IS NULL
+    WHERE v.id = ? AND v.tenant_id = ? AND v.user_id = ? AND v.deleted_at IS NULL
+  `).get(versionId, owner.tenantId, owner.userId);
+  const registration = ctx.db.prepare(`
+    SELECT id
+    FROM redraw_local_voice_registrations
+    WHERE id = ? AND tenant_id = ? AND user_id = ? AND version_id = ?
+      AND voice_redraw_asset_id = ? AND status = 'completed'
+      AND audio_asset_id = ? AND audio_sha256 = ? AND deleted_at IS NULL
+  `).get(
+    Number(metadata.registration_id),
+    owner.tenantId,
+    owner.userId,
+    versionId,
+    voiceRedrawAssetId,
+    Number(asset.id),
+    String(expected.audioSha256 || ''),
+  );
+  return Boolean(scope && registration
+    && Number(scope.project_id) === Number(asset.drama_id));
+}
+
+function assertOwnedAsset(ctx, assetId, kind, expected = {}) {
   const asset = ctx.db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(Number(assetId));
   if (!asset || !readableAsset(ctx, asset)) return null;
   if (kind === 'wardrobe') {
@@ -150,7 +189,9 @@ function assertOwnedAsset(ctx, assetId, kind) {
   } else if (kind === 'voice') {
     if (asset.type !== 'audio' || !SUPPORTED_AUDIO_MIME_TYPES.has(String(asset.mime_type || '').toLowerCase())) return null;
   }
-  if (asset.drama_id != null) {
+  if (kind === 'voice' && asset.category === 'redraw-local-voice') {
+    if (!isOwnedRedrawLocalVoice(ctx, asset, expected)) return null;
+  } else if (asset.drama_id != null) {
     const drama = ctx.db.prepare('SELECT tenant_id, user_id FROM dramas WHERE id = ? AND deleted_at IS NULL')
       .get(Number(asset.drama_id));
     const { tenantId, userId } = ownerContext(ctx);
@@ -241,7 +282,11 @@ function voiceForCharacter(ctx, version, row, sourceKey, missing) {
     || evidence.detected_locale !== evidence.locale) {
     missing.push(`${sourceKey}:voice_language_mismatch`);
   } else {
-    const audioAsset = assertOwnedAsset(ctx, evidence.audio_asset_id, 'voice');
+    const audioAsset = assertOwnedAsset(ctx, evidence.audio_asset_id, 'voice', {
+      versionId: Number(version.id),
+      voiceRedrawAssetId: Number(voiceRow.id),
+      audioSha256: voice.sha256,
+    });
     const digest = audioAsset ? fileSha256(ctx, audioAsset) : null;
     if (!digest) {
       missing.push(`${sourceKey}:voice_audio_unreadable`);

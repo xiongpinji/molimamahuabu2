@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "release": "redraw-coverage-http-provider-gate-task-c-p2-20260828",
+  "allowedPaths": [
+    "backend-node/src/routes/index.js",
+    "backend-node/test/featureLockManifest.test.js",
+    "backend-node/test/incrementalReleaseScope.test.js",
+    "backend-node/test/redrawRoutes.test.js",
+    "deploy/release-scopes/redraw-coverage-http-provider-gate-task-c-p2-20260828.json",
+    "docs/verification/platform-stability/feature-lock-manifest.json"
+  ]
+}

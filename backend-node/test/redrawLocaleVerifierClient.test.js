@@ -72,6 +72,23 @@ function validNativeRequest(audioPath) {
   };
 }
 
+function validLocalVoiceRequest(audioPath) {
+  return {
+    requestId: 'voice-local-1:locale',
+    audioPath,
+    audioSha256: crypto.createHash('sha256').update('fake-audio').digest('hex'),
+    approvedText: 'Anna did not pay 50 dollars.',
+    locale: 'en-US',
+    localTtsInvocation: {
+      engine: 'eSpeak NG',
+      engineVersion: '1.52.0',
+      binarySha256: '6'.repeat(64),
+      manifestSha256: '7'.repeat(64),
+      profile: 'role-1',
+    },
+  };
+}
+
 function makeAudio() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-locale-client-'));
   const audioPath = path.join(tmp, 'voice.wav');
@@ -130,6 +147,59 @@ function nativeOkResponse(request, overrides = {}) {
           .digest('hex'),
       },
       completed_at: '2026-08-09T00:00:01.000Z',
+      ...overrides,
+    },
+  };
+}
+
+function localVoiceOkResponse(request, overrides = {}) {
+  return {
+    ok: true,
+    result: {
+      source: 'offline-worker',
+      request_id: request.request_id,
+      audio_sha256: request.audio_sha256,
+      approved_text_sha256: crypto.createHash('sha256').update(request.approved_text).digest('hex'),
+      locale_pack: request.locale_pack,
+      language_verified: true,
+      detected_locale: 'en-US',
+      transcript_sha256: '8'.repeat(64),
+      model_manifest_sha256: 'a'.repeat(64),
+      calibration_manifest_sha256: 'b'.repeat(64),
+      models: {
+        asr_revision: 'asr-pinned',
+        accent_revision: 'accent-pinned',
+        asr_tree_sha256: 'c'.repeat(64),
+        accent_tree_sha256: 'd'.repeat(64),
+      },
+      asr: { ok: true, language: 'en', probability: 0.99 },
+      accent: { ok: true, label: 'us', probability: 0.99 },
+      metrics: {
+        word_error_rate: 0,
+        character_error_rate: 0,
+        critical_tokens_match: true,
+      },
+      checks: {
+        locale_pack: true,
+        audio_path: true,
+        audio_sha256_matches_request: true,
+        asr_inference: true,
+        accent_inference: true,
+        calibration_thresholds: true,
+        language: true,
+        language_probability: true,
+        word_error_rate: true,
+        character_error_rate: true,
+        critical_tokens_match: true,
+        us_accent_label: true,
+        us_accent_probability: true,
+        model_manifest: true,
+        calibration_manifest: true,
+        models: true,
+        transcript_present: true,
+      },
+      local_tts_invocation: { ...request.local_tts_invocation },
+      completed_at: '2026-08-28T00:00:01.000Z',
       ...overrides,
     },
   };
@@ -312,6 +382,120 @@ test('client rejects oversized requests before connecting', async () => {
   });
   await assert.rejects(() => client.verify(validRequest(audio.audioPath)), {
     code: 'REDRAW_LOCALE_REQUEST_TOO_LARGE',
+  });
+});
+
+test('local voice client sends exact independent request and returns fully bound evidence', async () => {
+  const audio = makeAudio();
+  await withServer((socket, request) => {
+    socket.end(`${JSON.stringify(localVoiceOkResponse(request))}\n`);
+  }, async ({ socketPath, state }) => {
+    const result = await clientFor(socketPath).verifyLocalVoice(validLocalVoiceRequest(audio.audioPath));
+
+    assert.equal(state.requestCount, 1);
+    const request = state.requests[0];
+    assert.deepEqual(Object.keys(request).sort(), [
+      'action',
+      'approved_text',
+      'audio_path',
+      'audio_sha256',
+      'local_tts_invocation',
+      'locale_pack',
+      'request_id',
+    ]);
+    assert.equal(request.action, 'verify_local_voice');
+    assert.equal(request.audio_sha256,
+      crypto.createHash('sha256').update(fs.readFileSync(audio.audioPath)).digest('hex'));
+    assert.deepEqual(Object.keys(request.local_tts_invocation).sort(), [
+      'binary_sha256',
+      'engine',
+      'engine_version',
+      'manifest_sha256',
+      'profile',
+    ]);
+    assert.equal(Object.hasOwn(request, 'tts_invocation'), false);
+    assert.equal(Object.hasOwn(request, 'video_invocation'), false);
+    assert.equal(JSON.stringify(request).includes('provider'), false);
+    assert.equal(result.requestId, request.request_id);
+    assert.equal(result.audioSha256, request.audio_sha256);
+    assert.equal(result.approvedTextSha256,
+      crypto.createHash('sha256').update(request.approved_text).digest('hex'));
+    assert.equal(result.localePack, request.locale_pack);
+    assert.equal(result.detectedLocale, 'en-US');
+    assert.equal(result.languageVerified, true);
+    assert.deepEqual(result.localTtsInvocation, validLocalVoiceRequest(audio.audioPath).localTtsInvocation);
+    assert.equal(Object.hasOwn(result, 'approvedText'), false);
+    assert.equal(JSON.stringify(result).includes(request.approved_text), false);
+  });
+});
+
+test('local voice client rejects input hash drift and mixed local invocation before connecting', async () => {
+  const audio = makeAudio();
+  const base = validLocalVoiceRequest(audio.audioPath);
+  const invalidInputs = [
+    { ...base, audioSha256: '0'.repeat(64) },
+    { ...base, localTtsInvocation: { ...base.localTtsInvocation, provider: 'minimax' } },
+    { ...base, localTtsInvocation: { ...base.localTtsInvocation, model: 'speech-02-hd' } },
+    { ...base, localTtsInvocation: { ...base.localTtsInvocation, aiServiceConfigId: 7 } },
+    { ...base, localTtsInvocation: { ...base.localTtsInvocation, providerTaskId: 'secret-task' } },
+  ];
+
+  for (const input of invalidInputs) {
+    await assert.rejects(
+      () => clientFor('unused').verifyLocalVoice(input),
+      { code: 'REDRAW_LOCALE_EVIDENCE_INVALID' },
+    );
+  }
+});
+
+test('local voice client rejects response key and binding drift without leaking worker details', async () => {
+  const cases = [
+    { audio_sha256: '0'.repeat(64) },
+    { approved_text_sha256: '0'.repeat(64) },
+    { locale_pack: 'en-GB@1' },
+    { detected_locale: 'en-GB' },
+    { model_manifest_sha256: '0'.repeat(64) },
+    { local_tts_invocation: { engine: 'other' } },
+    { provider: 'must-not-be-accepted' },
+  ];
+  for (const overrides of cases) {
+    const audio = makeAudio();
+    await withServer((socket, request) => {
+      const response = localVoiceOkResponse(request, overrides);
+      if (overrides.local_tts_invocation) {
+        response.result.local_tts_invocation = {
+          ...request.local_tts_invocation,
+          ...overrides.local_tts_invocation,
+        };
+      }
+      socket.end(`${JSON.stringify(response)}\n`);
+    }, async ({ socketPath, state }) => {
+      await assert.rejects(
+        () => clientFor(socketPath).verifyLocalVoice(validLocalVoiceRequest(audio.audioPath)),
+        { code: 'REDRAW_LOCALE_EVIDENCE_INVALID' },
+      );
+      assert.equal(state.requestCount, 1);
+    });
+  }
+
+  const audio = makeAudio();
+  await withServer((socket) => {
+    socket.end(`${JSON.stringify({
+      ok: false,
+      error_code: 'C:\\private\\voice.wav',
+      message: 'Anna did not pay 50 dollars. API_KEY=secret',
+    })}\n`);
+  }, async ({ socketPath }) => {
+    await assert.rejects(
+      () => clientFor(socketPath).verifyLocalVoice(validLocalVoiceRequest(audio.audioPath)),
+      (error) => {
+        assert.equal(error.code, 'REDRAW_LOCAL_TTS_VERIFICATION_FAILED');
+        assert.equal(error.message, 'REDRAW_LOCAL_TTS_VERIFICATION_FAILED');
+        assert.equal(JSON.stringify(error).includes('private'), false);
+        assert.equal(JSON.stringify(error).includes('secret'), false);
+        return true;
+      },
+    );
   });
 });
 

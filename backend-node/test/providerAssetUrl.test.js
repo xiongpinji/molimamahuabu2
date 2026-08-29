@@ -7,7 +7,10 @@ const http = require('http');
 const express = require('express');
 
 const { createStaticOwnershipMiddleware } = require('../src/middleware/resourceOwnership');
-const { signProviderAssetUrl } = require('../src/services/providerAssetUrlService');
+const {
+  signProviderAssetUrl,
+  signStrictStaticAssetUrl,
+} = require('../src/services/providerAssetUrlService');
 
 test('限时签名素材链接允许供应商匿名读取，但未签名链接仍受登录保护', async (t) => {
   const secret = 'test-provider-asset-secret-at-least-32-characters';
@@ -50,4 +53,36 @@ test('限时签名素材链接允许供应商匿名读取，但未签名链接�
   });
   const expiredResponse = await fetch(expiredUrl);
   assert.equal(expiredResponse.status, 401);
+});
+
+test('严格 static 签名拒绝非法 static 路径且必须生成同源 HTTPS 签名 URL', () => {
+  const secret = 'strict-static-provider-asset-secret-1234567890';
+  const filesBaseUrl = 'https://media.example.test/static';
+
+  const signed = signStrictStaticAssetUrl('/static/projects/0001/ref.png', {
+    filesBaseUrl,
+    secret,
+    now: 1_700_000_000_000,
+  });
+  const url = new URL(signed);
+  assert.equal(url.origin, 'https://media.example.test');
+  assert.equal(url.pathname, '/static/projects/0001/ref.png');
+  assert.ok(url.searchParams.get('provider_asset_expires'));
+  assert.ok(url.searchParams.get('provider_asset_signature'));
+
+  const badInputs = [
+    '/static/../private/ref.png',
+    '/static/%2e%2e/private/ref.png',
+    'C:\\private\\ref.png',
+    'file:///tmp/ref.png',
+    'https://evil.example.test/static/projects/0001/ref.png',
+    'https://media.example.test/assets/ref.png',
+  ];
+  for (const input of badInputs) {
+    assert.throws(() => signStrictStaticAssetUrl(input, { filesBaseUrl, secret }), /static URL/);
+  }
+  assert.throws(() => signStrictStaticAssetUrl('/static/projects/0001/ref.png', {
+    filesBaseUrl: 'http://media.example.test/static',
+    secret,
+  }), /static URL/);
 });

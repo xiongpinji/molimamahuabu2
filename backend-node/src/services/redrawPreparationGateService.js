@@ -572,7 +572,82 @@ function assetSha(asset) {
   return String(metadata?.sha256 || asset?.sha256 || '').trim();
 }
 
-function validateMotion(ctx, shot, motion) {
+function currentMotionBindingHashes(ctx, shot, faces, texts) {
+  try {
+    const version = ctx.db.prepare('SELECT name_map_json FROM redraw_versions WHERE id = ? LIMIT 1')
+      .get(Number(shot.version_id));
+    const nameMap = parseJsonAny(version?.name_map_json, {});
+    const identities = faces.map((face) => {
+      const row = loadCharacterRow(ctx, shot, face);
+      const pack = parseJsonAny(row?.source_ref_json, {})?.identity_pack;
+      if (!row || !isPlainObject(pack)) throw new Error('identity binding unavailable');
+      return {
+        redraw_asset_id: Number(row.id),
+        source_character_key: face.source_character_key,
+        target_character_name: String(nameMap?.[face.source_character_key] || row.localized_name || ''),
+        target_actor_label: pack.target_actor_label,
+        identity_asset_id: Number(pack.artifact?.asset_id),
+        identity_pack_sha256: pack.pack_sha256,
+        persona_origin: pack.persona_origin,
+        target_country: pack.target_country,
+        adult_status: pack.adult_status,
+        artifact: pack.artifact,
+        wardrobe: {
+          reference_asset_id: Number(pack.wardrobe?.reference_asset_id),
+          reference_sha256: pack.wardrobe?.reference_sha256,
+          consistency_confirmed: true,
+        },
+        pack_sha256: pack.pack_sha256,
+      };
+    });
+    const cleanPlates = texts.map((text) => {
+      const row = loadTextRow(ctx, shot, text);
+      const pack = parseJsonAny(row?.source_ref_json, {})?.text_clean_plate_pack;
+      if (!row || !isPlainObject(pack)) throw new Error('clean binding unavailable');
+      return {
+        redraw_asset_id: Number(row.id),
+        region_key: text.region_key,
+        kind: text.kind,
+        artifact: pack.artifact,
+        pack_sha256: pack.pack_sha256,
+      };
+    });
+    const coverage = ctx.__coverageBinding;
+    const coverageShot = coverage?.shots?.find((entry) => Number(entry.shot_id) === Number(shot.id));
+    if (!coverage || !coverageShot) throw new Error('coverage binding unavailable');
+    const currentCoverage = {
+      analysis_sha256: coverage.analysis_sha256,
+      approved_by: coverage.approved_by,
+      approved_at: coverage.approved_at,
+      facts_hash: coverage.facts_hash,
+      source_fingerprint: coverage.source_fingerprint,
+      requirement_keys: coverageShot.requirement_keys,
+      requirement_hash: coverageShot.requirement_hash,
+    };
+    return {
+      coverage: sha256(stableJson(currentCoverage)),
+      identity: sha256(stableJson(identities)),
+      clean: sha256(stableJson(cleanPlates)),
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function latestMotionImportCurrent(ctx, shot, assetId, expectedSha) {
+  if (!hasTable(ctx.db, 'redraw_reference_artifact_imports')) return true;
+  const latest = ctx.db.prepare(`
+    SELECT stored_asset_id, file_sha256
+    FROM redraw_reference_artifact_imports
+    WHERE tenant_id = ? AND user_id = ? AND version_id = ?
+      AND scope_type = 'shot' AND scope_id = ? AND purpose = 'motion'
+      AND status = 'completed'
+    ORDER BY id DESC LIMIT 1
+  `).get(String(shot.tenant_id || ''), String(shot.user_id || ''), Number(shot.version_id), Number(shot.id));
+  return !latest || (Number(latest.stored_asset_id) === assetId && latest.file_sha256 === expectedSha);
+}
+
+function validateMotion(ctx, shot, motion, faces, texts) {
   if (!isPlainObject(motion)) return false;
   const assetId = Number(motion.asset_id);
   const expectedSha = String(motion.sha256 || '').trim();
@@ -595,6 +670,7 @@ function validateMotion(ctx, shot, motion) {
   const metadata = parseJsonAny(row.metadata, {});
   const motionMetadata = metadata?.redraw_motion_reference;
   const work = ctx.db.prepare('SELECT source_asset_id, source_fingerprint FROM redraw_works WHERE id = ? LIMIT 1').get(Number(shot.work_id));
+  const bindingHashes = currentMotionBindingHashes(ctx, shot, faces, texts);
   if (!isPlainObject(motionMetadata)
     || motionMetadata.schema_version !== 'redraw-motion-reference-v1'
     || motionMetadata.tenant_id !== String(shot.tenant_id || '')
@@ -606,7 +682,13 @@ function validateMotion(ctx, shot, motion) {
     || Number(motionMetadata.clip_start_ms) !== Number(shot.start_ms)
     || Number(motionMetadata.clip_end_ms) !== Number(shot.end_ms)
     || motionMetadata.face_coverage_sha256 !== motion.face_coverage_sha256
-    || motionMetadata.text_coverage_sha256 !== motion.text_coverage_sha256) return false;
+    || motionMetadata.text_coverage_sha256 !== motion.text_coverage_sha256
+    || motionMetadata.file_sha256 !== expectedSha
+    || !bindingHashes
+    || motionMetadata.coverage_binding_sha256 !== bindingHashes.coverage
+    || motionMetadata.identity_binding_sha256 !== bindingHashes.identity
+    || motionMetadata.clean_binding_sha256 !== bindingHashes.clean
+    || !latestMotionImportCurrent(ctx, shot, assetId, expectedSha)) return false;
   return true;
 }
 
@@ -663,7 +745,7 @@ function validateBundleShape(ctx, shot, bundle, plan, missing) {
     face_coverage_sha256: bundle.motion_reference.face_coverage_sha256 || review.face_coverage_sha256,
     text_coverage_sha256: bundle.motion_reference.text_coverage_sha256 || review.text_coverage_sha256,
   } : bundle.motion_reference;
-  if (!validateMotion(ctx, shot, motionReference)) {
+  if (!validateMotion(ctx, shot, motionReference, bundle.face_tracks, textRegions)) {
     addMissing(missing, 'reference_bundle', shot.id, 'motion_reference_not_current', shotAnchor);
   }
 }

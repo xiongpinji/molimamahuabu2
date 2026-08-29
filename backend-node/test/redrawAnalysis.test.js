@@ -475,6 +475,60 @@ test('runAnalyzeTask writes facts and draft shots once, then confirms credits', 
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM credit_ledger WHERE event_type = 'confirm'").get().n, 1);
 });
 
+test('free analysis creates and completes without reservation or ledger rows', async () => {
+  const db = createDb();
+  addVerifiedConfig(db);
+  addWorkAndAssets(db);
+  prices.set(db, 'GPT-5.5', 0, { category: 'text', pricingMode: 'free' });
+
+  const started = await redraw.startAnalysis(db, log, { workId: 'work-1', userId: 'user-1' }, {
+    provider: { startAnalysis: async () => ({ provider_task_id: 'provider-free' }) },
+  });
+  assert.equal(started.reservation_id, null);
+  assert.deepEqual(started.billing, { charged: 0, held: 0, released: 0 });
+
+  await redraw.runAnalyzeTask(db, log, started.task_id, {
+    provider: { pollAnalysisTask: async () => ({ status: 'completed', result_asset_id: 'asset-result', facts: validFacts() }) },
+    assetReader: { canRead: (asset) => Boolean(asset?.local_path) },
+  });
+
+  const task = db.prepare('SELECT * FROM async_tasks WHERE id = ?').get(started.task_id);
+  const work = db.prepare('SELECT * FROM redraw_works WHERE id = ?').get('work-1');
+  assert.equal(task.status, 'completed');
+  assert.equal(task.credit_reservation_id, null);
+  assert.equal(work.credit_reservation_id, null);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM usage_reservations').get().n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM credit_ledger').get().n, 0);
+  assert.deepEqual(creditLedger.getAccount(db, 'user-1'), {
+    user_id: 'user-1',
+    available: 100,
+    held: 0,
+    spent: 0,
+  });
+});
+
+test('free analysis provider failure does not require reservation or ledger rows', async () => {
+  const db = createDb();
+  addVerifiedConfig(db);
+  addWorkAndAssets(db);
+  prices.set(db, 'GPT-5.5', 0, { category: 'text', pricingMode: 'free' });
+
+  await assert.rejects(
+    () => redraw.startAnalysis(db, log, { workId: 'work-1', userId: 'user-1' }, {
+      provider: { startAnalysis: async () => { throw new Error('provider offline'); } },
+    }),
+    /provider offline/,
+  );
+
+  const task = db.prepare("SELECT * FROM async_tasks WHERE type = 'redraw_analysis'").get();
+  assert.equal(task.status, 'failed');
+  assert.equal(task.credit_reservation_id, null);
+  assert.equal(db.prepare('SELECT status, credit_reservation_id FROM redraw_works WHERE id = ?').get('work-1').status, 'failed');
+  assert.equal(db.prepare('SELECT credit_reservation_id FROM redraw_works WHERE id = ?').get('work-1').credit_reservation_id, null);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM usage_reservations').get().n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM credit_ledger').get().n, 0);
+});
+
 test('startAnalysis immediately finalizes a synchronous native result with the real provider id', async () => {
   const db = createDb();
   addVerifiedConfig(db);
