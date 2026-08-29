@@ -14,6 +14,10 @@ const FRESHNESS_SURFACES = Object.freeze({
     'backend-node/src/services/toapisVideoClient.js',
     'backend-node/scripts/verify-toapis-video-models.js',
   ]),
+  toapisWan3: Object.freeze([
+    'backend-node/src/services/toapisWan3VideoClient.js',
+    'backend-node/scripts/verify-toapis-wan3-video.js',
+  ]),
   toapisPrivateAvatar: Object.freeze([
     'backend-node/src/services/toapisVideoClient.js',
     'backend-node/src/services/toapisPrivateAvatarService.js',
@@ -46,6 +50,28 @@ const PROVIDERS = Object.freeze({
       'backend-node/src/routes/aiConfig.js',
       'backend-node/src/services/aiConfigService.js',
       'backend-node/src/services/canvasModelCatalogService.js',
+      'backend-node/src/services/modelPriceService.js',
+      'backend-node/src/services/videoClient.js',
+      'backend-node/src/services/videoService.js',
+      'frontweb/src/components/AIConfigContent.vue',
+      'frontweb/src/utils/homeQuickGeneration.js',
+      'frontweb/src/utils/canvasModelCapabilities.js',
+      'frontweb/src/views/FilmCreate.vue',
+      'frontweb/src/views/FilmList.vue',
+      'frontweb/src/views/FreeCreate.vue',
+    ]),
+  }),
+  toapisWan3: Object.freeze({
+    label: 'ToAPIs Wan 3.0 video',
+    contract: 'toapis-wan3-video-real-verification-v1',
+    evidenceFile: 'toapis-wan3-video-verification.json',
+    clientFile: 'backend-node/src/services/toapisWan3VideoClient.js',
+    markers: /\bwan3\.0-video\b|\btoapis_wan3_video\b/,
+    surfaceFiles: Object.freeze([
+      'backend-node/src/routes/aiConfig.js',
+      'backend-node/src/services/aiConfigService.js',
+      'backend-node/src/services/canvasModelCatalogService.js',
+      'backend-node/src/services/externalModelEvidenceService.js',
       'backend-node/src/services/modelPriceService.js',
       'backend-node/src/services/videoClient.js',
       'backend-node/src/services/videoService.js',
@@ -116,6 +142,15 @@ const TOAPIS_PRIVATE_AVATAR_CASES = Object.freeze([
   Object.freeze({ id: 'fast-avatar-480-4s', model: 'seedance-2-fast', resolution: '480p', duration: 4 }),
   Object.freeze({ id: 'mini-avatar-480-4s', model: 'seedance-2-mini', resolution: '480p', duration: 4 }),
 ]);
+const TOAPIS_WAN3_CASE = Object.freeze({
+  id: 'wan3-t2v-480p-2s-no-audio',
+  model: 'wan3.0-video',
+  mode: 't2v',
+  resolution: '480p',
+  ratio: '16:9',
+  duration: 2,
+  audio: false,
+});
 
 const TOAPIS_PRICE_FLOORS = Object.freeze({
   'seedance-2-fast|480p': 0.584,
@@ -264,6 +299,20 @@ function trustedUnchangedToapisStandardSurface(candidate, expectedCurrent) {
     return candidateText === currentText
       && sourceSha256(candidate, relative) === TRUSTED_UNCHANGED_TOAPIS_STANDARD_SURFACE_SHA256[relative];
   });
+}
+
+function freshnessRequirements(candidate, expectedCurrent, surfaces) {
+  const toapis = surfaces.toapis
+    && (protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.toapis)
+      || !trustedUnchangedToapisStandardSurface(candidate, expectedCurrent));
+  return {
+    toapis,
+    toapisPrivateAvatar: protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.toapisPrivateAvatar),
+    toapisWan3: Boolean(surfaces.toapisWan3)
+      && protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.toapisWan3),
+    usmercari: protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.usmercari),
+    lingjing: protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.lingjing),
+  };
 }
 
 function canStartRegexLiteral(source, index) {
@@ -489,6 +538,10 @@ function auditEvidenceBindingRuntime(candidate, surfaces) {
     'evidence_sha256',
     'hasTrustedEvidenceBinding',
   ]) requirePattern(evidenceService, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `evidence binding runtime is missing ${token}`);
+  if (surfaces.toapisWan3) {
+    requirePattern(evidenceService, new RegExp(PROVIDERS.toapisWan3.contract),
+      `evidence binding runtime is missing ${PROVIDERS.toapisWan3.contract}`);
+  }
   if (surfaces.lingjing) {
     requirePattern(evidenceService, new RegExp(PROVIDERS.lingjing.contract), `evidence binding runtime is missing ${PROVIDERS.lingjing.contract}`);
   }
@@ -852,6 +905,149 @@ function auditToapisRuntime(candidate, options = {}) {
     'ToAPIs production preflight does not execute the evidence binding audit');
   requirePattern(productionPreflight.source, /['"]external_model_evidence_binding['"]/,
     'ToAPIs production preflight does not expose a blocking evidence check');
+}
+
+function auditToapisWan3Runtime(candidate, options = {}) {
+  const client = stripComments(candidateSource(candidate, 'backend-node/src/services/toapisWan3VideoClient.js'));
+  const sharedClient = stripComments(candidateSource(candidate, 'backend-node/src/services/toapisVideoClient.js'));
+  const scopes = functionScopes(client);
+  const validator = scopes.find((scope) => scope.name === 'validateToapisWan3VideoOptions');
+  const bodyBuilder = scopes.find((scope) => scope.name === 'buildToapisWan3VideoBody');
+  const submitter = scopes.find((scope) => scope.name === 'callToapisWan3VideoApi');
+  const poller = scopes.find((scope) => scope.name === 'fetchToapisWan3Task');
+  const unknown = scopes.find((scope) => scope.name === 'indeterminateCreateError');
+  const keyResolver = scopes.find((scope) => scope.name === 'resolveToapisWan3ApiKey');
+  const durationValidator = scopes.find((scope) => scope.name === 'validateReferenceDurations');
+  if (!validator || !bodyBuilder || !submitter || !poller || !unknown || !keyResolver || !durationValidator) {
+    fail('ToAPIs Wan 3.0 request client functions are incomplete');
+  }
+  for (const [pattern, message] of [
+    [/TOAPIS_WAN3_MODEL\s*=\s*['"]wan3\.0-video['"]/, 'ToAPIs Wan 3.0 model is not locked'],
+    [/aspectRatios\s*:\s*Object\.freeze\s*\(\s*\[['"]adaptive['"],\s*['"]16:9['"],\s*['"]9:16['"],\s*['"]1:1['"],\s*['"]4:3['"],\s*['"]3:4['"]\]\s*\)/, 'ToAPIs Wan 3.0 ratios differ from the reviewed contract'],
+    [/durations\s*:\s*Object\.freeze\s*\(\s*Array\.from\s*\(\s*\{\s*length\s*:\s*29\s*\}/, 'ToAPIs Wan 3.0 duration range is not 2 through 30 seconds'],
+    [/resolutions\s*:\s*Object\.freeze\s*\(\s*\[['"]480p['"],\s*['"]720p['"],\s*['"]1080p['"]\]\s*\)/, 'ToAPIs Wan 3.0 resolutions differ from the reviewed contract'],
+    [/maxReferences\s*:\s*10\b/, 'ToAPIs Wan 3.0 image-reference limit is not 10'],
+    [/maxVideoReferences\s*:\s*5\b/, 'ToAPIs Wan 3.0 video-reference limit is not 5'],
+    [/maxAudioReferences\s*:\s*5\b/, 'ToAPIs Wan 3.0 audio-reference limit is not 5'],
+    [/maxReferenceMediaDurationSeconds\s*:\s*15\b/, 'ToAPIs Wan 3.0 reference-media duration limit is not 15 seconds'],
+    [/supportsFirstFrame\s*:\s*true/, 'ToAPIs Wan 3.0 first-frame capability is missing'],
+    [/supportsLastFrame\s*:\s*true/, 'ToAPIs Wan 3.0 last-frame capability is missing'],
+    [/supportsAudio\s*:\s*true/, 'ToAPIs Wan 3.0 output-audio capability is missing'],
+  ]) requirePattern(client, pattern, message);
+  requirePattern(sharedClient, /hostname\s*!==\s*['"]toapis\.xyz['"]/, 'ToAPIs Wan 3.0 shared URL normalizer does not lock the official host');
+  requirePattern(sharedClient, /protocol\s*!==\s*['"]https:['"]/, 'ToAPIs Wan 3.0 shared URL normalizer does not require HTTPS');
+
+  for (const [pattern, message] of [
+    [/opts\.duration\s*==\s*null/, 'ToAPIs Wan 3.0 validation does not require an explicit duration'],
+    [/Number\.isSafeInteger\s*\(\s*duration\s*\)/, 'ToAPIs Wan 3.0 duration validation does not require an integer'],
+    [/images\.length\s*>\s*TOAPIS_WAN3_SPEC\.maxReferences/, 'ToAPIs Wan 3.0 image-reference ceiling is not enforced'],
+    [/videos\.length\s*>\s*TOAPIS_WAN3_SPEC\.maxVideoReferences/, 'ToAPIs Wan 3.0 video-reference ceiling is not enforced'],
+    [/audio\.length\s*>\s*TOAPIS_WAN3_SPEC\.maxAudioReferences/, 'ToAPIs Wan 3.0 audio-reference ceiling is not enforced'],
+    [/validateReferenceDurations\s*\(\s*videos\s*,\s*opts\.reference_video_durations/, 'ToAPIs Wan 3.0 video-reference duration is not fail closed'],
+    [/validateReferenceDurations\s*\(\s*audio\s*,\s*opts\.reference_audio_durations/, 'ToAPIs Wan 3.0 audio-reference duration is not fail closed'],
+    [/\(firstFrame\s*\|\|\s*lastFrame\)\s*&&\s*\(images\.length\s*\|\|\s*videos\.length\s*\|\|\s*audio\.length\)/, 'ToAPIs Wan 3.0 does not enforce frame/reference mutual exclusion'],
+    [/lastFrame\s*&&\s*!firstFrame/, 'ToAPIs Wan 3.0 allows a last frame without a first frame'],
+    [/parsed\.protocol\s*!==\s*['"]https:['"]/, 'ToAPIs Wan 3.0 references are not restricted to HTTPS'],
+    [/isPrivateHost\s*\(\s*parsed\.hostname\s*\)/, 'ToAPIs Wan 3.0 references are not protected from private hosts'],
+  ]) requirePattern(client, pattern, message);
+
+  for (const [pattern, message] of [
+    [/reference_images/, 'ToAPIs Wan 3.0 request body is missing reference_images'],
+    [/video_list/, 'ToAPIs Wan 3.0 request body is missing video_list'],
+    [/audio_with_roles/, 'ToAPIs Wan 3.0 request body is missing audio_with_roles'],
+    [/image_with_roles/, 'ToAPIs Wan 3.0 request body is missing image_with_roles'],
+    [/['"]first_frame['"]/, 'ToAPIs Wan 3.0 request body is missing first_frame'],
+    [/['"]last_frame['"]/, 'ToAPIs Wan 3.0 request body is missing last_frame'],
+    [/client_business_id/, 'ToAPIs Wan 3.0 request body is missing a recovery identifier'],
+  ]) requirePattern(bodyBuilder.source, pattern, message);
+
+  requirePattern(durationValidator.source,
+    /total\s*>\s*TOAPIS_WAN3_SPEC\.maxReferenceMediaDurationSeconds/,
+    'ToAPIs Wan 3.0 reference-media total duration is not enforced');
+  if (/\bTOAPIS_API_KEY\b/.test(keyResolver.source)) {
+    fail('ToAPIs Wan 3.0 key resolver must not inherit the legacy global ToAPIs key');
+  }
+  const explicitKeyIndex = keyResolver.source.indexOf('explicitApiKey');
+  const configKeyIndex = keyResolver.source.indexOf('config.api_key');
+  const wanEnvKeyIndex = keyResolver.source.indexOf('TOAPIS_WAN3_API_KEY');
+  if (explicitKeyIndex < 0 || configKeyIndex < 0 || wanEnvKeyIndex < 0
+      || explicitKeyIndex > configKeyIndex || configKeyIndex > wanEnvKeyIndex) {
+    fail('ToAPIs Wan 3.0 key priority must be request key, config key, then Wan-only environment key');
+  }
+  requirePattern(submitter.source,
+    /resolveToapisWan3ApiKey\s*\(\s*config\s*,\s*requestOpts\.apiKey\s*\)/,
+    'ToAPIs Wan 3.0 submission does not use the isolated request/config key resolver');
+  for (const [pattern, message] of [
+    [/!body\.client_business_id/, 'ToAPIs Wan 3.0 submission does not require a stable recovery id'],
+    [/RECOVERY_ID_REQUIRED/, 'ToAPIs Wan 3.0 recovery-id failure is not fail closed'],
+    [/\/v1\/videos\/generations/, 'ToAPIs Wan 3.0 official generation path is missing'],
+    [/method\s*:\s*['"]POST['"]/, 'ToAPIs Wan 3.0 submission is not a POST'],
+    [/response\.status\s*===\s*408\s*\|\|\s*response\.status\s*>=\s*500/, 'ToAPIs Wan 3.0 does not classify ambiguous HTTP failures'],
+    [/TOAPIS_WAN3_TASK_ID_MISSING/, 'ToAPIs Wan 3.0 missing task id is not indeterminate'],
+  ]) requirePattern(submitter.source, pattern, message);
+  if (/\bretry\b/i.test(submitter.source)) fail('ToAPIs Wan 3.0 submission must not retry an unknown request');
+  requirePattern(unknown.source, /indeterminate\s*:\s*true/, 'ToAPIs Wan 3.0 unknown result is not marked indeterminate');
+  requirePattern(unknown.source, /requestBodySent\s*:\s*true/, 'ToAPIs Wan 3.0 unknown result does not preserve submission state');
+  for (const [pattern, message] of [
+    [/parseToapisTask\s*\(/, 'ToAPIs Wan 3.0 polling does not use the protected task parser'],
+    [/\/v1\/videos\/generations\/\$\{encodeURIComponent\(id\)\}/, 'ToAPIs Wan 3.0 polling path is not locked to the provider task id'],
+    [/method\s*:\s*['"]GET['"]/, 'ToAPIs Wan 3.0 polling is not read only'],
+    [/queryFailed\s*:\s*true/, 'ToAPIs Wan 3.0 polling does not preserve query uncertainty'],
+    [/terminalFailure\s*:\s*true/, 'ToAPIs Wan 3.0 polling does not identify provider terminal failure'],
+    [/artifactUnreadable\s*:\s*true/, 'ToAPIs Wan 3.0 polling does not hold unreadable artifacts for review'],
+  ]) requirePattern(poller.source, pattern, message);
+  requirePattern(poller.source, /resolveToapisWan3ApiKey\s*\(\s*config\s*,\s*opts\.apiKey\s*\)/,
+    'ToAPIs Wan 3.0 polling does not use the isolated request/config key resolver');
+
+  if (options.auditEvidenceProducer !== true) return;
+  const verifier = stripComments(candidateSource(candidate, 'backend-node/scripts/verify-toapis-wan3-video.js'));
+  const verifierScopes = functionScopes(verifier);
+  const run = verifierScopes.find((scope) => scope.name === 'runWan3Verification');
+  const resume = verifierScopes.find((scope) => scope.name === 'decideWan3ResumeAction');
+  const evidence = verifierScopes.find((scope) => scope.name === 'buildWan3Evidence');
+  const budget = verifierScopes.find((scope) => scope.name === 'requireBudget');
+  const balanceGate = verifierScopes.find((scope) => scope.name === 'assertBalanceCanCover');
+  const billingCheckpoint = verifierScopes.find((scope) => scope.name === 'hasWan3BillingCheckpoint');
+  const taskWaiter = verifierScopes.find((scope) => scope.name === 'waitForTask');
+  if (!run || !resume || !evidence || !budget || !balanceGate || !billingCheckpoint || !taskWaiter) {
+    fail('ToAPIs Wan 3.0 paid verification workflow is incomplete');
+  }
+  for (const token of [
+    'toapis-wan3-video-real-verification-v1',
+    'wan3-t2v-480p-2s-no-audio',
+    'TOAPIS_WAN3_EXPECTED_COST_YUAN',
+    'TOAPIS_WAN3_HARD_CAP_YUAN',
+    'TOAPIS_USD_CNY_RATE',
+  ]) requirePattern(verifier, new RegExp(token), `ToAPIs Wan 3.0 paid verification is missing ${token}`);
+  requirePattern(resume.source, /provider_task_id[\s\S]{0,160}hasCompleteWan3Artifact[\s\S]{0,80}return\s+['"]finalize['"]/, 'ToAPIs Wan 3.0 verifier cannot safely finalize a downloaded artifact');
+  requirePattern(resume.source, /provider_task_id[\s\S]{0,160}return\s+['"]poll['"]/, 'ToAPIs Wan 3.0 verifier cannot safely resume a known task');
+  requirePattern(resume.source, /return\s+['"]stop['"]/, 'ToAPIs Wan 3.0 verifier does not stop an unknown submission');
+  requirePattern(budget.source, /expectedCostYuan\s*>\s*hardCapYuan/, 'ToAPIs Wan 3.0 verifier does not fail before an over-budget submission');
+  requirePattern(balanceGate.source, /remain_balance/, 'ToAPIs Wan 3.0 verifier does not require a balance preflight');
+  requirePattern(billingCheckpoint.source, /billing\?\.after[\s\S]{0,600}cost_yuan/, 'ToAPIs Wan 3.0 verifier does not recognize a durable billing checkpoint');
+  requirePattern(taskWaiter.source, /provider_task_id|taskId/, 'ToAPIs Wan 3.0 verifier does not poll the accepted task id');
+  requirePattern(run.source, /action\s*===\s*['"]complete['"][\s\S]{0,240}writeJsonAtomic\(paths\.evidencePath\s*,\s*evidence\)/, 'ToAPIs Wan 3.0 verifier does not restore a missing evidence file');
+  requirePattern(run.source, /!hasWan3BillingCheckpoint\(state\.case\.billing\)[\s\S]{0,600}cost_yuan[\s\S]{0,200}writeJsonAtomic\(paths\.statePath\s*,\s*state\)/, 'ToAPIs Wan 3.0 verifier does not persist billing before final evidence');
+
+  const balanceAt = run.source.indexOf('fetchBalance');
+  const submittingAt = run.source.indexOf("status: 'submitting'");
+  const durableAt = run.source.indexOf('writeJsonAtomic(paths.statePath, state)', submittingAt);
+  const submitAt = firstIndex(run.source, [/\bdeps\.createTask\b/, /\bcallToapisWan3VideoApi\b/]);
+  if (balanceAt < 0 || submittingAt < 0 || durableAt < 0 || submitAt < 0
+      || balanceAt > submitAt || submittingAt > submitAt || durableAt > submitAt) {
+    fail('ToAPIs Wan 3.0 verifier must preflight balance and durably record submitting before POST');
+  }
+  for (const [pattern, message] of [
+    [/created\?\.indeterminate/, 'ToAPIs Wan 3.0 verifier does not handle an indeterminate submission'],
+    [/state\.case\.status\s*=\s*['"]indeterminate['"]/, 'ToAPIs Wan 3.0 verifier does not persist indeterminate state'],
+    [/writeJsonAtomic\s*\(\s*paths\.statePath\s*,\s*state\s*\)/, 'ToAPIs Wan 3.0 verifier does not durably persist state'],
+    [/downloadAndInspect/, 'ToAPIs Wan 3.0 verifier does not validate a readable artifact'],
+    [/calculateBalanceDelta/, 'ToAPIs Wan 3.0 verifier does not reconcile billing'],
+    [/costYuan\s*>\s*budget\.hardCapYuan/, 'ToAPIs Wan 3.0 verifier does not enforce the actual-cost hard cap'],
+  ]) requirePattern(run.source, pattern, message);
+  requirePattern(evidence.source, /contract_version\s*:\s*EVIDENCE_VERSION/, 'ToAPIs Wan 3.0 evidence does not bind the dedicated contract');
+  requirePattern(evidence.source, /results\s*:\s*\[/, 'ToAPIs Wan 3.0 evidence does not publish a real result array');
+  requirePattern(evidence.source, /verified_capabilities/, 'ToAPIs Wan 3.0 evidence does not bind verified capabilities');
 }
 
 function auditToapisPrivateAvatarProducer(candidate) {
@@ -1483,6 +1679,118 @@ function auditToapisEvidence(evidenceRoot, envelope, now, requireRecent = true) 
         || Number(price.credits_per_second) !== ceilDecimalProduct(floor, 875)) {
       fail(`ToAPIs exact price or credits are invalid: ${key}`);
     }
+  }
+}
+
+function auditToapisWan3Evidence(evidenceRoot, envelope, now, requireRecent = true) {
+  const evidence = envelope?.evidence;
+  if (evidence?.contract_version !== PROVIDERS.toapisWan3.contract) {
+    fail('ToAPIs Wan 3.0 evidence contract_version is invalid');
+  }
+  if (evidence.provider_origin !== 'https://toapis.xyz') {
+    fail('ToAPIs Wan 3.0 evidence provider origin is not official');
+  }
+  const freshness = auditGeneratedAtFreshnessOnly(evidence, 'ToAPIs Wan 3.0', now, requireRecent);
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(String(evidence.run_id || ''))) {
+    fail('ToAPIs Wan 3.0 run id is invalid');
+  }
+  const results = Array.isArray(evidence.results) ? evidence.results : [];
+  if (results.length !== 1) fail('ToAPIs Wan 3.0 evidence must contain exactly one real case');
+  const result = results[0];
+  for (const [key, value] of Object.entries({
+    id: TOAPIS_WAN3_CASE.id,
+    model: TOAPIS_WAN3_CASE.model,
+    mode: TOAPIS_WAN3_CASE.mode,
+    requested_resolution: TOAPIS_WAN3_CASE.resolution,
+    requested_ratio: TOAPIS_WAN3_CASE.ratio,
+    requested_duration: TOAPIS_WAN3_CASE.duration,
+    requested_audio: TOAPIS_WAN3_CASE.audio,
+    status: 'completed',
+    submission_state: 'accepted',
+  })) {
+    if (result?.[key] !== value) fail(`ToAPIs Wan 3.0 ${key} evidence is invalid`);
+  }
+  if (Number(result.post_count) !== 1) fail('ToAPIs Wan 3.0 paid evidence must contain exactly one POST submission');
+  if (!String(result.provider_task_id || '').trim()) fail('ToAPIs Wan 3.0 provider task id is missing');
+  const recoveryTaskId = String(result.recovery_task_id || '');
+  if (!/^wan3-verify-[A-Za-z0-9._-]+$/.test(recoveryTaskId)) fail('ToAPIs Wan 3.0 recovery task id is invalid');
+  if (!String(result.config_id || '').trim()) fail('ToAPIs Wan 3.0 target config id is missing');
+  if (!/^[a-f0-9]{64}$/.test(String(result.config_fingerprint || ''))) {
+    fail('ToAPIs Wan 3.0 config fingerprint is invalid');
+  }
+
+  const request = result.request;
+  if (!request || request.model !== TOAPIS_WAN3_CASE.model
+      || request.duration !== TOAPIS_WAN3_CASE.duration
+      || request.ratio !== TOAPIS_WAN3_CASE.ratio
+      || request.resolution !== TOAPIS_WAN3_CASE.resolution
+      || request.audio !== TOAPIS_WAN3_CASE.audio
+      || request.client_business_id !== recoveryTaskId
+      || !String(request.prompt || '').trim()) {
+    fail('ToAPIs Wan 3.0 request binding is invalid');
+  }
+  if (sha256(Buffer.from(JSON.stringify(request), 'utf8')) !== result.request_sha256) {
+    fail('ToAPIs Wan 3.0 request digest does not match the submitted request');
+  }
+  const startedAt = canonicalTimestamp(result.started_at, 'ToAPIs Wan 3.0 started_at');
+  const acceptedAt = canonicalTimestamp(result.accepted_at, 'ToAPIs Wan 3.0 accepted_at');
+  const completedAt = canonicalTimestamp(result.completed_at, 'ToAPIs Wan 3.0 completed_at');
+  if (startedAt >= acceptedAt || acceptedAt >= completedAt || completedAt > freshness.generatedAt) {
+    fail('ToAPIs Wan 3.0 task timeline is invalid');
+  }
+
+  const artifact = result.artifact || {};
+  const safeTaskId = String(result.provider_task_id).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!safeTaskId || artifact.output_file !== `${TOAPIS_WAN3_CASE.id}-${safeTaskId}.mp4`) {
+    fail('ToAPIs Wan 3.0 task-to-artifact binding is invalid');
+  }
+  const inspected = auditAsset(evidenceRoot, artifact, 'ToAPIs Wan 3.0 artifact', 'toapis');
+  moliUrl(artifact.public_url, 'ToAPIs Wan 3.0 artifact public_url', 'toapis', inspected.outputFile);
+  if (artifact.content_type !== 'video/mp4') fail('ToAPIs Wan 3.0 artifact content type is invalid');
+  const probe = artifact.ffprobe || {};
+  const width = Number(probe.width);
+  const height = Number(probe.height);
+  const duration = Number(probe.duration_seconds);
+  const ratio = width / height;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || height < 440 || height > 520
+      || ratio < 1.7 || ratio > 1.85 || !Number.isFinite(duration) || duration < 1.5 || duration > 3.5
+      || !String(probe.video_codec || '') || probe.has_audio !== false
+      || (probe.audio_codec != null && String(probe.audio_codec).trim())) {
+    fail('ToAPIs Wan 3.0 ffprobe evidence is invalid');
+  }
+
+  const billing = result.billing || {};
+  const expectedCost = Number(billing.expected_cost_yuan);
+  const hardCap = Number(billing.hard_cap_yuan);
+  const before = billing.before || {};
+  const after = billing.after || {};
+  const beforeAt = canonicalTimestamp(before.captured_at, 'ToAPIs Wan 3.0 balance before');
+  const afterAt = canonicalTimestamp(after.captured_at, 'ToAPIs Wan 3.0 balance after');
+  const debitedBalance = round(Number(after.used_balance) - Number(before.used_balance));
+  const debitedCredits = round(Number(after.used_credits) - Number(before.used_credits));
+  const usdCnyRate = Number(billing.usd_cny_rate);
+  const costYuan = round(debitedBalance * usdCnyRate);
+  if (!Number.isFinite(expectedCost) || expectedCost <= 0
+      || !Number.isFinite(hardCap) || hardCap <= 0 || expectedCost > hardCap
+      || beforeAt >= afterAt || beforeAt > startedAt || afterAt < completedAt || afterAt > freshness.generatedAt
+      || !Number.isFinite(debitedBalance) || debitedBalance <= 0
+      || !Number.isFinite(debitedCredits) || debitedCredits <= 0
+      || !equalNumber(billing.debited_balance, debitedBalance)
+      || !equalNumber(billing.debited_credits, debitedCredits)
+      || billing.provider_currency !== 'USD'
+      || !Number.isFinite(usdCnyRate) || usdCnyRate <= 0
+      || !equalNumber(billing.cost_yuan, costYuan) || costYuan > hardCap) {
+    fail('ToAPIs Wan 3.0 billing evidence is invalid');
+  }
+
+  const capabilities = evidence.verified_capabilities || {};
+  if (capabilities.model !== TOAPIS_WAN3_CASE.model
+      || capabilities.text_to_video !== true
+      || !sameValues(capabilities.resolutions || [], [TOAPIS_WAN3_CASE.resolution])
+      || !sameValues(capabilities.durations || [], [TOAPIS_WAN3_CASE.duration])
+      || !sameValues(capabilities.ratios || [], [TOAPIS_WAN3_CASE.ratio])
+      || !sameValues(capabilities.audio_values || [], [TOAPIS_WAN3_CASE.audio])) {
+    fail('ToAPIs Wan 3.0 verified capabilities exceed the paid evidence');
   }
 }
 
@@ -2144,22 +2452,20 @@ function verifyExternalModelRelease(candidateArg, evidenceRootArg, expectedCurre
   if (!isInside(evidenceAllowedRoot, evidenceRoot)) fail('EVIDENCE_ROOT escapes EVIDENCE_ALLOWED_ROOT');
   const surfaces = {
     toapis: hasSurface(candidate, PROVIDERS.toapis),
+    toapisWan3: hasSurface(candidate, PROVIDERS.toapisWan3),
     usmercari: hasSurface(candidate, PROVIDERS.usmercari),
     lingjing: hasSurface(candidate, PROVIDERS.lingjing),
   };
-  if (!surfaces.toapis && !surfaces.usmercari && !surfaces.lingjing) return { legacy: true, surfaces };
-  const toapisFreshnessRequired = surfaces.toapis
-    && (protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.toapis)
-      || !trustedUnchangedToapisStandardSurface(candidate, expectedCurrent));
-  const freshnessRequired = {
-    toapis: toapisFreshnessRequired,
-    toapisPrivateAvatar: protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.toapisPrivateAvatar),
-    usmercari: protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.usmercari),
-    lingjing: protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.lingjing),
-  };
+  if (!surfaces.toapis && !surfaces.toapisWan3 && !surfaces.usmercari && !surfaces.lingjing) {
+    return { legacy: true, surfaces };
+  }
+  const freshnessRequired = freshnessRequirements(candidate, expectedCurrent, surfaces);
   auditEvidenceBindingRuntime(candidate, surfaces);
   if (surfaces.toapis) auditToapisRuntime(candidate, {
     auditEvidenceProducer: freshnessRequired.toapis || freshnessRequired.toapisPrivateAvatar,
+  });
+  if (surfaces.toapisWan3) auditToapisWan3Runtime(candidate, {
+    auditEvidenceProducer: freshnessRequired.toapisWan3,
   });
   if (freshnessRequired.toapisPrivateAvatar) auditToapisPrivateAvatarProducer(candidate);
   if (surfaces.usmercari) auditUsmercariRuntime(candidate);
@@ -2170,6 +2476,9 @@ function verifyExternalModelRelease(candidateArg, evidenceRootArg, expectedCurre
   if (surfaces.toapis) {
     auditToapisEvidence(evidenceRoot, envelopes.toapis, now, freshnessRequired.toapis);
     auditToapisPrivateAvatarEvidence(evidenceRoot, envelopes.toapisPrivateAvatar, now, freshnessRequired.toapisPrivateAvatar);
+  }
+  if (surfaces.toapisWan3) {
+    auditToapisWan3Evidence(evidenceRoot, envelopes.toapisWan3, now, freshnessRequired.toapisWan3);
   }
   if (surfaces.usmercari) auditUsmercariEvidence(evidenceRoot, envelopes.usmercari, now, freshnessRequired.usmercari);
   if (surfaces.lingjing) auditLingjingEvidence(evidenceRoot, envelopes.lingjing, now, freshnessRequired.lingjing);
@@ -2199,8 +2508,12 @@ module.exports = {
   PROVIDERS,
   LINGJING_CASE,
   TOAPIS_CASES,
+  TOAPIS_WAN3_CASE,
   USMERCARI_CASES,
   auditLingjingRuntime,
+  auditToapisWan3Evidence,
+  auditToapisWan3Runtime,
   decodeBaselineJpeg,
+  freshnessRequirements,
   verifyExternalModelRelease,
 };

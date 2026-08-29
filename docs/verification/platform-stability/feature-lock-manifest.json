@@ -221,22 +221,44 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批",
+          "approvedBy": "product-owner 2026-08-29 pr-208-main-sync-conflict-resolution",
+          "impactTests": [
+            "backend-node/test/providerRouteStability.test.js",
+            "backend-node/test/toapisPrivateAvatarService.test.js",
+            "backend-node/test/toapisPrivateAvatarVerification.test.js",
+            "backend-node/test/toapisVideoClient.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/toapisVideoReleaseContract.test.js",
+            "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js",
+            "frontweb/test/toapisVideoProviderConfig.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批",
-        "approvedBy": "product-owner 2026-08-29 pr-208-main-sync-conflict-resolution",
+        "reason": "2026-08-29 ToAPIs Wan 3.0 独立接入与未知提交保护获批",
+        "approvedBy": "product-owner 2026-08-29 toapis-wan3-local-gate-refresh-approved",
         "impactTests": [
-          "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/toapisPrivateAvatarService.test.js",
-          "backend-node/test/toapisPrivateAvatarVerification.test.js",
-          "backend-node/test/toapisVideoClient.test.js",
+          "backend-node/test/toapisWan3VideoClient.test.js",
+          "backend-node/test/toapisWan3VideoRuntime.test.js",
+          "backend-node/test/videoServiceWan3.test.js",
+          "backend-node/test/toapisWan3AiConfig.test.js",
+          "backend-node/test/toapisWan3Verification.test.js",
+          "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
+          "backend-node/test/toapisWan3Catalog.test.js",
+          "backend-node/test/providerRuntimeFingerprint.test.js",
+          "backend-node/test/externalModelEvidenceBinding.test.js",
           "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/toapisVideoReleaseContract.test.js",
-          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+          "backend-node/test/sharedReleaseGuardRotation.test.js",
+          "frontweb/test/aiConfigProviderPresets.test.js",
+          "frontweb/test/videoDurationOptions.test.js",
+          "frontweb/test/videoGenerationRequest.test.js",
           "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js",
-          "frontweb/test/toapisVideoProviderConfig.test.js"
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },
@@ -450,22 +472,44 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批",
+          "approvedBy": "product-owner 2026-08-29 pr-208-main-sync-conflict-resolution",
+          "impactTests": [
+            "backend-node/test/providerRouteStability.test.js",
+            "backend-node/test/toapisPrivateAvatarService.test.js",
+            "backend-node/test/toapisPrivateAvatarVerification.test.js",
+            "backend-node/test/toapisVideoClient.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/toapisVideoReleaseContract.test.js",
+            "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js",
+            "frontweb/test/toapisVideoProviderConfig.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批",
-        "approvedBy": "product-owner 2026-08-29 pr-208-main-sync-conflict-resolution",
+        "reason": "2026-08-29 ToAPIs Wan 3.0 独立接入与未知提交保护获批",
+        "approvedBy": "product-owner 2026-08-29 toapis-wan3-local-gate-refresh-approved",
         "impactTests": [
-          "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/toapisPrivateAvatarService.test.js",
-          "backend-node/test/toapisPrivateAvatarVerification.test.js",
-          "backend-node/test/toapisVideoClient.test.js",
+          "backend-node/test/toapisWan3VideoClient.test.js",
+          "backend-node/test/toapisWan3VideoRuntime.test.js",
+          "backend-node/test/videoServiceWan3.test.js",
+          "backend-node/test/toapisWan3AiConfig.test.js",
+          "backend-node/test/toapisWan3Verification.test.js",
+          "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
+          "backend-node/test/toapisWan3Catalog.test.js",
+          "backend-node/test/providerRuntimeFingerprint.test.js",
+          "backend-node/test/externalModelEvidenceBinding.test.js",
           "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/toapisVideoReleaseContract.test.js",
-          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+          "backend-node/test/sharedReleaseGuardRotation.test.js",
+          "frontweb/test/aiConfigProviderPresets.test.js",
+          "frontweb/test/videoDurationOptions.test.js",
+          "frontweb/test/videoGenerationRequest.test.js",
           "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js",
-          "frontweb/test/toapisVideoProviderConfig.test.js"
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },
@@ -711,22 +755,44 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批",
+          "approvedBy": "product-owner 2026-08-29 pr-208-main-sync-conflict-resolution",
+          "impactTests": [
+            "backend-node/test/providerRouteStability.test.js",
+            "backend-node/test/toapisPrivateAvatarService.test.js",
+            "backend-node/test/toapisPrivateAvatarVerification.test.js",
+            "backend-node/test/toapisVideoClient.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/toapisVideoReleaseContract.test.js",
+            "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js",
+            "frontweb/test/toapisVideoProviderConfig.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批",
-        "approvedBy": "product-owner 2026-08-29 pr-208-main-sync-conflict-resolution",
+        "reason": "2026-08-29 ToAPIs Wan 3.0 独立接入与未知提交保护获批",
+        "approvedBy": "product-owner 2026-08-29 toapis-wan3-local-gate-refresh-approved",
         "impactTests": [
-          "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/toapisPrivateAvatarService.test.js",
-          "backend-node/test/toapisPrivateAvatarVerification.test.js",
-          "backend-node/test/toapisVideoClient.test.js",
+          "backend-node/test/toapisWan3VideoClient.test.js",
+          "backend-node/test/toapisWan3VideoRuntime.test.js",
+          "backend-node/test/videoServiceWan3.test.js",
+          "backend-node/test/toapisWan3AiConfig.test.js",
+          "backend-node/test/toapisWan3Verification.test.js",
+          "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
+          "backend-node/test/toapisWan3Catalog.test.js",
+          "backend-node/test/providerRuntimeFingerprint.test.js",
+          "backend-node/test/externalModelEvidenceBinding.test.js",
           "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/toapisVideoReleaseContract.test.js",
-          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+          "backend-node/test/sharedReleaseGuardRotation.test.js",
+          "frontweb/test/aiConfigProviderPresets.test.js",
+          "frontweb/test/videoDurationOptions.test.js",
+          "frontweb/test/videoGenerationRequest.test.js",
           "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js",
-          "frontweb/test/toapisVideoProviderConfig.test.js"
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },
@@ -903,22 +969,44 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批",
+          "approvedBy": "product-owner 2026-08-29 pr-208-main-sync-conflict-resolution",
+          "impactTests": [
+            "backend-node/test/providerRouteStability.test.js",
+            "backend-node/test/toapisPrivateAvatarService.test.js",
+            "backend-node/test/toapisPrivateAvatarVerification.test.js",
+            "backend-node/test/toapisVideoClient.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/toapisVideoReleaseContract.test.js",
+            "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js",
+            "frontweb/test/toapisVideoProviderConfig.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批",
-        "approvedBy": "product-owner 2026-08-29 pr-208-main-sync-conflict-resolution",
+        "reason": "2026-08-29 ToAPIs Wan 3.0 独立接入与未知提交保护获批",
+        "approvedBy": "product-owner 2026-08-29 toapis-wan3-local-gate-refresh-approved",
         "impactTests": [
-          "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/toapisPrivateAvatarService.test.js",
-          "backend-node/test/toapisPrivateAvatarVerification.test.js",
-          "backend-node/test/toapisVideoClient.test.js",
+          "backend-node/test/toapisWan3VideoClient.test.js",
+          "backend-node/test/toapisWan3VideoRuntime.test.js",
+          "backend-node/test/videoServiceWan3.test.js",
+          "backend-node/test/toapisWan3AiConfig.test.js",
+          "backend-node/test/toapisWan3Verification.test.js",
+          "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
+          "backend-node/test/toapisWan3Catalog.test.js",
+          "backend-node/test/providerRuntimeFingerprint.test.js",
+          "backend-node/test/externalModelEvidenceBinding.test.js",
           "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/toapisVideoReleaseContract.test.js",
-          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+          "backend-node/test/sharedReleaseGuardRotation.test.js",
+          "frontweb/test/aiConfigProviderPresets.test.js",
+          "frontweb/test/videoDurationOptions.test.js",
+          "frontweb/test/videoGenerationRequest.test.js",
           "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js",
-          "frontweb/test/toapisVideoProviderConfig.test.js"
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },
@@ -1389,22 +1477,44 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批",
+          "approvedBy": "product-owner 2026-08-29 pr-208-main-sync-conflict-resolution",
+          "impactTests": [
+            "backend-node/test/providerRouteStability.test.js",
+            "backend-node/test/toapisPrivateAvatarService.test.js",
+            "backend-node/test/toapisPrivateAvatarVerification.test.js",
+            "backend-node/test/toapisVideoClient.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/toapisVideoReleaseContract.test.js",
+            "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js",
+            "frontweb/test/toapisVideoProviderConfig.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-29 PR #208 合入最新 main 与三处功能锁冲突收口获批",
-        "approvedBy": "product-owner 2026-08-29 pr-208-main-sync-conflict-resolution",
+        "reason": "2026-08-29 ToAPIs Wan 3.0 独立接入与未知提交保护获批",
+        "approvedBy": "product-owner 2026-08-29 toapis-wan3-local-gate-refresh-approved",
         "impactTests": [
-          "backend-node/test/providerRouteStability.test.js",
-          "backend-node/test/toapisPrivateAvatarService.test.js",
-          "backend-node/test/toapisPrivateAvatarVerification.test.js",
-          "backend-node/test/toapisVideoClient.test.js",
+          "backend-node/test/toapisWan3VideoClient.test.js",
+          "backend-node/test/toapisWan3VideoRuntime.test.js",
+          "backend-node/test/videoServiceWan3.test.js",
+          "backend-node/test/toapisWan3AiConfig.test.js",
+          "backend-node/test/toapisWan3Verification.test.js",
+          "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
+          "backend-node/test/toapisWan3Catalog.test.js",
+          "backend-node/test/providerRuntimeFingerprint.test.js",
+          "backend-node/test/externalModelEvidenceBinding.test.js",
           "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/toapisVideoReleaseContract.test.js",
-          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+          "backend-node/test/sharedReleaseGuardRotation.test.js",
+          "frontweb/test/aiConfigProviderPresets.test.js",
+          "frontweb/test/videoDurationOptions.test.js",
+          "frontweb/test/videoGenerationRequest.test.js",
           "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js",
-          "frontweb/test/toapisVideoProviderConfig.test.js"
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },
