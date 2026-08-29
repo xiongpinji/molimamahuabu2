@@ -404,9 +404,9 @@ function auditModelUiContract(releaseRoot) {
     /billingModel = modelPrice\.canonicalModel\(billingModel\)[\s\S]{0,16000}model:\s*billingModel,[\s\S]{0,300}generationCost\.record\(db, \{[\s\S]{0,120}model:\s*billingModel/,
     'billing model reservation and cost payload');
   requireFunctionExecutablePattern(videoService, 'backend-node/src/services/videoService.js', 'create',
-    /body\.provider\s*\|\|\s*videoConfig\?\.provider\s*\|\|\s*'chatfire',\s*prompt,\s*model,\s*duration/,
-    /body\.provider\s*\|\|\s*videoConfig\?\.provider\s*\|\|\s*,\s*prompt,\s*model,\s*duration/,
-    'provider fallback with upstream prompt, model, duration routing');
+    /wan3State\s*\?\s*videoConfig\?\.provider\s*:\s*\(body\.provider\s*\|\|\s*videoConfig\?\.provider\s*\|\|\s*'chatfire'\),\s*prompt,\s*model,\s*duration/,
+    /wan3State\s*\?\s*videoConfig\?\.provider\s*:\s*\(body\.provider\s*\|\|\s*videoConfig\?\.provider\s*\|\|\s*\),\s*prompt,\s*model,\s*duration/,
+    'verified Wan3 provider pin with legacy provider fallback and upstream prompt, model, duration routing');
   const usmercari = readSource(root, 'backend-node/src/services/usmercariVideoClient.js');
   requireCodePattern(usmercari, 'backend-node/src/services/usmercariVideoClient.js',
     /const IMAGE_UPLOAD_TARGET_BYTES = 24 \* 1024 \* 1024;\s*const MEDIA_UPLOAD_MAX_ATTEMPTS = 2;[\s\S]{0,140}const RETRYABLE_MEDIA_UPLOAD_STATUSES = new Set\(\[429, 502, 503, 504\]\);/,

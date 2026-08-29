@@ -30,6 +30,39 @@ function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
 }
 
+function withTrustedFixtureOwnership(root, callback) {
+  const fixtureRoot = path.resolve(root);
+  const originalStatSync = fs.statSync;
+  fs.statSync = function trustedFixtureStatSync(target, ...args) {
+    const stat = originalStatSync.call(fs, target, ...args);
+    const resolved = path.resolve(String(target));
+    const relative = path.relative(fixtureRoot, resolved);
+    const insideFixture = relative === ''
+      || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+    if (!insideFixture) return stat;
+    return new Proxy(stat, {
+      get(value, property, receiver) {
+        if (property === 'uid' || property === 'gid') return 0;
+        return Reflect.get(value, property, receiver);
+      },
+    });
+  };
+  try {
+    return callback();
+  } finally {
+    fs.statSync = originalStatSync;
+  }
+}
+
+function auditEvidenceFixture(item, now = item.now, requireRecent = true) {
+  return withTrustedFixtureOwnership(item.root, () => auditToapisWan3Evidence(
+    item.root,
+    { evidence: item.evidence, sha256: 'a'.repeat(64) },
+    now,
+    requireRecent,
+  ));
+}
+
 function evidenceFixture(mutate = () => {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-wan3-guard-'));
   const fileName = 'wan3-t2v-480p-2s-no-audio-wan-task-1.mp4';
@@ -173,12 +206,7 @@ test('changing only the Wan 3.0 surface does not require fresh legacy FAST/MINI 
 test('shared guard accepts a fresh successful Wan 3.0 paid evidence envelope', () => {
   const item = evidenceFixture();
   try {
-    assert.doesNotThrow(() => auditToapisWan3Evidence(
-      item.root,
-      { evidence: item.evidence, sha256: 'a'.repeat(64) },
-      item.now,
-      true,
-    ));
+    assert.doesNotThrow(() => auditEvidenceFixture(item));
   } finally {
     fs.rmSync(item.root, { recursive: true, force: true });
   }
@@ -196,12 +224,7 @@ for (const [label, mutate, expected] of [
 ]) test(`shared guard rejects Wan 3.0 ${label}`, () => {
   const item = evidenceFixture(mutate);
   try {
-    assert.throws(() => auditToapisWan3Evidence(
-      item.root,
-      { evidence: item.evidence, sha256: 'a'.repeat(64) },
-      item.now,
-      true,
-    ), expected);
+    assert.throws(() => auditEvidenceFixture(item), expected);
   } finally {
     fs.rmSync(item.root, { recursive: true, force: true });
   }
@@ -211,18 +234,8 @@ test('Wan 3.0 evidence freshness is enforced only when its own surface changed',
   const item = evidenceFixture();
   const staleNow = item.now + (2 * 24 * 60 * 60 * 1_000);
   try {
-    assert.doesNotThrow(() => auditToapisWan3Evidence(
-      item.root,
-      { evidence: item.evidence, sha256: 'a'.repeat(64) },
-      staleNow,
-      false,
-    ));
-    assert.throws(() => auditToapisWan3Evidence(
-      item.root,
-      { evidence: item.evidence, sha256: 'a'.repeat(64) },
-      staleNow,
-      true,
-    ), /stale/i);
+    assert.doesNotThrow(() => auditEvidenceFixture(item, staleNow, false));
+    assert.throws(() => auditEvidenceFixture(item, staleNow, true), /stale/i);
   } finally {
     fs.rmSync(item.root, { recursive: true, force: true });
   }
