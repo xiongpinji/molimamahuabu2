@@ -7,6 +7,7 @@ const { buildFeituoStatusUrl } = require('./feituoVideoClient');
 const token6688Client = require('./token6688Client');
 const usmercariVideoClient = require('./usmercariVideoClient');
 const toapisVideoClient = require('./toapisVideoClient');
+const toapisWan3VideoClient = require('./toapisWan3VideoClient');
 const lingjingVideoClient = require('./lingjingVideoClient');
 const fuminVideoClient = require('./fuminVideoClient');
 const fuminImageClient = require('./fuminImageClient');
@@ -20,6 +21,9 @@ function normalizeApiKeyForService(serviceType, apiKey) {
 
 function hasConnectionCredential(opts = {}) {
   if (String(opts.api_key || '').trim()) return true;
+  if (String(opts.api_protocol || '').toLowerCase() === 'toapis_wan3_video') {
+    return !!toapisWan3VideoClient.resolveToapisWan3ApiKey(opts);
+  }
   if (['usmercari', 'usmercari_image'].includes(String(opts.provider || '').toLowerCase())
       || String(opts.api_protocol || '').toLowerCase() === 'usmercari_image') {
     return !!usmercariVideoClient.resolveUsmercariApiKey(opts);
@@ -119,6 +123,11 @@ function resolveVideoSettingsDurations(context = {}) {
     .map((value) => String(value || '').trim().toLowerCase());
   const configuredModel = context.default_model
     || (Array.isArray(context.model) ? context.model[0] : context.model);
+  if (protocols.includes('toapis_wan3_video')) {
+    return String(configuredModel || '').trim().toLowerCase() === toapisWan3VideoClient.TOAPIS_WAN3_MODEL
+      ? toapisWan3VideoClient.TOAPIS_WAN3_SPEC.durations
+      : null;
+  }
   if (protocols.some((protocol) => ['toapis', 'toapis_video'].includes(protocol))) {
     return toapisVideoClient.TOAPIS_VIDEO_MODELS[String(configuredModel || '').trim().toLowerCase()]?.durations || null;
   }
@@ -883,9 +892,12 @@ async function testConnection(opts) {
   }
 
   // ToAPIs 连接测试只读取官方模型目录，禁止提交可能计费的视频生成请求。
-  if ((provider === 'toapis' || provider === 'toapis_video' || protocol === 'toapis_video')
+  if ((provider === 'toapis' || provider === 'toapis_video'
+      || protocol === 'toapis_video' || protocol === 'toapis_wan3_video')
       && serviceType === 'video') {
-    const apiKey = toapisVideoClient.resolveToapisApiKey(opts);
+    const apiKey = protocol === 'toapis_wan3_video'
+      ? toapisWan3VideoClient.resolveToapisWan3ApiKey(opts)
+      : toapisVideoClient.resolveToapisApiKey(opts);
     if (!apiKey) throw new Error('api_key 必填');
     const url = `${toapisVideoClient.normalizeToapisBaseUrl(base)}/v1/models?type=video`;
     const res = await fetch(url, {
@@ -899,7 +911,10 @@ async function testConnection(opts) {
     if (!res.ok) throw new Error(`ToAPIs 连接失败 (${res.status})`);
     const available = new Set((Array.isArray(data?.data) ? data.data : [])
       .map((item) => String(item?.id || item?.name || '').trim()).filter(Boolean));
-    const requested = (models.length ? models : Object.keys(toapisVideoClient.TOAPIS_VIDEO_MODELS))
+    const defaults = protocol === 'toapis_wan3_video'
+      ? [toapisWan3VideoClient.TOAPIS_WAN3_MODEL]
+      : Object.keys(toapisVideoClient.TOAPIS_VIDEO_MODELS);
+    const requested = (models.length ? models : defaults)
       .map((item) => String(item || '').trim()).filter(Boolean);
     const missing = requested.filter((item) => !available.has(item));
     if (missing.length) throw new Error(`ToAPIs 模型目录缺少: ${missing.join(', ')}`);

@@ -166,6 +166,21 @@ test('provider inference selects the repository current adapter branches', (t) =
   ]);
 });
 
+test('explicit Wan 3.0 protocol is not downgraded by the shared ToAPIs provider name', (t) => {
+  const root = createRuntimeRoot(t, 'toapis-wan3', {
+    'src/services/videoClient.js': 'video common\n',
+    'src/services/providerErrorClassifier.js': 'classifier\n',
+    'src/services/toapisWan3VideoClient.js': 'wan3 adapter\n',
+  });
+  const result = runtimeService.runtimeFingerprintForConfig({
+    service_type: 'video', provider: 'toapis', api_protocol: 'toapis_wan3_video',
+  }, { repoRoot: root });
+  assert.equal(result.ok, true);
+  assert.equal(result.protocol, 'toapis_wan3_video');
+  assert.equal(result.files.includes('src/services/toapisWan3VideoClient.js'), true);
+  assert.equal(result.files.includes('src/services/toapisVideoClient.js'), false);
+});
+
 test('catalog-supported text and image protocols with runtime branches have mappings', (t) => {
   const root = createRuntimeRoot(t, 'catalog-protocols', {
     'src/services/aiClient.js': 'text common\n',
