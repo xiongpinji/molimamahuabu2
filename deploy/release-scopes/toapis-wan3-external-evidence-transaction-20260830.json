@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "release": "toapis-wan3-external-evidence-transaction-20260830",
+  "allowedPaths": [
+    ".gitignore",
+    "backend-node/scripts/build-external-model-evidence-staging.js",
+    "backend-node/test/externalModelEvidenceStagingBuilder.test.js",
+    "backend-node/test/incrementalReleaseScope.test.js",
+    "backend-node/test/sharedExternalEvidenceOnlyTransaction.test.js",
+    "deploy/install-external-model-evidence-only.sh",
+    "deploy/release-scopes/toapis-wan3-external-evidence-transaction-20260830.json",
+    "docs/tasks/2026-08-29-toapis-wan3-integration.md"
+  ]
+}
