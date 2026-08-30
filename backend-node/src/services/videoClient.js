@@ -1337,7 +1337,7 @@ function getDefaultVideoConfig(db, preferredModel, evidenceRoots, preferredConfi
       return protocol === 'toapis_wan3_video'
         && config.verification_status === 'verified'
         && aiConfigService.hasConnectionCredential(config)
-        && hasTrustedEvidenceBinding(preferred, capabilities, evidenceRoots)
+        && hasTrustedEvidenceBinding(preferred, capabilities, evidenceRoots, config)
         && configSupportsVideoModel(config, preferred);
     }) || null;
   }
@@ -1536,7 +1536,7 @@ function assertToapisWan3VideoSubmitReady(db, config, model, request, evidenceRo
     throw toapisGateError('MODEL_CREDENTIAL_MISSING', `${target} 未配置有效的 ToAPIs API Key`);
   }
   const capabilities = getVerifiedToapisCapabilities(config, target);
-  if (!capabilities || !hasTrustedEvidenceBinding(target, capabilities, evidenceRoots)) {
+  if (!capabilities || !hasTrustedEvidenceBinding(target, capabilities, evidenceRoots, config)) {
     throw toapisGateError('MODEL_NOT_VERIFIED', `${target} 的真实生成证据与当前发布不一致`);
   }
   const resolutions = Array.isArray(capabilities.resolutions)

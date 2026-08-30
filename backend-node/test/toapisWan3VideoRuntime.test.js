@@ -19,6 +19,18 @@ const {
 const MODEL = 'wan3.0-video';
 const CONTRACT = 'toapis-wan3-video-real-verification-v1';
 const log = { info() {}, warn() {}, error() {} };
+const CONFIG_ID = 301;
+const API_KEY = 'wan-key';
+
+function configFingerprint() {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    id: String(CONFIG_ID),
+    provider: 'toapis_wan3',
+    model: MODEL,
+    base_url: 'https://toapis.xyz',
+    api_key: API_KEY,
+  })).digest('hex');
+}
 
 function createEvidenceFixture() {
   const allowedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wan3-runtime-evidence-'));
@@ -27,7 +39,14 @@ function createEvidenceFixture() {
   fs.mkdirSync(publicDir, { recursive: true, mode: 0o755 });
   const evidence = Buffer.from(JSON.stringify({
     contract_version: CONTRACT,
-    results: [{ artifact: { output_file: 'wan3-runtime.mp4' } }],
+    results: [{
+      source_config_id: 16,
+      target_config_id: CONFIG_ID,
+      config_id: CONFIG_ID,
+      credential_fingerprint: crypto.createHash('sha256').update(API_KEY).digest('hex'),
+      config_fingerprint: configFingerprint(),
+      artifact: { output_file: 'wan3-runtime.mp4' },
+    }],
   }));
   const sha256 = crypto.createHash('sha256').update(evidence).digest('hex');
   fs.writeFileSync(path.join(root, 'toapis-wan3-video-verification.json'), evidence, { mode: 0o644 });
@@ -64,13 +83,13 @@ test.after(() => fs.rmSync(fixture.roots.allowedRoot, { recursive: true, force: 
 
 function makeConfig(overrides = {}) {
   return {
-    id: 301,
+    id: CONFIG_ID,
     service_type: 'video',
-    provider: 'toapis',
+    provider: 'toapis_wan3',
     api_protocol: 'toapis_wan3_video',
     name: 'ToAPIs Wan 3.0',
     base_url: 'https://toapis.xyz',
-    api_key: 'wan-key',
+    api_key: API_KEY,
     model: JSON.stringify([MODEL]),
     default_model: MODEL,
     logical_model_id: null,
@@ -207,6 +226,8 @@ test('Wan 3.0 strict selection requires its exact protocol, dedicated credential
   });
   assert.equal(getDefaultVideoConfig(makeDb(stale), MODEL, fixture.roots), null);
   assert.equal(getDefaultVideoConfig(makeDb(makeConfig({ api_key: '' })), MODEL, fixture.roots), null);
+  assert.equal(getDefaultVideoConfig(makeDb(makeConfig({ api_key: 'rotated-key' })), MODEL, fixture.roots), null);
+  assert.equal(getDefaultVideoConfig(makeDb(makeConfig({ id: 305 })), MODEL, fixture.roots), null);
   assert.equal(getDefaultVideoConfig(makeDb(makeConfig()), MODEL, fixture.roots).id, 301);
 });
 

@@ -12,6 +12,8 @@ const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const aiConfig = require('../src/services/aiConfigService');
 const creditLedger = require('../src/services/creditLedgerService');
 const modelPrice = require('../src/services/modelPriceService');
+const providerRouteStability = require('../src/services/providerRouteStabilityService');
+const providerTaskReconciliation = require('../src/services/providerTaskReconciliationService');
 const videoClient = require('../src/services/videoClient');
 const videoService = require('../src/services/videoService');
 const wan3Client = require('../src/services/toapisWan3VideoClient');
@@ -27,25 +29,44 @@ function createWan3EvidenceRoot() {
   fs.mkdirSync(publicDir, { recursive: true, mode: 0o755 });
   const file = 'toapis-wan3-video-verification.json';
   const outputFile = 'wan3-video.mp4';
-  const bytes = Buffer.from(JSON.stringify({
-    contract_version: WAN3_CONTRACT,
-    results: [{ artifact: { output_file: outputFile } }],
-  }));
-  const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
-  fs.writeFileSync(path.join(root, file), bytes, { mode: 0o644 });
   fs.writeFileSync(path.join(publicDir, outputFile), 'wan3\n', { mode: 0o644 });
-  fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify({
-    contract_version: 'external-model-release-evidence-manifest-v1',
-    evidence: {
-      [WAN3_CONTRACT]: { file, sha256 },
-    },
-  }), { mode: 0o644 });
   if (process.platform !== 'win32') {
     for (const directory of [allowedRoot, root, path.join(root, 'public'), publicDir]) {
       fs.chmodSync(directory, 0o755);
     }
   }
-  return { allowedRoot, root, roots: { allowedRoot, root }, sha256 };
+  const evidence = { allowedRoot, root, roots: { allowedRoot, root }, sha256: null };
+  evidence.install = (config) => {
+    const apiKey = String(config.api_key || '');
+    const configFingerprint = crypto.createHash('sha256').update(JSON.stringify({
+      id: String(config.id),
+      provider: 'toapis_wan3',
+      model: WAN3_MODEL,
+      base_url: 'https://toapis.xyz',
+      api_key: apiKey,
+    })).digest('hex');
+    const bytes = Buffer.from(JSON.stringify({
+      contract_version: WAN3_CONTRACT,
+      results: [{
+        source_config_id: 16,
+        target_config_id: config.id,
+        config_id: config.id,
+        credential_fingerprint: crypto.createHash('sha256').update(apiKey).digest('hex'),
+        config_fingerprint: configFingerprint,
+        artifact: { output_file: outputFile },
+      }],
+    }));
+    evidence.sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+    fs.writeFileSync(path.join(root, file), bytes, { mode: 0o644 });
+    fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify({
+      contract_version: 'external-model-release-evidence-manifest-v1',
+      evidence: {
+        [WAN3_CONTRACT]: { file, sha256: evidence.sha256 },
+      },
+    }), { mode: 0o644 });
+    return evidence.sha256;
+  };
+  return evidence;
 }
 
 function setup(t) {
@@ -95,23 +116,35 @@ function verifiedCapabilities(evidence, overrides = {}) {
 }
 
 function configureWan3(db, evidence, options = {}) {
+  const apiKey = options.apiKey === undefined ? 'sk-test-wan3' : options.apiKey;
   const config = aiConfig.createConfig(db, log, {
     service_type: 'video',
-    provider: options.provider || 'toapis',
+    provider: options.provider || 'toapis_wan3',
     api_protocol: options.apiProtocol || 'toapis_wan3_video',
     name: options.name || 'ToAPIs Wan 3.0',
     base_url: 'https://toapis.xyz',
-    api_key: options.apiKey === undefined ? 'sk-test-wan3' : options.apiKey,
+    api_key: apiKey,
     model: [WAN3_MODEL],
     default_model: WAN3_MODEL,
     is_active: options.isActive !== false,
     is_default: true,
+    settings: {},
+  });
+  if (!evidence.sha256) evidence.install(config);
+  const capabilities = verifiedCapabilities(evidence, options.capabilities);
+  aiConfig.updateConfig(db, log, config.id, {
+    settings: {
+      canvas_capabilities_by_model: {
+        [WAN3_MODEL]: {
+          ...capabilities,
+          aspectRatios: capabilities.ratios,
+        },
+      },
+    },
   });
   aiConfig.recordVerification(db, config.id, {
     status: options.verificationStatus || 'verified',
-    capabilities: {
-      [WAN3_MODEL]: verifiedCapabilities(evidence, options.capabilities),
-    },
+    capabilities: { [WAN3_MODEL]: capabilities },
   });
   return aiConfig.getConfig(db, config.id);
 }
@@ -162,6 +195,7 @@ function waitFor(predicate, timeoutMs = 2000) {
 test('Wan3 accepts only the independent toapis_wan3_video protocol and exact trusted evidence', (t) => {
   for (const invalid of [
     { apiProtocol: 'toapis_video' },
+    { provider: 'toapis' },
     { capabilities: { evidence_sha256: '0'.repeat(64) } },
   ]) {
     const { db, evidence } = setup(t);
@@ -256,12 +290,192 @@ test('Wan3 processing uses the independent adapter and preserves an accepted tas
 
   const row = db.prepare('SELECT status, provider_task_id, error_msg, credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
   assert.equal(wanPosts, 1);
-  assert.equal(wanGets, 1);
+  assert.equal(wanGets, 1, row.error_msg);
   assert.equal(legacyPosts, 0);
   assert.equal(row.status, 'needs_attention');
   assert.equal(row.provider_task_id, 'wan-task-accepted');
   assert.match(row.error_msg, /仍可能处理中|最终状态未知/);
   assert.equal(creditLedger.getReservation(db, row.credit_reservation_id).status, 'held');
+});
+
+test('Wan3 accepted unknown task is publicly reconciled once and refunds only terminal failure', async (t) => {
+  const { db, evidence } = setup(t);
+  const config = configureWan3(db, evidence);
+  creditLedger.setAccountBalance(db, 'user-1', 100);
+  let scheduled;
+  let wanPosts = 0;
+  let wanGets = 0;
+  const originalWanCall = wan3Client.callToapisWan3VideoApi;
+  const originalWanFetch = wan3Client.fetchToapisWan3Task;
+  wan3Client.callToapisWan3VideoApi = async () => {
+    wanPosts += 1;
+    return { task_id: 'wan-task-public-reconcile', status: 'processing' };
+  };
+  wan3Client.fetchToapisWan3Task = async (_config, taskId) => {
+    wanGets += 1;
+    assert.equal(taskId, 'wan-task-public-reconcile');
+    if (wanGets === 1) return { state: 'processing', retryable: true };
+    return {
+      state: 'failed',
+      terminalFailure: true,
+      error: '供应商明确终态失败',
+    };
+  };
+  t.after(() => {
+    wan3Client.callToapisWan3VideoApi = originalWanCall;
+    wan3Client.fetchToapisWan3Task = originalWanFetch;
+  });
+
+  const created = videoService.create(db, log, validRequest(), {
+    billingEnabled: true,
+    userId: 'user-1',
+    evidenceRoots: evidence.roots,
+    schedule(callback) { scheduled = callback; },
+  });
+  await scheduled({
+    evidenceRoots: evidence.roots,
+    wan3PollMaxAttempts: 1,
+    wan3PollIntervalMs: 0,
+  });
+
+  const heldVideo = db.prepare('SELECT * FROM video_generations WHERE id = ?').get(created.id);
+  const route = db.prepare(`SELECT * FROM generation_route_requests
+    WHERE business_type = 'video_generation' AND business_id = ?`).get(String(created.id));
+  assert.ok(route, heldVideo.error_msg);
+  assert.equal(route.state, 'needs_attention');
+  assert.equal(route.credit_reservation_id, heldVideo.credit_reservation_id);
+  const attempt = db.prepare(`SELECT * FROM generation_route_attempts
+    WHERE request_id = ? ORDER BY attempt_no DESC LIMIT 1`).get(route.id);
+  assert.equal(attempt.state, 'needs_attention');
+  assert.equal(attempt.config_id, config.id);
+  assert.equal(attempt.provider_task_id, 'wan-task-public-reconcile');
+  assert.equal(attempt.query_protocol, 'toapis_wan3_video');
+  assert.match(attempt.config_fingerprint, /^[a-f0-9]{64}$/);
+  const task = db.prepare('SELECT * FROM async_tasks WHERE id = ?').get(created.task_id);
+  assert.equal(task.user_id, 'user-1');
+  assert.equal(task.credit_reservation_id, heldVideo.credit_reservation_id);
+
+  const first = await providerTaskReconciliation.reconcileRequest(db, log, route.id);
+  const second = await providerTaskReconciliation.reconcileRequest(db, log, route.id);
+
+  assert.equal(wanPosts, 1);
+  assert.equal(wanGets, 2);
+  assert.equal(first.task_state, 'failed');
+  assert.equal(first.credit_state, 'refunded');
+  assert.equal(first.reconciled, true);
+  assert.deepEqual(second, first);
+  assert.equal(db.prepare('SELECT status FROM video_generations WHERE id = ?').get(created.id).status, 'failed');
+  assert.equal(db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(created.task_id).status, 'failed');
+  assert.equal(db.prepare('SELECT state FROM generation_route_requests WHERE id = ?').get(route.id).state, 'failed');
+  assert.equal(db.prepare(`SELECT state FROM generation_route_attempts
+    WHERE request_id = ? AND attempt_no = ?`).get(route.id, attempt.attempt_no).state, 'failed');
+  assert.equal(creditLedger.getReservation(db, heldVideo.credit_reservation_id).status, 'refunded');
+  assert.deepEqual(creditLedger.getAccount(db, 'user-1'), {
+    user_id: 'user-1', available: 100, held: 0, spent: 0,
+  });
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM credit_ledger
+    WHERE reservation_id = ? AND event_type = 'refund'`).get(heldVideo.credit_reservation_id).count, 1);
+});
+
+test('Wan3 persists an accepted receipt even when route health changes after submission', async (t) => {
+  const { db, evidence } = setup(t);
+  const config = configureWan3(db, evidence);
+  creditLedger.setAccountBalance(db, 'user-1', 100);
+  let scheduled;
+  let wanPosts = 0;
+  const originalWanCall = wan3Client.callToapisWan3VideoApi;
+  const originalWanFetch = wan3Client.fetchToapisWan3Task;
+  wan3Client.callToapisWan3VideoApi = async () => {
+    wanPosts += 1;
+    db.prepare(`INSERT INTO provider_route_health
+      (config_id, state, consecutive_failures, updated_at)
+      VALUES (?, 'disabled', 0, ?)`)
+      .run(config.id, new Date().toISOString());
+    return { task_id: 'wan-task-health-changed', status: 'processing' };
+  };
+  wan3Client.fetchToapisWan3Task = async () => ({ state: 'processing', retryable: true });
+  t.after(() => {
+    wan3Client.callToapisWan3VideoApi = originalWanCall;
+    wan3Client.fetchToapisWan3Task = originalWanFetch;
+  });
+
+  const created = videoService.create(db, log, validRequest(), {
+    billingEnabled: true,
+    userId: 'user-1',
+    evidenceRoots: evidence.roots,
+    schedule(callback) { scheduled = callback; },
+  });
+  await scheduled({
+    evidenceRoots: evidence.roots,
+    wan3PollMaxAttempts: 1,
+    wan3PollIntervalMs: 0,
+  });
+
+  const video = db.prepare('SELECT * FROM video_generations WHERE id = ?').get(created.id);
+  const route = db.prepare(`SELECT * FROM generation_route_requests
+    WHERE business_type = 'video_generation' AND business_id = ?`).get(String(created.id));
+  assert.equal(wanPosts, 1);
+  assert.equal(video.status, 'needs_attention');
+  assert.ok(route, video.error_msg);
+  assert.equal(route.state, 'needs_attention');
+  const attempt = db.prepare(`SELECT * FROM generation_route_attempts
+    WHERE request_id = ? ORDER BY attempt_no DESC LIMIT 1`).get(route.id);
+  assert.equal(attempt.provider_task_id, 'wan-task-health-changed');
+  assert.equal(attempt.query_protocol, 'toapis_wan3_video');
+  assert.equal(attempt.state, 'needs_attention');
+  assert.equal(creditLedger.getReservation(db, video.credit_reservation_id).status, 'held');
+});
+
+test('Wan3 first-poll terminal failure atomically fails route and refunds once', async (t) => {
+  const { db, evidence } = setup(t);
+  configureWan3(db, evidence);
+  creditLedger.setAccountBalance(db, 'user-1', 100);
+  let scheduled;
+  const originalWanCall = wan3Client.callToapisWan3VideoApi;
+  const originalWanFetch = wan3Client.fetchToapisWan3Task;
+  wan3Client.callToapisWan3VideoApi = async () => ({
+    task_id: 'wan-task-first-poll-failed',
+    status: 'processing',
+  });
+  wan3Client.fetchToapisWan3Task = async () => ({
+    state: 'failed',
+    terminalFailure: true,
+    error: '供应商明确终态失败',
+  });
+  t.after(() => {
+    wan3Client.callToapisWan3VideoApi = originalWanCall;
+    wan3Client.fetchToapisWan3Task = originalWanFetch;
+  });
+
+  const created = videoService.create(db, log, validRequest(), {
+    billingEnabled: true,
+    userId: 'user-1',
+    evidenceRoots: evidence.roots,
+    schedule(callback) { scheduled = callback; },
+  });
+  await scheduled({
+    evidenceRoots: evidence.roots,
+    wan3PollMaxAttempts: 1,
+    wan3PollIntervalMs: 0,
+  });
+
+  const video = db.prepare('SELECT * FROM video_generations WHERE id = ?').get(created.id);
+  const task = db.prepare('SELECT * FROM async_tasks WHERE id = ?').get(created.task_id);
+  const route = db.prepare(`SELECT * FROM generation_route_requests
+    WHERE business_type = 'video_generation' AND business_id = ?`).get(String(created.id));
+  const attempt = db.prepare(`SELECT * FROM generation_route_attempts
+    WHERE request_id = ? ORDER BY attempt_no DESC LIMIT 1`).get(route.id);
+  assert.equal(video.status, 'failed');
+  assert.equal(task.status, 'failed');
+  assert.equal(route.state, 'failed');
+  assert.equal(attempt.state, 'failed');
+  assert.equal(attempt.provider_task_id, 'wan-task-first-poll-failed');
+  assert.equal(creditLedger.getReservation(db, video.credit_reservation_id).status, 'refunded');
+  assert.deepEqual(creditLedger.getAccount(db, 'user-1'), {
+    user_id: 'user-1', available: 100, held: 0, spent: 0,
+  });
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM credit_ledger
+    WHERE reservation_id = ? AND event_type = 'refund'`).get(video.credit_reservation_id).count, 1);
 });
 
 test('Wan3 structured rejection refunds immediately even when the message says unknown', async (t) => {
@@ -323,6 +537,190 @@ test('Wan3 structured unknown keeps credits held even when the message says defi
   assert.equal(creditLedger.getReservation(db, row.credit_reservation_id).status, 'held');
   assert.deepEqual(creditLedger.getAccount(db, 'user-1'), {
     user_id: 'user-1', available: 80, held: 20, spent: 0,
+  });
+});
+
+test('Wan3 preclaimed submission never posts again and never refunds the in-flight reservation', async (t) => {
+  const { db, evidence } = setup(t);
+  const config = configureWan3(db, evidence);
+  creditLedger.setAccountBalance(db, 'user-1', 100);
+  let scheduled;
+  let wanPosts = 0;
+  const originalWanCall = wan3Client.callToapisWan3VideoApi;
+  wan3Client.callToapisWan3VideoApi = async () => {
+    wanPosts += 1;
+    return { task_id: 'duplicate-must-not-run' };
+  };
+  t.after(() => { wan3Client.callToapisWan3VideoApi = originalWanCall; });
+
+  const created = videoService.create(db, log, validRequest(), {
+    billingEnabled: true,
+    userId: 'user-1',
+    evidenceRoots: evidence.roots,
+    schedule(callback) { scheduled = callback; },
+  });
+  const video = db.prepare('SELECT * FROM video_generations WHERE id = ?').get(created.id);
+  const reservation = creditLedger.getReservation(db, video.credit_reservation_id);
+  const now = new Date().toISOString();
+  const route = providerRouteStability.createOrGetRouteRequest(db, {
+    id: 'wan3-preclaimed-route',
+    idempotencyKey: `user-1:video:${created.id}`,
+    serviceType: 'video',
+    businessType: 'video_generation',
+    businessId: String(created.id),
+    tenantId: null,
+    userId: 'user-1',
+    logicalModelId: config.logical_model_id || video.model,
+    capabilities: {
+      resolution: '480p',
+      aspectRatio: '16:9',
+      duration: 2,
+      referenceImageCount: 0,
+      referenceVideoCount: 0,
+      referenceAudioCount: 0,
+      requiresAudio: false,
+    },
+    userPriceSnapshot: { model: reservation.model, credits: reservation.amount },
+    candidateConfigIds: [config.id],
+    creditReservationId: video.credit_reservation_id,
+    now,
+  });
+  providerRouteStability.startAttempt(db, {
+    requestId: route.id,
+    configId: config.id,
+    upstreamModel: 'wan3.0-video',
+    queryProtocol: 'toapis_wan3_video',
+    now,
+  });
+
+  await scheduled({ evidenceRoots: evidence.roots });
+
+  assert.equal(wanPosts, 0);
+  const after = db.prepare('SELECT status, credit_reservation_id FROM video_generations WHERE id = ?')
+    .get(created.id);
+  assert.equal(after.status, 'needs_attention');
+  assert.equal(creditLedger.getReservation(db, after.credit_reservation_id).status, 'held');
+  assert.deepEqual(creditLedger.getAccount(db, 'user-1'), {
+    user_id: 'user-1', available: 80, held: 20, spent: 0,
+  });
+});
+
+test('Wan3 restart preserves held credits when a preclaimed submission has no provider task id', (t) => {
+  const { db, evidence } = setup(t);
+  const config = configureWan3(db, evidence);
+  creditLedger.setAccountBalance(db, 'user-1', 100);
+  const created = createWan3(db, evidence, {}, { billingEnabled: true, userId: 'user-1' });
+  const video = db.prepare('SELECT * FROM video_generations WHERE id = ?').get(created.id);
+  const reservation = creditLedger.getReservation(db, video.credit_reservation_id);
+  const now = new Date().toISOString();
+  const route = providerRouteStability.createOrGetRouteRequest(db, {
+    id: 'wan3-restart-preclaimed-route',
+    idempotencyKey: `user-1:video:${created.id}`,
+    serviceType: 'video',
+    businessType: 'video_generation',
+    businessId: String(created.id),
+    tenantId: null,
+    userId: 'user-1',
+    logicalModelId: config.logical_model_id || video.model,
+    capabilities: {
+      resolution: '480p', aspectRatio: '16:9', duration: 2,
+      referenceImageCount: 0, referenceVideoCount: 0, referenceAudioCount: 0,
+      requiresAudio: false,
+    },
+    userPriceSnapshot: { model: reservation.model, credits: reservation.amount },
+    candidateConfigIds: [config.id],
+    creditReservationId: video.credit_reservation_id,
+    now,
+  });
+  providerRouteStability.startAttempt(db, {
+    requestId: route.id,
+    configId: config.id,
+    upstreamModel: 'wan3.0-video',
+    queryProtocol: 'toapis_wan3_video',
+    now,
+  });
+  db.prepare("UPDATE video_generations SET status = 'processing', provider_task_id = NULL WHERE id = ?")
+    .run(created.id);
+
+  videoService.resumeProcessingVideoGenerations(db, log, { evidenceRoots: evidence.roots });
+
+  const after = db.prepare('SELECT status, provider_task_id, credit_reservation_id FROM video_generations WHERE id = ?')
+    .get(created.id);
+  assert.equal(after.status, 'needs_attention');
+  assert.equal(after.provider_task_id, null);
+  assert.equal(creditLedger.getReservation(db, after.credit_reservation_id).status, 'held');
+  assert.equal(db.prepare('SELECT state FROM generation_route_requests WHERE id = ?').get(route.id).state, 'needs_attention');
+  assert.equal(db.prepare(`SELECT state FROM generation_route_attempts
+    WHERE request_id = ? ORDER BY attempt_no DESC LIMIT 1`).get(route.id).state, 'needs_attention');
+});
+
+test('Wan3 indeterminate submission persists a safe recovery handle and exact request digest without retrying', async (t) => {
+  const { db, evidence } = setup(t);
+  const config = configureWan3(db, evidence);
+  creditLedger.setAccountBalance(db, 'user-1', 100);
+  let scheduled;
+  let wanPosts = 0;
+  let submittedOptions = null;
+  const originalWanCall = wan3Client.callToapisWan3VideoApi;
+  wan3Client.callToapisWan3VideoApi = async (_config, _log, options) => {
+    wanPosts += 1;
+    submittedOptions = options;
+    return {
+      indeterminate: true,
+      error: '创建请求结果未知',
+      route_meta: {
+        phase: 'submit',
+        requestBodySent: true,
+        recoveryTaskId: `video-${options.video_gen_id}`,
+        recoveryCode: 'TOAPIS_WAN3_TRANSPORT_INTERRUPTED',
+        httpStatus: 504,
+      },
+    };
+  };
+  t.after(() => { wan3Client.callToapisWan3VideoApi = originalWanCall; });
+
+  const created = videoService.create(db, log, validRequest(), {
+    billingEnabled: true,
+    userId: 'user-1',
+    evidenceRoots: evidence.roots,
+    schedule(callback) { scheduled = callback; },
+  });
+  await scheduled({ evidenceRoots: evidence.roots });
+
+  assert.equal(wanPosts, 1);
+  assert.equal(submittedOptions.client_business_id, `video-${created.id}`);
+  const expectedBody = wan3Client.buildToapisWan3VideoBody(submittedOptions);
+  const expectedSha = crypto.createHash('sha256')
+    .update(JSON.stringify(expectedBody))
+    .digest('hex');
+  const video = db.prepare(`SELECT status, provider_task_id, credit_reservation_id
+    FROM video_generations WHERE id = ?`).get(created.id);
+  assert.equal(video.status, 'needs_attention');
+  assert.equal(video.provider_task_id, null);
+  assert.equal(creditLedger.getReservation(db, video.credit_reservation_id).status, 'held');
+
+  const route = db.prepare(`SELECT * FROM generation_route_requests
+    WHERE business_type = 'video_generation' AND business_id = ?`).get(String(created.id));
+  assert.equal(route.state, 'needs_attention');
+  assert.equal(route.credit_reservation_id, video.credit_reservation_id);
+  const attempt = db.prepare(`SELECT * FROM generation_route_attempts
+    WHERE request_id = ? ORDER BY attempt_no DESC LIMIT 1`).get(route.id);
+  assert.equal(attempt.config_id, config.id);
+  assert.equal(attempt.state, 'needs_attention');
+  assert.equal(attempt.provider_task_id, null);
+  assert.equal(attempt.error_category, 'submission_unknown');
+
+  const event = db.prepare(`SELECT event_type, task_state, credit_state, safe_details
+    FROM provider_stability_events WHERE request_id = ?
+      AND event_type = 'submission_unknown_recovery'`).get(route.id);
+  assert.equal(event.task_state, 'needs_attention');
+  assert.equal(event.credit_state, 'held');
+  assert.deepEqual(JSON.parse(event.safe_details), {
+    httpStatus: 504,
+    recoveryCode: 'TOAPIS_WAN3_TRANSPORT_INTERRUPTED',
+    recoveryTaskId: `video-${created.id}`,
+    requestBodySent: true,
+    requestSha256: expectedSha,
   });
 });
 

@@ -25,6 +25,11 @@ const PUBLIC_PROVIDER_BY_CONTRACT = Object.freeze({
   'usmercari-image-real-verification-v1': 'usmercari',
   'lingjing-video-real-verification-v1': 'lingjing',
 });
+const WAN3_CONTRACT = 'toapis-wan3-video-real-verification-v1';
+const WAN3_MODEL = 'wan3.0-video';
+const WAN3_PROVIDER = 'toapis_wan3';
+const WAN3_PROTOCOL = 'toapis_wan3_video';
+const WAN3_BASE_URL = 'https://toapis.xyz';
 
 function evidenceContractForModel(model) {
   return CONTRACT_BY_MODEL[String(model || '').trim().toLowerCase()] || null;
@@ -117,6 +122,64 @@ function hasProtectedPublicAssets(root, contract, evidence, requireRootOwnership
   return true;
 }
 
+function positiveConfigId(value) {
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+function wan3EvidenceBinding(evidence) {
+  if (!Array.isArray(evidence?.results) || evidence.results.length !== 1) return null;
+  const result = evidence.results[0];
+  const sourceConfigId = positiveConfigId(result?.source_config_id);
+  const targetConfigId = positiveConfigId(result?.target_config_id);
+  const configId = positiveConfigId(result?.config_id);
+  const credentialFingerprint = String(result?.credential_fingerprint || '').toLowerCase();
+  const configFingerprint = String(result?.config_fingerprint || '').toLowerCase();
+  if (!sourceConfigId || !targetConfigId || configId !== targetConfigId
+      || !/^[a-f0-9]{64}$/.test(credentialFingerprint)
+      || !/^[a-f0-9]{64}$/.test(configFingerprint)) return null;
+  return {
+    source_config_id: sourceConfigId,
+    target_config_id: targetConfigId,
+    config_id: configId,
+    credential_fingerprint: credentialFingerprint,
+    config_fingerprint: configFingerprint,
+  };
+}
+
+function configuredModels(config) {
+  if (Array.isArray(config?.model)) return config.model;
+  try {
+    const parsed = JSON.parse(String(config?.model || ''));
+    if (Array.isArray(parsed)) return parsed;
+  } catch (_) {}
+  return [config?.model];
+}
+
+function hasWan3ConfigBinding(trusted, config) {
+  const id = positiveConfigId(config?.id);
+  const apiKey = String(config?.api_key || '');
+  const models = configuredModels(config)
+    .map((value) => String(value || '').trim().toLowerCase());
+  if (!id || String(config?.service_type || '').trim().toLowerCase() !== 'video'
+      || String(config?.provider || '').trim().toLowerCase() !== WAN3_PROVIDER
+      || String(config?.api_protocol || '').trim().toLowerCase() !== WAN3_PROTOCOL
+      || String(config?.base_url || '') !== WAN3_BASE_URL
+      || !apiKey.trim() || !models.includes(WAN3_MODEL)
+      || String(config?.default_model || '').trim().toLowerCase() !== WAN3_MODEL
+      || trusted.target_config_id !== id || trusted.config_id !== id) return false;
+  const credentialFingerprint = crypto.createHash('sha256').update(apiKey).digest('hex');
+  const configFingerprint = crypto.createHash('sha256').update(JSON.stringify({
+    id: String(id),
+    provider: WAN3_PROVIDER,
+    model: WAN3_MODEL,
+    base_url: WAN3_BASE_URL,
+    api_key: apiKey,
+  })).digest('hex');
+  return trusted.credential_fingerprint === credentialFingerprint
+    && trusted.config_fingerprint === configFingerprint;
+}
+
 function readTrustedEvidence(model, roots) {
   const contract = evidenceContractForModel(model);
   if (!contract) return null;
@@ -140,20 +203,24 @@ function readTrustedEvidence(model, roots) {
     const evidence = JSON.parse(evidenceBytes.toString('utf8'));
     if (evidence?.contract_version !== contract
         || !hasProtectedPublicAssets(root, contract, evidence, requireRootOwnership)) return null;
-    return { contract, sha256: actualSha };
+    const configBinding = contract === WAN3_CONTRACT ? wan3EvidenceBinding(evidence) : {};
+    if (!configBinding) return null;
+    return { contract, sha256: actualSha, ...configBinding };
   } catch (_) {
     return null;
   }
 }
 
-function hasTrustedEvidenceBinding(model, capabilities, roots) {
+function hasTrustedEvidenceBinding(model, capabilities, roots, config) {
   const contract = evidenceContractForModel(model);
   if (!contract) return true;
   const trusted = readTrustedEvidence(model, roots);
-  return Boolean(trusted
+  const evidenceMatches = Boolean(trusted
     && capabilities
     && String(capabilities.evidence_contract || '') === trusted.contract
     && String(capabilities.evidence_sha256 || '').toLowerCase() === trusted.sha256);
+  if (!evidenceMatches) return false;
+  return contract !== WAN3_CONTRACT || hasWan3ConfigBinding(trusted, config);
 }
 
 module.exports = {

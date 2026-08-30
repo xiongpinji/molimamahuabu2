@@ -1712,9 +1712,42 @@ function auditToapisWan3Evidence(evidenceRoot, envelope, now, requireRecent = tr
   }
   if (Number(result.post_count) !== 1) fail('ToAPIs Wan 3.0 paid evidence must contain exactly one POST submission');
   if (!String(result.provider_task_id || '').trim()) fail('ToAPIs Wan 3.0 provider task id is missing');
+  const billing = result.billing || {};
+  const evidenceMode = Object.hasOwn(billing, 'evidence_mode')
+    ? billing.evidence_mode
+    : 'metered_positive_usage_v1';
+  if (!['metered_positive_usage_v1', 'unlimited_quota_positive_usage_v1'].includes(evidenceMode)) {
+    fail('ToAPIs Wan 3.0 billing evidence mode is invalid');
+  }
   const recoveryTaskId = String(result.recovery_task_id || '');
-  if (!/^wan3-verify-[A-Za-z0-9._-]+$/.test(recoveryTaskId)) fail('ToAPIs Wan 3.0 recovery task id is invalid');
-  if (!String(result.config_id || '').trim()) fail('ToAPIs Wan 3.0 target config id is missing');
+  const recoveryTaskIdPattern = evidenceMode === 'unlimited_quota_positive_usage_v1'
+    ? /^molimama-wan3-smoke-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    : /^wan3-verify-[A-Za-z0-9._-]+$/;
+  if (!recoveryTaskIdPattern.test(recoveryTaskId)) fail('ToAPIs Wan 3.0 recovery task id is invalid');
+  const exactConfigId = (value) => {
+    const raw = String(value ?? '').trim();
+    if (!/^[1-9]\d*$/.test(raw)) return null;
+    const parsed = Number(raw);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  };
+  const sourceConfigId = exactConfigId(result.source_config_id);
+  const targetConfigId = exactConfigId(result.target_config_id);
+  const compatibilityConfigId = exactConfigId(result.config_id);
+  if (sourceConfigId === null) {
+    fail('ToAPIs Wan 3.0 source config id is invalid');
+  }
+  if (targetConfigId === null) {
+    fail('ToAPIs Wan 3.0 target config id is invalid');
+  }
+  if (compatibilityConfigId === null || compatibilityConfigId !== targetConfigId) {
+    fail('ToAPIs Wan 3.0 target config id compatibility mirror is invalid');
+  }
+  if (evidenceMode === 'unlimited_quota_positive_usage_v1' && sourceConfigId === targetConfigId) {
+    fail('ToAPIs Wan 3.0 smoke source and formal target configs must be independent');
+  }
+  if (!/^[a-f0-9]{64}$/.test(String(result.credential_fingerprint || ''))) {
+    fail('ToAPIs Wan 3.0 credential fingerprint is invalid');
+  }
   if (!/^[a-f0-9]{64}$/.test(String(result.config_fingerprint || ''))) {
     fail('ToAPIs Wan 3.0 config fingerprint is invalid');
   }
@@ -1759,9 +1792,6 @@ function auditToapisWan3Evidence(evidenceRoot, envelope, now, requireRecent = tr
     fail('ToAPIs Wan 3.0 ffprobe evidence is invalid');
   }
 
-  const billing = result.billing || {};
-  const expectedCost = Number(billing.expected_cost_yuan);
-  const hardCap = Number(billing.hard_cap_yuan);
   const before = billing.before || {};
   const after = billing.after || {};
   const beforeAt = canonicalTimestamp(before.captured_at, 'ToAPIs Wan 3.0 balance before');
@@ -1770,17 +1800,28 @@ function auditToapisWan3Evidence(evidenceRoot, envelope, now, requireRecent = tr
   const debitedCredits = round(Number(after.used_credits) - Number(before.used_credits));
   const usdCnyRate = Number(billing.usd_cny_rate);
   const costYuan = round(debitedBalance * usdCnyRate);
-  if (!Number.isFinite(expectedCost) || expectedCost <= 0
-      || !Number.isFinite(hardCap) || hardCap <= 0 || expectedCost > hardCap
-      || beforeAt >= afterAt || beforeAt > startedAt || afterAt < completedAt || afterAt > freshness.generatedAt
+  if (beforeAt >= afterAt || beforeAt > startedAt || afterAt < completedAt || afterAt > freshness.generatedAt
       || !Number.isFinite(debitedBalance) || debitedBalance <= 0
       || !Number.isFinite(debitedCredits) || debitedCredits <= 0
       || !equalNumber(billing.debited_balance, debitedBalance)
       || !equalNumber(billing.debited_credits, debitedCredits)
       || billing.provider_currency !== 'USD'
       || !Number.isFinite(usdCnyRate) || usdCnyRate <= 0
-      || !equalNumber(billing.cost_yuan, costYuan) || costYuan > hardCap) {
+      || !equalNumber(billing.cost_yuan, costYuan)) {
     fail('ToAPIs Wan 3.0 billing evidence is invalid');
+  }
+  if (evidenceMode === 'metered_positive_usage_v1') {
+    const expectedCost = Number(billing.expected_cost_yuan);
+    const hardCap = Number(billing.hard_cap_yuan);
+    if (!Number.isFinite(expectedCost) || expectedCost <= 0
+        || !Number.isFinite(hardCap) || hardCap <= 0
+        || expectedCost > hardCap || costYuan > hardCap) {
+      fail('ToAPIs Wan 3.0 metered billing evidence is invalid');
+    }
+  } else if (billing.expected_cost_yuan !== null || billing.hard_cap_yuan !== null
+      || before.unlimited_quota !== true || after.unlimited_quota !== true
+      || before.remain_balance !== -1 || after.remain_balance !== -1) {
+    fail('ToAPIs Wan 3.0 unlimited-quota billing evidence is invalid');
   }
 
   const capabilities = evidence.verified_capabilities || {};

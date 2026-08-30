@@ -22,6 +22,8 @@ const BASE_URL = 'https://toapis.xyz';
 const STATE_VERSION = 'toapis-wan3-video-verification-state-v1';
 const EVIDENCE_VERSION = 'toapis-wan3-video-real-verification-v1';
 const PUBLIC_ASSET_BASE_URL = 'https://molimama.vip/verification-assets/toapis';
+const IMPORT_SMOKE_VERSION = 'toapis-wan3-unlimited-smoke-v1';
+const IMPORT_MANIFEST_VERSION = 'external-model-release-evidence-manifest-v1';
 const WAN3_CASE = Object.freeze({
   id: 'wan3-t2v-480p-2s-no-audio',
   model: TOAPIS_WAN3_MODEL,
@@ -65,6 +67,14 @@ function requireAbsoluteDirectory(raw, label) {
   return resolved;
 }
 
+function requireAbsoluteFile(raw, label) {
+  const value = String(raw || '').trim();
+  if (!value || !path.isAbsolute(value)) throw new Error(`${label} 必须是已存在的绝对文件路径`);
+  const stat = fs.lstatSync(value);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`${label} 必须是普通文件`);
+  return fs.realpathSync(value);
+}
+
 function resolveWan3VerificationPaths(env = process.env) {
   const outputDir = requireAbsoluteDirectory(env.TOAPIS_WAN3_VERIFY_OUTPUT_DIR, 'TOAPIS_WAN3_VERIFY_OUTPUT_DIR');
   const publicArtifactDir = requireAbsoluteDirectory(
@@ -90,6 +100,16 @@ function writeJsonAtomic(filePath, payload) {
   const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   fs.writeFileSync(temporary, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
   fs.renameSync(temporary, filePath);
+}
+
+function writeBytesExclusive(filePath, bytes, mode = 0o644) {
+  const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, bytes, { mode, flag: 'wx' });
+    fs.renameSync(temporary, filePath);
+  } finally {
+    if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
+  }
 }
 
 function readJson(filePath) {
@@ -125,11 +145,275 @@ function decideWan3ResumeAction(entry) {
 function configFingerprint(config, apiKey) {
   return sha256(JSON.stringify({
     id: String(config.id),
-    provider: 'toapis',
+    provider: 'toapis_wan3',
     model: TOAPIS_WAN3_MODEL,
     base_url: BASE_URL,
     api_key: apiKey,
   }));
+}
+
+function credentialFingerprint(apiKey) {
+  return sha256(apiKey);
+}
+
+function requireConfigId(raw, label) {
+  const value = String(raw || '').trim();
+  if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) {
+    throw new Error(`${label} 必须是正整数`);
+  }
+  return Number(value);
+}
+
+function requireTimestamp(value, label) {
+  const raw = String(value || '').trim();
+  const timestamp = Date.parse(raw);
+  if (!raw || !Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== raw) {
+    throw new Error(`${label} 必须是规范 UTC 时间`);
+  }
+  return timestamp;
+}
+
+function sameNumber(left, right) {
+  return Number.isFinite(Number(left)) && Number.isFinite(Number(right))
+    && Number(left) === Number(right);
+}
+
+function inspectWan3ImportArtifact(artifactPath, smoke, deps = {}) {
+  const bytes = fs.readFileSync(artifactPath);
+  if (bytes.length < 1024) throw new Error('Wan 3.0 导入成品为空或过小');
+  const digest = sha256(bytes);
+  if (Number(smoke?.artifact?.bytes) !== bytes.length) throw new Error('Wan 3.0 导入成品字节数与 smoke 记录不一致');
+  if (String(smoke?.artifact?.sha256 || '') !== digest) throw new Error('Wan 3.0 导入成品哈希与 smoke 记录不一致');
+  if (smoke?.artifact?.content_type !== 'video/mp4') throw new Error('Wan 3.0 导入成品必须是 video/mp4');
+  const recordedPath = requireAbsoluteFile(smoke?.artifact?.local_path, 'smoke artifact.local_path');
+  if (recordedPath !== artifactPath) throw new Error('Wan 3.0 导入成品路径与 smoke 记录不一致');
+
+  const probe = runWan3Ffprobe(artifactPath, deps);
+  const width = Number(probe?.width);
+  const height = Number(probe?.height);
+  const duration = Number(probe?.duration_seconds);
+  const ratio = width / height;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || height < 440 || height > 520
+      || ratio < 1.7 || ratio > 1.85) {
+    throw new Error(`Wan 3.0 导入成品不是已验证的 480p 16:9: ${width}x${height}`);
+  }
+  if (!Number.isFinite(duration) || duration < 1.5 || duration > 3.5) {
+    throw new Error(`Wan 3.0 导入成品时长不符合约 2 秒合同: ${duration}s`);
+  }
+  if (!String(probe?.video_codec || '').trim()) throw new Error('Wan 3.0 导入成品缺少视频轨');
+  if (probe?.has_audio !== false || (probe?.audio_codec != null && String(probe.audio_codec).trim())) {
+    throw new Error('Wan 3.0 导入的无音频成品意外包含音频轨');
+  }
+  const recordedProbe = smoke?.artifact?.ffprobe || {};
+  if (!sameNumber(recordedProbe.width, width)
+      || !sameNumber(recordedProbe.height, height)
+      || !sameNumber(recordedProbe.duration_seconds, duration)
+      || String(recordedProbe.video_codec || '') !== String(probe.video_codec || '')
+      || recordedProbe.has_audio !== false
+      || (recordedProbe.audio_codec != null && String(recordedProbe.audio_codec).trim())) {
+    throw new Error('Wan 3.0 导入成品 ffprobe 与 smoke 记录不一致');
+  }
+  return { bytes, sha256: digest, ffprobe: probe };
+}
+
+function requireUnlimitedSmokeBilling(smoke) {
+  const account = smoke?.account || {};
+  const before = account.before || {};
+  const after = account.after || {};
+  if (before.unlimited_quota !== true || after.unlimited_quota !== true) {
+    throw new Error('Wan 3.0 smoke unlimited_quota 前后必须均为 true');
+  }
+  if (before.remain_balance !== -1 || after.remain_balance !== -1) {
+    throw new Error('Wan 3.0 smoke remain_balance 前后必须均为 -1');
+  }
+  if (account.after_error !== null || account.billing_binding !== 'positive_usage_delta_observed') {
+    throw new Error('Wan 3.0 smoke 缺少完整的正向用量差绑定');
+  }
+  const debitedBalanceRaw = Number(after.used_balance) - Number(before.used_balance);
+  const debitedCreditsRaw = Number(after.used_credits) - Number(before.used_credits);
+  if (!Number.isFinite(debitedBalanceRaw) || debitedBalanceRaw <= 0
+      || !Number.isFinite(debitedCreditsRaw) || debitedCreditsRaw <= 0
+      || Number(account?.delta?.used_balance) !== debitedBalanceRaw
+      || Number(account?.delta?.used_credits) !== debitedCreditsRaw) {
+    throw new Error('Wan 3.0 smoke 正向用量差不精确');
+  }
+  return {
+    before,
+    after,
+    debitedBalance: round(debitedBalanceRaw),
+    debitedCredits: round(debitedCreditsRaw),
+  };
+}
+
+function validateWan3Smoke(smoke, targetConfigId, artifactPath, generatedAt, deps = {}) {
+  if (smoke?.contract_version !== IMPORT_SMOKE_VERSION
+      || smoke.evidence_scope !== 'provider_availability_smoke_only'
+      || smoke.production_billing_evidence !== false
+      || smoke.production_activation_authorized !== false) {
+    throw new Error('Wan 3.0 导入源不是未升级的私有 smoke 合同');
+  }
+  const sourceConfigId = requireConfigId(smoke.config_id, 'Wan 3.0 smoke source config id');
+  if (sourceConfigId === targetConfigId) {
+    throw new Error('Wan 3.0 正式目标配置必须独立于 smoke 来源配置');
+  }
+  const requestSummary = smoke.request || {};
+  for (const [key, value] of Object.entries({
+    model: WAN3_CASE.model,
+    mode: WAN3_CASE.mode,
+    duration: WAN3_CASE.duration,
+    resolution: WAN3_CASE.resolution,
+    ratio: WAN3_CASE.ratio,
+    audio: WAN3_CASE.audio,
+    reference_count: 0,
+  })) {
+    if (requestSummary[key] !== value) throw new Error(`Wan 3.0 smoke request.${key} 不符合已实测合同`);
+  }
+  const submission = smoke.submission || {};
+  const recoveryTaskId = String(submission.client_business_id || '');
+  if (!/^molimama-wan3-smoke-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(recoveryTaskId)) {
+    throw new Error('Wan 3.0 smoke client_business_id 无效');
+  }
+  const providerTaskId = String(submission.provider_task_id || '').trim();
+  if (!providerTaskId || Number(submission.post_count) !== 1) {
+    throw new Error('Wan 3.0 smoke 必须绑定且仅绑定一次已受理 POST');
+  }
+  const expectedSmokeFile = `wan3-480p-2s-silent-${String(providerTaskId).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')}.mp4`;
+  if (smoke?.artifact?.output_file !== expectedSmokeFile) throw new Error('Wan 3.0 smoke 任务与成品文件名绑定无效');
+
+  const beforeAt = requireTimestamp(smoke?.account?.before?.captured_at, 'Wan 3.0 smoke balance before');
+  const startedAt = requireTimestamp(submission.submitted_at, 'Wan 3.0 smoke submitted_at');
+  const acceptedAt = requireTimestamp(submission.accepted_at, 'Wan 3.0 smoke accepted_at');
+  const afterAt = requireTimestamp(smoke?.account?.after?.captured_at, 'Wan 3.0 smoke balance after');
+  const smokeCompletedAt = requireTimestamp(smoke.completed_at, 'Wan 3.0 smoke completed_at');
+  const generatedAtMs = requireTimestamp(generatedAt, 'Wan 3.0 import generated_at');
+  if (beforeAt > startedAt || startedAt >= acceptedAt || acceptedAt >= afterAt
+      || afterAt > smokeCompletedAt || smokeCompletedAt > generatedAtMs) {
+    throw new Error('Wan 3.0 smoke 时间线无效');
+  }
+  const billing = requireUnlimitedSmokeBilling(smoke);
+  const artifact = inspectWan3ImportArtifact(artifactPath, smoke, deps);
+  return {
+    sourceConfigId,
+    submission,
+    recoveryTaskId,
+    providerTaskId,
+    startedAt: submission.submitted_at,
+    acceptedAt: submission.accepted_at,
+    completedAt: smoke.account.after.captured_at,
+    billing,
+    artifact,
+  };
+}
+
+async function runWan3SmokeImport(options = {}) {
+  const env = options.env || process.env;
+  const deps = options.deps || {};
+  const apiKey = String(env.TOAPIS_WAN3_API_KEY || '').trim();
+  const targetConfigId = requireConfigId(env.TOAPIS_WAN3_TARGET_CONFIG_ID, 'TOAPIS_WAN3_TARGET_CONFIG_ID');
+  if (!apiKey) throw new Error('缺少 TOAPIS_WAN3_API_KEY');
+  const usdCnyRate = requirePositiveNumber(env, 'TOAPIS_USD_CNY_RATE');
+  const smokeResultPath = requireAbsoluteFile(
+    env.TOAPIS_WAN3_IMPORT_SMOKE_RESULT_PATH,
+    'TOAPIS_WAN3_IMPORT_SMOKE_RESULT_PATH',
+  );
+  const artifactPath = requireAbsoluteFile(
+    env.TOAPIS_WAN3_IMPORT_ARTIFACT_PATH,
+    'TOAPIS_WAN3_IMPORT_ARTIFACT_PATH',
+  );
+  const outputDir = requireAbsoluteDirectory(env.TOAPIS_WAN3_IMPORT_OUTPUT_DIR, 'TOAPIS_WAN3_IMPORT_OUTPUT_DIR');
+  if (fs.readdirSync(outputDir).length !== 0) throw new Error('TOAPIS_WAN3_IMPORT_OUTPUT_DIR 必须为空目录');
+  const smoke = JSON.parse(fs.readFileSync(smokeResultPath, 'utf8'));
+  const generatedAt = nowDate(deps).toISOString();
+  const checked = validateWan3Smoke(smoke, targetConfigId, artifactPath, generatedAt, deps);
+  const request = buildToapisWan3VideoBody({
+    model: WAN3_CASE.model,
+    prompt: WAN3_PROMPT,
+    duration: WAN3_CASE.duration,
+    resolution: WAN3_CASE.resolution,
+    ratio: WAN3_CASE.ratio,
+    audio: WAN3_CASE.audio,
+    client_business_id: checked.recoveryTaskId,
+  });
+  const outputFile = safeTaskBasename(checked.providerTaskId);
+  const publicArtifactDir = path.join(outputDir, 'public', 'toapis');
+  const publicArtifactPath = path.join(publicArtifactDir, outputFile);
+  const evidencePath = path.join(outputDir, 'toapis-wan3-video-verification.json');
+  const manifestPath = path.join(outputDir, 'manifest.json');
+  const state = {
+    version: STATE_VERSION,
+    generated_at: generatedAt,
+    run_id: typeof deps.randomUUID === 'function' ? deps.randomUUID() : crypto.randomUUID(),
+    case: {
+      id: WAN3_CASE.id,
+      model: WAN3_CASE.model,
+      mode: WAN3_CASE.mode,
+      requested_resolution: WAN3_CASE.resolution,
+      requested_ratio: WAN3_CASE.ratio,
+      requested_duration: WAN3_CASE.duration,
+      requested_audio: WAN3_CASE.audio,
+      status: 'completed',
+      submission_state: 'accepted',
+      provider_task_id: checked.providerTaskId,
+      recovery_task_id: checked.recoveryTaskId,
+      post_count: 1,
+      source_config_id: checked.sourceConfigId,
+      target_config_id: targetConfigId,
+      config_id: targetConfigId,
+      credential_fingerprint: credentialFingerprint(apiKey),
+      config_fingerprint: configFingerprint({ id: targetConfigId }, apiKey),
+      request,
+      request_sha256: sha256(JSON.stringify(request)),
+      started_at: checked.startedAt,
+      accepted_at: checked.acceptedAt,
+      completed_at: checked.completedAt,
+      artifact: {
+        public_url: `${PUBLIC_ASSET_BASE_URL}/${encodeURIComponent(outputFile)}`,
+        output_file: outputFile,
+        content_type: 'video/mp4',
+        bytes: checked.artifact.bytes.length,
+        sha256: checked.artifact.sha256,
+        ffprobe: checked.artifact.ffprobe,
+      },
+      billing: {
+        evidence_mode: 'unlimited_quota_positive_usage_v1',
+        expected_cost_yuan: null,
+        hard_cap_yuan: null,
+        before: checked.billing.before,
+        after: checked.billing.after,
+        debited_balance: checked.billing.debitedBalance,
+        debited_credits: checked.billing.debitedCredits,
+        provider_currency: 'USD',
+        usd_cny_rate: usdCnyRate,
+        cost_yuan: round(checked.billing.debitedBalance * usdCnyRate),
+      },
+    },
+  };
+  const evidence = buildWan3Evidence(state);
+  const evidenceBytes = Buffer.from(`${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
+  const manifest = {
+    contract_version: IMPORT_MANIFEST_VERSION,
+    evidence: {
+      [EVIDENCE_VERSION]: {
+        file: path.basename(evidencePath),
+        sha256: sha256(evidenceBytes),
+      },
+    },
+  };
+  const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  const created = [];
+  try {
+    fs.mkdirSync(publicArtifactDir, { recursive: true, mode: 0o755 });
+    writeBytesExclusive(publicArtifactPath, checked.artifact.bytes);
+    created.push(publicArtifactPath);
+    writeBytesExclusive(evidencePath, evidenceBytes);
+    created.push(evidencePath);
+    writeBytesExclusive(manifestPath, manifestBytes);
+    created.push(manifestPath);
+  } catch (error) {
+    for (const filePath of created.reverse()) fs.rmSync(filePath, { force: true });
+    throw error;
+  }
+  return evidence;
 }
 
 async function fetchBalance(apiKey, fetchImpl = globalThis.fetch) {
@@ -261,7 +545,10 @@ function buildWan3Evidence(state) {
       provider_task_id: result.provider_task_id,
       recovery_task_id: result.recovery_task_id,
       post_count: result.post_count,
+      source_config_id: result.source_config_id,
+      target_config_id: result.target_config_id,
       config_id: result.config_id,
+      credential_fingerprint: result.credential_fingerprint,
       config_fingerprint: result.config_fingerprint,
       request: result.request,
       request_sha256: result.request_sha256,
@@ -329,10 +616,9 @@ async function runWan3Verification(options = {}) {
     }
 
     const apiKey = String(env.TOAPIS_WAN3_API_KEY || '').trim();
-    const configId = String(env.TOAPIS_WAN3_VERIFY_CONFIG_ID || '').trim();
+    const configId = requireConfigId(env.TOAPIS_WAN3_VERIFY_CONFIG_ID, 'TOAPIS_WAN3_VERIFY_CONFIG_ID');
     if (!apiKey) throw new Error('缺少 TOAPIS_WAN3_API_KEY');
-    if (!configId) throw new Error('缺少 TOAPIS_WAN3_VERIFY_CONFIG_ID');
-    const config = { id: configId, provider: 'toapis', model: TOAPIS_WAN3_MODEL, base_url: BASE_URL, api_key: apiKey };
+    const config = { id: configId, provider: 'toapis_wan3', model: TOAPIS_WAN3_MODEL, base_url: BASE_URL, api_key: apiKey };
     const budget = requireBudget(env);
 
     if (action === 'submit') {
@@ -365,7 +651,10 @@ async function runWan3Verification(options = {}) {
           submission_state: 'submitting',
           recovery_task_id: recoveryTaskId,
           post_count: 0,
+          source_config_id: configId,
+          target_config_id: configId,
           config_id: configId,
+          credential_fingerprint: credentialFingerprint(apiKey),
           config_fingerprint: configFingerprint(config, apiKey),
           request,
           request_sha256: sha256(JSON.stringify(request)),
@@ -455,10 +744,15 @@ async function runWan3Verification(options = {}) {
 }
 
 if (require.main === module) {
-  runWan3Verification().then((evidence) => {
-    process.stdout.write(`TOAPIS_WAN3_VERIFICATION_COMPLETE task_id=${evidence.results[0].provider_task_id} cost_yuan=${evidence.results[0].billing.cost_yuan}\n`);
+  const importMode = process.argv.includes('--import-smoke')
+    || process.env.TOAPIS_WAN3_IMPORT_MODE === '1';
+  const runner = importMode ? runWan3SmokeImport : runWan3Verification;
+  runner().then((evidence) => {
+    const label = importMode ? 'TOAPIS_WAN3_IMPORT_COMPLETE' : 'TOAPIS_WAN3_VERIFICATION_COMPLETE';
+    process.stdout.write(`${label} task_id=${evidence.results[0].provider_task_id} cost_yuan=${evidence.results[0].billing.cost_yuan}\n`);
   }).catch((error) => {
-    process.stderr.write(`TOAPIS_WAN3_VERIFICATION_FAILED: ${error.message}\n`);
+    const label = importMode ? 'TOAPIS_WAN3_IMPORT_FAILED' : 'TOAPIS_WAN3_VERIFICATION_FAILED';
+    process.stderr.write(`${label}: ${error.message}\n`);
     process.exitCode = 1;
   });
 }
@@ -471,5 +765,6 @@ module.exports = {
   decideWan3ResumeAction,
   fetchBalance,
   resolveWan3VerificationPaths,
+  runWan3SmokeImport,
   runWan3Verification,
 };

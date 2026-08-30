@@ -87,7 +87,7 @@ function externalModelEvidenceBindingsReady(db, roots) {
   for (const config of configs) {
     const capabilitiesByModel = parseCapabilities(config.verified_capabilities);
     for (const model of mediaModelSelection.orderedModels(config)) {
-      if (!hasTrustedEvidenceBinding(model, capabilitiesByModel[model], roots)) failures.push(model);
+      if (!hasTrustedEvidenceBinding(model, capabilitiesByModel[model], roots, config)) failures.push(model);
     }
   }
   return [...new Set(failures)];

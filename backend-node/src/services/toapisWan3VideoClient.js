@@ -134,7 +134,7 @@ function buildToapisWan3VideoBody(opts = {}) {
       ? opts.audio
       : typeof opts.generate_audio === 'boolean'
         ? opts.generate_audio
-        : true,
+        : false,
   };
   if (opts.watermark != null) body.watermark = opts.watermark === true;
   if (opts.seed != null) {

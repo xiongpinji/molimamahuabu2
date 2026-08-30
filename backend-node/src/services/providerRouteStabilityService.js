@@ -466,6 +466,103 @@ function recordRecoveryTask(db, input) {
   })();
 }
 
+function recoveryMetadata(input) {
+  const recoveryTaskId = String(input.recoveryTaskId || '').trim();
+  const requestSha256 = String(input.requestSha256 || '').trim().toLowerCase();
+  const recoveryCode = String(input.recoveryCode || '').trim();
+  const httpStatus = input.httpStatus == null ? null : Number(input.httpStatus);
+  const valid = /^[A-Za-z0-9_.:-]{1,200}$/.test(recoveryTaskId)
+    && /^[0-9a-f]{64}$/.test(requestSha256)
+    && typeof input.requestBodySent === 'boolean'
+    && /^[A-Za-z0-9_.:-]{1,128}$/.test(recoveryCode)
+    && (httpStatus == null || (Number.isSafeInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599));
+  if (!valid) {
+    const error = new Error('供应商恢复元数据无效');
+    error.code = 'PROVIDER_RECOVERY_METADATA_INVALID';
+    throw error;
+  }
+  return {
+    recoveryTaskId,
+    requestSha256,
+    requestBodySent: input.requestBodySent,
+    recoveryCode,
+    httpStatus,
+  };
+}
+
+function recordSubmissionUnknownRecovery(db, input) {
+  const metadata = recoveryMetadata(input);
+  return db.transaction(() => {
+    const row = db.prepare(`SELECT a.*, r.tenant_id, r.user_id, r.logical_model_id
+      FROM generation_route_attempts a
+      JOIN generation_route_requests r ON r.id = a.request_id
+      WHERE a.request_id = ? AND a.attempt_no = ?`)
+      .get(input.requestId, input.attemptNo);
+    if (!row) throw new Error('路由尝试不存在');
+    if (row.provider_task_id != null) {
+      const error = new Error('已存在正式供应商任务号，不能记录未知提交恢复事件');
+      error.code = 'PROVIDER_RECOVERY_METADATA_CONFLICT';
+      throw error;
+    }
+
+    const existingEvents = db.prepare(`SELECT safe_details FROM provider_stability_events
+      WHERE request_id = ? AND event_type = 'submission_unknown_recovery'
+      ORDER BY id DESC`).all(input.requestId);
+    if (existingEvents.length > 0) {
+      const existing = parseJson(existingEvents[0].safe_details);
+      if (existing.recoveryTaskId !== metadata.recoveryTaskId
+          || existing.requestSha256 !== metadata.requestSha256
+          || existing.requestBodySent !== metadata.requestBodySent
+          || existing.recoveryCode !== metadata.recoveryCode) {
+        const error = new Error('供应商恢复元数据与已记录事件冲突');
+        error.code = 'PROVIDER_RECOVERY_METADATA_CONFLICT';
+        throw error;
+      }
+      return {
+        requestId: input.requestId,
+        attemptNo: input.attemptNo,
+        ...existing,
+      };
+    }
+
+    const now = input.now || new Date().toISOString();
+    db.prepare(`UPDATE generation_route_attempts
+      SET state = 'needs_attention', http_status = ?, error_category = 'submission_unknown',
+        safe_error_summary = ?, finished_at = ?
+      WHERE request_id = ? AND attempt_no = ? AND provider_task_id IS NULL`)
+      .run(
+        metadata.httpStatus,
+        toSafeErrorSummary({
+          category: 'submission_unknown',
+          httpStatus: metadata.httpStatus,
+          providerCode: metadata.recoveryCode,
+        }),
+        now,
+        input.requestId,
+        input.attemptNo,
+      );
+    db.prepare("UPDATE generation_route_requests SET state = 'needs_attention', updated_at = ? WHERE id = ?")
+      .run(now, input.requestId);
+    insertEvent(db, {
+      eventType: 'submission_unknown_recovery',
+      requestId: input.requestId,
+      tenantId: row.tenant_id,
+      userRef: row.user_id,
+      logicalModelId: row.logical_model_id,
+      configId: row.config_id,
+      taskState: 'needs_attention',
+      creditState: 'held',
+      safeDetails: metadata,
+      now,
+    });
+    return {
+      requestId: input.requestId,
+      attemptNo: input.attemptNo,
+      ...metadata,
+    };
+  })();
+}
+
 function recordArtifactVerified(db, input) {
   const now = input.now || new Date().toISOString();
   db.transaction(() => {
@@ -1406,6 +1503,7 @@ module.exports = {
   finishAttempt,
   recordAcceptedTask,
   recordRecoveryTask,
+  recordSubmissionUnknownRecovery,
   recordArtifactVerified,
   recordBusinessArtifactUnreadable,
   recordFailureAndHealth,

@@ -163,7 +163,7 @@ test('Wan3 前端只按声明能力提交已验证 480P/2秒/无音频路径', (
   assert.equal(payload.resolution, '480p')
   assert.equal(payload.duration, 2)
   assert.equal(Object.hasOwn(payload, 'generate_audio'), false)
-  assert.equal(supportsMultiImageVideoReferences('wan3.0-video'), true)
+  assert.equal(supportsMultiImageVideoReferences('wan3.0-video'), false)
   assert.throws(
     () => buildVideoGenerationRequest({
       model: 'wan3.0-video',

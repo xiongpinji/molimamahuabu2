@@ -169,6 +169,45 @@ test('管理员列表只返回安全中转关联、健康和任务积分摘要',
   assert.equal(JSON.stringify(events.body).includes('prompt text'), false);
 });
 
+test('管理员事件仅公开未知提交的安全恢复字段', async (t) => {
+  const context = await setup();
+  t.after(() => context.close());
+  context.db.prepare(`INSERT INTO provider_stability_events
+    (severity, event_type, logical_model_id, config_id, task_state, credit_state,
+     safe_details, created_at)
+    VALUES ('warning', 'submission_unknown_recovery', 'logical-image', ?,
+      'needs_attention', 'held', ?, ?)`)
+    .run(context.configId, JSON.stringify({
+      recoveryTaskId: 'video-901',
+      requestSha256: 'a'.repeat(64),
+      requestBodySent: true,
+      recoveryCode: 'TOAPIS_SUBMISSION_INDETERMINATE',
+      httpStatus: 504,
+      prompt: 'private prompt must not leak',
+      apiKey: 'sk-never-return-this',
+      resultUrl: 'https://signed.example/result?token=hidden',
+    }), '2026-08-15T00:01:00.000Z');
+
+  const events = await request(
+    context.baseUrl,
+    '/admin/provider-stability/events?event_type=submission_unknown_recovery',
+    { token: context.adminToken },
+  );
+  assert.equal(events.status, 200);
+  assert.equal(events.body.data.length, 1);
+  assert.deepEqual(events.body.data[0].safe_details, {
+    recoveryTaskId: 'video-901',
+    requestSha256: 'a'.repeat(64),
+    requestBodySent: true,
+    recoveryCode: 'TOAPIS_SUBMISSION_INDETERMINATE',
+    httpStatus: 504,
+  });
+  const serialized = JSON.stringify(events.body);
+  for (const sensitive of [
+    'private prompt', 'sk-never-return-this', 'signed.example', 'token=hidden',
+  ]) assert.equal(serialized.includes(sensitive), false);
+});
+
 test('线路 PATCH 保留原四字段并增量支持 canary_paused，恢复巡检不激活线路或伪造 fresh', async (t) => {
   const context = await setup();
   t.after(() => context.close());

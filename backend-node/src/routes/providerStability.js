@@ -74,6 +74,27 @@ function safeEvent(event) {
       allowedDetails[key] = value;
     }
   }
+  if (event.event_type === 'submission_unknown_recovery') {
+    const recoveryTaskId = event.safe_details?.recoveryTaskId;
+    if (typeof recoveryTaskId === 'string' && /^[A-Za-z0-9_.:-]{1,200}$/.test(recoveryTaskId)) {
+      allowedDetails.recoveryTaskId = recoveryTaskId;
+    }
+    const requestSha256 = event.safe_details?.requestSha256;
+    if (typeof requestSha256 === 'string' && /^[0-9a-f]{64}$/.test(requestSha256)) {
+      allowedDetails.requestSha256 = requestSha256;
+    }
+    if (typeof event.safe_details?.requestBodySent === 'boolean') {
+      allowedDetails.requestBodySent = event.safe_details.requestBodySent;
+    }
+    const recoveryCode = event.safe_details?.recoveryCode;
+    if (typeof recoveryCode === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(recoveryCode)) {
+      allowedDetails.recoveryCode = recoveryCode;
+    }
+    const httpStatus = event.safe_details?.httpStatus;
+    if (Number.isSafeInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599) {
+      allowedDetails.httpStatus = httpStatus;
+    }
+  }
   const legacySeverities = {
     P0: 'critical',
     P1: 'error',

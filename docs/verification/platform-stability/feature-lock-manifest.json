@@ -237,11 +237,33 @@
             "backend-node/test/incrementalReleaseScope.test.js",
             "frontweb/test/toapisVideoProviderConfig.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-29 ToAPIs Wan 3.0 独立接入与未知提交保护获批",
+          "approvedBy": "product-owner 2026-08-29 toapis-wan3-local-gate-refresh-approved",
+          "impactTests": [
+            "backend-node/test/toapisWan3VideoClient.test.js",
+            "backend-node/test/toapisWan3VideoRuntime.test.js",
+            "backend-node/test/videoServiceWan3.test.js",
+            "backend-node/test/toapisWan3AiConfig.test.js",
+            "backend-node/test/toapisWan3Verification.test.js",
+            "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
+            "backend-node/test/toapisWan3Catalog.test.js",
+            "backend-node/test/providerRuntimeFingerprint.test.js",
+            "backend-node/test/externalModelEvidenceBinding.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/sharedReleaseGuardRotation.test.js",
+            "frontweb/test/aiConfigProviderPresets.test.js",
+            "frontweb/test/videoDurationOptions.test.js",
+            "frontweb/test/videoGenerationRequest.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-29 ToAPIs Wan 3.0 独立接入与未知提交保护获批",
-        "approvedBy": "product-owner 2026-08-29 toapis-wan3-local-gate-refresh-approved",
+        "reason": "2026-08-30 PR #211 Hosted CI 功能锁批准链刷新获批",
+        "approvedBy": "product-owner 2026-08-30 pr-211-ci-fix-approved",
         "impactTests": [
           "backend-node/test/toapisWan3VideoClient.test.js",
           "backend-node/test/toapisWan3VideoRuntime.test.js",
@@ -488,11 +510,33 @@
             "backend-node/test/incrementalReleaseScope.test.js",
             "frontweb/test/toapisVideoProviderConfig.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-29 ToAPIs Wan 3.0 独立接入与未知提交保护获批",
+          "approvedBy": "product-owner 2026-08-29 toapis-wan3-local-gate-refresh-approved",
+          "impactTests": [
+            "backend-node/test/toapisWan3VideoClient.test.js",
+            "backend-node/test/toapisWan3VideoRuntime.test.js",
+            "backend-node/test/videoServiceWan3.test.js",
+            "backend-node/test/toapisWan3AiConfig.test.js",
+            "backend-node/test/toapisWan3Verification.test.js",
+            "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
+            "backend-node/test/toapisWan3Catalog.test.js",
+            "backend-node/test/providerRuntimeFingerprint.test.js",
+            "backend-node/test/externalModelEvidenceBinding.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/sharedReleaseGuardRotation.test.js",
+            "frontweb/test/aiConfigProviderPresets.test.js",
+            "frontweb/test/videoDurationOptions.test.js",
+            "frontweb/test/videoGenerationRequest.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-29 ToAPIs Wan 3.0 独立接入与未知提交保护获批",
-        "approvedBy": "product-owner 2026-08-29 toapis-wan3-local-gate-refresh-approved",
+        "reason": "2026-08-30 PR #211 Hosted CI 功能锁批准链刷新获批",
+        "approvedBy": "product-owner 2026-08-30 pr-211-ci-fix-approved",
         "impactTests": [
           "backend-node/test/toapisWan3VideoClient.test.js",
           "backend-node/test/toapisWan3VideoRuntime.test.js",
@@ -771,11 +815,33 @@
             "backend-node/test/incrementalReleaseScope.test.js",
             "frontweb/test/toapisVideoProviderConfig.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-29 ToAPIs Wan 3.0 独立接入与未知提交保护获批",
+          "approvedBy": "product-owner 2026-08-29 toapis-wan3-local-gate-refresh-approved",
+          "impactTests": [
+            "backend-node/test/toapisWan3VideoClient.test.js",
+            "backend-node/test/toapisWan3VideoRuntime.test.js",
+            "backend-node/test/videoServiceWan3.test.js",
+            "backend-node/test/toapisWan3AiConfig.test.js",
+            "backend-node/test/toapisWan3Verification.test.js",
+            "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
+            "backend-node/test/toapisWan3Catalog.test.js",
+            "backend-node/test/providerRuntimeFingerprint.test.js",
+            "backend-node/test/externalModelEvidenceBinding.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/sharedReleaseGuardRotation.test.js",
+            "frontweb/test/aiConfigProviderPresets.test.js",
+            "frontweb/test/videoDurationOptions.test.js",
+            "frontweb/test/videoGenerationRequest.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-29 ToAPIs Wan 3.0 独立接入与未知提交保护获批",
-        "approvedBy": "product-owner 2026-08-29 toapis-wan3-local-gate-refresh-approved",
+        "reason": "2026-08-30 PR #211 Hosted CI 功能锁批准链刷新获批",
+        "approvedBy": "product-owner 2026-08-30 pr-211-ci-fix-approved",
         "impactTests": [
           "backend-node/test/toapisWan3VideoClient.test.js",
           "backend-node/test/toapisWan3VideoRuntime.test.js",
@@ -985,11 +1051,33 @@
             "backend-node/test/incrementalReleaseScope.test.js",
             "frontweb/test/toapisVideoProviderConfig.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-29 ToAPIs Wan 3.0 独立接入与未知提交保护获批",
+          "approvedBy": "product-owner 2026-08-29 toapis-wan3-local-gate-refresh-approved",
+          "impactTests": [
+            "backend-node/test/toapisWan3VideoClient.test.js",
+            "backend-node/test/toapisWan3VideoRuntime.test.js",
+            "backend-node/test/videoServiceWan3.test.js",
+            "backend-node/test/toapisWan3AiConfig.test.js",
+            "backend-node/test/toapisWan3Verification.test.js",
+            "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
+            "backend-node/test/toapisWan3Catalog.test.js",
+            "backend-node/test/providerRuntimeFingerprint.test.js",
+            "backend-node/test/externalModelEvidenceBinding.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/sharedReleaseGuardRotation.test.js",
+            "frontweb/test/aiConfigProviderPresets.test.js",
+            "frontweb/test/videoDurationOptions.test.js",
+            "frontweb/test/videoGenerationRequest.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-29 ToAPIs Wan 3.0 独立接入与未知提交保护获批",
-        "approvedBy": "product-owner 2026-08-29 toapis-wan3-local-gate-refresh-approved",
+        "reason": "2026-08-30 PR #211 Hosted CI 功能锁批准链刷新获批",
+        "approvedBy": "product-owner 2026-08-30 pr-211-ci-fix-approved",
         "impactTests": [
           "backend-node/test/toapisWan3VideoClient.test.js",
           "backend-node/test/toapisWan3VideoRuntime.test.js",
@@ -1493,11 +1581,33 @@
             "backend-node/test/incrementalReleaseScope.test.js",
             "frontweb/test/toapisVideoProviderConfig.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-29 ToAPIs Wan 3.0 独立接入与未知提交保护获批",
+          "approvedBy": "product-owner 2026-08-29 toapis-wan3-local-gate-refresh-approved",
+          "impactTests": [
+            "backend-node/test/toapisWan3VideoClient.test.js",
+            "backend-node/test/toapisWan3VideoRuntime.test.js",
+            "backend-node/test/videoServiceWan3.test.js",
+            "backend-node/test/toapisWan3AiConfig.test.js",
+            "backend-node/test/toapisWan3Verification.test.js",
+            "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
+            "backend-node/test/toapisWan3Catalog.test.js",
+            "backend-node/test/providerRuntimeFingerprint.test.js",
+            "backend-node/test/externalModelEvidenceBinding.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/sharedReleaseGuardRotation.test.js",
+            "frontweb/test/aiConfigProviderPresets.test.js",
+            "frontweb/test/videoDurationOptions.test.js",
+            "frontweb/test/videoGenerationRequest.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-29 ToAPIs Wan 3.0 独立接入与未知提交保护获批",
-        "approvedBy": "product-owner 2026-08-29 toapis-wan3-local-gate-refresh-approved",
+        "reason": "2026-08-30 PR #211 Hosted CI 功能锁批准链刷新获批",
+        "approvedBy": "product-owner 2026-08-30 pr-211-ci-fix-approved",
         "impactTests": [
           "backend-node/test/toapisWan3VideoClient.test.js",
           "backend-node/test/toapisWan3VideoRuntime.test.js",
