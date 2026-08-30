@@ -152,7 +152,7 @@ const fs = require('fs');
 const path = require('path');
 const net = require('net');
 const { spawnSync } = require('child_process');
-const { randomUUID } = require('crypto');
+const { createHash, randomUUID } = require('crypto');
 const videoClient = require('./videoClient');
 const redrawSourceConditioningService = require('./redrawSourceConditioningService');
 const usmercariVideoClient = require('./usmercariVideoClient');
@@ -284,7 +284,8 @@ function markVideoCostUnknown(db, log, row) {
 function getVideoRouteAttempt(db, videoGenId) {
   try {
     return db.prepare(`SELECT r.id AS request_id, r.logical_model_id, r.tenant_id,
-        a.attempt_no, a.config_id
+        r.state AS route_state, a.attempt_no, a.config_id, a.state AS attempt_state,
+        a.query_protocol
       FROM generation_route_requests r
       JOIN generation_route_attempts a ON a.request_id = r.id
       WHERE r.business_type = 'video_generation' AND r.business_id = ?
@@ -292,6 +293,210 @@ function getVideoRouteAttempt(db, videoGenId) {
   } catch (_) {
     return null;
   }
+}
+
+function wan3RouteCapabilities(request = {}) {
+  return {
+    resolution: request.resolution,
+    aspectRatio: request.aspect_ratio,
+    duration: request.duration,
+    referenceImageCount: Array.isArray(request.reference_urls)
+      ? request.reference_urls.filter(Boolean).length
+      : 0,
+    referenceVideoCount: Array.isArray(request.reference_video_urls)
+      ? request.reference_video_urls.filter(Boolean).length
+      : 0,
+    referenceAudioCount: Array.isArray(request.reference_audio_urls)
+      ? request.reference_audio_urls.filter(Boolean).length
+      : 0,
+    requiresAudio: request.generate_audio === true,
+  };
+}
+
+function prepareWan3SubmissionRoute(db, row, config, request, now) {
+  const owner = String(row.tenant_id || row.user_id || 'local');
+  const businessId = String(row.id);
+  const reservation = row.credit_reservation_id
+    ? creditLedger.getReservation(db, row.credit_reservation_id)
+    : null;
+  return db.transaction(() => {
+    const route = providerRouteStability.createOrGetRouteRequest(db, {
+      id: randomUUID(),
+      idempotencyKey: `${owner}:video:${businessId}`,
+      serviceType: 'video',
+      businessType: 'video_generation',
+      businessId,
+      tenantId: row.tenant_id || null,
+      userId: row.user_id || null,
+      logicalModelId: config.logical_model_id || row.model || request.model,
+      capabilities: wan3RouteCapabilities(request),
+      userPriceSnapshot: reservation
+        ? { model: reservation.model, credits: reservation.amount }
+        : null,
+      candidateConfigIds: [config.id],
+      creditReservationId: row.credit_reservation_id || null,
+      now,
+    });
+    const existing = db.prepare(`SELECT * FROM generation_route_attempts
+      WHERE request_id = ? ORDER BY attempt_no DESC LIMIT 1`).get(route.id) || null;
+    if (existing) {
+      const error = new Error('Wan3 提交已被领取，禁止重复提交');
+      error.code = 'WAN3_SUBMISSION_ALREADY_CLAIMED';
+      error.routeState = route.state;
+      error.attemptState = existing.state;
+      throw error;
+    }
+    if (route.state !== 'created') throw new Error('Wan3 路由状态无法开始供应商提交');
+    const attempt = providerRouteStability.startAttempt(db, {
+      requestId: route.id,
+      configId: config.id,
+      upstreamModel: request.model || row.model || config.default_model,
+      queryProtocol: 'toapis_wan3_video',
+      now,
+    });
+    if (!attempt) {
+      const error = new Error('Wan3 当前线路不可提交');
+      error.code = 'WAN3_ROUTE_UNAVAILABLE';
+      throw error;
+    }
+    return { route, attempt };
+  })();
+}
+
+function persistWan3AcceptedTaskReceipt(db, row, config, request, providerTaskId, now) {
+  const taskId = String(providerTaskId || '').trim();
+  if (!taskId) throw new Error('Wan3 已受理任务缺少供应商任务号');
+  const owner = String(row.tenant_id || row.user_id || 'local');
+  const businessId = String(row.id);
+  const reservation = row.credit_reservation_id
+    ? creditLedger.getReservation(db, row.credit_reservation_id)
+    : null;
+  return db.transaction(() => {
+    const route = providerRouteStability.createOrGetRouteRequest(db, {
+      id: randomUUID(),
+      idempotencyKey: `${owner}:video:${businessId}`,
+      serviceType: 'video',
+      businessType: 'video_generation',
+      businessId,
+      tenantId: row.tenant_id || null,
+      userId: row.user_id || null,
+      logicalModelId: config.logical_model_id || row.model || request.model,
+      capabilities: wan3RouteCapabilities(request),
+      userPriceSnapshot: reservation
+        ? { model: reservation.model, credits: reservation.amount }
+        : null,
+      candidateConfigIds: [config.id],
+      creditReservationId: row.credit_reservation_id || null,
+      now,
+    });
+    let attempt = db.prepare(`SELECT * FROM generation_route_attempts
+      WHERE request_id = ? ORDER BY attempt_no DESC LIMIT 1`).get(route.id) || null;
+    if (attempt) {
+      if (Number(attempt.config_id) !== Number(config.id)) {
+        const error = new Error('Wan3 供应商任务凭证与既有路由冲突');
+        error.code = 'PROVIDER_TASK_RECEIPT_CONFLICT';
+        throw error;
+      }
+      if (attempt.provider_task_id == null) {
+        attempt = providerRouteStability.recordAcceptedTask(db, {
+          requestId: route.id,
+          attemptNo: attempt.attempt_no,
+          providerTaskId: taskId,
+          now,
+        });
+      } else if (String(attempt.provider_task_id) !== taskId) {
+        const error = new Error('Wan3 供应商任务凭证与既有路由冲突');
+        error.code = 'PROVIDER_TASK_RECEIPT_CONFLICT';
+        throw error;
+      }
+    } else {
+      if (route.state !== 'created') throw new Error('Wan3 路由状态无法固化供应商任务凭证');
+      const receipt = providerRouteStability.buildAttemptReceipt(db, {
+        requestId: route.id,
+        configId: config.id,
+        upstreamModel: request.model || row.model || config.default_model,
+        queryProtocol: 'toapis_wan3_video',
+      });
+      const attemptNo = Number(db.prepare(`SELECT COALESCE(MAX(attempt_no), 0) + 1 AS attempt_no
+        FROM generation_route_attempts WHERE request_id = ?`).get(route.id).attempt_no);
+      const inserted = db.prepare(`INSERT INTO generation_route_attempts
+        (request_id, attempt_no, config_id, provider, upstream_model, config_fingerprint,
+         query_protocol, state, provider_task_id, started_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'submitting', NULL, ?)`)
+        .run(
+          route.id,
+          attemptNo,
+          config.id,
+          receipt.provider,
+          receipt.upstreamModel,
+          receipt.configFingerprint,
+          receipt.queryProtocol,
+          now,
+        );
+      db.prepare("UPDATE generation_route_requests SET state = 'running', updated_at = ? WHERE id = ?")
+        .run(now, route.id);
+      attempt = db.prepare('SELECT * FROM generation_route_attempts WHERE id = ?').get(inserted.lastInsertRowid);
+      attempt = providerRouteStability.recordAcceptedTask(db, {
+        requestId: route.id,
+        attemptNo: attempt.attempt_no,
+        providerTaskId: taskId,
+        now,
+      });
+    }
+    const videoChanged = db.prepare(`UPDATE video_generations
+      SET status = 'processing', provider_task_id = ?, config_id = ?, ai_service_config_id = ?, updated_at = ?
+      WHERE id = ? AND deleted_at IS NULL`).run(taskId, config.id, config.id, now, row.id);
+    if (videoChanged.changes !== 1) throw new Error('Wan3 视频任务凭证持久化失败');
+    if (row.task_id) {
+      const taskChanged = db.prepare(`UPDATE async_tasks
+        SET provider_task_id = ?, credit_reservation_id = ?, tenant_id = ?, user_id = ?, updated_at = ?
+        WHERE id = ? AND deleted_at IS NULL`).run(
+        taskId,
+        row.credit_reservation_id || null,
+        row.tenant_id || null,
+        row.user_id || null,
+        now,
+        row.task_id,
+      );
+      if (taskChanged.changes !== 1) throw new Error('Wan3 异步任务凭证持久化失败');
+    }
+    return { route, attempt };
+  })();
+}
+
+function markVideoRouteNeedsAttention(db, videoGenId, category, now) {
+  const route = getVideoRouteAttempt(db, videoGenId);
+  if (!route) return false;
+  providerRouteStability.finishAttempt(db, {
+    requestId: route.request_id,
+    attemptNo: route.attempt_no,
+    state: 'needs_attention',
+    errorCategory: category || 'result_unknown',
+    now,
+  });
+  const changed = db.prepare(`UPDATE generation_route_requests
+    SET state = 'needs_attention', final_config_id = ?, updated_at = ?
+    WHERE id = ? AND state IN ('running', 'accepted', 'needs_attention')`)
+    .run(route.config_id, now, route.request_id);
+  return changed.changes === 1;
+}
+
+function markVideoRouteFailed(db, videoGenId, category, now) {
+  const route = getVideoRouteAttempt(db, videoGenId);
+  if (!route) return false;
+  providerRouteStability.finishAttempt(db, {
+    requestId: route.request_id,
+    attemptNo: route.attempt_no,
+    state: 'failed',
+    errorCategory: category || 'provider_task_failed',
+    now,
+  });
+  const changed = db.prepare(`UPDATE generation_route_requests
+    SET state = 'failed', final_config_id = ?, updated_at = ?
+    WHERE id = ? AND state IN ('running', 'accepted', 'needs_attention')`)
+    .run(route.config_id, now, route.request_id);
+  if (changed.changes !== 1) throw new Error('Wan3 路由终态结算失败');
+  return true;
 }
 
 function markVideoArtifactUnreadable(db, videoGenId) {
@@ -543,7 +748,7 @@ function toapisWan3ReadyState(db, model, evidenceRoots, preferredConfigId = null
     if (config.is_active
         && config.verification_status === 'verified'
         && aiConfigService.hasConnectionCredential(config)
-        && hasTrustedEvidenceBinding(target, capabilities, evidenceRoots)
+        && hasTrustedEvidenceBinding(target, capabilities, evidenceRoots, config)
         && durations.length
         && resolutions.length
         && aspectRatios.length
@@ -2470,18 +2675,33 @@ async function pollProviderTaskAndFinalize(
     );
   } else if (pollResult.indeterminate) {
     const message = String(pollResult.error || '供应商任务仍可能处理中，请勿重新提交').slice(0, 500);
-    setVideoGenNeedsAttention(db, videoGenId, row.task_id, message, now);
+    db.transaction(() => {
+      setVideoGenNeedsAttention(db, videoGenId, row.task_id, message, now);
+      if (isToapisWan3VideoConfig(config)) {
+        markVideoRouteNeedsAttention(db, videoGenId, 'result_unknown', now);
+      }
+    })();
     markVideoCostUnknown(db, log, row);
     log.warn('Video generation final status indeterminate; duplicate guard remains active', {
       id: videoGenId,
       provider_task_id: providerTaskId,
     });
   } else {
-    setVideoGenFailed(db, videoGenId, polledVideo.error, now, {
-      failureDisposition: pollResult.failureDisposition || 'refund',
-      category: pollResult.failureCategory || 'provider_task_failed',
-    });
-    if (row.task_id) taskService.updateTaskError(db, row.task_id, polledVideo.error);
+    db.transaction(() => {
+      setVideoGenFailed(db, videoGenId, polledVideo.error, now, {
+        failureDisposition: pollResult.failureDisposition || 'refund',
+        category: pollResult.failureCategory || 'provider_task_failed',
+      });
+      if (row.task_id) taskService.updateTaskError(db, row.task_id, polledVideo.error);
+      if (isToapisWan3VideoConfig(config)) {
+        markVideoRouteFailed(
+          db,
+          videoGenId,
+          pollResult.failureCategory || 'provider_task_failed',
+          now,
+        );
+      }
+    })();
     log.error('Video generation failed (after poll)', { id: videoGenId, error: polledVideo.error });
   }
 }
@@ -2569,6 +2789,23 @@ function resumeProcessingVideoGenerations(db, log, runtime = {}) {
   const stuckMsg = '服务重启后无法恢复轮询（缺少厂商任务 ID），请重新生成';
   for (const s of stuck) {
     const now = new Date().toISOString();
+    const claimed = getVideoRouteAttempt(db, s.id);
+    if (claimed?.query_protocol === 'toapis_wan3_video') {
+      db.transaction(() => {
+        setVideoGenNeedsAttention(
+          db,
+          s.id,
+          s.task_id,
+          'Wan3 提交可能已发出但缺少供应商任务 ID，请人工对账；禁止重复提交',
+          now,
+        );
+        markVideoRouteNeedsAttention(db, s.id, 'submission_unknown', now);
+      })();
+      log.warn('Wan3 interrupted submission requires reconciliation; reservation remains held', {
+        videoGenId: s.id,
+      });
+      continue;
+    }
     setVideoGenFailed(db, s.id, stuckMsg, now);
     if (s.task_id) taskService.updateTaskError(db, s.task_id, stuckMsg);
     log.warn('Marked interrupted video generation as failed', { videoGenId: s.id });
@@ -2609,6 +2846,7 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
   const now = new Date().toISOString();
   let providerSubmissionStarted = false;
   let knownProviderTaskId = row.provider_task_id && String(row.provider_task_id).trim();
+  let wan3Submission = null;
   try {
     db.prepare('UPDATE video_generations SET status = ?, updated_at = ? WHERE id = ?').run('processing', now, videoGenId);
     if (row.task_id) {
@@ -2860,6 +3098,26 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
         try { return JSON.parse(row.source_conditioning_json || '{}').provider_asset_expires_at || null; } catch (_) { return null; }
       })(),
     };
+    if (wan3ProcessingState) {
+      requestPayload.client_business_id = `video-${videoGenId}`;
+      const requestBody = toapisWan3VideoClient.buildToapisWan3VideoBody(requestPayload);
+      const requestSha256 = createHash('sha256')
+        .update(JSON.stringify(requestBody))
+        .digest('hex');
+      const receipt = prepareWan3SubmissionRoute(
+        db,
+        row,
+        config,
+        requestPayload,
+        new Date().toISOString(),
+      );
+      wan3Submission = {
+        requestId: receipt.route.id,
+        attemptNo: receipt.attempt.attempt_no,
+        recoveryTaskId: requestPayload.client_business_id,
+        requestSha256,
+      };
+    }
     providerSubmissionStarted = true;
     const result = wan3ProcessingState
       ? await toapisWan3VideoClient.callToapisWan3VideoApi(config, log, requestPayload, {
@@ -2870,7 +3128,22 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
     const now2 = new Date().toISOString();
     if (result.indeterminate) {
       const message = `VIDEO_SUBMISSION_INDETERMINATE: ${String(result.error || '供应商提交结果未知，请人工对账').slice(0, 450)}`;
-      setVideoGenNeedsAttention(db, videoGenId, row.task_id, message, now2);
+      db.transaction(() => {
+        setVideoGenNeedsAttention(db, videoGenId, row.task_id, message, now2);
+        if (wan3Submission) {
+          const routeMeta = result.route_meta && typeof result.route_meta === 'object'
+            ? result.route_meta
+            : {};
+          providerRouteStability.recordSubmissionUnknownRecovery(db, {
+            ...wan3Submission,
+            recoveryTaskId: String(routeMeta.recoveryTaskId || wan3Submission.recoveryTaskId),
+            requestBodySent: routeMeta.requestBodySent === true,
+            recoveryCode: String(routeMeta.recoveryCode || 'TOAPIS_WAN3_SUBMISSION_INDETERMINATE'),
+            httpStatus: routeMeta.httpStatus,
+            now: now2,
+          });
+        }
+      })();
       markVideoCostUnknown(db, log, row);
       log.warn('Video submission indeterminate; reservation remains held', { id: videoGenId });
       return;
@@ -2881,7 +3154,23 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
         : null;
       const classification = routeMeta ? classifyProviderFailure(routeMeta) : null;
       if (classification && !classification.definitiveNotAccepted) {
-        setVideoGenNeedsAttention(db, videoGenId, row.task_id, result.error, now2);
+        db.transaction(() => {
+          setVideoGenNeedsAttention(db, videoGenId, row.task_id, result.error, now2);
+          if (wan3Submission) {
+            providerRouteStability.recordSubmissionUnknownRecovery(db, {
+              ...wan3Submission,
+              recoveryTaskId: String(routeMeta.recoveryTaskId || wan3Submission.recoveryTaskId),
+              requestBodySent: routeMeta.requestBodySent === true,
+              recoveryCode: String(
+                routeMeta.recoveryCode
+                || routeMeta.providerCode
+                || 'TOAPIS_WAN3_SUBMISSION_INDETERMINATE'
+              ),
+              httpStatus: routeMeta.httpStatus,
+              now: now2,
+            });
+          }
+        })();
         markVideoCostUnknown(db, log, row);
         log.warn('Video submission failure is not definitive; reservation remains held', {
           id: videoGenId,
@@ -2889,11 +3178,16 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
         });
         return;
       }
-      setVideoGenFailed(db, videoGenId, result.error, now2, classification ? {
-        failureDisposition: 'refund',
-        category: classification.category,
-      } : {});
-      if (row.task_id) taskService.updateTaskError(db, row.task_id, result.error);
+      db.transaction(() => {
+        setVideoGenFailed(db, videoGenId, result.error, now2, classification ? {
+          failureDisposition: 'refund',
+          category: classification.category,
+        } : {});
+        if (row.task_id) taskService.updateTaskError(db, row.task_id, result.error);
+        if (wan3Submission) {
+          markVideoRouteFailed(db, videoGenId, classification?.category || 'provider_rejected', now2);
+        }
+      })();
       log.error('Video generation failed', { id: videoGenId, error: result.error });
       return;
     }
@@ -2927,9 +3221,20 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
     }
     if (result.task_id) {
       knownProviderTaskId = String(result.task_id).trim();
-      db.prepare(
-        'UPDATE video_generations SET status = ?, provider_task_id = ?, updated_at = ? WHERE id = ?'
-      ).run('processing', result.task_id, now2, videoGenId);
+      if (wan3ProcessingState) {
+        persistWan3AcceptedTaskReceipt(
+          db,
+          row,
+          selectedConfig,
+          requestPayload,
+          knownProviderTaskId,
+          now2,
+        );
+      } else {
+        db.prepare(
+          'UPDATE video_generations SET status = ?, provider_task_id = ?, updated_at = ? WHERE id = ?'
+        ).run('processing', result.task_id, now2, videoGenId);
+      }
       await pollProviderTaskAndFinalize(
         db,
         log,
@@ -2942,20 +3247,57 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
       );
       return;
     }
-    setVideoGenFailed(db, videoGenId, '未返回 task_id 或 video_url', now2);
-    if (row.task_id) taskService.updateTaskError(db, row.task_id, '未返回 task_id 或 video_url');
+    db.transaction(() => {
+      setVideoGenFailed(db, videoGenId, '未返回 task_id 或 video_url', now2);
+      if (row.task_id) taskService.updateTaskError(db, row.task_id, '未返回 task_id 或 video_url');
+      if (wan3Submission) markVideoRouteFailed(db, videoGenId, 'provider_invalid_response', now2);
+    })();
   } catch (err) {
     const now2 = new Date().toISOString();
+    if (err?.code === 'WAN3_SUBMISSION_ALREADY_CLAIMED') {
+      const claimed = getVideoRouteAttempt(db, videoGenId);
+      db.transaction(() => {
+        setVideoGenNeedsAttention(
+          db,
+          videoGenId,
+          row.task_id,
+          'Wan3 已存在提交记录且最终状态未知，请人工对账；禁止重复提交',
+          now2,
+        );
+        markVideoRouteNeedsAttention(db, videoGenId, 'submission_unknown', now2);
+      })();
+      log.warn('Wan3 submission already claimed; duplicate supplier POST skipped', {
+        id: videoGenId,
+        route_state: claimed?.route_state || err.routeState || null,
+        attempt_state: claimed?.attempt_state || err.attemptState || null,
+      });
+      return;
+    }
     if (providerSubmissionStarted) {
       const message = `供应商提交后状态未知，请人工对账：${String(err?.message || err).slice(0, 420)}`;
       if (knownProviderTaskId) {
-        db.prepare('UPDATE video_generations SET status = ?, provider_task_id = ?, error_msg = ?, updated_at = ? WHERE id = ?')
-          .run('needs_attention', knownProviderTaskId, message, now2, videoGenId);
+        db.transaction(() => {
+          db.prepare('UPDATE video_generations SET status = ?, provider_task_id = ?, error_msg = ?, updated_at = ? WHERE id = ?')
+            .run('needs_attention', knownProviderTaskId, message, now2, videoGenId);
+          if (row && row.task_id) taskService.updateTaskStatus(db, row.task_id, 'needs_attention', 90, message);
+          if (wan3Submission) markVideoRouteNeedsAttention(db, videoGenId, 'result_unknown', now2);
+        })();
+      } else if (wan3Submission) {
+        db.transaction(() => {
+          setVideoGenNeedsAttention(db, videoGenId, row.task_id, message, now2);
+          providerRouteStability.recordSubmissionUnknownRecovery(db, {
+            ...wan3Submission,
+            requestBodySent: true,
+            recoveryCode: 'TOAPIS_WAN3_POST_SUBMIT_EXCEPTION',
+            httpStatus: null,
+            now: now2,
+          });
+        })();
       } else {
         db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
           .run('needs_attention', message, now2, videoGenId);
+        if (row && row.task_id) taskService.updateTaskStatus(db, row.task_id, 'needs_attention', 90, message);
       }
-      if (row && row.task_id) taskService.updateTaskStatus(db, row.task_id, 'needs_attention', 90, message);
       log.error('Video generation post-submit state unknown; reservation remains held', {
         id: videoGenId,
         provider_task_id: knownProviderTaskId || null,

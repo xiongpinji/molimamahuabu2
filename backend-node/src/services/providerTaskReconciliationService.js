@@ -3,6 +3,7 @@ const { randomUUID } = require('crypto');
 const aiConfigService = require('./aiConfigService');
 const creditLedger = require('./creditLedgerService');
 const providerRouteStability = require('./providerRouteStabilityService');
+const toapisWan3VideoClient = require('./toapisWan3VideoClient');
 const videoClient = require('./videoClient');
 const videoService = require('./videoService');
 
@@ -216,6 +217,7 @@ function claimForReconciliation(db, requestId, options = {}) {
       attemptNo: state.attempt.attempt_no,
       providerTaskId: state.attempt.provider_task_id,
       configId: state.attempt.config_id,
+      queryProtocol: state.attempt.query_protocol,
       config: state.config,
       video: state.video,
       reservationId: state.reservation.id,
@@ -354,6 +356,24 @@ function noOpLogger() {
   return { info() {}, warn() {}, error() {} };
 }
 
+async function queryWan3TaskStatusOnce(claim, options = {}) {
+  const result = await toapisWan3VideoClient.fetchToapisWan3Task(
+    claim.config,
+    claim.providerTaskId,
+    options.queryFetchImpl ? { fetchImpl: options.queryFetchImpl } : {},
+  );
+  if (result?.state === 'completed' && videoClient.isPlausibleHttpVideoUrl(result.videoUrl)) {
+    return { state: 'succeeded', artifactUrl: result.videoUrl };
+  }
+  if (result?.state === 'completed' || result?.artifactUnreadable === true) {
+    return { state: 'artifact_unreadable' };
+  }
+  if (result?.state === 'failed' && result?.terminalFailure === true && result?.queryFailed !== true) {
+    return { state: 'failed', category: 'provider_task_failed' };
+  }
+  return { state: 'unknown', category: 'result_unknown' };
+}
+
 async function reconcileRequest(db, log, requestIdValue, options = {}) {
   const requestId = normalizeRequestId(requestIdValue);
   const initialState = loadReconciliationState(db, requestId);
@@ -363,12 +383,23 @@ async function reconcileRequest(db, log, requestIdValue, options = {}) {
   const claim = claimForReconciliation(db, requestId, options);
   if (!claim.acquired) return safeResult(db, requestId, claim.now);
 
-  const query = options.queryTaskStatusOnce || videoClient.queryVideoTaskStatusOnce;
   let outcome;
   try {
-    outcome = await query(db, noOpLogger(), claim.providerTaskId, claim.config, {
-      ...(options.queryFetchImpl ? { fetchImpl: options.queryFetchImpl } : {}),
-    });
+    if (options.queryTaskStatusOnce) {
+      outcome = await options.queryTaskStatusOnce(db, noOpLogger(), claim.providerTaskId, claim.config, {
+        ...(options.queryFetchImpl ? { fetchImpl: options.queryFetchImpl } : {}),
+      });
+    } else if (claim.queryProtocol === 'toapis_wan3_video') {
+      outcome = await queryWan3TaskStatusOnce(claim, options);
+    } else {
+      outcome = await videoClient.queryVideoTaskStatusOnce(
+        db,
+        noOpLogger(),
+        claim.providerTaskId,
+        claim.config,
+        { ...(options.queryFetchImpl ? { fetchImpl: options.queryFetchImpl } : {}) },
+      );
+    }
   } catch (_) {
     outcome = { state: 'unknown', category: 'result_unknown' };
   }

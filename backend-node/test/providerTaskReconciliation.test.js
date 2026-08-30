@@ -12,6 +12,7 @@ const generationCostLedgerService = require('../src/services/generationCostLedge
 const providerRouteCostService = require('../src/services/providerRouteCostService');
 const providerRouteStabilityService = require('../src/services/providerRouteStabilityService');
 const storageLayout = require('../src/services/storageLayout');
+const wan3Client = require('../src/services/toapisWan3VideoClient');
 const videoService = require('../src/services/videoService');
 const { MINIMAL_MP4 } = require('./fixtures/media');
 
@@ -1155,6 +1156,89 @@ test('reconcileRequest refunds only explicit provider task failure and is termin
     .get(state.reservation.id);
   assert.equal(cost.cost_source, 'unknown');
   assert.equal(cost.cost_micros, 0);
+});
+
+test('reconcileRequest uses the dedicated Wan3 query and holds every non-terminal result', async (t) => {
+  const failedState = setupReconciliationFixture(t, {
+    provider: 'toapis',
+    configProtocol: 'toapis_wan3_video',
+    baseUrl: 'https://toapis.xyz',
+    upstreamModel: 'wan3.0-video',
+  });
+  const originalFetch = wan3Client.fetchToapisWan3Task;
+  let queryCount = 0;
+  wan3Client.fetchToapisWan3Task = async (config, taskId) => {
+    queryCount += 1;
+    assert.equal(config.id, failedState.config.id);
+    assert.equal(taskId, PROVIDER_TASK_ID);
+    return { state: 'failed', terminalFailure: true, error: '供应商明确终态失败' };
+  };
+  t.after(() => { wan3Client.fetchToapisWan3Task = originalFetch; });
+
+  const failed = await reconciliation.reconcileRequest(failedState.db, failedState.log, ROUTE_ID, { now: NOW });
+  assert.equal(queryCount, 1);
+  assert.equal(failed.task_state, 'failed');
+  assert.equal(failed.credit_state, 'refunded');
+
+  const heldCases = [
+    ['processing', async () => ({ state: 'processing' }), 'result_unknown'],
+    ['unreadable artifact', async () => ({ state: 'completed', videoUrl: 'asset://internal/video.mp4' }), 'artifact_unreadable'],
+    ['query exception', async () => { throw new Error('query transport failed'); }, 'result_unknown'],
+  ];
+  for (const [name, query, expectedCategory] of heldCases) {
+    const state = setupReconciliationFixture(t, {
+      provider: 'toapis',
+      configProtocol: 'toapis_wan3_video',
+      baseUrl: 'https://toapis.xyz',
+      upstreamModel: 'wan3.0-video',
+    });
+    wan3Client.fetchToapisWan3Task = async () => {
+      queryCount += 1;
+      return query();
+    };
+    const result = await reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, { now: NOW });
+    assert.equal(result.task_state, 'needs_attention', name);
+    assert.equal(result.credit_state, 'held', name);
+    assert.equal(result.error_category, expectedCategory, name);
+    assert.equal(getReservation(state.db, state.reservation.id).status, 'held', name);
+    assert.equal(getRoute(state.db).state, 'needs_attention', name);
+  }
+  assert.equal(queryCount, 4);
+});
+
+test('Wan3 terminal reconciliation propagates settlement errors and rolls back state', async (t) => {
+  const state = setupReconciliationFixture(t, {
+    provider: 'toapis',
+    configProtocol: 'toapis_wan3_video',
+    baseUrl: 'https://toapis.xyz',
+    upstreamModel: 'wan3.0-video',
+  });
+  const originalFetch = wan3Client.fetchToapisWan3Task;
+  const originalRefund = creditLedgerService.refundForScope;
+  let queryCount = 0;
+  wan3Client.fetchToapisWan3Task = async () => {
+    queryCount += 1;
+    return { state: 'failed', terminalFailure: true };
+  };
+  creditLedgerService.refundForScope = () => { throw new Error('settlement failed'); };
+  t.after(() => {
+    wan3Client.fetchToapisWan3Task = originalFetch;
+    creditLedgerService.refundForScope = originalRefund;
+  });
+
+  await assert.rejects(
+    reconciliation.reconcileRequest(state.db, state.log, ROUTE_ID, { now: NOW }),
+    /settlement failed/,
+  );
+
+  assert.equal(queryCount, 1);
+  assert.equal(getReservation(state.db, state.reservation.id).status, 'held');
+  assert.equal(getVideo(state.db).status, 'needs_attention');
+  assert.equal(getTask(state.db).status, 'needs_attention');
+  assert.equal(getRoute(state.db).state, 'needs_attention');
+  assert.equal(getAttempt(state.db).state, 'needs_attention');
+  assert.equal(state.db.prepare(`SELECT COUNT(*) AS count FROM credit_ledger
+    WHERE reservation_id = ? AND event_type = 'refund'`).get(state.reservation.id).count, 0);
 });
 
 test('supported parser protocols hold credits without an artifact and refund explicit failure', async (t) => {
