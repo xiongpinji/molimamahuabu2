@@ -108,6 +108,12 @@ const toapisPrivateAvatarSplitKeyManifestPath = path.join(
   'release-scopes',
   'toapis-private-avatar-split-key-verification-20260828.json',
 );
+const toapisWan3ExternalEvidenceTransactionManifestPath = path.join(
+  repoRoot,
+  'deploy',
+  'release-scopes',
+  'toapis-wan3-external-evidence-transaction-20260830.json',
+);
 const TOAPIS_PRIVATE_AVATAR_SPLIT_KEY_ALLOWED_PATHS = [
   'backend-node/scripts/verify-toapis-private-avatar-video.js',
   'backend-node/test/incrementalReleaseScope.test.js',
@@ -116,6 +122,16 @@ const TOAPIS_PRIVATE_AVATAR_SPLIT_KEY_ALLOWED_PATHS = [
   'deploy/release-guard/verify-external-model-release.js',
   'deploy/release-scopes/toapis-private-avatar-split-key-verification-20260828.json',
   'deploy/rotate-external-model-release-guard.sh',
+];
+const TOAPIS_WAN3_EXTERNAL_EVIDENCE_TRANSACTION_ALLOWED_PATHS = [
+  '.gitignore',
+  'backend-node/scripts/build-external-model-evidence-staging.js',
+  'backend-node/test/externalModelEvidenceStagingBuilder.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/sharedExternalEvidenceOnlyTransaction.test.js',
+  'deploy/install-external-model-evidence-only.sh',
+  'deploy/release-scopes/toapis-wan3-external-evidence-transaction-20260830.json',
+  'docs/tasks/2026-08-29-toapis-wan3-integration.md',
 ];
 const CANVAS_TEXT_CAPABILITY_HOTFIX_ALLOWED_PATHS = [
   'backend-node/src/services/providerCanaryEvidenceService.js',
@@ -466,6 +482,10 @@ function assertExactToapisPrivateAvatarSplitKeyScope(allowedPaths) {
   assert.deepEqual(allowedPaths, TOAPIS_PRIVATE_AVATAR_SPLIT_KEY_ALLOWED_PATHS);
 }
 
+function assertExactToapisWan3ExternalEvidenceTransactionScope(allowedPaths) {
+  assert.deepEqual(allowedPaths, TOAPIS_WAN3_EXTERNAL_EVIDENCE_TRANSACTION_ALLOWED_PATHS);
+}
+
 function createFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'incremental-release-scope-'));
   const parentRoot = path.join(root, 'parent');
@@ -568,6 +588,40 @@ test('ToAPIs 私人形象双 Key 发布范围拒绝同数量偷换任一文件',
   assert.equal(swapped.length, TOAPIS_PRIVATE_AVATAR_SPLIT_KEY_ALLOWED_PATHS.length);
   assert.throws(
     () => assertExactToapisPrivateAvatarSplitKeyScope(swapped),
+    { name: 'AssertionError' },
+  );
+});
+
+test('ToAPIs Wan3 外部证据原子事务使用精确八文件发布范围', () => {
+  const { manifest, allowedPaths } = loadManifest(toapisWan3ExternalEvidenceTransactionManifestPath);
+  assert.equal(manifest.release, 'toapis-wan3-external-evidence-transaction-20260830');
+  assertExactToapisWan3ExternalEvidenceTransactionScope(allowedPaths);
+  assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
+  for (const forbidden of [
+    'backend-node/data',
+    'backend-node/uploads',
+    'storage',
+    'assets',
+    'ai-music',
+    'moli-music',
+    'deploy/install-protected-release-guard.sh',
+    'docs/verification/platform-stability/feature-lock-manifest.json',
+    'shared/release-guard',
+  ]) {
+    assert.equal(
+      allowedPaths.some((entry) => entry === forbidden || entry.startsWith(`${forbidden}/`)),
+      false,
+      `发布范围不得包含: ${forbidden}`,
+    );
+  }
+});
+
+test('ToAPIs Wan3 外部证据原子事务发布范围拒绝同数量偷换任一文件', () => {
+  const swapped = [...TOAPIS_WAN3_EXTERNAL_EVIDENCE_TRANSACTION_ALLOWED_PATHS];
+  swapped[swapped.indexOf('deploy/install-external-model-evidence-only.sh')] = 'backend-node/data/drama_generator.db';
+  assert.equal(swapped.length, TOAPIS_WAN3_EXTERNAL_EVIDENCE_TRANSACTION_ALLOWED_PATHS.length);
+  assert.throws(
+    () => assertExactToapisWan3ExternalEvidenceTransactionScope(swapped),
     { name: 'AssertionError' },
   );
 });
