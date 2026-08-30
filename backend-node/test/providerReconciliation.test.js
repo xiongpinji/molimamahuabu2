@@ -102,7 +102,7 @@ function createLegacyPropImageFailure(db, reservation, suffix, errorMessage) {
   return { taskId };
 }
 
-test('遗留结果未知失败转待核对并保持冻结且写管理员告警', (t) => {
+test('遗留图片结果未知超过 30 分钟自动失败并退款', (t) => {
   const { db } = setup();
   t.after(() => db.close());
   const reservation = reserve(db, 'legacy-unknown');
@@ -116,20 +116,21 @@ test('遗留结果未知失败转待核对并保持冻结且写管理员告警',
   const first = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:00:00.000Z');
   const second = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:01:00.000Z');
 
-  assert.equal(first.needs_attention, 1);
+  assert.equal(first.refunded, 1);
   assert.equal(second.processed, 0);
-  assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
+  assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'refunded');
   assert.equal(db.prepare('SELECT status FROM image_generations WHERE id = ?').get(linked.imageId).status,
-    'needs_attention');
+    'failed');
   assert.equal(db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(linked.taskId).status,
-    'needs_attention');
-  const event = db.prepare(`SELECT severity, credit_state FROM provider_stability_events
-    WHERE request_id = ? AND event_type = 'provider_legacy_generation_needs_attention'`)
-    .get(`legacy-credit:${reservation.id}`);
-  assert.deepEqual(event, { severity: 'error', credit_state: 'held_for_review' });
+    'failed');
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM tenant_credit_ledger
+    WHERE reservation_id = ? AND event_type = 'refund'`).get(reservation.id).count, 1);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM billing_reconciliation_events
+    WHERE reservation_id = ? AND safety_code = 'expired_generation_timeout'`)
+    .get(reservation.id).count, 1);
 });
 
-test('仅有异步任务的道具生图结果未知也转待核对且不退款', (t) => {
+test('仅有异步任务的道具生图结果未知超过 30 分钟也自动失败退款', (t) => {
   const { db } = setup();
   t.after(() => db.close());
   const reservation = reserve(db, 'legacy-prop-unknown');
@@ -143,16 +144,16 @@ test('仅有异步任务的道具生图结果未知也转待核对且不退款',
   const first = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:00:00.000Z');
   const second = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:01:00.000Z');
 
-  assert.equal(first.needs_attention, 1);
+  assert.equal(first.refunded, 1);
   assert.equal(second.processed, 0);
-  assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
+  assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'refunded');
   assert.equal(db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(linked.taskId).status,
-    'needs_attention');
+    'failed');
   assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM tenant_credit_ledger
-    WHERE reservation_id = ? AND event_type = 'refund'`).get(reservation.id).count, 0);
-  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM provider_stability_events
-    WHERE request_id = ? AND event_type = 'provider_legacy_generation_needs_attention'`)
-    .get(`legacy-credit:${reservation.id}`).count, 1);
+    WHERE reservation_id = ? AND event_type = 'refund'`).get(reservation.id).count, 1);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM billing_reconciliation_events
+    WHERE reservation_id = ? AND safety_code = 'expired_generation_timeout'`)
+    .get(reservation.id).count, 1);
 });
 
 test('遗留明确失败在安全证据齐全后自动退款且保持幂等', (t) => {
@@ -200,6 +201,141 @@ test('长期待核对冻结写一次升级告警而不退款或重试', (t) => {
   assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
   assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM provider_stability_events
     WHERE request_id = ? AND event_type = 'provider_credit_hold_sla_breached'`).get(route.id).count, 1);
+});
+
+test('生成冻结积分满 30 分钟自动失败并幂等返还', (t) => {
+  const { db, config } = setup();
+  t.after(() => db.close());
+  const reservation = reserve(db, 'held-timeout-refund');
+  const { route } = createRoute(db, config, reservation, 'held-timeout-refund');
+  db.prepare(`INSERT INTO async_tasks
+    (id, type, status, progress, message, resource_id, created_at, updated_at,
+     user_id, model, credit_reservation_id, tenant_id)
+    VALUES ('task-held-timeout-refund', 'image_generation', 'processing', 90,
+      '等待供应商结果', '102', ?, ?, 'user-a', 'logical-image', ?, 'tenant-a')`)
+    .run('2026-08-15T11:30:00.000Z', '2026-08-15T11:40:00.000Z', reservation.id);
+  db.prepare(`INSERT INTO image_generations
+    (id, provider, prompt, model, status, task_id, created_at, updated_at,
+     user_id, credit_reservation_id, tenant_id)
+    VALUES (102, 'private-relay', 'test prompt', 'logical-image', 'processing',
+      'task-held-timeout-refund', ?, ?, 'user-a', ?, 'tenant-a')`)
+    .run('2026-08-15T11:30:00.000Z', '2026-08-15T11:40:00.000Z', reservation.id);
+  db.prepare(`UPDATE tenant_usage_reservations SET created_at = ?, updated_at = ? WHERE id = ?`)
+    .run('2026-08-15T11:30:00.000Z', '2026-08-15T11:30:00.000Z', reservation.id);
+  db.prepare(`UPDATE generation_route_attempts
+    SET state = 'submission_unknown', error_category = 'submission_unknown', finished_at = ?
+    WHERE request_id = ?`).run('2026-08-15T11:40:00.000Z', route.id);
+  db.prepare(`UPDATE generation_route_requests SET state = 'needs_attention', updated_at = ? WHERE id = ?`)
+    .run('2026-08-15T11:40:00.000Z', route.id);
+
+  const first = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:00:00.000Z');
+  const second = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:01:00.000Z');
+
+  assert.equal(first.refunded, 1);
+  assert.equal(second.refunded, 0);
+  assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'refunded');
+  assert.equal(db.prepare("SELECT status FROM async_tasks WHERE id = 'task-held-timeout-refund'").get().status,
+    'failed');
+  assert.equal(db.prepare('SELECT status FROM image_generations WHERE id = 102').get().status, 'failed');
+  assert.equal(db.prepare('SELECT state FROM generation_route_requests WHERE id = ?').get(route.id).state,
+    'failed');
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM tenant_credit_ledger
+    WHERE reservation_id = ? AND event_type = 'refund'`).get(reservation.id).count, 1);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM billing_reconciliation_events
+    WHERE reservation_id = ? AND safety_code = 'expired_generation_timeout'`)
+    .get(reservation.id).count, 1);
+});
+
+test('生成冻结积分未满 30 分钟不提前失败或退款', (t) => {
+  const { db, config } = setup();
+  t.after(() => db.close());
+  const reservation = reserve(db, 'held-before-timeout');
+  const { route } = createRoute(db, config, reservation, 'held-before-timeout');
+  db.prepare(`UPDATE tenant_usage_reservations SET created_at = ?, updated_at = ? WHERE id = ?`)
+    .run('2026-08-15T11:30:01.000Z', '2026-08-15T11:30:01.000Z', reservation.id);
+
+  const result = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:00:00.000Z');
+
+  assert.equal(result.refunded, 0);
+  assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
+  assert.equal(db.prepare('SELECT state FROM generation_route_requests WHERE id = ?').get(route.id).state,
+    'running');
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM billing_reconciliation_events
+    WHERE reservation_id = ?`).get(reservation.id).count, 0);
+});
+
+test('超过 30 分钟但已有完成证据时不退款', (t) => {
+  const { db, config } = setup();
+  t.after(() => db.close());
+  const reservation = reserve(db, 'held-with-completed-evidence');
+  const { route } = createRoute(db, config, reservation, 'held-with-completed-evidence');
+  db.prepare(`INSERT INTO image_generations
+    (id, provider, prompt, model, status, task_id, image_url, created_at, updated_at,
+     user_id, credit_reservation_id, tenant_id)
+    VALUES (103, 'private-relay', 'test prompt', 'logical-image', 'completed',
+      'task-held-with-completed-evidence', 'https://example.invalid/image.png', ?, ?,
+      'user-a', ?, 'tenant-a')`)
+    .run('2026-08-15T11:00:00.000Z', '2026-08-15T11:10:00.000Z', reservation.id);
+  db.prepare(`UPDATE tenant_usage_reservations SET created_at = ?, updated_at = ? WHERE id = ?`)
+    .run('2026-08-15T11:00:00.000Z', '2026-08-15T11:00:00.000Z', reservation.id);
+  db.prepare("UPDATE generation_route_requests SET state = 'succeeded', updated_at = ? WHERE id = ?")
+    .run('2026-08-15T11:10:00.000Z', route.id);
+
+  const result = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:00:00.000Z');
+
+  assert.equal(result.refunded, 0);
+  assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
+  assert.equal(db.prepare('SELECT status FROM image_generations WHERE id = 103').get().status, 'completed');
+});
+
+test('超过 30 分钟但没有生成关联证据时不处理预扣', (t) => {
+  const { db } = setup();
+  t.after(() => db.close());
+  const reservation = reserve(db, 'held-without-generation-evidence');
+  db.prepare(`UPDATE tenant_usage_reservations SET created_at = ?, updated_at = ? WHERE id = ?`)
+    .run('2026-08-15T11:00:00.000Z', '2026-08-15T11:00:00.000Z', reservation.id);
+
+  const result = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:00:00.000Z');
+
+  assert.equal(result.refunded, 0);
+  assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
+});
+
+test('个人账户生成冻结积分超过 30 分钟也通过账本退款', (t) => {
+  const { db } = setup();
+  t.after(() => db.close());
+  creditLedgerService.setAccountBalance(db, 'personal-user', 30);
+  const reservation = creditLedgerService.reserve(db, {
+    userId: 'personal-user',
+    operationKey: 'personal-held-timeout',
+    amount: 7,
+    model: 'logical-image',
+    resourceType: 'image',
+    resourceId: 'personal-held-timeout',
+  });
+  db.prepare(`INSERT INTO async_tasks
+    (id, type, status, progress, message, resource_id, created_at, updated_at,
+     user_id, model, credit_reservation_id)
+    VALUES ('task-personal-held-timeout', 'image_generation', 'processing', 90,
+      '等待供应商结果', '104', ?, ?, 'personal-user', 'logical-image', ?)`)
+    .run('2026-08-15T11:00:00.000Z', '2026-08-15T11:00:00.000Z', reservation.id);
+  db.prepare(`UPDATE usage_reservations SET created_at = ?, updated_at = ? WHERE id = ?`)
+    .run('2026-08-15T11:00:00.000Z', '2026-08-15T11:00:00.000Z', reservation.id);
+
+  const first = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:00:00.000Z');
+  const second = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T12:01:00.000Z');
+
+  assert.equal(first.refunded, 1);
+  assert.equal(second.refunded, 0);
+  assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'refunded');
+  assert.deepEqual(creditLedgerService.getAccount(db, 'personal-user'), {
+    user_id: 'personal-user',
+    available: 30,
+    held: 0,
+    spent: 0,
+  });
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM credit_ledger
+    WHERE reservation_id = ? AND event_type = 'refund'`).get(reservation.id).count, 1);
 });
 
 test('已结算的待核对记录不会误报冻结积分超时', (t) => {

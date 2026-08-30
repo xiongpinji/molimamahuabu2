@@ -25,6 +25,8 @@ const UNCERTAINTY_MARKERS = [
   'etimedout',
 ];
 const CANCELLATION_MARKERS = ['用户已取消', 'user cancelled', 'user canceled'];
+const GENERATION_TIMEOUT_SAFETY_CODE = 'expired_generation_timeout';
+const GENERATION_TIMEOUT_MESSAGE = '生成超过 30 分钟未完成，系统已自动标记失败并返还冻结积分';
 const READONLY_REQUIRED_SCHEMA = Object.freeze({
   tenant_usage_reservations: ['id', 'tenant_id', 'actor_user_id', 'operation_key', 'model',
     'resource_type', 'resource_id', 'amount', 'status', 'reason', 'created_at', 'updated_at'],
@@ -250,6 +252,26 @@ function inspectReservation(db, reservation) {
   };
 }
 
+function hasGenerationEvidence(evidence) {
+  return Boolean(
+    evidence.providerRoutes.length
+    || evidence.images.length
+    || evidence.videos.length
+    || evidence.tasks.some((row) => String(row.type || '').endsWith('_generation')),
+  );
+}
+
+function hasCompletedEvidence(evidence) {
+  return [
+    ...evidence.tasks,
+    ...evidence.images,
+    ...evidence.videos,
+    ...evidence.providerRoutes,
+  ].some((row) => COMPLETED_STATUSES.has(
+    String(row.status || row.state || '').trim().toLowerCase(),
+  ));
+}
+
 function listAnomaliesCore(db, input = {}) {
   const olderThanMinutes = boundedInt(input.olderThanMinutes, 60, 5, 10080);
   const limit = boundedInt(input.limit, 100, 1, 500);
@@ -378,6 +400,119 @@ function refundReservation(db, input = {}) {
   })();
 }
 
+function refundExpiredGenerationReservation(db, input = {}) {
+  ensureSchema(db);
+  const reservationId = String(input.reservationId || '').trim();
+  const idempotencyKey = String(input.idempotencyKey || '').trim();
+  const reason = String(input.reason || GENERATION_TIMEOUT_MESSAGE).trim();
+  const timeoutMinutes = boundedInt(input.timeoutMinutes, 30, 5, 1440);
+  const now = input.now ? new Date(input.now) : new Date();
+  if (!reservationId || idempotencyKey.length < 8 || idempotencyKey.length > 100) {
+    throw reconciliationError('INVALID_RECONCILIATION_INPUT', '预扣 ID 或幂等键无效');
+  }
+  if (!reason || reason.length > 240 || Number.isNaN(now.getTime())) {
+    throw reconciliationError('INVALID_RECONCILIATION_INPUT', '退款原因或当前时间无效');
+  }
+
+  return db.transaction(() => {
+    const existing = db.prepare(`SELECT * FROM billing_reconciliation_events
+      WHERE idempotency_key = ?`).get(idempotencyKey);
+    if (existing) {
+      if (existing.reservation_id !== reservationId || existing.action !== 'refund') {
+        throw reconciliationError(
+          'RECONCILIATION_IDEMPOTENCY_CONFLICT',
+          '该幂等键已用于其他对账操作',
+        );
+      }
+      return {
+        applied: false,
+        history: existing,
+        reservation: creditLedger.getReservation(db, reservationId),
+      };
+    }
+
+    const reservation = reservationForInspection(db, reservationId);
+    if (reservation.status !== 'held') {
+      return { applied: false, history: null, reservation };
+    }
+    const createdAt = Date.parse(reservation.created_at || '');
+    if (!Number.isFinite(createdAt)
+      || now.getTime() - createdAt < timeoutMinutes * 60 * 1000) {
+      return { applied: false, history: null, reservation };
+    }
+
+    const evidence = evidenceForReservation(db, reservationId);
+    if (!hasGenerationEvidence(evidence) || hasCompletedEvidence(evidence)) {
+      return { applied: false, history: null, reservation };
+    }
+
+    const nowIso = now.toISOString();
+    db.prepare(`UPDATE async_tasks
+      SET status = 'failed', progress = 100, message = ?, error = ?,
+        completed_at = COALESCE(completed_at, ?), updated_at = ?
+      WHERE credit_reservation_id = ?
+        AND lower(COALESCE(status, '')) NOT IN ('completed', 'success', 'succeeded')
+        AND deleted_at IS NULL`)
+      .run(GENERATION_TIMEOUT_MESSAGE, GENERATION_TIMEOUT_MESSAGE, nowIso, nowIso, reservationId);
+    for (const table of ['image_generations', 'video_generations']) {
+      db.prepare(`UPDATE ${table}
+        SET status = 'failed', error_msg = ?, updated_at = ?
+        WHERE credit_reservation_id = ?
+          AND lower(COALESCE(status, '')) NOT IN ('completed', 'success', 'succeeded')
+          AND deleted_at IS NULL`)
+        .run(GENERATION_TIMEOUT_MESSAGE, nowIso, reservationId);
+    }
+    db.prepare(`UPDATE generation_route_requests
+      SET state = 'failed', updated_at = ?
+      WHERE credit_reservation_id = ?
+        AND lower(COALESCE(state, '')) NOT IN ('completed', 'succeeded', 'success')`)
+      .run(nowIso, reservationId);
+
+    const refunded = creditLedger.refund(db, reservationId, reason, now.getTime());
+    const history = {
+      id: randomUUID(),
+      idempotency_key: idempotencyKey,
+      reservation_id: reservationId,
+      tenant_id: reservation.tenant_id,
+      user_id: reservation.user_id,
+      actor_user_id: null,
+      action: 'refund',
+      previous_status: reservation.status,
+      result_status: refunded.status,
+      reason,
+      safety_code: GENERATION_TIMEOUT_SAFETY_CODE,
+      created_at: nowIso,
+    };
+    db.prepare(`INSERT INTO billing_reconciliation_events
+      (id, idempotency_key, reservation_id, tenant_id, user_id, actor_user_id,
+        action, previous_status, result_status, reason, safety_code, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        history.id,
+        history.idempotency_key,
+        history.reservation_id,
+        history.tenant_id,
+        history.user_id,
+        history.actor_user_id,
+        history.action,
+        history.previous_status,
+        history.result_status,
+        history.reason,
+        history.safety_code,
+        history.created_at,
+      );
+    auditEvents.record(db, {
+      tenantId: reservation.tenant_id,
+      eventType: 'billing.reconciliation.refunded',
+      resourceType: 'credit_reservation',
+      resourceId: reservationId,
+      outcome: 'success',
+      code: GENERATION_TIMEOUT_SAFETY_CODE,
+    });
+    return { applied: true, history, reservation: refunded };
+  }).immediate();
+}
+
 function listHistory(db, input = {}) {
   ensureSchema(db);
   const limit = boundedInt(input.limit, 100, 1, 500);
@@ -391,5 +526,8 @@ module.exports = {
   listAnomalies,
   listAnomaliesReadOnly,
   refundReservation,
+  refundExpiredGenerationReservation,
   listHistory,
+  GENERATION_TIMEOUT_SAFETY_CODE,
+  GENERATION_TIMEOUT_MESSAGE,
 };

@@ -13,6 +13,7 @@ const UNKNOWN_MESSAGE = '供应商提交结果未知，等待管理员核对，�
 const DEFAULT_INTERVAL_MS = 60_000;
 const DEFAULT_SUBMITTING_GRACE_MS = 20 * 60_000;
 const DEFAULT_REVIEW_SLA_MS = 60 * 60_000;
+const DEFAULT_FROZEN_CREDIT_TIMEOUT_MINUTES = 30;
 let reconciliationTimer = null;
 
 function routeRows(db, limit = 100) {
@@ -141,6 +142,35 @@ function recordReviewSlaOnce(db, route, now, reviewSlaMs) {
   });
 }
 
+function hasTimeoutRefund(db, reservationId) {
+  if (!reservationId) return false;
+  return Boolean(db.prepare(`SELECT 1 FROM billing_reconciliation_events
+    WHERE reservation_id = ? AND safety_code = ? LIMIT 1`)
+    .get(reservationId, billingReconciliation.GENERATION_TIMEOUT_SAFETY_CODE));
+}
+
+function reconcileExpiredHeldReservations(db, now, options, summary) {
+  const timeoutMinutes = options.frozenCreditTimeoutMinutes
+    ?? DEFAULT_FROZEN_CREDIT_TIMEOUT_MINUTES;
+  const rows = billingReconciliation.listAnomalies(db, {
+    olderThanMinutes: timeoutMinutes,
+    limit: options.limit,
+    now,
+  });
+  for (const row of rows) {
+    const result = billingReconciliation.refundExpiredGenerationReservation(db, {
+      reservationId: row.reservation_id,
+      idempotencyKey: `generation-timeout-refund:${row.reservation_id}`,
+      reason: billingReconciliation.GENERATION_TIMEOUT_MESSAGE,
+      timeoutMinutes,
+      now,
+    });
+    if (!result.applied) continue;
+    summary.processed += 1;
+    summary.refunded += 1;
+  }
+}
+
 function markLegacyHeldForReview(db, row, now) {
   const route = {
     id: `legacy-credit:${row.reservation_id}`,
@@ -216,7 +246,9 @@ function reconcileProviderRequests(db, log, nowValue = new Date().toISOString(),
     ? configuredReviewSlaMs
     : DEFAULT_REVIEW_SLA_MS;
   const summary = { processed: 0, needs_attention: 0, refunded: 0, resumable: 0, alerted: 0 };
+  reconcileExpiredHeldReservations(db, now, options, summary);
   for (const route of routeRows(db, options.limit)) {
+    if (hasTimeoutRefund(db, route.credit_reservation_id)) continue;
     if (route.service_type === 'video' && route.provider_task_id) {
       summary.resumable += 1;
       continue;

@@ -562,8 +562,9 @@
       "module": "shared",
       "status": "locked_fixed",
       "acceptance": [
-        "提交或结果未知时任务进入人工核对且积分保持冻结",
-        "只有明确失败且未创建供应商任务时自动退款，重复对账幂等"
+        "提交或结果未知时任务在预扣后的 30 分钟窗口内进入人工核对且积分保持冻结",
+        "预扣满 30 分钟仍无完成证据时自动失败并通过现有账本幂等退款",
+        "明确失败且未创建供应商任务时继续自动退款，重复对账幂等"
       ],
       "protectedPaths": [
         "backend-node/migrations/64_provider_task_receipt_reconciliation.sql",
@@ -606,7 +607,8 @@
         "docs/verification/platform-stability/provider-task-receipt-live-compat-20260823.md",
         "docs/verification/platform-stability/pr193-image-unknown-closure-ci-20260825.md",
         "docs/tasks/2026-08-26-static-asset-cross-release-compat.md",
-        "docs/superpowers/plans/2026-08-27-held-credit-reconciliation-dry-run.md"
+        "docs/superpowers/plans/2026-08-27-held-credit-reconciliation-dry-run.md",
+        "docs/tasks/2026-08-30-generation-credit-timeout.md"
       ],
       "fixCommit": "51a91f1e3eb5dc3636adb1c8a47e45f22a60e000",
       "unlockHistory": [
@@ -837,26 +839,43 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-30 PR #211 Hosted CI 功能锁批准链刷新获批",
+          "approvedBy": "product-owner 2026-08-30 pr-211-ci-fix-approved",
+          "impactTests": [
+            "backend-node/test/toapisWan3VideoClient.test.js",
+            "backend-node/test/toapisWan3VideoRuntime.test.js",
+            "backend-node/test/videoServiceWan3.test.js",
+            "backend-node/test/toapisWan3AiConfig.test.js",
+            "backend-node/test/toapisWan3Verification.test.js",
+            "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
+            "backend-node/test/toapisWan3Catalog.test.js",
+            "backend-node/test/providerRuntimeFingerprint.test.js",
+            "backend-node/test/externalModelEvidenceBinding.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/sharedReleaseGuardRotation.test.js",
+            "frontweb/test/aiConfigProviderPresets.test.js",
+            "frontweb/test/videoDurationOptions.test.js",
+            "frontweb/test/videoGenerationRequest.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-30 PR #211 Hosted CI 功能锁批准链刷新获批",
-        "approvedBy": "product-owner 2026-08-30 pr-211-ci-fix-approved",
+        "reason": "2026-08-30 生成冻结积分满 30 分钟自动失败返还获批",
+        "approvedBy": "product-owner 2026-08-30 generation-credit-30-minute-auto-refund",
         "impactTests": [
-          "backend-node/test/toapisWan3VideoClient.test.js",
-          "backend-node/test/toapisWan3VideoRuntime.test.js",
+          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/billingReconciliation.test.js",
+          "backend-node/test/billingReconciliationDryRun.test.js",
+          "backend-node/test/creditLedger.test.js",
+          "backend-node/test/providerTaskReconciliation.test.js",
+          "backend-node/test/taskService.test.js",
+          "backend-node/test/appBackgroundServices.test.js",
+          "backend-node/test/providerSubmissionUnknownRecovery.test.js",
           "backend-node/test/videoServiceWan3.test.js",
-          "backend-node/test/toapisWan3AiConfig.test.js",
-          "backend-node/test/toapisWan3Verification.test.js",
-          "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
-          "backend-node/test/toapisWan3Catalog.test.js",
-          "backend-node/test/providerRuntimeFingerprint.test.js",
-          "backend-node/test/externalModelEvidenceBinding.test.js",
-          "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/sharedReleaseGuardRotation.test.js",
-          "frontweb/test/aiConfigProviderPresets.test.js",
-          "frontweb/test/videoDurationOptions.test.js",
-          "frontweb/test/videoGenerationRequest.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
