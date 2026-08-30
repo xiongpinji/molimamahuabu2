@@ -508,7 +508,7 @@ function isPublicConfigReady(config, price, model = price.model, evidenceRoots) 
       || !hasConnectionCredential(config)) return false;
   const modelCapabilities = verifiedPublicCapabilities(config, model);
   if (protocol !== 'feituo_open'
-      && !hasTrustedEvidenceBinding(model, modelCapabilities, evidenceRoots)) return false;
+      && !hasTrustedEvidenceBinding(model, modelCapabilities, evidenceRoots, config)) return false;
   const resolutions = verifiedPublicResolutions(config, model);
   const target = String(model || '').trim().toLowerCase();
   const official = protocol === 'toapis_video'

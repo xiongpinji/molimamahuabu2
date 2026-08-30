@@ -214,7 +214,8 @@ function verifiedModelCapabilities(config, model, price, evidenceRoots) {
     .find((item) => String(item).trim().toLowerCase() === target);
   const capabilities = capabilityKey ? config.verified_capabilities[capabilityKey] : null;
   if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) return false;
-  if (protocol !== 'feituo_open' && !hasTrustedEvidenceBinding(target, capabilities, evidenceRoots)) return false;
+  if (protocol !== 'feituo_open'
+      && !hasTrustedEvidenceBinding(target, capabilities, evidenceRoots, config)) return false;
   const { evidence_contract: _evidenceContract, evidence_sha256: _evidenceSha256, ...publicCapabilitySource } = capabilities;
   const feituoOfficial = protocol === 'feituo_open'
     ? feituoVideoClient.FEITUO_MODELS[target]

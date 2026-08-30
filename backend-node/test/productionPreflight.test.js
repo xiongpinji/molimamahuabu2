@@ -1,10 +1,17 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const Database = require('better-sqlite3');
 const packageJson = require('../package.json');
 
 const modelPrices = require('../src/services/modelPriceService');
-const { runProductionPreflight } = require('../src/services/productionPreflightService');
+const {
+  externalModelEvidenceBindingsReady,
+  runProductionPreflight,
+} = require('../src/services/productionPreflightService');
 
 function createDb() {
   const db = new Database(':memory:');
@@ -79,6 +86,84 @@ function productionEnv() {
     SMTP_FROM: '茉莉妈妈 <mailer@example.com>',
   };
 }
+
+function installWan3Evidence(config) {
+  const allowedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wan3-preflight-evidence-'));
+  const root = path.join(allowedRoot, 'bundles', 'external-models-v1');
+  const publicRoot = path.join(root, 'public', 'toapis');
+  fs.mkdirSync(publicRoot, { recursive: true, mode: 0o755 });
+  const artifact = 'wan3-preflight.mp4';
+  fs.writeFileSync(path.join(publicRoot, artifact), 'wan3\n', { mode: 0o644 });
+  const credentialFingerprint = crypto.createHash('sha256').update(config.api_key).digest('hex');
+  const configFingerprint = crypto.createHash('sha256').update(JSON.stringify({
+    id: String(config.id),
+    provider: 'toapis_wan3',
+    model: 'wan3.0-video',
+    base_url: 'https://toapis.xyz',
+    api_key: config.api_key,
+  })).digest('hex');
+  const evidence = Buffer.from(JSON.stringify({
+    contract_version: 'toapis-wan3-video-real-verification-v1',
+    results: [{
+      source_config_id: 16,
+      target_config_id: config.id,
+      config_id: config.id,
+      credential_fingerprint: credentialFingerprint,
+      config_fingerprint: configFingerprint,
+      artifact: { output_file: artifact },
+    }],
+  }));
+  fs.writeFileSync(path.join(root, 'toapis-wan3-video-verification.json'), evidence, { mode: 0o644 });
+  const sha256 = crypto.createHash('sha256').update(evidence).digest('hex');
+  fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify({
+    contract_version: 'external-model-release-evidence-manifest-v1',
+    evidence: {
+      'toapis-wan3-video-real-verification-v1': {
+        file: 'toapis-wan3-video-verification.json',
+        sha256,
+      },
+    },
+  }), { mode: 0o644 });
+  return {
+    allowedRoot,
+    root,
+    roots: { allowedRoot, root },
+    sha256,
+  };
+}
+
+test('Wan 3.0 生产预检将共享证据强绑定到当前启用配置', () => {
+  const db = createDb();
+  let evidence;
+  try {
+    for (const column of ['api_protocol TEXT', 'base_url TEXT', 'api_key TEXT', 'verified_capabilities TEXT']) {
+      db.exec(`ALTER TABLE ai_service_configs ADD COLUMN ${column}`);
+    }
+    const config = {
+      id: 3,
+      api_key: 'wan3-preflight-key',
+    };
+    evidence = installWan3Evidence(config);
+    db.prepare(`UPDATE ai_service_configs
+      SET provider = 'toapis_wan3', api_protocol = 'toapis_wan3_video',
+          model = '["wan3.0-video"]', default_model = 'wan3.0-video',
+          base_url = 'https://toapis.xyz', api_key = ?, verified_capabilities = ?
+      WHERE id = ?`).run(config.api_key, JSON.stringify({
+        'wan3.0-video': {
+          evidence_contract: 'toapis-wan3-video-real-verification-v1',
+          evidence_sha256: evidence.sha256,
+        },
+      }), config.id);
+
+    assert.deepEqual(externalModelEvidenceBindingsReady(db, evidence.roots), []);
+    db.prepare('UPDATE ai_service_configs SET api_key = ? WHERE id = ?')
+      .run('rotated-wan3-key', config.id);
+    assert.deepEqual(externalModelEvidenceBindingsReady(db, evidence.roots), ['wan3.0-video']);
+  } finally {
+    db.close();
+    if (evidence) fs.rmSync(evidence.allowedRoot, { recursive: true, force: true });
+  }
+});
 
 test('安全生产配置、管理员和模型价格齐全时预检通过且不泄露密钥', () => {
   const db = createDb();

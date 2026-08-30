@@ -17,7 +17,17 @@ const MODEL = 'wan3.0-video';
 const CONTRACT = 'toapis-wan3-video-real-verification-v1';
 const log = { info() {}, warn() {}, error() {} };
 
-function evidenceRoot(t) {
+function configFingerprint(config) {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    id: String(config.id),
+    provider: 'toapis_wan3',
+    model: MODEL,
+    base_url: 'https://toapis.xyz',
+    api_key: config.api_key,
+  })).digest('hex');
+}
+
+function evidenceRoot(t, config) {
   const allowedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wan3-catalog-evidence-'));
   const root = path.join(allowedRoot, 'external-models-v1');
   const publicDir = path.join(root, 'public', 'toapis');
@@ -26,7 +36,14 @@ function evidenceRoot(t) {
   fs.mkdirSync(publicDir, { recursive: true });
   const evidence = Buffer.from(JSON.stringify({
     contract_version: CONTRACT,
-    results: [{ artifact: { output_file: outputFile } }],
+    results: [{
+      source_config_id: 16,
+      target_config_id: config.id,
+      config_id: config.id,
+      credential_fingerprint: crypto.createHash('sha256').update(config.api_key).digest('hex'),
+      config_fingerprint: configFingerprint(config),
+      artifact: { output_file: outputFile },
+    }],
   }));
   const sha256 = crypto.createHash('sha256').update(evidence).digest('hex');
   fs.writeFileSync(path.join(root, evidenceFile), evidence);
@@ -43,10 +60,9 @@ function setup(t) {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
   t.after(() => db.close());
-  const evidence = evidenceRoot(t);
   const config = aiConfig.createConfig(db, log, {
     service_type: 'video',
-    provider: 'toapis',
+    provider: 'toapis_wan3',
     api_protocol: 'toapis_wan3_video',
     name: 'ToAPIs Wan 3.0',
     base_url: 'https://toapis.xyz',
@@ -56,6 +72,7 @@ function setup(t) {
     is_active: true,
     is_default: true,
   });
+  const evidence = evidenceRoot(t, config);
   aiConfig.recordVerification(db, config.id, {
     status: 'verified',
     capabilities: {
@@ -124,6 +141,19 @@ test('Wan 3.0 public catalog fails closed when the verified tier has no matching
         evidence_sha256: evidence.sha256,
       },
     },
+  });
+  assert.equal(catalog.list(db, { evidenceRoots: evidence.roots })
+    .some((entry) => entry.model === MODEL), false);
+  assert.equal(prices.listPublic(db, { evidenceRoots: evidence.roots })
+    .some((entry) => entry.model === MODEL), false);
+});
+
+test('Wan 3.0 public catalog and price fail closed after the bound credential rotates', (t) => {
+  const { db, evidence, configId } = setup(t);
+  aiConfig.updateConfig(db, log, configId, { api_key: 'rotated-wan3-key' });
+  aiConfig.recordVerification(db, configId, {
+    status: 'verified',
+    capabilities: aiConfig.getConfig(db, configId).verified_capabilities,
   });
   assert.equal(catalog.list(db, { evidenceRoots: evidence.roots })
     .some((entry) => entry.model === MODEL), false);

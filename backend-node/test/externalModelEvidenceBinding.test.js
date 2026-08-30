@@ -64,13 +64,44 @@ function createEvidenceRoot() {
   };
 }
 
-function installWanEvidence(current) {
+function wan3ConfigFingerprint(config) {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    id: String(config.id),
+    provider: 'toapis_wan3',
+    model: 'wan3.0-video',
+    base_url: 'https://toapis.xyz',
+    api_key: config.api_key,
+  })).digest('hex');
+}
+
+function wan3Config(overrides = {}) {
+  return {
+    id: 99,
+    service_type: 'video',
+    provider: 'toapis_wan3',
+    api_protocol: 'toapis_wan3_video',
+    base_url: 'https://toapis.xyz',
+    api_key: 'wan3-runtime-key',
+    model: ['wan3.0-video'],
+    default_model: 'wan3.0-video',
+    ...overrides,
+  };
+}
+
+function installWanEvidence(current, config = wan3Config()) {
   const contract = 'toapis-wan3-video-real-verification-v1';
   const file = 'toapis-wan3-video-verification.json';
   const outputFile = 'wan3-video.mp4';
   const bytes = Buffer.from(JSON.stringify({
     contract_version: contract,
-    results: [{ artifact: { output_file: outputFile } }],
+    results: [{
+      source_config_id: 16,
+      target_config_id: config.id,
+      config_id: config.id,
+      credential_fingerprint: crypto.createHash('sha256').update(config.api_key).digest('hex'),
+      config_fingerprint: wan3ConfigFingerprint(config),
+      artifact: { output_file: outputFile },
+    }],
   }));
   fs.writeFileSync(path.join(current.root, file), bytes, { mode: 0o644 });
   fs.writeFileSync(path.join(current.root, 'public', 'toapis', outputFile), 'wan3\n', { mode: 0o644 });
@@ -112,19 +143,53 @@ test('Wan 3.0 fails closed until its independent evidence is installed', () => {
 test('Wan 3.0 binds only to its installed independent evidence bytes', () => {
   const current = createEvidenceRoot();
   try {
-    const installed = installWanEvidence(current);
+    const config = wan3Config();
+    const installed = installWanEvidence(current, config);
     assert.deepEqual(readTrustedEvidence('wan3.0-video', current.roots), {
       contract: 'toapis-wan3-video-real-verification-v1',
       sha256: installed.sha256,
+      source_config_id: 16,
+      target_config_id: config.id,
+      config_id: config.id,
+      credential_fingerprint: crypto.createHash('sha256').update(config.api_key).digest('hex'),
+      config_fingerprint: wan3ConfigFingerprint(config),
     });
     assert.equal(hasTrustedEvidenceBinding('wan3.0-video', {
       evidence_contract: 'toapis-wan3-video-real-verification-v1',
       evidence_sha256: installed.sha256,
-    }, current.roots), true);
+    }, current.roots, config), true);
     assert.equal(hasTrustedEvidenceBinding('wan3.0-video', {
       evidence_contract: 'toapis-wan3-video-real-verification-v1',
       evidence_sha256: '0'.repeat(64),
-    }, current.roots), false);
+    }, current.roots, config), false);
+  } finally {
+    fs.rmSync(current.allowedRoot, { recursive: true, force: true });
+  }
+});
+
+test('Wan 3.0 evidence binding fails closed when the active target config identity or credential drifts', () => {
+  const current = createEvidenceRoot();
+  try {
+    const config = wan3Config();
+    const installed = installWanEvidence(current, config);
+    const capabilities = {
+      evidence_contract: 'toapis-wan3-video-real-verification-v1',
+      evidence_sha256: installed.sha256,
+    };
+    for (const drifted of [
+      undefined,
+      wan3Config({ id: 100 }),
+      wan3Config({ provider: 'toapis' }),
+      wan3Config({ api_protocol: 'toapis_video' }),
+      wan3Config({ base_url: 'https://toapis.xyz/v1' }),
+      wan3Config({ api_key: 'rotated-key' }),
+      wan3Config({ model: ['seedance-2-fast'] }),
+      wan3Config({ default_model: 'seedance-2-fast' }),
+    ]) {
+      assert.equal(hasTrustedEvidenceBinding(
+        'wan3.0-video', capabilities, current.roots, drifted,
+      ), false);
+    }
   } finally {
     fs.rmSync(current.allowedRoot, { recursive: true, force: true });
   }

@@ -29,7 +29,7 @@ test('Wan 3.0 独立能力合同按官方限制构建多模态请求', () => {
     duration: 2,
     ratio: 'adaptive',
     resolution: '1080p',
-    audio: true,
+    audio: false,
   });
 
   assert.deepEqual(buildToapisWan3VideoBody({
