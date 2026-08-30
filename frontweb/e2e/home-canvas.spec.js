@@ -549,6 +549,43 @@ test('视频节点三张已连接参考图按序显示并插入带序号的 @ �
   await expect(page.locator('.vue-flow__edge')).toHaveCount(3)
 })
 
+test('图片节点提示词可通过 @ 选择已连接图片素材作为参考', async ({ page }) => {
+  const connectedImageTargetState = {
+    ...mentionHomeCanvasState,
+    nodes: mentionHomeCanvasState.nodes.map((node) => (
+      node.id === 'e2e:video-target'
+        ? {
+            ...node,
+            id: 'e2e:image-target',
+            data: { kind: 'image', title: '海报生成', content: '保持角色外观 ' },
+          }
+        : node
+    )),
+    edges: [{
+      id: 'e2e:image-reference-to-image',
+      source: 'e2e:image-reference',
+      target: 'e2e:image-target',
+      type: 'smoothstep',
+      data: { contract: { input: 'reference-image', order: 0 } },
+    }],
+  }
+  await loadHomeCanvasState(page, connectedImageTargetState)
+
+  await page.locator('.vue-flow__node[data-id="e2e:image-target"]').click()
+  const promptInput = page.getByRole('textbox', { name: '生成提示词' })
+  await promptInput.fill('保持角色外观 @')
+  const mentionMenu = page.getByLabel('@选择参考图')
+  await expect(mentionMenu).toBeVisible()
+  await mentionMenu.getByRole('button', { name: '图片1' }).click()
+
+  await expect(promptInput).toHaveValue('保持角色外观 @图片1 ')
+  await expect(page.locator('.vue-flow__edge')).toHaveCount(1)
+  await expect.poll(async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return state.nodes?.find((node) => node.id === 'e2e:image-target')?.data?.content || ''
+  }, homeCanvasStorageKey)).toBe('保持角色外观 @图片1 ')
+})
+
 test('生成结果数组中的图片可被 @ 引用并支持双击全屏预览', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 600 })
   const wideImage = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%222000%22 height=%221200%22%3E%3Crect width=%222000%22 height=%221200%22 fill=%22%23f27645%22/%3E%3C/svg%3E'

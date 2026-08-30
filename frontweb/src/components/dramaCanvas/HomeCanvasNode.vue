@@ -730,8 +730,9 @@ const videoReferenceMode = computed(() => {
   if (mode === 'omni' && supportsOmniReferenceMode.value) return mode
   return ''
 })
+const supportsReferenceMention = computed(() => ['image', 'video'].includes(props.data.kind))
 const referenceCandidates = computed(() => (
-  props.data.kind === 'video'
+  supportsReferenceMention.value
     ? (ctx?.getFreeNodeReferenceCandidates?.(props.id) || [])
     : []
 ))
@@ -743,7 +744,7 @@ const filteredReferenceCandidates = computed(() => {
     || String(candidate.title || '').toLowerCase().includes(query)
   ))
 })
-const showReferenceMention = computed(() => props.data.kind === 'video' && mentionStart.value >= 0)
+const showReferenceMention = computed(() => supportsReferenceMention.value && mentionStart.value >= 0)
 const readyReferenceCount = computed(() => inputReferences.value.filter((reference) => reference.ready).length)
 
 function referencePreviewUrl(reference) {
@@ -953,7 +954,7 @@ function chooseFile() {
 }
 
 function handlePromptInput(event) {
-  if (props.data.kind !== 'video') return
+  if (!supportsReferenceMention.value) return
   const value = String(event.target.value || '')
   const cursor = Number(event.target.selectionStart ?? value.length)
   const beforeCursor = value.slice(0, cursor)

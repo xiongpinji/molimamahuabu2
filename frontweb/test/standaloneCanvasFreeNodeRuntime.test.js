@@ -123,6 +123,13 @@ test('图片编辑器上传参考图，视频编辑器上传图片、视频或�
   assert.doesNotMatch(homeCanvasSource, /function freeCanvasReferenceCandidates[\s\S]{0,600}!connectedNodeIds\.has/)
 })
 
+test('图片和视频节点都允许通过 @ 选择直连图片参考，其他节点不启用', () => {
+  assert.match(nodeSource, /const supportsReferenceMention = computed\(\(\) => \['image', 'video'\]\.includes\(props\.data\.kind\)\)/)
+  assert.match(nodeSource, /const referenceCandidates = computed\(\(\) => \(\s*supportsReferenceMention\.value/)
+  assert.match(nodeSource, /function handlePromptInput\(event\) \{\s*if \(!supportsReferenceMention\.value\) return/)
+  assert.match(nodeSource, /const showReferenceMention = computed\(\(\) => supportsReferenceMention\.value && mentionStart\.value >= 0\)/)
+})
+
 test('自由节点可从节点内和右键挂载兼容素材，并拒绝修改不兼容节点', () => {
   assert.match(nodeSource, /ctx\?\.openFreeNodeAssetLibrary\?\.\(props\.id\)/)
   assert.match(nodeSource, /v-if="canMountAsset"[\s\S]*素材库/)
