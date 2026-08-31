@@ -120,6 +120,12 @@ const toapisWan3FullCapabilityManifestPath = path.join(
   'release-scopes',
   'toapis-wan3-full-capability-contract-20260831.json',
 );
+const wan3PrivateAvatarFreshnessIsolationManifestPath = path.join(
+  repoRoot,
+  'deploy',
+  'release-scopes',
+  'wan3-private-avatar-freshness-isolation-20260831.json',
+);
 const TOAPIS_PRIVATE_AVATAR_SPLIT_KEY_ALLOWED_PATHS = [
   'backend-node/scripts/verify-toapis-private-avatar-video.js',
   'backend-node/test/incrementalReleaseScope.test.js',
@@ -164,6 +170,14 @@ const TOAPIS_WAN3_FULL_CAPABILITY_ALLOWED_PATHS = [
   'frontweb/test/toapisVideoCanvasContract.test.js',
   'frontweb/test/videoGenerationRequest.test.js',
   'frontweb/test/videoResolutionPricingContract.test.js',
+];
+const WAN3_PRIVATE_AVATAR_FRESHNESS_ISOLATION_ALLOWED_PATHS = [
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/sharedExternalModelReleaseGuard.test.js',
+  'deploy/release-guard/verify-external-model-release.js',
+  'deploy/release-scopes/wan3-private-avatar-freshness-isolation-20260831.json',
+  'deploy/rotate-external-model-release-guard.sh',
+  'docs/tasks/2026-08-31-wan3-provider-asset-download-repair.md',
 ];
 const CANVAS_TEXT_CAPABILITY_HOTFIX_ALLOWED_PATHS = [
   'backend-node/src/services/providerCanaryEvidenceService.js',
@@ -522,6 +536,10 @@ function assertExactToapisWan3FullCapabilityScope(allowedPaths) {
   assert.deepEqual(allowedPaths, TOAPIS_WAN3_FULL_CAPABILITY_ALLOWED_PATHS);
 }
 
+function assertExactWan3PrivateAvatarFreshnessIsolationScope(allowedPaths) {
+  assert.deepEqual(allowedPaths, WAN3_PRIVATE_AVATAR_FRESHNESS_ISOLATION_ALLOWED_PATHS);
+}
+
 function createFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'incremental-release-scope-'));
   const parentRoot = path.join(root, 'parent');
@@ -702,6 +720,42 @@ test('ToAPIs Wan3 完整能力升级发布范围拒绝同数量偷换范围文�
   assert.equal(swapped.length, TOAPIS_WAN3_FULL_CAPABILITY_ALLOWED_PATHS.length);
   assert.throws(
     () => assertExactToapisWan3FullCapabilityScope(swapped),
+    { name: 'AssertionError' },
+  );
+});
+
+test('Wan3 与私人形象证据新鲜度隔离使用精确六文件发布范围', () => {
+  const { manifest, allowedPaths } = loadManifest(wan3PrivateAvatarFreshnessIsolationManifestPath);
+  assert.equal(manifest.release, 'wan3-private-avatar-freshness-isolation-20260831');
+  assertExactWan3PrivateAvatarFreshnessIsolationScope(allowedPaths);
+  assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
+  for (const forbidden of [
+    'backend-node/data',
+    'backend-node/uploads',
+    'storage',
+    'assets',
+    'ai-music',
+    'moli-music',
+    'deploy/install-protected-release-guard.sh',
+    'deploy/activate-protected-release.sh',
+    'docs/verification/platform-stability/feature-lock-manifest.json',
+    'shared/release-guard',
+  ]) {
+    assert.equal(
+      allowedPaths.some((entry) => entry === forbidden || entry.startsWith(`${forbidden}/`)),
+      false,
+      `发布范围不得包含: ${forbidden}`,
+    );
+  }
+});
+
+test('Wan3 与私人形象证据新鲜度隔离拒绝同数量偷换任一文件', () => {
+  const swapped = [...WAN3_PRIVATE_AVATAR_FRESHNESS_ISOLATION_ALLOWED_PATHS];
+  swapped[swapped.indexOf('deploy/release-guard/verify-external-model-release.js')]
+    = 'backend-node/data/drama_generator.db';
+  assert.equal(swapped.length, WAN3_PRIVATE_AVATAR_FRESHNESS_ISOLATION_ALLOWED_PATHS.length);
+  assert.throws(
+    () => assertExactWan3PrivateAvatarFreshnessIsolationScope(swapped),
     { name: 'AssertionError' },
   );
 });

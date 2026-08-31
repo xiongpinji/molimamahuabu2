@@ -287,6 +287,48 @@ function protectedSurfaceChanged(candidate, expectedCurrent, files) {
   });
 }
 
+function withoutNamedFunction(source, name) {
+  const code = maskStrings(source);
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const declaration = new RegExp(`\\b(?:async\\s+)?function\\s+${escaped}\\s*\\([^)]*\\)\\s*\\{`).exec(code);
+  if (!declaration) return source;
+  const opening = declaration.index + declaration[0].lastIndexOf('{');
+  let depth = 0;
+  for (let index = opening; index < code.length; index += 1) {
+    if (code[index] === '{') depth += 1;
+    if (code[index] !== '}') continue;
+    depth -= 1;
+    if (depth === 0) return `${source.slice(0, declaration.index)}${source.slice(index + 1)}`;
+  }
+  fail(`${name} function is unbalanced`);
+}
+
+function privateAvatarVideoServiceProjection(source) {
+  let projected = String(source || '').replace(
+    /^[\t ]*const[\t ]+providerAssetUrl[\t ]*=[\t ]*require\([\t ]*['"]\.\/providerAssetUrlService['"][\t ]*\);?[\t ]*$/m,
+    '',
+  );
+  projected = withoutNamedFunction(projected, 'signedWan3SubmissionPayload');
+  projected = projected.replace(
+    /Object\.assign\(\s*requestPayload\s*,\s*signedWan3SubmissionPayload\(\{\s*\.\.\.requestPayload\s*,\s*client_business_id\s*:\s*`video-\$\{videoGenId\}`\s*,?\s*\}\)\s*\)\s*;/,
+    'requestPayload.client_business_id = `video-${videoGenId}`;',
+  );
+  return projected
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .join('\n')
+    .trim();
+}
+
+function privateAvatarSurfaceChanged(candidate, expectedCurrent) {
+  const videoService = 'backend-node/src/services/videoService.js';
+  const otherFiles = FRESHNESS_SURFACES.toapisPrivateAvatar.filter((relative) => relative !== videoService);
+  if (protectedSurfaceChanged(candidate, expectedCurrent, otherFiles)) return true;
+  return privateAvatarVideoServiceProjection(candidateSource(candidate, videoService, false))
+    !== privateAvatarVideoServiceProjection(candidateSource(expectedCurrent, videoService, false));
+}
+
 function sourceSha256(root, relative) {
   const canonicalSource = candidateSource(root, relative, false).replace(/\r\n?/g, '\n');
   return sha256(Buffer.from(canonicalSource, 'utf8'));
@@ -307,7 +349,7 @@ function freshnessRequirements(candidate, expectedCurrent, surfaces) {
       || !trustedUnchangedToapisStandardSurface(candidate, expectedCurrent));
   return {
     toapis,
-    toapisPrivateAvatar: protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.toapisPrivateAvatar),
+    toapisPrivateAvatar: privateAvatarSurfaceChanged(candidate, expectedCurrent),
     toapisWan3: Boolean(surfaces.toapisWan3)
       && protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.toapisWan3),
     usmercari: protectedSurfaceChanged(candidate, expectedCurrent, FRESHNESS_SURFACES.usmercari),
@@ -2556,5 +2598,6 @@ module.exports = {
   auditToapisWan3Runtime,
   decodeBaselineJpeg,
   freshnessRequirements,
+  privateAvatarVideoServiceProjection,
   verifyExternalModelRelease,
 };

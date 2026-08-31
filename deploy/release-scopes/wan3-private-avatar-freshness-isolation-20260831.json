@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "release": "wan3-private-avatar-freshness-isolation-20260831",
+  "allowedPaths": [
+    "backend-node/test/incrementalReleaseScope.test.js",
+    "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+    "deploy/release-guard/verify-external-model-release.js",
+    "deploy/release-scopes/wan3-private-avatar-freshness-isolation-20260831.json",
+    "deploy/rotate-external-model-release-guard.sh",
+    "docs/tasks/2026-08-31-wan3-provider-asset-download-repair.md"
+  ]
+}
