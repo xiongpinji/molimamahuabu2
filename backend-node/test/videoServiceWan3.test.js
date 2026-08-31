@@ -14,6 +14,7 @@ const creditLedger = require('../src/services/creditLedgerService');
 const modelPrice = require('../src/services/modelPriceService');
 const providerRouteStability = require('../src/services/providerRouteStabilityService');
 const providerTaskReconciliation = require('../src/services/providerTaskReconciliationService');
+const providerAssetUrl = require('../src/services/providerAssetUrlService');
 const videoClient = require('../src/services/videoClient');
 const videoService = require('../src/services/videoService');
 const wan3Client = require('../src/services/toapisWan3VideoClient');
@@ -296,6 +297,80 @@ test('Wan3 processing uses the independent adapter and preserves an accepted tas
   assert.equal(row.provider_task_id, 'wan-task-accepted');
   assert.match(row.error_msg, /仍可能处理中|最终状态未知/);
   assert.equal(creditLedger.getReservation(db, row.credit_reservation_id).status, 'held');
+});
+
+test('Wan3 processing signs platform reference images before direct adapter submission', async (t) => {
+  const previousBaseUrl = process.env.STORAGE_BASE_URL;
+  const previousSecret = process.env.PLATFORM_JWT_SECRET;
+  process.env.STORAGE_BASE_URL = 'https://molimama.vip/static';
+  process.env.PLATFORM_JWT_SECRET = 'wan3-provider-asset-signature-secret-at-least-32-characters';
+  t.after(() => {
+    if (previousBaseUrl == null) delete process.env.STORAGE_BASE_URL;
+    else process.env.STORAGE_BASE_URL = previousBaseUrl;
+    if (previousSecret == null) delete process.env.PLATFORM_JWT_SECRET;
+    else process.env.PLATFORM_JWT_SECRET = previousSecret;
+  });
+
+  const { db, evidence, now } = setup(t);
+  configureWan3(db, evidence, {
+    capabilities: { maxReferences: 2, supportsImageReference: true },
+  });
+  for (const name of ['reference-1.png', 'reference-2.png']) {
+    const relativePath = `projects/0001/assets/${name}`;
+    db.prepare(`INSERT INTO assets
+      (drama_id, name, type, url, local_path, metadata, created_at, updated_at)
+      VALUES (1, ?, 'image', ?, ?, '{}', ?, ?)`)
+      .run(name, `/static/${relativePath}`, relativePath, now, now);
+  }
+
+  let scheduled;
+  let submittedOptions;
+  const originalWanCall = wan3Client.callToapisWan3VideoApi;
+  wan3Client.callToapisWan3VideoApi = async (_config, _log, options) => {
+    submittedOptions = options;
+    return {
+      error: 'capture-only',
+      route_meta: {
+        phase: 'validation', requestBodySent: false,
+        providerCode: 'INVALID_ARGUMENT', explicitlyRejected: true,
+      },
+    };
+  };
+  t.after(() => { wan3Client.callToapisWan3VideoApi = originalWanCall; });
+
+  const created = videoService.create(db, log, validRequest({
+    reference_image_urls: [
+      '/static/projects/0001/assets/reference-1.png',
+      '/static/projects/0001/assets/reference-2.png',
+    ],
+  }), {
+    evidenceRoots: evidence.roots,
+    schedule(callback) { scheduled = callback; },
+  });
+  await scheduled({ evidenceRoots: evidence.roots });
+
+  assert.equal(submittedOptions.video_gen_id, created.id);
+  assert.equal(submittedOptions.reference_urls.length, 2);
+  for (const signedValue of submittedOptions.reference_urls) {
+    const signed = new URL(signedValue);
+    assert.equal(signed.origin, 'https://molimama.vip');
+    assert.ok(signed.searchParams.get(providerAssetUrl.EXPIRES_PARAM));
+    assert.ok(signed.searchParams.get(providerAssetUrl.SIGNATURE_PARAM));
+    assert.equal(providerAssetUrl.verifyProviderAssetRequest({
+      pathname: signed.pathname,
+      expires: signed.searchParams.get(providerAssetUrl.EXPIRES_PARAM),
+      signature: signed.searchParams.get(providerAssetUrl.SIGNATURE_PARAM),
+      secret: process.env.PLATFORM_JWT_SECRET,
+    }), true);
+  }
+  const persisted = db.prepare(`SELECT reference_image_urls, request_snapshot
+    FROM video_generations WHERE id = ?`).get(created.id);
+  const canonicalReferences = [
+    'https://molimama.vip/static/projects/0001/assets/reference-1.png',
+    'https://molimama.vip/static/projects/0001/assets/reference-2.png',
+  ];
+  assert.deepEqual(JSON.parse(persisted.reference_image_urls), canonicalReferences);
+  assert.deepEqual(JSON.parse(persisted.request_snapshot).reference_image_urls, canonicalReferences);
 });
 
 test('Wan3 accepted unknown task is publicly reconciled once and refunds only terminal failure', async (t) => {

@@ -176,6 +176,7 @@ const videoReferenceCapability = require('./videoReferenceCapabilityService');
 const providerRouteStability = require('./providerRouteStabilityService');
 const { classifyProviderFailure } = require('./providerErrorClassifier');
 const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
+const providerAssetUrl = require('./providerAssetUrlService');
 const { getFfmpegPath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
 
 function parseReferenceUrls(value) {
@@ -1138,6 +1139,30 @@ function normalizeToapisReferenceUrl(ref, context) {
   return {
     url: `${context.origin}/static/${relativePath}`,
     relativePath,
+  };
+}
+
+function signedWan3SubmissionPayload(payload) {
+  const signAsset = (value) => providerAssetUrl.signProviderAssetUrl(value, {
+    filesBaseUrl: payload.files_base_url,
+  });
+  const signAssets = (values) => Array.isArray(values) ? values.map(signAsset) : values;
+  const hasMultimodalReferences = [
+    payload.reference_urls,
+    payload.reference_video_urls,
+    payload.reference_audio_urls,
+  ].some((values) => Array.isArray(values) && values.some((value) => String(value || '').trim()))
+    || String(payload.voice_reference_url || '').trim();
+  return {
+    ...payload,
+    image_url: hasMultimodalReferences ? '' : signAsset(payload.image_url),
+    first_frame_url: signAsset(payload.first_frame_url),
+    last_frame_url: signAsset(payload.last_frame_url),
+    reference_urls: signAssets(payload.reference_urls),
+    reference_video_urls: signAssets(payload.reference_video_urls),
+    reference_audio_urls: signAssets(payload.reference_audio_urls),
+    voice_reference_url: signAsset(payload.voice_reference_url),
+    audio: typeof payload.audio === 'boolean' ? payload.audio : payload.generate_audio,
   };
 }
 
@@ -3099,7 +3124,10 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
       })(),
     };
     if (wan3ProcessingState) {
-      requestPayload.client_business_id = `video-${videoGenId}`;
+      Object.assign(requestPayload, signedWan3SubmissionPayload({
+        ...requestPayload,
+        client_business_id: `video-${videoGenId}`,
+      }));
       const requestBody = toapisWan3VideoClient.buildToapisWan3VideoBody(requestPayload);
       const requestSha256 = createHash('sha256')
         .update(JSON.stringify(requestBody))
