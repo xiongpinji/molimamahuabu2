@@ -1,6 +1,6 @@
 # 重绘语言验证 worker 沙箱材料
 
-本目录只保存重绘语言验证 worker 的 systemd unit 和发布说明。release 允许携带受审计的 `server.py` 入口源码；其余 worker source、模型权重和 venv 必须预置在 `/opt/moli-drama/shared/redraw-locale-verifier/`。release 不携带模型权重、虚拟环境、密钥或生产数据。
+本目录只保存重绘语言验证 worker 的 systemd unit 和发布说明。release 允许携带受审计的 `server.py` 入口及其传递本地源码闭包，用于候选构建和 verify-only；模型权重、venv 和生产运行使用的 worker source 必须预置在 `/opt/moli-drama/shared/redraw-locale-verifier/`。候选激活不会安装或切换 shared worker source；这类变更必须单独审查和授权。release 不携带模型权重、虚拟环境、密钥或生产数据。
 
 上线顺序必须保持保守：先完成基准、签名和 disabled 部署，确认 unit 仍保持离线、单进程和资源受限，再批准付费 canary。付费 canary 需要单独授权，不能由本材料自动触发。
 

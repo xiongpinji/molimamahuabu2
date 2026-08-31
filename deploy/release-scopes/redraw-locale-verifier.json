@@ -7,6 +7,14 @@
     "deploy/redraw-locale-verifier/moli-redraw-locale-verifier.service",
     "deploy/release-scopes/redraw-locale-verifier.json",
     "docs/superpowers/reports/2026-08-08-redraw-locale-worker-gate.md",
-    "workers/redraw-locale-verifier/src/redraw_locale_worker/server.py"
+    "workers/redraw-locale-verifier/src/redraw_locale_worker/__init__.py",
+    "workers/redraw-locale-verifier/src/redraw_locale_worker/commonaccent_interface.py",
+    "workers/redraw-locale-verifier/src/redraw_locale_worker/engines.py",
+    "workers/redraw-locale-verifier/src/redraw_locale_worker/errors.py",
+    "workers/redraw-locale-verifier/src/redraw_locale_worker/normalization.py",
+    "workers/redraw-locale-verifier/src/redraw_locale_worker/protocol.py",
+    "workers/redraw-locale-verifier/src/redraw_locale_worker/server.py",
+    "workers/redraw-locale-verifier/src/redraw_locale_worker/verifier.py",
+    "workers/redraw-locale-verifier/tests/test_release_scope.py"
   ]
 }
