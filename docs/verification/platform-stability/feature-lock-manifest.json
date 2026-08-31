@@ -259,26 +259,45 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-30 PR #211 Hosted CI 功能锁批准链刷新获批",
+          "approvedBy": "product-owner 2026-08-30 pr-211-ci-fix-approved",
+          "impactTests": [
+            "backend-node/test/toapisWan3VideoClient.test.js",
+            "backend-node/test/toapisWan3VideoRuntime.test.js",
+            "backend-node/test/videoServiceWan3.test.js",
+            "backend-node/test/toapisWan3AiConfig.test.js",
+            "backend-node/test/toapisWan3Verification.test.js",
+            "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
+            "backend-node/test/toapisWan3Catalog.test.js",
+            "backend-node/test/providerRuntimeFingerprint.test.js",
+            "backend-node/test/externalModelEvidenceBinding.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/sharedReleaseGuardRotation.test.js",
+            "frontweb/test/aiConfigProviderPresets.test.js",
+            "frontweb/test/videoDurationOptions.test.js",
+            "frontweb/test/videoGenerationRequest.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-30 PR #211 Hosted CI 功能锁批准链刷新获批",
-        "approvedBy": "product-owner 2026-08-30 pr-211-ci-fix-approved",
+        "reason": "2026-08-31 Wan 3.0 完整能力合同原位升级获批",
+        "approvedBy": "product-owner 2026-08-31 wan3-full-capability-contract-approved",
         "impactTests": [
-          "backend-node/test/toapisWan3VideoClient.test.js",
-          "backend-node/test/toapisWan3VideoRuntime.test.js",
-          "backend-node/test/videoServiceWan3.test.js",
-          "backend-node/test/toapisWan3AiConfig.test.js",
-          "backend-node/test/toapisWan3Verification.test.js",
-          "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
+          "backend-node/test/billingPublicCatalog.test.js",
+          "backend-node/test/canvasModelCatalogService.test.js",
+          "backend-node/test/modelPriceMigration.test.js",
+          "backend-node/test/toapisWan3ConfigInstaller.test.js",
           "backend-node/test/toapisWan3Catalog.test.js",
-          "backend-node/test/providerRuntimeFingerprint.test.js",
-          "backend-node/test/externalModelEvidenceBinding.test.js",
-          "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/sharedReleaseGuardRotation.test.js",
           "frontweb/test/aiConfigProviderPresets.test.js",
-          "frontweb/test/videoDurationOptions.test.js",
+          "frontweb/test/billingDisplay.test.js",
+          "frontweb/test/imageResolutionPricingContract.test.js",
+          "frontweb/test/toapisVideoCanvasContract.test.js",
           "frontweb/test/videoGenerationRequest.test.js",
+          "frontweb/test/videoResolutionPricingContract.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -1092,26 +1111,45 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-30 PR #211 Hosted CI 功能锁批准链刷新获批",
+          "approvedBy": "product-owner 2026-08-30 pr-211-ci-fix-approved",
+          "impactTests": [
+            "backend-node/test/toapisWan3VideoClient.test.js",
+            "backend-node/test/toapisWan3VideoRuntime.test.js",
+            "backend-node/test/videoServiceWan3.test.js",
+            "backend-node/test/toapisWan3AiConfig.test.js",
+            "backend-node/test/toapisWan3Verification.test.js",
+            "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
+            "backend-node/test/toapisWan3Catalog.test.js",
+            "backend-node/test/providerRuntimeFingerprint.test.js",
+            "backend-node/test/externalModelEvidenceBinding.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/sharedReleaseGuardRotation.test.js",
+            "frontweb/test/aiConfigProviderPresets.test.js",
+            "frontweb/test/videoDurationOptions.test.js",
+            "frontweb/test/videoGenerationRequest.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-30 PR #211 Hosted CI 功能锁批准链刷新获批",
-        "approvedBy": "product-owner 2026-08-30 pr-211-ci-fix-approved",
+        "reason": "2026-08-31 Wan 3.0 完整能力合同原位升级获批",
+        "approvedBy": "product-owner 2026-08-31 wan3-full-capability-contract-approved",
         "impactTests": [
-          "backend-node/test/toapisWan3VideoClient.test.js",
-          "backend-node/test/toapisWan3VideoRuntime.test.js",
-          "backend-node/test/videoServiceWan3.test.js",
-          "backend-node/test/toapisWan3AiConfig.test.js",
-          "backend-node/test/toapisWan3Verification.test.js",
-          "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
+          "backend-node/test/billingPublicCatalog.test.js",
+          "backend-node/test/canvasModelCatalogService.test.js",
+          "backend-node/test/modelPriceMigration.test.js",
+          "backend-node/test/toapisWan3ConfigInstaller.test.js",
           "backend-node/test/toapisWan3Catalog.test.js",
-          "backend-node/test/providerRuntimeFingerprint.test.js",
-          "backend-node/test/externalModelEvidenceBinding.test.js",
-          "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/sharedReleaseGuardRotation.test.js",
           "frontweb/test/aiConfigProviderPresets.test.js",
-          "frontweb/test/videoDurationOptions.test.js",
+          "frontweb/test/billingDisplay.test.js",
+          "frontweb/test/imageResolutionPricingContract.test.js",
+          "frontweb/test/toapisVideoCanvasContract.test.js",
           "frontweb/test/videoGenerationRequest.test.js",
+          "frontweb/test/videoResolutionPricingContract.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -1622,26 +1660,45 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-30 PR #211 Hosted CI 功能锁批准链刷新获批",
+          "approvedBy": "product-owner 2026-08-30 pr-211-ci-fix-approved",
+          "impactTests": [
+            "backend-node/test/toapisWan3VideoClient.test.js",
+            "backend-node/test/toapisWan3VideoRuntime.test.js",
+            "backend-node/test/videoServiceWan3.test.js",
+            "backend-node/test/toapisWan3AiConfig.test.js",
+            "backend-node/test/toapisWan3Verification.test.js",
+            "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
+            "backend-node/test/toapisWan3Catalog.test.js",
+            "backend-node/test/providerRuntimeFingerprint.test.js",
+            "backend-node/test/externalModelEvidenceBinding.test.js",
+            "backend-node/test/toapisVideoIntegration.test.js",
+            "backend-node/test/sharedReleaseGuardRotation.test.js",
+            "frontweb/test/aiConfigProviderPresets.test.js",
+            "frontweb/test/videoDurationOptions.test.js",
+            "frontweb/test/videoGenerationRequest.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-30 PR #211 Hosted CI 功能锁批准链刷新获批",
-        "approvedBy": "product-owner 2026-08-30 pr-211-ci-fix-approved",
+        "reason": "2026-08-31 Wan 3.0 完整能力合同原位升级获批",
+        "approvedBy": "product-owner 2026-08-31 wan3-full-capability-contract-approved",
         "impactTests": [
-          "backend-node/test/toapisWan3VideoClient.test.js",
-          "backend-node/test/toapisWan3VideoRuntime.test.js",
-          "backend-node/test/videoServiceWan3.test.js",
-          "backend-node/test/toapisWan3AiConfig.test.js",
-          "backend-node/test/toapisWan3Verification.test.js",
-          "backend-node/test/toapisWan3SharedExternalModelReleaseGuard.test.js",
+          "backend-node/test/billingPublicCatalog.test.js",
+          "backend-node/test/canvasModelCatalogService.test.js",
+          "backend-node/test/modelPriceMigration.test.js",
+          "backend-node/test/toapisWan3ConfigInstaller.test.js",
           "backend-node/test/toapisWan3Catalog.test.js",
-          "backend-node/test/providerRuntimeFingerprint.test.js",
-          "backend-node/test/externalModelEvidenceBinding.test.js",
-          "backend-node/test/toapisVideoIntegration.test.js",
-          "backend-node/test/sharedReleaseGuardRotation.test.js",
           "frontweb/test/aiConfigProviderPresets.test.js",
-          "frontweb/test/videoDurationOptions.test.js",
+          "frontweb/test/billingDisplay.test.js",
+          "frontweb/test/imageResolutionPricingContract.test.js",
+          "frontweb/test/toapisVideoCanvasContract.test.js",
           "frontweb/test/videoGenerationRequest.test.js",
+          "frontweb/test/videoResolutionPricingContract.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]

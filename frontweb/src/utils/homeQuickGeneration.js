@@ -24,8 +24,8 @@ const VERIFIED_VIDEO_MODELS = Object.freeze({
     durations: Object.freeze([4, 5, 6, 8, 10, 11, 15]),
   }),
   'wan3.0-video': Object.freeze({
-    resolutions: Object.freeze(['480p']),
-    durations: Object.freeze([2]),
+    resolutions: Object.freeze(['480p', '720p', '1080p']),
+    durations: Object.freeze(Array.from({ length: 29 }, (_, index) => index + 2)),
   }),
 })
 const STRICT_CATALOG_PROVIDER_PROTOCOLS = Object.freeze({

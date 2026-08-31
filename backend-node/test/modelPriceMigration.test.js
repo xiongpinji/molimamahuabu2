@@ -18,6 +18,14 @@ test('图片分辨率迁移幂等且不改动既有视频价格', () => {
       FROM model_resolution_prices WHERE model = ?`).get('legacy-video'),
     { model: 'legacy-video', resolution: '720p', credits: 9, cost_micros_per_second: 140000 },
   );
+  db.prepare(`INSERT INTO model_resolution_prices
+    (model, resolution, credits, cost_micros_per_second, updated_at)
+    VALUES (?, ?, ?, ?, ?)`).run('wan3.0-video', '1080p', 134, 350000, '2026-08-31T00:00:00.000Z');
+  assert.equal(
+    db.prepare('SELECT credits FROM model_resolution_prices WHERE model = ? AND resolution = ?')
+      .get('wan3.0-video', '1080p').credits,
+    134,
+  );
   db.prepare(`INSERT INTO model_image_resolution_prices
     (model, resolution, credits, cost_micros_per_unit, updated_at)
     VALUES (?, ?, ?, ?, ?)`).run('nano-banana-2', '4k', 105, 120000, '2026-08-07T00:00:00.000Z');

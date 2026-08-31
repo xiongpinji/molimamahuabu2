@@ -8,18 +8,18 @@ const canvasSource = fs.readFileSync(new URL('../src/views/DramaCanvas.vue', imp
 const freeCreateSource = fs.readFileSync(new URL('../src/views/FreeCreate.vue', import.meta.url), 'utf8')
 const filmListSource = fs.readFileSync(new URL('../src/views/FilmList.vue', import.meta.url), 'utf8')
 
-test('管理端提供 480P 和 720P 的积分及每秒成本配置', () => {
-  assert.match(adminSource, /const videoResolutionLabels\s*=\s*\{[\s\S]*'480p': '480P'[\s\S]*'720p': '720P'/)
+test('管理端提供 480P、720P 和 1080P 的积分及每秒成本配置', () => {
+  assert.match(adminSource, /const videoResolutionLabels\s*=\s*\{[\s\S]*'480p': '480P'[\s\S]*'720p': '720P'[\s\S]*'1080p': '1080P'/)
   assert.match(adminSource, /v-for="resolution in resolutionKeys\(item\)"/)
   assert.match(adminSource, /videoResolutionLabels\[resolution\][\s\S]*用户收费/)
   assert.match(adminSource, /videoResolutionLabels\[resolution\][\s\S]*API 成本/)
   assert.match(adminSource, /resolution_prices/)
 })
 
-test('管理端 Wan3 价格编辑器只展示和提交当前证据允许的 480P', () => {
+test('管理端 Wan3 价格编辑器展示和提交批准的 480P、720P、1080P', () => {
   assert.match(adminSource, /function isWan3VideoPricing\(item\)/)
   assert.match(adminSource, /const videoResolutionLabels/)
-  assert.match(adminSource, /return usesVideoResolutionPricing\(itemOrCategory\)\s*\?\s*\(isWan3VideoPricing\(itemOrCategory\)\s*\?\s*\['480p'\]\s*:\s*\['480p', '720p'\]\)/s)
+  assert.match(adminSource, /return usesVideoResolutionPricing\(itemOrCategory\)\s*\?\s*\(isWan3VideoPricing\(itemOrCategory\)\s*\?\s*\['480p', '720p', '1080p'\]\s*:\s*\['480p', '720p'\]\)/s)
   assert.match(adminSource, /v-for="resolution in resolutionKeys\(item\)"[\s\S]*?item\.resolution_prices\[resolution\]\.cost_yuan_per_second/)
   assert.match(adminSource, /v-for="resolution in resolutionKeys\(newModel\)"[\s\S]*?newModel\.resolution_prices\[resolution\]\.cost_yuan_per_second/)
   assert.doesNotMatch(adminSource, /resolution_prices\['720p'\]/)

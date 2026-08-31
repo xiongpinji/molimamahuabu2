@@ -209,6 +209,25 @@ test('公共计费目录对 ToAPIs 视频复用真实验证、凭据和完整档
     assert.equal(captured.result.body.data.length, 1);
     assert.deepEqual(Object.keys(captured.result.body.data[0].resolution_prices), ['480p', '720p']);
 
+    db.prepare('UPDATE ai_service_configs SET verified_capabilities = ?')
+      .run(JSON.stringify({
+        'seedance-2-fast': withExternalModelEvidence('seedance-2-fast', {
+          durations: [4, 5], resolutions: ['480p', '720p', '1080p'],
+        }),
+      }));
+    modelPrice.set(db, 'seedance-2-fast', 511, {
+      category: 'video',
+      resolution_prices: {
+        '480p': { credits: 511, cost_micros_per_second: 584000 },
+        '720p': { credits: 511, cost_micros_per_second: 584000 },
+        '1080p': { credits: 511, cost_micros_per_second: 584000 },
+      },
+    });
+    captured = capture();
+    handlers.listPublicCatalog({}, captured.res);
+    assert.equal(captured.result.body.data.length, 1);
+    assert.deepEqual(Object.keys(captured.result.body.data[0].resolution_prices), ['480p', '720p']);
+
     db.prepare("UPDATE ai_service_configs SET verification_status = 'pending'").run();
     captured = capture();
     handlers.listPublicCatalog({}, captured.res);

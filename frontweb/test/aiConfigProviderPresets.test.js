@@ -24,11 +24,11 @@ test('管理员飞拓预设同步协议、Base URL、端点和模型时长能力
   assert.match(source, /xuan-seedance-2\.5'[\s\S]*?length:\s*27[\s\S]*?index \+ 4/)
 })
 
-test('管理员 ToAPIs Wan3 预设独立于 Seedance FAST/MINI 且只开放已验证 2 秒', () => {
+test('管理员 ToAPIs Wan3 预设独立于 Seedance FAST/MINI 且开放批准的 2 至 30 秒', () => {
   assert.match(source, /id:\s*'toapis_wan3'[\s\S]*?models:\s*\[\s*'wan3\.0-video'\s*\]/)
   assert.match(source, /toapis_wan3:\s*'toapis_wan3_video'/)
   assert.match(source, /p === 'toapis_wan3'[\s\S]*?https:\/\/toapis\.xyz/)
   assert.match(source, /providerId === 'toapis_wan3'[\s\S]*?\/v1\/videos\/generations/)
   assert.match(source, /providerId === 'toapis_wan3'[\s\S]*?\/v1\/videos\/generations\/\{taskId\}/)
-  assert.match(source, /'wan3\.0-video':\s*Object\.freeze\(\{\s*durations:\s*Object\.freeze\(\[2\]\)/)
+  assert.match(source, /'wan3\.0-video':\s*Object\.freeze\(\{\s*durations:\s*Object\.freeze\(Array\.from\(\{ length: 29 \}, \(_, index\) => index \+ 2\)\)/)
 })

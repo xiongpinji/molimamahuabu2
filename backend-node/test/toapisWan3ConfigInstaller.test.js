@@ -161,6 +161,17 @@ function writeEvidence(current, targetConfigId, overrides = {}) {
   return { evidencePath, evidence: loadFinalizeEvidence(evidencePath) };
 }
 
+function legacySmokeCapabilities(evidenceSha) {
+  return {
+    durations: [2], resolutions: ['480p'], aspectRatios: ['16:9'], audio_values: [false],
+    referenceTypes: [], maxReferences: 0, maxImageReferences: 0, maxVideoReferences: 0,
+    maxAudioReferences: 0, supportsFirstFrame: false, supportsLastFrame: false,
+    supportsImageReference: false, supportsVideoReference: false, supportsAudioReference: false,
+    supportsAudio: false, quantities: [1], evidence_contract: EVIDENCE_CONTRACT,
+    evidence_sha256: evidenceSha,
+  };
+}
+
 function finalizeOptions(current, targetConfigId, suffix = 'finalize', overrides = {}) {
   return {
     sourceConfigId: current.sourceConfigId,
@@ -269,7 +280,7 @@ test('finalize fails closed until evidence targets the independent row and all u
   } finally { close(current); }
 });
 
-test('finalize atomically binds exact evidence, the 480P user price and the independent route cost before activation', async () => {
+test('finalize keeps the real smoke evidence while publishing the approved full Wan3 capability and prices', async () => {
   const current = fixture();
   try {
     const prepared = await prepare(current);
@@ -292,12 +303,17 @@ test('finalize atomically binds exact evidence, the 480P user price and the inde
     assert.equal(row.canary_paused, 0);
     assert.equal(row.api_key, 'shared-fast-secret');
     const capabilities = JSON.parse(row.verified_capabilities)[MODEL];
-    assert.deepEqual(capabilities.durations, [2]);
-    assert.deepEqual(capabilities.resolutions, ['480p']);
-    assert.deepEqual(capabilities.aspectRatios, ['16:9']);
-    assert.deepEqual(capabilities.audio_values, [false]);
-    assert.equal(capabilities.supportsAudio, false);
-    assert.equal(capabilities.maxReferences, 0);
+    assert.deepEqual(capabilities.durations, Array.from({ length: 29 }, (_, index) => index + 2));
+    assert.deepEqual(capabilities.resolutions, ['480p', '720p', '1080p']);
+    assert.deepEqual(capabilities.aspectRatios, ['adaptive', '16:9', '9:16', '1:1', '4:3', '3:4']);
+    assert.deepEqual(capabilities.audio_values, [false, true]);
+    assert.equal(capabilities.supportsAudio, true);
+    assert.equal(capabilities.maxReferences, 10);
+    assert.equal(capabilities.maxImageReferences, 10);
+    assert.equal(capabilities.maxVideoReferences, 5);
+    assert.equal(capabilities.maxAudioReferences, 5);
+    assert.equal(capabilities.supportsFirstFrame, true);
+    assert.equal(capabilities.supportsLastFrame, true);
     assert.equal(capabilities.evidence_contract, EVIDENCE_CONTRACT);
     assert.equal(capabilities.evidence_sha256, evidence.sha256);
     const settings = JSON.parse(row.settings);
@@ -313,6 +329,8 @@ test('finalize atomically binds exact evidence, the 480P user price and the inde
     assert.equal(price.cost_micros_per_unit, 350000);
     assert.deepEqual(price.resolution_prices, {
       '480p': { credits: 10, cost_micros_per_second: 350000 },
+      '720p': { credits: 10, cost_micros_per_second: 350000 },
+      '1080p': { credits: 10, cost_micros_per_second: 350000 },
     });
     assert.deepEqual(providerRouteCostService.getRouteCost(current.db, prepared.configId), {
       config_id: prepared.configId,
@@ -322,12 +340,64 @@ test('finalize atomically binds exact evidence, the 480P user price and the inde
       input_cost_micros_per_1k: 0,
       output_cost_micros_per_1k: 0,
       updated_at: '2026-08-30T09:00:00.000Z',
-      resolution_prices: { '480p': { micros_per_unit: 360000 } },
+      resolution_prices: {
+        '480p': { micros_per_unit: 360000 },
+        '720p': { micros_per_unit: 360000 },
+        '1080p': { micros_per_unit: 360000 },
+      },
     });
     assert.equal(fs.existsSync(preparedPaths(current, 'finalize').backupPath), true);
     assert.equal(fs.existsSync(preparedPaths(current, 'finalize').receiptPath), true);
     assert.equal(fs.readFileSync(preparedPaths(current, 'finalize').receiptPath, 'utf8').includes('shared-fast-secret'), false);
     assert.deepEqual(protectedSnapshot(current), before);
+  } finally { close(current); }
+});
+
+test('finalize upgrades the exact legacy smoke-only Wan3 row without changing its identity or evidence', async () => {
+  const current = fixture();
+  try {
+    const prepared = await prepare(current);
+    const { evidence } = writeEvidence(current, prepared.configId);
+    await finalizeConfiguration(current.db, evidence, finalizeOptions(current, prepared.configId));
+    const row = current.db.prepare('SELECT settings FROM ai_service_configs WHERE id = ?').get(prepared.configId);
+    const settings = JSON.parse(row.settings);
+    settings.canvas_capabilities_by_model[MODEL] = legacySmokeCapabilities(evidence.sha256);
+    current.db.prepare(`UPDATE ai_service_configs
+      SET name = ?, verified_capabilities = ?, settings = ? WHERE id = ?`)
+      .run(
+        'ToAPIs Wan 3.0（480P 2 秒静音）',
+        JSON.stringify({ [MODEL]: legacySmokeCapabilities(evidence.sha256) }),
+        JSON.stringify(settings),
+        prepared.configId,
+      );
+    current.db.prepare('UPDATE model_credit_prices SET display_name = ?, public_note = ? WHERE model = ?')
+      .run(
+        'ToAPIs Wan 3.0（480P 2 秒静音）',
+        '仅支持纯文本生成：480P、2 秒、16:9、静音；不支持图片、视频或音频参考',
+        MODEL,
+      );
+    current.db.prepare("DELETE FROM model_resolution_prices WHERE model = ? AND resolution <> '480p'").run(MODEL);
+    current.db.prepare("DELETE FROM provider_route_resolution_costs WHERE config_id = ? AND resolution <> '480p'")
+      .run(prepared.configId);
+
+    const result = await finalizeConfiguration(
+      current.db,
+      evidence,
+      finalizeOptions(current, prepared.configId, 'upgrade'),
+    );
+    assert.equal(result.upgraded, true);
+    assert.equal(result.configId, prepared.configId);
+    const upgraded = current.db.prepare('SELECT name, verified_capabilities FROM ai_service_configs WHERE id = ?')
+      .get(prepared.configId);
+    assert.equal(upgraded.name, 'ToAPIs Wan 3.0');
+    const capabilities = JSON.parse(upgraded.verified_capabilities)[MODEL];
+    assert.deepEqual(capabilities.resolutions, ['480p', '720p', '1080p']);
+    assert.deepEqual(capabilities.durations, Array.from({ length: 29 }, (_, index) => index + 2));
+    assert.equal(capabilities.evidence_sha256, evidence.sha256);
+    assert.equal(current.db.prepare('SELECT COUNT(*) count FROM model_resolution_prices WHERE model = ?')
+      .get(MODEL).count, 3);
+    assert.equal(current.db.prepare('SELECT COUNT(*) count FROM provider_route_resolution_costs WHERE config_id = ?')
+      .get(prepared.configId).count, 3);
   } finally { close(current); }
 });
 

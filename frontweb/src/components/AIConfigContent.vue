@@ -577,6 +577,7 @@ input_reference = (图片文件，可选)</pre>
                   <b>接口：</b><code>POST /v1/videos/generations</code>（创建），<code>GET /v1/videos/generations/{taskId}</code>（查询）<br>
                   <b>模型：</b><code>seedance-2-fast</code>、<code>seedance-2-mini</code><br>
                   <b>分辨率：</b>仅支持 <code>480P</code>、<code>720P</code>；不支持 1080P。<br>
+                  <b>Wan 3.0：</b><code>wan3.0-video</code> 使用独立配置，支持 <code>480P/720P/1080P</code>、2–30 秒、有声或静音、首尾帧，以及最多 10 图/5 视频/5 音频参考。<br>
                   <b>开放门禁：</b>这些模型必须在真实生成验证成功后才可在前端可见；连接测试不能代替真实生成验证。<br>
                   <b>参考素材：</b>支持参考图、参考视频和参考音频；首尾帧模式与全能参考模式互斥，不得同时使用。
                 </div>
@@ -1359,7 +1360,7 @@ const formModelList = computed(() => parseModelList(form.value.modelText))
 const TOAPIS_ADMIN_VIDEO_CAPABILITIES = Object.freeze({
   'seedance-2-fast': Object.freeze({ durations: Object.freeze(Array.from({ length: 12 }, (_, index) => index + 4)) }),
   'seedance-2-mini': Object.freeze({ durations: Object.freeze([4, 8, 10, 12, 15]) }),
-  'wan3.0-video': Object.freeze({ durations: Object.freeze([2]) }),
+  'wan3.0-video': Object.freeze({ durations: Object.freeze(Array.from({ length: 29 }, (_, index) => index + 2)) }),
 })
 const FEITUO_ADMIN_VIDEO_CAPABILITIES = Object.freeze({
   'xuan-video-v1-6e7b4763634e6206': Object.freeze({ durations: Object.freeze([15]) }),

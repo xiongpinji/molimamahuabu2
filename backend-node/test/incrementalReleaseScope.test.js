@@ -114,6 +114,12 @@ const toapisWan3ExternalEvidenceTransactionManifestPath = path.join(
   'release-scopes',
   'toapis-wan3-external-evidence-transaction-20260830.json',
 );
+const toapisWan3FullCapabilityManifestPath = path.join(
+  repoRoot,
+  'deploy',
+  'release-scopes',
+  'toapis-wan3-full-capability-contract-20260831.json',
+);
 const TOAPIS_PRIVATE_AVATAR_SPLIT_KEY_ALLOWED_PATHS = [
   'backend-node/scripts/verify-toapis-private-avatar-video.js',
   'backend-node/test/incrementalReleaseScope.test.js',
@@ -132,6 +138,32 @@ const TOAPIS_WAN3_EXTERNAL_EVIDENCE_TRANSACTION_ALLOWED_PATHS = [
   'deploy/install-external-model-evidence-only.sh',
   'deploy/release-scopes/toapis-wan3-external-evidence-transaction-20260830.json',
   'docs/tasks/2026-08-29-toapis-wan3-integration.md',
+];
+const TOAPIS_WAN3_FULL_CAPABILITY_ALLOWED_PATHS = [
+  'backend-node/src/db/migrate.js',
+  'backend-node/src/services/canvasModelCatalogService.js',
+  'backend-node/src/services/modelPriceService.js',
+  'backend-node/test/billingPublicCatalog.test.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/modelPriceMigration.test.js',
+  'backend-node/test/toapisWan3Catalog.test.js',
+  'backend-node/test/toapisWan3ConfigInstaller.test.js',
+  'deploy/apply-toapis-wan3-video-config.js',
+  'deploy/release-scopes/toapis-wan3-full-capability-contract-20260831.json',
+  'docs/tasks/2026-08-29-toapis-wan3-integration.md',
+  'docs/verification/platform-stability/feature-lock-manifest.json',
+  'frontweb/src/components/AIConfigContent.vue',
+  'frontweb/src/utils/billingDisplay.js',
+  'frontweb/src/utils/homeQuickGeneration.js',
+  'frontweb/src/utils/videoModelReferenceCapabilities.js',
+  'frontweb/src/views/BillingAdmin.vue',
+  'frontweb/test/aiConfigProviderPresets.test.js',
+  'frontweb/test/billingDisplay.test.js',
+  'frontweb/test/imageResolutionPricingContract.test.js',
+  'frontweb/test/toapisVideoCanvasContract.test.js',
+  'frontweb/test/videoGenerationRequest.test.js',
+  'frontweb/test/videoResolutionPricingContract.test.js',
 ];
 const CANVAS_TEXT_CAPABILITY_HOTFIX_ALLOWED_PATHS = [
   'backend-node/src/services/providerCanaryEvidenceService.js',
@@ -486,6 +518,10 @@ function assertExactToapisWan3ExternalEvidenceTransactionScope(allowedPaths) {
   assert.deepEqual(allowedPaths, TOAPIS_WAN3_EXTERNAL_EVIDENCE_TRANSACTION_ALLOWED_PATHS);
 }
 
+function assertExactToapisWan3FullCapabilityScope(allowedPaths) {
+  assert.deepEqual(allowedPaths, TOAPIS_WAN3_FULL_CAPABILITY_ALLOWED_PATHS);
+}
+
 function createFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'incremental-release-scope-'));
   const parentRoot = path.join(root, 'parent');
@@ -622,6 +658,50 @@ test('ToAPIs Wan3 外部证据原子事务发布范围拒绝同数量偷换任�
   assert.equal(swapped.length, TOAPIS_WAN3_EXTERNAL_EVIDENCE_TRANSACTION_ALLOWED_PATHS.length);
   assert.throws(
     () => assertExactToapisWan3ExternalEvidenceTransactionScope(swapped),
+    { name: 'AssertionError' },
+  );
+});
+
+test('ToAPIs Wan3 完整能力升级使用精确二十四文件发布范围', () => {
+  const { manifest, allowedPaths } = loadManifest(toapisWan3FullCapabilityManifestPath);
+  assert.equal(manifest.release, 'toapis-wan3-full-capability-contract-20260831');
+  assertExactToapisWan3FullCapabilityScope(allowedPaths);
+  assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
+  for (const forbidden of [
+    'backend-node/data',
+    'backend-node/uploads',
+    'storage',
+    'assets',
+    'ai-music',
+    'moli-music',
+    'deploy/install-protected-release-guard.sh',
+    'shared/release-guard',
+  ]) {
+    assert.equal(
+      allowedPaths.some((entry) => entry === forbidden || entry.startsWith(`${forbidden}/`)),
+      false,
+      `发布范围不得包含: ${forbidden}`,
+    );
+  }
+});
+
+test('ToAPIs Wan3 完整能力升级发布范围拒绝同数量偷换业务文件', () => {
+  const swapped = [...TOAPIS_WAN3_FULL_CAPABILITY_ALLOWED_PATHS];
+  swapped[swapped.indexOf('backend-node/src/services/modelPriceService.js')] = 'backend-node/data/drama_generator.db';
+  assert.equal(swapped.length, TOAPIS_WAN3_FULL_CAPABILITY_ALLOWED_PATHS.length);
+  assert.throws(
+    () => assertExactToapisWan3FullCapabilityScope(swapped),
+    { name: 'AssertionError' },
+  );
+});
+
+test('ToAPIs Wan3 完整能力升级发布范围拒绝同数量偷换范围文件', () => {
+  const swapped = [...TOAPIS_WAN3_FULL_CAPABILITY_ALLOWED_PATHS];
+  swapped[swapped.indexOf('deploy/release-scopes/toapis-wan3-full-capability-contract-20260831.json')]
+    = 'shared/release-guard/verify-protected-release.js';
+  assert.equal(swapped.length, TOAPIS_WAN3_FULL_CAPABILITY_ALLOWED_PATHS.length);
+  assert.throws(
+    () => assertExactToapisWan3FullCapabilityScope(swapped),
     { name: 'AssertionError' },
   );
 });

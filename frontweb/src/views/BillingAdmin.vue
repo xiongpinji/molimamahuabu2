@@ -471,6 +471,7 @@ const imageResolutionLabels = {
 const videoResolutionLabels = {
   '480p': '480P',
   '720p': '720P',
+  '1080p': '1080P',
 }
 const newModel = reactive({
   model: '',
@@ -561,7 +562,7 @@ function usesVideoResolutionPricing(item) {
 
 function resolutionKeys(itemOrCategory) {
   const category = typeof itemOrCategory === 'string' ? itemOrCategory : itemOrCategory?.category
-  if (category === 'video') return usesVideoResolutionPricing(itemOrCategory) ? (isWan3VideoPricing(itemOrCategory) ? ['480p'] : ['480p', '720p']) : []
+  if (category === 'video') return usesVideoResolutionPricing(itemOrCategory) ? (isWan3VideoPricing(itemOrCategory) ? ['480p', '720p', '1080p'] : ['480p', '720p']) : []
   if (!usesImageResolutionPricing(itemOrCategory)) return []
   const model = String(itemOrCategory?.model || '').toLowerCase()
   return model === GPT_IMAGE_MODEL_ID ? ['1k', '2k'] : ['1k', '2k', '4k']

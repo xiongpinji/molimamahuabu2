@@ -141,6 +141,41 @@ function recoverOrphanedModelPriceRebuild(database) {
   database.exec('ALTER TABLE __model_credit_prices_free_rebuild RENAME TO model_credit_prices');
 }
 
+function recoverOrphanedVideoResolutionPriceRebuild(database) {
+  if (tableExists(database, 'model_resolution_prices')) return;
+  if (!tableExists(database, '__model_resolution_prices_1080p_rebuild')) return;
+  database.exec('ALTER TABLE __model_resolution_prices_1080p_rebuild RENAME TO model_resolution_prices');
+}
+
+function ensureVideoResolutionPriceContract(database) {
+  if (!tableExists(database, 'model_resolution_prices')) return;
+  const table = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'model_resolution_prices'")
+    .get();
+  const sql = String(table?.sql || '');
+  if (/resolution\s+IN\s*\([^)]*'1080p'/i.test(sql)) return;
+  const oldCheck = /resolution\s+IN\s*\(\s*'480p'\s*,\s*'720p'\s*\)/i;
+  const tempTable = '__model_resolution_prices_1080p_rebuild';
+  const createTempSql = sql
+    .replace(
+      /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"model_resolution_prices"|`model_resolution_prices`|\[model_resolution_prices\]|model_resolution_prices)\s*\(/i,
+      `CREATE TABLE ${quoteIdent(tempTable)} (`,
+    )
+    .replace(oldCheck, "resolution IN ('480p', '720p', '1080p')");
+  if (createTempSql === sql || !createTempSql.startsWith(`CREATE TABLE ${quoteIdent(tempTable)}`)) {
+    throw new Error('Unsupported model_resolution_prices DDL for 1080p migration');
+  }
+  const columns = database.prepare('PRAGMA table_info(model_resolution_prices)').all().map((column) => column.name);
+  const columnSql = columns.map(quoteIdent).join(', ');
+  database.transaction(() => {
+    database.exec(`DROP TABLE IF EXISTS ${quoteIdent(tempTable)}`);
+    database.exec(createTempSql);
+    database.exec(`INSERT INTO ${quoteIdent(tempTable)} (${columnSql}) SELECT ${columnSql} FROM model_resolution_prices`);
+    database.exec('DROP TABLE model_resolution_prices');
+    database.exec(`ALTER TABLE ${quoteIdent(tempTable)} RENAME TO model_resolution_prices`);
+  })();
+}
+
 function hasModelCreditPriceFreeContract(database) {
   if (!tableExists(database, 'model_credit_prices')) return false;
   const columns = database.prepare('PRAGMA table_info(model_credit_prices)').all();
@@ -1652,10 +1687,12 @@ function runMigrationsAndEnsure(database) {
     throw new Error('runMigrationsAndEnsure requires no active transaction');
   }
   recoverOrphanedModelPriceRebuild(database);
+  recoverOrphanedVideoResolutionPriceRebuild(database);
   preflightRedrawShotStatusConstraint(database);
   ensureRedrawCandidateReleaseContract(database);
   ensureRedrawMigrationColumns(database);
   runMigrations(database);
+  ensureVideoResolutionPriceContract(database);
   ensureModelCreditPriceFreeContract(database);
   ensureProviderRouteCostUnitConstraint(database);
   ensureAllColumns(database);

@@ -5,7 +5,7 @@ const MODEL_CATEGORIES = ['text', 'image', 'video', 'audio', 'other'];
 const MODEL_STATUSES = ['enabled', 'disabled'];
 const COST_UNITS = ['request', 'image', 'second', 'token'];
 const BILLING_UNITS = ['request', 'second'];
-const VIDEO_RESOLUTIONS = ['480p', '720p'];
+const VIDEO_RESOLUTIONS = ['480p', '720p', '1080p'];
 const IMAGE_RESOLUTIONS = ['1k', '2k', '4k'];
 const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'toapis_wan3_video', 'feituo_open', 'lingjing_open']);
 const toapisVideoClient = require('./toapisVideoClient');
@@ -100,7 +100,7 @@ function ensureSchema(db) {
   ensureModelCreditPriceFreeContract(db);
   db.exec(`CREATE TABLE IF NOT EXISTS model_resolution_prices (
     model TEXT NOT NULL COLLATE NOCASE,
-    resolution TEXT NOT NULL CHECK (resolution IN ('480p', '720p')),
+    resolution TEXT NOT NULL CHECK (resolution IN ('480p', '720p', '1080p')),
     credits INTEGER NOT NULL CHECK (credits > 0),
     cost_micros_per_second INTEGER NOT NULL DEFAULT 0 CHECK (cost_micros_per_second >= 0),
     updated_at TEXT NOT NULL,
@@ -483,7 +483,7 @@ function verifiedPublicResolutions(config, model) {
   const protocol = strictPublicProtocol(config);
   const target = String(model || '').trim().toLowerCase();
   const allowed = protocol === 'toapis_video'
-    ? VIDEO_RESOLUTIONS
+    ? (toapisVideoClient.TOAPIS_VIDEO_MODELS[target]?.resolutions || [])
     : protocol === 'toapis_wan3_video'
       ? toapisWan3VideoClient.TOAPIS_WAN3_SPEC.resolutions
     : protocol === 'feituo_open'
@@ -633,7 +633,7 @@ function set(db, value, creditsValue, options = {}) {
       const resolution = normalizeResolution(value, category);
       const tierCredits = Number(tier?.credits);
       if (!resolution || !Number.isSafeInteger(tierCredits) || tierCredits <= 0) {
-        const label = category === 'image' ? '图片分辨率价格只支持 1K、2K、4K' : '视频分辨率价格只支持 480P、720P';
+        const label = category === 'image' ? '图片分辨率价格只支持 1K、2K、4K' : '视频分辨率价格只支持 480P、720P、1080P';
         throw priceError('INVALID_MODEL_PRICE', `${label} 的正整数积分`);
       }
       return category === 'image'
