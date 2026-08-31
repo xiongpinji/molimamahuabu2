@@ -7,6 +7,7 @@ const { describe, it } = require('node:test');
 const { spawnSync } = require('node:child_process');
 
 const GUARD = path.resolve(__dirname, '../../deploy/release-guard/verify-external-model-release.js');
+const { privateAvatarVideoServiceProjection } = require(GUARD);
 const PRIVATE_AVATAR_PRODUCER = path.resolve(__dirname, '../scripts/verify-toapis-private-avatar-video.js');
 const TOAPIS_CONTRACT = 'toapis-video-real-verification-v1';
 const TOAPIS_PRIVATE_AVATAR_CONTRACT = 'toapis-private-avatar-video-verification-v1';
@@ -1177,8 +1178,62 @@ describeRootEvidence('shared evidence path and freshness safety', () => {
     try {
       fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
       makeEvidenceStaleButUnexpired(fixture, TOAPIS_PRIVATE_AVATAR_FILE);
-      fs.appendFileSync(path.join(fixture.candidate, 'backend-node/src/services/videoService.js'), '\n// private-avatar binding change\n');
+      const target = path.join(fixture.candidate, 'backend-node/src/services/videoService.js');
+      const source = fs.readFileSync(target, 'utf8');
+      const weakened = source.replace(
+        'if (refs.referenceAudioUrls.length && state.capabilities.supportsAudioReference !== true)',
+        'if (refs.referenceAudioUrls.length > 1 && state.capabilities.supportsAudioReference !== true)',
+      );
+      assert.notEqual(weakened, source);
+      fs.writeFileSync(target, weakened);
       assertFail(runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }), /private-avatar.*stale|24 hours/i);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not require fresh private-avatar evidence for the audited Wan3-only signing change', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    const expectedCurrent = path.join(fixture.root, 'expected-current');
+    const target = path.join(fixture.candidate, 'backend-node/src/services/videoService.js');
+    try {
+      fs.appendFileSync(target, `
+        async function processVideoGeneration(db, log, videoGenId) {
+          const requestPayload = {};
+          if (wan3ProcessingState) {
+            requestPayload.client_business_id = \`video-\${videoGenId}\`;
+          }
+          return requestPayload;
+        }
+      `);
+      fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
+      makeEvidenceStaleButUnexpired(fixture, TOAPIS_PRIVATE_AVATAR_FILE);
+      const source = fs.readFileSync(target, 'utf8')
+        .replace("    function toapisReadyState(db, model) {", "    const providerAssetUrl = require('./providerAssetUrlService');\n    function toapisReadyState(db, model) {")
+        .replace('        async function processVideoGeneration(db, log, videoGenId) {', `
+        function signedWan3SubmissionPayload(payload) {
+          return {
+            ...payload,
+            reference_urls: payload.reference_urls.map((value) => providerAssetUrl.signProviderAssetUrl(value)),
+          };
+        }
+        async function processVideoGeneration(db, log, videoGenId) {`)
+        .replace(
+          '            requestPayload.client_business_id = `video-${videoGenId}`;',
+          `            Object.assign(requestPayload, signedWan3SubmissionPayload({
+              ...requestPayload,
+              client_business_id: \`video-\${videoGenId}\`,
+            }));`,
+        );
+      fs.writeFileSync(target, source);
+      assert.equal(
+        privateAvatarVideoServiceProjection(source),
+        privateAvatarVideoServiceProjection(fs.readFileSync(
+          path.join(expectedCurrent, 'backend-node/src/services/videoService.js'),
+          'utf8',
+        )),
+      );
+      assertPass(runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }));
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
