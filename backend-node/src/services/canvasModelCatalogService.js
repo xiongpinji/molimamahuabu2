@@ -231,6 +231,8 @@ function verifiedModelCapabilities(config, model, price, evidenceRoots) {
     ? modelPriceService.IMAGE_RESOLUTIONS
     : protocol === 'feituo_open'
       ? feituoOfficial.resolutions
+      : protocol === 'toapis_video'
+        ? (toapisVideoClient.TOAPIS_VIDEO_MODELS[target]?.resolutions || [])
       : protocol === 'toapis_wan3_video'
         ? (wan3Official?.resolutions || [])
       : protocol === 'lingjing_open'

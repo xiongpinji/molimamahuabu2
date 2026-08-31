@@ -6,6 +6,7 @@ const path = require('node:path');
 const Database = require(require.resolve('better-sqlite3', {
   paths: [path.join(__dirname, '..', 'backend-node')],
 }));
+const { TOAPIS_WAN3_SPEC } = require('../backend-node/src/services/toapisWan3VideoClient');
 
 const CONTRACT = 'toapis-wan3-video-config-v1';
 const EVIDENCE_CONTRACT = 'toapis-wan3-video-real-verification-v1';
@@ -13,8 +14,11 @@ const MODEL = 'wan3.0-video';
 const BASE_URL = 'https://toapis.xyz';
 const ENDPOINT = '/v1/videos/generations';
 const QUERY_ENDPOINT = '/v1/videos/generations/{taskId}';
-const DISPLAY_NAME = 'ToAPIs Wan 3.0（480P 2 秒静音）';
-const PUBLIC_NOTE = '仅支持纯文本生成：480P、2 秒、16:9、静音；不支持图片、视频或音频参考';
+const DISPLAY_NAME = 'ToAPIs Wan 3.0';
+const PUBLIC_NOTE = '支持 480P/720P/1080P、2-30 秒、有声或静音、首尾帧，以及最多 10 张图片、5 个视频、5 个音频参考';
+const LEGACY_DISPLAY_NAME = 'ToAPIs Wan 3.0（480P 2 秒静音）';
+const LEGACY_PUBLIC_NOTE = '仅支持纯文本生成：480P、2 秒、16:9、静音；不支持图片、视频或音频参考';
+const RESOLUTIONS = TOAPIS_WAN3_SPEC.resolutions;
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -93,10 +97,11 @@ function wan3Rows(db) {
       || parseModels(row.model).some((item) => item.toLowerCase() === MODEL));
 }
 
-function assertTargetIdentity(row, source) {
+function assertTargetIdentity(row, source, options = {}) {
   if (!row) throw new Error('Wan3 目标配置不存在');
+  const allowedNames = options.allowLegacyName ? [DISPLAY_NAME, LEGACY_DISPLAY_NAME] : [DISPLAY_NAME];
   if (row.service_type !== 'video' || row.provider !== 'toapis_wan3'
-      || row.api_protocol !== 'toapis_wan3_video' || row.name !== DISPLAY_NAME
+      || row.api_protocol !== 'toapis_wan3_video' || !allowedNames.includes(row.name)
       || String(row.base_url || '').replace(/\/+$/, '') !== BASE_URL
       || JSON.stringify(parseModels(row.model)) !== JSON.stringify([MODEL])
       || row.default_model !== MODEL || row.logical_model_id !== MODEL
@@ -197,30 +202,40 @@ function loadFinalizeEvidence(evidencePath) {
 
 function runtimeCapabilities(evidenceSha) {
   return {
-    durations: [2],
-    resolutions: ['480p'],
-    aspectRatios: ['16:9'],
-    audio_values: [false],
-    referenceTypes: [],
-    maxReferences: 0,
-    maxImageReferences: 0,
-    maxVideoReferences: 0,
-    maxAudioReferences: 0,
-    supportsFirstFrame: false,
-    supportsLastFrame: false,
-    supportsImageReference: false,
-    supportsVideoReference: false,
-    supportsAudioReference: false,
-    supportsAudio: false,
+    durations: [...TOAPIS_WAN3_SPEC.durations],
+    resolutions: [...RESOLUTIONS],
+    aspectRatios: [...TOAPIS_WAN3_SPEC.aspectRatios],
+    audio_values: [false, true],
+    referenceTypes: ['image', 'video', 'audio'],
+    maxReferences: TOAPIS_WAN3_SPEC.maxReferences,
+    maxImageReferences: TOAPIS_WAN3_SPEC.maxReferences,
+    maxVideoReferences: TOAPIS_WAN3_SPEC.maxVideoReferences,
+    maxAudioReferences: TOAPIS_WAN3_SPEC.maxAudioReferences,
+    supportsFirstFrame: TOAPIS_WAN3_SPEC.supportsFirstFrame,
+    supportsLastFrame: TOAPIS_WAN3_SPEC.supportsLastFrame,
+    supportsImageReference: TOAPIS_WAN3_SPEC.supportsImageReference,
+    supportsVideoReference: TOAPIS_WAN3_SPEC.supportsVideoReference,
+    supportsAudioReference: TOAPIS_WAN3_SPEC.supportsAudioReference,
+    supportsAudio: TOAPIS_WAN3_SPEC.supportsAudio,
     quantities: [1],
     evidence_contract: EVIDENCE_CONTRACT,
     evidence_sha256: evidenceSha,
   };
 }
 
-function finalSettings(evidence) {
+function legacyRuntimeCapabilities(evidenceSha) {
+  return {
+    durations: [2], resolutions: ['480p'], aspectRatios: ['16:9'], audio_values: [false],
+    referenceTypes: [], maxReferences: 0, maxImageReferences: 0, maxVideoReferences: 0,
+    maxAudioReferences: 0, supportsFirstFrame: false, supportsLastFrame: false,
+    supportsImageReference: false, supportsVideoReference: false, supportsAudioReference: false,
+    supportsAudio: false, quantities: [1], evidence_contract: EVIDENCE_CONTRACT,
+    evidence_sha256: evidenceSha,
+  };
+}
+
+function settingsForCapabilities(evidence, capabilities) {
   const fingerprint = evidence.result.credential_fingerprint;
-  const capabilities = runtimeCapabilities(evidence.sha256);
   return {
     integration_contract: CONTRACT,
     phase: 'verified',
@@ -234,6 +249,14 @@ function finalSettings(evidence) {
     real_generation_verified_models: [MODEL],
     canvas_capabilities_by_model: { [MODEL]: capabilities },
   };
+}
+
+function finalSettings(evidence) {
+  return settingsForCapabilities(evidence, runtimeCapabilities(evidence.sha256));
+}
+
+function legacyFinalSettings(evidence) {
+  return settingsForCapabilities(evidence, legacyRuntimeCapabilities(evidence.sha256));
 }
 
 function verificationEvidence(evidence) {
@@ -270,8 +293,8 @@ function finalizeInputs(options) {
   };
 }
 
-function assertEvidenceBinding(source, target, evidence, values) {
-  assertTargetIdentity(target, source);
+function assertEvidenceBinding(source, target, evidence, values, options = {}) {
+  assertTargetIdentity(target, source, options);
   if (evidence.sourceConfigId !== values.sourceConfigId || evidence.targetConfigId !== values.targetConfigId
       || Number(source.id) !== values.sourceConfigId || Number(target.id) !== values.targetConfigId) {
     throw new Error('Wan3 evidence 的来源或目标配置绑定不匹配');
@@ -296,27 +319,157 @@ function expectedPrice(values) {
 function assertExactPrice(snapshot, values) {
   const expected = expectedPrice(values);
   const base = snapshot.base;
+  const tiers = new Map(snapshot.tiers.map((tier) => [String(tier.resolution).toLowerCase(), tier]));
   if (!base || base.model !== MODEL || base.display_name !== DISPLAY_NAME || base.public_note !== PUBLIC_NOTE
       || base.category !== 'video' || base.status !== 'enabled' || base.pricing_mode !== 'paid'
       || base.billing_unit !== 'second' || base.cost_unit !== 'second'
       || Number(base.credits) !== expected.credits || Number(base.cost_micros_per_unit) !== expected.cost
       || Number(base.input_cost_micros_per_1k) !== 0 || Number(base.output_cost_micros_per_1k) !== 0
-      || snapshot.tiers.length !== 1 || String(snapshot.tiers[0].resolution).toLowerCase() !== '480p'
-      || Number(snapshot.tiers[0].credits) !== expected.credits
-      || Number(snapshot.tiers[0].cost_micros_per_second) !== expected.cost) {
+      || tiers.size !== RESOLUTIONS.length
+      || !RESOLUTIONS.every((resolution) => (
+        Number(tiers.get(resolution)?.credits) === expected.credits
+        && Number(tiers.get(resolution)?.cost_micros_per_second) === expected.cost
+      ))) {
     throw new Error('Wan3 用户积分或模型成本与获批参数不一致');
   }
 }
 
 function assertExactRouteCost(snapshot, values) {
   const base = snapshot.base;
+  const tiers = new Map(snapshot.tiers.map((tier) => [String(tier.resolution).toLowerCase(), tier]));
   if (!base || base.currency !== 'CNY' || base.cost_unit !== 'second'
       || Number(base.micros_per_unit) !== values.routeCostMicrosPerSecond
       || Number(base.input_cost_micros_per_1k) !== 0 || Number(base.output_cost_micros_per_1k) !== 0
-      || snapshot.tiers.length !== 1 || String(snapshot.tiers[0].resolution).toLowerCase() !== '480p'
-      || Number(snapshot.tiers[0].micros_per_unit) !== values.routeCostMicrosPerSecond) {
+      || tiers.size !== RESOLUTIONS.length
+      || !RESOLUTIONS.every((resolution) => (
+        Number(tiers.get(resolution)?.micros_per_unit) === values.routeCostMicrosPerSecond
+      ))) {
     throw new Error('Wan3 独立线路成本与获批参数不一致');
   }
+}
+
+function assertLegacyPrice(snapshot, values) {
+  const expected = expectedPrice(values);
+  const base = snapshot.base;
+  const tiers = new Map(snapshot.tiers.map((tier) => [String(tier.resolution).toLowerCase(), tier]));
+  const tier = tiers.get('480p');
+  if (!base || base.model !== MODEL || base.display_name !== LEGACY_DISPLAY_NAME
+      || base.public_note !== LEGACY_PUBLIC_NOTE || base.category !== 'video'
+      || base.status !== 'enabled' || base.pricing_mode !== 'paid'
+      || base.billing_unit !== 'second' || base.cost_unit !== 'second'
+      || Number(base.credits) !== expected.credits || Number(base.cost_micros_per_unit) !== expected.cost
+      || Number(base.input_cost_micros_per_1k) !== 0 || Number(base.output_cost_micros_per_1k) !== 0
+      || tiers.size !== 1 || !tier
+      || Number(tier.credits) !== expected.credits
+      || Number(tier.cost_micros_per_second) !== expected.cost) {
+    throw new Error('Wan3 现有价格不是允许原位升级的精确旧合同');
+  }
+}
+
+function assertLegacyRouteCost(snapshot, values) {
+  const base = snapshot.base;
+  const tiers = new Map(snapshot.tiers.map((tier) => [String(tier.resolution).toLowerCase(), tier]));
+  const tier = tiers.get('480p');
+  if (!base || base.currency !== 'CNY' || base.cost_unit !== 'second'
+      || Number(base.micros_per_unit) !== values.routeCostMicrosPerSecond
+      || Number(base.input_cost_micros_per_1k) !== 0 || Number(base.output_cost_micros_per_1k) !== 0
+      || tiers.size !== 1 || !tier
+      || Number(tier.micros_per_unit) !== values.routeCostMicrosPerSecond) {
+    throw new Error('Wan3 现有线路成本不是允许原位升级的精确旧合同');
+  }
+}
+
+function assertLegacyConfiguration(db, source, target, evidence, values) {
+  assertEvidenceBinding(source, target, evidence, values, { allowLegacyName: true });
+  const caps = { [MODEL]: legacyRuntimeCapabilities(evidence.sha256) };
+  if (target.name !== LEGACY_DISPLAY_NAME || Number(target.is_active) !== 1
+      || target.verification_status !== 'verified' || Number(target.canary_paused) !== 0
+      || target.verification_error != null
+      || JSON.stringify(parseJson(target.verified_capabilities)) !== JSON.stringify(caps)
+      || JSON.stringify(parseJson(target.settings)) !== JSON.stringify(legacyFinalSettings(evidence))
+      || JSON.stringify(parseJson(target.verification_evidence)) !== JSON.stringify(verificationEvidence(evidence))) {
+    throw new Error('Wan3 现有配置不是允许原位升级的精确旧合同');
+  }
+  assertLegacyPrice(pricingSnapshot(db), values);
+  assertLegacyRouteCost(routeCostSnapshot(db, values.targetConfigId), values);
+}
+
+async function upgradeLegacyConfiguration(db, source, target, evidence, values, options) {
+  assertLegacyConfiguration(db, source, target, evidence, values);
+  const backupPath = requireNewAbsolutePath(options.backupPath, '数据库备份路径');
+  const receiptPath = requireNewAbsolutePath(options.receiptPath, '事务回执路径');
+  await db.backup(backupPath);
+  const now = timestamp(options.now);
+  const caps = { [MODEL]: runtimeCapabilities(evidence.sha256) };
+  try {
+    db.transaction(() => {
+      const currentSource = sourceConfig(db, values.sourceConfigId);
+      const currentTarget = db.prepare('SELECT * FROM ai_service_configs WHERE id = ? AND deleted_at IS NULL')
+        .get(values.targetConfigId);
+      assertLegacyConfiguration(db, currentSource, currentTarget, evidence, values);
+      const priceChanged = db.prepare(`UPDATE model_credit_prices
+        SET display_name = ?, public_note = ?, updated_at = ?
+        WHERE model = ? COLLATE NOCASE AND display_name = ? AND public_note = ?`)
+        .run(DISPLAY_NAME, PUBLIC_NOTE, now, MODEL, LEGACY_DISPLAY_NAME, LEGACY_PUBLIC_NOTE);
+      if (priceChanged.changes !== 1) throw new Error('Wan3 旧价格在升级前发生变化');
+      const insertResolutionPrice = db.prepare(`INSERT INTO model_resolution_prices
+        (model, resolution, credits, cost_micros_per_second, updated_at) VALUES (?, ?, ?, ?, ?)`);
+      for (const resolution of RESOLUTIONS.filter((item) => item !== '480p')) {
+        insertResolutionPrice.run(MODEL, resolution, values.userCreditsPerSecond, values.modelCostMicrosPerSecond, now);
+      }
+      const insertRouteResolutionCost = db.prepare(`INSERT INTO provider_route_resolution_costs
+        (config_id, resolution, micros_per_unit, updated_at) VALUES (?, ?, ?, ?)`);
+      for (const resolution of RESOLUTIONS.filter((item) => item !== '480p')) {
+        insertRouteResolutionCost.run(values.targetConfigId, resolution, values.routeCostMicrosPerSecond, now);
+      }
+      const updated = db.prepare(`UPDATE ai_service_configs SET
+        name = ?, verification_checked_at = ?, verified_capabilities = ?, verified_at = ?,
+        verification_error = NULL, settings = ?, verification_evidence = ?, updated_at = ?
+        WHERE id = ? AND updated_at = ? AND name = ? AND is_active = 1
+          AND verification_status = 'verified' AND api_key = ?`).run(
+        DISPLAY_NAME,
+        evidence.generatedAt,
+        JSON.stringify(caps),
+        now,
+        JSON.stringify(finalSettings(evidence)),
+        JSON.stringify(verificationEvidence(evidence)),
+        now,
+        values.targetConfigId,
+        currentTarget.updated_at,
+        LEGACY_DISPLAY_NAME,
+        currentTarget.api_key,
+      );
+      if (updated.changes !== 1) throw new Error('Wan3 旧配置在升级前发生变化');
+      verifyConfiguration(db, evidence, values);
+      writeJsonAtomic(receiptPath, {
+        contract: CONTRACT,
+        phase: 'upgrade',
+        applied_at: now,
+        database_backup: backupPath,
+        source_config_id: values.sourceConfigId,
+        target_config_id: values.targetConfigId,
+        evidence_contract: EVIDENCE_CONTRACT,
+        evidence_sha256: evidence.sha256,
+        credential_fingerprint: evidence.result.credential_fingerprint,
+        config_fingerprint: evidence.result.config_fingerprint,
+        user_credits_per_second: values.userCreditsPerSecond,
+        model_cost_micros_per_second: values.modelCostMicrosPerSecond,
+        route_cost_micros_per_second: values.routeCostMicrosPerSecond,
+      });
+    })();
+  } catch (error) {
+    fs.rmSync(receiptPath, { force: true });
+    throw error;
+  }
+  verifyConfiguration(db, evidence, values);
+  return {
+    finalized: false,
+    reused: false,
+    upgraded: true,
+    configId: values.targetConfigId,
+    backupPath,
+    receiptPath,
+  };
 }
 
 function verifyConfiguration(db, evidence, options = {}) {
@@ -414,11 +567,15 @@ async function finalizeConfiguration(db, evidence, options = {}) {
   const values = finalizeInputs(options);
   const source = sourceConfig(db, values.sourceConfigId);
   const target = db.prepare('SELECT * FROM ai_service_configs WHERE id = ? AND deleted_at IS NULL').get(values.targetConfigId);
-  assertEvidenceBinding(source, target, evidence, values);
   if (Number(target.is_active) === 1 && target.verification_status === 'verified') {
+    if (target.name === LEGACY_DISPLAY_NAME) {
+      return upgradeLegacyConfiguration(db, source, target, evidence, values, options);
+    }
+    assertEvidenceBinding(source, target, evidence, values);
     verifyConfiguration(db, evidence, values);
     return { finalized: false, reused: true, configId: values.targetConfigId };
   }
+  assertEvidenceBinding(source, target, evidence, values);
   preparedTarget(db, source);
   if (pricingSnapshot(db).base || pricingSnapshot(db).tiers.length) {
     throw new Error('Wan3 价格已存在或被管理员修改，禁止覆盖');
@@ -447,16 +604,20 @@ async function finalizeConfiguration(db, evidence, options = {}) {
          cost_unit, cost_micros_per_unit, input_cost_micros_per_1k, output_cost_micros_per_1k, updated_at)
         VALUES (?, ?, ?, 'video', ?, 'paid', 'enabled', 'second', 'second', ?, 0, 0, ?)`)
         .run(MODEL, DISPLAY_NAME, PUBLIC_NOTE, values.userCreditsPerSecond, values.modelCostMicrosPerSecond, now);
-      db.prepare(`INSERT INTO model_resolution_prices
-        (model, resolution, credits, cost_micros_per_second, updated_at) VALUES (?, '480p', ?, ?, ?)`)
-        .run(MODEL, values.userCreditsPerSecond, values.modelCostMicrosPerSecond, now);
+      const insertResolutionPrice = db.prepare(`INSERT INTO model_resolution_prices
+        (model, resolution, credits, cost_micros_per_second, updated_at) VALUES (?, ?, ?, ?, ?)`);
+      for (const resolution of RESOLUTIONS) {
+        insertResolutionPrice.run(MODEL, resolution, values.userCreditsPerSecond, values.modelCostMicrosPerSecond, now);
+      }
       db.prepare(`INSERT INTO provider_route_costs
         (config_id, currency, cost_unit, micros_per_unit, input_cost_micros_per_1k,
          output_cost_micros_per_1k, updated_at) VALUES (?, 'CNY', 'second', ?, 0, 0, ?)`)
         .run(values.targetConfigId, values.routeCostMicrosPerSecond, now);
-      db.prepare(`INSERT INTO provider_route_resolution_costs
-        (config_id, resolution, micros_per_unit, updated_at) VALUES (?, '480p', ?, ?)`)
-        .run(values.targetConfigId, values.routeCostMicrosPerSecond, now);
+      const insertRouteResolutionCost = db.prepare(`INSERT INTO provider_route_resolution_costs
+        (config_id, resolution, micros_per_unit, updated_at) VALUES (?, ?, ?, ?)`);
+      for (const resolution of RESOLUTIONS) {
+        insertRouteResolutionCost.run(values.targetConfigId, resolution, values.routeCostMicrosPerSecond, now);
+      }
       const updated = db.prepare(`UPDATE ai_service_configs SET
         verification_status = 'verified', verification_checked_at = ?, verified_capabilities = ?,
         verified_at = ?, verification_error = NULL, settings = ?, verification_evidence = ?,

@@ -16,6 +16,7 @@ const prices = require('../src/services/modelPriceService');
 const MODEL = 'wan3.0-video';
 const CONTRACT = 'toapis-wan3-video-real-verification-v1';
 const log = { info() {}, warn() {}, error() {} };
+const DURATIONS = Array.from({ length: 29 }, (_, index) => index + 2);
 
 function configFingerprint(config) {
   return crypto.createHash('sha256').update(JSON.stringify({
@@ -77,19 +78,22 @@ function setup(t) {
     status: 'verified',
     capabilities: {
       [MODEL]: {
-        durations: [2],
-        resolutions: ['480p'],
-        aspectRatios: ['16:9'],
-        audio_values: [false],
-        maxReferences: 0,
-        maxVideoReferences: 0,
-        maxAudioReferences: 0,
-        supportsFirstFrame: false,
-        supportsLastFrame: false,
-        supportsImageReference: false,
-        supportsVideoReference: false,
-        supportsAudioReference: false,
-        supportsAudio: false,
+        durations: DURATIONS,
+        resolutions: ['480p', '720p', '1080p'],
+        aspectRatios: ['adaptive', '16:9', '9:16', '1:1', '4:3', '3:4'],
+        audio_values: [false, true],
+        referenceTypes: ['image', 'video', 'audio'],
+        maxReferences: 10,
+        maxImageReferences: 10,
+        maxVideoReferences: 5,
+        maxAudioReferences: 5,
+        supportsFirstFrame: true,
+        supportsLastFrame: true,
+        supportsImageReference: true,
+        supportsVideoReference: true,
+        supportsAudioReference: true,
+        supportsAudio: true,
+        quantities: [1],
         evidence_contract: CONTRACT,
         evidence_sha256: evidence.sha256,
       },
@@ -101,29 +105,37 @@ function setup(t) {
     cost_unit: 'second',
     resolution_prices: {
       '480p': { credits: 10, cost_micros_per_second: 50000 },
+      '720p': { credits: 10, cost_micros_per_second: 50000 },
+      '1080p': { credits: 10, cost_micros_per_second: 50000 },
     },
   });
   return { db, evidence, configId: config.id };
 }
 
-test('Wan 3.0 public catalog exposes only the paid 480P capability and price', (t) => {
+test('Wan 3.0 public catalog exposes the approved full capability and all paid resolution tiers', (t) => {
   const { db, evidence } = setup(t);
   const item = catalog.list(db, { evidenceRoots: evidence.roots })
     .find((entry) => entry.model === MODEL);
   assert.ok(item);
   assert.equal(item.kind, 'video');
-  assert.deepEqual(item.capabilities.resolutions, ['480p']);
-  assert.deepEqual(item.capabilities.durations, [2]);
-  assert.deepEqual(item.capabilities.aspectRatios, ['16:9']);
-  assert.equal(item.capabilities.supportsAudio, false);
-  assert.deepEqual(Object.keys(item.resolution_prices), ['480p']);
+  assert.deepEqual(item.capabilities.resolutions, ['480p', '720p', '1080p']);
+  assert.deepEqual(item.capabilities.durations, DURATIONS);
+  assert.deepEqual(item.capabilities.aspectRatios, ['adaptive', '16:9', '9:16', '1:1', '4:3', '3:4']);
+  assert.equal(item.capabilities.supportsAudio, true);
+  assert.equal(item.capabilities.maxReferences, 10);
+  assert.equal(item.capabilities.maxImageReferences, 10);
+  assert.equal(item.capabilities.maxVideoReferences, 5);
+  assert.equal(item.capabilities.maxAudioReferences, 5);
+  assert.equal(item.capabilities.supportsFirstFrame, true);
+  assert.equal(item.capabilities.supportsLastFrame, true);
+  assert.deepEqual(Object.keys(item.resolution_prices).sort(), ['1080p', '480p', '720p']);
   assert.equal(JSON.stringify(item).includes('toapis.xyz'), false);
   assert.equal(JSON.stringify(item).includes('wan3-test-key'), false);
 
   const publicPrice = prices.listPublic(db, { evidenceRoots: evidence.roots })
     .find((entry) => entry.model === MODEL);
   assert.ok(publicPrice);
-  assert.deepEqual(Object.keys(publicPrice.resolution_prices), ['480p']);
+  assert.deepEqual(Object.keys(publicPrice.resolution_prices).sort(), ['1080p', '480p', '720p']);
 });
 
 test('Wan 3.0 public catalog fails closed when the verified tier has no matching price', (t) => {
@@ -133,7 +145,7 @@ test('Wan 3.0 public catalog fails closed when the verified tier has no matching
     capabilities: {
       [MODEL]: {
         durations: [2],
-        resolutions: ['720p'],
+        resolutions: ['4k'],
         aspectRatios: ['16:9'],
         audio_values: [false],
         supportsAudio: false,

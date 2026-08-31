@@ -142,53 +142,53 @@ test('飞拓新模型不按旧模型名静默裁剪引用并由统一能力显�
   )
 })
 
-test('Wan3 前端只按声明能力提交已验证 480P/2秒/无音频路径', () => {
+test('Wan3 前端按完整声明能力提交 1080P、2-30秒、有声和多模态参考', () => {
   const payload = buildVideoGenerationRequest({
     model: 'wan3.0-video',
     prompt: '城市街道镜头',
-    resolution: '480p',
-    duration: 2,
+    resolution: '1080p',
+    duration: 30,
     aspectRatio: '16:9',
-    generateAudio: false,
+    generateAudio: true,
+    referenceImageUrls: ['https://cdn.example/a.png', 'https://cdn.example/b.png'],
+    referenceVideoUrls: ['https://cdn.example/motion.mp4'],
+    referenceAudioUrls: ['https://cdn.example/voice.mp3'],
+    referenceMode: 'omni',
     capability: {
       declared: true,
-      resolutions: ['480p'],
-      durations: [2],
-      supportsAudio: false,
-      supportsImageReference: false,
+      resolutions: ['480p', '720p', '1080p'],
+      durations: Array.from({ length: 29 }, (_, index) => index + 2),
+      supportsAudio: true,
+      supportsImageReference: true,
+      supportsVideoReference: true,
+      supportsAudioReference: true,
+      maxReferences: 10,
+      maxVideoReferences: 5,
+      maxAudioReferences: 5,
     },
   })
 
   assert.equal(payload.model, 'wan3.0-video')
-  assert.equal(payload.resolution, '480p')
-  assert.equal(payload.duration, 2)
-  assert.equal(Object.hasOwn(payload, 'generate_audio'), false)
-  assert.equal(supportsMultiImageVideoReferences('wan3.0-video'), false)
+  assert.equal(payload.resolution, '1080p')
+  assert.equal(payload.duration, 30)
+  assert.equal(payload.generate_audio, true)
+  assert.deepEqual(payload.reference_image_urls, ['https://cdn.example/a.png', 'https://cdn.example/b.png'])
+  assert.deepEqual(payload.reference_video_urls, ['https://cdn.example/motion.mp4'])
+  assert.deepEqual(payload.reference_audio_urls, ['https://cdn.example/voice.mp3'])
+  assert.equal(supportsMultiImageVideoReferences('wan3.0-video'), true)
   assert.throws(
     () => buildVideoGenerationRequest({
       model: 'wan3.0-video',
       prompt: '城市街道镜头',
-      resolution: '480p',
-      duration: 2,
-      generateAudio: true,
+      resolution: '1080p',
+      duration: 31,
       capability: {
         declared: true,
-        resolutions: ['480p'],
-        durations: [2],
-        supportsAudio: false,
+        resolutions: ['480p', '720p', '1080p'],
+        durations: Array.from({ length: 29 }, (_, index) => index + 2),
       },
     }),
-    /不支持同步音频/,
-  )
-  assert.throws(
-    () => buildVideoGenerationRequest({
-      model: 'wan3.0-video',
-      prompt: '城市街道镜头',
-      resolution: '720p',
-      duration: 2,
-      capability: { declared: true, resolutions: ['480p'], durations: [2] },
-    }),
-    /不支持 720p 清晰度/,
+    /当前模型.*2.*30.*秒/,
   )
 })
 
