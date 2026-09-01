@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "release": "canvas-failed-generation-resubmit-20260901",
+  "allowedPaths": [
+    "backend-node/src/services/providerReconciliationService.js",
+    "backend-node/src/services/videoService.js",
+    "backend-node/test/featureLockManifest.test.js",
+    "backend-node/test/providerReconciliation.test.js",
+    "backend-node/test/redeem-code-service.test.js",
+    "backend-node/test/videoBilling.test.js",
+    "deploy/release-scopes/canvas-failed-generation-resubmit-20260901.json",
+    "docs/tasks/2026-09-01-canvas-failed-generation-resubmit.md",
+    "docs/verification/platform-stability/feature-lock-manifest.json"
+  ]
+}

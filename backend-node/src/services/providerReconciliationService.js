@@ -171,6 +171,29 @@ function reconcileExpiredHeldReservations(db, now, options, summary) {
   }
 }
 
+function reconcileRefundedVideoTasks(db, now) {
+  return db.prepare(`UPDATE async_tasks
+    SET status = 'failed', progress = 100, message = ?,
+      completed_at = COALESCE(completed_at, ?), updated_at = ?
+    WHERE status IN ('pending', 'processing', 'needs_attention')
+      AND deleted_at IS NULL
+      AND EXISTS (
+        SELECT 1 FROM video_generations AS generation
+        WHERE generation.task_id = async_tasks.id
+          AND generation.status = 'failed'
+          AND generation.deleted_at IS NULL
+          AND (
+            EXISTS (SELECT 1 FROM tenant_usage_reservations AS reservation
+              WHERE reservation.id = generation.credit_reservation_id
+                AND reservation.status = 'refunded')
+            OR EXISTS (SELECT 1 FROM usage_reservations AS reservation
+              WHERE reservation.id = generation.credit_reservation_id
+                AND reservation.status = 'refunded')
+          )
+      )`)
+    .run(billingReconciliation.GENERATION_TIMEOUT_MESSAGE, now, now).changes;
+}
+
 function markLegacyHeldForReview(db, row, now) {
   const route = {
     id: `legacy-credit:${row.reservation_id}`,
@@ -245,8 +268,17 @@ function reconcileProviderRequests(db, log, nowValue = new Date().toISOString(),
   const reviewSlaMs = Number.isFinite(configuredReviewSlaMs) && configuredReviewSlaMs >= 0
     ? configuredReviewSlaMs
     : DEFAULT_REVIEW_SLA_MS;
-  const summary = { processed: 0, needs_attention: 0, refunded: 0, resumable: 0, alerted: 0 };
+  const summary = {
+    processed: 0,
+    needs_attention: 0,
+    refunded: 0,
+    resumable: 0,
+    alerted: 0,
+    repaired: 0,
+  };
   reconcileExpiredHeldReservations(db, now, options, summary);
+  summary.repaired = reconcileRefundedVideoTasks(db, now);
+  summary.processed += summary.repaired;
   for (const route of routeRows(db, options.limit)) {
     if (hasTimeoutRefund(db, route.credit_reservation_id)) continue;
     if (route.service_type === 'video' && route.provider_task_id) {

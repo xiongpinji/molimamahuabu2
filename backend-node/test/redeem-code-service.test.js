@@ -226,9 +226,9 @@ test('管理员可更新或清空有效期并查询兑换人与对应账本', ()
     expiresAt: '2026-08-01T00:00:00.000Z',
   });
   const updated = redeemCodes.updateCode(db, created.id, {
-    expiresAt: '2026-09-01T00:00:00.000Z',
+    expiresAt: '2099-09-01T00:00:00.000Z',
   });
-  assert.equal(updated.expires_at, '2026-09-01T00:00:00.000Z');
+  assert.equal(updated.expires_at, '2099-09-01T00:00:00.000Z');
 
   redeemCodes.redeem(db, {
     code: created.code,

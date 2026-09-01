@@ -573,17 +573,27 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-31 Wan3 参考素材供应商下载签名修复获批",
+          "approvedBy": "product-owner 2026-08-31 wan3-provider-asset-download-repair",
+          "impactTests": [
+            "backend-node/test/providerAssetUrl.test.js",
+            "backend-node/test/providerAssetSignedAccess.test.js",
+            "backend-node/test/toapisWan3VideoClient.test.js",
+            "backend-node/test/videoServiceWan3.test.js",
+            "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-31 Wan3 参考素材供应商下载签名修复获批",
-        "approvedBy": "product-owner 2026-08-31 wan3-provider-asset-download-repair",
+        "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
+        "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
         "impactTests": [
-          "backend-node/test/providerAssetUrl.test.js",
-          "backend-node/test/providerAssetSignedAccess.test.js",
-          "backend-node/test/toapisWan3VideoClient.test.js",
-          "backend-node/test/videoServiceWan3.test.js",
-          "backend-node/test/videoGenerationRequestSnapshot.test.js",
+          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/videoBilling.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -910,17 +920,27 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-31 Wan3 参考素材供应商下载签名修复获批",
+          "approvedBy": "product-owner 2026-08-31 wan3-provider-asset-download-repair",
+          "impactTests": [
+            "backend-node/test/providerAssetUrl.test.js",
+            "backend-node/test/providerAssetSignedAccess.test.js",
+            "backend-node/test/toapisWan3VideoClient.test.js",
+            "backend-node/test/videoServiceWan3.test.js",
+            "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-31 Wan3 参考素材供应商下载签名修复获批",
-        "approvedBy": "product-owner 2026-08-31 wan3-provider-asset-download-repair",
+        "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
+        "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
         "impactTests": [
-          "backend-node/test/providerAssetUrl.test.js",
-          "backend-node/test/providerAssetSignedAccess.test.js",
-          "backend-node/test/toapisWan3VideoClient.test.js",
-          "backend-node/test/videoServiceWan3.test.js",
-          "backend-node/test/videoGenerationRequestSnapshot.test.js",
+          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/videoBilling.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -1727,17 +1747,27 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-31 Wan3 参考素材供应商下载签名修复获批",
+          "approvedBy": "product-owner 2026-08-31 wan3-provider-asset-download-repair",
+          "impactTests": [
+            "backend-node/test/providerAssetUrl.test.js",
+            "backend-node/test/providerAssetSignedAccess.test.js",
+            "backend-node/test/toapisWan3VideoClient.test.js",
+            "backend-node/test/videoServiceWan3.test.js",
+            "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-31 Wan3 参考素材供应商下载签名修复获批",
-        "approvedBy": "product-owner 2026-08-31 wan3-provider-asset-download-repair",
+        "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
+        "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
         "impactTests": [
-          "backend-node/test/providerAssetUrl.test.js",
-          "backend-node/test/providerAssetSignedAccess.test.js",
-          "backend-node/test/toapisWan3VideoClient.test.js",
-          "backend-node/test/videoServiceWan3.test.js",
-          "backend-node/test/videoGenerationRequestSnapshot.test.js",
+          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/videoBilling.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
