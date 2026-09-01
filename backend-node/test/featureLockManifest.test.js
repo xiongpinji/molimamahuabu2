@@ -1238,12 +1238,12 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   assert.deepEqual(feature.evidence.slice(0, PROACTIVE_CANARY_EVIDENCE.length), PROACTIVE_CANARY_EVIDENCE);
 });
 
-test('失败视频重试闭合刷新主动巡检锁并保留 PR #217 Fumin 批准历史', () => {
+test('PR #217 Fumin 刷新主动巡检锁并保留失败视频重试批准历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
-  assert.deepEqual(feature.unlock, FAILED_GENERATION_RESUBMIT_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-1), PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK);
+  assert.deepEqual(feature.unlock, PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), FAILED_GENERATION_RESUBMIT_UNLOCK);
   assert.deepEqual(feature.unlockHistory.at(-2), WAN3_PROVIDER_ASSET_SIGNING_UNLOCK);
   assert.deepEqual(feature.unlockHistory.at(-3), WAN3_FULL_CAPABILITY_UNLOCK);
   assert.deepEqual(feature.unlockHistory.at(-4), PR211_CI_LOCK_REFRESH_UNLOCK);
@@ -1394,10 +1394,10 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     const providerAssetSigningTouched = WAN3_PROVIDER_ASSET_SIGNING_FEATURE_IDS.has(featureId);
     const failedGenerationResubmitTouched = FAILED_GENERATION_RESUBMIT_FEATURE_IDS.has(featureId);
     const pr217FuminTouched = PR217_FUMIN_PRODUCT_API_ACCEPTANCE_FEATURE_IDS.has(featureId);
-    const expectedUnlock = failedGenerationResubmitTouched
-      ? FAILED_GENERATION_RESUBMIT_UNLOCK
-      : pr217FuminTouched
+    const expectedUnlock = pr217FuminTouched
       ? PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK
+      : failedGenerationResubmitTouched
+      ? FAILED_GENERATION_RESUBMIT_UNLOCK
       : providerAssetSigningTouched
       ? WAN3_PROVIDER_ASSET_SIGNING_UNLOCK
       : WAN3_FULL_CAPABILITY_FEATURE_IDS.has(featureId)
@@ -1524,7 +1524,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
         : []),
       ...(pr217FuminTouched
         ? [failedGenerationResubmitTouched
-          ? PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK
+          ? FAILED_GENERATION_RESUBMIT_UNLOCK
           : PRE_PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK_BY_FEATURE[featureId]]
         : []),
     ]);
@@ -1599,7 +1599,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
   assert.deepEqual(appLocks, [PROACTIVE_CANARY_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].sort());
   for (const featureId of appLocks) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
-    assert.deepEqual(feature.unlock, FAILED_GENERATION_RESUBMIT_UNLOCK);
+    assert.deepEqual(feature.unlock, PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK);
   }
 });
 
@@ -1647,13 +1647,13 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
     'docs/verification/platform-stability/video-audio-credit-reconciliation-20260822.md',
   ));
   assert.equal(unknownState.evidence.at(-1), GENERATION_CREDIT_TIMEOUT_EVIDENCE);
-  assert.deepEqual(unknownState.unlock, FAILED_GENERATION_RESUBMIT_UNLOCK);
-  assert.deepEqual(unknownState.unlockHistory.at(-1), PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK);
+  assert.deepEqual(unknownState.unlock, PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK);
+  assert.deepEqual(unknownState.unlockHistory.at(-1), FAILED_GENERATION_RESUBMIT_UNLOCK);
   assert.deepEqual(unknownState.unlockHistory.at(-2), WAN3_PROVIDER_ASSET_SIGNING_UNLOCK);
   assert.deepEqual(unknownState.unlockHistory.at(-3), GENERATION_CREDIT_TIMEOUT_UNLOCK);
 });
 
-test('失败视频重试闭环保留 Wan3 素材签名与完整历史并仅刷新实际触及的运行时功能锁', () => {
+test('PR #217 Fumin 保留失败视频重试与 Wan3 历史并仅刷新实际触及的运行时功能锁', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   for (const featureId of [
     PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
@@ -1667,10 +1667,10 @@ test('失败视频重试闭环保留 Wan3 素材签名与完整历史并仅刷�
     const failedGenerationResubmitChanged = FAILED_GENERATION_RESUBMIT_FEATURE_IDS.has(featureId);
     const timeoutChanged = featureId === UNKNOWN_STATE_RECONCILIATION_FEATURE_ID;
     const pr217FuminTouched = PR217_FUMIN_PRODUCT_API_ACCEPTANCE_FEATURE_IDS.has(featureId);
-    const expectedUnlock = failedGenerationResubmitChanged
-      ? FAILED_GENERATION_RESUBMIT_UNLOCK
-      : pr217FuminTouched
+    const expectedUnlock = pr217FuminTouched
       ? PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK
+      : failedGenerationResubmitChanged
+      ? FAILED_GENERATION_RESUBMIT_UNLOCK
       : signingChanged
       ? WAN3_PROVIDER_ASSET_SIGNING_UNLOCK
       : WAN3_FULL_CAPABILITY_FEATURE_IDS.has(featureId)
@@ -1678,10 +1678,12 @@ test('失败视频重试闭环保留 Wan3 素材签名与完整历史并仅刷�
         : WAN3_INTEGRATION_FEATURE_IDS.has(featureId)
         ? PR211_CI_LOCK_REFRESH_UNLOCK
         : TOAPIS_SUBMISSION_RECOVERY_UNLOCK;
-    const expectedPreviousUnlock = failedGenerationResubmitChanged
-      ? PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK
-      : pr217FuminTouched
-      ? PRE_PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK_BY_FEATURE[featureId]
+    const expectedPreviousUnlock = pr217FuminTouched
+      ? failedGenerationResubmitChanged
+        ? FAILED_GENERATION_RESUBMIT_UNLOCK
+        : PRE_PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK_BY_FEATURE[featureId]
+      : failedGenerationResubmitChanged
+      ? WAN3_PROVIDER_ASSET_SIGNING_UNLOCK
       : signingChanged
       ? PRE_WAN3_PROVIDER_ASSET_SIGNING_UNLOCK_BY_FEATURE[featureId]
       : WAN3_FULL_CAPABILITY_FEATURE_IDS.has(featureId)

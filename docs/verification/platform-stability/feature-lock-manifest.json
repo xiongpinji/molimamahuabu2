@@ -589,27 +589,27 @@
           ]
         },
         {
-          "reason": "2026-09-01 PR #217 Fumin 产品 API 单镜验收前置修复获批",
-          "approvedBy": "product-owner 2026-09-01 pr-217-fumin-product-api-one-shot-acceptance",
+          "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
+          "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
           "impactTests": [
-            "backend-node/test/fuminVideoClient.test.js",
-            "backend-node/test/fuminReferenceAssetService.test.js",
-            "backend-node/test/videoGenerationRequestSnapshot.test.js",
-            "backend-node/test/redrawGeneration.test.js",
-            "backend-node/test/redrawProviderAdapters.test.js",
+            "backend-node/test/providerReconciliation.test.js",
             "backend-node/test/videoBilling.test.js",
-            "backend-node/test/videoQueryTaskStatusOnce.test.js",
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
-        "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
+        "reason": "2026-09-01 PR #217 Fumin 产品 API 单镜验收前置修复获批",
+        "approvedBy": "product-owner 2026-09-01 pr-217-fumin-product-api-one-shot-acceptance",
         "impactTests": [
-          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/fuminVideoClient.test.js",
+          "backend-node/test/fuminReferenceAssetService.test.js",
+          "backend-node/test/videoGenerationRequestSnapshot.test.js",
+          "backend-node/test/redrawGeneration.test.js",
+          "backend-node/test/redrawProviderAdapters.test.js",
           "backend-node/test/videoBilling.test.js",
+          "backend-node/test/videoQueryTaskStatusOnce.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -951,27 +951,27 @@
           ]
         },
         {
-          "reason": "2026-09-01 PR #217 Fumin 产品 API 单镜验收前置修复获批",
-          "approvedBy": "product-owner 2026-09-01 pr-217-fumin-product-api-one-shot-acceptance",
+          "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
+          "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
           "impactTests": [
-            "backend-node/test/fuminVideoClient.test.js",
-            "backend-node/test/fuminReferenceAssetService.test.js",
-            "backend-node/test/videoGenerationRequestSnapshot.test.js",
-            "backend-node/test/redrawGeneration.test.js",
-            "backend-node/test/redrawProviderAdapters.test.js",
+            "backend-node/test/providerReconciliation.test.js",
             "backend-node/test/videoBilling.test.js",
-            "backend-node/test/videoQueryTaskStatusOnce.test.js",
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
-        "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
+        "reason": "2026-09-01 PR #217 Fumin 产品 API 单镜验收前置修复获批",
+        "approvedBy": "product-owner 2026-09-01 pr-217-fumin-product-api-one-shot-acceptance",
         "impactTests": [
-          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/fuminVideoClient.test.js",
+          "backend-node/test/fuminReferenceAssetService.test.js",
+          "backend-node/test/videoGenerationRequestSnapshot.test.js",
+          "backend-node/test/redrawGeneration.test.js",
+          "backend-node/test/redrawProviderAdapters.test.js",
           "backend-node/test/videoBilling.test.js",
+          "backend-node/test/videoQueryTaskStatusOnce.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -1808,27 +1808,27 @@
           ]
         },
         {
-          "reason": "2026-09-01 PR #217 Fumin 产品 API 单镜验收前置修复获批",
-          "approvedBy": "product-owner 2026-09-01 pr-217-fumin-product-api-one-shot-acceptance",
+          "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
+          "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
           "impactTests": [
-            "backend-node/test/fuminVideoClient.test.js",
-            "backend-node/test/fuminReferenceAssetService.test.js",
-            "backend-node/test/videoGenerationRequestSnapshot.test.js",
-            "backend-node/test/redrawGeneration.test.js",
-            "backend-node/test/redrawProviderAdapters.test.js",
+            "backend-node/test/providerReconciliation.test.js",
             "backend-node/test/videoBilling.test.js",
-            "backend-node/test/videoQueryTaskStatusOnce.test.js",
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
-        "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
+        "reason": "2026-09-01 PR #217 Fumin 产品 API 单镜验收前置修复获批",
+        "approvedBy": "product-owner 2026-09-01 pr-217-fumin-product-api-one-shot-acceptance",
         "impactTests": [
-          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/fuminVideoClient.test.js",
+          "backend-node/test/fuminReferenceAssetService.test.js",
+          "backend-node/test/videoGenerationRequestSnapshot.test.js",
+          "backend-node/test/redrawGeneration.test.js",
+          "backend-node/test/redrawProviderAdapters.test.js",
           "backend-node/test/videoBilling.test.js",
+          "backend-node/test/videoQueryTaskStatusOnce.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
