@@ -225,10 +225,11 @@ test('管理员可更新或清空有效期并查询兑换人与对应账本', ()
     credits: 25,
     expiresAt: '2026-08-01T00:00:00.000Z',
   });
+  const futureExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const updated = redeemCodes.updateCode(db, created.id, {
-    expiresAt: '2026-09-01T00:00:00.000Z',
+    expiresAt: futureExpiresAt,
   });
-  assert.equal(updated.expires_at, '2026-09-01T00:00:00.000Z');
+  assert.equal(updated.expires_at, futureExpiresAt);
 
   redeemCodes.redeem(db, {
     code: created.code,
