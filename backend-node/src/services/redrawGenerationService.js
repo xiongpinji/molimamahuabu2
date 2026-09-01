@@ -2136,6 +2136,8 @@ async function runShotGeneration(ctx, taskId) {
     ? (ctx.videoRecoveryProcessor || waitForRecoveredVideo)
     : (ctx.videoProcessor || ((database, logger, videoGenerationId) => (
       videoService.processVideoGeneration(database, logger, videoGenerationId, {
+        storageLocalPath: ctx.storageRoot,
+        storageBaseUrl: ctx.storageBaseUrl,
         providerAssetSigningSecret: ctx.providerAssetSecret,
         providerAssetStorageBaseUrl: ctx.storageBaseUrl,
         providerAssetTtlSeconds: ctx.providerAssetTtlSeconds,

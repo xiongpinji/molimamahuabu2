@@ -2014,6 +2014,15 @@ test('setupRouter bridges fake redraw asset adapters with trusted input model', 
   const seen = [];
   const adapterRequests = [];
   const localeVerifier = { assertReady() {}, async verify() {} };
+  const candidateQualityVerifier = async () => ({ decision: 'pass' });
+  const candidateQualityDependencies = {
+    probeMedia: async () => ({}),
+    verifyFullFrameCoverage: async () => ({}),
+    verifyLocale: async () => ({}),
+    verifyNativeAudio: async () => ({}),
+    verifySubtitles: async () => ({}),
+    verifyLipSync: async () => ({}),
+  };
   const fakeAdapters = {
     localize: async () => ({}),
     generateAsset: async (request) => {
@@ -2090,7 +2099,11 @@ test('setupRouter bridges fake redraw asset adapters with trusted input model', 
   mock('../src/services/promptOverridesService', { listOverrides: () => [] });
   try {
     const { setupRouter } = require('../src/routes');
-    setupRouter({ storage: {} }, {}, createLog(), { localeVerifier });
+    setupRouter({ storage: {} }, {}, createLog(), {
+      localeVerifier,
+      candidateQualityVerifier,
+      candidateQualityDependencies,
+    });
     assert.equal(seen.some((entry) => entry.localizationProvider === fakeAdapters.localize), true);
     const redrawOptions = seen.find((entry) => typeof entry.assetGenerationProvider === 'function'
       && !entry.factoryDeps);
@@ -2117,6 +2130,8 @@ test('setupRouter bridges fake redraw asset adapters with trusted input model', 
     assert.equal(factoryDeps.localeVerifier, localeVerifier);
     assert.equal(adapterRequests[0].localeVerifier, factoryDeps.localeVerifier);
     assert.equal(adapterRequests[1].localeVerifier, factoryDeps.localeVerifier);
+    assert.equal(redrawOptions.candidateQualityVerifier, candidateQualityVerifier);
+    assert.equal(redrawOptions.candidateQualityDependencies, candidateQualityDependencies);
   } finally {
     delete require.cache[routesPath];
     if (originalRedraw) require.cache[redrawPath] = originalRedraw;

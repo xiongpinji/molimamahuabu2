@@ -16,6 +16,7 @@ const lingjingVideoClient = require('./lingjingVideoClient');
 const feituoVideoClient = require('./feituoVideoClient');
 const usmercariVideoClient = require('./usmercariVideoClient');
 const fuminVideoClient = require('./fuminVideoClient');
+const fuminReferenceAssetService = require('./fuminReferenceAssetService');
 const token6688Client = require('./token6688Client');
 const mediaModelSelection = require('./mediaModelSelectionService');
 const toapisVideoClient = require('./toapisVideoClient');
@@ -802,35 +803,30 @@ async function resolveImageInputForAgnesAsync(db, rawUrl, files_base_url, storag
 /**
  * fumin Seedance 2 只接受可拉取的公网图片或已入库的 asset:// URI，禁止传 data URL。
  */
-async function resolveFuminReferenceImageAsync(db, rawUrl, files_base_url, storage_local_path, log, video_gen_id, index) {
-  const raw = String(rawUrl || '').trim();
-  if (!raw) return null;
-  if (raw.startsWith('asset://')) return raw;
-  return resolveFuminReferenceMedia(raw, files_base_url, 'image', index);
+async function resolveFuminReferenceImageAsync(db, rawUrl, files_base_url, storage_local_path, log, video_gen_id, index, config, runtime = {}) {
+  return resolveFuminReferenceMedia(rawUrl, files_base_url, storage_local_path, 'image', index, config, runtime);
 }
 
-function resolveFuminReferenceMedia(rawUrl, files_base_url, kind, index) {
+async function resolveFuminReferenceMedia(rawUrl, files_base_url, storage_local_path, kind, index, config, runtime = {}) {
   const raw = String(rawUrl || '').trim();
   if (!raw) return null;
-  if (raw.startsWith('asset://')) return raw;
-  if (/^https:\/\//i.test(raw)) {
-    try {
-      const inputUrl = new URL(raw);
-      const baseUrl = new URL(String(files_base_url || '').trim());
-      if (inputUrl.origin !== baseUrl.origin) return raw;
-    } catch (_) {
-      return raw;
-    }
-  }
-  const publicUrl = publicUrlFromLocalRef(raw, files_base_url);
-  const candidate = /^https:\/\//i.test(raw) ? raw : publicUrl;
-  if (!candidate) {
-    throw new Error(`fumin 参考${kind === 'audio' ? '音频' : kind === 'image' ? '图' : '视频'} ${Number(index) + 1} 无法转换为供应商可读取的公网 static URL`);
-  }
   try {
-    return providerAssetUrl.signStrictStaticAssetUrl(candidate, { filesBaseUrl: files_base_url });
-  } catch (_) {
-    throw new Error(`fumin 参考${kind === 'audio' ? '音频' : kind === 'image' ? '图' : '视频'} ${Number(index) + 1} 不是可公开读取的素材 URL`);
+    return await fuminReferenceAssetService.resolveFuminReference({
+      rawUrl: raw,
+      filesBaseUrl: files_base_url,
+      storageRoot: storage_local_path,
+      kind,
+      index,
+      uploadAsset: (asset) => fuminVideoClient.uploadFuminReferenceAsset(config, {
+        ...asset,
+        fetchImpl: runtime.fetchImpl,
+      }),
+    });
+  } catch (error) {
+    const label = kind === 'audio' ? '音频' : kind === 'image' ? '图' : '视频';
+    const wrapped = new Error(`fumin 参考${label} ${Number(index) + 1} 准备失败: ${error.message}`);
+    wrapped.code = error.code;
+    throw wrapped;
   }
 }
 
@@ -5352,6 +5348,7 @@ async function submitVideoWithConfig(db, log, config, opts, runtime = {}) {
       first_frame_url: undefined,
       last_frame_url: undefined,
       reference_urls: rawReferences,
+      fetchImpl: runtime.fetchImpl,
       resolve_image: (raw, index) => resolveFuminReferenceImageAsync(
         db,
         raw,
@@ -5360,12 +5357,17 @@ async function submitVideoWithConfig(db, log, config, opts, runtime = {}) {
         log,
         video_gen_id,
         index,
+        config,
+        runtime,
       ),
       resolve_media: (raw, index, kind) => resolveFuminReferenceMedia(
         raw,
         opts.files_base_url,
+        opts.storage_local_path,
         kind,
         index,
+        config,
+        runtime,
       ),
     });
   }

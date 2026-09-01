@@ -6175,6 +6175,29 @@ test('reference bundle required 默认生产路径允许精确 Fumin Mini 且预
   }
 });
 
+test('reference bundle 默认视频处理器沿用当前一键转绘隔离存储根', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  addFuminMiniCapability(state.db);
+  const originalProcessor = videoService.processVideoGeneration;
+  let capturedRuntime = null;
+  videoService.processVideoGeneration = async (db, _log, videoGenerationId, runtime) => {
+    capturedRuntime = runtime;
+    db.prepare("UPDATE video_generations SET status = 'failed', error_msg = 'test stop' WHERE id = ?")
+      .run(videoGenerationId);
+  };
+  t.after(() => { videoService.processVideoGeneration = originalProcessor; });
+
+  const result = await generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
+    resolveVideoConditioningCapability: undefined,
+    videoProcessor: undefined,
+    awaitCompletion: true,
+  })), { shotId: state.shotId });
+
+  assert.equal(result.status, 'failed');
+  assert.equal(capturedRuntime.storageLocalPath, state.storageRoot);
+  assert.equal(capturedRuntime.storageBaseUrl, 'https://media.example.test/static');
+});
+
 test('reference bundle required 缺失或漂移时在冻结积分和建视频前失败', async (t) => {
   await assertReferenceBundleGenerationRejects(
     t,

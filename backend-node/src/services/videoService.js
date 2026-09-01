@@ -2882,10 +2882,13 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
     }
     const loadConfig = require('../config').loadConfig;
     const cfg = loadConfig();
-    const filesBaseUrl = (cfg.storage && cfg.storage.base_url) ? String(cfg.storage.base_url).replace(/\/$/, '') : '';
-    const storageLocalPath = path.isAbsolute(cfg.storage?.local_path)
-      ? cfg.storage.local_path
-      : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
+    const filesBaseUrl = runtime.storageBaseUrl !== undefined
+      ? String(runtime.storageBaseUrl || '').replace(/\/$/, '')
+      : (cfg.storage && cfg.storage.base_url) ? String(cfg.storage.base_url).replace(/\/$/, '') : '';
+    const configuredStoragePath = runtime.storageLocalPath ?? cfg.storage?.local_path;
+    const storageLocalPath = path.isAbsolute(String(configuredStoragePath || ''))
+      ? configuredStoragePath
+      : path.join(process.cwd(), configuredStoragePath || './data/storage');
     const existingProviderTaskId = knownProviderTaskId;
     const config = processingVideoConfig(db, row.model, row.ai_service_config_id || row.config_id, runtime.evidenceRoots);
     if (!config) {

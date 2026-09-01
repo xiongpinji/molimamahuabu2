@@ -11,7 +11,6 @@ const videoClient = require('../src/services/videoClient');
 const taskService = require('../src/services/taskService');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
-const providerAssetUrlService = require('../src/services/providerAssetUrlService');
 const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 
 const log = { info() {}, warn() {}, error() {} };
@@ -280,15 +279,22 @@ test('reference bundle motion URL is not rewritten by raw source conditioning si
   assert.deepEqual(JSON.parse(row.reference_video_urls), [bundleMotionUrl]);
 });
 
-test('Fumin submit signs local static video and audio references with public files base URL', async (t) => {
+test('Fumin submit uploads trusted local static references before the single generation POST', async (t) => {
   const { db } = setup(t);
   const previousSecret = process.env.PLATFORM_JWT_SECRET;
   const originalFetch = global.fetch;
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fumin-video-submit-storage-'));
+  const assetDirectory = path.join(storageRoot, 'projects', '0001', 'assets');
+  fs.mkdirSync(assetDirectory, { recursive: true });
+  fs.writeFileSync(path.join(assetDirectory, 'actor.png'), Buffer.from('actor-image'));
+  fs.writeFileSync(path.join(assetDirectory, 'motion.mp4'), Buffer.from('motion-video'));
+  fs.writeFileSync(path.join(assetDirectory, 'voice.mp3'), Buffer.from('voice-audio'));
   process.env.PLATFORM_JWT_SECRET = 'video-client-static-signing-secret-1234567890';
   t.after(() => {
     if (previousSecret === undefined) delete process.env.PLATFORM_JWT_SECRET;
     else process.env.PLATFORM_JWT_SECRET = previousSecret;
     global.fetch = originalFetch;
+    fs.rmSync(storageRoot, { recursive: true, force: true });
   });
   const now = new Date().toISOString();
   const configId = db.prepare(`INSERT INTO ai_service_configs
@@ -312,7 +318,19 @@ test('Fumin submit signs local static video and audio references with public fil
     now,
   ).lastInsertRowid;
   let body = null;
-  global.fetch = async (_url, options) => {
+  const uploads = [];
+  global.fetch = async (url, options) => {
+    if (String(url).includes('/api/v3/files/uploads')) {
+      const file = options.body.get('file');
+      uploads.push({ name: file.name, type: file.type });
+      return new Response(JSON.stringify({
+        id: `asset-${uploads.length}`,
+        url: `https://fumin.ai/files/asset-${uploads.length}`,
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
     body = JSON.parse(options.body);
     return new Response(JSON.stringify({ id: 'fumin-task-static-media', status: 'queued' }), {
       status: 200,
@@ -331,23 +349,23 @@ test('Fumin submit signs local static video and audio references with public fil
     reference_video_urls: ['/static/projects/0001/assets/motion.mp4'],
     reference_audio_urls: ['/static/projects/0001/assets/voice.mp3'],
     files_base_url: 'https://media.example.test/static',
+    storage_local_path: storageRoot,
   }, { evidenceRoots });
 
   assert.deepEqual(result, { task_id: 'fumin-task-static-media', status: 'queued' });
+  assert.deepEqual(uploads, [
+    { name: 'actor.png', type: 'image/png' },
+    { name: 'motion.mp4', type: 'video/mp4' },
+    { name: 'voice.mp3', type: 'audio/mpeg' },
+  ]);
   const imageUrl = body.content.find((item) => item.role === 'reference_image').image_url.url;
   const videoUrl = body.content.find((item) => item.role === 'reference_video').video_url.url;
   const audioUrl = body.content.find((item) => item.role === 'reference_audio').audio_url.url;
-  for (const signed of [imageUrl, videoUrl, audioUrl]) {
-    const url = new URL(signed);
-    assert.equal(url.origin, 'https://media.example.test');
-    assert.ok(url.pathname.startsWith('/static/projects/0001/assets/'));
-    assert.ok(providerAssetUrlService.verifyProviderAssetRequest({
-      pathname: url.pathname,
-      expires: Number(url.searchParams.get('provider_asset_expires')),
-      signature: url.searchParams.get('provider_asset_signature'),
-      secret: process.env.PLATFORM_JWT_SECRET,
-    }));
-  }
+  assert.deepEqual([imageUrl, videoUrl, audioUrl], [
+    'https://fumin.ai/files/asset-1',
+    'https://fumin.ai/files/asset-2',
+    'https://fumin.ai/files/asset-3',
+  ]);
 });
 
 test('Fumin submit rejects traversal static image/video/audio before provider POST', async (t) => {

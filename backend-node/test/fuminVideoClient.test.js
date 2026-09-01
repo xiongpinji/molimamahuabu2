@@ -7,6 +7,7 @@ const {
   buildFuminVideoBody,
   callFuminVideoApi,
   resolveFuminApiKey,
+  uploadFuminReferenceAsset,
 } = require('../src/services/fuminVideoClient');
 
 const originalFetch = global.fetch;
@@ -203,4 +204,92 @@ test('Fumin 本地视频或音频无法公开时在 POST 前 fail closed', async
 
   assert.match(result.error, /参考视频或音频准备失败/);
   assert.equal(fetchCalls, 0);
+});
+
+test('Fumin 第一方素材上传使用固定端点并返回可用于生成的 HTTPS URL', async () => {
+  const requests = [];
+  const bytes = Buffer.from('approved-reference-bytes');
+  const result = await uploadFuminReferenceAsset({
+    base_url: 'https://fumin.ai',
+    api_key: 'db-fumin-key',
+  }, {
+    bytes,
+    filename: 'approved-motion.mp4',
+    mimeType: 'video/mp4',
+    fetchImpl: async (url, options) => {
+      requests.push({ url: String(url), options });
+      return new Response(JSON.stringify({
+        id: 'file-123',
+        url: 'https://fumin.ai/api/v3/files/file-123/content',
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  assert.deepEqual(result, {
+    asset_id: 'file-123',
+    url: 'https://fumin.ai/api/v3/files/file-123/content',
+  });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, 'https://fumin.ai/api/v3/files/uploads?volc_asset=true');
+  assert.equal(requests[0].options.method, 'POST');
+  assert.equal(requests[0].options.headers.Authorization, 'Bearer db-fumin-key');
+  assert.equal(requests[0].options.body instanceof FormData, true);
+  const uploaded = requests[0].options.body.get('file');
+  assert.equal(uploaded.name, 'approved-motion.mp4');
+  assert.equal(uploaded.type, 'video/mp4');
+  assert.deepEqual(Buffer.from(await uploaded.arrayBuffer()), bytes);
+});
+
+test('Fumin 上传只返回文件 ID 时查询一次固定元数据端点', async () => {
+  const requests = [];
+  const result = await uploadFuminReferenceAsset({
+    base_url: 'https://fumin.ai/api/v3',
+    api_key: 'db-fumin-key',
+  }, {
+    bytes: Buffer.from('approved-image-bytes'),
+    filename: 'approved-identity.png',
+    mimeType: 'image/png',
+    fetchImpl: async (url, options = {}) => {
+      requests.push({ url: String(url), method: options.method || 'GET' });
+      if (requests.length === 1) {
+        return new Response(JSON.stringify({ data: { file_id: 'file-456' } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ data: { file: { url: 'https://fumin.ai/files/file-456.png' } } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  assert.deepEqual(result, {
+    asset_id: 'file-456',
+    url: 'https://fumin.ai/files/file-456.png',
+  });
+  assert.deepEqual(requests, [
+    { url: 'https://fumin.ai/api/v3/files/uploads?volc_asset=true', method: 'POST' },
+    { url: 'https://fumin.ai/api/v3/files/file-456', method: 'GET' },
+  ]);
+});
+
+test('Fumin 素材上传连接结果未知时返回稳定错误且不查询元数据', async () => {
+  let calls = 0;
+  await assert.rejects(() => uploadFuminReferenceAsset({
+    base_url: 'https://fumin.ai',
+    api_key: 'db-fumin-key',
+  }, {
+    bytes: Buffer.from('approved-image-bytes'),
+    filename: 'approved-identity.png',
+    mimeType: 'image/png',
+    fetchImpl: async () => {
+      calls += 1;
+      throw new Error('socket closed');
+    },
+  }), { code: 'FUMIN_REFERENCE_UPLOAD_UNKNOWN' });
+  assert.equal(calls, 1);
 });

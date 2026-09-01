@@ -335,6 +335,10 @@ function setupRouter(cfg, db, log, options = {}) {
     coverageRegistrationProvider: explicitCoverageRegistrationProvider,
     localeRegistry,
     localeVerifier,
+    candidateQualityVerifier: options.candidateQualityVerifier
+      || redrawOptions.candidateQualityVerifier,
+    candidateQualityDependencies: options.candidateQualityDependencies
+      || redrawOptions.candidateQualityDependencies,
     localVoiceRegistrationService,
     localTtsWorker,
     localTtsManifest,
