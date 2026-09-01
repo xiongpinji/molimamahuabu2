@@ -4634,6 +4634,40 @@ test('单镜生成错误保持结构化 code details 与规定 HTTP 状态', asy
   }
 });
 
+test('单镜生成向准备门禁传入与公开门禁一致的可信资产读取上下文', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    const storageRoot = path.join(process.cwd(), 'test-generation-storage');
+    let capturedContext = null;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      cfg: { storage: { local_path: storageRoot } },
+      canReadArtifact: (assetId) => Number(assetId) === 41,
+      generationService: {
+        generateShot: async (context) => {
+          capturedContext = context;
+          return { status: 'processing', billing: { held: 1, charged: 0, released: 0 } };
+        },
+      },
+    }));
+    const result = captureResponse();
+    await handlers.generateShot(request({ id: shotId }), result);
+
+    assert.equal(result.statusCode, 202);
+    assert.ok(capturedContext?.preparationContext);
+    assert.equal(capturedContext.preparationContext.storageRoot, storageRoot);
+    assert.equal(capturedContext.preparationContext.canReadArtifact(41), true);
+    assert.equal(capturedContext.preparationContext.assetReader.canRead({ id: 41 }), true);
+    assert.equal(capturedContext.preparationContext.assetReader.owns({ id: 41 }), true);
+    assert.equal(capturedContext.preparationContext.assetReader.owns({ id: 42 }), false);
+  } finally {
+    db.close();
+  }
+});
+
 test('未审批单镜生成返回 409 missing 且不会冻结积分或调用 provider', async () => {
   const db = createDb();
   try {

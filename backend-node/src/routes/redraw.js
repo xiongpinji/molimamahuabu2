@@ -3589,17 +3589,32 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     }
   }
 
+  function generationPreparationContext() {
+    const storageRoot = storageRootFromConfig(cfg);
+    return {
+      storageRoot,
+      canReadArtifact,
+      assetReader: {
+        canRead: (row) => Boolean(row && canReadArtifact(row.id)),
+        owns: (row) => Boolean(row && canReadArtifact(row.id)),
+      },
+    };
+  }
+
   function generationContext(currentOwner) {
+    const preparationContext = generationPreparationContext();
+    const { storageRoot } = preparationContext;
     const storageBaseUrl = storageBaseUrlFromConfig(cfg);
     const staticAssetSigningSecret = options.staticAssetSigningSecret ?? process.env.PLATFORM_JWT_SECRET;
     return {
-      storageRoot: storageRootFromConfig(cfg),
+      storageRoot,
       storageBaseUrl,
       providerAssetSecret: options.providerAssetSecret ?? process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET,
       staticAssetSigningSecret,
       createReferenceUrl: createProductionReferenceUrlFactory(db, cfg, canReadArtifact, {
         staticAssetSigningSecret,
       }),
+      preparationContext,
       ...(options.generationOptions || {}),
       db,
       log,
@@ -4776,14 +4791,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     const currentOwner = owner(req);
     try {
       return response.success(res, redrawReviewService.evaluateGenerationGate(db, req.params.id, currentOwner, {
-        preparationContext: {
-          storageRoot: storageRootFromConfig(cfg),
-          canReadArtifact,
-          assetReader: {
-            canRead: (row) => Boolean(row && canReadArtifact(row.id)),
-            owns: (row) => Boolean(row && canReadArtifact(row.id)),
-          },
-        },
+        preparationContext: generationPreparationContext(),
       }));
     } catch (error) {
       if (error.code === 'REDRAW_VERSION_NOT_FOUND') return response.notFound(res, '本地化版本不存在');
