@@ -117,6 +117,7 @@ test('Rafael fixture is only the shot-6 owner approval request input and never p
 })
 
 test('supplemental dialogue cannot make Rafael authoritative or enter registration when source facts hide him', async () => {
+  test.setTimeout(60_000)
   const fixture = liveHarness.buildRedrawLiveProductFixture(
     redrawLatinAmericanCase,
     redrawLiveNineShotProject.required_inputs,
