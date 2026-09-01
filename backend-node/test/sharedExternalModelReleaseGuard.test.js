@@ -1192,6 +1192,35 @@ describeRootEvidence('shared evidence path and freshness safety', () => {
     }
   });
 
+  it('does not require fresh private-avatar evidence for async-task billing reservation linkage', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    const expectedCurrent = path.join(fixture.root, 'expected-current');
+    const target = path.join(fixture.candidate, 'backend-node/src/services/videoService.js');
+    try {
+      fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
+      makeEvidenceStaleButUnexpired(fixture, TOAPIS_PRIVATE_AVATAR_FILE);
+      const source = fs.readFileSync(target, 'utf8');
+      const linked = source.replace(
+        '      return reserveCredits(db, body);',
+        `      db.prepare('UPDATE async_tasks SET credit_reservation_id = ?, model = ? WHERE id = ?')
+        .run(reservation.id, billingModel, task.id);
+      return reserveCredits(db, body);`,
+      );
+      assert.notEqual(linked, source);
+      fs.writeFileSync(target, linked);
+      assert.equal(
+        privateAvatarVideoServiceProjection(linked),
+        privateAvatarVideoServiceProjection(fs.readFileSync(
+          path.join(expectedCurrent, 'backend-node/src/services/videoService.js'),
+          'utf8',
+        )),
+      );
+      assertPass(runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it('does not require fresh private-avatar evidence for the audited Wan3-only signing change', () => {
     const fixture = makeFixture({ toapis: true, usmercari: false });
     const expectedCurrent = path.join(fixture.root, 'expected-current');
