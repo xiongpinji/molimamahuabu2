@@ -238,8 +238,13 @@ test('verified ToAPIs Fast 480P 4-second request reserves exact credits and defe
   });
 
   const row = db.prepare('SELECT duration, resolution, credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
+  const task = db.prepare('SELECT credit_reservation_id, model FROM async_tasks WHERE id = ?').get(created.task_id);
   assert.deepEqual({ duration: row.duration, resolution: row.resolution }, { duration: 4, resolution: '480p' });
   assert.equal(credits.getReservation(db, row.credit_reservation_id).amount, 2044);
+  assert.deepEqual(task, {
+    credit_reservation_id: row.credit_reservation_id,
+    model: 'seedance-2-fast',
+  });
   assert.deepEqual(
     db.prepare('SELECT model, quantity, resolution, cost_micros, cost_source FROM generation_cost_records').get(),
     { model: 'seedance-2-fast', quantity: 0, resolution: '480p', cost_micros: 0, cost_source: 'unavailable' },

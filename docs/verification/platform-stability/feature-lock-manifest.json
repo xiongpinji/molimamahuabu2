@@ -586,6 +586,16 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
+          "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
+          "impactTests": [
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
@@ -935,6 +945,16 @@
             "backend-node/test/toapisWan3VideoClient.test.js",
             "backend-node/test/videoServiceWan3.test.js",
             "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
+          "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
+          "impactTests": [
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/videoBilling.test.js",
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
@@ -1782,6 +1802,16 @@
             "backend-node/test/toapisWan3VideoClient.test.js",
             "backend-node/test/videoServiceWan3.test.js",
             "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
+          "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
+          "impactTests": [
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/videoBilling.test.js",
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]

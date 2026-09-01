@@ -264,6 +264,37 @@ test('生成冻结积分未满 30 分钟不提前失败或退款', (t) => {
     WHERE reservation_id = ?`).get(reservation.id).count, 0);
 });
 
+test('已退款的视频任务即使缺少异步任务预扣关联也会收口为失败以允许重新提交', (t) => {
+  const { db } = setup();
+  t.after(() => db.close());
+  const reservation = reserve(db, 'refunded-video-task-with-missing-link');
+  const now = '2026-08-15T12:00:00.000Z';
+
+  db.prepare(`INSERT INTO async_tasks
+    (id, type, status, progress, message, error, resource_id, created_at, updated_at,
+     user_id, model, tenant_id)
+    VALUES ('task-refunded-video-missing-link', 'video_generation', 'needs_attention', 90,
+      '供应商提交结果未知，等待管理员核对，请勿重新提交', '供应商明确拒绝', '105', ?, ?,
+      'user-a', 'logical-image', 'tenant-a')`)
+    .run(now, now);
+  db.prepare(`INSERT INTO video_generations
+    (id, provider, prompt, model, status, task_id, error_msg, created_at, updated_at,
+     user_id, credit_reservation_id, tenant_id)
+    VALUES (105, 'private-relay', 'test prompt', 'logical-image', 'failed',
+      'task-refunded-video-missing-link', '供应商明确拒绝', ?, ?, 'user-a', ?, 'tenant-a')`)
+    .run(now, now, reservation.id);
+  creditLedgerService.settleGeneration(db, reservation.id, 'failed', '已确认失败');
+
+  const result = providerReconciliation.reconcileProviderRequests(db, log, now);
+  const task = db.prepare(`SELECT status, progress, completed_at
+    FROM async_tasks WHERE id = 'task-refunded-video-missing-link'`).get();
+
+  assert.equal(result.repaired, 1);
+  assert.equal(task.status, 'failed');
+  assert.equal(task.progress, 100);
+  assert.equal(task.completed_at, now);
+});
+
 test('超过 30 分钟但已有完成证据时不退款', (t) => {
   const { db, config } = setup();
   t.after(() => db.close());

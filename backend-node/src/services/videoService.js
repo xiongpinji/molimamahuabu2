@@ -1858,6 +1858,8 @@ function create(db, log, req, options = {}) {
         usageSource: 'configured',
       });
       db.prepare('UPDATE video_generations SET credit_reservation_id = ? WHERE id = ?').run(reservation.id, id);
+      db.prepare('UPDATE async_tasks SET credit_reservation_id = ?, model = ? WHERE id = ?')
+        .run(reservation.id, billingModel, task.id);
       auditEvent.record(db, {
         userId: options.userId,
         tenantId: options.tenantId,

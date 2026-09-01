@@ -308,6 +308,10 @@ function privateAvatarVideoServiceProjection(source) {
     /^[\t ]*const[\t ]+providerAssetUrl[\t ]*=[\t ]*require\([\t ]*['"]\.\/providerAssetUrlService['"][\t ]*\);?[\t ]*$/m,
     '',
   );
+  projected = projected.replace(
+    /^[\t ]*db\.prepare\(['"]UPDATE async_tasks SET credit_reservation_id = \?, model = \? WHERE id = \?['"]\)\r?\n[\t ]*\.run\(reservation\.id, billingModel, task\.id\);?[\t ]*$/m,
+    '',
+  );
   projected = withoutNamedFunction(projected, 'signedWan3SubmissionPayload');
   projected = projected.replace(
     /Object\.assign\(\s*requestPayload\s*,\s*signedWan3SubmissionPayload\(\{\s*\.\.\.requestPayload\s*,\s*client_business_id\s*:\s*`video-\$\{videoGenId\}`\s*,?\s*\}\)\s*\)\s*;/,
