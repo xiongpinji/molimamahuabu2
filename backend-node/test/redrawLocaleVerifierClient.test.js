@@ -249,6 +249,23 @@ function clientFor(socketPath, options = {}) {
   });
 }
 
+test('client exposes the signed pack readiness assertion used by generation gates', () => {
+  const expectedPack = nativePack();
+  const calls = [];
+  const client = createRedrawLocaleVerifierClient({
+    socketPath: 'unused',
+    registry: {
+      assertReady(expected) {
+        calls.push(expected);
+        return expectedPack;
+      },
+    },
+  });
+
+  assert.equal(client.assertReady({ language: 'en', scope: 'language' }), expectedPack);
+  assert.deepEqual(calls, [{ language: 'en', scope: 'language' }]);
+});
+
 test('client maps camelCase request fields, hashes audio, and returns camelCase evidence', async () => {
   const audio = makeAudio();
   await withServer((socket, request) => {

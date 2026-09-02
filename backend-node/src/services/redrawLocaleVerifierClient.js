@@ -52,6 +52,10 @@ function createRedrawLocaleVerifierClient(options = {}) {
     throw codedError('REDRAW_LOCALE_VERIFIER_CONFIG_INVALID');
   }
 
+  function assertReady(expected) {
+    return registry.assertReady(expected);
+  }
+
   async function verify(input = {}) {
     const pack = registry.assertReady(input.locale);
     const audioSha256 = await sha256File(input.audioPath);
@@ -104,7 +108,7 @@ function createRedrawLocaleVerifierClient(options = {}) {
     return validateLocalVoiceWrapper(response, request, pack);
   }
 
-  return { verify, verifyNativeAudio, verifyLocalVoice };
+  return { assertReady, verify, verifyNativeAudio, verifyLocalVoice };
 }
 
 function toWorkerRequest(input, pack, audioSha256) {
