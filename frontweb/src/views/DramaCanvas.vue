@@ -48,6 +48,10 @@
               <el-icon><RefreshRight /></el-icon>
             </button>
           </div>
+          <el-button class="canvas-recharge" size="small" type="warning" plain title="充值积分" @click="router.push({ name: 'recharge-center' })">
+            <el-icon><Coin /></el-icon>
+            <span>充值积分</span>
+          </el-button>
           <el-button class="topbar-share" size="small" circle aria-label="分享画布" title="复制画布链接" @click="shareCanvas">
             <el-icon><Share /></el-icon>
           </el-button>
@@ -625,7 +629,7 @@ import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
-import { MoreFilled, Operation, Plus, RefreshLeft, RefreshRight, Share } from '@element-plus/icons-vue'
+import { Coin, MoreFilled, Operation, Plus, RefreshLeft, RefreshRight, Share } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import '@vue-flow/core/dist/style.css'
