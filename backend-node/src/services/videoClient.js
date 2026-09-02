@@ -12,6 +12,7 @@ let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
 const { uploadLocalImageToProxy, uploadToImageProxy } = require('./uploadService');
 const imageClient = require('./imageClient');
 const aihubccClient = require('./aihubccClient');
+const newapiVideoClient = require('./newapiVideoClient');
 const lingjingVideoClient = require('./lingjingVideoClient');
 const feituoVideoClient = require('./feituoVideoClient');
 const usmercariVideoClient = require('./usmercariVideoClient');
@@ -47,6 +48,7 @@ const {
  */
 function inferVideoProtocol(provider) {
   const p = String(provider || '').toLowerCase();
+  if (p === 'newapi' || p === 'newapi_video' || p === 'megabyai') return 'newapi_video';
   if (p === 'aihubcc' || p === 'aihubcc_video') return 'aihubcc';
   if (p === 'token6688' || p === 'tokengo') return 'token6688';
   if (p === 'djpsd_openapi') return 'djpsd_openapi';
@@ -372,6 +374,11 @@ function resolveVideoProtocol(config, modelHint) {
 
 function getVideoArtifactFetchOptions(config, videoUrl) {
   if (!String(config?.api_key || '').trim()) return {};
+  const protocol = String(config?.api_protocol || '').trim().toLowerCase();
+  const provider = String(config?.provider || '').trim().toLowerCase();
+  if (protocol === 'newapi_video' || provider === 'newapi' || provider === 'megabyai') {
+    return { headers: { Authorization: 'Bearer ' + config.api_key } };
+  }
   try {
     const providerOrigin = new URL(String(config?.base_url || '')).origin;
     const artifactOrigin = new URL(String(videoUrl || '')).origin;
@@ -1759,6 +1766,7 @@ function buildQueryUrl(config, taskId) {
   const base = (config.base_url || (proto === 'deepwl_grok' ? 'https://zx1.deepwl.net' : '')).replace(/\/$/, '');
   let defaultEp;
   if (isSora) defaultEp = '/v1/videos/{taskId}';
+  else if (proto === 'newapi_video') defaultEp = '/v1/videos/{taskId}';
   else if (proto === 'xai') defaultEp = '/v1/videos/{taskId}';
   else if (proto === 'deepwl_grok') {
     const mode = resolveDeepwlGrokMode(config);
@@ -5334,6 +5342,18 @@ async function submitVideoWithConfig(db, log, config, opts, runtime = {}) {
     });
   }
 
+  if (protocol === 'newapi_video') {
+    return newapiVideoClient.callNewApiVideoApi(config, log, {
+      ...opts,
+      model,
+      prompt,
+      duration: opts.duration ?? duration,
+      aspect_ratio: opts.aspect_ratio ?? aspect_ratio,
+      resolution: opts.resolution ?? resolution,
+      fetchImpl: opts.fetchImpl,
+    });
+  }
+
   if (protocol === 'fumin_video') {
     const rawReferences = [...new Set([
       image_url,
@@ -6335,6 +6355,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isDeepwlGrok = protocol === 'deepwl_grok';
   const isAihubcc = protocol === 'aihubcc';
   const isIcreat = protocol === 'icreat_task';
+  const isNewApi = protocol === 'newapi_video';
   const isFeituo = protocol === 'feituo_open';
   const isUsmercari = protocol === 'usmercari_media';
   const isFumin = protocol === 'fumin_video';
@@ -6412,6 +6433,19 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           };
         }
         if (result.state === 'failed') return { error: result.error };
+        continue;
+      }
+      if (isNewApi) {
+        const result = await newapiVideoClient.fetchNewApiTask(config, taskId, { fetchImpl });
+        log.info('[NewAPI video poll] 状态', {
+          video_gen_id: videoGenId,
+          round: attempt + 1,
+          state: result.state,
+          has_video_url: !!result.videoUrl,
+        });
+        if (result.state === 'completed' && result.videoUrl) return { video_url: result.videoUrl };
+        if (result.state === 'failed') return { error: result.error };
+        if (result.state === 'completed') return { error: 'NewAPI 任务完成但未返回可下载的视频地址' };
         continue;
       }
       let url, headers, method = 'GET', requestBody;
@@ -7247,6 +7281,12 @@ function normalizeVideoDurationForModel(model, value) {
 }
 
 module.exports = {
+  NEWAPI_VERIFIED_MODELS: newapiVideoClient.VERIFIED_MODELS,
+  buildNewApiVideoBody: newapiVideoClient.buildVideoBody,
+  validateNewApiVideoOptions: newapiVideoClient.validateVideoOptions,
+  parseNewApiSubmitResponse: newapiVideoClient.parseSubmitResponse,
+  parseNewApiPollResponse: newapiVideoClient.parsePollResponse,
+  callNewApiVideoApi: newapiVideoClient.callNewApiVideoApi,
   getDefaultVideoConfig,
   getVideoConfigById,
   getVideoArtifactFetchOptions,

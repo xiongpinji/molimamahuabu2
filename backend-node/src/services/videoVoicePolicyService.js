@@ -28,6 +28,47 @@ const POLICIES = Object.freeze({
   }),
 });
 
+// 仅记录已经完成真实生成并校验结果文件的 NewAPI 模型能力；
+// 这不是对供应商未测试参数的推断。
+const NEWAPI_MODEL_CAPABILITIES = Object.freeze({
+  'seedance-2.0-fast': Object.freeze({
+    validated: true, response_mode: 'async', duration: Object.freeze({ min: 4, max: 15 }),
+    ratios: Object.freeze(['16:9', '9:16', '1:1']), resolutions: Object.freeze(['480p', '720p']),
+    reference_images_max: 9, reference_videos_max: 3, reference_audios_max: 3,
+    audio_mode: 'native_with_reference_audio',
+    verified_observation: Object.freeze({ output: '864x496 H264/AAC, 5.04s', latency_seconds: 204 }),
+  }),
+  'seedance-2.0': Object.freeze({
+    validated: true, response_mode: 'async', duration: Object.freeze({ min: 4, max: 15 }),
+    ratios: Object.freeze(['16:9', '9:16', '1:1']), resolutions: Object.freeze(['480p', '720p']),
+    reference_images_max: 9, reference_videos_max: 3, reference_audios_max: 3,
+    audio_mode: 'native_with_reference_audio',
+    verified_observation: Object.freeze({ output: '864x496 H264/AAC, 5.04s', latency_seconds: 226 }),
+  }),
+  'seedance-2.0-mini': Object.freeze({
+    validated: true, response_mode: 'async', duration: Object.freeze({ min: 4, max: 15 }),
+    ratios: Object.freeze(['16:9', '9:16', '1:1']), resolutions: Object.freeze(['480p', '720p']),
+    reference_images_max: 9, reference_videos_max: 3, reference_audios_max: 3,
+    audio_mode: 'native_with_reference_audio',
+    verified_observation: Object.freeze({ output: '864x496 H264/AAC, 4.04s', latency_seconds: 233 }),
+  }),
+  'seedance-2.5': Object.freeze({
+    validated: true, response_mode: 'async', duration: Object.freeze({ min: 4, max: 15 }),
+    ratios: Object.freeze(['16:9', '9:16', '1:1']), resolutions: Object.freeze(['480p', '720p']),
+    reference_images_max: 9, reference_videos_max: 3, reference_audios_max: 3,
+    audio_mode: 'native_with_reference_audio',
+    verified_observation: Object.freeze({ output: '854x480 H264/AAC, 5.04s', latency_seconds: 318 }),
+  }),
+  minimax_h3_image_audio_to_video_v2: Object.freeze({
+    validated: true, response_mode: 'async', duration: Object.freeze({ min: 4, max: 15 }),
+    ratios: Object.freeze(['16:9', '9:16', '1:1']), resolutions: Object.freeze(['768p']),
+    requires_reference: true, reference_images_max: 9, reference_videos_max: 3, reference_audios_max: 3,
+    audio_mode: 'native_with_reference_audio',
+    notes: '480p 会被供应商拒绝；至少需要一张参考图或一段参考音频。',
+    verified_observation: Object.freeze({ output: '1344x768 H264/AAC, 5.17s', latency_seconds: 153 }),
+  }),
+});
+
 function normalize(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -98,7 +139,7 @@ function enrichVideoConfig(config = {}) {
     }),
   })).filter((item) => item.model);
   const primary = policyForConfig(config);
-  return {
+  const enriched = {
     ...config,
     voice_policy: primary?.key || null,
     voice_policy_label: primary?.label || null,
@@ -106,10 +147,20 @@ function enrichVideoConfig(config = {}) {
     voice_policy_description: primary?.description || null,
     voice_policies: voicePolicies,
   };
+  if (normalize(config.provider) === 'newapi' || normalize(config.api_protocol) === 'newapi_video') {
+    enriched.model_capabilities = Object.fromEntries(
+      models
+        .map((model) => String(model || '').trim())
+        .filter((model) => NEWAPI_MODEL_CAPABILITIES[model])
+        .map((model) => [model, NEWAPI_MODEL_CAPABILITIES[model]])
+    );
+  }
+  return enriched;
 }
 
 module.exports = {
   POLICIES,
+  NEWAPI_MODEL_CAPABILITIES,
   classifyVideoVoicePolicy,
   enrichVideoConfig,
   isSeedance2Model,
