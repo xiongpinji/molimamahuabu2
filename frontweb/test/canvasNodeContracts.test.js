@@ -22,6 +22,13 @@ test('自由节点连接只允许真实模型能够消费的输入契约', () =>
     label: '图片 → 视频参考图',
     slots: ['reference-image', 'first-frame', 'last-frame', 'character-reference', 'style-reference'],
   })
+  assert.deepEqual(resolveCanvasNodeConnection('text', 'video'), {
+    allowed: true,
+    output: 'text',
+    input: 'prompt',
+    label: '文本 → 视频提示词',
+    slots: ['prompt', 'style-prompt'],
+  })
   assert.equal(resolveCanvasNodeConnection('image', 'audio').allowed, false)
   assert.equal(resolveCanvasNodeConnection('video', 'image').allowed, false)
   assert.deepEqual(resolveCanvasNodeConnection('audio', 'video'), {

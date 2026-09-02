@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildCanvasExecutionPlan } from '../src/utils/canvasExecutionPlan.js'
+import { buildCanvasExecutionBatches, buildCanvasExecutionPlan } from '../src/utils/canvasExecutionPlan.js'
 import {
   canvasModelCapability,
   canvasModelEntry,
@@ -33,6 +33,16 @@ test('subgraph reports cycles before execution', () => {
     { rootNodeIds: ['a'], includeDownstream: true },
   )
   assert.deepEqual(new Set(plan.cycleNodeIds), new Set(['a', 'b']))
+})
+
+test('独立视频节点共享同一图片上游时按批次并行执行', () => {
+  const result = buildCanvasExecutionBatches(
+    [node('image', 'image'), node('video-a', 'video'), node('video-b', 'video')],
+    [edge('image-a', 'image', 'video-a'), edge('image-b', 'image', 'video-b')],
+    { rootNodeIds: ['image'], includeDownstream: true },
+  )
+
+  assert.deepEqual(result.batches, [['image'], ['video-a', 'video-b']])
 })
 
 test('model capabilities restrict parameters and estimate per-second video cost', () => {

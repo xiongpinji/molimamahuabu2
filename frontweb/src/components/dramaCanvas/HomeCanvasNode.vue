@@ -174,13 +174,13 @@
         <div v-if="data.kind === 'video'" class="video-mode-toolbar">
           <div class="video-mode-tabs" role="tablist" aria-label="视频参考模式">
             <button
-              v-if="!supportsAnyReferenceMode"
               type="button"
-              class="active"
+              :class="{ active: videoReferenceMode === 'text' }"
+              :disabled="!supportsTextToVideoMode"
               role="tab"
-              aria-selected="true"
-              disabled
-              title="当前模型仅开放纯提示词生成"
+              :aria-selected="videoReferenceMode === 'text'"
+              :title="supportsTextToVideoMode ? '仅使用提示词生成视频' : '当前模型未开放文生视频'"
+              @click="setVideoReferenceMode('text')"
             >纯提示词</button>
             <button
               type="button"
@@ -300,6 +300,7 @@
               <figcaption :title="reference.title">{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}{{ referenceSubmissionOrdinal(reference) || '未采用' }}{{ reference.enabled === false ? '（未启用）' : '' }}</figcaption>
             </figure>
           </div>
+          <p v-else-if="data.kind === 'video' && videoReferenceMode === 'text'" class="reference-empty">纯提示词模式不会提交任何参考素材；切换到首尾帧、多图参考或全能参考后才会采用连线。</p>
           <p v-else-if="data.kind === 'video'" class="reference-empty">把图片、视频或音频节点连接到视频节点；首尾帧、多图参考和全能参考会按当前模式真实提交。</p>
           <p v-else class="reference-empty">把图片节点连接到图片节点，生成时会自动采用为参考图。</p>
         </section>
@@ -658,14 +659,11 @@ const supportsOmniReferenceMode = computed(() => (
   || capability.value.supportsAudioReference === true
   || capability.value?.declared === false
 ))
-const supportsAnyReferenceMode = computed(() => (
-  supportsFirstLastMode.value
-  || supportsImageReferenceMode.value
-  || supportsOmniReferenceMode.value
-))
+const supportsTextToVideoMode = computed(() => capability.value?.supportsTextToVideo !== false)
 const canUploadReference = computed(() => {
   if (typeof ctx?.uploadFreeCanvasReferenceMedia !== 'function') return false
   if (props.data.kind !== 'video') return true
+  if (videoReferenceMode.value === 'text') return false
   if (videoReferenceMode.value === 'first-last') return supportsFirstLastMode.value
   if (videoReferenceMode.value === 'multi') return supportsImageReferenceMode.value
   return supportsOmniReferenceMode.value
@@ -725,6 +723,7 @@ const firstLastFrameSlots = computed(() => {
 })
 const videoReferenceMode = computed(() => {
   const mode = normalizeFreeCanvasVideoReferenceMode(draft.videoReferenceMode, inputReferences.value)
+  if (mode === 'text' && supportsTextToVideoMode.value) return mode
   if (mode === 'first-last' && supportsFirstLastMode.value) return mode
   if (mode === 'multi' && supportsImageReferenceMode.value) return mode
   if (mode === 'omni' && supportsOmniReferenceMode.value) return mode
@@ -859,6 +858,8 @@ async function onModelChange() {
   }
   if (props.data.kind === 'video') {
     const currentModeSupported = (
+      (videoReferenceMode.value === 'text' && supportsTextToVideoMode.value)
+      ||
       (videoReferenceMode.value === 'first-last' && supportsFirstLastMode.value)
       || (videoReferenceMode.value === 'multi' && supportsImageReferenceMode.value)
       || (videoReferenceMode.value === 'omni' && supportsOmniReferenceMode.value)
@@ -870,7 +871,9 @@ async function onModelChange() {
           ? 'multi'
           : supportsOmniReferenceMode.value
             ? 'omni'
-            : ''
+            : supportsTextToVideoMode.value
+              ? 'text'
+              : ''
     }
   }
   await saveDraft()
@@ -1330,6 +1333,7 @@ function updateReference(reference, patch) {
 
 async function setVideoReferenceMode(mode) {
   if (props.data.kind !== 'video') return
+  if (mode === 'text' && !supportsTextToVideoMode.value) return
   if (mode === 'first-last' && !supportsFirstLastMode.value) return
   if (mode === 'multi' && !supportsImageReferenceMode.value) return
   if (mode === 'omni' && !supportsOmniReferenceMode.value) return
@@ -1340,15 +1344,15 @@ async function setVideoReferenceMode(mode) {
     if (reference.kind === 'image') {
       const index = imageIndex++
       const input = resolveFreeCanvasVideoReferenceInput(draft.videoReferenceMode, index)
-      const enabled = draft.videoReferenceMode === 'multi'
+      const enabled = draft.videoReferenceMode !== 'text' && (draft.videoReferenceMode === 'multi'
         || (draft.videoReferenceMode === 'omni' && capabilityAllows('supportsImageReference'))
         || (draft.videoReferenceMode === 'first-last' && index === 0)
-        || (draft.videoReferenceMode === 'first-last' && index === 1)
+        || (draft.videoReferenceMode === 'first-last' && index === 1))
       updateReference(reference, { input, enabled })
       return
     }
     updateReference(reference, {
-      enabled: draft.videoReferenceMode === 'omni'
+      enabled: draft.videoReferenceMode !== 'text' && draft.videoReferenceMode === 'omni'
         && (reference.kind === 'video'
           ? capabilityAllows('supportsVideoReference')
           : capabilityAllows('supportsAudioReference')),
@@ -1456,11 +1460,11 @@ watch(
         ? resolveFreeCanvasVideoReferenceInput(videoReferenceMode.value, index)
         : reference.slot
       const enabled = isImage
-        ? videoReferenceMode.value === 'multi'
+        ? videoReferenceMode.value !== 'text' && (videoReferenceMode.value === 'multi'
           || (videoReferenceMode.value === 'omni' && capabilityAllows('supportsImageReference'))
           || (videoReferenceMode.value === 'first-last' && index === 0)
-          || (videoReferenceMode.value === 'first-last' && index === 1)
-        : videoReferenceMode.value === 'omni'
+          || (videoReferenceMode.value === 'first-last' && index === 1))
+        : videoReferenceMode.value !== 'text' && videoReferenceMode.value === 'omni'
           && (reference.kind === 'video'
             ? capabilityAllows('supportsVideoReference')
             : capabilityAllows('supportsAudioReference'))
