@@ -663,6 +663,7 @@ class VerifierTests(unittest.TestCase):
         )
 
         self.assertTrue(result["language_verified"])
+        self.assertEqual(result["request_id"], self.native_english_request["request_id"])
         self.assertFalse(result["locale_verified"])
         self.assertEqual(result["detected_language"], "en")
         self.assertEqual(result["locale_pack"], "en@1")

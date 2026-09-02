@@ -517,7 +517,60 @@ class ServerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "LOCALE_READY_ATTESTATION_INVALID"):
             build_ready_payload({**self.pack, "model_manifest_sha256": "bad"})
         with self.assertRaisesRegex(ValueError, "LOCALE_READY_ATTESTATION_INVALID"):
+            build_ready_payload(self.pack, manifest_sha256="bad")
+        with self.assertRaisesRegex(ValueError, "LOCALE_READY_ATTESTATION_INVALID"):
             build_ready_payload({**self.pack, "id": ""})
+
+    def test_modern_ready_payload_binds_signed_registry_manifest(self):
+        modern_pack = {
+            "id": "en@1",
+            "language": "en",
+            "locale": None,
+            "scope": "language",
+            "prompt_language_label": "English",
+            "model_manifest_sha256": "a" * 64,
+            "calibration_manifest_sha256": "b" * 64,
+            "thresholds": {
+                "language_probability_min": 0.75,
+                "dialogue_similarity_min": 0.8,
+                "speech_chars_per_second_max": 20.0,
+            },
+        }
+        payload = build_ready_payload(
+            modern_pack,
+            manifest_sha256="c" * 64,
+            now=datetime(2026, 8, 8, 7, 0, 0, tzinfo=timezone.utc),
+            pid=1234,
+        )
+        self.assertEqual(payload["manifest_sha256"], "c" * 64)
+
+    def test_ready_after_startup_checks_preserves_manifest_hash_for_modern_pack(self):
+        ready_path = self.root / "worker.ready.json"
+        modern_pack = {
+            "id": "en@1",
+            "language": "en",
+            "locale": None,
+            "scope": "language",
+            "prompt_language_label": "English",
+            "model_manifest_sha256": "a" * 64,
+            "calibration_manifest_sha256": "b" * 64,
+            "thresholds": {
+                "language_probability_min": 0.75,
+                "dialogue_similarity_min": 0.8,
+                "speech_chars_per_second_max": 20.0,
+            },
+        }
+        write_ready_after_startup_checks(
+            ready_path,
+            modern_pack,
+            model_hash_check=lambda pack: None,
+            smoke_checks=(lambda: None, lambda: None),
+            manifest_sha256="c" * 64,
+            now=datetime(2026, 8, 8, 7, 0, 0, tzinfo=timezone.utc),
+            pid=1234,
+        )
+        payload = json.loads(ready_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["manifest_sha256"], "c" * 64)
 
     def test_multi_pack_ready_keeps_legacy_fields_and_binds_sorted_pack_attestations(self):
         pack_by_id = {"es@1": self.native_pack, "en-US@1": self.pack}
@@ -621,6 +674,7 @@ class ServerTests(unittest.TestCase):
             "REDRAW_LOCALE_VERIFIER_PACK_PATH": str(bundle_path),
             "REDRAW_LOCALE_VERIFIER_MODEL_MANIFEST_PATH": str(model_manifest_path),
             "REDRAW_LOCALE_VERIFIER_MODEL_MANIFEST_SHA256": expected_model_hash,
+            "REDRAW_LOCALE_VERIFIER_MANIFEST_SHA256": "e" * 64,
             "REDRAW_LOCALE_VERIFIER_SMOKE_AUDIO": str(smoke_audio),
             "REDRAW_LOCALE_VERIFIER_ASR_MODEL_DIR": str(asr_dir),
             "REDRAW_LOCALE_VERIFIER_ACCENT_RUNTIME_DIR": str(accent_dir),
@@ -638,6 +692,7 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(captured["pack"]["id"], "en-US@1")
         self.assertEqual(sorted(captured["pack_by_id"]), ["en-US@1", "es@1"])
+        self.assertEqual(captured["manifest_sha256"], "e" * 64)
         server_module.run_startup_checks(
             captured["pack"],
             pack_by_id=captured["pack_by_id"],

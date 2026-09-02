@@ -157,6 +157,7 @@ def verify_native_audio(request, pack, *, allowed_root, asr, accent=None):
     language_verified = all(checks.values())
     return {
         "source": "offline-worker",
+        "request_id": request.get("request_id"),
         "locale_pack": pack_id,
         "detected_language": detected_language,
         "detected_locale": None,

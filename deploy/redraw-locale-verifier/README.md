@@ -8,6 +8,8 @@
 
 systemd 通过 shared verifier 目录下的 `verifier.env` 注入 socket、ready、allowed-root、pack、model-manifest、ASR 模型、口音 runtime 和 smoke 音频路径；缺少任一项时 entrypoint fail closed，不发布 ready attestation。
 
+`verifier.env` 还必须提供 `REDRAW_LOCALE_VERIFIER_MANIFEST_SHA256`，其值是签名 `enabled-packs.json` canonical payload 的 SHA-256。Worker 会把该值绑定到 ready attestation，Node 侧 registry 据此拒绝与签名语言包不一致的 ready 状态。
+
 发布包边界由 `deploy/release-scopes/redraw-locale-verifier.json` 固定。禁止将密钥、模型权重、venv、生产 DB、`current` symlink 或 `shared/release-guard` 文件加入该 scope。
 
 ## Gate 使用与证据等级

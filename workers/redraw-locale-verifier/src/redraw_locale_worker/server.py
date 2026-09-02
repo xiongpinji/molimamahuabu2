@@ -226,7 +226,15 @@ def make_test_server(
     return LocaleTcpTestServer(("127.0.0.1", 0), LocaleRequestHandler, config=config)
 
 
-def build_ready_payload(pack, *, pack_by_id=None, now=None, pid=None, ttl_seconds=READY_TTL_SECONDS):
+def build_ready_payload(
+    pack,
+    *,
+    pack_by_id=None,
+    manifest_sha256=None,
+    now=None,
+    pid=None,
+    ttl_seconds=READY_TTL_SECONDS,
+):
     if not isinstance(pack, dict):
         raise TypeError("LOCALE_READY_ATTESTATION_INVALID")
     index = None
@@ -252,6 +260,10 @@ def build_ready_payload(pack, *, pack_by_id=None, now=None, pid=None, ttl_second
         "calibration_manifest_sha256": primary["calibration_manifest_sha256"],
         "expires_at": timestamp + ttl_seconds,
     }
+    if manifest_sha256 is not None:
+        if not isinstance(manifest_sha256, str) or HEX_SHA256_RE.fullmatch(manifest_sha256) is None:
+            raise ValueError("LOCALE_READY_ATTESTATION_INVALID")
+        payload["manifest_sha256"] = manifest_sha256
     if pack_by_id is not None:
         attestations = [_ready_attestation(index[pack_id]) for pack_id in sorted(index)]
         payload["enabled_pack_ids"] = [item["id"] for item in attestations]
@@ -259,18 +271,41 @@ def build_ready_payload(pack, *, pack_by_id=None, now=None, pid=None, ttl_second
     return payload
 
 
-def write_ready(path, pack, *, pack_by_id=None, now=None, pid=None):
+def write_ready(path, pack, *, pack_by_id=None, manifest_sha256=None, now=None, pid=None):
     ready_path = Path(path)
     ready_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = build_ready_payload(pack, pack_by_id=pack_by_id, now=now, pid=pid)
+    payload = build_ready_payload(
+        pack,
+        pack_by_id=pack_by_id,
+        manifest_sha256=manifest_sha256,
+        now=now,
+        pid=pid,
+    )
     temp_path = ready_path.with_suffix(".tmp")
     temp_path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
     os.replace(temp_path, ready_path)
 
 
-def write_ready_after_startup_checks(path, pack, *, model_hash_check, smoke_checks, pack_by_id=None, now=None, pid=None):
+def write_ready_after_startup_checks(
+    path,
+    pack,
+    *,
+    model_hash_check,
+    smoke_checks,
+    pack_by_id=None,
+    manifest_sha256=None,
+    now=None,
+    pid=None,
+):
     run_startup_checks(pack, pack_by_id=pack_by_id, model_hash_check=model_hash_check, smoke_checks=smoke_checks)
-    write_ready(path, pack, pack_by_id=pack_by_id, now=now, pid=pid)
+    write_ready(
+        path,
+        pack,
+        pack_by_id=pack_by_id,
+        manifest_sha256=manifest_sha256,
+        now=now,
+        pid=pid,
+    )
 
 
 def run_startup_checks(pack, *, model_hash_check, smoke_checks, pack_by_id=None):
@@ -329,10 +364,19 @@ def safe_unlink_socket(path):
 
 
 class ReadyRefresher:
-    def __init__(self, ready_path, pack, *, pack_by_id=None, interval_seconds=READY_REFRESH_SECONDS):
+    def __init__(
+        self,
+        ready_path,
+        pack,
+        *,
+        pack_by_id=None,
+        manifest_sha256=None,
+        interval_seconds=READY_REFRESH_SECONDS,
+    ):
         self.ready_path = Path(ready_path)
         self.pack = pack
         self.pack_by_id = pack_by_id
+        self.manifest_sha256 = manifest_sha256
         self.interval_seconds = interval_seconds
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -346,10 +390,24 @@ class ReadyRefresher:
 
     def _run(self):
         while not self._stop.wait(self.interval_seconds):
-            write_ready(self.ready_path, self.pack, pack_by_id=self.pack_by_id)
+            write_ready(
+                self.ready_path,
+                self.pack,
+                pack_by_id=self.pack_by_id,
+                manifest_sha256=self.manifest_sha256,
+            )
 
 
-def create_unix_server(socket_path, *, pack, pack_by_id=None, allowed_root, asr, accent, ready_path=None):
+def create_unix_server(
+    socket_path,
+    *,
+    pack,
+    pack_by_id=None,
+    allowed_root,
+    asr,
+    accent,
+    ready_path=None,
+):
     config = LocaleServerConfig(
         pack=pack,
         pack_by_id=pack_by_id,
@@ -366,7 +424,19 @@ def create_unix_server(socket_path, *, pack, pack_by_id=None, allowed_root, asr,
     return LocaleUnixServer(str(socket_path), LocaleRequestHandler, config=config)
 
 
-def run_server(socket_path, *, pack, pack_by_id=None, allowed_root, asr, accent, ready_path, model_hash_check, smoke_checks):
+def run_server(
+    socket_path,
+    *,
+    pack,
+    pack_by_id=None,
+    allowed_root,
+    asr,
+    accent,
+    ready_path,
+    model_hash_check,
+    smoke_checks,
+    manifest_sha256=None,
+):
     _safe_unlink_file(ready_path)
     server = None
     refresher = None
@@ -381,8 +451,18 @@ def run_server(socket_path, *, pack, pack_by_id=None, allowed_root, asr, accent,
             accent=accent,
             ready_path=ready_path,
         )
-        write_ready(ready_path, pack, pack_by_id=pack_by_id)
-        refresher = ReadyRefresher(ready_path, pack, pack_by_id=pack_by_id)
+        write_ready(
+            ready_path,
+            pack,
+            pack_by_id=pack_by_id,
+            manifest_sha256=manifest_sha256,
+        )
+        refresher = ReadyRefresher(
+            ready_path,
+            pack,
+            pack_by_id=pack_by_id,
+            manifest_sha256=manifest_sha256,
+        )
         refresher.start()
         server.serve_forever()
     finally:
@@ -634,6 +714,7 @@ def main():
         pack_path = _required_env("REDRAW_LOCALE_VERIFIER_PACK_PATH")
         model_manifest_path = _required_env("REDRAW_LOCALE_VERIFIER_MODEL_MANIFEST_PATH")
         expected_model_hash = _required_env("REDRAW_LOCALE_VERIFIER_MODEL_MANIFEST_SHA256")
+        expected_manifest_hash = _required_env("REDRAW_LOCALE_VERIFIER_MANIFEST_SHA256")
         smoke_audio = _required_env("REDRAW_LOCALE_VERIFIER_SMOKE_AUDIO")
         asr_model_dir = _required_env("REDRAW_LOCALE_VERIFIER_ASR_MODEL_DIR")
 
@@ -681,6 +762,7 @@ def main():
             ready_path=ready_path,
             model_hash_check=model_hash_check,
             smoke_checks=smoke_checks,
+            manifest_sha256=expected_manifest_hash,
         )
     except Exception as exc:  # noqa: BLE001 - startup must fail closed without secret details.
         raise SystemExit(f"LOCALE_SERVER_STARTUP_FAILED:{type(exc).__name__}") from None
