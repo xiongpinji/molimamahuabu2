@@ -62,6 +62,7 @@
 - 隔离付费验收启动器的唯一一次授权尝试在产品 API 入口被 `REDRAW_LOCALE_VERIFIER_NOT_READY` 拦截；供应商生成 POST、上传、扣费均为 0，隔离数据库中的视频生成和积分预扣均为 0。该 r10 状态与全局防重锁保留，不重试、不复用。
 - 本地验收器现增加 `assertPaidAcceptanceLocaleVerifierReady` 前置契约：缺少 `assertReady` 或 ready pack 无效时立即失败，并把 `en-US` 规范化为语言级 `en` 请求；本地零费用启动器在装配路由时先执行该检查。
 - 零费用验证：语言 Worker 预检在当前 Windows 环境明确返回 `ready=false`、`REDRAW_LOCALE_VERIFIER_NOT_READY`；前端一键转绘启动器 17 项中 16 通过、1 跳过；未发起供应商请求。
+- Worker 源码只读回归补充：协议、发布范围、校准、模型暂存和 server 测试合计 65 项，60 通过、5 跳过；完整发现运行另有 1 项因当前 Windows 解释器缺少锁定依赖 `jiwer==4.0.0` 而无法导入。未安装依赖、未创建新环境；生产 Worker 仍必须使用部署目录中预置且依赖完整的独立 venv。
 
 ### 未完成边界
 
