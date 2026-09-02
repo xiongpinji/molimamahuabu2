@@ -15,6 +15,7 @@
 - 私有头像运行时投影排除 `setVideoGenFailed`，与既有异步任务账务关联和 Wan3 专用签名投影规则保持一致。
 - 其他 `videoService.js` 变化仍参与比较；已有“引用能力门禁变化必须刷新证据”的拒绝测试继续通过。
 - 更新门禁轮换脚本中审核后的外部验证器 SHA-256，保持生产安装时精确字节校验。
+- 线上共享门禁已由其他受保护发布独立推进；轮换脚本显式接受当前已核对的 activator/UI/external 三个共享哈希，同时继续拒绝未知哈希，避免把其他会话的升级回退掉。
 
 ## TDD 与验证
 
@@ -22,7 +23,9 @@
 - 绿灯：`sharedExternalModelReleaseGuard.test.js` 为 145 通过、0 失败、3 跳过。
 - 轮换与回滚：`sharedReleaseGuardRotation.test.js` 为 40/40 通过。
 - 增量范围和外部证据事务测试已运行；首次组合运行仅因审核哈希尚未更新而失败，更新为实际验证器哈希后轮换测试通过。
+- 组合门禁回归：`node --test backend-node/test/sharedExternalModelReleaseGuard.test.js backend-node/test/sharedReleaseGuardRotation.test.js backend-node/test/sharedExternalEvidenceOnlyTransaction.test.js backend-node/test/incrementalReleaseScope.test.js` 为 232 通过、0 失败、3 跳过。
+- 语法与字节校验：外部验证器 `node --check` 通过；轮换脚本 `bash -n` 通过；声明的外部验证器 SHA-256 与源文件一致。
 
 ## 发布边界
 
-本文件记录代码候选，不表示共享生产门禁已经更新，也不表示退款候选已经上线。共享门禁升级必须作为独立安全变更审查和安装；安装成功后仍须重新执行退款候选 verify-only，再通过共享激活器切换。
+本文件记录代码候选，不表示共享生产门禁已经更新，也不表示退款候选已经上线。候选必须从实时 `/opt/moli-drama/current`（当前为 `canvas-video-parallel-pr220-20260902-a3b89193-r1`）重建；共享门禁升级作为独立安全变更审查和安装；安装成功后仍须重新执行退款候选 verify-only，再通过共享激活器切换。

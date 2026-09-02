@@ -17,6 +17,12 @@ readonly EXPECTED_NEW_ACTIVATOR_SHA256='ab13967725bec2de7f4c71abacda3a11bf5272d9
 readonly EXPECTED_INSTALLED_EXTERNAL_VERIFIER_SHA256='fc58e3e7c94e3215b43406793fb974a4804cebc69617855e5a550bb86806ee35'
 readonly EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256='73b461be2b57953feae9a01cc7bcdc1048825a2da5eac76ff9f6818a010240f9'
 readonly EXPECTED_NEW_UI_VERIFIER_SHA256='8f0252ad40fc142f46b2349933aa1f21eb949fe89dfe7ee610112af541364b62'
+# The shared guard can be advanced independently of the release source. Keep
+# the live reviewed hashes explicit so this one-time rotation remains CAS-safe
+# after another protected release has updated the shared guard.
+readonly EXPECTED_LIVE_ACTIVATOR_SHA256='166061c721f262d6425dcdb1d4d5e43e72f55d997165244b41024a85bc379c97'
+readonly EXPECTED_LIVE_UI_VERIFIER_SHA256='8f0252ad40fc142f46b2349933aa1f21eb949fe89dfe7ee610112af541364b62'
+readonly EXPECTED_LIVE_EXTERNAL_VERIFIER_SHA256='c3162d8e448533c2fb39e39e52438ff7384e0cba8bdf473f537e52d7684da5c5'
 
 fail() {
   echo "$*" >&2
@@ -103,7 +109,7 @@ require_reviewed_existing_activator() {
   local actual
   assert_root_owned_regular_file "$file" 'activate-protected-release.sh'
   actual="$(sha256_file "$file")"
-  if [[ "$actual" != "$EXPECTED_OLD_ACTIVATOR_SHA256" && "$actual" != "$EXPECTED_INSTALLED_ACTIVATOR_SHA256" ]]; then
+  if [[ "$actual" != "$EXPECTED_OLD_ACTIVATOR_SHA256" && "$actual" != "$EXPECTED_INSTALLED_ACTIVATOR_SHA256" && "$actual" != "$EXPECTED_LIVE_ACTIVATOR_SHA256" ]]; then
     fail "activate-protected-release.sh hash mismatch: expected one reviewed version actual=$actual"
   fi
   OLD_ACTIVATOR_ORIGINAL_SHA256="$actual"
@@ -114,7 +120,7 @@ require_reviewed_existing_ui_verifier() {
   local actual
   assert_root_owned_regular_file "$file" 'verify-protected-release.js'
   actual="$(sha256_file "$file")"
-  if [[ "$actual" != "$EXPECTED_OLD_UI_VERIFIER_SHA256" && "$actual" != "$EXPECTED_INSTALLED_UI_VERIFIER_SHA256" ]]; then
+  if [[ "$actual" != "$EXPECTED_OLD_UI_VERIFIER_SHA256" && "$actual" != "$EXPECTED_INSTALLED_UI_VERIFIER_SHA256" && "$actual" != "$EXPECTED_LIVE_UI_VERIFIER_SHA256" ]]; then
     fail "verify-protected-release.js hash mismatch: expected one reviewed version actual=$actual"
   fi
   OLD_UI_ORIGINAL_SHA256="$actual"
@@ -248,7 +254,7 @@ if [[ -e "$EXTERNAL_MODEL_VERIFIER" || -L "$EXTERNAL_MODEL_VERIFIER" ]]; then
   assert_root_owned_regular_file "$EXTERNAL_MODEL_VERIFIER" 'installed external model verifier'
   EXTERNAL_EXISTED=1
   OLD_EXTERNAL_HASH="$(sha256_file "$EXTERNAL_MODEL_VERIFIER")"
-  if [[ "$OLD_EXTERNAL_HASH" != "$EXPECTED_INSTALLED_EXTERNAL_VERIFIER_SHA256" && "$OLD_EXTERNAL_HASH" != "$EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256" ]]; then
+  if [[ "$OLD_EXTERNAL_HASH" != "$EXPECTED_INSTALLED_EXTERNAL_VERIFIER_SHA256" && "$OLD_EXTERNAL_HASH" != "$EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256" && "$OLD_EXTERNAL_HASH" != "$EXPECTED_LIVE_EXTERNAL_VERIFIER_SHA256" ]]; then
     fail "installed external model verifier hash mismatch: expected one reviewed version actual=$OLD_EXTERNAL_HASH"
   fi
 fi
