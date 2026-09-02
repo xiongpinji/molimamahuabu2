@@ -42,8 +42,23 @@ function startBackgroundServices(options) {
   };
 }
 
-function mountFrontend(app, webDist) {
+function assertFrontendDistReadable(webDist) {
   if (!fs.existsSync(webDist)) return false;
+
+  try {
+    fs.accessSync(webDist, fs.constants.R_OK | fs.constants.X_OK);
+    fs.accessSync(path.join(webDist, 'index.html'), fs.constants.R_OK);
+  } catch (error) {
+    throw new Error(
+      `Frontend static assets unavailable: ${error.code || 'access_error'} ${webDist}: ${error.message}`,
+    );
+  }
+
+  return true;
+}
+
+function mountFrontend(app, webDist) {
+  if (!assertFrontendDistReadable(webDist)) return false;
 
   app.use('/assets', express.static(path.join(webDist, 'assets')));
   app.use('/assets', (req, res) => {
