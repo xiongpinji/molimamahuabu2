@@ -1661,6 +1661,7 @@ test('生成预检和事务双检都向准备门禁传入受信上下文且早�
     assert.equal(created.status, 'processing');
     assert.equal(calls.length, 2);
     assert.deepEqual(reserveRowsAtGate, [0, 0]);
+    assert.deepEqual(calls.map((call) => call.options.shotIds), [[shotId], [shotId]]);
     assert.equal(calls.every((call) => call.options.preparationContext.storageRoot === 'C:\\trusted\\storage'), true);
     assert.equal(calls.every((call) => !Object.prototype.hasOwnProperty.call(call.options.preparationContext, 'rawSecret')), true);
     assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
@@ -5776,6 +5777,33 @@ test('reference bundle required 的单镜生成使用安全参考包投影且不
   assert.equal(/[\u3400-\u9fff]/.test(serialized), false);
   assert.equal(serialized.includes('sk-'), false);
   assert.equal(serialized.includes('Authorization'), false);
+});
+
+test('reference bundle 单镜生成只审核目标镜头，不被同版本其他镜头阻断', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  addShot(state.db, state.versionId, {
+    shotIndex: 2,
+    status: 'needs_attention',
+  });
+  const gate = redrawReviewService.evaluateGenerationGate(state.db, state.versionId, {
+    tenantId: 'tenant-a',
+    userId: 'user-a',
+  }, {
+    shotIds: [state.shotId],
+    preparationGate: () => ({
+      ok: false,
+      ready_shot_ids: [state.shotId],
+      missing: [{
+        resource_type: 'shot',
+        resource_id: '2',
+        shot_ids: [2],
+        reason_code: 'preparation_required',
+      }],
+    }),
+  });
+
+  assert.equal(gate.ok, true);
+  assert.deepEqual(gate.missing, []);
 });
 
 test('reference bundle 有声成片语言或对白验证失败时保持 needs_attention 和 held', async (t) => {

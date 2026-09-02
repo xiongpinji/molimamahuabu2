@@ -367,11 +367,12 @@ function normalizeBatchShotIds(value) {
   return ids;
 }
 
-function ensureGateOpen(db, ctx, versionId) {
+function ensureGateOpen(db, ctx, versionId, shotIds = null) {
   const gate = redrawReviewService.evaluateGenerationGate(db, versionId, {
     tenantId: ctx.tenantId,
     userId: ctx.userId,
   }, {
+    shotIds,
     preparationContext: redrawReviewService.trustedPreparationContext(ctx.preparationContext || ctx),
   });
   if (!gate.ok) {
@@ -1116,7 +1117,7 @@ async function generateShot(ctx, input = {}) {
   rejectClientVideoConditioning(input);
   const shot = selectShot(db, ctx, input);
   const parsed = parseShotPayload(shot);
-  ensureGateOpen(db, ctx, shot.version_id);
+  ensureGateOpen(db, ctx, shot.version_id, [shot.id]);
   const versionIdentity = {
     locale: shot.version_locale,
     market: shot.version_market,
@@ -1252,7 +1253,7 @@ async function generateShot(ctx, input = {}) {
       if (requiresReferenceBundle) {
         referenceBundleCreateState(db, ctx, shot, requestSnapshot, referenceBundleCreateExpected);
       }
-      ensureGateOpen(db, ctx, shot.version_id);
+      ensureGateOpen(db, ctx, shot.version_id, [shot.id]);
       const freshShot = selectShot(db, ctx, { shotId: shot.id });
       const transactionPolicy = evaluateShotGenerationPolicy(
         db,
@@ -2488,8 +2489,6 @@ async function generateBatch(ctx, input = {}) {
     `).get(versionId, String(ctx.tenantId), String(ctx.userId));
     if (!version) throw codedError('REDRAW_VERSION_NOT_FOUND', '转绘版本不存在或无权访问');
     const batchStyleSnapshot = strictJson(version.style_snapshot_json, 'redraw_versions.style_snapshot_json');
-    ensureGateOpen(db, ctx, versionId);
-
     let rows;
     if (explicitIds) {
       const placeholders = explicitIds.map(() => '?').join(',');
@@ -2509,6 +2508,7 @@ async function generateBatch(ctx, input = {}) {
         ORDER BY batch_index ASC, shot_index ASC, id ASC
       `).all(versionId, String(ctx.tenantId), String(ctx.userId));
     }
+    ensureGateOpen(db, ctx, versionId, explicitIds ? rows.map((row) => row.id) : null);
     return { batchStyleSnapshot, rows };
   })();
   const { batchStyleSnapshot, rows } = preflight;

@@ -45,6 +45,17 @@ function normalizeOwner(input = {}) {
   };
 }
 
+function normalizeShotScope(value) {
+  if (value == null) return null;
+  const values = Array.isArray(value) ? value : [value];
+  const ids = new Set();
+  for (const raw of values) {
+    const id = Number(raw);
+    if (Number.isSafeInteger(id) && id > 0) ids.add(id);
+  }
+  return ids;
+}
+
 function getVersion(db, versionId, owner = {}) {
   const { tenantId, userId } = normalizeOwner(owner);
   const clauses = ['id = ?', 'deleted_at IS NULL'];
@@ -227,6 +238,7 @@ function assetReviewAllowsPreparation(db, version, preparation) {
 function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
   if (!db) throw codedError('REDRAW_REVIEW_DB_REQUIRED', '缺少数据库');
   const version = getVersion(db, versionId, owner);
+  const scopedShotIds = normalizeShotScope(options.shotIds ?? options.shot_ids);
   if (Number(version.reference_bundle_required || 0) === 1) {
     const preparationGate = options.preparationGate || evaluatePreparationGate;
     const preparation = preparationGate({
@@ -234,16 +246,27 @@ function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
       db,
       ...normalizeOwner(owner),
     }, version.id);
-    if (!preparation.ok) {
+    const preparationReady = preparation.ok || (scopedShotIds && [...scopedShotIds].every((id) => (
+      preparation.ready_shot_ids?.some((readyId) => Number(readyId) === id)
+    )));
+    if (!preparationReady) {
+      const missing = scopedShotIds
+        ? preparation.missing.filter((item) => (
+          item?.resource_type === 'version'
+            || (Array.isArray(item?.shot_ids) && item.shot_ids.some((shotId) => scopedShotIds.has(Number(shotId))))
+        ))
+        : preparation.missing;
       return {
         ok: false,
         version_id: Number(version.id),
         current_step: assetReviewAllowsPreparation(db, version, preparation) ? 3 : 2,
-        missing: preparation.missing,
+        missing,
         blocking: [{
           code: 'preparation_not_ready',
           reason: '整集参考准备未完成或已过期',
-          shot_count: preparation.ready_shot_ids.length,
+          shot_count: scopedShotIds
+            ? [...scopedShotIds].filter((id) => preparation.ready_shot_ids?.some((readyId) => Number(readyId) === id)).length
+            : preparation.ready_shot_ids.length,
         }],
       };
     }
@@ -256,8 +279,11 @@ function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
     WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
     ORDER BY batch_index ASC, shot_index ASC, id ASC
   `).all(version.id, version.tenant_id, version.user_id);
+  const scopedShots = scopedShotIds
+    ? shots.filter((shot) => scopedShotIds.has(Number(shot.id)))
+    : shots;
   const blocking = [];
-  if (shots.length === 0) {
+  if (scopedShots.length === 0) {
     blocking.push({ code: 'shots_missing', reason: '当前版本没有可生成分镜' });
   }
   const missing = new Map();
@@ -269,7 +295,7 @@ function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
   const nameMap = referenceBundleRequired && isPlainObject(parseJson(version.name_map_json, null))
     ? parseJson(version.name_map_json, null)
     : {};
-  for (const shot of shots) {
+  for (const shot of scopedShots) {
     const shotId = shot.shot_id || Number(shot.id) || Number(shot.shot_index);
     const bundle = referenceBundleRequired ? currentV2Bundle(shot, version) : null;
     if (referenceBundleRequired && !bundle) {
@@ -397,7 +423,7 @@ function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
     blocking.push({
       code: 'preparation_not_ready',
       reason: '整集参考准备未完成或已过期',
-      shot_count: Math.max(0, shots.length - referenceBundleNotCurrentShots.size),
+      shot_count: Math.max(0, scopedShots.length - referenceBundleNotCurrentShots.size),
     });
   }
   if (invalidReferenceKeys.size > 0) {
