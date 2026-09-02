@@ -29,6 +29,7 @@ function ensureSchema(db) {
     CREATE TABLE IF NOT EXISTS billing_business_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       credit_value_micros INTEGER NOT NULL DEFAULT 0,
+      usd_cny_rate_micros INTEGER NOT NULL DEFAULT 7200000,
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_generation_cost_model_created
@@ -44,6 +45,10 @@ function ensureSchema(db) {
   ];
   for (const [name, type] of additions) {
     if (!columnNames.has(name)) db.exec(`ALTER TABLE generation_cost_records ADD COLUMN ${name} ${type}`);
+  }
+  const settingsColumns = db.prepare('PRAGMA table_info(billing_business_settings)').all();
+  if (!settingsColumns.some((column) => column.name === 'usd_cny_rate_micros')) {
+    db.exec('ALTER TABLE billing_business_settings ADD COLUMN usd_cny_rate_micros INTEGER NOT NULL DEFAULT 7200000');
   }
 }
 
@@ -101,6 +106,7 @@ function record(db, input) {
     try {
       const routed = routeCost.quoteRouteCost(db, {
         configId,
+        model,
         count: input.count ?? input.quantity ?? 1,
         duration: input.duration,
         inputTokens: input.inputTokens,
@@ -158,25 +164,37 @@ function record(db, input) {
 
 function getSettings(db) {
   ensureSchema(db);
-  const row = db.prepare('SELECT credit_value_micros, updated_at FROM billing_business_settings WHERE id = 1').get();
-  return row || { credit_value_micros: 0, updated_at: null };
+  const row = db.prepare('SELECT credit_value_micros, usd_cny_rate_micros, updated_at FROM billing_business_settings WHERE id = 1').get();
+  return row || { credit_value_micros: 0, usd_cny_rate_micros: 7200000, updated_at: null };
 }
 
-function updateSettings(db, value) {
+function updateSettings(db, value, legacyUsdCnyRateMicros) {
   ensureSchema(db);
-  const creditValueMicros = Number(value);
+  const current = getSettings(db);
+  const input = value && typeof value === 'object' ? value : {
+    credit_value_micros: value,
+    usd_cny_rate_micros: legacyUsdCnyRateMicros,
+  };
+  const creditValueMicros = Number(input.credit_value_micros ?? current.credit_value_micros);
   if (!Number.isSafeInteger(creditValueMicros) || creditValueMicros < 0) {
     const error = new Error('每积分估值必须是非负整数微元');
     error.code = 'INVALID_BILLING_SETTING';
     throw error;
   }
+  const usdCnyRateMicros = Number(input.usd_cny_rate_micros ?? current.usd_cny_rate_micros ?? 7200000);
+  if (!Number.isSafeInteger(usdCnyRateMicros) || usdCnyRateMicros <= 0) {
+    const error = new Error('USD/CNY 汇率必须是正整数微元');
+    error.code = 'INVALID_BILLING_SETTING';
+    throw error;
+  }
   const now = new Date().toISOString();
-  db.prepare(`INSERT INTO billing_business_settings (id, credit_value_micros, updated_at)
-    VALUES (1, ?, ?)
+  db.prepare(`INSERT INTO billing_business_settings (id, credit_value_micros, usd_cny_rate_micros, updated_at)
+    VALUES (1, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       credit_value_micros = excluded.credit_value_micros,
+      usd_cny_rate_micros = excluded.usd_cny_rate_micros,
       updated_at = excluded.updated_at`)
-    .run(creditValueMicros, now);
+    .run(creditValueMicros, usdCnyRateMicros, now);
   return getSettings(db);
 }
 

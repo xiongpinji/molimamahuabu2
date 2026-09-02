@@ -1,4 +1,5 @@
 const mediaModelSelection = require('./mediaModelSelectionService');
+const providerPricingSync = require('./providerPricingSyncService');
 
 const SUPPORTED_MODELS = ['GPT-5.5', 'gpt-image-2', 'seedance 2.0'];
 const MODEL_CATEGORIES = ['text', 'image', 'video', 'audio', 'other'];
@@ -230,24 +231,28 @@ function isRealGenerationVerified(row, model) {
   }
 }
 
-function providerInfo(row) {
+function providerInfo(row, upstreamModel = '') {
   const provider = String(row.provider || '').trim();
   if (!provider && !row.name && !row.base_url) return null;
   return {
+    config_id: Number(row.id) || null,
     provider,
     provider_name: String(row.name || provider).trim(),
     provider_base_url: String(row.base_url || '').trim(),
+    upstream_model: String(upstreamModel || '').trim(),
   };
 }
 
-function addProvider(item, row) {
-  const info = providerInfo(row);
+function addProvider(item, row, upstreamModel = '') {
+  const info = providerInfo(row, upstreamModel);
   if (!info) return item;
   const providers = item.providers || (item.providers = []);
   if (!providers.some((entry) => (
-    entry.provider === info.provider
-    && entry.provider_name === info.provider_name
-    && entry.provider_base_url === info.provider_base_url
+    entry.config_id === info.config_id
+      && entry.provider === info.provider
+      && entry.provider_name === info.provider_name
+      && entry.provider_base_url === info.provider_base_url
+      && entry.upstream_model === info.upstream_model
   ))) providers.push(info);
   return item;
 }
@@ -281,7 +286,7 @@ function listConfiguredModels(db) {
       byModel.set(key, item);
       models.push(item);
     }
-    addProvider(item, entry.config);
+    addProvider(item, entry.config, entry.upstreamModel);
   }
   for (const row of rows.filter((item) => !mediaModelSelection.KIND_BY_SERVICE[item.service_type])) {
     const category = SERVICE_CATEGORIES[String(row.service_type || '').toLowerCase()] || 'other';
@@ -301,7 +306,7 @@ function listConfiguredModels(db) {
         byModel.set(key, item);
         models.push(item);
       }
-      addProvider(item, row);
+      addProvider(item, row, value);
     }
   }
   return models;
@@ -356,9 +361,19 @@ function list(db) {
   return [...defaults, ...rows.filter((row) => !seen.has(row.model.toLowerCase()))]
     .map((row) => {
       const providers = row.providers || providersByModel.get(row.model.toLowerCase()) || [];
+      const providerCosts = providers.map((provider) => {
+        if (!provider.config_id || !provider.upstream_model) return null;
+        try {
+          const cost = providerPricingSync.getCost(db, provider.config_id, provider.upstream_model);
+          return cost ? { ...provider, ...cost } : null;
+        } catch (_) {
+          return null;
+        }
+      }).filter(Boolean);
       return {
         ...row,
         providers,
+        provider_costs: providerCosts,
         provider: providers[0]?.provider || '',
         provider_name: providers[0]?.provider_name || '',
         provider_base_url: providers[0]?.provider_base_url || '',

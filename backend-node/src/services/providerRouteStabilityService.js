@@ -137,12 +137,17 @@ function currentPriceCoversCapability(db, config, capability = {}) {
       if (!positiveInteger(tier?.credits)) return false;
     }
   }
-  return routeCostService.routeCostCoversCapability(db, config.id, capability);
+  return routeCostService.routeCostCoversCapability(db, config.id, {
+    ...capability,
+    model: capability.model || config.default_model || config.model?.[0],
+  });
 }
 
 function evidenceFingerprints(db, config) {
   try {
-    const cost = routeCostService.getRouteCost(db, config.id);
+    const cost = routeCostService.getRouteCost(db, config.id)
+      || require('./providerPricingSyncService').getCost(db, config.id,
+        config.default_model || config.model?.[0]);
     if (!cost) return null;
     const runtime = runtimeService.runtimeFingerprintForConfig(config);
     if (!runtime.ok || !runtime.fingerprint) return null;

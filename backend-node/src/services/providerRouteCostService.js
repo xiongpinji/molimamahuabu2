@@ -217,6 +217,15 @@ function requireRouteCost(db, configId) {
   return row;
 }
 
+function modelSpecificCost(db, configId, modelValue) {
+  const model = String(modelValue || '').trim();
+  if (!model) return null;
+  const selection = require('./mediaModelSelectionService').parseQualifiedSelection(model);
+  if (selection && Number(selection.configId) !== Number(configId)) return null;
+  const upstreamModel = selection?.upstreamModel || model;
+  return require('./providerPricingSyncService').getCost(db, configId, upstreamModel);
+}
+
 function selectedRate(row, resolution) {
   const tiers = row.resolution_prices || {};
   const tierNames = Object.keys(tiers);
@@ -233,7 +242,12 @@ function quoteRouteCost(db, usage) {
     throw costError('INVALID_PROVIDER_ROUTE_USAGE', 'usage must be an object');
   }
   const configId = positiveConfigId(usage.configId ?? usage.config_id);
-  const row = requireRouteCost(db, configId);
+  const specific = modelSpecificCost(db, configId, usage.model);
+  const configured = getRouteCost(db, configId);
+  // 配置级线路成本是管理员对整条中转线路的明确覆盖，优先于模型级自动同步成本。
+  // 模型级手工成本仅在没有配置级覆盖时生效；自动成本作为最后兜底。
+  const row = configured || specific;
+  if (!row) throw costError('PROVIDER_ROUTE_COST_NOT_CONFIGURED', 'provider route cost is not configured');
   const resolution = normalizeResolution(usage.resolution);
   const count = safeUsageInteger(usage.count ?? usage.quantity, 'count', 1);
   if (count <= 0) throw costError('INVALID_PROVIDER_ROUTE_USAGE', 'count must be positive');
@@ -293,7 +307,11 @@ function quoteRouteCost(db, usage) {
 
 function routeCostCoversCapability(db, configIdValue, capability = {}) {
   try {
-    const row = requireRouteCost(db, positiveConfigId(configIdValue));
+    const configId = positiveConfigId(configIdValue);
+    const specific = modelSpecificCost(db, configId, capability.model);
+    const configured = getRouteCost(db, configId);
+    const row = configured || specific;
+    if (!row) return false;
     const resolution = normalizeResolution(capability.resolution);
     if (resolution && Object.keys(row.resolution_prices || {}).length > 0
         && !row.resolution_prices[resolution]) return false;

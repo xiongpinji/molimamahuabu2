@@ -59,11 +59,14 @@
 
         <el-tab-pane v-if="isSuperAdmin" label="模型计费" name="models">
           <section class="panel">
-            <div class="panel-heading">
+            <div class="panel-heading model-heading">
               <div>
                 <h2>模型计费</h2>
                 <p>自动汇总 AI 配置中的实际模型；连接验证并启用计费后自动进入画布，无需修改前端代码。</p>
               </div>
+              <el-button type="primary" :loading="syncingProviderPricing" @click="syncProviderPricingNow">
+                同步中转站成本
+              </el-button>
             </div>
             <div class="model-pricing-summary" aria-label="模型计费状态">
               <el-tag type="success">已定价 {{ configuredModelCount }}</el-tag>
@@ -92,7 +95,17 @@
               </el-select>
             </div>
             <div class="model-list">
-              <div v-for="item in filteredPrices" :key="item.model" class="model-row">
+              <template v-for="group in filteredPriceGroups" :key="group.key">
+                <div class="model-provider-group">
+                  <div class="model-provider-group-heading">
+                    <div>
+                      <strong>{{ group.label }}</strong>
+                      <small>{{ group.baseUrl || '未配置中转站地址' }}</small>
+                    </div>
+                    <el-tag type="info" size="small">{{ group.items.length }} 个模型</el-tag>
+                  </div>
+                </div>
+                <div v-for="item in group.items" :key="`${group.key}:${item.model}`" class="model-row">
                 <label class="model-field"><span>前端显示名称</span><el-input v-model="item.display_name" maxlength="120" show-word-limit placeholder="画布下拉中展示的名称" /></label>
                 <label class="model-field">
                   <span>模型类型</span>
@@ -163,6 +176,12 @@
                 <small class="model-provider" :title="providerBaseUrl(item)">
                   中转站：{{ providerLabel(item) }}
                 </small>
+                <small class="model-provider-cost">
+                  <template v-if="item.provider_costs?.length">
+                    中转站成本：{{ formatProviderCosts(item) }}
+                  </template>
+                  <template v-else>中转站成本：未同步</template>
+                </small>
                 <div v-if="!usesVideoResolutionPricing(item) && !usesImageResolutionPricing(item)" class="cost-editor">
                   <span>API 成本</span>
                   <el-select v-if="!usesFixedRequestVideoPricing(item)" v-model="item.cost_unit">
@@ -183,8 +202,9 @@
                     <span>元 / {{ costUnitLabel(item.cost_unit) }}</span>
                   </template>
                 </div>
-              </div>
-              <el-empty v-if="filteredPrices.length === 0" description="没有匹配的模型" />
+                </div>
+              </template>
+              <el-empty v-if="filteredPriceGroups.length === 0" description="没有匹配的模型" />
             </div>
             <div class="new-model">
               <label class="model-field"><span>模型 ID</span><el-input v-model.trim="newModel.model" /></label>
@@ -282,6 +302,14 @@
                   aria-label="每积分估值"
                 />
                 <span>元 / 积分</span>
+                <el-input-number
+                  v-model="usdCnyRate"
+                  :min="0.000001"
+                  :precision="6"
+                  :step="0.01"
+                  aria-label="美元兑人民币汇率"
+                />
+                <span>元 / 美元</span>
                 <el-button :loading="savingLedgerSettings" @click="saveLedgerSettings">保存估值</el-button>
               </div>
             </div>
@@ -407,12 +435,14 @@ import {
   listAdminTenants,
   listModelPrices,
   listPlatformUsers,
+  syncProviderPricing,
   updateModelPrice,
   updateLedgerSettings,
   updatePlatformUser,
 } from '@/api/billing'
 import { readSession, saveAdminToken } from '@/utils/authSession'
 import { formatModelPrice } from '@/utils/billingDisplay'
+import { groupModelPricesByProvider } from '@/utils/billingModelGroups'
 
 const publicMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
 const route = useRoute()
@@ -439,7 +469,9 @@ const modelCategory = ref('all')
 const modelPricingState = ref('all')
 const ledgerPeriod = ref('day')
 const creditValueYuan = ref(0)
+const usdCnyRate = ref(7.2)
 const savingLedgerSettings = ref(false)
+const syncingProviderPricing = ref(false)
 const emptyLedgerReport = () => ({
   summary: {
     usage_count: 0,
@@ -539,6 +571,16 @@ function providerLabel(item) {
 
 function providerBaseUrl(item) {
   return providerEntries(item).map((entry) => entry.provider_base_url).filter(Boolean).join(' / ')
+}
+
+function formatProviderCosts(item) {
+  return (item.provider_costs || []).map((cost) => {
+    const provider = cost.provider_name || cost.provider || `配置 ${cost.config_id}`
+    const amount = microsToYuan(cost.micros_per_unit).toFixed(6)
+    const source = cost.cost_source === 'relay_auto' ? '自动同步' : '手工'
+    const fetched = cost.source_fetched_at ? `，${formatDate(cost.source_fetched_at)}` : ''
+    return `${provider} ¥${amount}/${costUnitLabel(cost.cost_unit)}（${source}${fetched}）`
+  }).join('；')
 }
 
 function usesImageResolutionPricing(item) {
@@ -691,6 +733,7 @@ const filteredPrices = computed(() => {
     return matchesSearch && matchesCategory && matchesState
   })
 })
+const filteredPriceGroups = computed(() => groupModelPricesByProvider(filteredPrices.value))
 
 async function loadAll() {
   if (!isSuperAdmin) return
@@ -707,6 +750,7 @@ async function loadAll() {
   tenants.value = tenantRows
   transactions.value = transactionRows
   creditValueYuan.value = microsToYuan(ledgerSettings.credit_value_micros)
+  usdCnyRate.value = microsToYuan(ledgerSettings.usd_cny_rate_micros || 7_200_000)
   ledgerReport.value = {
     ...emptyLedgerReport(),
     ...report,
@@ -714,6 +758,19 @@ async function loadAll() {
     rows: Array.isArray(report?.rows) ? report.rows : [],
   }
   if (!creditForm.tenant_id) creditForm.tenant_id = tenantRows[0]?.id || ''
+}
+
+async function syncProviderPricingNow() {
+  syncingProviderPricing.value = true
+  try {
+    const result = await syncProviderPricing()
+    const saved = (result.results || []).reduce((total, item) => total + Number(item.saved || 0), 0)
+    const skippedManual = (result.results || []).reduce((total, item) => total + Number(item.skipped_manual || 0), 0)
+    prices.value = (await listModelPrices()).map(normalizePrice)
+    ElMessage.success(`已同步 ${saved} 个模型成本${skippedManual ? `，保留 ${skippedManual} 个手工成本` : ''}`)
+  } finally {
+    syncingProviderPricing.value = false
+  }
 }
 
 async function unlock() {
@@ -838,8 +895,10 @@ async function saveLedgerSettings() {
   try {
     const saved = await updateLedgerSettings({
       credit_value_micros: yuanToMicros(creditValueYuan.value),
+      usd_cny_rate_micros: yuanToMicros(usdCnyRate.value),
     })
     creditValueYuan.value = microsToYuan(saved.credit_value_micros)
+    usdCnyRate.value = microsToYuan(saved.usd_cny_rate_micros)
     await loadLedgerReport()
     ElMessage.success('每积分估值已保存')
   } finally {
@@ -916,11 +975,18 @@ onMounted(async () => {
 .admin-tabs { margin-top: 10px; }
 .panel { padding: 22px; }
 .panel-heading { margin-bottom: 18px; }
+.model-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
 .model-pricing-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
 .model-filters { display: grid; grid-template-columns: minmax(220px, 1fr) 150px 150px; gap: 10px; margin-bottom: 14px; }
 .model-list { display: grid; gap: 10px; }
+.model-provider-group { margin-top: 8px; }
+.model-provider-group-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 14px; border: 1px solid #3a302c; border-radius: 10px; background: rgba(255, 113, 57, .08); }
+.model-provider-group-heading > div { display: grid; gap: 4px; min-width: 0; }
+.model-provider-group-heading strong { color: #f2c1ad; font-size: 13px; }
+.model-provider-group-heading small { overflow: hidden; color: #929292; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .model-row { display: grid; grid-template-columns: 1.2fr 120px 150px 120px auto; gap: 10px; align-items: center; padding: 14px; border: 1px solid #292929; border-radius: 12px; }
 .model-row small { display: flex; grid-column: 1 / -1; gap: 8px; align-items: center; color: #8f9098; }
+.model-provider-cost { color: #b9a598 !important; }
 .model-row > .model-public-note { grid-column: 1 / -1; }
 .cost-editor { display: grid; grid-column: 1 / -1; grid-template-columns: auto 140px 180px auto 180px auto; gap: 10px; align-items: center; padding-top: 10px; border-top: 1px dashed #353535; color: #9a9a9a; font-size: 12px; }
 .resolution-pricing-editor { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 10px; padding-top: 10px; border-top: 1px dashed #353535; }
@@ -941,6 +1007,8 @@ onMounted(async () => {
 @media (max-width: 900px) {
   .billing-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .model-row, .model-filters, .new-model, .credit-form, .admin-auth, .cost-editor, .resolution-pricing-editor { grid-template-columns: 1fr; }
+  .model-provider-group-heading { align-items: flex-start; flex-direction: column; }
+  .model-heading { align-items: stretch; flex-direction: column; }
   .new-model > .model-public-note { grid-column: auto; }
   .ledger-heading, .ledger-controls { align-items: stretch; flex-direction: column; }
   .ledger-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }

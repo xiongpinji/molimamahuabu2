@@ -21,6 +21,7 @@ function startBackgroundServices(options) {
     || require('./services/providerReconciliationService');
   const providerCanary = options.providerCanary
     || require('./services/providerCanarySchedulerService');
+  const providerPricing = options.providerPricing;
   const env = options.env || process.env;
   providerReconciliation.startProviderReconciliation(options.db, options.log, {
     intervalMs: Number(env.PROVIDER_RECONCILIATION_INTERVAL_MS) || 60_000,
@@ -32,12 +33,22 @@ function startBackgroundServices(options) {
     storageRoot: options.storageRoot,
     healthUrl: options.healthUrl,
   });
+  if (providerPricing?.startProviderPricingSync
+      && !/^(0|false|no)$/i.test(String(env.PROVIDER_PRICING_SYNC_ENABLED || ''))) {
+    providerPricing.startProviderPricingSync(options.db, options.log, {
+      intervalMs: Number(env.PROVIDER_PRICING_SYNC_INTERVAL_MS) || 6 * 60 * 60 * 1000,
+    });
+  }
   return {
     stop() {
-      return {
+      const stopped = {
         scheduler: providerCanary.stopProviderCanaryScheduler(),
         reconciliation: providerReconciliation.stopProviderReconciliation(),
       };
+      if (providerPricing?.stopProviderPricingSync) {
+        stopped.pricing = providerPricing.stopProviderPricingSync();
+      }
+      return stopped;
     },
   };
 }
@@ -150,6 +161,7 @@ function createApp() {
     log,
     storageRoot,
     healthUrl: `http://${healthUrlHost}:${config.server.port}/health`,
+    providerPricing: require('./services/providerPricingSyncSchedulerService'),
   });
 
   const app = express();

@@ -69,6 +69,10 @@ export function getLedgerSettings() {
   return request.get('/billing/admin/ledger/settings')
 }
 
+export function syncProviderPricing() {
+  return request.post('/billing/admin/provider-pricing/sync')
+}
+
 export function updateLedgerSettings(data) {
   return request.put('/billing/admin/ledger/settings', data)
 }

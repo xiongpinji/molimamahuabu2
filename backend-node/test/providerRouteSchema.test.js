@@ -184,6 +184,7 @@ test('provider stability migration creates the routing schema and remains idempo
       'provider_zero_cost_checks',
       'provider_route_costs',
       'provider_route_resolution_costs',
+      'provider_route_model_costs',
     ]) {
       assert.equal(hasTable(db, table), true, `missing table ${table}`);
     }
@@ -202,6 +203,15 @@ test('provider stability migration creates the routing schema and remains idempo
     for (const name of ['config_id', 'resolution', 'micros_per_unit', 'updated_at']) {
       assert.equal(columnNames(db, 'provider_route_resolution_costs').has(name), true,
         `missing provider_route_resolution_costs.${name}`);
+    }
+    for (const name of [
+      'config_id', 'model', 'currency', 'cost_unit', 'micros_per_unit',
+      'resolution_prices_json', 'source_currency', 'source_price_json',
+      'source_url', 'source_fetched_at', 'source_fingerprint',
+      'source_exchange_rate', 'cost_source', 'updated_at',
+    ]) {
+      assert.equal(columnNames(db, 'provider_route_model_costs').has(name), true,
+        `missing provider_route_model_costs.${name}`);
     }
     const capabilityJsonColumn = db.prepare('PRAGMA table_info(provider_canary_evidence)').all()
       .find((column) => column.name === 'capability_json');
