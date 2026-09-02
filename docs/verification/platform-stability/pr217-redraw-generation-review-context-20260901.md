@@ -65,6 +65,13 @@
 - 零费用验证：语言 Worker 预检在当前 Windows 环境明确返回 `ready=false`、`REDRAW_LOCALE_VERIFIER_NOT_READY`；前端一键转绘启动器 17 项中 16 通过、1 跳过；未发起供应商请求。
 - Worker 源码只读回归补充：协议、发布范围、校准、模型暂存和 server 测试合计 65 项，60 通过、5 跳过；完整发现运行另有 1 项因当前 Windows 解释器缺少锁定依赖 `jiwer==4.0.0` 而无法导入。未安装依赖、未创建新环境；生产 Worker 仍必须使用部署目录中预置且依赖完整的独立 venv。
 
+### 2026-09-02 线上语言 Worker 只读预检
+
+- SSH 只读回读的实时 current 为 `/opt/moli-drama/releases/canvas-failed-generation-resubmit-pr218-20260901-68a13b89-r3`，`RELEASE_COMMIT=68a13b899ff1a08854d434bedb00e4def890e649`。
+- `/opt/moli-drama/shared/redraw-locale-verifier`、`verifier.env`、`worker.ready.json`、语言 Worker Unix socket 均不存在；`moli-redraw-locale-verifier.service` 为 `not-found/inactive`。current 仅携带受审计的部署说明和 systemd unit，不携带 shared venv、模型权重或 ready 状态。
+- 结论：线上 ready attestation 不存在，完整语言验收门禁保持 `ready=false`。本轮只读检查未获取锁、未修改配置、未重启、未写生产数据库、未调用供应商或付费。
+- 后续若要提供 Worker，必须作为独立运维阶段在 shared 目录准备依赖完整的 venv、签名 pack、模型/校准清单和离线 smoke，再重新执行只读预检；不得把 release 中的源码目录冒充为已 ready 的生产 Worker。
+
 ### 未完成边界
 
 - 本次没有读取 Key、没有调用供应商、没有付费、没有重试旧任务、没有修改生产数据库、没有合并或部署。
