@@ -24,6 +24,10 @@ function liveFixture() {
   )
 }
 
+test('local harness locale verifier accepts language-scoped requests', () => {
+  expect(liveHarness.normalizeLocalVerifierLocale({ language: 'en', scope: 'language' })).toBe('en-US')
+})
+
 function fakeInputEnvironment(root) {
   const env = {
     REDRAW_LIVE_SOURCE_VIDEO: path.join(root, 'source.mp4'),

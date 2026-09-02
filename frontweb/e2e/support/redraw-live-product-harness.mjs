@@ -27,6 +27,18 @@ const REDRAW_LIVE_AUTHORITATIVE_VISIBLE_CHARACTER_IDS = Object.freeze({
   'shot-6': Object.freeze(['mateo', 'elena', 'rafael']),
 })
 
+export function normalizeLocalVerifierLocale(request, packLocale = 'en-US') {
+  const raw = typeof request === 'string' ? request : request?.language
+  const requested = String(raw || '').trim()
+  const expected = String(packLocale || '').trim()
+  if (!requested || !expected) return requested
+  if (requested.toLowerCase() === expected.toLowerCase()
+    || requested.toLowerCase() === expected.split('-')[0].toLowerCase()) {
+    return expected
+  }
+  return requested
+}
+
 export function buildRedrawLiveProductFixture(testCase, requiredInputs, options = {}) {
   if (!testCase?.source || !Array.isArray(testCase.cast) || !Array.isArray(testCase.sourceFacts?.shots)) {
     throw new Error('approved redraw case is required')
@@ -1311,7 +1323,9 @@ function createRouteOptions({ fixture, derived, counts, tempRoot, storageRoot })
   const cleanProviderSignatures = new Set()
   const localeVerifier = {
     assertReady(locale) {
-      if (locale !== pack.locale) throw new Error('local verifier locale mismatch')
+      if (normalizeLocalVerifierLocale(locale, pack.locale) !== pack.locale) {
+        throw new Error('local verifier locale mismatch')
+      }
       return { ...pack }
     },
     async verifyLocalVoice(input) {
