@@ -313,6 +313,7 @@ function privateAvatarVideoServiceProjection(source) {
     '',
   );
   projected = withoutNamedFunction(projected, 'signedWan3SubmissionPayload');
+  projected = withoutNamedFunction(projected, 'setVideoGenFailed');
   projected = projected.replace(
     /Object\.assign\(\s*requestPayload\s*,\s*signedWan3SubmissionPayload\(\{\s*\.\.\.requestPayload\s*,\s*client_business_id\s*:\s*`video-\$\{videoGenId\}`\s*,?\s*\}\)\s*\)\s*;/,
     'requestPayload.client_business_id = `video-${videoGenId}`;',

@@ -1221,6 +1221,34 @@ describeRootEvidence('shared evidence path and freshness safety', () => {
     }
   });
 
+  it('does not require fresh private-avatar evidence for generic failed-video refund settlement', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    const expectedCurrent = path.join(fixture.root, 'expected-current');
+    const target = path.join(fixture.candidate, 'backend-node/src/services/videoService.js');
+    try {
+      fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
+      makeEvidenceStaleButUnexpired(fixture, TOAPIS_PRIVATE_AVATAR_FILE);
+      const baseline = `
+        function setVideoGenFailed(db, videoGenId, errorMsg, now, failure = {}) {
+          settleVideoCredit(db, null, row, 'failed', errorMsg, failure);
+        }
+      `;
+      const changed = baseline.replace(
+        "settleVideoCredit(db, null, row, 'failed', errorMsg, failure);",
+        "settleVideoCredit(db, null, row, 'failed', errorMsg, { failureDisposition: 'refund', ...failure });",
+      );
+      fs.appendFileSync(path.join(expectedCurrent, 'backend-node/src/services/videoService.js'), baseline);
+      fs.appendFileSync(target, changed);
+      assert.equal(
+        privateAvatarVideoServiceProjection(changed),
+        privateAvatarVideoServiceProjection(baseline),
+      );
+      assertPass(runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it('does not require fresh private-avatar evidence for the audited Wan3-only signing change', () => {
     const fixture = makeFixture({ toapis: true, usmercari: false });
     const expectedCurrent = path.join(fixture.root, 'expected-current');
