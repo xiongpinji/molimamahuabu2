@@ -161,6 +161,7 @@ function validateNewPassword() {
 }
 
 async function submit() {
+  if (loading.value) return
   if (!email.value || !password.value) return ElMessage.warning('请输入邮箱和密码')
   if (mode.value !== 'login' && !validateNewPassword()) return
   loading.value = true

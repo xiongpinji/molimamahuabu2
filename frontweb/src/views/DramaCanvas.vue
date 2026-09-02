@@ -48,6 +48,10 @@
               <el-icon><RefreshRight /></el-icon>
             </button>
           </div>
+          <el-button class="canvas-recharge" size="small" type="warning" plain title="充值积分" @click="router.push({ name: 'recharge-center' })">
+            <el-icon><Coin /></el-icon>
+            <span>充值积分</span>
+          </el-button>
           <el-button class="topbar-share" size="small" circle aria-label="分享画布" title="复制画布链接" @click="shareCanvas">
             <el-icon><Share /></el-icon>
           </el-button>
@@ -625,7 +629,7 @@ import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
-import { MoreFilled, Operation, Plus, RefreshLeft, RefreshRight, Share } from '@element-plus/icons-vue'
+import { Coin, MoreFilled, Operation, Plus, RefreshLeft, RefreshRight, Share } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import '@vue-flow/core/dist/style.css'
@@ -713,7 +717,7 @@ import {
   resolveCanvasNodeConnection,
   toLibTvCanvasEdge,
 } from '@/utils/canvasNodeContracts'
-import { buildCanvasExecutionPlan } from '@/utils/canvasExecutionPlan'
+import { buildCanvasExecutionBatches } from '@/utils/canvasExecutionPlan'
 import {
   canvasModelCapability,
   canvasModelEntry,
@@ -895,6 +899,7 @@ const layoutPersistence = createCanvasLayoutPersistence(async ({ canvasLayout, w
 }, { onStateChange: onLayoutPersistenceState })
 const freeCanvasAssetSaveFlights = new Map()
 const freeCanvasTaskResumeFlights = new Map()
+const freeCanvasNodeGenerationFlights = new Map()
 const localPreviewUrls = new Set()
 const currentViewport = ref({ x: 0, y: 0, zoom: 0.75 })
 const focusedNodeId = ref(null)
@@ -3168,6 +3173,22 @@ function showFreeCanvasGenerationHistory(nodeOrId) {
 }
 
 async function runFreeCanvasNode(nodeOrId) {
+  const nodeId = String(nodeOrId?.id || nodeOrId || '')
+  if (!nodeId) return runFreeCanvasNodeOnce(nodeOrId)
+  const existingFlight = freeCanvasNodeGenerationFlights.get(nodeId)
+  if (existingFlight) return existingFlight
+  const flight = runFreeCanvasNodeOnce(nodeOrId)
+  freeCanvasNodeGenerationFlights.set(nodeId, flight)
+  try {
+    return await flight
+  } finally {
+    if (freeCanvasNodeGenerationFlights.get(nodeId) === flight) {
+      freeCanvasNodeGenerationFlights.delete(nodeId)
+    }
+  }
+}
+
+async function runFreeCanvasNodeOnce(nodeOrId) {
   const node = freeCanvasNodeById(nodeOrId)
   if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode') {
     ElMessage.warning('只有独立画布自由节点可直接运行')
@@ -3415,7 +3436,7 @@ async function runFreeCanvasNode(nodeOrId) {
 }
 
 async function runFreeCanvasSubgraph(nodeIds, includeDownstream = false) {
-  const plan = buildCanvasExecutionPlan(allGraphNodes.value, allGraphEdges.value, {
+  const plan = buildCanvasExecutionBatches(allGraphNodes.value, allGraphEdges.value, {
     rootNodeIds: nodeIds,
     includeDownstream,
   })
@@ -3427,11 +3448,18 @@ async function runFreeCanvasSubgraph(nodeIds, includeDownstream = false) {
     ElMessage.warning('请先选择可运行的自由节点')
     return { ok: false }
   }
-  for (const nodeId of plan.orderedNodeIds) {
-    const result = await runFreeCanvasNode(nodeId)
-    if (!result?.ok) {
-      ElMessage.error(`子图已在节点 ${nodeId} 停止，下游未提交`)
-      return { ok: false, failedNodeId: nodeId }
+  for (const batch of plan.batches) {
+    const outcomes = await Promise.all(batch.map(async (nodeId) => {
+      try {
+        return await runFreeCanvasNode(nodeId)
+      } catch (error) {
+        return { ok: false, nodeId, error: error?.message || '自由节点生成失败' }
+      }
+    }))
+    const failed = outcomes.find((result) => !result?.ok)
+    if (failed) {
+      ElMessage.error(`子图已在节点 ${failed.nodeId} 停止，下游未提交`)
+      return { ok: false, failedNodeId: failed.nodeId }
     }
   }
   ElMessage.success(`子图运行完成，共 ${plan.orderedNodeIds.length} 个节点`)

@@ -8,7 +8,7 @@ const FREE_NODE_STATUSES = new Set(['idle', 'queued', 'running', 'success', 'fai
 const FREE_NODE_ASSET_SAVE_STATUSES = new Set(['idle', 'running', 'success', 'failed'])
 const IMAGE_TOOL_STATUSES = new Set(['running', 'success', 'failed'])
 const VIDEO_TOOL_STATUSES = new Set(['running', 'success', 'failed'])
-const FREE_VIDEO_REFERENCE_MODES = new Set(['first-last', 'multi', 'omni'])
+const FREE_VIDEO_REFERENCE_MODES = new Set(['text', 'first-last', 'multi', 'omni'])
 const VIDEO_TOOL_OPERATIONS = new Set([
   'crop',
   'upscale',
@@ -133,6 +133,7 @@ export function normalizeFreeCanvasVideoReferenceMode(value, references = []) {
   if (enabledReferences.some((reference) => ['video', 'audio'].includes(cleanString(reference?.kind)))) {
     return 'omni'
   }
+  if (!enabledReferences.length) return 'text'
   return enabledReferences.some((reference) => (
     ['first-frame', 'last-frame'].includes(cleanString(reference?.slot ?? reference?.input))
   )) ? 'first-last' : 'multi'
@@ -177,7 +178,10 @@ export function selectFreeCanvasVideoReferenceMode(capability = {}, currentMode 
     || capability?.supportsOmniReference === true
     || supportsVideo
     || supportsAudio
+  const supportsText = capability?.supportsTextToVideo !== false
   const supported = (
+    (mode === 'text' && supportsText)
+    ||
     (mode === 'first-last' && supportsFirstLast)
     || (mode === 'multi' && supportsImage)
     || (mode === 'omni' && supportsOmni)
@@ -186,6 +190,7 @@ export function selectFreeCanvasVideoReferenceMode(capability = {}, currentMode 
   if (supportsFirstLast) return 'first-last'
   if (supportsImage) return 'multi'
   if (supportsOmni) return 'omni'
+  if (supportsText) return 'text'
   return ''
 }
 
@@ -775,10 +780,16 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
   const selectedVideoReferenceMode = nodeData.kind === 'video'
     ? selectFreeCanvasVideoReferenceMode(capability, requestedVideoReferenceMode)
     : ''
+  const hasUsableVideoReferences = nodeData.kind === 'video'
+    && (rawReferences.length > 0 || (nodeData.characterReferenceUrls || []).length > 0)
+  const effectiveVideoReferenceMode = nodeData.kind === 'video'
+    && !hasUsableVideoReferences
+    ? 'text'
+    : selectedVideoReferenceMode
   const references = nodeData.kind === 'video'
     ? planFreeCanvasVideoReferences(
       capability,
-      selectedVideoReferenceMode,
+      effectiveVideoReferenceMode,
       (options.upstreamReferences || []).filter((reference) => reference?.enabled !== false),
     )
       .filter(({ enabled }) => enabled)
@@ -854,8 +865,10 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
       ? assertVideoDurationAllowed(nodeData.duration, capability)
       : nodeData.duration
     const explicitMode = FREE_VIDEO_REFERENCE_MODES.has(cleanString(nodeData.videoReferenceMode))
-      && Boolean(selectedVideoReferenceMode)
-    const referenceMode = selectedVideoReferenceMode
+      && Boolean(effectiveVideoReferenceMode)
+      && effectiveVideoReferenceMode !== 'text'
+    const referenceMode = effectiveVideoReferenceMode
+    const isTextVideoMode = referenceMode === 'text'
     const firstFrameReference = imageReferences[0]
     const lastFrameReference = imageReferences[1]
     const hasOmniReferences = rawReferences.filter((reference) => (reference.kind || 'image') === 'image').length > 2
@@ -899,6 +912,21 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
       if (nodeData.includeAudio === true && capability.supportsAudio !== true) {
         throw new Error(`${nodeData.model || '当前视频模型'} 当前不支持同步音频`)
       }
+    }
+    if (isTextVideoMode) {
+      if (capabilityDeclared && capability.supportsTextToVideo === false) {
+        throw new Error(`${nodeData.model || '当前视频模型'} 当前不支持文生视频`)
+      }
+      return withoutEmptyFields({
+        drama_id: dramaId,
+        prompt: decoratedVideoPrompt({ ...nodeData, content }),
+        model: nodeData.model,
+        aspect_ratio: nodeData.aspectRatio,
+        duration,
+        style: nodeData.style,
+        resolution,
+        ...(capability.supportsAudio === true ? { generate_audio: nodeData.includeAudio === true } : {}),
+      })
     }
     const referenceImageUrls = references.length
       ? uniqueStrings([
