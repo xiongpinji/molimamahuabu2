@@ -1000,10 +1000,11 @@ test.beforeAll(async () => {
   const localeVerifier = {
     assertReady(locale) {
       if (locale && typeof locale === 'object') {
-        if (locale.language !== 'en') throw new Error('本地原生英文语言包未就绪')
+        const language = String(locale.language || '').trim().toLowerCase()
+        if (!['en', 'es'].includes(language)) throw new Error('本地原生语言包未就绪')
         return {
-          id: 'en@fixture', language: 'en', locale: null, scope: 'language',
-          prompt_language_label: 'English',
+          id: `${language}@fixture`, language, locale: null, scope: 'language',
+          prompt_language_label: language === 'es' ? 'Spanish' : 'English',
           model_manifest_sha256: 'a'.repeat(64),
           calibration_manifest_sha256: 'b'.repeat(64),
           thresholds: {
