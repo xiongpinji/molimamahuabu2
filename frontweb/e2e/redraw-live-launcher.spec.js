@@ -28,6 +28,28 @@ test('local harness locale verifier accepts language-scoped requests', () => {
   expect(liveHarness.normalizeLocalVerifierLocale({ language: 'en', scope: 'language' })).toBe('en-US')
 })
 
+test('paid acceptance locale preflight fails closed when the verifier is unavailable', () => {
+  expect(() => liveHarness.assertPaidAcceptanceLocaleVerifierReady()).toThrow(
+    /REDRAW_LOCALE_VERIFIER_NOT_READY/,
+  )
+})
+
+test('paid acceptance locale preflight normalizes language scope and returns the ready pack', () => {
+  const calls = []
+  const pack = { id: 'en-US@worker-1' }
+  const ready = liveHarness.assertPaidAcceptanceLocaleVerifierReady({
+    localeVerifier: {
+      assertReady(request) {
+        calls.push(request)
+        return pack
+      },
+    },
+    locale: 'en-US',
+  })
+  expect(ready).toEqual(pack)
+  expect(calls).toEqual([{ language: 'en', scope: 'language' }])
+})
+
 function fakeInputEnvironment(root) {
   const env = {
     REDRAW_LIVE_SOURCE_VIDEO: path.join(root, 'source.mp4'),
