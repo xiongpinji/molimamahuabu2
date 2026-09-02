@@ -26,7 +26,14 @@ function setVideoGenFailed(db, videoGenId, errorMsg, now, failure = {}) {
   try {
     row = db.prepare('SELECT id, credit_reservation_id FROM video_generations WHERE id = ?').get(Number(videoGenId));
   } catch (_) {}
-  settleVideoCredit(db, null, row, 'failed', errorMsg, failure);
+  settleVideoCredit(
+    db,
+    null,
+    row,
+    'failed',
+    errorMsg,
+    { failureDisposition: 'refund', ...(failure || {}) },
+  );
 }
 
 function setVideoGenNeedsAttention(db, videoGenId, taskId, errorMsg, now) {

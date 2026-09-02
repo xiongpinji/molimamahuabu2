@@ -5,6 +5,8 @@ const Database = require('better-sqlite3');
 const aiClient = require('../src/services/aiClient');
 const aiConfig = require('../src/services/aiConfigService');
 const canvasText = require('../src/services/canvas-text-generation-service');
+const credits = require('../src/services/creditLedgerService');
+const prices = require('../src/services/modelPriceService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 const log = { info() {}, warn() {}, error() {} };
@@ -58,4 +60,50 @@ test('独立画布文本节点拒绝空提示词', async () => {
   } finally {
     db.close();
   }
+});
+
+test('独立画布文本节点结果明确未知时保持积分冻结', async (t) => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  aiConfig.createConfig(db, log, {
+    service_type: 'text',
+    provider: 'openai',
+    name: '画布文本模型',
+    base_url: 'https://example.invalid/v1',
+    api_key: 'test-key',
+    model: ['GPT-5.5'],
+    default_model: 'GPT-5.5',
+    is_default: true,
+  });
+  credits.setTenantAccountBalance(db, 'tenant-a', 20);
+  prices.set(db, 'GPT-5.5', 5);
+  const original = aiClient.generateText;
+  t.after(() => {
+    aiClient.generateText = original;
+    db.close();
+  });
+  aiClient.generateText = async () => {
+    const error = new Error('供应商结果未知，请勿重新提交');
+    error.code = 'TEXT_RESULT_UNKNOWN';
+    throw error;
+  };
+
+  await assert.rejects(
+    () => canvasText.generate(db, log, {
+      dramaId: 7,
+      prompt: '结果未知时保留冻结',
+      model: 'GPT-5.5',
+      billingEnabled: true,
+      tenantId: 'tenant-a',
+      userId: 'user-1',
+    }),
+    (error) => error.code === 'TEXT_RESULT_UNKNOWN',
+  );
+
+  const reservation = db.prepare(
+    `SELECT status FROM tenant_usage_reservations
+     WHERE resource_type = 'canvas_text' ORDER BY created_at DESC LIMIT 1`,
+  ).get();
+  assert.equal(reservation.status, 'held');
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').held, 5);
 });

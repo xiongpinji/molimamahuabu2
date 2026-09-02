@@ -385,6 +385,38 @@ test('ToAPIs verification downgrade after reservation prevents supplier POST and
   }
 });
 
+test('画布视频明确失败状态即使错误文案含未知也立即退款', async () => {
+  const db = setup();
+  const originalCall = videoClient.callVideoApi;
+  const originalGetDefaultVideoConfig = videoClient.getDefaultVideoConfig;
+  videoClient.getDefaultVideoConfig = () => ({
+    model: 'seedance 2.0',
+    api_url: 'https://example.com',
+  });
+  videoClient.callVideoApi = async () => ({ error: '网络中断，供应商结果未知' });
+  try {
+    const created = videoService.create(db, log, {
+      drama_id: 1,
+      storyboard_id: 1,
+      model: 'seedance 2.0',
+      prompt: '明确失败即时退款',
+      duration: 5,
+    }, { billingEnabled: true, userId: 'user-1', schedule() {} });
+
+    await videoService.processVideoGeneration(db, log, created.id);
+
+    const row = db.prepare(
+      'SELECT status, credit_reservation_id FROM video_generations WHERE id = ?',
+    ).get(created.id);
+    assert.equal(row.status, 'failed');
+    assert.equal(credits.getReservation(db, row.credit_reservation_id).status, 'refunded');
+  } finally {
+    videoClient.callVideoApi = originalCall;
+    videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;
+    db.close();
+  }
+});
+
 function create(db, userId) {
   return videoService.create(db, log, {
     drama_id: 1,

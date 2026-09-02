@@ -40,7 +40,13 @@ function resolveTextModel(db, requestedModel) {
 function settlePromptCredit(db, log, reservationId, outcome, message = '') {
   if (!reservationId) return null;
   try {
-    const settled = creditLedger.settleGeneration(db, reservationId, outcome, message);
+    const settled = creditLedger.settleGeneration(
+      db,
+      reservationId,
+      outcome,
+      message,
+      outcome === 'failed' ? { failureDisposition: 'refund' } : {},
+    );
     auditEvent.record(db, {
       userId: settled?.actor_user_id || settled?.user_id,
       tenantId: settled?.tenant_id,

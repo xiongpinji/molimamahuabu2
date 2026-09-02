@@ -96,6 +96,7 @@ function settle(db, log, billing, outcome, message = '') {
       billing.reservationId,
       settlementOutcome,
       settlementMessage,
+      outcome === 'failed' ? { failureDisposition: 'refund' } : {},
     );
     try {
       if (outcome === 'completed') {
