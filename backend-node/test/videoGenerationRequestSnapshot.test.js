@@ -12,6 +12,7 @@ const taskService = require('../src/services/taskService');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
+const { MINIMAL_MP4 } = require('./fixtures/media');
 
 const log = { info() {}, warn() {}, error() {} };
 
@@ -231,6 +232,43 @@ test('ToAPIs process uses request_snapshot arrays and does not rebuild from muta
   assert.deepEqual(captured.reference_audio_urls, ['https://molimama.vip/static/projects/0001/assets/ref-audio.mp3']);
   assert.equal(captured.first_frame_url, null);
   assert.equal(captured.generate_audio, true);
+});
+
+test('completed video is downloaded into the runtime storage root', async (t) => {
+  const { db, drama1 } = setup(t);
+  const runtimeStorageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-video-runtime-storage-'));
+  const originalCall = videoClient.callVideoApi;
+  const originalFetch = global.fetch;
+  videoClient.callVideoApi = async () => ({
+    video_url: 'https://cdn.example.test/runtime-storage.mp4',
+  });
+  global.fetch = async () => ({
+    ok: true,
+    status: 200,
+    arrayBuffer: async () => MINIMAL_MP4,
+  });
+  t.after(() => {
+    videoClient.callVideoApi = originalCall;
+    global.fetch = originalFetch;
+    fs.rmSync(runtimeStorageRoot, { recursive: true, force: true });
+  });
+
+  const created = createVideo(db, {
+    drama_id: drama1,
+    storyboard_id: 1,
+    model: 'seedance-2-mini',
+    prompt: 'runtime storage root',
+    duration: 8,
+  }, { billingEnabled: false, schedule() {} });
+
+  await videoService.processVideoGeneration(db, log, created.id, {
+    storageLocalPath: runtimeStorageRoot,
+  });
+
+  const completed = db.prepare('SELECT status, local_path FROM video_generations WHERE id = ?')
+    .get(created.id);
+  assert.equal(completed.status, 'completed');
+  assert.equal(fs.existsSync(path.join(runtimeStorageRoot, completed.local_path)), true);
 });
 
 test('reference bundle motion URL is not rewritten by raw source conditioning signer during processing', async (t) => {

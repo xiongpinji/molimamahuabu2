@@ -2511,7 +2511,17 @@ function compactDownloadFailureMessage(error) {
     .slice(0, 500);
 }
 
-async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, videoUrl, logLabel, providerConfig) {
+async function finalizeSuccessfulVideo(
+  db,
+  log,
+  videoGenId,
+  row,
+  rowForAspect,
+  videoUrl,
+  logLabel,
+  providerConfig,
+  runtime = {},
+) {
   const now = new Date().toISOString();
   let localPath = null;
   let downloadError = null;
@@ -2522,7 +2532,10 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
   };
   try {
     const cfg = require('../config').loadConfig();
-    const storagePath = resolveStoragePath(cfg);
+    const configuredStoragePath = runtime.storageLocalPath ?? cfg.storage?.local_path;
+    const storagePath = path.isAbsolute(String(configuredStoragePath || ''))
+      ? configuredStoragePath
+      : path.join(process.cwd(), configuredStoragePath || './data/storage');
     const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
     const fetchOptions = videoClient.getVideoArtifactFetchOptions(providerConfig, videoUrl);
     const downloaded = await downloadVideoToLocal(
@@ -2698,7 +2711,8 @@ async function pollProviderTaskAndFinalize(
       rowForAspect,
       polledVideo.video_url,
       'after poll',
-      config
+      config,
+      runtime,
     );
   } else if (pollResult.indeterminate) {
     const message = String(pollResult.error || '供应商任务仍可能处理中，请勿重新提交').slice(0, 500);
@@ -3242,7 +3256,8 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
         rowForAspect,
         directVideo.video_url,
         '',
-        selectedConfig
+        selectedConfig,
+        runtime,
       );
       return;
     }

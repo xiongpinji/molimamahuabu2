@@ -5688,8 +5688,20 @@ test('供应商回读已先落 completed 终态时启动 mark 仍安排 shot 与
 test('reference bundle required 的单镜生成使用安全参考包投影且不调用源片 conditioning', async (t) => {
   const state = await setupReferenceBundleGenerationFixture(t);
   let providerCalls = 0;
+  let localeReadyCalls = 0;
   const result = await generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
     videoProcessor: async () => { providerCalls += 1; },
+    localeVerifier: {
+      assertReady(input) {
+        localeReadyCalls += 1;
+        assert.deepEqual(input, { language: 'en', scope: 'language' });
+        return nativePack({
+          id: 'en@1',
+          language: 'en',
+          prompt_language_label: 'English',
+        });
+      },
+    },
   })), { shotId: state.shotId });
 
   assert.equal(result.status, 'processing');
@@ -5719,6 +5731,10 @@ test('reference bundle required 的单镜生成使用安全参考包投影且不
   assert.equal(snapshot.locale, 'en-US');
   assert.equal(video.generate_audio, 1);
   assert.equal(snapshot.generate_audio, true);
+  assert.equal(localeReadyCalls, 1);
+  assert.equal(snapshot.locale_pack, 'en@1');
+  assert.equal(snapshot.dialogue_snapshot_hash, snapshot.reference_bundle.dialogue_script_sha256);
+  assert.match(snapshot.prompt_hash, /^[0-9a-f]{64}$/);
   assert.equal(video.prompt, snapshot.prompt);
   assert.match(snapshot.prompt, /Ethan/);
   assert.match(snapshot.prompt, /Maya/);
@@ -5736,6 +5752,10 @@ test('reference bundle required 的单镜生成使用安全参考包投影且不
     'character-001',
     'character-002',
   ]);
+  assert.deepEqual(snapshot.identity_bindings.map((binding) => binding.target_country), ['US', 'US']);
+  assert.match(snapshot.prompt, /Reference image 1 is the exclusive identity anchor for Ethan/i);
+  assert.match(snapshot.prompt, /target country US/i);
+  assert.match(snapshot.prompt, /Do not replace any character with a different face or apparent ethnicity/i);
   assert.deepEqual(
     snapshot.identity_bindings.map((binding) => binding.identity_pack_sha256),
     JSON.parse(state.db.prepare('SELECT reference_bundle_json FROM redraw_shots WHERE id = ?')
@@ -5756,6 +5776,53 @@ test('reference bundle required 的单镜生成使用安全参考包投影且不
   assert.equal(/[\u3400-\u9fff]/.test(serialized), false);
   assert.equal(serialized.includes('sk-'), false);
   assert.equal(serialized.includes('Authorization'), false);
+});
+
+test('reference bundle 有声成片语言或对白验证失败时保持 needs_attention 和 held', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  let providerCalls = 0;
+  let validationCalls = 0;
+  let importerCalls = 0;
+  const first = await generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
+    awaitCompletion: true,
+    localeVerifier: {
+      assertReady: () => nativePack({
+        id: 'en@1',
+        language: 'en',
+        prompt_language_label: 'English',
+      }),
+    },
+    videoProcessor: async (db, _log, videoId) => {
+      providerCalls += 1;
+      db.prepare(`UPDATE video_generations
+        SET status = 'completed', provider_task_id = 'provider-reference-bundle-wrong-language',
+            video_url = 'https://cdn.test/reference-bundle-wrong-language.mp4',
+            local_path = 'videos/reference-bundle-wrong-language.mp4'
+        WHERE id = ?`).run(videoId);
+    },
+    artifactVerifier: async () => ({ duration: 5, width: 854, height: 480 }),
+    nativeAudioValidator: async (input) => {
+      validationCalls += 1;
+      assert.equal(input.approvedText, 'Come with me.\nNot without proof.');
+      assert.equal(input.expectedLanguage, 'en');
+      assert.equal(input.localePack.id, 'en@1');
+      const error = new Error('目标语言或批准对白不匹配');
+      error.code = 'REDRAW_NATIVE_AUDIO_WORKER_EVIDENCE_INVALID';
+      throw error;
+    },
+    assetImporter: () => {
+      importerCalls += 1;
+      return { id: 1201 };
+    },
+  })), { shotId: state.shotId });
+
+  assert.equal(first.status, 'needs_attention');
+  assert.equal(providerCalls, 1);
+  assert.equal(validationCalls, 1);
+  assert.equal(importerCalls, 0);
+  assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(state.shotId).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(first.video_generation_id).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(first.reservation_id).status, 'held');
 });
 
 test('reference bundle generation 快照缺失身份包或当前包证据时不复用旧 generation', async (t) => {
