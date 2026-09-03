@@ -1,7 +1,7 @@
 import { pathToFileURL } from 'node:url'
+import { createFuminEpisodeProviderAdapter } from './fuminEpisodeProviderAdapter.mjs'
 
 export {
-  createProviderAdapter,
   loadEpisodePackage,
   parseArgs,
   runStage,
@@ -11,6 +11,7 @@ export async function main(argv = process.argv.slice(2), adapters = {}) {
   const runner = await import('./run-redraw-episode-blueprint-live.mjs')
   return runner.main(argv, {
     providerName: 'fumin',
+    provider: adapters.provider || createFuminEpisodeProviderAdapter(adapters),
     ...adapters,
   })
 }

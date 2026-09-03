@@ -766,55 +766,67 @@ test.beforeAll(async () => {
     const color = shotColors[offset % shotColors.length]
     const artifactDuration = artifactDurations[offset]
     const target = path.join(artifactRoot, `shot-${index}.mp4`)
-    const dialogue = genericLocalization.dialogue[offset]?.turns || []
+    const dialogue = activeLocalizationOverrides.dialogue[offset]?.turns || []
     const transcript = normalizedTranscript(dialogue.map((turn) => turn.localized_text).join(' '))
     let speechEvidence = null
     let speechPath = null
-    if (fullProductMode && transcript) {
+    if (transcript) {
       speechPath = path.join(artifactRoot, `shot-${index}-speech.mp3`)
-      speechEvidence = synthesizeOfflineSpeech(transcript, speechPath)
+      if (fullProductMode) {
+        speechEvidence = synthesizeOfflineSpeech(transcript, speechPath)
+      } else {
+        runFfmpeg([
+          '-hide_banner', '-loglevel', 'error',
+          '-f', 'lavfi', '-i', 'sine=frequency=520:sample_rate=44100',
+          '-t', '1.2', '-c:a', 'libmp3lame', '-y', speechPath,
+        ], `本地第 ${index} 镜语音证据生成`)
+        speechEvidence = {
+          schema_version: 'redraw-local-speech-evidence-v1',
+          locale: fixtureLocale,
+          transcript,
+          transcript_sha256: sha256Value(transcript),
+          source_audio_sha256: sha256File(speechPath),
+          source_audio_duration_ms: 1200,
+          synthesis: { engine: 'eSpeak NG', culture: 'es-ES', voice_code: 'es' },
+        }
+      }
     }
     const inputs = [
       '-hide_banner', '-loglevel', 'error',
-      '-f', 'lavfi', '-i', `color=c=${color}:size=320x180:rate=12`,
+      '-f', 'lavfi', '-i', `color=c=${color}:size=1280x720:rate=12`,
     ]
     if (speechPath) {
       inputs.push('-i', speechPath)
-    } else if (fullProductMode) {
+    } else if (fullProductMode || !transcript) {
       inputs.push('-f', 'lavfi', '-i', 'anoisesrc=color=pink:amplitude=0.025:sample_rate=44100')
-    } else if (index === '1') {
-      const frequency = index === '1' ? 520 : index === '2' ? 610 : 180
-      inputs.push('-f', 'lavfi', '-i', `sine=frequency=${frequency}:sample_rate=44100`)
     }
     inputs.push(
       '-t', String(artifactDuration), '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-      ...(fullProductMode
+      ...((fullProductMode || speechPath || !transcript)
         ? ['-af', 'apad', '-c:a', 'aac']
-        : index === '1' ? ['-c:a', 'aac', '-shortest'] : ['-an']),
+        : ['-an']),
       '-y', target,
     )
     runFfmpeg(inputs, `本地第 ${index} 镜视频生成`)
     const candidateSha256 = sha256File(target)
-    const audioEvidence = fullProductMode
-      ? speechEvidence
-        ? {
-            ...speechEvidence,
-            shot_index: Number(index),
-            speech_required: true,
-            candidate_sha256: candidateSha256,
-            source_audio_path: speechPath,
-          }
-        : {
-            schema_version: 'redraw-local-speech-evidence-v1',
-            locale: 'es-ES',
-            shot_index: Number(index),
-            transcript: null,
-            transcript_sha256: null,
-            speech_required: false,
-            ambience_kind: 'rain-like-pink-noise',
-            candidate_sha256: candidateSha256,
-          }
-      : null
+    const audioEvidence = speechEvidence
+      ? {
+          ...speechEvidence,
+          shot_index: Number(index),
+          speech_required: true,
+          candidate_sha256: candidateSha256,
+          source_audio_path: speechPath,
+        }
+      : {
+          schema_version: 'redraw-local-speech-evidence-v1',
+          locale: fixtureLocale,
+          shot_index: Number(index),
+          transcript: null,
+          transcript_sha256: null,
+          speech_required: false,
+          ambience_kind: 'rain-like-pink-noise',
+          candidate_sha256: candidateSha256,
+        }
     providerArtifacts[`shot-${index}`] = {
       absolutePath: target,
       relativePath: `redraw-local-provider/shot-${index}.mp4`,
@@ -1392,7 +1404,7 @@ test.beforeAll(async () => {
             SET status = 'completed', provider_task_id = ?, video_url = ?, local_path = ?, updated_at = ?
             WHERE id = ?
           `).run(
-            `local-fixture-video-${videoGenerationId}`,
+            `local-fixture-video-task-${Number(row?.shot_index || 1)}`,
             `/static/${relativePath}`,
             relativePath,
             new Date().toISOString(),
@@ -3710,5 +3722,65 @@ export async function runRedrawFullProductFlow({ page }) {
 }
 
 if (!fullProductMode) {
+  test('Task9 通用生产包 preflight 由母本蓝图/本地化/production packs 驱动且 0 供应商路由', async () => {
+    providerAudit.length = 0
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-task9-package-'))
+    try {
+      const sourcePath = path.join(root, 'source', 'master.mp4')
+      const identityPath = path.join(root, 'refs', 'identity.png')
+      const motionPath = path.join(root, 'refs', 'shot-1.mp4')
+      fs.mkdirSync(path.dirname(sourcePath), { recursive: true })
+      fs.mkdirSync(path.dirname(identityPath), { recursive: true })
+      fs.writeFileSync(sourcePath, 'local-master')
+      fs.writeFileSync(identityPath, 'identity')
+      fs.writeFileSync(motionPath, 'motion')
+      const blueprintHash = sha256Value(stableJson(sourceFacts))
+      const localizationHash = sha256Value(stableJson(localizationOverrides))
+      const pack = {
+        schema_version: 'redraw-shot-production-pack-v1',
+        shot_id: 'task9-shot-1',
+        start_ms: 0,
+        end_ms: 5000,
+        duration_ms: 5000,
+        blueprint_hash: blueprintHash,
+        localization_hash: localizationHash,
+        characters: [{ id: 'c1', name: 'Aran' }],
+        dialogue: [{ speaker_id: 'c1', speaker_name: 'Aran', text: "Don't look back", start_ms: 1000, end_ms: 3000 }],
+        visual_contract: { composition: 'rooftop medium shot' },
+        audio_contract: { locale: fixtureLocale, speech_required: true },
+        prompt: 'Aran says in English: Don’t look back.',
+      }
+      const canonicalPack = JSON.parse(JSON.stringify(pack))
+      delete canonicalPack.production_pack_hash
+      pack.production_pack_hash = sha256Value(stableJson(canonicalPack))
+      const episodePackage = {
+        schema_version: 'redraw-episode-production-package-v1',
+        blueprint_hash: blueprintHash,
+        localization_hash: localizationHash,
+        target: { locale: fixtureLocale, market: fixtureMarket },
+        source_media: { path: sourcePath, sha256: sha256File(sourcePath) },
+        identity_references: [{ id: 'identity-c1', character_id: 'c1', path: identityPath, sha256: sha256File(identityPath) }],
+        motion_references: [{ id: 'motion-task9-shot-1', shot_id: 'task9-shot-1', path: motionPath, sha256: sha256File(motionPath) }],
+        production_packs: [pack],
+      }
+      const packagePath = path.join(root, 'package', 'episode-package.json')
+      const stateDir = path.join(root, 'state')
+      fs.mkdirSync(path.dirname(packagePath), { recursive: true })
+      fs.writeFileSync(packagePath, `${JSON.stringify(episodePackage, null, 2)}\n`)
+      const runner = await import('../scripts/run-redraw-episode-blueprint-live.mjs')
+      const result = await runner.runStage(
+        runner.parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'preflight']),
+        { provider: { name: 'local-preflight-no-provider' } },
+      )
+      expect(result.blueprint_hash).toBe(blueprintHash)
+      expect(result.localization_hash).toBe(localizationHash)
+      expect(result.production_packs).toHaveLength(1)
+      expect(result.production_packs[0].production_pack_hash).toBe(pack.production_pack_hash)
+      expect(providerAudit).toHaveLength(0)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test('真实前后端与本地模拟供应商完成转绘同链', runRedrawFullProductFlow)
 }

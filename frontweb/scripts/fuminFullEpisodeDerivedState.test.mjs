@@ -6,6 +6,10 @@ import os from 'node:os'
 import path from 'node:path'
 
 import * as derivedState from './fuminFullEpisodeDerivedState.mjs'
+import {
+  validateGeneratedMediaForPack,
+  verifyTranscriptConsensusForPack,
+} from './fuminEpisodeProviderAdapter.mjs'
 import { assertNextShotAllowed } from './fuminFullEpisodePaidGuard.mjs'
 
 const sourceManifestSha256 = '4449766d1b76e8d37b6d26ca3c6acb7a180eceddd352e90049f31a29a8ac8ddc'
@@ -275,17 +279,32 @@ test('合法源状态原子派生为第 4 镜待人工验收的新状态且不�
   }
 })
 
-test('第 4 镜只调用本地媒体与双 ASR 适配器并保留原失败审计', () => {
+test('第 4 镜只调用新 Fumin adapter 的本地媒体与双 ASR 纯验收并保留原失败审计', () => {
   const fixture = makeSourceState()
   const calls = []
   try {
     fixture.adapters.revalidateShot4 = ({ stagingRoot, derivedManifest }) => {
       const videoPath = path.join(stagingRoot, 'artifacts', 'shot-04.mp4')
       assert.equal(fs.existsSync(videoPath), true)
-      calls.push('probe')
+      const pack = {
+        shot_id: 'shot-04',
+        duration_ms: 8000,
+        characters: [{ id: 'lead', name: 'Marcus' }],
+        dialogue: [{ speaker_id: 'lead', speaker_name: 'Marcus', text: 'We leave tonight.' }],
+        audio_contract: { locale: 'en-US', speech_required: true },
+      }
       calls.push('validate-media')
-      calls.push('transcribe-consensus')
+      const media = validateGeneratedMediaForPack(pack, {
+        width: 496,
+        height: 864,
+        duration_seconds: 8.01,
+        has_audio: true,
+      })
       calls.push('verify-consensus')
+      const speech = verifyTranscriptConsensusForPack(pack, [
+        { model_id: 'Systran/faster-whisper-base', language: 'en', probability: 0.96, text: 'We leave tonight.' },
+        { model_id: 'Systran/faster-whisper-small', language: 'en', probability: 0.95, text: 'We leave tonight.' },
+      ])
       calls.push('contact-sheet')
       writeFixture(path.join(stagingRoot, 'artifacts', 'shot-04-contact-sheet.jpg'), 'contact-sheet')
       const task = derivedManifest.tasks[3]
@@ -293,9 +312,10 @@ test('第 4 镜只调用本地媒体与双 ASR 适配器并保留原失败审计
       task.artifact = {
         artifact_id: 'shot-04.mp4',
         sha256: derivedState.R4_SHOT4_ARTIFACT_SHA256,
+        ffprobe: media,
       }
       task.contact_sheet_id = 'shot-04-contact-sheet.jpg'
-      task.speech = { consensus_passed: true, exact_model_id: 'Systran/faster-whisper-base' }
+      task.speech = speech
       task.revalidation = {
         schema_version: 'fumin-shot-local-revalidation-v2',
         source_status: 'failed',
@@ -313,9 +333,7 @@ test('第 4 镜只调用本地媒体与双 ASR 适配器并保留原失败审计
     ))
 
     assert.deepEqual(calls, [
-      'probe',
       'validate-media',
-      'transcribe-consensus',
       'verify-consensus',
       'contact-sheet',
     ])

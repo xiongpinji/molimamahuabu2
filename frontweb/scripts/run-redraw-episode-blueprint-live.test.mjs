@@ -132,20 +132,207 @@ test('shot stage reads character dialogue prompt and references from production 
     const result = await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'shot', '--shot-id', 'shot-1']), {
       provider: {
         name: 'fake-provider',
-        submitShot: async (context) => {
+        uploadReference: async () => ({ asset_id: 'asset' }),
+        submitGeneration: async (context) => {
           seen.push(context)
-          return { task_id: 'task-1', status: 'submitted' }
+          return { task_id: 'task-1' }
         },
+        pollGeneration: async () => ({ video_url: 'https://example.test/result.mp4' }),
+        downloadResult: async ({ output_path }) => {
+          fs.mkdirSync(path.dirname(output_path), { recursive: true })
+          fs.writeFileSync(output_path, 'video')
+          return { path: output_path, sha256: sha256(fs.readFileSync(output_path)), bytes: fs.statSync(output_path).size }
+        },
+        inspectArtifact: async () => ({ media: { has_audio: true }, language: { passed: true }, role: { passed: true }, dialogue: { exact_dialogue_present: true } }),
       },
       now: () => new Date('2026-09-03T09:00:05.000Z'),
     })
 
-    assert.equal(result.status, 'submitted')
+    assert.equal(result.status, 'completed_verified')
     assert.equal(seen[0].pack.shot_id, 'shot-1')
     assert.equal(seen[0].pack.dialogue[0].text, 'We leave tonight.')
     assert.match(seen[0].pack.prompt, /Marcus/)
-    assert.equal(seen[0].references.identities[0].character_id, 'lead')
-    assert.equal(seen[0].references.motion[0].shot_id, 'shot-1')
+    assert.equal(seen[0].uploaded_references.length, 2)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('shot stage runs the real provider lifecycle and persists every boundary', async () => {
+  const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-lifecycle-'))
+  try {
+    const { packagePath, identityPath, motionPath } = makeEpisodePackage(root)
+    const stateDir = path.join(root, 'isolated-state')
+    await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'preflight']), {
+      provider: { name: 'fake-provider' },
+      now: () => new Date('2026-09-03T09:00:00.000Z'),
+    })
+    const calls = []
+    const resultBytes = Buffer.from('verified-local-mp4')
+    const provider = {
+      name: 'fake-provider',
+      uploadReference: async (reference) => {
+        calls.push(['uploadReference', path.basename(reference.path), reference.sha256, reference.bytes.length])
+        assert.equal(Buffer.isBuffer(reference.bytes), true)
+        return { asset_id: `asset-${path.basename(reference.path)}` }
+      },
+      submitGeneration: async ({ pack, uploaded_references }) => {
+        calls.push(['submitGeneration', pack.shot_id, uploaded_references.length])
+        return { task_id: 'task-shot-1' }
+      },
+      pollGeneration: async ({ task_id }) => {
+        calls.push(['pollGeneration', task_id])
+        return { video_url: 'https://example.test/shot-1.mp4' }
+      },
+      downloadResult: async ({ video_url, output_path }) => {
+        calls.push(['downloadResult', video_url, path.basename(output_path)])
+        fs.mkdirSync(path.dirname(output_path), { recursive: true })
+        fs.writeFileSync(output_path, resultBytes, { flag: 'wx' })
+        return { path: output_path, sha256: sha256(resultBytes), bytes: resultBytes.length }
+      },
+      inspectArtifact: async ({ output_path, pack }) => {
+        calls.push(['inspectArtifact', path.basename(output_path), pack.dialogue[0].text])
+        return {
+          media: { width: 496, height: 864, duration_seconds: 5.02, has_audio: true },
+          language: { locale: 'en-US', passed: true },
+          role: { characters: ['lead'], passed: true },
+          dialogue: { exact_dialogue_present: true, text: 'We leave tonight.' },
+        }
+      },
+    }
+
+    const result = await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'shot', '--shot-id', 'shot-1']), {
+      provider,
+      now: () => new Date('2026-09-03T09:00:05.000Z'),
+    })
+    const manifest = JSON.parse(fs.readFileSync(path.join(stateDir, 'private-manifest.json'), 'utf8'))
+
+    assert.deepEqual(calls, [
+      ['uploadReference', path.basename(identityPath), sha256(fs.readFileSync(identityPath)), fs.statSync(identityPath).size],
+      ['uploadReference', path.basename(motionPath), sha256(fs.readFileSync(motionPath)), fs.statSync(motionPath).size],
+      ['submitGeneration', 'shot-1', 2],
+      ['pollGeneration', 'task-shot-1'],
+      ['downloadResult', 'https://example.test/shot-1.mp4', 'shot-1.mp4'],
+      ['inspectArtifact', 'shot-1.mp4', 'We leave tonight.'],
+    ])
+    assert.equal(result.status, 'completed_verified')
+    assert.equal(result.artifact.sha256, sha256(resultBytes))
+    assert.equal(manifest.tasks[0].status, 'completed_verified')
+    assert.equal(manifest.tasks[0].submission_started_at, '2026-09-03T09:00:05.000Z')
+    assert.doesNotMatch(JSON.stringify(result), /example\.test|asset-/)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('shot stage marks unknown provider results as needs_attention without retrying', async () => {
+  const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-unknown-'))
+  try {
+    const { packagePath } = makeEpisodePackage(root)
+    const stateDir = path.join(root, 'isolated-state')
+    await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'preflight']), {
+      provider: { name: 'fake-provider' },
+    })
+    let submitCalls = 0
+    const error = new Error('timeout')
+    error.code = 'REDRAW_EPISODE_PROVIDER_RESULT_UNKNOWN'
+    await assert.rejects(
+      () => runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'shot', '--shot-id', 'shot-1']), {
+        provider: {
+          name: 'fake-provider',
+          uploadReference: async () => ({ asset_id: 'asset' }),
+          submitGeneration: async () => {
+            submitCalls += 1
+            throw error
+          },
+          pollGeneration: async () => ({}),
+          downloadResult: async () => ({}),
+          inspectArtifact: async () => ({}),
+        },
+      }),
+      (caught) => caught.code === 'REDRAW_EPISODE_PROVIDER_RESULT_UNKNOWN',
+    )
+    const manifest = JSON.parse(fs.readFileSync(path.join(stateDir, 'private-manifest.json'), 'utf8'))
+    assert.equal(submitCalls, 1)
+    assert.equal(manifest.tasks[0].status, 'needs_attention')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('package schema fail-closes provider overrides, unknown production pack fields and symlink references', async (t) => {
+  const { loadEpisodePackage } = await import('./run-redraw-episode-blueprint-live.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-security-'))
+  try {
+    const base = makeEpisodePackage(root)
+    const withProvider = { ...base.episodePackage, provider: { base_url: 'https://evil.test', api_key: 'secret' } }
+    const providerPath = file(root, 'package/provider-override.json', `${JSON.stringify(withProvider)}\n`)
+    assert.throws(() => loadEpisodePackage(providerPath, path.join(root, 'state-a')), /REDRAW_EPISODE_PACKAGE_FIELD_FORBIDDEN/)
+
+    const withUnknownPack = JSON.parse(JSON.stringify(base.episodePackage))
+    withUnknownPack.production_packs[0].model = 'other-model'
+    withUnknownPack.production_packs[0].production_pack_hash = packHash(withUnknownPack.production_packs[0])
+    const unknownPackPath = file(root, 'package/unknown-pack.json', `${JSON.stringify(withUnknownPack)}\n`)
+    assert.throws(() => loadEpisodePackage(unknownPackPath, path.join(root, 'state-b')), /REDRAW_EPISODE_PRODUCTION_PACK_FIELD_FORBIDDEN/)
+
+    const symlinkPath = path.join(root, 'refs', 'identity-link.png')
+    try {
+      fs.symlinkSync(base.identityPath, symlinkPath)
+    } catch (error) {
+      t.skip(`symlink unavailable on this host: ${error.message}`)
+      return
+    }
+    const withSymlink = JSON.parse(JSON.stringify(base.episodePackage))
+    withSymlink.identity_references[0].path = symlinkPath
+    const symlinkPackage = file(root, 'package/symlink.json', `${JSON.stringify(withSymlink)}\n`)
+    assert.throws(() => loadEpisodePackage(symlinkPackage, path.join(root, 'state-c')), /REDRAW_EPISODE_REFERENCE_SYMLINK_REJECTED/)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('assemble and verify stages rehash and inspect local completed artifacts', async () => {
+  const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-verify-'))
+  try {
+    const { packagePath } = makeEpisodePackage(root)
+    const stateDir = path.join(root, 'isolated-state')
+    await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'preflight']), {
+      provider: { name: 'fake-provider' },
+    })
+    const shotBytes = Buffer.from('shot-mp4')
+    const episodeBytes = Buffer.from('episode-mp4')
+    const provider = {
+      name: 'fake-provider',
+      uploadReference: async () => ({ asset_id: 'asset' }),
+      submitGeneration: async () => ({ task_id: 'task-shot-1' }),
+      pollGeneration: async () => ({ video_url: 'https://example.test/shot-1.mp4' }),
+      downloadResult: async ({ output_path }) => {
+        fs.mkdirSync(path.dirname(output_path), { recursive: true })
+        fs.writeFileSync(output_path, shotBytes, { flag: 'wx' })
+        return { path: output_path, sha256: sha256(shotBytes), bytes: shotBytes.length }
+      },
+      inspectArtifact: async () => ({ media: { has_audio: true }, language: { passed: true }, role: { passed: true }, dialogue: { exact_dialogue_present: true } }),
+      assembleEpisode: async ({ output_path, shot_paths }) => {
+        assert.equal(shot_paths.length, 1)
+        fs.mkdirSync(path.dirname(output_path), { recursive: true })
+        fs.writeFileSync(output_path, episodeBytes, { flag: 'wx' })
+        return { path: output_path, sha256: sha256(episodeBytes), bytes: episodeBytes.length }
+      },
+      inspectEpisode: async ({ output_path }) => ({ media: { has_audio: true }, path: output_path }),
+    }
+    await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'shot', '--shot-id', 'shot-1']), { provider })
+    const assembled = await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'assemble']), { provider })
+    assert.equal(assembled.status, 'assembled_verified')
+    assert.equal(assembled.episode_artifact.sha256, sha256(episodeBytes))
+
+    fs.appendFileSync(path.join(stateDir, 'outputs', 'shots', 'shot-1.mp4'), 'drift')
+    await assert.rejects(
+      () => runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'verify']), { provider }),
+      /REDRAW_EPISODE_ARTIFACT_HASH_MISMATCH/,
+    )
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
