@@ -26,6 +26,7 @@ const REDRAW_COVERAGE_REGISTRATION_FEATURE_ID = 'redraw.coverage-registration-se
 const REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID = 'redraw.coverage-registration-http-route';
 const REDRAW_CLEAN_PLATE_MEDIA_FEATURE_ID = 'redraw.clean-plate-local-media-registration';
 const REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID = 'redraw.product-media-http-chain';
+const REDRAW_EPISODE_BLUEPRINT_FIRST_FEATURE_ID = 'redraw.episode-blueprint-first';
 const UNKNOWN_STATE_RECONCILIATION_FEATURE_ID = 'stability.unknown-state-billing-reconciliation';
 const PROVIDER_ROUTE_CONTRACT_FEATURE_ID = 'stability.provider-route-contract';
 const SAFE_PROVIDER_FAILOVER_FEATURE_ID = 'stability.safe-provider-failover';
@@ -533,6 +534,71 @@ const REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_REQUIRED_TESTS = [
   'backend-node/test/featureLockManifest.test.js',
   'backend-node/test/incrementalReleaseScope.test.js',
 ];
+const REDRAW_EPISODE_BLUEPRINT_FIRST_PROTECTED_PATHS = [
+  'backend-node/migrations/72_redraw_episode_blueprints.sql',
+  'backend-node/src/db/migrate.js',
+  'backend-node/src/routes/index.js',
+  'backend-node/src/routes/redraw.js',
+  'backend-node/src/services/localizationService.js',
+  'backend-node/src/services/redrawBlueprintWorkflowService.js',
+  'backend-node/src/services/redrawEpisodeBlueprintService.js',
+  'backend-node/src/services/redrawEpisodeFactsService.js',
+  'backend-node/src/services/redrawEvidenceFusionService.js',
+  'backend-node/src/services/redrawGenerationService.js',
+  'backend-node/src/services/redrawLocaleVerifierClient.js',
+  'backend-node/src/services/redrawLocalizationOrchestrator.js',
+  'backend-node/src/services/redrawNativeSourceAnalysisService.js',
+  'backend-node/src/services/redrawOrchestrator.js',
+  'backend-node/src/services/redrawShotProductionPackService.js',
+  'backend-node/src/services/redrawSourceAudioEvidenceService.js',
+  'frontweb/package.json',
+  'frontweb/scripts/fuminEpisodeProviderAdapter.mjs',
+  'frontweb/scripts/fuminFullEpisodeDerivedState.mjs',
+  'frontweb/scripts/run-redraw-episode-blueprint-live.mjs',
+  'frontweb/scripts/run-redraw-fumin-full-episode-live.mjs',
+  'frontweb/src/api/redraw.js',
+  'frontweb/src/components/redraw/RedrawBlueprintReviewPanel.vue',
+  'frontweb/src/components/redraw/RedrawLocalizationReviewPanel.vue',
+  'frontweb/src/components/redraw/RedrawSourceStep.vue',
+  'frontweb/src/utils/redrawBlueprintReviewState.js',
+  'frontweb/src/utils/redrawWorkspaceState.js',
+  'frontweb/src/views/RedrawWorkspace.vue',
+  'workers/redraw-locale-verifier/src/redraw_locale_worker/engines.py',
+  'workers/redraw-locale-verifier/src/redraw_locale_worker/server.py',
+  'workers/redraw-locale-verifier/src/redraw_locale_worker/source_evidence.py',
+];
+const REDRAW_EPISODE_BLUEPRINT_FIRST_REQUIRED_TESTS = [
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/redrawAnalysis.test.js',
+  'backend-node/test/redrawBlueprintWorkflow.test.js',
+  'backend-node/test/redrawEpisodeBlueprint.test.js',
+  'backend-node/test/redrawEpisodeFacts.test.js',
+  'backend-node/test/redrawEvidenceFusion.test.js',
+  'backend-node/test/redrawGeneration.test.js',
+  'backend-node/test/redrawLocaleVerifierClient.test.js',
+  'backend-node/test/redrawLocalization.test.js',
+  'backend-node/test/redrawLocalizationOrchestration.test.js',
+  'backend-node/test/redrawMigration.test.js',
+  'backend-node/test/redrawNativeSourceAnalysis.test.js',
+  'backend-node/test/redrawRoutes.test.js',
+  'backend-node/test/redrawShotProductionPack.test.js',
+  'backend-node/test/redrawSourceAudioEvidence.test.js',
+  'frontweb/e2e/redraw-backend-integration.spec.js',
+  'frontweb/e2e/redraw-workspace.spec.js',
+  'frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs',
+  'frontweb/scripts/fuminFullEpisodeDerivedState.test.mjs',
+  'frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs',
+  'frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs',
+  'frontweb/src/utils/redrawBlueprintReviewState.test.mjs',
+  'frontweb/test/redrawSourceRuntime.test.js',
+  'workers/redraw-locale-verifier/tests/test_server.py',
+  'workers/redraw-locale-verifier/tests/test_source_evidence.py',
+];
+const REDRAW_EPISODE_BLUEPRINT_FIRST_EVIDENCE = [
+  'docs/superpowers/specs/2026-09-03-episode-blueprint-first-redraw-design.md',
+  'docs/superpowers/plans/2026-09-03-episode-blueprint-first-redraw.md',
+];
 const REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_TASK_E_UNLOCK = {
   reason: '2026-08-28 一键转绘真实产品 HTTP 媒体同链回归 Task E 获批',
   approvedBy: 'product-owner 2026-08-28 redraw-product-media-registration-task-e',
@@ -742,6 +808,40 @@ const PR217_REDRAW_GENERATION_REVIEW_CONTEXT_UNLOCK = {
     'backend-node/test/featureLockManifest.test.js',
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
+};
+const REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK = {
+  reason: '2026-09-03 母本蓝图优先一键转绘任务 1-9 获批',
+  approvedBy: 'product-owner 2026-09-03 episode-blueprint-first-redraw',
+  impactTests: [
+    'backend-node/test/redrawEpisodeBlueprint.test.js',
+    'backend-node/test/redrawSourceAudioEvidence.test.js',
+    'backend-node/test/redrawEvidenceFusion.test.js',
+    'backend-node/test/redrawBlueprintWorkflow.test.js',
+    'backend-node/test/redrawLocalization.test.js',
+    'backend-node/test/redrawShotProductionPack.test.js',
+    'backend-node/test/redrawGeneration.test.js',
+    'backend-node/test/redrawRoutes.test.js',
+    'frontweb/e2e/redraw-workspace.spec.js',
+    'frontweb/e2e/redraw-backend-integration.spec.js',
+    'frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs',
+    'workers/redraw-locale-verifier/tests/test_source_evidence.py',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const REDRAW_EPISODE_BLUEPRINT_FIRST_TOUCHED_FEATURE_IDS = new Set([
+  PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
+  ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
+  PROACTIVE_CANARY_FEATURE_ID,
+  REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID,
+  REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID,
+]);
+const PRE_REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK_BY_FEATURE = {
+  [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: WAN3_FULL_CAPABILITY_UNLOCK,
+  [ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID]: PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK,
+  [PROACTIVE_CANARY_FEATURE_ID]: PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK,
+  [REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID]: PR217_REDRAW_GENERATION_REVIEW_CONTEXT_UNLOCK,
+  [REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID]: PR217_REDRAW_GENERATION_REVIEW_CONTEXT_UNLOCK,
 };
 const FAILED_GENERATION_RESUBMIT_UNLOCK = {
   reason: '2026-09-01 视频失败终态释放画布重复提交锁获批',
@@ -1238,34 +1338,36 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
   assert.deepEqual(feature.evidence.slice(0, PROACTIVE_CANARY_EVIDENCE.length), PROACTIVE_CANARY_EVIDENCE);
 });
 
-test('PR #217 Fumin 刷新主动巡检锁并保留失败视频重试批准历史', () => {
+test('母本蓝图任务刷新主动巡检锁并保留 PR #217 与失败视频批准历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
-  assert.deepEqual(feature.unlock, PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-1), FAILED_GENERATION_RESUBMIT_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-2), WAN3_PROVIDER_ASSET_SIGNING_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-3), WAN3_FULL_CAPABILITY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-4), PR211_CI_LOCK_REFRESH_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-5), WAN3_INTEGRATION_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-6), PR208_MAIN_SYNC_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-7), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-8), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-9), MIGRATION67_SHARED_HELPER_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-10), MIGRATION67_IDEMPOTENT_REPLAY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-11), FREE_BILLING_REVIEW_FIX_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-12), REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-13), TOAPIS_SUBMISSION_RECOVERY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-14), PR194_MAIN_SYNC_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-15), PR197_PROVIDER_CANARY_REMEDIATION_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-16), PR195_STATIC_ASSET_COMPAT_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-17), PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-18), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-19), CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-20), PR184_MAIN_MERGE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-21), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-22), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-23), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
+  assert.deepEqual(feature.unlock, REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK);
+  const preBlueprintHistory = feature.unlockHistory.slice(0, -1);
+  assert.deepEqual(preBlueprintHistory.at(-1), FAILED_GENERATION_RESUBMIT_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-2), WAN3_PROVIDER_ASSET_SIGNING_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-3), WAN3_FULL_CAPABILITY_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-4), PR211_CI_LOCK_REFRESH_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-5), WAN3_INTEGRATION_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-6), PR208_MAIN_SYNC_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-7), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-8), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-9), MIGRATION67_SHARED_HELPER_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-10), MIGRATION67_IDEMPOTENT_REPLAY_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-11), FREE_BILLING_REVIEW_FIX_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-12), REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-13), TOAPIS_SUBMISSION_RECOVERY_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-14), PR194_MAIN_SYNC_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-15), PR197_PROVIDER_CANARY_REMEDIATION_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-16), PR195_STATIC_ASSET_COMPAT_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-17), PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-18), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-19), CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-20), PR184_MAIN_MERGE_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-21), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-22), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-23), PROVIDER_TTS_CHARACTER_COST_UNLOCK);
   assert.equal(feature.evidence.at(-1), REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN);
   assert.equal(feature.evidence.at(-2), REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC);
   assert.equal(feature.evidence.at(-3), PR194_MAIN_SYNC_EVIDENCE);
@@ -1299,7 +1401,7 @@ test('Coverage 产品登记服务 Task B 使用独立功能锁覆盖服务和迁
   assert.notDeepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
 });
 
-test('Coverage 版本级 HTTP 入口保留 PR #217 历史并使用生成审核上下文新鲜批准', () => {
+test('Coverage 版本级 HTTP 入口保留生成审核上下文并使用母本蓝图新鲜批准', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(({ featureId }) => featureId === REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID}`);
@@ -1310,11 +1412,12 @@ test('Coverage 版本级 HTTP 入口保留 PR #217 历史并使用生成审核�
     REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN,
     PR217_REDRAW_GENERATION_REVIEW_CONTEXT_EVIDENCE,
   ]);
-  assert.deepEqual(feature.unlock, PR217_REDRAW_GENERATION_REVIEW_CONTEXT_UNLOCK);
+  assert.deepEqual(feature.unlock, REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK);
   assert.deepEqual(feature.unlockHistory, [
     REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK,
     REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK,
     PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK,
+    PR217_REDRAW_GENERATION_REVIEW_CONTEXT_UNLOCK,
   ]);
   assert.notDeepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
   assert.notDeepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
@@ -1340,7 +1443,7 @@ test('Clean provider 本地媒体登记 Task D 使用独立功能锁和新鲜批
   assert.notDeepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
 });
 
-test('真实产品 HTTP 媒体同链保留 PR #217 历史并使用生成审核上下文新鲜批准', () => {
+test('真实产品 HTTP 媒体同链保留生成审核上下文并使用母本蓝图新鲜批准', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(({ featureId }) => featureId === REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID}`);
@@ -1351,15 +1454,45 @@ test('真实产品 HTTP 媒体同链保留 PR #217 历史并使用生成审核�
     REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN,
     PR217_REDRAW_GENERATION_REVIEW_CONTEXT_EVIDENCE,
   ]);
-  assert.deepEqual(feature.unlock, PR217_REDRAW_GENERATION_REVIEW_CONTEXT_UNLOCK);
+  assert.deepEqual(feature.unlock, REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK);
   assert.deepEqual(feature.unlockHistory, [
     REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_TASK_E_UNLOCK,
     PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK,
+    PR217_REDRAW_GENERATION_REVIEW_CONTEXT_UNLOCK,
   ]);
   assert.notDeepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
   assert.notDeepEqual(feature.unlock, REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
   assert.notDeepEqual(feature.unlock, REDRAW_CLEAN_PLATE_MEDIA_TASK_D_P2_UNLOCK);
   assert.notDeepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
+});
+
+test('母本蓝图优先一键转绘以单一功能锁精确覆盖任务 1 到 9', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const feature = manifest.features.find(
+    ({ featureId }) => featureId === REDRAW_EPISODE_BLUEPRINT_FIRST_FEATURE_ID,
+  );
+  assert.ok(feature, `缺少功能锁 ${REDRAW_EPISODE_BLUEPRINT_FIRST_FEATURE_ID}`);
+  assert.equal(feature.module, 'shared');
+  assert.equal(feature.status, 'locked_pass');
+  assert.deepEqual(feature.protectedPaths, REDRAW_EPISODE_BLUEPRINT_FIRST_PROTECTED_PATHS);
+  assert.deepEqual(feature.requiredTests, REDRAW_EPISODE_BLUEPRINT_FIRST_REQUIRED_TESTS);
+  assert.deepEqual(feature.evidence, REDRAW_EPISODE_BLUEPRINT_FIRST_EVIDENCE);
+  assert.equal(feature.fixCommit, null);
+  assert.equal(feature.unlock, undefined);
+  assert.equal(feature.unlockHistory, undefined);
+});
+
+test('母本蓝图任务为实际触及的五个既有功能锁登记新鲜批准', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  for (const featureId of REDRAW_EPISODE_BLUEPRINT_FIRST_TOUCHED_FEATURE_IDS) {
+    const feature = manifest.features.find((entry) => entry.featureId === featureId);
+    assert.ok(feature, `缺少功能锁 ${featureId}`);
+    assert.deepEqual(feature.unlock, REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK);
+    assert.deepEqual(
+      feature.unlockHistory.at(-1),
+      PRE_REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK_BY_FEATURE[featureId],
+    );
+  }
 });
 
 test('ToAPIs 未知提交恢复批准在后续转绘更新后仍保留于四个锁', () => {
@@ -1394,7 +1527,10 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     const providerAssetSigningTouched = WAN3_PROVIDER_ASSET_SIGNING_FEATURE_IDS.has(featureId);
     const failedGenerationResubmitTouched = FAILED_GENERATION_RESUBMIT_FEATURE_IDS.has(featureId);
     const pr217FuminTouched = PR217_FUMIN_PRODUCT_API_ACCEPTANCE_FEATURE_IDS.has(featureId);
-    const expectedUnlock = pr217FuminTouched
+    const blueprintFirstTouched = REDRAW_EPISODE_BLUEPRINT_FIRST_TOUCHED_FEATURE_IDS.has(featureId);
+    const expectedUnlock = blueprintFirstTouched
+      ? REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK
+      : pr217FuminTouched
       ? PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK
       : failedGenerationResubmitTouched
       ? FAILED_GENERATION_RESUBMIT_UNLOCK
@@ -1527,6 +1663,9 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
           ? FAILED_GENERATION_RESUBMIT_UNLOCK
           : PRE_PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK_BY_FEATURE[featureId]]
         : []),
+      ...(blueprintFirstTouched
+        ? [PRE_REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK_BY_FEATURE[featureId]]
+        : []),
     ]);
     assert.deepEqual(
       feature.evidence.slice(0, HISTORICAL_EVIDENCE_BY_FEATURE[featureId].length),
@@ -1599,32 +1738,41 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
   assert.deepEqual(appLocks, [PROACTIVE_CANARY_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].sort());
   for (const featureId of appLocks) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
-    assert.deepEqual(feature.unlock, PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK);
+    assert.deepEqual(
+      feature.unlock,
+      REDRAW_EPISODE_BLUEPRINT_FIRST_TOUCHED_FEATURE_IDS.has(featureId)
+        ? REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK
+        : PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK,
+    );
   }
 });
 
-test('PR #217 刷新管理员预设锁并保留 Wan3 完整能力与前序历史', () => {
+test('母本蓝图任务刷新管理员预设锁并保留 PR #217 与 Wan3 历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(
     ({ featureId }) => featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
   );
   assert.ok(feature, `缺少功能锁 ${ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID}`);
-  assert.deepEqual(feature.unlock, PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-1), WAN3_FULL_CAPABILITY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-2), PR211_CI_LOCK_REFRESH_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-3), WAN3_INTEGRATION_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-4), PR208_MAIN_SYNC_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-5), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-6), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-7), TOAPIS_BACKUP_DOMAIN_MIGRATION_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-8), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
+  assert.deepEqual(feature.unlock, REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK);
+  const preBlueprintHistory = feature.unlockHistory.slice(0, -1);
+  assert.deepEqual(preBlueprintHistory.at(-1), WAN3_FULL_CAPABILITY_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-2), PR211_CI_LOCK_REFRESH_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-3), WAN3_INTEGRATION_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-4), PR208_MAIN_SYNC_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-5), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-6), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-7), TOAPIS_BACKUP_DOMAIN_MIGRATION_UNLOCK);
+  assert.deepEqual(preBlueprintHistory.at(-8), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
 });
 
 test('未触及锁保留当前批准记录且所有锁保留历史证据', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   assert.equal(manifest.features.length >= 5, true);
   for (const feature of manifest.features) {
-    if (feature.featureId === REDRAW_COVERAGE_REGISTRATION_FEATURE_ID) {
+    if (REDRAW_EPISODE_BLUEPRINT_FIRST_TOUCHED_FEATURE_IDS.has(feature.featureId)) {
+      assert.deepEqual(feature.unlock, REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK);
+    } else if (feature.featureId === REDRAW_COVERAGE_REGISTRATION_FEATURE_ID) {
       assert.deepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
     } else if (feature.featureId === REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID) {
       assert.deepEqual(feature.unlock, PR217_REDRAW_GENERATION_REVIEW_CONTEXT_UNLOCK);
@@ -1632,6 +1780,8 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
       assert.deepEqual(feature.unlock, REDRAW_CLEAN_PLATE_MEDIA_TASK_D_P2_UNLOCK);
     } else if (feature.featureId === REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID) {
       assert.deepEqual(feature.unlock, PR217_REDRAW_GENERATION_REVIEW_CONTEXT_UNLOCK);
+    } else if (feature.featureId === REDRAW_EPISODE_BLUEPRINT_FIRST_FEATURE_ID) {
+      assert.equal(feature.unlock, undefined);
     } else if (!Object.hasOwn(PROVIDER_TASK_LOCK_REQUIREMENTS, feature.featureId)) {
       assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
     }
@@ -1667,7 +1817,10 @@ test('PR #217 Fumin 保留失败视频重试与 Wan3 历史并仅刷新实际触
     const failedGenerationResubmitChanged = FAILED_GENERATION_RESUBMIT_FEATURE_IDS.has(featureId);
     const timeoutChanged = featureId === UNKNOWN_STATE_RECONCILIATION_FEATURE_ID;
     const pr217FuminTouched = PR217_FUMIN_PRODUCT_API_ACCEPTANCE_FEATURE_IDS.has(featureId);
-    const expectedUnlock = pr217FuminTouched
+    const blueprintFirstTouched = REDRAW_EPISODE_BLUEPRINT_FIRST_TOUCHED_FEATURE_IDS.has(featureId);
+    const expectedUnlock = blueprintFirstTouched
+      ? REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK
+      : pr217FuminTouched
       ? PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK
       : failedGenerationResubmitChanged
       ? FAILED_GENERATION_RESUBMIT_UNLOCK
@@ -1678,7 +1831,9 @@ test('PR #217 Fumin 保留失败视频重试与 Wan3 历史并仅刷新实际触
         : WAN3_INTEGRATION_FEATURE_IDS.has(featureId)
         ? PR211_CI_LOCK_REFRESH_UNLOCK
         : TOAPIS_SUBMISSION_RECOVERY_UNLOCK;
-    const expectedPreviousUnlock = pr217FuminTouched
+    const expectedPreviousUnlock = blueprintFirstTouched
+      ? PRE_REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK_BY_FEATURE[featureId]
+      : pr217FuminTouched
       ? failedGenerationResubmitChanged
         ? FAILED_GENERATION_RESUBMIT_UNLOCK
         : PRE_PR217_FUMIN_PRODUCT_API_ACCEPTANCE_UNLOCK_BY_FEATURE[featureId]
