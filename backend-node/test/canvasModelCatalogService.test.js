@@ -156,7 +156,7 @@ test('NewAPI 同名模型按中转站限定 ID 独立公开且只带实测档位
     (id, service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
      is_active, verification_status, verified_capabilities, created_at, updated_at)
     VALUES (15, 'video', 'usmercari', 'usmercari_media', '另一中转站', 'https://other.example', 'other-secret',
-      ?, 'seedance-2.0-mini', 1, 'verified', '{}', ?, ?)`)
+      ?, 'seedance-2.0-mini', 0, 'verified', '{}', ?, ?)`)
     .run(JSON.stringify(['seedance-2.0-mini']), now, now);
   db.prepare(`INSERT INTO ai_service_configs
     (id, service_type, provider, api_protocol, name, base_url, api_key, model, default_model,

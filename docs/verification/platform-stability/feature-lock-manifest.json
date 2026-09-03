@@ -300,11 +300,30 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
+          "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
+          "impactTests": [
+            "backend-node/test/canvasModelCatalogService.test.js",
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/newapiVideo.test.js",
+            "backend-node/test/newapiWan3ConfigInstaller.test.js",
+            "backend-node/test/providerModelSelection.test.js",
+            "backend-node/test/providerPricingSync.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/modelUiProtectionGate.test.js",
+            "frontweb/test/billing-model-groups.test.js",
+            "frontweb/test/filmListCanvasEntry.test.js",
+            "frontweb/test/homeQuickGeneration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
-        "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
+        "reason": "2026-09-03 NewAPI 六模型生产副本复验补丁获批",
+        "approvedBy": "product-owner 2026-09-03 newapi-six-model-production-copy-remediation",
         "impactTests": [
           "backend-node/test/canvasModelCatalogService.test.js",
           "backend-node/test/modelPrice.test.js",
@@ -615,11 +634,30 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
+          "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
+          "impactTests": [
+            "backend-node/test/canvasModelCatalogService.test.js",
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/newapiVideo.test.js",
+            "backend-node/test/newapiWan3ConfigInstaller.test.js",
+            "backend-node/test/providerModelSelection.test.js",
+            "backend-node/test/providerPricingSync.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/modelUiProtectionGate.test.js",
+            "frontweb/test/billing-model-groups.test.js",
+            "frontweb/test/filmListCanvasEntry.test.js",
+            "frontweb/test/homeQuickGeneration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
-        "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
+        "reason": "2026-09-03 NewAPI 六模型生产副本复验补丁获批",
+        "approvedBy": "product-owner 2026-09-03 newapi-six-model-production-copy-remediation",
         "impactTests": [
           "backend-node/test/canvasModelCatalogService.test.js",
           "backend-node/test/modelPrice.test.js",
@@ -981,11 +1019,30 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
+          "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
+          "impactTests": [
+            "backend-node/test/canvasModelCatalogService.test.js",
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/newapiVideo.test.js",
+            "backend-node/test/newapiWan3ConfigInstaller.test.js",
+            "backend-node/test/providerModelSelection.test.js",
+            "backend-node/test/providerPricingSync.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/modelUiProtectionGate.test.js",
+            "frontweb/test/billing-model-groups.test.js",
+            "frontweb/test/filmListCanvasEntry.test.js",
+            "frontweb/test/homeQuickGeneration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
-        "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
+        "reason": "2026-09-03 NewAPI 六模型生产副本复验补丁获批",
+        "approvedBy": "product-owner 2026-09-03 newapi-six-model-production-copy-remediation",
         "impactTests": [
           "backend-node/test/canvasModelCatalogService.test.js",
           "backend-node/test/modelPrice.test.js",
@@ -1255,11 +1312,30 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
+          "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
+          "impactTests": [
+            "backend-node/test/canvasModelCatalogService.test.js",
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/newapiVideo.test.js",
+            "backend-node/test/newapiWan3ConfigInstaller.test.js",
+            "backend-node/test/providerModelSelection.test.js",
+            "backend-node/test/providerPricingSync.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/modelUiProtectionGate.test.js",
+            "frontweb/test/billing-model-groups.test.js",
+            "frontweb/test/filmListCanvasEntry.test.js",
+            "frontweb/test/homeQuickGeneration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
-        "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
+        "reason": "2026-09-03 NewAPI 六模型生产副本复验补丁获批",
+        "approvedBy": "product-owner 2026-09-03 newapi-six-model-production-copy-remediation",
         "impactTests": [
           "backend-node/test/canvasModelCatalogService.test.js",
           "backend-node/test/modelPrice.test.js",
@@ -1846,11 +1922,30 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
+          "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
+          "impactTests": [
+            "backend-node/test/canvasModelCatalogService.test.js",
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/newapiVideo.test.js",
+            "backend-node/test/newapiWan3ConfigInstaller.test.js",
+            "backend-node/test/providerModelSelection.test.js",
+            "backend-node/test/providerPricingSync.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/modelUiProtectionGate.test.js",
+            "frontweb/test/billing-model-groups.test.js",
+            "frontweb/test/filmListCanvasEntry.test.js",
+            "frontweb/test/homeQuickGeneration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
-        "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
+        "reason": "2026-09-03 NewAPI 六模型生产副本复验补丁获批",
+        "approvedBy": "product-owner 2026-09-03 newapi-six-model-production-copy-remediation",
         "impactTests": [
           "backend-node/test/canvasModelCatalogService.test.js",
           "backend-node/test/modelPrice.test.js",

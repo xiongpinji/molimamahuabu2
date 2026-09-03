@@ -503,11 +503,16 @@ function list(db, options = {}) {
   const mediaEntries = mediaCandidates.map((entry) => {
     const logicalModel = String(entry.config.logical_model_id || '').trim();
     const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
-    const model = logicalModel || ((mediaCandidateCounts.get(upstreamKey) > 1
-        || (entry.duplicated && isNewapiVideoConfig(entry.config)))
-        && prices.has(entry.model.toLowerCase())
-      ? entry.model
-      : entry.upstreamModel);
+    const newapiQualifiedModel = `cfg-${entry.config.id}::${entry.upstreamModel}`;
+    const pricedModel = isNewapiVideoConfig(entry.config)
+        && prices.has(newapiQualifiedModel.toLowerCase())
+      ? newapiQualifiedModel
+      : ((mediaCandidateCounts.get(upstreamKey) > 1
+          || (entry.duplicated && isNewapiVideoConfig(entry.config)))
+          && prices.has(entry.model.toLowerCase())
+        ? entry.model
+        : entry.upstreamModel);
+    const model = logicalModel || pricedModel;
     return { ...entry, model };
   });
   const nonMediaEntries = eligibleConfigs
