@@ -10,8 +10,9 @@ const {
 } = require('./shortDramaProductionDirector');
 
 const SYSTEM_PROMPT = resolveScriptAnalysisSkill().system_prompt;
-const SCRIPT_ANALYSIS_DIRECT_CHARS = 60000;
-const SCRIPT_ANALYSIS_CHUNK_CHARS = 30000;
+const SCRIPT_ANALYSIS_DIRECT_CHARS = 10000;
+const SCRIPT_ANALYSIS_CHUNK_CHARS = 10000;
+const SCRIPT_ANALYSIS_CHUNK_CONCURRENCY = 2;
 
 const SCRIPT_ANALYSIS_LIMITS = Object.freeze({
   lockedFacts: 100,
@@ -699,26 +700,33 @@ async function runAnalysis({ db, log, project, skill, strategyPreset, generation
 
   const chunks = splitSourceScript(sourceScript);
   const packages = [];
-  for (let index = 0; index < chunks.length; index += 1) {
-    log?.info?.({
-      chunk_index: index + 1,
-      chunk_count: chunks.length,
-      chunk_chars: chunks[index].length,
-    }, 'script analysis chunk started');
-    const idempotencyKey = String(
-      generationOptions.idempotency_key || generationOptions.idempotencyKey || '',
-    ).trim();
-    packages.push(await runAnalysisChunk({
-      db,
-      log,
-      project: { ...project, source_script: chunks[index] },
-      selectedSkill,
-      strategyPreset,
-      generationOptions: {
-        ...generationOptions,
-        ...(idempotencyKey ? { idempotency_key: `${idempotencyKey}:chunk:${index + 1}` } : {}),
-      },
+  const idempotencyKey = String(
+    generationOptions.idempotency_key || generationOptions.idempotencyKey || '',
+  ).trim();
+  for (let offset = 0; offset < chunks.length; offset += SCRIPT_ANALYSIS_CHUNK_CONCURRENCY) {
+    const batch = chunks.slice(offset, offset + SCRIPT_ANALYSIS_CHUNK_CONCURRENCY);
+    const settledBatch = await Promise.allSettled(batch.map((chunk, batchIndex) => {
+      const index = offset + batchIndex;
+      log?.info?.({
+        chunk_index: index + 1,
+        chunk_count: chunks.length,
+        chunk_chars: chunk.length,
+      }, 'script analysis chunk started');
+      return runAnalysisChunk({
+        db,
+        log,
+        project: { ...project, source_script: chunk },
+        selectedSkill,
+        strategyPreset,
+        generationOptions: {
+          ...generationOptions,
+          ...(idempotencyKey ? { idempotency_key: `${idempotencyKey}:chunk:${index + 1}` } : {}),
+        },
+      });
     }));
+    const failed = settledBatch.find((result) => result.status === 'rejected');
+    if (failed) throw failed.reason;
+    packages.push(...settledBatch.map((result) => result.value));
   }
   return mergeProductionPackages(packages, { project, skill: selectedSkill, strategyPreset });
 }

@@ -448,6 +448,82 @@ test('splitSourceScript preserves every character and prefers natural boundaries
   assert.ok(chunks[0].endsWith('。'));
 });
 
+test('default long-script chunks stay below the verified 10000 character budget', () => {
+  const source = '字'.repeat(10001);
+  const chunks = splitSourceScript(source);
+
+  assert.equal(chunks.join(''), source);
+  assert.equal(chunks.length, 2);
+  assert.ok(chunks.every((chunk) => chunk.length <= 10000));
+});
+
+test('runAnalysis processes long-script chunks with bounded concurrency and stable order', async (t) => {
+  const originalGenerateText = aiClient.generateText;
+  t.after(() => { aiClient.generateText = originalGenerateText; });
+  const calls = [];
+  let active = 0;
+  let peakActive = 0;
+
+  aiClient.generateText = async (_db, _log, _type, userPrompt, _systemPrompt, options) => {
+    const callIndex = calls.length + 1;
+    calls.push({ callIndex, userPrompt, options });
+    active += 1;
+    peakActive = Math.max(peakActive, active);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    active -= 1;
+    const value = validPackage();
+    value.episodes[0].title = `分段 ${callIndex}`;
+    return JSON.stringify(value);
+  };
+
+  const result = await runAnalysis({
+    db: {},
+    log: { info() {}, warn() {} },
+    project: { ...project, source_script: '字'.repeat(20001) },
+    skill: resolveScriptAnalysisSkill('short-drama-director'),
+    generationOptions: { idempotency_key: 'reservation-bounded' },
+  });
+
+  assert.equal(calls.length, 3);
+  assert.equal(peakActive, 2);
+  assert.deepEqual(
+    calls.map((call) => call.options.idempotency_key),
+    [
+      'reservation-bounded:chunk:1',
+      'reservation-bounded:chunk:2',
+      'reservation-bounded:chunk:3',
+    ],
+  );
+  assert.deepEqual(result.episodes.map((episode) => episode.title), ['分段 1', '分段 2', '分段 3']);
+});
+
+test('runAnalysis waits for every in-flight chunk before surfacing a batch failure', async (t) => {
+  const originalGenerateText = aiClient.generateText;
+  t.after(() => { aiClient.generateText = originalGenerateText; });
+  let callCount = 0;
+  let siblingFinished = false;
+
+  aiClient.generateText = async () => {
+    callCount += 1;
+    if (callCount === 1) throw new Error('首片失败');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    siblingFinished = true;
+    return JSON.stringify(validPackage());
+  };
+
+  await assert.rejects(
+    runAnalysis({
+      db: {},
+      log: { info() {}, warn() {} },
+      project: { ...project, source_script: '字'.repeat(10001) },
+      skill: resolveScriptAnalysisSkill('short-drama-director'),
+    }),
+    /首片失败/,
+  );
+  assert.equal(callCount, 2);
+  assert.equal(siblingFinished, true);
+});
+
 test('runAnalysis splits long scripts, uses unique route keys and merges validated packages', async (t) => {
   const originalGenerateText = aiClient.generateText;
   t.after(() => { aiClient.generateText = originalGenerateText; });
