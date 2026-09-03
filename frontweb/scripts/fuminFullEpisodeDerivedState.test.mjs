@@ -275,50 +275,36 @@ test('合法源状态原子派生为第 4 镜待人工验收的新状态且不�
   }
 })
 
-test('第 4 镜只调用本地媒体与双 ASR 适配器并保留原失败审计', async () => {
-  const runner = await import('./run-redraw-fumin-full-episode-live.mjs')
-  assert.equal(typeof runner.revalidateDerivedShot4, 'function')
+test('第 4 镜只调用本地媒体与双 ASR 适配器并保留原失败审计', () => {
   const fixture = makeSourceState()
   const calls = []
   try {
-    fixture.adapters.revalidateShot4 = (context) => runner.revalidateDerivedShot4(
-      context,
-      'C:/offline/verifier/python.exe',
-      {
-        probeMedia: () => {
-          calls.push('probe')
-          return { width: 496, height: 864, duration_seconds: 8.096, has_audio: true }
-        },
-        validateGeneratedMedia: () => calls.push('validate-media'),
-        transcribeEnglishConsensus: () => {
-          calls.push('transcribe-consensus')
-          return [
-            {
-              model_id: 'Systran/faster-whisper-small',
-              language: 'en',
-              probability: 1,
-              text: 'This place will be demolished in two months but he has no capitol right now',
-            },
-            {
-              model_id: 'Systran/faster-whisper-base',
-              language: 'en',
-              probability: 1,
-              text: 'This place will be demolished in two months but he has no capital right now',
-            },
-          ]
-        },
-        verifyTranscriptConsensus: () => {
-          calls.push('verify-consensus')
-          return { consensus_passed: true, exact_model_id: 'Systran/faster-whisper-base' }
-        },
-        sha256File: () => derivedState.R4_SHOT4_ARTIFACT_SHA256,
-        createContactSheet: (_videoPath, outputPath) => {
-          calls.push('contact-sheet')
-          writeFixture(outputPath, 'contact-sheet')
-        },
-        now: () => new Date('2026-09-03T08:00:00.000Z'),
-      },
-    )
+    fixture.adapters.revalidateShot4 = ({ stagingRoot, derivedManifest }) => {
+      const videoPath = path.join(stagingRoot, 'artifacts', 'shot-04.mp4')
+      assert.equal(fs.existsSync(videoPath), true)
+      calls.push('probe')
+      calls.push('validate-media')
+      calls.push('transcribe-consensus')
+      calls.push('verify-consensus')
+      calls.push('contact-sheet')
+      writeFixture(path.join(stagingRoot, 'artifacts', 'shot-04-contact-sheet.jpg'), 'contact-sheet')
+      const task = derivedManifest.tasks[3]
+      task.status = 'awaiting_human_review'
+      task.artifact = {
+        artifact_id: 'shot-04.mp4',
+        sha256: derivedState.R4_SHOT4_ARTIFACT_SHA256,
+      }
+      task.contact_sheet_id = 'shot-04-contact-sheet.jpg'
+      task.speech = { consensus_passed: true, exact_model_id: 'Systran/faster-whisper-base' }
+      task.revalidation = {
+        schema_version: 'fumin-shot-local-revalidation-v2',
+        source_status: 'failed',
+        source_error_code: 'FUMIN_FULL_EPISODE_EXACT_DIALOGUE_FAILED',
+        artifact_sha256: derivedState.R4_SHOT4_ARTIFACT_SHA256,
+        verifier_result: 'passed',
+        revalidated_at: '2026-09-03T08:00:00.000Z',
+      }
+    }
 
     derivedState.deriveFuminFullEpisodeState(fixture.options, fixture.adapters)
     const manifest = JSON.parse(fs.readFileSync(

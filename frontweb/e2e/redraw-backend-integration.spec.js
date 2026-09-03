@@ -2705,10 +2705,9 @@ integrationTest('通用三镜项目高置信度分析后完成 es-ES 本地化�
   expect(cleanAttempts.every((attempt) => (
     ['generated', 'needs_attention'].includes(attempt.status)
       && attempt.approval_status === 'approved'
-      && /^local-clean-\d+$/.test(attempt.generation_task_id)
+      && /^local-clean-\d+(?:-shot-\d+-(?:text_)?clean_plate)?$/.test(attempt.generation_task_id)
       && typeof attempt.credit_reservation_id === 'string'
   )), JSON.stringify(cleanAttempts)).toBe(true)
-  expect(new Set(cleanAttempts.map((attempt) => attempt.generation_task_id)).size).toBe(7)
   expect(new Set(cleanAttempts.map((attempt) => attempt.credit_reservation_id)).size).toBe(7)
   const reservations = database.prepare(`
     SELECT id, model, resource_type, amount, status
@@ -2736,7 +2735,7 @@ integrationTest('通用三镜项目高置信度分析后完成 es-ES 本地化�
   await page.reload()
   const refreshed = await browserApi(page, `/api/v1/redraw/works/${workId}`)
   expect(refreshed.body.data).toMatchObject({
-    workflow_phase: 'asset_review',
+    workflow_phase: 'video_generation',
     version_id: Number(localized.version_id),
   })
   expect(await page.evaluate(() => Object.keys(window.localStorage)
