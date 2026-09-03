@@ -84,12 +84,21 @@ async function ffprobeVideo(sourcePath, timeoutMs) {
   ], timeoutMs);
   const payload = JSON.parse(stdout);
   const video = (payload.streams || []).find((stream) => stream.codec_type === 'video') || {};
+  const audio = (payload.streams || []).find((stream) => stream.codec_type === 'audio') || {};
   const durationSeconds = Number(video.duration || payload.format?.duration || 0);
+  const [rateNumerator, rateDenominator] = String(video.avg_frame_rate || video.r_frame_rate || '0/1')
+    .split('/')
+    .map(Number);
   return {
     duration_ms: Math.max(1, Math.round(durationSeconds * 1000)),
     width: Number(video.width) || null,
     height: Number(video.height) || null,
+    fps: rateDenominator > 0 ? rateNumerator / rateDenominator : null,
     codec: video.codec_name || null,
+    video_codec: video.codec_name || null,
+    audio_codec: audio.codec_name || null,
+    audio_sample_rate_hz: Number(audio.sample_rate) || null,
+    audio_channels: Number(audio.channels) || null,
   };
 }
 
@@ -210,16 +219,46 @@ function getAsset(db, assetId) {
   return asset;
 }
 
-function buildPrompt(probe) {
+function promptAudioSummary(audioEvidence) {
+  const segments = Array.isArray(audioEvidence?.segments) ? audioEvidence.segments : [];
+  return {
+    dialogue_mode: ['spoken', 'silent'].includes(audioEvidence?.dialogue_mode)
+      ? audioEvidence.dialogue_mode
+      : 'unavailable',
+    source_language: typeof audioEvidence?.source_language === 'string'
+      ? audioEvidence.source_language
+      : null,
+    evidence_id: audioEvidence?.evidence_ref || audioEvidence?.evidence_id
+      || audioEvidence?.result_asset_id || null,
+    segments: segments.map((segment) => ({
+      id: segment?.id || null,
+      evidence_ref: segment?.evidence_ref || audioEvidence?.evidence_ref
+        || audioEvidence?.evidence_id || audioEvidence?.result_asset_id || null,
+      start_ms: segment?.start_ms,
+      end_ms: segment?.end_ms,
+      speaker_cluster_id: segment?.speaker_cluster_id,
+      source_text: segment?.source_text,
+    })),
+  };
+}
+
+function buildPrompt(probe, audioEvidence) {
+  const audioSummary = promptAudioSummary(audioEvidence);
+  const serializedAudioSummary = JSON.stringify(audioSummary);
+  if (/(?:file:\/\/|[a-zA-Z]:[\\/]|\\\\|api[_-]?key|bearer\s+)/i.test(serializedAudioSummary)) {
+    throw codedError('REDRAW_NATIVE_AUDIO_PROMPT_UNSAFE', '音频摘要包含绝对路径或凭据');
+  }
   return [
     'You are analyzing a short-drama source video for strict 1:1 redraw facts v2.',
     'Return ONLY JSON with one top-level key named source_facts.',
     'source_facts.schema_version MUST be "2.0". Do not add explanations or any keys outside the schema.',
     'The images cover the full source in chronological pages. Every tile is labeled with its page offset and relative timestamp.',
     'Do not invent characters, scenes, props, reversals, dialogue, or timing that is not visible.',
-    'For dialogue, use only provided audio transcript evidence or visibly burned-in subtitles. No transcript evidence is provided here, so do not guess speech from mouths, faces, or contact-sheet context.',
-    'When dialogue evidence is absent, set audio_contract.dialogue_mode to "silent", keep dialogue empty, and keep speaker_mapping confidence low.',
-    'Every spoken dialogue turn MUST contain id, speaker_id, source_text, integer start_ms, and integer end_ms.',
+    'Do not rewrite transcript text. Transcript text is immutable audio evidence and will be attached by a deterministic fusion step.',
+    'Return dialogue as an empty array and audio_contract.dialogue_mode as "silent" for every visual shot.',
+    'Do not guess speech from mouths, faces, subtitles, or contact-sheet context.',
+    'Visual evidence may determine shot boundaries, actions, visible people, scenes, props, camera movement, and a possible association between a visible person and a speaker cluster.',
+    'A possible association is not identity evidence: do not rename a speaker cluster or claim that it is a visible character.',
     'Shots MUST be chronological, continuous, gap-free, non-overlapping, start at 0, and end at duration_ms.',
     'Each shot MUST include composition, camera_movement, opening_state, continuous_action, ending_state, visible_character_ids, dialogue, text_regions, audio_contract, and confidence.',
     'text_regions polygon coordinates MUST be normalized 0..1 points with at least 3 non-collinear points.',
@@ -227,6 +266,7 @@ function buildPrompt(probe) {
     '{"schema_version":"2.0","duration_ms":1,"story":[""],"characters":[{"id":"c1","source_name":"","display_name":"","relationship":"","relationships":[]}],"scenes":[{"id":"s1","location":"","time":"","source_ranges":[{"start_ms":0,"end_ms":1}]}],"props":[{"id":"p1","name":"","evidence_ranges":[{"start_ms":0,"end_ms":1}]}],"shots":[{"id":"shot-1","index":1,"start_ms":0,"end_ms":1,"composition":"","camera_movement":"","opening_state":"","continuous_action":"","ending_state":"","visible_character_ids":["c1"],"dialogue":[],"text_regions":[{"id":"txt1","kind":"subtitle","source_text":"","polygon":[[0.1,0.8],[0.9,0.8],[0.9,0.9],[0.1,0.9]]}],"audio_contract":{"dialogue_mode":"silent","ambient_audio":"preserve_or_rebuild"},"confidence":{"character_mapping":0.5,"speaker_mapping":0.2,"text_regions":0.5,"shot_boundary":0.5}}],"causal_chain":[""],"locked_facts":[""],"reversals":[""],"episode_hook":""}',
     'Keep all required arrays non-empty only when supported by visible evidence; an unsupported clip must fail rather than be completed with invented facts.',
     `Measured video metadata: duration_ms=${probe.duration_ms}, width=${probe.width || 'unknown'}, height=${probe.height || 'unknown'}.`,
+    `Minimal immutable audio transcript evidence: ${serializedAudioSummary}`,
   ].join('\n');
 }
 
@@ -281,27 +321,16 @@ function safeMediaProbeMetadata(probe, sheetCount) {
   };
 }
 
-function hasVisibleDialogueTextEvidence(shot) {
-  return Array.isArray(shot.text_regions) && shot.text_regions.some((region) => (
-    region
-    && ['subtitle', 'screen_text'].includes(region.kind)
-    && typeof region.source_text === 'string'
-    && region.source_text.trim()
-  ));
-}
-
-function applyNoTranscriptEvidencePolicy(rawFacts) {
+function applyVisualEvidencePolicy(rawFacts) {
   const facts = cloneJson(rawFacts);
   const shots = Array.isArray(facts.shots) ? facts.shots : [];
-  for (const [index, shot] of shots.entries()) {
-    const dialogue = Array.isArray(shot.dialogue) ? shot.dialogue : [];
-    const mode = shot.audio_contract && shot.audio_contract.dialogue_mode;
-    if ((mode === 'spoken' || dialogue.length > 0) && !hasVisibleDialogueTextEvidence(shot)) {
-      throw codedError(
-        'REDRAW_NATIVE_DIALOGUE_TEXT_EVIDENCE_REQUIRED',
-        `shots[${index}] 无音频转写时 spoken dialogue 必须有可见字幕文本证据`,
-      );
+  for (const shot of shots) {
+    shot.dialogue = [];
+    if (!shot.audio_contract || typeof shot.audio_contract !== 'object' || Array.isArray(shot.audio_contract)) {
+      shot.audio_contract = {};
     }
+    shot.audio_contract.dialogue_mode = 'silent';
+    shot.audio_contract.ambient_audio = 'preserve_or_rebuild';
     if (shot.confidence && typeof shot.confidence === 'object' && !Array.isArray(shot.confidence)) {
       shot.confidence.speaker_mapping = 0;
     }
@@ -309,7 +338,7 @@ function applyNoTranscriptEvidencePolicy(rawFacts) {
   return facts;
 }
 
-async function analyzeNativeSource(ctx = {}, input = {}) {
+async function analyzeNativeSource(ctx = {}, input = {}, audioEvidence) {
   const db = ctx.db;
   if (!db) throw codedError('REDRAW_NATIVE_DB_REQUIRED', '缺少数据库');
   const log = ctx.log || { info() {}, warn() {}, error() {} };
@@ -353,7 +382,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
     }
 
     const vision = await visionDetailed({
-      userPrompt: buildPrompt(probe),
+      userPrompt: buildPrompt(probe, audioEvidence),
       systemPrompt: 'Return strict JSON only for short-drama source analysis.',
       imageSources: sheets.map((sheet) => ({ localAbsPath: sheet.path })),
       options: { model: input.model || undefined, max_tokens: Number(input.maxTokens || 8000), temperature: 0.1 },
@@ -363,13 +392,26 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
       throw codedError('VISION_PROVIDER_RESPONSE_ID_MISSING', '视觉分析缺少真实 provider response id');
     }
     const parsed = parseJsonObject(vision.text);
-    const facts = normalizeSourceFacts(applyNoTranscriptEvidencePolicy(parsed.source_facts || parsed));
+    const facts = normalizeSourceFacts(applyVisualEvidencePolicy(parsed.source_facts || parsed));
     assertStrictNativeFacts(facts, probe);
     const mediaProbe = safeMediaProbeMetadata(probe, sheets.length);
+    const sourceMetadata = {
+      asset_id: Number(sourceAsset.id),
+      sha256: sha256File(source.absolute),
+      duration_ms: probe.duration_ms,
+      width: probe.width,
+      height: probe.height,
+      fps: probe.fps,
+      video_codec: probe.video_codec,
+      audio_codec: probe.audio_codec,
+      audio_sample_rate_hz: probe.audio_sample_rate_hz,
+      audio_channels: probe.audio_channels,
+    };
     const output = {
       schema_version: '2.0',
       work_id: Number(work.id),
       source_asset_id: Number(sourceAsset.id),
+      source: sourceMetadata,
       provider_task_id: String(vision.provider_task_id),
       model: vision.model || input.model || null,
       usage: vision.usage || null,
@@ -414,6 +456,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
       status: 'completed',
       provider_task_id: String(vision.provider_task_id),
       result_asset_id: resultAsset.id,
+      source: sourceMetadata,
       facts,
       sha256: resultHash,
       diagnostics: {

@@ -160,6 +160,212 @@ function updateDynamic(db, table, values, whereName, whereValue) {
     .run(...names.map((name) => values[name]), whereValue);
 }
 
+function resolveBlueprintPipeline(options) {
+  const candidates = [
+    options.sourceAudioEvidenceService,
+    options.nativeSourceAnalysisService,
+    options.evidenceFusionService,
+  ];
+  if (candidates.every((item) => item == null)) return null;
+  if (typeof candidates[0]?.analyzeSourceAudio !== 'function'
+    || typeof candidates[1]?.analyzeNativeSource !== 'function'
+    || typeof candidates[2]?.fuseEpisodeEvidence !== 'function') {
+    throw codedError(
+      'REDRAW_BLUEPRINT_PIPELINE_DEPENDENCY_REQUIRED',
+      '母本蓝图分析必须完整注入音频、视觉和证据融合服务',
+    );
+  }
+  return {
+    sourceAudioEvidenceService: candidates[0],
+    nativeSourceAnalysisService: candidates[1],
+    evidenceFusionService: candidates[2],
+  };
+}
+
+function evidenceAsset(result, kind, idPrefix, tool) {
+  if (result?.evidence_asset) return result.evidence_asset;
+  const assetId = result?.result_asset_id;
+  const sha256 = result?.evidence_sha256 || result?.sha256;
+  if (assetId == null || !sha256) return null;
+  return {
+    id: `${idPrefix}-${assetId}`,
+    kind,
+    asset_id: assetId,
+    sha256,
+    tool,
+    tool_version: '1.0.0',
+  };
+}
+
+async function runBlueprintPipeline(db, log, pipeline, request, options) {
+  const context = { ...(options.analysisContext || {}), db, log };
+  const audioEvidence = await pipeline.sourceAudioEvidenceService.analyzeSourceAudio(context, {
+    sourceAssetId: Number(request.sourceAssetId),
+    tenantId: String(request.tenantId || ''),
+    userId: String(request.userId || ''),
+    workId: Number(request.workId),
+  });
+  const visualEvidence = await pipeline.nativeSourceAnalysisService.analyzeNativeSource(context, {
+    taskId: request.taskId,
+    workId: request.workId,
+    tenantId: request.tenantId,
+    userId: request.userId,
+    model: request.model,
+    probeTimeoutMs: options.nativeAnalysisProbeTimeoutMs,
+    ffmpegTimeoutMs: options.nativeAnalysisFfmpegTimeoutMs,
+    maxTokens: options.nativeAnalysisMaxTokens,
+  }, audioEvidence);
+  if (visualEvidence?.status !== 'completed') {
+    throw codedError('REDRAW_BLUEPRINT_VISUAL_ANALYSIS_INCOMPLETE', '视觉证据分析未完成');
+  }
+  const evidenceAssets = [
+    evidenceAsset(audioEvidence, audioEvidence?.dialogue_mode === 'silent' ? 'audio' : 'audio_transcript', 'evidence-audio', 'source-audio-evidence'),
+    evidenceAsset(visualEvidence, 'visual', 'evidence-visual', 'native-source-analysis'),
+  ].filter(Boolean);
+  const blueprint = await pipeline.evidenceFusionService.fuseEpisodeEvidence({
+    source: visualEvidence.source || audioEvidence?.source,
+    visualFacts: visualEvidence.facts || visualEvidence.visualFacts,
+    audioEvidence,
+    evidenceAssets,
+  });
+  return {
+    status: 'completed',
+    provider_task_id: visualEvidence.provider_task_id,
+    result_asset_id: visualEvidence.result_asset_id || null,
+    blueprint,
+  };
+}
+
+function assertNeedsReviewBlueprint(blueprint) {
+  if (!blueprint
+    || blueprint.schema_version !== 'episode-blueprint-v1'
+    || !/^[a-f0-9]{64}$/.test(String(blueprint.blueprint_hash || ''))
+    || blueprint.review?.status !== 'needs_review'
+    || !Array.isArray(blueprint.shots)
+    || blueprint.shots.length === 0) {
+    throw codedError('REDRAW_BLUEPRINT_RESULT_INVALID', '母本蓝图必须完整且进入 needs_review');
+  }
+  return blueprint;
+}
+
+function insertBlueprintShots(db, work, version, blueprint) {
+  const shotColumns = tableColumns(db, 'redraw_shots');
+  for (const [index, shot] of blueprint.shots.entries()) {
+    const existing = shotColumns.has('work_id')
+      ? db.prepare('SELECT id FROM redraw_shots WHERE work_id = ? AND shot_id = ? LIMIT 1').get(work.id, shot.id)
+      : null;
+    if (existing) continue;
+    insertDynamic(db, 'redraw_shots', {
+      work_id: work.id,
+      version_id: version.id,
+      tenant_id: work.tenant_id || null,
+      user_id: work.user_id || null,
+      shot_id: shot.id,
+      batch_index: 1,
+      shot_index: index + 1,
+      start_ms: shot.start_ms,
+      end_ms: shot.end_ms,
+      duration_ms: shot.end_ms - shot.start_ms,
+      source_dialogue_json: JSON.stringify(shot.dialogue || []),
+      opening_state: shot.opening_state,
+      continuous_action: shot.continuous_action,
+      ending_state: shot.ending_state,
+      draft_json: JSON.stringify(shot),
+      status: 'draft',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+  }
+}
+
+function writeBlueprintOnce(db, work, blueprint) {
+  const now = new Date().toISOString();
+  let version = existingSourceFactsVersion(db, work);
+  let changed = false;
+  if (version) {
+    if (version.facts_hash !== blueprint.blueprint_hash) {
+      throw codedError('SOURCE_FACTS_HASH_CONFLICT', '母本蓝图 hash 冲突，请人工确认后再继续');
+    }
+  } else {
+    const existing = db.prepare('SELECT * FROM redraw_versions WHERE work_id = ? ORDER BY id ASC LIMIT 1').get(work.id);
+    if (existing) {
+      db.prepare('UPDATE redraw_versions SET source_facts_json = ?, facts_hash = ?, status = ?, updated_at = ? WHERE id = ?')
+        .run(JSON.stringify(blueprint), blueprint.blueprint_hash, 'needs_attention', now, existing.id);
+      version = { ...existing, source_facts_json: JSON.stringify(blueprint), facts_hash: blueprint.blueprint_hash };
+    } else {
+      const id = insertDynamic(db, 'redraw_versions', {
+        work_id: work.id,
+        tenant_id: work.tenant_id || null,
+        user_id: work.user_id || null,
+        version: 1,
+        locale: 'source',
+        market: '',
+        localization_level: 'faithful',
+        source_facts_json: JSON.stringify(blueprint),
+        facts_hash: blueprint.blueprint_hash,
+        status: 'needs_attention',
+        created_at: now,
+        updated_at: now,
+      }).lastInsertRowid;
+      version = { id, work_id: work.id, version: 1, facts_hash: blueprint.blueprint_hash };
+    }
+    changed = true;
+  }
+  updateDynamic(db, 'redraw_versions', { status: 'needs_attention', updated_at: now }, 'id', version.id);
+  insertBlueprintShots(db, work, version, blueprint);
+  updateDynamic(db, 'redraw_works', {
+    status: 'needs_attention',
+    current_version: Number(version.version || 1),
+    current_step: 1,
+    error_msg: null,
+    updated_at: now,
+  }, 'id', work.id);
+  return { version, changed };
+}
+
+function finalizeBlueprintAnalysis(db, task, work, pipelineResult) {
+  const blueprint = assertNeedsReviewBlueprint(pipelineResult.blueprint);
+  return atomicFinalize(db, () => {
+    const { version, changed } = writeBlueprintOnce(db, work, blueprint);
+    const project = readProjectPolicy(db, work);
+    if (changed && project) {
+      appendWorkflowEvent(db, {
+        tenantId: String(project.tenant_id || ''),
+        userId: String(project.user_id || ''),
+        projectId: Number(project.id),
+        resourceType: 'version',
+        resourceId: String(version.id),
+        fromState: String(work.status || ''),
+        toState: 'analysis_review',
+        reasonCode: 'analysis_completed',
+        evidenceHash: blueprint.blueprint_hash,
+        metadata: {
+          action: 'needs_review',
+          effective_mode: 'safe',
+          reason_codes: ['blueprint_review_required'],
+          policy_version: Number(project.policy_version || 0),
+        },
+        createdAt: new Date().toISOString(),
+      });
+    }
+    const payload = {
+      status: 'completed',
+      work_id: work.id,
+      version_id: version.id,
+      blueprint_hash: blueprint.blueprint_hash,
+      review_status: blueprint.review.status,
+      blueprint,
+    };
+    taskService.updateTaskResult(db, task.id, payload);
+    creditLedger.settleGeneration(
+      db,
+      task.credit_reservation_id || work.credit_reservation_id,
+      'completed',
+    );
+    return payload;
+  });
+}
+
 function buildUrl(baseUrl, endpoint, providerTaskId) {
   const base = String(baseUrl || '').replace(/\/$/, '');
   const ep = String(endpoint || '').trim();
@@ -269,6 +475,7 @@ async function startAnalysis(db, log, input, options = {}) {
   const userId = String(input.userId || work.user_id || '');
   const tenantId = input.tenantId || work.tenant_id;
   if (!userId) throw codedError('UNAUTHORIZED', '缺少用户身份');
+  const blueprintPipeline = resolveBlueprintPipeline(options);
 
   const config = loadVerifiedCapability(db);
   const model = modelPrice.canonicalModel(config.default_model || config.model || 'GPT-5.5');
@@ -324,8 +531,7 @@ async function startAnalysis(db, log, input, options = {}) {
 
   let providerResult;
   try {
-    providerResult = options.provider?.startAnalysis
-      ? await options.provider.startAnalysis({
+    const request = {
         taskId: created.task_id,
         reservationId: created.reservation_id,
         workId: work.id,
@@ -337,7 +543,11 @@ async function startAnalysis(db, log, input, options = {}) {
         config,
         analysisSettings,
         operationKey: `redraw_analysis:${work.id}:${sourceAssetId}`,
-      })
+      };
+    providerResult = blueprintPipeline
+      ? await runBlueprintPipeline(db, log, blueprintPipeline, request, options)
+      : options.provider?.startAnalysis
+        ? await options.provider.startAnalysis(request)
       : {};
   } catch (error) {
     markFailure(db, log, getTask(db, created.task_id), getWork(db, work.id), error.message);
@@ -354,6 +564,27 @@ async function startAnalysis(db, log, input, options = {}) {
       .run(String(providerTaskId), new Date().toISOString(), created.task_id);
     db.prepare('UPDATE redraw_works SET provider_task_id = ?, updated_at = ? WHERE id = ?')
       .run(String(providerTaskId), new Date().toISOString(), work.id);
+  }
+  if (blueprintPipeline) {
+    try {
+      const completion = finalizeBlueprintAnalysis(
+        db,
+        getTask(db, created.task_id),
+        getWork(db, work.id),
+        providerResult,
+      );
+      return {
+        ...created,
+        ...completion,
+        provider_task_id: String(providerTaskId),
+        result_asset_id: providerResult.result_asset_id || null,
+        current_step: 1,
+        billing: { charged: price, held: 0, released: 0 },
+      };
+    } catch (error) {
+      markFailure(db, log, getTask(db, created.task_id), getWork(db, work.id), error.message);
+      throw error;
+    }
   }
   const normalizedResult = normalizeProviderResult(providerResult);
   if (normalizedResult.status === 'failed') {

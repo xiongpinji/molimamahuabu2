@@ -155,6 +155,36 @@ function validFactsV2(confidence = {}) {
   };
 }
 
+function needsReviewBlueprint() {
+  return {
+    schema_version: 'episode-blueprint-v1',
+    source: {
+      asset_id: 101,
+      sha256: 'a'.repeat(64),
+      duration_ms: 10_000,
+      width: 1080,
+      height: 1920,
+      fps: 25,
+      video_codec: 'h264',
+      audio_codec: 'aac',
+      audio_sample_rate_hz: 48_000,
+      audio_channels: 2,
+    },
+    shots: [{
+      id: 'shot-blueprint-1',
+      index: 1,
+      start_ms: 0,
+      end_ms: 10_000,
+      opening_state: '人物站在门边。',
+      continuous_action: '人物拿起手机。',
+      ending_state: '人物看向屏幕。',
+      dialogue: [{ id: 'audio-segment-1', source_text: '别回头。' }],
+    }],
+    review: { status: 'needs_review' },
+    blueprint_hash: 'd'.repeat(64),
+  };
+}
+
 function createDb() {
   const db = new Database(':memory:');
   db.exec(`
@@ -698,6 +728,98 @@ test('safe analysis waits for manual review even with v2 confidence', async () =
     effective_analysis_state: 'analysis_review',
   });
   assert.equal(db.prepare("SELECT to_state FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().to_state, 'analysis_review');
+  db.close();
+});
+
+test('blueprint pipeline runs audio then visual then fusion and stops at needs_review', async () => {
+  const db = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+  const calls = [];
+  const audioEvidence = {
+    dialogue_mode: 'spoken',
+    result_asset_id: 201,
+    evidence_asset: {
+      id: 'evidence-audio-1', kind: 'audio_transcript', asset_id: 201,
+      sha256: 'c'.repeat(64), tool: 'audio-worker', tool_version: '1.0.0',
+    },
+  };
+  const visualEvidence = {
+    status: 'completed',
+    provider_task_id: 'provider-blueprint-1',
+    result_asset_id: 202,
+    source: needsReviewBlueprint().source,
+    facts: { schema_version: '2.0', duration_ms: 10_000, shots: [] },
+    evidence_asset: {
+      id: 'evidence-visual-1', kind: 'visual', asset_id: 202,
+      sha256: 'b'.repeat(64), tool: 'native-vision', tool_version: '1.0.0',
+    },
+  };
+  const blueprint = needsReviewBlueprint();
+
+  const result = await redraw.startAnalysis(db, log, {
+    workId: 1,
+    userId: 'user-1',
+    tenantId: 'tenant-1',
+  }, {
+    sourceAudioEvidenceService: {
+      analyzeSourceAudio: async (ctx, input) => {
+        calls.push('audio');
+        assert.equal(ctx.db, db);
+        assert.equal(input.workId, 1);
+        assert.equal(input.sourceAssetId, 101);
+        return audioEvidence;
+      },
+    },
+    nativeSourceAnalysisService: {
+      analyzeNativeSource: async (ctx, input, receivedAudioEvidence) => {
+        calls.push('visual');
+        assert.equal(ctx.db, db);
+        assert.equal(input.workId, 1);
+        assert.equal(receivedAudioEvidence, audioEvidence);
+        return visualEvidence;
+      },
+    },
+    evidenceFusionService: {
+      fuseEpisodeEvidence: (input) => {
+        calls.push('fusion');
+        assert.equal(input.source, visualEvidence.source);
+        assert.equal(input.visualFacts, visualEvidence.facts);
+        assert.equal(input.audioEvidence, audioEvidence);
+        assert.deepEqual(input.evidenceAssets, [
+          audioEvidence.evidence_asset,
+          visualEvidence.evidence_asset,
+        ]);
+        return blueprint;
+      },
+    },
+  });
+
+  assert.deepEqual(calls, ['audio', 'visual', 'fusion']);
+  assert.equal(result.status, 'completed');
+  assert.equal(result.blueprint_hash, blueprint.blueprint_hash);
+  assert.equal(result.review_status, 'needs_review');
+  assert.equal(result.blueprint, blueprint);
+  assert.equal(Object.hasOwn(result, 'automation_decision'), false);
+  assert.deepEqual(
+    db.prepare('SELECT status, current_step FROM redraw_works WHERE id = 1').get(),
+    { status: 'needs_attention', current_step: 1 },
+  );
+  const version = db.prepare('SELECT id, source_facts_json, facts_hash, status FROM redraw_versions WHERE work_id = 1').get();
+  assert.deepEqual(JSON.parse(version.source_facts_json), blueprint);
+  assert.equal(version.facts_hash, blueprint.blueprint_hash);
+  assert.equal(version.status, 'needs_attention');
+  const taskResult = JSON.parse(db.prepare('SELECT result FROM async_tasks WHERE id = ?').get(result.task_id).result);
+  assert.equal(taskResult.blueprint_hash, blueprint.blueprint_hash);
+  assert.equal(taskResult.review_status, 'needs_review');
+  assert.equal(Object.hasOwn(taskResult, 'automation_decision'), false);
+  assert.deepEqual(
+    db.prepare("SELECT to_state, evidence_hash FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get(),
+    { to_state: 'analysis_review', evidence_hash: blueprint.blueprint_hash },
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM async_tasks WHERE type != 'redraw_analysis'").get().n, 0);
+  assert.equal(
+    db.prepare('SELECT localized_dialogue_json FROM redraw_shots WHERE version_id = ?').get(version.id).localized_dialogue_json,
+    '[]',
+  );
   db.close();
 });
 
