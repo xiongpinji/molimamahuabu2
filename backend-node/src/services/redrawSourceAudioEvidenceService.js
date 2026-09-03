@@ -38,12 +38,13 @@ async function analyzeSourceAudio(ctx = {}, input = {}) {
   const lookup = ctx.assetLookup || ((assetId) => assetService.getById(db, assetId));
   const sourceAsset = await lookup(parsed.sourceAssetId);
   assertSourceAsset(sourceAsset, parsed);
-  const sourcePath = resolveSourcePath(fsApi, storageRoot, sourceAsset.local_path);
-  const sourceVideoSha256 = await sha256File(fsApi, sourcePath);
+  const sourceFile = resolveSourcePath(fsApi, storageRoot, sourceAsset.local_path);
+  const expectedSourceHashes = sourceHashBindings(work, sourceAsset);
 
   const taskId = safeGeneratedId((ctx.idFactory || crypto.randomUUID)());
   const wavId = safeGeneratedId((ctx.idFactory || crypto.randomUUID)());
   const tempDir = path.join(privateAudioRoot, `source-audio-${taskId}`);
+  const sourceSnapshotPath = path.join(tempDir, `source-${taskId}.bin`);
   const wavPath = path.join(tempDir, `${wavId}.wav`);
   try {
     fsApi.mkdirSync(tempDir, { mode: 0o700 });
@@ -53,13 +54,15 @@ async function analyzeSourceAudio(ctx = {}, input = {}) {
 
   try {
     assertContainedDirectory(fsApi, tempDir, privateAudioRoot, 'SOURCE_AUDIO_PRIVATE_ROOT_INVALID', true);
+    const sourceSnapshot = snapshotSourceFile(fsApi, sourceFile, sourceSnapshotPath, tempDir);
+    assertSourceHashBindings(expectedSourceHashes, sourceSnapshot.sha256, sourceSnapshot.size);
     createPrivateFile(fsApi, wavPath, tempDir);
     let workerEvidence = null;
     let silent = false;
     try {
       await (ctx.execFile || execFileAsync)(ctx.ffmpegPath || getFfmpegPath(), [
         '-hide_banner', '-loglevel', 'error', '-y',
-        '-i', sourcePath,
+        '-i', sourceSnapshot.path,
         '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le',
         wavPath,
       ], {
@@ -87,7 +90,7 @@ async function analyzeSourceAudio(ctx = {}, input = {}) {
 
     const evidence = buildEvidence({
       parsed,
-      sourceVideoSha256,
+      sourceVideoSha256: sourceSnapshot.sha256,
       taskId,
       workerEvidence,
       now: resolveNow(ctx.now),
@@ -125,7 +128,7 @@ function parseInput(input) {
 
 function getOwnedWork(db, input) {
   const work = db.prepare(`
-    SELECT id, tenant_id, user_id, source_asset_id
+    SELECT id, tenant_id, user_id, source_asset_id, source_fingerprint
     FROM redraw_works
     WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
   `).get(input.workId, input.tenantId, input.userId);
@@ -142,6 +145,52 @@ function assertSourceAsset(asset, input) {
     || metadata.tenant_id !== input.tenantId
     || metadata.user_id !== input.userId) {
     throw codedError('SOURCE_AUDIO_SOURCE_ASSET_INVALID');
+  }
+}
+
+function sourceHashBindings(work, sourceAsset) {
+  const metadata = parseMetadata(sourceAsset.metadata);
+  return {
+    work: normalizeOptionalSha256(
+      work.source_fingerprint,
+      'SOURCE_AUDIO_SOURCE_FINGERPRINT_INVALID',
+    ),
+    asset: [
+      sourceAsset.sha256,
+      sourceAsset.source_fingerprint,
+      metadata.sha256,
+      metadata.source_fingerprint,
+    ].map((value) => normalizeOptionalSha256(value, 'SOURCE_AUDIO_SOURCE_ASSET_HASH_INVALID'))
+      .filter(Boolean),
+    assetSize: normalizeOptionalFileSize(sourceAsset.file_size),
+  };
+}
+
+function normalizeOptionalSha256(value, code) {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  if (!/^[0-9a-f]{64}$/i.test(text)) throw codedError(code);
+  return text.toLowerCase();
+}
+
+function normalizeOptionalFileSize(value) {
+  if (value == null || value === '') return null;
+  const size = Number(value);
+  if (!Number.isSafeInteger(size) || size < 0) {
+    throw codedError('SOURCE_AUDIO_SOURCE_ASSET_SIZE_INVALID');
+  }
+  return size;
+}
+
+function assertSourceHashBindings(bindings, snapshotSha256, snapshotSize) {
+  if (bindings.work && bindings.work !== snapshotSha256) {
+    throw codedError('SOURCE_AUDIO_SOURCE_FINGERPRINT_INVALID');
+  }
+  if (bindings.asset.some((value) => value !== snapshotSha256)) {
+    throw codedError('SOURCE_AUDIO_SOURCE_ASSET_HASH_INVALID');
+  }
+  if (bindings.assetSize != null && bindings.assetSize !== snapshotSize) {
+    throw codedError('SOURCE_AUDIO_SOURCE_ASSET_SIZE_INVALID');
   }
 }
 
@@ -221,6 +270,100 @@ function createPrivateFile(fsApi, filePath, privateTaskDir) {
     if (descriptor !== undefined) fsApi.closeSync(descriptor);
   }
   assertContainedFile(fsApi, filePath, privateTaskDir, 'SOURCE_AUDIO_PRIVATE_ROOT_INVALID', true);
+}
+
+function snapshotSourceFile(fsApi, sourceFile, snapshotPath, privateTaskDir) {
+  let sourceDescriptor;
+  let snapshotDescriptor;
+  let sourceBefore;
+  let copiedBytes = 0;
+  const hash = crypto.createHash('sha256');
+  try {
+    sourceDescriptor = fsApi.openSync(sourceFile.path, 'r');
+    sourceBefore = fsApi.fstatSync(sourceDescriptor);
+    assertOpenedSource(fsApi, sourceFile, sourceDescriptor, sourceBefore);
+    snapshotDescriptor = fsApi.openSync(snapshotPath, 'wx', 0o600);
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    for (;;) {
+      const readBytes = fsApi.readSync(sourceDescriptor, buffer, 0, buffer.length, null);
+      if (readBytes === 0) break;
+      hash.update(buffer.subarray(0, readBytes));
+      writeAll(fsApi, snapshotDescriptor, buffer, readBytes);
+      copiedBytes += readBytes;
+    }
+    if (typeof fsApi.fsyncSync === 'function') fsApi.fsyncSync(snapshotDescriptor);
+    const sourceAfter = fsApi.fstatSync(sourceDescriptor);
+    if (!sameFileStat(sourceBefore, sourceAfter) || copiedBytes !== sourceBefore.size) {
+      throw new Error('source changed while copying');
+    }
+    assertOpenedSource(fsApi, sourceFile, sourceDescriptor, sourceAfter);
+    fsApi.closeSync(snapshotDescriptor);
+    snapshotDescriptor = undefined;
+    fsApi.closeSync(sourceDescriptor);
+    sourceDescriptor = undefined;
+    const snapshotReal = assertContainedFile(
+      fsApi,
+      snapshotPath,
+      privateTaskDir,
+      'SOURCE_AUDIO_SOURCE_SNAPSHOT_FAILED',
+      true,
+    );
+    if (fsApi.statSync(snapshotReal).size !== copiedBytes) {
+      throw new Error('snapshot size changed');
+    }
+    return { path: snapshotReal, sha256: hash.digest('hex'), size: copiedBytes };
+  } catch {
+    throw codedError('SOURCE_AUDIO_SOURCE_SNAPSHOT_FAILED');
+  } finally {
+    closeQuietly(fsApi, snapshotDescriptor);
+    closeQuietly(fsApi, sourceDescriptor);
+  }
+}
+
+function assertOpenedSource(fsApi, sourceFile, descriptor, handleStat) {
+  const inputStat = fsApi.lstatSync(sourceFile.path);
+  const real = fsApi.realpathSync.native(sourceFile.path);
+  const pathStat = fsApi.statSync(real);
+  const descriptorStat = fsApi.fstatSync(descriptor);
+  if (inputStat.isSymbolicLink()
+    || !handleStat.isFile()
+    || !descriptorStat.isFile()
+    || !pathStat.isFile()
+    || !samePath(real, sourceFile.path)
+    || !isStrictlyInside(sourceFile.storageRoot, real)
+    || !sameFileStat(sourceFile.stat, pathStat)
+    || !sameFileStat(handleStat, descriptorStat)
+    || !sameFileStat(pathStat, descriptorStat)) {
+    throw new Error('source binding changed');
+  }
+}
+
+function writeAll(fsApi, descriptor, buffer, byteLength) {
+  let offset = 0;
+  while (offset < byteLength) {
+    const written = fsApi.writeSync(descriptor, buffer, offset, byteLength - offset, null);
+    if (!Number.isSafeInteger(written) || written <= 0) throw new Error('snapshot write failed');
+    offset += written;
+  }
+}
+
+function sameFileStat(left, right) {
+  return Boolean(left)
+    && Boolean(right)
+    && left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
+}
+
+function closeQuietly(fsApi, descriptor) {
+  if (descriptor === undefined) return;
+  try {
+    fsApi.closeSync(descriptor);
+  } catch {
+    // Preserve the stable snapshot failure while the task directory cleanup runs.
+  }
 }
 
 function createContainedDirectory(fsApi, directory, parent, allowExisting) {
@@ -305,13 +448,15 @@ function resolveSourcePath(fsApi, storageRoot, localPath) {
     if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('source path escaped');
     const inputStat = fsApi.lstatSync(candidate);
     const real = fsApi.realpathSync.native(candidate);
+    const stat = fsApi.statSync(real);
     if (inputStat.isSymbolicLink()
-      || !fsApi.statSync(real).isFile()
-      || !isInside(storageRoot, real)) {
+      || !stat.isFile()
+      || !samePath(candidate, real)
+      || !isStrictlyInside(storageRoot, real)) {
       throw new Error('source path escaped');
     }
     fsApi.accessSync(real, fs.constants.R_OK);
-    return real;
+    return { path: real, stat, storageRoot };
   } catch {
     throw codedError('SOURCE_AUDIO_SOURCE_PATH_INVALID');
   }

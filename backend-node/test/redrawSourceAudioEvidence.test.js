@@ -70,7 +70,8 @@ function createHarness(t, overrides = {}) {
     now: () => now,
     idFactory: () => ids.shift(),
     execFile: async (command, args, options) => {
-      execCalls.push({ command, args, options });
+      const inputPath = args[args.indexOf('-i') + 1];
+      execCalls.push({ command, args, options, sourceBytes: fs.readFileSync(inputPath) });
       fs.writeFileSync(args.at(-1), AUDIO_BYTES);
     },
     workerClient: {
@@ -121,12 +122,16 @@ test('analyzeSourceAudio extracts private PCM WAV and atomically registers bound
 
   assert.equal(harness.execCalls.length, 1);
   assert.equal(harness.execCalls[0].command, 'ffmpeg-test');
+  const sourceSnapshotPath = harness.execCalls[0].args[5];
   assert.deepEqual(harness.execCalls[0].args, [
     '-hide_banner', '-loglevel', 'error', '-y',
-    '-i', harness.sourcePath,
+    '-i', sourceSnapshotPath,
     '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le',
     harness.workerCalls[0].audioPath,
   ]);
+  assert.notEqual(sourceSnapshotPath, harness.sourcePath);
+  assert.equal(path.dirname(sourceSnapshotPath), path.dirname(harness.workerCalls[0].audioPath));
+  assert.deepEqual(harness.execCalls[0].sourceBytes, fs.readFileSync(harness.sourcePath));
   assert.equal(harness.execCalls[0].options.shell, false);
   assert.equal(harness.workerCalls.length, 1);
   assert.equal(path.isAbsolute(harness.workerCalls[0].audioPath), true);
@@ -425,6 +430,14 @@ test('analyzeSourceAudio creates the private root and task directory as 0700 and
     mode: 0o700,
   });
   assert.deepEqual(openCalls.map(({ target, flags, mode }) => ({ target, flags, mode })), [{
+    target: path.resolve(harness.sourcePath),
+    flags: 'r',
+    mode: undefined,
+  }, {
+    target: path.resolve(taskDirectory, 'source-task-7fdca1.bin'),
+    flags: 'wx',
+    mode: 0o600,
+  }, {
     target: path.resolve(taskDirectory, 'wav-6e91b2.wav'),
     flags: 'wx',
     mode: 0o600,
@@ -490,7 +503,9 @@ test('analyzeSourceAudio never recursively cleans a task directory swapped to an
     workerClient: {
       async analyzeSourceAudio(input) {
         swappedTaskDir = path.dirname(input.audioPath);
-        fs.rmSync(input.audioPath, { force: true });
+        for (const entry of fs.readdirSync(swappedTaskDir)) {
+          fs.rmSync(path.join(swappedTaskDir, entry), { force: true });
+        }
         fs.rmdirSync(swappedTaskDir);
         fs.symlinkSync(externalRoot, swappedTaskDir, process.platform === 'win32' ? 'junction' : 'dir');
         const error = new Error('worker result unknown');
@@ -533,6 +548,168 @@ test('analyzeSourceAudio removes the evidence file when asset registration fails
 
   const evidenceRoot = path.join(harness.storageRoot, 'redraw-source-audio-evidence');
   assert.equal(fs.existsSync(path.join(evidenceRoot, 'task-7fdca1', 'audio-evidence.json')), false);
+  assert.equal(harness.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category = 'redraw_source_audio_evidence'").get().count, 0);
+  assert.deepEqual(fs.readdirSync(harness.privateAudioRoot), []);
+});
+
+test('analyzeSourceAudio feeds ffmpeg an immutable private snapshot when the registered source path changes', async (t) => {
+  const harness = createHarness(t);
+  const originalBytes = fs.readFileSync(harness.sourcePath);
+  const replacementBytes = Buffer.from('replacement-source-video');
+  let ffmpegInput;
+  const ctx = {
+    ...harness.ctx,
+    execFile: async (command, args) => {
+      fs.writeFileSync(harness.sourcePath, replacementBytes);
+      ffmpegInput = args[args.indexOf('-i') + 1];
+      assert.notEqual(ffmpegInput, harness.sourcePath);
+      assert.deepEqual(fs.readFileSync(ffmpegInput), originalBytes);
+      fs.writeFileSync(args.at(-1), AUDIO_BYTES);
+    },
+  };
+
+  const result = await analyzeSourceAudio(ctx, validInput(harness.sourceAsset.id));
+
+  assert.equal(result.source_video_sha256, sha256(originalBytes));
+  assert.equal(fs.readFileSync(harness.sourcePath, 'utf8'), replacementBytes.toString('utf8'));
+  assert.equal(fs.existsSync(ffmpegInput), false);
+  assert.deepEqual(fs.readdirSync(harness.privateAudioRoot), []);
+});
+
+test('analyzeSourceAudio rejects malformed or mismatched work source fingerprints before ffmpeg', async (t) => {
+  const harness = createHarness(t);
+  for (const fingerprint of ['not-a-sha256', '0'.repeat(64)]) {
+    harness.db.prepare('UPDATE redraw_works SET source_fingerprint = ? WHERE id = 1').run(fingerprint);
+    await assert.rejects(
+      () => analyzeSourceAudio(harness.ctx, validInput(harness.sourceAsset.id)),
+      (error) => error.code === 'SOURCE_AUDIO_SOURCE_FINGERPRINT_INVALID'
+        && error.message === 'SOURCE_AUDIO_SOURCE_FINGERPRINT_INVALID'
+        && !error.message.includes(harness.sourcePath),
+    );
+  }
+
+  assert.equal(harness.execCalls.length, 0);
+  assert.equal(harness.workerCalls.length, 0);
+  assert.equal(harness.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category = 'redraw_source_audio_evidence'").get().count, 0);
+  assert.deepEqual(fs.readdirSync(harness.privateAudioRoot), []);
+});
+
+test('analyzeSourceAudio rejects a source asset SHA that does not match snapshot bytes', async (t) => {
+  const harness = createHarness(t);
+  harness.db.prepare('UPDATE assets SET metadata = ? WHERE id = ?').run(JSON.stringify({
+    tenant_id: 'tenant-1',
+    user_id: 'user-1',
+    sha256: '0'.repeat(64),
+  }), harness.sourceAsset.id);
+
+  await assert.rejects(
+    () => analyzeSourceAudio(harness.ctx, validInput(harness.sourceAsset.id)),
+    (error) => error.code === 'SOURCE_AUDIO_SOURCE_ASSET_HASH_INVALID'
+      && error.message === 'SOURCE_AUDIO_SOURCE_ASSET_HASH_INVALID'
+      && !error.message.includes(harness.sourcePath),
+  );
+
+  assert.equal(harness.execCalls.length, 0);
+  assert.equal(harness.workerCalls.length, 0);
+  assert.equal(harness.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category = 'redraw_source_audio_evidence'").get().count, 0);
+  assert.deepEqual(fs.readdirSync(harness.privateAudioRoot), []);
+});
+
+test('analyzeSourceAudio rejects registered source asset size drift before ffmpeg', async (t) => {
+  const harness = createHarness(t);
+  harness.db.prepare('UPDATE assets SET file_size = ? WHERE id = ?')
+    .run(fs.statSync(harness.sourcePath).size + 1, harness.sourceAsset.id);
+
+  await assert.rejects(
+    () => analyzeSourceAudio(harness.ctx, validInput(harness.sourceAsset.id)),
+    (error) => error.code === 'SOURCE_AUDIO_SOURCE_ASSET_SIZE_INVALID'
+      && error.message === 'SOURCE_AUDIO_SOURCE_ASSET_SIZE_INVALID'
+      && !error.message.includes(harness.sourcePath),
+  );
+
+  assert.equal(harness.execCalls.length, 0);
+  assert.equal(harness.workerCalls.length, 0);
+  assert.equal(harness.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category = 'redraw_source_audio_evidence'").get().count, 0);
+  assert.deepEqual(fs.readdirSync(harness.privateAudioRoot), []);
+});
+
+test('analyzeSourceAudio supports a legacy empty fingerprint using the immutable snapshot SHA', async (t) => {
+  const harness = createHarness(t);
+  const sourceBytes = fs.readFileSync(harness.sourcePath);
+  harness.db.prepare("UPDATE redraw_works SET source_fingerprint = '' WHERE id = 1").run();
+
+  const result = await analyzeSourceAudio(harness.ctx, validInput(harness.sourceAsset.id));
+
+  assert.equal(result.source_video_sha256, sha256(sourceBytes));
+  assert.equal(result.source_asset_id, harness.sourceAsset.id);
+  assert.equal(harness.execCalls.length, 1);
+  assert.equal(harness.workerCalls.length, 1);
+  assert.deepEqual(fs.readdirSync(harness.privateAudioRoot), []);
+});
+
+test('analyzeSourceAudio sanitizes source snapshot open and copy failures before ffmpeg', async (t) => {
+  for (const failure of ['open', 'copy']) {
+    await t.test(failure, async (child) => {
+      const harness = createHarness(child);
+      const fsApi = Object.create(fs);
+      let sourceDescriptor;
+      fsApi.openSync = (target, flags, mode) => {
+        if (path.resolve(target) === path.resolve(harness.sourcePath) && flags === 'r') {
+          if (failure === 'open') throw new Error(`cannot open ${harness.sourcePath}`);
+          sourceDescriptor = fs.openSync(target, flags, mode);
+          return sourceDescriptor;
+        }
+        return fs.openSync(target, flags, mode);
+      };
+      fsApi.readSync = (descriptor, ...args) => {
+        if (failure === 'copy' && descriptor === sourceDescriptor) {
+          throw new Error(`cannot copy ${harness.sourcePath}`);
+        }
+        return fs.readSync(descriptor, ...args);
+      };
+
+      await assert.rejects(
+        () => analyzeSourceAudio({ ...harness.ctx, fs: fsApi }, validInput(harness.sourceAsset.id)),
+        (error) => error.code === 'SOURCE_AUDIO_SOURCE_SNAPSHOT_FAILED'
+          && error.message === 'SOURCE_AUDIO_SOURCE_SNAPSHOT_FAILED'
+          && !error.message.includes(harness.sourcePath),
+      );
+
+      assert.equal(harness.execCalls.length, 0);
+      assert.equal(harness.workerCalls.length, 0);
+      assert.equal(harness.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category = 'redraw_source_audio_evidence'").get().count, 0);
+      assert.deepEqual(fs.readdirSync(harness.privateAudioRoot), []);
+    });
+  }
+});
+
+test('analyzeSourceAudio rejects a source path swapped to a junction immediately before open', async (t) => {
+  const harness = createHarness(t);
+  const sourceDirectory = path.dirname(harness.sourcePath);
+  const externalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'source-audio-open-race-'));
+  fs.writeFileSync(path.join(externalRoot, path.basename(harness.sourcePath)), 'raced-source-video');
+  t.after(() => fs.rmSync(externalRoot, { recursive: true, force: true }));
+  const fsApi = Object.create(fs);
+  let swapped = false;
+  fsApi.openSync = (target, flags, mode) => {
+    if (!swapped && path.resolve(target) === path.resolve(harness.sourcePath) && flags === 'r') {
+      swapped = true;
+      fs.rmSync(sourceDirectory, { recursive: true, force: true });
+      fs.symlinkSync(externalRoot, sourceDirectory, process.platform === 'win32' ? 'junction' : 'dir');
+    }
+    return fs.openSync(target, flags, mode);
+  };
+
+  await assert.rejects(
+    () => analyzeSourceAudio({ ...harness.ctx, fs: fsApi }, validInput(harness.sourceAsset.id)),
+    (error) => error.code === 'SOURCE_AUDIO_SOURCE_SNAPSHOT_FAILED'
+      && error.message === 'SOURCE_AUDIO_SOURCE_SNAPSHOT_FAILED'
+      && !error.message.includes(harness.sourcePath),
+  );
+
+  assert.equal(swapped, true);
+  assert.equal(harness.execCalls.length, 0);
+  assert.equal(harness.workerCalls.length, 0);
   assert.equal(harness.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category = 'redraw_source_audio_evidence'").get().count, 0);
   assert.deepEqual(fs.readdirSync(harness.privateAudioRoot), []);
 });
