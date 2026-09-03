@@ -252,8 +252,8 @@ class ServerTests(unittest.TestCase):
             handle.writeframes(b"\x00\x00" * 16_000)
 
         class FakeAsr:
-            def infer(self, audio_path):
-                self.audio_path = Path(audio_path)
+            def infer_source_audio_bytes(self, audio_bytes):
+                self.audio_bytes = bytes(audio_bytes)
                 return {
                     "language": "zh",
                     "probability": 0.98,
@@ -282,12 +282,23 @@ class ServerTests(unittest.TestCase):
         thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         thread.start()
 
-        response = self._send_json({
-            "action": "analyze_source_audio",
-            "request_id": "source-1",
-            "audio_path": str(source_path),
-            "audio_sha256": _file_sha256(source_path),
-        })
+        source_sha256 = _file_sha256(source_path)
+        read_calls = []
+        original_open = Path.open
+
+        def track_audio_reads(path, *args, **kwargs):
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if Path(path) == source_path and mode == "rb":
+                read_calls.append(Path(path))
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(Path, "open", track_audio_reads):
+            response = self._send_json({
+                "action": "analyze_source_audio",
+                "request_id": "source-1",
+                "audio_path": str(source_path),
+                "audio_sha256": source_sha256,
+            })
 
         self.assertTrue(response["ok"])
         self.assertEqual(response["result"]["audio_sha256"], _file_sha256(source_path))
@@ -295,8 +306,9 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(response["result"]["segments"][0]["speaker_cluster_id"], "speaker-cluster-1")
         self.assertNotIn(str(source_path), json.dumps(response, ensure_ascii=False))
         self.assertEqual(verifier.calls, [])
-        self.assertEqual(asr.audio_path, source_path)
+        self.assertEqual(asr.audio_bytes, source_path.read_bytes())
         self.assertEqual(clusterer.embedding_input, (8_000, 16_000))
+        self.assertEqual(read_calls, [source_path])
 
     def test_source_audio_action_accepts_seventeen_second_pcm_wav_inside_allowed_root(self):
         source_path = self.root / "seventeen-seconds.wav"
@@ -309,8 +321,8 @@ class ServerTests(unittest.TestCase):
         calls = []
 
         class FakeAsr:
-            def infer(self, audio_path):
-                calls.append(("asr", Path(audio_path)))
+            def infer_source_audio_bytes(self, audio_bytes):
+                calls.append(("asr", len(audio_bytes)))
                 return {
                     "language": "zh",
                     "probability": 0.98,
@@ -346,7 +358,7 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(response["ok"])
         self.assertEqual(
             calls,
-            [("asr", source_path), ("embed", 8_000, 16_000), ("cluster", 1)],
+            [("asr", 544_044), ("embed", 8_000, 16_000), ("cluster", 1)],
         )
 
     def test_source_audio_action_rejects_paths_outside_allowed_roots(self):
@@ -409,8 +421,8 @@ class ServerTests(unittest.TestCase):
         calls = []
 
         class FakeAsr:
-            def infer(self, audio_path):
-                calls.append(("asr", Path(audio_path)))
+            def infer_source_audio_bytes(self, audio_bytes):
+                calls.append(("asr", len(audio_bytes)))
                 return {
                     "language": "zh",
                     "probability": 0.98,
@@ -464,8 +476,8 @@ class ServerTests(unittest.TestCase):
         calls = []
 
         class FakeAsr:
-            def infer(self, audio_path):
-                calls.append(("asr", Path(audio_path)))
+            def infer_source_audio_bytes(self, audio_bytes):
+                calls.append(("asr", len(audio_bytes)))
                 return {}
 
         class FakeClusterer:
@@ -524,8 +536,8 @@ class ServerTests(unittest.TestCase):
         calls = []
 
         class FakeAsr:
-            def infer(self, audio_path):
-                calls.append(("asr", Path(audio_path)))
+            def infer_source_audio_bytes(self, audio_bytes):
+                calls.append(("asr", len(audio_bytes)))
                 return {
                     "language": "zh",
                     "probability": 0.98,

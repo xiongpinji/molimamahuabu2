@@ -11,14 +11,16 @@ from pathlib import Path
 SPEAKER_CLUSTER_RE = re.compile(r"speaker-cluster-([1-9][0-9]*)")
 
 
-def analyze_source_audio(audio_path, *, asr, clusterer):
-    path = Path(audio_path)
-    try:
-        audio_bytes = path.read_bytes()
-    except OSError as exc:
-        raise ValueError("SOURCE_AUDIO_FORMAT_INVALID") from exc
+def analyze_source_audio(audio_path=None, *, audio_bytes=None, asr, clusterer):
+    if audio_bytes is None:
+        try:
+            audio_bytes = Path(audio_path).read_bytes()
+        except (OSError, TypeError) as exc:
+            raise ValueError("SOURCE_AUDIO_FORMAT_INVALID") from exc
+    if not isinstance(audio_bytes, bytes):
+        raise ValueError("SOURCE_AUDIO_FORMAT_INVALID")
     waveform, sample_rate = _read_mono_pcm16_wav(audio_bytes)
-    asr_result = _infer_source_audio(asr, path)
+    asr_result = _infer_source_audio(asr, audio_bytes)
     segments = _normalize_segments(asr_result)
     duration_seconds = len(waveform) / sample_rate
     _validate_segment_bounds(segments, duration_seconds)
@@ -89,13 +91,11 @@ class MfccSpeakerClusterer:
         return _first_seen_cluster_ids(raw_labels)
 
 
-def _infer_source_audio(asr, audio_path):
-    infer = getattr(asr, "infer_source_audio", None)
-    if not callable(infer):
-        infer = getattr(asr, "infer", None)
+def _infer_source_audio(asr, audio_bytes):
+    infer = getattr(asr, "infer_source_audio_bytes", None)
     if not callable(infer):
         raise ValueError("SOURCE_AUDIO_ASR_INVALID")
-    result = infer(audio_path)
+    result = infer(audio_bytes)
     if not isinstance(result, dict):
         raise ValueError("SOURCE_AUDIO_ASR_INVALID")
     return result

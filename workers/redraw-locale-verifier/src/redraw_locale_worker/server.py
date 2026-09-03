@@ -517,8 +517,9 @@ def _parse_worker_request(value):
 
 def _analyze_source_audio_request(request, config):
     audio_path = _resolve_source_audio_path(request.get("audio_path"), config.allowed_root)
+    audio_bytes = _read_source_audio_bytes(audio_path)
     expected_sha256 = request["audio_sha256"]
-    if not hmac.compare_digest(_file_sha256(audio_path), expected_sha256):
+    if not hmac.compare_digest(hashlib.sha256(audio_bytes).hexdigest(), expected_sha256):
         raise LocaleWorkerError("AUDIO_SHA256_MISMATCH")
     if config.asr is None or config.source_audio_clusterer is None:
         raise LocaleWorkerError("LOCALE_VERIFY_FAILED")
@@ -526,7 +527,7 @@ def _analyze_source_audio_request(request, config):
 
     try:
         result = analyze_source_audio(
-            audio_path,
+            audio_bytes=audio_bytes,
             asr=config.asr,
             clusterer=config.source_audio_clusterer,
         )
@@ -540,15 +541,15 @@ def _analyze_source_audio_request(request, config):
     return result
 
 
-def _file_sha256(path):
-    digest = hashlib.sha256()
+def _read_source_audio_bytes(path):
     try:
         with Path(path).open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
+            audio_bytes = handle.read(MAX_SOURCE_AUDIO_BYTES + 1)
     except OSError:
         raise LocaleWorkerError("AUDIO_PATH_NOT_ALLOWED") from None
-    return digest.hexdigest()
+    if not audio_bytes or len(audio_bytes) > MAX_SOURCE_AUDIO_BYTES:
+        raise LocaleWorkerError("AUDIO_PATH_NOT_ALLOWED")
+    return audio_bytes
 
 
 def _resolve_source_audio_path(audio_path, allowed_root):

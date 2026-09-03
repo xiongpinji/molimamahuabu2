@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import math
 import sys
@@ -9,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from redraw_locale_worker.engines import FasterWhisperEngine
 from redraw_locale_worker.source_evidence import MfccSpeakerClusterer, analyze_source_audio
 
 
@@ -18,8 +20,8 @@ class FakeAsr:
         self.language = language
         self.probability = probability
 
-    def infer(self, audio_path):
-        del audio_path
+    def infer_source_audio_bytes(self, audio_bytes):
+        self.audio_bytes = bytes(audio_bytes)
         return {
             "language": self.language,
             "probability": self.probability,
@@ -158,6 +160,71 @@ class SourceEvidenceTests(unittest.TestCase):
             set(result),
             {"source_language", "language_probability", "segments", "audio_sha256", "transcript_sha256"},
         )
+
+    def test_asr_uses_validated_immutable_bytes_when_source_path_is_replaced(self):
+        original_bytes = self.wav_path.read_bytes()
+        replacement_path = Path(self.temp_dir.name).resolve() / "replacement.wav"
+        with wave.open(str(replacement_path), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(16_000)
+            handle.writeframes(b"\x01\x00" * (16_000 * 3))
+        replacement_bytes = replacement_path.read_bytes()
+
+        class RacingAsr:
+            def infer_source_audio(self, audio_path):
+                self.wav_path.write_bytes(replacement_bytes)
+                self.received_bytes = Path(audio_path).read_bytes()
+                return self._result()
+
+            def infer_source_audio_bytes(self, audio_bytes):
+                self.wav_path.write_bytes(replacement_bytes)
+                self.received_bytes = bytes(audio_bytes)
+                return self._result()
+
+            @staticmethod
+            def _result():
+                return {
+                    "language": "zh",
+                    "probability": 0.99,
+                    "segments": [{"start": 0.0, "end": 0.5, "text": "旧音频"}],
+                }
+
+        asr = RacingAsr()
+        asr.wav_path = self.wav_path
+
+        result = analyze_source_audio(
+            self.wav_path,
+            asr=asr,
+            clusterer=FakeClusterer([0]),
+        )
+
+        self.assertNotEqual(original_bytes, replacement_bytes)
+        self.assertEqual(asr.received_bytes, original_bytes)
+        self.assertEqual(result["audio_sha256"], hashlib.sha256(original_bytes).hexdigest())
+
+    def test_faster_whisper_source_audio_transcribes_from_bytes_io(self):
+        calls = []
+
+        class FakeModel:
+            def transcribe(self, audio_input, *, beam_size, vad_filter):
+                calls.append((audio_input, beam_size, vad_filter))
+                return (
+                    [SimpleNamespace(start=0.0, end=0.5, text=" 字节音频 ")],
+                    SimpleNamespace(language="zh", language_probability=0.99),
+                )
+
+        engine = FasterWhisperEngine.__new__(FasterWhisperEngine)
+        engine.model = FakeModel()
+        audio_bytes = self.wav_path.read_bytes()
+
+        result = engine.infer_source_audio_bytes(audio_bytes)
+
+        self.assertEqual(len(calls), 1)
+        self.assertIsInstance(calls[0][0], io.BytesIO)
+        self.assertEqual(calls[0][0].getvalue(), audio_bytes)
+        self.assertEqual(calls[0][1:], (5, True))
+        self.assertEqual(result["segments"], [{"start": 0.0, "end": 0.5, "text": "字节音频"}])
 
     def test_mfcc_clusterer_uses_deterministic_online_cosine_clusters(self):
         clusterer = MfccSpeakerClusterer(threshold=0.82)
