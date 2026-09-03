@@ -13,6 +13,7 @@ from .protocol import HEX_SHA256_RE, parse_request
 
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
+MAX_SOURCE_AUDIO_BYTES = 16_000 * 2 * 16 + 4096
 READY_TTL_SECONDS = 10
 READY_REFRESH_SECONDS = 5
 _UnixStreamServerBase = getattr(socketserver, "UnixStreamServer", socketserver.TCPServer)
@@ -49,7 +50,10 @@ SAFE_ERROR_CODES = frozenset({
     "LOCALE_AUDIO_PATH_INVALID",
     "LOCALE_AUDIO_PROBE_FAILED",
     "LOCALE_AUDIO_STREAM_INVALID",
+    "AUDIO_PATH_NOT_ALLOWED",
 })
+SOURCE_AUDIO_REQUEST_FIELDS = frozenset({"action", "request_id", "audio_path"})
+SOURCE_AUDIO_SUFFIXES = frozenset({".wav"})
 LOCAL_VOICE_RESULT_FIELDS = frozenset({
     "source",
     "request_id",
@@ -100,13 +104,14 @@ LOCAL_VOICE_CHECK_FIELDS = frozenset({
 @dataclass(frozen=True)
 class LocaleServerConfig:
     pack: dict | None
-    allowed_root: Path
+    allowed_root: Path | tuple[Path, ...]
     pack_by_id: object = None
     asr: object = None
     accent: object = None
     verifier: object = None
     native_verifier: object = None
     local_voice_verifier: object = None
+    source_audio_clusterer: object = None
     ready_path: Path | None = None
     socket_path: Path | None = None
 
@@ -156,7 +161,7 @@ class LocaleRequestHandler(socketserver.StreamRequestHandler):
             self._write_error("LOCALE_REQUEST_INVALID_JSON")
             return
         try:
-            request = parse_request(raw)
+            request = _parse_worker_request(raw)
         except ProtocolError as exc:
             self._write_error(exc.code)
             return
@@ -170,6 +175,10 @@ class LocaleRequestHandler(socketserver.StreamRequestHandler):
 
         config = self.server.config
         try:
+            if request["action"] == "analyze_source_audio":
+                result = _analyze_source_audio_request(request, config)
+                self._write_json({"ok": True, "result": result})
+                return
             pack = _select_pack(config, request["locale_pack"])
             verifier = _select_verifier(config, request["action"])
             result = verifier(
@@ -212,16 +221,18 @@ def make_test_server(
     accent=None,
     native_verifier=None,
     local_voice_verifier=None,
+    source_audio_clusterer=None,
 ):
     config = LocaleServerConfig(
         pack=pack,
         pack_by_id=pack_by_id,
-        allowed_root=Path(allowed_root).resolve(),
+        allowed_root=_normalize_allowed_roots(allowed_root),
         asr=asr,
         accent=accent,
         verifier=verifier,
         native_verifier=native_verifier,
         local_voice_verifier=local_voice_verifier,
+        source_audio_clusterer=source_audio_clusterer,
     )
     return LocaleTcpTestServer(("127.0.0.1", 0), LocaleRequestHandler, config=config)
 
@@ -407,16 +418,18 @@ def create_unix_server(
     asr,
     accent,
     ready_path=None,
+    source_audio_clusterer=None,
 ):
     config = LocaleServerConfig(
         pack=pack,
         pack_by_id=pack_by_id,
-        allowed_root=Path(allowed_root).resolve(),
+        allowed_root=_normalize_allowed_roots(allowed_root),
         asr=asr,
         accent=accent,
         verifier=_default_verifier("verify"),
         native_verifier=_default_verifier("verify_native_audio"),
         local_voice_verifier=_default_verifier("verify_local_voice"),
+        source_audio_clusterer=source_audio_clusterer,
         ready_path=Path(ready_path) if ready_path is not None else None,
         socket_path=Path(socket_path),
     )
@@ -436,6 +449,7 @@ def run_server(
     model_hash_check,
     smoke_checks,
     manifest_sha256=None,
+    source_audio_clusterer=None,
 ):
     _safe_unlink_file(ready_path)
     server = None
@@ -450,6 +464,7 @@ def run_server(
             asr=asr,
             accent=accent,
             ready_path=ready_path,
+            source_audio_clusterer=source_audio_clusterer,
         )
         write_ready(
             ready_path,
@@ -481,6 +496,65 @@ def _encode_response(payload):
     if len(encoded) > MAX_RESPONSE_BYTES:
         return None
     return encoded
+
+
+def _parse_worker_request(value):
+    if not isinstance(value, dict) or value.get("action") != "analyze_source_audio":
+        return parse_request(value)
+    if set(value) != SOURCE_AUDIO_REQUEST_FIELDS:
+        raise ProtocolError("LOCALE_VERIFY_REQUEST_INVALID")
+    for field in ("request_id", "audio_path"):
+        if not isinstance(value.get(field), str) or not value[field].strip():
+            raise ProtocolError("LOCALE_VERIFY_REQUEST_INVALID")
+    return value
+
+
+def _analyze_source_audio_request(request, config):
+    audio_path = _resolve_source_audio_path(request.get("audio_path"), config.allowed_root)
+    if config.asr is None or config.source_audio_clusterer is None:
+        raise LocaleWorkerError("LOCALE_VERIFY_FAILED")
+    from .source_evidence import analyze_source_audio
+
+    return analyze_source_audio(
+        audio_path,
+        asr=config.asr,
+        clusterer=config.source_audio_clusterer,
+    )
+
+
+def _resolve_source_audio_path(audio_path, allowed_root):
+    try:
+        path_input = Path(audio_path)
+    except TypeError:
+        raise LocaleWorkerError("AUDIO_PATH_NOT_ALLOWED") from None
+    if not path_input.is_absolute() or path_input.is_symlink():
+        raise LocaleWorkerError("AUDIO_PATH_NOT_ALLOWED")
+    try:
+        path = path_input.resolve(strict=True)
+        stat_result = path.stat()
+    except (OSError, RuntimeError):
+        raise LocaleWorkerError("AUDIO_PATH_NOT_ALLOWED") from None
+    if (
+        not path.is_file()
+        or path.suffix.casefold() not in SOURCE_AUDIO_SUFFIXES
+        or stat_result.st_size <= 0
+        or stat_result.st_size > MAX_SOURCE_AUDIO_BYTES
+    ):
+        raise LocaleWorkerError("AUDIO_PATH_NOT_ALLOWED")
+    roots = allowed_root if isinstance(allowed_root, (list, tuple, set, frozenset)) else (allowed_root,)
+    for root_value in roots:
+        try:
+            root_input = Path(root_value)
+            if not root_input.is_absolute():
+                continue
+            root = root_input.resolve(strict=True)
+            if not root.is_dir():
+                continue
+            path.relative_to(root)
+            return path
+        except (TypeError, OSError, RuntimeError, ValueError):
+            continue
+    raise LocaleWorkerError("AUDIO_PATH_NOT_ALLOWED")
 
 
 def _valid_local_voice_result(result, request, pack):
@@ -710,7 +784,10 @@ def main():
     try:
         socket_path = _required_env("REDRAW_LOCALE_VERIFIER_SOCKET")
         ready_path = _required_env("REDRAW_LOCALE_VERIFIER_READY_PATH")
-        allowed_root = _required_env("REDRAW_LOCALE_VERIFIER_ALLOWED_ROOT")
+        allowed_root = _allowed_roots_from_env(
+            _required_env("REDRAW_LOCALE_VERIFIER_ALLOWED_ROOT"),
+            os.environ.get("REDRAW_LOCALE_VERIFIER_EXTRA_ALLOWED_ROOTS", ""),
+        )
         pack_path = _required_env("REDRAW_LOCALE_VERIFIER_PACK_PATH")
         model_manifest_path = _required_env("REDRAW_LOCALE_VERIFIER_MODEL_MANIFEST_PATH")
         expected_model_hash = _required_env("REDRAW_LOCALE_VERIFIER_MODEL_MANIFEST_SHA256")
@@ -728,9 +805,10 @@ def main():
         ):
             raise ValueError("LOCALE_MODEL_MANIFEST_HASH_INVALID")
 
-        from .engines import CommonAccentEngine, FasterWhisperEngine
+        from .engines import CommonAccentEngine, FasterWhisperEngine, build_source_audio_clusterer
 
         asr = FasterWhisperEngine(asr_model_dir)
+        source_audio_clusterer = build_source_audio_clusterer()
         accent_required = pack_by_id is None or any(_pack_requires_accent(item) for item in pack_by_id.values())
         accent = None
         if accent_required:
@@ -763,6 +841,7 @@ def main():
             model_hash_check=model_hash_check,
             smoke_checks=smoke_checks,
             manifest_sha256=expected_manifest_hash,
+            source_audio_clusterer=source_audio_clusterer,
         )
     except Exception as exc:  # noqa: BLE001 - startup must fail closed without secret details.
         raise SystemExit(f"LOCALE_SERVER_STARTUP_FAILED:{type(exc).__name__}") from None
@@ -773,6 +852,30 @@ def _required_env(name):
     if not value:
         raise ValueError(f"{name}_REQUIRED")
     return value
+
+
+def _normalize_allowed_roots(value):
+    values = value if isinstance(value, (list, tuple, set, frozenset)) else (value,)
+    roots = []
+    for item in values:
+        try:
+            raw_root = Path(item)
+        except TypeError:
+            raise ValueError("LOCALE_ALLOWED_ROOT_INVALID") from None
+        if not raw_root.is_absolute():
+            raise ValueError("LOCALE_ALLOWED_ROOT_INVALID")
+        root = raw_root.resolve()
+        roots.append(root)
+    if not roots:
+        raise ValueError("LOCALE_ALLOWED_ROOT_INVALID")
+    return roots[0] if len(roots) == 1 else tuple(roots)
+
+
+def _allowed_roots_from_env(primary, extra):
+    values = [primary]
+    if extra:
+        values.extend(item for item in extra.split(os.pathsep) if item)
+    return _normalize_allowed_roots(values)
 
 
 if __name__ == "__main__":

@@ -32,6 +32,9 @@ class FasterWhisperEngine:
             "segments": evidence_segments,
         }
 
+    def infer_source_audio(self, audio_path):
+        return self.infer(audio_path)
+
 
 class CommonAccentEngine:
     def __init__(self, runtime_dir, savedir=None):
@@ -83,3 +86,9 @@ def _raw_probability(value):
     if not math.isfinite(value) or value < 0.0 or value > 1.0:
         return None
     return value
+
+
+def build_source_audio_clusterer(*, threshold=0.82):
+    from .source_evidence import MfccSpeakerClusterer
+
+    return MfccSpeakerClusterer(threshold=threshold)

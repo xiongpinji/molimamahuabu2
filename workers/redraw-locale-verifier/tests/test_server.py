@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+import wave
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -233,6 +234,105 @@ class ServerTests(unittest.TestCase):
         self.assertIs(legacy.calls[0][1], self.pack)
         self.assertIs(native.calls[0][1], self.native_pack)
         self.assertIs(local.calls[0][1], self.pack)
+
+    def test_server_dispatches_source_audio_analysis_without_using_locale_verifiers(self):
+        source_path = self.root / "source.wav"
+        with wave.open(str(source_path), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(16_000)
+            handle.writeframes(b"\x00\x00" * 16_000)
+
+        class FakeAsr:
+            def infer(self, audio_path):
+                self.audio_path = Path(audio_path)
+                return {
+                    "language": "zh",
+                    "probability": 0.98,
+                    "segments": [{"start": 0.0, "end": 0.5, "text": "你回来了"}],
+                }
+
+        class FakeClusterer:
+            def embed(self, waveform, sample_rate):
+                self.embedding_input = (len(waveform), sample_rate)
+                return [1.0, 0.0]
+
+            def cluster(self, embeddings):
+                self.embeddings = embeddings
+                return [0]
+
+        verifier = CountingVerifier()
+        asr = FakeAsr()
+        clusterer = FakeClusterer()
+        self.server = make_test_server(
+            verifier,
+            pack=self.pack,
+            allowed_root=self.root,
+            asr=asr,
+            source_audio_clusterer=clusterer,
+        )
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+
+        response = self._send_json({
+            "action": "analyze_source_audio",
+            "request_id": "source-1",
+            "audio_path": str(source_path),
+        })
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["source_language"], "zh")
+        self.assertEqual(response["result"]["segments"][0]["speaker_cluster_id"], "speaker-cluster-1")
+        self.assertNotIn(str(source_path), json.dumps(response, ensure_ascii=False))
+        self.assertEqual(verifier.calls, [])
+        self.assertEqual(asr.audio_path, source_path)
+        self.assertEqual(clusterer.embedding_input, (8_000, 16_000))
+
+    def test_source_audio_action_rejects_paths_outside_allowed_roots(self):
+        with tempfile.TemporaryDirectory() as outside_dir:
+            outside_path = Path(outside_dir).resolve() / "outside.wav"
+            outside_path.write_bytes(b"RIFF")
+            self.server = make_test_server(
+                CountingVerifier(),
+                pack=self.pack,
+                allowed_root=self.root,
+                asr=object(),
+                source_audio_clusterer=object(),
+            )
+            thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+            thread.start()
+
+            response = self._send_json({
+                "action": "analyze_source_audio",
+                "request_id": "source-outside",
+                "audio_path": str(outside_path),
+            })
+
+        self.assertEqual(response, {"ok": False, "error_code": "AUDIO_PATH_NOT_ALLOWED"})
+
+    def test_source_audio_action_rejects_unsafe_type_and_size_before_asr(self):
+        unsupported_path = self.root / "source.mp3"
+        unsupported_path.write_bytes(b"audio")
+        oversized_path = self.root / "oversized.wav"
+        oversized_path.write_bytes(b"0" * (16_000 * 2 * 16 + 4097))
+        self.server = make_test_server(
+            CountingVerifier(),
+            pack=self.pack,
+            allowed_root=self.root,
+            asr=object(),
+            source_audio_clusterer=object(),
+        )
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+
+        for index, audio_path in enumerate((unsupported_path, oversized_path), start=1):
+            with self.subTest(audio_path=audio_path):
+                response = self._send_json({
+                    "action": "analyze_source_audio",
+                    "request_id": f"source-unsafe-{index}",
+                    "audio_path": str(audio_path),
+                })
+                self.assertEqual(response, {"ok": False, "error_code": "AUDIO_PATH_NOT_ALLOWED"})
 
     def test_local_voice_server_rejects_mixed_request_before_verifier(self):
         local = CountingVerifier()
@@ -644,6 +744,8 @@ class ServerTests(unittest.TestCase):
         accent_dir = self.root / "accent"
         asr_dir.mkdir()
         accent_dir.mkdir()
+        private_audio_root = self.root / "private-audio"
+        private_audio_root.mkdir()
         calls = []
         captured = {}
 
@@ -671,6 +773,7 @@ class ServerTests(unittest.TestCase):
             "REDRAW_LOCALE_VERIFIER_SOCKET": str(self.root / "worker.sock"),
             "REDRAW_LOCALE_VERIFIER_READY_PATH": str(self.root / "worker.ready.json"),
             "REDRAW_LOCALE_VERIFIER_ALLOWED_ROOT": str(self.root),
+            "REDRAW_LOCALE_VERIFIER_EXTRA_ALLOWED_ROOTS": str(private_audio_root),
             "REDRAW_LOCALE_VERIFIER_PACK_PATH": str(bundle_path),
             "REDRAW_LOCALE_VERIFIER_MODEL_MANIFEST_PATH": str(model_manifest_path),
             "REDRAW_LOCALE_VERIFIER_MODEL_MANIFEST_SHA256": expected_model_hash,
@@ -692,6 +795,7 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(captured["pack"]["id"], "en-US@1")
         self.assertEqual(sorted(captured["pack_by_id"]), ["en-US@1", "es@1"])
+        self.assertEqual(captured["allowed_root"], (self.root, private_audio_root))
         self.assertEqual(captured["manifest_sha256"], "e" * 64)
         server_module.run_startup_checks(
             captured["pack"],
@@ -709,6 +813,10 @@ class ServerTests(unittest.TestCase):
             smoke_checks={"asr": lambda: native_only_order.append(("asr", "es@1"))},
         )
         self.assertEqual(native_only_order, [("hash", "es@1"), ("asr", "es@1")])
+
+    def test_allowed_root_environment_rejects_relative_extra_root(self):
+        with self.assertRaisesRegex(ValueError, "LOCALE_ALLOWED_ROOT_INVALID"):
+            server_module._allowed_roots_from_env(str(self.root), "private-audio")
 
     def test_run_server_and_create_unix_server_preserve_multi_pack_config(self):
         pack_by_id = {"es@1": self.native_pack, "en-US@1": self.pack}
