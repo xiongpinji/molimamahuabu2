@@ -6,7 +6,7 @@ const MODEL_CATEGORIES = ['text', 'image', 'video', 'audio', 'other'];
 const MODEL_STATUSES = ['enabled', 'disabled'];
 const COST_UNITS = ['request', 'image', 'second', 'token'];
 const BILLING_UNITS = ['request', 'second'];
-const VIDEO_RESOLUTIONS = ['480p', '720p', '1080p'];
+const VIDEO_RESOLUTIONS = ['480p', '720p', '768p', '1080p'];
 const IMAGE_RESOLUTIONS = ['1k', '2k', '4k'];
 const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'toapis_wan3_video', 'feituo_open', 'lingjing_open']);
 const toapisVideoClient = require('./toapisVideoClient');
@@ -14,7 +14,7 @@ const toapisWan3VideoClient = require('./toapisWan3VideoClient');
 const feituoVideoClient = require('./feituoVideoClient');
 const lingjingVideoClient = require('./lingjingVideoClient');
 const { evidenceContractForModel, hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
-const { ensureModelCreditPriceFreeContract } = require('../db/migrate');
+const { ensureModelCreditPriceFreeContract, ensureVideoResolutionPriceContract } = require('../db/migrate');
 const SERVICE_CATEGORIES = {
   text: 'text',
   image: 'image',
@@ -101,12 +101,13 @@ function ensureSchema(db) {
   ensureModelCreditPriceFreeContract(db);
   db.exec(`CREATE TABLE IF NOT EXISTS model_resolution_prices (
     model TEXT NOT NULL COLLATE NOCASE,
-    resolution TEXT NOT NULL CHECK (resolution IN ('480p', '720p', '1080p')),
+    resolution TEXT NOT NULL CHECK (resolution IN ('480p', '720p', '768p', '1080p')),
     credits INTEGER NOT NULL CHECK (credits > 0),
     cost_micros_per_second INTEGER NOT NULL DEFAULT 0 CHECK (cost_micros_per_second >= 0),
     updated_at TEXT NOT NULL,
     PRIMARY KEY (model, resolution)
   )`);
+  ensureVideoResolutionPriceContract(db);
   db.exec(`CREATE TABLE IF NOT EXISTS model_image_resolution_prices (
     model TEXT NOT NULL COLLATE NOCASE,
     resolution TEXT NOT NULL CHECK (resolution IN ('1k', '2k', '4k')),
@@ -218,6 +219,20 @@ function isRealGenerationVerified(row, model) {
   const provider = String(row.provider || '').trim().toLowerCase();
   const protocol = String(row.api_protocol || '').trim().toLowerCase();
   const feituo = provider === 'feituo' || protocol === 'feituo_open';
+  const newapi = provider === 'newapi' || provider === 'newapi_video'
+    || protocol === 'newapi' || protocol === 'newapi_video';
+  if (newapi) {
+    let capabilities = row.verified_capabilities;
+    try {
+      if (typeof capabilities === 'string') capabilities = JSON.parse(capabilities || '{}');
+    } catch (_) {
+      capabilities = {};
+    }
+    const target = String(model || '').trim().toLowerCase();
+    const key = Object.keys(capabilities || {})
+      .find((item) => String(item).trim().toLowerCase() === target);
+    return row.verification_status === 'verified' && capabilities?.[key]?.validated === true;
+  }
   if (!isToken6688Config(row) && !feituo) return true;
   try {
     const settings = typeof row.settings === 'string' ? JSON.parse(row.settings) : row.settings;
@@ -235,10 +250,10 @@ function providerInfo(row, upstreamModel = '') {
   const provider = String(row.provider || '').trim();
   if (!provider && !row.name && !row.base_url) return null;
   return {
-    config_id: Number(row.id) || null,
     provider,
     provider_name: String(row.name || provider).trim(),
     provider_base_url: String(row.base_url || '').trim(),
+    config_id: Number(row.id) || null,
     upstream_model: String(upstreamModel || '').trim(),
   };
 }
@@ -361,6 +376,11 @@ function list(db) {
   return [...defaults, ...rows.filter((row) => !seen.has(row.model.toLowerCase()))]
     .map((row) => {
       const providers = row.providers || providersByModel.get(row.model.toLowerCase()) || [];
+      const providerMetadata = {
+        provider: providers[0]?.provider || '',
+        provider_name: providers[0]?.provider_name || '',
+        provider_base_url: providers[0]?.provider_base_url || '',
+      };
       const providerCosts = providers.map((provider) => {
         if (!provider.config_id || !provider.upstream_model) return null;
         try {
@@ -373,10 +393,8 @@ function list(db) {
       return {
         ...row,
         providers,
+        ...providerMetadata,
         provider_costs: providerCosts,
-        provider: providers[0]?.provider || '',
-        provider_name: providers[0]?.provider_name || '',
-        provider_base_url: providers[0]?.provider_base_url || '',
         billing_unit: billingUnit(row.model, row.category, row.billing_unit),
       };
     });
@@ -648,7 +666,7 @@ function set(db, value, creditsValue, options = {}) {
       const resolution = normalizeResolution(value, category);
       const tierCredits = Number(tier?.credits);
       if (!resolution || !Number.isSafeInteger(tierCredits) || tierCredits <= 0) {
-        const label = category === 'image' ? '图片分辨率价格只支持 1K、2K、4K' : '视频分辨率价格只支持 480P、720P、1080P';
+        const label = category === 'image' ? '图片分辨率价格只支持 1K、2K、4K' : '视频分辨率价格只支持 480P、720P、768P、1080P';
         throw priceError('INVALID_MODEL_PRICE', `${label} 的正整数积分`);
       }
       return category === 'image'
@@ -805,6 +823,7 @@ function calculateCharge(db, value, usage = {}) {
     mediaModelSelection.parseQualifiedSelection(model)?.upstreamModel || model,
   ).toLowerCase();
   const minimum = normalizedModel === 'lingjing-video-v1'
+    || normalizedModel === 'seedance-2.0-mini'
     || /^bytedance\/seedance-2-0-(?:mini|fast)$/.test(normalizedModel)
     ? 4
     : 5;

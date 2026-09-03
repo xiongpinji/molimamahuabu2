@@ -281,23 +281,42 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-31 Wan 3.0 完整能力合同原位升级获批",
+          "approvedBy": "product-owner 2026-08-31 wan3-full-capability-contract-approved",
+          "impactTests": [
+            "backend-node/test/billingPublicCatalog.test.js",
+            "backend-node/test/canvasModelCatalogService.test.js",
+            "backend-node/test/modelPriceMigration.test.js",
+            "backend-node/test/toapisWan3ConfigInstaller.test.js",
+            "backend-node/test/toapisWan3Catalog.test.js",
+            "frontweb/test/aiConfigProviderPresets.test.js",
+            "frontweb/test/billingDisplay.test.js",
+            "frontweb/test/imageResolutionPricingContract.test.js",
+            "frontweb/test/toapisVideoCanvasContract.test.js",
+            "frontweb/test/videoGenerationRequest.test.js",
+            "frontweb/test/videoResolutionPricingContract.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-31 Wan 3.0 完整能力合同原位升级获批",
-        "approvedBy": "product-owner 2026-08-31 wan3-full-capability-contract-approved",
+        "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
+        "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
         "impactTests": [
-          "backend-node/test/billingPublicCatalog.test.js",
           "backend-node/test/canvasModelCatalogService.test.js",
-          "backend-node/test/modelPriceMigration.test.js",
-          "backend-node/test/toapisWan3ConfigInstaller.test.js",
-          "backend-node/test/toapisWan3Catalog.test.js",
-          "frontweb/test/aiConfigProviderPresets.test.js",
-          "frontweb/test/billingDisplay.test.js",
-          "frontweb/test/imageResolutionPricingContract.test.js",
-          "frontweb/test/toapisVideoCanvasContract.test.js",
-          "frontweb/test/videoGenerationRequest.test.js",
-          "frontweb/test/videoResolutionPricingContract.test.js",
+          "backend-node/test/modelPrice.test.js",
+          "backend-node/test/newapiVideo.test.js",
+          "backend-node/test/newapiWan3ConfigInstaller.test.js",
+          "backend-node/test/providerModelSelection.test.js",
+          "backend-node/test/providerPricingSync.test.js",
+          "backend-node/test/videoBilling.test.js",
+          "backend-node/test/modelUiProtectionGate.test.js",
+          "frontweb/test/billing-model-groups.test.js",
+          "frontweb/test/filmListCanvasEntry.test.js",
+          "frontweb/test/homeQuickGeneration.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -586,14 +605,33 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
+          "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
+          "impactTests": [
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
-        "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
+        "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
+        "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
         "impactTests": [
-          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/canvasModelCatalogService.test.js",
+          "backend-node/test/modelPrice.test.js",
+          "backend-node/test/newapiVideo.test.js",
+          "backend-node/test/newapiWan3ConfigInstaller.test.js",
+          "backend-node/test/providerModelSelection.test.js",
+          "backend-node/test/providerPricingSync.test.js",
           "backend-node/test/videoBilling.test.js",
+          "backend-node/test/modelUiProtectionGate.test.js",
+          "frontweb/test/billing-model-groups.test.js",
+          "frontweb/test/filmListCanvasEntry.test.js",
+          "frontweb/test/homeQuickGeneration.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -933,14 +971,33 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
+          "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
+          "impactTests": [
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
-        "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
+        "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
+        "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
         "impactTests": [
-          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/canvasModelCatalogService.test.js",
+          "backend-node/test/modelPrice.test.js",
+          "backend-node/test/newapiVideo.test.js",
+          "backend-node/test/newapiWan3ConfigInstaller.test.js",
+          "backend-node/test/providerModelSelection.test.js",
+          "backend-node/test/providerPricingSync.test.js",
           "backend-node/test/videoBilling.test.js",
+          "backend-node/test/modelUiProtectionGate.test.js",
+          "frontweb/test/billing-model-groups.test.js",
+          "frontweb/test/filmListCanvasEntry.test.js",
+          "frontweb/test/homeQuickGeneration.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -1179,23 +1236,42 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-31 Wan 3.0 完整能力合同原位升级获批",
+          "approvedBy": "product-owner 2026-08-31 wan3-full-capability-contract-approved",
+          "impactTests": [
+            "backend-node/test/billingPublicCatalog.test.js",
+            "backend-node/test/canvasModelCatalogService.test.js",
+            "backend-node/test/modelPriceMigration.test.js",
+            "backend-node/test/toapisWan3ConfigInstaller.test.js",
+            "backend-node/test/toapisWan3Catalog.test.js",
+            "frontweb/test/aiConfigProviderPresets.test.js",
+            "frontweb/test/billingDisplay.test.js",
+            "frontweb/test/imageResolutionPricingContract.test.js",
+            "frontweb/test/toapisVideoCanvasContract.test.js",
+            "frontweb/test/videoGenerationRequest.test.js",
+            "frontweb/test/videoResolutionPricingContract.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-31 Wan 3.0 完整能力合同原位升级获批",
-        "approvedBy": "product-owner 2026-08-31 wan3-full-capability-contract-approved",
+        "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
+        "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
         "impactTests": [
-          "backend-node/test/billingPublicCatalog.test.js",
           "backend-node/test/canvasModelCatalogService.test.js",
-          "backend-node/test/modelPriceMigration.test.js",
-          "backend-node/test/toapisWan3ConfigInstaller.test.js",
-          "backend-node/test/toapisWan3Catalog.test.js",
-          "frontweb/test/aiConfigProviderPresets.test.js",
-          "frontweb/test/billingDisplay.test.js",
-          "frontweb/test/imageResolutionPricingContract.test.js",
-          "frontweb/test/toapisVideoCanvasContract.test.js",
-          "frontweb/test/videoGenerationRequest.test.js",
-          "frontweb/test/videoResolutionPricingContract.test.js",
+          "backend-node/test/modelPrice.test.js",
+          "backend-node/test/newapiVideo.test.js",
+          "backend-node/test/newapiWan3ConfigInstaller.test.js",
+          "backend-node/test/providerModelSelection.test.js",
+          "backend-node/test/providerPricingSync.test.js",
+          "backend-node/test/videoBilling.test.js",
+          "backend-node/test/modelUiProtectionGate.test.js",
+          "frontweb/test/billing-model-groups.test.js",
+          "frontweb/test/filmListCanvasEntry.test.js",
+          "frontweb/test/homeQuickGeneration.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -1760,14 +1836,33 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
+          "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
+          "impactTests": [
+            "backend-node/test/providerReconciliation.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-01 视频失败终态释放画布重复提交锁获批",
-        "approvedBy": "product-owner 2026-09-01 canvas-failed-generation-resubmit",
+        "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
+        "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
         "impactTests": [
-          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/canvasModelCatalogService.test.js",
+          "backend-node/test/modelPrice.test.js",
+          "backend-node/test/newapiVideo.test.js",
+          "backend-node/test/newapiWan3ConfigInstaller.test.js",
+          "backend-node/test/providerModelSelection.test.js",
+          "backend-node/test/providerPricingSync.test.js",
           "backend-node/test/videoBilling.test.js",
+          "backend-node/test/modelUiProtectionGate.test.js",
+          "frontweb/test/billing-model-groups.test.js",
+          "frontweb/test/filmListCanvasEntry.test.js",
+          "frontweb/test/homeQuickGeneration.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]

@@ -1335,7 +1335,17 @@ function getDefaultVideoConfig(db, preferredModel, evidenceRoots, preferredConfi
   const active = configs.filter((c) => c.is_active);
   const preferred = String(preferredModel || '').trim().toLowerCase();
   if (mediaModelSelection.parseQualifiedSelection(preferredModel)) {
-    return mediaModelSelection.resolveQualifiedConfig(active, preferredModel);
+    const resolved = mediaModelSelection.resolveQualifiedConfig(active, preferredModel);
+    if (!resolved) return null;
+    if (resolveVideoProtocol(resolved, resolved.canvas_selected_model) !== 'newapi_video') return resolved;
+    const target = String(resolved.canvas_selected_model || '').trim().toLowerCase();
+    const key = Object.keys(resolved.verified_capabilities || {})
+      .find((value) => String(value || '').trim().toLowerCase() === target);
+    return resolved.verification_status === 'verified'
+      && aiConfigService.hasConnectionCredential(resolved)
+      && resolved.verified_capabilities?.[key]?.validated === true
+      ? resolved
+      : null;
   }
   if (preferred === toapisWan3VideoClient.TOAPIS_WAN3_MODEL) {
     return active.find((config) => {

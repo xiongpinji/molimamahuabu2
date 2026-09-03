@@ -29,6 +29,11 @@ function toMicros(usd, rate) {
   return Math.round(value);
 }
 
+function sourceCurrency(value) {
+  const currency = String(value || 'USD').trim().toUpperCase();
+  return SOURCE_CURRENCIES.has(currency) ? currency : 'USD';
+}
+
 function positivePrice(value) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : null;
@@ -60,7 +65,8 @@ function parsePricingRow(row, options = {}) {
   if (!model) return null;
   // NewAPI quota_type=0 is a倍率/Token计费表达式，不能在没有上游 token 规则时臆算人民币成本。
   if (Number(row.quota_type) === 0) return null;
-  const rate = safeRate(options.usdCnyRate);
+  const source = sourceCurrency(options.sourceCurrency);
+  const rate = source === 'CNY' ? 1 : safeRate(options.usdCnyRate);
   const tiers = {};
 
   if (row.resolution_prices && typeof row.resolution_prices === 'object') {
@@ -95,7 +101,7 @@ function parsePricingRow(row, options = {}) {
     .map(([key, item]) => [key, { micros_per_unit: toMicros(item.price, rate) }]));
   return {
     model,
-    source_currency: 'USD',
+    source_currency: source,
     cost_source: 'relay_auto',
     cost_unit: unit,
     currency: 'CNY',
@@ -171,6 +177,19 @@ function pricingEndpoint(baseUrl) {
   return `${parsed.origin}/api/pricing`;
 }
 
+function statusEndpoint(baseUrl) {
+  const pricing = new URL(pricingEndpoint(baseUrl));
+  return `${pricing.origin}/api/status`;
+}
+
+function pricingSourceCurrency(payload) {
+  const status = payload?.data;
+  if (payload?.success === true && status && typeof status === 'object' && !Array.isArray(status)
+      && status.display_in_currency === true
+      && String(status.quota_display_type || '').trim().toUpperCase() === 'CNY') return 'CNY';
+  return 'USD';
+}
+
 function isNewApiConfig(config) {
   const provider = String(config?.provider || '').trim().toLowerCase();
   const protocol = String(config?.api_protocol || '').trim().toLowerCase();
@@ -187,6 +206,7 @@ async function syncProviderConfig(db, configIdValue, options = {}) {
   if (!config || config.deleted_at) throw syncError('PROVIDER_ROUTE_NOT_FOUND', 'provider route does not exist');
   if (!isNewApiConfig(config)) throw syncError('UNSUPPORTED_PROVIDER_PRICING', '仅支持 NewAPI 中转站报价同步');
   const endpoint = pricingEndpoint(config.base_url);
+  const statusUrl = statusEndpoint(config.base_url);
   const fetchImpl = options.fetchImpl || global.fetch;
   if (typeof fetchImpl !== 'function') throw syncError('PROVIDER_PRICING_FETCH_UNAVAILABLE', '当前运行环境不支持 HTTP 请求');
   const headers = { Accept: 'application/json' };
@@ -196,7 +216,12 @@ async function syncProviderConfig(db, configIdValue, options = {}) {
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
   const timeout = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   let response;
+  let detectedSourceCurrency = 'USD';
   try {
+    try {
+      const statusResponse = await fetchImpl(statusUrl, { headers, ...(controller ? { signal: controller.signal } : {}) });
+      if (statusResponse?.ok) detectedSourceCurrency = pricingSourceCurrency(await statusResponse.json());
+    } catch (_) {}
     response = await fetchImpl(endpoint, { headers, ...(controller ? { signal: controller.signal } : {}) });
   } catch (error) {
     throw syncError('PROVIDER_PRICING_FETCH_FAILED', '报价接口请求失败');
@@ -231,6 +256,7 @@ async function syncProviderConfig(db, configIdValue, options = {}) {
     }
     const outcome = saveRelayCost(db, configId, model, row, {
       usdCnyRate: options.usdCnyRate ?? readUsdCnyRate(db),
+      sourceCurrency: detectedSourceCurrency,
       sourceUrl: endpoint,
       fetchedAt: result.fetched_at,
     });
@@ -432,6 +458,7 @@ module.exports = {
   getCost,
   parsePricingRow,
   pricingEndpoint,
+  statusEndpoint,
   readUsdCnyRate,
   saveRelayCost,
   syncAllProviderPricing,

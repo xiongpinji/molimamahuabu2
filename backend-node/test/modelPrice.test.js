@@ -482,6 +482,46 @@ test('视频分档存在时必须明确选择已定价分辨率且不回退基�
   }
 });
 
+test('视频分档支持 MiniMax 实测的 768P 并迁移保留旧档位', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE model_resolution_prices (
+      model TEXT NOT NULL COLLATE NOCASE,
+      resolution TEXT NOT NULL CHECK (resolution IN ('480p', '720p', '1080p')),
+      credits INTEGER NOT NULL CHECK (credits > 0),
+      cost_micros_per_second INTEGER NOT NULL DEFAULT 0 CHECK (cost_micros_per_second >= 0),
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (model, resolution)
+    );
+    INSERT INTO model_resolution_prices
+      (model, resolution, credits, cost_micros_per_second, updated_at)
+    VALUES ('legacy-video', '480p', 9, 100000, '2026-09-03T00:00:00.000Z');
+  `);
+
+  runMigrationsAndEnsure(db);
+  prices.ensureSchema(db);
+  const saved = prices.set(db, 'minimax_h3_image_audio_to_video_v2', 27, {
+    category: 'video',
+    billingUnit: 'second',
+    costUnit: 'second',
+    resolution_prices: {
+      '768P': { credits: 27, cost_micros_per_second: 30000 },
+    },
+  });
+
+  assert.deepEqual(saved.resolution_prices, {
+    '768p': { credits: 27, cost_micros_per_second: 30000 },
+  });
+  assert.deepEqual(
+    db.prepare('SELECT model, resolution, credits FROM model_resolution_prices ORDER BY model').all(),
+    [
+      { model: 'legacy-video', resolution: '480p', credits: 9 },
+      { model: 'minimax_h3_image_audio_to_video_v2', resolution: '768p', credits: 27 },
+    ],
+  );
+  db.close();
+});
+
 test('调用方可显式允许 ToAPIs 4 秒而旧模型仍保持 5 到 15 秒', () => {
   const db = makeDb();
   prices.set(db, 'seedance-2-fast', 511, {

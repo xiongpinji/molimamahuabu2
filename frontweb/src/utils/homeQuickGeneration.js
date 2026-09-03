@@ -5,7 +5,8 @@ import {
 
 const QUICK_GENERATION_MODES = new Set(['text', 'image', 'video'])
 const IMAGE_RESOLUTIONS = ['1k', '2k', '4k']
-const STRICT_CATALOG_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'toapis_wan3_video', 'lingjing_open'])
+const STRICT_CATALOG_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'toapis_wan3_video', 'lingjing_open', 'newapi_video'])
+const DEFAULT_ASPECT_RATIOS = Object.freeze(['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'])
 const VERIFIED_IMAGE_MODELS = Object.freeze({
   'gpt-image-2-2-4k': Object.freeze({ resolutions: Object.freeze(['1k', '2k']), quantities: Object.freeze([1]), maxReferences: 6 }),
   'nano-banana-2': Object.freeze({ resolutions: Object.freeze(['1k', '2k', '4k']), quantities: Object.freeze([1]), maxReferences: 6 }),
@@ -35,6 +36,8 @@ const STRICT_CATALOG_PROVIDER_PROTOCOLS = Object.freeze({
   toapis_video: 'toapis_video',
   toapis_wan3: 'toapis_wan3_video',
   toapis_wan3_video: 'toapis_wan3_video',
+  newapi: 'newapi_video',
+  newapi_video: 'newapi_video',
   usmercari: 'usmercari_image',
   usmercari_image: 'usmercari_image',
 })
@@ -200,6 +203,12 @@ export function normalizeQuickGenerationCatalog(items = []) {
     })
     .filter((item) => {
       if (!STRICT_CATALOG_PROTOCOLS.has(item.protocol)) return true
+      if (item.protocol === 'newapi_video') {
+        return item.verificationStatus === 'verified'
+          && Boolean(item.capabilities.resolutions?.length)
+          && Boolean(item.capabilities.durations?.length)
+          && Boolean(item.capabilities.aspectRatios?.length)
+      }
       const verifiedModel = item.category === 'image'
         ? verifiedImageModel(item.model)
         : verifiedVideoModel(item.model)
@@ -232,6 +241,15 @@ export function quickGenerationDurations(model = {}) {
   return videoDurationOptionsForCapability(capability)
 }
 
+export function quickGenerationAspectRatios(model = {}, mode = '') {
+  const category = String(mode || model.category || model.kind || '').trim().toLowerCase()
+  if (category === 'text') return []
+  const declared = Array.isArray(model?.capabilities?.aspectRatios)
+    ? model.capabilities.aspectRatios.map((value) => String(value || '').trim()).filter(Boolean)
+    : []
+  return declared.length ? [...new Set(declared)] : [...DEFAULT_ASPECT_RATIOS]
+}
+
 export function normalizeQuickGenerationDraft(value = {}, modelMetadata = {}) {
   const mode = normalizeMode(value.mode)
   const hasModelMetadata = Boolean(modelMetadata?.model)
@@ -242,6 +260,8 @@ export function normalizeQuickGenerationDraft(value = {}, modelMetadata = {}) {
   const requestedDuration = Math.trunc(Number(value.duration) || durationOptions[0] || 5)
   const resolutionOptions = hasModelMetadata ? quickGenerationResolutions(modelMetadata, mode) : []
   const requestedResolution = String(value.resolution || (mode === 'image' ? '1k' : '720p')).trim().toLowerCase()
+  const aspectRatioOptions = hasModelMetadata ? quickGenerationAspectRatios(modelMetadata, mode) : [...DEFAULT_ASPECT_RATIOS]
+  const requestedAspectRatio = String(value.aspectRatio || '16:9').trim() || '16:9'
   const hasDeclaredVideoResolutions = mode === 'video'
     && hasModelMetadata
     && Array.isArray(modelMetadata?.capabilities?.resolutions)
@@ -253,7 +273,9 @@ export function normalizeQuickGenerationDraft(value = {}, modelMetadata = {}) {
     mode,
     prompt: String(value.prompt || '').trim(),
     model: String(value.model || '').trim(),
-    aspectRatio: String(value.aspectRatio || '16:9').trim() || '16:9',
+    aspectRatio: aspectRatioOptions.includes(requestedAspectRatio)
+      ? requestedAspectRatio
+      : aspectRatioOptions[0] || '16:9',
     duration: mode === 'video'
       ? (hasModelMetadata
         ? (durationOptions.includes(requestedDuration) ? requestedDuration : durationOptions[0])
@@ -345,6 +367,10 @@ export function buildQuickGenerationRequest(input = {}) {
     throw new Error('当前视频模型目录尚未就绪，请刷新后重试')
   }
   const capability = effectiveVideoCapability(input.model, providedCapability)
+  const aspectRatios = quickGenerationAspectRatios({ ...input, capabilities: capability }, 'video')
+  if (!aspectRatios.includes(body.aspect_ratio)) {
+    throw new Error(`当前模型画面比例仅支持 ${aspectRatios.join('、')}`)
+  }
   const declaredResolutions = uniqueNormalizedStrings(capability.resolutions)
   const hasDeclaredResolutionContract = Array.isArray(capability.resolutions)
   const requestedResolution = String(input.resolution || (hasDeclaredResolutionContract ? '' : '720p')).trim().toLowerCase()
@@ -373,6 +399,9 @@ export function buildQuickGenerationRequest(input = {}) {
     } else {
       throw new Error('当前模型未开放图片参考')
     }
+  }
+  if (capability.requiresReference === true && !referenceImageUrl) {
+    throw new Error('当前模型至少需要一张参考图')
   }
   return { endpoint: '/videos', body }
 }

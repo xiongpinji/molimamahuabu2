@@ -452,6 +452,8 @@ import { formatModelPrice } from '@/utils/billingDisplay'
 import {
   filterModelPricesByProviderConfig,
   groupModelPricesByProvider,
+  priceEditorResolutionKeys,
+  visibleProviderResolutionCosts,
 } from '@/utils/billingModelGroups'
 
 const publicMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
@@ -517,6 +519,7 @@ const imageResolutionLabels = {
 const videoResolutionLabels = {
   '480p': '480P',
   '720p': '720P',
+  '768p': '768P',
   '1080p': '1080P',
 }
 const newModel = reactive({
@@ -590,10 +593,13 @@ function providerBaseUrl(item) {
 function formatProviderCosts(item) {
   return (item.provider_costs || []).map((cost) => {
     const provider = cost.provider_name || cost.provider || `配置 ${cost.config_id}`
-    const amount = microsToYuan(cost.micros_per_unit).toFixed(6)
     const source = cost.cost_source === 'relay_auto' ? '自动同步' : '手工'
     const fetched = cost.source_fetched_at ? `，${formatDate(cost.source_fetched_at)}` : ''
-    return `${provider} ¥${amount}/${costUnitLabel(cost.cost_unit)}（${source}${fetched}）`
+    const resolutionCosts = visibleProviderResolutionCosts(item, cost)
+    const amount = resolutionCosts.length
+      ? resolutionCosts.map((tier) => `${videoResolutionLabels[tier.resolution] || tier.resolution.toUpperCase()} ¥${microsToYuan(tier.micros_per_unit).toFixed(6)}`).join('、')
+      : `¥${microsToYuan(cost.micros_per_unit).toFixed(6)}`
+    return `${provider} ${amount}/${costUnitLabel(cost.cost_unit)}（${source}${fetched}）`
   }).join('；')
 }
 
@@ -613,6 +619,9 @@ function isWan3VideoPricing(item) {
 }
 
 function providerVideoResolutionKeys(item) {
+  const configuredResolutions = priceEditorResolutionKeys(item, [])
+    .filter((resolution) => videoResolutionLabels[resolution])
+  if (configuredResolutions.length) return configuredResolutions
   const providerResolutions = new Set((item?.provider_costs || []).flatMap((cost) => (
     Object.keys(cost?.resolution_prices || {}).map((resolution) => resolution.toLowerCase())
   )))
@@ -645,6 +654,7 @@ function normalizePrice(item) {
     : 1
   const fallbackCost = Number(item.cost_micros_per_unit) || 0
   const emptyPrices = emptyResolutionPrices(item.model)
+  const editorResolutionKeys = priceEditorResolutionKeys(item, Object.keys(emptyPrices))
   const useUsmercariDefaults = USMERCARI_IMAGE_MODELS.has(String(item.model).toLowerCase())
     && Object.keys(resolutionPrices).length === 0
     && item.credits == null
@@ -661,7 +671,7 @@ function normalizePrice(item) {
     cost_yuan_per_unit: microsToYuan(item.cost_micros_per_unit),
     input_cost_yuan_per_1k: microsToYuan(item.input_cost_micros_per_1k),
     output_cost_yuan_per_1k: microsToYuan(item.output_cost_micros_per_1k),
-    resolution_prices: Object.fromEntries(Object.keys(emptyPrices).map((resolution) => {
+    resolution_prices: Object.fromEntries(editorResolutionKeys.map((resolution) => {
       const tier = resolutionPrices[resolution]
       if (resolution.endsWith('p')) {
         return [resolution, {

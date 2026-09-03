@@ -509,6 +509,58 @@ test('视频任务缺少显式时长时按 5 秒入库并计费', () => {
   db.close();
 });
 
+test('中转站限定的 NewAPI 模型创建后固定原配置且按限定 ID 计费', () => {
+  const db = setup();
+  aiConfig.createConfig(db, log, {
+    service_type: 'video', provider: 'usmercari', api_protocol: 'usmercari_media',
+    name: '另一中转站', base_url: 'https://other.example', api_key: 'other-secret',
+    model: ['seedance-2.0-mini'], default_model: 'seedance-2.0-mini', is_active: true,
+  });
+  const config = aiConfig.createConfig(db, log, {
+    service_type: 'video', provider: 'newapi', api_protocol: 'newapi_video',
+    name: 'NewAPI megabyai', base_url: 'https://newapi.example', api_key: 'newapi-secret',
+    model: ['seedance-2.0-mini'], default_model: 'seedance-2.0-mini', is_active: true,
+  });
+  aiConfig.recordVerification(db, config.id, {
+    status: 'verified',
+    capabilities: {
+      'seedance-2.0-mini': {
+        validated: true,
+        durations: [4],
+        aspectRatios: ['16:9'],
+        resolutions: ['480p'],
+      },
+    },
+  });
+  const selection = `cfg-${config.id}::seedance-2.0-mini`;
+  prices.set(db, selection, 44, {
+    category: 'video', billingUnit: 'second', costUnit: 'second',
+    resolution_prices: { '480p': { credits: 44, cost_micros_per_second: 50000 } },
+  });
+  credits.setAccountBalance(db, 'user-1', 10000);
+
+  const created = videoService.create(db, log, {
+    drama_id: 1,
+    storyboard_id: 1,
+    model: selection,
+    prompt: 'NewAPI 限定路由测试',
+    duration: 4,
+    aspect_ratio: '16:9',
+    resolution: '480p',
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} });
+  const row = db.prepare(`SELECT model, provider, duration, ai_service_config_id, credit_reservation_id
+    FROM video_generations WHERE id = ?`).get(created.id);
+  const task = db.prepare('SELECT model FROM async_tasks WHERE id = ?').get(created.task_id);
+
+  assert.equal(row.model, 'seedance-2.0-mini');
+  assert.equal(row.provider, 'newapi');
+  assert.equal(row.duration, 4);
+  assert.equal(row.ai_service_config_id, config.id);
+  assert.equal(task.model, selection);
+  assert.equal(credits.getReservation(db, row.credit_reservation_id).amount, 176);
+  db.close();
+});
+
 test('视频节点未覆盖时使用模型配置的默认时长计费', () => {
   const db = setup();
   prices.set(db, 'seedance 2.0', 3);

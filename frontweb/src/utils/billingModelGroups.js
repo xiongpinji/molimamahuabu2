@@ -51,6 +51,31 @@ function yuanFromMicros(value) {
   return Number.isFinite(micros) && micros > 0 ? micros / 1_000_000 : 0
 }
 
+function isConfiguredModelPrice(item = {}) {
+  if (item.configured === true) return true
+  if (item.configured === false) return false
+  return item.credits != null && item.status !== 'unconfigured'
+}
+
+export function priceEditorResolutionKeys(item = {}, fallbackKeys = []) {
+  const configuredKeys = Object.keys(item.resolution_prices || {})
+  return isConfiguredModelPrice(item) && configuredKeys.length
+    ? configuredKeys
+    : [...fallbackKeys]
+}
+
+export function visibleProviderResolutionCosts(item = {}, cost = {}) {
+  const tiers = cost?.resolution_prices && typeof cost.resolution_prices === 'object'
+    ? cost.resolution_prices
+    : {}
+  return priceEditorResolutionKeys(item, Object.keys(tiers))
+    .filter((resolution) => tiers[resolution])
+    .map((resolution) => ({
+      resolution,
+      micros_per_unit: Number(tiers[resolution]?.micros_per_unit) || 0,
+    }))
+}
+
 function providerCostFallback(item, providerCosts) {
   if (providerCosts.length !== 1) return item
   const [cost] = providerCosts
@@ -63,18 +88,19 @@ function providerCostFallback(item, providerCosts) {
   const fallbackCredits = Number(item.credits) > 0 ? Number(item.credits) : 1
 
   for (const [resolution, tier] of Object.entries(providerResolutionPrices)) {
-    const current = resolutionPrices[resolution] || { credits: fallbackCredits }
+    const current = resolutionPrices[resolution]
+    if (!current && isConfiguredModelPrice(item)) continue
     const amount = yuanFromMicros(tier?.micros_per_unit)
     resolutionPrices[resolution] = item.category === 'image'
       ? {
-          ...current,
-          cost_yuan_per_unit: Number(current.cost_yuan_per_unit) > 0
+          ...(current || { credits: fallbackCredits }),
+          cost_yuan_per_unit: Number(current?.cost_yuan_per_unit) > 0
             ? Number(current.cost_yuan_per_unit)
             : amount,
         }
       : {
-          ...current,
-          cost_yuan_per_second: Number(current.cost_yuan_per_second) > 0
+          ...(current || { credits: fallbackCredits }),
+          cost_yuan_per_second: Number(current?.cost_yuan_per_second) > 0
             ? Number(current.cost_yuan_per_second)
             : amount,
         }

@@ -100,6 +100,99 @@ test('canvas model catalog exposes video resolution prices to the node editor', 
   db.close();
 });
 
+test('NewAPI 画布目录只公开模型自身的真实验证能力', (t) => {
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO ai_service_configs
+    (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+     is_active, verification_status, verified_capabilities, created_at, updated_at)
+    VALUES ('video', 'newapi', 'newapi_video', 'NewAPI', 'https://newapi.example', 'secret',
+      ?, 'alibaba/wan-3.0', 1, 'verified', ?, ?, ?)`)
+    .run(JSON.stringify(['alibaba/wan-3.0']), JSON.stringify({
+      'alibaba/wan-3.0': {
+        validated: true,
+        durations: [4],
+        aspectRatios: ['16:9'],
+        resolutions: ['480p'],
+        supportsImageReference: false,
+        supportsVideoReference: false,
+        supportsAudioReference: false,
+        supportsAudio: true,
+      },
+    }), now, now);
+  prices.set(db, 'alibaba/wan-3.0', 134, {
+    category: 'video',
+    billingUnit: 'second',
+    costUnit: 'second',
+    cost_micros_per_unit: 150_000,
+    resolution_prices: {
+      '480p': { credits: 134, cost_micros_per_second: 150_000 },
+      '720p': { credits: 268, cost_micros_per_second: 300_000 },
+    },
+  });
+
+  const item = list(db, { evidenceRoots }).find((row) => row.model === 'alibaba/wan-3.0');
+  assert.deepEqual(item.resolution_prices, { '480p': { credits: 134 } });
+  assert.deepEqual(item.capabilities, {
+    validated: true,
+    durations: [4],
+    aspectRatios: ['16:9'],
+    resolutions: ['480p'],
+    supportsImageReference: false,
+    supportsVideoReference: false,
+    supportsAudioReference: false,
+    supportsAudio: true,
+  });
+});
+
+test('NewAPI 同名模型按中转站限定 ID 独立公开且只带实测档位', (t) => {
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO ai_service_configs
+    (id, service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+     is_active, verification_status, verified_capabilities, created_at, updated_at)
+    VALUES (15, 'video', 'usmercari', 'usmercari_media', '另一中转站', 'https://other.example', 'other-secret',
+      ?, 'seedance-2.0-mini', 1, 'verified', '{}', ?, ?)`)
+    .run(JSON.stringify(['seedance-2.0-mini']), now, now);
+  db.prepare(`INSERT INTO ai_service_configs
+    (id, service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+     is_active, verification_status, verified_capabilities, created_at, updated_at)
+    VALUES (29, 'video', 'newapi', 'newapi_video', 'NewAPI megabyai', 'https://newapi.example', 'newapi-secret',
+      ?, 'seedance-2.0-mini', 1, 'verified', ?, ?, ?)`)
+    .run(JSON.stringify(['seedance-2.0-mini']), JSON.stringify({
+      'seedance-2.0-mini': {
+        validated: true,
+        durations: [4],
+        aspectRatios: ['16:9'],
+        resolutions: ['480p', '720p'],
+        supportsImageReference: false,
+        supportsAudio: false,
+      },
+    }), now, now);
+  modelPriceService.set(db, 'cfg-29::seedance-2.0-mini', 44, {
+    displayName: 'NewAPI Seedance 2.0 Mini',
+    category: 'video',
+    billingUnit: 'second',
+    costUnit: 'second',
+    resolution_prices: {
+      '480p': { credits: 44, cost_micros_per_second: 50000 },
+    },
+  });
+
+  const items = list(db, { evidenceRoots }).filter((row) => row.model.includes('seedance-2.0-mini'));
+  assert.equal(items.length, 1);
+  assert.equal(items[0].model, 'cfg-29::seedance-2.0-mini');
+  assert.equal(items[0].label, 'NewAPI Seedance 2.0 Mini');
+  assert.deepEqual(items[0].resolution_prices, { '480p': { credits: 44 } });
+  assert.deepEqual(items[0].capabilities.resolutions, ['480p']);
+  assert.deepEqual(items[0].capabilities.durations, [4]);
+  assert.deepEqual(items[0].capabilities.aspectRatios, ['16:9']);
+});
+
 test('Token6688 画布目录按模型公开图片参考上限和 Seedance 9/3/9 能力', (t) => {
   const db = new Database(':memory:');
   t.after(() => db.close());

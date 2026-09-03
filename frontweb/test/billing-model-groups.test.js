@@ -1,10 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 
 import {
   filterModelPricesByProviderConfig,
   groupModelPricesByProvider,
+  priceEditorResolutionKeys,
+  visibleProviderResolutionCosts,
 } from '../src/utils/billingModelGroups.js'
+
+const adminSource = fs.readFileSync(new URL('../src/views/BillingAdmin.vue', import.meta.url), 'utf8')
 
 test('模型计费按中转站分组且同一模型可归入多个中转站', () => {
   const groups = groupModelPricesByProvider([
@@ -124,4 +129,76 @@ test('中转站分组用线路分档成本回填空白表单且不覆盖已填�
     credits: 1,
     cost_yuan_per_second: 1.08,
   })
+})
+
+test('已定价视频只保留用户实际开放档位且不被中转站成本扩档', () => {
+  const [group] = groupModelPricesByProvider([{
+    model: 'alibaba/wan-3.0',
+    category: 'video',
+    configured: true,
+    credits: 134,
+    providers: [{
+      config_id: 29,
+      provider: 'newapi',
+      provider_name: 'NewAPI megabyai',
+      provider_base_url: 'https://newapi.megabyai.cc',
+    }],
+    provider_costs: [{
+      config_id: 29,
+      cost_unit: 'second',
+      resolution_prices: {
+        '480p': { micros_per_unit: 150000 },
+        '720p': { micros_per_unit: 300000 },
+        '1080p': { micros_per_unit: 670000 },
+      },
+    }],
+    resolution_prices: {
+      '480p': { credits: 134, cost_yuan_per_second: 0 },
+    },
+  }])
+
+  const [item] = group.items
+  assert.deepEqual(Object.keys(item.resolution_prices), ['480p'])
+  assert.deepEqual(item.resolution_prices['480p'], {
+    credits: 134,
+    cost_yuan_per_second: 0.15,
+  })
+})
+
+test('已定价模型规范化时沿用数据库档位而未定价模型使用候选档位', () => {
+  assert.deepEqual(priceEditorResolutionKeys({
+    category: 'video',
+    credits: 134,
+    status: 'enabled',
+    resolution_prices: { '480p': { credits: 134 } },
+  }, ['480p', '720p', '1080p']), ['480p'])
+
+  assert.deepEqual(priceEditorResolutionKeys({
+    category: 'video',
+    credits: null,
+    status: 'unconfigured',
+    resolution_prices: {},
+  }, ['480p', '720p']), ['480p', '720p'])
+})
+
+test('视频计费编辑器优先循环已定价用户档位再回退中转站档位', () => {
+  assert.match(
+    adminSource,
+    /function providerVideoResolutionKeys\(item\)[\s\S]*priceEditorResolutionKeys\(item, \[\]\)[\s\S]*provider_costs/,
+  )
+})
+
+test('已定价模型的中转站成本摘要只显示实际开放档位', () => {
+  assert.deepEqual(visibleProviderResolutionCosts({
+    configured: true,
+    credits: 134,
+    status: 'enabled',
+    resolution_prices: { '480p': { credits: 134 } },
+  }, {
+    resolution_prices: {
+      '480p': { micros_per_unit: 150000 },
+      '720p': { micros_per_unit: 300000 },
+      '1080p': { micros_per_unit: 670000 },
+    },
+  }), [{ resolution: '480p', micros_per_unit: 150000 }])
 })

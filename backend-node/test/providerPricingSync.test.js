@@ -63,6 +63,20 @@ test('解析 NewAPI 报价为按秒人民币成本并保留原始美元快照', 
   });
 });
 
+test('人民币展示的 NewAPI 报价不重复乘美元汇率', () => {
+  const parsed = pricingSync.parsePricingRow(pricingRow(), {
+    sourceCurrency: 'CNY',
+    usdCnyRate: 7.2,
+  });
+  assert.equal(parsed.source_currency, 'CNY');
+  assert.equal(parsed.source_exchange_rate, 1);
+  assert.equal(parsed.micros_per_unit, 400_000);
+  assert.deepEqual(parsed.resolution_prices, {
+    '480p': { micros_per_unit: 200_000 },
+    '720p': { micros_per_unit: 400_000 },
+  });
+});
+
 test('条件报价按分辨率取最高档，避免台账低估成本', () => {
   const parsed = pricingSync.parsePricingRow(pricingRow({
     conditional_prices: [
@@ -184,11 +198,58 @@ test('同步配置时按中转站地址抓取并逐模型保存报价', async ()
         };
       },
     });
-    assert.deepEqual(calls, ['https://newapi.example/api/pricing']);
+    assert.deepEqual(calls, [
+      'https://newapi.example/api/status',
+      'https://newapi.example/api/pricing',
+    ]);
     assert.equal(result.saved, 1);
     assert.equal(result.skipped, 1);
     assert.equal(pricingSync.getCost(db, 30, 'seedance-2.0-fast').source_url,
       'https://newapi.example/api/pricing');
+  } finally {
+    db.close();
+  }
+});
+
+test('同步人民币展示的中转站时先识别币种并保存真实人民币成本', async () => {
+  const db = new Database(':memory:');
+  try {
+    db.pragma('foreign_keys = ON');
+    runMigrationsAndEnsure(db);
+    insertConfig(db, 36);
+    const calls = [];
+    const result = await pricingSync.syncProviderConfig(db, 36, {
+      usdCnyRate: 7.2,
+      fetchedAt: NOW,
+      fetchImpl: async (url) => {
+        calls.push(url);
+        if (url === 'https://newapi.example/api/status') {
+          return {
+            ok: true,
+            async json() {
+              return { success: true, data: {
+                display_in_currency: true,
+                quota_display_type: 'CNY',
+                usd_exchange_rate: 1,
+              } };
+            },
+          };
+        }
+        return {
+          ok: true,
+          async json() { return { success: true, data: [pricingRow()] }; },
+        };
+      },
+    });
+    assert.deepEqual(calls, [
+      'https://newapi.example/api/status',
+      'https://newapi.example/api/pricing',
+    ]);
+    assert.equal(result.saved, 1);
+    const cost = pricingSync.getCost(db, 36, 'seedance-2.0-fast');
+    assert.equal(cost.source_currency, 'CNY');
+    assert.equal(cost.source_exchange_rate, 1);
+    assert.equal(cost.resolution_prices['480p'].micros_per_unit, 200_000);
   } finally {
     db.close();
   }

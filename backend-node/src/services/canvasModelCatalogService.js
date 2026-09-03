@@ -143,6 +143,15 @@ function isRealGenerationVerified(config, model) {
   const protocol = String(config.api_protocol || '').toLowerCase();
   const token6688 = provider === 'token6688' || provider === 'tokengo' || protocol === 'token6688';
   const feituo = provider === 'feituo' || protocol === 'feituo_open';
+  const newapi = provider === 'newapi' || provider === 'newapi_video'
+    || protocol === 'newapi' || protocol === 'newapi_video';
+  if (newapi) {
+    const target = String(model || '').trim().toLowerCase();
+    const key = Object.keys(config.verified_capabilities || {})
+      .find((item) => String(item).trim().toLowerCase() === target);
+    return config.verification_status === 'verified'
+      && config.verified_capabilities?.[key]?.validated === true;
+  }
   if (!token6688 && !feituo) return true;
   try {
     const settings = typeof config.settings === 'string' ? JSON.parse(config.settings) : config.settings;
@@ -205,9 +214,47 @@ function strictVerifiedProtocol(config) {
   return null;
 }
 
+function isNewapiVideoConfig(config) {
+  return [config.api_protocol, config.provider]
+    .map((value) => String(value || '').trim().toLowerCase())
+    .some((value) => value === 'newapi' || value === 'newapi_video');
+}
+
 function verifiedModelCapabilities(config, model, price, evidenceRoots) {
   const protocol = strictVerifiedProtocol(config);
-  if (!STRICT_VERIFIED_PROTOCOLS.has(protocol)) return null;
+  if (!STRICT_VERIFIED_PROTOCOLS.has(protocol)) {
+    if (!isNewapiVideoConfig(config)) return null;
+    if (config.verification_status !== 'verified' || !aiConfigService.hasConnectionCredential(config)) return false;
+    const target = String(model || '').trim().toLowerCase();
+    const key = Object.keys(config.verified_capabilities || {})
+      .find((item) => String(item).trim().toLowerCase() === target);
+    const capabilities = key ? config.verified_capabilities[key] : null;
+    if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)
+        || capabilities.validated !== true) return false;
+    const pricedResolutions = new Set(Object.entries(price?.resolution_prices || {})
+      .filter(([, tier]) => Number.isSafeInteger(tier?.credits) && tier.credits > 0
+        && Number.isSafeInteger(tier?.cost_micros_per_second) && tier.cost_micros_per_second > 0)
+      .map(([resolution]) => resolution));
+    const resolutions = Array.isArray(capabilities.resolutions)
+      ? [...new Set(capabilities.resolutions.map((item) => String(item || '').trim().toLowerCase())
+        .filter((resolution) => modelPriceService.VIDEO_RESOLUTIONS.includes(resolution)
+          && pricedResolutions.has(resolution)))]
+      : [];
+    const durations = Array.isArray(capabilities.durations)
+      ? [...new Set(capabilities.durations.map(Number).filter(Number.isSafeInteger))]
+      : [];
+    const aspectRatios = Array.isArray(capabilities.aspectRatios)
+      ? [...new Set(capabilities.aspectRatios.map((value) => String(value || '').trim()).filter(Boolean))]
+      : [];
+    return price?.category === 'video'
+      && price.billing_unit === 'second'
+      && price.cost_unit === 'second'
+      && resolutions.length
+      && durations.length
+      && aspectRatios.length
+      ? publicCapabilityValue({ ...capabilities, resolutions, durations, aspectRatios })
+      : false;
+  }
   if (config.verification_status !== 'verified' || !aiConfigService.hasConnectionCredential(config)) return false;
   const target = String(model || '').trim().toLowerCase();
   const capabilityKey = Object.keys(config.verified_capabilities || {})
@@ -443,7 +490,8 @@ function list(db, options = {}) {
     .filter((entry) => {
       if (entry.duplicated
           && !String(entry.config.logical_model_id || '').trim()
-          && !strictVerifiedProtocol(entry.config)) return false;
+          && !strictVerifiedProtocol(entry.config)
+          && !isNewapiVideoConfig(entry.config)) return false;
       const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
       return !strictKeys.has(upstreamKey) || !!strictVerifiedProtocol(entry.config);
     });
@@ -455,7 +503,8 @@ function list(db, options = {}) {
   const mediaEntries = mediaCandidates.map((entry) => {
     const logicalModel = String(entry.config.logical_model_id || '').trim();
     const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
-    const model = logicalModel || (mediaCandidateCounts.get(upstreamKey) > 1
+    const model = logicalModel || ((mediaCandidateCounts.get(upstreamKey) > 1
+        || (entry.duplicated && isNewapiVideoConfig(entry.config)))
         && prices.has(entry.model.toLowerCase())
       ? entry.model
       : entry.upstreamModel);
@@ -506,6 +555,7 @@ function list(db, options = {}) {
         resolution_prices: Object.fromEntries(Object.entries(resolutionPrices)
           .map(([resolution, tier]) => [resolution, { credits: tier.credits }])),
         verification_status: config.verification_status || 'pending',
+        ...(isNewapiVideoConfig(config) ? { protocol: 'newapi_video' } : {}),
         capabilities: publicCapabilityValue(verifiedCapabilities || (kind === 'video'
           ? {
             ...videoReferenceCapabilityService.resolve(config, upstreamModel),

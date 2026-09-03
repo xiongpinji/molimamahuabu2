@@ -4,28 +4,37 @@ const VERIFIED_MODELS = Object.freeze([
   'seedance-2.0-mini',
   'seedance-2.5',
   'minimax_h3_image_audio_to_video_v2',
+  'alibaba/wan-3.0',
 ]);
 const VERIFIED_MODEL_SET = new Set(VERIFIED_MODELS);
+const WAN_3_MODEL = 'alibaba/wan-3.0';
+const VERIFIED_REQUESTS = Object.freeze({
+  'seedance-2.0-fast': Object.freeze({ duration: 5, resolution: '480p', ratio: '16:9' }),
+  'seedance-2.0': Object.freeze({ duration: 5, resolution: '480p', ratio: '16:9' }),
+  'seedance-2.0-mini': Object.freeze({ duration: 4, resolution: '480p', ratio: '16:9' }),
+  'seedance-2.5': Object.freeze({ duration: 5, resolution: '480p', ratio: '16:9' }),
+  minimax_h3_image_audio_to_video_v2: Object.freeze({ duration: 5, resolution: '768p', ratio: '16:9', imageReference: true }),
+  [WAN_3_MODEL]: Object.freeze({ duration: 4, resolution: '480p', ratio: '16:9' }),
+});
 
 function normalizeDuration(value) {
   const number = Number(value);
-  return Number.isFinite(number) ? Math.min(15, Math.max(4, Math.round(number))) : 5;
+  return Number.isSafeInteger(number) ? number : null;
 }
 
 function normalizeRatio(value) {
-  const ratio = String(value || '16:9').trim().replace(/：/g, ':');
-  return ['16:9', '9:16', '1:1'].includes(ratio) ? ratio : '16:9';
+  return String(value || '').trim().replace(/：/g, ':');
 }
 
 function normalizeResolution(value, model) {
   const raw = String(value || '').trim().toLowerCase().replace(/\s/g, '');
   if (model === 'minimax_h3_image_audio_to_video_v2') {
     if (raw === '480' || raw === '480p') throw new Error('minimax_h3_image_audio_to_video_v2 不支持 480p，请使用 768p');
-    if (!raw || raw === '720' || raw === '720p') return '768p';
   }
-  if (!raw) return '720p';
+  if (!raw) return '';
   if (raw === '480') return '480p';
   if (raw === '720') return '720p';
+  if (raw === '768') return '768p';
   return raw;
 }
 
@@ -65,9 +74,24 @@ function collectAudios(opts = {}) {
 function validateVideoOptions(opts = {}) {
   const model = String(opts.model || '').trim();
   if (!VERIFIED_MODEL_SET.has(model)) throw new Error(`NewAPI 模型 ${model || '(空)'} 尚未通过真实生成验证，禁止提交`);
-  normalizeResolution(opts.resolution, model);
-  if (model === 'minimax_h3_image_audio_to_video_v2' && !collectImages(opts).length && !collectAudios(opts).length) {
-    throw new Error('minimax_h3_image_audio_to_video_v2 至少需要一张参考图或一段参考音频');
+  const duration = normalizeDuration(opts.duration);
+  const ratio = normalizeRatio(opts.aspect_ratio);
+  const resolution = normalizeResolution(opts.resolution, model);
+  const contract = VERIFIED_REQUESTS[model];
+  const images = collectImages(opts);
+  const videos = collectVideos(opts);
+  const audios = collectAudios(opts);
+  if (duration !== contract.duration) throw new Error(`${model} 目前仅验证 ${contract.duration} 秒，禁止提交其他时长`);
+  if (resolution !== contract.resolution) throw new Error(`${model} 目前仅验证 ${contract.resolution}，禁止提交其他分辨率`);
+  if (ratio !== contract.ratio) throw new Error(`${model} 目前仅验证 ${contract.ratio}，禁止提交其他画幅`);
+  if (contract.imageReference && images.length !== 1) {
+    throw new Error('minimax_h3_image_audio_to_video_v2 必须且只能携带一张已验证参考图');
+  }
+  if (contract.imageReference && (videos.length || audios.length)) {
+    throw new Error('minimax_h3_image_audio_to_video_v2 尚未验证视频或音频参考，禁止提交');
+  }
+  if (!contract.imageReference && (images.length || videos.length || audios.length)) {
+    throw new Error(`${model} 尚未验证参考素材，禁止携带参考图、视频或音频`);
   }
 }
 

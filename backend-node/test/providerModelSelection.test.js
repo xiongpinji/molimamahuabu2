@@ -205,6 +205,25 @@ test('无逻辑模型的重复视频线路仅内部 qualified 选择可精确路
   ]);
 });
 
+test('NewAPI qualified 选择仍必须通过真实生成验证', (t) => {
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+  const pending = aiConfigService.createConfig(db, log, {
+    service_type: 'video', provider: 'newapi', api_protocol: 'newapi_video', name: 'NewAPI pending',
+    base_url: 'https://newapi.example', api_key: 'secret',
+    model: ['seedance-2.0-mini'], default_model: 'seedance-2.0-mini', is_active: true,
+  });
+  const selection = `cfg-${pending.id}::seedance-2.0-mini`;
+  assert.equal(videoClient.getDefaultVideoConfig(db, selection), null);
+
+  aiConfigService.recordVerification(db, pending.id, {
+    status: 'verified',
+    capabilities: { 'seedance-2.0-mini': { validated: true, resolutions: ['480p'] } },
+  });
+  assert.equal(videoClient.getDefaultVideoConfig(db, selection).id, pending.id);
+});
+
 test('分镜图片节点可精确选择通用图片配置中的模型', (t) => {
   const db = new Database(':memory:');
   t.after(() => db.close());

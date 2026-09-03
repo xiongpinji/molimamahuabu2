@@ -153,17 +153,17 @@ function ensureVideoResolutionPriceContract(database) {
     .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'model_resolution_prices'")
     .get();
   const sql = String(table?.sql || '');
-  if (/resolution\s+IN\s*\([^)]*'1080p'/i.test(sql)) return;
-  const oldCheck = /resolution\s+IN\s*\(\s*'480p'\s*,\s*'720p'\s*\)/i;
+  if (/resolution\s+IN\s*\([^)]*'768p'/i.test(sql)) return;
+  const oldCheck = /resolution\s+IN\s*\(\s*'480p'\s*,\s*'720p'\s*(?:,\s*'1080p'\s*)?\)/i;
   const tempTable = '__model_resolution_prices_1080p_rebuild';
   const createTempSql = sql
     .replace(
       /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"model_resolution_prices"|`model_resolution_prices`|\[model_resolution_prices\]|model_resolution_prices)\s*\(/i,
       `CREATE TABLE ${quoteIdent(tempTable)} (`,
     )
-    .replace(oldCheck, "resolution IN ('480p', '720p', '1080p')");
+    .replace(oldCheck, "resolution IN ('480p', '720p', '768p', '1080p')");
   if (createTempSql === sql || !createTempSql.startsWith(`CREATE TABLE ${quoteIdent(tempTable)}`)) {
-    throw new Error('Unsupported model_resolution_prices DDL for 1080p migration');
+    throw new Error('Unsupported model_resolution_prices DDL for 768p migration');
   }
   const columns = database.prepare('PRAGMA table_info(model_resolution_prices)').all().map((column) => column.name);
   const columnSql = columns.map(quoteIdent).join(', ');
@@ -1714,4 +1714,9 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { runMigrationsAndEnsure, ensureColumns, ensureModelCreditPriceFreeContract };
+module.exports = {
+  runMigrationsAndEnsure,
+  ensureColumns,
+  ensureModelCreditPriceFreeContract,
+  ensureVideoResolutionPriceContract,
+};
