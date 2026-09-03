@@ -253,11 +253,20 @@ function assertProvider(provider, methods) {
 
 function assertPackageBinding(options, manifest, pkg) {
   const packBinding = productionPackBinding(pkg.production_packs)
+  let manifestPackBinding
+  try {
+    const seen = new Set()
+    manifestPackBinding = (manifest.production_packs || [])
+      .map((pack) => validatePack(pack, manifest.blueprint_hash, manifest.localization_hash, seen))
+    manifestPackBinding = productionPackBinding(manifestPackBinding)
+  } catch {
+    fail('REDRAW_EPISODE_PACKAGE_STALE', options.episodePackage)
+  }
   if (manifest.package_sha256 !== sha256File(pkg.package_path)
     || manifest.blueprint_hash !== pkg.blueprint_hash
     || manifest.localization_hash !== pkg.localization_hash
     || stableStringify(manifest.production_pack_hashes || []) !== stableStringify(packBinding)
-    || stableStringify(productionPackBinding(manifest.production_packs || [])) !== stableStringify(packBinding)) {
+    || stableStringify(manifestPackBinding) !== stableStringify(packBinding)) {
     fail('REDRAW_EPISODE_PACKAGE_STALE', options.episodePackage)
   }
 }
@@ -296,15 +305,15 @@ function classifyProviderError(error) {
   return /UNKNOWN|TIMEOUT|RESULT_UNKNOWN|STATUS_UNKNOWN|REFERENCE_UPLOAD_UNKNOWN|SUBMISSION_UNKNOWN|DOWNLOAD_UNKNOWN/.test(code) ? 'needs_attention' : 'failed'
 }
 
-function expectedEpisodeDurationSeconds(manifest) {
-  return manifest.production_packs.reduce((sum, pack) => sum + (Number(pack.duration_ms) / 1000), 0)
+function expectedEpisodeDurationSeconds(productionPacks) {
+  return productionPacks.reduce((sum, pack) => sum + (Number(pack.duration_ms) / 1000), 0)
 }
 
-function assertEpisodeInspection(manifest, inspection) {
+function assertEpisodeInspection(productionPacks, inspection) {
   const duration = Number(inspection?.media?.duration_seconds ?? inspection?.media?.duration)
   if (Number.isFinite(duration)) {
-    const expected = expectedEpisodeDurationSeconds(manifest)
-    if (Math.abs(duration - expected) > Math.max(1, manifest.production_packs.length * 0.25)) {
+    const expected = expectedEpisodeDurationSeconds(productionPacks)
+    if (Math.abs(duration - expected) > Math.max(1, productionPacks.length * 0.25)) {
       fail('REDRAW_EPISODE_DURATION_MISMATCH', `${duration} !== ${expected}`)
     }
   }
@@ -393,7 +402,7 @@ async function runAssemble(options, adapters) {
   const manifest = readManifest(options.stateDir)
   assertPackageBinding(options, manifest, pkg)
   const shotPaths = []
-  for (const pack of manifest.production_packs) {
+  for (const pack of pkg.production_packs) {
     const task = manifest.tasks.find((item) => item.shot_id === pack.shot_id && item.status === 'completed_verified')
     if (!task?.artifact?.artifact_id) fail('REDRAW_EPISODE_ASSEMBLE_NOT_READY')
     const artifactPath = path.join(options.stateDir, task.artifact.artifact_id)
@@ -403,9 +412,10 @@ async function runAssemble(options, adapters) {
   }
   const outputPath = episodeOutputPath(options.stateDir)
   const assembled = await adapters.provider.assembleEpisode({ shot_paths: shotPaths, output_path: outputPath })
-  const inspection = await adapters.provider.inspectEpisode({ output_path: outputPath, manifest: clone(manifest) })
+  const trustedManifest = { ...clone(manifest), production_packs: clone(pkg.production_packs) }
+  const inspection = await adapters.provider.inspectEpisode({ output_path: outputPath, manifest: trustedManifest })
   if (sha256File(outputPath) !== assembled.sha256) fail('REDRAW_EPISODE_ARTIFACT_HASH_MISMATCH', 'episode')
-  assertEpisodeInspection(manifest, inspection)
+  assertEpisodeInspection(pkg.production_packs, inspection)
   manifest.status = 'assembled_verified'
   manifest.episode_artifact = {
     artifact_id: path.relative(options.stateDir, assembled.path).replace(/\\/g, '/'),
@@ -423,7 +433,7 @@ async function runVerify(options, adapters) {
   const pkg = loadEpisodePackage(options.episodePackage, options.stateDir)
   const manifest = readManifest(options.stateDir)
   assertPackageBinding(options, manifest, pkg)
-  for (const pack of manifest.production_packs) {
+  for (const pack of pkg.production_packs) {
     const task = manifest.tasks.find((item) => item.shot_id === pack.shot_id && item.status === 'completed_verified')
     if (!task?.artifact?.artifact_id) fail('REDRAW_EPISODE_VERIFY_NOT_READY', pack.shot_id)
     const artifactPath = path.join(options.stateDir, task.artifact.artifact_id)
@@ -434,8 +444,9 @@ async function runVerify(options, adapters) {
     const episodePath = path.join(options.stateDir, manifest.episode_artifact.artifact_id)
     if (!fs.existsSync(episodePath) || sha256File(episodePath) !== manifest.episode_artifact.sha256) fail('REDRAW_EPISODE_ARTIFACT_HASH_MISMATCH', 'episode')
     if (typeof adapters.provider.inspectEpisode === 'function') {
-      manifest.episode_verify_reread = publicPathless(await adapters.provider.inspectEpisode({ output_path: episodePath, manifest: clone(manifest) }))
-      assertEpisodeInspection(manifest, manifest.episode_verify_reread)
+      const trustedManifest = { ...clone(manifest), production_packs: clone(pkg.production_packs) }
+      manifest.episode_verify_reread = publicPathless(await adapters.provider.inspectEpisode({ output_path: episodePath, manifest: trustedManifest }))
+      assertEpisodeInspection(pkg.production_packs, manifest.episode_verify_reread)
     }
   }
   manifest.verification = { status: 'passed', verified_at: adapters.now().toISOString() }

@@ -520,6 +520,66 @@ test('assemble and verify stages reject stale episode packages before provider c
   }
 })
 
+test('assemble and verify stages revalidate manifest production pack bodies before provider calls', async () => {
+  const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-manifest-pack-bind-'))
+  try {
+    const { packagePath } = makeEpisodePackage(root)
+    const stateDir = path.join(root, 'isolated-state')
+    await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'preflight']), {
+      provider: { name: 'fake-provider' },
+    })
+    const shotBytes = Buffer.from('shot-mp4')
+    const provider = {
+      name: 'fake-provider',
+      uploadReference: async () => ({ asset_id: 'asset' }),
+      submitGeneration: async () => ({ task_id: 'task-shot-1' }),
+      pollGeneration: async () => ({ video_url: 'https://example.test/shot-1.mp4' }),
+      downloadResult: async ({ output_path }) => {
+        fs.mkdirSync(path.dirname(output_path), { recursive: true })
+        fs.writeFileSync(output_path, shotBytes, { flag: 'wx' })
+        return { path: output_path, sha256: sha256(shotBytes), bytes: shotBytes.length }
+      },
+      inspectArtifact: async () => ({ media: { has_audio: true }, language: { passed: true }, role: { passed: true }, dialogue: { exact_dialogue_present: true } }),
+    }
+    await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'shot', '--shot-id', 'shot-1']), { provider })
+
+    const manifestPath = path.join(stateDir, 'private-manifest.json')
+    const drifted = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+    drifted.production_packs[0].prompt = 'manifest body changed but hash was not updated'
+    drifted.production_packs[0].duration_ms = 6000
+    drifted.production_packs[0].end_ms = 6000
+    fs.writeFileSync(manifestPath, `${JSON.stringify(drifted, null, 2)}\n`)
+    let adapterCalls = 0
+    const assembleProvider = {
+      name: 'fake-provider',
+      assembleEpisode: async () => { adapterCalls += 1; return {} },
+      inspectEpisode: async () => { adapterCalls += 1; return {} },
+      inspectArtifact: async () => { adapterCalls += 1; return {} },
+    }
+    await assert.rejects(
+      () => runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'assemble']), { provider: assembleProvider }),
+      /REDRAW_EPISODE_PACKAGE_STALE/,
+    )
+    await assert.rejects(
+      () => runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'verify']), { provider: assembleProvider }),
+      /REDRAW_EPISODE_PACKAGE_STALE/,
+    )
+    assert.equal(adapterCalls, 0)
+
+    const malformed = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+    delete malformed.production_packs[0].prompt
+    fs.writeFileSync(manifestPath, `${JSON.stringify(malformed, null, 2)}\n`)
+    await assert.rejects(
+      () => runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'assemble']), { provider: assembleProvider }),
+      /REDRAW_EPISODE_PACKAGE_STALE/,
+    )
+    assert.equal(adapterCalls, 0)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('runtime source is free of the fixed Latin American fixture and Mateo shortcut', () => {
   const source = fs.readFileSync(scriptPath, 'utf8')
   assert.doesNotMatch(source, /redrawLatinAmericanCase|redraw-latin-american-case|Mateo/)
