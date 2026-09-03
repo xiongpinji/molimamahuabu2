@@ -201,8 +201,11 @@ function assertPromptUsesTargetText(prompt, blueprint, localization) {
   }
 }
 
-function assertNoSourceLanguageText(value, localization, path = []) {
-  if (!String(localization.locale || '').toLowerCase().startsWith('en')) return;
+function assertNoSourceLanguageText(value, localeOrLocalization, path = []) {
+  const locale = typeof localeOrLocalization === 'string'
+    ? localeOrLocalization
+    : localeOrLocalization?.locale;
+  if (!String(locale || '').toLowerCase().startsWith('en')) return;
   if (typeof value === 'string') {
     const key = String(path[path.length - 1] || '');
     if (!TECHNICAL_TEXT_KEY.test(key) && CJK_TEXT.test(value)) {
@@ -211,12 +214,12 @@ function assertNoSourceLanguageText(value, localization, path = []) {
     return;
   }
   if (Array.isArray(value)) {
-    value.forEach((item, index) => assertNoSourceLanguageText(item, localization, [...path, String(index)]));
+    value.forEach((item, index) => assertNoSourceLanguageText(item, locale, [...path, String(index)]));
     return;
   }
   if (!value || typeof value !== 'object') return;
   for (const [key, item] of Object.entries(value)) {
-    assertNoSourceLanguageText(item, localization, [...path, key]);
+    assertNoSourceLanguageText(item, locale, [...path, key]);
   }
 }
 
@@ -462,7 +465,7 @@ function assertShotProductionPackCurrent(db, owner, shot) {
     if (!hasVersionBinding) return null;
     throw codedError('REDRAW_PRODUCTION_PACK_STALE', '逐镜生产包缺失，请重新锁定本地化并刷新生成准备');
   }
-  const version = db.prepare(`SELECT work_id, version, blueprint_hash, localization_hash
+  const version = db.prepare(`SELECT work_id, version, locale, blueprint_hash, localization_hash
     FROM redraw_versions WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL LIMIT 1`)
     .get(Number(shot.version_id), String(owner.tenantId), String(owner.userId));
   const blueprintRow = version && db.prepare(`SELECT status, blueprint_json, blueprint_hash
@@ -482,6 +485,13 @@ function assertShotProductionPackCurrent(db, owner, shot) {
     throw codedError('REDRAW_PRODUCTION_PACK_STALE', '逐镜生产包已变化，请重新锁定本地化并刷新生成准备');
   }
   assertPreparationSnapshotCurrent(snapshot, pack, version, blueprintRow);
+  assertNoSourceLanguageText({
+    characters: pack.characters,
+    dialogue: pack.dialogue,
+    visual_contract: pack.visual_contract,
+    audio_contract: pack.audio_contract,
+    prompt: pack.prompt,
+  }, version.locale);
   return pack;
 }
 

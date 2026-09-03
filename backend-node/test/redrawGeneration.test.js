@@ -1679,6 +1679,22 @@ function installBlueprintFirstProductionPack(state, shotId) {
   return { blueprint, localization, pack };
 }
 
+function writeTamperedSelfConsistentChineseProductionPack(state, shotId) {
+  const row = state.db.prepare('SELECT compiled_prompt_json FROM redraw_shots WHERE id = ?').get(shotId);
+  const pack = JSON.parse(row.compiled_prompt_json);
+  pack.visual_contract.composition = '室内中景 with Mateo';
+  pack.prompt = `${pack.prompt}\nComposition: 室内中景 with Mateo.`;
+  pack.production_pack_hash = productionPackHash(pack);
+  state.db.prepare(`UPDATE redraw_shots
+    SET compiled_prompt_json = ?, preparation_snapshot_json = ?
+    WHERE id = ?`)
+    .run(JSON.stringify(pack), JSON.stringify({
+      blueprint_hash: pack.blueprint_hash,
+      localization_hash: pack.localization_hash,
+      production_pack_hash: pack.production_pack_hash,
+    }), shotId);
+}
+
 test('stale production pack hashes fail closed before provider and credit reserve', async () => {
   const cases = [
     ['blueprint hash', (pack) => {
@@ -1730,6 +1746,78 @@ test('stale production pack hashes fail closed before provider and credit reserv
     }
   } finally {
     redrawBillingService.reserveShotGeneration = originalReserve;
+  }
+});
+
+test('self-consistent production pack with source-language text fails closed before provider credit reserve and task writes', async () => {
+  const state = setup();
+  let providerCalls = 0;
+  const originalReserve = redrawBillingService.reserveShotGeneration;
+  let reserveCalls = 0;
+  redrawBillingService.reserveShotGeneration = (...args) => {
+    reserveCalls += 1;
+    return originalReserve(...args);
+  };
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    installBlueprintFirstProductionPack(state, shotId);
+    writeTamperedSelfConsistentChineseProductionPack(state, shotId);
+
+    await assert.rejects(
+      () => generateShot(ctx(state.db, {
+        awaitCompletion: true,
+        videoProcessor: async () => { providerCalls += 1; },
+      }), { shotId }),
+      (error) => error.code === 'REDRAW_PRODUCTION_PACK_SOURCE_TEXT_REMAINS',
+    );
+    assert.equal(providerCalls, 0);
+    assert.equal(reserveCalls, 0);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+    assert.equal(count(state.db, 'video_generations'), 0);
+    assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+    assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+  } finally {
+    redrawBillingService.reserveShotGeneration = originalReserve;
+    state.db.close();
+  }
+});
+
+test('production pack source-language transaction double-check rejects self-consistent drift before reserve', async () => {
+  const state = setup();
+  let providerCalls = 0;
+  let transactionHookCalls = 0;
+  const originalReserve = redrawBillingService.reserveShotGeneration;
+  let reserveCalls = 0;
+  redrawBillingService.reserveShotGeneration = (...args) => {
+    reserveCalls += 1;
+    return originalReserve(...args);
+  };
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    installBlueprintFirstProductionPack(state, shotId);
+    addVerifiedGenerationCapability(state.db, 'seedance 2.0', { locale: 'en-US', market: 'US' });
+
+    await assert.rejects(
+      () => generateShot(ctx(state.db, {
+        awaitCompletion: true,
+        beforeCreateTransaction() {
+          transactionHookCalls += 1;
+          writeTamperedSelfConsistentChineseProductionPack(state, shotId);
+        },
+        videoProcessor: async () => { providerCalls += 1; },
+      }), { shotId }),
+      (error) => error.code === 'REDRAW_PRODUCTION_PACK_SOURCE_TEXT_REMAINS',
+    );
+    assert.equal(transactionHookCalls, 1);
+    assert.equal(providerCalls, 0);
+    assert.equal(reserveCalls, 0);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+    assert.equal(count(state.db, 'video_generations'), 0);
+    assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+    assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+  } finally {
+    redrawBillingService.reserveShotGeneration = originalReserve;
+    state.db.close();
   }
 });
 
