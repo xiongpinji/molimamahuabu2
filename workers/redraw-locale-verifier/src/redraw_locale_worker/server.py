@@ -54,6 +54,7 @@ SAFE_ERROR_CODES = frozenset({
     "LOCALE_AUDIO_STREAM_INVALID",
     "AUDIO_PATH_NOT_ALLOWED",
     "AUDIO_SHA256_MISMATCH",
+    "SOURCE_AUDIO_FORMAT_INVALID",
 })
 SOURCE_AUDIO_REQUEST_FIELDS = frozenset({"action", "request_id", "audio_path", "audio_sha256"})
 SOURCE_AUDIO_SUFFIXES = frozenset({".wav"})
@@ -523,11 +524,16 @@ def _analyze_source_audio_request(request, config):
         raise LocaleWorkerError("LOCALE_VERIFY_FAILED")
     from .source_evidence import analyze_source_audio
 
-    result = analyze_source_audio(
-        audio_path,
-        asr=config.asr,
-        clusterer=config.source_audio_clusterer,
-    )
+    try:
+        result = analyze_source_audio(
+            audio_path,
+            asr=config.asr,
+            clusterer=config.source_audio_clusterer,
+        )
+    except ValueError as exc:
+        if str(exc) == "SOURCE_AUDIO_FORMAT_INVALID":
+            raise LocaleWorkerError("SOURCE_AUDIO_FORMAT_INVALID") from exc
+        raise
     result_sha256 = result.get("audio_sha256") if isinstance(result, dict) else None
     if not isinstance(result_sha256, str) or not hmac.compare_digest(result_sha256, expected_sha256):
         raise LocaleWorkerError("AUDIO_SHA256_MISMATCH")

@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import math
 import re
@@ -12,10 +13,13 @@ SPEAKER_CLUSTER_RE = re.compile(r"speaker-cluster-([1-9][0-9]*)")
 
 def analyze_source_audio(audio_path, *, asr, clusterer):
     path = Path(audio_path)
-    audio_bytes = path.read_bytes()
+    try:
+        audio_bytes = path.read_bytes()
+    except OSError as exc:
+        raise ValueError("SOURCE_AUDIO_FORMAT_INVALID") from exc
+    waveform, sample_rate = _read_mono_pcm16_wav(audio_bytes)
     asr_result = _infer_source_audio(asr, path)
     segments = _normalize_segments(asr_result)
-    waveform, sample_rate = _read_mono_pcm16_wav(path)
     duration_seconds = len(waveform) / sample_rate
     _validate_segment_bounds(segments, duration_seconds)
 
@@ -134,28 +138,59 @@ def _validate_segment_bounds(segments, duration_seconds):
             raise ValueError("SOURCE_AUDIO_SEGMENTS_INVALID")
 
 
-def _read_mono_pcm16_wav(audio_path):
+def _read_mono_pcm16_wav(audio_bytes):
     try:
-        with wave.open(str(audio_path), "rb") as handle:
+        data_bytes = _wav_data_payload_size(audio_bytes)
+        with wave.open(io.BytesIO(audio_bytes), "rb") as handle:
             channels = handle.getnchannels()
             sample_width = handle.getsampwidth()
             sample_rate = handle.getframerate()
+            compression_type = handle.getcomptype()
             frame_count = handle.getnframes()
             frames = handle.readframes(frame_count)
-    except (EOFError, OSError, wave.Error) as exc:
+    except (EOFError, OSError, struct.error, wave.Error) as exc:
         raise ValueError("SOURCE_AUDIO_FORMAT_INVALID") from exc
-    if channels <= 0 or sample_width != 2 or sample_rate <= 0 or frame_count <= 0:
+    if (
+        channels != 1
+        or sample_width != 2
+        or sample_rate != 16_000
+        or compression_type != "NONE"
+        or frame_count <= 0
+    ):
         raise ValueError("SOURCE_AUDIO_FORMAT_INVALID")
-    expected_bytes = frame_count * channels * sample_width
-    if len(frames) != expected_bytes:
+    expected_bytes = frame_count * 2
+    if data_bytes != expected_bytes or len(frames) != expected_bytes:
         raise ValueError("SOURCE_AUDIO_FORMAT_INVALID")
-    samples = struct.unpack(f"<{frame_count * channels}h", frames)
-    if channels == 1:
-        return [sample / 32768.0 for sample in samples], sample_rate
-    mono = []
-    for offset in range(0, len(samples), channels):
-        mono.append(sum(samples[offset:offset + channels]) / (channels * 32768.0))
-    return mono, sample_rate
+    samples = struct.unpack(f"<{frame_count}h", frames)
+    return [sample / 32768.0 for sample in samples], sample_rate
+
+
+def _wav_data_payload_size(audio_bytes):
+    if (
+        not isinstance(audio_bytes, bytes)
+        or len(audio_bytes) < 12
+        or audio_bytes[:4] != b"RIFF"
+        or audio_bytes[8:12] != b"WAVE"
+        or struct.unpack_from("<I", audio_bytes, 4)[0] + 8 != len(audio_bytes)
+    ):
+        raise ValueError("SOURCE_AUDIO_FORMAT_INVALID")
+    offset = 12
+    data_sizes = []
+    while offset < len(audio_bytes):
+        if offset + 8 > len(audio_bytes):
+            raise ValueError("SOURCE_AUDIO_FORMAT_INVALID")
+        chunk_id = audio_bytes[offset:offset + 4]
+        chunk_size = struct.unpack_from("<I", audio_bytes, offset + 4)[0]
+        chunk_end = offset + 8 + chunk_size
+        padded_end = chunk_end + (chunk_size % 2)
+        if padded_end > len(audio_bytes):
+            raise ValueError("SOURCE_AUDIO_FORMAT_INVALID")
+        if chunk_id == b"data":
+            data_sizes.append(chunk_size)
+        offset = padded_end
+    if len(data_sizes) != 1:
+        raise ValueError("SOURCE_AUDIO_FORMAT_INVALID")
+    return data_sizes[0]
 
 
 def _source_language(asr_result):

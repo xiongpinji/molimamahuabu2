@@ -497,6 +497,86 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(response, {"ok": False, "error_code": "AUDIO_SHA256_MISMATCH"})
         self.assertEqual(calls, [])
 
+    def test_source_audio_action_rejects_non_contract_wav_before_inference(self):
+        def write_wav(name, *, channels=1, sample_rate=16_000, frame_count=16_000):
+            path = self.root / name
+            with wave.open(str(path), "wb") as handle:
+                handle.setnchannels(channels)
+                handle.setsampwidth(2)
+                handle.setframerate(sample_rate)
+                handle.writeframes(b"\x00\x00" * channels * frame_count)
+            return path
+
+        stereo_path = write_wav("stereo.wav", channels=2)
+        mono_8k_path = write_wav("mono-8k.wav", sample_rate=8_000, frame_count=8_000)
+        mono_44k_path = write_wav("mono-44k.wav", sample_rate=44_100, frame_count=44_100)
+        damaged_path = self.root / "damaged.wav"
+        damaged_path.write_bytes(b"not a wav")
+        non_pcm_path = write_wav("non-pcm.wav")
+        non_pcm_bytes = bytearray(non_pcm_path.read_bytes())
+        non_pcm_bytes[20:22] = b"\x03\x00"
+        non_pcm_path.write_bytes(non_pcm_bytes)
+        zero_frame_path = write_wav("zero-frame.wav", frame_count=0)
+        truncated_path = write_wav("truncated.wav")
+        truncated_path.write_bytes(truncated_path.read_bytes()[:-1])
+        trailing_path = write_wav("trailing.wav")
+        trailing_path.write_bytes(trailing_path.read_bytes() + b"\x00\x00")
+        calls = []
+
+        class FakeAsr:
+            def infer(self, audio_path):
+                calls.append(("asr", Path(audio_path)))
+                return {
+                    "language": "zh",
+                    "probability": 0.98,
+                    "segments": [{"start": 0.0, "end": 0.5, "text": "格式"}],
+                }
+
+        class FakeClusterer:
+            def embed(self, waveform, sample_rate):
+                calls.append(("embed", len(waveform), sample_rate))
+                return [1.0, 0.0]
+
+            def cluster(self, embeddings):
+                calls.append(("cluster", len(embeddings)))
+                return [0]
+
+        self.server = make_test_server(
+            CountingVerifier(),
+            pack=self.pack,
+            allowed_root=self.root,
+            asr=FakeAsr(),
+            source_audio_clusterer=FakeClusterer(),
+        )
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+
+        invalid_paths = (
+            stereo_path,
+            mono_8k_path,
+            mono_44k_path,
+            damaged_path,
+            non_pcm_path,
+            zero_frame_path,
+            truncated_path,
+            trailing_path,
+        )
+        for index, audio_path in enumerate(invalid_paths, start=1):
+            with self.subTest(audio_path=audio_path):
+                calls.clear()
+                response = self._send_json({
+                    "action": "analyze_source_audio",
+                    "request_id": f"source-format-invalid-{index}",
+                    "audio_path": str(audio_path),
+                    "audio_sha256": _file_sha256(audio_path),
+                })
+
+                self.assertEqual(
+                    response,
+                    {"ok": False, "error_code": "SOURCE_AUDIO_FORMAT_INVALID"},
+                )
+                self.assertEqual(calls, [])
+
     def test_local_voice_server_rejects_mixed_request_before_verifier(self):
         local = CountingVerifier()
         self.server = make_test_server(
