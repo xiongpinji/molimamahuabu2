@@ -80,6 +80,23 @@ test('英文镜头提示词锁定演员姓名、目标语言和逐句对白', ()
   assert.doesNotMatch(prompt, /不是哥们/)
 })
 
+test('对白提及 Mateo 时锁定三音节英文发音且不污染其他镜头', () => {
+  const prompt = buildShotPrompt(redrawLatinAmericanCase, 1)
+  assert.match(prompt, /Mateo must be spoken as three distinct syllables: mah-TEH-oh/i)
+  assert.match(prompt, /final "oh" fully audible/i)
+
+  const unrelatedPrompt = buildShotPrompt(redrawLatinAmericanCase, 5)
+  assert.doesNotMatch(unrelatedPrompt, /mah-TEH-oh/i)
+})
+
+test('英文对白提示词传递逐句时间窗并禁止为赶时长截断词尾', () => {
+  const prompt = buildShotPrompt(redrawLatinAmericanCase, 1)
+  assert.match(prompt, /Generate synchronized en-US speech audio for the approved dialogue timing only\./i)
+  assert.match(prompt, /2\. Diego: "Mateo, you think acting crazy is funny\?" \(1250-3500ms\)/i)
+  assert.match(prompt, /3\. Lucas: "Mateo, are you okay\?" \(5500-6750ms\)/i)
+  assert.match(prompt, /Do not compress, clip, or drop any word or final vowel to fit the timing\./i)
+})
+
 test('第 5 镜锁定句首 I 并约束体育电视画面为无品牌不可读内容', () => {
   const prompt = buildShotPrompt(redrawLatinAmericanCase, 5)
   assert.match(prompt, /first audible word must be "I"/i)
@@ -100,6 +117,90 @@ test('英文所有格撇号与 ASR 连写结果应视为同一句对白', async 
   })
 
   assert.equal(result.exact_dialogue_present, true)
+})
+
+function asr(modelId, text, { language = 'en', probability = 1 } = {}) {
+  return { model_id: modelId, language, probability, text }
+}
+
+const smallAsr = 'Systran/faster-whisper-small'
+const baseAsr = 'Systran/faster-whisper-base'
+
+test('双 ASR 在一个精确匹配且另一个仅有 capital/capitol 拼写差异时通过', async () => {
+  const runner = await import('./run-redraw-fumin-full-episode-live.mjs')
+  assert.equal(typeof runner.verifyTranscriptConsensus, 'function')
+  const result = runner.verifyTranscriptConsensus(redrawLatinAmericanCase, 4, [
+    asr(smallAsr, 'This place will be demolished in two months but he has no capitol right now'),
+    asr(baseAsr, 'This place will be demolished in two months but he has no capital right now'),
+  ])
+
+  assert.equal(result.consensus_passed, true)
+  assert.equal(result.exact_model_id, baseAsr)
+  assert.ok(result.models[0].word_error_rate <= 0.1)
+  assert.ok(result.models[0].character_error_rate <= 0.03)
+  assert.deepEqual(result.critical_tokens, ['two', 'no'])
+})
+
+test('即使包含目标句，双 ASR 识别到大量额外对白时仍拒绝', async () => {
+  const runner = await import('./run-redraw-fumin-full-episode-live.mjs')
+  assert.throws(() => runner.verifyTranscriptConsensus(redrawLatinAmericanCase, 5, [
+    asr(smallAsr, 'I think seed this box I have my first seed money'),
+    asr(baseAsr, 'I have been seeded this month I have my first seed money'),
+  ]), /FUMIN_FULL_EPISODE_ASR_CONSENSUS_DISTANCE_FAILED/)
+})
+
+test('双 ASR 不允许次级结果截断 Mateo 角色名', async () => {
+  const runner = await import('./run-redraw-fumin-full-episode-live.mjs')
+  assert.equal(typeof runner.verifyTranscriptConsensus, 'function')
+  assert.throws(() => runner.verifyTranscriptConsensus(redrawLatinAmericanCase, 1, [
+    asr(smallAsr, 'Who are you Mateo you think acting crazy is funny Mate are you okay Thats Diego'),
+    asr(baseAsr, 'Who are you Mateo you think acting crazy is funny Mateo are you okay Thats Diego'),
+  ]), /FUMIN_FULL_EPISODE_CRITICAL_TOKEN_FAILED/)
+})
+
+test('双 ASR 不允许次级结果遗漏数字或否定词', async () => {
+  const runner = await import('./run-redraw-fumin-full-episode-live.mjs')
+  assert.equal(typeof runner.verifyTranscriptConsensus, 'function')
+  const exact = asr(baseAsr, 'This place will be demolished in two months but he has no capital right now')
+  assert.throws(() => runner.verifyTranscriptConsensus(redrawLatinAmericanCase, 4, [
+    asr(smallAsr, 'This place will be demolished in months but he has no capital right now'),
+    exact,
+  ]), /FUMIN_FULL_EPISODE_CRITICAL_TOKEN_FAILED/)
+  assert.throws(() => runner.verifyTranscriptConsensus(redrawLatinAmericanCase, 4, [
+    asr(smallAsr, 'This place will be demolished in two months but he has capital right now'),
+    exact,
+  ]), /FUMIN_FULL_EPISODE_CRITICAL_TOKEN_FAILED/)
+})
+
+test('双 ASR 任一模型缺失、错误语言或双方均不精确时关闭门禁', async () => {
+  const runner = await import('./run-redraw-fumin-full-episode-live.mjs')
+  assert.equal(typeof runner.verifyTranscriptConsensus, 'function')
+  const exact = 'This place will be demolished in two months but he has no capital right now'
+  assert.throws(() => runner.verifyTranscriptConsensus(redrawLatinAmericanCase, 4, [
+    asr(smallAsr, exact),
+  ]), /FUMIN_FULL_EPISODE_ASR_CONSENSUS_UNAVAILABLE/)
+  assert.throws(() => runner.verifyTranscriptConsensus(redrawLatinAmericanCase, 4, [
+    asr(smallAsr, exact, { language: 'zh' }),
+    asr(baseAsr, exact),
+  ]), /FUMIN_FULL_EPISODE_TARGET_LANGUAGE_FAILED/)
+  assert.throws(() => runner.verifyTranscriptConsensus(redrawLatinAmericanCase, 4, [
+    asr(smallAsr, exact.replace('capital', 'capitol')),
+    asr(baseAsr, exact.replace('capital', 'capitol')),
+  ]), /FUMIN_FULL_EPISODE_EXACT_DIALOGUE_FAILED/)
+})
+
+test('ASR 必须自动检测语言而不是强制按英语解码', () => {
+  const source = fs.readFileSync(new URL('./run-redraw-fumin-full-episode-live.mjs', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /\.transcribe\(sys\.argv\[1\],language="en"/)
+})
+
+test('静默镜头任一固定 ASR 识别出对白都失败', async () => {
+  const runner = await import('./run-redraw-fumin-full-episode-live.mjs')
+  assert.equal(typeof runner.verifyTranscriptConsensus, 'function')
+  assert.throws(() => runner.verifyTranscriptConsensus(redrawLatinAmericanCase, 3, [
+    asr(smallAsr, ''),
+    asr(baseAsr, 'hello'),
+  ]), /FUMIN_FULL_EPISODE_SILENT_SHOT_HAS_SPEECH/)
 })
 
 test('静默镜明确要求有环境声但禁止任何可理解语音', () => {

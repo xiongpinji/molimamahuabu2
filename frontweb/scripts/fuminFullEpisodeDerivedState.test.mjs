@@ -6,35 +6,39 @@ import os from 'node:os'
 import path from 'node:path'
 
 import * as derivedState from './fuminFullEpisodeDerivedState.mjs'
+import { assertNextShotAllowed } from './fuminFullEpisodePaidGuard.mjs'
 
-const sourceManifestSha256 = '81cb83879271235739fdc3e9239ff569bf8faf0f860117c72cd4df68b1d8cd4d'
+const sourceManifestSha256 = '4449766d1b76e8d37b6d26ca3c6acb7a180eceddd352e90049f31a29a8ac8ddc'
 
 function sourceManifest() {
   return {
     schema_version: 'redraw-fumin-full-episode-paid-private-v1',
     case_id: 'ac087bcd-latam-en-us',
     provider: 'fumin.ai',
+    status: 'preflight_complete',
     contract: {
       expectedShots: 9,
       maxPaidSubmits: 9,
       spendCapUsd: 25,
       estimatedPerShotUsd: 2.384848,
       estimatedTotalUsd: 21.463632,
-      initialBalanceUsd: 60.16,
+      initialBalanceUsd: 35.95,
       accountId: 'xiongpinji',
     },
     generation: {
+      model: 'fumin-seedance-2.0-mini',
       upstream_model: 'seedance-2.0-mini',
       resolution: '480p',
       aspect_ratio: '9:16',
       duration_seconds: 8,
       generate_audio: true,
+      retries_allowed: false,
     },
-    tasks: Array.from({ length: 6 }, (_, index) => ({
+    tasks: Array.from({ length: 4 }, (_, index) => ({
       shot_number: index + 1,
       task_id: `task-${index + 1}`,
-      status: index < 5 ? 'completed_verified' : 'failed',
-      error_code: index === 5 ? 'FUMIN_FULL_EPISODE_EXACT_DIALOGUE_FAILED' : undefined,
+      status: index < 3 ? 'completed_verified' : 'failed',
+      error_code: index === 3 ? 'FUMIN_FULL_EPISODE_EXACT_DIALOGUE_FAILED' : undefined,
     })),
   }
 }
@@ -54,7 +58,7 @@ function makeSourceState() {
   const targetRoot = path.join(fixtureRoot, 'r5')
   const manifest = sourceManifest()
 
-  for (let shotNumber = 1; shotNumber <= 6; shotNumber += 1) {
+  for (let shotNumber = 1; shotNumber <= 4; shotNumber += 1) {
     const suffix = String(shotNumber).padStart(2, '0')
     const video = Buffer.from(`shot-${suffix}-video`)
     writeFixture(path.join(sourceRoot, 'artifacts', `shot-${suffix}.mp4`), video)
@@ -66,10 +70,10 @@ function makeSourceState() {
       retry_allowed: false,
     }))
     manifest.tasks[shotNumber - 1].balance_evidence = {
-      observed_at: `2026-08-25T06:0${shotNumber}:00.000Z`,
-      balance_usd: 60 - shotNumber,
+      observed_at: `2026-09-03T0${shotNumber}:00:00.000Z`,
+      balance_usd: 36 - shotNumber,
     }
-    if (shotNumber <= 5) {
+    if (shotNumber <= 3) {
       manifest.tasks[shotNumber - 1].artifact = { sha256: digest(video) }
       writeFixture(path.join(sourceRoot, 'artifacts', `shot-${suffix}-contact-sheet.jpg`), 'contact-sheet')
       writeFixture(path.join(sourceRoot, `shot-${suffix}-public-evidence.json`), '{}')
@@ -92,32 +96,35 @@ function makeSourceState() {
     identity_references: { mateo: { url: 'https://signed.example.test/mateo.png?token=secret' } },
   }))
 
+  const calls = []
   const adapters = {
-    now: () => new Date('2026-08-25T08:00:00.000Z'),
+    now: () => new Date('2026-09-03T08:00:00.000Z'),
     sha256Buffer: digest,
     sha256File: (filePath) => (
-      path.basename(filePath) === 'shot-06.mp4'
-        ? derivedState.R4_SHOT6_ARTIFACT_SHA256
+      path.basename(filePath) === 'shot-04.mp4'
+        ? derivedState.R4_SHOT4_ARTIFACT_SHA256
         : digest(fs.readFileSync(filePath))
     ),
     publicEvidence: (value) => structuredClone(value),
-    revalidateShot6: ({ stagingRoot, derivedManifest }) => {
-      const task = derivedManifest.tasks[5]
+    providerRequest: () => calls.push('provider-request'),
+    revalidateShot4: ({ stagingRoot, derivedManifest }) => {
+      calls.push('revalidate-shot-4')
+      const task = derivedManifest.tasks[3]
       task.status = 'awaiting_human_review'
       delete task.error_code
       task.artifact = {
-        artifact_id: 'shot-06.mp4',
-        sha256: derivedState.R4_SHOT6_ARTIFACT_SHA256,
+        artifact_id: 'shot-04.mp4',
+        sha256: derivedState.R4_SHOT4_ARTIFACT_SHA256,
       }
       task.revalidation = {
-        schema_version: 'fumin-shot-local-revalidation-v1',
+        schema_version: 'fumin-shot-local-revalidation-v2',
         source_status: 'failed',
         source_error_code: 'FUMIN_FULL_EPISODE_EXACT_DIALOGUE_FAILED',
-        artifact_sha256: derivedState.R4_SHOT6_ARTIFACT_SHA256,
+        artifact_sha256: derivedState.R4_SHOT4_ARTIFACT_SHA256,
         verifier_result: 'passed',
-        revalidated_at: '2026-08-25T08:00:00.000Z',
+        revalidated_at: '2026-09-03T08:00:00.000Z',
       }
-      writeFixture(path.join(stagingRoot, 'artifacts', 'shot-06-contact-sheet.jpg'), 'contact-sheet')
+      writeFixture(path.join(stagingRoot, 'artifacts', 'shot-04-contact-sheet.jpg'), 'contact-sheet')
     },
   }
 
@@ -125,7 +132,9 @@ function makeSourceState() {
     fixtureRoot,
     sourceRoot,
     targetRoot,
+    calls,
     adapters,
+    sourceManifestBytes: manifestBytes,
     options: {
       sourceStateRoot: sourceRoot,
       targetStateRoot: targetRoot,
@@ -134,7 +143,7 @@ function makeSourceState() {
   }
 }
 
-test('只接受锁定合同、锁定 SHA 和第六镜指定误判的 r4', () => {
+test('只接受锁定合同、锁定 SHA 和第 4 镜指定误判的 2026-09-03 r4', () => {
   assert.equal(typeof derivedState.assertR4DerivationSource, 'function')
   assert.equal(derivedState.assertR4DerivationSource({
     manifest: sourceManifest(),
@@ -144,7 +153,6 @@ test('只接受锁定合同、锁定 SHA 和第六镜指定误判的 r4', () => 
 })
 
 test('源 manifest SHA 漂移时拒绝派生', () => {
-  assert.equal(typeof derivedState.assertR4DerivationSource, 'function')
   assert.throws(() => derivedState.assertR4DerivationSource({
     manifest: sourceManifest(),
     actualManifestSha256: 'f'.repeat(64),
@@ -152,27 +160,25 @@ test('源 manifest SHA 漂移时拒绝派生', () => {
   }), /FUMIN_DERIVE_SOURCE_MANIFEST_CAS_MISMATCH/)
 })
 
-test('第七镜已存在或第六镜不是指定误判时拒绝派生', () => {
-  assert.equal(typeof derivedState.assertR4DerivationSource, 'function')
-  const withShot7 = sourceManifest()
-  withShot7.tasks.push({ shot_number: 7, task_id: 'task-7', status: 'completed_verified' })
+test('第 5 镜已存在或第 4 镜不是指定误判时拒绝派生', () => {
+  const withShot5 = sourceManifest()
+  withShot5.tasks.push({ shot_number: 5, task_id: 'task-5', status: 'completed_verified' })
   assert.throws(() => derivedState.assertR4DerivationSource({
-    manifest: withShot7,
+    manifest: withShot5,
     actualManifestSha256: sourceManifestSha256,
     expectedManifestSha256: sourceManifestSha256,
   }), /FUMIN_DERIVE_SOURCE_TASKS_INVALID/)
 
-  const wrongShot6Error = sourceManifest()
-  wrongShot6Error.tasks[5].error_code = 'FUMIN_FULL_EPISODE_ASR_FAILED'
+  const wrongShot4Error = sourceManifest()
+  wrongShot4Error.tasks[3].error_code = 'FUMIN_FULL_EPISODE_ASR_FAILED'
   assert.throws(() => derivedState.assertR4DerivationSource({
-    manifest: wrongShot6Error,
+    manifest: wrongShot4Error,
     actualManifestSha256: sourceManifestSha256,
     expectedManifestSha256: sourceManifestSha256,
   }), /FUMIN_DERIVE_SOURCE_TASKS_INVALID/)
 })
 
 test('目标状态已存在时拒绝覆盖', () => {
-  assert.equal(typeof derivedState.deriveFuminFullEpisodeState, 'function')
   const fixture = makeSourceState()
   try {
     fs.mkdirSync(fixture.targetRoot)
@@ -185,11 +191,10 @@ test('目标状态已存在时拒绝覆盖', () => {
   }
 })
 
-test('缺少提交锁时拒绝派生', () => {
-  assert.equal(typeof derivedState.deriveFuminFullEpisodeState, 'function')
+test('缺少第 4 镜提交锁时拒绝派生且不留下目标状态', () => {
   const fixture = makeSourceState()
   try {
-    fs.rmSync(path.join(fixture.sourceRoot, 'locks', 'shot-06-submit.lock.json'))
+    fs.rmSync(path.join(fixture.sourceRoot, 'locks', 'shot-04-submit.lock.json'))
     assert.throws(
       () => derivedState.deriveFuminFullEpisodeState(fixture.options, fixture.adapters),
       /FUMIN_DERIVE_SOURCE_LOCK_INVALID/,
@@ -200,8 +205,21 @@ test('缺少提交锁时拒绝派生', () => {
   }
 })
 
+test('第 5—9 镜已有锁或成品时拒绝派生', () => {
+  const fixture = makeSourceState()
+  try {
+    writeFixture(path.join(fixture.sourceRoot, 'locks', 'shot-05-submit.lock.json'), '{}')
+    assert.throws(
+      () => derivedState.deriveFuminFullEpisodeState(fixture.options, fixture.adapters),
+      /FUMIN_DERIVE_LATER_SHOT_PRESENT/,
+    )
+    assert.equal(fs.existsSync(fixture.targetRoot), false)
+  } finally {
+    fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true })
+  }
+})
+
 test('已验收视频哈希漂移时拒绝派生', () => {
-  assert.equal(typeof derivedState.deriveFuminFullEpisodeState, 'function')
   const fixture = makeSourceState()
   try {
     fs.appendFileSync(path.join(fixture.sourceRoot, 'artifacts', 'shot-01.mp4'), 'drift')
@@ -215,10 +233,10 @@ test('已验收视频哈希漂移时拒绝派生', () => {
   }
 })
 
-test('合法源状态原子派生为第六镜待人工验收的新状态', () => {
-  assert.equal(typeof derivedState.deriveFuminFullEpisodeState, 'function')
+test('合法源状态原子派生为第 4 镜待人工验收的新状态且不调用供应商', () => {
   const fixture = makeSourceState()
   try {
+    const sourceBefore = fs.readFileSync(path.join(fixture.sourceRoot, 'private-manifest.json'))
     const result = derivedState.deriveFuminFullEpisodeState(fixture.options, fixture.adapters)
     const manifest = JSON.parse(fs.readFileSync(
       path.join(fixture.targetRoot, 'private-manifest.json'),
@@ -230,29 +248,40 @@ test('合法源状态原子派生为第六镜待人工验收的新状态', () =>
     ))
 
     assert.equal(result.status, 'awaiting_human_review')
-    assert.equal(manifest.tasks.length, 6)
-    assert.equal(manifest.tasks[5].status, 'awaiting_human_review')
-    assert.equal(manifest.tasks[5].revalidation.source_status, 'failed')
+    assert.equal(manifest.tasks.length, 4)
+    assert.equal(manifest.tasks[3].status, 'awaiting_human_review')
+    assert.equal(manifest.tasks[3].revalidation.source_status, 'failed')
+    assert.equal(manifest.derived_from.source_state_label, 'fumin-full-episode-20260903-r4')
+    assert.equal(manifest.derived_from.reason, 'dual_asr_orthographic_false_negative')
     assert.deepEqual(manifest.references.identities, {})
     assert.deepEqual(secrets, { schema_version: 'fumin-private-runtime-secrets-v1' })
     assert.equal(fs.existsSync(path.join(
       fixture.targetRoot,
       'artifacts',
-      'shot-06-contact-sheet.jpg',
+      'shot-04-contact-sheet.jpg',
     )), true)
     assert.doesNotMatch(JSON.stringify(secrets), /https:\/\//)
+    assert.deepEqual(fixture.calls, ['revalidate-shot-4'])
+    assert.deepEqual(
+      fs.readFileSync(path.join(fixture.sourceRoot, 'private-manifest.json')),
+      sourceBefore,
+    )
+    assert.throws(
+      () => assertNextShotAllowed(manifest, 5, {}),
+      /FUMIN_FULL_EPISODE_PREVIOUS_NOT_VERIFIED/,
+    )
   } finally {
     fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true })
   }
 })
 
-test('第 6 镜只调用本地媒体适配器并保留原失败审计', async () => {
+test('第 4 镜只调用本地媒体与双 ASR 适配器并保留原失败审计', async () => {
   const runner = await import('./run-redraw-fumin-full-episode-live.mjs')
-  assert.equal(typeof runner.revalidateDerivedShot6, 'function')
+  assert.equal(typeof runner.revalidateDerivedShot4, 'function')
   const fixture = makeSourceState()
   const calls = []
   try {
-    fixture.adapters.revalidateShot6 = (context) => runner.revalidateDerivedShot6(
+    fixture.adapters.revalidateShot4 = (context) => runner.revalidateDerivedShot4(
       context,
       'C:/offline/verifier/python.exe',
       {
@@ -261,28 +290,33 @@ test('第 6 镜只调用本地媒体适配器并保留原失败审计', async ()
           return { width: 496, height: 864, duration_seconds: 8.096, has_audio: true }
         },
         validateGeneratedMedia: () => calls.push('validate-media'),
-        transcribeEnglish: () => {
-          calls.push('transcribe')
-          return {
-            language: 'en',
-            probability: 1,
-            text: 'College kids home wash your hands and eat in this life',
-          }
+        transcribeEnglishConsensus: () => {
+          calls.push('transcribe-consensus')
+          return [
+            {
+              model_id: 'Systran/faster-whisper-small',
+              language: 'en',
+              probability: 1,
+              text: 'This place will be demolished in two months but he has no capitol right now',
+            },
+            {
+              model_id: 'Systran/faster-whisper-base',
+              language: 'en',
+              probability: 1,
+              text: 'This place will be demolished in two months but he has no capital right now',
+            },
+          ]
         },
-        verifyTranscript: () => {
-          calls.push('verify-transcript')
-          return {
-            detected_language: 'en',
-            detected_language_probability: 1,
-            exact_dialogue_present: true,
-          }
+        verifyTranscriptConsensus: () => {
+          calls.push('verify-consensus')
+          return { consensus_passed: true, exact_model_id: 'Systran/faster-whisper-base' }
         },
-        sha256File: () => derivedState.R4_SHOT6_ARTIFACT_SHA256,
+        sha256File: () => derivedState.R4_SHOT4_ARTIFACT_SHA256,
         createContactSheet: (_videoPath, outputPath) => {
           calls.push('contact-sheet')
           writeFixture(outputPath, 'contact-sheet')
         },
-        now: () => new Date('2026-08-25T08:00:00.000Z'),
+        now: () => new Date('2026-09-03T08:00:00.000Z'),
       },
     )
 
@@ -295,14 +329,14 @@ test('第 6 镜只调用本地媒体适配器并保留原失败审计', async ()
     assert.deepEqual(calls, [
       'probe',
       'validate-media',
-      'transcribe',
-      'verify-transcript',
+      'transcribe-consensus',
+      'verify-consensus',
       'contact-sheet',
     ])
-    assert.equal(manifest.tasks[5].status, 'awaiting_human_review')
-    assert.equal(manifest.tasks[5].revalidation.source_status, 'failed')
+    assert.equal(manifest.tasks[3].status, 'awaiting_human_review')
+    assert.equal(manifest.tasks[3].revalidation.source_status, 'failed')
     assert.equal(
-      manifest.tasks[5].revalidation.source_error_code,
+      manifest.tasks[3].revalidation.source_error_code,
       'FUMIN_FULL_EPISODE_EXACT_DIALOGUE_FAILED',
     )
     assert.doesNotMatch(JSON.stringify(manifest), /https:\/\//)

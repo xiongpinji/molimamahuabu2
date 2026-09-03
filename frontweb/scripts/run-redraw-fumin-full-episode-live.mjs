@@ -18,7 +18,7 @@ import {
 } from './fuminProductionIdentityPacks.mjs'
 import {
   deriveFuminFullEpisodeState,
-  R4_SHOT6_ARTIFACT_SHA256,
+  R4_SHOT4_ARTIFACT_SHA256,
 } from './fuminFullEpisodeDerivedState.mjs'
 
 const require = createRequire(import.meta.url)
@@ -35,6 +35,21 @@ const FUMIN_BASE_URL = 'https://fumin.ai'
 const MANIFEST_NAME = 'private-manifest.json'
 const RUNTIME_SECRETS_NAME = 'private-runtime-secrets.json'
 const HEX_64 = /^[a-f0-9]{64}$/i
+const ASR_MODEL_IDS = [
+  'Systran/faster-whisper-small',
+  'Systran/faster-whisper-base',
+]
+const NUMBER_WORDS = new Set([
+  'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+  'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen',
+  'eighteen', 'nineteen', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy',
+  'eighty', 'ninety', 'hundred', 'thousand', 'million', 'billion',
+])
+const NEGATION_WORDS = new Set([
+  'no', 'not', 'never', 'nor', 'neither', 'cannot', 'wont', 'dont', 'doesnt', 'didnt',
+  'isnt', 'arent', 'wasnt', 'werent', 'havent', 'hasnt', 'hadnt', 'couldnt',
+  'wouldnt', 'shouldnt', 'mustnt', 'neednt',
+])
 
 function fail(code, message = code) {
   throw Object.assign(new Error(`${code}: ${message}`), { code })
@@ -56,6 +71,46 @@ function normalizedWords(value) {
     .replace(/['’]/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
+}
+
+function editDistance(left, right) {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index)
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex]
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      current[rightIndex] = Math.min(
+        current[rightIndex - 1] + 1,
+        previous[rightIndex] + 1,
+        previous[rightIndex - 1] + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1),
+      )
+    }
+    previous.splice(0, previous.length, ...current)
+  }
+  return previous[right.length]
+}
+
+function orderedTurnsPresent(actual, turns) {
+  let cursor = 0
+  for (const turn of turns) {
+    const expected = normalizedWords(turn.localized_text)
+    const index = actual.indexOf(expected, cursor)
+    if (index < 0) return false
+    cursor = index + expected.length
+  }
+  return true
+}
+
+function criticalDialogueTokens(testCase, turns) {
+  const targetTokens = normalizedWords(turns.map((turn) => turn.localized_text).join(' ')).split(' ')
+  const characterTokens = new Set(testCase.cast.flatMap(
+    (actor) => normalizedWords(actor.target_name).split(' ').filter(Boolean),
+  ))
+  return [...new Set(targetTokens.filter((token) => (
+    characterTokens.has(token)
+      || /^\d+$/.test(token)
+      || NUMBER_WORDS.has(token)
+      || NEGATION_WORDS.has(token)
+  )))]
 }
 
 function pick(payload, paths) {
@@ -121,13 +176,18 @@ export function buildShotPrompt(testCase, shotNumber) {
     base.push('Generate natural synchronized ambience and sound effects only; no spoken dialogue, voiceover, narration, singing, or intelligible vocalization.')
   } else {
     base.push('All speech must be natural American English only. Do not speak Chinese, Spanish, or any other language.')
+    base.push('Generate synchronized en-US speech audio for the approved dialogue timing only.')
+    if (dialogue.turns.some((turn) => /\bMateo\b/i.test(turn.localized_text))) {
+      base.push('Pronunciation: Mateo must be spoken as three distinct syllables: mah-TEH-oh, with the final "oh" fully audible.')
+    }
     if (Number(shotNumber) === 5) {
       base.push('For Mateo\'s line, the first audible word must be "I", spoken clearly at full volume after a brief silent lead-in; do not clip or drop it.')
     }
     base.push('Speak these exact lines once, in this exact order, assigned to these exact characters:')
     dialogue.turns.forEach((turn, turnIndex) => {
-      base.push(`${turnIndex + 1}. ${castById.get(turn.speaker_id)}: "${turn.localized_text}"`)
+      base.push(`${turnIndex + 1}. ${castById.get(turn.speaker_id)}: "${turn.localized_text}" (${turn.start_ms}-${turn.end_ms}ms)`)
     })
+    base.push('Do not compress, clip, or drop any word or final vowel to fit the timing.')
     base.push('Do not add, omit, translate, paraphrase, repeat, or reassign any spoken words.')
   }
   return base.filter(Boolean).join('\n')
@@ -493,20 +553,26 @@ async function downloadResult(url, outputPath) {
   return { sha256: sha256Buffer(bytes), bytes: bytes.length }
 }
 
-export function transcribeEnglish(filePath, pythonPath) {
+export function transcribeEnglish(filePath, pythonPath, modelId = ASR_MODEL_IDS[0]) {
   if (!pythonPath || !fs.existsSync(pythonPath)) fail('FUMIN_FULL_EPISODE_VERIFIER_PYTHON_MISSING')
+  if (!ASR_MODEL_IDS.includes(modelId)) fail('FUMIN_FULL_EPISODE_ASR_MODEL_INVALID', modelId)
   const code = [
     'import json,sys',
     'from faster_whisper import WhisperModel',
-    'm=WhisperModel("Systran/faster-whisper-small",device="cpu",compute_type="int8",local_files_only=True)',
-    'segments,info=m.transcribe(sys.argv[1],language="en",beam_size=5,vad_filter=True)',
-    'print(json.dumps({"language":info.language,"probability":info.language_probability,"text":" ".join(s.text.strip() for s in segments).strip()},ensure_ascii=False))',
+    'model_id=sys.argv[2]',
+    'm=WhisperModel(model_id,device="cpu",compute_type="int8",local_files_only=True)',
+    'segments,info=m.transcribe(sys.argv[1],beam_size=5,vad_filter=True)',
+    'print(json.dumps({"model_id":model_id,"language":info.language,"probability":info.language_probability,"text":" ".join(s.text.strip() for s in segments).strip()},ensure_ascii=False))',
   ].join(';')
-  const stdout = runProcess(pythonPath, ['-c', code, filePath], 'FUMIN_FULL_EPISODE_ASR_FAILED', {
+  const stdout = runProcess(pythonPath, ['-c', code, filePath, modelId], 'FUMIN_FULL_EPISODE_ASR_FAILED', {
     timeout: 12 * 60 * 1_000,
     env: { ...process.env, HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1' },
   })
   return JSON.parse(stdout)
+}
+
+export function transcribeEnglishConsensus(filePath, pythonPath) {
+  return ASR_MODEL_IDS.map((modelId) => transcribeEnglish(filePath, pythonPath, modelId))
 }
 
 export function verifyTranscript(testCase, shotNumber, transcript) {
@@ -533,6 +599,90 @@ export function verifyTranscript(testCase, shotNumber, transcript) {
   }
 }
 
+export function verifyTranscriptConsensus(testCase, shotNumber, transcripts) {
+  if (!Array.isArray(transcripts) || transcripts.length !== ASR_MODEL_IDS.length) {
+    fail('FUMIN_FULL_EPISODE_ASR_CONSENSUS_UNAVAILABLE')
+  }
+  const byModel = new Map(transcripts.map((transcript) => [transcript?.model_id, transcript]))
+  if (byModel.size !== ASR_MODEL_IDS.length
+    || ASR_MODEL_IDS.some((modelId) => !byModel.has(modelId))) {
+    fail('FUMIN_FULL_EPISODE_ASR_CONSENSUS_UNAVAILABLE')
+  }
+  const dialogue = testCase.localization.dialogue[shotNumber - 1]
+  if (!dialogue) fail('FUMIN_FULL_EPISODE_SHOT_INVALID', String(shotNumber))
+  const ordered = ASR_MODEL_IDS.map((modelId) => byModel.get(modelId))
+  const actuals = ordered.map((transcript) => normalizedWords(transcript.text))
+  if (!dialogue.speech_required) {
+    const speech = actuals.find(Boolean)
+    if (speech) fail('FUMIN_FULL_EPISODE_SILENT_SHOT_HAS_SPEECH', speech)
+    return {
+      speech_required: false,
+      consensus_passed: true,
+      exact_dialogue_present: true,
+      models: ordered.map((transcript) => ({
+        model_id: transcript.model_id,
+        transcript: '',
+      })),
+    }
+  }
+
+  ordered.forEach((transcript, index) => {
+    if (!actuals[index]) fail('FUMIN_FULL_EPISODE_ASR_CONSENSUS_EMPTY', transcript.model_id)
+    if (String(transcript.language || '').toLowerCase() !== 'en'
+      || Number(transcript.probability) < 0.8) {
+      fail('FUMIN_FULL_EPISODE_TARGET_LANGUAGE_FAILED', transcript.model_id)
+    }
+  })
+
+  const target = normalizedWords(dialogue.turns.map((turn) => turn.localized_text).join(' '))
+  const targetWords = target.split(' ')
+  const criticalTokens = criticalDialogueTokens(testCase, dialogue.turns)
+  const requiredCriticalCounts = new Map(criticalTokens.map((token) => [
+    token,
+    targetWords.filter((word) => word === token).length,
+  ]))
+  const models = ordered.map((transcript, index) => {
+    const actual = actuals[index]
+    const actualWords = actual.split(' ')
+    const wordErrorRate = editDistance(targetWords, actualWords) / targetWords.length
+    const characterErrorRate = editDistance([...target], [...actual]) / target.length
+    const exactDialoguePresent = orderedTurnsPresent(actual, dialogue.turns)
+    const missingCriticalTokens = criticalTokens.filter((token) => (
+      actualWords.filter((word) => word === token).length < requiredCriticalCounts.get(token)
+    ))
+    if (missingCriticalTokens.length) {
+      fail(
+        'FUMIN_FULL_EPISODE_CRITICAL_TOKEN_FAILED',
+        `${transcript.model_id}: ${missingCriticalTokens.join(',')}`,
+      )
+    }
+    return {
+      model_id: transcript.model_id,
+      detected_language: transcript.language,
+      detected_language_probability: Number(transcript.probability),
+      transcript: transcript.text,
+      exact_dialogue_present: exactDialoguePresent,
+      word_error_rate: Number(wordErrorRate.toFixed(6)),
+      character_error_rate: Number(characterErrorRate.toFixed(6)),
+      critical_tokens_present: true,
+    }
+  })
+  const exact = models.find((model) => model.exact_dialogue_present)
+  if (!exact) fail('FUMIN_FULL_EPISODE_EXACT_DIALOGUE_FAILED')
+  const distanceInvalid = models.some((model) => (
+    model.word_error_rate > 0.1 || model.character_error_rate > 0.03
+  ))
+  if (distanceInvalid) fail('FUMIN_FULL_EPISODE_ASR_CONSENSUS_DISTANCE_FAILED')
+  return {
+    speech_required: true,
+    consensus_passed: true,
+    exact_dialogue_present: true,
+    exact_model_id: exact.model_id,
+    critical_tokens: criticalTokens,
+    models,
+  }
+}
+
 export function createContactSheet(videoPath, outputPath) {
   runProcess(getFfmpegPath(), [
     '-hide_banner', '-loglevel', 'error', '-i', videoPath,
@@ -550,7 +700,7 @@ export function validateGeneratedMedia(probe) {
   if (!probe.has_audio) fail('FUMIN_FULL_EPISODE_OUTPUT_AUDIO_MISSING')
 }
 
-export function revalidateDerivedShot6(
+export function revalidateDerivedShot4(
   { stagingRoot, derivedManifest },
   verifierPython,
   adapters = {},
@@ -558,36 +708,36 @@ export function revalidateDerivedShot6(
   const local = {
     probeMedia,
     validateGeneratedMedia,
-    transcribeEnglish,
-    verifyTranscript,
+    transcribeEnglishConsensus,
+    verifyTranscriptConsensus,
     sha256File,
     createContactSheet,
     now: () => new Date(),
     ...adapters,
   }
-  const videoPath = path.join(stagingRoot, 'artifacts', 'shot-06.mp4')
+  const videoPath = path.join(stagingRoot, 'artifacts', 'shot-04.mp4')
   const probe = local.probeMedia(videoPath)
   local.validateGeneratedMedia(probe)
-  const transcript = local.transcribeEnglish(videoPath, verifierPython)
-  const speech = local.verifyTranscript(redrawLatinAmericanCase, 6, transcript)
+  const transcripts = local.transcribeEnglishConsensus(videoPath, verifierPython)
+  const speech = local.verifyTranscriptConsensus(redrawLatinAmericanCase, 4, transcripts)
   const artifactSha256 = local.sha256File(videoPath)
-  if (artifactSha256 !== R4_SHOT6_ARTIFACT_SHA256) fail('FUMIN_DERIVE_SHOT6_HASH_MISMATCH')
-  const contactSheetPath = path.join(stagingRoot, 'artifacts', 'shot-06-contact-sheet.jpg')
+  if (artifactSha256 !== R4_SHOT4_ARTIFACT_SHA256) fail('FUMIN_DERIVE_SHOT4_HASH_MISMATCH')
+  const contactSheetPath = path.join(stagingRoot, 'artifacts', 'shot-04-contact-sheet.jpg')
   local.createContactSheet(videoPath, contactSheetPath)
 
-  const task = derivedManifest.tasks[5]
+  const task = derivedManifest.tasks[3]
   task.status = 'awaiting_human_review'
   delete task.error_code
   task.artifact = {
-    artifact_id: 'shot-06.mp4',
+    artifact_id: 'shot-04.mp4',
     sha256: artifactSha256,
     bytes: fs.statSync(videoPath).size,
     ffprobe: probe,
   }
-  task.contact_sheet_id = 'shot-06-contact-sheet.jpg'
+  task.contact_sheet_id = 'shot-04-contact-sheet.jpg'
   task.speech = speech
   task.revalidation = {
-    schema_version: 'fumin-shot-local-revalidation-v1',
+    schema_version: 'fumin-shot-local-revalidation-v2',
     source_status: 'failed',
     source_error_code: 'FUMIN_FULL_EPISODE_EXACT_DIALOGUE_FAILED',
     artifact_sha256: artifactSha256,
@@ -785,8 +935,8 @@ async function runShot(options) {
     const artifact = await downloadResult(videoUrl, videoPath)
     const probe = probeMedia(videoPath)
     validateGeneratedMedia(probe)
-    const transcript = transcribeEnglish(videoPath, options.verifierPython)
-    const speech = verifyTranscript(redrawLatinAmericanCase, shotNumber, transcript)
+    const transcripts = transcribeEnglishConsensus(videoPath, options.verifierPython)
+    const speech = verifyTranscriptConsensus(redrawLatinAmericanCase, shotNumber, transcripts)
     createContactSheet(videoPath, contactSheetPath)
     Object.assign(task, {
       status: 'awaiting_human_review',
@@ -899,7 +1049,7 @@ async function main() {
       sha256Buffer,
       sha256File,
       publicEvidence,
-      revalidateShot6: (context) => revalidateDerivedShot6(context, options.verifierPython),
+      revalidateShot4: (context) => revalidateDerivedShot4(context, options.verifierPython),
     })
   } else if (options.stage === 'preflight') result = await runPreflight(options)
   else if (options.stage === 'shot') result = await runShot(options)
