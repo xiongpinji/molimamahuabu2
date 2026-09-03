@@ -10,9 +10,11 @@ const {
 } = require('./shortDramaProductionDirector');
 
 const SYSTEM_PROMPT = resolveScriptAnalysisSkill().system_prompt;
+const SCRIPT_ANALYSIS_DIRECT_CHARS = 10000;
+const SCRIPT_ANALYSIS_CHUNK_CHARS = 10000;
+const SCRIPT_ANALYSIS_CHUNK_CONCURRENCY = 2;
 
 const SCRIPT_ANALYSIS_LIMITS = Object.freeze({
-  sourceScriptChars: 60000,
   lockedFacts: 100,
   lockedFactChars: 500,
 });
@@ -21,9 +23,6 @@ function getProjectInputError({ sourceScript, lockedFacts } = {}, { requireSourc
   const script = String(sourceScript || '');
   const facts = lockedFacts == null ? [] : lockedFacts;
   if (requireSource && !script.trim()) return '请先填写原始剧本，再开始分析';
-  if (script.length > SCRIPT_ANALYSIS_LIMITS.sourceScriptChars) {
-    return `原始剧本不能超过 ${SCRIPT_ANALYSIS_LIMITS.sourceScriptChars} 个字符，请按剧集或章节拆分后分析`;
-  }
   if (!Array.isArray(facts)) return '不可改事实必须是字符串数组';
   if (facts.length > SCRIPT_ANALYSIS_LIMITS.lockedFacts) {
     return `不可改事实不能超过 ${SCRIPT_ANALYSIS_LIMITS.lockedFacts} 条，请合并重复事实后重试`;
@@ -46,6 +45,36 @@ function parseArray(value) {
   } catch (_) {
     return [];
   }
+}
+
+function splitSourceScript(sourceScript, maxChars = SCRIPT_ANALYSIS_CHUNK_CHARS) {
+  const source = String(sourceScript || '');
+  if (!source) return [];
+  if (!Number.isInteger(maxChars) || maxChars <= 0) {
+    throw new Error('剧本分片长度必须是正整数');
+  }
+
+  const chunks = [];
+  const boundaries = ['\n\n', '\n', '。', '！', '？', '；'];
+  let start = 0;
+  while (start < source.length) {
+    let end = Math.min(start + maxChars, source.length);
+    if (end < source.length) {
+      const window = source.slice(start, end);
+      const minimumBoundary = Math.floor(maxChars * 0.5);
+      let naturalEnd = -1;
+      boundaries.forEach((boundary) => {
+        const index = window.lastIndexOf(boundary);
+        if (index >= minimumBoundary) {
+          naturalEnd = Math.max(naturalEnd, index + boundary.length);
+        }
+      });
+      if (naturalEnd > 0) end = start + naturalEnd;
+    }
+    chunks.push(source.slice(start, end));
+    start = end;
+  }
+  return chunks;
 }
 
 function asObject(value) {
@@ -169,24 +198,73 @@ ${String(note || '').trim()}
 未被审核备注要求修改的内容必须保持不变；不得改变原剧本和不可改动事实。`;
 }
 
-function normalizeVisualDirection(value) {
+function normalizeVisualDirection(value, evidenceFallback = '') {
   const visualDirection = asObject(value);
   if (!Object.keys(visualDirection).length) return null;
+  const evidence = (items) => {
+    const parsed = parseArray(items);
+    return parsed.length ? parsed : (evidenceFallback ? [evidenceFallback] : []);
+  };
   const emotionalTone = asObject(visualDirection.emotional_tone);
   const rhythm = asObject(visualDirection.rhythm);
   return {
     emotional_tone: {
       primary: String(emotionalTone.primary || ''),
       secondary: String(emotionalTone.secondary || ''),
-      evidence: parseArray(emotionalTone.evidence),
+      evidence: evidence(emotionalTone.evidence),
     },
-    scene_profile: parseArray(visualDirection.scene_profile),
+    scene_profile: parseArray(visualDirection.scene_profile)
+      .map((item) => ({ ...item, evidence: evidence(item?.evidence) })),
     rhythm: {
       labels: parseArray(rhythm.labels),
-      evidence: parseArray(rhythm.evidence),
+      evidence: evidence(rhythm.evidence),
     },
-    visual_motifs: parseArray(visualDirection.visual_motifs),
-    recommendations: parseArray(visualDirection.recommendations),
+    visual_motifs: parseArray(visualDirection.visual_motifs)
+      .map((item) => ({ ...item, evidence: evidence(item?.evidence) })),
+    recommendations: parseArray(visualDirection.recommendations)
+      .map((item) => ({ ...item, match_reasons: evidence(item?.match_reasons) })),
+  };
+}
+
+function restoreRequiredVisualDirection(value, project, selectedSkill, log) {
+  const requiresVisualDirection = Boolean(
+    selectedSkill.require_visual_direction || selectedSkill.require_production_direction
+  );
+  if (!requiresVisualDirection || value.visual_direction) return value;
+
+  const sourceEvidence = String(project.source_script || '').trim().slice(0, 240);
+  const issue = '模型未返回 visual_direction，系统已生成保守视觉方案，请人工复核';
+  log?.warn?.({ projectId: project.id, skillId: selectedSkill.id }, issue);
+  return {
+    ...value,
+    visual_direction: {
+      emotional_tone: {
+        primary: '待人工复核',
+        secondary: '',
+        evidence: [sourceEvidence],
+      },
+      scene_profile: [],
+      rhythm: {
+        labels: ['按原剧本场次推进'],
+        evidence: [sourceEvidence],
+      },
+      visual_motifs: [],
+      recommendations: [{
+        rank: 1,
+        name: '原剧本忠实呈现',
+        objective_style: '保持人物、场景与动作事实，采用清晰构图、连续轴线和符合场景时间的光线',
+        match_reasons: [sourceEvidence],
+        composition: '优先保证人物关系和关键动作清晰可读',
+        camera_movement: '按原剧本动作节奏使用稳定机位和必要的跟随运动',
+        lighting: '依据原剧本场景时间和环境设置可辨识的自然光线',
+        color: '保持场景内色彩连续，不额外引入叙事含义',
+        risks: ['模型未返回电影化视觉增强字段，当前方案需人工复核'],
+      }],
+    },
+    review: {
+      ...asObject(value.review),
+      issues: uniqueValues([...parseArray(value.review?.issues), issue]),
+    },
   };
 }
 
@@ -228,7 +306,10 @@ function normalizeProductionPackage(rawValue, project, { schemaVersion } = {}) {
     ai_changes: parseArray(raw.ai_changes),
     approval_status: 'draft',
   };
-  const visualDirection = normalizeVisualDirection(raw.visual_direction);
+  const visualDirection = normalizeVisualDirection(
+    raw.visual_direction,
+    String(project.source_script || '').trim().slice(0, 240),
+  );
   if (visualDirection) result.visual_direction = visualDirection;
   if (resolvedSchemaVersion === '2.0') {
     result.creative_strategy = raw.creative_strategy;
@@ -484,8 +565,142 @@ function validateProductionPackage(value, {
   return value;
 }
 
-async function runAnalysis({ db, log, project, skill, strategyPreset, generationOptions = {} }) {
+function uniqueValues(values) {
+  const seen = new Set();
+  return values.filter((value) => {
+    const key = typeof value === 'string' ? value.trim() : JSON.stringify(value);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function mergeNamedItems(packages, field, identityField = 'name') {
+  const seen = new Set();
+  return packages.flatMap((item) => parseArray(item[field])).filter((item) => {
+    const key = String(item?.[identityField] || '').trim().toLocaleLowerCase()
+      || JSON.stringify(item);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function validationOptionsFor(selectedSkill, strategyPreset) {
+  return {
+    expectedSchemaVersion: selectedSkill.output_schema_version,
+    requireVisualDirection: Boolean(
+      selectedSkill.require_visual_direction || selectedSkill.require_production_direction
+    ),
+    requireProductionDirection: Boolean(selectedSkill.require_production_direction),
+    expectedStrategyPreset: selectedSkill.require_production_direction
+      ? (strategyPreset || selectedSkill.default_strategy_preset || 'fusion')
+      : undefined,
+  };
+}
+
+function mergeProductionPackages(packages, { project, skill, strategyPreset } = {}) {
   const selectedSkill = skill || resolveScriptAnalysisSkill();
+  if (!Array.isArray(packages) || packages.length === 0) {
+    throw new Error('没有可合并的剧本分析分片');
+  }
+  const first = packages[0];
+  const episodes = packages.flatMap((item) => parseArray(item.episodes)).map((episode, index) => ({
+    ...episode,
+    episode_number: index + 1,
+    scenes: parseArray(episode?.scenes).map((scene, sceneIndex) => ({
+      ...scene,
+      scene_number: sceneIndex + 1,
+      shots: parseArray(scene?.shots).map((shot, shotIndex) => ({
+        ...shot,
+        shot_number: shotIndex + 1,
+      })),
+    })),
+  }));
+  const merged = {
+    ...first,
+    normalized_script: {
+      ...asObject(first.normalized_script),
+      logline: packages.map((item) => item.normalized_script?.logline).find(Boolean) || '',
+      genre: packages.map((item) => item.normalized_script?.genre).find(Boolean) || '',
+      tone: packages.map((item) => item.normalized_script?.tone).find(Boolean) || '',
+      target_duration_seconds: packages.reduce(
+        (total, item) => total + (Number(item.normalized_script?.target_duration_seconds) || 0),
+        0,
+      ),
+      story_structure: uniqueValues(
+        packages.flatMap((item) => parseArray(item.normalized_script?.story_structure)),
+      ),
+    },
+    character_bible: mergeNamedItems(packages, 'character_bible'),
+    scene_bible: mergeNamedItems(packages, 'scene_bible'),
+    prop_bible: mergeNamedItems(packages, 'prop_bible'),
+    episodes,
+    continuity_rules: uniqueValues(packages.flatMap((item) => parseArray(item.continuity_rules))),
+    review: {
+      ...asObject(first.review),
+      status: 'needs_review',
+      issues: uniqueValues(packages.flatMap((item) => parseArray(item.review?.issues))),
+    },
+    ai_changes: uniqueValues(packages.flatMap((item) => parseArray(item.ai_changes))),
+  };
+
+  if (selectedSkill.output_schema_version === '2.0') {
+    const strategies = packages.map((item) => asObject(item.creative_strategy));
+    const commercialBeats = strategies.map((item) => asObject(item.commercial_beats));
+    const audits = strategies.map((item) => asObject(item.audit));
+    merged.creative_strategy = {
+      ...strategies[0],
+      preset: strategyPreset || selectedSkill.default_strategy_preset || 'fusion',
+      audience: strategies.map((item) => item.audience).find(Boolean) || '',
+      genre_tracks: uniqueValues(strategies.flatMap((item) => parseArray(item.genre_tracks))),
+      story_engine: strategies.map((item) => item.story_engine).find(Boolean) || '',
+      season_arc: uniqueValues(strategies.flatMap((item) => parseArray(item.season_arc))),
+      episode_beats: uniqueValues(strategies.flatMap((item) => parseArray(item.episode_beats))),
+      commercial_beats: {
+        ...commercialBeats[0],
+        enabled: commercialBeats.some((item) => item.enabled === true),
+        items: uniqueValues(commercialBeats.flatMap((item) => parseArray(item.items))),
+      },
+      source_basis: uniqueValues(strategies.flatMap((item) => parseArray(item.source_basis))),
+      audit: {
+        ...audits[0],
+        issues: uniqueValues(audits.flatMap((item) => parseArray(item.issues))),
+      },
+    };
+  }
+
+  if (selectedSkill.require_visual_direction || selectedSkill.require_production_direction) {
+    const visualDirections = packages.map((item) => asObject(item.visual_direction));
+    const emotionalTones = visualDirections.map((item) => asObject(item.emotional_tone));
+    const rhythms = visualDirections.map((item) => asObject(item.rhythm));
+    merged.visual_direction = {
+      emotional_tone: {
+        primary: emotionalTones.map((item) => item.primary).find(Boolean) || '',
+        secondary: emotionalTones.map((item) => item.secondary).find(Boolean) || '',
+        evidence: uniqueValues(emotionalTones.flatMap((item) => parseArray(item.evidence))),
+      },
+      scene_profile: mergeNamedItems(visualDirections, 'scene_profile', 'type'),
+      rhythm: {
+        labels: uniqueValues(rhythms.flatMap((item) => parseArray(item.labels))),
+        evidence: uniqueValues(rhythms.flatMap((item) => parseArray(item.evidence))),
+      },
+      visual_motifs: mergeNamedItems(visualDirections, 'visual_motifs', 'motif'),
+      recommendations: mergeNamedItems(visualDirections, 'recommendations')
+        .map((item, index) => ({ ...item, rank: index + 1 })),
+    };
+  }
+
+  const normalized = normalizeProductionPackage(merged, project, {
+    schemaVersion: selectedSkill.output_schema_version,
+  });
+  return validateProductionPackage(
+    normalized,
+    validationOptionsFor(selectedSkill, strategyPreset),
+  );
+}
+
+async function runAnalysisChunk({ db, log, project, selectedSkill, strategyPreset, generationOptions }) {
   const raw = await aiClient.generateText(
     db,
     log,
@@ -500,21 +715,67 @@ async function runAnalysis({ db, log, project, skill, strategyPreset, generation
       ...generationOptions,
     },
   );
-  const normalized = normalizeProductionPackage(
-    safeParseAIJSON(raw, {}, log),
-    project,
-    { schemaVersion: selectedSkill.output_schema_version },
-  );
-  return validateProductionPackage(normalized, {
-    expectedSchemaVersion: selectedSkill.output_schema_version,
-    requireVisualDirection: Boolean(
-      selectedSkill.require_visual_direction || selectedSkill.require_production_direction
+  const normalized = restoreRequiredVisualDirection(
+    normalizeProductionPackage(
+      safeParseAIJSON(raw, {}, log),
+      project,
+      { schemaVersion: selectedSkill.output_schema_version },
     ),
-    requireProductionDirection: Boolean(selectedSkill.require_production_direction),
-    expectedStrategyPreset: selectedSkill.require_production_direction
-      ? (strategyPreset || selectedSkill.default_strategy_preset || 'fusion')
-      : undefined,
-  });
+    project,
+    selectedSkill,
+    log,
+  );
+  return validateProductionPackage(
+    normalized,
+    validationOptionsFor(selectedSkill, strategyPreset),
+  );
+}
+
+async function runAnalysis({ db, log, project, skill, strategyPreset, generationOptions = {} }) {
+  const selectedSkill = skill || resolveScriptAnalysisSkill();
+  const sourceScript = String(project.source_script || '');
+  if (sourceScript.length <= SCRIPT_ANALYSIS_DIRECT_CHARS) {
+    return runAnalysisChunk({
+      db,
+      log,
+      project,
+      selectedSkill,
+      strategyPreset,
+      generationOptions,
+    });
+  }
+
+  const chunks = splitSourceScript(sourceScript);
+  const packages = [];
+  const idempotencyKey = String(
+    generationOptions.idempotency_key || generationOptions.idempotencyKey || '',
+  ).trim();
+  for (let offset = 0; offset < chunks.length; offset += SCRIPT_ANALYSIS_CHUNK_CONCURRENCY) {
+    const batch = chunks.slice(offset, offset + SCRIPT_ANALYSIS_CHUNK_CONCURRENCY);
+    const settledBatch = await Promise.allSettled(batch.map((chunk, batchIndex) => {
+      const index = offset + batchIndex;
+      log?.info?.({
+        chunk_index: index + 1,
+        chunk_count: chunks.length,
+        chunk_chars: chunk.length,
+      }, 'script analysis chunk started');
+      return runAnalysisChunk({
+        db,
+        log,
+        project: { ...project, source_script: chunk },
+        selectedSkill,
+        strategyPreset,
+        generationOptions: {
+          ...generationOptions,
+          ...(idempotencyKey ? { idempotency_key: `${idempotencyKey}:chunk:${index + 1}` } : {}),
+        },
+      });
+    }));
+    const failed = settledBatch.find((result) => result.status === 'rejected');
+    if (failed) throw failed.reason;
+    packages.push(...settledBatch.map((result) => result.value));
+  }
+  return mergeProductionPackages(packages, { project, skill: selectedSkill, strategyPreset });
 }
 
 async function runRevision({
@@ -568,6 +829,8 @@ module.exports = {
   buildRevisionPrompt,
   normalizeProductionPackage,
   validateProductionPackage,
+  splitSourceScript,
+  mergeProductionPackages,
   runAnalysis,
   runRevision,
 };
