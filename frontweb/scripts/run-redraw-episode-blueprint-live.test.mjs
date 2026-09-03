@@ -596,6 +596,8 @@ test('verify rejects non-canonical artifact ids before inspecting them', async (
     'outputs//shots/shot-1.mp4',
     'outputs/shots/shot-1.mp4/',
     'outputs/shots',
+    'outputs/shots/shot-1.mp4:ads',
+    'C:outputs/shots/shot-1.mp4',
   ]
 
   for (const artifactId of artifactIds) {
@@ -603,6 +605,7 @@ test('verify rejects non-canonical artifact ids before inspecting them', async (
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-verify-canonical-paths-'))
       try {
         const state = await makeVerifyState(root)
+        if (artifactId.endsWith(':ads')) fs.writeFileSync(`${state.shotPath}:ads`, state.shotBytes)
         const manifest = JSON.parse(JSON.stringify(state.manifest))
         manifest.tasks[0].artifact.artifact_id = artifactId
         fs.writeFileSync(state.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)

@@ -239,6 +239,7 @@ function manifestArtifactPath(stateDir, artifactId, allowedDir) {
     || path.isAbsolute(artifactId)
     || path.win32.isAbsolute(artifactId)
     || path.posix.isAbsolute(artifactId)
+    || artifactId.includes(':')
     || artifactId.includes('\\')
     || artifactId.endsWith('/')
     || path.posix.normalize(artifactId) !== artifactId
