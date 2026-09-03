@@ -364,6 +364,102 @@ function saveDraft(rawCtx, input) {
   return transaction();
 }
 
+function sourceShotRecord(workId, versionId, ctx, shot) {
+  return {
+    work_id: Number(workId),
+    shot_id: shot.id,
+    version_id: Number(versionId),
+    tenant_id: ctx.tenantId,
+    user_id: ctx.userId,
+    batch_index: 1,
+    shot_index: Number(shot.index),
+    start_ms: Number(shot.start_ms),
+    end_ms: Number(shot.end_ms),
+    duration_ms: Number(shot.end_ms) - Number(shot.start_ms),
+    source_dialogue_json: JSON.stringify(shot.dialogue),
+    localized_dialogue_json: '[]',
+    references_json: '[]',
+    opening_state: shot.opening_state,
+    continuous_action: shot.continuous_action,
+    ending_state: shot.ending_state,
+    status: 'draft',
+  };
+}
+
+function sourceShotMatches(row, expected) {
+  return Number(row.work_id) === Number(expected.work_id)
+    && String(row.shot_id) === expected.shot_id
+    && Number(row.version_id) === expected.version_id
+    && String(row.tenant_id) === expected.tenant_id
+    && String(row.user_id) === expected.user_id
+    && Number(row.batch_index) === expected.batch_index
+    && Number(row.shot_index) === expected.shot_index
+    && Number(row.start_ms) === expected.start_ms
+    && Number(row.end_ms) === expected.end_ms
+    && Number(row.duration_ms) === expected.duration_ms
+    && String(row.source_dialogue_json) === expected.source_dialogue_json
+    && String(row.localized_dialogue_json) === expected.localized_dialogue_json
+    && String(row.references_json) === expected.references_json
+    && String(row.opening_state) === expected.opening_state
+    && String(row.continuous_action) === expected.continuous_action
+    && String(row.ending_state) === expected.ending_state
+    && row.status === expected.status
+    && row.deleted_at == null;
+}
+
+function materializeSourceShots(ctx, workId, versionId, projected, now) {
+  const expected = projected.shots.map((shot) => sourceShotRecord(workId, versionId, ctx, shot));
+  const expectedById = new Map(expected.map((shot) => [shot.shot_id, shot]));
+  const existing = ctx.db.prepare(`
+    SELECT work_id, shot_id, version_id, tenant_id, user_id, batch_index, shot_index,
+           start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
+           references_json, opening_state, continuous_action, ending_state, status, deleted_at
+    FROM redraw_shots
+    WHERE version_id = ?
+  `).all(Number(versionId));
+  const existingIds = new Set();
+  for (const row of existing) {
+    const matching = expectedById.get(String(row.shot_id));
+    if (!matching || existingIds.has(matching.shot_id) || !sourceShotMatches(row, matching)) {
+      throw codedError('REDRAW_BLUEPRINT_SOURCE_SHOTS_CONFLICT', '当前版本已有冲突的不可变源分镜');
+    }
+    existingIds.add(matching.shot_id);
+  }
+
+  const insert = ctx.db.prepare(`
+    INSERT INTO redraw_shots
+      (work_id, shot_id, version_id, tenant_id, user_id, batch_index, shot_index,
+       start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
+       references_json, opening_state, continuous_action, ending_state, status,
+       created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const shot of expected) {
+    if (existingIds.has(shot.shot_id)) continue;
+    insert.run(
+      shot.work_id,
+      shot.shot_id,
+      shot.version_id,
+      shot.tenant_id,
+      shot.user_id,
+      shot.batch_index,
+      shot.shot_index,
+      shot.start_ms,
+      shot.end_ms,
+      shot.duration_ms,
+      shot.source_dialogue_json,
+      shot.localized_dialogue_json,
+      shot.references_json,
+      shot.opening_state,
+      shot.continuous_action,
+      shot.ending_state,
+      shot.status,
+      now,
+      now,
+    );
+  }
+}
+
 function lockBlueprint(rawCtx, input) {
   const ctx = requireContext(rawCtx);
   const workId = workIdFrom(input);
@@ -410,6 +506,7 @@ function lockBlueprint(rawCtx, input) {
     if (versionUpdate.changes !== 1) {
       throw codedError('REDRAW_BLUEPRINT_VERSION_ALREADY_BOUND', '当前版本已有不可变母本事实');
     }
+    materializeSourceShots(ctx, workId, version.id, projected, now);
     const locked = ctx.db.prepare(`
       UPDATE redraw_episode_blueprints
       SET status = 'locked', reviewed_by = ?, reviewed_at = ?, updated_at = ?

@@ -15,6 +15,10 @@ const {
   normalizeEpisodeBlueprint,
   projectSourceFactsV2,
 } = require('../src/services/redrawEpisodeBlueprintService');
+const {
+  buildLocalizationInput,
+  createLocalizationVersion,
+} = require('../src/services/localizationService');
 const { fixtureBlueprint, lockedBlueprint } = require('./redrawEpisodeBlueprint.test');
 
 const NOW = '2026-09-03T00:00:00.000Z';
@@ -53,6 +57,32 @@ function changedLockedBlueprint(summary) {
   value.story.summary = summary;
   delete value.blueprint_hash;
   return normalizeEpisodeBlueprint(value);
+}
+
+function insertSourceShot(state, shot, overrides = {}) {
+  return state.db.prepare(`
+    INSERT INTO redraw_shots
+      (work_id, shot_id, version_id, tenant_id, user_id, batch_index, shot_index,
+       start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
+       references_json, opening_state, continuous_action, ending_state, status,
+       created_at, updated_at)
+    VALUES (?, ?, ?, 'tenant-a', 'user-a', 1, ?, ?, ?, ?, ?, '[]', '[]', ?, ?, ?, ?, ?, ?)
+  `).run(
+    state.workId,
+    overrides.shotId || shot.id,
+    state.versionId,
+    overrides.shotIndex || shot.index,
+    shot.start_ms,
+    shot.end_ms,
+    shot.end_ms - shot.start_ms,
+    JSON.stringify(shot.dialogue),
+    shot.opening_state,
+    shot.continuous_action,
+    shot.ending_state,
+    overrides.status || 'draft',
+    overrides.createdAt || NOW,
+    overrides.updatedAt || NOW,
+  );
 }
 
 test('creates revision 1 and returns the same row for a repeated blueprint hash', () => {
@@ -176,6 +206,141 @@ test('locks an approved draft atomically, projects source facts and makes the re
     }), { code: 'REDRAW_BLUEPRINT_LOCKED' });
     assert.equal(getCurrentBlueprint(state.ctx, { workId: state.workId }).blueprint_hash,
       approvedBlueprint.blueprint_hash);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('locked blueprint materializes source shots and directly creates a localization version', () => {
+  const state = setup();
+  try {
+    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM redraw_shots').get().count, 0);
+    const draft = createOrSaveDraft(state.ctx, {
+      workId: state.workId,
+      blueprint: normalizeEpisodeBlueprint(fixtureBlueprint()),
+    });
+    const reviewed = saveDraft(state.ctx, {
+      workId: state.workId,
+      blueprint: lockedBlueprint(),
+      expectedUpdatedAt: draft.updated_at,
+    });
+    lockBlueprint(state.ctx, {
+      workId: state.workId,
+      expectedBlueprintHash: reviewed.blueprint_hash,
+      expectedUpdatedAt: reviewed.updated_at,
+    });
+
+    const projected = projectSourceFactsV2(lockedBlueprint());
+    const sourceShots = state.db.prepare(`
+      SELECT work_id, version_id, tenant_id, user_id, batch_index, shot_index, shot_id,
+             start_ms, end_ms, duration_ms, source_dialogue_json,
+             localized_dialogue_json, references_json, opening_state,
+             continuous_action, ending_state, status, preparation_state, deleted_at
+      FROM redraw_shots
+      WHERE version_id = ?
+      ORDER BY batch_index, shot_index
+    `).all(state.versionId);
+    assert.equal(sourceShots.length, projected.shots.length);
+    sourceShots.forEach((row, index) => {
+      const shot = projected.shots[index];
+      assert.equal(Number(row.work_id), state.workId);
+      assert.equal(row.version_id, state.versionId);
+      assert.equal(row.tenant_id, 'tenant-a');
+      assert.equal(row.user_id, 'user-a');
+      assert.equal(row.batch_index, 1);
+      assert.equal(row.shot_index, shot.index);
+      assert.equal(row.shot_id, shot.id);
+      assert.equal(row.start_ms, shot.start_ms);
+      assert.equal(row.end_ms, shot.end_ms);
+      assert.equal(row.duration_ms, shot.end_ms - shot.start_ms);
+      assert.deepEqual(JSON.parse(row.source_dialogue_json), shot.dialogue);
+      assert.deepEqual(JSON.parse(row.localized_dialogue_json), []);
+      assert.deepEqual(JSON.parse(row.references_json), []);
+      assert.equal(row.opening_state, shot.opening_state);
+      assert.equal(row.continuous_action, shot.continuous_action);
+      assert.equal(row.ending_state, shot.ending_state);
+      assert.equal(row.status, 'draft');
+      assert.equal(row.preparation_state, 'parsed');
+      assert.equal(row.deleted_at, null);
+    });
+
+    const localized = createLocalizationVersion(state.db, state.ctx, state.workId, {
+      ...buildLocalizationInput(projected, { locale: 'en-US', market: 'US' }),
+      sourceVersionId: state.versionId,
+      dialogue: [
+        { shot_id: 'shot-1', turns: [{ speaker_id: 'character-qiao-an', target_text: 'Order 87 is here' }] },
+        { shot_id: 'shot-2', turns: [{ speaker_id: 'narrator', target_text: 'It was over' }] },
+      ],
+      textMap: { 'shot-2:text-region-1': 'CASE EIGHTY SEVEN' },
+    });
+    assert.equal(localized.shot_count, projected.shots.length);
+    assert.equal(state.db.prepare(`
+      SELECT COUNT(*) AS count FROM redraw_shots WHERE version_id = ?
+    `).get(localized.id).count, projected.shots.length);
+    assert.equal(state.db.prepare(`
+      SELECT COUNT(*) AS count FROM redraw_shots WHERE version_id = ?
+    `).get(state.versionId).count, projected.shots.length);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('locking preserves an identical source shot and inserts only missing shots', () => {
+  const state = setup();
+  try {
+    const blueprint = lockedBlueprint();
+    const projected = projectSourceFactsV2(blueprint);
+    const draft = createOrSaveDraft(state.ctx, { workId: state.workId, blueprint });
+    const existing = insertSourceShot(state, projected.shots[0], {
+      createdAt: '2026-09-02T00:00:00.000Z',
+      updatedAt: '2026-09-02T00:00:00.000Z',
+    });
+
+    lockBlueprint(state.ctx, {
+      workId: state.workId,
+      expectedBlueprintHash: draft.blueprint_hash,
+      expectedUpdatedAt: draft.updated_at,
+    });
+
+    const rows = state.db.prepare(`
+      SELECT id, shot_id, created_at, updated_at
+      FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
+    `).all(state.versionId);
+    assert.equal(rows.length, projected.shots.length);
+    assert.deepEqual(rows.map((row) => row.shot_id), projected.shots.map((shot) => shot.id));
+    assert.equal(rows[0].id, Number(existing.lastInsertRowid));
+    assert.equal(rows[0].created_at, '2026-09-02T00:00:00.000Z');
+    assert.equal(rows[0].updated_at, '2026-09-02T00:00:00.000Z');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('conflicting source shot rolls back lock and preserves the existing row', () => {
+  const state = setup();
+  try {
+    const blueprint = lockedBlueprint();
+    const projected = projectSourceFactsV2(blueprint);
+    const draft = createOrSaveDraft(state.ctx, { workId: state.workId, blueprint });
+    insertSourceShot(state, projected.shots[0], { shotId: 'conflicting-shot' });
+
+    assert.throws(() => lockBlueprint(state.ctx, {
+      workId: state.workId,
+      expectedBlueprintHash: draft.blueprint_hash,
+      expectedUpdatedAt: draft.updated_at,
+    }), { code: 'REDRAW_BLUEPRINT_SOURCE_SHOTS_CONFLICT' });
+
+    assert.equal(getCurrentBlueprint(state.ctx, { workId: state.workId }).status, 'draft');
+    assert.deepEqual(state.db.prepare(`
+      SELECT source_facts_json, facts_hash, blueprint_hash FROM redraw_versions WHERE id = ?
+    `).get(state.versionId), {
+      source_facts_json: null,
+      facts_hash: null,
+      blueprint_hash: null,
+    });
+    assert.deepEqual(state.db.prepare(`
+      SELECT shot_id, shot_index, status FROM redraw_shots WHERE version_id = ?
+    `).all(state.versionId), [{ shot_id: 'conflicting-shot', shot_index: 1, status: 'draft' }]);
   } finally {
     state.db.close();
   }
