@@ -366,6 +366,30 @@ test('validateProductionPackage rejects enhanced output without traceable eviden
   );
 });
 
+test('normalizeProductionPackage restores missing visual evidence from the source chunk', () => {
+  const raw = validV2Package();
+  raw.visual_direction.emotional_tone.evidence = [];
+  raw.visual_direction.rhythm.evidence = [];
+  raw.visual_direction.scene_profile[0].evidence = [];
+  raw.visual_direction.visual_motifs[0].evidence = [];
+  raw.visual_direction.recommendations[0].match_reasons = [];
+
+  const normalized = normalizeProductionPackage(raw, project, { schemaVersion: '2.0' });
+  const fallback = [project.source_script.slice(0, 240)];
+
+  assert.deepEqual(normalized.visual_direction.emotional_tone.evidence, fallback);
+  assert.deepEqual(normalized.visual_direction.rhythm.evidence, fallback);
+  assert.deepEqual(normalized.visual_direction.scene_profile[0].evidence, fallback);
+  assert.deepEqual(normalized.visual_direction.visual_motifs[0].evidence, fallback);
+  assert.deepEqual(normalized.visual_direction.recommendations[0].match_reasons, fallback);
+  assert.equal(validateProductionPackage(normalized, {
+    expectedSchemaVersion: '2.0',
+    requireVisualDirection: true,
+    requireProductionDirection: true,
+    expectedStrategyPreset: 'fusion',
+  }), normalized);
+});
+
 test('validateProductionPackage rejects malformed model output', () => {
   assert.throws(
     () => validateProductionPackage({ characters: [] }),
