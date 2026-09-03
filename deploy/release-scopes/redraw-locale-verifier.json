@@ -2,9 +2,6 @@
   "schemaVersion": 1,
   "release": "redraw-locale-verifier",
   "allowedPaths": [
-    ".env.production.example",
-    "backend-node/src/services/redrawNativeAudioService.js",
-    "backend-node/test/redrawNativeAudio.test.js",
     "backend-node/test/webProductionDeploymentContract.test.js",
     "deploy/redraw-locale-verifier/README.md",
     "deploy/redraw-locale-verifier/moli-redraw-locale-verifier.service",
