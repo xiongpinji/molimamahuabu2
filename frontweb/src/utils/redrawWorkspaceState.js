@@ -88,6 +88,8 @@ const PHASE_STAGE_ALIAS = {
   source: 'project_input',
   analyzing: 'source_analysis',
   analysis_review: 'source_analysis',
+  blueprint_review: 'source_analysis',
+  blueprint_locked: 'localization',
   localizing: 'localization',
   localization_needs_attention: 'localization',
   assets: 'character_assets',
@@ -251,11 +253,14 @@ function hasRefundOrReleaseEvidence(work) {
   return Number(work?.localization_billing?.released || 0) > 0
 }
 
-export function redrawWorkflowPhase(work) {
+export function redrawWorkflowPhase(work, blueprintRecord) {
   const localizationStatus = normalizedStatus(work?.localization_task?.status)
   if (['pending', 'processing', 'localizing'].includes(localizationStatus)) return 'localizing'
   if (['failed', 'needs_attention'].includes(localizationStatus)) return 'localization_needs_attention'
   if (localizationStatus === 'completed') return 'assets'
+  const blueprintStatus = normalizedStatus(blueprintRecord?.status)
+  if (blueprintStatus === 'draft') return 'blueprint_review'
+  if (blueprintStatus === 'locked') return 'blueprint_locked'
   const phase = normalizedStatus(work?.workflow_phase)
   if (['asset_review', 'assets'].includes(phase)) return 'assets'
   if (phase) return phase
@@ -275,12 +280,14 @@ export function localizationTaskState(work) {
   }
 }
 
-export function canConfirmLocalization(work, expectedQuoteHash) {
+export function canConfirmLocalization(work, expectedQuoteHash, blueprintRecord) {
   const quote = work?.localization_quote
   if (localizationQuoteCredits(work) == null || !String(quote?.quote_hash || '').trim()) return false
   if (expectedQuoteHash && String(quote.quote_hash).trim() !== String(expectedQuoteHash).trim()) return false
-  const phase = redrawWorkflowPhase(work)
-  if (phase === 'analysis_review') return true
+  if (blueprintRecord !== undefined && blueprintRecord !== null
+    && normalizedStatus(blueprintRecord.status) !== 'locked') return false
+  const phase = redrawWorkflowPhase(work, blueprintRecord)
+  if (['analysis_review', 'blueprint_locked'].includes(phase)) return true
   if (!['localization_needs_attention', 'failed'].includes(phase)) return false
   const task = work?.localization_task || {}
   return normalizedStatus(task.status || task.task_status) === 'failed' && hasRefundOrReleaseEvidence(work)
@@ -324,7 +331,7 @@ export function createLocalizationQuoteRequestGate() {
   }
 }
 
-export function createLocalizationConfirmationSnapshot({ work, quoteBody }) {
+export function createLocalizationConfirmationSnapshot({ work, quoteBody, blueprint }) {
   const request = {
     workId: work?.id,
     locale: quoteBody?.locale,
@@ -333,7 +340,9 @@ export function createLocalizationConfirmationSnapshot({ work, quoteBody }) {
   }
   return {
     workId: work?.id,
-    phase: redrawWorkflowPhase(work),
+    phase: redrawWorkflowPhase(work, blueprint),
+    blueprintStatus: blueprint == null ? '' : normalizedStatus(blueprint.status),
+    blueprintHash: blueprint == null ? '' : String(blueprint.blueprint_hash || '').trim(),
     previousHash: String(work?.localization_quote?.quote_hash || '').trim(),
     requestKey: localizationQuoteRequestKey(request),
     quoteBody: {
@@ -344,11 +353,13 @@ export function createLocalizationConfirmationSnapshot({ work, quoteBody }) {
   }
 }
 
-export function isCurrentLocalizationConfirmation(snapshot, { work, quoteBody }) {
+export function isCurrentLocalizationConfirmation(snapshot, { work, quoteBody, blueprint }) {
   if (!snapshot?.workId || String(work?.id || '') !== String(snapshot.workId)) return false
-  if (redrawWorkflowPhase(work) !== snapshot.phase) return false
-  if (!['analysis_review', 'localization_needs_attention', 'failed'].includes(snapshot.phase)) return false
-  if (!canConfirmLocalization(work, snapshot.previousHash)) return false
+  if (redrawWorkflowPhase(work, blueprint) !== snapshot.phase) return false
+  if (!['analysis_review', 'blueprint_locked', 'localization_needs_attention', 'failed'].includes(snapshot.phase)) return false
+  if ((blueprint == null ? '' : normalizedStatus(blueprint.status)) !== snapshot.blueprintStatus) return false
+  if ((blueprint == null ? '' : String(blueprint.blueprint_hash || '').trim()) !== snapshot.blueprintHash) return false
+  if (!canConfirmLocalization(work, snapshot.previousHash, blueprint)) return false
   const currentKey = localizationQuoteRequestKey({
     workId: work?.id,
     locale: quoteBody?.locale,

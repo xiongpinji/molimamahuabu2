@@ -55,7 +55,12 @@
           :project-id="projectId"
           :initial-work="work"
           :events="projectEvents"
+          :blueprint-record="blueprintRecord"
+          :blueprint-loading="blueprintLoading"
+          :blueprint-error="blueprintError"
           @work-updated="onWorkUpdated"
+          @blueprint-updated="onBlueprintUpdated"
+          @refresh-blueprint="refreshBlueprint"
         />
         <RedrawAssetStep
           v-else-if="allowedStep === 2"
@@ -112,6 +117,10 @@ const project = ref(null)
 const work = ref(null)
 const projectEvents = ref([])
 const projectEventsError = ref('')
+const blueprintRecord = ref(undefined)
+const blueprintLoading = ref(false)
+const blueprintError = ref('')
+let blueprintRequestSequence = 0
 
 const projectId = computed(() => route.params.projectId)
 const workId = computed(() => route.params.workId)
@@ -130,13 +139,21 @@ const steps = [
 ]
 
 async function loadWorkspace() {
+  const requestedWorkId = String(workId.value || '')
   loading.value = true
+  blueprintRequestSequence += 1
+  blueprintRecord.value = undefined
+  blueprintLoading.value = false
+  blueprintError.value = ''
   try {
     const eventsRequest = redrawAPI.listProjectEvents(projectId.value)
       .then((nextEvents) => resolveProjectEventsState({ previousEvents: projectEvents.value, nextEvents }))
       .catch((error) => resolveProjectEventsState({ previousEvents: projectEvents.value, error }))
     project.value = await redrawAPI.getProject(projectId.value)
     work.value = isExistingWorkId(workId.value) ? await redrawAPI.getWork(workId.value) : null
+    if (work.value?.id && String(work.value.id) === requestedWorkId) {
+      await loadBlueprint(work.value.id)
+    }
     applyProjectEventsState(await eventsRequest)
     const nextStep = resolveAllowedStep(route.query.step, work.value?.current_step || 1)
     if (String(route.query.step || '1') !== String(nextStep)) {
@@ -147,6 +164,48 @@ async function loadWorkspace() {
   }
 }
 
+async function loadBlueprint(targetWorkId) {
+  if (!isExistingWorkId(targetWorkId)) {
+    blueprintRecord.value = null
+    blueprintError.value = ''
+    return null
+  }
+  const requestSequence = ++blueprintRequestSequence
+  const requestedWorkId = String(targetWorkId)
+  blueprintLoading.value = true
+  try {
+    const next = await redrawAPI.getBlueprint(targetWorkId)
+    if (requestSequence !== blueprintRequestSequence || String(work.value?.id || '') !== requestedWorkId) return null
+    blueprintRecord.value = next
+    blueprintError.value = ''
+    return next
+  } catch (error) {
+    if (requestSequence !== blueprintRequestSequence || String(work.value?.id || '') !== requestedWorkId) return null
+    if (Number(error?.response?.status) === 404
+      || error?.response?.data?.error?.code === 'REDRAW_BLUEPRINT_NOT_FOUND') {
+      blueprintRecord.value = null
+      blueprintError.value = ''
+      return null
+    }
+    blueprintRecord.value = null
+    blueprintError.value = error?.response?.data?.error?.message || error?.message || '读取母本蓝图失败'
+    return null
+  } finally {
+    if (requestSequence === blueprintRequestSequence) blueprintLoading.value = false
+  }
+}
+
+function refreshBlueprint() {
+  return loadBlueprint(work.value?.id)
+}
+
+function onBlueprintUpdated(nextBlueprint) {
+  blueprintRequestSequence += 1
+  blueprintLoading.value = false
+  blueprintError.value = ''
+  blueprintRecord.value = nextBlueprint
+}
+
 function goStep(step) {
   const nextStep = Math.min(normalizeStep(step), backendStep.value)
   router.replace({ query: { ...route.query, step: nextStep } })
@@ -154,8 +213,14 @@ function goStep(step) {
 
 function onWorkUpdated(nextWork) {
   const previousBackendStep = work.value?.current_step || 1
+  const previousAnalysisStatus = String(work.value?.analysis_task?.status || work.value?.task_status || '').toLowerCase()
   work.value = nextWork
   refreshProjectEvents()
+  const nextAnalysisStatus = String(nextWork?.analysis_task?.status || nextWork?.task_status || '').toLowerCase()
+  if (nextWork?.id && blueprintRecord.value == null
+    && previousAnalysisStatus !== 'completed' && nextAnalysisStatus === 'completed') {
+    loadBlueprint(nextWork.id)
+  }
   if (nextWork?.id && String(workId.value) !== String(nextWork.id)) {
     router.replace({
       name: 'redraw-workspace',

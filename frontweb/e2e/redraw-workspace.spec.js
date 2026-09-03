@@ -100,6 +100,89 @@ const localizationQuote = {
   quote_hash: 'e'.repeat(64),
 }
 
+function blueprintReviewRecord() {
+  return {
+    id: 901,
+    work_id: workBase.id,
+    revision: 1,
+    status: 'draft',
+    blueprint_hash: 'c'.repeat(64),
+    updated_at: '2026-09-03T10:00:00.000Z',
+    blueprint: {
+      schema_version: 'episode-blueprint-v1',
+      source: {
+        asset_id: 'source-910',
+        sha256: 'a'.repeat(64),
+        duration_ms: 6_000,
+        width: 1080,
+        height: 1920,
+        fps: 25,
+        video_codec: 'h264',
+        audio_codec: 'aac',
+        audio_sample_rate_hz: 48_000,
+        audio_channels: 2,
+      },
+      evidence_manifest: {
+        items: [
+          { id: 'evidence-audio-1', kind: 'audio_transcript', asset_id: 'audio-1', sha256: 'b'.repeat(64), tool: 'local-asr', tool_version: '1.0' },
+          { id: 'evidence-visual-1', kind: 'visual', asset_id: 'visual-1', sha256: 'd'.repeat(64), tool: 'local-vision', tool_version: '1.0' },
+        ],
+      },
+      story: {
+        summary: '雨夜订单把男主重新带回旧案。',
+        beats: ['男主送达订单', '旧案编号重新出现'],
+        evidence_refs: ['evidence-visual-1'],
+        confidence: 0.88,
+      },
+      characters: [{
+        id: 'character-lead',
+        source_name: '男主',
+        display_name: '男主',
+        relationship: '骑手',
+        relationships: ['与旧案有关'],
+        face_track_ids: ['face-track-1'],
+        evidence_refs: ['evidence-visual-1'],
+        confidence: 0.92,
+        review_status: 'approved',
+      }],
+      scenes: [{
+        id: 'scene-storefront', location: '便利店门口', time: '雨夜',
+        source_ranges: [{ start_ms: 0, end_ms: 6_000 }],
+        evidence_refs: ['evidence-visual-1'], confidence: 0.91,
+      }],
+      props: [{
+        id: 'prop-order-bag', name: '密封餐袋',
+        evidence_ranges: [{ start_ms: 0, end_ms: 6_000 }],
+        evidence_refs: ['evidence-visual-1'], confidence: 0.87,
+      }],
+      shots: [{
+        id: 'shot-1', index: 1, start_ms: 0, end_ms: 6_000,
+        composition: '男主站在便利店门口。', camera_movement: '缓慢前推',
+        opening_state: '男主抱着餐袋。', continuous_action: '男主抬头望向路边。', ending_state: '男主停在车旁。',
+        visible_character_ids: ['character-lead'],
+        dialogue: [{
+          id: 'dialogue-1', speaker_id: 'speaker-cluster-1', speaker_kind: 'voice_cluster', off_screen: false,
+          start_ms: 500, end_ms: 1_800, source_text: '尾号八七的订单到了。', source_language: 'zh-CN', emotion: '克制',
+          evidence_refs: ['evidence-audio-1'], confidence: 0.73, review_status: 'needs_review',
+        }],
+        text_regions: [{
+          id: 'text-region-1', kind: 'screen_text', polygon: [[0.2, 0.3], [0.8, 0.3], [0.8, 0.5], [0.2, 0.5]],
+          source_text: 'A-87', evidence_refs: ['evidence-visual-1'], confidence: 0.9,
+        }],
+        audio_contract: { dialogue_mode: 'spoken', ambient_audio: 'preserve_or_rebuild' },
+        confidence: { character_mapping: 0.9, speaker_mapping: 0.73, text_regions: 0.9, shot_boundary: 0.94 },
+        evidence_refs: ['evidence-visual-1'],
+      }],
+      causal_chain: [{ id: 'causal-1', cause: '男主送达订单。', effect: '旧案编号重新出现。', evidence_refs: ['evidence-visual-1'], confidence: 0.84 }],
+      locked_facts: [{ id: 'fact-1', text: '男主在雨夜送达密封餐袋。', evidence_refs: ['evidence-visual-1'], confidence: 0.95 }],
+      reversals: [{ id: 'reversal-1', text: '普通订单与旧案有关。', evidence_refs: ['evidence-visual-1'], confidence: 0.8 }],
+      episode_hook: { text: '封条露出旧案编号。', evidence_refs: ['evidence-visual-1'], confidence: 0.9 },
+      review: { status: 'needs_review' },
+      blueprint_hash: 'c'.repeat(64),
+    },
+  }
+}
+
 const assetBatchQuote = {
   priced: true,
   total_credits: 18,
@@ -353,6 +436,46 @@ async function installFixtures(page, state) {
         ...(state.quoteReady ? { analysis_quote: { credits: 6 } } : { analysis_quote: null }),
       }
       await route.fulfill(apiData(state.work))
+      return
+    }
+    if (method === 'GET' && pathname === `/api/v1/redraw/works/${workBase.id}/blueprint`) {
+      if (!state.blueprint) {
+        await route.fulfill(apiData(null))
+        return
+      }
+      await route.fulfill(apiData(structuredClone(state.blueprint)))
+      return
+    }
+    if (method === 'PUT' && pathname === `/api/v1/redraw/works/${workBase.id}/blueprint`) {
+      const body = request.postDataJSON()
+      state.requests.push({ method, pathname, body })
+      if (state.blueprintConflict) {
+        await route.fulfill({
+          status: 409,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: false, error: { code: 'REDRAW_BLUEPRINT_CAS_CONFLICT', message: '母本蓝图已变化，请刷新后重试' } }),
+        })
+        return
+      }
+      state.blueprint = {
+        ...state.blueprint,
+        blueprint: structuredClone(body.blueprint),
+        blueprint_hash: 'e'.repeat(64),
+        updated_at: '2026-09-03T10:01:00.000Z',
+      }
+      state.blueprint.blueprint.blueprint_hash = state.blueprint.blueprint_hash
+      await route.fulfill(apiData(structuredClone(state.blueprint)))
+      return
+    }
+    if (method === 'POST' && pathname === `/api/v1/redraw/works/${workBase.id}/blueprint/lock`) {
+      const body = request.postDataJSON()
+      state.requests.push({ method, pathname, body })
+      state.blueprint = {
+        ...state.blueprint,
+        status: 'locked',
+        updated_at: '2026-09-03T10:02:00.000Z',
+      }
+      await route.fulfill(apiData(structuredClone(state.blueprint)))
       return
     }
     if (method === 'POST' && pathname === `/api/v1/redraw/works/${workBase.id}/localization-quote`) {
@@ -891,6 +1014,82 @@ test.describe('一键转绘输入与分析流程', () => {
     await expect(page.locator('.task-card')).toContainText('68%')
     await assertNoPageHorizontalScroll(page)
     await assertTextFits(page, '上传源片并锁定转绘基础设置')
+  })
+
+  test('母本蓝图审核映射声音聚类后以 CAS 保存并锁定，再开放本地化', async ({ page }) => {
+    const state = {
+      projects: [project],
+      quoteReady: true,
+      work: { ...analysisReviewWork(), url: 'https://fixtures.example/source.mp4' },
+      blueprint: blueprintReviewRecord(),
+      requests: [],
+    }
+    await installFixtures(page, state)
+    await page.goto('/redraw/projects/41/works/710?step=1')
+
+    await expect(page.getByRole('heading', { name: '母本反推审核' })).toBeVisible()
+    await expect(page.getByText('speaker-cluster-1', { exact: true })).toBeVisible()
+    await expect(page.getByText('尾号八七的订单到了。')).toBeVisible()
+    await expect(page.getByText('evidence-audio-1', { exact: true }).first()).toBeVisible()
+    await expect(page.getByRole('button', { name: '开始本地化' })).toBeDisabled()
+    await expect(page.getByText('本地化报价 9 积分')).toHaveCount(0)
+
+    const clusterSelect = page.getByRole('combobox', { name: 'speaker-cluster-1 映射角色' })
+    await clusterSelect.focus()
+    await clusterSelect.press('Enter')
+    await clusterSelect.press('ArrowDown')
+    await clusterSelect.press('Enter')
+    await page.getByLabel('审核人标识').fill('reviewer-e2e')
+    await page.getByRole('button', { name: '确认母本事实审核' }).click()
+    await page.getByRole('button', { name: '锁定母本蓝图' }).click()
+
+    await expect(page.getByText('蓝图已锁定，只读展示')).toBeVisible()
+    await expect(page.getByRole('button', { name: '开始本地化' })).toBeEnabled()
+    await expect(page.getByText('本地化报价 9 积分')).toBeVisible()
+    const save = state.requests.find((entry) => entry.method === 'PUT' && entry.pathname.endsWith('/blueprint'))
+    expectOnlyKeys(save.body, ['expected_updated_at', 'blueprint'])
+    expect(save.body.expected_updated_at).toBe('2026-09-03T10:00:00.000Z')
+    expect(save.body.blueprint.shots[0].dialogue[0]).toMatchObject({
+      speaker_id: 'character-lead', speaker_kind: 'character', off_screen: false, review_status: 'approved',
+    })
+    expect(save.body.blueprint.shots[0].dialogue[0].source_text).toBe('尾号八七的订单到了。')
+    expect(save.body.blueprint.shots[0].dialogue[0].evidence_refs).toEqual(['evidence-audio-1'])
+    const lock = state.requests.find((entry) => entry.method === 'POST' && entry.pathname.endsWith('/blueprint/lock'))
+    expectOnlyKeys(lock.body, ['expected_blueprint_hash', 'expected_updated_at'])
+    expect(lock.body).toEqual({
+      expected_blueprint_hash: 'e'.repeat(64),
+      expected_updated_at: '2026-09-03T10:01:00.000Z',
+    })
+  })
+
+  test('母本蓝图保存 CAS 冲突时要求刷新且不静默覆盖或继续锁定', async ({ page }) => {
+    const original = blueprintReviewRecord()
+    const state = {
+      projects: [project],
+      quoteReady: true,
+      work: { ...analysisReviewWork(), url: 'https://fixtures.example/source.mp4' },
+      blueprint: structuredClone(original),
+      blueprintConflict: true,
+      requests: [],
+    }
+    await installFixtures(page, state)
+    await page.goto('/redraw/projects/41/works/710?step=1')
+    const clusterSelect = page.getByRole('combobox', { name: 'speaker-cluster-1 映射角色' })
+    await clusterSelect.focus()
+    await clusterSelect.press('Enter')
+    await clusterSelect.press('ArrowDown')
+    await clusterSelect.press('Enter')
+    await page.getByLabel('审核人标识').fill('reviewer-e2e')
+    await page.getByRole('button', { name: '确认母本事实审核' }).click()
+    await page.getByRole('button', { name: '锁定母本蓝图' }).click()
+
+    await expect(page.getByText('母本蓝图已变化，请刷新后重试')).toBeVisible()
+    expect(state.blueprint).toEqual(original)
+    expect(state.requests.some((entry) => entry.pathname.endsWith('/blueprint/lock'))).toBe(false)
+    await expect(page.getByRole('button', { name: '开始本地化' })).toBeDisabled()
+    const browserErrors = browserErrorsByPage.get(page) || []
+    expect(browserErrors.some((message) => message.includes('409 (Conflict)'))).toBe(true)
+    browserErrorsByPage.set(page, browserErrors.filter((message) => !message.includes('409 (Conflict)')))
   })
 
   test('本地化确认后资产批次部分失败只重试失败项并开放第三步', async ({ page }) => {

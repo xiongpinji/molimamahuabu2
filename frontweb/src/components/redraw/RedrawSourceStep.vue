@@ -10,7 +10,7 @@
       </span>
     </div>
 
-    <div v-if="!['analysis_review', 'localizing', 'localization_needs_attention', 'failed'].includes(workflowPhase)" class="source-card">
+    <div v-if="!['analysis_review', 'blueprint_review', 'blueprint_locked', 'localizing', 'localization_needs_attention', 'failed'].includes(workflowPhase)" class="source-card">
       <div class="section-heading">
         <div>
           <p class="eyebrow">01 · 源片输入</p>
@@ -104,7 +104,28 @@
       <el-progress :percentage="taskState.progress" :stroke-width="6" color="#ff7139" />
     </section>
 
-    <section v-if="workflowPhase === 'analysis_review'" class="task-card">
+    <RedrawBlueprintReviewPanel
+      v-if="showsBlueprintReview"
+      :record="blueprintRecord"
+      :work="workState"
+      :loading="blueprintLoading"
+      :error="blueprintError"
+      @updated="onBlueprintUpdated"
+      @refresh-requested="$emit('refresh-blueprint')"
+    />
+
+    <section v-if="workflowPhase === 'blueprint_review'" class="task-card">
+      <div>
+        <strong>本地化门禁</strong>
+        <span>母本蓝图尚未锁定</span>
+      </div>
+      <p>先解决所有声音聚类并锁定母本事实，系统才会读取本地化报价。</p>
+      <div class="billing-row">
+        <el-button type="primary" disabled>开始本地化</el-button>
+      </div>
+    </section>
+
+    <section v-if="workflowPhase === 'analysis_review' && !showsBlueprintReview" class="task-card">
       <div>
         <strong>服务端分析摘要</strong>
         <span>{{ workState?.analysis_task?.status || taskState.status || 'completed' }}</span>
@@ -121,6 +142,24 @@
         >
           确认英文 1:1 本地化
         </el-button>
+      </div>
+    </section>
+
+    <section v-if="workflowPhase === 'blueprint_locked'" class="task-card">
+      <div>
+        <strong>母本蓝图已锁定</strong>
+        <span>可以开始本地化</span>
+      </div>
+      <p>本地化版本将绑定当前母本蓝图哈希，不会改写母本原文与证据。</p>
+      <div class="billing-row">
+        <strong v-if="hasLocalizationQuote" class="canvas-credit-callout-v1">本地化报价 {{ localizationCredits }} 积分</strong>
+        <strong v-else class="canvas-credit-callout-v1">本地化报价待管理员配置</strong>
+        <el-button
+          type="primary"
+          :loading="localizationSubmitting"
+          :disabled="!canSubmitLocalization"
+          @click="confirmLocalization"
+        >开始本地化</el-button>
       </div>
     </section>
 
@@ -160,6 +199,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { redrawAPI } from '@/api/redraw'
+import RedrawBlueprintReviewPanel from '@/components/redraw/RedrawBlueprintReviewPanel.vue'
 import StylePresetPicker from '@/components/redraw/StylePresetPicker.vue'
 import {
   analysisQuoteCredits,
@@ -191,9 +231,21 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  blueprintRecord: {
+    type: Object,
+    default: undefined,
+  },
+  blueprintLoading: {
+    type: Boolean,
+    default: false,
+  },
+  blueprintError: {
+    type: String,
+    default: '',
+  },
 })
 
-const emit = defineEmits(['work-updated'])
+const emit = defineEmits(['work-updated', 'blueprint-updated', 'refresh-blueprint'])
 
 const fileInput = ref(null)
 const selectedFile = ref(null)
@@ -210,7 +262,7 @@ const submitting = ref(false)
 const localizationSubmitting = ref(false)
 const taskState = ref({ task_id: '', status: '', progress: 0 })
 const localizationState = ref(localizationTaskState(props.initialWork))
-const workflowPhase = ref(redrawWorkflowPhase(props.initialWork))
+const workflowPhase = ref(redrawWorkflowPhase(props.initialWork, props.blueprintRecord))
 const localizationIdempotencyKey = ref('')
 const localizationQuoteGate = createLocalizationQuoteRequestGate()
 let pollTimer = null
@@ -228,9 +280,15 @@ const canStartAnalysis = computed(() => canStartRedrawAnalysis({
   selectedPreset: selectedPreset.value,
   freeStyle: freeStyle.value,
 }))
-const canSubmitLocalization = computed(() => canConfirmLocalization(workState.value))
+const canSubmitLocalization = computed(() => canConfirmLocalization(workState.value, undefined, props.blueprintRecord))
+const showsBlueprintReview = computed(() => (
+  ['blueprint_review', 'blueprint_locked'].includes(workflowPhase.value)
+  || props.blueprintLoading
+  || Boolean(props.blueprintError)
+))
 const eightStageState = computed(() => resolveEightStageState({
   ...(workState.value || {}),
+  workflow_phase: workflowPhase.value,
   events: props.events,
 }))
 
@@ -258,13 +316,13 @@ function localizationQuoteRequest(work) {
 }
 
 function isTerminalTaskState(work) {
-  const phase = redrawWorkflowPhase(work)
+  const phase = redrawWorkflowPhase(work, props.blueprintRecord)
   const analysisStatus = String(work?.analysis_task?.status || work?.task_status || work?.status || '').toLowerCase()
   const localizationStatus = String(work?.localization_task?.status || '').toLowerCase()
   if (phase === 'localizing') return false
   if (['pending', 'processing', 'analyzing'].includes(analysisStatus)) return false
   if (['pending', 'processing', 'localizing'].includes(localizationStatus)) return false
-  return ['analysis_review', 'localization_needs_attention', 'failed', 'assets'].includes(phase)
+  return ['analysis_review', 'blueprint_review', 'blueprint_locked', 'localization_needs_attention', 'failed', 'assets'].includes(phase)
     || ['completed', 'failed', 'needs_attention', 'cancelled', 'canceled'].includes(analysisStatus)
     || ['completed', 'failed', 'needs_attention', 'cancelled', 'canceled'].includes(localizationStatus)
 }
@@ -277,7 +335,7 @@ function shouldPollWork(work) {
       && (
         ['pending', 'processing', 'analyzing'].includes(analysisStatus)
           || ['pending', 'processing', 'localizing'].includes(localizationStatus)
-          || redrawWorkflowPhase(work) === 'localizing'
+          || redrawWorkflowPhase(work, props.blueprintRecord) === 'localizing'
       )
       && !isTerminalTaskState(work),
   )
@@ -308,7 +366,9 @@ function startTaskPolling() {
 
 function syncWork(next) {
   workState.value = next
-  workflowPhase.value = redrawWorkflowPhase(next)
+  workflowPhase.value = props.blueprintRecord === undefined
+    ? redrawWorkflowPhase(next)
+    : redrawWorkflowPhase(next, props.blueprintRecord)
   taskState.value = taskStateFromWork(next)
   localizationState.value = localizationTaskState(next)
   if (shouldResetLocalizationIdempotencyKey(next)) {
@@ -341,10 +401,11 @@ async function refreshWork() {
 }
 
 async function ensureLocalizationQuote(work = workState.value) {
+  const phase = redrawWorkflowPhase(work, props.blueprintRecord)
   if (
     !work?.id
       || work?.localization_quote
-      || !['analysis_review', 'localization_needs_attention', 'failed'].includes(redrawWorkflowPhase(work))
+      || !['analysis_review', 'blueprint_locked', 'localization_needs_attention', 'failed'].includes(phase)
   ) {
     return
   }
@@ -355,7 +416,8 @@ async function ensureLocalizationQuote(work = workState.value) {
     if (
       workState.value?.id !== work.id
         || !localizationQuoteGate.accepts(quoteRequest)
-        || !['analysis_review', 'localization_needs_attention', 'failed'].includes(redrawWorkflowPhase(workState.value))
+        || !['analysis_review', 'blueprint_locked', 'localization_needs_attention', 'failed']
+          .includes(redrawWorkflowPhase(workState.value, props.blueprintRecord))
     ) {
       return
     }
@@ -426,9 +488,17 @@ async function confirmLocalization() {
   try {
     const work = await ensureWork()
     const quoteBody = localizationQuoteBody()
-    const snapshot = createLocalizationConfirmationSnapshot({ work: workState.value, quoteBody })
+    const snapshot = createLocalizationConfirmationSnapshot({
+      work: workState.value,
+      quoteBody,
+      blueprint: props.blueprintRecord,
+    })
     const quote = await redrawAPI.quoteLocalization(work.id, quoteBody)
-    if (!isCurrentLocalizationConfirmation(snapshot, { work: workState.value, quoteBody: localizationQuoteBody() })) {
+    if (!isCurrentLocalizationConfirmation(snapshot, {
+      work: workState.value,
+      quoteBody: localizationQuoteBody(),
+      blueprint: props.blueprintRecord,
+    })) {
       return
     }
     const nextWork = {
@@ -437,7 +507,7 @@ async function confirmLocalization() {
     }
     syncWork(nextWork)
     const nextHash = String(nextWork.localization_quote?.quote_hash || '').trim()
-    if (!canConfirmLocalization(nextWork, snapshot.previousHash)) {
+    if (!canConfirmLocalization(nextWork, snapshot.previousHash, props.blueprintRecord)) {
       ElMessage.warning('本地化报价已变化，请重新确认')
       return
     }
@@ -476,13 +546,22 @@ onMounted(async () => {
 
 watch(() => props.initialWork, (next) => {
   workState.value = next
-  workflowPhase.value = redrawWorkflowPhase(next)
+  workflowPhase.value = redrawWorkflowPhase(next, props.blueprintRecord)
   taskState.value = taskStateFromWork(next)
   localizationState.value = localizationTaskState(next)
   if (shouldPollWork(next)) startTaskPolling()
   if (isTerminalTaskState(next)) stopTaskPolling()
   ensureLocalizationQuote(next)
 })
+
+watch(() => props.blueprintRecord, (next) => {
+  workflowPhase.value = redrawWorkflowPhase(workState.value, next)
+  ensureLocalizationQuote(workState.value)
+})
+
+function onBlueprintUpdated(next) {
+  emit('blueprint-updated', next)
+}
 
 onUnmounted(() => {
   stopTaskPolling()
