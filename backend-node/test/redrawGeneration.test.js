@@ -51,8 +51,11 @@ const {
   assertVideoConditioningCapability,
 } = require('../src/services/redrawGenerationService');
 const redrawReviewService = require('../src/services/redrawReviewService');
-const { productionPackHash } = require('../src/services/redrawShotProductionPackService');
-const { compileShotProductionPack } = require('../src/services/redrawShotProductionPackService');
+const redrawBillingService = require('../src/services/redrawBillingService');
+const {
+  compileShotProductionPack,
+  productionPackHash,
+} = require('../src/services/redrawShotProductionPackService');
 
 const log = { info() {}, warn() {}, error() {} };
 const FEITUO_FAST_MODEL = 'sdas-my-seedance-2.0-fast-upscaled-1080p';
@@ -1691,31 +1694,42 @@ test('stale production pack hashes fail closed before provider and credit reserv
     }],
   ];
 
-  for (const [name, mutate] of cases) {
-    const state = setup();
-    let providerCalls = 0;
-    try {
-      const shotId = addShot(state.db, state.versionId);
-      const { pack } = installBlueprintFirstProductionPack(state, shotId);
-      mutate(pack);
-      state.db.prepare('UPDATE redraw_shots SET compiled_prompt_json = ? WHERE id = ?')
-        .run(JSON.stringify(pack), shotId);
+  const originalReserve = redrawBillingService.reserveShotGeneration;
+  let reserveCalls = 0;
+  redrawBillingService.reserveShotGeneration = (...args) => {
+    reserveCalls += 1;
+    return originalReserve(...args);
+  };
+  try {
+    for (const [name, mutate] of cases) {
+      const state = setup();
+      let providerCalls = 0;
+      try {
+        const shotId = addShot(state.db, state.versionId);
+        const { pack } = installBlueprintFirstProductionPack(state, shotId);
+        mutate(pack);
+        state.db.prepare('UPDATE redraw_shots SET compiled_prompt_json = ? WHERE id = ?')
+          .run(JSON.stringify(pack), shotId);
 
-      await assert.rejects(
-        () => generateShot(ctx(state.db, {
-          awaitCompletion: true,
-          videoProcessor: async () => { providerCalls += 1; },
-        }), { shotId }),
-        (error) => error.code === 'REDRAW_PRODUCTION_PACK_STALE',
-        name,
-      );
-      assert.equal(providerCalls, 0, name);
-      assert.equal(count(state.db, 'tenant_usage_reservations'), 0, name);
-      assert.equal(count(state.db, 'video_generations'), 0, name);
-      assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0, name);
-    } finally {
-      state.db.close();
+        await assert.rejects(
+          () => generateShot(ctx(state.db, {
+            awaitCompletion: true,
+            videoProcessor: async () => { providerCalls += 1; },
+          }), { shotId }),
+          (error) => error.code === 'REDRAW_PRODUCTION_PACK_STALE',
+          name,
+        );
+        assert.equal(providerCalls, 0, name);
+        assert.equal(reserveCalls, 0, name);
+        assert.equal(count(state.db, 'tenant_usage_reservations'), 0, name);
+        assert.equal(count(state.db, 'video_generations'), 0, name);
+        assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0, name);
+      } finally {
+        state.db.close();
+      }
     }
+  } finally {
+    redrawBillingService.reserveShotGeneration = originalReserve;
   }
 });
 
