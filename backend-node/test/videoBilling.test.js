@@ -548,7 +548,7 @@ test('中转站限定的 NewAPI 模型创建后固定原配置且按限定 ID �
     aspect_ratio: '16:9',
     resolution: '480p',
   }, { billingEnabled: true, userId: 'user-1', schedule() {} });
-  const row = db.prepare(`SELECT model, provider, duration, ai_service_config_id, credit_reservation_id
+  const row = db.prepare(`SELECT model, provider, duration, ai_service_config_id, credit_reservation_id, source_conditioning_json
     FROM video_generations WHERE id = ?`).get(created.id);
   const task = db.prepare('SELECT model FROM async_tasks WHERE id = ?').get(created.task_id);
 
@@ -556,8 +556,187 @@ test('中转站限定的 NewAPI 模型创建后固定原配置且按限定 ID �
   assert.equal(row.provider, 'newapi');
   assert.equal(row.duration, 4);
   assert.equal(row.ai_service_config_id, config.id);
+  assert.deepEqual(JSON.parse(row.source_conditioning_json).video_capability, {
+    config_id: config.id,
+    config_updated_at: db.prepare('SELECT updated_at FROM ai_service_configs WHERE id = ?').get(config.id).updated_at,
+    provider: 'newapi',
+    protocol: 'newapi_video',
+    model: 'seedance-2.0-mini',
+  });
   assert.equal(task.model, selection);
   assert.equal(credits.getReservation(db, row.credit_reservation_id).amount, 176);
+  db.close();
+});
+
+test('NewAPI 的 4 秒能力不能误开放给同名的其他中转站模型', () => {
+  const originalGetDefaultVideoConfig = videoClient.getDefaultVideoConfig;
+  videoClient.getDefaultVideoConfig = (_db, model) => ({
+    id: 41,
+    model: [model],
+    default_model: model,
+    canvas_selected_model: model,
+    provider: 'custom-relay',
+    api_protocol: 'custom-video',
+    settings: '{}',
+  });
+
+  const db = setup();
+  try {
+    credits.setAccountBalance(db, 'user-1', 1000);
+    prices.set(db, 'seedance-2.0-mini', 44, { category: 'video', cost_unit: 'second' });
+    assert.throws(() => videoService.create(db, log, {
+      drama_id: 1,
+      model: 'seedance-2.0-mini',
+      prompt: '其他中转站不得继承 NewAPI 的 4 秒能力',
+      duration: 4,
+      aspect_ratio: '16:9',
+      resolution: '480p',
+    }, { billingEnabled: true, userId: 'user-1', schedule() {} }), (error) => (
+      error.code === 'INVALID_VIDEO_DURATION'
+    ));
+    assert.deepEqual(generationSideEffects(db), { tasks: 0, videos: 0, reservations: 0, costs: 0 });
+  } finally {
+    videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;
+    db.close();
+  }
+});
+
+test('NewAPI 创建只接受当前配置真实验证能力中的时长', () => {
+  const db = setup();
+  const config = aiConfig.createConfig(db, log, {
+    service_type: 'video', provider: 'newapi', api_protocol: 'newapi_video',
+    name: 'NewAPI 时长证据测试', base_url: 'https://newapi.example', api_key: 'newapi-secret',
+    model: ['seedance-2.0-mini'], default_model: 'seedance-2.0-mini', is_active: true,
+  });
+  aiConfig.recordVerification(db, config.id, {
+    status: 'verified',
+    capabilities: {
+      'seedance-2.0-mini': {
+        validated: true,
+        durations: [5],
+        aspectRatios: ['16:9'],
+        resolutions: ['480p'],
+      },
+    },
+  });
+  const selection = `cfg-${config.id}::seedance-2.0-mini`;
+  prices.set(db, selection, 44, {
+    category: 'video', billingUnit: 'second', costUnit: 'second',
+    resolution_prices: { '480p': { credits: 44, cost_micros_per_second: 50000 } },
+  });
+  credits.setAccountBalance(db, 'user-1', 1000);
+
+  assert.throws(() => videoService.create(db, log, {
+    drama_id: 1,
+    model: selection,
+    prompt: '只允许证据中的时长',
+    duration: 4,
+    aspect_ratio: '16:9',
+    resolution: '480p',
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} }), (error) => (
+    error.code === 'INVALID_VIDEO_DURATION'
+  ));
+  assert.deepEqual(generationSideEffects(db), { tasks: 0, videos: 0, reservations: 0, costs: 0 });
+  db.close();
+});
+
+test('NewAPI 未验证同步音频时在任务和预扣前拒绝开启音频', () => {
+  const db = setup();
+  const config = aiConfig.createConfig(db, log, {
+    service_type: 'video', provider: 'newapi', api_protocol: 'newapi_video',
+    name: 'NewAPI 音频能力测试', base_url: 'https://newapi.example', api_key: 'newapi-secret',
+    model: ['alibaba/wan-3.0'], default_model: 'alibaba/wan-3.0', is_active: true,
+  });
+  aiConfig.recordVerification(db, config.id, {
+    status: 'verified',
+    capabilities: {
+      'alibaba/wan-3.0': {
+        validated: true,
+        durations: [4],
+        aspectRatios: ['16:9'],
+        resolutions: ['480p'],
+        supportsAudio: false,
+      },
+    },
+  });
+  const selection = `cfg-${config.id}::alibaba/wan-3.0`;
+  prices.set(db, selection, 134, {
+    category: 'video', billingUnit: 'second', costUnit: 'second',
+    resolution_prices: { '480p': { credits: 134, cost_micros_per_second: 150000 } },
+  });
+  credits.setAccountBalance(db, 'user-1', 1000);
+
+  assert.throws(() => videoService.create(db, log, {
+    drama_id: 1,
+    model: selection,
+    prompt: '未验证同步音频不得提交',
+    duration: 4,
+    aspect_ratio: '16:9',
+    resolution: '480p',
+    generate_audio: true,
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} }), (error) => (
+    error.code === 'VIDEO_REFERENCE_FORBIDDEN'
+  ));
+  assert.deepEqual(generationSideEffects(db), { tasks: 0, videos: 0, reservations: 0, costs: 0 });
+  db.close();
+});
+
+test('NewAPI 排队后配置版本变化时拒绝切换线路或提交供应商', async () => {
+  const db = setup();
+  const config = aiConfig.createConfig(db, log, {
+    service_type: 'video', provider: 'newapi', api_protocol: 'newapi_video',
+    name: 'NewAPI 固定线路测试', base_url: 'https://newapi.example', api_key: 'newapi-secret',
+    model: ['seedance-2.0-mini'], default_model: 'seedance-2.0-mini', is_active: true,
+  });
+  aiConfig.recordVerification(db, config.id, {
+    status: 'verified',
+    capabilities: {
+      'seedance-2.0-mini': {
+        validated: true,
+        durations: [4],
+        aspectRatios: ['16:9'],
+        resolutions: ['480p'],
+        supportsAudio: false,
+      },
+    },
+  });
+  const selection = `cfg-${config.id}::seedance-2.0-mini`;
+  prices.set(db, selection, 44, {
+    category: 'video', billingUnit: 'second', costUnit: 'second',
+    resolution_prices: { '480p': { credits: 44, cost_micros_per_second: 50000 } },
+  });
+  credits.setAccountBalance(db, 'user-1', 1000);
+  let scheduled;
+  const created = videoService.create(db, log, {
+    drama_id: 1,
+    model: selection,
+    prompt: '排队后仍固定线路',
+    duration: 4,
+    aspect_ratio: '16:9',
+    resolution: '480p',
+  }, {
+    billingEnabled: true,
+    userId: 'user-1',
+    schedule(callback) { scheduled = callback; },
+  });
+  db.prepare('UPDATE ai_service_configs SET updated_at = ? WHERE id = ?')
+    .run('2099-01-01T00:00:00.000Z', config.id);
+  const originalCallVideoApi = videoClient.callVideoApi;
+  let supplierCalls = 0;
+  videoClient.callVideoApi = async () => {
+    supplierCalls += 1;
+    return { task_id: 'must-not-submit' };
+  };
+  try {
+    await scheduled();
+  } finally {
+    videoClient.callVideoApi = originalCallVideoApi;
+  }
+
+  const row = db.prepare('SELECT status, ai_service_config_id FROM video_generations WHERE id = ?').get(created.id);
+  assert.equal(row.ai_service_config_id, config.id);
+  assert.equal(row.status, 'needs_attention');
+  assert.equal(supplierCalls, 0);
   db.close();
 });
 

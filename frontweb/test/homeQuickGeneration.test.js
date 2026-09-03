@@ -144,11 +144,11 @@ test('首页目录不能因缺少 protocol 而放行 provider 或受保护模型
 test('首页和短剧工厂保留六个 NewAPI 模型各自的实测能力', () => {
   const definitions = [
     ['cfg-29::seedance-2.0-fast', 5, '480p'],
-    ['seedance-2.0', 5, '480p'],
+    ['cfg-29::seedance-2.0', 5, '480p'],
     ['cfg-29::seedance-2.0-mini', 4, '480p'],
-    ['seedance-2.5', 5, '480p'],
-    ['minimax_h3_image_audio_to_video_v2', 5, '768p'],
-    ['alibaba/wan-3.0', 4, '480p'],
+    ['cfg-29::seedance-2.5', 5, '480p'],
+    ['cfg-29::minimax_h3_image_audio_to_video_v2', 5, '768p'],
+    ['cfg-29::alibaba/wan-3.0', 4, '480p'],
   ]
   const catalog = normalizeQuickGenerationCatalog(definitions.map(([model, duration, resolution]) => ({
     kind: 'video',
@@ -161,7 +161,7 @@ test('首页和短剧工厂保留六个 NewAPI 模型各自的实测能力', () 
       durations: [duration],
       aspectRatios: ['16:9'],
       resolutions: [resolution],
-      ...(model.startsWith('minimax') ? { supportsImageReference: true, requiresReference: true } : {}),
+      ...(model.includes('minimax_h3') ? { supportsImageReference: true, requiresReference: true } : {}),
     },
   })))
 
@@ -173,7 +173,7 @@ test('首页和短剧工厂保留六个 NewAPI 模型各自的实测能力', () 
   }
   assert.throws(() => buildQuickGenerationRequest({
     mode: 'video',
-    model: 'minimax_h3_image_audio_to_video_v2',
+    model: definitions[4][0],
     aspectRatio: '16:9',
     duration: 5,
     resolution: '768p',

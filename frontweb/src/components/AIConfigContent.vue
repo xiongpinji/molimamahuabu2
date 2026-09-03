@@ -475,9 +475,8 @@
                 <div class="ph-body">
                   <b>Base URL：</b><code>https://newapi.megabyai.cc</code><br>
                   <b>接口：</b><code>POST /v1/videos</code>（创建），<code>GET /v1/videos/{taskId}</code>（查询）<br>
-                  <b>模型：</b><code>seedance-2.0-fast</code>、<code>seedance-2.0</code>、<code>seedance-2.0-mini</code>、<code>seedance-2.5</code>、<code>minimax_h3_image_audio_to_video_v2</code><br>
-                  <b>能力：</b>Seedance 为 4–15 秒、16:9/9:16/1:1、480p/720p；MiniMax H3 为 768p 且必须提供参考图或参考音频。连接测试只读取模型目录，不会扣费。<br>
-                  <b>注意：</b><code>alibaba/wan-3.0</code> 当前返回 model_not_found，未开放。
+                  <b>模型：</b><code>seedance-2.0-fast</code>、<code>seedance-2.0</code>、<code>seedance-2.0-mini</code>、<code>seedance-2.5</code>、<code>minimax_h3_image_audio_to_video_v2</code>、<code>alibaba/wan-3.0</code><br>
+                  <b>能力：</b>只开放下方逐模型列出的真实生成组合；中转站报价中的其他分辨率、时长、画幅或参考素材能力不自动开放。连接测试只读取模型目录，不会扣费。
                 </div>
               </el-collapse-item>
               <el-collapse-item name="sora-vid">
@@ -865,7 +864,7 @@ input_reference = (图片文件，可选)</pre>
           <div v-for="cap in newapiCapabilityRows" :key="cap.model" class="newapi-capability-row">
             <b>{{ cap.model }}</b>：{{ cap.duration }}；比例 {{ cap.ratios }}；分辨率 {{ cap.resolutions }}；{{ cap.references }}；{{ cap.audio }}
           </div>
-          <p class="ep-tip">以上仅包含已真实生成并完成结果文件校验的模型；Wan 3.0（包括 <code>alibaba/wan-3.0</code>）未通过验证，不在目录中。</p>
+          <p class="ep-tip">以上仅包含已真实生成并完成结果文件校验的模型与参数组合；未列出的组合不会进入首页或短剧工厂目录。</p>
         </div>
 
         <template v-if="form.service_type !== 'jimeng2_character_auth'">
@@ -1375,11 +1374,12 @@ const presetModelPick = ref('')
 
 const formModelList = computed(() => parseModelList(form.value.modelText))
 const NEWAPI_VIDEO_CAPABILITIES = Object.freeze({
-  'seedance-2.0-fast': Object.freeze({ duration: '4–15 秒', ratios: '16:9 / 9:16 / 1:1', resolutions: '480p / 720p', references: '最多 9 图、3 视频、3 音频参考', audio: '原生音频 + 参考音频' }),
-  'seedance-2.0': Object.freeze({ duration: '4–15 秒', ratios: '16:9 / 9:16 / 1:1', resolutions: '480p / 720p', references: '最多 9 图、3 视频、3 音频参考', audio: '原生音频 + 参考音频' }),
-  'seedance-2.0-mini': Object.freeze({ duration: '4–15 秒', ratios: '16:9 / 9:16 / 1:1', resolutions: '480p / 720p', references: '最多 9 图、3 视频、3 音频参考', audio: '原生音频 + 参考音频' }),
-  'seedance-2.5': Object.freeze({ duration: '4–15 秒', ratios: '16:9 / 9:16 / 1:1', resolutions: '480p / 720p', references: '最多 9 图、3 视频、3 音频参考', audio: '原生音频 + 参考音频' }),
-  minimax_h3_image_audio_to_video_v2: Object.freeze({ duration: '4–15 秒', ratios: '16:9 / 9:16 / 1:1', resolutions: '768p（必须参考素材）', references: '至少 1 图或 1 音频；最多 9 图、3 视频、3 音频', audio: '原生音频 + 参考音频' }),
+  'seedance-2.0-fast': Object.freeze({ duration: '5 秒', ratios: '16:9', resolutions: '480p', references: '不开放参考素材', audio: '不开放同步音频开关' }),
+  'seedance-2.0': Object.freeze({ duration: '5 秒', ratios: '16:9', resolutions: '480p', references: '不开放参考素材', audio: '不开放同步音频开关' }),
+  'seedance-2.0-mini': Object.freeze({ duration: '4 秒', ratios: '16:9', resolutions: '480p', references: '不开放参考素材', audio: '不开放同步音频开关' }),
+  'seedance-2.5': Object.freeze({ duration: '5 秒', ratios: '16:9', resolutions: '480p', references: '不开放参考素材', audio: '不开放同步音频开关' }),
+  minimax_h3_image_audio_to_video_v2: Object.freeze({ duration: '5 秒', ratios: '16:9', resolutions: '768p（必须 1 张参考图）', references: '必须且只能提供 1 张参考图', audio: '不开放同步音频开关' }),
+  'alibaba/wan-3.0': Object.freeze({ duration: '4 秒', ratios: '16:9', resolutions: '480p', references: '不开放参考素材', audio: '不开放同步音频开关' }),
 })
 const newapiCapabilityRows = computed(() => {
   if (form.value.service_type !== 'video' || (form.value.provider !== 'newapi' && form.value.api_protocol !== 'newapi_video')) return []
@@ -1573,7 +1573,7 @@ const providerConfigs = {
   ],
   video: [
     { id: 'aihubcc', name: 'AIHubCC 视频', models: AIHUBCC_VIDEO_MODELS },
-    { id: 'newapi', name: 'NewAPI（megabyai）', models: ['seedance-2.0-fast', 'seedance-2.0', 'seedance-2.0-mini', 'seedance-2.5', 'minimax_h3_image_audio_to_video_v2'] },
+    { id: 'newapi', name: 'NewAPI（megabyai）', models: ['seedance-2.0-fast', 'seedance-2.0', 'seedance-2.0-mini', 'seedance-2.5', 'minimax_h3_image_audio_to_video_v2', 'alibaba/wan-3.0'] },
     { id: 'token6688', name: 'Token6688 Seedance 特价按次', models: ['seedance-2-0-special-mini-720p', 'seedance-2-0-special-fast-720p', 'seedance-2-0-special-full-720p'] },
     { id: 'toapis', name: 'ToAPIs Seedance 2', models: ['seedance-2-fast', 'seedance-2-mini'] },
     { id: 'toapis_wan3', name: 'ToAPIs Wan 3.0', models: ['wan3.0-video'] },

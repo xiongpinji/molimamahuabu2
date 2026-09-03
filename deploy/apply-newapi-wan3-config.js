@@ -126,7 +126,7 @@ function pricingModelForConfig(db, upstreamModel) {
     .find((item) => Number(item.config.id) === CONFIG_ID
       && item.upstreamModel.toLowerCase() === upstreamModel.toLowerCase());
   if (!entry) throw new Error(`NewAPI #29 缺少模型 ${upstreamModel}`);
-  return entry.model;
+  return `cfg-${CONFIG_ID}::${entry.upstreamModel}`;
 }
 
 function readPrices(db) {

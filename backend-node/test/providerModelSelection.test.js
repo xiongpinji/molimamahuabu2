@@ -219,7 +219,14 @@ test('NewAPI qualified 选择仍必须通过真实生成验证', (t) => {
 
   aiConfigService.recordVerification(db, pending.id, {
     status: 'verified',
-    capabilities: { 'seedance-2.0-mini': { validated: true, resolutions: ['480p'] } },
+    capabilities: {
+      'seedance-2.0-mini': {
+        validated: true,
+        resolutions: ['480p'],
+        durations: [4],
+        aspectRatios: ['16:9'],
+      },
+    },
   });
   assert.equal(videoClient.getDefaultVideoConfig(db, selection).id, pending.id);
 });

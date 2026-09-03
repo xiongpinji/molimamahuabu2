@@ -354,11 +354,32 @@ test('管理员模型目录返回每个中转站模型的同步成本来源', as
         async json() { return { success: true, data: [pricingRow()] }; },
       }),
     });
-    const item = modelPrice.list(db).find((row) => row.model === 'seedance-2.0-fast');
+    const item = modelPrice.list(db).find((row) => row.model === 'cfg-32::seedance-2.0-fast');
     assert.equal(item.providers[0].config_id, 32);
     assert.equal(item.providers[0].upstream_model, 'seedance-2.0-fast');
     assert.equal(item.provider_costs[0].micros_per_unit, 2_880_000);
     assert.equal(item.provider_costs[0].source_currency, 'USD');
+  } finally {
+    db.close();
+  }
+});
+
+test('NewAPI 图片配置保持原模型计费身份且不继承视频限定前缀', () => {
+  const db = new Database(':memory:');
+  try {
+    db.pragma('foreign_keys = ON');
+    runMigrationsAndEnsure(db);
+    db.prepare(`INSERT INTO ai_service_configs
+        (id, service_type, provider, api_protocol, name, base_url, api_key, model,
+         default_model, is_active, deleted_at)
+      VALUES (36, 'storyboard_image', 'newapi', 'openai', 'NewAPI Image',
+        'https://newapi-image.example/v1', 'secret', ?, ?, 1, NULL)`)
+      .run(JSON.stringify(['image-model']), 'image-model');
+
+    const rows = modelPrice.list(db);
+    const item = rows.find((row) => row.model === 'image-model');
+    assert.equal(item.providers[0].config_id, 36);
+    assert.equal(rows.some((row) => row.model === 'cfg-36::image-model'), false);
   } finally {
     db.close();
   }

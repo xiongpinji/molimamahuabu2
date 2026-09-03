@@ -88,13 +88,12 @@ test('六个 NewAPI 模型按实测组合定价并把同名模型固定到配置
   assert.equal(JSON.parse(row.verification_evidence).models['seedance-2.0'].task_id, 'verified-seedance-2.0');
   assert.equal(row.verified_at, UPDATED_AT);
 
-  const expectedBillingIds = {
-    'seedance-2.0-fast': 'cfg-29::seedance-2.0-fast',
-    'seedance-2.0-mini': 'cfg-29::seedance-2.0-mini',
-  };
+  const expectedBillingIds = Object.fromEntries(
+    EXPECTED_MODELS.map((model) => [model, `cfg-29::${model}`]),
+  );
   for (const model of EXPECTED_MODELS) {
     const definition = PRICES[model];
-    const billingModel = expectedBillingIds[model] || model;
+    const billingModel = expectedBillingIds[model];
     const price = modelPriceService.list(db).find((item) => item.model === billingModel);
     assert.equal(price.credits, definition.credits, model);
     assert.equal(price.status, 'enabled', model);
@@ -106,12 +105,14 @@ test('六个 NewAPI 模型按实测组合定价并把同名模型固定到配置
         cost_micros_per_second: definition.cost,
       },
     }, model);
+    assert.deepEqual(price.providers.map((provider) => provider.config_id), [29], model);
+    assert.deepEqual(price.provider_costs.map((provider) => provider.config_id), [29], model);
   }
 
   const catalog = canvasModelCatalogService.list(db)
     .filter((item) => item.protocol === 'newapi_video');
   assert.deepEqual(catalog.map((item) => item.model).sort(), EXPECTED_MODELS
-    .map((model) => expectedBillingIds[model] || model).sort());
+    .map((model) => expectedBillingIds[model]).sort());
   assert.deepEqual(catalog.find((item) => item.model.includes('minimax_h3')).capabilities, CAPABILITIES.minimax_h3_image_audio_to_video_v2);
   assert.equal(JSON.stringify(receipt).includes('production-secret'), false);
   assert.equal(receipt.contract, 'newapi-six-model-public-remediation-v1');

@@ -258,6 +258,20 @@ function providerInfo(row, upstreamModel = '') {
   };
 }
 
+function isNewApiVideoConfig(row) {
+  if (String(row.service_type || '').trim().toLowerCase() !== 'video') return false;
+  const provider = String(row.provider || '').trim().toLowerCase();
+  const protocol = String(row.api_protocol || '').trim().toLowerCase();
+  return provider === 'newapi' || provider === 'newapi_video'
+    || protocol === 'newapi' || protocol === 'newapi_video';
+}
+
+function billingModelForMediaEntry(entry) {
+  return isNewApiVideoConfig(entry.config)
+    ? `cfg-${entry.config.id}::${entry.upstreamModel}`
+    : entry.model;
+}
+
 function addProvider(item, row, upstreamModel = '') {
   const info = providerInfo(row, upstreamModel);
   if (!info) return item;
@@ -283,7 +297,7 @@ function listConfiguredModels(db) {
   for (const entry of mediaModelSelection.listEntries(rows)) {
     let model;
     try {
-      model = canonicalModel(entry.model);
+      model = canonicalModel(billingModelForMediaEntry(entry));
     } catch {
       continue;
     }
@@ -292,7 +306,7 @@ function listConfiguredModels(db) {
     if (!item) {
       item = {
         model,
-        display_name: entry.duplicated
+        display_name: entry.duplicated || isNewApiVideoConfig(entry.config)
           ? `${entry.config.name || entry.config.provider || `配置 ${entry.config.id}`} · ${entry.upstreamModel}`
           : model,
         category: entry.kind,
@@ -431,8 +445,10 @@ function listPublic(db, options = {}) {
     if (!isStrictPublicConfig(row) && requiresVerificationStatus && row.verification_status !== 'verified') continue;
     if (!isRealGenerationVerified(row, entry.upstreamModel)) continue;
     const logicalModel = String(row.logical_model_id || '').trim();
-    if (entry.duplicated && !logicalModel && !isStrictPublicConfig(row)) continue;
-    const publicModel = logicalModel || entry.upstreamModel;
+    if (entry.duplicated && !logicalModel && !isStrictPublicConfig(row)
+        && !isNewApiVideoConfig(row)) continue;
+    const publicModel = logicalModel
+      || (isNewApiVideoConfig(row) ? billingModelForMediaEntry(entry) : entry.upstreamModel);
     addConfig(publicModel, entry.upstreamModel, row);
   }
   for (const row of rows.filter((item) => !mediaModelSelection.KIND_BY_SERVICE[item.service_type])) {
@@ -822,9 +838,7 @@ function calculateCharge(db, value, usage = {}) {
   const normalizedModel = String(
     mediaModelSelection.parseQualifiedSelection(model)?.upstreamModel || model,
   ).toLowerCase();
-  const minimum = normalizedModel === 'alibaba/wan-3.0'
-    || normalizedModel === 'lingjing-video-v1'
-    || normalizedModel === 'seedance-2.0-mini'
+  const minimum = normalizedModel === 'lingjing-video-v1'
     || /^bytedance\/seedance-2-0-(?:mini|fast)$/.test(normalizedModel)
     ? 4
     : 5;
