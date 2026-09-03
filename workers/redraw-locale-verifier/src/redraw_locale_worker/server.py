@@ -13,7 +13,8 @@ from .protocol import HEX_SHA256_RE, parse_request
 
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
-MAX_SOURCE_AUDIO_BYTES = 16_000 * 2 * 16 + 4096
+# Covers a 30-minute 16 kHz/16-bit mono PCM WAV under the existing local audio cap.
+MAX_SOURCE_AUDIO_BYTES = 64 * 1024 * 1024
 READY_TTL_SECONDS = 10
 READY_REFRESH_SECONDS = 5
 _UnixStreamServerBase = getattr(socketserver, "UnixStreamServer", socketserver.TCPServer)

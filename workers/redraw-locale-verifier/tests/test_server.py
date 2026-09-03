@@ -288,6 +288,56 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(asr.audio_path, source_path)
         self.assertEqual(clusterer.embedding_input, (8_000, 16_000))
 
+    def test_source_audio_action_accepts_seventeen_second_pcm_wav_inside_allowed_root(self):
+        source_path = self.root / "seventeen-seconds.wav"
+        with wave.open(str(source_path), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(16_000)
+            handle.writeframes(b"\x00\x00" * (16_000 * 17))
+        self.assertEqual(source_path.stat().st_size, 544_044)
+        calls = []
+
+        class FakeAsr:
+            def infer(self, audio_path):
+                calls.append(("asr", Path(audio_path)))
+                return {
+                    "language": "zh",
+                    "probability": 0.98,
+                    "segments": [{"start": 0.0, "end": 0.5, "text": "整集对白"}],
+                }
+
+        class FakeClusterer:
+            def embed(self, waveform, sample_rate):
+                calls.append(("embed", len(waveform), sample_rate))
+                return [1.0, 0.0]
+
+            def cluster(self, embeddings):
+                calls.append(("cluster", len(embeddings)))
+                return [0]
+
+        self.server = make_test_server(
+            CountingVerifier(),
+            pack=self.pack,
+            allowed_root=self.root,
+            asr=FakeAsr(),
+            source_audio_clusterer=FakeClusterer(),
+        )
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+
+        response = self._send_json({
+            "action": "analyze_source_audio",
+            "request_id": "source-seventeen-seconds",
+            "audio_path": str(source_path),
+        })
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(
+            calls,
+            [("asr", source_path), ("embed", 8_000, 16_000), ("cluster", 1)],
+        )
+
     def test_source_audio_action_rejects_paths_outside_allowed_roots(self):
         with tempfile.TemporaryDirectory() as outside_dir:
             outside_path = Path(outside_dir).resolve() / "outside.wav"
@@ -314,7 +364,9 @@ class ServerTests(unittest.TestCase):
         unsupported_path = self.root / "source.mp3"
         unsupported_path.write_bytes(b"audio")
         oversized_path = self.root / "oversized.wav"
-        oversized_path.write_bytes(b"0" * (16_000 * 2 * 16 + 4097))
+        with oversized_path.open("wb") as handle:
+            handle.seek(64 * 1024 * 1024)
+            handle.write(b"0")
         self.server = make_test_server(
             CountingVerifier(),
             pack=self.pack,
