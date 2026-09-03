@@ -291,6 +291,70 @@ test('fails closed for invalid manifest refs, unknown audio refs and silent tran
   );
 });
 
+test('rejects explicit evidence refs whose asset id or SHA disagrees with the manifest', () => {
+  const mismatchedVisualAsset = visualFacts();
+  mismatchedVisualAsset.evidence_ref = 'evidence-visual-1';
+  mismatchedVisualAsset.result_asset_id = 999;
+  assert.throws(
+    () => fuse({ visualFacts: mismatchedVisualAsset }),
+    /EVIDENCE_FUSION_EVIDENCE_INVALID/,
+  );
+
+  const mismatchedVisualSha = visualFacts();
+  mismatchedVisualSha.evidence_ref = 'evidence-visual-1';
+  mismatchedVisualSha.sha256 = 'd'.repeat(64);
+  assert.throws(
+    () => fuse({ visualFacts: mismatchedVisualSha }),
+    /EVIDENCE_FUSION_EVIDENCE_INVALID/,
+  );
+
+  const mismatchedAudioAsset = audioEvidence();
+  mismatchedAudioAsset.evidence_ref = 'evidence-audio-1';
+  mismatchedAudioAsset.result_asset_id = 999;
+  assert.throws(
+    () => fuse({ audioEvidence: mismatchedAudioAsset }),
+    /EVIDENCE_FUSION_EVIDENCE_INVALID/,
+  );
+
+  const mismatchedAudioSha = audioEvidence();
+  mismatchedAudioSha.evidence_ref = 'evidence-audio-1';
+  mismatchedAudioSha.evidence_sha256 = 'd'.repeat(64);
+  assert.throws(
+    () => fuse({ audioEvidence: mismatchedAudioSha }),
+    /EVIDENCE_FUSION_EVIDENCE_INVALID/,
+  );
+});
+
+test('rejects present but invalid story, character, shot and dialogue confidence values', () => {
+  const invalidStory = visualFacts();
+  invalidStory.story_confidence = '0.9';
+  assert.throws(
+    () => fuse({ visualFacts: invalidStory }),
+    /EVIDENCE_FUSION_CONFIDENCE_INVALID/,
+  );
+
+  const invalidCharacter = visualFacts();
+  invalidCharacter.characters[0].confidence = Number.NaN;
+  assert.throws(
+    () => fuse({ visualFacts: invalidCharacter }),
+    /EVIDENCE_FUSION_CONFIDENCE_INVALID/,
+  );
+
+  const invalidShot = visualFacts();
+  invalidShot.shots[0].confidence.character_mapping = -0.1;
+  assert.throws(
+    () => fuse({ visualFacts: invalidShot }),
+    /EVIDENCE_FUSION_CONFIDENCE_INVALID/,
+  );
+
+  const invalidDialogue = audioEvidence();
+  invalidDialogue.segments[0].confidence = 2;
+  assert.throws(
+    () => fuse({ audioEvidence: invalidDialogue }),
+    /EVIDENCE_FUSION_CONFIDENCE_INVALID/,
+  );
+});
+
 test('rejects transcript segments that do not overlap any source shot', () => {
   const unassigned = audioEvidence([{
     start_ms: 6_000,

@@ -23,7 +23,9 @@ const redrawDialogueOrchestrator = require('../services/redrawDialogueOrchestrat
 const redrawVoiceService = require('../services/redrawVoiceService');
 const redrawCompositionService = require('../services/redrawCompositionService');
 const redrawExportService = require('../services/redrawExportService');
+const redrawSourceAudioEvidenceService = require('../services/redrawSourceAudioEvidenceService');
 const redrawNativeSourceAnalysisService = require('../services/redrawNativeSourceAnalysisService');
+const redrawEvidenceFusionService = require('../services/redrawEvidenceFusionService');
 const redrawProjectPolicyService = require('../services/redrawProjectPolicyService');
 const redrawWorkflowEventService = require('../services/redrawWorkflowEventService');
 const redrawCharacterPlanService = require('../services/redrawCharacterPlanService');
@@ -1927,7 +1929,22 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   if (!analysisOptions.assetReader) {
     analysisOptions.assetReader = redrawOrchestrator.createAssetReader({ storageRoot: uploadLimits.storageRoot });
   }
-  if (!analysisOptions.provider) {
+  if (!analysisOptions.provider && !options.nativeSourceAnalysis) {
+    analysisOptions.sourceAudioEvidenceService = options.sourceAudioEvidenceService
+      || redrawSourceAudioEvidenceService;
+    analysisOptions.nativeSourceAnalysisService = options.nativeSourceAnalysisService
+      || redrawNativeSourceAnalysisService;
+    analysisOptions.evidenceFusionService = options.evidenceFusionService
+      || redrawEvidenceFusionService;
+    analysisOptions.analysisContext = {
+      storageRoot: uploadLimits.storageRoot,
+      assetService: options.assetService || assetService,
+      visionDetailed: options.visionDetailed,
+      serviceType: options.nativeAnalysisServiceType || 'video_understanding',
+      workerClient: options.sourceAudioWorkerClient || options.localeVerifier,
+      ...(analysisOptions.analysisContext || {}),
+    };
+  } else if (!analysisOptions.provider) {
     const nativeSourceAnalysis = options.nativeSourceAnalysis
       || redrawNativeSourceAnalysisService.analyzeNativeSource;
     analysisOptions.provider = {
@@ -5141,6 +5158,9 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
         current_step: Number(result.current_step || 1),
         status: result.status || 'processing',
         facts_hash: result.facts_hash || null,
+        blueprint_hash: result.blueprint_hash || null,
+        review_status: result.review_status || null,
+        blueprint: result.blueprint || null,
       });
     } catch (error) {
       cleanupReferenceImage(db, log, referenceAsset, uploadLimits.storageRoot);

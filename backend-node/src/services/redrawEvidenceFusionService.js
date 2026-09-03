@@ -27,8 +27,12 @@ function sha256(value) {
   return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 }
 
-function probability(value, fallback) {
-  return Number.isFinite(value) && value >= 0 && value <= 1 ? value : fallback;
+function probability(value, fallback, name = 'confidence') {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
+    fail('EVIDENCE_FUSION_CONFIDENCE_INVALID', `${name} 无效`);
+  }
+  return value;
 }
 
 function normalizeEvidenceAssets(value) {
@@ -66,6 +70,20 @@ function sameAssetId(left, right) {
   return left != null && right != null && String(left) === String(right);
 }
 
+function assertEvidenceBinding(evidence, payload, label) {
+  for (const assetId of [payload?.result_asset_id, payload?.evidence_asset_id]) {
+    if (assetId != null && !sameAssetId(evidence.asset_id, assetId)) {
+      fail('EVIDENCE_FUSION_EVIDENCE_INVALID', `${label} asset_id 与 manifest 不一致`);
+    }
+  }
+  for (const digest of [payload?.evidence_sha256, payload?.sha256]) {
+    if (digest != null && digest !== evidence.sha256) {
+      fail('EVIDENCE_FUSION_EVIDENCE_INVALID', `${label} sha256 与 manifest 不一致`);
+    }
+  }
+  return evidence;
+}
+
 function resolveEvidence(items, payload, allowedKinds, label) {
   const explicitRef = payload?.evidence_ref || payload?.evidence_id;
   if (explicitRef) {
@@ -73,17 +91,17 @@ function resolveEvidence(items, payload, allowedKinds, label) {
     if (!explicit || !allowedKinds.has(explicit.kind)) {
       fail('EVIDENCE_FUSION_EVIDENCE_INVALID', `${label} evidence_ref 未知或类型无效`);
     }
-    return explicit;
+    return assertEvidenceBinding(explicit, payload, label);
   }
-  const assetId = payload?.result_asset_id || payload?.evidence_asset_id;
-  const assetSha = payload?.evidence_sha256 || payload?.sha256;
+  const assetId = payload?.result_asset_id ?? payload?.evidence_asset_id;
+  const assetSha = payload?.evidence_sha256 ?? payload?.sha256;
   const matches = items.filter((item) => allowedKinds.has(item.kind)
     && (!assetId || sameAssetId(item.asset_id, assetId))
     && (!assetSha || item.sha256 === assetSha));
   if (matches.length !== 1) {
     fail('EVIDENCE_FUSION_EVIDENCE_INVALID', `${label} 证据不能唯一绑定 manifest`);
   }
-  return matches[0];
+  return assertEvidenceBinding(matches[0], payload, label);
 }
 
 function normalizeSource(raw) {
@@ -202,7 +220,11 @@ function normalizeAudioEvidence(raw, sourceValue, evidenceItems, defaultEvidence
       end_ms: segment.end_ms,
       source_text: segment.source_text.trim(),
       speaker_cluster_id: segment.speaker_cluster_id,
-      confidence: probability(segment.confidence, probability(raw.language_probability, 0)),
+      confidence: probability(
+        segment.confidence,
+        probability(raw.language_probability, 0, 'audioEvidence.language_probability'),
+        `segments[${index}].confidence`,
+      ),
     };
   });
   return {
@@ -305,7 +327,7 @@ function fuseEpisodeEvidence({ source, visualFacts, audioEvidence, evidenceAsset
       summary,
       beats,
       evidence_refs: visualReference(plainObject(storyItems[0]) ? storyItems[0] : null),
-      confidence: probability(visualFacts.story_confidence, 0.5),
+      confidence: probability(visualFacts.story_confidence, 0.5, 'story.confidence'),
     },
     characters: (visualFacts.characters || []).map((character, index) => ({
       id: character.id,
@@ -315,7 +337,7 @@ function fuseEpisodeEvidence({ source, visualFacts, audioEvidence, evidenceAsset
       relationships: Array.isArray(character.relationships) ? character.relationships : [],
       face_track_ids: Array.isArray(character.face_track_ids) ? character.face_track_ids : [],
       evidence_refs: visualReference(character),
-      confidence: probability(character.confidence, 0.5),
+      confidence: probability(character.confidence, 0.5, `characters[${index}].confidence`),
       review_status: 'needs_review',
     })),
     scenes: (visualFacts.scenes || []).map((scene, index) => ({
@@ -324,18 +346,22 @@ function fuseEpisodeEvidence({ source, visualFacts, audioEvidence, evidenceAsset
       time: sourceText(scene.time, `scenes[${index}].time`),
       source_ranges: scene.source_ranges,
       evidence_refs: visualReference(scene),
-      confidence: probability(scene.confidence, 0.5),
+      confidence: probability(scene.confidence, 0.5, `scenes[${index}].confidence`),
     })),
     props: (visualFacts.props || []).map((prop, index) => ({
       id: prop.id,
       name: sourceText(prop.name, `props[${index}].name`),
       evidence_ranges: prop.evidence_ranges,
       evidence_refs: visualReference(prop),
-      confidence: probability(prop.confidence, 0.5),
+      confidence: probability(prop.confidence, 0.5, `props[${index}].confidence`),
     })),
     shots: visualShots.map((shot, index) => {
       const dialogue = dialogueByShot.get(shot.id);
       const refs = [...new Set([...visualReference(shot), audioEvidenceAsset.id])];
+      if (shot.confidence !== undefined && !plainObject(shot.confidence)) {
+        fail('EVIDENCE_FUSION_CONFIDENCE_INVALID', `shots[${index}].confidence 无效`);
+      }
+      probability(shot.confidence?.speaker_mapping, 0.5, `shots[${index}].confidence.speaker_mapping`);
       return {
         id: shot.id,
         index: index + 1,
@@ -356,17 +382,33 @@ function fuseEpisodeEvidence({ source, visualFacts, audioEvidence, evidenceAsset
             ? { source_text: region.source_text.trim() }
             : {}),
           evidence_refs: visualReference(region),
-          confidence: probability(region.confidence, probability(shot.confidence?.text_regions, 0.5)),
+          confidence: probability(
+            region.confidence,
+            probability(shot.confidence?.text_regions, 0.5, `shots[${index}].confidence.text_regions`),
+            `shots[${index}].text_regions.confidence`,
+          ),
         })),
         audio_contract: {
           dialogue_mode: dialogue.length > 0 ? 'spoken' : 'silent',
           ambient_audio: 'preserve_or_rebuild',
         },
         confidence: {
-          character_mapping: probability(shot.confidence?.character_mapping, 0.5),
+          character_mapping: probability(
+            shot.confidence?.character_mapping,
+            0.5,
+            `shots[${index}].confidence.character_mapping`,
+          ),
           speaker_mapping: 0,
-          text_regions: probability(shot.confidence?.text_regions, 0.5),
-          shot_boundary: probability(shot.confidence?.shot_boundary, 0.5),
+          text_regions: probability(
+            shot.confidence?.text_regions,
+            0.5,
+            `shots[${index}].confidence.text_regions`,
+          ),
+          shot_boundary: probability(
+            shot.confidence?.shot_boundary,
+            0.5,
+            `shots[${index}].confidence.shot_boundary`,
+          ),
         },
         evidence_refs: refs,
       };
@@ -381,7 +423,7 @@ function fuseEpisodeEvidence({ source, visualFacts, audioEvidence, evidenceAsset
         cause,
         effect,
         evidence_refs: visualReference(plainObject(item) ? item : null),
-        confidence: probability(item?.confidence, 0.5),
+        confidence: probability(item?.confidence, 0.5, `causal_chain[${index}].confidence`),
       };
     }),
     locked_facts: (visualFacts.locked_facts || []).map((item, index) => {
@@ -390,7 +432,7 @@ function fuseEpisodeEvidence({ source, visualFacts, audioEvidence, evidenceAsset
         id: plainObject(item) && stableId(item.id) ? item.id : statementId('fact', index, text),
         text,
         evidence_refs: visualReference(plainObject(item) ? item : null),
-        confidence: probability(item?.confidence, 0.5),
+        confidence: probability(item?.confidence, 0.5, `locked_facts[${index}].confidence`),
       };
     }),
     reversals: (visualFacts.reversals || []).map((item, index) => {
@@ -399,13 +441,13 @@ function fuseEpisodeEvidence({ source, visualFacts, audioEvidence, evidenceAsset
         id: plainObject(item) && stableId(item.id) ? item.id : statementId('reversal', index, text),
         text,
         evidence_refs: visualReference(plainObject(item) ? item : null),
-        confidence: probability(item?.confidence, 0.5),
+        confidence: probability(item?.confidence, 0.5, `reversals[${index}].confidence`),
       };
     }),
     episode_hook: {
       text: statementValue(visualFacts.episode_hook, 'text', 'episode_hook.text'),
       evidence_refs: visualReference(plainObject(visualFacts.episode_hook) ? visualFacts.episode_hook : null),
-      confidence: probability(visualFacts.episode_hook?.confidence, 0.5),
+      confidence: probability(visualFacts.episode_hook?.confidence, 0.5, 'episode_hook.confidence'),
     },
     review: { status: 'needs_review' },
   };

@@ -1473,6 +1473,110 @@ test('同步原生分析完成时接口直接返回步骤 2 和已结算账单',
   }
 });
 
+test('默认分析入口按 audio 到 visual 到 fusion 生成 needs_review 母本且停在步骤 1', async () => {
+  const db = createDb();
+  try {
+    insertVerifiedVideoUnderstandingConfig(db);
+    prices.set(db, 'GPT-5.5', 6);
+    creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    const calls = [];
+    const audioEvidence = {
+      dialogue_mode: 'silent',
+      segments: [],
+      result_asset_id: 201,
+      evidence_sha256: 'c'.repeat(64),
+      evidence_asset: {
+        id: 'evidence-audio-route', kind: 'audio', asset_id: 201,
+        sha256: 'c'.repeat(64), tool: 'audio-worker', tool_version: '1.0.0',
+      },
+    };
+    const visualEvidence = {
+      status: 'completed',
+      provider_task_id: 'provider-blueprint-route',
+      result_asset_id: 202,
+      source: {
+        asset_id: 101,
+        sha256: 'f'.repeat(64),
+        duration_ms: 90_000,
+        width: 1080,
+        height: 1920,
+        fps: 25,
+        video_codec: 'h264',
+        audio_codec: 'aac',
+        audio_sample_rate_hz: 48_000,
+        audio_channels: 2,
+      },
+      facts: { schema_version: '2.0', duration_ms: 90_000, shots: [] },
+      evidence_asset: {
+        id: 'evidence-visual-route', kind: 'visual', asset_id: 202,
+        sha256: 'b'.repeat(64), tool: 'native-vision', tool_version: '2.0.0',
+      },
+    };
+    const blueprint = {
+      schema_version: 'episode-blueprint-v1',
+      source: visualEvidence.source,
+      shots: [{
+        id: 'shot-route-1', index: 1, start_ms: 0, end_ms: 90_000,
+        opening_state: '人物站在门边。',
+        continuous_action: '人物阅读手机消息。',
+        ending_state: '人物抬头。',
+        dialogue: [],
+      }],
+      review: { status: 'needs_review' },
+      blueprint_hash: 'd'.repeat(64),
+    };
+    const handlers = redrawRoutes(db, { error() {}, warn() {}, info() {} }, routeDeps({
+      orchestrator: {
+        startAnalysis: (...args) => realRedrawOrchestrator.startAnalysis(...args),
+      },
+      sourceAudioEvidenceService: {
+        analyzeSourceAudio: async () => {
+          calls.push('audio');
+          return audioEvidence;
+        },
+      },
+      nativeSourceAnalysisService: {
+        analyzeNativeSource: async (_ctx, _input, receivedAudioEvidence) => {
+          calls.push('visual');
+          assert.equal(receivedAudioEvidence, audioEvidence);
+          return visualEvidence;
+        },
+      },
+      evidenceFusionService: {
+        fuseEpisodeEvidence: (input) => {
+          calls.push('fusion');
+          assert.equal(input.source, visualEvidence.source);
+          return blueprint;
+        },
+      },
+    }));
+
+    const submitted = captureResponse();
+    await handlers.analyzeWork(request({
+      id: workId,
+      body: {
+        locale: 'en-US', market: 'US', aspect_ratio: '9:16', style_preset_id: 1,
+      },
+    }), submitted);
+
+    assert.equal(submitted.statusCode, 201);
+    assert.deepEqual(calls, ['audio', 'visual', 'fusion']);
+    assert.equal(submitted.body.data.blueprint_hash, blueprint.blueprint_hash);
+    assert.equal(submitted.body.data.review_status, 'needs_review');
+    assert.equal(submitted.body.data.current_step, 1);
+    assert.equal(submitted.body.data.status, 'completed');
+    assert.deepEqual(
+      db.prepare('SELECT status, current_step FROM redraw_works WHERE id = ?').get(workId),
+      { status: 'needs_attention', current_step: 1 },
+    );
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM async_tasks WHERE type != 'redraw_analysis'").get().n, 0);
+  } finally {
+    db.close();
+  }
+});
+
 test('未注入外部分析器时路由使用原生视觉服务完成真实编排合同', async () => {
   const db = createDb();
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-native-route-'));

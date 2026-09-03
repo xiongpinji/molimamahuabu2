@@ -47,6 +47,9 @@ const { createRedrawLocaleVerifierClient } = require('../services/redrawLocaleVe
 const redrawAssetService = require('../services/redrawAssetService');
 const redrawVoiceService = require('../services/redrawVoiceService');
 const redrawLocalVoiceRegistrationService = require('../services/redrawLocalVoiceRegistrationService');
+const redrawSourceAudioEvidenceService = require('../services/redrawSourceAudioEvidenceService');
+const redrawNativeSourceAnalysisService = require('../services/redrawNativeSourceAnalysisService');
+const redrawEvidenceFusionService = require('../services/redrawEvidenceFusionService');
 const { createRedrawProviderAssetsRouter } = require('./redrawProviderAssets');
 
 function createDefaultRedrawLocaleVerifier(options = {}) {
@@ -335,6 +338,18 @@ function setupRouter(cfg, db, log, options = {}) {
     coverageRegistrationProvider: explicitCoverageRegistrationProvider,
     localeRegistry,
     localeVerifier,
+    sourceAudioEvidenceService: options.sourceAudioEvidenceService
+      || redrawOptions.sourceAudioEvidenceService
+      || redrawSourceAudioEvidenceService,
+    nativeSourceAnalysisService: options.nativeSourceAnalysisService
+      || redrawOptions.nativeSourceAnalysisService
+      || redrawNativeSourceAnalysisService,
+    evidenceFusionService: options.evidenceFusionService
+      || redrawOptions.evidenceFusionService
+      || redrawEvidenceFusionService,
+    sourceAudioWorkerClient: options.sourceAudioWorkerClient
+      || redrawOptions.sourceAudioWorkerClient
+      || localeVerifier,
     candidateQualityVerifier: options.candidateQualityVerifier
       || redrawOptions.candidateQualityVerifier,
     candidateQualityDependencies: options.candidateQualityDependencies

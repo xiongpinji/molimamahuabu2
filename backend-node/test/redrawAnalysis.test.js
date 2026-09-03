@@ -745,7 +745,6 @@ test('blueprint pipeline runs audio then visual then fusion and stops at needs_r
   const visualEvidence = {
     status: 'completed',
     provider_task_id: 'provider-blueprint-1',
-    result_asset_id: 202,
     source: needsReviewBlueprint().source,
     facts: { schema_version: '2.0', duration_ms: 10_000, shots: [] },
     evidence_asset: {
@@ -782,8 +781,16 @@ test('blueprint pipeline runs audio then visual then fusion and stops at needs_r
       fuseEpisodeEvidence: (input) => {
         calls.push('fusion');
         assert.equal(input.source, visualEvidence.source);
-        assert.equal(input.visualFacts, visualEvidence.facts);
-        assert.equal(input.audioEvidence, audioEvidence);
+        assert.deepEqual(input.visualFacts, {
+          ...visualEvidence.facts,
+          result_asset_id: visualEvidence.evidence_asset.asset_id,
+          sha256: visualEvidence.evidence_asset.sha256,
+          evidence_ref: visualEvidence.evidence_asset.id,
+        });
+        assert.deepEqual(input.audioEvidence, {
+          ...audioEvidence,
+          evidence_ref: audioEvidence.evidence_asset.id,
+        });
         assert.deepEqual(input.evidenceAssets, [
           audioEvidence.evidence_asset,
           visualEvidence.evidence_asset,

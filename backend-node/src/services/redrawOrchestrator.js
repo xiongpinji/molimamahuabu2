@@ -218,14 +218,34 @@ async function runBlueprintPipeline(db, log, pipeline, request, options) {
   if (visualEvidence?.status !== 'completed') {
     throw codedError('REDRAW_BLUEPRINT_VISUAL_ANALYSIS_INCOMPLETE', '视觉证据分析未完成');
   }
-  const evidenceAssets = [
-    evidenceAsset(audioEvidence, audioEvidence?.dialogue_mode === 'silent' ? 'audio' : 'audio_transcript', 'evidence-audio', 'source-audio-evidence'),
-    evidenceAsset(visualEvidence, 'visual', 'evidence-visual', 'native-source-analysis'),
-  ].filter(Boolean);
+  const audioAsset = evidenceAsset(
+    audioEvidence,
+    audioEvidence?.dialogue_mode === 'silent' ? 'audio' : 'audio_transcript',
+    'evidence-audio',
+    'source-audio-evidence',
+  );
+  const visualAsset = evidenceAsset(
+    visualEvidence,
+    'visual',
+    'evidence-visual',
+    'native-source-analysis',
+  );
+  const evidenceAssets = [audioAsset, visualAsset].filter(Boolean);
+  const boundAudioEvidence = audioAsset
+    ? { ...audioEvidence, evidence_ref: audioAsset.id }
+    : audioEvidence;
+  const boundVisualFacts = visualAsset
+    ? {
+        ...(visualEvidence.facts || visualEvidence.visualFacts),
+        result_asset_id: visualEvidence.result_asset_id ?? visualAsset.asset_id,
+        sha256: visualEvidence.evidence_sha256 || visualEvidence.sha256 || visualAsset.sha256,
+        evidence_ref: visualAsset.id,
+      }
+    : visualEvidence.facts || visualEvidence.visualFacts;
   const blueprint = await pipeline.evidenceFusionService.fuseEpisodeEvidence({
     source: visualEvidence.source || audioEvidence?.source,
-    visualFacts: visualEvidence.facts || visualEvidence.visualFacts,
-    audioEvidence,
+    visualFacts: boundVisualFacts,
+    audioEvidence: boundAudioEvidence,
     evidenceAssets,
   });
   return {
