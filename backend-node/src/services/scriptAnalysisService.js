@@ -615,7 +615,9 @@ function mergeProductionPackages(packages, { project, skill, strategyPreset } = 
         issues: uniqueValues(audits.flatMap((item) => parseArray(item.issues))),
       },
     };
+  }
 
+  if (selectedSkill.require_visual_direction || selectedSkill.require_production_direction) {
     const visualDirections = packages.map((item) => asObject(item.visual_direction));
     const emotionalTones = visualDirections.map((item) => asObject(item.emotional_tone));
     const rhythms = visualDirections.map((item) => asObject(item.rhythm));
