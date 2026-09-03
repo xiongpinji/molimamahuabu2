@@ -217,6 +217,7 @@ test('重绘语言验证 worker 发布材料保持 shared verifier 与付费 can
     'workers/redraw-locale-verifier/src/redraw_locale_worker/normalization.py',
     'workers/redraw-locale-verifier/src/redraw_locale_worker/protocol.py',
     'workers/redraw-locale-verifier/src/redraw_locale_worker/server.py',
+    'workers/redraw-locale-verifier/src/redraw_locale_worker/source_evidence.py',
     'workers/redraw-locale-verifier/src/redraw_locale_worker/verifier.py',
     'workers/redraw-locale-verifier/tests/test_release_scope.py',
   ]);
