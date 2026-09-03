@@ -1255,11 +1255,13 @@ async function runAnalysis() {
     }))
     task.value.id = body?.task_id || body?.task?.id
     if (!task.value.id) throw new Error('服务端未返回任务编号')
+    notifyCreditAccountRefresh()
     startPolling()
   } catch (error) {
     running.value = false
     task.value.status = 'failed'
     task.value.error = error?.message || '提交分析任务失败'
+    notifyCreditAccountRefresh()
     ElMessage.error(task.value.error)
   }
 }
@@ -1276,6 +1278,11 @@ function stopPolling() {
     window.clearInterval(pollingTimer.value)
     pollingTimer.value = null
   }
+}
+
+function notifyCreditAccountRefresh() {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new Event('moli:credit-account-refresh'))
 }
 
 async function pollTask() {
@@ -1302,6 +1309,7 @@ async function pollTask() {
       task.value.message = isRevisionTask
         ? '已按审核意见生成新版本，请继续审核。'
         : '制作包已生成，请核对后再用于生产。'
+      notifyCreditAccountRefresh()
       ElMessage.success(isRevisionTask ? '模型已完成自动修订' : '导演分析已完成')
     } else if (['failed', 'error', 'cancelled'].includes(task.value.status)) {
       const isRevisionTask = task.value.type === 'script_analysis_revision'
@@ -1313,6 +1321,7 @@ async function pollTask() {
       task.value.type = isRevisionTask ? 'script_analysis_revision' : task.value.type
       task.value.status = 'failed'
       task.value.error = taskError
+      notifyCreditAccountRefresh()
       ElMessage.error(taskError)
     } else {
       task.value.progress = Math.min(92, Math.max(task.value.progress, 12))

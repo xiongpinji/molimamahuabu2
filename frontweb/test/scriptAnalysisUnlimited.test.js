@@ -13,3 +13,12 @@ test('剧本分析输入与文件导入不再包含固定字数上限', () => {
     /原剧本（\{\{\s*project\.source_script\.length\.toLocaleString\(\)\s*\}\}\s*字符）/,
   )
 })
+
+test('剧本分析在预扣建立和任务终态时刷新积分账户', () => {
+  assert.match(source, /moli:credit-account-refresh/)
+  assert.match(source, /function notifyCreditAccountRefresh\(\)/)
+  assert.ok(
+    (source.match(/notifyCreditAccountRefresh\(\)/g) || []).length >= 5,
+    '应覆盖函数定义、任务创建、提交失败、完成和失败终态',
+  )
+})
