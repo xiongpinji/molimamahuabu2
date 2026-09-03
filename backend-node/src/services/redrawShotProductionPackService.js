@@ -328,7 +328,6 @@ function versionRows(db, owner, versionId) {
 function compileVersionProductionPacks(db, owner, versionId) {
   const context = loadLockedEpisodeContext(db, owner, versionId);
   const rows = versionRows(db, owner, versionId);
-  if (rows.length === 0) return [];
   const blueprintIds = new Set((context.blueprint.shots || []).map((shot) => String(shot.id)));
   const rowIds = new Set(rows.map((row) => String(row.shot_id || '')));
   if (blueprintIds.size !== rows.length || rowIds.size !== rows.length
@@ -416,6 +415,17 @@ function assertProductionPackShape(pack, shot) {
   }
 }
 
+function assertPreparationSnapshotCurrent(snapshot, pack, version, blueprintRow) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)
+    || String(snapshot.blueprint_hash || '') !== String(version.blueprint_hash || '')
+    || String(snapshot.blueprint_hash || '') !== String(blueprintRow.blueprint_hash || '')
+    || String(snapshot.localization_hash || '') !== String(version.localization_hash || '')
+    || String(snapshot.production_pack_hash || '') !== String(pack.production_pack_hash || '')
+    || productionPackHash(pack) !== String(snapshot.production_pack_hash || '')) {
+    throw codedError('REDRAW_PRODUCTION_PACK_STALE', '逐镜生产包快照已变化，请重新锁定本地化并刷新生成准备');
+  }
+}
+
 function assertShotProductionPackCurrent(db, owner, shot) {
   const pack = parseJson(shot.compiled_prompt_json, null, 'compiled_prompt_json');
   const hasVersionBinding = HEX_64.test(String(shot.version_blueprint_hash || ''))
@@ -432,6 +442,7 @@ function assertShotProductionPackCurrent(db, owner, shot) {
     WHERE work_id = ? AND tenant_id = ? AND user_id = ? AND revision = ? ORDER BY id DESC LIMIT 1`)
     .get(Number(version.work_id), String(owner.tenantId), String(owner.userId), Number(version.version));
   const blueprint = parseJson(blueprintRow?.blueprint_json, null, 'blueprint_json');
+  const snapshot = parseJson(shot.preparation_snapshot_json, null, 'preparation_snapshot_json');
   assertProductionPackShape(pack, shot);
   if (!version || !blueprintRow || blueprintRow.status !== 'locked'
     || String(blueprintRow.blueprint_hash || '') !== String(version.blueprint_hash || '')
@@ -442,6 +453,7 @@ function assertShotProductionPackCurrent(db, owner, shot) {
     || productionPackHash(pack) !== String(pack.production_pack_hash)) {
     throw codedError('REDRAW_PRODUCTION_PACK_STALE', '逐镜生产包已变化，请重新锁定本地化并刷新生成准备');
   }
+  assertPreparationSnapshotCurrent(snapshot, pack, version, blueprintRow);
   return pack;
 }
 

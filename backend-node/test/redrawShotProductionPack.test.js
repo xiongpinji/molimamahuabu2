@@ -251,3 +251,42 @@ test('localization lock rolls back version, work, and earlier shot writes when p
     state.db.close();
   }
 });
+
+test('localization lock fails closed and rolls back when blueprint shots have no matching DB rows', () => {
+  for (const [name, arrange] of [
+    ['all rows missing', (db) => db.prepare('DELETE FROM redraw_shots').run()],
+    ['one row missing', (db) => db.prepare("DELETE FROM redraw_shots WHERE shot_id = 'shot-2'").run()],
+    ['unexpected extra row', (db) => db.prepare(`INSERT INTO redraw_shots
+      (id, work_id, shot_id, version_id, tenant_id, user_id, batch_index, shot_index,
+       start_ms, end_ms, duration_ms, references_json, compiled_prompt_json, preparation_snapshot_json, updated_at)
+      VALUES (999, 1, 'shot-extra', 10, 'tenant-a', 'user-a', 1, 99, 7000, 8000, 1000, '[]', ?, ?, ?)`)
+      .run(JSON.stringify({ legacy: true }), JSON.stringify({ existing: 'kept' }), '2026-09-03T00:00:00.000Z')],
+    ['wrong shot id set', (db) => db.prepare("UPDATE redraw_shots SET shot_id = 'shot-missing' WHERE shot_id = 'shot-2'").run()],
+  ]) {
+    const state = createLockDb();
+    try {
+      arrange(state.db);
+      assert.throws(
+        () => lockLocalizationReview(state.db, { tenantId: 'tenant-a', userId: 'user-a' }, 10, lockInput(state)),
+        (error) => error.code === 'REDRAW_PRODUCTION_PACK_STALE',
+        name,
+      );
+      assert.deepEqual(state.db.prepare('SELECT status, localization_hash, localization_review_json FROM redraw_versions WHERE id = 10').get(), {
+        status: 'needs_review',
+        localization_hash: state.localization.localization_hash,
+        localization_review_json: JSON.stringify(state.localization),
+      });
+      assert.deepEqual(state.db.prepare('SELECT current_step, status FROM redraw_works WHERE id = 1').get(), {
+        current_step: 1, status: 'needs_review',
+      });
+      assert.equal(
+        state.db.prepare("SELECT COUNT(*) AS count FROM redraw_shots WHERE compiled_prompt_json != ? OR preparation_snapshot_json != ?")
+          .get(JSON.stringify({ legacy: true }), JSON.stringify({ existing: 'kept' })).count,
+        0,
+        name,
+      );
+    } finally {
+      state.db.close();
+    }
+  }
+});

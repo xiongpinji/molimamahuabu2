@@ -1733,6 +1733,99 @@ test('stale production pack hashes fail closed before provider and credit reserv
   }
 });
 
+test('stale production pack preparation snapshot fails closed before provider credit reserve and task writes', async () => {
+  const cases = [
+    ['snapshot blueprint hash', (snapshot) => { snapshot.blueprint_hash = '1'.repeat(64); }],
+    ['snapshot localization hash', (snapshot) => { snapshot.localization_hash = '2'.repeat(64); }],
+    ['snapshot production pack hash', (snapshot) => { snapshot.production_pack_hash = '3'.repeat(64); }],
+    ['malformed snapshot', () => '{malformed-json'],
+  ];
+
+  const originalReserve = redrawBillingService.reserveShotGeneration;
+  let reserveCalls = 0;
+  redrawBillingService.reserveShotGeneration = (...args) => {
+    reserveCalls += 1;
+    return originalReserve(...args);
+  };
+  try {
+    for (const [name, mutate] of cases) {
+      const state = setup();
+      let providerCalls = 0;
+      try {
+        const shotId = addShot(state.db, state.versionId);
+        installBlueprintFirstProductionPack(state, shotId);
+        const row = state.db.prepare('SELECT preparation_snapshot_json FROM redraw_shots WHERE id = ?').get(shotId);
+        const snapshot = JSON.parse(row.preparation_snapshot_json);
+        const nextSnapshot = mutate(snapshot) || snapshot;
+        state.db.prepare('UPDATE redraw_shots SET preparation_snapshot_json = ? WHERE id = ?')
+          .run(typeof nextSnapshot === 'string' ? nextSnapshot : JSON.stringify(nextSnapshot), shotId);
+
+        await assert.rejects(
+          () => generateShot(ctx(state.db, {
+            awaitCompletion: true,
+            videoProcessor: async () => { providerCalls += 1; },
+          }), { shotId }),
+          (error) => error.code === 'REDRAW_PRODUCTION_PACK_STALE',
+          name,
+        );
+        assert.equal(providerCalls, 0, name);
+        assert.equal(reserveCalls, 0, name);
+        assert.equal(count(state.db, 'tenant_usage_reservations'), 0, name);
+        assert.equal(count(state.db, 'video_generations'), 0, name);
+        assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0, name);
+        assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0, name);
+      } finally {
+        state.db.close();
+      }
+    }
+  } finally {
+    redrawBillingService.reserveShotGeneration = originalReserve;
+  }
+});
+
+test('production pack preparation snapshot transaction double-check rejects drift before reserve', async () => {
+  const state = setup();
+  let providerCalls = 0;
+  let transactionHookCalls = 0;
+  const originalReserve = redrawBillingService.reserveShotGeneration;
+  let reserveCalls = 0;
+  redrawBillingService.reserveShotGeneration = (...args) => {
+    reserveCalls += 1;
+    return originalReserve(...args);
+  };
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    installBlueprintFirstProductionPack(state, shotId);
+    addVerifiedGenerationCapability(state.db, 'seedance 2.0', { locale: 'en-US', market: 'US' });
+
+    await assert.rejects(
+      () => generateShot(ctx(state.db, {
+        awaitCompletion: true,
+        beforeCreateTransaction() {
+          transactionHookCalls += 1;
+          const row = state.db.prepare('SELECT preparation_snapshot_json FROM redraw_shots WHERE id = ?').get(shotId);
+          const snapshot = JSON.parse(row.preparation_snapshot_json);
+          snapshot.production_pack_hash = '4'.repeat(64);
+          state.db.prepare('UPDATE redraw_shots SET preparation_snapshot_json = ? WHERE id = ?')
+            .run(JSON.stringify(snapshot), shotId);
+        },
+        videoProcessor: async () => { providerCalls += 1; },
+      }), { shotId }),
+      (error) => error.code === 'REDRAW_PRODUCTION_PACK_STALE',
+    );
+    assert.equal(transactionHookCalls, 1);
+    assert.equal(providerCalls, 0);
+    assert.equal(reserveCalls, 0);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+    assert.equal(count(state.db, 'video_generations'), 0);
+    assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+    assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+  } finally {
+    redrawBillingService.reserveShotGeneration = originalReserve;
+    state.db.close();
+  }
+});
+
 test('ID9 iCreat verified 模型在 reserve/video row/provider 前以 conditioning unsupported fail closed', async () => {
   const state = setup();
   const model = 'icreat-redraw-video-v1';

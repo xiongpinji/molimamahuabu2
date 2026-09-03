@@ -159,6 +159,8 @@ function episodeBlueprintFacts() {
     ],
     shots: [{
       id: 'shot-1',
+      start_ms: 0,
+      end_ms: 6_500,
       dialogue: [
         {
           id: 'dialogue-1',
@@ -181,6 +183,7 @@ function episodeBlueprintFacts() {
       ],
       text_regions: [{ id: 'text-1', source_text: '尾号八七' }],
     }],
+    review: { status: 'locked' },
   };
 }
 
@@ -214,6 +217,7 @@ function createEpisodeReviewDb() {
     ALTER TABLE redraw_versions ADD COLUMN blueprint_hash TEXT;
     ALTER TABLE redraw_versions ADD COLUMN localization_hash TEXT;
     ALTER TABLE redraw_versions ADD COLUMN localization_review_json TEXT;
+    ALTER TABLE redraw_shots ADD COLUMN preparation_snapshot_json TEXT NOT NULL DEFAULT '{}';
     CREATE TABLE redraw_episode_blueprints (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       work_id INTEGER NOT NULL,
@@ -242,6 +246,24 @@ function createEpisodeReviewDb() {
       (work_id, tenant_id, user_id, revision, status, blueprint_json, blueprint_hash, updated_at)
     VALUES (1, 'tenant-a', 'user-a', 1, 'locked', ?, ?, ?)
   `).run(JSON.stringify(blueprint), blueprint.blueprint_hash, now);
+  const insertShot = db.prepare(`
+    INSERT INTO redraw_shots
+      (work_id, shot_id, version_id, tenant_id, user_id, batch_index, shot_index,
+       start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
+       references_json, compiled_prompt_json, preparation_snapshot_json, created_at, updated_at)
+    VALUES (1, ?, ?, 'tenant-a', 'user-a', 1, ?, ?, ?, ?, ?, '[]', '[]', '{}', '{}', ?, ?)
+  `);
+  blueprint.shots.forEach((shot, index) => insertShot.run(
+    shot.id,
+    versionId,
+    index + 1,
+    shot.start_ms,
+    shot.end_ms,
+    shot.end_ms - shot.start_ms,
+    JSON.stringify(shot.dialogue || []),
+    now,
+    now,
+  ));
   db.prepare("UPDATE redraw_works SET current_version = 1, current_step = 1, status = 'needs_review', updated_at = ? WHERE id = 1")
     .run(now);
   return { db, versionId, blueprint, now };
