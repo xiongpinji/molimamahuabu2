@@ -72,6 +72,30 @@ function makeEpisodePackage(root, overrides = {}) {
   return { packagePath, episodePackage, sourcePath, identityPath, motionPath }
 }
 
+async function makeVerifyState(root) {
+  const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
+  const { packagePath } = makeEpisodePackage(root)
+  const stateDir = path.join(root, 'isolated-state')
+  await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'preflight']), {
+    provider: { name: 'fake-provider' },
+  })
+  const shotBytes = Buffer.from('verified-shot-mp4')
+  const shotPath = file(stateDir, 'outputs/shots/shot-1.mp4', shotBytes)
+  const manifestPath = path.join(stateDir, 'private-manifest.json')
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  manifest.tasks = [{
+    shot_id: 'shot-1',
+    status: 'completed_verified',
+    artifact: {
+      artifact_id: 'outputs/shots/shot-1.mp4',
+      sha256: sha256(shotBytes),
+      size: shotBytes.length,
+    },
+  }]
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+  return { packagePath, stateDir, manifestPath, manifest, shotPath, shotBytes, parseArgs, runStage }
+}
+
 test('generic runner preflight validates an absolute episode package and performs zero provider calls', async () => {
   const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-runner-'))
@@ -94,6 +118,45 @@ test('generic runner preflight validates an absolute episode package and perform
     assert.equal(fs.existsSync(path.join(stateDir, 'private-manifest.json')), true)
     assert.doesNotMatch(JSON.stringify(result), /master\.mp4|marcus\.png|shot-1\.mp4/)
   } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight manifest, public evidence, return value and stdout contain metadata instead of media bytes', async () => {
+  const { main } = await import('./run-redraw-episode-blueprint-live.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-preflight-metadata-'))
+  const originalWrite = process.stdout.write
+  try {
+    const { packagePath } = makeEpisodePackage(root)
+    const stateDir = path.join(root, 'isolated-state')
+    let stdout = ''
+    process.stdout.write = (chunk) => {
+      stdout += String(chunk)
+      return true
+    }
+    const result = await main([
+      '--episode-package', packagePath,
+      '--state-dir', stateDir,
+      '--stage', 'preflight',
+    ], {
+      provider: { name: 'fake-provider' },
+      now: () => new Date('2026-09-03T09:00:00.000Z'),
+    })
+    const publicEvidence = JSON.parse(fs.readFileSync(path.join(stateDir, 'public-preflight-evidence.json'), 'utf8'))
+    const privateManifest = JSON.parse(fs.readFileSync(path.join(stateDir, 'private-manifest.json'), 'utf8'))
+    const stdoutValue = JSON.parse(stdout)
+
+    for (const value of [result, stdoutValue, publicEvidence, privateManifest]) {
+      const serialized = JSON.stringify(value)
+      assert.doesNotMatch(serialized, /"bytes"\s*:/)
+      assert.doesNotMatch(serialized, /"type"\s*:\s*"Buffer"|"data"\s*:\s*\[\s*\d/)
+      assert.doesNotMatch(serialized, /master-video|identity-marcus|motion-shot-1/)
+      assert.equal(value.source_media.size, Buffer.byteLength('master-video'))
+      assert.equal(value.references.identities[0].size, Buffer.byteLength('identity-marcus'))
+      assert.equal(value.references.motion[0].size, Buffer.byteLength('motion-shot-1'))
+    }
+  } finally {
+    process.stdout.write = originalWrite
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
@@ -302,7 +365,10 @@ test('shot stage runs the real provider lifecycle and persists every boundary', 
     ])
     assert.equal(result.status, 'completed_verified')
     assert.equal(result.artifact.sha256, sha256(resultBytes))
+    assert.equal(result.artifact.size, resultBytes.length)
     assert.equal(manifest.tasks[0].status, 'completed_verified')
+    assert.equal(manifest.tasks[0].artifact.size, resultBytes.length)
+    assert.doesNotMatch(JSON.stringify(manifest), /"bytes"\s*:/)
     assert.equal(manifest.tasks[0].submission_started_at, '2026-09-03T09:00:05.000Z')
     assert.doesNotMatch(JSON.stringify(result), /example\.test|asset-/)
   } finally {
@@ -358,6 +424,8 @@ test('shot stage keeps private uploaded asset IDs for generation POST while publ
 
     assert.deepEqual(postedBodies[0].references.map((item) => item.asset_id), ['asset-1', 'asset-2'])
     assert.equal(privateManifest.tasks[0].uploaded_references[0].asset_id, 'asset-1')
+    assert.equal(privateManifest.tasks[0].uploaded_references[0].size, Buffer.byteLength('identity-marcus'))
+    assert.doesNotMatch(JSON.stringify(privateManifest), /"bytes"\s*:/)
     assert.doesNotMatch(JSON.stringify(result), /asset-1|fumin\.test|token|test-key/)
     assert.doesNotMatch(JSON.stringify(publicEvidence), /asset-1|fumin\.test|token|test-key/)
   } finally {
@@ -466,11 +534,99 @@ test('assemble and verify stages rehash and inspect local completed artifacts', 
     const assembled = await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'assemble']), { provider })
     assert.equal(assembled.status, 'assembled_verified')
     assert.equal(assembled.episode_artifact.sha256, sha256(episodeBytes))
+    assert.equal(assembled.episode_artifact.size, episodeBytes.length)
+    assert.doesNotMatch(fs.readFileSync(path.join(stateDir, 'private-manifest.json'), 'utf8'), /"bytes"\s*:/)
 
     fs.appendFileSync(path.join(stateDir, 'outputs', 'shots', 'shot-1.mp4'), 'drift')
     await assert.rejects(
       () => runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'verify']), { provider }),
       /REDRAW_EPISODE_ARTIFACT_HASH_MISMATCH/,
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('verify rejects traversal, absolute and disallowed-directory artifact ids before inspecting them', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-verify-paths-'))
+  try {
+    const state = await makeVerifyState(root)
+    const outsideShot = file(root, 'outside-shot.mp4', Buffer.from('outside-shot'))
+    const outsideEpisode = file(root, 'outside-episode.mp4', Buffer.from('outside-episode'))
+    const privateShot = file(state.stateDir, 'private-shot.mp4', Buffer.from('private-shot'))
+    const cases = [
+      { target: 'shot', artifactId: '../outside-shot.mp4', artifactPath: outsideShot },
+      { target: 'shot', artifactId: outsideShot, artifactPath: outsideShot },
+      { target: 'shot', artifactId: 'private-shot.mp4', artifactPath: privateShot },
+      { target: 'episode', artifactId: '../outside-episode.mp4', artifactPath: outsideEpisode },
+      { target: 'episode', artifactId: outsideEpisode, artifactPath: outsideEpisode },
+      { target: 'episode', artifactId: 'outputs/shots/shot-1.mp4', artifactPath: state.shotPath },
+    ]
+
+    for (const item of cases) {
+      const manifest = JSON.parse(JSON.stringify(state.manifest))
+      const artifact = { artifact_id: item.artifactId, sha256: sha256(fs.readFileSync(item.artifactPath)) }
+      if (item.target === 'shot') manifest.tasks[0].artifact = artifact
+      else manifest.episode_artifact = artifact
+      fs.writeFileSync(state.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+      let shotInspections = 0
+      let episodeInspections = 0
+      await assert.rejects(
+        () => state.runStage(state.parseArgs(['--episode-package', state.packagePath, '--state-dir', state.stateDir, '--stage', 'verify']), {
+          provider: {
+            name: 'fake-provider',
+            inspectArtifact: async () => { shotInspections += 1; return { media: { has_audio: true } } },
+            inspectEpisode: async () => { episodeInspections += 1; return { media: { has_audio: true } } },
+          },
+        }),
+        (error) => error.code === 'REDRAW_EPISODE_ARTIFACT_PATH_INVALID',
+      )
+      if (item.target === 'shot') assert.equal(shotInspections, 0)
+      else assert.equal(episodeInspections, 0)
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('verify rejects symlink shot and episode artifacts', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-verify-symlink-'))
+  try {
+    const state = await makeVerifyState(root)
+    const outsideShot = file(root, 'outside-shot.mp4', Buffer.from('outside-shot'))
+    const shotLink = path.join(state.stateDir, 'outputs', 'shots', 'shot-link.mp4')
+    try {
+      fs.symlinkSync(outsideShot, shotLink, 'file')
+    } catch (error) {
+      t.skip(`symlink unavailable on this host: ${error.message}`)
+      return
+    }
+    const shotManifest = JSON.parse(JSON.stringify(state.manifest))
+    shotManifest.tasks[0].artifact = { artifact_id: 'outputs/shots/shot-link.mp4', sha256: sha256(fs.readFileSync(outsideShot)) }
+    fs.writeFileSync(state.manifestPath, `${JSON.stringify(shotManifest, null, 2)}\n`)
+    await assert.rejects(
+      () => state.runStage(state.parseArgs(['--episode-package', state.packagePath, '--state-dir', state.stateDir, '--stage', 'verify']), {
+        provider: { name: 'fake-provider', inspectArtifact: async () => ({ media: { has_audio: true } }) },
+      }),
+      (error) => error.code === 'REDRAW_EPISODE_ARTIFACT_PATH_INVALID',
+    )
+
+    const outsideEpisode = file(root, 'outside-episode.mp4', Buffer.from('outside-episode'))
+    const episodeLink = path.join(state.stateDir, 'outputs', 'episode', 'episode-link.mp4')
+    fs.mkdirSync(path.dirname(episodeLink), { recursive: true })
+    fs.symlinkSync(outsideEpisode, episodeLink, 'file')
+    const episodeManifest = JSON.parse(JSON.stringify(state.manifest))
+    episodeManifest.episode_artifact = { artifact_id: 'outputs/episode/episode-link.mp4', sha256: sha256(fs.readFileSync(outsideEpisode)) }
+    fs.writeFileSync(state.manifestPath, `${JSON.stringify(episodeManifest, null, 2)}\n`)
+    await assert.rejects(
+      () => state.runStage(state.parseArgs(['--episode-package', state.packagePath, '--state-dir', state.stateDir, '--stage', 'verify']), {
+        provider: {
+          name: 'fake-provider',
+          inspectArtifact: async () => ({ media: { has_audio: true } }),
+          inspectEpisode: async () => ({ media: { has_audio: true } }),
+        },
+      }),
+      (error) => error.code === 'REDRAW_EPISODE_ARTIFACT_PATH_INVALID',
     )
   } finally {
     fs.rmSync(root, { recursive: true, force: true })

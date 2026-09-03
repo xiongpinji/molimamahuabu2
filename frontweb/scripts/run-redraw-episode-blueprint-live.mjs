@@ -90,10 +90,11 @@ function atomicJson(filePath, value) {
 }
 
 function publicPathless(value) {
+  if (Buffer.isBuffer(value) || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return undefined
   if (Array.isArray(value)) return value.map(publicPathless)
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value)
-      .filter(([key]) => !/(?:^|_)(?:path|url|key|secret|token|credential|password|asset[_-]?id)(?:_|$)/i.test(key))
+      .filter(([key]) => !/(?:^|_)(?:bytes|path|url|key|secret|token|credential|password|asset[_-]?id)(?:_|$)/i.test(key))
       .map(([key, item]) => [key, publicPathless(item)]))
   }
   return value
@@ -144,10 +145,11 @@ function requireFileWithHash(item, allowed, code, symlinkCode) {
   if (stat.isSymbolicLink()) fail(symlinkCode, filePath)
   if (!stat.isFile()) fail(code, filePath)
   const expected = requireHash(item.sha256, code)
-  const bytes = fs.readFileSync(filePath)
-  const actual = sha256Buffer(bytes)
+  const actual = sha256File(filePath)
   if (actual !== expected) fail(code, filePath)
-  return { ...clone(item), path: fs.realpathSync(filePath), sha256: expected, bytes }
+  const metadata = { ...clone(item), path: fs.realpathSync(filePath), sha256: expected, size: stat.size }
+  delete metadata.bytes
+  return metadata
 }
 
 function validatePack(pack, blueprintHash, localizationHash, seen) {
@@ -230,6 +232,31 @@ function outputPathForShot(stateDir, shotId) {
 
 function episodeOutputPath(stateDir) {
   return path.join(stateDir, 'outputs', 'episode', 'episode.mp4')
+}
+
+function manifestArtifactPath(stateDir, artifactId, allowedDir) {
+  if (typeof artifactId !== 'string' || !artifactId.trim()
+    || path.isAbsolute(artifactId)
+    || path.win32.isAbsolute(artifactId)
+    || path.posix.isAbsolute(artifactId)
+    || artifactId.split(/[\\/]+/).includes('..')) {
+    fail('REDRAW_EPISODE_ARTIFACT_PATH_INVALID', artifactId)
+  }
+  const stateRoot = path.resolve(stateDir)
+  const allowedRoot = path.resolve(allowedDir)
+  const artifactPath = path.resolve(stateRoot, artifactId)
+  if (!sameOrInside(allowedRoot, artifactPath)) fail('REDRAW_EPISODE_ARTIFACT_PATH_INVALID', artifactId)
+
+  let current = stateRoot
+  for (const segment of path.relative(stateRoot, artifactPath).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment)
+    if (!fs.existsSync(current)) break
+    if (fs.lstatSync(current).isSymbolicLink()) fail('REDRAW_EPISODE_ARTIFACT_PATH_INVALID', artifactId)
+  }
+  if (fs.existsSync(artifactPath) && !sameOrInside(realTargetPath(allowedRoot), fs.realpathSync(artifactPath))) {
+    fail('REDRAW_EPISODE_ARTIFACT_PATH_INVALID', artifactId)
+  }
+  return artifactPath
 }
 
 function referencesForShot(pkg, shotId) {
@@ -348,7 +375,14 @@ async function runShot(options, adapters) {
   try {
     for (const reference of referencesForShot(pkg, pack.shot_id)) {
       const uploaded = await adapters.provider.uploadReference(reference)
-      task.uploaded_references.push(clone(uploaded))
+      const uploadedMetadata = clone(uploaded)
+      if (uploadedMetadata && typeof uploadedMetadata === 'object' && !Array.isArray(uploadedMetadata)) {
+        if (Number.isSafeInteger(uploadedMetadata.bytes) && uploadedMetadata.bytes >= 0 && uploadedMetadata.size == null) {
+          uploadedMetadata.size = uploadedMetadata.bytes
+        }
+        delete uploadedMetadata.bytes
+      }
+      task.uploaded_references.push(uploadedMetadata)
       manifest.updated_at = now()
       writeManifest(options.stateDir, manifest)
     }
@@ -373,7 +407,7 @@ async function runShot(options, adapters) {
     task.artifact = {
       artifact_id: path.relative(options.stateDir, downloaded.path).replace(/\\/g, '/'),
       sha256: downloaded.sha256,
-      bytes: downloaded.bytes,
+      size: fs.statSync(outputPath).size,
     }
     task.downloaded_at = now()
     writeManifest(options.stateDir, manifest)
@@ -405,8 +439,7 @@ async function runAssemble(options, adapters) {
   for (const pack of pkg.production_packs) {
     const task = manifest.tasks.find((item) => item.shot_id === pack.shot_id && item.status === 'completed_verified')
     if (!task?.artifact?.artifact_id) fail('REDRAW_EPISODE_ASSEMBLE_NOT_READY')
-    const artifactPath = path.join(options.stateDir, task.artifact.artifact_id)
-    if (!sameOrInside(path.join(options.stateDir, 'outputs'), artifactPath)) fail('REDRAW_EPISODE_ARTIFACT_PATH_INVALID')
+    const artifactPath = manifestArtifactPath(options.stateDir, task.artifact.artifact_id, path.join(options.stateDir, 'outputs'))
     if (!fs.existsSync(artifactPath) || sha256File(artifactPath) !== task.artifact.sha256) fail('REDRAW_EPISODE_ARTIFACT_HASH_MISMATCH', pack.shot_id)
     shotPaths.push(artifactPath)
   }
@@ -420,7 +453,7 @@ async function runAssemble(options, adapters) {
   manifest.episode_artifact = {
     artifact_id: path.relative(options.stateDir, assembled.path).replace(/\\/g, '/'),
     sha256: assembled.sha256,
-    bytes: assembled.bytes,
+    size: fs.statSync(outputPath).size,
   }
   manifest.episode_verification = publicPathless(inspection)
   manifest.updated_at = adapters.now().toISOString()
@@ -436,12 +469,12 @@ async function runVerify(options, adapters) {
   for (const pack of pkg.production_packs) {
     const task = manifest.tasks.find((item) => item.shot_id === pack.shot_id && item.status === 'completed_verified')
     if (!task?.artifact?.artifact_id) fail('REDRAW_EPISODE_VERIFY_NOT_READY', pack.shot_id)
-    const artifactPath = path.join(options.stateDir, task.artifact.artifact_id)
+    const artifactPath = manifestArtifactPath(options.stateDir, task.artifact.artifact_id, path.join(options.stateDir, 'outputs'))
     if (!fs.existsSync(artifactPath) || sha256File(artifactPath) !== task.artifact.sha256) fail('REDRAW_EPISODE_ARTIFACT_HASH_MISMATCH', pack.shot_id)
     task.verify_reread = publicPathless(await adapters.provider.inspectArtifact({ output_path: artifactPath, pack: clone(pack) }))
   }
   if (manifest.episode_artifact?.artifact_id) {
-    const episodePath = path.join(options.stateDir, manifest.episode_artifact.artifact_id)
+    const episodePath = manifestArtifactPath(options.stateDir, manifest.episode_artifact.artifact_id, path.dirname(episodeOutputPath(options.stateDir)))
     if (!fs.existsSync(episodePath) || sha256File(episodePath) !== manifest.episode_artifact.sha256) fail('REDRAW_EPISODE_ARTIFACT_HASH_MISMATCH', 'episode')
     if (typeof adapters.provider.inspectEpisode === 'function') {
       const trustedManifest = { ...clone(manifest), production_packs: clone(pkg.production_packs) }
