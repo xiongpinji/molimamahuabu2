@@ -595,34 +595,21 @@ function assertDialogueEvidence(turn, evidence, name) {
   }
 }
 
-function assertBlueprintLockable(blueprint) {
+function normalizeLockableBlueprint(blueprint) {
   if (!blueprint || blueprint.schema_version !== 'episode-blueprint-v1') {
     throw codedError('BLUEPRINT_SCHEMA_INVALID', '蓝图版本无效');
   }
-  const durationMs = blueprint.source && blueprint.source.duration_ms;
-  if (!Number.isSafeInteger(durationMs) || durationMs <= 0 || !Array.isArray(blueprint.shots) || blueprint.shots.length === 0) {
-    throw codedError('BLUEPRINT_TIMELINE_INCOMPLETE', '蓝图时间轴无效');
-  }
-  let previousEnd = 0;
-  for (const [index, shot] of blueprint.shots.entries()) {
-    if (shot.index !== index + 1 || shot.start_ms !== previousEnd || !Number.isSafeInteger(shot.end_ms)
-      || shot.end_ms <= shot.start_ms || shot.end_ms > durationMs) {
-      throw codedError('BLUEPRINT_TIMELINE_INCOMPLETE', 'shots 存在间隙、重叠或越界');
-    }
-    previousEnd = shot.end_ms;
-  }
-  if (previousEnd !== durationMs) {
-    throw codedError('BLUEPRINT_TIMELINE_INCOMPLETE', 'shots 未覆盖完整母本');
-  }
+  const suppliedHash = blueprint.blueprint_hash;
+  const normalized = normalizeEpisodeBlueprint(blueprint);
 
-  const evidenceItems = blueprint.evidence_manifest && blueprint.evidence_manifest.items;
-  if (!/^[a-f0-9]{64}$/.test(String(blueprint.source.sha256 || '')) || !Array.isArray(evidenceItems) || evidenceItems.length === 0
+  const evidenceItems = normalized.evidence_manifest.items;
+  if (!/^[a-f0-9]{64}$/.test(String(normalized.source.sha256 || ''))
     || evidenceItems.some((item) => !/^[a-f0-9]{64}$/.test(String(item.sha256 || '')))) {
     throw codedError('BLUEPRINT_EVIDENCE_SHA_INVALID', '源资产或证据 SHA-256 无效');
   }
   const evidence = new Map(evidenceItems.map((item) => [item.id, item]));
-  const characterIds = new Set((blueprint.characters || []).map((character) => character.id));
-  for (const [shotIndex, shot] of blueprint.shots.entries()) {
+  const characterIds = new Set(normalized.characters.map((character) => character.id));
+  for (const [shotIndex, shot] of normalized.shots.entries()) {
     for (const [turnIndex, turn] of (shot.dialogue || []).entries()) {
       const name = `shots[${shotIndex}].dialogue[${turnIndex}]`;
       assertDialogueEvidence(turn, evidence, name);
@@ -637,40 +624,45 @@ function assertBlueprintLockable(blueprint) {
       }
     }
   }
-  if (!['approved', 'locked'].includes(blueprint.review && blueprint.review.status)) {
+  if (!['approved', 'locked'].includes(normalized.review.status)) {
     throw codedError('BLUEPRINT_REVIEW_REQUIRED', '蓝图尚未审核通过');
   }
-  if (!/^[a-f0-9]{64}$/.test(String(blueprint.blueprint_hash || '')) || blueprintSha256(blueprint) !== blueprint.blueprint_hash) {
+  if (!/^[a-f0-9]{64}$/.test(String(suppliedHash || '')) || suppliedHash !== normalized.blueprint_hash) {
     throw codedError('BLUEPRINT_HASH_MISMATCH', '蓝图哈希与规范内容不一致');
   }
+  return normalized;
+}
+
+function assertBlueprintLockable(blueprint) {
+  normalizeLockableBlueprint(blueprint);
   return blueprint;
 }
 
 function projectSourceFactsV2(blueprint) {
-  assertBlueprintLockable(blueprint);
+  const locked = normalizeLockableBlueprint(blueprint);
   return normalizeEpisodeFactsV2({
     schema_version: '2.0',
-    duration_ms: blueprint.source.duration_ms,
-    story: [blueprint.story.summary, ...blueprint.story.beats],
-    characters: blueprint.characters.map((character) => ({
+    duration_ms: locked.source.duration_ms,
+    story: [locked.story.summary, ...locked.story.beats],
+    characters: locked.characters.map((character) => ({
       id: character.id,
       source_name: character.source_name,
       display_name: character.display_name,
       relationship: character.relationship,
       relationships: character.relationships,
     })),
-    scenes: blueprint.scenes.map((scene) => ({
+    scenes: locked.scenes.map((scene) => ({
       id: scene.id,
       location: scene.location,
       time: scene.time,
       source_ranges: scene.source_ranges,
     })),
-    props: blueprint.props.map((prop) => ({
+    props: locked.props.map((prop) => ({
       id: prop.id,
       name: prop.name,
       evidence_ranges: prop.evidence_ranges,
     })),
-    shots: blueprint.shots.map((shot) => ({
+    shots: locked.shots.map((shot) => ({
       id: shot.id,
       index: shot.index,
       start_ms: shot.start_ms,
@@ -700,10 +692,10 @@ function projectSourceFactsV2(blueprint) {
       audio_contract: shot.audio_contract,
       confidence: shot.confidence,
     })),
-    causal_chain: blueprint.causal_chain.map((item) => `${item.cause} → ${item.effect}`),
-    locked_facts: blueprint.locked_facts.map((item) => item.text),
-    reversals: blueprint.reversals.map((item) => item.text),
-    episode_hook: blueprint.episode_hook.text,
+    causal_chain: locked.causal_chain.map((item) => `${item.cause} → ${item.effect}`),
+    locked_facts: locked.locked_facts.map((item) => item.text),
+    reversals: locked.reversals.map((item) => item.text),
+    episode_hook: locked.episode_hook.text,
   });
 }
 

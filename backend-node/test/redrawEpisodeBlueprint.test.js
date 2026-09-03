@@ -1,11 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { createHash } = require('node:crypto');
 
 const {
   assertBlueprintLockable,
   normalizeEpisodeBlueprint,
   projectSourceFactsV2,
 } = require('../src/services/redrawEpisodeBlueprintService');
+const { stableStringify } = require('../src/services/redrawEpisodeFactsService');
 
 function fixtureBlueprint() {
   return {
@@ -185,6 +187,20 @@ function lockedBlueprint() {
   return normalizeEpisodeBlueprint(raw);
 }
 
+function resignBlueprint(blueprint) {
+  const { blueprint_hash: ignored, ...canonical } = blueprint;
+  blueprint.blueprint_hash = createHash('sha256').update(stableStringify(canonical)).digest('hex');
+  return blueprint;
+}
+
+function assertLockAndProjectionReject(mutator, expected) {
+  const blueprint = lockedBlueprint();
+  mutator(blueprint);
+  resignBlueprint(blueprint);
+  assert.throws(() => assertBlueprintLockable(blueprint), expected);
+  assert.throws(() => projectSourceFactsV2(blueprint), expected);
+}
+
 test('normalizes a gap-free episode blueprint with off-screen and unresolved speakers', () => {
   const value = normalizeEpisodeBlueprint(fixtureBlueprint());
   assert.equal(value.schema_version, 'episode-blueprint-v1');
@@ -252,6 +268,36 @@ test('lock gate rejects incomplete timelines, invalid evidence and unresolved sp
 
   const lockable = lockedBlueprint();
   assert.equal(assertBlueprintLockable(lockable), lockable);
+});
+
+test('lock gate rejects re-signed story evidence references outside the manifest', () => {
+  assertLockAndProjectionReject((blueprint) => {
+    blueprint.story.evidence_refs = ['evidence-missing'];
+  }, /未知证据/);
+});
+
+test('lock gate rejects re-signed shot evidence references outside the manifest', () => {
+  assertLockAndProjectionReject((blueprint) => {
+    blueprint.shots[0].evidence_refs = ['evidence-missing'];
+  }, /未知证据/);
+});
+
+test('lock gate rejects a re-signed dialogue with an invalid speaker kind', () => {
+  assertLockAndProjectionReject((blueprint) => {
+    blueprint.shots[0].dialogue[0].speaker_kind = 'invented_speaker';
+  }, /speaker_kind/);
+});
+
+test('lock gate rejects a re-signed on-screen speaker missing from visible characters', () => {
+  assertLockAndProjectionReject((blueprint) => {
+    blueprint.shots[0].visible_character_ids = [];
+  }, /必须可见/);
+});
+
+test('lock gate rejects a re-signed blueprint with an unreviewed character', () => {
+  assertLockAndProjectionReject((blueprint) => {
+    blueprint.characters[0].review_status = 'needs_review';
+  }, /BLUEPRINT_REVIEW_REQUIRED/);
 });
 
 test('projects only lockable blueprints to source facts without guessing speaker names', () => {
