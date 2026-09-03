@@ -1723,6 +1723,50 @@ test('母本蓝图 PUT 递归拒绝 URL 路径密钥 provider model generation �
   }
 });
 
+test('母本蓝图 PUT 对深层、超大、循环和 NFKC 混淆输入稳定返回 400', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    let calls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      blueprintWorkflowService: {
+        saveDraft() {
+          calls += 1;
+          return {};
+        },
+      },
+    }));
+    const tooDeep = {};
+    let cursor = tooDeep;
+    for (let depth = 0; depth <= 64; depth += 1) {
+      cursor.child = {};
+      cursor = cursor.child;
+    }
+    const cycle = {};
+    cycle.self = cycle;
+    const cases = [
+      tooDeep,
+      new Array(50_001).fill(null),
+      { text: '字'.repeat((4 * 1024 * 1024) + 1) },
+      cycle,
+      { 'ｇｅｎｅｒａｔｉｏｎ＿ｐａｒａｍｅｔｅｒｓ': { seed: 1 } },
+    ];
+    for (const blueprint of cases) {
+      const result = captureResponse();
+      handlers.saveBlueprint(request({
+        id: workId,
+        body: { expected_updated_at: NOW, blueprint },
+      }), result);
+      assert.equal(result.statusCode, 400);
+      assert.equal(result.body.error.code, 'REDRAW_BLUEPRINT_INPUT_INVALID');
+    }
+    assert.equal(calls, 0);
+  } finally {
+    db.close();
+  }
+});
+
 test('母本蓝图 API 稳定映射 400 404 409 且内部错误不泄露路径和 secret', () => {
   const db = createDb();
   try {

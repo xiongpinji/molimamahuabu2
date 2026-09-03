@@ -271,31 +271,6 @@ function assertNeedsReviewBlueprint(blueprint) {
 
 function writeBlueprintOnce(db, work, blueprint) {
   const now = new Date().toISOString();
-  let version = db.prepare(`
-    SELECT *
-    FROM redraw_versions
-    WHERE tenant_id = ? AND user_id = ? AND work_id = ? AND deleted_at IS NULL
-    ORDER BY CASE WHEN version = ? THEN 0 ELSE 1 END, version DESC, id DESC
-    LIMIT 1
-  `).get(work.tenant_id, work.user_id, work.id, Number(work.current_version || 0));
-  if (!version) {
-    const id = insertDynamic(db, 'redraw_versions', {
-      work_id: work.id,
-      tenant_id: work.tenant_id || null,
-      user_id: work.user_id || null,
-      version: 1,
-      locale: 'source',
-      market: '',
-      localization_level: 'faithful',
-      source_facts_json: null,
-      facts_hash: null,
-      blueprint_hash: null,
-      status: 'needs_attention',
-      created_at: now,
-      updated_at: now,
-    }).lastInsertRowid;
-    version = { id, work_id: work.id, version: 1, status: 'needs_attention' };
-  }
   const existingDraft = db.prepare(`
     SELECT id
     FROM redraw_episode_blueprints
@@ -308,14 +283,45 @@ function writeBlueprintOnce(db, work, blueprint) {
     userId: work.user_id,
   }, { workId: work.id, blueprint });
   const changed = !existingDraft;
-  updateDynamic(db, 'redraw_versions', { status: 'needs_attention', updated_at: now }, 'id', version.id);
-  updateDynamic(db, 'redraw_works', {
-    status: 'needs_attention',
-    current_version: Number(version.version || 1),
-    current_step: 1,
-    error_msg: null,
-    updated_at: now,
-  }, 'id', work.id);
+  let version = db.prepare(`
+    SELECT *
+    FROM redraw_versions
+    WHERE tenant_id = ? AND user_id = ? AND work_id = ? AND version = ?
+      AND deleted_at IS NULL
+    LIMIT 1
+  `).get(work.tenant_id, work.user_id, work.id, draft.revision);
+  if (!version) {
+    throw codedError('REDRAW_BLUEPRINT_VERSION_NOT_FOUND', '母本蓝图缺少精确 source review 版本');
+  }
+  const versionBound = version.source_facts_json != null
+    || version.facts_hash != null
+    || version.blueprint_hash != null;
+  if (draft.status === 'draft') {
+    if (version.locale !== 'source' || versionBound) {
+      throw codedError('REDRAW_BLUEPRINT_VERSION_ALREADY_BOUND', '对应修订版本已有不可变事实');
+    }
+    const versionUpdate = db.prepare(`
+      UPDATE redraw_versions
+      SET status = 'needs_attention', updated_at = ?
+      WHERE tenant_id = ? AND user_id = ? AND work_id = ? AND version = ?
+        AND locale = 'source' AND source_facts_json IS NULL
+        AND facts_hash IS NULL AND blueprint_hash IS NULL AND deleted_at IS NULL
+    `).run(now, work.tenant_id, work.user_id, work.id, draft.revision);
+    if (versionUpdate.changes !== 1) {
+      throw codedError('REDRAW_BLUEPRINT_VERSION_ALREADY_BOUND', '对应修订版本已有不可变事实');
+    }
+    version = { ...version, status: 'needs_attention', updated_at: now };
+  } else if (version.locale !== 'source'
+    || !versionBound
+    || version.blueprint_hash !== draft.blueprint_hash) {
+    throw codedError('REDRAW_BLUEPRINT_VERSION_ALREADY_BOUND', '锁定蓝图与 source review 版本不一致');
+  }
+  db.prepare(`
+    UPDATE redraw_works
+    SET status = 'needs_attention', current_version = ?, current_step = 1,
+        error_msg = NULL, updated_at = ?
+    WHERE tenant_id = ? AND user_id = ? AND id = ? AND deleted_at IS NULL
+  `).run(draft.revision, now, work.tenant_id, work.user_id, work.id);
   return { version, draft, changed };
 }
 

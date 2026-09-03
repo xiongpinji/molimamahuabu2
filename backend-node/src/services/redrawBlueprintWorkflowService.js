@@ -10,7 +10,10 @@ const FORBIDDEN_KEY_PARTS = [
   'apikey', 'authorization', 'credential', 'generation', 'model', 'provider',
   'secret', 'token', 'url', 'uri', 'path', 'endpoint', 'request',
 ];
-const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+const DANGEROUS_KEYS = new Set(['proto', 'prototype', 'constructor']);
+const MAX_BLUEPRINT_DEPTH = 64;
+const MAX_BLUEPRINT_NODES = 50_000;
+const MAX_BLUEPRINT_STRING_BYTES = 4 * 1024 * 1024;
 
 function codedError(code, message) {
   const error = new Error(`${code}: ${message}`);
@@ -85,6 +88,70 @@ function rowById(ctx, workId, id) {
   `).get(ctx.tenantId, ctx.userId, workId, id);
 }
 
+function exactVersion(ctx, workId, revision) {
+  return ctx.db.prepare(`
+    SELECT id, work_id, tenant_id, user_id, version, locale, source_facts_json,
+           facts_hash, blueprint_hash, status, updated_at
+    FROM redraw_versions
+    WHERE tenant_id = ? AND user_id = ? AND work_id = ? AND version = ?
+      AND deleted_at IS NULL
+    LIMIT 1
+  `).get(ctx.tenantId, ctx.userId, workId, revision);
+}
+
+function versionIsBound(version) {
+  return version.source_facts_json != null
+    || version.facts_hash != null
+    || version.blueprint_hash != null;
+}
+
+function nextDraftRevision(ctx, workId, firstRevision) {
+  const versions = ctx.db.prepare(`
+    SELECT version, locale, source_facts_json, facts_hash, blueprint_hash, deleted_at
+    FROM redraw_versions
+    WHERE tenant_id = ? AND user_id = ? AND work_id = ? AND version >= ?
+    ORDER BY version ASC
+  `).all(ctx.tenantId, ctx.userId, workId, firstRevision);
+  let revision = firstRevision;
+  for (const version of versions) {
+    const number = Number(version.version);
+    if (number < revision) continue;
+    if (number > revision) break;
+    if (version.deleted_at == null && version.locale === 'source' && !versionIsBound(version)) {
+      return revision;
+    }
+    revision += 1;
+  }
+  return revision;
+}
+
+function ensureDraftVersion(ctx, workId, revision, now) {
+  const version = exactVersion(ctx, workId, revision);
+  if (version) {
+    if (version.locale !== 'source' || versionIsBound(version)) {
+      throw codedError('REDRAW_BLUEPRINT_VERSION_ALREADY_BOUND', '对应修订版本已有不可变事实');
+    }
+    const updated = ctx.db.prepare(`
+      UPDATE redraw_versions
+      SET status = 'needs_attention', updated_at = ?
+      WHERE tenant_id = ? AND user_id = ? AND work_id = ? AND version = ?
+        AND locale = 'source' AND source_facts_json IS NULL
+        AND facts_hash IS NULL AND blueprint_hash IS NULL AND deleted_at IS NULL
+    `).run(now, ctx.tenantId, ctx.userId, workId, revision);
+    if (updated.changes !== 1) {
+      throw codedError('REDRAW_BLUEPRINT_VERSION_ALREADY_BOUND', '对应修订版本已有不可变事实');
+    }
+    return;
+  }
+  ctx.db.prepare(`
+    INSERT INTO redraw_versions
+      (work_id, tenant_id, user_id, version, locale, market, localization_level,
+       source_facts_json, facts_hash, blueprint_hash, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'source', '', 'faithful', NULL, NULL, NULL,
+      'needs_attention', ?, ?)
+  `).run(workId, ctx.tenantId, ctx.userId, revision, now, now);
+}
+
 function mapRow(row) {
   if (!row) return null;
   return {
@@ -105,7 +172,7 @@ function mapRow(row) {
 }
 
 function normalizedKey(key) {
-  return String(key).replace(/[^a-z0-9]/gi, '').toLowerCase();
+  return String(key).normalize('NFKC').replace(/[^a-z0-9]/gi, '').toLowerCase();
 }
 
 function assertSafeString(value, name) {
@@ -113,36 +180,68 @@ function assertSafeString(value, name) {
   if (/^(?:[a-z]:[\\/]|\\\\|\/|file:\/\/)/i.test(text)
     || /https?:\/\//i.test(text)
     || /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(text)) {
-    throw codedError('REDRAW_BLUEPRINT_FORBIDDEN_FIELD', `${name} 不允许 URL 或本地路径`);
+    throw codedError('REDRAW_BLUEPRINT_INPUT_INVALID', `${name} 不允许 URL 或本地路径`);
   }
 }
 
 function assertSafeBlueprintValue(value, name = 'blueprint') {
-  if (typeof value === 'string') {
-    assertSafeString(value, name);
-    return;
-  }
-  if (value == null || typeof value !== 'object') return;
-  if (Array.isArray(value)) {
-    value.forEach((item, index) => assertSafeBlueprintValue(item, `${name}[${index}]`));
-    return;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    throw codedError('REDRAW_BLUEPRINT_FORBIDDEN_FIELD', `${name} 不允许继承字段`);
-  }
-  for (const key in value) {
-    if (!Object.prototype.hasOwnProperty.call(value, key)) {
-      throw codedError('REDRAW_BLUEPRINT_FORBIDDEN_FIELD', `${name}.${key} 不允许继承字段`);
+  const stack = [{ value, name, depth: 0 }];
+  const seen = new WeakSet();
+  let nodes = 0;
+  let stringBytes = 0;
+  while (stack.length > 0) {
+    const current = stack.pop();
+    nodes += 1;
+    if (nodes > MAX_BLUEPRINT_NODES || current.depth > MAX_BLUEPRINT_DEPTH) {
+      throw codedError('REDRAW_BLUEPRINT_INPUT_INVALID', '母本蓝图超过大小限制');
     }
-  }
-  for (const [key, item] of Object.entries(value)) {
-    const normalized = normalizedKey(key);
-    if (DANGEROUS_KEYS.has(key)
-      || FORBIDDEN_KEY_PARTS.some((part) => normalized.includes(part))) {
-      throw codedError('REDRAW_BLUEPRINT_FORBIDDEN_FIELD', `${name}.${key} 为禁止字段`);
+    if (typeof current.value === 'string') {
+      stringBytes += Buffer.byteLength(current.value, 'utf8');
+      if (stringBytes > MAX_BLUEPRINT_STRING_BYTES) {
+        throw codedError('REDRAW_BLUEPRINT_INPUT_INVALID', '母本蓝图文本超过大小限制');
+      }
+      assertSafeString(current.value, current.name);
+      continue;
     }
-    assertSafeBlueprintValue(item, `${name}.${key}`);
+    if (current.value == null || typeof current.value !== 'object') continue;
+    if (seen.has(current.value)) {
+      throw codedError('REDRAW_BLUEPRINT_INPUT_INVALID', '母本蓝图不允许循环引用');
+    }
+    seen.add(current.value);
+    if (Array.isArray(current.value)) {
+      if (nodes + stack.length + current.value.length > MAX_BLUEPRINT_NODES) {
+        throw codedError('REDRAW_BLUEPRINT_INPUT_INVALID', '母本蓝图超过大小限制');
+      }
+      for (let index = current.value.length - 1; index >= 0; index -= 1) {
+        stack.push({
+          value: current.value[index],
+          name: `${current.name}[${index}]`,
+          depth: current.depth + 1,
+        });
+      }
+      continue;
+    }
+    const prototype = Object.getPrototypeOf(current.value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw codedError('REDRAW_BLUEPRINT_INPUT_INVALID', `${current.name} 不允许继承字段`);
+    }
+    const entries = Object.entries(current.value);
+    if (nodes + stack.length + entries.length > MAX_BLUEPRINT_NODES) {
+      throw codedError('REDRAW_BLUEPRINT_INPUT_INVALID', '母本蓝图超过大小限制');
+    }
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const [key, item] = entries[index];
+      stringBytes += Buffer.byteLength(key, 'utf8');
+      if (stringBytes > MAX_BLUEPRINT_STRING_BYTES) {
+        throw codedError('REDRAW_BLUEPRINT_INPUT_INVALID', '母本蓝图文本超过大小限制');
+      }
+      const normalized = normalizedKey(key);
+      if (DANGEROUS_KEYS.has(normalized)
+        || FORBIDDEN_KEY_PARTS.some((part) => normalized.includes(part))) {
+        throw codedError('REDRAW_BLUEPRINT_INPUT_INVALID', `${current.name}.${key} 为禁止字段`);
+      }
+      stack.push({ value: item, name: `${current.name}.${key}`, depth: current.depth + 1 });
+    }
   }
 }
 
@@ -192,7 +291,7 @@ function createOrSaveDraft(rawCtx, input) {
 
     const current = currentRow(ctx, workId);
     const now = nextTimestamp(rawCtx, current?.updated_at);
-    const revision = Number(current?.revision || 0) + 1;
+    const revision = nextDraftRevision(ctx, workId, Number(current?.revision || 0) + 1);
     const result = ctx.db.prepare(`
       INSERT INTO redraw_episode_blueprints
         (work_id, tenant_id, user_id, revision, status, blueprint_json, blueprint_hash,
@@ -209,6 +308,7 @@ function createOrSaveDraft(rawCtx, input) {
       now,
       now,
     );
+    ensureDraftVersion(ctx, workId, revision, now);
     return mapRow(rowById(ctx, workId, result.lastInsertRowid));
   });
   return transaction();
@@ -264,24 +364,13 @@ function saveDraft(rawCtx, input) {
   return transaction();
 }
 
-function ownedVersion(ctx, workId, currentVersion) {
-  return ctx.db.prepare(`
-    SELECT id, work_id, tenant_id, user_id, version, source_facts_json, facts_hash,
-           blueprint_hash, updated_at
-    FROM redraw_versions
-    WHERE tenant_id = ? AND user_id = ? AND work_id = ? AND deleted_at IS NULL
-    ORDER BY CASE WHEN version = ? THEN 0 ELSE 1 END, version DESC, id DESC
-    LIMIT 1
-  `).get(ctx.tenantId, ctx.userId, workId, Number(currentVersion || 0));
-}
-
 function lockBlueprint(rawCtx, input) {
   const ctx = requireContext(rawCtx);
   const workId = workIdFrom(input);
   const expected = expectedUpdatedAt(input);
   const expectedHash = expectedBlueprintHash(input);
   const transaction = ctx.db.transaction(() => {
-    const work = assertOwnedWork(ctx, workId);
+    assertOwnedWork(ctx, workId);
     const current = currentRow(ctx, workId);
     if (!current) throw codedError('REDRAW_BLUEPRINT_NOT_FOUND', '母本蓝图不存在');
     if (current.status !== 'draft') {
@@ -296,9 +385,9 @@ function lockBlueprint(rawCtx, input) {
       || expectedHash !== current.blueprint_hash) {
       throw codedError('REDRAW_BLUEPRINT_HASH_MISMATCH', '母本蓝图哈希已变化，请刷新后重试');
     }
-    const version = ownedVersion(ctx, workId, work.current_version);
+    const version = exactVersion(ctx, workId, current.revision);
     if (!version) throw codedError('REDRAW_BLUEPRINT_NOT_FOUND', '母本蓝图不存在');
-    if (version.source_facts_json != null || version.facts_hash != null || version.blueprint_hash != null) {
+    if (version.locale !== 'source' || versionIsBound(version)) {
       throw codedError('REDRAW_BLUEPRINT_VERSION_ALREADY_BOUND', '当前版本已有不可变母本事实');
     }
     const projected = projectSourceFactsV2(blueprint);

@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const {
+  assertSafeBlueprintValue,
   createOrSaveDraft,
   getCurrentBlueprint,
   lockBlueprint,
@@ -67,6 +68,9 @@ test('creates revision 1 and returns the same row for a repeated blueprint hash'
     assert.equal(repeated.updated_at, first.updated_at);
     assert.equal(state.db.prepare(`
       SELECT COUNT(*) AS count FROM redraw_episode_blueprints WHERE work_id = ?
+    `).get(state.workId).count, 1);
+    assert.equal(state.db.prepare(`
+      SELECT COUNT(*) AS count FROM redraw_versions WHERE work_id = ?
     `).get(state.workId).count, 1);
     assert.deepEqual(repeated.blueprint, blueprint);
   } finally {
@@ -203,7 +207,7 @@ test('unresolved review cannot lock and leaves both draft and version unchanged'
   }
 });
 
-test('projection failure rolls back the lock and preserves existing source facts', () => {
+test('a new blueprint revision bypasses and preserves an already-bound legacy source version', () => {
   const state = setup();
   try {
     const legacyFacts = JSON.stringify({ schema_version: 'legacy', keep: true });
@@ -214,13 +218,13 @@ test('projection failure rolls back the lock and preserves existing source facts
       workId: state.workId,
       blueprint: lockedBlueprint(),
     });
-
-    assert.throws(() => lockBlueprint(state.ctx, {
+    assert.equal(draft.revision, 2);
+    const locked = lockBlueprint(state.ctx, {
       workId: state.workId,
       expectedBlueprintHash: draft.blueprint_hash,
       expectedUpdatedAt: draft.updated_at,
-    }), { code: 'REDRAW_BLUEPRINT_VERSION_ALREADY_BOUND' });
-    assert.equal(getCurrentBlueprint(state.ctx, { workId: state.workId }).status, 'draft');
+    });
+    assert.equal(locked.status, 'locked');
     assert.deepEqual(state.db.prepare(`
       SELECT source_facts_json, facts_hash, blueprint_hash FROM redraw_versions WHERE id = ?
     `).get(state.versionId), {
@@ -228,6 +232,10 @@ test('projection failure rolls back the lock and preserves existing source facts
       facts_hash: 'legacy-hash',
       blueprint_hash: null,
     });
+    assert.equal(state.db.prepare(`
+      SELECT blueprint_hash FROM redraw_versions
+      WHERE tenant_id = 'tenant-a' AND user_id = 'user-a' AND work_id = ? AND version = 2
+    `).get(state.workId).blueprint_hash, draft.blueprint_hash);
   } finally {
     state.db.close();
   }
@@ -251,7 +259,67 @@ test('analysis may create an explicit new draft revision after the previous one 
     assert.equal(state.db.prepare(`
       SELECT status FROM redraw_episode_blueprints WHERE work_id = ? AND revision = 1
     `).get(state.workId).status, 'locked');
+    assert.deepEqual(state.db.prepare(`
+      SELECT version, source_facts_json, facts_hash, blueprint_hash, locale, status
+      FROM redraw_versions
+      WHERE tenant_id = 'tenant-a' AND user_id = 'user-a' AND work_id = ? AND version = 2
+    `).get(state.workId), {
+      version: 2,
+      source_facts_json: null,
+      facts_hash: null,
+      blueprint_hash: null,
+      locale: 'source',
+      status: 'needs_attention',
+    });
+    const firstVersionBefore = state.db.prepare(`
+      SELECT source_facts_json, facts_hash, blueprint_hash
+      FROM redraw_versions
+      WHERE tenant_id = 'tenant-a' AND user_id = 'user-a' AND work_id = ? AND version = 1
+    `).get(state.workId);
+    assert.equal(state.db.prepare('SELECT current_version FROM redraw_works WHERE id = ?')
+      .get(state.workId).current_version, 1);
+    const lockedNext = lockBlueprint(state.ctx, {
+      workId: state.workId,
+      expectedBlueprintHash: next.blueprint_hash,
+      expectedUpdatedAt: next.updated_at,
+    });
+    assert.equal(lockedNext.revision, 2);
+    assert.equal(lockedNext.status, 'locked');
+    assert.deepEqual(state.db.prepare(`
+      SELECT source_facts_json, facts_hash, blueprint_hash
+      FROM redraw_versions
+      WHERE tenant_id = 'tenant-a' AND user_id = 'user-a' AND work_id = ? AND version = 1
+    `).get(state.workId), firstVersionBefore);
+    assert.equal(state.db.prepare(`
+      SELECT blueprint_hash FROM redraw_versions
+      WHERE tenant_id = 'tenant-a' AND user_id = 'user-a' AND work_id = ? AND version = 2
+    `).get(state.workId).blueprint_hash, next.blueprint_hash);
   } finally {
     state.db.close();
+  }
+});
+
+test('rejects bounded and confusable blueprint inputs with one stable input error', () => {
+  const tooDeep = {};
+  let cursor = tooDeep;
+  for (let depth = 0; depth <= 64; depth += 1) {
+    cursor.child = {};
+    cursor = cursor.child;
+  }
+  const cycle = {};
+  cycle.self = cycle;
+  const cases = [
+    tooDeep,
+    new Array(50_001).fill(null),
+    '字'.repeat((4 * 1024 * 1024) + 1),
+    cycle,
+    { 'ｐｒｏｖｉｄｅｒ': 'client-controlled' },
+  ];
+
+  for (const value of cases) {
+    assert.throws(
+      () => assertSafeBlueprintValue(value),
+      { code: 'REDRAW_BLUEPRINT_INPUT_INVALID' },
+    );
   }
 });

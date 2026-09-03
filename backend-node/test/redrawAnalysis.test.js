@@ -12,6 +12,7 @@ const taskService = require('../src/services/taskService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const { normalizeSourceFacts } = require('../src/services/redrawAnalysisService');
 const { normalizeEpisodeBlueprint } = require('../src/services/redrawEpisodeBlueprintService');
+const blueprintWorkflow = require('../src/services/redrawBlueprintWorkflowService');
 const redraw = require('../src/services/redrawOrchestrator');
 
 const log = { info() {}, warn() {}, error() {} };
@@ -882,6 +883,109 @@ test('blueprint pipeline runs audio then visual then fusion and stops at needs_r
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM async_tasks WHERE type != 'redraw_analysis'").get().n, 0);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_shots WHERE version_id = ?').get(version.id).count, 0);
   db.close();
+});
+
+test('re-analysis binds each blueprint revision to its exact immutable source review version', async () => {
+  const db = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+  const owner = { db, tenantId: 'tenant-1', userId: 'user-1' };
+  const analyze = (blueprint, suffix) => redraw.startAnalysis(db, log, {
+    workId: 1,
+    userId: 'user-1',
+    tenantId: 'tenant-1',
+  }, {
+    sourceAudioEvidenceService: {
+      analyzeSourceAudio: async () => ({
+        dialogue_mode: 'silent',
+        result_asset_id: 201,
+        evidence_asset: {
+          id: 'evidence-audio-1', kind: 'audio_silence', asset_id: 201,
+          sha256: 'c'.repeat(64), tool: 'audio-worker', tool_version: '1.0.0',
+        },
+      }),
+    },
+    nativeSourceAnalysisService: {
+      analyzeNativeSource: async () => ({
+        status: 'completed',
+        provider_task_id: `provider-blueprint-${suffix}`,
+        source: blueprint.source,
+        facts: { schema_version: '2.0', duration_ms: 10_000, shots: [] },
+        evidence_asset: blueprint.evidence_manifest.items[0],
+      }),
+    },
+    evidenceFusionService: { fuseEpisodeEvidence: () => blueprint },
+  });
+  const approve = (blueprint, summary) => {
+    const raw = JSON.parse(JSON.stringify(blueprint));
+    raw.story.summary = summary;
+    raw.review = { status: 'approved', reviewer: 'user-1' };
+    delete raw.blueprint_hash;
+    return normalizeEpisodeBlueprint(raw);
+  };
+
+  try {
+    const firstAnalysis = await analyze(needsReviewBlueprint(), 'one');
+    const firstReviewed = blueprintWorkflow.saveDraft(owner, {
+      workId: 1,
+      expectedUpdatedAt: firstAnalysis.blueprint_updated_at,
+      blueprint: approve(firstAnalysis.blueprint, '第一版审核通过。'),
+    });
+    const firstLocked = blueprintWorkflow.lockBlueprint(owner, {
+      workId: 1,
+      expectedUpdatedAt: firstReviewed.updated_at,
+      expectedBlueprintHash: firstReviewed.blueprint_hash,
+    });
+    assert.equal(firstLocked.revision, 1);
+    assert.equal(firstLocked.status, 'locked');
+
+    const versionOneId = firstAnalysis.version_id;
+    db.prepare("UPDATE redraw_versions SET status = 'asset_review', updated_at = ? WHERE id = ?")
+      .run('2026-09-03T01:00:00.000Z', versionOneId);
+    const versionOneBefore = db.prepare(`
+      SELECT id, version, source_facts_json, facts_hash, blueprint_hash, status, updated_at
+      FROM redraw_versions
+      WHERE id = ? AND work_id = 1 AND tenant_id = 'tenant-1' AND user_id = 'user-1'
+    `).get(versionOneId);
+    const blueprintOneBefore = db.prepare(`
+      SELECT * FROM redraw_episode_blueprints
+      WHERE work_id = 1 AND tenant_id = 'tenant-1' AND user_id = 'user-1' AND revision = 1
+    `).get();
+
+    const nextRaw = needsReviewBlueprint();
+    nextRaw.story.summary = '重新分析得到第二版母本。';
+    delete nextRaw.blueprint_hash;
+    const secondAnalysis = await analyze(normalizeEpisodeBlueprint(nextRaw), 'two');
+    assert.equal(secondAnalysis.blueprint_revision, 2);
+    assert.equal(secondAnalysis.version_id, db.prepare(`
+      SELECT id FROM redraw_versions
+      WHERE work_id = 1 AND tenant_id = 'tenant-1' AND user_id = 'user-1' AND version = 2
+    `).get().id);
+
+    const secondReviewed = blueprintWorkflow.saveDraft(owner, {
+      workId: 1,
+      expectedUpdatedAt: secondAnalysis.blueprint_updated_at,
+      blueprint: approve(secondAnalysis.blueprint, '第二版审核通过。'),
+    });
+    const secondLocked = blueprintWorkflow.lockBlueprint(owner, {
+      workId: 1,
+      expectedUpdatedAt: secondReviewed.updated_at,
+      expectedBlueprintHash: secondReviewed.blueprint_hash,
+    });
+    assert.equal(secondLocked.revision, 2);
+    assert.equal(secondLocked.status, 'locked');
+    assert.deepEqual(db.prepare(`
+      SELECT id, version, source_facts_json, facts_hash, blueprint_hash, status, updated_at
+      FROM redraw_versions WHERE id = ?
+    `).get(versionOneId), versionOneBefore);
+    assert.deepEqual(db.prepare(`
+      SELECT * FROM redraw_episode_blueprints
+      WHERE work_id = 1 AND tenant_id = 'tenant-1' AND user_id = 'user-1' AND revision = 1
+    `).get(), blueprintOneBefore);
+    assert.deepEqual(db.prepare(`
+      SELECT current_version, current_step FROM redraw_works WHERE id = 1
+    `).get(), { current_version: 2, current_step: 1 });
+  } finally {
+    db.close();
+  }
 });
 
 test('auto analysis blocks with stable error when budget, project policy, or thresholds are missing', async () => {
