@@ -257,14 +257,19 @@ export function redrawWorkflowPhase(work, blueprintRecord) {
   const localizationStatus = normalizedStatus(work?.localization_task?.status)
   if (['pending', 'processing', 'localizing'].includes(localizationStatus)) return 'localizing'
   if (['failed', 'needs_attention'].includes(localizationStatus)) return 'localization_needs_attention'
-  if (localizationStatus === 'completed') return 'assets'
   const blueprintStatus = normalizedStatus(blueprintRecord?.status)
+  const phase = normalizedStatus(work?.workflow_phase)
+  const reviewStatus = normalizedStatus(work?.localization_review_status)
+  if (localizationStatus === 'completed'
+    && Number(work?.current_step || 1) === 1
+    && ['review', 'needs_review'].includes(reviewStatus)) {
+    return 'localization_review'
+  }
+  if (['asset_review', 'assets'].includes(phase) || reviewStatus === 'locked') return 'assets'
   if (blueprintStatus === 'draft') return 'blueprint_review'
   if (blueprintStatus === 'locked') return 'blueprint_locked'
-  const phase = normalizedStatus(work?.workflow_phase)
-  if (['asset_review', 'assets'].includes(phase)) return 'assets'
   if (phase) return phase
-  if (Number(work?.current_step || 1) > 1) return 'assets'
+  if (Number(work?.current_step || 1) > 1 || localizationStatus === 'completed') return 'assets'
   if (normalizedStatus(work?.analysis_task?.status) === 'completed') return 'analysis_review'
   return 'source'
 }

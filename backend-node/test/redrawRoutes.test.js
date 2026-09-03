@@ -3095,12 +3095,70 @@ test('作品详情只有 draft 版本时不泄漏隐藏 current_version', () => 
   }
 });
 
+test('作品详情只公开最小本地化审核状态并派生 localization_review phase', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, {
+      current_version: 1,
+      current_step: 1,
+      status: 'needs_review',
+      task_id: 'task-analysis-localization-review',
+    });
+    const versionId = insertVersion(db, workId, {
+      locale: 'source',
+      market: 'US',
+      status: 'needs_review',
+      localization_task_id: 'task-localization-review',
+    });
+    db.prepare(`
+      UPDATE redraw_versions
+      SET localization_review_json = ?, localization_hash = ?
+      WHERE id = ?
+    `).run(JSON.stringify({
+      schema_version: 'episode-localization-v1',
+      review: { status: 'review', updated_at: NOW },
+    }), 'd'.repeat(64), Number(versionId));
+    db.prepare(`INSERT INTO async_tasks
+      (id, type, status, progress, message, resource_id, tenant_id, user_id, created_at, updated_at)
+      VALUES
+        ('task-analysis-localization-review', 'redraw_analysis', 'completed', 100, '分析完成', ?, 'tenant-a', 'user-a', ?, ?),
+        ('task-localization-review', 'redraw_localization', 'completed', 100, '等待审核', ?, 'tenant-a', 'user-a', ?, ?)
+    `).run(String(workId), NOW, NOW, String(workId), NOW, NOW);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const result = captureResponse();
+    handlers.getWork(request({ id: workId }), result);
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.data.version_id, Number(versionId));
+    assert.equal(result.body.data.workflow_phase, 'localization_review');
+    assert.equal(result.body.data.localization_review_status, 'review');
+    assert.equal(Object.hasOwn(result.body.data, 'localization_review_json'), false);
+  } finally {
+    db.close();
+  }
+});
+
 test('workflowPhase 纯函数按阶段优先级返回状态', () => {
   assert.equal(redrawRoutes.workflowPhase({ current_step: 3 }, null, null, null), 'video_generation');
   assert.equal(redrawRoutes.workflowPhase({ current_step: 2 }, null, null, { status: 'pending' }), 'asset_generating');
   assert.equal(redrawRoutes.workflowPhase({ current_step: 2 }, null, null, null), 'asset_review');
   assert.equal(redrawRoutes.workflowPhase({ current_step: 1 }, null, { status: 'processing' }, null), 'localizing');
   assert.equal(redrawRoutes.workflowPhase({ current_step: 1 }, null, { status: 'needs_attention' }, null), 'localization_needs_attention');
+  assert.equal(redrawRoutes.workflowPhase(
+    { current_step: 1 },
+    { status: 'completed' },
+    { status: 'completed' },
+    null,
+    { status: 'needs_review', localization_review_json: JSON.stringify({
+      schema_version: 'episode-localization-v1', review: { status: 'review' },
+    }) },
+  ), 'localization_review');
+  assert.equal(redrawRoutes.workflowPhase(
+    { current_step: 1 }, { status: 'completed' }, { status: 'completed' }, null,
+    { status: 'needs_review', localization_review_json: null },
+  ), 'analysis_review');
   assert.equal(redrawRoutes.workflowPhase({ current_step: 1 }, { status: 'completed' }, null, null), 'analysis_review');
   assert.equal(redrawRoutes.workflowPhase({ current_step: 1 }, { status: 'pending' }, null, null), 'analyzing');
   assert.equal(redrawRoutes.workflowPhase({ current_step: 1 }, null, null, null), 'source');

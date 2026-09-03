@@ -330,10 +330,8 @@ const showsBlueprintReview = computed(() => (
   || showsBlueprintReadGate.value
 ))
 const expectsLocalizationReview = computed(() => (
-  props.blueprintRecord?.status === 'locked'
+  workflowPhase.value === 'localization_review'
   && Number(workState.value?.version_id || 0) > 0
-  && String(workState.value?.localization_task?.status || '').toLowerCase() === 'completed'
-  && Number(workState.value?.current_step || 1) === 1
 ))
 const eightStageState = computed(() => resolveEightStageState({
   ...(workState.value || {}),

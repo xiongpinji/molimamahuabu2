@@ -621,7 +621,8 @@ async function installFixtures(page, state) {
       state.work = state.episodeLocalization ? {
         ...(state.work || analysisReviewWork()),
         status: 'needs_review',
-        workflow_phase: 'needs_review',
+        workflow_phase: 'localization_review',
+        localization_review_status: 'review',
         current_step: 1,
         version_id: 812,
         current_version: 1,
@@ -688,9 +689,11 @@ async function installFixtures(page, state) {
       state.localization = {
         ...state.localization,
         status: 'locked',
+        localization_hash: 'e'.repeat(64),
         updated_at: '2026-09-03T10:05:00.000Z',
         localization: {
           ...state.localization.localization,
+          localization_hash: 'e'.repeat(64),
           review: { ...state.localization.localization.review, status: 'locked', updated_at: '2026-09-03T10:05:00.000Z' },
         },
       }
@@ -698,6 +701,7 @@ async function installFixtures(page, state) {
         ...state.work,
         status: 'asset_review',
         workflow_phase: 'asset_review',
+        localization_review_status: 'locked',
         current_step: 2,
         version_id: 812,
         current_version: 1,
@@ -1409,6 +1413,9 @@ test.describe('一键转绘输入与分析流程', () => {
       expected_localization_hash: 'd'.repeat(64),
       expected_updated_at: '2026-09-03T10:04:00.000Z',
     })
+    expect(state.localization.localization_hash).toBe('e'.repeat(64))
+    expect(state.localization.localization.localization_hash).toBe('e'.repeat(64))
+    expect(state.work.localization_review_status).toBe('locked')
     await expect(page).toHaveURL(/step=2/)
     await expect(page.getByText('确认本地化资产后再进入批量转绘')).toBeVisible()
   })
@@ -1422,7 +1429,8 @@ test.describe('一键转绘输入与分析流程', () => {
       projects: [project],
       quoteReady: true,
       work: {
-        ...analysisReviewWork(), status: 'needs_review', workflow_phase: 'needs_review', version_id: 812, current_version: 1,
+        ...analysisReviewWork(), status: 'needs_review', workflow_phase: 'localization_review',
+        localization_review_status: 'review', version_id: 812, current_version: 1,
         localization_task: { id: 'task-localization-812', status: 'completed', progress: 100, message: '等待人工审核' },
       },
       blueprint,

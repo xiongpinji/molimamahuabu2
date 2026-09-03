@@ -4,6 +4,7 @@ const Database = require('better-sqlite3');
 
 const {
   buildLocalizationInput,
+  episodeLocalizationHash,
   normalizeLocalizationResult,
   normalizeLocalizationResultV2,
   getLocalizationReview,
@@ -584,6 +585,40 @@ test('episode 本地化绑定锁定蓝图并规范化全剧姓名、对白和 OC
   assert.equal(repeated.localization_hash, localized.localization_hash);
 });
 
+test('episode 本地化哈希绑定全部稳定审核状态且仅忽略明确审核时间字段', () => {
+  const blueprint = episodeBlueprintFacts();
+  const localized = normalizeLocalizationResultV2(
+    episodeLocalizationProviderResult(), blueprint,
+    {
+      locale: 'en-US', market: 'US', blueprintHash: blueprint.blueprint_hash,
+      validateTargetText: acceptsEnglishTarget,
+    },
+  );
+  const baseHash = episodeLocalizationHash(localized);
+  for (const mapName of [
+    'character_name_map', 'dialogue_map', 'text_region_map',
+    'cultural_adaptations', 'glossary', 'locked_terms',
+  ]) {
+    const changed = structuredClone(localized);
+    const firstKey = Object.keys(changed.review[mapName])[0];
+    changed.review[mapName][firstKey] = true;
+    assert.notEqual(episodeLocalizationHash(changed), baseHash, mapName);
+  }
+
+  const locked = structuredClone(localized);
+  locked.review.status = 'locked';
+  assert.notEqual(episodeLocalizationHash(locked), baseHash);
+
+  const auditTimes = structuredClone(localized);
+  auditTimes.review.updated_at = '2026-09-03T00:00:01.000Z';
+  auditTimes.review.reviewed_at = '2026-09-03T00:00:02.000Z';
+  assert.equal(episodeLocalizationHash(auditTimes), baseHash);
+
+  const stableReviewer = structuredClone(localized);
+  stableReviewer.review.reviewed_by = 'reviewer-a';
+  assert.notEqual(episodeLocalizationHash(stableReviewer), baseHash);
+});
+
 test('episode 本地化严格拒绝蓝图漂移、不完整映射、源姓名残留与目标语言失败', () => {
   const blueprint = episodeBlueprintFacts();
   const options = {
@@ -692,6 +727,11 @@ test('episode 本地化审核以 JSON CAS 保存且锁定后原子推进 asset_r
     });
     assert.equal(locked.status, 'locked');
     assert.equal(locked.localization.review.status, 'locked');
+    assert.notEqual(locked.localization_hash, saved.localization_hash);
+    assert.equal(
+      fixture.db.prepare('SELECT localization_hash FROM redraw_versions WHERE id = ?').get(fixture.versionId).localization_hash,
+      locked.localization_hash,
+    );
     assert.deepEqual(
       fixture.db.prepare('SELECT current_version, current_step, status FROM redraw_works WHERE id = 1').get(),
       { current_version: 1, current_step: 2, status: 'asset_review' },

@@ -666,10 +666,20 @@ function uncheckedReview(localization) {
   };
 }
 
+const REVIEW_AUDIT_TIME_FIELDS = new Set(['updated_at', 'reviewed_at']);
+
+function withoutReviewAuditTimes(value) {
+  if (Array.isArray(value)) return value.map(withoutReviewAuditTimes);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !REVIEW_AUDIT_TIME_FIELDS.has(key))
+    .map(([key, item]) => [key, withoutReviewAuditTimes(item)]));
+}
+
 function episodeLocalizationHash(localization) {
   const hashable = clone(localization);
   delete hashable.localization_hash;
-  delete hashable.review;
+  if (hashable.review) hashable.review = withoutReviewAuditTimes(hashable.review);
   return createHash('sha256').update(stableStringify(hashable)).digest('hex');
 }
 
@@ -1026,14 +1036,15 @@ function lockLocalizationReview(db, owner, versionId, input = {}) {
     }
     const now = nextLocalizationTimestamp(expectedUpdatedAt, input.now);
     normalized.review = { ...normalized.review, status: 'locked', updated_at: now };
-    normalized.localization_hash = recalculated;
+    const lockedHash = episodeLocalizationHash(normalized);
+    normalized.localization_hash = lockedHash;
     const changed = db.prepare(`
       UPDATE redraw_versions
       SET localization_review_json = ?, localization_hash = ?, status = 'asset_review', updated_at = ?
       WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'needs_review'
         AND localization_review_json = ? AND localization_hash = ? AND blueprint_hash = ?
     `).run(
-      JSON.stringify(normalized), recalculated, now,
+      JSON.stringify(normalized), lockedHash, now,
       Number(context.version.id), String(context.owner.tenantId), String(context.owner.userId),
       context.version.localization_review_json, expectedHash, context.blueprintHash,
     );
@@ -1714,6 +1725,7 @@ function validateLocalizedDialogue(sourceTurn, localizedTurn, options = {}) {
 
 module.exports = {
   buildLocalizationInput,
+  episodeLocalizationHash,
   normalizeLocalizationResult,
   normalizeLocalizationResultV2,
   assertSafeLocalizationReviewValue,

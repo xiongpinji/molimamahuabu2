@@ -483,12 +483,24 @@ function billingPayload(value) {
   };
 }
 
-function workflowPhase(work, analysisTask, localizationTask, assetBatch) {
+function localizationReviewStatus(version) {
+  const localization = parseJSON(version?.localization_review_json, null);
+  if (!localization || localization.schema_version !== 'episode-localization-v1') return '';
+  const status = String(localization.review?.status || '').trim().toLowerCase();
+  return ['review', 'needs_review', 'locked'].includes(status) ? status : '';
+}
+
+function workflowPhase(work, analysisTask, localizationTask, assetBatch, currentVersion) {
   if (Number(work?.current_step) >= 3) return 'video_generation';
   if (['pending', 'processing'].includes(String(assetBatch?.status || ''))) return 'asset_generating';
   if (Number(work?.current_step) === 2) return 'asset_review';
   if (['pending', 'processing'].includes(String(localizationTask?.status || ''))) return 'localizing';
   if (String(localizationTask?.status || '') === 'needs_attention') return 'localization_needs_attention';
+  if (String(localizationTask?.status || '') === 'completed'
+    && String(currentVersion?.status || '') === 'needs_review'
+    && ['review', 'needs_review'].includes(localizationReviewStatus(currentVersion))) {
+    return 'localization_review';
+  }
   if (String(analysisTask?.status || '') === 'completed') return 'analysis_review';
   if (['pending', 'processing'].includes(String(analysisTask?.status || ''))) return 'analyzing';
   return 'source';
@@ -2662,6 +2674,16 @@ module.exports = function redrawRoutes(db, log, options = {}) {
 
   function findCurrentPromotedVersionForWork(work, currentOwner) {
     const versionNumber = Number(work.current_version);
+    const localizationReview = Number.isSafeInteger(versionNumber) && versionNumber > 0
+      ? db.prepare(`
+        SELECT * FROM redraw_versions
+        WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+          AND version = ? AND COALESCE(localization_review_json, '') != ''
+          AND COALESCE(status, '') != 'draft' AND deleted_at IS NULL
+        LIMIT 1
+      `).get(work.id, currentOwner.tenantId, currentOwner.userId, versionNumber)
+      : null;
+    if (localizationReview) return localizationReview;
     const exact = Number.isSafeInteger(versionNumber) && versionNumber > 0
       ? db.prepare(`
         SELECT * FROM redraw_versions
@@ -3522,6 +3544,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
         userId: currentOwner.userId,
       });
       const localizationDecision = publicLocalizationDecision(localizationTask, currentVersion, project);
+      const reviewStatus = localizationReviewStatus(currentVersion);
       const projectedWork = { ...work };
       projectedWork.current_version = currentVersion ? Number(currentVersion.version) : 0;
       if (
@@ -3545,8 +3568,9 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
         }),
         analysis_task: publicTask(analysisTask),
         localization_task: publicTask(localizationTask),
+        localization_review_status: reviewStatus || null,
         asset_batch: publicAssetBatch(assetBatch),
-        workflow_phase: workflowPhase(projectedWork, analysisTask, localizationTask, assetBatch),
+        workflow_phase: workflowPhase(projectedWork, analysisTask, localizationTask, assetBatch, currentVersion),
         analysis_billing: analysisBilling(work, currentOwner),
         localization_billing: localizationBilling(work, localizationTask, currentOwner),
         reference_bundle_required: Number(currentVersion?.reference_bundle_required || 0) === 1,
