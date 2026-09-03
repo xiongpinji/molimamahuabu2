@@ -250,22 +250,54 @@ function normalizeTextRegions(value, name, seenTextRegionIds) {
   }).sort((a, b) => compareCodeUnit(a.id, b.id));
 }
 
-function normalizeDialogue(value, name, shot, visibleIds, seenTurnIds) {
+function normalizeDialogue(value, name, shot, visibleIds, knownCharacters, seenTurnIds) {
   assertArray(value, name);
   return value.map((turn, index) => {
-    assertAllowedKeys(turn, `${name}[${index}]`, ['id', 'speaker_id', 'start_ms', 'end_ms', 'source_text']);
+    assertAllowedKeys(turn, `${name}[${index}]`, [
+      'id', 'speaker_id', 'speaker_kind', 'off_screen', 'evidence_refs',
+      'start_ms', 'end_ms', 'source_text',
+    ]);
     const start = numberMs(turn.start_ms, `${name}[${index}].start_ms`);
     const end = numberMs(turn.end_ms, `${name}[${index}].end_ms`);
     if (end <= start || start < shot.start_ms || end > shot.end_ms) throw new Error(`${name}[${index}] dialogue 时间越界`);
     const speakerId = safeText(turn.speaker_id, `${name}[${index}].speaker_id`, 96);
-    if (!visibleIds.has(speakerId)) throw new Error(`${name}[${index}] speaker 必须可见`);
-    return {
+    const speakerKind = turn.speaker_kind == null ? 'character' : turn.speaker_kind;
+    if (!['character', 'voice_cluster', 'off_screen'].includes(speakerKind)) {
+      throw new Error(`${name}[${index}].speaker_kind 无效`);
+    }
+    if (turn.off_screen != null && typeof turn.off_screen !== 'boolean') {
+      throw new Error(`${name}[${index}].off_screen 必须是布尔值`);
+    }
+    const offScreen = turn.off_screen === true;
+    if (speakerKind === 'off_screen' && !offScreen) {
+      throw new Error(`${name}[${index}].off_screen 画外角色必须标记为 true`);
+    }
+    if (speakerKind === 'character' && !knownCharacters.has(speakerId)) {
+      throw new Error(`${name}[${index}] speaker 未知角色`);
+    }
+    if (speakerKind === 'character' && !offScreen && !visibleIds.has(speakerId)) {
+      throw new Error(`${name}[${index}] speaker 必须可见`);
+    }
+    if (speakerKind === 'voice_cluster' && !/^speaker-cluster-[1-9][0-9]*$/.test(speakerId)) {
+      throw new Error(`${name}[${index}].speaker_id 声音聚类 id 无效`);
+    }
+    const normalized = {
       id: uniqueId(turn.id, `${name}[${index}].id`, seenTurnIds),
       speaker_id: speakerId,
       start_ms: start,
       end_ms: end,
       source_text: safeText(turn.source_text, `${name}[${index}].source_text`, 300),
     };
+    if (turn.speaker_kind != null) normalized.speaker_kind = speakerKind;
+    if (turn.off_screen != null) normalized.off_screen = offScreen;
+    if (turn.evidence_refs != null) {
+      assertArray(turn.evidence_refs, `${name}[${index}].evidence_refs`);
+      const seenEvidenceRefs = new Set();
+      normalized.evidence_refs = turn.evidence_refs.map((item, refIndex) => (
+        uniqueId(item, `${name}[${index}].evidence_refs[${refIndex}]`, seenEvidenceRefs)
+      )).sort(compareCodeUnit);
+    }
+    return normalized;
   }).sort((a, b) => (a.start_ms - b.start_ms) || compareCodeUnit(a.id, b.id));
 }
 
@@ -319,6 +351,7 @@ function normalizeShots(value, durationMs, knownCharacters) {
       `shots[${index}].dialogue`,
       normalizedShot,
       new Set(visibleCharacterIds),
+      knownCharacters,
       seenTurnIds,
     );
     if (normalizedShot.audio_contract.dialogue_mode === 'silent' && normalizedShot.dialogue.length > 0) {
