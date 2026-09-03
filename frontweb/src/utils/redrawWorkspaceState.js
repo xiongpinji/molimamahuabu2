@@ -284,8 +284,8 @@ export function canConfirmLocalization(work, expectedQuoteHash, blueprintRecord)
   const quote = work?.localization_quote
   if (localizationQuoteCredits(work) == null || !String(quote?.quote_hash || '').trim()) return false
   if (expectedQuoteHash && String(quote.quote_hash).trim() !== String(expectedQuoteHash).trim()) return false
-  if (blueprintRecord !== undefined && blueprintRecord !== null
-    && normalizedStatus(blueprintRecord.status) !== 'locked') return false
+  if (blueprintRecord === undefined) return false
+  if (blueprintRecord !== null && normalizedStatus(blueprintRecord.status) !== 'locked') return false
   const phase = redrawWorkflowPhase(work, blueprintRecord)
   if (['analysis_review', 'blueprint_locked'].includes(phase)) return true
   if (!['localization_needs_attention', 'failed'].includes(phase)) return false

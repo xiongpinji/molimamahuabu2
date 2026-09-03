@@ -114,6 +114,17 @@
       @refresh-requested="$emit('refresh-blueprint')"
     />
 
+    <section v-if="showsBlueprintReadGate" class="task-card">
+      <div>
+        <strong>本地化门禁</strong>
+        <span>{{ blueprintLoading ? '正在读取母本蓝图' : '母本蓝图不可用' }}</span>
+      </div>
+      <p>{{ blueprintError || '等待确认当前作品是否存在母本蓝图。' }}</p>
+      <div class="billing-row">
+        <el-button type="primary" disabled>开始本地化</el-button>
+      </div>
+    </section>
+
     <section v-if="workflowPhase === 'blueprint_review'" class="task-card">
       <div>
         <strong>本地化门禁</strong>
@@ -201,6 +212,7 @@ import { ElMessage } from 'element-plus'
 import { redrawAPI } from '@/api/redraw'
 import RedrawBlueprintReviewPanel from '@/components/redraw/RedrawBlueprintReviewPanel.vue'
 import StylePresetPicker from '@/components/redraw/StylePresetPicker.vue'
+import { canStartLocalization } from '@/utils/redrawBlueprintReviewState'
 import {
   analysisQuoteCredits,
   buildAnalyzePayload,
@@ -280,11 +292,18 @@ const canStartAnalysis = computed(() => canStartRedrawAnalysis({
   selectedPreset: selectedPreset.value,
   freeStyle: freeStyle.value,
 }))
-const canSubmitLocalization = computed(() => canConfirmLocalization(workState.value, undefined, props.blueprintRecord))
+const canSubmitLocalization = computed(() => (
+  !props.blueprintLoading
+  && !props.blueprintError
+  && canConfirmLocalization(workState.value, undefined, props.blueprintRecord)
+))
+const showsBlueprintReadGate = computed(() => (
+  workflowPhase.value === 'analysis_review'
+  && (props.blueprintRecord === undefined || props.blueprintLoading || Boolean(props.blueprintError))
+))
 const showsBlueprintReview = computed(() => (
   ['blueprint_review', 'blueprint_locked'].includes(workflowPhase.value)
-  || props.blueprintLoading
-  || Boolean(props.blueprintError)
+  || showsBlueprintReadGate.value
 ))
 const eightStageState = computed(() => resolveEightStageState({
   ...(workState.value || {}),
@@ -313,6 +332,11 @@ function localizationQuoteRequest(work) {
     localizationLevel: body.localization_level,
     body,
   }
+}
+
+function blueprintAllowsLocalization(record = props.blueprintRecord) {
+  if (props.blueprintLoading || props.blueprintError) return false
+  return record === null || canStartLocalization(record)
 }
 
 function isTerminalTaskState(work) {
@@ -405,6 +429,7 @@ async function ensureLocalizationQuote(work = workState.value) {
   if (
     !work?.id
       || work?.localization_quote
+      || !blueprintAllowsLocalization()
       || !['analysis_review', 'blueprint_locked', 'localization_needs_attention', 'failed'].includes(phase)
   ) {
     return
@@ -487,6 +512,7 @@ async function confirmLocalization() {
   localizationSubmitting.value = true
   try {
     const work = await ensureWork()
+    if (!canSubmitLocalization.value || !blueprintAllowsLocalization()) return
     const quoteBody = localizationQuoteBody()
     const snapshot = createLocalizationConfirmationSnapshot({
       work: workState.value,

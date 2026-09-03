@@ -104,6 +104,32 @@ export function canStartLocalization(blueprintRecord) {
   return normalizedRecordStatus(blueprintRecord) === 'locked'
 }
 
+export function controlledBlueprintSourceUrl(value) {
+  if (typeof value !== 'string') return ''
+  const candidate = value.trim()
+  if (!candidate.startsWith('/api/') || /[\u0000-\u001f\u007f\\]/.test(candidate)) return ''
+  let decodedPath = candidate.split(/[?#]/, 1)[0]
+  for (let pass = 0; pass < 5; pass += 1) {
+    if (!decodedPath.startsWith('/api/')
+      || decodedPath.includes('\\')
+      || decodedPath.split('/').some((segment) => segment === '.' || segment === '..')) {
+      return ''
+    }
+    let nextPath
+    try {
+      nextPath = decodeURIComponent(decodedPath)
+    } catch (_) {
+      return ''
+    }
+    if (nextPath === decodedPath) {
+      const parsed = new URL(candidate, 'https://local.invalid')
+      return parsed.origin === 'https://local.invalid' && parsed.pathname.startsWith('/api/') ? candidate : ''
+    }
+    decodedPath = nextPath
+  }
+  return ''
+}
+
 export function buildBlueprintSavePayload(reviewRecord) {
   assertPlainData(reviewRecord, 'reviewRecord')
   const updatedAt = requiredText(reviewRecord?.updated_at, 'expected updated_at', 100)

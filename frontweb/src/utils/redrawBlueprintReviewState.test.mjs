@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
+import * as blueprintReviewState from './redrawBlueprintReviewState.js'
 import {
   approveCharacterReview,
   approveDialogueReview,
@@ -103,8 +104,34 @@ test('derives explicit blueprint review phases while preserving legacy works wit
   assert.equal(redrawWorkflowPhase(work, null), 'analysis_review')
   assert.equal(redrawWorkflowPhase(work, { status: 'draft' }), 'blueprint_review')
   assert.equal(redrawWorkflowPhase(work, { status: 'locked' }), 'blueprint_locked')
+  assert.equal(canConfirmLocalization(work, undefined, undefined), false)
+  assert.equal(canConfirmLocalization(work, undefined, null), true)
   assert.equal(canConfirmLocalization(work, undefined, { status: 'draft' }), false)
   assert.equal(canConfirmLocalization(work, undefined, { status: 'locked' }), true)
+})
+
+test('accepts only controlled same-origin api paths for the blueprint source player', () => {
+  const resolveSourceUrl = blueprintReviewState.controlledBlueprintSourceUrl
+  assert.equal(resolveSourceUrl?.('/api/v1/redraw/assets/910/source.mp4'), '/api/v1/redraw/assets/910/source.mp4')
+  assert.equal(resolveSourceUrl?.('/api/v1/redraw/assets/910/source.mp4?token=opaque#preview'), '/api/v1/redraw/assets/910/source.mp4?token=opaque#preview')
+
+  for (const hostile of [
+    'https://attacker.example/source.mp4',
+    'http://attacker.example/source.mp4',
+    '//attacker.example/source.mp4',
+    'javascript:alert(1)',
+    'data:video/mp4;base64,AAAA',
+    'blob:https://attacker.example/id',
+    '\\api\\v1\\source.mp4',
+    '/api/../secret.mp4',
+    '/api/%2e%2e/secret.mp4',
+    '/api/%252e%252e/secret.mp4',
+    '/api/%2e%2e%2fsecret.mp4',
+    '/api/%255c..%255csecret.mp4',
+    '/api/%E0%A4%A',
+  ]) {
+    assert.equal(resolveSourceUrl?.(hostile), '', hostile)
+  }
 })
 
 test('builds exact CAS-safe save and lock payloads without retaining mutable references', () => {

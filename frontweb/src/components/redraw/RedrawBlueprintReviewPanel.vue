@@ -30,7 +30,7 @@
       <div class="review-layout">
         <section class="source-player" aria-label="母本源片播放器">
           <h3>源片</h3>
-          <video v-if="sourceUrl" :src="sourceUrl" controls playsinline preload="metadata" />
+          <video v-if="sourceUrl" :src="sourceUrl" controls playsinline preload="metadata" referrerpolicy="no-referrer" />
           <div v-else class="media-empty">后端尚未返回可读源片预览，蓝图文本仍可审核。</div>
           <dl class="compact-facts">
             <div><dt>时长</dt><dd>{{ formatTime(draftBlueprint.source?.duration_ms) }}</dd></div>
@@ -203,6 +203,12 @@
                 </div>
               </li>
             </ol>
+            <div class="shot-pagination">
+              <span>已显示 {{ shots.length }} / {{ allShots.length }} 个镜头</span>
+              <el-button v-if="shots.length < allShots.length" size="small" @click="loadMoreShots">
+                加载更多镜头
+              </el-button>
+            </div>
           </details>
 
           <details>
@@ -256,13 +262,14 @@ import {
   blueprintLockBlockers,
   buildBlueprintLockPayload,
   buildBlueprintSavePayload,
+  controlledBlueprintSourceUrl,
   createOffScreenCharacterForCluster,
   mapVoiceClusterToCharacter,
   unresolvedVoiceClusters,
 } from '@/utils/redrawBlueprintReviewState'
 
 const props = defineProps({
-  record: { type: Object, default: null },
+  record: { type: Object, default: undefined },
   work: { type: Object, default: null },
   loading: { type: Boolean, default: false },
   error: { type: String, default: '' },
@@ -275,6 +282,7 @@ const SHOT_CONFIDENCE_FIELDS = [
   ['text_regions', '文字区域'],
   ['shot_boundary', '镜头边界'],
 ]
+const SHOT_PAGE_SIZE = 20
 
 const EvidenceMeta = defineComponent({
   name: 'EvidenceMeta',
@@ -312,19 +320,21 @@ const conflict = ref(false)
 const reviewer = ref('')
 const offScreenOpen = reactive({})
 const offScreenDrafts = reactive({})
+const visibleShotLimit = ref(SHOT_PAGE_SIZE)
 
 const isLocked = computed(() => recordState.value?.status === 'locked')
 const canEdit = computed(() => !isLocked.value && !saving.value && !locking.value && !conflict.value)
 const characters = computed(() => Array.isArray(draftBlueprint.value?.characters) ? draftBlueprint.value.characters : [])
-const shots = computed(() => [...(draftBlueprint.value?.shots || [])]
+const allShots = computed(() => [...(draftBlueprint.value?.shots || [])]
   .sort((left, right) => Number(left.start_ms) - Number(right.start_ms) || Number(left.index) - Number(right.index)))
+const shots = computed(() => allShots.value.slice(0, visibleShotLimit.value))
 const unresolved = computed(() => draftBlueprint.value ? unresolvedVoiceClusters(draftBlueprint.value) : [])
 const lockBlockers = computed(() => draftBlueprint.value ? blueprintLockBlockers(draftBlueprint.value) : ['母本蓝图不存在'])
 const nonReviewBlockers = computed(() => lockBlockers.value.filter((item) => item !== '母本事实尚未审核通过'))
 const visibleError = computed(() => localError.value || props.error)
 const sourceUrl = computed(() => {
   const value = String(props.work?.url || props.work?.source_video_ref?.url || '').trim()
-  return /^(?:https?:\/\/|\/api\/)/.test(value) ? value : ''
+  return controlledBlueprintSourceUrl(value)
 })
 
 function readableError(error, fallback) {
@@ -336,6 +346,7 @@ function readableError(error, fallback) {
 }
 
 function syncRecord(record) {
+  visibleShotLimit.value = SHOT_PAGE_SIZE
   if (!record) {
     recordState.value = null
     draftBlueprint.value = null
@@ -353,6 +364,10 @@ function syncRecord(record) {
   } catch (error) {
     localError.value = error.message || '母本蓝图数据无效'
   }
+}
+
+function loadMoreShots() {
+  visibleShotLimit.value = Math.min(visibleShotLimit.value + SHOT_PAGE_SIZE, allShots.value.length)
 }
 
 function replaceDraft(next) {
@@ -458,6 +473,7 @@ function speakerKindLabel(dialogue) {
 }
 
 watch(() => props.record, syncRecord, { immediate: true })
+watch(() => props.work?.id, () => { visibleShotLimit.value = SHOT_PAGE_SIZE })
 </script>
 
 <style scoped>
@@ -489,6 +505,7 @@ summary { padding: 13px 14px; color: #f0f0f0; font-weight: 700; cursor: pointer;
 .off-screen-form { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; }
 .off-screen-form label, .approval-box label { display: grid; gap: 6px; color: #bbb; font-size: 12px; }
 .shot-list { display: grid; gap: 10px; margin: 0; padding: 0 14px 14px; list-style: none; }
+.shot-pagination { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 14px 14px; color: #999; font-size: 12px; }
 .shot-card { background: #131313; }
 .dialogue-card, .ocr-card { display: grid; gap: 6px; padding: 10px; border-left: 3px solid #ff7139; border-radius: 5px; background: #1b1b1b; }
 .ocr-card { border-left-color: #4c9ffe; }

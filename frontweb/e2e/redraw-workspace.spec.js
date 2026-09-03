@@ -100,12 +100,16 @@ const localizationQuote = {
   quote_hash: 'e'.repeat(64),
 }
 
-function blueprintReviewRecord() {
+function blueprintReviewRecord({
+  workId = workBase.id,
+  status = 'draft',
+  storySummary = '雨夜订单把男主重新带回旧案。',
+} = {}) {
   return {
     id: 901,
-    work_id: workBase.id,
+    work_id: workId,
     revision: 1,
-    status: 'draft',
+    status,
     blueprint_hash: 'c'.repeat(64),
     updated_at: '2026-09-03T10:00:00.000Z',
     blueprint: {
@@ -129,7 +133,7 @@ function blueprintReviewRecord() {
         ],
       },
       story: {
-        summary: '雨夜订单把男主重新带回旧案。',
+        summary: storySummary,
         beats: ['男主送达订单', '旧案编号重新出现'],
         evidence_refs: ['evidence-visual-1'],
         confidence: 0.88,
@@ -181,6 +185,22 @@ function blueprintReviewRecord() {
       blueprint_hash: 'c'.repeat(64),
     },
   }
+}
+
+function blueprintReviewRecordWithShots(count) {
+  const record = blueprintReviewRecord()
+  const sourceShot = record.blueprint.shots[0]
+  record.blueprint.shots = Array.from({ length: count }, (_, index) => ({
+    ...structuredClone(sourceShot),
+    id: `shot-${index + 1}`,
+    index: index + 1,
+    start_ms: index * 1_000,
+    end_ms: (index + 1) * 1_000,
+    dialogue: index === 0 ? structuredClone(sourceShot.dialogue) : [],
+    text_regions: index === 0 ? structuredClone(sourceShot.text_regions) : [],
+  }))
+  record.blueprint.source.duration_ms = count * 1_000
+  return record
 }
 
 const assetBatchQuote = {
@@ -371,6 +391,8 @@ const localeOptions = [
   { locale: 'en-US', market: 'US' },
 ]
 const browserErrorsByPage = new WeakMap()
+const fixtureStatesByPage = new WeakMap()
+const strictApiStatesByPage = new WeakMap()
 
 function apiData(data) {
   return {
@@ -381,6 +403,12 @@ function apiData(data) {
 }
 
 async function installFixtures(page, state) {
+  state.expectedBrowserStatuses = []
+  fixtureStatesByPage.set(page, state)
+  if (state.strictApi) {
+    state.unexpectedApiRequests = []
+    strictApiStatesByPage.set(page, state)
+  }
   await page.addInitScript(() => {
     window.localStorage.setItem('moli_mama_session', JSON.stringify({
       token: 'e2e-redraw-token',
@@ -410,6 +438,10 @@ async function installFixtures(page, state) {
       await route.fulfill(apiData(project))
       return
     }
+    if (method === 'GET' && pathname === `/api/v1/redraw/projects/${project.id}/events`) {
+      await route.fulfill(apiData([]))
+      return
+    }
     if (method === 'GET' && pathname === '/api/v1/redraw/style-presets') {
       await route.fulfill(apiData(stylePresets))
       return
@@ -428,22 +460,66 @@ async function installFixtures(page, state) {
       await route.fulfill(apiData({ items: [state.work] }))
       return
     }
-    if (method === 'GET' && pathname === `/api/v1/redraw/works/${workBase.id}`) {
+    const workGetMatch = /^\/api\/v1\/redraw\/works\/(\d+)$/.exec(pathname)
+    if (method === 'GET' && workGetMatch) {
+      const requestedWorkId = Number(workGetMatch[1])
+      state.workGetsStarted = [...(state.workGetsStarted || []), requestedWorkId]
+      const workDelay = Number(state.workDelays?.[requestedWorkId] || 0)
+      if (workDelay > 0) await new Promise((resolve) => setTimeout(resolve, workDelay))
       state.workGets = (state.workGets || 0) + 1
       if (typeof state.onGetWork === 'function') state.onGetWork(state)
-      state.work = {
-        ...(state.work || workBase),
-        ...(state.quoteReady ? { analysis_quote: { credits: 6 } } : { analysis_quote: null }),
-      }
-      await route.fulfill(apiData(state.work))
-      return
-    }
-    if (method === 'GET' && pathname === `/api/v1/redraw/works/${workBase.id}/blueprint`) {
-      if (!state.blueprint) {
-        await route.fulfill(apiData(null))
+      const selectedWork = state.works?.[requestedWorkId]
+        || (requestedWorkId === workBase.id ? (state.work || workBase) : null)
+      if (!selectedWork) {
+        await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ success: false }) })
         return
       }
-      await route.fulfill(apiData(structuredClone(state.blueprint)))
+      const responseWork = {
+        ...selectedWork,
+        ...(state.quoteReady ? { analysis_quote: { credits: 6 } } : { analysis_quote: null }),
+      }
+      if (requestedWorkId === workBase.id) state.work = responseWork
+      if (state.works?.[requestedWorkId]) state.works[requestedWorkId] = responseWork
+      await route.fulfill(apiData(responseWork))
+      return
+    }
+    const blueprintGetMatch = /^\/api\/v1\/redraw\/works\/(\d+)\/blueprint$/.exec(pathname)
+    if (method === 'GET' && blueprintGetMatch) {
+      const requestedWorkId = Number(blueprintGetMatch[1])
+      state.blueprintGetsStarted = [...(state.blueprintGetsStarted || []), requestedWorkId]
+      const blueprintDelay = Number(state.blueprintDelays?.[requestedWorkId] || state.blueprintDelay || 0)
+      if (blueprintDelay > 0) await new Promise((resolve) => setTimeout(resolve, blueprintDelay))
+      const responseStatus = Number(state.blueprintStatuses?.[requestedWorkId] || state.blueprintStatus || 0)
+      if (responseStatus && responseStatus !== 200) {
+        await route.fulfill({
+          status: responseStatus,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            success: false,
+            error: {
+              code: responseStatus === 404 ? 'REDRAW_BLUEPRINT_NOT_FOUND' : 'REDRAW_BLUEPRINT_READ_FAILED',
+              message: `读取母本蓝图失败 (${responseStatus})`,
+            },
+          }),
+        })
+        return
+      }
+      const selectedBlueprint = state.blueprints?.[requestedWorkId]
+        || (requestedWorkId === workBase.id ? state.blueprint : null)
+      if (!selectedBlueprint) {
+        state.expectedBrowserStatuses.push('404 (Not Found)')
+        await route.fulfill({
+          status: 404,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: false, error: { code: 'REDRAW_BLUEPRINT_NOT_FOUND', message: '母本蓝图不存在' } }),
+        })
+        return
+      }
+      await route.fulfill(apiData(structuredClone(selectedBlueprint)))
+      return
+    }
+    if (method === 'GET' && /^\/api\/v1\/redraw\/works\/\d+\/source-video$/.test(pathname)) {
+      await route.fulfill({ path: fixtureVideoPath, contentType: 'video/mp4' })
       return
     }
     if (method === 'PUT' && pathname === `/api/v1/redraw/works/${workBase.id}/blueprint`) {
@@ -777,6 +853,15 @@ async function installFixtures(page, state) {
       return
     }
 
+    if (state.strictApi) {
+      state.unexpectedApiRequests.push({ method, pathname })
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: false, error: { code: 'UNEXPECTED_FIXTURE_API', message: `${method} ${pathname}` } }),
+      })
+      return
+    }
     await route.fulfill(apiData({ items: [] }))
   })
 }
@@ -929,6 +1014,15 @@ function expectOnlyKeys(body, keys) {
   expect(Object.keys(body).sort()).toEqual([...keys].sort())
 }
 
+function requestCount(state, method, suffix) {
+  return state.requests.filter((entry) => entry.method === method && entry.pathname.endsWith(suffix)).length
+}
+
+function ignoreExpectedBrowserStatus(page, statusText) {
+  const browserErrors = browserErrorsByPage.get(page) || []
+  browserErrorsByPage.set(page, browserErrors.filter((message) => !message.includes(statusText)))
+}
+
 test.describe('一键转绘输入与分析流程', () => {
   test.beforeEach(async ({ page }) => {
     const browserErrors = []
@@ -940,7 +1034,14 @@ test.describe('一键转绘输入与分析流程', () => {
   })
 
   test.afterEach(async ({ page }) => {
-    expect(browserErrorsByPage.get(page) || []).toEqual([])
+    const strictState = strictApiStatesByPage.get(page)
+    if (strictState) expect(strictState.unexpectedApiRequests).toEqual([])
+    const browserErrors = [...(browserErrorsByPage.get(page) || [])]
+    for (const expectedStatus of fixtureStatesByPage.get(page)?.expectedBrowserStatuses || []) {
+      const index = browserErrors.findIndex((message) => message.includes(expectedStatus))
+      if (index >= 0) browserErrors.splice(index, 1)
+    }
+    expect(browserErrors).toEqual([])
   })
 
   test('桌面端覆盖入口、上传、四类风格、报价门禁、payload 与刷新恢复', async ({ page }) => {
@@ -1018,9 +1119,10 @@ test.describe('一键转绘输入与分析流程', () => {
 
   test('母本蓝图审核映射声音聚类后以 CAS 保存并锁定，再开放本地化', async ({ page }) => {
     const state = {
+      strictApi: true,
       projects: [project],
       quoteReady: true,
-      work: { ...analysisReviewWork(), url: 'https://fixtures.example/source.mp4' },
+      work: { ...analysisReviewWork(), url: '/api/v1/redraw/works/710/source-video' },
       blueprint: blueprintReviewRecord(),
       requests: [],
     }
@@ -1028,6 +1130,7 @@ test.describe('一键转绘输入与分析流程', () => {
     await page.goto('/redraw/projects/41/works/710?step=1')
 
     await expect(page.getByRole('heading', { name: '母本反推审核' })).toBeVisible()
+    await expect(page.locator('.blueprint-review-panel video')).toHaveAttribute('referrerpolicy', 'no-referrer')
     await expect(page.getByText('speaker-cluster-1', { exact: true })).toBeVisible()
     await expect(page.getByText('尾号八七的订单到了。')).toBeVisible()
     await expect(page.getByText('evidence-audio-1', { exact: true }).first()).toBeVisible()
@@ -1039,6 +1142,8 @@ test.describe('一键转绘输入与分析流程', () => {
     await expect(page.getByText('置信度 88%', { exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: '开始本地化' })).toBeDisabled()
     await expect(page.getByText('本地化报价 9 积分')).toHaveCount(0)
+    expect(requestCount(state, 'POST', '/localization-quote')).toBe(0)
+    expect(requestCount(state, 'POST', '/versions')).toBe(0)
 
     const clusterSelect = page.getByRole('combobox', { name: 'speaker-cluster-1 映射角色' })
     await clusterSelect.focus()
@@ -1052,6 +1157,8 @@ test.describe('一键转绘输入与分析流程', () => {
     await expect(page.getByText('蓝图已锁定，只读展示')).toBeVisible()
     await expect(page.getByRole('button', { name: '开始本地化' })).toBeEnabled()
     await expect(page.getByText('本地化报价 9 积分')).toBeVisible()
+    await expect.poll(() => requestCount(state, 'POST', '/localization-quote')).toBe(1)
+    expect(requestCount(state, 'POST', '/versions')).toBe(0)
     const save = state.requests.find((entry) => entry.method === 'PUT' && entry.pathname.endsWith('/blueprint'))
     expectOnlyKeys(save.body, ['expected_updated_at', 'blueprint'])
     expect(save.body.expected_updated_at).toBe('2026-09-03T10:00:00.000Z')
@@ -1066,14 +1173,18 @@ test.describe('一键转绘输入与分析流程', () => {
       expected_blueprint_hash: 'e'.repeat(64),
       expected_updated_at: '2026-09-03T10:01:00.000Z',
     })
+    await page.getByRole('button', { name: '开始本地化' }).click()
+    await expect.poll(() => requestCount(state, 'POST', '/versions')).toBe(1)
+    expect(requestCount(state, 'POST', '/localization-quote')).toBe(2)
   })
 
   test('母本蓝图保存 CAS 冲突时要求刷新且不静默覆盖或继续锁定', async ({ page }) => {
     const original = blueprintReviewRecord()
     const state = {
+      strictApi: true,
       projects: [project],
       quoteReady: true,
-      work: { ...analysisReviewWork(), url: 'https://fixtures.example/source.mp4' },
+      work: { ...analysisReviewWork(), url: '/api/v1/redraw/works/710/source-video' },
       blueprint: structuredClone(original),
       blueprintConflict: true,
       requests: [],
@@ -1093,9 +1204,150 @@ test.describe('一键转绘输入与分析流程', () => {
     expect(state.blueprint).toEqual(original)
     expect(state.requests.some((entry) => entry.pathname.endsWith('/blueprint/lock'))).toBe(false)
     await expect(page.getByRole('button', { name: '开始本地化' })).toBeDisabled()
-    const browserErrors = browserErrorsByPage.get(page) || []
-    expect(browserErrors.some((message) => message.includes('409 (Conflict)'))).toBe(true)
-    browserErrorsByPage.set(page, browserErrors.filter((message) => !message.includes('409 (Conflict)')))
+    expect(requestCount(state, 'POST', '/localization-quote')).toBe(0)
+    expect(requestCount(state, 'POST', '/versions')).toBe(0)
+    expect((browserErrorsByPage.get(page) || []).some((message) => message.includes('409 (Conflict)'))).toBe(true)
+    ignoreExpectedBrowserStatus(page, '409 (Conflict)')
+  })
+
+  test('母本蓝图读取完成前保持本地化门禁且不提前报价', async ({ page }) => {
+    const state = {
+      strictApi: true,
+      projects: [project],
+      quoteReady: true,
+      work: analysisReviewWork(),
+      blueprint: blueprintReviewRecord({ status: 'locked' }),
+      blueprintDelay: 800,
+      requests: [],
+    }
+    await installFixtures(page, state)
+    await page.goto('/redraw/projects/41/works/710?step=1')
+    await expect.poll(() => state.blueprintGetsStarted?.length || 0).toBe(1)
+
+    await expect(page.getByRole('button', { name: '开始本地化' })).toBeDisabled()
+    expect(requestCount(state, 'POST', '/localization-quote')).toBe(0)
+    expect(requestCount(state, 'POST', '/versions')).toBe(0)
+
+    await expect(page.getByRole('button', { name: '开始本地化' })).toBeEnabled()
+    await expect.poll(() => requestCount(state, 'POST', '/localization-quote')).toBe(1)
+    expect(requestCount(state, 'POST', '/versions')).toBe(0)
+  })
+
+  for (const status of [401, 500]) {
+    test(`母本蓝图 GET ${status} 时失败关闭且不报价或创建本地化版本`, async ({ page }) => {
+      const state = {
+        strictApi: true,
+        projects: [project],
+        quoteReady: true,
+        work: analysisReviewWork(),
+        blueprintStatus: status,
+        requests: [],
+      }
+      await installFixtures(page, state)
+      await page.goto('/redraw/projects/41/works/710?step=1')
+
+      await expect(page.getByText(`读取母本蓝图失败 (${status})`).first()).toBeVisible()
+      await expect(page.getByRole('button', { name: '开始本地化' })).toBeDisabled()
+      expect(requestCount(state, 'POST', '/localization-quote')).toBe(0)
+      expect(requestCount(state, 'POST', '/versions')).toBe(0)
+      ignoreExpectedBrowserStatus(page, `${status} (`)
+    })
+  }
+
+  test('母本蓝图明确 404 时保留旧作品本地化流程', async ({ page }) => {
+    const state = {
+      strictApi: true,
+      projects: [project],
+      quoteReady: true,
+      work: analysisReviewWork(),
+      requests: [],
+    }
+    await installFixtures(page, state)
+    await page.goto('/redraw/projects/41/works/710?step=1')
+
+    await expect(page.getByText('服务端分析摘要')).toBeVisible()
+    await expect(page.getByRole('button', { name: '确认英文 1:1 本地化' })).toBeEnabled()
+    await expect.poll(() => requestCount(state, 'POST', '/localization-quote')).toBe(1)
+    expect(requestCount(state, 'POST', '/versions')).toBe(0)
+    ignoreExpectedBrowserStatus(page, '404 (Not Found)')
+
+    await page.getByRole('button', { name: '确认英文 1:1 本地化' }).click()
+    await expect.poll(() => requestCount(state, 'POST', '/versions')).toBe(1)
+    expect(requestCount(state, 'POST', '/localization-quote')).toBe(2)
+  })
+
+  test('母本源片播放器拒绝外部 hostile URL 且不发送请求', async ({ page }) => {
+    const state = {
+      strictApi: true,
+      projects: [project],
+      quoteReady: true,
+      work: { ...analysisReviewWork(), url: 'https://attacker.example/source.mp4' },
+      blueprint: blueprintReviewRecord(),
+      requests: [],
+      externalRequests: [],
+    }
+    page.on('request', (request) => {
+      if (new URL(request.url()).hostname === 'attacker.example') state.externalRequests.push(request.url())
+    })
+    await page.route('https://attacker.example/**', (route) => route.fulfill({ path: fixtureVideoPath, contentType: 'video/mp4' }))
+    await installFixtures(page, state)
+    await page.goto('/redraw/projects/41/works/710?step=1')
+
+    await expect(page.getByRole('heading', { name: '母本反推审核' })).toBeVisible()
+    await expect(page.locator('.blueprint-review-panel video')).toHaveCount(0)
+    expect(state.externalRequests).toEqual([])
+  })
+
+  test('长母本蓝图镜头首屏 20 条并按需加载剩余镜头', async ({ page }) => {
+    const state = {
+      strictApi: true,
+      projects: [project],
+      quoteReady: true,
+      work: analysisReviewWork(),
+      blueprint: blueprintReviewRecordWithShots(25),
+      requests: [],
+    }
+    await installFixtures(page, state)
+    await page.goto('/redraw/projects/41/works/710?step=1')
+
+    const shotCards = page.locator('.blueprint-review-panel .shot-card')
+    await expect(shotCards).toHaveCount(20)
+    await expect(page.getByText('已显示 20 / 25 个镜头')).toBeVisible()
+    await page.getByRole('button', { name: '加载更多镜头' }).click()
+    await expect(shotCards).toHaveCount(25)
+    await expect(page.getByText('已显示 25 / 25 个镜头')).toBeVisible()
+  })
+
+  test('切换作品时忽略迟到的旧工作区与母本响应', async ({ page }) => {
+    const work711 = { ...analysisReviewWork(), id: 711 }
+    const blueprint710 = blueprintReviewRecord({ status: 'locked', storySummary: '旧作品 710 的母本摘要。' })
+    const blueprint711 = blueprintReviewRecord({ workId: 711, storySummary: '新作品 711 的母本摘要。' })
+    const state = {
+      strictApi: true,
+      projects: [project],
+      quoteReady: true,
+      works: { 710: analysisReviewWork(), 711: work711 },
+      blueprints: { 710: blueprint710, 711: blueprint711 },
+      workDelays: { 710: 1_500 },
+      requests: [],
+    }
+    await installFixtures(page, state)
+    await page.goto('/redraw/projects/41/works/710?step=1', { waitUntil: 'domcontentloaded' })
+    await expect.poll(() => state.workGetsStarted?.includes(710) || false).toBe(true)
+
+    await page.evaluate(() => {
+      void document.querySelector('#app').__vue_app__.config.globalProperties.$router.push(
+        '/redraw/projects/41/works/711?step=1',
+      )
+    })
+    await expect(page).toHaveURL(/\/redraw\/projects\/41\/works\/711\?step=1/)
+    await expect(page.getByText('新作品 711 的母本摘要。')).toBeVisible()
+    await expect.poll(() => state.workGets || 0).toBe(2)
+    await expect(page.getByText('新作品 711 的母本摘要。')).toBeVisible()
+    await expect(page.getByText('旧作品 710 的母本摘要。')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '开始本地化' })).toBeDisabled()
+    expect(requestCount(state, 'POST', '/localization-quote')).toBe(0)
+    expect(requestCount(state, 'POST', '/versions')).toBe(0)
   })
 
   test('本地化确认后资产批次部分失败只重试失败项并开放第三步', async ({ page }) => {

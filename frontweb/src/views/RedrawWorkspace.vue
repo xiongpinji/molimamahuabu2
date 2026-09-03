@@ -120,6 +120,7 @@ const projectEventsError = ref('')
 const blueprintRecord = ref(undefined)
 const blueprintLoading = ref(false)
 const blueprintError = ref('')
+let workspaceRequestSequence = 0
 let blueprintRequestSequence = 0
 
 const projectId = computed(() => route.params.projectId)
@@ -139,60 +140,85 @@ const steps = [
 ]
 
 async function loadWorkspace() {
+  const requestSequence = ++workspaceRequestSequence
+  const requestedProjectId = String(projectId.value || '')
   const requestedWorkId = String(workId.value || '')
   loading.value = true
   blueprintRequestSequence += 1
   blueprintRecord.value = undefined
-  blueprintLoading.value = false
+  blueprintLoading.value = isExistingWorkId(requestedWorkId)
   blueprintError.value = ''
   try {
     const eventsRequest = redrawAPI.listProjectEvents(projectId.value)
       .then((nextEvents) => resolveProjectEventsState({ previousEvents: projectEvents.value, nextEvents }))
       .catch((error) => resolveProjectEventsState({ previousEvents: projectEvents.value, error }))
-    project.value = await redrawAPI.getProject(projectId.value)
-    work.value = isExistingWorkId(workId.value) ? await redrawAPI.getWork(workId.value) : null
-    if (work.value?.id && String(work.value.id) === requestedWorkId) {
-      await loadBlueprint(work.value.id)
+    const nextProject = await redrawAPI.getProject(requestedProjectId)
+    if (!isCurrentWorkspaceRequest(requestSequence, requestedProjectId, requestedWorkId)) return
+    const nextWork = isExistingWorkId(requestedWorkId) ? await redrawAPI.getWork(requestedWorkId) : null
+    if (!isCurrentWorkspaceRequest(requestSequence, requestedProjectId, requestedWorkId)) return
+    project.value = nextProject
+    work.value = nextWork
+    if (nextWork?.id && String(nextWork.id) === requestedWorkId) {
+      await loadBlueprint(nextWork.id)
     }
+    if (!isCurrentWorkspaceRequest(requestSequence, requestedProjectId, requestedWorkId)) return
     applyProjectEventsState(await eventsRequest)
     const nextStep = resolveAllowedStep(route.query.step, work.value?.current_step || 1)
     if (String(route.query.step || '1') !== String(nextStep)) {
       router.replace({ query: { ...route.query, step: nextStep } })
     }
   } finally {
-    loading.value = false
+    if (requestSequence === workspaceRequestSequence) loading.value = false
   }
+}
+
+function isCurrentWorkspaceRequest(requestSequence, requestedProjectId, requestedWorkId) {
+  return requestSequence === workspaceRequestSequence
+    && String(projectId.value || '') === requestedProjectId
+    && String(workId.value || '') === requestedWorkId
 }
 
 async function loadBlueprint(targetWorkId) {
   if (!isExistingWorkId(targetWorkId)) {
-    blueprintRecord.value = null
+    blueprintRecord.value = undefined
+    blueprintLoading.value = false
     blueprintError.value = ''
-    return null
+    return undefined
   }
   const requestSequence = ++blueprintRequestSequence
   const requestedWorkId = String(targetWorkId)
+  blueprintRecord.value = undefined
   blueprintLoading.value = true
+  blueprintError.value = ''
   try {
     const next = await redrawAPI.getBlueprint(targetWorkId)
-    if (requestSequence !== blueprintRequestSequence || String(work.value?.id || '') !== requestedWorkId) return null
+    if (!isCurrentBlueprintRequest(requestSequence, requestedWorkId)) return undefined
+    if (next == null) {
+      blueprintError.value = '读取母本蓝图返回空结果'
+      return undefined
+    }
     blueprintRecord.value = next
     blueprintError.value = ''
     return next
   } catch (error) {
-    if (requestSequence !== blueprintRequestSequence || String(work.value?.id || '') !== requestedWorkId) return null
-    if (Number(error?.response?.status) === 404
-      || error?.response?.data?.error?.code === 'REDRAW_BLUEPRINT_NOT_FOUND') {
+    if (!isCurrentBlueprintRequest(requestSequence, requestedWorkId)) return undefined
+    if (Number(error?.response?.status) === 404) {
       blueprintRecord.value = null
       blueprintError.value = ''
       return null
     }
-    blueprintRecord.value = null
+    blueprintRecord.value = undefined
     blueprintError.value = error?.response?.data?.error?.message || error?.message || '读取母本蓝图失败'
-    return null
+    return undefined
   } finally {
-    if (requestSequence === blueprintRequestSequence) blueprintLoading.value = false
+    if (isCurrentBlueprintRequest(requestSequence, requestedWorkId)) blueprintLoading.value = false
   }
+}
+
+function isCurrentBlueprintRequest(requestSequence, requestedWorkId) {
+  return requestSequence === blueprintRequestSequence
+    && String(workId.value || '') === requestedWorkId
+    && String(work.value?.id || '') === requestedWorkId
 }
 
 function refreshBlueprint() {
