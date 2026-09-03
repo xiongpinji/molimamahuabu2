@@ -123,6 +123,28 @@ class SourceEvidenceTests(unittest.TestCase):
                     clusterer=FakeClusterer([]),
                 )
 
+    def test_out_of_order_segments_are_rejected_instead_of_silently_sorted(self):
+        with self.assertRaisesRegex(ValueError, "SOURCE_AUDIO_SEGMENTS_INVALID"):
+            analyze_source_audio(
+                self.wav_path,
+                asr=FakeAsr([
+                    {"start": 1.0, "end": 1.5, "text": "第二句"},
+                    {"start": 0.0, "end": 0.5, "text": "第一句"},
+                ]),
+                clusterer=FakeClusterer([0, 1]),
+            )
+
+    def test_overlapping_segments_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "SOURCE_AUDIO_SEGMENTS_INVALID"):
+            analyze_source_audio(
+                self.wav_path,
+                asr=FakeAsr([
+                    {"start": 0.0, "end": 1.0, "text": "第一句"},
+                    {"start": 0.5, "end": 1.2, "text": "重叠对白"},
+                ]),
+                clusterer=FakeClusterer([0, 1]),
+            )
+
     def test_output_contract_does_not_leak_the_absolute_audio_path(self):
         result = analyze_source_audio(
             self.wav_path,

@@ -102,6 +102,7 @@ def _normalize_segments(asr_result):
     if not isinstance(raw_segments, (list, tuple)) or not raw_segments:
         raise ValueError("SOURCE_AUDIO_SEGMENTS_INVALID")
     segments = []
+    previous_end = 0.0
     for raw in raw_segments:
         if not isinstance(raw, dict):
             raise ValueError("SOURCE_AUDIO_SEGMENTS_INVALID")
@@ -115,12 +116,13 @@ def _normalize_segments(asr_result):
             or not math.isfinite(float(end))
             or float(start) < 0.0
             or float(end) <= float(start)
+            or float(start) < previous_end
             or not isinstance(text, str)
             or not text.strip()
         ):
             raise ValueError("SOURCE_AUDIO_SEGMENTS_INVALID")
         segments.append({"start": float(start), "end": float(end), "text": text.strip()})
-    segments.sort(key=lambda item: (item["start"], item["end"], item["text"]))
+        previous_end = float(end)
     return segments
 
 

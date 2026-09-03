@@ -2,6 +2,9 @@
   "schemaVersion": 1,
   "release": "redraw-locale-verifier",
   "allowedPaths": [
+    ".env.production.example",
+    "backend-node/src/services/redrawNativeAudioService.js",
+    "backend-node/test/redrawNativeAudio.test.js",
     "backend-node/test/webProductionDeploymentContract.test.js",
     "deploy/redraw-locale-verifier/README.md",
     "deploy/redraw-locale-verifier/moli-redraw-locale-verifier.service",
@@ -14,6 +17,7 @@
     "workers/redraw-locale-verifier/src/redraw_locale_worker/normalization.py",
     "workers/redraw-locale-verifier/src/redraw_locale_worker/protocol.py",
     "workers/redraw-locale-verifier/src/redraw_locale_worker/server.py",
+    "workers/redraw-locale-verifier/src/redraw_locale_worker/source_evidence.py",
     "workers/redraw-locale-verifier/src/redraw_locale_worker/verifier.py",
     "workers/redraw-locale-verifier/tests/test_release_scope.py"
   ]
