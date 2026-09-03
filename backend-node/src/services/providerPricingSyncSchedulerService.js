@@ -16,6 +16,7 @@ function startProviderPricingSync(db, log, options = {}) {
     .catch((error) => log?.warn?.('Provider pricing sync failed', { code: error?.code || 'UNKNOWN' }));
   const timer = setIntervalFn(run, intervalMs);
   schedulerState = { timer, clearIntervalFn };
+  timer.unref?.();
   setImmediateFn(run);
   return true;
 }
