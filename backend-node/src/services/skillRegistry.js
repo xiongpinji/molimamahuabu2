@@ -18,7 +18,7 @@ const VISUAL_DIRECTION_PROMPT_ADDITION = `
 11. 风格建议只增强生产包，不得删减或替代角色、场景、道具、分镜、连续性、审核和原文保护字段。`;
 
 const VISUAL_DIRECTION_CONTRACT = `电影化视觉导演附加契约：
-在基础生产包中额外输出以下可选增强字段，其他字段保持不变：
+在基础生产包中必须额外输出以下增强字段，其他字段保持不变：
 "visual_direction": {
   "emotional_tone": {
     "primary": "主情绪基调",

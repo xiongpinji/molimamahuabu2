@@ -184,11 +184,12 @@ test('V2 automatic revision preserves the selected creative strategy', async (t)
   );
 });
 
-test('buildUserPrompt only adds visual direction contract for the optional enhanced Skill', () => {
+test('buildUserPrompt adds a required visual direction contract for the selected enhanced Skill', () => {
   const skill = resolveScriptAnalysisSkill('cinematic-visual-director');
   const prompt = buildUserPrompt(project, skill);
   assert.match(prompt, /"visual_direction"/);
   assert.match(prompt, /"recommendations"/);
+  assert.match(prompt, /必须额外输出以下增强字段/);
   assert.match(prompt, /所有 evidence 必须可回溯到原始剧本/);
 });
 
@@ -388,6 +389,50 @@ test('normalizeProductionPackage restores missing visual evidence from the sourc
     requireProductionDirection: true,
     expectedStrategyPreset: 'fusion',
   }), normalized);
+});
+
+test('runAnalysis keeps a reviewable package when the model omits required visual direction', async (t) => {
+  const originalGenerateText = aiClient.generateText;
+  t.after(() => { aiClient.generateText = originalGenerateText; });
+  aiClient.generateText = async () => JSON.stringify(validPackage());
+
+  const result = await runAnalysis({
+    db: {},
+    log: { warn() {}, info() {} },
+    project,
+    skill: resolveScriptAnalysisSkill('cinematic-visual-director'),
+  });
+
+  assert.equal(result.visual_direction.emotional_tone.primary, '待人工复核');
+  assert.deepEqual(result.visual_direction.emotional_tone.evidence, [project.source_script]);
+  assert.equal(result.visual_direction.recommendations.length, 1);
+  assert.match(result.review.issues.join('\n'), /模型未返回 visual_direction/);
+  assert.equal(validateProductionPackage(result, { requireVisualDirection: true }), result);
+});
+
+test('V2 runAnalysis restores omitted visual direction without weakening the production contract', async (t) => {
+  const originalGenerateText = aiClient.generateText;
+  t.after(() => { aiClient.generateText = originalGenerateText; });
+  const generatedPackage = validV2Package();
+  delete generatedPackage.visual_direction;
+  aiClient.generateText = async () => JSON.stringify(generatedPackage);
+
+  const result = await runAnalysis({
+    db: {},
+    log: { warn() {}, info() {} },
+    project,
+    skill: resolveScriptAnalysisSkill('short-drama-production-director'),
+    strategyPreset: 'fusion',
+  });
+
+  assert.equal(result.visual_direction.emotional_tone.primary, '待人工复核');
+  assert.equal(result.creative_strategy.preset, 'fusion');
+  assert.equal(validateProductionPackage(result, {
+    expectedSchemaVersion: '2.0',
+    requireVisualDirection: true,
+    requireProductionDirection: true,
+    expectedStrategyPreset: 'fusion',
+  }), result);
 });
 
 test('validateProductionPackage rejects malformed model output', () => {

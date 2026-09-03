@@ -226,6 +226,48 @@ function normalizeVisualDirection(value, evidenceFallback = '') {
   };
 }
 
+function restoreRequiredVisualDirection(value, project, selectedSkill, log) {
+  const requiresVisualDirection = Boolean(
+    selectedSkill.require_visual_direction || selectedSkill.require_production_direction
+  );
+  if (!requiresVisualDirection || value.visual_direction) return value;
+
+  const sourceEvidence = String(project.source_script || '').trim().slice(0, 240);
+  const issue = '模型未返回 visual_direction，系统已生成保守视觉方案，请人工复核';
+  log?.warn?.({ projectId: project.id, skillId: selectedSkill.id }, issue);
+  return {
+    ...value,
+    visual_direction: {
+      emotional_tone: {
+        primary: '待人工复核',
+        secondary: '',
+        evidence: [sourceEvidence],
+      },
+      scene_profile: [],
+      rhythm: {
+        labels: ['按原剧本场次推进'],
+        evidence: [sourceEvidence],
+      },
+      visual_motifs: [],
+      recommendations: [{
+        rank: 1,
+        name: '原剧本忠实呈现',
+        objective_style: '保持人物、场景与动作事实，采用清晰构图、连续轴线和符合场景时间的光线',
+        match_reasons: [sourceEvidence],
+        composition: '优先保证人物关系和关键动作清晰可读',
+        camera_movement: '按原剧本动作节奏使用稳定机位和必要的跟随运动',
+        lighting: '依据原剧本场景时间和环境设置可辨识的自然光线',
+        color: '保持场景内色彩连续，不额外引入叙事含义',
+        risks: ['模型未返回电影化视觉增强字段，当前方案需人工复核'],
+      }],
+    },
+    review: {
+      ...asObject(value.review),
+      issues: uniqueValues([...parseArray(value.review?.issues), issue]),
+    },
+  };
+}
+
 function normalizeProductionPackage(rawValue, project, { schemaVersion } = {}) {
   const raw = asObject(rawValue);
   const normalized = asObject(raw.normalized_script);
@@ -673,10 +715,15 @@ async function runAnalysisChunk({ db, log, project, selectedSkill, strategyPrese
       ...generationOptions,
     },
   );
-  const normalized = normalizeProductionPackage(
-    safeParseAIJSON(raw, {}, log),
+  const normalized = restoreRequiredVisualDirection(
+    normalizeProductionPackage(
+      safeParseAIJSON(raw, {}, log),
+      project,
+      { schemaVersion: selectedSkill.output_schema_version },
+    ),
     project,
-    { schemaVersion: selectedSkill.output_schema_version },
+    selectedSkill,
+    log,
   );
   return validateProductionPackage(
     normalized,
