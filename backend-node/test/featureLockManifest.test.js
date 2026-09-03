@@ -838,6 +838,15 @@ const REDRAW_EPISODE_BLUEPRINT_HARDENING_UNLOCK = {
     'backend-node/test/featureLockManifest.test.js',
   ],
 };
+const REDRAW_EPISODE_CULTURAL_ADAPTATION_UNLOCK = {
+  reason: '2026-09-04 整集零提交预检文化适配修复获批',
+  approvedBy: 'product-owner 2026-09-04 full-episode-zero-submit-cultural-adaptation',
+  impactTests: [
+    'backend-node/test/redrawShotProductionPack.test.js',
+    'backend-node/test/redrawLocalization.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+  ],
+};
 const REDRAW_EPISODE_BLUEPRINT_FIRST_TOUCHED_FEATURE_IDS = new Set([
   PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
   ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
@@ -1487,8 +1496,8 @@ test('母本蓝图优先一键转绘以单一功能锁覆盖任务并登记交�
   assert.deepEqual(feature.requiredTests, REDRAW_EPISODE_BLUEPRINT_FIRST_REQUIRED_TESTS);
   assert.deepEqual(feature.evidence, REDRAW_EPISODE_BLUEPRINT_FIRST_EVIDENCE);
   assert.equal(feature.fixCommit, null);
-  assert.deepEqual(feature.unlock, REDRAW_EPISODE_BLUEPRINT_HARDENING_UNLOCK);
-  assert.equal(feature.unlockHistory, undefined);
+  assert.deepEqual(feature.unlock, REDRAW_EPISODE_CULTURAL_ADAPTATION_UNLOCK);
+  assert.deepEqual(feature.unlockHistory, [REDRAW_EPISODE_BLUEPRINT_HARDENING_UNLOCK]);
 });
 
 test('母本蓝图任务为实际触及的五个既有功能锁登记新鲜批准', () => {
@@ -1790,7 +1799,7 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
     } else if (feature.featureId === REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID) {
       assert.deepEqual(feature.unlock, PR217_REDRAW_GENERATION_REVIEW_CONTEXT_UNLOCK);
     } else if (feature.featureId === REDRAW_EPISODE_BLUEPRINT_FIRST_FEATURE_ID) {
-      assert.deepEqual(feature.unlock, REDRAW_EPISODE_BLUEPRINT_HARDENING_UNLOCK);
+      assert.deepEqual(feature.unlock, REDRAW_EPISODE_CULTURAL_ADAPTATION_UNLOCK);
     } else if (!Object.hasOwn(PROVIDER_TASK_LOCK_REQUIREMENTS, feature.featureId)) {
       assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
     }

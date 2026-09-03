@@ -111,6 +111,25 @@ test('English production prompt uses target names, dialogue, and screen text wit
   assert.doesNotMatch(pack.prompt, /小满|调度员，我回来了|先把订单送完|尾号八七/);
 });
 
+test('applies locked cultural adaptations to visual fields before compiling the target prompt', () => {
+  const blueprint = lockedBlueprint();
+  blueprint.shots[0].composition = 'Chinese news-style web page beside 小满';
+  const localization = lockedLocalization({
+    cultural_adaptations: [{
+      id: 'culture-news-page',
+      source: 'Chinese news-style web page',
+      target: 'American sports news web page',
+      note: 'Use the approved US-market screen treatment',
+    }],
+  });
+
+  const [pack] = compileEpisodeProductionPacks({ blueprint, localization });
+
+  assert.equal(pack.visual_contract.composition, 'American sports news web page beside Marcus');
+  assert.match(pack.prompt, /American sports news web page beside Marcus/);
+  assert.doesNotMatch(pack.prompt, /Chinese news-style web page/);
+});
+
 test('English production pack rejects source-language visual and audio free text after name replacement', () => {
   const cases = [
     ['composition', (shot) => { shot.composition = '室内中景 on 小满'; }],

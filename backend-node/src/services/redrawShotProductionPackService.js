@@ -111,11 +111,19 @@ function valuesForShot(value, shotId) {
 
 function localizeVisualText(value, blueprint, localization) {
   let text = String(value || '').trim();
-  const replacements = (Array.isArray(blueprint.characters) ? blueprint.characters : [])
+  const characterReplacements = (Array.isArray(blueprint.characters) ? blueprint.characters : [])
     .map((character) => ({
       source: String(character?.source_name || character?.display_name || '').trim(),
       target: String(localization.character_name_map?.[character?.id] || '').trim(),
-    }))
+    }));
+  const culturalReplacements = (Array.isArray(localization.cultural_adaptations)
+    ? localization.cultural_adaptations
+    : [])
+    .map((item) => ({
+      source: String(item?.source || '').trim(),
+      target: String(item?.target || '').trim(),
+    }));
+  const replacements = [...characterReplacements, ...culturalReplacements]
     .filter((item) => item.source && item.target && item.source !== item.target)
     .sort((left, right) => right.source.length - left.source.length);
   for (const { source, target } of replacements) text = text.split(source).join(target);
