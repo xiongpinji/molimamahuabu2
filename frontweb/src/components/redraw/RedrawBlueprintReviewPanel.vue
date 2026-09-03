@@ -269,16 +269,33 @@ const props = defineProps({
 })
 const emit = defineEmits(['updated', 'locked', 'refresh-requested'])
 
+const SHOT_CONFIDENCE_FIELDS = [
+  ['character_mapping', '人物映射'],
+  ['speaker_mapping', '说话人映射'],
+  ['text_regions', '文字区域'],
+  ['shot_boundary', '镜头边界'],
+]
+
 const EvidenceMeta = defineComponent({
   name: 'EvidenceMeta',
   props: { item: { type: Object, default: null } },
   setup(componentProps) {
     return () => {
       const refs = Array.isArray(componentProps.item?.evidence_refs) ? componentProps.item.evidence_refs : []
-      const confidence = Number(componentProps.item?.confidence)
-      const confidenceText = Number.isFinite(confidence) ? `置信度 ${Math.round(confidence * 100)}%` : '置信度未提供'
+      const confidence = componentProps.item?.confidence
+      const confidenceNode = confidence && typeof confidence === 'object' && !Array.isArray(confidence)
+        ? h('span', { class: 'confidence-breakdown', role: 'group', 'aria-label': '镜头置信度明细' },
+          SHOT_CONFIDENCE_FIELDS.map(([key, label]) => {
+            const value = confidence[key]
+            return h('span', { key }, typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+              ? `${label} ${Math.round(value * 100)}%`
+              : `${label} 未提供`)
+          }))
+        : h('span', typeof confidence === 'number' && Number.isFinite(confidence) && confidence >= 0 && confidence <= 1
+          ? `置信度 ${Math.round(confidence * 100)}%`
+          : '置信度未提供')
       return h('span', { class: 'evidence-meta' }, [
-        h('span', confidenceText),
+        confidenceNode,
         ...refs.map((refId) => h('code', { key: refId }, String(refId))),
       ])
     }
@@ -476,6 +493,7 @@ summary { padding: 13px 14px; color: #f0f0f0; font-weight: 700; cursor: pointer;
 .dialogue-card, .ocr-card { display: grid; gap: 6px; padding: 10px; border-left: 3px solid #ff7139; border-radius: 5px; background: #1b1b1b; }
 .ocr-card { border-left-color: #4c9ffe; }
 .evidence-meta { display: flex; flex-wrap: wrap; gap: 6px; color: #888; font-size: 11px; }
+.confidence-breakdown { display: flex; flex-wrap: wrap; gap: 6px; }
 .evidence-meta code { padding: 2px 5px; border-radius: 4px; background: #242424; color: #a9cfff; overflow-wrap: anywhere; }
 .evidence-list { display: grid; gap: 8px; margin: 0; padding: 0 14px 14px; list-style: none; }
 .evidence-list li { display: grid; gap: 4px; padding: 10px; border: 1px solid #292929; border-radius: 6px; }

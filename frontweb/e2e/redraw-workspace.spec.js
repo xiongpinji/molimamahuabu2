@@ -170,7 +170,7 @@ function blueprintReviewRecord() {
           source_text: 'A-87', evidence_refs: ['evidence-visual-1'], confidence: 0.9,
         }],
         audio_contract: { dialogue_mode: 'spoken', ambient_audio: 'preserve_or_rebuild' },
-        confidence: { character_mapping: 0.9, speaker_mapping: 0.73, text_regions: 0.9, shot_boundary: 0.94 },
+        confidence: { character_mapping: 0.91, speaker_mapping: 0.82, text_regions: 0.73, shot_boundary: 0.96 },
         evidence_refs: ['evidence-visual-1'],
       }],
       causal_chain: [{ id: 'causal-1', cause: '男主送达订单。', effect: '旧案编号重新出现。', evidence_refs: ['evidence-visual-1'], confidence: 0.84 }],
@@ -1031,6 +1031,12 @@ test.describe('一键转绘输入与分析流程', () => {
     await expect(page.getByText('speaker-cluster-1', { exact: true })).toBeVisible()
     await expect(page.getByText('尾号八七的订单到了。')).toBeVisible()
     await expect(page.getByText('evidence-audio-1', { exact: true }).first()).toBeVisible()
+    const confidenceDetails = page.getByLabel('镜头置信度明细')
+    await expect(confidenceDetails.getByText('人物映射 91%', { exact: true })).toBeVisible()
+    await expect(confidenceDetails.getByText('说话人映射 82%', { exact: true })).toBeVisible()
+    await expect(confidenceDetails.getByText('文字区域 73%', { exact: true })).toBeVisible()
+    await expect(confidenceDetails.getByText('镜头边界 96%', { exact: true })).toBeVisible()
+    await expect(page.getByText('置信度 88%', { exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: '开始本地化' })).toBeDisabled()
     await expect(page.getByText('本地化报价 9 积分')).toHaveCount(0)
 
