@@ -98,6 +98,11 @@ function mountFrontend(app, webDist) {
   return true;
 }
 
+function configureTrustedProxy(app) {
+  app.set('trust proxy', 'loopback');
+  return app;
+}
+
 function createApp() {
   const config = loadConfig();
   const db = getDb(config.database);
@@ -164,7 +169,7 @@ function createApp() {
     providerPricing: require('./services/providerPricingSyncSchedulerService'),
   });
 
-  const app = express();
+  const app = configureTrustedProxy(express());
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true }));
 
@@ -261,4 +266,10 @@ function createApp() {
   };
 }
 
-module.exports = { createApp, mountFrontend, resolveStorageRoot, startBackgroundServices };
+module.exports = {
+  configureTrustedProxy,
+  createApp,
+  mountFrontend,
+  resolveStorageRoot,
+  startBackgroundServices,
+};

@@ -1042,6 +1042,16 @@
           ]
         },
         {
+          "reason": "2026-09-02 画布充值入口与登录限流修复获批",
+          "approvedBy": "product-owner 2026-09-02 canvas-billing-login-rate-limit",
+          "impactTests": [
+            "backend-node/test/authRateLimitProxy.test.js",
+            "frontweb/test/canvasBillingAndLogin.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
           "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
           "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
           "impactTests": [
@@ -1987,6 +1997,16 @@
           ]
         },
         {
+          "reason": "2026-09-02 画布充值入口与登录限流修复获批",
+          "approvedBy": "product-owner 2026-09-02 canvas-billing-login-rate-limit",
+          "impactTests": [
+            "backend-node/test/authRateLimitProxy.test.js",
+            "frontweb/test/canvasBillingAndLogin.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
           "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
           "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
           "impactTests": [
@@ -2118,14 +2138,26 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-28 coverage 版本级入口显式 provider 装配门禁 P2 修复获批",
+          "approvedBy": "product-owner 2026-08-28 redraw-coverage-http-provider-gate-task-c-p2",
+          "impactTests": [
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawCoverageRegistration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-28 coverage 版本级入口显式 provider 装配门禁 P2 修复获批",
-        "approvedBy": "product-owner 2026-08-28 redraw-coverage-http-provider-gate-task-c-p2",
+        "reason": "2026-09-03 NewAPI 中转站成本同步管理路由注册获批",
+        "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
         "impactTests": [
+          "backend-node/test/providerPricingSync.test.js",
+          "backend-node/test/modelPrice.test.js",
           "backend-node/test/redrawRoutes.test.js",
-          "backend-node/test/redrawCoverageRegistration.test.js",
+          "backend-node/test/redrawProductMediaChain.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -2227,17 +2259,30 @@
         "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md"
       ],
       "fixCommit": null,
-      "unlockHistory": [],
+      "unlockHistory": [
+        {
+          "reason": "2026-08-28 一键转绘真实产品 HTTP 媒体同链回归 Task E 获批",
+          "approvedBy": "product-owner 2026-08-28 redraw-product-media-registration-task-e",
+          "impactTests": [
+            "backend-node/test/redrawProductMediaChain.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawCoverageRegistration.test.js",
+            "backend-node/test/redrawAssets.test.js",
+            "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+            "backend-node/test/redrawReferenceBundle.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        }
+      ],
       "unlock": {
-        "reason": "2026-08-28 一键转绘真实产品 HTTP 媒体同链回归 Task E 获批",
-        "approvedBy": "product-owner 2026-08-28 redraw-product-media-registration-task-e",
+        "reason": "2026-09-03 NewAPI 中转站成本同步管理路由注册获批",
+        "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
         "impactTests": [
-          "backend-node/test/redrawProductMediaChain.test.js",
+          "backend-node/test/providerPricingSync.test.js",
+          "backend-node/test/modelPrice.test.js",
           "backend-node/test/redrawRoutes.test.js",
-          "backend-node/test/redrawCoverageRegistration.test.js",
-          "backend-node/test/redrawAssets.test.js",
-          "backend-node/test/redrawReferencePreparationOrchestration.test.js",
-          "backend-node/test/redrawReferenceBundle.test.js",
+          "backend-node/test/redrawProductMediaChain.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]

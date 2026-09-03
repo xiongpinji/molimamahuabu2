@@ -526,6 +526,89 @@ test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => 
   assert.equal('storyboard_id' in audioPayload, false)
 })
 
+test('视频节点纯文生视频模式不提交参考素材字段', () => {
+  assert.equal(normalizeFreeCanvasVideoReferenceMode('text', []), 'text')
+  const payload = buildFreeCanvasGenerationRequest({
+    kind: 'video',
+    content: '纯文本生成一个镜头',
+    model: 'text-video',
+    videoReferenceMode: 'text',
+    aspectRatio: '16:9',
+    duration: 4,
+    resolution: '480p',
+  }, {
+    dramaId: 7,
+    upstreamUrls: ['/static/stale-reference.jpg'],
+    upstreamReferences: [{ kind: 'image', url: '/static/stale-reference.jpg', ready: true }],
+    capability: {
+      declared: true,
+      referenceTypes: ['image'],
+      supportsImageReference: true,
+      maxImageReferences: 3,
+      resolutions: ['480p'],
+      durations: [4],
+    },
+  })
+
+  for (const field of [
+    'reference_mode',
+    'image_url',
+    'first_frame_url',
+    'last_frame_url',
+    'reference_image_urls',
+    'reference_video_urls',
+    'reference_audio_urls',
+  ]) {
+    assert.equal(field in payload, false, `纯文生视频不应提交 ${field}`)
+  }
+})
+
+test('视频节点无可用参考时将历史 multi 状态降级为纯文生视频', () => {
+  const payload = buildFreeCanvasGenerationRequest({
+    kind: 'video',
+    content: '忽略已失效参考',
+    model: 'text-video',
+    videoReferenceMode: 'multi',
+    aspectRatio: '16:9',
+    duration: 4,
+    resolution: '480p',
+  }, {
+    dramaId: 7,
+    upstreamUrls: ['/static/stale-reference.jpg'],
+    upstreamReferences: [],
+    capability: {
+      declared: true,
+      referenceTypes: ['image'],
+      supportsImageReference: true,
+      maxImageReferences: 3,
+      resolutions: ['480p'],
+      durations: [4],
+    },
+  })
+
+  assert.equal('reference_mode' in payload, false)
+  assert.equal('reference_image_urls' in payload, false)
+})
+
+test('视频模型明确关闭文生视频时在提交前阻断', () => {
+  assert.throws(() => buildFreeCanvasGenerationRequest({
+    kind: 'video',
+    content: '不应提交',
+    model: 'image-to-video-only',
+    videoReferenceMode: 'text',
+    duration: 4,
+    resolution: '480p',
+  }, {
+    dramaId: 7,
+    capability: {
+      declared: true,
+      supportsTextToVideo: false,
+      resolutions: ['480p'],
+      durations: [4],
+    },
+  }), /image-to-video-only.*不支持文生视频/)
+})
+
 test('视频节点按模型能力传递多图片、音频和视频参考', () => {
   const upstreamReferences = [
     ...Array.from({ length: 5 }, (_, index) => ({

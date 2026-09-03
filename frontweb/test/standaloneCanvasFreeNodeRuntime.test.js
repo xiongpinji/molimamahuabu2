@@ -190,6 +190,7 @@ test('独立画布自由节点走真实生成分支，禁止污染剧集 runCanv
   assert.match(canvasSource, /buildFreeCanvasProjectAssetPayload/)
   assert.match(canvasSource, /resolveFreeCanvasResultUrl/)
   assert.match(canvasSource, /async function runFreeCanvasNode\(nodeOrId\)/)
+  assert.match(canvasSource, /const freeCanvasNodeGenerationFlights = new Map\(\)/)
   assert.match(canvasSource, /if \(!isStandaloneCanvas\.value \|\| node\?\.type !== 'homeCanvasNode'\)/)
   assert.match(canvasSource, /const upstreamReferences = freeCanvasNodeInputReferences\(node\)[\s\S]*const upstreamUrls = upstreamReferences[\s\S]*const generationData = \{ \.\.\.node\.data, model: catalogEntry\.model \}[\s\S]*requestPayload = buildFreeCanvasGenerationRequest\(generationData, \{[\s\S]*dramaId: dramaId\.value,[\s\S]*upstreamUrls,[\s\S]*upstreamReferences/)
   assert.match(canvasSource, /const modelRoute = canvasModelRoute\(freeCanvasModelCatalog\.value, kind, node\.data\?\.model\)/)
@@ -199,6 +200,8 @@ test('独立画布自由节点走真实生成分支，禁止污染剧集 runCanv
   assert.match(canvasSource, /else if \(kind === 'audio'\) submitResult = await request\.post\('\/audio\/extract', requestPayload\)/)
   assert.match(canvasSource, /buildFreeCanvasGenerationRequest\(generationData/)
   assert.match(canvasSource, /async function runCanvasNodeStep\(node, step\) \{[\s\S]*if \(isStandaloneCanvas\.value && node\?\.type === 'homeCanvasNode'\)/)
+  assert.match(canvasSource, /buildCanvasExecutionBatches/)
+  assert.match(canvasSource, /Promise\.all\(batch\.map/)
 })
 
 test('自由节点运行结果可轮询、失败写回、成功自动入库并保留旧 url', () => {
