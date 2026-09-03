@@ -496,6 +496,27 @@ test('mergeProductionPackages preserves required V2 strategy and visual directio
   }), result);
 });
 
+test('mergeProductionPackages preserves the V1 cinematic visual direction sidecar', () => {
+  const first = { ...validPackage(), visual_direction: validVisualDirection() };
+  const second = { ...validPackage(), visual_direction: validVisualDirection() };
+  second.visual_direction.recommendations[0].name = '克制手持纪实';
+
+  const result = mergeProductionPackages([first, second], {
+    project,
+    skill: resolveScriptAnalysisSkill('cinematic-visual-director'),
+  });
+
+  assert.equal(result.schema_version, '1.0');
+  assert.deepEqual(
+    result.visual_direction.recommendations.map((item) => item.rank),
+    [1, 2],
+  );
+  assert.equal(validateProductionPackage(result, {
+    expectedSchemaVersion: '1.0',
+    requireVisualDirection: true,
+  }), result);
+});
+
 test('validateProductionPackage accepts explicit V2 production director package', () => {
   const value = validV2Package();
   assert.equal(validateProductionPackage(value, {
