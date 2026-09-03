@@ -1820,6 +1820,170 @@ test('母本蓝图 API 稳定映射 400 404 409 且内部错误不泄露路径�
   }
 });
 
+test('本地化审核 GET PUT lock API 只把 owner、精确 CAS 和语言门禁交给服务', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 1, status: 'needs_review' });
+    const versionId = Number(insertVersion(db, workId, { locale: 'source', status: 'needs_review' }));
+    const localization = {
+      schema_version: 'episode-localization-v1',
+      blueprint_hash: 'a'.repeat(64),
+      locale: 'en-US',
+      market: 'US',
+      character_name_map: { c1: 'Maya' },
+      dialogue_map: [],
+      text_region_map: [],
+      cultural_adaptations: [],
+      glossary: [],
+      locked_terms: [],
+      review: { status: 'review', character_name_map: { c1: true }, dialogue_map: {}, text_region_map: {}, cultural_adaptations: {}, glossary: {}, locked_terms: {} },
+      localization_hash: 'b'.repeat(64),
+    };
+    const record = {
+      version_id: versionId,
+      work_id: Number(workId),
+      version: 1,
+      status: 'review',
+      blueprint_hash: 'a'.repeat(64),
+      localization_hash: 'b'.repeat(64),
+      locale: 'en-US',
+      market: 'US',
+      localization,
+      updated_at: NOW,
+    };
+    const calls = [];
+    const languageGate = () => ({ language_verified: true });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      localizationLanguageGate: languageGate,
+      localizationReviewService: {
+        getLocalizationReview(database, currentOwner, id) {
+          calls.push(['get', database, currentOwner, id]);
+          return record;
+        },
+        saveLocalizationReview(database, currentOwner, id, input) {
+          calls.push(['save', database, currentOwner, id, input]);
+          return { ...record, localization: input.localization };
+        },
+        lockLocalizationReview(database, currentOwner, id, input) {
+          calls.push(['lock', database, currentOwner, id, input]);
+          return { ...record, status: 'locked', localization: { ...localization, review: { ...localization.review, status: 'locked' } } };
+        },
+      },
+    }));
+
+    const read = captureResponse();
+    handlers.getLocalizationReview(request({ id: versionId }), read);
+    assert.equal(read.statusCode, 200);
+    assert.equal(read.body.data.version_id, versionId);
+
+    const saved = captureResponse();
+    handlers.saveLocalizationReview(request({
+      id: versionId,
+      body: { expected_updated_at: NOW, localization },
+    }), saved);
+    assert.equal(saved.statusCode, 200);
+
+    const locked = captureResponse();
+    handlers.lockLocalizationReview(request({
+      id: versionId,
+      body: {
+        blueprint_hash: 'a'.repeat(64),
+        expected_localization_hash: 'b'.repeat(64),
+        expected_updated_at: NOW,
+      },
+    }), locked);
+    assert.equal(locked.statusCode, 200);
+    assert.equal(locked.body.data.status, 'locked');
+
+    assert.equal(calls.length, 3);
+    for (const call of calls) {
+      assert.equal(call[1], db);
+      assert.deepEqual(call[2], { tenantId: 'tenant-a', userId: 'user-a' });
+      assert.equal(call[3], versionId);
+    }
+    assert.deepEqual(calls[1][4], {
+      expectedUpdatedAt: NOW,
+      localization,
+      validateTargetText: languageGate,
+    });
+    assert.deepEqual(calls[2][4], {
+      blueprintHash: 'a'.repeat(64),
+      expectedLocalizationHash: 'b'.repeat(64),
+      expectedUpdatedAt: NOW,
+      validateTargetText: languageGate,
+    });
+
+    const foreign = captureResponse();
+    handlers.getLocalizationReview(request({ id: versionId, tenantId: 'tenant-b' }), foreign);
+    assert.equal(foreign.statusCode, 404);
+    assert.equal(calls.length, 3);
+  } finally {
+    db.close();
+  }
+});
+
+test('本地化审核 API 严格拒绝危险字段并把并发与锁定冲突稳定映射为 409', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 1, status: 'needs_review' });
+    const versionId = Number(insertVersion(db, workId, { status: 'needs_review' }));
+    let calls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      localizationReviewService: {
+        saveLocalizationReview() { calls += 1; return {}; },
+        lockLocalizationReview() { calls += 1; return {}; },
+      },
+    }));
+    const unsafeBodies = [
+      {},
+      { expected_updated_at: NOW, localization: {}, provider: 'client' },
+      { expected_updated_at: NOW, localization: { provider: 'client' } },
+      { expected_updated_at: NOW, localization: { model: 'private-model' } },
+      { expected_updated_at: NOW, localization: { 'ｍｏｄｅｌ': 'private-model' } },
+      { expected_updated_at: NOW, localization: { target: 'https://provider.example/result' } },
+      { expected_updated_at: NOW, localization: { target: 'C:\\private\\result.json' } },
+      { expected_updated_at: NOW, localization: { api_key: 'private-key' } },
+    ];
+    for (const body of unsafeBodies) {
+      const result = captureResponse();
+      handlers.saveLocalizationReview(request({ id: versionId, body }), result);
+      assert.equal(result.statusCode, 400, JSON.stringify(body));
+      assert.equal(/provider\.example|C:\\private|private-key|private-model/.test(JSON.stringify(result.body)), false);
+    }
+    const unsafeLocks = [
+      {},
+      { blueprint_hash: 'a'.repeat(64), expected_localization_hash: 'b'.repeat(64), expected_updated_at: NOW, secret: 'x' },
+      { blueprint_hash: 'short', expected_localization_hash: 'b'.repeat(64), expected_updated_at: NOW },
+      { blueprint_hash: 'a'.repeat(64), expected_localization_hash: 'short', expected_updated_at: NOW },
+    ];
+    for (const body of unsafeLocks) {
+      const result = captureResponse();
+      handlers.lockLocalizationReview(request({ id: versionId, body }), result);
+      assert.equal(result.statusCode, 400, JSON.stringify(body));
+    }
+    assert.equal(calls, 0);
+
+    for (const code of ['LOCALIZATION_CAS_CONFLICT', 'LOCALIZATION_LOCKED', 'LOCALIZATION_HASH_MISMATCH', 'LOCALIZATION_REVIEW_REQUIRED', 'BLUEPRINT_HASH_MISMATCH']) {
+      const conflictHandlers = redrawRoutes(db, { error() {} }, routeDeps({
+        localizationReviewService: {
+          saveLocalizationReview() { throw Object.assign(new Error('private conflict'), { code }); },
+        },
+      }));
+      const result = captureResponse();
+      conflictHandlers.saveLocalizationReview(request({
+        id: versionId,
+        body: { expected_updated_at: NOW, localization: {} },
+      }), result);
+      assert.equal(result.statusCode, 409, code);
+      assert.equal(result.body.error.code, code);
+    }
+  } finally {
+    db.close();
+  }
+});
+
 test('未注入外部分析器时路由使用原生视觉服务完成真实编排合同', async () => {
   const db = createDb();
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-native-route-'));
@@ -2307,11 +2471,13 @@ test('本地化版本提交走异步 orchestrator 并返回 202 草稿版本和�
     const canReadArtifact = () => true;
     const provider = async () => ({});
     const schedule = () => {};
+    const languageGate = () => ({ language_verified: true });
     const calls = [];
     const handlers = redrawRoutes(db, { error() {} }, routeDeps({
       canReadArtifact,
       localizationProvider: provider,
       localizationSchedule: schedule,
+      localizationLanguageGate: languageGate,
       localizationOrchestrator: {
         quoteLocalization: () => ({ priced: true, credits: 7, model: 'gpt-localize', quote_hash: 'quote-ok' }),
         startLocalization: (_db, _log, input, deps) => {
@@ -2362,6 +2528,7 @@ test('本地化版本提交走异步 orchestrator 并返回 202 草稿版本和�
     assert.equal(calls[0].deps.provider, provider);
     assert.equal(calls[0].deps.schedule, schedule);
     assert.equal(calls[0].deps.canReadArtifact, canReadArtifact);
+    assert.equal(calls[0].deps.validateTargetText, languageGate);
   } finally {
     db.close();
   }
@@ -5972,6 +6139,9 @@ test('第三步、角色身份包、本地化确认和参考准备 API 已真实
     assert.equal(routes.has('POST /redraw/works/:id/generate-batch'), true);
     assert.equal(routes.has('POST /redraw/works/:id/localization-quote'), true);
     assert.equal(routes.has('POST /redraw/works/:id/versions'), true);
+    assert.equal(routes.has('GET /redraw/versions/:id/localization'), true);
+    assert.equal(routes.has('PUT /redraw/versions/:id/localization'), true);
+    assert.equal(routes.has('POST /redraw/versions/:id/localization/lock'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/assets/batch-quote'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/assets/batches'), true);
     assert.equal(routes.has('GET /redraw/assets/:id/preview/:variant'), true);

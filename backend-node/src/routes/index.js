@@ -285,6 +285,8 @@ function setupRouter(cfg, db, log, options = {}) {
   redrawVoiceService.setDefaultEvidenceRegistry(localeRegistry);
   const localeVerifier = options.localeVerifier || redrawOptions.localeVerifier
     || createDefaultRedrawLocaleVerifier({ ...options, localeRegistry });
+  const localizationLanguageGate = options.localizationLanguageGate
+    || redrawOptions.localizationLanguageGate;
   const localVoiceRegistrationService = options.localVoiceRegistrationService
     || redrawOptions.localVoiceRegistrationService
     || redrawLocalVoiceRegistrationService;
@@ -339,6 +341,7 @@ function setupRouter(cfg, db, log, options = {}) {
     coverageRegistrationProvider: explicitCoverageRegistrationProvider,
     localeRegistry,
     localeVerifier,
+    localizationLanguageGate,
     sourceAudioEvidenceService: options.sourceAudioEvidenceService
       || redrawOptions.sourceAudioEvidenceService
       || redrawSourceAudioEvidenceService,
@@ -420,6 +423,9 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/redraw/works/:id/blueprint/lock', redraw.lockBlueprint);
   r.post('/redraw/works/:id/localization-quote', redraw.localizationQuote);
   r.post('/redraw/works/:id/versions', redraw.createVersion);
+  r.get('/redraw/versions/:id/localization', redraw.getLocalizationReview);
+  r.put('/redraw/versions/:id/localization', redraw.saveLocalizationReview);
+  r.post('/redraw/versions/:id/localization/lock', redraw.lockLocalizationReview);
   if (typeof explicitCoverageRegistrationProvider === 'function') {
     r.post('/redraw/versions/:id/full-frame-coverages', redraw.registerFullFrameCoverage);
   }

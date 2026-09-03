@@ -11,6 +11,7 @@ const redrawUploadService = require('../services/redrawUploadService');
 const redrawCapabilityService = require('../services/redrawCapabilityService');
 const redrawOrchestrator = require('../services/redrawOrchestrator');
 const redrawLocalizationOrchestrator = require('../services/redrawLocalizationOrchestrator');
+const localizationService = require('../services/localizationService');
 const redrawAssetService = require('../services/redrawAssetService');
 const redrawReviewService = require('../services/redrawReviewService');
 const redrawCharacterIdentityService = require('../services/redrawCharacterIdentityService');
@@ -527,6 +528,10 @@ function codedRouteError(code, message, details) {
 
 const BLUEPRINT_SAVE_FIELDS = new Set(['expected_updated_at', 'blueprint']);
 const BLUEPRINT_LOCK_FIELDS = new Set(['expected_blueprint_hash', 'expected_updated_at']);
+const LOCALIZATION_REVIEW_SAVE_FIELDS = new Set(['expected_updated_at', 'localization']);
+const LOCALIZATION_REVIEW_LOCK_FIELDS = new Set([
+  'blueprint_hash', 'expected_localization_hash', 'expected_updated_at',
+]);
 
 function exactBlueprintBody(body, fields) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
@@ -573,6 +578,53 @@ function blueprintLockInput(body) {
     throw codedRouteError('REDRAW_BLUEPRINT_INPUT_INVALID', '蓝图锁定 CAS 参数无效');
   }
   return { expectedBlueprintHash: hash, expectedUpdatedAt: updatedAt };
+}
+
+function exactLocalizationReviewBody(body, fields) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw codedRouteError('LOCALIZATION_INPUT_INVALID', '本地化审核请求体无效');
+  }
+  const prototype = Object.getPrototypeOf(body);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw codedRouteError('LOCALIZATION_INPUT_INVALID', '本地化审核请求体无效');
+  }
+  for (const key in body) {
+    if (!Object.prototype.hasOwnProperty.call(body, key)) {
+      throw codedRouteError('LOCALIZATION_INPUT_INVALID', '本地化审核请求体无效');
+    }
+  }
+  if (Object.keys(body).length !== fields.size
+    || Object.keys(body).some((key) => !fields.has(key))) {
+    throw codedRouteError('LOCALIZATION_INPUT_INVALID', '本地化审核请求字段无效');
+  }
+  return body;
+}
+
+function localizationReviewSaveInput(body) {
+  const input = exactLocalizationReviewBody(body, LOCALIZATION_REVIEW_SAVE_FIELDS);
+  const expectedUpdatedAt = typeof input.expected_updated_at === 'string'
+    ? input.expected_updated_at.trim() : '';
+  if (!expectedUpdatedAt || !input.localization || typeof input.localization !== 'object'
+    || Array.isArray(input.localization)) {
+    throw codedRouteError('LOCALIZATION_INPUT_INVALID', '本地化审核 CAS 参数无效');
+  }
+  localizationService.assertSafeLocalizationReviewValue(input.localization);
+  return { expectedUpdatedAt, localization: input.localization };
+}
+
+function localizationReviewLockInput(body) {
+  const input = exactLocalizationReviewBody(body, LOCALIZATION_REVIEW_LOCK_FIELDS);
+  const blueprintHash = typeof input.blueprint_hash === 'string' ? input.blueprint_hash.trim() : '';
+  const expectedLocalizationHash = typeof input.expected_localization_hash === 'string'
+    ? input.expected_localization_hash.trim() : '';
+  const expectedUpdatedAt = typeof input.expected_updated_at === 'string'
+    ? input.expected_updated_at.trim() : '';
+  if (!/^[a-f0-9]{64}$/.test(blueprintHash)
+    || !/^[a-f0-9]{64}$/.test(expectedLocalizationHash)
+    || !expectedUpdatedAt) {
+    throw codedRouteError('LOCALIZATION_INPUT_INVALID', '本地化锁定 CAS 参数无效');
+  }
+  return { blueprintHash, expectedLocalizationHash, expectedUpdatedAt };
 }
 
 function publicBlueprintRecord(value) {
@@ -1830,7 +1882,8 @@ function sendLocalizationError(res, error, fallbackMessage, log, context = {}) {
   const details = error?.quote
     ? { ...(error?.details || {}), quote: error.quote }
     : error?.details;
-  if (code === 'REDRAW_LOCALIZATION_WORK_NOT_FOUND') {
+  if (code === 'REDRAW_LOCALIZATION_WORK_NOT_FOUND'
+    || code === 'LOCALIZATION_NOT_FOUND') {
     return response.error(res, 404, code, error.message || fallbackMessage, details);
   }
   if (code === 'INSUFFICIENT_CREDITS') {
@@ -1841,13 +1894,20 @@ function sendLocalizationError(res, error, fallbackMessage, log, context = {}) {
     'REDRAW_LOCALIZATION_CAPABILITY_UNVERIFIED',
     'REDRAW_LOCALIZATION_QUOTE_CHANGED',
     'REDRAW_LOCALIZATION_IDEMPOTENCY_CONFLICT',
+    'LOCALIZATION_CAS_CONFLICT',
+    'LOCALIZATION_LOCKED',
+    'LOCALIZATION_HASH_MISMATCH',
+    'LOCALIZATION_REVIEW_REQUIRED',
+    'BLUEPRINT_NOT_LOCKED',
+    'BLUEPRINT_HASH_MISMATCH',
   ].includes(code)) {
     return response.error(res, 409, code, error.message || fallbackMessage, details);
   }
   if (code === 'REDRAW_LOCALIZATION_CLIENT_CONTROL_FORBIDDEN') {
     return response.error(res, 400, code, error.message || fallbackMessage, details);
   }
-  if (code.startsWith('REDRAW_LOCALIZATION') || code.startsWith('REDRAW_')) {
+  if (code.startsWith('REDRAW_LOCALIZATION') || code.startsWith('REDRAW_')
+    || code.startsWith('LOCALIZATION_')) {
     return response.error(res, 400, code, error.message || fallbackMessage, details);
   }
   log?.error?.({ err: error, ...context }, fallbackMessage);
@@ -1962,6 +2022,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   const referencePreparationService = options.referencePreparationService
     || redrawReferencePreparationOrchestrator;
   const localizationOrchestrator = options.localizationOrchestrator || redrawLocalizationOrchestrator;
+  const localizationReviewService = options.localizationReviewService || localizationService;
   const assetBatchService = options.assetBatchService || {
     quoteAssetBatch: (ctx, input) => redrawAssetBatchService.quoteAssetBatch(db, { ...ctx, ...input }),
     startAssetBatch: (ctx, input) => redrawAssetBatchService.startAssetBatch(ctx, input, {
@@ -3881,6 +3942,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
           provider: options.localizationProvider,
           schedule: options.localizationSchedule,
           canReadArtifact,
+          validateTargetText: options.localizationLanguageGate,
         },
       );
       const versionId = result.version_id ?? result.draft_version_id ?? null;
@@ -3958,6 +4020,53 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
       else if (typeof res.destroy === 'function') res.destroy();
     });
     return stream.pipe(res);
+  }
+
+  function getLocalizationReview(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.error(res, 404, 'LOCALIZATION_NOT_FOUND', '本地化审核不存在');
+    try {
+      return response.success(res, localizationReviewService.getLocalizationReview(
+        db, currentOwner, Number(version.id),
+      ));
+    } catch (error) {
+      return sendLocalizationError(res, error, '读取本地化审核失败', log, { versionId: version.id });
+    }
+  }
+
+  function saveLocalizationReview(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.error(res, 404, 'LOCALIZATION_NOT_FOUND', '本地化审核不存在');
+    try {
+      const input = localizationReviewSaveInput(req.body);
+      return response.success(res, localizationReviewService.saveLocalizationReview(
+        db,
+        currentOwner,
+        Number(version.id),
+        { ...input, validateTargetText: options.localizationLanguageGate },
+      ));
+    } catch (error) {
+      return sendLocalizationError(res, error, '保存本地化审核失败', log, { versionId: version.id });
+    }
+  }
+
+  function lockLocalizationReview(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.error(res, 404, 'LOCALIZATION_NOT_FOUND', '本地化审核不存在');
+    try {
+      const input = localizationReviewLockInput(req.body);
+      return response.success(res, localizationReviewService.lockLocalizationReview(
+        db,
+        currentOwner,
+        Number(version.id),
+        { ...input, validateTargetText: options.localizationLanguageGate },
+      ));
+    } catch (error) {
+      return sendLocalizationError(res, error, '锁定本地化审核失败', log, { versionId: version.id });
+    }
   }
 
   async function registerLocalProductionVoice(req, res) {
@@ -5333,6 +5442,9 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     generateBatch,
     localizationQuote,
     createVersion,
+    getLocalizationReview,
+    saveLocalizationReview,
+    lockLocalizationReview,
     registerFullFrameCoverage,
     getCharacterPlan,
     preparationGate,

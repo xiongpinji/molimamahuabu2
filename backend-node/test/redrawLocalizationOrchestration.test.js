@@ -146,6 +146,51 @@ function v2LocalizedResult(overrides = {}) {
   };
 }
 
+function episodeBlueprint() {
+  return {
+    schema_version: 'episode-blueprint-v1',
+    blueprint_hash: 'b'.repeat(64),
+    characters: [
+      { id: 'c1', source_name: '小满' },
+      { id: 'c2', source_name: '调度员' },
+    ],
+    shots: [
+      {
+        id: 'shot-1',
+        dialogue: [{
+          id: 'turn-1', speaker_id: 'c1', speaker_kind: 'character', source_text: '我回来了。',
+          start_ms: 500, end_ms: 2_500, emotion: 'relieved',
+        }],
+        text_regions: [],
+      },
+      {
+        id: 'shot-2',
+        dialogue: [],
+        text_regions: [{ id: 'screen-1', source_text: '给妈妈打电话' }],
+      },
+    ],
+  };
+}
+
+function episodeLocalizedResult(overrides = {}) {
+  return {
+    blueprint_hash: 'b'.repeat(64),
+    locale: 'en-US',
+    market: 'US',
+    name_map: { c1: 'Mateo', c2: 'Avery' },
+    dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'turn-1', speaker_id: 'c1', target_text: 'I am back.' }] }],
+    text_map: { 'shot-2:screen-1': 'CALL MOM' },
+    culture_map: [{ id: 'culture-1', source: '妈妈', target: 'Mom', note: 'US family term' }],
+    glossary: [{ source_term: '妈妈', target_term: 'Mom', note: 'Keep consistent' }],
+    locked_terms: ['CALL MOM'],
+    ...overrides,
+  };
+}
+
+function verifiedTargetLanguage() {
+  return { language_verified: true };
+}
+
 function createDb(options = {}) {
   const db = new Database(':memory:');
   db.exec(`
@@ -201,6 +246,9 @@ function createDb(options = {}) {
       localization_idempotency_key TEXT,
       localization_model_snapshot_json TEXT NOT NULL DEFAULT '{}',
       facts_hash TEXT,
+      blueprint_hash TEXT,
+      localization_hash TEXT,
+      localization_review_json TEXT,
       status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'analyzing', 'asset_review', 'ready_to_generate', 'generating', 'composing', 'completed', 'failed', 'needs_attention', 'needs_review', 'blocked')),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -230,6 +278,17 @@ function createDb(options = {}) {
       evidence_hash TEXT,
       metadata_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL
+    );
+    CREATE TABLE redraw_episode_blueprints (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      work_id INTEGER NOT NULL,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      blueprint_json TEXT NOT NULL,
+      blueprint_hash TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );
     CREATE UNIQUE INDEX uq_redraw_version_number ON redraw_versions(work_id, version);
     CREATE UNIQUE INDEX uq_redraw_version_localization_key
@@ -337,6 +396,16 @@ function createDb(options = {}) {
        source_facts_json, facts_hash, style_snapshot_json, status, created_at, updated_at)
     VALUES (1, 'tenant-a', 'user-a', 1, 'source', '', 'faithful', ?, ?, ?, 'asset_review', ?, ?)
   `).run(JSON.stringify(facts), factsHash, JSON.stringify({ tone: 'thriller' }), now, now).lastInsertRowid);
+  if (options.blueprint) {
+    const blueprint = options.blueprint === true ? episodeBlueprint() : options.blueprint;
+    db.prepare('UPDATE redraw_versions SET blueprint_hash = ?, status = ? WHERE id = ?')
+      .run(options.versionBlueprintHash || blueprint.blueprint_hash, 'needs_review', sourceVersionId);
+    db.prepare(`
+      INSERT INTO redraw_episode_blueprints
+        (work_id, tenant_id, user_id, revision, status, blueprint_json, blueprint_hash, updated_at)
+      VALUES (1, 'tenant-a', 'user-a', 1, ?, ?, ?, ?)
+    `).run(options.blueprintStatus || 'locked', JSON.stringify(blueprint), blueprint.blueprint_hash, now);
+  }
   const insertShot = db.prepare(`
     INSERT INTO redraw_shots
       (work_id, shot_id, version_id, tenant_id, user_id, batch_index, shot_index,
@@ -434,6 +503,81 @@ test('quotes only when verified text capability and model price are available', 
   assert.equal(quote.snapshot.capability.provider, 'verified-provider');
   assert.equal(quote.snapshot.input.style_snapshot.tone, 'thriller');
   db.close();
+});
+
+test('locked blueprint localization stays on the exact revision and waits for review without assets', async () => {
+  const db = createDb({ blueprint: true, sourceFacts: v2SourceFacts() });
+  const provider = providerReturning(episodeLocalizedResult());
+  try {
+    const quote = quoteLocalization(db, quoteInput());
+    assert.equal(quote.priced, true);
+    assert.equal(quote.snapshot.blueprint_hash, 'b'.repeat(64));
+    assert.equal(quote.snapshot.blueprint_revision, 1);
+    const started = startLocalization(db, { info() {}, warn() {}, error() {} }, {
+      ...quoteInput(),
+      idempotencyKey: 'episode-localization-1',
+      quoteHash: quote.quote_hash,
+    }, {
+      provider,
+      validateTargetText: verifiedTargetLanguage,
+      schedule: (job) => job(),
+    });
+    await started.completion;
+
+    assert.equal(started.draft_version_id, 1);
+    assert.equal(provider.calls.length, 1);
+    assert.equal(provider.calls[0].input.blueprint_hash, 'b'.repeat(64));
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count, 1);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_assets').get().count, 0);
+    const version = db.prepare('SELECT version, status, localization_hash, localization_review_json FROM redraw_versions WHERE id = 1').get();
+    assert.equal(version.version, 1);
+    assert.equal(version.status, 'needs_review');
+    assert.match(version.localization_hash, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.parse(version.localization_review_json).review.status, 'review');
+    assert.deepEqual(db.prepare('SELECT current_version, current_step, status FROM redraw_works WHERE id = 1').get(), {
+      current_version: 1,
+      current_step: 1,
+      status: 'needs_review',
+    });
+    assert.equal(credits.getReservation(db, started.reservation_id).status, 'confirmed');
+  } finally {
+    db.close();
+  }
+});
+
+test('unlocked or hash-drifted blueprint and missing language verifier fail before provider or reservation', () => {
+  const cases = [
+    { name: 'unlocked', options: { blueprint: true, blueprintStatus: 'draft' }, code: 'BLUEPRINT_NOT_LOCKED', withVerifier: true },
+    { name: 'hash drift', options: { blueprint: true, versionBlueprintHash: 'c'.repeat(64) }, code: 'BLUEPRINT_HASH_MISMATCH', withVerifier: true },
+    { name: 'language gate missing', options: { blueprint: true }, code: 'LOCALIZATION_LANGUAGE_GATE_REQUIRED', withVerifier: false },
+  ];
+  for (const item of cases) {
+    const db = createDb({ ...item.options, sourceFacts: v2SourceFacts() });
+    const provider = providerReturning(episodeLocalizedResult());
+    try {
+      let quote;
+      if (item.name === 'language gate missing') quote = quoteLocalization(db, quoteInput());
+      assert.throws(
+        () => startLocalization(db, { info() {}, warn() {}, error() {} }, {
+          ...quoteInput(),
+          idempotencyKey: `episode-${item.name}`,
+          quoteHash: quote?.quote_hash || 'stale',
+        }, {
+          provider,
+          ...(item.withVerifier ? { validateTargetText: verifiedTargetLanguage } : {}),
+          schedule: (job) => job(),
+        }),
+        (error) => error.code === item.code,
+        item.name,
+      );
+      assert.equal(provider.calls.length, 0);
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+      assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count, 0);
+      assert.equal(db.prepare('SELECT localization_review_json FROM redraw_versions WHERE id = 1').get().localization_review_json, null);
+    } finally {
+      db.close();
+    }
+  }
 });
 
 test('free localization creates and completes without reservation or ledger rows', async () => {

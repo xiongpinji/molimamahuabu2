@@ -5,6 +5,11 @@ const Database = require('better-sqlite3');
 const {
   buildLocalizationInput,
   normalizeLocalizationResult,
+  normalizeLocalizationResultV2,
+  getLocalizationReview,
+  lockLocalizationReview,
+  saveGeneratedLocalizationReview,
+  saveLocalizationReview,
   validateLocalizedFacts,
   createLocalizationDraft,
   materializeLocalizationDraft,
@@ -141,6 +146,108 @@ function v2LocalizationResult(overrides = {}) {
     },
     ...overrides,
   };
+}
+
+function episodeBlueprintFacts() {
+  return {
+    schema_version: 'episode-blueprint-v1',
+    blueprint_hash: 'b'.repeat(64),
+    characters: [
+      { id: 'character-lead', source_name: '小满' },
+      { id: 'offscreen-dispatcher', source_name: '调度员' },
+    ],
+    shots: [{
+      id: 'shot-1',
+      dialogue: [
+        {
+          id: 'dialogue-1',
+          speaker_id: 'character-lead',
+          speaker_kind: 'character',
+          source_text: '调度员，我回来了。',
+          start_ms: 500,
+          end_ms: 3_500,
+          emotion: 'relieved',
+        },
+        {
+          id: 'dialogue-2',
+          speaker_id: 'offscreen-dispatcher',
+          speaker_kind: 'off_screen',
+          source_text: '先把订单送完。',
+          start_ms: 3_600,
+          end_ms: 6_000,
+          emotion: 'firm',
+        },
+      ],
+      text_regions: [{ id: 'text-1', source_text: '尾号八七' }],
+    }],
+  };
+}
+
+function episodeLocalizationProviderResult(overrides = {}) {
+  return {
+    blueprint_hash: 'b'.repeat(64),
+    locale: 'en-US',
+    market: 'US',
+    name_map: {
+      'character-lead': 'Mateo',
+      'offscreen-dispatcher': 'Avery',
+    },
+    dialogue: [{
+      shot_id: 'shot-1',
+      turns: [
+        { id: 'dialogue-1', speaker_id: 'character-lead', target_text: 'Avery, I am back.' },
+        { id: 'dialogue-2', speaker_id: 'offscreen-dispatcher', target_text: 'Finish the delivery first.' },
+      ],
+    }],
+    text_map: { 'shot-1:text-1': 'ORDER 87' },
+    culture_map: [{ id: 'culture-1', source: '订单', target: 'delivery order', note: 'US courier wording' }],
+    glossary: [{ source_term: '订单', target_term: 'delivery order', note: 'Keep consistent' }],
+    locked_terms: ['ORDER 87'],
+    ...overrides,
+  };
+}
+
+function createEpisodeReviewDb() {
+  const db = createDb();
+  db.exec(`
+    ALTER TABLE redraw_versions ADD COLUMN blueprint_hash TEXT;
+    ALTER TABLE redraw_versions ADD COLUMN localization_hash TEXT;
+    ALTER TABLE redraw_versions ADD COLUMN localization_review_json TEXT;
+    CREATE TABLE redraw_episode_blueprints (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      work_id INTEGER NOT NULL,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      blueprint_json TEXT NOT NULL,
+      blueprint_hash TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+  db.prepare('DELETE FROM redraw_shots').run();
+  db.prepare('DELETE FROM redraw_versions').run();
+  const blueprint = episodeBlueprintFacts();
+  const now = '2026-09-03T00:00:00.000Z';
+  const versionId = Number(db.prepare(`
+    INSERT INTO redraw_versions
+      (work_id, tenant_id, user_id, version, locale, market, localization_level,
+       source_facts_json, facts_hash, blueprint_hash, status, created_at, updated_at)
+    VALUES (1, 'tenant-a', 'user-a', 1, 'source', '', 'faithful', ?, ?, ?, 'needs_review', ?, ?)
+  `).run(JSON.stringify({ schema_version: '2.0', facts_hash: 'a'.repeat(64) }), 'a'.repeat(64),
+    blueprint.blueprint_hash, now, now).lastInsertRowid);
+  db.prepare(`
+    INSERT INTO redraw_episode_blueprints
+      (work_id, tenant_id, user_id, revision, status, blueprint_json, blueprint_hash, updated_at)
+    VALUES (1, 'tenant-a', 'user-a', 1, 'locked', ?, ?, ?)
+  `).run(JSON.stringify(blueprint), blueprint.blueprint_hash, now);
+  db.prepare("UPDATE redraw_works SET current_version = 1, current_step = 1, status = 'needs_review', updated_at = ? WHERE id = 1")
+    .run(now);
+  return { db, versionId, blueprint, now };
+}
+
+function acceptsEnglishTarget({ text, locale }) {
+  return locale === 'en-US' && !/[\u3400-\u9fff]/u.test(text);
 }
 
 function localizedFacts(overrides = {}) {
@@ -421,6 +528,216 @@ test('v2 本地化只改姓名文字对白并保留镜头事实', () => {
   assert.equal(result.dialogue[0].turns[0].overlap_group, 'og-1');
   assert.deepEqual(result.dialogue[1].turns, []);
   assert.deepEqual(result.text_map, { 'shot-2:screen-1': 'CALL MOM' });
+});
+
+test('episode 本地化绑定锁定蓝图并规范化全剧姓名、对白和 OCR 哈希', () => {
+  const blueprint = episodeBlueprintFacts();
+  const localized = normalizeLocalizationResultV2(
+    episodeLocalizationProviderResult(),
+    blueprint,
+    {
+      locale: 'en-US',
+      market: 'US',
+      blueprintHash: blueprint.blueprint_hash,
+      validateTargetText: acceptsEnglishTarget,
+    },
+  );
+
+  assert.deepEqual(Object.keys(localized), [
+    'schema_version',
+    'blueprint_hash',
+    'locale',
+    'market',
+    'character_name_map',
+    'dialogue_map',
+    'text_region_map',
+    'cultural_adaptations',
+    'glossary',
+    'locked_terms',
+    'review',
+    'localization_hash',
+  ]);
+  assert.equal(localized.schema_version, 'episode-localization-v1');
+  assert.equal(localized.blueprint_hash, blueprint.blueprint_hash);
+  assert.deepEqual(localized.character_name_map, {
+    'character-lead': 'Mateo',
+    'offscreen-dispatcher': 'Avery',
+  });
+  assert.deepEqual(localized.dialogue_map.map((turn) => turn.source_dialogue_id), ['dialogue-1', 'dialogue-2']);
+  assert.equal(localized.dialogue_map[0].source_text, '调度员，我回来了。');
+  assert.equal(localized.dialogue_map[0].speaker_id, 'character-lead');
+  assert.equal(localized.dialogue_map[0].emotion, 'relieved');
+  assert.equal(localized.text_region_map[0].source_text, '尾号八七');
+  assert.equal(localized.review.status, 'review');
+  assert.equal(Object.values(localized.review.character_name_map).every((value) => value === false), true);
+  assert.match(localized.localization_hash, /^[a-f0-9]{64}$/);
+
+  const repeated = normalizeLocalizationResultV2(
+    episodeLocalizationProviderResult(),
+    blueprint,
+    {
+      locale: 'en-US', market: 'US', blueprintHash: blueprint.blueprint_hash,
+      validateTargetText: acceptsEnglishTarget,
+    },
+  );
+  repeated.review.reviewed_at = '2099-01-01T00:00:00.000Z';
+  assert.equal(repeated.localization_hash, localized.localization_hash);
+});
+
+test('episode 本地化严格拒绝蓝图漂移、不完整映射、源姓名残留与目标语言失败', () => {
+  const blueprint = episodeBlueprintFacts();
+  const options = {
+    locale: 'en-US',
+    market: 'US',
+    blueprintHash: blueprint.blueprint_hash,
+    validateTargetText: acceptsEnglishTarget,
+  };
+  const cases = [
+    ['blueprint option drift', episodeLocalizationProviderResult(), { ...options, blueprintHash: 'c'.repeat(64) }, 'BLUEPRINT_HASH_MISMATCH'],
+    ['provider blueprint drift', episodeLocalizationProviderResult({ blueprint_hash: 'c'.repeat(64) }), options, 'BLUEPRINT_HASH_MISMATCH'],
+    ['missing offscreen name', episodeLocalizationProviderResult({ name_map: { 'character-lead': 'Mateo' } }), options, 'LOCALIZATION_NAME_MAP_MISMATCH'],
+    ['duplicate localized name', episodeLocalizationProviderResult({ name_map: { 'character-lead': 'Mateo', 'offscreen-dispatcher': ' mateo ' } }), options, 'LOCALIZATION_NAME_DUPLICATE'],
+    ['source name reused', episodeLocalizationProviderResult({ name_map: { 'character-lead': '小满', 'offscreen-dispatcher': 'Avery' } }), options, 'LOCALIZATION_SOURCE_TEXT_REMAINS'],
+    ['missing dialogue', episodeLocalizationProviderResult({ dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'dialogue-1', target_text: 'I am back.' }] }] }), options, 'LOCALIZATION_DIALOGUE_INVALID'],
+    ['speaker drift', episodeLocalizationProviderResult({ dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'dialogue-1', speaker_id: 'offscreen-dispatcher', target_text: 'I am back.' }, { id: 'dialogue-2', speaker_id: 'offscreen-dispatcher', target_text: 'Finish it.' }] }] }), options, 'LOCALIZATION_DIALOGUE_INVALID'],
+    ['source name remains in dialogue', episodeLocalizationProviderResult({ dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'dialogue-1', target_text: '小满 is back.' }, { id: 'dialogue-2', target_text: 'Finish it.' }] }] }), options, 'LOCALIZATION_SOURCE_TEXT_REMAINS'],
+    ['wrong target language', episodeLocalizationProviderResult({ dialogue: [{ shot_id: 'shot-1', turns: [{ id: 'dialogue-1', target_text: '我回来了。' }, { id: 'dialogue-2', target_text: 'Finish it.' }] }] }), options, 'LOCALIZATION_TARGET_LANGUAGE_MISMATCH'],
+    ['missing OCR region', episodeLocalizationProviderResult({ text_map: {} }), options, 'LOCALIZATION_TEXT_REGION_MISMATCH'],
+  ];
+
+  for (const [name, result, caseOptions, code] of cases) {
+    assert.throws(
+      () => normalizeLocalizationResultV2(result, blueprint, caseOptions),
+      (error) => error.code === code,
+      name,
+    );
+  }
+
+  const displayNameBlueprint = structuredClone(blueprint);
+  displayNameBlueprint.characters[0] = { id: 'character-lead', display_name: '小满' };
+  assert.throws(
+    () => normalizeLocalizationResultV2(episodeLocalizationProviderResult({
+      dialogue: [{ shot_id: 'shot-1', turns: [
+        { id: 'dialogue-1', target_text: '小满 is back.' },
+        { id: 'dialogue-2', target_text: 'Finish it.' },
+      ] }],
+    }), displayNameBlueprint, { ...options, validateTargetText: () => true }),
+    (error) => error.code === 'LOCALIZATION_SOURCE_TEXT_REMAINS',
+  );
+});
+
+test('episode 本地化审核以 JSON CAS 保存且锁定后原子推进 asset_review', () => {
+  const fixture = createEpisodeReviewDb();
+  const owner = { tenantId: 'tenant-a', userId: 'user-a' };
+  try {
+    const normalized = normalizeLocalizationResultV2(
+      episodeLocalizationProviderResult(),
+      fixture.blueprint,
+      {
+        locale: 'en-US', market: 'US', blueprintHash: fixture.blueprint.blueprint_hash,
+        validateTargetText: acceptsEnglishTarget,
+      },
+    );
+    const generated = saveGeneratedLocalizationReview(fixture.db, owner, fixture.versionId, normalized, {
+      now: '2026-09-03T00:00:01.000Z',
+    });
+    assert.equal(generated.status, 'review');
+    assert.equal(generated.version, 1);
+    assert.equal(generated.localization.review.updated_at, '2026-09-03T00:00:01.000Z');
+    assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM redraw_assets').get().count, 0);
+    assert.equal(fixture.db.prepare('SELECT current_step FROM redraw_works WHERE id = 1').get().current_step, 1);
+
+    const localeDrift = structuredClone(generated.localization);
+    localeDrift.locale = 'fr-FR';
+    localeDrift.market = 'CA';
+    assert.throws(
+      () => saveLocalizationReview(fixture.db, owner, fixture.versionId, {
+        expectedUpdatedAt: generated.updated_at,
+        localization: localeDrift,
+        validateTargetText: () => true,
+      }),
+      (error) => error.code === 'LOCALIZATION_INPUT_INVALID',
+    );
+
+    const localization = structuredClone(generated.localization);
+    localization.character_name_map['character-lead'] = 'Marcus';
+    localization.dialogue_map[0].target_text = 'Avery, I have returned.';
+    for (const key of Object.keys(localization.review)) {
+      if (key === 'status' || key === 'updated_at') continue;
+      for (const item of Object.keys(localization.review[key])) localization.review[key][item] = true;
+    }
+    const saved = saveLocalizationReview(fixture.db, owner, fixture.versionId, {
+      expectedUpdatedAt: generated.updated_at,
+      localization,
+      validateTargetText: acceptsEnglishTarget,
+      now: '2026-09-03T00:00:02.000Z',
+    });
+    assert.equal(saved.localization.character_name_map['character-lead'], 'Marcus');
+    assert.notEqual(saved.localization_hash, generated.localization_hash);
+    assert.throws(
+      () => saveLocalizationReview(fixture.db, owner, fixture.versionId, {
+        expectedUpdatedAt: generated.updated_at,
+        localization,
+        validateTargetText: acceptsEnglishTarget,
+      }),
+      (error) => error.code === 'LOCALIZATION_CAS_CONFLICT',
+    );
+
+    const locked = lockLocalizationReview(fixture.db, owner, fixture.versionId, {
+      blueprintHash: fixture.blueprint.blueprint_hash,
+      expectedLocalizationHash: saved.localization_hash,
+      expectedUpdatedAt: saved.updated_at,
+      validateTargetText: acceptsEnglishTarget,
+      now: '2026-09-03T00:00:03.000Z',
+    });
+    assert.equal(locked.status, 'locked');
+    assert.equal(locked.localization.review.status, 'locked');
+    assert.deepEqual(
+      fixture.db.prepare('SELECT current_version, current_step, status FROM redraw_works WHERE id = 1').get(),
+      { current_version: 1, current_step: 2, status: 'asset_review' },
+    );
+    assert.equal(fixture.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(fixture.versionId).status, 'asset_review');
+    assert.throws(
+      () => saveLocalizationReview(fixture.db, owner, fixture.versionId, {
+        expectedUpdatedAt: locked.updated_at,
+        localization: locked.localization,
+        validateTargetText: acceptsEnglishTarget,
+      }),
+      (error) => error.code === 'LOCALIZATION_LOCKED',
+    );
+  } finally {
+    fixture.db.close();
+  }
+});
+
+test('episode 本地化锁定缺少任一显式审核项时全量回滚', () => {
+  const fixture = createEpisodeReviewDb();
+  const owner = { tenantId: 'tenant-a', userId: 'user-a' };
+  try {
+    const normalized = normalizeLocalizationResultV2(
+      episodeLocalizationProviderResult(), fixture.blueprint,
+      {
+        locale: 'en-US', market: 'US', blueprintHash: fixture.blueprint.blueprint_hash,
+        validateTargetText: acceptsEnglishTarget,
+      },
+    );
+    const generated = saveGeneratedLocalizationReview(fixture.db, owner, fixture.versionId, normalized, {
+      now: '2026-09-03T00:00:01.000Z',
+    });
+    assert.throws(
+      () => lockLocalizationReview(fixture.db, owner, fixture.versionId, {
+        blueprintHash: fixture.blueprint.blueprint_hash,
+        expectedLocalizationHash: generated.localization_hash,
+        expectedUpdatedAt: generated.updated_at,
+        validateTargetText: acceptsEnglishTarget,
+      }),
+      (error) => error.code === 'LOCALIZATION_REVIEW_REQUIRED',
+    );
+    assert.equal(getLocalizationReview(fixture.db, owner, fixture.versionId).status, 'review');
+    assert.equal(fixture.db.prepare('SELECT current_step FROM redraw_works WHERE id = 1').get().current_step, 1);
+  } finally {
+    fixture.db.close();
+  }
 });
 
 test('v2 本地化严格拒绝漂移、第二市场、未知字段、残留源文本和非法置信度', () => {

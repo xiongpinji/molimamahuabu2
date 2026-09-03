@@ -12,11 +12,44 @@ const V2_RESULT_FIELDS = new Set([
   'text_map',
   'confidence',
 ]);
+const EPISODE_RESULT_FIELDS = new Set([
+  'blueprint_hash',
+  'locale',
+  'market',
+  'name_map',
+  'dialogue',
+  'text_map',
+  'culture_map',
+  'glossary',
+  'locked_terms',
+]);
 const CONFIDENCE_KEYS = ['names', 'dialogue_semantics', 'dialogue_timing', 'culture', 'screen_text'];
-const UNSAFE_KEY = /(?:^|_|\b)(?:key|api_key|access_key|secret_key|private_key|auth|authorization|token|secret|password|credential|provider|raw|prompt|url|path)(?:$|_|\b)/i;
+const UNSAFE_KEY = /(?:^|_|\b)(?:key|api_key|access_key|secret_key|private_key|auth|authorization|token|secret|password|credential|provider|model|generation|raw|prompt|url|path)(?:$|_|\b)/i;
 const TARGET_INJECTION_KEYS = new Set(['locale', 'market', 'region', 'country', 'language', 'target_locale', 'target_market']);
 const V2_DIALOGUE_ROW_FIELDS = new Set(['shot_id', 'shotId', 'turns']);
 const V2_DIALOGUE_TURN_FIELDS = new Set(['id', 'turn_id', 'speaker_id', 'start_ms', 'end_ms', 'overlap_group', 'target_text', 'localized_text', 'text']);
+const EPISODE_DIALOGUE_TURN_FIELDS = new Set([
+  'id', 'turn_id', 'speaker_id', 'target_text', 'localized_text', 'text', 'pronunciation_hint',
+]);
+const CULTURAL_ADAPTATION_FIELDS = new Set(['id', 'source', 'target', 'note']);
+const GLOSSARY_FIELDS = new Set(['source_term', 'target_term', 'note']);
+const EPISODE_LOCALIZATION_FIELDS = new Set([
+  'schema_version', 'blueprint_hash', 'locale', 'market', 'character_name_map',
+  'dialogue_map', 'text_region_map', 'cultural_adaptations', 'glossary',
+  'locked_terms', 'review', 'localization_hash',
+]);
+const EPISODE_DIALOGUE_FIELDS = new Set([
+  'source_dialogue_id', 'shot_id', 'speaker_id', 'speaker_kind', 'source_text',
+  'target_text', 'start_ms', 'end_ms', 'estimated_duration_ms',
+  'estimated_speech_rate', 'emotion', 'pronunciation_hint',
+]);
+const EPISODE_TEXT_REGION_FIELDS = new Set([
+  'text_region_id', 'shot_id', 'source_text', 'target_text',
+]);
+const EPISODE_REVIEW_FIELDS = new Set([
+  'status', 'updated_at', 'character_name_map', 'dialogue_map', 'text_region_map',
+  'cultural_adaptations', 'glossary', 'locked_terms',
+]);
 
 function assertObject(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -166,7 +199,8 @@ function assertSafeJson(value, path = 'localized_result', seen = new WeakSet()) 
   }
   if (!isPlainObject(value)) throw codedError('LOCALIZATION_INVALID_JSON', `${path} JSON object invalid`);
   for (const key of Object.keys(value)) {
-    if (key === '__proto__' || key === 'constructor' || key === 'prototype' || UNSAFE_KEY.test(key)) {
+    const normalizedKey = key.normalize('NFKC');
+    if (normalizedKey === '__proto__' || normalizedKey === 'constructor' || normalizedKey === 'prototype' || UNSAFE_KEY.test(normalizedKey)) {
       throw codedError('LOCALIZATION_UNKNOWN_FIELD', `${path}.${key} is not allowed`, { field: key });
     }
     assertSafeJson(value[key], `${path}.${key}`, seen);
@@ -264,7 +298,7 @@ function assertNoSourceRemainder(targetText, sourceText, sourceFacts) {
     throw codedError('LOCALIZATION_SOURCE_TEXT_REMAINS', 'target text equals source text');
   }
   for (const character of Array.isArray(sourceFacts.characters) ? sourceFacts.characters : []) {
-    const sourceName = compactComparableText(character?.source_name);
+    const sourceName = compactComparableText(character?.source_name ?? character?.display_name);
     if (sourceName && compactTarget.includes(sourceName)) {
       throw codedError('LOCALIZATION_SOURCE_TEXT_REMAINS', 'target text contains source character name');
     }
@@ -385,7 +419,641 @@ function normalizeV2Confidence(rawConfidence) {
   return confidence;
 }
 
+function localeComparable(value, locale) {
+  const normalized = String(value ?? '').normalize('NFKC').trim();
+  let lowered;
+  try {
+    lowered = normalized.toLocaleLowerCase(locale);
+  } catch (_) {
+    lowered = normalized.toLowerCase();
+  }
+  return lowered.replace(/[\p{White_Space}\p{P}\p{S}]+/gu, '');
+}
+
+function assertEpisodeRootFields(raw) {
+  for (const key of Object.keys(raw)) {
+    if (!EPISODE_RESULT_FIELDS.has(key)) {
+      throw codedError('LOCALIZATION_UNKNOWN_FIELD', `episode localization field not allowed: ${key}`, { field: key });
+    }
+  }
+}
+
+function assertEpisodeBlueprintHash(raw, blueprintFacts, options) {
+  const blueprintHash = String(options.blueprintHash || '').trim();
+  if (!SHA256.test(blueprintHash)
+    || blueprintHash !== String(blueprintFacts?.blueprint_hash || '').trim()
+    || blueprintHash !== String(raw.blueprint_hash || '').trim()) {
+    throw codedError('BLUEPRINT_HASH_MISMATCH', 'localization blueprint_hash mismatch');
+  }
+  return blueprintHash;
+}
+
+function targetLanguageResultOk(result) {
+  return result === true || result?.ok === true || result?.language_verified === true;
+}
+
+function assertTargetLanguage(text, options, details) {
+  const validate = options.validateTargetText || options.languageGate;
+  if (typeof validate !== 'function') {
+    throw codedError('LOCALIZATION_LANGUAGE_GATE_REQUIRED', 'target language verifier required');
+  }
+  const result = validate({
+    text,
+    locale: options.locale,
+    market: options.market,
+    ...details,
+  });
+  if (result && typeof result.then === 'function') {
+    throw codedError('LOCALIZATION_LANGUAGE_GATE_INVALID', 'target language verifier must be synchronous');
+  }
+  if (!targetLanguageResultOk(result)) {
+    throw codedError('LOCALIZATION_TARGET_LANGUAGE_MISMATCH', 'target text language mismatch', details);
+  }
+}
+
+function episodeNameMap(rawNameMap, blueprintFacts, locale, options) {
+  const nameMap = safeMap(rawNameMap, 'name_map');
+  const characters = Array.isArray(blueprintFacts.characters) ? blueprintFacts.characters : [];
+  const expectedIds = characters.map((character) => String(character?.id || '').trim()).filter(Boolean);
+  const actualIds = Object.keys(nameMap).sort();
+  if (stableStringify(actualIds) !== stableStringify([...expectedIds].sort())) {
+    throw codedError('LOCALIZATION_NAME_MAP_MISMATCH', 'name_map must exactly cover blueprint characters');
+  }
+  const seen = new Set();
+  const normalized = {};
+  for (const character of characters) {
+    const id = String(character.id);
+    if (typeof nameMap[id] !== 'string') {
+      throw codedError('LOCALIZATION_NAME_INVALID', 'localized character name invalid', { character_id: id });
+    }
+    const value = nameMap[id].trim();
+    if (!value) throw codedError('LOCALIZATION_NAME_EMPTY', 'localized character name empty', { character_id: id });
+    const comparable = localeComparable(value, locale);
+    if (!comparable) throw codedError('LOCALIZATION_NAME_EMPTY', 'localized character name empty', { character_id: id });
+    if (seen.has(comparable)) throw codedError('LOCALIZATION_NAME_DUPLICATE', 'localized character names duplicate');
+    seen.add(comparable);
+    assertNoSourceRemainder(value, character.source_name ?? character.display_name, blueprintFacts);
+    assertTargetLanguage(value, options, { kind: 'character_name', id });
+    normalized[id] = value;
+  }
+  return normalized;
+}
+
+function episodeSourceDialogue(blueprintFacts) {
+  const entries = [];
+  for (const shot of Array.isArray(blueprintFacts.shots) ? blueprintFacts.shots : []) {
+    for (const turn of Array.isArray(shot?.dialogue) ? shot.dialogue : []) {
+      entries.push({ shot, turn });
+    }
+  }
+  return entries;
+}
+
+function episodeProviderDialogue(rawDialogue) {
+  if (!Array.isArray(rawDialogue)) throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'dialogue must be an array');
+  const turns = new Map();
+  for (const row of rawDialogue) {
+    assertObject(row, 'dialogue[]');
+    assertSafeJson(row, 'dialogue[]');
+    assertOnlyKeys(row, V2_DIALOGUE_ROW_FIELDS, 'LOCALIZATION_UNKNOWN_FIELD', 'dialogue[]');
+    const shotId = String(row.shot_id ?? row.shotId ?? '').trim();
+    if (!shotId || !Array.isArray(row.turns)) throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'dialogue shot invalid');
+    for (const rawTurn of row.turns) {
+      assertObject(rawTurn, 'dialogue[].turns[]');
+      assertSafeJson(rawTurn, 'dialogue[].turns[]');
+      assertOnlyKeys(rawTurn, EPISODE_DIALOGUE_TURN_FIELDS, 'LOCALIZATION_UNKNOWN_FIELD', 'dialogue[].turns[]');
+      const id = String(rawTurn.id ?? rawTurn.turn_id ?? '').trim();
+      if (!id || turns.has(id)) throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'dialogue id invalid or duplicate');
+      turns.set(id, { shot_id: shotId, value: rawTurn });
+    }
+  }
+  return turns;
+}
+
+function normalizeEpisodeDialogue(rawDialogue, blueprintFacts, locale, options) {
+  const sourceEntries = episodeSourceDialogue(blueprintFacts);
+  const provided = episodeProviderDialogue(rawDialogue);
+  const expectedIds = sourceEntries.map(({ turn }) => String(turn?.id || '').trim());
+  if (expectedIds.some((id) => !id)
+    || stableStringify([...provided.keys()].sort()) !== stableStringify([...expectedIds].sort())) {
+    throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'dialogue must exactly cover source dialogue ids');
+  }
+  return sourceEntries.map(({ shot, turn }) => {
+    const id = String(turn.id);
+    const providedTurn = provided.get(id);
+    if (providedTurn.shot_id !== String(shot.id)
+      || (providedTurn.value.speaker_id != null
+        && String(providedTurn.value.speaker_id) !== String(turn.speaker_id))) {
+      throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'dialogue shot or speaker mismatch', { source_dialogue_id: id });
+    }
+    const targetText = turnTargetText(providedTurn.value);
+    if (!targetText) throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'dialogue target text missing');
+    assertNoSourceRemainder(targetText, turn.source_text, blueprintFacts);
+    assertTargetLanguage(targetText, options, { kind: 'dialogue', id });
+    const availableMs = Number(turn.end_ms) - Number(turn.start_ms);
+    const estimatedDurationMs = estimateSpeechMs(targetText, locale);
+    if (!Number.isFinite(availableMs) || availableMs <= 0 || estimatedDurationMs > availableMs) {
+      throw codedError('LOCALIZATION_DIALOGUE_DURATION_EXCEEDED', 'dialogue duration exceeded', { source_dialogue_id: id });
+    }
+    return {
+      source_dialogue_id: id,
+      shot_id: String(shot.id),
+      speaker_id: String(turn.speaker_id),
+      speaker_kind: String(turn.speaker_kind || 'character'),
+      source_text: String(turn.source_text || ''),
+      target_text: targetText,
+      start_ms: Number(turn.start_ms),
+      end_ms: Number(turn.end_ms),
+      estimated_duration_ms: estimatedDurationMs,
+      estimated_speech_rate: Number((Array.from(targetText).length / (availableMs / 1000)).toFixed(2)),
+      emotion: String(turn.emotion || ''),
+      pronunciation_hint: String(providedTurn.value.pronunciation_hint || '').trim(),
+    };
+  });
+}
+
+function episodeTextRegions(blueprintFacts) {
+  const regions = [];
+  for (const shot of Array.isArray(blueprintFacts.shots) ? blueprintFacts.shots : []) {
+    for (const region of Array.isArray(shot?.text_regions) ? shot.text_regions : []) {
+      const sourceText = String(region?.source_text || '').trim();
+      if (sourceText) regions.push({ shot_id: String(shot.id), region, source_text: sourceText });
+    }
+  }
+  return regions;
+}
+
+function normalizeEpisodeTextMap(rawTextMap, blueprintFacts, options) {
+  const textMap = safeMap(rawTextMap, 'text_map');
+  const regions = episodeTextRegions(blueprintFacts);
+  const expectedKeys = regions.map(({ shot_id: shotId, region }) => `${shotId}:${String(region.id)}`).sort();
+  if (stableStringify(Object.keys(textMap).sort()) !== stableStringify(expectedKeys)) {
+    throw codedError('LOCALIZATION_TEXT_REGION_MISMATCH', 'text_map must exactly cover source text regions');
+  }
+  return regions.map(({ shot_id: shotId, region, source_text: sourceText }) => {
+    const key = `${shotId}:${String(region.id)}`;
+    if (typeof textMap[key] !== 'string' || !textMap[key].trim()) {
+      throw codedError('LOCALIZATION_TEXT_REGION_MISMATCH', 'text region target missing');
+    }
+    const targetText = textMap[key].trim();
+    assertNoSourceRemainder(targetText, sourceText, blueprintFacts);
+    assertTargetLanguage(targetText, options, { kind: 'text_region', id: String(region.id) });
+    return {
+      text_region_id: String(region.id),
+      shot_id: shotId,
+      source_text: sourceText,
+      target_text: targetText,
+    };
+  });
+}
+
+function normalizeCulturalAdaptations(raw, options) {
+  if (!Array.isArray(raw)) throw codedError('LOCALIZATION_CULTURE_MAP_INVALID', 'culture_map must be an array');
+  const seen = new Set();
+  return raw.map((item) => {
+    assertObject(item, 'culture_map[]');
+    assertSafeJson(item, 'culture_map[]');
+    assertOnlyKeys(item, CULTURAL_ADAPTATION_FIELDS, 'LOCALIZATION_CULTURE_MAP_INVALID', 'culture_map[]');
+    const id = String(item.id || '').trim();
+    const source = String(item.source || '').trim();
+    const target = String(item.target || '').trim();
+    if (!id || seen.has(id) || !source || !target) throw codedError('LOCALIZATION_CULTURE_MAP_INVALID', 'culture adaptation invalid');
+    seen.add(id);
+    assertTargetLanguage(target, options, { kind: 'cultural_adaptation', id });
+    return { id, source, target, note: String(item.note || '').trim() };
+  }).sort((left, right) => left.id.localeCompare(right.id, 'en'));
+}
+
+function normalizeEpisodeGlossary(raw, options) {
+  if (!Array.isArray(raw)) throw codedError('LOCALIZATION_GLOSSARY_INVALID', 'glossary must be an array');
+  const seen = new Set();
+  return raw.map((item) => {
+    assertObject(item, 'glossary[]');
+    assertSafeJson(item, 'glossary[]');
+    assertOnlyKeys(item, GLOSSARY_FIELDS, 'LOCALIZATION_GLOSSARY_INVALID', 'glossary[]');
+    const sourceTerm = String(item.source_term || '').trim();
+    const targetTerm = String(item.target_term || '').trim();
+    if (!sourceTerm || !targetTerm || seen.has(sourceTerm)) throw codedError('LOCALIZATION_GLOSSARY_INVALID', 'glossary item invalid');
+    seen.add(sourceTerm);
+    assertTargetLanguage(targetTerm, options, { kind: 'glossary', id: sourceTerm });
+    return { source_term: sourceTerm, target_term: targetTerm, note: String(item.note || '').trim() };
+  }).sort((left, right) => left.source_term.localeCompare(right.source_term, 'en'));
+}
+
+function normalizeLockedTerms(raw, options) {
+  if (!Array.isArray(raw)) throw codedError('LOCALIZATION_LOCKED_TERMS_INVALID', 'locked_terms must be an array');
+  const seen = new Set();
+  return raw.map((item) => {
+    if (typeof item !== 'string' || !item.trim()) throw codedError('LOCALIZATION_LOCKED_TERMS_INVALID', 'locked term invalid');
+    const value = item.trim();
+    const comparable = localeComparable(value, options.locale);
+    if (seen.has(comparable)) throw codedError('LOCALIZATION_LOCKED_TERMS_INVALID', 'locked term duplicate');
+    seen.add(comparable);
+    assertTargetLanguage(value, options, { kind: 'locked_term', id: value });
+    return value;
+  }).sort((left, right) => left.localeCompare(right, 'en'));
+}
+
+function uncheckedReview(localization) {
+  return {
+    status: 'review',
+    character_name_map: Object.fromEntries(Object.keys(localization.character_name_map).map((id) => [id, false])),
+    dialogue_map: Object.fromEntries(localization.dialogue_map.map((item) => [item.source_dialogue_id, false])),
+    text_region_map: Object.fromEntries(localization.text_region_map.map((item) => [item.text_region_id, false])),
+    cultural_adaptations: Object.fromEntries(localization.cultural_adaptations.map((item) => [item.id, false])),
+    glossary: Object.fromEntries(localization.glossary.map((item) => [item.source_term, false])),
+    locked_terms: Object.fromEntries(localization.locked_terms.map((item) => [item, false])),
+  };
+}
+
+function episodeLocalizationHash(localization) {
+  const hashable = clone(localization);
+  delete hashable.localization_hash;
+  delete hashable.review;
+  return createHash('sha256').update(stableStringify(hashable)).digest('hex');
+}
+
+function normalizeEpisodeLocalizationResult(raw, blueprintFacts, options = {}) {
+  assertObject(raw, 'localized_result');
+  assertSafeJson(raw);
+  assertEpisodeRootFields(raw);
+  const blueprintHash = assertEpisodeBlueprintHash(raw, blueprintFacts, options);
+  const locale = String(options.locale || '').trim();
+  const market = String(options.market || '').trim();
+  if (!locale || String(raw.locale || '').trim() !== locale) {
+    throw codedError('LOCALIZATION_LOCALE_MISMATCH', 'episode locale mismatch');
+  }
+  if (!market || String(raw.market || '').trim() !== market) {
+    throw codedError('LOCALIZATION_MARKET_MISMATCH', 'episode market mismatch');
+  }
+  const normalized = {
+    schema_version: 'episode-localization-v1',
+    blueprint_hash: blueprintHash,
+    locale,
+    market,
+    character_name_map: episodeNameMap(raw.name_map, blueprintFacts, locale, options),
+    dialogue_map: normalizeEpisodeDialogue(raw.dialogue, blueprintFacts, locale, options),
+    text_region_map: normalizeEpisodeTextMap(raw.text_map, blueprintFacts, options),
+    cultural_adaptations: normalizeCulturalAdaptations(raw.culture_map, options),
+    glossary: normalizeEpisodeGlossary(raw.glossary, options),
+    locked_terms: normalizeLockedTerms(raw.locked_terms, options),
+  };
+  normalized.review = uncheckedReview(normalized);
+  normalized.localization_hash = episodeLocalizationHash(normalized);
+  return normalized;
+}
+
+function assertSafeLocalizationString(value) {
+  if (typeof value === 'string' && (/https?:\/\//i.test(value)
+    || /^(?:[a-z]:[\\/]|\\\\|\/|file:\/\/)/i.test(value)
+    || /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(value))) {
+    throw codedError('LOCALIZATION_INPUT_INVALID', 'localization cannot contain URL or path');
+  }
+  if (Array.isArray(value)) {
+    value.forEach(assertSafeLocalizationString);
+  } else if (value && typeof value === 'object') {
+    Object.values(value).forEach(assertSafeLocalizationString);
+  }
+}
+
+function assertSafeLocalizationReviewValue(value) {
+  assertSafeJson(value, 'localization');
+  assertSafeLocalizationString(value);
+}
+
+function episodeReviewContext(db, owner, versionId) {
+  const normalizedOwner = normalizeOwner(owner);
+  const id = Number(versionId);
+  if (!Number.isSafeInteger(id) || id <= 0 || !normalizedOwner.tenantId || !normalizedOwner.userId) {
+    throw codedError('LOCALIZATION_INPUT_INVALID', 'localization owner or version invalid');
+  }
+  const version = db.prepare(`
+    SELECT v.*, w.id AS owned_work_id
+    FROM redraw_versions v
+    JOIN redraw_works w
+      ON w.id = v.work_id AND w.tenant_id = v.tenant_id AND w.user_id = v.user_id
+    WHERE v.id = ? AND v.tenant_id = ? AND v.user_id = ? AND v.deleted_at IS NULL
+    LIMIT 1
+  `).get(id, String(normalizedOwner.tenantId), String(normalizedOwner.userId));
+  if (!version) throw codedError('LOCALIZATION_NOT_FOUND', 'localization version not found');
+  const blueprintRow = db.prepare(`
+    SELECT *
+    FROM redraw_episode_blueprints
+    WHERE work_id = ? AND tenant_id = ? AND user_id = ? AND revision = ?
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(version.work_id, String(normalizedOwner.tenantId), String(normalizedOwner.userId), Number(version.version));
+  if (!blueprintRow || blueprintRow.status !== 'locked') {
+    throw codedError('BLUEPRINT_NOT_LOCKED', 'localization requires locked blueprint');
+  }
+  const blueprint = parseJson(blueprintRow.blueprint_json, null);
+  const blueprintHash = String(blueprintRow.blueprint_hash || '').trim();
+  if (!blueprint || blueprint.schema_version !== 'episode-blueprint-v1'
+    || !SHA256.test(blueprintHash)
+    || blueprintHash !== String(blueprint.blueprint_hash || '').trim()
+    || blueprintHash !== String(version.blueprint_hash || '').trim()) {
+    throw codedError('BLUEPRINT_HASH_MISMATCH', 'localization blueprint binding changed');
+  }
+  return { owner: normalizedOwner, version, blueprint, blueprintRow, blueprintHash };
+}
+
+function parseStoredLocalization(version) {
+  const localization = parseJson(version.localization_review_json, null);
+  if (!localization || localization.schema_version !== 'episode-localization-v1') {
+    throw codedError('LOCALIZATION_NOT_FOUND', 'localization review not found');
+  }
+  return localization;
+}
+
+function publicLocalizationReview(context, localization) {
+  return {
+    version_id: Number(context.version.id),
+    work_id: Number(context.version.work_id),
+    version: Number(context.version.version),
+    status: localization.review?.status || 'review',
+    blueprint_hash: context.blueprintHash,
+    localization_hash: String(context.version.localization_hash || localization.localization_hash || ''),
+    locale: localization.locale,
+    market: localization.market,
+    localization: clone(localization),
+    updated_at: String(localization.review?.updated_at || context.version.updated_at || ''),
+  };
+}
+
+function nextLocalizationTimestamp(previous, provided) {
+  let millis = provided == null ? Date.now() : new Date(provided).getTime();
+  if (!Number.isFinite(millis)) millis = Date.now();
+  const previousMillis = Date.parse(String(previous || ''));
+  if (Number.isFinite(previousMillis) && millis <= previousMillis) millis = previousMillis + 1;
+  return new Date(millis).toISOString();
+}
+
+function getLocalizationReview(db, owner, versionId) {
+  const context = episodeReviewContext(db, owner, versionId);
+  return publicLocalizationReview(context, parseStoredLocalization(context.version));
+}
+
+function reviewMap(raw, expectedKeys, name) {
+  assertObject(raw, `review.${name}`);
+  assertOnlyKeys(raw, new Set(expectedKeys), 'LOCALIZATION_REVIEW_INVALID', `review.${name}`);
+  if (Object.keys(raw).length !== expectedKeys.length) {
+    throw codedError('LOCALIZATION_REVIEW_INVALID', `review.${name} must exactly cover items`);
+  }
+  return Object.fromEntries(expectedKeys.map((key) => {
+    if (typeof raw[key] !== 'boolean') throw codedError('LOCALIZATION_REVIEW_INVALID', `review.${name}.${key} invalid`);
+    return [key, raw[key]];
+  }));
+}
+
+function normalizeReviewChecklist(raw, localization) {
+  assertObject(raw, 'review');
+  assertOnlyKeys(raw, EPISODE_REVIEW_FIELDS, 'LOCALIZATION_REVIEW_INVALID', 'review');
+  if (raw.status !== 'review') throw codedError('LOCALIZATION_REVIEW_INVALID', 'review.status must be review');
+  return {
+    status: 'review',
+    character_name_map: reviewMap(raw.character_name_map, Object.keys(localization.character_name_map), 'character_name_map'),
+    dialogue_map: reviewMap(raw.dialogue_map, localization.dialogue_map.map((item) => item.source_dialogue_id), 'dialogue_map'),
+    text_region_map: reviewMap(raw.text_region_map, localization.text_region_map.map((item) => item.text_region_id), 'text_region_map'),
+    cultural_adaptations: reviewMap(raw.cultural_adaptations, localization.cultural_adaptations.map((item) => item.id), 'cultural_adaptations'),
+    glossary: reviewMap(raw.glossary, localization.glossary.map((item) => item.source_term), 'glossary'),
+    locked_terms: reviewMap(raw.locked_terms, localization.locked_terms, 'locked_terms'),
+  };
+}
+
+function normalizeLocalizationReviewInput(input, context, options = {}) {
+  assertObject(input, 'localization');
+  assertSafeLocalizationReviewValue(input);
+  assertOnlyKeys(input, EPISODE_LOCALIZATION_FIELDS, 'LOCALIZATION_UNKNOWN_FIELD', 'localization');
+  const locale = String(input.locale || '').trim();
+  const market = String(input.market || '').trim();
+  if (input.schema_version !== 'episode-localization-v1'
+    || String(input.blueprint_hash || '') !== context.blueprintHash
+    || !locale
+    || !market
+    || (options.expectedLocale && locale !== options.expectedLocale)
+    || (options.expectedMarket && market !== options.expectedMarket)) {
+    throw codedError('LOCALIZATION_INPUT_INVALID', 'localization contract binding invalid');
+  }
+  if (!Array.isArray(input.dialogue_map) || !Array.isArray(input.text_region_map)
+    || !Array.isArray(input.cultural_adaptations) || !Array.isArray(input.glossary)
+    || !Array.isArray(input.locked_terms)) {
+    throw codedError('LOCALIZATION_INPUT_INVALID', 'localization collections invalid');
+  }
+  const dialogueByShot = new Map();
+  for (const row of input.dialogue_map) {
+    assertObject(row, 'dialogue_map[]');
+    assertOnlyKeys(row, EPISODE_DIALOGUE_FIELDS, 'LOCALIZATION_UNKNOWN_FIELD', 'dialogue_map[]');
+    const shotId = String(row.shot_id || '').trim();
+    const turns = dialogueByShot.get(shotId) || [];
+    turns.push({
+      id: row.source_dialogue_id,
+      speaker_id: row.speaker_id,
+      target_text: row.target_text,
+      pronunciation_hint: row.pronunciation_hint,
+    });
+    dialogueByShot.set(shotId, turns);
+  }
+  const textMap = Object.fromEntries(input.text_region_map.map((row) => {
+    assertObject(row, 'text_region_map[]');
+    assertOnlyKeys(row, EPISODE_TEXT_REGION_FIELDS, 'LOCALIZATION_UNKNOWN_FIELD', 'text_region_map[]');
+    return [`${String(row.shot_id)}:${String(row.text_region_id)}`, row.target_text];
+  }));
+  const normalized = normalizeEpisodeLocalizationResult({
+    blueprint_hash: input.blueprint_hash,
+    locale: input.locale,
+    market: input.market,
+    name_map: input.character_name_map,
+    dialogue: [...dialogueByShot.entries()].map(([shotId, turns]) => ({ shot_id: shotId, turns })),
+    text_map: textMap,
+    culture_map: input.cultural_adaptations,
+    glossary: input.glossary,
+    locked_terms: input.locked_terms,
+  }, context.blueprint, {
+    locale: input.locale,
+    market: input.market,
+    blueprintHash: context.blueprintHash,
+    validateTargetText: options.validateTargetText,
+  });
+  const suppliedDialogue = new Map(input.dialogue_map.map((item) => [item.source_dialogue_id, item]));
+  for (const row of normalized.dialogue_map) {
+    const supplied = suppliedDialogue.get(row.source_dialogue_id);
+    for (const field of ['shot_id', 'speaker_id', 'speaker_kind', 'source_text', 'start_ms', 'end_ms', 'emotion']) {
+      if (stableStringify(supplied?.[field]) !== stableStringify(row[field])) {
+        throw codedError('LOCALIZATION_SOURCE_IMMUTABLE', `dialogue_map.${row.source_dialogue_id}.${field} changed`);
+      }
+    }
+  }
+  const suppliedRegions = new Map(input.text_region_map.map((item) => [item.text_region_id, item]));
+  for (const row of normalized.text_region_map) {
+    const supplied = suppliedRegions.get(row.text_region_id);
+    for (const field of ['shot_id', 'source_text']) {
+      if (stableStringify(supplied?.[field]) !== stableStringify(row[field])) {
+        throw codedError('LOCALIZATION_SOURCE_IMMUTABLE', `text_region_map.${row.text_region_id}.${field} changed`);
+      }
+    }
+  }
+  normalized.review = normalizeReviewChecklist(input.review, normalized);
+  normalized.localization_hash = episodeLocalizationHash(normalized);
+  return normalized;
+}
+
+function saveGeneratedLocalizationReview(db, owner, versionId, input, options = {}) {
+  const context = episodeReviewContext(db, owner, versionId);
+  if (input?.schema_version !== 'episode-localization-v1'
+    || input.blueprint_hash !== context.blueprintHash
+    || input.localization_hash !== episodeLocalizationHash(input)) {
+    throw codedError('LOCALIZATION_HASH_MISMATCH', 'generated localization hash invalid');
+  }
+  const current = context.version.localization_review_json;
+  if (current != null && String(current).trim()) {
+    throw codedError('LOCALIZATION_CAS_CONFLICT', 'localization review already exists');
+  }
+  const localization = clone(input);
+  localization.review = {
+    ...uncheckedReview(localization),
+    updated_at: nextLocalizationTimestamp(context.version.updated_at, options.now),
+  };
+  const transaction = db.transaction(() => {
+    const changed = db.prepare(`
+      UPDATE redraw_versions
+      SET localization_review_json = ?, localization_hash = ?, status = 'needs_review', updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND user_id = ? AND blueprint_hash = ?
+        AND localization_review_json IS NULL
+    `).run(
+      JSON.stringify(localization),
+      localization.localization_hash,
+      localization.review.updated_at,
+      Number(context.version.id),
+      String(context.owner.tenantId),
+      String(context.owner.userId),
+      context.blueprintHash,
+    );
+    if (changed.changes !== 1) throw codedError('LOCALIZATION_CAS_CONFLICT', 'localization review changed');
+    db.prepare(`
+      UPDATE redraw_works
+      SET current_version = ?, current_step = 1, status = 'needs_review', updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND user_id = ?
+    `).run(Number(context.version.version), localization.review.updated_at, Number(context.version.work_id),
+      String(context.owner.tenantId), String(context.owner.userId));
+  });
+  transaction.immediate();
+  return getLocalizationReview(db, owner, versionId);
+}
+
+function expectedReviewTimestamp(input) {
+  const value = String(input?.expectedUpdatedAt ?? input?.expected_updated_at ?? '').trim();
+  if (!value) throw codedError('LOCALIZATION_INPUT_INVALID', 'expected_updated_at required');
+  return value;
+}
+
+function saveLocalizationReview(db, owner, versionId, input = {}) {
+  const context = episodeReviewContext(db, owner, versionId);
+  const current = parseStoredLocalization(context.version);
+  if (current.review?.status === 'locked' || context.version.status === 'asset_review') {
+    throw codedError('LOCALIZATION_LOCKED', 'locked localization cannot be changed');
+  }
+  const expected = expectedReviewTimestamp(input);
+  if (expected !== String(current.review?.updated_at || '')) {
+    throw codedError('LOCALIZATION_CAS_CONFLICT', 'localization changed, refresh required');
+  }
+  const localizationInput = clone(input.localization);
+  const localization = normalizeLocalizationReviewInput(localizationInput, context, {
+    validateTargetText: input.validateTargetText,
+    expectedLocale: current.locale,
+    expectedMarket: current.market,
+  });
+  const now = nextLocalizationTimestamp(expected, input.now);
+  localization.review.updated_at = now;
+  const previousJson = context.version.localization_review_json;
+  const previousHash = String(context.version.localization_hash || '');
+  const changed = db.prepare(`
+    UPDATE redraw_versions
+    SET localization_review_json = ?, localization_hash = ?, updated_at = ?
+    WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'needs_review'
+      AND localization_review_json = ? AND localization_hash = ? AND blueprint_hash = ?
+  `).run(
+    JSON.stringify(localization), localization.localization_hash, now,
+    Number(context.version.id), String(context.owner.tenantId), String(context.owner.userId),
+    previousJson, previousHash, context.blueprintHash,
+  );
+  if (changed.changes !== 1) throw codedError('LOCALIZATION_CAS_CONFLICT', 'localization changed, refresh required');
+  return getLocalizationReview(db, owner, versionId);
+}
+
+function reviewComplete(review) {
+  return ['character_name_map', 'dialogue_map', 'text_region_map', 'cultural_adaptations', 'glossary', 'locked_terms']
+    .every((key) => Object.values(review[key] || {}).every((value) => value === true));
+}
+
+function expectedLocalizationHash(input) {
+  const value = String(input?.expectedLocalizationHash ?? input?.expected_localization_hash ?? '').trim();
+  if (!SHA256.test(value)) throw codedError('LOCALIZATION_INPUT_INVALID', 'expected_localization_hash invalid');
+  return value;
+}
+
+function expectedBlueprintHash(input) {
+  const value = String(input?.blueprintHash ?? input?.blueprint_hash ?? '').trim();
+  if (!SHA256.test(value)) throw codedError('LOCALIZATION_INPUT_INVALID', 'blueprint_hash invalid');
+  return value;
+}
+
+function lockLocalizationReview(db, owner, versionId, input = {}) {
+  const expectedUpdatedAt = expectedReviewTimestamp(input);
+  const expectedHash = expectedLocalizationHash(input);
+  const blueprintHash = expectedBlueprintHash(input);
+  const transaction = db.transaction(() => {
+    const context = episodeReviewContext(db, owner, versionId);
+    const current = parseStoredLocalization(context.version);
+    if (current.review?.status === 'locked' || context.version.status === 'asset_review') {
+      throw codedError('LOCALIZATION_LOCKED', 'localization already locked');
+    }
+    if (blueprintHash !== context.blueprintHash) throw codedError('BLUEPRINT_HASH_MISMATCH', 'blueprint hash changed');
+    if (expectedUpdatedAt !== String(current.review?.updated_at || '')) {
+      throw codedError('LOCALIZATION_CAS_CONFLICT', 'localization changed, refresh required');
+    }
+    const reviewInput = clone(current);
+    const normalized = normalizeLocalizationReviewInput(reviewInput, context, {
+      validateTargetText: input.validateTargetText,
+      expectedLocale: current.locale,
+      expectedMarket: current.market,
+    });
+    if (!reviewComplete(normalized.review)) throw codedError('LOCALIZATION_REVIEW_REQUIRED', 'all localization items must be reviewed');
+    const recalculated = episodeLocalizationHash(normalized);
+    if (expectedHash !== String(context.version.localization_hash || '')
+      || expectedHash !== recalculated
+      || expectedHash !== String(current.localization_hash || '')) {
+      throw codedError('LOCALIZATION_HASH_MISMATCH', 'localization hash changed');
+    }
+    const now = nextLocalizationTimestamp(expectedUpdatedAt, input.now);
+    normalized.review = { ...normalized.review, status: 'locked', updated_at: now };
+    normalized.localization_hash = recalculated;
+    const changed = db.prepare(`
+      UPDATE redraw_versions
+      SET localization_review_json = ?, localization_hash = ?, status = 'asset_review', updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'needs_review'
+        AND localization_review_json = ? AND localization_hash = ? AND blueprint_hash = ?
+    `).run(
+      JSON.stringify(normalized), recalculated, now,
+      Number(context.version.id), String(context.owner.tenantId), String(context.owner.userId),
+      context.version.localization_review_json, expectedHash, context.blueprintHash,
+    );
+    if (changed.changes !== 1) throw codedError('LOCALIZATION_CAS_CONFLICT', 'localization changed, refresh required');
+    const workChanged = db.prepare(`
+      UPDATE redraw_works
+      SET current_version = ?, current_step = 2, status = 'asset_review', updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND user_id = ? AND current_step = 1
+    `).run(Number(context.version.version), now, Number(context.version.work_id),
+      String(context.owner.tenantId), String(context.owner.userId));
+    if (workChanged.changes !== 1) throw codedError('LOCALIZATION_CAS_CONFLICT', 'work localization gate changed');
+  });
+  transaction.immediate();
+  return getLocalizationReview(db, owner, versionId);
+}
+
 function normalizeLocalizationResultV2(raw, sourceFacts, options = {}) {
+  if (sourceFacts?.schema_version === 'episode-blueprint-v1') {
+    return normalizeEpisodeLocalizationResult(raw, sourceFacts, options);
+  }
   assertSafeJson(raw);
   assertV2RootFields(raw);
   const expectedHash = v2SourceHash(sourceFacts);
@@ -431,7 +1099,7 @@ function buildLocalizationInput(sourceFacts, options = {}) {
 
 function normalizeLocalizationResult(raw, sourceFacts, options = {}) {
   assertObject(raw, 'localized_result');
-  if (sourceFacts?.schema_version === '2.0') {
+  if (['2.0', 'episode-blueprint-v1'].includes(sourceFacts?.schema_version)) {
     return normalizeLocalizationResultV2(raw, sourceFacts, options);
   }
   const validation = validateLocalizedFacts(sourceFacts, raw);
@@ -1047,6 +1715,12 @@ function validateLocalizedDialogue(sourceTurn, localizedTurn, options = {}) {
 module.exports = {
   buildLocalizationInput,
   normalizeLocalizationResult,
+  normalizeLocalizationResultV2,
+  assertSafeLocalizationReviewValue,
+  getLocalizationReview,
+  lockLocalizationReview,
+  saveGeneratedLocalizationReview,
+  saveLocalizationReview,
   validateLocalizedFacts,
   createLocalizationDraft,
   findOwnedDraftVersion,

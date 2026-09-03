@@ -206,6 +206,15 @@ export const redrawAPI = {
   createVersion(workId, body) {
     return request.post(`/redraw/works/${workId}/versions`, body)
   },
+  getLocalization(versionId) {
+    return request.get(`/redraw/versions/${versionId}/localization`, { silentError: true })
+  },
+  saveLocalization(versionId, body) {
+    return request.put(`/redraw/versions/${versionId}/localization`, body, { silentError: true })
+  },
+  lockLocalization(versionId, body) {
+    return request.post(`/redraw/versions/${versionId}/localization/lock`, body, { silentError: true })
+  },
   getCharacterPlan(versionId) {
     return request.get(`/redraw/versions/${versionId}/character-plan`)
   },

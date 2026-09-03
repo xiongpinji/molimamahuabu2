@@ -203,6 +203,61 @@ function blueprintReviewRecordWithShots(count) {
   return record
 }
 
+function localizationReviewRecord() {
+  return {
+    version_id: 812,
+    work_id: workBase.id,
+    version: 1,
+    status: 'review',
+    blueprint_hash: 'c'.repeat(64),
+    localization_hash: 'b'.repeat(64),
+    locale: 'en-US',
+    market: 'US',
+    updated_at: '2026-09-03T10:03:00.000Z',
+    localization: {
+      schema_version: 'episode-localization-v1',
+      blueprint_hash: 'c'.repeat(64),
+      locale: 'en-US',
+      market: 'US',
+      character_name_map: {
+        'character-lead': 'Mateo',
+        'offscreen-dispatcher': 'Avery',
+      },
+      dialogue_map: [{
+        source_dialogue_id: 'dialogue-1',
+        shot_id: 'shot-1',
+        speaker_id: 'character-lead',
+        speaker_kind: 'character',
+        source_text: '尾号八七的订单到了。',
+        target_text: 'Order A-87 is here.',
+        start_ms: 500,
+        end_ms: 1_800,
+        estimated_duration_ms: 1_100,
+        estimated_speech_rate: 10.77,
+        emotion: '克制',
+        pronunciation_hint: 'A eighty-seven',
+      }],
+      text_region_map: [{
+        text_region_id: 'text-region-1', shot_id: 'shot-1', source_text: 'A-87', target_text: 'A-87',
+      }],
+      cultural_adaptations: [{ id: 'culture-1', source: '尾号', target: 'Order number', note: 'US delivery wording' }],
+      glossary: [{ source_term: '餐袋', target_term: 'delivery bag', note: 'Keep consistent' }],
+      locked_terms: ['A-87'],
+      review: {
+        status: 'review',
+        updated_at: '2026-09-03T10:03:00.000Z',
+        character_name_map: { 'character-lead': false, 'offscreen-dispatcher': false },
+        dialogue_map: { 'dialogue-1': false },
+        text_region_map: { 'text-region-1': false },
+        cultural_adaptations: { 'culture-1': false },
+        glossary: { '餐袋': false },
+        locked_terms: { 'A-87': false },
+      },
+      localization_hash: 'b'.repeat(64),
+    },
+  }
+}
+
 const assetBatchQuote = {
   priced: true,
   total_credits: 18,
@@ -563,7 +618,19 @@ async function installFixtures(page, state) {
     if (method === 'POST' && pathname === `/api/v1/redraw/works/${workBase.id}/versions`) {
       const body = request.postDataJSON()
       state.requests.push({ method, pathname, body })
-      state.work = {
+      state.work = state.episodeLocalization ? {
+        ...(state.work || analysisReviewWork()),
+        status: 'needs_review',
+        workflow_phase: 'needs_review',
+        current_step: 1,
+        version_id: 812,
+        current_version: 1,
+        localization_quote: { ...localizationQuote },
+        localization_task: {
+          id: 'task-localization-812', status: 'completed', progress: 100, message: '等待人工审核',
+        },
+        localization_billing: { held: 0, charged: 9, released: 0, quote: { ...localizationQuote } },
+      } : {
         ...(state.work || analysisReviewWork()),
         status: 'localizing',
         workflow_phase: 'localizing',
@@ -581,10 +648,61 @@ async function installFixtures(page, state) {
       }
       await route.fulfill(apiData({
         task_id: 'task-localization-812',
-        status: 'processing',
-        progress: 33,
+        version_id: state.episodeLocalization ? 812 : null,
+        status: state.episodeLocalization ? 'completed' : 'processing',
+        progress: state.episodeLocalization ? 100 : 33,
         billing: state.work.localization_billing,
       }))
+      return
+    }
+    if (method === 'GET' && pathname === '/api/v1/redraw/versions/812/localization') {
+      state.requests.push({ method, pathname })
+      await route.fulfill(apiData(structuredClone(state.localization)))
+      return
+    }
+    if (method === 'PUT' && pathname === '/api/v1/redraw/versions/812/localization') {
+      const body = request.postDataJSON()
+      state.requests.push({ method, pathname, body })
+      if (state.localizationConflict) {
+        await route.fulfill({
+          status: 409,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: false, error: { code: 'LOCALIZATION_CAS_CONFLICT', message: '本地化已变化，请刷新后重试' } }),
+        })
+        return
+      }
+      state.localization = {
+        ...state.localization,
+        localization: structuredClone(body.localization),
+        localization_hash: 'd'.repeat(64),
+        updated_at: '2026-09-03T10:04:00.000Z',
+      }
+      state.localization.localization.localization_hash = state.localization.localization_hash
+      state.localization.localization.review.updated_at = state.localization.updated_at
+      await route.fulfill(apiData(structuredClone(state.localization)))
+      return
+    }
+    if (method === 'POST' && pathname === '/api/v1/redraw/versions/812/localization/lock') {
+      const body = request.postDataJSON()
+      state.requests.push({ method, pathname, body })
+      state.localization = {
+        ...state.localization,
+        status: 'locked',
+        updated_at: '2026-09-03T10:05:00.000Z',
+        localization: {
+          ...state.localization.localization,
+          review: { ...state.localization.localization.review, status: 'locked', updated_at: '2026-09-03T10:05:00.000Z' },
+        },
+      }
+      state.work = {
+        ...state.work,
+        status: 'asset_review',
+        workflow_phase: 'asset_review',
+        current_step: 2,
+        version_id: 812,
+        current_version: 1,
+      }
+      await route.fulfill(apiData(structuredClone(state.localization)))
       return
     }
     if (method === 'PUT' && /^\/api\/v1\/redraw\/shots\/\d+$/.test(pathname)) {
@@ -632,6 +750,11 @@ async function installFixtures(page, state) {
     if (method === 'GET' && pathname === '/api/v1/redraw/versions/812/assets') {
       state.requests.push({ method, pathname })
       await route.fulfill(apiData(state.assets))
+      return
+    }
+    if (method === 'GET' && pathname === '/api/v1/redraw/versions/812/character-plan') {
+      state.requests.push({ method, pathname })
+      await route.fulfill(apiData(null))
       return
     }
     if (method === 'PUT' && /^\/api\/v1\/redraw\/assets\/\d+\/identity-pack$/.test(pathname)) {
@@ -1207,6 +1330,117 @@ test.describe('一键转绘输入与分析流程', () => {
     expect(requestCount(state, 'POST', '/localization-quote')).toBe(0)
     expect(requestCount(state, 'POST', '/versions')).toBe(0)
     expect((browserErrorsByPage.get(page) || []).some((message) => message.includes('409 (Conflict)'))).toBe(true)
+    ignoreExpectedBrowserStatus(page, '409 (Conflict)')
+  })
+
+  test('锁定母本后审核全剧姓名对白与 OCR，全部确认才可锁定并进入资产审核', async ({ page }) => {
+    const blueprint = blueprintReviewRecord({ status: 'locked' })
+    blueprint.blueprint.characters.push({
+      id: 'offscreen-dispatcher', source_name: '调度员', display_name: '调度员',
+      relationship: '画外音', relationships: [], face_track_ids: [], evidence_refs: ['evidence-audio-1'],
+      confidence: 1, review_status: 'approved',
+    })
+    Object.assign(blueprint.blueprint.shots[0].dialogue[0], {
+      speaker_id: 'character-lead', speaker_kind: 'character', review_status: 'approved',
+    })
+    const state = {
+      strictApi: true,
+      episodeLocalization: true,
+      projects: [project],
+      quoteReady: true,
+      work: analysisReviewWork(),
+      blueprint,
+      localization: localizationReviewRecord(),
+      assets: [],
+      gate: { ok: false, missing: [], current_step: 2 },
+      requests: [],
+    }
+    await installFixtures(page, state)
+    await page.goto('/redraw/projects/41/works/710?step=1')
+
+    await expect(page.getByRole('button', { name: '开始本地化' })).toBeEnabled()
+    await page.getByRole('button', { name: '开始本地化' }).click()
+    await expect(page.getByRole('heading', { name: '全剧本地化审核' })).toBeVisible()
+    await expect(page.getByText('character-lead', { exact: true })).toBeVisible()
+    await expect(page.getByText('男主', { exact: true })).toBeVisible()
+    await expect(page.getByLabel('character-lead 目标姓名')).toHaveValue('Mateo')
+    await expect(page.getByText('尾号八七的订单到了。', { exact: true })).toBeVisible()
+    await expect(page.getByLabel('dialogue-1 目标对白')).toHaveValue('Order A-87 is here.')
+    await expect(page.getByText('说话人 character-lead')).toBeVisible()
+    await expect(page.getByText('00:00.500–00:01.800')).toBeVisible()
+    await expect(page.getByText('预计语速 10.77 字符/秒')).toBeVisible()
+    await expect(page.getByText('情绪 克制')).toBeVisible()
+    await expect(page.getByRole('button', { name: '02 资产审核' })).toBeDisabled()
+    expect(state.requests.some((entry) => entry.pathname.includes('/assets'))).toBe(false)
+    expect(state.requests.some((entry) => entry.pathname.includes('/generate'))).toBe(false)
+
+    const targetName = page.getByLabel('character-lead 目标姓名')
+    await targetName.fill('Avery')
+    await expect(page.getByText('目标姓名不能重复')).toBeVisible()
+    await expect(page.getByRole('button', { name: '锁定本地化' })).toBeDisabled()
+    await targetName.fill('男主')
+    await expect(page.getByText('目标内容不能残留源角色名')).toBeVisible()
+    await targetName.fill('Marcus')
+    const targetDialogue = page.getByLabel('dialogue-1 目标对白')
+    await targetDialogue.fill('男主 returns with the order.')
+    await expect(page.getByText('目标内容不能残留源角色名')).toBeVisible()
+    await targetDialogue.fill('Marcus returns with the order.')
+
+    for (const name of [
+      'character-lead 姓名已审核', 'offscreen-dispatcher 姓名已审核', 'dialogue-1 对白已审核',
+      'text-region-1 OCR 已审核', 'culture-1 文化适配已审核', '餐袋 glossary 已审核', 'A-87 locked term 已审核',
+    ]) {
+      await page.getByRole('checkbox', { name }).check()
+    }
+    await expect(page.getByRole('button', { name: '锁定本地化' })).toBeDisabled()
+    await page.getByRole('button', { name: '保存本地化审核' }).click()
+    const save = state.requests.find((entry) => entry.method === 'PUT' && entry.pathname.endsWith('/localization'))
+    expectOnlyKeys(save.body, ['expected_updated_at', 'localization'])
+    expect(save.body.expected_updated_at).toBe('2026-09-03T10:03:00.000Z')
+    expect(save.body.localization.character_name_map['character-lead']).toBe('Marcus')
+    expect(save.body.localization.dialogue_map[0].target_text).toBe('Marcus returns with the order.')
+
+    await expect(page.getByRole('button', { name: '锁定本地化' })).toBeEnabled()
+    await page.getByRole('button', { name: '锁定本地化' }).click()
+    const lock = state.requests.find((entry) => entry.method === 'POST' && entry.pathname.endsWith('/localization/lock'))
+    expectOnlyKeys(lock.body, ['blueprint_hash', 'expected_localization_hash', 'expected_updated_at'])
+    expect(lock.body).toEqual({
+      blueprint_hash: 'c'.repeat(64),
+      expected_localization_hash: 'd'.repeat(64),
+      expected_updated_at: '2026-09-03T10:04:00.000Z',
+    })
+    await expect(page).toHaveURL(/step=2/)
+    await expect(page.getByText('确认本地化资产后再进入批量转绘')).toBeVisible()
+  })
+
+  test('本地化保存 CAS 409 要求刷新且不覆盖当前编辑', async ({ page }) => {
+    const blueprint = blueprintReviewRecord({ status: 'locked' })
+    blueprint.blueprint.characters.push({ id: 'offscreen-dispatcher', source_name: '调度员', display_name: '调度员' })
+    const state = {
+      strictApi: true,
+      episodeLocalization: true,
+      projects: [project],
+      quoteReady: true,
+      work: {
+        ...analysisReviewWork(), status: 'needs_review', workflow_phase: 'needs_review', version_id: 812, current_version: 1,
+        localization_task: { id: 'task-localization-812', status: 'completed', progress: 100, message: '等待人工审核' },
+      },
+      blueprint,
+      localization: localizationReviewRecord(),
+      localizationConflict: true,
+      requests: [],
+    }
+    await installFixtures(page, state)
+    await page.goto('/redraw/projects/41/works/710?step=1')
+    await expect(page.getByRole('heading', { name: '全剧本地化审核' })).toBeVisible()
+    await page.getByLabel('character-lead 目标姓名').fill('Marcus')
+    await page.getByRole('button', { name: '保存本地化审核' }).click()
+
+    await expect(page.getByText('本地化已变化，请刷新后重试').first()).toBeVisible()
+    await expect(page.getByLabel('character-lead 目标姓名')).toHaveValue('Marcus')
+    expect(state.localization.localization.character_name_map['character-lead']).toBe('Mateo')
+    expect(state.requests.filter((entry) => entry.method === 'PUT' && entry.pathname.endsWith('/localization'))).toHaveLength(1)
+    expect(state.requests.some((entry) => entry.pathname.endsWith('/localization/lock'))).toBe(false)
     ignoreExpectedBrowserStatus(page, '409 (Conflict)')
   })
 

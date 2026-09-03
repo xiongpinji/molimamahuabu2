@@ -10,7 +10,7 @@
       </span>
     </div>
 
-    <div v-if="!['analysis_review', 'blueprint_review', 'blueprint_locked', 'localizing', 'localization_needs_attention', 'failed'].includes(workflowPhase)" class="source-card">
+    <div v-if="!expectsLocalizationReview && !['analysis_review', 'blueprint_review', 'blueprint_locked', 'localizing', 'localization_needs_attention', 'failed'].includes(workflowPhase)" class="source-card">
       <div class="section-heading">
         <div>
           <p class="eyebrow">01 · 源片输入</p>
@@ -183,6 +183,25 @@
       <p>请勿重复提交</p>
     </section>
 
+    <section v-if="localizationLoading && expectsLocalizationReview" class="task-card">
+      <div><strong>全剧本地化审核</strong><span>正在读取</span></div>
+    </section>
+
+    <section v-else-if="localizationError && expectsLocalizationReview" class="task-card">
+      <div><strong>全剧本地化审核</strong><span>读取失败</span></div>
+      <p>{{ localizationError }}</p>
+      <div class="billing-row"><el-button @click="loadLocalization(true)">刷新本地化</el-button></div>
+    </section>
+
+    <RedrawLocalizationReviewPanel
+      v-else-if="localizationRecord"
+      :record="localizationRecord"
+      :blueprint="blueprintRecord"
+      @updated="onLocalizationUpdated"
+      @locked="onLocalizationLocked"
+      @refresh-requested="loadLocalization(true)"
+    />
+
     <section v-if="['localization_needs_attention', 'failed'].includes(workflowPhase)" class="task-card">
       <div>
         <strong>本地化失败</strong>
@@ -211,6 +230,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { redrawAPI } from '@/api/redraw'
 import RedrawBlueprintReviewPanel from '@/components/redraw/RedrawBlueprintReviewPanel.vue'
+import RedrawLocalizationReviewPanel from '@/components/redraw/RedrawLocalizationReviewPanel.vue'
 import StylePresetPicker from '@/components/redraw/StylePresetPicker.vue'
 import { canStartLocalization } from '@/utils/redrawBlueprintReviewState'
 import {
@@ -277,6 +297,10 @@ const localizationState = ref(localizationTaskState(props.initialWork))
 const workflowPhase = ref(redrawWorkflowPhase(props.initialWork, props.blueprintRecord))
 const localizationIdempotencyKey = ref('')
 const localizationQuoteGate = createLocalizationQuoteRequestGate()
+const localizationRecord = ref(null)
+const localizationLoading = ref(false)
+const localizationError = ref('')
+let localizationRequestSequence = 0
 let pollTimer = null
 let pollAttempts = 0
 
@@ -304,6 +328,12 @@ const showsBlueprintReadGate = computed(() => (
 const showsBlueprintReview = computed(() => (
   ['blueprint_review', 'blueprint_locked'].includes(workflowPhase.value)
   || showsBlueprintReadGate.value
+))
+const expectsLocalizationReview = computed(() => (
+  props.blueprintRecord?.status === 'locked'
+  && Number(workState.value?.version_id || 0) > 0
+  && String(workState.value?.localization_task?.status || '').toLowerCase() === 'completed'
+  && Number(workState.value?.current_step || 1) === 1
 ))
 const eightStageState = computed(() => resolveEightStageState({
   ...(workState.value || {}),
@@ -401,6 +431,32 @@ function syncWork(next) {
   if (shouldPollWork(next)) startTaskPolling()
   if (isTerminalTaskState(next)) stopTaskPolling()
   ensureLocalizationQuote(next)
+  if (expectsLocalizationReview.value) loadLocalization()
+  else if (Number(next?.current_step || 1) > 1) {
+    localizationRequestSequence += 1
+    localizationRecord.value = null
+    localizationError.value = ''
+  }
+}
+
+async function loadLocalization(force = false) {
+  const versionId = Number(workState.value?.version_id || 0)
+  if (!expectsLocalizationReview.value || !versionId) return
+  if (!force && localizationRecord.value?.version_id === versionId) return
+  const requestSequence = ++localizationRequestSequence
+  localizationLoading.value = true
+  localizationError.value = ''
+  try {
+    const next = await redrawAPI.getLocalization(versionId)
+    if (requestSequence !== localizationRequestSequence
+      || Number(workState.value?.version_id || 0) !== versionId) return
+    localizationRecord.value = next
+  } catch (error) {
+    if (requestSequence !== localizationRequestSequence) return
+    localizationError.value = error?.response?.data?.error?.message || error?.message || '读取本地化审核失败'
+  } finally {
+    if (requestSequence === localizationRequestSequence) localizationLoading.value = false
+  }
 }
 
 async function loadCapabilities() {
@@ -583,10 +639,20 @@ watch(() => props.initialWork, (next) => {
 watch(() => props.blueprintRecord, (next) => {
   workflowPhase.value = redrawWorkflowPhase(workState.value, next)
   ensureLocalizationQuote(workState.value)
+  if (expectsLocalizationReview.value) loadLocalization()
 })
 
 function onBlueprintUpdated(next) {
   emit('blueprint-updated', next)
+}
+
+function onLocalizationUpdated(next) {
+  localizationRecord.value = next
+}
+
+async function onLocalizationLocked(next) {
+  localizationRecord.value = next
+  await refreshWork()
 }
 
 onUnmounted(() => {
