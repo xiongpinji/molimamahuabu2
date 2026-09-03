@@ -61,3 +61,23 @@
 - 激活审计：`/opt/moli-drama/shared/release-audit/protected-release-20260902T232332Z-3281854.audit`；数据库备份：`/root/data/disk/moli-drama-backups/database-release-guard-20260902T232332Z-3281854.sqlite`，`quick_check=ok`，切换前活动任务 `async_tasks/image_generations/video_generations=0`。
 - 线上验收：`readlink -f /opt/moli-drama/current` 指向 r2；`moli-drama` 为 active；内网 `/health` 和 `https://molimama.vip/health` 返回 200/`status=ok`；AI 音乐 `server.js` 与 `worker.js` 进程保持不变。
 - 首次启动同步已写入 5 条 `relay_auto` 模型成本，来源均为 `https://newapi.megabyai.cc/api/pricing`，抓取时间 `2026-09-02T23:26:06.534Z`，汇率 7.2：`minimax_h3_image_audio_to_video_v2` 1.080000 元/秒、`seedance-2.0` 10.800000 元/秒、`seedance-2.0-fast` 2.880000 元/秒、`seedance-2.0-mini` 0.792000 元/秒、`seedance-2.5` 7.344000 元/秒。`alibaba/wan-3.0` 未通过真实生成验证，因此未写入已开放模型成本目录。
+
+## 2026-09-03 用户复验失败后的二次修复
+
+用户复验确认两个前端问题仍存在：直接进入运营计费不可靠；从模型配置的“设置定价”进入时会混入其他中转站的模型。
+
+根因与修复：
+
+- `BillingAdmin.loadAll()` 原来用一个 `Promise.all` 同时读取模型、账号、工作区、流水和台账。任意辅助接口失败都会阻断模型价格赋值。现改为先独立读取模型价格，再以 `Promise.allSettled` 读取辅助数据；辅助接口失败时模型计费仍可显示，并给出部分数据不可用提示。
+- 模型配置入口原来只传 `model`，没有传当前配置标识；同名模型可属于多个中转站，因此无法限定线路。现改为传 `config_id`，计费页按该配置精确过滤。
+- 首版分组把同一个模型对象原样放进多个队列，导致队列内仍携带其他中转站的 `providers` 和 `provider_costs`。现为每个队列生成仅含该中转站关联与成本的浅副本，不再串组。
+
+本地回归证据：
+
+- 先增加失败用例，旧实现 4/4 失败；修复后计费导航、分组、RBAC 和兑换后台相关测试 29/29 通过。
+- `npm run build` 通过，生成 `BillingAdmin-2tvwVf7i.js` 和 `AiConfig-BWYcO3wx.js`。
+- Playwright 构建产物验收：直接访问 `/billing-admin` 可见模型计费面板和两个独立中转站队列；模拟账号辅助接口 500 时，模型数仍为 3 且队列继续显示。
+- Playwright 从模型配置 21 点击“设置定价”后进入 `/billing-admin?tab=models&config_id=21`，只显示中转站 A 的 2 个模型，未出现中转站 B。
+- 前端全量 Node 测试仅有 1 个与本次无关的既存失败：`aiConfigProviderPresets.test.js` 仍断言飞拓预设不得包含 `seedance-2.5`，而当前基线早已包含该模型；本任务未改动供应商预设。
+
+本节记录的是本地修复与验收，不代表新的生产候选已经激活；生产证据须在受保护发布后补录。

@@ -73,6 +73,13 @@
               <el-tag type="warning">未定价 {{ unconfiguredModelCount }}</el-tag>
               <el-tag type="info">已停用 {{ disabledModelCount }}</el-tag>
             </div>
+            <el-alert
+              v-if="providerConfigId"
+              title="当前仅显示所选中转站配置下的模型"
+              type="info"
+              :closable="false"
+              show-icon
+            />
             <div class="model-filters">
               <el-input
                 v-model.trim="modelSearch"
@@ -442,7 +449,10 @@ import {
 } from '@/api/billing'
 import { readSession, saveAdminToken } from '@/utils/authSession'
 import { formatModelPrice } from '@/utils/billingDisplay'
-import { groupModelPricesByProvider } from '@/utils/billingModelGroups'
+import {
+  filterModelPricesByProviderConfig,
+  groupModelPricesByProvider,
+} from '@/utils/billingModelGroups'
 
 const publicMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
 const route = useRoute()
@@ -454,6 +464,10 @@ const loading = ref(false)
 const unlocked = ref(!requiresAdminToken)
 const requestedTab = String(route.query.tab || '')
 const requestedModel = String(route.query.model || '').trim()
+const requestedConfigId = Number(route.query.config_id)
+const providerConfigId = Number.isSafeInteger(requestedConfigId) && requestedConfigId > 0
+  ? requestedConfigId
+  : null
 const activeTab = ref(isSuperAdmin && ['recharge', 'models', 'ledger', 'codes', 'users', 'transactions', 'reconciliation'].includes(requestedTab)
   ? requestedTab
   : (isSuperAdmin ? 'models' : 'codes'))
@@ -720,7 +734,7 @@ const disabledModelCount = computed(() => prices.value.filter(
 ).length)
 const filteredPrices = computed(() => {
   const query = modelSearch.value.toLowerCase()
-  return prices.value.filter((item) => {
+  return filterModelPricesByProviderConfig(prices.value, providerConfigId).filter((item) => {
     const matchesSearch = !query
       || String(item.model).toLowerCase().includes(query)
       || String(item.display_name || '').toLowerCase().includes(query)
@@ -737,27 +751,37 @@ const filteredPriceGroups = computed(() => groupModelPricesByProvider(filteredPr
 
 async function loadAll() {
   if (!isSuperAdmin) return
-  const [modelRows, userRows, tenantRows, transactionRows, ledgerSettings, report] = await Promise.all([
-    listModelPrices(),
+  prices.value = (await listModelPrices()).map(normalizePrice)
+  const [userResult, tenantResult, transactionResult, settingsResult, reportResult] = await Promise.allSettled([
     listPlatformUsers(),
     listAdminTenants(),
     listAdminCreditTransactions(),
     getLedgerSettings(),
     getLedgerReport(ledgerPeriod.value),
   ])
-  prices.value = modelRows.map(normalizePrice)
-  users.value = userRows
-  tenants.value = tenantRows
-  transactions.value = transactionRows
-  creditValueYuan.value = microsToYuan(ledgerSettings.credit_value_micros)
-  usdCnyRate.value = microsToYuan(ledgerSettings.usd_cny_rate_micros || 7_200_000)
-  ledgerReport.value = {
-    ...emptyLedgerReport(),
-    ...report,
-    summary: { ...emptyLedgerReport().summary, ...(report?.summary || {}) },
-    rows: Array.isArray(report?.rows) ? report.rows : [],
+  if (userResult.status === 'fulfilled') users.value = userResult.value
+  if (tenantResult.status === 'fulfilled') {
+    tenants.value = tenantResult.value
+    if (!creditForm.tenant_id) creditForm.tenant_id = tenantResult.value[0]?.id || ''
   }
-  if (!creditForm.tenant_id) creditForm.tenant_id = tenantRows[0]?.id || ''
+  if (transactionResult.status === 'fulfilled') transactions.value = transactionResult.value
+  if (settingsResult.status === 'fulfilled') {
+    creditValueYuan.value = microsToYuan(settingsResult.value.credit_value_micros)
+    usdCnyRate.value = microsToYuan(settingsResult.value.usd_cny_rate_micros || 7_200_000)
+  }
+  if (reportResult.status === 'fulfilled') {
+    const report = reportResult.value
+    ledgerReport.value = {
+      ...emptyLedgerReport(),
+      ...report,
+      summary: { ...emptyLedgerReport().summary, ...(report?.summary || {}) },
+      rows: Array.isArray(report?.rows) ? report.rows : [],
+    }
+  }
+  if ([userResult, tenantResult, transactionResult, settingsResult, reportResult]
+    .some((result) => result.status === 'rejected')) {
+    ElMessage.warning('模型计费已加载，部分运营数据暂时不可用')
+  }
 }
 
 async function syncProviderPricingNow() {

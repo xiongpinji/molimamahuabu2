@@ -1279,9 +1279,7 @@ const importFileRef = ref(null)
 const router = useRouter()
 
 function openPricing(row) {
-  const model = normalizeModelOption(row.default_model)
-    || (Array.isArray(row.model) ? normalizeModelOption(row.model[0]) : '')
-  router.push({ name: 'billing-admin', query: { tab: 'models', model } })
+  router.push({ name: 'billing-admin', query: { tab: 'models', config_id: row.id } })
 }
 
 // ---- 生成设置 ----
