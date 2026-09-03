@@ -2,10 +2,14 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 
 const FUMIN_BASE_URL = 'https://fumin.ai'
 const FUMIN_MODEL = 'fumin-seedance-2.0-mini'
 export const ASR_MODEL_IDS = ['Systran/faster-whisper-base', 'Systran/faster-whisper-small']
+const require = createRequire(import.meta.url)
+const backendRoot = fileURLToPath(new URL('../../backend-node/', import.meta.url))
 
 function codedError(code, message = code) {
   const error = new Error(`${code}: ${message}`)
@@ -90,6 +94,25 @@ function runProcess(command, args, code, options = {}) {
     fail(code, result.error?.message || result.stderr || `exit ${result.status}`)
   }
   return result.stdout
+}
+
+function defaultFfmpegPath() {
+  try {
+    return require(path.join(backendRoot, 'src', 'utils', 'ffmpegPath')).getFfmpegPath()
+  } catch {
+    return process.env.FFMPEG_PATH || 'ffmpeg'
+  }
+}
+
+function quoteConcatPath(filePath) {
+  return String(path.resolve(filePath)).replace(/\\/g, '/').replace(/'/g, "'\\''")
+}
+
+function writeConcatList(shotPaths, outputPath) {
+  const listPath = path.join(path.dirname(outputPath), `concat-${process.pid}-${Date.now()}.txt`)
+  const lines = shotPaths.map((shotPath) => `file '${quoteConcatPath(shotPath)}'`)
+  fs.writeFileSync(listPath, `${lines.join('\n')}\n`, { flag: 'wx' })
+  return listPath
 }
 
 export function probeMediaWithFfprobe(filePath, adapters = {}) {
@@ -332,8 +355,25 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
     },
     async assembleEpisode({ shot_paths, output_path }) {
       fs.mkdirSync(path.dirname(output_path), { recursive: true })
-      const bytes = Buffer.concat(shot_paths.map((shotPath) => fs.readFileSync(shotPath)))
-      fs.writeFileSync(output_path, bytes, { flag: 'wx' })
+      if (fs.existsSync(output_path)) fail('FUMIN_EPISODE_ASSEMBLE_OUTPUT_EXISTS', output_path)
+      for (const shotPath of shot_paths) {
+        if (!fs.existsSync(shotPath) || !fs.statSync(shotPath).isFile()) {
+          fail('FUMIN_EPISODE_ASSEMBLE_INPUT_MISSING', shotPath)
+        }
+      }
+      const listPath = writeConcatList(shot_paths, output_path)
+      try {
+        ;(options.runProcess || runProcess)(
+          options.ffmpegPath || defaultFfmpegPath(),
+          ['-hide_banner', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', output_path],
+          'FUMIN_EPISODE_ASSEMBLE_FFMPEG_FAILED',
+        )
+      } finally {
+        fs.rmSync(listPath, { force: true })
+      }
+      if (!fs.existsSync(output_path)) fail('FUMIN_EPISODE_ASSEMBLE_OUTPUT_MISSING', output_path)
+      const bytes = fs.readFileSync(output_path)
+      if (bytes.length < 1) fail('FUMIN_EPISODE_ASSEMBLE_OUTPUT_EMPTY', output_path)
       return { path: output_path, sha256: sha256Buffer(bytes), bytes: bytes.length }
     },
     async inspectEpisode({ output_path }) {

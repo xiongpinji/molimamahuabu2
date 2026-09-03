@@ -226,6 +226,61 @@ test('shot stage runs the real provider lifecycle and persists every boundary', 
   }
 })
 
+test('shot stage keeps private uploaded asset IDs for generation POST while public evidence is redacted', async () => {
+  const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-fumin-assets-'))
+  try {
+    const { packagePath } = makeEpisodePackage(root)
+    const stateDir = path.join(root, 'isolated-state')
+    await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'preflight']), {
+      provider: { name: 'fumin' },
+    })
+    const postedBodies = []
+    let uploadCount = 0
+    const videoBytes = Buffer.from('verified-local-mp4')
+    const adapter = createFuminEpisodeProviderAdapter({
+      apiKey: 'test-key',
+      fetchImpl: async (url, options = {}) => {
+        if (String(url).includes('/files/uploads')) {
+          uploadCount += 1
+          return { ok: true, text: async () => JSON.stringify({ id: `asset-${uploadCount}`, url: 'https://fumin.test/ref.png?token=secret' }) }
+        }
+        if (String(url).includes('/contents/generations/tasks') && options.method === 'POST') {
+          postedBodies.push(JSON.parse(String(options.body)))
+          return { ok: true, text: async () => JSON.stringify({ id: 'task-1' }) }
+        }
+        if (String(url).includes('/contents/generations/tasks/task-1')) {
+          return { ok: true, text: async () => JSON.stringify({ status: 'succeeded', output: { video_url: 'https://fumin.test/result.mp4' } }) }
+        }
+        if (String(url) === 'https://fumin.test/result.mp4') {
+          return { ok: true, arrayBuffer: async () => videoBytes }
+        }
+        throw new Error(`unexpected url ${url}`)
+      },
+      sleep: async () => {},
+      runProcess: () => JSON.stringify({
+        streams: [{ codec_type: 'video', width: 496, height: 864, codec_name: 'h264' }, { codec_type: 'audio', channels: 2, codec_name: 'aac' }],
+        format: { duration: '5.02' },
+      }),
+      transcribeConsensus: async () => [
+        { model_id: 'Systran/faster-whisper-base', language: 'en', probability: 0.99, text: 'We leave tonight.' },
+        { model_id: 'Systran/faster-whisper-small', language: 'en', probability: 0.99, text: 'We leave tonight.' },
+      ],
+    })
+    const result = await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'shot', '--shot-id', 'shot-1']), { provider: adapter })
+    const privateManifest = JSON.parse(fs.readFileSync(path.join(stateDir, 'private-manifest.json'), 'utf8'))
+    const publicEvidence = JSON.parse(fs.readFileSync(path.join(stateDir, 'shot-1-public-evidence.json'), 'utf8'))
+
+    assert.deepEqual(postedBodies[0].references.map((item) => item.asset_id), ['asset-1', 'asset-2'])
+    assert.equal(privateManifest.tasks[0].uploaded_references[0].asset_id, 'asset-1')
+    assert.doesNotMatch(JSON.stringify(result), /asset-1|fumin\.test|token|test-key/)
+    assert.doesNotMatch(JSON.stringify(publicEvidence), /asset-1|fumin\.test|token|test-key/)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('shot stage marks unknown provider results as needs_attention without retrying', async () => {
   const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-unknown-'))

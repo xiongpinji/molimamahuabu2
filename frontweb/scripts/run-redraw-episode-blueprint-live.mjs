@@ -277,6 +277,23 @@ function classifyProviderError(error) {
   return /UNKNOWN|TIMEOUT|RESULT_UNKNOWN|STATUS_UNKNOWN|REFERENCE_UPLOAD_UNKNOWN|SUBMISSION_UNKNOWN|DOWNLOAD_UNKNOWN/.test(code) ? 'needs_attention' : 'failed'
 }
 
+function expectedEpisodeDurationSeconds(manifest) {
+  return manifest.production_packs.reduce((sum, pack) => sum + (Number(pack.duration_ms) / 1000), 0)
+}
+
+function assertEpisodeInspection(manifest, inspection) {
+  const duration = Number(inspection?.media?.duration_seconds ?? inspection?.media?.duration)
+  if (Number.isFinite(duration)) {
+    const expected = expectedEpisodeDurationSeconds(manifest)
+    if (Math.abs(duration - expected) > Math.max(1, manifest.production_packs.length * 0.25)) {
+      fail('REDRAW_EPISODE_DURATION_MISMATCH', `${duration} !== ${expected}`)
+    }
+  }
+  if (inspection?.media && inspection.media.has_audio === false) {
+    fail('REDRAW_EPISODE_AUDIO_MISSING')
+  }
+}
+
 async function runShot(options, adapters) {
   if (!options.shotId) fail('REDRAW_EPISODE_SHOT_ID_REQUIRED')
   assertProvider(adapters.provider, ['uploadReference', 'submitGeneration', 'pollGeneration', 'downloadResult', 'inspectArtifact'])
@@ -303,7 +320,7 @@ async function runShot(options, adapters) {
   try {
     for (const reference of referencesForShot(pkg, pack.shot_id)) {
       const uploaded = await adapters.provider.uploadReference(reference)
-      task.uploaded_references.push(publicPathless(uploaded))
+      task.uploaded_references.push(clone(uploaded))
       manifest.updated_at = now()
       writeManifest(options.stateDir, manifest)
     }
@@ -367,6 +384,7 @@ async function runAssemble(options, adapters) {
   const assembled = await adapters.provider.assembleEpisode({ shot_paths: shotPaths, output_path: outputPath })
   const inspection = await adapters.provider.inspectEpisode({ output_path: outputPath, manifest: clone(manifest) })
   if (sha256File(outputPath) !== assembled.sha256) fail('REDRAW_EPISODE_ARTIFACT_HASH_MISMATCH', 'episode')
+  assertEpisodeInspection(manifest, inspection)
   manifest.status = 'assembled_verified'
   manifest.episode_artifact = {
     artifact_id: path.relative(options.stateDir, assembled.path).replace(/\\/g, '/'),
@@ -394,6 +412,7 @@ async function runVerify(options, adapters) {
     if (!fs.existsSync(episodePath) || sha256File(episodePath) !== manifest.episode_artifact.sha256) fail('REDRAW_EPISODE_ARTIFACT_HASH_MISMATCH', 'episode')
     if (typeof adapters.provider.inspectEpisode === 'function') {
       manifest.episode_verify_reread = publicPathless(await adapters.provider.inspectEpisode({ output_path: episodePath, manifest: clone(manifest) }))
+      assertEpisodeInspection(manifest, manifest.episode_verify_reread)
     }
   }
   manifest.verification = { status: 'passed', verified_at: adapters.now().toISOString() }

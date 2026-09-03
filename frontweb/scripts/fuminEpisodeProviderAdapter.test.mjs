@@ -100,3 +100,67 @@ test('Fumin transcript consensus enforces target English dialogue and silent sho
     /FUMIN_EPISODE_SILENT_SHOT_HAS_SPEECH/,
   )
 })
+
+test('Fumin adapter assembles two verified shots with ffmpeg concat instead of raw byte concatenation', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fumin-assemble-'))
+  try {
+    const shot1 = path.join(root, 'shot 1.mp4')
+    const shot2 = path.join(root, "shot'2.mp4")
+    const output = path.join(root, 'out', 'episode.mp4')
+    fs.writeFileSync(shot1, 'mp4-a')
+    fs.writeFileSync(shot2, 'mp4-b')
+    const calls = []
+    const adapter = createFuminEpisodeProviderAdapter({
+      apiKey: 'test-key',
+      fetchImpl: async () => { throw new Error('network must not be used') },
+      runProcess: (command, args, code) => {
+        calls.push({ command, args, code })
+        assert.equal(command, 'ffmpeg-test-bin')
+        assert.deepEqual(args.slice(0, 4), ['-hide_banner', '-loglevel', 'error', '-f'])
+        assert.equal(args.includes('-safe'), true)
+        assert.equal(args.includes('-c'), true)
+        assert.equal(args.at(-1), output)
+        const listPath = args[args.indexOf('-i') + 1]
+        const list = fs.readFileSync(listPath, 'utf8')
+        assert.match(list, /^file '/m)
+        assert.match(list, /shot'\\''2\.mp4/)
+        fs.mkdirSync(path.dirname(output), { recursive: true })
+        fs.writeFileSync(output, 'ffmpeg-output')
+        return ''
+      },
+      ffmpegPath: 'ffmpeg-test-bin',
+    })
+    const result = await adapter.assembleEpisode({ shot_paths: [shot1, shot2], output_path: output })
+    assert.equal(calls.length, 1)
+    assert.equal(fs.readFileSync(output, 'utf8'), 'ffmpeg-output')
+    assert.notEqual(fs.readFileSync(output, 'utf8'), 'mp4-amp4-b')
+    assert.equal(result.sha256, sha256(Buffer.from('ffmpeg-output')))
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('Fumin adapter rejects concat output that ffmpeg did not create', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fumin-assemble-missing-'))
+  try {
+    const shot1 = path.join(root, 'shot-1.mp4')
+    const shot2 = path.join(root, 'shot-2.mp4')
+    const output = path.join(root, 'out', 'episode.mp4')
+    fs.writeFileSync(shot1, 'mp4-a')
+    fs.writeFileSync(shot2, 'mp4-b')
+    const adapter = createFuminEpisodeProviderAdapter({
+      apiKey: 'test-key',
+      fetchImpl: async () => { throw new Error('network must not be used') },
+      runProcess: () => '',
+      ffmpegPath: 'ffmpeg-test-bin',
+    })
+    await assert.rejects(
+      () => adapter.assembleEpisode({ shot_paths: [shot1, shot2], output_path: output }),
+      /FUMIN_EPISODE_ASSEMBLE_OUTPUT_MISSING/,
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
