@@ -239,6 +239,9 @@ function manifestArtifactPath(stateDir, artifactId, allowedDir) {
     || path.isAbsolute(artifactId)
     || path.win32.isAbsolute(artifactId)
     || path.posix.isAbsolute(artifactId)
+    || artifactId.includes('\\')
+    || artifactId.endsWith('/')
+    || path.posix.normalize(artifactId) !== artifactId
     || artifactId.split(/[\\/]+/).includes('..')) {
     fail('REDRAW_EPISODE_ARTIFACT_PATH_INVALID', artifactId)
   }
@@ -253,8 +256,11 @@ function manifestArtifactPath(stateDir, artifactId, allowedDir) {
     if (!fs.existsSync(current)) break
     if (fs.lstatSync(current).isSymbolicLink()) fail('REDRAW_EPISODE_ARTIFACT_PATH_INVALID', artifactId)
   }
-  if (fs.existsSync(artifactPath) && !sameOrInside(realTargetPath(allowedRoot), fs.realpathSync(artifactPath))) {
-    fail('REDRAW_EPISODE_ARTIFACT_PATH_INVALID', artifactId)
+  if (fs.existsSync(artifactPath)) {
+    if (!fs.lstatSync(artifactPath).isFile()
+      || !sameOrInside(realTargetPath(allowedRoot), fs.realpathSync(artifactPath))) {
+      fail('REDRAW_EPISODE_ARTIFACT_PATH_INVALID', artifactId)
+    }
   }
   return artifactPath
 }

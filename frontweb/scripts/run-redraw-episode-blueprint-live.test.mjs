@@ -589,6 +589,41 @@ test('verify rejects traversal, absolute and disallowed-directory artifact ids b
   }
 })
 
+test('verify rejects non-canonical artifact ids before inspecting them', async (t) => {
+  const artifactIds = [
+    'outputs/shots/./shot-1.mp4',
+    'outputs\\shots\\shot-1.mp4',
+    'outputs//shots/shot-1.mp4',
+    'outputs/shots/shot-1.mp4/',
+    'outputs/shots',
+  ]
+
+  for (const artifactId of artifactIds) {
+    await t.test(artifactId, async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-verify-canonical-paths-'))
+      try {
+        const state = await makeVerifyState(root)
+        const manifest = JSON.parse(JSON.stringify(state.manifest))
+        manifest.tasks[0].artifact.artifact_id = artifactId
+        fs.writeFileSync(state.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+        let inspections = 0
+        await assert.rejects(
+          () => state.runStage(state.parseArgs(['--episode-package', state.packagePath, '--state-dir', state.stateDir, '--stage', 'verify']), {
+            provider: {
+              name: 'fake-provider',
+              inspectArtifact: async () => { inspections += 1; return { media: { has_audio: true } } },
+            },
+          }),
+          (error) => error.code === 'REDRAW_EPISODE_ARTIFACT_PATH_INVALID',
+        )
+        assert.equal(inspections, 0)
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true })
+      }
+    })
+  }
+})
+
 test('verify rejects symlink shot and episode artifacts', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-verify-symlink-'))
   try {
