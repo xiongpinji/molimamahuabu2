@@ -4,6 +4,8 @@ const { createHash } = require('node:crypto');
 
 const HEX_64 = /^[a-f0-9]{64}$/;
 const UNSAFE_CONTRACT_KEY = /(?:^|_)(?:api_?key|access_?key|secret|token|password|credential|provider|model|prompt|raw|url|path)(?:_|$)/i;
+const CJK_TEXT = /[\u3400-\u9fff]/u;
+const TECHNICAL_TEXT_KEY = /(?:^|_)(?:id|ids|hash|sha256|url|uri|path|key|kind|locale|market|schema_?version)(?:_|$)/i;
 
 function codedError(code, message) {
   const error = new Error(message);
@@ -199,6 +201,25 @@ function assertPromptUsesTargetText(prompt, blueprint, localization) {
   }
 }
 
+function assertNoSourceLanguageText(value, localization, path = []) {
+  if (!String(localization.locale || '').toLowerCase().startsWith('en')) return;
+  if (typeof value === 'string') {
+    const key = String(path[path.length - 1] || '');
+    if (!TECHNICAL_TEXT_KEY.test(key) && CJK_TEXT.test(value)) {
+      throw codedError('REDRAW_PRODUCTION_PACK_SOURCE_TEXT_REMAINS', 'production pack contains source-language text');
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoSourceLanguageText(item, localization, [...path, String(index)]));
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  for (const [key, item] of Object.entries(value)) {
+    assertNoSourceLanguageText(item, localization, [...path, key]);
+  }
+}
+
 function compileShotProductionPack(input = {}) {
   const blueprint = input.blueprint || {};
   const localization = input.localization || {};
@@ -269,6 +290,13 @@ function compileShotProductionPack(input = {}) {
   };
   pack.prompt = buildPrompt(pack);
   assertPromptUsesTargetText(pack.prompt, blueprint, localization);
+  assertNoSourceLanguageText({
+    characters: pack.characters,
+    dialogue: pack.dialogue,
+    visual_contract: pack.visual_contract,
+    audio_contract: pack.audio_contract,
+    prompt: pack.prompt,
+  }, localization);
   pack.production_pack_hash = productionPackHash(pack);
   return pack;
 }

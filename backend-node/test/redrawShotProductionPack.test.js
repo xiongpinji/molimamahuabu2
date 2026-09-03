@@ -111,6 +111,26 @@ test('English production prompt uses target names, dialogue, and screen text wit
   assert.doesNotMatch(pack.prompt, /小满|调度员，我回来了|先把订单送完|尾号八七/);
 });
 
+test('English production pack rejects source-language visual and audio free text after name replacement', () => {
+  const cases = [
+    ['composition', (shot) => { shot.composition = '室内中景 on 小满'; }],
+    ['camera_movement', (shot) => { shot.camera_movement = '镜头缓慢推进'; }],
+    ['opening_state', (shot) => { shot.opening_state = '门口有雨声'; }],
+    ['continuous_action', (shot) => { shot.continuous_action = 'Marcus checks the 订单'; }],
+    ['ending_state', (shot) => { shot.ending_state = '灯光变暗'; }],
+    ['audio_contract ambience', (shot) => { shot.audio_contract = { ambience: '安静的调度站' }; }],
+  ];
+  for (const [name, mutate] of cases) {
+    const blueprint = lockedBlueprint();
+    mutate(blueprint.shots[0]);
+    assert.throws(
+      () => compileEpisodeProductionPacks({ blueprint, localization: lockedLocalization() }),
+      (error) => error.code === 'REDRAW_PRODUCTION_PACK_SOURCE_TEXT_REMAINS',
+      name,
+    );
+  }
+});
+
 test('canonical production pack hash changes when a structured field changes', () => {
   const input = { blueprint: lockedBlueprint(), localization: lockedLocalization() };
   const [first] = compileEpisodeProductionPacks(input);
@@ -199,6 +219,11 @@ function lockInput(state) {
   };
 }
 
+function dbUpdateBlueprint(db, blueprint) {
+  db.prepare('UPDATE redraw_episode_blueprints SET blueprint_json = ? WHERE id = 20')
+    .run(JSON.stringify(blueprint));
+}
+
 test('localization lock atomically writes every existing owned shot pack and hash bindings', () => {
   const state = createLockDb();
   try {
@@ -238,6 +263,30 @@ test('localization lock rolls back version, work, and earlier shot writes when p
       /injected pack persistence failure/,
     );
     assert.equal(writes, 2);
+    assert.deepEqual(state.db.prepare('SELECT status, localization_hash FROM redraw_versions WHERE id = 10').get(), {
+      status: 'needs_review', localization_hash: state.localization.localization_hash,
+    });
+    assert.deepEqual(state.db.prepare('SELECT current_step, status FROM redraw_works WHERE id = 1').get(), {
+      current_step: 1, status: 'needs_review',
+    });
+    const shots = state.db.prepare('SELECT compiled_prompt_json, preparation_snapshot_json FROM redraw_shots ORDER BY id').all();
+    assert.equal(shots.every((row) => JSON.parse(row.compiled_prompt_json).legacy === true), true);
+    assert.equal(shots.every((row) => JSON.parse(row.preparation_snapshot_json).existing === 'kept'), true);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('localization lock rolls back when English production pack keeps source-language visual text', () => {
+  const state = createLockDb();
+  try {
+    const blueprint = structuredClone(state.blueprint);
+    blueprint.shots[0].composition = '室内中景 on 小满';
+    dbUpdateBlueprint(state.db, blueprint);
+    assert.throws(
+      () => lockLocalizationReview(state.db, { tenantId: 'tenant-a', userId: 'user-a' }, 10, lockInput(state)),
+      (error) => error.code === 'REDRAW_PRODUCTION_PACK_SOURCE_TEXT_REMAINS',
+    );
     assert.deepEqual(state.db.prepare('SELECT status, localization_hash FROM redraw_versions WHERE id = 10').get(), {
       status: 'needs_review', localization_hash: state.localization.localization_hash,
     });
