@@ -11,6 +11,7 @@ const prices = require('../src/services/modelPriceService');
 const taskService = require('../src/services/taskService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const { normalizeSourceFacts } = require('../src/services/redrawAnalysisService');
+const { normalizeEpisodeBlueprint } = require('../src/services/redrawEpisodeBlueprintService');
 const redraw = require('../src/services/redrawOrchestrator');
 
 const log = { info() {}, warn() {}, error() {} };
@@ -156,7 +157,7 @@ function validFactsV2(confidence = {}) {
 }
 
 function needsReviewBlueprint() {
-  return {
+  return normalizeEpisodeBlueprint({
     schema_version: 'episode-blueprint-v1',
     source: {
       asset_id: 101,
@@ -170,19 +171,56 @@ function needsReviewBlueprint() {
       audio_sample_rate_hz: 48_000,
       audio_channels: 2,
     },
-    shots: [{
-      id: 'shot-blueprint-1',
-      index: 1,
-      start_ms: 0,
-      end_ms: 10_000,
-      opening_state: '人物站在门边。',
-      continuous_action: '人物拿起手机。',
-      ending_state: '人物看向屏幕。',
-      dialogue: [{ id: 'audio-segment-1', source_text: '别回头。' }],
+    evidence_manifest: {
+      items: [{
+        id: 'evidence-visual-1', kind: 'visual', asset_id: 202,
+        sha256: 'b'.repeat(64), tool: 'native-vision', tool_version: '1.0.0',
+      }],
+    },
+    story: {
+      summary: '人物在门边查看手机。',
+      beats: ['人物拿起手机'],
+      evidence_refs: ['evidence-visual-1'],
+      confidence: 0.9,
+    },
+    characters: [{
+      id: 'character-1', source_name: '人物', display_name: '人物', relationship: '主角',
+      relationships: [], face_track_ids: ['face-1'], evidence_refs: ['evidence-visual-1'],
+      confidence: 0.9, review_status: 'approved',
     }],
+    scenes: [{
+      id: 'scene-1', location: '门边', time: '夜',
+      source_ranges: [{ start_ms: 0, end_ms: 10_000 }],
+      evidence_refs: ['evidence-visual-1'], confidence: 0.9,
+    }],
+    props: [{
+      id: 'prop-phone', name: '手机', evidence_ranges: [{ start_ms: 1000, end_ms: 5000 }],
+      evidence_refs: ['evidence-visual-1'], confidence: 0.9,
+    }],
+    shots: [{
+      id: 'shot-blueprint-1', index: 1, start_ms: 0, end_ms: 10_000,
+      composition: '人物站在门边。', camera_movement: '定机位',
+      opening_state: '人物站在门边。', continuous_action: '人物拿起手机。',
+      ending_state: '人物看向屏幕。', visible_character_ids: ['character-1'], dialogue: [],
+      text_regions: [], audio_contract: { dialogue_mode: 'silent', ambient_audio: 'preserve_or_rebuild' },
+      confidence: { character_mapping: 0.9, speaker_mapping: 0.9, text_regions: 0.9, shot_boundary: 0.9 },
+      evidence_refs: ['evidence-visual-1'],
+    }],
+    causal_chain: [{
+      id: 'causal-1', cause: '手机响起。', effect: '人物查看手机。',
+      evidence_refs: ['evidence-visual-1'], confidence: 0.9,
+    }],
+    locked_facts: [{
+      id: 'fact-1', text: '人物在门边。', evidence_refs: ['evidence-visual-1'], confidence: 0.9,
+    }],
+    reversals: [{
+      id: 'reversal-1', text: '手机消息改变行动。', evidence_refs: ['evidence-visual-1'], confidence: 0.8,
+    }],
+    episode_hook: {
+      text: '手机里是什么消息？', evidence_refs: ['evidence-visual-1'], confidence: 0.9,
+    },
     review: { status: 'needs_review' },
-    blueprint_hash: 'd'.repeat(64),
-  };
+  });
 }
 
 function createDb() {
@@ -804,29 +842,45 @@ test('blueprint pipeline runs audio then visual then fusion and stops at needs_r
   assert.equal(result.status, 'completed');
   assert.equal(result.blueprint_hash, blueprint.blueprint_hash);
   assert.equal(result.review_status, 'needs_review');
-  assert.equal(result.blueprint, blueprint);
+  assert.deepEqual(result.blueprint, blueprint);
+  assert.equal(result.blueprint_revision, 1);
+  assert.ok(result.blueprint_updated_at);
   assert.equal(Object.hasOwn(result, 'automation_decision'), false);
   assert.deepEqual(
     db.prepare('SELECT status, current_step FROM redraw_works WHERE id = 1').get(),
     { status: 'needs_attention', current_step: 1 },
   );
-  const version = db.prepare('SELECT id, source_facts_json, facts_hash, status FROM redraw_versions WHERE work_id = 1').get();
-  assert.deepEqual(JSON.parse(version.source_facts_json), blueprint);
-  assert.equal(version.facts_hash, blueprint.blueprint_hash);
+  const version = db.prepare(`
+    SELECT id, source_facts_json, facts_hash, blueprint_hash, status
+    FROM redraw_versions WHERE work_id = 1
+  `).get();
+  assert.equal(version.source_facts_json, null);
+  assert.equal(version.facts_hash, null);
+  assert.equal(version.blueprint_hash, null);
   assert.equal(version.status, 'needs_attention');
+  const persisted = db.prepare(`
+    SELECT revision, status, blueprint_json, blueprint_hash, evidence_manifest_json, updated_at
+    FROM redraw_episode_blueprints
+    WHERE tenant_id = 'tenant-1' AND user_id = 'user-1' AND work_id = 1
+  `).get();
+  assert.equal(persisted.revision, 1);
+  assert.equal(persisted.status, 'draft');
+  assert.deepEqual(JSON.parse(persisted.blueprint_json), blueprint);
+  assert.equal(persisted.blueprint_hash, blueprint.blueprint_hash);
+  assert.deepEqual(JSON.parse(persisted.evidence_manifest_json), blueprint.evidence_manifest);
+  assert.equal(result.blueprint_updated_at, persisted.updated_at);
   const taskResult = JSON.parse(db.prepare('SELECT result FROM async_tasks WHERE id = ?').get(result.task_id).result);
   assert.equal(taskResult.blueprint_hash, blueprint.blueprint_hash);
   assert.equal(taskResult.review_status, 'needs_review');
+  assert.equal(taskResult.blueprint_revision, 1);
+  assert.equal(taskResult.blueprint_updated_at, persisted.updated_at);
   assert.equal(Object.hasOwn(taskResult, 'automation_decision'), false);
   assert.deepEqual(
     db.prepare("SELECT to_state, evidence_hash FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get(),
     { to_state: 'analysis_review', evidence_hash: blueprint.blueprint_hash },
   );
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM async_tasks WHERE type != 'redraw_analysis'").get().n, 0);
-  assert.equal(
-    db.prepare('SELECT localized_dialogue_json FROM redraw_shots WHERE version_id = ?').get(version.id).localized_dialogue_json,
-    '[]',
-  );
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_shots WHERE version_id = ?').get(version.id).count, 0);
   db.close();
 });
 

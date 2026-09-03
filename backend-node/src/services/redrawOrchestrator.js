@@ -10,6 +10,7 @@ const {
 } = require('./redrawAutomationPolicyService');
 const redrawGenerationService = require('./redrawGenerationService');
 const { appendWorkflowEvent } = require('./redrawWorkflowEventService');
+const redrawBlueprintWorkflowService = require('./redrawBlueprintWorkflowService');
 
 const DEFAULT_RESUME_QUERY_TIMEOUT_MS = 10_000;
 const RESUME_ERROR_SNIPPET_LIMIT = 512;
@@ -268,71 +269,46 @@ function assertNeedsReviewBlueprint(blueprint) {
   return blueprint;
 }
 
-function insertBlueprintShots(db, work, version, blueprint) {
-  const shotColumns = tableColumns(db, 'redraw_shots');
-  for (const [index, shot] of blueprint.shots.entries()) {
-    const existing = shotColumns.has('work_id')
-      ? db.prepare('SELECT id FROM redraw_shots WHERE work_id = ? AND shot_id = ? LIMIT 1').get(work.id, shot.id)
-      : null;
-    if (existing) continue;
-    insertDynamic(db, 'redraw_shots', {
-      work_id: work.id,
-      version_id: version.id,
-      tenant_id: work.tenant_id || null,
-      user_id: work.user_id || null,
-      shot_id: shot.id,
-      batch_index: 1,
-      shot_index: index + 1,
-      start_ms: shot.start_ms,
-      end_ms: shot.end_ms,
-      duration_ms: shot.end_ms - shot.start_ms,
-      source_dialogue_json: JSON.stringify(shot.dialogue || []),
-      opening_state: shot.opening_state,
-      continuous_action: shot.continuous_action,
-      ending_state: shot.ending_state,
-      draft_json: JSON.stringify(shot),
-      status: 'draft',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    });
-  }
-}
-
 function writeBlueprintOnce(db, work, blueprint) {
   const now = new Date().toISOString();
-  let version = existingSourceFactsVersion(db, work);
-  let changed = false;
-  if (version) {
-    if (version.facts_hash !== blueprint.blueprint_hash) {
-      throw codedError('SOURCE_FACTS_HASH_CONFLICT', '母本蓝图 hash 冲突，请人工确认后再继续');
-    }
-  } else {
-    const existing = db.prepare('SELECT * FROM redraw_versions WHERE work_id = ? ORDER BY id ASC LIMIT 1').get(work.id);
-    if (existing) {
-      db.prepare('UPDATE redraw_versions SET source_facts_json = ?, facts_hash = ?, status = ?, updated_at = ? WHERE id = ?')
-        .run(JSON.stringify(blueprint), blueprint.blueprint_hash, 'needs_attention', now, existing.id);
-      version = { ...existing, source_facts_json: JSON.stringify(blueprint), facts_hash: blueprint.blueprint_hash };
-    } else {
-      const id = insertDynamic(db, 'redraw_versions', {
-        work_id: work.id,
-        tenant_id: work.tenant_id || null,
-        user_id: work.user_id || null,
-        version: 1,
-        locale: 'source',
-        market: '',
-        localization_level: 'faithful',
-        source_facts_json: JSON.stringify(blueprint),
-        facts_hash: blueprint.blueprint_hash,
-        status: 'needs_attention',
-        created_at: now,
-        updated_at: now,
-      }).lastInsertRowid;
-      version = { id, work_id: work.id, version: 1, facts_hash: blueprint.blueprint_hash };
-    }
-    changed = true;
+  let version = db.prepare(`
+    SELECT *
+    FROM redraw_versions
+    WHERE tenant_id = ? AND user_id = ? AND work_id = ? AND deleted_at IS NULL
+    ORDER BY CASE WHEN version = ? THEN 0 ELSE 1 END, version DESC, id DESC
+    LIMIT 1
+  `).get(work.tenant_id, work.user_id, work.id, Number(work.current_version || 0));
+  if (!version) {
+    const id = insertDynamic(db, 'redraw_versions', {
+      work_id: work.id,
+      tenant_id: work.tenant_id || null,
+      user_id: work.user_id || null,
+      version: 1,
+      locale: 'source',
+      market: '',
+      localization_level: 'faithful',
+      source_facts_json: null,
+      facts_hash: null,
+      blueprint_hash: null,
+      status: 'needs_attention',
+      created_at: now,
+      updated_at: now,
+    }).lastInsertRowid;
+    version = { id, work_id: work.id, version: 1, status: 'needs_attention' };
   }
+  const existingDraft = db.prepare(`
+    SELECT id
+    FROM redraw_episode_blueprints
+    WHERE tenant_id = ? AND user_id = ? AND work_id = ? AND blueprint_hash = ?
+    LIMIT 1
+  `).get(work.tenant_id, work.user_id, work.id, blueprint.blueprint_hash);
+  const draft = redrawBlueprintWorkflowService.createOrSaveDraft({
+    db,
+    tenantId: work.tenant_id,
+    userId: work.user_id,
+  }, { workId: work.id, blueprint });
+  const changed = !existingDraft;
   updateDynamic(db, 'redraw_versions', { status: 'needs_attention', updated_at: now }, 'id', version.id);
-  insertBlueprintShots(db, work, version, blueprint);
   updateDynamic(db, 'redraw_works', {
     status: 'needs_attention',
     current_version: Number(version.version || 1),
@@ -340,13 +316,13 @@ function writeBlueprintOnce(db, work, blueprint) {
     error_msg: null,
     updated_at: now,
   }, 'id', work.id);
-  return { version, changed };
+  return { version, draft, changed };
 }
 
 function finalizeBlueprintAnalysis(db, task, work, pipelineResult) {
   const blueprint = assertNeedsReviewBlueprint(pipelineResult.blueprint);
   return atomicFinalize(db, () => {
-    const { version, changed } = writeBlueprintOnce(db, work, blueprint);
+    const { version, draft, changed } = writeBlueprintOnce(db, work, blueprint);
     const project = readProjectPolicy(db, work);
     if (changed && project) {
       appendWorkflowEvent(db, {
@@ -358,7 +334,7 @@ function finalizeBlueprintAnalysis(db, task, work, pipelineResult) {
         fromState: String(work.status || ''),
         toState: 'analysis_review',
         reasonCode: 'analysis_completed',
-        evidenceHash: blueprint.blueprint_hash,
+        evidenceHash: draft.blueprint_hash,
         metadata: {
           action: 'needs_review',
           effective_mode: 'safe',
@@ -372,9 +348,11 @@ function finalizeBlueprintAnalysis(db, task, work, pipelineResult) {
       status: 'completed',
       work_id: work.id,
       version_id: version.id,
-      blueprint_hash: blueprint.blueprint_hash,
-      review_status: blueprint.review.status,
-      blueprint,
+      blueprint_hash: draft.blueprint_hash,
+      blueprint_revision: draft.revision,
+      blueprint_updated_at: draft.updated_at,
+      review_status: draft.blueprint.review.status,
+      blueprint: draft.blueprint,
     };
     taskService.updateTaskResult(db, task.id, payload);
     creditLedger.settleGeneration(

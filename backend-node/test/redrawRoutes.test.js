@@ -16,6 +16,7 @@ const realRedrawOrchestrator = require('../src/services/redrawOrchestrator');
 const redrawCapabilityService = require('../src/services/redrawCapabilityService');
 const redrawAssetService = require('../src/services/redrawAssetService');
 const redrawReviewService = require('../src/services/redrawReviewService');
+const { normalizeEpisodeBlueprint } = require('../src/services/redrawEpisodeBlueprintService');
 const providerAssetUrlService = require('../src/services/providerAssetUrlService');
 const userAuthService = require('../src/services/userAuthService');
 
@@ -1514,19 +1515,7 @@ test('默认分析入口按 audio 到 visual 到 fusion 生成 needs_review 母�
         sha256: 'b'.repeat(64), tool: 'native-vision', tool_version: '2.0.0',
       },
     };
-    const blueprint = {
-      schema_version: 'episode-blueprint-v1',
-      source: visualEvidence.source,
-      shots: [{
-        id: 'shot-route-1', index: 1, start_ms: 0, end_ms: 90_000,
-        opening_state: '人物站在门边。',
-        continuous_action: '人物阅读手机消息。',
-        ending_state: '人物抬头。',
-        dialogue: [],
-      }],
-      review: { status: 'needs_review' },
-      blueprint_hash: 'd'.repeat(64),
-    };
+    const blueprint = routeNeedsReviewBlueprint(visualEvidence.source);
     const handlers = redrawRoutes(db, { error() {}, warn() {}, info() {} }, routeDeps({
       orchestrator: {
         startAnalysis: (...args) => realRedrawOrchestrator.startAnalysis(...args),
@@ -1564,6 +1553,8 @@ test('默认分析入口按 audio 到 visual 到 fusion 生成 needs_review 母�
     assert.equal(submitted.statusCode, 201);
     assert.deepEqual(calls, ['audio', 'visual', 'fusion']);
     assert.equal(submitted.body.data.blueprint_hash, blueprint.blueprint_hash);
+    assert.equal(submitted.body.data.blueprint_revision, 1);
+    assert.ok(submitted.body.data.blueprint_updated_at);
     assert.equal(submitted.body.data.review_status, 'needs_review');
     assert.equal(submitted.body.data.current_step, 1);
     assert.equal(submitted.body.data.status, 'completed');
@@ -1571,7 +1562,215 @@ test('默认分析入口按 audio 到 visual 到 fusion 生成 needs_review 母�
       db.prepare('SELECT status, current_step FROM redraw_works WHERE id = ?').get(workId),
       { status: 'needs_attention', current_step: 1 },
     );
+    const persisted = db.prepare(`
+      SELECT revision, status, blueprint_hash, updated_at
+      FROM redraw_episode_blueprints
+      WHERE tenant_id = 'tenant-a' AND user_id = 'user-a' AND work_id = ?
+    `).get(workId);
+    assert.deepEqual(persisted, {
+      revision: 1,
+      status: 'draft',
+      blueprint_hash: blueprint.blueprint_hash,
+      updated_at: submitted.body.data.blueprint_updated_at,
+    });
+    assert.deepEqual(db.prepare(`
+      SELECT source_facts_json, facts_hash, blueprint_hash
+      FROM redraw_versions WHERE tenant_id = 'tenant-a' AND user_id = 'user-a' AND work_id = ?
+    `).get(workId), {
+      source_facts_json: null,
+      facts_hash: null,
+      blueprint_hash: null,
+    });
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_shots WHERE work_id = ?').get(workId).count, 0);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM async_tasks WHERE type != 'redraw_analysis'").get().n, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('母本蓝图 GET PUT lock API 只把 owner 和精确 CAS 字段交给 workflow service', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    const calls = [];
+    const record = {
+      id: 81,
+      work_id: workId,
+      revision: 1,
+      status: 'draft',
+      blueprint_hash: 'a'.repeat(64),
+      blueprint: { schema_version: 'episode-blueprint-v1', story: { summary: '安全摘要' } },
+      evidence_manifest: { items: [] },
+      reviewed_by: null,
+      reviewed_at: null,
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      blueprintWorkflowService: {
+        getCurrentBlueprint(ctx, input) {
+          calls.push(['get', ctx, input]);
+          return record;
+        },
+        saveDraft(ctx, input) {
+          calls.push(['save', ctx, input]);
+          return { ...record, blueprint: input.blueprint };
+        },
+        lockBlueprint(ctx, input) {
+          calls.push(['lock', ctx, input]);
+          return { ...record, status: 'locked', reviewed_by: ctx.userId, reviewed_at: NOW };
+        },
+      },
+    }));
+
+    const read = captureResponse();
+    handlers.getBlueprint(request({ id: workId }), read);
+    assert.equal(read.statusCode, 200);
+    assert.equal(read.body.data.blueprint_hash, record.blueprint_hash);
+
+    const edited = { schema_version: 'episode-blueprint-v1', story: { summary: '审核修订' } };
+    const saved = captureResponse();
+    handlers.saveBlueprint(request({
+      id: workId,
+      body: { expected_updated_at: NOW, blueprint: edited },
+    }), saved);
+    assert.equal(saved.statusCode, 200);
+    assert.deepEqual(saved.body.data.blueprint, edited);
+
+    const locked = captureResponse();
+    handlers.lockBlueprint(request({
+      id: workId,
+      body: { expected_blueprint_hash: 'a'.repeat(64), expected_updated_at: NOW },
+    }), locked);
+    assert.equal(locked.statusCode, 200);
+    assert.equal(locked.body.data.status, 'locked');
+
+    assert.equal(calls.length, 3);
+    for (const [, ctx, input] of calls) {
+      assert.equal(ctx.db, db);
+      assert.equal(ctx.tenantId, 'tenant-a');
+      assert.equal(ctx.userId, 'user-a');
+      assert.equal(input.workId, workId);
+    }
+    assert.deepEqual(calls[1][2], {
+      workId,
+      blueprint: edited,
+      expectedUpdatedAt: NOW,
+    });
+    assert.deepEqual(calls[2][2], {
+      workId,
+      expectedBlueprintHash: 'a'.repeat(64),
+      expectedUpdatedAt: NOW,
+    });
+
+    const foreign = captureResponse();
+    handlers.getBlueprint(request({ id: workId, tenantId: 'tenant-b' }), foreign);
+    assert.equal(foreign.statusCode, 404);
+    assert.equal(calls.length, 3);
+  } finally {
+    db.close();
+  }
+});
+
+test('母本蓝图 PUT 递归拒绝 URL 路径密钥 provider model generation 和包装字段', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    let calls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      blueprintWorkflowService: {
+        saveDraft() {
+          calls += 1;
+          return {};
+        },
+        lockBlueprint() {
+          calls += 1;
+          return {};
+        },
+      },
+    }));
+    const unsafeBodies = [
+      { expected_updated_at: NOW, blueprint: { story: { summary: 'https://provider.example/task' } } },
+      { expected_updated_at: NOW, blueprint: { story: { summary: 'C:\\private\\blueprint.json' } } },
+      { expected_updated_at: NOW, blueprint: { provider: 'private-provider' } },
+      { expected_updated_at: NOW, blueprint: { model: 'private-model' } },
+      { expected_updated_at: NOW, blueprint: { generation_parameters: { seed: 1 } } },
+      { expected_updated_at: NOW, blueprint: { api_key: 'private-key' } },
+      { expected_updated_at: NOW, blueprint: {}, wrapper: 'unknown' },
+    ];
+    for (const body of unsafeBodies) {
+      const result = captureResponse();
+      handlers.saveBlueprint(request({ id: workId, body }), result);
+      assert.equal(result.statusCode, 400, JSON.stringify(body));
+      assert.equal(/provider\.example|C:\\private|private-key|private-model/.test(JSON.stringify(result.body)), false);
+    }
+    const unsafeLocks = [
+      {},
+      { expected_blueprint_hash: 'a'.repeat(64), expected_updated_at: NOW, provider: 'client' },
+      { expected_blueprint_hash: 'short', expected_updated_at: NOW },
+      { expected_blueprint_hash: 'a'.repeat(64), expected_updated_at: '' },
+    ];
+    for (const body of unsafeLocks) {
+      const result = captureResponse();
+      handlers.lockBlueprint(request({ id: workId, body }), result);
+      assert.equal(result.statusCode, 400, JSON.stringify(body));
+    }
+    assert.equal(calls, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('母本蓝图 API 稳定映射 400 404 409 且内部错误不泄露路径和 secret', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    const cases = [
+      ['REDRAW_BLUEPRINT_INPUT_INVALID', 400],
+      ['REDRAW_BLUEPRINT_FORBIDDEN_FIELD', 400],
+      ['REDRAW_BLUEPRINT_NOT_FOUND', 404],
+      ['REDRAW_BLUEPRINT_CAS_CONFLICT', 409],
+      ['REDRAW_BLUEPRINT_LOCKED', 409],
+      ['REDRAW_BLUEPRINT_HASH_MISMATCH', 409],
+      ['REDRAW_BLUEPRINT_VERSION_ALREADY_BOUND', 409],
+      ['BLUEPRINT_REVIEW_REQUIRED', 409],
+      ['BLUEPRINT_SPEAKER_REVIEW_REQUIRED', 409],
+    ];
+    for (const [code, status] of cases) {
+      const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+        blueprintWorkflowService: {
+          saveDraft() {
+            throw Object.assign(new Error(`${code}: private detail`), { code });
+          },
+        },
+      }));
+      const result = captureResponse();
+      handlers.saveBlueprint(request({
+        id: workId,
+        body: { expected_updated_at: NOW, blueprint: {} },
+      }), result);
+      assert.equal(result.statusCode, status, code);
+      assert.equal(result.body.error.code, code);
+    }
+
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      blueprintWorkflowService: {
+        saveDraft() {
+          throw new Error('C:\\private\\blueprint.json Authorization Bearer provider-secret');
+        },
+      },
+    }));
+    const failed = captureResponse();
+    handlers.saveBlueprint(request({
+      id: workId,
+      body: { expected_updated_at: NOW, blueprint: {} },
+    }), failed);
+    assert.equal(failed.statusCode, 500);
+    assert.equal(failed.body.error.code, 'INTERNAL_ERROR');
+    assert.equal(/private|Authorization|Bearer|provider-secret/i.test(JSON.stringify(failed.body)), false);
   } finally {
     db.close();
   }
@@ -5718,6 +5917,9 @@ test('第三步、角色身份包、本地化确认和参考准备 API 已真实
       .flatMap((layer) => Object.keys(layer.route.methods)
         .map((method) => `${method.toUpperCase()} ${layer.route.path}`)));
     assert.equal(routes.has('GET /redraw/works/:id'), true);
+    assert.equal(routes.has('GET /redraw/works/:id/blueprint'), true);
+    assert.equal(routes.has('PUT /redraw/works/:id/blueprint'), true);
+    assert.equal(routes.has('POST /redraw/works/:id/blueprint/lock'), true);
     assert.equal(routes.has('PUT /redraw/shots/:id'), true);
     assert.equal(routes.has('GET /redraw/shots/:id/reference-bundle'), true);
     assert.equal(routes.has('PUT /redraw/shots/:id/reference-bundle'), true);
@@ -6901,6 +7103,63 @@ async function withRouteServer(router, run) {
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
   }
+}
+
+function routeNeedsReviewBlueprint(source) {
+  return normalizeEpisodeBlueprint({
+    schema_version: 'episode-blueprint-v1',
+    source,
+    evidence_manifest: {
+      items: [{
+        id: 'evidence-visual-route', kind: 'visual', asset_id: 202,
+        sha256: 'b'.repeat(64), tool: 'native-vision', tool_version: '2.0.0',
+      }],
+    },
+    story: {
+      summary: '人物在门边阅读手机消息。', beats: ['人物抬头'],
+      evidence_refs: ['evidence-visual-route'], confidence: 0.9,
+    },
+    characters: [{
+      id: 'character-route', source_name: '人物', display_name: '人物', relationship: '主角',
+      relationships: [], face_track_ids: ['face-route'], evidence_refs: ['evidence-visual-route'],
+      confidence: 0.9, review_status: 'approved',
+    }],
+    scenes: [{
+      id: 'scene-route', location: '门边', time: '夜',
+      source_ranges: [{ start_ms: 0, end_ms: source.duration_ms }],
+      evidence_refs: ['evidence-visual-route'], confidence: 0.9,
+    }],
+    props: [{
+      id: 'prop-route-phone', name: '手机',
+      evidence_ranges: [{ start_ms: 1000, end_ms: Math.min(source.duration_ms, 5000) }],
+      evidence_refs: ['evidence-visual-route'], confidence: 0.9,
+    }],
+    shots: [{
+      id: 'shot-route-1', index: 1, start_ms: 0, end_ms: source.duration_ms,
+      composition: '人物站在门边。', camera_movement: '定机位',
+      opening_state: '人物站在门边。', continuous_action: '人物阅读手机消息。',
+      ending_state: '人物抬头。', visible_character_ids: ['character-route'], dialogue: [],
+      text_regions: [], audio_contract: { dialogue_mode: 'silent', ambient_audio: 'preserve_or_rebuild' },
+      confidence: { character_mapping: 0.9, speaker_mapping: 0.9, text_regions: 0.9, shot_boundary: 0.9 },
+      evidence_refs: ['evidence-visual-route'],
+    }],
+    causal_chain: [{
+      id: 'causal-route', cause: '手机消息出现。', effect: '人物抬头。',
+      evidence_refs: ['evidence-visual-route'], confidence: 0.9,
+    }],
+    locked_facts: [{
+      id: 'fact-route', text: '人物在门边查看手机。',
+      evidence_refs: ['evidence-visual-route'], confidence: 0.9,
+    }],
+    reversals: [{
+      id: 'reversal-route', text: '消息改变人物行动。',
+      evidence_refs: ['evidence-visual-route'], confidence: 0.8,
+    }],
+    episode_hook: {
+      text: '消息内容是什么？', evidence_refs: ['evidence-visual-route'], confidence: 0.9,
+    },
+    review: { status: 'needs_review' },
+  });
 }
 
 function waitForDirectoryState(directory, predicate, label) {

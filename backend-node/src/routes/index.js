@@ -50,6 +50,7 @@ const redrawLocalVoiceRegistrationService = require('../services/redrawLocalVoic
 const redrawSourceAudioEvidenceService = require('../services/redrawSourceAudioEvidenceService');
 const redrawNativeSourceAnalysisService = require('../services/redrawNativeSourceAnalysisService');
 const redrawEvidenceFusionService = require('../services/redrawEvidenceFusionService');
+const redrawBlueprintWorkflowService = require('../services/redrawBlueprintWorkflowService');
 const { createRedrawProviderAssetsRouter } = require('./redrawProviderAssets');
 
 function createDefaultRedrawLocaleVerifier(options = {}) {
@@ -347,6 +348,9 @@ function setupRouter(cfg, db, log, options = {}) {
     evidenceFusionService: options.evidenceFusionService
       || redrawOptions.evidenceFusionService
       || redrawEvidenceFusionService,
+    blueprintWorkflowService: options.blueprintWorkflowService
+      || redrawOptions.blueprintWorkflowService
+      || redrawBlueprintWorkflowService,
     sourceAudioWorkerClient: options.sourceAudioWorkerClient
       || redrawOptions.sourceAudioWorkerClient
       || localeVerifier,
@@ -411,6 +415,9 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/redraw/style-presets', redraw.listStylePresets);
   r.get('/redraw/locales', redraw.listLocales);
   r.post('/redraw/works/:id/analyze', redraw.uploadReferenceImage, redraw.analyzeWork);
+  r.get('/redraw/works/:id/blueprint', redraw.getBlueprint);
+  r.put('/redraw/works/:id/blueprint', redraw.saveBlueprint);
+  r.post('/redraw/works/:id/blueprint/lock', redraw.lockBlueprint);
   r.post('/redraw/works/:id/localization-quote', redraw.localizationQuote);
   r.post('/redraw/works/:id/versions', redraw.createVersion);
   if (typeof explicitCoverageRegistrationProvider === 'function') {

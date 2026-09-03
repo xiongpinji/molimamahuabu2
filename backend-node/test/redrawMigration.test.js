@@ -2124,3 +2124,97 @@ test('补充对白审批迁移建立 owner 范围、状态约束和登记证据�
   `).get(), before);
   db.close();
 });
+
+test('母本蓝图迁移建立 owner 修订合同、唯一约束和版本哈希列且可重复执行', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  runMigrationsAndEnsure(db);
+
+  assert.deepEqual(columnNames(db, 'redraw_episode_blueprints'), [
+    'id',
+    'work_id',
+    'tenant_id',
+    'user_id',
+    'revision',
+    'status',
+    'blueprint_json',
+    'blueprint_hash',
+    'evidence_manifest_json',
+    'reviewed_by',
+    'reviewed_at',
+    'created_at',
+    'updated_at',
+  ]);
+  const table = tableSql(db, 'redraw_episode_blueprints');
+  assert.match(table, /UNIQUE\s*\(\s*work_id\s*,\s*revision\s*\)/i);
+  assert.match(table, /UNIQUE\s*\(\s*work_id\s*,\s*blueprint_hash\s*\)/i);
+  assert.match(table, /status\s+TEXT\s+NOT NULL[^,]*CHECK\s*\(\s*status\s+IN\s*\(\s*'draft'\s*,\s*'locked'\s*\)\s*\)/i);
+
+  const indexes = new Set(db.prepare("PRAGMA index_list(redraw_episode_blueprints)").all()
+    .map((row) => row.name));
+  assert.equal(indexes.has('idx_redraw_episode_blueprints_owner'), true);
+  assert.equal(indexes.has('idx_redraw_episode_blueprints_work_status'), true);
+
+  const versionColumns = columnNames(db, 'redraw_versions');
+  assert.equal(versionColumns.includes('blueprint_hash'), true);
+  assert.equal(versionColumns.includes('localization_hash'), true);
+  assert.equal(versionColumns.includes('localization_review_json'), true);
+
+  const projectId = insertProject(db, 'tenant-blueprint', 'user-blueprint');
+  const workId = insertWork(db, projectId, {
+    tenant_id: 'tenant-blueprint',
+    user_id: 'user-blueprint',
+    source_fingerprint: 'blueprint-migration-source',
+  });
+  const insertBlueprint = db.prepare(`
+    INSERT INTO redraw_episode_blueprints
+      (work_id, tenant_id, user_id, revision, status, blueprint_json, blueprint_hash,
+       evidence_manifest_json, created_at, updated_at)
+    VALUES (?, 'tenant-blueprint', 'user-blueprint', ?, 'draft', '{}', ?, '{}', ?, ?)
+  `);
+  const blueprintId = Number(insertBlueprint.run(workId, 1, 'a'.repeat(64), NOW, NOW).lastInsertRowid);
+  assert.throws(() => insertBlueprint.run(workId, 1, 'b'.repeat(64), NOW, NOW), /UNIQUE/i);
+  assert.throws(() => insertBlueprint.run(workId, 2, 'a'.repeat(64), NOW, NOW), /UNIQUE/i);
+  db.prepare("UPDATE redraw_episode_blueprints SET status = 'locked' WHERE id = ?").run(blueprintId);
+  assert.throws(
+    () => db.prepare("UPDATE redraw_episode_blueprints SET blueprint_json = '{\"changed\":true}' WHERE id = ?").run(blueprintId),
+    /immutable/i,
+  );
+  assert.throws(
+    () => db.prepare('DELETE FROM redraw_episode_blueprints WHERE id = ?').run(blueprintId),
+    /immutable/i,
+  );
+
+  db.close();
+});
+
+test('母本蓝图兼容迁移不改写既有 source facts 且不给旧版本伪造哈希', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const projectId = insertProject(db, 'tenant-legacy-blueprint', 'user-legacy-blueprint');
+  const workId = insertWork(db, projectId, {
+    tenant_id: 'tenant-legacy-blueprint',
+    user_id: 'user-legacy-blueprint',
+    source_fingerprint: 'legacy-blueprint-source',
+  });
+  const legacyFacts = JSON.stringify({ schema_version: 'legacy', story: ['必须保留'] });
+  const versionId = insertVersion(db, workId, 1, {
+    source_facts_json: legacyFacts,
+    facts_hash: 'legacy-facts-hash',
+  });
+
+  runMigrationsAndEnsure(db);
+  runMigrationsAndEnsure(db);
+
+  assert.deepEqual(db.prepare(`
+    SELECT source_facts_json, facts_hash, blueprint_hash, localization_hash, localization_review_json
+    FROM redraw_versions WHERE id = ?
+  `).get(versionId), {
+    source_facts_json: legacyFacts,
+    facts_hash: 'legacy-facts-hash',
+    blueprint_hash: null,
+    localization_hash: null,
+    localization_review_json: null,
+  });
+  db.close();
+});

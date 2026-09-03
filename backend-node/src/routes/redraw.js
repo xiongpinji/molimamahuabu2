@@ -26,6 +26,7 @@ const redrawExportService = require('../services/redrawExportService');
 const redrawSourceAudioEvidenceService = require('../services/redrawSourceAudioEvidenceService');
 const redrawNativeSourceAnalysisService = require('../services/redrawNativeSourceAnalysisService');
 const redrawEvidenceFusionService = require('../services/redrawEvidenceFusionService');
+const redrawBlueprintWorkflowService = require('../services/redrawBlueprintWorkflowService');
 const redrawProjectPolicyService = require('../services/redrawProjectPolicyService');
 const redrawWorkflowEventService = require('../services/redrawWorkflowEventService');
 const redrawCharacterPlanService = require('../services/redrawCharacterPlanService');
@@ -522,6 +523,86 @@ function codedRouteError(code, message, details) {
   error.code = code;
   if (details !== undefined) error.details = details;
   return error;
+}
+
+const BLUEPRINT_SAVE_FIELDS = new Set(['expected_updated_at', 'blueprint']);
+const BLUEPRINT_LOCK_FIELDS = new Set(['expected_blueprint_hash', 'expected_updated_at']);
+
+function exactBlueprintBody(body, fields) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw codedRouteError('REDRAW_BLUEPRINT_INPUT_INVALID', '母本蓝图请求体无效');
+  }
+  const prototype = Object.getPrototypeOf(body);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw codedRouteError('REDRAW_BLUEPRINT_FORBIDDEN_FIELD', '母本蓝图请求不允许继承字段');
+  }
+  for (const key in body) {
+    if (!Object.prototype.hasOwnProperty.call(body, key)) {
+      throw codedRouteError('REDRAW_BLUEPRINT_FORBIDDEN_FIELD', '母本蓝图请求不允许继承字段');
+    }
+  }
+  if (Object.keys(body).length !== fields.size
+    || Object.keys(body).some((key) => !fields.has(key))) {
+    throw codedRouteError('REDRAW_BLUEPRINT_FORBIDDEN_FIELD', '母本蓝图请求字段无效');
+  }
+  return body;
+}
+
+function blueprintSaveInput(body) {
+  const input = exactBlueprintBody(body, BLUEPRINT_SAVE_FIELDS);
+  if (typeof input.expected_updated_at !== 'string' || !input.expected_updated_at.trim()) {
+    throw codedRouteError('REDRAW_BLUEPRINT_INPUT_INVALID', 'expected_updated_at 必填');
+  }
+  if (!input.blueprint || typeof input.blueprint !== 'object' || Array.isArray(input.blueprint)) {
+    throw codedRouteError('REDRAW_BLUEPRINT_INPUT_INVALID', 'blueprint 必须是对象');
+  }
+  redrawBlueprintWorkflowService.assertSafeBlueprintValue(input.blueprint);
+  return {
+    expectedUpdatedAt: input.expected_updated_at.trim(),
+    blueprint: input.blueprint,
+  };
+}
+
+function blueprintLockInput(body) {
+  const input = exactBlueprintBody(body, BLUEPRINT_LOCK_FIELDS);
+  const hash = typeof input.expected_blueprint_hash === 'string'
+    ? input.expected_blueprint_hash.trim() : '';
+  const updatedAt = typeof input.expected_updated_at === 'string'
+    ? input.expected_updated_at.trim() : '';
+  if (!/^[a-f0-9]{64}$/.test(hash) || !updatedAt) {
+    throw codedRouteError('REDRAW_BLUEPRINT_INPUT_INVALID', '蓝图锁定 CAS 参数无效');
+  }
+  return { expectedBlueprintHash: hash, expectedUpdatedAt: updatedAt };
+}
+
+function publicBlueprintRecord(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return Object.fromEntries([
+    'id', 'work_id', 'revision', 'status', 'blueprint_hash', 'blueprint',
+    'evidence_manifest', 'reviewed_by', 'reviewed_at', 'created_at', 'updated_at',
+  ].filter((key) => Object.prototype.hasOwnProperty.call(source, key))
+    .map((key) => [key, source[key]]));
+}
+
+function sendBlueprintError(res, error, log, context = {}) {
+  const code = String(error?.code || '');
+  if (code === 'REDRAW_BLUEPRINT_NOT_FOUND') {
+    return response.error(res, 404, code, '母本蓝图不存在');
+  }
+  if (code === 'REDRAW_BLUEPRINT_INPUT_INVALID'
+    || code === 'REDRAW_BLUEPRINT_FORBIDDEN_FIELD') {
+    return response.error(res, 400, code, '母本蓝图请求无效');
+  }
+  if (code === 'REDRAW_BLUEPRINT_CAS_CONFLICT'
+    || code === 'REDRAW_BLUEPRINT_LOCKED'
+    || code === 'REDRAW_BLUEPRINT_HASH_CONFLICT'
+    || code === 'REDRAW_BLUEPRINT_HASH_MISMATCH'
+    || code === 'REDRAW_BLUEPRINT_VERSION_ALREADY_BOUND'
+    || code.startsWith('BLUEPRINT_')) {
+    return response.error(res, 409, code, '母本蓝图尚未通过当前锁定门禁');
+  }
+  log?.error?.({ code: 'INTERNAL_ERROR', ...context }, '母本蓝图审核失败');
+  return response.error(res, 500, 'INTERNAL_ERROR', '母本蓝图审核失败');
 }
 
 function assertReferenceArtifactFields(body, allowed) {
@@ -1871,6 +1952,8 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   const uploadService = options.uploadService || redrawUploadService;
   const capabilityService = options.capabilityService || redrawCapabilityService;
   const orchestrator = options.orchestrator || redrawOrchestrator;
+  const blueprintWorkflowService = options.blueprintWorkflowService
+    || redrawBlueprintWorkflowService;
   const shotService = options.shotService || redrawShotService;
   const generationService = options.generationService || redrawGenerationService;
   const referenceBundleService = options.referenceBundleService || redrawReferenceBundleService;
@@ -5159,6 +5242,8 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
         status: result.status || 'processing',
         facts_hash: result.facts_hash || null,
         blueprint_hash: result.blueprint_hash || null,
+        blueprint_revision: result.blueprint_revision || null,
+        blueprint_updated_at: result.blueprint_updated_at || null,
         review_status: result.review_status || null,
         blueprint: result.blueprint || null,
       });
@@ -5174,6 +5259,53 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
       if (error.code === 'INVALID_REDRAW_ANALYSIS_SETTINGS') return response.badRequest(res, error.message);
       log?.error?.({ err: error, workId: req.params.id }, 'redraw analyze work failed');
       return response.internalError(res, error.message || '提交转绘分析失败');
+    }
+  }
+
+  function getBlueprint(req, res) {
+    const currentOwner = owner(req);
+    const work = findOwnedWork(req.params.id, currentOwner);
+    if (!work) {
+      return response.error(res, 404, 'REDRAW_BLUEPRINT_NOT_FOUND', '母本蓝图不存在');
+    }
+    try {
+      return response.success(res, publicBlueprintRecord(
+        blueprintWorkflowService.getCurrentBlueprint({ db, ...currentOwner }, { workId: work.id }),
+      ));
+    } catch (error) {
+      return sendBlueprintError(res, error, log, { workId: work.id });
+    }
+  }
+
+  function saveBlueprint(req, res) {
+    const currentOwner = owner(req);
+    const work = findOwnedWork(req.params.id, currentOwner);
+    if (!work) {
+      return response.error(res, 404, 'REDRAW_BLUEPRINT_NOT_FOUND', '母本蓝图不存在');
+    }
+    try {
+      const input = blueprintSaveInput(req.body);
+      return response.success(res, publicBlueprintRecord(
+        blueprintWorkflowService.saveDraft({ db, ...currentOwner }, { workId: work.id, ...input }),
+      ));
+    } catch (error) {
+      return sendBlueprintError(res, error, log, { workId: work.id });
+    }
+  }
+
+  function lockBlueprint(req, res) {
+    const currentOwner = owner(req);
+    const work = findOwnedWork(req.params.id, currentOwner);
+    if (!work) {
+      return response.error(res, 404, 'REDRAW_BLUEPRINT_NOT_FOUND', '母本蓝图不存在');
+    }
+    try {
+      const input = blueprintLockInput(req.body);
+      return response.success(res, publicBlueprintRecord(
+        blueprintWorkflowService.lockBlueprint({ db, ...currentOwner }, { workId: work.id, ...input }),
+      ));
+    } catch (error) {
+      return sendBlueprintError(res, error, log, { workId: work.id });
     }
   }
 
@@ -5237,6 +5369,9 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     listStylePresets,
     listLocales,
     analyzeWork,
+    getBlueprint,
+    saveBlueprint,
+    lockBlueprint,
   };
 };
 
