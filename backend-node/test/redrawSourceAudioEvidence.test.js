@@ -317,3 +317,222 @@ test('analyzeSourceAudio rejects path-bearing injected Worker evidence before pe
   assert.equal(harness.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category = 'redraw_source_audio_evidence'").get().count, 0);
   assert.deepEqual(fs.readdirSync(harness.privateAudioRoot), []);
 });
+
+test('analyzeSourceAudio refuses an evidence-root symlink without writing or registering outside storage', async (t) => {
+  const harness = createHarness(t);
+  const externalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'source-audio-evidence-outside-'));
+  t.after(() => fs.rmSync(externalRoot, { recursive: true, force: true }));
+  const evidenceRoot = path.join(harness.storageRoot, 'redraw-source-audio-evidence');
+  fs.symlinkSync(externalRoot, evidenceRoot, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.equal(fs.lstatSync(evidenceRoot).isSymbolicLink(), true);
+
+  await assert.rejects(
+    () => analyzeSourceAudio(harness.ctx, validInput(harness.sourceAsset.id)),
+    { code: 'SOURCE_AUDIO_EVIDENCE_PATH_INVALID' },
+  );
+
+  assert.equal(harness.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category = 'redraw_source_audio_evidence'").get().count, 0);
+  assert.equal(fs.existsSync(path.join(externalRoot, 'task-7fdca1', 'audio-evidence.json')), false);
+});
+
+test('analyzeSourceAudio refuses a storage-root symlink before ffmpeg or Worker runs', async (t) => {
+  const harness = createHarness(t);
+  const linkedStorageRoot = path.join(os.tmpdir(), `source-audio-storage-link-${crypto.randomUUID()}`);
+  fs.symlinkSync(
+    harness.storageRoot,
+    linkedStorageRoot,
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+  t.after(() => fs.rmSync(linkedStorageRoot, { recursive: true, force: true }));
+  assert.equal(fs.lstatSync(linkedStorageRoot).isSymbolicLink(), true);
+
+  await assert.rejects(
+    () => analyzeSourceAudio({ ...harness.ctx, storageRoot: linkedStorageRoot }, validInput(harness.sourceAsset.id)),
+    (error) => error.code === 'SOURCE_AUDIO_STORAGE_ROOT_INVALID'
+      && error.message === 'SOURCE_AUDIO_STORAGE_ROOT_INVALID'
+      && !error.message.includes(linkedStorageRoot),
+  );
+
+  assert.equal(harness.execCalls.length, 0);
+  assert.equal(harness.workerCalls.length, 0);
+});
+
+test('analyzeSourceAudio refuses a private-root symlink before ffmpeg or Worker runs', async (t) => {
+  const harness = createHarness(t);
+  const externalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'source-audio-private-outside-'));
+  const linkedRoot = path.join(os.tmpdir(), `source-audio-private-link-${crypto.randomUUID()}`);
+  fs.symlinkSync(externalRoot, linkedRoot, process.platform === 'win32' ? 'junction' : 'dir');
+  t.after(() => {
+    fs.rmSync(linkedRoot, { recursive: true, force: true });
+    fs.rmSync(externalRoot, { recursive: true, force: true });
+  });
+  assert.equal(fs.lstatSync(linkedRoot).isSymbolicLink(), true);
+
+  await assert.rejects(
+    () => analyzeSourceAudio({ ...harness.ctx, privateAudioRoot: linkedRoot }, validInput(harness.sourceAsset.id)),
+    { code: 'SOURCE_AUDIO_PRIVATE_ROOT_INVALID' },
+  );
+
+  assert.equal(harness.execCalls.length, 0);
+  assert.equal(harness.workerCalls.length, 0);
+  assert.deepEqual(fs.readdirSync(externalRoot), []);
+});
+
+test('analyzeSourceAudio creates the private root and task directory as 0700 and WAV as 0600', async (t) => {
+  const harness = createHarness(t);
+  const privateAudioRoot = path.join(os.tmpdir(), `source-audio-private-new-${crypto.randomUUID()}`);
+  t.after(() => fs.rmSync(privateAudioRoot, { recursive: true, force: true }));
+  const mkdirCalls = [];
+  const openCalls = [];
+  const writeCalls = [];
+  const renameCalls = [];
+  const fsApi = Object.create(fs);
+  fsApi.mkdirSync = (target, options) => {
+    mkdirCalls.push({ target: path.resolve(target), options });
+    return fs.mkdirSync(target, options);
+  };
+  fsApi.openSync = (target, flags, mode) => {
+    openCalls.push({ target: path.resolve(target), flags, mode });
+    return fs.openSync(target, flags, mode);
+  };
+  fsApi.writeFileSync = (target, value, options) => {
+    writeCalls.push({ target: path.resolve(target), options });
+    return fs.writeFileSync(target, value, options);
+  };
+  fsApi.renameSync = (source, target) => {
+    renameCalls.push({ source: path.resolve(source), target: path.resolve(target) });
+    return fs.renameSync(source, target);
+  };
+  const ctx = {
+    ...harness.ctx,
+    fs: fsApi,
+    privateAudioRoot,
+    execFile: async (command, args) => {
+      const wavPath = args.at(-1);
+      assert.equal(fs.lstatSync(wavPath).isFile(), true);
+      fs.writeFileSync(wavPath, AUDIO_BYTES);
+    },
+  };
+
+  await analyzeSourceAudio(ctx, validInput(harness.sourceAsset.id));
+
+  assert.deepEqual(mkdirCalls.find((call) => call.target === path.resolve(privateAudioRoot))?.options, {
+    recursive: true,
+    mode: 0o700,
+  });
+  const taskDirectory = path.join(privateAudioRoot, 'source-audio-task-7fdca1');
+  assert.deepEqual(mkdirCalls.find((call) => call.target === path.resolve(taskDirectory))?.options, {
+    mode: 0o700,
+  });
+  assert.deepEqual(openCalls.map(({ target, flags, mode }) => ({ target, flags, mode })), [{
+    target: path.resolve(taskDirectory, 'wav-6e91b2.wav'),
+    flags: 'wx',
+    mode: 0o600,
+  }]);
+  const evidenceWrite = writeCalls.find((call) => path.basename(call.target).startsWith('.audio-evidence-'));
+  assert.deepEqual(evidenceWrite?.options, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+  assert.equal(path.dirname(evidenceWrite.target), path.resolve(
+    harness.storageRoot,
+    'redraw-source-audio-evidence',
+    'task-7fdca1',
+  ));
+  assert.deepEqual(renameCalls, [{
+    source: evidenceWrite.target,
+    target: path.resolve(
+      harness.storageRoot,
+      'redraw-source-audio-evidence',
+      'task-7fdca1',
+      'audio-evidence.json',
+    ),
+  }]);
+});
+
+test('analyzeSourceAudio rejects a group-writable existing private root on POSIX', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const harness = createHarness(t);
+  fs.chmodSync(harness.privateAudioRoot, 0o770);
+
+  await assert.rejects(
+    () => analyzeSourceAudio(harness.ctx, validInput(harness.sourceAsset.id)),
+    { code: 'SOURCE_AUDIO_PRIVATE_ROOT_INVALID' },
+  );
+
+  assert.equal(harness.execCalls.length, 0);
+  assert.equal(harness.workerCalls.length, 0);
+});
+
+test('analyzeSourceAudio fails closed without deleting a pre-existing private task directory', async (t) => {
+  const harness = createHarness(t);
+  const occupiedTaskDir = path.join(harness.privateAudioRoot, 'source-audio-task-7fdca1');
+  const sentinelPath = path.join(occupiedTaskDir, 'keep.txt');
+  fs.mkdirSync(occupiedTaskDir, { mode: 0o700 });
+  fs.writeFileSync(sentinelPath, 'keep');
+
+  await assert.rejects(
+    () => analyzeSourceAudio(harness.ctx, validInput(harness.sourceAsset.id)),
+    (error) => error.code === 'SOURCE_AUDIO_PRIVATE_ROOT_INVALID'
+      && error.message === 'SOURCE_AUDIO_PRIVATE_ROOT_INVALID'
+      && !error.message.includes(harness.privateAudioRoot),
+  );
+
+  assert.equal(fs.readFileSync(sentinelPath, 'utf8'), 'keep');
+  assert.equal(harness.execCalls.length, 0);
+  assert.equal(harness.workerCalls.length, 0);
+});
+
+test('analyzeSourceAudio never recursively cleans a task directory swapped to an outside junction', async (t) => {
+  const externalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'source-audio-cleanup-outside-'));
+  const sentinelPath = path.join(externalRoot, 'keep.txt');
+  fs.writeFileSync(sentinelPath, 'keep');
+  let swappedTaskDir;
+  const harness = createHarness(t, {
+    workerClient: {
+      async analyzeSourceAudio(input) {
+        swappedTaskDir = path.dirname(input.audioPath);
+        fs.rmSync(input.audioPath, { force: true });
+        fs.rmdirSync(swappedTaskDir);
+        fs.symlinkSync(externalRoot, swappedTaskDir, process.platform === 'win32' ? 'junction' : 'dir');
+        const error = new Error('worker result unknown');
+        error.code = 'SOURCE_AUDIO_RESULT_UNKNOWN';
+        throw error;
+      },
+    },
+  });
+  t.after(() => {
+    if (swappedTaskDir) fs.rmSync(swappedTaskDir, { recursive: true, force: true });
+    fs.rmSync(externalRoot, { recursive: true, force: true });
+  });
+
+  await assert.rejects(
+    () => analyzeSourceAudio(harness.ctx, validInput(harness.sourceAsset.id)),
+    { code: 'SOURCE_AUDIO_PRIVATE_CLEANUP_FAILED' },
+  );
+
+  assert.equal(fs.readFileSync(sentinelPath, 'utf8'), 'keep');
+  assert.equal(fs.lstatSync(swappedTaskDir).isSymbolicLink(), true);
+  assert.equal(harness.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category = 'redraw_source_audio_evidence'").get().count, 0);
+});
+
+test('analyzeSourceAudio removes the evidence file when asset registration fails', async (t) => {
+  const harness = createHarness(t);
+  const failingAssetService = {
+    getById: assetService.getById,
+    create(db, serviceLog, payload) {
+      if (payload.category === 'redraw_source_audio_evidence') {
+        throw new Error('registration failed');
+      }
+      return assetService.create(db, serviceLog, payload);
+    },
+  };
+
+  await assert.rejects(
+    () => analyzeSourceAudio({ ...harness.ctx, assetService: failingAssetService }, validInput(harness.sourceAsset.id)),
+    { code: 'SOURCE_AUDIO_PERSISTENCE_FAILED' },
+  );
+
+  const evidenceRoot = path.join(harness.storageRoot, 'redraw-source-audio-evidence');
+  assert.equal(fs.existsSync(path.join(evidenceRoot, 'task-7fdca1', 'audio-evidence.json')), false);
+  assert.equal(harness.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category = 'redraw_source_audio_evidence'").get().count, 0);
+  assert.deepEqual(fs.readdirSync(harness.privateAudioRoot), []);
+});

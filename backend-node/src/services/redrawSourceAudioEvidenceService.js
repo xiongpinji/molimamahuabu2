@@ -17,12 +17,14 @@ async function analyzeSourceAudio(ctx = {}, input = {}) {
   const db = ctx.db;
   if (!db || typeof db.prepare !== 'function') throw codedError('SOURCE_AUDIO_DB_REQUIRED');
   const fsApi = ctx.fs || fs;
-  const storageRoot = resolveRoot(fsApi, ctx.storageRoot, 'SOURCE_AUDIO_STORAGE_ROOT_INVALID', false);
-  const privateAudioRoot = resolveRoot(
+  const storageRoot = resolveDirectoryRoot(
+    fsApi,
+    ctx.storageRoot,
+    'SOURCE_AUDIO_STORAGE_ROOT_INVALID',
+  );
+  const privateAudioRoot = resolvePrivateRoot(
     fsApi,
     ctx.privateAudioRoot || process.env.REDRAW_NATIVE_AUDIO_PRIVATE_TEMP_ROOT,
-    'SOURCE_AUDIO_PRIVATE_ROOT_INVALID',
-    true,
   );
   if (isInside(storageRoot, privateAudioRoot) || isInside(privateAudioRoot, storageRoot)) {
     throw codedError('SOURCE_AUDIO_PRIVATE_ROOT_INVALID');
@@ -43,9 +45,15 @@ async function analyzeSourceAudio(ctx = {}, input = {}) {
   const wavId = safeGeneratedId((ctx.idFactory || crypto.randomUUID)());
   const tempDir = path.join(privateAudioRoot, `source-audio-${taskId}`);
   const wavPath = path.join(tempDir, `${wavId}.wav`);
-  fsApi.mkdirSync(tempDir);
+  try {
+    fsApi.mkdirSync(tempDir, { mode: 0o700 });
+  } catch {
+    throw codedError('SOURCE_AUDIO_PRIVATE_ROOT_INVALID');
+  }
 
   try {
+    assertContainedDirectory(fsApi, tempDir, privateAudioRoot, 'SOURCE_AUDIO_PRIVATE_ROOT_INVALID', true);
+    createPrivateFile(fsApi, wavPath, tempDir);
     let workerEvidence = null;
     let silent = false;
     try {
@@ -94,7 +102,7 @@ async function analyzeSourceAudio(ctx = {}, input = {}) {
       taskId,
     });
   } finally {
-    fsApi.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    cleanupPrivateTaskDirectory(fsApi, privateAudioRoot, tempDir);
   }
 }
 
@@ -137,16 +145,154 @@ function assertSourceAsset(asset, input) {
   }
 }
 
-function resolveRoot(fsApi, value, code, create) {
+function resolveDirectoryRoot(fsApi, value, code) {
   try {
     if (typeof value !== 'string' || !value.trim() || !path.isAbsolute(value)) throw new Error(code);
     const resolved = path.resolve(value);
-    if (create) fsApi.mkdirSync(resolved, { recursive: true });
-    const real = fsApi.realpathSync.native(resolved);
-    if (!fsApi.statSync(real).isDirectory()) throw new Error(code);
+    return assertDirectoryAtPath(fsApi, resolved, code);
+  } catch {
+    throw codedError(code);
+  }
+}
+
+function resolvePrivateRoot(fsApi, value) {
+  const code = 'SOURCE_AUDIO_PRIVATE_ROOT_INVALID';
+  try {
+    if (typeof value !== 'string' || !value.trim() || !path.isAbsolute(value)) throw new Error(code);
+    const resolved = path.resolve(value);
+    fsApi.mkdirSync(resolved, { recursive: true, mode: 0o700 });
+    const real = assertDirectoryAtPath(fsApi, resolved, code);
+    assertPrivateOwnership(fsApi.statSync(real), code, 0o022);
     return real;
   } catch {
     throw codedError(code);
+  }
+}
+
+function assertDirectoryAtPath(fsApi, value, code) {
+  const resolved = path.resolve(value);
+  const inputStat = fsApi.lstatSync(resolved);
+  const real = fsApi.realpathSync.native(resolved);
+  const stat = fsApi.statSync(real);
+  if (inputStat.isSymbolicLink() || !stat.isDirectory() || !samePath(resolved, real)) {
+    throw codedError(code);
+  }
+  return real;
+}
+
+function assertContainedDirectory(fsApi, value, parent, code, privateAccess) {
+  const parentReal = assertDirectoryAtPath(fsApi, parent, code);
+  const real = assertDirectoryAtPath(fsApi, value, code);
+  if (!isStrictlyInside(parentReal, real)) throw codedError(code);
+  if (privateAccess) assertPrivateOwnership(fsApi.statSync(real), code, 0o022);
+  return real;
+}
+
+function assertContainedFile(fsApi, value, parent, code, privateAccess) {
+  const parentReal = assertDirectoryAtPath(fsApi, parent, code);
+  const resolved = path.resolve(value);
+  const inputStat = fsApi.lstatSync(resolved);
+  const real = fsApi.realpathSync.native(resolved);
+  const stat = fsApi.statSync(real);
+  if (inputStat.isSymbolicLink()
+    || !stat.isFile()
+    || !samePath(resolved, real)
+    || !isStrictlyInside(parentReal, real)) {
+    throw codedError(code);
+  }
+  if (privateAccess) assertPrivateOwnership(stat, code, 0o077);
+  return real;
+}
+
+function assertPrivateOwnership(stat, code, forbiddenMode) {
+  if (typeof process.getuid !== 'function') return;
+  if (stat.uid !== process.getuid() || (stat.mode & forbiddenMode) !== 0) {
+    throw codedError(code);
+  }
+}
+
+function createPrivateFile(fsApi, filePath, privateTaskDir) {
+  let descriptor;
+  try {
+    descriptor = fsApi.openSync(filePath, 'wx', 0o600);
+  } catch {
+    throw codedError('SOURCE_AUDIO_PRIVATE_ROOT_INVALID');
+  } finally {
+    if (descriptor !== undefined) fsApi.closeSync(descriptor);
+  }
+  assertContainedFile(fsApi, filePath, privateTaskDir, 'SOURCE_AUDIO_PRIVATE_ROOT_INVALID', true);
+}
+
+function createContainedDirectory(fsApi, directory, parent, allowExisting) {
+  const code = 'SOURCE_AUDIO_EVIDENCE_PATH_INVALID';
+  try {
+    assertDirectoryAtPath(fsApi, parent, code);
+    try {
+      fsApi.mkdirSync(directory, { mode: 0o700 });
+    } catch (error) {
+      if (!allowExisting || error?.code !== 'EEXIST') throw error;
+    }
+    return assertContainedDirectory(fsApi, directory, parent, code, false);
+  } catch {
+    throw codedError(code);
+  }
+}
+
+function assertEvidenceDirectoryChain(fsApi, storageRoot, parentDir, outputDir) {
+  const code = 'SOURCE_AUDIO_EVIDENCE_PATH_INVALID';
+  assertDirectoryAtPath(fsApi, storageRoot, code);
+  assertContainedDirectory(fsApi, parentDir, storageRoot, code, false);
+  assertContainedDirectory(fsApi, outputDir, parentDir, code, false);
+}
+
+function cleanupPrivateTaskDirectory(fsApi, privateAudioRoot, tempDir) {
+  if (!fsApi.existsSync(tempDir)) return;
+  try {
+    assertDirectoryAtPath(fsApi, privateAudioRoot, 'SOURCE_AUDIO_PRIVATE_CLEANUP_FAILED');
+    assertContainedDirectory(
+      fsApi,
+      tempDir,
+      privateAudioRoot,
+      'SOURCE_AUDIO_PRIVATE_CLEANUP_FAILED',
+      false,
+    );
+    fsApi.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  } catch {
+    throw codedError('SOURCE_AUDIO_PRIVATE_CLEANUP_FAILED');
+  }
+}
+
+function cleanupContainedFile(fsApi, parent, filePath) {
+  if (!fsApi.existsSync(filePath)) return;
+  try {
+    assertContainedFile(fsApi, filePath, parent, 'SOURCE_AUDIO_EVIDENCE_PATH_INVALID', false);
+    fsApi.rmSync(filePath, { force: true });
+  } catch {
+    // Refuse to follow or remove a path whose containment cannot be proven.
+  }
+}
+
+function cleanupEvidenceOutput(fsApi, storageRoot, parentDir, outputDir) {
+  if (!fsApi.existsSync(outputDir)) return;
+  try {
+    assertDirectoryAtPath(fsApi, storageRoot, 'SOURCE_AUDIO_EVIDENCE_PATH_INVALID');
+    assertContainedDirectory(
+      fsApi,
+      parentDir,
+      storageRoot,
+      'SOURCE_AUDIO_EVIDENCE_PATH_INVALID',
+      false,
+    );
+    assertContainedDirectory(
+      fsApi,
+      outputDir,
+      parentDir,
+      'SOURCE_AUDIO_EVIDENCE_PATH_INVALID',
+      false,
+    );
+    fsApi.rmSync(outputDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  } catch {
+    // Fail closed instead of recursively deleting through an untrusted path.
   }
 }
 
@@ -173,14 +319,14 @@ function resolveSourcePath(fsApi, storageRoot, localPath) {
 
 function assertExtractedWav(fsApi, wavPath, privateAudioRoot) {
   try {
-    const inputStat = fsApi.lstatSync(wavPath);
-    const real = fsApi.realpathSync.native(wavPath);
-    const stat = fsApi.statSync(real);
-    if (inputStat.isSymbolicLink()
-      || !stat.isFile()
-      || stat.size <= 0
-      || path.extname(real).toLowerCase() !== '.wav'
-      || !isInside(privateAudioRoot, real)) {
+    const real = assertContainedFile(
+      fsApi,
+      wavPath,
+      privateAudioRoot,
+      'SOURCE_AUDIO_EXTRACTION_FAILED',
+      true,
+    );
+    if (fsApi.statSync(real).size <= 0 || path.extname(real).toLowerCase() !== '.wav') {
       throw new Error('invalid WAV');
     }
   } catch {
@@ -268,10 +414,18 @@ function persistEvidence({ assetService, ctx, db, evidence, fsApi, storageRoot, 
   const parentDir = path.join(storageRoot, 'redraw-source-audio-evidence');
   const outputDir = path.join(parentDir, taskId);
   const outputPath = path.join(outputDir, 'audio-evidence.json');
-  fsApi.mkdirSync(parentDir, { recursive: true });
-  fsApi.mkdirSync(outputDir);
   try {
-    atomicWriteJson(fsApi, outputPath, evidence, (ctx.idFactory || crypto.randomUUID)());
+    createContainedDirectory(fsApi, parentDir, storageRoot, true);
+    createContainedDirectory(fsApi, outputDir, parentDir, false);
+    atomicWriteJson({
+      fsApi,
+      storageRoot,
+      parentDir,
+      outputDir,
+      outputPath,
+      payload: evidence,
+      rawId: (ctx.idFactory || crypto.randomUUID)(),
+    });
     const evidenceSha256 = sha256Bytes(fsApi.readFileSync(outputPath));
     const stat = fsApi.statSync(outputPath);
     const asset = assetService.create(db, ctx.log || {}, {
@@ -300,20 +454,38 @@ function persistEvidence({ assetService, ctx, db, evidence, fsApi, storageRoot, 
       result_asset_id: Number(asset.id),
     };
   } catch (error) {
-    fsApi.rmSync(outputDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    cleanupEvidenceOutput(fsApi, storageRoot, parentDir, outputDir);
     if (error?.code === 'SOURCE_AUDIO_ASSET_REGISTRATION_FAILED') throw error;
+    if (error?.code === 'SOURCE_AUDIO_EVIDENCE_PATH_INVALID') throw error;
     throw codedError('SOURCE_AUDIO_PERSISTENCE_FAILED');
   }
 }
 
-function atomicWriteJson(fsApi, outputPath, payload, rawId) {
+function atomicWriteJson({
+  fsApi,
+  storageRoot,
+  parentDir,
+  outputDir,
+  outputPath,
+  payload,
+  rawId,
+}) {
   const tempId = safeGeneratedId(rawId);
   const tempPath = path.join(path.dirname(outputPath), `.audio-evidence-${tempId}.tmp`);
   try {
-    fsApi.writeFileSync(tempPath, JSON.stringify(payload, null, 2), { encoding: 'utf8', flag: 'wx' });
+    assertEvidenceDirectoryChain(fsApi, storageRoot, parentDir, outputDir);
+    fsApi.writeFileSync(tempPath, JSON.stringify(payload, null, 2), {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    });
+    assertContainedFile(fsApi, tempPath, outputDir, 'SOURCE_AUDIO_EVIDENCE_PATH_INVALID', false);
+    assertEvidenceDirectoryChain(fsApi, storageRoot, parentDir, outputDir);
     fsApi.renameSync(tempPath, outputPath);
+    assertEvidenceDirectoryChain(fsApi, storageRoot, parentDir, outputDir);
+    assertContainedFile(fsApi, outputPath, outputDir, 'SOURCE_AUDIO_EVIDENCE_PATH_INVALID', false);
   } finally {
-    fsApi.rmSync(tempPath, { force: true });
+    cleanupContainedFile(fsApi, outputDir, tempPath);
   }
 }
 
@@ -374,6 +546,20 @@ function isSha256(value) {
 function isInside(parent, child) {
   const relative = path.relative(path.resolve(parent), path.resolve(child));
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function isStrictlyInside(parent, child) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function samePath(left, right) {
+  const normalizedLeft = path.normalize(path.resolve(left));
+  const normalizedRight = path.normalize(path.resolve(right));
+  if (process.platform === 'win32') {
+    return normalizedLeft.toLowerCase() === normalizedRight.toLowerCase();
+  }
+  return normalizedLeft === normalizedRight;
 }
 
 function containsAbsolutePath(value) {
