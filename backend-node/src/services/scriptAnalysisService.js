@@ -197,24 +197,31 @@ ${String(note || '').trim()}
 未被审核备注要求修改的内容必须保持不变；不得改变原剧本和不可改动事实。`;
 }
 
-function normalizeVisualDirection(value) {
+function normalizeVisualDirection(value, evidenceFallback = '') {
   const visualDirection = asObject(value);
   if (!Object.keys(visualDirection).length) return null;
+  const evidence = (items) => {
+    const parsed = parseArray(items);
+    return parsed.length ? parsed : (evidenceFallback ? [evidenceFallback] : []);
+  };
   const emotionalTone = asObject(visualDirection.emotional_tone);
   const rhythm = asObject(visualDirection.rhythm);
   return {
     emotional_tone: {
       primary: String(emotionalTone.primary || ''),
       secondary: String(emotionalTone.secondary || ''),
-      evidence: parseArray(emotionalTone.evidence),
+      evidence: evidence(emotionalTone.evidence),
     },
-    scene_profile: parseArray(visualDirection.scene_profile),
+    scene_profile: parseArray(visualDirection.scene_profile)
+      .map((item) => ({ ...item, evidence: evidence(item?.evidence) })),
     rhythm: {
       labels: parseArray(rhythm.labels),
-      evidence: parseArray(rhythm.evidence),
+      evidence: evidence(rhythm.evidence),
     },
-    visual_motifs: parseArray(visualDirection.visual_motifs),
-    recommendations: parseArray(visualDirection.recommendations),
+    visual_motifs: parseArray(visualDirection.visual_motifs)
+      .map((item) => ({ ...item, evidence: evidence(item?.evidence) })),
+    recommendations: parseArray(visualDirection.recommendations)
+      .map((item) => ({ ...item, match_reasons: evidence(item?.match_reasons) })),
   };
 }
 
@@ -256,7 +263,10 @@ function normalizeProductionPackage(rawValue, project, { schemaVersion } = {}) {
     ai_changes: parseArray(raw.ai_changes),
     approval_status: 'draft',
   };
-  const visualDirection = normalizeVisualDirection(raw.visual_direction);
+  const visualDirection = normalizeVisualDirection(
+    raw.visual_direction,
+    String(project.source_script || '').trim().slice(0, 240),
+  );
   if (visualDirection) result.visual_direction = visualDirection;
   if (resolvedSchemaVersion === '2.0') {
     result.creative_strategy = raw.creative_strategy;
