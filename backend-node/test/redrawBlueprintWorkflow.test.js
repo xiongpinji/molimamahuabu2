@@ -346,6 +346,52 @@ test('conflicting source shot rolls back lock and preserves the existing row', (
   }
 });
 
+test('polluted source shot defaults roll back lock without inserting missing shots', () => {
+  const state = setup();
+  try {
+    const blueprint = lockedBlueprint();
+    const projected = projectSourceFactsV2(blueprint);
+    const draft = createOrSaveDraft(state.ctx, { workId: state.workId, blueprint });
+    const existing = insertSourceShot(state, projected.shots[0]);
+    state.db.prepare(`
+      UPDATE redraw_shots
+      SET prompt = 'polluted prompt', compiled_prompt_json = '{"polluted":true}',
+          draft_json = '{"polluted":true}', preparation_state = 'stale',
+          preparation_snapshot_json = '{"polluted":true}'
+      WHERE id = ?
+    `).run(existing.lastInsertRowid);
+
+    assert.throws(() => lockBlueprint(state.ctx, {
+      workId: state.workId,
+      expectedBlueprintHash: draft.blueprint_hash,
+      expectedUpdatedAt: draft.updated_at,
+    }), { code: 'REDRAW_BLUEPRINT_SOURCE_SHOTS_CONFLICT' });
+
+    assert.equal(getCurrentBlueprint(state.ctx, { workId: state.workId }).status, 'draft');
+    assert.deepEqual(state.db.prepare(`
+      SELECT source_facts_json, facts_hash, blueprint_hash FROM redraw_versions WHERE id = ?
+    `).get(state.versionId), {
+      source_facts_json: null,
+      facts_hash: null,
+      blueprint_hash: null,
+    });
+    assert.deepEqual(state.db.prepare(`
+      SELECT shot_id, prompt, compiled_prompt_json, draft_json, preparation_state,
+             preparation_snapshot_json
+      FROM redraw_shots WHERE version_id = ?
+    `).all(state.versionId), [{
+      shot_id: projected.shots[0].id,
+      prompt: 'polluted prompt',
+      compiled_prompt_json: '{"polluted":true}',
+      draft_json: '{"polluted":true}',
+      preparation_state: 'stale',
+      preparation_snapshot_json: '{"polluted":true}',
+    }]);
+  } finally {
+    state.db.close();
+  }
+});
+
 test('unresolved review cannot lock and leaves both draft and version unchanged', () => {
   const state = setup();
   try {

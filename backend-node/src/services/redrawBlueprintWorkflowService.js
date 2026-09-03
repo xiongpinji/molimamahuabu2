@@ -14,6 +14,26 @@ const DANGEROUS_KEYS = new Set(['proto', 'prototype', 'constructor']);
 const MAX_BLUEPRINT_DEPTH = 64;
 const MAX_BLUEPRINT_NODES = 50_000;
 const MAX_BLUEPRINT_STRING_BYTES = 4 * 1024 * 1024;
+const SOURCE_SHOT_DEFAULTS = {
+  prompt: '',
+  negative_prompt: '',
+  compiled_prompt_json: '{}',
+  draft_json: null,
+  video_generation_id: null,
+  audio_asset_id: null,
+  subtitle_asset_id: null,
+  reference_bundle_json: '{}',
+  reference_bundle_hash: null,
+  reference_bundle_updated_at: null,
+  preparation_state: 'parsed',
+  preparation_version: 1,
+  preparation_evidence_hash: null,
+  preparation_snapshot_json: '{}',
+  stale_reason_code: null,
+  approved_candidate_review_id: null,
+  error_code: null,
+  error_message: null,
+};
 
 function codedError(code, message) {
   const error = new Error(`${code}: ${message}`);
@@ -387,7 +407,7 @@ function sourceShotRecord(workId, versionId, ctx, shot) {
 }
 
 function sourceShotMatches(row, expected) {
-  return Number(row.work_id) === Number(expected.work_id)
+  const coreMatches = Number(row.work_id) === Number(expected.work_id)
     && String(row.shot_id) === expected.shot_id
     && Number(row.version_id) === expected.version_id
     && String(row.tenant_id) === expected.tenant_id
@@ -405,18 +425,16 @@ function sourceShotMatches(row, expected) {
     && String(row.ending_state) === expected.ending_state
     && row.status === expected.status
     && row.deleted_at == null;
+  return coreMatches && Object.entries(SOURCE_SHOT_DEFAULTS).every(([name, value]) => (
+    !Object.prototype.hasOwnProperty.call(row, name) || row[name] === value
+  ));
 }
 
 function materializeSourceShots(ctx, workId, versionId, projected, now) {
   const expected = projected.shots.map((shot) => sourceShotRecord(workId, versionId, ctx, shot));
   const expectedById = new Map(expected.map((shot) => [shot.shot_id, shot]));
-  const existing = ctx.db.prepare(`
-    SELECT work_id, shot_id, version_id, tenant_id, user_id, batch_index, shot_index,
-           start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
-           references_json, opening_state, continuous_action, ending_state, status, deleted_at
-    FROM redraw_shots
-    WHERE version_id = ?
-  `).all(Number(versionId));
+  const existing = ctx.db.prepare('SELECT * FROM redraw_shots WHERE version_id = ?')
+    .all(Number(versionId));
   const existingIds = new Set();
   for (const row of existing) {
     const matching = expectedById.get(String(row.shot_id));
