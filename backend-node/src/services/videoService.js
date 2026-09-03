@@ -543,7 +543,7 @@ function markVideoArtifactVerified(db, videoGenId) {
 }
 
 function minimumVideoDuration(model) {
-  return /^(?:bytedance\/seedance-2-0-(?:mini|fast)|seedance-2\.0-mini)$/.test(
+  return /^(?:alibaba\/wan-3\.0|bytedance\/seedance-2-0-(?:mini|fast)|seedance-2\.0-mini)$/.test(
     String(model || '').trim().toLowerCase(),
   ) ? 4 : 5;
 }

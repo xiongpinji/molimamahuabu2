@@ -646,6 +646,58 @@ test('iCreat Seedance Mini 和 Fast 的 4 秒任务可创建并进入供应商�
   ]);
 });
 
+test('NewAPI Wan 3.0 的已验证 4 秒任务可在预扣前通过平台时长校验', () => {
+  const originalGetDefaultVideoConfig = videoClient.getDefaultVideoConfig;
+  videoClient.getDefaultVideoConfig = (_db, model) => ({
+    id: 29,
+    model: JSON.stringify([model]),
+    default_model: model,
+    canvas_selected_model: model,
+    provider: 'newapi',
+    api_protocol: 'newapi_video',
+    api_key: 'test-key',
+    verification_status: 'verified',
+    verified_capabilities: {
+      [model]: {
+        validated: true,
+        durations: [4],
+        aspectRatios: ['16:9'],
+        resolutions: ['480p'],
+      },
+    },
+    settings: '{}',
+  });
+
+  const db = setup();
+  try {
+    credits.setAccountBalance(db, 'user-1', 1000);
+    prices.set(db, 'alibaba/wan-3.0', 134, {
+      category: 'video',
+      billing_unit: 'second',
+      cost_unit: 'second',
+      resolution_prices: {
+        '480p': { credits: 134, cost_micros_per_second: 150_000 },
+      },
+    });
+
+    const created = videoService.create(db, log, {
+      drama_id: 1,
+      model: 'alibaba/wan-3.0',
+      prompt: 'NewAPI Wan 3.0 4 秒任务',
+      duration: 4,
+      aspect_ratio: '16:9',
+      resolution: '480p',
+    }, { billingEnabled: true, userId: 'user-1', schedule() {} });
+
+    const row = db.prepare('SELECT duration, credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
+    assert.equal(row.duration, 4);
+    assert.equal(credits.getReservation(db, row.credit_reservation_id).amount, 536);
+  } finally {
+    videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;
+    db.close();
+  }
+});
+
 test('已有处理中任务时仍校验时长且不静默复用不同秒数', () => {
   const db = setup();
   prices.set(db, 'seedance 2.0', 2);

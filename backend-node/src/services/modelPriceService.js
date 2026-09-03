@@ -822,7 +822,8 @@ function calculateCharge(db, value, usage = {}) {
   const normalizedModel = String(
     mediaModelSelection.parseQualifiedSelection(model)?.upstreamModel || model,
   ).toLowerCase();
-  const minimum = normalizedModel === 'lingjing-video-v1'
+  const minimum = normalizedModel === 'alibaba/wan-3.0'
+    || normalizedModel === 'lingjing-video-v1'
     || normalizedModel === 'seedance-2.0-mini'
     || /^bytedance\/seedance-2-0-(?:mini|fast)$/.test(normalizedModel)
     ? 4
