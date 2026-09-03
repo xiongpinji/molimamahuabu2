@@ -1,12 +1,18 @@
 const aiConfigService = require('../services/aiConfigService');
 const canvasModelCatalogService = require('../services/canvasModelCatalogService');
 const modelPriceService = require('../services/modelPriceService');
+const { enrichVideoConfig } = require('../services/videoVoicePolicyService');
 const response = require('../response');
+
+function toPublicConfig(config) {
+  const enriched = config?.service_type === 'video' ? enrichVideoConfig(config) : config;
+  return aiConfigService.toPublicConfig(enriched);
+}
 
 function list(db) {
   return (req, res) => {
     const list = aiConfigService.listConfigs(db, req.query.service_type);
-    response.success(res, list.map(aiConfigService.toPublicConfig));
+    response.success(res, list.map(toPublicConfig));
   };
 }
 
@@ -106,7 +112,7 @@ function get(db) {
     if (isNaN(id)) return response.badRequest(res, '无效的配置ID');
     const config = aiConfigService.getConfig(db, id);
     if (!config) return response.notFound(res, '配置不存在');
-    response.success(res, aiConfigService.toPublicConfig(config));
+    response.success(res, toPublicConfig(config));
   };
 }
 
@@ -143,7 +149,7 @@ function create(db, log, cfg) {
         ...body,
         model: body.model ?? [],
       });
-      response.created(res, aiConfigService.toPublicConfig(config));
+      response.created(res, toPublicConfig(config));
     } catch (err) {
       log.errorw('Create AI config failed', { error: err.message });
       if (isVideoSettingsError(err)) return response.badRequest(res, err.message);
@@ -170,7 +176,7 @@ function update(db, log, cfg) {
     try {
       const config = aiConfigService.updateConfig(db, log, id, body);
       if (!config) return response.notFound(res, '配置不存在');
-      response.success(res, aiConfigService.toPublicConfig(config));
+      response.success(res, toPublicConfig(config));
     } catch (err) {
       if (isVideoSettingsError(err)) return response.badRequest(res, err.message);
       throw err;

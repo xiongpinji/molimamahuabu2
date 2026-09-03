@@ -7,6 +7,7 @@ import {
   estimateGenerationCredits,
   normalizeQuickGenerationCatalog,
   normalizeQuickGenerationDraft,
+  quickGenerationAspectRatios,
   quickGenerationResolutions,
 } from '../src/utils/homeQuickGeneration.js'
 
@@ -140,6 +141,46 @@ test('首页目录不能因缺少 protocol 而放行 provider 或受保护模型
   assert.equal(catalog[0].protocol, 'toapis_video')
 })
 
+test('首页和短剧工厂保留六个 NewAPI 模型各自的实测能力', () => {
+  const definitions = [
+    ['cfg-29::seedance-2.0-fast', 5, '480p'],
+    ['cfg-29::seedance-2.0', 5, '480p'],
+    ['cfg-29::seedance-2.0-mini', 4, '480p'],
+    ['cfg-29::seedance-2.5', 5, '480p'],
+    ['cfg-29::minimax_h3_image_audio_to_video_v2', 5, '768p'],
+    ['cfg-29::alibaba/wan-3.0', 4, '480p'],
+  ]
+  const catalog = normalizeQuickGenerationCatalog(definitions.map(([model, duration, resolution]) => ({
+    kind: 'video',
+    model,
+    protocol: 'newapi_video',
+    verification_status: 'verified',
+    resolution_prices: { [resolution]: { credits: 10 } },
+    capabilities: {
+      validated: true,
+      durations: [duration],
+      aspectRatios: ['16:9'],
+      resolutions: [resolution],
+      ...(model.includes('minimax_h3') ? { supportsImageReference: true, requiresReference: true } : {}),
+    },
+  })))
+
+  assert.deepEqual(catalog.map((item) => item.model), definitions.map(([model]) => model))
+  for (const [index, [, duration, resolution]] of definitions.entries()) {
+    assert.deepEqual(catalog[index].capabilities.durations, [duration])
+    assert.deepEqual(catalog[index].capabilities.aspectRatios, ['16:9'])
+    assert.deepEqual(catalog[index].capabilities.resolutions, [resolution])
+  }
+  assert.throws(() => buildQuickGenerationRequest({
+    mode: 'video',
+    model: definitions[4][0],
+    aspectRatio: '16:9',
+    duration: 5,
+    resolution: '768p',
+    capability: catalog[4].capabilities,
+  }), /至少需要一张参考图/)
+})
+
 test('首页草稿只接受文字、图片和视频并携带一次性自动生成标记', () => {
   assert.deepEqual(normalizeQuickGenerationDraft({
     mode: 'text',
@@ -167,6 +208,22 @@ test('首页视频时长使用目录能力而不是固定 5/10/15 秒', () => {
   assert.deepEqual(quickGeneration.quickGenerationDurations?.({
     kind: 'video', capabilities: { durations: [4, 8, 10, 12, 15] },
   }), [4, 8, 10, 12, 15])
+})
+
+test('首页画幅只使用模型已验证能力并纠正旧草稿参数', () => {
+  const model = {
+    model: 'alibaba/wan-3.0',
+    kind: 'video',
+    capabilities: { aspectRatios: ['16:9'], durations: [4], resolutions: ['480p'] },
+  }
+  assert.deepEqual(quickGenerationAspectRatios(model, 'video'), ['16:9'])
+  assert.equal(normalizeQuickGenerationDraft({
+    mode: 'video', model: model.model, aspectRatio: '9:16', duration: 4, resolution: '480p',
+  }, model).aspectRatio, '16:9')
+  assert.throws(() => buildQuickGenerationRequest({
+    mode: 'video', model: model.model, aspectRatio: '9:16', duration: 4, resolution: '480p',
+    capability: model.capabilities,
+  }), /画面比例仅支持 16:9/)
 })
 
 test('文字、图片和视频请求均保留所选模型及对应生成参数', () => {

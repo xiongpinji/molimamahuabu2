@@ -26,7 +26,14 @@ function setVideoGenFailed(db, videoGenId, errorMsg, now, failure = {}) {
   try {
     row = db.prepare('SELECT id, credit_reservation_id FROM video_generations WHERE id = ?').get(Number(videoGenId));
   } catch (_) {}
-  settleVideoCredit(db, null, row, 'failed', errorMsg, failure);
+  settleVideoCredit(
+    db,
+    null,
+    row,
+    'failed',
+    errorMsg,
+    { failureDisposition: 'refund', ...(failure || {}) },
+  );
 }
 
 function setVideoGenNeedsAttention(db, videoGenId, taskId, errorMsg, now) {
@@ -1383,6 +1390,7 @@ function create(db, log, req, options = {}) {
     model = feituoState.model;
   }
   const strictVideoState = wan3State || lingjingState || toapisState || feituoState;
+  const newapiBinding = videoClient.getNewApiVideoBinding(videoConfig, selectedModel, model);
   const videoProtocol = String(videoConfig?.api_protocol || videoConfig?.provider || '').trim().toLowerCase();
   const isToapisVideo = Boolean(toapisState || wan3State)
     || videoProtocol === 'toapis_video'
@@ -1433,7 +1441,7 @@ function create(db, log, req, options = {}) {
       `${strictVideoState.model} 当前只开放已验证且已定价的 ${strictVideoState.resolutions.join('、')}`
     );
   }
-  const allowedDurations = strictVideoState?.durations || null;
+  const allowedDurations = strictVideoState?.durations || newapiBinding?.durations || null;
   const minimumDuration = minimumVideoDuration(model);
   const storyboardDuration = Number(storyboardDefaults?.duration);
   const storyboardDurationAllowed = Number.isSafeInteger(storyboardDuration)
@@ -1520,6 +1528,7 @@ function create(db, log, req, options = {}) {
     price = modelPrice.calculateCharge(db, billingModel, {
       duration,
       resolution: body.resolution,
+      allowedDurations: newapiBinding?.durations,
     });
   }
 
@@ -1543,6 +1552,7 @@ function create(db, log, req, options = {}) {
         : (body.reference_audio_url ? [body.reference_audio_url] : []),
     });
   }
+  if (newapiBinding) videoClient.validateNewApiVideoRequest(newapiBinding, body, model, duration);
 
   const persistedPrompt = storyboardId
     ? voicePrompt.ensureStoryboardVoicePrompt(db, storyboardId)
@@ -1793,7 +1803,7 @@ function create(db, log, req, options = {}) {
     referenceAudioUrls,
     toapisPrivateAvatarImages,
   });
-  const sourceConditioningJson = (lingjingState || wan3State)
+  const sourceConditioningJson = (lingjingState || wan3State || newapiBinding)
     ? JSON.stringify({
         video_capability: {
           config_id: videoConfig.id,
@@ -1834,7 +1844,7 @@ function create(db, log, req, options = {}) {
         imageUrl ?? null, persistedFirstFrameUrl,
         lastFrameUrl ?? null, refs, referenceVideoUrl, referenceAudioUrl,
         referenceMode, generateAudio ? 1 : 0, JSON.stringify(referenceVideoUrls), JSON.stringify(referenceAudioUrls),
-        JSON.stringify(requestSnapshot), (lingjingState || wan3State) ? videoConfig.id : null, sourceConditioningJson, task.id,
+        JSON.stringify(requestSnapshot), (lingjingState || wan3State || newapiBinding) ? videoConfig.id : null, sourceConditioningJson, task.id,
         billingEnabled ? options.tenantId || null : null,
         billingEnabled ? String(options.userId) : null, now, now
       );
@@ -2982,6 +2992,7 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
         ? LINGJING_VIDEO_SPEC.durations
         : null)
       || FEITUO_MODELS[normalizedProcessingModel]?.durations
+      || videoClient.getNewApiVideoBinding(config, null, processingModel)?.durations
       || null;
     const processingMinimumDuration = minimumVideoDuration(config.canvas_selected_model || processingModel);
     const effectiveDuration = normalizeVideoDuration(

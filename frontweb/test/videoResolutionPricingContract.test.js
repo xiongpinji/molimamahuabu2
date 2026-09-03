@@ -19,12 +19,17 @@ test('管理端提供 480P、720P 和 1080P 的积分及每秒成本配置', () 
 test('管理端 Wan3 价格编辑器展示和提交批准的 480P、720P、1080P', () => {
   assert.match(adminSource, /function isWan3VideoPricing\(item\)/)
   assert.match(adminSource, /const videoResolutionLabels/)
-  assert.match(adminSource, /return usesVideoResolutionPricing\(itemOrCategory\)\s*\?\s*\(isWan3VideoPricing\(itemOrCategory\)\s*\?\s*\['480p', '720p', '1080p'\]\s*:\s*\['480p', '720p'\]\)/s)
+  assert.match(adminSource, /function providerVideoResolutionKeys\(item\)[\s\S]*provider_costs[\s\S]*resolution_prices/)
+  assert.match(adminSource, /return usesVideoResolutionPricing\(itemOrCategory\)\s*\?\s*providerVideoResolutionKeys\(itemOrCategory\)\s*:\s*\[\]/s)
   assert.match(adminSource, /v-for="resolution in resolutionKeys\(item\)"[\s\S]*?item\.resolution_prices\[resolution\]\.cost_yuan_per_second/)
   assert.match(adminSource, /v-for="resolution in resolutionKeys\(newModel\)"[\s\S]*?newModel\.resolution_prices\[resolution\]\.cost_yuan_per_second/)
   assert.doesNotMatch(adminSource, /resolution_prices\['720p'\]/)
   assert.match(adminSource, /resolutionPricePayload\(item\)/)
   assert.match(adminSource, /Object\.fromEntries\(resolutionKeys\(item\)\.map/)
+})
+
+test('运营计费直达页为 Wan3 预先创建 1080P 表单档位', () => {
+  assert.match(adminSource, /function emptyResolutionPrices\(model = ''\)[\s\S]*isWan3VideoPricing\(\{ model \}\)[\s\S]*'1080p'/)
 })
 
 test('画布积分提示保留受保护合同并传递节点分辨率', () => {

@@ -138,6 +138,7 @@ function estimateCanaryCost(db, config, capability = {}) {
   try {
     quote = routeCostService.quoteRouteCost(db, {
       configId: positiveConfigId(config),
+      model: config.default_model || config.model,
       count: 1,
       duration: serviceType === 'video' ? capability.duration : undefined,
       resolution: capability.resolution,

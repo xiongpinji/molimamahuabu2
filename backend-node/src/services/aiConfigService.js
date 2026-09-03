@@ -11,6 +11,7 @@ const toapisWan3VideoClient = require('./toapisWan3VideoClient');
 const lingjingVideoClient = require('./lingjingVideoClient');
 const fuminVideoClient = require('./fuminVideoClient');
 const fuminImageClient = require('./fuminImageClient');
+const newapiVideoClient = require('./newapiVideoClient');
 
 function normalizeApiKeyForService(serviceType, apiKey) {
   if (serviceType === 'jimeng2_character_auth' && apiKey != null) {
@@ -310,6 +311,11 @@ function createConfig(db, log, req) {
       else if (st === 'video') {
         endpoint = '/videos';
         queryEndpoint = '/videos/{taskId}';
+      }
+    } else if (p === 'newapi' || p === 'newapi_video' || p === 'megabyai') {
+      if (st === 'video') {
+        endpoint = '/v1/videos';
+        queryEndpoint = '/v1/videos/{taskId}';
       }
     } else if (p === 'gemini' || p === 'google') {
       endpoint = '/v1beta/models/{model}:generateContent';
@@ -794,6 +800,29 @@ async function testConnection(opts) {
     }
     if (res.ok || res.status === 400 || res.status === 404) return;
     throw new Error(`AIHubCC 连接失败 (${res.status})`);
+  }
+
+  // NewAPI 视频连接测试只读取模型目录，禁止提交可能计费的视频任务。
+  if ((provider === 'newapi' || provider === 'newapi_video' || provider === 'megabyai'
+      || protocol === 'newapi_video') && serviceType === 'video') {
+    if (!opts.api_key) throw new Error('api_key 必填');
+    const url = `${base}/v1/models`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${opts.api_key}` },
+    });
+    const raw = await res.text();
+    let data = null;
+    try { data = raw ? JSON.parse(raw) : null; } catch (_) {}
+    if (res.status === 401 || res.status === 403) throw new Error(`NewAPI API Key 无效 (${res.status})`);
+    if (!res.ok) throw new Error(`NewAPI 连接失败 (${res.status})`);
+    const available = new Set((Array.isArray(data?.data) ? data.data : [])
+      .map((item) => String(item?.id || item?.name || '').trim()).filter(Boolean));
+    const requested = (models.length ? models : newapiVideoClient.VERIFIED_MODELS)
+      .map((item) => String(item || '').trim()).filter(Boolean);
+    const missing = requested.filter((item) => !available.has(item));
+    if (missing.length) throw new Error(`NewAPI 模型目录缺少: ${missing.join(', ')}`);
+    return;
   }
 
   // 可灵图片：查询一个不存在的任务即可验证鉴权，禁止连接测试创建付费图片任务。

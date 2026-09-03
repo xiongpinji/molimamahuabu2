@@ -1483,6 +1483,7 @@ test('createApp resumes redraw analysis tasks after orphan cleanup', async () =>
     assert.equal(created.db.prepare('SELECT status FROM usage_reservations WHERE id = ?').get(held.id).status, 'confirmed');
     assert.equal(creditLedger.getAccount(created.db, 'user-1').spent, 6);
   } finally {
+    created?.stopBackgroundServices?.();
     try {
       require('../src/db').closeDb();
     } catch (_) {

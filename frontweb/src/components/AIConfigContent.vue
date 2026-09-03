@@ -367,6 +367,7 @@
           </template>
           <el-select v-model="form.api_protocol" style="width: 100%" placeholder="选择接口规范（自定义厂商必选）" clearable>
             <el-option label="OpenAI 兼容（大多数中转站默认）" value="openai" />
+            <el-option v-if="form.service_type === 'video'" label="NewAPI 视频（异步 JSON，Bearer）" value="newapi_video" />
             <el-option label="火山引擎（豆包 Seedream / Seedance）" value="volcengine" />
             <el-option label="火山即梦 Seedance 全能（方舟多图参考，Seedance 2.0 等）" value="volcengine_omni" />
             <el-option label="通义万象 DashScope" value="dashscope" />
@@ -467,6 +468,15 @@
     { "type": "image_url", "image_url": { "url": "https://..." }, "role": "reference_image" }
   ],
   "ratio": "9:16", "duration": 5, "watermark": false, "resolution": "720p" }</pre>
+                </div>
+              </el-collapse-item>
+              <el-collapse-item name="newapi-vid">
+                <template #title><span class="ph-tag ph-tag-vid">视频</span> NewAPI（megabyai）— 已验证模型</template>
+                <div class="ph-body">
+                  <b>Base URL：</b><code>https://newapi.megabyai.cc</code><br>
+                  <b>接口：</b><code>POST /v1/videos</code>（创建），<code>GET /v1/videos/{taskId}</code>（查询）<br>
+                  <b>模型：</b><code>seedance-2.0-fast</code>、<code>seedance-2.0</code>、<code>seedance-2.0-mini</code>、<code>seedance-2.5</code>、<code>minimax_h3_image_audio_to_video_v2</code>、<code>alibaba/wan-3.0</code><br>
+                  <b>能力：</b>只开放下方逐模型列出的真实生成组合；中转站报价中的其他分辨率、时长、画幅或参考素材能力不自动开放。连接测试只读取模型目录，不会扣费。
                 </div>
               </el-collapse-item>
               <el-collapse-item name="sora-vid">
@@ -847,6 +857,14 @@ input_reference = (图片文件，可选)</pre>
           </p>
           <p v-else-if="endpointPreviewInfo.isJimeng2Auth" class="ep-tip">角色「SD2认证」将调用上述地址注册素材（POST 创建、GET 查询状态）。</p>
           <p v-else class="ep-tip">以上为系统推断的实际调用地址（可手动填写上方端点字段来覆盖）</p>
+        </div>
+
+        <div v-if="newapiCapabilityRows.length" class="newapi-capability-box">
+          <div class="newapi-capability-title">NewAPI 已验证响应能力</div>
+          <div v-for="cap in newapiCapabilityRows" :key="cap.model" class="newapi-capability-row">
+            <b>{{ cap.model }}</b>：{{ cap.duration }}；比例 {{ cap.ratios }}；分辨率 {{ cap.resolutions }}；{{ cap.references }}；{{ cap.audio }}
+          </div>
+          <p class="ep-tip">以上仅包含已真实生成并完成结果文件校验的模型与参数组合；未列出的组合不会进入首页或短剧工厂目录。</p>
         </div>
 
         <template v-if="form.service_type !== 'jimeng2_character_auth'">
@@ -1260,9 +1278,7 @@ const importFileRef = ref(null)
 const router = useRouter()
 
 function openPricing(row) {
-  const model = normalizeModelOption(row.default_model)
-    || (Array.isArray(row.model) ? normalizeModelOption(row.model[0]) : '')
-  router.push({ name: 'billing-admin', query: { tab: 'models', model } })
+  router.push({ name: 'billing-admin', query: { tab: 'models', config_id: row.id } })
 }
 
 // ---- 生成设置 ----
@@ -1357,6 +1373,18 @@ const form = ref({
 const presetModelPick = ref('')
 
 const formModelList = computed(() => parseModelList(form.value.modelText))
+const NEWAPI_VIDEO_CAPABILITIES = Object.freeze({
+  'seedance-2.0-fast': Object.freeze({ duration: '5 秒', ratios: '16:9', resolutions: '480p', references: '不开放参考素材', audio: '不开放同步音频开关' }),
+  'seedance-2.0': Object.freeze({ duration: '5 秒', ratios: '16:9', resolutions: '480p', references: '不开放参考素材', audio: '不开放同步音频开关' }),
+  'seedance-2.0-mini': Object.freeze({ duration: '4 秒', ratios: '16:9', resolutions: '480p', references: '不开放参考素材', audio: '不开放同步音频开关' }),
+  'seedance-2.5': Object.freeze({ duration: '5 秒', ratios: '16:9', resolutions: '480p', references: '不开放参考素材', audio: '不开放同步音频开关' }),
+  minimax_h3_image_audio_to_video_v2: Object.freeze({ duration: '5 秒', ratios: '16:9', resolutions: '768p（必须 1 张参考图）', references: '必须且只能提供 1 张参考图', audio: '不开放同步音频开关' }),
+  'alibaba/wan-3.0': Object.freeze({ duration: '4 秒', ratios: '16:9', resolutions: '480p', references: '不开放参考素材', audio: '不开放同步音频开关' }),
+})
+const newapiCapabilityRows = computed(() => {
+  if (form.value.service_type !== 'video' || (form.value.provider !== 'newapi' && form.value.api_protocol !== 'newapi_video')) return []
+  return formModelList.value.filter((model) => NEWAPI_VIDEO_CAPABILITIES[model]).map((model) => ({ model, ...NEWAPI_VIDEO_CAPABILITIES[model] }))
+})
 const TOAPIS_ADMIN_VIDEO_CAPABILITIES = Object.freeze({
   'seedance-2-fast': Object.freeze({ durations: Object.freeze(Array.from({ length: 12 }, (_, index) => index + 4)) }),
   'seedance-2-mini': Object.freeze({ durations: Object.freeze([4, 8, 10, 12, 15]) }),
@@ -1545,6 +1573,7 @@ const providerConfigs = {
   ],
   video: [
     { id: 'aihubcc', name: 'AIHubCC 视频', models: AIHUBCC_VIDEO_MODELS },
+    { id: 'newapi', name: 'NewAPI（megabyai）', models: ['seedance-2.0-fast', 'seedance-2.0', 'seedance-2.0-mini', 'seedance-2.5', 'minimax_h3_image_audio_to_video_v2', 'alibaba/wan-3.0'] },
     { id: 'token6688', name: 'Token6688 Seedance 特价按次', models: ['seedance-2-0-special-mini-720p', 'seedance-2-0-special-fast-720p', 'seedance-2-0-special-full-720p'] },
     { id: 'toapis', name: 'ToAPIs Seedance 2', models: ['seedance-2-fast', 'seedance-2-mini'] },
     { id: 'toapis_wan3', name: 'ToAPIs Wan 3.0', models: ['wan3.0-video'] },
@@ -1608,6 +1637,7 @@ const providerProtocolMap = {
   ffir: 'kling_omni',
   klingai: 'kling_omni',
   // video
+  newapi: 'newapi_video',
   vidu: 'vidu',
   xai: 'xai',
   grok: 'xai',
@@ -1640,6 +1670,7 @@ function getBaseUrlForProvider(provider) {
   if (!provider) return ''
   const p = String(provider).toLowerCase()
   if (p === 'aihubcc') return 'https://aihubcc.cc/v1'
+  if (p === 'newapi') return 'https://newapi.megabyai.cc'
   if (p === 'token6688' || p === 'tokengo') return 'https://qd.token6688.com'
   if (p === 'usmercari_image') return 'https://chat-ai.mercarimx.com'
   if (p === 'gemini' || p === 'google') return 'https://generativelanguage.googleapis.com'
@@ -1812,7 +1843,10 @@ const endpointPreviewInfo = computed(() => {
       submitPath = '/images/generations'  // openai 兼容：base_url 已含 /v1
     }
   } else if (service_type === 'video') {
-    if (proto === 'toapis_wan3_video' || p === 'toapis_wan3') {
+    if (proto === 'newapi_video' || p === 'newapi') {
+      submitPath = endpoint || '/v1/videos'
+      queryPath = query_endpoint || '/v1/videos/{taskId}'
+    } else if (proto === 'toapis_wan3_video' || p === 'toapis_wan3') {
       submitPath = endpoint || '/v1/videos/generations'
     } else if (proto === 'toapis_video' || p === 'toapis') {
       submitPath = endpoint || '/v1/videos/generations'
@@ -1889,6 +1923,8 @@ const endpointPreviewInfo = computed(() => {
 
     if (query_endpoint) {
       queryPath = query_endpoint
+    } else if (proto === 'newapi_video' || p === 'newapi') {
+      queryPath = '/v1/videos/{taskId}'
     } else if (proto === 'toapis_wan3_video' || p === 'toapis_wan3') {
       queryPath = '/v1/videos/generations/{taskId}'
     } else if (proto === 'toapis_video' || p === 'toapis') {
@@ -2048,6 +2084,12 @@ function onProviderChange(providerId) {
     form.value.api_protocol = 'toapis_video'
     form.value.endpoint = '/v1/videos/generations'
     form.value.query_endpoint = '/v1/videos/generations/{taskId}'
+  }
+  if (st === 'video' && providerId === 'newapi') {
+    form.value.api_protocol = 'newapi_video'
+    form.value.endpoint = '/v1/videos'
+    form.value.query_endpoint = '/v1/videos/{taskId}'
+    form.value.video_duration = 5
   }
   if (st === 'video' && providerId === 'toapis_wan3') {
     form.value.api_protocol = 'toapis_wan3_video'
@@ -3018,6 +3060,21 @@ code {
   margin: -4px 0 14px;
   font-size: 12px;
 }
+.newapi-capability-box {
+  background: #f0f9eb;
+  border: 1px solid #b3e19d;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: -4px 0 14px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.newapi-capability-title {
+  color: #529b2e;
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+.newapi-capability-row { color: #303133; margin-bottom: 3px; }
 .ep-preview-header {
   display: flex;
   align-items: center;

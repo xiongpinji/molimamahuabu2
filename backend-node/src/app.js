@@ -21,6 +21,7 @@ function startBackgroundServices(options) {
     || require('./services/providerReconciliationService');
   const providerCanary = options.providerCanary
     || require('./services/providerCanarySchedulerService');
+  const providerPricing = options.providerPricing;
   const env = options.env || process.env;
   providerReconciliation.startProviderReconciliation(options.db, options.log, {
     intervalMs: Number(env.PROVIDER_RECONCILIATION_INTERVAL_MS) || 60_000,
@@ -32,18 +33,43 @@ function startBackgroundServices(options) {
     storageRoot: options.storageRoot,
     healthUrl: options.healthUrl,
   });
+  if (providerPricing?.startProviderPricingSync
+      && !/^(0|false|no)$/i.test(String(env.PROVIDER_PRICING_SYNC_ENABLED || ''))) {
+    providerPricing.startProviderPricingSync(options.db, options.log, {
+      intervalMs: Number(env.PROVIDER_PRICING_SYNC_INTERVAL_MS) || 6 * 60 * 60 * 1000,
+    });
+  }
   return {
     stop() {
-      return {
+      const stopped = {
         scheduler: providerCanary.stopProviderCanaryScheduler(),
         reconciliation: providerReconciliation.stopProviderReconciliation(),
       };
+      if (providerPricing?.stopProviderPricingSync) {
+        stopped.pricing = providerPricing.stopProviderPricingSync();
+      }
+      return stopped;
     },
   };
 }
 
-function mountFrontend(app, webDist) {
+function assertFrontendDistReadable(webDist) {
   if (!fs.existsSync(webDist)) return false;
+
+  try {
+    fs.accessSync(webDist, fs.constants.R_OK | fs.constants.X_OK);
+    fs.accessSync(path.join(webDist, 'index.html'), fs.constants.R_OK);
+  } catch (error) {
+    throw new Error(
+      `Frontend static assets unavailable: ${error.code || 'access_error'} ${webDist}: ${error.message}`,
+    );
+  }
+
+  return true;
+}
+
+function mountFrontend(app, webDist) {
+  if (!assertFrontendDistReadable(webDist)) return false;
 
   app.use('/assets', express.static(path.join(webDist, 'assets')));
   app.use('/assets', (req, res) => {
@@ -140,6 +166,7 @@ function createApp() {
     log,
     storageRoot,
     healthUrl: `http://${healthUrlHost}:${config.server.port}/health`,
+    providerPricing: require('./services/providerPricingSyncSchedulerService'),
   });
 
   const app = configureTrustedProxy(express());

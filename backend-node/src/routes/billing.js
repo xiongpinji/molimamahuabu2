@@ -8,6 +8,7 @@ const platformAdmin = require('../services/platform-admin-service');
 const tenants = require('../services/tenantService');
 const reconciliation = require('../services/billingReconciliationService');
 const generationCost = require('../services/generationCostLedgerService');
+const providerPricingSync = require('../services/providerPricingSyncService');
 
 function adminRedeemInput(db, req) {
   const input = {
@@ -344,11 +345,27 @@ function routes(db, log, runtime = {}) {
         response.internalError(res, error.message);
       }
     },
+    syncProviderPricing: async (_req, res) => {
+      try {
+        const settings = generationCost.getSettings(db);
+        const results = await (runtime.providerPricingSync || providerPricingSync).syncAllProviderPricing(db, {
+          usdCnyRate: Number(settings.usd_cny_rate_micros || 0) / 1_000_000,
+          log,
+        });
+        return response.success(res, {
+          rate: Number(settings.usd_cny_rate_micros || 0) / 1_000_000,
+          results,
+        });
+      } catch (error) {
+        log.error('billing provider pricing sync', { code: error?.code || 'UNKNOWN' });
+        return response.internalError(res, '同步中转站成本失败');
+      }
+    },
     updateLedgerSettings: (req, res) => {
       try {
         response.success(res, generationCost.updateSettings(
           db,
-          req.body?.credit_value_micros,
+          req.body || {},
         ));
       } catch (error) {
         if (error.code === 'INVALID_BILLING_SETTING') {

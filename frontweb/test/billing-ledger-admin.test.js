@@ -19,3 +19,14 @@ test('前端使用专用经营台账设置和报表接口', () => {
   assert.match(api, /billing\/admin\/ledger\/settings/)
   assert.match(api, /billing\/admin\/ledger\/report/)
 })
+
+test('模型计费恢复完整列表并按中转站分组', () => {
+  assert.match(view, /groupModelPricesByProvider/)
+  assert.match(view, /filteredPriceGroups/)
+  assert.match(view, /model-provider-group/)
+  assert.match(view, /v-for="group in filteredPriceGroups"/)
+  assert.match(view, /v-for="item in group.items"/)
+  assert.match(view, /syncProviderPricingNow/)
+  assert.match(view, /中转站成本：未同步/)
+  assert.match(view, /usdCnyRate/)
+})

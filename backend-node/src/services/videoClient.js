@@ -12,6 +12,7 @@ let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
 const { uploadLocalImageToProxy, uploadToImageProxy } = require('./uploadService');
 const imageClient = require('./imageClient');
 const aihubccClient = require('./aihubccClient');
+const newapiVideoClient = require('./newapiVideoClient');
 const lingjingVideoClient = require('./lingjingVideoClient');
 const feituoVideoClient = require('./feituoVideoClient');
 const usmercariVideoClient = require('./usmercariVideoClient');
@@ -47,6 +48,7 @@ const {
  */
 function inferVideoProtocol(provider) {
   const p = String(provider || '').toLowerCase();
+  if (p === 'newapi' || p === 'newapi_video' || p === 'megabyai') return 'newapi_video';
   if (p === 'aihubcc' || p === 'aihubcc_video') return 'aihubcc';
   if (p === 'token6688' || p === 'tokengo') return 'token6688';
   if (p === 'djpsd_openapi') return 'djpsd_openapi';
@@ -372,6 +374,11 @@ function resolveVideoProtocol(config, modelHint) {
 
 function getVideoArtifactFetchOptions(config, videoUrl) {
   if (!String(config?.api_key || '').trim()) return {};
+  const protocol = String(config?.api_protocol || '').trim().toLowerCase();
+  const provider = String(config?.provider || '').trim().toLowerCase();
+  if (protocol === 'newapi_video' || provider === 'newapi' || provider === 'megabyai') {
+    return { headers: { Authorization: 'Bearer ' + config.api_key } };
+  }
   try {
     const providerOrigin = new URL(String(config?.base_url || '')).origin;
     const artifactOrigin = new URL(String(videoUrl || '')).origin;
@@ -1298,6 +1305,75 @@ function configSupportsVideoModel(config, preferredModel) {
   return models.some((model) => normalize(model) === normalize(requested));
 }
 
+function getNewApiVideoBinding(config, selectedModel, modelHint) {
+  if (!config) return null;
+  const selection = mediaModelSelection.parseQualifiedSelection(selectedModel);
+  const model = String(selection?.upstreamModel
+    || modelHint
+    || config?.canvas_selected_model
+    || config?.default_model
+    || '').trim();
+  if (resolveVideoProtocol(config, model) !== 'newapi_video') return null;
+  if (selection && Number(config?.id) !== selection.configId) return null;
+  if (!model || !configSupportsVideoModel(config, model)
+      || config?.verification_status !== 'verified'
+      || !aiConfigService.hasConnectionCredential(config)) return null;
+  const target = model.toLowerCase();
+  const capabilityKey = Object.keys(config.verified_capabilities || {})
+    .find((value) => String(value || '').trim().toLowerCase() === target);
+  const capabilities = capabilityKey ? config.verified_capabilities[capabilityKey] : null;
+  const durations = Array.isArray(capabilities?.durations)
+    ? [...new Set(capabilities.durations.map(Number).filter(Number.isSafeInteger))]
+    : [];
+  if (capabilities?.validated !== true || durations.length === 0) return null;
+  return {
+    configId: Number(config.id),
+    configUpdatedAt: config.updated_at || '',
+    provider: config.provider,
+    protocol: 'newapi_video',
+    model,
+    durations,
+    capabilities,
+  };
+}
+
+function validateNewApiVideoRequest(binding, body, model, duration) {
+  if (!binding || binding.protocol !== 'newapi_video') return;
+  if (body?.generate_audio === true && binding.capabilities?.supportsAudio !== true) {
+    throw Object.assign(new Error(`${model} 尚未验证同步音频，禁止开启`), {
+      code: 'VIDEO_REFERENCE_FORBIDDEN',
+    });
+  }
+  try {
+    newapiVideoClient.validateVideoOptions({
+      model,
+      duration,
+      aspect_ratio: body?.aspect_ratio,
+      resolution: body?.resolution,
+      image_url: body?.image_url,
+      first_frame_url: body?.first_frame_url ?? body?.first_frame_local_path,
+      last_frame_url: body?.last_frame_url ?? body?.last_frame_local_path,
+      reference_urls: Array.isArray(body?.reference_image_urls) ? body.reference_image_urls : [],
+      reference_video_urls: Array.isArray(body?.reference_video_urls)
+        ? body.reference_video_urls
+        : (body?.reference_video_url ? [body.reference_video_url] : []),
+      reference_audio_urls: Array.isArray(body?.reference_audio_urls)
+        ? body.reference_audio_urls
+        : (body?.reference_audio_url ? [body.reference_audio_url] : []),
+    });
+  } catch (error) {
+    const message = String(error?.message || 'NewAPI 视频请求参数无效');
+    const code = /秒|时长/.test(message)
+      ? 'INVALID_VIDEO_DURATION'
+      : /分辨率/.test(message)
+        ? 'MODEL_RESOLUTION_PRICE_REQUIRED'
+        : /参考|音频/.test(message)
+          ? 'VIDEO_REFERENCE_FORBIDDEN'
+          : 'INVALID_VIDEO_REQUEST';
+    throw Object.assign(new Error(message), { code });
+  }
+}
+
 // ??????????????????listConfigs ?? is_default DESC, priority DESC ??
 function getDefaultVideoConfig(db, preferredModel, evidenceRoots, preferredConfigId) {
   // Compatibility: the redraw path may pass the exact config id as the third
@@ -1322,13 +1398,21 @@ function getDefaultVideoConfig(db, preferredModel, evidenceRoots, preferredConfi
         ? exact
         : null;
     }
+    if (resolveVideoProtocol(exact, preferredModel) === 'newapi_video') {
+      return getNewApiVideoBinding(exact, null, preferredModel) ? exact : null;
+    }
     return configSupportsVideoModel(exact, preferredModel) ? exact : null;
   }
   const configs = aiConfigService.listConfigs(db, 'video');
   const active = configs.filter((c) => c.is_active);
   const preferred = String(preferredModel || '').trim().toLowerCase();
   if (mediaModelSelection.parseQualifiedSelection(preferredModel)) {
-    return mediaModelSelection.resolveQualifiedConfig(active, preferredModel);
+    const resolved = mediaModelSelection.resolveQualifiedConfig(active, preferredModel);
+    if (!resolved) return null;
+    if (resolveVideoProtocol(resolved, resolved.canvas_selected_model) !== 'newapi_video') return resolved;
+    return getNewApiVideoBinding(resolved, preferredModel, resolved.canvas_selected_model)
+      ? resolved
+      : null;
   }
   if (preferred === toapisWan3VideoClient.TOAPIS_WAN3_MODEL) {
     return active.find((config) => {
@@ -1759,6 +1843,7 @@ function buildQueryUrl(config, taskId) {
   const base = (config.base_url || (proto === 'deepwl_grok' ? 'https://zx1.deepwl.net' : '')).replace(/\/$/, '');
   let defaultEp;
   if (isSora) defaultEp = '/v1/videos/{taskId}';
+  else if (proto === 'newapi_video') defaultEp = '/v1/videos/{taskId}';
   else if (proto === 'xai') defaultEp = '/v1/videos/{taskId}';
   else if (proto === 'deepwl_grok') {
     const mode = resolveDeepwlGrokMode(config);
@@ -5334,6 +5419,18 @@ async function submitVideoWithConfig(db, log, config, opts, runtime = {}) {
     });
   }
 
+  if (protocol === 'newapi_video') {
+    return newapiVideoClient.callNewApiVideoApi(config, log, {
+      ...opts,
+      model,
+      prompt,
+      duration: opts.duration ?? duration,
+      aspect_ratio: opts.aspect_ratio ?? aspect_ratio,
+      resolution: opts.resolution ?? resolution,
+      fetchImpl: opts.fetchImpl,
+    });
+  }
+
   if (protocol === 'fumin_video') {
     const rawReferences = [...new Set([
       image_url,
@@ -6335,6 +6432,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isDeepwlGrok = protocol === 'deepwl_grok';
   const isAihubcc = protocol === 'aihubcc';
   const isIcreat = protocol === 'icreat_task';
+  const isNewApi = protocol === 'newapi_video';
   const isFeituo = protocol === 'feituo_open';
   const isUsmercari = protocol === 'usmercari_media';
   const isFumin = protocol === 'fumin_video';
@@ -6412,6 +6510,19 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           };
         }
         if (result.state === 'failed') return { error: result.error };
+        continue;
+      }
+      if (isNewApi) {
+        const result = await newapiVideoClient.fetchNewApiTask(config, taskId, { fetchImpl });
+        log.info('[NewAPI video poll] 状态', {
+          video_gen_id: videoGenId,
+          round: attempt + 1,
+          state: result.state,
+          has_video_url: !!result.videoUrl,
+        });
+        if (result.state === 'completed' && result.videoUrl) return { video_url: result.videoUrl };
+        if (result.state === 'failed') return { error: result.error };
+        if (result.state === 'completed') return { error: 'NewAPI 任务完成但未返回可下载的视频地址' };
         continue;
       }
       let url, headers, method = 'GET', requestBody;
@@ -7247,6 +7358,14 @@ function normalizeVideoDurationForModel(model, value) {
 }
 
 module.exports = {
+  NEWAPI_VERIFIED_MODELS: newapiVideoClient.VERIFIED_MODELS,
+  buildNewApiVideoBody: newapiVideoClient.buildVideoBody,
+  validateNewApiVideoOptions: newapiVideoClient.validateVideoOptions,
+  parseNewApiSubmitResponse: newapiVideoClient.parseSubmitResponse,
+  parseNewApiPollResponse: newapiVideoClient.parsePollResponse,
+  callNewApiVideoApi: newapiVideoClient.callNewApiVideoApi,
+  getNewApiVideoBinding,
+  validateNewApiVideoRequest,
   getDefaultVideoConfig,
   getVideoConfigById,
   getVideoArtifactFetchOptions,

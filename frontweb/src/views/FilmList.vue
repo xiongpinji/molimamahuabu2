@@ -45,6 +45,7 @@
               <span v-if="homeReferenceUploading">上传中…</span>
               <span v-else-if="homeReferencePreview">点击更换参考图</span>
               <span v-else-if="homeMediaType === 'text'">文字无需参考图</span>
+              <span v-else-if="homeReferenceRequired">请上传参考图（必填）</span>
               <span v-else>上传参考图</span>
             </button>
             <input
@@ -87,12 +88,7 @@
                 </label>
                   <label v-if="homeMediaType !== 'text'" class="home-control">
                     <select v-model="homeAspectRatio" aria-label="画面比例">
-                      <option value="16:9">16:9</option>
-                      <option value="9:16">9:16</option>
-                      <option value="1:1">1:1</option>
-                      <option value="4:3">4:3</option>
-                      <option value="3:4">3:4</option>
-                      <option value="21:9">21:9</option>
+                      <option v-for="value in homeAspectRatioOptions" :key="value" :value="value">{{ value }}</option>
                     </select>
                   </label>
                   <label v-if="homeMediaType === 'video'" class="home-control">
@@ -125,7 +121,7 @@
                   <button
                     type="button"
                     class="home-generate"
-                    :disabled="!homePrompt.trim() || !homeModel || homeSelectedPrice == null || homeInsufficientCredits || homeReferenceUploading"
+                    :disabled="!homePrompt.trim() || !homeModel || homeSelectedPrice == null || homeInsufficientCredits || homeReferenceUploading || (homeReferenceRequired && !homeReferenceImageUrl)"
                     @click="startFromComposer"
                   >
                     <span>✦</span>生成
@@ -456,6 +452,7 @@ import {
   estimateGenerationCredits,
   normalizeQuickGenerationCatalog,
   normalizeQuickGenerationDraft,
+  quickGenerationAspectRatios,
   quickGenerationDurations,
   quickGenerationResolutions,
 } from '@/utils/homeQuickGeneration'
@@ -512,6 +509,7 @@ const homeSelectedModel = computed(() => (
   homeModelOptions.value.find((item) => item.model === homeModel.value) || null
 ))
 const homeResolutions = computed(() => quickGenerationResolutions(homeSelectedModel.value || {}, homeMediaType.value))
+const homeAspectRatioOptions = computed(() => quickGenerationAspectRatios(homeSelectedModel.value || {}, homeMediaType.value))
 const homeDurationOptions = computed(() => quickGenerationDurations(homeSelectedModel.value || {}))
 const homeQuantityOptions = computed(() => {
   const declared = homeSelectedModel.value?.capabilities?.quantities
@@ -533,11 +531,17 @@ function triggerHomeReferenceUpload() {
 const homeSupportsReferenceImage = computed(() => {
   if (homeMediaType.value === 'text') return false
   const capability = homeSelectedModel.value?.capabilities || {}
+  if (capability.supportsImageReference === true || capability.supportsFirstFrame === true) return true
+  if (capability.supportsImageReference === false && capability.supportsFirstFrame === false) return false
   if (homeMediaType.value === 'image') return capability.supportsImageReference !== false
   return homeSelectedModel.value?.protocol === 'toapis_video'
     ? capability.supportsFirstFrame === true
     : capability.supportsFirstFrame !== false
 })
+const homeReferenceRequired = computed(() => (
+  homeMediaType.value !== 'text'
+  && homeSelectedModel.value?.capabilities?.requiresReference === true
+))
 
 async function onHomeReferenceChange(event) {
   const file = event.target.files?.[0]
@@ -579,9 +583,11 @@ async function loadHomeGenerationConfig() {
 
 function syncHomeResolution() {
   const allowed = homeResolutions.value
+  const allowedRatios = homeAspectRatioOptions.value
   const current = String(homeResolution.value || '').trim().toLowerCase()
   if (allowed.length && !allowed.includes(current)) homeResolution.value = allowed[0]
   else if (current) homeResolution.value = current
+  if (allowedRatios.length && !allowedRatios.includes(homeAspectRatio.value)) homeAspectRatio.value = allowedRatios[0]
   if (!homeQuantityOptions.value.includes(Number(homeQuantity.value))) homeQuantity.value = homeQuantityOptions.value[0] || 1
   if (!homeDurationOptions.value.includes(Number(homeDuration.value))) homeDuration.value = homeDurationOptions.value[0] || 5
   if (homeSelectedModel.value?.capabilities?.supportsAudio !== true) homeGenerateAudio.value = false
@@ -594,6 +600,10 @@ function startFromComposer() {
   }
   if (!homeModel.value) {
     ElMessage.warning('当前没有管理员已启用并配置计费的模型')
+    return
+  }
+  if (homeReferenceRequired.value && !homeReferenceImageUrl.value) {
+    ElMessage.warning('当前模型必须先上传参考图')
     return
   }
   if (homeSelectedPrice.value == null) {

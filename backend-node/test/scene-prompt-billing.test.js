@@ -112,3 +112,25 @@ test('场景提示词供应商明确失败时退回预扣积分', async (t) => {
     tenant_id: 'tenant-a', available: 20, held: 0, spent: 0,
   });
 });
+
+test('画布场景提示词明确标记失败时即使错误文案含未知也立即退款', async (t) => {
+  const { db, sceneId } = setup();
+  const original = aiClient.generateText;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async () => {
+    throw new Error('网络中断，供应商结果未知');
+  };
+  const { res, result } = capture();
+
+  await sceneRoutes(db, log, {}, { billingEnabled: true }).generatePrompt(request(sceneId), res);
+
+  assert.equal(result.status, 400);
+  const reservation = db.prepare(
+    `SELECT * FROM tenant_usage_reservations
+     WHERE resource_type = 'text' AND resource_id = ?`,
+  ).get(String(sceneId));
+  assert.equal(reservation.status, 'refunded');
+  assert.deepEqual(credits.getTenantAccount(db, 'tenant-a'), {
+    tenant_id: 'tenant-a', available: 20, held: 0, spent: 0,
+  });
+});

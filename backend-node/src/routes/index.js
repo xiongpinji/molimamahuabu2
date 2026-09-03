@@ -180,6 +180,7 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/billing/admin/credit-transactions', requireAdmin, requireBillingManager, billing.listAdminCreditTransactions);
   r.get('/billing/admin/ledger/settings', requireAdmin, requireBillingManager, billing.getLedgerSettings);
   r.put('/billing/admin/ledger/settings', requireAdmin, requireBillingManager, billing.updateLedgerSettings);
+  r.post('/billing/admin/provider-pricing/sync', requireAdmin, requireBillingManager, billing.syncProviderPricing);
   r.get('/billing/admin/ledger/report', requireAdmin, requireBillingManager, billing.getLedgerReport);
   r.get('/billing/admin/reconciliation/anomalies', requireAdmin, requireBillingManager, billing.listReconciliationAnomalies);
   r.get('/billing/admin/reconciliation/history', requireAdmin, requireBillingManager, billing.listReconciliationHistory);

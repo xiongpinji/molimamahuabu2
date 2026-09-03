@@ -25,6 +25,59 @@ function describeRootEvidence(name, fn) {
     : {}, fn);
 }
 
+describe('private-avatar video-service projection', () => {
+  it('ignores only the audited NewAPI routing and verified-duration integration', () => {
+    const baseline = `
+      const strictVideoState = wan3State || lingjingState || toapisState || feituoState;
+      const allowedDurations = strictVideoState?.durations || null;
+      const price = modelPrice.calculateCharge(db, billingModel, {
+        duration,
+        resolution: body.resolution,
+      });
+      const sourceConditioningJson = (lingjingState || wan3State)
+        ? JSON.stringify({ video_capability: { config_id: videoConfig.id } })
+        : null;
+      JSON.stringify(requestSnapshot), (lingjingState || wan3State) ? videoConfig.id : null, sourceConditioningJson;
+      const processingAllowedDurations = TOAPIS_VIDEO_MODELS[normalizedProcessingModel]?.durations
+        || FEITUO_MODELS[normalizedProcessingModel]?.durations
+        || null;
+    `;
+    const isolatedNewApi = `
+      const strictVideoState = wan3State || lingjingState || toapisState || feituoState;
+      const newapiBinding = videoClient.getNewApiVideoBinding(videoConfig, selectedModel, model);
+      const allowedDurations = strictVideoState?.durations || newapiBinding?.durations || null;
+      const price = modelPrice.calculateCharge(db, billingModel, {
+        duration,
+        resolution: body.resolution,
+        allowedDurations: newapiBinding?.durations,
+      });
+      if (newapiBinding) videoClient.validateNewApiVideoRequest(newapiBinding, body, model, duration);
+      const sourceConditioningJson = (lingjingState || wan3State || newapiBinding)
+        ? JSON.stringify({ video_capability: { config_id: videoConfig.id } })
+        : null;
+      JSON.stringify(requestSnapshot), (lingjingState || wan3State || newapiBinding) ? videoConfig.id : null, sourceConditioningJson;
+      const processingAllowedDurations = TOAPIS_VIDEO_MODELS[normalizedProcessingModel]?.durations
+        || FEITUO_MODELS[normalizedProcessingModel]?.durations
+        || videoClient.getNewApiVideoBinding(config, null, processingModel)?.durations
+        || null;
+    `;
+
+    assert.equal(
+      privateAvatarVideoServiceProjection(isolatedNewApi),
+      privateAvatarVideoServiceProjection(baseline),
+    );
+  });
+
+  it('does not hide a widened config pin outside the exact NewAPI binding', () => {
+    const safe = 'const pinned = (lingjingState || wan3State || newapiBinding) ? videoConfig.id : null;';
+    const widened = 'const pinned = (lingjingState || wan3State || newapiBinding || videoConfig) ? videoConfig.id : null;';
+    assert.notEqual(
+      privateAvatarVideoServiceProjection(widened),
+      privateAvatarVideoServiceProjection(safe),
+    );
+  });
+});
+
 const TOAPIS_CASES = Object.freeze([
   { id: 'fast-t2v-480', model: 'seedance-2-fast', mode: 't2v', resolution: '480p', duration: 5, audio: true },
   { id: 'fast-t2v-720', model: 'seedance-2-fast', mode: 't2v', resolution: '720p', duration: 5, audio: false },
@@ -1214,6 +1267,34 @@ describeRootEvidence('shared evidence path and freshness safety', () => {
           path.join(expectedCurrent, 'backend-node/src/services/videoService.js'),
           'utf8',
         )),
+      );
+      assertPass(runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }));
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not require fresh private-avatar evidence for generic failed-video refund settlement', () => {
+    const fixture = makeFixture({ toapis: true, usmercari: false });
+    const expectedCurrent = path.join(fixture.root, 'expected-current');
+    const target = path.join(fixture.candidate, 'backend-node/src/services/videoService.js');
+    try {
+      fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
+      makeEvidenceStaleButUnexpired(fixture, TOAPIS_PRIVATE_AVATAR_FILE);
+      const baseline = `
+        function setVideoGenFailed(db, videoGenId, errorMsg, now, failure = {}) {
+          settleVideoCredit(db, null, row, 'failed', errorMsg, failure);
+        }
+      `;
+      const changed = baseline.replace(
+        "settleVideoCredit(db, null, row, 'failed', errorMsg, failure);",
+        "settleVideoCredit(db, null, row, 'failed', errorMsg, { failureDisposition: 'refund', ...failure });",
+      );
+      fs.appendFileSync(path.join(expectedCurrent, 'backend-node/src/services/videoService.js'), baseline);
+      fs.appendFileSync(target, changed);
+      assert.equal(
+        privateAvatarVideoServiceProjection(changed),
+        privateAvatarVideoServiceProjection(baseline),
       );
       assertPass(runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }));
     } finally {

@@ -2275,14 +2275,16 @@ test('createApp reconciles redraw localization and asset batches after analysis 
     failOrphanedAsyncTasksOnStartup: () => { order.push('generic'); return 0; },
   });
   mock('../src/services/videoService', { resumeProcessingVideoGenerations() {} });
+  let created;
   try {
     const { createApp } = require('../src/app');
-    createApp();
+    created = createApp();
     resumeResolve();
     await resumePromise;
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(order, ['analysis', 'localization', 'batch', 'dialogue', 'generic']);
   } finally {
+    created?.stopBackgroundServices?.();
     delete require.cache[appPath];
     for (const [resolved, original] of moduleMocks) {
       if (original) require.cache[resolved] = original;

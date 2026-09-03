@@ -1,11 +1,12 @@
 const mediaModelSelection = require('./mediaModelSelectionService');
+const providerPricingSync = require('./providerPricingSyncService');
 
 const SUPPORTED_MODELS = ['GPT-5.5', 'gpt-image-2', 'seedance 2.0'];
 const MODEL_CATEGORIES = ['text', 'image', 'video', 'audio', 'other'];
 const MODEL_STATUSES = ['enabled', 'disabled'];
 const COST_UNITS = ['request', 'image', 'second', 'token'];
 const BILLING_UNITS = ['request', 'second'];
-const VIDEO_RESOLUTIONS = ['480p', '720p', '1080p'];
+const VIDEO_RESOLUTIONS = ['480p', '720p', '768p', '1080p'];
 const IMAGE_RESOLUTIONS = ['1k', '2k', '4k'];
 const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'toapis_wan3_video', 'feituo_open', 'lingjing_open']);
 const toapisVideoClient = require('./toapisVideoClient');
@@ -13,7 +14,7 @@ const toapisWan3VideoClient = require('./toapisWan3VideoClient');
 const feituoVideoClient = require('./feituoVideoClient');
 const lingjingVideoClient = require('./lingjingVideoClient');
 const { evidenceContractForModel, hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
-const { ensureModelCreditPriceFreeContract } = require('../db/migrate');
+const { ensureModelCreditPriceFreeContract, ensureVideoResolutionPriceContract } = require('../db/migrate');
 const SERVICE_CATEGORIES = {
   text: 'text',
   image: 'image',
@@ -76,6 +77,7 @@ function billingUnit(value, category = '', configuredUnit = '') {
 }
 
 function ensureSchema(db) {
+  if (db.readonly) return;
   recoverOrphanedFreePricingRebuild(db);
   db.exec(`CREATE TABLE IF NOT EXISTS model_credit_prices (
     model TEXT PRIMARY KEY,
@@ -100,12 +102,13 @@ function ensureSchema(db) {
   ensureModelCreditPriceFreeContract(db);
   db.exec(`CREATE TABLE IF NOT EXISTS model_resolution_prices (
     model TEXT NOT NULL COLLATE NOCASE,
-    resolution TEXT NOT NULL CHECK (resolution IN ('480p', '720p', '1080p')),
+    resolution TEXT NOT NULL CHECK (resolution IN ('480p', '720p', '768p', '1080p')),
     credits INTEGER NOT NULL CHECK (credits > 0),
     cost_micros_per_second INTEGER NOT NULL DEFAULT 0 CHECK (cost_micros_per_second >= 0),
     updated_at TEXT NOT NULL,
     PRIMARY KEY (model, resolution)
   )`);
+  ensureVideoResolutionPriceContract(db);
   db.exec(`CREATE TABLE IF NOT EXISTS model_image_resolution_prices (
     model TEXT NOT NULL COLLATE NOCASE,
     resolution TEXT NOT NULL CHECK (resolution IN ('1k', '2k', '4k')),
@@ -217,6 +220,20 @@ function isRealGenerationVerified(row, model) {
   const provider = String(row.provider || '').trim().toLowerCase();
   const protocol = String(row.api_protocol || '').trim().toLowerCase();
   const feituo = provider === 'feituo' || protocol === 'feituo_open';
+  const newapi = provider === 'newapi' || provider === 'newapi_video'
+    || protocol === 'newapi' || protocol === 'newapi_video';
+  if (newapi) {
+    let capabilities = row.verified_capabilities;
+    try {
+      if (typeof capabilities === 'string') capabilities = JSON.parse(capabilities || '{}');
+    } catch (_) {
+      capabilities = {};
+    }
+    const target = String(model || '').trim().toLowerCase();
+    const key = Object.keys(capabilities || {})
+      .find((item) => String(item).trim().toLowerCase() === target);
+    return row.verification_status === 'verified' && capabilities?.[key]?.validated === true;
+  }
   if (!isToken6688Config(row) && !feituo) return true;
   try {
     const settings = typeof row.settings === 'string' ? JSON.parse(row.settings) : row.settings;
@@ -230,24 +247,42 @@ function isRealGenerationVerified(row, model) {
   }
 }
 
-function providerInfo(row) {
+function providerInfo(row, upstreamModel = '') {
   const provider = String(row.provider || '').trim();
   if (!provider && !row.name && !row.base_url) return null;
   return {
     provider,
     provider_name: String(row.name || provider).trim(),
     provider_base_url: String(row.base_url || '').trim(),
+    config_id: Number(row.id) || null,
+    upstream_model: String(upstreamModel || '').trim(),
   };
 }
 
-function addProvider(item, row) {
-  const info = providerInfo(row);
+function isNewApiVideoConfig(row) {
+  if (String(row.service_type || '').trim().toLowerCase() !== 'video') return false;
+  const provider = String(row.provider || '').trim().toLowerCase();
+  const protocol = String(row.api_protocol || '').trim().toLowerCase();
+  return provider === 'newapi' || provider === 'newapi_video'
+    || protocol === 'newapi' || protocol === 'newapi_video';
+}
+
+function billingModelForMediaEntry(entry) {
+  return isNewApiVideoConfig(entry.config)
+    ? `cfg-${entry.config.id}::${entry.upstreamModel}`
+    : entry.model;
+}
+
+function addProvider(item, row, upstreamModel = '') {
+  const info = providerInfo(row, upstreamModel);
   if (!info) return item;
   const providers = item.providers || (item.providers = []);
   if (!providers.some((entry) => (
-    entry.provider === info.provider
-    && entry.provider_name === info.provider_name
-    && entry.provider_base_url === info.provider_base_url
+    entry.config_id === info.config_id
+      && entry.provider === info.provider
+      && entry.provider_name === info.provider_name
+      && entry.provider_base_url === info.provider_base_url
+      && entry.upstream_model === info.upstream_model
   ))) providers.push(info);
   return item;
 }
@@ -263,7 +298,7 @@ function listConfiguredModels(db) {
   for (const entry of mediaModelSelection.listEntries(rows)) {
     let model;
     try {
-      model = canonicalModel(entry.model);
+      model = canonicalModel(billingModelForMediaEntry(entry));
     } catch {
       continue;
     }
@@ -272,7 +307,7 @@ function listConfiguredModels(db) {
     if (!item) {
       item = {
         model,
-        display_name: entry.duplicated
+        display_name: entry.duplicated || isNewApiVideoConfig(entry.config)
           ? `${entry.config.name || entry.config.provider || `配置 ${entry.config.id}`} · ${entry.upstreamModel}`
           : model,
         category: entry.kind,
@@ -281,7 +316,7 @@ function listConfiguredModels(db) {
       byModel.set(key, item);
       models.push(item);
     }
-    addProvider(item, entry.config);
+    addProvider(item, entry.config, entry.upstreamModel);
   }
   for (const row of rows.filter((item) => !mediaModelSelection.KIND_BY_SERVICE[item.service_type])) {
     const category = SERVICE_CATEGORIES[String(row.service_type || '').toLowerCase()] || 'other';
@@ -301,7 +336,7 @@ function listConfiguredModels(db) {
         byModel.set(key, item);
         models.push(item);
       }
-      addProvider(item, row);
+      addProvider(item, row, value);
     }
   }
   return models;
@@ -356,12 +391,25 @@ function list(db) {
   return [...defaults, ...rows.filter((row) => !seen.has(row.model.toLowerCase()))]
     .map((row) => {
       const providers = row.providers || providersByModel.get(row.model.toLowerCase()) || [];
-      return {
-        ...row,
-        providers,
+      const providerMetadata = {
         provider: providers[0]?.provider || '',
         provider_name: providers[0]?.provider_name || '',
         provider_base_url: providers[0]?.provider_base_url || '',
+      };
+      const providerCosts = providers.map((provider) => {
+        if (!provider.config_id || !provider.upstream_model) return null;
+        try {
+          const cost = providerPricingSync.getCost(db, provider.config_id, provider.upstream_model);
+          return cost ? { ...provider, ...cost } : null;
+        } catch (_) {
+          return null;
+        }
+      }).filter(Boolean);
+      return {
+        ...row,
+        providers,
+        ...providerMetadata,
+        provider_costs: providerCosts,
         billing_unit: billingUnit(row.model, row.category, row.billing_unit),
       };
     });
@@ -398,8 +446,10 @@ function listPublic(db, options = {}) {
     if (!isStrictPublicConfig(row) && requiresVerificationStatus && row.verification_status !== 'verified') continue;
     if (!isRealGenerationVerified(row, entry.upstreamModel)) continue;
     const logicalModel = String(row.logical_model_id || '').trim();
-    if (entry.duplicated && !logicalModel && !isStrictPublicConfig(row)) continue;
-    const publicModel = logicalModel || entry.upstreamModel;
+    if (entry.duplicated && !logicalModel && !isStrictPublicConfig(row)
+        && !isNewApiVideoConfig(row)) continue;
+    const publicModel = logicalModel
+      || (isNewApiVideoConfig(row) ? billingModelForMediaEntry(entry) : entry.upstreamModel);
     addConfig(publicModel, entry.upstreamModel, row);
   }
   for (const row of rows.filter((item) => !mediaModelSelection.KIND_BY_SERVICE[item.service_type])) {
@@ -633,7 +683,7 @@ function set(db, value, creditsValue, options = {}) {
       const resolution = normalizeResolution(value, category);
       const tierCredits = Number(tier?.credits);
       if (!resolution || !Number.isSafeInteger(tierCredits) || tierCredits <= 0) {
-        const label = category === 'image' ? '图片分辨率价格只支持 1K、2K、4K' : '视频分辨率价格只支持 480P、720P、1080P';
+        const label = category === 'image' ? '图片分辨率价格只支持 1K、2K、4K' : '视频分辨率价格只支持 480P、720P、768P、1080P';
         throw priceError('INVALID_MODEL_PRICE', `${label} 的正整数积分`);
       }
       return category === 'image'

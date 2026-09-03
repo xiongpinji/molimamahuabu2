@@ -77,3 +77,27 @@ test('前端静态服务不会把缺失的哈希资源回退成 SPA HTML', async
   assert.match(await route.text(), /moli-spa/);
   assert.match(route.headers.get('cache-control') || '', /no-cache/);
 });
+
+test('前端静态目录存在但不可读取时启动即失败', (t) => {
+  const webDist = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-web-dist-permission-'));
+  fs.mkdirSync(path.join(webDist, 'assets'));
+  const indexHtml = path.join(webDist, 'index.html');
+  fs.writeFileSync(indexHtml, '<!doctype html><title>moli-spa</title>');
+  t.after(() => fs.rmSync(webDist, { recursive: true, force: true }));
+
+  const originalAccessSync = fs.accessSync;
+  fs.accessSync = (target, mode) => {
+    if (target === indexHtml && mode === fs.constants.R_OK) {
+      const error = new Error(`EACCES: permission denied, access '${target}'`);
+      error.code = 'EACCES';
+      throw error;
+    }
+    return originalAccessSync(target, mode);
+  };
+  t.after(() => { fs.accessSync = originalAccessSync; });
+
+  assert.throws(
+    () => mountFrontend(express(), webDist),
+    /Frontend static assets unavailable.*EACCES/,
+  );
+});

@@ -36,4 +36,3 @@ test('仅信任本机反代并解析 X-Forwarded-For 的真实客户端 IP', asy
 
   assert.equal(await requestIp(app, { 'X-Forwarded-For': '203.0.113.9' }), '203.0.113.9');
 });
-

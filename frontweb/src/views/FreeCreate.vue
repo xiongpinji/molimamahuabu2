@@ -40,7 +40,7 @@
         </div>
 
         <div v-if="supportsReferenceImage" class="form-section">
-          <div class="form-label">参考图（可选）</div>
+          <div class="form-label">参考图{{ referenceRequired ? '（必填）' : '（可选）' }}</div>
           <div class="ref-image-zone" @click="triggerRefImageUpload" @dragover.prevent @drop.prevent="onRefImageDrop">
             <template v-if="refImageDataUrl">
               <img :src="refImageDataUrl" class="ref-preview" />
@@ -66,10 +66,7 @@
           <div v-if="mode === 'image' || mode === 'video'" class="form-item">
             <div class="form-label">比例</div>
             <el-select v-model="aspectRatio">
-              <el-option label="16:9" value="16:9" />
-              <el-option label="9:16" value="9:16" />
-              <el-option label="1:1" value="1:1" />
-              <el-option label="4:3" value="4:3" />
+              <el-option v-for="value in selectedAspectRatioOptions" :key="value" :label="value" :value="value" />
             </el-select>
           </div>
           <div v-if="mode === 'video'" class="form-item">
@@ -134,7 +131,7 @@
           type="primary"
           size="large"
           :loading="generating"
-          :disabled="!prompt.trim() || !model || selectedCredits == null || insufficientCredits || refImageUploading"
+          :disabled="!prompt.trim() || !model || selectedCredits == null || insufficientCredits || refImageUploading || (referenceRequired && !refImageLocalPath)"
           class="generate-btn"
           @click="generate"
         >
@@ -234,6 +231,7 @@ import {
   estimateGenerationCredits,
   normalizeQuickGenerationCatalog,
   normalizeQuickGenerationDraft,
+  quickGenerationAspectRatios,
   quickGenerationDurations,
   quickGenerationResolutions,
 } from '@/utils/homeQuickGeneration'
@@ -271,14 +269,22 @@ const selectedModel = computed(() => (
   modelOptions.value.find((item) => item.model === model.value) || null
 ))
 const selectedResolutions = computed(() => quickGenerationResolutions(selectedModel.value || {}, mode.value))
+const selectedAspectRatioOptions = computed(() => quickGenerationAspectRatios(selectedModel.value || {}, mode.value))
 const selectedDurationOptions = computed(() => quickGenerationDurations(selectedModel.value || {}))
 const supportsReferenceImage = computed(() => {
-  if (mode.value === 'image') return selectedModel.value?.capabilities?.supportsImageReference !== false
-  if (mode.value !== 'video') return false
+  if (!['image', 'video'].includes(mode.value)) return false
+  const capability = selectedModel.value?.capabilities || {}
+  if (capability.supportsImageReference === true || capability.supportsFirstFrame === true) return true
+  if (capability.supportsImageReference === false && capability.supportsFirstFrame === false) return false
+  if (mode.value === 'image') return capability.supportsImageReference !== false
   return selectedModel.value?.protocol === 'toapis_video'
-    ? selectedModel.value?.capabilities?.supportsFirstFrame === true
-    : selectedModel.value?.capabilities?.supportsFirstFrame !== false
+    ? capability.supportsFirstFrame === true
+    : capability.supportsFirstFrame !== false
 })
+const referenceRequired = computed(() => (
+  ['image', 'video'].includes(mode.value)
+  && selectedModel.value?.capabilities?.requiresReference === true
+))
 const quantityOptions = computed(() => {
   const declared = selectedModel.value?.capabilities?.quantities
   return Array.isArray(declared) && declared.length ? declared : [1]
@@ -331,6 +337,7 @@ onMounted(async () => {
     ? draft.model
     : (modelOptions.value[0]?.model || '')
   generateAudio.value = draft.generateAudio
+  syncSelectedParameters()
   sessionStorage.removeItem('moli_quick_create_draft')
   try {
     const res = await generationSettingsAPI.get()
@@ -345,9 +352,11 @@ onMounted(async () => {
 
 function syncSelectedParameters() {
   const allowed = selectedResolutions.value
+  const allowedRatios = selectedAspectRatioOptions.value
   const current = String(resolution.value || '').trim().toLowerCase()
   if (allowed.length && !allowed.includes(current)) resolution.value = allowed[0]
   else if (current) resolution.value = current
+  if (allowedRatios.length && !allowedRatios.includes(aspectRatio.value)) aspectRatio.value = allowedRatios[0]
   if (!quantityOptions.value.includes(Number(quantity.value))) quantity.value = quantityOptions.value[0] || 1
   if (!selectedDurationOptions.value.includes(Number(duration.value))) duration.value = selectedDurationOptions.value[0] || 5
   if (selectedModel.value?.capabilities?.supportsAudio !== true) generateAudio.value = false
@@ -442,6 +451,10 @@ async function generate() {
   }
   if (refImageUploadError.value) {
     ElMessage.warning('参考图上传失败，请移除或重新上传')
+    return
+  }
+  if (referenceRequired.value && !refImageLocalPath.value) {
+    ElMessage.warning('当前模型必须先上传参考图')
     return
   }
   generating.value = true
