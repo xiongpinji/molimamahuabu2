@@ -102,14 +102,14 @@ async function prepare(current, suffix = 'prepare') {
   });
 }
 
-function writeEvidence(current, targetConfigId, overrides = {}) {
-  const credentialFingerprint = sha256('shared-fast-secret');
+function writeEvidenceForBinding(current, targetConfigId, sourceConfigId, apiKey, overrides = {}) {
+  const credentialFingerprint = sha256(apiKey);
   const configFingerprint = sha256(JSON.stringify({
     id: String(targetConfigId),
     provider: 'toapis_wan3',
     model: MODEL,
     base_url: 'https://toapis.xyz',
-    api_key: 'shared-fast-secret',
+    api_key: apiKey,
   }));
   const base = {
     contract_version: EVIDENCE_CONTRACT,
@@ -125,7 +125,7 @@ function writeEvidence(current, targetConfigId, overrides = {}) {
       status: 'completed',
       submission_state: 'accepted',
       post_count: 1,
-      source_config_id: current.sourceConfigId,
+      source_config_id: sourceConfigId,
       target_config_id: targetConfigId,
       config_id: targetConfigId,
       credential_fingerprint: credentialFingerprint,
@@ -161,6 +161,16 @@ function writeEvidence(current, targetConfigId, overrides = {}) {
   return { evidencePath, evidence: loadFinalizeEvidence(evidencePath) };
 }
 
+function writeEvidence(current, targetConfigId, overrides = {}) {
+  return writeEvidenceForBinding(
+    current,
+    targetConfigId,
+    current.sourceConfigId,
+    'shared-fast-secret',
+    overrides,
+  );
+}
+
 function legacySmokeCapabilities(evidenceSha) {
   return {
     durations: [2], resolutions: ['480p'], aspectRatios: ['16:9'], audio_values: [false],
@@ -183,6 +193,47 @@ function finalizeOptions(current, targetConfigId, suffix = 'finalize', overrides
     ...preparedPaths(current, suffix),
     ...overrides,
   };
+}
+
+async function arrangeRotatedActiveWan3(current) {
+  const prepared = await prepare(current);
+  const oldEvidence = writeEvidence(current, prepared.configId).evidence;
+  await finalizeConfiguration(current.db, oldEvidence, finalizeOptions(current, prepared.configId));
+  const rotatedKey = 'rotated-wan3-secret';
+  const priorEvidenceSha = 'b'.repeat(64);
+  const prior = current.db.prepare('SELECT * FROM ai_service_configs WHERE id = ?').get(prepared.configId);
+  const priorSettings = JSON.parse(prior.settings);
+  const priorVerification = JSON.parse(prior.verification_evidence);
+  const priorCapabilities = JSON.parse(prior.verified_capabilities);
+  const credentialFingerprint = sha256(rotatedKey);
+  const configFingerprint = sha256(JSON.stringify({
+    id: String(prepared.configId),
+    provider: 'toapis_wan3',
+    model: MODEL,
+    base_url: 'https://toapis.xyz',
+    api_key: rotatedKey,
+  }));
+  priorSettings.credential_fingerprint = credentialFingerprint;
+  priorSettings.config_fingerprint = configFingerprint;
+  priorSettings.evidence_sha256 = priorEvidenceSha;
+  priorSettings.canvas_capabilities_by_model[MODEL].evidence_sha256 = priorEvidenceSha;
+  priorVerification.credential_fingerprint = credentialFingerprint;
+  priorVerification.config_fingerprint = configFingerprint;
+  priorVerification.evidence_sha256 = priorEvidenceSha;
+  priorCapabilities[MODEL].evidence_sha256 = priorEvidenceSha;
+  current.db.prepare(`UPDATE ai_service_configs SET api_key = ?, verified_capabilities = ?, settings = ?,
+    verification_evidence = ?, verification_checked_at = ?, verified_at = ?, updated_at = ? WHERE id = ?`)
+    .run(
+      rotatedKey,
+      JSON.stringify(priorCapabilities),
+      JSON.stringify(priorSettings),
+      JSON.stringify(priorVerification),
+      '2026-09-01T01:02:22.027Z',
+      '2026-09-01T01:02:22.027Z',
+      '2026-09-01T01:02:22.027Z',
+      prepared.configId,
+    );
+  return { prepared, rotatedKey };
 }
 
 test('prepare creates one independent inactive Wan3 route by copying only the source credential', async () => {
@@ -398,6 +449,70 @@ test('finalize upgrades the exact legacy smoke-only Wan3 row without changing it
       .get(MODEL).count, 3);
     assert.equal(current.db.prepare('SELECT COUNT(*) count FROM provider_route_resolution_costs WHERE config_id = ?')
       .get(prepared.configId).count, 3);
+  } finally { close(current); }
+});
+
+test('finalize rebinds fresh direct evidence to the exact active Wan3 row without changing prices or route cost', async () => {
+  const current = fixture();
+  try {
+    const { prepared, rotatedKey } = await arrangeRotatedActiveWan3(current);
+    const before = wan3Snapshot(current, prepared.configId);
+    const sourceBefore = current.db.prepare('SELECT * FROM ai_service_configs WHERE id = ?').get(current.sourceConfigId);
+    const directEvidence = writeEvidenceForBinding(
+      current,
+      prepared.configId,
+      prepared.configId,
+      rotatedKey,
+      { generated_at: '2026-09-03T10:30:00.000Z' },
+    ).evidence;
+
+    const result = await finalizeConfiguration(current.db, directEvidence, finalizeOptions(
+      current,
+      prepared.configId,
+      'rebind',
+      { sourceConfigId: prepared.configId },
+    ));
+
+    assert.equal(result.rebound, true);
+    assert.equal(result.configId, prepared.configId);
+    assert.deepEqual(current.db.prepare('SELECT * FROM ai_service_configs WHERE id = ?').get(current.sourceConfigId), sourceBefore);
+    const after = wan3Snapshot(current, prepared.configId);
+    assert.equal(after.config.api_key, rotatedKey);
+    assert.equal(JSON.parse(after.config.settings).source_config_id, prepared.configId);
+    assert.equal(JSON.parse(after.config.settings).evidence_sha256, directEvidence.sha256);
+    assert.deepEqual(after.price, before.price);
+    assert.deepEqual(after.tiers, before.tiers);
+    assert.deepEqual(after.routeCost, before.routeCost);
+    assert.equal(fs.existsSync(preparedPaths(current, 'rebind').backupPath), true);
+    assert.equal(fs.existsSync(preparedPaths(current, 'rebind').receiptPath), true);
+    assert.equal(fs.readFileSync(preparedPaths(current, 'rebind').receiptPath, 'utf8').includes(rotatedKey), false);
+  } finally { close(current); }
+});
+
+test('finalize refuses direct evidence older than the active Wan3 verification', async () => {
+  const current = fixture();
+  try {
+    const { prepared, rotatedKey } = await arrangeRotatedActiveWan3(current);
+    const before = wan3Snapshot(current, prepared.configId);
+    const staleEvidence = writeEvidenceForBinding(
+      current,
+      prepared.configId,
+      prepared.configId,
+      rotatedKey,
+      { generated_at: '2026-08-31T23:59:59.000Z' },
+    ).evidence;
+    await assert.rejects(
+      finalizeConfiguration(current.db, staleEvidence, finalizeOptions(
+        current,
+        prepared.configId,
+        'stale-rebind',
+        { sourceConfigId: prepared.configId },
+      )),
+      /旧|时间|stale/i,
+    );
+    assert.deepEqual(wan3Snapshot(current, prepared.configId), before);
+    assert.equal(fs.existsSync(preparedPaths(current, 'stale-rebind').backupPath), false);
+    assert.equal(fs.existsSync(preparedPaths(current, 'stale-rebind').receiptPath), false);
   } finally { close(current); }
 });
 

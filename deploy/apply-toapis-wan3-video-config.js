@@ -90,6 +90,16 @@ function sourceConfig(db, sourceConfigIdValue) {
   return row;
 }
 
+function evidenceSourceConfig(db, values) {
+  if (values.sourceConfigId !== values.targetConfigId) return sourceConfig(db, values.sourceConfigId);
+  const row = db.prepare('SELECT * FROM ai_service_configs WHERE id = ? AND deleted_at IS NULL')
+    .get(values.sourceConfigId);
+  if (!row || Number(row.is_active) !== 1 || row.verification_status !== 'verified') {
+    throw new Error('Wan3 同配置 evidence 仅允许重绑已验证的活动目标配置');
+  }
+  return row;
+}
+
 function wan3Rows(db) {
   return db.prepare('SELECT * FROM ai_service_configs WHERE deleted_at IS NULL ORDER BY id').all()
     .filter((row) => String(row.logical_model_id || '').trim().toLowerCase() === MODEL
@@ -394,6 +404,110 @@ function assertLegacyConfiguration(db, source, target, evidence, values) {
   assertLegacyRouteCost(routeCostSnapshot(db, values.targetConfigId), values);
 }
 
+function assertRebindableConfiguration(db, target, values) {
+  assertTargetIdentity(target, target);
+  const settings = parseJson(target.settings);
+  const verification = parseJson(target.verification_evidence);
+  const previousEvidenceSha = String(settings.evidence_sha256 || '');
+  const expectedCredential = credentialFingerprint(target.api_key);
+  const expectedConfig = targetConfigFingerprint(target);
+  const previousSourceConfigId = Number(settings.source_config_id);
+  const expectedCapabilities = { [MODEL]: runtimeCapabilities(previousEvidenceSha) };
+  if (Number(target.is_active) !== 1 || target.verification_status !== 'verified'
+      || Number(target.canary_paused) !== 0 || target.verification_error != null
+      || !Number.isSafeInteger(previousSourceConfigId) || previousSourceConfigId <= 0
+      || !/^[a-f0-9]{64}$/.test(previousEvidenceSha)
+      || settings.integration_contract !== CONTRACT || settings.phase !== 'verified'
+      || Number(settings.target_config_id) !== values.targetConfigId
+      || settings.credential_fingerprint !== expectedCredential
+      || settings.config_fingerprint !== expectedConfig || settings.upstream_model !== MODEL
+      || settings.evidence_contract !== EVIDENCE_CONTRACT
+      || JSON.stringify(settings.real_generation_verified_models) !== JSON.stringify([MODEL])
+      || JSON.stringify(settings.canvas_capabilities_by_model) !== JSON.stringify(expectedCapabilities)
+      || verification.evidence_contract !== EVIDENCE_CONTRACT
+      || verification.evidence_sha256 !== previousEvidenceSha
+      || Number(verification.source_config_id) !== previousSourceConfigId
+      || Number(verification.target_config_id) !== values.targetConfigId
+      || verification.credential_fingerprint !== expectedCredential
+      || verification.config_fingerprint !== expectedConfig
+      || JSON.stringify(parseJson(target.verified_capabilities)) !== JSON.stringify(expectedCapabilities)) {
+    throw new Error('Wan3 现有配置不是允许证据重绑的精确活动合同');
+  }
+  assertExactPrice(pricingSnapshot(db), values);
+  assertExactRouteCost(routeCostSnapshot(db, values.targetConfigId), values);
+}
+
+async function rebindCurrentConfiguration(db, target, evidence, values, options) {
+  assertRebindableConfiguration(db, target, values);
+  assertEvidenceBinding(target, target, evidence, values);
+  const previousVerifiedAt = Date.parse(String(target.verification_checked_at || target.verified_at || ''));
+  if (!Number.isFinite(previousVerifiedAt) || Date.parse(evidence.generatedAt) <= previousVerifiedAt) {
+    throw new Error('Wan3 同配置 evidence 时间不新于现有验证，禁止重绑旧证据');
+  }
+  const backupPath = requireNewAbsolutePath(options.backupPath, '数据库备份路径');
+  const receiptPath = requireNewAbsolutePath(options.receiptPath, '事务回执路径');
+  await db.backup(backupPath);
+  const now = timestamp(options.now);
+  const caps = { [MODEL]: runtimeCapabilities(evidence.sha256) };
+  try {
+    db.transaction(() => {
+      const currentTarget = db.prepare('SELECT * FROM ai_service_configs WHERE id = ? AND deleted_at IS NULL')
+        .get(values.targetConfigId);
+      assertRebindableConfiguration(db, currentTarget, values);
+      assertEvidenceBinding(currentTarget, currentTarget, evidence, values);
+      const updated = db.prepare(`UPDATE ai_service_configs SET
+        verification_checked_at = ?, verified_capabilities = ?, verified_at = ?,
+        verification_error = NULL, settings = ?, verification_evidence = ?, updated_at = ?
+        WHERE id = ? AND updated_at = ? AND api_key = ? AND settings = ?
+          AND verification_evidence = ? AND verified_capabilities = ?
+          AND is_active = 1 AND verification_status = 'verified' AND canary_paused = 0`)
+        .run(
+          evidence.generatedAt,
+          JSON.stringify(caps),
+          now,
+          JSON.stringify(finalSettings(evidence)),
+          JSON.stringify(verificationEvidence(evidence)),
+          now,
+          values.targetConfigId,
+          currentTarget.updated_at,
+          currentTarget.api_key,
+          currentTarget.settings,
+          currentTarget.verification_evidence,
+          currentTarget.verified_capabilities,
+        );
+      if (updated.changes !== 1) throw new Error('Wan3 配置在证据重绑前发生变化');
+      verifyConfiguration(db, evidence, values);
+      writeJsonAtomic(receiptPath, {
+        contract: CONTRACT,
+        phase: 'rebind',
+        applied_at: now,
+        database_backup: backupPath,
+        source_config_id: values.sourceConfigId,
+        target_config_id: values.targetConfigId,
+        evidence_contract: EVIDENCE_CONTRACT,
+        evidence_sha256: evidence.sha256,
+        credential_fingerprint: evidence.result.credential_fingerprint,
+        config_fingerprint: evidence.result.config_fingerprint,
+        user_credits_per_second: values.userCreditsPerSecond,
+        model_cost_micros_per_second: values.modelCostMicrosPerSecond,
+        route_cost_micros_per_second: values.routeCostMicrosPerSecond,
+      });
+    })();
+  } catch (error) {
+    fs.rmSync(receiptPath, { force: true });
+    throw error;
+  }
+  verifyConfiguration(db, evidence, values);
+  return {
+    finalized: false,
+    reused: false,
+    rebound: true,
+    configId: values.targetConfigId,
+    backupPath,
+    receiptPath,
+  };
+}
+
 async function upgradeLegacyConfiguration(db, source, target, evidence, values, options) {
   assertLegacyConfiguration(db, source, target, evidence, values);
   const backupPath = requireNewAbsolutePath(options.backupPath, '数据库备份路径');
@@ -474,7 +588,7 @@ async function upgradeLegacyConfiguration(db, source, target, evidence, values, 
 
 function verifyConfiguration(db, evidence, options = {}) {
   const values = finalizeInputs(options);
-  const source = sourceConfig(db, values.sourceConfigId);
+  const source = evidenceSourceConfig(db, values);
   const target = db.prepare('SELECT * FROM ai_service_configs WHERE id = ? AND deleted_at IS NULL').get(values.targetConfigId);
   assertEvidenceBinding(source, target, evidence, values);
   const caps = { [MODEL]: runtimeCapabilities(evidence.sha256) };
@@ -565,13 +679,21 @@ async function prepareConfiguration(db, options = {}) {
 async function finalizeConfiguration(db, evidence, options = {}) {
   exactEvidenceCapabilities(evidence?.payload?.verified_capabilities);
   const values = finalizeInputs(options);
-  const source = sourceConfig(db, values.sourceConfigId);
+  const source = evidenceSourceConfig(db, values);
   const target = db.prepare('SELECT * FROM ai_service_configs WHERE id = ? AND deleted_at IS NULL').get(values.targetConfigId);
   if (Number(target.is_active) === 1 && target.verification_status === 'verified') {
     if (target.name === LEGACY_DISPLAY_NAME) {
       return upgradeLegacyConfiguration(db, source, target, evidence, values, options);
     }
     assertEvidenceBinding(source, target, evidence, values);
+    if (values.sourceConfigId === values.targetConfigId) {
+      try {
+        verifyConfiguration(db, evidence, values);
+        return { finalized: false, reused: true, configId: values.targetConfigId };
+      } catch (_) {
+        return rebindCurrentConfiguration(db, target, evidence, values, options);
+      }
+    }
     verifyConfiguration(db, evidence, values);
     return { finalized: false, reused: true, configId: values.targetConfigId };
   }
