@@ -122,6 +122,13 @@ function productionPackHash(pack) {
   return sha256Buffer(stableStringify(copy))
 }
 
+function productionPackBinding(packs) {
+  return packs.map((pack) => ({
+    shot_id: String(pack.shot_id),
+    production_pack_hash: String(pack.production_pack_hash).toLowerCase(),
+  }))
+}
+
 function requireHash(value, code) {
   const hash = String(value || '').trim().toLowerCase()
   if (!HEX_64.test(hash)) fail(code, value)
@@ -227,9 +234,9 @@ function episodeOutputPath(stateDir) {
 
 function referencesForShot(pkg, shotId) {
   const pack = pkg.production_packs.find((item) => item.shot_id === shotId)
-  const characterJson = JSON.stringify(pack?.characters || [])
+  const characterIds = new Set((pack?.characters || []).map((character) => String(character.id)))
   return [
-    ...pkg.identity_references.filter((item) => !item.character_id || characterJson.includes(String(item.character_id))),
+    ...pkg.identity_references.filter((item) => !item.character_id || characterIds.has(String(item.character_id))),
     ...pkg.motion_references.filter((item) => String(item.shot_id || '') === String(shotId)),
   ].map((item) => {
     const bytes = fs.readFileSync(item.path)
@@ -241,6 +248,17 @@ function referencesForShot(pkg, shotId) {
 function assertProvider(provider, methods) {
   for (const method of methods) {
     if (typeof provider?.[method] !== 'function') fail('REDRAW_EPISODE_PROVIDER_ADAPTER_REQUIRED', method)
+  }
+}
+
+function assertPackageBinding(options, manifest, pkg) {
+  const packBinding = productionPackBinding(pkg.production_packs)
+  if (manifest.package_sha256 !== sha256File(pkg.package_path)
+    || manifest.blueprint_hash !== pkg.blueprint_hash
+    || manifest.localization_hash !== pkg.localization_hash
+    || stableStringify(manifest.production_pack_hashes || []) !== stableStringify(packBinding)
+    || stableStringify(productionPackBinding(manifest.production_packs || [])) !== stableStringify(packBinding)) {
+    fail('REDRAW_EPISODE_PACKAGE_STALE', options.episodePackage)
   }
 }
 
@@ -258,6 +276,7 @@ async function runPreflight(options, adapters) {
     package_sha256: sha256File(pkg.package_path),
     blueprint_hash: pkg.blueprint_hash,
     localization_hash: pkg.localization_hash,
+    production_pack_hashes: productionPackBinding(pkg.production_packs),
     target: pkg.target,
     source_media: publicPathless(pkg.source_media),
     references: {
@@ -300,7 +319,7 @@ async function runShot(options, adapters) {
   const pkg = loadEpisodePackage(options.episodePackage, options.stateDir)
   const manifest = readManifest(options.stateDir)
   if (manifest.status !== 'preflight_passed' && manifest.status !== 'in_progress') fail('REDRAW_EPISODE_STATE_NOT_READY')
-  if (manifest.blueprint_hash !== pkg.blueprint_hash || manifest.localization_hash !== pkg.localization_hash) fail('REDRAW_EPISODE_PACKAGE_STALE')
+  assertPackageBinding(options, manifest, pkg)
   const pack = pkg.production_packs.find((item) => item.shot_id === options.shotId)
   if (!pack) fail('REDRAW_EPISODE_SHOT_NOT_FOUND', options.shotId)
   if (manifest.tasks.find((item) => item.shot_id === options.shotId)) fail('REDRAW_EPISODE_SHOT_ALREADY_SUBMITTED', options.shotId)
@@ -370,7 +389,9 @@ async function runShot(options, adapters) {
 
 async function runAssemble(options, adapters) {
   assertProvider(adapters.provider, ['assembleEpisode', 'inspectEpisode'])
+  const pkg = loadEpisodePackage(options.episodePackage, options.stateDir)
   const manifest = readManifest(options.stateDir)
+  assertPackageBinding(options, manifest, pkg)
   const shotPaths = []
   for (const pack of manifest.production_packs) {
     const task = manifest.tasks.find((item) => item.shot_id === pack.shot_id && item.status === 'completed_verified')
@@ -399,7 +420,9 @@ async function runAssemble(options, adapters) {
 
 async function runVerify(options, adapters) {
   assertProvider(adapters.provider, ['inspectArtifact'])
+  const pkg = loadEpisodePackage(options.episodePackage, options.stateDir)
   const manifest = readManifest(options.stateDir)
+  assertPackageBinding(options, manifest, pkg)
   for (const pack of manifest.production_packs) {
     const task = manifest.tasks.find((item) => item.shot_id === pack.shot_id && item.status === 'completed_verified')
     if (!task?.artifact?.artifact_id) fail('REDRAW_EPISODE_VERIFY_NOT_READY', pack.shot_id)
