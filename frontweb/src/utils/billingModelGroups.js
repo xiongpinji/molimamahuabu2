@@ -47,14 +47,65 @@ function sameProviderEntry(candidate = {}, target = {}) {
   return providerGroupKey(candidate) === providerGroupKey(target)
 }
 
-function scopeItemToProviders(item, entries) {
-  const scopedEntries = Array.isArray(entries) ? entries : []
+function yuanFromMicros(value) {
+  const micros = Number(value)
+  return Number.isFinite(micros) && micros > 0 ? micros / 1_000_000 : 0
+}
+
+function providerCostFallback(item, providerCosts) {
+  if (providerCosts.length !== 1) return item
+  const [cost] = providerCosts
+  const resolutionPrices = Object.fromEntries(
+    Object.entries(item.resolution_prices || {}).map(([resolution, tier]) => [resolution, { ...tier }]),
+  )
+  const providerResolutionPrices = cost.resolution_prices && typeof cost.resolution_prices === 'object'
+    ? cost.resolution_prices
+    : {}
+  const fallbackCredits = Number(item.credits) > 0 ? Number(item.credits) : 1
+
+  for (const [resolution, tier] of Object.entries(providerResolutionPrices)) {
+    const current = resolutionPrices[resolution] || { credits: fallbackCredits }
+    const amount = yuanFromMicros(tier?.micros_per_unit)
+    resolutionPrices[resolution] = item.category === 'image'
+      ? {
+          ...current,
+          cost_yuan_per_unit: Number(current.cost_yuan_per_unit) > 0
+            ? Number(current.cost_yuan_per_unit)
+            : amount,
+        }
+      : {
+          ...current,
+          cost_yuan_per_second: Number(current.cost_yuan_per_second) > 0
+            ? Number(current.cost_yuan_per_second)
+            : amount,
+        }
+  }
+
   return {
     ...item,
-    providers: scopedEntries,
-    provider_costs: (Array.isArray(item.provider_costs) ? item.provider_costs : [])
-      .filter((cost) => scopedEntries.some((entry) => sameProviderEntry(cost, entry))),
+    cost_unit: item.cost_unit || cost.cost_unit,
+    cost_yuan_per_unit: Number(item.cost_yuan_per_unit) > 0
+      ? Number(item.cost_yuan_per_unit)
+      : yuanFromMicros(cost.micros_per_unit),
+    input_cost_yuan_per_1k: Number(item.input_cost_yuan_per_1k) > 0
+      ? Number(item.input_cost_yuan_per_1k)
+      : yuanFromMicros(cost.input_cost_micros_per_1k),
+    output_cost_yuan_per_1k: Number(item.output_cost_yuan_per_1k) > 0
+      ? Number(item.output_cost_yuan_per_1k)
+      : yuanFromMicros(cost.output_cost_micros_per_1k),
+    resolution_prices: resolutionPrices,
   }
+}
+
+function scopeItemToProviders(item, entries) {
+  const scopedEntries = Array.isArray(entries) ? entries : []
+  const providerCosts = (Array.isArray(item.provider_costs) ? item.provider_costs : [])
+    .filter((cost) => scopedEntries.some((entry) => sameProviderEntry(cost, entry)))
+  return providerCostFallback({
+    ...item,
+    providers: scopedEntries,
+    provider_costs: providerCosts,
+  }, providerCosts)
 }
 
 export function filterModelPricesByProviderConfig(items = [], configId) {

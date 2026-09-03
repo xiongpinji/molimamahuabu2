@@ -39,5 +39,5 @@ test('视频模型保留分档且 Wan3 增加 1080P 每秒分档', () => {
   assert.match(source, /const videoResolutionLabels\s*=\s*\{[\s\S]*'480p': '480P'[\s\S]*'720p': '720P'[\s\S]*'1080p': '1080P'/)
   assert.match(source, /videoResolutionLabels\[resolution\][\s\S]*用户收费（积分\/秒）/)
   assert.match(source, /videoResolutionLabels\[resolution\][\s\S]*API 成本（元\/秒）/)
-  assert.match(source, /isWan3VideoPricing\(itemOrCategory\) \? \['480p', '720p', '1080p'\] : \['480p', '720p'\]/)
+  assert.match(source, /providerVideoResolutionKeys\(itemOrCategory\)/)
 })

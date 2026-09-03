@@ -77,3 +77,40 @@ test('从某条模型配置进入计费页时只保留该配置所属模型和�
   assert.deepEqual(items[0].providers.map((entry) => entry.config_id), [21])
   assert.deepEqual(items[0].provider_costs.map((entry) => entry.config_id), [21])
 })
+
+test('中转站分组用线路分档成本回填空白表单且不覆盖已填写成本', () => {
+  const [group] = groupModelPricesByProvider([{
+    model: 'cfg-29::seedance-2.0-mini',
+    category: 'video',
+    providers: [{
+      config_id: 29,
+      provider: 'newapi',
+      provider_name: 'NewAPI',
+      provider_base_url: 'https://relay.example',
+    }],
+    provider_costs: [{
+      config_id: 29,
+      cost_unit: 'second',
+      micros_per_unit: 792000,
+      resolution_prices: {
+        '480p': { micros_per_unit: 360000 },
+        '720p': { micros_per_unit: 792000 },
+        '1080p': { micros_per_unit: 1080000 },
+      },
+    }],
+    cost_yuan_per_unit: 0,
+    resolution_prices: {
+      '480p': { credits: 1, cost_yuan_per_second: 0.4 },
+      '720p': { credits: 1, cost_yuan_per_second: 0 },
+    },
+  }])
+
+  const [item] = group.items
+  assert.equal(item.cost_yuan_per_unit, 0.792)
+  assert.equal(item.resolution_prices['480p'].cost_yuan_per_second, 0.4)
+  assert.equal(item.resolution_prices['720p'].cost_yuan_per_second, 0.792)
+  assert.deepEqual(item.resolution_prices['1080p'], {
+    credits: 1,
+    cost_yuan_per_second: 1.08,
+  })
+})

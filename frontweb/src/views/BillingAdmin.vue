@@ -612,13 +612,22 @@ function isWan3VideoPricing(item) {
     || String(item?.api_protocol || item?.protocol || '').trim().toLowerCase() === 'toapis_wan3_video'
 }
 
+function providerVideoResolutionKeys(item) {
+  const providerResolutions = new Set((item?.provider_costs || []).flatMap((cost) => (
+    Object.keys(cost?.resolution_prices || {}).map((resolution) => resolution.toLowerCase())
+  )))
+  const supported = Object.keys(videoResolutionLabels).filter((resolution) => providerResolutions.has(resolution))
+  if (supported.length) return supported
+  return isWan3VideoPricing(item) ? ['480p', '720p', '1080p'] : ['480p', '720p']
+}
+
 function usesVideoResolutionPricing(item) {
   return item?.category === 'video' && !usesFixedRequestVideoPricing(item)
 }
 
 function resolutionKeys(itemOrCategory) {
   const category = typeof itemOrCategory === 'string' ? itemOrCategory : itemOrCategory?.category
-  if (category === 'video') return usesVideoResolutionPricing(itemOrCategory) ? (isWan3VideoPricing(itemOrCategory) ? ['480p', '720p', '1080p'] : ['480p', '720p']) : []
+  if (category === 'video') return usesVideoResolutionPricing(itemOrCategory) ? providerVideoResolutionKeys(itemOrCategory) : []
   if (!usesImageResolutionPricing(itemOrCategory)) return []
   const model = String(itemOrCategory?.model || '').toLowerCase()
   return model === GPT_IMAGE_MODEL_ID ? ['1k', '2k'] : ['1k', '2k', '4k']
