@@ -19,8 +19,7 @@ function normalizeBaseUrl(value) {
   try {
     const url = new URL(raw)
     if (!['http:', 'https:'].includes(url.protocol)) return raw.toLowerCase().replace(/\/+$/, '')
-    const pathname = url.pathname.replace(/\/+$/, '')
-    return `${url.protocol.toLowerCase()}//${url.host.toLowerCase()}${pathname}${url.search}`
+    return `${url.protocol.toLowerCase()}//${url.host.toLowerCase()}`
   } catch (_) {
     return raw.toLowerCase().replace(/\/+$/, '')
   }

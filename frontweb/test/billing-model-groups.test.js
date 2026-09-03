@@ -30,8 +30,8 @@ test('模型计费按中转站分组且同一模型可归入多个中转站', ()
   ])
 
   assert.deepEqual(groups.map((group) => group.key), [
-    'url:https://relay-a.example/v1',
-    'url:https://relay-b.example/v1',
+    'url:https://relay-a.example',
+    'url:https://relay-b.example',
     'unassigned',
   ])
   assert.deepEqual(groups[0].items.map((item) => item.model), ['seedance-2.0', 'wan-3.0'])
@@ -51,6 +51,17 @@ test('同一个中转站的大小写和尾部斜杠差异不会拆成两个队�
 
   assert.equal(groups.length, 1)
   assert.deepEqual(groups[0].items.map((item) => item.model), ['a', 'b'])
+})
+
+test('同一中转站域名的根路径和 v1 路径归入一个队列', () => {
+  const groups = groupModelPricesByProvider([
+    { model: 'image-model', providers: [{ provider: 'relay', provider_name: '图片线路', provider_base_url: 'https://relay.example/v1' }] },
+    { model: 'video-model', providers: [{ provider: 'relay', provider_name: '视频线路', provider_base_url: 'https://relay.example' }] },
+  ])
+
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0].key, 'url:https://relay.example')
+  assert.deepEqual(groups[0].items.map((item) => item.model), ['image-model', 'video-model'])
 })
 
 test('从某条模型配置进入计费页时只保留该配置所属模型和成本', () => {
