@@ -116,11 +116,10 @@
             </label>
 
             <label class="field field--script">
-              <span>原剧本（{{ project.source_script.length }}/{{ SCRIPT_CHAR_LIMIT }}）</span>
+              <span>原剧本（{{ project.source_script.length.toLocaleString() }} 字符）</span>
               <textarea
                 v-model="project.source_script"
                 rows="15"
-                :maxlength="SCRIPT_CHAR_LIMIT"
                 placeholder="粘贴完整剧本、小说章节或故事大纲。建议保留人物名、场次和对白。"
               />
             </label>
@@ -718,7 +717,6 @@ const loadingPresets = ref(false)
 const saving = ref(false)
 const running = ref(false)
 const reviewing = ref(false)
-const SCRIPT_CHAR_LIMIT = 60000
 const scriptFileInput = ref(null)
 const versions = ref([])
 const selectedVersion = ref('')
@@ -1349,10 +1347,6 @@ async function importScriptFile(event) {
 
     const text = await file.text()
     if (!text.trim()) throw new Error('文件内容为空')
-    if (text.length > SCRIPT_CHAR_LIMIT) {
-      throw new Error(`剧本内容超过 ${SCRIPT_CHAR_LIMIT.toLocaleString()} 字符限制`)
-    }
-
     project.value.source_script = text
     if (!project.value.title.trim()) {
       project.value.title = file.name.replace(/\.(txt|md|markdown)$/i, '')
