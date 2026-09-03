@@ -1,5 +1,6 @@
 import json
 import hashlib
+import hmac
 import os
 import socketserver
 import stat
@@ -52,8 +53,9 @@ SAFE_ERROR_CODES = frozenset({
     "LOCALE_AUDIO_PROBE_FAILED",
     "LOCALE_AUDIO_STREAM_INVALID",
     "AUDIO_PATH_NOT_ALLOWED",
+    "AUDIO_SHA256_MISMATCH",
 })
-SOURCE_AUDIO_REQUEST_FIELDS = frozenset({"action", "request_id", "audio_path"})
+SOURCE_AUDIO_REQUEST_FIELDS = frozenset({"action", "request_id", "audio_path", "audio_sha256"})
 SOURCE_AUDIO_SUFFIXES = frozenset({".wav"})
 LOCAL_VOICE_RESULT_FIELDS = frozenset({
     "source",
@@ -507,20 +509,40 @@ def _parse_worker_request(value):
     for field in ("request_id", "audio_path"):
         if not isinstance(value.get(field), str) or not value[field].strip():
             raise ProtocolError("LOCALE_VERIFY_REQUEST_INVALID")
+    if not isinstance(value.get("audio_sha256"), str) or not HEX_SHA256_RE.fullmatch(value["audio_sha256"]):
+        raise ProtocolError("LOCALE_AUDIO_HASH_INVALID")
     return value
 
 
 def _analyze_source_audio_request(request, config):
     audio_path = _resolve_source_audio_path(request.get("audio_path"), config.allowed_root)
+    expected_sha256 = request["audio_sha256"]
+    if not hmac.compare_digest(_file_sha256(audio_path), expected_sha256):
+        raise LocaleWorkerError("AUDIO_SHA256_MISMATCH")
     if config.asr is None or config.source_audio_clusterer is None:
         raise LocaleWorkerError("LOCALE_VERIFY_FAILED")
     from .source_evidence import analyze_source_audio
 
-    return analyze_source_audio(
+    result = analyze_source_audio(
         audio_path,
         asr=config.asr,
         clusterer=config.source_audio_clusterer,
     )
+    result_sha256 = result.get("audio_sha256") if isinstance(result, dict) else None
+    if not isinstance(result_sha256, str) or not hmac.compare_digest(result_sha256, expected_sha256):
+        raise LocaleWorkerError("AUDIO_SHA256_MISMATCH")
+    return result
+
+
+def _file_sha256(path):
+    digest = hashlib.sha256()
+    try:
+        with Path(path).open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        raise LocaleWorkerError("AUDIO_PATH_NOT_ALLOWED") from None
+    return digest.hexdigest()
 
 
 def _resolve_source_audio_path(audio_path, allowed_root):

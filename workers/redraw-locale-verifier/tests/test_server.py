@@ -110,6 +110,14 @@ def _valid_local_voice_result(request, pack):
     }
 
 
+def _file_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 class ServerTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -278,9 +286,11 @@ class ServerTests(unittest.TestCase):
             "action": "analyze_source_audio",
             "request_id": "source-1",
             "audio_path": str(source_path),
+            "audio_sha256": _file_sha256(source_path),
         })
 
         self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["audio_sha256"], _file_sha256(source_path))
         self.assertEqual(response["result"]["source_language"], "zh")
         self.assertEqual(response["result"]["segments"][0]["speaker_cluster_id"], "speaker-cluster-1")
         self.assertNotIn(str(source_path), json.dumps(response, ensure_ascii=False))
@@ -330,6 +340,7 @@ class ServerTests(unittest.TestCase):
             "action": "analyze_source_audio",
             "request_id": "source-seventeen-seconds",
             "audio_path": str(source_path),
+            "audio_sha256": _file_sha256(source_path),
         })
 
         self.assertTrue(response["ok"])
@@ -356,6 +367,7 @@ class ServerTests(unittest.TestCase):
                 "action": "analyze_source_audio",
                 "request_id": "source-outside",
                 "audio_path": str(outside_path),
+                "audio_sha256": _file_sha256(outside_path),
             })
 
         self.assertEqual(response, {"ok": False, "error_code": "AUDIO_PATH_NOT_ALLOWED"})
@@ -383,8 +395,107 @@ class ServerTests(unittest.TestCase):
                     "action": "analyze_source_audio",
                     "request_id": f"source-unsafe-{index}",
                     "audio_path": str(audio_path),
+                    "audio_sha256": _file_sha256(audio_path),
                 })
                 self.assertEqual(response, {"ok": False, "error_code": "AUDIO_PATH_NOT_ALLOWED"})
+
+    def test_source_audio_action_requires_a_lowercase_sha256(self):
+        source_path = self.root / "source-hash-required.wav"
+        with wave.open(str(source_path), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(16_000)
+            handle.writeframes(b"\x00\x00" * 16_000)
+        calls = []
+
+        class FakeAsr:
+            def infer(self, audio_path):
+                calls.append(("asr", Path(audio_path)))
+                return {
+                    "language": "zh",
+                    "probability": 0.98,
+                    "segments": [{"start": 0.0, "end": 0.5, "text": "哈希"}],
+                }
+
+        class FakeClusterer:
+            def embed(self, waveform, sample_rate):
+                calls.append(("embed", len(waveform), sample_rate))
+                return [1.0, 0.0]
+
+            def cluster(self, embeddings):
+                calls.append(("cluster", len(embeddings)))
+                return [0]
+
+        self.server = make_test_server(
+            CountingVerifier(),
+            pack=self.pack,
+            allowed_root=self.root,
+            asr=FakeAsr(),
+            source_audio_clusterer=FakeClusterer(),
+        )
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+        base_request = {
+            "action": "analyze_source_audio",
+            "request_id": "source-hash-required",
+            "audio_path": str(source_path),
+        }
+
+        missing_response = self._send_json(base_request)
+        invalid_response = self._send_json({**base_request, "audio_sha256": "A" * 64})
+
+        self.assertEqual(
+            missing_response,
+            {"ok": False, "error_code": "LOCALE_VERIFY_REQUEST_INVALID"},
+        )
+        self.assertEqual(
+            invalid_response,
+            {"ok": False, "error_code": "LOCALE_AUDIO_HASH_INVALID"},
+        )
+        self.assertEqual(calls, [])
+
+    def test_source_audio_action_rejects_mismatched_sha256_before_inference(self):
+        source_path = self.root / "source-hash-mismatch.wav"
+        with wave.open(str(source_path), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(16_000)
+            handle.writeframes(b"\x00\x00" * 16_000)
+        calls = []
+
+        class FakeAsr:
+            def infer(self, audio_path):
+                calls.append(("asr", Path(audio_path)))
+                return {}
+
+        class FakeClusterer:
+            def embed(self, waveform, sample_rate):
+                calls.append(("embed", len(waveform), sample_rate))
+                return []
+
+            def cluster(self, embeddings):
+                calls.append(("cluster", len(embeddings)))
+                return []
+
+        self.server = make_test_server(
+            CountingVerifier(),
+            pack=self.pack,
+            allowed_root=self.root,
+            asr=FakeAsr(),
+            source_audio_clusterer=FakeClusterer(),
+        )
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+
+        response = self._send_json({
+            "action": "analyze_source_audio",
+            "request_id": "source-hash-mismatch",
+            "audio_path": str(source_path),
+            "audio_sha256": "0" * 64,
+        })
+
+        self.assertEqual(response, {"ok": False, "error_code": "AUDIO_SHA256_MISMATCH"})
+        self.assertEqual(calls, [])
 
     def test_local_voice_server_rejects_mixed_request_before_verifier(self):
         local = CountingVerifier()
