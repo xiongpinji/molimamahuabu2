@@ -51,6 +51,8 @@ const {
   assertVideoConditioningCapability,
 } = require('../src/services/redrawGenerationService');
 const redrawReviewService = require('../src/services/redrawReviewService');
+const { productionPackHash } = require('../src/services/redrawShotProductionPackService');
+const { compileShotProductionPack } = require('../src/services/redrawShotProductionPackService');
 
 const log = { info() {}, warn() {}, error() {} };
 const FEITUO_FAST_MODEL = 'sdas-my-seedance-2.0-fast-upscaled-1080p';
@@ -1593,6 +1595,129 @@ function addVerifiedGenerationCapability(db, model, overrides = {}) {
   );
   return configId;
 }
+
+function installBlueprintFirstProductionPack(state, shotId) {
+  const blueprint = {
+    schema_version: 'episode-blueprint-v1',
+    characters: [{ id: 'character-lead', source_name: '小满', role: 'courier' }],
+    shots: [{
+      id: 'shot-1',
+      start_ms: 0,
+      end_ms: 5000,
+      duration_ms: 5000,
+      composition: 'medium shot by the loading dock',
+      camera_movement: 'slow push in',
+      continuous_action: 'Mateo answers and keeps walking.',
+      character_ids: ['character-lead'],
+      dialogue: [{
+        id: 'dialogue-1',
+        speaker_id: 'character-lead',
+        source_text: '我回来了。',
+        start_ms: 500,
+        end_ms: 2500,
+      }],
+    }],
+    review: { status: 'locked' },
+  };
+  blueprint.blueprint_hash = crypto.createHash('sha256').update(stableJson(blueprint)).digest('hex');
+  const localization = {
+    schema_version: 'episode-localization-v1',
+    blueprint_hash: blueprint.blueprint_hash,
+    locale: 'en-US',
+    market: 'US',
+    character_name_map: { 'character-lead': 'Mateo' },
+    dialogue_map: [{
+      source_dialogue_id: 'dialogue-1',
+      shot_id: 'shot-1',
+      speaker_id: 'character-lead',
+      source_text: '我回来了。',
+      target_text: 'I am back.',
+      start_ms: 500,
+      end_ms: 2500,
+    }],
+    text_region_map: [],
+    cultural_adaptations: [],
+    glossary: [],
+    locked_terms: [],
+    review: { status: 'locked' },
+  };
+  localization.localization_hash = crypto.createHash('sha256').update(stableJson(localization)).digest('hex');
+  state.db.prepare(`INSERT INTO redraw_episode_blueprints
+    (work_id, tenant_id, user_id, revision, status, blueprint_json, blueprint_hash,
+     evidence_manifest_json, created_at, updated_at)
+    VALUES (?, 'tenant-a', 'user-a', 2, 'locked', ?, ?, '{}', ?, ?)`)
+    .run(state.workId, JSON.stringify(blueprint), blueprint.blueprint_hash, state.now, state.now);
+  state.db.prepare(`UPDATE redraw_versions
+    SET version = 2, locale = 'en-US', market = 'US', blueprint_hash = ?, localization_hash = ?,
+        localization_review_json = ?, reference_bundle_required = 0, status = 'ready_to_generate'
+    WHERE id = ?`)
+    .run(blueprint.blueprint_hash, localization.localization_hash, JSON.stringify(localization), state.versionId);
+  state.db.prepare('UPDATE redraw_works SET current_version = 2 WHERE id = ?').run(state.workId);
+  state.db.prepare(`UPDATE redraw_shots
+    SET shot_id = 'shot-1', start_ms = 0, end_ms = 5000, duration_ms = 5000,
+        source_dialogue_json = ?, preparation_snapshot_json = '{}'
+    WHERE id = ?`).run(JSON.stringify(blueprint.shots[0].dialogue), shotId);
+  const shot = state.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(shotId);
+  const pack = compileShotProductionPack({
+    shot,
+    blueprint,
+    localization,
+    blueprintHash: blueprint.blueprint_hash,
+    localizationHash: localization.localization_hash,
+  });
+  state.db.prepare(`UPDATE redraw_shots
+    SET compiled_prompt_json = ?, preparation_snapshot_json = ?
+    WHERE id = ?`)
+    .run(JSON.stringify(pack), JSON.stringify({
+      blueprint_hash: pack.blueprint_hash,
+      localization_hash: pack.localization_hash,
+      production_pack_hash: pack.production_pack_hash,
+    }), shotId);
+  return { blueprint, localization, pack };
+}
+
+test('stale production pack hashes fail closed before provider and credit reserve', async () => {
+  const cases = [
+    ['blueprint hash', (pack) => {
+      pack.blueprint_hash = '1'.repeat(64);
+      pack.production_pack_hash = productionPackHash(pack);
+    }],
+    ['localization hash', (pack) => {
+      pack.localization_hash = '2'.repeat(64);
+      pack.production_pack_hash = productionPackHash(pack);
+    }],
+    ['canonical pack hash', (pack) => {
+      pack.prompt = 'tampered prompt';
+    }],
+  ];
+
+  for (const [name, mutate] of cases) {
+    const state = setup();
+    let providerCalls = 0;
+    try {
+      const shotId = addShot(state.db, state.versionId);
+      const { pack } = installBlueprintFirstProductionPack(state, shotId);
+      mutate(pack);
+      state.db.prepare('UPDATE redraw_shots SET compiled_prompt_json = ? WHERE id = ?')
+        .run(JSON.stringify(pack), shotId);
+
+      await assert.rejects(
+        () => generateShot(ctx(state.db, {
+          awaitCompletion: true,
+          videoProcessor: async () => { providerCalls += 1; },
+        }), { shotId }),
+        (error) => error.code === 'REDRAW_PRODUCTION_PACK_STALE',
+        name,
+      );
+      assert.equal(providerCalls, 0, name);
+      assert.equal(count(state.db, 'tenant_usage_reservations'), 0, name);
+      assert.equal(count(state.db, 'video_generations'), 0, name);
+      assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0, name);
+    } finally {
+      state.db.close();
+    }
+  }
+});
 
 test('ID9 iCreat verified 模型在 reserve/video row/provider 前以 conditioning unsupported fail closed', async () => {
   const state = setup();
@@ -6687,6 +6812,110 @@ test('auto 当前 processing 精确重放复用，改变服务端参数也不能
     assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
     assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 1);
     assert.equal(count(state.db, 'video_generations'), 1);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('blueprint-first 逐镜生产包哈希漂移时在 reservation task video 和 provider 前 fail closed', async () => {
+  const state = setup();
+  try {
+    const blueprint = {
+      schema_version: 'episode-blueprint-v1',
+      characters: [{ id: 'character-lead', source_name: '小满', role: 'courier' }],
+      shots: [{
+        id: 'shot-1',
+        start_ms: 0,
+        end_ms: 5000,
+        duration_ms: 5000,
+        composition: 'medium shot by the loading dock',
+        camera_movement: 'slow push in',
+        continuous_action: 'Mateo answers and keeps walking.',
+        character_ids: ['character-lead'],
+        dialogue: [{
+          id: 'dialogue-1',
+          speaker_id: 'character-lead',
+          source_text: '我回来了。',
+          start_ms: 500,
+          end_ms: 2500,
+        }],
+      }],
+      review: { status: 'locked' },
+    };
+    blueprint.blueprint_hash = crypto.createHash('sha256').update(stableJson(blueprint)).digest('hex');
+    const localization = {
+      schema_version: 'episode-localization-v1',
+      blueprint_hash: blueprint.blueprint_hash,
+      locale: 'en-US',
+      market: 'US',
+      character_name_map: { 'character-lead': 'Mateo' },
+      dialogue_map: [{
+        source_dialogue_id: 'dialogue-1',
+        shot_id: 'shot-1',
+        speaker_id: 'character-lead',
+        source_text: '我回来了。',
+        target_text: 'I am back.',
+        start_ms: 500,
+        end_ms: 2500,
+      }],
+      text_region_map: [],
+      cultural_adaptations: [],
+      glossary: [],
+      locked_terms: [],
+      review: { status: 'locked' },
+    };
+    localization.localization_hash = crypto.createHash('sha256').update(stableJson(localization)).digest('hex');
+    state.db.prepare(`INSERT INTO redraw_episode_blueprints
+      (work_id, tenant_id, user_id, revision, status, blueprint_json, blueprint_hash,
+       evidence_manifest_json, created_at, updated_at)
+      VALUES (?, 'tenant-a', 'user-a', 2, 'locked', ?, ?, '{}', ?, ?)`)
+      .run(state.workId, JSON.stringify(blueprint), blueprint.blueprint_hash, state.now, state.now);
+    state.db.prepare(`UPDATE redraw_versions
+      SET version = 2, locale = 'en-US', market = 'US', blueprint_hash = ?, localization_hash = ?,
+          localization_review_json = ?, reference_bundle_required = 0, status = 'ready_to_generate'
+      WHERE id = ?`)
+      .run(blueprint.blueprint_hash, localization.localization_hash, JSON.stringify(localization), state.versionId);
+    state.db.prepare('UPDATE redraw_works SET current_version = 2 WHERE id = ?').run(state.workId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      source_dialogue_json: JSON.stringify(blueprint.shots[0].dialogue),
+      references: [],
+      status: 'draft',
+    });
+    state.db.prepare(`UPDATE redraw_shots
+      SET shot_id = 'shot-1', preparation_snapshot_json = '{}'
+      WHERE id = ?`).run(shotId);
+    const shot = state.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(shotId);
+    const pack = compileShotProductionPack({
+      shot,
+      blueprint,
+      localization,
+      blueprintHash: blueprint.blueprint_hash,
+      localizationHash: localization.localization_hash,
+    });
+    state.db.prepare(`UPDATE redraw_shots
+      SET compiled_prompt_json = ?, preparation_snapshot_json = ?
+      WHERE id = ?`)
+      .run(JSON.stringify(pack), JSON.stringify({
+        blueprint_hash: pack.blueprint_hash,
+        localization_hash: pack.localization_hash,
+        production_pack_hash: pack.production_pack_hash,
+      }), shotId);
+    state.db.prepare('UPDATE redraw_versions SET localization_hash = ? WHERE id = ?')
+      .run('c'.repeat(64), state.versionId);
+    let providerCalls = 0;
+    await assert.rejects(
+      () => generateShot(ctx(state.db, {
+        schedule() {},
+        videoProcessor: async () => { providerCalls += 1; },
+      }), { shotId }),
+      (error) => error.code === 'REDRAW_PRODUCTION_PACK_STALE',
+    );
+    assert.equal(providerCalls, 0);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+    assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+    assert.equal(count(state.db, 'video_generations'), 0);
+    assert.equal(state.db.prepare('SELECT video_generation_id FROM redraw_shots WHERE id = ?').get(shotId).video_generation_id, null);
   } finally {
     state.db.close();
   }

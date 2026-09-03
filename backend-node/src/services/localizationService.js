@@ -1,4 +1,5 @@
 const { createHash, randomUUID } = require('node:crypto');
+const { writeVersionProductionPacks } = require('./redrawShotProductionPackService');
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const V2_RESULT_FIELDS = new Set([
@@ -1007,7 +1008,7 @@ function expectedBlueprintHash(input) {
   return value;
 }
 
-function lockLocalizationReview(db, owner, versionId, input = {}) {
+function lockLocalizationReview(db, owner, versionId, input = {}, deps = {}) {
   const expectedUpdatedAt = expectedReviewTimestamp(input);
   const expectedHash = expectedLocalizationHash(input);
   const blueprintHash = expectedBlueprintHash(input);
@@ -1049,6 +1050,7 @@ function lockLocalizationReview(db, owner, versionId, input = {}) {
       context.version.localization_review_json, expectedHash, context.blueprintHash,
     );
     if (changed.changes !== 1) throw codedError('LOCALIZATION_CAS_CONFLICT', 'localization changed, refresh required');
+    writeVersionProductionPacks(db, context.owner, context.version.id, { ...deps, now });
     const workChanged = db.prepare(`
       UPDATE redraw_works
       SET current_version = ?, current_step = 2, status = 'asset_review', updated_at = ?
