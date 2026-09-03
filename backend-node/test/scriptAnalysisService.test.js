@@ -6,8 +6,11 @@ const {
   SCRIPT_ANALYSIS_LIMITS,
   buildUserPrompt,
   getProjectInputError,
+  mergeProductionPackages,
   normalizeProductionPackage,
+  runAnalysis,
   runRevision,
+  splitSourceScript,
   validateProductionPackage,
 } = require('../src/services/scriptAnalysisService');
 const aiClient = require('../src/services/aiClient');
@@ -388,14 +391,14 @@ test('validateProductionPackage rejects blank video prompts', () => {
   );
 });
 
-test('getProjectInputError enforces script and locked fact limits', () => {
-  assert.match(
-    getProjectInputError({
-      sourceScript: '字'.repeat(SCRIPT_ANALYSIS_LIMITS.sourceScriptChars + 1),
-      lockedFacts: [],
-    }),
-    /原始剧本不能超过/,
+test('getProjectInputError accepts scripts above the former 60000 character limit', () => {
+  assert.equal(
+    getProjectInputError({ sourceScript: '字'.repeat(60001), lockedFacts: [] }),
+    '',
   );
+});
+
+test('getProjectInputError keeps locked fact limits', () => {
   assert.match(
     getProjectInputError({
       sourceScript: '短剧',
@@ -410,6 +413,87 @@ test('getProjectInputError enforces script and locked fact limits', () => {
     }),
     /字符串数组/,
   );
+});
+
+test('splitSourceScript preserves every character and prefers natural boundaries', () => {
+  const source = `${'甲'.repeat(18)}。${'乙'.repeat(18)}。${'丙'.repeat(18)}`;
+  const chunks = splitSourceScript(source, 25);
+
+  assert.equal(chunks.join(''), source);
+  assert.ok(chunks.every((chunk) => chunk.length <= 25));
+  assert.ok(chunks[0].endsWith('。'));
+});
+
+test('runAnalysis splits long scripts, uses unique route keys and merges validated packages', async (t) => {
+  const originalGenerateText = aiClient.generateText;
+  t.after(() => { aiClient.generateText = originalGenerateText; });
+  const sourceScript = `${'第一场：小满走进雨夜街道。\n'.repeat(5000)}`.slice(0, 60001);
+  assert.equal(sourceScript.length, 60001);
+  const longProject = { ...project, source_script: sourceScript };
+  const calls = [];
+
+  aiClient.generateText = async (_db, _log, _type, userPrompt, _systemPrompt, options) => {
+    calls.push({ userPrompt, options });
+    const value = validPackage();
+    value.normalized_script.target_duration_seconds = 4;
+    value.character_bible = [{ name: '小满', description: `第 ${calls.length} 段中的小满` }];
+    value.episodes[0].title = `分段 ${calls.length}`;
+    value.episodes[0].scenes[0].shots[0].description = `分段 ${calls.length} 的镜头`;
+    return JSON.stringify(value);
+  };
+
+  const result = await runAnalysis({
+    db: {},
+    log: { info() {}, warn() {} },
+    project: longProject,
+    skill: resolveScriptAnalysisSkill('short-drama-director'),
+    generationOptions: { idempotency_key: 'reservation-1' },
+  });
+
+  assert.ok(calls.length > 1);
+  assert.ok(calls.every((call) => !call.userPrompt.includes(sourceScript)));
+  assert.equal(new Set(calls.map((call) => call.options.idempotency_key)).size, calls.length);
+  assert.equal(result.source.source_script, sourceScript);
+  assert.equal(result.character_bible.length, 1);
+  assert.deepEqual(
+    result.episodes.map((episode) => episode.episode_number),
+    Array.from({ length: calls.length }, (_, index) => index + 1),
+  );
+  assert.equal(result.normalized_script.target_duration_seconds, calls.length * 4);
+  assert.equal(validateProductionPackage(result), result);
+});
+
+test('mergeProductionPackages preserves required V2 strategy and visual direction', () => {
+  const first = validV2Package();
+  const second = validV2Package();
+  second.episodes[0].title = '第二段';
+  second.creative_strategy.season_arc = ['查明失踪真相', '兄妹共同面对幕后者'];
+  second.visual_direction.recommendations[0].name = '克制手持纪实';
+
+  const result = mergeProductionPackages([first, second], {
+    project,
+    skill: resolveScriptAnalysisSkill('short-drama-production-director'),
+    strategyPreset: 'fusion',
+  });
+
+  assert.equal(result.schema_version, '2.0');
+  assert.equal(result.creative_strategy.preset, 'fusion');
+  assert.deepEqual(result.creative_strategy.season_arc, [
+    '重逢',
+    '查明失踪真相',
+    '兄妹共同面对幕后者',
+  ]);
+  assert.deepEqual(result.episodes.map((episode) => episode.episode_number), [1, 2]);
+  assert.deepEqual(
+    result.visual_direction.recommendations.map((item) => item.rank),
+    [1, 2],
+  );
+  assert.equal(validateProductionPackage(result, {
+    expectedSchemaVersion: '2.0',
+    requireVisualDirection: true,
+    requireProductionDirection: true,
+    expectedStrategyPreset: 'fusion',
+  }), result);
 });
 
 test('validateProductionPackage accepts explicit V2 production director package', () => {
