@@ -116,3 +116,11 @@
 - 管理员直达 `/billing-admin?tab=models` 已恢复为 15 个队列、48 张按线路展开的模型卡，Wan3 1080P 初始化异常消失。
 - 逐队列核对发现 Fumin、USMercari、Token6688 的根路径与 `/v1` 路径仍被拆成两个队列。按用户“同属一个中转站的模型在一个队列”要求，中转站身份应按协议、域名和端口归一，而不是把 API 兼容路径当作不同中转站。
 - 增加同域名根路径/`v1` 归队的红灯回归，确认旧逻辑产生 2 组；修改后计费相关合同 `26/26` 通过，前端构建成功。配置页携带 `config_id` 的专属入口仍按配置精确过滤，不受全局归队规则影响。
+
+### r6 最终生产验收
+
+- 最终候选 `/opt/moli-drama/releases/billing-admin-relay-origin-groups-20260903-b41-r6` 从操作时 r5 克隆，只覆盖 `billingModelGroups.js`；共享 verify-only 通过，审计 `/opt/moli-drama/shared/release-audit/protected-release-20260903T034537Z-2976578.audit` 记录 `activation_success`。
+- 数据库备份 `/root/data/disk/moli-drama-backups/database-release-guard-20260903T034537Z-2976578.sqlite` 为 `quick_check=ok`；切换前后活动生成任务均为 0，停机窗口 230ms；当前服务健康且错误级日志为空，AI 音乐 PID 1592199/1592245 未变化。
+- 管理员干净直达地址 `/billing-admin?tab=models` 实际显示 12 个中转站队列、48 张线路模型卡，页面新错误为 0；Fumin 合并为 6 个模型、USMercari 合并为 5 个、Token6688 合并为 4 个，不同域名保持独立。
+- 从 AI 配置逐一点击“设置定价”复验：NewAPI #29 为 5；USMercari #15/#17 为 3/2；Fumin #20/#21/#25 为 1/2/1；ToAPIs #16/#27/#28 均为 1。每次都只有一个当前配置队列，没有混入同域名的其他配置。
+- NewAPI 五模型成本输入框最终值：Mini 480P/720P 为 0.360000/0.792000 元每秒；Fast 为 1.440000/2.880000；Seedance 2.0 为 1.152000/2.160000/7.560000；Seedance 2.5 为 1.872000/4.176000/7.344000；MiniMax H3 1080P 为 1.080000。全程未点击保存、未改用户售价、未触发生成或付费。
