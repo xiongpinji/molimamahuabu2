@@ -341,7 +341,13 @@ const redrawShots = [
     continuous_action: 'She turns the key and pushes the door.',
     ending_state: 'The door opens into the loft.',
     source_dialogue: ['你终于来了。'],
-    localized_dialogue: ['You finally made it.'],
+    localized_dialogue: [{
+      speaker_id: 'source-character-maya',
+      source_text: '你终于来了。',
+      localized_text: 'You finally made it.',
+      start_ms: 0,
+      end_ms: 12000,
+    }],
     prompt: '@Maya enters @Brooklyn Loft with @Brass Key',
     negative_prompt: 'blurred face',
     references: [{ asset_id: 1201, kind: 'character', version_number: 3, approval_status: 'approved', name: 'Maya' }],
@@ -403,7 +409,13 @@ const redrawShots = [
     continuous_action: 'She walks up without looking back.',
     ending_state: 'She disappears above the landing.',
     source_dialogue: ['别回头。'],
-    localized_dialogue: ["Don't look back."],
+    localized_dialogue: [{
+      speaker_id: 'source-character-maya',
+      source_text: '别回头。',
+      localized_text: "Don't look back.",
+      start_ms: 24000,
+      end_ms: 36000,
+    }],
     prompt: '@Maya climbs the staircase',
     negative_prompt: '',
     references: [{ asset_id: 1201, kind: 'character', version_number: 3, approval_status: 'approved', name: 'Maya' }],
@@ -490,7 +502,8 @@ async function installFixtures(page, state) {
       return
     }
     if (method === 'GET' && pathname === `/api/v1/redraw/projects/${project.id}`) {
-      await route.fulfill(apiData(project))
+      const selectedProject = state.projects?.find((item) => Number(item.id) === Number(project.id)) || project
+      await route.fulfill(apiData(selectedProject))
       return
     }
     if (method === 'GET' && pathname === `/api/v1/redraw/projects/${project.id}/events`) {
@@ -898,8 +911,9 @@ async function installFixtures(page, state) {
       const body = request.postDataJSON()
       state.requests.push({ method, pathname, body })
       await route.fulfill(apiData({
+        status: 'ready',
         priced: true,
-        credits: 7,
+        total_credits: 7,
         quote_hash: 'b'.repeat(64),
       }))
       return
@@ -1093,7 +1107,7 @@ function editFixtureState() {
     new_video_ref: { video_url: 'https://fixtures.example/generated.mp4' },
   }))
   return {
-    projects: [project],
+    projects: [{ ...project, default_locale: 'en-US', default_market: 'US' }],
     quoteReady: true,
     assetQuoteReady: true,
     work: {
@@ -2026,24 +2040,24 @@ test.describe('一键转绘输入与分析流程', () => {
     await expect(page.getByText('按分镜生成并从后端恢复真实进度')).toBeVisible()
     await expect(page.getByText('本次预计扣除 10 积分')).toBeVisible()
     await expect(page.getByText('本次预计扣除 4 积分')).toBeVisible()
-    await expect(page.getByText('建议保持 10–15 秒')).toBeVisible()
+    await expect(page.getByText('建议保持 5–15 秒')).toBeVisible()
     await assertNoPageHorizontalScroll(page)
     await assertTextFits(page, '本次预计扣除 4 积分')
   })
 
-  test('第四步英文配音后合成并通过鉴权 blob 下载交付文件', async ({ page }) => {
+  test('第四步 en-US 配音后合成并通过鉴权 blob 下载交付文件', async ({ page }) => {
     const state = editFixtureState()
     await installFixtures(page, state)
     await page.setViewportSize({ width: 1440, height: 1000 })
 
     await page.goto('/redraw/projects/41/works/710?step=4')
-    await expect(page.getByRole('heading', { name: '英文配音、合成预览与下载' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'en-US 配音、合成预览与下载' })).toBeVisible()
     await expect(page.getByText('固定源片顺序')).toBeVisible()
     await expect(page.getByText('本次预计扣除 7 积分')).toBeVisible()
     await expect(page.getByRole('button', { name: /镜头 1/ })).toBeVisible()
     await expect(page.getByRole('button', { name: /镜头 2/ })).toBeVisible()
 
-    await page.getByRole('button', { name: '生成英文配音' }).click()
+    await page.getByRole('button', { name: '生成en-US 配音' }).click()
     await expect.poll(() => state.requests.some((entry) => entry.pathname === '/api/v1/redraw/versions/812/dialogue/start')).toBe(true)
     const dialogue = state.requests.find((entry) => entry.pathname === '/api/v1/redraw/versions/812/dialogue/start')
     expectOnlyKeys(dialogue.body, ['quote_hash', 'idempotency_key'])
