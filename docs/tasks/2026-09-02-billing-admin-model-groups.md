@@ -80,4 +80,14 @@
 - Playwright 从模型配置 21 点击“设置定价”后进入 `/billing-admin?tab=models&config_id=21`，只显示中转站 A 的 2 个模型，未出现中转站 B。
 - 前端全量 Node 测试仅有 1 个与本次无关的既存失败：`aiConfigProviderPresets.test.js` 仍断言飞拓预设不得包含 `seedance-2.5`，而当前基线早已包含该模型；本任务未改动供应商预设。
 
-本节记录的是本地修复与验收，不代表新的生产候选已经激活；生产证据须在受保护发布后补录。
+上述二次修复已随后制作 r3 候选并完成受保护上线，证据如下。
+
+### r3 二次修复上线证据
+
+- Git 源提交：`221bd022be0df77132fad2fd0989952ad895f4c4`。候选 `/opt/moli-drama/releases/billing-admin-model-groups-20260903-b41-r3` 从操作时线上 r2 克隆，只覆盖 `AIConfigContent.vue`、`billingModelGroups.js` 和 `BillingAdmin.vue` 3 个目标源文件；构建前源码差异也严格限定为这 3 个文件。
+- 第一次 verify-only 因 Windows 归档使 3 个源文件成为 `0666` 而被共享门禁拒绝；仅把候选中的这 3 个文件恢复为线上同名文件的 `0644`，未绕过或修改门禁。第二次 verify-only 明确返回 `protected_release_verified`。
+- 正式激活审计：`/opt/moli-drama/shared/release-audit/protected-release-20260903T021008Z-85289.audit`，记录 r2 到 r3 的 `activation_success`。数据库备份：`/root/data/disk/moli-drama-backups/database-release-guard-20260903T021008Z-85289.sqlite`，SHA-256 为 `977f50633e8b027949d9f2fd2cbdf2b6cb1f564d96db4f73a4af638167d29b49`，`quick_check=ok`；切换前后活动任务均为 0，服务停机窗口 230 ms。
+- 线上独立验收：`current` 指向 r3，`moli-drama` 为 active，内网 `/health` 返回 `status=ok`，`/billing-admin` 返回 200，部署后日志未发现 `uncaught/unhandled/fatal/error`。
+- 公网拉取的 `BillingAdmin-DCJPa1Mb.js` 和 `AiConfig-Dck_SE59.js` 与 r3 服务器文件 SHA-256 完全一致；构建产物中已确认包含按 `config_id` 限定中转站、独立加载模型计费和辅助运营接口失败提示。
+- AI 音乐隔离保持：`/opt/moli-mama/server/server.js` PID 1592199、`worker.js` PID 1592245 未变化。
+- 生产端需要管理员登录态才能查看完整计费数据，因此自动线上验收覆盖到页面、资源和服务层；带登录态的交互行为已在同一构建产物的 Playwright 验收中覆盖，仍需管理员刷新页面做最终用户验收。
