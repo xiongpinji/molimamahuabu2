@@ -28,6 +28,10 @@ test('管理端 Wan3 价格编辑器展示和提交批准的 480P、720P、1080P
   assert.match(adminSource, /Object\.fromEntries\(resolutionKeys\(item\)\.map/)
 })
 
+test('运营计费直达页为 Wan3 预先创建 1080P 表单档位', () => {
+  assert.match(adminSource, /function emptyResolutionPrices\(model = ''\)[\s\S]*isWan3VideoPricing\(\{ model \}\)[\s\S]*'1080p'/)
+})
+
 test('画布积分提示保留受保护合同并传递节点分辨率', () => {
   assert.match(nodeSource, /class="billing-cost canvas-credit-callout-v1"\s+aria-live="polite"/)
   assert.match(nodeSource, /本次预计扣除/)

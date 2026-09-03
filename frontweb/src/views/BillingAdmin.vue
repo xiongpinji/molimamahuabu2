@@ -689,10 +689,19 @@ function emptyResolutionPrices(model = '') {
         '2k': { credits: 1, cost_yuan_per_unit: 0 },
         '4k': { credits: 1, cost_yuan_per_unit: 0 },
       }
+  const videoDefaults = isWan3VideoPricing({ model })
+    ? {
+        '480p': { credits: 1, cost_yuan_per_second: 0 },
+        '720p': { credits: 1, cost_yuan_per_second: 0 },
+        '1080p': { credits: 1, cost_yuan_per_second: 0 },
+      }
+    : {
+        '480p': { credits: 1, cost_yuan_per_second: 0 },
+        '720p': { credits: 1, cost_yuan_per_second: 0 },
+      }
   return {
     ...Object.fromEntries(Object.entries(imageDefaults).map(([resolution, tier]) => [resolution, { ...tier }])),
-    '480p': { credits: 1, cost_yuan_per_second: 0 },
-    '720p': { credits: 1, cost_yuan_per_second: 0 },
+    ...videoDefaults,
   }
 }
 
