@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const Database = require('better-sqlite3');
 
 const prices = require('../src/services/modelPriceService');
@@ -520,6 +523,47 @@ test('视频分档支持 MiniMax 实测的 768P 并迁移保留旧档位', () =>
     ],
   );
   db.close();
+});
+
+test('只读价格目录跳过 768P 结构迁移并保持可查询', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'model-price-readonly-'));
+  const databasePath = path.join(directory, 'model-prices.sqlite');
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+
+  const writableDb = new Database(databasePath);
+  prices.ensureSchema(writableDb);
+  writableDb.exec(`
+    DROP TABLE model_resolution_prices;
+    CREATE TABLE model_resolution_prices (
+      model TEXT NOT NULL COLLATE NOCASE,
+      resolution TEXT NOT NULL CHECK (resolution IN ('480p', '720p', '1080p')),
+      credits INTEGER NOT NULL CHECK (credits > 0),
+      cost_micros_per_second INTEGER NOT NULL DEFAULT 0 CHECK (cost_micros_per_second >= 0),
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (model, resolution)
+    );
+    INSERT INTO model_credit_prices
+      (model, credits, category, billing_unit, cost_unit, updated_at)
+    VALUES ('legacy-video', 9, 'video', 'second', 'second', '2026-09-03T00:00:00.000Z');
+    INSERT INTO model_resolution_prices
+      (model, resolution, credits, cost_micros_per_second, updated_at)
+    VALUES ('legacy-video', '480p', 9, 100000, '2026-09-03T00:00:00.000Z');
+  `);
+  writableDb.close();
+
+  const readonlyDb = new Database(databasePath, { readonly: true, fileMustExist: true });
+  try {
+    const rows = prices.list(readonlyDb);
+    assert.deepEqual(rows.find((row) => row.model === 'legacy-video').resolution_prices, {
+      '480p': { credits: 9, cost_micros_per_second: 100000 },
+    });
+    const table = readonlyDb
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'model_resolution_prices'")
+      .get();
+    assert.doesNotMatch(table.sql, /'768p'/);
+  } finally {
+    readonlyDb.close();
+  }
 });
 
 test('调用方可显式允许 ToAPIs 4 秒而旧模型仍保持 5 到 15 秒', () => {

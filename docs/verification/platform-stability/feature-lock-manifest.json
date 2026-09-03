@@ -1088,25 +1088,37 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 NewAPI 配置级能力隔离与六模型路由固定获批",
+          "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+          "impactTests": [
+            "backend-node/test/canvasModelCatalogService.test.js",
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/newapiVideo.test.js",
+            "backend-node/test/newapiWan3ConfigInstaller.test.js",
+            "backend-node/test/providerModelSelection.test.js",
+            "backend-node/test/providerPricingSync.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/modelUiProtectionGate.test.js",
+            "frontweb/test/billing-model-groups.test.js",
+            "frontweb/test/filmListCanvasEntry.test.js",
+            "frontweb/test/homeQuickGeneration.test.js",
+            "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+            "frontweb/test/aiConfigProviderPresets.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 NewAPI 配置级能力隔离与六模型路由固定获批",
-        "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+        "reason": "2026-09-03 NewAPI 计费只读生产预检兼容修复获批",
+        "approvedBy": "product-owner 2026-09-03 newapi-readonly-preflight-compat",
         "impactTests": [
-          "backend-node/test/canvasModelCatalogService.test.js",
           "backend-node/test/modelPrice.test.js",
-          "backend-node/test/newapiVideo.test.js",
-          "backend-node/test/newapiWan3ConfigInstaller.test.js",
-          "backend-node/test/providerModelSelection.test.js",
+          "backend-node/test/productionPreflight.test.js",
           "backend-node/test/providerPricingSync.test.js",
-          "backend-node/test/videoBilling.test.js",
           "backend-node/test/modelUiProtectionGate.test.js",
-          "frontweb/test/billing-model-groups.test.js",
-          "frontweb/test/filmListCanvasEntry.test.js",
-          "frontweb/test/homeQuickGeneration.test.js",
-          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
-          "frontweb/test/aiConfigProviderPresets.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -2043,25 +2055,37 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 NewAPI 配置级能力隔离与六模型路由固定获批",
+          "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+          "impactTests": [
+            "backend-node/test/canvasModelCatalogService.test.js",
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/newapiVideo.test.js",
+            "backend-node/test/newapiWan3ConfigInstaller.test.js",
+            "backend-node/test/providerModelSelection.test.js",
+            "backend-node/test/providerPricingSync.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/modelUiProtectionGate.test.js",
+            "frontweb/test/billing-model-groups.test.js",
+            "frontweb/test/filmListCanvasEntry.test.js",
+            "frontweb/test/homeQuickGeneration.test.js",
+            "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+            "frontweb/test/aiConfigProviderPresets.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 NewAPI 配置级能力隔离与六模型路由固定获批",
-        "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+        "reason": "2026-09-03 NewAPI 计费只读生产预检兼容修复获批",
+        "approvedBy": "product-owner 2026-09-03 newapi-readonly-preflight-compat",
         "impactTests": [
-          "backend-node/test/canvasModelCatalogService.test.js",
           "backend-node/test/modelPrice.test.js",
-          "backend-node/test/newapiVideo.test.js",
-          "backend-node/test/newapiWan3ConfigInstaller.test.js",
-          "backend-node/test/providerModelSelection.test.js",
+          "backend-node/test/productionPreflight.test.js",
           "backend-node/test/providerPricingSync.test.js",
-          "backend-node/test/videoBilling.test.js",
           "backend-node/test/modelUiProtectionGate.test.js",
-          "frontweb/test/billing-model-groups.test.js",
-          "frontweb/test/filmListCanvasEntry.test.js",
-          "frontweb/test/homeQuickGeneration.test.js",
-          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
-          "frontweb/test/aiConfigProviderPresets.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]

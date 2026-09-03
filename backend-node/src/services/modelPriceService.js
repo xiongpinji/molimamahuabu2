@@ -77,6 +77,7 @@ function billingUnit(value, category = '', configuredUnit = '') {
 }
 
 function ensureSchema(db) {
+  if (db.readonly) return;
   recoverOrphanedFreePricingRebuild(db);
   db.exec(`CREATE TABLE IF NOT EXISTS model_credit_prices (
     model TEXT PRIMARY KEY,
