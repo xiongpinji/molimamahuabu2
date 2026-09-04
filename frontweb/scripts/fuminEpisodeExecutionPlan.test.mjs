@@ -215,7 +215,8 @@ test('rejects runtime-sensitive field names recursively without scanning dialogu
   const sensitiveFields = [
     'key', 'apiKey', 'api_key', 'secret', 'token', 'credential', 'password', 'model',
     'url', 'uri', 'endpoint', 'baseUrl', 'base_url', 'audioUrl', 'sourceUrl', 'callbackUrl',
-    'endpointUrl', 'assetURL', 'sourceUri', 'callbackURI',
+    'endpointUrl', 'assetURL', 'sourceUri', 'callbackURI', 'secretToken', 'accessToken',
+    'apiSecret', 'secretKey', 'modelName', 'modelId', 'credentialId', 'passwordHash',
   ]
   for (const field of sensitiveFields) {
     const pkg = makeLockedPackage()
@@ -234,7 +235,7 @@ test('rejects runtime-sensitive field names recursively without scanning dialogu
   }
 
   const rootNested = makeLockedPackage()
-  rootNested.runtime = { nested: { endpointUrl: 'must-not-leak' } }
+  rootNested.runtime = { nested: { secretToken: 'must-not-leak' } }
   assert.throws(
     () => buildFuminEpisodeExecutionPlan(rootNested),
     (error) => error.code === 'FUMIN_EXECUTION_RUNTIME_CONFIG_FORBIDDEN',
@@ -246,6 +247,7 @@ test('rejects runtime-sensitive field names recursively without scanning dialogu
     start_ms: 100,
     end_ms: 900,
     text: 'The URL label and https://example.test are ordinary dialogue text.',
+    metadata: { monkey: 'animal', keyframe: 24, modeling: 'clay' },
   }]
   assert.match(
     buildFuminEpisodeExecutionPlan(safe).units[0].dialogue[0].text,

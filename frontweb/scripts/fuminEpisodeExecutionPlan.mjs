@@ -5,10 +5,11 @@ export const FUMIN_PROVIDER_DURATION_SECONDS = 5
 const MAX_KEEP_DURATION_MS = FUMIN_PROVIDER_DURATION_SECONDS * 1000
 const HEX_64 = /^[a-f0-9]{64}$/i
 const CJK_TEXT = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u
-const FORBIDDEN_RUNTIME_FIELDS = new Set([
-  'provider', 'model', 'key', 'apikey', 'secret', 'token', 'credential', 'password',
-  'url', 'uri', 'endpoint', 'baseurl',
+const FORBIDDEN_RUNTIME_FIELD_TOKENS = new Set([
+  'provider', 'model', 'key', 'secret', 'token', 'credential', 'password',
+  'url', 'uri', 'endpoint', 'apikey', 'baseurl',
 ])
+const ALLOWED_DOMAIN_FIELD_KEYS = new Set(['source_character_key'])
 
 function fail(code, detail = '') {
   const error = new Error(detail ? `${code}: ${detail}` : code)
@@ -59,8 +60,14 @@ function assertNoRuntimeFields(value) {
   }
   if (!isObject(value)) return
   for (const [key, item] of Object.entries(value)) {
-    const compactKey = key.replace(/[_-]/gu, '').toLowerCase()
-    if (FORBIDDEN_RUNTIME_FIELDS.has(compactKey) || /(?:url|uri)$/iu.test(key)) {
+    const tokens = key
+      .replace(/([a-z0-9])([A-Z])/gu, '$1 $2')
+      .replace(/([A-Z]+)([A-Z][a-z])/gu, '$1 $2')
+      .split(/[^A-Za-z0-9]+/u)
+      .filter(Boolean)
+      .map((token) => token.toLowerCase())
+    if (!ALLOWED_DOMAIN_FIELD_KEYS.has(key)
+      && tokens.some((token) => FORBIDDEN_RUNTIME_FIELD_TOKENS.has(token))) {
       fail('FUMIN_EXECUTION_RUNTIME_CONFIG_FORBIDDEN', key)
     }
     assertNoRuntimeFields(item)
