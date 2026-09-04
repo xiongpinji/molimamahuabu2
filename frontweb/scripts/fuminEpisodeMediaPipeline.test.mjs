@@ -47,6 +47,18 @@ test('normalize arguments trim from zero to the exact keep duration with the can
   assert.equal(args.at(-1), 'normalized.mp4')
 })
 
+test('normalize arguments honor a speech-aware source offset while preserving the exact keep duration', async () => {
+  const { buildNormalizeUnitArgs } = await import('./fuminEpisodeMediaPipeline.mjs')
+  const args = buildNormalizeUnitArgs({
+    inputPath: 'raw.mp4',
+    outputPath: 'normalized.mp4',
+    keepDurationMs: 3766,
+    startOffsetMs: 554,
+  })
+  assert.equal(args[args.indexOf('-ss') + 1], '0.554')
+  assert.equal(args[args.indexOf('-t') + 1], '3.766')
+})
+
 test('normalize arguments reject non-integer, zero, and over-five-second keep durations', async () => {
   const { buildNormalizeUnitArgs } = await import('./fuminEpisodeMediaPipeline.mjs')
   for (const keepDurationMs of [0, -1, 5001, 1.25, Number.NaN]) {

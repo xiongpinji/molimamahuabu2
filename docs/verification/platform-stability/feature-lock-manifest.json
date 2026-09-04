@@ -2693,13 +2693,24 @@
             "frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs",
             "backend-node/test/featureLockManifest.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-04 Fumin 完成任务结果地址兼容修复获批",
+          "approvedBy": "product-owner 2026-09-04 pr217-fumin-result-url-parser-fix",
+          "impactTests": [
+            "frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-04 Fumin 完成任务结果地址兼容修复获批",
-        "approvedBy": "product-owner 2026-09-04 pr217-fumin-result-url-parser-fix",
+        "reason": "2026-09-04 Fumin 对白保留裁剪修复获批",
+        "approvedBy": "product-owner 2026-09-04 pr217-fumin-dialogue-preserving-normalization",
         "impactTests": [
+          "frontweb/scripts/fuminEpisodeMediaPipeline.test.mjs",
           "frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs",
+          "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+          "frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs",
           "backend-node/test/featureLockManifest.test.js"
         ]
       }

@@ -254,7 +254,8 @@ export function transcribeEnglish(filePath, pythonPath, modelId = ASR_MODEL_IDS[
     'model_id=sys.argv[2]',
     'm=WhisperModel(model_id,device="cpu",compute_type="int8",local_files_only=True)',
     'segments,info=m.transcribe(sys.argv[1],beam_size=5,vad_filter=True)',
-    'print(json.dumps({"model_id":model_id,"language":info.language,"probability":info.language_probability,"text":" ".join(s.text.strip() for s in segments).strip()},ensure_ascii=False))',
+    'segments=list(segments)',
+    'print(json.dumps({"model_id":model_id,"language":info.language,"probability":info.language_probability,"text":" ".join(s.text.strip() for s in segments).strip(),"speech_start_seconds":min((s.start for s in segments),default=None),"speech_end_seconds":max((s.end for s in segments),default=None)},ensure_ascii=False))',
   ].join(';')
   const stdout = (adapters.runProcess || runProcess)(pythonPath, ['-c', code, filePath, modelId], 'FUMIN_EPISODE_ASR_FAILED', {
     timeout: 12 * 60_000,
@@ -304,12 +305,20 @@ export function verifyTranscriptConsensusForUnit(unit, transcripts) {
     consensus_passed: true,
     exact_dialogue_present: true,
     target_dialogue: expected,
-    models: ordered.map((transcript) => ({
-      model_id: transcript.model_id,
-      detected_language: transcript.language,
-      detected_language_probability: Number(transcript.probability),
-      transcript: transcript.text,
-    })),
+    models: ordered.map((transcript) => {
+      const model = {
+        model_id: transcript.model_id,
+        detected_language: transcript.language,
+        detected_language_probability: Number(transcript.probability),
+        transcript: transcript.text,
+      }
+      if (Number.isFinite(Number(transcript.speech_start_seconds))
+        && Number.isFinite(Number(transcript.speech_end_seconds))) {
+        model.speech_start_seconds = Number(transcript.speech_start_seconds)
+        model.speech_end_seconds = Number(transcript.speech_end_seconds)
+      }
+      return model
+    }),
   }
 }
 
@@ -318,13 +327,57 @@ export function verifyTranscriptConsensusForPack(pack, transcripts) {
 }
 
 function buildPrompt(pack) {
+  const dialogue = Array.isArray(pack?.dialogue) ? pack.dialogue : []
+  const timingAvailable = dialogue.every((turn) => {
+    const startMs = Number(turn?.start_ms)
+    const endMs = Number(turn?.end_ms)
+    const text = String(turn?.text || turn?.localized_text || '').trim()
+    return !text || (Number.isInteger(startMs) && Number.isInteger(endMs) && startMs >= 0 && endMs > startMs)
+  })
+  if (!timingAvailable && pack?.schema_version === 'fumin-episode-execution-unit-v1') {
+    fail('FUMIN_EPISODE_DIALOGUE_TIMING_INVALID')
+  }
+  const dialogueTiming = timingAvailable ? dialogue.flatMap((turn) => {
+    const text = String(turn?.text || turn?.localized_text || '').trim()
+    return text ? [`- ${(Number(turn.start_ms) / 1000).toFixed(3)}-${(Number(turn.end_ms) / 1000).toFixed(3)}: ${text}`] : []
+  }) : []
   return [
     String(pack.prompt || '').trim(),
     'Create one vertical 9:16 cinematic live-action shot at 480p.',
     'Use only the supplied identity and motion references.',
     'Generate synchronized target-language audio exactly matching the approved dialogue when speech is required.',
+    ...(dialogueTiming.length > 0 ? [
+      'Approved dialogue timing (seconds from shot start):',
+      ...dialogueTiming,
+      'Start each line on time and finish every approved word within its listed window. Do not delay dialogue beyond these windows.',
+    ] : []),
     'Do not add subtitles, captions, watermarks, logos, Chinese text, or unapproved dialogue.',
   ].filter(Boolean).join('\n')
+}
+
+function dialogueCropStartMs(unit, rawVerification) {
+  if (targetDialogue(unit).length === 0 || Number(unit?.keep_duration_ms) === 5000) return 0
+  const keepDurationMs = Number(unit?.keep_duration_ms)
+  const rawDurationMs = Math.floor(Number(rawVerification?.media?.duration_seconds) * 1000)
+  const models = rawVerification?.dialogue?.models
+  if (!Number.isInteger(keepDurationMs) || !Number.isFinite(rawDurationMs)
+    || !Array.isArray(models) || models.length !== ASR_MODEL_IDS.length) {
+    fail('FUMIN_EPISODE_ASR_TIMING_UNAVAILABLE')
+  }
+  const starts = models.map((model) => Number(model?.speech_start_seconds))
+  const ends = models.map((model) => Number(model?.speech_end_seconds))
+  if (starts.some((value) => !Number.isFinite(value) || value < 0)
+    || ends.some((value, index) => !Number.isFinite(value) || value <= starts[index])) {
+    fail('FUMIN_EPISODE_ASR_TIMING_UNAVAILABLE')
+  }
+  const speechStartMs = Math.floor(Math.min(...starts) * 1000)
+  const speechEndMs = Math.ceil(Math.max(...ends) * 1000)
+  const latestStartMs = Math.min(speechStartMs - 100, rawDurationMs - keepDurationMs)
+  const paddedStartMs = Math.max(0, speechEndMs + 100 - keepDurationMs)
+  if (paddedStartMs <= latestStartMs) return paddedStartMs
+  const exactStartMs = Math.max(0, speechEndMs - keepDurationMs)
+  if (exactStartMs <= Math.min(speechStartMs, rawDurationMs - keepDurationMs)) return exactStartMs
+  fail('FUMIN_EPISODE_DIALOGUE_WINDOW_TOO_SHORT')
 }
 
 function sameOrInside(parent, child) {
@@ -817,13 +870,14 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
       fs.writeFileSync(output_path, bytes, { flag: 'wx' })
       return { path: output_path, sha256: sha256Buffer(bytes), bytes: bytes.length }
     },
-    async finalizeArtifact({ raw_path, output_path, unit }) {
+    async finalizeArtifact({ raw_path, output_path, unit, raw_verification }) {
       const finalize = options.normalizeUnitArtifact || normalizeUnitArtifact
       const finalized = finalize({
         inputPath: raw_path,
         outputPath: output_path,
         outputRoot: outputRootForFinal(output_path),
         keepDurationMs: unit?.keep_duration_ms,
+        startOffsetMs: dialogueCropStartMs(unit, raw_verification),
         ffmpegPath: options.ffmpegPath || defaultFfmpegPath(),
         ffprobePath: options.ffprobePath || process.env.FFPROBE_PATH || 'ffprobe',
       })

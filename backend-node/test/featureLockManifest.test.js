@@ -1064,6 +1064,17 @@ const FUMIN_RESULT_URL_PARSER_UNLOCK = {
     'backend-node/test/featureLockManifest.test.js',
   ],
 };
+const FUMIN_DIALOGUE_PRESERVING_NORMALIZATION_UNLOCK = {
+  reason: '2026-09-04 Fumin 对白保留裁剪修复获批',
+  approvedBy: 'product-owner 2026-09-04 pr217-fumin-dialogue-preserving-normalization',
+  impactTests: [
+    'frontweb/scripts/fuminEpisodeMediaPipeline.test.mjs',
+    'frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs',
+    'frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs',
+    'frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs',
+    'backend-node/test/featureLockManifest.test.js',
+  ],
+};
 const PRE_MERGED_BLUEPRINT_UNLOCK_BY_FEATURE = {
   [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK,
   [ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID]: NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK,
@@ -1698,13 +1709,14 @@ test('母本蓝图优先一键转绘锁定固定五秒整集范围并完整保�
   assert.deepEqual(feature.requiredTests, REDRAW_EPISODE_BLUEPRINT_FIRST_REQUIRED_TESTS);
   assert.deepEqual(feature.evidence, REDRAW_EPISODE_BLUEPRINT_FIRST_EVIDENCE);
   assert.equal(feature.fixCommit, null);
-  assert.deepEqual(feature.unlock, FUMIN_RESULT_URL_PARSER_UNLOCK);
+  assert.deepEqual(feature.unlock, FUMIN_DIALOGUE_PRESERVING_NORMALIZATION_UNLOCK);
   assert.deepEqual(feature.unlockHistory, [
     REDRAW_EPISODE_BLUEPRINT_HARDENING_UNLOCK,
     REDRAW_EPISODE_CULTURAL_ADAPTATION_UNLOCK,
     FUMIN_FIXED_FIVE_SECOND_FULL_EPISODE_UNLOCK,
     FUMIN_R5_TOP_LEVEL_IDENTITY_REFERENCE_UNLOCK,
     FUMIN_VERIFIED_UPSTREAM_SUBMISSION_CONTRACT_UNLOCK,
+    FUMIN_RESULT_URL_PARSER_UNLOCK,
   ]);
 });
 
@@ -1964,7 +1976,7 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
     } else if (feature.featureId === REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID) {
       assert.deepEqual(feature.unlock, MERGED_CURRENT_UNLOCK_BY_FEATURE[feature.featureId]);
     } else if (feature.featureId === REDRAW_EPISODE_BLUEPRINT_FIRST_FEATURE_ID) {
-      assert.deepEqual(feature.unlock, FUMIN_RESULT_URL_PARSER_UNLOCK);
+      assert.deepEqual(feature.unlock, FUMIN_DIALOGUE_PRESERVING_NORMALIZATION_UNLOCK);
     } else if (!Object.hasOwn(PROVIDER_TASK_LOCK_REQUIREMENTS, feature.featureId)) {
       assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
     }

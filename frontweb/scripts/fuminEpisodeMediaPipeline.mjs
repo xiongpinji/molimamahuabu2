@@ -15,11 +15,18 @@ function assertKeepDuration(keepDurationMs) {
   }
 }
 
-export function buildNormalizeUnitArgs({ inputPath, outputPath, keepDurationMs }) {
+function assertStartOffset(startOffsetMs, keepDurationMs) {
+  if (!Number.isInteger(startOffsetMs) || startOffsetMs < 0 || startOffsetMs + keepDurationMs > 5000) {
+    fail('FUMIN_MEDIA_START_OFFSET_INVALID', String(startOffsetMs))
+  }
+}
+
+export function buildNormalizeUnitArgs({ inputPath, outputPath, keepDurationMs, startOffsetMs = 0 }) {
   assertKeepDuration(keepDurationMs)
+  assertStartOffset(startOffsetMs, keepDurationMs)
   return [
     '-hide_banner', '-loglevel', 'error', '-nostdin', '-n',
-    '-ss', '0.000', '-i', inputPath,
+    '-ss', (startOffsetMs / 1000).toFixed(3), '-i', inputPath,
     '-t', (keepDurationMs / 1000).toFixed(3),
     '-map', '0:v:0', '-map', '0:a:0',
     '-vf', 'scale=480:864,fps=24',
@@ -181,10 +188,12 @@ export function normalizeUnitArtifact({
   outputPath,
   outputRoot,
   keepDurationMs,
+  startOffsetMs = 0,
   ffmpegPath = process.env.FFMPEG_PATH || 'ffmpeg',
   ffprobePath = process.env.FFPROBE_PATH || 'ffprobe',
 }) {
   assertKeepDuration(keepDurationMs)
+  assertStartOffset(startOffsetMs, keepDurationMs)
   const { root, target } = assertOutputPath(outputRoot, outputPath)
   const input = assertNoLinks(inputPath)
   const inputStat = lstat(input)
@@ -200,6 +209,7 @@ export function normalizeUnitArtifact({
       inputPath: input,
       outputPath: stagingPath,
       keepDurationMs,
+      startOffsetMs,
     }), 'FUMIN_MEDIA_FFMPEG_FAILED')
     if (sha256File(input) !== inputHash) fail('FUMIN_MEDIA_ARTIFACT_HASH_MISMATCH', input)
     const stat = lstat(stagingPath)

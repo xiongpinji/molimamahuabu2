@@ -227,6 +227,9 @@ test('planned submissions reuse the verified backend Fumin body contract with pr
         'Create one vertical 9:16 cinematic live-action shot at 480p.',
         'Use only the supplied identity and motion references.',
         'Generate synchronized target-language audio exactly matching the approved dialogue when speech is required.',
+        'Approved dialogue timing (seconds from shot start):',
+        '- 0.000-1.000: Unit line.',
+        'Start each line on time and finish every approved word within its listed window. Do not delay dialogue beyond these windows.',
         'Do not add subtitles, captions, watermarks, logos, Chinese text, or unapproved dialogue.',
       ].join('\n'),
       duration: 5,
@@ -803,7 +806,7 @@ test('inspectArtifact distinguishes five-second raw media from a keep-duration c
   assert.deepEqual(probes, ['raw', 'final'])
 })
 
-test('finalizeArtifact delegates exact raw, final, and keep-duration inputs to the local pipeline', async () => {
+test('finalizeArtifact shifts a short unit window to retain raw dialogue confirmed by both ASRs', async () => {
   const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
   const calls = []
   const adapter = createFuminEpisodeProviderAdapter({
@@ -819,11 +822,21 @@ test('finalizeArtifact delegates exact raw, final, and keep-duration inputs to t
   const result = await adapter.finalizeArtifact({
     raw_path: 'C:/state/outputs/raw/shot.part-01.mp4',
     output_path: 'C:/state/outputs/units/shot.part-01.mp4',
-    unit: plannedUnit({ keep_duration_ms: 1266 }),
+    unit: plannedUnit({ keep_duration_ms: 3766 }),
+    raw_verification: {
+      media: { duration_seconds: 5.088 },
+      dialogue: {
+        models: [
+          { model_id: 'Systran/faster-whisper-base', speech_start_seconds: 2.06, speech_end_seconds: 4.22 },
+          { model_id: 'Systran/faster-whisper-small', speech_start_seconds: 2.06, speech_end_seconds: 4.22 },
+        ],
+      },
+    },
   })
   assert.deepEqual(result, { path: 'C:/state/outputs/units/shot.part-01.mp4', sha256: 'a'.repeat(64) })
   assert.equal(calls.length, 1)
-  assert.equal(calls[0].keepDurationMs, 1266)
+  assert.equal(calls[0].keepDurationMs, 3766)
+  assert.equal(calls[0].startOffsetMs, 554)
   assert.equal(calls[0].outputRoot, path.resolve('C:/state/outputs'))
   assert.equal(calls[0].ffmpegPath, 'ffmpeg-local')
   assert.equal(calls[0].ffprobePath, 'ffprobe-local')
