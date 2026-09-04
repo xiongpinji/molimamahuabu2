@@ -282,6 +282,29 @@ test('Fumin 2xx indeterminate submission or completed status without video url a
   }
 })
 
+test('Fumin completed task accepts the verified data.content.video_url response shape', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const adapter = createFuminEpisodeProviderAdapter({
+    apiKey: 'test-key',
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        data: {
+          status: 'succeeded',
+          content: { video_url: 'https://fumin.test/result.mp4' },
+        },
+      }),
+    }),
+    sleep: async () => {},
+  })
+
+  assert.deepEqual(
+    await adapter.pollGeneration({ task_id: 'task-content-video-url' }),
+    { state: 'completed', video_url: 'https://fumin.test/result.mp4' },
+  )
+})
+
 test('Fumin 2xx indeterminate reference uploads are conservative unknowns', async () => {
   const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fumin-upload-unknown-'))

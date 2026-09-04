@@ -85,3 +85,11 @@
 - TDD 红灯先证明 workflow 仍直接调用 `npm audit`、启动器缺失、Windows `npm.cmd` 直接启动失败及脚本被 `.gitignore` 排除；绿灯合同测试为 9/9 通过，并锁定“漏洞证据与网络错误文本并存时也不得重试”。
 - 修复后的本地真实审计使用 npm 官方 registry：前端 0 漏洞；后端报告 3 个 moderate 漏洞并按既有 `--audit-level=high` 合同退出 0。没有运行 `npm audit fix`，没有升级依赖或修改业务代码。
 - 本阶段未读取供应商 Key、未调用供应商、未付费、未写生产数据库、未合并、未部署；新提交的 Hosted CI 结果必须另行等待，不由本地结果推导。
+
+### 2026-09-04 当前 HEAD 单镜真实验收与结果地址解析收口
+
+- PR #217 的新 HEAD `7760dd3bf7fd6291cac944806b930f78b16bcc1a` 已通过四组 Hosted CI；随后按用户“开始下一项”的明确指令，仅对 `shot-24.part-01` 执行一次 Fumin `seedance-2.0-mini`、480p、9:16、5 秒、有声英文真实生成。目标对白为 `The World Cup starts my fortune.`，输入固定为 1 张 Ethan Cole 身份图和 1 段无原音轨动作参考。
+- 新隔离状态 `pr217-fumin-single-shot-20260904-r17-current-head` 的 preflight 通过且提交前任务数为 0。实际生成取得唯一供应商任务号并上传 2 份参考素材；轮询遇到 `FUMIN_EPISODE_RESULT_UNKNOWN` 后立即停止，状态冻结为 `needs_attention`，未重试、未再次查询供应商、未取得或验收结果文件。
+- 本地对比发现整集适配器遗漏了同仓库既有 Fumin 客户端已经支持的 `content.video_url`、`data.content.video_url` 及对应 `content.video.url` 完成结果路径。由于 r17 未保存原始供应商响应，不能反向断言本次响应的精确字段，只能确认这是一个可复现的解析合同缺口，不能把 r17 报告为真实成片失败或验收通过。
+- TDD 红灯使用 `data.content.video_url` 稳定复现相同未知结果；最小修复只补齐既有已验证结果路径，不修改模型、请求参数、定价或轮询次数。单文件 27/27、Fumin 六文件 104 tests / 102 pass / 0 fail / 2 Windows symlink skip、功能锁与发布范围 66/66 均通过。
+- r17 保持不可复用；本次没有生产数据库写入、合并、部署或第二次供应商提交。修复后的真实成片、音轨、英文对白、角色一致性和完整 5 秒仍未验证，后续若再次真实提交必须使用新的隔离状态和新的明确授权。

@@ -122,12 +122,16 @@ function parseSubmission(payload) {
 function parseStatus(payload) {
   const raw = String(pick(payload, [['status'], ['state'], ['data', 'status'], ['data', 'state']]) || '').toLowerCase()
   const videoUrl = pick(payload, [
+    ['content', 'video_url'],
+    ['data', 'content', 'video_url'],
     ['video_url'],
     ['url'],
     ['output', 'video_url'],
     ['data', 'video_url'],
     ['data', 'url'],
     ['data', 'output', 'video_url'],
+    ['content', 'video', 'url'],
+    ['data', 'content', 'video', 'url'],
   ])
   if (/success|succeed|completed|finished/.test(raw)) {
     if (!/^https:\/\//i.test(String(videoUrl || ''))) fail('FUMIN_EPISODE_RESULT_UNKNOWN')
