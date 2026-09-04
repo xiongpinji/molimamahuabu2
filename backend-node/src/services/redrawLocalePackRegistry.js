@@ -279,7 +279,16 @@ function validNativeThresholds(thresholds) {
 function resolveExpectedPack(packs, expected) {
   let matches;
   if (typeof expected === 'string') {
-    matches = packs.filter((pack) => pack.locale === expected);
+    const value = expected.trim();
+    matches = packs.filter((pack) => pack.locale === value);
+    if (matches.length === 0) {
+      const language = value.split('-')[0].toLowerCase();
+      if (/^[a-z]{2,8}$/.test(language)) {
+        matches = packs.filter((pack) => (
+          pack.scope === 'language' && pack.language === language && pack.locale === null
+        ));
+      }
+    }
   } else if (expected && typeof expected === 'object') {
     const allowedFields = new Set([
       'calibrationManifestSha256',

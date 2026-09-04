@@ -1,3 +1,4 @@
+import io
 import math
 from pathlib import Path
 
@@ -12,7 +13,15 @@ class FasterWhisperEngine:
         self.model = WhisperModel(str(model_path), device="cpu", compute_type="int8", local_files_only=True)
 
     def infer(self, audio_path):
-        segments, info = self.model.transcribe(str(Path(audio_path)), beam_size=5, vad_filter=True)
+        return self._transcribe(str(Path(audio_path)))
+
+    def infer_source_audio_bytes(self, audio_bytes):
+        if not isinstance(audio_bytes, bytes) or not audio_bytes:
+            raise ValueError("SOURCE_AUDIO_ASR_INVALID")
+        return self._transcribe(io.BytesIO(audio_bytes))
+
+    def _transcribe(self, audio_input):
+        segments, info = self.model.transcribe(audio_input, beam_size=5, vad_filter=True)
         evidence_segments = []
         for segment in segments:
             text = getattr(segment, "text", "").strip()
@@ -83,3 +92,9 @@ def _raw_probability(value):
     if not math.isfinite(value) or value < 0.0 or value > 1.0:
         return None
     return value
+
+
+def build_source_audio_clusterer(*, threshold=0.82):
+    from .source_evidence import MfccSpeakerClusterer
+
+    return MfccSpeakerClusterer(threshold=threshold)

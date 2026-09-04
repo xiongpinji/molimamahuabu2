@@ -51,6 +51,11 @@ const {
   assertVideoConditioningCapability,
 } = require('../src/services/redrawGenerationService');
 const redrawReviewService = require('../src/services/redrawReviewService');
+const redrawBillingService = require('../src/services/redrawBillingService');
+const {
+  compileShotProductionPack,
+  productionPackHash,
+} = require('../src/services/redrawShotProductionPackService');
 
 const log = { info() {}, warn() {}, error() {} };
 const FEITUO_FAST_MODEL = 'sdas-my-seedance-2.0-fast-upscaled-1080p';
@@ -1594,6 +1599,321 @@ function addVerifiedGenerationCapability(db, model, overrides = {}) {
   return configId;
 }
 
+function installBlueprintFirstProductionPack(state, shotId) {
+  const blueprint = {
+    schema_version: 'episode-blueprint-v1',
+    characters: [{ id: 'character-lead', source_name: '小满', role: 'courier' }],
+    shots: [{
+      id: 'shot-1',
+      start_ms: 0,
+      end_ms: 5000,
+      duration_ms: 5000,
+      composition: 'medium shot by the loading dock',
+      camera_movement: 'slow push in',
+      continuous_action: 'Mateo answers and keeps walking.',
+      character_ids: ['character-lead'],
+      dialogue: [{
+        id: 'dialogue-1',
+        speaker_id: 'character-lead',
+        source_text: '我回来了。',
+        start_ms: 500,
+        end_ms: 2500,
+      }],
+    }],
+    review: { status: 'locked' },
+  };
+  blueprint.blueprint_hash = crypto.createHash('sha256').update(stableJson(blueprint)).digest('hex');
+  const localization = {
+    schema_version: 'episode-localization-v1',
+    blueprint_hash: blueprint.blueprint_hash,
+    locale: 'en-US',
+    market: 'US',
+    character_name_map: { 'character-lead': 'Mateo' },
+    dialogue_map: [{
+      source_dialogue_id: 'dialogue-1',
+      shot_id: 'shot-1',
+      speaker_id: 'character-lead',
+      source_text: '我回来了。',
+      target_text: 'I am back.',
+      start_ms: 500,
+      end_ms: 2500,
+    }],
+    text_region_map: [],
+    cultural_adaptations: [],
+    glossary: [],
+    locked_terms: [],
+    review: { status: 'locked' },
+  };
+  localization.localization_hash = crypto.createHash('sha256').update(stableJson(localization)).digest('hex');
+  state.db.prepare(`INSERT INTO redraw_episode_blueprints
+    (work_id, tenant_id, user_id, revision, status, blueprint_json, blueprint_hash,
+     evidence_manifest_json, created_at, updated_at)
+    VALUES (?, 'tenant-a', 'user-a', 2, 'locked', ?, ?, '{}', ?, ?)`)
+    .run(state.workId, JSON.stringify(blueprint), blueprint.blueprint_hash, state.now, state.now);
+  state.db.prepare(`UPDATE redraw_versions
+    SET version = 2, locale = 'en-US', market = 'US', blueprint_hash = ?, localization_hash = ?,
+        localization_review_json = ?, reference_bundle_required = 0, status = 'ready_to_generate'
+    WHERE id = ?`)
+    .run(blueprint.blueprint_hash, localization.localization_hash, JSON.stringify(localization), state.versionId);
+  state.db.prepare('UPDATE redraw_works SET current_version = 2 WHERE id = ?').run(state.workId);
+  state.db.prepare(`UPDATE redraw_shots
+    SET shot_id = 'shot-1', start_ms = 0, end_ms = 5000, duration_ms = 5000,
+        source_dialogue_json = ?, preparation_snapshot_json = '{}'
+    WHERE id = ?`).run(JSON.stringify(blueprint.shots[0].dialogue), shotId);
+  const shot = state.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(shotId);
+  const pack = compileShotProductionPack({
+    shot,
+    blueprint,
+    localization,
+    blueprintHash: blueprint.blueprint_hash,
+    localizationHash: localization.localization_hash,
+  });
+  state.db.prepare(`UPDATE redraw_shots
+    SET compiled_prompt_json = ?, preparation_snapshot_json = ?
+    WHERE id = ?`)
+    .run(JSON.stringify(pack), JSON.stringify({
+      blueprint_hash: pack.blueprint_hash,
+      localization_hash: pack.localization_hash,
+      production_pack_hash: pack.production_pack_hash,
+    }), shotId);
+  return { blueprint, localization, pack };
+}
+
+function writeTamperedSelfConsistentChineseProductionPack(state, shotId) {
+  const row = state.db.prepare('SELECT compiled_prompt_json FROM redraw_shots WHERE id = ?').get(shotId);
+  const pack = JSON.parse(row.compiled_prompt_json);
+  pack.visual_contract.composition = '室内中景 with Mateo';
+  pack.prompt = `${pack.prompt}\nComposition: 室内中景 with Mateo.`;
+  pack.production_pack_hash = productionPackHash(pack);
+  state.db.prepare(`UPDATE redraw_shots
+    SET compiled_prompt_json = ?, preparation_snapshot_json = ?
+    WHERE id = ?`)
+    .run(JSON.stringify(pack), JSON.stringify({
+      blueprint_hash: pack.blueprint_hash,
+      localization_hash: pack.localization_hash,
+      production_pack_hash: pack.production_pack_hash,
+    }), shotId);
+}
+
+test('stale production pack hashes fail closed before provider and credit reserve', async () => {
+  const cases = [
+    ['blueprint hash', (pack) => {
+      pack.blueprint_hash = '1'.repeat(64);
+      pack.production_pack_hash = productionPackHash(pack);
+    }],
+    ['localization hash', (pack) => {
+      pack.localization_hash = '2'.repeat(64);
+      pack.production_pack_hash = productionPackHash(pack);
+    }],
+    ['canonical pack hash', (pack) => {
+      pack.prompt = 'tampered prompt';
+    }],
+  ];
+
+  const originalReserve = redrawBillingService.reserveShotGeneration;
+  let reserveCalls = 0;
+  redrawBillingService.reserveShotGeneration = (...args) => {
+    reserveCalls += 1;
+    return originalReserve(...args);
+  };
+  try {
+    for (const [name, mutate] of cases) {
+      const state = setup();
+      let providerCalls = 0;
+      try {
+        const shotId = addShot(state.db, state.versionId);
+        const { pack } = installBlueprintFirstProductionPack(state, shotId);
+        mutate(pack);
+        state.db.prepare('UPDATE redraw_shots SET compiled_prompt_json = ? WHERE id = ?')
+          .run(JSON.stringify(pack), shotId);
+
+        await assert.rejects(
+          () => generateShot(ctx(state.db, {
+            awaitCompletion: true,
+            videoProcessor: async () => { providerCalls += 1; },
+          }), { shotId }),
+          (error) => error.code === 'REDRAW_PRODUCTION_PACK_STALE',
+          name,
+        );
+        assert.equal(providerCalls, 0, name);
+        assert.equal(reserveCalls, 0, name);
+        assert.equal(count(state.db, 'tenant_usage_reservations'), 0, name);
+        assert.equal(count(state.db, 'video_generations'), 0, name);
+        assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0, name);
+      } finally {
+        state.db.close();
+      }
+    }
+  } finally {
+    redrawBillingService.reserveShotGeneration = originalReserve;
+  }
+});
+
+test('self-consistent production pack with source-language text fails closed before provider credit reserve and task writes', async () => {
+  const state = setup();
+  let providerCalls = 0;
+  const originalReserve = redrawBillingService.reserveShotGeneration;
+  let reserveCalls = 0;
+  redrawBillingService.reserveShotGeneration = (...args) => {
+    reserveCalls += 1;
+    return originalReserve(...args);
+  };
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    installBlueprintFirstProductionPack(state, shotId);
+    writeTamperedSelfConsistentChineseProductionPack(state, shotId);
+
+    await assert.rejects(
+      () => generateShot(ctx(state.db, {
+        awaitCompletion: true,
+        videoProcessor: async () => { providerCalls += 1; },
+      }), { shotId }),
+      (error) => error.code === 'REDRAW_PRODUCTION_PACK_SOURCE_TEXT_REMAINS',
+    );
+    assert.equal(providerCalls, 0);
+    assert.equal(reserveCalls, 0);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+    assert.equal(count(state.db, 'video_generations'), 0);
+    assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+    assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+  } finally {
+    redrawBillingService.reserveShotGeneration = originalReserve;
+    state.db.close();
+  }
+});
+
+test('production pack source-language transaction double-check rejects self-consistent drift before reserve', async () => {
+  const state = setup();
+  let providerCalls = 0;
+  let transactionHookCalls = 0;
+  const originalReserve = redrawBillingService.reserveShotGeneration;
+  let reserveCalls = 0;
+  redrawBillingService.reserveShotGeneration = (...args) => {
+    reserveCalls += 1;
+    return originalReserve(...args);
+  };
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    installBlueprintFirstProductionPack(state, shotId);
+    addVerifiedGenerationCapability(state.db, 'seedance 2.0', { locale: 'en-US', market: 'US' });
+
+    await assert.rejects(
+      () => generateShot(ctx(state.db, {
+        awaitCompletion: true,
+        beforeCreateTransaction() {
+          transactionHookCalls += 1;
+          writeTamperedSelfConsistentChineseProductionPack(state, shotId);
+        },
+        videoProcessor: async () => { providerCalls += 1; },
+      }), { shotId }),
+      (error) => error.code === 'REDRAW_PRODUCTION_PACK_SOURCE_TEXT_REMAINS',
+    );
+    assert.equal(transactionHookCalls, 1);
+    assert.equal(providerCalls, 0);
+    assert.equal(reserveCalls, 0);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+    assert.equal(count(state.db, 'video_generations'), 0);
+    assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+    assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+  } finally {
+    redrawBillingService.reserveShotGeneration = originalReserve;
+    state.db.close();
+  }
+});
+
+test('stale production pack preparation snapshot fails closed before provider credit reserve and task writes', async () => {
+  const cases = [
+    ['snapshot blueprint hash', (snapshot) => { snapshot.blueprint_hash = '1'.repeat(64); }],
+    ['snapshot localization hash', (snapshot) => { snapshot.localization_hash = '2'.repeat(64); }],
+    ['snapshot production pack hash', (snapshot) => { snapshot.production_pack_hash = '3'.repeat(64); }],
+    ['malformed snapshot', () => '{malformed-json'],
+  ];
+
+  const originalReserve = redrawBillingService.reserveShotGeneration;
+  let reserveCalls = 0;
+  redrawBillingService.reserveShotGeneration = (...args) => {
+    reserveCalls += 1;
+    return originalReserve(...args);
+  };
+  try {
+    for (const [name, mutate] of cases) {
+      const state = setup();
+      let providerCalls = 0;
+      try {
+        const shotId = addShot(state.db, state.versionId);
+        installBlueprintFirstProductionPack(state, shotId);
+        const row = state.db.prepare('SELECT preparation_snapshot_json FROM redraw_shots WHERE id = ?').get(shotId);
+        const snapshot = JSON.parse(row.preparation_snapshot_json);
+        const nextSnapshot = mutate(snapshot) || snapshot;
+        state.db.prepare('UPDATE redraw_shots SET preparation_snapshot_json = ? WHERE id = ?')
+          .run(typeof nextSnapshot === 'string' ? nextSnapshot : JSON.stringify(nextSnapshot), shotId);
+
+        await assert.rejects(
+          () => generateShot(ctx(state.db, {
+            awaitCompletion: true,
+            videoProcessor: async () => { providerCalls += 1; },
+          }), { shotId }),
+          (error) => error.code === 'REDRAW_PRODUCTION_PACK_STALE',
+          name,
+        );
+        assert.equal(providerCalls, 0, name);
+        assert.equal(reserveCalls, 0, name);
+        assert.equal(count(state.db, 'tenant_usage_reservations'), 0, name);
+        assert.equal(count(state.db, 'video_generations'), 0, name);
+        assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0, name);
+        assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0, name);
+      } finally {
+        state.db.close();
+      }
+    }
+  } finally {
+    redrawBillingService.reserveShotGeneration = originalReserve;
+  }
+});
+
+test('production pack preparation snapshot transaction double-check rejects drift before reserve', async () => {
+  const state = setup();
+  let providerCalls = 0;
+  let transactionHookCalls = 0;
+  const originalReserve = redrawBillingService.reserveShotGeneration;
+  let reserveCalls = 0;
+  redrawBillingService.reserveShotGeneration = (...args) => {
+    reserveCalls += 1;
+    return originalReserve(...args);
+  };
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    installBlueprintFirstProductionPack(state, shotId);
+    addVerifiedGenerationCapability(state.db, 'seedance 2.0', { locale: 'en-US', market: 'US' });
+
+    await assert.rejects(
+      () => generateShot(ctx(state.db, {
+        awaitCompletion: true,
+        beforeCreateTransaction() {
+          transactionHookCalls += 1;
+          const row = state.db.prepare('SELECT preparation_snapshot_json FROM redraw_shots WHERE id = ?').get(shotId);
+          const snapshot = JSON.parse(row.preparation_snapshot_json);
+          snapshot.production_pack_hash = '4'.repeat(64);
+          state.db.prepare('UPDATE redraw_shots SET preparation_snapshot_json = ? WHERE id = ?')
+            .run(JSON.stringify(snapshot), shotId);
+        },
+        videoProcessor: async () => { providerCalls += 1; },
+      }), { shotId }),
+      (error) => error.code === 'REDRAW_PRODUCTION_PACK_STALE',
+    );
+    assert.equal(transactionHookCalls, 1);
+    assert.equal(providerCalls, 0);
+    assert.equal(reserveCalls, 0);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+    assert.equal(count(state.db, 'video_generations'), 0);
+    assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+    assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+  } finally {
+    redrawBillingService.reserveShotGeneration = originalReserve;
+    state.db.close();
+  }
+});
+
 test('ID9 iCreat verified 模型在 reserve/video row/provider 前以 conditioning unsupported fail closed', async () => {
   const state = setup();
   const model = 'icreat-redraw-video-v1';
@@ -1661,6 +1981,7 @@ test('生成预检和事务双检都向准备门禁传入受信上下文且早�
     assert.equal(created.status, 'processing');
     assert.equal(calls.length, 2);
     assert.deepEqual(reserveRowsAtGate, [0, 0]);
+    assert.deepEqual(calls.map((call) => call.options.shotIds), [[shotId], [shotId]]);
     assert.equal(calls.every((call) => call.options.preparationContext.storageRoot === 'C:\\trusted\\storage'), true);
     assert.equal(calls.every((call) => !Object.prototype.hasOwnProperty.call(call.options.preparationContext, 'rawSecret')), true);
     assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
@@ -1853,6 +2174,7 @@ test('原生对白生成在 reserve 前要求 ready pack、verified native capab
 test('原生对白生成持久化 generate_audio、prompt/dialogue/config/locale pack 快照且强制 ToAPIs 同步音频', async () => {
   const state = setup();
   const originalCallVideoApi = videoClient.callVideoApi;
+  const originalPollVideoTask = videoClient.pollVideoTask;
   let scheduled;
   let captured;
   try {
@@ -1860,6 +2182,10 @@ test('原生对白生成持久化 generate_audio、prompt/dialogue/config/locale
       captured = opts;
       return { task_id: 'provider-native-shot-1', status: 'queued' };
     };
+    videoClient.pollVideoTask = async () => ({
+      indeterminate: true,
+      error: '测试桩：供应商任务仍在处理中',
+    });
     state.db.prepare('DELETE FROM ai_service_configs').run();
     const native = addNativeDialogueCapability(state.db);
     prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
@@ -1902,6 +2228,7 @@ test('原生对白生成持久化 generate_audio、prompt/dialogue/config/locale
     assert.equal(captured.ai_service_config_id, native.configId);
   } finally {
     videoClient.callVideoApi = originalCallVideoApi;
+    videoClient.pollVideoTask = originalPollVideoTask;
     state.db.close();
   }
 });
@@ -5688,8 +6015,20 @@ test('供应商回读已先落 completed 终态时启动 mark 仍安排 shot 与
 test('reference bundle required 的单镜生成使用安全参考包投影且不调用源片 conditioning', async (t) => {
   const state = await setupReferenceBundleGenerationFixture(t);
   let providerCalls = 0;
+  let localeReadyCalls = 0;
   const result = await generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
     videoProcessor: async () => { providerCalls += 1; },
+    localeVerifier: {
+      assertReady(input) {
+        localeReadyCalls += 1;
+        assert.deepEqual(input, { language: 'en', scope: 'language' });
+        return nativePack({
+          id: 'en@1',
+          language: 'en',
+          prompt_language_label: 'English',
+        });
+      },
+    },
   })), { shotId: state.shotId });
 
   assert.equal(result.status, 'processing');
@@ -5719,6 +6058,10 @@ test('reference bundle required 的单镜生成使用安全参考包投影且不
   assert.equal(snapshot.locale, 'en-US');
   assert.equal(video.generate_audio, 1);
   assert.equal(snapshot.generate_audio, true);
+  assert.equal(localeReadyCalls, 1);
+  assert.equal(snapshot.locale_pack, 'en@1');
+  assert.equal(snapshot.dialogue_snapshot_hash, snapshot.reference_bundle.dialogue_script_sha256);
+  assert.match(snapshot.prompt_hash, /^[0-9a-f]{64}$/);
   assert.equal(video.prompt, snapshot.prompt);
   assert.match(snapshot.prompt, /Ethan/);
   assert.match(snapshot.prompt, /Maya/);
@@ -5736,6 +6079,10 @@ test('reference bundle required 的单镜生成使用安全参考包投影且不
     'character-001',
     'character-002',
   ]);
+  assert.deepEqual(snapshot.identity_bindings.map((binding) => binding.target_country), ['US', 'US']);
+  assert.match(snapshot.prompt, /Reference image 1 is the exclusive identity anchor for Ethan/i);
+  assert.match(snapshot.prompt, /target country US/i);
+  assert.match(snapshot.prompt, /Do not replace any character with a different face or apparent ethnicity/i);
   assert.deepEqual(
     snapshot.identity_bindings.map((binding) => binding.identity_pack_sha256),
     JSON.parse(state.db.prepare('SELECT reference_bundle_json FROM redraw_shots WHERE id = ?')
@@ -5756,6 +6103,80 @@ test('reference bundle required 的单镜生成使用安全参考包投影且不
   assert.equal(/[\u3400-\u9fff]/.test(serialized), false);
   assert.equal(serialized.includes('sk-'), false);
   assert.equal(serialized.includes('Authorization'), false);
+});
+
+test('reference bundle 单镜生成只审核目标镜头，不被同版本其他镜头阻断', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  addShot(state.db, state.versionId, {
+    shotIndex: 2,
+    status: 'needs_attention',
+  });
+  const gate = redrawReviewService.evaluateGenerationGate(state.db, state.versionId, {
+    tenantId: 'tenant-a',
+    userId: 'user-a',
+  }, {
+    shotIds: [state.shotId],
+    preparationGate: () => ({
+      ok: false,
+      ready_shot_ids: [state.shotId],
+      missing: [{
+        resource_type: 'shot',
+        resource_id: '2',
+        shot_ids: [2],
+        reason_code: 'preparation_required',
+      }],
+    }),
+  });
+
+  assert.equal(gate.ok, true);
+  assert.deepEqual(gate.missing, []);
+});
+
+test('reference bundle 有声成片语言或对白验证失败时保持 needs_attention 和 held', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  let providerCalls = 0;
+  let validationCalls = 0;
+  let importerCalls = 0;
+  const first = await generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
+    awaitCompletion: true,
+    localeVerifier: {
+      assertReady: () => nativePack({
+        id: 'en@1',
+        language: 'en',
+        prompt_language_label: 'English',
+      }),
+    },
+    videoProcessor: async (db, _log, videoId) => {
+      providerCalls += 1;
+      db.prepare(`UPDATE video_generations
+        SET status = 'completed', provider_task_id = 'provider-reference-bundle-wrong-language',
+            video_url = 'https://cdn.test/reference-bundle-wrong-language.mp4',
+            local_path = 'videos/reference-bundle-wrong-language.mp4'
+        WHERE id = ?`).run(videoId);
+    },
+    artifactVerifier: async () => ({ duration: 5, width: 854, height: 480 }),
+    nativeAudioValidator: async (input) => {
+      validationCalls += 1;
+      assert.equal(input.approvedText, 'Come with me.\nNot without proof.');
+      assert.equal(input.expectedLanguage, 'en');
+      assert.equal(input.localePack.id, 'en@1');
+      const error = new Error('目标语言或批准对白不匹配');
+      error.code = 'REDRAW_NATIVE_AUDIO_WORKER_EVIDENCE_INVALID';
+      throw error;
+    },
+    assetImporter: () => {
+      importerCalls += 1;
+      return { id: 1201 };
+    },
+  })), { shotId: state.shotId });
+
+  assert.equal(first.status, 'needs_attention');
+  assert.equal(providerCalls, 1);
+  assert.equal(validationCalls, 1);
+  assert.equal(importerCalls, 0);
+  assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(state.shotId).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(first.video_generation_id).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(first.reservation_id).status, 'held');
 });
 
 test('reference bundle generation 快照缺失身份包或当前包证据时不复用旧 generation', async (t) => {
@@ -6175,6 +6596,29 @@ test('reference bundle required 默认生产路径允许精确 Fumin Mini 且预
   }
 });
 
+test('reference bundle 默认视频处理器沿用当前一键转绘隔离存储根', async (t) => {
+  const state = await setupReferenceBundleGenerationFixture(t);
+  addFuminMiniCapability(state.db);
+  const originalProcessor = videoService.processVideoGeneration;
+  let capturedRuntime = null;
+  videoService.processVideoGeneration = async (db, _log, videoGenerationId, runtime) => {
+    capturedRuntime = runtime;
+    db.prepare("UPDATE video_generations SET status = 'failed', error_msg = 'test stop' WHERE id = ?")
+      .run(videoGenerationId);
+  };
+  t.after(() => { videoService.processVideoGeneration = originalProcessor; });
+
+  const result = await generateShot(ctx(state.db, referenceBundleGenerationDeps(state, {
+    resolveVideoConditioningCapability: undefined,
+    videoProcessor: undefined,
+    awaitCompletion: true,
+  })), { shotId: state.shotId });
+
+  assert.equal(result.status, 'failed');
+  assert.equal(capturedRuntime.storageLocalPath, state.storageRoot);
+  assert.equal(capturedRuntime.storageBaseUrl, 'https://media.example.test/static');
+});
+
 test('reference bundle required 缺失或漂移时在冻结积分和建视频前失败', async (t) => {
   await assertReferenceBundleGenerationRejects(
     t,
@@ -6569,6 +7013,110 @@ test('auto 当前 processing 精确重放复用，改变服务端参数也不能
     assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
     assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 1);
     assert.equal(count(state.db, 'video_generations'), 1);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('blueprint-first 逐镜生产包哈希漂移时在 reservation task video 和 provider 前 fail closed', async () => {
+  const state = setup();
+  try {
+    const blueprint = {
+      schema_version: 'episode-blueprint-v1',
+      characters: [{ id: 'character-lead', source_name: '小满', role: 'courier' }],
+      shots: [{
+        id: 'shot-1',
+        start_ms: 0,
+        end_ms: 5000,
+        duration_ms: 5000,
+        composition: 'medium shot by the loading dock',
+        camera_movement: 'slow push in',
+        continuous_action: 'Mateo answers and keeps walking.',
+        character_ids: ['character-lead'],
+        dialogue: [{
+          id: 'dialogue-1',
+          speaker_id: 'character-lead',
+          source_text: '我回来了。',
+          start_ms: 500,
+          end_ms: 2500,
+        }],
+      }],
+      review: { status: 'locked' },
+    };
+    blueprint.blueprint_hash = crypto.createHash('sha256').update(stableJson(blueprint)).digest('hex');
+    const localization = {
+      schema_version: 'episode-localization-v1',
+      blueprint_hash: blueprint.blueprint_hash,
+      locale: 'en-US',
+      market: 'US',
+      character_name_map: { 'character-lead': 'Mateo' },
+      dialogue_map: [{
+        source_dialogue_id: 'dialogue-1',
+        shot_id: 'shot-1',
+        speaker_id: 'character-lead',
+        source_text: '我回来了。',
+        target_text: 'I am back.',
+        start_ms: 500,
+        end_ms: 2500,
+      }],
+      text_region_map: [],
+      cultural_adaptations: [],
+      glossary: [],
+      locked_terms: [],
+      review: { status: 'locked' },
+    };
+    localization.localization_hash = crypto.createHash('sha256').update(stableJson(localization)).digest('hex');
+    state.db.prepare(`INSERT INTO redraw_episode_blueprints
+      (work_id, tenant_id, user_id, revision, status, blueprint_json, blueprint_hash,
+       evidence_manifest_json, created_at, updated_at)
+      VALUES (?, 'tenant-a', 'user-a', 2, 'locked', ?, ?, '{}', ?, ?)`)
+      .run(state.workId, JSON.stringify(blueprint), blueprint.blueprint_hash, state.now, state.now);
+    state.db.prepare(`UPDATE redraw_versions
+      SET version = 2, locale = 'en-US', market = 'US', blueprint_hash = ?, localization_hash = ?,
+          localization_review_json = ?, reference_bundle_required = 0, status = 'ready_to_generate'
+      WHERE id = ?`)
+      .run(blueprint.blueprint_hash, localization.localization_hash, JSON.stringify(localization), state.versionId);
+    state.db.prepare('UPDATE redraw_works SET current_version = 2 WHERE id = ?').run(state.workId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      source_dialogue_json: JSON.stringify(blueprint.shots[0].dialogue),
+      references: [],
+      status: 'draft',
+    });
+    state.db.prepare(`UPDATE redraw_shots
+      SET shot_id = 'shot-1', preparation_snapshot_json = '{}'
+      WHERE id = ?`).run(shotId);
+    const shot = state.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(shotId);
+    const pack = compileShotProductionPack({
+      shot,
+      blueprint,
+      localization,
+      blueprintHash: blueprint.blueprint_hash,
+      localizationHash: localization.localization_hash,
+    });
+    state.db.prepare(`UPDATE redraw_shots
+      SET compiled_prompt_json = ?, preparation_snapshot_json = ?
+      WHERE id = ?`)
+      .run(JSON.stringify(pack), JSON.stringify({
+        blueprint_hash: pack.blueprint_hash,
+        localization_hash: pack.localization_hash,
+        production_pack_hash: pack.production_pack_hash,
+      }), shotId);
+    state.db.prepare('UPDATE redraw_versions SET localization_hash = ? WHERE id = ?')
+      .run('c'.repeat(64), state.versionId);
+    let providerCalls = 0;
+    await assert.rejects(
+      () => generateShot(ctx(state.db, {
+        schedule() {},
+        videoProcessor: async () => { providerCalls += 1; },
+      }), { shotId }),
+      (error) => error.code === 'REDRAW_PRODUCTION_PACK_STALE',
+    );
+    assert.equal(providerCalls, 0);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+    assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+    assert.equal(count(state.db, 'video_generations'), 0);
+    assert.equal(state.db.prepare('SELECT video_generation_id FROM redraw_shots WHERE id = ?').get(shotId).video_generation_id, null);
   } finally {
     state.db.close();
   }

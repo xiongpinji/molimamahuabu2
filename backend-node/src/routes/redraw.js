@@ -11,6 +11,7 @@ const redrawUploadService = require('../services/redrawUploadService');
 const redrawCapabilityService = require('../services/redrawCapabilityService');
 const redrawOrchestrator = require('../services/redrawOrchestrator');
 const redrawLocalizationOrchestrator = require('../services/redrawLocalizationOrchestrator');
+const localizationService = require('../services/localizationService');
 const redrawAssetService = require('../services/redrawAssetService');
 const redrawReviewService = require('../services/redrawReviewService');
 const redrawCharacterIdentityService = require('../services/redrawCharacterIdentityService');
@@ -23,7 +24,10 @@ const redrawDialogueOrchestrator = require('../services/redrawDialogueOrchestrat
 const redrawVoiceService = require('../services/redrawVoiceService');
 const redrawCompositionService = require('../services/redrawCompositionService');
 const redrawExportService = require('../services/redrawExportService');
+const redrawSourceAudioEvidenceService = require('../services/redrawSourceAudioEvidenceService');
 const redrawNativeSourceAnalysisService = require('../services/redrawNativeSourceAnalysisService');
+const redrawEvidenceFusionService = require('../services/redrawEvidenceFusionService');
+const redrawBlueprintWorkflowService = require('../services/redrawBlueprintWorkflowService');
 const redrawProjectPolicyService = require('../services/redrawProjectPolicyService');
 const redrawWorkflowEventService = require('../services/redrawWorkflowEventService');
 const redrawCharacterPlanService = require('../services/redrawCharacterPlanService');
@@ -479,12 +483,24 @@ function billingPayload(value) {
   };
 }
 
-function workflowPhase(work, analysisTask, localizationTask, assetBatch) {
+function localizationReviewStatus(version) {
+  const localization = parseJSON(version?.localization_review_json, null);
+  if (!localization || localization.schema_version !== 'episode-localization-v1') return '';
+  const status = String(localization.review?.status || '').trim().toLowerCase();
+  return ['review', 'needs_review', 'locked'].includes(status) ? status : '';
+}
+
+function workflowPhase(work, analysisTask, localizationTask, assetBatch, currentVersion) {
   if (Number(work?.current_step) >= 3) return 'video_generation';
   if (['pending', 'processing'].includes(String(assetBatch?.status || ''))) return 'asset_generating';
   if (Number(work?.current_step) === 2) return 'asset_review';
   if (['pending', 'processing'].includes(String(localizationTask?.status || ''))) return 'localizing';
   if (String(localizationTask?.status || '') === 'needs_attention') return 'localization_needs_attention';
+  if (String(localizationTask?.status || '') === 'completed'
+    && String(currentVersion?.status || '') === 'needs_review'
+    && ['review', 'needs_review'].includes(localizationReviewStatus(currentVersion))) {
+    return 'localization_review';
+  }
   if (String(analysisTask?.status || '') === 'completed') return 'analysis_review';
   if (['pending', 'processing'].includes(String(analysisTask?.status || ''))) return 'analyzing';
   return 'source';
@@ -520,6 +536,137 @@ function codedRouteError(code, message, details) {
   error.code = code;
   if (details !== undefined) error.details = details;
   return error;
+}
+
+const BLUEPRINT_SAVE_FIELDS = new Set(['expected_updated_at', 'blueprint']);
+const BLUEPRINT_LOCK_FIELDS = new Set(['expected_blueprint_hash', 'expected_updated_at']);
+const LOCALIZATION_REVIEW_SAVE_FIELDS = new Set(['expected_updated_at', 'localization']);
+const LOCALIZATION_REVIEW_LOCK_FIELDS = new Set([
+  'blueprint_hash', 'expected_localization_hash', 'expected_updated_at',
+]);
+
+function exactBlueprintBody(body, fields) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw codedRouteError('REDRAW_BLUEPRINT_INPUT_INVALID', '母本蓝图请求体无效');
+  }
+  const prototype = Object.getPrototypeOf(body);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw codedRouteError('REDRAW_BLUEPRINT_FORBIDDEN_FIELD', '母本蓝图请求不允许继承字段');
+  }
+  for (const key in body) {
+    if (!Object.prototype.hasOwnProperty.call(body, key)) {
+      throw codedRouteError('REDRAW_BLUEPRINT_FORBIDDEN_FIELD', '母本蓝图请求不允许继承字段');
+    }
+  }
+  if (Object.keys(body).length !== fields.size
+    || Object.keys(body).some((key) => !fields.has(key))) {
+    throw codedRouteError('REDRAW_BLUEPRINT_FORBIDDEN_FIELD', '母本蓝图请求字段无效');
+  }
+  return body;
+}
+
+function blueprintSaveInput(body) {
+  const input = exactBlueprintBody(body, BLUEPRINT_SAVE_FIELDS);
+  if (typeof input.expected_updated_at !== 'string' || !input.expected_updated_at.trim()) {
+    throw codedRouteError('REDRAW_BLUEPRINT_INPUT_INVALID', 'expected_updated_at 必填');
+  }
+  if (!input.blueprint || typeof input.blueprint !== 'object' || Array.isArray(input.blueprint)) {
+    throw codedRouteError('REDRAW_BLUEPRINT_INPUT_INVALID', 'blueprint 必须是对象');
+  }
+  redrawBlueprintWorkflowService.assertSafeBlueprintValue(input.blueprint);
+  return {
+    expectedUpdatedAt: input.expected_updated_at.trim(),
+    blueprint: input.blueprint,
+  };
+}
+
+function blueprintLockInput(body) {
+  const input = exactBlueprintBody(body, BLUEPRINT_LOCK_FIELDS);
+  const hash = typeof input.expected_blueprint_hash === 'string'
+    ? input.expected_blueprint_hash.trim() : '';
+  const updatedAt = typeof input.expected_updated_at === 'string'
+    ? input.expected_updated_at.trim() : '';
+  if (!/^[a-f0-9]{64}$/.test(hash) || !updatedAt) {
+    throw codedRouteError('REDRAW_BLUEPRINT_INPUT_INVALID', '蓝图锁定 CAS 参数无效');
+  }
+  return { expectedBlueprintHash: hash, expectedUpdatedAt: updatedAt };
+}
+
+function exactLocalizationReviewBody(body, fields) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw codedRouteError('LOCALIZATION_INPUT_INVALID', '本地化审核请求体无效');
+  }
+  const prototype = Object.getPrototypeOf(body);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw codedRouteError('LOCALIZATION_INPUT_INVALID', '本地化审核请求体无效');
+  }
+  for (const key in body) {
+    if (!Object.prototype.hasOwnProperty.call(body, key)) {
+      throw codedRouteError('LOCALIZATION_INPUT_INVALID', '本地化审核请求体无效');
+    }
+  }
+  if (Object.keys(body).length !== fields.size
+    || Object.keys(body).some((key) => !fields.has(key))) {
+    throw codedRouteError('LOCALIZATION_INPUT_INVALID', '本地化审核请求字段无效');
+  }
+  return body;
+}
+
+function localizationReviewSaveInput(body) {
+  const input = exactLocalizationReviewBody(body, LOCALIZATION_REVIEW_SAVE_FIELDS);
+  const expectedUpdatedAt = typeof input.expected_updated_at === 'string'
+    ? input.expected_updated_at.trim() : '';
+  if (!expectedUpdatedAt || !input.localization || typeof input.localization !== 'object'
+    || Array.isArray(input.localization)) {
+    throw codedRouteError('LOCALIZATION_INPUT_INVALID', '本地化审核 CAS 参数无效');
+  }
+  localizationService.assertSafeLocalizationReviewValue(input.localization);
+  return { expectedUpdatedAt, localization: input.localization };
+}
+
+function localizationReviewLockInput(body) {
+  const input = exactLocalizationReviewBody(body, LOCALIZATION_REVIEW_LOCK_FIELDS);
+  const blueprintHash = typeof input.blueprint_hash === 'string' ? input.blueprint_hash.trim() : '';
+  const expectedLocalizationHash = typeof input.expected_localization_hash === 'string'
+    ? input.expected_localization_hash.trim() : '';
+  const expectedUpdatedAt = typeof input.expected_updated_at === 'string'
+    ? input.expected_updated_at.trim() : '';
+  if (!/^[a-f0-9]{64}$/.test(blueprintHash)
+    || !/^[a-f0-9]{64}$/.test(expectedLocalizationHash)
+    || !expectedUpdatedAt) {
+    throw codedRouteError('LOCALIZATION_INPUT_INVALID', '本地化锁定 CAS 参数无效');
+  }
+  return { blueprintHash, expectedLocalizationHash, expectedUpdatedAt };
+}
+
+function publicBlueprintRecord(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return Object.fromEntries([
+    'id', 'work_id', 'revision', 'status', 'blueprint_hash', 'blueprint',
+    'evidence_manifest', 'reviewed_by', 'reviewed_at', 'created_at', 'updated_at',
+  ].filter((key) => Object.prototype.hasOwnProperty.call(source, key))
+    .map((key) => [key, source[key]]));
+}
+
+function sendBlueprintError(res, error, log, context = {}) {
+  const code = String(error?.code || '');
+  if (code === 'REDRAW_BLUEPRINT_NOT_FOUND') {
+    return response.error(res, 404, code, '母本蓝图不存在');
+  }
+  if (code === 'REDRAW_BLUEPRINT_INPUT_INVALID'
+    || code === 'REDRAW_BLUEPRINT_FORBIDDEN_FIELD') {
+    return response.error(res, 400, code, '母本蓝图请求无效');
+  }
+  if (code === 'REDRAW_BLUEPRINT_CAS_CONFLICT'
+    || code === 'REDRAW_BLUEPRINT_LOCKED'
+    || code === 'REDRAW_BLUEPRINT_HASH_CONFLICT'
+    || code === 'REDRAW_BLUEPRINT_HASH_MISMATCH'
+    || code === 'REDRAW_BLUEPRINT_VERSION_ALREADY_BOUND'
+    || code.startsWith('BLUEPRINT_')) {
+    return response.error(res, 409, code, '母本蓝图尚未通过当前锁定门禁');
+  }
+  log?.error?.({ code: 'INTERNAL_ERROR', ...context }, '母本蓝图审核失败');
+  return response.error(res, 500, 'INTERNAL_ERROR', '母本蓝图审核失败');
 }
 
 function assertReferenceArtifactFields(body, allowed) {
@@ -1747,7 +1894,8 @@ function sendLocalizationError(res, error, fallbackMessage, log, context = {}) {
   const details = error?.quote
     ? { ...(error?.details || {}), quote: error.quote }
     : error?.details;
-  if (code === 'REDRAW_LOCALIZATION_WORK_NOT_FOUND') {
+  if (code === 'REDRAW_LOCALIZATION_WORK_NOT_FOUND'
+    || code === 'LOCALIZATION_NOT_FOUND') {
     return response.error(res, 404, code, error.message || fallbackMessage, details);
   }
   if (code === 'INSUFFICIENT_CREDITS') {
@@ -1758,13 +1906,20 @@ function sendLocalizationError(res, error, fallbackMessage, log, context = {}) {
     'REDRAW_LOCALIZATION_CAPABILITY_UNVERIFIED',
     'REDRAW_LOCALIZATION_QUOTE_CHANGED',
     'REDRAW_LOCALIZATION_IDEMPOTENCY_CONFLICT',
+    'LOCALIZATION_CAS_CONFLICT',
+    'LOCALIZATION_LOCKED',
+    'LOCALIZATION_HASH_MISMATCH',
+    'LOCALIZATION_REVIEW_REQUIRED',
+    'BLUEPRINT_NOT_LOCKED',
+    'BLUEPRINT_HASH_MISMATCH',
   ].includes(code)) {
     return response.error(res, 409, code, error.message || fallbackMessage, details);
   }
   if (code === 'REDRAW_LOCALIZATION_CLIENT_CONTROL_FORBIDDEN') {
     return response.error(res, 400, code, error.message || fallbackMessage, details);
   }
-  if (code.startsWith('REDRAW_LOCALIZATION') || code.startsWith('REDRAW_')) {
+  if (code.startsWith('REDRAW_LOCALIZATION') || code.startsWith('REDRAW_')
+    || code.startsWith('LOCALIZATION_')) {
     return response.error(res, 400, code, error.message || fallbackMessage, details);
   }
   log?.error?.({ err: error, ...context }, fallbackMessage);
@@ -1869,6 +2024,8 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   const uploadService = options.uploadService || redrawUploadService;
   const capabilityService = options.capabilityService || redrawCapabilityService;
   const orchestrator = options.orchestrator || redrawOrchestrator;
+  const blueprintWorkflowService = options.blueprintWorkflowService
+    || redrawBlueprintWorkflowService;
   const shotService = options.shotService || redrawShotService;
   const generationService = options.generationService || redrawGenerationService;
   const referenceBundleService = options.referenceBundleService || redrawReferenceBundleService;
@@ -1877,6 +2034,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   const referencePreparationService = options.referencePreparationService
     || redrawReferencePreparationOrchestrator;
   const localizationOrchestrator = options.localizationOrchestrator || redrawLocalizationOrchestrator;
+  const localizationReviewService = options.localizationReviewService || localizationService;
   const assetBatchService = options.assetBatchService || {
     quoteAssetBatch: (ctx, input) => redrawAssetBatchService.quoteAssetBatch(db, { ...ctx, ...input }),
     startAssetBatch: (ctx, input) => redrawAssetBatchService.startAssetBatch(ctx, input, {
@@ -1927,7 +2085,22 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   if (!analysisOptions.assetReader) {
     analysisOptions.assetReader = redrawOrchestrator.createAssetReader({ storageRoot: uploadLimits.storageRoot });
   }
-  if (!analysisOptions.provider) {
+  if (!analysisOptions.provider && !options.nativeSourceAnalysis) {
+    analysisOptions.sourceAudioEvidenceService = options.sourceAudioEvidenceService
+      || redrawSourceAudioEvidenceService;
+    analysisOptions.nativeSourceAnalysisService = options.nativeSourceAnalysisService
+      || redrawNativeSourceAnalysisService;
+    analysisOptions.evidenceFusionService = options.evidenceFusionService
+      || redrawEvidenceFusionService;
+    analysisOptions.analysisContext = {
+      storageRoot: uploadLimits.storageRoot,
+      assetService: options.assetService || assetService,
+      visionDetailed: options.visionDetailed,
+      serviceType: options.nativeAnalysisServiceType || 'video_understanding',
+      workerClient: options.sourceAudioWorkerClient || options.localeVerifier,
+      ...(analysisOptions.analysisContext || {}),
+    };
+  } else if (!analysisOptions.provider) {
     const nativeSourceAnalysis = options.nativeSourceAnalysis
       || redrawNativeSourceAnalysisService.analyzeNativeSource;
     analysisOptions.provider = {
@@ -2501,6 +2674,16 @@ module.exports = function redrawRoutes(db, log, options = {}) {
 
   function findCurrentPromotedVersionForWork(work, currentOwner) {
     const versionNumber = Number(work.current_version);
+    const localizationReview = Number.isSafeInteger(versionNumber) && versionNumber > 0
+      ? db.prepare(`
+        SELECT * FROM redraw_versions
+        WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+          AND version = ? AND COALESCE(localization_review_json, '') != ''
+          AND COALESCE(status, '') != 'draft' AND deleted_at IS NULL
+        LIMIT 1
+      `).get(work.id, currentOwner.tenantId, currentOwner.userId, versionNumber)
+      : null;
+    if (localizationReview) return localizationReview;
     const exact = Number.isSafeInteger(versionNumber) && versionNumber > 0
       ? db.prepare(`
         SELECT * FROM redraw_versions
@@ -3361,6 +3544,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
         userId: currentOwner.userId,
       });
       const localizationDecision = publicLocalizationDecision(localizationTask, currentVersion, project);
+      const reviewStatus = localizationReviewStatus(currentVersion);
       const projectedWork = { ...work };
       projectedWork.current_version = currentVersion ? Number(currentVersion.version) : 0;
       if (
@@ -3384,8 +3568,9 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
         }),
         analysis_task: publicTask(analysisTask),
         localization_task: publicTask(localizationTask),
+        localization_review_status: reviewStatus || null,
         asset_batch: publicAssetBatch(assetBatch),
-        workflow_phase: workflowPhase(projectedWork, analysisTask, localizationTask, assetBatch),
+        workflow_phase: workflowPhase(projectedWork, analysisTask, localizationTask, assetBatch, currentVersion),
         analysis_billing: analysisBilling(work, currentOwner),
         localization_billing: localizationBilling(work, localizationTask, currentOwner),
         reference_bundle_required: Number(currentVersion?.reference_bundle_required || 0) === 1,
@@ -3589,17 +3774,32 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     }
   }
 
+  function generationPreparationContext() {
+    const storageRoot = storageRootFromConfig(cfg);
+    return {
+      storageRoot,
+      canReadArtifact,
+      assetReader: {
+        canRead: (row) => Boolean(row && canReadArtifact(row.id)),
+        owns: (row) => Boolean(row && canReadArtifact(row.id)),
+      },
+    };
+  }
+
   function generationContext(currentOwner) {
+    const preparationContext = generationPreparationContext();
+    const { storageRoot } = preparationContext;
     const storageBaseUrl = storageBaseUrlFromConfig(cfg);
     const staticAssetSigningSecret = options.staticAssetSigningSecret ?? process.env.PLATFORM_JWT_SECRET;
     return {
-      storageRoot: storageRootFromConfig(cfg),
+      storageRoot,
       storageBaseUrl,
       providerAssetSecret: options.providerAssetSecret ?? process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET,
       staticAssetSigningSecret,
       createReferenceUrl: createProductionReferenceUrlFactory(db, cfg, canReadArtifact, {
         staticAssetSigningSecret,
       }),
+      preparationContext,
       ...(options.generationOptions || {}),
       db,
       log,
@@ -3766,6 +3966,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
           provider: options.localizationProvider,
           schedule: options.localizationSchedule,
           canReadArtifact,
+          validateTargetText: options.localizationLanguageGate,
         },
       );
       const versionId = result.version_id ?? result.draft_version_id ?? null;
@@ -3843,6 +4044,53 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
       else if (typeof res.destroy === 'function') res.destroy();
     });
     return stream.pipe(res);
+  }
+
+  function getLocalizationReview(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.error(res, 404, 'LOCALIZATION_NOT_FOUND', '本地化审核不存在');
+    try {
+      return response.success(res, localizationReviewService.getLocalizationReview(
+        db, currentOwner, Number(version.id),
+      ));
+    } catch (error) {
+      return sendLocalizationError(res, error, '读取本地化审核失败', log, { versionId: version.id });
+    }
+  }
+
+  function saveLocalizationReview(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.error(res, 404, 'LOCALIZATION_NOT_FOUND', '本地化审核不存在');
+    try {
+      const input = localizationReviewSaveInput(req.body);
+      return response.success(res, localizationReviewService.saveLocalizationReview(
+        db,
+        currentOwner,
+        Number(version.id),
+        { ...input, validateTargetText: options.localizationLanguageGate },
+      ));
+    } catch (error) {
+      return sendLocalizationError(res, error, '保存本地化审核失败', log, { versionId: version.id });
+    }
+  }
+
+  function lockLocalizationReview(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.error(res, 404, 'LOCALIZATION_NOT_FOUND', '本地化审核不存在');
+    try {
+      const input = localizationReviewLockInput(req.body);
+      return response.success(res, localizationReviewService.lockLocalizationReview(
+        db,
+        currentOwner,
+        Number(version.id),
+        { ...input, validateTargetText: options.localizationLanguageGate },
+      ));
+    } catch (error) {
+      return sendLocalizationError(res, error, '锁定本地化审核失败', log, { versionId: version.id });
+    }
   }
 
   async function registerLocalProductionVoice(req, res) {
@@ -4776,14 +5024,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     const currentOwner = owner(req);
     try {
       return response.success(res, redrawReviewService.evaluateGenerationGate(db, req.params.id, currentOwner, {
-        preparationContext: {
-          storageRoot: storageRootFromConfig(cfg),
-          canReadArtifact,
-          assetReader: {
-            canRead: (row) => Boolean(row && canReadArtifact(row.id)),
-            owns: (row) => Boolean(row && canReadArtifact(row.id)),
-          },
-        },
+        preparationContext: generationPreparationContext(),
       }));
     } catch (error) {
       if (error.code === 'REDRAW_VERSION_NOT_FOUND') return response.notFound(res, '本地化版本不存在');
@@ -5133,6 +5374,11 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
         current_step: Number(result.current_step || 1),
         status: result.status || 'processing',
         facts_hash: result.facts_hash || null,
+        blueprint_hash: result.blueprint_hash || null,
+        blueprint_revision: result.blueprint_revision || null,
+        blueprint_updated_at: result.blueprint_updated_at || null,
+        review_status: result.review_status || null,
+        blueprint: result.blueprint || null,
       });
     } catch (error) {
       cleanupReferenceImage(db, log, referenceAsset, uploadLimits.storageRoot);
@@ -5146,6 +5392,53 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
       if (error.code === 'INVALID_REDRAW_ANALYSIS_SETTINGS') return response.badRequest(res, error.message);
       log?.error?.({ err: error, workId: req.params.id }, 'redraw analyze work failed');
       return response.internalError(res, error.message || '提交转绘分析失败');
+    }
+  }
+
+  function getBlueprint(req, res) {
+    const currentOwner = owner(req);
+    const work = findOwnedWork(req.params.id, currentOwner);
+    if (!work) {
+      return response.error(res, 404, 'REDRAW_BLUEPRINT_NOT_FOUND', '母本蓝图不存在');
+    }
+    try {
+      return response.success(res, publicBlueprintRecord(
+        blueprintWorkflowService.getCurrentBlueprint({ db, ...currentOwner }, { workId: work.id }),
+      ));
+    } catch (error) {
+      return sendBlueprintError(res, error, log, { workId: work.id });
+    }
+  }
+
+  function saveBlueprint(req, res) {
+    const currentOwner = owner(req);
+    const work = findOwnedWork(req.params.id, currentOwner);
+    if (!work) {
+      return response.error(res, 404, 'REDRAW_BLUEPRINT_NOT_FOUND', '母本蓝图不存在');
+    }
+    try {
+      const input = blueprintSaveInput(req.body);
+      return response.success(res, publicBlueprintRecord(
+        blueprintWorkflowService.saveDraft({ db, ...currentOwner }, { workId: work.id, ...input }),
+      ));
+    } catch (error) {
+      return sendBlueprintError(res, error, log, { workId: work.id });
+    }
+  }
+
+  function lockBlueprint(req, res) {
+    const currentOwner = owner(req);
+    const work = findOwnedWork(req.params.id, currentOwner);
+    if (!work) {
+      return response.error(res, 404, 'REDRAW_BLUEPRINT_NOT_FOUND', '母本蓝图不存在');
+    }
+    try {
+      const input = blueprintLockInput(req.body);
+      return response.success(res, publicBlueprintRecord(
+        blueprintWorkflowService.lockBlueprint({ db, ...currentOwner }, { workId: work.id, ...input }),
+      ));
+    } catch (error) {
+      return sendBlueprintError(res, error, log, { workId: work.id });
     }
   }
 
@@ -5173,6 +5466,9 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     generateBatch,
     localizationQuote,
     createVersion,
+    getLocalizationReview,
+    saveLocalizationReview,
+    lockLocalizationReview,
     registerFullFrameCoverage,
     getCharacterPlan,
     preparationGate,
@@ -5209,6 +5505,9 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     listStylePresets,
     listLocales,
     analyzeWork,
+    getBlueprint,
+    saveBlueprint,
+    lockBlueprint,
   };
 };
 

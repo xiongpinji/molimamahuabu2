@@ -27,6 +27,40 @@ const REDRAW_LIVE_AUTHORITATIVE_VISIBLE_CHARACTER_IDS = Object.freeze({
   'shot-6': Object.freeze(['mateo', 'elena', 'rafael']),
 })
 
+export function normalizeLocalVerifierLocale(request, packLocale = 'en-US') {
+  const raw = typeof request === 'string' ? request : request?.language
+  const requested = String(raw || '').trim()
+  const expected = String(packLocale || '').trim()
+  if (!requested || !expected) return requested
+  if (requested.toLowerCase() === expected.toLowerCase()
+    || requested.toLowerCase() === expected.split('-')[0].toLowerCase()) {
+    return expected
+  }
+  return requested
+}
+
+export function assertPaidAcceptanceLocaleVerifierReady({ localeVerifier, locale = 'en-US' } = {}) {
+  if (!localeVerifier || typeof localeVerifier.assertReady !== 'function') {
+    const error = new Error('REDRAW_LOCALE_VERIFIER_NOT_READY')
+    error.code = 'REDRAW_LOCALE_VERIFIER_NOT_READY'
+    throw error
+  }
+  const normalizedLocale = normalizeLocalVerifierLocale(locale, locale)
+  const language = normalizedLocale.split('-')[0].toLowerCase()
+  try {
+    const pack = localeVerifier.assertReady({ language, scope: 'language' })
+    if (!pack || typeof pack.id !== 'string' || !pack.id.trim()) {
+      throw new Error('REDRAW_LOCALE_VERIFIER_NOT_READY')
+    }
+    return pack
+  } catch (cause) {
+    const error = new Error('REDRAW_LOCALE_VERIFIER_NOT_READY')
+    error.code = 'REDRAW_LOCALE_VERIFIER_NOT_READY'
+    error.cause = cause
+    throw error
+  }
+}
+
 export function buildRedrawLiveProductFixture(testCase, requiredInputs, options = {}) {
   if (!testCase?.source || !Array.isArray(testCase.cast) || !Array.isArray(testCase.sourceFacts?.shots)) {
     throw new Error('approved redraw case is required')
@@ -1311,7 +1345,9 @@ function createRouteOptions({ fixture, derived, counts, tempRoot, storageRoot })
   const cleanProviderSignatures = new Set()
   const localeVerifier = {
     assertReady(locale) {
-      if (locale !== pack.locale) throw new Error('local verifier locale mismatch')
+      if (normalizeLocalVerifierLocale(locale, pack.locale) !== pack.locale) {
+        throw new Error('local verifier locale mismatch')
+      }
       return { ...pack }
     },
     async verifyLocalVoice(input) {
@@ -1335,6 +1371,7 @@ function createRouteOptions({ fixture, derived, counts, tempRoot, storageRoot })
       }
     },
   }
+  assertPaidAcceptanceLocaleVerifierReady({ localeVerifier, locale: pack.locale })
   const localeRegistry = {
     assertReady(request) {
       const locale = typeof request === 'string' ? request : request?.locale

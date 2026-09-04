@@ -5,6 +5,10 @@ from .errors import ProtocolError
 
 SUPPORTED_LOCALE_PACK = "en-US@1"
 SUPPORTED_NATIVE_AUDIO_PACK = "es@1"
+SUPPORTED_NATIVE_AUDIO_PACKS = {
+    "es@1": "es",
+    "en@1": "en",
+}
 HEX_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 REQUIRED_VERIFY_FIELDS = {
     "request_id",
@@ -89,7 +93,7 @@ def _parse_native_audio(value):
         raise ProtocolError("LOCALE_VERIFY_REQUEST_INVALID")
     for key in ("request_id", "audio_path", "approved_text"):
         _require_non_empty_string(value.get(key), "LOCALE_VERIFY_REQUEST_INVALID")
-    if value.get("locale_pack") != SUPPORTED_NATIVE_AUDIO_PACK:
+    if value.get("locale_pack") not in SUPPORTED_NATIVE_AUDIO_PACKS:
         raise ProtocolError("LOCALE_PACK_UNSUPPORTED")
     if not isinstance(value.get("audio_sha256"), str) or not HEX_SHA256_RE.fullmatch(value["audio_sha256"]):
         raise ProtocolError("LOCALE_AUDIO_HASH_INVALID")

@@ -1227,9 +1227,13 @@ function buildGenerationPrompt(bundle, identityBindings) {
     entry.source_character_key,
     entry.target_character_name,
   ]));
-  const characterLines = identityBindings.map((entry) => (
-    `- ${entry.source_character_key}: ${entry.target_character_name}, portrayed by ${entry.target_actor_label}`
-  ));
+  const imageIndexByAsset = new Map();
+  const characterLines = identityBindings.map((entry) => {
+    if (!imageIndexByAsset.has(entry.reference_image_asset_id)) {
+      imageIndexByAsset.set(entry.reference_image_asset_id, imageIndexByAsset.size + 1);
+    }
+    return `- Reference image ${imageIndexByAsset.get(entry.reference_image_asset_id)} is the exclusive identity anchor for ${entry.target_character_name}, portrayed by ${entry.target_actor_label}, target country ${entry.target_country}. Preserve that face, apparent ethnicity, adult age, hair, and wardrobe.`;
+  });
   let dialogueSection;
   if (bundle.dialogue.kind === 'spoken' && bundle.dialogue.speech_required === true) {
     const dialogueLines = bundle.dialogue.turns.map((turn) => {
@@ -1255,6 +1259,8 @@ function buildGenerationPrompt(bundle, identityBindings) {
   return [
     `Create a 1:1 live-action redraw of this short-drama shot for target locale ${targetLocale} and market ${targetMarket}.`,
     'Use the approved fictional AI-generated adult character references and the silent motion reference only.',
+    'Use the motion reference only for action, blocking, framing, and camera movement; never use it as a face or identity source.',
+    'Do not replace any character with a different face or apparent ethnicity.',
     'Keep the same plot beats, blocking, camera framing, pacing, and visible text coverage.',
     `Target locale: ${targetLocale}.`,
     'Character mapping:',
@@ -1297,6 +1303,7 @@ async function projectReferenceBundleForGeneration(rawCtx, shotId) {
       reference_image_asset_id: face.identity.artifact.asset_id,
       redraw_asset_id: face.identity_redraw_asset_id,
       identity_pack_sha256: face.identity_pack_sha256,
+      target_country: face.identity.target_country,
     }));
     return {
       prompt: buildGenerationPrompt(bundle, identityBindings),

@@ -319,23 +319,43 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 NewAPI 六模型生产副本复验补丁获批",
+          "approvedBy": "product-owner 2026-09-03 newapi-six-model-production-copy-remediation",
+          "impactTests": [
+            "backend-node/test/canvasModelCatalogService.test.js",
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/newapiVideo.test.js",
+            "backend-node/test/newapiWan3ConfigInstaller.test.js",
+            "backend-node/test/providerModelSelection.test.js",
+            "backend-node/test/providerPricingSync.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/modelUiProtectionGate.test.js",
+            "frontweb/test/billing-model-groups.test.js",
+            "frontweb/test/filmListCanvasEntry.test.js",
+            "frontweb/test/homeQuickGeneration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 NewAPI 六模型生产副本复验补丁获批",
-        "approvedBy": "product-owner 2026-09-03 newapi-six-model-production-copy-remediation",
+        "reason": "2026-09-03 母本蓝图优先一键转绘任务 1-9 获批",
+        "approvedBy": "product-owner 2026-09-03 episode-blueprint-first-redraw",
         "impactTests": [
-          "backend-node/test/canvasModelCatalogService.test.js",
-          "backend-node/test/modelPrice.test.js",
-          "backend-node/test/newapiVideo.test.js",
-          "backend-node/test/newapiWan3ConfigInstaller.test.js",
-          "backend-node/test/providerModelSelection.test.js",
-          "backend-node/test/providerPricingSync.test.js",
-          "backend-node/test/videoBilling.test.js",
-          "backend-node/test/modelUiProtectionGate.test.js",
-          "frontweb/test/billing-model-groups.test.js",
-          "frontweb/test/filmListCanvasEntry.test.js",
-          "frontweb/test/homeQuickGeneration.test.js",
+          "backend-node/test/redrawEpisodeBlueprint.test.js",
+          "backend-node/test/redrawSourceAudioEvidence.test.js",
+          "backend-node/test/redrawEvidenceFusion.test.js",
+          "backend-node/test/redrawBlueprintWorkflow.test.js",
+          "backend-node/test/redrawLocalization.test.js",
+          "backend-node/test/redrawShotProductionPack.test.js",
+          "backend-node/test/redrawGeneration.test.js",
+          "backend-node/test/redrawRoutes.test.js",
+          "frontweb/e2e/redraw-workspace.spec.js",
+          "frontweb/e2e/redraw-backend-integration.spec.js",
+          "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+          "workers/redraw-locale-verifier/tests/test_source_evidence.py",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -636,6 +656,21 @@
           ]
         },
         {
+          "reason": "2026-09-01 PR #217 Fumin 产品 API 单镜验收前置修复获批",
+          "approvedBy": "product-owner 2026-09-01 pr-217-fumin-product-api-one-shot-acceptance",
+          "impactTests": [
+            "backend-node/test/fuminVideoClient.test.js",
+            "backend-node/test/fuminReferenceAssetService.test.js",
+            "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/redrawGeneration.test.js",
+            "backend-node/test/redrawProviderAdapters.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
           "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
           "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
           "impactTests": [
@@ -672,25 +707,38 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 NewAPI 配置级能力隔离与六模型路由固定获批",
+          "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+          "impactTests": [
+            "backend-node/test/canvasModelCatalogService.test.js",
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/newapiVideo.test.js",
+            "backend-node/test/newapiWan3ConfigInstaller.test.js",
+            "backend-node/test/providerModelSelection.test.js",
+            "backend-node/test/providerPricingSync.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/modelUiProtectionGate.test.js",
+            "frontweb/test/billing-model-groups.test.js",
+            "frontweb/test/filmListCanvasEntry.test.js",
+            "frontweb/test/homeQuickGeneration.test.js",
+            "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+            "frontweb/test/aiConfigProviderPresets.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 NewAPI 配置级能力隔离与六模型路由固定获批",
-        "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+        "reason": "2026-09-04 一键转绘完整主线本地合入最新 main 获批",
+        "approvedBy": "product-owner 2026-09-04 redraw-complete-local-main-merge",
         "impactTests": [
-          "backend-node/test/canvasModelCatalogService.test.js",
-          "backend-node/test/modelPrice.test.js",
-          "backend-node/test/newapiVideo.test.js",
-          "backend-node/test/newapiWan3ConfigInstaller.test.js",
-          "backend-node/test/providerModelSelection.test.js",
-          "backend-node/test/providerPricingSync.test.js",
+          "backend-node/test/fuminVideoClient.test.js",
+          "backend-node/test/fuminReferenceAssetService.test.js",
+          "backend-node/test/videoGenerationRequestSnapshot.test.js",
+          "backend-node/test/redrawGeneration.test.js",
           "backend-node/test/videoBilling.test.js",
-          "backend-node/test/modelUiProtectionGate.test.js",
-          "frontweb/test/billing-model-groups.test.js",
-          "frontweb/test/filmListCanvasEntry.test.js",
-          "frontweb/test/homeQuickGeneration.test.js",
-          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
-          "frontweb/test/aiConfigProviderPresets.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -1042,6 +1090,21 @@
           ]
         },
         {
+          "reason": "2026-09-01 PR #217 Fumin 产品 API 单镜验收前置修复获批",
+          "approvedBy": "product-owner 2026-09-01 pr-217-fumin-product-api-one-shot-acceptance",
+          "impactTests": [
+            "backend-node/test/fuminVideoClient.test.js",
+            "backend-node/test/fuminReferenceAssetService.test.js",
+            "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/redrawGeneration.test.js",
+            "backend-node/test/redrawProviderAdapters.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
           "reason": "2026-09-02 画布充值入口与登录限流修复获批",
           "approvedBy": "product-owner 2026-09-02 canvas-billing-login-rate-limit",
           "impactTests": [
@@ -1109,16 +1172,29 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 NewAPI 计费只读生产预检兼容修复获批",
+          "approvedBy": "product-owner 2026-09-03 newapi-readonly-preflight-compat",
+          "impactTests": [
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/productionPreflight.test.js",
+            "backend-node/test/providerPricingSync.test.js",
+            "backend-node/test/modelUiProtectionGate.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 NewAPI 计费只读生产预检兼容修复获批",
-        "approvedBy": "product-owner 2026-09-03 newapi-readonly-preflight-compat",
+        "reason": "2026-09-04 一键转绘完整主线本地合入最新 main 获批",
+        "approvedBy": "product-owner 2026-09-04 redraw-complete-local-main-merge",
         "impactTests": [
-          "backend-node/test/modelPrice.test.js",
-          "backend-node/test/productionPreflight.test.js",
-          "backend-node/test/providerPricingSync.test.js",
-          "backend-node/test/modelUiProtectionGate.test.js",
+          "backend-node/test/fuminVideoClient.test.js",
+          "backend-node/test/fuminReferenceAssetService.test.js",
+          "backend-node/test/videoGenerationRequestSnapshot.test.js",
+          "backend-node/test/redrawGeneration.test.js",
+          "backend-node/test/videoBilling.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -1378,6 +1454,21 @@
           ]
         },
         {
+          "reason": "2026-09-01 PR #217 Fumin 产品 API 单镜验收前置修复获批",
+          "approvedBy": "product-owner 2026-09-01 pr-217-fumin-product-api-one-shot-acceptance",
+          "impactTests": [
+            "backend-node/test/fuminVideoClient.test.js",
+            "backend-node/test/fuminReferenceAssetService.test.js",
+            "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/redrawGeneration.test.js",
+            "backend-node/test/redrawProviderAdapters.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
           "reason": "2026-09-03 NewAPI 六模型首页、短剧工厂与计费分组修复获批",
           "approvedBy": "product-owner 2026-09-03 newapi-six-model-public-remediation",
           "impactTests": [
@@ -1414,25 +1505,45 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 NewAPI 配置级能力隔离与六模型路由固定获批",
+          "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+          "impactTests": [
+            "backend-node/test/canvasModelCatalogService.test.js",
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/newapiVideo.test.js",
+            "backend-node/test/newapiWan3ConfigInstaller.test.js",
+            "backend-node/test/providerModelSelection.test.js",
+            "backend-node/test/providerPricingSync.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/modelUiProtectionGate.test.js",
+            "frontweb/test/billing-model-groups.test.js",
+            "frontweb/test/filmListCanvasEntry.test.js",
+            "frontweb/test/homeQuickGeneration.test.js",
+            "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+            "frontweb/test/aiConfigProviderPresets.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 NewAPI 配置级能力隔离与六模型路由固定获批",
-        "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+        "reason": "2026-09-03 母本蓝图优先一键转绘任务 1-9 获批",
+        "approvedBy": "product-owner 2026-09-03 episode-blueprint-first-redraw",
         "impactTests": [
-          "backend-node/test/canvasModelCatalogService.test.js",
-          "backend-node/test/modelPrice.test.js",
-          "backend-node/test/newapiVideo.test.js",
-          "backend-node/test/newapiWan3ConfigInstaller.test.js",
-          "backend-node/test/providerModelSelection.test.js",
-          "backend-node/test/providerPricingSync.test.js",
-          "backend-node/test/videoBilling.test.js",
-          "backend-node/test/modelUiProtectionGate.test.js",
-          "frontweb/test/billing-model-groups.test.js",
-          "frontweb/test/filmListCanvasEntry.test.js",
-          "frontweb/test/homeQuickGeneration.test.js",
-          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
-          "frontweb/test/aiConfigProviderPresets.test.js",
+          "backend-node/test/redrawEpisodeBlueprint.test.js",
+          "backend-node/test/redrawSourceAudioEvidence.test.js",
+          "backend-node/test/redrawEvidenceFusion.test.js",
+          "backend-node/test/redrawBlueprintWorkflow.test.js",
+          "backend-node/test/redrawLocalization.test.js",
+          "backend-node/test/redrawShotProductionPack.test.js",
+          "backend-node/test/redrawGeneration.test.js",
+          "backend-node/test/redrawRoutes.test.js",
+          "frontweb/e2e/redraw-workspace.spec.js",
+          "frontweb/e2e/redraw-backend-integration.spec.js",
+          "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+          "workers/redraw-locale-verifier/tests/test_source_evidence.py",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -2009,6 +2120,21 @@
           ]
         },
         {
+          "reason": "2026-09-01 PR #217 Fumin 产品 API 单镜验收前置修复获批",
+          "approvedBy": "product-owner 2026-09-01 pr-217-fumin-product-api-one-shot-acceptance",
+          "impactTests": [
+            "backend-node/test/fuminVideoClient.test.js",
+            "backend-node/test/fuminReferenceAssetService.test.js",
+            "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/redrawGeneration.test.js",
+            "backend-node/test/redrawProviderAdapters.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
           "reason": "2026-09-02 画布充值入口与登录限流修复获批",
           "approvedBy": "product-owner 2026-09-02 canvas-billing-login-rate-limit",
           "impactTests": [
@@ -2076,16 +2202,36 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 NewAPI 计费只读生产预检兼容修复获批",
+          "approvedBy": "product-owner 2026-09-03 newapi-readonly-preflight-compat",
+          "impactTests": [
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/productionPreflight.test.js",
+            "backend-node/test/providerPricingSync.test.js",
+            "backend-node/test/modelUiProtectionGate.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 NewAPI 计费只读生产预检兼容修复获批",
-        "approvedBy": "product-owner 2026-09-03 newapi-readonly-preflight-compat",
+        "reason": "2026-09-03 母本蓝图优先一键转绘任务 1-9 获批",
+        "approvedBy": "product-owner 2026-09-03 episode-blueprint-first-redraw",
         "impactTests": [
-          "backend-node/test/modelPrice.test.js",
-          "backend-node/test/productionPreflight.test.js",
-          "backend-node/test/providerPricingSync.test.js",
-          "backend-node/test/modelUiProtectionGate.test.js",
+          "backend-node/test/redrawEpisodeBlueprint.test.js",
+          "backend-node/test/redrawSourceAudioEvidence.test.js",
+          "backend-node/test/redrawEvidenceFusion.test.js",
+          "backend-node/test/redrawBlueprintWorkflow.test.js",
+          "backend-node/test/redrawLocalization.test.js",
+          "backend-node/test/redrawShotProductionPack.test.js",
+          "backend-node/test/redrawGeneration.test.js",
+          "backend-node/test/redrawRoutes.test.js",
+          "frontweb/e2e/redraw-workspace.spec.js",
+          "frontweb/e2e/redraw-backend-integration.spec.js",
+          "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+          "workers/redraw-locale-verifier/tests/test_source_evidence.py",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -2149,7 +2295,8 @@
       ],
       "evidence": [
         "docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md",
-        "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md"
+        "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md",
+        "docs/verification/platform-stability/pr217-redraw-generation-review-context-20260901.md"
       ],
       "fixCommit": null,
       "unlockHistory": [
@@ -2172,16 +2319,64 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-01 PR #217 Fumin 产品 API 单镜验收前置修复获批",
+          "approvedBy": "product-owner 2026-09-01 pr-217-fumin-product-api-one-shot-acceptance",
+          "impactTests": [
+            "backend-node/test/fuminVideoClient.test.js",
+            "backend-node/test/fuminReferenceAssetService.test.js",
+            "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/redrawGeneration.test.js",
+            "backend-node/test/redrawProviderAdapters.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-01 一键转绘真实生成审核上下文一致性修复获批",
+          "approvedBy": "product-owner 2026-09-01 continue-next-step-redraw-generation-review-context",
+          "impactTests": [
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawGeneration.test.js",
+            "backend-node/test/redrawPreparationGate.test.js",
+            "backend-node/test/redrawReviewGate.test.js",
+            "backend-node/test/redrawReferenceBundle.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-03 NewAPI 中转站成本同步管理路由注册获批",
+          "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+          "impactTests": [
+            "backend-node/test/providerPricingSync.test.js",
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawProductMediaChain.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 NewAPI 中转站成本同步管理路由注册获批",
-        "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+        "reason": "2026-09-03 母本蓝图优先一键转绘任务 1-9 获批",
+        "approvedBy": "product-owner 2026-09-03 episode-blueprint-first-redraw",
         "impactTests": [
-          "backend-node/test/providerPricingSync.test.js",
-          "backend-node/test/modelPrice.test.js",
+          "backend-node/test/redrawEpisodeBlueprint.test.js",
+          "backend-node/test/redrawSourceAudioEvidence.test.js",
+          "backend-node/test/redrawEvidenceFusion.test.js",
+          "backend-node/test/redrawBlueprintWorkflow.test.js",
+          "backend-node/test/redrawLocalization.test.js",
+          "backend-node/test/redrawShotProductionPack.test.js",
+          "backend-node/test/redrawGeneration.test.js",
           "backend-node/test/redrawRoutes.test.js",
-          "backend-node/test/redrawProductMediaChain.test.js",
+          "frontweb/e2e/redraw-workspace.spec.js",
+          "frontweb/e2e/redraw-backend-integration.spec.js",
+          "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+          "workers/redraw-locale-verifier/tests/test_source_evidence.py",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -2215,26 +2410,26 @@
       "fixCommit": null,
       "unlockHistory": [
         {
-        "reason": "2026-08-28 一键转绘 clean provider 本地媒体登记 Task D 获批",
-        "approvedBy": "product-owner 2026-08-28 redraw-product-media-registration-task-d",
-        "impactTests": [
-          "backend-node/test/redrawAssets.test.js",
-          "backend-node/test/redrawReferencePreparationOrchestration.test.js",
-          "backend-node/test/redrawReferenceBundle.test.js",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
-        ]
+          "reason": "2026-08-28 一键转绘 clean provider 本地媒体登记 Task D 获批",
+          "approvedBy": "product-owner 2026-08-28 redraw-product-media-registration-task-d",
+          "impactTests": [
+            "backend-node/test/redrawAssets.test.js",
+            "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+            "backend-node/test/redrawReferenceBundle.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         },
         {
-        "reason": "2026-08-28 clean provider 本地媒体双字段污染 P1 修复获批",
-        "approvedBy": "product-owner 2026-08-28 redraw-clean-local-media-dual-field-p1-fix",
-        "impactTests": [
-          "backend-node/test/redrawAssets.test.js",
-          "backend-node/test/redrawReferencePreparationOrchestration.test.js",
-          "backend-node/test/redrawReferenceBundle.test.js",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
-        ]
+          "reason": "2026-08-28 clean provider 本地媒体双字段污染 P1 修复获批",
+          "approvedBy": "product-owner 2026-08-28 redraw-clean-local-media-dual-field-p1-fix",
+          "impactTests": [
+            "backend-node/test/redrawAssets.test.js",
+            "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+            "backend-node/test/redrawReferenceBundle.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
@@ -2280,7 +2475,8 @@
       ],
       "evidence": [
         "docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md",
-        "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md"
+        "docs/superpowers/plans/2026-08-27-redraw-product-media-registration.md",
+        "docs/verification/platform-stability/pr217-redraw-generation-review-context-20260901.md"
       ],
       "fixCommit": null,
       "unlockHistory": [
@@ -2297,18 +2493,206 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-01 PR #217 Fumin 产品 API 单镜验收前置修复获批",
+          "approvedBy": "product-owner 2026-09-01 pr-217-fumin-product-api-one-shot-acceptance",
+          "impactTests": [
+            "backend-node/test/fuminVideoClient.test.js",
+            "backend-node/test/fuminReferenceAssetService.test.js",
+            "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/redrawGeneration.test.js",
+            "backend-node/test/redrawProviderAdapters.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/videoQueryTaskStatusOnce.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-01 一键转绘真实生成审核上下文一致性修复获批",
+          "approvedBy": "product-owner 2026-09-01 continue-next-step-redraw-generation-review-context",
+          "impactTests": [
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawGeneration.test.js",
+            "backend-node/test/redrawPreparationGate.test.js",
+            "backend-node/test/redrawReviewGate.test.js",
+            "backend-node/test/redrawReferenceBundle.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-03 NewAPI 中转站成本同步管理路由注册获批",
+          "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+          "impactTests": [
+            "backend-node/test/providerPricingSync.test.js",
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawProductMediaChain.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 NewAPI 中转站成本同步管理路由注册获批",
-        "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+        "reason": "2026-09-03 母本蓝图优先一键转绘任务 1-9 获批",
+        "approvedBy": "product-owner 2026-09-03 episode-blueprint-first-redraw",
         "impactTests": [
-          "backend-node/test/providerPricingSync.test.js",
-          "backend-node/test/modelPrice.test.js",
+          "backend-node/test/redrawEpisodeBlueprint.test.js",
+          "backend-node/test/redrawSourceAudioEvidence.test.js",
+          "backend-node/test/redrawEvidenceFusion.test.js",
+          "backend-node/test/redrawBlueprintWorkflow.test.js",
+          "backend-node/test/redrawLocalization.test.js",
+          "backend-node/test/redrawShotProductionPack.test.js",
+          "backend-node/test/redrawGeneration.test.js",
           "backend-node/test/redrawRoutes.test.js",
-          "backend-node/test/redrawProductMediaChain.test.js",
+          "frontweb/e2e/redraw-workspace.spec.js",
+          "frontweb/e2e/redraw-backend-integration.spec.js",
+          "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+          "workers/redraw-locale-verifier/tests/test_source_evidence.py",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
+        ]
+      }
+    },
+    {
+      "featureId": "redraw.episode-blueprint-first",
+      "module": "shared",
+      "status": "locked_pass",
+      "acceptance": [
+        "任意可读母本先形成连续覆盖全片且绑定音视频证据的 episode-blueprint-v1，再允许进入本地化",
+        "母本事实、本地化姓名与对白、逐镜生产包分别绑定稳定哈希，任何上游变化都会使下游结果失效",
+        "真实整集运行入口只读取已校验生产包，不导入固定九镜 fixture 或运行时人物常量",
+        "蓝图或本地化未锁定、生产包哈希不一致时保持零供应商提交和零积分预留"
+      ],
+      "protectedPaths": [
+        "backend-node/migrations/72_redraw_episode_blueprints.sql",
+        "backend-node/src/db/migrate.js",
+        "backend-node/src/routes/index.js",
+        "backend-node/src/routes/redraw.js",
+        "backend-node/src/services/localizationService.js",
+        "backend-node/src/services/redrawBlueprintWorkflowService.js",
+        "backend-node/src/services/redrawEpisodeBlueprintService.js",
+        "backend-node/src/services/redrawEpisodeFactsService.js",
+        "backend-node/src/services/redrawEvidenceFusionService.js",
+        "backend-node/src/services/redrawGenerationService.js",
+        "backend-node/src/services/redrawLocaleVerifierClient.js",
+        "backend-node/src/services/redrawLocalizationOrchestrator.js",
+        "backend-node/src/services/redrawNativeSourceAnalysisService.js",
+        "backend-node/src/services/redrawOrchestrator.js",
+        "backend-node/src/services/redrawShotProductionPackService.js",
+        "backend-node/src/services/redrawSourceAudioEvidenceService.js",
+        "frontweb/package.json",
+        "frontweb/scripts/fuminEpisodeExecutionPlan.mjs",
+        "frontweb/scripts/fuminEpisodeMediaPipeline.mjs",
+        "frontweb/scripts/fuminEpisodeProviderAdapter.mjs",
+        "frontweb/scripts/fuminExecutionMotion.mjs",
+        "frontweb/scripts/fuminFullEpisodeDerivedState.mjs",
+        "frontweb/scripts/run-redraw-episode-blueprint-live.mjs",
+        "frontweb/scripts/run-redraw-fumin-full-episode-live.mjs",
+        "frontweb/src/api/redraw.js",
+        "frontweb/src/components/redraw/RedrawBlueprintReviewPanel.vue",
+        "frontweb/src/components/redraw/RedrawLocalizationReviewPanel.vue",
+        "frontweb/src/components/redraw/RedrawSourceStep.vue",
+        "frontweb/src/utils/redrawBlueprintReviewState.js",
+        "frontweb/src/utils/redrawWorkspaceState.js",
+        "frontweb/src/views/RedrawWorkspace.vue",
+        "workers/redraw-locale-verifier/src/redraw_locale_worker/engines.py",
+        "workers/redraw-locale-verifier/src/redraw_locale_worker/server.py",
+        "workers/redraw-locale-verifier/src/redraw_locale_worker/source_evidence.py"
+      ],
+      "requiredTests": [
+        "backend-node/test/featureLockManifest.test.js",
+        "backend-node/test/incrementalReleaseScope.test.js",
+        "backend-node/test/redrawAnalysis.test.js",
+        "backend-node/test/redrawBlueprintWorkflow.test.js",
+        "backend-node/test/redrawEpisodeBlueprint.test.js",
+        "backend-node/test/redrawEpisodeFacts.test.js",
+        "backend-node/test/redrawEvidenceFusion.test.js",
+        "backend-node/test/redrawGeneration.test.js",
+        "backend-node/test/redrawLocaleVerifierClient.test.js",
+        "backend-node/test/redrawLocalization.test.js",
+        "backend-node/test/redrawLocalizationOrchestration.test.js",
+        "backend-node/test/redrawMigration.test.js",
+        "backend-node/test/redrawNativeSourceAnalysis.test.js",
+        "backend-node/test/redrawRoutes.test.js",
+        "backend-node/test/redrawShotProductionPack.test.js",
+        "backend-node/test/redrawSourceAudioEvidence.test.js",
+        "frontweb/e2e/redraw-backend-integration.spec.js",
+        "frontweb/e2e/redraw-workspace.spec.js",
+        "frontweb/scripts/fuminEpisodeExecutionPlan.test.mjs",
+        "frontweb/scripts/fuminEpisodeMediaPipeline.test.mjs",
+        "frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs",
+        "frontweb/scripts/fuminExecutionMotion.test.mjs",
+        "frontweb/scripts/fuminFullEpisodeDerivedState.test.mjs",
+        "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+        "frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs",
+        "frontweb/src/utils/redrawBlueprintReviewState.test.mjs",
+        "frontweb/test/redrawSourceRuntime.test.js",
+        "workers/redraw-locale-verifier/tests/test_server.py",
+        "workers/redraw-locale-verifier/tests/test_source_evidence.py"
+      ],
+      "evidence": [
+        "docs/superpowers/specs/2026-09-03-episode-blueprint-first-redraw-design.md",
+        "docs/superpowers/plans/2026-09-03-episode-blueprint-first-redraw.md",
+        "docs/superpowers/specs/2026-09-04-fumin-fixed-five-second-full-episode-generation-design.md",
+        "docs/superpowers/plans/2026-09-04-fumin-fixed-five-second-full-episode-generation.md",
+        "docs/verification/redraw/fumin-fixed-five-second-full-episode-verification.md"
+      ],
+      "fixCommit": null,
+      "unlockHistory": [
+        {
+          "reason": "2026-09-04 母本蓝图整集验收安全与源分镜物化收口获批",
+          "approvedBy": "product-owner 2026-09-04 episode-blueprint-first-delivery-hardening",
+          "impactTests": [
+            "backend-node/test/redrawBlueprintWorkflow.test.js",
+            "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-04 整集零提交预检文化适配修复获批",
+          "approvedBy": "product-owner 2026-09-04 full-episode-zero-submit-cultural-adaptation",
+          "impactTests": [
+            "backend-node/test/redrawShotProductionPack.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-04 Fumin 固定五秒整集执行方案 A 书面规格获批",
+          "approvedBy": "product-owner 2026-09-04 fumin-fixed-five-second-full-episode-option-a",
+          "impactTests": [
+            "frontweb/scripts/fuminEpisodeExecutionPlan.test.mjs",
+            "frontweb/scripts/fuminExecutionMotion.test.mjs",
+            "frontweb/scripts/fuminEpisodeMediaPipeline.test.mjs",
+            "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+            "frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs",
+            "frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-04 R5 零提交预检顶层身份引用兼容修复",
+          "approvedBy": "product-owner 2026-09-04 fumin-fixed-five-second-full-episode-option-a",
+          "impactTests": [
+            "frontweb/scripts/fuminEpisodeExecutionPlan.test.mjs",
+            "frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs",
+            "backend-node/test/redrawShotProductionPack.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        }
+      ],
+      "unlock": {
+        "reason": "2026-09-04 Fumin 已验证上游提交合同与未知结果收口获批",
+        "approvedBy": "product-owner 2026-09-04 fumin-fixed-five-second-full-episode-option-a",
+        "impactTests": [
+          "frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs",
+          "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+          "frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs",
+          "backend-node/test/featureLockManifest.test.js"
         ]
       }
     },

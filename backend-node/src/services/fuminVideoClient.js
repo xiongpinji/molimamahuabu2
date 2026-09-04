@@ -53,6 +53,14 @@ function buildFuminQueryUrl(config = {}, taskId) {
   return buildFuminUrl(config, '/api/v3/contents/generations/tasks/{taskId}', taskId);
 }
 
+function buildFuminUploadUrl(config = {}) {
+  return `${normalizeFuminBaseUrl(config.base_url)}/api/v3/files/uploads?volc_asset=true`;
+}
+
+function buildFuminFileUrl(config = {}, assetId) {
+  return `${normalizeFuminBaseUrl(config.base_url)}/api/v3/files/${encodeURIComponent(String(assetId))}`;
+}
+
 function uniqueUrls(values) {
   return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
 }
@@ -114,6 +122,105 @@ function parseJson(raw) {
   try { return JSON.parse(raw); } catch (_) { return null; }
 }
 
+function pickFuminFileId(payload) {
+  return payload?.id
+    ?? payload?.file_id
+    ?? payload?.data?.id
+    ?? payload?.data?.file_id
+    ?? null;
+}
+
+function pickFuminFileUrl(payload) {
+  const value = payload?.url
+    ?? payload?.data?.url
+    ?? payload?.file?.url
+    ?? payload?.data?.file?.url
+    ?? null;
+  return /^https:\/\//i.test(String(value || '').trim()) ? String(value).trim() : null;
+}
+
+function fuminReferenceError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+async function responseJson(response, code) {
+  const raw = await response.text();
+  const payload = parseJson(raw);
+  if (!payload) throw fuminReferenceError(code, 'Fumin 素材接口返回非 JSON 响应');
+  return { payload, raw };
+}
+
+async function uploadFuminReferenceAsset(config = {}, input = {}) {
+  const apiKey = resolveFuminApiKey(config, input.env || process.env);
+  if (!apiKey) throw fuminReferenceError('FUMIN_REFERENCE_UPLOAD_KEY_MISSING', 'Fumin API Key 未配置');
+  const bytes = Buffer.isBuffer(input.bytes) ? input.bytes : null;
+  const filename = String(input.filename || '').trim().replace(/["\r\n]/g, '_');
+  const mimeType = String(input.mimeType || '').trim().toLowerCase();
+  if (!bytes?.length || !filename || !/^[^/\\\0]+$/u.test(filename)
+    || !/^(?:image\/(?:png|jpeg|webp)|video\/mp4|audio\/(?:mpeg|wav))$/.test(mimeType)) {
+    throw fuminReferenceError('FUMIN_REFERENCE_UPLOAD_INPUT_INVALID', 'Fumin 参考素材上传参数无效');
+  }
+  const fetchImpl = input.fetchImpl || globalThis.fetch;
+  if (typeof fetchImpl !== 'function') {
+    throw fuminReferenceError('FUMIN_REFERENCE_UPLOAD_UNAVAILABLE', 'Fumin 参考素材上传客户端不可用');
+  }
+  const form = new FormData();
+  form.append('file', new Blob([bytes], { type: mimeType }), filename);
+  let response;
+  try {
+    response = await fetchImpl(buildFuminUploadUrl(config), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+      signal: input.signal || AbortSignal.timeout(Number(input.timeoutMs || 180_000)),
+    });
+  } catch (error) {
+    throw fuminReferenceError(
+      'FUMIN_REFERENCE_UPLOAD_UNKNOWN',
+      `Fumin 参考素材上传连接中断，结果未知且不得自动重试: ${error.message}`,
+    );
+  }
+  const uploaded = await responseJson(response, 'FUMIN_REFERENCE_UPLOAD_RESPONSE_INVALID');
+  if (!response.ok) {
+    throw fuminReferenceError(
+      'FUMIN_REFERENCE_UPLOAD_REJECTED',
+      `Fumin 参考素材上传失败 (HTTP ${response.status})`,
+    );
+  }
+  const assetId = pickFuminFileId(uploaded.payload);
+  if (assetId == null || !String(assetId).trim()) {
+    throw fuminReferenceError('FUMIN_REFERENCE_UPLOAD_ID_MISSING', 'Fumin 参考素材上传未返回文件 ID');
+  }
+  let url = pickFuminFileUrl(uploaded.payload);
+  if (!url) {
+    let metadataResponse;
+    try {
+      metadataResponse = await fetchImpl(buildFuminFileUrl(config, assetId), {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: input.signal || AbortSignal.timeout(Number(input.metadataTimeoutMs || 30_000)),
+      });
+    } catch (error) {
+      throw fuminReferenceError(
+        'FUMIN_REFERENCE_METADATA_UNKNOWN',
+        `Fumin 参考素材元数据查询连接中断，结果未知且不得自动重试: ${error.message}`,
+      );
+    }
+    const metadata = await responseJson(metadataResponse, 'FUMIN_REFERENCE_METADATA_INVALID');
+    if (!metadataResponse.ok) {
+      throw fuminReferenceError(
+        'FUMIN_REFERENCE_URL_UNAVAILABLE',
+        `Fumin 参考素材 URL 查询失败 (HTTP ${metadataResponse.status})`,
+      );
+    }
+    url = pickFuminFileUrl(metadata.payload);
+  }
+  if (!url) throw fuminReferenceError('FUMIN_REFERENCE_URL_INVALID', 'Fumin 参考素材未返回 HTTPS URL');
+  return { asset_id: String(assetId), url };
+}
+
 function pickFuminVideoUrl(payload) {
   const candidates = [
     payload?.content?.video_url,
@@ -154,6 +261,7 @@ function parseFuminStatusPayload(payload) {
 async function callFuminVideoApi(config, log, opts = {}) {
   const apiKey = resolveFuminApiKey(config);
   if (!apiKey) return { error: 'fumin API Key 未配置' };
+  const fetchImpl = opts.fetchImpl || globalThis.fetch;
   let imageUrls = [];
   const rawRefs = uniqueUrls([
     opts.image_url,
@@ -223,7 +331,7 @@ async function callFuminVideoApi(config, log, opts = {}) {
   });
   let response;
   try {
-    response = await fetch(url, {
+    response = await fetchImpl(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -252,8 +360,10 @@ module.exports = {
   resolveFuminModel,
   buildFuminCreateUrl,
   buildFuminQueryUrl,
+  buildFuminUploadUrl,
   buildFuminVideoBody,
   parseFuminSubmitResponse,
   parseFuminStatusPayload,
   callFuminVideoApi,
+  uploadFuminReferenceAsset,
 };

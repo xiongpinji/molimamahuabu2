@@ -225,6 +225,18 @@ class VerifierTests(unittest.TestCase):
                 "speech_chars_per_second_max": 20,
             },
         }
+        self.native_english_text = "Mateo, come with me."
+        self.native_english_request = {
+            **self.native_request,
+            "request_id": "req-native-en-1",
+            "approved_text": self.native_english_text,
+            "locale_pack": "en@1",
+        }
+        self.native_english_pack = {
+            **self.native_pack,
+            "id": "en@1",
+            "language": "en",
+        }
         self.local_request = {
             "action": "verify_local_voice",
             "request_id": "req-local-1",
@@ -639,6 +651,24 @@ class VerifierTests(unittest.TestCase):
         self.assertNotIn(self.native_text, serialized)
         self.assertNotIn("provider-real-1", serialized)
         self.assertNotIn("transcript", result)
+
+    @unittest.skipUnless(callable(verify_native_audio), "native verifier is not implemented yet")
+    def test_native_audio_verifies_english_without_tts_or_accent(self):
+        result = verify_native_audio(
+            self.native_english_request,
+            self.native_english_pack,
+            allowed_root=self.allowed_root,
+            asr=self._native_asr(language="en", text=self.native_english_text),
+            accent=ExplodingAccent(),
+        )
+
+        self.assertTrue(result["language_verified"])
+        self.assertEqual(result["request_id"], self.native_english_request["request_id"])
+        self.assertFalse(result["locale_verified"])
+        self.assertEqual(result["detected_language"], "en")
+        self.assertEqual(result["locale_pack"], "en@1")
+        self.assertEqual(result["dialogue_similarity"], 1.0)
+        self.assertNotIn("tts_invocation", result)
 
     @unittest.skipUnless(callable(verify_native_audio), "native verifier is not implemented yet")
     def test_native_audio_uses_asr_language_not_request_locale_claims(self):

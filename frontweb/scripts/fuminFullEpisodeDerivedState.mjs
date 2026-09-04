@@ -3,10 +3,10 @@ import path from 'node:path'
 
 const HEX_64 = /^[a-f0-9]{64}$/i
 const EXPECTED_CASE_ID = 'ac087bcd-latam-en-us'
-const EXPECTED_SHOT6_ERROR = 'FUMIN_FULL_EPISODE_EXACT_DIALOGUE_FAILED'
+const EXPECTED_SHOT4_ERROR = 'FUMIN_FULL_EPISODE_EXACT_DIALOGUE_FAILED'
 const IDENTITY_IDS = ['mateo', 'diego', 'lucas', 'elena', 'rafael']
 
-export const R4_SHOT6_ARTIFACT_SHA256 = '578519fa9be3ea5067176087cabeacee5413649d46ee7ffd941156a8b3ed4ac7'
+export const R4_SHOT4_ARTIFACT_SHA256 = 'ebaa46b25736a2b13829cf8de50c1e391a786841b46ef83cf8b03da3871812dd'
 
 function fail(code, message = code) {
   throw Object.assign(new Error(`${code}: ${message}`), { code })
@@ -32,8 +32,9 @@ export function assertR4DerivationSource({
     || Number(contract?.spendCapUsd) !== 25
     || Number(contract?.estimatedPerShotUsd) !== 2.384848
     || Number(contract?.estimatedTotalUsd) !== 21.463632
-    || Number(contract?.initialBalanceUsd) !== 60.16
+    || Number(contract?.initialBalanceUsd) !== 35.95
     || contract?.accountId !== 'xiongpinji'
+    || generation?.model !== 'fumin-seedance-2.0-mini'
     || generation?.upstream_model !== 'seedance-2.0-mini'
     || generation?.resolution !== '480p'
     || generation?.aspect_ratio !== '9:16'
@@ -43,12 +44,12 @@ export function assertR4DerivationSource({
   }
 
   const tasks = Array.isArray(manifest.tasks) ? manifest.tasks : []
-  const tasksValid = tasks.length === 6 && tasks.every((task, index) => (
+  const tasksValid = tasks.length === 4 && tasks.every((task, index) => (
     Number(task.shot_number) === index + 1
       && Boolean(task.task_id)
-      && (index < 5
+      && (index < 3
         ? task.status === 'completed_verified'
-        : task.status === 'failed' && task.error_code === EXPECTED_SHOT6_ERROR)
+        : task.status === 'failed' && task.error_code === EXPECTED_SHOT4_ERROR)
   ))
   if (!tasksValid) fail('FUMIN_DERIVE_SOURCE_TASKS_INVALID')
 
@@ -60,7 +61,7 @@ function readJson(filePath) {
 }
 
 function assertSourceLocks(sourceRoot) {
-  for (let shotNumber = 1; shotNumber <= 6; shotNumber += 1) {
+  for (let shotNumber = 1; shotNumber <= 4; shotNumber += 1) {
     const lockPath = path.join(
       sourceRoot,
       'locks',
@@ -77,7 +78,7 @@ function assertSourceLocks(sourceRoot) {
     }
   }
 
-  for (let shotNumber = 7; shotNumber <= 9; shotNumber += 1) {
+  for (let shotNumber = 5; shotNumber <= 9; shotNumber += 1) {
     const suffix = String(shotNumber).padStart(2, '0')
     if (fs.existsSync(path.join(sourceRoot, 'locks', `shot-${suffix}-submit.lock.json`))
       || fs.existsSync(path.join(sourceRoot, 'artifacts', `shot-${suffix}.mp4`))) {
@@ -87,17 +88,17 @@ function assertSourceLocks(sourceRoot) {
 }
 
 function assertSourceArtifacts(sourceRoot, manifest, sha256File) {
-  for (let shotNumber = 1; shotNumber <= 6; shotNumber += 1) {
+  for (let shotNumber = 1; shotNumber <= 4; shotNumber += 1) {
     const suffix = String(shotNumber).padStart(2, '0')
     const videoPath = path.join(sourceRoot, 'artifacts', `shot-${suffix}.mp4`)
     if (!fs.existsSync(videoPath)) fail('FUMIN_DERIVE_SOURCE_FILE_MISSING', `shot-${suffix}.mp4`)
-    const expected = shotNumber === 6
-      ? R4_SHOT6_ARTIFACT_SHA256
+    const expected = shotNumber === 4
+      ? R4_SHOT4_ARTIFACT_SHA256
       : String(manifest.tasks[shotNumber - 1]?.artifact?.sha256 || '').toLowerCase()
     if (!HEX_64.test(expected) || sha256File(videoPath) !== expected) {
       fail('FUMIN_DERIVE_SOURCE_ARTIFACT_HASH_MISMATCH', String(shotNumber))
     }
-    if (shotNumber <= 5
+    if (shotNumber <= 3
       && (!fs.existsSync(path.join(sourceRoot, 'artifacts', `shot-${suffix}-contact-sheet.jpg`))
         || !fs.existsSync(path.join(sourceRoot, `shot-${suffix}-public-evidence.json`)))) {
       fail('FUMIN_DERIVE_SOURCE_EVIDENCE_MISSING', String(shotNumber))
@@ -107,10 +108,10 @@ function assertSourceArtifacts(sourceRoot, manifest, sha256File) {
 
 function requiredRelativeFiles() {
   const files = []
-  for (let shotNumber = 1; shotNumber <= 6; shotNumber += 1) {
+  for (let shotNumber = 1; shotNumber <= 4; shotNumber += 1) {
     const suffix = String(shotNumber).padStart(2, '0')
     files.push(`artifacts/shot-${suffix}.mp4`, `locks/shot-${suffix}-submit.lock.json`)
-    if (shotNumber <= 5) {
+    if (shotNumber <= 3) {
       files.push(
         `artifacts/shot-${suffix}-contact-sheet.jpg`,
         `shot-${suffix}-public-evidence.json`,
@@ -142,13 +143,13 @@ function buildDerivedManifest(sourceManifest, sourceManifestSha256, nowIso) {
   manifest.references = { ...(manifest.references || {}), identities: {} }
   manifest.derived_from = {
     schema_version: 'fumin-full-episode-derived-state-v1',
-    source_state_label: 'fumin-full-episode-ready-20260825-r4',
+    source_state_label: 'fumin-full-episode-20260903-r4',
     source_manifest_sha256: sourceManifestSha256,
-    source_task_count: 6,
-    reason: 'local_transcript_apostrophe_false_negative',
+    source_task_count: 4,
+    reason: 'dual_asr_orthographic_false_negative',
     derived_at: nowIso,
   }
-  manifest.tasks[5].status = 'awaiting_human_review'
+  manifest.tasks[3].status = 'awaiting_human_review'
   return manifest
 }
 
@@ -185,7 +186,7 @@ export function deriveFuminFullEpisodeState(options, adapters) {
       sourceManifestSha256,
       now.toISOString(),
     )
-    adapters.revalidateShot6({ sourceRoot, stagingRoot, derivedManifest })
+    adapters.revalidateShot4({ sourceRoot, stagingRoot, derivedManifest })
     writeJsonExclusive(path.join(stagingRoot, 'private-manifest.json'), derivedManifest)
     writeJsonExclusive(path.join(stagingRoot, 'private-runtime-secrets.json'), {
       schema_version: 'fumin-private-runtime-secrets-v1',

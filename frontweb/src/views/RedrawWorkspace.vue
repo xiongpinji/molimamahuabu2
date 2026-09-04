@@ -55,7 +55,12 @@
           :project-id="projectId"
           :initial-work="work"
           :events="projectEvents"
+          :blueprint-record="blueprintRecord"
+          :blueprint-loading="blueprintLoading"
+          :blueprint-error="blueprintError"
           @work-updated="onWorkUpdated"
+          @blueprint-updated="onBlueprintUpdated"
+          @refresh-blueprint="refreshBlueprint"
         />
         <RedrawAssetStep
           v-else-if="allowedStep === 2"
@@ -112,6 +117,11 @@ const project = ref(null)
 const work = ref(null)
 const projectEvents = ref([])
 const projectEventsError = ref('')
+const blueprintRecord = ref(undefined)
+const blueprintLoading = ref(false)
+const blueprintError = ref('')
+let workspaceRequestSequence = 0
+let blueprintRequestSequence = 0
 
 const projectId = computed(() => route.params.projectId)
 const workId = computed(() => route.params.workId)
@@ -130,21 +140,96 @@ const steps = [
 ]
 
 async function loadWorkspace() {
+  const requestSequence = ++workspaceRequestSequence
+  const requestedProjectId = String(projectId.value || '')
+  const requestedWorkId = String(workId.value || '')
   loading.value = true
+  blueprintRequestSequence += 1
+  blueprintRecord.value = undefined
+  blueprintLoading.value = isExistingWorkId(requestedWorkId)
+  blueprintError.value = ''
   try {
     const eventsRequest = redrawAPI.listProjectEvents(projectId.value)
       .then((nextEvents) => resolveProjectEventsState({ previousEvents: projectEvents.value, nextEvents }))
       .catch((error) => resolveProjectEventsState({ previousEvents: projectEvents.value, error }))
-    project.value = await redrawAPI.getProject(projectId.value)
-    work.value = isExistingWorkId(workId.value) ? await redrawAPI.getWork(workId.value) : null
+    const nextProject = await redrawAPI.getProject(requestedProjectId)
+    if (!isCurrentWorkspaceRequest(requestSequence, requestedProjectId, requestedWorkId)) return
+    const nextWork = isExistingWorkId(requestedWorkId) ? await redrawAPI.getWork(requestedWorkId) : null
+    if (!isCurrentWorkspaceRequest(requestSequence, requestedProjectId, requestedWorkId)) return
+    project.value = nextProject
+    work.value = nextWork
+    if (nextWork?.id && String(nextWork.id) === requestedWorkId) {
+      await loadBlueprint(nextWork.id)
+    }
+    if (!isCurrentWorkspaceRequest(requestSequence, requestedProjectId, requestedWorkId)) return
     applyProjectEventsState(await eventsRequest)
     const nextStep = resolveAllowedStep(route.query.step, work.value?.current_step || 1)
     if (String(route.query.step || '1') !== String(nextStep)) {
       router.replace({ query: { ...route.query, step: nextStep } })
     }
   } finally {
-    loading.value = false
+    if (requestSequence === workspaceRequestSequence) loading.value = false
   }
+}
+
+function isCurrentWorkspaceRequest(requestSequence, requestedProjectId, requestedWorkId) {
+  return requestSequence === workspaceRequestSequence
+    && String(projectId.value || '') === requestedProjectId
+    && String(workId.value || '') === requestedWorkId
+}
+
+async function loadBlueprint(targetWorkId) {
+  if (!isExistingWorkId(targetWorkId)) {
+    blueprintRecord.value = undefined
+    blueprintLoading.value = false
+    blueprintError.value = ''
+    return undefined
+  }
+  const requestSequence = ++blueprintRequestSequence
+  const requestedWorkId = String(targetWorkId)
+  blueprintRecord.value = undefined
+  blueprintLoading.value = true
+  blueprintError.value = ''
+  try {
+    const next = await redrawAPI.getBlueprint(targetWorkId)
+    if (!isCurrentBlueprintRequest(requestSequence, requestedWorkId)) return undefined
+    if (next == null) {
+      blueprintError.value = '读取母本蓝图返回空结果'
+      return undefined
+    }
+    blueprintRecord.value = next
+    blueprintError.value = ''
+    return next
+  } catch (error) {
+    if (!isCurrentBlueprintRequest(requestSequence, requestedWorkId)) return undefined
+    if (Number(error?.response?.status) === 404) {
+      blueprintRecord.value = null
+      blueprintError.value = ''
+      return null
+    }
+    blueprintRecord.value = undefined
+    blueprintError.value = error?.response?.data?.error?.message || error?.message || '读取母本蓝图失败'
+    return undefined
+  } finally {
+    if (isCurrentBlueprintRequest(requestSequence, requestedWorkId)) blueprintLoading.value = false
+  }
+}
+
+function isCurrentBlueprintRequest(requestSequence, requestedWorkId) {
+  return requestSequence === blueprintRequestSequence
+    && String(workId.value || '') === requestedWorkId
+    && String(work.value?.id || '') === requestedWorkId
+}
+
+function refreshBlueprint() {
+  return loadBlueprint(work.value?.id)
+}
+
+function onBlueprintUpdated(nextBlueprint) {
+  blueprintRequestSequence += 1
+  blueprintLoading.value = false
+  blueprintError.value = ''
+  blueprintRecord.value = nextBlueprint
 }
 
 function goStep(step) {
@@ -154,8 +239,14 @@ function goStep(step) {
 
 function onWorkUpdated(nextWork) {
   const previousBackendStep = work.value?.current_step || 1
+  const previousAnalysisStatus = String(work.value?.analysis_task?.status || work.value?.task_status || '').toLowerCase()
   work.value = nextWork
   refreshProjectEvents()
+  const nextAnalysisStatus = String(nextWork?.analysis_task?.status || nextWork?.task_status || '').toLowerCase()
+  if (nextWork?.id && blueprintRecord.value == null
+    && previousAnalysisStatus !== 'completed' && nextAnalysisStatus === 'completed') {
+    loadBlueprint(nextWork.id)
+  }
   if (nextWork?.id && String(workId.value) !== String(nextWork.id)) {
     router.replace({
       name: 'redraw-workspace',

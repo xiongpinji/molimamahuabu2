@@ -102,6 +102,12 @@ const redrawProductMediaHttpChainManifestPath = path.join(
   'release-scopes',
   'redraw-product-media-http-chain-task-e-20260828.json',
 );
+const redrawEpisodeBlueprintFirstManifestPath = path.join(
+  repoRoot,
+  'deploy',
+  'release-scopes',
+  'redraw-episode-blueprint-first-redraw-20260903.json',
+);
 const toapisPrivateAvatarSplitKeyManifestPath = path.join(
   repoRoot,
   'deploy',
@@ -467,6 +473,80 @@ const REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_ALLOWED_PATHS = [
   'docs/superpowers/specs/2026-08-27-redraw-product-media-registration-addendum.md',
   'docs/verification/platform-stability/feature-lock-manifest.json',
 ];
+const REDRAW_EPISODE_BLUEPRINT_FIRST_BASELINE_ALLOWED_PATHS = [
+  'backend-node/migrations/72_redraw_episode_blueprints.sql',
+  'backend-node/src/db/migrate.js',
+  'backend-node/src/routes/index.js',
+  'backend-node/src/routes/redraw.js',
+  'backend-node/src/services/localizationService.js',
+  'backend-node/src/services/redrawBlueprintWorkflowService.js',
+  'backend-node/src/services/redrawEpisodeBlueprintService.js',
+  'backend-node/src/services/redrawEpisodeFactsService.js',
+  'backend-node/src/services/redrawEvidenceFusionService.js',
+  'backend-node/src/services/redrawGenerationService.js',
+  'backend-node/src/services/redrawLocaleVerifierClient.js',
+  'backend-node/src/services/redrawLocalizationOrchestrator.js',
+  'backend-node/src/services/redrawNativeSourceAnalysisService.js',
+  'backend-node/src/services/redrawOrchestrator.js',
+  'backend-node/src/services/redrawShotProductionPackService.js',
+  'backend-node/src/services/redrawSourceAudioEvidenceService.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+  'backend-node/test/redrawAnalysis.test.js',
+  'backend-node/test/redrawBlueprintWorkflow.test.js',
+  'backend-node/test/redrawEpisodeBlueprint.test.js',
+  'backend-node/test/redrawEpisodeFacts.test.js',
+  'backend-node/test/redrawEvidenceFusion.test.js',
+  'backend-node/test/redrawGeneration.test.js',
+  'backend-node/test/redrawLocaleVerifierClient.test.js',
+  'backend-node/test/redrawLocalization.test.js',
+  'backend-node/test/redrawLocalizationOrchestration.test.js',
+  'backend-node/test/redrawMigration.test.js',
+  'backend-node/test/redrawNativeSourceAnalysis.test.js',
+  'backend-node/test/redrawRoutes.test.js',
+  'backend-node/test/redrawShotProductionPack.test.js',
+  'backend-node/test/redrawSourceAudioEvidence.test.js',
+  'deploy/release-scopes/redraw-episode-blueprint-first-redraw-20260903.json',
+  'docs/superpowers/plans/2026-09-03-episode-blueprint-first-redraw.md',
+  'docs/superpowers/specs/2026-09-03-episode-blueprint-first-redraw-design.md',
+  'docs/verification/platform-stability/feature-lock-manifest.json',
+  'docs/verification/redraw/episode-blueprint-local-acceptance.md',
+  'frontweb/e2e/redraw-backend-integration.spec.js',
+  'frontweb/e2e/redraw-workspace.spec.js',
+  'frontweb/package.json',
+  'frontweb/scripts/fuminEpisodeProviderAdapter.mjs',
+  'frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs',
+  'frontweb/scripts/fuminFullEpisodeDerivedState.mjs',
+  'frontweb/scripts/fuminFullEpisodeDerivedState.test.mjs',
+  'frontweb/scripts/run-redraw-episode-blueprint-live.mjs',
+  'frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs',
+  'frontweb/scripts/run-redraw-fumin-full-episode-live.mjs',
+  'frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs',
+  'frontweb/src/api/redraw.js',
+  'frontweb/src/components/redraw/RedrawBlueprintReviewPanel.vue',
+  'frontweb/src/components/redraw/RedrawLocalizationReviewPanel.vue',
+  'frontweb/src/components/redraw/RedrawSourceStep.vue',
+  'frontweb/src/utils/redrawBlueprintReviewState.js',
+  'frontweb/src/utils/redrawBlueprintReviewState.test.mjs',
+  'frontweb/src/utils/redrawWorkspaceState.js',
+  'frontweb/src/views/RedrawWorkspace.vue',
+  'frontweb/test/redrawSourceRuntime.test.js',
+];
+const REDRAW_EPISODE_BLUEPRINT_FIRST_ADDED_PATHS = [
+  'docs/superpowers/plans/2026-09-04-fumin-fixed-five-second-full-episode-generation.md',
+  'docs/superpowers/specs/2026-09-04-fumin-fixed-five-second-full-episode-generation-design.md',
+  'docs/verification/redraw/fumin-fixed-five-second-full-episode-verification.md',
+  'frontweb/scripts/fuminEpisodeExecutionPlan.mjs',
+  'frontweb/scripts/fuminEpisodeExecutionPlan.test.mjs',
+  'frontweb/scripts/fuminEpisodeMediaPipeline.mjs',
+  'frontweb/scripts/fuminEpisodeMediaPipeline.test.mjs',
+  'frontweb/scripts/fuminExecutionMotion.mjs',
+  'frontweb/scripts/fuminExecutionMotion.test.mjs',
+];
+const REDRAW_EPISODE_BLUEPRINT_FIRST_ALLOWED_PATHS = [
+  ...REDRAW_EPISODE_BLUEPRINT_FIRST_BASELINE_ALLOWED_PATHS,
+  ...REDRAW_EPISODE_BLUEPRINT_FIRST_ADDED_PATHS,
+].sort();
 
 function assertExactProactiveCanaryScope(allowedPaths) {
   assert.deepEqual(allowedPaths, PROACTIVE_CANARY_ALLOWED_PATHS);
@@ -522,6 +602,10 @@ function assertExactRedrawCleanPlateMediaP2Scope(allowedPaths) {
 
 function assertExactRedrawProductMediaHttpChainScope(allowedPaths) {
   assert.deepEqual(allowedPaths, REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_ALLOWED_PATHS);
+}
+
+function assertExactRedrawEpisodeBlueprintFirstScope(allowedPaths) {
+  assert.deepEqual(allowedPaths, REDRAW_EPISODE_BLUEPRINT_FIRST_ALLOWED_PATHS);
 }
 
 function assertExactToapisPrivateAvatarSplitKeyScope(allowedPaths) {
@@ -1071,6 +1155,54 @@ test('真实产品 HTTP 媒体同链 Task E 发布范围拒绝同数量偷换', 
   assert.equal(swapped.length, REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_ALLOWED_PATHS.length);
   assert.throws(
     () => assertExactRedrawProductMediaHttpChainScope(swapped),
+    { name: 'AssertionError' },
+  );
+});
+
+test('母本蓝图优先一键转绘使用旧基线加 9 文件的精确 66 文件主应用发布范围', () => {
+  const { manifest, allowedPaths } = loadManifest(redrawEpisodeBlueprintFirstManifestPath);
+  assert.equal(manifest.release, 'redraw-episode-blueprint-first-redraw-20260903');
+  assertExactRedrawEpisodeBlueprintFirstScope(allowedPaths);
+  assert.equal(REDRAW_EPISODE_BLUEPRINT_FIRST_ADDED_PATHS.length, 9);
+  assert.equal(
+    allowedPaths.length,
+    REDRAW_EPISODE_BLUEPRINT_FIRST_BASELINE_ALLOWED_PATHS.length
+      + REDRAW_EPISODE_BLUEPRINT_FIRST_ADDED_PATHS.length,
+  );
+  assert.deepEqual(allowedPaths, [...allowedPaths].sort());
+  for (const addedPath of REDRAW_EPISODE_BLUEPRINT_FIRST_ADDED_PATHS) {
+    assert.equal(fs.existsSync(path.join(repoRoot, addedPath)), true, `发布范围路径不存在: ${addedPath}`);
+  }
+  assert.equal(allowedPaths.every((entry) => !entry.includes('*') && !entry.endsWith('/')), true);
+
+  for (const forbidden of [
+    '.codex-staging',
+    'backend-node/data',
+    'backend-node/uploads',
+    'storage',
+    'assets',
+    'ai-music',
+    'moli-music',
+    'deploy/install-protected-release-guard.sh',
+    'deploy/release-scopes/redraw-locale-verifier.json',
+    'shared/release-guard',
+    'workers/redraw-locale-verifier',
+  ]) {
+    assert.equal(
+      allowedPaths.some((entry) => entry === forbidden || entry.startsWith(`${forbidden}/`)),
+      false,
+      `主应用发布范围不得包含: ${forbidden}`,
+    );
+  }
+});
+
+test('母本蓝图优先一键转绘发布范围拒绝同数量偷换任一文件', () => {
+  const swapped = [...REDRAW_EPISODE_BLUEPRINT_FIRST_ALLOWED_PATHS];
+  const index = swapped.indexOf('backend-node/src/services/redrawEpisodeBlueprintService.js');
+  swapped[index] = 'backend-node/data/drama_generator.db';
+  assert.equal(swapped.length, REDRAW_EPISODE_BLUEPRINT_FIRST_ALLOWED_PATHS.length);
+  assert.throws(
+    () => assertExactRedrawEpisodeBlueprintFirstScope(swapped),
     { name: 'AssertionError' },
   );
 });

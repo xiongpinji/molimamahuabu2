@@ -19,6 +19,7 @@ const redrawReviewService = require('./redrawReviewService');
 const redrawCapabilityService = require('./redrawCapabilityService');
 const redrawSourceConditioningService = require('./redrawSourceConditioningService');
 const redrawReferenceBundleService = require('./redrawReferenceBundleService');
+const { assertShotProductionPackCurrent } = require('./redrawShotProductionPackService');
 const { compileNativeDialoguePrompt } = require('./redrawNativeDialoguePromptService');
 const redrawNativeAudioService = require('./redrawNativeAudioService');
 const { normalizeVideoProviderResult } = require('./redrawProviderAdapters');
@@ -319,6 +320,8 @@ function selectShot(db, ctx, shotInput) {
            v.locale AS version_locale,
            v.market AS version_market,
            v.status AS version_status, v.deleted_at AS version_deleted_at,
+           v.blueprint_hash AS version_blueprint_hash,
+           v.localization_hash AS version_localization_hash,
            w.source_asset_id, w.source_fingerprint, w.duration_ms AS source_duration_ms
     FROM redraw_shots s
     JOIN redraw_versions v ON v.id = s.version_id
@@ -367,11 +370,12 @@ function normalizeBatchShotIds(value) {
   return ids;
 }
 
-function ensureGateOpen(db, ctx, versionId) {
+function ensureGateOpen(db, ctx, versionId, shotIds = null) {
   const gate = redrawReviewService.evaluateGenerationGate(db, versionId, {
     tenantId: ctx.tenantId,
     userId: ctx.userId,
   }, {
+    shotIds,
     preparationContext: redrawReviewService.trustedPreparationContext(ctx.preparationContext || ctx),
   });
   if (!gate.ok) {
@@ -537,6 +541,7 @@ function canonicalIdentityBindings(value) {
     ...(binding?.target_character_name ? { target_character_name: String(binding.target_character_name || '').trim() } : {}),
     target_actor_label: String(binding?.target_actor_label || '').trim(),
     identity_pack_sha256: String(binding?.identity_pack_sha256 || '').trim(),
+    ...(binding?.target_country ? { target_country: String(binding.target_country || '').trim() } : {}),
   })).sort((left, right) => (
     Number(left.redraw_asset_id || 0) - Number(right.redraw_asset_id || 0)
     || String(left.track_key || '').localeCompare(String(right.track_key || ''))
@@ -545,6 +550,7 @@ function canonicalIdentityBindings(value) {
     || String(left.target_character_name || '').localeCompare(String(right.target_character_name || ''))
     || left.target_actor_label.localeCompare(right.target_actor_label)
     || left.identity_pack_sha256.localeCompare(right.identity_pack_sha256)
+    || String(left.target_country || '').localeCompare(String(right.target_country || ''))
   ));
 }
 
@@ -671,6 +677,7 @@ function referenceBundleCreateState(db, ctx, shot, requestSnapshot, expectedStat
     reference_image_asset_id: face.identity?.artifact?.asset_id,
     redraw_asset_id: face.identity_redraw_asset_id,
     identity_pack_sha256: face.identity_pack_sha256,
+    target_country: face.identity?.target_country,
   })) : [];
   const currentRequestSnapshot = {
     identity_bindings: identityBindings,
@@ -1113,7 +1120,8 @@ async function generateShot(ctx, input = {}) {
   rejectClientVideoConditioning(input);
   const shot = selectShot(db, ctx, input);
   const parsed = parseShotPayload(shot);
-  ensureGateOpen(db, ctx, shot.version_id);
+  assertShotProductionPackCurrent(db, { tenantId: ctx.tenantId, userId: ctx.userId }, shot);
+  ensureGateOpen(db, ctx, shot.version_id, [shot.id]);
   const versionIdentity = {
     locale: shot.version_locale,
     market: shot.version_market,
@@ -1169,6 +1177,20 @@ async function generateShot(ctx, input = {}) {
     generation.locale = referenceBundleProjection.targetLocale || 'en-US';
     generation.targetLocale = referenceBundleProjection.targetLocale || 'en-US';
     generation.generateAudio = referenceBundleProjection.generateAudio === true;
+    if (generation.generateAudio
+      && referenceBundleProjection.referenceBundleSnapshot?.speech_required === true) {
+      const referenceLanguage = languageFromLocale(generation.targetLocale);
+      const referencePack = assertReadyNativePack(ctx, referenceLanguage);
+      const dialogueSnapshotHash = String(
+        referenceBundleProjection.referenceBundleSnapshot.dialogue_script_sha256 || '',
+      );
+      if (!HEX_64.test(dialogueSnapshotHash)) {
+        throw codedError('REDRAW_REFERENCE_BUNDLE_DIALOGUE_INVALID', '参考包缺少有效的目标对白快照');
+      }
+      generation.localePack = referencePack.id;
+      generation.dialogue_snapshot_hash = dialogueSnapshotHash;
+      generation.prompt_hash = sha256Text(`${generation.prompt}\n${dialogueSnapshotHash}`);
+    }
   }
   const referenceImageUrls = requiresReferenceBundle
     ? referenceBundleProjection.referenceImageUrls
@@ -1235,8 +1257,9 @@ async function generateShot(ctx, input = {}) {
       if (requiresReferenceBundle) {
         referenceBundleCreateState(db, ctx, shot, requestSnapshot, referenceBundleCreateExpected);
       }
-      ensureGateOpen(db, ctx, shot.version_id);
       const freshShot = selectShot(db, ctx, { shotId: shot.id });
+      assertShotProductionPackCurrent(db, { tenantId: ctx.tenantId, userId: ctx.userId }, freshShot);
+      ensureGateOpen(db, ctx, shot.version_id, [shot.id]);
       const transactionPolicy = evaluateShotGenerationPolicy(
         db,
         ctx,
@@ -2136,6 +2159,8 @@ async function runShotGeneration(ctx, taskId) {
     ? (ctx.videoRecoveryProcessor || waitForRecoveredVideo)
     : (ctx.videoProcessor || ((database, logger, videoGenerationId) => (
       videoService.processVideoGeneration(database, logger, videoGenerationId, {
+        storageLocalPath: ctx.storageRoot,
+        storageBaseUrl: ctx.storageBaseUrl,
         providerAssetSigningSecret: ctx.providerAssetSecret,
         providerAssetStorageBaseUrl: ctx.storageBaseUrl,
         providerAssetTtlSeconds: ctx.providerAssetTtlSeconds,
@@ -2469,8 +2494,6 @@ async function generateBatch(ctx, input = {}) {
     `).get(versionId, String(ctx.tenantId), String(ctx.userId));
     if (!version) throw codedError('REDRAW_VERSION_NOT_FOUND', '转绘版本不存在或无权访问');
     const batchStyleSnapshot = strictJson(version.style_snapshot_json, 'redraw_versions.style_snapshot_json');
-    ensureGateOpen(db, ctx, versionId);
-
     let rows;
     if (explicitIds) {
       const placeholders = explicitIds.map(() => '?').join(',');
@@ -2490,6 +2513,7 @@ async function generateBatch(ctx, input = {}) {
         ORDER BY batch_index ASC, shot_index ASC, id ASC
       `).all(versionId, String(ctx.tenantId), String(ctx.userId));
     }
+    ensureGateOpen(db, ctx, versionId, explicitIds ? rows.map((row) => row.id) : null);
     return { batchStyleSnapshot, rows };
   })();
   const { batchStyleSnapshot, rows } = preflight;

@@ -132,7 +132,7 @@ test('分析完成后停留确认态且本地化任务独立恢复', () => {
   assert.equal(canConfirmLocalization({
     workflow_phase: 'analysis_review',
     localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
-  }), true)
+  }, undefined, null), true)
   assert.deepEqual(localizationTaskState({
     localization_task: { id: 'loc-1', status: 'processing', progress: 35 },
   }), {
@@ -179,8 +179,8 @@ test('本地化报价哈希变化时不能用旧报价提交', () => {
   }
 
   assert.equal(localizationQuoteCredits(work), 9)
-  assert.equal(canConfirmLocalization(work, 'quote-old'), false)
-  assert.equal(canConfirmLocalization(work, 'quote-new'), true)
+  assert.equal(canConfirmLocalization(work, 'quote-old', null), false)
+  assert.equal(canConfirmLocalization(work, 'quote-new', null), true)
 })
 
 test('二次报价缺失、未定价或哈希变化都必须失败关闭', () => {
@@ -229,6 +229,35 @@ test('本地化轮询阶段独立于分析任务和 current_step', () => {
   })
 })
 
+test('completed 本地化只有存在未锁审核记录时进入 localization_review', () => {
+  const completed = {
+    current_step: 1,
+    workflow_phase: 'localization_review',
+    localization_review_status: 'review',
+    localization_task: { id: 'loc-review', status: 'completed' },
+  }
+  assert.equal(redrawWorkflowPhase(completed, { status: 'locked' }), 'localization_review')
+  assert.equal(redrawWorkflowPhase({
+    ...completed,
+    localization_review_status: null,
+  }, { status: 'locked' }), 'blueprint_locked')
+  assert.equal(redrawWorkflowPhase({
+    ...completed,
+    workflow_phase: 'analysis_review',
+    localization_review_status: null,
+  }, { status: 'locked' }), 'blueprint_locked')
+  assert.equal(redrawWorkflowPhase({
+    ...completed,
+    current_step: 2,
+    workflow_phase: 'asset_review',
+    localization_review_status: 'locked',
+  }, { status: 'locked' }), 'assets')
+  assert.equal(redrawWorkflowPhase({
+    current_step: 2,
+    localization_task: { status: 'completed' },
+  }, null), 'assets')
+})
+
 test('本地化失败状态优先于后端回落的分析确认阶段', () => {
   assert.equal(redrawWorkflowPhase({
     workflow_phase: 'analysis_review',
@@ -242,19 +271,19 @@ test('本地化重试必须明确失败且明确已退款或释放，否则失�
     workflow_phase: 'localization_needs_attention',
     localization_task: { id: 'loc-1', status: 'failed' },
     localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
-  }), false)
+  }, undefined, null), false)
   assert.equal(canConfirmLocalization({
     workflow_phase: 'localization_needs_attention',
     localization_task: { id: 'loc-1', status: 'failed' },
     localization_billing: { held: 0, charged: 0, released: 9 },
     localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
-  }), true)
+  }, undefined, null), true)
   assert.equal(canConfirmLocalization({
     workflow_phase: 'localization_needs_attention',
     localization_task: { id: 'loc-1', status: 'failed' },
     localization_billing: { held: 0, charged: 0, released: 0 },
     localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
-  }), false)
+  }, undefined, null), false)
 })
 
 test('本地化幂等键只在完成或明确失败且已退款释放后重置', () => {
@@ -316,19 +345,23 @@ test('本地化确认二次报价只接受同 work 同上下文且仍在确认�
       localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
     },
     quoteBody: { locale: 'en-US', market: 'US', localization_level: 'faithful' },
+    blueprint: null,
   })
 
   assert.equal(isCurrentLocalizationConfirmation(snapshot, {
     work: { id: 2, workflow_phase: 'analysis_review' },
     quoteBody: { locale: 'en-US', market: 'US', localization_level: 'faithful' },
+    blueprint: null,
   }), false)
   assert.equal(isCurrentLocalizationConfirmation(snapshot, {
     work: { id: 1, workflow_phase: 'analysis_review' },
     quoteBody: { locale: 'ja-JP', market: 'JP', localization_level: 'faithful' },
+    blueprint: null,
   }), false)
   assert.equal(isCurrentLocalizationConfirmation(snapshot, {
     work: { id: 1, workflow_phase: 'localizing' },
     quoteBody: { locale: 'en-US', market: 'US', localization_level: 'faithful' },
+    blueprint: null,
   }), false)
   assert.equal(isCurrentLocalizationConfirmation(snapshot, {
     work: {
@@ -337,6 +370,7 @@ test('本地化确认二次报价只接受同 work 同上下文且仍在确认�
       localization_quote: { priced: true, credits: 9, quote_hash: 'quote-new' },
     },
     quoteBody: { locale: 'en-US', market: 'US', localization_level: 'faithful' },
+    blueprint: null,
   }), false)
   assert.equal(isCurrentLocalizationConfirmation(snapshot, {
     work: {
@@ -345,6 +379,7 @@ test('本地化确认二次报价只接受同 work 同上下文且仍在确认�
       localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
     },
     quoteBody: { locale: 'en-US', market: 'US', localization_level: 'faithful' },
+    blueprint: null,
   }), true)
 })
 
@@ -354,7 +389,7 @@ test('真实公开 localization_billing released 是本地化失败重试证据'
     localization_task: { id: 'loc-1', status: 'failed' },
     localization_billing: { held: 0, charged: 0, released: 9 },
     localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
-  }), true)
+  }, undefined, null), true)
   assert.equal(shouldResetLocalizationIdempotencyKey({
     localization_task: { id: 'loc-1', status: 'failed' },
     localization_billing: { held: 0, charged: 0, released: 9 },

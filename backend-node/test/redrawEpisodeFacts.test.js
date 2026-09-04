@@ -229,6 +229,62 @@ test('v2 rejects dialogue, audio, text region, confidence and required shot fiel
   assert.throws(() => normalizeEpisodeFactsV2(invalid((raw) => { raw.shots[0].confidence.text_regions = 1.2; })), /confidence/);
 });
 
+test('v2 accepts explicit off-screen and unresolved speakers without requiring visible faces', () => {
+  const offScreen = genericThreeShotFacts();
+  offScreen.shots[0].dialogue[0] = {
+    ...offScreen.shots[0].dialogue[0],
+    speaker_id: 'narrator',
+    speaker_kind: 'off_screen',
+    off_screen: true,
+    evidence_refs: ['evidence-audio-1'],
+  };
+  const normalizedOffScreen = normalizeEpisodeFactsV2(offScreen);
+  assert.deepEqual(normalizedOffScreen.shots[0].dialogue[0], {
+    id: 't1',
+    speaker_id: 'narrator',
+    speaker_kind: 'off_screen',
+    off_screen: true,
+    evidence_refs: ['evidence-audio-1'],
+    start_ms: 900,
+    end_ms: 2_200,
+    source_text: '尾号八七的订单到了',
+  });
+
+  const unresolved = genericThreeShotFacts();
+  unresolved.shots[0].dialogue[0] = {
+    ...unresolved.shots[0].dialogue[0],
+    speaker_id: 'speaker-cluster-1',
+    speaker_kind: 'voice_cluster',
+    off_screen: false,
+    evidence_refs: ['evidence-audio-1'],
+  };
+  assert.equal(normalizeEpisodeFactsV2(unresolved).shots[0].dialogue[0].speaker_id, 'speaker-cluster-1');
+});
+
+test('v2 still requires visible characters on-screen and preserves legacy dialogue shape', () => {
+  assert.throws(() => normalizeEpisodeFactsV2(invalid((raw) => {
+    raw.shots[0].dialogue[0].speaker_id = 'c2';
+    raw.shots[0].dialogue[0].speaker_kind = 'character';
+    raw.shots[0].dialogue[0].off_screen = false;
+    raw.shots[0].dialogue[0].evidence_refs = ['evidence-audio-1'];
+  })), /speaker|可见/);
+
+  assert.throws(() => normalizeEpisodeFactsV2(invalid((raw) => {
+    raw.shots[0].dialogue[0].speaker_id = 'c9';
+    raw.shots[0].dialogue[0].speaker_kind = 'character';
+    raw.shots[0].dialogue[0].off_screen = true;
+    raw.shots[0].dialogue[0].evidence_refs = ['evidence-audio-1'];
+  })), /speaker|未知角色/);
+
+  assert.deepEqual(normalizeEpisodeFactsV2(genericThreeShotFacts()).shots[0].dialogue[0], {
+    id: 't1',
+    speaker_id: 'c1',
+    start_ms: 900,
+    end_ms: 2_200,
+    source_text: '尾号八七的订单到了',
+  });
+});
+
 test('v2 rejects non-string narrative arrays and dangerous file path text', () => {
   for (const value of [{ text: '解释' }, ['解释'], () => '解释']) {
     assert.throws(() => normalizeEpisodeFactsV2(invalid((raw) => { raw.story = [value]; })), /story|文本|string/);

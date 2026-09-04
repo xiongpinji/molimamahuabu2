@@ -47,6 +47,10 @@ const { createRedrawLocaleVerifierClient } = require('../services/redrawLocaleVe
 const redrawAssetService = require('../services/redrawAssetService');
 const redrawVoiceService = require('../services/redrawVoiceService');
 const redrawLocalVoiceRegistrationService = require('../services/redrawLocalVoiceRegistrationService');
+const redrawSourceAudioEvidenceService = require('../services/redrawSourceAudioEvidenceService');
+const redrawNativeSourceAnalysisService = require('../services/redrawNativeSourceAnalysisService');
+const redrawEvidenceFusionService = require('../services/redrawEvidenceFusionService');
+const redrawBlueprintWorkflowService = require('../services/redrawBlueprintWorkflowService');
 const { createRedrawProviderAssetsRouter } = require('./redrawProviderAssets');
 
 function createDefaultRedrawLocaleVerifier(options = {}) {
@@ -282,6 +286,8 @@ function setupRouter(cfg, db, log, options = {}) {
   redrawVoiceService.setDefaultEvidenceRegistry(localeRegistry);
   const localeVerifier = options.localeVerifier || redrawOptions.localeVerifier
     || createDefaultRedrawLocaleVerifier({ ...options, localeRegistry });
+  const localizationLanguageGate = options.localizationLanguageGate
+    || redrawOptions.localizationLanguageGate;
   const localVoiceRegistrationService = options.localVoiceRegistrationService
     || redrawOptions.localVoiceRegistrationService
     || redrawLocalVoiceRegistrationService;
@@ -336,6 +342,26 @@ function setupRouter(cfg, db, log, options = {}) {
     coverageRegistrationProvider: explicitCoverageRegistrationProvider,
     localeRegistry,
     localeVerifier,
+    localizationLanguageGate,
+    sourceAudioEvidenceService: options.sourceAudioEvidenceService
+      || redrawOptions.sourceAudioEvidenceService
+      || redrawSourceAudioEvidenceService,
+    nativeSourceAnalysisService: options.nativeSourceAnalysisService
+      || redrawOptions.nativeSourceAnalysisService
+      || redrawNativeSourceAnalysisService,
+    evidenceFusionService: options.evidenceFusionService
+      || redrawOptions.evidenceFusionService
+      || redrawEvidenceFusionService,
+    blueprintWorkflowService: options.blueprintWorkflowService
+      || redrawOptions.blueprintWorkflowService
+      || redrawBlueprintWorkflowService,
+    sourceAudioWorkerClient: options.sourceAudioWorkerClient
+      || redrawOptions.sourceAudioWorkerClient
+      || localeVerifier,
+    candidateQualityVerifier: options.candidateQualityVerifier
+      || redrawOptions.candidateQualityVerifier,
+    candidateQualityDependencies: options.candidateQualityDependencies
+      || redrawOptions.candidateQualityDependencies,
     localVoiceRegistrationService,
     localTtsWorker,
     localTtsManifest,
@@ -393,8 +419,14 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/redraw/style-presets', redraw.listStylePresets);
   r.get('/redraw/locales', redraw.listLocales);
   r.post('/redraw/works/:id/analyze', redraw.uploadReferenceImage, redraw.analyzeWork);
+  r.get('/redraw/works/:id/blueprint', redraw.getBlueprint);
+  r.put('/redraw/works/:id/blueprint', redraw.saveBlueprint);
+  r.post('/redraw/works/:id/blueprint/lock', redraw.lockBlueprint);
   r.post('/redraw/works/:id/localization-quote', redraw.localizationQuote);
   r.post('/redraw/works/:id/versions', redraw.createVersion);
+  r.get('/redraw/versions/:id/localization', redraw.getLocalizationReview);
+  r.put('/redraw/versions/:id/localization', redraw.saveLocalizationReview);
+  r.post('/redraw/versions/:id/localization/lock', redraw.lockLocalizationReview);
   if (typeof explicitCoverageRegistrationProvider === 'function') {
     r.post('/redraw/versions/:id/full-frame-coverages', redraw.registerFullFrameCoverage);
   }

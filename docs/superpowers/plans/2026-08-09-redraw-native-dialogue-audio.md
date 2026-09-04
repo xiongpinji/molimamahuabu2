@@ -1,5 +1,7 @@
 # 转绘原生外语对白音轨实现计划
 
+> 2026-09-02 增量修复：原生音频 Worker 语言包白名单现支持 `es@1`（西语）和 `en@1`（英语）；`en@1` 只做 ASR/台词验证，不调用 TTS 或口音分类。既有 `en-US@1` TTS 合同保持不变。该修复已通过隔离 Worker 全套回归和 Node 原生对白回归，但 `en@1` 仍需目标模型真实生成、签名 manifest/ready attestation 后才可进入生产语言目录。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
 **目标：** 让一键转绘默认由已验证的视频模型在单次供应商提交中生成画面、环境声和目标语言对白；生成后以隔离 Worker 验证音轨、语言和批准台词，最终以 `audio_mode=native` 保留原生音轨。TTS 只在用户明确选择、重新报价并再次确认后作为 `audio_mode=replace` 回退。
