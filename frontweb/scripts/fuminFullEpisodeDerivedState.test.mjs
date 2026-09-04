@@ -279,7 +279,7 @@ test('合法源状态原子派生为第 4 镜待人工验收的新状态且不�
   }
 })
 
-test('第 4 镜只调用新 Fumin adapter 的本地媒体与双 ASR 纯验收并保留原失败审计', () => {
+test('第 4 镜只调用新 Fumin adapter 的固定五秒单元媒体与双 ASR 纯验收并保留原失败审计', () => {
   const fixture = makeSourceState()
   const calls = []
   try {
@@ -289,15 +289,17 @@ test('第 4 镜只调用新 Fumin adapter 的本地媒体与双 ASR 纯验收并
       const pack = {
         shot_id: 'shot-04',
         duration_ms: 8000,
+        provider_duration_seconds: 5,
         characters: [{ id: 'lead', name: 'Marcus' }],
         dialogue: [{ speaker_id: 'lead', speaker_name: 'Marcus', text: 'We leave tonight.' }],
         audio_contract: { locale: 'en-US', speech_required: true },
       }
       calls.push('validate-media')
       const media = validateGeneratedMediaForPack(pack, {
+        video_codec: 'h264',
         width: 496,
         height: 864,
-        duration_seconds: 8.01,
+        duration_seconds: 5.01,
         has_audio: true,
       })
       calls.push('verify-consensus')
