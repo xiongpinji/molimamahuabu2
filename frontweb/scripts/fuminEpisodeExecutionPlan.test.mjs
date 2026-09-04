@@ -173,6 +173,57 @@ test('binds identity references by parent characters and one exact motion refere
   assert.equal(plan.units[0].motion_reference_id, 'motion-shot-01')
 })
 
+test('fails closed for missing, duplicate, or stale identity hashes on a bound character', () => {
+  const requiredHash = '1'.repeat(64)
+  const staleHash = '2'.repeat(64)
+  const pack = makePack({
+    characters: [{ id: 'lead', identity_hashes: [requiredHash] }],
+  })
+  const reference = { id: 'identity-current', character_id: 'lead', sha256: requiredHash }
+
+  assert.throws(
+    () => buildFuminEpisodeExecutionPlan(makePackage([pack], {
+      identity_references: [reference, { id: 'identity-stale', character_id: 'lead', sha256: staleHash }],
+    })),
+    (error) => error.code === 'FUMIN_EXECUTION_IDENTITY_REFERENCE_STALE',
+  )
+  assert.throws(
+    () => buildFuminEpisodeExecutionPlan(makePackage([pack], {
+      identity_references: [{ id: 'identity-stale', character_id: 'lead', sha256: staleHash }],
+    })),
+    (error) => error.code === 'FUMIN_EXECUTION_IDENTITY_REFERENCE_MISSING',
+  )
+  assert.throws(
+    () => buildFuminEpisodeExecutionPlan(makePackage([pack], {
+      identity_references: [reference, { ...reference, id: 'identity-current-copy' }],
+    })),
+    (error) => error.code === 'FUMIN_EXECUTION_IDENTITY_REFERENCE_AMBIGUOUS',
+  )
+})
+
+test('derives stable pathless ids for id-less identity and motion references', () => {
+  const identityHash = '1'.repeat(64)
+  const motionHash = '2'.repeat(64)
+  const pack = makePack({
+    characters: [{ id: 'lead', assets: [{ kind: 'identity', sha256: identityHash }] }],
+    visual_contract: { references: [{ kind: 'motion', sha256: motionHash }] },
+  })
+  const packageWithPaths = (identityPath, motionPath) => makePackage([pack], {
+    identity_references: [{ character_id: 'lead', path: identityPath, sha256: identityHash }],
+    motion_references: [{ shot_id: 'shot-01', path: motionPath, sha256: motionHash }],
+  })
+
+  const first = buildFuminEpisodeExecutionPlan(packageWithPaths('C:/private/a.png', 'C:/private/a.mp4'))
+  const second = buildFuminEpisodeExecutionPlan(packageWithPaths('D:/other/b.png', 'D:/other/b.mp4'))
+
+  assert.match(first.units[0].identity_reference_ids[0], /^identity-ref-[a-f0-9]{64}$/)
+  assert.match(first.units[0].motion_reference_id, /^motion-ref-[a-f0-9]{64}$/)
+  assert.deepEqual(second.units[0].identity_reference_ids, first.units[0].identity_reference_ids)
+  assert.equal(second.units[0].motion_reference_id, first.units[0].motion_reference_id)
+  assert.equal(second.execution_plan_hash, first.execution_plan_hash)
+  assert.doesNotMatch(JSON.stringify(first), /C:\/private|D:\/other/)
+})
+
 test('rewrites the parent Dialogue block with only the complete dialogue in each unit', () => {
   const pack = makePack({
     shot_id: 'shot-dialogue',
@@ -185,8 +236,8 @@ test('rewrites the parent Dialogue block with only the complete dialogue in each
     prompt: [
       'Shot shot-dialogue.',
       'Dialogue:',
-      '- Ava: stale first line.',
-      '- Ben: stale second line.',
+      '- Ava: First line.',
+      '- Ben: Second line.',
       'Audio locale: en-US.',
     ].join('\n'),
   })
@@ -198,6 +249,35 @@ test('rewrites the parent Dialogue block with only the complete dialogue in each
   assert.match(plan.units[1].prompt, /Dialogue: Ben: Second line\./)
   assert.doesNotMatch(plan.units[1].prompt, /First line|stale/)
   assert.ok(plan.units.every((unit) => !/[\u3400-\u9fff]/u.test(unit.prompt)))
+})
+
+test('removes only known parent dialogue lines while preserving following non-dialogue constraints', () => {
+  const pack = makePack({
+    shot_id: 'shot-logo',
+    start_ms: 0,
+    end_ms: 8000,
+    dialogue: [{
+      id: 'stale',
+      speaker_id: 'lead',
+      speaker_name: 'Ava',
+      start_ms: 5000,
+      end_ms: 7000,
+      text: 'stale line',
+    }],
+    prompt: [
+      'Shot shot-logo.',
+      'Dialogue:',
+      '- Ava: stale line',
+      '- Keep exact logo placement.',
+      'Audio locale: en-US.',
+    ].join('\n'),
+  })
+
+  const [first] = buildFuminEpisodeExecutionPlan(makePackage([pack])).units
+
+  assert.doesNotMatch(first.prompt, /stale line/)
+  assert.match(first.prompt, /Keep exact logo placement\./)
+  assert.match(first.prompt, /Audio locale: en-US\./)
 })
 
 test('hashes the canonical plan deterministically', () => {
@@ -253,6 +333,25 @@ test('rejects runtime-sensitive field names recursively without scanning dialogu
     buildFuminEpisodeExecutionPlan(safe).units[0].dialogue[0].text,
     /URL label.*https:\/\/example\.test/,
   )
+  assert.equal('metadata' in buildFuminEpisodeExecutionPlan(safe).units[0].dialogue[0], false)
+})
+
+test('rejects authorization, header, and cookie fields at any input depth', () => {
+  for (const field of ['authorization', 'auth', 'header', 'headers', 'cookie', 'setCookie']) {
+    const pkg = makeLockedPackage()
+    pkg.production_packs[0].dialogue = [{
+      id: 'turn-1',
+      start_ms: 100,
+      end_ms: 900,
+      text: 'Keep this ordinary dialogue.',
+      metadata: { nested: { [field]: 'must-not-leak' } },
+    }]
+    assert.throws(
+      () => buildFuminEpisodeExecutionPlan(pkg),
+      (error) => error.code === 'FUMIN_EXECUTION_RUNTIME_CONFIG_FORBIDDEN',
+      field,
+    )
+  }
 })
 
 test('fails closed for malformed packs, references, dialogue and non-contiguous timelines', () => {

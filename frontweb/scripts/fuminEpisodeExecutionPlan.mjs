@@ -7,9 +7,13 @@ const HEX_64 = /^[a-f0-9]{64}$/i
 const CJK_TEXT = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u
 const FORBIDDEN_RUNTIME_FIELD_TOKENS = new Set([
   'provider', 'model', 'key', 'secret', 'token', 'credential', 'password',
-  'url', 'uri', 'endpoint', 'apikey', 'baseurl',
+  'url', 'uri', 'endpoint', 'apikey', 'baseurl', 'authorization', 'auth',
+  'header', 'headers', 'cookie',
 ])
 const ALLOWED_DOMAIN_FIELD_KEYS = new Set(['source_character_key'])
+const DIALOGUE_STRING_FIELDS = [
+  'id', 'speaker_id', 'speaker_kind', 'speaker_name', 'emotion', 'pronunciation_hint',
+]
 
 function fail(code, detail = '') {
   const error = new Error(detail ? `${code}: ${detail}` : code)
@@ -53,6 +57,13 @@ function requireHash(value, code) {
   return hash
 }
 
+function referenceId(reference, type, bindingKey, bindingId, sha256) {
+  if (reference.id != null && String(reference.id).trim()) {
+    return requireId(reference.id, `FUMIN_EXECUTION_${type.toUpperCase()}_REFERENCE_INVALID`)
+  }
+  return `${type}-ref-${sha256Canonical({ type, [bindingKey]: bindingId, sha256 })}`
+}
+
 function assertNoRuntimeFields(value) {
   if (Array.isArray(value)) {
     value.forEach(assertNoRuntimeFields)
@@ -79,19 +90,24 @@ function normalizeIdentityReferences(references) {
   const seen = new Set()
   return references.map((reference) => {
     if (!isObject(reference)) fail('FUMIN_EXECUTION_IDENTITY_REFERENCE_INVALID')
-    const id = requireId(reference.id, 'FUMIN_EXECUTION_IDENTITY_REFERENCE_INVALID')
-    if (seen.has(id)) fail('FUMIN_EXECUTION_IDENTITY_REFERENCE_DUPLICATE', id)
-    seen.add(id)
     const characterId = String(reference.character_id || '').trim()
     const sourceCharacterKey = String(reference.source_character_key || '').trim()
     if ((!characterId && !sourceCharacterKey)
       || (characterId && sourceCharacterKey && characterId !== sourceCharacterKey)) {
-      fail('FUMIN_EXECUTION_IDENTITY_REFERENCE_AMBIGUOUS', id)
+      fail('FUMIN_EXECUTION_IDENTITY_REFERENCE_AMBIGUOUS')
     }
+    const bindingId = characterId || sourceCharacterKey
+    const sha256 = requireHash(
+      reference.sha256,
+      'FUMIN_EXECUTION_IDENTITY_REFERENCE_HASH_INVALID',
+    )
+    const id = referenceId(reference, 'identity', 'character_id', bindingId, sha256)
+    if (seen.has(id)) fail('FUMIN_EXECUTION_IDENTITY_REFERENCE_DUPLICATE', id)
+    seen.add(id)
     return {
       id,
-      character_id: characterId || sourceCharacterKey,
-      sha256: requireHash(reference.sha256, 'FUMIN_EXECUTION_IDENTITY_REFERENCE_HASH_INVALID'),
+      character_id: bindingId,
+      sha256,
     }
   })
 }
@@ -101,13 +117,18 @@ function normalizeMotionReferences(references) {
   const seen = new Set()
   return references.map((reference) => {
     if (!isObject(reference)) fail('FUMIN_EXECUTION_MOTION_REFERENCE_INVALID')
-    const id = requireId(reference.id, 'FUMIN_EXECUTION_MOTION_REFERENCE_INVALID')
+    const shotId = requireId(reference.shot_id, 'FUMIN_EXECUTION_MOTION_REFERENCE_INVALID')
+    const sha256 = requireHash(
+      reference.sha256,
+      'FUMIN_EXECUTION_MOTION_REFERENCE_HASH_INVALID',
+    )
+    const id = referenceId(reference, 'motion', 'shot_id', shotId, sha256)
     if (seen.has(id)) fail('FUMIN_EXECUTION_MOTION_REFERENCE_DUPLICATE', id)
     seen.add(id)
     return {
       id,
-      shot_id: requireId(reference.shot_id, 'FUMIN_EXECUTION_MOTION_REFERENCE_INVALID'),
-      sha256: requireHash(reference.sha256, 'FUMIN_EXECUTION_MOTION_REFERENCE_HASH_INVALID'),
+      shot_id: shotId,
+      sha256,
     }
   })
 }
@@ -120,9 +141,14 @@ function normalizeCharacters(characters, shotId) {
     const id = requireId(character.id, 'FUMIN_EXECUTION_CHARACTER_INVALID')
     if (seen.has(id)) fail('FUMIN_EXECUTION_CHARACTER_DUPLICATE', id)
     seen.add(id)
-    const identityHashes = (Array.isArray(character.assets) ? character.assets : [])
+    const declaredHashes = Array.isArray(character.identity_hashes)
+      ? character.identity_hashes
+      : []
+    const assetHashes = (Array.isArray(character.assets) ? character.assets : [])
       .filter((asset) => asset?.kind === 'identity')
-      .map((asset) => requireHash(asset.sha256, 'FUMIN_EXECUTION_IDENTITY_ASSET_HASH_INVALID'))
+      .map((asset) => asset.sha256)
+    const identityHashes = [...new Set([...declaredHashes, ...assetHashes]
+      .map((hash) => requireHash(hash, 'FUMIN_EXECUTION_IDENTITY_ASSET_HASH_INVALID')))]
     return { id, identity_hashes: identityHashes }
   })
 }
@@ -143,7 +169,16 @@ function normalizeDialogue(dialogue, pack) {
       || !turn.text.trim()) {
       fail('FUMIN_EXECUTION_DIALOGUE_TIMELINE_INVALID', pack.shot_id)
     }
-    return { ...clone(turn), start_ms: startMs, end_ms: endMs }
+    const normalized = {
+      text: turn.text.trim(),
+      start_ms: startMs,
+      end_ms: endMs,
+    }
+    for (const field of DIALOGUE_STRING_FIELDS) {
+      const value = String(turn[field] ?? '').trim()
+      if (value) normalized[field] = value
+    }
+    return normalized
   })
 }
 
@@ -194,13 +229,16 @@ function identityIdsForPack(identityReferences, pack) {
   const ids = []
   for (const character of pack.characters) {
     const matches = identityReferences.filter((reference) => reference.character_id === character.id)
-    if (matches.length === 0) fail('FUMIN_EXECUTION_IDENTITY_REFERENCE_MISSING', character.id)
+    const requiredHashes = new Set(character.identity_hashes)
     for (const hash of character.identity_hashes) {
-      if (!matches.some((reference) => reference.sha256 === hash)) {
-        fail('FUMIN_EXECUTION_IDENTITY_REFERENCE_HASH_MISMATCH', character.id)
-      }
+      const hashMatches = matches.filter((reference) => reference.sha256 === hash)
+      if (hashMatches.length === 0) fail('FUMIN_EXECUTION_IDENTITY_REFERENCE_MISSING', character.id)
+      if (hashMatches.length > 1) fail('FUMIN_EXECUTION_IDENTITY_REFERENCE_AMBIGUOUS', character.id)
+      ids.push(hashMatches[0].id)
     }
-    ids.push(...matches.map((reference) => reference.id))
+    if (matches.some((reference) => !requiredHashes.has(reference.sha256))) {
+      fail('FUMIN_EXECUTION_IDENTITY_REFERENCE_STALE', character.id)
+    }
   }
   return [...new Set(ids)].sort()
 }
@@ -276,24 +314,28 @@ function dialogueForWindow(pack, window) {
     }))
 }
 
-function parentPromptWithoutDialogue(prompt) {
-  const kept = []
-  let skippingDialogue = false
-  for (const line of prompt.split(/\r?\n/u)) {
-    if (/^\s*Dialogue\s*:/iu.test(line)) {
-      skippingDialogue = true
-      continue
+function normalizePromptLine(line) {
+  return line.trim().replace(/^[-*]\s*/u, '').replace(/\s+/gu, ' ')
+}
+
+function parentPromptWithoutDialogue(prompt, dialogue) {
+  const dialogueLines = new Set()
+  for (const turn of dialogue) {
+    const text = normalizePromptLine(turn.text)
+    dialogueLines.add(text)
+    for (const speaker of [turn.speaker_name, turn.speaker_id]) {
+      if (speaker) dialogueLines.add(normalizePromptLine(`${speaker}: ${turn.text}`))
     }
-    if (skippingDialogue && /^\s*[A-Za-z][A-Za-z0-9 -]*:\s*/u.test(line)) {
-      skippingDialogue = false
-    }
-    if (!skippingDialogue) kept.push(line)
   }
-  return kept.join('\n').trim()
+  return prompt.split(/\r?\n/u)
+    .filter((line) => !/^\s*Dialogue\s*:/iu.test(line))
+    .filter((line) => !dialogueLines.has(normalizePromptLine(line)))
+    .join('\n')
+    .trim()
 }
 
 function buildExecutionUnitPrompt(pack, dialogue) {
-  const parent = parentPromptWithoutDialogue(pack.prompt)
+  const parent = parentPromptWithoutDialogue(pack.prompt, pack.dialogue)
   const dialogueText = dialogue.length > 0
     ? dialogue.map((turn) => {
       const speaker = String(turn.speaker_name || turn.speaker_id || '').trim()
